@@ -23,7 +23,7 @@
   15. [IMPLEMENTE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
   16. [IMPLEMENTE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
   17. [IMPLEMENTE] Implementer les classes : declaration et expression de classe, constructor, methodes d'instance, methodes statiques, extends, super(...) et super.methode(), new, instanceof, getters/setters, champs, ordre d'initialisation, heritage multi-niveaux (Dog/Cat extends Animal), avec classes.js et test21.js.
-  18. [A FAIRE] Implementer les exceptions : try/catch/finally, throw de n'importe quelle valeur, classes Error/TypeError/RangeError/SyntaxError avec message, deroulement de pile via pile de gestionnaires (ou SEH Windows), finally execute meme avec return/break/continue, exception non rattrapee (message sur stderr + code de sortie non nul), erreurs runtime (appel d'un non-fonction, propriete d'undefined), avec test23.js.
+  18. [IMPLEMENTE] Implementer les exceptions : try/catch/finally, throw de n'importe quelle valeur, classes Error/TypeError/RangeError/SyntaxError avec message, deroulement de pile via pile de gestionnaires (ou SEH Windows), finally execute meme avec return/break/continue, exception non rattrapee (message sur stderr + code de sortie non nul), erreurs runtime (appel d'un non-fonction, propriete d'undefined), avec test23.js.
   19. [A FAIRE] Implementer les objets globaux et built-ins numeriques : Math (abs, max, min, pow, sqrt, floor, ceil, round, trunc, sign, random, PI, E...), Number (isInteger, isNaN, isFinite, parseFloat, MAX_VALUE...), Number()/parseInt (avec base)/parseFloat/isNaN/isFinite, JSON.stringify et JSON.parse reels (pas des stubs), NaN/Infinity/undefined/globalThis, avec math.js, test20.js et test24.js.
   20. [A FAIRE] Implementer les expressions regulieres : litteraux /re/flags (g, i, m, ainsi que les flags non standards rencontres dans test03.js), new RegExp(pattern, flags), moteur a backtracking (classes, quantificateurs, groupes, ancres, alternatives), RegExp.test/exec, String.match/matchAll/search/replace/split, lastIndex, avec test19.js.
   21. [A FAIRE] Implementer l'interface console, processus et systeme hote Windows : console.log (plusieurs arguments, nombres entiers/flottants/negatifs, booleens, null, undefined, objets et tableaux), console.error/warn vers stderr, process.stdout.write (sans saut de ligne), process.exit(code), process.argv, alert (comme console.log), prompt (lecture de stdin), imports kernel32 (GetStdHandle, WriteFile, ReadFile, GetCommandLineA, HeapAlloc, ExitProcess), avec hello.js, test12.js et test24.js.
@@ -329,7 +329,7 @@ Const
     'length', 'prototype', 'constructor', 'name', 'message', 'toString',
     'valueOf'
   );
-  RT_DATA_VAR_COUNT = 12;
+  RT_DATA_VAR_COUNT = 13;
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
@@ -349,7 +349,7 @@ Const
   JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
-    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw'
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc'
   );
   BUILTIN_COUNT = 47;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
@@ -716,6 +716,8 @@ Type
     tmp_free_count: LongInt;
     jt: Array[1..MAX_JT] Of TJumpTarget;
     jt_count, plabel_count, chain_end: LongInt;
+    try_count: LongInt;
+    try_rec, try_fin, try_jt: Array[1..16] Of LongInt;
     in_chain, chain_used: Boolean;
     plabels: Array[1..4] Of LongInt;
     instrs  : Array[1..MAX_INSTR] Of TInstr;
@@ -4999,7 +5001,7 @@ Begin
   ctx.sem.syms[sy].refs := 0;
   ctx.sem.syms[sy].writes := 0;
   If (ctx.sem.scopes[sc].func = 1) And Not ctx.sem.scopes[sc].in_loop And
-     (ctx.sem.syms[sy].kind <> DK_FNAME) Then
+     (ctx.sem.syms[sy].kind In [DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS]) Then
     ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_STATIC;
   If (ctx.sem.syms[sy].kind = DK_VAR) Or (ctx.sem.syms[sy].kind = DK_FUNC) Then
     ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_HOISTED;
@@ -7873,6 +7875,7 @@ End;
 Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt); Forward;
 Procedure BindTo(Var ctx: TCompilerContext; node, tslot: LongInt; init: Boolean); Forward;
 Procedure GenScopeEnter(Var ctx: TCompilerContext; sc: LongInt); Forward;
+Function RtVarSym(Var ctx: TCompilerContext; Const name: TString): LongInt; Forward;
 
 Procedure LoadTag(Var ctx: TCompilerContext; lo: LongInt; tag: LongInt);
 Begin
@@ -10589,6 +10592,151 @@ Begin
   TempRelease(ctx, t);
 End;
 
+{ ---- Exceptions (TODO 18) ----
+
+  Un try ouvre un enregistrement de gestionnaire de 32 octets dans la
+  trame (4 emplacements) : precedent +0, esp +4, ebp +8, adresse du
+  catch +12, ebx +16, esi +20, edi +24. Il est chaine dans la variable
+  du runtime handler_top. _JSRT_throw(valeur) range la valeur dans la
+  variable exc, depile le gestionnaire, restaure esp, ebp, ebx, esi, edi
+  et saute a l'adresse du catch. L'adresse est obtenue par l'astuce
+  call / pop : le point de reprise est l'instruction jmp qui suit le
+  call. Un return, break ou continue qui sort d'un try depile son
+  gestionnaire et recopie le bloc finally a cet endroit. }
+
+Function AllocHandler(Var ctx: TCompilerContext): LongInt;
+Var
+  a, b, c, d: LongInt;
+Begin
+  a := AllocTemp(ctx);
+  b := AllocTemp(ctx);
+  c := AllocTemp(ctx);
+  d := AllocTemp(ctx);
+  AllocHandler := SlotDisp(d);
+End;
+
+Procedure HandlerSetup(Var ctx: TCompilerContext; base, lcatch: LongInt);
+Var
+  lset: LongInt;
+Begin
+  lset := NewLabel(ctx);
+  Emit1(ctx, OP_CALL, LabelOp(lset));
+  Emit1(ctx, OP_JMP, LabelOp(lcatch));
+  PlaceLabel(ctx, lset);
+  Emit1(ctx, OP_POP, RegOp(R_EAX));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + RT_EH_CATCH), RegOp(R_EAX));
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'handler_top'), 0));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + RT_EH_PREV), RegOp(R_EAX));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + RT_EH_ESP), RegOp(R_ESP));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + RT_EH_EBP), RegOp(R_EBP));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + 16), RegOp(R_EBX));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + 20), RegOp(R_ESI));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + 24), RegOp(R_EDI));
+  Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, base));
+  Emit(ctx, OP_MOV, MemSym(SYMK_D, RtVarSym(ctx, 'handler_top'), 0), RegOp(R_EAX));
+End;
+
+Procedure HandlerPop(Var ctx: TCompilerContext; base: LongInt);
+Begin
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, base + RT_EH_PREV));
+  Emit(ctx, OP_MOV, MemSym(SYMK_D, RtVarSym(ctx, 'handler_top'), 0), RegOp(R_EAX));
+End;
+
+Procedure TryPush(Var ctx: TCompilerContext; base, fin: LongInt);
+Begin
+  If ctx.ir.try_count < 16 Then
+    Begin
+      Inc(ctx.ir.try_count);
+      ctx.ir.try_rec[ctx.ir.try_count] := base;
+      ctx.ir.try_fin[ctx.ir.try_count] := fin;
+      ctx.ir.try_jt[ctx.ir.try_count] := ctx.ir.jt_count;
+    End
+  Else
+    PipelineError(ctx, 'blocs try imbriques trop profonds');
+End;
+
+{ Sort des try dont l'etiquette de saut est jt >= mint : depile leur
+  gestionnaire et execute leur finally (return : mint = 0). }
+Procedure GenExitTries(Var ctx: TCompilerContext; mint: LongInt);
+Var
+  saved, i, fin, base: LongInt;
+Begin
+  saved := ctx.ir.try_count;
+  i := saved;
+  While (i >= 1) And (ctx.ir.try_jt[i] >= mint) Do
+    Begin
+      base := ctx.ir.try_rec[i];
+      fin := ctx.ir.try_fin[i];
+      HandlerPop(ctx, base);
+      ctx.ir.try_count := i - 1;
+      If fin <> 0 Then
+        GenStmt(ctx, fin);
+      Dec(i);
+    End;
+  ctx.ir.try_count := saved;
+End;
+
+Procedure GenTryCatch(Var ctx: TCompilerContext; n: LongInt);
+Var
+  base, lcatch, lend, cn, par: LongInt;
+Begin
+  base := AllocHandler(ctx);
+  lcatch := NewLabel(ctx);
+  lend := NewLabel(ctx);
+  HandlerSetup(ctx, base, lcatch);
+  TryPush(ctx, base, 0);
+  GenStmt(ctx, ctx.ast.nodes[n].e1);
+  Dec(ctx.ir.try_count);
+  HandlerPop(ctx, base);
+  Emit1(ctx, OP_JMP, LabelOp(lend));
+  PlaceLabel(ctx, lcatch);
+  cn := ctx.ast.nodes[n].e2;
+  GenScopeEnter(ctx, ctx.ast.nodes[cn].scope);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 0));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 4));
+  par := ctx.ast.nodes[cn].e1;
+  If par <> 0 Then
+    BindValue(ctx, par, True);
+  If ctx.ast.nodes[cn].e2 <> 0 Then
+    GenStmtList(ctx, ctx.ast.nodes[ctx.ast.nodes[cn].e2].e1);
+  PlaceLabel(ctx, lend);
+End;
+
+Procedure GenTry(Var ctx: TCompilerContext; n: LongInt);
+Var
+  base, lcatch, lend, tx, fin: LongInt;
+Begin
+  fin := ctx.ast.nodes[n].e3;
+  If fin = 0 Then
+    Begin
+      GenTryCatch(ctx, n);
+      Exit;
+    End;
+  base := AllocHandler(ctx);
+  lcatch := NewLabel(ctx);
+  lend := NewLabel(ctx);
+  HandlerSetup(ctx, base, lcatch);
+  TryPush(ctx, base, fin);
+  If ctx.ast.nodes[n].e2 <> 0 Then
+    GenTryCatch(ctx, n)
+  Else
+    GenStmt(ctx, ctx.ast.nodes[n].e1);
+  Dec(ctx.ir.try_count);
+  HandlerPop(ctx, base);
+  GenStmt(ctx, fin);
+  Emit1(ctx, OP_JMP, LabelOp(lend));
+  PlaceLabel(ctx, lcatch);
+  tx := TempAcquire(ctx);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 0));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 4));
+  SaveTemp(ctx, tx);
+  GenStmt(ctx, fin);
+  PushTemp(ctx, tx);
+  CallRt(ctx, 'throw', 8);
+  TempRelease(ctx, tx);
+  PlaceLabel(ctx, lend);
+End;
+
 Procedure GenBreakContinue(Var ctx: TCompilerContext; n: LongInt; is_break: Boolean);
 Var
   i: LongInt;
@@ -10599,6 +10747,7 @@ Begin
       PendingNote(ctx, n, 'cible de break/continue introuvable');
       Exit;
     End;
+  GenExitTries(ctx, i);
   If is_break Then
     Emit1(ctx, OP_JMP, LabelOp(ctx.ir.jt[i].brk))
   Else
@@ -10633,6 +10782,8 @@ Begin
 End;
 
 Procedure GenStmt(Var ctx: TCompilerContext; n: LongInt);
+Var
+  tx: LongInt;
 Begin
   If n = 0 Then
     Exit;
@@ -10660,9 +10811,26 @@ Begin
           GenExpr(ctx, ctx.ast.nodes[n].e1)
         Else
           LoadUndefined(ctx);
+        If ctx.ir.try_count > 0 Then
+          Begin
+            tx := TempAcquire(ctx);
+            SaveTemp(ctx, tx);
+            GenExitTries(ctx, 0);
+            LoadTemp(ctx, tx);
+            TempRelease(ctx, tx);
+          End;
         Emit0(ctx, OP_LEAVE);
         Emit0(ctx, OP_RET);
       End;
+    N_THROW:
+      Begin
+        GenExpr(ctx, ctx.ast.nodes[n].e1);
+        Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+        Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+        CallRt(ctx, 'throw', 8);
+      End;
+    N_TRY:
+      GenTry(ctx, n);
     N_IF:
       GenIf(ctx, n);
     N_WHILE:
@@ -10725,6 +10893,7 @@ Begin
   ctx.ir.cg_fs := fs;
   ctx.ir.tmp_free_count := 0;
   ctx.ir.jt_count := 0;
+  ctx.ir.try_count := 0;
   ctx.ir.plabel_count := 0;
   ctx.ir.in_chain := False;
   Emit1(ctx, OP_PROC, AddrSym(SYMK_X, xs));
@@ -11875,7 +12044,7 @@ Begin
   A('endp');
 
   { _JSRT_fatal(chaine C) : message sur stderr puis fin du processus }
-  A('proc _JSRT_fatal');
+  A('proc _JSRT_die');
   A('push ebp');
   A('mov ebp, esp');
   A('push dword ptr [ebp+8]');
@@ -11903,24 +12072,6 @@ Begin
   A('call _JSRT_fatal');
   A('endp');
 
-  { _JSRT_throw_tdz(chaine du nom) }
-  A('proc _JSRT_throw_tdz');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('push offset _JSRT_c_tdz1');
-  A('push dword ptr [_JSRT_v_stderr]');
-  A('call _JSRT_write_cstr');
-  A('add esp, 8');
-  A('mov eax, dword ptr [ebp+8]');
-  A('push dword ptr [eax+$STR_LEN]');
-  A('add eax, $STR_DATA');
-  A('push eax');
-  A('push dword ptr [_JSRT_v_stderr]');
-  A('call _JSRT_write');
-  A('add esp, 12');
-  A('push offset _JSRT_c_tdz2');
-  A('call _JSRT_fatal');
-  A('endp');
 End;
 
 { ---- Chaines : creation, concatenation, conversions ---- }
@@ -18263,6 +18414,369 @@ Begin
   FEnd;
 End;
 
+{ ---- Exceptions : runtime (TODO 18) ---- }
+
+Const
+  ErrKinds: Array[1..7] Of String[16] = (
+    'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError',
+    'EvalError', 'URIError');
+
+{ Constructeur natif d'une classe d'erreur : remplit this s'il est un objet
+  (appel par super(...) d'une classe derivee) sinon cree l'objet. }
+Procedure ErrCtor(Const code, kind: TString);
+Begin
+  FBegin(code, 0);
+  A('cmp dword ptr [ebp+20], $OBJ');
+  A('jne .new');
+  A('mov ebx, dword ptr [ebp+16]');
+  A('jmp .have');
+  A('.new:');
+  A('push offset _JSNO_' + kind + '_proto');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('.have:');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .nomsg');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $UNDEF');
+  A('je .nomsg');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push $STR');
+  A('push eax');
+  A('push 1');
+  A('push offset ' + RtStr('message'));
+  A('push ebx');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('.nomsg:');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .st');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + '], $OBJ');
+  A('jne .st');
+  A('push offset ' + RtStr('cause'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('call _JSRT_has_own');
+  A('add esp, 12');
+  A('test eax, eax');
+  A('jz .st');
+  A('push offset ' + RtStr('cause'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('push 1');
+  A('push offset ' + RtStr('cause'));
+  A('push ebx');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('.st:');
+  A('push ebx');
+  A('call _JSRT_err_stack');
+  A('add esp, 4');
+  A('mov eax, ebx');
+  A('mov edx, $OBJ');
+  FEnd;
+End;
+
+Procedure RtErrors;
+Var
+  k: LongInt;
+Begin
+  { _JSRT_err_stack(erreur) : propriete cachee stack = toString + position }
+  FBegin('_JSRT_err_stack', 0);
+  A('push $OBJ');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push $STR');
+  A('push offset ' + RtStr(#10 + '    at <anonymous>'));
+  A('push $STR');
+  A('push eax');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push $STR');
+  A('push eax');
+  A('push 1');
+  A('push offset ' + RtStr('stack'));
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  FEnd;
+
+  { _JSRT_make_error(prototype, message) -> objet erreur }
+  FBegin('_JSRT_make_error', 0);
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('push $STR');
+  A('push dword ptr [ebp+12]');
+  A('push 1');
+  A('push offset ' + RtStr('message'));
+  A('push ebx');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('push ebx');
+  A('call _JSRT_err_stack');
+  A('add esp, 4');
+  A('mov eax, ebx');
+  FEnd;
+
+  { _JSRT_throw_msg(prototype, message) : leve une erreur }
+  A('proc _JSRT_throw_msg');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_make_error');
+  A('add esp, 8');
+  A('push $OBJ');
+  A('push eax');
+  A('call _JSRT_throw');
+  A('endp');
+
+  { _JSRT_throw_tdz(nom) : ReferenceError }
+  A('proc _JSRT_throw_tdz');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push $STR');
+  A('push offset ' + RtStr(' ne peut pas etre utilise avant son initialisation'));
+  A('push $STR');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push eax');
+  A('push offset _JSNO_ReferenceError_proto');
+  A('call _JSRT_throw_msg');
+  A('endp');
+
+  { _JSRT_fatal(message C) : leve TypeError, RangeError... selon le prefixe }
+  FBegin('_JSRT_fatal', 1);
+  A('mov esi, dword ptr [ebp+8]');
+  A('cmp esi, offset _JSRT_c_oom');
+  A('jne .go');
+  A('push esi');
+  A('call _JSRT_die');
+  A('.go:');
+  A('mov ' + Lv(1) + ', offset _JSNO_Error_proto');
+  A('movzx eax, byte ptr [esi]');
+  A('cmp eax, 84');
+  A('jne .n1');
+  A('mov ' + Lv(1) + ', offset _JSNO_TypeError_proto');
+  A('jmp .msg');
+  A('.n1:');
+  A('cmp eax, 82');
+  A('jne .n2');
+  A('movzx eax, byte ptr [esi+1]');
+  A('cmp eax, 97');
+  A('jne .ref');
+  A('mov ' + Lv(1) + ', offset _JSNO_RangeError_proto');
+  A('jmp .msg');
+  A('.ref:');
+  A('mov ' + Lv(1) + ', offset _JSNO_ReferenceError_proto');
+  A('jmp .msg');
+  A('.n2:');
+  A('cmp eax, 83');
+  A('jne .msg');
+  A('mov ' + Lv(1) + ', offset _JSNO_SyntaxError_proto');
+  A('.msg:');
+  A('mov ebx, esi');
+  A('.f:');
+  A('movzx eax, byte ptr [ebx]');
+  A('test eax, eax');
+  A('jz .nocolon');
+  A('cmp eax, 58');
+  A('je .col');
+  A('inc ebx');
+  A('jmp .f');
+  A('.col:');
+  A('inc ebx');
+  A('cmp byte ptr [ebx], 32');
+  A('jne .ms');
+  A('inc ebx');
+  A('jmp .ms');
+  A('.nocolon:');
+  A('mov ebx, esi');
+  A('.ms:');
+  A('mov ecx, ebx');
+  A('.l:');
+  A('cmp byte ptr [ecx], 0');
+  A('je .e');
+  A('inc ecx');
+  A('jmp .l');
+  A('.e:');
+  A('sub ecx, ebx');
+  A('jz .mk');
+  A('cmp byte ptr [ebx+ecx-1], 10');
+  A('jne .mk');
+  A('dec ecx');
+  A('.mk:');
+  A('push ecx');
+  A('push ecx');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('pop ecx');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('mov esi, ebx');
+  A('push eax');
+  A('rep movsb');
+  A('pop eax');
+  A('push eax');
+  A('push ' + Lv(1));
+  A('call _JSRT_throw_msg');
+  FEnd;
+
+  { _JSRT_throw(valeur) : saute au gestionnaire le plus recent }
+  A('proc _JSRT_throw');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [_JSRT_v_exc], eax');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [_JSRT_v_exc+4], eax');
+  A('mov ecx, dword ptr [_JSRT_v_handler_top]');
+  A('test ecx, ecx');
+  A('jz .uncaught');
+  A('mov eax, dword ptr [ecx]');
+  A('mov dword ptr [_JSRT_v_handler_top], eax');
+  A('mov ebx, dword ptr [ecx+16]');
+  A('mov esi, dword ptr [ecx+20]');
+  A('mov edi, dword ptr [ecx+24]');
+  A('mov eax, dword ptr [ecx+12]');
+  A('mov esp, dword ptr [ecx+4]');
+  A('mov ebp, dword ptr [ecx+8]');
+  A('jmp eax');
+  A('.uncaught:');
+  A('push offset _JSRT_c_uncaught');
+  A('push dword ptr [_JSRT_v_stderr]');
+  A('call _JSRT_write_cstr');
+  A('add esp, 8');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push dword ptr [eax+$STR_LEN]');
+  A('add eax, $STR_DATA');
+  A('push eax');
+  A('push dword ptr [_JSRT_v_stderr]');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('push offset _JSRT_c_nl');
+  A('push dword ptr [_JSRT_v_stderr]');
+  A('call _JSRT_write_cstr');
+  A('add esp, 8');
+  A('push 1');
+  A('call dword ptr [__imp__ExitProcess@4]');
+  A('endp');
+
+  { Error.prototype.toString }
+  FBegin('_JSRT_err_toString', 0);
+  A('push offset ' + RtStr('name'));
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $UNDEF');
+  A('jne .nm');
+  A('mov eax, offset ' + RtStr('Error'));
+  A('mov edx, $STR');
+  A('.nm:');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  A('push offset ' + RtStr('message'));
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $UNDEF');
+  A('jne .ms');
+  A('mov eax, offset ' + RtStr(''));
+  A('mov edx, $STR');
+  A('.ms:');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('mov esi, eax');
+  A('cmp dword ptr [esi+$STR_LEN], 0');
+  A('jne .m1');
+  A('mov eax, ebx');
+  A('mov edx, $STR');
+  A('jmp .ret');
+  A('.m1:');
+  A('cmp dword ptr [ebx+$STR_LEN], 0');
+  A('jne .m2');
+  A('mov eax, esi');
+  A('mov edx, $STR');
+  A('jmp .ret');
+  A('.m2:');
+  A('push $STR');
+  A('push offset ' + RtStr(': '));
+  A('push $STR');
+  A('push ebx');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push $STR');
+  A('push esi');
+  A('push $STR');
+  A('push eax');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('mov edx, $STR');
+  FEnd;
+
+  { Error.captureStackTrace : sans effet }
+  A('proc _JSRT_Error_capture');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('ret');
+  A('endp');
+
+  For k := 1 To 7 Do
+    ErrCtor('_JSRT_' + ErrKinds[k] + '_call', ErrKinds[k]);
+End;
+
+{ Donnees statiques : prototypes et fonctions des classes d'erreur. }
+Procedure RtErrorData(oproto: LongInt);
+Var
+  k, errproto, proto, props, f: LongInt;
+Begin
+  errproto := 0;
+  For k := 1 To 7 Do
+    Begin
+      BoReset;
+      BoAdd('name', DsymFind(asm_ctx^, RtStr(ErrKinds[k])), RT_T_STRING);
+      BoAdd('message', DsymFind(asm_ctx^, RtStr('')), RT_T_STRING);
+      If k = 1 Then
+        BoAdd('toString', RtFuncObj('toString', '_JSRT_err_toString', 0), RT_T_FUNCTION);
+      If k = 1 Then
+        Begin
+          proto := BoFinish('_JSNO_Error_proto', oproto);
+          errproto := proto;
+        End
+      Else
+        proto := BoFinish('_JSNO_' + ErrKinds[k] + '_proto', errproto);
+      BoReset;
+      BoAdd('prototype', proto, RT_T_OBJECT);
+      If k = 1 Then
+        BoAdd('captureStackTrace', RtFuncObj('captureStackTrace', '_JSRT_Error_capture', 1),
+              RT_T_FUNCTION);
+      props := BoFinish('_JSNO_' + ErrKinds[k] + '_props', 0);
+      f := RtFuncObjP(ErrKinds[k], '_JSRT_' + ErrKinds[k] + '_call', 1, props);
+      RtGlobal(ErrKinds[k], f, RT_T_FUNCTION);
+    End;
+End;
+
 { ---- Assemblage du runtime ---- }
 
 Procedure RtStaticData;
@@ -18278,6 +18792,7 @@ Begin
   RtCString('_JSRT_c_tdz2', ' ne peut pas etre utilise avant son initialisation' + #10);
   RtCString('_JSRT_c_space', ' ');
   RtCString('_JSRT_c_nl', #10);
+  RtCString('_JSRT_c_uncaught', 'Uncaught ');
   RtCString('_JSRT_c_setundef', 'TypeError: impossible de definir une propriete de null ou undefined' + #10);
   RtCString('_JSRT_c_noiter', 'TypeError: la valeur n''est pas iterable' + #10);
   RtCString('_JSRT_c_setprop', 'TypeError: affectation de propriete non prise en charge pour cet objet' + #10);
@@ -18288,6 +18803,7 @@ Begin
   BoReset;
   RtObjectProtoMethods;
   oproto := BoFinish('_JSNO_object_proto', 0);
+  RtErrorData(oproto);
 
   BoReset;
   RtStringProtoMethods;
@@ -18329,6 +18845,7 @@ Begin
   RtArrays;
   RtObjects;
   RtClasses;
+  RtErrors;
 End;
 
 { ============================================================
@@ -18891,7 +19408,18 @@ Begin
           End;
       End;
     OP_JMP:
-      emu_pc := emu_lbl[ins^.a.disp];
+      Begin
+        If ins^.a.kind = OD_LABEL Then
+          emu_pc := emu_lbl[ins^.a.disp]
+        Else
+          Begin
+            r := OpRd(ctx, ins^.a, 4);
+            If (r < EMU_CODE) Or (r >= EMU_TRAP) Then
+              EmuFault('saut vers une adresse invalide ' + HexU(r))
+            Else
+              emu_pc := (r - EMU_CODE) Div 4;
+          End;
+      End;
     OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JB, OP_JAE, OP_JA, OP_JBE,
     OP_JO, OP_JNO, OP_JS, OP_JNS:
       If EmuCond(ins^.op) Then
@@ -18903,6 +19431,8 @@ Begin
           EmuFault('symbole non resolu : ' + SymNameOf(ctx, ins^.a.symkind, ins^.a.sym))
         Else If ins^.a.kind = OD_ADDR Then
           EmuCall(SymAddr(ctx, ins^.a.symkind, ins^.a.sym), EMU_CODE + 4 * LongWord(emu_pc))
+        Else If ins^.a.kind = OD_LABEL Then
+          EmuCall(EMU_CODE + 4 * LongWord(emu_lbl[ins^.a.disp]), EMU_CODE + 4 * LongWord(emu_pc))
         Else
           EmuCall(OpRd(ctx, ins^.a, 4), EMU_CODE + 4 * LongWord(emu_pc));
       End;
