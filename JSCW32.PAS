@@ -29639,6 +29639,14 @@ Begin
             CoReloc(COFF_REL32, ins^.a.symkind, ins^.a.sym);
             CoD(0);
           End
+        Else If ins^.a.kind = OD_LABEL Then
+          Begin
+            CoB($E8);
+            If co_lbl[ins^.a.disp] < 0 Then
+              CoD(0)
+            Else
+              CoD(co_lbl[ins^.a.disp] - (co_len + 4));
+          End
         Else
           Begin
             CoB($FF);
@@ -30500,7 +30508,9 @@ End;
   aux valeurs « attendu » des commentaires du source.
 
   Execution : sous Windows le .EXE produit est lance ; sur un autre systeme,
-  l'emulateur 80386 integre (-run) remplace le lancement. Les artefacts jt_*
+  la variable d'environnement JSCW32_RUNNER (par exemple « wine ») donne la
+  commande qui lance le .EXE, sinon l'emulateur 80386 integre (-run) remplace
+  le lancement. Les artefacts jt_*
   sont supprimes apres chaque fichier (sauf avec -keep).
 
   Valeurs attendues : commentaires « // attendu : valeur » dans l'ordre du
@@ -30921,7 +30931,7 @@ Var
   exe_name, obj_name, asm_name, src, nul, line: String;
   i, rc, ok_count, fail_count, warn_count: LongInt;
   isexe, isobj, isasm, passed, windows: Boolean;
-  stale: String;
+  runner: String;
 Begin
   RunTests := EXIT_OK;
   self := ParamStr(0);
@@ -30956,8 +30966,11 @@ Begin
     mode_name := 'ASM+OBJ'
   Else
     mode_name := 'OBJ';
+  runner := GetEnv('JSCW32_RUNNER');
   If isexe And windows Then
     run_name := 'execution du .EXE'
+  Else If isexe And (runner <> '') Then
+    run_name := 'execution du .EXE par ' + runner
   Else
     run_name := 'emulateur 80386 integre';
   HtListFiles(dir);
@@ -31006,6 +31019,9 @@ Begin
             Begin
               If windows Then
                 rc := HtShell(exe_name + ' < ' + nul + ' > ' + out_name + ' 2>&1')
+              Else If runner <> '' Then
+                rc := HtShell(runner + ' ' + exe_name + ' < ' + nul + ' > ' + out_name +
+                              ' 2>&1')
               Else
                 rc := HtShell('"' + self + '" -run "' + src + '" < ' + nul + ' > ' +
                               out_name + ' 2>&1');

@@ -35,8 +35,10 @@ Harnais de validation (-test)
     mode EXE     (defaut)  : en-tetes MZ/PE du .exe, puis execution ;
     mode OBJ     (-obj)    : en-tete COFF i386 du .obj ;
     mode ASM+OBJ (-asm -obj) : .asm et .obj.
-  Execution : sous Windows le .exe est lance ; ailleurs l'emulateur integre
-  (-run) tient lieu d'execution. La sortie est comparee aux commentaires
+  Execution : sous Windows le .exe est lance ; ailleurs, si la variable
+  d'environnement JSCW32_RUNNER est definie (par exemple JSCW32_RUNNER=wine),
+  le .exe est lance avec cette commande ; sinon l'emulateur integre (-run) tient
+  lieu d'execution. La sortie est comparee aux commentaires
   « // attendu : valeur » du source, dans l'ordre :
     « a puis b »   deux lignes a et b ;
     « a, b, c »    trois lignes consecutives ;
