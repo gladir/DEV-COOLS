@@ -251889,10 +251889,31 @@ Begin
       End;
      End;
     $21, $12, $1E, $19, $22, $20, $18, $31, $17:
-     { Si Alt est tenu, c est un Alt+lettre ; sinon clavier emulateur.
-       Comme on ne sait pas l etat d Alt, on laisse passer en priorite
-       pour permettre l ouverture des menus. }
-     ;
+     Begin
+      { BOGUE REEL CORRIGE (2026-10-19, signale par l utilisateur en        }
+      { utilisant MSD : "Alt+U, Alt+F... c est le menu de DEVENV.PAS qui    }
+      { s affiche plutot que les menus de l emulateur") - cette branche     }
+      { laissait TOUJOURS passer inconditionnellement vers le menu de       }
+      { l IDE (commentaire d origine : "comme on ne sait pas l etat d Alt") }
+      { - or Ev.ShiftState (bit 4, voir PollEvents/GetAsyncKeyState($12))   }
+      { indique DEJA de facon fiable si Alt est reellement tenu, exactement}
+      { comme pour Ctrl+Ins ailleurs dans ce fichier. Un programme DOS TUI  }
+      { avec son propre menu Alt+lettre (MSD, Norton Commander, etc.) doit  }
+      { recevoir ces touches quand l emulateur a le focus - meme priorite  }
+      { que les F-keys de debogage juste au-dessus. }
+      If (Ev.ShiftState And 4 <> 0) And
+         (EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus)) Then
+       { Alt reellement tenu ET (debogueur en pause ou pas le focus
+         emulateur) : laisser passer au menu de l IDE. }
+      Else Begin
+       HandleEmulatorPanelEvent(EmuPanel, Ev);
+       If Not EmuPanel.Base.Visible Then
+        FullRepaintNeeded := True
+       Else
+        DrawEmulatorPanel(EmuPanel);
+       Exit;
+      End;
+     End;
     Else Begin
      If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus) Then Begin
       { Debogueur en pause, ou pas le focus emulateur : laisser passer
