@@ -27,7 +27,7 @@
   19. [IMPLEMENTE] Implementer les objets globaux et built-ins numeriques : Math (abs, max, min, pow, sqrt, floor, ceil, round, trunc, sign, random, PI, E...), Number (isInteger, isNaN, isFinite, parseFloat, MAX_VALUE...), Number()/parseInt (avec base)/parseFloat/isNaN/isFinite, JSON.stringify et JSON.parse reels (pas des stubs), NaN/Infinity/undefined/globalThis, avec math.js, test20.js et test24.js.
   20. [IMPLEMENTE] Implementer les expressions regulieres : litteraux /re/flags (g, i, m, ainsi que les flags non standards rencontres dans test03.js), new RegExp(pattern, flags), moteur a backtracking (classes, quantificateurs, groupes, ancres, alternatives), RegExp.test/exec, String.match/matchAll/search/replace/split, lastIndex, avec test19.js.
   21. [IMPLEMENTE] Implementer l'interface console, processus et systeme hote Windows : console.log (plusieurs arguments, nombres entiers/flottants/negatifs, booleens, null, undefined, objets et tableaux), console.error/warn vers stderr, process.stdout.write (sans saut de ligne), process.exit(code), process.argv, alert (comme console.log), prompt (lecture de stdin), imports kernel32 (GetStdHandle, WriteFile, ReadFile, GetCommandLineA, HeapAlloc, ExitProcess), avec hello.js, test12.js et test24.js.
-  22. [A FAIRE] Construire le generateur ASM 80386 optionnel : syntaxe assembleur Windows 32 bits (.386, .MODEL FLAT, sections .text/.data/.rdata, EXTERN/PUBLIC), labels stables, commentaires reprenant les lignes JavaScript d'origine, routines runtime appelees par noms stables, emission du .ASM uniquement sur demande explicite de l'utilisateur.
+  22. [IMPLEMENTE] Construire le generateur ASM 80386 optionnel : syntaxe assembleur Windows 32 bits (.386, .MODEL FLAT, sections .text/.data/.rdata, EXTERN/PUBLIC), labels stables, commentaires reprenant les lignes JavaScript d'origine, routines runtime appelees par noms stables, emission du .ASM uniquement sur demande explicite de l'utilisateur.
   23. [A FAIRE] Construire le generateur OBJ COFF i386 : en-tete, sections .text/.data/.rdata/.bss, table de symboles, relocations (REL32/DIR32), symboles externes importes de kernel32, production d'un .OBJ seul quand le parametre le demande, et validation du format avec les outils DUMPBIN.PAS / OBJDUMP.PAS / NM.PAS du depot.
   24. [A FAIRE] Construire le linker PE32 interne : en-tetes MZ/PE, sections alignees, table d'imports kernel32 (et runtime propre), resolution des relocations, point d'entree, sous-systeme console, ecriture du .EXE final par defaut, suppression des anciens .EXE perimes et verification avec DISEXE.PAS.
   25. [A FAIRE] Ajouter le harnais de validation et stabiliser : option -test compilant tous les SAMPLES\JS\* (arrays, classes, control, hello, math, objects, t04_12, t09_15, t09full, test03, test03b, test04, test04b, test09, test10, test10adv, test11, test11adv, test12 a test24), execution des .EXE et comparaison avec les valeurs « attendu » des commentaires, modes EXE / OBJ / ASM+OBJ, nettoyage des artefacts, compatibilite Free Pascal/Turbo Pascal (types bornes, buffers, aucune dependance moderne), diagnostics finaux et documentation d'utilisation.
@@ -459,6 +459,7 @@ Type
     line_count  : LongInt;
     char_count  : LongInt;
     max_line_len: LongInt;
+    user_lines  : LongInt;     { lignes du programme (hors prelude) }
     line_start  : Array[1..MAX_SOURCE_LINES + 1] Of LongInt;
     buf         : Array[0..MAX_SOURCE_CHARS] Of Char;
   End;
@@ -1755,6 +1756,7 @@ Begin
   io := IOResult;
   If failed Then
     Exit;
+  ctx.source.user_lines := ctx.source.line_count;
   If Not (ctx.options.dump_tokens Or ctx.options.dump_ast Or ctx.options.dump_scopes) Then
     If Not AppendPrelude(ctx) Then
       Exit;
@@ -12305,6 +12307,8 @@ Begin
           Break;
         End;
     End;
+  If op = OP_FNSTSW Then
+    a1 := '';
   AsmOperand(a1, oa, line0);
   AsmOperand(a2, ob, line0);
   { un registre 8 bits impose la taille octet a l'autre operande memoire }
@@ -12377,6 +12381,22 @@ Begin
   NewDataSym(asm_ctx^, name, SEC_RDATA, ofs, 4, DS_FDESC);
 End;
 
+{ Nom de symbole de donnees unique (un meme code peut avoir plusieurs objets fonction). }
+Function UniqDName(Const base: TString): TString;
+Var
+  k: LongInt;
+  r: TString;
+Begin
+  r := base;
+  k := 1;
+  While DsymFind(asm_ctx^, r) <> 0 Do
+    Begin
+      Inc(k);
+      r := base + '_' + IntToStr(k);
+    End;
+  UniqDName := r;
+End;
+
 { Descripteur de fonction statique pour le code ; retourne son symbole. }
 Function RtDescSym(Const jsname, code: TString; nparams, flags: LongInt): LongInt;
 Var
@@ -12387,7 +12407,7 @@ Begin
            DsymFind(asm_ctx^, RtStr(jsname)));
   PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NPARAMS, nparams);
   PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_FLAGS, flags);
-  RtDescSym := NewDataSym(asm_ctx^, '_JSND_' + code, SEC_RDATA, fd_ofs, RT_FD_SIZE,
+  RtDescSym := NewDataSym(asm_ctx^, UniqDName('_JSND_' + code), SEC_RDATA, fd_ofs, RT_FD_SIZE,
                           DS_FDESC);
 End;
 
@@ -12401,7 +12421,7 @@ Begin
            DsymFind(asm_ctx^, RtStr(jsname)));
   PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NPARAMS, nparams);
   PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_FLAGS, FDF_NATIVE);
-  fd_sym := NewDataSym(asm_ctx^, '_JSND_' + code, SEC_RDATA, fd_ofs, RT_FD_SIZE,
+  fd_sym := NewDataSym(asm_ctx^, UniqDName('_JSND_' + code), SEC_RDATA, fd_ofs, RT_FD_SIZE,
                        DS_FDESC);
   fo_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_FN_SIZE);
   PutByte(asm_ctx^, SEC_RDATA, fo_ofs + RT_HDR_KIND, RT_OK_FUNCTION);
@@ -12411,7 +12431,7 @@ Begin
   If props <> 0 Then
     AddReloc(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_PROPS, props);
   PutDword(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_THIS + 4, TagImm(RT_T_UNDEFINED));
-  RtFuncObjP := NewDataSym(asm_ctx^, '_JSNF_' + code, SEC_RDATA, fo_ofs, RT_FN_SIZE,
+  RtFuncObjP := NewDataSym(asm_ctx^, UniqDName('_JSNF_' + code), SEC_RDATA, fo_ofs, RT_FN_SIZE,
                           DS_FDESC);
 End;
 
@@ -28443,6 +28463,461 @@ End;
 { Les etapes sont implementees par les TODO suivants. Tant qu'une etape
   n'existe pas, elle echoue explicitement au lieu de produire un faux
   resultat. }
+{ ---- Generateur ASM 80386 (TODO 22) ----
+
+  Ecrit le programme en syntaxe NASM Win32 (BITS 32, section .text / .rdata /
+  .data, extern pour les imports kernel32, global pour le point d'entree), a
+  partir de l'IR et du pool de donnees. Seulement sur demande (-asm). Les
+  lignes JavaScript d'origine sont reprises en commentaires ; les routines du
+  runtime gardent leurs noms _JSRT_*. Le fichier peut etre assemble tel quel :
+  nasm -f win32 prog.asm }
+
+Var
+  ag_f: Text;
+  ag_lines: LongInt;
+  ag_ord: Array[1..MAX_DSYMS] Of LongInt;
+  ag_rord: Array[1..MAX_RELOCS] Of LongInt;
+
+Procedure AgLine(Const s: TString);
+Begin
+  Writeln(ag_f, s);
+  Inc(ag_lines);
+End;
+
+Function AgInt(v: LongInt): TString;
+Var
+  s: String[12];
+Begin
+  Str(v, s);
+  AgInt := s;
+End;
+
+{ Operande memoire en syntaxe NASM, avec le prefixe de taille. }
+Function AgMem(Var ctx: TCompilerContext; Var o: TOperand; Const size: TString): TString;
+Var
+  inner: TString;
+Begin
+  inner := '';
+  If o.base <> R_NONE Then
+    inner := RegName(o.base);
+  If o.index <> R_NONE Then
+    Begin
+      If inner <> '' Then
+        inner := inner + '+';
+      inner := inner + RegName(o.index);
+    End;
+  If o.symkind <> 0 Then
+    Begin
+      If inner <> '' Then
+        inner := inner + '+';
+      inner := inner + SymNameOf(ctx, o.symkind, o.sym);
+    End;
+  AgMem := size + ' [' + inner + DispText(o.disp) + ']';
+End;
+
+Function AgSize(Var o: TOperand; fp: Boolean): TString;
+Begin
+  If o.size = 1 Then
+    AgSize := 'byte'
+  Else If o.size = 2 Then
+    AgSize := 'word'
+  Else If o.size = 8 Then
+    AgSize := 'qword'
+  Else If fp And (o.size <> 4) Then
+    AgSize := 'qword'
+  Else
+    AgSize := 'dword';
+End;
+
+Function AgOperand(Var ctx: TCompilerContext; Var o: TOperand; fp: Boolean): TString;
+Begin
+  Case o.kind Of
+    OD_REG:   AgOperand := RegName(o.reg);
+    OD_IMM:   AgOperand := ImmText(o.disp);
+    OD_MEM:   AgOperand := AgMem(ctx, o, AgSize(o, fp));
+    OD_ADDR:  AgOperand := SymNameOf(ctx, o.symkind, o.sym);
+    OD_LABEL: AgOperand := SymLabel(o.disp);
+  Else
+    AgOperand := '';
+  End;
+End;
+
+Procedure AgInstr(Var ctx: TCompilerContext; Var ins: TInstr);
+Var
+  nm, a, b, t: TString;
+  fp: Boolean;
+Begin
+  nm := OpName(ins.op);
+  fp := ins.op >= OP_FLD;
+  a := AgOperand(ctx, ins.a, fp);
+  b := AgOperand(ctx, ins.b, fp);
+  t := '';
+  Case ins.op Of
+    OP_FNSTSW:
+      t := 'fnstsw ax';
+    OP_FPOP:
+      t := 'fstp st0';
+    OP_FLD, OP_FADD, OP_FSUB, OP_FSUBR, OP_FMUL, OP_FDIV, OP_FDIVR:
+      If ins.a.kind = OD_IMM Then
+        Begin
+          If ins.op = OP_FLD Then
+            t := 'fld st' + AgInt(ins.a.disp)
+          Else
+            t := nm + ' st0, st' + AgInt(ins.a.disp);
+        End;
+    OP_FXCH:
+      If ins.a.kind = OD_IMM Then
+        t := 'fxch st' + AgInt(ins.a.disp);
+    OP_FADDP, OP_FSUBP, OP_FSUBRP, OP_FMULP, OP_FDIVP, OP_FDIVRP:
+      t := nm + ' st1, st0';
+  End;
+  If t = '' Then
+    Begin
+      t := nm;
+      If a <> '' Then
+        t := t + ' ' + a;
+      If b <> '' Then
+        t := t + ', ' + b;
+    End;
+  AgLine('        ' + t);
+End;
+
+{ Texte de la ligne JS (sans retour a la ligne, tronque). }
+Function AgSourceLine(Var ctx: TCompilerContext; ln: LongInt): TString;
+Var
+  a, b, i, k: LongInt;
+  r: TString;
+Begin
+  a := ctx.source.line_start[ln];
+  b := ctx.source.line_start[ln + 1] - 1;
+  r := '';
+  k := 0;
+  For i := a To b - 1 Do
+    Begin
+      If ctx.source.buf[i] <> #10 Then
+        Begin
+          If k < 100 Then
+            r := r + ctx.source.buf[i];
+          Inc(k);
+        End;
+    End;
+  While (Length(r) > 0) And ((r[1] = ' ') Or (r[1] = #9)) Do
+    Delete(r, 1, 1);
+  If k > 100 Then
+    r := r + ' ...';
+  AgSourceLine := r;
+End;
+
+Procedure AgCode(Var ctx: TCompilerContext);
+Var
+  i, last_line: LongInt;
+  op: TOpc;
+  nm: TString;
+Begin
+  AgLine('section .text use32 class=CODE');
+  AgLine('');
+  last_line := 0;
+  For i := 1 To ctx.ir.count Do
+    Begin
+      op := ctx.ir.instrs[i].op;
+      Case op Of
+        OP_LABEL:
+          AgLine(SymLabel(ctx.ir.instrs[i].a.disp) + ':');
+        OP_COMMENT:
+          AgLine('        ; ' + ctx.ir.comments[ctx.ir.instrs[i].a.disp]);
+        OP_PROC:
+          Begin
+            nm := SymNameOf(ctx, ctx.ir.instrs[i].a.symkind, ctx.ir.instrs[i].a.sym);
+            AgLine('');
+            If i <= ctx.ir.user_count Then
+              AgLine('; ---- ' + nm + ' ----')
+            Else
+              AgLine('; ---- runtime : ' + nm + ' ----');
+            AgLine(nm + ':');
+            last_line := 0;
+          End;
+        OP_ENDP:
+          ;
+      Else
+        Begin
+          If (i <= ctx.ir.user_count) And (ctx.ir.instrs[i].line <> last_line) Then
+            Begin
+              last_line := ctx.ir.instrs[i].line;
+              If (last_line >= 1) And (last_line <= ctx.source.user_lines) Then
+                AgLine('        ; js:' + AgInt(last_line) + ': ' + AgSourceLine(ctx, last_line));
+            End;
+          AgInstr(ctx, ctx.ir.instrs[i]);
+        End;
+      End;
+    End;
+  AgLine('');
+End;
+
+{ Trie les indices par decalage (insertion, listes courtes en pratique). }
+Procedure AgSortSyms(Var ctx: TCompilerContext; sec: LongInt; Var n: LongInt);
+Var
+  i, j, t: LongInt;
+Begin
+  n := 0;
+  For i := 1 To ctx.data.sym_count Do
+    If ctx.data.syms[i].sec = sec Then
+      Begin
+        Inc(n);
+        ag_ord[n] := i;
+      End;
+  For i := 2 To n Do
+    Begin
+      t := ag_ord[i];
+      j := i - 1;
+      While (j >= 1) And (ctx.data.syms[ag_ord[j]].ofs > ctx.data.syms[t].ofs) Do
+        Begin
+          ag_ord[j + 1] := ag_ord[j];
+          Dec(j);
+        End;
+      ag_ord[j + 1] := t;
+    End;
+End;
+
+Procedure AgSortRelocs(Var ctx: TCompilerContext; sec: LongInt; Var n: LongInt);
+Var
+  i, j, t: LongInt;
+Begin
+  n := 0;
+  For i := 1 To ctx.data.reloc_count Do
+    If ctx.data.relocs[i].sec = sec Then
+      Begin
+        Inc(n);
+        ag_rord[n] := i;
+      End;
+  For i := 2 To n Do
+    Begin
+      t := ag_rord[i];
+      j := i - 1;
+      While (j >= 1) And (ctx.data.relocs[ag_rord[j]].ofs > ctx.data.relocs[t].ofs) Do
+        Begin
+          ag_rord[j + 1] := ag_rord[j];
+          Dec(j);
+        End;
+      ag_rord[j + 1] := t;
+    End;
+End;
+
+Function AgImgByte(Var ctx: TCompilerContext; sec, ofs: LongInt): LongInt;
+Begin
+  If sec = SEC_RDATA Then
+    AgImgByte := ctx.data.rd[ofs]
+  Else
+    AgImgByte := ctx.data.dt[ofs];
+End;
+
+Function AgImgDword(Var ctx: TCompilerContext; sec, ofs: LongInt): LongInt;
+Var
+  v: Int64;
+Begin
+  v := AgImgByte(ctx, sec, ofs) + AgImgByte(ctx, sec, ofs + 1) * 256 +
+       AgImgByte(ctx, sec, ofs + 2) * 65536 + Int64(AgImgByte(ctx, sec, ofs + 3)) * 16777216;
+  If v >= 2147483648 Then
+    v := v - 4294967296;
+  AgImgDword := v;
+End;
+
+{ Une section de donnees : etiquettes, relocations (dd symbole), mots et octets. }
+Procedure AgData(Var ctx: TCompilerContext; sec: LongInt; Const header: TString);
+Var
+  size, ns, nr, si, ri, pos, nb, k, t, add_: LongInt;
+  txt_a, txt_b: LongInt;
+  line, nmr: TString;
+  c: LongInt;
+Begin
+  If sec = SEC_RDATA Then
+    size := ctx.data.rd_size
+  Else
+    size := ctx.data.dt_size;
+  AgLine(header);
+  AgSortSyms(ctx, sec, ns);
+  AgSortRelocs(ctx, sec, nr);
+  si := 1;
+  ri := 1;
+  pos := 0;
+  txt_a := -1;
+  txt_b := -1;
+  While pos < size Do
+    Begin
+      While (si <= ns) And (ctx.data.syms[ag_ord[si]].ofs <= pos) Do
+        Begin
+          AgLine(ctx.data.syms[ag_ord[si]].name + ':');
+          If ctx.data.syms[ag_ord[si]].kind = DS_STRING Then
+            Begin
+              txt_a := ctx.data.syms[ag_ord[si]].ofs + RT_STR_DATA;
+              txt_b := ctx.data.syms[ag_ord[si]].ofs + ctx.data.syms[ag_ord[si]].size - 1;
+            End;
+          Inc(si);
+        End;
+      While (ri <= nr) And (ctx.data.relocs[ag_rord[ri]].ofs < pos) Do
+        Inc(ri);
+      If (ri <= nr) And (ctx.data.relocs[ag_rord[ri]].ofs = pos) Then
+        Begin
+          If ctx.data.relocs[ag_rord[ri]].tkind = SYMK_D Then
+            nmr := ctx.data.syms[ctx.data.relocs[ag_rord[ri]].target].name
+          Else
+            nmr := ctx.ir.xsyms[ctx.data.relocs[ag_rord[ri]].target].name;
+          add_ := AgImgDword(ctx, sec, pos);
+          If add_ = 0 Then
+            AgLine('        dd ' + nmr)
+          Else
+            AgLine('        dd ' + nmr + DispText(add_));
+          Inc(pos, 4);
+          Inc(ri);
+          Continue;
+        End;
+      { fin du bloc : prochain symbole ou prochaine relocation }
+      nb := size;
+      If (si <= ns) And (ctx.data.syms[ag_ord[si]].ofs < nb) Then
+        nb := ctx.data.syms[ag_ord[si]].ofs;
+      If (ri <= nr) And (ctx.data.relocs[ag_rord[ri]].ofs < nb) Then
+        nb := ctx.data.relocs[ag_rord[ri]].ofs;
+      If (pos >= txt_a) And (pos < txt_b) Then
+        Begin
+          { texte d'une chaine : ASCII imprimable entre guillemets }
+          If txt_b < nb Then
+            nb := txt_b;
+          line := '';
+          t := 0;
+          k := pos;
+          While k < nb Do
+            Begin
+              c := AgImgByte(ctx, sec, k);
+              If (c >= 32) And (c < 127) And (c <> 34) And (c <> 39) And (c <> 96) Then
+                Begin
+                  If t = 0 Then
+                    Begin
+                      If line <> '' Then
+                        line := line + ',';
+                      line := line + '"';
+                      t := 1;
+                    End;
+                  line := line + Chr(c);
+                End
+              Else
+                Begin
+                  If t = 1 Then
+                    Begin
+                      line := line + '"';
+                      t := 0;
+                    End;
+                  If line <> '' Then
+                    line := line + ',';
+                  line := line + AgInt(c);
+                End;
+              Inc(k);
+              If Length(line) > 100 Then
+                Begin
+                  If t = 1 Then
+                    line := line + '"';
+                  AgLine('        db ' + line);
+                  line := '';
+                  t := 0;
+                End;
+            End;
+          If t = 1 Then
+            line := line + '"';
+          If line <> '' Then
+            AgLine('        db ' + line);
+          pos := nb;
+        End
+      Else
+        Begin
+          If (pos >= txt_b) And (pos < txt_b + 1) And (txt_b >= 0) And (nb > pos) Then
+            nb := pos + 1;
+          If (pos + 4 <= nb) And (pos Mod 4 = 0) And (pos < txt_a) Then
+            Begin
+              { mots de 4 octets alignes }
+              line := '';
+              k := 0;
+              While (pos + 4 <= nb) And (k < 4) And (pos Mod 4 = 0) And
+                    ((txt_a < 0) Or (pos + 4 <= txt_a) Or (pos >= txt_b + 1)) Do
+                Begin
+                  If line <> '' Then
+                    line := line + ', ';
+                  line := line + ImmText(AgImgDword(ctx, sec, pos));
+                  Inc(pos, 4);
+                  Inc(k);
+                End;
+              AgLine('        dd ' + line);
+            End
+          Else
+            Begin
+              line := '';
+              k := 0;
+              While (pos < nb) And (k < 16) Do
+                Begin
+                  If line <> '' Then
+                    line := line + ', ';
+                  line := line + AgInt(AgImgByte(ctx, sec, pos));
+                  Inc(pos);
+                  Inc(k);
+                  If (pos Mod 4 = 0) And (pos + 4 <= nb) And ((txt_a < 0) Or (pos + 4 <= txt_a)) Then
+                    Break;
+                End;
+              AgLine('        db ' + line);
+            End;
+        End;
+    End;
+  { symboles places a la fin de la section }
+  While si <= ns Do
+    Begin
+      AgLine(ctx.data.syms[ag_ord[si]].name + ':');
+      Inc(si);
+    End;
+  AgLine('');
+End;
+
+Function EmitAsm386(Var ctx: TCompilerContext): Boolean;
+Var
+  i, nimp: LongInt;
+  io: Integer;
+Begin
+  EmitAsm386 := True;
+  If Not ctx.options.emit_asm Then
+    Exit;
+  EmitAsm386 := False;
+  Assign(ag_f, NormalizePath(ctx.asm_name));
+  Rewrite(ag_f);
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      PipelineError(ctx, 'impossible de creer le fichier ' + ctx.asm_name);
+      Exit;
+    End;
+  ag_lines := 0;
+  AgLine('; Genere par JSCW32 ' + JSCW32_VERSION);
+  AgLine('; Source: ' + ctx.source_name);
+  AgLine('; Cible: 80386 Win32 (COFF), syntaxe NASM : nasm -f win32 ' + ctx.asm_name);
+  AgLine('; Emission demandee explicitement par -asm');
+  AgLine('; ' + AgInt(ctx.ir.proc_count) + ' procedures, ' + AgInt(ctx.ir.count) +
+         ' instructions, .rdata ' + AgInt(ctx.data.rd_size) + ' octets, .data ' +
+         AgInt(ctx.data.dt_size) + ' octets');
+  AgLine('');
+  AgLine('BITS 32');
+  AgLine('global _JSSTART');
+  nimp := 0;
+  For i := 1 To ctx.ir.xsym_count Do
+    If Not ctx.ir.xsyms[i].defined And (DsymFind(ctx, ctx.ir.xsyms[i].name) = 0) Then
+      Begin
+        AgLine('extern ' + ctx.ir.xsyms[i].name);
+        Inc(nimp);
+      End;
+  AgLine('');
+  AgCode(ctx);
+  AgData(ctx, SEC_RDATA, 'section .rdata align=4 class=CONST');
+  AgData(ctx, SEC_DATA, 'section .data align=4 class=DATA');
+  Close(ag_f);
+  io := IOResult;
+  If ctx.options.verbose Then
+    Writeln('  ASM: ', ctx.asm_name, ' (', ag_lines, ' lignes, ', nimp, ' imports)');
+  EmitAsm386 := True;
+End;
+
 Function RunStage(Var ctx: TCompilerContext; stage: TCompileStage): Boolean;
 Var
   ok: Boolean;
@@ -28473,6 +28948,8 @@ Begin
         If ctx.options.dump_scopes And ctx.ir.built Then
           DumpScopes(ctx);
       End;
+    CS_EMIT_ASM386:
+      RunStage := EmitAsm386(ctx);
     CS_ANALYZE:
       Begin
         ok := AnalyzeProgram(ctx);
