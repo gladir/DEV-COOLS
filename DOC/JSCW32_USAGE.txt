@@ -52,6 +52,15 @@ Harnais de validation (-test)
 
 Limites connues
 ---------------
+  - Aucune table interne n'a de taille fixe : source, jetons, AST, symboles,
+    portees, pool de donnees, instructions, tampons COFF/PE et sorties du
+    harnais sont des listes chainees par blocs allouees sur le tas (bloc de
+    32 Ko, curseur sur le dernier bloc utilise). Seules la memoire disponible
+    et l'espace d'adressage de l'emulateur -run (64 Mo, memoire simulee d'une
+    machine) bornent la taille d'un programme. Restent fixes par nature :
+    les registres et la pile FPU de l'emulateur, les 4 sections COFF, les
+    tables constantes (mots-cles, operateurs, prelude) et les tampons de
+    lecture de fichier.
   - Les chaines sont des octets UTF-8 : length et les indices comptent des
     octets (exact en ASCII).
   - Pas de ramasse-miettes : le tas ne fait que croitre.
