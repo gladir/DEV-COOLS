@@ -9661,6 +9661,7 @@ Var
  EmuStepsToTick : LongInt;       { decompte avant prochain tick }
  EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
  Emu8042WriteHits: Integer;      { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuKeyPushHits: Integer;        { DIAGNOSTIC TEMPORAIRE - a retirer }
  { --- 8259A/8255A/UART/LPT/NE2000 : voir Emu_PortRead/Emu_PortWrite. --- }
  EmuPICMaster   : TEmuPICChip;   { 20h/21h, tout materiel }
  EmuPICSlave    : TEmuPICChip;   { A0h/A1h, materiel classe AT+ seulement }
@@ -183155,7 +183156,23 @@ End;
 Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word);
 Var
  NextHead: Byte;
+ DiagF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGKEYPUSH.LOG }
 Begin
+ { DIAGNOSTIC TEMPORAIRE - a retirer (enquete "lettres perdues en tapant  }
+ { vite", 2026-10-18) : confirme si les frappes atteignent bien ce point  }
+ { d injection, peu importe l etat d affichage de l onglet emulateur. }
+ If EmuKeyPushHits < 100 Then Begin
+  Inc(EmuKeyPushHits);
+  {$I-} Assign(DiagF, 'DIAGKEYPUSH.LOG');
+  If FileExists('DIAGKEYPUSH.LOG') Then Append(DiagF) Else Rewrite(DiagF);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagF, '#', EmuKeyPushHits, ' K=', HexWord(K), ' EmuHasFocus=',
+    EmuHasFocus);
+   Close(DiagF);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  NextHead := (P.KeyHead + 1) And $3F;
  If NextHead <> P.KeyTail Then Begin
   P.KeyBuf[P.KeyHead] := K;
@@ -229393,13 +229410,34 @@ Begin
   If EmuStepsToTick <= 0 Then Begin
     EmuStepsToTick := EmuStepsPerTick;
     Emu_TimerTick(P);
-    { Drainer le clavier hote vers buffer BIOS + IRQ 9 }
+    { Drainer le clavier hote vers buffer BIOS }
     While EmuVScr_HasKey(P) Do Begin
       EntryAddr16 := EmuVScr_PopKey(P);
       { Le mot est encode (scancode<<8) Or ASCII. Pour les fleches
         et touches speciales, ASCII=0 et scancode est valide. }
       Emu_PushBiosKey(P, Hi(EntryAddr16), Lo(EntryAddr16));
-      EmuIrqPending := EmuIrqPending Or $02;
+      { BOGUE REEL CORRIGE (2026-10-19, enquete "caractere bizarre en     }
+      { tapant" - demande explicite de l'utilisateur) : lever ICI une     }
+      { VRAIE IRQ1 (EmuIrqPending Or 2) livrait l interruption au VRAI    }
+      { gestionnaire INT 09h de l invite (code authentique, execute par   }
+      { Emu_StepOne) - lequel, croyant qu un VRAI code de balayage        }
+      { materiel vient d arriver, fait lui-meme IN AL,60h pour le lire ET }
+      { le traduire/empiler dans le MEME tampon clavier - alors que la    }
+      { ligne juste au-dessus vient DEJA d y empiler directement le       }
+      { caractere (deja traduit, scancode non disponible cote hote). Le   }
+      { port 60h ne contenant alors AUCUNE vraie touche (P.CPU.NextRawKey }
+      { jamais affecte = 0 par defaut), ce 2e octet SANS RAPPORT se        }
+      { traduit via la VRAIE table de l invite en un caractere parasite   }
+      { CONSTANT (confirme en direct : toujours le meme octet, quelle que }
+      { soit la touche reellement tapee) qui s intercalait au hasard dans }
+      { le texte affiche - exactement le symptome signale. La seule       }
+      { raison de lever cette IRQ ici etait de reveiller un CPU en HLT     }
+      { (voir Emu_FireHwInt/TEmuCPU.Halted) ; inutile de livrer une VRAIE  }
+      { interruption pour cela - un simple reveil suffit, le caractere     }
+      { etant deja physiquement dans le tampon pour le prochain sondage    }
+      { INT 16h/21h de l invite (Emu_BiosHasKey/Emu_BiosPopKey ne          }
+      { dependent d aucune IRQ). }
+      P.CPU.Halted := False;
       If Emu_ReadWord(P.CPU, $40, $1C) = Emu_ReadWord(P.CPU, $40, $1A) Then Break;
     End;
   End;
@@ -229441,9 +229479,30 @@ Begin
      If KeyPressed Then Begin
       K := Ord(ReadKey);
       If K = 0 Then EmuDbg_RequestBreak(EDC_8086);
+      { BOGUE REEL CORRIGE PUIS RESTREINT (2026-10-18/19) : la frappe       }
+      { etendue (2e octet non nul = code de balayage - fleches/F-touches,   }
+      { mais aussi n importe quel Alt+lettre, donc frolee par megarde en    }
+      { tapant vite pres d AltGr sur un clavier francais) N EST PLUS         }
+      { transmise ici (contrairement a l essai du 2026-10-18) : la          }
+      { transmettre via EmuVScr_PushKey faisait certes disparaitre la       }
+      { perte de lettres normales, mais causait un NOUVEAU symptome signale}
+      { par l utilisateur - un caractere bizarre (accentue) apparaissant au}
+      { prompt - comportement DOS authentique mais indesirable ici         }
+      { (COMMAND.COM echo brut du code de balayage quand AL=0, aucune       }
+      { gestion propre des touches etendues dans son editeur de ligne de    }
+      { base). Cette boucle ne sert QUE a detecter Esc/Ctrl+C/Ctrl+Break    }
+      { (voir commentaire Stage 1 plus haut) - la frappe etendue est donc   }
+      { de nouveau simplement consommee/ignoree ici, EXACTEMENT comme       }
+      { avant ce chantier ; seul le caractere ASCII normal (branche         }
+      { ci-dessous) reste transmis, ce qui couvre entierement le bogue      }
+      { reellement signale ("dir" devenait "ir"/"di"). }
      End Else
       EmuDbg_RequestBreak(EDC_8086);
-    End;
+    End Else
+     { Meme correctif que ci-dessus, pour un caractere ASCII normal (lettre,}
+     { chiffre...) - memes encodage/raison, voir EV_KEY_CHAR dans            }
+     { HandleEmulatorPanelEvent. }
+     EmuVScr_PushKey(P, Byte(K));
    End;
    If P.CPU.Fault <> sfNone Then Break;
    { Redessiner au plus une fois toutes les 80 ms pour eviter le
