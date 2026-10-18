@@ -89,7 +89,126 @@ function __now() {
   if (hi < 0) hi += 4294967296;
   return Math.floor((hi * 4294967296 + lo) / 10000 - 11644473600000);
 }
+function __jsonwalk(reviver, holder, key) {
+  var val = holder[key], i, k, nv, ks;
+  if (val !== null && typeof val === 'object') {
+    if (Array.isArray(val)) {
+      for (i = 0; i < val.length; i++) {
+        nv = __jsonwalk(reviver, val, i);
+        if (nv === undefined) delete val[i]; else val[i] = nv;
+      }
+    } else {
+      ks = Object.keys(val);
+      for (i = 0; i < ks.length; i++) {
+        k = ks[i];
+        nv = __jsonwalk(reviver, val, k);
+        if (nv === undefined) delete val[k]; else val[k] = nv;
+      }
+    }
+  }
+  return reviver.call(holder, typeof key === 'number' ? String(key) : key, val);
+}
+function __jsonser(st, holder, key, indent) {
+  var value = holder[key], parts = [], i, k, ks, s, inner, t;
+  if (value !== null && (typeof value === 'object' || typeof value === 'bigint') && typeof value.toJSON === 'function') {
+    value = value.toJSON(typeof key === 'number' ? String(key) : key);
+  }
+  if (st.rep !== null) value = st.rep.call(holder, typeof key === 'number' ? String(key) : key, value);
+  t = typeof value;
+  if (value === null) return 'null';
+  if (t === 'boolean') return value ? 'true' : 'false';
+  if (t === 'string') return st.native(value);
+  if (t === 'number') return isFinite(value) ? String(value) : 'null';
+  if (t === 'bigint') throw new TypeError('Do not know how to serialize a BigInt');
+  if (t !== 'object') return undefined;
+  if (st.stack.indexOf(value) >= 0) throw new TypeError('Converting circular structure to JSON');
+  st.stack.push(value);
+  inner = indent + st.gap;
+  if (Array.isArray(value)) {
+    for (i = 0; i < value.length; i++) {
+      s = __jsonser(st, value, i, inner);
+      parts.push(s === undefined ? 'null' : s);
+    }
+    st.stack.pop();
+    if (parts.length === 0) return '[]';
+    return st.gap === '' ? '[' + parts.join(',') + ']' : '[\n' + inner + parts.join(',\n' + inner) + '\n' + indent + ']';
+  }
+  ks = st.plist !== null ? st.plist : Object.keys(value);
+  for (i = 0; i < ks.length; i++) {
+    k = ks[i];
+    if (st.plist !== null && !(k in value)) continue;
+    s = __jsonser(st, value, k, inner);
+    if (s !== undefined) parts.push(st.native(k) + (st.gap === '' ? ':' : ': ') + s);
+  }
+  st.stack.pop();
+  if (parts.length === 0) return '{}';
+  return st.gap === '' ? '{' + parts.join(',') + '}' : '{\n' + inner + parts.join(',\n' + inner) + '\n' + indent + '}';
+}
+function __toFixed(f) {
+  var x = Number(this), neg = '', r, d, E, keep, t, a, i, n, ip, fp;
+  f = f === undefined ? 0 : Math.floor(Number(f));
+  if (f !== f) f = 0;
+  if (f < 0 || f > 100) throw new RangeError('toFixed() digits argument must be between 0 and 100');
+  if (x !== x) return 'NaN';
+  if (x >= 1e21 || x <= -1e21) return String(x);
+  if (x < 0) { neg = '-'; x = -x; }
+  if (x === 0) {
+    n = '0';
+  } else {
+    r = __exact(x);
+    d = r[0];
+    E = r[1];
+    keep = E + 1 + f;
+    if (keep < 0) n = '0';
+    else if (keep >= d.length) { n = d; while (n.length < keep) n += '0'; }
+    else {
+      t = d.slice(0, keep);
+      if (d.charCodeAt(keep) >= 53) {
+        a = t.split('');
+        i = keep - 1;
+        while (i >= 0) {
+          if (a[i] === '9') { a[i] = '0'; i--; }
+          else { a[i] = String.fromCharCode(a[i].charCodeAt(0) + 1); break; }
+        }
+        t = a.join('');
+        if (i < 0) t = '1' + t;
+      }
+      n = t === '' ? '0' : t;
+    }
+  }
+  while (n.length < f + 1) n = '0' + n;
+  ip = n.slice(0, n.length - f);
+  fp = n.slice(n.length - f);
+  ip = ip.replace(/^0+(?=\d)/, '');
+  if (neg !== '' && /^0*$/.test(ip + fp)) neg = Number(this) < 0 ? '-' : '';
+  return neg + ip + (f > 0 ? '.' + fp : '');
+}
 function __init_lib() {
+  Number.prototype.toFixed = __toFixed;
+  var jparse = JSON.parse, jstr = JSON.stringify;
+  JSON.parse = function (text, reviver) {
+    var v = jparse(text);
+    if (typeof reviver !== 'function') return v;
+    return __jsonwalk(reviver, { '': v }, '');
+  };
+  JSON.stringify = function (value, replacer, space) {
+    var plist = null, rep = null, gap = '', i, k, seen, st;
+    if (typeof replacer === 'function') rep = replacer;
+    else if (Array.isArray(replacer)) {
+      plist = [];
+      seen = {};
+      for (i = 0; i < replacer.length; i++) {
+        k = replacer[i];
+        if (typeof k === 'number') k = String(k);
+        if (typeof k === 'string' && !seen[k]) { seen[k] = true; plist.push(k); }
+      }
+    }
+    if (rep === null && plist === null) return jstr(value, undefined, space);
+    if (typeof space === 'number') { for (i = 0; i < Math.min(10, space); i++) gap += ' '; }
+    else if (typeof space === 'string') gap = space.slice(0, 10);
+    st = { rep: rep, plist: plist, gap: gap, stack: [], native: function (x) { return jstr(x); } };
+    return __jsonser(st, { '': value }, '', '');
+  };
   __require.cache = {};
   __require.resolve = function (n) { return String(n); };
   if (!String.prototype.substr) {

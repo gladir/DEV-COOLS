@@ -339,6 +339,53 @@ function __bigop_impl(op, a, b) {
   if (op === 10) return __bshl(a, -Number(__btos(b)));
   throw new TypeError('BigInts have no unsigned right shift, use >> instead');
 }
+function __dtoa(x) {
+  var neg = x < 0, ax = neg ? -x : x, e = 0, f = ax, k, r, s, mp, mm, d, ds = '', n, even, tc1, tc2, t, boundary, F, be, ten, i, ex;
+  while (f >= 9007199254740992) { f = f / 2; e++; }
+  while (f < 4503599627370496 && e > -1074) { f = f * 2; e--; }
+  boundary = f === 4503599627370496 && e > -1074;
+  F = __bfromnum(f);
+  if (e >= 0) {
+    be = __bpow(__bmk(1, [2]), __bfromnum(e));
+    if (!boundary) { r = F * be * __bmk(1, [2]); s = __bmk(1, [2]); mp = be; mm = be; }
+    else { r = F * be * __bmk(1, [4]); s = __bmk(1, [4]); mp = be * __bmk(1, [2]); mm = be; }
+  } else {
+    be = __bpow(__bmk(1, [2]), __bfromnum(-e));
+    if (!boundary) { r = F * __bmk(1, [2]); s = be * __bmk(1, [2]); mp = __bmk(1, [1]); mm = __bmk(1, [1]); }
+    else { r = F * __bmk(1, [4]); s = be * __bmk(1, [4]); mp = __bmk(1, [2]); mm = __bmk(1, [1]); }
+  }
+  ex = __exact(ax);
+  k = ex[1] + 1;
+  ten = __bmk(1, [10]);
+  if (k >= 0) s = s * __bpow(ten, __bfromnum(k));
+  else { t = __bpow(ten, __bfromnum(-k)); r = r * t; mp = mp * t; mm = mm * t; }
+  even = f % 2 === 0;
+  if (even ? (r + mp >= s) : (r + mp > s)) { k++; s = s * ten; }
+  for (i = 0; i < 40; i++) {
+    r = r * ten; mp = mp * ten; mm = mm * ten;
+    d = Number(__btos(r / s));
+    r = r % s;
+    tc1 = even ? (r <= mm) : (r < mm);
+    tc2 = even ? (r + mp >= s) : (r + mp > s);
+    if (!tc1 && !tc2) { ds += d; continue; }
+    if (tc1 && !tc2) ds += d;
+    else if (!tc1 && tc2) ds += d + 1;
+    else {
+      t = r * __bmk(1, [2]);
+      ds += (t < s || (!(t > s) && d % 2 === 0)) ? d : d + 1;
+    }
+    break;
+  }
+  n = ds.length;
+  if (n <= k && k <= 21) { t = ds; while (t.length < k) t += '0'; }
+  else if (0 < k && k <= 21) t = ds.slice(0, k) + '.' + ds.slice(k);
+  else if (-6 < k && k <= 0) { t = '0.'; for (i = 0; i < -k; i++) t += '0'; t += ds; }
+  else {
+    ex = k - 1;
+    t = ds.charAt(0) + (n > 1 ? '.' + ds.slice(1) : '') + 'e' + (ex < 0 ? '-' : '+') + (ex < 0 ? -ex : ex);
+  }
+  return neg ? '-' + t : t;
+}
 function __init_big() {
   var P = {};
   __bigproto = P;
