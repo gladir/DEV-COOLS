@@ -21,7 +21,7 @@
   13. [IMPLEMENTE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
   14. [IMPLEMENTE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
   15. [IMPLEMENTE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
-  16. [A FAIRE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
+  16. [IMPLEMENTE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
   17. [A FAIRE] Implementer les classes : declaration et expression de classe, constructor, methodes d'instance, methodes statiques, extends, super(...) et super.methode(), new, instanceof, getters/setters, champs, ordre d'initialisation, heritage multi-niveaux (Dog/Cat extends Animal), avec classes.js et test21.js.
   18. [A FAIRE] Implementer les exceptions : try/catch/finally, throw de n'importe quelle valeur, classes Error/TypeError/RangeError/SyntaxError avec message, deroulement de pile via pile de gestionnaires (ou SEH Windows), finally execute meme avec return/break/continue, exception non rattrapee (message sur stderr + code de sortie non nul), erreurs runtime (appel d'un non-fonction, propriete d'undefined), avec test23.js.
   19. [A FAIRE] Implementer les objets globaux et built-ins numeriques : Math (abs, max, min, pow, sqrt, floor, ceil, round, trunc, sign, random, PI, E...), Number (isInteger, isNaN, isFinite, parseFloat, MAX_VALUE...), Number()/parseInt (avec base)/parseFloat/isNaN/isFinite, JSON.stringify et JSON.parse reels (pas des stubs), NaN/Infinity/undefined/globalThis, avec math.js, test20.js et test24.js.
@@ -191,6 +191,7 @@ Const
   RT_OBJ_CAP = 20;
   RT_OBJ_CLASS = 24;
   RT_OBJ_SIZE = 32;
+  RT_OBJ_INDEX = 28;
   RT_PROP_KEY = 0;
   RT_PROP_FLAGS = 4;
   RT_PROP_VALUE = 8;
@@ -278,6 +279,8 @@ Const
   DS_ATOMS = 5;
   DS_RTVAR = 6;
   DS_GLOBAL = 7;
+  OF_FROZEN = 2;                  { objet gele }
+  OF_ROPROPS = 4;                 { tableau de proprietes en lecture seule }
   OF_STATIC = 1;                  { drapeau d'en-tete : cellule statique }
   { drapeaux d'un descripteur de fonction }
   FDF_ARROW = 1;
@@ -4959,6 +4962,21 @@ Begin
                        LineOfTok(ctx, ctx.sem.syms[old].name_tok) + ')');
               Break;
             End;
+          { var, function et parametre redeclares : meme variable }
+          If (Not conflict) And (ctx.sem.syms[old].kind <> DK_FNAME) And
+             (ctx.ast.decls[d].kind <> DK_FNAME) And
+             (ctx.sem.syms[old].kind In [DK_VAR, DK_FUNC, DK_PARAM]) And
+             (ctx.ast.decls[d].kind In [DK_VAR, DK_FUNC, DK_PARAM]) Then
+            Begin
+              If ctx.ast.decls[d].kind = DK_FUNC Then
+                Begin
+                  ctx.sem.syms[old].kind := DK_FUNC;
+                  ctx.sem.syms[old].node := ctx.ast.decls[d].node;
+                  ctx.sem.syms[old].flags := ctx.sem.syms[old].flags Or SF_HOISTED;
+                End;
+              ctx.ast.nodes[ctx.ast.decls[d].node].sym := old;
+              Exit;
+            End;
         End;
       old := ctx.sem.syms[old].next;
     End;
@@ -9508,6 +9526,63 @@ Begin
   TempRelease(ctx, t);
 End;
 
+{ Litteral d'objet : obj_new puis obj_define / obj_define_acc / obj_spread. }
+Procedure GenObjectLit(Var ctx: TCompilerContext; n: LongInt);
+Var
+  t, tk, p, fl: LongInt;
+Begin
+  t := TempAcquire(ctx);
+  CallRt(ctx, 'obj_new', 0);
+  SaveTemp(ctx, t);
+  p := ctx.ast.nodes[n].e1;
+  While p <> 0 Do
+    Begin
+      fl := ctx.ast.nodes[p].flags;
+      If fl And PR_SPREAD <> 0 Then
+        Begin
+          GenExpr(ctx, ctx.ast.nodes[p].e1);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushTemp(ctx, t);
+          CallRt(ctx, 'obj_spread', 16);
+        End
+      Else
+        Begin
+          tk := 0;
+          If fl And PR_COMPUTED <> 0 Then
+            Begin
+              tk := TempAcquire(ctx);
+              GenExpr(ctx, ctx.ast.nodes[p].e2);
+              Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+              Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+              CallRt(ctx, 'tokey', 8);
+              SaveTemp(ctx, tk);
+            End;
+          GenExpr(ctx, ctx.ast.nodes[p].e1);
+          If fl And PR_SETTER <> 0 Then
+            Emit1(ctx, OP_PUSH, ImmOp(1))
+          Else If fl And PR_GETTER <> 0 Then
+            Emit1(ctx, OP_PUSH, ImmOp(0));
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          If tk <> 0 Then
+            Emit1(ctx, OP_PUSH, TempLo(tk))
+          Else
+            Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[p].aux].sym));
+          Emit1(ctx, OP_PUSH, TempLo(t));
+          If fl And (PR_GETTER Or PR_SETTER) <> 0 Then
+            CallRt(ctx, 'obj_define_acc', 24)
+          Else
+            CallRt(ctx, 'obj_define', 16);
+          If tk <> 0 Then
+            TempRelease(ctx, tk);
+        End;
+      p := ctx.ast.nodes[p].next;
+    End;
+  LoadTemp(ctx, t);
+  TempRelease(ctx, t);
+End;
+
 Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt);
 Var
   e: LongInt;
@@ -9526,6 +9601,8 @@ Begin
       GenCall(ctx, n);
     N_ARRAY_LIT:
       GenArrayLit(ctx, n);
+    N_OBJECT_LIT:
+      GenObjectLit(ctx, n);
     N_MEMBER, N_INDEX:
       GenMember(ctx, n);
     N_FUNC_EXPR:
@@ -9668,8 +9745,8 @@ End;
   motif de declaration ou un litteral utilise comme cible. }
 Procedure BindTo(Var ctx: TCompilerContext; node, tslot: LongInt; init: Boolean);
 Var
-  el, idx, target, def, key_atom, nkeys: LongInt;
-  rest, hole, pattern_kind: Boolean;
+  el, idx, target, def, key_atom, nkeys, tex, tk: LongInt;
+  rest, hole, pattern_kind, has_rest: Boolean;
   fl: LongInt;
   kn: TNodeKind;
 Begin
@@ -9729,6 +9806,25 @@ Begin
   Else
     Begin
       nkeys := 0;
+      tex := 0;
+      has_rest := False;
+      el := ctx.ast.nodes[node].e1;
+      While el <> 0 Do
+        Begin
+          If ((ctx.ast.nodes[el].kind = N_PATTERN_PROP) And
+              (ctx.ast.nodes[el].flags And PP_REST <> 0)) Or
+             ((ctx.ast.nodes[el].kind <> N_PATTERN_PROP) And
+              (ctx.ast.nodes[el].flags And PR_SPREAD <> 0)) Then
+            has_rest := True;
+          el := ctx.ast.nodes[el].next;
+        End;
+      If has_rest Then
+        Begin
+          { liste des cles deja prises, pour le reste de l'objet }
+          tex := TempAcquire(ctx);
+          CallRt(ctx, 'array_new', 0);
+          SaveTemp(ctx, tex);
+        End;
       el := ctx.ast.nodes[node].e1;
       While el <> 0 Do
         Begin
@@ -9743,6 +9839,20 @@ Begin
               If pattern_kind Then
                 Begin
                   GenExpr(ctx, ctx.ast.nodes[el].e3);
+                  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+                  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+                  CallRt(ctx, 'tokey', 8);
+                  If has_rest And Not rest Then
+                    Begin
+                      tk := TempAcquire(ctx);
+                      SaveTemp(ctx, tk);
+                      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+                      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+                      PushTemp(ctx, tex);
+                      CallRt(ctx, 'array_push', 16);
+                      LoadTemp(ctx, tk);
+                      TempRelease(ctx, tk);
+                    End;
                   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
                   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
                 End;
@@ -9760,6 +9870,20 @@ Begin
                   GenExpr(ctx, ctx.ast.nodes[el].e2);
                   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
                   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+                  CallRt(ctx, 'tokey', 8);
+                  If has_rest And Not rest Then
+                    Begin
+                      tk := TempAcquire(ctx);
+                      SaveTemp(ctx, tk);
+                      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+                      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+                      PushTemp(ctx, tex);
+                      CallRt(ctx, 'array_push', 16);
+                      LoadTemp(ctx, tk);
+                      TempRelease(ctx, tk);
+                    End;
+                  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+                  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
                 End;
               { dans a: b = 1, la valeur par defaut enveloppe la cible }
               If (target <> 0) And (ctx.ast.nodes[target].kind = N_ASSIGN) And
@@ -9771,9 +9895,10 @@ Begin
             End;
           If rest Then
             Begin
-              { le reste d'objet exige la liste des cles exclues }
-              PendingNote(ctx, el, 'reste d''objet (...rest)');
-              LoadUndefined(ctx);
+              { le reste d'objet : copie sans les cles deja prises }
+              PushTemp(ctx, tex);
+              PushTemp(ctx, tslot);
+              CallRt(ctx, 'obj_rest', 16);
             End
           Else If pattern_kind Then
             Begin
@@ -9784,6 +9909,13 @@ Begin
             End
           Else
             Begin
+              If has_rest Then
+                Begin
+                  Emit1(ctx, OP_PUSH, ImmOp(TagImm(RT_T_STRING)));
+                  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[key_atom].sym));
+                  PushTemp(ctx, tex);
+                  CallRt(ctx, 'array_push', 16);
+                End;
               Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[key_atom].sym));
               PushTemp(ctx, tslot);
               CallRt(ctx, 'get_prop', 12);
@@ -9793,6 +9925,8 @@ Begin
           Inc(nkeys);
           el := ctx.ast.nodes[el].next;
         End;
+      If has_rest Then
+        TempRelease(ctx, tex);
     End;
 End;
 
@@ -11311,16 +11445,21 @@ Begin
       props_sym := NewDataSym(asm_ctx^, name + '_props', SEC_RDATA, props_ofs,
                               RT_PROP_SIZE * bo_n, DS_FDESC);
     End;
-  obj_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_OBJ_SIZE);
-  PutByte(asm_ctx^, SEC_RDATA, obj_ofs + RT_HDR_KIND, RT_OK_OBJECT);
-  PutByte(asm_ctx^, SEC_RDATA, obj_ofs + RT_HDR_FLAGS, OF_STATIC);
-  If proto <> 0 Then
-    AddReloc(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_PROTO, proto);
+  { l'en-tete est dans .data (modifiable) ; le tableau de proprietes reste
+    en lecture seule et est copie au premier changement }
+  obj_ofs := SecAlloc(asm_ctx^, SEC_DATA, RT_OBJ_SIZE);
+  PutByte(asm_ctx^, SEC_DATA, obj_ofs + RT_HDR_KIND, RT_OK_OBJECT);
   If bo_n > 0 Then
-    AddReloc(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_PROPS, props_sym);
-  PutDword(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_COUNT, bo_n);
-  PutDword(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_CAP, bo_n);
-  BoFinish := NewDataSym(asm_ctx^, name, SEC_RDATA, obj_ofs, RT_OBJ_SIZE, DS_FDESC);
+    PutByte(asm_ctx^, SEC_DATA, obj_ofs + RT_HDR_FLAGS, OF_STATIC Or OF_ROPROPS)
+  Else
+    PutByte(asm_ctx^, SEC_DATA, obj_ofs + RT_HDR_FLAGS, OF_STATIC);
+  If proto <> 0 Then
+    AddReloc(asm_ctx^, SEC_DATA, obj_ofs + RT_OBJ_PROTO, proto);
+  If bo_n > 0 Then
+    AddReloc(asm_ctx^, SEC_DATA, obj_ofs + RT_OBJ_PROPS, props_sym);
+  PutDword(asm_ctx^, SEC_DATA, obj_ofs + RT_OBJ_COUNT, bo_n);
+  PutDword(asm_ctx^, SEC_DATA, obj_ofs + RT_OBJ_CAP, bo_n);
+  BoFinish := NewDataSym(asm_ctx^, name, SEC_DATA, obj_ofs, RT_OBJ_SIZE, DS_GLOBAL);
 End;
 
 { Variable globale du runtime _JSRT_g_nom (valeur de 8 octets) qui designe
@@ -11635,12 +11774,38 @@ Begin
   A('je .fn');
   A('cmp edx, $ARR');
   A('je .arr');
+  A('cmp edx, $OBJ');
+  A('je .objs');
   A('mov eax, offset ' + RtStr('[object Object]'));
   A('jmp .str');
   A('.arr:');
   A('push offset ' + RtStr(','));
   A('push eax');
   A('call _JSRT_arr_join');
+  A('leave');
+  A('ret');
+  A('.objs:');
+  A('push offset ' + RtStr('toString'));
+  A('push eax');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .objdef');
+  A('test dword ptr [eax+4], 2');
+  A('jnz .objdef');
+  A('cmp dword ptr [eax+12], $FN');
+  A('jne .objdef');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [eax+8]');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('cmp edx, $STR');
+  A('je .objret');
+  A('.objdef:');
+  A('mov eax, offset ' + RtStr('[object Object]'));
+  A('mov edx, $STR');
+  A('.objret:');
   A('leave');
   A('ret');
   A('.fn:');
@@ -11920,228 +12085,6 @@ End;
 
 Procedure RtProperties;
 Begin
-  { _JSRT_obj_lookup(objet, atome) : EDX:EAX = valeur, ECX = 1 si trouvee }
-  A('proc _JSRT_obj_lookup');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('push esi');
-  A('push edi');
-  A('mov esi, dword ptr [ebp+8]');
-  A('mov edx, dword ptr [ebp+12]');
-  A('.chain:');
-  A('test esi, esi');
-  A('jz .nf');
-  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
-  A('mov edi, dword ptr [esi+$OBJ_PROPS]');
-  A('.scan:');
-  A('test ecx, ecx');
-  A('jz .up');
-  A('cmp dword ptr [edi], edx');
-  A('je .found');
-  A('add edi, ' + IntToStr(RT_PROP_SIZE));
-  A('dec ecx');
-  A('jmp .scan');
-  A('.up:');
-  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
-  A('jmp .chain');
-  A('.found:');
-  A('mov eax, dword ptr [edi+' + IntToStr(RT_PROP_VALUE) + ']');
-  A('mov edx, dword ptr [edi+' + IntToStr(RT_PROP_VALUE + 4) + ']');
-  A('mov ecx, 1');
-  A('jmp .out');
-  A('.nf:');
-  A('xor eax, eax');
-  A('mov edx, $UNDEF');
-  A('xor ecx, ecx');
-  A('.out:');
-  A('pop edi');
-  A('pop esi');
-  A('pop ebp');
-  A('ret');
-  A('endp');
-
-  { _JSRT_obj_lookup_str(objet, chaine) : comme obj_lookup, cle comparee par
-    contenu (cles dynamiques) }
-  A('proc _JSRT_obj_lookup_str');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('push esi');
-  A('push edi');
-  A('push ebx');
-  A('mov esi, dword ptr [ebp+8]');
-  A('.chain:');
-  A('test esi, esi');
-  A('jz .nf');
-  A('mov ebx, dword ptr [esi+$OBJ_COUNT]');
-  A('mov edi, dword ptr [esi+$OBJ_PROPS]');
-  A('.scan:');
-  A('test ebx, ebx');
-  A('jz .up');
-  A('push dword ptr [ebp+12]');
-  A('push dword ptr [edi]');
-  A('call _JSRT_str_equal');
-  A('add esp, 8');
-  A('test eax, eax');
-  A('jnz .found');
-  A('add edi, ' + IntToStr(RT_PROP_SIZE));
-  A('dec ebx');
-  A('jmp .scan');
-  A('.up:');
-  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
-  A('jmp .chain');
-  A('.found:');
-  A('mov eax, dword ptr [edi+' + IntToStr(RT_PROP_VALUE) + ']');
-  A('mov edx, dword ptr [edi+' + IntToStr(RT_PROP_VALUE + 4) + ']');
-  A('jmp .out');
-  A('.nf:');
-  A('xor eax, eax');
-  A('mov edx, $UNDEF');
-  A('.out:');
-  A('pop ebx');
-  A('pop edi');
-  A('pop esi');
-  A('pop ebp');
-  A('ret');
-  A('endp');
-
-  { _JSRT_get_prop(objet, atome) : objet.nom }
-  A('proc _JSRT_get_prop');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('mov eax, dword ptr [ebp+8]');
-  A('mov ecx, dword ptr [ebp+12]');
-  A('cmp ecx, $STR');
-  A('je .str');
-  A('cmp ecx, $OBJ');
-  A('je .obj');
-  A('cmp ecx, $FN');
-  A('je .fn');
-  A('cmp ecx, $ARR');
-  A('je .arr');
-  A('cmp ecx, $UNDEF');
-  A('je .bad');
-  A('cmp ecx, $NULL');
-  A('je .bad');
-  A('.undef:');
-  A('xor eax, eax');
-  A('mov edx, $UNDEF');
-  A('leave');
-  A('ret');
-  A('.str:');
-  A('mov edx, dword ptr [ebp+16]');
-  A('cmp edx, offset ' + RtStr('length'));
-  A('jne .strproto');
-  A('mov eax, dword ptr [eax+$STR_LEN]');
-  A('mov edx, $INT');
-  A('leave');
-  A('ret');
-  A('.strproto:');
-  A('push edx');
-  A('push offset _JSNO_string_proto');
-  A('jmp .look');
-  A('.arr:');
-  A('mov edx, dword ptr [ebp+16]');
-  A('mov ecx, offset ' + RtStr('length'));
-  A('cmp edx, ecx');
-  A('jne .arrproto');
-  A('mov eax, dword ptr [eax+$ARR_LEN]');
-  A('mov edx, $INT');
-  A('leave');
-  A('ret');
-  A('.arrproto:');
-  A('push edx');
-  A('push offset _JSNO_array_proto');
-  A('jmp .look');
-  A('.fn:');
-  A('mov eax, dword ptr [eax+$FN_PROPS]');
-  A('.obj:');
-  A('push dword ptr [ebp+16]');
-  A('push eax');
-  A('.look:');
-  A('call _JSRT_obj_lookup');
-  A('add esp, 8');
-  A('leave');
-  A('ret');
-  A('.bad:');
-  A('push offset _JSRT_c_read');
-  A('call _JSRT_fatal');
-  A('endp');
-
-  { _JSRT_get_member(objet, cle) : objet[cle] }
-  A('proc _JSRT_get_member');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('mov eax, dword ptr [ebp+8]');
-  A('mov ecx, dword ptr [ebp+12]');
-  A('mov edx, dword ptr [ebp+20]');
-  A('cmp ecx, $UNDEF');
-  A('je .bad');
-  A('cmp ecx, $NULL');
-  A('je .bad');
-  A('cmp ecx, $STR');
-  A('jne .notstr');
-  A('cmp edx, $INT');
-  A('je .stridx');
-  A('cmp edx, $STR');
-  A('jne .undef');
-  A('push dword ptr [ebp+16]');
-  A('push eax');
-  A('call _JSRT_str_get_prop');
-  A('add esp, 8');
-  A('leave');
-  A('ret');
-  A('.stridx:');
-  A('push dword ptr [ebp+16]');
-  A('push eax');
-  A('call _JSRT_str_char_at');
-  A('add esp, 8');
-  A('leave');
-  A('ret');
-  A('.notstr:');
-  A('cmp ecx, $ARR');
-  A('jne .nota');
-  A('cmp edx, $INT');
-  A('jne .ak');
-  A('push dword ptr [ebp+16]');
-  A('push eax');
-  A('call _JSRT_arr_get');
-  A('leave');
-  A('ret');
-  A('.ak:');
-  A('cmp edx, $STR');
-  A('jne .undef');
-  A('push dword ptr [ebp+16]');
-  A('push eax');
-  A('call _JSRT_arr_get_name');
-  A('leave');
-  A('ret');
-  A('.nota:');
-  A('cmp edx, $STR');
-  A('jne .undef');
-  A('cmp ecx, $FN');
-  A('jne .o');
-  A('mov eax, dword ptr [eax+$FN_PROPS]');
-  A('jmp .look');
-  A('.o:');
-  A('cmp ecx, $OBJ');
-  A('jne .undef');
-  A('.look:');
-  A('push dword ptr [ebp+16]');
-  A('push eax');
-  A('call _JSRT_obj_lookup_str');
-  A('add esp, 8');
-  A('leave');
-  A('ret');
-  A('.undef:');
-  A('xor eax, eax');
-  A('mov edx, $UNDEF');
-  A('leave');
-  A('ret');
-  A('.bad:');
-  A('push offset _JSRT_c_read');
-  A('call _JSRT_fatal');
-  A('endp');
-
   { _JSRT_str_get_prop(pstr, pcle) : propriete d'une chaine par nom }
   A('proc _JSRT_str_get_prop');
   A('push ebp');
@@ -13979,19 +13922,6 @@ Begin
   A('call _JSRT_fatal');
   A('endp');
 
-  { _JSRT_obj_set / _JSRT_obj_set_member : objets ordinaires, ecrits par le TODO 16 }
-  A('proc _JSRT_obj_set');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('push offset _JSRT_c_setprop');
-  A('call _JSRT_fatal');
-  A('endp');
-  A('proc _JSRT_obj_set_member');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('push offset _JSRT_c_setprop');
-  A('call _JSRT_fatal');
-  A('endp');
 End;
 
 { Iterateurs (for-of, for-in, spread) et jointure. }
@@ -14129,70 +14059,6 @@ Begin
   A('add esp, 16');
   A('jmp .l');
   A('.d:');
-  A('pop esi');
-  A('pop ebx');
-  A('pop ebp');
-  A('ret');
-  A('endp');
-
-  { _JSRT_forin_keys(valeur) -> tableau des cles enumerables }
-  A('proc _JSRT_forin_keys');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('push ebx');
-  A('push esi');
-  A('push edi');
-  A('call _JSRT_array_new');
-  A('mov ebx, eax');
-  A('mov esi, dword ptr [ebp+8]');
-  A('mov ecx, dword ptr [ebp+12]');
-  A('cmp ecx, $ARR');
-  A('je .arr');
-  A('cmp ecx, $STR');
-  A('je .strk');
-  A('cmp ecx, $OBJ');
-  A('je .obj');
-  A('jmp .done');
-  A('.arr:');
-  A('mov edi, dword ptr [esi+$ARR_LEN]');
-  A('jmp .num');
-  A('.strk:');
-  A('mov edi, dword ptr [esi+$STR_LEN]');
-  A('.num:');
-  A('xor esi, esi');
-  A('.nl:');
-  A('cmp esi, edi');
-  A('jae .done');
-  A('push esi');
-  A('call _JSRT_int_to_str');
-  A('add esp, 4');
-  A('push $STR');
-  A('push eax');
-  A('push $ARR');
-  A('push ebx');
-  A('call _JSRT_array_push');
-  A('add esp, 16');
-  A('inc esi');
-  A('jmp .nl');
-  A('.obj:');
-  A('mov edi, dword ptr [esi+$OBJ_PROPS]');
-  A('mov esi, dword ptr [esi+$OBJ_COUNT]');
-  A('.ol:');
-  A('test esi, esi');
-  A('jz .done');
-  A('push $STR');
-  A('push dword ptr [edi]');
-  A('push $ARR');
-  A('push ebx');
-  A('call _JSRT_array_push');
-  A('add esp, 16');
-  A('add edi, ' + IntToStr(RT_PROP_SIZE));
-  A('dec esi');
-  A('jmp .ol');
-  A('.done:');
-  A('mov eax, ebx');
-  A('mov edx, $ARR');
-  A('pop edi');
   A('pop esi');
   A('pop ebx');
   A('pop ebp');
@@ -15491,28 +15357,6 @@ Begin
   A('ret');
   A('endp');
 
-  { _JSRT_new_this(fonction) : this d'un appel new (undefined pour un natif) }
-  A('proc _JSRT_new_this');
-  A('push ebp');
-  A('mov ebp, esp');
-  A('mov eax, dword ptr [ebp+8]');
-  A('mov ecx, dword ptr [eax+$FN_DESC]');
-  A('mov edx, dword ptr [ecx+8]');
-  A('test edx, 32768');
-  A('jnz .native');
-  A('push ' + IntToStr(RT_OBJ_SIZE));
-  A('call _JSRT_alloc');
-  A('add esp, 4');
-  A('mov byte ptr [eax], $OK_OBJECT');
-  A('mov edx, $OBJ');
-  A('leave');
-  A('ret');
-  A('.native:');
-  A('xor eax, eax');
-  A('mov edx, $UNDEF');
-  A('leave');
-  A('ret');
-  A('endp');
 End;
 
 Procedure RtArrays;
@@ -15586,16 +15430,2168 @@ Begin
   f_is := RtFuncObj('isArray', '_JSRT_Array_isArray', 1);
   BoReset;
   BoAdd('isArray', f_is, RT_T_FUNCTION);
+  BoAdd('prototype', DsymFind(asm_ctx^, '_JSNO_array_proto'), RT_T_OBJECT);
   props := BoFinish('_JSNO_Array_props', 0);
   f_arr := RtFuncObjP('Array', '_JSRT_Array_call', 1, props);
   RtGlobal('Array', f_arr, RT_T_FUNCTION);
+End;
+
+{ ---- Objets, proprietes et prototypes (TODO 16) ----
+
+  Objet : en-tete (8), prototype +8, tableau des proprietes +12, nombre
+  +16, capacite +20, classe +24, index de hachage +28. Propriete (16
+  octets) : cle +0 (pointeur de chaine), drapeaux +4, valeur +8. Les
+  proprietes restent dans l'ordre d'insertion ; au-dela de 8 proprietes
+  un index de hachage (adressage ouvert, indices+1) accelere la
+  recherche. Drapeaux : 1 non enumerable, 2 accesseur (la valeur est
+  alors un enregistrement getter, setter), 4 lecture seule. Drapeaux
+  d'en-tete : 1 statique, 2 gele, 4 tableau de proprietes en lecture
+  seule (copie au premier changement). }
+
+Procedure FBegin(Const code: TString; nloc: LongInt);
+Begin
+  A('proc ' + code);
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  If nloc > 0 Then
+    A('sub esp, ' + IntToStr(4 * nloc));
+End;
+
+Procedure FEnd;
+Begin
+  A('.ret:');
+  A('mov esp, ebp');
+  A('sub esp, 12');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ Ajoute (valeur hi, lo ; drapeau) au tableau dont le pointeur est dans loc. }
+Procedure PushToArrLocal(Const hi, lo, arr: TString);
+Begin
+  A('push ' + hi);
+  A('push ' + lo);
+  A('push $ARR');
+  A('push ' + arr);
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+End;
+
+Procedure RtObjCore;
+Begin
+  { _JSRT_str_hash(chaine) -> FNV-1a 32 bits, mis en cache }
+  A('proc _JSRT_str_hash');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov edx, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [edx+$STR_HASH]');
+  A('test eax, eax');
+  A('jnz .quick');
+  A('push ebx');
+  A('push esi');
+  A('mov eax, 0x811C9DC5');
+  A('mov ecx, dword ptr [edx+$STR_LEN]');
+  A('lea esi, [edx+$STR_DATA]');
+  A('mov edx, 16777619');
+  A('.l:');
+  A('test ecx, ecx');
+  A('jz .d');
+  A('movzx ebx, byte ptr [esi]');
+  A('xor eax, ebx');
+  A('imul eax, edx');
+  A('inc esi');
+  A('dec ecx');
+  A('jmp .l');
+  A('.d:');
+  A('mov edx, dword ptr [ebp+8]');
+  A('movzx ecx, byte ptr [edx+2]');
+  A('test ecx, 1');
+  A('jnz .nostore');
+  A('mov dword ptr [edx+$STR_HASH], eax');
+  A('.nostore:');
+  A('pop esi');
+  A('pop ebx');
+  A('.quick:');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_new_proto(prototype) -> pointeur d'objet vide }
+  A('proc _JSRT_obj_new_proto');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ' + IntToStr(RT_OBJ_SIZE));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_OBJECT');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+$OBJ_PROTO], ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_new() -> objet vide (prototype Object.prototype) }
+  A('proc _JSRT_obj_new');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push offset _JSNO_object_proto');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov edx, $OBJ');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_own(obj) : rend le tableau de proprietes modifiable }
+  A('proc _JSRT_obj_own');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('test ecx, 4');
+  A('jz .ret');
+  A('mov eax, dword ptr [esi+$OBJ_COUNT]');
+  A('cmp eax, 4');
+  A('jae .c');
+  A('mov eax, 4');
+  A('.c:');
+  A('push eax');
+  A('shl eax, 4');
+  A('push eax');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('pop ecx');
+  A('mov edi, eax');
+  A('mov dword ptr [esi+$OBJ_CAP], ecx');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('shl ecx, 4');
+  A('push ecx');
+  A('push dword ptr [esi+$OBJ_PROPS]');
+  A('push edi');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('mov dword ptr [esi+$OBJ_PROPS], edi');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('and ecx, -5');
+  A('mov byte ptr [esi+2], cl');
+  A('.ret:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_idx_insert(obj, i) : inscrit la propriete i dans l'index }
+  FBegin('_JSRT_idx_insert', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('mov eax, edi');
+  A('shl eax, 4');
+  A('add eax, dword ptr [esi+$OBJ_PROPS]');
+  A('push dword ptr [eax]');
+  A('call _JSRT_str_hash');
+  A('add esp, 4');
+  A('mov ecx, dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + ']');
+  A('mov edx, dword ptr [ecx]');
+  A('and eax, edx');
+  A('.p:');
+  A('mov ebx, eax');
+  A('shl ebx, 2');
+  A('add ebx, ecx');
+  A('cmp dword ptr [ebx+4], 0');
+  A('je .put');
+  A('inc eax');
+  A('and eax, edx');
+  A('jmp .p');
+  A('.put:');
+  A('lea eax, [edi+1]');
+  A('mov dword ptr [ebx+4], eax');
+  FEnd;
+
+  { _JSRT_obj_reindex(obj) : reconstruit l'index de hachage }
+  FBegin('_JSRT_obj_reindex', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$OBJ_CAP]');
+  A('add ecx, ecx');
+  A('mov ebx, 16');
+  A('.s:');
+  A('cmp ebx, ecx');
+  A('jae .g');
+  A('add ebx, ebx');
+  A('jmp .s');
+  A('.g:');
+  A('mov eax, ebx');
+  A('shl eax, 2');
+  A('add eax, 4');
+  A('push eax');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov edx, ebx');
+  A('dec edx');
+  A('mov dword ptr [eax], edx');
+  A('mov dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + '], eax');
+  A('xor edi, edi');
+  A('.l:');
+  A('cmp edi, dword ptr [esi+$OBJ_COUNT]');
+  A('jae .ret');
+  A('push edi');
+  A('push esi');
+  A('call _JSRT_idx_insert');
+  A('add esp, 8');
+  A('inc edi');
+  A('jmp .l');
+  FEnd;
+
+  { _JSRT_prop_find(obj, cle) -> propriete propre ou 0 }
+  FBegin('_JSRT_prop_find', 2);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('push edi');
+  A('call _JSRT_str_hash');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('mov ecx, dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + ']');
+  A('test ecx, ecx');
+  A('jnz .hashed');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('mov edx, dword ptr [esi+$OBJ_PROPS]');
+  A('.lin:');
+  A('test ecx, ecx');
+  A('jz .none');
+  A('mov eax, dword ptr [edx]');
+  A('cmp eax, edi');
+  A('je .yes');
+  A('cmp ebx, dword ptr [eax+$STR_HASH]');
+  A('jne .nx');
+  A('push ecx');
+  A('push edx');
+  A('push edi');
+  A('push eax');
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('pop edx');
+  A('pop ecx');
+  A('test eax, eax');
+  A('jnz .yes');
+  A('.nx:');
+  A('add edx, ' + IntToStr(RT_PROP_SIZE));
+  A('dec ecx');
+  A('jmp .lin');
+  A('.yes:');
+  A('mov eax, edx');
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  A('jmp .ret');
+  A('.hashed:');
+  A('mov edx, dword ptr [ecx]');
+  A('mov eax, ebx');
+  A('and eax, edx');
+  A('mov ' + Lv(1) + ', eax');
+  A('.hl:');
+  A('mov eax, ' + Lv(1));
+  A('shl eax, 2');
+  A('add eax, dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + ']');
+  A('mov eax, dword ptr [eax+4]');
+  A('test eax, eax');
+  A('jz .none');
+  A('dec eax');
+  A('shl eax, 4');
+  A('add eax, dword ptr [esi+$OBJ_PROPS]');
+  A('mov ' + Lv(2) + ', eax');
+  A('mov ecx, dword ptr [eax]');
+  A('cmp ecx, edi');
+  A('je .y2');
+  A('cmp ebx, dword ptr [ecx+$STR_HASH]');
+  A('jne .hn');
+  A('push edi');
+  A('push ecx');
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .y2');
+  A('.hn:');
+  A('mov ecx, dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + ']');
+  A('mov edx, dword ptr [ecx]');
+  A('mov eax, ' + Lv(1));
+  A('inc eax');
+  A('and eax, edx');
+  A('mov ' + Lv(1) + ', eax');
+  A('jmp .hl');
+  A('.y2:');
+  A('mov eax, ' + Lv(2));
+  FEnd;
+
+  { _JSRT_prop_lookup(obj, cle) -> EAX propriete (chaine de prototypes), EDX proprietaire }
+  FBegin('_JSRT_prop_lookup', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('.c:');
+  A('test esi, esi');
+  A('jz .none');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .found');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .c');
+  A('.found:');
+  A('mov edx, esi');
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  A('xor edx, edx');
+  FEnd;
+
+  { _JSRT_call0(fonction, this lo, this hi) / _JSRT_call1(..., arg lo, arg hi) }
+  A('proc _JSRT_call0');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('sub esp, 16');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], 0');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [esp+8], eax');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esp+12], eax');
+  A('mov eax, dword ptr [ebp+8]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('leave');
+  A('ret');
+  A('endp');
+  A('proc _JSRT_call1');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('sub esp, 24');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], 1');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [esp+8], eax');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esp+12], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esp+16], eax');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov dword ptr [esp+20], eax');
+  A('mov eax, dword ptr [ebp+8]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_prop_get(propriete, recepteur lo, hi) -> valeur (appelle le getter) }
+  A('proc _JSRT_prop_get');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [eax+4]');
+  A('test ecx, 2');
+  A('jnz .acc');
+  A('mov edx, dword ptr [eax+12]');
+  A('mov eax, dword ptr [eax+8]');
+  A('leave');
+  A('ret');
+  A('.acc:');
+  A('mov ecx, dword ptr [eax+8]');
+  A('mov eax, dword ptr [ecx]');
+  A('test eax, eax');
+  A('jz .undef');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push eax');
+  A('call _JSRT_call0');
+  A('leave');
+  A('ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_get(recepteur lo, hi, obj, cle) -> valeur ou undefined }
+  A('proc _JSRT_obj_get');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .undef');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('leave');
+  A('ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_lookup(_str)(obj, cle) : EDX:EAX valeur brute, ECX = 1 si trouvee }
+  A('proc _JSRT_obj_lookup');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .nf');
+  A('mov edx, dword ptr [eax+12]');
+  A('mov eax, dword ptr [eax+8]');
+  A('mov ecx, 1');
+  A('leave');
+  A('ret');
+  A('.nf:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('xor ecx, ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+  A('proc _JSRT_obj_lookup_str');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_lookup');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_add(obj, cle, drapeaux, valeur lo, valeur hi) }
+  FBegin('_JSRT_obj_add', 1);
+  A('mov esi, dword ptr [ebp+8]');
+  A('push esi');
+  A('call _JSRT_obj_own');
+  A('add esp, 4');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_str_hash');
+  A('add esp, 4');
+  A('mov ' + Lv(1) + ', 0');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('cmp ecx, dword ptr [esi+$OBJ_CAP]');
+  A('jb .room');
+  A('mov ebx, dword ptr [esi+$OBJ_CAP]');
+  A('add ebx, ebx');
+  A('cmp ebx, 4');
+  A('jae .g1');
+  A('mov ebx, 4');
+  A('.g1:');
+  A('mov eax, ebx');
+  A('shl eax, 4');
+  A('push eax');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov edi, eax');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('shl ecx, 4');
+  A('push ecx');
+  A('push dword ptr [esi+$OBJ_PROPS]');
+  A('push edi');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('mov dword ptr [esi+$OBJ_PROPS], edi');
+  A('mov dword ptr [esi+$OBJ_CAP], ebx');
+  A('mov ' + Lv(1) + ', 1');
+  A('.room:');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('mov edx, ecx');
+  A('shl edx, 4');
+  A('add edx, dword ptr [esi+$OBJ_PROPS]');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [edx], eax');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [edx+4], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [edx+8], eax');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov dword ptr [edx+12], eax');
+  A('inc ecx');
+  A('mov dword ptr [esi+$OBJ_COUNT], ecx');
+  A('cmp ecx, 8');
+  A('jbe .ret');
+  A('cmp ' + Lv(1) + ', 1');
+  A('je .build');
+  A('cmp dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + '], 0');
+  A('je .build');
+  A('dec ecx');
+  A('push ecx');
+  A('push esi');
+  A('call _JSRT_idx_insert');
+  A('add esp, 8');
+  A('jmp .ret');
+  A('.build:');
+  A('push esi');
+  A('call _JSRT_obj_reindex');
+  A('add esp, 4');
+  FEnd;
+
+  { _JSRT_obj_remove(obj, cle) -> 1 si supprimee }
+  FBegin('_JSRT_obj_remove', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('push esi');
+  A('call _JSRT_obj_own');
+  A('add esp, 4');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .no');
+  A('mov edx, eax');
+  A('sub edx, dword ptr [esi+$OBJ_PROPS]');
+  A('shr edx, 4');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('dec ecx');
+  A('mov dword ptr [esi+$OBJ_COUNT], ecx');
+  A('sub ecx, edx');
+  A('shl ecx, 4');
+  A('lea ebx, [eax+16]');
+  A('push ecx');
+  A('push ebx');
+  A('push eax');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('cmp dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + '], 0');
+  A('je .ok');
+  A('cmp dword ptr [esi+$OBJ_COUNT], 8');
+  A('ja .re');
+  A('mov dword ptr [esi+' + IntToStr(RT_OBJ_INDEX) + '], 0');
+  A('jmp .ok');
+  A('.re:');
+  A('push esi');
+  A('call _JSRT_obj_reindex');
+  A('add esp, 4');
+  A('.ok:');
+  A('mov eax, 1');
+  A('jmp .ret');
+  A('.no:');
+  A('xor eax, eax');
+  FEnd;
+
+  { _JSRT_obj_define(obj, cle, valeur lo, hi) : propriete de donnee (litteraux) }
+  FBegin('_JSRT_obj_define', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('push esi');
+  A('call _JSRT_obj_own');
+  A('add esp, 4');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .add');
+  A('mov dword ptr [eax+4], 0');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('mov dword ptr [eax+8], ecx');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('mov dword ptr [eax+12], ecx');
+  A('jmp .ret');
+  A('.add:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push 0');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  FEnd;
+
+  { _JSRT_obj_define_acc(obj, cle, fonction lo, hi, setter) : getter ou setter }
+  FBegin('_JSRT_obj_define_acc', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('push esi');
+  A('call _JSRT_obj_own');
+  A('add esp, 4');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .new');
+  A('mov ecx, dword ptr [eax+4]');
+  A('test ecx, 2');
+  A('jnz .have');
+  A('mov ebx, eax');
+  A('push 8');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov dword ptr [ebx+4], 2');
+  A('mov dword ptr [ebx+8], eax');
+  A('mov dword ptr [ebx+12], 0');
+  A('mov edi, eax');
+  A('jmp .store');
+  A('.have:');
+  A('mov edi, dword ptr [eax+8]');
+  A('jmp .store');
+  A('.new:');
+  A('push 8');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov edi, eax');
+  A('push 0');
+  A('push edi');
+  A('push 2');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('.store:');
+  A('mov eax, dword ptr [ebp+24]');
+  A('shl eax, 2');
+  A('add eax, edi');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('mov dword ptr [eax], ecx');
+  FEnd;
+
+  { _JSRT_tokey(valeur) -> chaine de la cle de propriete }
+  A('proc _JSRT_tokey');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_tostring');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_fn_prototype(fonction) : Fonction.prototype, creee a la demande }
+  FBegin('_JSRT_fn_prototype', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+$FN_PROPS]');
+  A('test eax, eax');
+  A('jnz .have');
+  A('push offset _JSNO_object_proto');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov dword ptr [esi+$FN_PROPS], eax');
+  A('.have:');
+  A('mov edi, eax');
+  A('push offset ' + RtStr('prototype'));
+  A('push edi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .mk');
+  A('mov edx, dword ptr [eax+12]');
+  A('mov eax, dword ptr [eax+8]');
+  A('jmp .ret');
+  A('.mk:');
+  A('call _JSRT_obj_new');
+  A('mov ebx, eax');
+  A('push $FN');
+  A('push esi');
+  A('push 1');
+  A('push offset ' + RtStr('constructor'));
+  A('push ebx');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('push $OBJ');
+  A('push ebx');
+  A('push 1');
+  A('push offset ' + RtStr('prototype'));
+  A('push edi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('mov eax, ebx');
+  A('mov edx, $OBJ');
+  FEnd;
+
+  { _JSRT_get_named(recepteur lo, hi, cle) : propriete d'un objet ou d'une fonction }
+  FBegin('_JSRT_get_named', 0);
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $FN');
+  A('jne .o');
+  A('mov esi, dword ptr [eax+$FN_PROPS]');
+  A('test esi, esi');
+  A('jz .fnproto');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .fnproto');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('jmp .ret');
+  A('.fnproto:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('movzx ecx, byte ptr [eax+2]');
+  A('test ecx, 1');
+  A('jnz .undef');
+  A('push dword ptr [ebp+16]');
+  A('push offset ' + RtStr('prototype'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .undef');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_fn_prototype');
+  A('add esp, 4');
+  A('jmp .ret');
+  A('.o:');
+  A('cmp ecx, $OBJ');
+  A('jne .undef');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_get');
+  A('add esp, 16');
+  A('jmp .ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { _JSRT_obj_set(objet lo, hi, cle, valeur lo, hi) : objet.cle = valeur }
+  FBegin('_JSRT_obj_set', 0);
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $FN');
+  A('je .fn');
+  A('cmp ecx, $UNDEF');
+  A('je .bad');
+  A('cmp ecx, $NULL');
+  A('je .bad');
+  A('jmp .done');
+  A('.fn:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('movzx ecx, byte ptr [eax+2]');
+  A('test ecx, 1');
+  A('jnz .done');
+  A('mov esi, dword ptr [eax+$FN_PROPS]');
+  A('test esi, esi');
+  A('jnz .setobj');
+  A('push offset _JSNO_object_proto');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov esi, eax');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [ecx+$FN_PROPS], eax');
+  A('jmp .setobj');
+  A('.obj:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('.setobj:');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('test ecx, 2');
+  A('jnz .done');
+  A('push esi');
+  A('call _JSRT_obj_own');
+  A('add esp, 4');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .newprop');
+  A('mov ebx, eax');
+  A('mov edi, edx');
+  A('mov ecx, dword ptr [ebx+4]');
+  A('test ecx, 2');
+  A('jnz .acc');
+  A('test ecx, 4');
+  A('jnz .done');
+  A('cmp edi, esi');
+  A('jne .newprop');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [ebx+8], eax');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov dword ptr [ebx+12], eax');
+  A('jmp .done');
+  A('.acc:');
+  A('mov ecx, dword ptr [ebx+8]');
+  A('mov eax, dword ptr [ecx+4]');
+  A('test eax, eax');
+  A('jz .done');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push eax');
+  A('call _JSRT_call1');
+  A('add esp, 20');
+  A('jmp .done');
+  A('.newprop:');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push 0');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('.done:');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov edx, dword ptr [ebp+24]');
+  A('jmp .ret');
+  A('.bad:');
+  A('push offset _JSRT_c_setundef');
+  A('call _JSRT_fatal');
+  FEnd;
+
+  { _JSRT_obj_set_member(objet, cle, valeur) : cle quelconque }
+  A('proc _JSRT_obj_set_member');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push dword ptr [ebp+28]');
+  A('push dword ptr [ebp+24]');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_set');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_has_str(tableau, chaine) -> 1 si un element chaine est egal }
+  FBegin('_JSRT_arr_has_str', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('xor ebx, ebx');
+  A('.l:');
+  A('cmp ebx, dword ptr [esi+$ARR_LEN]');
+  A('jae .no');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('cmp dword ptr [eax+4], $STR');
+  A('jne .nx');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [eax]');
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .ret');
+  A('.nx:');
+  A('inc ebx');
+  A('jmp .l');
+  A('.no:');
+  A('xor eax, eax');
+  FEnd;
+
+  { _JSRT_obj_spread(cible, source) : copie les proprietes enumerables propres }
+  FBegin('_JSRT_obj_spread', 1);
+  A('mov ecx, dword ptr [ebp+20]');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $ARR');
+  A('jne .ret');
+  A('mov esi, dword ptr [ebp+16]');
+  A('xor edi, edi');
+  A('.al:');
+  A('cmp edi, dword ptr [esi+$ARR_LEN]');
+  A('jae .ret');
+  A('push edi');
+  A('call _JSRT_int_to_str');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('push edi');
+  A('push esi');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('push ebx');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('inc edi');
+  A('jmp .al');
+  A('.obj:');
+  A('mov esi, dword ptr [ebp+16]');
+  A('xor edi, edi');
+  A('.ol:');
+  A('cmp edi, dword ptr [esi+$OBJ_COUNT]');
+  A('jae .ret');
+  A('mov ebx, edi');
+  A('shl ebx, 4');
+  A('add ebx, dword ptr [esi+$OBJ_PROPS]');
+  A('test dword ptr [ebx+4], 1');
+  A('jnz .on');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push ebx');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('push dword ptr [ebx]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('.on:');
+  A('inc edi');
+  A('jmp .ol');
+  FEnd;
+
+  { _JSRT_obj_rest(source, cles exclues) : copie sans les cles exclues }
+  FBegin('_JSRT_obj_rest', 0);
+  A('call _JSRT_obj_new');
+  A('mov ebx, eax');
+  A('cmp dword ptr [ebp+12], $OBJ');
+  A('jne .done');
+  A('mov esi, dword ptr [ebp+8]');
+  A('xor edi, edi');
+  A('.l:');
+  A('cmp edi, dword ptr [esi+$OBJ_COUNT]');
+  A('jae .done');
+  A('mov eax, edi');
+  A('shl eax, 4');
+  A('add eax, dword ptr [esi+$OBJ_PROPS]');
+  A('test dword ptr [eax+4], 1');
+  A('jnz .nx');
+  A('push eax');
+  A('push dword ptr [eax]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_arr_has_str');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('pop eax');
+  A('test ecx, ecx');
+  A('jnz .nx');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('mov ecx, edi');
+  A('shl ecx, 4');
+  A('add ecx, dword ptr [esi+$OBJ_PROPS]');
+  A('push edx');
+  A('push eax');
+  A('push dword ptr [ecx]');
+  A('push ebx');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('.nx:');
+  A('inc edi');
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, ebx');
+  A('mov edx, $OBJ');
+  FEnd;
+
+  { _JSRT_delete_prop(objet, cle) : delete objet.cle }
+  FBegin('_JSRT_delete_prop', 0);
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $ARR');
+  A('jne .true');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_str_to_idx');
+  A('add esp, 4');
+  A('cmp eax, -1');
+  A('je .true');
+  A('mov esi, dword ptr [ebp+8]');
+  A('cmp eax, dword ptr [esi+$ARR_LEN]');
+  A('jae .true');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov dword ptr [eax], 0');
+  A('mov dword ptr [eax+4], $UNDEF');
+  A('jmp .true');
+  A('.obj:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('test ecx, 2');
+  A('jnz .false');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_obj_remove');
+  A('add esp, 8');
+  A('.true:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  A('.false:');
+  A('xor eax, eax');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  { _JSRT_delete_member(objet, cle) }
+  A('proc _JSRT_delete_member');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $ARR');
+  A('jne .gen');
+  A('cmp dword ptr [ebp+20], $INT');
+  A('jne .gen');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('cmp eax, dword ptr [ecx+$ARR_LEN]');
+  A('jae .true');
+  A('shl eax, 3');
+  A('add eax, dword ptr [ecx+$ARR_ELEMS]');
+  A('mov dword ptr [eax], 0');
+  A('mov dword ptr [eax+4], $UNDEF');
+  A('.true:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  A('leave');
+  A('ret');
+  A('.gen:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_delete_prop');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_has_own(valeur lo, hi, cle chaine) -> 0 ou 1 }
+  FBegin('_JSRT_has_own', 0);
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $FN');
+  A('je .fn');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('cmp ecx, $STR');
+  A('je .str');
+  A('xor eax, eax');
+  A('jmp .ret');
+  A('.fn:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [esi+$FN_PROPS]');
+  A('test esi, esi');
+  A('jz .no');
+  A('jmp .look');
+  A('.obj:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('.look:');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .no');
+  A('mov eax, 1');
+  A('jmp .ret');
+  A('.arr:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [esi+$ARR_LEN]');
+  A('jmp .idx');
+  A('.str:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [esi+$STR_LEN]');
+  A('.idx:');
+  A('push dword ptr [ebp+16]');
+  A('push offset ' + RtStr('length'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .ret');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_str_to_idx');
+  A('add esp, 4');
+  A('cmp eax, -1');
+  A('je .no');
+  A('cmp eax, ebx');
+  A('jae .no');
+  A('mov eax, 1');
+  A('jmp .ret');
+  A('.no:');
+  A('xor eax, eax');
+  FEnd;
+
+End;
+
+{ Acces aux proprietes, enumeration, operateurs in / instanceof, new. }
+
+{ Une entree de _JSRT_ownkeys : kind 0 = propriete EBX, kind 1 = indice EDI
+  (cle texte dans le local 3). Selon le mode : cles, valeurs ou paires. }
+Procedure EmitOwnEntry(kind: LongInt);
+Var
+  keyop, valcode1, valcode2, valcode3, valcode4, l1, l2, done: TString;
+Begin
+  If kind = 0 Then
+    keyop := 'dword ptr [ebx]'
+  Else
+    keyop := Lv(3);
+  l1 := U('m');
+  l2 := U('e');
+  done := U('n');
+  A('mov eax, dword ptr [ebp+16]');
+  A('cmp eax, 1');
+  A('je ' + l1);
+  A('cmp eax, 2');
+  A('je ' + l2);
+  PushToArrLocal('$STR', keyop, Lv(1));
+  A('jmp ' + done);
+  A(l1 + ':');
+  If kind = 0 Then
+    Begin
+      A('push dword ptr [ebp+12]');
+      A('push dword ptr [ebp+8]');
+      A('push ebx');
+      A('call _JSRT_prop_get');
+    End
+  Else
+    Begin
+      A('push edi');
+      A('push dword ptr [ebp+12]');
+      A('push dword ptr [ebp+8]');
+      A('call _JSRT_get_index');
+    End;
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('push $ARR');
+  A('push ' + Lv(1));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('jmp ' + done);
+  A(l2 + ':');
+  If kind = 0 Then
+    Begin
+      A('push dword ptr [ebp+12]');
+      A('push dword ptr [ebp+8]');
+      A('push ebx');
+      A('call _JSRT_prop_get');
+    End
+  Else
+    Begin
+      A('push edi');
+      A('push dword ptr [ebp+12]');
+      A('push dword ptr [ebp+8]');
+      A('call _JSRT_get_index');
+    End;
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_array_new');
+  A('mov ' + Lv(2) + ', eax');
+  PushToArrLocal('$STR', keyop, Lv(2));
+  A('pop eax');
+  A('pop edx');
+  A('push edx');
+  A('push eax');
+  A('push $ARR');
+  A('push ' + Lv(2));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  PushToArrLocal('$ARR', Lv(2), Lv(1));
+  A(done + ':');
+End;
+
+Procedure RtObjAccess;
+Begin
+  { _JSRT_in(cle, objet) : cle in objet }
+  FBegin('_JSRT_in', 0);
+  A('mov ecx, dword ptr [ebp+20]');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $FN');
+  A('je .fn');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  A('.fn:');
+  A('mov esi, dword ptr [ebp+16]');
+  A('mov esi, dword ptr [esi+$FN_PROPS]');
+  A('test esi, esi');
+  A('jz .no');
+  A('jmp .look');
+  A('.obj:');
+  A('mov esi, dword ptr [ebp+16]');
+  A('.look:');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .no');
+  A('jmp .yes');
+  A('.arr:');
+  A('cmp dword ptr [ebp+12], $INT');
+  A('jne .arrname');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('cmp eax, dword ptr [ecx+$ARR_LEN]');
+  A('jae .no');
+  A('jmp .yes');
+  A('.arrname:');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  A('push ebx');
+  A('push offset ' + RtStr('length'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .yes');
+  A('push ebx');
+  A('call _JSRT_str_to_idx');
+  A('add esp, 4');
+  A('cmp eax, -1');
+  A('je .proto');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('cmp eax, dword ptr [ecx+$ARR_LEN]');
+  A('jb .yes');
+  A('.proto:');
+  A('push ebx');
+  A('push offset _JSNO_array_proto');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .yes');
+  A('.no:');
+  A('xor eax, eax');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  A('.yes:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  { _JSRT_instanceof(valeur, fonction) }
+  FBegin('_JSRT_instanceof', 0);
+  A('cmp dword ptr [ebp+20], $FN');
+  A('jne .bad');
+  A('push offset ' + RtStr('prototype'));
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $OBJ');
+  A('jne .no');
+  A('mov ebx, eax');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .o');
+  A('cmp ecx, $ARR');
+  A('je .a');
+  A('jmp .no');
+  A('.o:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .walk');
+  A('.a:');
+  A('mov esi, offset _JSNO_array_proto');
+  A('.walk:');
+  A('test esi, esi');
+  A('jz .no');
+  A('cmp esi, ebx');
+  A('je .yes');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .walk');
+  A('.bad:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  A('.no:');
+  A('xor eax, eax');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  A('.yes:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  { _JSRT_new_this(fonction) : this d'un appel new }
+  FBegin('_JSRT_new_this', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$FN_DESC]');
+  A('mov edx, dword ptr [ecx+8]');
+  A('test edx, 32768');
+  A('jnz .native');
+  A('push offset ' + RtStr('prototype'));
+  A('push $FN');
+  A('push esi');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $OBJ');
+  A('jne .dflt');
+  A('push eax');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('jmp .o');
+  A('.dflt:');
+  A('push offset _JSNO_object_proto');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('.o:');
+  A('mov edx, $OBJ');
+  A('jmp .ret');
+  A('.native:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { _JSRT_get_prop(objet, atome) : objet.nom }
+  A('proc _JSRT_get_prop');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .named');
+  A('cmp ecx, $STR');
+  A('je .str');
+  A('cmp ecx, $FN');
+  A('je .named');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('cmp ecx, $UNDEF');
+  A('je .bad');
+  A('cmp ecx, $NULL');
+  A('je .bad');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.named:');
+  A('push dword ptr [ebp+16]');
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_get_named');
+  A('leave');
+  A('ret');
+  A('.str:');
+  A('mov edx, dword ptr [ebp+16]');
+  A('mov ecx, offset ' + RtStr('length'));
+  A('cmp edx, ecx');
+  A('jne .strproto');
+  A('mov eax, dword ptr [eax+$STR_LEN]');
+  A('mov edx, $INT');
+  A('leave');
+  A('ret');
+  A('.strproto:');
+  A('push edx');
+  A('push offset _JSNO_string_proto');
+  A('call _JSRT_obj_lookup');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.arr:');
+  A('mov edx, dword ptr [ebp+16]');
+  A('mov ecx, offset ' + RtStr('length'));
+  A('cmp edx, ecx');
+  A('jne .arrproto');
+  A('mov eax, dword ptr [eax+$ARR_LEN]');
+  A('mov edx, $INT');
+  A('leave');
+  A('ret');
+  A('.arrproto:');
+  A('push edx');
+  A('push offset _JSNO_array_proto');
+  A('call _JSRT_obj_lookup');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.bad:');
+  A('push offset _JSRT_c_read');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_get_member(objet, cle) : objet[cle] }
+  A('proc _JSRT_get_member');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('mov edx, dword ptr [ebp+20]');
+  A('cmp ecx, $UNDEF');
+  A('je .bad');
+  A('cmp ecx, $NULL');
+  A('je .bad');
+  A('cmp ecx, $STR');
+  A('jne .notstr');
+  A('cmp edx, $INT');
+  A('je .stridx');
+  A('cmp edx, $STR');
+  A('jne .undef');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_str_get_prop');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.stridx:');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_str_char_at');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.notstr:');
+  A('cmp ecx, $ARR');
+  A('jne .nota');
+  A('cmp edx, $INT');
+  A('jne .ak');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_arr_get');
+  A('leave');
+  A('ret');
+  A('.ak:');
+  A('cmp edx, $STR');
+  A('jne .undef');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_arr_get_name');
+  A('leave');
+  A('ret');
+  A('.nota:');
+  A('cmp ecx, $OBJ');
+  A('je .named');
+  A('cmp ecx, $FN');
+  A('jne .undef');
+  A('.named:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_get_named');
+  A('leave');
+  A('ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.bad:');
+  A('push offset _JSRT_c_read');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_ownkeys(valeur, mode) : 0 cles, 1 valeurs, 2 paires, 3 noms (tous) }
+  FBegin('_JSRT_ownkeys', 3);
+  A('call _JSRT_array_new');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $FN');
+  A('je .fn');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('cmp ecx, $STR');
+  A('je .str');
+  A('jmp .done');
+  A('.fn:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [esi+$FN_PROPS]');
+  A('test esi, esi');
+  A('jz .done');
+  A('jmp .props');
+  A('.obj:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('.props:');
+  A('xor edi, edi');
+  A('.pl:');
+  A('cmp edi, dword ptr [esi+$OBJ_COUNT]');
+  A('jae .done');
+  A('mov ebx, edi');
+  A('shl ebx, 4');
+  A('add ebx, dword ptr [esi+$OBJ_PROPS]');
+  A('test dword ptr [ebx+4], 1');
+  A('jz .vis');
+  A('cmp dword ptr [ebp+16], 3');
+  A('jne .pn');
+  A('.vis:');
+  EmitOwnEntry(0);
+  A('.pn:');
+  A('inc edi');
+  A('jmp .pl');
+  A('.arr:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [esi+$ARR_LEN]');
+  A('jmp .idx');
+  A('.str:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [esi+$STR_LEN]');
+  A('.idx:');
+  A('xor edi, edi');
+  A('.il:');
+  A('cmp edi, ebx');
+  A('jae .idone');
+  A('push edi');
+  A('call _JSRT_int_to_str');
+  A('add esp, 4');
+  A('mov ' + Lv(3) + ', eax');
+  EmitOwnEntry(1);
+  A('inc edi');
+  A('jmp .il');
+  A('.idone:');
+  A('cmp dword ptr [ebp+12], $ARR');
+  A('jne .done');
+  A('cmp dword ptr [ebp+16], 3');
+  A('jne .done');
+  PushToArrLocal('$STR', 'offset ' + RtStr('length'), Lv(1));
+  A('.done:');
+  A('mov eax, ' + Lv(1));
+  A('mov edx, $ARR');
+  FEnd;
+
+  { _JSRT_forin_keys(valeur) : cles enumerables, heritees comprises }
+  FBegin('_JSRT_forin_keys', 2);
+  A('call _JSRT_array_new');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov ' + Lv(2) + ', 0');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $OBJ');
+  A('je .cn');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('cmp ecx, $STR');
+  A('jne .done');
+  A('mov edi, dword ptr [esi+$STR_LEN]');
+  A('jmp .num');
+  A('.arr:');
+  A('mov edi, dword ptr [esi+$ARR_LEN]');
+  A('.num:');
+  A('xor esi, esi');
+  A('.nl:');
+  A('cmp esi, edi');
+  A('jae .done');
+  A('push esi');
+  A('call _JSRT_int_to_str');
+  A('add esp, 4');
+  PushToArrLocal('$STR', 'eax', Lv(1));
+  A('inc esi');
+  A('jmp .nl');
+  A('.cn:');
+  A('test esi, esi');
+  A('jz .done');
+  A('cmp ' + Lv(2) + ', 0');
+  A('je .own');
+  A('movzx eax, byte ptr [esi+2]');
+  A('test eax, 1');
+  A('jnz .done');
+  A('.own:');
+  A('xor edi, edi');
+  A('.pl:');
+  A('cmp edi, dword ptr [esi+$OBJ_COUNT]');
+  A('jae .next');
+  A('mov ebx, edi');
+  A('shl ebx, 4');
+  A('add ebx, dword ptr [esi+$OBJ_PROPS]');
+  A('test dword ptr [ebx+4], 1');
+  A('jnz .pn');
+  A('push dword ptr [ebx]');
+  A('push ' + Lv(1));
+  A('call _JSRT_arr_has_str');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .pn');
+  PushToArrLocal('$STR', 'dword ptr [ebx]', Lv(1));
+  A('.pn:');
+  A('inc edi');
+  A('jmp .pl');
+  A('.next:');
+  A('mov ' + Lv(2) + ', 1');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .cn');
+  A('.done:');
+  A('mov eax, ' + Lv(1));
+  A('mov edx, $ARR');
+  FEnd;
+End;
+
+{ Object.keys / values / entries / getOwnPropertyNames }
+Procedure ObjOwnNative(Const code: TString; mode: LongInt);
+Begin
+  FBegin(code, 0);
+  A('push ' + IntToStr(mode));
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .u');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('jmp .go');
+  A('.u:');
+  A('push $UNDEF');
+  A('push 0');
+  A('.go:');
+  A('call _JSRT_ownkeys');
+  A('add esp, 12');
+  FEnd;
+End;
+
+Procedure ObjArg(i: LongInt; Const lo, hi: TString);
+Var
+  have, ok: TString;
+Begin
+  have := U('h');
+  ok := U('k');
+  A('cmp dword ptr [ebp+12], ' + IntToStr(i + 1));
+  A('jae ' + have);
+  A('mov ' + lo + ', 0');
+  A('mov ' + hi + ', $UNDEF');
+  A('jmp ' + ok);
+  A(have + ':');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i) + ']');
+  A('mov ' + lo + ', eax');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i + 4) + ']');
+  A('mov ' + hi + ', eax');
+  A(ok + ':');
+End;
+
+{ Attribut de defineProperty : s'il est present dans le descripteur, met a
+  jour le bit du local 2 (0 = vrai pour le bit, sinon positionne). }
+Procedure DescAttr(Const name: TString; bit: LongInt);
+Var
+  skip, falsy: TString;
+Begin
+  skip := U('s');
+  falsy := U('f');
+  A('push offset ' + RtStr(name));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('call _JSRT_has_own');
+  A('add esp, 12');
+  A('test eax, eax');
+  A('jz ' + skip);
+  A('push offset ' + RtStr(name));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_truthy');
+  A('add esp, 8');
+  A('mov ecx, ' + Lv(2));
+  A('and ecx, ' + IntToStr(-1 - bit));
+  A('test eax, eax');
+  A('jnz ' + falsy);
+  A('or ecx, ' + IntToStr(bit));
+  A(falsy + ':');
+  A('mov ' + Lv(2) + ', ecx');
+  A(skip + ':');
+End;
+
+Procedure RtObjNatives;
+Begin
+  ObjOwnNative('_JSRT_Object_keys', 0);
+  ObjOwnNative('_JSRT_Object_values', 1);
+  ObjOwnNative('_JSRT_Object_entries', 2);
+  ObjOwnNative('_JSRT_Object_getOwnPropertyNames', 3);
+
+  { Object.assign(cible, ...sources) }
+  FBegin('_JSRT_Object_assign', 3);
+  A('mov ebx, 1');
+  A('.sl:');
+  A('cmp ebx, dword ptr [ebp+12]');
+  A('jae .done');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('lea esi, [ebp+eax+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push 0');
+  A('push dword ptr [esi+4]');
+  A('push dword ptr [esi]');
+  A('call _JSRT_ownkeys');
+  A('add esp, 12');
+  A('mov ' + Lv(2) + ', eax');
+  A('xor edi, edi');
+  A('.kl:');
+  A('mov ecx, ' + Lv(2));
+  A('cmp edi, dword ptr [ecx+$ARR_LEN]');
+  A('jae .sn');
+  A('mov eax, edi');
+  A('shl eax, 3');
+  A('add eax, dword ptr [ecx+$ARR_ELEMS]');
+  A('mov ecx, dword ptr [eax]');
+  A('mov ' + Lv(3) + ', ecx');
+  A('push $STR');
+  A('push ecx');
+  A('push dword ptr [esi+4]');
+  A('push dword ptr [esi]');
+  A('call _JSRT_get_member');
+  A('add esp, 16');
+  A('push edx');
+  A('push eax');
+  A('push $STR');
+  A('push ' + Lv(3));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_set_member');
+  A('add esp, 24');
+  A('inc edi');
+  A('jmp .kl');
+  A('.sn:');
+  A('inc ebx');
+  A('jmp .sl');
+  A('.done:');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  FEnd;
+
+  { Object.create(prototype) }
+  FBegin('_JSRT_Object_create', 0);
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .null');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .null');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('jmp .go');
+  A('.null:');
+  A('push 0');
+  A('.go:');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov edx, $OBJ');
+  FEnd;
+
+  { Object.freeze / isFrozen }
+  FBegin('_JSRT_Object_freeze', 2);
+  ObjArg(0, 'dword ptr [ebp-16]', 'dword ptr [ebp-20]');
+  A('mov eax, dword ptr [ebp-16]');
+  A('mov ecx, dword ptr [ebp-20]');
+  A('cmp ecx, $OBJ');
+  A('je .f');
+  A('cmp ecx, $ARR');
+  A('je .f');
+  A('cmp ecx, $FN');
+  A('jne .r');
+  A('.f:');
+  A('movzx ecx, byte ptr [eax+2]');
+  A('or ecx, 2');
+  A('mov byte ptr [eax+2], cl');
+  A('.r:');
+  A('mov eax, dword ptr [ebp-16]');
+  A('mov edx, dword ptr [ebp-20]');
+  FEnd;
+
+  FBegin('_JSRT_Object_isFrozen', 2);
+  ObjArg(0, 'dword ptr [ebp-16]', 'dword ptr [ebp-20]');
+  A('mov eax, dword ptr [ebp-16]');
+  A('mov ecx, dword ptr [ebp-20]');
+  A('cmp ecx, $OBJ');
+  A('je .t');
+  A('cmp ecx, $ARR');
+  A('je .t');
+  A('cmp ecx, $FN');
+  A('jne .yes');
+  A('.t:');
+  A('movzx ecx, byte ptr [eax+2]');
+  A('test ecx, 2');
+  A('jz .no');
+  A('.yes:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  A('.no:');
+  A('xor eax, eax');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  { Object.getPrototypeOf / setPrototypeOf }
+  FBegin('_JSRT_Object_getPrototypeOf', 2);
+  ObjArg(0, 'dword ptr [ebp-16]', 'dword ptr [ebp-20]');
+  A('mov eax, dword ptr [ebp-16]');
+  A('mov ecx, dword ptr [ebp-20]');
+  A('cmp ecx, $OBJ');
+  A('je .o');
+  A('cmp ecx, $ARR');
+  A('je .a');
+  A('cmp ecx, $STR');
+  A('je .s');
+  A('jmp .null');
+  A('.o:');
+  A('mov eax, dword ptr [eax+$OBJ_PROTO]');
+  A('test eax, eax');
+  A('jz .null');
+  A('jmp .obj');
+  A('.a:');
+  A('mov eax, offset _JSNO_array_proto');
+  A('jmp .obj');
+  A('.s:');
+  A('mov eax, offset _JSNO_string_proto');
+  A('.obj:');
+  A('mov edx, $OBJ');
+  A('jmp .ret');
+  A('.null:');
+  A('xor eax, eax');
+  A('mov edx, $NULL');
+  FEnd;
+
+  FBegin('_JSRT_Object_setPrototypeOf', 2);
+  ObjArg(0, 'dword ptr [ebp-16]', 'dword ptr [ebp-20]');
+  A('cmp dword ptr [ebp-20], $OBJ');
+  A('jne .r');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .r');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('cmp ecx, $OBJ');
+  A('je .set');
+  A('xor eax, eax');
+  A('.set:');
+  A('mov edx, dword ptr [ebp-16]');
+  A('mov dword ptr [edx+$OBJ_PROTO], eax');
+  A('.r:');
+  A('mov eax, dword ptr [ebp-16]');
+  A('mov edx, dword ptr [ebp-20]');
+  FEnd;
+
+  { Object.fromEntries(paires) }
+  FBegin('_JSRT_Object_fromEntries', 0);
+  A('call _JSRT_obj_new');
+  A('mov ebx, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .done');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $ARR');
+  A('jne .done');
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('xor edi, edi');
+  A('.l:');
+  A('cmp edi, dword ptr [esi+$ARR_LEN]');
+  A('jae .done');
+  A('mov eax, edi');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('cmp dword ptr [eax+4], $ARR');
+  A('jne .nx');
+  A('mov ecx, dword ptr [eax]');
+  A('push 1');
+  A('push ecx');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('mov eax, edi');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('push 0');
+  A('push dword ptr [eax]');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('pop eax');
+  A('pop edx');
+  A('push edx');
+  A('push eax');
+  A('push ecx');
+  A('push ebx');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('.nx:');
+  A('inc edi');
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, ebx');
+  A('mov edx, $OBJ');
+  FEnd;
+
+  { Object.hasOwn(objet, cle) }
+  FBegin('_JSRT_Object_hasOwn', 2);
+  ObjArg(1, 'dword ptr [ebp-16]', 'dword ptr [ebp-20]');
+  A('push dword ptr [ebp-20]');
+  A('push dword ptr [ebp-16]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .u');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('jmp .go');
+  A('.u:');
+  A('push $UNDEF');
+  A('push 0');
+  A('.go:');
+  A('call _JSRT_has_own');
+  A('add esp, 12');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  { Object.defineProperty(objet, cle, descripteur) }
+  FBegin('_JSRT_Object_defineProperty', 3);
+  A('cmp dword ptr [ebp+12], 3');
+  A('jb .bad');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .bad');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + '], $OBJ');
+  A('jne .bad');
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('mov ' + Lv(1) + ', eax');
+  { drapeaux de depart : ceux de la propriete existante, sinon cachee et en lecture seule }
+  A('mov ' + Lv(2) + ', 5');
+  A('push esi');
+  A('call _JSRT_obj_own');
+  A('add esp, 4');
+  A('push ' + Lv(1));
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .fresh');
+  A('mov ecx, dword ptr [eax+4]');
+  A('mov ' + Lv(2) + ', ecx');
+  A('.fresh:');
+  DescAttr('enumerable', 1);
+  DescAttr('writable', 4);
+  { accesseur ou donnee }
+  A('push offset ' + RtStr('get'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('mov ebx, 0');
+  A('cmp edx, $FN');
+  A('jne .nog');
+  A('push 0');
+  A('push edx');
+  A('push eax');
+  A('push ' + Lv(1));
+  A('push esi');
+  A('call _JSRT_obj_define_acc');
+  A('add esp, 20');
+  A('mov ebx, 1');
+  A('.nog:');
+  A('push offset ' + RtStr('set'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $FN');
+  A('jne .nos');
+  A('push 1');
+  A('push edx');
+  A('push eax');
+  A('push ' + Lv(1));
+  A('push esi');
+  A('call _JSRT_obj_define_acc');
+  A('add esp, 20');
+  A('mov ebx, 1');
+  A('.nos:');
+  A('test ebx, ebx');
+  A('jnz .flags');
+  A('push offset ' + RtStr('value'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('push ' + Lv(1));
+  A('push esi');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('.flags:');
+  A('push ' + Lv(1));
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('mov ecx, dword ptr [eax+4]');
+  A('and ecx, 2');
+  A('mov edx, ' + Lv(2));
+  A('and edx, -3');
+  A('or edx, ecx');
+  A('mov dword ptr [eax+4], edx');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov edx, $OBJ');
+  A('jmp .ret');
+  A('.bad:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  FEnd;
+
+  { Object(valeur) }
+  FBegin('_JSRT_Object_call', 0);
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .new');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('cmp edx, $UNDEF');
+  A('je .new');
+  A('cmp edx, $NULL');
+  A('je .new');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('jmp .ret');
+  A('.new:');
+  A('call _JSRT_obj_new');
+  FEnd;
+
+  { Object.prototype : hasOwnProperty, isPrototypeOf, propertyIsEnumerable, toString, valueOf }
+  FBegin('_JSRT_op_hasOwnProperty', 0);
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .u');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('jmp .k');
+  A('.u:');
+  A('push $UNDEF');
+  A('push 0');
+  A('.k:');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_has_own');
+  A('add esp, 12');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  FBegin('_JSRT_op_propertyIsEnumerable', 0);
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+20], $OBJ');
+  A('jne .r');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .u');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('jmp .k');
+  A('.u:');
+  A('push $UNDEF');
+  A('push 0');
+  A('.k:');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .r');
+  A('test dword ptr [eax+4], 1');
+  A('mov eax, 1');
+  A('jz .r');
+  A('xor eax, eax');
+  A('.r:');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  FBegin('_JSRT_op_isPrototypeOf', 0);
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+20], $OBJ');
+  A('jne .r');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .r');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .r');
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('.w:');
+  A('test esi, esi');
+  A('jz .r');
+  A('cmp esi, dword ptr [ebp+16]');
+  A('je .y');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .w');
+  A('.y:');
+  A('mov eax, 1');
+  A('.r:');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  FBegin('_JSRT_op_toString', 0);
+  A('mov eax, offset ' + RtStr('[object Object]'));
+  A('mov edx, $STR');
+  FEnd;
+
+  FBegin('_JSRT_op_valueOf', 0);
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov edx, dword ptr [ebp+20]');
+  FEnd;
+End;
+
+Procedure RtObjects;
+Begin
+  RtObjCore;
+  RtObjAccess;
+  RtObjNatives;
+End;
+
+{ Object.prototype et la globale Object. }
+Procedure RtObjectProtoMethods;
+  Procedure M(Const name, code: TString; nparams: LongInt);
+  Begin
+    BoAdd(name, RtFuncObj(name, code, nparams), RT_T_FUNCTION);
+  End;
+Begin
+  M('hasOwnProperty', '_JSRT_op_hasOwnProperty', 1);
+  M('isPrototypeOf', '_JSRT_op_isPrototypeOf', 1);
+  M('propertyIsEnumerable', '_JSRT_op_propertyIsEnumerable', 1);
+  M('toString', '_JSRT_op_toString', 0);
+  M('valueOf', '_JSRT_op_valueOf', 0);
+End;
+
+Procedure RtObjectGlobals;
+  Procedure M(Const name, code: TString; nparams: LongInt);
+  Begin
+    BoAdd(name, RtFuncObj(name, code, nparams), RT_T_FUNCTION);
+  End;
+Var
+  props, f_obj: LongInt;
+Begin
+  BoReset;
+  M('keys', '_JSRT_Object_keys', 1);
+  M('values', '_JSRT_Object_values', 1);
+  M('entries', '_JSRT_Object_entries', 1);
+  M('assign', '_JSRT_Object_assign', 2);
+  M('create', '_JSRT_Object_create', 2);
+  M('freeze', '_JSRT_Object_freeze', 1);
+  M('isFrozen', '_JSRT_Object_isFrozen', 1);
+  M('getPrototypeOf', '_JSRT_Object_getPrototypeOf', 1);
+  M('setPrototypeOf', '_JSRT_Object_setPrototypeOf', 2);
+  M('getOwnPropertyNames', '_JSRT_Object_getOwnPropertyNames', 1);
+  M('fromEntries', '_JSRT_Object_fromEntries', 1);
+  M('hasOwn', '_JSRT_Object_hasOwn', 2);
+  M('defineProperty', '_JSRT_Object_defineProperty', 3);
+  BoAdd('prototype', DsymFind(asm_ctx^, '_JSNO_object_proto'), RT_T_OBJECT);
+  props := BoFinish('_JSNO_Object_props', 0);
+  f_obj := RtFuncObjP('Object', '_JSRT_Object_call', 1, props);
+  RtGlobal('Object', f_obj, RT_T_FUNCTION);
 End;
 
 { ---- Assemblage du runtime ---- }
 
 Procedure RtStaticData;
 Var
-  f_log, f_err, f_warn, proto, cons: LongInt;
+  f_log, f_err, f_warn, proto, cons, oproto: LongInt;
 Begin
   RtCString('_JSRT_c_oom', 'JSCW32: memoire epuisee' + #10);
   RtCString('_JSRT_c_notfunc', 'TypeError: la valeur appelee n''est pas une fonction' + #10);
@@ -15606,18 +17602,23 @@ Begin
   RtCString('_JSRT_c_tdz2', ' ne peut pas etre utilise avant son initialisation' + #10);
   RtCString('_JSRT_c_space', ' ');
   RtCString('_JSRT_c_nl', #10);
+  RtCString('_JSRT_c_setundef', 'TypeError: impossible de definir une propriete de null ou undefined' + #10);
   RtCString('_JSRT_c_noiter', 'TypeError: la valeur n''est pas iterable' + #10);
   RtCString('_JSRT_c_setprop', 'TypeError: affectation de propriete non prise en charge pour cet objet' + #10);
   RtCString('_JSRT_c_range', 'RangeError: argument invalide' + #10);
 
   { prototype des chaines : les methodes natives }
   BoReset;
+  RtObjectProtoMethods;
+  oproto := BoFinish('_JSNO_object_proto', 0);
+
+  BoReset;
   RtStringProtoMethods;
-  proto := BoFinish('_JSNO_string_proto', 0);
+  proto := BoFinish('_JSNO_string_proto', oproto);
 
   BoReset;
   RtArrayProtoMethods;
-  BoFinish('_JSNO_array_proto', 0);
+  BoFinish('_JSNO_array_proto', oproto);
 
   f_log := RtFuncObj('log', '_JSRT_console_log', 0);
   f_err := RtFuncObj('error', '_JSRT_console_error', 0);
@@ -15630,6 +17631,7 @@ Begin
   RtGlobal('console', cons, RT_T_OBJECT);
   RtStaticGlobals;
   RtArrayGlobals;
+  RtObjectGlobals;
 End;
 
 Procedure EmitRuntime(Var ctx: TCompilerContext);
@@ -15648,6 +17650,7 @@ Begin
   RtConsoleFn('_JSRT_console_error', '_JSRT_v_stderr');
   RtStringMethods;
   RtArrays;
+  RtObjects;
 End;
 
 { ============================================================
@@ -15968,7 +17971,7 @@ Begin
       Begin
         n := 20;
         s := '';
-        For i := 0 To a3 - 1 Do
+        For i := 0 To Int64(a3) - 1 Do
           Begin
             c := MemRd(a2 + i, 1);
             If c <> 13 Then
