@@ -28,7 +28,7 @@
   20. [IMPLEMENTE] Implementer les expressions regulieres : litteraux /re/flags (g, i, m, ainsi que les flags non standards rencontres dans test03.js), new RegExp(pattern, flags), moteur a backtracking (classes, quantificateurs, groupes, ancres, alternatives), RegExp.test/exec, String.match/matchAll/search/replace/split, lastIndex, avec test19.js.
   21. [IMPLEMENTE] Implementer l'interface console, processus et systeme hote Windows : console.log (plusieurs arguments, nombres entiers/flottants/negatifs, booleens, null, undefined, objets et tableaux), console.error/warn vers stderr, process.stdout.write (sans saut de ligne), process.exit(code), process.argv, alert (comme console.log), prompt (lecture de stdin), imports kernel32 (GetStdHandle, WriteFile, ReadFile, GetCommandLineA, HeapAlloc, ExitProcess), avec hello.js, test12.js et test24.js.
   22. [IMPLEMENTE] Construire le generateur ASM 80386 optionnel : syntaxe assembleur Windows 32 bits (.386, .MODEL FLAT, sections .text/.data/.rdata, EXTERN/PUBLIC), labels stables, commentaires reprenant les lignes JavaScript d'origine, routines runtime appelees par noms stables, emission du .ASM uniquement sur demande explicite de l'utilisateur.
-  23. [A FAIRE] Construire le generateur OBJ COFF i386 : en-tete, sections .text/.data/.rdata/.bss, table de symboles, relocations (REL32/DIR32), symboles externes importes de kernel32, production d'un .OBJ seul quand le parametre le demande, et validation du format avec les outils DUMPBIN.PAS / OBJDUMP.PAS / NM.PAS du depot.
+  23. [IMPLEMENTE] Construire le generateur OBJ COFF i386 : en-tete, sections .text/.data/.rdata/.bss, table de symboles, relocations (REL32/DIR32), symboles externes importes de kernel32, production d'un .OBJ seul quand le parametre le demande, et validation du format avec les outils DUMPBIN.PAS / OBJDUMP.PAS / NM.PAS du depot.
   24. [A FAIRE] Construire le linker PE32 interne : en-tetes MZ/PE, sections alignees, table d'imports kernel32 (et runtime propre), resolution des relocations, point d'entree, sous-systeme console, ecriture du .EXE final par defaut, suppression des anciens .EXE perimes et verification avec DISEXE.PAS.
   25. [A FAIRE] Ajouter le harnais de validation et stabiliser : option -test compilant tous les SAMPLES\JS\* (arrays, classes, control, hello, math, objects, t04_12, t09_15, t09full, test03, test03b, test04, test04b, test09, test10, test10adv, test11, test11adv, test12 a test24), execution des .EXE et comparaison avec les valeurs « attendu » des commentaires, modes EXE / OBJ / ASM+OBJ, nettoyage des artefacts, compatibilite Free Pascal/Turbo Pascal (types bornes, buffers, aucune dependance moderne), diagnostics finaux et documentation d'utilisation.
 }
@@ -28918,6 +28918,1108 @@ Begin
   EmitAsm386 := True;
 End;
 
+{ ---- Generateur OBJ COFF i386 (TODO 23) ----
+
+  Encode l'IR en code machine 80386 (formes courtes comme NASM : imm8, jumps
+  courts relaxes sur plusieurs passes), construit la table des symboles et
+  les relocations (DIR32 pour les adresses absolues, REL32 pour les appels),
+  puis ecrit l'objet : en-tete, sections .text / .rdata / .data / .bss,
+  relocations, symboles (tous externes, imports kernel32 non definis) et
+  table des chaines. L'objet est toujours construit en memoire (le linker
+  PE32 interne l'utilise) ; le fichier .obj n'est ecrit qu'en mode OBJ. }
+
+Const
+  CO_MAX_TEXT = 4194304;
+  CO_MAX_REL = 262144;
+  CO_MAX_LBL = 262144;
+  COFF_DIR32 = 6;
+  COFF_REL32 = 20;
+
+Type
+  TCoRel = Record
+    ofs, typ: LongInt;
+    symkind, sym: LongInt;
+  End;
+
+Var
+  co_text: Array[0..CO_MAX_TEXT - 1] Of Byte;
+  co_len: LongInt;
+  co_rel: Array[1..CO_MAX_REL] Of TCoRel;
+  co_nrel: LongInt;
+  co_lbl: Array[0..CO_MAX_LBL - 1] Of LongInt;
+  co_jlong: Array[1..MAX_INSTR] Of Boolean;
+  co_proc_ofs: Array[1..MAX_XSYMS] Of LongInt;
+  co_final, co_fail: Boolean;
+  co_changed, co_poschg: Boolean;
+  co_pass: LongInt;
+  co_lblpass: Array[0..CO_MAX_LBL - 1] Of SmallInt;
+  co_jofs: Array[1..MAX_INSTR] Of LongInt;
+  co_size: LongInt;                 { taille du fichier ecrit }
+
+Procedure CoB(b: LongInt);
+Begin
+  If co_len >= CO_MAX_TEXT Then
+    Begin
+      co_fail := True;
+      Exit;
+    End;
+  co_text[co_len] := b And 255;
+  Inc(co_len);
+End;
+
+Procedure CoD(v: LongInt);
+Begin
+  CoB(v);
+  CoB(v Shr 8);
+  CoB(v Shr 16);
+  CoB(v Shr 24);
+End;
+
+Procedure CoReloc(typ, symkind, sym: LongInt);
+Begin
+  If Not co_final Then
+    Exit;
+  If co_nrel >= CO_MAX_REL Then
+    Begin
+      co_fail := True;
+      Exit;
+    End;
+  Inc(co_nrel);
+  co_rel[co_nrel].ofs := co_len;
+  co_rel[co_nrel].typ := typ;
+  co_rel[co_nrel].symkind := symkind;
+  co_rel[co_nrel].sym := sym;
+End;
+
+Function CoRegNum(r: TReg): LongInt;
+Begin
+  Case r Of
+    R_EAX, R_AL: CoRegNum := 0;
+    R_ECX, R_CL: CoRegNum := 1;
+    R_EDX, R_DL: CoRegNum := 2;
+    R_EBX, R_BL: CoRegNum := 3;
+    R_ESP: CoRegNum := 4;
+    R_EBP: CoRegNum := 5;
+    R_ESI: CoRegNum := 6;
+    R_EDI: CoRegNum := 7;
+  Else
+    CoRegNum := 0;
+  End;
+End;
+
+Function CoIsReg8(r: TReg): Boolean;
+Begin
+  CoIsReg8 := (r = R_CL) Or (r = R_AL) Or (r = R_DL) Or (r = R_BL);
+End;
+
+Function CoFits8(v: LongInt): Boolean;
+Begin
+  CoFits8 := (v >= -128) And (v <= 127);
+End;
+
+Procedure CoDisp32(Var o: TOperand);
+Begin
+  If o.symkind <> 0 Then
+    CoReloc(COFF_DIR32, o.symkind, o.sym);
+  CoD(o.disp);
+End;
+
+{ Octet ModRM (+ SIB + deplacement) pour un registre ou une operande memoire. }
+Procedure CoModRM(regf: LongInt; Var o: TOperand);
+Var
+  base, idx, t: TReg;
+  md, rm: LongInt;
+  sib: Boolean;
+Begin
+  If o.kind = OD_REG Then
+    Begin
+      CoB($C0 Or (regf Shl 3) Or CoRegNum(o.reg));
+      Exit;
+    End;
+  base := o.base;
+  idx := o.index;
+  If (base = R_NONE) And (idx <> R_NONE) Then
+    Begin
+      base := idx;
+      idx := R_NONE;
+    End;
+  If (idx = R_ESP) And (base <> R_NONE) Then
+    Begin
+      t := base;
+      base := idx;
+      idx := t;
+    End;
+  If base = R_NONE Then
+    Begin
+      CoB((regf Shl 3) Or 5);
+      CoDisp32(o);
+      Exit;
+    End;
+  sib := (idx <> R_NONE) Or (base = R_ESP);
+  If (o.symkind <> 0) Or Not CoFits8(o.disp) Then
+    md := 2
+  Else If (o.disp = 0) And (base <> R_EBP) Then
+    md := 0
+  Else
+    md := 1;
+  If sib Then
+    rm := 4
+  Else
+    rm := CoRegNum(base);
+  CoB((md Shl 6) Or (regf Shl 3) Or rm);
+  If sib Then
+    Begin
+      If idx = R_NONE Then
+        CoB($20 Or CoRegNum(base))
+      Else
+        CoB((CoRegNum(idx) Shl 3) Or CoRegNum(base));
+    End;
+  If md = 1 Then
+    CoB(o.disp)
+  Else If md = 2 Then
+    CoDisp32(o);
+End;
+
+{ Immediat de 32 bits : constante ou adresse de symbole (DIR32). }
+Procedure CoImm32(Var o: TOperand);
+Begin
+  If o.kind = OD_ADDR Then
+    Begin
+      CoReloc(COFF_DIR32, o.symkind, o.sym);
+      CoD(0);
+    End
+  Else
+    CoD(o.disp);
+End;
+
+Function CoIs8(Var o: TOperand): Boolean;
+Begin
+  CoIs8 := ((o.kind = OD_REG) And CoIsReg8(o.reg)) Or
+           ((o.kind = OD_MEM) And (o.size = 1));
+End;
+
+Procedure CoAlu(n: LongInt; Var a, b: TOperand);
+Begin
+  If (b.kind = OD_IMM) Or (b.kind = OD_ADDR) Then
+    Begin
+      If CoIs8(a) Then
+        Begin
+          If (a.kind = OD_REG) And (a.reg = R_AL) Then
+            Begin
+              CoB(n * 8 + 4);
+              CoB(b.disp);
+            End
+          Else
+            Begin
+              CoB($80);
+              CoModRM(n, a);
+              CoB(b.disp);
+            End;
+        End
+      Else If (b.kind = OD_IMM) And CoFits8(b.disp) Then
+        Begin
+          CoB($83);
+          CoModRM(n, a);
+          CoB(b.disp);
+        End
+      Else If (a.kind = OD_REG) And (a.reg = R_EAX) Then
+        Begin
+          CoB(n * 8 + 5);
+          CoImm32(b);
+        End
+      Else
+        Begin
+          CoB($81);
+          CoModRM(n, a);
+          CoImm32(b);
+        End;
+    End
+  Else If b.kind = OD_REG Then
+    Begin
+      If CoIs8(a) Then
+        CoB(n * 8)
+      Else
+        CoB(n * 8 + 1);
+      CoModRM(CoRegNum(b.reg), a);
+    End
+  Else
+    Begin
+      If CoIs8(a) Then
+        CoB(n * 8 + 2)
+      Else
+        CoB(n * 8 + 3);
+      CoModRM(CoRegNum(a.reg), b);
+    End;
+End;
+
+Procedure CoMov(Var a, b: TOperand);
+Begin
+  If a.kind = OD_REG Then
+    Begin
+      If CoIsReg8(a.reg) Then
+        Begin
+          If b.kind = OD_IMM Then
+            Begin
+              CoB($B0 + CoRegNum(a.reg));
+              CoB(b.disp);
+            End
+          Else If b.kind = OD_REG Then
+            Begin
+              CoB($88);
+              CoModRM(CoRegNum(b.reg), a);
+            End
+          Else
+            Begin
+              CoB($8A);
+              CoModRM(CoRegNum(a.reg), b);
+            End;
+        End
+      Else If (b.kind = OD_IMM) Or (b.kind = OD_ADDR) Then
+        Begin
+          CoB($B8 + CoRegNum(a.reg));
+          CoImm32(b);
+        End
+      Else If (b.kind = OD_MEM) And (a.reg = R_EAX) And (b.base = R_NONE) And
+              (b.index = R_NONE) And (b.size <> 1) And (b.size <> 2) Then
+        Begin
+          CoB($A1);
+          CoDisp32(b);
+        End
+      Else If b.kind = OD_REG Then
+        Begin
+          CoB($89);
+          CoModRM(CoRegNum(b.reg), a);
+        End
+      Else
+        Begin
+          CoB($8B);
+          CoModRM(CoRegNum(a.reg), b);
+        End;
+    End
+  Else
+    Begin
+      If (b.kind = OD_REG) And (b.reg = R_EAX) And (a.base = R_NONE) And
+         (a.index = R_NONE) And (a.size <> 1) And (a.size <> 2) Then
+        Begin
+          CoB($A3);
+          CoDisp32(a);
+        End
+      Else If (b.kind = OD_IMM) Or (b.kind = OD_ADDR) Then
+        Begin
+          If a.size = 1 Then
+            Begin
+              CoB($C6);
+              CoModRM(0, a);
+              CoB(b.disp);
+            End
+          Else
+            Begin
+              CoB($C7);
+              CoModRM(0, a);
+              CoImm32(b);
+            End;
+        End
+      Else If CoIsReg8(b.reg) Then
+        Begin
+          CoB($88);
+          CoModRM(CoRegNum(b.reg), a);
+        End
+      Else
+        Begin
+          CoB($89);
+          CoModRM(CoRegNum(b.reg), a);
+        End;
+    End;
+End;
+
+Function CoFpSize(Var o: TOperand): LongInt;
+Begin
+  If o.size = 4 Then
+    CoFpSize := 4
+  Else
+    CoFpSize := 8;
+End;
+
+{ Operation x87 a un operande : memoire (m32 / m64) ou st(i). }
+Procedure CoFpArith(ext: LongInt; Var a: TOperand);
+Begin
+  If a.kind = OD_IMM Then
+    Begin
+      If (a.disp = 0) And (ext < 2) Then
+        CoB($DC)
+      Else
+        CoB($D8);
+      CoB($C0 + ext * 8 + a.disp);
+    End
+  Else
+    Begin
+      If CoFpSize(a) = 4 Then
+        CoB($D8)
+      Else
+        CoB($DC);
+      CoModRM(ext, a);
+    End;
+End;
+
+Procedure CoFp2(b1, b2: LongInt);
+Begin
+  CoB(b1);
+  CoB(b2);
+End;
+
+Procedure CoFp(Var ins: TInstr);
+Begin
+  Case ins.op Of
+    OP_FLD:
+      If ins.a.kind = OD_IMM Then
+        CoFp2($D9, $C0 + ins.a.disp)
+      Else
+        Begin
+          If CoFpSize(ins.a) = 4 Then
+            CoB($D9)
+          Else
+            CoB($DD);
+          CoModRM(0, ins.a);
+        End;
+    OP_FILD:
+      Begin
+        If ins.a.size = 2 Then
+          Begin
+            CoB($DF);
+            CoModRM(0, ins.a);
+          End
+        Else If ins.a.size = 8 Then
+          Begin
+            CoB($DF);
+            CoModRM(5, ins.a);
+          End
+        Else
+          Begin
+            CoB($DB);
+            CoModRM(0, ins.a);
+          End;
+      End;
+    OP_FST, OP_FSTP:
+      Begin
+        If CoFpSize(ins.a) = 4 Then
+          CoB($D9)
+        Else
+          CoB($DD);
+        If ins.op = OP_FST Then
+          CoModRM(2, ins.a)
+        Else
+          CoModRM(3, ins.a);
+      End;
+    OP_FISTP:
+      Begin
+        If ins.a.size = 2 Then
+          Begin
+            CoB($DF);
+            CoModRM(3, ins.a);
+          End
+        Else If ins.a.size = 8 Then
+          Begin
+            CoB($DF);
+            CoModRM(7, ins.a);
+          End
+        Else
+          Begin
+            CoB($DB);
+            CoModRM(3, ins.a);
+          End;
+      End;
+    OP_FADD:  CoFpArith(0, ins.a);
+    OP_FMUL:  CoFpArith(1, ins.a);
+    OP_FSUB:  CoFpArith(4, ins.a);
+    OP_FSUBR: CoFpArith(5, ins.a);
+    OP_FDIV:  CoFpArith(6, ins.a);
+    OP_FDIVR: CoFpArith(7, ins.a);
+    OP_FADDP:  CoFp2($DE, $C1);
+    OP_FMULP:  CoFp2($DE, $C9);
+    OP_FSUBRP: CoFp2($DE, $E1);
+    OP_FSUBP:  CoFp2($DE, $E9);
+    OP_FDIVRP: CoFp2($DE, $F1);
+    OP_FDIVP:  CoFp2($DE, $F9);
+    OP_FCHS:   CoFp2($D9, $E0);
+    OP_FABS:   CoFp2($D9, $E1);
+    OP_FSQRT:  CoFp2($D9, $FA);
+    OP_FXCH:
+      If ins.a.kind = OD_IMM Then
+        CoFp2($D9, $C8 + ins.a.disp)
+      Else
+        CoFp2($D9, $C9);
+    OP_FLD1:   CoFp2($D9, $E8);
+    OP_FLDZ:   CoFp2($D9, $EE);
+    OP_FLDPI:  CoFp2($D9, $EB);
+    OP_FLDLN2: CoFp2($D9, $ED);
+    OP_FLDL2E: CoFp2($D9, $EA);
+    OP_FLDLG2: CoFp2($D9, $EC);
+    OP_FYL2X:  CoFp2($D9, $F1);
+    OP_F2XM1:  CoFp2($D9, $F0);
+    OP_FSCALE: CoFp2($D9, $FD);
+    OP_FPREM:  CoFp2($D9, $F8);
+    OP_FRNDINT: CoFp2($D9, $FC);
+    OP_FSIN:   CoFp2($D9, $FE);
+    OP_FCOS:   CoFp2($D9, $FF);
+    OP_FPATAN: CoFp2($D9, $F3);
+    OP_FCOMPP: CoFp2($DE, $D9);
+    OP_FTST:   CoFp2($D9, $E4);
+    OP_FNSTSW: CoFp2($DF, $E0);
+    OP_FNSTCW: Begin CoB($D9); CoModRM(7, ins.a); End;
+    OP_FLDCW:  Begin CoB($D9); CoModRM(5, ins.a); End;
+    OP_FPOP:   CoFp2($DD, $D8);
+  End;
+End;
+
+Function CoCond(op: TOpc): LongInt;
+Begin
+  Case op Of
+    OP_JO: CoCond := 0;
+    OP_JNO: CoCond := 1;
+    OP_JB: CoCond := 2;
+    OP_JAE: CoCond := 3;
+    OP_JE: CoCond := 4;
+    OP_JNE: CoCond := 5;
+    OP_JBE: CoCond := 6;
+    OP_JA: CoCond := 7;
+    OP_JS: CoCond := 8;
+    OP_JNS: CoCond := 9;
+    OP_JL: CoCond := 12;
+    OP_JGE: CoCond := 13;
+    OP_JLE: CoCond := 14;
+    OP_JG: CoCond := 15;
+  Else
+    CoCond := -1;
+  End;
+End;
+
+{ Saut vers une etiquette : forme courte tant qu'elle atteint sa cible. Une
+  cible deja placee dans la passe courante est exacte ; pour une cible en avant,
+  l'ecart de la passe precedente (sous-estimation) decide du passage a la
+  forme longue, qui est definitif. }
+Procedure CoJump(idx: LongInt; Var ins: TInstr);
+Var
+  cc, target, d, prev: LongInt;
+Begin
+  cc := CoCond(ins.op);
+  target := co_lbl[ins.a.disp];
+  prev := co_jofs[idx];
+  co_jofs[idx] := co_len;
+  If Not co_jlong[idx] Then
+    Begin
+      If co_lblpass[ins.a.disp] = co_pass Then
+        d := target - (co_len + 2)
+      Else If prev < 0 Then
+        d := 0
+      Else
+        d := target - (prev + 2);
+      If Not CoFits8(d) Then
+        Begin
+          co_jlong[idx] := True;
+          co_changed := True;
+        End;
+    End;
+  If target < 0 Then
+    target := co_len + 2;
+  If Not co_jlong[idx] Then
+    Begin
+      If cc < 0 Then
+        CoB($EB)
+      Else
+        CoB($70 + cc);
+      CoB(target - (co_len + 1));
+    End
+  Else If cc < 0 Then
+    Begin
+      CoB($E9);
+      CoD(target - (co_len + 4));
+    End
+  Else
+    Begin
+      CoB($0F);
+      CoB($80 + cc);
+      CoD(target - (co_len + 4));
+    End;
+End;
+
+Procedure CoShift(n: LongInt; Var a, b: TOperand);
+Begin
+  If b.kind = OD_REG Then
+    Begin
+      CoB($D3);
+      CoModRM(n, a);
+    End
+  Else If b.disp = 1 Then
+    Begin
+      CoB($D1);
+      CoModRM(n, a);
+    End
+  Else
+    Begin
+      CoB($C1);
+      CoModRM(n, a);
+      CoB(b.disp);
+    End;
+End;
+
+Procedure CoInstr(Var ctx: TCompilerContext; idx: LongInt);
+Var
+  ins: ^TInstr;
+Begin
+  ins := @ctx.ir.instrs[idx];
+  Case ins^.op Of
+    OP_NONE, OP_COMMENT, OP_ENDP: ;
+    OP_LABEL:
+      Begin
+        If co_lbl[ins^.a.disp] <> co_len Then
+          co_poschg := True;
+        co_lbl[ins^.a.disp] := co_len;
+        co_lblpass[ins^.a.disp] := co_pass;
+      End;
+    OP_PROC:
+      co_proc_ofs[ins^.a.sym] := co_len;
+    OP_MOV: CoMov(ins^.a, ins^.b);
+    OP_ADD: CoAlu(0, ins^.a, ins^.b);
+    OP_OR:  CoAlu(1, ins^.a, ins^.b);
+    OP_AND: CoAlu(4, ins^.a, ins^.b);
+    OP_SUB: CoAlu(5, ins^.a, ins^.b);
+    OP_XOR: CoAlu(6, ins^.a, ins^.b);
+    OP_CMP: CoAlu(7, ins^.a, ins^.b);
+    OP_LEA:
+      Begin
+        CoB($8D);
+        CoModRM(CoRegNum(ins^.a.reg), ins^.b);
+      End;
+    OP_PUSH:
+      Begin
+        If ins^.a.kind = OD_REG Then
+          CoB($50 + CoRegNum(ins^.a.reg))
+        Else If ins^.a.kind = OD_ADDR Then
+          Begin
+            CoB($68);
+            CoImm32(ins^.a);
+          End
+        Else If ins^.a.kind = OD_IMM Then
+          Begin
+            If CoFits8(ins^.a.disp) Then
+              Begin
+                CoB($6A);
+                CoB(ins^.a.disp);
+              End
+            Else
+              Begin
+                CoB($68);
+                CoD(ins^.a.disp);
+              End;
+          End
+        Else
+          Begin
+            CoB($FF);
+            CoModRM(6, ins^.a);
+          End;
+      End;
+    OP_POP:
+      CoB($58 + CoRegNum(ins^.a.reg));
+    OP_TEST:
+      Begin
+        If ins^.b.kind = OD_REG Then
+          Begin
+            If CoIs8(ins^.a) Then
+              CoB($84)
+            Else
+              CoB($85);
+            CoModRM(CoRegNum(ins^.b.reg), ins^.a);
+          End
+        Else If CoIs8(ins^.a) Then
+          Begin
+            CoB($F6);
+            CoModRM(0, ins^.a);
+            CoB(ins^.b.disp);
+          End
+        Else If (ins^.a.kind = OD_REG) And (ins^.a.reg = R_EAX) Then
+          Begin
+            CoB($A9);
+            CoD(ins^.b.disp);
+          End
+        Else
+          Begin
+            CoB($F7);
+            CoModRM(0, ins^.a);
+            CoD(ins^.b.disp);
+          End;
+      End;
+    OP_INC, OP_DEC:
+      Begin
+        If ins^.a.kind = OD_REG Then
+          Begin
+            If ins^.op = OP_INC Then
+              CoB($40 + CoRegNum(ins^.a.reg))
+            Else
+              CoB($48 + CoRegNum(ins^.a.reg));
+          End
+        Else
+          Begin
+            If CoIs8(ins^.a) Then
+              CoB($FE)
+            Else
+              CoB($FF);
+            If ins^.op = OP_INC Then
+              CoModRM(0, ins^.a)
+            Else
+              CoModRM(1, ins^.a);
+          End;
+      End;
+    OP_NOT: Begin CoB($F7); CoModRM(2, ins^.a); End;
+    OP_NEG: Begin CoB($F7); CoModRM(3, ins^.a); End;
+    OP_DIV: Begin CoB($F7); CoModRM(6, ins^.a); End;
+    OP_IDIV: Begin CoB($F7); CoModRM(7, ins^.a); End;
+    OP_IMUL:
+      Begin
+        If ins^.b.kind = OD_IMM Then
+          Begin
+            If CoFits8(ins^.b.disp) Then
+              Begin
+                CoB($6B);
+                CoModRM(CoRegNum(ins^.a.reg), ins^.a);
+                CoB(ins^.b.disp);
+              End
+            Else
+              Begin
+                CoB($69);
+                CoModRM(CoRegNum(ins^.a.reg), ins^.a);
+                CoD(ins^.b.disp);
+              End;
+          End
+        Else
+          Begin
+            CoB($0F);
+            CoB($AF);
+            CoModRM(CoRegNum(ins^.a.reg), ins^.b);
+          End;
+      End;
+    OP_SHL: CoShift(4, ins^.a, ins^.b);
+    OP_SHR: CoShift(5, ins^.a, ins^.b);
+    OP_SAR: CoShift(7, ins^.a, ins^.b);
+    OP_MOVZX:
+      Begin
+        CoB($0F);
+        If (ins^.b.kind = OD_MEM) And (ins^.b.size = 2) Then
+          CoB($B7)
+        Else
+          CoB($B6);
+        CoModRM(CoRegNum(ins^.a.reg), ins^.b);
+      End;
+    OP_CDQ: CoB($99);
+    OP_LEAVE: CoB($C9);
+    OP_RET: CoB($C3);
+    OP_NOP: CoB($90);
+    OP_REP_MOVSB: CoFp2($F3, $A4);
+    OP_CALL:
+      Begin
+        If ins^.a.kind = OD_ADDR Then
+          Begin
+            CoB($E8);
+            CoReloc(COFF_REL32, ins^.a.symkind, ins^.a.sym);
+            CoD(0);
+          End
+        Else
+          Begin
+            CoB($FF);
+            CoModRM(2, ins^.a);
+          End;
+      End;
+    OP_JMP:
+      Begin
+        If ins^.a.kind = OD_LABEL Then
+          CoJump(idx, ins^)
+        Else
+          Begin
+            CoB($FF);
+            CoModRM(4, ins^.a);
+          End;
+      End;
+    OP_JE, OP_JNE, OP_JB, OP_JAE, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JA, OP_JBE,
+    OP_JO, OP_JNO, OP_JS, OP_JNS:
+      CoJump(idx, ins^);
+  Else
+    Begin
+      If ins^.op >= OP_FLD Then
+        CoFp(ins^)
+      Else
+        Begin
+          co_fail := True;
+          PipelineError(ctx, 'instruction non encodable: ' + OpName(ins^.op));
+        End;
+    End;
+  End;
+End;
+
+Procedure CoPass(Var ctx: TCompilerContext);
+Var
+  i: LongInt;
+Begin
+  co_len := 0;
+  co_nrel := 0;
+  co_changed := False;
+  co_poschg := False;
+  Inc(co_pass);
+  For i := 1 To ctx.ir.count Do
+    Begin
+      CoInstr(ctx, i);
+      If co_fail Then
+        Exit;
+    End;
+End;
+
+{ ---- Ecriture de l'objet ---- }
+
+Var
+  co_out: Array[0..CO_MAX_TEXT * 3 - 1] Of Byte;
+  co_olen: LongInt;
+
+Procedure OB(b: LongInt);
+Begin
+  co_out[co_olen] := b And 255;
+  Inc(co_olen);
+End;
+
+Procedure OW(v: LongInt);
+Begin
+  OB(v);
+  OB(v Shr 8);
+End;
+
+Procedure OD(v: LongInt);
+Begin
+  OB(v);
+  OB(v Shr 8);
+  OB(v Shr 16);
+  OB(v Shr 24);
+End;
+
+Procedure OBytes(Var src; n: LongInt);
+Begin
+  Move(src, co_out[co_olen], n);
+  Inc(co_olen, n);
+End;
+
+Const
+  CO_NSEC = 4;
+  CO_S_TEXT = 1;
+  CO_S_RDATA = 2;
+  CO_S_DATA = 3;
+  CO_S_BSS = 4;
+
+Var
+  co_str: Array[0..524287] Of Byte;     { table des chaines (sans les 4 octets de taille) }
+  co_strlen: LongInt;
+  co_dsym_idx: Array[1..MAX_DSYMS] Of LongInt;
+  co_xsym_idx: Array[1..MAX_XSYMS] Of LongInt;
+  co_nsyms: LongInt;
+  co_symrec: Array[1..MAX_DSYMS + MAX_XSYMS] Of Record
+    name: String[100];
+    value: LongInt;
+    sec: LongInt;
+    typ: LongInt;
+  End;
+
+Procedure CoAddSym(Const nm: String; value, sec, typ: LongInt; Var idx: LongInt);
+Begin
+  Inc(co_nsyms);
+  co_symrec[co_nsyms].name := nm;
+  co_symrec[co_nsyms].value := value;
+  co_symrec[co_nsyms].sec := sec;
+  co_symrec[co_nsyms].typ := typ;
+  idx := co_nsyms - 1;
+End;
+
+Function CoSecChars(s: LongInt): LongInt;
+Begin
+  Case s Of
+    CO_S_TEXT:  CoSecChars := $60500020;
+    CO_S_RDATA: CoSecChars := $40300040;
+    CO_S_DATA:  CoSecChars := LongInt($C0300040);
+  Else
+    CoSecChars := LongInt($C0300080);
+  End;
+End;
+
+Procedure CoSecName(nm: String);
+Var
+  i: LongInt;
+Begin
+  For i := 1 To 8 Do
+    If i <= Length(nm) Then
+      OB(Ord(nm[i]))
+    Else
+      OB(0);
+End;
+
+Function CoRelSymIndex(Var r: TCoRel): LongInt;
+Begin
+  If r.symkind = SYMK_D Then
+    CoRelSymIndex := co_dsym_idx[r.sym]
+  Else
+    CoRelSymIndex := co_xsym_idx[r.sym];
+End;
+
+{ Construit l'objet complet dans co_out. }
+Function BuildObj(Var ctx: TCompilerContext): Boolean;
+Var
+  i, j, k, raw_off, rel_off, sym_off, passes: LongInt;
+  rsz, dsz: LongInt;
+  nm: String;
+  sec_raw, sec_rel, sec_nrel, sec_size: Array[1..CO_NSEC] Of LongInt;
+  sec_ovf: Array[1..CO_NSEC] Of Boolean;
+Begin
+  BuildObj := False;
+  co_fail := False;
+  For i := 1 To ctx.ir.count Do
+    co_jlong[i] := False;
+  FillChar(co_lbl, SizeOf(co_lbl), $FF);
+  FillChar(co_lblpass, SizeOf(co_lblpass), 0);
+  FillChar(co_jofs, SizeOf(co_jofs), $FF);
+  co_pass := 0;
+  For i := 1 To ctx.ir.count Do
+    If (ctx.ir.instrs[i].a.kind = OD_LABEL) And
+       (ctx.ir.instrs[i].a.disp >= CO_MAX_LBL) Then
+      Begin
+        PipelineError(ctx, 'trop d''etiquettes');
+        Exit;
+      End;
+  { passes de dimensionnement des sauts, puis passe finale avec relocations }
+  co_final := False;
+  passes := 0;
+  Repeat
+    CoPass(ctx);
+    Inc(passes);
+    If ctx.options.verbose Then
+      Begin
+        k := 0;
+        For i := 1 To ctx.ir.count Do
+          If co_jlong[i] Then
+            Inc(k);
+        Writeln('  passe ', passes, ' : ', co_len, ' octets, ', k, ' sauts longs');
+      End;
+  Until co_fail Or ((Not co_changed) And (Not co_poschg)) Or (passes > 60);
+  If co_fail Then
+    Begin
+      If ctx.errors = 0 Then
+        PipelineError(ctx, 'code machine trop volumineux');
+      Exit;
+    End;
+  co_final := True;
+  CoPass(ctx);
+  If ctx.options.verbose Then
+    Begin
+      k := 0;
+      For i := 1 To ctx.ir.count Do
+        If co_jlong[i] Then
+          Inc(k);
+      Writeln('  sauts longs: ', k, ' apres ', passes, ' passes');
+    End;
+  If co_fail Then
+    Begin
+      If ctx.errors = 0 Then
+        PipelineError(ctx, 'trop de relocations ou code trop volumineux');
+      Exit;
+    End;
+  rsz := ctx.data.rd_size;
+  dsz := ctx.data.dt_size;
+  { table des symboles : donnees, procedures, externes }
+  co_nsyms := 0;
+  For i := 1 To ctx.data.sym_count Do
+    Begin
+      If ctx.data.syms[i].sec = SEC_RDATA Then
+        k := CO_S_RDATA
+      Else
+        k := CO_S_DATA;
+      CoAddSym(ctx.data.syms[i].name, ctx.data.syms[i].ofs, k, 0, co_dsym_idx[i]);
+    End;
+  For i := 1 To ctx.ir.xsym_count Do
+    Begin
+      If ctx.ir.xsyms[i].defined Then
+        CoAddSym(ctx.ir.xsyms[i].name, co_proc_ofs[i], CO_S_TEXT, $20, co_xsym_idx[i])
+      Else If DsymFind(ctx, ctx.ir.xsyms[i].name) <> 0 Then
+        co_xsym_idx[i] := co_dsym_idx[DsymFind(ctx, ctx.ir.xsyms[i].name)]
+      Else
+        CoAddSym(ctx.ir.xsyms[i].name, 0, 0, 0, co_xsym_idx[i]);
+    End;
+  { dimensions et relocations par section }
+  sec_size[CO_S_TEXT] := co_len;
+  sec_size[CO_S_RDATA] := rsz;
+  sec_size[CO_S_DATA] := dsz;
+  sec_size[CO_S_BSS] := 0;
+  For i := 1 To CO_NSEC Do
+    sec_nrel[i] := 0;
+  sec_nrel[CO_S_TEXT] := co_nrel;
+  For i := 1 To ctx.data.reloc_count Do
+    If ctx.data.relocs[i].sec = SEC_RDATA Then
+      Inc(sec_nrel[CO_S_RDATA])
+    Else
+      Inc(sec_nrel[CO_S_DATA]);
+  For i := 1 To CO_NSEC Do
+    sec_ovf[i] := sec_nrel[i] > 65534;
+  { disposition du fichier }
+  raw_off := 20 + 40 * CO_NSEC;
+  sec_raw[CO_S_TEXT] := raw_off;
+  raw_off := raw_off + co_len;
+  sec_raw[CO_S_RDATA] := raw_off;
+  raw_off := raw_off + rsz;
+  sec_raw[CO_S_DATA] := raw_off;
+  raw_off := raw_off + dsz;
+  sec_raw[CO_S_BSS] := 0;
+  rel_off := raw_off;
+  For i := 1 To CO_NSEC Do
+    If sec_nrel[i] > 0 Then
+      Begin
+        sec_rel[i] := rel_off;
+        rel_off := rel_off + 10 * sec_nrel[i];
+        If sec_ovf[i] Then
+          rel_off := rel_off + 10;
+      End
+    Else
+      sec_rel[i] := 0;
+  sym_off := rel_off;
+  { ecriture : en-tete, sections }
+  co_olen := 0;
+  OW($14C);
+  OW(CO_NSEC);
+  OD(0);
+  OD(sym_off);
+  OD(co_nsyms);
+  OW(0);
+  OW(0);
+  For i := 1 To CO_NSEC Do
+    Begin
+      Case i Of
+        CO_S_TEXT: CoSecName('.text');
+        CO_S_RDATA: CoSecName('.rdata');
+        CO_S_DATA: CoSecName('.data');
+      Else
+        CoSecName('.bss');
+      End;
+      OD(0);
+      OD(0);
+      OD(sec_size[i]);
+      OD(sec_raw[i]);
+      OD(sec_rel[i]);
+      OD(0);
+      If sec_ovf[i] Then
+        OW(65535)
+      Else
+        OW(sec_nrel[i]);
+      OW(0);
+      If sec_ovf[i] Then
+        OD(CoSecChars(i) Or $01000000)
+      Else
+        OD(CoSecChars(i));
+    End;
+  OBytes(co_text[0], co_len);
+  OBytes(ctx.data.rd[0], rsz);
+  OBytes(ctx.data.dt[0], dsz);
+  { relocations }
+  If sec_nrel[CO_S_TEXT] > 0 Then
+    Begin
+      If sec_ovf[CO_S_TEXT] Then
+        Begin
+          OD(sec_nrel[CO_S_TEXT] + 1);
+          OD(0);
+          OW(0);
+        End;
+      For i := 1 To co_nrel Do
+        Begin
+          OD(co_rel[i].ofs);
+          OD(CoRelSymIndex(co_rel[i]));
+          OW(co_rel[i].typ);
+        End;
+    End;
+  For k := CO_S_RDATA To CO_S_DATA Do
+    If sec_nrel[k] > 0 Then
+      Begin
+        If sec_ovf[k] Then
+          Begin
+            OD(sec_nrel[k] + 1);
+            OD(0);
+            OW(0);
+          End;
+        For i := 1 To ctx.data.reloc_count Do
+          If ((k = CO_S_RDATA) And (ctx.data.relocs[i].sec = SEC_RDATA)) Or
+             ((k = CO_S_DATA) And (ctx.data.relocs[i].sec <> SEC_RDATA)) Then
+            Begin
+              OD(ctx.data.relocs[i].ofs);
+              If ctx.data.relocs[i].tkind = SYMK_D Then
+                OD(co_dsym_idx[ctx.data.relocs[i].target])
+              Else
+                OD(co_xsym_idx[ctx.data.relocs[i].target]);
+              OW(COFF_DIR32);
+            End;
+      End;
+  { symboles et table des chaines }
+  co_strlen := 0;
+  For i := 1 To co_nsyms Do
+    Begin
+      nm := co_symrec[i].name;
+      If Length(nm) <= 8 Then
+        Begin
+          For j := 1 To 8 Do
+            If j <= Length(nm) Then
+              OB(Ord(nm[j]))
+            Else
+              OB(0);
+        End
+      Else
+        Begin
+          OD(0);
+          OD(co_strlen + 4);
+          For j := 1 To Length(nm) Do
+            Begin
+              co_str[co_strlen] := Ord(nm[j]);
+              Inc(co_strlen);
+            End;
+          co_str[co_strlen] := 0;
+          Inc(co_strlen);
+        End;
+      OD(co_symrec[i].value);
+      OW(co_symrec[i].sec);
+      OW(co_symrec[i].typ);
+      OB(2);
+      OB(0);
+    End;
+  OD(co_strlen + 4);
+  OBytes(co_str[0], co_strlen);
+  co_size := co_olen;
+  BuildObj := True;
+End;
+
+Function EmitObjCoff(Var ctx: TCompilerContext): Boolean;
+Var
+  f: File;
+  io: Integer;
+Begin
+  EmitObjCoff := False;
+  If Not BuildObj(ctx) Then
+    Exit;
+  If ctx.options.verbose Then
+    Writeln('  OBJ: ', co_len, ' octets de code, ', co_nrel, ' relocations de code, ',
+            co_nsyms, ' symboles, ', co_size, ' octets');
+  If ArtifactIsPersisted(ctx, AK_OBJ_COFF) Then
+    Begin
+      Assign(f, NormalizePath(ctx.obj_name));
+      Rewrite(f, 1);
+      io := IOResult;
+      If io <> 0 Then
+        Begin
+          PipelineError(ctx, 'impossible de creer le fichier ' + ctx.obj_name);
+          Exit;
+        End;
+      BlockWrite(f, co_out, co_size);
+      Close(f);
+      io := IOResult;
+    End;
+  EmitObjCoff := True;
+End;
+
 Function RunStage(Var ctx: TCompilerContext; stage: TCompileStage): Boolean;
 Var
   ok: Boolean;
@@ -28950,6 +30052,8 @@ Begin
       End;
     CS_EMIT_ASM386:
       RunStage := EmitAsm386(ctx);
+    CS_BUILD_OBJ:
+      RunStage := EmitObjCoff(ctx);
     CS_ANALYZE:
       Begin
         ok := AnalyzeProgram(ctx);
