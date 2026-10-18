@@ -334,7 +334,7 @@ Const
     'length', 'prototype', 'constructor', 'name', 'message', 'toString',
     'valueOf'
   );
-  RT_DATA_VAR_COUNT = 18;
+  RT_DATA_VAR_COUNT = 21;
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
@@ -354,9 +354,16 @@ Const
   JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
-    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp'
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree'
   );
-  BUILTIN_COUNT = 54;
+  PRELUDE_ALIAS_COUNT = 22;
+  PreludeAliases: Array[1..PRELUDE_ALIAS_COUNT] Of String[20] = (
+    'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol', 'Date', 'Promise', 'BigInt',
+    'setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval',
+    'clearImmediate', 'queueMicrotask', 'require', 'eval', 'module', 'exports',
+    'structuredClone', 'AggregateError', 'TextEncoder'
+  );
+  BUILTIN_COUNT = 59;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -366,7 +373,8 @@ Const
     'decodeURIComponent', 'encodeURIComponent', 'exports', 'globalThis',
     'isFinite', 'isNaN', 'module', 'parseFloat', 'parseInt', 'process',
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
-    '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write'
+    '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
+    '__invoke', '__fproto', '__gen_resume', '__gen_done'
   );
 
 Type
@@ -1261,7 +1269,7 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 352;
+  PRELUDE_LINES = 603;
   PreludeText: Array[1..PRELUDE_LINES] Of String[160] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -1462,6 +1470,9 @@ Const
     '  var isFn = typeof v === ''function'';',
     '  var isRx = !isFn && !isArr && v instanceof RegExp;',
     '  var isErr = !isFn && !isArr && !isRx && v instanceof Error;',
+    '  var isMap = !isFn && !isArr && !isRx && !isErr && v instanceof __Map;',
+    '  var isSet = !isFn && !isArr && !isRx && !isErr && !isMap && v instanceof __Set;',
+    '  var isWeak = !isFn && !isArr && (v instanceof __WeakMap || v instanceof __WeakSet);',
     '  var cname = isArr ? ''Array'' : __i_cname(v);',
     '  var ex = isArr ? __extras(v) : undefined;',
     '  var keys = isArr ? (ex ? Object.keys(ex) : []) : __i_order(Object.keys(v));',
@@ -1481,6 +1492,11 @@ Const
     '  } else if (isErr) {',
     '    base = __i_errbase(v, ctx);',
     '    if (keys.length === 0) return base;',
+    '  } else if (isMap || isSet) {',
+    '    b0 = cname + ''('' + v[''\x01n''] + '') {'';',
+    '    if (keys.length === 0 && v[''\x01n''] === 0) return b0 + ''}'';',
+    '  } else if (isWeak) {',
+    '    return cname + '' { <items unknown> }'';',
     '  } else {',
     '    if (cname === null) b0 = ''[Object: null prototype] {'';',
     '    else if (cname !== ''Object'') b0 = cname + '' {'';',
@@ -1503,6 +1519,17 @@ Const
     '    if (n > lim) out.push(''... '' + (n - lim) + '' more item'' + (n - lim > 1 ? ''s'' : ''''));',
     '    for (i = 0; i < keys.length; i++) out.push(__i_prop(ex, keys[i], ctx, rt));',
     '  } else {',
+    '    if (isMap || isSet) {',
+    '      var ks = v[''\x01k''];',
+    '      for (i = 0; i < ks.length; i++) {',
+    '        if (ks[i] === __TOMB) continue;',
+    '        ctx.ind += 2;',
+    '        var e = __i_fmt(ks[i], ctx, rt);',
+    '        if (isMap) e += '' => '' + __i_fmt(v[''\x01v''][i], ctx, rt);',
+    '        ctx.ind -= 2;',
+    '        out.push(e);',
+    '      }',
+    '    }',
     '    for (i = 0; i < keys.length; i++) out.push(__i_prop(v, keys[i], ctx, rt));',
     '  }',
     '  ctx.seen.pop();',
@@ -1516,6 +1543,7 @@ Const
     'function __i_fmt(v, ctx, rt) {',
     '  var t = typeof v;',
     '  if (t === ''string'') return __i_qstr(v, ctx);',
+    '  if (t === ''symbol'') return __sym_str(v);',
     '  if (t === ''number'') return (v === 0 && 1 / v < 0) ? ''-0'' : String(v);',
     '  if (t !== ''object'' && t !== ''function'') return String(v);',
     '  if (v === null) return ''null'';',
@@ -1614,7 +1642,238 @@ Const
     '    __setgrp(1);',
     '  }',
     '}',
-    'var __i_g;'
+    'var __i_g;',
+    'var __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
+    'function __mk(k) {',
+    '  var t = typeof k;',
+    '  if (t === ''string'') return ''s'' + k;',
+    '  if (t === ''number'') return ''n'' + String(k);',
+    '  if (t === ''object'' || t === ''function'') return k === null ? ''l'' : ''o'' + __ptr(k);',
+    '  if (t === ''symbol'') return ''y'' + k;',
+    '  return t.charAt(0) + String(k);',
+    '}',
+    'function __mkiter(next) {',
+    '  var it = Object.create(__IterProto);',
+    '  it[''\x01n''] = next;',
+    '  return it;',
+    '}',
+    'function __sym_desc(s) {',
+    '  var e = s.indexOf(''\x02'');',
+    '  return s.slice(1, e < 0 ? s.length : e);',
+    '}',
+    'function __sym_str(s) {',
+    '  return ''Symbol('' + __sym_desc(s) + '')'';',
+    '}',
+    'function __i_init() {',
+    '  var FP = __fproto();',
+    '  FP.call = function (t, ...a) { return __invoke(this, t, a); };',
+    '  FP.apply = function (t, a) { return __invoke(this, t, a === undefined || a === null ? [] : a); };',
+    '  FP.bind = function (t, ...a) {',
+    '    var f = this;',
+    '    return function (...b) { return __invoke(f, t, a.concat(b)); };',
+    '  };',
+    '  FP.toString = function () { return ''function '' + this.name + ''() { [native code] }''; };',
+    '  __IterProto = {',
+    '    next: function () { return this[''\x01n''](); },',
+    '    toString: function () { return ''[object Iterator]''; }',
+    '  };',
+    '  __IterProto[''\x01Symbol.iterator\x02''] = function () { return this; };',
+    '  __Symbol = function Symbol(desc) {',
+    '    __sym_n = (__sym_n || 0) + 1;',
+    '    return ''\x01'' + (desc === undefined ? '''' : String(desc)) + ''\x02'' + __sym_n;',
+    '  };',
+    '  __Symbol.iterator = ''\x01Symbol.iterator\x02'';',
+    '  __Symbol.asyncIterator = ''\x01Symbol.asyncIterator\x02'';',
+    '  __Symbol.hasInstance = ''\x01Symbol.hasInstance\x02'';',
+    '  __Symbol.toPrimitive = ''\x01Symbol.toPrimitive\x02'';',
+    '  __Symbol.toStringTag = ''\x01Symbol.toStringTag\x02'';',
+    '  __Symbol[''for''] = function (key) {',
+    '    __sym_reg = __sym_reg || {};',
+    '    var k = String(key);',
+    '    if (__sym_reg[k] === undefined) __sym_reg[k] = ''\x01'' + k + ''\x02'';',
+    '    return __sym_reg[k];',
+    '  };',
+    '  __Symbol.keyFor = function (s) {',
+    '    var d = __sym_desc(s);',
+    '    return __sym_reg && __sym_reg[d] === s ? d : undefined;',
+    '  };',
+    '  var SI = ''\x01Symbol.iterator\x02'';',
+    '  __GenProto = {',
+    '    next: function (v) { var x = __gen_resume(this, 0, v); return { value: x, done: __gen_done(this) }; },',
+    '    ''return'': function (v) { var x = __gen_resume(this, 2, v); return { value: x, done: true }; },',
+    '    ''throw'': function (e) { var x = __gen_resume(this, 1, e); return { value: x, done: __gen_done(this) }; },',
+    '    toString: function () { return ''[object Generator]''; }',
+    '  };',
+    '  __GenProto[SI] = function () { return this; };',
+    '  var TOMB = {};',
+    '  __TOMB = TOMB;',
+    '  __Map = class Map {',
+    '    constructor(iterable) {',
+    '      this[''\x01k''] = [];',
+    '      this[''\x01v''] = [];',
+    '      this[''\x01i''] = {};',
+    '      this[''\x01n''] = 0;',
+    '      if (iterable !== undefined && iterable !== null) {',
+    '        for (const e of iterable) this.set(e[0], e[1]);',
+    '      }',
+    '    }',
+    '    get size() { return this[''\x01n'']; }',
+    '    get(k) {',
+    '      var p = this[''\x01i''][__mk(k)];',
+    '      return p === undefined ? undefined : this[''\x01v''][p];',
+    '    }',
+    '    has(k) { return this[''\x01i''][__mk(k)] !== undefined; }',
+    '    set(k, v) {',
+    '      var m = __mk(k);',
+    '      var p = this[''\x01i''][m];',
+    '      if (p === undefined) {',
+    '        this[''\x01i''][m] = this[''\x01k''].length;',
+    '        this[''\x01k''].push(k === 0 ? 0 : k);',
+    '        this[''\x01v''].push(v);',
+    '        this[''\x01n'']++;',
+    '      } else this[''\x01v''][p] = v;',
+    '      return this;',
+    '    }',
+    '    delete(k) {',
+    '      var m = __mk(k);',
+    '      var p = this[''\x01i''][m];',
+    '      if (p === undefined) return false;',
+    '      delete this[''\x01i''][m];',
+    '      this[''\x01k''][p] = TOMB;',
+    '      this[''\x01v''][p] = undefined;',
+    '      this[''\x01n'']--;',
+    '      return true;',
+    '    }',
+    '    clear() {',
+    '      this[''\x01k''] = [];',
+    '      this[''\x01v''] = [];',
+    '      this[''\x01i''] = {};',
+    '      this[''\x01n''] = 0;',
+    '    }',
+    '    forEach(cb, thisArg) {',
+    '      for (var i = 0; i < this[''\x01k''].length; i++) {',
+    '        if (this[''\x01k''][i] !== TOMB) cb.call(thisArg, this[''\x01v''][i], this[''\x01k''][i], this);',
+    '      }',
+    '    }',
+    '    entries() { return this[''\x01it''](2); }',
+    '    keys() { return this[''\x01it''](0); }',
+    '    values() { return this[''\x01it''](1); }',
+    '    [''\x01it''](kind) {',
+    '      var self = this;',
+    '      var i = 0;',
+    '      return __mkiter(function () {',
+    '        while (i < self[''\x01k''].length && self[''\x01k''][i] === TOMB) i++;',
+    '        if (i >= self[''\x01k''].length) return { value: undefined, done: true };',
+    '        var r = kind === 0 ? self[''\x01k''][i] : kind === 1 ? self[''\x01v''][i] : [self[''\x01k''][i], self[''\x01v''][i]];',
+    '        i++;',
+    '        return { value: r, done: false };',
+    '      });',
+    '    }',
+    '  };',
+    '  __Map.prototype[SI] = __Map.prototype.entries;',
+    '  __Map.prototype[''\x01Symbol.toStringTag\x02''] = ''Map'';',
+    '  __Set = class Set {',
+    '    constructor(iterable) {',
+    '      this[''\x01k''] = [];',
+    '      this[''\x01i''] = {};',
+    '      this[''\x01n''] = 0;',
+    '      if (iterable !== undefined && iterable !== null) {',
+    '        for (const e of iterable) this.add(e);',
+    '      }',
+    '    }',
+    '    get size() { return this[''\x01n'']; }',
+    '    has(k) { return this[''\x01i''][__mk(k)] !== undefined; }',
+    '    add(k) {',
+    '      var m = __mk(k);',
+    '      if (this[''\x01i''][m] === undefined) {',
+    '        this[''\x01i''][m] = this[''\x01k''].length;',
+    '        this[''\x01k''].push(k === 0 ? 0 : k);',
+    '        this[''\x01n'']++;',
+    '      }',
+    '      return this;',
+    '    }',
+    '    delete(k) {',
+    '      var m = __mk(k);',
+    '      var p = this[''\x01i''][m];',
+    '      if (p === undefined) return false;',
+    '      delete this[''\x01i''][m];',
+    '      this[''\x01k''][p] = TOMB;',
+    '      this[''\x01n'']--;',
+    '      return true;',
+    '    }',
+    '    clear() {',
+    '      this[''\x01k''] = [];',
+    '      this[''\x01i''] = {};',
+    '      this[''\x01n''] = 0;',
+    '    }',
+    '    forEach(cb, thisArg) {',
+    '      for (var i = 0; i < this[''\x01k''].length; i++) {',
+    '        if (this[''\x01k''][i] !== TOMB) cb.call(thisArg, this[''\x01k''][i], this[''\x01k''][i], this);',
+    '      }',
+    '    }',
+    '    values() { return this[''\x01it''](false); }',
+    '    keys() { return this[''\x01it''](false); }',
+    '    entries() { return this[''\x01it''](true); }',
+    '    [''\x01it''](pairs) {',
+    '      var self = this;',
+    '      var i = 0;',
+    '      return __mkiter(function () {',
+    '        while (i < self[''\x01k''].length && self[''\x01k''][i] === TOMB) i++;',
+    '        if (i >= self[''\x01k''].length) return { value: undefined, done: true };',
+    '        var r = pairs ? [self[''\x01k''][i], self[''\x01k''][i]] : self[''\x01k''][i];',
+    '        i++;',
+    '        return { value: r, done: false };',
+    '      });',
+    '    }',
+    '  };',
+    '  __Set.prototype[SI] = __Set.prototype.values;',
+    '  __WeakMap = class WeakMap {',
+    '    constructor(iterable) {',
+    '      this[''\x01i''] = {};',
+    '      if (iterable !== undefined && iterable !== null) {',
+    '        for (const e of iterable) this.set(e[0], e[1]);',
+    '      }',
+    '    }',
+    '    get(k) { var e = this[''\x01i''][__mk(k)]; return e === undefined ? undefined : e[0]; }',
+    '    has(k) { return this[''\x01i''][__mk(k)] !== undefined; }',
+    '    set(k, v) {',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) throw new TypeError(''Invalid value used as weak map key'');',
+    '      this[''\x01i''][__mk(k)] = [v];',
+    '      return this;',
+    '    }',
+    '    delete(k) {',
+    '      var m = __mk(k);',
+    '      if (this[''\x01i''][m] === undefined) return false;',
+    '      delete this[''\x01i''][m];',
+    '      return true;',
+    '    }',
+    '  };',
+    '  __WeakSet = class WeakSet {',
+    '    constructor(iterable) {',
+    '      this[''\x01i''] = {};',
+    '      if (iterable !== undefined && iterable !== null) {',
+    '        for (const e of iterable) this.add(e);',
+    '      }',
+    '    }',
+    '    has(k) { return this[''\x01i''][__mk(k)] !== undefined; }',
+    '    add(k) {',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) throw new TypeError(''Invalid value used in weak set'');',
+    '      this[''\x01i''][__mk(k)] = true;',
+    '      return this;',
+    '    }',
+    '    delete(k) {',
+    '      var m = __mk(k);',
+    '      if (this[''\x01i''][m] === undefined) return false;',
+    '      delete this[''\x01i''][m];',
+    '      return true;',
+    '    }',
+    '  };',
+    '}',
+    'function __i_run() {',
+    '}',
+    'function __i_async(g) {',
+    '  return g;',
+    '}'
   );
 { PRELUDE-END }
 
@@ -3901,6 +4160,46 @@ Begin
     End;
 End;
 
+{ La fonction courante est-elle un generateur (gen) ou une fonction async ? }
+Function CurFuncHas(Var ctx: TCompilerContext; gen: Boolean): Boolean;
+Var
+  f: LongInt;
+Begin
+  f := ctx.ast.cur_func;
+  CurFuncHas := False;
+  If (f = 0) Or (f = ctx.ast.root) Then
+    Exit;
+  If ctx.ast.nodes[f].kind = N_METHOD Then
+    Begin
+      If gen Then
+        CurFuncHas := ctx.ast.nodes[f].flags And MF_GENERATOR <> 0
+      Else
+        CurFuncHas := ctx.ast.nodes[f].flags And MF_ASYNC <> 0;
+    End
+  Else If gen Then
+    CurFuncHas := ctx.ast.nodes[f].flags And FN_GENERATOR <> 0
+  Else
+    CurFuncHas := ctx.ast.nodes[f].flags And FN_ASYNC <> 0;
+End;
+
+{ Le jeton courant peut-il commencer une expression (apres yield) ? }
+Function StartsExpr(Var ctx: TCompilerContext): Boolean;
+Var
+  t: LongInt;
+  s: TTokenText;
+Begin
+  t := ctx.ast.pt;
+  StartsExpr := True;
+  If (ctx.lex.tokens[t].kind = TK_EOF) Or ctx.lex.tokens[t].nl_before Then
+    StartsExpr := False
+  Else If ctx.lex.tokens[t].kind = TK_PUNCT Then
+    Begin
+      s := ctx.lex.tokens[t].text;
+      If (s = ')') Or (s = ']') Or (s = '}') Or (s = ',') Or (s = ';') Or (s = ':') Then
+        StartsExpr := False;
+    End;
+End;
+
 Function ParseUnary(Var ctx: TCompilerContext): LongInt;
 Var
   node, t, operand: LongInt;
@@ -3910,6 +4209,14 @@ Begin
   t := ctx.ast.pt;
   s := ctx.lex.tokens[t].text;
   is_op := False;
+  If TkIsId(ctx, t, 'await') And CurFuncHas(ctx, False) Then
+    Begin
+      node := NewNode(ctx, N_UNARY, t);
+      PAdvance(ctx);
+      ctx.ast.nodes[node].e1 := ParseUnary(ctx);
+      ParseUnary := node;
+      Exit;
+    End;
   If ctx.lex.tokens[t].kind = TK_OPERATOR Then
     { & unaire : operateur de reference &fn, extension utilisee par test22.js }
     is_op := (s = '!') Or (s = '~') Or (s = '+') Or (s = '-') Or (s = '&')
@@ -4050,6 +4357,21 @@ Var
   s: TTokenText;
   is_async: Boolean;
 Begin
+  If TkIsId(ctx, ctx.ast.pt, 'yield') And CurFuncHas(ctx, True) Then
+    Begin
+      node := NewNode(ctx, N_UNARY, ctx.ast.pt);
+      PAdvance(ctx);
+      If (ctx.lex.tokens[ctx.ast.pt].kind = TK_OPERATOR) And
+         (ctx.lex.tokens[ctx.ast.pt].text = '*') Then
+        Begin
+          ctx.ast.nodes[node].flags := 1;
+          PAdvance(ctx);
+        End;
+      If StartsExpr(ctx) Or (ctx.ast.nodes[node].flags = 1) Then
+        ctx.ast.nodes[node].e1 := ParseAssign(ctx, no_in);
+      ParseAssign := node;
+      Exit;
+    End;
   If IsArrowAhead(ctx, is_async) Then
     Begin
       ParseAssign := ParseArrowFn(ctx, is_async, no_in);
@@ -5357,6 +5679,16 @@ Begin
       IsBuiltinGlobal := True;
 End;
 
+Function IsPreludeAlias(Const name: TTokenText): Boolean;
+Var
+  i: Integer;
+Begin
+  IsPreludeAlias := False;
+  For i := 1 To PRELUDE_ALIAS_COUNT Do
+    If PreludeAliases[i] = name Then
+      IsPreludeAlias := True;
+End;
+
 Function IsLexicalKind(kind: TDeclKind): Boolean;
 Begin
   IsLexicalKind := (kind = DK_LET) Or (kind = DK_CONST) Or (kind = DK_CLASS);
@@ -5644,6 +5976,10 @@ Begin
     End;
   If sy = 0 Then
     sy := LookupSymbol(ctx, name);
+  { globales fournies par le prelude JS : Map, Set, Date, Promise... (declarees
+    sous le nom __Map, __Set... ; une declaration du programme a priorite) }
+  If (sy = 0) And IsPreludeAlias(name) Then
+    sy := LookupSymbol(ctx, '__' + name);
   If sy = 0 Then
     Begin
       If IsBuiltinGlobal(name) Then
@@ -9177,7 +9513,22 @@ Begin
   e := ctx.ast.nodes[n].e1;
   slow := NewLabel(ctx);
   done := NewLabel(ctx);
-  If s = '!' Then
+  If (s = 'yield') Or (s = 'await') Then
+    Begin
+      { suspension de la coroutine : la valeur envoyee (ou rendue par la promesse)
+        revient dans EDX:EAX }
+      If e <> 0 Then
+        GenExpr(ctx, e)
+      Else
+        LoadUndefined(ctx);
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      If (s = 'yield') And (ctx.ast.nodes[n].flags = 1) Then
+        CallRt(ctx, 'yield_star', 8)
+      Else
+        CallRt(ctx, 'yield', 8);
+    End
+  Else If s = '!' Then
     Begin
       GenExpr(ctx, e);
       GenTruthy(ctx);
@@ -11178,7 +11529,7 @@ End;
 
 Procedure GenTryCatch(Var ctx: TCompilerContext; n: LongInt);
 Var
-  base, lcatch, lend, cn, par: LongInt;
+  base, lcatch, lend, cn, par, cnt: LongInt;
 Begin
   base := AllocHandler(ctx);
   lcatch := NewLabel(ctx);
@@ -11194,6 +11545,16 @@ Begin
   GenScopeEnter(ctx, ctx.ast.nodes[cn].scope);
   Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 0));
   Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 4));
+  { return() d'un generateur : la valeur sentinelle traverse les catch }
+  cnt := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EAX), AddrSym(SYMK_X, XSym(ctx, '_JSNO_function_proto')));
+  Emit1(ctx, OP_JNE, LabelOp(cnt));
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_OBJECT)));
+  Emit1(ctx, OP_JNE, LabelOp(cnt));
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  CallRt(ctx, 'throw', 8);
+  PlaceLabel(ctx, cnt);
   par := ctx.ast.nodes[cn].e1;
   If par <> 0 Then
     BindValue(ctx, par, True);
@@ -11482,6 +11843,29 @@ Begin
   sc := ctx.ast.nodes[n].scope;
   BeginProc(ctx, ctx.data.fdescs[fd].code_sym, sc);
   ctx.ir.cur_line := ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
+  If ctx.data.fdescs[fd].flags And (FDF_GENERATOR Or FDF_ASYNC) <> 0 Then
+    Begin
+      { generateur / async : l'appel cree la coroutine ; le corps s'execute lors de la
+        premiere reprise (drapeau genflag positionne par la coroutine) }
+      body := NewLabel(ctx);
+      Emit(ctx, OP_CMP, MemSym(SYMK_D, RtVarSym(ctx, 'genflag'), 0), ImmOp(0));
+      Emit1(ctx, OP_JNE, LabelOp(body));
+      Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_THIS + 4));
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_THIS));
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+      If ctx.data.fdescs[fd].flags And FDF_GENERATOR <> 0 Then
+        Emit1(ctx, OP_PUSH, ImmOp(0))
+      Else
+        Emit1(ctx, OP_PUSH, ImmOp(1));
+      CallRt(ctx, 'gen_new', 24);
+      Emit0(ctx, OP_LEAVE);
+      Emit0(ctx, OP_RET);
+      PlaceLabel(ctx, body);
+      Emit(ctx, OP_MOV, MemSym(SYMK_D, RtVarSym(ctx, 'genflag'), 0), ImmOp(0));
+    End;
   EmitComment(ctx, 'fonction ' + StrText(ctx, ctx.data.fdescs[fd].name_str) +
               ' (' + SymFdesc(fd) + ')');
   GenScopeEnter(ctx, sc);
@@ -11573,7 +11957,9 @@ Begin
   BeginProc(ctx, SymRt('main'), 1);
   EmitComment(ctx, 'programme principal');
   GenScopeEnter(ctx, 1);
+  CallRt(ctx, 'prelude_init', 0);
   GenStmtList(ctx, ctx.ast.nodes[ctx.ast.root].e1);
+  CallRt(ctx, 'prelude_run', 0);
   EndProc(ctx);
 
   For i := 1 To ctx.data.fd_count Do
@@ -13221,6 +13607,8 @@ Begin
       A('mov edx, dword ptr [ecx+4]');
       A('cmp edx, $STR');
       A('jne .t1');
+      A('cmp byte ptr [eax+$STR_DATA], 1');
+      A('je .js');
       A('test esi, esi');
       A('jnz .nx');
       A('cmp dword ptr [ebp+12], 1');
@@ -14204,6 +14592,12 @@ Begin
   A('push dword ptr [ebp+24]');
   A('call _JSRT_tostring');
   A('add esp, 8');
+  A('cmp byte ptr [eax+$STR_DATA], 1');
+  A('jne .plain');
+  A('push eax');
+  A('call _JSRT_sym_str');
+  A('add esp, 4');
+  A('.plain:');
   A('leave');
   A('ret');
   A('.empty:');
@@ -15054,8 +15448,38 @@ Begin
   A('je .ok');
   A('cmp dword ptr [ebp+12], $STR');
   A('je .ok');
+  A('cmp dword ptr [ebp+12], $OBJ');
+  A('je .proto');
+  A('.noiter:');
   A('push offset _JSRT_c_noiter');
   A('call _JSRT_fatal');
+  A('.proto:');
+  A('push offset ' + RtStr(#1 + 'Symbol.iterator' + #2));
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .noiter');
+  A('cmp dword ptr [eax+12], $FN');
+  A('jne .noiter');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [eax+8]');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('cmp edx, $OBJ');
+  A('jne .noiter');
+  A('push eax');
+  A('push 24');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('pop ecx');
+  A('mov byte ptr [eax], $OK_ENV');
+  A('mov dword ptr [eax+8], ecx');
+  A('mov dword ptr [eax+12], $OBJ');
+  A('mov edx, $OBJ');
+  A('leave');
+  A('ret');
   A('.ok:');
   A('push 24');
   A('call _JSRT_alloc');
@@ -15077,6 +15501,13 @@ Begin
   A('push ebx');
   A('push esi');
   A('mov esi, dword ptr [ebp+8]');
+  A('cmp dword ptr [esi+12], $OBJ');
+  A('jne .notproto');
+  A('push esi');
+  A('call _JSRT_iter_next_proto');
+  A('add esp, 4');
+  A('jmp .out');
+  A('.notproto:');
   A('mov eax, dword ptr [esi+8]');
   A('mov ecx, dword ptr [esi+16]');
   A('cmp dword ptr [esi+12], $ARR');
@@ -15118,6 +15549,62 @@ Begin
   A('xor eax, eax');
   A('mov edx, $DONE');
   A('.out:');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_iter_next_proto(iterateur) : protocole next() / done / value }
+  A('proc _JSRT_iter_next_proto');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [esi+8]');
+  A('push offset ' + RtStr('next'));
+  A('push $OBJ');
+  A('push ebx');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $FN');
+  A('jne .bad');
+  A('push $OBJ');
+  A('push ebx');
+  A('push eax');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('cmp edx, $OBJ');
+  A('jne .bad');
+  A('mov edi, eax');
+  A('push offset ' + RtStr('done'));
+  A('push $OBJ');
+  A('push edi');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_truthy');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .done');
+  A('push offset ' + RtStr('value'));
+  A('push $OBJ');
+  A('push edi');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('jmp .ret');
+  A('.done:');
+  A('xor eax, eax');
+  A('mov edx, $DONE');
+  A('jmp .ret');
+  A('.bad:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  A('.ret:');
+  A('pop edi');
   A('pop esi');
   A('pop ebx');
   A('pop ebp');
@@ -16440,7 +16927,13 @@ Begin
   A('mov eax, offset ' + RtStr('number'));
   A('jmp .r');
   A('.string:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('cmp byte ptr [eax+$STR_DATA], 1');
+  A('je .symbol');
   A('mov eax, offset ' + RtStr('string'));
+  A('jmp .r');
+  A('.symbol:');
+  A('mov eax, offset ' + RtStr('symbol'));
   A('jmp .r');
   A('.boolean:');
   A('mov eax, offset ' + RtStr('boolean'));
@@ -17040,6 +17533,11 @@ Begin
 
   { _JSRT_obj_add(obj, cle, drapeaux, valeur lo, valeur hi) }
   FBegin('_JSRT_obj_add', 1);
+  A('mov eax, dword ptr [ebp+12]');
+  A('cmp byte ptr [eax+$STR_DATA], 1');
+  A('jne .nosym');
+  A('or dword ptr [ebp+16], 1');
+  A('.nosym:');
   A('mov esi, dword ptr [ebp+8]');
   A('push esi');
   A('call _JSRT_obj_own');
@@ -17332,6 +17830,12 @@ Begin
   A('mov edx, $INT');
   A('jmp .ret');
   A('.noname:');
+  A('push dword ptr [ebp+16]');
+  A('push offset _JSNO_function_proto');
+  A('call _JSRT_obj_lookup');
+  A('add esp, 8');
+  A('test ecx, ecx');
+  A('jnz .ret');
   A('mov eax, dword ptr [ebp+8]');
   A('movzx ecx, byte ptr [eax+2]');
   A('test ecx, 1');
@@ -27174,6 +27678,503 @@ Begin
   RtGlobal('__acc', RtFuncObj('__acc', '_JSRT_n_acc', 2), RT_T_FUNCTION);
   RtGlobal('__write', RtFuncObj('__write', '_JSRT_n_write', 2), RT_T_FUNCTION);
   RtGlobal('__setgrp', RtFuncObj('__setgrp', '_JSRT_n_setgrp', 1), RT_T_FUNCTION);
+  RtGlobal('__ptr', RtFuncObj('__ptr', '_JSRT_n_ptr', 1), RT_T_FUNCTION);
+  RtGlobal('__gen_resume', RtFuncObj('__gen_resume', '_JSRT_n_gen_resume', 3), RT_T_FUNCTION);
+  RtGlobal('__gen_done', RtFuncObj('__gen_done', '_JSRT_n_gen_done', 1), RT_T_FUNCTION);
+  RtGlobal('__invoke', RtFuncObj('__invoke', '_JSRT_n_invoke', 3), RT_T_FUNCTION);
+  RtGlobal('__fproto', RtFuncObj('__fproto', '_JSRT_n_fproto', 0), RT_T_FUNCTION);
+End;
+
+
+{ ---- Crochets du prelude : initialisation, boucle d'evenements, natives ---- }
+Procedure RtPreludeHooks;
+  Procedure CallSlot(Const code, slot: TString);
+  Begin
+    FBegin(code, 0);
+    A('mov eax, offset ' + slot);
+    A('cmp dword ptr [eax+4], $FN');
+    A('jne .ret');
+    A('push $UNDEF');
+    A('push 0');
+    A('push dword ptr [eax]');
+    A('call _JSRT_call0');
+    A('add esp, 12');
+    FEnd;
+  End;
+Begin
+  CallSlot('_JSRT_prelude_init', '_JSV___i_init');
+  CallSlot('_JSRT_prelude_run', '_JSV___i_run');
+  { __invoke(f, this, tableau) : appel avec this et les elements du tableau }
+  FBegin('_JSRT_n_invoke', 0);
+  A('cmp dword ptr [ebp+12], 3');
+  A('jb .bad');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $FN');
+  A('jne .bad');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + '], $ARR');
+  A('jne .bad');
+  A('push $ARR');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_call_array');
+  A('add esp, 24');
+  A('jmp .ret');
+  A('.bad:');
+  A('push offset _JSRT_c_notfunc');
+  A('call _JSRT_fatal');
+  FEnd;
+
+  { __fproto() -> Function.prototype }
+  FBegin('_JSRT_n_fproto', 0);
+  A('mov eax, offset _JSNO_function_proto');
+  A('mov edx, $OBJ');
+  FEnd;
+
+  { _JSRT_sym_str(cle) -> 'Symbol(description)' }
+  FBegin('_JSRT_sym_str', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('mov edx, 1');
+  A('.l:');
+  A('cmp edx, ecx');
+  A('jae .e');
+  A('cmp byte ptr [esi+edx+$STR_DATA], 2');
+  A('je .e');
+  A('inc edx');
+  A('jmp .l');
+  A('.e:');
+  A('push edx');
+  A('push 1');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  A('push $STR');
+  A('push eax');
+  A('push $STR');
+  A('push offset ' + RtStr('Symbol('));
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push $STR');
+  A('push offset ' + RtStr(')'));
+  A('push $STR');
+  A('push eax');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('mov edx, $STR');
+  FEnd;
+
+  { __ptr(v) -> adresse (entier) d'une chaine, d'un objet ou d'une fonction : identite stable }
+  FBegin('_JSRT_n_ptr', 0);
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .r');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('shr eax, 3');
+  A('.r:');
+  A('mov edx, $INT');
+  FEnd;
+End;
+
+
+{ ---- Coroutines : generateurs et fonctions async ----
+
+  Chaque generateur (ou appel de fonction async) s'execute sur sa propre pile
+  de 64 Ko ; yield / await commutent de pile (registres sauvegardes, chaine
+  des gestionnaires d'exceptions et limite de pile propres a chaque
+  coroutine). Une fonction generateur appelee normalement cree la coroutine
+  et rend l'objet generateur (prologue genere par le compilateur) ; la
+  premiere reprise appelle le meme code avec _JSRT_v_genflag a 1 pour entrer
+  dans le corps. Enregistrement (80 octets) : etat +0 (0 neuf, 1 suspendu,
+  2 en cours, 3 termine), esp / gestionnaire / limite du generateur +4 +8 +12,
+  de l'appelant +16 +20 +24, coroutine precedente +28, base de pile +32,
+  fonction +36, argc +40, this +44 +48, arguments +52, valeur +56 +60,
+  genre de fin +64 (0 yield, 1 return, 2 throw), mode de reprise +68
+  (0 next, 1 throw, 2 return), valeur envoyee +72 +76. }
+Const
+  GEN_STACK = 65536;
+
+Procedure RtCoroutines;
+Begin
+  { _JSRT_co_enter(co) : bascule vers la pile du generateur }
+  A('proc _JSRT_co_enter');
+  A('push ebp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [esp+20]');
+  A('mov dword ptr [esi+16], esp');
+  A('mov eax, dword ptr [_JSRT_v_handler_top]');
+  A('mov dword ptr [esi+20], eax');
+  A('mov eax, dword ptr [_JSRT_v_stack_limit]');
+  A('mov dword ptr [esi+24], eax');
+  A('mov eax, dword ptr [_JSRT_v_curco]');
+  A('mov dword ptr [esi+28], eax');
+  A('mov dword ptr [_JSRT_v_curco], esi');
+  A('mov dword ptr [esi], 2');
+  A('mov eax, dword ptr [esi+8]');
+  A('mov dword ptr [_JSRT_v_handler_top], eax');
+  A('mov eax, dword ptr [esi+12]');
+  A('mov dword ptr [_JSRT_v_stack_limit], eax');
+  A('mov esp, dword ptr [esi+4]');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_co_leave() : retour vers la pile de l'appelant (suspension ou fin) }
+  A('proc _JSRT_co_leave');
+  A('push ebp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [_JSRT_v_curco]');
+  A('mov dword ptr [esi+4], esp');
+  A('mov eax, dword ptr [_JSRT_v_handler_top]');
+  A('mov dword ptr [esi+8], eax');
+  A('mov eax, dword ptr [_JSRT_v_stack_limit]');
+  A('mov dword ptr [esi+12], eax');
+  A('mov eax, dword ptr [esi+20]');
+  A('mov dword ptr [_JSRT_v_handler_top], eax');
+  A('mov eax, dword ptr [esi+24]');
+  A('mov dword ptr [_JSRT_v_stack_limit], eax');
+  A('mov eax, dword ptr [esi+28]');
+  A('mov dword ptr [_JSRT_v_curco], eax');
+  A('mov esp, dword ptr [esi+16]');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { point d'entree d'une coroutine (atteint par ret depuis co_enter) }
+  A('proc _JSRT_gen_entry');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('sub esp, 48');
+  A('mov dword ptr [ebp-32], 0');
+  A('mov dword ptr [ebp-28], esp');
+  A('mov dword ptr [ebp-24], ebp');
+  A('mov dword ptr [ebp-20], offset _JSRT_gen_caught');
+  A('mov dword ptr [ebp-16], ebx');
+  A('mov dword ptr [ebp-12], esi');
+  A('mov dword ptr [ebp-8], edi');
+  A('lea eax, [ebp-32]');
+  A('mov dword ptr [_JSRT_v_handler_top], eax');
+  A('mov esi, dword ptr [_JSRT_v_curco]');
+  A('mov dword ptr [ebp-36], esi');
+  A('mov dword ptr [_JSRT_v_genflag], 1');
+  A('mov ecx, dword ptr [esi+40]');
+  A('shl ecx, 3');
+  A('add ecx, 16');
+  A('sub esp, ecx');
+  A('mov eax, dword ptr [esi+36]');
+  A('mov dword ptr [esp], eax');
+  A('mov ecx, dword ptr [esi+40]');
+  A('mov dword ptr [esp+4], ecx');
+  A('mov ecx, dword ptr [esi+44]');
+  A('mov dword ptr [esp+8], ecx');
+  A('mov ecx, dword ptr [esi+48]');
+  A('mov dword ptr [esp+12], ecx');
+  A('lea edi, [esp+16]');
+  A('mov ecx, dword ptr [esi+40]');
+  A('shl ecx, 3');
+  A('mov esi, dword ptr [esi+52]');
+  A('rep movsb');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('mov esi, dword ptr [ebp-36]');
+  A('mov dword ptr [esi+56], eax');
+  A('mov dword ptr [esi+60], edx');
+  A('mov dword ptr [esi+64], 1');
+  A('jmp _JSRT_gen_finish');
+  A('endp');
+
+  { exception non rattrapee dans la coroutine (ebp = trame de gen_entry) }
+  A('proc _JSRT_gen_caught');
+  A('mov esi, dword ptr [ebp-36]');
+  A('mov eax, dword ptr [_JSRT_v_exc]');
+  A('mov edx, dword ptr [_JSRT_v_exc+4]');
+  A('cmp edx, $OBJ');
+  A('jne .real');
+  A('cmp eax, offset _JSNO_function_proto');
+  A('jne .real');
+  { return() demande par l''appelant : fin normale avec la valeur envoyee }
+  A('mov eax, dword ptr [esi+72]');
+  A('mov edx, dword ptr [esi+76]');
+  A('mov dword ptr [esi+64], 1');
+  A('jmp .store');
+  A('.real:');
+  A('mov dword ptr [esi+64], 2');
+  A('.store:');
+  A('mov dword ptr [esi+56], eax');
+  A('mov dword ptr [esi+60], edx');
+  A('jmp _JSRT_gen_finish');
+  A('endp');
+
+  A('proc _JSRT_gen_finish');
+  A('mov dword ptr [esi], 3');
+  A('.again:');
+  A('call _JSRT_co_leave');
+  A('jmp .again');
+  A('endp');
+
+  { _JSRT_gen_new(genre, fonction, argc, this lo, this hi, arguments) -> objet generateur
+    ou promesse (genre 1 = async) }
+  FBegin('_JSRT_gen_new', 0);
+  A('push 80');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('shl ecx, 3');
+  A('add ecx, 8');
+  A('push ecx');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov dword ptr [ebx+52], eax');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('shl ecx, 3');
+  A('push ecx');
+  A('push dword ptr [ebp+28]');
+  A('push eax');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [ebx+36], eax');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [ebx+40], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [ebx+44], eax');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov dword ptr [ebx+48], eax');
+  { pile : liste libre ou nouvelle }
+  A('mov eax, dword ptr [_JSRT_v_genfree]');
+  A('test eax, eax');
+  A('jz .new');
+  A('mov ecx, dword ptr [eax]');
+  A('mov dword ptr [_JSRT_v_genfree], ecx');
+  A('jmp .have');
+  A('.new:');
+  A('push ' + IntToStr(GEN_STACK));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('.have:');
+  A('mov dword ptr [ebx+32], eax');
+  A('lea ecx, [eax+' + IntToStr(GEN_STACK - 32) + ']');
+  A('mov dword ptr [ecx], 0');
+  A('mov dword ptr [ecx+4], 0');
+  A('mov dword ptr [ecx+8], 0');
+  A('mov dword ptr [ecx+12], 0');
+  A('mov dword ptr [ecx+16], offset _JSRT_gen_entry');
+  A('mov dword ptr [ecx+20], 0');
+  A('mov dword ptr [ebx+4], ecx');
+  A('mov dword ptr [ebx+8], 0');
+  A('add eax, 8192');
+  A('mov dword ptr [ebx+12], eax');
+  A('mov dword ptr [ebx], 0');
+  { objet generateur }
+  A('mov ecx, offset _JSV___GenProto');
+  A('mov eax, offset _JSNO_object_proto');
+  A('cmp dword ptr [ecx+4], $OBJ');
+  A('jne .proto');
+  A('mov eax, dword ptr [ecx]');
+  A('.proto:');
+  A('push eax');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov edi, eax');
+  A('push $INT');
+  A('push ebx');
+  A('push 1');
+  A('push offset ' + RtStr(#1 + 'co'));
+  A('push edi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('cmp dword ptr [ebp+8], 1');
+  A('je .async');
+  A('mov eax, edi');
+  A('mov edx, $OBJ');
+  A('jmp .ret');
+  A('.async:');
+  A('mov eax, offset _JSV___i_async');
+  A('push $OBJ');
+  A('push edi');
+  A('push $UNDEF');
+  A('push 0');
+  A('push dword ptr [eax]');
+  A('call _JSRT_call1');
+  A('add esp, 20');
+  FEnd;
+
+  { _JSRT_yield(valeur) : suspend la coroutine courante, rend la valeur envoyee }
+  FBegin('_JSRT_yield', 0);
+  A('mov esi, dword ptr [_JSRT_v_curco]');
+  A('test esi, esi');
+  A('jz .bad');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esi+56], eax');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [esi+60], eax');
+  A('mov dword ptr [esi+64], 0');
+  A('mov dword ptr [esi], 1');
+  A('call _JSRT_co_leave');
+  A('mov esi, dword ptr [_JSRT_v_curco]');
+  A('mov eax, dword ptr [esi+72]');
+  A('mov edx, dword ptr [esi+76]');
+  A('mov ecx, dword ptr [esi+68]');
+  A('test ecx, ecx');
+  A('jz .ret');
+  A('cmp ecx, 1');
+  A('jne .ret2');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_throw');
+  A('.ret2:');
+  A('push $OBJ');
+  A('push offset _JSNO_function_proto');
+  A('call _JSRT_throw');
+  A('.bad:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  FEnd;
+
+  { _JSRT_yield_star(iterable) : delegue a un autre iterable }
+  FBegin('_JSRT_yield_star', 0);
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_iter_new');
+  A('add esp, 8');
+  A('mov esi, eax');
+  A('.l:');
+  A('push $OBJ');
+  A('push esi');
+  A('call _JSRT_iter_next');
+  A('add esp, 8');
+  A('cmp edx, $DONE');
+  A('je .d');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_yield');
+  A('add esp, 8');
+  A('jmp .l');
+  A('.d:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { _JSRT_gen_resume(co, mode, valeur lo, hi) -> valeur rendue (EDX:EAX) }
+  FBegin('_JSRT_gen_resume', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi]');
+  A('cmp eax, 2');
+  A('je .running');
+  A('cmp eax, 3');
+  A('je .finished');
+  A('test eax, eax');
+  A('jnz .go');
+  A('cmp dword ptr [ebp+12], 0');
+  A('je .go');
+  { throw / return avant le premier next : fin immediate }
+  A('mov dword ptr [esi], 3');
+  A('jmp .finished');
+  A('.go:');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [esi+68], eax');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esi+72], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esi+76], eax');
+  A('push esi');
+  A('call _JSRT_co_enter');
+  A('add esp, 4');
+  A('mov esi, dword ptr [ebp+8]');
+  A('cmp dword ptr [esi], 3');
+  A('jne .nofree');
+  A('mov eax, dword ptr [esi+32]');
+  A('test eax, eax');
+  A('jz .nofree');
+  A('mov ecx, dword ptr [_JSRT_v_genfree]');
+  A('mov dword ptr [eax], ecx');
+  A('mov dword ptr [_JSRT_v_genfree], eax');
+  A('mov dword ptr [esi+32], 0');
+  A('.nofree:');
+  A('mov eax, dword ptr [esi+56]');
+  A('mov edx, dword ptr [esi+60]');
+  A('cmp dword ptr [esi+64], 2');
+  A('jne .ret');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_throw');
+  A('.finished:');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, 1');
+  A('je .rethrow');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp ecx, 2');
+  A('jne .ret');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov edx, dword ptr [ebp+20]');
+  A('jmp .ret');
+  A('.rethrow:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_throw');
+  A('.running:');
+  A('push offset ' + RtStr('Generator is already running'));
+  A('push offset _JSNO_TypeError_proto');
+  A('call _JSRT_throw_msg');
+  FEnd;
+
+  { __gen_resume(generateur, mode, valeur) et __gen_done(generateur) }
+  FBegin('_JSRT_n_gen_resume', 0);
+  A('cmp dword ptr [ebp+12], 3');
+  A('jb .bad');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .bad');
+  A('push offset ' + RtStr(#1 + 'co'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .bad');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push dword ptr [eax+8]');
+  A('call _JSRT_gen_resume');
+  A('add esp, 16');
+  A('jmp .ret');
+  A('.bad:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  FEnd;
+
+  FBegin('_JSRT_n_gen_done', 0);
+  A('mov edx, $BOOL');
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ret');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .ret');
+  A('push offset ' + RtStr(#1 + 'co'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .ret');
+  A('mov ecx, dword ptr [eax+8]');
+  A('xor eax, eax');
+  A('cmp dword ptr [ecx], 3');
+  A('jne .no');
+  A('mov eax, 1');
+  A('.no:');
+  A('mov edx, $BOOL');
+  FEnd;
 End;
 
 { ---- Assemblage du runtime ---- }
@@ -27208,6 +28209,8 @@ Begin
   RtNumObjects(oproto);
   RtJsonObject(oproto);
   RtRegExpData(oproto);
+  BoReset;
+  BoFinish('_JSNO_function_proto', oproto);
 
   BoReset;
   RtStringProtoMethods;
@@ -27281,6 +28284,8 @@ Begin
   RtRxParse;
   RtRxVm;
   RtRxApi;
+  RtPreludeHooks;
+  RtCoroutines;
 End;
 
 { ============================================================
@@ -29657,6 +30662,12 @@ Begin
       Begin
         If ins^.a.kind = OD_LABEL Then
           CoJump(idx, ins^)
+        Else If ins^.a.kind = OD_ADDR Then
+          Begin
+            CoB($E9);
+            CoReloc(COFF_REL32, ins^.a.symkind, ins^.a.sym);
+            CoD(0);
+          End
         Else
           Begin
             CoB($FF);
