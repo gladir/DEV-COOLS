@@ -28,10 +28,10 @@
     TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 06 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 07 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
-         symboles et prelude, code interne et listing) ;
-         TODO 07 a 25 a faire.
+         symboles et prelude, code interne et listing, parseur de
+         clauses) ; TODO 08 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -328,7 +328,7 @@
               appel d'une procedure differee et x87 s'assemble avec ML et
               s'execute : il ecrit Salut A68 et rend le code 49
 
-  TODO 07 - PARSEUR : PROGRAMME, CLAUSES SERIES ET FERMEES [A FAIRE]
+  TODO 07 - PARSEUR : PROGRAMME, CLAUSES SERIES ET FERMEES [IMPLEMENTE]
             Un programme est une clause serie, avec ou sans BEGIN ... END
               ou parentheses autour (arrays, structs, test_loop...)
             Clause serie : suite d'unites, declarations et labels
@@ -341,6 +341,37 @@
             Recuperation apres erreur : synchronisation sur ; ou sur un
               mot de fermeture (END OD FI ESAC) avec progression garantie
             Verification : test_closed.a68, test_primary.a68
+            Realise : section 10 ; arbre d'unites (TUnit : genre, mode,
+              position, enfants A B C, element suivant, symbole, portee) ;
+              genres UK_SERIAL, UK_CLOSED, UK_LABELDEF, UK_GOTO, UK_SKIP,
+              UK_DECL et UK_OPAQUE ; jetons lus dans TokTab (TokAt,
+              ParserAdvance, AtKw, AtPunct) ; ParseSerial (au niveau le plus
+              externe seule la fin du fichier ferme la clause) ;
+              ParseClosed (BEGIN ... END et parentheses, une portee par
+              clause, fermeture manquante signalee avec la ligne et la
+              colonne de l'ouverture) ; ParenIsClosed distingue une clause
+              fermee de (c | a | b) et des listes a virgules ; etiquettes
+              devant une unite ou une declaration (ParseLabelDef, doublon
+              signale) ; GOTO (ParseGoto) resolu en fin d'analyse
+              (ResolveGotos : etiquette visible depuis la portee du saut
+              ou une portee englobante, sinon erreur) ; avertissement
+              d'etiquette inutilisee avec -w ; unites vides et point-
+              virgule final tolerees ; recuperation : message puis saut
+              jusqu'au prochain point-virgule ou a une fermeture, avec
+              progression garantie ; en attendant les TODOs 08 a 19, les
+              declarations (AtDeclStart) et les autres unites sont
+              enveloppees sans analyse (ParseOpaque : jetons equilibres
+              jusqu'au point-virgule, le DO d'une clause repetitive
+              ouvrant son corps) ; PhaseCodegen genere maintenant le code
+              depuis l'arbre (GenUnit : etiquettes et JMP) ; -d affiche
+              l'arbre, -v les statistiques
+            Verifie : les 27 exemples sont analyses sans erreur (de 6 unites
+              pour test_dataseg a 39 pour math) ; test_closed donne deux
+              clauses fermees, deux etiquettes et un GOTO resolu ; erreurs :
+              GOTO vers une etiquette inconnue, etiquette dupliquee, END ou
+              parenthese manquants, fermeture isolee, point-virgule oublie,
+              GOTO sans etiquette ; un programme avec GOTO et etiquettes
+              imbriquees s'assemble avec ML et s'execute (code 0)
 
   TODO 08 - DECLARATIONS : IDENTITE, VARIABLE, MODE ET PRIO [A FAIRE]
             Declaration d'identite : INT x = 42 ; BOOL flag = TRUE ;
@@ -871,6 +902,34 @@ Type
     FrameBytes : LongInt;      { octets locaux (portee de procedure)  }
     FrameScope : Integer;      { portee de procedure du cadre, -1 si
                                  les objets sont statiques            }
+  End;
+
+  { Arbre d unites (TODO 07) : une unite est un noeud ; les enfants
+    sont designes par A, B, C ; les elements d une liste (clause serie,
+    arguments) sont chaines par Next. Les indices sont des LongInt car
+    Integer vaut 16 bits en mode TP. }
+  TUnitKind = (
+    UK_SERIAL,     { clause serie : A = premier element de la liste   }
+    UK_CLOSED,     { clause fermee : A = clause serie, Scope          }
+    UK_LABELDEF,   { definition d une etiquette : Sym                 }
+    UK_GOTO,       { saut : Name, Scope, Sym apres resolution         }
+    UK_SKIP,       { SKIP                                              }
+    UK_DECL,       { declaration pas encore analysee (TODO 08)        }
+    UK_OPAQUE      { unite pas encore analysee (TODOs 10 a 19)        }
+  );
+
+  TUnit = Record
+    Kind    : TUnitKind;
+    Mode    : Integer;     { mode de l unite (TODO 09)              }
+    Line    : Integer;
+    Col     : Integer;
+    A, B, C : LongInt;     { enfants (-1 : aucun) ; UK_DECL et
+                             UK_OPAQUE : jetons A a B - 1           }
+    Next    : LongInt;     { element suivant d une liste            }
+    Sym     : Integer;     { symbole associe, -1 si aucun           }
+    Scope   : Integer;     { portee de la clause ou du saut         }
+    Name    : TName;
+    IntVal  : LongInt;
   End;
 
   { Options de la ligne de commande (TODO 02) }
@@ -3909,8 +3968,590 @@ Begin
   Emit1(OP_CALL, OpLabel(Intern('ExitProcess')));
 End;
 
+{ ============================================================
+  SECTION 10 - ARBRE D UNITES ET PARSEUR (TODO 07, 08, 10)
+  ============================================================ }
+Var
+  UnitTab    : Array[0..MAX_UNIT - 1] Of TUnit;
+  UnitCount  : LongInt;
+  UnitRoot   : LongInt;       { clause serie du programme              }
+  TokPos     : LongInt;       { jeton courant dans TokTab              }
+  GotoTab    : Array[0..MAX_LABEL - 1] Of LongInt;
+  GotoCount  : Integer;
+  ClauseCount: LongInt;       { clauses fermees analysees              }
+  LabelCount : LongInt;       { etiquettes definies                    }
+  OpaqueCount: LongInt;       { unites et declarations non analysees   }
+
+Function UnitNew(K : TUnitKind; Line, Col : Integer) : LongInt;
+Begin
+  If UnitCount >= MAX_UNIT Then
+    FatalError('programme trop long (arbre d''unites plein, max ' +
+               ItoS(MAX_UNIT) + ')');
+  UnitTab[UnitCount].Kind  := K;
+  UnitTab[UnitCount].Mode  := MD_ERROR;
+  UnitTab[UnitCount].Line  := Line;
+  UnitTab[UnitCount].Col   := Col;
+  UnitTab[UnitCount].A     := -1;
+  UnitTab[UnitCount].B     := -1;
+  UnitTab[UnitCount].C     := -1;
+  UnitTab[UnitCount].Next  := -1;
+  UnitTab[UnitCount].Sym   := -1;
+  UnitTab[UnitCount].Scope := ScopeCur;
+  UnitTab[UnitCount].Name  := '';
+  UnitTab[UnitCount].IntVal := 0;
+  UnitNew := UnitCount;
+  Inc(UnitCount);
+End;
+
+{ ---- acces aux jetons ---- }
+Function TokAt(K : LongInt) : TToken;
+Begin
+  If TokPos + K >= TokCount Then
+    TokAt := TokTab[TokCount - 1]          { EOF }
+  Else
+    TokAt := TokTab[TokPos + K];
+End;
+
+Procedure ParserAdvance;
+Begin
+  If TokPos < TokCount - 1 Then Inc(TokPos);
+End;
+
+Function AtKw(Const W : TName) : Boolean;
+Begin
+  AtKw := (TokTab[TokPos].Kind = TK_KEYWORD) And (TokTab[TokPos].Val = W);
+End;
+
+Function AtPunct(Const W : TName) : Boolean;
+Begin
+  AtPunct := (TokTab[TokPos].Kind = TK_PUNCT) And (TokTab[TokPos].Val = W);
+End;
+
+Function AtEOF : Boolean;
+Begin
+  AtEOF := TokTab[TokPos].Kind = TK_EOF;
+End;
+
+Function TokDesc(Const T : TToken) : TString;
+Begin
+  Case T.Kind Of
+    TK_EOF     : TokDesc := 'fin de fichier';
+    TK_INT     : TokDesc := T.Val;
+    TK_REAL    : TokDesc := T.Val;
+    TK_BOOL    : TokDesc := T.Val;
+    TK_CHAR    : TokDesc := '"' + T.Val + '"';
+    TK_STRING  : TokDesc := 'chaine';
+    TK_TAG     : TokDesc := 'identificateur ' + T.Val;
+  Else
+    TokDesc := '''' + T.Val + '''';
+  End;
+End;
+
+Procedure ParseError(Const Msg : TString);
+Begin
+  ErrorAt(TokTab[TokPos].Line, TokTab[TokPos].Col,
+          Msg + ' (trouve: ' + TokDesc(TokTab[TokPos]) + ')');
+End;
+
+{ +1 pour un jeton qui ouvre une construction, -1 pour un jeton qui la
+  ferme, 0 sinon }
+Function TokDepth(Const T : TToken) : Integer;
+Begin
+  TokDepth := 0;
+  If T.Kind = TK_KEYWORD Then
+  Begin
+    If (T.Val = 'BEGIN') Or (T.Val = 'IF') Or (T.Val = 'CASE') Or
+       (T.Val = 'DO') Then
+      TokDepth := 1
+    Else If (T.Val = 'END') Or (T.Val = 'FI') Or (T.Val = 'ESAC') Or
+            (T.Val = 'OD') Then
+      TokDepth := -1;
+  End
+  Else If T.Kind = TK_PUNCT Then
+  Begin
+    If (T.Val = '(') Or (T.Val = '[') Then
+      TokDepth := 1
+    Else If (T.Val = ')') Or (T.Val = ']') Then
+      TokDepth := -1;
+  End;
+End;
+
+{ Le jeton ferme-t-il une clause serie (a profondeur nulle) ? }
+Function AtSerialEnd : Boolean;
+Var
+  T : TToken;
+Begin
+  T := TokTab[TokPos];
+  AtSerialEnd := False;
+  Case T.Kind Of
+    TK_EOF : AtSerialEnd := True;
+    TK_KEYWORD:
+      AtSerialEnd := (T.Val = 'END') Or (T.Val = 'FI') Or
+                     (T.Val = 'ESAC') Or (T.Val = 'OD') Or
+                     (T.Val = 'ELSE') Or (T.Val = 'ELIF') Or
+                     (T.Val = 'OUT') Or (T.Val = 'OUSE') Or
+                     (T.Val = 'THEN') Or (T.Val = 'IN') Or
+                     (T.Val = 'DO');
+    TK_PUNCT:
+      AtSerialEnd := (T.Val = ')') Or (T.Val = ']') Or (T.Val = '|') Or
+                     (T.Val = '|:');
+  End;
+End;
+
+{ Debut d une declaration (analysee au TODO 08) : mot de declarateur, ou
+  nom de mode suivi d un identificateur }
+Function AtDeclStart : Boolean;
+Var
+  T, N : TToken;
+Begin
+  T := TokTab[TokPos];
+  N := TokAt(1);
+  AtDeclStart := False;
+  If T.Kind = TK_KEYWORD Then
+    AtDeclStart := (T.Val = 'MODE') Or (T.Val = 'PRIO') Or
+                   (T.Val = 'OP') Or (T.Val = 'PROC') Or
+                   (T.Val = 'INT') Or (T.Val = 'REAL') Or
+                   (T.Val = 'BOOL') Or (T.Val = 'CHAR') Or
+                   (T.Val = 'STRING') Or (T.Val = 'BITS') Or
+                   (T.Val = 'BYTES') Or (T.Val = 'COMPL') Or
+                   (T.Val = 'REF') Or (T.Val = 'HEAP') Or
+                   (T.Val = 'LOC') Or (T.Val = 'FLEX') Or
+                   (T.Val = 'LONG') Or (T.Val = 'STRUCT') Or
+                   (T.Val = 'UNION')
+  Else If T.Kind = TK_PUNCT Then
+    AtDeclStart := T.Val = '['
+  Else If (T.Kind = TK_BOLD) Or (T.Kind = TK_TAG) Then
+    AtDeclStart := N.Kind = TK_TAG;
+End;
+
+{ Jetons de la position courante jusqu au ; ou a la fermeture de la
+  clause, sans les analyser : enveloppe provisoire des unites et
+  declarations des TODOs suivants. Retourne le noeud. }
+Function ParseOpaque(K : TUnitKind) : LongInt;
+Var
+  U, Start : LongInt;
+  Depth    : Integer;
+  Done     : Boolean;
+  LoopHead : Boolean;
+  OL, OC   : Integer;
+Begin
+  U := UnitNew(K, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  Start := TokPos;
+  Depth := 0;
+  OL := 0;
+  OC := 0;
+  Done := False;
+  { une clause repetitive FOR ... DO ... OD : son DO ouvre le corps }
+  LoopHead := AtKw('FOR') Or AtKw('WHILE') Or AtKw('FROM') Or
+              AtKw('BY') Or AtKw('TO') Or AtKw('DOWNTO');
+  While Not Done Do
+  Begin
+    If AtEOF Then
+    Begin
+      If Depth > 0 Then
+        ErrorAt(OL, OC, 'construction non fermee (fin de fichier)');
+      Done := True;
+    End
+    Else If (Depth = 0) And LoopHead And AtKw('DO') Then
+    Begin
+      OL := TokTab[TokPos].Line;
+      OC := TokTab[TokPos].Col;
+      LoopHead := False;
+      Inc(Depth);
+      ParserAdvance;
+    End
+    Else If (Depth = 0) And (AtPunct(';') Or AtSerialEnd) Then
+      Done := True
+    Else
+    Begin
+      If TokDepth(TokTab[TokPos]) > 0 Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          OL := TokTab[TokPos].Line;
+          OC := TokTab[TokPos].Col;
+        End;
+        Inc(Depth);
+      End
+      Else If (TokDepth(TokTab[TokPos]) < 0) And (Depth > 0) Then
+        Dec(Depth);
+      ParserAdvance;
+    End;
+  End;
+  If TokPos = Start Then ParserAdvance;     { progression garantie }
+  UnitTab[U].A := Start;
+  UnitTab[U].B := TokPos;
+  Inc(OpaqueCount);
+  ParseOpaque := U;
+End;
+
+{ La parenthese ouvrante courante ouvre-t-elle une clause fermee simple
+  (ni (c | a | b), ni liste d elements separes par des virgules) ? }
+Function ParenIsClosed : Boolean;
+Var
+  K     : LongInt;
+  Depth : Integer;
+  T     : TToken;
+  Plain : Boolean;
+Begin
+  Plain := True;
+  Depth := 0;
+  K := TokPos;
+  While K < TokCount Do
+  Begin
+    T := TokTab[K];
+    If T.Kind = TK_EOF Then
+      K := TokCount
+    Else
+    Begin
+      If TokDepth(T) > 0 Then
+        Inc(Depth)
+      Else If TokDepth(T) < 0 Then
+        Dec(Depth)
+      Else If (Depth = 1) And (T.Kind = TK_PUNCT) And
+              ((T.Val = ',') Or (T.Val = '|') Or (T.Val = '|:')) Then
+        Plain := False;
+      If Depth <= 0 Then K := TokCount Else Inc(K);
+    End;
+  End;
+  ParenIsClosed := Plain;
+End;
+
+{ Definit l etiquette courante dans la portee courante (erreur si elle
+  y est deja definie) }
+Function ParseLabelDef : LongInt;
+Var
+  U    : LongInt;
+  I, S : Integer;
+  Name : TName;
+Begin
+  Name := TokTab[TokPos].Val;
+  U := UnitNew(UK_LABELDEF, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  UnitTab[U].Name := Name;
+  S := -1;
+  I := ScopeTab[ScopeCur].LastSym;
+  While (I >= 0) And (S < 0) Do
+  Begin
+    If (SymTab[I].Kind = SK_LABEL) And (SymTab[I].Name = Name) Then S := I;
+    I := SymTab[I].Prev;
+  End;
+  If S >= 0 Then
+    ErrorAt(TokTab[TokPos].Line, TokTab[TokPos].Col,
+            'etiquette dupliquee: ' + Name)
+  Else
+  Begin
+    S := SymDeclare(Name, SK_LABEL, MD_VOID, TokTab[TokPos].Line,
+                    TokTab[TokPos].Col);
+    Inc(LabelCount);
+  End;
+  UnitTab[U].Sym := S;
+  ParserAdvance;                       { l etiquette }
+  ParserAdvance;                       { les deux-points }
+  ParseLabelDef := U;
+End;
+
+{ GOTO etiquette : l etiquette peut etre definie plus loin ; la
+  resolution se fait a la fin de l analyse (ResolveGotos) }
+Function ParseGoto : LongInt;
+Var
+  U : LongInt;
+Begin
+  U := UnitNew(UK_GOTO, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  ParserAdvance;                       { GOTO }
+  If TokTab[TokPos].Kind = TK_TAG Then
+  Begin
+    UnitTab[U].Name := TokTab[TokPos].Val;
+    If GotoCount >= MAX_LABEL Then
+      FatalError('trop de sauts GOTO (max ' + ItoS(MAX_LABEL) + ')');
+    GotoTab[GotoCount] := U;
+    Inc(GotoCount);
+    ParserAdvance;
+  End
+  Else
+    ParseError('etiquette attendue apres GOTO');
+  ParseGoto := U;
+End;
+
+Function ParseSerial(Top : Boolean) : LongInt; Forward;
+
+{ Clause fermee : BEGIN ... END ou ( ... ) ; ouvre une portee }
+Function ParseClosed : LongInt;
+Var
+  U, Ser  : LongInt;
+  L, C    : Integer;
+  IsBegin : Boolean;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  IsBegin := AtKw('BEGIN');
+  U := UnitNew(UK_CLOSED, L, C);
+  ParserAdvance;                       { BEGIN ou ( }
+  UnitTab[U].Scope := ScopeEnter(SCK_CLOSED);
+  Ser := ParseSerial(False);
+  UnitTab[U].A := Ser;
+  If IsBegin Then
+  Begin
+    If AtKw('END') Then
+      ParserAdvance
+    Else
+      ParseError('''END'' attendu (BEGIN ouvert ligne ' + ItoS(L) +
+                 ', colonne ' + ItoS(C) + ')');
+  End
+  Else
+  Begin
+    If AtPunct(')') Then
+      ParserAdvance
+    Else
+      ParseError(''')'' attendu (parenthese ouverte ligne ' + ItoS(L) +
+                 ', colonne ' + ItoS(C) + ')');
+  End;
+  ScopeLeave;
+  Inc(ClauseCount);
+  ParseClosed := U;
+End;
+
+{ Une unite ; les unites autres que la clause fermee, GOTO et SKIP sont
+  provisoirement enveloppees (TODOs 10 a 19) }
+Function ParseUnit : LongInt;
+Var
+  U : LongInt;
+Begin
+  If AtKw('BEGIN') Or (AtPunct('(') And ParenIsClosed) Then
+    ParseUnit := ParseClosed
+  Else If AtKw('GOTO') Then
+    ParseUnit := ParseGoto
+  Else If AtKw('SKIP') Then
+  Begin
+    U := UnitNew(UK_SKIP, TokTab[TokPos].Line, TokTab[TokPos].Col);
+    ParserAdvance;
+    ParseUnit := U;
+  End
+  Else If AtDeclStart Then
+    ParseUnit := ParseOpaque(UK_DECL)
+  Else
+    ParseUnit := ParseOpaque(UK_OPAQUE);
+End;
+
+{ Clause serie : unites, declarations et etiquettes separees par des
+  points-virgules, jusqu a une fermeture. Au niveau le plus externe
+  (Top), seule la fin du fichier ferme la clause ; un jeton de
+  fermeture isole est une erreur. Retourne le premier element. }
+Function ParseSerial(Top : Boolean) : LongInt;
+Var
+  First, Last, U : LongInt;
+  Start          : LongInt;
+  NeedSep        : Boolean;
+
+  Procedure AddItem(N : LongInt);
+  Begin
+    If First < 0 Then First := N Else UnitTab[Last].Next := N;
+    Last := N;
+  End;
+
+Begin
+  First := -1;
+  Last := -1;
+  NeedSep := False;
+  While Not AtEOF Do
+  Begin
+    Start := TokPos;
+    If AtPunct(';') Then
+    Begin
+      ParserAdvance;                   { separateur (unite vide toleree) }
+      NeedSep := False;
+    End
+    Else If AtSerialEnd Then
+    Begin
+      If Not Top Then
+      Begin
+        ParseSerial := First;
+        Exit;
+      End;
+      ParseError('fermeture sans ouverture');
+      ParserAdvance;
+    End
+    Else If NeedSep Then
+    Begin
+      { recuperation : signale puis saute jusqu au prochain ; ou a une
+        fermeture }
+      ParseError(''';'' ou fermeture attendu');
+      AddItem(ParseOpaque(UK_OPAQUE));
+      NeedSep := True;
+    End
+    Else If (TokTab[TokPos].Kind = TK_TAG) And
+            (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = ':') Then
+      AddItem(ParseLabelDef)
+    Else
+    Begin
+      U := ParseUnit;
+      AddItem(U);
+      NeedSep := True;
+    End;
+    If TokPos = Start Then ParserAdvance;     { progression garantie }
+  End;
+  ParseSerial := First;
+End;
+
+{ Etiquettes : chaque GOTO designe une etiquette visible depuis sa
+  portee (la sienne ou une portee englobante) }
+Function SymFindLabelFrom(S : Integer; Const Name : TName) : Integer;
+Var
+  I : Integer;
+Begin
+  SymFindLabelFrom := -1;
+  While S >= 0 Do
+  Begin
+    I := ScopeTab[S].LastSym;
+    While I >= 0 Do
+    Begin
+      If (SymTab[I].Kind = SK_LABEL) And (SymTab[I].Name = Name) Then
+      Begin
+        SymFindLabelFrom := I;
+        Exit;
+      End;
+      I := SymTab[I].Prev;
+    End;
+    S := ScopeTab[S].Parent;
+  End;
+End;
+
+Procedure ResolveGotos;
+Var
+  K : Integer;
+  U : LongInt;
+  S : Integer;
+Begin
+  For K := 0 To GotoCount - 1 Do
+  Begin
+    U := GotoTab[K];
+    S := SymFindLabelFrom(UnitTab[U].Scope, UnitTab[U].Name);
+    If S < 0 Then
+      ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+              'etiquette non definie: ' + UnitTab[U].Name)
+    Else
+    Begin
+      UnitTab[U].Sym := S;
+      SymTab[S].Used := True;
+    End;
+  End;
+End;
+
+Procedure WarnUnusedLabels;
+Var
+  I : Integer;
+Begin
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].Kind = SK_LABEL) And Not SymTab[I].Used Then
+      WarnAt(SymTab[I].Line, SymTab[I].Col,
+             'etiquette non utilisee: ' + SymTab[I].Name);
+End;
+
+{ Mode debug -d : arbre d unites }
+Function UnitKindName(K : TUnitKind) : TString;
+Begin
+  Case K Of
+    UK_SERIAL   : UnitKindName := 'clause serie';
+    UK_CLOSED   : UnitKindName := 'clause fermee';
+    UK_LABELDEF : UnitKindName := 'etiquette';
+    UK_GOTO     : UnitKindName := 'GOTO';
+    UK_SKIP     : UnitKindName := 'SKIP';
+    UK_DECL     : UnitKindName := 'declaration (non analysee)';
+    UK_OPAQUE   : UnitKindName := 'unite (non analysee)';
+  End;
+End;
+
+Procedure UnitDump(U : LongInt; Depth : Integer);
+Var
+  I : Integer;
+  E : LongInt;
+Begin
+  While U >= 0 Do
+  Begin
+    For I := 1 To Depth Do Write('  ');
+    Write(UnitKindName(UnitTab[U].Kind), ' ligne ', UnitTab[U].Line);
+    Case UnitTab[U].Kind Of
+      UK_LABELDEF, UK_GOTO : Write(' ', UnitTab[U].Name);
+      UK_DECL, UK_OPAQUE   :
+        Begin
+          Write(' :');
+          E := UnitTab[U].A;
+          While (E < UnitTab[U].B) And (E < UnitTab[U].A + 8) Do
+          Begin
+            Write(' ', TokTab[E].Val);
+            Inc(E);
+          End;
+          If E < UnitTab[U].B Then Write(' ...');
+        End;
+    End;
+    WriteLn;
+    If UnitTab[U].Kind = UK_CLOSED Then
+      UnitDump(UnitTab[U].A, Depth + 1);
+    U := UnitTab[U].Next;
+  End;
+End;
+
+Procedure PhaseParse;
+Begin
+  UnitCount := 0;
+  TokPos := 0;
+  GotoCount := 0;
+  ClauseCount := 0;
+  LabelCount := 0;
+  OpaqueCount := 0;
+  ScopeEnter(SCK_PROGRAM);
+  UnitRoot := UnitNew(UK_SERIAL, 1, 1);
+  UnitTab[UnitRoot].A := ParseSerial(True);
+  ResolveGotos;
+  If Opts.Warnings Then WarnUnusedLabels;
+  ScopeLeave;
+  If Opts.Verbose Then
+    WriteLn('  ', UnitCount, ' unite(s), ', ClauseCount,
+            ' clause(s) fermee(s), ', LabelCount, ' etiquette(s), ',
+            GotoCount, ' goto, ', OpaqueCount,
+            ' unite(s) ou declaration(s) pas encore analysee(s)');
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('Arbre d''unites (', UnitCount, ' noeuds) :');
+    UnitDump(UnitTab[UnitRoot].A, 1);
+  End;
+End;
+
+{ ============================================================
+  SECTION 11 - COERCITIONS, MODES ET GENERATION (TODO 09, 11 a 19)
+  ============================================================ }
+Procedure PhaseModes;
+Begin
+  { A faire : TODO 09 et 11 a 19 }
+End;
+
+{ ---- Generation du code a partir de l arbre ---- }
+Procedure GenUnit(U : LongInt);
+Begin
+  While U >= 0 Do
+  Begin
+    Case UnitTab[U].Kind Of
+      UK_SERIAL  : GenUnit(UnitTab[U].A);
+      UK_CLOSED  : GenUnit(UnitTab[U].A);
+      UK_LABELDEF:
+        If UnitTab[U].Sym >= 0 Then
+          EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
+      UK_GOTO    :
+        If UnitTab[U].Sym >= 0 Then
+          Emit1(OP_JMP, OpLabel(Intern(SymTab[UnitTab[U].Sym].AsmName)));
+      UK_SKIP    : ;
+      UK_DECL, UK_OPAQUE:
+        EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
+                    ' : pas encore generee)');
+    End;
+    U := UnitTab[U].Next;
+  End;
+End;
+
 Procedure PhaseCodegen;
 Begin
+  GenMainBegin;
+  GenUnit(UnitRoot);
+  GenMainEnd;
   If Opts.Verbose Then
     WriteLn('  ', CodeCount + DeferCount, ' instruction(s), ',
             DataCount, ' donnee(s) statique(s), ', NameCount,
@@ -3927,24 +4568,6 @@ Begin
     WriteListing(Opts.AsmFile);
     If Opts.Verbose Then WriteLn('  listing : ', Opts.AsmFile);
   End;
-End;
-
-{ ============================================================
-  SECTION 10 - ARBRE D UNITES ET PARSEUR (TODO 07, 08, 10)
-  ============================================================ }
-Procedure PhaseParse;
-Begin
-  { A faire : TODO 07, 08 et 10 ; en attendant, le programme est vide }
-  GenMainBegin;
-  GenMainEnd;
-End;
-
-{ ============================================================
-  SECTION 11 - COERCITIONS ET RESOLUTION DES MODES (TODO 09)
-  ============================================================ }
-Procedure PhaseModes;
-Begin
-  { A faire : TODO 09 et 11 a 19 }
 End;
 
 { ============================================================
