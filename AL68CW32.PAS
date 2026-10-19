@@ -28,9 +28,9 @@
     TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 03 implementes (squelette en sections, pipeline en 7
-         phases, options, constantes, limites et nommage, lexeur) ;
-         TODO 04 a 25 a faire.
+  ETAT : TODO 01 a 04 implementes (squelette en sections, pipeline en 7
+         phases, options, constantes, limites et nommage, lexeur, modes) ;
+         TODO 05 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -193,7 +193,7 @@
               16rFF), GO TO et les erreurs ci-dessus donnent le resultat
               attendu avec -d
 
-  TODO 04 - MODES (TYPES) ET LEUR REPRESENTATION [A FAIRE]
+  TODO 04 - MODES (TYPES) ET LEUR REPRESENTATION [IMPLEMENTE]
             Modes de base : INT (32 bits), REAL (64 bits, x87), BOOL,
               CHAR, BITS (32 bits), VOID
             Modes construits : REF m (pointeur 4 octets), [] m (tableau
@@ -213,6 +213,31 @@
             Tailles et alignements calcules une fois par mode
             Mode debug -d : liste des modes
             Verification : test_decl.a68, test_struct.a68, test_union.a68
+            Realise : section 7 ; TMode (genre, element, dimensions,
+              FLEX, liste dans un pool, taille) ; modes de base aux
+              indices fixes MD_ERROR, MD_VOID, MD_INT, MD_REAL, MD_BOOL,
+              MD_CHAR, MD_BITS, MD_NIL et MD_STRING (FLEX [] CHAR) ;
+              constructeurs ModeRef et ModeRow (modes partages),
+              ModeStructTmp, ModeUnionTmp et ModeProcTmp (liste en cours
+              ModeTmpAdd) ; union : alternatives aplaties, sans doublon et
+              triees, VOID refuse ; structure : doublon de champ signale ;
+              ModeFwd et ModeDefine pour les modes recursifs ; ModeSame :
+              equivalence structurelle, recursion comprise (paires deja
+              rencontrees supposees equivalentes) ; ModeDeref, ModeDeref1,
+              ModeFindField, ModeUnionHas ; ModeSize : INT, BOOL, CHAR,
+              BITS, REF 4 octets, REAL 8, PROC 8 (entree et lien statique),
+              tableau 4 + 12 par dimension (STRING 16), STRUCT somme des
+              champs, UNION 4 + alternative la plus large, recursion sans
+              REF detectee (ModeBadRec) ; ModeFieldOffset, ModeElemSize (1
+              octet pour un CHAR) ; ModeName et ModeDump (-d)
+            Verifie : harnais de 25 controles hors depot (tailles,
+              partage, noms, STRING different de [] CHAR, structures de
+              noms differents, NODE et NODE2 recursifs equivalents,
+              recursion sans REF, unions dans un ordre quelconque,
+              aplatissement, UNION a une alternative, VOID refuse,
+              procedures) : tous reussis ; les modes des exemples
+              (POINT, VEC3, NOMBRE, POLYVAL, WRAPPED) seront crees par le
+              parseur aux TODOs 08, 13 et 18
 
   TODO 05 - TABLE DES SYMBOLES, PORTEES ET PRELUDE STANDARD [A FAIRE]
             Portees emboitees (clauses fermees, series, boucles,
@@ -643,6 +668,7 @@ Const
   { ---- Limites internes du compilateur (32 bits) ---- }
   MAX_SYM       = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};  { identificateurs }
   MAX_MODE      = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};   { modes (TODO 04)  }
+  MAX_MODEPOOL  = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};  { champs, alternatives}
   MAX_UNIT      = {$IFDEF FPC}32768{$ELSE}512{$ENDIF}; { noeuds de l arbre}
   MAX_LABEL     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
   MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { portees emboitees}
@@ -705,6 +731,35 @@ Type
     RealVal : Double;      { TK_REAL (et TK_INT)                    }
     Line    : Integer;
     Col     : Integer;
+  End;
+
+  { Modes (TODO 04) }
+  TModeKind = (
+    MK_ERROR,      { mode inconnu (apres une erreur)                 }
+    MK_VOID,
+    MK_INT,
+    MK_REAL,
+    MK_BOOL,
+    MK_CHAR,
+    MK_BITS,
+    MK_NIL,        { mode de NIL : se coerce vers tout REF           }
+    MK_REF,        { Sub = mode reference                            }
+    MK_ROW,        { Sub = element, Dims dimensions, Flex            }
+    MK_STRUCT,     { Count champs dans le pool a partir de First     }
+    MK_UNION,      { Count alternatives triees, dans le pool         }
+    MK_PROC,       { Sub = resultat, Count parametres dans le pool   }
+    MK_FWD         { mode nomme en cours de definition (recursion)   }
+  );
+
+  TMode = Record
+    Kind  : TModeKind;
+    Sub   : Integer;
+    Dims  : Integer;
+    Flex  : Boolean;
+    First : Integer;
+    Count : Integer;
+    Size  : LongInt;       { -1 : pas calcule, -2 : en cours         }
+    Name  : TName;         { nom d un MK_FWD                         }
   End;
 
   { Options de la ligne de commande (TODO 02) }
@@ -1830,6 +1885,611 @@ End;
 { ============================================================
   SECTION 7 - MODES (TODO 04)
   ============================================================ }
+Const
+  { indices fixes des modes de base }
+  MD_ERROR  = 0;
+  MD_VOID   = 1;
+  MD_INT    = 2;
+  MD_REAL   = 3;
+  MD_BOOL   = 4;
+  MD_CHAR   = 5;
+  MD_BITS   = 6;
+  MD_NIL    = 7;
+  MD_STRING = 8;     { FLEX [] CHAR }
+
+  { dimensions d un descripteur de tableau : pointeur + (borne
+    inferieure, borne superieure, pas) par dimension }
+  ROW_DESC_BASE = 4;
+  ROW_DESC_DIM  = 12;
+
+Var
+  ModeTab   : Array[0..MAX_MODE - 1] Of TMode;
+  ModeCount : Integer;
+  ModePoolM : Array[0..MAX_MODEPOOL - 1] Of Integer;
+  ModePoolN : Array[0..MAX_MODEPOOL - 1] Of TName;
+  ModePoolCount : Integer;
+  { liste en cours de construction (champs, parametres, alternatives) }
+  ModeTmpN  : Integer;
+  ModeTmpM  : Array[0..MAX_FIELD - 1] Of Integer;
+  ModeTmpS  : Array[0..MAX_FIELD - 1] Of TName;
+  ModeBadRec: Boolean;   { une taille a rencontre un mode recursif }
+
+Function ModeNewRaw(K : TModeKind) : Integer;
+Begin
+  If ModeCount >= MAX_MODE Then
+    FatalError('trop de modes (max ' + ItoS(MAX_MODE) + ')');
+  ModeTab[ModeCount].Kind  := K;
+  ModeTab[ModeCount].Sub   := 0;
+  ModeTab[ModeCount].Dims  := 0;
+  ModeTab[ModeCount].Flex  := False;
+  ModeTab[ModeCount].First := 0;
+  ModeTab[ModeCount].Count := 0;
+  ModeTab[ModeCount].Size  := -1;
+  ModeTab[ModeCount].Name  := '';
+  ModeNewRaw := ModeCount;
+  Inc(ModeCount);
+End;
+
+{ Suit les modes nommes en cours de definition jusqu au mode reel }
+Function ModeResolve(M : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := 0;
+  While (M >= 0) And (M < ModeCount) And (ModeTab[M].Kind = MK_FWD) And
+        (ModeTab[M].Sub <> 0) And (N < 64) Do
+  Begin
+    M := ModeTab[M].Sub;
+    Inc(N);
+  End;
+  ModeResolve := M;
+End;
+
+Function ModeKind(M : Integer) : TModeKind;
+Begin
+  ModeKind := ModeTab[ModeResolve(M)].Kind;
+End;
+
+Procedure ModeInit;
+Var
+  I : Integer;
+Begin
+  ModeCount := 0;
+  ModePoolCount := 0;
+  ModeTmpN := 0;
+  ModeBadRec := False;
+  For I := 0 To 7 Do
+    ModeNewRaw(TModeKind(I));        { MK_ERROR a MK_NIL, dans l ordre }
+  I := ModeNewRaw(MK_ROW);           { MD_STRING }
+  ModeTab[I].Sub  := MD_CHAR;
+  ModeTab[I].Dims := 1;
+  ModeTab[I].Flex := True;
+End;
+
+Function ModeRef(M : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ModeCount - 1 Do
+    If (ModeTab[I].Kind = MK_REF) And (ModeTab[I].Sub = M) Then
+    Begin
+      ModeRef := I;
+      Exit;
+    End;
+  I := ModeNewRaw(MK_REF);
+  ModeTab[I].Sub := M;
+  ModeRef := I;
+End;
+
+Function ModeRow(M, Dims : Integer; Flex : Boolean) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ModeCount - 1 Do
+    If (ModeTab[I].Kind = MK_ROW) And (ModeTab[I].Sub = M) And
+       (ModeTab[I].Dims = Dims) And (ModeTab[I].Flex = Flex) Then
+    Begin
+      ModeRow := I;
+      Exit;
+    End;
+  I := ModeNewRaw(MK_ROW);
+  ModeTab[I].Sub  := M;
+  ModeTab[I].Dims := Dims;
+  ModeTab[I].Flex := Flex;
+  ModeRow := I;
+End;
+
+{ Mode nomme dont la definition suit (MODE NODE = STRUCT(... REF NODE)) }
+Function ModeFwd(Const Name : TName) : Integer;
+Var
+  I : Integer;
+Begin
+  I := ModeNewRaw(MK_FWD);
+  ModeTab[I].Name := Name;
+  ModeFwd := I;
+End;
+
+Procedure ModeDefine(Fwd, Target : Integer);
+Begin
+  If (Fwd > 0) And (ModeTab[Fwd].Kind = MK_FWD) And
+     (ModeResolve(Target) <> Fwd) Then
+    ModeTab[Fwd].Sub := Target;
+End;
+
+{ ---- construction des modes a liste ---- }
+Procedure ModeTmpReset;
+Begin
+  ModeTmpN := 0;
+End;
+
+Procedure ModeTmpAdd(Const Name : TName; M, Line, Col : Integer);
+Begin
+  If ModeTmpN >= MAX_FIELD Then
+  Begin
+    ErrorAt(Line, Col, 'trop d''elements dans un mode (max ' +
+            ItoS(MAX_FIELD) + ')');
+    Exit;
+  End;
+  ModeTmpM[ModeTmpN] := M;
+  ModeTmpS[ModeTmpN] := Name;
+  Inc(ModeTmpN);
+End;
+
+Procedure ModePoolAdd(Const Name : TName; M : Integer);
+Begin
+  If ModePoolCount >= MAX_MODEPOOL Then
+    FatalError('trop de champs de modes (max ' + ItoS(MAX_MODEPOOL) +
+               ')');
+  ModePoolM[ModePoolCount] := M;
+  ModePoolN[ModePoolCount] := Name;
+  Inc(ModePoolCount);
+End;
+
+{ Les listes de ModeTab[I] et de la liste en cours sont-elles les
+  memes, element par element (indices et noms) ? }
+Function ModeSameList(I : Integer; UseNames : Boolean) : Boolean;
+Var
+  K : Integer;
+Begin
+  ModeSameList := False;
+  If ModeTab[I].Count <> ModeTmpN Then Exit;
+  For K := 0 To ModeTmpN - 1 Do
+  Begin
+    If ModePoolM[ModeTab[I].First + K] <> ModeTmpM[K] Then Exit;
+    If UseNames And
+       (ModePoolN[ModeTab[I].First + K] <> ModeTmpS[K]) Then Exit;
+  End;
+  ModeSameList := True;
+End;
+
+Procedure ModeFillFromTmp(I : Integer);
+Var
+  K : Integer;
+Begin
+  ModeTab[I].First := ModePoolCount;
+  ModeTab[I].Count := ModeTmpN;
+  For K := 0 To ModeTmpN - 1 Do
+    ModePoolAdd(ModeTmpS[K], ModeTmpM[K]);
+End;
+
+{ STRUCT(champs de la liste en cours) ; noms de champs distincts }
+Function ModeStructTmp(Line, Col : Integer) : Integer;
+Var
+  I, J, K : Integer;
+Begin
+  For J := 0 To ModeTmpN - 1 Do
+    For K := 0 To J - 1 Do
+      If ModeTmpS[J] = ModeTmpS[K] Then
+        ErrorAt(Line, Col, 'champ en double: ' + ModeTmpS[J]);
+  For I := 0 To ModeCount - 1 Do
+    If (ModeTab[I].Kind = MK_STRUCT) And ModeSameList(I, True) Then
+    Begin
+      ModeStructTmp := I;
+      ModeTmpN := 0;
+      Exit;
+    End;
+  I := ModeNewRaw(MK_STRUCT);
+  ModeFillFromTmp(I);
+  ModeTmpN := 0;
+  ModeStructTmp := I;
+End;
+
+{ PROC(parametres de la liste en cours) Result }
+Function ModeProcTmp(Result : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ModeCount - 1 Do
+    If (ModeTab[I].Kind = MK_PROC) And (ModeTab[I].Sub = Result) And
+       ModeSameList(I, False) Then
+    Begin
+      ModeProcTmp := I;
+      ModeTmpN := 0;
+      Exit;
+    End;
+  I := ModeNewRaw(MK_PROC);
+  ModeTab[I].Sub := Result;
+  ModeFillFromTmp(I);
+  ModeTmpN := 0;
+  ModeProcTmp := I;
+End;
+
+Function ModeSame(A, B : Integer) : Boolean; Forward;
+
+{ UNION(alternatives) : unions imbriquees aplaties, doublons retires,
+  alternatives triees par indice (l ordre n a pas d importance) }
+Function ModeUnionTmp(Line, Col : Integer) : Integer;
+Var
+  Alts  : Array[0..MAX_ALT - 1] Of Integer;
+  N     : Integer;
+  I, J, K, T, M, R : Integer;
+  Dup   : Boolean;
+
+  Procedure AddAlt(X : Integer);
+  Var
+    D : Integer;
+  Begin
+    Dup := False;
+    For D := 0 To N - 1 Do
+      If ModeSame(Alts[D], X) Then Dup := True;
+    If Not Dup Then
+    Begin
+      If N >= MAX_ALT Then
+        ErrorAt(Line, Col, 'trop d''alternatives dans une UNION (max ' +
+                ItoS(MAX_ALT) + ')')
+      Else
+      Begin
+        Alts[N] := X;
+        Inc(N);
+      End;
+    End;
+  End;
+
+Begin
+  N := 0;
+  For I := 0 To ModeTmpN - 1 Do
+  Begin
+    M := ModeResolve(ModeTmpM[I]);
+    If ModeTab[M].Kind = MK_VOID Then
+      ErrorAt(Line, Col, 'VOID ne peut pas etre une alternative d''UNION')
+    Else If ModeTab[M].Kind = MK_UNION Then
+    Begin
+      For K := 0 To ModeTab[M].Count - 1 Do
+        AddAlt(ModePoolM[ModeTab[M].First + K]);
+    End
+    Else
+      AddAlt(M);
+  End;
+  For J := 1 To N - 1 Do                 { tri par insertion }
+  Begin
+    T := Alts[J];
+    K := J - 1;
+    While (K >= 0) And (Alts[K] > T) Do
+    Begin
+      Alts[K + 1] := Alts[K];
+      Dec(K);
+    End;
+    Alts[K + 1] := T;
+  End;
+  ModeTmpN := 0;
+  For I := 0 To N - 1 Do
+    ModeTmpAdd('', Alts[I], Line, Col);
+  R := -1;
+  For I := 0 To ModeCount - 1 Do
+    If (R < 0) And (ModeTab[I].Kind = MK_UNION) And
+       ModeSameList(I, False) Then
+      R := I;
+  If R < 0 Then
+  Begin
+    R := ModeNewRaw(MK_UNION);
+    ModeFillFromTmp(R);
+  End;
+  ModeTmpN := 0;
+  ModeUnionTmp := R;
+End;
+
+{ ---- equivalence structurelle (recursion comprise) ---- }
+Var
+  EqA, EqB : Array[0..31] Of Integer;
+  EqN      : Integer;
+
+Function ModeSame(A, B : Integer) : Boolean;
+Var
+  K     : Integer;
+  Same  : Boolean;
+Begin
+  A := ModeResolve(A);
+  B := ModeResolve(B);
+  If A = B Then
+  Begin
+    ModeSame := True;
+    Exit;
+  End;
+  ModeSame := False;
+  If ModeTab[A].Kind <> ModeTab[B].Kind Then Exit;
+  { paire deja en cours de comparaison : supposee equivalente }
+  For K := 0 To EqN - 1 Do
+    If (EqA[K] = A) And (EqB[K] = B) Then
+    Begin
+      ModeSame := True;
+      Exit;
+    End;
+  If EqN >= 32 Then Exit;
+  EqA[EqN] := A;
+  EqB[EqN] := B;
+  Inc(EqN);
+  Same := False;
+  Case ModeTab[A].Kind Of
+    MK_REF:
+      Same := ModeSame(ModeTab[A].Sub, ModeTab[B].Sub);
+    MK_ROW:
+      Same := (ModeTab[A].Dims = ModeTab[B].Dims) And
+              (ModeTab[A].Flex = ModeTab[B].Flex) And
+              ModeSame(ModeTab[A].Sub, ModeTab[B].Sub);
+    MK_PROC, MK_STRUCT, MK_UNION:
+      Begin
+        Same := (ModeTab[A].Count = ModeTab[B].Count);
+        If Same And (ModeTab[A].Kind = MK_PROC) Then
+          Same := ModeSame(ModeTab[A].Sub, ModeTab[B].Sub);
+        K := 0;
+        While Same And (K < ModeTab[A].Count) Do
+        Begin
+          If ModeTab[A].Kind = MK_STRUCT Then
+            Same := ModePoolN[ModeTab[A].First + K] =
+                    ModePoolN[ModeTab[B].First + K];
+          If Same Then
+            Same := ModeSame(ModePoolM[ModeTab[A].First + K],
+                             ModePoolM[ModeTab[B].First + K]);
+          Inc(K);
+        End;
+      End;
+  End;
+  Dec(EqN);
+  ModeSame := Same;
+End;
+
+{ ---- predicats et acces ---- }
+Function ModeIsRef(M : Integer) : Boolean;
+Begin
+  ModeIsRef := ModeKind(M) = MK_REF;
+End;
+
+{ mode apres retrait d un niveau de REF (le mode lui-meme sinon) }
+Function ModeDeref1(M : Integer) : Integer;
+Begin
+  M := ModeResolve(M);
+  If ModeTab[M].Kind = MK_REF Then
+    ModeDeref1 := ModeResolve(ModeTab[M].Sub)
+  Else
+    ModeDeref1 := M;
+End;
+
+{ mode apres retrait de tous les REF }
+Function ModeDeref(M : Integer) : Integer;
+Begin
+  M := ModeResolve(M);
+  While ModeTab[M].Kind = MK_REF Do
+    M := ModeResolve(ModeTab[M].Sub);
+  ModeDeref := M;
+End;
+
+Function ModeIsNumeric(M : Integer) : Boolean;
+Begin
+  M := ModeResolve(M);
+  ModeIsNumeric := ModeTab[M].Kind In [MK_INT, MK_REAL];
+End;
+
+Function ModeIsString(M : Integer) : Boolean;
+Begin
+  ModeIsString := ModeSame(M, MD_STRING);
+End;
+
+Function ModeFieldCount(M : Integer) : Integer;
+Begin
+  ModeFieldCount := ModeTab[ModeResolve(M)].Count;
+End;
+
+Function ModeFieldName(M, I : Integer) : TName;
+Begin
+  M := ModeResolve(M);
+  ModeFieldName := ModePoolN[ModeTab[M].First + I];
+End;
+
+Function ModeFieldMode(M, I : Integer) : Integer;
+Begin
+  M := ModeResolve(M);
+  ModeFieldMode := ModePoolM[ModeTab[M].First + I];
+End;
+
+{ indice du champ de ce nom dans une structure ; -1 si absent }
+Function ModeFindField(M : Integer; Const Name : TName) : Integer;
+Var
+  I : Integer;
+Begin
+  ModeFindField := -1;
+  M := ModeResolve(M);
+  If ModeTab[M].Kind <> MK_STRUCT Then Exit;
+  For I := 0 To ModeTab[M].Count - 1 Do
+    If ModePoolN[ModeTab[M].First + I] = Name Then
+      ModeFindField := I;
+End;
+
+{ le mode M est-il une alternative de l union U ? }
+Function ModeUnionHas(U, M : Integer) : Boolean;
+Var
+  I : Integer;
+Begin
+  ModeUnionHas := False;
+  U := ModeResolve(U);
+  If ModeTab[U].Kind <> MK_UNION Then Exit;
+  For I := 0 To ModeTab[U].Count - 1 Do
+    If ModeSame(ModePoolM[ModeTab[U].First + I], M) Then
+      ModeUnionHas := True;
+End;
+
+{ ---- representation en memoire ---- }
+Function ModeSize(M : Integer) : LongInt;
+Var
+  K     : Integer;
+  Total : LongInt;
+  Max   : LongInt;
+  S     : LongInt;
+Begin
+  M := ModeResolve(M);
+  If ModeTab[M].Size = -2 Then
+  Begin
+    ModeBadRec := True;              { recursion sans REF }
+    ModeSize := 0;
+    Exit;
+  End;
+  If ModeTab[M].Size >= 0 Then
+  Begin
+    ModeSize := ModeTab[M].Size;
+    Exit;
+  End;
+  ModeTab[M].Size := -2;
+  Total := 0;
+  Case ModeTab[M].Kind Of
+    MK_ERROR, MK_FWD : Total := 4;
+    MK_VOID          : Total := 0;
+    MK_INT, MK_BOOL, MK_CHAR, MK_BITS, MK_NIL, MK_REF : Total := 4;
+    MK_REAL          : Total := 8;
+    MK_PROC          : Total := 8;       { entree + lien statique }
+    MK_ROW           : Total := ROW_DESC_BASE +
+                                ROW_DESC_DIM * ModeTab[M].Dims;
+    MK_STRUCT:
+      For K := 0 To ModeTab[M].Count - 1 Do
+        Total := Total + ModeSize(ModePoolM[ModeTab[M].First + K]);
+    MK_UNION:
+      Begin
+        Max := 0;
+        For K := 0 To ModeTab[M].Count - 1 Do
+        Begin
+          S := ModeSize(ModePoolM[ModeTab[M].First + K]);
+          If S > Max Then Max := S;
+        End;
+        Total := 4 + Max;                { etiquette + valeur }
+      End;
+  End;
+  ModeTab[M].Size := Total;
+  ModeSize := Total;
+End;
+
+{ decalage d un champ dans une structure }
+Function ModeFieldOffset(M, I : Integer) : LongInt;
+Var
+  K   : Integer;
+  Off : LongInt;
+Begin
+  M := ModeResolve(M);
+  Off := 0;
+  For K := 0 To I - 1 Do
+    Off := Off + ModeSize(ModePoolM[ModeTab[M].First + K]);
+  ModeFieldOffset := Off;
+End;
+
+{ taille d un element de tableau : 1 octet pour un CHAR }
+Function ModeElemSize(Row : Integer) : LongInt;
+Var
+  E : Integer;
+Begin
+  E := ModeResolve(ModeTab[ModeResolve(Row)].Sub);
+  If ModeTab[E].Kind = MK_CHAR Then
+    ModeElemSize := 1
+  Else
+    ModeElemSize := ModeSize(E);
+End;
+
+{ ---- noms des modes (messages d erreur et mode -d) ---- }
+Function ModeName(M : Integer) : TString;
+Var
+  S : TString;
+  K : Integer;
+Begin
+  If (M < 0) Or (M >= ModeCount) Then
+  Begin
+    ModeName := '?';
+    Exit;
+  End;
+  S := '';
+  Case ModeTab[M].Kind Of
+    MK_ERROR : S := '<erreur>';
+    MK_VOID  : S := 'VOID';
+    MK_INT   : S := 'INT';
+    MK_REAL  : S := 'REAL';
+    MK_BOOL  : S := 'BOOL';
+    MK_CHAR  : S := 'CHAR';
+    MK_BITS  : S := 'BITS';
+    MK_NIL   : S := 'NIL';
+    MK_FWD   : S := ModeTab[M].Name;
+    MK_REF   : S := 'REF ' + ModeName(ModeTab[M].Sub);
+    MK_ROW:
+      Begin
+        If M = MD_STRING Then
+          S := 'STRING'
+        Else
+        Begin
+          If ModeTab[M].Flex Then S := 'FLEX ';
+          S := S + '[';
+          For K := 2 To ModeTab[M].Dims Do
+            S := S + ',';
+          S := S + ']' + ModeName(ModeTab[M].Sub);
+        End;
+      End;
+    MK_STRUCT:
+      Begin
+        S := 'STRUCT(';
+        For K := 0 To ModeTab[M].Count - 1 Do
+        Begin
+          If K > 0 Then S := S + ', ';
+          S := S + ModeName(ModePoolM[ModeTab[M].First + K]) + ' ' +
+               ModePoolN[ModeTab[M].First + K];
+        End;
+        S := S + ')';
+      End;
+    MK_UNION:
+      Begin
+        S := 'UNION(';
+        For K := 0 To ModeTab[M].Count - 1 Do
+        Begin
+          If K > 0 Then S := S + ', ';
+          S := S + ModeName(ModePoolM[ModeTab[M].First + K]);
+        End;
+        S := S + ')';
+      End;
+    MK_PROC:
+      Begin
+        S := 'PROC';
+        If ModeTab[M].Count > 0 Then
+        Begin
+          S := S + '(';
+          For K := 0 To ModeTab[M].Count - 1 Do
+          Begin
+            If K > 0 Then S := S + ', ';
+            S := S + ModeName(ModePoolM[ModeTab[M].First + K]);
+          End;
+          S := S + ')';
+        End;
+        S := S + ' ' + ModeName(ModeTab[M].Sub);
+      End;
+  End;
+  ModeName := S;
+End;
+
+{ Mode debug -d : liste des modes }
+Procedure ModeDump;
+Var
+  I : Integer;
+Begin
+  WriteLn('Modes (', ModeCount, ') :');
+  For I := 0 To ModeCount - 1 Do
+  Begin
+    Write(I:4, '  ', ModeName(I));
+    If ModeTab[I].Kind <> MK_FWD Then
+      Write('  ', ModeSize(I), ' octets');
+    WriteLn;
+  End;
+End;
 
 { ============================================================
   SECTION 8 - TABLE DES SYMBOLES ET PORTEES (TODO 05)
@@ -1912,6 +2572,8 @@ Begin
   ErrorCount := 0;
   WarnCount  := 0;
   OutCreatedN := 0;
+  ModeInit;
+  If Opts.DebugMode Then ModeDump;
   If Opts.Verbose Then
   Begin
     ShowBanner;
