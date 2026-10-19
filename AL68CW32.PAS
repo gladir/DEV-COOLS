@@ -28,9 +28,9 @@
     TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 et 02 implementes (squelette en sections, pipeline en 7
-         phases, options, constantes, limites et nommage) ;
-         TODO 03 a 25 a faire.
+  ETAT : TODO 01 a 03 implementes (squelette en sections, pipeline en 7
+         phases, options, constantes, limites et nommage, lexeur) ;
+         TODO 04 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -150,10 +150,12 @@
               -o vers un .asm ou vers le source -> refus ; fichiers
               nommes par defaut (.exe, .obj, .asm) pour -o, -obj, -asm
 
-  TODO 03 - LEXEUR ALGOL 68 [A FAIRE]
-            TTokenKind : TK_EOF, TK_INT, TK_REAL, TK_STRING, TK_CHAR,
-              TK_TAG (identificateur en minuscules), TK_BOLD (mot en
-              majuscules), TK_OP (symbole d'operateur), TK_PUNCT
+  TODO 03 - LEXEUR ALGOL 68 [IMPLEMENTE]
+            TTokenKind : TK_EOF, TK_INT, TK_REAL, TK_BOOL, TK_CHAR,
+              TK_STRING, TK_TAG (identificateur contenant une
+              minuscule), TK_KEYWORD (mot reserve de la syntaxe), TK_BOLD
+              (autre mot en majuscules : nom de mode ou d'operateur),
+              TK_OP (symbole d'operateur), TK_PUNCT
             Format libre, suivi de ligne et colonne pour les erreurs
             Mots en majuscules = mots reserves ou noms de modes et
               d'operateurs ; table des mots reserves du TODO 01
@@ -171,6 +173,25 @@
             Mode debug -d : afficher chaque token
             Verification : hello.a68 (denotations), test_formula.a68
               (tous les operateurs)
+            Realise : source charge en memoire (LexLoad, LexAt avec
+              regard en avant de plusieurs caracteres) ; PhaseLex range
+              tous les tokens dans TokTab (EOF inclus), ce qui permet au
+              parseur de regarder en avant ; denotations de chaines dans
+              LitTab ; mots reserves dans KeywordTab ; &, ~, :=: et :/=:
+              donnent AND, NOT, IS et ISNT ; GO suivi de TO devient GOTO ;
+              nombres en base (16rFF, 2r1010) avec controle de la base et
+              des chiffres ; un seul caractere "A" donne TK_CHAR, ""
+              donne une chaine vide ; erreurs : caractere invalide,
+              chaine non fermee ou trop longue, commentaire non termine
+              (mot ou dieze attendu), entier, exposant ou reel hors
+              limites, base invalide, identificateur trop long
+            Verifie : les 27 exemples sont lus sans erreur (de 18 tokens
+              pour test_dataseg a 353 pour control) ; tous les symboles
+              composes (+:= -:= *:= /:= %:= %*:= =: := :=: :/=: +* ** /=
+              <= >= |: et les autres), les trois formes de commentaires
+              et les pragmats, les denotations (3.14, .5e2, 1.5e-3, 2e5,
+              16rFF), GO TO et les erreurs ci-dessus donnent le resultat
+              attendu avec -d
 
   TODO 04 - MODES (TYPES) ET LEUR REPRESENTATION [A FAIRE]
             Modes de base : INT (32 bits), REAL (64 bits, x87), BOOL,
@@ -634,6 +655,10 @@ Const
   MAX_LOOP_NEST = 32;     { imbrication maximale des boucles           }
   MAX_ERRORS    = 30;     { arret apres ce nombre d erreurs            }
   MAX_STR       = 255;    { longueur maximale d une chaine litterale   }
+  MAX_NAME      = 63;     { longueur maximale d un identificateur      }
+  MAX_SRC       = {$IFDEF FPC}1048576{$ELSE}32000{$ENDIF}; { taille source }
+  MAX_TOKEN     = {$IFDEF FPC}65536{$ELSE}2048{$ENDIF};    { tokens         }
+  MAX_STRLIT    = {$IFDEF FPC}4096{$ELSE}128{$ENDIF};      { denotations    }
 
   { ---- Prefixes de nommage ASM ---- }
   A68_VAR_PFX   = '_A68V_';     { variable ou identite                 }
@@ -648,10 +673,39 @@ Const
   A68_MAIN_NAME = '_A68P_Main'; { point d entree du programme          }
 
 { ============================================================
-  SECTION 2 - TYPES (TODO 01, 03, 04, 05)
+  SECTION 2 - TYPES (TODO 01, 02, 03, 04, 05)
   ============================================================ }
 Type
   TString = String[255];
+
+  TName = String[MAX_NAME];
+
+  { Tokens du lexeur (TODO 03) : les mots en majuscules sont soit des
+    mots reserves de la syntaxe (TK_KEYWORD), soit d autres mots en
+    majuscules (TK_BOLD : noms de modes et d operateurs, resolus par la
+    table des symboles) ; un identificateur contient une minuscule }
+  TTokenKind = (
+    TK_EOF,
+    TK_INT,        { denotation entiere (IntVal)                      }
+    TK_REAL,       { denotation reelle (RealVal)                      }
+    TK_BOOL,       { TRUE ou FALSE (IntVal = 1 ou 0)                  }
+    TK_CHAR,       { denotation d un caractere (IntVal = code)        }
+    TK_STRING,     { denotation de chaine (IntVal = indice LitTab)    }
+    TK_TAG,        { identificateur                                   }
+    TK_KEYWORD,    { mot reserve de la syntaxe                        }
+    TK_BOLD,       { autre mot en majuscules                          }
+    TK_OP,         { symbole d operateur ou d affectation             }
+    TK_PUNCT       { ; , ( ) [ ] : | et |:                            }
+  );
+
+  TToken = Record
+    Kind    : TTokenKind;
+    Val     : TName;       { texte ; symboles normalises            }
+    IntVal  : LongInt;     { TK_INT, TK_BOOL, TK_CHAR, TK_STRING    }
+    RealVal : Double;      { TK_REAL (et TK_INT)                    }
+    Line    : Integer;
+    Col     : Integer;
+  End;
 
   { Options de la ligne de commande (TODO 02) }
   TOptions = Record
@@ -1089,9 +1143,688 @@ End;
 { ============================================================
   SECTION 6 - LEXEUR (TODO 03)
   ============================================================ }
-Procedure PhaseLex;
+Const
+  KEYWORD_COUNT = 50;
+  KeywordTab : Array[1..KEYWORD_COUNT] Of String[7] = (
+    'BEGIN', 'END', 'IF', 'THEN', 'ELIF', 'ELSE', 'FI', 'CASE', 'IN',
+    'OUSE', 'OUT', 'ESAC', 'FOR', 'FROM', 'BY', 'TO', 'DOWNTO', 'WHILE',
+    'DO', 'OD', 'MODE', 'STRUCT', 'UNION', 'PROC', 'OP', 'PRIO', 'REF',
+    'HEAP', 'LOC', 'INT', 'REAL', 'BOOL', 'CHAR', 'STRING', 'BITS',
+    'BYTES', 'COMPL', 'VOID', 'FLEX', 'PAR', 'GOTO', 'SKIP', 'NIL',
+    'EMPTY', 'OF', 'IS', 'ISNT', 'AT', 'EXIT', 'LONG'
+  );
+
+Var
+  SrcBuf     : Array[0..MAX_SRC] Of Char;  { source en memoire }
+  SrcLen     : LongInt;
+  LexPos     : LongInt;    { indice du caractere courant          }
+  LexLine    : Integer;    { ligne du caractere courant           }
+  LexCol     : Integer;    { colonne du caractere courant         }
+  TokTab     : Array[0..MAX_TOKEN - 1] Of TToken;
+  TokCount   : LongInt;    { tokens ranges dans TokTab (EOF inclus)}
+  LitTab     : Array[0..MAX_STRLIT - 1] Of TString;
+  LitCount   : LongInt;    { denotations de chaines               }
+
+{ Charge le fichier source en memoire }
+Procedure LexLoad;
+Var
+  F : File;
+  N : LongInt;
 Begin
-  { A faire : TODO 03 }
+  Assign(F, Opts.SrcFile);
+  Reset(F, 1);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le source: ' + Opts.SrcFile);
+  BlockRead(F, SrcBuf, MAX_SRC, N);
+  If (IOResult <> 0) Or (N < 0) Then N := 0;
+  If N >= MAX_SRC Then
+  Begin
+    Close(F);
+    FatalError('source trop volumineux (max ' + ItoS(MAX_SRC) +
+               ' octets)');
+  End;
+  Close(F);
+  SrcLen := N;
+  SrcBuf[SrcLen] := #0;
+  LexPos  := 0;
+  LexLine := 1;
+  LexCol  := 1;
+End;
+
+{ Caractere a LexPos + K ; #0 a la fin (un NUL reel est invalide) }
+Function LexAt(K : LongInt) : Char;
+Begin
+  If LexPos + K >= SrcLen Then
+    LexAt := #0
+  Else If SrcBuf[LexPos + K] = #0 Then
+    LexAt := #1
+  Else
+    LexAt := SrcBuf[LexPos + K];
+End;
+
+Function LexCur : Char;
+Begin
+  LexCur := LexAt(0);
+End;
+
+Procedure LexNextChar;
+Begin
+  If LexPos >= SrcLen Then Exit;
+  If SrcBuf[LexPos] = #10 Then
+  Begin
+    Inc(LexLine);
+    LexCol := 1;
+  End
+  Else
+    Inc(LexCol);
+  Inc(LexPos);
+End;
+
+Function LexAtEnd : Boolean;
+Begin
+  LexAtEnd := LexPos >= SrcLen;
+End;
+
+Function IsLetter(C : Char) : Boolean;
+Begin
+  IsLetter := C In ['A'..'Z', 'a'..'z'];
+End;
+
+Function IsDigit(C : Char) : Boolean;
+Begin
+  IsDigit := C In ['0'..'9'];
+End;
+
+Function IsWordChar(C : Char) : Boolean;
+Begin
+  IsWordChar := C In ['A'..'Z', 'a'..'z', '0'..'9', '_'];
+End;
+
+Function IsKeyword(Const W : TName) : Boolean;
+Var
+  I : Integer;
+Begin
+  IsKeyword := False;
+  For I := 1 To KEYWORD_COUNT Do
+    If KeywordTab[I] = W Then
+    Begin
+      IsKeyword := True;
+      Exit;
+    End;
+End;
+
+Function TokenKindName(K : TTokenKind) : TString;
+Begin
+  Case K Of
+    TK_EOF     : TokenKindName := 'EOF';
+    TK_INT     : TokenKindName := 'INT';
+    TK_REAL    : TokenKindName := 'REAL';
+    TK_BOOL    : TokenKindName := 'BOOL';
+    TK_CHAR    : TokenKindName := 'CHAR';
+    TK_STRING  : TokenKindName := 'STRING';
+    TK_TAG     : TokenKindName := 'TAG';
+    TK_KEYWORD : TokenKindName := 'KEYWORD';
+    TK_BOLD    : TokenKindName := 'BOLD';
+    TK_OP      : TokenKindName := 'OP';
+    TK_PUNCT   : TokenKindName := 'PUNCT';
+  End;
+End;
+
+{ Mot : lettres, chiffres et soulignes. Un mot sans minuscule est un
+  mot en majuscules (mot reserve ou nom de mode / d operateur). }
+Procedure LexScanWord(Var T : TToken);
+Var
+  HasLower : Boolean;
+  TooLong  : Boolean;
+Begin
+  T.Val := '';
+  HasLower := False;
+  TooLong  := False;
+  While IsWordChar(LexCur) Do
+  Begin
+    If LexCur In ['a'..'z'] Then HasLower := True;
+    If Length(T.Val) < MAX_NAME Then
+      T.Val := T.Val + LexCur
+    Else If Not TooLong Then
+    Begin
+      ErrorAt(T.Line, T.Col, 'identificateur trop long (max ' +
+              ItoS(MAX_NAME) + ' caracteres)');
+      TooLong := True;
+    End;
+    LexNextChar;
+  End;
+  If HasLower Then
+    T.Kind := TK_TAG
+  Else If (T.Val = 'TRUE') Or (T.Val = 'FALSE') Then
+  Begin
+    T.Kind := TK_BOOL;
+    If T.Val = 'TRUE' Then T.IntVal := 1 Else T.IntVal := 0;
+  End
+  Else If IsKeyword(T.Val) Then
+    T.Kind := TK_KEYWORD
+  Else
+    T.Kind := TK_BOLD;
+End;
+
+{ Valeur d un chiffre en base 16 ; -1 si ce n est pas un chiffre }
+Function DigitValue(C : Char) : Integer;
+Begin
+  If C In ['0'..'9'] Then
+    DigitValue := Ord(C) - Ord('0')
+  Else If C In ['a'..'f'] Then
+    DigitValue := Ord(C) - Ord('a') + 10
+  Else If C In ['A'..'F'] Then
+    DigitValue := Ord(C) - Ord('A') + 10
+  Else
+    DigitValue := -1;
+End;
+
+{ Nombre : entier (123), entier en base (16rFF), reel (3.14, .5,
+  1.5e-3, 2e5) }
+Procedure LexScanNumber(Var T : TToken);
+Var
+  IntOvf  : Boolean;
+  IsReal  : Boolean;
+  Mant    : Double;
+  E10     : Integer;
+  ExpV    : Integer;
+  ExpNeg  : Boolean;
+  Digit   : Integer;
+  I, N    : Integer;
+  P       : Double;
+  Base    : LongInt;
+  BaseOK  : Boolean;
+Begin
+  T.Val := '';
+  T.IntVal := 0;
+  IntOvf := False;
+  IsReal := False;
+  Mant := 0;
+  E10 := 0;
+
+  { partie entiere }
+  While IsDigit(LexCur) Do
+  Begin
+    Digit := Ord(LexCur) - Ord('0');
+    If T.IntVal > (MaxLongInt - Digit) Div 10 Then
+      IntOvf := True
+    Else
+      T.IntVal := T.IntVal * 10 + Digit;
+    Mant := Mant * 10 + Digit;
+    If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
+    LexNextChar;
+  End;
+
+  { entier en base : <base>r<chiffres> }
+  If (LexCur = 'r') And (DigitValue(LexAt(1)) >= 0) And Not IsReal And
+     (T.Val <> '') And (Length(T.Val) <= 2) Then
+  Begin
+    Base := T.IntVal;
+    BaseOK := (Base >= 2) And (Base <= 16);
+    If Not BaseOK Then
+      ErrorAt(T.Line, T.Col, 'base invalide: ' + T.Val + 'r');
+    If Length(T.Val) < MAX_NAME Then T.Val := T.Val + 'r';
+    LexNextChar;
+    T.IntVal := 0;
+    IntOvf := False;
+    While DigitValue(LexCur) >= 0 Do
+    Begin
+      Digit := DigitValue(LexCur);
+      If BaseOK And (Digit >= Base) Then
+      Begin
+        ErrorAt(LexLine, LexCol, 'chiffre invalide en base ' +
+                ItoS(Base) + ': ' + LexCur);
+        BaseOK := False;
+      End;
+      If T.IntVal > (MaxLongInt - Digit) Div Base Then
+        IntOvf := True
+      Else
+        T.IntVal := T.IntVal * Base + Digit;
+      If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
+      LexNextChar;
+    End;
+    T.Kind := TK_INT;
+    If IntOvf Then
+    Begin
+      ErrorAt(T.Line, T.Col, 'entier hors limites: ' + T.Val);
+      T.IntVal := MaxLongInt;
+    End;
+    T.RealVal := T.IntVal;
+    Exit;
+  End;
+
+  { partie fractionnaire : le point doit etre suivi d un chiffre }
+  If (LexCur = '.') And IsDigit(LexAt(1)) Then
+  Begin
+    IsReal := True;
+    If Length(T.Val) < MAX_NAME Then T.Val := T.Val + '.';
+    LexNextChar;
+    While IsDigit(LexCur) Do
+    Begin
+      Mant := Mant * 10 + (Ord(LexCur) - Ord('0'));
+      Dec(E10);
+      If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
+      LexNextChar;
+    End;
+  End;
+
+  { exposant : e ou E suivi de [+|-] chiffres }
+  If (LexCur In ['E', 'e']) And
+     (IsDigit(LexAt(1)) Or
+      ((LexAt(1) In ['+', '-']) And IsDigit(LexAt(2)))) Then
+  Begin
+    IsReal := True;
+    If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
+    LexNextChar;
+    ExpNeg := False;
+    If LexCur In ['+', '-'] Then
+    Begin
+      ExpNeg := (LexCur = '-');
+      If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
+      LexNextChar;
+    End;
+    ExpV := 0;
+    While IsDigit(LexCur) Do
+    Begin
+      If ExpV < 10000 Then
+        ExpV := ExpV * 10 + (Ord(LexCur) - Ord('0'));
+      If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
+      LexNextChar;
+    End;
+    If ExpNeg Then ExpV := -ExpV;
+    E10 := E10 + ExpV;
+  End;
+
+  If IsReal Then
+  Begin
+    T.Kind := TK_REAL;
+    If (E10 > 308) Or (E10 < -308) Then
+    Begin
+      ErrorAt(T.Line, T.Col, 'exposant hors limites: ' + T.Val);
+      T.RealVal := 0;
+    End
+    Else
+    Begin
+      P := 1;
+      N := Abs(E10);
+      For I := 1 To N Do
+        P := P * 10;
+      If E10 < 0 Then
+        T.RealVal := Mant / P
+      Else
+        T.RealVal := Mant * P;
+      If RealBad(T.RealVal) Then
+      Begin
+        ErrorAt(T.Line, T.Col, 'reel hors limites: ' + T.Val);
+        T.RealVal := 0;
+      End;
+    End;
+  End
+  Else
+  Begin
+    T.Kind := TK_INT;
+    If IntOvf Then
+    Begin
+      ErrorAt(T.Line, T.Col, 'entier hors limites: ' + T.Val);
+      T.IntVal := MaxLongInt;
+    End;
+    T.RealVal := T.IntVal;
+  End;
+End;
+
+{ "texte" : un guillemet double s ecrit "" ; sur une seule ligne.
+  Un seul caractere donne une denotation CHAR, sinon STRING. }
+Procedure LexScanString(Var T : TToken);
+Var
+  S       : TString;
+  TooLong : Boolean;
+  Closed  : Boolean;
+Begin
+  S := '';
+  TooLong := False;
+  Closed  := False;
+  LexNextChar;                           { guillemet ouvrant }
+  While (LexCur <> #10) And Not LexAtEnd And Not Closed Do
+  Begin
+    If LexCur = '"' Then
+    Begin
+      If LexAt(1) = '"' Then
+      Begin
+        S := S + '"';
+        LexNextChar;
+        LexNextChar;
+      End
+      Else
+        Closed := True;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + LexCur
+      Else If Not TooLong Then
+      Begin
+        ErrorAt(T.Line, T.Col, 'chaine trop longue (max ' +
+                ItoS(MAX_STR) + ' caracteres)');
+        TooLong := True;                 { une seule erreur par chaine }
+      End;
+      LexNextChar;
+    End;
+  End;
+  If Closed Then
+    LexNextChar
+  Else
+    ErrorAt(T.Line, T.Col, 'chaine non fermee');
+  If Length(S) = 1 Then
+  Begin
+    T.Kind   := TK_CHAR;
+    T.IntVal := Ord(S[1]);
+    T.Val    := S;
+  End
+  Else
+  Begin
+    T.Kind := TK_STRING;
+    If LitCount >= MAX_STRLIT Then
+      FatalError('trop de denotations de chaines (max ' +
+                 ItoS(MAX_STRLIT) + ')');
+    LitTab[LitCount] := S;
+    T.IntVal := LitCount;
+    Inc(LitCount);
+    T.Val := Copy(S, 1, MAX_NAME);
+  End;
+End;
+
+{ Commentaire entre dieses : # ... # (le # ouvrant est deja lu) }
+Procedure LexSkipHash(StartLine, StartCol : Integer);
+Begin
+  While (LexCur <> '#') And Not LexAtEnd Do
+    LexNextChar;
+  If LexCur = '#' Then
+    LexNextChar
+  Else
+    ErrorAt(StartLine, StartCol, 'commentaire non termine (# attendu)');
+End;
+
+{ Commentaire ou pragmat introduit par un mot en majuscules (CO,
+  COMMENT, PR, PRAGMAT) : ignore jusqu au meme mot, isole, qui le ferme }
+Procedure LexSkipWord(Const W : TName; StartLine, StartCol : Integer);
+Var
+  Cand   : TName;
+  Closed : Boolean;
+Begin
+  Closed := False;
+  While Not Closed And Not LexAtEnd Do
+  Begin
+    If IsLetter(LexCur) Then
+    Begin
+      Cand := '';
+      While IsWordChar(LexCur) Do
+      Begin
+        If Length(Cand) < MAX_NAME Then Cand := Cand + LexCur;
+        LexNextChar;
+      End;
+      If Cand = W Then Closed := True;
+    End
+    Else
+      LexNextChar;
+  End;
+  If Not Closed Then
+    ErrorAt(StartLine, StartCol, 'commentaire non termine (' + W +
+            ' attendu)');
+End;
+
+Function CommentWord(Const W : TName) : Boolean;
+Begin
+  CommentWord := (W = 'CO') Or (W = 'COMMENT') Or (W = 'PR') Or
+                 (W = 'PRAGMAT');
+End;
+
+{ Un token brut ; les commentaires et pragmats sont ignores }
+Procedure LexScanToken(Var T : TToken);
+Var
+  Done : Boolean;
+  C    : Char;
+Begin
+  Repeat
+    While LexCur In [' ', #9, #10, #12, #13] Do
+      LexNextChar;
+    T.Line := LexLine;
+    T.Col  := LexCol;
+    T.Val  := '';
+    T.IntVal := 0;
+    T.RealVal := 0;
+    C := LexCur;
+    Done := True;
+    If LexAtEnd Then
+      T.Kind := TK_EOF
+    Else If IsLetter(C) Then
+    Begin
+      LexScanWord(T);
+      If (T.Kind = TK_BOLD) And CommentWord(T.Val) Then
+      Begin
+        LexSkipWord(T.Val, T.Line, T.Col);
+        Done := False;
+      End;
+    End
+    Else If IsDigit(C) Or ((C = '.') And IsDigit(LexAt(1))) Then
+      LexScanNumber(T)
+    Else If C = '"' Then
+      LexScanString(T)
+    Else If C = '#' Then
+    Begin
+      LexNextChar;
+      LexSkipHash(T.Line, T.Col);
+      Done := False;
+    End
+    Else
+    Begin
+      T.Kind := TK_OP;
+      T.Val  := C;
+      Case C Of
+        '+', '-':
+          Begin
+            LexNextChar;
+            If (LexCur = ':') And (LexAt(1) = '=') Then
+            Begin
+              T.Val := T.Val + ':=';           { +:= et -:= }
+              LexNextChar;
+              LexNextChar;
+            End
+            Else If (C = '+') And (LexCur = '*') Then
+            Begin
+              T.Val := '+*';
+              LexNextChar;
+            End;
+          End;
+        '*':
+          Begin
+            LexNextChar;
+            If (LexCur = ':') And (LexAt(1) = '=') Then
+            Begin
+              T.Val := '*:=';
+              LexNextChar;
+              LexNextChar;
+            End
+            Else If LexCur = '*' Then
+            Begin
+              T.Val := '**';
+              LexNextChar;
+            End;
+          End;
+        '/':
+          Begin
+            LexNextChar;
+            If (LexCur = ':') And (LexAt(1) = '=') Then
+            Begin
+              T.Val := '/:=';
+              LexNextChar;
+              LexNextChar;
+            End
+            Else If LexCur = '=' Then
+            Begin
+              T.Val := '/=';
+              LexNextChar;
+            End;
+          End;
+        '%':
+          Begin
+            LexNextChar;
+            If (LexCur = ':') And (LexAt(1) = '=') Then
+            Begin
+              T.Val := '%:=';
+              LexNextChar;
+              LexNextChar;
+            End
+            Else If (LexCur = '*') And (LexAt(1) = ':') And
+                    (LexAt(2) = '=') Then
+            Begin
+              T.Val := '%*:=';
+              LexNextChar;
+              LexNextChar;
+              LexNextChar;
+            End
+            Else If LexCur = '*' Then
+            Begin
+              T.Val := '%*';
+              LexNextChar;
+            End;
+          End;
+        '=':
+          Begin
+            LexNextChar;
+            If LexCur = ':' Then
+            Begin
+              T.Val := '=:';                   { affectation inversee }
+              LexNextChar;
+            End;
+          End;
+        '<', '>':
+          Begin
+            LexNextChar;
+            If LexCur = '=' Then
+            Begin
+              T.Val := T.Val + '=';
+              LexNextChar;
+            End;
+          End;
+        '&':
+          Begin
+            T.Kind := TK_BOLD;                 { & equivaut a AND }
+            T.Val  := 'AND';
+            LexNextChar;
+          End;
+        '~':
+          Begin
+            T.Kind := TK_BOLD;                 { ~ equivaut a NOT }
+            T.Val  := 'NOT';
+            LexNextChar;
+          End;
+        ':':
+          Begin
+            LexNextChar;
+            If LexCur = '=' Then
+            Begin
+              LexNextChar;
+              If LexCur = ':' Then
+              Begin
+                T.Kind := TK_KEYWORD;          { :=: equivaut a IS }
+                T.Val  := 'IS';
+                LexNextChar;
+              End
+              Else
+                T.Val := ':=';
+            End
+            Else If (LexCur = '/') And (LexAt(1) = '=') And
+                    (LexAt(2) = ':') Then
+            Begin
+              T.Kind := TK_KEYWORD;            { :/=: equivaut a ISNT }
+              T.Val  := 'ISNT';
+              LexNextChar;
+              LexNextChar;
+              LexNextChar;
+            End
+            Else
+              T.Kind := TK_PUNCT;
+          End;
+        '|':
+          Begin
+            T.Kind := TK_PUNCT;
+            LexNextChar;
+            If LexCur = ':' Then
+            Begin
+              T.Val := '|:';
+              LexNextChar;
+            End;
+          End;
+        ';', ',', '(', ')', '[', ']':
+          Begin
+            T.Kind := TK_PUNCT;
+            LexNextChar;
+          End;
+      Else
+        Begin
+          If (C < ' ') Or (C > '~') Then
+            ErrorAt(T.Line, T.Col,
+                    'caractere invalide: code ' + ItoS(Ord(C)))
+          Else
+            ErrorAt(T.Line, T.Col, 'caractere invalide: ' + C);
+          LexNextChar;
+          Done := False;
+        End;
+      End;
+    End;
+  Until Done;
+End;
+
+{ Mode debug -d : une ligne par token }
+Procedure PrintToken(Const T : TToken);
+Begin
+  Write(T.Line:5, ':', T.Col:3, ' ', TokenKindName(T.Kind):8);
+  Case T.Kind Of
+    TK_INT, TK_BOOL : WriteLn(' ', T.IntVal);
+    TK_REAL         : WriteLn(' ', T.RealVal:0:6, '  (', T.Val, ')');
+    TK_CHAR         : WriteLn(' "', T.Val, '"');
+    TK_STRING       : WriteLn(' "', LitTab[T.IntVal], '"');
+    TK_EOF          : WriteLn;
+  Else
+    WriteLn(' ', T.Val);
+  End;
+End;
+
+{ Range le token dans TokTab ; GO suivi de TO devient GOTO }
+Procedure LexStore(Var T : TToken);
+Begin
+  If (T.Kind = TK_KEYWORD) And (T.Val = 'TO') And (TokCount > 0) And
+     (TokTab[TokCount - 1].Kind = TK_BOLD) And
+     (TokTab[TokCount - 1].Val = 'GO') Then
+  Begin
+    TokTab[TokCount - 1].Kind := TK_KEYWORD;
+    TokTab[TokCount - 1].Val  := 'GOTO';
+    Exit;
+  End;
+  If TokCount >= MAX_TOKEN Then
+    FatalError('trop de tokens (max ' + ItoS(MAX_TOKEN) + ')');
+  TokTab[TokCount] := T;
+  Inc(TokCount);
+End;
+
+Procedure PhaseLex;
+Var
+  T : TToken;
+Begin
+  LexLoad;
+  TokCount := 0;
+  LitCount := 0;
+  Repeat
+    LexScanToken(T);
+    If Opts.DebugMode Then PrintToken(T);
+    LexStore(T);
+  Until T.Kind = TK_EOF;
+  If Opts.Verbose Then
+  Begin
+    If (LexCol = 1) And (LexLine > 1) Then Dec(LexLine);
+    WriteLn('  ', Opts.SrcFile, ': ', LexLine, ' ligne(s), ',
+            TokCount - 1, ' token(s)');
+  End;
 End;
 
 { ============================================================
