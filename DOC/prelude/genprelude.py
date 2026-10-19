@@ -9,14 +9,59 @@ nbase=len(src)
 ends=[]
 for f,k in chunks:
     src+=lines(f); ends.append(len(src))
-out=["{ PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }","Const","  PRELUDE_LINES = %d;"%len(src),"  PRELUDE_BASE = %d;"%nbase,"  PRELUDE_CHUNKS = %d;"%len(chunks),
- "  PreludeChunkEnd: Array[1..%d] Of LongInt = (%s);"%(len(chunks),', '.join(map(str,ends))),
- "  PreludeChunkKeys: Array[1..%d] Of String[255] = (%s);"%(len(chunks),', '.join("'%s'"%k.replace("'","''") for f,k in chunks)),
- "  PreludeText: Array[1..PRELUDE_LINES] Of String[250] = ("]
-for i,l in enumerate(src):
-    assert len(l.encode('utf8'))<=250,(i,len(l))
-    q="'"+l.replace("'","''")+"'"
-    out.append("    "+q+(","if i<len(src)-1 else ""))
+def split_line(l):
+    pieces=[]; cur=''; curlen=0; first=True
+    for ch in l:
+        e=ch.replace("'","''")
+        n=len(e.encode('utf8'))
+        lim=73 if first else 70
+        if curlen+n>lim:
+            pieces.append(cur); cur=''; curlen=0; first=False
+        cur+=e; curlen+=n
+    pieces.append(cur)
+    return pieces
+elems=[]
+def add_line(l):
+    for k,pc in enumerate(split_line(l)):
+        elems.append(("#1" if k else "")+"'"+pc+"'")
+for l in src[:nbase]: add_line(l)
+nb_elems=len(elems)
+cends=[]
+pos=nbase
+for (f,k),e in zip(chunks,ends):
+    for l in src[pos:e]: add_line(l)
+    pos=e
+    cends.append(len(elems))
+def numlist(name,vals):
+    out=["  %s: Array[1..%d] Of LongInt = ("%(name,len(vals))]
+    row=[]
+    for n,v in enumerate(vals):
+        row.append(str(v))
+        if len(row)==8 or n==len(vals)-1:
+            out.append("    "+", ".join(row)+("," if n<len(vals)-1 else ""))
+            row=[]
+    out[-1]+=");"
+    return out
+# cles : decoupees aux '|' en morceaux de 70 octets au plus
+kchunk=[]; ktext=[]
+for ci,(f,k) in enumerate(chunks):
+    parts=k.split('|'); cur=''
+    for p_ in parts:
+        cand=(cur+'|'+p_) if cur else p_
+        if len(cand.replace("'","''"))>66 and cur:
+            kchunk.append(ci+1); ktext.append(cur); cur=p_
+        else: cur=cand
+    kchunk.append(ci+1); ktext.append(cur)
+out=["{ PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }","Const","  PRELUDE_LINES = %d;"%len(elems),"  PRELUDE_BASE = %d;"%nb_elems,"  PRELUDE_CHUNKS = %d;"%len(chunks),"  PRELUDE_KEYS = %d;"%len(ktext)]
+out+=numlist("PreludeChunkEnd",cends)
+out+=numlist("PreludeKeyChunk",kchunk)
+out.append("  PreludeKeyText: Array[1..%d] Of String[78] = ("%len(ktext))
+for n,t in enumerate(ktext):
+    out.append("    '"+t.replace("'","''")+"'"+(","if n<len(ktext)-1 else ""))
+out.append("  );")
+out.append("  PreludeText: Array[1..PRELUDE_LINES] Of String[80] = (")
+for n,e in enumerate(elems):
+    out.append("    "+e+(","if n<len(elems)-1 else ""))
 out.append("  );")
 out.append("{ PRELUDE-END }")
 blk="\n".join(out)+"\n"
