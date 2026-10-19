@@ -23,13 +23,9 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 (squelette et pipeline), TODO 02 (options), TODO 03
-         (constantes, limites, nommage), TODO 04 (lexeur) et TODO 05
-         (types), TODO 06 (symboles et portees) et TODO 07 (structure du
-         programme et declarations) et TODO 08 (expressions et
-         precedence) et TODO 09 (relationnels, booleens, expression
-         conditionnelle) et TODO 10 (variables, affectations, own)
-         implementes, les autres TODOs sont a faire.
+  ETAT : TODO 01 a 11 implementes (squelette, options, constantes,
+         lexeur, types, symboles, structure du programme, expressions,
+         booleens, affectations, tableaux) ; TODO 12 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -206,7 +202,7 @@
               intrinseques (mod(a, b), max...) : noeuds opaques types
               integer en attendant les TODO 11, 14 et 17
 
-  TODO 11 - TABLEAUX [A FAIRE]
+  TODO 11 - TABLEAUX [IMPLEMENTE]
             Declaration : [integer|real|Boolean] array nom[lo:hi] et
               multidimensionnelle nom[lo1:hi1, lo2:hi2] (matrice 3x3)
             Bornes constantes (declarations globales) et bornes
@@ -218,6 +214,16 @@
             Verification de bornes a l'execution : _A58RT_CHKIDX
             Tableau en parametre de procedure (adresse + bornes)
             Exemples : arrays.a58, test_arrays.a58, test_dataseg.a58
+            Realise : declaration (bornes constantes ou expressions entieres
+              evaluees a l'execution, octets calcules, donnees statiques
+              au niveau 0 ou dans le cadre d'une procedure), noeud
+              EX_INDEX (indices convertis en integer, nombre d'indices
+              verifie, constantes controlees contre les bornes connues,
+              Flag = controle _A58RT_CHKIDX necessaire), element de
+              tableau comme cible d'affectation, chaine a := V[i] := 7
+            Reste pour la generation de code : calcul d'adresse et
+              descripteur (TODO 18), allocation sur le tas des tableaux
+              dynamiques (TODO 22), passage en parametre (TODO 14, 15)
 
   TODO 12 - INSTRUCTIONS CONDITIONNELLES ET BOUCLES FOR [A FAIRE]
             if cond then stmt [else stmt], else lie au if le plus proche
@@ -1713,6 +1719,8 @@ Type
     ArrHi      : Array[1..MAX_DIM] Of LongInt;
     ArrDynamic : Boolean;     { tableau : bornes calculees a l exec. }
     ElemType   : Integer;     { tableau : type des elements          }
+    ArrBytes   : LongInt;     { tableau : octets de donnees (bornes cst) }
+    ArrDataOfs : LongInt;     { tableau local : decalage des donnees  }
     ParamCount : Integer;     { procedure : nombre de parametres     }
     ParamSym   : Array[1..MAX_PARAM] Of Integer;
     ParamBytes : Integer;     { procedure : taille des parametres    }
@@ -2319,6 +2327,8 @@ Const
   MAX_EXPR     = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
   MAX_EXPR_STR = {$IFDEF FPC}256{$ELSE}16{$ENDIF};
   PREC_UNARY   = 9;
+  MAX_ARRAY_ELEMS = 134217728;    { 2^27 elements }
+  MAX_ARRAY_BYTES = 1073741824;   { 1 Go }
   PREC_POWER   = 8;
 
 Type
@@ -2338,7 +2348,9 @@ Type
     EX_BINARY,      { L Op R                                }
     EX_COND,        { if L then R else E                    }
     EX_ASSIGN,      { L := R (L : variable) ; valeur = celle de L }
-    EX_OPAQUE       { appel / indice non encore traduit (StrIdx = nom) }
+    EX_OPAQUE,      { appel non encore traduit (StrIdx = nom)  }
+    EX_INDEX,       { Sym[L...] : element de tableau (IntVal = nb d indices) }
+    EX_LIST         { liste d indices : L = expression, R = suivant }
   );
 
   TExprNode = Record
@@ -2349,6 +2361,7 @@ Type
     RealVal : Double;
     StrIdx  : Integer;
     Conv    : TConv;        { EX_ASSIGN : conversion de R vers L }
+    Flag    : Boolean;      { EX_INDEX : controle de bornes a l execution }
     Sym     : Integer;
     L, R, E : Integer;      { fils, -1 si absent (E : sinon)    }
     Line    : Integer;
@@ -3140,8 +3153,93 @@ Begin
   ParseCondExpr := ExprMakeCond(C, T, E, Line, Col);
 End;
 
-{ Appel ou indice : saute le groupe ( ... ) ou [ ... ] courant et le
-  remplace par un noeud opaque de type T (TODO 11, 14, 17). }
+{ Tableau (declare comme tel, ou parametre de type array) ? }
+Function SymIsArrayLike(S : Integer) : Boolean;
+Begin
+  SymIsArrayLike := (SymTab[S].Kind = SK_ARRAY) Or
+    ((SymTab[S].Kind In [SK_PARAM_VALUE, SK_PARAM_NAME]) And
+     (SymTab[S].TypeIdx = TY_IDX_ARRAY));
+End;
+
+{ nom[i] ou nom[i, j] : le token courant est le '[' qui suit le nom.
+  Chaque indice est converti en integer ; les constantes sont
+  verifiees contre les bornes connues. Flag = True quand le generateur
+  doit controler les bornes a l'execution (_A58RT_CHKIDX). }
+Function ParseIndexed(Const Tok : TToken; S : Integer) : Integer;
+Var
+  Head, Tail, Item, E, N, Dims, Node : Integer;
+  Bad, NeedCheck                     : Boolean;
+  Conv                               : TConv;
+  Line, Col                          : Integer;
+Begin
+  Dims := SymTab[S].ArrDims;
+  Head := -1;
+  Tail := -1;
+  N    := 0;
+  Bad  := False;
+  NeedCheck := (Dims = 0) Or SymTab[S].ArrDynamic;
+  ParserAdvance;                            { [ }
+  Repeat
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    E := ParseExprPrec(1);
+    If E >= 0 Then
+      If Not ExprCoerce(E, TY_IDX_INTEGER, Conv, Line, Col) Then E := -1;
+    Inc(N);
+    If E < 0 Then
+      Bad := True
+    Else
+    Begin
+      Item := ExprNew(EX_LIST, TY_IDX_INTEGER, Line, Col);
+      ExprTab[Item].L    := E;
+      ExprTab[Item].Conv := Conv;
+      If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+      Tail := Item;
+      If ExprTab[E].Kind = EX_INT Then
+      Begin
+        If (Dims > 0) And (N <= Dims) And (Not SymTab[S].ArrDynamic) Then
+        Begin
+          If (ExprTab[E].IntVal < SymTab[S].ArrLo[N]) Or
+             (ExprTab[E].IntVal > SymTab[S].ArrHi[N]) Then
+          Begin
+            ErrorAt(Line, Col, 'indice hors bornes: ' +
+                    ItoS(ExprTab[E].IntVal) + ' (' + Tok.Val + '[' +
+                    ItoS(SymTab[S].ArrLo[N]) + ':' +
+                    ItoS(SymTab[S].ArrHi[N]) + '])');
+            Bad := True;
+          End;
+        End;
+      End
+      Else
+        NeedCheck := True;
+    End;
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+  If AtPunct(']') Then
+    ParserAdvance
+  Else
+    ParseError(''']'' attendu');
+  If (Dims > 0) And (N <> Dims) Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, 'tableau ' + Tok.Val + ': ' + ItoS(N) +
+            ' indice(s) au lieu de ' + ItoS(Dims));
+    Bad := True;
+  End;
+  ParseIndexed := -1;
+  If Bad Then Exit;
+  Node := ExprNew(EX_INDEX, SymTab[S].ElemType, Tok.Line, Tok.Col);
+  ExprTab[Node].Sym    := S;
+  ExprTab[Node].L      := Head;
+  ExprTab[Node].IntVal := N;
+  ExprTab[Node].Flag   := NeedCheck;
+  ParseIndexed := Node;
+End;
+
+{ Appel : saute le groupe ( ... ) courant et le remplace par un noeud
+  opaque de type T (TODO 14, 17). }
 Function ParseOpaque(Const Tok : TToken; T : Integer) : Integer;
 Var
   N, Depth : Integer;
@@ -3218,15 +3316,26 @@ Begin
     TK_IDENT:
       Begin
         ParserAdvance;
-        If AtPunct('(') Or AtPunct('[') Then
+        If AtPunct('[') Then
         Begin
-          { appel ou indice : saute les arguments ; la traduction
-            releve des TODO 11 (tableaux), 14 (procedures) et 17
-            (fonctions intrinseques) }
+          S := SymFind(Tok.Val);
+          If S < 0 Then
+            ErrorAt(Tok.Line, Tok.Col, 'tableau non declare: ' + Tok.Val)
+          Else If Not SymIsArrayLike(S) Then
+            ErrorAt(Tok.Line, Tok.Col, 'ce n''est pas un tableau: ' +
+                    Tok.Val)
+          Else
+            ParsePrimary := ParseIndexed(Tok, S);
+          Exit;
+        End;
+        If AtPunct('(') Then
+        Begin
+          { appel : saute les arguments ; la traduction releve des
+            TODO 14 (procedures) et 17 (fonctions intrinseques) }
           S := SymFind(Tok.Val);
           T := TY_IDX_INTEGER;
           If S >= 0 Then
-            If SymTab[S].Kind In [SK_FUNC, SK_ARRAY] Then
+            If SymTab[S].Kind = SK_FUNC Then
               T := SymTab[S].TypeIdx;
           ParsePrimary := ParseOpaque(Tok, T);
           Exit;
@@ -3234,8 +3343,14 @@ Begin
         S := SymFind(Tok.Val);
         If S < 0 Then
           S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
-        If SymTab[S].Kind In [SK_VAR, SK_OWN, SK_PARAM_VALUE,
+        If SymIsArrayLike(S) Then
+          ErrorAt(Tok.Line, Tok.Col, 'indice attendu pour le tableau ' +
+                  Tok.Val)
+        Else If SymTab[S].Kind In [SK_VAR, SK_OWN, SK_PARAM_VALUE,
                               SK_PARAM_NAME] Then
+          ParsePrimary := ExprMakeVar(S, Tok.Line, Tok.Col)
+        Else If (SymTab[S].Kind = SK_FUNC) And (S = SymCurProc) And
+                AtOp(':=') Then
           ParsePrimary := ExprMakeVar(S, Tok.Line, Tok.Col)
         Else
           ErrorAt(Tok.Line, Tok.Col,
@@ -3317,6 +3432,7 @@ End;
 Procedure ExprDump(N, Depth : Integer);
 Var
   Pad : TString;
+  I   : Integer;
 Begin
   If N < 0 Then Exit;
   Pad := '';
@@ -3342,6 +3458,26 @@ Begin
                         TypeName(ExprTab[N].Typ));
     EX_OPAQUE : WriteLn('opaque ', ExprStrTab[ExprTab[N].StrIdx], ' : ',
                         TypeName(ExprTab[N].Typ));
+    EX_INDEX  : Begin
+                  Write('index ', SymTab[ExprTab[N].Sym].Name, '[',
+                        ExprTab[N].IntVal, '] : ',
+                        TypeName(ExprTab[N].Typ));
+                  If ExprTab[N].Flag Then
+                    WriteLn(' (controle de bornes)')
+                  Else
+                    WriteLn;
+                End;
+    EX_LIST   : WriteLn('list');
+  End;
+  If ExprTab[N].Kind = EX_INDEX Then
+  Begin
+    I := ExprTab[N].L;
+    While I >= 0 Do
+    Begin
+      ExprDump(ExprTab[I].L, Depth + 1);
+      I := ExprTab[I].R;
+    End;
+    Exit;
   End;
   If ExprTab[N].Kind = EX_COND Then
   Begin
@@ -3411,62 +3547,27 @@ Begin
       ParserAdvance;
 End;
 
-{ ---- Affectations (TODO 10) -------------------------------------- }
+{ ---- Affectations (TODO 10, 11) ---------------------------------- }
 
-{ Cible d'une affectation : variable, own, parametre, ou nom de la
-  fonction dont le corps est en cours (valeur de retour). -1 si erreur. }
-Function ResolveTarget(Const Tok : TToken) : Integer;
+{ Cible deja analysee (variable ou element de tableau) suivie de ':='
+  (token courant). Affectations multiples a := b := expr : le membre
+  droit est analyse comme une expression ; si un ':=' suit et que
+  c'est une cible, l'affectation continue (associative a droite).
+  Chaque affectation vaut la valeur convertie vers sa cible. }
+Function ParseAssignTail(Tgt : Integer) : Integer;
 Var
-  S : Integer;
+  Val, N    : Integer;
+  Conv      : TConv;
+  Line, Col : Integer;
 Begin
-  ResolveTarget := -1;
-  S := SymFind(Tok.Val);
-  If S < 0 Then
-    S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
-  Case SymTab[S].Kind Of
-    SK_VAR, SK_OWN, SK_PARAM_VALUE, SK_PARAM_NAME:
-      ResolveTarget := ExprMakeVar(S, Tok.Line, Tok.Col);
-    SK_FUNC:
-      If S = SymCurProc Then
-        ResolveTarget := ExprMakeVar(S, Tok.Line, Tok.Col)
-      Else
-        ErrorAt(Tok.Line, Tok.Col, 'affectation au nom d''une fonction ' +
-                'hors de son corps: ' + Tok.Val);
-  Else
-    ErrorAt(Tok.Line, Tok.Col, 'affectation impossible: ' + Tok.Val +
-            ' (' + SymKindName(SymTab[S].Kind) + ')');
-  End;
-End;
-
-{ nom := valeur   (Tok = le nom, ':=' est le token courant)
-  Affectations multiples a := b := expr (associatives a droite) :
-  chaque affectation vaut la valeur convertie vers sa cible. }
-Function ParseAssignExpr(Const Tok : TToken) : Integer;
-Var
-  Tgt, Val, N : Integer;
-  Conv        : TConv;
-  T2          : TToken;
-  Line, Col   : Integer;
-Begin
-  ParseAssignExpr := -1;
+  ParseAssignTail := -1;
   Line := CurToken.Line;
   Col  := CurToken.Col;
-  Tgt  := ResolveTarget(Tok);
   ParserAdvance;                          { :=  }
-  If CurToken.Kind = TK_IDENT Then
-  Begin
-    T2 := CurToken;
-    ParserAdvance;
-    If AtOp(':=') Then
-      Val := ParseAssignExpr(T2)
-    Else
-    Begin
-      ParserUnget(T2);
-      Val := ParseExpr;
-    End;
-  End
-  Else
-    Val := ParseExpr;
+  Val := ParseExpr;
+  If (Val >= 0) And AtOp(':=') And
+     (ExprTab[Val].Kind In [EX_VAR, EX_INDEX]) Then
+    Val := ParseAssignTail(Val);
   If (Tgt < 0) Or (Val < 0) Then Exit;
   If Not ExprCoerce(Val, ExprTab[Tgt].Typ, Conv, Line, Col) Then Exit;
   N := ExprNew(EX_ASSIGN, ExprTab[Tgt].Typ, Line, Col);
@@ -3475,28 +3576,36 @@ Begin
   ExprTab[N].R    := Val;
   ExprTab[N].Conv := Conv;
   Inc(AssignCount);
-  ParseAssignExpr := N;
+  ParseAssignTail := N;
 End;
 
 { Instruction commencant par un identificateur : affectation si le
-  token suivant est ':='. Etiquettes (TODO 13), appels de procedure
-  (TODO 14), elements de tableau (TODO 11) et write/read (TODO 16)
-  restent sautes pour le moment. }
+  token suivant est ':=' (variable) ou '[' (element de tableau, la
+  cible est alors analysee avec ses indices). Etiquettes (TODO 13),
+  appels de procedure (TODO 14) et write/read (TODO 16) restent
+  sautes pour le moment. }
 Procedure ParseIdentStatement;
 Var
   Tok : TToken;
-  N   : Integer;
+  Tgt, N : Integer;
 Begin
   Tok := CurToken;
   ParserAdvance;
-  If Not AtOp(':=') Then
+  If Not (AtOp(':=') Or AtPunct('[')) Then
   Begin
     ParserUnget(Tok);
     SkipStatement;
     Exit;
   End;
+  ParserUnget(Tok);                       { nom de nouveau courant }
   ExprReset;
-  N := ParseAssignExpr(Tok);
+  Tgt := ParseExpr;
+  N := -1;
+  If Tgt >= 0 Then
+    If AtOp(':=') And (ExprTab[Tgt].Kind In [EX_VAR, EX_INDEX]) Then
+      N := ParseAssignTail(Tgt)
+    Else
+      ParseError(''':='' attendu apres ' + Tok.Val);
   If N < 0 Then
     ParserSync
   Else
@@ -3536,71 +3645,84 @@ Begin
   Until Done;
 End;
 
-{ Saute une expression de borne jusqu'a ':' ',' ']' ou ';' }
-Procedure SkipBoundExpr;
+{ Borne de tableau : expression entiere. Une constante est retenue
+  telle quelle ; sinon (Dyn = True) Node est l'arbre de la borne,
+  evalue a l'execution par le generateur (TODO 18). }
+Procedure ParseBound(Var V : LongInt; Var Dyn : Boolean;
+                     Var Node : Integer);
 Var
-  Depth : Integer;
+  N, Line, Col : Integer;
+  Conv         : TConv;
 Begin
-  Depth := 0;
-  While Not AtEOF Do
+  V    := 0;
+  Node := -1;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  N := ParseExprPrec(1);
+  If N < 0 Then
   Begin
-    If Depth = 0 Then
-      If AtPunct(':') Or AtPunct(',') Or AtPunct(']') Or AtPunct(';')
-         Or AtKw('end') Then
-        Exit;
-    If AtPunct('(') Or AtPunct('[') Then
-      Inc(Depth)
-    Else If (AtPunct(')') Or AtPunct(']')) And (Depth > 0) Then
-      Dec(Depth);
-    ParserAdvance;
+    Dyn := True;
+    Exit;
+  End;
+  If Not ExprCoerce(N, TY_IDX_INTEGER, Conv, Line, Col) Then
+  Begin
+    Dyn := True;
+    Exit;
+  End;
+  If ExprTab[N].Kind = EX_INT Then
+    V := ExprTab[N].IntVal
+  Else
+  Begin
+    Dyn  := True;
+    Node := N;
   End;
 End;
 
-{ Borne de tableau : constante entiere signee, sinon expression a
-  evaluer a l execution (Dyn = True, TODO 11). }
-Procedure ParseBound(Var V : LongInt; Var Dyn : Boolean);
+{ Octets d'un tableau a bornes constantes (0 et erreur si trop grand) }
+Function ArrayBytes(S : Integer; Line, Col : Integer) : LongInt;
 Var
-  Neg : Boolean;
+  D        : Integer;
+  Count, W : TWide;
 Begin
-  Neg := False;
-  V   := 0;
-  If AtOp('-') Then
+  ArrayBytes := 0;
+  Count := 1;
+  For D := 1 To SymTab[S].ArrDims Do
   Begin
-    Neg := True;
-    ParserAdvance;
-  End
-  Else If AtOp('+') Then
-    ParserAdvance;
-  If CurToken.Kind = TK_INTEGER Then
-  Begin
-    V := CurToken.IntVal;
-    If Neg Then V := -V;
-    ParserAdvance;
-    If Not (AtPunct(':') Or AtPunct(',') Or AtPunct(']')) Then
+    Count := Count * (TWide(SymTab[S].ArrHi[D]) -
+                      TWide(SymTab[S].ArrLo[D]) + 1);
+    If Count > MAX_ARRAY_ELEMS Then
     Begin
-      Dyn := True;                { expression composee }
-      SkipBoundExpr;
+      ErrorAt(Line, Col, 'tableau trop grand: ' + SymTab[S].Name);
+      Exit;
     End;
-  End
-  Else
-  Begin
-    Dyn := True;
-    SkipBoundExpr;
   End;
+  W := Count * TypeSizeof(SymTab[S].ElemType);
+  If W > MAX_ARRAY_BYTES Then
+  Begin
+    ErrorAt(Line, Col, 'tableau trop grand: ' + SymTab[S].Name);
+    Exit;
+  End;
+  ArrayBytes := W;
 End;
 
 { [integer|real|Boolean] array a, b [lo:hi, lo:hi], c [lo:hi]
-  Un tableau sans type est de type real (regle d Algol 60). }
+  Un tableau sans type est de type real (regle d Algol 60).
+  Bornes constantes : donnees statiques (.data au niveau 0, cadre de
+  la procedure sinon). Bornes variables : allocation sur le tas a
+  l'execution. }
 Procedure ParseArrayDecl(ElemType : Integer; IsOwn : Boolean);
 Var
-  Names : Array[1..16] Of Integer;
-  NName : Integer;
-  I, D  : Integer;
-  Lo, Hi: LongInt;
-  Dyn   : Boolean;
-  Cur   : Integer;
+  Names      : Array[1..16] Of Integer;
+  NLo, NHi   : Array[1..MAX_DIM] Of Integer;
+  NName      : Integer;
+  I, D       : Integer;
+  Lo, Hi     : LongInt;
+  DynD       : Boolean;
+  Cur        : Integer;
+  Line, Col  : Integer;
 Begin
   Repeat
+    ExprReset;
     NName := 0;
     Repeat
       If CurToken.Kind <> TK_IDENT Then
@@ -3619,6 +3741,8 @@ Begin
       End
       Else
         ParseError('trop de noms dans une declaration de tableau');
+      Line := CurToken.Line;
+      Col  := CurToken.Col;
       ParserAdvance;
       If AtPunct(',') Then
         ParserAdvance
@@ -3634,15 +3758,28 @@ Begin
     End;
     ParserAdvance;
     D := 0;
+    For I := 1 To MAX_DIM Do
+    Begin
+      NLo[I] := -1;
+      NHi[I] := -1;
+    End;
     Repeat
-      Dyn := False;
-      ParseBound(Lo, Dyn);
+      DynD := False;
+      Inc(D);
+      Lo := 0;
+      Hi := 0;
+      If D <= MAX_DIM Then
+        ParseBound(Lo, DynD, NLo[D])
+      Else
+        ParseBound(Lo, DynD, I);
       If AtPunct(':') Then
         ParserAdvance
       Else
         ParseError(''':'' attendu entre les bornes');
-      ParseBound(Hi, Dyn);
-      Inc(D);
+      If D <= MAX_DIM Then
+        ParseBound(Hi, DynD, NHi[D])
+      Else
+        ParseBound(Hi, DynD, I);
       If D <= MAX_DIM Then
         For I := 1 To NName Do
         Begin
@@ -3650,11 +3787,11 @@ Begin
           SymTab[Cur].ArrDims := D;
           SymTab[Cur].ArrLo[D] := Lo;
           SymTab[Cur].ArrHi[D] := Hi;
-          If Dyn Then SymTab[Cur].ArrDynamic := True;
+          If DynD Then SymTab[Cur].ArrDynamic := True;
         End
       Else
         ParseError('trop de dimensions (max ' + ItoS(MAX_DIM) + ')');
-      If (Not Dyn) And (Lo > Hi) Then
+      If (Not DynD) And (Lo > Hi) Then
         ErrorAt(CurToken.Line, CurToken.Col,
                 'bornes inversees: ' + ItoS(Lo) + ':' + ItoS(Hi));
       If AtPunct(',') Then
@@ -3663,6 +3800,41 @@ Begin
         Break;
     Until False;
     ExpectPunct(']');
+
+    { stockage des tableaux a bornes constantes }
+    For I := 1 To NName Do
+    Begin
+      Cur := Names[I];
+      If (Not SymTab[Cur].ArrDynamic) And (SymTab[Cur].ArrDims > 0) Then
+      Begin
+        SymTab[Cur].ArrBytes := ArrayBytes(Cur, Line, Col);
+        If (CurLevel > 0) And (Not IsOwn) Then
+          SymTab[Cur].ArrDataOfs := SymAllocLocal(SymTab[Cur].ArrBytes);
+      End;
+      If Opts.DebugMode Then
+      Begin
+        Write('Tableau ', SymTab[Cur].Name, ' ', TypeName(ElemType),
+              ' [', SymTab[Cur].ArrDims, ' dim.]');
+        If SymTab[Cur].ArrDynamic Then
+          WriteLn(' bornes a l''execution')
+        Else
+          WriteLn(' ', SymTab[Cur].ArrBytes, ' octets');
+      End;
+    End;
+    If Opts.DebugMode Then
+      For D := 1 To MAX_DIM Do
+      Begin
+        If NLo[D] >= 0 Then
+        Begin
+          WriteLn('  borne inf. dim ', D, ' :');
+          ExprDump(NLo[D], 1);
+        End;
+        If NHi[D] >= 0 Then
+        Begin
+          WriteLn('  borne sup. dim ', D, ' :');
+          ExprDump(NHi[D], 1);
+        End;
+      End;
     If AtPunct(',') Then
       ParserAdvance
     Else
