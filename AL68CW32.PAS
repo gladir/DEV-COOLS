@@ -34,10 +34,10 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 08 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 09 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
-         clauses, declarations) ; TODO 09 a 25 a faire.
+         clauses, declarations, coercitions) ; TODO 10 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -426,7 +426,7 @@
               REAL) := 3, [1:3, 1:4] REAL, FLEX [] CHAR et PROC (INT) INT
               sont acceptes
 
-  TODO 09 - COERCITIONS [A FAIRE]
+  TODO 09 - COERCITIONS [IMPLEMENTE]
             Forces de contexte : forte, ferme, meek, faible, douce
             Coercitions : dereferencement (REF INT vers INT, plusieurs
               niveaux), deprocedurage (PROC INT vers INT), elargissement
@@ -443,6 +443,34 @@
             Constantes : repliement INT vers REAL au moment de la
               compilation
             Verification : coerce.a68, test_primary.a68
+            Realise : section 11 ; noeud UK_COERCE (unite enveloppee, genre
+              CO_DEREF, CO_DEPROC, CO_WIDEN, CO_ROW, CO_UNITE ou CO_VOID,
+              mode obtenu) ; TStrength (douce, faible, meek, ferme, forte) ;
+              CoerceFit (union, elargissement, enrobage d'un element,
+              NIL vers REF) ; CoerceUnit : suite de deprocedurages et
+              dereferencements puis coercition finale, repliement des
+              denotations (7 vers REAL, caractere vers chaine), SKIP, GOTO,
+              EMPTY et NIL qui prennent le mode demande, clause fermee dont
+              le dernier element prend le mode demande, unite de mode
+              inconnu laissee telle quelle, erreur coercition impossible ;
+              l'etiquette d'une union est l'indice de l'alternative (B) ;
+              CoerceName (force faible : un nom reste un REF) ;
+              ModeBalance (equilibrage de deux branches) ; PhaseModes :
+              ModesSerial (unites non finales videes, derniere coercee ;
+              la parse ne verifie plus les initialiseurs) et ModesDecl
+              (initialiseur coerce vers le mode de l'objet) ; NIL, EMPTY
+              et SKIP reconnus comme initialiseurs ; GenInit genere
+              denotation, NIL, EMPTY et union ; -d affiche l'arbre apres
+              coercitions
+            Verifie : harnais de 33 controles hors depot (REF REF INT vers
+              INT, 7 vers REAL, INT vers REAL refuse en contexte ferme,
+              REF INT vers REAL, INT et REAL vers UNION, BOOL vers UNION
+              refuse, UNION(INT) vers UNION(INT, REAL), caractere vers
+              STRING, enrobage, PROC INT vers INT, vidage, NIL, SKIP, force
+              faible et douce, equilibrage, clause serie et clause fermee) :
+              tous reussis ; les 27 exemples passent sans erreur ; test_union
+              s'assemble avec ML et les unions contiennent l'etiquette de
+              mode puis la valeur (par exemple 2 puis 42 pour un INT)
 
   TODO 10 - UNITES PRIMAIRES [A FAIRE]
             Identificateurs (variables, identites, parametres) avec
@@ -953,6 +981,9 @@ Type
     UK_LABELDEF,   { definition d une etiquette : Sym                 }
     UK_GOTO,       { saut : Name, Scope, Sym apres resolution         }
     UK_SKIP,       { SKIP                                              }
+    UK_NIL,        { NIL : mode MD_NIL                                 }
+    UK_EMPTY,      { EMPTY : union vide                                }
+    UK_COERCE,     { coercition : A = unite, IntVal = genre (CO_...)   }
     UK_INTDEN,     { denotation entiere : IntVal                       }
     UK_REALDEN,    { denotation reelle : RealVal                       }
     UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
@@ -4442,6 +4473,22 @@ Begin
     Skip := 1;
     T := TokAt(1);
   End;
+  If (T.Kind = TK_KEYWORD) And ((T.Val = 'NIL') Or (T.Val = 'EMPTY') Or
+     (T.Val = 'SKIP')) And (Skip = 0) And TokEndsExpr(1) Then
+  Begin
+    If T.Val = 'NIL' Then
+    Begin
+      U := UnitNew(UK_NIL, T.Line, T.Col);
+      UnitTab[U].Mode := MD_NIL;
+    End
+    Else If T.Val = 'EMPTY' Then
+      U := UnitNew(UK_EMPTY, T.Line, T.Col)
+    Else
+      U := UnitNew(UK_SKIP, T.Line, T.Col);
+    ParserAdvance;
+    ParseDenotation := U;
+    Exit;
+  End;
   If Not (T.Kind In [TK_INT, TK_REAL, TK_BOOL, TK_CHAR, TK_STRING]) Then
     Exit;
   If Not TokEndsExpr(Skip + 1) Then Exit;
@@ -4793,32 +4840,6 @@ Begin
   End;
 End;
 
-{ Le mode d une denotation convient-il au mode declare (avant les
-  coercitions generales du TODO 09) ? }
-Function DenotationFits(Decl : Integer; U : LongInt) : Boolean;
-Var
-  D : Integer;
-Begin
-  D := ModeResolve(Decl);
-  If (ModeTab[D].Kind = MK_UNION) And
-     (UnitTab[U].Kind In [UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN,
-                          UK_STRDEN]) Then
-  Begin
-    DenotationFits := ModeUnionHas(D, UnitTab[U].Mode);
-    Exit;
-  End;
-  Case UnitTab[U].Kind Of
-    UK_INTDEN  : DenotationFits := (D = MD_INT) Or (D = MD_REAL) Or
-                                   (D = MD_BITS);
-    UK_REALDEN : DenotationFits := D = MD_REAL;
-    UK_BOOLDEN : DenotationFits := D = MD_BOOL;
-    UK_CHARDEN : DenotationFits := (D = MD_CHAR) Or (D = MD_STRING);
-    UK_STRDEN  : DenotationFits := D = MD_STRING;
-  Else
-    DenotationFits := True;
-  End;
-End;
-
 { Reserve la place d un objet : cellule du segment de donnees au niveau
   0, sinon place dans le cadre }
 Procedure DeclareStorage(S : Integer; M : Integer; Line, Col : Integer);
@@ -5031,10 +5052,6 @@ Begin
       UnitTab[U].B := Bounds;
       UnitTab[U].C := Dims;
       If Heap Then UnitTab[U].IntVal := 1;
-      If (Init >= 0) And Not DenotationFits(M, Init) Then
-        ErrorAt(UnitTab[Init].Line, UnitTab[Init].Col,
-                'initialisation incompatible: ' +
-                ModeName(UnitTab[Init].Mode) + ' vers ' + ModeName(M));
       If (Dims > 0) And (Not IsVar) Then
         ErrorAt(L, C, 'une identite de tableau ne peut pas avoir de ' +
                 'bornes');
@@ -5253,6 +5270,9 @@ Begin
     UK_LABELDEF : UnitKindName := 'etiquette';
     UK_GOTO     : UnitKindName := 'GOTO';
     UK_SKIP     : UnitKindName := 'SKIP';
+    UK_NIL      : UnitKindName := 'NIL';
+    UK_EMPTY    : UnitKindName := 'EMPTY';
+    UK_COERCE   : UnitKindName := 'coercition';
     UK_INTDEN   : UnitKindName := 'denotation INT';
     UK_REALDEN  : UnitKindName := 'denotation REAL';
     UK_BOOLDEN  : UnitKindName := 'denotation BOOL';
@@ -5267,51 +5287,83 @@ Begin
   End;
 End;
 
-Procedure UnitDump(U : LongInt; Depth : Integer);
+Function CoerceName_(K : LongInt) : TString;
+Begin
+  Case K Of
+    1 : CoerceName_ := 'dereferencement';
+    2 : CoerceName_ := 'deprocedurage';
+    3 : CoerceName_ := 'elargissement';
+    4 : CoerceName_ := 'enrobage';
+    5 : CoerceName_ := 'union';
+    6 : CoerceName_ := 'vidage';
+  Else
+    CoerceName_ := '?';
+  End;
+End;
+
+Procedure UnitDump(U : LongInt; Depth : Integer); Forward;
+
+Procedure UnitDumpOne(U : LongInt; Depth : Integer);
 Var
   I : Integer;
   E : LongInt;
 Begin
+  For I := 1 To Depth Do Write('  ');
+  Write(UnitKindName(UnitTab[U].Kind), ' ligne ', UnitTab[U].Line);
+  Case UnitTab[U].Kind Of
+    UK_LABELDEF, UK_GOTO : Write(' ', UnitTab[U].Name);
+    UK_INTDEN, UK_BOOLDEN, UK_CHARDEN : Write(' ', UnitTab[U].IntVal);
+    UK_REALDEN : Write(' ', UnitTab[U].RealVal:0:6);
+    UK_STRDEN  : Write(' "', LitTab[UnitTab[U].IntVal], '"');
+    UK_COERCE  : Write(' ', CoerceName_(UnitTab[U].IntVal), ' -> ',
+                       ModeName(UnitTab[U].Mode));
+    UK_VARDECL, UK_IDDECL :
+      Begin
+        Write(' ', UnitTab[U].Name, ' : ', ModeName(UnitTab[U].Mode));
+        If UnitTab[U].C > 0 Then
+          Write(' (', UnitTab[U].C, ' dimension(s))');
+        If UnitTab[U].IntVal = 1 Then Write(' HEAP');
+      End;
+    UK_MODEDECL :
+      Begin
+        Write(' ', UnitTab[U].Name, ' = ');
+        If ModeTab[UnitTab[U].Mode].Kind = MK_FWD Then
+          Write(ModeName(ModeTab[UnitTab[U].Mode].Sub))
+        Else
+          Write(ModeName(UnitTab[U].Mode));
+      End;
+    UK_PRIODECL : Write(' ', UnitTab[U].Name, ' = ', UnitTab[U].IntVal);
+    UK_DECL, UK_OPAQUE :
+      Begin
+        Write(' :');
+        E := UnitTab[U].A;
+        While (E < UnitTab[U].B) And (E < UnitTab[U].A + 8) Do
+        Begin
+          Write(' ', TokTab[E].Val);
+          Inc(E);
+        End;
+        If E < UnitTab[U].B Then Write(' ...');
+      End;
+  End;
+  If (UnitTab[U].Kind In [UK_VARDECL, UK_IDDECL]) And
+     (UnitTab[U].A >= 0) Then
+  Begin
+    WriteLn;
+    UnitDumpOne(UnitTab[U].A, Depth + 1);
+  End
+  Else
+    WriteLn;
+  If UnitTab[U].Kind = UK_CLOSED Then
+    UnitDump(UnitTab[U].A, Depth + 1)
+  Else If UnitTab[U].Kind = UK_COERCE Then
+    UnitDumpOne(UnitTab[U].A, Depth + 1);
+End;
+
+Procedure UnitDump(U : LongInt; Depth : Integer);
+Begin
   While U >= 0 Do
   Begin
-    For I := 1 To Depth Do Write('  ');
-    Write(UnitKindName(UnitTab[U].Kind), ' ligne ', UnitTab[U].Line);
-    Case UnitTab[U].Kind Of
-      UK_LABELDEF, UK_GOTO : Write(' ', UnitTab[U].Name);
-      UK_INTDEN, UK_BOOLDEN, UK_CHARDEN : Write(' ', UnitTab[U].IntVal);
-      UK_REALDEN : Write(' ', UnitTab[U].RealVal:0:6);
-      UK_STRDEN  : Write(' "', LitTab[UnitTab[U].IntVal], '"');
-      UK_VARDECL, UK_IDDECL :
-        Begin
-          Write(' ', UnitTab[U].Name, ' : ', ModeName(UnitTab[U].Mode));
-          If UnitTab[U].C > 0 Then
-            Write(' (', UnitTab[U].C, ' dimension(s))');
-          If UnitTab[U].IntVal = 1 Then Write(' HEAP');
-        End;
-      UK_MODEDECL :
-        Begin
-          Write(' ', UnitTab[U].Name, ' = ');
-          If ModeTab[UnitTab[U].Mode].Kind = MK_FWD Then
-            Write(ModeName(ModeTab[UnitTab[U].Mode].Sub))
-          Else
-            Write(ModeName(UnitTab[U].Mode));
-        End;
-      UK_PRIODECL : Write(' ', UnitTab[U].Name, ' = ', UnitTab[U].IntVal);
-      UK_DECL, UK_OPAQUE   :
-        Begin
-          Write(' :');
-          E := UnitTab[U].A;
-          While (E < UnitTab[U].B) And (E < UnitTab[U].A + 8) Do
-          Begin
-            Write(' ', TokTab[E].Val);
-            Inc(E);
-          End;
-          If E < UnitTab[U].B Then Write(' ...');
-        End;
-    End;
-    WriteLn;
-    If UnitTab[U].Kind = UK_CLOSED Then
-      UnitDump(UnitTab[U].A, Depth + 1);
+    UnitDumpOne(U, Depth);
     U := UnitTab[U].Next;
   End;
 End;
@@ -5348,9 +5400,399 @@ End;
 { ============================================================
   SECTION 11 - COERCITIONS, MODES ET GENERATION (TODO 09, 11 a 19)
   ============================================================ }
+{ ---- Coercitions (TODO 09) ----
+  Un noeud UK_COERCE enveloppe une unite : A = unite, IntVal = genre de
+  coercition (CO_...), Mode = mode obtenu. Forces de contexte, de la
+  plus faible a la plus forte :
+    douce  : deprocedurage
+    faible : deprocedurage et dereferencement qui laisse un nom (REF)
+    meek   : deprocedurage et dereferencement
+    ferme  : meek puis union (operandes de formules)
+    forte  : ferme puis elargissement, enrobage en tableau et vidage }
+Const
+  CO_DEREF  = 1;      { REF m vers m                                  }
+  CO_DEPROC = 2;      { PROC m (sans parametre) vers m : appel        }
+  CO_WIDEN  = 3;      { INT vers REAL                                 }
+  CO_ROW    = 4;      { m vers [] m (un element)                      }
+  CO_UNITE  = 5;      { m vers UNION(... m ...) : B = etiquette       }
+  CO_VOID   = 6;      { toute valeur vers VOID                        }
+
+  FIT_NONE  = 0;
+  FIT_UNITE = 1;
+  FIT_WIDEN = 2;
+  FIT_ROW   = 3;
+  FIT_NIL   = 4;
+
+Type
+  TStrength = (STR_SOFT, STR_WEAK, STR_MEEK, STR_FIRM, STR_STRONG);
+
+Var
+  CoerceCount : LongInt;      { coercitions inserees (statistiques)   }
+
+Function ModeIsProc0(M : Integer) : Boolean;
+Begin
+  M := ModeResolve(M);
+  ModeIsProc0 := (ModeTab[M].Kind = MK_PROC) And (ModeTab[M].Count = 0);
+End;
+
+{ Alternative de l union U equivalente au mode M ; -1 si aucune }
+Function ModeUnionAlt(U, M : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  ModeUnionAlt := -1;
+  U := ModeResolve(U);
+  If ModeTab[U].Kind <> MK_UNION Then Exit;
+  For I := 0 To ModeTab[U].Count - 1 Do
+    If ModeSame(ModePoolM[ModeTab[U].First + I], M) Then
+      ModeUnionAlt := ModeResolve(ModePoolM[ModeTab[U].First + I]);
+End;
+
+{ Union M contenue dans l union Want (chaque alternative de M en est
+  une de Want) }
+Function ModeUnionSubset(M, Want : Integer) : Boolean;
+Var
+  I : Integer;
+Begin
+  M := ModeResolve(M);
+  ModeUnionSubset := False;
+  If ModeTab[M].Kind <> MK_UNION Then Exit;
+  For I := 0 To ModeTab[M].Count - 1 Do
+    If ModeUnionAlt(Want, ModePoolM[ModeTab[M].First + I]) < 0 Then Exit;
+  ModeUnionSubset := True;
+End;
+
+{ Coercion finale (sans dereferencement ni deprocedurage) qui fait du
+  mode M le mode Want, selon la force du contexte }
+Function CoerceFit(M, Want : Integer; Str : TStrength) : Integer;
+Var
+  W, E : Integer;
+Begin
+  CoerceFit := FIT_NONE;
+  M := ModeResolve(M);
+  W := ModeResolve(Want);
+  If (ModeTab[M].Kind = MK_NIL) And (ModeTab[W].Kind = MK_REF) Then
+  Begin
+    CoerceFit := FIT_NIL;
+    Exit;
+  End;
+  If (Str >= STR_FIRM) And (ModeTab[W].Kind = MK_UNION) Then
+  Begin
+    If (ModeUnionAlt(W, M) >= 0) Or ModeUnionSubset(M, W) Then
+    Begin
+      CoerceFit := FIT_UNITE;
+      Exit;
+    End;
+  End;
+  If Str = STR_STRONG Then
+  Begin
+    If (ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_REAL) Then
+    Begin
+      CoerceFit := FIT_WIDEN;
+      Exit;
+    End;
+    If (ModeTab[W].Kind = MK_ROW) And (ModeTab[W].Dims = 1) Then
+    Begin
+      E := ModeResolve(ModeTab[W].Sub);
+      If ModeSame(M, E) Then CoerceFit := FIT_ROW;
+    End;
+  End;
+End;
+
+Function CoerceWrap(U : LongInt; Kind : Integer; NewMode : Integer)
+         : LongInt;
+Var
+  N : LongInt;
+Begin
+  N := UnitNew(UK_COERCE, UnitTab[U].Line, UnitTab[U].Col);
+  UnitTab[N].A := U;
+  UnitTab[N].IntVal := Kind;
+  UnitTab[N].Mode := NewMode;
+  Inc(CoerceCount);
+  CoerceWrap := N;
+End;
+
+Function ModesSerial(First : LongInt; Want : Integer) : LongInt; Forward;
+
+{ Coerce l unite U vers le mode Want dans un contexte de force Str ;
+  retourne l unite (eventuellement enveloppee). Une unite de mode
+  inconnu (pas encore analysee) est laissee telle quelle. }
+Function CoerceUnit(U : LongInt; Want : Integer; Str : TStrength)
+         : LongInt;
+Var
+  M, W, Fit, Tag, Steps : Integer;
+  Cur                   : LongInt;
+  Lit                   : TString;
+  Done                  : Boolean;
+Begin
+  CoerceUnit := U;
+  If (U < 0) Or (Want = MD_ERROR) Then Exit;
+  W := ModeResolve(Want);
+  Cur := U;
+  { unites qui prennent le mode demande }
+  Case UnitTab[U].Kind Of
+    UK_SKIP, UK_GOTO:
+      Begin
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_EMPTY:
+      Begin
+        If ModeTab[W].Kind <> MK_UNION Then
+          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                  'EMPTY demande une UNION, pas ' + ModeName(Want));
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_CLOSED:
+      Begin
+        UnitTab[U].A := ModesSerial(UnitTab[U].A, Want);
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+  End;
+  M := UnitTab[U].Mode;
+  If M = MD_ERROR Then Exit;               { mode pas encore connu }
+  M := ModeResolve(M);
+  Done := False;
+  Steps := 0;
+  While Not Done Do
+  Begin
+    Inc(Steps);
+    If Steps > 16 Then
+    Begin
+      ErrorAt(UnitTab[U].Line, UnitTab[U].Col, 'coercition trop longue');
+      Done := True;
+    End
+    Else If W = MD_VOID Then
+    Begin
+      { vidage : un PROC sans parametre est d abord appele }
+      If ModeIsProc0(M) And (Str = STR_STRONG) Then
+      Begin
+        M := ModeResolve(ModeTab[M].Sub);
+        Cur := CoerceWrap(Cur, CO_DEPROC, M);
+      End
+      Else
+      Begin
+        If (Str = STR_STRONG) And (M <> MD_VOID) Then
+          Cur := CoerceWrap(Cur, CO_VOID, MD_VOID);
+        Done := True;
+      End;
+    End
+    Else If ModeSame(M, W) Then
+      Done := True
+    Else
+    Begin
+      Fit := CoerceFit(M, W, Str);
+      If Fit <> FIT_NONE Then
+      Begin
+        Case Fit Of
+          FIT_NIL:
+            UnitTab[Cur].Mode := Want;
+          FIT_UNITE:
+            Begin
+              If ModeTab[M].Kind = MK_UNION Then
+                Tag := 0
+              Else
+                Tag := ModeUnionAlt(W, M);
+              Cur := CoerceWrap(Cur, CO_UNITE, Want);
+              UnitTab[Cur].B := Tag;
+            End;
+          FIT_WIDEN:
+            If UnitTab[Cur].Kind = UK_INTDEN Then
+            Begin
+              { repliement : la denotation devient reelle }
+              UnitTab[Cur].Kind := UK_REALDEN;
+              UnitTab[Cur].RealVal := UnitTab[Cur].IntVal;
+              UnitTab[Cur].Mode := MD_REAL;
+            End
+            Else
+              Cur := CoerceWrap(Cur, CO_WIDEN, MD_REAL);
+          FIT_ROW:
+            If (UnitTab[Cur].Kind = UK_CHARDEN) And ModeIsString(W) Then
+            Begin
+              { repliement : un caractere devient une chaine }
+              Lit := Chr(UnitTab[Cur].IntVal);
+              If LitCount >= MAX_STRLIT Then
+                FatalError('trop de denotations de chaines (max ' +
+                           ItoS(MAX_STRLIT) + ')');
+              LitTab[LitCount] := Lit;
+              UnitTab[Cur].Kind := UK_STRDEN;
+              UnitTab[Cur].IntVal := LitCount;
+              UnitTab[Cur].Mode := MD_STRING;
+              Inc(LitCount);
+            End
+            Else
+              Cur := CoerceWrap(Cur, CO_ROW, Want);
+        End;
+        Done := True;
+      End
+      Else If (ModeTab[M].Kind = MK_REF) And (Str >= STR_WEAK) And
+              ((Str >= STR_MEEK) Or
+               (ModeKind(ModeTab[M].Sub) = MK_REF)) Then
+      Begin
+        M := ModeResolve(ModeTab[M].Sub);
+        Cur := CoerceWrap(Cur, CO_DEREF, M);
+      End
+      Else If ModeIsProc0(M) Then
+      Begin
+        M := ModeResolve(ModeTab[M].Sub);
+        Cur := CoerceWrap(Cur, CO_DEPROC, M);
+      End
+      Else
+      Begin
+        ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                'coercition impossible: ' + ModeName(UnitTab[U].Mode) +
+                ' vers ' + ModeName(Want));
+        UnitTab[Cur].Mode := Want;
+        Done := True;
+      End;
+    End;
+  End;
+  CoerceUnit := Cur;
+End;
+
+{ Mode commun de deux branches (IF, CASE) : equilibrage }
+Function ModeBalance(A, B : Integer) : Integer;
+Var
+  RA, RB : Integer;
+Begin
+  ModeBalance := MD_ERROR;
+  RA := ModeDeref(A);
+  RB := ModeDeref(B);
+  If ModeSame(A, B) Then
+    ModeBalance := ModeResolve(A)
+  Else If (RA = MD_VOID) Or (RB = MD_VOID) Then
+    ModeBalance := MD_VOID
+  Else If ModeSame(RA, RB) Then
+    ModeBalance := RA
+  Else If ((RA = MD_INT) And (RB = MD_REAL)) Or
+          ((RA = MD_REAL) And (RB = MD_INT)) Then
+    ModeBalance := MD_REAL;
+End;
+
+{ Dereferencement jusqu a un nom (REF m avec m non REF) et deprocedurage :
+  force faible, pour une selection x OF p ou un indice a[i] }
+Function CoerceName(U : LongInt) : LongInt;
+Var
+  M : Integer;
+  Cur : LongInt;
+  Steps : Integer;
+Begin
+  Cur := U;
+  If (U < 0) Or (UnitTab[U].Mode = MD_ERROR) Then
+  Begin
+    CoerceName := U;
+    Exit;
+  End;
+  M := ModeResolve(UnitTab[U].Mode);
+  Steps := 0;
+  While Steps < 16 Do
+  Begin
+    Inc(Steps);
+    If (ModeTab[M].Kind = MK_REF) And
+       (ModeKind(ModeTab[M].Sub) = MK_REF) Then
+    Begin
+      M := ModeResolve(ModeTab[M].Sub);
+      Cur := CoerceWrap(Cur, CO_DEREF, M);
+    End
+    Else If ModeIsProc0(M) Then
+    Begin
+      M := ModeResolve(ModeTab[M].Sub);
+      Cur := CoerceWrap(Cur, CO_DEPROC, M);
+    End
+    Else
+      Steps := 99;
+  End;
+  CoerceName := Cur;
+End;
+
+{ ---- Passe de resolution des modes ---- }
+
+{ Est-ce une unite (par opposition a une declaration ou une etiquette) ? }
+Function IsValueUnit(U : LongInt) : Boolean;
+Begin
+  IsValueUnit := Not (UnitTab[U].Kind In [UK_LABELDEF, UK_VARDECL,
+                      UK_IDDECL, UK_MODEDECL, UK_PRIODECL, UK_DECL]);
+End;
+
+{ Remplace dans une chaine l element Old par New (meme suivant) }
+Procedure ReplaceItem(Var First : LongInt; Old, New : LongInt);
+Var
+  P : LongInt;
+Begin
+  If Old = New Then Exit;
+  UnitTab[New].Next := UnitTab[Old].Next;
+  If First = Old Then
+    First := New
+  Else
+  Begin
+    P := First;
+    While (P >= 0) And (UnitTab[P].Next <> Old) Do P := UnitTab[P].Next;
+    If P >= 0 Then UnitTab[P].Next := New;
+  End;
+End;
+
+Procedure ModesDecl(U : LongInt);
+Var
+  Init, New : LongInt;
+Begin
+  Init := UnitTab[U].A;
+  If Init >= 0 Then
+  Begin
+    New := CoerceUnit(Init, UnitTab[U].Mode, STR_STRONG);
+    UnitTab[U].A := New;
+  End;
+End;
+
+{ Clause serie : les unites autres que la derniere sont videes ; la
+  derniere prend le mode Want }
+Function ModesSerial(First : LongInt; Want : Integer) : LongInt;
+Var
+  P, Last, New : LongInt;
+  Head         : LongInt;
+Begin
+  Head := First;
+  Last := -1;
+  P := First;
+  While P >= 0 Do
+  Begin
+    If IsValueUnit(P) Then Last := P;
+    P := UnitTab[P].Next;
+  End;
+  P := First;
+  While P >= 0 Do
+  Begin
+    If UnitTab[P].Kind In [UK_VARDECL, UK_IDDECL] Then
+      ModesDecl(P)
+    Else If IsValueUnit(P) Then
+    Begin
+      If P = Last Then
+        New := CoerceUnit(P, Want, STR_STRONG)
+      Else
+        New := CoerceUnit(P, MD_VOID, STR_STRONG);
+      If New <> P Then
+      Begin
+        ReplaceItem(Head, P, New);
+        P := New;
+      End;
+    End;
+    P := UnitTab[P].Next;
+  End;
+  ModesSerial := Head;
+End;
+
 Procedure PhaseModes;
 Begin
-  { A faire : TODO 09 et 11 a 19 }
+  CoerceCount := 0;
+  UnitTab[UnitRoot].A := ModesSerial(UnitTab[UnitRoot].A, MD_VOID);
+  If Opts.Verbose Then
+    WriteLn('  ', CoerceCount, ' coercition(s) inseree(s)');
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('Arbre d''unites apres coercitions :');
+    UnitDump(UnitTab[UnitRoot].A, 1);
+  End;
 End;
 
 { Operande memoire de l objet d un symbole (segment de donnees ou
@@ -5404,17 +5846,40 @@ Begin
   End;
 End;
 
-{ Declaration d identite ou de variable : initialisation de l objet par
-  une denotation (dans une union : etiquette de mode puis valeur) ; les
-  autres initialiseurs viendront avec les TODOs 10 a 19 }
-Procedure GenDecl(U : LongInt);
-Var
-  S, Init : LongInt;
-  M       : Integer;
+{ Initialise l objet du symbole S (a Disp octets de son debut) avec
+  l unite Init, deja coercee vers le mode de l objet : denotation,
+  NIL, EMPTY, union (etiquette de mode puis valeur) ; les autres
+  initialiseurs viendront avec les TODOs 10 a 19 }
+Procedure GenInit(S : Integer; Disp : LongInt; Init : LongInt;
+                  Const Name : TName);
 Begin
-  S := UnitTab[U].Sym;
-  M := ModeResolve(UnitTab[U].Mode);
-  Init := UnitTab[U].A;
+  Case UnitTab[Init].Kind Of
+    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
+      GenStoreDenotation(S, Disp, ModeResolve(UnitTab[Init].Mode), Init);
+    UK_NIL, UK_EMPTY:
+      Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(0));
+    UK_SKIP: ;
+    UK_COERCE:
+      If (UnitTab[Init].IntVal = CO_UNITE) And
+         (ModeKind(UnitTab[UnitTab[Init].A].Mode) <> MK_UNION) And
+         (UnitTab[UnitTab[Init].A].Kind In [UK_INTDEN, UK_REALDEN,
+          UK_BOOLDEN, UK_CHARDEN, UK_STRDEN]) Then
+      Begin
+        Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].B));
+        GenInit(S, Disp + 4, UnitTab[Init].A, Name);
+      End
+      Else
+        EmitComment(Name + ' : coercition ligne ' +
+                    ItoS(UnitTab[Init].Line) + ' pas encore generee');
+  Else
+    EmitComment(Name + ' : initialiseur ligne ' +
+                ItoS(UnitTab[Init].Line) + ' pas encore genere');
+  End;
+End;
+
+{ Declaration d identite ou de variable }
+Procedure GenDecl(U : LongInt);
+Begin
   If UnitTab[U].IntVal = 1 Then
     EmitComment('HEAP traite comme LOC (TODO 14)');
   If UnitTab[U].C > 0 Then
@@ -5422,45 +5887,39 @@ Begin
     EmitComment('tableau ' + UnitTab[U].Name + ' (TODO 15)');
     Exit;
   End;
-  If Init < 0 Then Exit;
-  If Not (UnitTab[Init].Kind In [UK_INTDEN, UK_REALDEN, UK_BOOLDEN,
-                                 UK_CHARDEN, UK_STRDEN]) Then
-  Begin
-    EmitComment(UnitTab[U].Name + ' : initialiseur ligne ' +
-                ItoS(UnitTab[Init].Line) + ' pas encore genere');
-    Exit;
-  End;
-  If ModeTab[M].Kind = MK_UNION Then
-  Begin
-    Emit(OP_MOV, SymCell(S, 0, 4),
-         OpImm(ModeResolve(UnitTab[Init].Mode)));
-    GenStoreDenotation(S, 4, ModeResolve(UnitTab[Init].Mode), Init);
-  End
-  Else
-    GenStoreDenotation(S, 0, M, Init);
+  If UnitTab[U].A >= 0 Then
+    GenInit(UnitTab[U].Sym, 0, UnitTab[U].A, UnitTab[U].Name);
 End;
 
 { ---- Generation du code a partir de l arbre ---- }
+Procedure GenUnit(U : LongInt); Forward;
+
+Procedure GenOne(U : LongInt);
+Begin
+  Case UnitTab[U].Kind Of
+    UK_SERIAL  : GenUnit(UnitTab[U].A);
+    UK_CLOSED  : GenUnit(UnitTab[U].A);
+    UK_COERCE  : GenOne(UnitTab[U].A);
+    UK_LABELDEF:
+      If UnitTab[U].Sym >= 0 Then
+        EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
+    UK_GOTO    :
+      If UnitTab[U].Sym >= 0 Then
+        Emit1(OP_JMP, OpLabel(Intern(SymTab[UnitTab[U].Sym].AsmName)));
+    UK_SKIP, UK_NIL, UK_EMPTY, UK_MODEDECL, UK_PRIODECL : ;
+    UK_VARDECL, UK_IDDECL : GenDecl(U);
+    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
+    UK_DECL, UK_OPAQUE:
+      EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
+                  ' : pas encore generee)');
+  End;
+End;
+
 Procedure GenUnit(U : LongInt);
 Begin
   While U >= 0 Do
   Begin
-    Case UnitTab[U].Kind Of
-      UK_SERIAL  : GenUnit(UnitTab[U].A);
-      UK_CLOSED  : GenUnit(UnitTab[U].A);
-      UK_LABELDEF:
-        If UnitTab[U].Sym >= 0 Then
-          EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
-      UK_GOTO    :
-        If UnitTab[U].Sym >= 0 Then
-          Emit1(OP_JMP, OpLabel(Intern(SymTab[UnitTab[U].Sym].AsmName)));
-      UK_SKIP, UK_MODEDECL, UK_PRIODECL : ;
-      UK_VARDECL, UK_IDDECL : GenDecl(U);
-      UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
-      UK_DECL, UK_OPAQUE:
-        EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
-                    ' : pas encore generee)');
-    End;
+    GenOne(U);
     U := UnitTab[U].Next;
   End;
 End;
