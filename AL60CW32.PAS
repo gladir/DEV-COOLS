@@ -30,7 +30,8 @@
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
-         expressions arithmetiques) ; TODO 11 a 25 a faire.
+         expressions arithmetiques, booleennes et conditionnelles) ;
+         TODO 12 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -341,7 +342,7 @@
               ML.PAS avec un runtime de test, executees ; le code de
               retour donne le resultat attendu
 
-  TODO 11 - EXPRESSIONS BOOLEENNES ET CONDITIONNELLES [A FAIRE]
+  TODO 11 - EXPRESSIONS BOOLEENNES ET CONDITIONNELLES [IMPLEMENTE]
             Relationnels = != # < <= > >= (integer et real, resultat
               Boolean) ; logiques not (~), and (/\), or (\/), impl, equiv
               avec leurs priorites (not > and > or > impl > equiv)
@@ -350,8 +351,30 @@
             Expression conditionnelle : if B then E1 else E2, les deux
               branches de meme type (integer et real : promotion en real)
             Expression designationnelle : if B then etiquette else
-              etiquette, element de switch
+              etiquette, element de switch (realisee avec goto et switch,
+              TODO 14, car elle depend des etiquettes)
             Verification : test_condexpr.a60, test_arithbool.a60, ifthen.a60
+            Realise : ParseRelation (un relationnel n'est pas chainable),
+              ParseSecondary (not s'applique a une relation ou un
+              primaire : not a < b vaut not (a < b)), ParseBoolFactor
+              (and), ParseBoolTerm (or), ParseImplication (impl),
+              ParseSimpleExpr (equiv), ParseCondExpr (la branche then est
+              une expression simple, la branche else une expression
+              complete, donc if a then b else if c then d else e),
+              ParseCondition (Boolean ou entier, avec avertissement pour
+              un entier) ; ExprMakeBinary et ExprMakeUnary : relationnels
+              (operandes arithmetiques, comparaison des reels par
+              FCOMP + SAHF), logiques, repliement des constantes avec
+              court-circuit (false and x, true or x, false impl x),
+              ExprMakeCond (branches de meme type commun, real si l'une
+              l'est) ; GenCompareFlags, GenJump (and / or / impl en
+              court-circuit, not inverse le saut), SETcc pour la valeur,
+              equiv par CMP + SETE
+            Verifie : 49 expressions (relationnels entiers et reels,
+              priorites, court-circuit, conditionnelles imbriquees,
+              constantes repliees) generees, assemblees avec ML.PAS et
+              executees ; les 30 cas du TODO 10 donnent les memes
+              resultats (27 valeurs et 3 refus attendus)
 
   TODO 12 - INSTRUCTIONS : AFFECTATION, IF ET BLOCS [A FAIRE]
             Affectation x := E avec conversion de type ; affectations
@@ -3471,7 +3494,7 @@ Type
 
   TExprNode = Record
     Kind    : TExprKind;
-    Op      : String[4];
+    Op      : String[5];
     Typ     : Integer;      { TY_IDX_* ou TY_UNKNOWN            }
     IntVal  : LongInt;
     RealVal : Double;
@@ -3695,6 +3718,56 @@ Begin
     ExprConstReal := ExprTab[N].RealVal;
 End;
 
+{ Constante booleenne ou entiere utilisable comme condition }
+Function ExprIsCondConst(N : Integer) : Boolean;
+Begin
+  ExprIsCondConst := (N >= 0) And
+                     (ExprTab[N].Kind In [EX_INT, EX_BOOL]);
+End;
+
+Function ExprTruth(N : Integer) : Boolean;
+Begin
+  ExprTruth := (ExprTab[N].IntVal <> 0);
+End;
+
+{ Constante numerique ou booleenne (comparable) }
+Function ExprIsNumConst(N : Integer) : Boolean;
+Begin
+  ExprIsNumConst := (N >= 0) And
+                    (ExprTab[N].Kind In [EX_INT, EX_REAL, EX_BOOL]);
+End;
+
+Function ExprNumReal(N : Integer) : Double;
+Begin
+  If ExprTab[N].Kind = EX_REAL Then
+    ExprNumReal := ExprTab[N].RealVal
+  Else
+    ExprNumReal := ExprTab[N].IntVal;
+End;
+
+{ Transforme le noeud N en constante booleenne (repliement) }
+Procedure ExprSetBool(N : Integer; V : Boolean);
+Begin
+  ExprTab[N].Kind := EX_BOOL;
+  ExprTab[N].Typ  := TY_IDX_BOOLEAN;
+  ExprTab[N].L    := -1;
+  ExprTab[N].R    := -1;
+  If V Then ExprTab[N].IntVal := 1 Else ExprTab[N].IntVal := 0;
+  Inc(FoldCount);
+End;
+
+Function OpIsRel(Const Op : TString) : Boolean;
+Begin
+  OpIsRel := (Op = '=') Or (Op = '#') Or (Op = '<') Or (Op = '<=') Or
+             (Op = '>') Or (Op = '>=');
+End;
+
+Function OpIsLogic(Const Op : TString) : Boolean;
+Begin
+  OpIsLogic := (Op = 'and') Or (Op = 'or') Or (Op = 'impl') Or
+               (Op = 'equiv');
+End;
+
 Function FoldRange(W : TWide) : Boolean;
 Begin
   FoldRange := (W <= MaxLongInt) And (W >= -TWide(MaxLongInt) - 1);
@@ -3822,7 +3895,15 @@ Begin
             TypeName(A) + ', ' + TypeName(B));
 End;
 
-{ + ou - unaire. La constante est repliee ; +x est l'identite. }
+{ Un entier utilise comme operande booleen est vrai s'il est different
+  de zero : avertissement (TypeConvNote) }
+Procedure ExprNoteCond(N : Integer; Line, Col : Integer);
+Begin
+  If ExprTab[N].Typ = TY_IDX_INTEGER Then
+    WarnAt(Line, Col, TypeConvNote(TY_IDX_INTEGER, TY_IDX_BOOLEAN));
+End;
+
+{ + ou - unaire, ou not. La constante est repliee ; +x est l'identite. }
 Function ExprMakeUnary(Const Op : TString; A : Integer;
                        Line, Col : Integer) : Integer;
 Var
@@ -3830,6 +3911,26 @@ Var
 Begin
   ExprMakeUnary := -1;
   If A < 0 Then Exit;
+  If Op = 'not' Then
+  Begin
+    If Not TypeIsCondition(ExprTab[A].Typ) Then
+    Begin
+      OpTypeError(Op, ExprTab[A].Typ, TY_UNKNOWN, Line, Col);
+      Exit;
+    End;
+    ExprNoteCond(A, Line, Col);
+    If ExprIsCondConst(A) Then
+    Begin
+      ExprSetBool(A, Not ExprTruth(A));
+      ExprMakeUnary := A;
+      Exit;
+    End;
+    N := ExprNew(EX_UNARY, TY_IDX_BOOLEAN, Line, Col);
+    ExprTab[N].Op := Op;
+    ExprTab[N].L  := A;
+    ExprMakeUnary := N;
+    Exit;
+  End;
   T := TypeArith(ExprTab[A].Typ, ExprTab[A].Typ);
   If T = TY_UNKNOWN Then
   Begin
@@ -3870,11 +3971,115 @@ Var
   IV                 : LongInt;
   RV                 : Double;
   Err                : TString;
+  D1, D2             : Double;
+  Cmp                : Integer;
+  Res                : Boolean;
 Begin
   ExprMakeBinary := -1;
   If (L < 0) Or (R < 0) Then Exit;
   TL := ExprTab[L].Typ;
   TR := ExprTab[R].Typ;
+
+  { relationnels : operandes arithmetiques, resultat Boolean }
+  If OpIsRel(Op) Then
+  Begin
+    If TypeRelational(TL, TR) = TY_UNKNOWN Then
+    Begin
+      OpTypeError(Op, TL, TR, Line, Col);
+      Exit;
+    End;
+    If ExprIsNumConst(L) And ExprIsNumConst(R) Then
+    Begin
+      If (ExprTab[L].Kind = EX_REAL) Or (ExprTab[R].Kind = EX_REAL) Then
+      Begin
+        D1 := ExprNumReal(L);
+        D2 := ExprNumReal(R);
+        Cmp := 0;
+        If D1 < D2 Then Cmp := -1 Else If D1 > D2 Then Cmp := 1;
+      End
+      Else
+      Begin
+        Cmp := 0;
+        If ExprTab[L].IntVal < ExprTab[R].IntVal Then
+          Cmp := -1
+        Else If ExprTab[L].IntVal > ExprTab[R].IntVal Then
+          Cmp := 1;
+      End;
+      If Op = '=' Then
+        Res := (Cmp = 0)
+      Else If Op = '#' Then
+        Res := (Cmp <> 0)
+      Else If Op = '<' Then
+        Res := (Cmp < 0)
+      Else If Op = '<=' Then
+        Res := (Cmp <= 0)
+      Else If Op = '>' Then
+        Res := (Cmp > 0)
+      Else
+        Res := (Cmp >= 0);
+      ExprSetBool(L, Res);
+      ExprMakeBinary := L;
+      Exit;
+    End;
+    N := ExprNew(EX_BINARY, TY_IDX_BOOLEAN, Line, Col);
+    ExprTab[N].Op := Op;
+    ExprTab[N].L  := L;
+    ExprTab[N].R  := R;
+    ExprMakeBinary := N;
+    Exit;
+  End;
+
+  { operateurs logiques : operandes booleens (ou entiers, avec
+    avertissement), resultat Boolean ; constantes repliees }
+  If OpIsLogic(Op) Then
+  Begin
+    If Not (TypeIsCondition(TL) And TypeIsCondition(TR)) Then
+    Begin
+      OpTypeError(Op, TL, TR, Line, Col);
+      Exit;
+    End;
+    ExprNoteCond(L, Line, Col);
+    ExprNoteCond(R, Line, Col);
+    If ExprIsCondConst(L) Then
+    Begin
+      If ExprIsCondConst(R) Then
+      Begin
+        If Op = 'and' Then
+          Res := ExprTruth(L) And ExprTruth(R)
+        Else If Op = 'or' Then
+          Res := ExprTruth(L) Or ExprTruth(R)
+        Else If Op = 'impl' Then
+          Res := (Not ExprTruth(L)) Or ExprTruth(R)
+        Else
+          Res := (ExprTruth(L) = ExprTruth(R));
+        ExprSetBool(L, Res);
+        ExprMakeBinary := L;
+        Exit;
+      End;
+      { gauche constante : la droite n'est pas toujours evaluee }
+      If ((Op = 'and') And (Not ExprTruth(L))) Or
+         ((Op = 'or') And ExprTruth(L)) Or
+         ((Op = 'impl') And (Not ExprTruth(L))) Then
+      Begin
+        ExprSetBool(L, Op <> 'and');
+        ExprMakeBinary := L;
+        Exit;
+      End;
+      If ((Op = 'and') Or (Op = 'or') Or (Op = 'impl')) And
+         (ExprTab[R].Typ = TY_IDX_BOOLEAN) Then
+      Begin
+        Inc(FoldCount);               { true and x, false or x, true impl x }
+        ExprMakeBinary := R;
+        Exit;
+      End;
+    End;
+    N := ExprNew(EX_BINARY, TY_IDX_BOOLEAN, Line, Col);
+    ExprTab[N].Op := Op;
+    ExprTab[N].L  := L;
+    ExprTab[N].R  := R;
+    ExprMakeBinary := N;
+    Exit;
+  End;
 
   { type du resultat }
   If Op = '/' Then
@@ -3950,6 +4155,68 @@ Begin
   ExprTab[N].L  := L;
   ExprTab[N].R  := R;
   ExprMakeBinary := N;
+End;
+
+{ if C then T else E : valeur de T ou de E. Les branches ont un type
+  commun : Boolean si les deux le sont, chaine si les deux le sont,
+  sinon le type arithmetique (real si l'une l'est). Une condition
+  constante choisit directement la branche. }
+Function ExprMakeCond(C, T, E : Integer; Line, Col : Integer) : Integer;
+Var
+  N, Res, Sel : Integer;
+Begin
+  ExprMakeCond := -1;
+  If (C < 0) Or (T < 0) Or (E < 0) Then Exit;
+  If (ExprTab[T].Typ = TY_IDX_BOOLEAN) And
+     (ExprTab[E].Typ = TY_IDX_BOOLEAN) Then
+    Res := TY_IDX_BOOLEAN
+  Else If (ExprTab[T].Typ = TY_IDX_STRING) And
+          (ExprTab[E].Typ = TY_IDX_STRING) Then
+    Res := TY_IDX_STRING
+  Else
+  Begin
+    Res := TypeArith(ExprTab[T].Typ, ExprTab[E].Typ);
+    If Res = TY_UNKNOWN Then
+    Begin
+      ErrorAt(Line, Col, 'branches then/else de types incompatibles: ' +
+              TypeName(ExprTab[T].Typ) + ', ' + TypeName(ExprTab[E].Typ));
+      Exit;
+    End;
+  End;
+
+  If ExprIsCondConst(C) Then
+  Begin
+    If ExprTruth(C) Then Sel := T Else Sel := E;
+    If ExprTab[Sel].Typ = Res Then
+    Begin
+      Inc(FoldCount);
+      ExprMakeCond := Sel;
+      Exit;
+    End;
+    If (Res = TY_IDX_REAL) And (ExprTab[Sel].Kind In [EX_INT, EX_BOOL]) Then
+    Begin
+      ExprTab[Sel].RealVal := ExprTab[Sel].IntVal;
+      ExprTab[Sel].Kind := EX_REAL;
+      ExprTab[Sel].Typ  := TY_IDX_REAL;
+      Inc(FoldCount);
+      ExprMakeCond := Sel;
+      Exit;
+    End;
+    If (Res = TY_IDX_INTEGER) And (ExprTab[Sel].Kind = EX_BOOL) Then
+    Begin
+      ExprTab[Sel].Kind := EX_INT;
+      ExprTab[Sel].Typ  := TY_IDX_INTEGER;
+      Inc(FoldCount);
+      ExprMakeCond := Sel;
+      Exit;
+    End;
+  End;
+
+  N := ExprNew(EX_COND, Res, Line, Col);
+  ExprTab[N].L := C;
+  ExprTab[N].R := T;
+  ExprTab[N].E := E;
+  ExprMakeCond := N;
 End;
 
 { ---- Expressions primaires -------------------------------------- }
@@ -4297,12 +4564,189 @@ Begin
   ParseArith := L;
 End;
 
-{ Expression : arithmetique pour le moment ; les relationnels, les
-  operateurs booleens et les expressions conditionnelles (TODO 11)
-  s'ajouteront au-dessus. }
+{ ---- Expressions booleennes et conditionnelles (TODO 11) ---------
+  Grammaire du Revised Report (3.4.1) :
+    relation          = arithmetique relationnel arithmetique
+    secondaire        = [not] relation ou primaire
+    facteur booleen   = secondaire [and secondaire]...
+    terme booleen     = facteur [or facteur]...
+    implication       = terme [impl terme]...
+    booleen simple    = implication [equiv implication]...
+    expression        = booleen simple, ou
+                        if condition then simple else expression
+  Priorites : not > and > or > impl > equiv. Les relationnels se
+  notent = # != <> < <= > >=. ----------------------------------------- }
+
+Function ParseRelation : Integer;
+Var
+  L, R      : Integer;
+  Op        : TString;
+  Line, Col : Integer;
+Begin
+  L := ParseArith;
+  If AtOp('=') Or AtOp('#') Or AtOp('<') Or AtOp('<=') Or AtOp('>') Or
+     AtOp('>=') Then
+  Begin
+    Op   := CurToken.Val;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseArith;
+    L := ExprMakeBinary(Op, L, R, Line, Col);
+    If AtOp('=') Or AtOp('#') Or AtOp('<') Or AtOp('<=') Or AtOp('>') Or
+       AtOp('>=') Then
+    Begin
+      ErrorAt(CurToken.Line, CurToken.Col, 'comparaison chainee non ' +
+              'supportee: utiliser and entre les comparaisons');
+      ParserAdvance;
+      R := ParseArith;
+      L := -1;
+    End;
+  End;
+  ParseRelation := L;
+End;
+
+{ not s'applique a une relation ou a un primaire }
+Function ParseSecondary : Integer;
+Var
+  Line, Col : Integer;
+Begin
+  If AtKw('not') Then
+  Begin
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    ParseSecondary := ExprMakeUnary('not', ParseSecondary, Line, Col);
+  End
+  Else
+    ParseSecondary := ParseRelation;
+End;
+
+Function ParseBoolFactor : Integer;
+Var
+  L, R      : Integer;
+  Line, Col : Integer;
+Begin
+  L := ParseSecondary;
+  While AtKw('and') Do
+  Begin
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseSecondary;
+    L := ExprMakeBinary('and', L, R, Line, Col);
+  End;
+  ParseBoolFactor := L;
+End;
+
+Function ParseBoolTerm : Integer;
+Var
+  L, R      : Integer;
+  Line, Col : Integer;
+Begin
+  L := ParseBoolFactor;
+  While AtKw('or') Do
+  Begin
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseBoolFactor;
+    L := ExprMakeBinary('or', L, R, Line, Col);
+  End;
+  ParseBoolTerm := L;
+End;
+
+Function ParseImplication : Integer;
+Var
+  L, R      : Integer;
+  Line, Col : Integer;
+Begin
+  L := ParseBoolTerm;
+  While AtKw('impl') Do
+  Begin
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseBoolTerm;
+    L := ExprMakeBinary('impl', L, R, Line, Col);
+  End;
+  ParseImplication := L;
+End;
+
+{ Expression booleenne simple (sans if au sommet) }
+Function ParseSimpleExpr : Integer;
+Var
+  L, R      : Integer;
+  Line, Col : Integer;
+Begin
+  L := ParseImplication;
+  While AtKw('equiv') Do
+  Begin
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseImplication;
+    L := ExprMakeBinary('equiv', L, R, Line, Col);
+  End;
+  ParseSimpleExpr := L;
+End;
+
+{ Condition de if / while / expression conditionnelle : Boolean ou
+  entier (vrai si different de zero, avec avertissement). -1 si erreur. }
+Function ParseCondition : Integer;
+Var
+  N         : Integer;
+  Line, Col : Integer;
+Begin
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  N := ParseExpr;
+  If (N >= 0) And (Not TypeIsCondition(ExprTab[N].Typ)) Then
+  Begin
+    ErrorAt(Line, Col, 'condition booleenne attendue (type: ' +
+            TypeName(ExprTab[N].Typ) + ')');
+    N := -1;
+  End
+  Else If N >= 0 Then
+    ExprNoteCond(N, Line, Col);
+  ParseCondition := N;
+End;
+
+{ if condition then expression simple else expression
+  (le mot if est le token courant) }
+Function ParseCondExpr : Integer;
+Var
+  C, T, E   : Integer;
+  Line, Col : Integer;
+Begin
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  ParserAdvance;                          { if }
+  C := ParseCondition;
+  If AtKw('then') Then
+    ParserAdvance
+  Else
+    ParseError('''then'' attendu');
+  T := ParseSimpleExpr;
+  If AtKw('else') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError('''else'' attendu dans une expression conditionnelle');
+    ParseCondExpr := -1;
+    Exit;
+  End;
+  E := ParseExpr;
+  ParseCondExpr := ExprMakeCond(C, T, E, Line, Col);
+End;
+
+{ Expression : booleenne simple ou conditionnelle }
 Function ParseExpr : Integer;
 Begin
-  ParseExpr := ParseArith;
+  If AtKw('if') Then
+    ParseExpr := ParseCondExpr
+  Else
+    ParseExpr := ParseSimpleExpr;
 End;
 
 { Mode debug -d : arbre d'une expression }
@@ -4529,6 +4973,168 @@ Begin
   GenConvert(ExprTab[N].Typ, T);
 End;
 
+Function InvRel(Const Op : TString) : TString;
+Begin
+  If Op = '=' Then InvRel := '#'
+  Else If Op = '#' Then InvRel := '='
+  Else If Op = '<' Then InvRel := '>='
+  Else If Op = '<=' Then InvRel := '>'
+  Else If Op = '>' Then InvRel := '<='
+  Else InvRel := '<';
+End;
+
+{ Saut selon Op ; entiers : drapeaux signes ; reels : apres
+  FCOMP [ESP] (droite en ST0, gauche en memoire) et SAHF, la
+  relation est inversee et lue avec les drapeaux non signes. }
+Function JccFor(Const Op : TString; IsReal : Boolean) : TOp;
+Begin
+  If Op = '=' Then JccFor := OP_JE
+  Else If Op = '#' Then JccFor := OP_JNE
+  Else If IsReal Then
+  Begin
+    If Op = '<' Then JccFor := OP_JA
+    Else If Op = '<=' Then JccFor := OP_JAE
+    Else If Op = '>' Then JccFor := OP_JB
+    Else JccFor := OP_JBE;
+  End
+  Else
+  Begin
+    If Op = '<' Then JccFor := OP_JL
+    Else If Op = '<=' Then JccFor := OP_JLE
+    Else If Op = '>' Then JccFor := OP_JG
+    Else JccFor := OP_JGE;
+  End;
+End;
+
+Function SetFor(Const Op : TString; IsReal : Boolean) : TOp;
+Begin
+  If Op = '=' Then SetFor := OP_SETE
+  Else If Op = '#' Then SetFor := OP_SETNE
+  Else If IsReal Then
+  Begin
+    If Op = '<' Then SetFor := OP_SETA
+    Else If Op = '<=' Then SetFor := OP_SETAE
+    Else If Op = '>' Then SetFor := OP_SETB
+    Else SetFor := OP_SETBE;
+  End
+  Else
+  Begin
+    If Op = '<' Then SetFor := OP_SETL
+    Else If Op = '<=' Then SetFor := OP_SETLE
+    Else If Op = '>' Then SetFor := OP_SETG
+    Else SetFor := OP_SETGE;
+  End;
+End;
+
+{ Evalue les deux operandes d'une relation et positionne les drapeaux.
+  Retourne True si la comparaison est reelle (mapping non signe). }
+Function GenCompareFlags(N : Integer) : Boolean;
+Var
+  L, R, Dom : Integer;
+Begin
+  L := ExprTab[N].L;
+  R := ExprTab[N].R;
+  Dom := TypeArith(ExprTab[L].Typ, ExprTab[R].Typ);
+  If Dom = TY_IDX_REAL Then
+  Begin
+    GenExprAs(L, TY_IDX_REAL);
+    SpillReal;
+    GenExprAs(R, TY_IDX_REAL);
+    Emit1(OP_FCOMP, OpMem(R_ESP, 0, 8));
+    Emit1(OP_FNSTSW, OpReg(R_AX));
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(8));
+    Emit0(OP_SAHF);
+    GenCompareFlags := True;
+  End
+  Else
+  Begin
+    GenExprAs(L, TY_IDX_INTEGER);
+    If ExprTab[R].Kind = EX_INT Then
+      Emit(OP_CMP, OpReg(R_EAX), OpImm(ExprTab[R].IntVal))
+    Else
+    Begin
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      GenExprAs(R, TY_IDX_INTEGER);
+      Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+      Emit1(OP_POP, OpReg(R_EAX));
+      Emit(OP_CMP, OpReg(R_EAX), OpReg(R_ECX));
+    End;
+    GenCompareFlags := False;
+  End;
+End;
+
+{ Saute vers Lbl si la condition N est vraie (OnTrue) ou fausse.
+  Les operateurs and / or / impl sont evalues en court-circuit. }
+Procedure GenJump(N, Lbl : Integer; OnTrue : Boolean);
+Var
+  Skip   : Integer;
+  Op     : TString;
+  IsReal : Boolean;
+Begin
+  If ExprTab[N].Kind In [EX_BOOL, EX_INT] Then
+  Begin
+    If (ExprTab[N].IntVal <> 0) = OnTrue Then
+      Emit1(OP_JMP, OpLabel(Lbl));
+    Exit;
+  End;
+  If (ExprTab[N].Kind = EX_UNARY) And (ExprTab[N].Op = 'not') Then
+  Begin
+    GenJump(ExprTab[N].L, Lbl, Not OnTrue);
+    Exit;
+  End;
+  If ExprTab[N].Kind = EX_BINARY Then
+  Begin
+    Op := ExprTab[N].Op;
+    If OpIsRel(Op) Then
+    Begin
+      IsReal := GenCompareFlags(N);
+      If Not OnTrue Then Op := InvRel(Op);
+      Emit1(JccFor(Op, IsReal), OpLabel(Lbl));
+      Exit;
+    End;
+    If (Op = 'and') Or (Op = 'or') Or (Op = 'impl') Then
+    Begin
+      If Op = 'impl' Then
+      Begin
+        { a impl b = (non a) ou b }
+        If OnTrue Then
+        Begin
+          GenJump(ExprTab[N].L, Lbl, False);
+          GenJump(ExprTab[N].R, Lbl, True);
+        End
+        Else
+        Begin
+          Skip := NewLabel;
+          GenJump(ExprTab[N].L, Skip, False);
+          GenJump(ExprTab[N].R, Lbl, False);
+          EmitLabel(Skip);
+        End;
+        Exit;
+      End;
+      If (Op = 'and') = (Not OnTrue) Then
+      Begin
+        { and / faux  ou  or / vrai : l'un des deux suffit }
+        GenJump(ExprTab[N].L, Lbl, OnTrue);
+        GenJump(ExprTab[N].R, Lbl, OnTrue);
+      End
+      Else
+      Begin
+        Skip := NewLabel;
+        GenJump(ExprTab[N].L, Skip, Not OnTrue);
+        GenJump(ExprTab[N].R, Lbl, OnTrue);
+        EmitLabel(Skip);
+      End;
+      Exit;
+    End;
+  End;
+  GenExpr(N);
+  Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+  If OnTrue Then
+    Emit1(OP_JNE, OpLabel(Lbl))
+  Else
+    Emit1(OP_JE, OpLabel(Lbl));
+End;
+
 { EAX := EAX op ECX pour + - * div ^ (entiers) }
 Procedure GenIntOp(Const Op : TString; RightIsConst : Boolean);
 Var
@@ -4565,13 +5171,49 @@ End;
   rangees sur la pile machine (jamais en registre a travers un appel). }
 Procedure GenBinary(N : Integer);
 Var
-  Op      : TString;
-  L, R, T : Integer;
+  Op        : TString;
+  L, R, T   : Integer;
+  IsReal    : Boolean;
+  Lf, Le    : Integer;
 Begin
   Op := ExprTab[N].Op;
   L  := ExprTab[N].L;
   R  := ExprTab[N].R;
   T  := ExprTab[N].Typ;
+
+  If OpIsRel(Op) Then
+  Begin
+    IsReal := GenCompareFlags(N);
+    Emit1(SetFor(Op, IsReal), OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    Exit;
+  End;
+
+  If OpIsLogic(Op) Then
+  Begin
+    If Op = 'equiv' Then
+    Begin
+      GenExprAs(L, TY_IDX_BOOLEAN);
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      GenExprAs(R, TY_IDX_BOOLEAN);
+      Emit1(OP_POP, OpReg(R_ECX));
+      Emit(OP_CMP, OpReg(R_ECX), OpReg(R_EAX));
+      Emit1(OP_SETE, OpReg(R_AL));
+      Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    End
+    Else
+    Begin
+      Lf := NewLabel;
+      Le := NewLabel;
+      GenJump(N, Lf, False);
+      Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+      Emit1(OP_JMP, OpLabel(Le));
+      EmitLabel(Lf);
+      Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+      EmitLabel(Le);
+    End;
+    Exit;
+  End;
 
   If T = TY_IDX_REAL Then
   Begin
@@ -4621,6 +5263,8 @@ End;
 { Evalue le noeud N : integer, Boolean ou chaine (adresse) dans EAX,
   real dans ST(0). Les autres noeuds viendront avec leurs TODO. }
 Procedure GenExpr(N : Integer);
+Var
+  Lelse, Lend : Integer;
 Begin
   Case ExprTab[N].Kind Of
     EX_INT, EX_BOOL:
@@ -4640,6 +5284,14 @@ Begin
     EX_VAR:
       GenLoadVar(ExprTab[N].Sym);
     EX_UNARY:
+      If ExprTab[N].Op = 'not' Then
+      Begin
+        GenExpr(ExprTab[N].L);
+        Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+        Emit1(OP_SETE, OpReg(R_AL));
+        Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+      End
+      Else
       Begin
         GenExprAs(ExprTab[N].L, ExprTab[N].Typ);
         If ExprTab[N].Op = '-' Then
@@ -4652,9 +5304,20 @@ Begin
       End;
     EX_BINARY:
       GenBinary(N);
+    EX_COND:
+      Begin
+        Lelse := NewLabel;
+        Lend  := NewLabel;
+        GenJump(ExprTab[N].L, Lelse, False);
+        GenExprAs(ExprTab[N].R, ExprTab[N].Typ);
+        Emit1(OP_JMP, OpLabel(Lend));
+        EmitLabel(Lelse);
+        GenExprAs(ExprTab[N].E, ExprTab[N].Typ);
+        EmitLabel(Lend);
+      End;
   Else
     FatalError('erreur interne: noeud d''expression non genere ' +
-               '(TODO 11 a 17)');
+               '(TODO 12 a 17)');
   End;
 End;
 
