@@ -424,6 +424,7 @@ Function HashVal(Const v: TVal): Int64; Forward;
 Function ValEq(Const a, b: TVal): Boolean; Forward;
 Function CallValue(Const fn: TVal; a: PVal; n: Integer;
  kw: TPyDict): TVal; Forward;
+Var ReprSkipObj: TObject = Nil;
 Function ReprVal(Const v: TVal): AnsiString; Forward;
 Function StrVal(Const v: TVal): AnsiString; Forward;
 Procedure RaiseExc(c: TPyType; Const msg: AnsiString); Forward;
@@ -439,6 +440,7 @@ Function VBytes(Const s: AnsiString): TVal; Forward;
 Function NewList: TPyList; Forward;
 Function NewTuple(n: Integer): TPyTuple; Forward;
 Function InternStr(Const s: AnsiString): TPyStr; Forward;
+Function ExcToStr(o: TPyObj): AnsiString; Forward;
 Function IterOf(Const v: TVal): TVal; Forward;
 Function IterNextVal(Const it: TVal; Var r: TVal): Boolean; Forward;
 Procedure MarkVal(Const v: TVal); Forward;
@@ -1238,6 +1240,12 @@ Begin
  MagTrim(Result);
 End;
 
+Function Sar32(t: Int64): Int64; Inline;
+Begin
+ If t >= 0 Then Result := t Shr 32
+ Else Result := -((-(t + 1)) Shr 32) - 1;
+End;
+
 { Division de Knuth (algorithme D) }
 Procedure MagDivMod(Const a, b: TMag; Var q, r: TMag);
 Var
@@ -1297,7 +1305,7 @@ Begin
    p := qhat * v[i];
    t := Int64(u[i + j]) - k - Int64(p And $FFFFFFFF);
    u[i + j] := Cardinal(t And $FFFFFFFF);
-   k := Int64(p Shr 32) - (t Shr 32);
+   k := Int64(p Shr 32) - Sar32(t);
   End;
   t := Int64(u[j + n]) - k;
   u[j + n] := Cardinal(t And $FFFFFFFF);
@@ -1848,6 +1856,51 @@ Begin
  Else Result := MakeInt(False, m);
 End;
 
+
+{ qq * 2^e2 arrondi (pair le plus proche) vers un double IEEE }
+Function PackDouble(qq: QWord; e2: Integer): Double;
+Var
+ L, top, keep, sh: Integer;
+ mant, rem1, half, t: QWord;
+Begin
+ If qq = 0 Then Begin
+  Result := 0;
+  Exit;
+ End;
+ L := 0;
+ t := qq;
+ While t <> 0 Do Begin
+  Inc(L);
+  t := t Shr 1;
+ End;
+ top := e2 + L - 1;
+ If top > 1100 Then Begin
+  Result := Infinity;
+  Exit;
+ End;
+ If top >= -1022 Then keep := 53 Else keep := top + 1075;
+ If keep >= L Then Begin
+  Result := Ldexp(Int64(qq), e2);
+  Exit;
+ End;
+ If keep < 0 Then Begin
+  Result := 0;
+  Exit;
+ End;
+ sh := L - keep;
+ If sh >= 64 Then Begin
+  mant := 0;
+  rem1 := qq;
+ End
+ Else Begin
+  mant := qq Shr sh;
+  rem1 := qq And ((QWord(1) Shl sh) - 1);
+ End;
+ half := QWord(1) Shl (sh - 1);
+ If (rem1 > half) Or ((rem1 = half) And ((mant And 1) = 1)) Then Inc(mant);
+ Result := Ldexp(Int64(mant), e2 + sh);
+End;
+
 Function MagToDouble(Const m: TMag; neg: Boolean): Double;
 Var
  bl, sh: Integer;
@@ -1864,7 +1917,7 @@ Begin
  If bl <= 64 Then Begin
   q := m[0];
   If Length(m) > 1 Then q := q Or (QWord(m[1]) Shl 32);
-  Result := q;
+  Result := PackDouble(q, 0);
  End
  Else Begin
   sh := bl - 64;
@@ -1880,8 +1933,7 @@ Begin
   If sticky Then q := q Or 1;
   If bl > 1030 Then
    RaiseExc(exOverflow, 'int too large to convert to float');
-  Result := q;
-  Result := Ldexp(Result, sh);
+  Result := PackDouble(q, sh);
   If IsInfinite(Result) Then
    RaiseExc(exOverflow, 'int too large to convert to float');
  End;
@@ -2094,8 +2146,7 @@ Begin
  If Length(t) > 0 Then qq := t[0];
  If Length(t) > 1 Then qq := qq Or (QWord(t[1]) Shl 32);
  If sticky Then qq := qq Or 1;
- Result := qq;
- Result := Ldexp(Result, sh - k);
+ Result := PackDouble(qq, sh - k);
 End;
 
 { Analyse d'un litteral flottant (sans signe, sans soulignement) }
@@ -2218,7 +2269,7 @@ Begin
   If neg Then Result := '-0.0' Else Result := '0.0';
   Exit;
  End;
- p := 14;
+ If Abs(d) < 2.2250738585072014e-308 Then p := 0 Else p := 14;
  Repeat
   digs := SciDigits(Abs(d), p, E);
   back := ParseFloatStr(Copy(digs, 1, 1) + '.' + Copy(digs, 2, 40) +
@@ -6128,12 +6179,12 @@ Begin
   STORE_SUBSCR: Result := -3;
   DELETE_SUBSCR: Result := -2;
   WITH_CLEANUP_START: Result := 1;
-  WITH_CLEANUP_FINISH: Result := -1;
+  WITH_CLEANUP_FINISH: Result := -2;
   POP_BLOCK: Result := 0;
-  END_FINALLY: Result := -1;
+  END_FINALLY: Result := -6;
   POP_EXCEPT: Result := -3;
-  BEGIN_FINALLY: Result := 1;
-  POP_FINALLY: Result := -1;
+  BEGIN_FINALLY: Result := 6;
+  POP_FINALLY: Result := -6;
   STORE_NAME, STORE_GLOBAL, STORE_FAST, STORE_DEREF: Result := -1;
   DELETE_NAME, DELETE_GLOBAL, DELETE_FAST, DELETE_DEREF: Result := 0;
   UNPACK_SEQUENCE: Result := arg - 1;
@@ -6169,7 +6220,7 @@ Begin
   FORMAT_VALUE: If (arg And 4) <> 0 Then Result := -1 Else Result := 0;
   LOAD_METHOD: Result := 1;
   CALL_METHOD: Result := -arg - 1;
-  CALL_FINALLY: If jump Then Result := 1 Else Result := 0;
+  CALL_FINALLY: If jump Then Result := 6 Else Result := 0;
   EXTENDED_ARG: Result := 0;
  Else
   Result := 0;
@@ -6196,7 +6247,7 @@ Var
  depth: Array Of Integer;
  work: Array Of Integer;
  wdepth: Array Of Integer;
- nw, cur, d, d1, dj, maxd, t, op: Integer;
+ nw, cur, d, d1, dj, maxd, t, op, steps: Integer;
  sc: TScope;
  fl: Integer;
 Begin
@@ -6278,7 +6329,10 @@ Begin
  work[0] := 0;
  wdepth[0] := 0;
  nw := 1;
+ steps := 0;
  While nw > 0 Do Begin
+  Inc(steps);
+  If steps > 100 * n + 5000 Then Break;
   Dec(nw);
   cur := work[nw];
   d := wdepth[nw];
@@ -6310,7 +6364,7 @@ Begin
  End;
  code := TPyCode.Create(tyCode);
  code.co := co;
- code.stacksize := maxd + 2;
+ code.stacksize := maxd + 10;
  SetLength(code.consts, g.nconsts);
  For i := 0 To g.nconsts - 1 Do code.consts[i] := g.consts[i];
  SetLength(code.names, Length(g.names));
@@ -8098,8 +8152,13 @@ Begin
 End;
 
 Procedure RaiseStopIteration(Const v: TVal);
+Var
+ o: TPyObj;
 Begin
- Raise EPyError.Make(MakeExcArgs(exStopIteration, [v]));
+ If v.k = vkNone Then o := MakeExcArgs(exStopIteration, [])
+ Else o := MakeExcArgs(exStopIteration, [v]);
+ o.idict.SetS('value', v);
+ Raise EPyError.Make(o);
 End;
 
 Function TypeName(Const v: TVal): AnsiString;
@@ -8191,6 +8250,28 @@ Begin
  End;
 End;
 
+Function BigFitsInt64(Const v: TVal; Var r: Int64): Boolean;
+Var
+ b: TPyBigInt;
+ q: QWord;
+ i: Integer;
+Begin
+ b := TPyBigInt(v.o);
+ Result := False;
+ If Length(b.mag) > 2 Then Exit;
+ q := 0;
+ For i := High(b.mag) Downto 0 Do q := (q Shl 32) Or b.mag[i];
+ If b.neg Then Begin
+  If q > QWord($8000000000000000) Then Exit;
+  r := -Int64(q);
+ End
+ Else Begin
+  If q > QWord($7FFFFFFFFFFFFFFF) Then Exit;
+  r := Int64(q);
+ End;
+ Result := True;
+End;
+
 Function ToInt64(Const v: TVal): Int64;
 Var
  t: TVal;
@@ -8198,8 +8279,10 @@ Begin
  Case v.k Of
   vkInt, vkBool: Result := v.i;
   vkObj: Begin
-    If v.o Is TPyBigInt Then
+    If v.o Is TPyBigInt Then Begin
+     If BigFitsInt64(v, Result) Then Exit;
      RaiseExc(exOverflow, 'Python int too large to convert to C long');
+    End;
     TypeErr('''' + TypeName(v) + ''' object cannot be interpreted as an ' +
      'integer');
     Result := 0;
@@ -8587,6 +8670,19 @@ Begin
  Else Result := 0;
 End;
 
+Function PyCmpOverride(Const v: TVal; op: Integer): Boolean;
+Var
+ f: TVal;
+Begin
+ Result := False;
+ If (v.k = vkObj) And v.o.cls.userdef Then Begin
+  If LookupType(v.o.cls, DunderCmpName(op), f) And (f.k = vkObj) And
+   (f.o Is TPyFunc) Then Result := True
+  Else If (op = 3) And LookupType(v.o.cls, '__eq__', f) And (f.k = vkObj) And
+   (f.o Is TPyFunc) Then Result := True;
+ End;
+End;
+
 Function ValCompare(Const a, b: TVal; op: Integer): Boolean;
 Var
  la, lb: TPyList;
@@ -8625,7 +8721,8 @@ Var
 
 Begin
  { nombres }
- If IsNumVal(a) And IsNumVal(b) Then Begin
+ If IsNumVal(a) And IsNumVal(b) And Not PyCmpOverride(a, op) And
+  Not PyCmpOverride(b, SwapOp(op)) Then Begin
   If (a.k <> vkFloat) And (b.k <> vkFloat) And (a.k <> vkObj) And
    (b.k <> vkObj) Then Begin
    Case op Of
@@ -8666,7 +8763,8 @@ Begin
     op);
    Exit;
   End;
-  If (a.o Is TPyList) And (b.o Is TPyList) And Not a.o.cls.userdef Then Begin
+  If (a.o Is TPyList) And (b.o Is TPyList) And Not PyCmpOverride(a, op) Then
+  Begin
    la := TPyList(a.o);
    lb := TPyList(b.o);
    If (op = 2) And (la.cnt <> lb.cnt) Then Begin
@@ -8699,7 +8797,7 @@ Begin
    Exit;
   End;
   If (a.o Is TPyDict) And (b.o Is TPyDict) And (op >= 2) And (op <= 3) And
-   Not a.o.cls.userdef Then Begin
+   Not PyCmpOverride(a, op) Then Begin
    da := TPyDict(a.o);
    db := TPyDict(b.o);
    Result := da.used = db.used;
@@ -8944,6 +9042,7 @@ End;
 
 Function ReprVal(Const v: TVal): AnsiString;
 Var
+ skipUser: Boolean;
  s: AnsiString;
  i: Integer;
  d: TPyDict;
@@ -8965,7 +9064,9 @@ Begin
   vkNull: Begin Result := '<NULL>'; Exit; End;
  End;
  o := v.o;
- If o.cls.userdef Then
+ skipUser := o = ReprSkipObj;
+ If skipUser Then ReprSkipObj := Nil;
+ If o.cls.userdef And Not skipUser Then
   If CallStrMethod(v, '__repr__', s) Then Begin
    Result := s;
    Exit;
@@ -9138,7 +9239,7 @@ Begin
     End;
     If v.o Is TPyStr Then Result := TPyStr(v.o).s
     Else If TypeIsSub(v.o.cls, exBaseException) And (v.o Is TPyObj) Then
-     Result := ExcArgsStr(v.o)
+     Result := ExcToStr(v.o)
     Else Result := ReprVal(v);
    End;
  Else
@@ -9826,8 +9927,10 @@ Begin
   Exit;
  End;
  If (v.k = vkObj) Then Begin
-  If v.o Is TPyBigInt Then
+  If v.o Is TPyBigInt Then Begin
+   If BigFitsInt64(v, Result) Then Exit;
    RaiseExc(exIndexError, 'cannot fit ''int'' into an index-sized integer');
+  End;
   If LookupType(v.o.cls, '__index__', f) Then Begin
    r := Call1(f, v);
    If (r.k = vkInt) Or (r.k = vkBool) Then Begin
@@ -10242,12 +10345,30 @@ Begin
  Result := VObj(r);
 End;
 
+Function PyBinOverride(op: Integer; Const a, b: TVal): Boolean;
+Var
+ f: TVal;
+Begin
+ Result := False;
+ If (a.k = vkObj) And a.o.cls.userdef And
+  LookupType(a.o.cls, '__' + BinNames[op] + '__', f) And (f.k = vkObj) And
+  (f.o Is TPyFunc) Then Result := True
+ Else If (b.k = vkObj) And b.o.cls.userdef And
+  LookupType(b.o.cls, '__r' + BinNames[op] + '__', f) And (f.k = vkObj) And
+  (f.o Is TPyFunc) Then Result := True;
+End;
+
 Function BinaryOp(op: Integer; Const a, b: TVal): TVal;
 Var
  r: TVal;
  d: TPyDict;
  i: Integer;
 Begin
+ If IsNumVal(a) And IsNumVal(b) And ((a.k = vkObj) Or (b.k = vkObj)) And
+  PyBinOverride(op, a, b) And UserBinary(op, a, b, False, r) Then Begin
+  Result := r;
+  Exit;
+ End;
  If NumBinary(op, a, b, r) Then Begin
   Result := r;
   Exit;
@@ -10849,6 +10970,7 @@ End;
 Function CallValue3(Const fn, a, b, c: TVal): TVal; Forward;
 
 Var
+ NoTbOnce: Boolean;
  FramePool: TFrame;
  LoopYielded: Boolean;
  GcThreshold: Integer;
@@ -11008,7 +11130,7 @@ Begin
  For i := 0 To High(co.co) Do Result[i + 1] := Chr(co.co[i]);
 End;
 
-Function SpecialGetAttr(Const o: TVal; Const name: AnsiString;
+Function SpecialGetAttr(Const o: TVal; Const attr: AnsiString;
  Var res: TVal): Boolean;
 Var
  ob: TPyObj;
@@ -11018,26 +11140,26 @@ Var
  v: TVal;
 Begin
  Result := True;
- If name = '__class__' Then Begin
+ If attr = '__class__' Then Begin
   res := VObj(TypeOf(o));
   Exit;
  End;
  If o.k <> vkObj Then Begin
   If IsNumVal(o) Then Begin
-   If name = 'real' Then Begin
+   If attr = 'real' Then Begin
     If o.k = vkFloat Then res := o
     Else If o.k = vkBool Then res := VInt(o.i) Else res := o;
     Exit;
    End;
-   If name = 'imag' Then Begin
+   If attr = 'imag' Then Begin
     If o.k = vkFloat Then res := VFloat(0) Else res := VInt(0);
     Exit;
    End;
-   If (name = 'numerator') And (o.k <> vkFloat) Then Begin
+   If (attr = 'numerator') And (o.k <> vkFloat) Then Begin
     If o.k = vkBool Then res := VInt(o.i) Else res := o;
     Exit;
    End;
-   If (name = 'denominator') And (o.k <> vkFloat) Then Begin
+   If (attr = 'denominator') And (o.k <> vkFloat) Then Begin
     res := VInt(1);
     Exit;
    End;
@@ -11046,7 +11168,7 @@ Begin
   Exit;
  End;
  ob := o.o;
- If (name = '__dict__') Then Begin
+ If (attr = '__dict__') Then Begin
   If ob Is TPyType Then Begin
    res := VObj(ob.idict.Copy);
    Exit;
@@ -11064,27 +11186,27 @@ Begin
   Exit;
  End;
  If ob Is TPyBigInt Then Begin
-  If name = 'real' Then Begin res := o; Exit; End;
-  If name = 'imag' Then Begin res := VInt(0); Exit; End;
-  If name = 'numerator' Then Begin res := o; Exit; End;
-  If name = 'denominator' Then Begin res := VInt(1); Exit; End;
+  If attr = 'real' Then Begin res := o; Exit; End;
+  If attr = 'imag' Then Begin res := VInt(0); Exit; End;
+  If attr = 'numerator' Then Begin res := o; Exit; End;
+  If attr = 'denominator' Then Begin res := VInt(1); Exit; End;
  End;
  If ob Is TPyFunc Then Begin
   With TPyFunc(ob) Do Begin
-   If name = '__name__' Then Begin res := VStr(TPyFunc(ob).name); Exit; End;
-   If name = '__qualname__' Then Begin res := VStr(qualname); Exit; End;
-   If name = '__doc__' Then Begin res := NoneIfNull(doc); Exit; End;
-   If name = '__code__' Then Begin res := VObj(code); Exit; End;
-   If name = '__globals__' Then Begin res := VObj(globals); Exit; End;
-   If name = '__defaults__' Then Begin
+   If attr = '__name__' Then Begin res := VStr(TPyFunc(ob).name); Exit; End;
+   If attr = '__qualname__' Then Begin res := VStr(qualname); Exit; End;
+   If attr = '__doc__' Then Begin res := NoneIfNull(doc); Exit; End;
+   If attr = '__code__' Then Begin res := VObj(code); Exit; End;
+   If attr = '__globals__' Then Begin res := VObj(globals); Exit; End;
+   If attr = '__defaults__' Then Begin
     If defaults = Nil Then res := vNone Else res := VObj(defaults);
     Exit;
    End;
-   If name = '__kwdefaults__' Then Begin
+   If attr = '__kwdefaults__' Then Begin
     If kwdefaults = Nil Then res := vNone Else res := VObj(kwdefaults);
     Exit;
    End;
-   If name = '__closure__' Then Begin
+   If attr = '__closure__' Then Begin
     If Length(closure) = 0 Then res := vNone
     Else Begin
      t := NewTuple(Length(closure));
@@ -11093,11 +11215,11 @@ Begin
     End;
     Exit;
    End;
-   If name = '__module__' Then Begin
+   If attr = '__module__' Then Begin
     If globals.GetS('__name__', v) Then res := v Else res := vNone;
     Exit;
    End;
-   If name = '__annotations__' Then Begin
+   If attr = '__annotations__' Then Begin
     If idict = Nil Then idict := TPyDict.Make;
     If Not idict.GetS('__annotations__', v) Then Begin
      v := VObj(TPyDict.Make);
@@ -11112,22 +11234,22 @@ Begin
  End;
  If ob Is TPyCode Then Begin
   With TPyCode(ob) Do Begin
-   If name = 'co_name' Then res := VStr(TPyCode(ob).name)
-   Else If name = 'co_filename' Then res := VStr(filename)
-   Else If name = 'co_firstlineno' Then res := VInt(firstline)
-   Else If name = 'co_argcount' Then res := VInt(argcount)
-   Else If name = 'co_posonlyargcount' Then res := VInt(posonly)
-   Else If name = 'co_kwonlyargcount' Then res := VInt(kwonly)
-   Else If name = 'co_nlocals' Then res := VInt(nlocals)
-   Else If name = 'co_stacksize' Then res := VInt(stacksize)
-   Else If name = 'co_flags' Then res := VInt(flags)
-   Else If name = 'co_code' Then res := VBytes(BytesOfCode(TPyCode(ob)))
-   Else If name = 'co_lnotab' Then res := VBytes(lnotab)
-   Else If name = 'co_varnames' Then res := StrTupleVal(varnames)
-   Else If name = 'co_freevars' Then res := StrTupleVal(freevars)
-   Else If name = 'co_cellvars' Then res := StrTupleVal(cellvars)
-   Else If name = 'co_names' Then res := StrTupleVal(names)
-   Else If name = 'co_consts' Then Begin
+   If attr = 'co_name' Then res := VStr(TPyCode(ob).name)
+   Else If attr = 'co_filename' Then res := VStr(filename)
+   Else If attr = 'co_firstlineno' Then res := VInt(firstline)
+   Else If attr = 'co_argcount' Then res := VInt(argcount)
+   Else If attr = 'co_posonlyargcount' Then res := VInt(posonly)
+   Else If attr = 'co_kwonlyargcount' Then res := VInt(kwonly)
+   Else If attr = 'co_nlocals' Then res := VInt(nlocals)
+   Else If attr = 'co_stacksize' Then res := VInt(stacksize)
+   Else If attr = 'co_flags' Then res := VInt(flags)
+   Else If attr = 'co_code' Then res := VBytes(BytesOfCode(TPyCode(ob)))
+   Else If attr = 'co_lnotab' Then res := VBytes(lnotab)
+   Else If attr = 'co_varnames' Then res := StrTupleVal(varnames)
+   Else If attr = 'co_freevars' Then res := StrTupleVal(freevars)
+   Else If attr = 'co_cellvars' Then res := StrTupleVal(cellvars)
+   Else If attr = 'co_names' Then res := StrTupleVal(names)
+   Else If attr = 'co_consts' Then Begin
     t := NewTuple(Length(consts));
     For i := 0 To High(consts) Do t.items[i] := consts[i];
     res := VObj(t);
@@ -11137,43 +11259,43 @@ Begin
   Exit;
  End;
  If ob Is TPyMethod Then Begin
-  If name = '__self__' Then Begin res := TPyMethod(ob).slf; Exit; End;
-  If name = '__func__' Then Begin res := TPyMethod(ob).fn; Exit; End;
-  If (name = '__name__') Or (name = '__doc__') Or (name = '__qualname__') Or
-   (name = '__module__') Then Begin
-   res := GetAttr(TPyMethod(ob).fn, name);
+  If attr = '__self__' Then Begin res := TPyMethod(ob).slf; Exit; End;
+  If attr = '__func__' Then Begin res := TPyMethod(ob).fn; Exit; End;
+  If (attr = '__name__') Or (attr = '__doc__') Or (attr = '__qualname__') Or
+   (attr = '__module__') Then Begin
+   res := GetAttr(TPyMethod(ob).fn, attr);
    Exit;
   End;
   Result := False;
   Exit;
  End;
  If ob Is TPyBuiltin Then Begin
-  If (name = '__name__') Or (name = '__qualname__') Then Begin
+  If (attr = '__name__') Or (attr = '__qualname__') Then Begin
    res := VStr(TPyBuiltin(ob).name);
    Exit;
   End;
-  If name = '__doc__' Then Begin res := vNone; Exit; End;
-  If name = '__self__' Then Begin res := vNone; Exit; End;
-  If name = '__module__' Then Begin res := vNone; Exit; End;
+  If attr = '__doc__' Then Begin res := vNone; Exit; End;
+  If attr = '__self__' Then Begin res := vNone; Exit; End;
+  If attr = '__module__' Then Begin res := vNone; Exit; End;
   Result := False;
   Exit;
  End;
  If ob Is TPyType Then Begin
   With TPyType(ob) Do Begin
-   If name = '__name__' Then Begin res := VStr(TPyType(ob).name); Exit; End;
-   If name = '__qualname__' Then Begin res := VStr(qualname); Exit; End;
-   If name = '__bases__' Then Begin res := TupleOfTypes(bases); Exit; End;
-   If name = '__mro__' Then Begin res := TupleOfTypes(mro); Exit; End;
-   If name = '__base__' Then Begin
+   If attr = '__name__' Then Begin res := VStr(TPyType(ob).name); Exit; End;
+   If attr = '__qualname__' Then Begin res := VStr(qualname); Exit; End;
+   If attr = '__bases__' Then Begin res := TupleOfTypes(bases); Exit; End;
+   If attr = '__mro__' Then Begin res := TupleOfTypes(mro); Exit; End;
+   If attr = '__base__' Then Begin
     If Length(bases) > 0 Then res := VObj(bases[0]) Else res := vNone;
     Exit;
    End;
-   If name = '__module__' Then Begin
+   If attr = '__module__' Then Begin
     If idict.GetS('__module__', v) Then res := v
     Else res := VStr('builtins');
     Exit;
    End;
-   If name = '__doc__' Then Begin
+   If attr = '__doc__' Then Begin
     If idict.GetS('__doc__', v) Then res := v Else res := vNone;
     Exit;
    End;
@@ -11182,7 +11304,7 @@ Begin
   Exit;
  End;
  If ob Is TPyModule Then Begin
-  If name = '__name__' Then Begin
+  If attr = '__name__' Then Begin
    If ob.idict.GetS('__name__', v) Then res := v
    Else res := VStr(TPyModule(ob).name);
    Exit;
@@ -11191,12 +11313,12 @@ Begin
   Exit;
  End;
  If ob Is TPyGen Then Begin
-  If name = '__name__' Then Begin res := VStr(TPyGen(ob).name); Exit; End;
-  If name = 'gi_running' Then Begin
+  If attr = '__name__' Then Begin res := VStr(TPyGen(ob).name); Exit; End;
+  If attr = 'gi_running' Then Begin
    res := VBool(TPyGen(ob).state = 2);
    Exit;
   End;
-  If name = 'gi_frame' Then Begin
+  If attr = 'gi_frame' Then Begin
    If TPyGen(ob).state = 3 Then res := vNone Else res := VObj(ob);
    Exit;
   End;
@@ -11204,64 +11326,64 @@ Begin
   Exit;
  End;
  If ob Is TPyCell Then Begin
-  If name = 'cell_contents' Then Begin
+  If attr = 'cell_contents' Then Begin
    If TPyCell(ob).v.k = vkNull Then RaiseExc(exValueError, 'Cell is empty');
    res := TPyCell(ob).v;
    Exit;
   End;
  End;
  If ob Is TPySlice Then Begin
-  If name = 'start' Then Begin res := TPySlice(ob).start; Exit; End;
-  If name = 'stop' Then Begin res := TPySlice(ob).stop; Exit; End;
-  If name = 'step' Then Begin res := TPySlice(ob).step; Exit; End;
+  If attr = 'start' Then Begin res := TPySlice(ob).start; Exit; End;
+  If attr = 'stop' Then Begin res := TPySlice(ob).stop; Exit; End;
+  If attr = 'step' Then Begin res := TPySlice(ob).step; Exit; End;
  End;
  If ob Is TPyRange Then Begin
-  If name = 'start' Then Begin res := VInt(TPyRange(ob).start); Exit; End;
-  If name = 'stop' Then Begin res := VInt(TPyRange(ob).stop); Exit; End;
-  If name = 'step' Then Begin res := VInt(TPyRange(ob).step); Exit; End;
+  If attr = 'start' Then Begin res := VInt(TPyRange(ob).start); Exit; End;
+  If attr = 'stop' Then Begin res := VInt(TPyRange(ob).stop); Exit; End;
+  If attr = 'step' Then Begin res := VInt(TPyRange(ob).step); Exit; End;
  End;
  If ob Is TPyProperty Then Begin
-  If name = 'fget' Then Begin res := TPyProperty(ob).fget; Exit; End;
-  If name = 'fset' Then Begin res := TPyProperty(ob).fset; Exit; End;
-  If name = 'fdel' Then Begin res := TPyProperty(ob).fdel; Exit; End;
-  If name = '__doc__' Then Begin res := TPyProperty(ob).doc; Exit; End;
+  If attr = 'fget' Then Begin res := TPyProperty(ob).fget; Exit; End;
+  If attr = 'fset' Then Begin res := TPyProperty(ob).fset; Exit; End;
+  If attr = 'fdel' Then Begin res := TPyProperty(ob).fdel; Exit; End;
+  If attr = '__doc__' Then Begin res := TPyProperty(ob).doc; Exit; End;
  End;
  If ob Is TPyWrapper Then Begin
-  If (name = '__func__') Or (name = '__wrapped__') Then Begin
+  If (attr = '__func__') Or (attr = '__wrapped__') Then Begin
    res := TPyWrapper(ob).fn;
    Exit;
   End;
  End;
  If ob Is TPyFile Then Begin
   With TPyFile(ob) Do Begin
-   If name = 'closed' Then Begin res := VBool(closed); Exit; End;
-   If name = 'name' Then Begin
+   If attr = 'closed' Then Begin res := VBool(closed); Exit; End;
+   If attr = 'name' Then Begin
     If std = 1 Then res := VStr('<stdin>')
     Else If std = 2 Then res := VStr('<stdout>')
     Else If std = 3 Then res := VStr('<stderr>')
     Else res := VStr(fname);
     Exit;
    End;
-   If name = 'mode' Then Begin res := VStr(mode); Exit; End;
-   If name = 'encoding' Then Begin res := VStr('utf-8'); Exit; End;
-   If name = 'errors' Then Begin res := VStr('strict'); Exit; End;
-   If name = 'newlines' Then Begin res := vNone; Exit; End;
+   If attr = 'mode' Then Begin res := VStr(mode); Exit; End;
+   If attr = 'encoding' Then Begin res := VStr('utf-8'); Exit; End;
+   If attr = 'errors' Then Begin res := VStr('strict'); Exit; End;
+   If attr = 'newlines' Then Begin res := vNone; Exit; End;
   End;
  End;
  If TypeIsSub(ob.cls, exBaseException) Then Begin
-  If name = '__traceback__' Then Begin
+  If attr = '__traceback__' Then Begin
    If (ob.idict <> Nil) And ob.idict.GetS('__tb__', v) Then
     res := vNone
    Else res := vNone;
    Exit;
   End;
-  If (name = '__cause__') Or (name = '__context__') Then Begin
-   If (ob.idict <> Nil) And ob.idict.GetS(name, v) Then res := v
+  If (attr = '__cause__') Or (attr = '__context__') Then Begin
+   If (ob.idict <> Nil) And ob.idict.GetS(attr, v) Then res := v
    Else res := vNone;
    Exit;
   End;
-  If name = '__suppress_context__' Then Begin
-   If (ob.idict <> Nil) And ob.idict.GetS(name, v) Then res := v
+  If attr = '__suppress_context__' Then Begin
+   If (ob.idict <> Nil) And ob.idict.GetS(attr, v) Then res := v
    Else res := vFalse;
    Exit;
   End;
@@ -12030,7 +12152,9 @@ Begin
    If (t.mro[i].idict <> Nil) And t.mro[i].idict.GetS('__init_subclass__', f)
     Then Begin
     If (f.k = vkObj) And (f.o Is TPyWrapper) Then
-     f := BindMethod(TPyWrapper(f.o).fn, VObj(t));
+     f := BindMethod(TPyWrapper(f.o).fn, VObj(t))
+    Else If (f.k = vkObj) And (f.o Is TPyFunc) Then
+     f := BindMethod(f, VObj(t));
     If (f.k = vkObj) And (f.o Is TPyMethod) Then
      CallValue(f, @key, 0, kw);
     Break;
@@ -12236,7 +12360,8 @@ Begin
  End;
  While True Do Begin
   f := CurFrame;
-  AddTraceback(exc, f);
+  If NoTbOnce Then NoTbOnce := False
+  Else AddTraceback(exc, f);
   sb := f.base + f.nfast;
   While f.nb > 0 Do Begin
    b := f.blocks[f.nb - 1];
@@ -12403,6 +12528,7 @@ Begin
  If nargs = 0 Then Begin
   If ExcInfo.k <> vkObj Then
    RaiseExc(exRuntimeError, 'No active exception to reraise');
+  NoTbOnce := True;
   Raise EPyError.Make(ExcInfo.o);
  End;
  e := NormalizeExc(excv, False);
@@ -12538,20 +12664,20 @@ Begin
  If (Length(code.consts) > 0) And IsStrVal(code.consts[0]) And
   ((code.flags And CO_OPTIMIZED) <> 0) Then fn.doc := code.consts[0];
  k := 0;
+ If (flags And 1) <> 0 Then Begin
+  fn.defaults := TPyTuple(sp[k].o);
+  Inc(k);
+ End;
+ If (flags And 2) <> 0 Then Begin
+  fn.kwdefaults := TPyDict(sp[k].o);
+  Inc(k);
+ End;
+ If (flags And 4) <> 0 Then Inc(k);
  If (flags And 8) <> 0 Then Begin
   clos := TPyTuple(sp[k].o);
   Inc(k);
   SetLength(fn.closure, Length(clos.items));
   For i := 0 To High(clos.items) Do fn.closure[i] := TPyCell(clos.items[i].o);
- End;
- If (flags And 4) <> 0 Then Inc(k);
- If (flags And 2) <> 0 Then Begin
-  fn.kwdefaults := TPyDict(sp[k].o);
-  Inc(k);
- End;
- If (flags And 1) <> 0 Then Begin
-  fn.defaults := TPyTuple(sp[k].o);
-  Inc(k);
  End;
  Result := fn;
 End;
@@ -12943,7 +13069,10 @@ Begin
        b := sp[-1];
        Dec(sp, 2);
        f.sp := sp;
-       If (b.k = vkObj) Then Raise EPyError.Make(b.o);
+       If (b.k = vkObj) Then Begin
+        NoTbOnce := True;
+        Raise EPyError.Make(b.o);
+       End;
        RaiseExc(exSystemError, 'bad END_FINALLY state');
       End;
      End;
@@ -13765,6 +13894,11 @@ Var
  t: TPyType;
  o: TPyObj;
  f: TVal;
+ items: TValArr;
+ snames: Array Of AnsiString;
+ sl: TStringList;
+ js: AnsiString;
+ ii: Integer;
 Begin
  If (n < 1) Or Not ((a[0].k = vkObj) And (a[0].o Is TPyType)) Then
   TypeErr('object.__new__(X): X is not a type object');
@@ -13774,6 +13908,26 @@ Begin
    (f.o Is TPyBuiltin) And (TPyBuiltin(f.o).name = '__init__') And
    (Pointer(TPyBuiltin(f.o).fn) = Pointer(@ObjInit)) Then
    TypeErr(t.name + '() takes no arguments');
+ End;
+ If t.userdef And LookupType(t, '__abstractmethods__', f) And
+  (f.k = vkObj) And (f.o Is TPySet) And (TPySet(f.o).used > 0) Then Begin
+  items := IterToArr(f);
+  SetLength(snames, Length(items));
+  For ii := 0 To High(items) Do snames[ii] := StrOf(items[ii]);
+  sl := TStringList.Create;
+  Try
+   For ii := 0 To High(snames) Do sl.Add(snames[ii]);
+   sl.Sort;
+   js := '';
+   For ii := 0 To sl.Count - 1 Do Begin
+    If ii > 0 Then js := js + ', ';
+    js := js + sl[ii];
+   End;
+  Finally
+   sl.Free;
+  End;
+  TypeErr('Can''t instantiate abstract class ' + t.name +
+   ' with abstract method' + PluralS(Length(snames)) + ' ' + js);
  End;
  If t.native <> nkObject Then
   TypeErr('object.__new__(' + t.name + ') is not safe, use ' +
@@ -14102,6 +14256,19 @@ Begin
   Else s := s + ' (' + StrVal(fn) + ', line ' + StrVal(ln) + ')';
  End;
  Result := VStr(s);
+End;
+
+Function ExcToStr(o: TPyObj): AnsiString;
+Var
+ f, v: TVal;
+Begin
+ If LookupType(o.cls, '__str__', f) And (f.k = vkObj) And
+  (f.o Is TPyBuiltin) And (Pointer(TPyBuiltin(f.o).fn) <> Pointer(@ObjStr))
+  And (Pointer(TPyBuiltin(f.o).fn) <> Pointer(@ExcStr)) Then Begin
+  v := VObj(o);
+  Result := StrOf(TPyBuiltin(f.o).fn(@v, 1, Nil));
+ End
+ Else Result := ExcArgsStr(o);
 End;
 
 { ---- fonctions de base ---- }
@@ -14795,6 +14962,8 @@ End;
 
 Function IntCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ neg: Boolean;
+ m: TMag;
  base: Integer;
  ok: Boolean;
  v: TVal;
@@ -14822,6 +14991,11 @@ Begin
   Exit;
  End;
  Result := ToIntVal(a[0]);
+ If (Result.k = vkObj) And (Result.o Is TPyBigInt) And
+  (Result.o.cls <> tyInt) Then Begin
+  IntToMag(Result, neg, m);
+  Result := MakeInt(neg, m);
+ End;
 End;
 
 Function FloatFromStr(Const s0: AnsiString; Var ok: Boolean): Double;
@@ -16101,7 +16275,7 @@ Begin
   End;
   If key = '' Then v := NextArg;
   fs.fill := ' ';
-  fs.align := '>';
+  fs.align := #0;
   If Pos('-', flags) > 0 Then fs.align := '<';
   fs.sign := '-';
   If Pos('+', flags) > 0 Then fs.sign := '+'
@@ -17708,7 +17882,9 @@ End;
 
 Function ListReprM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
+ If a[0].k = vkObj Then ReprSkipObj := a[0].o;
  Result := VStr(ReprVal(a[0]));
+ ReprSkipObj := Nil;
 End;
 
 { ------------------------------------------------------------
@@ -18626,9 +18802,21 @@ Begin
 End;
 
 Function IntNewM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ t: TPyType;
+ o: TPyBigInt;
+ neg: Boolean;
+ m: TMag;
 Begin
- If TPyType(a[0].o) <> tyInt Then TypeErr('subclassing int is not supported');
+ t := TPyType(a[0].o);
  Result := IntCtor(a + 1, n - 1, kw);
+ If t <> tyInt Then Begin
+  IntToMag(Result, neg, m);
+  o := TPyBigInt.Make(neg, m);
+  o.cls := t;
+  o.idict := TPyDict.Make;
+  Result := VObj(o);
+ End;
 End;
 
 Function FloatNewM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21692,11 +21880,16 @@ Function RndRandom(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: TPyMT;
  x, y: Cardinal;
+ dx, dy, d1, d2: Double;
 Begin
  r := TPyMT(a[0].o);
  x := MTGenInt32(r) Shr 5;
  y := MTGenInt32(r) Shr 6;
- Result := VFloat((x * 67108864.0 + y) * (1.0 / 9007199254740992.0));
+ dx := x;
+ dy := y;
+ d1 := 67108864;
+ d2 := 9007199254740992;
+ Result := VFloat((dx * d1 + dy) / d2);
 End;
 
 Function RndGetRandBits(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21917,6 +22110,7 @@ Begin
  DefFunc(m.idict, '_stringio', @SioNew);
  DefFunc(m.idict, '_bytesio', @BioNew);
  DefFunc(m.idict, '_getvalue', @SioGetValue);
+ DefMethod(tyFile, 'getvalue', @SioGetValue);
  m.idict.SetS('TextIOWrapper', VObj(tyFile));
  m.idict.SetS('open', BuiltinsDict.ent[BuiltinsDict.FindS('open', HashBytes(
   'open'))].val);
@@ -21988,6 +22182,7 @@ Var
  stackSize: PtrUInt;
  m: TPyModule;
 Begin
+ SetExceptionMask([Low(TFPUException)..High(TFPUException)]);
  GcInit := True;
  GcEnabled := True;
  GcThreshold := 300000;
@@ -22830,6 +23025,4845 @@ Begin
  End;
  FinishAndHalt(ExitCode);
 End;
+Function Src_abc: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'def abstractmethod(funcobj):'#10;
+ s := s +
+   '    funcobj.__isabstractmethod__ = True'#10;
+ s := s +
+   '    return funcobj'#10;
+ s := s + #10;
+ s := s +
+   'class abstractclassmethod(classmethod):'#10;
+ s := s +
+   '    __isabstractmethod__ = True'#10;
+ s := s + #10;
+ s := s +
+   'class abstractstaticmethod(staticmethod):'#10;
+ s := s +
+   '    __isabstractmethod__ = True'#10;
+ s := s + #10;
+ s := s +
+   'class abstractproperty(property):'#10;
+ s := s +
+   '    __isabstractmethod__ = True'#10;
+ s := s + #10;
+ s := s +
+   'class ABCMeta(type):'#10;
+ s := s +
+   '    def __new__(mcls, name, bases, namespace, **kwargs):'#10;
+ s := s +
+   '        cls = super().__new__(mcls, name, bases, namespace, ' +
+   '**kwargs)'#10;
+ s := s +
+   '        abstracts = set()'#10;
+ s := s +
+   '        for n, v in list(namespace.items()):'#10;
+ s := s +
+   '            if getattr(v, ''__isabstractmethod__'', False):'#10;
+ s := s +
+   '                abstracts.add(n)'#10;
+ s := s +
+   '        for base in bases:'#10;
+ s := s +
+   '            for n in getattr(base, ''__abstractmethods__'', ()' +
+   '):'#10;
+ s := s +
+   '                v = getattr(cls, n, None)'#10;
+ s := s +
+   '                if getattr(v, ''__isabstractmethod__'', False)' +
+   ':'#10;
+ s := s +
+   '                    abstracts.add(n)'#10;
+ s := s +
+   '        cls.__abstractmethods__ = frozenset(abstracts)'#10;
+ s := s +
+   '        cls._abc_registry = []'#10;
+ s := s +
+   '        return cls'#10;
+ s := s + #10;
+ s := s +
+   '    def register(cls, subclass):'#10;
+ s := s +
+   '        if subclass not in cls._abc_registry:'#10;
+ s := s +
+   '            cls._abc_registry.append(subclass)'#10;
+ s := s +
+   '        return subclass'#10;
+ s := s + #10;
+ s := s +
+   '    def __instancecheck__(cls, instance):'#10;
+ s := s +
+   '        return cls.__subclasscheck__(type(instance))'#10;
+ s := s + #10;
+ s := s +
+   '    def __subclasscheck__(cls, subclass):'#10;
+ s := s +
+   '        if cls in getattr(subclass, ''__mro__'', ()):'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        hook = cls.__dict__.get(''__subclasshook__'')'#10;
+ s := s +
+   '        if hook is None:'#10;
+ s := s +
+   '            for b in cls.__mro__:'#10;
+ s := s +
+   '                if ''__subclasshook__'' in b.__dict__:'#10;
+ s := s +
+   '                    hook = b.__dict__[''__subclasshook__'']'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '        if hook is not None:'#10;
+ s := s +
+   '            f = hook.__func__ if hasattr(hook, ''__func__'') e' +
+   'lse hook'#10;
+ s := s +
+   '            r = f(cls, subclass)'#10;
+ s := s +
+   '            if r is not NotImplemented:'#10;
+ s := s +
+   '                return bool(r)'#10;
+ s := s +
+   '        for r in cls._abc_registry:'#10;
+ s := s +
+   '            if issubclass(subclass, r):'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '        for sub in cls.__subclasses__():'#10;
+ s := s +
+   '            if issubclass(subclass, sub):'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   'class ABC(metaclass=ABCMeta):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def get_cache_token():'#10;
+ s := s +
+   '    return 0'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_bisect: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'def bisect_right(a, x, lo=0, hi=None, *, key=None):'#10;
+ s := s +
+   '    if lo < 0:'#10;
+ s := s +
+   '        raise ValueError(''lo must be non-negative'')'#10;
+ s := s +
+   '    if hi is None:'#10;
+ s := s +
+   '        hi = len(a)'#10;
+ s := s +
+   '    while lo < hi:'#10;
+ s := s +
+   '        mid = (lo + hi) // 2'#10;
+ s := s +
+   '        if key is None:'#10;
+ s := s +
+   '            if x < a[mid]:'#10;
+ s := s +
+   '                hi = mid'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                lo = mid + 1'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if x < key(a[mid]):'#10;
+ s := s +
+   '                hi = mid'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                lo = mid + 1'#10;
+ s := s +
+   '    return lo'#10;
+ s := s + #10;
+ s := s +
+   'def bisect_left(a, x, lo=0, hi=None, *, key=None):'#10;
+ s := s +
+   '    if lo < 0:'#10;
+ s := s +
+   '        raise ValueError(''lo must be non-negative'')'#10;
+ s := s +
+   '    if hi is None:'#10;
+ s := s +
+   '        hi = len(a)'#10;
+ s := s +
+   '    while lo < hi:'#10;
+ s := s +
+   '        mid = (lo + hi) // 2'#10;
+ s := s +
+   '        if key is None:'#10;
+ s := s +
+   '            if a[mid] < x:'#10;
+ s := s +
+   '                lo = mid + 1'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                hi = mid'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if key(a[mid]) < x:'#10;
+ s := s +
+   '                lo = mid + 1'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                hi = mid'#10;
+ s := s +
+   '    return lo'#10;
+ s := s + #10;
+ s := s +
+   'def insort_right(a, x, lo=0, hi=None, *, key=None):'#10;
+ s := s +
+   '    if key is None:'#10;
+ s := s +
+   '        lo = bisect_right(a, x, lo, hi)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        lo = bisect_right(a, key(x), lo, hi, key=key)'#10;
+ s := s +
+   '    a.insert(lo, x)'#10;
+ s := s + #10;
+ s := s +
+   'def insort_left(a, x, lo=0, hi=None, *, key=None):'#10;
+ s := s +
+   '    if key is None:'#10;
+ s := s +
+   '        lo = bisect_left(a, x, lo, hi)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        lo = bisect_left(a, key(x), lo, hi, key=key)'#10;
+ s := s +
+   '    a.insert(lo, x)'#10;
+ s := s + #10;
+ s := s +
+   'bisect = bisect_right'#10;
+ s := s +
+   'insort = insort_right'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_collections_abc: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'from abc import ABCMeta, abstractmethod'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["Awaitable", "Coroutine", "AsyncIterable", "Async' +
+   'Iterator", "AsyncGenerator", "Hashable", "Iterable", "Iterat' +
+   'or", "Generator", "Reversible", "Sized", "Container", "Calla' +
+   'ble", "Collection", "Set", "MutableSet", "Mapping", "Mutable' +
+   'Mapping", "MappingView", "KeysView", "ItemsView", "ValuesVie' +
+   'w", "Sequence", "MutableSequence", "ByteString"]'#10;
+ s := s + #10;
+ s := s +
+   'def _check_methods(C, *methods):'#10;
+ s := s +
+   '    mro = C.__mro__'#10;
+ s := s +
+   '    for method in methods:'#10;
+ s := s +
+   '        for B in mro:'#10;
+ s := s +
+   '            if method in B.__dict__:'#10;
+ s := s +
+   '                if B.__dict__[method] is None:'#10;
+ s := s +
+   '                    return NotImplemented'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '    return True'#10;
+ s := s + #10;
+ s := s +
+   'class Hashable(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        return 0'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Hashable:'#10;
+ s := s +
+   '            return _check_methods(C, "__hash__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Awaitable(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Awaitable:'#10;
+ s := s +
+   '            return _check_methods(C, "__await__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Coroutine(Awaitable):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class AsyncIterable(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class AsyncIterator(AsyncIterable):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class AsyncGenerator(AsyncIterator):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class Iterable(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        while False:'#10;
+ s := s +
+   '            yield None'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Iterable:'#10;
+ s := s +
+   '            return _check_methods(C, "__iter__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Iterator(Iterable):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        raise StopIteration'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Iterator:'#10;
+ s := s +
+   '            return _check_methods(C, ''__iter__'', ''__next__'')'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Reversible(Iterable):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Reversible:'#10;
+ s := s +
+   '            return _check_methods(C, "__reversed__", "__iter' +
+   '__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Generator(Iterator):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        return self.send(None)'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Generator:'#10;
+ s := s +
+   '            return _check_methods(C, ''__iter__'', ''__next__'',' +
+   ' ''send'', ''throw'', ''close'')'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Sized(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __len__(self):'#10;
+ s := s +
+   '        return 0'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Sized:'#10;
+ s := s +
+   '            return _check_methods(C, "__len__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Container(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __contains__(self, x):'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Container:'#10;
+ s := s +
+   '            return _check_methods(C, "__contains__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Collection(Sized, Iterable, Container):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Collection:'#10;
+ s := s +
+   '            return _check_methods(C, "__len__", "__iter__", ' +
+   '"__contains__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Callable(metaclass=ABCMeta):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __call__(self, *args, **kwds):'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, C):'#10;
+ s := s +
+   '        if cls is Callable:'#10;
+ s := s +
+   '            return _check_methods(C, "__call__")'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class Set(Collection):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    def __le__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Set):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        if len(self) > len(other):'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        for elem in self:'#10;
+ s := s +
+   '            if elem not in other:'#10;
+ s := s +
+   '                return False'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def __lt__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Set):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return len(self) < len(other) and self.__le__(other)'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Set):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return len(self) == len(other) and self.__le__(other' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _from_iterable(cls, it):'#10;
+ s := s +
+   '        return cls(it)'#10;
+ s := s + #10;
+ s := s +
+   '    def __and__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Iterable):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self._from_iterable(value for value in other ' +
+   'if value in self)'#10;
+ s := s + #10;
+ s := s +
+   '    __rand__ = __and__'#10;
+ s := s + #10;
+ s := s +
+   '    def isdisjoint(self, other):'#10;
+ s := s +
+   '        for value in other:'#10;
+ s := s +
+   '            if value in self:'#10;
+ s := s +
+   '                return False'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def __or__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Iterable):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        chain = (e for s in (self, other) for e in s)'#10;
+ s := s +
+   '        return self._from_iterable(chain)'#10;
+ s := s + #10;
+ s := s +
+   '    __ror__ = __or__'#10;
+ s := s + #10;
+ s := s +
+   '    def __sub__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Set):'#10;
+ s := s +
+   '            if not isinstance(other, Iterable):'#10;
+ s := s +
+   '                return NotImplemented'#10;
+ s := s +
+   '            other = self._from_iterable(other)'#10;
+ s := s +
+   '        return self._from_iterable(value for value in self i' +
+   'f value not in other)'#10;
+ s := s + #10;
+ s := s +
+   '    def __xor__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Set):'#10;
+ s := s +
+   '            if not isinstance(other, Iterable):'#10;
+ s := s +
+   '                return NotImplemented'#10;
+ s := s +
+   '            other = self._from_iterable(other)'#10;
+ s := s +
+   '        return (self - other) | (other - self)'#10;
+ s := s + #10;
+ s := s +
+   'class MutableSet(Set):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    def clear(self):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                self.pop()'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s + #10;
+ s := s +
+   '    def pop(self):'#10;
+ s := s +
+   '        it = iter(self)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            value = next(it)'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            raise KeyError from None'#10;
+ s := s +
+   '        self.discard(value)'#10;
+ s := s +
+   '        return value'#10;
+ s := s + #10;
+ s := s +
+   '    def remove(self, value):'#10;
+ s := s +
+   '        if value not in self:'#10;
+ s := s +
+   '            raise KeyError(value)'#10;
+ s := s +
+   '        self.discard(value)'#10;
+ s := s + #10;
+ s := s +
+   'class Mapping(Collection):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __getitem__(self, key):'#10;
+ s := s +
+   '        raise KeyError'#10;
+ s := s + #10;
+ s := s +
+   '    def get(self, key, default=None):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return self[key]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            return default'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, key):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            self[key]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return True'#10;
+ s := s + #10;
+ s := s +
+   '    def keys(self):'#10;
+ s := s +
+   '        return KeysView(self)'#10;
+ s := s + #10;
+ s := s +
+   '    def items(self):'#10;
+ s := s +
+   '        return ItemsView(self)'#10;
+ s := s + #10;
+ s := s +
+   '    def values(self):'#10;
+ s := s +
+   '        return ValuesView(self)'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Mapping):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return dict(self.items()) == dict(other.items())'#10;
+ s := s + #10;
+ s := s +
+   'class MappingView(Sized):'#10;
+ s := s +
+   '    __slots__ = (''_mapping'',)'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, mapping):'#10;
+ s := s +
+   '        self._mapping = mapping'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(self):'#10;
+ s := s +
+   '        return len(self._mapping)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''{0.__class__.__name__}({0._mapping!r})''.form' +
+   'at(self)'#10;
+ s := s + #10;
+ s := s +
+   'class KeysView(MappingView, Set):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _from_iterable(self, it):'#10;
+ s := s +
+   '        return set(it)'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, key):'#10;
+ s := s +
+   '        return key in self._mapping'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        yield from self._mapping'#10;
+ s := s + #10;
+ s := s +
+   'class ItemsView(MappingView, Set):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _from_iterable(self, it):'#10;
+ s := s +
+   '        return set(it)'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, item):'#10;
+ s := s +
+   '        key, value = item'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            v = self._mapping[key]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return v is value or v == value'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        for key in self._mapping:'#10;
+ s := s +
+   '            yield (key, self._mapping[key])'#10;
+ s := s + #10;
+ s := s +
+   'class ValuesView(MappingView, Collection):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, value):'#10;
+ s := s +
+   '        for key in self._mapping:'#10;
+ s := s +
+   '            v = self._mapping[key]'#10;
+ s := s +
+   '            if v is value or v == value:'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        for key in self._mapping:'#10;
+ s := s +
+   '            yield self._mapping[key]'#10;
+ s := s + #10;
+ s := s +
+   'class MutableMapping(Mapping):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __setitem__(self, key, value):'#10;
+ s := s +
+   '        raise KeyError'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __delitem__(self, key):'#10;
+ s := s +
+   '        raise KeyError'#10;
+ s := s + #10;
+ s := s +
+   '    __marker = object()'#10;
+ s := s + #10;
+ s := s +
+   '    def pop(self, key, default=__marker):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            value = self[key]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            if default is self.__marker:'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '            return default'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            del self[key]'#10;
+ s := s +
+   '            return value'#10;
+ s := s + #10;
+ s := s +
+   '    def popitem(self):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            key = next(iter(self))'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            raise KeyError from None'#10;
+ s := s +
+   '        value = self[key]'#10;
+ s := s +
+   '        del self[key]'#10;
+ s := s +
+   '        return key, value'#10;
+ s := s + #10;
+ s := s +
+   '    def clear(self):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                self.popitem()'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s + #10;
+ s := s +
+   '    def update(self, other=(), **kwds):'#10;
+ s := s +
+   '        if isinstance(other, Mapping):'#10;
+ s := s +
+   '            for key in other:'#10;
+ s := s +
+   '                self[key] = other[key]'#10;
+ s := s +
+   '        elif hasattr(other, "keys"):'#10;
+ s := s +
+   '            for key in other.keys():'#10;
+ s := s +
+   '                self[key] = other[key]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            for key, value in other:'#10;
+ s := s +
+   '                self[key] = value'#10;
+ s := s +
+   '        for key, value in kwds.items():'#10;
+ s := s +
+   '            self[key] = value'#10;
+ s := s + #10;
+ s := s +
+   '    def setdefault(self, key, default=None):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return self[key]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            self[key] = default'#10;
+ s := s +
+   '        return default'#10;
+ s := s + #10;
+ s := s +
+   'class Sequence(Reversible, Collection):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __getitem__(self, index):'#10;
+ s := s +
+   '        raise IndexError'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        i = 0'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                v = self[i]'#10;
+ s := s +
+   '                yield v'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s +
+   '        except IndexError:'#10;
+ s := s +
+   '            return'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, value):'#10;
+ s := s +
+   '        for v in self:'#10;
+ s := s +
+   '            if v is value or v == value:'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   '    def __reversed__(self):'#10;
+ s := s +
+   '        for i in reversed(range(len(self))):'#10;
+ s := s +
+   '            yield self[i]'#10;
+ s := s + #10;
+ s := s +
+   '    def index(self, value, start=0, stop=None):'#10;
+ s := s +
+   '        if start is not None and start < 0:'#10;
+ s := s +
+   '            start = max(len(self) + start, 0)'#10;
+ s := s +
+   '        if stop is not None and stop < 0:'#10;
+ s := s +
+   '            stop += len(self)'#10;
+ s := s +
+   '        i = start'#10;
+ s := s +
+   '        while stop is None or i < stop:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                v = self[i]'#10;
+ s := s +
+   '                if v is value or v == value:'#10;
+ s := s +
+   '                    return i'#10;
+ s := s +
+   '            except IndexError:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '        raise ValueError'#10;
+ s := s + #10;
+ s := s +
+   '    def count(self, value):'#10;
+ s := s +
+   '        return sum(1 for v in self if v is value or v == val' +
+   'ue)'#10;
+ s := s + #10;
+ s := s +
+   'class ByteString(Sequence):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class MutableSequence(Sequence):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __setitem__(self, index, value):'#10;
+ s := s +
+   '        raise IndexError'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def __delitem__(self, index):'#10;
+ s := s +
+   '        raise IndexError'#10;
+ s := s + #10;
+ s := s +
+   '    @abstractmethod'#10;
+ s := s +
+   '    def insert(self, index, value):'#10;
+ s := s +
+   '        raise IndexError'#10;
+ s := s + #10;
+ s := s +
+   '    def append(self, value):'#10;
+ s := s +
+   '        self.insert(len(self), value)'#10;
+ s := s + #10;
+ s := s +
+   '    def clear(self):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                self.pop()'#10;
+ s := s +
+   '        except IndexError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s + #10;
+ s := s +
+   '    def reverse(self):'#10;
+ s := s +
+   '        n = len(self)'#10;
+ s := s +
+   '        for i in range(n // 2):'#10;
+ s := s +
+   '            self[i], self[n - i - 1] = self[n - i - 1], self' +
+   '[i]'#10;
+ s := s + #10;
+ s := s +
+   '    def extend(self, values):'#10;
+ s := s +
+   '        for v in values:'#10;
+ s := s +
+   '            self.append(v)'#10;
+ s := s + #10;
+ s := s +
+   '    def pop(self, index=-1):'#10;
+ s := s +
+   '        v = self[index]'#10;
+ s := s +
+   '        del self[index]'#10;
+ s := s +
+   '        return v'#10;
+ s := s + #10;
+ s := s +
+   '    def remove(self, value):'#10;
+ s := s +
+   '        del self[self.index(value)]'#10;
+ s := s + #10;
+ s := s +
+   '    def __iadd__(self, values):'#10;
+ s := s +
+   '        self.extend(values)'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   'Hashable.register(int)'#10;
+ s := s +
+   'Hashable.register(float)'#10;
+ s := s +
+   'Hashable.register(str)'#10;
+ s := s +
+   'Hashable.register(bytes)'#10;
+ s := s +
+   'Hashable.register(tuple)'#10;
+ s := s +
+   'Hashable.register(frozenset)'#10;
+ s := s +
+   'Sequence.register(tuple)'#10;
+ s := s +
+   'Sequence.register(str)'#10;
+ s := s +
+   'Sequence.register(range)'#10;
+ s := s +
+   'Sequence.register(bytes)'#10;
+ s := s +
+   'MutableSequence.register(list)'#10;
+ s := s +
+   'Set.register(frozenset)'#10;
+ s := s +
+   'MutableSet.register(set)'#10;
+ s := s +
+   'Mapping.register(dict)'#10;
+ s := s +
+   'MutableMapping.register(dict)'#10;
+ s := s +
+   'Collection.register(dict)'#10;
+ s := s +
+   'Collection.register(set)'#10;
+ s := s +
+   'Collection.register(frozenset)'#10;
+ s := s +
+   'Collection.register(tuple)'#10;
+ s := s +
+   'Collection.register(list)'#10;
+ s := s +
+   'Collection.register(str)'#10;
+ s := s +
+   'Iterator.register(type(iter([])))'#10;
+ s := s +
+   'Iterator.register(type(iter(())))'#10;
+ s := s +
+   'Iterator.register(type(iter('''')))'#10;
+ s := s +
+   'Iterator.register(type(iter(range(0))))'#10;
+ s := s +
+   'Iterator.register(type((lambda: (yield))()))'#10;
+ s := s +
+   'Callable.register(type(len))'#10;
+ s := s +
+   'Callable.register(type(lambda: 0))'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_collections: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '#PACKAGE'#10;
+ s := s +
+   'import sys as _sys'#10;
+ s := s +
+   'from operator import itemgetter as _itemgetter'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''deque'', ''defaultdict'', ''namedtuple'', ''OrderedDic' +
+   't'', ''Counter'', ''ChainMap'', ''UserDict'', ''UserList'', ''UserStri' +
+   'ng'']'#10;
+ s := s + #10;
+ s := s +
+   'def namedtuple(typename, field_names, *, rename=False, defau' +
+   'lts=None, module=None):'#10;
+ s := s +
+   '    if isinstance(field_names, str):'#10;
+ s := s +
+   '        field_names = field_names.replace('','', '' '').split()'#10;
+ s := s +
+   '    field_names = list(map(str, field_names))'#10;
+ s := s +
+   '    typename = str(typename)'#10;
+ s := s +
+   '    if rename:'#10;
+ s := s +
+   '        seen = set()'#10;
+ s := s +
+   '        for index, name in enumerate(field_names):'#10;
+ s := s +
+   '            if (not name.isidentifier() or name.startswith(''' +
+   '_'') or name in seen):'#10;
+ s := s +
+   '                field_names[index] = ''_%d'' % index'#10;
+ s := s +
+   '            seen.add(name)'#10;
+ s := s +
+   '    for name in [typename] + field_names:'#10;
+ s := s +
+   '        if type(name) is not str:'#10;
+ s := s +
+   '            raise TypeError(''Type names and field names must' +
+   ' be strings'')'#10;
+ s := s +
+   '        if not name.isidentifier():'#10;
+ s := s +
+   '            raise ValueError(''Type names and field names mus' +
+   't be valid identifiers: %r'' % name)'#10;
+ s := s +
+   '    seen = set()'#10;
+ s := s +
+   '    for name in field_names:'#10;
+ s := s +
+   '        if name.startswith(''_'') and not rename:'#10;
+ s := s +
+   '            raise ValueError(''Field names cannot start with ' +
+   'an underscore: %r'' % name)'#10;
+ s := s +
+   '        if name in seen:'#10;
+ s := s +
+   '            raise ValueError(''Encountered duplicate field na' +
+   'me: %r'' % name)'#10;
+ s := s +
+   '        seen.add(name)'#10;
+ s := s +
+   '    field_defaults = {}'#10;
+ s := s +
+   '    if defaults is not None:'#10;
+ s := s +
+   '        defaults = tuple(defaults)'#10;
+ s := s +
+   '        if len(defaults) > len(field_names):'#10;
+ s := s +
+   '            raise TypeError(''Got more default values than fi' +
+   'eld names'')'#10;
+ s := s +
+   '        field_defaults = dict(reversed(list(zip(reversed(fie' +
+   'ld_names), reversed(defaults)))))'#10;
+ s := s +
+   '    field_names = tuple(field_names)'#10;
+ s := s +
+   '    num_fields = len(field_names)'#10;
+ s := s +
+   '    arg_list = '', ''.join(field_names)'#10;
+ s := s +
+   '    if num_fields == 1:'#10;
+ s := s +
+   '        arg_list += '','''#10;
+ s := s +
+   '    repr_fmt = ''('' + '', ''.join(''%s=%%r'' % name for name in f' +
+   'ield_names) + '')'''#10;
+ s := s + #10;
+ s := s +
+   '    def __new__(_cls, *args, **kwargs):'#10;
+ s := s +
+   '        if len(args) > num_fields:'#10;
+ s := s +
+   '            raise TypeError(''__new__() takes %d positional a' +
+   'rguments but %d were given'' % (num_fields + 1, len(args) + 1' +
+   '))'#10;
+ s := s +
+   '        vals = list(args)'#10;
+ s := s +
+   '        for name in field_names[len(args):]:'#10;
+ s := s +
+   '            if name in kwargs:'#10;
+ s := s +
+   '                vals.append(kwargs.pop(name))'#10;
+ s := s +
+   '            elif name in field_defaults:'#10;
+ s := s +
+   '                vals.append(field_defaults[name])'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                raise TypeError("__new__() missing 1 require' +
+   'd positional argument: ''%s''" % name)'#10;
+ s := s +
+   '        if kwargs:'#10;
+ s := s +
+   '            raise TypeError("__new__() got an unexpected key' +
+   'word argument ''%s''" % list(kwargs)[0])'#10;
+ s := s +
+   '        return tuple.__new__(_cls, vals)'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _make(cls, iterable):'#10;
+ s := s +
+   '        result = tuple.__new__(cls, iterable)'#10;
+ s := s +
+   '        if len(result) != num_fields:'#10;
+ s := s +
+   '            raise TypeError(''Expected %d arguments, got %d'' ' +
+   '% (num_fields, len(result)))'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def _replace(_self, **kwds):'#10;
+ s := s +
+   '        result = _self._make(map(kwds.pop, field_names, _sel' +
+   'f))'#10;
+ s := s +
+   '        if kwds:'#10;
+ s := s +
+   '            raise ValueError(''Got unexpected field names: %r' +
+   ''' % list(kwds))'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return self.__class__.__name__ + repr_fmt % tuple(se' +
+   'lf)'#10;
+ s := s + #10;
+ s := s +
+   '    def _asdict(self):'#10;
+ s := s +
+   '        return dict(zip(self._fields, self))'#10;
+ s := s + #10;
+ s := s +
+   '    def __getnewargs__(self):'#10;
+ s := s +
+   '        return tuple(self)'#10;
+ s := s + #10;
+ s := s +
+   '    ns = {'#10;
+ s := s +
+   '        ''__doc__'': ''%s(%s)'' % (typename, arg_list),'#10;
+ s := s +
+   '        ''__slots__'': (),'#10;
+ s := s +
+   '        ''_fields'': field_names,'#10;
+ s := s +
+   '        ''_fields_defaults'': field_defaults,'#10;
+ s := s +
+   '        ''_field_defaults'': field_defaults,'#10;
+ s := s +
+   '        ''__new__'': __new__,'#10;
+ s := s +
+   '        ''_make'': _make,'#10;
+ s := s +
+   '        ''_replace'': _replace,'#10;
+ s := s +
+   '        ''__repr__'': __repr__,'#10;
+ s := s +
+   '        ''_asdict'': _asdict,'#10;
+ s := s +
+   '        ''__getnewargs__'': __getnewargs__,'#10;
+ s := s +
+   '    }'#10;
+ s := s +
+   '    for index, name in enumerate(field_names):'#10;
+ s := s +
+   '        ns[name] = property(_itemgetter(index), doc=''Alias f' +
+   'or field number %d'' % index)'#10;
+ s := s +
+   '    result = type(typename, (tuple,), ns)'#10;
+ s := s +
+   '    if module is None:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            module = _sys._getframe(1).f_globals.get(''__name' +
+   '__'', ''__main__'')'#10;
+ s := s +
+   '        except Exception:'#10;
+ s := s +
+   '            module = ''__main__'''#10;
+ s := s +
+   '    result.__module__ = module'#10;
+ s := s +
+   '    return result'#10;
+ s := s + #10;
+ s := s +
+   'class deque:'#10;
+ s := s +
+   '    def __init__(self, iterable=(), maxlen=None):'#10;
+ s := s +
+   '        self._d = []'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s +
+   '        if maxlen is not None and maxlen < 0:'#10;
+ s := s +
+   '            raise ValueError(''maxlen must be non-negative'')'#10;
+ s := s +
+   '        self.maxlen = maxlen'#10;
+ s := s +
+   '        for x in iterable:'#10;
+ s := s +
+   '            self.append(x)'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(self):'#10;
+ s := s +
+   '        return len(self._d) - self._h'#10;
+ s := s + #10;
+ s := s +
+   '    def _compact(self):'#10;
+ s := s +
+   '        if self._h > 16 and self._h * 2 > len(self._d):'#10;
+ s := s +
+   '            del self._d[:self._h]'#10;
+ s := s +
+   '            self._h = 0'#10;
+ s := s + #10;
+ s := s +
+   '    def append(self, x):'#10;
+ s := s +
+   '        self._d.append(x)'#10;
+ s := s +
+   '        if self.maxlen is not None and len(self._d) - self._' +
+   'h > self.maxlen:'#10;
+ s := s +
+   '            self.popleft()'#10;
+ s := s + #10;
+ s := s +
+   '    def appendleft(self, x):'#10;
+ s := s +
+   '        if self._h == 0:'#10;
+ s := s +
+   '            k = len(self._d) // 2 + 4'#10;
+ s := s +
+   '            self._d[0:0] = [None] * k'#10;
+ s := s +
+   '            self._h = k'#10;
+ s := s +
+   '        self._h -= 1'#10;
+ s := s +
+   '        self._d[self._h] = x'#10;
+ s := s +
+   '        if self.maxlen is not None and len(self._d) - self._' +
+   'h > self.maxlen:'#10;
+ s := s +
+   '            self.pop()'#10;
+ s := s + #10;
+ s := s +
+   '    def pop(self):'#10;
+ s := s +
+   '        if len(self._d) <= self._h:'#10;
+ s := s +
+   '            raise IndexError(''pop from an empty deque'')'#10;
+ s := s +
+   '        return self._d.pop()'#10;
+ s := s + #10;
+ s := s +
+   '    def popleft(self):'#10;
+ s := s +
+   '        if len(self._d) <= self._h:'#10;
+ s := s +
+   '            raise IndexError(''pop from an empty deque'')'#10;
+ s := s +
+   '        x = self._d[self._h]'#10;
+ s := s +
+   '        self._d[self._h] = None'#10;
+ s := s +
+   '        self._h += 1'#10;
+ s := s +
+   '        self._compact()'#10;
+ s := s +
+   '        return x'#10;
+ s := s + #10;
+ s := s +
+   '    def extend(self, iterable):'#10;
+ s := s +
+   '        for x in iterable:'#10;
+ s := s +
+   '            self.append(x)'#10;
+ s := s + #10;
+ s := s +
+   '    def extendleft(self, iterable):'#10;
+ s := s +
+   '        for x in iterable:'#10;
+ s := s +
+   '            self.appendleft(x)'#10;
+ s := s + #10;
+ s := s +
+   '    def clear(self):'#10;
+ s := s +
+   '        self._d = []'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s + #10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        return deque(self, self.maxlen)'#10;
+ s := s + #10;
+ s := s +
+   '    __copy__ = copy'#10;
+ s := s + #10;
+ s := s +
+   '    def count(self, x):'#10;
+ s := s +
+   '        return sum(1 for y in self if y == x)'#10;
+ s := s + #10;
+ s := s +
+   '    def index(self, x, *args):'#10;
+ s := s +
+   '        l = list(self)'#10;
+ s := s +
+   '        return l.index(x, *args)'#10;
+ s := s + #10;
+ s := s +
+   '    def insert(self, i, x):'#10;
+ s := s +
+   '        l = list(self)'#10;
+ s := s +
+   '        l.insert(i, x)'#10;
+ s := s +
+   '        self._d = l'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s +
+   '        if self.maxlen is not None and len(l) > self.maxlen:'#10;
+ s := s +
+   '            raise IndexError(''deque already at its maximum s' +
+   'ize'')'#10;
+ s := s + #10;
+ s := s +
+   '    def remove(self, value):'#10;
+ s := s +
+   '        l = list(self)'#10;
+ s := s +
+   '        l.remove(value)'#10;
+ s := s +
+   '        self._d = l'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s + #10;
+ s := s +
+   '    def reverse(self):'#10;
+ s := s +
+   '        l = list(self)'#10;
+ s := s +
+   '        l.reverse()'#10;
+ s := s +
+   '        self._d = l'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s + #10;
+ s := s +
+   '    def rotate(self, n=1):'#10;
+ s := s +
+   '        l = list(self)'#10;
+ s := s +
+   '        if not l:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        n = n % len(l)'#10;
+ s := s +
+   '        if n:'#10;
+ s := s +
+   '            l = l[-n:] + l[:-n]'#10;
+ s := s +
+   '        self._d = l'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        d = self._d'#10;
+ s := s +
+   '        i = self._h'#10;
+ s := s +
+   '        while i < len(d):'#10;
+ s := s +
+   '            yield d[i]'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s + #10;
+ s := s +
+   '    def __reversed__(self):'#10;
+ s := s +
+   '        for i in range(len(self._d) - 1, self._h - 1, -1):'#10;
+ s := s +
+   '            yield self._d[i]'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(self, i):'#10;
+ s := s +
+   '        n = len(self)'#10;
+ s := s +
+   '        if isinstance(i, slice):'#10;
+ s := s +
+   '            return list(self)[i]'#10;
+ s := s +
+   '        if i < 0:'#10;
+ s := s +
+   '            i += n'#10;
+ s := s +
+   '        if i < 0 or i >= n:'#10;
+ s := s +
+   '            raise IndexError(''deque index out of range'')'#10;
+ s := s +
+   '        return self._d[self._h + i]'#10;
+ s := s + #10;
+ s := s +
+   '    def __setitem__(self, i, v):'#10;
+ s := s +
+   '        n = len(self)'#10;
+ s := s +
+   '        if i < 0:'#10;
+ s := s +
+   '            i += n'#10;
+ s := s +
+   '        if i < 0 or i >= n:'#10;
+ s := s +
+   '            raise IndexError(''deque index out of range'')'#10;
+ s := s +
+   '        self._d[self._h + i] = v'#10;
+ s := s + #10;
+ s := s +
+   '    def __delitem__(self, i):'#10;
+ s := s +
+   '        l = list(self)'#10;
+ s := s +
+   '        del l[i]'#10;
+ s := s +
+   '        self._d = l'#10;
+ s := s +
+   '        self._h = 0'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, x):'#10;
+ s := s +
+   '        for y in self:'#10;
+ s := s +
+   '            if y == x:'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   '    def __bool__(self):'#10;
+ s := s +
+   '        return len(self._d) > self._h'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, deque):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return list(self) == list(other)'#10;
+ s := s + #10;
+ s := s +
+   '    def __lt__(self, other):'#10;
+ s := s +
+   '        return list(self) < list(other)'#10;
+ s := s + #10;
+ s := s +
+   '    def __add__(self, other):'#10;
+ s := s +
+   '        r = self.copy()'#10;
+ s := s +
+   '        r.extend(other)'#10;
+ s := s +
+   '        return r'#10;
+ s := s + #10;
+ s := s +
+   '    def __iadd__(self, other):'#10;
+ s := s +
+   '        self.extend(other)'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __mul__(self, n):'#10;
+ s := s +
+   '        return deque(list(self) * n, self.maxlen)'#10;
+ s := s + #10;
+ s := s +
+   '    __hash__ = None'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if self.maxlen is None:'#10;
+ s := s +
+   '            return ''deque(%r)'' % (list(self),)'#10;
+ s := s +
+   '        return ''deque(%r, maxlen=%d)'' % (list(self), self.ma' +
+   'xlen)'#10;
+ s := s + #10;
+ s := s +
+   'class defaultdict(dict):'#10;
+ s := s +
+   '    def __init__(self, *args, **kwargs):'#10;
+ s := s +
+   '        if args:'#10;
+ s := s +
+   '            f = args[0]'#10;
+ s := s +
+   '            if f is not None and not callable(f):'#10;
+ s := s +
+   '                raise TypeError(''first argument must be call' +
+   'able or None'')'#10;
+ s := s +
+   '            self.default_factory = f'#10;
+ s := s +
+   '            dict.__init__(self, *args[1:], **kwargs)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self.default_factory = None'#10;
+ s := s +
+   '            dict.__init__(self, **kwargs)'#10;
+ s := s + #10;
+ s := s +
+   '    def __missing__(self, key):'#10;
+ s := s +
+   '        if self.default_factory is None:'#10;
+ s := s +
+   '            raise KeyError(key)'#10;
+ s := s +
+   '        value = self.default_factory()'#10;
+ s := s +
+   '        self[key] = value'#10;
+ s := s +
+   '        return value'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''defaultdict(%r, %s)'' % (self.default_factory' +
+   ', dict.__repr__(self))'#10;
+ s := s + #10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        return type(self)(self.default_factory, self)'#10;
+ s := s + #10;
+ s := s +
+   '    __copy__ = copy'#10;
+ s := s + #10;
+ s := s +
+   'class OrderedDict(dict):'#10;
+ s := s +
+   '    def move_to_end(self, key, last=True):'#10;
+ s := s +
+   '        v = self.pop(key)'#10;
+ s := s +
+   '        if last:'#10;
+ s := s +
+   '            self[key] = v'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            items = list(self.items())'#10;
+ s := s +
+   '            self.clear()'#10;
+ s := s +
+   '            self[key] = v'#10;
+ s := s +
+   '            for k, x in items:'#10;
+ s := s +
+   '                self[k] = x'#10;
+ s := s + #10;
+ s := s +
+   '    def popitem(self, last=True):'#10;
+ s := s +
+   '        if not self:'#10;
+ s := s +
+   '            raise KeyError(''dictionary is empty'')'#10;
+ s := s +
+   '        key = next(reversed(list(self.keys()))) if last else' +
+   ' next(iter(self))'#10;
+ s := s +
+   '        return key, self.pop(key)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if not self:'#10;
+ s := s +
+   '            return ''%s()'' % (self.__class__.__name__,)'#10;
+ s := s +
+   '        return ''%s(%r)'' % (self.__class__.__name__, list(sel' +
+   'f.items()))'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if isinstance(other, OrderedDict):'#10;
+ s := s +
+   '            return list(self.items()) == list(other.items())'#10;
+ s := s +
+   '        return dict.__eq__(self, other)'#10;
+ s := s + #10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        return self.__class__(self)'#10;
+ s := s + #10;
+ s := s +
+   '    __copy__ = copy'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def fromkeys(cls, iterable, value=None):'#10;
+ s := s +
+   '        d = cls()'#10;
+ s := s +
+   '        for k in iterable:'#10;
+ s := s +
+   '            d[k] = value'#10;
+ s := s +
+   '        return d'#10;
+ s := s + #10;
+ s := s +
+   'class Counter(dict):'#10;
+ s := s +
+   '    def __init__(self, iterable=None, **kwds):'#10;
+ s := s +
+   '        dict.__init__(self)'#10;
+ s := s +
+   '        self.update(iterable, **kwds)'#10;
+ s := s + #10;
+ s := s +
+   '    def __missing__(self, key):'#10;
+ s := s +
+   '        return 0'#10;
+ s := s + #10;
+ s := s +
+   '    def most_common(self, n=None):'#10;
+ s := s +
+   '        if n is None:'#10;
+ s := s +
+   '            return sorted(self.items(), key=_itemgetter(1), ' +
+   'reverse=True)'#10;
+ s := s +
+   '        return sorted(self.items(), key=_itemgetter(1), reve' +
+   'rse=True)[:n]'#10;
+ s := s + #10;
+ s := s +
+   '    def elements(self):'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            for _ in range(count):'#10;
+ s := s +
+   '                yield elem'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def fromkeys(cls, iterable, v=None):'#10;
+ s := s +
+   '        raise NotImplementedError(''Counter.fromkeys() is und' +
+   'efined.  Use Counter(iterable) instead.'')'#10;
+ s := s + #10;
+ s := s +
+   '    def update(self, iterable=None, **kwds):'#10;
+ s := s +
+   '        if iterable is not None:'#10;
+ s := s +
+   '            if isinstance(iterable, dict):'#10;
+ s := s +
+   '                if self:'#10;
+ s := s +
+   '                    for elem, count in iterable.items():'#10;
+ s := s +
+   '                        self[elem] = count + self[elem]'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    dict.update(self, iterable)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                for elem in iterable:'#10;
+ s := s +
+   '                    self[elem] = self[elem] + 1'#10;
+ s := s +
+   '        if kwds:'#10;
+ s := s +
+   '            self.update(kwds)'#10;
+ s := s + #10;
+ s := s +
+   '    def subtract(self, iterable=None, **kwds):'#10;
+ s := s +
+   '        if iterable is not None:'#10;
+ s := s +
+   '            if isinstance(iterable, dict):'#10;
+ s := s +
+   '                for elem, count in iterable.items():'#10;
+ s := s +
+   '                    self[elem] = self[elem] - count'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                for elem in iterable:'#10;
+ s := s +
+   '                    self[elem] = self[elem] - 1'#10;
+ s := s +
+   '        if kwds:'#10;
+ s := s +
+   '            self.subtract(kwds)'#10;
+ s := s + #10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        return self.__class__(self)'#10;
+ s := s + #10;
+ s := s +
+   '    def __delitem__(self, elem):'#10;
+ s := s +
+   '        if elem in self:'#10;
+ s := s +
+   '            dict.__delitem__(self, elem)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if not self:'#10;
+ s := s +
+   '            return ''%s()'' % self.__class__.__name__'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            d = dict(self.most_common())'#10;
+ s := s +
+   '            return ''%s(%r)'' % (self.__class__.__name__, d)'#10;
+ s := s +
+   '        except TypeError:'#10;
+ s := s +
+   '            return ''{0}({1!r})''.format(self.__class__.__name' +
+   '__, dict(self))'#10;
+ s := s + #10;
+ s := s +
+   '    def __add__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Counter):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        result = Counter()'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            newcount = count + other[elem]'#10;
+ s := s +
+   '            if newcount > 0:'#10;
+ s := s +
+   '                result[elem] = newcount'#10;
+ s := s +
+   '        for elem, count in other.items():'#10;
+ s := s +
+   '            if elem not in self and count > 0:'#10;
+ s := s +
+   '                result[elem] = count'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __sub__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Counter):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        result = Counter()'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            newcount = count - other[elem]'#10;
+ s := s +
+   '            if newcount > 0:'#10;
+ s := s +
+   '                result[elem] = newcount'#10;
+ s := s +
+   '        for elem, count in other.items():'#10;
+ s := s +
+   '            if elem not in self and count < 0:'#10;
+ s := s +
+   '                result[elem] = 0 - count'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __or__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Counter):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        result = Counter()'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            other_count = other[elem]'#10;
+ s := s +
+   '            newcount = other_count if count < other_count el' +
+   'se count'#10;
+ s := s +
+   '            if newcount > 0:'#10;
+ s := s +
+   '                result[elem] = newcount'#10;
+ s := s +
+   '        for elem, count in other.items():'#10;
+ s := s +
+   '            if elem not in self and count > 0:'#10;
+ s := s +
+   '                result[elem] = count'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __and__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, Counter):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        result = Counter()'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            other_count = other[elem]'#10;
+ s := s +
+   '            newcount = count if count < other_count else oth' +
+   'er_count'#10;
+ s := s +
+   '            if newcount > 0:'#10;
+ s := s +
+   '                result[elem] = newcount'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __pos__(self):'#10;
+ s := s +
+   '        result = Counter()'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            if count > 0:'#10;
+ s := s +
+   '                result[elem] = count'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __neg__(self):'#10;
+ s := s +
+   '        result = Counter()'#10;
+ s := s +
+   '        for elem, count in self.items():'#10;
+ s := s +
+   '            if count < 0:'#10;
+ s := s +
+   '                result[elem] = 0 - count'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   'class ChainMap:'#10;
+ s := s +
+   '    def __init__(self, *maps):'#10;
+ s := s +
+   '        self.maps = list(maps) or [{}]'#10;
+ s := s + #10;
+ s := s +
+   '    def __missing__(self, key):'#10;
+ s := s +
+   '        raise KeyError(key)'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(self, key):'#10;
+ s := s +
+   '        for mapping in self.maps:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                return mapping[key]'#10;
+ s := s +
+   '            except KeyError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '        return self.__missing__(key)'#10;
+ s := s + #10;
+ s := s +
+   '    def get(self, key, default=None):'#10;
+ s := s +
+   '        return self[key] if key in self else default'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(self):'#10;
+ s := s +
+   '        return len(set().union(*self.maps))'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        d = {}'#10;
+ s := s +
+   '        for mapping in reversed(self.maps):'#10;
+ s := s +
+   '            d.update(mapping)'#10;
+ s := s +
+   '        return iter(d)'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, key):'#10;
+ s := s +
+   '        return any(key in m for m in self.maps)'#10;
+ s := s + #10;
+ s := s +
+   '    def __bool__(self):'#10;
+ s := s +
+   '        return any(self.maps)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''%s(%s)'' % (self.__class__.__name__, '', ''.joi' +
+   'n(map(repr, self.maps)))'#10;
+ s := s + #10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        return self.__class__(self.maps[0].copy(), *self.map' +
+   's[1:])'#10;
+ s := s + #10;
+ s := s +
+   '    __copy__ = copy'#10;
+ s := s + #10;
+ s := s +
+   '    def new_child(self, m=None):'#10;
+ s := s +
+   '        if m is None:'#10;
+ s := s +
+   '            m = {}'#10;
+ s := s +
+   '        return self.__class__(m, *self.maps)'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def parents(self):'#10;
+ s := s +
+   '        return self.__class__(*self.maps[1:])'#10;
+ s := s + #10;
+ s := s +
+   '    def __setitem__(self, key, value):'#10;
+ s := s +
+   '        self.maps[0][key] = value'#10;
+ s := s + #10;
+ s := s +
+   '    def __delitem__(self, key):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            del self.maps[0][key]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            raise KeyError(''Key not found in the first mappi' +
+   'ng: {!r}''.format(key))'#10;
+ s := s + #10;
+ s := s +
+   '    def keys(self):'#10;
+ s := s +
+   '        return list(iter(self))'#10;
+ s := s + #10;
+ s := s +
+   '    def values(self):'#10;
+ s := s +
+   '        return [self[k] for k in self]'#10;
+ s := s + #10;
+ s := s +
+   '    def items(self):'#10;
+ s := s +
+   '        return [(k, self[k]) for k in self]'#10;
+ s := s + #10;
+ s := s +
+   '    def popitem(self):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return self.maps[0].popitem()'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            raise KeyError(''No keys found in the first mappi' +
+   'ng.'')'#10;
+ s := s + #10;
+ s := s +
+   '    def pop(self, key, *args):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return self.maps[0].pop(key, *args)'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            raise KeyError(''Key not found in the first mappi' +
+   'ng: {!r}''.format(key))'#10;
+ s := s + #10;
+ s := s +
+   '    def clear(self):'#10;
+ s := s +
+   '        self.maps[0].clear()'#10;
+ s := s + #10;
+ s := s +
+   'class UserDict:'#10;
+ s := s +
+   '    def __init__(self, dict=None, **kwargs):'#10;
+ s := s +
+   '        self.data = {}'#10;
+ s := s +
+   '        if dict is not None:'#10;
+ s := s +
+   '            self.update(dict)'#10;
+ s := s +
+   '        if kwargs:'#10;
+ s := s +
+   '            self.update(kwargs)'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(self): return len(self.data)'#10;
+ s := s +
+   '    def __getitem__(self, key):'#10;
+ s := s +
+   '        if key in self.data:'#10;
+ s := s +
+   '            return self.data[key]'#10;
+ s := s +
+   '        if hasattr(self.__class__, ''__missing__''):'#10;
+ s := s +
+   '            return self.__class__.__missing__(self, key)'#10;
+ s := s +
+   '        raise KeyError(key)'#10;
+ s := s +
+   '    def __setitem__(self, key, item): self.data[key] = item'#10;
+ s := s +
+   '    def __delitem__(self, key): del self.data[key]'#10;
+ s := s +
+   '    def __iter__(self): return iter(self.data)'#10;
+ s := s +
+   '    def __contains__(self, key): return key in self.data'#10;
+ s := s +
+   '    def __repr__(self): return repr(self.data)'#10;
+ s := s +
+   '    def keys(self): return self.data.keys()'#10;
+ s := s +
+   '    def values(self): return self.data.values()'#10;
+ s := s +
+   '    def items(self): return self.data.items()'#10;
+ s := s +
+   '    def get(self, key, default=None): return self.data.get(k' +
+   'ey, default)'#10;
+ s := s +
+   '    def update(self, other=(), **kw):'#10;
+ s := s +
+   '        if hasattr(other, ''keys''):'#10;
+ s := s +
+   '            for k in other.keys():'#10;
+ s := s +
+   '                self[k] = other[k]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            for k, v in other:'#10;
+ s := s +
+   '                self[k] = v'#10;
+ s := s +
+   '        for k, v in kw.items():'#10;
+ s := s +
+   '            self[k] = v'#10;
+ s := s +
+   '    def pop(self, key, *args): return self.data.pop(key, *ar' +
+   'gs)'#10;
+ s := s +
+   '    def setdefault(self, key, default=None):'#10;
+ s := s +
+   '        if key not in self:'#10;
+ s := s +
+   '            self[key] = default'#10;
+ s := s +
+   '        return self[key]'#10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        c = self.__class__.__new__(self.__class__)'#10;
+ s := s +
+   '        c.__dict__.update(self.__dict__)'#10;
+ s := s +
+   '        c.data = self.data.copy()'#10;
+ s := s +
+   '        return c'#10;
+ s := s +
+   '    def clear(self): self.data.clear()'#10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if isinstance(other, UserDict):'#10;
+ s := s +
+   '            return self.data == other.data'#10;
+ s := s +
+   '        return self.data == other'#10;
+ s := s + #10;
+ s := s +
+   'class UserList:'#10;
+ s := s +
+   '    def __init__(self, initlist=None):'#10;
+ s := s +
+   '        self.data = []'#10;
+ s := s +
+   '        if initlist is not None:'#10;
+ s := s +
+   '            self.data = list(initlist.data if isinstance(ini' +
+   'tlist, UserList) else initlist)'#10;
+ s := s +
+   '    def __repr__(self): return repr(self.data)'#10;
+ s := s +
+   '    def __len__(self): return len(self.data)'#10;
+ s := s +
+   '    def __getitem__(self, i):'#10;
+ s := s +
+   '        if isinstance(i, slice):'#10;
+ s := s +
+   '            return self.__class__(self.data[i])'#10;
+ s := s +
+   '        return self.data[i]'#10;
+ s := s +
+   '    def __setitem__(self, i, item): self.data[i] = item'#10;
+ s := s +
+   '    def __delitem__(self, i): del self.data[i]'#10;
+ s := s +
+   '    def __iter__(self): return iter(self.data)'#10;
+ s := s +
+   '    def __contains__(self, item): return item in self.data'#10;
+ s := s +
+   '    def __eq__(self, other): return self.data == (other.data' +
+   ' if isinstance(other, UserList) else other)'#10;
+ s := s +
+   '    def __lt__(self, other): return self.data < (other.data ' +
+   'if isinstance(other, UserList) else other)'#10;
+ s := s +
+   '    def __add__(self, other):'#10;
+ s := s +
+   '        return self.__class__(self.data + (other.data if isi' +
+   'nstance(other, UserList) else list(other)))'#10;
+ s := s +
+   '    def __iadd__(self, other):'#10;
+ s := s +
+   '        self.data += other.data if isinstance(other, UserLis' +
+   't) else list(other)'#10;
+ s := s +
+   '        return self'#10;
+ s := s +
+   '    def __mul__(self, n): return self.__class__(self.data * ' +
+   'n)'#10;
+ s := s +
+   '    def append(self, item): self.data.append(item)'#10;
+ s := s +
+   '    def insert(self, i, item): self.data.insert(i, item)'#10;
+ s := s +
+   '    def pop(self, i=-1): return self.data.pop(i)'#10;
+ s := s +
+   '    def remove(self, item): self.data.remove(item)'#10;
+ s := s +
+   '    def clear(self): self.data.clear()'#10;
+ s := s +
+   '    def copy(self): return self.__class__(self)'#10;
+ s := s +
+   '    def count(self, item): return self.data.count(item)'#10;
+ s := s +
+   '    def index(self, item, *args): return self.data.index(ite' +
+   'm, *args)'#10;
+ s := s +
+   '    def reverse(self): self.data.reverse()'#10;
+ s := s +
+   '    def sort(self, *args, **kwds): self.data.sort(*args, **k' +
+   'wds)'#10;
+ s := s +
+   '    def extend(self, other):'#10;
+ s := s +
+   '        self.data.extend(other.data if isinstance(other, Use' +
+   'rList) else other)'#10;
+ s := s + #10;
+ s := s +
+   'class UserString:'#10;
+ s := s +
+   '    def __init__(self, seq):'#10;
+ s := s +
+   '        self.data = seq if isinstance(seq, str) else str(seq' +
+   ')'#10;
+ s := s +
+   '    def __str__(self): return str(self.data)'#10;
+ s := s +
+   '    def __repr__(self): return repr(self.data)'#10;
+ s := s +
+   '    def __len__(self): return len(self.data)'#10;
+ s := s +
+   '    def __getitem__(self, i): return self.__class__(self.dat' +
+   'a[i])'#10;
+ s := s +
+   '    def __eq__(self, other): return self.data == (other.data' +
+   ' if isinstance(other, UserString) else other)'#10;
+ s := s +
+   '    def __hash__(self): return hash(self.data)'#10;
+ s := s +
+   '    def __add__(self, other): return self.__class__(self.dat' +
+   'a + str(other))'#10;
+ s := s +
+   '    def __contains__(self, c): return c in self.data'#10;
+ s := s +
+   '    def __iter__(self): return iter(self.data)'#10;
+ s := s +
+   '    def upper(self): return self.__class__(self.data.upper()' +
+   ')'#10;
+ s := s +
+   '    def lower(self): return self.__class__(self.data.lower()' +
+   ')'#10;
+ s := s +
+   '    def __getattr__(self, name):'#10;
+ s := s +
+   '        return getattr(self.data, name)'#10;
+ s := s + #10;
+ s := s +
+   'from collections import abc'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_copy: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'class Error(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s +
+   'error = Error'#10;
+ s := s + #10;
+ s := s +
+   'def copy(x):'#10;
+ s := s +
+   '    cls = type(x)'#10;
+ s := s +
+   '    if cls in (int, float, bool, str, bytes, type(None), tup' +
+   'le, frozenset, type, range):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    if cls is list:'#10;
+ s := s +
+   '        return list(x)'#10;
+ s := s +
+   '    if cls is dict:'#10;
+ s := s +
+   '        return dict(x)'#10;
+ s := s +
+   '    if cls is set:'#10;
+ s := s +
+   '        return set(x)'#10;
+ s := s +
+   '    f = getattr(cls, ''__copy__'', None)'#10;
+ s := s +
+   '    if f is not None:'#10;
+ s := s +
+   '        return f(x)'#10;
+ s := s +
+   '    if isinstance(x, type) or callable(x) and not hasattr(x,' +
+   ' ''__dict__''):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    return _reconstruct(x, False, {})'#10;
+ s := s + #10;
+ s := s +
+   'def _reconstruct(x, deep, memo):'#10;
+ s := s +
+   '    cls = type(x)'#10;
+ s := s +
+   '    if hasattr(cls, ''__new__''):'#10;
+ s := s +
+   '        y = cls.__new__(cls)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        y = object.__new__(cls)'#10;
+ s := s +
+   '    if hasattr(x, ''__dict__''):'#10;
+ s := s +
+   '        if deep:'#10;
+ s := s +
+   '            y.__dict__.update(deepcopy(x.__dict__, memo))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            y.__dict__.update(x.__dict__)'#10;
+ s := s +
+   '    return y'#10;
+ s := s + #10;
+ s := s +
+   'def deepcopy(x, memo=None, _nil=[]):'#10;
+ s := s +
+   '    if memo is None:'#10;
+ s := s +
+   '        memo = {}'#10;
+ s := s +
+   '    d = id(x)'#10;
+ s := s +
+   '    y = memo.get(d, _nil)'#10;
+ s := s +
+   '    if y is not _nil:'#10;
+ s := s +
+   '        return y'#10;
+ s := s +
+   '    cls = type(x)'#10;
+ s := s +
+   '    if cls in (int, float, bool, str, bytes, type(None), typ' +
+   'e, range):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    if cls is list:'#10;
+ s := s +
+   '        y = []'#10;
+ s := s +
+   '        memo[d] = y'#10;
+ s := s +
+   '        for a in x:'#10;
+ s := s +
+   '            y.append(deepcopy(a, memo))'#10;
+ s := s +
+   '        return y'#10;
+ s := s +
+   '    if cls is tuple:'#10;
+ s := s +
+   '        y = tuple([deepcopy(a, memo) for a in x])'#10;
+ s := s +
+   '        for k, j in zip(x, y):'#10;
+ s := s +
+   '            if k is not j:'#10;
+ s := s +
+   '                memo[d] = y'#10;
+ s := s +
+   '                return y'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    if cls is dict:'#10;
+ s := s +
+   '        y = {}'#10;
+ s := s +
+   '        memo[d] = y'#10;
+ s := s +
+   '        for k, v in x.items():'#10;
+ s := s +
+   '            y[deepcopy(k, memo)] = deepcopy(v, memo)'#10;
+ s := s +
+   '        return y'#10;
+ s := s +
+   '    if cls is set:'#10;
+ s := s +
+   '        y = set()'#10;
+ s := s +
+   '        memo[d] = y'#10;
+ s := s +
+   '        for a in x:'#10;
+ s := s +
+   '            y.add(deepcopy(a, memo))'#10;
+ s := s +
+   '        return y'#10;
+ s := s +
+   '    if cls is frozenset:'#10;
+ s := s +
+   '        y = frozenset([deepcopy(a, memo) for a in x])'#10;
+ s := s +
+   '        memo[d] = y'#10;
+ s := s +
+   '        return y'#10;
+ s := s +
+   '    f = getattr(cls, ''__deepcopy__'', None)'#10;
+ s := s +
+   '    if f is not None:'#10;
+ s := s +
+   '        y = f(x, memo)'#10;
+ s := s +
+   '        memo[d] = y'#10;
+ s := s +
+   '        return y'#10;
+ s := s +
+   '    if isinstance(x, type):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    if callable(x) and not hasattr(x, ''__dict__''):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    y = _reconstruct(x, True, memo)'#10;
+ s := s +
+   '    memo[d] = y'#10;
+ s := s +
+   '    return y'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_functools: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'WRAPPER_ASSIGNMENTS = (''__module__'', ''__name__'', ''__qualname' +
+   '__'', ''__doc__'', ''__annotations__'')'#10;
+ s := s +
+   'WRAPPER_UPDATES = (''__dict__'',)'#10;
+ s := s + #10;
+ s := s +
+   'def update_wrapper(wrapper, wrapped, assigned=WRAPPER_ASSIGN' +
+   'MENTS, updated=WRAPPER_UPDATES):'#10;
+ s := s +
+   '    for attr in assigned:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            value = getattr(wrapped, attr)'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                setattr(wrapper, attr, value)'#10;
+ s := s +
+   '            except (AttributeError, TypeError):'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '    for attr in updated:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            getattr(wrapper, attr).update(getattr(wrapped, a' +
+   'ttr, {}))'#10;
+ s := s +
+   '        except (AttributeError, TypeError):'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '    wrapper.__wrapped__ = wrapped'#10;
+ s := s +
+   '    return wrapper'#10;
+ s := s + #10;
+ s := s +
+   'def wraps(wrapped, assigned=WRAPPER_ASSIGNMENTS, updated=WRA' +
+   'PPER_UPDATES):'#10;
+ s := s +
+   '    def deco(wrapper):'#10;
+ s := s +
+   '        return update_wrapper(wrapper, wrapped, assigned, up' +
+   'dated)'#10;
+ s := s +
+   '    return deco'#10;
+ s := s + #10;
+ s := s +
+   '_initial_missing = object()'#10;
+ s := s + #10;
+ s := s +
+   'def reduce(function, sequence, initial=_initial_missing):'#10;
+ s := s +
+   '    it = iter(sequence)'#10;
+ s := s +
+   '    if initial is _initial_missing:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            value = next(it)'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            raise TypeError(''reduce() of empty sequence with' +
+   ' no initial value'') from None'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        value = initial'#10;
+ s := s +
+   '    for element in it:'#10;
+ s := s +
+   '        value = function(value, element)'#10;
+ s := s +
+   '    return value'#10;
+ s := s + #10;
+ s := s +
+   'class partial:'#10;
+ s := s +
+   '    def __init__(*args, **keywords):'#10;
+ s := s +
+   '        if len(args) < 2:'#10;
+ s := s +
+   '            raise TypeError("type ''partial'' takes at least o' +
+   'ne argument")'#10;
+ s := s +
+   '        self, func, *args = args'#10;
+ s := s +
+   '        if not callable(func):'#10;
+ s := s +
+   '            raise TypeError(''the first argument must be call' +
+   'able'')'#10;
+ s := s +
+   '        if hasattr(func, ''func''):'#10;
+ s := s +
+   '            args = func.args + tuple(args)'#10;
+ s := s +
+   '            keywords = {**func.keywords, **keywords}'#10;
+ s := s +
+   '            func = func.func'#10;
+ s := s +
+   '        self.func = func'#10;
+ s := s +
+   '        self.args = tuple(args)'#10;
+ s := s +
+   '        self.keywords = keywords'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(*args, **keywords):'#10;
+ s := s +
+   '        self, *args = args'#10;
+ s := s +
+   '        keywords = {**self.keywords, **keywords}'#10;
+ s := s +
+   '        return self.func(*self.args, *args, **keywords)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        args = [repr(self.func)]'#10;
+ s := s +
+   '        args.extend(repr(x) for x in self.args)'#10;
+ s := s +
+   '        args.extend(''%s=%r'' % (k, v) for (k, v) in self.keyw' +
+   'ords.items())'#10;
+ s := s +
+   '        return ''functools.partial(%s)'' % '', ''.join(args)'#10;
+ s := s + #10;
+ s := s +
+   'class partialmethod:'#10;
+ s := s +
+   '    def __init__(self, func, *args, **keywords):'#10;
+ s := s +
+   '        self.func = func'#10;
+ s := s +
+   '        self.args = args'#10;
+ s := s +
+   '        self.keywords = keywords'#10;
+ s := s + #10;
+ s := s +
+   '    def __get__(self, obj, cls=None):'#10;
+ s := s +
+   '        if obj is None:'#10;
+ s := s +
+   '            return self'#10;
+ s := s +
+   '        def _method(*a, **kw):'#10;
+ s := s +
+   '            return self.func(obj, *self.args, *a, **{**self.' +
+   'keywords, **kw})'#10;
+ s := s +
+   '        return _method'#10;
+ s := s + #10;
+ s := s +
+   'def cmp_to_key(mycmp):'#10;
+ s := s +
+   '    class K(object):'#10;
+ s := s +
+   '        __slots__ = [''obj'']'#10;
+ s := s +
+   '        def __init__(self, obj):'#10;
+ s := s +
+   '            self.obj = obj'#10;
+ s := s +
+   '        def __lt__(self, other):'#10;
+ s := s +
+   '            return mycmp(self.obj, other.obj) < 0'#10;
+ s := s +
+   '        def __gt__(self, other):'#10;
+ s := s +
+   '            return mycmp(self.obj, other.obj) > 0'#10;
+ s := s +
+   '        def __eq__(self, other):'#10;
+ s := s +
+   '            return mycmp(self.obj, other.obj) == 0'#10;
+ s := s +
+   '        def __le__(self, other):'#10;
+ s := s +
+   '            return mycmp(self.obj, other.obj) <= 0'#10;
+ s := s +
+   '        def __ge__(self, other):'#10;
+ s := s +
+   '            return mycmp(self.obj, other.obj) >= 0'#10;
+ s := s +
+   '        __hash__ = None'#10;
+ s := s +
+   '    return K'#10;
+ s := s + #10;
+ s := s +
+   'def total_ordering(cls):'#10;
+ s := s +
+   '    def _gt_from_lt(self, other):'#10;
+ s := s +
+   '        r = self.__lt__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r and self != other'#10;
+ s := s +
+   '    def _le_from_lt(self, other):'#10;
+ s := s +
+   '        r = self.__lt__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return r or self == other'#10;
+ s := s +
+   '    def _ge_from_lt(self, other):'#10;
+ s := s +
+   '        r = self.__lt__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r'#10;
+ s := s +
+   '    def _ge_from_le(self, other):'#10;
+ s := s +
+   '        r = self.__le__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r or self == other'#10;
+ s := s +
+   '    def _lt_from_le(self, other):'#10;
+ s := s +
+   '        r = self.__le__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return r and self != other'#10;
+ s := s +
+   '    def _gt_from_le(self, other):'#10;
+ s := s +
+   '        r = self.__le__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r'#10;
+ s := s +
+   '    def _lt_from_gt(self, other):'#10;
+ s := s +
+   '        r = self.__gt__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r and self != other'#10;
+ s := s +
+   '    def _ge_from_gt(self, other):'#10;
+ s := s +
+   '        r = self.__gt__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return r or self == other'#10;
+ s := s +
+   '    def _le_from_gt(self, other):'#10;
+ s := s +
+   '        r = self.__gt__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r'#10;
+ s := s +
+   '    def _le_from_ge(self, other):'#10;
+ s := s +
+   '        r = self.__ge__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r or self == other'#10;
+ s := s +
+   '    def _gt_from_ge(self, other):'#10;
+ s := s +
+   '        r = self.__ge__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return r and self != other'#10;
+ s := s +
+   '    def _lt_from_ge(self, other):'#10;
+ s := s +
+   '        r = self.__ge__(other)'#10;
+ s := s +
+   '        if r is NotImplemented:'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '        return not r'#10;
+ s := s +
+   '    convert = {'#10;
+ s := s +
+   '        ''__lt__'': [(''__gt__'', _gt_from_lt), (''__le__'', _le_f' +
+   'rom_lt), (''__ge__'', _ge_from_lt)],'#10;
+ s := s +
+   '        ''__le__'': [(''__ge__'', _ge_from_le), (''__lt__'', _lt_f' +
+   'rom_le), (''__gt__'', _gt_from_le)],'#10;
+ s := s +
+   '        ''__gt__'': [(''__lt__'', _lt_from_gt), (''__ge__'', _ge_f' +
+   'rom_gt), (''__le__'', _le_from_gt)],'#10;
+ s := s +
+   '        ''__ge__'': [(''__le__'', _le_from_ge), (''__gt__'', _gt_f' +
+   'rom_ge), (''__lt__'', _lt_from_ge)]'#10;
+ s := s +
+   '    }'#10;
+ s := s +
+   '    roots = {op for op in convert if getattr(cls, op, None) ' +
+   'is not getattr(object, op, None)}'#10;
+ s := s +
+   '    if not roots:'#10;
+ s := s +
+   '        raise ValueError(''must define at least one ordering ' +
+   'operation: < > <= >='')'#10;
+ s := s +
+   '    root = max(roots)'#10;
+ s := s +
+   '    for opname, opfunc in convert[root]:'#10;
+ s := s +
+   '        if opname not in roots:'#10;
+ s := s +
+   '            opfunc.__name__ = opname'#10;
+ s := s +
+   '            setattr(cls, opname, opfunc)'#10;
+ s := s +
+   '    return cls'#10;
+ s := s + #10;
+ s := s +
+   'class _CacheInfo(tuple):'#10;
+ s := s +
+   '    def __new__(cls, hits, misses, maxsize, currsize):'#10;
+ s := s +
+   '        return tuple.__new__(cls, (hits, misses, maxsize, cu' +
+   'rrsize))'#10;
+ s := s +
+   '    hits = property(lambda s: s[0])'#10;
+ s := s +
+   '    misses = property(lambda s: s[1])'#10;
+ s := s +
+   '    maxsize = property(lambda s: s[2])'#10;
+ s := s +
+   '    currsize = property(lambda s: s[3])'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''CacheInfo(hits=%r, misses=%r, maxsize=%r, cu' +
+   'rrsize=%r)'' % tuple(self)'#10;
+ s := s + #10;
+ s := s +
+   'def lru_cache(maxsize=128, typed=False):'#10;
+ s := s +
+   '    if callable(maxsize) and isinstance(typed, bool):'#10;
+ s := s +
+   '        user_function, maxsize = maxsize, 128'#10;
+ s := s +
+   '        return _lru_wrap(user_function, maxsize, typed)'#10;
+ s := s +
+   '    def decorating_function(user_function):'#10;
+ s := s +
+   '        return _lru_wrap(user_function, maxsize, typed)'#10;
+ s := s +
+   '    return decorating_function'#10;
+ s := s + #10;
+ s := s +
+   'def _make_key(args, kwds, typed):'#10;
+ s := s +
+   '    key = args'#10;
+ s := s +
+   '    if kwds:'#10;
+ s := s +
+   '        key = key + (_kwd_mark,)'#10;
+ s := s +
+   '        for item in kwds.items():'#10;
+ s := s +
+   '            key = key + item'#10;
+ s := s +
+   '    if typed:'#10;
+ s := s +
+   '        key = key + tuple([type(v) for v in args])'#10;
+ s := s +
+   '        if kwds:'#10;
+ s := s +
+   '            key = key + tuple([type(v) for v in kwds.values(' +
+   ')])'#10;
+ s := s +
+   '    return key'#10;
+ s := s + #10;
+ s := s +
+   '_kwd_mark = object()'#10;
+ s := s + #10;
+ s := s +
+   'def _lru_wrap(user_function, maxsize, typed):'#10;
+ s := s +
+   '    cache = {}'#10;
+ s := s +
+   '    stats = [0, 0]'#10;
+ s := s +
+   '    def wrapper(*args, **kwds):'#10;
+ s := s +
+   '        key = _make_key(args, kwds, typed)'#10;
+ s := s +
+   '        if key in cache:'#10;
+ s := s +
+   '            stats[0] += 1'#10;
+ s := s +
+   '            result = cache.pop(key)'#10;
+ s := s +
+   '            cache[key] = result'#10;
+ s := s +
+   '            return result'#10;
+ s := s +
+   '        stats[1] += 1'#10;
+ s := s +
+   '        result = user_function(*args, **kwds)'#10;
+ s := s +
+   '        cache[key] = result'#10;
+ s := s +
+   '        if maxsize is not None and len(cache) > maxsize:'#10;
+ s := s +
+   '            del cache[next(iter(cache))]'#10;
+ s := s +
+   '        return result'#10;
+ s := s +
+   '    def cache_info():'#10;
+ s := s +
+   '        return _CacheInfo(stats[0], stats[1], maxsize, len(c' +
+   'ache))'#10;
+ s := s +
+   '    def cache_clear():'#10;
+ s := s +
+   '        cache.clear()'#10;
+ s := s +
+   '        stats[0] = stats[1] = 0'#10;
+ s := s +
+   '    wrapper.cache_info = cache_info'#10;
+ s := s +
+   '    wrapper.cache_clear = cache_clear'#10;
+ s := s +
+   '    update_wrapper(wrapper, user_function)'#10;
+ s := s +
+   '    return wrapper'#10;
+ s := s + #10;
+ s := s +
+   'def cache(user_function):'#10;
+ s := s +
+   '    return lru_cache(maxsize=None)(user_function)'#10;
+ s := s + #10;
+ s := s +
+   'class cached_property:'#10;
+ s := s +
+   '    def __init__(self, func):'#10;
+ s := s +
+   '        self.func = func'#10;
+ s := s +
+   '        self.attrname = None'#10;
+ s := s +
+   '        self.__doc__ = func.__doc__'#10;
+ s := s + #10;
+ s := s +
+   '    def __set_name__(self, owner, name):'#10;
+ s := s +
+   '        self.attrname = name'#10;
+ s := s + #10;
+ s := s +
+   '    def __get__(self, instance, owner=None):'#10;
+ s := s +
+   '        if instance is None:'#10;
+ s := s +
+   '            return self'#10;
+ s := s +
+   '        name = self.attrname'#10;
+ s := s +
+   '        cache = instance.__dict__'#10;
+ s := s +
+   '        if name in cache:'#10;
+ s := s +
+   '            return cache[name]'#10;
+ s := s +
+   '        val = self.func(instance)'#10;
+ s := s +
+   '        cache[name] = val'#10;
+ s := s +
+   '        return val'#10;
+ s := s + #10;
+ s := s +
+   'def singledispatch(func):'#10;
+ s := s +
+   '    registry = {}'#10;
+ s := s +
+   '    def dispatch(cls):'#10;
+ s := s +
+   '        for c in cls.__mro__:'#10;
+ s := s +
+   '            if c in registry:'#10;
+ s := s +
+   '                return registry[c]'#10;
+ s := s +
+   '        return func'#10;
+ s := s +
+   '    def register(cls, f=None):'#10;
+ s := s +
+   '        if f is None:'#10;
+ s := s +
+   '            if isinstance(cls, type):'#10;
+ s := s +
+   '                return lambda f: register(cls, f)'#10;
+ s := s +
+   '            f = cls'#10;
+ s := s +
+   '            ann = getattr(f, ''__annotations__'', {})'#10;
+ s := s +
+   '            cls = list(ann.values())[0]'#10;
+ s := s +
+   '        registry[cls] = f'#10;
+ s := s +
+   '        return f'#10;
+ s := s +
+   '    def wrapper(*args, **kw):'#10;
+ s := s +
+   '        if not args:'#10;
+ s := s +
+   '            raise TypeError(func.__name__ + '' requires at le' +
+   'ast 1 positional argument'')'#10;
+ s := s +
+   '        return dispatch(args[0].__class__)(*args, **kw)'#10;
+ s := s +
+   '    registry[object] = func'#10;
+ s := s +
+   '    wrapper.register = register'#10;
+ s := s +
+   '    wrapper.dispatch = dispatch'#10;
+ s := s +
+   '    wrapper.registry = registry'#10;
+ s := s +
+   '    update_wrapper(wrapper, func)'#10;
+ s := s +
+   '    return wrapper'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_heapq: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'def heappush(heap, item):'#10;
+ s := s +
+   '    heap.append(item)'#10;
+ s := s +
+   '    _siftdown(heap, 0, len(heap) - 1)'#10;
+ s := s + #10;
+ s := s +
+   'def heappop(heap):'#10;
+ s := s +
+   '    lastelt = heap.pop()'#10;
+ s := s +
+   '    if heap:'#10;
+ s := s +
+   '        returnitem = heap[0]'#10;
+ s := s +
+   '        heap[0] = lastelt'#10;
+ s := s +
+   '        _siftup(heap, 0)'#10;
+ s := s +
+   '        return returnitem'#10;
+ s := s +
+   '    return lastelt'#10;
+ s := s + #10;
+ s := s +
+   'def heapreplace(heap, item):'#10;
+ s := s +
+   '    returnitem = heap[0]'#10;
+ s := s +
+   '    heap[0] = item'#10;
+ s := s +
+   '    _siftup(heap, 0)'#10;
+ s := s +
+   '    return returnitem'#10;
+ s := s + #10;
+ s := s +
+   'def heappushpop(heap, item):'#10;
+ s := s +
+   '    if heap and heap[0] < item:'#10;
+ s := s +
+   '        item, heap[0] = heap[0], item'#10;
+ s := s +
+   '        _siftup(heap, 0)'#10;
+ s := s +
+   '    return item'#10;
+ s := s + #10;
+ s := s +
+   'def heapify(x):'#10;
+ s := s +
+   '    n = len(x)'#10;
+ s := s +
+   '    for i in reversed(range(n // 2)):'#10;
+ s := s +
+   '        _siftup(x, i)'#10;
+ s := s + #10;
+ s := s +
+   'def _siftdown(heap, startpos, pos):'#10;
+ s := s +
+   '    newitem = heap[pos]'#10;
+ s := s +
+   '    while pos > startpos:'#10;
+ s := s +
+   '        parentpos = (pos - 1) >> 1'#10;
+ s := s +
+   '        parent = heap[parentpos]'#10;
+ s := s +
+   '        if newitem < parent:'#10;
+ s := s +
+   '            heap[pos] = parent'#10;
+ s := s +
+   '            pos = parentpos'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        break'#10;
+ s := s +
+   '    heap[pos] = newitem'#10;
+ s := s + #10;
+ s := s +
+   'def _siftup(heap, pos):'#10;
+ s := s +
+   '    endpos = len(heap)'#10;
+ s := s +
+   '    startpos = pos'#10;
+ s := s +
+   '    newitem = heap[pos]'#10;
+ s := s +
+   '    childpos = 2 * pos + 1'#10;
+ s := s +
+   '    while childpos < endpos:'#10;
+ s := s +
+   '        rightpos = childpos + 1'#10;
+ s := s +
+   '        if rightpos < endpos and not heap[childpos] < heap[r' +
+   'ightpos]:'#10;
+ s := s +
+   '            childpos = rightpos'#10;
+ s := s +
+   '        heap[pos] = heap[childpos]'#10;
+ s := s +
+   '        pos = childpos'#10;
+ s := s +
+   '        childpos = 2 * pos + 1'#10;
+ s := s +
+   '    heap[pos] = newitem'#10;
+ s := s +
+   '    _siftdown(heap, startpos, pos)'#10;
+ s := s + #10;
+ s := s +
+   'def nlargest(n, iterable, key=None):'#10;
+ s := s +
+   '    if key is None:'#10;
+ s := s +
+   '        return sorted(iterable, reverse=True)[:n]'#10;
+ s := s +
+   '    return sorted(iterable, key=key, reverse=True)[:n]'#10;
+ s := s + #10;
+ s := s +
+   'def nsmallest(n, iterable, key=None):'#10;
+ s := s +
+   '    if key is None:'#10;
+ s := s +
+   '        return sorted(iterable)[:n]'#10;
+ s := s +
+   '    return sorted(iterable, key=key)[:n]'#10;
+ s := s + #10;
+ s := s +
+   'def merge(*iterables, key=None, reverse=False):'#10;
+ s := s +
+   '    h = []'#10;
+ s := s +
+   '    for it in iterables:'#10;
+ s := s +
+   '        h.extend(it)'#10;
+ s := s +
+   '    return iter(sorted(h, key=key, reverse=reverse))'#10;
+ s := s + #10;
+ s := s +
+   '_heappop_max = None'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_io: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import _io'#10;
+ s := s +
+   'from _io import TextIOWrapper, open'#10;
+ s := s + #10;
+ s := s +
+   'SEEK_SET = 0'#10;
+ s := s +
+   'SEEK_CUR = 1'#10;
+ s := s +
+   'SEEK_END = 2'#10;
+ s := s +
+   'DEFAULT_BUFFER_SIZE = 8192'#10;
+ s := s + #10;
+ s := s +
+   'class UnsupportedOperation(OSError, ValueError):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class StringIO:'#10;
+ s := s +
+   '    def __new__(cls, initial_value='''', newline=''\n''):'#10;
+ s := s +
+   '        f = _io._stringio(initial_value)'#10;
+ s := s +
+   '        return f'#10;
+ s := s + #10;
+ s := s +
+   'class BytesIO:'#10;
+ s := s +
+   '    def __new__(cls, initial_value=b''''):'#10;
+ s := s +
+   '        f = _io._bytesio(initial_value)'#10;
+ s := s +
+   '        return f'#10;
+ s := s + #10;
+ s := s +
+   'class IOBase:'#10;
+ s := s +
+   '    pass'#10;
+ s := s +
+   'class RawIOBase(IOBase):'#10;
+ s := s +
+   '    pass'#10;
+ s := s +
+   'class BufferedIOBase(IOBase):'#10;
+ s := s +
+   '    pass'#10;
+ s := s +
+   'class TextIOBase(IOBase):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_itertools: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'def count(start=0, step=1):'#10;
+ s := s +
+   '    n = start'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        yield n'#10;
+ s := s +
+   '        n += step'#10;
+ s := s + #10;
+ s := s +
+   'def cycle(iterable):'#10;
+ s := s +
+   '    saved = []'#10;
+ s := s +
+   '    for element in iterable:'#10;
+ s := s +
+   '        yield element'#10;
+ s := s +
+   '        saved.append(element)'#10;
+ s := s +
+   '    while saved:'#10;
+ s := s +
+   '        for element in saved:'#10;
+ s := s +
+   '            yield element'#10;
+ s := s + #10;
+ s := s +
+   'def repeat(object, times=None):'#10;
+ s := s +
+   '    if times is None:'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            yield object'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        for i in range(times):'#10;
+ s := s +
+   '            yield object'#10;
+ s := s + #10;
+ s := s +
+   'def accumulate(iterable, func=None, *, initial=None):'#10;
+ s := s +
+   '    it = iter(iterable)'#10;
+ s := s +
+   '    total = initial'#10;
+ s := s +
+   '    if initial is None:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            total = next(it)'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '    yield total'#10;
+ s := s +
+   '    for element in it:'#10;
+ s := s +
+   '        total = func(total, element) if func else total + el' +
+   'ement'#10;
+ s := s +
+   '        yield total'#10;
+ s := s + #10;
+ s := s +
+   'class chain:'#10;
+ s := s +
+   '    def __init__(self, *iterables):'#10;
+ s := s +
+   '        self._its = iterables'#10;
+ s := s +
+   '        self._gen = self._run()'#10;
+ s := s + #10;
+ s := s +
+   '    def _run(self):'#10;
+ s := s +
+   '        for it in self._its:'#10;
+ s := s +
+   '            for element in it:'#10;
+ s := s +
+   '                yield element'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        return next(self._gen)'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def from_iterable(cls, iterables):'#10;
+ s := s +
+   '        c = cls()'#10;
+ s := s +
+   '        c._its = iterables'#10;
+ s := s +
+   '        c._gen = c._run()'#10;
+ s := s +
+   '        return c'#10;
+ s := s + #10;
+ s := s +
+   'def compress(data, selectors):'#10;
+ s := s +
+   '    return (d for d, s in zip(data, selectors) if s)'#10;
+ s := s + #10;
+ s := s +
+   'def dropwhile(predicate, iterable):'#10;
+ s := s +
+   '    iterable = iter(iterable)'#10;
+ s := s +
+   '    for x in iterable:'#10;
+ s := s +
+   '        if not predicate(x):'#10;
+ s := s +
+   '            yield x'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '    for x in iterable:'#10;
+ s := s +
+   '        yield x'#10;
+ s := s + #10;
+ s := s +
+   'def filterfalse(predicate, iterable):'#10;
+ s := s +
+   '    if predicate is None:'#10;
+ s := s +
+   '        predicate = bool'#10;
+ s := s +
+   '    for x in iterable:'#10;
+ s := s +
+   '        if not predicate(x):'#10;
+ s := s +
+   '            yield x'#10;
+ s := s + #10;
+ s := s +
+   'class groupby:'#10;
+ s := s +
+   '    def __init__(self, iterable, key=None):'#10;
+ s := s +
+   '        if key is None:'#10;
+ s := s +
+   '            key = lambda x: x'#10;
+ s := s +
+   '        self.keyfunc = key'#10;
+ s := s +
+   '        self.it = iter(iterable)'#10;
+ s := s +
+   '        self.tgtkey = self.currkey = self.currvalue = object' +
+   '()'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        self.id = object()'#10;
+ s := s +
+   '        while self.currkey == self.tgtkey:'#10;
+ s := s +
+   '            self.currvalue = next(self.it)'#10;
+ s := s +
+   '            self.currkey = self.keyfunc(self.currvalue)'#10;
+ s := s +
+   '        self.tgtkey = self.currkey'#10;
+ s := s +
+   '        return (self.currkey, self._grouper(self.tgtkey, sel' +
+   'f.id))'#10;
+ s := s + #10;
+ s := s +
+   '    def _grouper(self, tgtkey, id):'#10;
+ s := s +
+   '        while self.id is id and self.currkey == tgtkey:'#10;
+ s := s +
+   '            yield self.currvalue'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                self.currvalue = next(self.it)'#10;
+ s := s +
+   '            except StopIteration:'#10;
+ s := s +
+   '                return'#10;
+ s := s +
+   '            self.currkey = self.keyfunc(self.currvalue)'#10;
+ s := s + #10;
+ s := s +
+   'def islice(iterable, *args):'#10;
+ s := s +
+   '    s = slice(*args)'#10;
+ s := s +
+   '    start, stop, step = s.start or 0, s.stop, s.step or 1'#10;
+ s := s +
+   '    if start < 0 or (stop is not None and stop < 0) or step ' +
+   '<= 0:'#10;
+ s := s +
+   '        raise ValueError(''Indices for islice() must be None ' +
+   'or an integer: 0 <= x <= sys.maxsize.'')'#10;
+ s := s +
+   '    it = iter(iterable)'#10;
+ s := s +
+   '    nexti = start'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    if stop is None:'#10;
+ s := s +
+   '        for element in it:'#10;
+ s := s +
+   '            if i == nexti:'#10;
+ s := s +
+   '                yield element'#10;
+ s := s +
+   '                nexti += step'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    if start >= stop:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    for element in it:'#10;
+ s := s +
+   '        if i == nexti:'#10;
+ s := s +
+   '            yield element'#10;
+ s := s +
+   '            nexti += step'#10;
+ s := s +
+   '            if nexti >= stop:'#10;
+ s := s +
+   '                return'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s + #10;
+ s := s +
+   'def starmap(function, iterable):'#10;
+ s := s +
+   '    for args in iterable:'#10;
+ s := s +
+   '        yield function(*args)'#10;
+ s := s + #10;
+ s := s +
+   'def takewhile(predicate, iterable):'#10;
+ s := s +
+   '    for x in iterable:'#10;
+ s := s +
+   '        if predicate(x):'#10;
+ s := s +
+   '            yield x'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            break'#10;
+ s := s + #10;
+ s := s +
+   'def tee(iterable, n=2):'#10;
+ s := s +
+   '    it = iter(iterable)'#10;
+ s := s +
+   '    deques = [[] for i in range(n)]'#10;
+ s := s +
+   '    def gen(mydeque):'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            if not mydeque:'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    newval = next(it)'#10;
+ s := s +
+   '                except StopIteration:'#10;
+ s := s +
+   '                    return'#10;
+ s := s +
+   '                for d in deques:'#10;
+ s := s +
+   '                    d.append(newval)'#10;
+ s := s +
+   '            yield mydeque.pop(0)'#10;
+ s := s +
+   '    return tuple(gen(d) for d in deques)'#10;
+ s := s + #10;
+ s := s +
+   'def zip_longest(*args, fillvalue=None):'#10;
+ s := s +
+   '    iterators = [iter(it) for it in args]'#10;
+ s := s +
+   '    num_active = len(iterators)'#10;
+ s := s +
+   '    if not num_active:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        values = []'#10;
+ s := s +
+   '        for i, it in enumerate(iterators):'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                value = next(it)'#10;
+ s := s +
+   '            except StopIteration:'#10;
+ s := s +
+   '                num_active -= 1'#10;
+ s := s +
+   '                if not num_active:'#10;
+ s := s +
+   '                    return'#10;
+ s := s +
+   '                iterators[i] = repeat(fillvalue)'#10;
+ s := s +
+   '                value = fillvalue'#10;
+ s := s +
+   '            values.append(value)'#10;
+ s := s +
+   '        yield tuple(values)'#10;
+ s := s + #10;
+ s := s +
+   'def product(*args, repeat=1):'#10;
+ s := s +
+   '    pools = [tuple(pool) for pool in args] * repeat'#10;
+ s := s +
+   '    result = [[]]'#10;
+ s := s +
+   '    for pool in pools:'#10;
+ s := s +
+   '        result = [x + [y] for x in result for y in pool]'#10;
+ s := s +
+   '    for prod in result:'#10;
+ s := s +
+   '        yield tuple(prod)'#10;
+ s := s + #10;
+ s := s +
+   'def permutations(iterable, r=None):'#10;
+ s := s +
+   '    pool = tuple(iterable)'#10;
+ s := s +
+   '    n = len(pool)'#10;
+ s := s +
+   '    r = n if r is None else r'#10;
+ s := s +
+   '    if r > n:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    indices = list(range(n))'#10;
+ s := s +
+   '    cycles = list(range(n, n - r, -1))'#10;
+ s := s +
+   '    yield tuple(pool[i] for i in indices[:r])'#10;
+ s := s +
+   '    while n:'#10;
+ s := s +
+   '        for i in reversed(range(r)):'#10;
+ s := s +
+   '            cycles[i] -= 1'#10;
+ s := s +
+   '            if cycles[i] == 0:'#10;
+ s := s +
+   '                indices[i:] = indices[i + 1:] + indices[i:i ' +
+   '+ 1]'#10;
+ s := s +
+   '                cycles[i] = n - i'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                j = cycles[i]'#10;
+ s := s +
+   '                indices[i], indices[-j] = indices[-j], indic' +
+   'es[i]'#10;
+ s := s +
+   '                yield tuple(pool[i] for i in indices[:r])'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return'#10;
+ s := s + #10;
+ s := s +
+   'def combinations(iterable, r):'#10;
+ s := s +
+   '    pool = tuple(iterable)'#10;
+ s := s +
+   '    n = len(pool)'#10;
+ s := s +
+   '    if r > n:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    indices = list(range(r))'#10;
+ s := s +
+   '    yield tuple(pool[i] for i in indices)'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        for i in reversed(range(r)):'#10;
+ s := s +
+   '            if indices[i] != i + n - r:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        indices[i] += 1'#10;
+ s := s +
+   '        for j in range(i + 1, r):'#10;
+ s := s +
+   '            indices[j] = indices[j - 1] + 1'#10;
+ s := s +
+   '        yield tuple(pool[i] for i in indices)'#10;
+ s := s + #10;
+ s := s +
+   'def combinations_with_replacement(iterable, r):'#10;
+ s := s +
+   '    pool = tuple(iterable)'#10;
+ s := s +
+   '    n = len(pool)'#10;
+ s := s +
+   '    if not n and r:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    indices = [0] * r'#10;
+ s := s +
+   '    yield tuple(pool[i] for i in indices)'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        for i in reversed(range(r)):'#10;
+ s := s +
+   '            if indices[i] != n - 1:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        indices[i:] = [indices[i] + 1] * (r - i)'#10;
+ s := s +
+   '        yield tuple(pool[i] for i in indices)'#10;
+ s := s + #10;
+ s := s +
+   'def pairwise(iterable):'#10;
+ s := s +
+   '    a = iter(iterable)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        prev = next(a)'#10;
+ s := s +
+   '    except StopIteration:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    for b in a:'#10;
+ s := s +
+   '        yield prev, b'#10;
+ s := s +
+   '        prev = b'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_keyword: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'kwlist = [''False'', ''None'', ''True'', ''and'', ''as'', ''assert'', ''a' +
+   'sync'', ''await'', ''break'', ''class'', ''continue'', ''def'', ''del'', ' +
+   '''elif'', ''else'', ''except'', ''finally'', ''for'', ''from'', ''global''' +
+   ', ''if'', ''import'', ''in'', ''is'', ''lambda'', ''nonlocal'', ''not'', ''' +
+   'or'', ''pass'', ''raise'', ''return'', ''try'', ''while'', ''with'', ''yie' +
+   'ld'']'#10;
+ s := s +
+   'softkwlist = []'#10;
+ s := s +
+   'def iskeyword(s):'#10;
+ s := s +
+   '    return s in kwlist'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_operator: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'def lt(a, b): return a < b'#10;
+ s := s +
+   'def le(a, b): return a <= b'#10;
+ s := s +
+   'def eq(a, b): return a == b'#10;
+ s := s +
+   'def ne(a, b): return a != b'#10;
+ s := s +
+   'def ge(a, b): return a >= b'#10;
+ s := s +
+   'def gt(a, b): return a > b'#10;
+ s := s +
+   'def not_(a): return not a'#10;
+ s := s +
+   'def truth(a): return True if a else False'#10;
+ s := s +
+   'def is_(a, b): return a is b'#10;
+ s := s +
+   'def is_not(a, b): return a is not b'#10;
+ s := s +
+   'def abs(a): return -a if a < 0 else a'#10;
+ s := s +
+   'def add(a, b): return a + b'#10;
+ s := s +
+   'def and_(a, b): return a & b'#10;
+ s := s +
+   'def floordiv(a, b): return a // b'#10;
+ s := s +
+   'def index(a): return a.__index__()'#10;
+ s := s +
+   'def inv(a): return ~a'#10;
+ s := s +
+   'invert = inv'#10;
+ s := s +
+   'def lshift(a, b): return a << b'#10;
+ s := s +
+   'def mod(a, b): return a % b'#10;
+ s := s +
+   'def mul(a, b): return a * b'#10;
+ s := s +
+   'def matmul(a, b): return a @ b'#10;
+ s := s +
+   'def neg(a): return -a'#10;
+ s := s +
+   'def or_(a, b): return a | b'#10;
+ s := s +
+   'def pos(a): return +a'#10;
+ s := s +
+   'def pow(a, b): return a ** b'#10;
+ s := s +
+   'def rshift(a, b): return a >> b'#10;
+ s := s +
+   'def sub(a, b): return a - b'#10;
+ s := s +
+   'def truediv(a, b): return a / b'#10;
+ s := s +
+   'def xor(a, b): return a ^ b'#10;
+ s := s +
+   'def concat(a, b): return a + b'#10;
+ s := s +
+   'def contains(a, b): return b in a'#10;
+ s := s +
+   'def countOf(a, b):'#10;
+ s := s +
+   '    n = 0'#10;
+ s := s +
+   '    for x in a:'#10;
+ s := s +
+   '        if x == b:'#10;
+ s := s +
+   '            n += 1'#10;
+ s := s +
+   '    return n'#10;
+ s := s +
+   'def delitem(a, b): del a[b]'#10;
+ s := s +
+   'def getitem(a, b): return a[b]'#10;
+ s := s +
+   'def indexOf(a, b):'#10;
+ s := s +
+   '    for i, x in enumerate(a):'#10;
+ s := s +
+   '        if x == b:'#10;
+ s := s +
+   '            return i'#10;
+ s := s +
+   '    raise ValueError(''sequence.index(x): x not in sequence'')'#10;
+ s := s +
+   'def setitem(a, b, c): a[b] = c'#10;
+ s := s +
+   'def length_hint(obj, default=0):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        return len(obj)'#10;
+ s := s +
+   '    except TypeError:'#10;
+ s := s +
+   '        return default'#10;
+ s := s +
+   'def iadd(a, b):'#10;
+ s := s +
+   '    a += b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def isub(a, b):'#10;
+ s := s +
+   '    a -= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def imul(a, b):'#10;
+ s := s +
+   '    a *= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def itruediv(a, b):'#10;
+ s := s +
+   '    a /= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def ifloordiv(a, b):'#10;
+ s := s +
+   '    a //= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def imod(a, b):'#10;
+ s := s +
+   '    a %= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def ior(a, b):'#10;
+ s := s +
+   '    a |= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def iand(a, b):'#10;
+ s := s +
+   '    a &= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def ixor(a, b):'#10;
+ s := s +
+   '    a ^= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def ipow(a, b):'#10;
+ s := s +
+   '    a **= b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def iconcat(a, b):'#10;
+ s := s +
+   '    a += b'#10;
+ s := s +
+   '    return a'#10;
+ s := s +
+   'def call(obj, *args, **kwargs): return obj(*args, **kwargs)'#10;
+ s := s + #10;
+ s := s +
+   'class attrgetter:'#10;
+ s := s +
+   '    def __init__(self, attr, *attrs):'#10;
+ s := s +
+   '        if not attrs:'#10;
+ s := s +
+   '            if not isinstance(attr, str):'#10;
+ s := s +
+   '                raise TypeError(''attribute name must be a st' +
+   'ring'')'#10;
+ s := s +
+   '            self._attrs = (attr,)'#10;
+ s := s +
+   '            names = attr.split(''.'')'#10;
+ s := s +
+   '            def func(obj):'#10;
+ s := s +
+   '                for name in names:'#10;
+ s := s +
+   '                    obj = getattr(obj, name)'#10;
+ s := s +
+   '                return obj'#10;
+ s := s +
+   '            self._call = func'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._attrs = (attr,) + attrs'#10;
+ s := s +
+   '            getters = tuple(map(attrgetter, self._attrs))'#10;
+ s := s +
+   '            def func(obj):'#10;
+ s := s +
+   '                return tuple(getter(obj) for getter in gette' +
+   'rs)'#10;
+ s := s +
+   '            self._call = func'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, obj):'#10;
+ s := s +
+   '        return self._call(obj)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''operator.attrgetter(%s)'' % '', ''.join(map(rep' +
+   'r, self._attrs))'#10;
+ s := s + #10;
+ s := s +
+   'class itemgetter:'#10;
+ s := s +
+   '    def __init__(self, item, *items):'#10;
+ s := s +
+   '        if not items:'#10;
+ s := s +
+   '            self._items = (item,)'#10;
+ s := s +
+   '            def func(obj):'#10;
+ s := s +
+   '                return obj[item]'#10;
+ s := s +
+   '            self._call = func'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._items = items = (item,) + items'#10;
+ s := s +
+   '            def func(obj):'#10;
+ s := s +
+   '                return tuple(obj[i] for i in items)'#10;
+ s := s +
+   '            self._call = func'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, obj):'#10;
+ s := s +
+   '        return self._call(obj)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''operator.itemgetter(%s)'' % '', ''.join(map(rep' +
+   'r, self._items))'#10;
+ s := s + #10;
+ s := s +
+   'class methodcaller:'#10;
+ s := s +
+   '    def __init__(self, name, *args, **kwargs):'#10;
+ s := s +
+   '        self._name = name'#10;
+ s := s +
+   '        self._args = args'#10;
+ s := s +
+   '        self._kwargs = kwargs'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, obj):'#10;
+ s := s +
+   '        return getattr(obj, self._name)(*self._args, **self.' +
+   '_kwargs)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        args = [repr(self._name)]'#10;
+ s := s +
+   '        args.extend(map(repr, self._args))'#10;
+ s := s +
+   '        args.extend(''%s=%r'' % (k, v) for k, v in self._kwarg' +
+   's.items())'#10;
+ s := s +
+   '        return ''operator.methodcaller(%s)'' % '', ''.join(args)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_random: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import _random'#10;
+ s := s +
+   'from math import log as _log, exp as _exp, pi as _pi, e as _' +
+   'e, ceil as _ceil'#10;
+ s := s +
+   'from math import sqrt as _sqrt, acos as _acos, cos as _cos, ' +
+   'sin as _sin'#10;
+ s := s +
+   'from math import tau as TWOPI'#10;
+ s := s +
+   'from bisect import bisect as _bisect'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["Random", "seed", "random", "uniform", "randint",' +
+   ' "choice", "sample", "randrange", "shuffle", "normalvariate"' +
+   ', "lognormvariate", "expovariate", "vonmisesvariate", "gamma' +
+   'variate", "triangular", "gauss", "betavariate", "paretovaria' +
+   'te", "weibullvariate", "getstate", "setstate", "getrandbits"' +
+   ', "choices", "SystemRandom"]'#10;
+ s := s + #10;
+ s := s +
+   'NV_MAGICCONST = 4 * _exp(-0.5) / _sqrt(2.0)'#10;
+ s := s +
+   'LOG4 = _log(4.0)'#10;
+ s := s +
+   'SG_MAGICCONST = 1.0 + _log(4.5)'#10;
+ s := s +
+   'BPF = 53'#10;
+ s := s +
+   'RECIP_BPF = 2 ** -BPF'#10;
+ s := s + #10;
+ s := s +
+   'class Random:'#10;
+ s := s +
+   '    VERSION = 3'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, x=None):'#10;
+ s := s +
+   '        self._st = _random.new()'#10;
+ s := s +
+   '        self.gauss_next = None'#10;
+ s := s +
+   '        self.seed(x)'#10;
+ s := s + #10;
+ s := s +
+   '    def seed(self, a=None, version=2):'#10;
+ s := s +
+   '        _random.seed(self._st, a)'#10;
+ s := s +
+   '        self.gauss_next = None'#10;
+ s := s + #10;
+ s := s +
+   '    def getstate(self):'#10;
+ s := s +
+   '        return self.VERSION, _random.getstate(self._st), sel' +
+   'f.gauss_next'#10;
+ s := s + #10;
+ s := s +
+   '    def setstate(self, state):'#10;
+ s := s +
+   '        version, internalstate, self.gauss_next = state'#10;
+ s := s +
+   '        _random.setstate(self._st, internalstate)'#10;
+ s := s + #10;
+ s := s +
+   '    def random(self):'#10;
+ s := s +
+   '        return _random.random(self._st)'#10;
+ s := s + #10;
+ s := s +
+   '    def getrandbits(self, k):'#10;
+ s := s +
+   '        return _random.getrandbits(self._st, k)'#10;
+ s := s + #10;
+ s := s +
+   '    def _randbelow(self, n):'#10;
+ s := s +
+   '        if n == 0:'#10;
+ s := s +
+   '            return 0'#10;
+ s := s +
+   '        getrandbits = self.getrandbits'#10;
+ s := s +
+   '        k = n.bit_length()'#10;
+ s := s +
+   '        r = getrandbits(k)'#10;
+ s := s +
+   '        while r >= n:'#10;
+ s := s +
+   '            r = getrandbits(k)'#10;
+ s := s +
+   '        return r'#10;
+ s := s + #10;
+ s := s +
+   '    def randrange(self, start, stop=None, step=1):'#10;
+ s := s +
+   '        istart = int(start)'#10;
+ s := s +
+   '        if istart != start:'#10;
+ s := s +
+   '            raise ValueError(''non-integer arg 1 for randrang' +
+   'e()'')'#10;
+ s := s +
+   '        if stop is None:'#10;
+ s := s +
+   '            if istart > 0:'#10;
+ s := s +
+   '                return self._randbelow(istart)'#10;
+ s := s +
+   '            raise ValueError(''empty range for randrange()'')'#10;
+ s := s +
+   '        istop = int(stop)'#10;
+ s := s +
+   '        if istop != stop:'#10;
+ s := s +
+   '            raise ValueError(''non-integer stop for randrange' +
+   '()'')'#10;
+ s := s +
+   '        width = istop - istart'#10;
+ s := s +
+   '        if step == 1 and width > 0:'#10;
+ s := s +
+   '            return istart + self._randbelow(width)'#10;
+ s := s +
+   '        if step == 1:'#10;
+ s := s +
+   '            raise ValueError(''empty range for randrange() (%' +
+   'd, %d, %d)'' % (istart, istop, width))'#10;
+ s := s +
+   '        istep = int(step)'#10;
+ s := s +
+   '        if istep != step:'#10;
+ s := s +
+   '            raise ValueError(''non-integer step for randrange' +
+   '()'')'#10;
+ s := s +
+   '        if istep > 0:'#10;
+ s := s +
+   '            n = (width + istep - 1) // istep'#10;
+ s := s +
+   '        elif istep < 0:'#10;
+ s := s +
+   '            n = (width + istep + 1) // istep'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            raise ValueError(''zero step for randrange()'')'#10;
+ s := s +
+   '        if n <= 0:'#10;
+ s := s +
+   '            raise ValueError(''empty range for randrange()'')'#10;
+ s := s +
+   '        return istart + istep * self._randbelow(n)'#10;
+ s := s + #10;
+ s := s +
+   '    def randint(self, a, b):'#10;
+ s := s +
+   '        return self.randrange(a, b + 1)'#10;
+ s := s + #10;
+ s := s +
+   '    def randbytes(self, n):'#10;
+ s := s +
+   '        return self.getrandbits(n * 8).to_bytes(n, ''little'')'#10;
+ s := s + #10;
+ s := s +
+   '    def choice(self, seq):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            i = self._randbelow(len(seq))'#10;
+ s := s +
+   '        except ValueError:'#10;
+ s := s +
+   '            raise IndexError(''Cannot choose from an empty se' +
+   'quence'') from None'#10;
+ s := s +
+   '        return seq[i]'#10;
+ s := s + #10;
+ s := s +
+   '    def shuffle(self, x, random=None):'#10;
+ s := s +
+   '        if random is None:'#10;
+ s := s +
+   '            randbelow = self._randbelow'#10;
+ s := s +
+   '            for i in reversed(range(1, len(x))):'#10;
+ s := s +
+   '                j = randbelow(i + 1)'#10;
+ s := s +
+   '                x[i], x[j] = x[j], x[i]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            for i in reversed(range(1, len(x))):'#10;
+ s := s +
+   '                j = int(random() * (i + 1))'#10;
+ s := s +
+   '                x[i], x[j] = x[j], x[i]'#10;
+ s := s + #10;
+ s := s +
+   '    def sample(self, population, k):'#10;
+ s := s +
+   '        if isinstance(population, set):'#10;
+ s := s +
+   '            population = tuple(population)'#10;
+ s := s +
+   '        if not hasattr(population, ''__len__'') or not hasattr' +
+   '(population, ''__getitem__''):'#10;
+ s := s +
+   '            raise TypeError(''Population must be a sequence o' +
+   'r set.  For dicts, use list(d).'')'#10;
+ s := s +
+   '        randbelow = self._randbelow'#10;
+ s := s +
+   '        n = len(population)'#10;
+ s := s +
+   '        if not 0 <= k <= n:'#10;
+ s := s +
+   '            raise ValueError(''Sample larger than population ' +
+   'or is negative'')'#10;
+ s := s +
+   '        result = [None] * k'#10;
+ s := s +
+   '        setsize = 21'#10;
+ s := s +
+   '        if k > 5:'#10;
+ s := s +
+   '            setsize += 4 ** _ceil(_log(k * 3, 4))'#10;
+ s := s +
+   '        if n <= setsize:'#10;
+ s := s +
+   '            pool = list(population)'#10;
+ s := s +
+   '            for i in range(k):'#10;
+ s := s +
+   '                j = randbelow(n - i)'#10;
+ s := s +
+   '                result[i] = pool[j]'#10;
+ s := s +
+   '                pool[j] = pool[n - i - 1]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            selected = set()'#10;
+ s := s +
+   '            selected_add = selected.add'#10;
+ s := s +
+   '            for i in range(k):'#10;
+ s := s +
+   '                j = randbelow(n)'#10;
+ s := s +
+   '                while j in selected:'#10;
+ s := s +
+   '                    j = randbelow(n)'#10;
+ s := s +
+   '                selected_add(j)'#10;
+ s := s +
+   '                result[i] = population[j]'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def choices(self, population, weights=None, *, cum_weigh' +
+   'ts=None, k=1):'#10;
+ s := s +
+   '        random = self.random'#10;
+ s := s +
+   '        n = len(population)'#10;
+ s := s +
+   '        if cum_weights is None:'#10;
+ s := s +
+   '            if weights is None:'#10;
+ s := s +
+   '                floor = int'#10;
+ s := s +
+   '                n += 0.0'#10;
+ s := s +
+   '                return [population[floor(random() * n)] for ' +
+   'i in range(k)]'#10;
+ s := s +
+   '            cum_weights = []'#10;
+ s := s +
+   '            t = 0'#10;
+ s := s +
+   '            for w in weights:'#10;
+ s := s +
+   '                t += w'#10;
+ s := s +
+   '                cum_weights.append(t)'#10;
+ s := s +
+   '        elif weights is not None:'#10;
+ s := s +
+   '            raise TypeError(''Cannot specify both weights and' +
+   ' cumulative weights'')'#10;
+ s := s +
+   '        if len(cum_weights) != n:'#10;
+ s := s +
+   '            raise ValueError(''The number of weights does not' +
+   ' match the population'')'#10;
+ s := s +
+   '        total = cum_weights[-1] + 0.0'#10;
+ s := s +
+   '        hi = n - 1'#10;
+ s := s +
+   '        return [population[_bisect(cum_weights, random() * t' +
+   'otal, 0, hi)] for i in range(k)]'#10;
+ s := s + #10;
+ s := s +
+   '    def uniform(self, a, b):'#10;
+ s := s +
+   '        return a + (b - a) * self.random()'#10;
+ s := s + #10;
+ s := s +
+   '    def triangular(self, low=0.0, high=1.0, mode=None):'#10;
+ s := s +
+   '        u = self.random()'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            c = 0.5 if mode is None else (mode - low) / (hig' +
+   'h - low)'#10;
+ s := s +
+   '        except ZeroDivisionError:'#10;
+ s := s +
+   '            return low'#10;
+ s := s +
+   '        if u > c:'#10;
+ s := s +
+   '            u = 1.0 - u'#10;
+ s := s +
+   '            c = 1.0 - c'#10;
+ s := s +
+   '            low, high = high, low'#10;
+ s := s +
+   '        return low + (high - low) * _sqrt(u * c)'#10;
+ s := s + #10;
+ s := s +
+   '    def normalvariate(self, mu, sigma):'#10;
+ s := s +
+   '        random = self.random'#10;
+ s := s +
+   '        while 1:'#10;
+ s := s +
+   '            u1 = random()'#10;
+ s := s +
+   '            u2 = 1.0 - random()'#10;
+ s := s +
+   '            z = NV_MAGICCONST * (u1 - 0.5) / u2'#10;
+ s := s +
+   '            zz = z * z / 4.0'#10;
+ s := s +
+   '            if zz <= -_log(u2):'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        return mu + z * sigma'#10;
+ s := s + #10;
+ s := s +
+   '    def gauss(self, mu, sigma):'#10;
+ s := s +
+   '        random = self.random'#10;
+ s := s +
+   '        z = self.gauss_next'#10;
+ s := s +
+   '        self.gauss_next = None'#10;
+ s := s +
+   '        if z is None:'#10;
+ s := s +
+   '            x2pi = random() * TWOPI'#10;
+ s := s +
+   '            g2rad = _sqrt(-2.0 * _log(1.0 - random()))'#10;
+ s := s +
+   '            z = _cos(x2pi) * g2rad'#10;
+ s := s +
+   '            self.gauss_next = _sin(x2pi) * g2rad'#10;
+ s := s +
+   '        return mu + z * sigma'#10;
+ s := s + #10;
+ s := s +
+   '    def lognormvariate(self, mu, sigma):'#10;
+ s := s +
+   '        return _exp(self.normalvariate(mu, sigma))'#10;
+ s := s + #10;
+ s := s +
+   '    def expovariate(self, lambd):'#10;
+ s := s +
+   '        return -_log(1.0 - self.random()) / lambd'#10;
+ s := s + #10;
+ s := s +
+   '    def betavariate(self, alpha, beta):'#10;
+ s := s +
+   '        y = self.gammavariate(alpha, 1.0)'#10;
+ s := s +
+   '        if y == 0:'#10;
+ s := s +
+   '            return 0.0'#10;
+ s := s +
+   '        return y / (y + self.gammavariate(beta, 1.0))'#10;
+ s := s + #10;
+ s := s +
+   '    def gammavariate(self, alpha, beta):'#10;
+ s := s +
+   '        if alpha <= 0.0 or beta <= 0.0:'#10;
+ s := s +
+   '            raise ValueError(''gammavariate: alpha and beta m' +
+   'ust be > 0.0'')'#10;
+ s := s +
+   '        random = self.random'#10;
+ s := s +
+   '        if alpha > 1.0:'#10;
+ s := s +
+   '            ainv = _sqrt(2.0 * alpha - 1.0)'#10;
+ s := s +
+   '            bbb = alpha - LOG4'#10;
+ s := s +
+   '            ccc = alpha + ainv'#10;
+ s := s +
+   '            while 1:'#10;
+ s := s +
+   '                u1 = random()'#10;
+ s := s +
+   '                if not 1e-7 < u1 < .9999999:'#10;
+ s := s +
+   '                    continue'#10;
+ s := s +
+   '                u2 = 1.0 - random()'#10;
+ s := s +
+   '                v = _log(u1 / (1.0 - u1)) / ainv'#10;
+ s := s +
+   '                x = alpha * _exp(v)'#10;
+ s := s +
+   '                z = u1 * u1 * u2'#10;
+ s := s +
+   '                r = bbb + ccc * v - x'#10;
+ s := s +
+   '                if r + SG_MAGICCONST - 4.5 * z >= 0.0 or r >' +
+   '= _log(z):'#10;
+ s := s +
+   '                    return x * beta'#10;
+ s := s +
+   '        elif alpha == 1.0:'#10;
+ s := s +
+   '            return -_log(1.0 - random()) * beta'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            while 1:'#10;
+ s := s +
+   '                u = random()'#10;
+ s := s +
+   '                b = (_e + alpha) / _e'#10;
+ s := s +
+   '                p = b * u'#10;
+ s := s +
+   '                if p <= 1.0:'#10;
+ s := s +
+   '                    x = p ** (1.0 / alpha)'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    x = -_log((b - p) / alpha)'#10;
+ s := s +
+   '                u1 = random()'#10;
+ s := s +
+   '                if p > 1.0:'#10;
+ s := s +
+   '                    if u1 <= x ** (alpha - 1.0):'#10;
+ s := s +
+   '                        break'#10;
+ s := s +
+   '                elif u1 <= _exp(-x):'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '            return x * beta'#10;
+ s := s + #10;
+ s := s +
+   '    def paretovariate(self, alpha):'#10;
+ s := s +
+   '        u = 1.0 - self.random()'#10;
+ s := s +
+   '        return 1.0 / u ** (1.0 / alpha)'#10;
+ s := s + #10;
+ s := s +
+   '    def weibullvariate(self, alpha, beta):'#10;
+ s := s +
+   '        u = 1.0 - self.random()'#10;
+ s := s +
+   '        return alpha * (-_log(u)) ** (1.0 / beta)'#10;
+ s := s + #10;
+ s := s +
+   '    def vonmisesvariate(self, mu, kappa):'#10;
+ s := s +
+   '        random = self.random'#10;
+ s := s +
+   '        if kappa <= 1e-6:'#10;
+ s := s +
+   '            return TWOPI * random()'#10;
+ s := s +
+   '        s = 0.5 / kappa'#10;
+ s := s +
+   '        r = s + _sqrt(1.0 + s * s)'#10;
+ s := s +
+   '        while 1:'#10;
+ s := s +
+   '            u1 = random()'#10;
+ s := s +
+   '            z = _cos(_pi * u1)'#10;
+ s := s +
+   '            d = z / (r + z)'#10;
+ s := s +
+   '            u2 = random()'#10;
+ s := s +
+   '            if u2 < 1.0 - d * d or u2 <= (1.0 - d) * _exp(d)' +
+   ':'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        q = 1.0 / r'#10;
+ s := s +
+   '        f = (q + z) / (1.0 + q * z)'#10;
+ s := s +
+   '        u3 = random()'#10;
+ s := s +
+   '        if u3 > 0.5:'#10;
+ s := s +
+   '            theta = (mu + _acos(f)) % TWOPI'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            theta = (mu - _acos(f)) % TWOPI'#10;
+ s := s +
+   '        return theta'#10;
+ s := s + #10;
+ s := s +
+   'class SystemRandom(Random):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   '_inst = Random()'#10;
+ s := s +
+   'seed = _inst.seed'#10;
+ s := s +
+   'random = _inst.random'#10;
+ s := s +
+   'uniform = _inst.uniform'#10;
+ s := s +
+   'triangular = _inst.triangular'#10;
+ s := s +
+   'randint = _inst.randint'#10;
+ s := s +
+   'choice = _inst.choice'#10;
+ s := s +
+   'randrange = _inst.randrange'#10;
+ s := s +
+   'sample = _inst.sample'#10;
+ s := s +
+   'shuffle = _inst.shuffle'#10;
+ s := s +
+   'choices = _inst.choices'#10;
+ s := s +
+   'normalvariate = _inst.normalvariate'#10;
+ s := s +
+   'lognormvariate = _inst.lognormvariate'#10;
+ s := s +
+   'expovariate = _inst.expovariate'#10;
+ s := s +
+   'vonmisesvariate = _inst.vonmisesvariate'#10;
+ s := s +
+   'gammavariate = _inst.gammavariate'#10;
+ s := s +
+   'gauss = _inst.gauss'#10;
+ s := s +
+   'betavariate = _inst.betavariate'#10;
+ s := s +
+   'paretovariate = _inst.paretovariate'#10;
+ s := s +
+   'weibullvariate = _inst.weibullvariate'#10;
+ s := s +
+   'getstate = _inst.getstate'#10;
+ s := s +
+   'setstate = _inst.setstate'#10;
+ s := s +
+   'getrandbits = _inst.getrandbits'#10;
+ s := s +
+   'randbytes = _inst.randbytes'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_site: AnsiString;
 Var
  s: AnsiString;
@@ -22976,9 +28010,192 @@ Begin
  Result := s;
 End;
 
+Function Src_string: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'whitespace = '' \t\n\r\v\f'''#10;
+ s := s +
+   'ascii_lowercase = ''abcdefghijklmnopqrstuvwxyz'''#10;
+ s := s +
+   'ascii_uppercase = ''ABCDEFGHIJKLMNOPQRSTUVWXYZ'''#10;
+ s := s +
+   'ascii_letters = ascii_lowercase + ascii_uppercase'#10;
+ s := s +
+   'digits = ''0123456789'''#10;
+ s := s +
+   'hexdigits = digits + ''abcdef'' + ''ABCDEF'''#10;
+ s := s +
+   'octdigits = ''01234567'''#10;
+ s := s +
+   'punctuation = r"""!"#$%&''()*+,-./:;<=>?@[\]^_`{|}~"""'#10;
+ s := s +
+   'printable = digits + ascii_letters + punctuation + whitespac' +
+   'e'#10;
+ s := s + #10;
+ s := s +
+   'def capwords(s, sep=None):'#10;
+ s := s +
+   '    return (sep or '' '').join(x.capitalize() for x in s.split' +
+   '(sep))'#10;
+ s := s + #10;
+ s := s +
+   'class Template:'#10;
+ s := s +
+   '    delimiter = ''$'''#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, template):'#10;
+ s := s +
+   '        self.template = template'#10;
+ s := s + #10;
+ s := s +
+   '    def _sub(self, mapping, safe):'#10;
+ s := s +
+   '        import re'#10;
+ s := s +
+   '        t = self.template'#10;
+ s := s +
+   '        out = []'#10;
+ s := s +
+   '        i = 0'#10;
+ s := s +
+   '        n = len(t)'#10;
+ s := s +
+   '        while i < n:'#10;
+ s := s +
+   '            c = t[i]'#10;
+ s := s +
+   '            if c != ''$'':'#10;
+ s := s +
+   '                out.append(c)'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '            if i < n and t[i] == ''$'':'#10;
+ s := s +
+   '                out.append(''$'')'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s +
+   '            elif i < n and t[i] == ''{'':'#10;
+ s := s +
+   '                j = t.find(''}'', i)'#10;
+ s := s +
+   '                if j < 0:'#10;
+ s := s +
+   '                    if safe:'#10;
+ s := s +
+   '                        out.append(''${'')'#10;
+ s := s +
+   '                        i += 1'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '                    raise ValueError(''Invalid placeholder in' +
+   ' string'')'#10;
+ s := s +
+   '                name = t[i + 1:j]'#10;
+ s := s +
+   '                i = j + 1'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    out.append(str(mapping[name]))'#10;
+ s := s +
+   '                except KeyError:'#10;
+ s := s +
+   '                    if safe:'#10;
+ s := s +
+   '                        out.append(''${'' + name + ''}'')'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        raise'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                j = i'#10;
+ s := s +
+   '                while j < n and (t[j].isalnum() or t[j] == ''' +
+   '_''):'#10;
+ s := s +
+   '                    j += 1'#10;
+ s := s +
+   '                if j == i:'#10;
+ s := s +
+   '                    if safe:'#10;
+ s := s +
+   '                        out.append(''$'')'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '                    raise ValueError(''Invalid placeholder in' +
+   ' string'')'#10;
+ s := s +
+   '                name = t[i:j]'#10;
+ s := s +
+   '                i = j'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    out.append(str(mapping[name]))'#10;
+ s := s +
+   '                except KeyError:'#10;
+ s := s +
+   '                    if safe:'#10;
+ s := s +
+   '                        out.append(''$'' + name)'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        raise'#10;
+ s := s +
+   '        return ''''.join(out)'#10;
+ s := s + #10;
+ s := s +
+   '    def substitute(self, mapping=None, **kws):'#10;
+ s := s +
+   '        m = dict(mapping or {})'#10;
+ s := s +
+   '        m.update(kws)'#10;
+ s := s +
+   '        return self._sub(m, False)'#10;
+ s := s + #10;
+ s := s +
+   '    def safe_substitute(self, mapping=None, **kws):'#10;
+ s := s +
+   '        m = dict(mapping or {})'#10;
+ s := s +
+   '        m.update(kws)'#10;
+ s := s +
+   '        return self._sub(m, True)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Procedure RegisterPrelude;
 Begin
+  RegSource('abc', @Src_abc);
+  RegSource('bisect', @Src_bisect);
+  RegSource('collections.abc', @Src_collections_abc);
+  RegSource('collections', @Src_collections);
+  RegSource('copy', @Src_copy);
+  RegSource('functools', @Src_functools);
+  RegSource('heapq', @Src_heapq);
+  RegSource('io', @Src_io);
+  RegSource('itertools', @Src_itertools);
+  RegSource('keyword', @Src_keyword);
+  RegSource('operator', @Src_operator);
+  RegSource('random', @Src_random);
   RegSource('site', @Src_site);
+  RegSource('string', @Src_string);
 End;
 
 Begin
