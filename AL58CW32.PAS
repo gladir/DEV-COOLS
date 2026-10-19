@@ -26,8 +26,8 @@
   ETAT : TODO 01 (squelette et pipeline), TODO 02 (options), TODO 03
          (constantes, limites, nommage), TODO 04 (lexeur) et TODO 05
          (types), TODO 06 (symboles et portees) et TODO 07 (structure du
-         programme et declarations) implementes, les autres TODOs sont
-         a faire.
+         programme et declarations) et TODO 08 (expressions et
+         precedence) implementes, les autres TODOs sont a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -137,7 +137,7 @@
             Instruction vide et expression isolee ("42;", "3 + 4;",
               "true and false;") : evaluee puis ignoree
 
-  TODO 08 - EXPRESSIONS ARITHMETIQUES ET PRECEDENCE [A FAIRE]
+  TODO 08 - EXPRESSIONS ARITHMETIQUES ET PRECEDENCE [IMPLEMENTE]
             Parseur a precedence (Pratt) a 9 niveaux, du plus fort :
               not et unaire +/- ; ^ et ** (droite) ; * / div mod ;
               + - ; relationnels ; and ; or ; imp ; eqv
@@ -146,8 +146,18 @@
               reelle si un operande est real
             Puissance : appel de _A58RT_POW (entiers) ou x87 (reels)
             Pliage de constantes a la compilation
-            Debordement et division par zero : message d'erreur runtime
+            Debordement et division par zero : erreur de compilation
+              sur constantes (implemente) ; message runtime pour les
+              valeurs variables (TODO 22)
             Expressions couvertes : test_binexpr, test_operators, math
+            Realise : arbre d'expressions (ExprTab, ExprDump en mode -d),
+              ParseExprPrec / ParseUnary / ParsePrimary, typage et
+              repliement des constantes entieres (32 bits, debordement
+              detecte) et reelles ; unaire plus prioritaire que ^ (donc
+              -2 ^ 2 = 4, selon DOC\ALGOL58_SPEC_LANG.txt) ; exposant
+              entier negatif : resultat entier tronque (avertissement)
+            Reste pour la generation de code : TODO 18 (parcours de
+              l'arbre : ADD, SUB, IMUL, CDQ/IDIV, appel de POW, x87)
 
   TODO 09 - RELATIONNELS, BOOLEENS ET EXPRESSIONS CONDITIONNELLES [A FAIRE]
             Comparaisons = # != < <= > >= : CMP + SETcc / Jcc, resultat
@@ -396,6 +406,10 @@ Program AL58CW32;
 {$IFNDEF FPC}{$N+}{$ENDIF}
 {$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
+{$IFDEF FPC}
+Uses Math;
+{$ENDIF}
+
 { ============================================================
   SECTION 1 - CONSTANTES (TODO 01, 03)
   ============================================================ }
@@ -557,6 +571,16 @@ Begin
   While Length(S) < Width Do
     S := '0' + S;
   ItoSZ := S;
+End;
+
+{ Vrai si un reel est infini ou invalide (debordement) }
+Function RealBad(D : Double) : Boolean;
+Begin
+  {$IFDEF FPC}
+  RealBad := IsNaN(D) Or IsInfinite(D);
+  {$ELSE}
+  RealBad := False;
+  {$ENDIF}
 End;
 
 Function UpCaseStr(Const S : TString) : TString;
@@ -1161,6 +1185,11 @@ Begin
         T.RealVal := Mant / P
       Else
         T.RealVal := Mant * P;
+      If RealBad(T.RealVal) Then
+      Begin
+        LexError(T.Line, T.Col, 'reel hors limites: ' + T.Val);
+        T.RealVal := 0;
+      End;
     End;
   End
   Else
@@ -2232,6 +2261,709 @@ Begin
     ParserAdvance;
 End;
 
+Procedure ParseItem; Forward;
+
+{ ---- Expressions (TODO 08) --------------------------------------
+  Les expressions sont analysees en arbre (pool ExprTab) : le
+  generateur de code (TODO 18) parcourra cet arbre. Chaque noeud
+  porte son type ; les operations sur constantes sont repliees a la
+  compilation. Priorites, du plus fort au plus faible :
+    9 not, unaire +/- (droite)    8 ^ ** (droite)
+    7 * / div mod                 6 + -
+    5 = # < <= > >=               4 and      3 or    2 imp    1 eqv
+  Les regles de type et le repliement des relationnels et des
+  operateurs logiques sont completes au TODO 09. ----------------- }
+Const
+  MAX_EXPR     = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
+  MAX_EXPR_STR = {$IFDEF FPC}256{$ELSE}16{$ENDIF};
+  PREC_UNARY   = 9;
+  PREC_POWER   = 8;
+
+Type
+  {$IFDEF FPC}
+  TWide = Int64;
+  {$ELSE}
+  TWide = Comp;
+  {$ENDIF}
+
+  TExprKind = (
+    EX_INT,         { constante entiere                     }
+    EX_REAL,        { constante reelle                      }
+    EX_BOOL,        { true / false (IntVal = 1 ou 0)        }
+    EX_STR,         { chaine litterale (StrIdx)             }
+    EX_VAR,         { variable scalaire (Sym)               }
+    EX_UNARY,       { Op appliquee a L                      }
+    EX_BINARY       { L Op R                                }
+  );
+
+  TExprNode = Record
+    Kind    : TExprKind;
+    Op      : String[4];
+    Typ     : Integer;      { TY_IDX_* ou TY_UNKNOWN            }
+    IntVal  : LongInt;
+    RealVal : Double;
+    StrIdx  : Integer;
+    Sym     : Integer;
+    L, R    : Integer;      { fils, -1 si absent                }
+    Line    : Integer;
+    Col     : Integer;
+  End;
+
+Var
+  ExprTab      : Array[0..MAX_EXPR - 1] Of TExprNode;
+  ExprCount    : Integer;
+  ExprStrTab   : Array[0..MAX_EXPR_STR - 1] Of TString;
+  ExprStrCount : Integer;
+  FoldCount    : LongInt;     { operations repliees (statistiques) }
+
+{ Vide le pool : appele avant chaque expression }
+Procedure ExprReset;
+Begin
+  ExprCount    := 0;
+  ExprStrCount := 0;
+End;
+
+Function ExprNew(K : TExprKind; Typ : Integer; Line, Col : Integer)
+         : Integer;
+Begin
+  If ExprCount >= MAX_EXPR Then
+    FatalError('expression trop complexe (max ' + ItoS(MAX_EXPR) +
+               ' noeuds)');
+  FillChar(ExprTab[ExprCount], SizeOf(TExprNode), 0);
+  ExprTab[ExprCount].Kind := K;
+  ExprTab[ExprCount].Typ  := Typ;
+  ExprTab[ExprCount].L    := -1;
+  ExprTab[ExprCount].R    := -1;
+  ExprTab[ExprCount].Sym  := -1;
+  ExprTab[ExprCount].Line := Line;
+  ExprTab[ExprCount].Col  := Col;
+  ExprNew := ExprCount;
+  Inc(ExprCount);
+End;
+
+Function ExprMakeInt(V : LongInt; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_INT, TY_IDX_INTEGER, Line, Col);
+  ExprTab[N].IntVal := V;
+  ExprMakeInt := N;
+End;
+
+Function ExprMakeReal(V : Double; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_REAL, TY_IDX_REAL, Line, Col);
+  ExprTab[N].RealVal := V;
+  ExprMakeReal := N;
+End;
+
+Function ExprMakeBool(V : Boolean; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_BOOL, TY_IDX_BOOLEAN, Line, Col);
+  If V Then ExprTab[N].IntVal := 1;
+  ExprMakeBool := N;
+End;
+
+Function ExprMakeStr(Const S : TString; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  If ExprStrCount >= MAX_EXPR_STR Then
+    FatalError('trop de chaines dans une expression');
+  N := ExprNew(EX_STR, TY_IDX_STRING, Line, Col);
+  ExprStrTab[ExprStrCount] := S;
+  ExprTab[N].StrIdx := ExprStrCount;
+  Inc(ExprStrCount);
+  ExprMakeStr := N;
+End;
+
+Function ExprMakeVar(Sym : Integer; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_VAR, SymTab[Sym].TypeIdx, Line, Col);
+  ExprTab[N].Sym := Sym;
+  ExprMakeVar := N;
+End;
+
+Function ExprIsConst(N : Integer) : Boolean;
+Begin
+  ExprIsConst := (N >= 0) And
+                 (ExprTab[N].Kind In [EX_INT, EX_REAL]);
+End;
+
+Function ExprConstReal(N : Integer) : Double;
+Begin
+  If ExprTab[N].Kind = EX_INT Then
+    ExprConstReal := ExprTab[N].IntVal
+  Else
+    ExprConstReal := ExprTab[N].RealVal;
+End;
+
+{ ---- Classification des operateurs ------------------------------ }
+
+Function OpText(Const T : TToken) : TString;
+Begin
+  If T.Kind In [TK_OP, TK_KEYWORD] Then
+    OpText := T.Val
+  Else
+    OpText := '';
+End;
+
+Function OpIsRel(Const Op : TString) : Boolean;
+Begin
+  OpIsRel := (Op = '=') Or (Op = '#') Or (Op = '<') Or (Op = '<=') Or
+             (Op = '>') Or (Op = '>=');
+End;
+
+Function OpIsLogic(Const Op : TString) : Boolean;
+Begin
+  OpIsLogic := (Op = 'and') Or (Op = 'or') Or (Op = 'imp') Or
+               (Op = 'eqv');
+End;
+
+{ Priorite d'un operateur binaire (0 si le token n'en est pas un) }
+Function BinOpPrec(Const T : TToken) : Integer;
+Var
+  Op : TString;
+Begin
+  BinOpPrec := 0;
+  Op := OpText(T);
+  If T.Kind = TK_OP Then
+  Begin
+    If (Op = '+') Or (Op = '-') Then
+      BinOpPrec := 6
+    Else If (Op = '*') Or (Op = '/') Then
+      BinOpPrec := 7
+    Else If Op = '^' Then
+      BinOpPrec := PREC_POWER
+    Else If OpIsRel(Op) Then
+      BinOpPrec := 5;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    If (Op = 'div') Or (Op = 'mod') Then
+      BinOpPrec := 7
+    Else If Op = 'and' Then
+      BinOpPrec := 4
+    Else If Op = 'or' Then
+      BinOpPrec := 3
+    Else If Op = 'imp' Then
+      BinOpPrec := 2
+    Else If Op = 'eqv' Then
+      BinOpPrec := 1;
+  End;
+End;
+
+{ Seul ^ est associatif a droite }
+Function BinOpIsRight(Const T : TToken) : Boolean;
+Begin
+  BinOpIsRight := (T.Kind = TK_OP) And (T.Val = '^');
+End;
+
+{ ---- Repliement de constantes ----------------------------------- }
+
+Function FoldRange(W : TWide) : Boolean;
+Begin
+  FoldRange := (W <= MaxLongInt) And (W >= -TWide(MaxLongInt) - 1);
+End;
+
+{ Op entier sur constantes ; Err <> '' en cas d'erreur }
+Procedure FoldIntBin(Const Op : TString; A, B : LongInt;
+                     Var R : LongInt; Var Err : TString);
+Var
+  W, Base : TWide;
+  E       : LongInt;
+Begin
+  Err := '';
+  R := 0;
+  W := 0;
+  If Op = '+' Then
+    W := TWide(A) + TWide(B)
+  Else If Op = '-' Then
+    W := TWide(A) - TWide(B)
+  Else If Op = '*' Then
+    W := TWide(A) * TWide(B)
+  Else If (Op = '/') Or (Op = 'div') Or (Op = 'mod') Then
+  Begin
+    If B = 0 Then
+    Begin
+      Err := 'division par zero';
+      Exit;
+    End;
+    If (Op = 'mod') Then
+      W := TWide(A) Mod TWide(B)
+    Else
+      W := TWide(A) Div TWide(B);
+  End
+  Else If Op = '^' Then
+  Begin
+    If B < 0 Then
+    Begin
+      { exposant negatif : resultat entier tronque }
+      If A = 0 Then
+      Begin
+        Err := 'division par zero (0 ^ exposant negatif)';
+        Exit;
+      End;
+      If A = 1 Then
+        W := 1
+      Else If A = -1 Then
+      Begin
+        If Odd(B) Then W := -1 Else W := 1;
+      End
+      Else
+        W := 0;
+    End
+    Else
+    Begin
+      W := 1;
+      Base := A;
+      E := B;
+      While E > 0 Do
+      Begin
+        If Odd(E) Then
+        Begin
+          W := W * Base;
+          If Not FoldRange(W) Then Break;
+        End;
+        E := E Div 2;
+        If E > 0 Then
+        Begin
+          Base := Base * Base;
+          If (Base > MaxLongInt) Or (Base < -TWide(MaxLongInt) - 1) Then
+          Begin
+            W := TWide(MaxLongInt) + 1;     { debordement certain }
+            Break;
+          End;
+        End;
+      End;
+    End;
+  End;
+  If Not FoldRange(W) Then
+  Begin
+    Err := 'debordement entier 32 bits dans une constante';
+    Exit;
+  End;
+  R := W;
+End;
+
+{ Operation reelle sur constantes ; Err <> '' en cas d'erreur }
+Procedure FoldRealBin(Const Op : TString; A, B : Double;
+                      Var R : Double; Var Err : TString);
+Var
+  I, N : LongInt;
+Begin
+  Err := '';
+  R := 0;
+  If Op = '+' Then
+    R := A + B
+  Else If Op = '-' Then
+    R := A - B
+  Else If Op = '*' Then
+    R := A * B
+  Else If Op = '/' Then
+  Begin
+    If B = 0 Then
+    Begin
+      Err := 'division par zero';
+      Exit;
+    End;
+    R := A / B;
+  End
+  Else If Op = '^' Then
+  Begin
+    If (Frac(B) = 0) And (Abs(B) <= 1024) Then
+    Begin
+      N := Trunc(Abs(B));
+      R := 1;
+      For I := 1 To N Do
+      Begin
+        R := R * A;
+        If RealBad(R) Then Break;
+      End;
+      If (B < 0) And (Not RealBad(R)) Then
+      Begin
+        If R = 0 Then
+          Err := 'division par zero (0 ^ exposant negatif)'
+        Else
+          R := 1 / R;
+      End;
+    End
+    Else If A > 0 Then
+      R := Exp(B * Ln(A))
+    Else If (A = 0) And (B > 0) Then
+      R := 0
+    Else
+      Err := 'puissance reelle invalide (base <= 0, exposant non entier)';
+  End;
+  If (Err = '') And RealBad(R) Then
+    Err := 'debordement reel dans une constante';
+End;
+
+{ ---- Construction des noeuds ------------------------------------ }
+
+Procedure OpTypeError(Const Op : TString; A, B : Integer; Line, Col : Integer);
+Begin
+  If B = TY_UNKNOWN Then
+    ErrorAt(Line, Col, 'operande incompatible avec ''' + Op + ''': ' +
+            TypeName(A))
+  Else
+    ErrorAt(Line, Col, 'operandes incompatibles avec ''' + Op + ''': ' +
+            TypeName(A) + ', ' + TypeName(B));
+End;
+
+Function ExprMakeUnary(Const Op : TString; A : Integer;
+                       Line, Col : Integer) : Integer;
+Var
+  N, T : Integer;
+Begin
+  ExprMakeUnary := -1;
+  If A < 0 Then Exit;
+  If Op = 'not' Then
+  Begin
+    If Not TypeIsCondition(ExprTab[A].Typ) Then
+    Begin
+      OpTypeError(Op, ExprTab[A].Typ, TY_UNKNOWN, Line, Col);
+      Exit;
+    End;
+    T := TY_IDX_BOOLEAN;
+  End
+  Else
+  Begin
+    T := TypeArith(ExprTab[A].Typ, ExprTab[A].Typ);
+    If T = TY_UNKNOWN Then
+    Begin
+      OpTypeError(Op, ExprTab[A].Typ, TY_UNKNOWN, Line, Col);
+      Exit;
+    End;
+    { +x : identite sur un nombre ; -x sur constante : replie }
+    If ExprIsConst(A) Then
+    Begin
+      If Op = '-' Then
+      Begin
+        If ExprTab[A].Kind = EX_INT Then
+          ExprTab[A].IntVal := -ExprTab[A].IntVal
+        Else
+          ExprTab[A].RealVal := -ExprTab[A].RealVal;
+        Inc(FoldCount);
+      End;
+      ExprMakeUnary := A;
+      Exit;
+    End;
+    If (Op = '+') And (ExprTab[A].Typ = T) Then
+    Begin
+      ExprMakeUnary := A;
+      Exit;
+    End;
+  End;
+  N := ExprNew(EX_UNARY, T, Line, Col);
+  ExprTab[N].Op := Op;
+  ExprTab[N].L  := A;
+  ExprMakeUnary := N;
+End;
+
+Function ExprMakeBinary(Const Op : TString; L, R : Integer;
+                        Line, Col : Integer) : Integer;
+Var
+  N, T, TL, TR : Integer;
+  IV           : LongInt;
+  RV           : Double;
+  Err          : TString;
+  IsDiv        : Boolean;
+Begin
+  ExprMakeBinary := -1;
+  If (L < 0) Or (R < 0) Then Exit;
+  TL := ExprTab[L].Typ;
+  TR := ExprTab[R].Typ;
+  IsDiv := (Op = '/') Or (Op = 'div') Or (Op = 'mod');
+
+  { type du resultat }
+  If OpIsRel(Op) Then
+  Begin
+    If (TypeArith(TL, TR) = TY_UNKNOWN) Then
+    Begin
+      OpTypeError(Op, TL, TR, Line, Col);
+      Exit;
+    End;
+    T := TY_IDX_BOOLEAN;
+  End
+  Else If OpIsLogic(Op) Then
+  Begin
+    If Not (TypeIsCondition(TL) And TypeIsCondition(TR)) Then
+    Begin
+      OpTypeError(Op, TL, TR, Line, Col);
+      Exit;
+    End;
+    T := TY_IDX_BOOLEAN;
+  End
+  Else
+  Begin
+    T := TypeArith(TL, TR);
+    If T = TY_UNKNOWN Then
+    Begin
+      OpTypeError(Op, TL, TR, Line, Col);
+      Exit;
+    End;
+    { div et mod n'acceptent que des entiers }
+    If ((Op = 'div') Or (Op = 'mod')) And (T = TY_IDX_REAL) Then
+    Begin
+      ErrorAt(Line, Col, '''' + Op + ''' demande des operandes entiers');
+      Exit;
+    End;
+  End;
+
+  { division par une constante nulle }
+  If IsDiv And ExprIsConst(R) And (ExprConstReal(R) = 0) Then
+  Begin
+    ErrorAt(Line, Col, 'division par zero');
+    Exit;
+  End;
+  If (Op = '^') And (T = TY_IDX_INTEGER) And ExprIsConst(R) And
+     (ExprTab[R].IntVal < 0) Then
+    WarnAt(Line, Col, 'exposant negatif: resultat entier tronque');
+
+  { repliement des operations arithmetiques sur deux constantes }
+  If (Not OpIsRel(Op)) And (Not OpIsLogic(Op)) And
+     ExprIsConst(L) And ExprIsConst(R) Then
+  Begin
+    Err := '';
+    If T = TY_IDX_INTEGER Then
+    Begin
+      FoldIntBin(Op, ExprTab[L].IntVal, ExprTab[R].IntVal, IV, Err);
+      If Err = '' Then
+      Begin
+        ExprTab[L].IntVal := IV;
+        ExprTab[L].Line := Line;
+        ExprTab[L].Col  := Col;
+      End;
+    End
+    Else
+    Begin
+      FoldRealBin(Op, ExprConstReal(L), ExprConstReal(R), RV, Err);
+      If Err = '' Then
+      Begin
+        ExprTab[L].Kind := EX_REAL;
+        ExprTab[L].Typ  := TY_IDX_REAL;
+        ExprTab[L].RealVal := RV;
+        ExprTab[L].Line := Line;
+        ExprTab[L].Col  := Col;
+      End;
+    End;
+    If Err <> '' Then
+    Begin
+      ErrorAt(Line, Col, Err);
+      Exit;
+    End;
+    Inc(FoldCount);
+    ExprMakeBinary := L;
+    Exit;
+  End;
+
+  N := ExprNew(EX_BINARY, T, Line, Col);
+  ExprTab[N].Op := Op;
+  ExprTab[N].L  := L;
+  ExprTab[N].R  := R;
+  ExprMakeBinary := N;
+End;
+
+{ ---- Analyse (parseur a precedence) ----------------------------- }
+
+Function ParseExprPrec(MinPrec : Integer) : Integer; Forward;
+
+Function ParsePrimary : Integer;
+Var
+  N, S : Integer;
+  Tok  : TToken;
+Begin
+  ParsePrimary := -1;
+  Tok := CurToken;
+  Case Tok.Kind Of
+    TK_INTEGER:
+      Begin
+        ParsePrimary := ExprMakeInt(Tok.IntVal, Tok.Line, Tok.Col);
+        ParserAdvance;
+      End;
+    TK_REAL:
+      Begin
+        ParsePrimary := ExprMakeReal(Tok.RealVal, Tok.Line, Tok.Col);
+        ParserAdvance;
+      End;
+    TK_STRING:
+      Begin
+        ParsePrimary := ExprMakeStr(Tok.Val, Tok.Line, Tok.Col);
+        ParserAdvance;
+      End;
+    TK_KEYWORD:
+      If (Tok.Val = 'true') Or (Tok.Val = 'false') Then
+      Begin
+        ParsePrimary := ExprMakeBool(Tok.Val = 'true', Tok.Line, Tok.Col);
+        ParserAdvance;
+      End
+      Else
+        ParseError('expression attendue');
+    TK_PUNCT:
+      If Tok.Val = '(' Then
+      Begin
+        ParserAdvance;
+        N := ParseExprPrec(1);
+        If AtPunct(')') Then
+          ParserAdvance
+        Else
+          ParseError(''')'' attendu');
+        ParsePrimary := N;
+      End
+      Else
+        ParseError('expression attendue');
+    TK_IDENT:
+      Begin
+        { variable scalaire ; appels et indices : TODO 10 }
+        ParserAdvance;
+        If AtPunct('(') Or AtPunct('[') Then
+        Begin
+          ErrorAt(Tok.Line, Tok.Col,
+                  'appel ou indice non encore supporte: ' + Tok.Val);
+          Exit;
+        End;
+        S := SymFind(Tok.Val);
+        If S < 0 Then
+          S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
+        If SymTab[S].Kind In [SK_VAR, SK_OWN, SK_PARAM_VALUE,
+                              SK_PARAM_NAME] Then
+          ParsePrimary := ExprMakeVar(S, Tok.Line, Tok.Col)
+        Else
+          ErrorAt(Tok.Line, Tok.Col,
+                  'variable attendue: ' + Tok.Val + ' (' +
+                  SymKindName(SymTab[S].Kind) + ')');
+      End;
+  Else
+    ParseError('expression attendue');
+  End;
+End;
+
+{ Operandes : not, + et - unaires (priorite maximale, droite) }
+Function ParseUnary : Integer;
+Var
+  Op        : TString;
+  Line, Col : Integer;
+  A         : Integer;
+Begin
+  If AtOp('+') Or AtOp('-') Or AtKw('not') Then
+  Begin
+    Op   := CurToken.Val;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    A := ParseUnary;
+    ParseUnary := ExprMakeUnary(Op, A, Line, Col);
+  End
+  Else
+    ParseUnary := ParsePrimary;
+End;
+
+{ Boucle de precedence : n'accepte que les operateurs de priorite
+  >= MinPrec ; ^ est associatif a droite, les autres a gauche. }
+Function ParseExprPrec(MinPrec : Integer) : Integer;
+Var
+  Left, Right, Prec : Integer;
+  Op                : TString;
+  Line, Col         : Integer;
+  RightAssoc        : Boolean;
+Begin
+  Left := ParseUnary;
+  Repeat
+    Prec := BinOpPrec(CurToken);
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+    Op   := CurToken.Val;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    RightAssoc := BinOpIsRight(CurToken);
+    ParserAdvance;
+    If RightAssoc Then
+      Right := ParseExprPrec(Prec)
+    Else
+      Right := ParseExprPrec(Prec + 1);
+    Left := ExprMakeBinary(Op, Left, Right, Line, Col);
+  Until False;
+  ParseExprPrec := Left;
+End;
+
+Function ParseExpr : Integer;
+Begin
+  ParseExpr := ParseExprPrec(1);
+End;
+
+{ Mode debug -d : arbre d'une expression }
+Procedure ExprDump(N, Depth : Integer);
+Var
+  Pad : TString;
+Begin
+  If N < 0 Then Exit;
+  Pad := '';
+  While Length(Pad) < 2 * Depth + 2 Do
+    Pad := Pad + ' ';
+  Write(Pad);
+  Case ExprTab[N].Kind Of
+    EX_INT    : WriteLn('int ', ExprTab[N].IntVal);
+    EX_REAL   : WriteLn('real ', ExprTab[N].RealVal:0:6);
+    EX_BOOL   : If ExprTab[N].IntVal <> 0 Then
+                  WriteLn('bool true')
+                Else
+                  WriteLn('bool false');
+    EX_STR    : WriteLn('str "', ExprStrTab[ExprTab[N].StrIdx], '"');
+    EX_VAR    : WriteLn('var ', SymTab[ExprTab[N].Sym].Name, ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_UNARY  : WriteLn('unary ', ExprTab[N].Op, ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_BINARY : WriteLn('binary ', ExprTab[N].Op, ' : ',
+                        TypeName(ExprTab[N].Typ));
+  End;
+  ExprDump(ExprTab[N].L, Depth + 1);
+  ExprDump(ExprTab[N].R, Depth + 1);
+End;
+
+{ Debut d'une instruction expression : 42 ; 3 + 4 ; (2 + 3) * 4 ;
+  "hello" ; true and false ; -5 ; not true ;  Elle est evaluee puis
+  ignoree. Les instructions commencant par un identificateur
+  (affectation, appel, etiquette) relevent des TODO 09 a 13. }
+Function AtExprStart : Boolean;
+Begin
+  AtExprStart := (CurToken.Kind In [TK_INTEGER, TK_REAL, TK_STRING]) Or
+                 AtKw('true') Or AtKw('false') Or AtKw('not') Or
+                 AtOp('+') Or AtOp('-') Or AtPunct('(');
+End;
+
+Procedure ParseExprStatement;
+Var
+  N : Integer;
+Begin
+  ExprReset;
+  N := ParseExpr;
+  { Etiquette numerique "100: instruction" (traitee au TODO 13) }
+  If (N >= 0) And (ExprTab[N].Kind = EX_INT) And AtPunct(':') Then
+  Begin
+    ParserAdvance;
+    ParseItem;
+    Exit;
+  End;
+  If N < 0 Then
+    ParserSync
+  Else If Opts.DebugMode Then
+  Begin
+    WriteLn('Expression ligne ', ExprTab[N].Line, ' :');
+    ExprDump(N, 0);
+  End;
+  If Not (AtEOF Or AtPunct(';') Or AtKw('end')) Then
+  Begin
+    If N >= 0 Then ParseError('operateur ou '';'' attendu');
+    ParserSync;
+  End;
+End;
+
 Procedure ParseBlock; Forward;
 
 { Instruction simple (placeholder des TODO 08 a 13) : consomme les
@@ -2655,6 +3387,8 @@ Begin
     ParseBlock
   Else If AtDeclKw Then
     ParseDeclaration
+  Else If AtExprStart Then
+    ParseExprStatement
   Else
     SkipStatement;
 End;
@@ -2727,7 +3461,8 @@ Begin
   LexClose;
   If Opts.Verbose Then
     WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
-            ' procedure(s), ', BlockCount, ' bloc(s)');
+            ' procedure(s), ', BlockCount, ' bloc(s), ', FoldCount,
+            ' constante(s) repliee(s)');
 End;
 
 { ============================================================
@@ -2789,6 +3524,11 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  {$IFDEF FPC}
+  SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
+                    exOverflow, exUnderflow, exPrecision]);
+  {$ENDIF}
+  FoldCount := 0;
   TypeInit;
   SymInit;
   LexQuiet := False;
