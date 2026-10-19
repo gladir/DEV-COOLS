@@ -31,8 +31,8 @@
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
-         instructions et blocs, boucle for, goto et switch) ;
-         TODO 15 a 25 a faire.
+         instructions et blocs, boucle for, goto et switch, tableaux) ;
+         TODO 16 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -478,7 +478,7 @@
               entre procedures (souches, liens statiques) est verifie sur
               le listing et sera execute avec les procedures (TODO 16)
 
-  TODO 15 - TABLEAUX A BORNES DYNAMIQUES [A FAIRE]
+  TODO 15 - TABLEAUX A BORNES DYNAMIQUES [IMPLEMENTE]
             Declaration [type] array A[l1:u1, l2:u2], B[...] : plusieurs
               tableaux par declaration, jusqu'a MAX_ARRAY_DIM dimensions
             Bornes evaluees a l'entree du bloc (expressions quelconques) :
@@ -488,6 +488,29 @@
               (_A60RT_CHKIDX), taille nulle ou negative, limite de taille
             Tableaux de real, d'integer et de Boolean ; tableaux OWN
             Verification : arrays.a60, test_arrays.a60
+            Realise : ParseArrayDecl ([own] [type] array a, b[l:u, l:u],
+              c[l:u] ; sans type : real comme dans le rapport), ParseBound,
+              ArrayBytes (limites 2^27 elements et 1 Go), DataDeclareSym
+              (donnees et descripteur .data), GenArrayDecl (remplit le
+              descripteur ; bornes variables : taille calculee puis
+              _A60RT_ALLOC), GenIndexAddr (indice lineaire somme de
+              (i - lo) * pas, CHKIDX sauf indice constant verifie a la
+              compilation, bornes lues dans le descripteur si variables),
+              GenDescToESI, GenAddrNode, GenFreeArray ; descripteur de
+              DWORD : base, nombre de dimensions, puis lo, hi, pas par
+              dimension ; bornes constantes : donnees en .data (niveau 0,
+              own) ou dans le cadre (procedure) ; bornes variables : tas,
+              liberees (_A60RT_FREE, pointeur remis a zero) a la fin du
+              bloc, y compris a chaque tour d'une boucle ; un tableau own
+              exige des bornes constantes ; un goto qui sort d'un bloc ne
+              libere pas ses tableaux (fuite limitee) ; affectation a un
+              element (adresse empilee puis valeur) ; GenExpr EX_INDEX
+            Verifie : 13 programmes (1 et 2 dimensions, bornes negatives,
+              real par defaut, listes de tableaux, bornes variables, bloc
+              repete en boucle, own, element comme indice, Boolean,
+              indice hors bornes a l'execution) assembles avec ML.PAS et
+              executes ; 10 erreurs diagnostiquees ; FREE est un RET dans
+              le runtime de test (le vrai est au TODO 22)
 
   TODO 16 - PROCEDURES ET FONCTIONS : DECLARATION ET APPEL [A FAIRE]
             procedure [type] Nom(p1, p2) ; value ...; specifications ;
@@ -530,7 +553,8 @@
             Appels vers les routines du runtime avec arguments en registres
             Contrat avec le runtime (TODO 22) : WRITESTR, WRITEZ,
               WRITEINT, WRITEREAL, WRITEBOOL, NEWLINE, READINT, READREAL,
-              POW, EXP, FLOOR, RTOI, RSIGN, ISQRT, CHKIDX, DIVZERO, ALLOC
+              POW, EXP, FLOOR, RTOI, RSIGN, ISQRT, CHKIDX, DIVZERO, ALLOC,
+              FREE
             Verification : test_io.a60, math.a60, hello.a60
 
   TODO 19 - ENCODEUR BINAIRE x86-32 [A FAIRE]
@@ -3385,9 +3409,17 @@ Begin
   End;
 End;
 
-{ Declare la cellule .data d'un symbole : variable globale (niveau 0
-  ou own) de la taille de son type ; un tableau est declare par le
-  TODO 15. Les noms _A60V_x et _A60O_x_n viennent de SymAdd. }
+{ Descripteur d'un tableau : nom de sa cellule (_A60DSC_x) }
+Function DescName(S : Integer) : Integer;
+Begin
+  DescName := Intern('_A60DSC_' + Copy(SymTab[S].Mangled,
+                     Length(A60_ARR_PFX) + 1, 120));
+End;
+
+{ Declare les cellules .data d'un symbole : variable globale (niveau 0
+  ou own) de la taille de son type ; tableau global ou own : donnees
+  (bornes constantes) et descripteur. Les noms _A60V_x, _A60O_x_n et
+  _A60A_x viennent de SymAdd. }
 Procedure DataDeclareSym(S : Integer);
 Begin
   Case SymTab[S].Kind Of
@@ -3395,6 +3427,13 @@ Begin
       If SymTab[S].Storage = SC_GLOBAL Then
         DataAddZero(Intern(SymTab[S].Mangled),
                     TypeSizeof(SymTab[S].TypeIdx));
+    SK_ARRAY:
+      If SymTab[S].Storage = SC_GLOBAL Then
+      Begin
+        If (Not SymTab[S].ArrDynamic) And (SymTab[S].ArrBytes > 0) Then
+          DataAddZero(Intern(SymTab[S].Mangled), SymTab[S].ArrBytes);
+        DataAddZero(DescName(S), 4 * (2 + 3 * SymTab[S].ArrDims));
+      End;
   End;
 End;
 
@@ -3549,6 +3588,8 @@ End;
   son type. Ce TODO couvre les expressions primaires ; les operateurs
   (TODO 10 et 11) s'ajoutent au-dessus de ParsePrimary. ----------- }
 Const
+  MAX_ARRAY_ELEMS = 134217728;    { 2^27 elements }
+  MAX_ARRAY_BYTES = 1073741824;   { 1 Go }
   MAX_EXPR     = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
   MAX_EXPR_STR = {$IFDEF FPC}256{$ELSE}16{$ENDIF};
 
@@ -5339,6 +5380,216 @@ Begin
   GenIntOp(Op, False);
 End;
 
+{ ---- Tableaux : adresse d'un element, declaration, liberation ----- }
+{ ESI := adresse du descripteur du tableau S : declare (global ou
+  local) ou parametre tableau (pointeur recu). Descripteur (DWORD) :
+  [0] base, [1] nombre de dimensions, puis par dimension lo, hi,
+  pas (en elements). }
+Procedure GenDescToESI(S : Integer);
+Var
+  F : TReg;
+Begin
+  If SymTab[S].Kind = SK_ARRAY Then
+  Begin
+    If SymTab[S].Storage = SC_GLOBAL Then
+      Emit(OP_MOV, OpReg(R_ESI), OpOffset(DescName(S)))
+    Else
+    Begin
+      F := GenFrameReg(SymTab[S].Level);
+      Emit(OP_LEA, OpReg(R_ESI), OpMem(F, SymTab[S].ArrDescOfs, 0));
+    End;
+  End
+  Else
+  Begin
+    F := GenFrameReg(SymTab[S].Level);
+    Emit(OP_MOV, OpReg(R_ESI), OpMem(F, SymTab[S].Offset, 4));
+  End;
+End;
+
+
+{ Pas (en elements) de la dimension K d'un tableau a bornes connues }
+Function KnownStride(S, K : Integer) : LongInt;
+Var
+  J       : Integer;
+  Stride  : LongInt;
+Begin
+  Stride := 1;
+  For J := K + 1 To SymTab[S].ArrDims Do
+    Stride := Stride * (SymTab[S].ArrHi[J] - SymTab[S].ArrLo[J] + 1);
+  KnownStride := Stride;
+End;
+
+{ Adresse d'un element de tableau -> EAX. Chaque indice est controle
+  par _A60RT_CHKIDX (sauf constante verifiee a la compilation) ;
+  indice lineaire = somme (i_k - lo_k) * pas_k. }
+Procedure GenIndexAddr(N : Integer);
+Var
+  S, K, Dims, Item, E : Integer;
+  Known, Chk          : Boolean;
+  Off                 : LongInt;
+Begin
+  S    := ExprTab[N].Sym;
+  Dims := ExprTab[N].IntVal;
+  Known := (SymTab[S].Kind = SK_ARRAY) And (Not SymTab[S].ArrDynamic) And
+           (SymTab[S].ArrDims = Dims);
+  Item := ExprTab[N].L;
+  K := 0;
+  While Item >= 0 Do
+  Begin
+    Inc(K);
+    E := ExprTab[Item].L;
+    If K > 1 Then Emit1(OP_PUSH, OpReg(R_EAX));        { cumul partiel }
+    GenExprAs(E, TY_IDX_INTEGER);
+    Off := 8 + 12 * (K - 1);                           { lo ; hi = +4 }
+    Chk := (Not Known) Or (ExprTab[E].Kind <> EX_INT);
+    GenDescToESI(S);
+    If Chk Then
+    Begin
+      If Known Then
+      Begin
+        Emit(OP_MOV, OpReg(R_ECX), OpImm(SymTab[S].ArrLo[K]));
+        Emit(OP_MOV, OpReg(R_EDX), OpImm(SymTab[S].ArrHi[K]));
+      End
+      Else
+      Begin
+        Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, Off, 4));
+        Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESI, Off + 4, 4));
+      End;
+      CallRT('CHKIDX');
+    End;
+    If Known Then
+    Begin
+      If SymTab[S].ArrLo[K] <> 0 Then
+        Emit(OP_SUB, OpReg(R_EAX), OpImm(SymTab[S].ArrLo[K]));
+      If KnownStride(S, K) <> 1 Then
+      Begin
+        Emit(OP_MOV, OpReg(R_ECX), OpImm(KnownStride(S, K)));
+        Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+      End;
+    End
+    Else
+    Begin
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, Off, 4));
+      Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, Off + 8, 4));
+      Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+    End;
+    If K > 1 Then
+    Begin
+      Emit1(OP_POP, OpReg(R_ECX));
+      Emit(OP_ADD, OpReg(R_EAX), OpReg(R_ECX));
+    End;
+    Item := ExprTab[Item].R;
+  End;
+  GenDescToESI(S);
+  Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, 0, 4));
+  Emit(OP_LEA, OpReg(R_EAX),
+       OpMemIdx(-1, R_ECX, R_EAX, ValSize(ExprTab[N].Typ), 0, 0));
+End;
+
+{ Adresse d'une variable ou d'un element -> EAX }
+Procedure GenAddrNode(E : Integer);
+Begin
+  If ExprTab[E].Kind = EX_INDEX Then
+    GenIndexAddr(E)
+  Else
+    GenAddrVar(ExprTab[E].Sym);
+End;
+
+{ Declaration d'un tableau : remplit le descripteur a l'execution et,
+  pour des bornes variables, alloue les donnees sur le tas. }
+Procedure GenArrayDecl(S : Integer; Const NLo, NHi : Array Of Integer);
+Var
+  K, Dims, Es : Integer;
+  Local       : Boolean;
+  Base        : LongInt;
+
+  Function Cell(Off : LongInt) : TOperand;
+  Begin
+    If Local Then
+      Cell := OpMem(R_EBP, SymTab[S].ArrDescOfs + Off, 4)
+    Else
+      Cell := OpMemSym(DescName(S), Off, 4);
+  End;
+
+Begin
+  Dims  := SymTab[S].ArrDims;
+  Es    := TypeSizeof(SymTab[S].ElemType);
+  Local := SymTab[S].Storage = SC_LOCAL;
+  Emit(OP_MOV, Cell(4), OpImm(Dims));
+  If Not SymTab[S].ArrDynamic Then
+  Begin
+    For K := 1 To Dims Do
+    Begin
+      Base := 8 + 12 * (K - 1);
+      Emit(OP_MOV, Cell(Base), OpImm(SymTab[S].ArrLo[K]));
+      Emit(OP_MOV, Cell(Base + 4), OpImm(SymTab[S].ArrHi[K]));
+      Emit(OP_MOV, Cell(Base + 8), OpImm(KnownStride(S, K)));
+    End;
+    If Local Then
+    Begin
+      Emit(OP_LEA, OpReg(R_EAX),
+           OpMem(R_EBP, SymTab[S].ArrDataOfs, 0));
+      Emit(OP_MOV, Cell(0), OpReg(R_EAX));
+    End
+    Else
+      Emit(OP_MOV, Cell(0), OpOffset(Intern(SymTab[S].Mangled)));
+    Exit;
+  End;
+  { bornes a l'execution }
+  For K := 1 To Dims Do
+  Begin
+    Base := 8 + 12 * (K - 1);
+    If NLo[K - 1] >= 0 Then
+      GenExprAs(NLo[K - 1], TY_IDX_INTEGER)
+    Else
+      LoadImm(R_EAX, SymTab[S].ArrLo[K]);
+    Emit(OP_MOV, Cell(Base), OpReg(R_EAX));
+    If NHi[K - 1] >= 0 Then
+      GenExprAs(NHi[K - 1], TY_IDX_INTEGER)
+    Else
+      LoadImm(R_EAX, SymTab[S].ArrHi[K]);
+    Emit(OP_MOV, Cell(Base + 4), OpReg(R_EAX));
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+  For K := Dims Downto 1 Do
+  Begin
+    Base := 8 + 12 * (K - 1);
+    Emit(OP_MOV, Cell(Base + 8), OpReg(R_EAX));         { pas }
+    Emit(OP_MOV, OpReg(R_ECX), Cell(Base + 4));
+    Emit(OP_SUB, OpReg(R_ECX), Cell(Base));
+    Emit1(OP_INC, OpReg(R_ECX));
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));          { elements }
+  End;
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(Es));
+  Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+  CallRT('ALLOC');
+  Emit(OP_MOV, Cell(0), OpReg(R_EAX));
+End;
+
+
+{ Fin de bloc : libere la memoire d'un tableau a bornes variables
+  (allouee sur le tas par GenArrayDecl) et remet son pointeur a zero }
+Procedure GenFreeArray(S : Integer);
+Var
+  Skip  : Integer;
+  Local : Boolean;
+  Cell  : TOperand;
+Begin
+  Local := SymTab[S].Storage = SC_LOCAL;
+  If Local Then
+    Cell := OpMem(R_EBP, SymTab[S].ArrDescOfs, 4)
+  Else
+    Cell := OpMemSym(DescName(S), 0, 4);
+  Skip := NewLabel;
+  Emit(OP_MOV, OpReg(R_EAX), Cell);
+  Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+  Emit1(OP_JE, OpLabel(Skip));
+  CallRT('FREE');
+  Emit(OP_MOV, Cell, OpImm(0));
+  EmitLabel(Skip);
+End;
+
+
 { Evalue le noeud N : integer, Boolean ou chaine (adresse) dans EAX,
   real dans ST(0). Les autres noeuds viendront avec leurs TODO. }
 Procedure GenExpr(N : Integer);
@@ -5362,6 +5613,14 @@ Begin
            OpOffset(DataStr(ExprStrTab[ExprTab[N].StrIdx])));
     EX_VAR:
       GenLoadVar(ExprTab[N].Sym);
+    EX_INDEX:
+      Begin
+        GenIndexAddr(N);
+        If IsRealT(ExprTab[N].Typ) Then
+          Emit1(OP_FLD, OpMem(R_EAX, 0, 8))
+        Else
+          Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 0, 4));
+      End;
     EX_UNARY:
       If ExprTab[N].Op = 'not' Then
       Begin
@@ -5414,10 +5673,28 @@ Begin
   Tgt := ExprTab[N].L;
   Val := ExprTab[N].R;
   TT  := ExprTab[Tgt].Typ;
+  If ExprTab[Tgt].Kind = EX_INDEX Then
+  Begin
+    { adresse de la cible d'abord (indices), puis la valeur }
+    GenIndexAddr(Tgt);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenExprAs(Val, TT);
+    Emit1(OP_POP, OpReg(R_ECX));
+    If IsRealT(TT) Then
+    Begin
+      If NeedValue Then
+        Emit1(OP_FST, OpMem(R_ECX, 0, 8))
+      Else
+        Emit1(OP_FSTP, OpMem(R_ECX, 0, 8));
+    End
+    Else
+      Emit(OP_MOV, OpMem(R_ECX, 0, 4), OpReg(R_EAX));
+    Exit;
+  End;
   If (ExprTab[Tgt].Kind <> EX_VAR) Or
      (SymTab[ExprTab[Tgt].Sym].Kind = SK_PARAM_NAME) Then
-    FatalError('erreur interne: affectation a un element de tableau ou ' +
-               'a un parametre par nom (TODO 15 et 17)');
+    FatalError('erreur interne: affectation a un parametre par nom ' +
+               '(TODO 17)');
   Sym := ExprTab[Tgt].Sym;
   GenExprAs(Val, TT);
   Cell := SymCell(Sym, 0, ValSize(TT));
@@ -5659,7 +5936,12 @@ Var
   LabelCount  : LongInt;      { etiquettes definies                  }
   ForCount    : LongInt;      { instructions for                     }
   GotoCount   : LongInt;      { instructions goto                    }
+  DynCount    : Integer;      { tableaux a bornes variables ouverts  }
+  DynStack    : Array[0..63] Of Integer;
   LoopDepth   : Integer;      { imbrication courante des for         }
+
+Const
+  MAX_DYN_ARR = 64;
 
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
@@ -6502,6 +6784,222 @@ Begin
   Dec(LoopDepth);
 End;
 
+{ Borne de tableau : expression entiere. Une constante est retenue
+  telle quelle ; sinon (Dyn = True) Node est l'arbre de la borne,
+  evalue a l'execution par le generateur. }
+Procedure ParseBound(Var V : LongInt; Var Dyn : Boolean;
+                     Var Node : Integer);
+Var
+  N, Line, Col : Integer;
+  Conv         : TConv;
+Begin
+  V    := 0;
+  Node := -1;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  N := ParseExpr;
+  If N < 0 Then
+  Begin
+    Dyn := True;
+    Exit;
+  End;
+  If Not ExprCoerce(N, TY_IDX_INTEGER, Conv, Line, Col) Then
+  Begin
+    Dyn := True;
+    Exit;
+  End;
+  If ExprTab[N].Kind = EX_INT Then
+    V := ExprTab[N].IntVal
+  Else
+  Begin
+    Dyn  := True;
+    Node := N;
+  End;
+End;
+
+{ Octets d'un tableau a bornes constantes (0 et erreur si trop grand) }
+Function ArrayBytes(S : Integer; Line, Col : Integer) : LongInt;
+Var
+  D        : Integer;
+  Count, W : TWide;
+Begin
+  ArrayBytes := 0;
+  Count := 1;
+  For D := 1 To SymTab[S].ArrDims Do
+  Begin
+    Count := Count * (TWide(SymTab[S].ArrHi[D]) -
+                      TWide(SymTab[S].ArrLo[D]) + 1);
+    If Count > MAX_ARRAY_ELEMS Then
+    Begin
+      ErrorAt(Line, Col, 'tableau trop grand: ' + SymTab[S].Name);
+      Exit;
+    End;
+  End;
+  W := Count * TypeSizeof(SymTab[S].ElemType);
+  If W > MAX_ARRAY_BYTES Then
+  Begin
+    ErrorAt(Line, Col, 'tableau trop grand: ' + SymTab[S].Name);
+    Exit;
+  End;
+  ArrayBytes := W;
+End;
+
+{ [integer|real|Boolean] array a, b [lo:hi, lo:hi], c [lo:hi]
+  Un tableau sans type est de type real (regle d Algol 60).
+  Bornes constantes : donnees statiques (.data au niveau 0, cadre de
+  la procedure sinon). Bornes variables : allocation sur le tas a
+  l'execution. }
+Procedure ParseArrayDecl(ElemType : Integer; IsOwn : Boolean);
+Var
+  Names      : Array[1..16] Of Integer;
+  NLo, NHi   : Array[1..MAX_ARRAY_DIM] Of Integer;
+  NName      : Integer;
+  I, D       : Integer;
+  Lo, Hi     : LongInt;
+  DynD       : Boolean;
+  Cur        : Integer;
+  Line, Col  : Integer;
+Begin
+  Repeat
+    ExprReset;
+    NName := 0;
+    Repeat
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        ParseError('nom de tableau attendu');
+        ParserSync;
+        Exit;
+      End;
+      If NName < 16 Then
+      Begin
+        Inc(NName);
+        Names[NName] := SymAdd(CurToken.Val, SK_ARRAY, ElemType, IsOwn,
+                               CurToken.Line, CurToken.Col);
+        SymTab[Names[NName]].ElemType := ElemType;
+        Inc(DeclCount);
+      End
+      Else
+        ParseError('trop de noms dans une declaration de tableau');
+      Line := CurToken.Line;
+      Col  := CurToken.Col;
+      ParserAdvance;
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+
+    If Not AtPunct('[') Then
+    Begin
+      ParseError('''['' attendu apres le nom du tableau');
+      ParserSync;
+      Exit;
+    End;
+    ParserAdvance;
+    D := 0;
+    For I := 1 To MAX_ARRAY_DIM Do
+    Begin
+      NLo[I] := -1;
+      NHi[I] := -1;
+    End;
+    Repeat
+      DynD := False;
+      Inc(D);
+      Lo := 0;
+      Hi := 0;
+      If D <= MAX_ARRAY_DIM Then
+        ParseBound(Lo, DynD, NLo[D])
+      Else
+        ParseBound(Lo, DynD, I);
+      If AtPunct(':') Then
+        ParserAdvance
+      Else
+        ParseError(''':'' attendu entre les bornes');
+      If D <= MAX_ARRAY_DIM Then
+        ParseBound(Hi, DynD, NHi[D])
+      Else
+        ParseBound(Hi, DynD, I);
+      If D <= MAX_ARRAY_DIM Then
+        For I := 1 To NName Do
+        Begin
+          Cur := Names[I];
+          SymTab[Cur].ArrDims := D;
+          SymTab[Cur].ArrLo[D] := Lo;
+          SymTab[Cur].ArrHi[D] := Hi;
+          If DynD Then SymTab[Cur].ArrDynamic := True;
+        End
+      Else
+        ParseError('trop de dimensions (max ' + ItoS(MAX_ARRAY_DIM) + ')');
+      If (Not DynD) And (Lo > Hi) Then
+        ErrorAt(CurToken.Line, CurToken.Col,
+                'bornes inversees: ' + ItoS(Lo) + ':' + ItoS(Hi));
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+    ExpectPunct(']');
+
+    { stockage des tableaux a bornes constantes }
+    For I := 1 To NName Do
+    Begin
+      Cur := Names[I];
+      If (Not SymTab[Cur].ArrDynamic) And (SymTab[Cur].ArrDims > 0) Then
+      Begin
+        SymTab[Cur].ArrBytes := ArrayBytes(Cur, Line, Col);
+        If (CurLevel > 0) And (Not IsOwn) Then
+          SymTab[Cur].ArrDataOfs := SymAllocLocal(SymTab[Cur].ArrBytes);
+      End;
+      If SymTab[Cur].ArrDynamic And IsOwn Then
+        ErrorAt(Line, Col, 'les bornes d''un tableau own doivent etre ' +
+                'constantes: ' + SymTab[Cur].Name);
+      If SymTab[Cur].ArrDims > 0 Then
+      Begin
+        If SymTab[Cur].Storage = SC_LOCAL Then
+          SymTab[Cur].ArrDescOfs :=
+            SymAllocLocal(4 * (2 + 3 * SymTab[Cur].ArrDims));
+        DataDeclareSym(Cur);
+        GenArrayDecl(Cur, NLo, NHi);
+        If SymTab[Cur].ArrDynamic And (Not IsOwn) Then
+        Begin
+          If DynCount >= MAX_DYN_ARR Then
+            FatalError('trop de tableaux dynamiques ouverts (max ' +
+                       ItoS(MAX_DYN_ARR) + ')');
+          DynStack[DynCount] := Cur;
+          Inc(DynCount);
+        End;
+      End;
+      If Opts.DebugMode Then
+      Begin
+        Write('Tableau ', SymTab[Cur].Name, ' ', TypeName(ElemType),
+              ' [', SymTab[Cur].ArrDims, ' dim.]');
+        If SymTab[Cur].ArrDynamic Then
+          WriteLn(' bornes a l''execution')
+        Else
+          WriteLn(' ', SymTab[Cur].ArrBytes, ' octets');
+      End;
+    End;
+    If Opts.DebugMode Then
+      For D := 1 To MAX_ARRAY_DIM Do
+      Begin
+        If NLo[D] >= 0 Then
+        Begin
+          WriteLn('  borne inf. dim ', D, ' :');
+          ExprDump(NLo[D], 1);
+        End;
+        If NHi[D] >= 0 Then
+        Begin
+          WriteLn('  borne sup. dim ', D, ' :');
+          ExprDump(NHi[D], 1);
+        End;
+      End;
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+End;
+
 { Declaration de variables : type nom, nom, ... ; own type nom, ... }
 Procedure ParseVarList(K : TSymKind; T : Integer; IsOwn : Boolean);
 Var
@@ -6543,14 +7041,23 @@ Begin
     ParserAdvance;
     ParseLabelDecl;
   End
+  Else If AtKw('array') Then
+  Begin
+    ParserAdvance;                       { sans type : real (rapport) }
+    ParseArrayDecl(TY_IDX_REAL, IsOwn);
+  End
   Else If AtKw('integer') Or AtKw('real') Or AtKw('boolean') Then
   Begin
     T := TypeFromKeyword(CurToken.Val);
     ParserAdvance;
-    If AtKw('array') Or AtKw('procedure') Then
+    If AtKw('array') Then
     Begin
-      ParseError('declaration de tableau ou de procedure non disponible ' +
-                 '(TODO 15 et 16)');
+      ParserAdvance;
+      ParseArrayDecl(T, IsOwn);
+    End
+    Else If AtKw('procedure') Then
+    Begin
+      ParseError('declaration de procedure non disponible (TODO 16)');
       ParserSync;
     End
     Else If IsOwn Then
@@ -6561,7 +7068,7 @@ Begin
   Else
   Begin
     ParseError('declaration non disponible ou type attendu ' +
-               '(tableaux et procedures : TODO 15 et 16)');
+               '(procedures : TODO 16)');
     ParserSync;
   End;
 End;
@@ -6605,10 +7112,13 @@ End;
 { begin item ; item ; ... end   (portee propre). Un bloc sans
   declaration est une instruction composee. }
 Procedure ParseBlock;
+Var
+  Mark : Integer;
 Begin
   Inc(BlockCount);
   ParserAdvance;                      { begin }
   SymEnterScope;
+  Mark := DynCount;
   Repeat
     ParseItem;
     If AtPunct(';') Then
@@ -6626,6 +7136,12 @@ Begin
     ParserAdvance
   Else
     ParseError('''end'' attendu (begin non ferme)');
+  { fin du bloc : liberation des tableaux a bornes variables }
+  While DynCount > Mark Do
+  Begin
+    Dec(DynCount);
+    GenFreeArray(DynStack[DynCount]);
+  End;
   SymLeaveScope;
 End;
 
@@ -6659,6 +7175,7 @@ Begin
   LabelCount  := 0;
   ForCount    := 0;
   GotoCount   := 0;
+  DynCount    := 0;
   PendCount   := 0;
   LoopDepth   := 0;
   FoldCount   := 0;
