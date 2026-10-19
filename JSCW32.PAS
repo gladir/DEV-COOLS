@@ -284,6 +284,7 @@ Const
   FDF_FIELD_INIT = 8192;
   FDF_STATIC_BLOCK = 16384;
   FDF_NATIVE = 32768;
+  FDF_USES_NT = 65536;
   { descripteur de classe : nom, constructeur, drapeaux, membres }
   RT_CD_NAME = 0;
   RT_CD_CTOR = 4;
@@ -500,7 +501,7 @@ Type
   );
 
   TDeclKind = (DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS, DK_PARAM, DK_CATCH,
-                 DK_FNAME, DK_ARGS);
+                 DK_FNAME, DK_ARGS, DK_NEWTARGET);
 
   { Noeud d'AST : tok est le jeton principal (position, nom) ; e1..e4 sont
     des noeuds enfants (ou des indices de jeton pour break/continue et
@@ -585,7 +586,7 @@ Type
 
   TSemInfo = Record
     scope_count, sym_count, cap_count: LongInt;
-    cur_scope, loop_depth, cur_class: LongInt;
+    cur_scope, loop_depth, cur_class, nt_tok: LongInt;
     in_typeof, stop, next_in_loop: Boolean;
     scopes: TDynList;
     syms  : TDynList;
@@ -1660,7 +1661,11 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 2770;
+  PRELUDE_LINES = 3347;
+  PRELUDE_BASE = 2471;
+  PRELUDE_CHUNKS = 2;
+  PreludeChunkEnd: Array[1..2] Of LongInt = (3106, 3347);
+  PreludeChunkKeys: Array[1..2] Of String[40] = ('path', 'eval|Function');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -2088,6 +2093,12 @@ Const
     '    return function (...b) { return __invoke(f, t, a.concat(b)); };',
     '  };',
     '  FP.toString = function () { return ''function '' + this.name + ''() { [native code] }''; };',
+    '  var __cl = [[Object, 0], [Array, 0], [String, 0], [Number, 0], [Boolean, 0], [RegExp, 0], [Error, 0], [EvalError, 0], [RangeError, 0],',
+    '    [ReferenceError, 0], [SyntaxError, 0], [TypeError, 0], [URIError, 0]];',
+    '  for (var __ci = 0; __ci < __cl.length; __ci++) {',
+    '    var __cp = __cl[__ci][0].prototype;',
+    '    if (__cp) Object.defineProperty(__cp, ''constructor'', { value: __cl[__ci][0], writable: true, configurable: true, enumerable: false });',
+    '  }',
     '  __IterProto = {',
     '    next: function () { return this[''\x01n''](); },',
     '    toString: function () { return ''[object Iterator]''; }',
@@ -3098,13 +3109,17 @@ Const
     '  } else r = __sig(x, f + 1);',
     '  return neg + __expo(r[0], r[1]);',
     '}',
-    'function __tpl() {',
-    '  var n = arguments.length / 2, a = [], r = [];',
-    '  for (var i = 0; i < n; i++) { a.push(arguments[i]); r.push(arguments[n + i]); }',
+    'var __tplc;',
+    'function __tpl(site) {',
+    '  if (!__tplc) __tplc = {};',
+    '  if (__tplc[site]) return __tplc[site];',
+    '  var n = (arguments.length - 1) / 2, a = [], r = [];',
+    '  for (var i = 0; i < n; i++) { a.push(arguments[i + 1]); r.push(arguments[n + i + 1]); }',
     '  a.raw = r;',
+    '  __tplc[site] = a;',
     '  return a;',
     '}',
-    'var __bigproto, __bigop, __BigInt;',
+    'var __bigproto, __bigop, __BigInt, __btruthy, __bseq;',
     'function __bmk(sign, m) {',
     '  var o = Object.create(__bigproto);',
     '  o[''\x01m''] = m;',
@@ -3496,6 +3511,8 @@ Const
     '  var P = {};',
     '  __bigproto = P;',
     '  __bigop = __bigop_impl;',
+    '  __bseq = function (b) { return __bsg(this) === __bsg(b) && __mcmp(__bm(this), __bm(b)) === 0; };',
+    '  __btruthy = function (x) { return x[''\x01m''].length !== 0; };',
     '  __BigInt = function BigInt(v) {',
     '    if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError(''BigInt is not a constructor'');',
     '    return __bto(v);',
@@ -3737,87 +3754,17 @@ Const
     '  };',
     '  return util;',
     '}',
-    'function __mkPath() {',
-    '  var path = {};',
-    '  function norm(p) {',
-    '    var abs = p.charAt(0) === ''/'', parts = p.split(''/''), out = [], i;',
-    '    for (i = 0; i < parts.length; i++) {',
-    '      if (parts[i] === '''' || parts[i] === ''.'') continue;',
-    '      if (parts[i] === ''..'') {',
-    '        if (out.length > 0 && out[out.length - 1] !== ''..'') out.pop();',
-    '        else if (!abs) out.push(''..'');',
-    '      } else out.push(parts[i]);',
-    '    }',
-    '    var r = out.join(''/'');',
-    '    if (abs) return ''/'' + r;',
-    '    return r === '''' ? ''.'' : r;',
-    '  }',
-    '  path.sep = ''/'';',
-    '  path.delimiter = '':'';',
-    '  path.normalize = function (p) {',
-    '    var r = norm(String(p));',
-    '    return (String(p).slice(-1) === ''/'' && r !== ''/'' && r !== ''.'') ? r + ''/'' : r;',
-    '  };',
-    '  path.join = function (...a) {',
-    '    var s = a.filter(function (x) { return x !== ''''; }).join(''/'');',
-    '    return s === '''' ? ''.'' : path.normalize(s);',
-    '  };',
-    '  path.isAbsolute = function (p) { return String(p).charAt(0) === ''/''; };',
-    '  path.resolve = function (...a) {',
-    '    var r = '''', i;',
-    '    for (i = a.length - 1; i >= 0 && r.charAt(0) !== ''/''; i--) {',
-    '      if (a[i] !== '''') r = a[i] + (r === '''' ? '''' : ''/'' + r);',
-    '    }',
-    '    if (r.charAt(0) !== ''/'') r = process.cwd().replace(/\\/g, ''/'') + (r === '''' ? '''' : ''/'' + r);',
-    '    r = norm(r);',
-    '    return r;',
-    '  };',
-    '  path.dirname = function (p) {',
-    '    p = String(p);',
-    '    while (p.length > 1 && p.slice(-1) === ''/'') p = p.slice(0, -1);',
-    '    var i = p.lastIndexOf(''/'');',
-    '    if (i < 0) return ''.'';',
-    '    if (i === 0) return ''/'';',
-    '    return p.slice(0, i);',
-    '  };',
-    '  path.basename = function (p, ext) {',
-    '    p = String(p);',
-    '    while (p.length > 1 && p.slice(-1) === ''/'') p = p.slice(0, -1);',
-    '    var b = p.slice(p.lastIndexOf(''/'') + 1);',
-    '    if (ext !== undefined && b.length > ext.length && b.slice(-ext.length) === ext) b = b.slice(0, -ext.length);',
-    '    return b;',
-    '  };',
-    '  path.extname = function (p) {',
-    '    var b = path.basename(p), i = b.lastIndexOf(''.'');',
-    '    return (i <= 0) ? '''' : b.slice(i);',
-    '  };',
-    '  path.relative = function (from, to) {',
-    '    var f = path.resolve(from).split(''/'').filter(Boolean), t = path.resolve(to).split(''/'').filter(Boolean), i = 0;',
-    '    while (i < f.length && i < t.length && f[i] === t[i]) i++;',
-    '    var out = [], j;',
-    '    for (j = i; j < f.length; j++) out.push(''..'');',
-    '    return out.concat(t.slice(i)).join(''/'');',
-    '  };',
-    '  path.parse = function (p) {',
-    '    p = String(p);',
-    '    var base = path.basename(p), ext = path.extname(p), dir = path.dirname(p);',
-    '    if (dir === ''.'' && p.charAt(0) !== ''.'') dir = '''';',
-    '    return { root: p.charAt(0) === ''/'' ? ''/'' : '''', dir: dir, base: base, ext: ext, name: ext ? base.slice(0, -ext.length) : base };',
-    '  };',
-    '  path.format = function (o) {',
-    '    var dir = o.dir || o.root || '''', base = o.base || ((o.name || '''') + (o.ext || ''''));',
-    '    return dir ? (dir === o.root ? dir + base : dir + ''/'' + base) : base;',
-    '  };',
-    '  path.posix = path;',
-    '  path.win32 = path;',
-    '  return path;',
-    '}',
+    'function __mkPath() { return null; }',
     'function __mkmod(name) {',
     '  var e;',
     '  if (name === ''events'') return __mkEvents();',
     '  if (name === ''assert'' || name === ''assert/strict'') return __mkAssert();',
     '  if (name === ''util'') return __mkUtil();',
-    '  if (name === ''path'' || name === ''path/posix'') return __mkPath();',
+    '  if (name === ''path'' || name === ''path/posix'' || name === ''path/win32'') {',
+    '    e = __mkPath();',
+    '    if (!e) throw new Error(''Cannot find module '' + name);',
+    '    return name === ''path/posix'' ? e.posix : e;',
+    '  }',
     '  if (name === ''os'') {',
     '    return {',
     '      EOL: ''\r\n'', platform: function () { return ''win32''; }, type: function () { return ''Windows_NT''; },',
@@ -3857,247 +3804,6 @@ Const
     '  var m = __mkmod(name);',
     '  __modcache[name] = m;',
     '  return m;',
-    '}',
-    'function __evtok(src) {',
-    '  var t = [], i = 0, n = src.length, c, j, q, s, ch, m;',
-    '  var ops3 = [''==='', ''!=='', ''>>>'', ''**='', ''...''];',
-    '  var ops2 = [''=='', ''!='', ''<='', ''>='', ''&&'', ''||'', ''??'', ''<<'', ''>>'', ''**'', ''=>'', ''?.''];',
-    '  while (i < n) {',
-    '    c = src.charAt(i);',
-    '    if (c === '' '' || c === ''\t'' || c === ''\n'' || c === ''\r'') { i++; continue; }',
-    '    if ((c >= ''0'' && c <= ''9'') || (c === ''.'' && src.charAt(i + 1) >= ''0'' && src.charAt(i + 1) <= ''9'')) {',
-    '      m = /^(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)/.exec(src.slice(i));',
-    '      t.push({ k: ''n'', v: Number(m[0]) });',
-    '      i += m[0].length;',
-    '      continue;',
-    '    }',
-    '    if (c === ''"'' || c === "''") {',
-    '      q = c; s = ''''; i++;',
-    '      while (i < n && src.charAt(i) !== q) {',
-    '        ch = src.charAt(i);',
-    '        if (ch === ''\\'') {',
-    '          i++; ch = src.charAt(i);',
-    '          if (ch === ''n'') s += ''\n''; else if (ch === ''t'') s += ''\t''; else if (ch === ''r'') s += ''\r'';',
-    '          else if (ch === ''x'') { s += String.fromCharCode(parseInt(src.slice(i + 1, i + 3), 16)); i += 2; }',
-    '          else if (ch === ''u'') { s += String.fromCharCode(parseInt(src.slice(i + 1, i + 5), 16)); i += 4; }',
-    '          else s += ch;',
-    '        } else s += ch;',
-    '        i++;',
-    '      }',
-    '      if (i >= n) throw new SyntaxError(''Invalid or unexpected token'');',
-    '      i++;',
-    '      t.push({ k: ''s'', v: s });',
-    '      continue;',
-    '    }',
-    '    if ((c >= ''a'' && c <= ''z'') || (c >= ''A'' && c <= ''Z'') || c === ''_'' || c === ''$'') {',
-    '      j = i;',
-    '      while (j < n && /[A-Za-z0-9_$]/.test(src.charAt(j))) j++;',
-    '      t.push({ k: ''i'', v: src.slice(i, j) });',
-    '      i = j;',
-    '      continue;',
-    '    }',
-    '    if (ops3.indexOf(src.substr(i, 3)) >= 0) { t.push({ k: ''p'', v: src.substr(i, 3) }); i += 3; continue; }',
-    '    if (ops2.indexOf(src.substr(i, 2)) >= 0) { t.push({ k: ''p'', v: src.substr(i, 2) }); i += 2; continue; }',
-    '    t.push({ k: ''p'', v: c });',
-    '    i++;',
-    '  }',
-    '  t.push({ k: ''e'', v: '''' });',
-    '  return t;',
-    '}',
-    'function __evparse(toks) {',
-    '  var p = 0;',
-    '  var prec = { ''??'': 1, ''||'': 2, ''&&'': 3, ''|'': 4, ''^'': 5, ''&'': 6, ''=='': 7, ''!='': 7, ''==='': 7, ''!=='': 7, ''<'': 8, ''>'': 8, ''<='': 8, ''>='': 8, ''in'': 8, ''instanceof'': 8,',
-    '    ''<<'': 9, ''>>'': 9, ''>>>'': 9, ''+'': 10, ''-'': 10, ''*'': 11, ''/'': 11, ''%'': 11, ''**'': 12 };',
-    '  function peek() { return toks[p]; }',
-    '  function isP(v) { return toks[p].k === ''p'' && toks[p].v === v; }',
-    '  function expect(v) {',
-    '    if (!isP(v)) throw new SyntaxError("Unexpected token ''" + toks[p].v + "''");',
-    '    p++;',
-    '  }',
-    '  function primary() {',
-    '    var t = toks[p], r, a, k;',
-    '    if (t.k === ''n'' || t.k === ''s'') { p++; return [''v'', t.v]; }',
-    '    if (t.k === ''i'') {',
-    '      p++;',
-    '      if (t.v === ''true'') return [''v'', true];',
-    '      if (t.v === ''false'') return [''v'', false];',
-    '      if (t.v === ''null'') return [''v'', null];',
-    '      if (t.v === ''var'' || t.v === ''let'' || t.v === ''const'' || t.v === ''function'' || t.v === ''if'' || t.v === ''for'' || t.v === ''while'' || t.v === ''return'' || t.v === ''class'') {',
-    '        throw new EvalError(''eval: statements are not supported by JSCW32 (only expressions)'');',
-    '      }',
-    '      return [''id'', t.v];',
-    '    }',
-    '    if (isP(''('')) { p++; r = expr(); expect('')''); return r; }',
-    '    if (isP(''['')) {',
-    '      p++; a = [];',
-    '      while (!isP('']'')) { a.push(assign()); if (isP('','')) p++; else break; }',
-    '      expect('']'');',
-    '      return [''arr'', a];',
-    '    }',
-    '    if (isP(''{'')) {',
-    '      p++; a = [];',
-    '      while (!isP(''}'')) {',
-    '        k = toks[p]; p++;',
-    '        if (isP('':'')) { p++; a.push([k.v, assign()]); } else a.push([k.v, [''id'', k.v]]);',
-    '        if (isP('','')) p++; else break;',
-    '      }',
-    '      expect(''}'');',
-    '      return [''obj'', a];',
-    '    }',
-    '    throw new SyntaxError("Unexpected token ''" + t.v + "''");',
-    '  }',
-    '  function postfix() {',
-    '    var e = primary(), a;',
-    '    for (;;) {',
-    '      if (isP(''.'') || isP(''?.'')) {',
-    '        var opt = isP(''?.'');',
-    '        p++;',
-    '        if (opt && isP(''('')) { e = [''call'', e, args(), true]; continue; }',
-    '        if (opt && isP(''['')) { p++; var ix = expr(); expect('']''); e = [''mem'', e, ix, true]; continue; }',
-    '        e = [''mem'', e, [''v'', toks[p].v], opt]; p++;',
-    '      } else if (isP(''['')) { p++; var ix2 = expr(); expect('']''); e = [''mem'', e, ix2, false]; }',
-    '      else if (isP(''('')) e = [''call'', e, args(), false];',
-    '      else break;',
-    '    }',
-    '    return e;',
-    '  }',
-    '  function args() {',
-    '    expect(''('');',
-    '    var a = [];',
-    '    while (!isP('')'')) { a.push(assign()); if (isP('','')) p++; else break; }',
-    '    expect('')'');',
-    '    return a;',
-    '  }',
-    '  function unary() {',
-    '    var t = toks[p];',
-    '    if (t.k === ''p'' && (t.v === ''-'' || t.v === ''+'' || t.v === ''!'' || t.v === ''~'')) { p++; return [''un'', t.v, unary()]; }',
-    '    if (t.k === ''i'' && (t.v === ''typeof'' || t.v === ''void'')) { p++; return [''un'', t.v, unary()]; }',
-    '    return postfix();',
-    '  }',
-    '  function binary(minp) {',
-    '    var l = unary(), t, pr, r;',
-    '    for (;;) {',
-    '      t = toks[p];',
-    '      if (!((t.k === ''p'' || (t.k === ''i'' && (t.v === ''in'' || t.v === ''instanceof''))) && prec[t.v] !== undefined)) break;',
-    '      pr = prec[t.v];',
-    '      if (pr < minp) break;',
-    '      p++;',
-    '      r = t.v === ''**'' ? binary(pr) : binary(pr + 1);',
-    '      l = [(t.v === ''&&'' || t.v === ''||'' || t.v === ''??'') ? ''lg'' : ''bin'', t.v, l, r];',
-    '    }',
-    '    return l;',
-    '  }',
-    '  function assign() {',
-    '    var c = binary(1), a, b;',
-    '    if (isP(''?'')) { p++; a = assign(); expect('':''); b = assign(); return [''cond'', c, a, b]; }',
-    '    return c;',
-    '  }',
-    '  function expr() {',
-    '    var e = assign();',
-    '    while (isP('','')) { p++; e = [''seq'', e, assign()]; }',
-    '    return e;',
-    '  }',
-    '  var list = [];',
-    '  while (peek().k !== ''e'') {',
-    '    if (isP('';'')) { p++; continue; }',
-    '    list.push(expr());',
-    '    if (peek().k !== ''e'' && !isP('';'')) throw new SyntaxError("Unexpected token ''" + peek().v + "''");',
-    '  }',
-    '  return list;',
-    '}',
-    'function __evrun(n, env) {',
-    '  var t = n[0], a, b, i, o, f, args, c;',
-    '  if (t === ''v'') return n[1];',
-    '  if (t === ''id'') {',
-    '    if (n[1] === ''undefined'') return undefined;',
-    '    if (n[1] === ''NaN'') return NaN;',
-    '    if (n[1] === ''Infinity'') return Infinity;',
-    '    if (env[n[1]] !== undefined) return env[n[1]]();',
-    '    throw new ReferenceError(n[1] + '' is not defined'');',
-    '  }',
-    '  if (t === ''arr'') { a = []; for (i = 0; i < n[1].length; i++) a.push(__evrun(n[1][i], env)); return a; }',
-    '  if (t === ''obj'') { o = {}; for (i = 0; i < n[1].length; i++) o[n[1][i][0]] = __evrun(n[1][i][1], env); return o; }',
-    '  if (t === ''cond'') return __evrun(n[1], env) ? __evrun(n[2], env) : __evrun(n[3], env);',
-    '  if (t === ''seq'') { __evrun(n[1], env); return __evrun(n[2], env); }',
-    '  if (t === ''un'') {',
-    '    if (n[1] === ''typeof'' && n[2][0] === ''id'' && env[n[2][1]] === undefined && n[2][1] !== ''undefined'') return ''undefined'';',
-    '    a = __evrun(n[2], env);',
-    '    switch (n[1]) {',
-    '      case ''-'': return -a;',
-    '      case ''+'': return +a;',
-    '      case ''!'': return !a;',
-    '      case ''~'': return ~a;',
-    '      case ''typeof'': return typeof a;',
-    '      default: return undefined;',
-    '    }',
-    '  }',
-    '  if (t === ''lg'') {',
-    '    a = __evrun(n[2], env);',
-    '    if (n[1] === ''&&'') return a ? __evrun(n[3], env) : a;',
-    '    if (n[1] === ''||'') return a ? a : __evrun(n[3], env);',
-    '    return (a === null || a === undefined) ? __evrun(n[3], env) : a;',
-    '  }',
-    '  if (t === ''bin'') {',
-    '    a = __evrun(n[2], env);',
-    '    b = __evrun(n[3], env);',
-    '    switch (n[1]) {',
-    '      case ''+'': return a + b;',
-    '      case ''-'': return a - b;',
-    '      case ''*'': return a * b;',
-    '      case ''/'': return a / b;',
-    '      case ''%'': return a % b;',
-    '      case ''**'': return a ** b;',
-    '      case ''=='': return a == b;',
-    '      case ''!='': return a != b;',
-    '      case ''==='': return a === b;',
-    '      case ''!=='': return a !== b;',
-    '      case ''<'': return a < b;',
-    '      case ''>'': return a > b;',
-    '      case ''<='': return a <= b;',
-    '      case ''>='': return a >= b;',
-    '      case ''&'': return a & b;',
-    '      case ''|'': return a | b;',
-    '      case ''^'': return a ^ b;',
-    '      case ''<<'': return a << b;',
-    '      case ''>>'': return a >> b;',
-    '      case ''>>>'': return a >>> b;',
-    '      case ''in'': return a in b;',
-    '      default: return a instanceof b;',
-    '    }',
-    '  }',
-    '  if (t === ''mem'') {',
-    '    o = __evrun(n[1], env);',
-    '    if (n[3] && (o === null || o === undefined)) return undefined;',
-    '    return o[__evrun(n[2], env)];',
-    '  }',
-    '  if (t === ''call'') {',
-    '    args = [];',
-    '    for (i = 0; i < n[2].length; i++) args.push(__evrun(n[2][i], env));',
-    '    if (n[1][0] === ''mem'') {',
-    '      o = __evrun(n[1][1], env);',
-    '      if (n[1][3] && (o === null || o === undefined)) return undefined;',
-    '      f = o[__evrun(n[1][2], env)];',
-    '      if (n[3] && (f === null || f === undefined)) return undefined;',
-    '      return f.apply(o, args);',
-    '    }',
-    '    f = __evrun(n[1], env);',
-    '    if (n[3] && (f === null || f === undefined)) return undefined;',
-    '    return f.apply(undefined, args);',
-    '  }',
-    '  throw new SyntaxError(''eval: unsupported expression'');',
-    '}',
-    'function __eval(x) {',
-    '  if (typeof x !== ''string'') return x;',
-    '  var env = {',
-    '    Math: function () { return Math; }, JSON: function () { return JSON; }, Number: function () { return Number; },',
-    '    String: function () { return String; }, Array: function () { return Array; }, Object: function () { return Object; },',
-    '    Boolean: function () { return Boolean; }, parseInt: function () { return parseInt; }, parseFloat: function () { return parseFloat; },',
-    '    isNaN: function () { return isNaN; }, isFinite: function () { return isFinite; }, Date: function () { return __Date; },',
-    '    Map: function () { return __Map; }, Set: function () { return __Set; }, BigInt: function () { return __BigInt; }',
-    '  };',
-    '  var list = __evparse(__evtok(x)), r, i;',
-    '  for (i = 0; i < list.length; i++) r = __evrun(list[i], env);',
-    '  return r;',
     '}',
     'var __UPR, __LOR, __UPM, __LOM;',
     'function __case_init() {',
@@ -4431,6 +4137,882 @@ Const
     '    }',
     '    return __fromu16(u);',
     '  };',
+    '}',
+    'function __pvs(v, name) {',
+    '  if (typeof v !== ''string'') {',
+    '    var d;',
+    '    if (v === undefined) d = ''undefined'';',
+    '    else if (v === null) d = ''null'';',
+    '    else if (typeof v === ''function'') d = ''function '' + v.name;',
+    '    else if (typeof v === ''object'') d = ''an instance of '' + (v.constructor ? v.constructor.name : ''Object'');',
+    '    else d = ''type '' + typeof v + '' ('' + String(v) + '')'';',
+    '    var e = new TypeError(''The "'' + name + ''" argument must be of type string. Received '' + d);',
+    '    e.code = ''ERR_INVALID_ARG_TYPE'';',
+    '    throw e;',
+    '  }',
+    '}',
+    'function __pnorm(path, allowAboveRoot, separator, isSep) {',
+    '  var res = '''', lastSegmentLength = 0, lastSlash = -1, dots = 0, code = 0, i, k;',
+    '  for (i = 0; i <= path.length; ++i) {',
+    '    if (i < path.length) code = path.charCodeAt(i);',
+    '    else if (isSep(code)) break;',
+    '    else code = 47;',
+    '    if (isSep(code)) {',
+    '      if (lastSlash === i - 1 || dots === 1) {',
+    '        // rien',
+    '      } else if (dots === 2) {',
+    '        if (res.length < 2 || lastSegmentLength !== 2 || res.charCodeAt(res.length - 1) !== 46 || res.charCodeAt(res.length - 2) !== 46) {',
+    '          if (res.length > 2) {',
+    '            k = res.lastIndexOf(separator);',
+    '            if (k === -1) { res = ''''; lastSegmentLength = 0; }',
+    '            else { res = res.slice(0, k); lastSegmentLength = res.length - 1 - res.lastIndexOf(separator); }',
+    '            lastSlash = i; dots = 0;',
+    '            continue;',
+    '          } else if (res.length !== 0) {',
+    '            res = ''''; lastSegmentLength = 0; lastSlash = i; dots = 0;',
+    '            continue;',
+    '          }',
+    '        }',
+    '        if (allowAboveRoot) { res += res.length > 0 ? separator + ''..'' : ''..''; lastSegmentLength = 2; }',
+    '      } else {',
+    '        if (res.length > 0) res += separator + path.slice(lastSlash + 1, i);',
+    '        else res = path.slice(lastSlash + 1, i);',
+    '        lastSegmentLength = i - lastSlash - 1;',
+    '      }',
+    '      lastSlash = i; dots = 0;',
+    '    } else if (code === 46 && dots !== -1) {',
+    '      ++dots;',
+    '    } else {',
+    '      dots = -1;',
+    '    }',
+    '  }',
+    '  return res;',
+    '}',
+    'function __pres(p, ci) {',
+    '  var d = p.slice(0, ci).toUpperCase(), c;',
+    '  if (d === ''CON'' || d === ''PRN'' || d === ''AUX'' || d === ''NUL'') return true;',
+    '  if (d.length === 4 && (d.slice(0, 3) === ''COM'' || d.slice(0, 3) === ''LPT'')) {',
+    '    c = d.charCodeAt(3);',
+    '    return (c >= 49 && c <= 57) || c === 185 || c === 178 || c === 179;',
+    '  }',
+    '  return false;',
+    '}',
+    'function __pformat(sep, o) {',
+    '  if (o === null || typeof o !== ''object'') {',
+    '    var e = new TypeError(''The "pathObject" argument must be of type object. Received '' + (o === null ? ''null'' : o === undefined ? ''undefined'' : ''type '' + typeof o + '' ('' + String(o) + '')''));',
+    '    e.code = ''ERR_INVALID_ARG_TYPE'';',
+    '    throw e;',
+    '  }',
+    '  var dir = o.dir || o.root;',
+    '  var base = o.base || ((o.name || '''') + (o.ext || ''''));',
+    '  if (!dir) return base;',
+    '  return dir === o.root ? dir + base : dir + sep + base;',
+    '}',
+    'function __pisPosix(c) { return c === 47; }',
+    'function __pisSep(c) { return c === 47 || c === 92; }',
+    'function __pisDev(c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122); }',
+    'function __mkPosix() {',
+    '  var posix = {};',
+    '  posix.resolve = function () {',
+    '    var resolvedPath = '''', resolvedAbsolute = false, i, p;',
+    '    for (i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {',
+    '      p = i >= 0 ? arguments[i] : process.cwd().replace(/\\/g, ''/'').replace(/^[A-Za-z]:/, '''');',
+    '      __pvs(p, ''paths['' + i + '']'');',
+    '      if (p.length === 0) continue;',
+    '      resolvedPath = p + ''/'' + resolvedPath;',
+    '      resolvedAbsolute = p.charCodeAt(0) === 47;',
+    '    }',
+    '    resolvedPath = __pnorm(resolvedPath, !resolvedAbsolute, ''/'', __pisPosix);',
+    '    if (resolvedAbsolute) return ''/'' + resolvedPath;',
+    '    return resolvedPath.length > 0 ? resolvedPath : ''.'';',
+    '  };',
+    '  posix.normalize = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    if (p.length === 0) return ''.'';',
+    '    var isAbsolute = p.charCodeAt(0) === 47, trailing = p.charCodeAt(p.length - 1) === 47;',
+    '    p = __pnorm(p, !isAbsolute, ''/'', __pisPosix);',
+    '    if (p.length === 0) { if (isAbsolute) return ''/''; return trailing ? ''./'' : ''.''; }',
+    '    if (trailing) p += ''/'';',
+    '    return isAbsolute ? ''/'' + p : p;',
+    '  };',
+    '  posix.isAbsolute = function (p) { __pvs(p, ''path''); return p.length > 0 && p.charCodeAt(0) === 47; };',
+    '  posix.join = function () {',
+    '    if (arguments.length === 0) return ''.'';',
+    '    var joined, i, a;',
+    '    for (i = 0; i < arguments.length; ++i) {',
+    '      a = arguments[i];',
+    '      __pvs(a, ''path'');',
+    '      if (a.length > 0) { if (joined === undefined) joined = a; else joined += ''/'' + a; }',
+    '    }',
+    '    if (joined === undefined) return ''.'';',
+    '    return posix.normalize(joined);',
+    '  };',
+    '  posix.relative = function (from, to) {',
+    '    __pvs(from, ''from''); __pvs(to, ''to'');',
+    '    if (from === to) return '''';',
+    '    from = posix.resolve(from); to = posix.resolve(to);',
+    '    if (from === to) return '''';',
+    '    var fromStart = 1, fromEnd = from.length, fromLen = fromEnd - fromStart, toStart = 1, toLen = to.length - toStart;',
+    '    var length = fromLen < toLen ? fromLen : toLen, lastCommonSep = -1, i = 0, fc;',
+    '    for (; i < length; i++) {',
+    '      fc = from.charCodeAt(fromStart + i);',
+    '      if (fc !== to.charCodeAt(toStart + i)) break;',
+    '      else if (fc === 47) lastCommonSep = i;',
+    '    }',
+    '    if (i === length) {',
+    '      if (toLen > length) {',
+    '        if (to.charCodeAt(toStart + i) === 47) return to.slice(toStart + i + 1);',
+    '        if (i === 0) return to.slice(toStart + i);',
+    '      } else if (fromLen > length) {',
+    '        if (from.charCodeAt(fromStart + i) === 47) lastCommonSep = i;',
+    '        else if (i === 0) lastCommonSep = 0;',
+    '      }',
+    '    }',
+    '    var out = '''';',
+    '    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {',
+    '      if (i === fromEnd || from.charCodeAt(i) === 47) out += out.length === 0 ? ''..'' : ''/..'';',
+    '    }',
+    '    return out + to.slice(toStart + lastCommonSep);',
+    '  };',
+    '  posix.toNamespacedPath = function (p) { return p; };',
+    '  posix.dirname = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    if (p.length === 0) return ''.'';',
+    '    var hasRoot = p.charCodeAt(0) === 47, end = -1, matchedSlash = true, i;',
+    '    for (i = p.length - 1; i >= 1; --i) {',
+    '      if (p.charCodeAt(i) === 47) { if (!matchedSlash) { end = i; break; } }',
+    '      else matchedSlash = false;',
+    '    }',
+    '    if (end === -1) return hasRoot ? ''/'' : ''.'';',
+    '    if (hasRoot && end === 1) return ''//'';',
+    '    return p.slice(0, end);',
+    '  };',
+    '  posix.basename = function (p, suffix) {',
+    '    if (suffix !== undefined) __pvs(suffix, ''suffix'');',
+    '    __pvs(p, ''path'');',
+    '    var start = 0, end = -1, matchedSlash = true, i, code, extIdx, firstNonSlashEnd;',
+    '    if (suffix !== undefined && suffix.length > 0 && suffix.length <= p.length) {',
+    '      if (suffix === p) return '''';',
+    '      extIdx = suffix.length - 1; firstNonSlashEnd = -1;',
+    '      for (i = p.length - 1; i >= 0; --i) {',
+    '        code = p.charCodeAt(i);',
+    '        if (code === 47) { if (!matchedSlash) { start = i + 1; break; } }',
+    '        else {',
+    '          if (firstNonSlashEnd === -1) { matchedSlash = false; firstNonSlashEnd = i + 1; }',
+    '          if (extIdx >= 0) {',
+    '            if (code === suffix.charCodeAt(extIdx)) { if (--extIdx === -1) end = i; }',
+    '            else { extIdx = -1; end = firstNonSlashEnd; }',
+    '          }',
+    '        }',
+    '      }',
+    '      if (start === end) end = firstNonSlashEnd;',
+    '      else if (end === -1) end = p.length;',
+    '      return p.slice(start, end);',
+    '    }',
+    '    for (i = p.length - 1; i >= 0; --i) {',
+    '      if (p.charCodeAt(i) === 47) { if (!matchedSlash) { start = i + 1; break; } }',
+    '      else if (end === -1) { matchedSlash = false; end = i + 1; }',
+    '    }',
+    '    if (end === -1) return '''';',
+    '    return p.slice(start, end);',
+    '  };',
+    '  posix.extname = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var startDot = -1, startPart = 0, end = -1, matchedSlash = true, preDotState = 0, i, code;',
+    '    for (i = p.length - 1; i >= 0; --i) {',
+    '      code = p.charCodeAt(i);',
+    '      if (code === 47) { if (!matchedSlash) { startPart = i + 1; break; } continue; }',
+    '      if (end === -1) { matchedSlash = false; end = i + 1; }',
+    '      if (code === 46) { if (startDot === -1) startDot = i; else if (preDotState !== 1) preDotState = 1; }',
+    '      else if (startDot !== -1) preDotState = -1;',
+    '    }',
+    '    if (startDot === -1 || end === -1 || preDotState === 0 || (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) return '''';',
+    '    return p.slice(startDot, end);',
+    '  };',
+    '  posix.format = function (o) { return __pformat(''/'', o); };',
+    '  posix.parse = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var ret = { root: '''', dir: '''', base: '''', ext: '''', name: '''' };',
+    '    if (p.length === 0) return ret;',
+    '    var isAbsolute = p.charCodeAt(0) === 47, start, startDot = -1, startPart = 0, end = -1, matchedSlash = true, i = p.length - 1, preDotState = 0, code, s2;',
+    '    if (isAbsolute) { ret.root = ''/''; start = 1; } else start = 0;',
+    '    for (; i >= start; --i) {',
+    '      code = p.charCodeAt(i);',
+    '      if (code === 47) { if (!matchedSlash) { startPart = i + 1; break; } continue; }',
+    '      if (end === -1) { matchedSlash = false; end = i + 1; }',
+    '      if (code === 46) { if (startDot === -1) startDot = i; else if (preDotState !== 1) preDotState = 1; }',
+    '      else if (startDot !== -1) preDotState = -1;',
+    '    }',
+    '    if (end !== -1) {',
+    '      s2 = startPart === 0 && isAbsolute ? 1 : startPart;',
+    '      if (startDot === -1 || preDotState === 0 || (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {',
+    '        ret.base = ret.name = p.slice(s2, end);',
+    '      } else {',
+    '        ret.name = p.slice(s2, startDot); ret.base = p.slice(s2, end); ret.ext = p.slice(startDot, end);',
+    '      }',
+    '    }',
+    '    if (startPart > 0) ret.dir = p.slice(0, startPart - 1);',
+    '    else if (isAbsolute) ret.dir = ''/'';',
+    '    return ret;',
+    '  };',
+    '  posix.sep = ''/'';',
+    '  posix.delimiter = '':'';',
+    '  posix.posix = posix;',
+    '  return posix;',
+    '}',
+    'function __mkWin32() {',
+    '  var win32 = {};',
+    '  win32.resolve = function () {',
+    '    var resolvedDevice = '''', resolvedTail = '''', resolvedAbsolute = false, i, p, len, rootEnd, device, isAbsolute, code, j, last, firstPart;',
+    '    for (i = arguments.length - 1; i >= -1; i--) {',
+    '      if (i >= 0) {',
+    '        p = arguments[i];',
+    '        __pvs(p, ''paths['' + i + '']'');',
+    '        if (p.length === 0) continue;',
+    '      } else if (resolvedDevice.length === 0) {',
+    '        p = process.cwd();',
+    '        if (arguments.length === 0 || ((arguments.length === 1 && (arguments[0] === '''' || arguments[0] === ''.'')) && __pisSep(p.charCodeAt(0)))) {',
+    '          return p;',
+    '        }',
+    '      } else {',
+    '        p = process.env[''='' + resolvedDevice] || process.cwd();',
+    '        if (p === undefined || (p.slice(0, 2).toLowerCase() !== resolvedDevice.toLowerCase() && p.charCodeAt(2) === 92)) p = resolvedDevice + ''\\'';',
+    '      }',
+    '      len = p.length; rootEnd = 0; device = ''''; isAbsolute = false;',
+    '      code = p.charCodeAt(0);',
+    '      if (len === 1) {',
+    '        if (__pisSep(code)) { rootEnd = 1; isAbsolute = true; }',
+    '      } else if (__pisSep(code)) {',
+    '        isAbsolute = true;',
+    '        if (__pisSep(p.charCodeAt(1))) {',
+    '          j = 2; last = j;',
+    '          while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '          if (j < len && j !== last) {',
+    '            firstPart = p.slice(last, j);',
+    '            last = j;',
+    '            while (j < len && __pisSep(p.charCodeAt(j))) j++;',
+    '            if (j < len && j !== last) {',
+    '              last = j;',
+    '              while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '              if (j === len || j !== last) {',
+    '                if (firstPart !== ''.'' && firstPart !== ''?'') {',
+    '                  device = ''\\\\'' + firstPart + ''\\'' + p.slice(last, j);',
+    '                  rootEnd = j;',
+    '                } else {',
+    '                  device = ''\\\\'' + firstPart;',
+    '                  rootEnd = 4;',
+    '                }',
+    '              }',
+    '            }',
+    '          }',
+    '        } else {',
+    '          rootEnd = 1;',
+    '        }',
+    '      } else if (__pisDev(code) && p.charCodeAt(1) === 58) {',
+    '        device = p.slice(0, 2); rootEnd = 2;',
+    '        if (len > 2 && __pisSep(p.charCodeAt(2))) { isAbsolute = true; rootEnd = 3; }',
+    '      }',
+    '      if (device.length > 0) {',
+    '        if (resolvedDevice.length > 0) {',
+    '          if (device.toLowerCase() !== resolvedDevice.toLowerCase()) continue;',
+    '        } else {',
+    '          resolvedDevice = device;',
+    '        }',
+    '      }',
+    '      if (resolvedAbsolute) {',
+    '        if (resolvedDevice.length > 0) break;',
+    '      } else {',
+    '        resolvedTail = p.slice(rootEnd) + ''\\'' + resolvedTail;',
+    '        resolvedAbsolute = isAbsolute;',
+    '        if (isAbsolute && resolvedDevice.length > 0) break;',
+    '      }',
+    '    }',
+    '    resolvedTail = __pnorm(resolvedTail, !resolvedAbsolute, ''\\'', __pisSep);',
+    '    return resolvedAbsolute ? resolvedDevice + ''\\'' + resolvedTail : (resolvedDevice + resolvedTail) || ''.'';',
+    '  };',
+    '  win32.normalize = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var len = p.length, rootEnd = 0, device, isAbsolute = false, code, j, last, firstPart, tail, ci, poss;',
+    '    if (len === 0) return ''.'';',
+    '    code = p.charCodeAt(0);',
+    '    if (len === 1) return __pisPosix(code) ? ''\\'' : p;',
+    '    if (__pisSep(code)) {',
+    '      isAbsolute = true;',
+    '      if (__pisSep(p.charCodeAt(1))) {',
+    '        j = 2; last = j;',
+    '        while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '        if (j < len && j !== last) {',
+    '          firstPart = p.slice(last, j);',
+    '          last = j;',
+    '          while (j < len && __pisSep(p.charCodeAt(j))) j++;',
+    '          if (j < len && j !== last) {',
+    '            last = j;',
+    '            while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '            if (j === len || j !== last) {',
+    '              if (firstPart === ''.'' || firstPart === ''?'') {',
+    '                device = ''\\\\'' + firstPart;',
+    '                rootEnd = 4;',
+    '                ci = p.indexOf('':'');',
+    '                poss = p.slice(4, ci + 1);',
+    '                if (__pres(poss, poss.length - 1)) {',
+    '                  device = ''\\\\?\\'' + poss;',
+    '                  rootEnd = 4 + poss.length;',
+    '                }',
+    '              } else if (j === len) {',
+    '                return ''\\\\'' + firstPart + ''\\'' + p.slice(last) + ''\\'';',
+    '              } else {',
+    '                device = ''\\\\'' + firstPart + ''\\'' + p.slice(last, j);',
+    '                rootEnd = j;',
+    '              }',
+    '            }',
+    '          }',
+    '        }',
+    '      } else {',
+    '        rootEnd = 1;',
+    '      }',
+    '    } else {',
+    '      ci = p.indexOf('':'');',
+    '      if (ci > 0) {',
+    '        if (__pisDev(code) && ci === 1) {',
+    '          device = p.slice(0, 2);',
+    '          rootEnd = 2;',
+    '          if (len > 2 && __pisSep(p.charCodeAt(2))) { isAbsolute = true; rootEnd = 3; }',
+    '        } else if (__pres(p, ci)) {',
+    '          device = p.slice(0, ci + 1);',
+    '          rootEnd = ci + 1;',
+    '        }',
+    '      }',
+    '    }',
+    '    tail = rootEnd < len ? __pnorm(p.slice(rootEnd), !isAbsolute, ''\\'', __pisSep) : '''';',
+    '    if (tail.length === 0 && !isAbsolute) tail = ''.'';',
+    '    if (tail.length > 0 && __pisSep(p.charCodeAt(len - 1))) tail += ''\\'';',
+    '    if (!isAbsolute && device === undefined && p.indexOf('':'') >= 0) {',
+    '      // un chemin relatif ne doit pas devenir un chemin de lecteur (CVE-2024-36139)',
+    '      if (tail.length >= 2 && __pisDev(tail.charCodeAt(0)) && tail.charCodeAt(1) === 58) return ''.\\'' + tail;',
+    '      j = p.indexOf('':'');',
+    '      do {',
+    '        if (j === len - 1 || __pisSep(p.charCodeAt(j + 1))) return ''.\\'' + tail;',
+    '      } while ((j = p.indexOf('':'', j + 1)) !== -1);',
+    '    }',
+    '    if (__pres(p, p.indexOf('':''))) return ''.\\'' + (device === undefined || device === null ? '''' : device) + tail;',
+    '    if (device === undefined) return isAbsolute ? ''\\'' + tail : tail;',
+    '    return isAbsolute ? device + ''\\'' + tail : device + tail;',
+    '  };',
+    '  win32.isAbsolute = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var len = p.length, code;',
+    '    if (len === 0) return false;',
+    '    code = p.charCodeAt(0);',
+    '    return __pisSep(code) || (len > 2 && __pisDev(code) && p.charCodeAt(1) === 58 && __pisSep(p.charCodeAt(2)));',
+    '  };',
+    '  win32.join = function () {',
+    '    if (arguments.length === 0) return ''.'';',
+    '    var path = [], firstPart, joined, i, a, needsReplace = true, slashCount = 0, firstLen, parts = [], part = '''', result, pi, ci;',
+    '    for (i = 0; i < arguments.length; ++i) {',
+    '      a = arguments[i];',
+    '      __pvs(a, ''path'');',
+    '      if (a.length > 0) path.push(a);',
+    '    }',
+    '    if (path.length === 0) return ''.'';',
+    '    firstPart = path[0];',
+    '    joined = path.join(''\\'');',
+    '    if (__pisSep(firstPart.charCodeAt(0))) {',
+    '      ++slashCount;',
+    '      firstLen = firstPart.length;',
+    '      if (firstLen > 1 && __pisSep(firstPart.charCodeAt(1))) {',
+    '        ++slashCount;',
+    '        if (firstLen > 2) {',
+    '          if (__pisSep(firstPart.charCodeAt(2))) ++slashCount;',
+    '          else needsReplace = false;',
+    '        }',
+    '      }',
+    '    }',
+    '    if (needsReplace) {',
+    '      while (slashCount < joined.length && __pisSep(joined.charCodeAt(slashCount))) slashCount++;',
+    '      if (slashCount >= 2) joined = ''\\'' + joined.slice(slashCount);',
+    '    }',
+    '    for (i = 0; i < joined.length; i++) {',
+    '      if (joined.charAt(i) === ''\\'') {',
+    '        if (part) parts.push(part);',
+    '        part = '''';',
+    '        while (i + 1 < joined.length && joined.charAt(i + 1) === ''\\'') i++;',
+    '      } else {',
+    '        part += joined.charAt(i);',
+    '      }',
+    '    }',
+    '    if (part) parts.push(part);',
+    '    for (pi = 0; pi < parts.length; pi++) {',
+    '      ci = parts[pi].indexOf('':'');',
+    '      if (ci !== -1 && __pres(parts[pi], ci)) {',
+    '        result = '''';',
+    '        for (i = 0; i < joined.length; i++) result += joined.charAt(i) === ''/'' ? ''\\'' : joined.charAt(i);',
+    '        return result;',
+    '      }',
+    '    }',
+    '    return win32.normalize(joined);',
+    '  };',
+    '  win32.relative = function (from, to) {',
+    '    __pvs(from, ''from''); __pvs(to, ''to'');',
+    '    if (from === to) return '''';',
+    '    var fromOrig = win32.resolve(from), toOrig = win32.resolve(to);',
+    '    if (fromOrig === toOrig) return '''';',
+    '    from = fromOrig.toLowerCase(); to = toOrig.toLowerCase();',
+    '    if (from === to) return '''';',
+    '    if (fromOrig.length !== from.length || toOrig.length !== to.length) {',
+    '      var fromSplit = fromOrig.split(''\\''), toSplit = toOrig.split(''\\''), n, k;',
+    '      if (fromSplit[fromSplit.length - 1] === '''') fromSplit.pop();',
+    '      if (toSplit[toSplit.length - 1] === '''') toSplit.pop();',
+    '      var fl = fromSplit.length, tl = toSplit.length, ln = fl < tl ? fl : tl, ix;',
+    '      for (ix = 0; ix < ln; ix++) {',
+    '        if (fromSplit[ix].toLowerCase() !== toSplit[ix].toLowerCase()) break;',
+    '      }',
+    '      if (ix === 0) return toOrig;',
+    '      if (ix === ln) {',
+    '        if (tl > ln) return toSplit.slice(ix).join(''\\'');',
+    '        if (fl > ln) return ''..\\''.repeat(fl - 1 - ix) + ''..'';',
+    '        return '''';',
+    '      }',
+    '      return ''..\\''.repeat(fl - ix) + toSplit.slice(ix).join(''\\'');',
+    '    }',
+    '    var fromStart = 0, fromEnd, fromLen, toStart = 0, toEnd, toLen, length, lastCommonSep = -1, i = 0, fc, out = '''';',
+    '    while (fromStart < from.length && from.charCodeAt(fromStart) === 92) fromStart++;',
+    '    fromEnd = from.length;',
+    '    while (fromEnd - 1 > fromStart && from.charCodeAt(fromEnd - 1) === 92) fromEnd--;',
+    '    fromLen = fromEnd - fromStart;',
+    '    while (toStart < to.length && to.charCodeAt(toStart) === 92) toStart++;',
+    '    toEnd = to.length;',
+    '    while (toEnd - 1 > toStart && to.charCodeAt(toEnd - 1) === 92) toEnd--;',
+    '    toLen = toEnd - toStart;',
+    '    length = fromLen < toLen ? fromLen : toLen;',
+    '    for (; i < length; i++) {',
+    '      fc = from.charCodeAt(fromStart + i);',
+    '      if (fc !== to.charCodeAt(toStart + i)) break;',
+    '      else if (fc === 92) lastCommonSep = i;',
+    '    }',
+    '    if (i !== length) {',
+    '      if (lastCommonSep === -1) return toOrig;',
+    '    } else {',
+    '      if (toLen > length) {',
+    '        if (to.charCodeAt(toStart + i) === 92) return toOrig.slice(toStart + i + 1);',
+    '        if (i === 2) return toOrig.slice(toStart + i);',
+    '      }',
+    '      if (fromLen > length) {',
+    '        if (from.charCodeAt(fromStart + i) === 92) lastCommonSep = i;',
+    '        else if (i === 2) lastCommonSep = 3;',
+    '      }',
+    '      if (lastCommonSep === -1) lastCommonSep = 0;',
+    '    }',
+    '    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {',
+    '      if (i === fromEnd || from.charCodeAt(i) === 92) out += out.length === 0 ? ''..'' : ''\\..'';',
+    '    }',
+    '    toStart += lastCommonSep;',
+    '    if (out.length > 0) return out + toOrig.slice(toStart, toEnd);',
+    '    if (toOrig.charCodeAt(toStart) === 92) ++toStart;',
+    '    return toOrig.slice(toStart, toEnd);',
+    '  };',
+    '  win32.toNamespacedPath = function (p) {',
+    '    if (typeof p !== ''string'' || p.length === 0) return p;',
+    '    var r = win32.resolve(p), code;',
+    '    if (r.length <= 2) return p;',
+    '    if (r.charCodeAt(0) === 92) {',
+    '      if (r.charCodeAt(1) === 92) {',
+    '        code = r.charCodeAt(2);',
+    '        if (code !== 63 && code !== 46) return ''\\\\?\\UNC\\'' + r.slice(2);',
+    '      }',
+    '    } else if (__pisDev(r.charCodeAt(0)) && r.charCodeAt(1) === 58 && r.charCodeAt(2) === 92) {',
+    '      return ''\\\\?\\'' + r;',
+    '    }',
+    '    return r;',
+    '  };',
+    '  win32.dirname = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var len = p.length, rootEnd = -1, offset = 0, code, j, last, end = -1, matchedSlash = true, i;',
+    '    if (len === 0) return ''.'';',
+    '    code = p.charCodeAt(0);',
+    '    if (len === 1) return __pisSep(code) ? p : ''.'';',
+    '    if (__pisSep(code)) {',
+    '      rootEnd = offset = 1;',
+    '      if (__pisSep(p.charCodeAt(1))) {',
+    '        j = 2; last = j;',
+    '        while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '        if (j < len && j !== last) {',
+    '          last = j;',
+    '          while (j < len && __pisSep(p.charCodeAt(j))) j++;',
+    '          if (j < len && j !== last) {',
+    '            last = j;',
+    '            while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '            if (j === len) return p;',
+    '            if (j !== last) rootEnd = offset = j + 1;',
+    '          }',
+    '        }',
+    '      }',
+    '    } else if (__pisDev(code) && p.charCodeAt(1) === 58) {',
+    '      rootEnd = len > 2 && __pisSep(p.charCodeAt(2)) ? 3 : 2;',
+    '      offset = rootEnd;',
+    '    }',
+    '    for (i = len - 1; i >= offset; --i) {',
+    '      if (__pisSep(p.charCodeAt(i))) { if (!matchedSlash) { end = i; break; } }',
+    '      else matchedSlash = false;',
+    '    }',
+    '    if (end === -1) {',
+    '      if (rootEnd === -1) return ''.'';',
+    '      end = rootEnd;',
+    '    }',
+    '    return p.slice(0, end);',
+    '  };',
+    '  win32.basename = function (p, suffix) {',
+    '    if (suffix !== undefined) __pvs(suffix, ''suffix'');',
+    '    __pvs(p, ''path'');',
+    '    var start = 0, end = -1, matchedSlash = true, i, code, extIdx, firstNonSlashEnd;',
+    '    if (p.length >= 2 && __pisDev(p.charCodeAt(0)) && p.charCodeAt(1) === 58) start = 2;',
+    '    if (suffix !== undefined && suffix.length > 0 && suffix.length <= p.length) {',
+    '      if (suffix === p) return '''';',
+    '      extIdx = suffix.length - 1; firstNonSlashEnd = -1;',
+    '      for (i = p.length - 1; i >= start; --i) {',
+    '        code = p.charCodeAt(i);',
+    '        if (__pisSep(code)) { if (!matchedSlash) { start = i + 1; break; } }',
+    '        else {',
+    '          if (firstNonSlashEnd === -1) { matchedSlash = false; firstNonSlashEnd = i + 1; }',
+    '          if (extIdx >= 0) {',
+    '            if (code === suffix.charCodeAt(extIdx)) { if (--extIdx === -1) end = i; }',
+    '            else { extIdx = -1; end = firstNonSlashEnd; }',
+    '          }',
+    '        }',
+    '      }',
+    '      if (start === end) end = firstNonSlashEnd;',
+    '      else if (end === -1) end = p.length;',
+    '      return p.slice(start, end);',
+    '    }',
+    '    for (i = p.length - 1; i >= start; --i) {',
+    '      if (__pisSep(p.charCodeAt(i))) { if (!matchedSlash) { start = i + 1; break; } }',
+    '      else if (end === -1) { matchedSlash = false; end = i + 1; }',
+    '    }',
+    '    if (end === -1) return '''';',
+    '    return p.slice(start, end);',
+    '  };',
+    '  win32.extname = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var start = 0, startDot = -1, startPart = 0, end = -1, matchedSlash = true, preDotState = 0, i, code;',
+    '    if (p.length >= 2 && p.charCodeAt(1) === 58 && __pisDev(p.charCodeAt(0))) start = startPart = 2;',
+    '    for (i = p.length - 1; i >= start; --i) {',
+    '      code = p.charCodeAt(i);',
+    '      if (__pisSep(code)) { if (!matchedSlash) { startPart = i + 1; break; } continue; }',
+    '      if (end === -1) { matchedSlash = false; end = i + 1; }',
+    '      if (code === 46) { if (startDot === -1) startDot = i; else if (preDotState !== 1) preDotState = 1; }',
+    '      else if (startDot !== -1) preDotState = -1;',
+    '    }',
+    '    if (startDot === -1 || end === -1 || preDotState === 0 || (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) return '''';',
+    '    return p.slice(startDot, end);',
+    '  };',
+    '  win32.format = function (o) { return __pformat(''\\'', o); };',
+    '  win32.parse = function (p) {',
+    '    __pvs(p, ''path'');',
+    '    var ret = { root: '''', dir: '''', base: '''', ext: '''', name: '''' };',
+    '    if (p.length === 0) return ret;',
+    '    var len = p.length, rootEnd = 0, code = p.charCodeAt(0), j, last, startDot = -1, startPart, end = -1, matchedSlash = true, i, preDotState = 0;',
+    '    if (len === 1) {',
+    '      if (__pisSep(code)) { ret.root = ret.dir = p; return ret; }',
+    '      ret.base = ret.name = p;',
+    '      return ret;',
+    '    }',
+    '    if (__pisSep(code)) {',
+    '      rootEnd = 1;',
+    '      if (__pisSep(p.charCodeAt(1))) {',
+    '        j = 2; last = j;',
+    '        while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '        if (j < len && j !== last) {',
+    '          last = j;',
+    '          while (j < len && __pisSep(p.charCodeAt(j))) j++;',
+    '          if (j < len && j !== last) {',
+    '            last = j;',
+    '            while (j < len && !__pisSep(p.charCodeAt(j))) j++;',
+    '            if (j === len) rootEnd = j;',
+    '            else if (j !== last) rootEnd = j + 1;',
+    '          }',
+    '        }',
+    '      }',
+    '    } else if (__pisDev(code) && p.charCodeAt(1) === 58) {',
+    '      if (len <= 2) { ret.root = ret.dir = p; return ret; }',
+    '      rootEnd = 2;',
+    '      if (__pisSep(p.charCodeAt(2))) {',
+    '        if (len === 3) { ret.root = ret.dir = p; return ret; }',
+    '        rootEnd = 3;',
+    '      }',
+    '    }',
+    '    if (rootEnd > 0) ret.root = p.slice(0, rootEnd);',
+    '    startPart = rootEnd;',
+    '    for (i = p.length - 1; i >= rootEnd; --i) {',
+    '      code = p.charCodeAt(i);',
+    '      if (__pisSep(code)) { if (!matchedSlash) { startPart = i + 1; break; } continue; }',
+    '      if (end === -1) { matchedSlash = false; end = i + 1; }',
+    '      if (code === 46) { if (startDot === -1) startDot = i; else if (preDotState !== 1) preDotState = 1; }',
+    '      else if (startDot !== -1) preDotState = -1;',
+    '    }',
+    '    if (end !== -1) {',
+    '      if (startDot === -1 || preDotState === 0 || (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {',
+    '        ret.base = ret.name = p.slice(startPart, end);',
+    '      } else {',
+    '        ret.name = p.slice(startPart, startDot); ret.base = p.slice(startPart, end); ret.ext = p.slice(startDot, end);',
+    '      }',
+    '    }',
+    '    if (startPart > 0 && startPart !== rootEnd) ret.dir = p.slice(0, startPart - 1);',
+    '    else ret.dir = ret.root;',
+    '    return ret;',
+    '  };',
+    '  win32.sep = ''\\'';',
+    '  win32.delimiter = '';'';',
+    '  win32.win32 = win32;',
+    '  return win32;',
+    '}',
+    'var __pathmod;',
+    'function __mkPath() {',
+    '  if (__pathmod) return __pathmod;',
+    '  var posix = __mkPosix(), win32 = __mkWin32();',
+    '  win32.posix = posix;',
+    '  posix.win32 = win32;',
+    '  __pathmod = win32;',
+    '  return win32;',
+    '}',
+    'function __evtok(src) {',
+    '  var t = [], i = 0, n = src.length, c, j, q, s, ch, m;',
+    '  var ops3 = [''==='', ''!=='', ''>>>'', ''**='', ''...''];',
+    '  var ops2 = [''=='', ''!='', ''<='', ''>='', ''&&'', ''||'', ''??'', ''<<'', ''>>'', ''**'', ''=>'', ''?.''];',
+    '  while (i < n) {',
+    '    c = src.charAt(i);',
+    '    if (c === '' '' || c === ''\t'' || c === ''\n'' || c === ''\r'') { i++; continue; }',
+    '    if ((c >= ''0'' && c <= ''9'') || (c === ''.'' && src.charAt(i + 1) >= ''0'' && src.charAt(i + 1) <= ''9'')) {',
+    '      m = /^(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)/.exec(src.slice(i));',
+    '      t.push({ k: ''n'', v: Number(m[0]) });',
+    '      i += m[0].length;',
+    '      continue;',
+    '    }',
+    '    if (c === ''"'' || c === "''") {',
+    '      q = c; s = ''''; i++;',
+    '      while (i < n && src.charAt(i) !== q) {',
+    '        ch = src.charAt(i);',
+    '        if (ch === ''\\'') {',
+    '          i++; ch = src.charAt(i);',
+    '          if (ch === ''n'') s += ''\n''; else if (ch === ''t'') s += ''\t''; else if (ch === ''r'') s += ''\r'';',
+    '          else if (ch === ''x'') { s += String.fromCharCode(parseInt(src.slice(i + 1, i + 3), 16)); i += 2; }',
+    '          else if (ch === ''u'') { s += String.fromCharCode(parseInt(src.slice(i + 1, i + 5), 16)); i += 4; }',
+    '          else s += ch;',
+    '        } else s += ch;',
+    '        i++;',
+    '      }',
+    '      if (i >= n) throw new SyntaxError(''Invalid or unexpected token'');',
+    '      i++;',
+    '      t.push({ k: ''s'', v: s });',
+    '      continue;',
+    '    }',
+    '    if ((c >= ''a'' && c <= ''z'') || (c >= ''A'' && c <= ''Z'') || c === ''_'' || c === ''$'') {',
+    '      j = i;',
+    '      while (j < n && /[A-Za-z0-9_$]/.test(src.charAt(j))) j++;',
+    '      t.push({ k: ''i'', v: src.slice(i, j) });',
+    '      i = j;',
+    '      continue;',
+    '    }',
+    '    if (ops3.indexOf(src.substr(i, 3)) >= 0) { t.push({ k: ''p'', v: src.substr(i, 3) }); i += 3; continue; }',
+    '    if (ops2.indexOf(src.substr(i, 2)) >= 0) { t.push({ k: ''p'', v: src.substr(i, 2) }); i += 2; continue; }',
+    '    t.push({ k: ''p'', v: c });',
+    '    i++;',
+    '  }',
+    '  t.push({ k: ''e'', v: '''' });',
+    '  return t;',
+    '}',
+    'function __evparse(toks) {',
+    '  var p = 0;',
+    '  var prec = { ''??'': 1, ''||'': 2, ''&&'': 3, ''|'': 4, ''^'': 5, ''&'': 6, ''=='': 7, ''!='': 7, ''==='': 7, ''!=='': 7, ''<'': 8, ''>'': 8, ''<='': 8, ''>='': 8, ''in'': 8, ''instanceof'': 8,',
+    '    ''<<'': 9, ''>>'': 9, ''>>>'': 9, ''+'': 10, ''-'': 10, ''*'': 11, ''/'': 11, ''%'': 11, ''**'': 12 };',
+    '  function peek() { return toks[p]; }',
+    '  function isP(v) { return toks[p].k === ''p'' && toks[p].v === v; }',
+    '  function expect(v) {',
+    '    if (!isP(v)) throw new SyntaxError("Unexpected token ''" + toks[p].v + "''");',
+    '    p++;',
+    '  }',
+    '  function primary() {',
+    '    var t = toks[p], r, a, k;',
+    '    if (t.k === ''n'' || t.k === ''s'') { p++; return [''v'', t.v]; }',
+    '    if (t.k === ''i'') {',
+    '      p++;',
+    '      if (t.v === ''true'') return [''v'', true];',
+    '      if (t.v === ''false'') return [''v'', false];',
+    '      if (t.v === ''null'') return [''v'', null];',
+    '      if (t.v === ''var'' || t.v === ''let'' || t.v === ''const'' || t.v === ''function'' || t.v === ''if'' || t.v === ''for'' || t.v === ''while'' || t.v === ''return'' || t.v === ''class'') {',
+    '        throw new EvalError(''eval: statements are not supported by JSCW32 (only expressions)'');',
+    '      }',
+    '      return [''id'', t.v];',
+    '    }',
+    '    if (isP(''('')) { p++; r = expr(); expect('')''); return r; }',
+    '    if (isP(''['')) {',
+    '      p++; a = [];',
+    '      while (!isP('']'')) { a.push(assign()); if (isP('','')) p++; else break; }',
+    '      expect('']'');',
+    '      return [''arr'', a];',
+    '    }',
+    '    if (isP(''{'')) {',
+    '      p++; a = [];',
+    '      while (!isP(''}'')) {',
+    '        k = toks[p]; p++;',
+    '        if (isP('':'')) { p++; a.push([k.v, assign()]); } else a.push([k.v, [''id'', k.v]]);',
+    '        if (isP('','')) p++; else break;',
+    '      }',
+    '      expect(''}'');',
+    '      return [''obj'', a];',
+    '    }',
+    '    throw new SyntaxError("Unexpected token ''" + t.v + "''");',
+    '  }',
+    '  function postfix() {',
+    '    var e = primary(), a;',
+    '    for (;;) {',
+    '      if (isP(''.'') || isP(''?.'')) {',
+    '        var opt = isP(''?.'');',
+    '        p++;',
+    '        if (opt && isP(''('')) { e = [''call'', e, args(), true]; continue; }',
+    '        if (opt && isP(''['')) { p++; var ix = expr(); expect('']''); e = [''mem'', e, ix, true]; continue; }',
+    '        e = [''mem'', e, [''v'', toks[p].v], opt]; p++;',
+    '      } else if (isP(''['')) { p++; var ix2 = expr(); expect('']''); e = [''mem'', e, ix2, false]; }',
+    '      else if (isP(''('')) e = [''call'', e, args(), false];',
+    '      else break;',
+    '    }',
+    '    return e;',
+    '  }',
+    '  function args() {',
+    '    expect(''('');',
+    '    var a = [];',
+    '    while (!isP('')'')) { a.push(assign()); if (isP('','')) p++; else break; }',
+    '    expect('')'');',
+    '    return a;',
+    '  }',
+    '  function unary() {',
+    '    var t = toks[p];',
+    '    if (t.k === ''p'' && (t.v === ''-'' || t.v === ''+'' || t.v === ''!'' || t.v === ''~'')) { p++; return [''un'', t.v, unary()]; }',
+    '    if (t.k === ''i'' && (t.v === ''typeof'' || t.v === ''void'')) { p++; return [''un'', t.v, unary()]; }',
+    '    return postfix();',
+    '  }',
+    '  function binary(minp) {',
+    '    var l = unary(), t, pr, r;',
+    '    for (;;) {',
+    '      t = toks[p];',
+    '      if (!((t.k === ''p'' || (t.k === ''i'' && (t.v === ''in'' || t.v === ''instanceof''))) && prec[t.v] !== undefined)) break;',
+    '      pr = prec[t.v];',
+    '      if (pr < minp) break;',
+    '      p++;',
+    '      r = t.v === ''**'' ? binary(pr) : binary(pr + 1);',
+    '      l = [(t.v === ''&&'' || t.v === ''||'' || t.v === ''??'') ? ''lg'' : ''bin'', t.v, l, r];',
+    '    }',
+    '    return l;',
+    '  }',
+    '  function assign() {',
+    '    var c = binary(1), a, b;',
+    '    if (isP(''?'')) { p++; a = assign(); expect('':''); b = assign(); return [''cond'', c, a, b]; }',
+    '    return c;',
+    '  }',
+    '  function expr() {',
+    '    var e = assign();',
+    '    while (isP('','')) { p++; e = [''seq'', e, assign()]; }',
+    '    return e;',
+    '  }',
+    '  var list = [];',
+    '  while (peek().k !== ''e'') {',
+    '    if (isP('';'')) { p++; continue; }',
+    '    list.push(expr());',
+    '    if (peek().k !== ''e'' && !isP('';'')) throw new SyntaxError("Unexpected token ''" + peek().v + "''");',
+    '  }',
+    '  return list;',
+    '}',
+    'function __evrun(n, env) {',
+    '  var t = n[0], a, b, i, o, f, args, c;',
+    '  if (t === ''v'') return n[1];',
+    '  if (t === ''id'') {',
+    '    if (n[1] === ''undefined'') return undefined;',
+    '    if (n[1] === ''NaN'') return NaN;',
+    '    if (n[1] === ''Infinity'') return Infinity;',
+    '    if (env[n[1]] !== undefined) return env[n[1]]();',
+    '    throw new ReferenceError(n[1] + '' is not defined'');',
+    '  }',
+    '  if (t === ''arr'') { a = []; for (i = 0; i < n[1].length; i++) a.push(__evrun(n[1][i], env)); return a; }',
+    '  if (t === ''obj'') { o = {}; for (i = 0; i < n[1].length; i++) o[n[1][i][0]] = __evrun(n[1][i][1], env); return o; }',
+    '  if (t === ''cond'') return __evrun(n[1], env) ? __evrun(n[2], env) : __evrun(n[3], env);',
+    '  if (t === ''seq'') { __evrun(n[1], env); return __evrun(n[2], env); }',
+    '  if (t === ''un'') {',
+    '    if (n[1] === ''typeof'' && n[2][0] === ''id'' && env[n[2][1]] === undefined && n[2][1] !== ''undefined'') return ''undefined'';',
+    '    a = __evrun(n[2], env);',
+    '    switch (n[1]) {',
+    '      case ''-'': return -a;',
+    '      case ''+'': return +a;',
+    '      case ''!'': return !a;',
+    '      case ''~'': return ~a;',
+    '      case ''typeof'': return typeof a;',
+    '      default: return undefined;',
+    '    }',
+    '  }',
+    '  if (t === ''lg'') {',
+    '    a = __evrun(n[2], env);',
+    '    if (n[1] === ''&&'') return a ? __evrun(n[3], env) : a;',
+    '    if (n[1] === ''||'') return a ? a : __evrun(n[3], env);',
+    '    return (a === null || a === undefined) ? __evrun(n[3], env) : a;',
+    '  }',
+    '  if (t === ''bin'') {',
+    '    a = __evrun(n[2], env);',
+    '    b = __evrun(n[3], env);',
+    '    switch (n[1]) {',
+    '      case ''+'': return a + b;',
+    '      case ''-'': return a - b;',
+    '      case ''*'': return a * b;',
+    '      case ''/'': return a / b;',
+    '      case ''%'': return a % b;',
+    '      case ''**'': return a ** b;',
+    '      case ''=='': return a == b;',
+    '      case ''!='': return a != b;',
+    '      case ''==='': return a === b;',
+    '      case ''!=='': return a !== b;',
+    '      case ''<'': return a < b;',
+    '      case ''>'': return a > b;',
+    '      case ''<='': return a <= b;',
+    '      case ''>='': return a >= b;',
+    '      case ''&'': return a & b;',
+    '      case ''|'': return a | b;',
+    '      case ''^'': return a ^ b;',
+    '      case ''<<'': return a << b;',
+    '      case ''>>'': return a >> b;',
+    '      case ''>>>'': return a >>> b;',
+    '      case ''in'': return a in b;',
+    '      default: return a instanceof b;',
+    '    }',
+    '  }',
+    '  if (t === ''mem'') {',
+    '    o = __evrun(n[1], env);',
+    '    if (n[3] && (o === null || o === undefined)) return undefined;',
+    '    return o[__evrun(n[2], env)];',
+    '  }',
+    '  if (t === ''call'') {',
+    '    args = [];',
+    '    for (i = 0; i < n[2].length; i++) args.push(__evrun(n[2][i], env));',
+    '    if (n[1][0] === ''mem'') {',
+    '      o = __evrun(n[1][1], env);',
+    '      if (n[1][3] && (o === null || o === undefined)) return undefined;',
+    '      f = o[__evrun(n[1][2], env)];',
+    '      if (n[3] && (f === null || f === undefined)) return undefined;',
+    '      return f.apply(o, args);',
+    '    }',
+    '    f = __evrun(n[1], env);',
+    '    if (n[3] && (f === null || f === undefined)) return undefined;',
+    '    return f.apply(undefined, args);',
+    '  }',
+    '  throw new SyntaxError(''eval: unsupported expression'');',
+    '}',
+    'function __eval(x) {',
+    '  if (typeof x !== ''string'') return x;',
+    '  var env = {',
+    '    Math: function () { return Math; }, JSON: function () { return JSON; }, Number: function () { return Number; },',
+    '    String: function () { return String; }, Array: function () { return Array; }, Object: function () { return Object; },',
+    '    Boolean: function () { return Boolean; }, parseInt: function () { return parseInt; }, parseFloat: function () { return parseFloat; },',
+    '    isNaN: function () { return isNaN; }, isFinite: function () { return isFinite; }, Date: function () { return __Date; },',
+    '    Map: function () { return __Map; }, Set: function () { return __Set; }, BigInt: function () { return __BigInt; }',
+    '  };',
+    '  var list = __evparse(__evtok(x)), r, i;',
+    '  for (i = 0; i < list.length; i++) r = __evrun(list[i], env);',
+    '  return r;',
     '}'
   );
 { PRELUDE-END }
@@ -4439,8 +5021,53 @@ Const
   programme gardent leur numero : le prelude est place apres. }
 Function AppendPrelude(Var ctx: TCompilerContext): Boolean;
 Var
-  i, j, line_len: LongInt;
+  i, j, line_len, c, first, n0: LongInt;
   ok: Boolean;
+  chunk_on: Array[1..PRELUDE_CHUNKS] Of Boolean;
+
+  Function SourceHas(Const kw: String): Boolean;
+  Var
+    a, b: LongInt;
+    same: Boolean;
+  Begin
+    SourceHas := False;
+    For a := 0 To n0 - Length(kw) Do
+      If SrcCharP(ctx.source.buf, a)^ = kw[1] Then
+        Begin
+          same := True;
+          For b := 2 To Length(kw) Do
+            If SrcCharP(ctx.source.buf, a + b - 1)^ <> kw[b] Then
+              Begin
+                same := False;
+                Break;
+              End;
+          If same Then
+            Begin
+              SourceHas := True;
+              Exit;
+            End;
+        End;
+  End;
+
+  Function SourceHasAny(Const keys: String): Boolean;
+  Var
+    k, e: LongInt;
+  Begin
+    SourceHasAny := False;
+    k := 1;
+    While k <= Length(keys) Do
+      Begin
+        e := k;
+        While (e <= Length(keys)) And (keys[e] <> '|') Do
+          Inc(e);
+        If SourceHas(Copy(keys, k, e - k)) Then
+          Begin
+            SourceHasAny := True;
+            Exit;
+          End;
+        k := e + 1;
+      End;
+  End;
 
   Procedure Put(c: Char);
   Begin
@@ -4461,12 +5088,30 @@ Var
 
 Begin
   ok := True;
+  { le source du programme contient-il un des mots (separes par |) ? }
+  { Les blocs optionnels du prelude (path, eval...) ne sont ajoutes que si le
+    programme cite un de leurs mots-cles. }
+  n0 := ctx.source.char_count;
+  For c := 1 To PRELUDE_CHUNKS Do
+    chunk_on[c] := SourceHasAny(PreludeChunkKeys[c]);
   Put(#10);
-  For i := 1 To PRELUDE_LINES Do
+  For i := 1 To PRELUDE_BASE Do
     Begin
       For j := 1 To Length(PreludeText[i]) Do
         Put(PreludeText[i][j]);
       Put(#10);
+    End;
+  first := PRELUDE_BASE + 1;
+  For c := 1 To PRELUDE_CHUNKS Do
+    Begin
+      If chunk_on[c] Then
+        For i := first To PreludeChunkEnd[c] Do
+          Begin
+            For j := 1 To Length(PreludeText[i]) Do
+              Put(PreludeText[i][j]);
+            Put(#10);
+          End;
+      first := PreludeChunkEnd[c] + 1;
     End;
   AppendPrelude := ok;
 End;
@@ -6243,10 +6888,10 @@ Begin
   ParseTemplate := node;
 End;
 
-{ Gabarit etiquete : tag`a...b` devient tag(__tpl(cuits..., bruts...), valeurs...). }
+{ Gabarit etiquete : tag`a...b` devient tag(__tpl(site, cuits..., bruts...), valeurs...). }
 Function BuildTagged(Var ctx: TCompilerContext; tag: LongInt): LongInt;
 Var
-  t, p, nx, c, idx, id, call_tpl, outer, tpl_tok: LongInt;
+  t, p, nx, c, idx, id, call_tpl, outer, tpl_tok, site: LongInt;
   s_first, s_last, r_first, r_last, a_first, a_last: LongInt;
 Begin
   tpl_tok := ctx.ast.pt;
@@ -6277,6 +6922,13 @@ Begin
       p := nx;
     End;
   NodeP(ctx.ast.nodes, s_last)^.next := r_first;
+  { identifiant du site (indice du jeton du gabarit) : premier argument de __tpl }
+  idx := AddToken(ctx, TK_NUMBER, TokP(ctx.lex.tokens, tpl_tok)^.line,
+                  TokP(ctx.lex.tokens, tpl_tok)^.col, ctx.lex.pos);
+  TokP(ctx.lex.tokens, idx)^.num_val := tpl_tok;
+  site := NewNode(ctx, N_NUMBER, idx);
+  NodeP(ctx.ast.nodes, site)^.next := s_first;
+  s_first := site;
   idx := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, tpl_tok)^.line,
                   TokP(ctx.lex.tokens, tpl_tok)^.col, ctx.lex.pos);
   TokP(ctx.lex.tokens, idx)^.text := '__tpl';
@@ -6647,7 +7299,7 @@ Begin
   PAdvance(ctx);
   If CurIsP(ctx, '.') Then
     Begin
-      { new.target : appel de __newtarget() }
+      { new.target : identifiant cache resolu comme arguments }
       PAdvance(ctx);
       If Not ((TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT) And
               (TokP(ctx.lex.tokens, ctx.ast.pt)^.text = 'target')) Then
@@ -6657,10 +7309,10 @@ Begin
         End;
       nt_tok := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, ctx.ast.pt)^.line,
                          TokP(ctx.lex.tokens, ctx.ast.pt)^.col, ctx.lex.pos);
-      TokP(ctx.lex.tokens, nt_tok)^.text := '__newtarget';
+      TokP(ctx.lex.tokens, nt_tok)^.text := 'new.target';
       PAdvance(ctx);
-      NodeP(ctx.ast.nodes, node)^.kind := N_CALL;
-      NodeP(ctx.ast.nodes, node)^.e1 := NewNode(ctx, N_IDENT, nt_tok);
+      NodeP(ctx.ast.nodes, node)^.kind := N_IDENT;
+      NodeP(ctx.ast.nodes, node)^.tok := nt_tok;
       Exit;
     End;
   If CurIsKw(ctx, 'new') Then
@@ -7939,6 +8591,7 @@ Begin
     DK_CATCH: DeclKindName := 'catch';
     DK_FNAME: DeclKindName := 'fname';
     DK_ARGS:  DeclKindName := 'arguments';
+    DK_NEWTARGET: DeclKindName := 'new.target';
   Else
     DeclKindName := '?';
   End;
@@ -8378,6 +9031,9 @@ Begin
   ScopeP(ctx.sem.scopes, sc)^.last_sym := sy;
 End;
 
+Function CreateArgsSymbol(Var ctx: TCompilerContext; prov, tok: LongInt;
+                          kind: TDeclKind): LongInt; Forward;
+
 Function EnterScope(Var ctx: TCompilerContext; node: LongInt;
                     kind: TScopeKind; fk: TFuncKind): LongInt;
 Var
@@ -8408,6 +9064,17 @@ Begin
   If (kind = SK_FUNCTION) And (par <> 0) Then
     ScopeP(ctx.sem.scopes, ScopeP(ctx.sem.scopes, par)^.func)^.has_nested := True;
   ctx.sem.cur_scope := sc;
+  If (kind = SK_FUNCTION) And ((fk = FK_CTOR) Or (fk = FK_DERIVED_CTOR)) Then
+    Begin
+      { un constructeur de classe consomme toujours new.target }
+      If ctx.sem.nt_tok = 0 Then
+        Begin
+          ctx.sem.nt_tok := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, node)^.tok)^.line,
+                                     TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, node)^.tok)^.col, ctx.lex.pos);
+          TokP(ctx.lex.tokens, ctx.sem.nt_tok)^.text := 'new.target';
+        End;
+      CreateArgsSymbol(ctx, sc, ctx.sem.nt_tok, DK_NEWTARGET);
+    End;
   d := NodeP(ctx.ast.nodes, node)^.decl_head;
   While d <> 0 Do
     Begin
@@ -8472,7 +9139,8 @@ Begin
 End;
 
 { Symbole implicite arguments de la fonction prov. }
-Function CreateArgsSymbol(Var ctx: TCompilerContext; prov, tok: LongInt): LongInt;
+Function CreateArgsSymbol(Var ctx: TCompilerContext; prov, tok: LongInt;
+                          kind: TDeclKind): LongInt;
 Var
   sy: LongInt;
 Begin
@@ -8480,7 +9148,7 @@ Begin
   Inc(ctx.sem.sym_count);
   sy := ctx.sem.sym_count;
   SymP(ctx.sem.syms, sy)^.name_tok := tok;
-  SymP(ctx.sem.syms, sy)^.kind := DK_ARGS;
+  SymP(ctx.sem.syms, sy)^.kind := kind;
   SymP(ctx.sem.syms, sy)^.scope := prov;
   SymP(ctx.sem.syms, sy)^.node := 0;
   SymP(ctx.sem.syms, sy)^.next := 0;
@@ -8556,8 +9224,25 @@ Begin
         Begin
           sy := LookupWithin(ctx, name, prov);
           If sy = 0 Then
-            sy := CreateArgsSymbol(ctx, prov, tok);
+            sy := CreateArgsSymbol(ctx, prov, tok, DK_ARGS);
           ScopeP(ctx.sem.scopes, prov)^.uses_arguments := True;
+        End;
+    End;
+  If name = 'new.target' Then
+    Begin
+      { new.target : symbole cache de la fonction englobante non fleche ;
+        hors fonction, la valeur est undefined }
+      prov := NearestNonArrow(ctx);
+      If ScopeP(ctx.sem.scopes, prov)^.kind = SK_FUNCTION Then
+        Begin
+          sy := LookupWithin(ctx, name, prov);
+          If sy = 0 Then
+            sy := CreateArgsSymbol(ctx, prov, tok, DK_NEWTARGET);
+        End
+      Else
+        Begin
+          name := 'undefined';
+          TokP(ctx.lex.tokens, tok)^.text := name;
         End;
     End;
   If sy = 0 Then
@@ -9188,6 +9873,7 @@ Begin
   ctx.sem.cur_scope := 0;
   ctx.sem.loop_depth := 0;
   ctx.sem.cur_class := 0;
+  ctx.sem.nt_tok := 0;
   ctx.sem.in_typeof := False;
   ctx.sem.stop := False;
   ctx.sem.next_in_loop := False;
@@ -10243,7 +10929,7 @@ End;
 
 Procedure AddFuncDesc(Var ctx: TCompilerContext; n: LongInt);
 Var
-  id, fl, sc: LongInt;
+  id, fl, sc, nsy: LongInt;
   nm: LongInt;
 Begin
   Inc(ctx.data.fd_count);
@@ -10301,6 +10987,13 @@ Begin
         fl := fl Or FDF_USES_ARGS;
       If ScopeP(ctx.sem.scopes, sc)^.this_captured Then
         fl := fl Or FDF_THIS_CAPTURED;
+      nsy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
+      While nsy <> 0 Do
+        Begin
+          If SymP(ctx.sem.syms, nsy)^.kind = DK_NEWTARGET Then
+            fl := fl Or FDF_USES_NT;
+          nsy := SymP(ctx.sem.syms, nsy)^.next;
+        End;
       FdescP(ctx.data.fdescs, id)^.ncells := ScopeP(ctx.sem.scopes, sc)^.cap_count;
     End
   Else
@@ -12710,19 +13403,37 @@ Var
   top, has_spread, old_used, is_new, is_super: Boolean;
   nt_old, nt_res: LongInt;
 
-  { new.target : sauvegarde puis positionne la cible, restaure apres l'appel }
+  { new.target : sauvegarde puis positionne la cible (new : le constructeur
+    lui-meme ; super(...) : new.target du constructeur courant) pour un
+    appele qui la consomme, restaure apres l'appel }
   Procedure NtEnter;
+  Var
+    hsy: LongInt;
   Begin
-    If Not is_new Then
+    If Not (is_new Or is_super) Then
       Exit;
+    If is_new Then
+      PushTemp(ctx, tf)
+    Else
+      Begin
+        hsy := ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.first_sym;
+        While (hsy <> 0) And (SymP(ctx.sem.syms, hsy)^.kind <> DK_NEWTARGET) Do
+          hsy := SymP(ctx.sem.syms, hsy)^.next;
+        If hsy <> 0 Then
+          LoadSym(ctx, hsy)
+        Else
+          LoadUndefined(ctx);
+        Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+        Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      End;
     PushTemp(ctx, tf);
-    CallRt(ctx, 'nt_enter', 8);
+    CallRt(ctx, 'nt_enter', 16);
     SaveTemp(ctx, nt_old);
   End;
 
   Procedure NtLeave;
   Begin
-    If Not is_new Then
+    If Not (is_new Or is_super) Then
       Exit;
     SaveTemp(ctx, nt_res);
     PushTemp(ctx, nt_old);
@@ -12763,7 +13474,7 @@ Begin
   tt := TempAcquire(ctx);
   nt_old := 0;
   nt_res := 0;
-  If is_new Then
+  If is_new Or is_super Then
     Begin
       nt_old := TempAcquire(ctx);
       nt_res := TempAcquire(ctx);
@@ -12908,7 +13619,7 @@ Begin
   PlaceLabel(ctx, notfn);
   CallRt(ctx, 'throw_notfunc', 0);
   PlaceLabel(ctx, lbl);
-  If is_new Then
+  If is_new Or is_super Then
     Begin
       TempRelease(ctx, nt_res);
       TempRelease(ctx, nt_old);
@@ -14551,6 +15262,13 @@ Begin
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
           Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
           CallRt(ctx, 'make_arguments', 8);
+          StoreSym(ctx, sy, True);
+        End
+      Else If SymP(ctx.sem.syms, sy)^.kind = DK_NEWTARGET Then
+        Begin
+          { new.target de cette invocation : lu puis efface, pour que les appels
+            ordinaires faits depuis le corps ne le voient pas }
+          CallRt(ctx, 'nt_take', 0);
           StoreSym(ctx, sy, True);
         End;
       sy := SymP(ctx.sem.syms, sy)^.next;
@@ -17219,9 +17937,32 @@ Begin
   A('je .true');
   A('mov ecx, dword ptr [ebp+8]');
   A('cmp ecx, dword ptr [ebp+16]');
-  A('jne .false');
+  A('jne .objdiff');
   A('.true:');
   A('mov eax, 1');
+  A('jmp .ret');
+  { deux BigInt (objets du prelude) sont egaux s'ils ont la meme valeur : __bseq }
+  A('.objdiff:');
+  A('cmp eax, $OBJ');
+  A('jne .false');
+  A('cmp dword ptr [_JSV___bigproto+4], $OBJ');
+  A('jne .false');
+  A('mov edx, dword ptr [_JSV___bigproto]');
+  A('cmp dword ptr [ecx+$OBJ_PROTO], edx');
+  A('jne .false');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('cmp dword ptr [ecx+$OBJ_PROTO], edx');
+  A('jne .false');
+  A('mov ecx, offset _JSV___bseq');
+  A('cmp dword ptr [ecx+4], $FN');
+  A('jne .false');
+  A('push $OBJ');
+  A('push dword ptr [ebp+16]');
+  A('push $OBJ');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_call1');
+  A('add esp, 20');
   A('jmp .ret');
   A('.str:');
   A('push dword ptr [ebp+16]');
@@ -21056,7 +21797,29 @@ Begin
   A('cmp edx, $INT');
   A('jb .dbl');
   A('cmp edx, $STR');
+  A('je .str');
+  A('cmp edx, $OBJ');
   A('jne .t');
+  { un BigInt (objet du prelude) vaut faux quand il est nul : __btruthy(x) }
+  A('cmp dword ptr [_JSV___bigproto+4], $OBJ');
+  A('jne .t');
+  A('mov ecx, dword ptr [eax+$OBJ_PROTO]');
+  A('cmp ecx, dword ptr [_JSV___bigproto]');
+  A('jne .t');
+  A('mov ecx, offset _JSV___btruthy');
+  A('cmp dword ptr [ecx+4], $FN');
+  A('jne .t');
+  A('push edx');
+  A('push eax');
+  A('push $UNDEF');
+  A('push 0');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_call1');
+  A('add esp, 20');
+  A('test eax, eax');
+  A('jz .f');
+  A('jmp .t');
+  A('.str:');
   A('cmp dword ptr [eax+$STR_LEN], 0');
   A('je .f');
   A('.t:');
@@ -22640,14 +23403,24 @@ Begin
   A('mov edx, $BOOL');
   FEnd;
 
-  { new.target : _JSRT_nt_enter(cible) -> ancienne ; _JSRT_nt_leave(ancienne) }
+  { new.target : _JSRT_nt_enter(appele, cible) -> ancienne ; _JSRT_nt_leave(ancienne) ;
+    la cible n'est positionnee que si l'appele la consomme (drapeau du descripteur) }
   A('proc _JSRT_nt_enter');
   A('push ebp');
   A('mov ebp, esp');
   A('mov eax, dword ptr [_JSRT_v_newtarget]');
   A('xor edx, edx');
+  A('cmp dword ptr [ebp+12], $FN');
+  A('jne .st');
   A('mov ecx, dword ptr [ebp+8]');
-  A('mov dword ptr [_JSRT_v_newtarget], ecx');
+  A('mov ecx, dword ptr [ecx+$FN_DESC]');
+  A('test dword ptr [ecx+' + IntToStr(RT_FD_FLAGS) + '], ' + IntToStr(FDF_USES_NT));
+  A('jz .st');
+  A('cmp dword ptr [ebp+20], $FN');
+  A('jne .st');
+  A('mov edx, dword ptr [ebp+16]');
+  A('.st:');
+  A('mov dword ptr [_JSRT_v_newtarget], edx');
   A('leave');
   A('ret');
   A('endp');
@@ -22657,6 +23430,17 @@ Begin
   A('mov ecx, dword ptr [ebp+8]');
   A('mov dword ptr [_JSRT_v_newtarget], ecx');
   A('leave');
+  A('ret');
+  A('endp');
+  { _JSRT_nt_take() -> new.target de l'invocation (fonction ou undefined), efface la variable }
+  A('proc _JSRT_nt_take');
+  A('mov eax, dword ptr [_JSRT_v_newtarget]');
+  A('mov dword ptr [_JSRT_v_newtarget], 0');
+  A('mov edx, $FN');
+  A('test eax, eax');
+  A('jnz .r');
+  A('mov edx, $UNDEF');
+  A('.r:');
   A('ret');
   A('endp');
   A('proc _JSRT_n_newtarget');
@@ -23627,8 +24411,8 @@ Procedure RtClassData;
 Var
   d: LongInt;
 Begin
-  d := RtDescSym('constructor', '_JSRT_ctor_base', 0, FDF_CTOR);
-  d := RtDescSym('constructor', '_JSRT_ctor_derived', 0, FDF_CTOR Or FDF_DERIVED);
+  d := RtDescSym('constructor', '_JSRT_ctor_base', 0, FDF_CTOR Or FDF_USES_NT);
+  d := RtDescSym('constructor', '_JSRT_ctor_derived', 0, FDF_CTOR Or FDF_DERIVED Or FDF_USES_NT);
 End;
 
 Procedure RtClasses;
@@ -23786,6 +24570,7 @@ Begin
   A('push dword ptr [ebp+8]');
   A('call _JSRT_class_call_check');
   A('add esp, 4');
+  A('call _JSRT_nt_take');
   A('push dword ptr [ebp+20]');
   A('push dword ptr [ebp+16]');
   A('push dword ptr [ebp+8]');
@@ -23795,14 +24580,24 @@ Begin
   A('mov edx, $UNDEF');
   FEnd;
 
-  { Constructeur par defaut d'une classe derivee : transmet les arguments }
-  FBegin('_JSRT_ctor_derived', 0);
+  { Constructeur par defaut d'une classe derivee : transmet les arguments et new.target }
+  FBegin('_JSRT_ctor_derived', 3);
   A('push dword ptr [ebp+8]');
   A('call _JSRT_class_call_check');
   A('add esp, 4');
+  A('call _JSRT_nt_take');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov ' + Lv(2) + ', edx');
   A('mov esi, dword ptr [ebp+8]');
   A('cmp dword ptr [esi+$FN_THIS+4], $FN');
   A('jne .nopar');
+  A('push ' + Lv(2));
+  A('push ' + Lv(1));
+  A('push $FN');
+  A('push dword ptr [esi+$FN_THIS]');
+  A('call _JSRT_nt_enter');
+  A('add esp, 16');
+  A('mov ' + Lv(3) + ', eax');
   A('mov ebx, dword ptr [ebp+12]');
   A('mov eax, ebx');
   A('shl eax, 3');
@@ -23824,7 +24619,10 @@ Begin
   A('mov eax, dword ptr [esi+$FN_THIS]');
   A('call dword ptr [eax+$FN_CODE]');
   A('mov esp, ebp');
-  A('sub esp, 12');
+  A('sub esp, 24');
+  A('push ' + Lv(3));
+  A('call _JSRT_nt_leave');
+  A('add esp, 4');
   A('.nopar:');
   A('mov esi, dword ptr [ebp+8]');
   A('push dword ptr [ebp+20]');
