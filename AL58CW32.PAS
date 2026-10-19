@@ -25,7 +25,8 @@
 
   ETAT : TODO 01 (squelette et pipeline), TODO 02 (options), TODO 03
          (constantes, limites, nommage), TODO 04 (lexeur) et TODO 05
-         (types) implementes, les autres TODOs sont a faire.
+         (types) et TODO 06 (symboles et portees) implementes, les autres
+         TODOs sont a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -107,11 +108,12 @@
             Mode de passage des parametres : value (PM_VALUE) ou par nom
               (PM_NAME, thunk)
 
-  TODO 06 - TABLE DES SYMBOLES ET PORTEES [A FAIRE]
+  TODO 06 - TABLE DES SYMBOLES ET PORTEES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_ARRAY, SK_PROC, SK_FUNC, SK_LABEL,
               SK_SWITCH, SK_PARAM_VALUE, SK_PARAM_NAME, SK_OWN
             SymAdd, SymFind, SymFindInScope, SymEnterScope, SymLeaveScope
-            Une portee par bloc begin...end, par procedure et par for
+            Une portee par bloc begin...end et par procedure (le parseur
+              ouvre aussi une portee pour tout autre bloc au besoin)
             Masquage lexical : t declare dans deux blocs freres
               (blocks.a58 : t=100 puis t=200)
             Variable non declaree (x := 42 dans test_errors.a58) :
@@ -1588,6 +1590,559 @@ Begin
 End;
 
 { ============================================================
+  TABLE DES SYMBOLES ET PORTEES (TODO 06)
+
+  Allocation des variables :
+    - niveau 0 (programme principal, y compris ses blocs imbriques) :
+      donnees statiques dans .data, noms ASM uniques ; les procedures
+      du niveau 0 y accedent directement, sans lien statique
+    - variables d une procedure : locales [EBP-n]
+    - parametres : [EBP+n], le premier en [EBP+8] ; les procedures
+      declarees dans une autre procedure recoivent en plus un lien
+      statique (BP de la procedure englobante) en [EBP+8], les
+      parametres commencent alors en [EBP+12]
+    - parametre par valeur : taille du type ; parametre par nom :
+      8 octets (adresse du thunk + BP de l appelant)
+  ============================================================ }
+Const
+  SYM_NAME_MAX    = 63;
+  PARAM_NAME_SIZE = 8;
+  MAX_IMPLICIT    = {$IFDEF FPC}256{$ELSE}16{$ENDIF};
+  SYM_TOTAL       = MAX_SYM + MAX_IMPLICIT;
+
+Type
+  TName    = String[SYM_NAME_MAX];
+  TMangled = String[127];
+
+  TSymKind = (
+    SK_VAR,           { variable scalaire                          }
+    SK_OWN,           { variable scalaire own (persistante)        }
+    SK_ARRAY,         { tableau                                    }
+    SK_PROC,          { procedure sans valeur de retour            }
+    SK_FUNC,          { procedure typee (fonction)                 }
+    SK_LABEL,         { etiquette de go to                         }
+    SK_SWITCH,        { aiguillage                                 }
+    SK_PARAM_VALUE,   { parametre value                            }
+    SK_PARAM_NAME     { parametre par nom (defaut)                 }
+  );
+
+  TStorage = (
+    SC_NONE,          { pas de stockage de donnees                 }
+    SC_GLOBAL,        { .data : label Mangled                      }
+    SC_LOCAL,         { pile : [EBP + Offset], Offset < 0          }
+    SC_PARAM          { pile : [EBP + Offset], Offset > 0          }
+  );
+
+  TSymRec = Record
+    Name       : TName;       { identificateur tel qu ecrit          }
+    Key        : TName;       { identificateur en majuscules         }
+    Mangled    : TMangled;    { nom ASM (SC_GLOBAL, procedures)      }
+    Kind       : TSymKind;
+    TypeIdx    : Integer;     { type, ou type de retour / d element  }
+    Storage    : TStorage;
+    Offset     : LongInt;     { decalage par rapport a EBP           }
+    ScopeId    : Integer;     { identifiant unique de la portee      }
+    Level      : Integer;     { niveau d imbrication des procedures  }
+    IsOwn      : Boolean;
+    IsDefined  : Boolean;     { etiquette : definie ?                }
+    IsUsed     : Boolean;     { etiquette : referencee ?             }
+    Line       : Integer;
+    Col        : Integer;
+    ArrDims    : Integer;     { tableau : nombre de dimensions       }
+    ArrLo      : Array[1..MAX_DIM] Of LongInt;
+    ArrHi      : Array[1..MAX_DIM] Of LongInt;
+    ArrDynamic : Boolean;     { tableau : bornes calculees a l exec. }
+    ParamCount : Integer;     { procedure : nombre de parametres     }
+    ParamSym   : Array[1..MAX_PARAM] Of Integer;
+    ParamBytes : Integer;     { procedure : taille des parametres    }
+    ParamIdx   : Integer;     { parametre : rang (1..n)              }
+    SwitchCount: Integer;     { switch : nombre de designateurs      }
+  End;
+
+  TScopeRec = Record
+    FirstSym   : Integer;     { premier symbole de la portee         }
+    Id         : Integer;     { identifiant unique                   }
+    IsProc     : Boolean;     { portee d une procedure ?             }
+    ProcSym    : Integer;     { symbole de la procedure (ou -1)      }
+    SavedLocal : LongInt;     { LocalOfs a l entree                  }
+    SavedProc  : Integer;     { CurProcScope a l entree              }
+    FrameSize  : LongInt;     { procedure : octets de locales max.   }
+    RetOfs     : LongInt;     { fonction : cellule du resultat       }
+  End;
+
+  TUseRec = Record
+    Base  : TMangled;
+    Count : Integer;
+  End;
+
+Var
+  SymTab       : Array[0..SYM_TOTAL - 1] Of TSymRec;
+  SymCount     : Integer;     { symboles de la pile (0..SymCount-1)  }
+  ImpCount     : Integer;     { symboles implicites (MAX_SYM..)      }
+  ScopeTab     : Array[0..MAX_SCOPE - 1] Of TScopeRec;
+  ScopeTop     : Integer;     { nombre de portees ouvertes           }
+  ScopeSeq     : Integer;     { compteur d identifiants de portee    }
+  CurLevel     : Integer;     { niveau de procedure courant (0=main) }
+  CurProcScope : Integer;     { portee de la procedure courante      }
+  LocalOfs     : LongInt;     { octets de locales alloues            }
+  UseTab       : Array[0..SYM_TOTAL - 1] Of TUseRec;
+  UseCount     : Integer;
+
+{ Nom ASM unique : le premier usage garde Base, les suivants recoivent
+  un suffixe __n (blocs freres declarant le meme identificateur). }
+Function UniqueMangle(Const Base : TMangled) : TMangled;
+Var
+  I : Integer;
+Begin
+  For I := 0 To UseCount - 1 Do
+    If UseTab[I].Base = Base Then
+    Begin
+      Inc(UseTab[I].Count);
+      UniqueMangle := Base + '__' + ItoS(UseTab[I].Count);
+      Exit;
+    End;
+  If UseCount >= SYM_TOTAL Then
+    FatalError('table des noms ASM pleine');
+  UseTab[UseCount].Base  := Base;
+  UseTab[UseCount].Count := 1;
+  Inc(UseCount);
+  UniqueMangle := Base;
+End;
+
+Function SymKindName(K : TSymKind) : TString;
+Begin
+  Case K Of
+    SK_VAR         : SymKindName := 'var';
+    SK_OWN         : SymKindName := 'own';
+    SK_ARRAY       : SymKindName := 'array';
+    SK_PROC        : SymKindName := 'proc';
+    SK_FUNC        : SymKindName := 'func';
+    SK_LABEL       : SymKindName := 'label';
+    SK_SWITCH      : SymKindName := 'switch';
+    SK_PARAM_VALUE : SymKindName := 'param-value';
+    SK_PARAM_NAME  : SymKindName := 'param-name';
+  End;
+End;
+
+Function StorageName(S : TStorage) : TString;
+Begin
+  Case S Of
+    SC_NONE   : StorageName := '-';
+    SC_GLOBAL : StorageName := 'global';
+    SC_LOCAL  : StorageName := 'local';
+    SC_PARAM  : StorageName := 'param';
+  End;
+End;
+
+Procedure SymInit;
+Begin
+  SymCount     := 0;
+  ImpCount     := 0;
+  ScopeTop     := 0;
+  ScopeSeq     := 0;
+  CurLevel     := 0;
+  CurProcScope := -1;
+  LocalOfs     := 0;
+  UseCount     := 0;
+End;
+
+{ ---- Recherche ------------------------------------------------- }
+
+Function SymMakeKey(Const Name : TString) : TName;
+Begin
+  SymMakeKey := Copy(UpCaseStr(Name), 1, SYM_NAME_MAX);
+End;
+
+{ Symbole visible le plus interne ; la pile masque les portees
+  englobantes, puis les symboles implicites. -1 si introuvable. }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I   : Integer;
+  Key : TName;
+Begin
+  Key := SymMakeKey(Name);
+  SymFind := -1;
+  For I := SymCount - 1 Downto 0 Do
+    If SymTab[I].Key = Key Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  For I := MAX_SYM To MAX_SYM + ImpCount - 1 Do
+    If SymTab[I].Key = Key Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+End;
+
+{ Symbole declare dans la portee courante seulement. -1 si absent. }
+Function SymFindInScope(Const Name : TString) : Integer;
+Var
+  I, First : Integer;
+  Key      : TName;
+Begin
+  SymFindInScope := -1;
+  If ScopeTop = 0 Then Exit;
+  Key   := SymMakeKey(Name);
+  First := ScopeTab[ScopeTop - 1].FirstSym;
+  For I := SymCount - 1 Downto First Do
+    If SymTab[I].Key = Key Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+End;
+
+{ ---- Portees et allocation de la pile --------------------------- }
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+    FatalError('blocs trop imbriques (max ' + ItoS(MAX_SCOPE) + ')');
+  Inc(ScopeSeq);
+  ScopeTab[ScopeTop].FirstSym   := SymCount;
+  ScopeTab[ScopeTop].Id         := ScopeSeq;
+  ScopeTab[ScopeTop].IsProc     := False;
+  ScopeTab[ScopeTop].ProcSym    := -1;
+  ScopeTab[ScopeTop].SavedLocal := LocalOfs;
+  ScopeTab[ScopeTop].SavedProc  := CurProcScope;
+  ScopeTab[ScopeTop].FrameSize  := 0;
+  ScopeTab[ScopeTop].RetOfs     := 0;
+  Inc(ScopeTop);
+End;
+
+{ Reserve Size octets (arrondis a 4) dans les locales de la procedure
+  courante et retourne le decalage negatif par rapport a EBP. }
+Function SymAllocLocal(Size : Integer) : LongInt;
+Begin
+  If CurProcScope < 0 Then
+    FatalError('erreur interne: locale hors procedure');
+  LocalOfs := LocalOfs + ((Size + 3) And (Not 3));
+  If LocalOfs > ScopeTab[CurProcScope].FrameSize Then
+    ScopeTab[CurProcScope].FrameSize := LocalOfs;
+  SymAllocLocal := -LocalOfs;
+End;
+
+{ Ouvre la portee du corps d une procedure deja ajoutee a la table.
+  Les parametres sont ensuite ajoutes par SymAdd. }
+Procedure SymEnterProc(ProcIdx : Integer);
+Begin
+  SymEnterScope;
+  ScopeTab[ScopeTop - 1].IsProc  := True;
+  ScopeTab[ScopeTop - 1].ProcSym := ProcIdx;
+  Inc(CurLevel);
+  CurProcScope := ScopeTop - 1;
+  LocalOfs := 0;
+  If SymTab[ProcIdx].Kind = SK_FUNC Then
+    ScopeTab[CurProcScope].RetOfs :=
+      SymAllocLocal(TypeSizeof(SymTab[ProcIdx].TypeIdx));
+End;
+
+{ Procedure dont le corps est en cours de compilation (ou -1) }
+Function SymCurProc : Integer;
+Begin
+  If CurProcScope < 0 Then
+    SymCurProc := -1
+  Else
+    SymCurProc := ScopeTab[CurProcScope].ProcSym;
+End;
+
+{ Octets de locales du corps courant (pour SUB ESP, n au prologue) }
+Function SymFrameSize : LongInt;
+Begin
+  If CurProcScope < 0 Then
+    SymFrameSize := 0
+  Else
+    SymFrameSize := ScopeTab[CurProcScope].FrameSize;
+End;
+
+{ Decalage [EBP+n] de la cellule du resultat d une fonction }
+Function SymResultOfs : LongInt;
+Begin
+  If CurProcScope < 0 Then
+    SymResultOfs := 0
+  Else
+    SymResultOfs := ScopeTab[CurProcScope].RetOfs;
+End;
+
+{ ---- Ajout de symboles ------------------------------------------ }
+
+Function SymAdd(Const Name : TString; K : TSymKind; TypeIdx : Integer;
+                IsOwn : Boolean; Line, Col : Integer) : Integer;
+Var
+  I, P : Integer;
+Begin
+  If ScopeTop = 0 Then
+    FatalError('erreur interne: aucune portee ouverte');
+  If Length(Name) > SYM_NAME_MAX Then
+    ErrorAt(Line, Col, 'identificateur trop long (max ' +
+            ItoS(SYM_NAME_MAX) + '): ' + Name);
+
+  I := SymFindInScope(Name);
+  If I >= 0 Then
+  Begin
+    ErrorAt(Line, Col, 'declaration en double: ' + Name);
+    SymAdd := I;
+    Exit;
+  End;
+  If (ScopeTop = 1) And (K <> SK_LABEL) Then
+    For I := MAX_SYM To MAX_SYM + ImpCount - 1 Do
+      If SymTab[I].Key = SymMakeKey(Name) Then
+      Begin
+        ErrorAt(Line, Col, 'declaree apres un usage implicite: ' + Name);
+        SymAdd := I;
+        Exit;
+      End;
+  If SymCount >= MAX_SYM Then
+    FatalError('table des symboles pleine (max ' + ItoS(MAX_SYM) + ')');
+
+  I := SymCount;
+  Inc(SymCount);
+  FillChar(SymTab[I], SizeOf(TSymRec), 0);
+  SymTab[I].Name      := Copy(Name, 1, SYM_NAME_MAX);
+  SymTab[I].Key       := SymMakeKey(Name);
+  SymTab[I].Kind      := K;
+  SymTab[I].TypeIdx   := TypeIdx;
+  SymTab[I].Storage   := SC_NONE;
+  SymTab[I].ScopeId   := ScopeTab[ScopeTop - 1].Id;
+  SymTab[I].Level     := CurLevel;
+  SymTab[I].IsOwn     := IsOwn Or (K = SK_OWN);
+  SymTab[I].Line      := Line;
+  SymTab[I].Col       := Col;
+
+  Case K Of
+    SK_VAR, SK_OWN, SK_ARRAY:
+      If (CurLevel = 0) Or SymTab[I].IsOwn Then
+      Begin
+        SymTab[I].Storage := SC_GLOBAL;
+        If SymTab[I].IsOwn And (K <> SK_ARRAY) Then
+          SymTab[I].Mangled := UniqueMangle(MangleOwn(Name))
+        Else If K = SK_ARRAY Then
+          SymTab[I].Mangled := UniqueMangle(MangleArr(Name))
+        Else
+          SymTab[I].Mangled := UniqueMangle(MangleVar(Name));
+      End
+      Else
+      Begin
+        SymTab[I].Storage := SC_LOCAL;
+        If K = SK_ARRAY Then
+          SymTab[I].Offset := SymAllocLocal(ABI_WORD_SIZE)
+        Else
+          SymTab[I].Offset := SymAllocLocal(TypeSizeof(TypeIdx));
+      End;
+    SK_PROC, SK_FUNC:
+      SymTab[I].Mangled := UniqueMangle(MangleProc(Name));
+    SK_LABEL:
+      SymTab[I].Mangled := UniqueMangle(MangleUserLabel(Name));
+    SK_SWITCH:
+      SymTab[I].Mangled := UniqueMangle(MangleSwitch(Name));
+    SK_PARAM_VALUE, SK_PARAM_NAME:
+      Begin
+        P := SymCurProc;
+        If P < 0 Then
+          FatalError('erreur interne: parametre hors procedure');
+        If SymTab[P].ParamCount >= MAX_PARAM Then
+          ErrorAt(Line, Col, 'trop de parametres (max ' +
+                  ItoS(MAX_PARAM) + ')')
+        Else
+        Begin
+          Inc(SymTab[P].ParamCount);
+          SymTab[P].ParamSym[SymTab[P].ParamCount] := I;
+          SymTab[I].ParamIdx := SymTab[P].ParamCount;
+        End;
+        SymTab[I].Storage := SC_PARAM;
+      End;
+  End;
+  SymAdd := I;
+End;
+
+{ Variable utilisee sans declaration : avertissement, puis integer
+  global implicite visible de partout (test_errors.a58, x := 42). }
+Function SymImplicit(Const Name : TString; Line, Col : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  If ImpCount >= MAX_IMPLICIT Then
+    FatalError('trop de variables implicites (max ' +
+               ItoS(MAX_IMPLICIT) + ')');
+  WarnAt(Line, Col, 'variable non declaree: ' + Name +
+         ' (declaree integer)');
+  I := MAX_SYM + ImpCount;
+  Inc(ImpCount);
+  FillChar(SymTab[I], SizeOf(TSymRec), 0);
+  SymTab[I].Name    := Copy(Name, 1, SYM_NAME_MAX);
+  SymTab[I].Key     := SymMakeKey(Name);
+  SymTab[I].Kind    := SK_VAR;
+  SymTab[I].TypeIdx := TY_IDX_INTEGER;
+  SymTab[I].Storage := SC_GLOBAL;
+  SymTab[I].ScopeId := 1;
+  SymTab[I].Level   := 0;
+  SymTab[I].Line    := Line;
+  SymTab[I].Col     := Col;
+  SymTab[I].Mangled := UniqueMangle(MangleVar(Name));
+  SymImplicit := I;
+End;
+
+{ ---- Parametres de procedure ------------------------------------ }
+
+Function SymFindParam(ProcIdx : Integer; Const Name : TString) : Integer;
+Var
+  K   : Integer;
+  Key : TName;
+Begin
+  Key := SymMakeKey(Name);
+  SymFindParam := -1;
+  For K := 1 To SymTab[ProcIdx].ParamCount Do
+    If SymTab[SymTab[ProcIdx].ParamSym[K]].Key = Key Then
+    Begin
+      SymFindParam := SymTab[ProcIdx].ParamSym[K];
+      Exit;
+    End;
+End;
+
+{ "value a, b ;" : passe le parametre par valeur }
+Function SymMarkValue(ProcIdx : Integer; Const Name : TString) : Boolean;
+Var
+  S : Integer;
+Begin
+  S := SymFindParam(ProcIdx, Name);
+  If S >= 0 Then
+    SymTab[S].Kind := SK_PARAM_VALUE;
+  SymMarkValue := (S >= 0);
+End;
+
+{ "integer a ;" : specification de type d un parametre }
+Function SymSetParamType(ProcIdx : Integer; Const Name : TString;
+                         T : Integer) : Boolean;
+Var
+  S : Integer;
+Begin
+  S := SymFindParam(ProcIdx, Name);
+  If S >= 0 Then
+    SymTab[S].TypeIdx := T;
+  SymSetParamType := (S >= 0);
+End;
+
+Function SymParamSize(S : Integer) : Integer;
+Begin
+  If SymTab[S].TypeIdx = TY_IDX_ARRAY Then
+    SymParamSize := ABI_WORD_SIZE          { adresse du descripteur }
+  Else If SymTab[S].Kind = SK_PARAM_NAME Then
+    SymParamSize := PARAM_NAME_SIZE        { thunk + BP appelant    }
+  Else
+    SymParamSize := (TypeSizeof(SymTab[S].TypeIdx) + 3) And (Not 3);
+End;
+
+{ A appeler apres les specifications : calcule les decalages [EBP+n]
+  (le premier parametre en EBP+8, apres EBP et l adresse de retour,
+  decale de 4 si un lien statique est recu) et ParamBytes. }
+Procedure SymLayoutParams(ProcIdx : Integer);
+Var
+  K, S : Integer;
+  Ofs  : LongInt;
+Begin
+  Ofs := ABI_PARAM_BASE;
+  If SymTab[ProcIdx].Level >= 1 Then
+    Ofs := Ofs + ABI_WORD_SIZE;           { lien statique }
+  For K := 1 To SymTab[ProcIdx].ParamCount Do
+  Begin
+    S := SymTab[ProcIdx].ParamSym[K];
+    SymTab[S].Offset := Ofs;
+    Ofs := Ofs + SymParamSize(S);
+  End;
+  SymTab[ProcIdx].ParamBytes := Ofs - ABI_PARAM_BASE;
+End;
+
+{ ---- Etiquettes ------------------------------------------------- }
+
+{ Reference "go to nom" : retrouve l etiquette visible, ou cree une
+  etiquette pas encore definie dans la portee courante (renvoi avant). }
+Function SymRefLabel(Const Name : TString; Line, Col : Integer) : Integer;
+Var
+  I   : Integer;
+  Key : TName;
+Begin
+  Key := SymMakeKey(Name);
+  For I := SymCount - 1 Downto 0 Do
+    If (SymTab[I].Key = Key) And (SymTab[I].Kind = SK_LABEL) Then
+    Begin
+      SymTab[I].IsUsed := True;
+      SymRefLabel := I;
+      Exit;
+    End;
+  I := SymAdd(Name, SK_LABEL, TY_IDX_LABEL, False, Line, Col);
+  SymTab[I].IsUsed := True;
+  SymRefLabel := I;
+End;
+
+{ Definition "nom :" devant une instruction }
+Function SymDefLabel(Const Name : TString; Line, Col : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  I := SymFindInScope(Name);
+  If I >= 0 Then
+  Begin
+    If (SymTab[I].Kind = SK_LABEL) And (Not SymTab[I].IsDefined) Then
+    Begin
+      SymTab[I].IsDefined := True;     { fin d un renvoi avant }
+      SymTab[I].Line := Line;
+      SymTab[I].Col  := Col;
+    End
+    Else
+      ErrorAt(Line, Col, 'etiquette dupliquee: ' + Name);
+    SymDefLabel := I;
+    Exit;
+  End;
+  I := SymAdd(Name, SK_LABEL, TY_IDX_LABEL, False, Line, Col);
+  SymTab[I].IsDefined := True;
+  SymDefLabel := I;
+End;
+
+{ ---- Impression et fermeture ------------------------------------ }
+
+Procedure SymDumpScope(Scope : Integer);
+Var
+  I : Integer;
+Begin
+  WriteLn('Portee ', ScopeTab[Scope].Id, ' (niveau ', CurLevel,
+          '), locales ', ScopeTab[Scope].FrameSize, ' octets :');
+  For I := ScopeTab[Scope].FirstSym To SymCount - 1 Do
+    WriteLn('  ', SymTab[I].Name, ' ', SymKindName(SymTab[I].Kind), ' ',
+            TypeName(SymTab[I].TypeIdx), ' ', StorageName(SymTab[I].Storage),
+            ' ', SymTab[I].Offset, ' ', SymTab[I].Mangled);
+End;
+
+{ Ferme la portee courante : verifie les etiquettes, libere les
+  symboles et restaure l etat de la pile. }
+Procedure SymLeaveScope;
+Var
+  I, S : Integer;
+Begin
+  If ScopeTop = 0 Then
+    FatalError('erreur interne: fermeture sans portee ouverte');
+  S := ScopeTop - 1;
+  For I := ScopeTab[S].FirstSym To SymCount - 1 Do
+    If SymTab[I].Kind = SK_LABEL Then
+    Begin
+      If Not SymTab[I].IsDefined Then
+        ErrorAt(SymTab[I].Line, SymTab[I].Col,
+                'etiquette non definie: ' + SymTab[I].Name)
+      Else If Not SymTab[I].IsUsed Then
+        WarnAt(SymTab[I].Line, SymTab[I].Col,
+               'etiquette non utilisee: ' + SymTab[I].Name);
+    End;
+  If Opts.DebugMode Then SymDumpScope(S);
+  SymCount := ScopeTab[S].FirstSym;
+  LocalOfs := ScopeTab[S].SavedLocal;
+  If ScopeTab[S].IsProc Then
+    Dec(CurLevel);
+  CurProcScope := ScopeTab[S].SavedProc;
+  Dec(ScopeTop);
+End;
+
+{ ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 07 a 17)
   ============================================================ }
 Procedure PhaseParse;
@@ -1655,6 +2210,8 @@ Begin
   ErrorCount := 0;
   WarnCount  := 0;
   TypeInit;
+  SymInit;
+  SymEnterScope;                { portee globale (identifiant 1) }
   If Opts.DebugMode Then TypeDump;
   If Opts.Verbose Then
   Begin
