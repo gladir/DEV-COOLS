@@ -26,15 +26,15 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 22 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 23 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
          instructions et blocs, boucle for, goto et switch, tableaux,
          procedures, appel par nom, entrees/sorties et fonctions
-         standard, encodeur x86-32, ecrivains PE et COFF, runtime integre) ;
-         TODO 23 a 25 a faire.
+         standard, encodeur x86-32, ecrivains PE et COFF, runtime integre, erreurs et rapport) ;
+         TODO 24 et 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -813,7 +813,7 @@
               division par zero : message et code de retour 1 ; canal 2 =
               erreur standard
 
-  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [A FAIRE]
+  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [IMPLEMENTE]
             Erreurs lexicales : caractere invalide, chaine non fermee,
               commentaire non termine, nombre hors limites
             Erreurs syntaxiques : token inattendu, begin/end non apparie,
@@ -833,6 +833,34 @@
               aucun fichier de sortie corrompu en cas d'erreur (les
               fichiers crees sont supprimes sur erreur fatale)
             Exemples : test_lex.a60 et programmes fautifs du script de test
+            Realise : ErrorAt / WarnAt / WarnMsg au format indique (les
+              avertissements ne s'affichent qu'avec -w) ; erreurs lexicales
+              (caractere invalide, chaine non fermee, commentaire non
+              termine, entier ou exposant hors limites), syntaxiques
+              (token inattendu, begin non ferme, texte apres le end final,
+              parenthese ou crochet manquant, point-virgule manquant),
+              semantiques (affectation ou operande incompatible, nombre
+              d'arguments, procedure inconnue, etiquette attendue ou
+              dupliquee, declaration en double, tableau sans indice ou
+              avec trop d'indices, bornes inversees, division par zero
+              constante) ; recuperation par AtSyncKw (begin, for, if,
+              procedure et ;) ; avertissements : variable non declaree,
+              etiquette non utilisee ou non definie, indice de switch
+              hors bornes, pas nul, conversions real -> integer et
+              integer <-> Boolean, et maintenant Boolean utilise comme
+              nombre (operande arithmetique ou comparaison avec un
+              nombre : ExprNoteBoolNum) ; NoteOutput / RemoveOutputs :
+              les fichiers .asm, .exe et .obj crees sont supprimes sur
+              erreur fatale ; PhaseReport affiche Compilation echouee :
+              N erreur(s), M avertissement(s) ou, avec -w ou -v,
+              Compilation terminee : 0 erreur, M avertissement(s) ;
+              code de retour EXIT_ERROR (1) sur erreur
+            Verifie : 40 programmes fautifs ou limites (lexicaux,
+              syntaxiques, semantiques, avertissements) donnent le message
+              attendu, le compte final et le code de retour 1 sans
+              aucun fichier de sortie ; une erreur fatale apres la
+              creation du .asm (sortie .exe impossible) supprime le .asm ;
+              les 32 exemples executables donnent toujours la meme sortie
 
   TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [A FAIRE]
             Run : lexeur -> parseur/generateur -> runtime -> encodeur ->
@@ -1221,9 +1249,39 @@ End;
 { ============================================================
   SECTION 5 - OPTIONS DE LIGNE DE COMMANDE (TODO 02)
   ============================================================ }
+{ Fichiers de sortie crees pendant cette compilation : supprimes si une
+  erreur fatale survient, pour ne laisser aucun fichier tronque. }
+Var
+  OutCreated  : Array[0..7] Of TString;
+  OutCreatedN : Integer;
+
+Procedure NoteOutput(Const Name : TString);
+Begin
+  If OutCreatedN <= 7 Then
+  Begin
+    OutCreated[OutCreatedN] := Name;
+    Inc(OutCreatedN);
+  End;
+End;
+
+Procedure RemoveOutputs;
+Var
+  I : Integer;
+  F : File;
+Begin
+  For I := 0 To OutCreatedN - 1 Do
+  Begin
+    Assign(F, OutCreated[I]);
+    Erase(F);
+    If IOResult <> 0 Then ;
+  End;
+  OutCreatedN := 0;
+End;
+
 Procedure FatalError(Const Msg : TString);
 Begin
   WriteLn('AL60CW32: erreur fatale: ', Msg);
+  RemoveOutputs;
   Halt(EXIT_ERROR);
 End;
 
@@ -3459,6 +3517,7 @@ Begin
   Rewrite(F);
   If IOResult <> 0 Then
     FatalError('impossible de creer ' + FileName);
+  NoteOutput(FileName);
   WriteLn(F, '; ', FileName, ' - genere par AL60CW32 ',
           AL60CW32_VERSION, ' a partir de ', Opts.SrcFile);
   WriteLn(F);
@@ -4245,6 +4304,18 @@ Begin
     WarnAt(Line, Col, TypeConvNote(TY_IDX_INTEGER, TY_IDX_BOOLEAN));
 End;
 
+{ Un Boolean utilise comme operande arithmetique ou compare a un
+  nombre vaut 0 ou 1 : avertissement (TypeConvNote) }
+Procedure ExprNoteBoolNum(L, R : Integer; Both : Boolean;
+                          Line, Col : Integer);
+Begin
+  If (Not Both) And (ExprTab[L].Typ = ExprTab[R].Typ) Then Exit;
+  If ExprTab[L].Typ = TY_IDX_BOOLEAN Then
+    WarnAt(Line, Col, TypeConvNote(TY_IDX_BOOLEAN, TY_IDX_INTEGER));
+  If ExprTab[R].Typ = TY_IDX_BOOLEAN Then
+    WarnAt(Line, Col, TypeConvNote(TY_IDX_BOOLEAN, TY_IDX_INTEGER));
+End;
+
 { + ou - unaire, ou not. La constante est repliee ; +x est l'identite. }
 Function ExprMakeUnary(Const Op : TString; A : Integer;
                        Line, Col : Integer) : Integer;
@@ -4330,6 +4401,7 @@ Begin
       OpTypeError(Op, TL, TR, Line, Col);
       Exit;
     End;
+    ExprNoteBoolNum(L, R, False, Line, Col);
     If ExprIsNumConst(L) And ExprIsNumConst(R) Then
     Begin
       If (ExprTab[L].Kind = EX_REAL) Or (ExprTab[R].Kind = EX_REAL) Then
@@ -4447,6 +4519,7 @@ Begin
       OpTypeError(Op, TL, TR, Line, Col);
     Exit;
   End;
+  ExprNoteBoolNum(L, R, True, Line, Col);
 
   { division par une constante nulle }
   If ((Op = '/') Or (Op = 'div')) And ExprIsConst(R) And
@@ -9626,6 +9699,7 @@ Begin
   Assign(F, FileName);
   Rewrite(F);
   If IOResult <> 0 Then Exit;
+  NoteOutput(FileName);
   For I := 0 To CodeCount + DeferCount - 1 Do
   Begin
     Ins := InstrAt(I);
@@ -9909,7 +9983,8 @@ Begin
   Assign(F, FileName);
   Rewrite(F, 1);
   If IOResult <> 0 Then FatalError('impossible de creer ' + FileName);
-    BlockWrite(F, PeOut, FileSize, Written);
+  NoteOutput(FileName);
+  BlockWrite(F, PeOut, FileSize, Written);
   Close(F);
   If Written <> FileSize Then
     FatalError('erreur d''ecriture de ' + FileName);
@@ -10062,6 +10137,7 @@ Begin
   Assign(F, FileName);
   Rewrite(F, 1);
   If IOResult <> 0 Then FatalError('impossible de creer ' + FileName);
+  NoteOutput(FileName);
   BlockWrite(F, PeOut, FileSize, Written);
   Close(F);
   If Written <> FileSize Then
@@ -11069,7 +11145,12 @@ End;
   ============================================================ }
 Procedure PhaseReport;
 Begin
-  { A faire : TODO 23 et 24 }
+  If ErrorCount > 0 Then
+    WriteLn('Compilation echouee : ', ErrorCount, ' erreur(s), ',
+            WarnCount, ' avertissement(s)')
+  Else If (WarnCount > 0) Or Opts.Verbose Then
+    WriteLn('Compilation terminee : 0 erreur, ', WarnCount,
+            ' avertissement(s)');
 End;
 
 { ============================================================
@@ -11099,6 +11180,7 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  OutCreatedN := 0;
   LexQuiet   := False;
   TypeInit;
   SymInit;
