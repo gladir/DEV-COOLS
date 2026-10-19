@@ -2432,6 +2432,14 @@ Const
  EMU_MSCDEX_INFO_OFS  = $0110; { jamais dereferencee - voir AX=1501h      }
  EMU_DPMI_STUB_SEG    = $F000; { trampoline point d entree DPMI (INT      }
  EMU_DPMI_STUB_OFS    = $0120; { 2Fh/1687h), voir Emu_DoInt2F/Dpmi_Switch }
+ { Au-dela des 16 "atterrissages" de rappel (AX=0303h, OFS+4..OFS+34) -   }
+ { voir AX=0305h : un seul octet IRET (CFh), jamais reellement execute   }
+ { comme une vraie procedure de sauvegarde/restauration d etat (notre    }
+ { coeur DPMI ne delegue jamais a un vrai code mode reel pour cela), mais}
+ { une VRAIE adresse mode reel valide et deferencable si jamais un       }
+ { client y saute/l appelle quand meme - voir le commentaire de tete de  }
+ { AX=0305h pour l enquete qui a mene a ce correctif (BC.EXE/BC30). }
+ EMU_DPMI_SSRS_OFS    = $0128;
  { Marqueur de retour utilise par Dpmi_RunRealProc (AX=0301h/0302h,       }
  { "appeler une procedure mode reel") - jamais reellement execute (la      }
  { boucle de step s arrete des que CS:IP l atteint), donc pas besoin d y   }
@@ -9662,6 +9670,12 @@ Var
  EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
  Emu8042WriteHits: Integer;      { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuKeyPushHits: Integer;        { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagInt31Hits: Integer;         { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagPStepHits: Integer;         { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagPIntHits: Integer;          { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagLoop3090Done: Boolean;      { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagRealTrampHits: Integer;     { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagAh48Hits: Integer;          { DIAGNOSTIC TEMPORAIRE - a retirer }
  { --- 8259A/8255A/UART/LPT/NE2000 : voir Emu_PortRead/Emu_PortWrite. --- }
  EmuPICMaster   : TEmuPICChip;   { 20h/21h, tout materiel }
  EmuPICSlave    : TEmuPICChip;   { A0h/A1h, materiel classe AT+ seulement }
@@ -194836,6 +194850,10 @@ Var
  FName, HPath: String;
  IORes: Word;
  BytesIO: Word;
+ DiagAh4c: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGAH4C.LOG }
+ DiagAh48F: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGAH48.LOG }
+ DiagAh48ReqBX: Word; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagAh48Result: String; { DIAGNOSTIC TEMPORAIRE - a retirer }
  SeekPos: LongInt;
  IoI, IoJ: LongInt;
  OpenMode: Byte;
@@ -195819,14 +195837,30 @@ Begin
    { libere ni vu par un programme qui parcourt la chaine (voir            }
    { l enquete TP4/TURBO.EXE, [[project_devenv_netbios]]). }
    Begin
+    { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE) }
+    DiagAh48ReqBX := P.CPU.Regs.BX;
     If Emu_McbAlloc(P.CPU, P.CPU.Regs.BX, EmuPspSeg, McbGotSeg, McbMaxFree) Then Begin
      P.CPU.Regs.AX := McbGotSeg;
      Exclude(P.CPU.Flags.s, EFG_CF);
+     DiagAh48Result := 'OK seg=' + HexWord(McbGotSeg);
     End Else Begin
      Include(P.CPU.Flags.s, EFG_CF);
      P.CPU.Regs.AX := 8;
      P.CPU.Regs.BX := McbMaxFree;
      EmuExtErr := 8;
+     DiagAh48Result := 'FAIL maxfree=' + HexWord(McbMaxFree);
+    End;
+    If DiagAh48Hits < 100 Then Begin
+     Inc(DiagAh48Hits);
+     {$I-} Assign(DiagAh48F, 'DIAGAH48.LOG');
+     If FileExists('DIAGAH48.LOG') Then Append(DiagAh48F) Else Rewrite(DiagAh48F);
+     {$I+}
+     If IOResult = 0 Then Begin
+      WriteLn(DiagAh48F, '#', DiagAh48Hits, ' req BX=', HexWord(DiagAh48ReqBX),
+       ' -> ', DiagAh48Result);
+      Close(DiagAh48F);
+     End;
+     {$I+} If IOResult <> 0 Then ;
     End;
    End;
   $49:
@@ -196010,6 +196044,18 @@ Begin
    End;
   $4C:
    Begin
+    { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE) }
+    {$I-} Assign(DiagAh4c, 'DIAGAH4C.LOG');
+    If FileExists('DIAGAH4C.LOG') Then Append(DiagAh4c) Else Rewrite(DiagAh4c);
+    {$I+}
+    If IOResult = 0 Then Begin
+     WriteLn(DiagAh4c, 'AH=4Ch AL=', HexByte(P.CPU.Regs.AL),
+      ' EmuExecDepth=', EmuExecDepth, ' DpmiActive=', DpmiCPU.Active,
+      ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP),
+      ' TotalSteps=', P.TotalSteps);
+     Close(DiagAh4c);
+    End;
+    {$I+} If IOResult <> 0 Then ;
     EmuExitCode := P.CPU.Regs.AL;
     EmuExitType := 0;
     Emu_DosTerminate(P, 'Programme termine (code ' + IntToStr(EmuExitCode) + ')');
@@ -205596,6 +205642,37 @@ Begin
  Else Dpmi_SelLimit := 0;
 End;
 
+Function Dpmi_SelBig(Sel: Word): Boolean;
+Var Idx: Integer;
+Begin
+ If Dpmi_SelToIdx(Sel, Idx) Then Dpmi_SelBig := DpmiCPU.LDT[Idx].Big
+ Else Dpmi_SelBig := False;
+End;
+
+{ BOGUE REEL CORRIGE (2026-10-19, enquete BC.EXE, suite - divergence trouvee }
+{ via comparaison avec une vraie trace DOSBox) : Dpmi_Push16/32/Pop16/32      }
+{ modifiaient directement DpmiCPU.Reg.ESP (LongInt 32 bits signe) par +/-2/4, }
+{ SANS JAMAIS BOUCLER sur 16 bits quand la pile est une pile 16 bits (bit B   }
+{ du descripteur SS = 0, cas normal de TOUT code 16 bits DOS/Windows 3.x,     }
+{ Is32Bit=False ici) - un vrai 80386 en pile 16 bits ne modifie QUE SP (les   }
+{ 16 bits bas), ESP[31:16] restant inchanges (toujours 0 en pratique ici,     }
+{ voir Dpmi_Switch qui initialise ESP depuis P.CPU.Regs.SP). Des que SP       }
+{ franchissait 0000h vers le bas (PUSH quand SP=0000h) ou FFFFh vers le haut  }
+{ (POP quand SP=FFFFh), l ancien code produisait ESP=FFFFFFFEh/00010000h au   }
+{ lieu de SP=FFFEh/0000h - confirme en direct (DIAGPSTEP.LOG, ESP=FFFFFFF6h   }
+{ a l instruction #1369) : Dpmi_LinAddr ajoute ensuite ce LongInt BRUT (donc  }
+{ negatif ou hors plage 16 bits) a la base du segment, calculant une adresse  }
+{ lineaire COMPLETEMENT FAUSSE pour TOUT acces pile suivant - explique le     }
+{ flux d instructions qui "derive" progressivement (donnees lues comme code  }
+{ a partir d un faux retour de pile) jusqu au plantage final. }
+Procedure Dpmi_AdjustSP(Delta: LongInt);
+Begin
+ If Dpmi_SelBig(DpmiCPU.SegSel[2]) Then
+  DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + Delta
+ Else
+  DpmiCPU.Reg.ESP := Word(LongInt(Word(DpmiCPU.Reg.ESP)) + Delta);
+End;
+
 { Adresse lineaire d un couple selecteur:offset - AUCUNE verification de   }
 { limite n est appliquee (un vrai serveur DPMI declencherait une exception }
 { 0Dh GPF au-dela de la limite - non implante dans cette premiere etape,   }
@@ -205863,6 +205940,21 @@ Begin
  Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS,     $CD);
  Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS + 1, $FB);
  Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS + 2, $CB);
+ { AX=0305h ("Get State Save/Restore Addresses") - voir le correctif      }
+ { a ce case dans Emu_DoInt31. }
+ Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_SSRS_OFS, $CF); { IRET }
+ { BC.EXE/DPMI16BI.OVL relit BX:CX de AX=0305h via AX=0003h ("ce           }
+ { selecteur est-il du code ?", voir Emu_DoInt31) - EMU_DPMI_STUB_SEG      }
+ { ($F000 Shr 3 = 7680, dans la plage 0..EMU_DPMI_MAX_SEL) doit donc       }
+ { exister comme une VRAIE entree LDT "presente" de type code, sans quoi  }
+ { Dpmi_SelToIdx le rejette (jamais alloue via AX=0000h) - marquage        }
+ { honnete : c est reellement du code executable (les octets ecrits        }
+ { juste au-dessus). }
+ DpmiCPU.LDT[EMU_DPMI_STUB_SEG Shr 3].Present := True;
+ DpmiCPU.LDT[EMU_DPMI_STUB_SEG Shr 3].IsCode := True;
+ DpmiCPU.LDT[EMU_DPMI_STUB_SEG Shr 3].Base := LongInt(EMU_DPMI_STUB_SEG) Shl 4;
+ DpmiCPU.LDT[EMU_DPMI_STUB_SEG Shr 3].Limit := $FFFF;
+ DpmiCPU.LDT[EMU_DPMI_STUB_SEG Shr 3].AccessByte := $9A; { present, DPL0, code, lire/executer }
 End;
 
 { Gestionnaire du point d entree DPMI (voir DOC/DPMI.txt 3.2) - execute    }
@@ -205880,10 +205972,27 @@ Var
  RetIP, RetCS: Word;
  CodeSel, DataSel, EsSel, SsSel: Word;
  CodeIdx: Integer;
+ DiagSwF: Text;
+ DiagSwI: Integer;
 Begin
  If Not EmuDpmi.Active Then Exit; { securite, ne devrait pas arriver }
  RetIP := Emu_PopWord(P.CPU);
  RetCS := Emu_PopWord(P.CPU);
+ { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE, suite) }
+ {$I-} Assign(DiagSwF, 'DIAGSWITCH.LOG');
+ If FileExists('DIAGSWITCH.LOG') Then Append(DiagSwF) Else Rewrite(DiagSwF);
+ {$I+}
+ If IOResult = 0 Then Begin
+  WriteLn(DiagSwF, 'RetCS=', HexWord(RetCS), ' RetIP=', HexWord(RetIP),
+   ' CallerCS=', HexWord(P.CPU.Segs.CS), ' CallerIP=', HexWord(P.CPU.IP),
+   ' AX=', HexWord(P.CPU.Regs.AX), ' TotalSteps=', P.TotalSteps);
+  Write(DiagSwF, 'Bytes@RetCS:RetIP-20..+20: ');
+  For DiagSwI := -20 To 20 Do
+   Write(DiagSwF, HexByte(Emu_ReadByte(P.CPU, RetCS, Word(LongInt(RetIP) + DiagSwI))), ' ');
+  WriteLn(DiagSwF);
+  Close(DiagSwF);
+ End;
+ {$I+} If IOResult <> 0 Then ;
  FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
  { BOGUE REEL CORRIGE (2026-10-14, enquete PKUNZIP.EXE) : Is32Bit pilotait  }
  { la taille d operande/adresse par defaut du DECODAGE directement depuis   }
@@ -206092,7 +206201,25 @@ Var
  StructAddr: LongInt;
  IntNum: Byte;
  CbIdx: Integer;
+ DiagInt31: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGINT31.LOG }
 Begin
+ { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE) }
+ If DiagInt31Hits < 200 Then Begin
+  Inc(DiagInt31Hits);
+  {$I-} Assign(DiagInt31, 'DIAGINT31.LOG');
+  If FileExists('DIAGINT31.LOG') Then Append(DiagInt31) Else Rewrite(DiagInt31);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagInt31, '#', DiagInt31Hits, ' AX=', HexWord(DpmiCPU.Reg.AX),
+    ' BX=', HexWord(DpmiCPU.Reg.EBX And $FFFF),
+    ' CX=', HexWord(DpmiCPU.Reg.ECX And $FFFF),
+    ' DX=', HexWord(DpmiCPU.Reg.EDX And $FFFF),
+    ' ESI=', HexLong(DpmiCPU.Reg.ESI), ' EDI=', HexLong(DpmiCPU.Reg.EDI),
+    ' EIP=', HexLong(DpmiCPU.EIP));
+   Close(DiagInt31);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  Exclude(DpmiCPU.Flags.s, EFG_CF);
  Case DpmiCPU.Reg.AX Of
   $0000: Begin
@@ -206112,9 +206239,25 @@ Begin
    End Else DpmiCPU.Reg.AX := NewSel;
   End;
   $0003: Begin
-   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then
-    DpmiCPU.Reg.AX := Byte(DpmiCPU.LDT[Idx].IsCode)
-   Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+   { BOGUE REEL CORRIGE (2026-10-19, enquete DPMI/BC.EXE, suite directe du  }
+   { correctif AX=0305h ci-dessous - voir                                   }
+   { project_devenv_bc30_dpmi_investigation) : AX=0003h n est PAS "obtenir  }
+   { le type d un selecteur" (confusion avec un champ de AX=000Bh "Get      }
+   { Descriptor") - c est **"Get Selector Increment Value"**, une fonction  }
+   { SANS ENTREE qui renvoie TOUJOURS la meme constante (l espacement en    }
+   { octets entre deux selecteurs consecutifs, 8 sur toute architecture     }
+   { x86 reelle puisqu un descripteur GDT/LDT fait 8 octets) - BX n est      }
+   { JAMAIS lu par un vrai hote. Confirme OCTET POUR OCTET par comparaison   }
+   { directe avec un VRAI DOSBox (meme technique que AX=0305h juste en-     }
+   { dessous) : BC.EXE/DPMI16BI.OVL appelle AX=3 avec un BX QUELCONQUE       }
+   { (reliquat d un appel precedent, jamais un vrai selecteur alloue) et     }
+   { recoit TOUJOURS EAX=00000008, CF=0 - jamais d erreur, jamais lie a BX.  }
+   { L ancienne implementation (qui validait BX comme un VRAI selecteur via  }
+   { Dpmi_SelToIdx) renvoyait CF=1 des que BX ne correspondait a aucune       }
+   { entree LDT allouee par NOUS - ce qui arrivait presque toujours ici      }
+   { puisque BX ne designe jamais un vrai selecteur pour cette fonction.     }
+   DpmiCPU.Reg.AX := 8;
+   Exclude(DpmiCPU.Flags.s, EFG_CF);
   End;
   $0006: Begin
    If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then Begin
@@ -206331,24 +206474,45 @@ Begin
    Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8024; End;
   End;
   $0305: Begin
-   { BOGUE REEL CORRIGE (2026-10-14, enquete "TPX.EXE : boucle sur memoire   }
-   { zero", 5e trouvaille, suite de EMU_DPMI_RAWSWITCH_SEL) : AX=0305h       }
-   { "Get Version" NE DEFINIT PAS SI en sortie dans la vraie specification   }
-   { DPMI - un hote reel le laisse donc INTACT. Cette ligne y ecrivait       }
-   { pourtant EMU_DPMI_MAX_CALLBACK (une invention locale sans rapport),     }
-   { ecrasant au passage le SI laisse par le PRECEDENT appel AX=0306h (le    }
-   { selecteur marqueur du "raw mode switch" 32 bits) - TPX.EXE/DOS4GW       }
-   { enchaine justement 0306h PUIS 0305h PUIS sauvegarde SI en memoire,      }
-   { comptant sur le fait qu un hote honnete ne touche pas a SI entre les    }
-   { deux. Confirme en tracant TOUTES les ecritures DS:0080-0089 (DIAGWATCH, }
-   { Dpmi_WriteByte) : rien n y reecrit apres la sous-routine de demarrage - }
-   { [0088] gardait donc EMU_DPMI_MAX_CALLBACK pour de bon au lieu du vrai    }
-   { selecteur, et le CALLF [0086] plus tard dans le programme sautait vers  }
-   { une base de descripteur inexistante (boucle "DIV DH" sur memoire vide). }
-   DpmiCPU.Reg.AX := 90;  { version DPMI 0.9 * 100 }
-   DpmiCPU.Reg.BX := 1;   { bit0=1 : 32 bits supporte }
-   DpmiCPU.Reg.CL := 3;   { 80386 }
-   DpmiCPU.Reg.DH := 0; DpmiCPU.Reg.DL := $5A;
+   { BOGUE REEL CORRIGE (2026-10-19, enquete DPMI/BC.EXE - voir               }
+   { project_devenv_bc30_dpmi_investigation) : ce cas repondait avec la       }
+   { semantique de AX=0400h ("Get Version" : AX=version*100, BX=drapeaux de   }
+   { capacite, CL=cpu, DH/DL=version) - or AX=0305h est en realite "Get       }
+   { State Save/Restore Addresses" (DOC/DPMI.txt 7.6, section correctement    }
+   { intitulee mais dont les CHAMPS documentes etaient ceux de la MAUVAISE    }
+   { fonction) : AX=taille du tampon d etat requis (0 si aucun, cas normal    }
+   { pour un hote simple comme le notre), BX:CX = adresse reelle SEG:OFF      }
+   { d une procedure "sauvegarder l etat", SI:DI = adresse reelle SEG:OFF     }
+   { d une procedure "restaurer l etat" - PAS un bitmask de capacites.        }
+   { Confirme en comparant OCTET PAR OCTET avec un VRAI DOSBox (build local   }
+   { avec deboggeur, voir /c/tmp/dosbox-build/ et le harnais de script non    }
+   { interactif CLAUDE_DBGSCRIPT qu il contient) : a ce MEME point d execution}
+   { (decalage fichier 0x166, confirme identique par ancrage sur 0306h juste  }
+   { avant), le VRAI DPMI de DOSBox renvoie AX=00000000 et BX:CX=0588:089A -  }
+   { exactement un couple segment:offset reel plausible, PAS un petit         }
+   { bitmask - et le client (BC.EXE/DPMI16BI.OVL) relit IMMEDIATEMENT ce      }
+   { BX:CX via AX=0003h ("ce selecteur/cette adresse est-elle du code ?")     }
+   { pour valider la procedure recue. Notre ancienne reponse (BX=1,           }
+   { "capacite 32 bits") n etait donc PAS une adresse valide du tout - le     }
+   { client echouait cette validation et finissait par abandonner (INT 21h   }
+   { AH=4Ch AL=E8h, code de sortie 232 observe). Desormais, BX:CX et SI:DI    }
+   { pointent tous deux vers un veritable octet IRET (CFh) en memoire basse   }
+   { (EMU_DPMI_SSRS_OFS) - jamais reellement invoque comme procedure par      }
+   { notre coeur DPMI (la sauvegarde/restauration d etat est geree de facon   }
+   { synthetique ailleurs), mais une VRAIE adresse dereferencable si un       }
+   { client y saute quand meme, qui se contente alors de revenir aussitot.    }
+   { Risque de regression explicitement envisage pour TPX.EXE/DOS4GW (voir    }
+   { l ancien commentaire, remplace ci-dessus) : ce client sauvegarde EN FAIT }
+   { BX/CX/SI/DI de AX=0306h en memoire AVANT d appeler AX=0305h (confirme    }
+   { dans la MEME trace DOSBox de reference, aux decalages 0x153-0x15F,       }
+   { juste avant l appel 0x166) - il n est donc PAS expose a ce que AX=0305h  }
+   { fait ensuite de ces registres, contrairement a ce que l ancien           }
+   { commentaire supposait sans preuve directe a l epoque. A revalider en     }
+   { direct neanmoins apres ce correctif (voir le plan de verification de     }
+   { l enquete). }
+   DpmiCPU.Reg.AX := 0;
+   DpmiCPU.Reg.BX := EMU_DPMI_STUB_SEG; DpmiCPU.Reg.CX := EMU_DPMI_SSRS_OFS;
+   DpmiCPU.Reg.SI := EMU_DPMI_STUB_SEG; DpmiCPU.Reg.DI := EMU_DPMI_SSRS_OFS;
   End;
   $0306: Begin
    { Adresses "raw mode switch" - BOGUE REEL CORRIGE (2026-10-14, voir       }
@@ -206779,26 +206943,26 @@ End;
 
 Procedure Dpmi_Push32(Var P: TEmulatorPanel; V: LongInt);
 Begin
- DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP - 4;
+ Dpmi_AdjustSP(-4);
  Dpmi_WriteDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP), V);
 End;
 
 Function Dpmi_Pop32(Var P: TEmulatorPanel): LongInt;
 Begin
  Dpmi_Pop32 := Dpmi_ReadDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP));
- DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + 4;
+ Dpmi_AdjustSP(4);
 End;
 
 Procedure Dpmi_Push16(Var P: TEmulatorPanel; V: Word);
 Begin
- DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP - 2;
+ Dpmi_AdjustSP(-2);
  Dpmi_WriteWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP), V);
 End;
 
 Function Dpmi_Pop16(Var P: TEmulatorPanel): Word;
 Begin
  Dpmi_Pop16 := Dpmi_ReadWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP));
- DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + 2;
+ Dpmi_AdjustSP(2);
 End;
 
 { Les 6 formes standard d un opcode ALU compact (00h-3Dh, voir Dpmi_Step) : }
@@ -207101,7 +207265,18 @@ End;
 { chaque aller-retour). }
 Procedure Emu_RawSwitchToProtected(Var P: TEmulatorPanel; ContCS: Word; ContIP: Word);
 Var Sel: Word;
+ DiagRswF: Text;
 Begin
+ { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE, suite) }
+ {$I-} Assign(DiagRswF, 'DIAGRAWSWITCH.LOG');
+ If FileExists('DIAGRAWSWITCH.LOG') Then Append(DiagRswF) Else Rewrite(DiagRswF);
+ {$I+}
+ If IOResult = 0 Then Begin
+  WriteLn(DiagRswF, 'ContCS=', HexWord(ContCS), ' ContIP=', HexWord(ContIP),
+   ' TotalSteps=', P.TotalSteps);
+  Close(DiagRswF);
+ End;
+ {$I+} If IOResult <> 0 Then ;
  If Dpmi_SelBase(DpmiCPU.SegSel[1]) = (LongInt(ContCS) Shl 4) Then
   Sel := DpmiCPU.SegSel[1]
  Else Sel := Dpmi_SegToSel(ContCS);
@@ -207833,6 +208008,10 @@ Var
 { branchement dans la boucle principale). }
 Procedure Dpmi_Step(Var P: TEmulatorPanel);
 Var
+ DiagPStepF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPSTEP.LOG }
+ DiagPIntF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPINT.LOG }
+ DiagLoop3090F: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGLOOP3090.LOG }
+ ScanJ: Integer;
  B, ModRM, Reg, Sub: Byte;
  OpSize: Byte;
  DefSeg: Word;
@@ -207952,6 +208131,37 @@ Begin
  RepMode := 0;
  Repeat
   B := Dpmi_FetchByte(P, 0);
+  { DIAGNOSTIC TEMPORAIRE - a retirer (enquete BC.EXE, boucle 0x3090) }
+  If (DpmiCPU.EIP = $3090) And (Not DiagLoop3090Done) Then Begin
+   DiagLoop3090Done := True;
+   {$I-} Assign(DiagLoop3090F, 'DIAGLOOP3090.LOG'); Rewrite(DiagLoop3090F); {$I+}
+   If IOResult = 0 Then Begin
+    Write(DiagLoop3090F, 'bytes@3090(240)=');
+    For ScanJ := 0 To 239 Do
+     Write(DiagLoop3090F, HexByte(Dpmi_ReadByte(P,
+      Dpmi_SelBase(DpmiCPU.SegSel[1]) + $3090 + ScanJ)), ' ');
+    WriteLn(DiagLoop3090F);
+    Close(DiagLoop3090F);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
+  { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE) }
+  If DiagPStepHits < 20000 Then Begin
+   Inc(DiagPStepHits);
+   {$I-} Assign(DiagPStepF, 'DIAGPSTEP.LOG');
+   If FileExists('DIAGPSTEP.LOG') Then Append(DiagPStepF) Else Rewrite(DiagPStepF);
+   {$I+}
+   If IOResult = 0 Then Begin
+    WriteLn(DiagPStepF, '#', DiagPStepHits, ' CS=', HexWord(DpmiCPU.SegSel[1]),
+     ' EIP=', HexLong(DpmiCPU.EIP),
+     ' B=', HexByte(B), ' EAX=', HexLong(DpmiCPU.Reg.EAX),
+     ' EBX=', HexLong(DpmiCPU.Reg.EBX), ' ESP=', HexLong(DpmiCPU.Reg.ESP),
+     ' SS=', HexWord(DpmiCPU.SegSel[2]), ' CF=',
+     Byte(EFG_CF In DpmiCPU.Flags.s));
+    Close(DiagPStepF);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   Case B Of
    $66: Begin
     If OpSize = 2 Then OpSize := 4 Else OpSize := 2;
@@ -208937,7 +209147,7 @@ Begin
   $C2: Begin { RET Iw (proche) }
    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
    If OpSize = 2 Then DpmiCPU.EIP := Dpmi_Pop16(P) Else DpmiCPU.EIP := Dpmi_Pop32(P);
-   DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + Imm;
+   Dpmi_AdjustSP(Imm);
   End;
   $C3: Begin { RET (proche) }
    If OpSize = 2 Then DpmiCPU.EIP := Dpmi_Pop16(P) Else DpmiCPU.EIP := Dpmi_Pop32(P);
@@ -208977,7 +209187,7 @@ Begin
     DpmiCPU.EIP := RetIP32;
     DpmiCPU.SegSel[1] := RetCS16;
     Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
-    If B = $CA Then DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + Imm;
+    If B = $CA Then Dpmi_AdjustSP(Imm);
    End;
   End;
   $E4: Begin { IN AL,imm8 - BOGUE REEL (2026-10-14, chantier GPF/suite) :    }
@@ -209085,6 +209295,21 @@ Begin
    { que de repli pour les clients DPMI classiques qui n ont jamais appele    }
    { LIDT eux-memes (IdtBase reste alors a 0, voir sa valeur initiale). }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   { DIAGNOSTIC TEMPORAIRE - a retirer (enquete BC.EXE, ecran vide) }
+   If DiagPIntHits < 500 Then Begin
+    Inc(DiagPIntHits);
+    {$I-} Assign(DiagPIntF, 'DIAGPINT.LOG');
+    If FileExists('DIAGPINT.LOG') Then Append(DiagPIntF) Else Rewrite(DiagPIntF);
+    {$I+}
+    If IOResult = 0 Then Begin
+     WriteLn(DiagPIntF, '#', DiagPIntHits, ' INT=', HexByte(Byte(Imm)),
+      ' AX=', HexWord(DpmiCPU.Reg.AX), ' BX=', HexWord(DpmiCPU.Reg.BX),
+      ' CX=', HexWord(DpmiCPU.Reg.CX), ' DX=', HexWord(DpmiCPU.Reg.DX),
+      ' TotalSteps=', P.TotalSteps);
+     Close(DiagPIntF);
+    End;
+    {$I+} If IOResult <> 0 Then ;
+   End;
    If Imm = $31 Then Emu_DoInt31(P)  { toujours le service DPMI, jamais       }
                                       { redirigeable par le client (voir     }
                                       { DOC/DPMI.txt) }
@@ -209646,7 +209871,7 @@ Begin
      Dpmi_Push32(P, V32);
     End;
     DpmiCPU.Reg.EBP := V32;
-    DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP - Imm;
+    Dpmi_AdjustSP(-Imm);
    End;
   End;
   $CE: Begin { INTO : declenche l exception 4 (Overflow) SEULEMENT si OF=1 }
@@ -211185,6 +211410,7 @@ Var
  Borrow1: Boolean; { DAS ($2F) : report du 1er ajustement, voir son commentaire }
  LslB0, LslB1, LslB6: Byte;            { octets de limite/indicateurs LSL   }
  LslRawLimit, LslEffLimit: LongInt;    { limite brute puis apres granularite}
+ DiagRealTrampF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGREALTRAMP.LOG }
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  { CPU reellement a l'arret (HLT, voir $F4 plus bas) : ne rien       }
@@ -211363,6 +211589,23 @@ Begin
  { Boucle pour absorber prefixes de segment et REP/REPNE en serie }
  Repeat
   OpCode := Emu_FetchByte(P.CPU, 0);
+  { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE, suite) }
+  If (P.CPU.Segs.CS = $010C) And (P.CPU.IP >= $0A00) And (P.CPU.IP <= $0A40)
+   And (DiagRealTrampHits < 500) Then Begin
+   Inc(DiagRealTrampHits);
+   {$I-} Assign(DiagRealTrampF, 'DIAGREALTRAMP.LOG');
+   If FileExists('DIAGREALTRAMP.LOG') Then Append(DiagRealTrampF)
+                                       Else Rewrite(DiagRealTrampF);
+   {$I+}
+   If IOResult = 0 Then Begin
+    WriteLn(DiagRealTrampF, '#', DiagRealTrampHits, ' CS:IP=',
+     HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP), ' OpCode=',
+     HexByte(OpCode), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+     HexWord(P.CPU.Regs.SP), ' TotalSteps=', P.TotalSteps);
+    Close(DiagRealTrampF);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   Case OpCode Of
    $26: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.ES;
               ResetSegOvr := True; Inc(P.CPU.IP); End;
@@ -229575,6 +229818,7 @@ Procedure DOS_PrintEndMessage(Var P: TEmulatorPanel);
 Var
  LogF_R: Text;
  Idx_R, KK_R: Integer;
+ DiagEndMsgF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGENDMSG.LOG }
 Begin
  { "DEBUG ... /SOFTICE:fichier" (2026-10-12) : si la derniere ligne du       }
  { script etait un "G" qui a fait tourner le programme jusqu'a SA PROPRE     }
@@ -229585,6 +229829,25 @@ Begin
  { ecrit si un script etait actif, pas seulement sur demande). }
  If EmuCmdConsole.Base.Visible Then EmuDbg_DumpConsoleTranscript;
  P.Fault := P.CPU.Fault;
+ { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE, suite) : capture }
+ { l etat REEL au moment precis ou le message de fin s affiche, quelle que }
+ { soit la branche (Dpmi_Step ou Emu_StepOne) qui a positionne la faute -   }
+ { DIAGDPMIFAULT.LOG ne couvre que les fautes levees DANS Dpmi_Step via le  }
+ { site d appel garde par DpmiCPU.Active ; ce nouveau fichier couvre TOUS   }
+ { les cas sans hypothese sur l origine. }
+ If P.Fault = sfInvalidCode Then Begin
+  {$I-} Assign(DiagEndMsgF, 'DIAGENDMSG.LOG'); Rewrite(DiagEndMsgF); {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagEndMsgF, 'TotalSteps=', P.TotalSteps,
+    ' LastBadOp=', HexByte(P.CPU.LastBadOp),
+    ' LastBadCS:IP=', HexWord(P.CPU.LastBadCS), ':', HexWord(P.CPU.LastBadIP),
+    ' RealCS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP),
+    ' DpmiActive=', Ord(DpmiCPU.Active),
+    ' DpmiEIP=', HexLong(DpmiCPU.EIP));
+   Close(DiagEndMsgF);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  { Resume EMUDIAG.LOG de fin de session - voir Options > Emulateur >      }
  { DOS: Debug (DosLogDiag) pour activer/desactiver. Ecrit systematiquement }
  { (pas seulement en cas d anomalie), contrairement aux deux autres        }
@@ -250871,7 +251134,23 @@ Var
  LinAddr: LongInt;
 Begin
  If Not EmuDbg.Active Then Exit;
- LinAddr := (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP;
+ { BOGUE REEL CORRIGE (2026-10-19, enquete DPMI/BC.EXE) : ce hook lisait  }
+ { TOUJOURS EmuPanel.CPU.Segs.CS/IP (coeur REEL), meme une fois          }
+ { DpmiCPU.Active=True - or DOS_RunOneChunk n appelle alors plus JAMAIS   }
+ { Emu_StepOne (voir son Dispatch "If DpmiCPU.Active Then Dpmi_Step(P)    }
+ { Else Emu_StepOne(P)"), donc P.CPU.IP reste FIGE pour toujours a        }
+ { l adresse de la bascule reel->protege. Consequence concrete :         }
+ { un BPX pose sur cette adresse semblait se RE-DECLENCHER A L IDENTIQUE  }
+ { (memes registres) a chaque G/T suivant, donnant une fausse apparence   }
+ { de boucle infinie alors que le programme progressait normalement en    }
+ { mode protege. Desormais, une fois actif, l adresse suivie est celle    }
+ { du coeur protege (base du selecteur de code + EIP), coherente avec     }
+ { la logique deja utilisee par Emu_RawSwitchToProtected/ToReal pour      }
+ { reconnaitre un meme alias. }
+ If DpmiCPU.Active Then
+  LinAddr := Dpmi_SelBase(DpmiCPU.SegSel[1]) + DpmiCPU.EIP
+ Else
+  LinAddr := (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP;
  If EmuDbg_ShouldBreak(EDC_8086, LinAddr) Then
   EmuDbg_EnterPause(EDC_8086);
 End;
