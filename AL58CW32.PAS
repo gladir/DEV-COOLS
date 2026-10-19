@@ -28,7 +28,8 @@
          (types), TODO 06 (symboles et portees) et TODO 07 (structure du
          programme et declarations) et TODO 08 (expressions et
          precedence) et TODO 09 (relationnels, booleens, expression
-         conditionnelle) implementes, les autres TODOs sont a faire.
+         conditionnelle) et TODO 10 (variables, affectations, own)
+         implementes, les autres TODOs sont a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -181,7 +182,7 @@
             Reste pour la generation de code (TODO 18) : TEST / Jcc,
               SETcc, court-circuit de and / or sur valeurs variables
 
-  TODO 10 - VARIABLES, AFFECTATIONS ET VARIABLES OWN [A FAIRE]
+  TODO 10 - VARIABLES, AFFECTATIONS ET VARIABLES OWN [IMPLEMENTE]
             Variables globales : section .data, label _A58V_nom
             Variables locales de bloc/procedure : [EBP-n]
             Variables own : section .data, persistantes entre appels,
@@ -191,7 +192,19 @@
             Affectation multiple a := b := expr (associative a droite)
             Valeur negative et litteral signe ("b := -7")
             Initialisation des variables locales non specifiee en Algol
-              58 : choisir et documenter (zero recommande)
+              58 : choix retenu, zero (les variables statiques sont a
+              zero dans .data ; les locales de procedure seront mises a
+              zero au prologue par le generateur, TODO 18)
+            Realise : cible = variable, own, parametre (valeur ou nom),
+              ou nom de la fonction dont le corps est en cours (valeur de
+              retour) ; noeud EX_ASSIGN avec conversion (ExprCoerce) :
+              constantes converties a la compilation, real -> integer
+              arrondi au plus proche (demi vers le haut, avec
+              avertissement), real -> Boolean interdit ; affectations
+              multiples a droite ; variable non declaree : avertissement
+              et declaration implicite ; appels, indices et fonctions
+              intrinseques (mod(a, b), max...) : noeuds opaques types
+              integer en attendant les TODO 11, 14 et 17
 
   TODO 11 - TABLEAUX [A FAIRE]
             Declaration : [integer|real|Boolean] array nom[lo:hi] et
@@ -2198,12 +2211,31 @@ Var
   DeclCount  : LongInt;      { symboles declares (statistiques)     }
   BlockCount : LongInt;      { blocs begin...end analyses           }
   ProcCount  : LongInt;      { procedures declarees                 }
+  AssignCount: LongInt;      { affectations analysees               }
+  ParkValid  : Boolean;      { un token est range (ParserUnget)     }
+  ParkTok    : TToken;
 
 { ---- Primitives du parseur -------------------------------------- }
 
 Procedure ParserAdvance;
 Begin
-  LexNextToken(CurToken);
+  If ParkValid Then
+  Begin
+    CurToken  := ParkTok;
+    ParkValid := False;
+  End
+  Else
+    LexNextToken(CurToken);
+End;
+
+{ Rend Saved (le token precedent) courant ; le token courant est
+  range et reviendra au prochain ParserAdvance. Permet de regarder un
+  token apres un identificateur avant de decider du type d'instruction. }
+Procedure ParserUnget(Const Saved : TToken);
+Begin
+  ParkTok   := CurToken;
+  ParkValid := True;
+  CurToken  := Saved;
 End;
 
 Function TokText(Const T : TToken) : TString;
@@ -2304,7 +2336,9 @@ Type
     EX_VAR,         { variable scalaire (Sym)               }
     EX_UNARY,       { Op appliquee a L                      }
     EX_BINARY,      { L Op R                                }
-    EX_COND         { if L then R else E                    }
+    EX_COND,        { if L then R else E                    }
+    EX_ASSIGN,      { L := R (L : variable) ; valeur = celle de L }
+    EX_OPAQUE       { appel / indice non encore traduit (StrIdx = nom) }
   );
 
   TExprNode = Record
@@ -2314,6 +2348,7 @@ Type
     IntVal  : LongInt;
     RealVal : Double;
     StrIdx  : Integer;
+    Conv    : TConv;        { EX_ASSIGN : conversion de R vers L }
     Sym     : Integer;
     L, R, E : Integer;      { fils, -1 si absent (E : sinon)    }
     Line    : Integer;
@@ -2380,16 +2415,22 @@ Begin
   ExprMakeBool := N;
 End;
 
+{ Range S dans la table des chaines de l'expression ; retourne l'indice }
+Function ExprAddStr(Const S : TString) : Integer;
+Begin
+  If ExprStrCount >= MAX_EXPR_STR Then
+    FatalError('trop de chaines dans une expression');
+  ExprStrTab[ExprStrCount] := S;
+  ExprAddStr := ExprStrCount;
+  Inc(ExprStrCount);
+End;
+
 Function ExprMakeStr(Const S : TString; Line, Col : Integer) : Integer;
 Var
   N : Integer;
 Begin
-  If ExprStrCount >= MAX_EXPR_STR Then
-    FatalError('trop de chaines dans une expression');
   N := ExprNew(EX_STR, TY_IDX_STRING, Line, Col);
-  ExprStrTab[ExprStrCount] := S;
-  ExprTab[N].StrIdx := ExprStrCount;
-  Inc(ExprStrCount);
+  ExprTab[N].StrIdx := ExprAddStr(S);
   ExprMakeStr := N;
 End;
 
@@ -2900,6 +2941,93 @@ Begin
   ExprMakeBinary := N;
 End;
 
+Function ConvName(C : TConv) : TString;
+Begin
+  Case C Of
+    CV_NONE        : ConvName := 'none';
+    CV_INT_TO_REAL : ConvName := 'int->real';
+    CV_REAL_TO_INT : ConvName := 'real->int';
+    CV_INT_TO_BOOL : ConvName := 'int->bool';
+    CV_ERROR       : ConvName := 'error';
+  End;
+End;
+
+{ Arrondi au plus proche, demi vers le haut : entier(x + 0.5) }
+Function RoundHalfUp(X : Double) : LongInt;
+Var
+  Y : Double;
+  I : LongInt;
+Begin
+  Y := X + 0.5;
+  I := Trunc(Y);
+  If (Y < 0) And (Frac(Y) <> 0) Then Dec(I);
+  RoundHalfUp := I;
+End;
+
+{ Convertit la valeur du noeud N vers le type Dest (affectation) :
+  verifie la compatibilite et plie la conversion des constantes ;
+  Conv indique la conversion a generer pour une valeur non constante.
+  Retourne False apres avoir signale une erreur. }
+Function ExprCoerce(N, Dest : Integer; Var Conv : TConv;
+                    Line, Col : Integer) : Boolean;
+Begin
+  ExprCoerce := False;
+  Conv := TypeConversion(ExprTab[N].Typ, Dest);
+  If Conv = CV_ERROR Then
+  Begin
+    ErrorAt(Line, Col, 'affectation incompatible: ' +
+            TypeName(ExprTab[N].Typ) + ' vers ' + TypeName(Dest));
+    Exit;
+  End;
+  If Conv = CV_REAL_TO_INT Then
+    WarnAt(Line, Col, 'real affecte a un integer: arrondi au plus proche');
+  Case ExprTab[N].Kind Of
+    EX_INT:
+      If Dest = TY_IDX_REAL Then
+      Begin
+        ExprTab[N].RealVal := ExprTab[N].IntVal;
+        ExprTab[N].Kind := EX_REAL;
+        ExprTab[N].Typ  := TY_IDX_REAL;
+        Conv := CV_NONE;
+      End
+      Else If Dest = TY_IDX_BOOLEAN Then
+      Begin
+        If ExprTab[N].IntVal <> 0 Then ExprTab[N].IntVal := 1;
+        ExprTab[N].Kind := EX_BOOL;
+        ExprTab[N].Typ  := TY_IDX_BOOLEAN;
+        Conv := CV_NONE;
+      End;
+    EX_REAL:
+      If Dest = TY_IDX_INTEGER Then
+      Begin
+        If Abs(ExprTab[N].RealVal) >= 2147483647.0 Then
+        Begin
+          ErrorAt(Line, Col, 'constante reelle hors de l''intervalle ' +
+                  'integer');
+          Exit;
+        End;
+        ExprTab[N].IntVal := RoundHalfUp(ExprTab[N].RealVal);
+        ExprTab[N].Kind := EX_INT;
+        ExprTab[N].Typ  := TY_IDX_INTEGER;
+        Conv := CV_NONE;
+      End;
+    EX_BOOL:
+      If Dest = TY_IDX_INTEGER Then
+      Begin
+        ExprTab[N].Kind := EX_INT;
+        ExprTab[N].Typ  := TY_IDX_INTEGER;
+      End
+      Else If Dest = TY_IDX_REAL Then
+      Begin
+        ExprTab[N].RealVal := ExprTab[N].IntVal;
+        ExprTab[N].Kind := EX_REAL;
+        ExprTab[N].Typ  := TY_IDX_REAL;
+        Conv := CV_NONE;
+      End;
+  End;
+  ExprCoerce := True;
+End;
+
 { if C then T else E : valeur de T ou de E. Les branches ont un type
   commun : Boolean si les deux le sont, chaine si les deux le sont,
   sinon le type arithmetique (real si l'une l'est). Une condition
@@ -3012,10 +3140,29 @@ Begin
   ParseCondExpr := ExprMakeCond(C, T, E, Line, Col);
 End;
 
+{ Appel ou indice : saute le groupe ( ... ) ou [ ... ] courant et le
+  remplace par un noeud opaque de type T (TODO 11, 14, 17). }
+Function ParseOpaque(Const Tok : TToken; T : Integer) : Integer;
+Var
+  N, Depth : Integer;
+Begin
+  Depth := 0;
+  Repeat
+    If AtPunct('(') Or AtPunct('[') Then
+      Inc(Depth)
+    Else If AtPunct(')') Or AtPunct(']') Then
+      Dec(Depth);
+    ParserAdvance;
+  Until (Depth <= 0) Or AtEOF Or AtPunct(';');
+  N := ExprNew(EX_OPAQUE, T, Tok.Line, Tok.Col);
+  ExprTab[N].StrIdx := ExprAddStr(Tok.Val);
+  ParseOpaque := N;
+End;
+
 Function ParsePrimary : Integer;
 Var
-  N, S : Integer;
-  Tok  : TToken;
+  N, S, T : Integer;
+  Tok     : TToken;
 Begin
   ParsePrimary := -1;
   Tok := CurToken;
@@ -3043,6 +3190,16 @@ Begin
       End
       Else If Tok.Val = 'if' Then
         ParsePrimary := ParseCondExpr
+      Else If (Tok.Val = 'mod') Or (Tok.Val = 'div') Then
+      Begin
+        { mod(a, b) : forme fonction (TODO 17) }
+        ParserAdvance;
+        If AtPunct('(') Then
+          ParsePrimary := ParseOpaque(Tok, TY_IDX_INTEGER)
+        Else
+          ErrorAt(Tok.Line, Tok.Col, 'expression attendue (trouve: ''' +
+                  Tok.Val + ''')');
+      End
       Else
         ParseError('expression attendue');
     TK_PUNCT:
@@ -3060,12 +3217,18 @@ Begin
         ParseError('expression attendue');
     TK_IDENT:
       Begin
-        { variable scalaire ; appels et indices : TODO 10 }
         ParserAdvance;
         If AtPunct('(') Or AtPunct('[') Then
         Begin
-          ErrorAt(Tok.Line, Tok.Col,
-                  'appel ou indice non encore supporte: ' + Tok.Val);
+          { appel ou indice : saute les arguments ; la traduction
+            releve des TODO 11 (tableaux), 14 (procedures) et 17
+            (fonctions intrinseques) }
+          S := SymFind(Tok.Val);
+          T := TY_IDX_INTEGER;
+          If S >= 0 Then
+            If SymTab[S].Kind In [SK_FUNC, SK_ARRAY] Then
+              T := SymTab[S].TypeIdx;
+          ParsePrimary := ParseOpaque(Tok, T);
           Exit;
         End;
         S := SymFind(Tok.Val);
@@ -3175,6 +3338,10 @@ Begin
     EX_BINARY : WriteLn('binary ', ExprTab[N].Op, ' : ',
                         TypeName(ExprTab[N].Typ));
     EX_COND   : WriteLn('cond : ', TypeName(ExprTab[N].Typ));
+    EX_ASSIGN : WriteLn('assign := ', ConvName(ExprTab[N].Conv), ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_OPAQUE : WriteLn('opaque ', ExprStrTab[ExprTab[N].StrIdx], ' : ',
+                        TypeName(ExprTab[N].Typ));
   End;
   If ExprTab[N].Kind = EX_COND Then
   Begin
@@ -3242,6 +3409,109 @@ Begin
       ParseBlock
     Else
       ParserAdvance;
+End;
+
+{ ---- Affectations (TODO 10) -------------------------------------- }
+
+{ Cible d'une affectation : variable, own, parametre, ou nom de la
+  fonction dont le corps est en cours (valeur de retour). -1 si erreur. }
+Function ResolveTarget(Const Tok : TToken) : Integer;
+Var
+  S : Integer;
+Begin
+  ResolveTarget := -1;
+  S := SymFind(Tok.Val);
+  If S < 0 Then
+    S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
+  Case SymTab[S].Kind Of
+    SK_VAR, SK_OWN, SK_PARAM_VALUE, SK_PARAM_NAME:
+      ResolveTarget := ExprMakeVar(S, Tok.Line, Tok.Col);
+    SK_FUNC:
+      If S = SymCurProc Then
+        ResolveTarget := ExprMakeVar(S, Tok.Line, Tok.Col)
+      Else
+        ErrorAt(Tok.Line, Tok.Col, 'affectation au nom d''une fonction ' +
+                'hors de son corps: ' + Tok.Val);
+  Else
+    ErrorAt(Tok.Line, Tok.Col, 'affectation impossible: ' + Tok.Val +
+            ' (' + SymKindName(SymTab[S].Kind) + ')');
+  End;
+End;
+
+{ nom := valeur   (Tok = le nom, ':=' est le token courant)
+  Affectations multiples a := b := expr (associatives a droite) :
+  chaque affectation vaut la valeur convertie vers sa cible. }
+Function ParseAssignExpr(Const Tok : TToken) : Integer;
+Var
+  Tgt, Val, N : Integer;
+  Conv        : TConv;
+  T2          : TToken;
+  Line, Col   : Integer;
+Begin
+  ParseAssignExpr := -1;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  Tgt  := ResolveTarget(Tok);
+  ParserAdvance;                          { :=  }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    T2 := CurToken;
+    ParserAdvance;
+    If AtOp(':=') Then
+      Val := ParseAssignExpr(T2)
+    Else
+    Begin
+      ParserUnget(T2);
+      Val := ParseExpr;
+    End;
+  End
+  Else
+    Val := ParseExpr;
+  If (Tgt < 0) Or (Val < 0) Then Exit;
+  If Not ExprCoerce(Val, ExprTab[Tgt].Typ, Conv, Line, Col) Then Exit;
+  N := ExprNew(EX_ASSIGN, ExprTab[Tgt].Typ, Line, Col);
+  ExprTab[N].Op   := ':=';
+  ExprTab[N].L    := Tgt;
+  ExprTab[N].R    := Val;
+  ExprTab[N].Conv := Conv;
+  Inc(AssignCount);
+  ParseAssignExpr := N;
+End;
+
+{ Instruction commencant par un identificateur : affectation si le
+  token suivant est ':='. Etiquettes (TODO 13), appels de procedure
+  (TODO 14), elements de tableau (TODO 11) et write/read (TODO 16)
+  restent sautes pour le moment. }
+Procedure ParseIdentStatement;
+Var
+  Tok : TToken;
+  N   : Integer;
+Begin
+  Tok := CurToken;
+  ParserAdvance;
+  If Not AtOp(':=') Then
+  Begin
+    ParserUnget(Tok);
+    SkipStatement;
+    Exit;
+  End;
+  ExprReset;
+  N := ParseAssignExpr(Tok);
+  If N < 0 Then
+    ParserSync
+  Else
+  Begin
+    If Opts.DebugMode Then
+    Begin
+      WriteLn('Affectation ligne ', ExprTab[N].Line, ' :');
+      ExprDump(N, 0);
+    End;
+    If Not (AtEOF Or AtPunct(';') Or AtKw('end')) Then
+    Begin
+      ParseError('operateur ou '';'' attendu');
+      ParserSync;
+    End;
+  End;
 End;
 
 { ---- Declarations ----------------------------------------------- }
@@ -3653,6 +3923,8 @@ Begin
     ParseDeclaration
   Else If AtExprStart Then
     ParseExprStatement
+  Else If CurToken.Kind = TK_IDENT Then
+    ParseIdentStatement
   Else
     SkipStatement;
 End;
@@ -3717,6 +3989,8 @@ Begin
   DeclCount  := 0;
   BlockCount := 0;
   ProcCount  := 0;
+  AssignCount := 0;
+  ParkValid  := False;
   LexQuiet   := True;            { erreurs lexicales deja signalees }
   LexInit;
   SymEnterScope;                 { portee globale (identifiant 1) }
@@ -3725,8 +3999,8 @@ Begin
   LexClose;
   If Opts.Verbose Then
     WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
-            ' procedure(s), ', BlockCount, ' bloc(s), ', FoldCount,
-            ' constante(s) repliee(s)');
+            ' procedure(s), ', BlockCount, ' bloc(s), ', AssignCount,
+            ' affectation(s), ', FoldCount, ' constante(s) repliee(s)');
 End;
 
 { ============================================================
