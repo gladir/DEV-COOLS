@@ -25,8 +25,9 @@
 
   ETAT : TODO 01 (squelette et pipeline), TODO 02 (options), TODO 03
          (constantes, limites, nommage), TODO 04 (lexeur) et TODO 05
-         (types) et TODO 06 (symboles et portees) implementes, les autres
-         TODOs sont a faire.
+         (types), TODO 06 (symboles et portees) et TODO 07 (structure du
+         programme et declarations) implementes, les autres TODOs sont
+         a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -122,7 +123,7 @@
             Calcul des offsets locaux [EBP-n] et des parametres [EBP+n]
             Niveau d'imbrication statique pour les procedures imbriquees
 
-  TODO 07 - STRUCTURE D'UN PROGRAMME ET DECLARATIONS MELANGEES [A FAIRE]
+  TODO 07 - STRUCTURE D'UN PROGRAMME ET DECLARATIONS MELANGEES [IMPLEMENTE]
             Un programme est un bloc begin ... end ou une suite
               d'instructions sans begin/end englobant (test_types.a58,
               test_symbols.a58, test_emitter.a58)
@@ -921,6 +922,13 @@ Var
   LexPending : Boolean;    { un token est en attente (go to)      }
   LexPendTok : TToken;
   TokenCount : LongInt;    { tokens lus (statistiques)            }
+  LexQuiet   : Boolean;    { vrai : ne pas rapporter les erreurs  }
+
+{ Erreur lexicale ; la 2e passe (parseur) ne les repete pas }
+Procedure LexError(Line, Col : Integer; Const Msg : TString);
+Begin
+  If Not LexQuiet Then ErrorAt(Line, Col, Msg);
+End;
 
 { Lit un octet du fichier source ; #0 a la fin du fichier.
   Un octet 0 reel ou ^Z fait partie de la fin / est invalide. }
@@ -1119,7 +1127,7 @@ Begin
       LexNextChar;
     End;
     If Not IsDigit(LexCur) Then
-      ErrorAt(LexLine, LexCol, 'exposant invalide: chiffre attendu')
+      LexError(LexLine, LexCol, 'exposant invalide: chiffre attendu')
     Else
     Begin
       ExpV := 0;
@@ -1140,7 +1148,7 @@ Begin
     T.Kind := TK_REAL;
     If (E10 > 308) Or (E10 < -308) Then
     Begin
-      ErrorAt(T.Line, T.Col, 'exposant hors limites: ' + T.Val);
+      LexError(T.Line, T.Col, 'exposant hors limites: ' + T.Val);
       T.RealVal := 0;
     End
     Else
@@ -1160,7 +1168,7 @@ Begin
     T.Kind := TK_INTEGER;
     If IntOvf Then
     Begin
-      ErrorAt(T.Line, T.Col, 'entier hors limites: ' + T.Val);
+      LexError(T.Line, T.Col, 'entier hors limites: ' + T.Val);
       T.IntVal := MaxLongInt;
     End;
     T.RealVal := T.IntVal;
@@ -1182,7 +1190,7 @@ Begin
       T.Val := T.Val + LexCur
     Else If Not TooLong Then
     Begin
-      ErrorAt(T.Line, T.Col, 'chaine trop longue (max ' +
+      LexError(T.Line, T.Col, 'chaine trop longue (max ' +
               ItoS(MAX_STR) + ' caracteres)');
       TooLong := True;                   { une seule erreur par chaine }
     End;
@@ -1191,7 +1199,7 @@ Begin
   If LexCur = '"' Then
     LexNextChar
   Else
-    ErrorAt(T.Line, T.Col, 'chaine non fermee');
+    LexError(T.Line, T.Col, 'chaine non fermee');
 End;
 
 { Commentaire : "comment" deja lu, ignore tout jusqu au ; inclus }
@@ -1202,7 +1210,7 @@ Begin
   If LexCur = ';' Then
     LexNextChar
   Else
-    ErrorAt(StartLine, StartCol,
+    LexError(StartLine, StartCol,
             'commentaire non termine (point-virgule attendu)');
 End;
 
@@ -1273,7 +1281,7 @@ Begin
             End
             Else
             Begin
-              ErrorAt(T.Line, T.Col, 'caractere invalide: !');
+              LexError(T.Line, T.Col, 'caractere invalide: !');
               Done := False;
             End;
           End;
@@ -1296,10 +1304,10 @@ Begin
       Else
         Begin
           If (C < ' ') Or (C > '~') Then
-            ErrorAt(T.Line, T.Col,
+            LexError(T.Line, T.Col,
                     'caractere invalide: code ' + ItoS(Ord(C)))
           Else
-            ErrorAt(T.Line, T.Col, 'caractere invalide: ' + C);
+            LexError(T.Line, T.Col, 'caractere invalide: ' + C);
           LexNextChar;
           Done := False;
         End;
@@ -1652,6 +1660,7 @@ Type
     ArrLo      : Array[1..MAX_DIM] Of LongInt;
     ArrHi      : Array[1..MAX_DIM] Of LongInt;
     ArrDynamic : Boolean;     { tableau : bornes calculees a l exec. }
+    ElemType   : Integer;     { tableau : type des elements          }
     ParamCount : Integer;     { procedure : nombre de parametres     }
     ParamSym   : Array[1..MAX_PARAM] Of Integer;
     ParamBytes : Integer;     { procedure : taille des parametres    }
@@ -2145,9 +2154,580 @@ End;
 { ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 07 a 17)
   ============================================================ }
+Var
+  CurToken   : TToken;       { token courant du parseur             }
+  DeclCount  : LongInt;      { symboles declares (statistiques)     }
+  BlockCount : LongInt;      { blocs begin...end analyses           }
+  ProcCount  : LongInt;      { procedures declarees                 }
+
+{ ---- Primitives du parseur -------------------------------------- }
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken(CurToken);
+End;
+
+Function TokText(Const T : TToken) : TString;
+Begin
+  Case T.Kind Of
+    TK_EOF    : TokText := 'fin de fichier';
+    TK_STRING : TokText := '"' + T.Val + '"';
+    TK_INTEGER,
+    TK_REAL   : TokText := T.Val;
+  Else
+    TokText := '''' + T.Val + '''';
+  End;
+End;
+
+Procedure ParseError(Const Msg : TString);
+Begin
+  ErrorAt(CurToken.Line, CurToken.Col,
+          Msg + ' (trouve: ' + TokText(CurToken) + ')');
+End;
+
+Function AtEOF : Boolean;
+Begin
+  AtEOF := (CurToken.Kind = TK_EOF);
+End;
+
+Function AtKw(Const S : TString) : Boolean;
+Begin
+  AtKw := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = S);
+End;
+
+Function AtPunct(C : Char) : Boolean;
+Begin
+  AtPunct := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = C);
+End;
+
+Function AtOp(Const S : TString) : Boolean;
+Begin
+  AtOp := (CurToken.Kind = TK_OP) And (CurToken.Val = S);
+End;
+
+Function AtTypeKw : Boolean;
+Begin
+  AtTypeKw := AtKw('integer') Or AtKw('real') Or AtKw('boolean');
+End;
+
+Function AtDeclKw : Boolean;
+Begin
+  AtDeclKw := AtTypeKw Or AtKw('own') Or AtKw('array') Or
+              AtKw('procedure') Or AtKw('switch');
+End;
+
+Procedure ExpectPunct(C : Char);
+Begin
+  If AtPunct(C) Then
+    ParserAdvance
+  Else
+    ParseError('''' + C + ''' attendu');
+End;
+
+{ Recuperation apres une erreur : avance jusqu au prochain ';' ou
+  'end' (non consommes) pour reprendre l analyse (TODO 23). }
+Procedure ParserSync;
+Begin
+  While Not (AtEOF Or AtPunct(';') Or AtKw('end')) Do
+    ParserAdvance;
+End;
+
+Procedure ParseBlock; Forward;
+
+{ Instruction simple (placeholder des TODO 08 a 13) : consomme les
+  tokens jusqu au prochain ';' ou 'end' (non consommes). Un bloc
+  begin...end imbrique est analyse a part pour que ses declarations
+  et sa structure soient verifiees. L'expression isolee "42 ;" est
+  donc lue puis ignoree. }
+Procedure SkipStatement;
+Begin
+  While Not (AtEOF Or AtPunct(';') Or AtKw('end')) Do
+    If AtKw('begin') Then
+      ParseBlock
+    Else
+      ParserAdvance;
+End;
+
+{ ---- Declarations ----------------------------------------------- }
+
+{ integer a, b, c   (declaration de variables, own ou non) }
+Procedure ParseVarList(K : TSymKind; T : Integer; IsOwn : Boolean);
+Var
+  Done : Boolean;
+Begin
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParseError('identificateur attendu dans la declaration');
+      ParserSync;
+      Exit;
+    End;
+    SymAdd(CurToken.Val, K, T, IsOwn, CurToken.Line, CurToken.Col);
+    Inc(DeclCount);
+    ParserAdvance;
+    Done := Not AtPunct(',');
+    If Not Done Then ParserAdvance;
+  Until Done;
+End;
+
+{ Saute une expression de borne jusqu'a ':' ',' ']' ou ';' }
+Procedure SkipBoundExpr;
+Var
+  Depth : Integer;
+Begin
+  Depth := 0;
+  While Not AtEOF Do
+  Begin
+    If Depth = 0 Then
+      If AtPunct(':') Or AtPunct(',') Or AtPunct(']') Or AtPunct(';')
+         Or AtKw('end') Then
+        Exit;
+    If AtPunct('(') Or AtPunct('[') Then
+      Inc(Depth)
+    Else If (AtPunct(')') Or AtPunct(']')) And (Depth > 0) Then
+      Dec(Depth);
+    ParserAdvance;
+  End;
+End;
+
+{ Borne de tableau : constante entiere signee, sinon expression a
+  evaluer a l execution (Dyn = True, TODO 11). }
+Procedure ParseBound(Var V : LongInt; Var Dyn : Boolean);
+Var
+  Neg : Boolean;
+Begin
+  Neg := False;
+  V   := 0;
+  If AtOp('-') Then
+  Begin
+    Neg := True;
+    ParserAdvance;
+  End
+  Else If AtOp('+') Then
+    ParserAdvance;
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    V := CurToken.IntVal;
+    If Neg Then V := -V;
+    ParserAdvance;
+    If Not (AtPunct(':') Or AtPunct(',') Or AtPunct(']')) Then
+    Begin
+      Dyn := True;                { expression composee }
+      SkipBoundExpr;
+    End;
+  End
+  Else
+  Begin
+    Dyn := True;
+    SkipBoundExpr;
+  End;
+End;
+
+{ [integer|real|Boolean] array a, b [lo:hi, lo:hi], c [lo:hi]
+  Un tableau sans type est de type real (regle d Algol 60). }
+Procedure ParseArrayDecl(ElemType : Integer; IsOwn : Boolean);
+Var
+  Names : Array[1..16] Of Integer;
+  NName : Integer;
+  I, D  : Integer;
+  Lo, Hi: LongInt;
+  Dyn   : Boolean;
+  Cur   : Integer;
+Begin
+  Repeat
+    NName := 0;
+    Repeat
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        ParseError('nom de tableau attendu');
+        ParserSync;
+        Exit;
+      End;
+      If NName < 16 Then
+      Begin
+        Inc(NName);
+        Names[NName] := SymAdd(CurToken.Val, SK_ARRAY, ElemType, IsOwn,
+                               CurToken.Line, CurToken.Col);
+        SymTab[Names[NName]].ElemType := ElemType;
+        Inc(DeclCount);
+      End
+      Else
+        ParseError('trop de noms dans une declaration de tableau');
+      ParserAdvance;
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+
+    If Not AtPunct('[') Then
+    Begin
+      ParseError('''['' attendu apres le nom du tableau');
+      ParserSync;
+      Exit;
+    End;
+    ParserAdvance;
+    D := 0;
+    Repeat
+      Dyn := False;
+      ParseBound(Lo, Dyn);
+      If AtPunct(':') Then
+        ParserAdvance
+      Else
+        ParseError(''':'' attendu entre les bornes');
+      ParseBound(Hi, Dyn);
+      Inc(D);
+      If D <= MAX_DIM Then
+        For I := 1 To NName Do
+        Begin
+          Cur := Names[I];
+          SymTab[Cur].ArrDims := D;
+          SymTab[Cur].ArrLo[D] := Lo;
+          SymTab[Cur].ArrHi[D] := Hi;
+          If Dyn Then SymTab[Cur].ArrDynamic := True;
+        End
+      Else
+        ParseError('trop de dimensions (max ' + ItoS(MAX_DIM) + ')');
+      If (Not Dyn) And (Lo > Hi) Then
+        ErrorAt(CurToken.Line, CurToken.Col,
+                'bornes inversees: ' + ItoS(Lo) + ':' + ItoS(Hi));
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+    ExpectPunct(']');
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+End;
+
+{ switch s := l1, l2, if b then l3 else l4
+  Les designateurs sont comptes (virgules de premier niveau) ; leur
+  traduction releve du TODO 13. }
+Procedure ParseSwitchDecl;
+Var
+  S, Depth, N : Integer;
+Begin
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    ParseError('nom de switch attendu');
+    ParserSync;
+    Exit;
+  End;
+  S := SymAdd(CurToken.Val, SK_SWITCH, TY_IDX_SWITCH, False,
+              CurToken.Line, CurToken.Col);
+  Inc(DeclCount);
+  ParserAdvance;
+  If AtOp(':=') Then
+    ParserAdvance
+  Else
+    ParseError(''':='' attendu apres le nom du switch');
+  N := 1;
+  Depth := 0;
+  If AtPunct(';') Or AtEOF Then
+    ParseError('liste de designateurs attendue');
+  While Not (AtEOF Or AtKw('end') Or (Depth = 0) And AtPunct(';')) Do
+  Begin
+    If AtPunct('(') Or AtPunct('[') Then
+      Inc(Depth)
+    Else If (AtPunct(')') Or AtPunct(']')) And (Depth > 0) Then
+      Dec(Depth)
+    Else If (Depth = 0) And AtPunct(',') Then
+      Inc(N);
+    ParserAdvance;
+  End;
+  SymTab[S].SwitchCount := N;
+End;
+
+{ Specification d'un parametre : integer a, b ;  Boolean array t ;
+  Les types non listes (label, string) ne sont pas supportes. }
+Procedure ParseParamSpec(P : Integer);
+Var
+  T, Elem, S : Integer;
+Begin
+  T := TY_UNKNOWN;
+  Elem := TY_IDX_REAL;
+  If AtTypeKw Then
+  Begin
+    T := TypeFromKeyword(CurToken.Val);
+    Elem := T;
+    ParserAdvance;
+  End;
+  If AtKw('array') Then
+  Begin
+    T := TY_IDX_ARRAY;
+    ParserAdvance;
+  End
+  Else If AtKw('procedure') Then
+  Begin
+    T := TY_IDX_PROCEDURE;
+    ParserAdvance;
+  End
+  Else If AtKw('switch') Then
+  Begin
+    T := TY_IDX_SWITCH;
+    ParserAdvance;
+  End;
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParseError('nom de parametre attendu dans la specification');
+      ParserSync;
+      Exit;
+    End;
+    S := SymFindParam(P, CurToken.Val);
+    If S < 0 Then
+      ErrorAt(CurToken.Line, CurToken.Col,
+              'specification d''un nom qui n''est pas un parametre: ' +
+              CurToken.Val)
+    Else
+    Begin
+      SymTab[S].TypeIdx := T;
+      SymTab[S].ElemType := Elem;
+    End;
+    ParserAdvance;
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+  ExpectPunct(';');
+End;
+
+{ [type] procedure nom [(p1, p2)] ; [value p1, p2 ;] [specs] corps
+  Le mot procedure est deja consomme. L entete et la table des
+  symboles sont completes ; le corps reste a traduire (TODO 14). }
+Procedure ParseProcDecl(RetType : Integer; HasType : Boolean);
+Var
+  P, K, S : Integer;
+  Kind    : TSymKind;
+Begin
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    ParseError('nom de procedure attendu');
+    ParserSync;
+    Exit;
+  End;
+  If HasType Then
+    Kind := SK_FUNC
+  Else
+  Begin
+    Kind := SK_PROC;
+    RetType := TY_IDX_PROCEDURE;
+  End;
+  P := SymAdd(CurToken.Val, Kind, RetType, False,
+              CurToken.Line, CurToken.Col);
+  Inc(DeclCount);
+  Inc(ProcCount);
+  ParserAdvance;
+  SymEnterProc(P);
+
+  If AtPunct('(') Then
+  Begin
+    ParserAdvance;
+    If Not AtPunct(')') Then
+      Repeat
+        If CurToken.Kind <> TK_IDENT Then
+        Begin
+          ParseError('nom de parametre attendu');
+          Break;
+        End;
+        SymAdd(CurToken.Val, SK_PARAM_NAME, TY_UNKNOWN, False,
+               CurToken.Line, CurToken.Col);
+        ParserAdvance;
+        If AtPunct(',') Then
+          ParserAdvance
+        Else
+          Break;
+      Until False;
+    ExpectPunct(')');
+  End;
+  ExpectPunct(';');
+
+  If AtKw('value') Then
+  Begin
+    ParserAdvance;
+    Repeat
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        ParseError('nom de parametre attendu apres value');
+        Break;
+      End;
+      If Not SymMarkValue(P, CurToken.Val) Then
+        ErrorAt(CurToken.Line, CurToken.Col,
+                'value: ce n''est pas un parametre: ' + CurToken.Val);
+      ParserAdvance;
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+    ExpectPunct(';');
+  End;
+
+  While AtTypeKw Or AtKw('array') Or AtKw('switch') Or
+        AtKw('procedure') Do
+    ParseParamSpec(P);
+
+  { Parametre sans specification : integer par defaut }
+  For K := 1 To SymTab[P].ParamCount Do
+  Begin
+    S := SymTab[P].ParamSym[K];
+    If SymTab[S].TypeIdx = TY_UNKNOWN Then
+    Begin
+      WarnAt(SymTab[S].Line, SymTab[S].Col,
+             'parametre sans specification: ' + SymTab[S].Name +
+             ' (integer)');
+      SymTab[S].TypeIdx := TY_IDX_INTEGER;
+    End;
+  End;
+  SymLayoutParams(P);
+
+  SkipStatement;                 { corps : TODO 14 }
+  SymLeaveScope;
+End;
+
+{ Declaration commencant par own, un type, array, procedure ou
+  switch. Le ';' final n'est pas consomme. }
+Procedure ParseDeclaration;
+Var
+  IsOwn, HasType : Boolean;
+  T              : Integer;
+Begin
+  IsOwn   := AtKw('own');
+  HasType := False;
+  T       := TY_UNKNOWN;
+  If IsOwn Then ParserAdvance;
+  If AtTypeKw Then
+  Begin
+    T := TypeFromKeyword(CurToken.Val);
+    HasType := True;
+    ParserAdvance;
+  End;
+
+  If AtKw('array') Then
+  Begin
+    ParserAdvance;
+    If HasType Then
+      ParseArrayDecl(T, IsOwn)
+    Else
+      ParseArrayDecl(TY_IDX_REAL, IsOwn);
+  End
+  Else If AtKw('procedure') Then
+  Begin
+    If IsOwn Then ParseError('own ne s''applique pas a une procedure');
+    ParserAdvance;
+    ParseProcDecl(T, HasType);
+  End
+  Else If AtKw('switch') Then
+  Begin
+    If IsOwn Or HasType Then
+      ParseError('switch n''accepte ni own ni type');
+    ParserAdvance;
+    ParseSwitchDecl;
+  End
+  Else If HasType Then
+  Begin
+    If IsOwn Then
+      ParseVarList(SK_OWN, T, True)
+    Else
+      ParseVarList(SK_VAR, T, False);
+  End
+  Else
+  Begin
+    ParseError('type attendu apres own');
+    ParserSync;
+  End;
+End;
+
+{ ---- Structure du programme ------------------------------------- }
+
+{ Element d un bloc : declaration, bloc imbrique, instruction ou
+  rien (instruction vide devant ';' ou 'end'). }
+Procedure ParseItem;
+Begin
+  If AtEOF Or AtPunct(';') Or AtKw('end') Then
+    Exit
+  Else If AtKw('begin') Then
+    ParseBlock
+  Else If AtDeclKw Then
+    ParseDeclaration
+  Else
+    SkipStatement;
+End;
+
+{ begin item ; item ; ... end   (portee propre) }
+Procedure ParseBlock;
+Begin
+  Inc(BlockCount);
+  ParserAdvance;                      { begin }
+  SymEnterScope;
+  Repeat
+    ParseItem;
+    If AtPunct(';') Then
+      ParserAdvance
+    Else If AtKw('end') Or AtEOF Then
+      Break
+    Else
+    Begin
+      ParseError(''';'' ou ''end'' attendu');
+      ParserSync;
+      If AtPunct(';') Then ParserAdvance;
+    End;
+  Until False;
+  If AtKw('end') Then
+    ParserAdvance
+  Else
+    ParseError('''end'' attendu (begin non ferme)');
+  SymLeaveScope;
+End;
+
+{ Programme : suite d elements au niveau supreme. Des blocs begin...end
+  peuvent se suivre sans ';' (test_thunks.a58) ; un programme peut
+  aussi n etre qu une suite d instructions sans begin (test_types). }
+Procedure ParseProgram;
+Var
+  WasBlock : Boolean;
+Begin
+  ParserAdvance;
+  While Not AtEOF Do
+  Begin
+    WasBlock := AtKw('begin');
+    If AtKw('end') Then
+    Begin
+      ParseError('''end'' sans ''begin'' correspondant');
+      ParserAdvance;
+      Continue;
+    End;
+    ParseItem;
+    If AtPunct(';') Then
+      ParserAdvance
+    Else If Not (AtEOF Or WasBlock) Then
+    Begin
+      ParseError(''';'' attendu');
+      ParserSync;
+      If AtPunct(';') Then ParserAdvance;
+    End;
+  End;
+End;
+
 Procedure PhaseParse;
 Begin
-  { A faire : TODO 07 a 17 }
+  DeclCount  := 0;
+  BlockCount := 0;
+  ProcCount  := 0;
+  LexQuiet   := True;            { erreurs lexicales deja signalees }
+  LexInit;
+  SymEnterScope;                 { portee globale (identifiant 1) }
+  ParseProgram;
+  SymLeaveScope;
+  LexClose;
+  If Opts.Verbose Then
+    WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
+            ' procedure(s), ', BlockCount, ' bloc(s)');
 End;
 
 { ============================================================
@@ -2211,7 +2791,7 @@ Begin
   WarnCount  := 0;
   TypeInit;
   SymInit;
-  SymEnterScope;                { portee globale (identifiant 1) }
+  LexQuiet := False;
   If Opts.DebugMode Then TypeDump;
   If Opts.Verbose Then
   Begin
@@ -2225,7 +2805,8 @@ Begin
       WriteLn('  .ASM   : ', Opts.AsmFile);
   End;
   For P := PH_LEX To PH_REPORT Do
-    RunPhase(P);
+    If (ErrorCount = 0) Or (P = PH_REPORT) Then
+      RunPhase(P);
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
   Else
