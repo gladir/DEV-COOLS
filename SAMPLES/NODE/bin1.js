@@ -1,0 +1,17 @@
+var u = new Uint8Array(4); u[0] = 1; u[1] = 300; u[2] = -1; u[3] = 2.7;
+console.log(u[0], u[1], u[2], u[3], u.length, u.byteLength, u[4]);
+var b = new ArrayBuffer(8), f = new Float32Array(b), i32 = new Int32Array(b), u8 = new Uint8Array(b);
+f[0] = 1.5; console.log(u8[0], u8[1], u8[2], u8[3], i32[0], f[0], f.length, b.byteLength);
+var c = new Uint8ClampedArray(3); c[0] = 300; c[1] = -5; c[2] = 1.5; console.log(c[0], c[1], c[2]);
+var i16 = new Int16Array([1, -2, 40000]); console.log(i16[0], i16[1], i16[2], new Uint32Array([4294967295, -1])[1], new Int8Array([200])[0], new Float64Array([0.1])[0]);
+var dv = new DataView(new ArrayBuffer(16)); dv.setInt16(0, -2); dv.setUint32(2, 0xDEADBEEF, true); dv.setFloat64(8, Math.PI);
+console.log(dv.getInt16(0), dv.getUint16(0), dv.getUint8(2), dv.getUint32(2, true).toString(16), dv.getFloat64(8), dv.byteLength);
+var s = new Uint8Array([5, 1, 4, 2, 3]); console.log(s.slice(1, 3).join(), s.subarray(2).join(), Array.from(s.map(function (x) { return x * 2; })).join(), s.sort().join(), s.indexOf(4), s.includes(9));
+var sub = s.subarray(1, 3); sub[0] = 99; console.log(s[1], sub.byteOffset, sub.length, sub.buffer === s.buffer);
+console.log([...new Uint8Array([7, 8])], Array.from(new Uint16Array(3).fill(5)), Uint8Array.from([1, 2, 3], function (x) { return x * 3; }).join(), Uint8Array.of(9, 8).join());
+var big = new Uint32Array(2); big[0] = 4000000000; console.log(big[0], typeof big[0]);
+console.log(Object.prototype.toString.call(u), u instanceof Uint8Array, ArrayBuffer.isView(u), u.constructor.name, Uint8Array.BYTES_PER_ELEMENT, Array.isArray(u));
+var e = new TextEncoder().encode('héllo €😀'); console.log(e.length, e.join(), new TextDecoder().decode(e));
+var buf = Buffer.from('héllo wörld'); console.log(buf.length, buf.toString(), buf.toString('hex'), buf.toString('base64'), Buffer.from('aGk=', 'base64').toString(), Buffer.from('6869', 'hex').toString());
+console.log(Buffer.concat([Buffer.from('ab'), Buffer.from('cd')]).toString(), Buffer.alloc(3, 1).join(), Buffer.isBuffer(buf), buf.slice(0, 2).toString('latin1'), Buffer.byteLength('€'), buf.indexOf('wör'), buf.equals(Buffer.from('héllo wörld')));
+var w = Buffer.alloc(8); w.writeUInt32BE(0x01020304, 0); w.writeInt16LE(-2, 4); w.writeUInt8(255, 6); console.log(w.readUInt32BE(0), w.readInt16LE(4), w.readUInt8(6), w.readUInt16LE(0), JSON.stringify(Buffer.from('hi')), w.toString('hex'));

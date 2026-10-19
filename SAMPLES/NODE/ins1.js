@@ -1,0 +1,12 @@
+var u = new Uint8Array([1,2,3]);
+console.log(u);
+console.log(new Float64Array([1.5, 2]));
+console.log(new Int16Array(0));
+console.log(new ArrayBuffer(4));
+console.log(Buffer.from('he'));
+console.log([new Uint8Array(2)], { a: new Uint8Array([9]) });
+console.log(Object.keys(u), JSON.stringify(u), JSON.stringify({ b: Buffer.from('hi') }));
+console.log(String(u), u.toString(), Array.from(u), [...u]);
+console.log(new DataView(new ArrayBuffer(2)).byteLength);
+console.log(Object.prototype.toString.call(u), u instanceof Uint8Array, ArrayBuffer.isView(u));
+console.log(require('util').inspect(new Uint8Array(200)).length);

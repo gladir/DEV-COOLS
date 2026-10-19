@@ -108,6 +108,7 @@ function __jsonwalk(reviver, holder, key) {
   }
   return reviver.call(holder, typeof key === 'number' ? String(key) : key, val);
 }
+var __jsonSlow;
 function __jsonser(st, holder, key, indent) {
   var value = holder[key], parts = [], i, k, ks, s, inner, t;
   if (value !== null && (typeof value === 'object' || typeof value === 'bigint') && typeof value.toJSON === 'function') {
@@ -443,7 +444,7 @@ function __init_lib() {
         if (typeof k === 'string' && !seen[k]) { seen[k] = true; plist.push(k); }
       }
     }
-    if (rep === null && plist === null) return jstr(value, undefined, space);
+    if (rep === null && plist === null && !__jsonSlow) return jstr(value, undefined, space);
     if (typeof space === 'number') { for (i = 0; i < Math.min(10, space); i++) gap += ' '; }
     else if (typeof space === 'string') gap = space.slice(0, 10);
     st = { rep: rep, plist: plist, gap: gap, stack: [], native: function (x) { return jstr(x); } };

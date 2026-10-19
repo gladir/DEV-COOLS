@@ -22,6 +22,8 @@ function __sym_str(s) {
 function __init_eval() {}
 function __init_web() {}
 function __init_bin() {}
+function __init_proxy() {}
+var __proxyOp, __Proxy;
 var __global;
 function __i_init() {
   __init_async();
@@ -246,5 +248,6 @@ function __i_init() {
   };
   __init_web();
   __init_bin();
+  __init_proxy();
   __init_globals();
 }

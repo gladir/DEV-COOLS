@@ -320,6 +320,7 @@ function __i_fmt(v, ctx, rt) {
   if (t === 'number') return (v === 0 && 1 / v < 0) ? '-0' : String(v);
   if (t !== 'object' && t !== 'function') return String(v);
   if (v === null) return 'null';
+  while (t === 'object' && __proxyinfo(v, 2)) v = __proxyinfo(v, 0);
   if (ctx.seen.indexOf(v) !== -1) {
     var ix = ctx.circ.indexOf(v);
     if (ix === -1) {

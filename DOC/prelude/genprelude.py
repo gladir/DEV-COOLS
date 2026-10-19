@@ -1,6 +1,6 @@
 import re,sys
 base=['prelude.js','prelude_core.js','prelude_async.js','prelude_lib.js','prelude_big.js','prelude_mod.js','prelude_case.js','prelude_str.js']
-chunks=[('prelude_path.js','path'),('prelude_eval.js','eval|Function'),('prelude_web.js','Event|Abort|URL|fetch|DOMException'),('prelude_bin.js','Int8Array|Uint8Array|Uint8ClampedArray|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics')]
+chunks=[('prelude_path.js','path'),('prelude_eval.js','eval|Function'),('prelude_web.js','Event|Abort|URL|fetch|DOMException'),('prelude_bin.js','Int8Array|Uint8Array|Uint8ClampedArray|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics'),('prelude_proxy.js','Proxy')]
 D='/tmp/claude-0/b/p/'
 def lines(f): return open(D+f).read().rstrip('\n').split('\n')
 src=[]
