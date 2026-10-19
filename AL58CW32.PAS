@@ -23,10 +23,11 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 14 implementes (squelette, options, constantes,
+  ETAT : TODO 01 a 15 implementes (squelette, options, constantes,
          lexeur, types, symboles, structure du programme, expressions,
          booleens, affectations, tableaux, if et for, go to et switch,
-         procedures et appels) ; TODO 15 a 25 a faire.
+         procedures et appels, parametres par nom) ; TODO 16 a 25 a
+         faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -310,7 +311,7 @@
               RET n (n = ParamBytes) ; resultat dans EAX (integer,
               Boolean) ou ST(0) (real)
 
-  TODO 15 - PARAMETRES PAR NOM ET THUNKS [A FAIRE]
+  TODO 15 - PARAMETRES PAR NOM ET THUNKS [IMPLEMENTE]
             Par defaut un parametre est passe par nom (substitution
               textuelle reevaluee a chaque acces)
             Un thunk _A58TH_proc_param par argument : evalue l'expression
@@ -324,6 +325,26 @@
             Melange value / name dans un meme appel (twoparam)
             Jensen's device : somme d'une expression indicee par i
             Exemples : test_thunks.a58, procs.a58
+            Realise : classement de chaque argument par nom (TArgClass) :
+              constante (cellule .data, par reference), variable simple
+              ou element a indices constants (reference directe),
+              parametre par nom de l'appelant (paire reprise telle
+              quelle), expression ou element a indices variables (thunk
+              de lecture, reevalue a chaque acces : Jensen's device),
+              variable ou element ecrit par la procedure et converti ou
+              indice (thunk d'ecriture qui rend l'adresse) ; un thunk
+              recoit le nom _A58TH_proc_param (unique) ; IsWritten marque
+              les parametres affectes (affectation, variable de for) et
+              se propage aux parametres transmis ; un argument non
+              assignable pour un parametre modifie est une erreur
+            Paire transmise : mot 0 = adresse du thunk (0 = reference
+              directe), mot 1 = BP de l'appelant (ou adresse de la
+              variable si mot 0 = 0) ; le thunk est appele avec EAX =
+              contexte, fixe EBP, rend la valeur ou l'adresse dans EAX
+              (ST(0) pour un real)
+            Reste pour la generation de code (TODO 18) : emission des
+              thunks au moment de l'appel, acces au parametre dans le
+              corps (appel du thunk ou lecture par reference)
 
   TODO 16 - ENTREES/SORTIES : WRITE, WRITELN, READ, READLN [A FAIRE]
             write(a, b, ...) avec liste d'arguments heterogenes :
@@ -1526,6 +1547,25 @@ Type
     PM_NAME            { par defaut : thunk reevalue a chaque acces    }
   );
 
+  { Mode de transmission d'un argument a un parametre (TODO 15).
+    Un parametre par nom est transmis comme une paire de mots :
+      mot 0 = adresse du thunk, ou 0 pour une reference directe
+      mot 1 = BP de l'appelant (contexte du thunk), ou l'adresse
+              de la variable quand le mot 0 vaut 0
+    Le thunk est appele avec EAX = contexte ; il fixe EBP, evalue
+    l'argument et retourne la valeur (thunk de lecture) ou l'adresse
+    (thunk d'ecriture) dans EAX, ou ST(0) pour un real. }
+  TArgClass = (
+    AC_VALUE,          { parametre value : valeur convertie empilee    }
+    AC_ARRAY,          { tableau : adresse du descripteur              }
+    AC_CONST,          { constante : cellule en .data, par reference   }
+    AC_REF,            { variable simple : adresse directe             }
+    AC_FORWARD,        { parametre par nom de l'appelant : paire reprise }
+    AC_THUNK,          { expression : thunk de lecture                 }
+    AC_THUNK_RW        { variable indicee ou convertie ecrite par la
+                         procedure : thunk qui rend l'adresse          }
+  );
+
 Var
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;
@@ -1753,6 +1793,7 @@ Type
     ScopeId    : Integer;     { identifiant unique de la portee      }
     Level      : Integer;     { niveau d imbrication des procedures  }
     IsOwn      : Boolean;
+    IsWritten  : Boolean;     { parametre par nom : affecte dans le corps }
     IsDefined  : Boolean;     { etiquette : definie ?                }
     IsUsed     : Boolean;     { etiquette : referencee ?             }
     Line       : Integer;
@@ -2305,6 +2346,7 @@ Var
   IfCount    : LongInt;      { instructions if                      }
   GotoCount  : LongInt;      { instructions go to                   }
   CallCount  : LongInt;      { appels de procedure ou fonction      }
+  ThunkCount : LongInt;      { thunks d'arguments par nom           }
   LabelCount : LongInt;      { etiquettes definies                  }
   ForCount   : LongInt;      { instructions for                     }
   LoopDepth  : Integer;      { imbrication courante des for         }
@@ -3346,6 +3388,36 @@ Begin
   ParseIndexed := Node;
 End;
 
+Function ArgClassName(C : TArgClass) : TString;
+Begin
+  Case C Of
+    AC_VALUE    : ArgClassName := 'value';
+    AC_ARRAY    : ArgClassName := 'array/ref';
+    AC_CONST    : ArgClassName := 'name/const';
+    AC_REF      : ArgClassName := 'name/ref';
+    AC_FORWARD  : ArgClassName := 'name/forward';
+    AC_THUNK    : ArgClassName := 'name/thunk';
+    AC_THUNK_RW : ArgClassName := 'name/thunk-rw';
+  End;
+End;
+
+{ Sous-script constants : tous les indices du tableau sont des entiers
+  constants (l'adresse de l'element ne change donc jamais). }
+Function IndexIsFixed(E : Integer) : Boolean;
+Var
+  I : Integer;
+Begin
+  IndexIsFixed := False;
+  If ExprTab[E].Flag Then Exit;             { controle de bornes requis }
+  I := ExprTab[E].L;
+  While I >= 0 Do
+  Begin
+    If ExprTab[ExprTab[I].L].Kind <> EX_INT Then Exit;
+    I := ExprTab[I].R;
+  End;
+  IndexIsFixed := True;
+End;
+
 { Argument d'appel pour le parametre P. Un parametre tableau recoit le
   nom d'un tableau ; un parametre value, une expression convertie vers
   son type ; un parametre par nom, une expression (thunk au TODO 15)
@@ -3359,6 +3431,8 @@ Var
   E, S      : Integer;
   Conv      : TConv;
   Line, Col : Integer;
+  Cls       : TArgClass;
+  IsLv      : Boolean;
 Begin
   ParseCallArg := False;
   Item := -1;
@@ -3407,13 +3481,58 @@ Begin
     If Not ExprCoerceCtx(E, SymTab[P].TypeIdx, Conv, Line, Col,
                          'argument') Then Exit;
   End;
+  { mode de transmission de l'argument }
+  If SymTab[P].TypeIdx = TY_IDX_ARRAY Then
+    Cls := AC_ARRAY
+  Else If SymTab[P].Kind = SK_PARAM_VALUE Then
+    Cls := AC_VALUE
+  Else
+  Begin
+    IsLv := ExprTab[E].Kind In [EX_VAR, EX_INDEX];
+    If SymTab[P].IsWritten Then
+    Begin
+      If Not IsLv Then
+      Begin
+        ErrorAt(Line, Col, 'argument non assignable: ' + ProcName +
+                ' modifie le parametre ' + SymTab[P].Name);
+        Exit;
+      End;
+      { l'ecriture traverse l'appelant : son parametre par nom aussi }
+      If (ExprTab[E].Kind = EX_VAR) And
+         (SymTab[ExprTab[E].Sym].Kind = SK_PARAM_NAME) Then
+        SymTab[ExprTab[E].Sym].IsWritten := True;
+    End;
+    If ExprTab[E].Kind In [EX_INT, EX_REAL, EX_BOOL] Then
+      Cls := AC_CONST
+    Else If (ExprTab[E].Kind = EX_VAR) And (Conv = CV_NONE) Then
+    Begin
+      If SymTab[ExprTab[E].Sym].Kind = SK_PARAM_NAME Then
+        Cls := AC_FORWARD
+      Else
+        Cls := AC_REF;
+    End
+    Else If (ExprTab[E].Kind = EX_INDEX) And (Conv = CV_NONE) And
+            IndexIsFixed(E) Then
+      Cls := AC_REF
+    Else If IsLv And SymTab[P].IsWritten Then
+      Cls := AC_THUNK_RW
+    Else
+      Cls := AC_THUNK;
+  End;
+
   Item := ExprNew(EX_LIST, ExprTab[E].Typ, Line, Col);
-  ExprTab[Item].L    := E;
-  ExprTab[Item].Conv := Conv;
-  ExprTab[Item].Flag := (SymTab[P].Kind = SK_PARAM_NAME) And
-                        (ExprTab[E].Kind In [EX_VAR, EX_INDEX]) And
-                        (Conv = CV_NONE) And
-                        (ExprTab[E].Typ <> TY_IDX_ARRAY);
+  ExprTab[Item].L      := E;
+  ExprTab[Item].Conv   := Conv;
+  ExprTab[Item].IntVal := Ord(Cls);
+  ExprTab[Item].Flag   := (Cls = AC_REF);
+  If Cls In [AC_THUNK, AC_THUNK_RW] Then
+  Begin
+    { le thunk est emis par le generateur au moment de l'appel : il
+      evalue (ou localise) l'argument dans le contexte de l'appelant }
+    ExprTab[Item].StrIdx :=
+      ExprAddStr(UniqueMangle(MangleThunk(ProcName, SymTab[P].Name)));
+    Inc(ThunkCount);
+  End;
   ParseCallArg := True;
 End;
 
@@ -3734,15 +3853,9 @@ Begin
     Begin
       Inc(K);
       Write(Pad, '  arg ', K, ' ');
-      If SymTab[SymTab[ExprTab[N].Sym].ParamSym[K]].Kind =
-         SK_PARAM_VALUE Then
-        Write('value')
-      Else If ExprTab[ExprTab[I].L].Typ = TY_IDX_ARRAY Then
-        Write('array/ref')
-      Else If ExprTab[I].Flag Then
-        Write('name/ref')
-      Else
-        Write('name/thunk');
+      Write(ArgClassName(TArgClass(ExprTab[I].IntVal)));
+      If TArgClass(ExprTab[I].IntVal) In [AC_THUNK, AC_THUNK_RW] Then
+        Write(' ', ExprStrTab[ExprTab[I].StrIdx]);
       WriteLn(' ', ConvName(ExprTab[I].Conv));
       ExprDump(ExprTab[I].L, Depth + 2);
       I := ExprTab[I].R;
@@ -3852,6 +3965,11 @@ Begin
     Val := ParseAssignTail(Val);
   If (Tgt < 0) Or (Val < 0) Then Exit;
   If Not ExprCoerce(Val, ExprTab[Tgt].Typ, Conv, Line, Col) Then Exit;
+  { affectation d'un parametre par nom : les arguments doivent
+    pouvoir etre ecrits (TODO 15) }
+  If (ExprTab[Tgt].Kind = EX_VAR) And
+     (SymTab[ExprTab[Tgt].Sym].Kind = SK_PARAM_NAME) Then
+    SymTab[ExprTab[Tgt].Sym].IsWritten := True;
   N := ExprNew(EX_ASSIGN, ExprTab[Tgt].Typ, Line, Col);
   ExprTab[N].Op   := ':=';
   ExprTab[N].L    := Tgt;
@@ -4086,6 +4204,8 @@ Begin
     Begin
       Sym := ExprTab[Tgt].Sym;
       VT  := ExprTab[Tgt].Typ;
+      If SymTab[Sym].Kind = SK_PARAM_NAME Then
+        SymTab[Sym].IsWritten := True;      { variable de boucle }
       If Not TypeIsNumeric(VT) Then
       Begin
         ErrorAt(Line, Col, 'variable de boucle numerique attendue ' +
@@ -4880,6 +5000,7 @@ Begin
   IfCount    := 0;
   GotoCount  := 0;
   CallCount  := 0;
+  ThunkCount := 0;
   LabelCount := 0;
   ForCount   := 0;
   LoopDepth  := 0;
@@ -4895,8 +5016,8 @@ Begin
             ' procedure(s), ', BlockCount, ' bloc(s), ', AssignCount,
             ' affectation(s), ', IfCount, ' if, ', ForCount, ' for, ',
             GotoCount, ' goto, ', LabelCount, ' etiquette(s), ',
-            CallCount, ' appel(s), ', FoldCount,
-            ' constante(s) repliee(s)');
+            CallCount, ' appel(s), ', ThunkCount, ' thunk(s), ',
+            FoldCount, ' constante(s) repliee(s)');
 End;
 
 { ============================================================
