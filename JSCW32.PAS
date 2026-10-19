@@ -120,6 +120,7 @@ Const
   SF_HOISTED      = 64;     { var ou fonction : initialise a l'entree }
   SF_IMPLICIT     = 128;    { globale implicite }
   SF_INITIALIZING = 256;    { en cours d'initialisation }
+  SF_EVALVIS      = 512;    { visible depuis un eval direct (cellule nommee) }
   { Mode d'acces a un identifiant }
   RM_READ = 1;
   RM_WRITE = 2;
@@ -351,7 +352,7 @@ Const
     'AbortController', 'AbortSignal', 'DOMException', 'URL', 'URLSearchParams', 'btoa', 'atob', 'fetch',
     'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Buffer', 'TextDecoder', 'Atomics', 'Proxy', 'Intl'
   );
-  BUILTIN_COUNT = 90;
+  BUILTIN_COUNT = 92;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -364,7 +365,7 @@ Const
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
     '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32', 'Intl', '__fsrc',
-    '__co_await', '__co_yield', '__gen_kind'
+    '__co_await', '__co_yield', '__gen_kind', '__cellget', '__cellset'
   );
 
 Type
@@ -1676,10 +1677,10 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 13736;
-  PRELUDE_BASE = 3103;
+  PRELUDE_LINES = 13748;
+  PRELUDE_BASE = 3104;
   PRELUDE_CHUNKS = 33;
-  PreludeChunkEnd: Array[1..33] Of LongInt = (3738, 5475, 5812, 6374, 6554, 8017, 8525, 9328, 10513, 10618, 10697, 10778, 10976, 11275, 11443, 11528, 11700, 11876, 12041, 12136, 12210, 12292, 12389, 12484, 12566, 12645, 12739, 12914, 13138, 13221, 13303, 13549, 13736);
+  PreludeChunkEnd: Array[1..33] Of LongInt = (3739, 5487, 5824, 6386, 6566, 8029, 8537, 9340, 10525, 10630, 10709, 10790, 10988, 11287, 11455, 11540, 11712, 11888, 12053, 12148, 12222, 12304, 12401, 12496, 12578, 12657, 12751, 12926, 13150, 13233, 13315, 13561, 13748);
   PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
@@ -2126,6 +2127,7 @@ Const
     'function __init_eval() {}',
     'function __init_web() {}',
     'function __init_bin() {}',
+    'function __evlocal(x) { return x; }',
     'function __init_proxy() {}',
     'function __init_uni() {}',
     'function __init_norm() {}',
@@ -6372,7 +6374,7 @@ Const
     '  }',
     '  return __evNone;',
     '}',
-    'function __evScope(p) { return { v: {}, p: p, c: null, fn: null }; }',
+    'function __evScope(p) { return { v: {}, p: p, c: null, fn: null, cl: null }; }',
     'function __evRefErr(name) { return new ReferenceError(name + '' is not defined''); }',
     'function __evTdzErr(name) { return new ReferenceError("Cannot access ''" + name + "'' before initialization"); }',
     'function __evGlobalGet(name) {',
@@ -6387,6 +6389,7 @@ Const
     '  var k = ''$'' + name;',
     '  while (s !== null) {',
     '    if (k in s.v) return true;',
+    '    if (s.cl !== null && k in s.cl) return true;',
     '    s = s.p;',
     '  }',
     '  return (k in __evg) || __ginfo(name) >= 0 || __evBuiltin(name) !== __evNone;',
@@ -6399,6 +6402,7 @@ Const
     '      if (x === __evTDZ) throw __evTdzErr(name);',
     '      return x;',
     '    }',
+    '    if (s.cl !== null && k in s.cl) return __cellget(s.cl[k]);',
     '    s = s.p;',
     '  }',
     '  return __evGlobalGet(name);',
@@ -6412,6 +6416,7 @@ Const
     '      s.v[k] = val;',
     '      return;',
     '    }',
+    '    if (s.cl !== null && k in s.cl) { __cellset(s.cl[k], val); return; }',
     '    s = s.p;',
     '  }',
     '  if (k in __evg) { __evg[k] = val; return; }',
@@ -7132,10 +7137,11 @@ Const
     '  }',
     '  throw new SyntaxError(''eval: unsupported statement '' + n.t);',
     '}',
-    'function __evRun(prog) {',
-    '  var s = { v: {}, p: null, c: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;',
+    'function __evRun(prog, base) {',
+    '  var s = base || { v: {}, p: null, c: null, cl: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;',
     '  for (i = 0; i < prog.vars.length; i++) {',
     '    k = ''$'' + prog.vars[i];',
+    '    if (base && (k in base.cl)) continue;',
     '    if (!(k in __evg) && __ginfo(prog.vars[i]) < 0) __evg[k] = undefined;',
     '  }',
     '  __evHoist(prog.lex, [], s);',
@@ -7146,6 +7152,13 @@ Const
     '  __evcv = undefined;',
     '  sig = __evExecList(prog.body, s);',
     '  return __evcv;',
+    '}',
+    'function __evlocal(x, thisv, names, cells) {',
+    '  var cl = {}, i, base;',
+    '  if (typeof x !== ''string'') return x;',
+    '  for (i = 0; i < names.length; i++) cl[''$'' + names[i]] = cells[i];',
+    '  base = { v: {}, p: null, c: null, cl: cl, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };',
+    '  return __evRun(__evParse(x), base);',
     '}',
     'function __eval(x) {',
     '  if (typeof x !== ''string'') return x;',
@@ -21436,6 +21449,69 @@ Begin
   End;
 End;
 
+{ eval(...) direct : toutes les variables visibles (hors statiques) deviennent des
+  cellules nommees passees a l'interprete ; la liste (identifiants synthetiques
+  chaines par next) va dans e3, le this dans e4. }
+Procedure SemDirectEval(Var ctx: TCompilerContext; n: LongInt);
+Var
+  sc, sy, id, first, last, cnt, q, rs: LongInt;
+  nm: TTokenText;
+  dup: Boolean;
+Begin
+  first := 0;
+  last := 0;
+  cnt := 0;
+  sc := ctx.sem.cur_scope;
+  While sc <> 0 Do
+    Begin
+      sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
+      While sy <> 0 Do
+        Begin
+          nm := SemTokText(ctx, SymP(ctx.sem.syms, sy)^.name_tok);
+          If (SymP(ctx.sem.syms, sy)^.flags And SF_INITIALIZING = 0) And
+             ((SymP(ctx.sem.syms, sy)^.flags And SF_STATIC = 0) Or (SymP(ctx.sem.syms, sy)^.scope <> 1)) And
+             (SymP(ctx.sem.syms, sy)^.kind <> DK_FNAME) And (nm <> '') And
+             (nm[1] <> '%') And (nm <> 'arguments') And (nm <> 'new.target') And (cnt < 200) Then
+            Begin
+              dup := False;
+              q := first;
+              While q <> 0 Do
+                Begin
+                  If SemTokText(ctx, NodeP(ctx.ast.nodes, q)^.tok) = nm Then
+                    dup := True;
+                  q := NodeP(ctx.ast.nodes, q)^.next;
+                End;
+              If Not dup Then
+                Begin
+                  id := NewNode(ctx, N_IDENT, SymP(ctx.sem.syms, sy)^.name_tok);
+                  ResolveIdent(ctx, id, RM_READ);
+                  rs := NodeP(ctx.ast.nodes, id)^.sym;
+                  If rs <> 0 Then
+                    Begin
+                      If SymP(ctx.sem.syms, rs)^.flags And SF_STATIC = 0 Then
+                        SymP(ctx.sem.syms, rs)^.flags := SymP(ctx.sem.syms, rs)^.flags Or
+                          SF_CAPTURED Or SF_CELL;
+                      SymP(ctx.sem.syms, rs)^.flags := SymP(ctx.sem.syms, rs)^.flags Or
+                        SF_REASSIGNED Or SF_EVALVIS;
+                      NodeP(ctx.ast.nodes, id)^.next := 0;
+                      If first = 0 Then
+                        first := id
+                      Else
+                        NodeP(ctx.ast.nodes, last)^.next := id;
+                      last := id;
+                      Inc(cnt);
+                    End;
+                End;
+            End;
+          sy := SymP(ctx.sem.syms, sy)^.next;
+        End;
+      sc := ScopeP(ctx.sem.scopes, sc)^.parent;
+    End;
+  NodeP(ctx.ast.nodes, n)^.e3 := first;
+  NodeP(ctx.ast.nodes, n)^.e4 := NewNode(ctx, N_THIS, NodeP(ctx.ast.nodes, n)^.tok);
+  ResolveThis(ctx, NodeP(ctx.ast.nodes, n)^.e4);
+End;
+
 Procedure SemNode(Var ctx: TCompilerContext; n: LongInt); Forward;
 
 Procedure SemList(Var ctx: TCompilerContext; n: LongInt);
@@ -21786,7 +21862,14 @@ Begin
               End;
           End
         Else
-          SemNode(ctx, e);
+          Begin
+            SemNode(ctx, e);
+            If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_IDENT) And
+               (SemTokText(ctx, NodeP(ctx.ast.nodes, e)^.tok) = 'eval') And
+               (NodeP(ctx.ast.nodes, e)^.sym <> 0) And
+               (SemTokText(ctx, SymP(ctx.sem.syms, NodeP(ctx.ast.nodes, e)^.sym)^.name_tok) = '__eval') Then
+              SemDirectEval(ctx, n);
+          End;
         SemList(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       End;
     N_PROP:
@@ -23259,7 +23342,7 @@ Begin
   For i := 1 To ctx.sem.sym_count Do
     Begin
       SymP(ctx.sem.syms, i)^.name_str := 0;
-      If (SymP(ctx.sem.syms, i)^.flags And SF_TDZ_CHECK <> 0) Or
+      If (SymP(ctx.sem.syms, i)^.flags And (SF_TDZ_CHECK Or SF_EVALVIS) <> 0) Or
          (eval_on And (SymP(ctx.sem.syms, i)^.flags And SF_STATIC <> 0) And
           (SymP(ctx.sem.syms, i)^.scope = 1) And
           (Copy(TokP(ctx.lex.tokens, SymP(ctx.sem.syms, i)^.name_tok)^.text, 1, 2) <> '__')) Then
@@ -25433,6 +25516,56 @@ Begin
   ctx.ir.in_chain := Not top;
 End;
 
+{ eval(code) direct : _JSRT_eval_direct(code, this, nb, table de (cellule, nom)) }
+Procedure GenDirectEval(Var ctx: TCompilerContext; n: LongInt);
+Var
+  a, id, sy, k, tc, tt: LongInt;
+  lo, hi: TOperand;
+Begin
+  tc := TempAcquire(ctx);
+  tt := TempAcquire(ctx);
+  a := NodeP(ctx.ast.nodes, n)^.e2;
+  If a <> 0 Then
+    GenExpr(ctx, a)
+  Else
+    LoadUndefined(ctx);
+  SaveTemp(ctx, tc);
+  { les autres arguments sont evalues puis ignores }
+  If a <> 0 Then
+    Begin
+      a := NodeP(ctx.ast.nodes, a)^.next;
+      While a <> 0 Do
+        Begin
+          GenExpr(ctx, a);
+          a := NodeP(ctx.ast.nodes, a)^.next;
+        End;
+    End;
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e4);
+  SaveTemp(ctx, tt);
+  k := 0;
+  id := NodeP(ctx.ast.nodes, n)^.e3;
+  While id <> 0 Do
+    Begin
+      sy := NodeP(ctx.ast.nodes, id)^.sym;
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, SymP(ctx.sem.syms, sy)^.name_str)^.sym));
+      If SymP(ctx.sem.syms, sy)^.flags And SF_STATIC <> 0 Then
+        Emit(ctx, OP_LEA, RegOp(R_ECX), MemSym(SYMK_D, SymP(ctx.sem.syms, sy)^.ds, -RT_CELL_VALUE))
+      Else
+        SymAccess(ctx, sy, lo, hi);
+      Emit1(ctx, OP_PUSH, RegOp(R_ECX));
+      Inc(k);
+      id := NodeP(ctx.ast.nodes, id)^.next;
+    End;
+  Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ESP));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  Emit1(ctx, OP_PUSH, ImmOp(k));
+  PushTemp(ctx, tt);
+  PushTemp(ctx, tc);
+  CallRt(ctx, 'eval_direct', 24 + 8 * k);
+  TempRelease(ctx, tt);
+  TempRelease(ctx, tc);
+End;
+
 Procedure GenCall(Var ctx: TCompilerContext; n: LongInt);
 Var
   callee, a, nargs, i, tf, tt, notfn, lbl, old_end, usethis, okl: LongInt;
@@ -25484,6 +25617,12 @@ Var
 
 Begin
   callee := NodeP(ctx.ast.nodes, n)^.e1;
+  If (NodeP(ctx.ast.nodes, n)^.kind = N_CALL) And (NodeP(ctx.ast.nodes, n)^.e4 <> 0) And
+     (callee <> 0) And (NodeP(ctx.ast.nodes, callee)^.kind = N_IDENT) Then
+    Begin
+      GenDirectEval(ctx, n);
+      Exit;
+    End;
   is_new := NodeP(ctx.ast.nodes, n)^.kind = N_NEW;
   is_super := (callee <> 0) And (NodeP(ctx.ast.nodes, callee)^.kind = N_SUPER);
   arrow_super := is_super And (NodeP(ctx.ast.nodes, n)^.e3 <> 0);
@@ -46638,6 +46777,8 @@ Begin
   RtGlobal('__gcstress', RtFuncObj('__gcstress', '_JSRT_n_gcstress', 1), RT_T_FUNCTION);
   RtGlobal('__gen_resume', RtFuncObj('__gen_resume', '_JSRT_n_gen_resume', 3), RT_T_FUNCTION);
   RtGlobal('__gen_done', RtFuncObj('__gen_done', '_JSRT_n_gen_done', 1), RT_T_FUNCTION);
+  RtGlobal('__cellget', RtFuncObj('__cellget', '_JSRT_n_cellget', 1), RT_T_FUNCTION);
+  RtGlobal('__cellset', RtFuncObj('__cellset', '_JSRT_n_cellset', 2), RT_T_FUNCTION);
   RtGlobal('__gen_kind', RtFuncObj('__gen_kind', '_JSRT_n_gen_kind', 1), RT_T_FUNCTION);
   RtGlobal('__co_await', RtFuncObj('__co_await', '_JSRT_n_co_await', 1), RT_T_FUNCTION);
   RtGlobal('__co_yield', RtFuncObj('__co_yield', '_JSRT_n_co_yield', 1), RT_T_FUNCTION);
@@ -47376,6 +47517,54 @@ Begin
   A('call _JSRT_fatal');
   FEnd;
 
+  { _JSRT_eval_direct(code, this, nb, table) : appelle __evlocal(code, this, noms, cellules) }
+  FBegin('_JSRT_eval_direct', 1);
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('call _JSRT_array_new');
+  A('mov esi, eax');
+  A('call _JSRT_array_new');
+  A('mov edi, eax');
+  A('mov dword ptr [ebp-16], 0');
+  A('.l:');
+  A('mov eax, dword ptr [ebp-16]');
+  A('cmp eax, dword ptr [ebp+24]');
+  A('jae .d');
+  A('mov edx, eax');
+  A('shl edx, 3');
+  A('add edx, dword ptr [ebp+28]');
+  A('push $STR');
+  A('push dword ptr [edx+4]');
+  A('push $STR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('mov edx, dword ptr [ebp-16]');
+  A('shl edx, 3');
+  A('add edx, dword ptr [ebp+28]');
+  A('push $INT');
+  A('push dword ptr [edx]');
+  A('push $INT');
+  A('push esi');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('inc dword ptr [ebp-16]');
+  A('jmp .l');
+  A('.d:');
+  PushToArrLocal('dword ptr [ebp+12]', 'dword ptr [ebp+8]', 'edi');
+  PushToArrLocal('dword ptr [ebp+20]', 'dword ptr [ebp+16]', 'edi');
+  PushToArrLocal('$ARR', 'ebx', 'edi');
+  PushToArrLocal('$ARR', 'esi', 'edi');
+  A('mov eax, offset _JSV___evlocal');
+  A('push edi');
+  A('push $UNDEF');
+  A('push 0');
+  A('push $FN');
+  A('push dword ptr [eax]');
+  A('call _JSRT_call_array');
+  A('add esp, 20');
+  FEnd;
+
   { _JSRT_forawait(iterable) : appelle __i_forawait du prelude }
   FBegin('_JSRT_forawait', 0);
   A('mov eax, offset _JSV___i_forawait');
@@ -47514,6 +47703,33 @@ Begin
   A('.bad:');
   A('push offset _JSRT_c_type');
   A('call _JSRT_fatal');
+  FEnd;
+
+  { __cellget(adresse) et __cellset(adresse, valeur) : cellules des variables locales (eval direct) }
+  FBegin('_JSRT_n_cellget', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ret');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov eax, dword ptr [ecx+' + IntToStr(RT_CELL_VALUE) + ']');
+  A('mov edx, dword ptr [ecx+' + IntToStr(RT_CELL_VALUE + 4) + ']');
+  A('cmp edx, $TDZ');
+  A('jne .ret');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  FBegin('_JSRT_n_cellset', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .ret');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('mov dword ptr [ecx+' + IntToStr(RT_CELL_VALUE) + '], eax');
+  A('mov dword ptr [ecx+' + IntToStr(RT_CELL_VALUE + 4) + '], edx');
   FEnd;
 
   { __gen_kind(generateur) : genre de la derniere suspension (0 yield, 1 await) }

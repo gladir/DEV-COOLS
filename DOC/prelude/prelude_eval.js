@@ -950,7 +950,7 @@ function __evBuiltin(name) {
   }
   return __evNone;
 }
-function __evScope(p) { return { v: {}, p: p, c: null, fn: null }; }
+function __evScope(p) { return { v: {}, p: p, c: null, fn: null, cl: null }; }
 function __evRefErr(name) { return new ReferenceError(name + ' is not defined'); }
 function __evTdzErr(name) { return new ReferenceError("Cannot access '" + name + "' before initialization"); }
 function __evGlobalGet(name) {
@@ -965,6 +965,7 @@ function __evHasVar(s, name) {
   var k = '$' + name;
   while (s !== null) {
     if (k in s.v) return true;
+    if (s.cl !== null && k in s.cl) return true;
     s = s.p;
   }
   return (k in __evg) || __ginfo(name) >= 0 || __evBuiltin(name) !== __evNone;
@@ -977,6 +978,7 @@ function __evGetVar(s, name) {
       if (x === __evTDZ) throw __evTdzErr(name);
       return x;
     }
+    if (s.cl !== null && k in s.cl) return __cellget(s.cl[k]);
     s = s.p;
   }
   return __evGlobalGet(name);
@@ -990,6 +992,7 @@ function __evSetVar(s, name, val) {
       s.v[k] = val;
       return;
     }
+    if (s.cl !== null && k in s.cl) { __cellset(s.cl[k], val); return; }
     s = s.p;
   }
   if (k in __evg) { __evg[k] = val; return; }
@@ -1710,10 +1713,11 @@ function __evExec(n, s, labels) {
   }
   throw new SyntaxError('eval: unsupported statement ' + n.t);
 }
-function __evRun(prog) {
-  var s = { v: {}, p: null, c: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;
+function __evRun(prog, base) {
+  var s = base || { v: {}, p: null, c: null, cl: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;
   for (i = 0; i < prog.vars.length; i++) {
     k = '$' + prog.vars[i];
+    if (base && (k in base.cl)) continue;
     if (!(k in __evg) && __ginfo(prog.vars[i]) < 0) __evg[k] = undefined;
   }
   __evHoist(prog.lex, [], s);
@@ -1724,6 +1728,13 @@ function __evRun(prog) {
   __evcv = undefined;
   sig = __evExecList(prog.body, s);
   return __evcv;
+}
+function __evlocal(x, thisv, names, cells) {
+  var cl = {}, i, base;
+  if (typeof x !== 'string') return x;
+  for (i = 0; i < names.length; i++) cl['$' + names[i]] = cells[i];
+  base = { v: {}, p: null, c: null, cl: cl, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };
+  return __evRun(__evParse(x), base);
 }
 function __eval(x) {
   if (typeof x !== 'string') return x;
