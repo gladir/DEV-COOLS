@@ -23,6 +23,9 @@ function __init_eval() {}
 function __init_web() {}
 function __init_bin() {}
 function __init_proxy() {}
+function __init_uni() {}
+function __init_norm() {}
+var __uprop;
 function __init_fs() {}
 function __init_intl() {}
 function __init_il_cs() {}
@@ -278,6 +281,8 @@ function __i_init() {
   __init_web();
   __init_bin();
   __init_proxy();
+  __init_uni();
+  __init_norm();
   __init_fs();
   __init_globals();
   __init_intl();
