@@ -394,6 +394,7 @@ function __init_globals() {
   gt.WeakRef = __WeakRef;
   gt.FinalizationRegistry = __FinalizationRegistry;
   __tagOf(Set.prototype, 'Set'); __tagOf(WeakMap.prototype, 'WeakMap'); __tagOf(WeakSet.prototype, 'WeakSet'); __tagOf(__WeakRef.prototype, 'WeakRef');
+  __tagOf(__GenProto, 'Generator'); __tagOf(__AsyncGenProto, 'AsyncGenerator');
   __tagOf(Math, 'Math'); __tagOf(JSON, 'JSON'); __tagOf(__Reflect, 'Reflect'); __tagOf(BigInt.prototype, 'BigInt');
 }
 function __tagOf(o, n) { Object.defineProperty(o, '\x01Symbol.toStringTag\x02', { value: n, enumerable: false, configurable: true }); }

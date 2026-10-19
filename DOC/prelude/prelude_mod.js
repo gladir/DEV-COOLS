@@ -255,7 +255,8 @@ function __mkmod(name) {
   e.code = 'MODULE_NOT_FOUND';
   throw e;
 }
-function __require(name) {
+var __umods, __ualias, __ucache, __filename, __dirname;
+function __reqbi(name) {
   name = String(name);
   if (name.slice(0, 5) === 'node:') name = name.slice(5);
   if (__modcache === undefined) __modcache = {};
@@ -263,4 +264,63 @@ function __require(name) {
   var m = __mkmod(name);
   __modcache[name] = m;
   return m;
+}
+function __require(name) {
+  var t;
+  if (__ualias !== undefined) {
+    t = __ualias['#main|' + String(name)];
+    if (t !== undefined) return __loadmod(t);
+  }
+  return __reqbi(name);
+}
+function __reqx(id, from) {
+  var t;
+  if (__ualias !== undefined) {
+    t = __ualias[from + '|' + String(id)];
+    if (t !== undefined) return __loadmod(t);
+  }
+  return __reqbi(id);
+}
+function __ufile(key) {
+  return key.charAt(0) === '/' || key.charAt(1) === ':' ? key : __dirname + '/' + key;
+}
+function __loadmod(key) {
+  var m, file, req, dir;
+  if (__ucache === undefined) __ucache = {};
+  m = __ucache[key];
+  if (m !== undefined) return m.exports;
+  file = __ufile(key);
+  dir = file.slice(0, file.lastIndexOf('/'));
+  m = { id: file, filename: file, exports: {}, loaded: false, children: [], paths: [], path: dir };
+  __ucache[key] = m;
+  req = function (id) { return __reqx(id, key); };
+  req.resolve = function (id) { var t = __ualias[key + '|' + id]; return t === undefined ? String(id) : __ufile(t); };
+  req.cache = __ucache;
+  m.require = req;
+  __umods[key].call(m.exports, m.exports, req, m, file, dir);
+  m.loaded = true;
+  return m.exports;
+}
+function __esm(m) {
+  var r = {}, ks, i;
+  if (m !== null && (typeof m === 'object' || typeof m === 'function') && m.__esModule) return m;
+  if (m !== null && (typeof m === 'object' || typeof m === 'function')) {
+    ks = Object.keys(m);
+    for (i = 0; i < ks.length; i++) r[ks[i]] = m[ks[i]];
+  }
+  r.default = m;
+  return r;
+}
+function __reexpall(target, m) {
+  var ks = Object.keys(m), i;
+  var def = function (k) { Object.defineProperty(target, k, { get: function () { return m[k]; }, enumerable: true, configurable: true }); };
+  for (i = 0; i < ks.length; i++) if (ks[i] !== 'default' && ks[i] !== '__esModule') def(ks[i]);
+}
+function __reexp(target, m, pairs) {
+  var i, e = __esm(m);
+  var def = function (src, k) { Object.defineProperty(target, k, { get: function () { return e[src]; }, enumerable: true, configurable: true }); };
+  for (i = 0; i < pairs.length; i++) def(pairs[i][0], pairs[i][1]);
+}
+function __dynimport(spec) {
+  return Promise.resolve().then(function () { return __esm(__require(spec)); });
 }

@@ -109,6 +109,8 @@ function __i_init() {
   Object.defineProperty(__symproto, 'description', { get: function () { return __sym_desc(this); }, configurable: true, enumerable: false });
   __Symbol.prototype = __symproto;
   var SI = '\x01Symbol.iterator\x02';
+  Object.defineProperty(Array.prototype, SI, { value: Array.prototype.values, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(String.prototype, SI, { value: function () { return [...String(this)].values(); }, writable: true, configurable: true, enumerable: false });
   __GenProto = {
     next: function (v) { var x = __gen_resume(this, 0, v); return { value: x, done: __gen_done(this) }; },
     'return': function (v) { var x = __gen_resume(this, 2, v); return { value: x, done: true }; },

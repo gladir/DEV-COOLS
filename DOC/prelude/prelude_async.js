@@ -1,4 +1,4 @@
-var __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;
+var __AsyncGenProto, __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;
 function __job(fn) {
   __mq = __mq || [];
   __mq.push(fn);
@@ -106,6 +106,102 @@ function __i_async(g) {
   step(0, undefined);
   return p;
 }
+function __ag_finish(g, req, ok, val, done) {
+  var q = g['\x01aq'];
+  q.shift();
+  g['\x01ar'] = false;
+  if (ok) __resolveP(req.p, { value: val, done: done });
+  else __settle(req.p, 2, val);
+  __ag_drain(g);
+}
+function __ag_drain(g) {
+  var q = g['\x01aq'];
+  if (g['\x01ar'] || q.length === 0) return;
+  g['\x01ar'] = true;
+  __ag_step(g, q[0], q[0].m, q[0].v);
+}
+function __ag_wait(v, ok, bad) {
+  var w = v instanceof __Promise ? v : __Promise.resolve(v);
+  w.then(ok, bad);
+}
+function __ag_step(g, req, mode, v) {
+  var r;
+  if (__gen_done(g)) {
+    if (mode === 0) __ag_finish(g, req, true, undefined, true);
+    else if (mode === 2) __ag_wait(v, function (x) { __ag_finish(g, req, true, x, true); }, function (e) { __ag_finish(g, req, false, e); });
+    else __ag_finish(g, req, false, v);
+    return;
+  }
+  try { r = __gen_resume(g, mode, v); } catch (e) { __ag_finish(g, req, false, e); return; }
+  if (__gen_done(g)) {
+    __ag_wait(r, function (x) { __ag_finish(g, req, true, x, true); }, function (e) { __ag_finish(g, req, false, e); });
+    return;
+  }
+  if (__gen_kind(g) === 1) __ag_wait(r, function (x) { __ag_step(g, req, 0, x); }, function (e) { __ag_step(g, req, 1, e); });
+  else __ag_wait(r, function (x) { __ag_finish(g, req, true, x, false); }, function (e) { __ag_step(g, req, 1, e); });
+}
+function __ag_enqueue(g, mode, v) {
+  var p = __newP();
+  var q = g['\x01aq'];
+  if (!q) { q = []; g['\x01aq'] = q; g['\x01ar'] = false; }
+  q.push({ m: mode, v: v, p: p });
+  __ag_drain(g);
+  return p;
+}
+function __init_agen() {
+  __AsyncGenProto = {
+    next: function (v) { return __ag_enqueue(this, 0, v); },
+    'return': function (v) { return __ag_enqueue(this, 2, v); },
+    'throw': function (e) { return __ag_enqueue(this, 1, e); },
+    toString: function () { return '[object AsyncGenerator]'; }
+  };
+  __AsyncGenProto['\x01Symbol.asyncIterator\x02'] = function () { return this; };
+}
+function __i_forawait(x) {
+  var m = x === null || x === undefined ? undefined : x['\x01Symbol.asyncIterator\x02'];
+  var it, isA = false;
+  if (typeof m === 'function') { it = m.call(x); isA = true; }
+  else {
+    m = x === null || x === undefined ? undefined : x['\x01Symbol.iterator\x02'];
+    if (typeof m !== 'function') throw new TypeError(__i_insp(x, 0) + ' is not async iterable');
+    it = m.call(x);
+  }
+  var w = {
+    next: function (v) {
+      var r = it.next(v);
+      if (isA) r = __co_await(r);
+      if (r === null || typeof r !== 'object') throw new TypeError('Iterator result ' + __i_insp(r, 0) + ' is not an object');
+      if (!isA && !r.done) return { value: __co_await(r.value), done: false };
+      return r;
+    },
+    'return': function (v) {
+      if (typeof it['return'] === 'function') {
+        var r = it['return'](v);
+        if (isA) __co_await(r);
+      }
+      return { value: v, done: true };
+    }
+  };
+  w['\x01Symbol.iterator\x02'] = function () { return this; };
+  return w;
+}
+function __i_ystarA(x) {
+  var m = x === null || x === undefined ? undefined : x['\x01Symbol.asyncIterator\x02'];
+  var it, isA = false;
+  if (typeof m === 'function') { it = m.call(x); isA = true; }
+  else {
+    m = x === null || x === undefined ? undefined : x['\x01Symbol.iterator\x02'];
+    if (typeof m !== 'function') throw new TypeError(__i_insp(x, 0) + ' is not async iterable');
+    it = m.call(x);
+  }
+  var sent;
+  while (true) {
+    var r = it.next(sent);
+    if (isA) r = __co_await(r);
+    if (r.done) return r.value;
+    sent = __co_yield(isA ? r.value : __co_await(r.value));
+  }
+}
 function __timer_add(fn, ms, args, interval) {
   __timers = __timers || [];
   __timer_seq = (__timer_seq || 0) + 1;
@@ -194,6 +290,7 @@ function __i_run() {
   }
 }
 function __init_async() {
+  __init_agen();
   __Promise = class Promise {
     constructor(executor) {
       if (typeof executor !== 'function') throw new TypeError('Promise resolver ' + __i_insp(executor, 0) + ' is not a function');

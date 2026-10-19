@@ -351,7 +351,7 @@ Const
     'AbortController', 'AbortSignal', 'DOMException', 'URL', 'URLSearchParams', 'btoa', 'atob', 'fetch',
     'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Buffer', 'TextDecoder', 'Atomics', 'Proxy', 'Intl'
   );
-  BUILTIN_COUNT = 87;
+  BUILTIN_COUNT = 90;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -363,7 +363,8 @@ Const
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
-    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32', 'Intl', '__fsrc'
+    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32', 'Intl', '__fsrc',
+    '__co_await', '__co_yield', '__gen_kind'
   );
 
 Type
@@ -1675,10 +1676,10 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 13590;
-  PRELUDE_BASE = 3003;
+  PRELUDE_LINES = 13736;
+  PRELUDE_BASE = 3103;
   PRELUDE_CHUNKS = 33;
-  PreludeChunkEnd: Array[1..33] Of LongInt = (3638, 5329, 5666, 6228, 6408, 7871, 8379, 9182, 10367, 10472, 10551, 10632, 10830, 11129, 11297, 11382, 11554, 11730, 11895, 11990, 12064, 12146, 12243, 12338, 12420, 12499, 12593, 12768, 12992, 13075, 13157, 13403, 13590);
+  PreludeChunkEnd: Array[1..33] Of LongInt = (3738, 5475, 5812, 6374, 6554, 8017, 8525, 9328, 10513, 10618, 10697, 10778, 10976, 11275, 11443, 11528, 11700, 11876, 12041, 12136, 12210, 12292, 12389, 12484, 12566, 12645, 12739, 12914, 13138, 13221, 13303, 13549, 13736);
   PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
@@ -2212,6 +2213,8 @@ Const
     '  Object.defineProperty(__symproto, ''description'', { get: function () { return __sym_desc(this); }, configurable: true, enumerable: false });',
     '  __Symbol.prototype = __symproto;',
     '  var SI = ''\x01Symbol.iterator\x02'';',
+    '  Object.defineProperty(Array.prototype, SI, { value: Array.prototype.values, writable: true, configurable: true, enumerable: false });',
+    '  Object.defineProperty(String.prototype, SI, { value: function () { return [...String(this)].values(); }, writable: true, configurable: true, enumerable: false });',
     '  __GenProto = {',
     '    next: function (v) { var x = __gen_resume(this, 0, v); return { value: x, done: __gen_done(this) }; },',
     '    ''return'': function (v) { var x = __gen_resume(this, 2, v); return { value: x, done: true }; },',
@@ -2391,7 +2394,7 @@ Const
     '  __init_globals();',
     '  __init_intl();',
     '}',
-    'var __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;',
+    'var __AsyncGenProto, __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;',
     'function __job(fn) {',
     '  __mq = __mq || [];',
     '  __mq.push(fn);',
@@ -2499,6 +2502,102 @@ Const
     '  step(0, undefined);',
     '  return p;',
     '}',
+    'function __ag_finish(g, req, ok, val, done) {',
+    '  var q = g[''\x01aq''];',
+    '  q.shift();',
+    '  g[''\x01ar''] = false;',
+    '  if (ok) __resolveP(req.p, { value: val, done: done });',
+    '  else __settle(req.p, 2, val);',
+    '  __ag_drain(g);',
+    '}',
+    'function __ag_drain(g) {',
+    '  var q = g[''\x01aq''];',
+    '  if (g[''\x01ar''] || q.length === 0) return;',
+    '  g[''\x01ar''] = true;',
+    '  __ag_step(g, q[0], q[0].m, q[0].v);',
+    '}',
+    'function __ag_wait(v, ok, bad) {',
+    '  var w = v instanceof __Promise ? v : __Promise.resolve(v);',
+    '  w.then(ok, bad);',
+    '}',
+    'function __ag_step(g, req, mode, v) {',
+    '  var r;',
+    '  if (__gen_done(g)) {',
+    '    if (mode === 0) __ag_finish(g, req, true, undefined, true);',
+    '    else if (mode === 2) __ag_wait(v, function (x) { __ag_finish(g, req, true, x, true); }, function (e) { __ag_finish(g, req, false, e); });',
+    '    else __ag_finish(g, req, false, v);',
+    '    return;',
+    '  }',
+    '  try { r = __gen_resume(g, mode, v); } catch (e) { __ag_finish(g, req, false, e); return; }',
+    '  if (__gen_done(g)) {',
+    '    __ag_wait(r, function (x) { __ag_finish(g, req, true, x, true); }, function (e) { __ag_finish(g, req, false, e); });',
+    '    return;',
+    '  }',
+    '  if (__gen_kind(g) === 1) __ag_wait(r, function (x) { __ag_step(g, req, 0, x); }, function (e) { __ag_step(g, req, 1, e); });',
+    '  else __ag_wait(r, function (x) { __ag_finish(g, req, true, x, false); }, function (e) { __ag_step(g, req, 1, e); });',
+    '}',
+    'function __ag_enqueue(g, mode, v) {',
+    '  var p = __newP();',
+    '  var q = g[''\x01aq''];',
+    '  if (!q) { q = []; g[''\x01aq''] = q; g[''\x01ar''] = false; }',
+    '  q.push({ m: mode, v: v, p: p });',
+    '  __ag_drain(g);',
+    '  return p;',
+    '}',
+    'function __init_agen() {',
+    '  __AsyncGenProto = {',
+    '    next: function (v) { return __ag_enqueue(this, 0, v); },',
+    '    ''return'': function (v) { return __ag_enqueue(this, 2, v); },',
+    '    ''throw'': function (e) { return __ag_enqueue(this, 1, e); },',
+    '    toString: function () { return ''[object AsyncGenerator]''; }',
+    '  };',
+    '  __AsyncGenProto[''\x01Symbol.asyncIterator\x02''] = function () { return this; };',
+    '}',
+    'function __i_forawait(x) {',
+    '  var m = x === null || x === undefined ? undefined : x[''\x01Symbol.asyncIterator\x02''];',
+    '  var it, isA = false;',
+    '  if (typeof m === ''function'') { it = m.call(x); isA = true; }',
+    '  else {',
+    '    m = x === null || x === undefined ? undefined : x[''\x01Symbol.iterator\x02''];',
+    '    if (typeof m !== ''function'') throw new TypeError(__i_insp(x, 0) + '' is not async iterable'');',
+    '    it = m.call(x);',
+    '  }',
+    '  var w = {',
+    '    next: function (v) {',
+    '      var r = it.next(v);',
+    '      if (isA) r = __co_await(r);',
+    '      if (r === null || typeof r !== ''object'') throw new TypeError(''Iterator result '' + __i_insp(r, 0) + '' is not an object'');',
+    '      if (!isA && !r.done) return { value: __co_await(r.value), done: false };',
+    '      return r;',
+    '    },',
+    '    ''return'': function (v) {',
+    '      if (typeof it[''return''] === ''function'') {',
+    '        var r = it[''return''](v);',
+    '        if (isA) __co_await(r);',
+    '      }',
+    '      return { value: v, done: true };',
+    '    }',
+    '  };',
+    '  w[''\x01Symbol.iterator\x02''] = function () { return this; };',
+    '  return w;',
+    '}',
+    'function __i_ystarA(x) {',
+    '  var m = x === null || x === undefined ? undefined : x[''\x01Symbol.asyncIterator\x02''];',
+    '  var it, isA = false;',
+    '  if (typeof m === ''function'') { it = m.call(x); isA = true; }',
+    '  else {',
+    '    m = x === null || x === undefined ? undefined : x[''\x01Symbol.iterator\x02''];',
+    '    if (typeof m !== ''function'') throw new TypeError(__i_insp(x, 0) + '' is not async iterable'');',
+    '    it = m.call(x);',
+    '  }',
+    '  var sent;',
+    '  while (true) {',
+    '    var r = it.next(sent);',
+    '    if (isA) r = __co_await(r);',
+    '    if (r.done) return r.value;',
+    '    sent = __co_yield(isA ? r.value : __co_await(r.value));',
+    '  }',
+    '}',
     'function __timer_add(fn, ms, args, interval) {',
     '  __timers = __timers || [];',
     '  __timer_seq = (__timer_seq || 0) + 1;',
@@ -2587,6 +2686,7 @@ Const
     '  }',
     '}',
     'function __init_async() {',
+    '  __init_agen();',
     '  __Promise = class Promise {',
     '    constructor(executor) {',
     '      if (typeof executor !== ''function'') throw new TypeError(''Promise resolver '' + __i_insp(executor, 0) + '' is not a function'');',
@@ -3097,6 +3197,7 @@ Const
     '  gt.WeakRef = __WeakRef;',
     '  gt.FinalizationRegistry = __FinalizationRegistry;',
     '  __tagOf(Set.prototype, ''Set''); __tagOf(WeakMap.prototype, ''WeakMap''); __tagOf(WeakSet.prototype, ''WeakSet''); __tagOf(__WeakRef.prototype, ''WeakRef'');',
+    '  __tagOf(__GenProto, ''Generator''); __tagOf(__AsyncGenProto, ''AsyncGenerator'');',
     '  __tagOf(Math, ''Math''); __tagOf(JSON, ''JSON''); __tagOf(__Reflect, ''Reflect''); __tagOf(BigInt.prototype, ''BigInt'');',
     '}',
     'function __tagOf(o, n) { Object.defineProperty(o, ''\x01Symbol.toStringTag\x02'', { value: n, enumerable: false, configurable: true }); }',
@@ -5688,9 +5789,9 @@ Const
     '    expectP('')'');',
     '    return { list: list, rest: rest };',
     '  }',
-    '  function fnBody(name, ps, arrow, kind) {',
+    '  function fnBody(name, ps, arrow, kind, gen, asy) {',
     '    var saved = fctx, savedIn = noIn, body, lx;',
-    '    fctx = { vars: [], fn: true };',
+    '    fctx = { vars: [], fn: true, gen: !!gen, asy: !!asy };',
     '    noIn = false;',
     '    expectP(''{'');',
     '    body = [];',
@@ -5700,18 +5801,18 @@ Const
     '    }',
     '    p++;',
     '    lx = __evLex(body);',
-    '    var node = { t: ''Fn'', name: name, params: ps.list, rest: ps.rest, body: body, vars: fctx.vars, lex: lx.lex, funs: lx.funs, arrow: arrow, kind: kind };',
+    '    var node = { t: ''Fn'', name: name, params: ps.list, rest: ps.rest, body: body, vars: fctx.vars, lex: lx.lex, funs: lx.funs, arrow: arrow, kind: kind, gen: !!gen, asy: !!asy };',
     '    fctx = saved;',
     '    noIn = savedIn;',
     '    return node;',
     '  }',
-    '  function fnExpr(isDecl) {',
-    '    var name = null;',
+    '  function fnExpr(isDecl, asy) {',
+    '    var name = null, gen = false;',
     '    p++;',
-    '    if (isP(''*'')) unsup(''generators'');',
+    '    if (isP(''*'')) { p++; gen = true; }',
     '    if (T[p].k === ''i'' && !isP(''('')) name = ident();',
     '    else if (isDecl) fail();',
-    '    return fnBody(name, params(), false, ''fn'');',
+    '    return fnBody(name, params(), false, ''fn'', gen, asy);',
     '  }',
     '  function arrowAhead() {',
     '    var d = 0, q = p, t;',
@@ -5726,14 +5827,14 @@ Const
     '    }',
     '    return T[q + 1].k === ''p'' && T[q + 1].v === ''=>'' && !T[q + 1].nl;',
     '  }',
-    '  function arrowRest(ps) {',
+    '  function arrowRest(ps, asy) {',
     '    var saved = fctx, savedIn = noIn, node, body, lx;',
     '    expectP(''=>'');',
-    '    if (isP(''{'')) return fnBody(null, ps, true, ''arrow'');',
-    '    fctx = { vars: [], fn: true };',
+    '    if (isP(''{'')) return fnBody(null, ps, true, ''arrow'', false, asy);',
+    '    fctx = { vars: [], fn: true, gen: false, asy: !!asy };',
     '    noIn = savedIn;',
     '    body = assign();',
-    '    node = { t: ''Fn'', name: null, params: ps.list, rest: ps.rest, body: body, vars: [], lex: [], funs: [], arrow: true, kind: ''arrow'', exprBody: true };',
+    '    node = { t: ''Fn'', name: null, params: ps.list, rest: ps.rest, body: body, vars: [], lex: [], funs: [], arrow: true, kind: ''arrow'', exprBody: true, gen: false, asy: !!asy };',
     '    fctx = saved;',
     '    return node;',
     '  }',
@@ -5745,7 +5846,7 @@ Const
     '    return [propName(), false];',
     '  }',
     '  function classBody(isDecl) {',
-    '    var name = null, sup = null, members = [], st, kind, key, kc, fn, v, nxt;',
+    '    var name = null, sup = null, members = [], st, kind, key, kc, fn, v, nxt, masy, mgen;',
     '    p++;',
     '    if (T[p].k === ''i'' && T[p].v !== ''extends'' && !isP(''{'')) name = ident();',
     '    else if (isDecl) fail();',
@@ -5762,13 +5863,14 @@ Const
     '          continue;',
     '        }',
     '      }',
-    '      if (isK(''async'') && !(T[p + 1].k === ''p'' && (T[p + 1].v === ''('' || T[p + 1].v === ''='' || T[p + 1].v === '';'' || T[p + 1].v === ''}'')) && !T[p + 1].nl) unsup(''async methods'');',
-    '      if (isP(''*'')) unsup(''generator methods'');',
+    '      masy = false; mgen = false;',
+    '      if (isK(''async'') && !(T[p + 1].k === ''p'' && (T[p + 1].v === ''('' || T[p + 1].v === ''='' || T[p + 1].v === '';'' || T[p + 1].v === ''}'')) && !T[p + 1].nl) { p++; masy = true; }',
+    '      if (isP(''*'')) { p++; mgen = true; }',
     '      nxt = T[p + 1];',
     '      if ((isK(''get'') || isK(''set'')) && !(nxt.k === ''p'' && (nxt.v === ''('' || nxt.v === ''='' || nxt.v === '';'' || nxt.v === ''}''))) { kind = T[p].v; p++; }',
     '      key = memberKey(); kc = key[1]; key = key[0];',
     '      if (isP(''('')) {',
-    '        fn = fnBody(null, params(), false, ''method'');',
+    '        fn = fnBody(null, params(), false, ''method'', mgen, masy);',
     '        members.push({ kind: kind, st: st, k: key, c: kc, v: fn, ctor: !st && !kc && key === ''constructor'' && kind === ''method'' });',
     '      } else {',
     '        v = null;',
@@ -5792,16 +5894,17 @@ Const
     '    return a;',
     '  }',
     '  function objLit() {',
-    '    var props = [], k, kc, nm, fn, nxt, v, pr;',
+    '    var props = [], k, kc, nm, fn, nxt, v, pr, masy, mgen;',
     '    p++;',
     '    while (!isP(''}'')) {',
     '      if (isP(''...'')) { p++; props.push({ kind: ''spread'', v: assign() }); }',
     '      else {',
+    '        masy = false; mgen = false;',
     '        if (isK(''async'')) {',
     '          nxt = T[p + 1];',
-    '          if (!(nxt.k === ''p'' && (nxt.v === '','' || nxt.v === '':'' || nxt.v === ''('' || nxt.v === ''}'' || nxt.v === ''=''))) unsup(''async methods'');',
+    '          if (!(nxt.k === ''p'' && (nxt.v === '','' || nxt.v === '':'' || nxt.v === ''('' || nxt.v === ''}'' || nxt.v === ''=''))) { p++; masy = true; }',
     '        }',
-    '        if (isP(''*'')) unsup(''generator methods'');',
+    '        if (isP(''*'')) { p++; mgen = true; }',
     '        nm = null; nxt = T[p + 1];',
     '        if ((isK(''get'') || isK(''set'')) && !(nxt.k === ''p'' && (nxt.v === '','' || nxt.v === '':'' || nxt.v === ''('' || nxt.v === ''}'' || nxt.v === ''=''))) { nm = T[p].v; p++; }',
     '        k = memberKey(); kc = k[1]; k = k[0];',
@@ -5809,7 +5912,7 @@ Const
     '          fn = fnBody(null, params(), false, ''method'');',
     '          props.push({ kind: nm, k: k, c: kc, v: fn });',
     '        } else if (isP(''('')) {',
-    '          fn = fnBody(null, params(), false, ''method'');',
+    '          fn = fnBody(null, params(), false, ''method'', mgen, masy);',
     '          props.push({ kind: ''init'', method: true, k: k, c: kc, v: fn });',
     '        } else if (isP('':'')) {',
     '          p++;',
@@ -5852,10 +5955,16 @@ Const
     '            if (!isP(''.'') && !isP(''['') && !isP(''('')) fail();',
     '            return { t: ''Super'' };',
     '          case ''async'':',
-    '            if (T[p + 1].k === ''i'' && T[p + 1].v === ''function'') unsup(''async functions'');',
-    '            if (T[p + 1].k === ''p'' && T[p + 1].v === ''('' && arrowAhead2()) unsup(''async functions'');',
+    '            if (T[p + 1].k === ''i'' && T[p + 1].v === ''function'' && !T[p + 1].nl) { p++; return fnExpr(false, true); }',
+    '            if (T[p + 1].k === ''p'' && T[p + 1].v === ''('' && !T[p + 1].nl && arrowAhead2()) { p++; return arrowRest(params(), true); }',
     '            break;',
-    '          case ''import'': unsup(''import expressions'');',
+    '          case ''import'':',
+    '            if (!(T[p + 1].k === ''p'' && T[p + 1].v === ''('')) unsup(''import declarations'');',
+    '            p += 2;',
+    '            e = assign();',
+    '            if (isP('','')) { p++; if (!isP('')'')) assign(); if (isP('','')) p++; }',
+    '            expectP('')'');',
+    '            return { t: ''ImportCall'', a: e };',
     '        }',
     '        if (__evKW[t.v] === 1) fail();',
     '        p++;',
@@ -5953,9 +6062,7 @@ Const
     '      if (t.v === ''++'' || t.v === ''--'') { p++; a = unary(); __evToTarget(a); return { t: ''Upd'', op: t.v, pre: true, a: a }; }',
     '    } else if (t.k === ''i'') {',
     '      if (t.v === ''typeof'' || t.v === ''void'' || t.v === ''delete'') { p++; return { t: ''Un'', op: t.v, a: unary() }; }',
-    '      if (t.v === ''await'') {',
-    '        if (T[p + 1].k !== ''p'' || (T[p + 1].v !== ''='' && T[p + 1].v !== '')'' && T[p + 1].v !== '';'')) unsup(''await expressions'');',
-    '      }',
+    '      if (t.v === ''await'' && fctx.asy) { p++; return { t: ''Await'', a: unary() }; }',
     '    }',
     '    e = lhs();',
     '    t = T[p];',
@@ -5996,11 +6103,23 @@ Const
     '  function assign() {',
     '    var t = T[p], left, o, ps, n2;',
     '    if (t.k === ''i'' && __evKW[t.v] !== 1 && T[p + 1].k === ''p'' && T[p + 1].v === ''=>'' && !T[p + 1].nl) {',
-    '      if (t.v === ''async'') unsup(''async functions'');',
     '      p++;',
-    '      return arrowRest({ list: [{ t: ''Id'', n: t.v }], rest: null });',
+    '      return arrowRest({ list: [{ t: ''Id'', n: t.v }], rest: null }, false);',
     '    }',
-    '    if (t.k === ''p'' && t.v === ''('' && arrowAhead()) return arrowRest(params());',
+    '    if (t.k === ''i'' && t.v === ''async'' && !T[p + 1].nl && T[p + 1].k === ''i'' && __evKW[T[p + 1].v] !== 1 && T[p + 2].k === ''p'' && T[p + 2].v === ''=>'' && !T[p + 2].nl) {',
+    '      p++;',
+    '      n2 = T[p].v;',
+    '      p++;',
+    '      return arrowRest({ list: [{ t: ''Id'', n: n2 }], rest: null }, true);',
+    '    }',
+    '    if (t.k === ''i'' && t.v === ''yield'' && fctx.gen) {',
+    '      p++;',
+    '      n2 = false; left = null;',
+    '      if (isP(''*'') && !T[p].nl) { p++; n2 = true; left = assign(); }',
+    '      else if (!T[p].nl && T[p].k !== ''e'' && !(T[p].k === ''p'' && (T[p].v === '')'' || T[p].v === '']'' || T[p].v === ''}'' || T[p].v === '','' || T[p].v === '';'' || T[p].v === '':''))) left = assign();',
+    '      return { t: ''Yield'', a: left, dlg: n2, ag: fctx.asy };',
+    '    }',
+    '    if (t.k === ''p'' && t.v === ''('' && arrowAhead()) return arrowRest(params(), false);',
     '    left = cond();',
     '    o = T[p];',
     '    if (o.k === ''p'' && __evAsgOps[o.v] === 1) {',
@@ -6057,9 +6176,10 @@ Const
     '    return { t: ''Block'', body: body, lex: lx.lex, funs: lx.funs };',
     '  }',
     '  function forStmt() {',
-    '    var init = null, test = null, upd = null, body, kind, tg, it, sv;',
+    '    var init = null, test = null, upd = null, body, kind, tg, it, sv, aw;',
     '    p++;',
-    '    if (isK(''await'')) unsup(''for await loops'');',
+    '    aw = false;',
+    '    if (isK(''await'')) { p++; aw = true; }',
     '    expectP(''('');',
     '    if (isP('';'')) {',
     '      // pas d''initialisation',
@@ -6072,7 +6192,7 @@ Const
     '        it = kind === ''of'' ? assign() : expr();',
     '        expectP('')'');',
     '        body = stmt();',
-    '        return { t: kind === ''of'' ? ''ForOf'' : ''ForIn'', decl: init, a: null, it: it, body: body };',
+    '        return { t: kind === ''of'' ? ''ForOf'' : ''ForIn'', decl: init, a: null, it: it, body: body, aw: aw };',
     '      }',
     '    } else {',
     '      sv = noIn; noIn = true;',
@@ -6084,7 +6204,7 @@ Const
     '        it = kind === ''of'' ? assign() : expr();',
     '        expectP('')'');',
     '        body = stmt();',
-    '        return { t: kind === ''of'' ? ''ForOf'' : ''ForIn'', decl: null, a: tg, it: it, body: body };',
+    '        return { t: kind === ''of'' ? ''ForOf'' : ''ForIn'', decl: null, a: tg, it: it, body: body, aw: aw };',
     '      }',
     '      init = { t: ''Expr'', e: init };',
     '    }',
@@ -6110,7 +6230,7 @@ Const
     '        case ''function'': n = fnExpr(true); return { t: ''FnDecl'', fn: n };',
     '        case ''class'': n = classBody(true); return { t: ''ClassDecl'', cls: n };',
     '        case ''async'':',
-    '          if (T[p + 1].k === ''i'' && T[p + 1].v === ''function'' && !T[p + 1].nl) unsup(''async functions'');',
+    '          if (T[p + 1].k === ''i'' && T[p + 1].v === ''function'' && !T[p + 1].nl) { p++; n = fnExpr(true, true); return { t: ''FnDecl'', fn: n }; }',
     '          break;',
     '        case ''if'':',
     '          p++; expectP(''(''); a = expr(); expectP('')'');',
@@ -6447,9 +6567,24 @@ Const
     '  }',
     '  throw new SyntaxError(''Unknown operator '' + op);',
     '}',
+    'async function __evAsyncRun(node, scope, home, thisv, args, nt, f) { return __evInvoke(node, scope, home, thisv, args, nt, f); }',
+    'function* __evGenRun(node, scope, home, thisv, args, nt, f) { return __evInvoke(node, scope, home, thisv, args, nt, f); }',
+    'async function* __evAGenRun(node, scope, home, thisv, args, nt, f) { return __evInvoke(node, scope, home, thisv, args, nt, f); }',
+    'function __evYieldStar(x) {',
+    '  var it = x[Symbol.iterator](), sent, r;',
+    '  for (;;) {',
+    '    r = it.next(sent);',
+    '    if (r.done) return r.value;',
+    '    sent = __co_yield(r.value);',
+    '  }',
+    '}',
     'function __evMkFn(node, scope, home) {',
     '  var f;',
-    '  if (node.arrow) {',
+    '  if (node.gen || node.asy) {',
+    '    var run = node.gen ? (node.asy ? __evAGenRun : __evGenRun) : __evAsyncRun;',
+    '    if (node.arrow) f = function () { return run(node, scope, home, undefined, arguments, undefined, f); };',
+    '    else f = function () { return run(node, scope, home, this, arguments, undefined, f); };',
+    '  } else if (node.arrow) {',
     '    f = function () { return __evInvoke(node, scope, home, undefined, arguments, undefined, f); };',
     '  } else {',
     '    f = function () { return __evInvoke(node, scope, home, this, arguments, new.target, f); };',
@@ -6688,6 +6823,17 @@ Const
     '      }',
     '      return __evMkFn(n, s, undefined);',
     '    case ''Cls'': return __evClass(n.cls, s);',
+    '    case ''Await'': return __co_await(__evEval(n.a, s));',
+    '    case ''Yield'':',
+    '      v = n.a === null ? undefined : __evEval(n.a, s);',
+    '      if (n.dlg) return n.ag ? __i_ystarA(v) : __evYieldStar(v);',
+    '      return __co_yield(v);',
+    '    case ''ImportCall'':',
+    '      v = __evEval(n.a, s);',
+    '      return Promise.resolve().then(function () {',
+    '        var m = require(String(v));',
+    '        return m !== null && typeof m === ''object'' ? Object.assign({ default: m }, m) : { default: m };',
+    '      });',
     '    case ''Seq'':',
     '      for (i = 0; i < n.l.length; i++) v = __evEval(n.l[i], s);',
     '      return v;',
@@ -6911,6 +7057,7 @@ Const
     '    case ''ForIn'':',
     '    case ''ForOf'':',
     '      v = __evEval(n.it, s);',
+    '      if (n.aw) v = __i_forawait(v);',
     '      if (n.t === ''ForIn'') {',
     '        if (v === null || v === undefined) return null;',
     '        it = [];',
@@ -19820,17 +19967,17 @@ End;
 Function ParseFor(Var ctx: TCompilerContext): LongInt;
 Var
   node, save_scope, init, test, upd, body: LongInt;
-  is_of, is_in: Boolean;
+  is_of, is_in, is_await: Boolean;
   kind: TNodeKind;
 Begin
   node := NewNode(ctx, N_FOR, ctx.ast.pt);
   ParseFor := node;
   PAdvance(ctx);
+  is_await := False;
   If TkIsId(ctx, ctx.ast.pt, 'await') Then
     Begin
-      ParseError(ctx, ctx.ast.pt, 'for await n''est pas supporte');
-      Synchronize(ctx);
-      Exit;
+      is_await := True;
+      PAdvance(ctx);
     End;
   If Not Expect(ctx, '(') Then
     Begin
@@ -19866,6 +20013,10 @@ Begin
         kind := N_FOR_OF
       Else
         kind := N_FOR_IN;
+      If is_await And Not is_of Then
+        ParseError(ctx, ctx.ast.pt, 'for await exige for-of');
+      If is_await Then
+        NodeP(ctx.ast.nodes, node)^.flags := 1;
       NodeP(ctx.ast.nodes, node)^.kind := kind;
       PAdvance(ctx);
       NodeP(ctx.ast.nodes, node)^.e1 := init;
@@ -24671,6 +24822,8 @@ Begin
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
       If (s = 'yield') And (NodeP(ctx.ast.nodes, n)^.flags = 1) Then
         CallRt(ctx, 'yield_star', 8)
+      Else If s = 'await' Then
+        CallRt(ctx, 'yield_aw', 8)
       Else
         CallRt(ctx, 'yield', 8);
     End
@@ -26628,53 +26781,6 @@ Begin
   PlaceLabel(ctx, brk);
 End;
 
-{ for (x of valeur) et for (x in objet). }
-Procedure GenForInOf(Var ctx: TCompilerContext; n: LongInt; is_of: Boolean);
-Var
-  sc, top, brk, iter, v, left, target: LongInt;
-Begin
-  sc := NodeP(ctx.ast.nodes, n)^.scope;
-  top := NewLabel(ctx);
-  brk := NewLabel(ctx);
-  iter := TempAcquire(ctx);
-  v := TempAcquire(ctx);
-  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
-  If Not is_of Then
-    Begin
-      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
-      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      CallRt(ctx, 'forin_keys', 8);
-    End;
-  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
-  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-  CallRt(ctx, 'iter_new', 8);
-  SaveTemp(ctx, iter);
-  PlaceLabel(ctx, top);
-  PushTemp(ctx, iter);
-  CallRt(ctx, 'iter_next', 8);
-  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_DONE)));
-  Emit1(ctx, OP_JE, LabelOp(brk));
-  SaveTemp(ctx, v);
-  { nouvelle portee (nouvelles cellules) a chaque iteration }
-  GenScopeEnter(ctx, sc);
-  LoadTemp(ctx, v);
-  left := NodeP(ctx.ast.nodes, n)^.e1;
-  If (left <> 0) And (NodeP(ctx.ast.nodes, left)^.kind = N_VAR_DECL) Then
-    Begin
-      target := NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, left)^.e1)^.e1;
-      BindValue(ctx, target, True);
-    End
-  Else
-    BindValue(ctx, left, False);
-  PushTarget(ctx, JT_LOOP, brk, top);
-  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e3);
-  PopTarget(ctx);
-  Emit1(ctx, OP_JMP, LabelOp(top));
-  PlaceLabel(ctx, brk);
-  TempRelease(ctx, v);
-  TempRelease(ctx, iter);
-End;
-
 Procedure GenSwitch(Var ctx: TCompilerContext; n: LongInt);
 Var
   t, brk, base, cs, i, ncases, dflt: LongInt;
@@ -26791,8 +26897,10 @@ Begin
 End;
 
 { Sort des try dont l'etiquette de saut est jt >= mint : depile leur
-  gestionnaire et execute leur finally (return : mint = 0). }
-Procedure GenExitTries(Var ctx: TCompilerContext; mint: LongInt);
+  gestionnaire et execute leur finally (return : mint = 0).
+  Un finally negatif est la fermeture d'un iterateur de for-of (temporaire -fin) ;
+  un continue ne la declenche pas pour sa propre boucle (keepc). }
+Procedure GenExitTriesX(Var ctx: TCompilerContext; mint: LongInt; keepc: Boolean);
 Var
   saved, i, fin, base: LongInt;
 Begin
@@ -26802,13 +26910,25 @@ Begin
     Begin
       base := TryRecP(ctx.ir.try_rec, i)^;
       fin := TryFinP(ctx.ir.try_fin, i)^;
+      If keepc And (fin < 0) And (TryJtP(ctx.ir.try_jt, i)^ = mint) Then
+        Break;
       HandlerPop(ctx, base);
       ctx.ir.try_count := i - 1;
-      If fin <> 0 Then
-        GenStmt(ctx, fin);
+      If fin > 0 Then
+        GenStmt(ctx, fin)
+      Else If fin < 0 Then
+        Begin
+          PushTemp(ctx, -fin);
+          CallRt(ctx, 'iter_close', 8);
+        End;
       Dec(i);
     End;
   ctx.ir.try_count := saved;
+End;
+
+Procedure GenExitTries(Var ctx: TCompilerContext; mint: LongInt);
+Begin
+  GenExitTriesX(ctx, mint, False);
 End;
 
 Procedure GenTryCatch(Var ctx: TCompilerContext; n: LongInt);
@@ -26882,6 +27002,107 @@ Begin
   PlaceLabel(ctx, lend);
 End;
 
+{ for (x of valeur) et for (x in objet). }
+Procedure GenForInOf(Var ctx: TCompilerContext; n: LongInt; is_of: Boolean);
+Var
+  sc, top, brk, iter, v, left, target, base, lcatch, ldone, ib, tx, skip: LongInt;
+Begin
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
+  top := NewLabel(ctx);
+  brk := NewLabel(ctx);
+  iter := TempAcquire(ctx);
+  v := TempAcquire(ctx);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+  If Not is_of Then
+    Begin
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'forin_keys', 8);
+    End
+  Else If NodeP(ctx.ast.nodes, n)^.flags = 1 Then
+    Begin
+      { for await : l'iterable est enveloppe par le prelude }
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'forawait', 8);
+    End;
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  CallRt(ctx, 'iter_new', 8);
+  SaveTemp(ctx, iter);
+  base := 0;
+  lcatch := 0;
+  ldone := 0;
+  ib := 0;
+  If is_of Then
+    Begin
+      { fermeture de l'iterateur (return) sur break, return, exception }
+      ib := TempAcquire(ctx);
+      base := AllocHandler(ctx);
+      lcatch := NewLabel(ctx);
+      ldone := NewLabel(ctx);
+      Emit(ctx, OP_MOV, TempLo(ib), ImmOp(0));
+      PushTarget(ctx, JT_LOOP, brk, top);
+      HandlerSetup(ctx, base, lcatch);
+      TryPush(ctx, base, -iter);
+    End;
+  PlaceLabel(ctx, top);
+  If is_of Then
+    Emit(ctx, OP_MOV, TempLo(ib), ImmOp(0));
+  PushTemp(ctx, iter);
+  CallRt(ctx, 'iter_next', 8);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_DONE)));
+  If is_of Then
+    Begin
+      Emit1(ctx, OP_JE, LabelOp(ldone));
+      Emit(ctx, OP_MOV, TempLo(ib), ImmOp(1));
+    End
+  Else
+    Emit1(ctx, OP_JE, LabelOp(brk));
+  SaveTemp(ctx, v);
+  { nouvelle portee (nouvelles cellules) a chaque iteration }
+  GenScopeEnter(ctx, sc);
+  LoadTemp(ctx, v);
+  left := NodeP(ctx.ast.nodes, n)^.e1;
+  If (left <> 0) And (NodeP(ctx.ast.nodes, left)^.kind = N_VAR_DECL) Then
+    Begin
+      target := NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, left)^.e1)^.e1;
+      BindValue(ctx, target, True);
+    End
+  Else
+    BindValue(ctx, left, False);
+  If Not is_of Then
+    PushTarget(ctx, JT_LOOP, brk, top);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e3);
+  PopTarget(ctx);
+  Emit1(ctx, OP_JMP, LabelOp(top));
+  If is_of Then
+    Begin
+      Dec(ctx.ir.try_count);
+      PlaceLabel(ctx, ldone);
+      HandlerPop(ctx, base);
+      Emit1(ctx, OP_JMP, LabelOp(brk));
+      PlaceLabel(ctx, lcatch);
+      tx := TempAcquire(ctx);
+      skip := NewLabel(ctx);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 0));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 4));
+      SaveTemp(ctx, tx);
+      Emit(ctx, OP_CMP, TempLo(ib), ImmOp(0));
+      Emit1(ctx, OP_JE, LabelOp(skip));
+      PushTemp(ctx, iter);
+      CallRt(ctx, 'iter_close', 8);
+      PlaceLabel(ctx, skip);
+      PushTemp(ctx, tx);
+      CallRt(ctx, 'throw', 8);
+      TempRelease(ctx, tx);
+      TempRelease(ctx, ib);
+    End;
+  PlaceLabel(ctx, brk);
+  TempRelease(ctx, v);
+  TempRelease(ctx, iter);
+End;
+
 Procedure GenBreakContinue(Var ctx: TCompilerContext; n: LongInt; is_break: Boolean);
 Var
   i: LongInt;
@@ -26892,7 +27113,7 @@ Begin
       PendingNote(ctx, n, 'cible de break/continue introuvable');
       Exit;
     End;
-  GenExitTries(ctx, i);
+  GenExitTriesX(ctx, i, Not is_break);
   If is_break Then
     Emit1(ctx, OP_JMP, LabelOp(JtP(ctx.ir.jt, i)^.brk))
   Else
@@ -27139,7 +27360,12 @@ Begin
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
       If FdescP(ctx.data.fdescs, fd)^.flags And FDF_GENERATOR <> 0 Then
-        Emit1(ctx, OP_PUSH, ImmOp(0))
+        Begin
+          If FdescP(ctx.data.fdescs, fd)^.flags And FDF_ASYNC <> 0 Then
+            Emit1(ctx, OP_PUSH, ImmOp(2))
+          Else
+            Emit1(ctx, OP_PUSH, ImmOp(0));
+        End
       Else
         Emit1(ctx, OP_PUSH, ImmOp(1));
       CallRt(ctx, 'gen_new', 24);
@@ -32401,6 +32627,33 @@ Begin
   A('mov dword ptr [eax+12], ecx');
   A('mov edx, $OBJ');
   A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_iter_close(iterateur) : appelle return() d'un iterateur objet }
+  A('proc _JSRT_iter_close');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('mov eax, dword ptr [ebp+8]');
+  A('cmp dword ptr [eax+12], $OBJ');
+  A('jne .out');
+  A('mov ebx, dword ptr [eax+8]');
+  A('push offset ' + RtStr('return'));
+  A('push $OBJ');
+  A('push ebx');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $FN');
+  A('jne .out');
+  A('push $OBJ');
+  A('push ebx');
+  A('push eax');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('.out:');
+  A('pop ebx');
+  A('pop ebp');
   A('ret');
   A('endp');
 
@@ -46385,6 +46638,9 @@ Begin
   RtGlobal('__gcstress', RtFuncObj('__gcstress', '_JSRT_n_gcstress', 1), RT_T_FUNCTION);
   RtGlobal('__gen_resume', RtFuncObj('__gen_resume', '_JSRT_n_gen_resume', 3), RT_T_FUNCTION);
   RtGlobal('__gen_done', RtFuncObj('__gen_done', '_JSRT_n_gen_done', 1), RT_T_FUNCTION);
+  RtGlobal('__gen_kind', RtFuncObj('__gen_kind', '_JSRT_n_gen_kind', 1), RT_T_FUNCTION);
+  RtGlobal('__co_await', RtFuncObj('__co_await', '_JSRT_n_co_await', 1), RT_T_FUNCTION);
+  RtGlobal('__co_yield', RtFuncObj('__co_yield', '_JSRT_n_co_yield', 1), RT_T_FUNCTION);
   RtGlobal('__invoke', RtFuncObj('__invoke', '_JSRT_n_invoke', 3), RT_T_FUNCTION);
   RtGlobal('__newtarget', RtFuncObj('__newtarget', '_JSRT_n_newtarget', 0), RT_T_FUNCTION);
   RtGlobal('__fproto', RtFuncObj('__fproto', '_JSRT_n_fproto', 0), RT_T_FUNCTION);
@@ -46979,7 +47235,7 @@ Begin
   { _JSRT_gen_new(genre, fonction, argc, this lo, this hi, arguments) -> objet generateur
     ou promesse (genre 1 = async) }
   FBegin('_JSRT_gen_new', 0);
-  A('push 80');
+  A('push 88');
   A('call _JSRT_alloc');
   A('add esp, 4');
   A('mov ebx, eax');
@@ -47031,7 +47287,14 @@ Begin
   A('mov dword ptr [ebx+12], eax');
   A('mov dword ptr [ebx], 0');
   { objet generateur }
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [ebx+84], eax');
+  A('mov dword ptr [ebx+80], 0');
   A('mov ecx, offset _JSV___GenProto');
+  A('cmp dword ptr [ebp+8], 2');
+  A('jne .gp');
+  A('mov ecx, offset _JSV___AsyncGenProto');
+  A('.gp:');
   A('mov eax, offset _JSNO_object_proto');
   A('cmp dword ptr [ecx+4], $OBJ');
   A('jne .proto');
@@ -47064,11 +47327,28 @@ Begin
   A('add esp, 20');
   FEnd;
 
-  { _JSRT_yield(valeur) : suspend la coroutine courante, rend la valeur envoyee }
+  { _JSRT_yield(valeur) : suspend la coroutine courante, rend la valeur envoyee ;
+    yield_aw : meme chose pour un await (genre de suspension 1, lu par les pilotes) }
   FBegin('_JSRT_yield', 0);
+  A('push 0');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_yield_k');
+  FEnd;
+
+  FBegin('_JSRT_yield_aw', 0);
+  A('push 1');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_yield_k');
+  FEnd;
+
+  FBegin('_JSRT_yield_k', 0);
   A('mov esi, dword ptr [_JSRT_v_curco]');
   A('test esi, esi');
   A('jz .bad');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esi+80], eax');
   A('mov eax, dword ptr [ebp+8]');
   A('mov dword ptr [esi+56], eax');
   A('mov eax, dword ptr [ebp+12]');
@@ -47096,8 +47376,36 @@ Begin
   A('call _JSRT_fatal');
   FEnd;
 
+  { _JSRT_forawait(iterable) : appelle __i_forawait du prelude }
+  FBegin('_JSRT_forawait', 0);
+  A('mov eax, offset _JSV___i_forawait');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push $UNDEF');
+  A('push 0');
+  A('push dword ptr [eax]');
+  A('call _JSRT_call1');
+  A('add esp, 20');
+  FEnd;
+
   { _JSRT_yield_star(iterable) : delegue a un autre iterable }
   FBegin('_JSRT_yield_star', 0);
+  A('mov esi, dword ptr [_JSRT_v_curco]');
+  A('test esi, esi');
+  A('jz .sync');
+  A('cmp dword ptr [esi+84], 2');
+  A('jne .sync');
+  { generateur asynchrone : delegation par le prelude }
+  A('mov eax, offset _JSV___i_ystarA');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push $UNDEF');
+  A('push 0');
+  A('push dword ptr [eax]');
+  A('call _JSRT_call1');
+  A('add esp, 20');
+  A('jmp .ret');
+  A('.sync:');
   A('push dword ptr [ebp+12]');
   A('push dword ptr [ebp+8]');
   A('call _JSRT_iter_new');
@@ -47206,6 +47514,58 @@ Begin
   A('.bad:');
   A('push offset _JSRT_c_type');
   A('call _JSRT_fatal');
+  FEnd;
+
+  { __gen_kind(generateur) : genre de la derniere suspension (0 yield, 1 await) }
+  FBegin('_JSRT_n_gen_kind', 0);
+  A('xor eax, eax');
+  A('mov edx, $INT');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ret');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .ret');
+  A('push offset ' + RtStr(#1 + 'co'));
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .none');
+  A('mov ecx, dword ptr [eax+8]');
+  A('mov eax, dword ptr [ecx+80]');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  A('mov edx, $INT');
+  FEnd;
+
+  { __co_await(v) et __co_yield(v) : suspensions explicites depuis le prelude }
+  FBegin('_JSRT_n_co_await', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .have');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('.have:');
+  A('push 1');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_yield_k');
+  FEnd;
+
+  FBegin('_JSRT_n_co_yield', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .have');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('.have:');
+  A('push 0');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_yield_k');
   FEnd;
 
   FBegin('_JSRT_n_gen_done', 0);

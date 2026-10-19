@@ -367,9 +367,9 @@ function __evParse(src) {
     expectP(')');
     return { list: list, rest: rest };
   }
-  function fnBody(name, ps, arrow, kind) {
+  function fnBody(name, ps, arrow, kind, gen, asy) {
     var saved = fctx, savedIn = noIn, body, lx;
-    fctx = { vars: [], fn: true };
+    fctx = { vars: [], fn: true, gen: !!gen, asy: !!asy };
     noIn = false;
     expectP('{');
     body = [];
@@ -379,18 +379,18 @@ function __evParse(src) {
     }
     p++;
     lx = __evLex(body);
-    var node = { t: 'Fn', name: name, params: ps.list, rest: ps.rest, body: body, vars: fctx.vars, lex: lx.lex, funs: lx.funs, arrow: arrow, kind: kind };
+    var node = { t: 'Fn', name: name, params: ps.list, rest: ps.rest, body: body, vars: fctx.vars, lex: lx.lex, funs: lx.funs, arrow: arrow, kind: kind, gen: !!gen, asy: !!asy };
     fctx = saved;
     noIn = savedIn;
     return node;
   }
-  function fnExpr(isDecl) {
-    var name = null;
+  function fnExpr(isDecl, asy) {
+    var name = null, gen = false;
     p++;
-    if (isP('*')) unsup('generators');
+    if (isP('*')) { p++; gen = true; }
     if (T[p].k === 'i' && !isP('(')) name = ident();
     else if (isDecl) fail();
-    return fnBody(name, params(), false, 'fn');
+    return fnBody(name, params(), false, 'fn', gen, asy);
   }
   function arrowAhead() {
     var d = 0, q = p, t;
@@ -405,14 +405,14 @@ function __evParse(src) {
     }
     return T[q + 1].k === 'p' && T[q + 1].v === '=>' && !T[q + 1].nl;
   }
-  function arrowRest(ps) {
+  function arrowRest(ps, asy) {
     var saved = fctx, savedIn = noIn, node, body, lx;
     expectP('=>');
-    if (isP('{')) return fnBody(null, ps, true, 'arrow');
-    fctx = { vars: [], fn: true };
+    if (isP('{')) return fnBody(null, ps, true, 'arrow', false, asy);
+    fctx = { vars: [], fn: true, gen: false, asy: !!asy };
     noIn = savedIn;
     body = assign();
-    node = { t: 'Fn', name: null, params: ps.list, rest: ps.rest, body: body, vars: [], lex: [], funs: [], arrow: true, kind: 'arrow', exprBody: true };
+    node = { t: 'Fn', name: null, params: ps.list, rest: ps.rest, body: body, vars: [], lex: [], funs: [], arrow: true, kind: 'arrow', exprBody: true, gen: false, asy: !!asy };
     fctx = saved;
     return node;
   }
@@ -424,7 +424,7 @@ function __evParse(src) {
     return [propName(), false];
   }
   function classBody(isDecl) {
-    var name = null, sup = null, members = [], st, kind, key, kc, fn, v, nxt;
+    var name = null, sup = null, members = [], st, kind, key, kc, fn, v, nxt, masy, mgen;
     p++;
     if (T[p].k === 'i' && T[p].v !== 'extends' && !isP('{')) name = ident();
     else if (isDecl) fail();
@@ -441,13 +441,14 @@ function __evParse(src) {
           continue;
         }
       }
-      if (isK('async') && !(T[p + 1].k === 'p' && (T[p + 1].v === '(' || T[p + 1].v === '=' || T[p + 1].v === ';' || T[p + 1].v === '}')) && !T[p + 1].nl) unsup('async methods');
-      if (isP('*')) unsup('generator methods');
+      masy = false; mgen = false;
+      if (isK('async') && !(T[p + 1].k === 'p' && (T[p + 1].v === '(' || T[p + 1].v === '=' || T[p + 1].v === ';' || T[p + 1].v === '}')) && !T[p + 1].nl) { p++; masy = true; }
+      if (isP('*')) { p++; mgen = true; }
       nxt = T[p + 1];
       if ((isK('get') || isK('set')) && !(nxt.k === 'p' && (nxt.v === '(' || nxt.v === '=' || nxt.v === ';' || nxt.v === '}'))) { kind = T[p].v; p++; }
       key = memberKey(); kc = key[1]; key = key[0];
       if (isP('(')) {
-        fn = fnBody(null, params(), false, 'method');
+        fn = fnBody(null, params(), false, 'method', mgen, masy);
         members.push({ kind: kind, st: st, k: key, c: kc, v: fn, ctor: !st && !kc && key === 'constructor' && kind === 'method' });
       } else {
         v = null;
@@ -471,16 +472,17 @@ function __evParse(src) {
     return a;
   }
   function objLit() {
-    var props = [], k, kc, nm, fn, nxt, v, pr;
+    var props = [], k, kc, nm, fn, nxt, v, pr, masy, mgen;
     p++;
     while (!isP('}')) {
       if (isP('...')) { p++; props.push({ kind: 'spread', v: assign() }); }
       else {
+        masy = false; mgen = false;
         if (isK('async')) {
           nxt = T[p + 1];
-          if (!(nxt.k === 'p' && (nxt.v === ',' || nxt.v === ':' || nxt.v === '(' || nxt.v === '}' || nxt.v === '='))) unsup('async methods');
+          if (!(nxt.k === 'p' && (nxt.v === ',' || nxt.v === ':' || nxt.v === '(' || nxt.v === '}' || nxt.v === '='))) { p++; masy = true; }
         }
-        if (isP('*')) unsup('generator methods');
+        if (isP('*')) { p++; mgen = true; }
         nm = null; nxt = T[p + 1];
         if ((isK('get') || isK('set')) && !(nxt.k === 'p' && (nxt.v === ',' || nxt.v === ':' || nxt.v === '(' || nxt.v === '}' || nxt.v === '='))) { nm = T[p].v; p++; }
         k = memberKey(); kc = k[1]; k = k[0];
@@ -488,7 +490,7 @@ function __evParse(src) {
           fn = fnBody(null, params(), false, 'method');
           props.push({ kind: nm, k: k, c: kc, v: fn });
         } else if (isP('(')) {
-          fn = fnBody(null, params(), false, 'method');
+          fn = fnBody(null, params(), false, 'method', mgen, masy);
           props.push({ kind: 'init', method: true, k: k, c: kc, v: fn });
         } else if (isP(':')) {
           p++;
@@ -531,10 +533,16 @@ function __evParse(src) {
             if (!isP('.') && !isP('[') && !isP('(')) fail();
             return { t: 'Super' };
           case 'async':
-            if (T[p + 1].k === 'i' && T[p + 1].v === 'function') unsup('async functions');
-            if (T[p + 1].k === 'p' && T[p + 1].v === '(' && arrowAhead2()) unsup('async functions');
+            if (T[p + 1].k === 'i' && T[p + 1].v === 'function' && !T[p + 1].nl) { p++; return fnExpr(false, true); }
+            if (T[p + 1].k === 'p' && T[p + 1].v === '(' && !T[p + 1].nl && arrowAhead2()) { p++; return arrowRest(params(), true); }
             break;
-          case 'import': unsup('import expressions');
+          case 'import':
+            if (!(T[p + 1].k === 'p' && T[p + 1].v === '(')) unsup('import declarations');
+            p += 2;
+            e = assign();
+            if (isP(',')) { p++; if (!isP(')')) assign(); if (isP(',')) p++; }
+            expectP(')');
+            return { t: 'ImportCall', a: e };
         }
         if (__evKW[t.v] === 1) fail();
         p++;
@@ -632,9 +640,7 @@ function __evParse(src) {
       if (t.v === '++' || t.v === '--') { p++; a = unary(); __evToTarget(a); return { t: 'Upd', op: t.v, pre: true, a: a }; }
     } else if (t.k === 'i') {
       if (t.v === 'typeof' || t.v === 'void' || t.v === 'delete') { p++; return { t: 'Un', op: t.v, a: unary() }; }
-      if (t.v === 'await') {
-        if (T[p + 1].k !== 'p' || (T[p + 1].v !== '=' && T[p + 1].v !== ')' && T[p + 1].v !== ';')) unsup('await expressions');
-      }
+      if (t.v === 'await' && fctx.asy) { p++; return { t: 'Await', a: unary() }; }
     }
     e = lhs();
     t = T[p];
@@ -675,11 +681,23 @@ function __evParse(src) {
   function assign() {
     var t = T[p], left, o, ps, n2;
     if (t.k === 'i' && __evKW[t.v] !== 1 && T[p + 1].k === 'p' && T[p + 1].v === '=>' && !T[p + 1].nl) {
-      if (t.v === 'async') unsup('async functions');
       p++;
-      return arrowRest({ list: [{ t: 'Id', n: t.v }], rest: null });
+      return arrowRest({ list: [{ t: 'Id', n: t.v }], rest: null }, false);
     }
-    if (t.k === 'p' && t.v === '(' && arrowAhead()) return arrowRest(params());
+    if (t.k === 'i' && t.v === 'async' && !T[p + 1].nl && T[p + 1].k === 'i' && __evKW[T[p + 1].v] !== 1 && T[p + 2].k === 'p' && T[p + 2].v === '=>' && !T[p + 2].nl) {
+      p++;
+      n2 = T[p].v;
+      p++;
+      return arrowRest({ list: [{ t: 'Id', n: n2 }], rest: null }, true);
+    }
+    if (t.k === 'i' && t.v === 'yield' && fctx.gen) {
+      p++;
+      n2 = false; left = null;
+      if (isP('*') && !T[p].nl) { p++; n2 = true; left = assign(); }
+      else if (!T[p].nl && T[p].k !== 'e' && !(T[p].k === 'p' && (T[p].v === ')' || T[p].v === ']' || T[p].v === '}' || T[p].v === ',' || T[p].v === ';' || T[p].v === ':'))) left = assign();
+      return { t: 'Yield', a: left, dlg: n2, ag: fctx.asy };
+    }
+    if (t.k === 'p' && t.v === '(' && arrowAhead()) return arrowRest(params(), false);
     left = cond();
     o = T[p];
     if (o.k === 'p' && __evAsgOps[o.v] === 1) {
@@ -736,9 +754,10 @@ function __evParse(src) {
     return { t: 'Block', body: body, lex: lx.lex, funs: lx.funs };
   }
   function forStmt() {
-    var init = null, test = null, upd = null, body, kind, tg, it, sv;
+    var init = null, test = null, upd = null, body, kind, tg, it, sv, aw;
     p++;
-    if (isK('await')) unsup('for await loops');
+    aw = false;
+    if (isK('await')) { p++; aw = true; }
     expectP('(');
     if (isP(';')) {
       // pas d'initialisation
@@ -751,7 +770,7 @@ function __evParse(src) {
         it = kind === 'of' ? assign() : expr();
         expectP(')');
         body = stmt();
-        return { t: kind === 'of' ? 'ForOf' : 'ForIn', decl: init, a: null, it: it, body: body };
+        return { t: kind === 'of' ? 'ForOf' : 'ForIn', decl: init, a: null, it: it, body: body, aw: aw };
       }
     } else {
       sv = noIn; noIn = true;
@@ -763,7 +782,7 @@ function __evParse(src) {
         it = kind === 'of' ? assign() : expr();
         expectP(')');
         body = stmt();
-        return { t: kind === 'of' ? 'ForOf' : 'ForIn', decl: null, a: tg, it: it, body: body };
+        return { t: kind === 'of' ? 'ForOf' : 'ForIn', decl: null, a: tg, it: it, body: body, aw: aw };
       }
       init = { t: 'Expr', e: init };
     }
@@ -789,7 +808,7 @@ function __evParse(src) {
         case 'function': n = fnExpr(true); return { t: 'FnDecl', fn: n };
         case 'class': n = classBody(true); return { t: 'ClassDecl', cls: n };
         case 'async':
-          if (T[p + 1].k === 'i' && T[p + 1].v === 'function' && !T[p + 1].nl) unsup('async functions');
+          if (T[p + 1].k === 'i' && T[p + 1].v === 'function' && !T[p + 1].nl) { p++; n = fnExpr(true, true); return { t: 'FnDecl', fn: n }; }
           break;
         case 'if':
           p++; expectP('('); a = expr(); expectP(')');
@@ -1126,9 +1145,24 @@ function __evBinop(op, a, b) {
   }
   throw new SyntaxError('Unknown operator ' + op);
 }
+async function __evAsyncRun(node, scope, home, thisv, args, nt, f) { return __evInvoke(node, scope, home, thisv, args, nt, f); }
+function* __evGenRun(node, scope, home, thisv, args, nt, f) { return __evInvoke(node, scope, home, thisv, args, nt, f); }
+async function* __evAGenRun(node, scope, home, thisv, args, nt, f) { return __evInvoke(node, scope, home, thisv, args, nt, f); }
+function __evYieldStar(x) {
+  var it = x[Symbol.iterator](), sent, r;
+  for (;;) {
+    r = it.next(sent);
+    if (r.done) return r.value;
+    sent = __co_yield(r.value);
+  }
+}
 function __evMkFn(node, scope, home) {
   var f;
-  if (node.arrow) {
+  if (node.gen || node.asy) {
+    var run = node.gen ? (node.asy ? __evAGenRun : __evGenRun) : __evAsyncRun;
+    if (node.arrow) f = function () { return run(node, scope, home, undefined, arguments, undefined, f); };
+    else f = function () { return run(node, scope, home, this, arguments, undefined, f); };
+  } else if (node.arrow) {
     f = function () { return __evInvoke(node, scope, home, undefined, arguments, undefined, f); };
   } else {
     f = function () { return __evInvoke(node, scope, home, this, arguments, new.target, f); };
@@ -1367,6 +1401,17 @@ function __evEval(n, s) {
       }
       return __evMkFn(n, s, undefined);
     case 'Cls': return __evClass(n.cls, s);
+    case 'Await': return __co_await(__evEval(n.a, s));
+    case 'Yield':
+      v = n.a === null ? undefined : __evEval(n.a, s);
+      if (n.dlg) return n.ag ? __i_ystarA(v) : __evYieldStar(v);
+      return __co_yield(v);
+    case 'ImportCall':
+      v = __evEval(n.a, s);
+      return Promise.resolve().then(function () {
+        var m = require(String(v));
+        return m !== null && typeof m === 'object' ? Object.assign({ default: m }, m) : { default: m };
+      });
     case 'Seq':
       for (i = 0; i < n.l.length; i++) v = __evEval(n.l[i], s);
       return v;
@@ -1590,6 +1635,7 @@ function __evExec(n, s, labels) {
     case 'ForIn':
     case 'ForOf':
       v = __evEval(n.it, s);
+      if (n.aw) v = __i_forawait(v);
       if (n.t === 'ForIn') {
         if (v === null || v === undefined) return null;
         it = [];

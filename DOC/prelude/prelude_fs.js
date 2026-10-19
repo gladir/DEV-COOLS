@@ -158,7 +158,7 @@ function __fsList(p) {
   return names;
 }
 function __mkFs() {
-  var fs = {}, EE = __require('events'), i, names;
+  var fs = {}, EE = __reqbi('events'), i, names;
   var join = function (a, b) { return a.replace(/[\\\/]+$/, '') + '/' + b; };
   var Stats = function Stats() { };
   Stats.prototype.isFile = function () { return (this.mode & 61440) === 32768; };
@@ -459,7 +459,7 @@ function __mkFs() {
   };
   return fs;
 }
-function __mkFsPromises() { return __require('fs').promises; }
+function __mkFsPromises() { return __reqbi('fs').promises; }
 function __runProc(file, args, o, input) {
   o = o || {};
   var cmd, shell = o.shell, wcmd, pipes = new Uint32Array(2), sa = new Uint32Array(3), si = new Uint32Array(17), pi = new Uint32Array(4), stdio = o.stdio, mode = ['pipe', 'pipe', 'pipe'], i;
@@ -543,7 +543,7 @@ function __cpEnc(r, o) {
   return r;
 }
 function __mkCp() {
-  var cp = {}, EE = __require('events');
+  var cp = {}, EE = __reqbi('events');
   cp.spawnSync = function (file, args, o) {
     if (args !== undefined && args !== null && !Array.isArray(args)) { o = args; args = []; }
     var r = __runProc(file, args || [], o, o && o.input);
@@ -642,7 +642,7 @@ function __mkCp() {
   return cp;
 }
 function __stdinMake() {
-  var EE = __require('events'), s = new EE(), enc = null, started = false, ended = false, paused = false, h = __k32(25, -10);
+  var EE = __reqbi('events'), s = new EE(), enc = null, started = false, ended = false, paused = false, h = __k32(25, -10);
   s.fd = 0; s.isTTY = false; s.readable = true;
   s.setEncoding = function (e) { enc = e || 'utf8'; return s; };
   var got = new Uint32Array(1);
@@ -693,7 +693,7 @@ function __stdinMake() {
   return s;
 }
 function __mkReadline() {
-  var rl = {}, EE = __require('events');
+  var rl = {}, EE = __reqbi('events');
   rl.createInterface = function (opts, out) {
     var input = opts && opts.input !== undefined ? opts.input : opts, output = opts && opts.output !== undefined ? opts.output : out, i = new EE(), buf = '', closed = false, qcb = null, prompt = '> ', lines = [], waiters = [];
     if (opts && opts.prompt !== undefined) prompt = opts.prompt;
@@ -795,9 +795,9 @@ function __init_fs() {
 }
 function __mkFsModule(name) {
   if (name === 'fs') return __mkFs();
-  if (name === 'fs/promises') return __require('fs').promises;
+  if (name === 'fs/promises') return __reqbi('fs').promises;
   if (name === 'child_process') return __mkCp();
   if (name === 'readline') return __mkReadline();
-  if (name === 'readline/promises') return __require('readline').promises;
+  if (name === 'readline/promises') return __reqbi('readline').promises;
   return null;
 }
