@@ -5025,6 +5025,44 @@ Type
   ReadISRNext : Boolean; { OCW3 : prochaine lecture du port commande = ISR sinon IRR }
  End;
 
+ { --- 8253/8254 PIT (Programmable Interval Timer), canaux 0-2, ports        }
+ { 40h-43h (2026-10-19, enquete eComStation - demande explicite de           }
+ { l'utilisateur) : BOGUE REEL CORRIGE - Emu_PortRead/Write ne modelisaient   }
+ { avant ce correctif AUCUN vrai compte a rebours ni commande de verrou      }
+ { (latch) : chaque IN 40h/41h/42h se contentait d'incrementer un compteur    }
+ { factice SANS AUCUN rapport avec le temps ecoule, et OUT 43h (registre de   }
+ { commande, y compris la commande de verrouillage) etait purement et        }
+ { simplement ignore. Le noyau eComStation (et probablement d'autres OS      }
+ { d'epoque) utilise la sequence materielle standard "OUT 43h (verrouiller   }
+ { le compte) ; IN 40h (octet bas) ; IN 40h (octet haut)" pour mesurer un     }
+ { delta de calibration CPU - recevoir 2 echantillons factices sans rapport   }
+ { au lieu des deux moitie's d'une VRAIE valeur 16 bits cohesive produisait   }
+ { un delta absurde, menant a un MUL puis un DIV qui debordait (voir          }
+ { DIV0 SNAPSHOT, 1000:8506, enquete complete). Le calcul du compte courant   }
+ { ci-dessous reste une approximation honnete (pas cycle-exact) fondee sur    }
+ { le MEME etalonnage deja utilise ailleurs dans ce fichier pour le tic BIOS  }
+ { 18.2 Hz (EmuStepsPerTick=5000 pas = 1 periode complete de 65536 a 1,193182 }
+ { MHz, voir Emu_TimerTick) - mais HONORE REELLEMENT la commande de           }
+ { verrouillage (Latched/LatchValue) et la sequence LSB/MSB (ReadToggle),     }
+ { ce qui est precisement ce dont ce genre de code invite a besoin. }
+ TEmuPITChannel = Record
+  ReloadVal   : Word;    { valeur programmee (0 = 65536, convention reelle) }
+  Mode        : Byte;    { 0-5 (OUT 43h, bits 3-1) - stocke mais non modelise }
+  BCD         : Boolean; { OUT 43h, bit 0 - stocke mais non modelise }
+  AccessMode  : Byte;    { 0=verrou,1=LSB seul,2=MSB seul,3=LSB puis MSB }
+  ReadToggle  : Boolean; { False=prochaine lecture LSB, True=MSB (mode 3) }
+  WriteToggle : Boolean; { idem en ecriture }
+  WriteLSB    : Byte;    { LSB deja ecrit, en attente du MSB (mode 3) }
+  Latched     : Boolean; { un verrou (latch) est arme, LatchValue a lire }
+  LatchValue  : Word;
+  BaseSteps   : Int64;   { P.TotalSteps au dernier (re)chargement du compte }
+ End;
+ { Type nomme (pas juste "Array[0..2] Of TEmuPITChannel" repete) : FPC       }
+ { traite deux declarations anonymes identiques comme des types DIFFERENTS, }
+ { incompatibles entre EmuPIT (global) et Snap.PIT (TDOSSnapshot) sans ce   }
+ { partage explicite. }
+ TEmuPITArray = Array[0..2] Of TEmuPITChannel;
+
  { --- 8255A PPI (Options > Emulateur > DOS: Materiel) - ports 60h-63h,     }
  { repetes sur 64h-6Fh sur le materiel PC/XT d origine (decodage incomplet  }
  { 2 bits d adresse, voir Emu_IsATClassHw) ; le port A (60h, scancode       }
@@ -6498,6 +6536,8 @@ Type
   { --- 8259A/8255A/UART/LPT/NE2000 (voir Emu_PortRead/Emu_PortWrite) ---   }
   PICMaster      : TEmuPICChip;
   PICSlave       : TEmuPICChip;
+  PIT            : TEmuPITArray;
+  Port9D         : Byte;
   PPI            : TEmuPPI;
   LPT1, LPT2     : TEmuLPT;
   COM2, COM4     : TEmuUART;
@@ -7229,6 +7269,18 @@ Type
   DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
   DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
   DosLogInt13     : Boolean;     { journal EMUINT13.LOG (appels BIOS disque) }
+  { DOSCFG (2026-10-19, demande explicite de l'utilisateur, commande        }
+  { "Invite de commande" du Terminal) - 3 nouveaux parametres pilotant      }
+  { INT 21h AH=30h/AX=3306h (version) et AH=38h (pays) ; defauts identiques }
+  { au comportement fige qui existait avant ce correctif (DOS 5.00/USA),    }
+  { aucune regression pour les scenarios deja verifies (TP4..TP7/QP). }
+  DosVerMajor     : Byte;        { version DOS rapportee (AH=30h), partie majeure }
+  DosVerMinor     : Byte;        { version DOS rapportee (AH=30h), partie mineure }
+  DosCountry      : Integer;     { code pays MS-DOS (AH=38h), voir DosCountryName }
+  DosSoundOn      : Boolean;     { drapeau son - voir le commentaire de tete de  }
+                                  { TermCmd_DOSCFG : aucun haut-parleur PC/carte  }
+                                  { son synthetise dans ce fichier pour l'instant,}
+                                  { simple etat memorise/rapporte honnetement.    }
   { Emulateur > Z8001 (2026-09-20, demande explicite de l'utilisateur -     }
   { "Enter sur .Z8K doit lancer l'emulateur Z8001 avec une API CP/M         }
   { integree si la case CP/M est cochee, cochee par defaut"). }
@@ -9484,6 +9536,9 @@ Var
  EmuBootLoop2Dumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuBootLoop3Dumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuBootLoop4Hits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuDrDosLoopDumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuEcs1200Dumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuDrDos14F1Dumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  { Activites observees (Deboguer > Activites observees, voir              }
  { EmuActivityDlg/DrawEmuActivityDlg) - compteurs mis a jour en direct     }
  { pendant l execution DOS, remis a zero a chaque demarrage de session     }
@@ -9674,11 +9729,32 @@ Var
  DiagPStepHits: Integer;         { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagPIntHits: Integer;          { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagLoop3090Done: Boolean;      { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagVidModeHits: Integer;       { DIAGNOSTIC TEMPORAIRE - a retirer }
+ { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-19, demande explicite de       }
+ { l'utilisateur suite au bogue PIT eComStation) : compteur des acces a un   }
+ { port d'E/S SANS AUCUNE branche geree dans Emu_PortRead/Write (voir leur   }
+ { "Else" respectif) - but : reperer d'autres lacunes similaires AVANT        }
+ { qu'elles ne causent un autre plantage, sur n'importe quel OS invite. }
+ EmuUnkPortHits: Integer;
  DiagRealTrampHits: Integer;     { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagAh48Hits: Integer;          { DIAGNOSTIC TEMPORAIRE - a retirer }
  { --- 8259A/8255A/UART/LPT/NE2000 : voir Emu_PortRead/Emu_PortWrite. --- }
  EmuPICMaster   : TEmuPICChip;   { 20h/21h, tout materiel }
  EmuPICSlave    : TEmuPICChip;   { A0h/A1h, materiel classe AT+ seulement }
+ EmuPIT         : TEmuPITArray; { 40h-43h, voir TEmuPITChannel }
+ { 9Dh (2026-10-19, enquete eComStation, demande explicite de l'utilisateur  }
+ { - "tenir compte du materiel PS/2 vs PC/XT") : aucune reference consultee  }
+ { ici ne confirme avec certitude la signification HISTORIQUE precise de ce  }
+ { port exact (contrairement a E8h, un "port de delai" tres documente) -     }
+ { honnete de le dire plutot que d inventer un nom de registre MCA/POS       }
+ { specifique non verifie. Ce qui EST certain et documente : les systemes    }
+ { IBM PS/2 (DosHardware=3) utilisent reellement un bus Micro Channel avec    }
+ { des registres systeme dans cette zone (0090h-009Fh), alors qu un vrai     }
+ { PC/XT/AT (bus ISA) n y a RIEN de connecte - et la convention electrique    }
+ { reelle d un bus ISA non connecte (resistances de tirage) est de lire      }
+ { $FF, PAS 0 comme le ferait notre valeur par defaut generique pour un      }
+ { port veritablement inconnu. Voir Emu_PortRead/Write pour le detail. }
+ EmuPort9D      : Byte;
  EmuPPI         : TEmuPPI;       { 60h-63h (+ miroir 64h-6Fh), materiel PC/XT }
  Emu8042        : TEmu8042;      { 60h/64h, materiel classe AT+ }
  EmuLPT1        : TEmuLPT;       { 03BCh-03BFh }
@@ -159052,6 +159128,186 @@ Begin
  TermAddLine(TP, 'Transfert systeme termine.');
 End;
 
+{ --- DOSCFG : ajuster/afficher a chaud la configuration de l'emulateur DOS  }
+{ (2026-10-19, demande explicite de l'utilisateur, "Invite de commande"     }
+{ uniquement) - meme principe que BOOT/SYS ci-dessus : reutilise TEL QUEL   }
+{ les champs OptionsDlg.Data deja existants (CPU/DPMI, voir le dialogue     }
+{ Options > Emulateur > DOS) plutot que d'inventer un 2e mecanisme de       }
+{ configuration - juste un 2e point d'acces plus rapide que le dialogue,    }
+{ utile en script (/TERMINALDOS:) ou pour un changement ponctuel sans       }
+{ ouvrir de fenetre. DOSVER/COUNTRY/SOUND sont de VRAIS nouveaux champs     }
+{ (DosVerMajor/DosVerMinor/DosCountry/DosSoundOn) introduits ici meme,       }
+{ cables dans Emu_DoInt21 $30/$33 sous-fonction 6/$38 (voir ces 3 cases) -   }
+{ SOUND reste honnetement un simple drapeau memorise (aucune carte son/     }
+{ haut-parleur PC synthetise dans ce fichier pour l'instant, voir le         }
+{ commentaire de tete de DosSoundOn) : la commande le rapporte fidelement,   }
+{ ne pretend pas a un effet audible qui n'existe pas encore. }
+Function DosCountryName(Code: Integer): String; Forward;
+Function DosCountryCodeFromName(Const NameIn: String): Integer; Forward;
+Procedure Emu_ApplyCpuType(CpuType: Integer); Forward;
+
+Procedure TermCmd_DOSCFG(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Tok, Key, Val, U: String;
+ EqPos, DotPos, CodeErr: Integer;
+ NewCpu, NewCountry, NewMajor, NewMinor: Integer;
+Begin
+ Tok := TermExtractParam(ParamStr, 1);
+ If (Tok = '') Or (UpCaseStr(Tok) = '/?') Then Begin
+  If Tok = '' Then Begin
+   TermAddLine(TP, 'DOSCFG - configuration de l''emulateur DOS (Options > Emulateur > DOS)');
+   TermAddLine(TP, '  CPU     = ' + DosCpuTypeName(OptionsDlg.Data.DosCpuType));
+   If OptionsDlg.Data.DosDPMI Then TermAddLine(TP, '  DPMI    = ON')
+                              Else TermAddLine(TP, '  DPMI    = OFF');
+   TermAddLine(TP, '  DOSVER  = ' + IntToStr(OptionsDlg.Data.DosVerMajor) + '.' +
+    IntToStr(OptionsDlg.Data.DosVerMinor));
+   TermAddLine(TP, '  COUNTRY = ' + DosCountryName(OptionsDlg.Data.DosCountry));
+   If OptionsDlg.Data.DosSoundOn Then TermAddLine(TP, '  SOUND   = ON')
+                                 Else TermAddLine(TP, '  SOUND   = OFF');
+   TermAddLine(TP, 'Taper DOSCFG /? pour la syntaxe complete.');
+  End Else Begin
+   TermAddLine(TP, 'Syntaxe : DOSCFG [parametre[=valeur]]');
+   TermAddLine(TP, '  DOSCFG                 Affiche tous les parametres actuels');
+   TermAddLine(TP, '  DOSCFG CPU             Affiche le type de processeur emule');
+   TermAddLine(TP, '  DOSCFG CPU=nom         8086/8088/80186/80188/NECV20/NECV30/');
+   TermAddLine(TP, '                         80286/80386/80486/PENTIUM');
+   TermAddLine(TP, '  DOSCFG DPMI            Affiche si le support DPMI est actif');
+   TermAddLine(TP, '  DOSCFG DPMI=ON|OFF     Active/desactive le support DPMI');
+   TermAddLine(TP, '  DOSCFG DOSVER          Affiche la version DOS rapportee');
+   TermAddLine(TP, '  DOSCFG DOSVER=M.m      Version DOS rapportee (ex: 6.22)');
+   TermAddLine(TP, '  DOSCFG COUNTRY         Affiche le pays rapporte (INT 21h AH=38h)');
+   TermAddLine(TP, '  DOSCFG COUNTRY=nom     USA/CAN/FRA/GBR/DEU/ITA/ESP/JPN');
+   TermAddLine(TP, '  DOSCFG SOUND           Affiche si le son est active');
+   TermAddLine(TP, '  DOSCFG SOUND=ON|OFF    Active/desactive le son (reserve, voir');
+   TermAddLine(TP, '                         DOSCFG /? - aucun haut-parleur PC emule');
+   TermAddLine(TP, '                         pour l''instant, le drapeau est juste memorise)');
+  End;
+  Exit;
+ End;
+ EqPos := Pos('=', Tok);
+ If EqPos > 0 Then Begin
+  Key := UpCaseStr(Copy(Tok, 1, EqPos - 1));
+  Val := Copy(Tok, EqPos + 1, Length(Tok) - EqPos);
+ End Else Begin
+  Key := UpCaseStr(Tok);
+  Val := '';
+ End;
+ U := UpCaseStr(Val);
+ If Key = 'CPU' Then Begin
+  If Val = '' Then
+   TermAddLine(TP, 'CPU = ' + DosCpuTypeName(OptionsDlg.Data.DosCpuType))
+  Else Begin
+   NewCpu := TermCpuTypeFromName(Val);
+   If NewCpu < 0 Then
+    TermAddLine(TP, 'DOSCFG : type de processeur inconnu : ' + Val)
+   Else Begin
+    OptionsDlg.Data.DosCpuType := NewCpu;
+    Emu_ApplyCpuType(OptionsDlg.Data.DosCpuType);
+    TermAddLine(TP, 'CPU = ' + DosCpuTypeName(OptionsDlg.Data.DosCpuType));
+   End;
+  End;
+ End Else If Key = 'DPMI' Then Begin
+  If Val = '' Then Begin
+   If OptionsDlg.Data.DosDPMI Then TermAddLine(TP, 'DPMI = ON')
+                              Else TermAddLine(TP, 'DPMI = OFF');
+  End
+  Else If (U = 'ON') Or (U = 'TRUE') Or (U = '1') Then Begin
+   OptionsDlg.Data.DosDPMI := True;
+   TermAddLine(TP, 'DPMI = ON');
+  End Else If (U = 'OFF') Or (U = 'FALSE') Or (U = '0') Then Begin
+   OptionsDlg.Data.DosDPMI := False;
+   TermAddLine(TP, 'DPMI = OFF');
+  End Else
+   TermAddLine(TP, 'DOSCFG : valeur attendue ON ou OFF pour DPMI');
+ End Else If Key = 'DOSVER' Then Begin
+  If Val = '' Then
+   TermAddLine(TP, 'DOSVER = ' + IntToStr(OptionsDlg.Data.DosVerMajor) + '.' +
+    IntToStr(OptionsDlg.Data.DosVerMinor))
+  Else Begin
+   DotPos := Pos('.', Val);
+   If DotPos <= 0 Then
+    TermAddLine(TP, 'DOSCFG : syntaxe attendue DOSVER=majeur.mineur (ex: 6.22)')
+   Else Begin
+    System.Val(Copy(Val, 1, DotPos - 1), NewMajor, CodeErr);
+    If CodeErr = 0 Then
+     System.Val(Copy(Val, DotPos + 1, Length(Val) - DotPos), NewMinor, CodeErr);
+    If (CodeErr <> 0) Or (NewMajor < 0) Or (NewMajor > 255) Or
+       (NewMinor < 0) Or (NewMinor > 255) Then
+     TermAddLine(TP, 'DOSCFG : syntaxe attendue DOSVER=majeur.mineur (ex: 6.22)')
+    Else Begin
+     OptionsDlg.Data.DosVerMajor := NewMajor;
+     OptionsDlg.Data.DosVerMinor := NewMinor;
+     TermAddLine(TP, 'DOSVER = ' + IntToStr(NewMajor) + '.' + IntToStr(NewMinor));
+    End;
+   End;
+  End;
+ End Else If Key = 'COUNTRY' Then Begin
+  If Val = '' Then
+   TermAddLine(TP, 'COUNTRY = ' + DosCountryName(OptionsDlg.Data.DosCountry))
+  Else Begin
+   NewCountry := DosCountryCodeFromName(Val);
+   If NewCountry < 0 Then
+    TermAddLine(TP, 'DOSCFG : pays inconnu : ' + Val +
+     ' (USA/CAN/FRA/GBR/DEU/ITA/ESP/JPN)')
+   Else Begin
+    OptionsDlg.Data.DosCountry := NewCountry;
+    TermAddLine(TP, 'COUNTRY = ' + DosCountryName(NewCountry));
+   End;
+  End;
+ End Else If Key = 'SOUND' Then Begin
+  If Val = '' Then Begin
+   If OptionsDlg.Data.DosSoundOn Then TermAddLine(TP, 'SOUND = ON')
+                                 Else TermAddLine(TP, 'SOUND = OFF');
+  End
+  Else If (U = 'ON') Or (U = 'TRUE') Or (U = '1') Then Begin
+   OptionsDlg.Data.DosSoundOn := True;
+   TermAddLine(TP, 'SOUND = ON');
+  End Else If (U = 'OFF') Or (U = 'FALSE') Or (U = '0') Then Begin
+   OptionsDlg.Data.DosSoundOn := False;
+   TermAddLine(TP, 'SOUND = OFF');
+  End Else
+   TermAddLine(TP, 'DOSCFG : valeur attendue ON ou OFF pour SOUND');
+ End Else
+  TermAddLine(TP, 'DOSCFG : parametre inconnu : ' + Key +
+   ' (CPU/DPMI/DOSVER/COUNTRY/SOUND, voir DOSCFG /?)');
+End;
+
+{ Nom de pays (table courte) -> code pays MS-DOS/COUNTRY.SYS reel (voir      }
+{ Ralf Brown INT 21h/AH=38h et tout fichier COUNTRY.TXT d'epoque) - PAS un   }
+{ indicatif telephonique generique (USA=001/CAN=002 partagent le +1 reel    }
+{ mais sont 2 codes DOS DISTINCTS, FRA/GBR/DEU/ITA/ESP/JPN reutilisent eux   }
+{ directement l'indicatif international, seul cas reellement standardise    }
+{ par MS-DOS au-dela de 001/002/003). }
+Function DosCountryCodeFromName(Const NameIn: String): Integer;
+Var U: String;
+Begin
+ U := UpCaseStr(NameIn);
+ If U = 'USA'      Then DosCountryCodeFromName := 1
+ Else If U = 'CAN' Then DosCountryCodeFromName := 2
+ Else If U = 'FRA' Then DosCountryCodeFromName := 33
+ Else If U = 'GBR' Then DosCountryCodeFromName := 44
+ Else If U = 'DEU' Then DosCountryCodeFromName := 49
+ Else If U = 'ITA' Then DosCountryCodeFromName := 39
+ Else If U = 'ESP' Then DosCountryCodeFromName := 34
+ Else If U = 'JPN' Then DosCountryCodeFromName := 81
+ Else DosCountryCodeFromName := -1;
+End;
+
+Function DosCountryName(Code: Integer): String;
+Begin
+ Case Code Of
+  1:  DosCountryName := 'USA';
+  2:  DosCountryName := 'CAN';
+  33: DosCountryName := 'FRA';
+  44: DosCountryName := 'GBR';
+  49: DosCountryName := 'DEU';
+  39: DosCountryName := 'ITA';
+  34: DosCountryName := 'ESP';
+  81: DosCountryName := 'JPN';
+  Else DosCountryName := IntToStr(Code);
+ End;
+End;
+
 { ============================================================ }
 { === Commandes Microsoft Teams (PowerShell dev uniquement)=== }
 { ============================================================ }
@@ -168822,6 +169078,8 @@ Begin
     TermCmd_FORMAT(TP, ParamStr)
    Else If CurrCmd = 'SYS' Then
     TermCmd_SYS(TP, ParamStr)
+   Else If CurrCmd = 'DOSCFG' Then
+    TermCmd_DOSCFG(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
@@ -184466,7 +184724,7 @@ Begin
  End;
  If EmuWatchEnabled And (SizeBytes > 0) And
     (Addr <= EmuWatchPhysHi) And (Addr + LongInt(SizeBytes) - 1 >= EmuWatchPhysLo) And
-    (EmuWatchHits < 200) Then Begin
+    (EmuWatchHits < 3000) Then Begin
   Inc(EmuWatchHits);
   {$I-} Assign(WLog, 'EMUWATCH.LOG'); Append(WLog);
   WIO := IOResult;
@@ -192908,11 +193166,111 @@ Begin
  F.DOR := Value;
 End;
 
+{ --- 8253/8254 PIT (40h-43h) : voir TEmuPITChannel pour le detail du        }
+{ bogue corrige. Compte a rebours APPROXIME (pas cycle-exact) a partir du    }
+{ meme etalonnage deja utilise pour le tic BIOS 18.2 Hz (EmuStepsPerTick =   }
+{ 5000 pas = 1 periode complete de 65536 a 1,193182 MHz). }
+Function Emu_PIT_CurrentCount(Idx: Byte; Var P: TEmulatorPanel): Word;
+Var
+ Reload: LongInt;
+ ElapsedSteps, ElapsedTicks: Int64;
+ Cnt: LongInt;
+Begin
+ Reload := EmuPIT[Idx].ReloadVal;
+ If Reload = 0 Then Reload := 65536;
+ ElapsedSteps := P.TotalSteps - EmuPIT[Idx].BaseSteps;
+ If ElapsedSteps < 0 Then ElapsedSteps := 0;
+ If EmuStepsPerTick < 1 Then ElapsedTicks := 0
+ Else ElapsedTicks := (ElapsedSteps * 65536) Div EmuStepsPerTick;
+ Cnt := Reload - LongInt(ElapsedTicks Mod Reload);
+ Emu_PIT_CurrentCount := Word(Cnt And $FFFF);
+End;
+
+{ Lecture d un port de donnees (40h/41h/42h) - respecte la commande de       }
+{ verrouillage (Latched) et la sequence LSB/MSB (AccessMode 3, la plus       }
+{ courante en pratique - "OUT 43h ; IN 40h ; IN 40h"). }
+Function Emu_PIT_PortRead(Var P: TEmulatorPanel; Idx: Byte): Byte;
+Var Cnt: Word;
+Begin
+ If EmuPIT[Idx].Latched Then Cnt := EmuPIT[Idx].LatchValue
+ Else Cnt := Emu_PIT_CurrentCount(Idx, P);
+ Case EmuPIT[Idx].AccessMode Of
+  1: Begin { LSB seul }
+   Emu_PIT_PortRead := Byte(Cnt And $FF);
+   EmuPIT[Idx].Latched := False;
+  End;
+  2: Begin { MSB seul }
+   Emu_PIT_PortRead := Byte((Cnt Shr 8) And $FF);
+   EmuPIT[Idx].Latched := False;
+  End;
+  Else Begin { 3 (ou 0, defaut) : LSB puis MSB }
+   If Not EmuPIT[Idx].ReadToggle Then Begin
+    Emu_PIT_PortRead := Byte(Cnt And $FF);
+    EmuPIT[Idx].ReadToggle := True;
+   End Else Begin
+    Emu_PIT_PortRead := Byte((Cnt Shr 8) And $FF);
+    EmuPIT[Idx].ReadToggle := False;
+    EmuPIT[Idx].Latched := False;
+   End;
+  End;
+ End;
+End;
+
+{ Ecriture d un port de donnees (40h/41h/42h) - programme ReloadVal selon la }
+{ meme sequence LSB/MSB, puis redemarre reellement le compte a rebours      }
+{ (BaseSteps) - UNIQUEMENT une fois la valeur complete ecrite, fidele a un   }
+{ vrai 8253/8254 (une commande de mode seule, sans donnees, ne redemarre     }
+{ rien). }
+Procedure Emu_PIT_PortWrite(Var P: TEmulatorPanel; Idx: Byte; Value: Byte);
+Begin
+ Case EmuPIT[Idx].AccessMode Of
+  1: EmuPIT[Idx].ReloadVal := Value;
+  2: EmuPIT[Idx].ReloadVal := Word(Value) Shl 8;
+  Else Begin { 3 (ou 0) : LSB puis MSB }
+   If Not EmuPIT[Idx].WriteToggle Then Begin
+    EmuPIT[Idx].WriteLSB := Value;
+    EmuPIT[Idx].WriteToggle := True;
+    Exit;
+   End Else Begin
+    EmuPIT[Idx].ReloadVal := Word(EmuPIT[Idx].WriteLSB) Or (Word(Value) Shl 8);
+    EmuPIT[Idx].WriteToggle := False;
+   End;
+  End;
+ End;
+ EmuPIT[Idx].BaseSteps := P.TotalSteps;
+End;
+
+{ Ecriture du registre de commande (43h) - decode SC/RW/M/BCD comme un vrai  }
+{ 8253/8254. RW=00 est la commande de VERROUILLAGE (latch) : fige le compte  }
+{ courant dans LatchValue SANS toucher au compte a rebours lui-meme (vrai     }
+{ comportement materiel), exactement ce que la sequence de calibration de    }
+{ l'enquete eComStation attend. }
+Procedure Emu_PIT_CmdWrite(Var P: TEmulatorPanel; Value: Byte);
+Var Chan, RW: Byte;
+Begin
+ Chan := (Value Shr 6) And $03;
+ If Chan > 2 Then Exit; { 11 = "read-back command" (8254 seulement), non modelise }
+ RW := (Value Shr 4) And $03;
+ If RW = 0 Then Begin
+  EmuPIT[Chan].LatchValue := Emu_PIT_CurrentCount(Chan, P);
+  EmuPIT[Chan].Latched := True;
+  EmuPIT[Chan].ReadToggle := False;
+  Exit;
+ End;
+ EmuPIT[Chan].AccessMode  := RW;
+ EmuPIT[Chan].Mode        := (Value Shr 1) And $07;
+ EmuPIT[Chan].BCD         := (Value And $01) <> 0;
+ EmuPIT[Chan].WriteToggle := False;
+ EmuPIT[Chan].ReadToggle  := False;
+ EmuPIT[Chan].Latched     := False;
+End;
+
 { --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
       Les ports non ger?s retournent 0. --- }
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
 Var
  CmosIdxPort, CmosDataPort: Word;
+ DiagUnkF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPORTUNK.LOG }
 Begin
  Emu_PortRead := 0;
  Emu_CMOSPorts(CmosIdxPort, CmosDataPort);
@@ -192931,12 +193289,27 @@ Begin
     A0h/A1h dessus ne doit rien trouver (comportement par defaut : 0). }
   $A0, $A1: If Emu_IsATClassHw Then
              Emu_PortRead := Emu_PIC_In(EmuPICSlave, Port = $A0, 0);
-  $40, $41, $42: Begin
-   { PIT 8253 - lecture de compteur. Retourne un compteur libre. }
-   Inc(EmuTickCounter);
-   Emu_PortRead := Byte(EmuTickCounter);
-  End;
-  $43: Emu_PortRead := 0;
+  $40, $41, $42: Emu_PortRead := Emu_PIT_PortRead(P, Port - $40);
+  $43: Emu_PortRead := 0; { ecriture seule sur le vrai materiel }
+  { E8h (2026-10-19, enquete eComStation, demande explicite de l'utilisateur }
+  { suite a DIAGPORTUNK.LOG) : port "delai d'E/S" - AUCUN peripherique reel   }
+  { n y repond jamais, un vrai BIOS/OS l utilise deliberement comme simple    }
+  { tampon d attente materielle entre 2 autres acces de port (meme famille    }
+  { que le port 80h, plus connu, utilise pour la meme raison par Linux et     }
+  { d'autres - voir toute reference x86 sur les "I/O delay ports"). Geree     }
+  { ici EXPLICITEMENT (pas par la simple valeur par defaut 0 du debut de      }
+  { cette fonction) pour que ce port n'apparaisse plus dans DIAGPORTUNK.LOG   }
+  { comme "non gere" alors que son comportement (bus flottant, aucun effet)   }
+  { est reellement celui attendu, pas une lacune. }
+  $E8: Emu_PortRead := 0;
+  { 9Dh : voir le commentaire de tete d'EmuPort9D - comportement            }
+  { REELLEMENT different selon le materiel choisi (Options > Emulateur >    }
+  { DOS: Materiel), comme demande explicitement : un vrai PS/2 (bus Micro    }
+  { Channel) a quelque chose de reel ici (verrou lecture/ecriture) ; un vrai }
+  { PC/XT/AT (bus ISA) n y a rien de connecte, et un bus ISA non connecte se }
+  { lit $FF (resistances de tirage), jamais 0. }
+  $9D: If OptionsDlg.Data.DosHardware = 3 Then Emu_PortRead := EmuPort9D
+       Else Emu_PortRead := $FF;
   { 60h/64h : 8255A PPI (PC/XT/clones) ou 8042 (AT/PS2/Compaq Deskpro 386,  }
   { voir Emu_IsATClassHw) - PROTOCOLE REELLEMENT DIFFERENT selon le        }
   { materiel choisi (Options > Emulateur > DOS: Materiel), pas juste un    }
@@ -193014,12 +193387,30 @@ Begin
   $3F4: Emu_PortRead := Emu_FDC_MSR(EmuFDC);
   $3F5: Emu_PortRead := Emu_FDC_ReadData(EmuFDC);
   $3F7: If Emu_IsATClassHw Then Emu_PortRead := Emu_FDC_ReadDIR(EmuFDC);
+  Else Begin
+   { DIAGNOSTIC TEMPORAIRE - a retirer : voir le commentaire de tete d       }
+   { EmuUnkPortHits - port LU sans aucune branche geree ci-dessus. }
+   If EmuUnkPortHits < 300 Then Begin
+    Inc(EmuUnkPortHits);
+    {$I-} Assign(DiagUnkF, 'DIAGPORTUNK.LOG');
+    If FileExists('DIAGPORTUNK.LOG') Then Append(DiagUnkF) Else Rewrite(DiagUnkF);
+    {$I+}
+    If IOResult = 0 Then Begin
+     WriteLn(DiagUnkF, '#', EmuUnkPortHits, ' IN port=', HexWord(Port),
+      ' -> 0 (non gere)  Steps=', P.TotalSteps, ' CS:IP=',
+      HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+     Close(DiagUnkF);
+    End;
+    {$I+} If IOResult <> 0 Then ;
+   End;
+  End;
  End;
 End;
 
 Procedure Emu_PortWrite(Var P: TEmulatorPanel; Port: Word; Value: Byte);
 Var
  CmosIdxPort, CmosDataPort: Word;
+ DiagUnkF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPORTUNK.LOG }
 Begin
  Emu_CMOSPorts(CmosIdxPort, CmosDataPort);
  If Port = CmosIdxPort Then Begin
@@ -193033,6 +193424,16 @@ Begin
  Case Port Of
   $20, $21: Emu_PIC_Out(EmuPICMaster, Port = $20, Value);
   $A0, $A1: If Emu_IsATClassHw Then Emu_PIC_Out(EmuPICSlave, Port = $A0, Value);
+  $40, $41, $42: Emu_PIT_PortWrite(P, Port - $40, Value);
+  $43: Emu_PIT_CmdWrite(P, Value);
+  { E8h : port "delai d'E/S" - voir le commentaire jumeau dans              }
+  { Emu_PortRead. Accepte et ignore deliberement, geste EXPLICITE (pas un   }
+  { "non gere" fortuit). }
+  $E8: ;
+  { 9Dh : voir le commentaire jumeau dans Emu_PortRead - seul un vrai PS/2   }
+  { (Micro Channel) memorise reellement ce qui y est ecrit ; un vrai        }
+  { PC/XT/AT (bus ISA non connecte a cette adresse) ignore l ecriture. }
+  $9D: If OptionsDlg.Data.DosHardware = 3 Then EmuPort9D := Value;
   $60: If Emu_IsATClassHw Then Emu_8042_WriteData(Value); { XT : Port A entree pure }
   $61: EmuPPI.PortB := Value;
   $63: If Not Emu_IsATClassHw Then EmuPPI.CtrlReg := Value;
@@ -193072,6 +193473,23 @@ Begin
   $3F2: Emu_FDC_WriteDOR(EmuFDC, Value);
   $3F5: Emu_FDC_WriteData(EmuFDC, Value);
   $3F7: If Emu_IsATClassHw Then EmuFDC.CCR := Value And $03;
+  Else Begin
+   { DIAGNOSTIC TEMPORAIRE - a retirer : voir le commentaire de tete d       }
+   { EmuUnkPortHits - port ECRIT sans aucune branche geree ci-dessus. }
+   If EmuUnkPortHits < 300 Then Begin
+    Inc(EmuUnkPortHits);
+    {$I-} Assign(DiagUnkF, 'DIAGPORTUNK.LOG');
+    If FileExists('DIAGPORTUNK.LOG') Then Append(DiagUnkF) Else Rewrite(DiagUnkF);
+    {$I+}
+    If IOResult = 0 Then Begin
+     WriteLn(DiagUnkF, '#', EmuUnkPortHits, ' OUT port=', HexWord(Port),
+      ' val=', HexByte(Value), ' (non gere, ignore)  Steps=', P.TotalSteps,
+      ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+     Close(DiagUnkF);
+    End;
+    {$I+} If IOResult <> 0 Then ;
+   End;
+  End;
  End;
 End;
 
@@ -193146,6 +193564,7 @@ Var
  I: Integer;
  B: Byte;
  Mode: Byte;
+ DiagVidModeF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGVIDMODE.LOG }
 Begin
  Inc(EmuDiag_Int10Cnt);
  Case P.CPU.Regs.AH Of
@@ -193154,6 +193573,20 @@ Begin
      on efface l ecran si mode texte. Bit 7 d AL = ne pas effacer. }
    Begin
     Mode := P.CPU.Regs.AL And $7F;
+    { DIAGNOSTIC TEMPORAIRE - a retirer (enquete W95, ecran vide) }
+    If DiagVidModeHits < 200 Then Begin
+     Inc(DiagVidModeHits);
+     {$I-} Assign(DiagVidModeF, 'DIAGVIDMODE.LOG');
+     If FileExists('DIAGVIDMODE.LOG') Then Append(DiagVidModeF) Else Rewrite(DiagVidModeF);
+     {$I+}
+     If IOResult = 0 Then Begin
+      WriteLn(DiagVidModeF, '#', DiagVidModeHits, ' AL=', HexByte(P.CPU.Regs.AL),
+       ' Mode=', HexByte(Mode), ' TotalSteps=', P.TotalSteps,
+       ' Supported=', Ord(Emu_VidModeSupported(Mode)));
+      Close(DiagVidModeF);
+     End;
+     {$I+} If IOResult <> 0 Then ;
+    End;
     Emu_VidSetMode(P.CPU.Regs.AL, P);
     { EmuVideo.Mode (et non Mode ci-dessus) : si la carte configuree ne  }
     { supporte pas ce mode (voir Emu_VidModeSupported), Emu_VidSetMode   }
@@ -195262,8 +195695,10 @@ Begin
      P.CPU.Regs.AH := EMU_WIN95_VER_MINOR;
      P.CPU.Regs.BH := 0;
     End Else Begin
-     P.CPU.Regs.AL := 5;
-     P.CPU.Regs.AH := 0;
+     { DOSCFG DOSVER=M.m (2026-10-19, demande explicite) : auparavant fige   }
+     { a 5.00, voir TermCmd_DOSCFG. }
+     P.CPU.Regs.AL := OptionsDlg.Data.DosVerMajor;
+     P.CPU.Regs.AH := OptionsDlg.Data.DosVerMinor;
      P.CPU.Regs.BH := $FF;
     End;
     P.CPU.Regs.BL := 0;
@@ -195304,8 +195739,10 @@ Begin
         P.CPU.Regs.BL := EMU_WIN95_VER_MAJOR;
         P.CPU.Regs.BH := EMU_WIN95_VER_MINOR;
        End Else Begin
-        P.CPU.Regs.BL := 5;
-        P.CPU.Regs.BH := 0;
+        { DOSCFG DOSVER=M.m (2026-10-19) : voir le case $30 ci-dessus, meme   }
+        { champ OptionsDlg.Data.DosVerMajor/Minor, meme raisonnement. }
+        P.CPU.Regs.BL := OptionsDlg.Data.DosVerMajor;
+        P.CPU.Regs.BH := OptionsDlg.Data.DosVerMinor;
        End;
        P.CPU.Regs.AL := 0;  { <> FFh : version vraie disponible (>= DOS 5.0) }
        P.CPU.Regs.DL := 0;  { revision }
@@ -195394,13 +195831,15 @@ Begin
    End;
   $38:
    Begin
+    { DOSCFG COUNTRY=nom (2026-10-19, demande explicite) : BX/mot d ID pays  }
+    { auparavant fige a 1 (USA), voir TermCmd_DOSCFG/OptionsDlg.Data.DosCountry. }
     Exclude(P.CPU.Flags.s, EFG_CF);
-    P.CPU.Regs.BX := 1;
+    P.CPU.Regs.BX := Word(OptionsDlg.Data.DosCountry);
     If P.CPU.Regs.AL = 0 Then Begin
      P.CPU.Segs.ES := $40;
      P.CPU.Regs.DX := $E0;
      For I := 0 To 33 Do Emu_WriteByte(P.CPU, $40, Word($E0 + I), 0);
-     Emu_WriteWord(P.CPU, $40, $E2, 1);
+     Emu_WriteWord(P.CPU, $40, $E2, Word(OptionsDlg.Data.DosCountry));
      Emu_WriteByte(P.CPU, $40, $E4, Ord('$'));
      Emu_WriteByte(P.CPU, $40, $E9, Ord(','));
      Emu_WriteByte(P.CPU, $40, $EB, Ord('.'));
@@ -199225,7 +199664,16 @@ End;
   (pas d extensions LBA/EDD). }
 Procedure Emu_HardDiskOpenOne(Idx: Byte; FName: String);
 Var
- Sz: LongInt;
+ { BOGUE REEL CORRIGE (2026-10-19, enquete eComStation 2.0 - "Le systeme ne  }
+ { peut pas trouver le lecteur specifie" au montage) : Sz etait LongInt (32  }
+ { bits SIGNE, max ~2,147 milliards) alors que FileSize() ci-dessous peut     }
+ { reellement renvoyer une valeur 64 bits plus large (c est precisement      }
+ { pour pouvoir stocker un tel resultat que EmuFloppySize est deja LongWord, }
+ { voir son commentaire de tete) - une image EXACTEMENT de 4 Go (2^32        }
+ { octets, le cas reel ici) deborde meme un LongWord (max ~4,295 Go) une     }
+ { fois tronquee a 32 bits par ce Sz intermediaire, et retombe tout rond a   }
+ { 0 - d ou le rejet "image vide ou invalide" quelques lignes plus bas. }
+ Sz: Int64;
  VirtSec: LongInt;
  DetHeads, DetSpt: Word;
 Begin
@@ -199257,8 +199705,14 @@ Begin
  FileMode := 0;
  Sz := FileSize(EmuFloppyFile[Idx]);
  {$I+} If IOResult <> 0 Then ;
+ { Plafonner plutot que de laisser deborder silencieusement (voir le        }
+ { commentaire de tete de Sz) - perte de quelques octets au plus pour une   }
+ { image reellement plus grande que ~4,295 Go, honnete et sans consequence  }
+ { pratique (bien au-dela de toute image testee ici), au lieu d un          }
+ { bouclage a 0 qui faisait echouer tout le montage. }
+ If Sz > $FFFFFFFF Then Sz := $FFFFFFFF;
  EmuFloppyName[Idx] := FName;
- EmuFloppySize[Idx] := Sz;
+ EmuFloppySize[Idx] := LongWord(Sz);
  If Not Emu_DiskDetectFormat(Idx) Then Begin
   {$I-} Close(EmuFloppyFile[Idx]); {$I+} If IOResult <> 0 Then ;
   EmuFloppyName[Idx] := '';
@@ -200501,14 +200955,17 @@ Begin
 End;
 
 Procedure Emu_LogInt13(Const Phase: String; AH, AL, CH, CL, DH, DL: Byte;
- CX, DX, ES, BX: Word; LBA, Count: LongInt);
+ CX, DX, ES, BX: Word; LBA, Count: LongInt; Steps: LongInt);
 Var LogF: Text;
 Begin
  If Not OptionsDlg.Data.DosLogInt13 Then Exit;
  {$I-}
  Assign(LogF, 'EMUINT13.LOG'); Append(LogF);
  If IOResult <> 0 Then Begin Assign(LogF, 'EMUINT13.LOG'); Rewrite(LogF); End;
- WriteLn(LogF, Phase, ' #', EmuInt13LogCount,
+ { DIAGNOSTIC TEMPORAIRE (2026-10-19, enquete W95) : Steps= ajoute pour      }
+ { correler avec EMUWATCH.LOG (destination ES=9000 couvrant 1230h, voir     }
+ { l enquete segment 1073h/REP MOVSW/'$' qui ne se termine jamais). }
+ WriteLn(LogF, Phase, ' #', EmuInt13LogCount, ' Steps=', Steps,
   ' AH=', AH, ' AL=', AL,
   ' CH=', CH, ' CL=', CL, ' DH=', DH, ' DL=', DL,
   ' CX=', CX, ' DX=', DX, ' ES=', ES, ' BX=', BX,
@@ -200675,7 +201132,7 @@ Begin
  DL := P.CPU.Regs.DL;
  Emu_LogInt13('INT13', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
   P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
-  P.CPU.Segs.ES, P.CPU.Regs.BX, -1, AL);
+  P.CPU.Segs.ES, P.CPU.Regs.BX, -1, AL, P.TotalSteps);
  { Amorcage El Torito (2026-09-02, demande explicite de l utilisateur) :  }
  { DL=EMU_ELTORITO_DL est une unite CD-ROM synthetique, hors plage de     }
  { Emu_DiskIdxFromDL (qui la rejetterait comme "unite hors plage") -      }
@@ -200724,7 +201181,7 @@ Begin
    LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
   Emu_LogInt13('CHS', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
    P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
-   P.CPU.Segs.ES, P.CPU.Regs.BX, LBA, NSect);
+   P.CPU.Segs.ES, P.CPU.Regs.BX, LBA, NSect, P.TotalSteps);
    If LBA < 0 Then Begin
     Emu_Int13SetError(P, Idx, $04);  { 04 = sector not found }
     P.CPU.Regs.AL := 0;
@@ -200740,7 +201197,7 @@ Begin
   Emu_LogInt13('CHS_RESULT', P.CPU.Regs.AH, P.CPU.Regs.AL,
    P.CPU.Regs.CH, P.CPU.Regs.CL, P.CPU.Regs.DH, DL,
    P.CPU.Regs.CX, P.CPU.Regs.DX, P.CPU.Segs.ES,
-   P.CPU.Regs.BX, LBA, Done);
+   P.CPU.Regs.BX, LBA, Done, P.TotalSteps);
   End;
   $03: Begin   { Write sectors }
    If Not EmuFloppyOpen[Idx] Then Begin
@@ -200968,7 +201425,7 @@ Begin
    LBA := LongInt(LBALo) Or (LongInt(LBAHi) Shl 16);
   Emu_LogInt13('EDD', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
    P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
-   BufSeg, BufOfs, LBA, NSectW);
+   BufSeg, BufOfs, LBA, NSectW, P.TotalSteps);
    If AH = $42 Then
     Done := Emu_FloppyReadSectors(P, Idx, LBA, NSectW, BufSeg, BufOfs)
    Else Begin
@@ -200981,7 +201438,7 @@ Begin
    Emu_Int13SetError(P, Idx, $04);
   Emu_LogInt13('EDD_RESULT', P.CPU.Regs.AH, P.CPU.Regs.AL,
    P.CPU.Regs.CH, P.CPU.Regs.CL, P.CPU.Regs.DH, DL,
-   P.CPU.Regs.CX, P.CPU.Regs.DX, BufSeg, BufOfs, LBA, Done);
+   P.CPU.Regs.CX, P.CPU.Regs.DX, BufSeg, BufOfs, LBA, Done, P.TotalSteps);
   End;
   $44: Begin { Extended Verify }
    If Not Emu_DiskIfSupportsEDD Then Begin Emu_Int13SetError(P, Idx, $01); Exit; End;
@@ -211166,6 +211623,31 @@ Begin
  { DOS: Materiel, au lieu de rester a zero (jamais lu par aucun logiciel    }
  { invite avant ce correctif). }
  Emu_WriteByte(P.CPU, $F000, $FFFE, DosHardwareBiosId(OptionsDlg.Data.DosHardware));
+ { BOGUE REEL CORRIGE (2026-10-19, enquete "BOOT C:" VHD Windows 95,       }
+ { ecran reste vide) : la chaine de date ROM BIOS a F000:FFF5 (8 octets    }
+ { ASCII "MM/DD/YY", convention universelle sur TOUT vrai PC/XT/AT depuis  }
+ { les tout premiers BIOS - voir n'importe quelle desassemblage de ROM     }
+ { d'epoque) n'etait JAMAIS ecrite ici (restait a zero, comme le reste de  }
+ { la ROM non explicitement initialisee) - seul F000:FFFE (ID materiel,    }
+ { ci-dessus) l etait. Trace en direct (Emu_StepOne, 20377 pas apres       }
+ { BOOT C:) : le chargeur reel de Windows 95 (IO.SYS) lit ES:FFEA/FFEE     }
+ { ("COMPAQ"), PUIS ES:FFF5/FFF8/FFFB (la date, via CMP apres XCHG AH,AL)  }
+ { pour choisir son disposition de memoire de travail - avec une date a    }
+ { zero (annee "00", jamais un cas reel), il calcule un segment de travail }
+ { ($1073 observe) qui ne correspond a AUCUNE zone reellement initialisee, }
+ { et une boucle de copie de chaine (LODSB/STOSB/CMP AL,'$'/JNZ, voir      }
+ { DIAGW95JUMP.LOG) tourne alors indefiniment car ce segment ne contient    }
+ { jamais l octet '$' attendu. Une date recente plausible (comme un VRAI   }
+ { AT-BIOS de milieu des annees 90) fait emprunter le MEME chemin que      }
+ { n'importe quel vrai PC de cette epoque. }
+ Emu_WriteByte(P.CPU, $F000, $FFF5, Ord('0'));
+ Emu_WriteByte(P.CPU, $F000, $FFF6, Ord('7'));
+ Emu_WriteByte(P.CPU, $F000, $FFF7, Ord('/'));
+ Emu_WriteByte(P.CPU, $F000, $FFF8, Ord('0'));
+ Emu_WriteByte(P.CPU, $F000, $FFF9, Ord('1'));
+ Emu_WriteByte(P.CPU, $F000, $FFFA, Ord('/'));
+ Emu_WriteByte(P.CPU, $F000, $FFFB, Ord('9'));
+ Emu_WriteByte(P.CPU, $F000, $FFFC, Ord('4'));
  EmuTickCounter  := 0;
  EmuStepsPerTick := 5000;
  EmuStepsToTick  := EmuStepsPerTick;
@@ -211179,6 +211661,19 @@ Begin
  { qu un vrai BIOS programme au demarrage). }
  Emu_PIC_Reset(EmuPICMaster, $08);
  Emu_PIC_Reset(EmuPICSlave, $70);
+ { PIT 8253/8254 (voir TEmuPITChannel) : etat par defaut reel (reload=0      }
+ { =65536, mode 3/carre, LSB puis MSB) sur les 3 canaux, BaseSteps cale sur  }
+ { P.TotalSteps COURANT (pas forcement 0, voir Emu_InitBDA appelee aussi     }
+ { hors d'un tout premier demarrage a froid) pour que le tout premier       }
+ { compte a rebours parte d une base coherente. }
+ EmuUnkPortHits := 0;
+ EmuPort9D := $FF; { voir le commentaire de tete d'EmuPort9D }
+ FillChar(EmuPIT, SizeOf(EmuPIT), 0);
+ For I := 0 To 2 Do Begin
+  EmuPIT[I].AccessMode := 3;
+  EmuPIT[I].Mode := 3;
+  EmuPIT[I].BaseSteps := P.TotalSteps;
+ End;
  FillChar(EmuPPI, SizeOf(EmuPPI), 0);
  FillChar(EmuLPT1, SizeOf(EmuLPT1), 0);
  FillChar(EmuLPT2, SizeOf(EmuLPT2), 0);
@@ -229311,6 +229806,89 @@ Begin
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
   EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
   Inc(EmuOpCount[EmuTraceBuf[EmuTraceIdx].Op]);
+  { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-19, enquete DR-DOS 7 "BOOT   }
+  { C:" boucle infinie, demande explicite de l'utilisateur) : 89EE:573E     }
+  { (capture precedente) s'est revele etre un gestionnaire periodique        }
+  { legitime (INT 4Ah, horloge RTC) - FAUSSE PISTE. Le VRAI blocage,         }
+  { confirme par DIAGBOOTLOOP.LOG, est un gel a CS=14F1 (IF=FALSE en        }
+  { PERMANENCE, aucun changement de segment pendant 453216 pas consecutifs - }
+  { meme signature que le bogue deja resolu "jamais de STI" sur MS-DOS 6.22, }
+  { mais nouvelle adresse). Capture a la premiere entree dans ce segment. }
+  If OptionsDlg.Data.DosLogDiag And (Not EmuDrDosLoopDumped) And
+     (P.CPU.Segs.CS = $14F1) Then Begin
+   EmuDrDosLoopDumped := True;
+   {$I-} Assign(LogF_R, 'DIAGDRDOSLOOP.LOG'); Rewrite(LogF_R);
+   If IOResult = 0 Then Begin
+    WriteLn(LogF_R, 'Premiere entree segment 14F1 : CS:IP=', HexWord(P.CPU.Segs.CS),
+     ':', HexWord(P.CPU.IP), ' Steps=', P.TotalSteps, ' DS=',
+     HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES), ' SI=',
+     HexWord(P.CPU.Regs.SI), ' DI=', HexWord(P.CPU.Regs.DI), ' CX=',
+     HexWord(P.CPU.Regs.CX), ' AX=', HexWord(P.CPU.Regs.AX), ' BX=',
+     HexWord(P.CPU.Regs.BX), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+     HexWord(P.CPU.Regs.SP), ' IF=', (EFG_IF In P.CPU.Flags.s));
+    WriteLn(LogF_R, 'Trace circulaire (last 300 pas AVANT cette entree, DR-DOS) :');
+    For Idx_R := -300 To -1 Do Begin
+     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+     WriteLn(LogF_R, '  [', Idx_R, '] ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+      HexWord(EmuTraceBuf[KK_R].IP), ' op=', HexByte(EmuTraceBuf[KK_R].Op),
+      ' AX=', HexWord(EmuTraceBuf[KK_R].AX), ' ES=',
+      HexWord(EmuTraceBuf[KK_R].ES), ' DI=', HexWord(EmuTraceBuf[KK_R].DI),
+      ' CX=', HexWord(EmuTraceBuf[KK_R].CX));
+    End;
+    WriteLn(LogF_R, 'Pile DR-DOS (32 mots a partir de SS:SP) :');
+    For Idx_R := 0 To 31 Do
+     WriteLn(LogF_R, '  [SP+', HexWord(Idx_R * 2), '] = ',
+      HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.SP + Idx_R * 2))));
+    { L echantillon periodique (DIAGBOOTLOOP.LOG) montre plus tard CS:IP=     }
+    { 14F1:00D1 sans plus aucun changement de segment pendant 453216 pas -    }
+    { la boucle reelle est donc tres probablement pres de cet offset, pas    }
+    { a 0000 (point d entree). On vide une large plage pour couvrir les deux.}
+    WriteLn(LogF_R, 'Octets a 14F1:0000(256) =');
+    For Idx_R := 0 To 255 Do
+     Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, $14F1, Word(Idx_R))), ' ');
+    WriteLn(LogF_R);
+    Close(LogF_R);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
+  { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-19, enquete eComStation       }
+  { "BOOT C:", suite au port 9Dh) : DIAGBOOTLOOP.LOG montre un gel a         }
+  { CS:IP=1200:0199 (IF=FALSE en permanence, aucun changement de segment     }
+  { pendant plusieurs millions de pas) juste apres la routine de sondage     }
+  { materiel qui ecrivait E8h/lisait 9Dh - a verifier si c'est une boucle     }
+  { d'attente sur 9Dh (bit cense changer que notre $FF constant ne fait      }
+  { jamais varier) ou autre chose. Capture a la premiere entree. }
+  If OptionsDlg.Data.DosLogDiag And (Not EmuEcs1200Dumped) And
+     (P.CPU.Segs.CS = $1200) And (P.CPU.IP >= $0190) And
+     (P.CPU.IP <= $01B0) Then Begin
+   EmuEcs1200Dumped := True;
+   {$I-} Assign(LogF_R, 'DIAGECS1200.LOG'); Rewrite(LogF_R);
+   If IOResult = 0 Then Begin
+    WriteLn(LogF_R, 'Premiere entree 1200:0190-01B0 : CS:IP=', HexWord(P.CPU.Segs.CS),
+     ':', HexWord(P.CPU.IP), ' Steps=', P.TotalSteps, ' DS=',
+     HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES), ' SI=',
+     HexWord(P.CPU.Regs.SI), ' DI=', HexWord(P.CPU.Regs.DI), ' CX=',
+     HexWord(P.CPU.Regs.CX), ' AX=', HexWord(P.CPU.Regs.AX), ' BX=',
+     HexWord(P.CPU.Regs.BX), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+     HexWord(P.CPU.Regs.SP), ' IF=', (EFG_IF In P.CPU.Flags.s));
+    WriteLn(LogF_R, 'Trace circulaire (last 300 pas AVANT cette entree, eComStation) :');
+    For Idx_R := -300 To -1 Do Begin
+     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+     WriteLn(LogF_R, '  [', Idx_R, '] ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+      HexWord(EmuTraceBuf[KK_R].IP), ' op=', HexByte(EmuTraceBuf[KK_R].Op),
+      ' AX=', HexWord(EmuTraceBuf[KK_R].AX), ' ES=',
+      HexWord(EmuTraceBuf[KK_R].ES), ' DI=', HexWord(EmuTraceBuf[KK_R].DI),
+      ' CX=', HexWord(EmuTraceBuf[KK_R].CX));
+    End;
+    WriteLn(LogF_R, 'Octets a 1200:0190(48) =');
+    For Idx_R := 0 To 47 Do
+     Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, $1200, Word($0190 + Idx_R))), ' ');
+    WriteLn(LogF_R);
+    Close(LogF_R);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 - voir       }
   { Options > Emulateur > DOS: Debug (DosLogDiag) pour activer/desactiver. }
   If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = 0) And
@@ -229392,6 +229970,13 @@ Begin
      HexByte(EmuIrqPending), ' IMR=', HexByte(EmuPICMaster.IMR),
      ' ISR=', HexByte(EmuPICMaster.ISR), ' IF=',
      (EFG_IF In P.CPU.Flags.s), ' EmuTickCounter=', EmuTickCounter);
+    { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-19, enquete eComStation,     }
+    { bascule mode protege) : DpmiCPU.Active/CR0/Fault pour confirmer si       }
+    { Emu_RawSwitchToProtectedViaCR0 a ete engagee et ou elle s est arretee.  }
+    WriteLn(DiagBootLoop, 'DpmiActive=', DpmiCPU.Active, ' CR0=',
+     HexLong(P.CPU.CR0), ' Fault=', IntToStr(Ord(P.CPU.Fault)),
+     ' DpmiCS=', HexWord(DpmiCPU.SegSel[1]), ' DpmiEIP=',
+     HexLong(DpmiCPU.EIP));
     WriteLn(DiagBootLoop, 'EmuSegLogCount=', EmuSegLogCount,
      ' arme=', EmuSegLogArmed);
     Write(DiagBootLoop, 'Derniers changements CS :');
@@ -229913,6 +230498,18 @@ Begin
     Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
      Word(EmuDiv0IP + Idx_R))), ' ');
    WriteLn(LogF_R);
+   { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-19, enquete eComStation,     }
+   { demande explicite de l'utilisateur) : octets AVANT le DIV, pour voir   }
+   { le vrai port de l'instruction IN AL,imm8 reperee dans la trace juste    }
+   { avant le calcul du dividende, et confirmer si ce port est gere par     }
+   { l emulateur (vs port inconnu renvoyant $FF/poison par defaut). }
+   WriteLn(LogF_R, '  Bytes AVANT le DIV (', HexWord(EmuDiv0CS), ':',
+    HexWord(Word(LongInt(EmuDiv0IP) - 40)), '..', HexWord(EmuDiv0IP), ') :');
+   Write(LogF_R, '   ');
+   For Idx_R := -40 To -1 Do
+    Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
+     Word(LongInt(EmuDiv0IP) + Idx_R))), ' ');
+   WriteLn(LogF_R);
   End;
   { Win16 uniquement (2026-09-23) : la sequence des DERNIERS appels API      }
   { est bien plus lisible que le trace d'opcodes bruts pour repondre a       }
@@ -230084,6 +230681,8 @@ Begin
  Snap.StepsPerTick := EmuStepsPerTick; Snap.StepsToTick := EmuStepsToTick;
  Snap.IrqPending := EmuIrqPending;
  Snap.PICMaster := EmuPICMaster; Snap.PICSlave := EmuPICSlave;
+ Snap.PIT := EmuPIT;
+ Snap.Port9D := EmuPort9D;
  Snap.PPI := EmuPPI; Snap.LPT1 := EmuLPT1; Snap.LPT2 := EmuLPT2;
  Snap.COM2 := EmuCOM2; Snap.COM4 := EmuCOM4; Snap.NE2000 := EmuNE2000;
  Snap.Kbd8042 := Emu8042;
@@ -230227,6 +230826,8 @@ Begin
  EmuStepsPerTick := Snap.StepsPerTick; EmuStepsToTick := Snap.StepsToTick;
  EmuIrqPending := Snap.IrqPending;
  EmuPICMaster := Snap.PICMaster; EmuPICSlave := Snap.PICSlave;
+ EmuPIT := Snap.PIT;
+ EmuPort9D := Snap.Port9D;
  EmuPPI := Snap.PPI; EmuLPT1 := Snap.LPT1; EmuLPT2 := Snap.LPT2;
  EmuCOM2 := Snap.COM2; EmuCOM4 := Snap.COM4; EmuNE2000 := Snap.NE2000;
  Emu8042 := Snap.Kbd8042;
@@ -234935,6 +235536,10 @@ Begin NesActive := False;
    ponctuellement pour une investigation (voir [[project-devenv]] pour
    les plages deja explorees : $B0000-$BFFFF pour le VRAM B800h, ou
    $3DF80-$3E050 pour le tampon source du blit NC3 a 3BF2:20A9). }
+ { Watch desactive par defaut - enquete W95 "BOOT C:" mise en pause          }
+ { (2026-10-19, demande explicite de l'utilisateur) : reactiver              }
+ { EmuWatchEnabled/PhysLo=$10730/PhysHi=$11730 au besoin pour reprendre      }
+ { (segment 1073h, destination du REP MOVSW 9000:06FE). }
  EmuWatchEnabled := False;
  EmuWatchPhysLo := 0;
  EmuWatchPhysHi := 0;
@@ -236140,6 +236745,9 @@ Begin
  D.DosDiskInterface := 5;      { IDE/ATA : coherent avec DosHardware=2 (IBM PC AT) par defaut }
  D.DosEmu8087 := True;
  D.DosLogInt13 := False;
+ D.DosVerMajor := 5; D.DosVerMinor := 0; { voir TermCmd_DOSCFG : defauts }
+ D.DosCountry := 1;  { USA }            { identiques au comportement fige }
+ D.DosSoundOn := True;                  { d'avant ce correctif }
  D.DosEmu80286 := True;
  D.DosEmu80386 := True;
  D.DosXMS := True;
@@ -238632,6 +239240,13 @@ Begin
  WriteCfgLine(F, 'DosDiskInterface', S);
  WriteCfgLine(F, 'DosEmu8087', BoolToStr(Data.DosEmu8087));
  WriteCfgLine(F, 'DosLogInt13', BoolToStr(Data.DosLogInt13));
+ Str(Data.DosVerMajor, S);
+ WriteCfgLine(F, 'DosVerMajor', S);
+ Str(Data.DosVerMinor, S);
+ WriteCfgLine(F, 'DosVerMinor', S);
+ Str(Data.DosCountry, S);
+ WriteCfgLine(F, 'DosCountry', S);
+ WriteCfgLine(F, 'DosSoundOn', BoolToStr(Data.DosSoundOn));
  WriteCfgLine(F, 'DosEmu80286', BoolToStr(Data.DosEmu80286));
  WriteCfgLine(F, 'DosEmu80386', BoolToStr(Data.DosEmu80386));
  WriteCfgLine(F, 'DosXMS', BoolToStr(Data.DosXMS));
@@ -238874,6 +239489,23 @@ Begin
    Data.DosSouris := StrToBool(Value)
   Else If Key = 'DosLogInt13' Then
    Data.DosLogInt13 := StrToBool(Value)
+  Else If Key = 'DosVerMajor' Then
+  Begin
+   Val(Value, Data.DosVerMajor, Code);
+   If Code <> 0 Then Data.DosVerMajor := 5;
+  End
+  Else If Key = 'DosVerMinor' Then
+  Begin
+   Val(Value, Data.DosVerMinor, Code);
+   If Code <> 0 Then Data.DosVerMinor := 0;
+  End
+  Else If Key = 'DosCountry' Then
+  Begin
+   Val(Value, Data.DosCountry, Code);
+   If Code <> 0 Then Data.DosCountry := 1;
+  End
+  Else If Key = 'DosSoundOn' Then
+   Data.DosSoundOn := StrToBool(Value)
   Else If Key = 'DosMousePS2BIOS' Then
    Data.DosMousePS2BIOS := StrToBool(Value)
   Else If Key = 'DosMouseVendor' Then
