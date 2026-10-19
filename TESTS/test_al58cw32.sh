@@ -188,7 +188,7 @@ check_error() {   # nom source motif
   "$AL58" "$1.a58" >"$1.log" 2>&1
   local rc=$?
   if [ $rc -eq 1 ] && grep -q "$3" "$1.log" && grep -q "Compilation echouee" "$1.log" &&
-     [ ! -e "$1.exe" ]; then
+     [ ! -e "$1.exe" ] && [ ! -e "$1.obj" ] && [ ! -e "$1.asm" ]; then
     ok "erreur $1"
   else
     bad "erreur $1 (rc=$rc)"
@@ -198,7 +198,7 @@ check_error() {   # nom source motif
 
 check_error lexicale   'begin integer x; x := 3 @ 4 end'                  'caractere invalide'
 check_error syntaxe    'begin integer x; x := (3 + 4; x := 2 end'         "')' attendu"
-check_error virgule    'begin integer x x := 2 end'                       "attendu"
+check_error virgule    'begin integer x x := 2 end'                       "';' ou 'end' attendu"
 check_error fin        'begin integer x; x := 1;'                         "'end' attendu"
 check_error doublon    'begin integer x; integer x; x := 1 end'           'declaration en double'
 check_error etiquette  'begin integer x; goto nulle; x := 1 end'          'etiquette non definie'
@@ -213,17 +213,23 @@ if [ "$(grep -c ': erreur :' multi.log)" -ge 2 ]; then ok "erreurs multiples"; e
 # avertissements : actifs avec -w, absents sans option
 printf 'begin integer x; goto la; x := 1; la: x := 2; inutile: x := 3 end\n' >warn.a58
 "$AL58" -w warn.a58 >warn.log 2>&1
-if grep -q 'etiquette non utilisee' warn.log; then ok "avertissement -w"; else bad "avertissement -w"; fi
+rc=$?
+if [ $rc -eq 0 ] && [ -f warn.exe ] && grep -q 'etiquette non utilisee' warn.log; then ok "avertissement -w"; else bad "avertissement -w"; fi
+rm -f warn.exe
 "$AL58" warn.a58 >warn.log 2>&1
-if grep -q 'avertissement' warn.log; then bad "avertissement sans -w"; else ok "sans -w: aucun avertissement"; fi
+rc=$?
+if [ $rc -eq 0 ] && [ -f warn.exe ] && ! grep -q 'avertissement' warn.log; then ok "sans -w: aucun avertissement"; else bad "avertissement sans -w"; fi
 
 # options
-"$AL58" -h >/dev/null 2>&1
-[ $? -eq 0 ] && ok "-h" || bad "-h"
-"$AL58" >/dev/null 2>&1
-[ $? -eq 2 ] && ok "sans argument: usage" || bad "sans argument"
-"$AL58" introuvable.a58 >/dev/null 2>&1
-[ $? -ne 0 ] && ok "source introuvable" || bad "source introuvable"
+"$AL58" -h >help.log 2>&1
+rc=$?
+if [ $rc -eq 0 ] && grep -q 'Syntaxe: AL58CW32' help.log; then ok "-h"; else bad "-h"; fi
+"$AL58" >noarg.log 2>&1
+rc=$?
+if [ $rc -eq 2 ] && grep -q 'Syntaxe: AL58CW32' noarg.log; then ok "sans argument: usage"; else bad "sans argument"; fi
+"$AL58" introuvable.a58 >missing.log 2>&1
+rc=$?
+if [ $rc -eq 1 ] && grep -q 'introuvable' missing.log; then ok "source introuvable"; else bad "source introuvable"; fi
 
 # --- Resultat ----------------------------------------------------------------
 echo ""
