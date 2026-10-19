@@ -26,14 +26,15 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 09 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 21 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
          instructions et blocs, boucle for, goto et switch, tableaux,
          procedures, appel par nom, entrees/sorties et fonctions
-         standard, encodeur x86-32, ecrivain PE) ; TODO 21 a 25 a faire.
+         standard, encodeur x86-32, ecrivains PE et COFF) ;
+         TODO 22 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -742,7 +743,7 @@
               qui appellent le runtime (hello, test_types...) s'arretent
               sur 'routine du runtime absente' jusqu'au TODO 22
 
-  TODO 21 - ECRIVAIN COFF (.OBJ, OPTION -obj) [A FAIRE]
+  TODO 21 - ECRIVAIN COFF (.OBJ, OPTION -obj) [IMPLEMENTE]
             COFF File Header (machine 386), sections .text et .data avec
               relocations (IMAGE_REL_I386_DIR32, REL32)
             Table des symboles : sections (avec entree auxiliaire), point
@@ -755,6 +756,19 @@
             Verification : objdump -h -t -r sur tous les exemples ; un
               .OBJ lie avec lld-link (ou LINK.PAS) doit donner le meme
               comportement que l'.EXE direct
+            Realise : CoffSym et WriteCOFF (en-tete machine $014C, deux
+              sections .text et .data alignees sur 4, relocations DIR32 par
+              les symboles de section 0 et 2 avec la valeur en place
+              augmentee du decalage de l'etiquette, et REL32 pour les
+              appels aux imports ; symboles : .text et .data avec entree
+              auxiliaire, _A60P_Main externe defini, un externe non defini
+              par import ou routine du runtime ; table des chaines) ;
+              PhaseWrite appelle WriteCOFF avec -obj et WritePE sinon ;
+              -obj -asm produit .OBJ et .ASM, jamais de .EXE
+            Verifie : les 33 exemples compilent avec -obj ; objdump -h -t
+              -r lit chacun d'eux (sections, symboles, relocations) ;
+              aucun .exe n'est cree avec -obj ; les references au runtime
+              (_A60RT_) restent des externes non definis jusqu'au TODO 22
 
   TODO 22 - RUNTIME ALGOL 60 POUR WIN32 [A FAIRE]
             Runtime ecrit en assembleur 80386, integre au compilateur
@@ -9880,11 +9894,164 @@ Begin
     WriteLn('  executable : ', FileName, ' (', FileSize, ' octets)');
 End;
 
+{ ---- Ecrivain COFF : fichier objet i386 (TODO 21) ----
+  Disposition : en-tete (20) + 2 en-tetes de section (.text, .data) +
+  donnees .text + relocations .text + donnees .data + relocations .data +
+  table des symboles (18 octets par entree) + table des chaines.
+  Symboles : 0/1 = .text + aux, 2/3 = .data + aux, 4 = _A60P_Main
+  (externe, defini dans .text), 5.. = externes non definis (imports et
+  routines du runtime).
+  Une adresse absolue vers une etiquette definie vise le symbole de
+  section ; le decalage de l'etiquette est ajoute a la valeur en place
+  (addendum COFF). Un appel externe a 0 en place (REL32). }
+Procedure CoffSym(Pos : LongInt; Const Name : TString; StrBase : LongInt;
+                  Var StrLen : LongInt; Value : LongInt; Sect, Typ : LongInt;
+                  Cls, NAux : LongInt);
+Var
+  I : LongInt;
+Begin
+  If Length(Name) <= 8 Then
+    PeStr(Pos, Name)
+  Else
+  Begin
+    PeD(Pos + 4, StrLen);
+    For I := 1 To Length(Name) Do PeB(StrBase + StrLen + I - 1, Ord(Name[I]));
+    PeB(StrBase + StrLen + Length(Name), 0);
+    StrLen := StrLen + Length(Name) + 1;
+  End;
+  PeD(Pos + 8, Value);
+  PeW(Pos + 12, Sect);
+  PeW(Pos + 14, Typ);
+  PeB(Pos + 16, Cls);
+  PeB(Pos + 17, NAux);
+End;
+
+Procedure WriteCOFF(Const FileName : TString);
+Var
+  I, K, P, Idx, Where : LongInt;
+  NTextRel, NDataRel  : LongInt;
+  TextRaw, TextRelOff, DataRaw, DataRelOff, SymOff, StrOff, StrLen : LongInt;
+  NSym, FileSize, Written, Sect : LongInt;
+  MainSym : Integer;
+  F : File;
+  RelOut : LongInt;
+Begin
+  MainSym := Intern(A60_MAIN_NAME);
+  If BinLbl[MainSym].Sect <> 1 Then
+    FatalError('point d''entree ' + A60_MAIN_NAME + ' introuvable');
+  NTextRel := 0;
+  NDataRel := 0;
+  For I := 0 To BinFixCount - 1 Do
+    If BinFix[I].Sect = 0 Then Inc(NTextRel) Else Inc(NDataRel);
+  If (NTextRel > 65535) Or (NDataRel > 65535) Then
+    FatalError('trop de relocations pour une section COFF');
+
+  NSym := 5 + BinImportCount;
+  TextRaw    := 20 + 2 * 40;
+  TextRelOff := TextRaw + AlignUp(BinCodeLen, 4);
+  DataRaw    := TextRelOff + 10 * NTextRel;
+  DataRelOff := DataRaw + AlignUp(BinDataLen, 4);
+  SymOff     := DataRelOff + 10 * NDataRel;
+  StrOff     := SymOff + 18 * NSym;
+  FileSize   := StrOff + 4 + Length(A60_MAIN_NAME) + 1;
+  For I := 0 To BinImportCount - 1 Do
+    FileSize := FileSize + Length(NameTab[BinImport[I]]) + 1;
+  If FileSize > PE_MAX_FILE Then FatalError('fichier objet trop grand');
+  FillChar(PeOut, FileSize, 0);
+
+  { en-tete de fichier }
+  PeW(0, PE_MACHINE_I386);
+  PeW(2, 2);
+  PeD(8, SymOff);
+  PeD(12, NSym);
+
+  { sections }
+  PeStr(20, '.text');
+  PeD(20 + 16, BinCodeLen);
+  If BinCodeLen > 0 Then PeD(20 + 20, TextRaw);
+  If NTextRel > 0 Then PeD(20 + 24, TextRelOff);
+  PeW(20 + 32, NTextRel);
+  PeD(20 + 36, PE_SCN_TEXT Or $00300000);          { alignement 4 }
+  PeStr(60, '.data');
+  PeD(60 + 16, BinDataLen);
+  If BinDataLen > 0 Then PeD(60 + 20, DataRaw);
+  If NDataRel > 0 Then PeD(60 + 24, DataRelOff);
+  PeW(60 + 32, NDataRel);
+  PeD(60 + 36, PE_SCN_DATA Or $00300000);
+
+  For I := 0 To BinCodeLen - 1 Do PeOut[TextRaw + I] := BinCode[I];
+  For I := 0 To BinDataLen - 1 Do PeOut[DataRaw + I] := BinData[I];
+
+  { relocations : .text d'abord, puis .data }
+  P := TextRelOff;
+  For Sect := 0 To 1 Do
+  Begin
+    If Sect = 1 Then P := DataRelOff;
+    For I := 0 To BinFixCount - 1 Do
+      If BinFix[I].Sect = Sect Then
+      Begin
+        If Sect = 0 Then
+          Where := TextRaw + BinFix[I].Off
+        Else
+          Where := DataRaw + BinFix[I].Off;
+        PeD(P, BinFix[I].Off);
+        If BinFix[I].Kind = BF_ABS32 Then
+        Begin
+          Case BinLbl[BinFix[I].Sym].Sect Of
+            1 : Idx := 0;
+            2 : Idx := 2;
+          Else
+            FatalError('symbole non defini: ' + NameTab[BinFix[I].Sym]);
+          End;
+          PeD(Where, PeGetD(Where) + BinLbl[BinFix[I].Sym].Off);
+          PeD(P + 4, Idx);
+          PeW(P + 8, COFF_REL_DIR32);
+        End
+        Else
+        Begin
+          K := -1;
+          For RelOut := 0 To BinImportCount - 1 Do
+            If BinImport[RelOut] = BinFix[I].Sym Then K := RelOut;
+          If K < 0 Then FatalError('import inconnu');
+          PeD(P + 4, 5 + K);
+          PeW(P + 8, COFF_REL_REL32);
+        End;
+        P := P + 10;
+      End;
+  End;
+
+  { table des symboles }
+  StrLen := 4;
+  CoffSym(SymOff, '.text', StrOff, StrLen, 0, 1, 0, COFF_SYM_STATIC, 1);
+  PeD(SymOff + 18, BinCodeLen);
+  PeW(SymOff + 22, NTextRel);
+  CoffSym(SymOff + 36, '.data', StrOff, StrLen, 0, 2, 0, COFF_SYM_STATIC, 1);
+  PeD(SymOff + 54, BinDataLen);
+  PeW(SymOff + 58, NDataRel);
+  CoffSym(SymOff + 72, A60_MAIN_NAME, StrOff, StrLen, BinLbl[MainSym].Off,
+          1, $20, COFF_SYM_EXTERNAL, 0);
+  For I := 0 To BinImportCount - 1 Do
+    CoffSym(SymOff + 90 + 18 * I, NameTab[BinImport[I]], StrOff, StrLen, 0,
+            0, $20, COFF_SYM_EXTERNAL, 0);
+  PeD(StrOff, StrLen);
+  FileSize := StrOff + StrLen;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  If IOResult <> 0 Then FatalError('impossible de creer ' + FileName);
+  BlockWrite(F, PeOut, FileSize, Written);
+  Close(F);
+  If Written <> FileSize Then
+    FatalError('erreur d''ecriture de ' + FileName);
+  If Opts.Verbose Then
+    WriteLn('  objet : ', FileName, ' (', FileSize, ' octets, ', NSym,
+            ' symbole(s), ', BinFixCount, ' relocation(s))');
+End;
+
 Procedure PhaseWrite;
 Begin
   If Opts.EmitExe Then WritePE(Opts.OutFile);
-  If Opts.EmitObj Then
-    FatalError('option -obj: ecrivain COFF non implemente (TODO 21)');
+  If Opts.EmitObj Then WriteCOFF(Opts.OutFile);
 End;
 
 { ============================================================
