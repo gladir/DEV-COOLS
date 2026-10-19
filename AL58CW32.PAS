@@ -23,11 +23,11 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 16 implementes (squelette, options, constantes,
+  ETAT : TODO 01 a 17 implementes (squelette, options, constantes,
          lexeur, types, symboles, structure du programme, expressions,
          booleens, affectations, tableaux, if et for, go to et switch,
-         procedures et appels, parametres par nom, entrees/sorties) ;
-         TODO 17 a 25 a faire.
+         procedures et appels, parametres par nom, entrees/sorties,
+         fonctions intrinseques) ; TODO 18 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -370,7 +370,7 @@
             Reste pour le runtime (TODO 22) : format des reels, lecture
               des Boolean (true / false), WriteFile et ReadFile
 
-  TODO 17 - FONCTIONS INTRINSEQUES [A FAIRE]
+  TODO 17 - FONCTIONS INTRINSEQUES [IMPLEMENTE]
             abs, sign, entier, sqrt, max, min, mod(a, b) en fonction
             Avec x87 : sin, cos, arctan, ln, exp, sqrt reels corrects
               (au lieu des stubs 16 bits), puissance reelle
@@ -380,6 +380,19 @@
               procedure utilisateur (la declaration utilisateur gagne)
               (exemple : integer procedure max(a, b) dans hello.a58)
             Exemples : test_intrinsics.a58, math.a58, test_runtime.a58
+            Realise : table des intrinseques (abs, sign, entier, sqrt, sin,
+              cos, arctan, ln, exp, max, min, mod, div), noeud EX_INTRIN ;
+              entier = plancher (entier(-2.1) = -3, identite sur un
+              integer) ; sqrt suit son argument (racine entiere pour un
+              integer, x87 pour un real) ; max / min convertissent vers le
+              type commun ; mod(a, b) et div(a, b) exigent des entiers ;
+              repliement des appels a arguments constants (avec erreurs :
+              sqrt negatif, ln <= 0, division par zero) ; un nom inconnu
+              suivi de ( est maintenant une erreur, ainsi qu'une
+              instruction commencant par un nom inconnu
+            Reste pour la generation de code (TODO 18) et le runtime
+              (TODO 22) : appels _A58RT_ABS, SIGN, SQRT, MAX, MIN,
+              instructions x87 FSIN, FCOS, FPATAN, FYL2X, F2XM1...
 
   TODO 18 - GENERATION DU CODE ASSEMBLEUR 80386 [A FAIRE]
             Representation du code : liste d'instructions internes avec
@@ -1334,11 +1347,24 @@ Begin
     LexError(T.Line, T.Col, 'chaine non fermee');
 End;
 
-{ Commentaire : "comment" deja lu, ignore tout jusqu au ; inclus }
+{ Commentaire : "comment" deja lu, ignore tout jusqu au ; inclus.
+  Tolerance : un ; entre parentheses sur la meme ligne ne termine pas
+  le commentaire ("... (suivi de ;) ;" dans test_goto.a58). }
 Procedure LexSkipComment(StartLine, StartCol : Integer);
+Var
+  Depth : Integer;
 Begin
-  While (LexCur <> ';') And (LexCur <> LEX_EOF) Do
+  Depth := 0;
+  While ((LexCur <> ';') Or (Depth > 0)) And (LexCur <> LEX_EOF) Do
+  Begin
+    If LexCur = '(' Then
+      Inc(Depth)
+    Else If (LexCur = ')') And (Depth > 0) Then
+      Dec(Depth)
+    Else If LexCur = #10 Then
+      Depth := 0;                    { la tolerance s arrete a la ligne }
     LexNextChar;
+  End;
   If LexCur = ';' Then
     LexNextChar
   Else
@@ -2359,6 +2385,7 @@ Var
   CallCount  : LongInt;      { appels de procedure ou fonction      }
   ThunkCount : LongInt;      { thunks d'arguments par nom           }
   IOCount    : LongInt;      { instructions write / read            }
+  IntrinCount: LongInt;      { appels d'intrinseques non repliees   }
   LabelCount : LongInt;      { etiquettes definies                  }
   ForCount   : LongInt;      { instructions for                     }
   LoopDepth  : Integer;      { imbrication courante des for         }
@@ -2500,6 +2527,11 @@ Type
   TWide = Comp;
   {$ENDIF}
 
+  TIntrinsic = (
+    IN_ABS, IN_SIGN, IN_ENTIER, IN_SQRT, IN_SIN, IN_COS, IN_ARCTAN,
+    IN_LN, IN_EXP, IN_MAX, IN_MIN, IN_MOD, IN_DIV, IN_NONE
+  );
+
   TExprKind = (
     EX_INT,         { constante entiere                     }
     EX_REAL,        { constante reelle                      }
@@ -2510,7 +2542,7 @@ Type
     EX_BINARY,      { L Op R                                }
     EX_COND,        { if L then R else E                    }
     EX_ASSIGN,      { L := R (L : variable) ; valeur = celle de L }
-    EX_OPAQUE,      { appel non encore traduit (StrIdx = nom)  }
+    EX_INTRIN,      { fonction intrinseque (IntVal = TIntrinsic)  }
     EX_INDEX,       { Sym[L...] : element de tableau (IntVal = nb d indices) }
     EX_LIST,        { liste d indices : L = expression, R = suivant }
     EX_LABEL,       { designateur : etiquette (Sym)               }
@@ -3631,23 +3663,276 @@ Begin
   ParseCall := Node;
 End;
 
-{ Appel d'une fonction inconnue : saute le groupe ( ... ) courant et le
-  remplace par un noeud opaque de type T (TODO 17 : intrinseques). }
-Function ParseOpaque(Const Tok : TToken; T : Integer) : Integer;
-Var
-  N, Depth : Integer;
+{ ---- Fonctions intrinseques (TODO 17) ----------------------------- }
+
+Function IntrinsicName(I : TIntrinsic) : TString;
 Begin
-  Depth := 0;
-  Repeat
-    If AtPunct('(') Or AtPunct('[') Then
-      Inc(Depth)
-    Else If AtPunct(')') Or AtPunct(']') Then
-      Dec(Depth);
-    ParserAdvance;
-  Until (Depth <= 0) Or AtEOF Or AtPunct(';');
-  N := ExprNew(EX_OPAQUE, T, Tok.Line, Tok.Col);
-  ExprTab[N].StrIdx := ExprAddStr(Tok.Val);
-  ParseOpaque := N;
+  Case I Of
+    IN_ABS    : IntrinsicName := 'abs';
+    IN_SIGN   : IntrinsicName := 'sign';
+    IN_ENTIER : IntrinsicName := 'entier';
+    IN_SQRT   : IntrinsicName := 'sqrt';
+    IN_SIN    : IntrinsicName := 'sin';
+    IN_COS    : IntrinsicName := 'cos';
+    IN_ARCTAN : IntrinsicName := 'arctan';
+    IN_LN     : IntrinsicName := 'ln';
+    IN_EXP    : IntrinsicName := 'exp';
+    IN_MAX    : IntrinsicName := 'max';
+    IN_MIN    : IntrinsicName := 'min';
+    IN_MOD    : IntrinsicName := 'mod';
+    IN_DIV    : IntrinsicName := 'div';
+  Else
+    IntrinsicName := '?';
+  End;
+End;
+
+{ Intrinseque designe par un nom (IN_NONE si ce n'en est pas un) ;
+  une procedure du programme de meme nom reste prioritaire. }
+Function FindIntrinsic(Const Name : TString) : TIntrinsic;
+Var
+  I : TIntrinsic;
+  K : TString;
+Begin
+  K := StrLower(Name);
+  FindIntrinsic := IN_NONE;
+  For I := IN_ABS To IN_DIV Do
+    If IntrinsicName(I) = K Then
+    Begin
+      FindIntrinsic := I;
+      Exit;
+    End;
+End;
+
+Function IntrinsicArgc(I : TIntrinsic) : Integer;
+Begin
+  If I In [IN_MAX, IN_MIN, IN_MOD, IN_DIV] Then
+    IntrinsicArgc := 2
+  Else
+    IntrinsicArgc := 1;
+End;
+
+{ Racine carree entiere (plancher) }
+Function IntSqrt(V : LongInt) : LongInt;
+Var
+  R : TWide;
+Begin
+  R := Trunc(Sqrt(V));
+  While R * R > V Do Dec(R);
+  While (R + 1) * (R + 1) <= V Do Inc(R);
+  IntSqrt := R;
+End;
+
+{ nom(arg) ou nom(a, b) : fonction intrinseque I, Tok = le nom.
+  Resultat : abs, max, min suivent le type des arguments ; sign et
+  entier donnent un integer ; sqrt suit son argument (racine entiere
+  pour un integer) ; sin, cos, arctan, ln, exp donnent un real (x87) ;
+  mod et div (forme fonction) exigent des entiers. Les appels dont tous
+  les arguments sont constants sont calcules a la compilation. }
+Function ParseIntrinsic(Const Tok : TToken; I : TIntrinsic) : Integer;
+Var
+  Args           : Array[1..2] Of Integer;
+  Argc, Expected : Integer;
+  K, Res, Target : Integer;
+  E, Node, Item  : Integer;
+  Head, Tail     : Integer;
+  Conv           : TConv;
+  Bad, AllConst  : Boolean;
+  IsRealArg      : Boolean;
+  D1, D2, RV     : Double;
+  IV, I1, I2     : LongInt;
+  Err            : TString;
+Begin
+  ParseIntrinsic := -1;
+  Expected := IntrinsicArgc(I);
+  Argc := 0;
+  Bad  := False;
+  Args[1] := -1;
+  Args[2] := -1;
+  If Not AtPunct('(') Then
+  Begin
+    ParseError('''('' attendu apres ' + Tok.Val);
+    Exit;
+  End;
+  ParserAdvance;
+  If Not AtPunct(')') Then
+    Repeat
+      E := ParseExprPrec(1);
+      Inc(Argc);
+      If Argc <= 2 Then Args[Argc] := E;
+      If E < 0 Then Bad := True;
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+  ExpectPunct(')');
+  If Argc <> Expected Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, Tok.Val + ': ' + ItoS(Expected) +
+            ' argument(s) attendu(s), ' + ItoS(Argc) + ' trouve(s)');
+    Exit;
+  End;
+  If Bad Then Exit;
+  For K := 1 To Expected Do
+    If Not TypeIsArith(ExprTab[Args[K]].Typ) Then
+    Begin
+      ErrorAt(Tok.Line, Tok.Col, Tok.Val + ': argument numerique ' +
+              'attendu (type: ' + TypeName(ExprTab[Args[K]].Typ) + ')');
+      Exit;
+    End;
+
+  { type du resultat }
+  IsRealArg := ExprTab[Args[1]].Typ = TY_IDX_REAL;
+  Case I Of
+    IN_ABS    : Res := TypeArith(ExprTab[Args[1]].Typ, ExprTab[Args[1]].Typ);
+    IN_SIGN,
+    IN_ENTIER : Res := TY_IDX_INTEGER;
+    IN_SQRT   : If IsRealArg Then Res := TY_IDX_REAL
+                Else Res := TY_IDX_INTEGER;
+    IN_SIN, IN_COS, IN_ARCTAN, IN_LN, IN_EXP : Res := TY_IDX_REAL;
+    IN_MAX, IN_MIN : Res := TypeArith(ExprTab[Args[1]].Typ,
+                                      ExprTab[Args[2]].Typ);
+  Else
+    Res := TY_IDX_INTEGER;
+  End;
+  If I In [IN_MOD, IN_DIV] Then
+    If (ExprTab[Args[1]].Typ = TY_IDX_REAL) Or
+       (ExprTab[Args[2]].Typ = TY_IDX_REAL) Then
+    Begin
+      ErrorAt(Tok.Line, Tok.Col, Tok.Val + ' demande des operandes ' +
+              'entiers');
+      Exit;
+    End;
+
+  { repliement : tous les arguments sont des constantes }
+  AllConst := True;
+  For K := 1 To Expected Do
+    If Not ExprIsNumConst(Args[K]) Then AllConst := False;
+  If AllConst Then
+  Begin
+    Err := '';
+    IV  := 0;
+    RV  := 0;
+    D1  := ExprNumReal(Args[1]);
+    I1  := ExprTab[Args[1]].IntVal;
+    D2  := 0;
+    I2  := 0;
+    If Expected = 2 Then
+    Begin
+      D2 := ExprNumReal(Args[2]);
+      I2 := ExprTab[Args[2]].IntVal;
+    End;
+    Case I Of
+      IN_ABS:
+        If Res = TY_IDX_REAL Then RV := Abs(D1) Else IV := Abs(I1);
+      IN_SIGN:
+        If D1 > 0 Then IV := 1 Else If D1 < 0 Then IV := -1 Else IV := 0;
+      IN_ENTIER:
+        If ExprTab[Args[1]].Kind = EX_REAL Then
+        Begin
+          If Abs(D1) >= 2147483647.0 Then
+            Err := 'entier: valeur hors de l''intervalle integer'
+          Else
+          Begin
+            RV := Int(D1);
+            If D1 < RV Then RV := RV - 1;
+            IV := Trunc(RV);
+          End;
+        End
+        Else
+          IV := I1;
+      IN_SQRT:
+        If D1 < 0 Then
+          Err := 'sqrt: argument negatif'
+        Else If Res = TY_IDX_REAL Then
+          RV := Sqrt(D1)
+        Else
+          IV := IntSqrt(I1);
+      IN_SIN:    RV := Sin(D1);
+      IN_COS:    RV := Cos(D1);
+      IN_ARCTAN: RV := ArcTan(D1);
+      IN_LN:
+        If D1 <= 0 Then Err := 'ln: argument non positif'
+        Else RV := Ln(D1);
+      IN_EXP:
+        If D1 > 700 Then Err := 'exp: debordement'
+        Else RV := Exp(D1);
+      IN_MAX:
+        If Res = TY_IDX_REAL Then
+        Begin
+          If D1 >= D2 Then RV := D1 Else RV := D2;
+        End
+        Else If I1 >= I2 Then IV := I1 Else IV := I2;
+      IN_MIN:
+        If Res = TY_IDX_REAL Then
+        Begin
+          If D1 <= D2 Then RV := D1 Else RV := D2;
+        End
+        Else If I1 <= I2 Then IV := I1 Else IV := I2;
+      IN_MOD: FoldIntBin('mod', I1, I2, IV, Err);
+      IN_DIV: FoldIntBin('div', I1, I2, IV, Err);
+    End;
+    If (Err = '') And (Res = TY_IDX_REAL) And RealBad(RV) Then
+      Err := Tok.Val + ': debordement reel';
+    If Err <> '' Then
+    Begin
+      ErrorAt(Tok.Line, Tok.Col, Err);
+      Exit;
+    End;
+    Node := Args[1];
+    ExprTab[Node].Line := Tok.Line;
+    ExprTab[Node].Col  := Tok.Col;
+    If Res = TY_IDX_REAL Then
+    Begin
+      ExprTab[Node].Kind    := EX_REAL;
+      ExprTab[Node].Typ     := TY_IDX_REAL;
+      ExprTab[Node].RealVal := RV;
+    End
+    Else
+    Begin
+      ExprTab[Node].Kind   := EX_INT;
+      ExprTab[Node].Typ    := TY_IDX_INTEGER;
+      ExprTab[Node].IntVal := IV;
+    End;
+    Inc(FoldCount);
+    ParseIntrinsic := Node;
+    Exit;
+  End;
+
+  { entier d'un integer : identite }
+  If (I = IN_ENTIER) And (ExprTab[Args[1]].Typ = TY_IDX_INTEGER) Then
+  Begin
+    ParseIntrinsic := Args[1];
+    Exit;
+  End;
+
+  { noeud d'appel du runtime ; chaque argument est converti vers le
+    type de calcul (real pour les fonctions transcendantes et le
+    resultat de max / min) }
+  Head := -1;
+  Tail := -1;
+  For K := 1 To Expected Do
+  Begin
+    If I In [IN_SIN, IN_COS, IN_ARCTAN, IN_LN, IN_EXP] Then
+      Target := TY_IDX_REAL
+    Else If I In [IN_MAX, IN_MIN] Then
+      Target := Res
+    Else If ExprTab[Args[K]].Typ = TY_IDX_REAL Then
+      Target := TY_IDX_REAL
+    Else
+      Target := TY_IDX_INTEGER;
+    Conv := TypeConversion(ExprTab[Args[K]].Typ, Target);
+    Item := ExprNew(EX_LIST, Target, Tok.Line, Tok.Col);
+    ExprTab[Item].L    := Args[K];
+    ExprTab[Item].Conv := Conv;
+    If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+    Tail := Item;
+  End;
+  Node := ExprNew(EX_INTRIN, Res, Tok.Line, Tok.Col);
+  ExprTab[Node].IntVal := Ord(I);
+  ExprTab[Node].L      := Head;
+  Inc(IntrinCount);
+  ParseIntrinsic := Node;
 End;
 
 Function ParsePrimary : Integer;
@@ -3683,10 +3968,15 @@ Begin
         ParsePrimary := ParseCondExpr
       Else If (Tok.Val = 'mod') Or (Tok.Val = 'div') Then
       Begin
-        { mod(a, b) : forme fonction (TODO 17) }
+        { mod(a, b) et div(a, b) : forme fonction }
         ParserAdvance;
         If AtPunct('(') Then
-          ParsePrimary := ParseOpaque(Tok, TY_IDX_INTEGER)
+        Begin
+          If Tok.Val = 'mod' Then
+            ParsePrimary := ParseIntrinsic(Tok, IN_MOD)
+          Else
+            ParsePrimary := ParseIntrinsic(Tok, IN_DIV);
+        End
         Else
           ErrorAt(Tok.Line, Tok.Col, 'expression attendue (trouve: ''' +
                   Tok.Val + ''')');
@@ -3732,9 +4022,14 @@ Begin
         End;
         If AtPunct('(') Then
         Begin
-          { nom inconnu : fonction intrinseque (TODO 17), saute les
-            arguments }
-          ParsePrimary := ParseOpaque(Tok, TY_IDX_INTEGER);
+          If S >= 0 Then
+            ErrorAt(Tok.Line, Tok.Col, 'ce n''est pas une procedure: ' +
+                    Tok.Val)
+          Else If FindIntrinsic(Tok.Val) <> IN_NONE Then
+            ParsePrimary := ParseIntrinsic(Tok, FindIntrinsic(Tok.Val))
+          Else
+            ErrorAt(Tok.Line, Tok.Col, 'procedure ou fonction ' +
+                    'inconnue: ' + Tok.Val);
           Exit;
         End;
         If S < 0 Then
@@ -3852,8 +4147,9 @@ Begin
     EX_COND   : WriteLn('cond : ', TypeName(ExprTab[N].Typ));
     EX_ASSIGN : WriteLn('assign := ', ConvName(ExprTab[N].Conv), ' : ',
                         TypeName(ExprTab[N].Typ));
-    EX_OPAQUE : WriteLn('opaque ', ExprStrTab[ExprTab[N].StrIdx], ' : ',
-                        TypeName(ExprTab[N].Typ));
+    EX_INTRIN : WriteLn('intrinsic ',
+                        IntrinsicName(TIntrinsic(ExprTab[N].IntVal)),
+                        ' : ', TypeName(ExprTab[N].Typ));
     EX_INDEX  : Begin
                   Write('index ', SymTab[ExprTab[N].Sym].Name, '[',
                         ExprTab[N].IntVal, '] : ',
@@ -3897,7 +4193,7 @@ Begin
     End;
     Exit;
   End;
-  If ExprTab[N].Kind In [EX_WRITE, EX_READ] Then
+  If ExprTab[N].Kind In [EX_WRITE, EX_READ, EX_INTRIN] Then
   Begin
     I := ExprTab[N].L;
     While I >= 0 Do
@@ -3963,29 +4259,6 @@ Begin
 End;
 
 Procedure ParseBlock; Forward;
-
-{ Instruction simple (placeholder des TODO 08 a 13) : consomme les
-  tokens jusqu au prochain ';' ou 'end' (non consommes). Un bloc
-  begin...end imbrique est analyse a part pour que ses declarations
-  et sa structure soient verifiees. L'expression isolee "42 ;" est
-  donc lue puis ignoree. }
-Procedure SkipStatement;
-Var
-  Depth : Integer;
-Begin
-  Depth := 0;
-  While Not (AtEOF Or ((Depth = 0) And AtStmtEnd) Or AtPunct(';')) Do
-    If AtKw('begin') Then
-      ParseBlock
-    Else
-    Begin
-      If AtPunct('(') Or AtPunct('[') Then
-        Inc(Depth)
-      Else If (AtPunct(')') Or AtPunct(']')) And (Depth > 0) Then
-        Dec(Depth);
-      ParserAdvance;
-    End;
-End;
 
 { ---- Affectations (TODO 10, 11) ---------------------------------- }
 
@@ -4073,8 +4346,12 @@ Begin
   End;
   If Not (AtOp(':=') Or AtPunct('[')) Then
   Begin
-    ParserUnget(Tok);
-    SkipStatement;
+    If AtPunct('(') Then
+      ErrorAt(Tok.Line, Tok.Col, 'procedure inconnue: ' + Tok.Val)
+    Else
+      ErrorAt(Tok.Line, Tok.Col, 'instruction incorrecte apres ' +
+              Tok.Val + ' (affectation, appel ou etiquette attendu)');
+    ParserSync;
     Exit;
   End;
   ParserUnget(Tok);                       { nom de nouveau courant }
@@ -5100,7 +5377,10 @@ Begin
   Else If CurToken.Kind = TK_IDENT Then
     ParseIdentStatement
   Else
-    SkipStatement;
+  Begin
+    ParseError('instruction attendue');
+    ParserSync;
+  End;
 End;
 
 { Element d un bloc : declaration ou instruction. }
@@ -5178,6 +5458,7 @@ Begin
   CallCount  := 0;
   ThunkCount := 0;
   IOCount    := 0;
+  IntrinCount := 0;
   LabelCount := 0;
   ForCount   := 0;
   LoopDepth  := 0;
@@ -5194,7 +5475,8 @@ Begin
             ' affectation(s), ', IfCount, ' if, ', ForCount, ' for, ',
             GotoCount, ' goto, ', LabelCount, ' etiquette(s), ',
             CallCount, ' appel(s), ', ThunkCount, ' thunk(s), ',
-            IOCount, ' e/s, ', FoldCount, ' constante(s) repliee(s)');
+            IOCount, ' e/s, ', IntrinCount, ' intrinseque(s), ',
+            FoldCount, ' constante(s) repliee(s)');
 End;
 
 { ============================================================
