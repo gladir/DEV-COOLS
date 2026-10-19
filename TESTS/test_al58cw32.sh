@@ -70,10 +70,17 @@ run_exe() {
   fi
 }
 
+HAVE_OBJDUMP=""
+HAVE_PYTHON=""
+command -v objdump >/dev/null 2>&1 && HAVE_OBJDUMP=1
+command -v python3 >/dev/null 2>&1 && HAVE_PYTHON=1
+
 echo "============================================================"
 echo "  Test AL58CW32 - Compilateur Algol 58 vers Win32 PE / COFF"
 echo "============================================================"
-echo "  Executeur : ${RUNNER:-aucun (comparaisons ignorees)}"
+echo "  Executeur : ${RUNNER:-aucun (comparaisons de sortie ignorees)}"
+if [ -n "$HAVE_OBJDUMP" ]; then echo "  objdump   : oui"; else echo "  objdump   : non (controles .obj et encodage ignores)"; fi
+if [ -n "$HAVE_PYTHON" ]; then echo "  python3   : oui"; else echo "  python3   : non (controle de l encodage ignore)"; fi
 echo "  Exemples  : $SAMPLES_DIR"
 echo "============================================================"
 
@@ -137,12 +144,14 @@ for SRC in "$SAMPLES_DIR"/*.a58; do
   else
     bad "$NAME (-obj)"
   fi
-  if command -v objdump >/dev/null 2>&1; then
+  if [ -n "$HAVE_OBJDUMP" ]; then
     if objdump -h -t -r "$NAME.obj" >/dev/null 2>&1; then
       ok "$NAME .obj lisible (objdump)"
     else
       bad "$NAME (.obj illisible)"
     fi
+  else
+    skip "$NAME .obj lisible (objdump absent)"
   fi
 
   # -obj -asm : .obj + .asm
@@ -155,13 +164,15 @@ for SRC in "$SAMPLES_DIR"/*.a58; do
   fi
 
   # encodage binaire verifie par objdump
-  if command -v objdump >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  if [ -n "$HAVE_OBJDUMP" ] && [ -n "$HAVE_PYTHON" ]; then
     "$AL58" $OPT -d "$NAME.a58" -o "$D/enc.exe" >/dev/null 2>&1
     if python3 "$DATA_DIR/chkenc.py" "$D/enc.lst" 2>&1 | tail -1 | grep -q " 0 ecart"; then
       ok "$NAME encodage"
     else
       bad "$NAME (encodage)"
     fi
+  else
+    skip "$NAME encodage (objdump ou python3 absent)"
   fi
 done
 
