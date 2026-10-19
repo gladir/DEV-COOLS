@@ -1,0 +1,7 @@
+double(a)=14
+b apres setval=42
+addone(10)=11
+double(5)=10
+add(10,c)=13
+sumval(val,5)=20
+Fin test call-by-name

@@ -213,6 +213,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Algol 60 pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>AL60CW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Algol 60 pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>AL68C86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Algol 68 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>

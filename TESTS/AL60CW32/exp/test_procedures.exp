@@ -1,0 +1,10 @@
+Hello from procedure
+val=42
+val=100
+double(21)=42
+double(5)=10
+add(10,20)=30
+sum=15
+fact(5)=120
+fact(6)=720
+Fin test procedures

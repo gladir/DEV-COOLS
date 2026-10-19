@@ -26,7 +26,7 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 24 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 25 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
@@ -34,8 +34,8 @@
          instructions et blocs, boucle for, goto et switch, tableaux,
          procedures, appel par nom, entrees/sorties et fonctions
          standard, encodeur x86-32, ecrivains PE et COFF, runtime integre,
-         erreurs et rapport, modes -v et -d) ;
-         TODO 25 a faire.
+         erreurs et rapport, modes -v et -d, validation sur les 33
+         exemples : TESTS\test_al60cw32.sh).
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -896,7 +896,7 @@
               .asm ou vers le source, d'une extension inconnue, d'une
               option inconnue ; sans argument -> usage et code 2
 
-  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL60\* [A FAIRE]
+  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL60\* [IMPLEMENTE]
             Compiler les 33 fichiers : arrays, blocks, byname, forloop,
               hello, ifthen, math, own, procs, switch, test_arithbool,
               test_arrays, test_blocks, test_callbyname, test_condexpr,
@@ -920,6 +920,29 @@
             Mettre a jour README.md (ligne AL60CW32.PAS), ajouter
               DOC\TODO\AL60CW32.txt et BINLINUX\AL60CW32 (WIN32\
               al60cw32.exe a produire sous Windows)
+            Realise : TESTS\AL60CW32\exp\*.exp (sorties attendues des 33
+              exemples ; test_switch.exp ne contient que le debut de
+              la sortie), TESTS\AL60CW32\runpe.c, stubs.asm et stubs.bin
+              (chargeur PE minimal pour Linux x86-64, avec HeapFree),
+              chkenc.py (encodage verifie par objdump) et
+              TESTS\test_al60cw32.sh : pour chaque exemple, .EXE par
+              defaut (ni .asm ni .obj), execution et comparaison de la
+              sortie et du code de retour, -asm, -obj, -obj -asm, .obj
+              lisible par objdump, .obj lie avec lld-link (alias
+              kernel32 generes par le script) et execute, listing .ASM
+              autonome, encodage ; puis 25 programmes fautifs (message,
+              code 1, compteurs, aucun fichier), 9 avertissements avec
+              -w et leur absence sans -w ou avec -w-, erreurs
+              d'execution (indice, division par zero, canal 2 sur
+              l'erreur standard), matrice des fichiers produits, -v, -d,
+              -h, usage, source .alg ou sans extension, options et
+              extensions refusees, nettoyage apres erreur fatale ;
+              README.md (ligne AL60CW32.PAS), DOC\TODO\AL60CW32.txt et
+              BINLINUX\AL60CW32
+            Resultat : 365 verifications reussies, 0 echec, 0 ignoree ;
+              WIN32\al60cw32.exe n'a pas pu etre genere ici (pas de
+              compilateur croise Free Pascal vers Win32) : a produire
+              avec fpc -Mtp AL60CW32.PAS sous Windows
   ============================================================ *)
 
 Program AL60CW32;
