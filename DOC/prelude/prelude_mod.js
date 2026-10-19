@@ -211,6 +211,7 @@ function __mkUtil() {
   return util;
 }
 function __mkPath() { return null; }
+function __mkFsModule() { return null; }
 function __mkmod(name) {
   var e;
   if (name === 'events') return __mkEvents();
@@ -241,9 +242,11 @@ function __mkmod(name) {
   }
   if (name === 'perf_hooks') return { performance: performance };
   if (name === 'process') return process;
-  if (name === 'fs' || name === 'child_process' || name === 'http' || name === 'https' || name === 'net' || name === 'crypto' ||
-      name === 'readline' || name === 'stream' || name === 'zlib' || name === 'worker_threads' || name === 'buffer' || name === 'url' ||
-      name === 'string_decoder' || name === 'vm' || name === 'cluster' || name === 'dns' || name === 'tty' || name === 'fs/promises') {
+  e = __mkFsModule(name);
+  if (e) return e;
+  if (name === 'http' || name === 'https' || name === 'net' || name === 'crypto' ||
+      name === 'stream' || name === 'zlib' || name === 'worker_threads' || name === 'buffer' || name === 'url' ||
+      name === 'string_decoder' || name === 'vm' || name === 'cluster' || name === 'dns' || name === 'tty' || false) {
     e = new Error("Module '" + name + "' is not supported by JSCW32");
     e.code = 'ERR_MODULE_NOT_SUPPORTED';
     throw e;

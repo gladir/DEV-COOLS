@@ -347,7 +347,7 @@ Const
     'AbortController', 'AbortSignal', 'DOMException', 'URL', 'URLSearchParams', 'btoa', 'atob', 'fetch',
     'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Buffer', 'TextDecoder', 'Atomics', 'Proxy'
   );
-  BUILTIN_COUNT = 84;
+  BUILTIN_COUNT = 85;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -359,7 +359,7 @@ Const
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
-    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo'
+    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32'
   );
 
 Type
@@ -1669,11 +1669,11 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 6233;
-  PRELUDE_BASE = 2828;
-  PRELUDE_CHUNKS = 5;
-  PreludeChunkEnd: Array[1..5] Of LongInt = (3463, 5154, 5491, 6053, 6233);
-  PreludeChunkKeys: Array[1..5] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8Array|Uint8ClampedArray|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics', 'Proxy');
+  PRELUDE_LINES = 7041;
+  PRELUDE_BASE = 2833;
+  PRELUDE_CHUNKS = 6;
+  PreludeChunkEnd: Array[1..6] Of LongInt = (3468, 5159, 5496, 6058, 6238, 7041);
+  PreludeChunkKeys: Array[1..6] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -2120,6 +2120,7 @@ Const
     'function __init_web() {}',
     'function __init_bin() {}',
     'function __init_proxy() {}',
+    'function __init_fs() {}',
     'var __proxyOp, __Proxy;',
     'var __global;',
     'function __i_init() {',
@@ -2346,6 +2347,7 @@ Const
     '  __init_web();',
     '  __init_bin();',
     '  __init_proxy();',
+    '  __init_fs();',
     '  __init_globals();',
     '}',
     'var __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;',
@@ -4102,6 +4104,7 @@ Const
     '  return util;',
     '}',
     'function __mkPath() { return null; }',
+    'function __mkFsModule() { return null; }',
     'function __mkmod(name) {',
     '  var e;',
     '  if (name === ''events'') return __mkEvents();',
@@ -4132,9 +4135,11 @@ Const
     '  }',
     '  if (name === ''perf_hooks'') return { performance: performance };',
     '  if (name === ''process'') return process;',
-    '  if (name === ''fs'' || name === ''child_process'' || name === ''http'' || name === ''https'' || name === ''net'' || name === ''crypto'' ||',
-    '      name === ''readline'' || name === ''stream'' || name === ''zlib'' || name === ''worker_threads'' || name === ''buffer'' || name === ''url'' ||',
-    '      name === ''string_decoder'' || name === ''vm'' || name === ''cluster'' || name === ''dns'' || name === ''tty'' || name === ''fs/promises'') {',
+    '  e = __mkFsModule(name);',
+    '  if (e) return e;',
+    '  if (name === ''http'' || name === ''https'' || name === ''net'' || name === ''crypto'' ||',
+    '      name === ''stream'' || name === ''zlib'' || name === ''worker_threads'' || name === ''buffer'' || name === ''url'' ||',
+    '      name === ''string_decoder'' || name === ''vm'' || name === ''cluster'' || name === ''dns'' || name === ''tty'' || false) {',
     '    e = new Error("Module ''" + name + "'' is not supported by JSCW32");',
     '    e.code = ''ERR_MODULE_NOT_SUPPORTED'';',
     '    throw e;',
@@ -7907,6 +7912,809 @@ Const
     '    x.f.call(x.h, x.t);',
     '    return o;',
     '  };',
+    '}',
+    'var __fsMod, __cpMod, __rlMod, __stdinObj;',
+    'function __wb(s) {',
+    '  var n = s.length, u = new Uint16Array(n + 1), i;',
+    '  for (i = 0; i < n; i++) u[i] = s.charCodeAt(i);',
+    '  return u;',
+    '}',
+    'function __wstr(u, n) {',
+    '  var out = [], i, j;',
+    '  for (i = 0; i < n; i += 2048) {',
+    '    j = i + 2048 > n ? n : i + 2048;',
+    '    out.push(String.fromCharCode.apply(null, __taArr(u.subarray(i, j))));',
+    '  }',
+    '  return out.join('''');',
+    '}',
+    'var __fsErrs;',
+    'function __fsErr(sys, path, dest) {',
+    '  var gle = __k32(28), m, msg, e;',
+    '  if (__fsErrs === undefined) {',
+    '    __fsErrs = {',
+    '      2: [''ENOENT'', -2, ''no such file or directory''], 3: [''ENOENT'', -2, ''no such file or directory''], 5: [''EACCES'', -13, ''permission denied''],',
+    '      80: [''EEXIST'', -17, ''file already exists''], 183: [''EEXIST'', -17, ''file already exists''], 145: [''ENOTEMPTY'', -39, ''directory not empty''],',
+    '      267: [''ENOTDIR'', -20, ''not a directory''], 32: [''EBUSY'', -16, ''resource busy or locked''], 4: [''EMFILE'', -24, ''too many open files''],',
+    '      6: [''EBADF'', -9, ''bad file descriptor''], 87: [''EINVAL'', -22, ''invalid argument''], 123: [''ENOENT'', -2, ''no such file or directory''],',
+    '      19: [''EPERM'', -1, ''operation not permitted''], 1: [''EPERM'', -1, ''operation not permitted'']',
+    '    };',
+    '  }',
+    '  m = __fsErrs[gle] || [''EIO'', -5, ''i/o error''];',
+    '  if (m[0] === ''ENOENT'' && sys === ''scandir'' && dest === ''notdir'') { m = [''ENOTDIR'', -20, ''not a directory'']; dest = undefined; }',
+    '  msg = m[0] + '': '' + m[2] + '', '' + sys + (path !== undefined ? " ''" + path + "''" : '''') + (dest ? " -> ''" + dest + "''" : '''');',
+    '  e = new Error(msg);',
+    '  e.errno = m[1]; e.code = m[0]; e.syscall = sys;',
+    '  if (path !== undefined) e.path = path;',
+    '  if (dest) e.dest = dest;',
+    '  return e;',
+    '}',
+    'function __fsPath(p, what) {',
+    '  if (typeof p === ''string'') return p;',
+    '  if (p !== null && typeof p === ''object'' && p.protocol === ''file:'' && typeof p.pathname === ''string'') return decodeURIComponent(p.pathname).replace(/^\/([A-Za-z]:)/, ''$1'');',
+    '  if (p instanceof Uint8Array) return p.toString();',
+    '  var e = new TypeError(''The "'' + (what || ''path'') + ''" argument must be of type string or an instance of Buffer or URL. Received '' +',
+    '    (p === null ? ''null'' : typeof p === ''object'' ? ''an instance of '' + (p.constructor && p.constructor.name) : ''type '' + typeof p + '' ('' + String(p) + '')''));',
+    '  e.code = ''ERR_INVALID_ARG_TYPE'';',
+    '  throw e;',
+    '}',
+    'function __fsH(fd) { return fd >= 0 && fd <= 2 ? __k32(25, -10 - fd) : fd; }',
+    'function __fsFlags(f) {',
+    '  if (f === undefined || f === null) f = ''r'';',
+    '  if (typeof f === ''number'') {',
+    '    var acc = f & 3, cr = (f & 256) !== 0, ex = (f & 1024) !== 0, tr = (f & 512) !== 0, ap = (f & 8) !== 0;',
+    '    f = acc === 0 ? ''r'' : acc === 1 ? (ex ? ''wx'' : tr ? ''w'' : cr ? ''a'' : ''r+'') : (tr ? ''w+'' : cr && ap ? ''a+'' : ''r+'');',
+    '    if (ap && acc === 1) f = ''a'';',
+    '  }',
+    '  switch (f) {',
+    '    case ''r'': case ''rs'': case ''sr'': return [-2147483648, 3];',
+    '    case ''r+'': case ''rs+'': case ''sr+'': return [-1073741824, 3];',
+    '    case ''w'': return [1073741824, 2];',
+    '    case ''wx'': case ''xw'': return [1073741824, 1];',
+    '    case ''w+'': return [-1073741824, 2];',
+    '    case ''wx+'': case ''xw+'': return [-1073741824, 1];',
+    '    case ''a'': case ''as'': case ''sa'': return [4, 4];',
+    '    case ''ax'': case ''xa'': return [4, 1];',
+    '    case ''a+'': case ''as+'': case ''sa+'': return [-2147483644, 4];',
+    '    case ''ax+'': case ''xa+'': return [-2147483644, 1];',
+    '  }',
+    '  var e = new TypeError("The argument ''flags'' is invalid. Received ''" + f + "''");',
+    '  e.code = ''ERR_INVALID_ARG_VALUE'';',
+    '  throw e;',
+    '}',
+    'function __fsAttr(p) { return __k32(36, __wb(p)); }',
+    'function __fsOpen(p, flags) {',
+    '  var fl = __fsFlags(flags), h;',
+    '  if (p === ''/dev/stdin'') return 0;',
+    '  h = __k32(1, __wb(p), fl[0], 7, null, fl[1], 128, null);',
+    '  if (h === -1) {',
+    '    var a = __fsAttr(p);',
+    '    if (a !== -1 && (a & 16) !== 0 && __k32(28) === 5) {',
+    '      var e = new Error("EISDIR: illegal operation on a directory, read");',
+    '      e.errno = -21; e.code = ''EISDIR''; e.syscall = ''read'';',
+    '      throw e;',
+    '    }',
+    '    throw __fsErr(''open'', p);',
+    '  }',
+    '  return h;',
+    '}',
+    'function __fsReadAll(h, size) {',
+    '  var chunks = [], total = 0, got = new Uint32Array(1), n, buf, ok;',
+    '  for (;;) {',
+    '    n = size > 0 ? size - total : 65536;',
+    '    if (n <= 0) break;',
+    '    if (n > 1048576) n = 1048576;',
+    '    buf = new Uint8Array(n);',
+    '    got[0] = 0;',
+    '    ok = __k32(3, h, buf, n, got, null);',
+    '    if (!ok || got[0] === 0) break;',
+    '    chunks.push(got[0] === n ? buf : buf.subarray(0, got[0]));',
+    '    total += got[0];',
+    '  }',
+    '  var r = Buffer.alloc(total), off = 0, i;',
+    '  for (i = 0; i < chunks.length; i++) { r.set(chunks[i], off); off += chunks[i].length; }',
+    '  return r;',
+    '}',
+    'function __fsWriteAll(h, b, what) {',
+    '  var got = new Uint32Array(1), off = 0, n, ok;',
+    '  while (off < b.length) {',
+    '    n = b.length - off;',
+    '    if (n > 1048576) n = 1048576;',
+    '    got[0] = 0;',
+    '    ok = __k32(4, h, b.subarray(off, off + n), n, got, null);',
+    '    if (!ok) throw __fsErr(''write'', what);',
+    '    off += got[0];',
+    '    if (got[0] === 0) break;',
+    '  }',
+    '  return off;',
+    '}',
+    'function __fsEnc(o) { return typeof o === ''string'' ? o : (o && o.encoding) || null; }',
+    'function __fsData(d, enc) {',
+    '  if (typeof d === ''string'') return Buffer.from(d, enc || ''utf8'');',
+    '  if (d instanceof Uint8Array) return d;',
+    '  if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);',
+    '  var e = new TypeError(''The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received '' +',
+    '    (d === null ? ''null'' : typeof d === ''object'' ? ''an instance of '' + (d.constructor && d.constructor.name) : ''type '' + typeof d + '' ('' + String(d) + '')''));',
+    '  e.code = ''ERR_INVALID_ARG_TYPE'';',
+    '  throw e;',
+    '}',
+    'function __ftMs(lo, hi) { return (hi * 4294967296 + lo) / 10000 - 11644473600000; }',
+    'function __fsStats(a, u32, base, dir) {',
+    '  var attr = a[0], hasSize = !dir, s = {}, isDir = (attr & 16) !== 0, ro = (attr & 1) !== 0, mt = __ftMs(a[base + 5], a[base + 6]), at = __ftMs(a[base + 3], a[base + 4]), bt = __ftMs(a[base + 1], a[base + 2]);',
+    '  var sz = a[base + 8] * 4294967296 + a[base + 9];',
+    '  s.dev = 0; s.mode = isDir ? 16895 : (ro ? 33060 : 33206); s.nlink = 1; s.uid = 0; s.gid = 0; s.rdev = 0; s.blksize = 4096; s.ino = 0;',
+    '  s.size = isDir ? 0 : sz; s.blocks = isDir ? 0 : Math.ceil(sz / 512);',
+    '  s.atimeMs = at; s.mtimeMs = mt; s.ctimeMs = mt; s.birthtimeMs = bt;',
+    '  s.atime = new Date(at); s.mtime = new Date(mt); s.ctime = new Date(mt); s.birthtime = new Date(bt);',
+    '  Object.setPrototypeOf(s, __StatsP);',
+    '  return s;',
+    '}',
+    'var __StatsP;',
+    'function __fsStat(p) {',
+    '  var buf = new Uint32Array(9);',
+    '  if (!__k32(12, __wb(p), 0, buf)) throw __fsErr(''stat'', p);',
+    '  return __fsStats([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], 0, buf[7], buf[8]], null, 0, false);',
+    '}',
+    'function __fsList(p) {',
+    '  var pat = __wb(p.replace(/[\\\/]+$/, '''') + ''/*''), data = new Uint16Array(296), d32 = new Uint32Array(data.buffer), h, names = [], name, a;',
+    '  h = __k32(13, pat, data);',
+    '  if (h === -1) {',
+    '    a = __fsAttr(p);',
+    '    if (a !== -1 && (a & 16) === 0) throw __fsErr(''scandir'', p, ''notdir'');',
+    '    throw __fsErr(''scandir'', p);',
+    '  }',
+    '  do {',
+    '    name = __wstr(data.subarray(22), 260);',
+    '    name = name.slice(0, name.indexOf(''\0'') < 0 ? name.length : name.indexOf(''\0''));',
+    '    if (name !== ''.'' && name !== ''..'') names.push({ name: name, attr: d32[0] });',
+    '    data.fill(0, 22, 282);',
+    '  } while (__k32(14, h, data));',
+    '  __k32(15, h);',
+    '  names.sort(function (x, y) { return x.name < y.name ? -1 : x.name > y.name ? 1 : 0; });',
+    '  return names;',
+    '}',
+    'function __mkFs() {',
+    '  var fs = {}, EE = __require(''events''), i, names;',
+    '  var join = function (a, b) { return a.replace(/[\\\/]+$/, '''') + ''/'' + b; };',
+    '  var Stats = function Stats() { };',
+    '  Stats.prototype.isFile = function () { return (this.mode & 61440) === 32768; };',
+    '  Stats.prototype.isDirectory = function () { return (this.mode & 61440) === 16384; };',
+    '  Stats.prototype.isSymbolicLink = function () { return false; };',
+    '  Stats.prototype.isFIFO = Stats.prototype.isSocket = Stats.prototype.isBlockDevice = Stats.prototype.isCharacterDevice = function () { return false; };',
+    '  __StatsP = Stats.prototype;',
+    '  fs.Stats = Stats;',
+    '  var Dirent = function Dirent(name, dir, parent) { this.name = name; this.parentPath = parent; this.path = parent; this[''\x01d''] = dir; Object.defineProperty(this, ''\x01d'', { enumerable: false }); };',
+    '  Dirent.prototype.isFile = function () { return !this[''\x01d'']; };',
+    '  Dirent.prototype.isDirectory = function () { return this[''\x01d'']; };',
+    '  Dirent.prototype.isSymbolicLink = Dirent.prototype.isFIFO = Dirent.prototype.isSocket = Dirent.prototype.isBlockDevice = Dirent.prototype.isCharacterDevice = function () { return false; };',
+    '  fs.Dirent = Dirent;',
+    '  fs.constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 256, O_EXCL: 1024, O_TRUNC: 512, O_APPEND: 8, COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384 };',
+    '  fs.F_OK = 0; fs.R_OK = 4; fs.W_OK = 2; fs.X_OK = 1;',
+    '  fs.existsSync = function (p) { try { return __fsAttr(__fsPath(p)) !== -1; } catch (e) { return false; } };',
+    '  fs.accessSync = function (p, m) { p = __fsPath(p); if (__fsAttr(p) === -1) throw __fsErr(''access'', p); };',
+    '  fs.openSync = function (p, flags) { return __fsOpen(__fsPath(p), flags); };',
+    '  fs.closeSync = function (fd) { if (fd > 2 && !__k32(2, fd)) throw __fsErr(''close''); };',
+    '  fs.readFileSync = function (p, o) {',
+    '    if (p === ''/dev/stdin'') p = 0;',
+    '    var enc = __fsEnc(o), h, own = typeof p !== ''number'', b, flag = o && typeof o === ''object'' ? o.flag : undefined, size = 0;',
+    '    if (own) p = __fsPath(p);',
+    '    h = own ? __fsOpen(p, flag) : __fsH(p);',
+    '    try {',
+    '      if (own && p !== ''/dev/stdin'') size = __k32(6, h, null);',
+    '      if (size < 0) size = 0;',
+    '      b = __fsReadAll(h, size);',
+    '    } finally { if (own && h > 2) __k32(2, h); }',
+    '    return enc ? b.toString(enc) : b;',
+    '  };',
+    '  fs.writeFileSync = function (p, d, o) {',
+    '    var enc = __fsEnc(o), flag = o && typeof o === ''object'' && o.flag ? o.flag : ''w'', own = typeof p !== ''number'', h, b = __fsData(d, enc);',
+    '    if (own) p = __fsPath(p);',
+    '    h = own ? __fsOpen(p, flag) : __fsH(p);',
+    '    try { __fsWriteAll(h, b, own ? p : undefined); } finally { if (own && h > 2) __k32(2, h); }',
+    '  };',
+    '  fs.appendFileSync = function (p, d, o) {',
+    '    var enc = __fsEnc(o);',
+    '    fs.writeFileSync(p, d, { encoding: enc, flag: ''a'' });',
+    '  };',
+    '  fs.readSync = function (fd, buf, off, len, pos) {',
+    '    var got = new Uint32Array(1), h = __fsH(fd), o = off;',
+    '    if (off !== null && typeof off === ''object'') { len = off.length; pos = off.position; o = off.offset; }',
+    '    if (o === undefined || o === null) o = 0;',
+    '    if (len === undefined) len = buf.length - o;',
+    '    if (typeof pos === ''number'' && pos >= 0) __k32(5, h, pos, null, 0);',
+    '    if (!__k32(3, h, buf.subarray(o, o + len), len, got, null) && __k32(28) !== 109) throw __fsErr(''read'');',
+    '    return got[0];',
+    '  };',
+    '  fs.writeSync = function (fd, d, a, b, c) {',
+    '    var h = __fsH(fd), buf, pos = null;',
+    '    if (typeof d === ''string'') { buf = Buffer.from(d, typeof b === ''string'' ? b : ''utf8''); pos = typeof a === ''number'' ? a : null; }',
+    '    else {',
+    '      buf = __fsData(d);',
+    '      var off = a === undefined || a === null ? 0 : a, len = b === undefined || b === null ? buf.length - off : b;',
+    '      buf = buf.subarray(off, off + len);',
+    '      pos = typeof c === ''number'' ? c : null;',
+    '    }',
+    '    if (pos !== null) __k32(5, h, pos, null, 0);',
+    '    return __fsWriteAll(h, buf);',
+    '  };',
+    '  fs.fstatSync = function (fd) {',
+    '    var h = __fsH(fd), sz = __k32(6, h, null), s = {};',
+    '    s.size = sz < 0 ? 0 : sz; s.mode = fd <= 2 ? 8592 : 33206; s.mtimeMs = s.atimeMs = s.ctimeMs = s.birthtimeMs = Date.now();',
+    '    s.mtime = s.atime = s.ctime = s.birthtime = new Date(s.mtimeMs);',
+    '    Object.setPrototypeOf(s, Stats.prototype);',
+    '    return s;',
+    '  };',
+    '  fs.statSync = function (p, o) {',
+    '    try { return __fsStat(__fsPath(p)); } catch (e) { if (o && o.throwIfNoEntry === false && e.code === ''ENOENT'') return undefined; throw e; }',
+    '  };',
+    '  fs.lstatSync = fs.statSync;',
+    '  fs.readdirSync = function (p, o) {',
+    '    p = __fsPath(p);',
+    '    var wt = o && typeof o === ''object'' && o.withFileTypes, rec = o && typeof o === ''object'' && o.recursive, out = [], l = __fsList(p), k;',
+    '    var walk = function (dir, rel, list) {',
+    '      var j, e, r;',
+    '      for (j = 0; j < list.length; j++) {',
+    '        e = list[j];',
+    '        r = rel === '''' ? e.name : rel + ''/'' + e.name;',
+    '        out.push(wt ? new Dirent(e.name, (e.attr & 16) !== 0, dir) : r);',
+    '        if (rec && (e.attr & 16) !== 0) walk(join(dir, e.name), r, __fsList(join(dir, e.name)));',
+    '      }',
+    '    };',
+    '    walk(p, '''', l);',
+    '    return out;',
+    '  };',
+    '  fs.mkdirSync = function (p, o) {',
+    '    p = __fsPath(p);',
+    '    var rec = o && typeof o === ''object'' && o.recursive, parts, cur, first, i, norm = p.replace(/\\/g, ''/'');',
+    '    if (!rec) { if (!__k32(8, __wb(p), null)) throw __fsErr(''mkdir'', p); return undefined; }',
+    '    parts = norm.split(''/''); cur = '''';',
+    '    for (i = 0; i < parts.length; i++) {',
+    '      cur = i === 0 ? parts[0] : cur + ''/'' + parts[i];',
+    '      if (parts[i] === '''' || (i === 0 && /^[A-Za-z]:$/.test(parts[0]))) continue;',
+    '      if (__fsAttr(cur) !== -1) continue;',
+    '      if (!__k32(8, __wb(cur), null)) throw __fsErr(''mkdir'', p);',
+    '      if (first === undefined) first = cur;',
+    '    }',
+    '    return first;',
+    '  };',
+    '  fs.rmdirSync = function (p, o) {',
+    '    p = __fsPath(p);',
+    '    if (o && o.recursive) return fs.rmSync(p, { recursive: true, force: false });',
+    '    if (!__k32(9, __wb(p))) throw __fsErr(''rmdir'', p);',
+    '  };',
+    '  fs.unlinkSync = function (p) {',
+    '    p = __fsPath(p);',
+    '    var a = __fsAttr(p);',
+    '    if (a !== -1 && (a & 16) !== 0) { var e = new Error("EPERM: operation not permitted, unlink ''" + p + "''"); e.errno = -1; e.code = ''EPERM''; e.syscall = ''unlink''; e.path = p; throw e; }',
+    '    if (!__k32(7, __wb(p))) throw __fsErr(''unlink'', p);',
+    '  };',
+    '  fs.rmSync = function (p, o) {',
+    '    p = __fsPath(p);',
+    '    var a = __fsAttr(p), l, j;',
+    '    if (a === -1) { if (o && o.force) return; throw __fsErr(''rm'', p); }',
+    '    if ((a & 16) !== 0) {',
+    '      if (!(o && o.recursive)) { var e = new Error(''Path is a directory: rm returned EISDIR (is a directory) '' + p); e.code = ''ERR_FS_EISDIR''; e.errno = 21; e.syscall = ''rm''; e.path = p; throw e; }',
+    '      l = __fsList(p);',
+    '      for (j = 0; j < l.length; j++) fs.rmSync(join(p, l[j].name), o);',
+    '      if (!__k32(9, __wb(p))) throw __fsErr(''rm'', p);',
+    '    } else if (!__k32(7, __wb(p))) throw __fsErr(''rm'', p);',
+    '  };',
+    '  fs.renameSync = function (a, b) {',
+    '    a = __fsPath(a, ''oldPath''); b = __fsPath(b, ''newPath'');',
+    '    if (__fsAttr(b) !== -1 && (__fsAttr(b) & 16) === 0) __k32(7, __wb(b));',
+    '    if (!__k32(10, __wb(a), __wb(b))) throw __fsErr(''rename'', a, b);',
+    '  };',
+    '  fs.copyFileSync = function (a, b, mode) {',
+    '    a = __fsPath(a, ''src''); b = __fsPath(b, ''dest'');',
+    '    if (!__k32(11, __wb(a), __wb(b), (mode & 1) !== 0 ? 1 : 0)) throw __fsErr(''copyfile'', a, b);',
+    '  };',
+    '  fs.cpSync = function (a, b, o) {',
+    '    a = __fsPath(a, ''src''); b = __fsPath(b, ''dest'');',
+    '    var st = fs.statSync(a), l, j;',
+    '    if (st.isDirectory()) {',
+    '      if (!(o && o.recursive)) { var e = new Error(''Recursive option is required to copy a directory: '' + a); e.code = ''ERR_FS_EISDIR''; throw e; }',
+    '      if (__fsAttr(b) === -1) fs.mkdirSync(b, { recursive: true });',
+    '      l = __fsList(a);',
+    '      for (j = 0; j < l.length; j++) fs.cpSync(join(a, l[j].name), join(b, l[j].name), o);',
+    '    } else fs.copyFileSync(a, b);',
+    '  };',
+    '  fs.truncateSync = function (p, len) {',
+    '    var h = __fsOpen(__fsPath(p), ''r+'');',
+    '    try { __k32(5, h, len || 0, null, 0); if (!__k32(29, h)) throw __fsErr(''ftruncate'', p); } finally { __k32(2, h); }',
+    '  };',
+    '  fs.ftruncateSync = function (fd, len) { __k32(5, fd, len || 0, null, 0); if (!__k32(29, fd)) throw __fsErr(''ftruncate''); };',
+    '  fs.fsyncSync = function (fd) { __k32(30, __fsH(fd)); };',
+    '  fs.fdatasyncSync = fs.fsyncSync;',
+    '  fs.chmodSync = fs.chownSync = fs.fchmodSync = fs.lchownSync = function () { };',
+    '  fs.utimesSync = fs.futimesSync = fs.lutimesSync = function () { };',
+    '  fs.realpathSync = function (p) {',
+    '    p = __fsPath(p);',
+    '    if (__fsAttr(p) === -1) throw __fsErr(''lstat'', p);',
+    '    var u = new Uint16Array(1040), n = __k32(33, __wb(p), 1040, u, null);',
+    '    return __wstr(u, n);',
+    '  };',
+    '  fs.realpathSync.native = fs.realpathSync;',
+    '  fs.mkdtempSync = function (prefix) {',
+    '    var cs = ''abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'', k, s = '''', t;',
+    '    for (k = 0; k < 20; k++) {',
+    '      s = '''';',
+    '      for (t = 0; t < 6; t++) s += cs[Math.floor(Math.random() * cs.length)];',
+    '      if (__k32(8, __wb(prefix + s), null)) return prefix + s;',
+    '    }',
+    '    throw __fsErr(''mkdtemp'', prefix + ''XXXXXX'');',
+    '  };',
+    '  fs.symlinkSync = function (t, p) { var e = new Error("EPERM: operation not permitted, symlink ''" + t + "'' -> ''" + p + "''"); e.code = ''EPERM''; e.errno = -1; e.syscall = ''symlink''; throw e; };',
+    '  fs.readlinkSync = function (p) { var e = new Error("EINVAL: invalid argument, readlink ''" + p + "''"); e.code = ''EINVAL''; e.errno = -22; e.syscall = ''readlink''; throw e; };',
+    '  fs.linkSync = fs.symlinkSync;',
+    '  fs.watch = fs.watchFile = function () { throw new Error(''fs.watch is not supported by JSCW32''); };',
+    '  var syncNames = [''access'', ''appendFile'', ''chmod'', ''chown'', ''close'', ''copyFile'', ''cp'', ''fstat'', ''ftruncate'', ''fsync'', ''lstat'', ''mkdir'',',
+    '    ''mkdtemp'', ''open'', ''readFile'', ''readdir'', ''readlink'', ''realpath'', ''rename'', ''rm'', ''rmdir'', ''stat'', ''symlink'', ''truncate'', ''unlink'', ''utimes'', ''writeFile''];',
+    '  var cbWrap = function (f) {',
+    '    return function () {',
+    '      var a = Array.prototype.slice.call(arguments), cb = a.pop(), self = this;',
+    '      if (typeof cb !== ''function'') { var e = new TypeError(''The "cb" argument must be of type function. Received '' + (cb === undefined ? ''undefined'' : typeof cb)); e.code = ''ERR_INVALID_ARG_TYPE''; throw e; }',
+    '      setImmediate(function () {',
+    '        var r;',
+    '        try { r = f.apply(self, a); } catch (er) { cb(er); return; }',
+    '        cb(null, r);',
+    '      });',
+    '    };',
+    '  };',
+    '  var promWrap = function (f) {',
+    '    return function () {',
+    '      var a = arguments, self = this;',
+    '      return new Promise(function (res, rej) {',
+    '        setImmediate(function () { var r; try { r = f.apply(self, a); } catch (er) { rej(er); return; } res(r); });',
+    '      });',
+    '    };',
+    '  };',
+    '  var prom = {};',
+    '  for (i = 0; i < syncNames.length; i++) {',
+    '    fs[syncNames[i]] = cbWrap(fs[syncNames[i] + ''Sync'']);',
+    '    prom[syncNames[i]] = promWrap(fs[syncNames[i] + ''Sync'']);',
+    '  }',
+    '  fs.exists = function (p, cb) { setImmediate(function () { cb(fs.existsSync(p)); }); };',
+    '  fs.read = function (fd, buf, off, len, pos, cb) {',
+    '    setImmediate(function () { var n; try { n = fs.readSync(fd, buf, off, len, pos); } catch (er) { cb(er); return; } cb(null, n, buf); });',
+    '  };',
+    '  fs.write = function (fd, d) {',
+    '    var a = Array.prototype.slice.call(arguments, 1), cb = a.pop();',
+    '    setImmediate(function () { var n; try { n = fs.writeSync.apply(fs, [fd].concat(a)); } catch (er) { cb(er); return; } cb(null, n, d); });',
+    '  };',
+    '  prom.FileHandle = null;',
+    '  prom.open = function (p, fl) {',
+    '    return new Promise(function (res, rej) {',
+    '      var fd;',
+    '      try { fd = fs.openSync(p, fl); } catch (er) { rej(er); return; }',
+    '      res({',
+    '        fd: fd, close: function () { fs.closeSync(fd); return Promise.resolve(); },',
+    '        readFile: function (o) { return Promise.resolve(fs.readFileSync(fd, o)); }, writeFile: function (d, o) { fs.writeFileSync(fd, d, o); return Promise.resolve(); },',
+    '        stat: function () { return Promise.resolve(fs.fstatSync(fd)); }',
+    '      });',
+    '    });',
+    '  };',
+    '  prom.constants = fs.constants;',
+    '  fs.promises = prom;',
+    '  fs.createReadStream = function (p, o) {',
+    '    var s = new EE(), enc = __fsEnc(o), hw = o && o.highWaterMark ? o.highWaterMark : 65536, h, started = false, start = o && o.start !== undefined ? o.start : 0, end = o && o.end !== undefined ? o.end : Infinity;',
+    '    s.path = p; s.bytesRead = 0; s.readable = true; s.destroyed = false;',
+    '    s.setEncoding = function (e) { enc = e; return s; };',
+    '    s.destroy = function () { s.destroyed = true; if (h !== undefined) { __k32(2, h); h = undefined; } return s; };',
+    '    s.close = function (cb) { s.destroy(); if (cb) setImmediate(cb); };',
+    '    var pump = function () {',
+    '      var got, buf, n, chunk;',
+    '      if (s.destroyed) return;',
+    '      if (h === undefined) {',
+    '        try { h = __fsOpen(__fsPath(p), ''r''); } catch (er) { s.emit(''error'', er); return; }',
+    '        if (start > 0) __k32(5, h, start, null, 0);',
+    '        s.emit(''open'', h); s.emit(''ready'');',
+    '      }',
+    '      n = Math.min(hw, end - start - s.bytesRead + 1);',
+    '      got = new Uint32Array(1); buf = Buffer.alloc(n > 0 ? n : 0);',
+    '      if (n > 0) __k32(3, h, buf, n, got, null);',
+    '      if (n <= 0 || got[0] === 0) { s.readable = false; s.emit(''end''); s.destroy(); s.emit(''close''); return; }',
+    '      s.bytesRead += got[0];',
+    '      chunk = got[0] === n ? buf : buf.subarray(0, got[0]);',
+    '      s.emit(''data'', enc ? chunk.toString(enc) : chunk);',
+    '      setImmediate(pump);',
+    '    };',
+    '    var begin = function () { if (!started) { started = true; setImmediate(pump); } };',
+    '    var on = s.on;',
+    '    s.on = s.addListener = function (n, f) { on.call(s, n, f); if (n === ''data'' || n === ''readable'') begin(); return s; };',
+    '    s.resume = function () { begin(); return s; };',
+    '    s.pause = function () { return s; };',
+    '    s.pipe = function (dest) {',
+    '      s.on(''data'', function (c) { dest.write(c); });',
+    '      s.on(''end'', function () { if (dest !== process.stdout && dest !== process.stderr) dest.end(); });',
+    '      return dest;',
+    '    };',
+    '    s[Symbol.asyncIterator] = function () {',
+    '      var q = [], done = false, waiting = null;',
+    '      s.on(''data'', function (c) { if (waiting) { var w = waiting; waiting = null; w({ value: c, done: false }); } else q.push(c); });',
+    '      s.on(''end'', function () { done = true; if (waiting) { var w = waiting; waiting = null; w({ value: undefined, done: true }); } });',
+    '      return {',
+    '        next: function () {',
+    '          if (q.length) return Promise.resolve({ value: q.shift(), done: false });',
+    '          if (done) return Promise.resolve({ value: undefined, done: true });',
+    '          return new Promise(function (r) { waiting = r; });',
+    '        },',
+    '        [Symbol.asyncIterator]: function () { return this; }',
+    '      };',
+    '    };',
+    '    return s;',
+    '  };',
+    '  fs.createWriteStream = function (p, o) {',
+    '    var s = new EE(), h, flag = o && o.flags ? o.flags : ''w'', enc = __fsEnc(o) || ''utf8'', failed = false;',
+    '    s.path = p; s.bytesWritten = 0; s.writable = true; s.destroyed = false;',
+    '    var open = function () {',
+    '      if (h !== undefined || failed) return;',
+    '      try { h = __fsOpen(__fsPath(p), flag); } catch (er) { failed = true; setImmediate(function () { s.emit(''error'', er); }); return; }',
+    '      setImmediate(function () { s.emit(''open'', h); s.emit(''ready''); });',
+    '    };',
+    '    open();',
+    '    s.write = function (d, e, cb) {',
+    '      if (typeof e === ''function'') { cb = e; e = undefined; }',
+    '      if (failed) return false;',
+    '      var b = __fsData(d, e || enc);',
+    '      __fsWriteAll(h, b, p);',
+    '      s.bytesWritten += b.length;',
+    '      if (cb) setImmediate(cb);',
+    '      return true;',
+    '    };',
+    '    s.end = function (d, e, cb) {',
+    '      if (typeof d === ''function'') { cb = d; d = undefined; }',
+    '      if (d !== undefined && d !== null) s.write(d, e);',
+    '      s.writable = false;',
+    '      if (h !== undefined) { __k32(2, h); h = undefined; }',
+    '      setImmediate(function () { s.emit(''finish''); s.emit(''close''); if (cb) cb(); });',
+    '      return s;',
+    '    };',
+    '    s.close = s.destroy = function () { s.end(); return s; };',
+    '    s.cork = s.uncork = function () { };',
+    '    return s;',
+    '  };',
+    '  return fs;',
+    '}',
+    'function __mkFsPromises() { return __require(''fs'').promises; }',
+    'function __runProc(file, args, o, input) {',
+    '  o = o || {};',
+    '  var cmd, shell = o.shell, wcmd, pipes = new Uint32Array(2), sa = new Uint32Array(3), si = new Uint32Array(17), pi = new Uint32Array(4), stdio = o.stdio, mode = [''pipe'', ''pipe'', ''pipe''], i;',
+    '  var hIn, hOut, hErr, rOut, rErr, wIn, ok, outs = [], errs = [], outDone = false, errDone = false, avail = new Uint32Array(1), got = new Uint32Array(1), code = new Uint32Array(1), cwd = null, envp = null, flags = 134217728;',
+    '  if (typeof stdio === ''string'') mode = [stdio, stdio, stdio];',
+    '  else if (Array.isArray(stdio)) for (i = 0; i < 3; i++) if (stdio[i] !== undefined && stdio[i] !== null) mode[i] = typeof stdio[i] === ''number'' ? ''inherit'' : stdio[i];',
+    '  if (shell === undefined && args === null) shell = true;',
+    '  if (shell) {',
+    '    cmd = args === null ? file : file + '' '' + args.map(__cpQuote).join('' '');',
+    '    wcmd = ''cmd.exe /d /s /c "'' + cmd + ''"'';',
+    '  } else wcmd = [file].concat(args || []).map(__cpQuote).join('' '');',
+    '  sa[0] = 12; sa[1] = 0; sa[2] = 1;',
+    '  if (mode[0] === ''inherit'') hIn = __k32(25, -10);',
+    '  else { __k32(19, pipes, pipes.subarray(1), sa, 1048576); hIn = pipes[0]; wIn = pipes[1]; __k32(26, wIn, 1, 0); }',
+    '  if (mode[1] === ''inherit'') hOut = __k32(25, -11);',
+    '  else { __k32(19, pipes, pipes.subarray(1), sa, 1048576); rOut = pipes[0]; hOut = pipes[1]; __k32(26, rOut, 1, 0); }',
+    '  if (mode[2] === ''inherit'') hErr = __k32(25, -12);',
+    '  else { __k32(19, pipes, pipes.subarray(1), sa, 1048576); rErr = pipes[0]; hErr = pipes[1]; __k32(26, rErr, 1, 0); }',
+    '  si[0] = 68; si[11] = 256; si[14] = hIn; si[15] = hOut; si[16] = hErr;',
+    '  if (o.cwd) cwd = __wb(String(o.cwd));',
+    '  var env = o.env || process.env, es = [], k, ks = Object.keys(env);',
+    '  for (k = 0; k < ks.length; k++) if (env[ks[k]] !== undefined) es.push(ks[k] + ''='' + env[ks[k]]);',
+    '  es = es.join(''\0'') + ''\0\0'';',
+    '  envp = __wb(es); flags |= 1024;',
+    '  ok = __k32(20, null, __wb(wcmd), null, null, 1, flags, envp, cwd, si, pi);',
+    '  if (!ok) {',
+    '    var gle = __k32(28);',
+    '    if (mode[0] !== ''inherit'') { __k32(2, hIn); __k32(2, wIn); }',
+    '    if (mode[1] !== ''inherit'') { __k32(2, hOut); __k32(2, rOut); }',
+    '    if (mode[2] !== ''inherit'') { __k32(2, hErr); __k32(2, rErr); }',
+    '    var er = new Error(''spawnSync '' + file + '' ENOENT''); er.errno = -2; er.code = ''ENOENT''; er.syscall = ''spawnSync '' + file; er.path = file; er.spawnargs = args || [];',
+    '    return { error: er, status: null, signal: null, pid: 0, output: null, stdout: null, stderr: null };',
+    '  }',
+    '  if (mode[0] !== ''inherit'') {',
+    '    __k32(2, hIn);',
+    '    if (input !== undefined && input !== null) { var ib = __fsData(input); if (ib.length > 0) { got[0] = 0; __k32(4, wIn, ib, ib.length, got, null); } }',
+    '    __k32(2, wIn);',
+    '  }',
+    '  if (mode[1] !== ''inherit'') __k32(2, hOut);',
+    '  if (mode[2] !== ''inherit'') __k32(2, hErr);',
+    '  var drain = function (h, list) {',
+    '    var a, buf, any = false;',
+    '    if (!__k32(27, h, null, 0, null, avail, null)) return -1;',
+    '    a = avail[0];',
+    '    while (a > 0) {',
+    '      buf = Buffer.alloc(a > 65536 ? 65536 : a);',
+    '      got[0] = 0;',
+    '      if (!__k32(3, h, buf, buf.length, got, null) || got[0] === 0) break;',
+    '      list.push(got[0] === buf.length ? buf : buf.subarray(0, got[0]));',
+    '      a -= got[0]; any = true;',
+    '    }',
+    '    return any ? 1 : 0;',
+    '  };',
+    '  var exited = false, r1, r2, idle;',
+    '  for (;;) {',
+    '    r1 = rOut !== undefined && !outDone ? drain(rOut, outs) : -1;',
+    '    r2 = rErr !== undefined && !errDone ? drain(rErr, errs) : -1;',
+    '    if (r1 < 0) outDone = true;',
+    '    if (r2 < 0) errDone = true;',
+    '    if (r1 > 0 || r2 > 0) continue;',
+    '    if ((rOut === undefined || outDone) && (rErr === undefined || errDone)) break;',
+    '    if (__k32(21, pi[0], 0) === 0) { if (exited) break; exited = true; continue; }',
+    '    __sleep(1);',
+    '  }',
+    '  __k32(21, pi[0], -1);',
+    '  __k32(22, pi[0], code);',
+    '  __k32(2, pi[0]); __k32(2, pi[1]);',
+    '  if (rOut !== undefined) __k32(2, rOut);',
+    '  if (rErr !== undefined) __k32(2, rErr);',
+    '  var so = Buffer.concat(outs), se = Buffer.concat(errs);',
+    '  return { pid: pi[2], status: code[0] | 0, signal: null, output: [null, so, se], stdout: so, stderr: se };',
+    '}',
+    'function __cpQuote(a) {',
+    '  a = String(a);',
+    '  if (a !== '''' && !/[\s"]/.test(a)) return a;',
+    '  return ''"'' + a.replace(/(\\*)"/g, ''$1$1\\"'').replace(/(\\+)$/, ''$1$1'') + ''"'';',
+    '}',
+    'function __cpEnc(r, o) {',
+    '  var enc = __fsEnc(o);',
+    '  if (enc && enc !== ''buffer'') { if (r.stdout) r.stdout = r.stdout.toString(enc); if (r.stderr) r.stderr = r.stderr.toString(enc); r.output = [null, r.stdout, r.stderr]; }',
+    '  return r;',
+    '}',
+    'function __mkCp() {',
+    '  var cp = {}, EE = __require(''events'');',
+    '  cp.spawnSync = function (file, args, o) {',
+    '    if (args !== undefined && args !== null && !Array.isArray(args)) { o = args; args = []; }',
+    '    var r = __runProc(file, args || [], o, o && o.input);',
+    '    return __cpEnc(r, o);',
+    '  };',
+    '  cp.execSync = function (cmd, o) {',
+    '    var r = __runProc(cmd, null, o, o && o.input), e;',
+    '    if (r.error) throw r.error;',
+    '    __cpEnc(r, o);',
+    '    if (r.stderr && (!o || !o.stdio || o.stdio === ''pipe'') && r.stderr.length > 0) process.stderr.write(r.stderr);',
+    '    if (r.status !== 0) {',
+    '      e = new Error(''Command failed: '' + cmd + (r.stderr && r.stderr.length ? ''\n'' + r.stderr.toString() : ''''));',
+    '      e.status = r.status; e.signal = null; e.output = r.output; e.pid = r.pid; e.stdout = r.stdout; e.stderr = r.stderr;',
+    '      throw e;',
+    '    }',
+    '    return r.stdout;',
+    '  };',
+    '  cp.execFileSync = function (file, args, o) {',
+    '    if (args !== undefined && !Array.isArray(args)) { o = args; args = []; }',
+    '    var r = __runProc(file, args || [], o, o && o.input), e;',
+    '    if (r.error) throw r.error;',
+    '    __cpEnc(r, o);',
+    '    if (r.status !== 0) {',
+    '      e = new Error(''Command failed: '' + file + '' '' + (args || []).join('' ''));',
+    '      e.status = r.status; e.signal = null; e.output = r.output; e.pid = r.pid; e.stdout = r.stdout; e.stderr = r.stderr;',
+    '      throw e;',
+    '    }',
+    '    return r.stdout;',
+    '  };',
+    '  var mkChild = function (run) {',
+    '    var c = new EE(), inChunks = [], ended = false;',
+    '    c.stdout = new EE(); c.stderr = new EE(); c.pid = 0; c.exitCode = null; c.killed = false; c.signalCode = null; c.connected = false;',
+    '    c.stdout.setEncoding = c.stderr.setEncoding = function (e) { this[''\x01e''] = e; return this; };',
+    '    c.stdin = {',
+    '      write: function (d, e, cb) { inChunks.push(__fsData(d, typeof e === ''string'' ? e : undefined)); if (typeof e === ''function'') e(); else if (cb) cb(); return true; },',
+    '      end: function (d) { if (d !== undefined) this.write(d); ended = true; },',
+    '      on: function () { return this; }, once: function () { return this; }',
+    '    };',
+    '    c.kill = function () { c.killed = true; return false; };',
+    '    c.ref = c.unref = function () { return c; };',
+    '    setImmediate(function () {',
+    '      var r = run(inChunks.length ? Buffer.concat(inChunks) : undefined);',
+    '      if (r.error) { c.emit(''error'', r.error); c.emit(''close'', -2, null); return; }',
+    '      c.pid = r.pid; c.exitCode = r.status;',
+    '      var emitOut = function (s, b) {',
+    '        if (b.length === 0) return;',
+    '        var e = s[''\x01e''];',
+    '        s.emit(''data'', e ? b.toString(e) : b);',
+    '      };',
+    '      emitOut(c.stdout, r.stdout); emitOut(c.stderr, r.stderr);',
+    '      c.stdout.emit(''end''); c.stderr.emit(''end''); c.stdout.emit(''close''); c.stderr.emit(''close'');',
+    '      c.emit(''exit'', r.status, null);',
+    '      c.emit(''close'', r.status, null);',
+    '    });',
+    '    return c;',
+    '  };',
+    '  cp.spawn = function (file, args, o) {',
+    '    if (args !== undefined && !Array.isArray(args)) { o = args; args = []; }',
+    '    return mkChild(function (input) { return __runProc(file, args || [], o, input); });',
+    '  };',
+    '  cp.exec = function (cmd, o, cb) {',
+    '    if (typeof o === ''function'') { cb = o; o = {}; }',
+    '    var c = mkChild(function (input) { return __runProc(cmd, null, o, input); });',
+    '    if (cb) {',
+    '      var so = [], se = [];',
+    '      c.stdout.on(''data'', function (d) { so.push(d); });',
+    '      c.stderr.on(''data'', function (d) { se.push(d); });',
+    '      c.on(''close'', function (code) {',
+    '        var enc = __fsEnc(o) || ''utf8'', out = Buffer.concat(so.map(function (x) { return typeof x === ''string'' ? Buffer.from(x) : x; })), err = Buffer.concat(se.map(function (x) { return typeof x === ''string'' ? Buffer.from(x) : x; }));',
+    '        var os = enc === ''buffer'' ? out : out.toString(enc), es = enc === ''buffer'' ? err : err.toString(enc), e = null;',
+    '        if (code !== 0) { e = new Error(''Command failed: '' + cmd + (es.length ? ''\n'' + es : '''')); e.code = code; e.killed = false; e.signal = null; e.cmd = cmd; }',
+    '        cb(e, os, es);',
+    '      });',
+    '    }',
+    '    return c;',
+    '  };',
+    '  cp.execFile = function (file, args, o, cb) {',
+    '    if (typeof args === ''function'') { cb = args; args = []; o = {}; }',
+    '    else if (!Array.isArray(args)) { cb = o; o = args; args = []; }',
+    '    if (typeof o === ''function'') { cb = o; o = {}; }',
+    '    var c = mkChild(function (input) { return __runProc(file, args, o, input); });',
+    '    if (cb) {',
+    '      var so = [], se = [];',
+    '      c.stdout.on(''data'', function (d) { so.push(d); });',
+    '      c.stderr.on(''data'', function (d) { se.push(d); });',
+    '      c.on(''error'', function (er) { cb(er, '''', ''''); });',
+    '      c.on(''close'', function (code) {',
+    '        var out = Buffer.concat(so.map(function (x) { return typeof x === ''string'' ? Buffer.from(x) : x; })), err = Buffer.concat(se.map(function (x) { return typeof x === ''string'' ? Buffer.from(x) : x; })), e = null;',
+    '        if (code !== 0 && code !== -2) { e = new Error(''Command failed: '' + file + '' '' + args.join('' '')); e.code = code; }',
+    '        if (code !== -2) cb(e, out.toString(), err.toString());',
+    '      });',
+    '    }',
+    '    return c;',
+    '  };',
+    '  cp.fork = function () { throw new Error(''child_process.fork is not supported by JSCW32''); };',
+    '  return cp;',
+    '}',
+    'function __stdinMake() {',
+    '  var EE = __require(''events''), s = new EE(), enc = null, started = false, ended = false, paused = false, h = __k32(25, -10);',
+    '  s.fd = 0; s.isTTY = false; s.readable = true;',
+    '  s.setEncoding = function (e) { enc = e || ''utf8''; return s; };',
+    '  var got = new Uint32Array(1);',
+    '  var pump = function () {',
+    '    var buf, chunk;',
+    '    if (ended || paused) return;',
+    '    buf = Buffer.alloc(65536); got[0] = 0;',
+    '    if (!__k32(3, h, buf, 65536, got, null) || got[0] === 0) {',
+    '      ended = true; s.readable = false;',
+    '      s.emit(''end''); s.emit(''close'');',
+    '      return;',
+    '    }',
+    '    chunk = buf.subarray(0, got[0]);',
+    '    s.emit(''data'', enc ? chunk.toString(enc) : chunk);',
+    '    setImmediate(pump);',
+    '  };',
+    '  var begin = function () { paused = false; if (!started) { started = true; setImmediate(pump); } else if (!ended) setImmediate(pump); };',
+    '  var on = s.on;',
+    '  s.on = s.addListener = function (n, f) { on.call(s, n, f); if (n === ''data'' || n === ''readable'' || n === ''end'') { if (!started) begin(); } return s; };',
+    '  s.resume = function () { begin(); return s; };',
+    '  s.pause = function () { paused = true; return s; };',
+    '  s.unref = s.ref = function () { return s; };',
+    '  s.setRawMode = function () { return s; };',
+    '  s.read = function () {',
+    '    var buf = Buffer.alloc(65536);',
+    '    got[0] = 0;',
+    '    if (ended || !__k32(3, h, buf, 65536, got, null) || got[0] === 0) { ended = true; return null; }',
+    '    return enc ? buf.subarray(0, got[0]).toString(enc) : buf.subarray(0, got[0]);',
+    '  };',
+    '  s.pipe = function (dest) {',
+    '    s.on(''data'', function (c) { dest.write(c); });',
+    '    s.on(''end'', function () { if (dest !== process.stdout && dest !== process.stderr && dest.end) dest.end(); });',
+    '    return dest;',
+    '  };',
+    '  s[Symbol.asyncIterator] = function () {',
+    '    var q = [], done = false, waiting = null;',
+    '    s.on(''data'', function (c) { if (waiting) { var w = waiting; waiting = null; w({ value: c, done: false }); } else q.push(c); });',
+    '    s.on(''end'', function () { done = true; if (waiting) { var w = waiting; waiting = null; w({ value: undefined, done: true }); } });',
+    '    return {',
+    '      next: function () {',
+    '        if (q.length) return Promise.resolve({ value: q.shift(), done: false });',
+    '        if (done) return Promise.resolve({ value: undefined, done: true });',
+    '        return new Promise(function (r) { waiting = r; });',
+    '      },',
+    '      [Symbol.asyncIterator]: function () { return this; }',
+    '    };',
+    '  };',
+    '  return s;',
+    '}',
+    'function __mkReadline() {',
+    '  var rl = {}, EE = __require(''events'');',
+    '  rl.createInterface = function (opts, out) {',
+    '    var input = opts && opts.input !== undefined ? opts.input : opts, output = opts && opts.output !== undefined ? opts.output : out, i = new EE(), buf = '''', closed = false, qcb = null, prompt = ''> '', lines = [], waiters = [];',
+    '    if (opts && opts.prompt !== undefined) prompt = opts.prompt;',
+    '    i.terminal = false; i.line = ''''; i.input = input; i.output = output;',
+    '    var deliver = function (l) {',
+    '      if (qcb) { var c = qcb; qcb = null; c(l); } else i.emit(''line'', l);',
+    '      if (waiters.length) { waiters.shift()({ value: l, done: false }); } else lines.push(l);',
+    '    };',
+    '    var close = function () {',
+    '      if (closed) return;',
+    '      closed = true;',
+    '      if (buf.length > 0) { var l = buf; buf = ''''; deliver(l); }',
+    '      while (waiters.length) waiters.shift()({ value: undefined, done: true });',
+    '      i.emit(''close'');',
+    '    };',
+    '    i.close = function () { closed = false; close(); };',
+    '    i.setPrompt = function (p) { prompt = p; };',
+    '    i.getPrompt = function () { return prompt; };',
+    '    i.prompt = function () { if (output && output.write) output.write(prompt); };',
+    '    i.write = function () { };',
+    '    i.pause = function () { return i; };',
+    '    i.resume = function () { return i; };',
+    '    i.question = function (q, o, cb) {',
+    '      if (typeof o === ''function'') cb = o;',
+    '      if (output && output.write) output.write(q);',
+    '      qcb = cb;',
+    '    };',
+    '    if (input && input.on) {',
+    '      if (input.setEncoding) input.setEncoding(''utf8'');',
+    '      input.on(''data'', function (d) {',
+    '        var parts, j;',
+    '        buf += typeof d === ''string'' ? d : d.toString();',
+    '        parts = buf.split(/\r\n|\n|\r/);',
+    '        buf = parts.pop();',
+    '        for (j = 0; j < parts.length; j++) deliver(parts[j]);',
+    '      });',
+    '      input.on(''end'', close);',
+    '    }',
+    '    i[Symbol.asyncIterator] = function () {',
+    '      lines.length = 0;',
+    '      return {',
+    '        next: function () {',
+    '          if (lines.length) return Promise.resolve({ value: lines.shift(), done: false });',
+    '          if (closed) return Promise.resolve({ value: undefined, done: true });',
+    '          return new Promise(function (r) { waiters.push(r); });',
+    '        },',
+    '        [Symbol.asyncIterator]: function () { return this; }',
+    '      };',
+    '    };',
+    '    var pending = [];',
+    '    i.on(''line'', function (l) { });',
+    '    return i;',
+    '  };',
+    '  rl.promises = {',
+    '    createInterface: function (o) {',
+    '      var i = rl.createInterface(o), q = i.question;',
+    '      i.question = function (s) { return new Promise(function (res) { q.call(i, s, res); }); };',
+    '      return i;',
+    '    }',
+    '  };',
+    '  rl.clearLine = rl.cursorTo = rl.moveCursor = rl.clearScreenDown = function () { return true; };',
+    '  rl.emitKeypressEvents = function () { };',
+    '  return rl;',
+    '}',
+    'function __init_fs() {',
+    '  var env = process.env, blk = __k32(18), n, p, buf, s, eq, k, tmp;',
+    '  process.cwd = function () {',
+    '    var u = new Uint16Array(1040), n = __k32(16, 1040, u);',
+    '    return __wstr(u, n);',
+    '  };',
+    '  process.chdir = function (d) {',
+    '    if (!__k32(24, __wb(String(d)))) {',
+    '      var e = new Error("ENOENT: no such file or directory, chdir ''" + process.cwd() + "'' -> ''" + d + "''");',
+    '      e.code = ''ENOENT''; e.errno = -2; e.syscall = ''chdir'';',
+    '      throw e;',
+    '    }',
+    '  };',
+    '  process.pid = __k32(38);',
+    '  process.ppid = 0;',
+    '  process.execPath = ''C:\\Program Files\\nodejs\\node.exe'';',
+    '  process.stdout.fd = 1; process.stderr.fd = 2;',
+    '  process.stdout.isTTY = false; process.stderr.isTTY = false;',
+    '  if (blk !== 0) {',
+    '    p = blk;',
+    '    for (;;) {',
+    '      n = __k32(42, p);',
+    '      if (n === 0) break;',
+    '      buf = new Uint16Array(n);',
+    '      __k32(41, buf, p, n * 2);',
+    '      s = __wstr(buf, n);',
+    '      eq = s.indexOf(''='', 1);',
+    '      if (eq > 0) env[s.slice(0, eq)] = s.slice(eq + 1);',
+    '      p += (n + 1) * 2;',
+    '    }',
+    '    __k32(34, blk);',
+    '  }',
+    '  Object.defineProperty(process, ''stdin'', { get: function () { if (__stdinObj === undefined) __stdinObj = __stdinMake(); return __stdinObj; }, configurable: true, enumerable: true });',
+    '  __fsMod = undefined;',
+    '}',
+    'function __mkFsModule(name) {',
+    '  if (name === ''fs'') return __mkFs();',
+    '  if (name === ''fs/promises'') return __require(''fs'').promises;',
+    '  if (name === ''child_process'') return __mkCp();',
+    '  if (name === ''readline'') return __mkReadline();',
+    '  if (name === ''readline/promises'') return __require(''readline'').promises;',
+    '  return null;',
     '}'
   );
 { PRELUDE-END }
@@ -25029,7 +25837,6 @@ Begin
   A('endp');
 End;
 
-{ Ajoute (valeur hi, lo ; drapeau) au tableau dont le pointeur est dans loc. }
 { Appel d'une operation de mandataire : pousse les 7 mots puis appelle _JSRT_proxy_op. }
 Procedure EmitProxyOp(op: LongInt; Const plo, klo, khi, vlo, vhi, rlo, rhi: TString);
 Begin
@@ -25045,6 +25852,7 @@ Begin
   A('add esp, 32');
 End;
 
+{ Ajoute (valeur hi, lo ; drapeau) au tableau dont le pointeur est dans loc. }
 Procedure PushToArrLocal(Const hi, lo, arr: TString);
 Begin
   A('push ' + hi);
@@ -38299,6 +39107,140 @@ End;
   decalage en octets +36, longueur +40, genre +44 (0 Int8, 1 Uint8, 2 Uint8Clamped,
   3 Int16, 4 Uint16, 5 Int32, 6 Uint32, 7 Float32, 8 Float64). Les acces a t[i]
   passent par _JSRT_ta_get / _JSRT_ta_set (voir get_member et set_member). }
+Const
+  K32_COUNT = 42;
+  K32Names: Array[1..K32_COUNT] Of String[32] = (
+    'CreateFileW@28',
+    'CloseHandle@4',
+    'ReadFile@20',
+    'WriteFile@20',
+    'SetFilePointer@16',
+    'GetFileSize@8',
+    'DeleteFileW@4',
+    'CreateDirectoryW@8',
+    'RemoveDirectoryW@4',
+    'MoveFileW@8',
+    'CopyFileW@12',
+    'GetFileAttributesExW@12',
+    'FindFirstFileW@8',
+    'FindNextFileW@8',
+    'FindClose@4',
+    'GetCurrentDirectoryW@8',
+    'GetEnvironmentVariableW@12',
+    'GetEnvironmentStringsW@0',
+    'CreatePipe@16',
+    'CreateProcessW@40',
+    'WaitForSingleObject@8',
+    'GetExitCodeProcess@8',
+    'GetTimeZoneInformation@4',
+    'SetCurrentDirectoryW@4',
+    'GetStdHandle@4',
+    'SetHandleInformation@12',
+    'PeekNamedPipe@24',
+    'GetLastError@0',
+    'SetEndOfFile@4',
+    'FlushFileBuffers@4',
+    'SetFileAttributesW@8',
+    'GetTempPathW@8',
+    'GetFullPathNameW@16',
+    'FreeEnvironmentStringsW@4',
+    'SetEnvironmentVariableW@8',
+    'GetFileAttributesW@4',
+    'SetFileTime@16',
+    'GetCurrentProcessId@0',
+    'GetFileInformationByHandle@8',
+    'TerminateProcess@8',
+    'RtlMoveMemory@12',
+    'lstrlenW@4'
+  );
+
+{ Appels systeme KERNEL32 generiques : fichiers, repertoires, processus, environnement. }
+Procedure RtSys;
+Var
+  id, j, na: LongInt;
+Begin
+  { __k32(id, a1..a10) : appelle une fonction KERNEL32 (stdcall). Entiers tels quels, chaines -> pointeur
+    des donnees, ArrayBuffer / tableaux types -> pointeur des octets. Resultat : EAX en entier. }
+  FBegin('_JSRT_n_k32', 11);
+  A('xor ebx, ebx');
+  A('.cl:');
+  A('cmp ebx, 11');
+  A('jae .cd');
+  A('xor eax, eax');
+  A('cmp ebx, dword ptr [ebp+12]');
+  A('jae .st');
+  A('mov esi, ebx');
+  A('shl esi, 3');
+  A('add esi, ebp');
+  A('mov eax, dword ptr [esi+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov ecx, dword ptr [esi+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('call .conv');
+  A('.st:');
+  A('mov edi, ebx');
+  A('shl edi, 2');
+  A('neg edi');
+  A('add edi, ebp');
+  A('mov dword ptr [edi-16], eax');
+  A('inc ebx');
+  A('jmp .cl');
+  A('.conv:');
+  A('cmp ecx, $INT');
+  A('je .cok');
+  A('cmp ecx, $BOOL');
+  A('je .cok');
+  A('cmp ecx, $STR');
+  A('jne .c1');
+  A('add eax, $STR_DATA');
+  A('ret');
+  A('.c1:');
+  A('cmp ecx, $OBJ');
+  A('jne .c2');
+  A('test byte ptr [eax+2], ' + IntToStr(OF_ABUF));
+  A('jz .c3');
+  A('mov eax, dword ptr [eax+32]');
+  A('ret');
+  A('.c3:');
+  A('test byte ptr [eax+2], ' + IntToStr(OF_TYPED));
+  A('jz .czero');
+  A('mov edx, dword ptr [eax+32]');
+  A('mov edx, dword ptr [edx+32]');
+  A('add edx, dword ptr [eax+36]');
+  A('mov eax, edx');
+  A('ret');
+  A('.c2:');
+  A('cmp ecx, $INT');
+  A('ja .czero');
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('.cok:');
+  A('ret');
+  A('.czero:');
+  A('xor eax, eax');
+  A('ret');
+  A('.cd:');
+  For id := 1 To K32_COUNT Do
+    Begin
+      na := 0;
+      j := Pos('@', K32Names[id]);
+      Val(Copy(K32Names[id], j + 1, 3), na, j);
+      na := na Div 4;
+      A('cmp dword ptr [ebp-16], ' + IntToStr(id));
+      A('jne .n' + IntToStr(id));
+      For j := na Downto 1 Do
+        A('push dword ptr [ebp-' + IntToStr(16 + 4 * j) + ']');
+      A('call dword ptr [__imp__' + K32Names[id] + ']');
+      A('jmp .out');
+      A('.n' + IntToStr(id) + ':');
+    End;
+  A('xor eax, eax');
+  A('.out:');
+  A('mov edx, $INT');
+  FEnd;
+  RtGlobal('__k32', RtFuncObj('__k32', '_JSRT_n_k32', 11), RT_T_FUNCTION);
+End;
+
 Procedure RtBinary;
 Begin
   { _JSRT_ab_load(adresse, genre) -> nombre }
@@ -38825,6 +39767,7 @@ Begin
   RtCoroutines;
   RtGlobalBridge(ctx);
   RtBinary;
+  RtSys;
   { bornes de la section .data : racines du ramasse-miettes }
   NewDataSym(ctx, '_JSRT_data_begin', SEC_DATA, 0, 0, DS_RTVAR);
   NewDataSym(ctx, '_JSRT_data_end', SEC_DATA, (ctx.data.dt_size + 7) And Not 7, 0, DS_RTVAR);
@@ -39149,9 +40092,923 @@ Begin
   EmuUnixMs := emu_base_ms;
 End;
 
+{ ---- Appels systeme KERNEL32 simules : fichiers, repertoires, processus, environnement ---- }
+Const
+  EMU_FILES = 64;
+  EMU_FIND = 16;
+  EMU_PIPES = 16;
+Type
+  TEmuPipe = Record
+    used: Boolean;
+    data: Pointer;
+    size, pos: LongInt;
+  End;
+Var
+  emu_fh: Array[1..EMU_FILES] Of File;
+  emu_fused: Array[1..EMU_FILES] Of Boolean;
+  emu_fapp: Array[1..EMU_FILES] Of Boolean;
+  emu_sr: Array[1..EMU_FIND] Of SearchRec;
+  emu_sused: Array[1..EMU_FIND] Of Boolean;
+  emu_pipe: Array[1..EMU_PIPES] Of TEmuPipe;
+  emu_lasterr: LongWord;
+  emu_procexit: LongInt;
+  emu_tmpn: LongInt;
+
+Function EmuWStr(a: LongWord): String;
+Var
+  r: String;
+  c, c2: LongWord;
+  n: LongInt;
+Begin
+  r := '';
+  n := 0;
+  While n < 250 Do
+    Begin
+      c := MemRd(a + 2 * LongWord(n), 2);
+      Inc(n);
+      If c = 0 Then
+        Break;
+      If (c >= $D800) And (c < $DC00) Then
+        Begin
+          c2 := MemRd(a + 2 * LongWord(n), 2);
+          If (c2 >= $DC00) And (c2 < $E000) Then
+            Begin
+              Inc(n);
+              c := $10000 + ((c - $D800) Shl 10) + (c2 - $DC00);
+            End;
+        End;
+      If c < $80 Then
+        r := r + Chr(c)
+      Else If c < $800 Then
+        r := r + Chr($C0 Or (c Shr 6)) + Chr($80 Or (c And $3F))
+      Else If c < $10000 Then
+        r := r + Chr($E0 Or (c Shr 12)) + Chr($80 Or ((c Shr 6) And $3F)) + Chr($80 Or (c And $3F))
+      Else
+        r := r + Chr($F0 Or (c Shr 18)) + Chr($80 Or ((c Shr 12) And $3F)) + Chr($80 Or ((c Shr 6) And $3F)) + Chr($80 Or (c And $3F));
+    End;
+  EmuWStr := r;
+End;
+
+{ Ecrit s (UTF-8) en UTF-16 + zero final dans la memoire simulee (maxc caracteres au plus) ; rend le nombre de caracteres. }
+Function EmuPutW(a: LongWord; Const s: String; maxc: LongWord): LongWord;
+Var
+  i, n: LongWord;
+  c: LongWord;
+Begin
+  i := 1;
+  n := 0;
+  While i <= Length(s) Do
+    Begin
+      c := Ord(s[i]);
+      Inc(i);
+      If (c >= $F0) And (i + 2 <= Length(s) + 1) Then
+        Begin
+          c := ((c And 7) Shl 18) Or ((Ord(s[i]) And $3F) Shl 12) Or ((Ord(s[i + 1]) And $3F) Shl 6) Or (Ord(s[i + 2]) And $3F);
+          Inc(i, 3);
+        End
+      Else If (c >= $E0) And (i + 1 <= Length(s) + 1) Then
+        Begin
+          c := ((c And 15) Shl 12) Or ((Ord(s[i]) And $3F) Shl 6) Or (Ord(s[i + 1]) And $3F);
+          Inc(i, 2);
+        End
+      Else If (c >= $C0) And (i <= Length(s) + 1) Then
+        Begin
+          c := ((c And 31) Shl 6) Or (Ord(s[i]) And $3F);
+          Inc(i);
+        End;
+      If c >= $10000 Then
+        Begin
+          If n + 2 >= maxc Then
+            Break;
+          c := c - $10000;
+          MemWr(a + 2 * n, $D800 + (c Shr 10), 2);
+          MemWr(a + 2 * n + 2, $DC00 + (c And $3FF), 2);
+          Inc(n, 2);
+        End
+      Else
+        Begin
+          If n + 1 >= maxc Then
+            Break;
+          MemWr(a + 2 * n, c, 2);
+          Inc(n);
+        End;
+    End;
+  If maxc > 0 Then
+    MemWr(a + 2 * n, 0, 2);
+  EmuPutW := n;
+End;
+
+{ Date DOS empaquetee -> FILETIME (intervalles de 100 ns depuis 1601). }
+Function EmuFileTime(t: LongInt): Int64;
+Var
+  dt: DateTime;
+  yy, mm, era, yoe, doy, doe, days: Int64;
+Begin
+  UnpackTime(t, dt);
+  yy := dt.Year;
+  mm := dt.Month;
+  If mm <= 2 Then
+    Dec(yy);
+  era := yy Div 400;
+  yoe := yy - era * 400;
+  If dt.Month > 2 Then
+    doy := (153 * (mm - 3) + 2) Div 5 + dt.Day - 1
+  Else
+    doy := (153 * (mm + 9) + 2) Div 5 + dt.Day - 1;
+  doe := yoe * 365 + yoe Div 4 - yoe Div 100 + doy;
+  days := era * 146097 + doe - 719468;
+  EmuFileTime := ((days * 86400 + dt.Hour * 3600 + dt.Min * 60 + dt.Sec + 11644473600) * 10000000);
+End;
+
+Function EmuWinAttr(a: Byte): LongWord;
+Var
+  r: LongWord;
+Begin
+  r := 0;
+  If (a And Directory) <> 0 Then
+    r := r Or $10;
+  If (a And ReadOnly) <> 0 Then
+    r := r Or 1;
+  If r = 0 Then
+    r := $80;
+  EmuWinAttr := r;
+End;
+
+Procedure EmuPut64(a: LongWord; v: Int64);
+Begin
+  MemWr(a, LongWord(v And $FFFFFFFF), 4);
+  MemWr(a + 4, LongWord((v Shr 32) And $FFFFFFFF), 4);
+End;
+
+Procedure EmuFillFind(p: LongWord; Const sr: SearchRec);
+Var
+  t: Int64;
+Begin
+  t := EmuFileTime(sr.Time);
+  MemWr(p, EmuWinAttr(sr.Attr), 4);
+  EmuPut64(p + 4, t);
+  EmuPut64(p + 12, t);
+  EmuPut64(p + 20, t);
+  MemWr(p + 28, 0, 4);
+  MemWr(p + 32, LongWord(sr.Size), 4);
+  EmuPutW(p + 44, sr.Name, 260);
+End;
+
+Function EmuDirExists(Const name: String): Boolean;
+Var
+  sr: SearchRec;
+Begin
+  FindFirst(name, AnyFile, sr);
+  EmuDirExists := (DosError = 0) And ((sr.Attr And Directory) <> 0);
+  FindClose(sr);
+End;
+
+Function EmuFileExists(Const name: String): Boolean;
+Var
+  sr: SearchRec;
+Begin
+  FindFirst(name, AnyFile, sr);
+  EmuFileExists := (DosError = 0) And ((sr.Attr And Directory) = 0);
+  FindClose(sr);
+End;
+
+Function EmuNewFile: LongInt;
+Var
+  i: LongInt;
+Begin
+  EmuNewFile := 0;
+  For i := 1 To EMU_FILES Do
+    If Not emu_fused[i] Then
+      Begin
+        EmuNewFile := i;
+        Exit;
+      End;
+End;
+
+{ Lecture / ecriture sur un descripteur simule (fichier >= 100, tube >= 300) ; rend le nombre d'octets. }
+Function EmuHRead(h, buf, n: LongWord): LongInt;
+Var
+  fi, got, k: LongInt;
+  tmp: Array[0..4095] Of Byte;
+  cnt: LongInt;
+  done: LongInt;
+Begin
+  EmuHRead := -1;
+  done := 0;
+  If (h >= 300) And (h < 300 + EMU_PIPES) Then
+    Begin
+      fi := h - 299;
+      If Not emu_pipe[fi].used Then
+        Exit;
+      While (done < LongInt(n)) And (emu_pipe[fi].pos < emu_pipe[fi].size) Do
+        Begin
+          MemWr(buf + LongWord(done), PByte(emu_pipe[fi].data)[emu_pipe[fi].pos], 1);
+          Inc(emu_pipe[fi].pos);
+          Inc(done);
+        End;
+      EmuHRead := done;
+      Exit;
+    End;
+  If (h < 100) Or (h >= 100 + EMU_FILES) Then
+    Exit;
+  fi := h - 99;
+  If Not emu_fused[fi] Then
+    Exit;
+  While done < LongInt(n) Do
+    Begin
+      cnt := n - LongWord(done);
+      If cnt > 4096 Then
+        cnt := 4096;
+      got := 0;
+      {$I-}
+      BlockRead(emu_fh[fi], tmp, cnt, got);
+      {$I-}
+      If IOResult <> 0 Then
+        got := 0;
+      For k := 0 To got - 1 Do
+        MemWr(buf + LongWord(done + k), tmp[k], 1);
+      Inc(done, got);
+      If got < cnt Then
+        Break;
+    End;
+  EmuHRead := done;
+End;
+
+Function EmuHWrite(h, buf, n: LongWord): LongInt;
+Var
+  fi, k, cnt, done, wr: LongInt;
+  tmp: Array[0..4095] Of Byte;
+  np: Pointer;
+Begin
+  EmuHWrite := -1;
+  done := 0;
+  If (h >= 300) And (h < 300 + EMU_PIPES) Then
+    Begin
+      fi := h - 299;
+      If Not emu_pipe[fi].used Then
+        Exit;
+      ReallocMem(emu_pipe[fi].data, emu_pipe[fi].size + LongInt(n) + 1);
+      For k := 0 To LongInt(n) - 1 Do
+        PByte(emu_pipe[fi].data)[emu_pipe[fi].size + k] := MemRd(buf + LongWord(k), 1);
+      Inc(emu_pipe[fi].size, n);
+      np := emu_pipe[fi].data;
+      EmuHWrite := n;
+      Exit;
+    End;
+  If (h < 100) Or (h >= 100 + EMU_FILES) Then
+    Exit;
+  fi := h - 99;
+  If Not emu_fused[fi] Then
+    Exit;
+  {$I-}
+  If emu_fapp[fi] Then
+    Seek(emu_fh[fi], FileSize(emu_fh[fi]));
+  {$I-}
+  While done < LongInt(n) Do
+    Begin
+      cnt := n - LongWord(done);
+      If cnt > 4096 Then
+        cnt := 4096;
+      For k := 0 To cnt - 1 Do
+        tmp[k] := MemRd(buf + LongWord(done + k), 1);
+      wr := 0;
+      {$I-}
+      BlockWrite(emu_fh[fi], tmp, cnt, wr);
+      {$I-}
+      If IOResult <> 0 Then
+        wr := 0;
+      Inc(done, wr);
+      If wr < cnt Then
+        Break;
+    End;
+  EmuHWrite := done;
+End;
+
+{ Fichier du tube d'entree/sortie de processus : charge un fichier hote dans un tube. }
+Procedure EmuLoadPipe(pi: LongInt; Const fname: String);
+Var
+  f: File;
+  sz, got: LongInt;
+Begin
+  Assign(f, fname);
+  {$I-}
+  FileMode := 0;
+  Reset(f, 1);
+  {$I-}
+  If IOResult <> 0 Then
+    Exit;
+  sz := FileSize(f);
+  ReallocMem(emu_pipe[pi].data, sz + 1);
+  got := 0;
+  If sz > 0 Then
+    BlockRead(f, emu_pipe[pi].data^, sz, got);
+  emu_pipe[pi].size := got;
+  emu_pipe[pi].pos := 0;
+  Close(f);
+  Erase(f);
+End;
+
+Procedure EmuSys(i: LongInt);
+Var
+  esp, a1, a2, a3, a4, a5, a6, a7: LongWord;
+  n: LongWord;
+  s, s2, cmd: String;
+  fi, k, j, got: LongInt;
+  f: File;
+  sr: SearchRec;
+  t: Int64;
+  fl: LongWord;
+  buf: Array[0..4095] Of Byte;
+  tf: Text;
+  hout, herr, hin: LongWord;
+  base: String;
+Begin
+  esp := emu_reg[Ord(R_ESP)];
+  a1 := MemRd(esp + 4, 4);
+  a2 := MemRd(esp + 8, 4);
+  a3 := MemRd(esp + 12, 4);
+  a4 := MemRd(esp + 16, 4);
+  a5 := MemRd(esp + 20, 4);
+  a6 := MemRd(esp + 24, 4);
+  a7 := MemRd(esp + 28, 4);
+  n := 0;
+  emu_reg[Ord(R_EAX)] := 0;
+  Case i Of
+    1: { CreateFileW(nom, acces, partage, securite, disposition, drapeaux, modele) }
+      Begin
+        n := 28;
+        s := EmuWStr(a1);
+        emu_reg[Ord(R_EAX)] := $FFFFFFFF;
+        fi := EmuNewFile;
+        If (fi = 0) Then
+          emu_lasterr := 4
+        Else If EmuDirExists(s) Then
+          emu_lasterr := 5
+        Else
+          Begin
+            Assign(emu_fh[fi], s);
+            fl := a2;
+            k := 0;
+            Case a5 Of
+              1: If EmuFileExists(s) Then k := 80 Else k := -1;
+              2: k := -1;
+              3: If Not EmuFileExists(s) Then k := 2 Else k := -2;
+              4: If EmuFileExists(s) Then k := -2 Else k := -1;
+              5: If Not EmuFileExists(s) Then k := 2 Else k := -1;
+            End;
+            If k > 0 Then
+              emu_lasterr := k
+            Else
+              Begin
+                {$I-}
+                If k = -1 Then
+                  Rewrite(emu_fh[fi], 1)
+                Else
+                  Begin
+                    If (fl And $40000000) <> 0 Then
+                      FileMode := 2
+                    Else If (fl And 4) <> 0 Then
+                      FileMode := 2
+                    Else
+                      FileMode := 0;
+                    Reset(emu_fh[fi], 1);
+                  End;
+                {$I-}
+                If IOResult <> 0 Then
+                  Begin
+                    emu_lasterr := 5;
+                    If Not EmuDirExists(s) Then
+                      If Not EmuFileExists(s) Then
+                        emu_lasterr := 3;
+                  End
+                Else
+                  Begin
+                    emu_fused[fi] := True;
+                    emu_fapp[fi] := ((fl And $40000000) = 0) And ((fl And 4) <> 0);
+                    emu_reg[Ord(R_EAX)] := 99 + fi;
+                  End;
+              End;
+          End;
+      End;
+    2: { CloseHandle }
+      Begin
+        n := 4;
+        emu_reg[Ord(R_EAX)] := 1;
+        If (a1 >= 100) And (a1 < 100 + EMU_FILES) Then
+          Begin
+            fi := a1 - 99;
+            If emu_fused[fi] Then
+              Begin
+                {$I-}
+                Close(emu_fh[fi]);
+                {$I-}
+                If IOResult <> 0 Then ;
+                emu_fused[fi] := False;
+              End;
+          End;
+      End;
+    5: { SetFilePointer(h, bas, ptrhaut, methode) }
+      Begin
+        n := 16;
+        emu_reg[Ord(R_EAX)] := $FFFFFFFF;
+        If (a1 >= 100) And (a1 < 100 + EMU_FILES) Then
+          Begin
+            fi := a1 - 99;
+            {$I-}
+            Case a4 Of
+              0: Seek(emu_fh[fi], LongInt(a2));
+              1: Seek(emu_fh[fi], FilePos(emu_fh[fi]) + LongInt(a2));
+            Else
+              Seek(emu_fh[fi], FileSize(emu_fh[fi]) + LongInt(a2));
+            End;
+            {$I-}
+            If IOResult = 0 Then
+              emu_reg[Ord(R_EAX)] := FilePos(emu_fh[fi]);
+          End;
+      End;
+    6: { GetFileSize(h, ptrhaut) }
+      Begin
+        n := 8;
+        emu_reg[Ord(R_EAX)] := $FFFFFFFF;
+        If (a1 >= 100) And (a1 < 100 + EMU_FILES) Then
+          Begin
+            emu_reg[Ord(R_EAX)] := FileSize(emu_fh[a1 - 99]);
+            If a2 <> 0 Then
+              MemWr(a2, 0, 4);
+          End;
+      End;
+    7: { DeleteFileW }
+      Begin
+        n := 4;
+        s := EmuWStr(a1);
+        If Not EmuFileExists(s) Then
+          emu_lasterr := 2
+        Else
+          Begin
+            Assign(f, s);
+            {$I-}
+            Erase(f);
+            {$I-}
+            If IOResult = 0 Then
+              emu_reg[Ord(R_EAX)] := 1
+            Else
+              emu_lasterr := 5;
+          End;
+      End;
+    8: { CreateDirectoryW }
+      Begin
+        n := 8;
+        s := EmuWStr(a1);
+        If EmuDirExists(s) Or EmuFileExists(s) Then
+          emu_lasterr := 183
+        Else
+          Begin
+            {$I-}
+            MkDir(s);
+            {$I-}
+            If IOResult = 0 Then
+              emu_reg[Ord(R_EAX)] := 1
+            Else
+              emu_lasterr := 3;
+          End;
+      End;
+    9: { RemoveDirectoryW }
+      Begin
+        n := 4;
+        s := EmuWStr(a1);
+        If Not EmuDirExists(s) Then
+          emu_lasterr := 3
+        Else
+          Begin
+            {$I-}
+            RmDir(s);
+            {$I-}
+            If IOResult = 0 Then
+              emu_reg[Ord(R_EAX)] := 1
+            Else
+              emu_lasterr := 145;
+          End;
+      End;
+    10: { MoveFileW }
+      Begin
+        n := 8;
+        s := EmuWStr(a1);
+        s2 := EmuWStr(a2);
+        If Not (EmuFileExists(s) Or EmuDirExists(s)) Then
+          emu_lasterr := 2
+        Else If EmuFileExists(s2) Or EmuDirExists(s2) Then
+          emu_lasterr := 183
+        Else
+          Begin
+            Assign(f, s);
+            {$I-}
+            Rename(f, s2);
+            {$I-}
+            If IOResult = 0 Then
+              emu_reg[Ord(R_EAX)] := 1
+            Else
+              emu_lasterr := 5;
+          End;
+      End;
+    11: { CopyFileW(src, dst, echec si existe) }
+      Begin
+        n := 12;
+        s := EmuWStr(a1);
+        s2 := EmuWStr(a2);
+        If Not EmuFileExists(s) Then
+          emu_lasterr := 2
+        Else If (a3 <> 0) And EmuFileExists(s2) Then
+          emu_lasterr := 80
+        Else
+          Begin
+            Assign(f, s);
+            Assign(emu_fh[EMU_FILES], s2);
+            {$I-}
+            FileMode := 0;
+            Reset(f, 1);
+            Rewrite(emu_fh[EMU_FILES], 1);
+            {$I-}
+            If IOResult <> 0 Then
+              emu_lasterr := 5
+            Else
+              Begin
+                {$I-}
+                Repeat
+                  got := 0;
+                  BlockRead(f, buf, 4096, got);
+                  If got > 0 Then
+                    BlockWrite(emu_fh[EMU_FILES], buf, got);
+                Until got < 4096;
+                Close(f);
+                Close(emu_fh[EMU_FILES]);
+                {$I-}
+                If IOResult <> 0 Then ;
+                emu_reg[Ord(R_EAX)] := 1;
+              End;
+          End;
+      End;
+    12: { GetFileAttributesExW(nom, niveau, ptr) }
+      Begin
+        n := 12;
+        s := EmuWStr(a1);
+        FindFirst(s, AnyFile, sr);
+        If DosError <> 0 Then
+          emu_lasterr := 2
+        Else
+          Begin
+            t := EmuFileTime(sr.Time);
+            MemWr(a3, EmuWinAttr(sr.Attr), 4);
+            EmuPut64(a3 + 4, t);
+            EmuPut64(a3 + 12, t);
+            EmuPut64(a3 + 20, t);
+            MemWr(a3 + 28, 0, 4);
+            MemWr(a3 + 32, LongWord(sr.Size), 4);
+            emu_reg[Ord(R_EAX)] := 1;
+          End;
+        FindClose(sr);
+      End;
+    36: { GetFileAttributesW(nom) }
+      Begin
+        n := 4;
+        s := EmuWStr(a1);
+        FindFirst(s, AnyFile, sr);
+        If DosError <> 0 Then
+          Begin
+            emu_lasterr := 2;
+            emu_reg[Ord(R_EAX)] := $FFFFFFFF;
+          End
+        Else
+          emu_reg[Ord(R_EAX)] := EmuWinAttr(sr.Attr);
+        FindClose(sr);
+      End;
+    13: { FindFirstFileW(motif, ptr) }
+      Begin
+        n := 8;
+        s := EmuWStr(a1);
+        emu_reg[Ord(R_EAX)] := $FFFFFFFF;
+        fi := 0;
+        For k := 1 To EMU_FIND Do
+          If (fi = 0) And Not emu_sused[k] Then
+            fi := k;
+        If fi = 0 Then
+          emu_lasterr := 4
+        Else
+          Begin
+            FindFirst(s, AnyFile, emu_sr[fi]);
+            If DosError <> 0 Then
+              Begin
+                emu_lasterr := 2;
+                FindClose(emu_sr[fi]);
+              End
+            Else
+              Begin
+                emu_sused[fi] := True;
+                EmuFillFind(a2, emu_sr[fi]);
+                emu_reg[Ord(R_EAX)] := 199 + fi;
+              End;
+          End;
+      End;
+    14: { FindNextFileW(h, ptr) }
+      Begin
+        n := 8;
+        If (a1 >= 200) And (a1 < 200 + EMU_FIND) Then
+          Begin
+            fi := a1 - 199;
+            FindNext(emu_sr[fi]);
+            If DosError = 0 Then
+              Begin
+                EmuFillFind(a2, emu_sr[fi]);
+                emu_reg[Ord(R_EAX)] := 1;
+              End
+            Else
+              emu_lasterr := 18;
+          End;
+      End;
+    15: { FindClose }
+      Begin
+        n := 4;
+        emu_reg[Ord(R_EAX)] := 1;
+        If (a1 >= 200) And (a1 < 200 + EMU_FIND) Then
+          Begin
+            fi := a1 - 199;
+            If emu_sused[fi] Then
+              Begin
+                FindClose(emu_sr[fi]);
+                emu_sused[fi] := False;
+              End;
+          End;
+      End;
+    16: { GetCurrentDirectoryW(taille, tampon) }
+      Begin
+        n := 8;
+        GetDir(0, s);
+        If LongWord(Length(s)) + 1 > a1 Then
+          emu_reg[Ord(R_EAX)] := Length(s) + 1
+        Else
+          emu_reg[Ord(R_EAX)] := EmuPutW(a2, s, a1);
+      End;
+    24: { SetCurrentDirectoryW }
+      Begin
+        n := 4;
+        s := EmuWStr(a1);
+        {$I-}
+        ChDir(s);
+        {$I-}
+        If IOResult = 0 Then
+          emu_reg[Ord(R_EAX)] := 1
+        Else
+          emu_lasterr := 2;
+      End;
+    17: { GetEnvironmentVariableW(nom, tampon, taille) }
+      Begin
+        n := 12;
+        s := EmuWStr(a1);
+        s2 := GetEnv(s);
+        If s2 = '' Then
+          emu_lasterr := 203
+        Else If LongWord(Length(s2)) + 1 > a3 Then
+          emu_reg[Ord(R_EAX)] := Length(s2) + 1
+        Else
+          emu_reg[Ord(R_EAX)] := EmuPutW(a2, s2, a3);
+      End;
+    35: { SetEnvironmentVariableW }
+      Begin
+        n := 8;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    18: { GetEnvironmentStringsW() : bloc NOM=VALEUR en UTF-16 }
+      Begin
+        n := 0;
+        a2 := emu_brk;
+        emu_brk := emu_brk + $10000;
+        a3 := 0;
+        For k := 1 To EnvCount Do
+          Begin
+            s := EnvStr(k);
+            If a3 + 2 * LongWord(Length(s)) + 4 < $F000 Then
+              a3 := a3 + 2 * (EmuPutW(a2 + a3, s, 2000) + 1);
+          End;
+        MemWr(a2 + a3, 0, 2);
+        emu_reg[Ord(R_EAX)] := a2;
+      End;
+    34: { FreeEnvironmentStringsW }
+      Begin
+        n := 4;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    19: { CreatePipe(ptrlecture, ptrecriture, securite, taille) }
+      Begin
+        n := 16;
+        fi := 0;
+        For k := 1 To EMU_PIPES Do
+          If (fi = 0) And Not emu_pipe[k].used Then
+            fi := k;
+        If fi <> 0 Then
+          Begin
+            emu_pipe[fi].used := True;
+            emu_pipe[fi].size := 0;
+            emu_pipe[fi].pos := 0;
+            MemWr(a1, 299 + fi, 4);
+            MemWr(a2, 299 + fi, 4);
+            emu_reg[Ord(R_EAX)] := 1;
+          End;
+      End;
+    26: { SetHandleInformation }
+      Begin
+        n := 12;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    27: { PeekNamedPipe(h, tampon, taille, lus, disponible, restant) }
+      Begin
+        n := 24;
+        If (a1 >= 300) And (a1 < 300 + EMU_PIPES) Then
+          Begin
+            fi := a1 - 299;
+            If a5 <> 0 Then
+              MemWr(a5, emu_pipe[fi].size - emu_pipe[fi].pos, 4);
+            emu_reg[Ord(R_EAX)] := 1;
+          End;
+      End;
+    20: { CreateProcessW(app, ligne, sa, sa, heritage, drapeaux, env, repertoire, startup, info) }
+      Begin
+        n := 40;
+        s := EmuWStr(a2);
+        If s = '' Then
+          s := EmuWStr(a1);
+        hin := 0;
+        hout := 1;
+        herr := 2;
+        { startupinfo = 9e argument }
+        fl := MemRd(esp + 36, 4);
+        If (MemRd(fl + 44, 4) And $100) <> 0 Then
+          Begin
+            hin := MemRd(fl + 56, 4);
+            hout := MemRd(fl + 60, 4);
+            herr := MemRd(fl + 64, 4);
+          End;
+        cmd := s;
+        j := Pos(' /c ', cmd);
+        If j > 0 Then
+          Begin
+            cmd := Copy(cmd, j + 4, 250);
+            If (Length(cmd) >= 2) And (cmd[1] = '"') And (cmd[Length(cmd)] = '"') Then
+              cmd := Copy(cmd, 2, Length(cmd) - 2);
+          End;
+        Inc(emu_tmpn);
+        base := '/tmp/jscw_emu_' + IntToStr(emu_tmpn);
+        Assign(tf, base + '.sh');
+        Rewrite(tf);
+        Write(tf, cmd);
+        If (hout >= 300) And (hout < 300 + EMU_PIPES) Then
+          Write(tf, ' >' + base + '.out')
+        Else If hout = 2 Then
+          Write(tf, ' >&2');
+        If (herr >= 300) And (herr < 300 + EMU_PIPES) Then
+          Write(tf, ' 2>' + base + '.err')
+        Else If herr = 1 Then
+          Write(tf, ' 2>&1');
+        If (hin >= 300) And (hin < 300 + EMU_PIPES) Then
+          Begin
+            Assign(f, base + '.in');
+            Rewrite(f, 1);
+            If emu_pipe[hin - 299].size > 0 Then
+              BlockWrite(f, emu_pipe[hin - 299].data^, emu_pipe[hin - 299].size);
+            Close(f);
+            Write(tf, ' <' + base + '.in');
+          End;
+        Writeln(tf);
+        Close(tf);
+        Flush(Output);
+        Exec('/bin/sh', base + '.sh');
+        emu_procexit := DosExitCode;
+        If (hout >= 300) And (hout < 300 + EMU_PIPES) Then
+          EmuLoadPipe(hout - 299, base + '.out');
+        If (herr >= 300) And (herr < 300 + EMU_PIPES) Then
+          EmuLoadPipe(herr - 299, base + '.err');
+        Assign(f, base + '.sh');
+        Erase(f);
+        Assign(f, base + '.in');
+        {$I-}
+        Erase(f);
+        {$I-}
+        If IOResult <> 0 Then ;
+        k := MemRd(esp + 40, 4);
+        MemWr(k, 400, 4);
+        MemWr(k + 4, 401, 4);
+        MemWr(k + 8, 4243, 4);
+        MemWr(k + 12, 4244, 4);
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    21: { WaitForSingleObject }
+      Begin
+        n := 8;
+        emu_reg[Ord(R_EAX)] := 0;
+      End;
+    22: { GetExitCodeProcess(h, ptr) }
+      Begin
+        n := 8;
+        MemWr(a2, LongWord(emu_procexit), 4);
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    23: { GetTimeZoneInformation(ptr) : UTC }
+      Begin
+        n := 4;
+        For k := 0 To 42 Do
+          MemWr(a1 + 4 * LongWord(k), 0, 4);
+        emu_reg[Ord(R_EAX)] := 0;
+      End;
+    28: { GetLastError }
+      Begin
+        n := 0;
+        emu_reg[Ord(R_EAX)] := emu_lasterr;
+      End;
+    29: { SetEndOfFile }
+      Begin
+        n := 4;
+        If (a1 >= 100) And (a1 < 100 + EMU_FILES) Then
+          Begin
+            {$I-}
+            Truncate(emu_fh[a1 - 99]);
+            {$I-}
+            If IOResult = 0 Then
+              emu_reg[Ord(R_EAX)] := 1;
+          End;
+      End;
+    30: { FlushFileBuffers }
+      Begin
+        n := 4;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    31: { SetFileAttributesW }
+      Begin
+        n := 8;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    32: { GetTempPathW(taille, tampon) }
+      Begin
+        n := 8;
+        emu_reg[Ord(R_EAX)] := EmuPutW(a2, '/tmp/', a1);
+      End;
+    33: { GetFullPathNameW(nom, taille, tampon, ptrfichier) }
+      Begin
+        n := 16;
+        s := EmuWStr(a1);
+        If (s = '') Or (s[1] <> '/') Then
+          Begin
+            GetDir(0, s2);
+            s := s2 + '/' + s;
+          End;
+        emu_reg[Ord(R_EAX)] := EmuPutW(a3, s, a2);
+      End;
+    37: { SetFileTime }
+      Begin
+        n := 16;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    38: { GetCurrentProcessId }
+      Begin
+        n := 0;
+        emu_reg[Ord(R_EAX)] := 4242;
+      End;
+    39: { GetFileInformationByHandle }
+      Begin
+        n := 8;
+      End;
+    40: { TerminateProcess }
+      Begin
+        n := 8;
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    41: { RtlMoveMemory(dst, src, n) }
+      Begin
+        n := 12;
+        For k := 0 To LongInt(a3) - 1 Do
+          MemWr(a1 + LongWord(k), MemRd(a2 + LongWord(k), 1), 1);
+      End;
+    42: { lstrlenW(ptr) }
+      Begin
+        n := 4;
+        k := 0;
+        While (MemRd(a1 + 2 * LongWord(k), 2) <> 0) And Not emu_halt Do
+          Inc(k);
+        emu_reg[Ord(R_EAX)] := k;
+      End;
+  Else
+    EmuFault('appel systeme inconnu ' + IntToStr(i));
+  End;
+  emu_reg[Ord(R_ESP)] := emu_reg[Ord(R_ESP)] + 4 + n;
+  If Not emu_halt Then
+    Begin
+      emu_pc := (MemRd(esp, 4) - EMU_CODE) Div 4;
+      If MemRd(esp, 4) = EMU_HALTADDR Then
+        emu_halt := True;
+    End;
+End;
+
 Procedure EmuTrap(id: LongInt);
 Var
   esp, a1, a2, a3, a4, n, i: LongWord;
+  k: LongInt;
   c: Byte;
   ch: Char;
   s: String;
@@ -39163,6 +41020,11 @@ Begin
   a3 := MemRd(esp + 12, 4);
   a4 := MemRd(esp + 16, 4);
   n := 0;
+  If id >= 100 Then
+    Begin
+      EmuSys(id - 100);
+      Exit;
+    End;
   Case id Of
     1: { VirtualAlloc(adresse, taille, type, protection) }
       Begin
@@ -39197,31 +41059,49 @@ Begin
     4: { WriteFile(handle, tampon, nombre, ecrits, recouvrement) }
       Begin
         n := 20;
-        s := '';
-        i := 0;
-        While i < a3 Do
+        If a1 >= 100 Then
           Begin
-            c := MemRd(a2 + i, 1);
-            If c <> 13 Then
-              s := s + Chr(c);
-            If Length(s) >= 200 Then
+            k := EmuHWrite(a1, a2, a3);
+            If k < 0 Then
               Begin
-                If a1 = 2 Then
-                  Write(ErrOutput, s)
-                Else
-                  Write(s);
-                s := '';
+                emu_lasterr := 6;
+                emu_reg[Ord(R_EAX)] := 0;
+              End
+            Else
+              Begin
+                If a4 <> 0 Then
+                  MemWr(a4, LongWord(k), 4);
+                emu_reg[Ord(R_EAX)] := 1;
               End;
-            Inc(i);
-          End;
-        If a1 = 2 Then
-          Write(ErrOutput, s)
+          End
         Else
-          Write(s);
-        Flush(Output);
-        If a4 <> 0 Then
-          MemWr(a4, a3, 4);
-        emu_reg[Ord(R_EAX)] := 1;
+          Begin
+            s := '';
+            i := 0;
+            While i < a3 Do
+              Begin
+                c := MemRd(a2 + i, 1);
+                If c <> 13 Then
+                  s := s + Chr(c);
+                If Length(s) >= 200 Then
+                  Begin
+                    If a1 = 2 Then
+                      Write(ErrOutput, s)
+                    Else
+                      Write(s);
+                    s := '';
+                  End;
+                Inc(i);
+              End;
+            If a1 = 2 Then
+              Write(ErrOutput, s)
+            Else
+              Write(s);
+            Flush(Output);
+            If a4 <> 0 Then
+              MemWr(a4, a3, 4);
+            emu_reg[Ord(R_EAX)] := 1;
+          End;
       End;
     6: { GetTickCount() }
       Begin
@@ -39231,19 +41111,37 @@ Begin
     5: { ReadFile(handle, tampon, nombre, lus, recouvrement) : lit l'entree standard }
       Begin
         n := 20;
-        i := 0;
-        If a1 = 0 Then
-          While (i < a3) And Not Eof(Input) Do
-            Begin
-              Read(Input, ch);
-              MemWr(a2 + i, Ord(ch), 1);
-              Inc(i);
-              If ch = #10 Then
-                Break;
-            End;
-        If a4 <> 0 Then
-          MemWr(a4, i, 4);
-        emu_reg[Ord(R_EAX)] := 1;
+        If a1 >= 100 Then
+          Begin
+            k := EmuHRead(a1, a2, a3);
+            If k < 0 Then
+              Begin
+                emu_lasterr := 6;
+                emu_reg[Ord(R_EAX)] := 0;
+              End
+            Else
+              Begin
+                If a4 <> 0 Then
+                  MemWr(a4, LongWord(k), 4);
+                emu_reg[Ord(R_EAX)] := 1;
+              End;
+          End
+        Else
+          Begin
+            i := 0;
+            If a1 = 0 Then
+              While (i < a3) And Not Eof(Input) Do
+                Begin
+                  Read(Input, ch);
+                  MemWr(a2 + i, Ord(ch), 1);
+                  Inc(i);
+                  If ch = #10 Then
+                    Break;
+                End;
+            If a4 <> 0 Then
+              MemWr(a4, i, 4);
+            emu_reg[Ord(R_EAX)] := 1;
+          End;
       End;
     8: { GetSystemTimeAsFileTime(ptr) : horloge simulee (heure de depart + temps ecoule) }
       Begin
@@ -39979,7 +41877,7 @@ End;
 
 Function RunEmulator(Var ctx: TCompilerContext): LongInt;
 Var
-  i, start_idx: LongInt;
+  i, j, start_idx: LongInt;
   nm: TString;
   d: LongInt;
   rdsz, a: LongWord;
@@ -40043,6 +41941,10 @@ Begin
             Else If nm = '__imp__GetSystemTimeAsFileTime@4' Then a := 8
             Else If nm = '__imp__Sleep@4' Then a := 9
             Else If nm = '__imp__VirtualFree@12' Then a := 10;
+            If a = 0 Then
+              For j := 1 To K32_COUNT Do
+                If nm = '__imp__' + K32Names[j] Then
+                  a := 100 + j;
             If a <> 0 Then
               Begin
                 MemWr(emu_iat_next, EMU_TRAP + 4 * a, 4);
@@ -42311,7 +44213,7 @@ Begin
 {$ENDIF}
   {$I-}
   Rewrite(f);
-  {$I+}
+  {$I-}
   io := IOResult;
   If io <> 0 Then
     Begin
@@ -42340,7 +44242,7 @@ Begin
   Assign(f, name);
   {$I-}
   Reset(f, 1);
-  {$I+}
+  {$I-}
   io := IOResult;
   If io = 0 Then
     Begin
@@ -42360,7 +44262,7 @@ Begin
   Assign(f, name);
   {$I-}
   Erase(f);
-  {$I+}
+  {$I-}
   io := IOResult;
 End;
 
@@ -42373,7 +44275,7 @@ Begin
   Assign(f, name);
   {$I-}
   Reset(f, 1);
-  {$I+}
+  {$I-}
   io := IOResult;
   If io = 0 Then
     Begin
@@ -42394,7 +44296,7 @@ Begin
   Assign(f, name);
   {$I-}
   Reset(f, 1);
-  {$I+}
+  {$I-}
   io := IOResult;
   If io <> 0 Then
     Exit;
@@ -42485,7 +44387,7 @@ Begin
   Assign(f, name);
   {$I-}
   Reset(f);
-  {$I+}
+  {$I-}
   io := IOResult;
   If io <> 0 Then
     Exit;
@@ -42493,7 +44395,7 @@ Begin
     Begin
       {$I-}
       Readln(f, s);
-      {$I+}
+      {$I-}
       io := IOResult;
       Inc(ht_nout);
       ht_outP(ht_out, ht_nout)^ := HtTrim(s);
@@ -42535,7 +44437,7 @@ Begin
   Assign(f, name);
   {$I-}
   Reset(f);
-  {$I+}
+  {$I-}
   io := IOResult;
   If io <> 0 Then
     Exit;
@@ -42543,7 +44445,7 @@ Begin
     Begin
       {$I-}
       Readln(f, s);
-      {$I+}
+      {$I-}
       io := IOResult;
       p := Pos('// attendu', s);
       If p > 0 Then

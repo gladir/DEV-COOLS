@@ -23,6 +23,7 @@ function __init_eval() {}
 function __init_web() {}
 function __init_bin() {}
 function __init_proxy() {}
+function __init_fs() {}
 var __proxyOp, __Proxy;
 var __global;
 function __i_init() {
@@ -249,5 +250,6 @@ function __i_init() {
   __init_web();
   __init_bin();
   __init_proxy();
+  __init_fs();
   __init_globals();
 }
