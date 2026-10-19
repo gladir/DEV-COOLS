@@ -32,7 +32,8 @@
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
          instructions et blocs, boucle for, goto et switch, tableaux,
-         procedures, appel par nom) ; TODO 18 a 25 a faire.
+         procedures, appel par nom, entrees/sorties et fonctions
+         standard) ; TODO 19 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -610,7 +611,7 @@
               TODOs 12 a 16 rendent les memes resultats ; 5 erreurs
               diagnostiquees
 
-  TODO 18 - ENTREES/SORTIES ET FONCTIONS STANDARD [A FAIRE]
+  TODO 18 - ENTREES/SORTIES ET FONCTIONS STANDARD [IMPLEMENTE]
             Sorties avec numero de canal (1 = sortie standard) :
               outstring(c, chaine), outinteger(c, n), outreal(c, x),
               outboolean(c, b), newline(c), print(chaine) (raccourci de
@@ -623,9 +624,41 @@
             Appels vers les routines du runtime avec arguments en registres
             Contrat avec le runtime (TODO 22) : WRITESTR, WRITEZ,
               WRITEINT, WRITEREAL, WRITEBOOL, NEWLINE, READINT, READREAL,
-              POW, EXP, FLOOR, RTOI, RSIGN, ISQRT, CHKIDX, DIVZERO, ALLOC,
-              FREE
+              POW, RPOW, EXP, FLOOR, RTOI, RSIGN, CHKIDX, DIVZERO, ALLOC,
+              FREE, SETCHAN
             Verification : test_io.a60, math.a60, hello.a60
+            Realise : ParseIO (procedures sans valeur outstring, outinteger,
+              outreal, outboolean, newline, print, ininteger, inreal,
+              inboolean, sysact ; une procedure du programme de meme nom
+              reste prioritaire) ; arguments verifies et convertis
+              (texte pour outstring / print, integer / real / Boolean
+              pour les autres, variable du bon type pour les lectures,
+              parametre par nom marque ecrit) ; newline sans parentheses
+              accepte ; sysact(...) est un appel sans effet ; canal : 1 =
+              sortie standard, 2 = erreur standard (SETCHAN, avec retour
+              a la sortie standard), les entrees ignorent le canal ;
+              GenIO : chaine constante par WRITESTR (adresse, longueur),
+              autre texte par WRITEZ, WRITEINT, WRITEREAL (ST0),
+              WRITEBOOL, NEWLINE, READINT, READREAL, READBOOL
+            Fonctions standard (ParseIntrinsic, GenIntrinsic) : abs (type
+              de l'argument), sign et entier (integer), sqrt, sin, cos,
+              arctan, ln, exp (real, x87 : FSQRT, FSIN, FCOS, FPATAN,
+              FYL2X, runtime EXP) ; argument constant replie a la
+              compilation ; entier d'un integer est l'identite
+            Verifie : les 32 exemples SAMPLES\ALGOL60 autres que
+              test_switch compilent et s'executent (assemblage ML.PAS avec
+              le runtime de test) ; les sorties lues (hello, math, procs,
+              blocks, forloop, own, test_callbyname, test_procedures,
+              test_runtime...) correspondent aux sources ; fonctions
+              standard et lectures verifiees sur 10 programmes ; 10 erreurs
+              diagnostiquees
+            Extensions tolerees par les exemples : etiquettes jamais
+              definies (test_lex.a60) = avertissement et saut vers la fin
+              du programme ; valeur affectee au nom d'une procedure sans
+              type (ignoree, avec avertissement)
+            Remarque : test_switch.a60 boucle indefiniment par construction
+              (done: est suivi de x := 2 ; GOTO sw[x] qui revient a L2) ;
+              son test doit etre borne par un delai (TODO 25)
 
   TODO 19 - ENCODEUR BINAIRE x86-32 [A FAIRE]
             Encoder chaque instruction du code interne en octets :
@@ -695,8 +728,9 @@
               figure dans le listing .ASM qui devient autonome
             Routines : WRITESTR, WRITEZ, WRITEINT, WRITEREAL, WRITEBOOL,
               NEWLINE, READINT, READREAL, POW, RPOW, EXP, FLOOR, RTOI,
-              RSIGN, ISQRT, CHKIDX, DIVZERO, ALLOC, FREE (blocs dont les
-              tableaux sont liberes a la sortie)
+              RSIGN, CHKIDX, DIVZERO, ALLOC, FREE (blocs dont les
+              tableaux sont liberes a la sortie), SETCHAN (canal de
+              sortie : 2 = erreur standard)
             Messages d'erreur d'execution (indice hors bornes, division
               par zero) et code de sortie 1
             Formats a documenter : entier decimal, reel en notation
@@ -752,9 +786,11 @@
               .ASM (-asm), verifier que -asm est optionnel
             Controler l'encodage avec objdump et les erreurs avec des
               programmes fautifs (message, code de retour, aucun fichier)
-            Cas speciaux : test_lex.a60 (tous les symboles lexicaux),
-              test_emitter, test_symbols et test_types (declarations et
-              expressions isolees) doivent produire un .EXE valide
+            Cas speciaux : test_lex.a60 (tous les symboles lexicaux,
+              etiquettes non definies), test_emitter, test_symbols et
+              test_types (declarations et expressions isolees) doivent
+              produire un .EXE valide ; test_switch.a60 ne se termine pas
+              (comparer le debut de sa sortie sous un delai)
             Mettre a jour README.md (ligne AL60CW32.PAS), ajouter
               DOC\TODO\AL60CW32.txt et BINLINUX\AL60CW32 (WIN32\
               al60cw32.exe a produire sous Windows)
@@ -2434,7 +2470,9 @@ Begin
   SymAllocLocal(4);
   If SymTab[ProcIdx].Kind = SK_FUNC Then
     ScopeTab[CurProcScope].RetOfs :=
-      SymAllocLocal(TypeSizeof(SymTab[ProcIdx].TypeIdx));
+      SymAllocLocal(TypeSizeof(SymTab[ProcIdx].TypeIdx))
+  Else
+    ScopeTab[CurProcScope].RetOfs := SymAllocLocal(4);   { integer ignore }
 End;
 
 { Procedure dont le corps est en cours de compilation (ou -1) }
@@ -3562,6 +3600,8 @@ Var
   ProcCount   : LongInt;     { procedures declarees (statistiques)  }
   CallCount   : LongInt;     { appels de procedure ou fonction      }
   ThunkCount  : LongInt;     { thunks d'arguments par nom           }
+  IntrinCount : LongInt;     { appels de fonctions standard         }
+  IOCount     : LongInt;     { appels d'entree/sortie               }
 
 Procedure ParserInit;
 Begin
@@ -3703,7 +3743,19 @@ Type
     EX_LIST,        { liste : L = expression, R = suivant   }
     EX_LABEL,       { designateur : etiquette (Sym)         }
     EX_SWITCHREF,   { designateur : Sym[L] (element de switch) }
-    EX_CALL         { appel de Sym ; L = liste des arguments }
+    EX_CALL,        { appel de Sym ; L = liste des arguments }
+    EX_INTRIN,      { fonction standard (IntVal = TIntrinsic)    }
+    EX_IO           { entree/sortie (IntVal = TIoOp, L = arguments) }
+  );
+
+  TIntrinsic = (
+    IN_ABS, IN_SIGN, IN_ENTIER, IN_SQRT, IN_SIN, IN_COS, IN_ARCTAN,
+    IN_LN, IN_EXP, IN_NONE
+  );
+
+  TIoOp = (
+    IO_OUTSTRING, IO_OUTINTEGER, IO_OUTREAL, IO_OUTBOOLEAN, IO_NEWLINE,
+    IO_PRINT, IO_ININTEGER, IO_INREAL, IO_INBOOLEAN, IO_SYSACT, IO_NONE
   );
 
   TExprNode = Record
@@ -4824,6 +4876,218 @@ Begin
 End;
 
 
+{ ---- Fonctions standard et entrees/sorties : noms ----------------- }
+
+Function IntrinsicName(I : TIntrinsic) : TString;
+Begin
+  Case I Of
+    IN_ABS    : IntrinsicName := 'abs';
+    IN_SIGN   : IntrinsicName := 'sign';
+    IN_ENTIER : IntrinsicName := 'entier';
+    IN_SQRT   : IntrinsicName := 'sqrt';
+    IN_SIN    : IntrinsicName := 'sin';
+    IN_COS    : IntrinsicName := 'cos';
+    IN_ARCTAN : IntrinsicName := 'arctan';
+    IN_LN     : IntrinsicName := 'ln';
+    IN_EXP    : IntrinsicName := 'exp';
+  Else
+    IntrinsicName := '?';
+  End;
+End;
+
+{ Fonction standard designee par un nom (IN_NONE si ce n'en est pas
+  une) ; une procedure du programme de meme nom reste prioritaire. }
+Function FindIntrinsic(Const Name : TString) : TIntrinsic;
+Var
+  I : TIntrinsic;
+  K : TString;
+Begin
+  K := StrLower(Name);
+  FindIntrinsic := IN_NONE;
+  For I := IN_ABS To IN_EXP Do
+    If IntrinsicName(I) = K Then
+    Begin
+      FindIntrinsic := I;
+      Exit;
+    End;
+End;
+
+Function IoName(O : TIoOp) : TString;
+Begin
+  Case O Of
+    IO_OUTSTRING  : IoName := 'outstring';
+    IO_OUTINTEGER : IoName := 'outinteger';
+    IO_OUTREAL    : IoName := 'outreal';
+    IO_OUTBOOLEAN : IoName := 'outboolean';
+    IO_NEWLINE    : IoName := 'newline';
+    IO_PRINT      : IoName := 'print';
+    IO_ININTEGER  : IoName := 'ininteger';
+    IO_INREAL     : IoName := 'inreal';
+    IO_INBOOLEAN  : IoName := 'inboolean';
+    IO_SYSACT     : IoName := 'sysact';
+  Else
+    IoName := '?';
+  End;
+End;
+
+{ Procedure d'entree/sortie designee par un nom (IO_NONE sinon) ; une
+  procedure du programme de meme nom reste prioritaire. }
+Function FindIo(Const Name : TString) : TIoOp;
+Var
+  O : TIoOp;
+  K : TString;
+Begin
+  K := StrLower(Name);
+  FindIo := IO_NONE;
+  For O := IO_OUTSTRING To IO_SYSACT Do
+    If IoName(O) = K Then
+    Begin
+      FindIo := O;
+      Exit;
+    End;
+End;
+
+{ Racine carree entiere (plancher) : non utilisee, sqrt est real }
+
+{ nom(arg) : fonction standard I, Tok = le nom (rapport, 3.2.4).
+  abs suit le type de son argument ; sign et entier donnent un integer
+  (entier = plus grand entier <= x) ; sqrt, sin, cos, arctan, ln et exp
+  donnent un real (x87). Un appel dont l'argument est une constante est
+  calcule a la compilation. }
+Function ParseIntrinsic(Const Tok : TToken; I : TIntrinsic) : Integer;
+Var
+  Arg, Res, Target : Integer;
+  Node, Item       : Integer;
+  Conv             : TConv;
+  D1, RV           : Double;
+  IV, I1           : LongInt;
+  Err              : TString;
+Begin
+  ParseIntrinsic := -1;
+  If Not AtPunct('(') Then
+  Begin
+    ParseError('''('' attendu apres ' + Tok.Val);
+    Exit;
+  End;
+  ParserAdvance;
+  Arg := ParseExpr;
+  If AtPunct(',') Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, Tok.Val + ': 1 argument attendu');
+    While Not (AtPunct(')') Or AtStmtEnd) Do ParserAdvance;
+    If AtPunct(')') Then ParserAdvance;
+    Exit;
+  End;
+  ExpectPunct(')');
+  If Arg < 0 Then Exit;
+  If Not TypeIsArith(ExprTab[Arg].Typ) Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, Tok.Val + ': argument numerique ' +
+            'attendu (type: ' + TypeName(ExprTab[Arg].Typ) + ')');
+    Exit;
+  End;
+
+  { type du resultat }
+  Case I Of
+    IN_ABS    : Res := TypeArith(ExprTab[Arg].Typ, ExprTab[Arg].Typ);
+    IN_SIGN,
+    IN_ENTIER : Res := TY_IDX_INTEGER;
+  Else
+    Res := TY_IDX_REAL;
+  End;
+
+  { repliement : l'argument est une constante }
+  If ExprIsNumConst(Arg) Then
+  Begin
+    Err := '';
+    IV  := 0;
+    RV  := 0;
+    D1  := ExprNumReal(Arg);
+    I1  := ExprTab[Arg].IntVal;
+    Case I Of
+      IN_ABS:
+        If Res = TY_IDX_REAL Then RV := Abs(D1) Else IV := Abs(I1);
+      IN_SIGN:
+        If D1 > 0 Then IV := 1 Else If D1 < 0 Then IV := -1 Else IV := 0;
+      IN_ENTIER:
+        If ExprTab[Arg].Kind = EX_REAL Then
+        Begin
+          If Abs(D1) >= 2147483647.0 Then
+            Err := 'entier: valeur hors de l''intervalle integer'
+          Else
+          Begin
+            RV := Int(D1);
+            If D1 < RV Then RV := RV - 1;
+            IV := Trunc(RV);
+          End;
+        End
+        Else
+          IV := I1;
+      IN_SQRT:
+        If D1 < 0 Then Err := 'sqrt: argument negatif' Else RV := Sqrt(D1);
+      IN_SIN:    RV := Sin(D1);
+      IN_COS:    RV := Cos(D1);
+      IN_ARCTAN: RV := ArcTan(D1);
+      IN_LN:
+        If D1 <= 0 Then Err := 'ln: argument non positif'
+        Else RV := Ln(D1);
+      IN_EXP:
+        If D1 > 700 Then Err := 'exp: debordement'
+        Else RV := Exp(D1);
+    End;
+    If (Err = '') And (Res = TY_IDX_REAL) And RealBad(RV) Then
+      Err := Tok.Val + ': debordement reel';
+    If Err <> '' Then
+    Begin
+      ErrorAt(Tok.Line, Tok.Col, Err);
+      Exit;
+    End;
+    Node := Arg;
+    ExprTab[Node].Line := Tok.Line;
+    ExprTab[Node].Col  := Tok.Col;
+    If Res = TY_IDX_REAL Then
+    Begin
+      ExprTab[Node].Kind    := EX_REAL;
+      ExprTab[Node].Typ     := TY_IDX_REAL;
+      ExprTab[Node].RealVal := RV;
+    End
+    Else
+    Begin
+      ExprTab[Node].Kind   := EX_INT;
+      ExprTab[Node].Typ    := TY_IDX_INTEGER;
+      ExprTab[Node].IntVal := IV;
+    End;
+    Inc(FoldCount);
+    ParseIntrinsic := Node;
+    Exit;
+  End;
+
+  { entier d'un integer : identite }
+  If (I = IN_ENTIER) And (ExprTab[Arg].Typ = TY_IDX_INTEGER) Then
+  Begin
+    ParseIntrinsic := Arg;
+    Exit;
+  End;
+
+  { noeud d'appel : l'argument est converti vers le type de calcul
+    (real pour les fonctions transcendantes) }
+  If I In [IN_SIN, IN_COS, IN_ARCTAN, IN_LN, IN_EXP, IN_SQRT] Then
+    Target := TY_IDX_REAL
+  Else If ExprTab[Arg].Typ = TY_IDX_REAL Then
+    Target := TY_IDX_REAL
+  Else
+    Target := TY_IDX_INTEGER;
+  Conv := TypeConversion(ExprTab[Arg].Typ, Target);
+  Item := ExprNew(EX_LIST, Target, Tok.Line, Tok.Col);
+  ExprTab[Item].L    := Arg;
+  ExprTab[Item].Conv := Conv;
+  Node := ExprNew(EX_INTRIN, Res, Tok.Line, Tok.Col);
+  ExprTab[Node].IntVal := Ord(I);
+  ExprTab[Node].L      := Item;
+  Inc(IntrinCount);
+  ParseIntrinsic := Node;
+End;
+
 { Expression primaire : constante, chaine, variable, element de tableau,
   appel de fonction ou expression entre parentheses }
 Function ParsePrimary : Integer;
@@ -4893,6 +5157,18 @@ Begin
           ParsePrimary := ParseCall(Tok, S);
           Exit;
         End;
+        If (S >= 0) And (SymTab[S].Kind = SK_PROC) And
+           (S = SymCurProc) And AtOp(':=') Then
+        Begin
+          { extension : valeur affectee au nom d'une procedure sans type
+            (test_lex.a60) : rangee dans une cellule, jamais utilisee }
+          WarnAt(Tok.Line, Tok.Col, 'valeur affectee a une procedure ' +
+                 'sans type: ' + Tok.Val + ' (ignoree)');
+          N := ExprMakeVar(S, Tok.Line, Tok.Col);
+          ExprTab[N].Typ := TY_IDX_INTEGER;
+          ParsePrimary := N;
+          Exit;
+        End;
         If (S >= 0) And (SymTab[S].Kind = SK_PROC) Then
         Begin
           ErrorAt(Tok.Line, Tok.Col, 'procedure sans valeur dans une ' +
@@ -4904,6 +5180,11 @@ Begin
           If S >= 0 Then
             ErrorAt(Tok.Line, Tok.Col, 'ce n''est pas une procedure: ' +
                     Tok.Val)
+          Else If FindIntrinsic(Tok.Val) <> IN_NONE Then
+            ParsePrimary := ParseIntrinsic(Tok, FindIntrinsic(Tok.Val))
+          Else If FindIo(Tok.Val) <> IO_NONE Then
+            ErrorAt(Tok.Line, Tok.Col, Tok.Val + ' est une procedure ' +
+                    'sans valeur')
           Else
             ErrorAt(Tok.Line, Tok.Col, 'procedure ou fonction ' +
                     'inconnue: ' + Tok.Val);
@@ -5244,6 +5525,10 @@ Begin
     EX_CALL   : WriteLn('call ', SymTab[ExprTab[N].Sym].Name, '(',
                         ExprTab[N].IntVal, ' argument(s)) : ',
                         TypeName(ExprTab[N].Typ));
+    EX_INTRIN : WriteLn('intrinsic ',
+                        IntrinsicName(TIntrinsic(ExprTab[N].IntVal)),
+                        ' : ', TypeName(ExprTab[N].Typ));
+    EX_IO     : WriteLn('io ', IoName(TIoOp(ExprTab[N].IntVal)));
   End;
   ExprDump(ExprTab[N].L, Depth + 1);
   ExprDump(ExprTab[N].R, Depth + 1);
@@ -5310,7 +5595,7 @@ Function SymCell(S : Integer; Extra : LongInt; Size : Byte) : TOperand;
 Var
   F : TReg;
 Begin
-  If SymTab[S].Kind = SK_FUNC Then
+  If SymTab[S].Kind In [SK_FUNC, SK_PROC] Then
   Begin
     SymCell := OpMem(R_EBP, SymResultOfs + Extra, Size);
     Exit;
@@ -6100,6 +6385,77 @@ Begin
   Emit1(OP_CALL, OpLabel(Intern(SymTab[S].Mangled)));
 End;
 
+{ Fonction standard : valeur dans EAX (integer) ou ST(0) (real) }
+Procedure GenIntrinsic(N : Integer);
+Var
+  I  : TIntrinsic;
+  A1 : Integer;
+  T  : Integer;
+Begin
+  I  := TIntrinsic(ExprTab[N].IntVal);
+  A1 := ExprTab[N].L;
+  T  := ExprTab[N].Typ;
+  Case I Of
+    IN_ABS:
+      Begin
+        GenExprAs(ExprTab[A1].L, ExprTab[A1].Typ);
+        If T = TY_IDX_REAL Then
+          Emit0(OP_FABS)
+        Else
+        Begin
+          Emit0(OP_CDQ);
+          Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EDX));
+          Emit(OP_SUB, OpReg(R_EAX), OpReg(R_EDX));
+        End;
+      End;
+    IN_SIGN:
+      Begin
+        GenExprAs(ExprTab[A1].L, ExprTab[A1].Typ);
+        If ExprTab[A1].Typ = TY_IDX_REAL Then
+          CallRT('RSIGN')
+        Else
+        Begin
+          Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+          Emit0(OP_CDQ);
+          Emit1(OP_NEG, OpReg(R_ECX));
+          Emit(OP_SHR, OpReg(R_ECX), OpImm(31));
+          Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+          Emit(OP_OR, OpReg(R_EAX), OpReg(R_ECX));
+        End;
+      End;
+    IN_ENTIER:
+      Begin
+        GenExprAs(ExprTab[A1].L, TY_IDX_REAL);
+        CallRT('FLOOR');
+      End;
+    IN_SQRT:
+      Begin
+        GenExprAs(ExprTab[A1].L, TY_IDX_REAL);
+        Emit0(OP_FSQRT);
+      End;
+    IN_SIN, IN_COS, IN_ARCTAN, IN_LN, IN_EXP:
+      Begin
+        GenExprAs(ExprTab[A1].L, TY_IDX_REAL);
+        Case I Of
+          IN_SIN    : Emit0(OP_FSIN);
+          IN_COS    : Emit0(OP_FCOS);
+          IN_ARCTAN :
+            Begin
+              Emit0(OP_FLD1);
+              Emit0(OP_FPATAN);
+            End;
+          IN_LN     :
+            Begin
+              Emit0(OP_FLDLN2);
+              Emit1(OP_FXCH, OpST(1));
+              Emit0(OP_FYL2X);
+            End;
+          IN_EXP    : CallRT('EXP');
+        End;
+      End;
+  End;
+End;
+
 { Evalue le noeud N : integer, Boolean ou chaine (adresse) dans EAX,
   real dans ST(0). Les autres noeuds viendront avec leurs TODO. }
 Procedure GenExpr(N : Integer);
@@ -6125,6 +6481,8 @@ Begin
       GenLoadVar(ExprTab[N].Sym);
     EX_CALL:
       GenCall(N);
+    EX_INTRIN:
+      GenIntrinsic(N);
     EX_INDEX:
       Begin
         GenIndexAddr(N);
@@ -6216,12 +6574,151 @@ Begin
     Emit(OP_MOV, Cell, OpReg(R_EAX));
 End;
 
-{ Instruction dont l'arbre est N : affectation ou appel }
+{ Vrai si l'evaluation de N a un effet (appel, affectation) }
+Function ExprHasEffect(N : Integer) : Boolean;
+Begin
+  ExprHasEffect := False;
+  If N < 0 Then Exit;
+  If ExprTab[N].Kind In [EX_ASSIGN, EX_CALL, EX_IO] Then
+  Begin
+    ExprHasEffect := True;
+    Exit;
+  End;
+  If ExprHasEffect(ExprTab[N].L) Or ExprHasEffect(ExprTab[N].R) Or
+     ExprHasEffect(ExprTab[N].E) Then
+    ExprHasEffect := True;
+End;
+
+{ Entree/sortie : sortie standard et entree standard par le runtime.
+  Le numero de canal (premier argument, sauf print) est evalue
+  seulement s'il a un effet ; il n'y a qu'une sortie et qu'une entree. }
+Procedure GenIO(N : Integer);
+Var
+  Op            : TIoOp;
+  Item, Ch, A   : Integer;
+  E, T          : Integer;
+  Cell          : TOperand;
+  RdName        : TString;
+  Len           : Integer;
+  SetChan       : Boolean;
+Begin
+  Op := TIoOp(ExprTab[N].IntVal);
+  Item := ExprTab[N].L;
+  SetChan := False;
+  If (Op <> IO_PRINT) And (Item >= 0) Then
+  Begin
+    Ch := ExprTab[Item].L;
+    { canal 1 : sortie standard ; les autres sont confiees au runtime
+      (SETCHAN : 2 = erreur standard, tout autre = sortie standard) }
+    If Op In [IO_OUTSTRING, IO_OUTINTEGER, IO_OUTREAL, IO_OUTBOOLEAN,
+              IO_NEWLINE] Then
+    Begin
+      If Not ((ExprTab[Ch].Kind = EX_INT) And (ExprTab[Ch].IntVal = 1))
+      Then
+      Begin
+        GenExprAs(Ch, TY_IDX_INTEGER);
+        CallRT('SETCHAN');
+        SetChan := True;
+      End;
+    End
+    Else If ExprHasEffect(Ch) Then
+    Begin
+      GenExpr(Ch);
+      If IsRealT(ExprTab[Ch].Typ) Then Emit1(OP_FSTP, OpST(0));
+    End;
+    If Op <> IO_NEWLINE Then Item := ExprTab[Item].R;
+  End;
+  If Op = IO_NEWLINE Then
+  Begin
+    CallRT('NEWLINE');
+    If SetChan Then
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+      CallRT('SETCHAN');
+    End;
+    Exit;
+  End;
+  A := ExprTab[Item].L;
+  Case Op Of
+    IO_OUTSTRING, IO_PRINT:
+      If ExprTab[A].Kind = EX_STR Then
+      Begin
+        Len := Length(ExprStrTab[ExprTab[A].StrIdx]);
+        If Len > 0 Then
+        Begin
+          Emit(OP_MOV, OpReg(R_EAX),
+               OpOffset(DataStr(ExprStrTab[ExprTab[A].StrIdx])));
+          Emit(OP_MOV, OpReg(R_EDX), OpImm(Len));
+          CallRT('WRITESTR');
+        End;
+      End
+      Else
+      Begin
+        GenExpr(A);
+        CallRT('WRITEZ');
+      End;
+    IO_OUTINTEGER:
+      Begin
+        GenExprAs(A, TY_IDX_INTEGER);
+        CallRT('WRITEINT');
+      End;
+    IO_OUTREAL:
+      Begin
+        GenExprAs(A, TY_IDX_REAL);
+        CallRT('WRITEREAL');
+      End;
+    IO_OUTBOOLEAN:
+      Begin
+        GenExprAs(A, TY_IDX_BOOLEAN);
+        CallRT('WRITEBOOL');
+      End;
+    IO_ININTEGER, IO_INREAL, IO_INBOOLEAN:
+      Begin
+        E := A;
+        T := ExprTab[E].Typ;
+        If Op = IO_INREAL Then
+          RdName := 'READREAL'
+        Else If Op = IO_INBOOLEAN Then
+          RdName := 'READBOOL'
+        Else
+          RdName := 'READINT';
+        If (ExprTab[E].Kind = EX_VAR) And
+           (SymTab[ExprTab[E].Sym].Kind <> SK_PARAM_NAME) Then
+        Begin
+          CallRT(RdName);
+          Cell := SymCell(ExprTab[E].Sym, 0, ValSize(T));
+          If IsRealT(T) Then
+            Emit1(OP_FSTP, Cell)
+          Else
+            Emit(OP_MOV, Cell, OpReg(R_EAX));
+        End
+        Else
+        Begin
+          GenAddrNode(E);
+          Emit1(OP_PUSH, OpReg(R_EAX));
+          CallRT(RdName);
+          Emit1(OP_POP, OpReg(R_ECX));
+          If IsRealT(T) Then
+            Emit1(OP_FSTP, OpMem(R_ECX, 0, 8))
+          Else
+            Emit(OP_MOV, OpMem(R_ECX, 0, 4), OpReg(R_EAX));
+        End;
+      End;
+  End;
+  If SetChan Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+    CallRT('SETCHAN');
+  End;
+End;
+
+{ Instruction dont l'arbre est N : affectation, appel ou E/S }
 Procedure GenStmtExpr(N : Integer);
 Begin
   If N < 0 Then Exit;
   Case ExprTab[N].Kind Of
     EX_ASSIGN: GenAssign(N, False);
+    EX_IO:     GenIO(N);
   Else
     Begin
       GenExpr(N);
@@ -6526,21 +7023,6 @@ Const
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
 
-{ Vrai si l'evaluation de N a un effet (appel, affectation) }
-Function ExprHasEffect(N : Integer) : Boolean;
-Begin
-  ExprHasEffect := False;
-  If N < 0 Then Exit;
-  If ExprTab[N].Kind In [EX_ASSIGN, EX_CALL] Then
-  Begin
-    ExprHasEffect := True;
-    Exit;
-  End;
-  If ExprHasEffect(ExprTab[N].L) Or ExprHasEffect(ExprTab[N].R) Or
-     ExprHasEffect(ExprTab[N].E) Then
-    ExprHasEffect := True;
-End;
-
 { Debut d'une expression isolee utilisee comme instruction (extension
   toleree par les exemples : a + b ; `texte` ; 42 ;). Elle est evaluee
   seulement si elle a un effet ; sinon avertissement. }
@@ -6582,6 +7064,149 @@ Begin
     ParseError('operateur ou '';'' attendu');
     ParserSync;
   End;
+End;
+
+{ Procedures d'entree/sortie standard : nom(canal, valeur) ; print(texte)
+  et newline(canal). Tok = le nom, deja consomme. }
+Procedure ParseIO(Const Tok : TToken; Op : TIoOp);
+Var
+  Head, Tail, Item, E, N, Expected : Integer;
+  Bad                               : Boolean;
+  Line, Col                         : Integer;
+  Conv                              : TConv;
+  Node, K, Want                     : Integer;
+  Args                              : Array[1..2] Of Integer;
+Begin
+  Inc(IOCount);
+  Head := -1;
+  Tail := -1;
+  N    := 0;
+  Bad  := False;
+  Args[1] := -1;
+  Args[2] := -1;
+  Case Op Of
+    IO_NEWLINE, IO_PRINT : Expected := 1;
+  Else
+    Expected := 2;
+  End;
+  If (Op = IO_NEWLINE) And (Not AtPunct('(')) Then
+  Begin
+    { newline sans argument : sortie standard }
+    Node := ExprNew(EX_IO, TY_IDX_PROCEDURE, Tok.Line, Tok.Col);
+    ExprTab[Node].IntVal := Ord(Op);
+    ExprTab[Node].L      := -1;
+    GenIO(Node);
+    Exit;
+  End;
+  If (Op = IO_SYSACT) And (Not AtPunct('(')) Then Exit;
+  If Not AtPunct('(') Then
+  Begin
+    ParseError('''('' attendu apres ' + Tok.Val);
+    ParserSync;
+    Exit;
+  End;
+  ParserAdvance;
+  If Not AtPunct(')') Then
+    Repeat
+      Line := CurToken.Line;
+      Col  := CurToken.Col;
+      E := ParseExpr;
+      Inc(N);
+      If N <= 2 Then Args[N] := E;
+      If E < 0 Then
+        Bad := True
+      Else
+      Begin
+        Item := ExprNew(EX_LIST, ExprTab[E].Typ, Line, Col);
+        ExprTab[Item].L := E;
+        If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+        Tail := Item;
+      End;
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+  ExpectPunct(')');
+  If Op = IO_SYSACT Then Exit;        { appel systeme : sans effet }
+  If N <> Expected Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, Tok.Val + ': ' + ItoS(Expected) +
+            ' argument(s) attendu(s), ' + ItoS(N) + ' trouve(s)');
+    Exit;
+  End;
+  If Bad Then Exit;
+  { le canal est un entier }
+  If Op <> IO_PRINT Then
+  Begin
+    If Not ExprCoerceCtx(Args[1], TY_IDX_INTEGER, Conv,
+                         ExprTab[Args[1]].Line, ExprTab[Args[1]].Col,
+                         'canal') Then Exit;
+    K := 2;
+  End
+  Else
+    K := 1;
+  If Op = IO_NEWLINE Then
+  Begin
+    Node := ExprNew(EX_IO, TY_IDX_PROCEDURE, Tok.Line, Tok.Col);
+    ExprTab[Node].IntVal := Ord(Op);
+    ExprTab[Node].L      := Head;
+    GenIO(Node);
+    Exit;
+  End;
+  E := Args[K];
+  Line := ExprTab[E].Line;
+  Col  := ExprTab[E].Col;
+  Case Op Of
+    IO_OUTSTRING, IO_PRINT:
+      If ExprTab[E].Typ <> TY_IDX_STRING Then
+      Begin
+        ErrorAt(Line, Col, Tok.Val + ': texte attendu (type: ' +
+                TypeName(ExprTab[E].Typ) + ')');
+        Exit;
+      End;
+    IO_OUTINTEGER:
+      If Not ExprCoerceCtx(E, TY_IDX_INTEGER, Conv, Line, Col,
+                           'argument') Then Exit;
+    IO_OUTREAL:
+      If Not ExprCoerceCtx(E, TY_IDX_REAL, Conv, Line, Col,
+                           'argument') Then Exit;
+    IO_OUTBOOLEAN:
+      If Not ExprCoerceCtx(E, TY_IDX_BOOLEAN, Conv, Line, Col,
+                           'argument') Then Exit;
+    IO_ININTEGER, IO_INREAL, IO_INBOOLEAN:
+      Begin
+        Case Op Of
+          IO_ININTEGER : Want := TY_IDX_INTEGER;
+          IO_INREAL    : Want := TY_IDX_REAL;
+        Else
+          Want := TY_IDX_BOOLEAN;
+        End;
+        If Not (ExprTab[E].Kind In [EX_VAR, EX_INDEX]) Then
+        Begin
+          ErrorAt(Line, Col, Tok.Val + ': variable attendue');
+          Exit;
+        End;
+        If ExprTab[E].Typ <> Want Then
+        Begin
+          ErrorAt(Line, Col, Tok.Val + ': variable ' + TypeName(Want) +
+                  ' attendue (type: ' + TypeName(ExprTab[E].Typ) + ')');
+          Exit;
+        End;
+        If (ExprTab[E].Kind = EX_VAR) And
+           (SymTab[ExprTab[E].Sym].Kind = SK_PARAM_NAME) Then
+          SymTab[ExprTab[E].Sym].IsWritten := True;
+      End;
+  End;
+  Node := ExprNew(EX_IO, TY_IDX_PROCEDURE, Tok.Line, Tok.Col);
+  ExprTab[Node].IntVal := Ord(Op);
+  ExprTab[Node].L      := Head;
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('E/S ligne ', Tok.Line, ' :');
+    ExprDump(Node, 1);
+  End;
+  GenIO(Node);
 End;
 
 { Cible deja analysee (variable ou element de tableau) suivie de ':='
@@ -6906,6 +7531,12 @@ Begin
     Exit;
   End;
   S := SymFind(Tok.Val);
+  If (S < 0) And (FindIo(Tok.Val) <> IO_NONE) And (Not AtOp(':=')) Then
+  Begin
+    ExprReset;
+    ParseIO(Tok, FindIo(Tok.Val));
+    Exit;
+  End;
   If (S >= 0) And ((SymTab[S].Kind In [SK_PROC, SK_FUNC]) Or
                    IsFormalProc(S)) And
      (Not AtOp(':=')) And (Not AtPunct('[')) Then
@@ -7918,6 +8549,27 @@ Begin
     ParseError('texte apres la fin du programme');
 End;
 
+{ Etiquettes jamais definies dans le programme : avertissement, puis
+  definies a la fin du programme (un saut y termine donc le
+  programme) ; test_lex.a60 en contient. }
+Procedure ResolveUndefinedLabels;
+Var
+  I : Integer;
+Begin
+  For I := ScopeTab[0].FirstSym To SymCount - 1 Do
+    If (SymTab[I].Kind = SK_LABEL) And (Not SymTab[I].IsDefined) Then
+    Begin
+      WarnAt(SymTab[I].Line, SymTab[I].Col,
+             'etiquette non definie: ' + SymTab[I].Name +
+             ' (saut vers la fin du programme)');
+      SymTab[I].IsDefined  := True;
+      SymTab[I].LevelKnown := True;
+      SymTab[I].Level      := 0;
+      EmitLabel(Intern(SymTab[I].Mangled));
+      ResolveStubs(I);
+    End;
+End;
+
 Procedure PhaseParse;
 Begin
   ParserInit;
@@ -7928,6 +8580,8 @@ Begin
   ProcCount   := 0;
   CallCount   := 0;
   ThunkCount  := 0;
+  IntrinCount := 0;
+  IOCount     := 0;
   LabelCount  := 0;
   ForCount    := 0;
   GotoCount   := 0;
@@ -7941,13 +8595,15 @@ Begin
   SymEnterScope;                 { portee globale (identifiant 1) }
   GenMainBegin;
   ParseProgram;
+  ResolveUndefinedLabels;
   GenMainEnd;
   SymLeaveScope;
   LexClose;
   If Opts.Verbose Then
     WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
             ' procedure(s), ', BlockCount, ' bloc(s), ', CallCount,
-            ' appel(s), ', ThunkCount, ' thunk(s), ', AssignCount,
+            ' appel(s), ', ThunkCount, ' thunk(s), ', IOCount, ' e/s, ',
+            IntrinCount, ' fonction(s) standard, ', AssignCount,
             ' affectation(s), ', IfCount, ' if, ',
             ForCount, ' for, ', GotoCount, ' goto, ', LabelCount,
             ' etiquette(s), ', FoldCount,
