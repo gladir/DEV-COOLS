@@ -953,9 +953,6 @@ Program AL60CW32;
 {$ENDIF}
 {$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
-{$IFDEF FPC}
-Uses Math;
-{$ENDIF}
 
 { ============================================================
   SECTION 1 - CONSTANTES (TODO 01, 03)
@@ -1044,6 +1041,12 @@ Const
 Type
   TString = String[255];
 
+  TDoubleBits = Record
+    Case Boolean Of
+      False : (D : Double);
+      True  : (Lo, Hi : LongInt);
+  End;
+
   { Tokens du lexeur (TODO 04) }
   TTokenKind = (
     TK_EOF,
@@ -1121,14 +1124,13 @@ Begin
   ItoSZ := S;
 End;
 
-{ Vrai si un reel est infini ou invalide (debordement) }
+{ Vrai si un reel est infini ou invalide (exposant tout a 1) }
 Function RealBad(D : Double) : Boolean;
+Var
+  B : TDoubleBits;
 Begin
-  {$IFDEF FPC}
-  RealBad := IsNaN(D) Or IsInfinite(D);
-  {$ELSE}
-  RealBad := False;
-  {$ENDIF}
+  B.D := D;
+  RealBad := (B.Hi And $7FF00000) = $7FF00000;
 End;
 
 Function UpCaseStr(Const S : TString) : TString;
@@ -3093,11 +3095,6 @@ Type
     First, Count : Integer;
   End;
 
-  TDoubleBits = Record
-    Case Boolean Of
-      False : (D : Double);
-      True  : (Lo, Hi : LongInt);
-  End;
 
 Var
   CodeTab    : Array[0..MAX_CODE - 1] Of TInstr;
