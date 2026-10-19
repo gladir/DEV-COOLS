@@ -1,4 +1,4 @@
-var __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
+var __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
 function __mk(k) {
   var t = typeof k;
   if (t === 'string') return 's' + k;
@@ -19,8 +19,10 @@ function __sym_desc(s) {
 function __sym_str(s) {
   return 'Symbol(' + __sym_desc(s) + ')';
 }
+function __init_eval() {}
 function __i_init() {
   __init_async();
+  __init_eval();
   __init_lib();
   __init_big();
   __init_str();
@@ -32,6 +34,12 @@ function __i_init() {
     return function (...b) { return __invoke(f, t, a.concat(b)); };
   };
   FP.toString = function () { return 'function ' + this.name + '() { [native code] }'; };
+  var __cl = [[Object, 0], [Array, 0], [String, 0], [Number, 0], [Boolean, 0], [RegExp, 0], [Function, 0], [Error, 0], [EvalError, 0], [RangeError, 0],
+    [ReferenceError, 0], [SyntaxError, 0], [TypeError, 0], [URIError, 0]];
+  for (var __ci = 0; __ci < __cl.length; __ci++) {
+    var __cp = __cl[__ci][0].prototype;
+    if (__cp) Object.defineProperty(__cp, 'constructor', { value: __cl[__ci][0], writable: true, configurable: true, enumerable: false });
+  }
   __IterProto = {
     next: function () { return this['\x01n'](); },
     toString: function () { return '[object Iterator]'; }

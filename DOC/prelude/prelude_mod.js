@@ -210,87 +210,17 @@ function __mkUtil() {
   };
   return util;
 }
-function __mkPath() {
-  var path = {};
-  function norm(p) {
-    var abs = p.charAt(0) === '/', parts = p.split('/'), out = [], i;
-    for (i = 0; i < parts.length; i++) {
-      if (parts[i] === '' || parts[i] === '.') continue;
-      if (parts[i] === '..') {
-        if (out.length > 0 && out[out.length - 1] !== '..') out.pop();
-        else if (!abs) out.push('..');
-      } else out.push(parts[i]);
-    }
-    var r = out.join('/');
-    if (abs) return '/' + r;
-    return r === '' ? '.' : r;
-  }
-  path.sep = '/';
-  path.delimiter = ':';
-  path.normalize = function (p) {
-    var r = norm(String(p));
-    return (String(p).slice(-1) === '/' && r !== '/' && r !== '.') ? r + '/' : r;
-  };
-  path.join = function (...a) {
-    var s = a.filter(function (x) { return x !== ''; }).join('/');
-    return s === '' ? '.' : path.normalize(s);
-  };
-  path.isAbsolute = function (p) { return String(p).charAt(0) === '/'; };
-  path.resolve = function (...a) {
-    var r = '', i;
-    for (i = a.length - 1; i >= 0 && r.charAt(0) !== '/'; i--) {
-      if (a[i] !== '') r = a[i] + (r === '' ? '' : '/' + r);
-    }
-    if (r.charAt(0) !== '/') r = process.cwd().replace(/\\/g, '/') + (r === '' ? '' : '/' + r);
-    r = norm(r);
-    return r;
-  };
-  path.dirname = function (p) {
-    p = String(p);
-    while (p.length > 1 && p.slice(-1) === '/') p = p.slice(0, -1);
-    var i = p.lastIndexOf('/');
-    if (i < 0) return '.';
-    if (i === 0) return '/';
-    return p.slice(0, i);
-  };
-  path.basename = function (p, ext) {
-    p = String(p);
-    while (p.length > 1 && p.slice(-1) === '/') p = p.slice(0, -1);
-    var b = p.slice(p.lastIndexOf('/') + 1);
-    if (ext !== undefined && b.length > ext.length && b.slice(-ext.length) === ext) b = b.slice(0, -ext.length);
-    return b;
-  };
-  path.extname = function (p) {
-    var b = path.basename(p), i = b.lastIndexOf('.');
-    return (i <= 0) ? '' : b.slice(i);
-  };
-  path.relative = function (from, to) {
-    var f = path.resolve(from).split('/').filter(Boolean), t = path.resolve(to).split('/').filter(Boolean), i = 0;
-    while (i < f.length && i < t.length && f[i] === t[i]) i++;
-    var out = [], j;
-    for (j = i; j < f.length; j++) out.push('..');
-    return out.concat(t.slice(i)).join('/');
-  };
-  path.parse = function (p) {
-    p = String(p);
-    var base = path.basename(p), ext = path.extname(p), dir = path.dirname(p);
-    if (dir === '.' && p.charAt(0) !== '.') dir = '';
-    return { root: p.charAt(0) === '/' ? '/' : '', dir: dir, base: base, ext: ext, name: ext ? base.slice(0, -ext.length) : base };
-  };
-  path.format = function (o) {
-    var dir = o.dir || o.root || '', base = o.base || ((o.name || '') + (o.ext || ''));
-    return dir ? (dir === o.root ? dir + base : dir + '/' + base) : base;
-  };
-  path.posix = path;
-  path.win32 = path;
-  return path;
-}
+function __mkPath() { return null; }
 function __mkmod(name) {
   var e;
   if (name === 'events') return __mkEvents();
   if (name === 'assert' || name === 'assert/strict') return __mkAssert();
   if (name === 'util') return __mkUtil();
-  if (name === 'path' || name === 'path/posix') return __mkPath();
+  if (name === 'path' || name === 'path/posix' || name === 'path/win32') {
+    e = __mkPath();
+    if (!e) throw new Error('Cannot find module ' + name);
+    return name === 'path/posix' ? e.posix : e;
+  }
   if (name === 'os') {
     return {
       EOL: '\r\n', platform: function () { return 'win32'; }, type: function () { return 'Windows_NT'; },

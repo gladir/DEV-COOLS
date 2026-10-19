@@ -183,7 +183,75 @@ function __toFixed(f) {
   if (neg !== '' && /^0*$/.test(ip + fp)) neg = Number(this) < 0 ? '-' : '';
   return neg + ip + (f > 0 ? '.' + fp : '');
 }
+
+function __defm(o, name, fn) {
+  Object.defineProperty(o, name, { value: fn, writable: true, configurable: true, enumerable: false });
+}
+function __flat(a, depth, out) {
+  var i, v;
+  for (i = 0; i < a.length; i++) {
+    v = a[i];
+    if (Array.isArray(v) && depth > 0) __flat(v, depth - 1, out);
+    else out.push(v);
+  }
+  return out;
+}
+function __init_arr() {
+  var AP = Array.prototype;
+  __defm(AP, 'at', function (i) { i = Math.trunc(Number(i)) || 0; if (i < 0) i += this.length; return this[i]; });
+  __defm(AP, 'reduceRight', function (f, init) {
+    var i = this.length - 1, acc;
+    if (arguments.length > 1) acc = init;
+    else {
+      if (i < 0) throw new TypeError('Reduce of empty array with no initial value');
+      acc = this[i--];
+    }
+    for (; i >= 0; i--) acc = f(acc, this[i], i, this);
+    return acc;
+  });
+  __defm(AP, 'findLast', function (f, t) { for (var i = this.length - 1; i >= 0; i--) if (f.call(t, this[i], i, this)) return this[i]; return undefined; });
+  __defm(AP, 'findLastIndex', function (f, t) { for (var i = this.length - 1; i >= 0; i--) if (f.call(t, this[i], i, this)) return i; return -1; });
+  __defm(AP, 'flat', function (d) { return __flat(this, d === undefined ? 1 : Number(d), []); });
+  __defm(AP, 'flatMap', function (f, t) { return __flat(this.map(f, t), 1, []); });
+  __defm(AP, 'keys', function () { var i = 0, a = this; return __mkiter(function () { return i < a.length ? { value: i++, done: false } : { value: undefined, done: true }; }); });
+  __defm(AP, 'values', function () { var i = 0, a = this; return __mkiter(function () { return i < a.length ? { value: a[i++], done: false } : { value: undefined, done: true }; }); });
+  __defm(AP, 'entries', function () { var i = 0, a = this; return __mkiter(function () { return i < a.length ? { value: [i, a[i++]], done: false } : { value: undefined, done: true }; }); });
+  __defm(AP, 'copyWithin', function (target, start, end) {
+    var n = this.length, to = target < 0 ? Math.max(n + target, 0) : Math.min(target, n), from = start < 0 ? Math.max(n + start, 0) : Math.min(start || 0, n);
+    var fin = end === undefined ? n : (end < 0 ? Math.max(n + end, 0) : Math.min(end, n)), tmp = this.slice(from, fin), i;
+    for (i = 0; i < tmp.length && to + i < n; i++) this[to + i] = tmp[i];
+    return this;
+  });
+  __defm(AP, 'toReversed', function () { return this.slice().reverse(); });
+  __defm(AP, 'toSorted', function (f) { return this.slice().sort(f); });
+  __defm(AP, 'toSpliced', function () { var c = this.slice(); c.splice.apply(c, arguments); return c; });
+  __defm(AP, 'with', function (i, v) {
+    var c = this.slice();
+    i = Math.trunc(Number(i)) || 0;
+    if (i < 0) i += c.length;
+    if (i < 0 || i >= c.length) throw new RangeError('Invalid index : ' + i);
+    c[i] = v;
+    return c;
+  });
+  Math.cbrt = function (x) { return x < 0 ? -Math.pow(-x, 1 / 3) : Math.pow(x, 1 / 3); };
+  Math.sinh = function (x) { return (Math.exp(x) - Math.exp(-x)) / 2; };
+  Math.cosh = function (x) { return (Math.exp(x) + Math.exp(-x)) / 2; };
+  Math.tanh = function (x) { if (x === Infinity) return 1; if (x === -Infinity) return -1; var a = Math.exp(x), b = Math.exp(-x); return (a - b) / (a + b); };
+  Math.asinh = function (x) { return x === -Infinity ? x : Math.log(x + Math.sqrt(x * x + 1)); };
+  Math.acosh = function (x) { return Math.log(x + Math.sqrt(x * x - 1)); };
+  Math.atanh = function (x) { return Math.log((1 + x) / (1 - x)) / 2; };
+  Math.expm1 = function (x) { return Math.abs(x) < 1e-5 ? x + x * x / 2 + x * x * x / 6 : Math.exp(x) - 1; };
+  Math.log1p = function (x) { return Math.abs(x) < 1e-5 ? x - x * x / 2 + x * x * x / 3 : Math.log(1 + x); };
+  Math.clz32 = function (x) { x = x >>> 0; if (x === 0) return 32; var n = 0; while ((x & 2147483648) === 0) { x = x << 1; n++; } return n; };
+  Math.fround = function (x) { return x; };
+  Object.defineProperties = function (o, props) {
+    var k;
+    for (k in props) Object.defineProperty(o, k, props[k]);
+    return o;
+  };
+}
 function __init_lib() {
+  __init_arr();
   var rma = String.prototype.matchAll;
   String.prototype.matchAll = function (re) {
     if (re instanceof RegExp && re.flags.indexOf('g') < 0) throw new TypeError('String.prototype.matchAll called with a non-global RegExp argument');
@@ -502,9 +570,75 @@ function __toExponential(f) {
   } else r = __sig(x, f + 1);
   return neg + __expo(r[0], r[1]);
 }
-function __tpl() {
-  var n = arguments.length / 2, a = [], r = [];
-  for (var i = 0; i < n; i++) { a.push(arguments[i]); r.push(arguments[n + i]); }
+var __tplc;
+function __tpl(site) {
+  if (!__tplc) __tplc = {};
+  if (__tplc[site]) return __tplc[site];
+  var n = (arguments.length - 1) / 2, a = [], r = [];
+  for (var i = 0; i < n; i++) { a.push(arguments[i + 1]); r.push(arguments[n + i + 1]); }
   a.raw = r;
+  __tplc[site] = a;
   return a;
 }
+function __uriEnc(s, keep) {
+  var out = '', i, c, cp, lo, b, k, hx = '0123456789ABCDEF';
+  s = String(s);
+  for (i = 0; i < s.length; i++) {
+    c = s.charAt(i);
+    if (keep.indexOf(c) >= 0) { out += c; continue; }
+    cp = s.charCodeAt(i);
+    if (cp >= 56320 && cp <= 57343) throw new URIError('URI malformed');
+    if (cp >= 55296 && cp <= 56319) {
+      if (i + 1 >= s.length) throw new URIError('URI malformed');
+      lo = s.charCodeAt(i + 1);
+      if (lo < 56320 || lo > 57343) throw new URIError('URI malformed');
+      cp = 65536 + ((cp - 55296) << 10) + (lo - 56320);
+      i++;
+    }
+    if (cp < 128) b = [cp];
+    else if (cp < 2048) b = [192 | (cp >> 6), 128 | (cp & 63)];
+    else if (cp < 65536) b = [224 | (cp >> 12), 128 | ((cp >> 6) & 63), 128 | (cp & 63)];
+    else b = [240 | (cp >> 18), 128 | ((cp >> 12) & 63), 128 | ((cp >> 6) & 63), 128 | (cp & 63)];
+    for (k = 0; k < b.length; k++) out += '%' + hx.charAt(b[k] >> 4) + hx.charAt(b[k] & 15);
+  }
+  return out;
+}
+function __uriDec(s, reserved) {
+  var out = '', i = 0, n, c, b, need, cp, k, h, j, raw;
+  s = String(s);
+  n = s.length;
+  while (i < n) {
+    c = s.charAt(i);
+    if (c !== '%') { out += c; i++; continue; }
+    raw = i;
+    if (i + 2 > n - 1) throw new URIError('URI malformed');
+    h = parseInt(s.substr(i + 1, 2), 16);
+    if (!/^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) throw new URIError('URI malformed');
+    b = h;
+    i += 3;
+    if (b < 128) {
+      if (reserved.indexOf(String.fromCharCode(b)) >= 0) out += s.slice(raw, i);
+      else out += String.fromCharCode(b);
+      continue;
+    }
+    if (b >= 192 && b < 224) { need = 1; cp = b & 31; }
+    else if (b >= 224 && b < 240) { need = 2; cp = b & 15; }
+    else if (b >= 240 && b < 248) { need = 3; cp = b & 7; }
+    else throw new URIError('URI malformed');
+    for (k = 0; k < need; k++) {
+      if (s.charAt(i) !== '%' || !/^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) throw new URIError('URI malformed');
+      j = parseInt(s.substr(i + 1, 2), 16);
+      if ((j & 192) !== 128) throw new URIError('URI malformed');
+      cp = (cp << 6) | (j & 63);
+      i += 3;
+    }
+    if ((need === 1 && cp < 128) || (need === 2 && cp < 2048) || (need === 3 && cp < 65536) || cp > 1114111 || (cp >= 55296 && cp <= 57343)) throw new URIError('URI malformed');
+    if (cp >= 65536) { cp -= 65536; out += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023)); }
+    else out += String.fromCharCode(cp);
+  }
+  return out;
+}
+function __encodeURIComponent(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"); }
+function __encodeURI(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#"); }
+function __decodeURIComponent(s) { return __uriDec(s, ''); }
+function __decodeURI(s) { return __uriDec(s, ';/?:@&=+$,#'); }

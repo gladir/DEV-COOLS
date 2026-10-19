@@ -84,9 +84,11 @@ Limites connues
     blocs.
   - Expressions regulieres : lookbehind, groupes nommes ((?<nom>...), \k<nom>,
     $<nom>), matchAll (iterateur), drapeau u avec \u{...} et plages hors BMP
-    dans les classes sont pris en charge. Ecarts : le drapeau i ne replie la
-    casse que pour l'ASCII ; pas de \p{...} ; le point (.) consomme un point
-    de code entier meme sans drapeau u (Node : une unite UTF-16).
+    dans les classes sont pris en charge. Le drapeau i replie la casse ASCII
+    et la casse Unicode simple (tables du prelude) pour les caracteres
+    litteraux et les classes (intervalles de moins de 700 points de code).
+    Ecarts : pas de \p{...} ; le point (.) consomme un point de code entier
+    meme sans drapeau u (Node : une unite UTF-16).
   - Classes : l'appel d'une classe sans new leve un TypeError ; super.methode()
     fonctionne dans les fleches, mais super(...) (appel du constructeur
     parent) dans une fleche n'est pas gere.
@@ -95,6 +97,15 @@ Limites connues
     (arithmetique entiere en precision arbitraire).
   - Traces de pile : « at fonction (fichier:ligne) » avec la ligne de l'appel,
     sans numero de colonne.
+  - Ajouts de bibliotheque (prelude) : Array.prototype at, reduceRight,
+    findLast, findLastIndex, flat, flatMap, keys, values, entries,
+    copyWithin, toReversed, toSorted, toSpliced, with ; Math cbrt, sinh, cosh,
+    tanh, asinh, acosh, atanh, expm1, log1p, clz32, fround (approximation) ;
+    Object.defineProperties ; encodeURI, decodeURI, encodeURIComponent,
+    decodeURIComponent ; la propriete constructor des prototypes natifs.
+    Toujours absents : Object.getOwnPropertyDescriptor(s), seal,
+    preventExtensions, isExtensible, Reflect, Proxy, Intl,
+    Symbol comme type distinct (les symboles sont des chaines marquees).
   - Les messages d'erreur du runtime (TypeError, RangeError... produits par le
     moteur) peuvent differer de ceux de V8.
   - Date, Map, Set, WeakMap, WeakSet, Symbol, Promise, async/await, les
@@ -107,20 +118,31 @@ Limites connues
         formats ISO, Â« Mar 5, 2021 08:09:10 Â» et jj/mm/aaaa.
       * async/await et generateurs : coroutines a pile propre (64 Ko) ;
         pas de generateurs asynchrones ni de Â« for await Â».
-      * BigInt : precision arbitraire (objet du prelude) ; x++ sur une
-        valeur retournee par x++ devient un nombre ; 0n est Â« truthy Â» ;
-        pas de Map/Set par valeur sur les BigInt.
-      * new.target : variable globale positionnee par new ; une fonction
-        appelee normalement depuis un constructeur peut le voir a tort.
-      * require : util, assert, events, os, path (syntaxe POSIX), timers,
-        timers/promises, perf_hooks, process. fs, http, crypto... lÃ¨vent
-        une erreur explicite. Pas de require de fichiers relatifs.
-      * eval : seulement des expressions (litteraux, operateurs, tableaux,
-        objets, Math/JSON/Number/String..., appels de methodes) ; pas
-        d'instructions (var, function, if...) ni d'acces aux variables du
-        programme ; new Function n'existe pas.
-      * Les gabarits etiquetes n'ont pas de cache par site d'appel (le
-        tableau strings est recree a chaque evaluation).
+      * BigInt : precision arbitraire (objet du prelude) ; 0n est faux, x++
+        et x-- rendent un BigInt, les BigInt sont egaux par valeur (===,
+        indexOf, Map, Set). typeof rend 'bigint'.
+      * new.target : propre a chaque fonction (symbole cache lu a l'entree
+        puis efface) ; un appel ordinaire depuis un constructeur voit
+        undefined, les fleches heritent de la fonction englobante.
+      * require : util, assert, events, os, path, timers, timers/promises,
+        perf_hooks, process. fs, http, crypto... levent une erreur
+        explicite. Pas de require de fichiers relatifs. path suit Node sous
+        Windows (path = path.win32, separateur \, lecteurs et UNC), path.posix
+        donne la variante POSIX ; les deux sont portes de lib/path.js de Node.
+      * eval et new Function : un interprete JavaScript ecrit dans le prelude
+        (bloc optionnel, ajoute seulement si le source contient « eval » ou
+        « Function »). Il traite var/let/const, destructuration, fonctions,
+        fleches, classes (champs, statiques, accesseurs, super, #prive),
+        if/for/for-in/for-of/while/do/switch/try, etiquettes, modeles,
+        spread, ?. ?? et ses affectations. Les variables globales du
+        programme (var, let, const, function, class de premier niveau) sont
+        lues et modifiees par nom ; les variables creees par eval ne sont
+        visibles que d'autres eval ; les variables locales d'une fonction
+        ne sont pas visibles (eval se comporte comme un eval indirect) ;
+        generateurs, async/await, with, import/export ne sont pas geres
+        dans le code evalue. eval est lent (arbre interprete).
+      * Gabarits etiquetes : le tableau strings (et strings.raw) est cree une
+        fois par site d'appel, comme sous Node (non gele).
   - Les .exe n'ont pas ete executes sur une machine Windows par l'auteur du
     harnais : leur validation repose sur l'emulateur, binutils, DISEXE et des
     controles de relocation.

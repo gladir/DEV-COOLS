@@ -221,8 +221,26 @@ function __coll(s, level) {
   }
   return out;
 }
+var __cfold;
 function __init_str() {
   var SP = String.prototype;
+  // variantes de casse des points de code lo..lo+n (valeur empaquetee), pour les regex /i
+  __cfold = function (packed) {
+    var lo = packed & 2097151, n = packed >> 21, out = [], i, cp, s, v, k, c1, c2, vs;
+    for (i = 0; i <= n; i++) {
+      cp = lo + i;
+      if (cp >= 55296 && cp <= 57343) continue;
+      s = String.fromCodePoint(cp);
+      c1 = s.toUpperCase(); c2 = s.toLowerCase();
+      vs = [c1, c2, c1.toLowerCase(), c2.toUpperCase()];
+      for (k = 0; k < 4; k++) {
+        v = vs[k];
+        if (v.length === 0 || v.length > 2) continue;
+        if (v.codePointAt(0) !== cp && String.fromCodePoint(v.codePointAt(0)) === v) out.push(v.codePointAt(0));
+      }
+    }
+    return out;
+  };
   SP.at = function (i) {
     var s = __su_this(this), n = s.length;
     i = __su_int(i);

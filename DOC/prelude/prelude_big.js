@@ -1,4 +1,4 @@
-var __bigproto, __bigop, __BigInt;
+var __bigproto, __bigop, __BigInt, __btruthy, __bseq;
 function __bmk(sign, m) {
   var o = Object.create(__bigproto);
   o['\x01m'] = m;
@@ -390,6 +390,8 @@ function __init_big() {
   var P = {};
   __bigproto = P;
   __bigop = __bigop_impl;
+  __bseq = function (b) { return __bsg(this) === __bsg(b) && __mcmp(__bm(this), __bm(b)) === 0; };
+  __btruthy = function (x) { return x['\x01m'].length !== 0; };
   __BigInt = function BigInt(v) {
     if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError('BigInt is not a constructor');
     return __bto(v);

@@ -1662,10 +1662,10 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 4861;
-  PRELUDE_BASE = 2535;
+  PRELUDE_LINES = 4947;
+  PRELUDE_BASE = 2621;
   PRELUDE_CHUNKS = 2;
-  PreludeChunkEnd: Array[1..2] Of LongInt = (3170, 4861);
+  PreludeChunkEnd: Array[1..2] Of LongInt = (3256, 4947);
   PreludeChunkKeys: Array[1..2] Of String[40] = ('path', 'eval|Function');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
@@ -2793,7 +2793,75 @@ Const
     '  if (neg !== '''' && /^0*$/.test(ip + fp)) neg = Number(this) < 0 ? ''-'' : '''';',
     '  return neg + ip + (f > 0 ? ''.'' + fp : '''');',
     '}',
+    '',
+    'function __defm(o, name, fn) {',
+    '  Object.defineProperty(o, name, { value: fn, writable: true, configurable: true, enumerable: false });',
+    '}',
+    'function __flat(a, depth, out) {',
+    '  var i, v;',
+    '  for (i = 0; i < a.length; i++) {',
+    '    v = a[i];',
+    '    if (Array.isArray(v) && depth > 0) __flat(v, depth - 1, out);',
+    '    else out.push(v);',
+    '  }',
+    '  return out;',
+    '}',
+    'function __init_arr() {',
+    '  var AP = Array.prototype;',
+    '  __defm(AP, ''at'', function (i) { i = Math.trunc(Number(i)) || 0; if (i < 0) i += this.length; return this[i]; });',
+    '  __defm(AP, ''reduceRight'', function (f, init) {',
+    '    var i = this.length - 1, acc;',
+    '    if (arguments.length > 1) acc = init;',
+    '    else {',
+    '      if (i < 0) throw new TypeError(''Reduce of empty array with no initial value'');',
+    '      acc = this[i--];',
+    '    }',
+    '    for (; i >= 0; i--) acc = f(acc, this[i], i, this);',
+    '    return acc;',
+    '  });',
+    '  __defm(AP, ''findLast'', function (f, t) { for (var i = this.length - 1; i >= 0; i--) if (f.call(t, this[i], i, this)) return this[i]; return undefined; });',
+    '  __defm(AP, ''findLastIndex'', function (f, t) { for (var i = this.length - 1; i >= 0; i--) if (f.call(t, this[i], i, this)) return i; return -1; });',
+    '  __defm(AP, ''flat'', function (d) { return __flat(this, d === undefined ? 1 : Number(d), []); });',
+    '  __defm(AP, ''flatMap'', function (f, t) { return __flat(this.map(f, t), 1, []); });',
+    '  __defm(AP, ''keys'', function () { var i = 0, a = this; return __mkiter(function () { return i < a.length ? { value: i++, done: false } : { value: undefined, done: true }; }); });',
+    '  __defm(AP, ''values'', function () { var i = 0, a = this; return __mkiter(function () { return i < a.length ? { value: a[i++], done: false } : { value: undefined, done: true }; }); });',
+    '  __defm(AP, ''entries'', function () { var i = 0, a = this; return __mkiter(function () { return i < a.length ? { value: [i, a[i++]], done: false } : { value: undefined, done: true }; }); });',
+    '  __defm(AP, ''copyWithin'', function (target, start, end) {',
+    '    var n = this.length, to = target < 0 ? Math.max(n + target, 0) : Math.min(target, n), from = start < 0 ? Math.max(n + start, 0) : Math.min(start || 0, n);',
+    '    var fin = end === undefined ? n : (end < 0 ? Math.max(n + end, 0) : Math.min(end, n)), tmp = this.slice(from, fin), i;',
+    '    for (i = 0; i < tmp.length && to + i < n; i++) this[to + i] = tmp[i];',
+    '    return this;',
+    '  });',
+    '  __defm(AP, ''toReversed'', function () { return this.slice().reverse(); });',
+    '  __defm(AP, ''toSorted'', function (f) { return this.slice().sort(f); });',
+    '  __defm(AP, ''toSpliced'', function () { var c = this.slice(); c.splice.apply(c, arguments); return c; });',
+    '  __defm(AP, ''with'', function (i, v) {',
+    '    var c = this.slice();',
+    '    i = Math.trunc(Number(i)) || 0;',
+    '    if (i < 0) i += c.length;',
+    '    if (i < 0 || i >= c.length) throw new RangeError(''Invalid index : '' + i);',
+    '    c[i] = v;',
+    '    return c;',
+    '  });',
+    '  Math.cbrt = function (x) { return x < 0 ? -Math.pow(-x, 1 / 3) : Math.pow(x, 1 / 3); };',
+    '  Math.sinh = function (x) { return (Math.exp(x) - Math.exp(-x)) / 2; };',
+    '  Math.cosh = function (x) { return (Math.exp(x) + Math.exp(-x)) / 2; };',
+    '  Math.tanh = function (x) { if (x === Infinity) return 1; if (x === -Infinity) return -1; var a = Math.exp(x), b = Math.exp(-x); return (a - b) / (a + b); };',
+    '  Math.asinh = function (x) { return x === -Infinity ? x : Math.log(x + Math.sqrt(x * x + 1)); };',
+    '  Math.acosh = function (x) { return Math.log(x + Math.sqrt(x * x - 1)); };',
+    '  Math.atanh = function (x) { return Math.log((1 + x) / (1 - x)) / 2; };',
+    '  Math.expm1 = function (x) { return Math.abs(x) < 1e-5 ? x + x * x / 2 + x * x * x / 6 : Math.exp(x) - 1; };',
+    '  Math.log1p = function (x) { return Math.abs(x) < 1e-5 ? x - x * x / 2 + x * x * x / 3 : Math.log(1 + x); };',
+    '  Math.clz32 = function (x) { x = x >>> 0; if (x === 0) return 32; var n = 0; while ((x & 2147483648) === 0) { x = x << 1; n++; } return n; };',
+    '  Math.fround = function (x) { return x; };',
+    '  Object.defineProperties = function (o, props) {',
+    '    var k;',
+    '    for (k in props) Object.defineProperty(o, k, props[k]);',
+    '    return o;',
+    '  };',
+    '}',
     'function __init_lib() {',
+    '  __init_arr();',
     '  var rma = String.prototype.matchAll;',
     '  String.prototype.matchAll = function (re) {',
     '    if (re instanceof RegExp && re.flags.indexOf(''g'') < 0) throw new TypeError(''String.prototype.matchAll called with a non-global RegExp argument'');',
@@ -4156,8 +4224,26 @@ Const
     '  }',
     '  return out;',
     '}',
+    'var __cfold;',
     'function __init_str() {',
     '  var SP = String.prototype;',
+    '  // variantes de casse des points de code lo..lo+n (valeur empaquetee), pour les regex /i',
+    '  __cfold = function (packed) {',
+    '    var lo = packed & 2097151, n = packed >> 21, out = [], i, cp, s, v, k, c1, c2, vs;',
+    '    for (i = 0; i <= n; i++) {',
+    '      cp = lo + i;',
+    '      if (cp >= 55296 && cp <= 57343) continue;',
+    '      s = String.fromCodePoint(cp);',
+    '      c1 = s.toUpperCase(); c2 = s.toLowerCase();',
+    '      vs = [c1, c2, c1.toLowerCase(), c2.toUpperCase()];',
+    '      for (k = 0; k < 4; k++) {',
+    '        v = vs[k];',
+    '        if (v.length === 0 || v.length > 2) continue;',
+    '        if (v.codePointAt(0) !== cp && String.fromCodePoint(v.codePointAt(0)) === v) out.push(v.codePointAt(0));',
+    '      }',
+    '    }',
+    '    return out;',
+    '  };',
     '  SP.at = function (i) {',
     '    var s = __su_this(this), n = s.length;',
     '    i = __su_int(i);',
@@ -31748,6 +31834,43 @@ Begin
   FEnd;
 
   { _JSRT_rx_class(C) : analyse [...] ; le curseur est sur le crochet ouvrant }
+  { _JSRT_rx_foldrange(table, lo, hi) : ajoute a la classe les variantes de casse des points
+    de code lo..hi (hi - lo < 1024), fournies par le prelude (__cfold) }
+  FBegin('_JSRT_rx_foldrange', 0);
+  A('mov ecx, offset _JSV___cfold');
+  A('cmp dword ptr [ecx+4], $FN');
+  A('jne .ret');
+  A('mov eax, dword ptr [ebp+16]');
+  A('sub eax, dword ptr [ebp+12]');
+  A('shl eax, 21');
+  A('or eax, dword ptr [ebp+12]');
+  A('push $INT');
+  A('push eax');
+  A('push $UNDEF');
+  A('push 0');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_call1');
+  A('add esp, 20');
+  A('cmp edx, $ARR');
+  A('jne .ret');
+  A('mov ebx, eax');
+  A('xor edi, edi');
+  A('.l:');
+  A('cmp edi, dword ptr [ebx+$ARR_LEN]');
+  A('jae .ret');
+  A('mov eax, edi');
+  A('shl eax, 3');
+  A('add eax, dword ptr [ebx+$ARR_ELEMS]');
+  A('mov eax, dword ptr [eax]');
+  A('push eax');
+  A('push eax');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('inc edi');
+  A('jmp .l');
+  FEnd;
+
   FBegin('_JSRT_rx_class', 4);
   A('mov esi, dword ptr [ebp+8]');
   A('push 32');
@@ -31989,6 +32112,37 @@ Begin
   A('inc ebx');
   A('cmp ebx, 122');
   A('jbe .ci3');
+  { variantes de casse des membres hors ASCII (liste figee au depart) }
+  A('mov eax, ' + Lv(1));
+  A('mov eax, dword ptr [eax+28]');
+  A('test eax, eax');
+  A('jz .emit');
+  A('mov ebx, dword ptr [eax]');
+  A('xor edi, edi');
+  A('.cfl:');
+  A('cmp edi, ebx');
+  A('jae .emit');
+  A('mov eax, ' + Lv(1));
+  A('mov eax, dword ptr [eax+28]');
+  A('mov edx, edi');
+  A('shl edx, 3');
+  A('lea eax, [eax+edx+8]');
+  A('mov ecx, dword ptr [eax]');
+  A('mov edx, dword ptr [eax+4]');
+  A('cmp edx, 128');
+  A('jb .cfn');
+  A('mov eax, edx');
+  A('sub eax, ecx');
+  A('cmp eax, 700');
+  A('ja .cfn');
+  A('push edx');
+  A('push ecx');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_foldrange');
+  A('add esp, 12');
+  A('.cfn:');
+  A('inc edi');
+  A('jmp .cfl');
   A('.emit:');
   RxEmit('5', Lv(1), Lv(2));
   FEnd;
@@ -32172,6 +32326,33 @@ Begin
   RxErr('\ at end of pattern');
   { litteraux }
   A('.lit:');
+  A('movzx eax, byte ptr [ebx]');
+  A('cmp eax, 192');
+  A('jb .litb');
+  A('test dword ptr [esi+20], 1');
+  A('jz .litb');
+  { caractere hors ASCII en mode /i : classe du point de code et de ses variantes }
+  A('push esi');
+  A('call _JSRT_rx_getcp');
+  A('add esp, 4');
+  A('mov ' + Lv(3) + ', eax');
+  A('push 32');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov ' + Lv(2) + ', eax');
+  A('push ' + Lv(3));
+  A('push ' + Lv(3));
+  A('push ' + Lv(2));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push ' + Lv(3));
+  A('push ' + Lv(3));
+  A('push ' + Lv(2));
+  A('call _JSRT_rx_foldrange');
+  A('add esp, 12');
+  RxEmit('5', Lv(2), '0');
+  A('jmp .ret');
+  A('.litb:');
   A('movzx eax, byte ptr [ebx]');
   A('push eax');
   A('call _JSRT_u8len');
