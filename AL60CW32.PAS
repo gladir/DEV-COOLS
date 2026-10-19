@@ -26,10 +26,10 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 07 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 08 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
-         et listing .ASM) ; TODO 08 a 25 a faire.
+         et listing .ASM, segment de donnees) ; TODO 09 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -255,7 +255,7 @@
               le listing seulement avec -asm et, avec -d, affiche le code
               interne ; en -v, nombre d'instructions et de noms
 
-  TODO 08 - SEGMENT DE DONNEES, VARIABLES STATIQUES ET OWN [A FAIRE]
+  TODO 08 - SEGMENT DE DONNEES, VARIABLES STATIQUES ET OWN [IMPLEMENTE]
             Cellules de .data : zero (DD n DUP(0)), chaines (DB, 0),
               entiers, reels (DQ), tables d'adresses (switch)
             Chaines litterales dedoublonnees (_A60K_nnn)
@@ -265,6 +265,15 @@
               cellules _A60O_nom_n, meme pour les tableaux OWN
             Constantes reelles en memoire (QWORD) pour FLD
             Verification : own.a60, test_own.a60, test_data.a60
+            Realise : DataNew, DataAddZero (octets a zero), DataStr
+              (chaine litterale dedoublonnee, _A60K_n), DataInt et
+              DataReal (constantes _A60C_n dedoublonnees, reels en QWORD
+              par leurs deux mots), DataTable (table d'adresses de switch),
+              DataDeclareSym (cellule d'une variable globale ou own, de la
+              taille de son type : integer et Boolean 4 octets, real 8) ;
+              DataDump (mode -d) ; la declaration des tableaux, y compris
+              own, est faite avec les tableaux (TODO 15) ; l'ecriture des
+              octets en .data est faite par l'encodeur (TODO 19)
 
   TODO 09 - EXPRESSIONS PRIMAIRES ET VARIABLES [A FAIRE]
             Arbre d'expression (pool reinitialise a chaque instruction) :
@@ -3132,6 +3141,142 @@ Begin
     FatalError('erreur d''ecriture de ' + FileName);
 End;
 
+{ ---- Donnees (.data) ---- }
+
+Function DataNew(NameIdx : Integer; K : TDataKind) : Integer;
+Begin
+  If DataCount >= MAX_DATAITEMS Then
+    FatalError('trop de donnees statiques');
+  FillChar(DataTab[DataCount], SizeOf(TDataItem), 0);
+  DataTab[DataCount].Name := NameIdx;
+  DataTab[DataCount].Kind := K;
+  DataTab[DataCount].Str  := -1;
+  DataNew := DataCount;
+  Inc(DataCount);
+End;
+
+{ Cellule de Size octets mise a zero }
+Procedure DataAddZero(NameIdx : Integer; Size : LongInt);
+Begin
+  DataTab[DataNew(NameIdx, DK_ZERO)].Size := Size;
+End;
+
+{ Chaine litterale : retourne le nom du label ; deux chaines egales
+  partagent la meme cellule. }
+Function DataStr(Const S : TString) : Integer;
+Var
+  I, N : Integer;
+Begin
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And
+       (AsmStrs[DataTab[I].Str] = S) Then
+    Begin
+      DataStr := DataTab[I].Name;
+      Exit;
+    End;
+  Inc(ConstSeq);
+  N := Intern(A60_STR_PFX + ItoS(ConstSeq));
+  I := DataNew(N, DK_STR);
+  DataTab[I].Str  := AsmStrAdd(S);
+  DataTab[I].Size := Length(S);
+  DataStr := N;
+End;
+
+{ Constante entiere en memoire (argument par nom, par reference) }
+Function DataInt(V : LongInt) : Integer;
+Var
+  I, N : Integer;
+Begin
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_INT) And (DataTab[I].Lo = V) Then
+    Begin
+      DataInt := DataTab[I].Name;
+      Exit;
+    End;
+  Inc(ConstSeq);
+  N := Intern('_A60C_' + ItoS(ConstSeq));
+  I := DataNew(N, DK_INT);
+  DataTab[I].Lo   := V;
+  DataTab[I].Size := 4;
+  DataInt := N;
+End;
+
+{ Constante reelle (QWORD) }
+Function DataReal(V : Double) : Integer;
+Var
+  I, N : Integer;
+  B    : TDoubleBits;
+Begin
+  B.D := V;
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_REAL) And (DataTab[I].Lo = B.Lo) And
+       (DataTab[I].Hi = B.Hi) Then
+    Begin
+      DataReal := DataTab[I].Name;
+      Exit;
+    End;
+  Inc(ConstSeq);
+  N := Intern('_A60C_' + ItoS(ConstSeq));
+  I := DataNew(N, DK_REAL);
+  DataTab[I].Lo   := B.Lo;
+  DataTab[I].Hi   := B.Hi;
+  DataTab[I].Size := 8;
+  DataReal := N;
+End;
+
+{ Table d'adresses (switch) : Entries = indices de noms }
+Procedure DataTable(NameIdx : Integer; Const Entries : Array Of Integer;
+                    Count : Integer);
+Var
+  I, K : Integer;
+Begin
+  K := DataNew(NameIdx, DK_TABLE);
+  DataTab[K].First := TabEntCount;
+  DataTab[K].Count := Count;
+  DataTab[K].Size  := 4 * Count;
+  For I := 0 To Count - 1 Do
+  Begin
+    If TabEntCount >= MAX_TABENT Then
+      FatalError('tables de switch trop grandes');
+    TabEnt[TabEntCount] := Entries[I];
+    Inc(TabEntCount);
+  End;
+End;
+
+{ Declare la cellule .data d'un symbole : variable globale (niveau 0
+  ou own) de la taille de son type ; un tableau est declare par le
+  TODO 15. Les noms _A60V_x et _A60O_x_n viennent de SymAdd. }
+Procedure DataDeclareSym(S : Integer);
+Begin
+  Case SymTab[S].Kind Of
+    SK_VAR, SK_OWN:
+      If SymTab[S].Storage = SC_GLOBAL Then
+        DataAddZero(Intern(SymTab[S].Mangled),
+                    TypeSizeof(SymTab[S].TypeIdx));
+  End;
+End;
+
+{ Mode debug -d : liste des cellules de donnees }
+Procedure DataDump;
+Var
+  I : Integer;
+  K : TString;
+Begin
+  WriteLn('Donnees (', DataCount, ') :');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_ZERO  : K := 'zero';
+      DK_STR   : K := 'chaine';
+      DK_INT   : K := 'entier';
+      DK_REAL  : K := 'reel';
+      DK_TABLE : K := 'table';
+    End;
+    WriteLn('  ', NameTab[DataTab[I].Name], ' ', K, ' ',
+            DataTab[I].Size, ' octets');
+  End;
+End;
+
 { ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 09 a 18)
   ============================================================ }
@@ -3151,6 +3296,7 @@ Begin
             ' nom(s) interne(s)');
   If Opts.DebugMode Then
   Begin
+    DataDump;
     WriteLn('Code interne (', CodeCount + DeferCount, ' entrees) :');
     WriteInstrList(Output, CodeTab, CodeCount);
     WriteInstrList(Output, DeferTab, DeferCount);
