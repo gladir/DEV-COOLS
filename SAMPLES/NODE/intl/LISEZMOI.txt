@@ -1,0 +1,3 @@
+Tests Intl : ces programmes affichent beaucoup de lignes ; comparez leur sortie a celle de Node.
+Avec l'emulateur (-run) ils depassent la limite d'instructions : compilez-les en .exe et lancez-les
+(sous Wine ou Windows), puis comparez avec "node fichier.js".

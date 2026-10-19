@@ -1,0 +1,184 @@
+JSCW32 - Compilateur JavaScript vers executable Windows 32 bits (80386)
+=======================================================================
+
+Syntaxe
+-------
+  jscw32 [options] fichier.js
+
+Produits
+--------
+  Par defaut : fichier.exe (PE32 console, KERNEL32.dll).
+  -obj       : fichier.obj seulement (COFF i386, pas d'edition de liens).
+  -asm       : ecrit en plus fichier.asm (syntaxe NASM Win32 : nasm -f win32).
+               Le .asm n'est jamais ecrit sans -asm.
+  -o nom     : nom de base commun (nom.exe / nom.obj / nom.asm).
+  Un ancien .exe est supprime avant une nouvelle production en mode EXE.
+
+Pipeline
+--------
+  .js -> jetons -> AST -> analyse semantique -> IR 80386 -> [.asm] -> .obj COFF
+      -> .exe PE32. Le formateur de console (inspect de Node) est un prelude JS
+  ajoute a la fin du source ; les lignes du programme gardent leur numero.
+
+Execution et diagnostics
+------------------------
+  -run       execute le programme dans l'emulateur 80386 integre (pas besoin
+             de Windows). -v, -tokens, -ast, -scopes, -runtime, -data, -ir,
+             -rt (avec -ir) affichent les etapes internes.
+
+Harnais de validation (-test)
+-----------------------------
+  jscw32 -test [dossier] [-obj] [-asm] [-keep]
+
+  Compile chaque .js du dossier (SAMPLES\JS par defaut) dans un sous-processus
+  et verifie :
+    mode EXE     (defaut)  : en-tetes MZ/PE du .exe, puis execution ;
+    mode OBJ     (-obj)    : en-tete COFF i386 du .obj ;
+    mode ASM+OBJ (-asm -obj) : .asm et .obj.
+  Execution : sous Windows le .exe est lance ; ailleurs, si la variable
+  d'environnement JSCW32_RUNNER est definie (par exemple JSCW32_RUNNER=wine),
+  le .exe est lance avec cette commande ; sinon l'emulateur integre (-run) tient
+  lieu d'execution. La sortie est comparee aux commentaires
+  Â« // attendu : valeur Â» du source, dans l'ordre :
+    Â« a puis b Â»   deux lignes a et b ;
+    Â« a, b, c Â»    trois lignes consecutives ;
+    Â« v (texte) Â»  la parenthese finale est un commentaire ;
+    Â« Error: v Â»   une ligne d'erreur correspond a v.
+  Sans commentaire Â« attendu Â», le test exige une compilation et une execution
+  sans erreur. test11adv se termine volontairement par une exception non
+  rattrapee (instanceof sur un objet) : c'est le resultat attendu.
+  Les artefacts jt_* sont supprimes (sauf -keep). Le code de sortie est 1 si
+  au moins un fichier echoue.
+
+Limites connues
+---------------
+  Ce chapitre decrit ce qui est implemente et, pour chaque domaine, ce qui
+  reste different de Node (les comparaisons se font avec Node 22 / V8). Les
+  programmes d'essai comparant les sorties a celles de Node sont dans
+  SAMPLES\NODE (lancer SAMPLES/NODE/run_diff.sh <compilateur>) ; les tests
+  de SAMPLES\JS passent par -test.
+
+  Cible, optimisation, validation
+  - Cible unique : 80386, 32 bits, executable PE32 console (KERNEL32).
+    Pas de 64 bits, pas d'autre systeme.
+  - Optimisation : repli des constantes entieres, un judas local sur l'IR
+    (rechargement d'un emplacement deja present dans un registre), boucle
+    d'initialisation des variables, prelude decoupe en blocs optionnels
+    (chemin, eval, URL/fetch, binaire/fs, Proxy, Unicode, Intl, formats de
+    nombres, modules, tables de langues). Pas d'allocation de registres :
+    le code reste de style « machine a pile ». Les blocs optionnels sont
+    choisis par recherche de mots dans le source (par exemple toFixed,
+    encodeURIComponent, btoa, require, Proxy...) : une methode appelee par un
+    nom construit a l'execution (obj['to' + 'Fixed']) sans que le mot
+    apparaisse ailleurs dans le programme n'est pas disponible (erreur
+    « module non charge »), sauf si le source contient eval ou Function. Un « hello » pese environ
+    780 Ko (le prelude de base est toujours present : console, nombres,
+    chaines, tableaux, Map/Set, Date, Promise, JSON, BigInt).
+  - Les .exe ont ete valides sous Wine et avec l'emulateur 80386 integre
+    (-run), jamais sur un vrai Windows par l'auteur du harnais.
+  - Aucune table interne n'a de taille fixe : source, jetons, AST, symboles,
+    portees, pool de donnees, instructions, tampons COFF/PE et sorties du
+    harnais sont des listes chainees par blocs allouees sur le tas. Seules la
+    memoire disponible et l'espace d'adressage de l'emulateur -run (64 Mo)
+    bornent la taille d'un programme.
+
+  Langage
+  - Modules : require de fichiers relatifs, JSON, node_modules, import/export
+    ESM (liaisons par instantane, pas « vivantes »), import() dynamique et
+    await de premier niveau sont assembles a la compilation en un seul
+    executable (les fichiers ne sont pas lus a l'execution). require des
+    modules integres : util, assert, events, os, path, timers,
+    timers/promises, perf_hooks, process, fs, readline, child_process.
+  - async/await, generateurs, generateurs asynchrones (async function*,
+    yield*, for await ... of, sur iterables synchrones ou asynchrones).
+    Les coroutines ont une pile propre de 64 Ko : une recursion tres profonde
+    a l'interieur d'un generateur ou d'une fonction async peut la depasser.
+  - for-of ferme l'iterateur (return()) sur break, return, continue
+    etiquete et exception, comme Node.
+  - Mode non strict : this vaut globalThis (ou le receveur) dans un appel nu ;
+    arguments est lie aux parametres simples (ecrire un parametre change
+    arguments[i] et inversement). Exception : un parametre capture par une
+    fonction imbriquee n'est pas lie. with (objet) instruction fonctionne mais
+    son corps est interprete (voir eval) : return, break et continue non
+    etiquetes y sont geres ; var, class et yield/await dans le corps ne le
+    sont pas completement ; les variables du corps sont lues et ecrites par
+    nom (lent).
+  - Function.prototype.toString rend le texte source des fonctions et des
+    classes du programme (« [native code] » pour les natives).
+  - super(...) fonctionne dans une fleche d'un constructeur derive.
+  - Variable inconnue a la compilation : lue dans globalThis a l'execution
+    (ReferenceError si absente), comme Node.
+  - Symboles : chaines marquees. typeof rend 'symbol', Symbol('a').constructor
+    est Symbol, Object.getOwnPropertySymbols existe ; un symbole reste
+    pourtant une chaine pour certains operateurs peu courants.
+
+  eval et new Function
+  - Interprete JavaScript ecrit dans le prelude (bloc ajoute seulement si le
+    source contient « eval », « Function » ou « with »). Il traite var/let/
+    const, destructuration, fonctions, fleches, classes (champs, statiques,
+    accesseurs, super, #prive), generateurs, async/await, for await,
+    import(), if/for/while/do/switch/try, etiquettes, modeles, spread, ?. ??,
+    with.
+  - eval direct : voit les variables locales et les parametres de la
+    fonction appelante, ses fonctions locales et this (les variables sont
+    passees par cellules nommees ; le compilateur place alors dans des
+    cellules toutes les variables visibles de la fonction). Les variables
+    creees par un eval deviennent globales (pas locales a la fonction).
+    Un parametre ou une variable const reste modifiable depuis eval.
+  - import / export statiques ne sont pas geres dans le code evalue.
+  - eval est lent (arbre interprete).
+
+  Chaines, nombres, dates, Intl
+  - Chaines UTF-16 comme Node (length, indices, charCodeAt, regex...), stockage
+    UTF-8/WTF-8. toUpperCase/toLowerCase suivent Unicode (tables du
+    prelude). normalize NFC/NFD/NFKC/NFKD exact (tables generees depuis Node).
+    localeCompare : classement par groupes de base + tables de langues, pas
+    la collation ICU complete.
+  - Expressions regulieres : lookbehind, groupes nommes, matchAll, drapeaux
+    u, i (repli de casse Unicode simple), \p{...} / \P{...} (proprietes
+    Unicode generees depuis ICU 77). Ecart : le point sans drapeau u consomme
+    un point de code entier, pas une unite UTF-16.
+  - Nombres : affichage exact des doubles, toFixed/toPrecision/toExponential
+    exacts (arithmetique entiere en precision arbitraire), BigInt a precision
+    arbitraire.
+  - Dates : fuseau local lu du systeme (GetTimeZoneInformation) avec regles
+    d'heure d'ete (periode moderne uniquement) ; noms de fuseaux IANA
+    approximes. toLocale*String et Intl : DateTimeFormat, NumberFormat,
+    PluralRules, RelativeTimeFormat, ListFormat, Collator, Locale, Segmenter,
+    DisplayNames, pour une vingtaine de langues (donnees generees depuis
+    Node / ICU 77 / CLDR 47). Ecarts : option era et dayPeriod ignorees,
+    noms de fuseaux, d'unites et de devises traduits partiellement, la
+    langue par defaut est toujours en-US.
+
+  Bibliotheque
+  - Reflect, Proxy (interception native des proprietes ; un mandataire dans la
+    chaine de prototypes n'intercepte que get ; les pieges get/set d'un
+    mandataire de fonction ne sont pas appeles), WeakRef, FinalizationRegistry,
+    Object.getOwnPropertyDescriptor(s), defineProperty, seal, freeze,
+    preventExtensions, isExtensible.
+  - ArrayBuffer, DataView, tableaux types (sauf BigInt64Array /
+    BigUint64Array), Buffer, TextEncoder/TextDecoder. SharedArrayBuffer est
+    un simple alias d'ArrayBuffer (un seul fil d'execution).
+  - URL, URLSearchParams, AbortController, EventTarget, fs (par KERNEL32 en
+    UTF-16 ; version synchrone, fs.promises, flux de lecture/ecriture),
+    readline, process.stdin, child_process (CreateProcess ; sous l'emulateur
+    -run : /bin/sh). Il n'y a pas de reseau : fetch existe mais rejette
+    toujours la promesse, http / net / crypto levent une erreur.
+  - Erreurs : les messages produits par le moteur (TypeError, RangeError...)
+    sont en francais et different de V8. Traces de pile : « at fonction
+    (fichier:ligne) » sans numero de colonne.
+
+  Memoire
+  - Ramasse-miettes : marquage et balayage conservatif, sans deplacement,
+    declenche tous les 8 Mo alloues (puis autant que la memoire vivante).
+    Racines : piles, registres, section .data. Un entier qui ressemble a une
+    adresse de tas peut retenir une cellule a tort (jamais l'inverse).
+  - WeakMap / WeakSet : la valeur est portee par la cle (propriete cachee)
+    et disparait avec elle ; une cle qui n'est pas un objet ordinaire
+    (tableau, fonction, expression reguliere) est conservee fortement.
+  - WeakRef et FinalizationRegistry : cellules faibles videes par le
+    ramasse-miettes ; les callbacks de finalisation sont lances entre deux
+    taches (apres un ramasse-miettes). Comme la pile est analysee de facon
+    conservative, une cible peut survivre plus longtemps qu'avec V8.
+  - __gc(), __gcstats() ([octets vivants, collectes]) et __gcstress(n)
+    sont disponibles pour les essais.

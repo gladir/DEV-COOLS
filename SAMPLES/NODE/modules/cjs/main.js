@@ -1,0 +1,11 @@
+const util = require('./lib/util');
+const { add, mul } = require('./lib/math.js');
+const cfg = require('./data/config.json');
+const lp = require('leftpad');
+const counter = require('./lib/counter');
+console.log(util.greet('world'), add(2, 3), mul(4, 5), cfg.name, cfg.list.length, lp('7', 3, '0'));
+counter.inc(); counter.inc();
+console.log(counter.value(), require('./lib/counter') === counter, require('./lib/util').greet === util.greet);
+console.log(typeof __filename, typeof __dirname, require('path').basename(__filename), require('path').basename(__dirname));
+console.log(require.main === module, module.id !== undefined);
+console.log(require('./lib/cyc-a').a);

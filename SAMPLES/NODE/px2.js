@@ -1,0 +1,13 @@
+var arr = new Proxy([1, 2, 3], { set(t, k, v) { console.log('set', k, v); t[k] = v; return true; } });
+arr.push(4);
+console.log(arr.length, arr.map(x => x * 2), Array.isArray(arr), arr.join('-'));
+var o = new Proxy({ n: 1 }, { get(t, k, r) { return Reflect.get(t, k, r); }, set(t, k, v, r) { return Reflect.set(t, k, v, r); } });
+o.n++; o.m = 7; console.log(o.n, o.m, Object.keys(o));
+var cls = new Proxy(class Foo { static s() { return 's'; } m() { return 'm'; } }, {});
+console.log(cls.s(), new cls().m());
+var base = { hi() { return 'hi ' + this.who; } };
+var chain = Object.create(new Proxy(base, {}));
+chain.who = 'x'; console.log(chain.hi());
+console.log(typeof new Proxy({}, {}), typeof new Proxy(function () {}, {}));
+var spied = new Proxy({ f(a) { return a + 1; } }, { get(t, k) { var v = t[k]; return typeof v === 'function' ? function (...a) { console.log('call', k, a); return v.apply(t, a); } : v; } });
+console.log(spied.f(1));

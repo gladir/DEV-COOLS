@@ -693,6 +693,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>JSCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur JavaScript vers un executable Windows 32 bits (80386, objet COFF, editeur de liens PE32 interne, option -test).</td>
+		</tr>
+		<tr>
 			<td><b>KOTLIN86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Kotlin pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
