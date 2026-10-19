@@ -116,6 +116,8 @@ Type
   immortal: Boolean;
   Constructor Create(c: TPyType);
   Procedure MarkKids; Virtual;
+  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Virtual;
+  Function NativeRepr(Var s: AnsiString): Boolean; Virtual;
  End;
 
  TPyStr = Class(TPyObj)
@@ -135,6 +137,13 @@ Type
   neg: Boolean;
   mag: TMag;
   Constructor Make(ng: Boolean; Const m: TMag);
+ End;
+
+ TPyComplex = Class(TPyObj)
+  re, im: Double;
+  Constructor Make(r, i: Double);
+  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
+  Function NativeRepr(Var s: AnsiString): Boolean; Override;
  End;
 
  TPyList = Class(TPyObj)
@@ -380,7 +389,7 @@ Var
  tyList, tyTuple, tyDict, tySet, tyFrozenset, tyNone, tyFunction,
  tyBuiltin, tyMethod, tyModule, tyCode, tyCell, tyGenerator, tyRange,
  tySlice, tyProperty, tyStaticMethod, tyClassMethod, tySuper,
- tyEllipsis, tyNotImpl, tyFile, tyIter, tyDictView, tyFrame,
+ tyEllipsis, tyNotImpl, tyFile, tyIter, tyDictView, tyFrame, tyComplex,
  tyTraceback: TPyType;
 
  { exceptions }
@@ -428,6 +437,7 @@ Var ReprSkipObj: TObject = Nil;
 Var BytesImplLoaded: Boolean = False;
 Function ImportByName(Const name: AnsiString): TVal; Forward;
 Procedure LoadBytesImpl; Forward;
+Procedure EnsureCodeSource(c: TPyCode); Forward;
 Function ReprVal(Const v: TVal): AnsiString; Forward;
 Function StrVal(Const v: TVal): AnsiString; Forward;
 Procedure RaiseExc(c: TPyType; Const msg: AnsiString); Forward;
@@ -542,11 +552,34 @@ Begin
  s := t;
 End;
 
+Function TPyObj.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Begin
+ Result := False;
+End;
+
+Function TPyObj.NativeRepr(Var s: AnsiString): Boolean;
+Begin
+ Result := False;
+End;
+
 Constructor TPyBigInt.Make(ng: Boolean; Const m: TMag);
 Begin
  Inherited Create(tyInt);
  neg := ng;
  mag := m;
+End;
+
+Constructor TPyComplex.Make(r, i: Double);
+Begin
+ Inherited Create(tyComplex);
+ re := r;
+ im := i;
+End;
+
+Function VComplex(r, i: Double): TVal;
+Begin
+ Result.k := vkObj;
+ Result.o := TPyComplex.Make(r, i);
 End;
 
 Constructor TPyList.Make;
@@ -3744,10 +3777,12 @@ Begin
  Case t.kind Of
   tkNumber: Begin
     Advance;
-    If t.flags = tfImag Then
-     SynErr('complex numbers are not supported', t.line, t.col);
     nd := NewNode(nNum, t.line, t.col);
-    nd.v := t.v;
+    If t.flags = tfImag Then Begin
+     If t.v.k = vkFloat Then nd.v := VComplex(0, t.v.d)
+     Else nd.v := VComplex(0, IntToDouble(t.v));
+    End
+    Else nd.v := t.v;
     Result := nd;
     Exit;
    End;
@@ -6037,6 +6072,8 @@ Begin
    End;
   nUnary: If (nd.s = '-') And (nd.a.k = nNum) Then Begin
     If nd.a.v.k = vkFloat Then v := VFloat(-nd.a.v.d)
+    Else If (nd.a.v.k = vkObj) And (nd.a.v.o Is TPyComplex) Then
+     v := VComplex(-TPyComplex(nd.a.v.o).re, -TPyComplex(nd.a.v.o).im)
     Else v := IntNeg(nd.a.v);
     Result := True;
    End;
@@ -6367,7 +6404,7 @@ Begin
  End;
  code := TPyCode.Create(tyCode);
  code.co := co;
- code.stacksize := maxd + 10;
+ code.stacksize := maxd;
  SetLength(code.consts, g.nconsts);
  For i := 0 To g.nconsts - 1 Do code.consts[i] := g.consts[i];
  SetLength(code.names, Length(g.names));
@@ -8509,6 +8546,11 @@ Begin
      Result := Int64(acc);
     End
     Else If v.o Is TPyBigInt Then Result := IntHash(v)
+    Else If v.o Is TPyComplex Then Begin
+     Result := HashVal(VFloat(TPyComplex(v.o).re)) +
+      HashVal(VFloat(TPyComplex(v.o).im)) * 1000003;
+     If Result = -1 Then Result := -2;
+    End
     Else If v.o Is TPyBytes Then Begin
      If v.o.cls = tyBytearray Then TypeErr('unhashable type: ''bytearray''');
      Result := HashBytes(TPyBytes(v.o).s) Xor 7;
@@ -8729,6 +8771,29 @@ Begin
  Else Result := 0;
 End;
 
+{ extrait (re, im) d'un nombre Python ; faux si ce n'est pas un nombre }
+Function CxParts(Const v: TVal; Var r, i: Double): Boolean;
+Begin
+ Result := True;
+ If (v.k = vkObj) And (v.o Is TPyComplex) Then Begin
+  r := TPyComplex(v.o).re;
+  i := TPyComplex(v.o).im;
+ End
+ Else If IsNumVal(v) Then Begin
+  r := NumToDouble(v);
+  i := 0;
+ End
+ Else Result := False;
+End;
+
+Function CxEqualParts(Const a, b: TVal; Var eq: Boolean): Boolean;
+Var
+ ar, ai, br, bi: Double;
+Begin
+ Result := CxParts(a, ar, ai) And CxParts(b, br, bi);
+ If Result Then eq := (ar = br) And (ai = bi);
+End;
+
 Function PyCmpOverride(Const v: TVal; op: Integer): Boolean;
 Var
  f: TVal;
@@ -8744,6 +8809,7 @@ End;
 
 Function ValCompare(Const a, b: TVal; op: Integer): Boolean;
 Var
+ r2: Boolean;
  la, lb: TPyList;
  ta, tb: TPyTuple;
  i, n: Integer;
@@ -8795,6 +8861,11 @@ Begin
    Exit;
   End;
   Result := CmpResult(CmpNum(a, b), op);
+  Exit;
+ End;
+ If (((a.k = vkObj) And (a.o Is TPyComplex)) Or ((b.k = vkObj) And
+  (b.o Is TPyComplex))) And (op >= 2) And (op <= 3) And CxEqualParts(a, b, r2) Then Begin
+  Result := r2 = (op = 2);
   Exit;
  End;
  If (a.k = vkNone) Or (b.k = vkNone) Then Begin
@@ -9123,6 +9194,11 @@ Begin
   vkNull: Begin Result := '<NULL>'; Exit; End;
  End;
  o := v.o;
+ If Not o.cls.userdef Then
+  If o.NativeRepr(s) Then Begin
+   Result := s;
+   Exit;
+  End;
  skipUser := o = ReprSkipObj;
  If skipUser Then ReprSkipObj := Nil;
  If o.cls.userdef And Not skipUser Then
@@ -9344,6 +9420,15 @@ Begin
  End;
  If spec = '' Then Begin
   Result := StrVal(v);
+  Exit;
+ End;
+ If (v.k = vkObj) And (v.o Is TPyComplex) Then Begin
+  ParseFmtSpec(spec, fs);
+  Result := FormatValue(VFloat(TPyComplex(v.o).re), spec);
+  If FloatSignBit(TPyComplex(v.o).im) Then Result := Result + '-'
+  Else Result := Result + '+';
+  Result := Result + FormatValue(VFloat(Abs(TPyComplex(v.o).im)), spec) + 'j';
+  If fs.typ = #0 Then Result := '(' + Result + ')';
   Exit;
  End;
  ParseFmtSpec(spec, fs);
@@ -11181,7 +11266,7 @@ Begin
  Else f := TFrame.Create;
  nfast := Length(code.varnames) + Length(code.cellvars) +
   Length(code.freevars);
- total := nfast + code.stacksize;
+ total := nfast + code.stacksize + 16;
  f.code := code;
  f.func := fn;
  f.globals := g;
@@ -11407,6 +11492,7 @@ Begin
   Exit;
  End;
  ob := o.o;
+ If ob.NativeAttr(attr, res) Then Exit;
  If (attr = '__dict__') Then Begin
   If ob Is TPyType Then Begin
    res := VObj(ob.idict.Copy);
@@ -12598,6 +12684,7 @@ Begin
  l := TPyList(tb.o);
  ln := LineForFrame(f);
  src := '';
+ EnsureCodeSource(f.code);
  If (ln >= 1) And (ln <= Length(f.code.source)) Then
   src := Trim(f.code.source[ln - 1]);
  e := NewTuple(4);
@@ -21101,6 +21188,38 @@ End;
 { ------------------------------------------------------------
   Module math
   ------------------------------------------------------------ }
+{$LINKLIB m}
+Function c_sin(x: Double): Double; CDecl; External 'm' Name 'sin';
+Function c_cos(x: Double): Double; CDecl; External 'm' Name 'cos';
+Function c_tan(x: Double): Double; CDecl; External 'm' Name 'tan';
+Function c_asin(x: Double): Double; CDecl; External 'm' Name 'asin';
+Function c_acos(x: Double): Double; CDecl; External 'm' Name 'acos';
+Function c_atan(x: Double): Double; CDecl; External 'm' Name 'atan';
+Function c_atan2(y, x: Double): Double; CDecl; External 'm' Name 'atan2';
+Function c_sinh(x: Double): Double; CDecl; External 'm' Name 'sinh';
+Function c_cosh(x: Double): Double; CDecl; External 'm' Name 'cosh';
+Function c_tanh(x: Double): Double; CDecl; External 'm' Name 'tanh';
+Function c_asinh(x: Double): Double; CDecl; External 'm' Name 'asinh';
+Function c_acosh(x: Double): Double; CDecl; External 'm' Name 'acosh';
+Function c_atanh(x: Double): Double; CDecl; External 'm' Name 'atanh';
+Function c_exp(x: Double): Double; CDecl; External 'm' Name 'exp';
+Function c_expm1(x: Double): Double; CDecl; External 'm' Name 'expm1';
+Function c_log(x: Double): Double; CDecl; External 'm' Name 'log';
+Function c_log2(x: Double): Double; CDecl; External 'm' Name 'log2';
+Function c_log10(x: Double): Double; CDecl; External 'm' Name 'log10';
+Function c_log1p(x: Double): Double; CDecl; External 'm' Name 'log1p';
+Function c_pow(x, y: Double): Double; CDecl; External 'm' Name 'pow';
+Function c_fmod(x, y: Double): Double; CDecl; External 'm' Name 'fmod';
+Function c_hypot(x, y: Double): Double; CDecl; External 'm' Name 'hypot';
+Function c_erf(x: Double): Double; CDecl; External 'm' Name 'erf';
+Function c_erfc(x: Double): Double; CDecl; External 'm' Name 'erfc';
+Function c_tgamma(x: Double): Double; CDecl; External 'm' Name 'tgamma';
+Function c_lgamma(x: Double): Double; CDecl; External 'm' Name 'lgamma';
+
+Const
+ RadToDegC: Double = 57.295779513082322865;
+ DegToRadC: Double = 0.017453292519943295769;
+
 Function MathArg(a: PVal; i, n: Integer; Const fname: AnsiString): Double;
 Begin
  If i >= n Then TypeErr(fname + '() takes exactly one argument (' +
@@ -21144,7 +21263,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'sin');
  If IsInfinite(x) Then MathDomain;
- Result := VFloat(Sin(x));
+ Result := VFloat(c_sin(x));
 End;
 
 Function MCos(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21153,7 +21272,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'cos');
  If IsInfinite(x) Then MathDomain;
- Result := VFloat(Cos(x));
+ Result := VFloat(c_cos(x));
 End;
 
 Function MTan(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21162,7 +21281,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'tan');
  If IsInfinite(x) Then MathDomain;
- Result := VFloat(Tan(x));
+ Result := VFloat(c_tan(x));
 End;
 
 Function MAsin(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21171,7 +21290,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'asin');
  If (x < -1) Or (x > 1) Then MathDomain;
- Result := VFloat(ArcSin(x));
+ Result := VFloat(c_asin(x));
 End;
 
 Function MAcos(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21180,17 +21299,17 @@ Var
 Begin
  x := MathArg(a, 0, n, 'acos');
  If (x < -1) Or (x > 1) Then MathDomain;
- Result := VFloat(ArcCos(x));
+ Result := VFloat(c_acos(x));
 End;
 
 Function MAtan(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(ArcTan(MathArg(a, 0, n, 'atan')));
+ Result := VFloat(c_atan(MathArg(a, 0, n, 'atan')));
 End;
 
 Function MAtan2(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(ArcTan2(MathArg(a, 0, n, 'atan2'), MathArg(a, 1, n,
+ Result := VFloat(c_atan2(MathArg(a, 0, n, 'atan2'), MathArg(a, 1, n,
   'atan2')));
 End;
 
@@ -21199,7 +21318,7 @@ Var
  x: Double;
 Begin
  x := MathArg(a, 0, n, 'sinh');
- Result := CheckFloat(SinH(x), x);
+ Result := CheckFloat(c_sinh(x), x);
 End;
 
 Function MCosh(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21207,17 +21326,17 @@ Var
  x: Double;
 Begin
  x := MathArg(a, 0, n, 'cosh');
- Result := CheckFloat(CosH(x), x);
+ Result := CheckFloat(c_cosh(x), x);
 End;
 
 Function MTanh(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(TanH(MathArg(a, 0, n, 'tanh')));
+ Result := VFloat(c_tanh(MathArg(a, 0, n, 'tanh')));
 End;
 
 Function MAsinh(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(ArcSinH(MathArg(a, 0, n, 'asinh')));
+ Result := VFloat(c_asinh(MathArg(a, 0, n, 'asinh')));
 End;
 
 Function MAcosh(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21226,7 +21345,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'acosh');
  If x < 1 Then MathDomain;
- Result := VFloat(ArcCosH(x));
+ Result := VFloat(c_acosh(x));
 End;
 
 Function MAtanh(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21235,7 +21354,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'atanh');
  If (x <= -1) Or (x >= 1) Then MathDomain;
- Result := VFloat(ArcTanH(x));
+ Result := VFloat(c_atanh(x));
 End;
 
 Function MExp(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21243,7 +21362,7 @@ Var
  x: Double;
 Begin
  x := MathArg(a, 0, n, 'exp');
- Result := CheckFloat(Exp(x), x);
+ Result := CheckFloat(c_exp(x), x);
 End;
 
 Function MExpm1(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21251,8 +21370,7 @@ Var
  x: Double;
 Begin
  x := MathArg(a, 0, n, 'expm1');
- If Abs(x) < 1e-5 Then Result := VFloat(x + x * x / 2 + x * x * x / 6)
- Else Result := CheckFloat(Exp(x) - 1, x);
+ Result := CheckFloat(c_expm1(x), x);
 End;
 
 Function LogOf(Const v: TVal; Const fname: AnsiString): Double;
@@ -21265,13 +21383,13 @@ Begin
   bl := IntBitLength(v);
   If bl > 1000 Then Begin
    sh := IntShr(v, bl - 60);
-   Result := Ln(IntToDouble(sh)) + (bl - 60) * Ln(2);
+   Result := c_log(IntToDouble(sh)) + (bl - 60) * c_log(2);
    Exit;
   End;
  End;
  x := NumToDouble(v);
  If x <= 0 Then MathDomain;
- Result := Ln(x);
+ Result := c_log(x);
 End;
 
 Function MLog(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21291,25 +21409,47 @@ Begin
 End;
 
 Function MLog2(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ bl: Int64;
+ sh: TVal;
+ x: Double;
 Begin
  If Not IsNumVal(a[0]) Then
   TypeErr('must be real number, not ' + TypeName(a[0]));
- Result := VFloat(LogOf(a[0], 'log2') / Ln(2));
- If (a[0].k = vkInt) And (a[0].i > 0) And ((a[0].i And (a[0].i - 1)) = 0) Then
-  Result := VFloat(IntBitLength(a[0]) - 1);
+ If (a[0].k = vkObj) And (a[0].o Is TPyBigInt) And
+  Not TPyBigInt(a[0].o).neg Then Begin
+  bl := IntBitLength(a[0]);
+  If bl > 1000 Then Begin
+   sh := IntShr(a[0], bl - 60);
+   Result := VFloat(c_log2(IntToDouble(sh)) + (bl - 60));
+   Exit;
+  End;
+ End;
+ x := NumToDouble(a[0]);
+ If x <= 0 Then MathDomain;
+ Result := VFloat(c_log2(x));
 End;
 
 Function MLog10(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- r: Double;
+ bl: Int64;
+ sh: TVal;
+ x: Double;
 Begin
  If Not IsNumVal(a[0]) Then
   TypeErr('must be real number, not ' + TypeName(a[0]));
- r := LogOf(a[0], 'log10') / Ln(10);
- If (a[0].k = vkInt) And (a[0].i > 0) Then
-  If Abs(r - Round(r)) < 1e-12 Then
-   If IntPow(VInt(10), VInt(Round(r))).i = a[0].i Then r := Round(r);
- Result := VFloat(r);
+ If (a[0].k = vkObj) And (a[0].o Is TPyBigInt) And
+  Not TPyBigInt(a[0].o).neg Then Begin
+  bl := IntBitLength(a[0]);
+  If bl > 1000 Then Begin
+   sh := IntShr(a[0], bl - 60);
+   Result := VFloat(c_log10(IntToDouble(sh)) + (bl - 60) * c_log10(2));
+   Exit;
+  End;
+ End;
+ x := NumToDouble(a[0]);
+ If x <= 0 Then MathDomain;
+ Result := VFloat(c_log10(x));
 End;
 
 Function MLog1p(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21318,8 +21458,7 @@ Var
 Begin
  x := MathArg(a, 0, n, 'log1p');
  If x <= -1 Then MathDomain;
- If Abs(x) < 1e-5 Then Result := VFloat(x - x * x / 2 + x * x * x / 3)
- Else Result := VFloat(Ln(1 + x));
+ Result := VFloat(c_log1p(x));
 End;
 
 Function MPow(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21330,7 +21469,7 @@ Begin
  y := MathArg(a, 1, n, 'pow');
  If (x = 0) And (y < 0) Then MathDomain;
  If (x < 0) And (Frac(y) <> 0) And Not IsInfinite(y) Then MathDomain;
- r := Power(x, y);
+ r := c_pow(x, y);
  If IsInfinite(r) And Not IsInfinite(x) And Not IsInfinite(y) Then
   RaiseExc(exOverflow, 'math range error');
  Result := VFloat(r);
@@ -21394,7 +21533,7 @@ Begin
  x := MathArg(a, 0, n, 'fmod');
  y := MathArg(a, 1, n, 'fmod');
  If (y = 0) Or IsInfinite(x) Then MathDomain;
- Result := VFloat(FMod(x, y));
+ Result := VFloat(c_fmod(x, y));
 End;
 
 Function MModf(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21435,28 +21574,65 @@ Begin
  Result := CheckFloat(r, x);
 End;
 
+Function VectorNorm(Const v: Array Of Double; mx: Double; foundNan: Boolean): Double;
+Var
+ x, csum, oldcsum, frac: Double;
+ i: Integer;
+Begin
+ If IsInfinite(mx) Then Begin
+  Result := mx;
+  Exit;
+ End;
+ If foundNan Then Begin
+  Result := NaN;
+  Exit;
+ End;
+ If (mx = 0) Or (Length(v) <= 1) Then Begin
+  Result := mx;
+  Exit;
+ End;
+ csum := 1.0;
+ frac := 0.0;
+ For i := 0 To High(v) Do Begin
+  x := v[i] / mx;
+  x := x * x;
+  oldcsum := csum;
+  csum := csum + x;
+  frac := frac + ((oldcsum - csum) + x);
+ End;
+ Result := mx * Sqrt(csum - 1.0 + frac);
+End;
+
 Function MHypot(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- s: Double;
+ mx: Double;
  i: Integer;
- x: Double;
+ v: Array Of Double;
+ nan: Boolean;
 Begin
- s := 0;
+ SetLength(v, n);
+ mx := 0;
+ nan := False;
  For i := 0 To n - 1 Do Begin
-  x := MathArg(a, i, n, 'hypot');
-  s := s + x * x;
+  v[i] := Abs(MathArg(a, i, n, 'hypot'));
+  If IsNan(v[i]) Then nan := True
+  Else If v[i] > mx Then mx := v[i];
  End;
- Result := VFloat(Sqrt(s));
+ If n = 0 Then Begin
+  Result := VFloat(0);
+  Exit;
+ End;
+ Result := VFloat(VectorNorm(v, mx, nan));
 End;
 
 Function MDegrees(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(MathArg(a, 0, n, 'degrees') * 180.0 / Pi);
+ Result := VFloat(MathArg(a, 0, n, 'degrees') * RadToDegC);
 End;
 
 Function MRadians(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(MathArg(a, 0, n, 'radians') * Pi / 180.0);
+ Result := VFloat(MathArg(a, 0, n, 'radians') * DegToRadC);
 End;
 
 Function MCopysign(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21679,69 +21855,243 @@ Begin
  Result := r;
 End;
 
-Function MGamma(a: PVal; n: Integer; kw: TPyDict): TVal;
+Const
+ LanczosG = 6.024680040776729583740234375;
+ LanczosGMinusHalf = 5.524680040776729583740234375;
+ LanczosNum: Array[0..12] Of Double = (
+  23531376880.410759688572007674451636754734846804940,
+  42919803642.649098768957899047001988850926355848959,
+  35711959237.355668049440185451547166705960488635843,
+  17921034426.037209699919755754458931112671403265390,
+  6039542586.3520280050642916443072979210699388420708,
+  1439720407.3117216736632230727949123939715485786772,
+  248874557.86205415651146038641322942321632125127801,
+  31426415.585400194380614231628318205362874684987640,
+  2876370.6289353724412254090516208496135991145378768,
+  186056.26539522349504029498971604569928220784236328,
+  8071.6720023658162106380029022722506138218516325024,
+  210.82427775157934587250973392071336271166969580291,
+  2.5066282746310002701649081771338373386264310793408);
+ LanczosDen: Array[0..12] Of Double = (
+  0.0, 39916800.0, 120543840.0, 150917976.0, 105258076.0, 45995730.0,
+  13339535.0, 2637558.0, 357423.0, 32670.0, 1925.0, 66.0, 1.0);
+ GammaIntegral: Array[0..22] Of Double = (
+  1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0,
+  3628800.0, 39916800.0, 479001600.0, 6227020800.0, 87178291200.0,
+  1307674368000.0, 20922789888000.0, 355687428096000.0,
+  6402373705728000.0, 121645100408832000.0, 2432902008176640000.0,
+  51090942171709440000.0, 1124000727777607680000.0);
+ PiC: Double = 3.141592653589793238462643383279502884197;
+ LogPiC: Double = 1.144729885849400174143427351353058711647;
+
+Function LanczosSum(x: Double): Double;
 Var
- x: Double;
+ num, den: Double;
  i: Integer;
- r: Double;
 Begin
- x := MathArg(a, 0, n, 'gamma');
- If (Frac(x) = 0) And (x <= 0) Then MathDomain;
- If (Frac(x) = 0) And (x < 171) Then Begin
-  r := 1;
-  For i := 2 To Trunc(x) - 1 Do r := r * i;
-  Result := VFloat(r);
+ num := 0;
+ den := 0;
+ If x < 5.0 Then Begin
+  For i := 12 Downto 0 Do Begin
+   num := num * x + LanczosNum[i];
+   den := den * x + LanczosDen[i];
+  End;
+ End
+ Else Begin
+  For i := 0 To 12 Do Begin
+   num := num / x + LanczosNum[i];
+   den := den / x + LanczosDen[i];
+  End;
+ End;
+ Result := num / den;
+End;
+
+Function MSinPi(x: Double): Double;
+Var
+ y, r: Double;
+ n: Integer;
+Begin
+ y := c_fmod(Abs(x), 2.0);
+ n := Round(2.0 * y);
+ Case n Of
+  0: r := c_sin(PiC * y);
+  1: r := c_cos(PiC * (y - 0.5));
+  2: r := c_sin(PiC * (1.0 - y));
+  3: r := -c_cos(PiC * (y - 1.5));
+ Else r := c_sin(PiC * (y - 2.0));
+ End;
+ If FloatSignBit(x) Then Result := -r Else Result := r;
+End;
+
+{ port de m_tgamma de CPython ; err : 0 ok, 1 domaine, 2 intervalle }
+Function MTGamma(x: Double; Var err: Integer): Double;
+Var
+ absx, r, y, z, q, sqrtpow: Double;
+Begin
+ err := 0;
+ If IsNan(x) Or IsInfinite(x) Then Begin
+  If IsNan(x) Or (x > 0) Then Result := x
+  Else Begin
+   err := 1;
+   Result := NaN;
+  End;
   Exit;
  End;
- { Lanczos }
- Result := VFloat(Exp(Ln(Abs(2.5066282746310002 * (1.000000000190015 +
-  76.18009172947146 / (x + 1) - 86.50532032941677 / (x + 2) +
-  24.01409824083091 / (x + 3) - 1.231739572450155 / (x + 4) +
-  0.001208650973866179 / (x + 5) - 0.000005395239384953 / (x + 6)) /
-  x)) + (x + 0.5) * Ln(x + 5.5) - (x + 5.5)));
+ If x = 0 Then Begin
+  err := 1;
+  If FloatSignBit(x) Then Result := -Infinity Else Result := Infinity;
+  Exit;
+ End;
+ If x = Int(x) Then Begin
+  If x < 0 Then Begin
+   err := 1;
+   Result := NaN;
+   Exit;
+  End;
+  If x <= 23 Then Begin
+   Result := GammaIntegral[Trunc(x) - 1];
+   Exit;
+  End;
+ End;
+ absx := Abs(x);
+ If absx < 1e-20 Then Begin
+  r := 1.0 / x;
+  If IsInfinite(r) Then err := 2;
+  Result := r;
+  Exit;
+ End;
+ If absx > 200.0 Then Begin
+  If x < 0 Then Result := 0.0 / MSinPi(x)
+  Else Begin
+   err := 2;
+   Result := Infinity;
+  End;
+  Exit;
+ End;
+ y := absx + LanczosGMinusHalf;
+ If absx > LanczosGMinusHalf Then Begin
+  q := y - absx;
+  z := q - LanczosGMinusHalf;
+ End
+ Else Begin
+  q := y - LanczosGMinusHalf;
+  z := q - absx;
+ End;
+ z := z * LanczosG / y;
+ If x < 0 Then Begin
+  r := -PiC / MSinPi(absx) / absx * c_exp(y) / LanczosSum(absx);
+  r := r - z * r;
+  If absx < 140.0 Then r := r / c_pow(y, absx - 0.5)
+  Else Begin
+   sqrtpow := c_pow(y, absx / 2.0 - 0.25);
+   r := r / sqrtpow;
+   r := r / sqrtpow;
+  End;
+ End
+ Else Begin
+  r := LanczosSum(absx) / c_exp(y);
+  r := r + z * r;
+  If absx < 140.0 Then r := r * c_pow(y, absx - 0.5)
+  Else Begin
+   sqrtpow := c_pow(y, absx / 2.0 - 0.25);
+   r := r * sqrtpow;
+   r := r * sqrtpow;
+  End;
+ End;
+ If IsInfinite(r) Then err := 2;
+ Result := r;
+End;
+
+Function MLGammaC(x: Double; Var err: Integer): Double;
+Var
+ r, absx: Double;
+Begin
+ err := 0;
+ If IsNan(x) Or IsInfinite(x) Then Begin
+  If IsNan(x) Then Result := x Else Result := Infinity;
+  Exit;
+ End;
+ If (x = Int(x)) And (x <= 2.0) Then Begin
+  If x <= 0 Then Begin
+   err := 1;
+   Result := Infinity;
+  End
+  Else Result := 0.0;
+  Exit;
+ End;
+ absx := Abs(x);
+ If absx < 1e-20 Then Begin
+  Result := -c_log(absx);
+  Exit;
+ End;
+ r := c_log(LanczosSum(absx)) - LanczosG;
+ r := r + (absx - 0.5) * (c_log(absx + LanczosG - 0.5) - 1);
+ If x < 0 Then
+  r := LogPiC - c_log(Abs(MSinPi(absx))) - c_log(absx) - r;
+ If IsInfinite(r) Then err := 2;
+ Result := r;
+End;
+
+Function MGamma(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ x, r: Double;
+ err: Integer;
+Begin
+ x := MathArg(a, 0, n, 'gamma');
+ r := MTGamma(x, err);
+ If err = 1 Then MathDomain;
+ If err = 2 Then RaiseExc(exOverflow, 'math range error');
+ Result := VFloat(r);
 End;
 
 Function MLgamma(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- x: Double;
+ x, r: Double;
+ err: Integer;
 Begin
  x := MathArg(a, 0, n, 'lgamma');
- Result := VFloat(Ln(Abs(MGamma(a, n, kw).d)));
+ r := MLGammaC(x, err);
+ If err = 1 Then MathDomain;
+ If err = 2 Then RaiseExc(exOverflow, 'math range error');
+ Result := VFloat(r);
 End;
 
 Function MErf(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- x, t, y: Double;
 Begin
- x := MathArg(a, 0, n, 'erf');
- t := 1 / (1 + 0.3275911 * Abs(x));
- y := 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t -
-  0.284496736) * t + 0.254829592) * t * Exp(-x * x);
- If x < 0 Then y := -y;
- Result := VFloat(y);
+ Result := VFloat(c_erf(MathArg(a, 0, n, 'erf')));
 End;
 
 Function MErfc(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(1 - MErf(a, n, kw).d);
+ Result := VFloat(c_erfc(MathArg(a, 0, n, 'erfc')));
 End;
 
 Function MDist(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  p, q: TValArr;
  i: Integer;
- s, d: Double;
+ mx, d: Double;
+ v: Array Of Double;
+ nan: Boolean;
 Begin
+ If Not ((a[0].k = vkObj) And ((a[0].o Is TPyTuple) Or (a[0].o Is TPyList))) Then
+  TypeErr('dist() argument 1 must be tuple, not ' + TypeName(a[0]));
+ If Not ((a[1].k = vkObj) And ((a[1].o Is TPyTuple) Or (a[1].o Is TPyList))) Then
+  TypeErr('dist() argument 2 must be tuple, not ' + TypeName(a[1]));
  p := IterToArr(a[0]);
  q := IterToArr(a[1]);
  If Length(p) <> Length(q) Then
   ValueErr('both points must have the same number of dimensions');
- s := 0;
+ SetLength(v, Length(p));
+ mx := 0;
+ nan := False;
  For i := 0 To High(p) Do Begin
-  d := NumToDouble(p[i]) - NumToDouble(q[i]);
-  s := s + d * d;
+  d := Abs(NumToDouble(p[i]) - NumToDouble(q[i]));
+  v[i] := d;
+  If IsNan(d) Then nan := True
+  Else If d > mx Then mx := d;
  End;
- Result := VFloat(Sqrt(s));
+ Result := VFloat(VectorNorm(v, mx, nan));
 End;
 
 Function MRemainder(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21821,18 +22171,41 @@ End;
 { ------------------------------------------------------------
   Module time
   ------------------------------------------------------------ }
-Function NowSeconds: Double;
 {$IFDEF UNIX}
+Type
+ TReTimeSpec = Record
+  sec, nsec: Int64;
+ End;
+
+Function ClockGetTime(clk: LongInt; tp: Pointer): LongInt; CDecl;
+ External 'c' Name 'clock_gettime';
+
+Function ClockNs(clk: LongInt): Int64;
 Var
- tv: TTimeVal;
-{$ENDIF}
+ ts: TReTimeSpec;
 Begin
- {$IFDEF UNIX}
- fpgettimeofday(@tv, Nil);
- Result := tv.tv_sec + tv.tv_usec / 1000000.0;
- {$ELSE}
- Result := (Now - EncodeDate(1970, 1, 1)) * 86400.0;
- {$ENDIF}
+ ClockGetTime(clk, @ts);
+ Result := ts.sec * 1000000000 + ts.nsec;
+End;
+{$ELSE}
+Function ClockNs(clk: LongInt): Int64;
+Begin
+ Result := Round((Now - EncodeDate(1970, 1, 1)) * 86400.0 * 1.0e9);
+End;
+{$ENDIF}
+
+Function NsToSeconds(ns: Int64): Double;
+Var
+ d, billion: Double;
+Begin
+ d := ns;
+ billion := 1000000000.0;
+ Result := d / billion;
+End;
+
+Function NowSeconds: Double;
+Begin
+ Result := NsToSeconds(ClockNs(0));
 End;
 
 Function TimeTime(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21842,7 +22215,7 @@ End;
 
 Function TimeTimeNs(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VInt(Round(NowSeconds * 1.0e9));
+ Result := VInt(ClockNs(0));
 End;
 
 Function TimeSleep(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21861,17 +22234,17 @@ Var
 
 Function TimePerf(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(GetTickCount64 / 1000.0);
+ Result := VFloat(NsToSeconds(ClockNs(1)));
 End;
 
 Function TimePerfNs(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VInt(GetTickCount64 * 1000000);
+ Result := VInt(ClockNs(1));
 End;
 
 Function TimeProcess(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VFloat(NowSeconds - StartTick);
+ Result := VFloat(NsToSeconds(ClockNs(2)));
 End;
 
 Function TimeStructArr(t: Double; local: Boolean): TVal;
@@ -22803,6 +23176,3633 @@ Begin
 End;
 
 { ------------------------------------------------------------
+  Module _re : moteur d'expressions regulieres (retour arriere)
+  ------------------------------------------------------------ }
+Const
+ REF_I = 2;
+ REF_L = 4;
+ REF_M = 8;
+ REF_S = 16;
+ REF_U = 32;
+ REF_X = 64;
+ REF_A = 256;
+ { categories de classes }
+ RC_DIGIT = 1;
+ RC_NDIGIT = 2;
+ RC_WORD = 4;
+ RC_NWORD = 8;
+ RC_SPACE = 16;
+ RC_NSPACE = 32;
+ { codes d'instruction }
+ opChar = 0;      { x = point de code }
+ opCharI = 1;     { x = point de code en minuscule }
+ opAny = 2;       { tout sauf \n }
+ opAnyAll = 3;    { tout }
+ opSet = 4;       { x = index d'ensemble, y = flags }
+ opBol = 5;       { ^ sans MULTILINE }
+ opBolM = 6;      { ^ MULTILINE }
+ opEol = 7;       { $ sans MULTILINE }
+ opEolM = 8;      { $ MULTILINE }
+ opBos = 9;       { \A }
+ opEos = 10;      { \Z }
+ opWordB = 11;    { \b, y = flags ASCII }
+ opNWordB = 12;   { \B }
+ opSave = 13;     { x = index de capture }
+ opSplit = 14;    { x = prioritaire, y = alternative }
+ opJmp = 15;
+ opMatch = 16;
+ opBackref = 17;  { x = groupe, y = icase }
+ opLook = 18;     { x = 0 avant/1 arriere, y = largeur, z = suite, neg dans w }
+ opLookEnd = 19;
+ opRep = 20;      { repetition simple : x = min, y = max, z = lazy }
+ opEmptyChk = 21; { x = slot, y = cible }
+ opCond = 22;     { x = groupe, y = cible si absent }
+ opFail = 23;
+
+Type
+ TReRange = Record
+  lo, hi: Cardinal;
+ End;
+
+ TReSet = Class
+  neg: Boolean;
+  ranges: Array Of TReRange;
+  cats: Integer;
+  Procedure AddRange(lo, hi: Cardinal);
+  Function Has(c: Cardinal; ascii: Boolean): Boolean;
+  Function Test(c: Cardinal; icase, ascii: Boolean): Boolean;
+ End;
+
+ TReInstr = Record
+  op, x, y, z, w: Integer;
+ End;
+
+ TReProg = Class
+  code: Array Of TReInstr;
+  n: Integer;
+  sets: Array Of TReSet;
+  nsets: Integer;
+  ngroups: Integer;
+  nslots: Integer;
+  gnames: Array Of AnsiString;
+  gidx: Array Of Integer;
+  ngn: Integer;
+  flags: Integer;
+  isBytes: Boolean;
+  firstCh: Integer;
+  Destructor Destroy; Override;
+ End;
+
+ TReNode = Class
+  kind: Integer;
+  c: Cardinal;
+  idx, mn, mx: Integer;
+  lazy, neg: Boolean;
+  flags: Integer;
+  kids: Array Of TReNode;
+  Procedure Add(k: TReNode);
+ End;
+
+ EReSyntax = Class(Exception)
+  pos: Integer;
+ End;
+
+Const
+ nkEmpty = 0;
+ nkChr = 1;
+ nkAnyN = 2;
+ nkSetN = 3;
+ nkCat = 4;
+ nkAlt = 5;
+ nkRepeat = 6;
+ nkGroup = 7;
+ nkBackref = 8;
+ nkAssert = 9;
+ nkLookN = 10;
+ nkCondN = 11;
+ nkAnchor = 12;
+
+Procedure TReNode.Add(k: TReNode);
+Begin
+ SetLength(kids, Length(kids) + 1);
+ kids[High(kids)] := k;
+End;
+
+Destructor TReProg.Destroy;
+Var
+ i: Integer;
+Begin
+ For i := 0 To nsets - 1 Do sets[i].Free;
+ Inherited Destroy;
+End;
+
+Procedure TReSet.AddRange(lo, hi: Cardinal);
+Begin
+ SetLength(ranges, Length(ranges) + 1);
+ ranges[High(ranges)].lo := lo;
+ ranges[High(ranges)].hi := hi;
+End;
+
+Function ReIsWord(c: Cardinal; ascii: Boolean): Boolean;
+Begin
+ If ascii Or (c < 128) Then
+  Result := ((c >= 48) And (c <= 57)) Or ((c >= 65) And (c <= 90)) Or
+   ((c >= 97) And (c <= 122)) Or (c = 95)
+ Else Result := CpIsAlpha(c) Or CpIsDigit(c) Or (c = 95) Or
+  ((c >= $660) And (c <= $669)) Or ((c >= $FF10) And (c <= $FF19));
+End;
+
+Function ReIsDigit(c: Cardinal; ascii: Boolean): Boolean;
+Begin
+ If ascii Or (c < 128) Then Result := (c >= 48) And (c <= 57)
+ Else Result := ((c >= $660) And (c <= $669)) Or
+  ((c >= $6F0) And (c <= $6F9)) Or ((c >= $966) And (c <= $96F)) Or
+  ((c >= $FF10) And (c <= $FF19));
+End;
+
+Function ReIsSpace(c: Cardinal; ascii: Boolean): Boolean;
+Begin
+ If ascii Then Result := (c = 32) Or ((c >= 9) And (c <= 13))
+ Else Result := CpIsSpace(c);
+End;
+
+Function TReSet.Has(c: Cardinal; ascii: Boolean): Boolean;
+Var
+ i: Integer;
+Begin
+ Result := True;
+ For i := 0 To High(ranges) Do
+  If (c >= ranges[i].lo) And (c <= ranges[i].hi) Then Exit;
+ If (cats And RC_DIGIT) <> 0 Then If ReIsDigit(c, ascii) Then Exit;
+ If (cats And RC_NDIGIT) <> 0 Then If Not ReIsDigit(c, ascii) Then Exit;
+ If (cats And RC_WORD) <> 0 Then If ReIsWord(c, ascii) Then Exit;
+ If (cats And RC_NWORD) <> 0 Then If Not ReIsWord(c, ascii) Then Exit;
+ If (cats And RC_SPACE) <> 0 Then If ReIsSpace(c, ascii) Then Exit;
+ If (cats And RC_NSPACE) <> 0 Then If Not ReIsSpace(c, ascii) Then Exit;
+ Result := False;
+End;
+
+Function TReSet.Test(c: Cardinal; icase, ascii: Boolean): Boolean;
+Var
+ r: Boolean;
+ l, u: Cardinal;
+Begin
+ r := Has(c, ascii);
+ If (Not r) And icase Then Begin
+  l := CpLower(c);
+  u := CpUpper(c);
+  If l <> c Then r := Has(l, ascii);
+  If (Not r) And (u <> c) Then r := Has(u, ascii);
+ End;
+ Result := r <> neg;
+End;
+
+{ ---------------- analyse de l'expression ---------------- }
+Type
+ TReParser = Class
+  p: TCpArr;
+  n, i: Integer;
+  flags: Integer;
+  ngroups: Integer;
+  names: Array Of AnsiString;
+  nameIdx: Array Of Integer;
+  sets: Array Of TReSet;
+  nsets: Integer;
+  nodes: TList;
+  isBytes: Boolean;
+  openGroups: Array Of Integer;
+  Constructor Create(Const pat: TCpArr; fl: Integer; bytesMode: Boolean);
+  Destructor Destroy; Override;
+  Function NewNode(k: Integer): TReNode;
+  Procedure Err(Const msg: AnsiString; at: Integer);
+  Function ParseAlt(depth: Integer): TReNode;
+  Function ParseSeq(depth: Integer): TReNode;
+  Function ParseAtom(depth: Integer; Var okAtom: Boolean): TReNode;
+  Function ParseClass: TReNode;
+  Function ParseEscape(inClass: Boolean; Var cat: Integer; Var isCat: Boolean): Cardinal;
+  Function ParseQuant(atom: TReNode): TReNode;
+  Function AddSet(s: TReSet): Integer;
+  Function GroupByName(Const nm: AnsiString): Integer;
+  Procedure SkipVerbose;
+  Function ReadName(term: Cardinal; allowDigit: Boolean = False): AnsiString;
+  Function ParseFlagsGroup(depth: Integer; Var res: TReNode; start: Integer): Boolean;
+ End;
+
+Constructor TReParser.Create(Const pat: TCpArr; fl: Integer; bytesMode: Boolean);
+Begin
+ p := pat;
+ n := Length(pat);
+ i := 0;
+ flags := fl;
+ ngroups := 0;
+ nodes := TList.Create;
+ isBytes := bytesMode;
+End;
+
+Destructor TReParser.Destroy;
+Var
+ k: Integer;
+Begin
+ For k := 0 To nodes.Count - 1 Do TReNode(nodes[k]).Free;
+ nodes.Free;
+ Inherited Destroy;
+End;
+
+Function TReParser.NewNode(k: Integer): TReNode;
+Begin
+ Result := TReNode.Create;
+ Result.kind := k;
+ Result.flags := flags;
+ Result.mn := 0;
+ Result.mx := 0;
+ nodes.Add(Result);
+End;
+
+Procedure TReParser.Err(Const msg: AnsiString; at: Integer);
+Var
+ e: EReSyntax;
+Begin
+ e := EReSyntax.Create(msg);
+ e.pos := at;
+ Raise e;
+End;
+
+Function TReParser.AddSet(s: TReSet): Integer;
+Begin
+ If nsets >= Length(sets) Then SetLength(sets, nsets * 2 + 4);
+ sets[nsets] := s;
+ Result := nsets;
+ Inc(nsets);
+End;
+
+Function TReParser.GroupByName(Const nm: AnsiString): Integer;
+Var
+ k: Integer;
+Begin
+ Result := -1;
+ For k := 0 To High(names) Do
+  If names[k] = nm Then Begin
+   Result := nameIdx[k];
+   Exit;
+  End;
+End;
+
+Procedure TReParser.SkipVerbose;
+Begin
+ If (flags And REF_X) = 0 Then Exit;
+ While i < n Do Begin
+  If (p[i] = 32) Or ((p[i] >= 9) And (p[i] <= 13)) Then Inc(i)
+  Else If p[i] = Ord('#') Then Begin
+   While (i < n) And (p[i] <> 10) Do Inc(i);
+  End
+  Else Break;
+ End;
+End;
+
+Function TReParser.ReadName(term: Cardinal; allowDigit: Boolean): AnsiString;
+Var
+ st: Integer;
+Begin
+ st := i;
+ While (i < n) And (p[i] <> term) Do Inc(i);
+ If i >= n Then
+  Err('missing ' + Chr(term) + ', unterminated name', st);
+ Result := CpsToStr(p, st, i);
+ Inc(i);
+ If Result = '' Then Err('missing group name', st);
+ If Not (CpIsAlpha(p[st]) Or (p[st] = 95) Or (allowDigit And
+  (p[st] >= 48) And (p[st] <= 57))) Then
+  Err('bad character in group name ' + StrReprEsc(Result, False), st);
+End;
+
+Function HexVal(c: Cardinal): Integer;
+Begin
+ If (c >= 48) And (c <= 57) Then Result := c - 48
+ Else If (c >= 97) And (c <= 102) Then Result := c - 87
+ Else If (c >= 65) And (c <= 70) Then Result := c - 55
+ Else Result := -1;
+End;
+
+{ Lit un echappement apres '\' (i pointe sur le caractere suivant le \).
+  Retourne un point de code, ou isCat=True avec cat renseigne. }
+Function TReParser.ParseEscape(inClass: Boolean; Var cat: Integer;
+ Var isCat: Boolean): Cardinal;
+Var
+ c: Cardinal;
+ st, v, k, cnt: Integer;
+Begin
+ isCat := False;
+ st := i - 1;
+ If i >= n Then Err('bad escape (end of pattern)', st);
+ c := p[i];
+ Inc(i);
+ Case Chr(c And 255) Of
+  'd': If c < 128 Then Begin isCat := True; cat := RC_DIGIT; Result := 0; Exit; End;
+  'D': If c < 128 Then Begin isCat := True; cat := RC_NDIGIT; Result := 0; Exit; End;
+  'w': If c < 128 Then Begin isCat := True; cat := RC_WORD; Result := 0; Exit; End;
+  'W': If c < 128 Then Begin isCat := True; cat := RC_NWORD; Result := 0; Exit; End;
+  's': If c < 128 Then Begin isCat := True; cat := RC_SPACE; Result := 0; Exit; End;
+  'S': If c < 128 Then Begin isCat := True; cat := RC_NSPACE; Result := 0; Exit; End;
+ End;
+ If c >= 128 Then Begin
+  Result := c;
+  Exit;
+ End;
+ Case Chr(c) Of
+  'n': Result := 10;
+  't': Result := 9;
+  'r': Result := 13;
+  'f': Result := 12;
+  'v': Result := 11;
+  'a': Result := 7;
+  'b': If inClass Then Result := 8
+   Else Err('bad escape \b', st);
+  '\': Result := 92;
+  'x': Begin
+    v := 0;
+    cnt := 0;
+    While (cnt < 2) And (i < n) And (HexVal(p[i]) >= 0) Do Begin
+     v := v * 16 + HexVal(p[i]);
+     Inc(i);
+     Inc(cnt);
+    End;
+    If cnt < 2 Then
+     Err('incomplete escape \x' + CpsToStr(p, st + 2, i), st);
+    Result := v;
+   End;
+  'u', 'U': Begin
+    If isBytes Then Err('bad escape \' + Chr(c), st);
+    If c = Ord('u') Then k := 4 Else k := 8;
+    v := 0;
+    cnt := 0;
+    While (cnt < k) And (i < n) And (HexVal(p[i]) >= 0) Do Begin
+     v := v * 16 + HexVal(p[i]);
+     Inc(i);
+     Inc(cnt);
+    End;
+    If cnt < k Then
+     Err('incomplete escape \' + CpsToStr(p, st + 1, i), st);
+    Result := v;
+   End;
+  '0': Begin
+    v := 0;
+    cnt := 0;
+    While (cnt < 2) And (i < n) And (p[i] >= 48) And (p[i] <= 55) Do Begin
+     v := v * 8 + (p[i] - 48);
+     Inc(i);
+     Inc(cnt);
+    End;
+    Result := v;
+   End;
+  '1'..'9': Begin
+    { en classe : octal si 3 chiffres ; hors classe traite par l'appelant }
+    If inClass Then Begin
+     If (c <= 55) And (i + 1 < n) And (p[i] >= 48) And (p[i] <= 55) And
+      (p[i + 1] >= 48) And (p[i + 1] <= 55) Then Begin
+      v := (c - 48) * 64 + (p[i] - 48) * 8 + (p[i + 1] - 48);
+      Inc(i, 2);
+      If v > 255 Then
+       Err('octal escape value \' + CpsToStr(p, st + 1, i) +
+        ' outside of range 0-0o377', st);
+      Result := v;
+     End
+     Else Err('bad escape \' + Chr(c), st);
+    End
+    Else Err('bad escape \' + Chr(c), st);
+   End;
+ Else
+  If ((c >= 65) And (c <= 90)) Or ((c >= 97) And (c <= 122)) Then
+   Err('bad escape \' + Chr(c), st);
+  Result := c;
+ End;
+End;
+
+Function TReParser.ParseClass: TReNode;
+Var
+ s: TReSet;
+ st, lo, hi: Integer;
+ first: Boolean;
+ c, c2: Cardinal;
+ cat, cat2: Integer;
+ isCat, isCat2: Boolean;
+ nd: TReNode;
+ si: Integer;
+Begin
+ st := i - 1;
+ s := TReSet.Create;
+ If (i < n) And (p[i] = Ord('^')) Then Begin
+  s.neg := True;
+  Inc(i);
+ End;
+ first := True;
+ While True Do Begin
+  If i >= n Then Begin
+   s.Free;
+   Err('unterminated character set', st);
+  End;
+  c := p[i];
+  If (c = Ord(']')) And Not first Then Begin
+   Inc(i);
+   Break;
+  End;
+  first := False;
+  Inc(i);
+  isCat := False;
+  If c = Ord('\') Then Begin
+   Try
+    c := ParseEscape(True, cat, isCat);
+   Except
+    s.Free;
+    Raise;
+   End;
+  End
+  Else If (c = Ord('[')) And (i < n) And ((p[i] = Ord(':')) Or
+   (p[i] = Ord('.')) Or (p[i] = Ord('='))) Then Begin
+   { avertissement ignore }
+  End;
+  If isCat Then Begin
+   s.cats := s.cats Or cat;
+   { un - apres une categorie est litteral }
+   Continue;
+  End;
+  { intervalle ? }
+  If (i + 1 < n) And (p[i] = Ord('-')) And (p[i + 1] <> Ord(']')) Then Begin
+   Inc(i);
+   c2 := p[i];
+   Inc(i);
+   isCat2 := False;
+   If c2 = Ord('\') Then Begin
+    Try
+     c2 := ParseEscape(True, cat2, isCat2);
+    Except
+     s.Free;
+     Raise;
+    End;
+   End;
+   If isCat2 Then Begin
+    s.Free;
+    Err('bad character range ' + CpsToStr(p, i - 3, i), i - 3);
+   End;
+   If c2 < c Then Begin
+    s.Free;
+    Err('bad character range ' + CpsToStr(p, i - 3, i), i - 3);
+   End;
+   s.AddRange(c, c2);
+  End
+  Else s.AddRange(c, c);
+ End;
+ lo := 0;
+ hi := 0;
+ si := AddSet(s);
+ nd := NewNode(nkSetN);
+ nd.idx := si;
+ Result := nd;
+End;
+
+Function TReParser.ParseQuant(atom: TReNode): TReNode;
+Var
+ mn, mx, st, v: Integer;
+ q: TReNode;
+ lazy: Boolean;
+ save, k: Integer;
+ hasMin, hasMax, comma: Boolean;
+Begin
+ Result := atom;
+ While True Do Begin
+  SkipVerbose;
+  If i >= n Then Exit;
+  mn := 0;
+  mx := -1;
+  st := i;
+  If p[i] = Ord('*') Then Begin
+   mn := 0; mx := -1; Inc(i);
+  End
+  Else If p[i] = Ord('+') Then Begin
+   mn := 1; mx := -1; Inc(i);
+  End
+  Else If p[i] = Ord('?') Then Begin
+   mn := 0; mx := 1; Inc(i);
+  End
+  Else If p[i] = Ord('{') Then Begin
+   save := i;
+   Inc(i);
+   hasMin := False;
+   hasMax := False;
+   comma := False;
+   v := 0;
+   While (i < n) And (p[i] >= 48) And (p[i] <= 57) Do Begin
+    v := v * 10 + (p[i] - 48);
+    If v > 4294967 Then Err('the repetition number is too large', st);
+    hasMin := True;
+    Inc(i);
+   End;
+   mn := v;
+   If (i < n) And (p[i] = Ord(',')) Then Begin
+    comma := True;
+    Inc(i);
+    v := 0;
+    While (i < n) And (p[i] >= 48) And (p[i] <= 57) Do Begin
+     v := v * 10 + (p[i] - 48);
+     If v > 4294967 Then Err('the repetition number is too large', st);
+     hasMax := True;
+     Inc(i);
+    End;
+    If hasMax Then mx := v Else mx := -1;
+   End
+   Else mx := mn;
+   If (i >= n) Or (p[i] <> Ord('}')) Or (Not hasMin And Not hasMax And
+    Not comma) Or (Not comma And Not hasMin) Then Begin
+    i := save;
+    Exit;  { litteral }
+   End;
+   Inc(i);
+   If (mx >= 0) And (mx < mn) Then
+    Err('min repeat greater than max repeat', st + 1);
+  End
+  Else Exit;
+  { atome repetable ? }
+  If (atom.kind = nkAnchor) Or ((atom.kind = nkAssert) And False) Then
+   Err('nothing to repeat', st);
+  If (atom.kind = nkRepeat) And Not atom.neg Then
+   Err('multiple repeat', st);
+  lazy := False;
+  If (i < n) And (p[i] = Ord('?')) Then Begin
+   lazy := True;
+   Inc(i);
+  End
+  Else If (i < n) And (p[i] = Ord('+')) Then Begin
+   { possessif : non supporte avant 3.11 }
+   Err('multiple repeat', i);
+  End;
+  q := NewNode(nkRepeat);
+  q.mn := mn;
+  q.mx := mx;
+  q.lazy := lazy;
+  q.Add(atom);
+  q.neg := False;
+  atom := q;
+  Result := q;
+  { marque : un repeat ne peut etre re-repete que via groupe }
+  q.neg := False;
+  { interdit \"a**\" : verifie au tour suivant }
+  k := 0;
+  SkipVerbose;
+  If (i < n) And ((p[i] = Ord('*')) Or (p[i] = Ord('+')) Or (p[i] = Ord('?'))) Then
+   Err('multiple repeat', i);
+  If (i < n) And (p[i] = Ord('{')) Then Begin
+   { verifie si quantificateur valide }
+   save := i;
+   Inc(i);
+   hasMin := False;
+   While (i < n) And (((p[i] >= 48) And (p[i] <= 57)) Or (p[i] = Ord(','))) Do Begin
+    hasMin := True;
+    Inc(i);
+   End;
+   If hasMin And (i < n) And (p[i] = Ord('}')) Then
+    Err('multiple repeat', save);
+   i := save;
+  End;
+  Exit;
+ End;
+End;
+
+Function ReFlagOf(c: Cardinal): Integer;
+Begin
+ Case Chr(c And 255) Of
+  'a': Result := REF_A;
+  'i': Result := REF_I;
+  'L': Result := REF_L;
+  'm': Result := REF_M;
+  's': Result := REF_S;
+  'u': Result := REF_U;
+  'x': Result := REF_X;
+ Else Result := 0;
+ End;
+ If c > 255 Then Result := 0;
+End;
+
+Function ReScanGlobalFlags(Const p: TCpArr): Integer;
+Var
+ i, n, j, f, g: Integer;
+ inCls: Boolean;
+Begin
+ Result := 0;
+ n := Length(p);
+ i := 0;
+ inCls := False;
+ While i < n Do Begin
+  If p[i] = Ord('\') Then Begin
+   Inc(i, 2);
+   Continue;
+  End;
+  If inCls Then Begin
+   If p[i] = Ord(']') Then inCls := False;
+   Inc(i);
+   Continue;
+  End;
+  If p[i] = Ord('[') Then Begin
+   inCls := True;
+   Inc(i);
+   If (i < n) And (p[i] = Ord('^')) Then Inc(i);
+   If (i < n) And (p[i] = Ord(']')) Then Inc(i);
+   Continue;
+  End;
+  If (p[i] = Ord('(')) And (i + 2 < n) And (p[i + 1] = Ord('?')) Then Begin
+   j := i + 2;
+   f := 0;
+   While (j < n) And (ReFlagOf(p[j]) <> 0) Do Begin
+    f := f Or ReFlagOf(p[j]);
+    Inc(j);
+   End;
+   If (j < n) And (p[j] = Ord(')')) And (j > i + 2) Then Result := Result Or f;
+  End;
+  Inc(i);
+ End;
+ g := 0;
+End;
+
+Function TReParser.ParseFlagsGroup(depth: Integer; Var res: TReNode;
+ start: Integer): Boolean;
+Var
+ add, del, f, old: Integer;
+ neg: Boolean;
+ body: TReNode;
+Begin
+ { i pointe apres "(?" ; renvoie False si ce n'est pas un groupe de flags }
+ Result := False;
+ add := 0;
+ del := 0;
+ neg := False;
+ While (i < n) And (ReFlagOf(p[i]) <> 0) Do Begin
+  add := add Or ReFlagOf(p[i]);
+  Inc(i);
+ End;
+ If (i < n) And (p[i] = Ord('-')) Then Begin
+  Inc(i);
+  neg := True;
+  If (i >= n) Or (ReFlagOf(p[i]) = 0) Then Err('missing flag', i);
+  While (i < n) And (ReFlagOf(p[i]) <> 0) Do Begin
+   del := del Or ReFlagOf(p[i]);
+   Inc(i);
+  End;
+ End;
+ If i >= n Then Err('missing -, : or )', i);
+ If p[i] = Ord(')') Then Begin
+  If neg Then Err('missing :', i);
+  Inc(i);
+  res := NewNode(nkEmpty);
+  Result := True;
+  Exit;
+ End;
+ If p[i] <> Ord(':') Then Begin
+  If (add = 0) And Not neg Then Exit;
+  Err('missing -, : or )', i);
+ End;
+ If (add And (REF_A Or REF_U Or REF_L)) <> 0 Then
+  Err('bad inline flags: cannot turn on global flag', start);
+ If (del And (REF_A Or REF_U Or REF_L)) <> 0 Then
+  Err('bad inline flags: cannot turn off flags ''a'', ''u'' and ''L''', start);
+ Inc(i);
+ old := flags;
+ flags := (flags Or add) And Not del;
+ body := ParseAlt(depth + 1);
+ flags := old;
+ If (i >= n) Or (p[i] <> Ord(')')) Then
+  Err('missing ), unterminated subpattern', start);
+ Inc(i);
+ f := 0;
+ res := NewNode(nkGroup);
+ res.idx := -1;
+ res.Add(body);
+ Result := True;
+End;
+
+Function TReParser.ParseAtom(depth: Integer; Var okAtom: Boolean): TReNode;
+Var
+ c: Cardinal;
+ nd, body, yes, no: TReNode;
+ st, gi, k, v, cnt: Integer;
+ nm: AnsiString;
+ cat: Integer;
+ isCat: Boolean;
+ s: TReSet;
+ neg: Boolean;
+ old: Integer;
+ dummy: TReNode;
+Begin
+ okAtom := True;
+ Result := Nil;
+ If i >= n Then Begin
+  okAtom := False;
+  Exit;
+ End;
+ c := p[i];
+ st := i;
+ Case Chr(c And 255) Of
+  '|', ')': If c < 128 Then Begin
+    okAtom := False;
+    Exit;
+   End;
+ End;
+ Inc(i);
+ If c = Ord('(') Then Begin
+  If (i < n) And (p[i] = Ord('?')) Then Begin
+   Inc(i);
+   If i >= n Then Err('unexpected end of pattern', i);
+   c := p[i];
+   Inc(i);
+   If c = Ord(':') Then Begin
+    body := ParseAlt(depth + 1);
+    If (i >= n) Or (p[i] <> Ord(')')) Then
+     Err('missing ), unterminated subpattern', st);
+    Inc(i);
+    nd := NewNode(nkGroup);
+    nd.idx := -1;
+    nd.Add(body);
+    Result := nd;
+    Exit;
+   End;
+   If c = Ord('P') Then Begin
+    If i >= n Then Err('unexpected end of pattern', i);
+    c := p[i];
+    Inc(i);
+    If c = Ord('<') Then Begin
+     nm := ReadName(Ord('>'));
+     If GroupByName(nm) >= 0 Then
+      Err('redefinition of group name ' + StrReprEsc(nm, False) +
+       ' as group ' + IntToStr(ngroups + 1) + '; was group ' +
+       IntToStr(GroupByName(nm)), st + 4);
+     Inc(ngroups);
+     gi := ngroups;
+     SetLength(names, Length(names) + 1);
+     SetLength(nameIdx, Length(nameIdx) + 1);
+     names[High(names)] := nm;
+     nameIdx[High(nameIdx)] := gi;
+     SetLength(openGroups, Length(openGroups) + 1);
+     openGroups[High(openGroups)] := gi;
+     body := ParseAlt(depth + 1);
+     SetLength(openGroups, Length(openGroups) - 1);
+     If (i >= n) Or (p[i] <> Ord(')')) Then
+      Err('missing ), unterminated subpattern', st);
+     Inc(i);
+     nd := NewNode(nkGroup);
+     nd.idx := gi;
+     nd.Add(body);
+     Result := nd;
+     Exit;
+    End;
+    If c = Ord('=') Then Begin
+     nm := ReadName(Ord(')'));
+     gi := GroupByName(nm);
+     If gi < 0 Then Err('unknown group name ' + StrReprEsc(nm, False), st + 4);
+     For k := 0 To High(openGroups) Do
+      If openGroups[k] = gi Then Err('cannot refer to an open group', st);
+     nd := NewNode(nkBackref);
+     nd.idx := gi;
+     Result := nd;
+     Exit;
+    End;
+    Err('unknown extension ?P' + CpsToStr(p, i - 1, i), st + 1);
+   End;
+   If c = Ord('#') Then Begin
+    While (i < n) And (p[i] <> Ord(')')) Do Inc(i);
+    If i >= n Then Err('missing ), unterminated comment', st);
+    Inc(i);
+    Result := NewNode(nkEmpty);
+    Exit;
+   End;
+   If (c = Ord('=')) Or (c = Ord('!')) Then Begin
+    body := ParseAlt(depth + 1);
+    If (i >= n) Or (p[i] <> Ord(')')) Then
+     Err('missing ), unterminated subpattern', st);
+    Inc(i);
+    nd := NewNode(nkLookN);
+    nd.idx := 0;
+    nd.neg := c = Ord('!');
+    nd.Add(body);
+    Result := nd;
+    Exit;
+   End;
+   If c = Ord('<') Then Begin
+    If i >= n Then Err('unexpected end of pattern', i);
+    c := p[i];
+    Inc(i);
+    If (c <> Ord('=')) And (c <> Ord('!')) Then
+     Err('unknown extension ?<' + CpsToStr(p, i - 1, i), st + 1);
+    body := ParseAlt(depth + 1);
+    If (i >= n) Or (p[i] <> Ord(')')) Then
+     Err('missing ), unterminated subpattern', st);
+    Inc(i);
+    nd := NewNode(nkLookN);
+    nd.idx := 1;
+    nd.neg := c = Ord('!');
+    nd.Add(body);
+    Result := nd;
+    Exit;
+   End;
+   If c = Ord('(') Then Begin
+    { conditionnel }
+    nm := ReadName(Ord(')'), True);
+    If (nm <> '') And (nm[1] >= '0') And (nm[1] <= '9') Then Begin
+     gi := StrToIntDef(nm, -1);
+     If gi <= 0 Then Err('bad group number', st + 3);
+    End
+    Else Begin
+     gi := GroupByName(nm);
+     If gi < 0 Then Err('unknown group name ' + StrReprEsc(nm, False), st + 3);
+    End;
+    nd := NewNode(nkCondN);
+    nd.idx := gi;
+    yes := ParseSeq(depth + 1);
+    no := Nil;
+    If (i < n) And (p[i] = Ord('|')) Then Begin
+     Inc(i);
+     no := ParseSeq(depth + 1);
+     If (i < n) And (p[i] = Ord('|')) Then
+      Err('conditional backref with more than two branches', i);
+    End;
+    If (i >= n) Or (p[i] <> Ord(')')) Then
+     Err('missing ), unterminated subpattern', st);
+    Inc(i);
+    If no = Nil Then no := NewNode(nkEmpty);
+    nd.Add(yes);
+    nd.Add(no);
+    Result := nd;
+    Exit;
+   End;
+   { flags }
+   Dec(i);
+   If ParseFlagsGroup(depth, nd, st) Then Begin
+    Result := nd;
+    Exit;
+   End;
+   Err('unknown extension ?' + CpsToStr(p, i, i + 1), st + 1);
+  End;
+  { groupe capturant }
+  Inc(ngroups);
+  gi := ngroups;
+  SetLength(openGroups, Length(openGroups) + 1);
+  openGroups[High(openGroups)] := gi;
+  body := ParseAlt(depth + 1);
+  SetLength(openGroups, Length(openGroups) - 1);
+  If (i >= n) Or (p[i] <> Ord(')')) Then
+   Err('missing ), unterminated subpattern', st);
+  Inc(i);
+  nd := NewNode(nkGroup);
+  nd.idx := gi;
+  nd.Add(body);
+  Result := nd;
+  Exit;
+ End;
+ If c = Ord('[') Then Begin
+  Result := ParseClass;
+  Exit;
+ End;
+ If c = Ord('.') Then Begin
+  Result := NewNode(nkAnyN);
+  Exit;
+ End;
+ If c = Ord('^') Then Begin
+  nd := NewNode(nkAnchor);
+  nd.idx := 0;
+  Result := nd;
+  Exit;
+ End;
+ If c = Ord('$') Then Begin
+  nd := NewNode(nkAnchor);
+  nd.idx := 1;
+  Result := nd;
+  Exit;
+ End;
+ If (c = Ord('*')) Or (c = Ord('+')) Or (c = Ord('?')) Then
+  Err('nothing to repeat', st);
+ If c = Ord('{') Then Begin
+  { quantificateur sans atome ? }
+  k := i;
+  v := 0;
+  cnt := 0;
+  While (k < n) And (((p[k] >= 48) And (p[k] <= 57)) Or (p[k] = Ord(','))) Do Begin
+   Inc(k);
+   Inc(cnt);
+  End;
+  If (cnt > 0) And (k < n) And (p[k] = Ord('}')) Then
+   Err('nothing to repeat', st);
+ End;
+ If c = Ord('\') Then Begin
+  If i >= n Then Err('bad escape (end of pattern)', st);
+  c := p[i];
+  If c < 128 Then Begin
+   Case Chr(c) Of
+    'A': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 2; Result := nd; Exit; End;
+    'Z': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 3; Result := nd; Exit; End;
+    'b': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 4; Result := nd; Exit; End;
+    'B': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 5; Result := nd; Exit; End;
+    '1'..'9': Begin
+      { reference arriere }
+      k := i;
+      v := 0;
+      cnt := 0;
+      While (k < n) And (cnt < 2) And (p[k] >= 48) And (p[k] <= 57) Do Begin
+       v := v * 10 + (p[k] - 48);
+       Inc(k);
+       Inc(cnt);
+      End;
+      { 3 chiffres octaux -> caractere }
+      If (c <= 55) And (i + 2 < n) And (p[i + 1] >= 48) And (p[i + 1] <= 55)
+       And (p[i + 2] >= 48) And (p[i + 2] <= 55) Then Begin
+       v := (c - 48) * 64 + (p[i + 1] - 48) * 8 + (p[i + 2] - 48);
+       If v > 255 Then
+        Err('octal escape value \' + CpsToStr(p, i, i + 3) +
+         ' outside of range 0-0o377', st);
+       Inc(i, 3);
+       nd := NewNode(nkChr);
+       nd.c := v;
+       Result := nd;
+       Exit;
+      End;
+      If v > ngroups Then
+       Err('invalid group reference ' + IntToStr(v), st + 1);
+      For cnt := 0 To High(openGroups) Do
+       If openGroups[cnt] = v Then Err('cannot refer to an open group', st);
+      i := k;
+      nd := NewNode(nkBackref);
+      nd.idx := v;
+      Result := nd;
+      Exit;
+     End;
+   End;
+  End;
+  { echappement ordinaire }
+  Dec(i);
+  Inc(i);
+  v := 0;
+  c := ParseEscape(False, cat, isCat);
+  If isCat Then Begin
+   s := TReSet.Create;
+   s.cats := cat;
+   nd := NewNode(nkSetN);
+   nd.idx := AddSet(s);
+   Result := nd;
+   Exit;
+  End;
+  nd := NewNode(nkChr);
+  nd.c := c;
+  Result := nd;
+  Exit;
+ End;
+ nd := NewNode(nkChr);
+ nd.c := c;
+ Result := nd;
+ old := 0;
+ neg := False;
+ dummy := Nil;
+End;
+
+Function TReParser.ParseSeq(depth: Integer): TReNode;
+Var
+ seq, atom: TReNode;
+ okAtom: Boolean;
+ st: Integer;
+Begin
+ seq := NewNode(nkCat);
+ While True Do Begin
+  SkipVerbose;
+  st := i;
+  atom := ParseAtom(depth, okAtom);
+  If Not okAtom Then Break;
+  If (atom.kind = nkEmpty) And (atom.flags = flags) Then Begin
+   { groupe de flags ou commentaire : pas de quantificateur }
+   If (i < n) And ((p[i] = Ord('*')) Or (p[i] = Ord('+')) Or (p[i] = Ord('?')))
+   Then Err('nothing to repeat', i);
+   Continue;
+  End;
+  atom := ParseQuant(atom);
+  seq.Add(atom);
+ End;
+ Result := seq;
+End;
+
+Function TReParser.ParseAlt(depth: Integer): TReNode;
+Var
+ alt, first: TReNode;
+Begin
+ If depth > 200 Then Err('pattern nested too deeply', i);
+ first := ParseSeq(depth);
+ If (i < n) And (p[i] = Ord('|')) Then Begin
+  alt := NewNode(nkAlt);
+  alt.Add(first);
+  While (i < n) And (p[i] = Ord('|')) Do Begin
+   Inc(i);
+   alt.Add(ParseSeq(depth));
+  End;
+  Result := alt;
+ End
+ Else Result := first;
+End;
+
+{ ---------------- generation de code ---------------- }
+Type
+ TReGen = Class
+  prog: TReProg;
+  ps: TReParser;
+  nslot: Integer;
+  Function Emit(op, x, y, z, w: Integer): Integer;
+  Function Width(nd: TReNode): Integer;
+  Function MinWidth(nd: TReNode): Integer;
+  Function IsSingle(nd: TReNode): Boolean;
+  Procedure Gen(nd: TReNode);
+  Procedure GenRepeat(nd: TReNode);
+ End;
+
+Function TReGen.Emit(op, x, y, z, w: Integer): Integer;
+Begin
+ If prog.n >= Length(prog.code) Then SetLength(prog.code, prog.n * 2 + 16);
+ If prog.n > 4000000 Then
+  ps.Err('regular expression code size limit exceeded', 0);
+ prog.code[prog.n].op := op;
+ prog.code[prog.n].x := x;
+ prog.code[prog.n].y := y;
+ prog.code[prog.n].z := z;
+ prog.code[prog.n].w := w;
+ Result := prog.n;
+ Inc(prog.n);
+End;
+
+Function TReGen.IsSingle(nd: TReNode): Boolean;
+Begin
+ Result := nd.kind In [nkChr, nkAnyN, nkSetN];
+ If Not Result And (nd.kind = nkCat) And (Length(nd.kids) = 1) Then
+  Result := IsSingle(nd.kids[0]);
+End;
+
+Function TReGen.Width(nd: TReNode): Integer;
+Var
+ k, w, t: Integer;
+Begin
+ Case nd.kind Of
+  nkEmpty, nkAnchor, nkAssert, nkLookN: Result := 0;
+  nkChr, nkAnyN, nkSetN: Result := 1;
+  nkCat: Begin
+    Result := 0;
+    For k := 0 To High(nd.kids) Do Begin
+     w := Width(nd.kids[k]);
+     If w < 0 Then Begin Result := -1; Exit; End;
+     Result := Result + w;
+    End;
+   End;
+  nkAlt: Begin
+    Result := Width(nd.kids[0]);
+    For k := 1 To High(nd.kids) Do Begin
+     w := Width(nd.kids[k]);
+     If w <> Result Then Result := -1;
+    End;
+   End;
+  nkRepeat: Begin
+    w := Width(nd.kids[0]);
+    If (w >= 0) And (nd.mn = nd.mx) Then Result := w * nd.mn
+    Else If (w = 0) Then Result := 0
+    Else Result := -1;
+   End;
+  nkGroup: Result := Width(nd.kids[0]);
+  nkCondN: Begin
+    w := Width(nd.kids[0]);
+    t := Width(nd.kids[1]);
+    If w = t Then Result := w Else Result := -1;
+   End;
+ Else
+  Result := -1;
+ End;
+End;
+
+Function TReGen.MinWidth(nd: TReNode): Integer;
+Var
+ k, w: Integer;
+Begin
+ Case nd.kind Of
+  nkChr, nkAnyN, nkSetN: Result := 1;
+  nkCat: Begin
+    Result := 0;
+    For k := 0 To High(nd.kids) Do Result := Result + MinWidth(nd.kids[k]);
+   End;
+  nkAlt: Begin
+    Result := MinWidth(nd.kids[0]);
+    For k := 1 To High(nd.kids) Do Begin
+     w := MinWidth(nd.kids[k]);
+     If w < Result Then Result := w;
+    End;
+   End;
+  nkRepeat: Result := MinWidth(nd.kids[0]) * nd.mn;
+  nkGroup: Result := MinWidth(nd.kids[0]);
+  nkCondN: Begin
+    Result := MinWidth(nd.kids[0]);
+    w := MinWidth(nd.kids[1]);
+    If w < Result Then Result := w;
+   End;
+ Else
+  Result := 0;
+ End;
+End;
+
+Procedure TReGen.GenRepeat(nd: TReNode);
+Var
+ body: TReNode;
+ k, cnt, l1, sp, slot, pcSave, chk: Integer;
+ splits: Array Of Integer;
+ nullable: Boolean;
+ szBefore: Integer;
+Begin
+ body := nd.kids[0];
+ If IsSingle(body) Then Begin
+  Emit(opRep, nd.mn, nd.mx, Ord(nd.lazy), 0);
+  Gen(body);
+  Exit;
+ End;
+ nullable := MinWidth(body) = 0;
+ szBefore := prog.n;
+ For k := 1 To nd.mn Do Begin
+  Gen(body);
+  If prog.n - szBefore > 2000000 Then
+   ps.Err('regular expression code size limit exceeded', 0);
+ End;
+ If nd.mx = -1 Then Begin
+  l1 := Emit(opSplit, 0, 0, 0, 0);
+  slot := -1;
+  chk := -1;
+  If nullable Then Begin
+   slot := prog.nslots;
+   Inc(prog.nslots);
+   Emit(opSave, -1 - slot, 0, 0, 0);
+  End;
+  Gen(body);
+  If nullable Then chk := Emit(opEmptyChk, -1 - slot, 0, 0, 0);
+  Emit(opJmp, l1, 0, 0, 0);
+  If chk >= 0 Then prog.code[chk].y := prog.n;
+  If nd.lazy Then Begin
+   prog.code[l1].x := prog.n;
+   prog.code[l1].y := l1 + 1;
+  End
+  Else Begin
+   prog.code[l1].x := l1 + 1;
+   prog.code[l1].y := prog.n;
+  End;
+ End
+ Else Begin
+  cnt := nd.mx - nd.mn;
+  SetLength(splits, cnt);
+  For k := 0 To cnt - 1 Do Begin
+   splits[k] := Emit(opSplit, 0, 0, 0, 0);
+   Gen(body);
+   If prog.n - szBefore > 2000000 Then
+    ps.Err('regular expression code size limit exceeded', 0);
+  End;
+  For k := 0 To cnt - 1 Do Begin
+   If nd.lazy Then Begin
+    prog.code[splits[k]].x := prog.n;
+    prog.code[splits[k]].y := splits[k] + 1;
+   End
+   Else Begin
+    prog.code[splits[k]].x := splits[k] + 1;
+    prog.code[splits[k]].y := prog.n;
+   End;
+  End;
+ End;
+ sp := 0;
+ pcSave := 0;
+End;
+
+Procedure TReGen.Gen(nd: TReNode);
+Var
+ k, j, w, fl, l1, lend, endJmp, lk, lf: Integer;
+ jmps: Array Of Integer;
+ icase, asc: Boolean;
+Begin
+ icase := (nd.flags And REF_I) <> 0;
+ asc := ((nd.flags And REF_A) <> 0) Or prog.isBytes;
+ Case nd.kind Of
+  nkEmpty: ;
+  nkChr: Begin
+    If icase And ((CpLower(nd.c) <> nd.c) Or (CpUpper(nd.c) <> nd.c)) Then
+     Emit(opCharI, CpLower(nd.c), 0, 0, 0)
+    Else Emit(opChar, nd.c, 0, 0, 0);
+   End;
+  nkAnyN: Begin
+    If (nd.flags And REF_S) <> 0 Then Emit(opAnyAll, 0, 0, 0, 0)
+    Else Emit(opAny, 0, 0, 0, 0);
+   End;
+  nkSetN: Begin
+    fl := 0;
+    If icase Then fl := fl Or 1;
+    If asc Then fl := fl Or 2;
+    Emit(opSet, nd.idx, fl, 0, 0);
+   End;
+  nkCat: Begin
+    For k := 0 To High(nd.kids) Do Gen(nd.kids[k]);
+   End;
+  nkAlt: Begin
+    SetLength(jmps, 0);
+    For k := 0 To High(nd.kids) Do Begin
+     If k < High(nd.kids) Then Begin
+      l1 := Emit(opSplit, 0, 0, 0, 0);
+      prog.code[l1].x := l1 + 1;
+      Gen(nd.kids[k]);
+      SetLength(jmps, Length(jmps) + 1);
+      jmps[High(jmps)] := Emit(opJmp, 0, 0, 0, 0);
+      prog.code[l1].y := prog.n;
+     End
+     Else Gen(nd.kids[k]);
+    End;
+    For k := 0 To High(jmps) Do prog.code[jmps[k]].x := prog.n;
+   End;
+  nkGroup: Begin
+    If nd.idx >= 0 Then Emit(opSave, 2 * nd.idx, 0, 0, 0);
+    Gen(nd.kids[0]);
+    If nd.idx >= 0 Then Emit(opSave, 2 * nd.idx + 1, 0, 0, 0);
+   End;
+  nkBackref: Begin
+    fl := 0;
+    If icase Then fl := 1;
+    Emit(opBackref, nd.idx, fl, 0, 0);
+   End;
+  nkAnchor: Begin
+    Case nd.idx Of
+     0: If (nd.flags And REF_M) <> 0 Then Emit(opBolM, 0, 0, 0, 0)
+        Else Emit(opBol, 0, 0, 0, 0);
+     1: If (nd.flags And REF_M) <> 0 Then Emit(opEolM, 0, 0, 0, 0)
+        Else Emit(opEol, 0, 0, 0, 0);
+     2: Emit(opBos, 0, 0, 0, 0);
+     3: Emit(opEos, 0, 0, 0, 0);
+     4: Emit(opWordB, 0, Ord(asc), 0, 0);
+     5: Emit(opNWordB, 0, Ord(asc), 0, 0);
+    End;
+   End;
+  nkLookN: Begin
+    w := 0;
+    If nd.idx = 1 Then Begin
+     w := Width(nd.kids[0]);
+     If w < 0 Then ps.Err('look-behind requires fixed-width pattern', 0);
+    End;
+    lk := Emit(opLook, nd.idx, w, 0, Ord(nd.neg));
+    Gen(nd.kids[0]);
+    Emit(opLookEnd, 0, 0, 0, 0);
+    prog.code[lk].z := prog.n;
+   End;
+  nkCondN: Begin
+    lk := Emit(opCond, nd.idx, 0, 0, 0);
+    Gen(nd.kids[0]);
+    endJmp := Emit(opJmp, 0, 0, 0, 0);
+    prog.code[lk].y := prog.n;
+    Gen(nd.kids[1]);
+    prog.code[endJmp].x := prog.n;
+   End;
+  nkRepeat: GenRepeat(nd);
+ End;
+ lend := 0;
+ lf := 0;
+ j := 0;
+End;
+
+{ ---------------- execution ---------------- }
+Type
+ TReBT = Record
+  kind, a, b, c: Integer;
+ End;
+
+ TReState = Class
+  prog: TReProg;
+  subj: TCpArr;
+  n: Integer;
+  caps: Array Of Integer;
+  ncap, liIdx: Integer;
+  bt: Array Of TReBT;
+  sp: Integer;
+  ascii: Boolean;
+  mustAdvance, needEnd: Boolean;
+  startPos, matchEnd: Integer;
+  steps: Int64;
+  Constructor Create(p: TReProg; Const s: TCpArr; len: Integer);
+  Procedure Push(k, a, b, c: Integer); Inline;
+  Function MatchOne(Const ins: TReInstr; pos: Integer): Boolean;
+  Function Run(pc0, pos0: Integer; top: Boolean): Boolean;
+  Function Attempt(s: Integer): Boolean;
+  Function Search(start: Integer; mode: Integer): Boolean;
+ End;
+
+Constructor TReState.Create(p: TReProg; Const s: TCpArr; len: Integer);
+Begin
+ prog := p;
+ subj := s;
+ n := len;
+ ncap := 2 * (p.ngroups + 1);
+ liIdx := ncap + p.nslots;
+ SetLength(caps, liIdx + 1);
+ SetLength(bt, 256);
+ sp := 0;
+ ascii := ((p.flags And REF_A) <> 0) Or p.isBytes;
+End;
+
+Procedure TReState.Push(k, a, b, c: Integer);
+Begin
+ If sp >= Length(bt) Then SetLength(bt, Length(bt) * 2);
+ bt[sp].kind := k;
+ bt[sp].a := a;
+ bt[sp].b := b;
+ bt[sp].c := c;
+ Inc(sp);
+End;
+
+Function TReState.MatchOne(Const ins: TReInstr; pos: Integer): Boolean;
+Var
+ c: Cardinal;
+Begin
+ If pos >= n Then Begin
+  Result := False;
+  Exit;
+ End;
+ c := subj[pos];
+ Case ins.op Of
+  opChar: Result := c = Cardinal(ins.x);
+  opCharI: Result := CpLower(c) = Cardinal(ins.x);
+  opAny: Result := c <> 10;
+  opAnyAll: Result := True;
+  opSet: Result := prog.sets[ins.x].Test(c, (ins.y And 1) <> 0,
+    (ins.y And 2) <> 0);
+ Else Result := False;
+ End;
+End;
+
+Function TReState.Run(pc0, pos0: Integer; top: Boolean): Boolean;
+Var
+ base, pc, pos, i, cnt, maxc, newpos, g, s, e, len, k, saveSp, kept: Integer;
+ ok, r, before, after: Boolean;
+ ins: ^TReInstr;
+ en: TReBT;
+ c1, c2: Cardinal;
+ nextIsChar: Boolean;
+ nextCh: Cardinal;
+Begin
+ base := sp;
+ pc := pc0;
+ pos := pos0;
+ While True Do Begin
+  ins := @prog.code[pc];
+  ok := True;
+  Case ins^.op Of
+   opChar: If (pos < n) And (subj[pos] = Cardinal(ins^.x)) Then Begin
+      Inc(pos); Inc(pc);
+     End Else ok := False;
+   opCharI: If (pos < n) And (CpLower(subj[pos]) = Cardinal(ins^.x)) Then Begin
+      Inc(pos); Inc(pc);
+     End Else ok := False;
+   opAny: If (pos < n) And (subj[pos] <> 10) Then Begin
+      Inc(pos); Inc(pc);
+     End Else ok := False;
+   opAnyAll: If pos < n Then Begin
+      Inc(pos); Inc(pc);
+     End Else ok := False;
+   opSet: If MatchOne(ins^, pos) Then Begin
+      Inc(pos); Inc(pc);
+     End Else ok := False;
+   opBol: If pos = 0 Then Inc(pc) Else ok := False;
+   opBolM: If (pos = 0) Or (subj[pos - 1] = 10) Then Inc(pc) Else ok := False;
+   opEol: If (pos = n) Or ((pos = n - 1) And (subj[pos] = 10)) Then Inc(pc)
+     Else ok := False;
+   opEolM: If (pos = n) Or (subj[pos] = 10) Then Inc(pc) Else ok := False;
+   opBos: If pos = 0 Then Inc(pc) Else ok := False;
+   opEos: If pos = n Then Inc(pc) Else ok := False;
+   opWordB, opNWordB: Begin
+      If n = 0 Then ok := False
+      Else Begin
+       before := (pos > 0) And ReIsWord(subj[pos - 1], ins^.y <> 0);
+       after := (pos < n) And ReIsWord(subj[pos], ins^.y <> 0);
+       If ins^.op = opWordB Then ok := before <> after
+       Else ok := before = after;
+      End;
+      If ok Then Inc(pc);
+     End;
+   opSave: Begin
+      k := ins^.x;
+      If k < 0 Then k := ncap + (-1 - k);
+      Push(1, k, caps[k], 0);
+      caps[k] := pos;
+      If (k >= 2) And (k < ncap) And ((k And 1) = 1) Then Begin
+       Push(1, liIdx, caps[liIdx], 0);
+       caps[liIdx] := k Div 2;
+      End;
+      Inc(pc);
+     End;
+   opSplit: Begin
+      Push(0, ins^.y, pos, 0);
+      pc := ins^.x;
+     End;
+   opJmp: pc := ins^.x;
+   opMatch, opLookEnd: Begin
+      If ins^.op = opMatch Then Begin
+       If (needEnd And (pos <> n)) Or (mustAdvance And (pos = startPos)) Then
+        ok := False
+       Else Begin
+        matchEnd := pos;
+        Result := True;
+        Exit;
+       End;
+      End
+      Else Begin
+       matchEnd := pos;
+       Result := True;
+       Exit;
+      End;
+     End;
+   opBackref: Begin
+      g := ins^.x;
+      s := caps[2 * g];
+      e := caps[2 * g + 1];
+      If (s < 0) Or (e < 0) Then ok := False
+      Else Begin
+       len := e - s;
+       If pos + len > n Then ok := False
+       Else Begin
+        For k := 0 To len - 1 Do Begin
+         c1 := subj[s + k];
+         c2 := subj[pos + k];
+         If ins^.y <> 0 Then Begin
+          c1 := CpLower(c1);
+          c2 := CpLower(c2);
+         End;
+         If c1 <> c2 Then Begin
+          ok := False;
+          Break;
+         End;
+        End;
+        If ok Then Begin
+         Inc(pos, len);
+         Inc(pc);
+        End;
+       End;
+      End;
+     End;
+   opRep: Begin
+      maxc := ins^.y;
+      If ins^.z = 0 Then Begin
+       { glouton }
+       cnt := 0;
+       While ((maxc < 0) Or (cnt < maxc)) And MatchOne(prog.code[pc + 1], pos + cnt) Do
+        Inc(cnt);
+       If cnt < ins^.x Then ok := False
+       Else Begin
+        If cnt > ins^.x Then Push(2, pc + 2, pos + cnt, pos + ins^.x);
+        pos := pos + cnt;
+        pc := pc + 2;
+       End;
+      End
+      Else Begin
+       cnt := 0;
+       While cnt < ins^.x Do Begin
+        If Not MatchOne(prog.code[pc + 1], pos) Then Begin
+         ok := False;
+         Break;
+        End;
+        Inc(pos);
+        Inc(cnt);
+       End;
+       If ok Then Begin
+        If (maxc < 0) Or (maxc > cnt) Then Push(3, pc, pos, cnt);
+        pc := pc + 2;
+       End;
+      End;
+     End;
+   opEmptyChk: Begin
+      k := ins^.x;
+      If k < 0 Then k := ncap + (-1 - k);
+      If caps[k] = pos Then pc := ins^.y Else Inc(pc);
+     End;
+   opCond: Begin
+      If caps[2 * ins^.x + 1] >= 0 Then Inc(pc) Else pc := ins^.y;
+     End;
+   opFail: ok := False;
+   opLook: Begin
+      saveSp := sp;
+      If ins^.x = 0 Then r := Run(pc + 1, pos, False)
+      Else Begin
+       If pos - ins^.y < 0 Then r := False
+       Else r := Run(pc + 1, pos - ins^.y, False);
+      End;
+      If ins^.w = 0 Then Begin
+       If r Then Begin
+        { garde les entrees de restauration de captures }
+        kept := saveSp;
+        For i := saveSp To sp - 1 Do
+         If bt[i].kind = 1 Then Begin
+          bt[kept] := bt[i];
+          Inc(kept);
+         End;
+        sp := kept;
+        pc := ins^.z;
+       End
+       Else ok := False;
+      End
+      Else Begin
+       If r Then Begin
+        { desfait toutes les captures }
+        While sp > saveSp Do Begin
+         Dec(sp);
+         If bt[sp].kind = 1 Then caps[bt[sp].a] := bt[sp].b;
+        End;
+        ok := False;
+       End
+       Else pc := ins^.z;
+      End;
+     End;
+  Else
+   ok := False;
+  End;
+  If Not ok Then Begin
+   { retour arriere }
+   While True Do Begin
+    If sp <= base Then Begin
+     Result := False;
+     Exit;
+    End;
+    Dec(sp);
+    en := bt[sp];
+    If en.kind = 1 Then caps[en.a] := en.b
+    Else If en.kind = 0 Then Begin
+     pc := en.a;
+     pos := en.b;
+     Break;
+    End
+    Else If en.kind = 2 Then Begin
+     newpos := en.b - 1;
+     nextIsChar := prog.code[en.a].op = opChar;
+     If nextIsChar Then Begin
+      nextCh := Cardinal(prog.code[en.a].x);
+      While (newpos > en.c) And ((newpos >= n) Or (subj[newpos] <> nextCh)) Do
+       Dec(newpos);
+     End;
+     If newpos > en.c Then Push(2, en.a, newpos, en.c);
+     pos := newpos;
+     pc := en.a;
+     Break;
+    End
+    Else Begin
+     { repetition paresseuse : tente une de plus }
+     ins := @prog.code[en.a];
+     If ((ins^.y < 0) Or (en.c < ins^.y)) And
+      MatchOne(prog.code[en.a + 1], en.b) Then Begin
+      pos := en.b + 1;
+      Push(3, en.a, pos, en.c + 1);
+      pc := en.a + 2;
+      Break;
+     End;
+    End;
+   End;
+  End;
+ End;
+ cnt := base;
+ i := 0;
+ nextIsChar := False;
+ nextCh := 0;
+End;
+
+Function TReState.Attempt(s: Integer): Boolean;
+Var
+ i: Integer;
+Begin
+ For i := 0 To High(caps) Do caps[i] := -1;
+ caps[0] := s;
+ startPos := s;
+ sp := 0;
+ Result := Run(0, s, True);
+ If Result Then Begin
+  caps[1] := matchEnd;
+  sp := 0;
+ End;
+End;
+
+{ mode : 0 match, 1 search, 2 fullmatch }
+Function TReState.Search(start: Integer; mode: Integer): Boolean;
+Var
+ s: Integer;
+Begin
+ Result := False;
+ needEnd := mode = 2;
+ If start > n Then Exit;
+ If mode <> 1 Then Begin
+  Result := Attempt(start);
+  mustAdvance := False;
+  Exit;
+ End;
+ s := start;
+ While s <= n Do Begin
+  If prog.firstCh >= 0 Then Begin
+   While (s < n) And (subj[s] <> Cardinal(prog.firstCh)) Do Inc(s);
+   If s >= n Then Exit;
+  End;
+  If Attempt(s) Then Begin
+   Result := True;
+   Exit;
+  End;
+  mustAdvance := False;
+  Inc(s);
+ End;
+End;
+
+{ ---------------- objets Python ---------------- }
+Var
+ tyRePattern, tyReMatch, tyReIter, tyReScanner, exReError: TPyType;
+
+Type
+ TPyPattern = Class(TPyObj)
+  pat: TVal;
+  flags: Integer;
+  prog: TReProg;
+  groupindex: TPyDict;
+  isBytes: Boolean;
+  Procedure MarkKids; Override;
+  Destructor Destroy; Override;
+  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
+  Function NativeRepr(Var s: AnsiString): Boolean; Override;
+ End;
+
+ TPyMatch = Class(TPyObj)
+  pattern: TPyPattern;
+  str: TVal;
+  caps: Array Of Integer;
+  pos, endpos, lastindex: Integer;
+  cps: TCpArr;
+  ascii: Boolean;
+  Procedure MarkKids; Override;
+  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
+  Function NativeRepr(Var s: AnsiString): Boolean; Override;
+ End;
+
+ TReIter = Class(TPyIter)
+  pattern: TPyPattern;
+  str: TVal;
+  st: TReState;
+  cps: TCpArr;
+  ascii: Boolean;
+  pos, endpos: Integer;
+  must: Boolean;
+  done: Boolean;
+  Function Next(Var r: TVal): Boolean; Override;
+  Procedure MarkKids; Override;
+  Destructor Destroy; Override;
+ End;
+
+Procedure TPyPattern.MarkKids;
+Begin
+ Inherited MarkKids;
+ MarkVal(pat);
+ If groupindex <> Nil Then MarkObj(groupindex);
+End;
+
+Destructor TPyPattern.Destroy;
+Begin
+ prog.Free;
+ Inherited Destroy;
+End;
+
+Procedure TPyMatch.MarkKids;
+Begin
+ Inherited MarkKids;
+ If pattern <> Nil Then MarkObj(pattern);
+ MarkVal(str);
+End;
+
+Procedure TReIter.MarkKids;
+Begin
+ Inherited MarkKids;
+ If pattern <> Nil Then MarkObj(pattern);
+ MarkVal(str);
+End;
+
+Destructor TReIter.Destroy;
+Begin
+ st.Free;
+ Inherited Destroy;
+End;
+
+Function ReFlagNames(fl: Integer; isBytes: Boolean): AnsiString;
+Const
+ nm: Array[0..8] Of String = ('TEMPLATE', 'IGNORECASE', 'LOCALE',
+  'MULTILINE', 'DOTALL', 'UNICODE', 'VERBOSE', 'DEBUG', 'ASCII');
+Var
+ k: Integer;
+Begin
+ Result := '';
+ If Not isBytes Then fl := fl And Not REF_U;
+ For k := 0 To 8 Do
+  If (fl And (1 Shl k)) <> 0 Then Begin
+   If Result <> '' Then Result := Result + '|';
+   Result := Result + 're.' + nm[k];
+   fl := fl And Not (1 Shl k);
+  End;
+ If fl <> 0 Then Begin
+  If Result <> '' Then Result := Result + '|';
+  Result := Result + '0x' + LowerCase(IntToHex(fl, 1));
+ End;
+End;
+
+Function TPyPattern.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Var
+ fl: Integer;
+Begin
+ Result := True;
+ If nm = 'pattern' Then res := pat
+ Else If nm = 'flags' Then Begin
+  fl := flags;
+  If Not isBytes And ((fl And (REF_A Or REF_L)) = 0) Then fl := fl Or REF_U;
+  res := VInt(fl);
+ End
+ Else If nm = 'groups' Then res := VInt(prog.ngroups)
+ Else If nm = 'groupindex' Then res := VObj(groupindex.Copy)
+ Else Result := False;
+End;
+
+Function ReLastGroupName(m: TPyMatch): AnsiString;
+Var
+ k: Integer;
+Begin
+ Result := '';
+ For k := 0 To m.pattern.prog.ngn - 1 Do
+  If m.pattern.prog.gidx[k] = m.lastindex Then
+   Result := m.pattern.prog.gnames[k];
+End;
+
+Function TPyMatch.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Var
+ g: AnsiString;
+Begin
+ Result := True;
+ If nm = 'string' Then res := str
+ Else If nm = 're' Then res := VObj(pattern)
+ Else If nm = 'pos' Then res := VInt(pos)
+ Else If nm = 'endpos' Then res := VInt(endpos)
+ Else If nm = 'lastindex' Then Begin
+  If lastindex < 0 Then res := vNone Else res := VInt(lastindex);
+ End
+ Else If nm = 'lastgroup' Then Begin
+  If lastindex < 0 Then res := vNone
+  Else Begin
+   g := ReLastGroupName(Self);
+   If g = '' Then res := vNone Else res := VStr(g);
+  End;
+ End
+ Else If nm = 'regs' Then Begin
+  res := vNone;
+  Result := False;
+ End
+ Else Result := False;
+End;
+
+{ erreur de syntaxe -> re.error }
+Procedure ReRaise(Const msg: AnsiString; Const pattern: TVal; pos: Integer);
+Var
+ e: TPyObj;
+ full, ps: AnsiString;
+ line, col, k: Integer;
+ cps: TCpArr;
+Begin
+ full := msg;
+ e := Nil;
+ If pos >= 0 Then Begin
+  full := msg + ' at position ' + IntToStr(pos);
+  If IsStrVal(pattern) Then Begin
+   cps := StrToCps(TPyStr(pattern.o).s);
+   line := 1;
+   col := 1;
+   For k := 0 To pos - 1 Do
+    If (k < Length(cps)) And (cps[k] = 10) Then Begin
+     Inc(line);
+     col := 1;
+    End
+    Else Inc(col);
+   If line > 1 Then
+    full := full + ' (line ' + IntToStr(line) + ', column ' + IntToStr(col) + ')';
+  End;
+ End;
+ e := MakeExcArgs(exReError, [VStr(full)]);
+ If e.idict = Nil Then e.idict := TPyDict.Make;
+ e.idict.SetS('msg', VStr(msg));
+ e.idict.SetS('pattern', pattern);
+ If pos >= 0 Then e.idict.SetS('pos', VInt(pos)) Else e.idict.SetS('pos', vNone);
+ e.idict.SetS('lineno', vNone);
+ e.idict.SetS('colno', vNone);
+ ps := '';
+ Raise EPyError.Make(e);
+End;
+
+Function ReCompileProg(Const pattern: TVal; flags: Integer;
+ Var outFlags: Integer): TReProg;
+Var
+ cps: TCpArr;
+ isB: Boolean;
+ ps: TReParser;
+ gen: TReGen;
+ root: TReNode;
+ prog: TReProg;
+ s: AnsiString;
+ k, f: Integer;
+Begin
+ isB := (pattern.k = vkObj) And (pattern.o Is TPyBytes);
+ If isB Then Begin
+  s := TPyBytes(pattern.o).s;
+  SetLength(cps, Length(s));
+  For k := 1 To Length(s) Do cps[k - 1] := Ord(s[k]);
+  If (flags And REF_U) <> 0 Then
+   ValueErr('cannot use UNICODE flag with a bytes pattern');
+ End
+ Else Begin
+  If Not IsStrVal(pattern) Then
+   TypeErr('first argument must be string or compiled pattern');
+  cps := StrToCps(TPyStr(pattern.o).s);
+  If (flags And REF_L) <> 0 Then
+   ValueErr('cannot use LOCALE flag with a str pattern');
+ End;
+ If ((flags And REF_A) <> 0) And ((flags And REF_U) <> 0) Then
+  ValueErr('ASCII and UNICODE flags are incompatible');
+ f := flags Or ReScanGlobalFlags(cps);
+ If ((f And REF_A) <> 0) And ((f And REF_U) <> 0) Then
+  ValueErr('ASCII and UNICODE flags are incompatible');
+ prog := TReProg.Create;
+ prog.isBytes := isB;
+ prog.flags := f;
+ ps := TReParser.Create(cps, f, isB);
+ gen := TReGen.Create;
+ Try
+  Try
+   root := ps.ParseAlt(0);
+   If ps.i < ps.n Then Begin
+    If cps[ps.i] = Ord(')') Then ps.Err('unbalanced parenthesis', ps.i)
+    Else ps.Err('unexpected character', ps.i);
+   End;
+   gen.prog := prog;
+   gen.ps := ps;
+   gen.Gen(root);
+   gen.Emit(opMatch, 0, 0, 0, 0);
+   SetLength(prog.sets, ps.nsets);
+   For k := 0 To ps.nsets - 1 Do prog.sets[k] := ps.sets[k];
+   prog.nsets := ps.nsets;
+   ps.nsets := 0;
+   prog.ngroups := ps.ngroups;
+   prog.ngn := Length(ps.names);
+   SetLength(prog.gnames, prog.ngn);
+   SetLength(prog.gidx, prog.ngn);
+   For k := 0 To prog.ngn - 1 Do Begin
+    prog.gnames[k] := ps.names[k];
+    prog.gidx[k] := ps.nameIdx[k];
+   End;
+   prog.firstCh := -1;
+   If (prog.n > 0) And (prog.code[0].op = opChar) Then
+    prog.firstCh := prog.code[0].x;
+  Except
+   On E: EReSyntax Do Begin
+    For k := 0 To ps.nsets - 1 Do ps.sets[k].Free;
+    prog.Free;
+    ReRaise(E.Message, pattern, E.pos);
+   End;
+  End;
+ Finally
+  gen.Free;
+  ps.Free;
+ End;
+ outFlags := f;
+ Result := prog;
+End;
+
+Function ReNewPattern(Const pattern: TVal; flags: Integer): TPyPattern;
+Var
+ prog: TReProg;
+ f, k: Integer;
+ p: TPyPattern;
+Begin
+ prog := ReCompileProg(pattern, flags, f);
+ p := TPyPattern.Create(tyRePattern);
+ p.pat := pattern;
+ p.flags := f;
+ p.prog := prog;
+ p.isBytes := prog.isBytes;
+ p.groupindex := TPyDict.Make;
+ For k := 0 To prog.ngn - 1 Do
+  p.groupindex.SetS(prog.gnames[k], VInt(prog.gidx[k]));
+ Result := p;
+End;
+
+{ ---- sujet ---- }
+Procedure ReSubject(p: TPyPattern; Const v: TVal; Var cps: TCpArr;
+ Var ascii: Boolean);
+Var
+ s: AnsiString;
+ k: Integer;
+Begin
+ If IsStrVal(v) Then Begin
+  If p.isBytes Then
+   TypeErr('cannot use a bytes pattern on a string-like object');
+  s := TPyStr(v.o).s;
+  ascii := IsAsciiStr(s);
+  If ascii Then Begin
+   SetLength(cps, Length(s));
+   For k := 1 To Length(s) Do cps[k - 1] := Ord(s[k]);
+  End
+  Else cps := StrToCps(s);
+ End
+ Else If (v.k = vkObj) And (v.o Is TPyBytes) Then Begin
+  If Not p.isBytes Then
+   TypeErr('cannot use a string pattern on a bytes-like object');
+  s := TPyBytes(v.o).s;
+  ascii := True;
+  SetLength(cps, Length(s));
+  For k := 1 To Length(s) Do cps[k - 1] := Ord(s[k]);
+ End
+ Else Begin
+  TypeErr('expected string or bytes-like object');
+  ascii := True;
+ End;
+End;
+
+Function ReSlice(p: TPyPattern; Const strv: TVal; Const cps: TCpArr;
+ ascii: Boolean; lo, hi: Integer): TVal;
+Var
+ s: AnsiString;
+Begin
+ If strv.o Is TPyBytes Then Begin
+  s := TPyBytes(strv.o).s;
+  Result := VBytesLike(strv.o, Copy(s, lo + 1, hi - lo));
+  If strv.o.cls = tyBytearray Then Result := VBytes(Copy(s, lo + 1, hi - lo));
+ End
+ Else If ascii Then Result := VStr(Copy(TPyStr(strv.o).s, lo + 1, hi - lo))
+ Else Result := VStr(CpsToStr(cps, lo, hi));
+End;
+
+Function ReEmptyOf(p: TPyPattern): TVal;
+Begin
+ If p.isBytes Then Result := VBytes('') Else Result := VStr('');
+End;
+
+Function ReMakeMatch(p: TPyPattern; Const strv: TVal; st: TReState;
+ Const cps: TCpArr; ascii: Boolean; pos, endpos: Integer): TVal;
+Var
+ m: TPyMatch;
+ k: Integer;
+Begin
+ m := TPyMatch.Create(tyReMatch);
+ m.pattern := p;
+ m.str := strv;
+ SetLength(m.caps, 2 * (p.prog.ngroups + 1));
+ For k := 0 To High(m.caps) Do m.caps[k] := st.caps[k];
+ m.pos := pos;
+ m.endpos := endpos;
+ m.lastindex := st.caps[st.liIdx];
+ m.cps := cps;
+ m.ascii := ascii;
+ Result := VObj(m);
+End;
+
+Procedure ReArgs(a: PVal; n: Integer; kw: TPyDict; Var strv: TVal;
+ Var pos, endpos: Int64; len: Integer);
+Var
+ v: TVal;
+Begin
+ If Not ArgKw(a, n, kw, 1, 'string', strv) Then
+  TypeErr('missing required argument ''string'' (pos 1)');
+ pos := 0;
+ endpos := len;
+ If ArgKw(a, n, kw, 2, 'pos', v) Then pos := IndexVal(v);
+ If ArgKw(a, n, kw, 3, 'endpos', v) Then endpos := IndexVal(v);
+ If pos < 0 Then pos := 0;
+ If pos > len Then pos := len;
+ If endpos < 0 Then endpos := 0;
+ If endpos > len Then endpos := len;
+End;
+
+Function ReDoMatch(a: PVal; n: Integer; kw: TPyDict; mode: Integer): TVal;
+Var
+ p: TPyPattern;
+ strv: TVal;
+ cps: TCpArr;
+ ascii: Boolean;
+ pos, endpos: Int64;
+ st: TReState;
+Begin
+ p := TPyPattern(a[0].o);
+ If Not ArgKw(a, n, kw, 1, 'string', strv) Then
+  TypeErr('missing required argument ''string'' (pos 1)');
+ ReSubject(p, strv, cps, ascii);
+ ReArgs(a, n, kw, strv, pos, endpos, Length(cps));
+ st := TReState.Create(p.prog, cps, endpos);
+ Try
+  If st.Search(pos, mode) Then
+   Result := ReMakeMatch(p, strv, st, cps, ascii, pos, endpos)
+  Else Result := vNone;
+ Finally
+  st.Free;
+ End;
+End;
+
+Function PatMatchM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := ReDoMatch(a, n, kw, 0);
+End;
+
+Function PatSearchM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := ReDoMatch(a, n, kw, 1);
+End;
+
+Function PatFullMatchM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := ReDoMatch(a, n, kw, 2);
+End;
+
+Function ReGroupVal(p: TPyPattern; Const strv: TVal; Const caps: Array Of Integer;
+ Const cps: TCpArr; ascii: Boolean; g: Integer; Const deflt: TVal): TVal;
+Begin
+ If (caps[2 * g] < 0) Or (caps[2 * g + 1] < 0) Then Result := deflt
+ Else Result := ReSlice(p, strv, cps, ascii, caps[2 * g], caps[2 * g + 1]);
+End;
+
+Function TReIter.Next(Var r: TVal): Boolean;
+Begin
+ Result := False;
+ If done Then Exit;
+ st.mustAdvance := must;
+ If Not st.Search(pos, 1) Then Begin
+  done := True;
+  Exit;
+ End;
+ r := ReMakeMatch(pattern, str, st, cps, ascii, 0, endpos);
+ must := st.caps[1] = st.caps[0];
+ pos := st.caps[1];
+ Result := True;
+End;
+
+Function PatFindIterM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: TPyPattern;
+ strv: TVal;
+ pos, endpos: Int64;
+ it: TReIter;
+Begin
+ p := TPyPattern(a[0].o);
+ If Not ArgKw(a, n, kw, 1, 'string', strv) Then
+  TypeErr('missing required argument ''string'' (pos 1)');
+ it := TReIter.Create(tyIter);
+ ReSubject(p, strv, it.cps, it.ascii);
+ ReArgs(a, n, kw, strv, pos, endpos, Length(it.cps));
+ it.pattern := p;
+ it.str := strv;
+ it.st := TReState.Create(p.prog, it.cps, endpos);
+ it.pos := pos;
+ it.endpos := endpos;
+ Result := VObj(it);
+End;
+
+Function PatFindAllM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: TPyPattern;
+ strv: TVal;
+ cps: TCpArr;
+ ascii: Boolean;
+ pos, endpos: Int64;
+ st: TReState;
+ l: TPyList;
+ t: TPyTuple;
+ g: Integer;
+ must: Boolean;
+ e: TVal;
+Begin
+ p := TPyPattern(a[0].o);
+ If Not ArgKw(a, n, kw, 1, 'string', strv) Then
+  TypeErr('missing required argument ''string'' (pos 1)');
+ ReSubject(p, strv, cps, ascii);
+ ReArgs(a, n, kw, strv, pos, endpos, Length(cps));
+ st := TReState.Create(p.prog, cps, endpos);
+ l := NewList;
+ Result := VObj(l);
+ e := ReEmptyOf(p);
+ must := False;
+ Try
+  While True Do Begin
+   st.mustAdvance := must;
+   If Not st.Search(pos, 1) Then Break;
+   If p.prog.ngroups = 0 Then
+    l.Add(ReSlice(p, strv, cps, ascii, st.caps[0], st.caps[1]))
+   Else If p.prog.ngroups = 1 Then
+    l.Add(ReGroupVal(p, strv, st.caps, cps, ascii, 1, e))
+   Else Begin
+    t := NewTuple(p.prog.ngroups);
+    For g := 1 To p.prog.ngroups Do
+     t.items[g - 1] := ReGroupVal(p, strv, st.caps, cps, ascii, g, e);
+    l.Add(VObj(t));
+   End;
+   must := st.caps[1] = st.caps[0];
+   pos := st.caps[1];
+  End;
+ Finally
+  st.Free;
+ End;
+End;
+
+Function PatSplitM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: TPyPattern;
+ strv, v: TVal;
+ cps: TCpArr;
+ ascii: Boolean;
+ pos, maxsplit: Int64;
+ st: TReState;
+ l: TPyList;
+ g, cnt, last: Integer;
+ must: Boolean;
+Begin
+ p := TPyPattern(a[0].o);
+ If Not ArgKw(a, n, kw, 1, 'string', strv) Then
+  TypeErr('missing required argument ''string'' (pos 1)');
+ maxsplit := 0;
+ If ArgKw(a, n, kw, 2, 'maxsplit', v) Then maxsplit := IndexVal(v);
+ ReSubject(p, strv, cps, ascii);
+ st := TReState.Create(p.prog, cps, Length(cps));
+ l := NewList;
+ Result := VObj(l);
+ pos := 0;
+ last := 0;
+ cnt := 0;
+ must := False;
+ Try
+  While (maxsplit <= 0) Or (cnt < maxsplit) Do Begin
+   st.mustAdvance := must;
+   If Not st.Search(pos, 1) Then Break;
+   l.Add(ReSlice(p, strv, cps, ascii, last, st.caps[0]));
+   For g := 1 To p.prog.ngroups Do
+    l.Add(ReGroupVal(p, strv, st.caps, cps, ascii, g, vNone));
+   Inc(cnt);
+   last := st.caps[1];
+   must := st.caps[1] = st.caps[0];
+   pos := st.caps[1];
+  End;
+  l.Add(ReSlice(p, strv, cps, ascii, last, Length(cps)));
+ Finally
+  st.Free;
+ End;
+End;
+
+{ modeles de remplacement }
+Type
+ TReTplItem = Record
+  group: Integer;      { -1 : litteral }
+  lit: AnsiString;
+ End;
+ TReTplArr = Array Of TReTplItem;
+
+Procedure ReParseTemplate(p: TPyPattern; Const tv: TVal;
+ Var items: TReTplArr; Var cnt: Integer);
+Var
+ s: AnsiString;
+ cps: TCpArr;
+ i, n, k, gi, v, d: Integer;
+ lit: AnsiString;
+ nm: AnsiString;
+ c: Cardinal;
+ isB: Boolean;
+
+ Procedure Flush;
+ Begin
+  If lit <> '' Then Begin
+   If cnt >= Length(items) Then SetLength(items, cnt * 2 + 8);
+   items[cnt].group := -1;
+   items[cnt].lit := lit;
+   Inc(cnt);
+   lit := '';
+  End;
+ End;
+
+ Procedure AddGroup(g: Integer);
+ Begin
+  Flush;
+  If cnt >= Length(items) Then SetLength(items, cnt * 2 + 8);
+  items[cnt].group := g;
+  items[cnt].lit := '';
+  Inc(cnt);
+ End;
+
+ Procedure AddCp(cp: Cardinal);
+ Begin
+  If isB Then lit := lit + Chr(cp And 255) Else lit := lit + Utf8Enc(cp);
+ End;
+
+Begin
+ cnt := 0;
+ lit := '';
+ isB := (tv.k = vkObj) And (tv.o Is TPyBytes);
+ If isB Then Begin
+  s := TPyBytes(tv.o).s;
+  SetLength(cps, Length(s));
+  For k := 1 To Length(s) Do cps[k - 1] := Ord(s[k]);
+ End
+ Else cps := StrToCps(TPyStr(tv.o).s);
+ n := Length(cps);
+ i := 0;
+ While i < n Do Begin
+  c := cps[i];
+  If c <> Ord('\') Then Begin
+   AddCp(c);
+   Inc(i);
+   Continue;
+  End;
+  Inc(i);
+  If i >= n Then
+   RaiseExc(exReError, 'bad escape (end of pattern)');
+  c := cps[i];
+  Inc(i);
+  If c = Ord('g') Then Begin
+   If (i >= n) Or (cps[i] <> Ord('<')) Then
+    RaiseExc(exReError, 'missing <');
+   Inc(i);
+   k := i;
+   While (i < n) And (cps[i] <> Ord('>')) Do Inc(i);
+   If i >= n Then RaiseExc(exReError, 'missing >, unterminated name');
+   nm := CpsToStr(cps, k, i);
+   Inc(i);
+   If nm = '' Then RaiseExc(exReError, 'missing group name');
+   If (nm[1] >= '0') And (nm[1] <= '9') Then Begin
+    gi := StrToIntDef(nm, -1);
+    If gi < 0 Then RaiseExc(exReError, 'bad character in group name ' +
+     StrReprEsc(nm, False));
+    If gi > p.prog.ngroups Then
+     RaiseExc(exReError, 'invalid group reference ' + IntToStr(gi));
+    AddGroup(gi);
+   End
+   Else Begin
+    gi := -1;
+    For k := 0 To p.prog.ngn - 1 Do
+     If p.prog.gnames[k] = nm Then gi := p.prog.gidx[k];
+    If gi < 0 Then RaiseExc(exIndexError, 'unknown group name ' +
+     StrReprEsc(nm, False));
+    AddGroup(gi);
+   End;
+   Continue;
+  End;
+  If (c >= Ord('0')) And (c <= Ord('9')) Then Begin
+   v := c - 48;
+   If (c = Ord('0')) Then Begin
+    d := 0;
+    While (d < 2) And (i < n) And (cps[i] >= 48) And (cps[i] <= 55) Do Begin
+     v := v * 8 + (cps[i] - 48);
+     Inc(i);
+     Inc(d);
+    End;
+    AddCp(v);
+    Continue;
+   End;
+   If (i < n) And (cps[i] >= 48) And (cps[i] <= 57) Then Begin
+    If (c <= 55) And (cps[i] <= 55) And (i + 1 < n) And (cps[i + 1] >= 48)
+     And (cps[i + 1] <= 55) Then Begin
+     v := (c - 48) * 64 + (cps[i] - 48) * 8 + (cps[i + 1] - 48);
+     Inc(i, 2);
+     AddCp(v);
+     Continue;
+    End;
+    v := v * 10 + (cps[i] - 48);
+    Inc(i);
+   End;
+   If v > p.prog.ngroups Then
+    RaiseExc(exReError, 'invalid group reference ' + IntToStr(v));
+   AddGroup(v);
+   Continue;
+  End;
+  Case Chr(c And 255) Of
+   'n': AddCp(10);
+   't': AddCp(9);
+   'r': AddCp(13);
+   'f': AddCp(12);
+   'v': AddCp(11);
+   'a': AddCp(7);
+   'b': AddCp(8);
+   '\': AddCp(92);
+  Else
+   If ((c >= 65) And (c <= 90)) Or ((c >= 97) And (c <= 122)) Then
+    RaiseExc(exReError, 'bad escape \' + Chr(c));
+   AddCp(92);
+   AddCp(c);
+  End;
+ End;
+ Flush;
+End;
+
+Function ReSubImpl(a: PVal; n: Integer; kw: TPyDict; Var nsubs: Integer): TVal;
+Var
+ p: TPyPattern;
+ repl, strv, v, mobj, rv: TVal;
+ cps: TCpArr;
+ ascii, isFn, simple: Boolean;
+ st: TReState;
+ count: Int64;
+ pos, last: Integer;
+ must: Boolean;
+ items: TReTplArr;
+ icnt, k: Integer;
+ outS, piece: AnsiString;
+ emptyV: TVal;
+ grp: TVal;
+Begin
+ p := TPyPattern(a[0].o);
+ If Not ArgKw(a, n, kw, 1, 'repl', repl) Then
+  TypeErr('missing required argument ''repl'' (pos 1)');
+ If Not ArgKw(a, n, kw, 2, 'string', strv) Then
+  TypeErr('missing required argument ''string'' (pos 2)');
+ count := 0;
+ If ArgKw(a, n, kw, 3, 'count', v) Then count := IndexVal(v);
+ ReSubject(p, strv, cps, ascii);
+ isFn := False;
+ simple := False;
+ icnt := 0;
+ If (repl.k = vkObj) And ((repl.o Is TPyStr) Or (repl.o Is TPyBytes)) Then Begin
+  If (repl.o Is TPyBytes) <> p.isBytes Then
+   TypeErr('expected str instance, bytes found');
+  If repl.o Is TPyStr Then
+   simple := System.Pos('\', TPyStr(repl.o).s) = 0
+  Else simple := System.Pos('\', TPyBytes(repl.o).s) = 0;
+  If Not simple Then ReParseTemplate(p, repl, items, icnt);
+ End
+ Else Begin
+  If Not (IsCallable(repl)) Then
+   TypeErr('expected str, bytes or callable, not ' + TypeName(repl));
+  isFn := True;
+ End;
+ st := TReState.Create(p.prog, cps, Length(cps));
+ outS := '';
+ pos := 0;
+ last := 0;
+ nsubs := 0;
+ must := False;
+ emptyV := ReEmptyOf(p);
+ Try
+  While (count <= 0) Or (nsubs < count) Do Begin
+   st.mustAdvance := must;
+   If Not st.Search(pos, 1) Then Break;
+   If st.caps[0] > last Then Begin
+    v := ReSlice(p, strv, cps, ascii, last, st.caps[0]);
+    If p.isBytes Then outS := outS + TPyBytes(v.o).s
+    Else outS := outS + TPyStr(v.o).s;
+   End;
+   If isFn Then Begin
+    mobj := ReMakeMatch(p, strv, st, cps, ascii, 0, Length(cps));
+    rv := Call1(repl, mobj);
+    If rv.k <> vkNone Then Begin
+     If p.isBytes Then Begin
+      If Not ((rv.k = vkObj) And (rv.o Is TPyBytes)) Then
+       TypeErr('expected bytes-like object');
+      outS := outS + TPyBytes(rv.o).s;
+     End
+     Else outS := outS + StrOf(rv);
+    End;
+   End
+   Else If simple Then Begin
+    If p.isBytes Then outS := outS + TPyBytes(repl.o).s
+    Else outS := outS + TPyStr(repl.o).s;
+   End
+   Else Begin
+    For k := 0 To icnt - 1 Do
+     If items[k].group < 0 Then outS := outS + items[k].lit
+     Else Begin
+      grp := ReGroupVal(p, strv, st.caps, cps, ascii, items[k].group, emptyV);
+      If p.isBytes Then outS := outS + TPyBytes(grp.o).s
+      Else outS := outS + TPyStr(grp.o).s;
+     End;
+   End;
+   last := st.caps[1];
+   Inc(nsubs);
+   must := st.caps[1] = st.caps[0];
+   pos := st.caps[1];
+  End;
+  If last < Length(cps) Then Begin
+   v := ReSlice(p, strv, cps, ascii, last, Length(cps));
+   If p.isBytes Then outS := outS + TPyBytes(v.o).s
+   Else outS := outS + TPyStr(v.o).s;
+  End;
+ Finally
+  st.Free;
+ End;
+ If p.isBytes Then Result := VBytes(outS) Else Result := VStr(outS);
+ piece := '';
+End;
+
+Function PatSubM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ ns: Integer;
+Begin
+ Result := ReSubImpl(a, n, kw, ns);
+End;
+
+Function PatSubnM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ ns: Integer;
+Begin
+ Result := ReSubImpl(a, n, kw, ns);
+ Result := Tup2(Result, VInt(ns));
+End;
+
+Function PatReprM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: TPyPattern;
+ s, fl: AnsiString;
+ pv: TVal;
+Begin
+ p := TPyPattern(a[0].o);
+ pv := p.pat;
+ s := ReprVal(pv);
+ If Utf8Len(s) > 200 Then s := Copy(s, 1, 200);
+ fl := ReFlagNames(p.flags, p.isBytes);
+ If fl <> '' Then s := s + ', ' + fl;
+ Result := VStr('re.compile(' + s + ')');
+End;
+
+Function TPyPattern.NativeRepr(Var s: AnsiString): Boolean;
+Var
+ a: TVal;
+Begin
+ a := VObj(Self);
+ s := StrOf(PatReprM(@a, 1, Nil));
+ Result := True;
+End;
+
+Function PatEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p, q: TPyPattern;
+Begin
+ If Not ((a[1].k = vkObj) And (a[1].o Is TPyPattern)) Then Begin
+  Result := vNotImpl;
+  Exit;
+ End;
+ p := TPyPattern(a[0].o);
+ q := TPyPattern(a[1].o);
+ Result := VBool((p.flags = q.flags) And (p.isBytes = q.isBytes) And
+  ValEq(p.pat, q.pat));
+End;
+
+Function PatHashM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(HashVal(TPyPattern(a[0].o).pat) Xor TPyPattern(a[0].o).flags);
+End;
+
+Function PatCopyM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := a[0];
+End;
+
+{ ---- Match ---- }
+Function ReGroupIndex(m: TPyMatch; Const g: TVal): Integer;
+Var
+ k: Integer;
+ nm: AnsiString;
+ v: TVal;
+Begin
+ If IsStrVal(g) Then Begin
+  nm := TPyStr(g.o).s;
+  If m.pattern.groupindex.GetS(nm, v) Then Begin
+   Result := v.i;
+   Exit;
+  End;
+  RaiseExc(exIndexError, 'no such group');
+ End;
+ If Not (IsIntVal(g) And (g.k <> vkObj)) Then Begin
+  If (g.k = vkObj) And (g.o Is TPyBigInt) Then
+   RaiseExc(exIndexError, 'no such group');
+  k := IndexVal(g);
+  Result := k;
+ End
+ Else Result := g.i;
+ If (Result < 0) Or (Result > m.pattern.prog.ngroups) Then
+  RaiseExc(exIndexError, 'no such group');
+End;
+
+Function ReMatchGroup(m: TPyMatch; g: Integer; Const deflt: TVal): TVal;
+Begin
+ Result := ReGroupVal(m.pattern, m.str, m.caps, m.cps, m.ascii, g, deflt);
+End;
+
+Function MatchGroupM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ t: TPyTuple;
+ k: Integer;
+Begin
+ m := TPyMatch(a[0].o);
+ If n = 1 Then Result := ReMatchGroup(m, 0, vNone)
+ Else If n = 2 Then Result := ReMatchGroup(m, ReGroupIndex(m, a[1]), vNone)
+ Else Begin
+  t := NewTuple(n - 1);
+  For k := 1 To n - 1 Do
+   t.items[k - 1] := ReMatchGroup(m, ReGroupIndex(m, a[k]), vNone);
+  Result := VObj(t);
+ End;
+End;
+
+Function MatchGetItemM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+Begin
+ m := TPyMatch(a[0].o);
+ Result := ReMatchGroup(m, ReGroupIndex(m, a[1]), vNone);
+End;
+
+Function MatchGroupsM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ t: TPyTuple;
+ k: Integer;
+ d: TVal;
+Begin
+ m := TPyMatch(a[0].o);
+ d := vNone;
+ If n > 1 Then d := a[1] Else KwGet(kw, 'default', d);
+ t := NewTuple(m.pattern.prog.ngroups);
+ For k := 1 To m.pattern.prog.ngroups Do
+  t.items[k - 1] := ReMatchGroup(m, k, d);
+ Result := VObj(t);
+End;
+
+Function MatchGroupDictM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ r: TPyDict;
+ k: Integer;
+ d: TVal;
+Begin
+ m := TPyMatch(a[0].o);
+ d := vNone;
+ If n > 1 Then d := a[1] Else KwGet(kw, 'default', d);
+ r := TPyDict.Make;
+ For k := 0 To m.pattern.prog.ngn - 1 Do
+  r.SetS(m.pattern.prog.gnames[k], ReMatchGroup(m, m.pattern.prog.gidx[k], d));
+ Result := VObj(r);
+End;
+
+Function MatchStartM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ g: Integer;
+Begin
+ m := TPyMatch(a[0].o);
+ If n > 1 Then g := ReGroupIndex(m, a[1]) Else g := 0;
+ Result := VInt(m.caps[2 * g]);
+End;
+
+Function MatchEndM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ g: Integer;
+Begin
+ m := TPyMatch(a[0].o);
+ If n > 1 Then g := ReGroupIndex(m, a[1]) Else g := 0;
+ Result := VInt(m.caps[2 * g + 1]);
+End;
+
+Function MatchSpanM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ g: Integer;
+Begin
+ m := TPyMatch(a[0].o);
+ If n > 1 Then g := ReGroupIndex(m, a[1]) Else g := 0;
+ Result := Tup2(VInt(m.caps[2 * g]), VInt(m.caps[2 * g + 1]));
+End;
+
+Function MatchExpandM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ items: TReTplArr;
+ icnt, k: Integer;
+ outS: AnsiString;
+ grp, e: TVal;
+Begin
+ m := TPyMatch(a[0].o);
+ ReParseTemplate(m.pattern, a[1], items, icnt);
+ e := ReEmptyOf(m.pattern);
+ outS := '';
+ For k := 0 To icnt - 1 Do
+  If items[k].group < 0 Then outS := outS + items[k].lit
+  Else Begin
+   grp := ReMatchGroup(m, items[k].group, e);
+   If m.pattern.isBytes Then outS := outS + TPyBytes(grp.o).s
+   Else outS := outS + TPyStr(grp.o).s;
+  End;
+ If m.pattern.isBytes Then Result := VBytes(outS) Else Result := VStr(outS);
+End;
+
+Function MatchReprM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+Begin
+ m := TPyMatch(a[0].o);
+ Result := VStr('<re.Match object; span=(' + IntToStr(m.caps[0]) + ', ' +
+  IntToStr(m.caps[1]) + '), match=' + ReprVal(ReMatchGroup(m, 0, vNone)) + '>');
+End;
+
+Function TPyMatch.NativeRepr(Var s: AnsiString): Boolean;
+Var
+ a: TVal;
+Begin
+ a := VObj(Self);
+ s := StrOf(MatchReprM(@a, 1, Nil));
+ Result := True;
+End;
+
+Function MatchBoolM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := vTrue;
+End;
+
+Function MatchRegsM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyMatch;
+ t: TPyTuple;
+ k: Integer;
+Begin
+ m := TPyMatch(a[0].o);
+ t := NewTuple(m.pattern.prog.ngroups + 1);
+ For k := 0 To m.pattern.prog.ngroups Do
+  t.items[k] := Tup2(VInt(m.caps[2 * k]), VInt(m.caps[2 * k + 1]));
+ Result := VObj(t);
+End;
+
+{ ---- module ---- }
+Function ReCompileFn(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ fl: Int64;
+ v: TVal;
+Begin
+ If n < 1 Then TypeErr('compile() missing required argument ''pattern'' (pos 1)');
+ If (a[0].k = vkObj) And (a[0].o Is TPyPattern) Then Begin
+  If (n > 1) And (IndexVal(a[1]) <> 0) Then
+   ValueErr('cannot process flags argument with a compiled pattern');
+  Result := a[0];
+  Exit;
+ End;
+ fl := 0;
+ If n > 1 Then fl := IndexVal(a[1]) Else If KwGet(kw, 'flags', v) Then
+  fl := IndexVal(v);
+ Result := VObj(ReNewPattern(a[0], fl));
+End;
+
+Function ReIsPatternFn(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBool((a[0].k = vkObj) And (a[0].o Is TPyPattern));
+End;
+
+Procedure InitReModule(m: TPyModule);
+Var
+ d: TPyDict;
+Begin
+ d := m.idict;
+ d.SetS('Pattern', VObj(tyRePattern));
+ d.SetS('Match', VObj(tyReMatch));
+ d.SetS('error', VObj(exReError));
+ DefFunc(d, 'compile', @ReCompileFn);
+ DefFunc(d, '_is_pattern', @ReIsPatternFn);
+ d.SetS('MAGIC', VInt(20171005));
+ d.SetS('CODESIZE', VInt(4));
+End;
+
+Procedure InitReTypes;
+Begin
+ tyRePattern := NewType('Pattern', tyObject, nkNoNew);
+ tyRePattern.idict.SetS('__module__', VStr('re'));
+ tyReMatch := NewType('Match', tyObject, nkNoNew);
+ tyReMatch.idict.SetS('__module__', VStr('re'));
+ exReError := NewType('error', exException, nkException);
+ exReError.idict.SetS('__module__', VStr('re'));
+ DefMethod(tyRePattern, 'match', @PatMatchM);
+ DefMethod(tyRePattern, 'search', @PatSearchM);
+ DefMethod(tyRePattern, 'fullmatch', @PatFullMatchM);
+ DefMethod(tyRePattern, 'finditer', @PatFindIterM);
+ DefMethod(tyRePattern, 'findall', @PatFindAllM);
+ DefMethod(tyRePattern, 'split', @PatSplitM);
+ DefMethod(tyRePattern, 'sub', @PatSubM);
+ DefMethod(tyRePattern, 'subn', @PatSubnM);
+ DefMethod(tyRePattern, '__repr__', @PatReprM);
+ DefMethod(tyRePattern, '__eq__', @PatEqM);
+ DefMethod(tyRePattern, '__hash__', @PatHashM);
+ DefMethod(tyRePattern, '__copy__', @PatCopyM);
+ DefMethod(tyRePattern, '__deepcopy__', @PatCopyM);
+ DefMethod(tyReMatch, 'group', @MatchGroupM);
+ DefMethod(tyReMatch, '__getitem__', @MatchGetItemM);
+ DefMethod(tyReMatch, 'groups', @MatchGroupsM);
+ DefMethod(tyReMatch, 'groupdict', @MatchGroupDictM);
+ DefMethod(tyReMatch, 'start', @MatchStartM);
+ DefMethod(tyReMatch, 'end', @MatchEndM);
+ DefMethod(tyReMatch, 'span', @MatchSpanM);
+ DefMethod(tyReMatch, 'expand', @MatchExpandM);
+ DefMethod(tyReMatch, '__repr__', @MatchReprM);
+ DefMethod(tyReMatch, '__bool__', @MatchBoolM);
+ DefMethod(tyReMatch, '__copy__', @PatCopyM);
+ DefMethod(tyReMatch, '__deepcopy__', @PatCopyM);
+End;
+
+{ ------------------------------------------------------------
+  Module marshal (format CPython 3.8, version 4)
+  ------------------------------------------------------------ }
+Var
+ MBuf: AnsiString;
+ MLen: Integer;
+
+Procedure MPutByte(b: Byte);
+Begin
+ If MLen >= Length(MBuf) Then SetLength(MBuf, Length(MBuf) * 2 + 64);
+ Inc(MLen);
+ MBuf[MLen] := Chr(b);
+End;
+
+Procedure MPutStr(Const s: AnsiString);
+Var
+ i: Integer;
+Begin
+ For i := 1 To Length(s) Do MPutByte(Ord(s[i]));
+End;
+
+Procedure MPutInt32(v: LongInt);
+Begin
+ MPutByte(v And 255);
+ MPutByte((v Shr 8) And 255);
+ MPutByte((v Shr 16) And 255);
+ MPutByte((v Shr 24) And 255);
+End;
+
+Procedure MWriteObj(Const v: TVal; depth: Integer);
+Var
+ o: TPyObj;
+ i: Integer;
+ neg: Boolean;
+ m: TMag;
+ digits: Array Of Word;
+ nd, bits, cur, ncur: Integer;
+ w: Cardinal;
+ acc: QWord;
+ d: Double;
+ q: ^QWord;
+ s: AnsiString;
+ code: TPyCode;
+ items: TValArr;
+ k: Integer;
+ e: TVal;
+Begin
+ If depth > 2000 Then ValueErr('object too deeply nested to marshal');
+ Case v.k Of
+  vkNone: Begin MPutByte(Ord('N')); Exit; End;
+  vkBool: Begin
+    If v.i <> 0 Then MPutByte(Ord('T')) Else MPutByte(Ord('F'));
+    Exit;
+   End;
+  vkInt: Begin
+    If (v.i >= -2147483648) And (v.i <= 2147483647) Then Begin
+     MPutByte(Ord('i'));
+     MPutInt32(v.i);
+     Exit;
+    End;
+   End;
+  vkFloat: Begin
+    d := v.d;
+    q := @d;
+    MPutByte(Ord('g'));
+    acc := q^;
+    For i := 0 To 7 Do Begin
+     MPutByte(acc And 255);
+     acc := acc Shr 8;
+    End;
+    Exit;
+   End;
+ End;
+ If IsIntVal(v) Then Begin
+  IntToMag(v, neg, m);
+  { chiffres de 15 bits }
+  SetLength(digits, 0);
+  cur := 0;
+  ncur := 0;
+  nd := 0;
+  For i := 0 To High(m) Do Begin
+   w := m[i];
+   For k := 0 To 31 Do Begin
+    cur := cur Or (Integer((w Shr k) And 1) Shl ncur);
+    Inc(ncur);
+    If ncur = 15 Then Begin
+     SetLength(digits, nd + 1);
+     digits[nd] := cur;
+     Inc(nd);
+     cur := 0;
+     ncur := 0;
+    End;
+   End;
+  End;
+  If ncur > 0 Then Begin
+   SetLength(digits, nd + 1);
+   digits[nd] := cur;
+   Inc(nd);
+  End;
+  While (nd > 0) And (digits[nd - 1] = 0) Do Dec(nd);
+  MPutByte(Ord('l'));
+  If neg Then MPutInt32(-nd) Else MPutInt32(nd);
+  For i := 0 To nd - 1 Do Begin
+   MPutByte(digits[i] And 255);
+   MPutByte(digits[i] Shr 8);
+  End;
+  bits := 0;
+  Exit;
+ End;
+ If v.k = vkNull Then Begin
+  MPutByte(Ord('0'));
+  Exit;
+ End;
+ If v.k <> vkObj Then ValueErr('unmarshallable object');
+ o := v.o;
+ If o = vEllipsis.o Then Begin
+  MPutByte(Ord('.'));
+  Exit;
+ End;
+ If o Is TPyStr Then Begin
+  s := TPyStr(o).s;
+  MPutByte(Ord('u'));
+  MPutInt32(Length(s));
+  MPutStr(s);
+ End
+ Else If (o Is TPyBytes) Then Begin
+  MPutByte(Ord('s'));
+  MPutInt32(Length(TPyBytes(o).s));
+  MPutStr(TPyBytes(o).s);
+ End
+ Else If o Is TPyTuple Then Begin
+  MPutByte(Ord('('));
+  MPutInt32(Length(TPyTuple(o).items));
+  For i := 0 To High(TPyTuple(o).items) Do
+   MWriteObj(TPyTuple(o).items[i], depth + 1);
+ End
+ Else If o Is TPyList Then Begin
+  MPutByte(Ord('['));
+  MPutInt32(TPyList(o).cnt);
+  For i := 0 To TPyList(o).cnt - 1 Do MWriteObj(TPyList(o).items[i], depth + 1);
+ End
+ Else If o Is TPyDict Then Begin
+  MPutByte(Ord('{'));
+  For i := 0 To TPyDict(o).nent - 1 Do
+   If TPyDict(o).ent[i].key.k <> vkNull Then Begin
+    MWriteObj(TPyDict(o).ent[i].key, depth + 1);
+    MWriteObj(TPyDict(o).ent[i].val, depth + 1);
+   End;
+  MPutByte(Ord('0'));
+ End
+ Else If o Is TPySet Then Begin
+  items := SetItems(TPySet(o));
+  If TPySet(o).frozen Then MPutByte(Ord('>')) Else MPutByte(Ord('<'));
+  MPutInt32(Length(items));
+  For i := 0 To High(items) Do MWriteObj(items[i], depth + 1);
+ End
+ Else If o Is TPyCode Then Begin
+  code := TPyCode(o);
+  MPutByte(Ord('c'));
+  MPutInt32(code.argcount);
+  MPutInt32(code.posonly);
+  MPutInt32(code.kwonly);
+  MPutInt32(code.nlocals);
+  MPutInt32(code.stacksize);
+  MPutInt32(code.flags);
+  MPutByte(Ord('s'));
+  MPutInt32(Length(code.co));
+  For i := 0 To High(code.co) Do MPutByte(code.co[i]);
+  MPutByte(Ord('('));
+  MPutInt32(Length(code.consts));
+  For i := 0 To High(code.consts) Do MWriteObj(code.consts[i], depth + 1);
+  MPutByte(Ord('('));
+  MPutInt32(Length(code.names));
+  For i := 0 To High(code.names) Do MWriteObj(VStr(code.names[i]), depth + 1);
+  MPutByte(Ord('('));
+  MPutInt32(Length(code.varnames));
+  For i := 0 To High(code.varnames) Do
+   MWriteObj(VStr(code.varnames[i]), depth + 1);
+  MPutByte(Ord('('));
+  MPutInt32(Length(code.freevars));
+  For i := 0 To High(code.freevars) Do
+   MWriteObj(VStr(code.freevars[i]), depth + 1);
+  MPutByte(Ord('('));
+  MPutInt32(Length(code.cellvars));
+  For i := 0 To High(code.cellvars) Do
+   MWriteObj(VStr(code.cellvars[i]), depth + 1);
+  MWriteObj(VStr(code.filename), depth + 1);
+  MWriteObj(VStr(code.name), depth + 1);
+  MPutInt32(code.firstline);
+  MPutByte(Ord('s'));
+  MPutInt32(Length(code.lnotab));
+  MPutStr(code.lnotab);
+ End
+ Else Begin
+  e := VStr(TypeName(v));
+  ValueErr('unmarshallable object');
+ End;
+End;
+
+Function MarshalDump(Const v: TVal): AnsiString;
+Begin
+ MBuf := '';
+ MLen := 0;
+ SetLength(MBuf, 256);
+ MWriteObj(v, 0);
+ Result := Copy(MBuf, 1, MLen);
+ MBuf := '';
+ MLen := 0;
+End;
+
+Var
+ MRefs: Array Of TVal;
+ MNRefs: Integer;
+
+Function MReadObj(Const s: AnsiString; Var p: Integer; depth: Integer): TVal; Forward;
+
+Function MGetByte(Const s: AnsiString; Var p: Integer): Byte;
+Begin
+ If p > Length(s) Then
+  RaiseExc(exEOFError, 'marshal data too short');
+ Result := Ord(s[p]);
+ Inc(p);
+End;
+
+Function MGetInt32(Const s: AnsiString; Var p: Integer): LongInt;
+Var
+ v: Cardinal;
+Begin
+ v := MGetByte(s, p);
+ v := v Or (Cardinal(MGetByte(s, p)) Shl 8);
+ v := v Or (Cardinal(MGetByte(s, p)) Shl 16);
+ v := v Or (Cardinal(MGetByte(s, p)) Shl 24);
+ Result := LongInt(v);
+End;
+
+Function MGetBytes(Const s: AnsiString; Var p: Integer; n: Integer): AnsiString;
+Begin
+ If (n < 0) Or (p + n - 1 > Length(s)) Then
+  RaiseExc(exEOFError, 'marshal data too short');
+ Result := Copy(s, p, n);
+ Inc(p, n);
+End;
+
+Function MReadStrTuple(Const s: AnsiString; Var p: Integer; depth: Integer;
+ Var arr: TStrArr): Boolean;
+Var
+ v: TVal;
+ i: Integer;
+Begin
+ v := MReadObj(s, p, depth + 1);
+ Result := (v.k = vkObj) And (v.o Is TPyTuple);
+ If Not Result Then ValueErr('bad marshal data (tuple expected)');
+ SetLength(arr, Length(TPyTuple(v.o).items));
+ For i := 0 To High(arr) Do arr[i] := StrOf(TPyTuple(v.o).items[i]);
+End;
+
+Function MReadObj(Const s: AnsiString; Var p: Integer; depth: Integer): TVal;
+Var
+ t: Byte;
+ flag: Boolean;
+ refIdx, n, i, k: Integer;
+ acc: QWord;
+ d: Double;
+ q: ^QWord;
+ tp: TPyTuple;
+ l: TPyList;
+ dd: TPyDict;
+ st: TPySet;
+ code: TPyCode;
+ key, val, v: TVal;
+ str: AnsiString;
+ dg: Integer;
+ big: TVal;
+ neg: Boolean;
+ tmp: TVal;
+
+ Function Reserve: Integer;
+ Begin
+  If MNRefs >= Length(MRefs) Then SetLength(MRefs, MNRefs * 2 + 16);
+  MRefs[MNRefs] := vNone;
+  Result := MNRefs;
+  Inc(MNRefs);
+ End;
+
+Begin
+ If depth > 2000 Then RaiseExc(exRecursionError,
+  'maximum recursion depth exceeded during unmarshalling');
+ t := MGetByte(s, p);
+ flag := (t And $80) <> 0;
+ t := t And $7F;
+ refIdx := -1;
+ Result := vNone;
+ Case Chr(t) Of
+  '0': Result := vNull;
+  'N': Result := vNone;
+  'F': Result := vFalse;
+  'T': Result := vTrue;
+  '.': Result := vEllipsis;
+  'S': Result := VObj(exStopIteration);
+  'i': Begin
+    Result := VInt(MGetInt32(s, p));
+    If flag Then Begin refIdx := Reserve; MRefs[refIdx] := Result; End;
+   End;
+  'l': Begin
+    n := MGetInt32(s, p);
+    neg := n < 0;
+    If neg Then n := -n;
+    big := VInt(0);
+    For i := 0 To n - 1 Do Begin
+     dg := MGetByte(s, p);
+     dg := dg Or (Integer(MGetByte(s, p)) Shl 8);
+     big := IntAdd(big, IntShl(VInt(dg), 15 * i));
+    End;
+    If neg Then big := IntNeg(big);
+    Result := big;
+    If flag Then Begin refIdx := Reserve; MRefs[refIdx] := Result; End;
+   End;
+  'g': Begin
+    acc := 0;
+    For i := 0 To 7 Do acc := acc Or (QWord(MGetByte(s, p)) Shl (8 * i));
+    q := @d;
+    q^ := acc;
+    Result := VFloat(d);
+    If flag Then Begin refIdx := Reserve; MRefs[refIdx] := Result; End;
+   End;
+  's': Begin
+    n := MGetInt32(s, p);
+    Result := VBytes(MGetBytes(s, p, n));
+    If flag Then Begin refIdx := Reserve; MRefs[refIdx] := Result; End;
+   End;
+  'u', 't', 'a', 'A': Begin
+    n := MGetInt32(s, p);
+    Result := VStr(MGetBytes(s, p, n));
+    If (t = Ord('t')) Or (t = Ord('A')) Then Result := VObj(InternStr(TPyStr(Result.o).s));
+    If flag Then Begin refIdx := Reserve; MRefs[refIdx] := Result; End;
+   End;
+  'z', 'Z': Begin
+    n := MGetByte(s, p);
+    Result := VStr(MGetBytes(s, p, n));
+    If t = Ord('Z') Then Result := VObj(InternStr(TPyStr(Result.o).s));
+    If flag Then Begin refIdx := Reserve; MRefs[refIdx] := Result; End;
+   End;
+  '(', ')': Begin
+    If t = Ord('(') Then n := MGetInt32(s, p) Else n := MGetByte(s, p);
+    If flag Then refIdx := Reserve;
+    tp := NewTuple(n);
+    Result := VObj(tp);
+    If refIdx >= 0 Then MRefs[refIdx] := Result;
+    For i := 0 To n - 1 Do tp.items[i] := MReadObj(s, p, depth + 1);
+   End;
+  '[': Begin
+    n := MGetInt32(s, p);
+    If flag Then refIdx := Reserve;
+    l := NewList;
+    Result := VObj(l);
+    If refIdx >= 0 Then MRefs[refIdx] := Result;
+    For i := 0 To n - 1 Do l.Add(MReadObj(s, p, depth + 1));
+   End;
+  '{': Begin
+    If flag Then refIdx := Reserve;
+    dd := TPyDict.Make;
+    Result := VObj(dd);
+    If refIdx >= 0 Then MRefs[refIdx] := Result;
+    While True Do Begin
+     key := MReadObj(s, p, depth + 1);
+     If key.k = vkNull Then Break;
+     val := MReadObj(s, p, depth + 1);
+     dd.SetItem(key, val);
+    End;
+   End;
+  '<', '>': Begin
+    n := MGetInt32(s, p);
+    If flag Then refIdx := Reserve;
+    st := TPySet.Make(t = Ord('>'));
+    Result := VObj(st);
+    If refIdx >= 0 Then MRefs[refIdx] := Result;
+    For i := 0 To n - 1 Do st.Add(MReadObj(s, p, depth + 1));
+   End;
+  'r': Begin
+    n := MGetInt32(s, p);
+    If (n < 0) Or (n >= MNRefs) Then ValueErr('bad marshal data (invalid reference)');
+    Result := MRefs[n];
+   End;
+  'c': Begin
+    If flag Then refIdx := Reserve;
+    code := TPyCode.Create(tyCode);
+    Result := VObj(code);
+    If refIdx >= 0 Then MRefs[refIdx] := Result;
+    code.argcount := MGetInt32(s, p);
+    code.posonly := MGetInt32(s, p);
+    code.kwonly := MGetInt32(s, p);
+    code.nlocals := MGetInt32(s, p);
+    code.stacksize := MGetInt32(s, p);
+    code.flags := MGetInt32(s, p);
+    v := MReadObj(s, p, depth + 1);
+    If Not ((v.k = vkObj) And (v.o Is TPyBytes)) Then
+     ValueErr('bad marshal data (code bytes)');
+    str := TPyBytes(v.o).s;
+    SetLength(code.co, Length(str));
+    For i := 1 To Length(str) Do code.co[i - 1] := Ord(str[i]);
+    v := MReadObj(s, p, depth + 1);
+    If Not ((v.k = vkObj) And (v.o Is TPyTuple)) Then
+     ValueErr('bad marshal data (consts)');
+    SetLength(code.consts, Length(TPyTuple(v.o).items));
+    For i := 0 To High(code.consts) Do code.consts[i] := TPyTuple(v.o).items[i];
+    MReadStrTuple(s, p, depth, code.names);
+    SetLength(code.nameObjs, Length(code.names));
+    For i := 0 To High(code.names) Do code.nameObjs[i] := InternStr(code.names[i]);
+    MReadStrTuple(s, p, depth, code.varnames);
+    MReadStrTuple(s, p, depth, code.freevars);
+    MReadStrTuple(s, p, depth, code.cellvars);
+    code.filename := StrOf(MReadObj(s, p, depth + 1));
+    code.name := StrOf(MReadObj(s, p, depth + 1));
+    code.firstline := MGetInt32(s, p);
+    v := MReadObj(s, p, depth + 1);
+    If Not ((v.k = vkObj) And (v.o Is TPyBytes)) Then
+     ValueErr('bad marshal data (lnotab)');
+    code.lnotab := TPyBytes(v.o).s;
+    SetLength(code.source, 0);
+   End;
+ Else
+  ValueErr('bad marshal data (unknown type code)');
+ End;
+ tmp := vNone;
+ k := 0;
+End;
+
+Function MarshalLoad(Const s: AnsiString; Var p: Integer): TVal;
+Begin
+ MNRefs := 0;
+ SetLength(MRefs, 0);
+ Result := MReadObj(s, p, 0);
+ If Result.k = vkNull Then ValueErr('bad marshal data (null object in marshal data)');
+ SetLength(MRefs, 0);
+ MNRefs := 0;
+End;
+
+Function MarshalDumpsFn(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If n < 1 Then TypeErr('dumps() missing required argument ''value'' (pos 1)');
+ Result := VBytes(MarshalDump(a[0]));
+End;
+
+Function MarshalLoadsFn(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: Integer;
+Begin
+ If n < 1 Then TypeErr('loads() missing required argument ''bytes'' (pos 1)');
+ If Not ((a[0].k = vkObj) And (a[0].o Is TPyBytes)) Then
+  TypeErr('a bytes-like object is required, not ''' + TypeName(a[0]) + '''');
+ p := 1;
+ Result := MarshalLoad(TPyBytes(a[0].o).s, p);
+End;
+
+Function MarshalDumpFn(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If n < 2 Then TypeErr('dump() takes at least 2 arguments');
+ Call1(GetAttr(a[1], 'write'), VBytes(MarshalDump(a[0])));
+ Result := vNone;
+End;
+
+Function MarshalLoadFn(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ data: TVal;
+ p: Integer;
+Begin
+ If n < 1 Then TypeErr('load() missing required argument ''file'' (pos 1)');
+ data := Call0(GetAttr(a[0], 'read'));
+ If Not ((data.k = vkObj) And (data.o Is TPyBytes)) Then
+  TypeErr('file must be opened in binary mode');
+ p := 1;
+ Result := MarshalLoad(TPyBytes(data.o).s, p);
+End;
+
+Procedure InitMarshalModule(m: TPyModule);
+Var
+ d: TPyDict;
+Begin
+ d := m.idict;
+ DefFunc(d, 'dumps', @MarshalDumpsFn);
+ DefFunc(d, 'loads', @MarshalLoadsFn);
+ DefFunc(d, 'dump', @MarshalDumpFn);
+ DefFunc(d, 'load', @MarshalLoadFn);
+ d.SetS('version', VInt(4));
+End;
+
+{ source d'un objet code charge depuis un .pyc }
+Procedure EnsureCodeSource(c: TPyCode);
+Var
+ src: AnsiString;
+ i, st: Integer;
+Begin
+ If Length(c.source) > 0 Then Exit;
+ If (c.filename = '') Or (c.filename[1] = '<') Then Exit;
+ If Not ReadWholeFile(c.filename, src) Then Exit;
+ SetLength(c.source, 0);
+ st := 1;
+ For i := 1 To Length(src) Do
+  If src[i] = #10 Then Begin
+   SetLength(c.source, Length(c.source) + 1);
+   c.source[High(c.source)] := Copy(src, st, i - st);
+   st := i + 1;
+  End;
+ If st <= Length(src) Then Begin
+  SetLength(c.source, Length(c.source) + 1);
+  c.source[High(c.source)] := Copy(src, st, Length(src));
+ End;
+ If Length(c.source) = 0 Then Begin
+  SetLength(c.source, 1);
+  c.source[0] := '';
+ End;
+End;
+
+{ ------------------------------------------------------------
+  Type complex
+  ------------------------------------------------------------ }
+Function CxPartRepr(x: Double): AnsiString;
+Begin
+ Result := FloatRepr(x);
+ If (Length(Result) > 2) And (Copy(Result, Length(Result) - 1, 2) = '.0') Then
+  Result := Copy(Result, 1, Length(Result) - 2);
+End;
+
+Function TPyComplex.NativeRepr(Var s: AnsiString): Boolean;
+Var
+ sign: AnsiString;
+Begin
+ Result := True;
+ If (re = 0) And Not FloatSignBit(re) Then Begin
+  s := CxPartRepr(im) + 'j';
+  Exit;
+ End;
+ If FloatSignBit(im) Or (Not (im = im) And False) Then sign := '-' Else sign := '+';
+ s := '(' + CxPartRepr(re) + sign + CxPartRepr(Abs(im)) + 'j)';
+ If IsNan(im) Then s := '(' + CxPartRepr(re) + '+nanj)';
+End;
+
+Function TPyComplex.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Begin
+ Result := True;
+ If nm = 'real' Then res := VFloat(re)
+ Else If nm = 'imag' Then res := VFloat(im)
+ Else Result := False;
+End;
+
+Function CxPow(ar, ai, br, bi: Double; Var rr, ri: Double): Boolean;
+Var
+ vabs, len, at, phase: Double;
+ n, k: Integer;
+ xr, xi, tr, ti, pr, pi_: Double;
+ mask: Integer;
+Begin
+ Result := True;
+ If (br = 0) And (bi = 0) Then Begin
+  rr := 1;
+  ri := 0;
+  Exit;
+ End;
+ If (ar = 0) And (ai = 0) Then Begin
+  If (bi <> 0) Or (br < 0) Then Begin
+   Result := False;
+   Exit;
+  End;
+  rr := 0;
+  ri := 0;
+  Exit;
+ End;
+ If (bi = 0) And (Abs(br) <= 100) And (br = Int(br)) Then Begin
+  n := Trunc(br);
+  mask := 1;
+  xr := ar;
+  xi := ai;
+  pr := 1;
+  pi_ := 0;
+  k := Abs(n);
+  While k > 0 Do Begin
+   If (k And mask) <> 0 Then Begin
+    tr := pr * xr - pi_ * xi;
+    ti := pr * xi + pi_ * xr;
+    pr := tr;
+    pi_ := ti;
+    k := k And Not mask;
+   End;
+   mask := mask Shl 1;
+   If k > 0 Then Begin
+    tr := xr * xr - xi * xi;
+    ti := 2 * xr * xi;
+    xr := tr;
+    xi := ti;
+    k := k Shr 1;
+    mask := 1;
+   End;
+  End;
+  If n < 0 Then Begin
+   tr := pr * pr + pi_ * pi_;
+   rr := pr / tr;
+   ri := -pi_ / tr;
+  End
+  Else Begin
+   rr := pr;
+   ri := pi_;
+  End;
+  Exit;
+ End;
+ vabs := Sqrt(ar * ar + ai * ai);
+ len := c_pow(vabs, br);
+ at := c_atan2(ai, ar);
+ phase := at * br;
+ If bi <> 0 Then Begin
+  len := len / c_exp(at * bi);
+  phase := phase + bi * c_log(vabs);
+ End;
+ rr := len * c_cos(phase);
+ ri := len * c_sin(phase);
+End;
+
+Function CxBinary(op: Integer; a, b: PVal): TVal;
+Var
+ ar, ai, br, bi, rr, ri, d, ratio, denom: Double;
+Begin
+ If Not (CxParts(a^, ar, ai) And CxParts(b^, br, bi)) Then Begin
+  Result := vNotImpl;
+  Exit;
+ End;
+ Case op Of
+  bopAdd: Begin rr := ar + br; ri := ai + bi; End;
+  bopSub: Begin rr := ar - br; ri := ai - bi; End;
+  bopMul: Begin rr := ar * br - ai * bi; ri := ar * bi + ai * br; End;
+  bopTrueDiv: Begin
+    If (br = 0) And (bi = 0) Then
+     RaiseExc(exZeroDivision, 'complex division by zero');
+    If Abs(br) >= Abs(bi) Then Begin
+     ratio := bi / br;
+     denom := br + bi * ratio;
+     rr := (ar + ai * ratio) / denom;
+     ri := (ai - ar * ratio) / denom;
+    End
+    Else Begin
+     ratio := br / bi;
+     denom := br * ratio + bi;
+     rr := (ar * ratio + ai) / denom;
+     ri := (ai * ratio - ar) / denom;
+    End;
+   End;
+  bopPow: Begin
+    If Not CxPow(ar, ai, br, bi, rr, ri) Then
+     RaiseExc(exZeroDivision, '0.0 to a negative or complex power');
+   End;
+ Else
+  TypeErr('can''t take floor or mod of complex number.');
+  rr := 0;
+  ri := 0;
+ End;
+ d := 0;
+ Result := VComplex(rr, ri);
+End;
+
+Function CxAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopAdd, @a[0], @a[1]); End;
+Function CxRAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopAdd, @a[1], @a[0]); End;
+Function CxSubM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopSub, @a[0], @a[1]); End;
+Function CxRSubM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopSub, @a[1], @a[0]); End;
+Function CxMulM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopMul, @a[0], @a[1]); End;
+Function CxRMulM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopMul, @a[1], @a[0]); End;
+Function CxDivM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopTrueDiv, @a[0], @a[1]); End;
+Function CxRDivM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopTrueDiv, @a[1], @a[0]); End;
+Function CxPowM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopPow, @a[0], @a[1]); End;
+Function CxRPowM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := CxBinary(bopPow, @a[1], @a[0]); End;
+Function CxFloorDivM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ TypeErr('can''t take floor of complex number.');
+ Result := vNone;
+End;
+Function CxModM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ TypeErr('can''t mod complex numbers.');
+ Result := vNone;
+End;
+
+Function CxNegM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VComplex(-TPyComplex(a[0].o).re, -TPyComplex(a[0].o).im);
+End;
+
+Function CxPosM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := a[0];
+End;
+
+Function CxAbsM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r, i: Double;
+Begin
+ r := TPyComplex(a[0].o).re;
+ i := TPyComplex(a[0].o).im;
+ If IsInfinite(r) Or IsInfinite(i) Then Result := VFloat(Infinity)
+ Else Result := VFloat(Sqrt(r * r + i * i));
+End;
+
+Function CxBoolM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBool((TPyComplex(a[0].o).re <> 0) Or (TPyComplex(a[0].o).im <> 0));
+End;
+
+Function CxEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ ar, ai, br, bi: Double;
+Begin
+ If Not (CxParts(a[0], ar, ai) And CxParts(a[1], br, bi)) Then Begin
+  Result := vNotImpl;
+  Exit;
+ End;
+ Result := VBool((ar = br) And (ai = bi));
+End;
+
+Function CxNeM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ ar, ai, br, bi: Double;
+Begin
+ If Not (CxParts(a[0], ar, ai) And CxParts(a[1], br, bi)) Then Begin
+  Result := vNotImpl;
+  Exit;
+ End;
+ Result := VBool((ar <> br) Or (ai <> bi));
+End;
+
+Function CxHashM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ hr, hi, h: Int64;
+Begin
+ hr := HashVal(VFloat(TPyComplex(a[0].o).re));
+ hi := HashVal(VFloat(TPyComplex(a[0].o).im));
+ h := hr + hi * 1000003;
+ If h = -1 Then h := -2;
+ Result := VInt(h);
+End;
+
+Function CxConjM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VComplex(TPyComplex(a[0].o).re, -TPyComplex(a[0].o).im);
+End;
+
+Function CxReprM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ s: AnsiString;
+Begin
+ TPyComplex(a[0].o).NativeRepr(s);
+ Result := VStr(s);
+End;
+
+Function CxGetNewArgsM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := Tup2(VFloat(TPyComplex(a[0].o).re), VFloat(TPyComplex(a[0].o).im));
+End;
+
+Function CxFormatM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VStr(FormatValue(a[0], StrOf(a[1])));
+End;
+
+{ parse "1+2j" etc. }
+Function CxParse(Const s0: AnsiString; Var r, i: Double): Boolean;
+Var
+ s: AnsiString;
+ p, q, k: Integer;
+ ok: Boolean;
+ d: Double;
+
+ Function Num(Const t: AnsiString; Var v: Double): Boolean;
+ Begin
+  If t = '' Then Begin
+   Result := False;
+   Exit;
+  End;
+  v := FloatFromStr(t, Result);
+ End;
+
+Begin
+ s := Trim(s0);
+ Result := False;
+ r := 0;
+ i := 0;
+ If (s <> '') And (s[1] = '(') And (s[Length(s)] = ')') Then
+  s := Trim(Copy(s, 2, Length(s) - 2));
+ If s = '' Then Exit;
+ If (s[Length(s)] <> 'j') And (s[Length(s)] <> 'J') Then Begin
+  Result := Num(s, r);
+  Exit;
+ End;
+ s := Copy(s, 1, Length(s) - 1);
+ { cherche le signe separateur (pas apres e/E, pas en position 1) }
+ p := 0;
+ For k := Length(s) Downto 2 Do
+  If ((s[k] = '+') Or (s[k] = '-')) And Not (s[k - 1] In ['e', 'E']) Then Begin
+   p := k;
+   Break;
+  End;
+ If p = 0 Then Begin
+  If (s = '') Or (s = '+') Then Begin i := 1; Result := True; End
+  Else If s = '-' Then Begin i := -1; Result := True; End
+  Else Result := Num(s, i);
+  Exit;
+ End;
+ If Not Num(Copy(s, 1, p - 1), r) Then Exit;
+ q := p;
+ If (Copy(s, p, 2) = '+') Or (Copy(s, p) = '+') Then Begin
+  i := 1;
+  Result := True;
+ End
+ Else If Copy(s, p) = '-' Then Begin
+  i := -1;
+  Result := True;
+ End
+ Else Result := Num(Copy(s, p), i);
+ ok := Result;
+ d := 0;
+ If q = 0 Then ok := False;
+End;
+
+Function ComplexCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ rv, iv: TVal;
+ r1, i1, r2, i2: Double;
+ hasI: Boolean;
+ pr, pim: Double;
+Begin
+ rv := VInt(0);
+ hasI := False;
+ If n > 0 Then rv := a[0] Else KwGet(kw, 'real', rv);
+ If n > 1 Then Begin iv := a[1]; hasI := True; End
+ Else hasI := KwGet(kw, 'imag', iv);
+ If IsStrVal(rv) Then Begin
+  If hasI Then TypeErr('complex() can''t take second arg if first is a string');
+  If Not CxParse(TPyStr(rv.o).s, pr, pim) Then
+   ValueErr('complex() arg is a malformed string');
+  Result := VComplex(pr, pim);
+  Exit;
+ End;
+ If hasI And IsStrVal(iv) Then
+  TypeErr('complex() second arg can''t be a string');
+ If Not CxParts(rv, r1, i1) Then Begin
+  { __complex__ ou __float__ }
+  If (rv.k = vkObj) And (rv.o.cls.userdef) And
+   LookupType(rv.o.cls, '__complex__', iv) Then Begin
+   Result := Call1(iv, rv);
+   Exit;
+  End;
+  If (rv.k = vkObj) And LookupType(rv.o.cls, '__float__', iv) Then
+   r1 := NumToDouble(Call1(iv, rv))
+  Else TypeErr('complex() first argument must be a string or a number, not ''' +
+   TypeName(rv) + '''');
+  i1 := 0;
+ End;
+ If hasI Then Begin
+  If Not CxParts(iv, r2, i2) Then
+   TypeErr('complex() second argument must be a number, not ''' +
+    TypeName(iv) + '''');
+  { real + imag*1j }
+  If (rv.k = vkObj) And (rv.o Is TPyComplex) Then
+   Result := VComplex(r1 - i2, i1 + r2)
+  Else Result := VComplex(r1 - i2, r2);
+ End
+ Else Result := VComplex(r1, i1);
+End;
+
+Procedure InitComplexType;
+Begin
+ tyComplex := MkType('complex', tyObject, nkNoNew);
+ tyComplex.ctor := @ComplexCtor;
+ DefMethod(tyComplex, '__add__', @CxAddM);
+ DefMethod(tyComplex, '__radd__', @CxRAddM);
+ DefMethod(tyComplex, '__sub__', @CxSubM);
+ DefMethod(tyComplex, '__rsub__', @CxRSubM);
+ DefMethod(tyComplex, '__mul__', @CxMulM);
+ DefMethod(tyComplex, '__rmul__', @CxRMulM);
+ DefMethod(tyComplex, '__truediv__', @CxDivM);
+ DefMethod(tyComplex, '__rtruediv__', @CxRDivM);
+ DefMethod(tyComplex, '__pow__', @CxPowM);
+ DefMethod(tyComplex, '__rpow__', @CxRPowM);
+ DefMethod(tyComplex, '__floordiv__', @CxFloorDivM);
+ DefMethod(tyComplex, '__mod__', @CxModM);
+ DefMethod(tyComplex, '__neg__', @CxNegM);
+ DefMethod(tyComplex, '__pos__', @CxPosM);
+ DefMethod(tyComplex, '__abs__', @CxAbsM);
+ DefMethod(tyComplex, '__bool__', @CxBoolM);
+ DefMethod(tyComplex, '__eq__', @CxEqM);
+ DefMethod(tyComplex, '__ne__', @CxNeM);
+ DefMethod(tyComplex, '__hash__', @CxHashM);
+ DefMethod(tyComplex, 'conjugate', @CxConjM);
+ DefMethod(tyComplex, '__repr__', @CxReprM);
+ DefMethod(tyComplex, '__str__', @CxReprM);
+ DefMethod(tyComplex, '__format__', @CxFormatM);
+ DefMethod(tyComplex, '__getnewargs__', @CxGetNewArgsM);
+End;
+
+{ ------------------------------------------------------------
   Initialisation, ligne de commande, mode interactif
   ------------------------------------------------------------ }
 Procedure RegisterPrelude; Forward;
@@ -22863,6 +26863,8 @@ Begin
  Result := GetEnvironmentVariable(nm);
 End;
 
+Procedure InitCodeopModule(m: TPyModule); Forward;
+
 Procedure InitRuntime;
 Var
  stackSize: PtrUInt;
@@ -22908,6 +26910,8 @@ Begin
  InitStrMethods;
  InitContainerMethods;
  InitFileType;
+ InitReTypes;
+ InitComplexType;
  DefFunc(BuiltinsDict, '__import__', @BiImport);
  StdinObj := NewStdFile(1, 'r');
  StdoutObj := NewStdFile(2, 'w');
@@ -22919,6 +26923,9 @@ Begin
  RegNative('time', @InitTimeModule);
  RegNative('posix', @InitPosixModule);
  RegNative('_random', @InitRandomModule);
+ RegNative('_re', @InitReModule);
+ RegNative('marshal', @InitMarshalModule);
+ RegNative('_codeop', @InitCodeopModule);
  RegNative('gc', @InitGcModule);
  RegNative('atexit', @InitAtexitModule);
  RegNative('builtins', @InitBuiltinsModule);
@@ -23007,10 +27014,20 @@ End;
 Function RunSource(Const src, fname: AnsiString): Integer;
 Var
  code: TPyCode;
+ p: Integer;
+ v: TVal;
 Begin
  Result := 0;
  Try
-  code := CompileSafe(src, fname, 0);
+  If (Length(src) >= 16) And (src[1] = #$55) And (src[2] = #$0D) And
+   (src[3] = #$0D) And (src[4] = #$0A) Then Begin
+   p := 17;
+   v := MarshalLoad(src, p);
+   If Not ((v.k = vkObj) And (v.o Is TPyCode)) Then
+    RaiseExc(exRuntimeError, 'Bad code object in .pyc file');
+   code := TPyCode(v.o);
+  End
+  Else code := CompileSafe(src, fname, 0);
   RunCodeObject(code, MainDict, MainDict);
  Except
   On E: EPyError Do Result := HandleUncaught(E.exc);
@@ -23060,6 +27077,42 @@ Begin
  w := Copy(src, p, q - p);
  Result := (w = 'if') Or (w = 'while') Or (w = 'for') Or (w = 'try') Or
   (w = 'with') Or (w = 'def') Or (w = 'class') Or (w = 'async');
+End;
+
+Function CodeopCompile(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ src, fname, sym, buf: AnsiString;
+ mode: Integer;
+ more: Boolean;
+Begin
+ src := StrOf(a[0]);
+ If n > 1 Then fname := StrOf(a[1]) Else fname := '<input>';
+ If n > 2 Then sym := StrOf(a[2]) Else sym := 'single';
+ If sym = 'exec' Then mode := 0
+ Else If sym = 'eval' Then mode := 1
+ Else mode := 2;
+ buf := src;
+ If (buf <> '') And (buf[Length(buf)] <> #10) Then buf := buf + #10;
+ more := False;
+ If (mode = 2) And IsCompoundStart(buf) Then
+  If Not ((Length(buf) >= 2) And (buf[Length(buf)] = #10) And
+   (buf[Length(buf) - 1] = #10)) Then more := True;
+ If Not more Then Begin
+  Try
+   Result := VObj(CompileSource(buf, fname, mode));
+  Except
+   On E: ESyntax Do Begin
+    If E.incomplete Then Result := vNone
+    Else Raise EPyError.Make(ExcFromSyntax(E, fname));
+   End;
+  End;
+ End
+ Else Result := vNone;
+End;
+
+Procedure InitCodeopModule(m: TPyModule);
+Begin
+ DefFunc(m.idict, 'compile_command', @CodeopCompile);
 End;
 
 Function ReadPromptLine(Const prompt: AnsiString; Var line: AnsiString):
@@ -24800,6 +28853,728 @@ Begin
    'bisect = bisect_right'#10;
  s := s +
    'insort = insort_right'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_cmath: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import math'#10;
+ s := s + #10;
+ s := s +
+   'pi = math.pi'#10;
+ s := s +
+   'e = math.e'#10;
+ s := s +
+   'tau = math.tau'#10;
+ s := s +
+   'inf = math.inf'#10;
+ s := s +
+   'nan = math.nan'#10;
+ s := s +
+   'infj = complex(0.0, inf)'#10;
+ s := s +
+   'nanj = complex(0.0, nan)'#10;
+ s := s + #10;
+ s := s +
+   'def _c(z):'#10;
+ s := s +
+   '    if isinstance(z, complex):'#10;
+ s := s +
+   '        return z'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        return complex(z)'#10;
+ s := s +
+   '    except (TypeError, ValueError):'#10;
+ s := s +
+   '        raise TypeError("must be real number, not %s" % type' +
+   '(z).__name__) from None'#10;
+ s := s + #10;
+ s := s +
+   'def phase(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return math.atan2(z.imag, z.real)'#10;
+ s := s + #10;
+ s := s +
+   'def polar(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return abs(z), math.atan2(z.imag, z.real)'#10;
+ s := s + #10;
+ s := s +
+   'def rect(r, phi):'#10;
+ s := s +
+   '    if math.isinf(r) and (math.isinf(phi) or math.isnan(phi)' +
+   '):'#10;
+ s := s +
+   '        raise ValueError("math domain error")'#10;
+ s := s +
+   '    if phi == 0.0:'#10;
+ s := s +
+   '        return complex(r, phi)'#10;
+ s := s +
+   '    return complex(r * math.cos(phi), r * math.sin(phi))'#10;
+ s := s + #10;
+ s := s +
+   'def isfinite(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return math.isfinite(z.real) and math.isfinite(z.imag)'#10;
+ s := s + #10;
+ s := s +
+   'def isinf(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return math.isinf(z.real) or math.isinf(z.imag)'#10;
+ s := s + #10;
+ s := s +
+   'def isnan(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return math.isnan(z.real) or math.isnan(z.imag)'#10;
+ s := s + #10;
+ s := s +
+   'def isclose(a, b, *, rel_tol=1e-09, abs_tol=0.0):'#10;
+ s := s +
+   '    a = _c(a)'#10;
+ s := s +
+   '    b = _c(b)'#10;
+ s := s +
+   '    if rel_tol < 0.0 or abs_tol < 0.0:'#10;
+ s := s +
+   '        raise ValueError("tolerances must be non-negative")'#10;
+ s := s +
+   '    if a == b:'#10;
+ s := s +
+   '        return True'#10;
+ s := s +
+   '    if isinf(a) or isinf(b):'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    diff = abs(b - a)'#10;
+ s := s +
+   '    return ((diff <= rel_tol * abs(b)) or (diff <= rel_tol *' +
+   ' abs(a)) or diff <= abs_tol)'#10;
+ s := s + #10;
+ s := s +
+   'def exp(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    if z.imag == 0.0:'#10;
+ s := s +
+   '        return complex(math.exp(z.real), z.imag)'#10;
+ s := s +
+   '    l = math.exp(z.real)'#10;
+ s := s +
+   '    return complex(l * math.cos(z.imag), l * math.sin(z.imag' +
+   '))'#10;
+ s := s + #10;
+ s := s +
+   'def _log(z):'#10;
+ s := s +
+   '    ax = abs(z.real)'#10;
+ s := s +
+   '    ay = abs(z.imag)'#10;
+ s := s +
+   '    h = math.hypot(ax, ay)'#10;
+ s := s +
+   '    if 0.71 <= h <= 1.73:'#10;
+ s := s +
+   '        am = ax if ax > ay else ay'#10;
+ s := s +
+   '        an = ay if ax > ay else ax'#10;
+ s := s +
+   '        r = math.log1p((am - 1) * (am + 1) + an * an) / 2.0'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        r = math.log(h)'#10;
+ s := s +
+   '    return complex(r, math.atan2(z.imag, z.real))'#10;
+ s := s + #10;
+ s := s +
+   'def log(z, base=None):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    if z == 0:'#10;
+ s := s +
+   '        raise ValueError("math domain error")'#10;
+ s := s +
+   '    r = _log(z)'#10;
+ s := s +
+   '    if base is not None:'#10;
+ s := s +
+   '        return r / log(base)'#10;
+ s := s +
+   '    return r'#10;
+ s := s + #10;
+ s := s +
+   'def log10(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    if z == 0:'#10;
+ s := s +
+   '        raise ValueError("math domain error")'#10;
+ s := s +
+   '    r = _log(z)'#10;
+ s := s +
+   '    return complex(r.real / math.log(10.0), r.imag / math.lo' +
+   'g(10.0))'#10;
+ s := s + #10;
+ s := s +
+   'def sqrt(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    if z.real == 0.0 and z.imag == 0.0:'#10;
+ s := s +
+   '        return complex(0.0, z.imag)'#10;
+ s := s +
+   '    ax = abs(z.real)'#10;
+ s := s +
+   '    ay = abs(z.imag)'#10;
+ s := s +
+   '    if ax < 2.2250738585072014e-308 * 2 and ay < 2.225073858' +
+   '5072014e-308 * 2:'#10;
+ s := s +
+   '        ax = math.ldexp(ax, 53)'#10;
+ s := s +
+   '        s = math.ldexp(math.sqrt(ax + math.hypot(ax, math.ld' +
+   'exp(ay, 53))), -27)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        ax = ax / 8.0'#10;
+ s := s +
+   '        s = 2.0 * math.sqrt(ax + math.hypot(ax, ay / 8.0))'#10;
+ s := s +
+   '    d = ay / (2.0 * s)'#10;
+ s := s +
+   '    if z.real >= 0.0:'#10;
+ s := s +
+   '        return complex(s, math.copysign(d, z.imag))'#10;
+ s := s +
+   '    return complex(d, math.copysign(s, z.imag))'#10;
+ s := s + #10;
+ s := s +
+   'def sinh(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return complex(math.sinh(z.real) * math.cos(z.imag), mat' +
+   'h.cosh(z.real) * math.sin(z.imag))'#10;
+ s := s + #10;
+ s := s +
+   'def cosh(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return complex(math.cosh(z.real) * math.cos(z.imag), mat' +
+   'h.sinh(z.real) * math.sin(z.imag))'#10;
+ s := s + #10;
+ s := s +
+   'def tanh(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    tx = math.tanh(z.real)'#10;
+ s := s +
+   '    ty = math.tan(z.imag)'#10;
+ s := s +
+   '    cx = 1.0 / math.cosh(z.real)'#10;
+ s := s +
+   '    txty = tx * ty'#10;
+ s := s +
+   '    denom = 1.0 + txty * txty'#10;
+ s := s +
+   '    return complex(tx * (1.0 + ty * ty) / denom, ((ty / deno' +
+   'm) * cx) * cx)'#10;
+ s := s + #10;
+ s := s +
+   'def sin(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    r = sinh(complex(-z.imag, z.real))'#10;
+ s := s +
+   '    return complex(r.imag, -r.real)'#10;
+ s := s + #10;
+ s := s +
+   'def cos(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    return cosh(complex(-z.imag, z.real))'#10;
+ s := s + #10;
+ s := s +
+   'def tan(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    r = tanh(complex(-z.imag, z.real))'#10;
+ s := s +
+   '    return complex(r.imag, -r.real)'#10;
+ s := s + #10;
+ s := s +
+   'def asinh(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    s1 = sqrt(complex(1.0 + z.imag, -z.real))'#10;
+ s := s +
+   '    s2 = sqrt(complex(1.0 - z.imag, z.real))'#10;
+ s := s +
+   '    return complex(math.asinh(s1.real * s2.imag - s2.real * ' +
+   's1.imag),'#10;
+ s := s +
+   '                   math.atan2(z.imag, s1.real * s2.real - s1' +
+   '.imag * s2.imag))'#10;
+ s := s + #10;
+ s := s +
+   'def asin(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    r = asinh(complex(-z.imag, z.real))'#10;
+ s := s +
+   '    return complex(r.imag, -r.real)'#10;
+ s := s + #10;
+ s := s +
+   'def acosh(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    s1 = sqrt(complex(z.real - 1.0, z.imag))'#10;
+ s := s +
+   '    s2 = sqrt(complex(z.real + 1.0, z.imag))'#10;
+ s := s +
+   '    return complex(math.asinh(s1.real * s2.real + s1.imag * ' +
+   's2.imag),'#10;
+ s := s +
+   '                   2.0 * math.atan2(s1.imag, s2.real))'#10;
+ s := s + #10;
+ s := s +
+   'def acos(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    s1 = sqrt(complex(1.0 - z.real, -z.imag))'#10;
+ s := s +
+   '    s2 = sqrt(complex(1.0 + z.real, z.imag))'#10;
+ s := s +
+   '    return complex(2.0 * math.atan2(s1.real, s2.real),'#10;
+ s := s +
+   '                   math.asinh(s2.real * s1.imag - s2.imag * ' +
+   's1.real))'#10;
+ s := s + #10;
+ s := s +
+   'def atanh(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    if z.real < 0.0:'#10;
+ s := s +
+   '        return -atanh(-z)'#10;
+ s := s +
+   '    ay = abs(z.imag)'#10;
+ s := s +
+   '    if z.real == 1.0 and ay == 0.0:'#10;
+ s := s +
+   '        raise ValueError("math domain error")'#10;
+ s := s +
+   '    if z.real > 1e154 or ay > 1e154:'#10;
+ s := s +
+   '        return complex(z.real / (z.real * z.real + z.imag * ' +
+   'z.imag) if z.real != 0 else 0.0, math.copysign(math.pi / 2, ' +
+   'z.imag))'#10;
+ s := s +
+   '    r_real = math.log1p(4.0 * z.real / ((1 - z.real) * (1 - ' +
+   'z.real) + ay * ay)) / 4.0'#10;
+ s := s +
+   '    r_imag = -math.atan2(-2.0 * z.imag, (1 - z.real) * (1 + ' +
+   'z.real) - ay * ay) / 2.0'#10;
+ s := s +
+   '    return complex(r_real, r_imag)'#10;
+ s := s + #10;
+ s := s +
+   'def atan(z):'#10;
+ s := s +
+   '    z = _c(z)'#10;
+ s := s +
+   '    r = atanh(complex(-z.imag, z.real))'#10;
+ s := s +
+   '    return complex(r.imag, -r.real)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_code: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import traceback'#10;
+ s := s +
+   'from codeop import CommandCompiler, compile_command'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["InteractiveInterpreter", "InteractiveConsole", "' +
+   'interact",'#10;
+ s := s +
+   '           "compile_command"]'#10;
+ s := s + #10;
+ s := s +
+   'class InteractiveInterpreter:'#10;
+ s := s +
+   '    def __init__(self, locals=None):'#10;
+ s := s +
+   '        if locals is None:'#10;
+ s := s +
+   '            locals = {"__name__": "__console__", "__doc__": ' +
+   'None}'#10;
+ s := s +
+   '        self.locals = locals'#10;
+ s := s +
+   '        self.compile = CommandCompiler()'#10;
+ s := s + #10;
+ s := s +
+   '    def runsource(self, source, filename="<input>", symbol="' +
+   'single"):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            code = self.compile(source, filename, symbol)'#10;
+ s := s +
+   '        except (OverflowError, SyntaxError, ValueError):'#10;
+ s := s +
+   '            self.showsyntaxerror(filename)'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        if code is None:'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        self.runcode(code)'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   '    def runcode(self, code):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            exec(code, self.locals)'#10;
+ s := s +
+   '        except SystemExit:'#10;
+ s := s +
+   '            raise'#10;
+ s := s +
+   '        except:'#10;
+ s := s +
+   '            self.showtraceback()'#10;
+ s := s + #10;
+ s := s +
+   '    def showsyntaxerror(self, filename=None):'#10;
+ s := s +
+   '        type, value, tb = sys.exc_info()'#10;
+ s := s +
+   '        sys.last_type = type'#10;
+ s := s +
+   '        sys.last_value = value'#10;
+ s := s +
+   '        sys.last_traceback = tb'#10;
+ s := s +
+   '        if filename and type is SyntaxError:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                msg, (dummy_filename, lineno, offset, line) ' +
+   '= value.args'#10;
+ s := s +
+   '            except ValueError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                value = SyntaxError(msg, (filename, lineno, ' +
+   'offset, line))'#10;
+ s := s +
+   '                sys.last_value = value'#10;
+ s := s +
+   '        if sys.excepthook is sys.__excepthook__:'#10;
+ s := s +
+   '            lines = traceback.format_exception_only(type, va' +
+   'lue)'#10;
+ s := s +
+   '            self.write(''''.join(lines))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            sys.excepthook(type, value, tb)'#10;
+ s := s + #10;
+ s := s +
+   '    def showtraceback(self):'#10;
+ s := s +
+   '        sys.last_type, sys.last_value, last_tb = ei = sys.ex' +
+   'c_info()'#10;
+ s := s +
+   '        sys.last_traceback = last_tb'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            lines = traceback.format_exception(ei[0], ei[1],' +
+   ' last_tb.tb_next)'#10;
+ s := s +
+   '            if sys.excepthook is sys.__excepthook__:'#10;
+ s := s +
+   '                self.write(''''.join(lines))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                sys.excepthook(ei[0], ei[1], last_tb)'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            last_tb = ei = None'#10;
+ s := s + #10;
+ s := s +
+   '    def write(self, data):'#10;
+ s := s +
+   '        sys.stderr.write(data)'#10;
+ s := s + #10;
+ s := s +
+   'class InteractiveConsole(InteractiveInterpreter):'#10;
+ s := s +
+   '    def __init__(self, locals=None, filename="<console>"):'#10;
+ s := s +
+   '        InteractiveInterpreter.__init__(self, locals)'#10;
+ s := s +
+   '        self.filename = filename'#10;
+ s := s +
+   '        self.resetbuffer()'#10;
+ s := s + #10;
+ s := s +
+   '    def resetbuffer(self):'#10;
+ s := s +
+   '        self.buffer = []'#10;
+ s := s + #10;
+ s := s +
+   '    def interact(self, banner=None, exitmsg=None):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            sys.ps1'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            sys.ps1 = ">>> "'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            sys.ps2'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            sys.ps2 = "... "'#10;
+ s := s +
+   '        cprt = ''Type "help", "copyright", "credits" or "lice' +
+   'nse" for more information.'''#10;
+ s := s +
+   '        if banner is None:'#10;
+ s := s +
+   '            self.write("Python %s on %s\n%s\n(%s)\n" %'#10;
+ s := s +
+   '                       (sys.version, sys.platform, cprt,'#10;
+ s := s +
+   '                        self.__class__.__name__))'#10;
+ s := s +
+   '        elif banner:'#10;
+ s := s +
+   '            self.write("%s\n" % str(banner))'#10;
+ s := s +
+   '        more = 0'#10;
+ s := s +
+   '        while 1:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                if more:'#10;
+ s := s +
+   '                    prompt = sys.ps2'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    prompt = sys.ps1'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    line = self.raw_input(prompt)'#10;
+ s := s +
+   '                except EOFError:'#10;
+ s := s +
+   '                    self.write("\n")'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    more = self.push(line)'#10;
+ s := s +
+   '            except KeyboardInterrupt:'#10;
+ s := s +
+   '                self.write("\nKeyboardInterrupt\n")'#10;
+ s := s +
+   '                self.resetbuffer()'#10;
+ s := s +
+   '                more = 0'#10;
+ s := s +
+   '        if exitmsg is None:'#10;
+ s := s +
+   '            self.write(''now exiting %s...\n'' % self.__class_' +
+   '_.__name__)'#10;
+ s := s +
+   '        elif exitmsg != '''':'#10;
+ s := s +
+   '            self.write(''%s\n'' % exitmsg)'#10;
+ s := s + #10;
+ s := s +
+   '    def push(self, line):'#10;
+ s := s +
+   '        self.buffer.append(line)'#10;
+ s := s +
+   '        source = "\n".join(self.buffer)'#10;
+ s := s +
+   '        more = self.runsource(source, self.filename)'#10;
+ s := s +
+   '        if not more:'#10;
+ s := s +
+   '            self.resetbuffer()'#10;
+ s := s +
+   '        return more'#10;
+ s := s + #10;
+ s := s +
+   '    def raw_input(self, prompt=""):'#10;
+ s := s +
+   '        return input(prompt)'#10;
+ s := s + #10;
+ s := s +
+   'def interact(banner=None, readfunc=None, local=None, exitmsg' +
+   '=None):'#10;
+ s := s +
+   '    console = InteractiveConsole(local)'#10;
+ s := s +
+   '    if readfunc is not None:'#10;
+ s := s +
+   '        console.raw_input = readfunc'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            import readline'#10;
+ s := s +
+   '        except ImportError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '    console.interact(banner, exitmsg)'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == "__main__":'#10;
+ s := s +
+   '    import argparse'#10;
+ s := s +
+   '    parser = argparse.ArgumentParser()'#10;
+ s := s +
+   '    parser.add_argument(''-q'', action=''store_true'','#10;
+ s := s +
+   '                       help="don''t print version and copyrig' +
+   'ht messages")'#10;
+ s := s +
+   '    args = parser.parse_args()'#10;
+ s := s +
+   '    if args.q or sys.flags.quiet:'#10;
+ s := s +
+   '        banner = '''''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        banner = None'#10;
+ s := s +
+   '    interact(banner)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_codeop: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import _codeop'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["compile_command", "Compile", "CommandCompiler"]'#10;
+ s := s + #10;
+ s := s +
+   'PyCF_DONT_IMPLY_DEDENT = 0x200'#10;
+ s := s + #10;
+ s := s +
+   'def compile_command(source, filename="<input>", symbol="sing' +
+   'le"):'#10;
+ s := s +
+   '    return _codeop.compile_command(source, filename, symbol)'#10;
+ s := s + #10;
+ s := s +
+   'class Compile:'#10;
+ s := s +
+   '    def __init__(self):'#10;
+ s := s +
+   '        self.flags = PyCF_DONT_IMPLY_DEDENT'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, source, filename, symbol):'#10;
+ s := s +
+   '        codeob = compile(source, filename, symbol, self.flag' +
+   's, 1)'#10;
+ s := s +
+   '        return codeob'#10;
+ s := s + #10;
+ s := s +
+   'class CommandCompiler:'#10;
+ s := s +
+   '    def __init__(self,):'#10;
+ s := s +
+   '        self.compiler = Compile()'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, source, filename="<input>", symbol="s' +
+   'ingle"):'#10;
+ s := s +
+   '        return _codeop.compile_command(source, filename, sym' +
+   'bol)'#10;
  s := s + #10;
  Result := s;
 End;
@@ -27012,6 +31787,292 @@ Begin
  Result := s;
 End;
 
+Function Src_compileall: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import importlib.util'#10;
+ s := s +
+   'import py_compile'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["compile_dir", "compile_file", "compile_path"]'#10;
+ s := s + #10;
+ s := s +
+   'def _walk_dir(dir, maxlevels, quiet=0):'#10;
+ s := s +
+   '    if quiet < 2 and isinstance(dir, os.PathLike):'#10;
+ s := s +
+   '        dir = os.fspath(dir)'#10;
+ s := s +
+   '    if not quiet:'#10;
+ s := s +
+   '        print(''Listing {!r}...''.format(dir))'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        names = os.listdir(dir)'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        if quiet < 2:'#10;
+ s := s +
+   '            print("Can''t list {!r}".format(dir))'#10;
+ s := s +
+   '        names = []'#10;
+ s := s +
+   '    names.sort()'#10;
+ s := s +
+   '    for name in names:'#10;
+ s := s +
+   '        if name == ''__pycache__'':'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        fullname = os.path.join(dir, name)'#10;
+ s := s +
+   '        if not os.path.isdir(fullname):'#10;
+ s := s +
+   '            yield fullname'#10;
+ s := s +
+   '        elif (maxlevels > 0 and name != os.curdir and name !' +
+   '= os.pardir and'#10;
+ s := s +
+   '              os.path.isdir(fullname) and not os.path.islink' +
+   '(fullname)):'#10;
+ s := s +
+   '            yield from _walk_dir(fullname, maxlevels=maxleve' +
+   'ls - 1, quiet=quiet)'#10;
+ s := s + #10;
+ s := s +
+   'def compile_dir(dir, maxlevels=10, ddir=None, force=False, r' +
+   'x=None,'#10;
+ s := s +
+   '                quiet=0, legacy=False, optimize=-1, workers=' +
+   '1,'#10;
+ s := s +
+   '                invalidation_mode=None):'#10;
+ s := s +
+   '    success = True'#10;
+ s := s +
+   '    for file in _walk_dir(dir, quiet=quiet, maxlevels=maxlev' +
+   'els):'#10;
+ s := s +
+   '        if not compile_file(file, ddir, force, rx, quiet, le' +
+   'gacy, optimize,'#10;
+ s := s +
+   '                            invalidation_mode):'#10;
+ s := s +
+   '            success = False'#10;
+ s := s +
+   '    return success'#10;
+ s := s + #10;
+ s := s +
+   'def compile_file(fullname, ddir=None, force=False, rx=None, ' +
+   'quiet=0,'#10;
+ s := s +
+   '                 legacy=False, optimize=-1, invalidation_mod' +
+   'e=None):'#10;
+ s := s +
+   '    success = True'#10;
+ s := s +
+   '    if quiet < 2 and isinstance(fullname, os.PathLike):'#10;
+ s := s +
+   '        fullname = os.fspath(fullname)'#10;
+ s := s +
+   '    name = os.path.basename(fullname)'#10;
+ s := s +
+   '    if ddir is not None:'#10;
+ s := s +
+   '        dfile = os.path.join(ddir, name)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        dfile = None'#10;
+ s := s +
+   '    if rx is not None:'#10;
+ s := s +
+   '        mo = rx.search(fullname)'#10;
+ s := s +
+   '        if mo:'#10;
+ s := s +
+   '            return success'#10;
+ s := s +
+   '    if os.path.isfile(fullname):'#10;
+ s := s +
+   '        if legacy:'#10;
+ s := s +
+   '            cfile = fullname + ''c'''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            cfile = py_compile.cache_from_source(fullname)'#10;
+ s := s +
+   '        if name[-3:] == ''.py'':'#10;
+ s := s +
+   '            if not force:'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    mtime = int(os.stat(fullname).st_mtime)'#10;
+ s := s +
+   '                    with open(cfile, ''rb'') as chandle:'#10;
+ s := s +
+   '                        actual = chandle.read(12)'#10;
+ s := s +
+   '                    if actual[8:12] == (mtime & 0xFFFFFFFF).' +
+   'to_bytes(4, ''little'') and actual[:4] == py_compile.MAGIC_NUM' +
+   'BER:'#10;
+ s := s +
+   '                        return success'#10;
+ s := s +
+   '                except OSError:'#10;
+ s := s +
+   '                    pass'#10;
+ s := s +
+   '            if not quiet:'#10;
+ s := s +
+   '                print(''Compiling {!r}...''.format(fullname))'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                ok = py_compile.compile(fullname, cfile, dfi' +
+   'le, True, optimize=optimize)'#10;
+ s := s +
+   '            except py_compile.PyCompileError as err:'#10;
+ s := s +
+   '                success = False'#10;
+ s := s +
+   '                if quiet >= 2:'#10;
+ s := s +
+   '                    return success'#10;
+ s := s +
+   '                elif quiet:'#10;
+ s := s +
+   '                    print(''*** Error compiling {!r}...''.form' +
+   'at(fullname))'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    print(''*** '', end='''')'#10;
+ s := s +
+   '                msg = err.msg.encode(sys.stdout.encoding or ' +
+   '''utf-8'', errors=''backslashreplace'').decode(sys.stdout.encodi' +
+   'ng or ''utf-8'')'#10;
+ s := s +
+   '                print(msg)'#10;
+ s := s +
+   '            except (SyntaxError, UnicodeError, OSError) as e' +
+   ':'#10;
+ s := s +
+   '                success = False'#10;
+ s := s +
+   '                if quiet >= 2:'#10;
+ s := s +
+   '                    return success'#10;
+ s := s +
+   '                elif quiet:'#10;
+ s := s +
+   '                    print(''*** Error compiling {!r}...''.form' +
+   'at(fullname))'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    print(''*** '', end='''')'#10;
+ s := s +
+   '                print(e.__class__.__name__ + '':'', e)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                if ok == 0:'#10;
+ s := s +
+   '                    success = False'#10;
+ s := s +
+   '    return success'#10;
+ s := s + #10;
+ s := s +
+   'def compile_path(skip_curdir=1, maxlevels=0, force=False, qu' +
+   'iet=0,'#10;
+ s := s +
+   '                 legacy=False, optimize=-1, invalidation_mod' +
+   'e=None):'#10;
+ s := s +
+   '    success = True'#10;
+ s := s +
+   '    for dir in sys.path:'#10;
+ s := s +
+   '        if (not dir or dir == os.curdir) and skip_curdir:'#10;
+ s := s +
+   '            if quiet < 2:'#10;
+ s := s +
+   '                print(''Skipping current directory'')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            success = success and compile_dir(dir, maxlevels' +
+   ', None, force, quiet=quiet,'#10;
+ s := s +
+   '                                              legacy=legacy,' +
+   ' optimize=optimize)'#10;
+ s := s +
+   '    return success'#10;
+ s := s + #10;
+ s := s +
+   'def main():'#10;
+ s := s +
+   '    import argparse'#10;
+ s := s +
+   '    parser = argparse.ArgumentParser(description=''Utilities ' +
+   'to support installing Python libraries.'')'#10;
+ s := s +
+   '    parser.add_argument(''-l'', action=''store_const'', const=0,' +
+   ' default=10, dest=''maxlevels'')'#10;
+ s := s +
+   '    parser.add_argument(''-f'', action=''store_true'', dest=''for' +
+   'ce'')'#10;
+ s := s +
+   '    parser.add_argument(''-q'', action=''count'', dest=''quiet'', ' +
+   'default=0)'#10;
+ s := s +
+   '    parser.add_argument(''compile_dest'', metavar=''FILE|DIR'', ' +
+   'nargs=''*'')'#10;
+ s := s +
+   '    args = parser.parse_args()'#10;
+ s := s +
+   '    success = True'#10;
+ s := s +
+   '    for dest in (args.compile_dest or sys.path):'#10;
+ s := s +
+   '        if os.path.isfile(dest):'#10;
+ s := s +
+   '            if not compile_file(dest, None, args.force, None' +
+   ', args.quiet):'#10;
+ s := s +
+   '                success = False'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if not compile_dir(dest, args.maxlevels, None, a' +
+   'rgs.force, None, args.quiet):'#10;
+ s := s +
+   '                success = False'#10;
+ s := s +
+   '    return success'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == ''__main__'':'#10;
+ s := s +
+   '    sys.exit(not main())'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_contextlib: AnsiString;
 Var
  s: AnsiString;
@@ -27543,6 +32604,884 @@ Begin
    '    memo[d] = y'#10;
  s := s +
    '    return y'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_dis: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Disassembler of Python byte code into mnemonics."""'#10;
+ s := s + #10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import types'#10;
+ s := s +
+   'import collections'#10;
+ s := s +
+   'import io'#10;
+ s := s + #10;
+ s := s +
+   'from opcode import *'#10;
+ s := s +
+   'from opcode import __all__ as _opcodes_all'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["code_info", "dis", "disassemble", "distb", "disc' +
+   'o",'#10;
+ s := s +
+   '           "findlinestarts", "findlabels", "show_code",'#10;
+ s := s +
+   '           "get_instructions", "Instruction", "Bytecode"] + ' +
+   '_opcodes_all'#10;
+ s := s +
+   'del _opcodes_all'#10;
+ s := s + #10;
+ s := s +
+   '_have_code = (types.MethodType, types.FunctionType, types.Co' +
+   'deType,'#10;
+ s := s +
+   '              classmethod, staticmethod, type)'#10;
+ s := s + #10;
+ s := s +
+   'FORMAT_VALUE = opmap[''FORMAT_VALUE'']'#10;
+ s := s +
+   'FORMAT_VALUE_CONVERTERS = ('#10;
+ s := s +
+   '    (None, ''''),'#10;
+ s := s +
+   '    (str, ''str''),'#10;
+ s := s +
+   '    (repr, ''repr''),'#10;
+ s := s +
+   '    (ascii, ''ascii''),'#10;
+ s := s +
+   ')'#10;
+ s := s +
+   'MAKE_FUNCTION = opmap[''MAKE_FUNCTION'']'#10;
+ s := s +
+   'MAKE_FUNCTION_FLAGS = (''defaults'', ''kwdefaults'', ''annotation' +
+   's'', ''closure'')'#10;
+ s := s + #10;
+ s := s +
+   'def _try_compile(source, name):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        c = compile(source, name, ''eval'')'#10;
+ s := s +
+   '    except SyntaxError:'#10;
+ s := s +
+   '        c = compile(source, name, ''exec'')'#10;
+ s := s +
+   '    return c'#10;
+ s := s + #10;
+ s := s +
+   'def dis(x=None, *, file=None, depth=None):'#10;
+ s := s +
+   '    if x is None:'#10;
+ s := s +
+   '        distb(file=file)'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    if hasattr(x, ''__func__''):'#10;
+ s := s +
+   '        x = x.__func__'#10;
+ s := s +
+   '    if hasattr(x, ''__code__''):'#10;
+ s := s +
+   '        x = x.__code__'#10;
+ s := s +
+   '    if hasattr(x, ''gi_code''):'#10;
+ s := s +
+   '        x = x.gi_code'#10;
+ s := s +
+   '    if hasattr(x, ''__dict__''):'#10;
+ s := s +
+   '        items = sorted(x.__dict__.items())'#10;
+ s := s +
+   '        for name, x1 in items:'#10;
+ s := s +
+   '            if isinstance(x1, _have_code):'#10;
+ s := s +
+   '                print("Disassembly of %s:" % name, file=file' +
+   ')'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    dis(x1, file=file, depth=depth)'#10;
+ s := s +
+   '                except TypeError as msg:'#10;
+ s := s +
+   '                    print("Sorry:", msg, file=file)'#10;
+ s := s +
+   '                print(file=file)'#10;
+ s := s +
+   '    elif hasattr(x, ''co_code''):'#10;
+ s := s +
+   '        _disassemble_recursive(x, file=file, depth=depth)'#10;
+ s := s +
+   '    elif isinstance(x, (bytes, bytearray)):'#10;
+ s := s +
+   '        _disassemble_bytes(x, file=file)'#10;
+ s := s +
+   '    elif isinstance(x, str):'#10;
+ s := s +
+   '        _disassemble_str(x, file=file, depth=depth)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        raise TypeError("don''t know how to disassemble %s ob' +
+   'jects" %'#10;
+ s := s +
+   '                        type(x).__name__)'#10;
+ s := s + #10;
+ s := s +
+   'def distb(tb=None, *, file=None):'#10;
+ s := s +
+   '    if tb is None:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            tb = sys.last_traceback'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            raise RuntimeError("no last traceback to disasse' +
+   'mble") from None'#10;
+ s := s +
+   '        while tb.tb_next:'#10;
+ s := s +
+   '            tb = tb.tb_next'#10;
+ s := s +
+   '    disassemble(tb.tb_frame.f_code, tb.tb_lasti, file=file)'#10;
+ s := s + #10;
+ s := s +
+   'COMPILER_FLAG_NAMES = {'#10;
+ s := s +
+   '     1: "OPTIMIZED",'#10;
+ s := s +
+   '     2: "NEWLOCALS",'#10;
+ s := s +
+   '     4: "VARARGS",'#10;
+ s := s +
+   '     8: "VARKEYWORDS",'#10;
+ s := s +
+   '    16: "NESTED",'#10;
+ s := s +
+   '    32: "GENERATOR",'#10;
+ s := s +
+   '    64: "NOFREE",'#10;
+ s := s +
+   '   128: "COROUTINE",'#10;
+ s := s +
+   '   256: "ITERABLE_COROUTINE",'#10;
+ s := s +
+   '   512: "ASYNC_GENERATOR",'#10;
+ s := s +
+   '}'#10;
+ s := s + #10;
+ s := s +
+   'def pretty_flags(flags):'#10;
+ s := s +
+   '    names = []'#10;
+ s := s +
+   '    for i in range(32):'#10;
+ s := s +
+   '        flag = 1 << i'#10;
+ s := s +
+   '        if flags & flag:'#10;
+ s := s +
+   '            names.append(COMPILER_FLAG_NAMES.get(flag, hex(f' +
+   'lag)))'#10;
+ s := s +
+   '            flags ^= flag'#10;
+ s := s +
+   '            if not flags:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        names.append(hex(flags))'#10;
+ s := s +
+   '    return ", ".join(names)'#10;
+ s := s + #10;
+ s := s +
+   'def _get_code_object(x):'#10;
+ s := s +
+   '    if hasattr(x, ''__func__''):'#10;
+ s := s +
+   '        x = x.__func__'#10;
+ s := s +
+   '    if hasattr(x, ''__code__''):'#10;
+ s := s +
+   '        x = x.__code__'#10;
+ s := s +
+   '    if hasattr(x, ''gi_code''):'#10;
+ s := s +
+   '        x = x.gi_code'#10;
+ s := s +
+   '    if isinstance(x, str):'#10;
+ s := s +
+   '        x = _try_compile(x, "<disassembly>")'#10;
+ s := s +
+   '    if hasattr(x, ''co_code''):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    raise TypeError("don''t know how to disassemble %s object' +
+   's" %'#10;
+ s := s +
+   '                    type(x).__name__)'#10;
+ s := s + #10;
+ s := s +
+   'def code_info(x):'#10;
+ s := s +
+   '    return _format_code_info(_get_code_object(x))'#10;
+ s := s + #10;
+ s := s +
+   'def _format_code_info(co):'#10;
+ s := s +
+   '    lines = []'#10;
+ s := s +
+   '    lines.append("Name:              %s" % co.co_name)'#10;
+ s := s +
+   '    lines.append("Filename:          %s" % co.co_filename)'#10;
+ s := s +
+   '    lines.append("Argument count:    %s" % co.co_argcount)'#10;
+ s := s +
+   '    lines.append("Positional-only arguments: %s" % co.co_pos' +
+   'onlyargcount)'#10;
+ s := s +
+   '    lines.append("Kw-only arguments: %s" % co.co_kwonlyargco' +
+   'unt)'#10;
+ s := s +
+   '    lines.append("Number of locals:  %s" % co.co_nlocals)'#10;
+ s := s +
+   '    lines.append("Stack size:        %s" % co.co_stacksize)'#10;
+ s := s +
+   '    lines.append("Flags:             %s" % pretty_flags(co.c' +
+   'o_flags))'#10;
+ s := s +
+   '    if co.co_consts:'#10;
+ s := s +
+   '        lines.append("Constants:")'#10;
+ s := s +
+   '        for i_c in enumerate(co.co_consts):'#10;
+ s := s +
+   '            lines.append("%4d: %r" % i_c)'#10;
+ s := s +
+   '    if co.co_names:'#10;
+ s := s +
+   '        lines.append("Names:")'#10;
+ s := s +
+   '        for i_n in enumerate(co.co_names):'#10;
+ s := s +
+   '            lines.append("%4d: %s" % i_n)'#10;
+ s := s +
+   '    if co.co_varnames:'#10;
+ s := s +
+   '        lines.append("Variable names:")'#10;
+ s := s +
+   '        for i_n in enumerate(co.co_varnames):'#10;
+ s := s +
+   '            lines.append("%4d: %s" % i_n)'#10;
+ s := s +
+   '    if co.co_freevars:'#10;
+ s := s +
+   '        lines.append("Free variables:")'#10;
+ s := s +
+   '        for i_n in enumerate(co.co_freevars):'#10;
+ s := s +
+   '            lines.append("%4d: %s" % i_n)'#10;
+ s := s +
+   '    if co.co_cellvars:'#10;
+ s := s +
+   '        lines.append("Cell variables:")'#10;
+ s := s +
+   '        for i_n in enumerate(co.co_cellvars):'#10;
+ s := s +
+   '            lines.append("%4d: %s" % i_n)'#10;
+ s := s +
+   '    return "\n".join(lines)'#10;
+ s := s + #10;
+ s := s +
+   'def show_code(co, *, file=None):'#10;
+ s := s +
+   '    print(code_info(co), file=file)'#10;
+ s := s + #10;
+ s := s +
+   '_Instruction = collections.namedtuple("_Instruction",'#10;
+ s := s +
+   '     "opname opcode arg argval argrepr offset starts_line is' +
+   '_jump_target")'#10;
+ s := s + #10;
+ s := s +
+   '_Instruction.opname.__doc__ = "Human readable name for opera' +
+   'tion"'#10;
+ s := s +
+   '_Instruction.opcode.__doc__ = "Numeric code for operation"'#10;
+ s := s +
+   '_Instruction.arg.__doc__ = "Numeric argument to operation (i' +
+   'f any), otherwise None"'#10;
+ s := s +
+   '_Instruction.argval.__doc__ = "Resolved arg value (if known)' +
+   ', otherwise same as arg"'#10;
+ s := s +
+   '_Instruction.argrepr.__doc__ = "Human readable description o' +
+   'f operation argument"'#10;
+ s := s +
+   '_Instruction.offset.__doc__ = "Start index of operation with' +
+   'in bytecode sequence"'#10;
+ s := s +
+   '_Instruction.starts_line.__doc__ = "Line started by this opc' +
+   'ode (if any), otherwise None"'#10;
+ s := s +
+   '_Instruction.is_jump_target.__doc__ = "True if other code ju' +
+   'mps to here, otherwise False"'#10;
+ s := s + #10;
+ s := s +
+   'class Instruction(_Instruction):'#10;
+ s := s +
+   '    def _disassemble(self, lineno_width=3, mark_as_current=F' +
+   'alse):'#10;
+ s := s +
+   '        fields = []'#10;
+ s := s +
+   '        if lineno_width:'#10;
+ s := s +
+   '            if self.starts_line is not None:'#10;
+ s := s +
+   '                lineno_fmt = "%%%dd" % lineno_width'#10;
+ s := s +
+   '                fields.append(lineno_fmt % self.starts_line)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                fields.append('' '' * lineno_width)'#10;
+ s := s +
+   '        if mark_as_current:'#10;
+ s := s +
+   '            fields.append(''-->'')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            fields.append(''   '')'#10;
+ s := s +
+   '        if self.is_jump_target:'#10;
+ s := s +
+   '            fields.append(''>>'')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            fields.append(''  '')'#10;
+ s := s +
+   '        fields.append(repr(self.offset).rjust(4))'#10;
+ s := s +
+   '        fields.append(self.opname.ljust(20))'#10;
+ s := s +
+   '        if self.arg is not None:'#10;
+ s := s +
+   '            fields.append(repr(self.arg).rjust(5))'#10;
+ s := s +
+   '            if self.argrepr:'#10;
+ s := s +
+   '                fields.append(''('' + self.argrepr + '')'')'#10;
+ s := s +
+   '        return '' ''.join(fields).rstrip()'#10;
+ s := s + #10;
+ s := s +
+   'def get_instructions(x, *, first_line=None):'#10;
+ s := s +
+   '    co = _get_code_object(x)'#10;
+ s := s +
+   '    cell_names = co.co_cellvars + co.co_freevars'#10;
+ s := s +
+   '    linestarts = dict(findlinestarts(co))'#10;
+ s := s +
+   '    if first_line is not None:'#10;
+ s := s +
+   '        line_offset = first_line - co.co_firstlineno'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        line_offset = 0'#10;
+ s := s +
+   '    return _get_instructions_bytes(co.co_code, co.co_varname' +
+   's, co.co_names,'#10;
+ s := s +
+   '                                   co.co_consts, cell_names,' +
+   ' linestarts,'#10;
+ s := s +
+   '                                   line_offset)'#10;
+ s := s + #10;
+ s := s +
+   'def _get_const_info(const_index, const_list):'#10;
+ s := s +
+   '    argval = const_index'#10;
+ s := s +
+   '    if const_list is not None:'#10;
+ s := s +
+   '        argval = const_list[const_index]'#10;
+ s := s +
+   '    return argval, repr(argval)'#10;
+ s := s + #10;
+ s := s +
+   'def _get_name_info(name_index, name_list):'#10;
+ s := s +
+   '    argval = name_index'#10;
+ s := s +
+   '    if name_list is not None:'#10;
+ s := s +
+   '        argval = name_list[name_index]'#10;
+ s := s +
+   '        argrepr = argval'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        argrepr = repr(argval)'#10;
+ s := s +
+   '    return argval, argrepr'#10;
+ s := s + #10;
+ s := s +
+   'def _get_instructions_bytes(code, varnames=None, names=None,' +
+   ' constants=None,'#10;
+ s := s +
+   '                      cells=None, linestarts=None, line_offs' +
+   'et=0):'#10;
+ s := s +
+   '    labels = findlabels(code)'#10;
+ s := s +
+   '    starts_line = None'#10;
+ s := s +
+   '    for offset, op, arg in _unpack_opargs(code):'#10;
+ s := s +
+   '        if linestarts is not None:'#10;
+ s := s +
+   '            starts_line = linestarts.get(offset, None)'#10;
+ s := s +
+   '            if starts_line is not None:'#10;
+ s := s +
+   '                starts_line += line_offset'#10;
+ s := s +
+   '        is_jump_target = offset in labels'#10;
+ s := s +
+   '        argval = None'#10;
+ s := s +
+   '        argrepr = '''''#10;
+ s := s +
+   '        if arg is not None:'#10;
+ s := s +
+   '            argval = arg'#10;
+ s := s +
+   '            if op in hasconst:'#10;
+ s := s +
+   '                argval, argrepr = _get_const_info(arg, const' +
+   'ants)'#10;
+ s := s +
+   '            elif op in hasname:'#10;
+ s := s +
+   '                argval, argrepr = _get_name_info(arg, names)'#10;
+ s := s +
+   '            elif op in hasjrel:'#10;
+ s := s +
+   '                argval = offset + 2 + arg'#10;
+ s := s +
+   '                argrepr = "to " + repr(argval)'#10;
+ s := s +
+   '            elif op in haslocal:'#10;
+ s := s +
+   '                argval, argrepr = _get_name_info(arg, varnam' +
+   'es)'#10;
+ s := s +
+   '            elif op in hascompare:'#10;
+ s := s +
+   '                argval = cmp_op[arg]'#10;
+ s := s +
+   '                argrepr = argval'#10;
+ s := s +
+   '            elif op in hasfree:'#10;
+ s := s +
+   '                argval, argrepr = _get_name_info(arg, cells)'#10;
+ s := s +
+   '            elif op == FORMAT_VALUE:'#10;
+ s := s +
+   '                argval, argrepr = FORMAT_VALUE_CONVERTERS[ar' +
+   'g & 0x3]'#10;
+ s := s +
+   '                argval = (argval, bool(arg & 0x4))'#10;
+ s := s +
+   '                if argval[1]:'#10;
+ s := s +
+   '                    if argrepr:'#10;
+ s := s +
+   '                        argrepr += '', '''#10;
+ s := s +
+   '                    argrepr += ''with format'''#10;
+ s := s +
+   '            elif op == MAKE_FUNCTION:'#10;
+ s := s +
+   '                argrepr = '', ''.join(s for i, s in enumerate(' +
+   'MAKE_FUNCTION_FLAGS)'#10;
+ s := s +
+   '                                    if arg & (1<<i))'#10;
+ s := s +
+   '            elif op in hasjabs:'#10;
+ s := s +
+   '                argval = arg'#10;
+ s := s +
+   '                argrepr = "to " + repr(argval)'#10;
+ s := s +
+   '        yield Instruction(opname[op], op,'#10;
+ s := s +
+   '                          arg, argval, argrepr,'#10;
+ s := s +
+   '                          offset, starts_line, is_jump_targe' +
+   't)'#10;
+ s := s + #10;
+ s := s +
+   'def disassemble(co, lasti=-1, *, file=None):'#10;
+ s := s +
+   '    cell_names = co.co_cellvars + co.co_freevars'#10;
+ s := s +
+   '    linestarts = dict(findlinestarts(co))'#10;
+ s := s +
+   '    _disassemble_bytes(co.co_code, lasti, co.co_varnames, co' +
+   '.co_names,'#10;
+ s := s +
+   '                       co.co_consts, cell_names, linestarts,' +
+   ' file=file)'#10;
+ s := s + #10;
+ s := s +
+   'def _disassemble_recursive(co, *, file=None, depth=None):'#10;
+ s := s +
+   '    disassemble(co, file=file)'#10;
+ s := s +
+   '    if depth is None or depth > 0:'#10;
+ s := s +
+   '        if depth is not None:'#10;
+ s := s +
+   '            depth = depth - 1'#10;
+ s := s +
+   '        for x in co.co_consts:'#10;
+ s := s +
+   '            if hasattr(x, ''co_code''):'#10;
+ s := s +
+   '                print(file=file)'#10;
+ s := s +
+   '                print("Disassembly of %r:" % (x,), file=file' +
+   ')'#10;
+ s := s +
+   '                _disassemble_recursive(x, file=file, depth=d' +
+   'epth)'#10;
+ s := s + #10;
+ s := s +
+   'def _disassemble_bytes(code, lasti=-1, varnames=None, names=' +
+   'None,'#10;
+ s := s +
+   '                       constants=None, cells=None, linestart' +
+   's=None,'#10;
+ s := s +
+   '                       *, file=None, line_offset=0):'#10;
+ s := s +
+   '    show_lineno = linestarts is not None'#10;
+ s := s +
+   '    if show_lineno:'#10;
+ s := s +
+   '        maxlineno = max(linestarts.values()) + line_offset'#10;
+ s := s +
+   '        if maxlineno >= 1000:'#10;
+ s := s +
+   '            lineno_width = len(str(maxlineno))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            lineno_width = 3'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        lineno_width = 0'#10;
+ s := s +
+   '    maxoffset = len(code) - 2'#10;
+ s := s +
+   '    if maxoffset >= 10000:'#10;
+ s := s +
+   '        offset_width = len(str(maxoffset))'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        offset_width = 4'#10;
+ s := s +
+   '    for instr in _get_instructions_bytes(code, varnames, nam' +
+   'es,'#10;
+ s := s +
+   '                                         constants, cells, l' +
+   'inestarts,'#10;
+ s := s +
+   '                                         line_offset=line_of' +
+   'fset):'#10;
+ s := s +
+   '        new_source_line = (show_lineno and'#10;
+ s := s +
+   '                           instr.starts_line is not None and'#10;
+ s := s +
+   '                           instr.offset > 0)'#10;
+ s := s +
+   '        if new_source_line:'#10;
+ s := s +
+   '            print(file=file)'#10;
+ s := s +
+   '        is_current_instr = instr.offset == lasti'#10;
+ s := s +
+   '        print(instr._disassemble(lineno_width, is_current_in' +
+   'str), file=file)'#10;
+ s := s + #10;
+ s := s +
+   'def _disassemble_str(source, **kwargs):'#10;
+ s := s +
+   '    _disassemble_recursive(_try_compile(source, ''<dis>''), **' +
+   'kwargs)'#10;
+ s := s + #10;
+ s := s +
+   'disco = disassemble'#10;
+ s := s + #10;
+ s := s +
+   'def _unpack_opargs(code):'#10;
+ s := s +
+   '    extended_arg = 0'#10;
+ s := s +
+   '    for i in range(0, len(code), 2):'#10;
+ s := s +
+   '        op = code[i]'#10;
+ s := s +
+   '        if op >= HAVE_ARGUMENT:'#10;
+ s := s +
+   '            arg = code[i+1] | extended_arg'#10;
+ s := s +
+   '            extended_arg = (arg << 8) if op == EXTENDED_ARG ' +
+   'else 0'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            arg = None'#10;
+ s := s +
+   '        yield (i, op, arg)'#10;
+ s := s + #10;
+ s := s +
+   'def findlabels(code):'#10;
+ s := s +
+   '    labels = []'#10;
+ s := s +
+   '    for offset, op, arg in _unpack_opargs(code):'#10;
+ s := s +
+   '        if arg is not None:'#10;
+ s := s +
+   '            if op in hasjrel:'#10;
+ s := s +
+   '                label = offset + 2 + arg'#10;
+ s := s +
+   '            elif op in hasjabs:'#10;
+ s := s +
+   '                label = arg'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            if label not in labels:'#10;
+ s := s +
+   '                labels.append(label)'#10;
+ s := s +
+   '    return labels'#10;
+ s := s + #10;
+ s := s +
+   'def findlinestarts(code):'#10;
+ s := s +
+   '    byte_increments = code.co_lnotab[0::2]'#10;
+ s := s +
+   '    line_increments = code.co_lnotab[1::2]'#10;
+ s := s +
+   '    lastlineno = None'#10;
+ s := s +
+   '    lineno = code.co_firstlineno'#10;
+ s := s +
+   '    addr = 0'#10;
+ s := s +
+   '    for byte_incr, line_incr in zip(byte_increments, line_in' +
+   'crements):'#10;
+ s := s +
+   '        if byte_incr:'#10;
+ s := s +
+   '            if lineno != lastlineno:'#10;
+ s := s +
+   '                yield (addr, lineno)'#10;
+ s := s +
+   '                lastlineno = lineno'#10;
+ s := s +
+   '            addr += byte_incr'#10;
+ s := s +
+   '        if line_incr >= 0x80:'#10;
+ s := s +
+   '            line_incr -= 0x100'#10;
+ s := s +
+   '        lineno += line_incr'#10;
+ s := s +
+   '    if lineno != lastlineno:'#10;
+ s := s +
+   '        yield (addr, lineno)'#10;
+ s := s + #10;
+ s := s +
+   'class Bytecode:'#10;
+ s := s +
+   '    def __init__(self, x, *, first_line=None, current_offset' +
+   '=None):'#10;
+ s := s +
+   '        self.codeobj = co = _get_code_object(x)'#10;
+ s := s +
+   '        if first_line is None:'#10;
+ s := s +
+   '            self.first_line = co.co_firstlineno'#10;
+ s := s +
+   '            self._line_offset = 0'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self.first_line = first_line'#10;
+ s := s +
+   '            self._line_offset = first_line - co.co_firstline' +
+   'no'#10;
+ s := s +
+   '        self._cell_names = co.co_cellvars + co.co_freevars'#10;
+ s := s +
+   '        self._linestarts = dict(findlinestarts(co))'#10;
+ s := s +
+   '        self._original_object = x'#10;
+ s := s +
+   '        self.current_offset = current_offset'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        co = self.codeobj'#10;
+ s := s +
+   '        return _get_instructions_bytes(co.co_code, co.co_var' +
+   'names, co.co_names,'#10;
+ s := s +
+   '                                       co.co_consts, self._c' +
+   'ell_names,'#10;
+ s := s +
+   '                                       self._linestarts,'#10;
+ s := s +
+   '                                       line_offset=self._lin' +
+   'e_offset)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return "{}({!r})".format(self.__class__.__name__, se' +
+   'lf._original_object)'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def from_traceback(cls, tb):'#10;
+ s := s +
+   '        while tb.tb_next:'#10;
+ s := s +
+   '            tb = tb.tb_next'#10;
+ s := s +
+   '        return cls(tb.tb_frame.f_code, current_offset=tb.tb_' +
+   'lasti)'#10;
+ s := s + #10;
+ s := s +
+   '    def info(self):'#10;
+ s := s +
+   '        return _format_code_info(self.codeobj)'#10;
+ s := s + #10;
+ s := s +
+   '    def dis(self):'#10;
+ s := s +
+   '        co = self.codeobj'#10;
+ s := s +
+   '        if self.current_offset is not None:'#10;
+ s := s +
+   '            offset = self.current_offset'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            offset = -1'#10;
+ s := s +
+   '        output = io.StringIO()'#10;
+ s := s +
+   '        _disassemble_bytes(co.co_code, varnames=co.co_varnam' +
+   'es,'#10;
+ s := s +
+   '                           names=co.co_names, constants=co.c' +
+   'o_consts,'#10;
+ s := s +
+   '                           cells=self._cell_names,'#10;
+ s := s +
+   '                           linestarts=self._linestarts,'#10;
+ s := s +
+   '                           line_offset=self._line_offset,'#10;
+ s := s +
+   '                           file=output,'#10;
+ s := s +
+   '                           lasti=offset)'#10;
+ s := s +
+   '        return output.getvalue()'#10;
+ s := s + #10;
+ s := s +
+   'def _test():'#10;
+ s := s +
+   '    import sys'#10;
+ s := s +
+   '    if len(sys.argv) > 1:'#10;
+ s := s +
+   '        fn = sys.argv[1]'#10;
+ s := s +
+   '        if not fn or fn == "-":'#10;
+ s := s +
+   '            fn = None'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        fn = None'#10;
+ s := s +
+   '    if fn is None:'#10;
+ s := s +
+   '        f = sys.stdin'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        f = open(fn, ''rb'')'#10;
+ s := s +
+   '    with f:'#10;
+ s := s +
+   '        source = f.read()'#10;
+ s := s +
+   '    if isinstance(source, bytes):'#10;
+ s := s +
+   '        source = source.decode()'#10;
+ s := s +
+   '    if fn is None:'#10;
+ s := s +
+   '        fn = "<stdin>"'#10;
+ s := s +
+   '    code = compile(source, fn, "exec")'#10;
+ s := s +
+   '    dis(code)'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == "__main__":'#10;
+ s := s +
+   '    _test()'#10;
  s := s + #10;
  Result := s;
 End;
@@ -29500,6 +35439,440 @@ Begin
  Result := s;
 End;
 
+Function Src_importlib_machinery: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s + #10;
+ s := s +
+   'SOURCE_SUFFIXES = [''.py'']'#10;
+ s := s +
+   'BYTECODE_SUFFIXES = [''.pyc'']'#10;
+ s := s +
+   'OPTIMIZED_BYTECODE_SUFFIXES = [''.pyc'']'#10;
+ s := s +
+   'EXTENSION_SUFFIXES = []'#10;
+ s := s +
+   'DEBUG_BYTECODE_SUFFIXES = [''.pyc'']'#10;
+ s := s + #10;
+ s := s +
+   'def all_suffixes():'#10;
+ s := s +
+   '    return SOURCE_SUFFIXES + BYTECODE_SUFFIXES + EXTENSION_S' +
+   'UFFIXES'#10;
+ s := s + #10;
+ s := s +
+   'class ModuleSpec:'#10;
+ s := s +
+   '    def __init__(self, name, loader, *, origin=None, loader_' +
+   'state=None, is_package=None):'#10;
+ s := s +
+   '        self.name = name'#10;
+ s := s +
+   '        self.loader = loader'#10;
+ s := s +
+   '        self.origin = origin'#10;
+ s := s +
+   '        self.loader_state = loader_state'#10;
+ s := s +
+   '        self.submodule_search_locations = [] if is_package e' +
+   'lse None'#10;
+ s := s +
+   '        self.has_location = False'#10;
+ s := s +
+   '        self.cached = None'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def parent(self):'#10;
+ s := s +
+   '        if self.submodule_search_locations is None:'#10;
+ s := s +
+   '            return self.name.rpartition(''.'')[0]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return self.name'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        args = [''name={!r}''.format(self.name), ''loader={!r}''' +
+   '.format(self.loader)]'#10;
+ s := s +
+   '        if self.origin is not None:'#10;
+ s := s +
+   '            args.append(''origin={!r}''.format(self.origin))'#10;
+ s := s +
+   '        if self.submodule_search_locations is not None:'#10;
+ s := s +
+   '            args.append(''submodule_search_locations={}''.form' +
+   'at(self.submodule_search_locations))'#10;
+ s := s +
+   '        return ''{}({})''.format(self.__class__.__name__, '', ''' +
+   '.join(args))'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return (self.name == other.name and self.loader ' +
+   '== other.loader and'#10;
+ s := s +
+   '                    self.origin == other.origin)'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            return False'#10;
+ s := s + #10;
+ s := s +
+   'class SourceFileLoader:'#10;
+ s := s +
+   '    def __init__(self, fullname, path):'#10;
+ s := s +
+   '        self.name = fullname'#10;
+ s := s +
+   '        self.path = path'#10;
+ s := s + #10;
+ s := s +
+   '    def get_filename(self, fullname=None):'#10;
+ s := s +
+   '        return self.path'#10;
+ s := s + #10;
+ s := s +
+   '    def get_data(self, path):'#10;
+ s := s +
+   '        with open(path, ''rb'') as f:'#10;
+ s := s +
+   '            return f.read()'#10;
+ s := s + #10;
+ s := s +
+   '    def get_source(self, fullname=None):'#10;
+ s := s +
+   '        return self.get_data(self.path).decode(''utf-8'')'#10;
+ s := s + #10;
+ s := s +
+   '    def get_code(self, fullname=None):'#10;
+ s := s +
+   '        return compile(self.get_source(), self.path, ''exec'')'#10;
+ s := s + #10;
+ s := s +
+   '    def create_module(self, spec):'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    def exec_module(self, module):'#10;
+ s := s +
+   '        exec(self.get_code(), module.__dict__)'#10;
+ s := s + #10;
+ s := s +
+   '    def load_module(self, fullname=None):'#10;
+ s := s +
+   '        import importlib.util'#10;
+ s := s +
+   '        spec = importlib.util.spec_from_file_location(fullna' +
+   'me or self.name, self.path, loader=self)'#10;
+ s := s +
+   '        module = importlib.util.module_from_spec(spec)'#10;
+ s := s +
+   '        sys.modules[spec.name] = module'#10;
+ s := s +
+   '        self.exec_module(module)'#10;
+ s := s +
+   '        return module'#10;
+ s := s + #10;
+ s := s +
+   '    def is_package(self, fullname=None):'#10;
+ s := s +
+   '        return self.path.rpartition(''/'')[2].startswith(''__in' +
+   'it__.'')'#10;
+ s := s + #10;
+ s := s +
+   'class BuiltinImporter:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class FrozenImporter:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class PathFinder:'#10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def find_spec(cls, fullname, path=None, target=None):'#10;
+ s := s +
+   '        import importlib.util'#10;
+ s := s +
+   '        return importlib.util.find_spec(fullname)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_importlib: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '#PACKAGE'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import types'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''__import__'', ''import_module'', ''invalidate_caches' +
+   ''', ''reload'']'#10;
+ s := s + #10;
+ s := s +
+   '_bootstrap = None'#10;
+ s := s +
+   '_bootstrap_external = None'#10;
+ s := s + #10;
+ s := s +
+   'def invalidate_caches():'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def import_module(name, package=None):'#10;
+ s := s +
+   '    level = 0'#10;
+ s := s +
+   '    if name.startswith(''.''):'#10;
+ s := s +
+   '        if not package:'#10;
+ s := s +
+   '            msg = ("the ''package'' argument is required to pe' +
+   'rform a relative "'#10;
+ s := s +
+   '                   "import for {!r}")'#10;
+ s := s +
+   '            raise TypeError(msg.format(name))'#10;
+ s := s +
+   '        for character in name:'#10;
+ s := s +
+   '            if character != ''.'':'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            level += 1'#10;
+ s := s +
+   '        if level > 1:'#10;
+ s := s +
+   '            bits = package.rsplit(''.'', level - 1)'#10;
+ s := s +
+   '            if len(bits) < level:'#10;
+ s := s +
+   '                raise ValueError(''attempted relative import ' +
+   'beyond top-level package'')'#10;
+ s := s +
+   '            base = bits[0]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            base = package'#10;
+ s := s +
+   '        name = ''{}.{}''.format(base, name[level:]) if name[le' +
+   'vel:] else base'#10;
+ s := s +
+   '    __import__(name)'#10;
+ s := s +
+   '    return sys.modules[name]'#10;
+ s := s + #10;
+ s := s +
+   'def reload(module):'#10;
+ s := s +
+   '    if not isinstance(module, types.ModuleType):'#10;
+ s := s +
+   '        raise TypeError("reload() argument must be a module"' +
+   ')'#10;
+ s := s +
+   '    name = module.__name__'#10;
+ s := s +
+   '    if sys.modules.get(name) is not module:'#10;
+ s := s +
+   '        raise ImportError("module %s not in sys.modules" % n' +
+   'ame, name=name)'#10;
+ s := s +
+   '    fn = getattr(module, ''__file__'', None)'#10;
+ s := s +
+   '    if not fn or fn.startswith(''<frozen''):'#10;
+ s := s +
+   '        return module'#10;
+ s := s +
+   '    with open(fn) as f:'#10;
+ s := s +
+   '        src = f.read()'#10;
+ s := s +
+   '    exec(compile(src, fn, ''exec''), module.__dict__)'#10;
+ s := s +
+   '    return module'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_importlib_util: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import types'#10;
+ s := s +
+   'from py_compile import cache_from_source, source_from_cache,' +
+   ' MAGIC_NUMBER'#10;
+ s := s + #10;
+ s := s +
+   'def resolve_name(name, package):'#10;
+ s := s +
+   '    if not name.startswith(''.''):'#10;
+ s := s +
+   '        return name'#10;
+ s := s +
+   '    elif not package:'#10;
+ s := s +
+   '        raise ValueError(f''no package specified for {repr(na' +
+   'me)} (required for relative module names)'')'#10;
+ s := s +
+   '    level = 0'#10;
+ s := s +
+   '    for character in name:'#10;
+ s := s +
+   '        if character != ''.'':'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        level += 1'#10;
+ s := s +
+   '    bits = package.rsplit(''.'', level - 1)'#10;
+ s := s +
+   '    if len(bits) < level:'#10;
+ s := s +
+   '        raise ValueError(''attempted relative import beyond t' +
+   'op-level package'')'#10;
+ s := s +
+   '    base = bits[0]'#10;
+ s := s +
+   '    return ''{}.{}''.format(base, name[level:]) if name[level:' +
+   '] else base'#10;
+ s := s + #10;
+ s := s +
+   'def find_spec(name, package=None):'#10;
+ s := s +
+   '    from importlib.machinery import ModuleSpec, SourceFileLo' +
+   'ader'#10;
+ s := s +
+   '    fullname = resolve_name(name, package) if name.startswit' +
+   'h(''.'') else name'#10;
+ s := s +
+   '    if fullname in sys.modules:'#10;
+ s := s +
+   '        module = sys.modules[fullname]'#10;
+ s := s +
+   '        spec = getattr(module, ''__spec__'', None)'#10;
+ s := s +
+   '        if spec is None:'#10;
+ s := s +
+   '            return ModuleSpec(fullname, None, origin=getattr' +
+   '(module, ''__file__'', None))'#10;
+ s := s +
+   '        return spec'#10;
+ s := s +
+   '    leaf = fullname.rpartition(''.'')[2]'#10;
+ s := s +
+   '    paths = sys.path'#10;
+ s := s +
+   '    if ''.'' in fullname:'#10;
+ s := s +
+   '        parent = __import__(fullname.rpartition(''.'')[0], fro' +
+   'mlist=[''__path__''])'#10;
+ s := s +
+   '        paths = parent.__path__'#10;
+ s := s +
+   '    for entry in paths:'#10;
+ s := s +
+   '        base = os.path.join(entry or ''.'', leaf)'#10;
+ s := s +
+   '        for cand, is_pkg in ((os.path.join(base, ''__init__.p' +
+   'y''), True), (base + ''.py'', False)):'#10;
+ s := s +
+   '            if os.path.isfile(cand):'#10;
+ s := s +
+   '                return spec_from_file_location(fullname, can' +
+   'd, loader=SourceFileLoader(fullname, cand),'#10;
+ s := s +
+   '                                               submodule_sea' +
+   'rch_locations=[base] if is_pkg else None)'#10;
+ s := s +
+   '    return None'#10;
+ s := s + #10;
+ s := s +
+   'def spec_from_file_location(name, location=None, *, loader=N' +
+   'one, submodule_search_locations=None):'#10;
+ s := s +
+   '    from importlib.machinery import ModuleSpec, SourceFileLo' +
+   'ader'#10;
+ s := s +
+   '    if loader is None:'#10;
+ s := s +
+   '        loader = SourceFileLoader(name, location)'#10;
+ s := s +
+   '    spec = ModuleSpec(name, loader, origin=location)'#10;
+ s := s +
+   '    spec.has_location = True'#10;
+ s := s +
+   '    spec.submodule_search_locations = submodule_search_locat' +
+   'ions'#10;
+ s := s +
+   '    return spec'#10;
+ s := s + #10;
+ s := s +
+   'def module_from_spec(spec):'#10;
+ s := s +
+   '    module = types.ModuleType(spec.name)'#10;
+ s := s +
+   '    module.__spec__ = spec'#10;
+ s := s +
+   '    module.__loader__ = spec.loader'#10;
+ s := s +
+   '    module.__file__ = spec.origin'#10;
+ s := s +
+   '    module.__package__ = spec.parent'#10;
+ s := s +
+   '    if spec.submodule_search_locations is not None:'#10;
+ s := s +
+   '        module.__path__ = list(spec.submodule_search_locatio' +
+   'ns)'#10;
+ s := s +
+   '    return module'#10;
+ s := s + #10;
+ s := s +
+   'def decode_source(source_bytes):'#10;
+ s := s +
+   '    return source_bytes.decode(''utf-8'')'#10;
+ s := s + #10;
+ s := s +
+   'def source_hash(source_bytes):'#10;
+ s := s +
+   '    return b''\0'' * 8'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_io: AnsiString;
 Var
  s: AnsiString;
@@ -30149,6 +36522,467 @@ Begin
    'def lazycache(filename, module_globals):'#10;
  s := s +
    '    return False'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_opcode: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '# genere depuis la table d''instructions de PYTHON3.PAS (CPyt' +
+   'hon 3.8)'#10;
+ s := s +
+   '"""opcode module - potentially shared between dis and other ' +
+   'modules which'#10;
+ s := s +
+   'operate on bytecodes (e.g. peephole optimizers).'#10;
+ s := s +
+   '"""'#10;
+ s := s +
+   '__all__ = ["cmp_op", "hasconst", "hasname", "hasjrel", "hasj' +
+   'abs",'#10;
+ s := s +
+   '           "haslocal", "hascompare", "hasfree", "opname", "o' +
+   'pmap",'#10;
+ s := s +
+   '           "HAVE_ARGUMENT", "EXTENDED_ARG", "hasnargs"]'#10;
+ s := s +
+   'cmp_op = (''<'', ''<='', ''=='', ''!='', ''>'', ''>='', ''in'', ''not in'', ' +
+   '''is'','#10;
+ s := s +
+   '        ''is not'', ''exception match'', ''BAD'')'#10;
+ s := s +
+   'hasconst = []'#10;
+ s := s +
+   'hasname = []'#10;
+ s := s +
+   'hasjrel = []'#10;
+ s := s +
+   'hasjabs = []'#10;
+ s := s +
+   'haslocal = []'#10;
+ s := s +
+   'hascompare = []'#10;
+ s := s +
+   'hasfree = []'#10;
+ s := s +
+   'hasnargs = []'#10;
+ s := s +
+   'opmap = {}'#10;
+ s := s +
+   'opname = [''<%r>'' % (op,) for op in range(256)]'#10;
+ s := s +
+   'def def_op(name, op):'#10;
+ s := s +
+   '    opname[op] = name'#10;
+ s := s +
+   '    opmap[name] = op'#10;
+ s := s + #10;
+ s := s +
+   'def name_op(name, op):'#10;
+ s := s +
+   '    def_op(name, op)'#10;
+ s := s +
+   '    hasname.append(op)'#10;
+ s := s + #10;
+ s := s +
+   'def jrel_op(name, op):'#10;
+ s := s +
+   '    def_op(name, op)'#10;
+ s := s +
+   '    hasjrel.append(op)'#10;
+ s := s + #10;
+ s := s +
+   'def jabs_op(name, op):'#10;
+ s := s +
+   '    def_op(name, op)'#10;
+ s := s +
+   '    hasjabs.append(op)'#10;
+ s := s +
+   'def_op(''POP_TOP'', 1)'#10;
+ s := s +
+   'def_op(''ROT_TWO'', 2)'#10;
+ s := s +
+   'def_op(''ROT_THREE'', 3)'#10;
+ s := s +
+   'def_op(''DUP_TOP'', 4)'#10;
+ s := s +
+   'def_op(''DUP_TOP_TWO'', 5)'#10;
+ s := s +
+   'def_op(''ROT_FOUR'', 6)'#10;
+ s := s +
+   'def_op(''NOP'', 9)'#10;
+ s := s +
+   'def_op(''UNARY_POSITIVE'', 10)'#10;
+ s := s +
+   'def_op(''UNARY_NEGATIVE'', 11)'#10;
+ s := s +
+   'def_op(''UNARY_NOT'', 12)'#10;
+ s := s +
+   'def_op(''UNARY_INVERT'', 15)'#10;
+ s := s +
+   'def_op(''BINARY_MATRIX_MULTIPLY'', 16)'#10;
+ s := s +
+   'def_op(''INPLACE_MATRIX_MULTIPLY'', 17)'#10;
+ s := s +
+   'def_op(''BINARY_POWER'', 19)'#10;
+ s := s +
+   'def_op(''BINARY_MULTIPLY'', 20)'#10;
+ s := s +
+   'def_op(''BINARY_MODULO'', 22)'#10;
+ s := s +
+   'def_op(''BINARY_ADD'', 23)'#10;
+ s := s +
+   'def_op(''BINARY_SUBTRACT'', 24)'#10;
+ s := s +
+   'def_op(''BINARY_SUBSCR'', 25)'#10;
+ s := s +
+   'def_op(''BINARY_FLOOR_DIVIDE'', 26)'#10;
+ s := s +
+   'def_op(''BINARY_TRUE_DIVIDE'', 27)'#10;
+ s := s +
+   'def_op(''INPLACE_FLOOR_DIVIDE'', 28)'#10;
+ s := s +
+   'def_op(''INPLACE_TRUE_DIVIDE'', 29)'#10;
+ s := s +
+   'def_op(''GET_AITER'', 50)'#10;
+ s := s +
+   'def_op(''GET_ANEXT'', 51)'#10;
+ s := s +
+   'def_op(''BEFORE_ASYNC_WITH'', 52)'#10;
+ s := s +
+   'def_op(''BEGIN_FINALLY'', 53)'#10;
+ s := s +
+   'def_op(''END_ASYNC_FOR'', 54)'#10;
+ s := s +
+   'def_op(''INPLACE_ADD'', 55)'#10;
+ s := s +
+   'def_op(''INPLACE_SUBTRACT'', 56)'#10;
+ s := s +
+   'def_op(''INPLACE_MULTIPLY'', 57)'#10;
+ s := s +
+   'def_op(''INPLACE_MODULO'', 59)'#10;
+ s := s +
+   'def_op(''STORE_SUBSCR'', 60)'#10;
+ s := s +
+   'def_op(''DELETE_SUBSCR'', 61)'#10;
+ s := s +
+   'def_op(''BINARY_LSHIFT'', 62)'#10;
+ s := s +
+   'def_op(''BINARY_RSHIFT'', 63)'#10;
+ s := s +
+   'def_op(''BINARY_AND'', 64)'#10;
+ s := s +
+   'def_op(''BINARY_XOR'', 65)'#10;
+ s := s +
+   'def_op(''BINARY_OR'', 66)'#10;
+ s := s +
+   'def_op(''INPLACE_POWER'', 67)'#10;
+ s := s +
+   'def_op(''GET_ITER'', 68)'#10;
+ s := s +
+   'def_op(''GET_YIELD_FROM_ITER'', 69)'#10;
+ s := s +
+   'def_op(''PRINT_EXPR'', 70)'#10;
+ s := s +
+   'def_op(''LOAD_BUILD_CLASS'', 71)'#10;
+ s := s +
+   'def_op(''YIELD_FROM'', 72)'#10;
+ s := s +
+   'def_op(''GET_AWAITABLE'', 73)'#10;
+ s := s +
+   'def_op(''INPLACE_LSHIFT'', 75)'#10;
+ s := s +
+   'def_op(''INPLACE_RSHIFT'', 76)'#10;
+ s := s +
+   'def_op(''INPLACE_AND'', 77)'#10;
+ s := s +
+   'def_op(''INPLACE_XOR'', 78)'#10;
+ s := s +
+   'def_op(''INPLACE_OR'', 79)'#10;
+ s := s +
+   'def_op(''WITH_CLEANUP_START'', 81)'#10;
+ s := s +
+   'def_op(''WITH_CLEANUP_FINISH'', 82)'#10;
+ s := s +
+   'def_op(''RETURN_VALUE'', 83)'#10;
+ s := s +
+   'def_op(''IMPORT_STAR'', 84)'#10;
+ s := s +
+   'def_op(''SETUP_ANNOTATIONS'', 85)'#10;
+ s := s +
+   'def_op(''YIELD_VALUE'', 86)'#10;
+ s := s +
+   'def_op(''POP_BLOCK'', 87)'#10;
+ s := s +
+   'def_op(''END_FINALLY'', 88)'#10;
+ s := s +
+   'def_op(''POP_EXCEPT'', 89)'#10;
+ s := s +
+   'name_op(''STORE_NAME'', 90)'#10;
+ s := s +
+   'name_op(''DELETE_NAME'', 91)'#10;
+ s := s +
+   'def_op(''UNPACK_SEQUENCE'', 92)'#10;
+ s := s +
+   'jrel_op(''FOR_ITER'', 93)'#10;
+ s := s +
+   'def_op(''UNPACK_EX'', 94)'#10;
+ s := s +
+   'name_op(''STORE_ATTR'', 95)'#10;
+ s := s +
+   'name_op(''DELETE_ATTR'', 96)'#10;
+ s := s +
+   'name_op(''STORE_GLOBAL'', 97)'#10;
+ s := s +
+   'name_op(''DELETE_GLOBAL'', 98)'#10;
+ s := s +
+   'def_op(''LOAD_CONST'', 100)'#10;
+ s := s +
+   'name_op(''LOAD_NAME'', 101)'#10;
+ s := s +
+   'def_op(''BUILD_TUPLE'', 102)'#10;
+ s := s +
+   'def_op(''BUILD_LIST'', 103)'#10;
+ s := s +
+   'def_op(''BUILD_SET'', 104)'#10;
+ s := s +
+   'def_op(''BUILD_MAP'', 105)'#10;
+ s := s +
+   'name_op(''LOAD_ATTR'', 106)'#10;
+ s := s +
+   'def_op(''COMPARE_OP'', 107)'#10;
+ s := s +
+   'name_op(''IMPORT_NAME'', 108)'#10;
+ s := s +
+   'name_op(''IMPORT_FROM'', 109)'#10;
+ s := s +
+   'jrel_op(''JUMP_FORWARD'', 110)'#10;
+ s := s +
+   'jabs_op(''JUMP_IF_FALSE_OR_POP'', 111)'#10;
+ s := s +
+   'jabs_op(''JUMP_IF_TRUE_OR_POP'', 112)'#10;
+ s := s +
+   'jabs_op(''JUMP_ABSOLUTE'', 113)'#10;
+ s := s +
+   'jabs_op(''POP_JUMP_IF_FALSE'', 114)'#10;
+ s := s +
+   'jabs_op(''POP_JUMP_IF_TRUE'', 115)'#10;
+ s := s +
+   'name_op(''LOAD_GLOBAL'', 116)'#10;
+ s := s +
+   'jrel_op(''SETUP_FINALLY'', 122)'#10;
+ s := s +
+   'def_op(''LOAD_FAST'', 124)'#10;
+ s := s +
+   'def_op(''STORE_FAST'', 125)'#10;
+ s := s +
+   'def_op(''DELETE_FAST'', 126)'#10;
+ s := s +
+   'def_op(''RAISE_VARARGS'', 130)'#10;
+ s := s +
+   'def_op(''CALL_FUNCTION'', 131)'#10;
+ s := s +
+   'def_op(''MAKE_FUNCTION'', 132)'#10;
+ s := s +
+   'def_op(''BUILD_SLICE'', 133)'#10;
+ s := s +
+   'def_op(''LOAD_CLOSURE'', 135)'#10;
+ s := s +
+   'def_op(''LOAD_DEREF'', 136)'#10;
+ s := s +
+   'def_op(''STORE_DEREF'', 137)'#10;
+ s := s +
+   'def_op(''DELETE_DEREF'', 138)'#10;
+ s := s +
+   'def_op(''CALL_FUNCTION_KW'', 141)'#10;
+ s := s +
+   'def_op(''CALL_FUNCTION_EX'', 142)'#10;
+ s := s +
+   'jrel_op(''SETUP_WITH'', 143)'#10;
+ s := s +
+   'def_op(''EXTENDED_ARG'', 144)'#10;
+ s := s +
+   'def_op(''LIST_APPEND'', 145)'#10;
+ s := s +
+   'def_op(''SET_ADD'', 146)'#10;
+ s := s +
+   'def_op(''MAP_ADD'', 147)'#10;
+ s := s +
+   'def_op(''LOAD_CLASSDEREF'', 148)'#10;
+ s := s +
+   'def_op(''BUILD_LIST_UNPACK'', 149)'#10;
+ s := s +
+   'def_op(''BUILD_MAP_UNPACK'', 150)'#10;
+ s := s +
+   'def_op(''BUILD_MAP_UNPACK_WITH_CALL'', 151)'#10;
+ s := s +
+   'def_op(''BUILD_TUPLE_UNPACK'', 152)'#10;
+ s := s +
+   'def_op(''BUILD_SET_UNPACK'', 153)'#10;
+ s := s +
+   'jrel_op(''SETUP_ASYNC_WITH'', 154)'#10;
+ s := s +
+   'def_op(''FORMAT_VALUE'', 155)'#10;
+ s := s +
+   'def_op(''BUILD_CONST_KEY_MAP'', 156)'#10;
+ s := s +
+   'def_op(''BUILD_STRING'', 157)'#10;
+ s := s +
+   'def_op(''BUILD_TUPLE_UNPACK_WITH_CALL'', 158)'#10;
+ s := s +
+   'name_op(''LOAD_METHOD'', 160)'#10;
+ s := s +
+   'def_op(''CALL_METHOD'', 161)'#10;
+ s := s +
+   'jrel_op(''CALL_FINALLY'', 162)'#10;
+ s := s +
+   'def_op(''POP_FINALLY'', 163)'#10;
+ s := s + #10;
+ s := s +
+   'hasconst.append(opmap[''LOAD_CONST''])'#10;
+ s := s +
+   'haslocal.extend([opmap[''LOAD_FAST''], opmap[''STORE_FAST''], op' +
+   'map[''DELETE_FAST'']])'#10;
+ s := s +
+   'hascompare.append(opmap[''COMPARE_OP''])'#10;
+ s := s +
+   'hasfree.extend([opmap[''LOAD_CLOSURE''], opmap[''LOAD_DEREF''], ' +
+   'opmap[''STORE_DEREF''], opmap[''DELETE_DEREF''], opmap[''LOAD_CLA' +
+   'SSDEREF'']])'#10;
+ s := s +
+   'hasnargs.extend([opmap[''CALL_FUNCTION''], opmap[''CALL_FUNCTIO' +
+   'N_KW''], opmap[''CALL_FUNCTION_EX''], opmap[''CALL_METHOD'']])'#10;
+ s := s + #10;
+ s := s +
+   'EXTENDED_ARG = opmap[''EXTENDED_ARG'']'#10;
+ s := s +
+   'HAVE_ARGUMENT = 90'#10;
+ s := s + #10;
+ s := s +
+   'def stack_effect(opcode, oparg=None, *, jump=None):'#10;
+ s := s +
+   '    if opcode < 0 or opcode > 255 or opname[opcode][:1] == ''' +
+   '<'':'#10;
+ s := s +
+   '        raise ValueError(''invalid opcode or oparg'')'#10;
+ s := s +
+   '    has_arg = opcode >= HAVE_ARGUMENT'#10;
+ s := s +
+   '    if has_arg and oparg is None:'#10;
+ s := s +
+   '        raise ValueError(''stack_effect: opcode requires opar' +
+   'g but oparg was not specified'')'#10;
+ s := s +
+   '    if not has_arg and oparg is not None:'#10;
+ s := s +
+   '        raise ValueError(''stack_effect: opcode does not perm' +
+   'it oparg but oparg was specified'')'#10;
+ s := s +
+   '    return _EFFECTS.get(opname[opcode], 0) if not callable(_' +
+   'EFFECTS.get(opname[opcode])) else _EFFECTS[opname[opcode]](o' +
+   'parg)'#10;
+ s := s + #10;
+ s := s +
+   '_EFFECTS = {'#10;
+ s := s +
+   ' ''POP_TOP'': -1, ''ROT_TWO'': 0, ''ROT_THREE'': 0, ''ROT_FOUR'': 0,' +
+   ' ''DUP_TOP'': 1, ''DUP_TOP_TWO'': 2, ''NOP'': 0,'#10;
+ s := s +
+   ' ''UNARY_POSITIVE'': 0, ''UNARY_NEGATIVE'': 0, ''UNARY_NOT'': 0, ''' +
+   'UNARY_INVERT'': 0,'#10;
+ s := s +
+   ' ''BINARY_MATRIX_MULTIPLY'': -1, ''INPLACE_MATRIX_MULTIPLY'': -1' +
+   ', ''BINARY_POWER'': -1, ''BINARY_MULTIPLY'': -1,'#10;
+ s := s +
+   ' ''BINARY_MODULO'': -1, ''BINARY_ADD'': -1, ''BINARY_SUBTRACT'': -' +
+   '1, ''BINARY_SUBSCR'': -1,'#10;
+ s := s +
+   ' ''BINARY_FLOOR_DIVIDE'': -1, ''BINARY_TRUE_DIVIDE'': -1, ''INPLA' +
+   'CE_FLOOR_DIVIDE'': -1, ''INPLACE_TRUE_DIVIDE'': -1,'#10;
+ s := s +
+   ' ''INPLACE_ADD'': -1, ''INPLACE_SUBTRACT'': -1, ''INPLACE_MULTIPL' +
+   'Y'': -1, ''INPLACE_MODULO'': -1,'#10;
+ s := s +
+   ' ''STORE_SUBSCR'': -3, ''DELETE_SUBSCR'': -2, ''BINARY_LSHIFT'': -' +
+   '1, ''BINARY_RSHIFT'': -1, ''BINARY_AND'': -1,'#10;
+ s := s +
+   ' ''BINARY_XOR'': -1, ''BINARY_OR'': -1, ''INPLACE_POWER'': -1, ''GE' +
+   'T_ITER'': 0, ''PRINT_EXPR'': -1,'#10;
+ s := s +
+   ' ''LOAD_BUILD_CLASS'': 1, ''INPLACE_LSHIFT'': -1, ''INPLACE_RSHIF' +
+   'T'': -1, ''INPLACE_AND'': -1,'#10;
+ s := s +
+   ' ''INPLACE_XOR'': -1, ''INPLACE_OR'': -1, ''RETURN_VALUE'': -1, ''I' +
+   'MPORT_STAR'': -1,'#10;
+ s := s +
+   ' ''SETUP_ANNOTATIONS'': 0, ''YIELD_VALUE'': 0, ''POP_BLOCK'': 0, ''' +
+   'POP_EXCEPT'': -3,'#10;
+ s := s +
+   ' ''STORE_NAME'': -1, ''DELETE_NAME'': 0, ''UNPACK_SEQUENCE'': lamb' +
+   'da a: a - 1,'#10;
+ s := s +
+   ' ''UNPACK_EX'': lambda a: (a & 0xFF) + (a >> 8), ''FOR_ITER'': 1' +
+   ', ''STORE_ATTR'': -2, ''DELETE_ATTR'': -1,'#10;
+ s := s +
+   ' ''STORE_GLOBAL'': -1, ''DELETE_GLOBAL'': 0, ''LOAD_CONST'': 1, ''L' +
+   'OAD_NAME'': 1,'#10;
+ s := s +
+   ' ''BUILD_TUPLE'': lambda a: 1 - a, ''BUILD_LIST'': lambda a: 1 -' +
+   ' a, ''BUILD_SET'': lambda a: 1 - a,'#10;
+ s := s +
+   ' ''BUILD_STRING'': lambda a: 1 - a, ''BUILD_MAP'': lambda a: 1 -' +
+   ' 2 * a, ''BUILD_CONST_KEY_MAP'': lambda a: -a,'#10;
+ s := s +
+   ' ''LOAD_ATTR'': 0, ''COMPARE_OP'': -1, ''IMPORT_NAME'': -1, ''IMPOR' +
+   'T_FROM'': 1,'#10;
+ s := s +
+   ' ''JUMP_FORWARD'': 0, ''JUMP_ABSOLUTE'': 0, ''POP_JUMP_IF_FALSE'':' +
+   ' -1, ''POP_JUMP_IF_TRUE'': -1,'#10;
+ s := s +
+   ' ''JUMP_IF_TRUE_OR_POP'': 0, ''JUMP_IF_FALSE_OR_POP'': 0, ''LOAD_' +
+   'GLOBAL'': 1, ''SETUP_FINALLY'': 0,'#10;
+ s := s +
+   ' ''LOAD_FAST'': 1, ''STORE_FAST'': -1, ''DELETE_FAST'': 0, ''RAISE_' +
+   'VARARGS'': lambda a: -a,'#10;
+ s := s +
+   ' ''CALL_FUNCTION'': lambda a: -a, ''CALL_FUNCTION_KW'': lambda a' +
+   ': -a - 1,'#10;
+ s := s +
+   ' ''CALL_FUNCTION_EX'': lambda a: -1 - ((a & 1) == 1), ''MAKE_FU' +
+   'NCTION'': lambda a: -1 - ((a & 1) != 0) - ((a & 2) != 0) - ((' +
+   'a & 4) != 0) - ((a & 8) != 0),'#10;
+ s := s +
+   ' ''BUILD_SLICE'': lambda a: -2 if a == 3 else -1, ''LOAD_CLOSUR' +
+   'E'': 1, ''LOAD_DEREF'': 1, ''STORE_DEREF'': -1,'#10;
+ s := s +
+   ' ''DELETE_DEREF'': 0, ''LOAD_CLASSDEREF'': 1, ''SETUP_WITH'': 6, ''' +
+   'EXTENDED_ARG'': 0,'#10;
+ s := s +
+   ' ''LIST_APPEND'': -1, ''SET_ADD'': -1, ''MAP_ADD'': -2, ''FORMAT_VA' +
+   'LUE'': lambda a: -1 if (a & 4) == 4 else 0,'#10;
+ s := s +
+   ' ''LOAD_METHOD'': 1, ''CALL_METHOD'': lambda a: -a - 1, ''BEGIN_F' +
+   'INALLY'': 6, ''END_FINALLY'': -6,'#10;
+ s := s +
+   ' ''CALL_FINALLY'': 1, ''POP_FINALLY'': lambda a: -6 if a else -5' +
+   ', ''WITH_CLEANUP_START'': 1,'#10;
+ s := s +
+   ' ''WITH_CLEANUP_FINISH'': -2, ''YIELD_FROM'': -1, ''GET_YIELD_FRO' +
+   'M_ITER'': 0,'#10;
+ s := s +
+   ' ''BUILD_LIST_UNPACK'': lambda a: 1 - a, ''BUILD_TUPLE_UNPACK'':' +
+   ' lambda a: 1 - a, ''BUILD_SET_UNPACK'': lambda a: 1 - a,'#10;
+ s := s +
+   ' ''BUILD_MAP_UNPACK'': lambda a: 1 - a, ''BUILD_MAP_UNPACK_WITH' +
+   '_CALL'': lambda a: 1 - a,'#10;
+ s := s +
+   ' ''BUILD_TUPLE_UNPACK_WITH_CALL'': lambda a: 1 - a,'#10;
+ s := s +
+   '}'#10;
  s := s + #10;
  Result := s;
 End;
@@ -31634,6 +38468,299 @@ Begin
  Result := s;
 End;
 
+Function Src_py_compile: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import enum'#10;
+ s := s +
+   'import marshal'#10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import time'#10;
+ s := s +
+   'import traceback'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["compile", "main", "PyCompileError", "PycInvalida' +
+   'tionMode"]'#10;
+ s := s + #10;
+ s := s +
+   'MAGIC_NUMBER = b''U\r\r\n'''#10;
+ s := s + #10;
+ s := s +
+   'class PyCompileError(Exception):'#10;
+ s := s +
+   '    def __init__(self, exc_type, exc_value, file, msg=''''):'#10;
+ s := s +
+   '        exc_type_name = exc_type.__name__'#10;
+ s := s +
+   '        if exc_type is SyntaxError:'#10;
+ s := s +
+   '            tbtext = ''''.join(traceback.format_exception_only' +
+   '('#10;
+ s := s +
+   '                exc_type, exc_value))'#10;
+ s := s +
+   '            errmsg = tbtext.replace(''File "<string>"'', ''File' +
+   ' "%s"'' % file)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            errmsg = "Sorry: %s: %s" % (exc_type_name, exc_v' +
+   'alue)'#10;
+ s := s +
+   '        Exception.__init__(self, msg or errmsg, exc_type_nam' +
+   'e, exc_value, file)'#10;
+ s := s +
+   '        self.exc_type_name = exc_type_name'#10;
+ s := s +
+   '        self.exc_value = exc_value'#10;
+ s := s +
+   '        self.file = file'#10;
+ s := s +
+   '        self.msg = msg or errmsg'#10;
+ s := s + #10;
+ s := s +
+   '    def __str__(self):'#10;
+ s := s +
+   '        return self.msg'#10;
+ s := s + #10;
+ s := s +
+   'class PycInvalidationMode(enum.Enum):'#10;
+ s := s +
+   '    TIMESTAMP = 1'#10;
+ s := s +
+   '    CHECKED_HASH = 2'#10;
+ s := s +
+   '    UNCHECKED_HASH = 3'#10;
+ s := s + #10;
+ s := s +
+   'def _get_default_invalidation_mode():'#10;
+ s := s +
+   '    return PycInvalidationMode.TIMESTAMP'#10;
+ s := s + #10;
+ s := s +
+   'def cache_from_source(path, debug_override=None, *, optimiza' +
+   'tion=None):'#10;
+ s := s +
+   '    path = os.fspath(path)'#10;
+ s := s +
+   '    head, tail = os.path.split(path)'#10;
+ s := s +
+   '    base, sep, rest = tail.rpartition(''.'')'#10;
+ s := s +
+   '    tag = ''cpython-38'''#10;
+ s := s +
+   '    if optimization is None:'#10;
+ s := s +
+   '        opt = sys.flags.optimize'#10;
+ s := s +
+   '        optimization = '''' if not opt else opt'#10;
+ s := s +
+   '    if optimization != '''':'#10;
+ s := s +
+   '        almost_filename = ''{}.{}.opt-{}''.format(base or rest' +
+   ', tag, optimization)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        almost_filename = ''{}.{}''.format(base or rest, tag)'#10;
+ s := s +
+   '    return os.path.join(head, ''__pycache__'', almost_filename' +
+   ' + ''.pyc'')'#10;
+ s := s + #10;
+ s := s +
+   'def source_from_cache(path):'#10;
+ s := s +
+   '    head, pycache_filename = os.path.split(path)'#10;
+ s := s +
+   '    head, pycache = os.path.split(head)'#10;
+ s := s +
+   '    base_filename = pycache_filename.partition(''.'')[0]'#10;
+ s := s +
+   '    return os.path.join(head, base_filename + ''.py'')'#10;
+ s := s + #10;
+ s := s +
+   'def _w32(n):'#10;
+ s := s +
+   '    return (n & 0xFFFFFFFF).to_bytes(4, ''little'')'#10;
+ s := s + #10;
+ s := s +
+   'def compile(file, cfile=None, dfile=None, doraise=False, opt' +
+   'imize=-1,'#10;
+ s := s +
+   '            invalidation_mode=None):'#10;
+ s := s +
+   '    if cfile is None:'#10;
+ s := s +
+   '        if optimize >= 0:'#10;
+ s := s +
+   '            optimization = optimize if optimize >= 1 else '''''#10;
+ s := s +
+   '            cfile = cache_from_source(file, optimization=opt' +
+   'imization)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            cfile = cache_from_source(file)'#10;
+ s := s +
+   '    if os.path.islink(cfile):'#10;
+ s := s +
+   '        msg = (''{} is a symlink and will be changed into a r' +
+   'egular file if '''#10;
+ s := s +
+   '               ''import writes a byte-compiled file to it'')'#10;
+ s := s +
+   '        raise FileExistsError(msg.format(cfile))'#10;
+ s := s +
+   '    elif os.path.exists(cfile) and not os.path.isfile(cfile)' +
+   ':'#10;
+ s := s +
+   '        msg = (''{} is a non-regular file and will be changed' +
+   ' into a regular '''#10;
+ s := s +
+   '               ''one if import writes a byte-compiled file to' +
+   ' it'')'#10;
+ s := s +
+   '        raise FileExistsError(msg.format(cfile))'#10;
+ s := s +
+   '    with open(file, ''rb'') as f:'#10;
+ s := s +
+   '        source_bytes = f.read()'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        code = __builtins__.compile(source_bytes.decode(''utf' +
+   '-8''), dfile or file, ''exec'') if False else _compile_src(sour' +
+   'ce_bytes, dfile or file)'#10;
+ s := s +
+   '    except Exception as err:'#10;
+ s := s +
+   '        py_exc = PyCompileError(err.__class__, err, dfile or' +
+   ' file)'#10;
+ s := s +
+   '        if doraise:'#10;
+ s := s +
+   '            raise py_exc'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            sys.stderr.write(py_exc.msg + ''\n'')'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '    dirname = os.path.dirname(cfile)'#10;
+ s := s +
+   '    if dirname:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            os.makedirs(dirname)'#10;
+ s := s +
+   '        except FileExistsError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        mtime = int(os.stat(file).st_mtime)'#10;
+ s := s +
+   '    except Exception:'#10;
+ s := s +
+   '        mtime = 0'#10;
+ s := s +
+   '    data = MAGIC_NUMBER + _w32(0) + _w32(mtime) + _w32(len(s' +
+   'ource_bytes))'#10;
+ s := s +
+   '    data += marshal.dumps(code)'#10;
+ s := s +
+   '    with open(cfile, ''wb'') as f:'#10;
+ s := s +
+   '        f.write(data)'#10;
+ s := s +
+   '    return cfile'#10;
+ s := s + #10;
+ s := s +
+   'def _compile_src(source_bytes, filename):'#10;
+ s := s +
+   '    import builtins'#10;
+ s := s +
+   '    return builtins.compile(source_bytes.decode(''utf-8''), fi' +
+   'lename, ''exec'')'#10;
+ s := s + #10;
+ s := s +
+   'def main(args=None):'#10;
+ s := s +
+   '    if args is None:'#10;
+ s := s +
+   '        args = sys.argv[1:]'#10;
+ s := s +
+   '    rv = 0'#10;
+ s := s +
+   '    if args == [''-'']:'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            filename = sys.stdin.readline()'#10;
+ s := s +
+   '            if not filename:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            filename = filename.rstrip(''\n'')'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                compile(filename, doraise=True)'#10;
+ s := s +
+   '            except PyCompileError as error:'#10;
+ s := s +
+   '                rv = 1'#10;
+ s := s +
+   '                sys.stderr.write("%s\n" % error.msg)'#10;
+ s := s +
+   '            except OSError as error:'#10;
+ s := s +
+   '                rv = 1'#10;
+ s := s +
+   '                sys.stderr.write("%s\n" % error)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        for filename in args:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                compile(filename, doraise=True)'#10;
+ s := s +
+   '            except PyCompileError as error:'#10;
+ s := s +
+   '                rv = 1'#10;
+ s := s +
+   '                sys.stderr.write(error.msg)'#10;
+ s := s +
+   '            except OSError as error:'#10;
+ s := s +
+   '                rv = 1'#10;
+ s := s +
+   '                sys.stderr.write("%s\n" % error)'#10;
+ s := s +
+   '    return rv'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == "__main__":'#10;
+ s := s +
+   '    sys.exit(main())'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_random: AnsiString;
 Var
  s: AnsiString;
@@ -32228,6 +39355,419 @@ Begin
    'getrandbits = _inst.getrandbits'#10;
  s := s +
    'randbytes = _inst.randbytes'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_re: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import enum'#10;
+ s := s +
+   'import _re'#10;
+ s := s +
+   'from _re import error, Pattern, Match'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ['#10;
+ s := s +
+   '    "match", "fullmatch", "search", "sub", "subn", "split",'#10;
+ s := s +
+   '    "findall", "finditer", "compile", "purge", "template", "' +
+   'escape",'#10;
+ s := s +
+   '    "error", "Pattern", "Match", "A", "I", "L", "M", "S", "X' +
+   '", "U",'#10;
+ s := s +
+   '    "ASCII", "IGNORECASE", "LOCALE", "MULTILINE", "DOTALL", ' +
+   '"VERBOSE",'#10;
+ s := s +
+   '    "UNICODE",'#10;
+ s := s +
+   ']'#10;
+ s := s + #10;
+ s := s +
+   '__version__ = "2.2.1"'#10;
+ s := s + #10;
+ s := s +
+   'class RegexFlag(enum.IntFlag):'#10;
+ s := s +
+   '    ASCII = A = 256'#10;
+ s := s +
+   '    IGNORECASE = I = 2'#10;
+ s := s +
+   '    LOCALE = L = 4'#10;
+ s := s +
+   '    UNICODE = U = 32'#10;
+ s := s +
+   '    MULTILINE = M = 8'#10;
+ s := s +
+   '    DOTALL = S = 16'#10;
+ s := s +
+   '    VERBOSE = X = 64'#10;
+ s := s +
+   '    TEMPLATE = T = 1'#10;
+ s := s +
+   '    DEBUG = 128'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if self._name_ is not None:'#10;
+ s := s +
+   '            return ''re.%s'' % self._name_'#10;
+ s := s +
+   '        value = self._value_'#10;
+ s := s +
+   '        members = []'#10;
+ s := s +
+   '        negative = value < 0'#10;
+ s := s +
+   '        if negative:'#10;
+ s := s +
+   '            value = ~value'#10;
+ s := s +
+   '        for m in self.__class__:'#10;
+ s := s +
+   '            if value & m._value_:'#10;
+ s := s +
+   '                value &= ~m._value_'#10;
+ s := s +
+   '                members.append(''re.%s'' % m._name_)'#10;
+ s := s +
+   '        if value:'#10;
+ s := s +
+   '            members.append(hex(value))'#10;
+ s := s +
+   '        res = ''|''.join(members)'#10;
+ s := s +
+   '        if negative:'#10;
+ s := s +
+   '            if len(members) > 1:'#10;
+ s := s +
+   '                res = ''~(%s)'' % res'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                res = ''~%s'' % res'#10;
+ s := s +
+   '        return res'#10;
+ s := s +
+   '    __str__ = object.__str__'#10;
+ s := s + #10;
+ s := s +
+   'globals().update(RegexFlag.__members__)'#10;
+ s := s + #10;
+ s := s +
+   'def match(pattern, string, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).match(string)'#10;
+ s := s + #10;
+ s := s +
+   'def fullmatch(pattern, string, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).fullmatch(string)'#10;
+ s := s + #10;
+ s := s +
+   'def search(pattern, string, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).search(string)'#10;
+ s := s + #10;
+ s := s +
+   'def sub(pattern, repl, string, count=0, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).sub(repl, string, count)'#10;
+ s := s + #10;
+ s := s +
+   'def subn(pattern, repl, string, count=0, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).subn(repl, string, count' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   'def split(pattern, string, maxsplit=0, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).split(string, maxsplit)'#10;
+ s := s + #10;
+ s := s +
+   'def findall(pattern, string, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).findall(string)'#10;
+ s := s + #10;
+ s := s +
+   'def finditer(pattern, string, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags).finditer(string)'#10;
+ s := s + #10;
+ s := s +
+   'def compile(pattern, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags)'#10;
+ s := s + #10;
+ s := s +
+   'def purge():'#10;
+ s := s +
+   '    _cache.clear()'#10;
+ s := s + #10;
+ s := s +
+   'def template(pattern, flags=0):'#10;
+ s := s +
+   '    return _compile(pattern, flags | T)'#10;
+ s := s + #10;
+ s := s +
+   '_special_chars_map = {i: ''\\'' + chr(i) for i in b''()[]{}?*+-' +
+   '|^$\\.&~# \t\n\r\v\f''}'#10;
+ s := s + #10;
+ s := s +
+   'def escape(pattern):'#10;
+ s := s +
+   '    if isinstance(pattern, str):'#10;
+ s := s +
+   '        out = []'#10;
+ s := s +
+   '        for ch in pattern:'#10;
+ s := s +
+   '            if ch in ''()[]{}?*+-|^$\\.&~# \t\n\r\v\f'':'#10;
+ s := s +
+   '                out.append(''\\'' + ch)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                out.append(ch)'#10;
+ s := s +
+   '        return ''''.join(out)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        pattern = str(pattern, ''latin1'')'#10;
+ s := s +
+   '        return bytes(escape(pattern), ''latin1'')'#10;
+ s := s + #10;
+ s := s +
+   '_cache = {}'#10;
+ s := s +
+   '_MAXCACHE = 512'#10;
+ s := s + #10;
+ s := s +
+   'def _compile(pattern, flags):'#10;
+ s := s +
+   '    if isinstance(flags, RegexFlag):'#10;
+ s := s +
+   '        flags = flags.value'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        return _cache[type(pattern), pattern, flags]'#10;
+ s := s +
+   '    except KeyError:'#10;
+ s := s +
+   '        pass'#10;
+ s := s +
+   '    if isinstance(pattern, Pattern):'#10;
+ s := s +
+   '        if flags:'#10;
+ s := s +
+   '            raise ValueError("cannot process flags argument ' +
+   'with a compiled pattern")'#10;
+ s := s +
+   '        return pattern'#10;
+ s := s +
+   '    if not isinstance(pattern, (str, bytes)):'#10;
+ s := s +
+   '        raise TypeError("first argument must be string or co' +
+   'mpiled pattern")'#10;
+ s := s +
+   '    p = _re.compile(pattern, flags)'#10;
+ s := s +
+   '    if len(_cache) >= _MAXCACHE:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            del _cache[next(iter(_cache))]'#10;
+ s := s +
+   '        except (StopIteration, RuntimeError, KeyError):'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '    _cache[type(pattern), pattern, flags] = p'#10;
+ s := s +
+   '    return p'#10;
+ s := s + #10;
+ s := s +
+   'class Scanner:'#10;
+ s := s +
+   '    def __init__(self, lexicon, flags=0):'#10;
+ s := s +
+   '        self.lexicon = lexicon'#10;
+ s := s +
+   '        parts = []'#10;
+ s := s +
+   '        for phrase, action in lexicon:'#10;
+ s := s +
+   '            parts.append(''(%s)'' % phrase)'#10;
+ s := s +
+   '        self.scanner = compile(''|''.join(parts), flags)'#10;
+ s := s +
+   '    def scan(self, string):'#10;
+ s := s +
+   '        result = []'#10;
+ s := s +
+   '        append = result.append'#10;
+ s := s +
+   '        i = 0'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            m = self.scanner.match(string, i)'#10;
+ s := s +
+   '            if not m:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            j = m.end()'#10;
+ s := s +
+   '            if i == j:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            action = self.lexicon[m.lastindex - 1][1]'#10;
+ s := s +
+   '            if callable(action):'#10;
+ s := s +
+   '                self.match = m'#10;
+ s := s +
+   '                action = action(self, m.group())'#10;
+ s := s +
+   '            if action is not None:'#10;
+ s := s +
+   '                append(action)'#10;
+ s := s +
+   '            i = j'#10;
+ s := s +
+   '        return result, string[i:]'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_runpy: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import types'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["run_module", "run_path"]'#10;
+ s := s + #10;
+ s := s +
+   'def _run_code(code, run_globals, init_globals=None, mod_name' +
+   '=None,'#10;
+ s := s +
+   '              mod_spec=None, pkg_name=None, script_name=None' +
+   '):'#10;
+ s := s +
+   '    if init_globals is not None:'#10;
+ s := s +
+   '        run_globals.update(init_globals)'#10;
+ s := s +
+   '    run_globals.update(__name__=mod_name, __file__=script_na' +
+   'me,'#10;
+ s := s +
+   '                       __package__=pkg_name, __spec__=mod_sp' +
+   'ec)'#10;
+ s := s +
+   '    exec(code, run_globals)'#10;
+ s := s +
+   '    return run_globals'#10;
+ s := s + #10;
+ s := s +
+   'def run_module(mod_name, init_globals=None, run_name=None, a' +
+   'lter_sys=False):'#10;
+ s := s +
+   '    import importlib.util'#10;
+ s := s +
+   '    spec = importlib.util.find_spec(mod_name)'#10;
+ s := s +
+   '    if spec is None or spec.origin is None:'#10;
+ s := s +
+   '        raise ImportError("No module named %s" % mod_name)'#10;
+ s := s +
+   '    with open(spec.origin) as f:'#10;
+ s := s +
+   '        src = f.read()'#10;
+ s := s +
+   '    code = compile(src, spec.origin, ''exec'')'#10;
+ s := s +
+   '    if run_name is None:'#10;
+ s := s +
+   '        run_name = mod_name'#10;
+ s := s +
+   '    saved = None'#10;
+ s := s +
+   '    if alter_sys:'#10;
+ s := s +
+   '        saved = sys.modules.get(''__main__'')'#10;
+ s := s +
+   '        mod = types.ModuleType(run_name)'#10;
+ s := s +
+   '        sys.modules[run_name] = mod'#10;
+ s := s +
+   '        glb = mod.__dict__'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        glb = {}'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        return _run_code(code, glb, init_globals, run_name, ' +
+   'spec,'#10;
+ s := s +
+   '                         mod_name.rpartition(''.'')[0], spec.o' +
+   'rigin)'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        if alter_sys and saved is not None:'#10;
+ s := s +
+   '            sys.modules[''__main__''] = saved'#10;
+ s := s + #10;
+ s := s +
+   'def run_path(path_name, init_globals=None, run_name=None):'#10;
+ s := s +
+   '    if run_name is None:'#10;
+ s := s +
+   '        run_name = "<run_path>"'#10;
+ s := s +
+   '    if os.path.isdir(path_name):'#10;
+ s := s +
+   '        path_name = os.path.join(path_name, ''__main__.py'')'#10;
+ s := s +
+   '    with open(path_name, ''rb'') as f:'#10;
+ s := s +
+   '        data = f.read()'#10;
+ s := s +
+   '    if data[:4] == b''U\r\r\n'':'#10;
+ s := s +
+   '        import marshal'#10;
+ s := s +
+   '        code = marshal.loads(data[16:])'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        code = compile(data.decode(''utf-8''), path_name, ''exe' +
+   'c'')'#10;
+ s := s +
+   '    return _run_code(code, {}, init_globals, run_name, None,' +
+   ' '''', path_name)'#10;
  s := s + #10;
  Result := s;
 End;
@@ -35647,22 +43187,34 @@ Begin
   RegSource('_bytesimpl', @Src__bytesimpl);
   RegSource('abc', @Src_abc);
   RegSource('bisect', @Src_bisect);
+  RegSource('cmath', @Src_cmath);
+  RegSource('code', @Src_code);
+  RegSource('codeop', @Src_codeop);
   RegSource('collections.abc', @Src_collections_abc);
   RegSource('collections', @Src_collections);
+  RegSource('compileall', @Src_compileall);
   RegSource('contextlib', @Src_contextlib);
   RegSource('copy', @Src_copy);
+  RegSource('dis', @Src_dis);
   RegSource('enum', @Src_enum);
   RegSource('errno', @Src_errno);
   RegSource('functools', @Src_functools);
   RegSource('heapq', @Src_heapq);
+  RegSource('importlib.machinery', @Src_importlib_machinery);
+  RegSource('importlib', @Src_importlib);
+  RegSource('importlib.util', @Src_importlib_util);
   RegSource('io', @Src_io);
   RegSource('itertools', @Src_itertools);
   RegSource('keyword', @Src_keyword);
   RegSource('linecache', @Src_linecache);
+  RegSource('opcode', @Src_opcode);
   RegSource('operator', @Src_operator);
   RegSource('os', @Src_os);
   RegSource('posixpath', @Src_posixpath);
+  RegSource('py_compile', @Src_py_compile);
   RegSource('random', @Src_random);
+  RegSource('re', @Src_re);
+  RegSource('runpy', @Src_runpy);
   RegSource('site', @Src_site);
   RegSource('stat', @Src_stat);
   RegSource('string', @Src_string);
