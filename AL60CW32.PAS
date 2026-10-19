@@ -26,10 +26,10 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 06 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 07 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
-         lexeur, types et conversions, table des symboles) ;
-         TODO 07 a 25 a faire.
+         lexeur, types et conversions, table des symboles, code interne
+         et listing .ASM) ; TODO 08 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -226,7 +226,7 @@
               (avertissement, integer global) ; copies persistantes des
               parametres a la fermeture du corps de la procedure
 
-  TODO 07 - CODE INTERNE ET LISTING .ASM [A FAIRE]
+  TODO 07 - CODE INTERNE ET LISTING .ASM [IMPLEMENTE]
             Instructions 80386 structurees (TInstr : operation, deux
               operandes registre / immediat / memoire / etiquette /
               OFFSET / ST(i)) dans deux listes : programme principal et
@@ -240,6 +240,20 @@
               dans ST(0), valeurs intermediaires sur la pile machine,
               jamais en registre a travers un appel
             Le listing ne doit jamais etre ecrit sans -asm
+            Realise : TReg (EAX..EDI, AX, AL, CL, DL, BL), TOperandKind
+              (registre, immediat, memoire [Sym+Base+Index*Echelle+Depl]
+              avec taille, etiquette, OFFSET, ST(i)), TOp (88 operations :
+              MOV MOVZX LEA PUSH POP, arithmetique, logique, decalages,
+              SETcc, Jcc, CALL RET REP STOSD et x87), listes CodeTab et
+              DeferTab (MoveToDeferred deplace les procedures et thunks
+              apres le programme), table des noms avec hachage (Intern),
+              pseudo-instructions OP_LABEL, OP_COMMENT, OP_BLANK ;
+              InstrText ecrit une instruction en syntaxe MASM ; la table
+              des donnees (TDataItem : zeros, chaines, entiers, reels,
+              tables d'adresses) est ecrite par WriteListing, ses
+              constructeurs sont l'objet du TODO 08 ; PhaseCodegen ecrit
+              le listing seulement avec -asm et, avec -d, affiche le code
+              interne ; en -v, nombre d'instructions et de noms
 
   TODO 08 - SEGMENT DE DONNEES, VARIABLES STATIQUES ET OWN [A FAIRE]
             Cellules de .data : zero (DD n DUP(0)), chaines (DB, 0),
@@ -2497,6 +2511,628 @@ Begin
 End;
 
 { ============================================================
+  CODE INTERNE ET LISTING ASM (TODO 07)
+
+  Le generateur produit une liste d'instructions 80386 structurees
+  (CodeTab), consommee par le listing .ASM optionnel (WriteListing)
+  puis par l'encodeur binaire (TODO 19). Les procedures et les thunks
+  sont ecrits dans une seconde liste (DeferTab) placee apres le
+  programme principal.
+
+  Conventions de generation :
+    - integer, Boolean, pointeurs : EAX ; real : ST(0) ; les valeurs
+      intermediaires sont rangees sur la pile machine (jamais en
+      registre a travers un appel)
+    - ECX, EDX, ESI, EDI : temporaires ; EBP : cadre ; ESP : pile
+    - appels de procedure : voir TODO 16 ; routines du
+      runtime : arguments dans les registres (TODO 22)
+  ============================================================ }
+Const
+  MAX_CODE      = {$IFDEF FPC}262144{$ELSE}2048{$ENDIF};
+  MAX_NAMES     = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
+  MAX_ASMSTR    = {$IFDEF FPC}4096{$ELSE}64{$ENDIF};
+  MAX_DATAITEMS = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};
+  MAX_TABENT    = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};
+  NAME_HASH     = {$IFDEF FPC}32768{$ELSE}1024{$ENDIF};
+
+Type
+  TReg = (
+    R_NONE,
+    R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI,   { 0..7 }
+    R_AX, R_AL, R_CL, R_DL, R_BL                              { 16/8 bits }
+  );
+
+  TOperandKind = (
+    OK_NONE,
+    OK_REG,       { Reg                                                  }
+    OK_IMM,       { Imm                                                  }
+    OK_MEM,       { [Sym + Base + Index*Scale + Imm], Size octets        }
+    OK_LABEL,     { cible de saut ou d'appel : Sym                       }
+    OK_OFFSET,    { OFFSET Sym + Imm                                     }
+    OK_ST         { ST(Imm)                                              }
+  );
+
+  TOperand = Record
+    Kind  : TOperandKind;
+    Reg   : TReg;
+    Base  : TReg;
+    Index : TReg;
+    Scale : Byte;          { 1, 2, 4 ou 8 }
+    Size  : Byte;          { memoire : 1, 2, 4, 8 octets (0 = non precise) }
+    Imm   : LongInt;
+    Sym   : Integer;       { indice dans NameTab, -1 si aucun }
+  End;
+
+  TOp = (
+    OP_NOP,
+    OP_LABEL,           { A.Sym = nom }
+    OP_COMMENT,         { A.Imm = indice dans AsmStrs }
+    OP_BLANK,
+    OP_MOV, OP_MOVZX, OP_LEA, OP_PUSH, OP_POP,
+    OP_ADD, OP_SUB, OP_IMUL, OP_IDIV, OP_CDQ, OP_NEG, OP_NOT,
+    OP_AND, OP_OR, OP_XOR, OP_CMP, OP_TEST, OP_INC, OP_DEC,
+    OP_SHR, OP_SAR,
+    OP_SETE, OP_SETNE, OP_SETL, OP_SETLE, OP_SETG, OP_SETGE,
+    OP_SETA, OP_SETAE, OP_SETB, OP_SETBE,
+    OP_JMP, OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE,
+    OP_JA, OP_JAE, OP_JB, OP_JBE, OP_JS,
+    OP_CALL, OP_RET, OP_REP_STOSD,
+    OP_FLD, OP_FST, OP_FSTP, OP_FILD,
+    OP_FADD, OP_FSUB, OP_FSUBR, OP_FMUL, OP_FDIV, OP_FDIVR,
+    OP_FCHS, OP_FABS, OP_FSQRT, OP_FSIN, OP_FCOS, OP_FPATAN,
+    OP_FYL2X, OP_FLDLN2, OP_FLD1, OP_FLDZ, OP_FXCH,
+    OP_FCOM, OP_FCOMP, OP_FNSTSW, OP_SAHF,
+    OP_DIV, OP_JNS, OP_SHL, OP_FTST, OP_FRNDINT, OP_F2XM1, OP_FSCALE,
+    OP_FLDL2E, OP_FADDP, OP_FSUBP, OP_FMULP, OP_FDIVP, OP_FISTP,
+    OP_FNSTCW, OP_FLDCW
+  );
+
+  TInstr = Record
+    Op   : TOp;
+    A, B : TOperand;
+  End;
+
+  TDataKind = (
+    DK_ZERO,     { Size octets a zero }
+    DK_STR,      { chaine : AsmStrs[Str], sans zero final }
+    DK_INT,      { un DWORD : Lo }
+    DK_REAL,     { un QWORD : Lo, Hi }
+    DK_TABLE     { DWORD d'adresses : TabEnt[First .. First+Count-1] }
+  );
+
+  TDataItem = Record
+    Name         : Integer;
+    Kind         : TDataKind;
+    Size         : LongInt;
+    Lo, Hi       : LongInt;
+    Str          : Integer;
+    First, Count : Integer;
+  End;
+
+  TDoubleBits = Record
+    Case Boolean Of
+      False : (D : Double);
+      True  : (Lo, Hi : LongInt);
+  End;
+
+Var
+  CodeTab    : Array[0..MAX_CODE - 1] Of TInstr;
+  CodeCount  : LongInt;       { Integer = 16 bits en mode TP }
+  DeferTab   : Array[0..MAX_CODE - 1] Of TInstr;
+  DeferCount : LongInt;
+  NameTab    : Array[0..MAX_NAMES - 1] Of TMangled;
+  NameCount  : Integer;
+  NameHash   : Array[0..NAME_HASH - 1] Of Integer;
+  AsmStrs    : Array[0..MAX_ASMSTR - 1] Of TString;
+  AsmStrCount: Integer;
+  DataTab    : Array[0..MAX_DATAITEMS - 1] Of TDataItem;
+  DataCount  : Integer;
+  TabEnt     : Array[0..MAX_TABENT - 1] Of Integer;
+  TabEntCount: Integer;
+  LabelSeq   : LongInt;       { compteur des etiquettes internes     }
+  ConstSeq   : LongInt;       { compteur des constantes en .data     }
+
+{ Nom interne unique (table de hachage) : retourne son indice }
+Function Intern(Const S : TMangled) : Integer;
+Var
+  H, I : LongInt;
+Begin
+  H := 5381;
+  For I := 1 To Length(S) Do
+    H := ((H * 33) + Ord(S[I])) And $7FFFFFF;
+  H := H Mod NAME_HASH;
+  While NameHash[H] >= 0 Do
+  Begin
+    If NameTab[NameHash[H]] = S Then
+    Begin
+      Intern := NameHash[H];
+      Exit;
+    End;
+    H := (H + 1) Mod NAME_HASH;
+  End;
+  If NameCount >= MAX_NAMES Then
+    FatalError('table des noms ASM pleine');
+  NameTab[NameCount] := S;
+  NameHash[H] := NameCount;
+  Intern := NameCount;
+  Inc(NameCount);
+End;
+
+Procedure CodeInit;
+Var
+  I : Integer;
+Begin
+  CodeCount   := 0;
+  DeferCount  := 0;
+  NameCount   := 0;
+  AsmStrCount := 0;
+  DataCount   := 0;
+  TabEntCount := 0;
+  LabelSeq    := 0;
+  ConstSeq    := 0;
+  For I := 0 To NAME_HASH - 1 Do
+    NameHash[I] := -1;
+End;
+
+{ ---- Operandes ---- }
+
+Function OpNone : TOperand;
+Var
+  O : TOperand;
+Begin
+  FillChar(O, SizeOf(O), 0);
+  O.Sym := -1;
+  OpNone := O;
+End;
+
+Function OpReg(R : TReg) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_REG;
+  O.Reg  := R;
+  OpReg := O;
+End;
+
+Function OpImm(V : LongInt) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_IMM;
+  O.Imm  := V;
+  OpImm := O;
+End;
+
+{ [Base + Disp] }
+Function OpMem(Base : TReg; Disp : LongInt; Size : Byte) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_MEM;
+  O.Base := Base;
+  O.Imm  := Disp;
+  O.Size := Size;
+  OpMem := O;
+End;
+
+{ [Sym + Disp] : cellule en .data }
+Function OpMemSym(Sym : Integer; Disp : LongInt; Size : Byte) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_MEM;
+  O.Sym  := Sym;
+  O.Imm  := Disp;
+  O.Size := Size;
+  OpMemSym := O;
+End;
+
+{ [Sym + Base + Index*Scale + Disp] }
+Function OpMemIdx(Sym : Integer; Base, Index : TReg; Scale : Byte;
+                  Disp : LongInt; Size : Byte) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind  := OK_MEM;
+  O.Sym   := Sym;
+  O.Base  := Base;
+  O.Index := Index;
+  O.Scale := Scale;
+  O.Imm   := Disp;
+  O.Size  := Size;
+  OpMemIdx := O;
+End;
+
+Function OpLabel(Sym : Integer) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_LABEL;
+  O.Sym  := Sym;
+  OpLabel := O;
+End;
+
+Function OpOffset(Sym : Integer) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_OFFSET;
+  O.Sym  := Sym;
+  OpOffset := O;
+End;
+
+Function OpST(I : Integer) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_ST;
+  O.Imm  := I;
+  OpST := O;
+End;
+
+{ ---- Emission ---- }
+
+Procedure Emit(Op : TOp; Const A, B : TOperand);
+Begin
+  If CodeCount >= MAX_CODE Then
+    FatalError('programme trop long (code interne plein)');
+  CodeTab[CodeCount].Op := Op;
+  CodeTab[CodeCount].A  := A;
+  CodeTab[CodeCount].B  := B;
+  Inc(CodeCount);
+End;
+
+Procedure Emit0(Op : TOp);
+Begin
+  Emit(Op, OpNone, OpNone);
+End;
+
+Procedure Emit1(Op : TOp; Const A : TOperand);
+Begin
+  Emit(Op, A, OpNone);
+End;
+
+Procedure EmitLabel(Name : Integer);
+Begin
+  Emit(OP_LABEL, OpLabel(Name), OpNone);
+End;
+
+Function AsmStrAdd(Const S : TString) : Integer;
+Begin
+  If AsmStrCount >= MAX_ASMSTR Then
+    FatalError('table des chaines ASM pleine');
+  AsmStrs[AsmStrCount] := S;
+  AsmStrAdd := AsmStrCount;
+  Inc(AsmStrCount);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  Emit(OP_COMMENT, OpImm(AsmStrAdd(S)), OpNone);
+End;
+
+Procedure EmitBlank;
+Begin
+  Emit0(OP_BLANK);
+End;
+
+{ Etiquette interne _A60L_NNNNN }
+Function NewLabel : Integer;
+Begin
+  Inc(LabelSeq);
+  NewLabel := Intern(MangleLabel(LabelSeq));
+End;
+
+{ Deplace CodeTab[Start .. CodeCount-1] a la fin de DeferTab : les
+  procedures et les thunks sortent ainsi du flot du programme. }
+Procedure MoveToDeferred(Start : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := Start To CodeCount - 1 Do
+  Begin
+    If DeferCount >= MAX_CODE Then
+      FatalError('programme trop long (code differe plein)');
+    DeferTab[DeferCount] := CodeTab[I];
+    Inc(DeferCount);
+  End;
+  CodeCount := Start;
+End;
+
+{ ---- Listing texte (MASM / ML.PAS) ---- }
+
+Function RegName(R : TReg) : TString;
+Begin
+  Case R Of
+    R_EAX : RegName := 'EAX';
+    R_ECX : RegName := 'ECX';
+    R_EDX : RegName := 'EDX';
+    R_EBX : RegName := 'EBX';
+    R_ESP : RegName := 'ESP';
+    R_EBP : RegName := 'EBP';
+    R_ESI : RegName := 'ESI';
+    R_EDI : RegName := 'EDI';
+    R_AL  : RegName := 'AL';
+    R_CL  : RegName := 'CL';
+    R_DL  : RegName := 'DL';
+    R_BL  : RegName := 'BL';
+    R_AX  : RegName := 'AX';
+  Else
+    RegName := '?';
+  End;
+End;
+
+Function OpName(Op : TOp) : TString;
+Begin
+  Case Op Of
+    OP_MOV: OpName := 'MOV';       OP_MOVZX: OpName := 'MOVZX';
+    OP_LEA: OpName := 'LEA';       OP_PUSH: OpName := 'PUSH';
+    OP_POP: OpName := 'POP';       OP_ADD: OpName := 'ADD';
+    OP_SUB: OpName := 'SUB';       OP_IMUL: OpName := 'IMUL';
+    OP_IDIV: OpName := 'IDIV';     OP_CDQ: OpName := 'CDQ';
+    OP_NEG: OpName := 'NEG';       OP_NOT: OpName := 'NOT';
+    OP_AND: OpName := 'AND';       OP_OR: OpName := 'OR';
+    OP_XOR: OpName := 'XOR';       OP_CMP: OpName := 'CMP';
+    OP_TEST: OpName := 'TEST';     OP_INC: OpName := 'INC';
+    OP_DEC: OpName := 'DEC';       OP_SHR: OpName := 'SHR';
+    OP_SAR: OpName := 'SAR';
+    OP_SETE: OpName := 'SETE';     OP_SETNE: OpName := 'SETNE';
+    OP_SETL: OpName := 'SETL';     OP_SETLE: OpName := 'SETLE';
+    OP_SETG: OpName := 'SETG';     OP_SETGE: OpName := 'SETGE';
+    OP_SETA: OpName := 'SETA';     OP_SETAE: OpName := 'SETAE';
+    OP_SETB: OpName := 'SETB';     OP_SETBE: OpName := 'SETBE';
+    OP_JMP: OpName := 'JMP';       OP_JE: OpName := 'JE';
+    OP_JNE: OpName := 'JNE';       OP_JL: OpName := 'JL';
+    OP_JLE: OpName := 'JLE';       OP_JG: OpName := 'JG';
+    OP_JGE: OpName := 'JGE';       OP_JA: OpName := 'JA';
+    OP_JAE: OpName := 'JAE';       OP_JB: OpName := 'JB';
+    OP_JBE: OpName := 'JBE';       OP_JS: OpName := 'JS';
+    OP_CALL: OpName := 'CALL';     OP_RET: OpName := 'RET';
+    OP_REP_STOSD: OpName := 'REP STOSD';
+    OP_FLD: OpName := 'FLD';       OP_FST: OpName := 'FST';
+    OP_FSTP: OpName := 'FSTP';     OP_FILD: OpName := 'FILD';
+    OP_FADD: OpName := 'FADD';     OP_FSUB: OpName := 'FSUB';
+    OP_FSUBR: OpName := 'FSUBR';   OP_FMUL: OpName := 'FMUL';
+    OP_FDIV: OpName := 'FDIV';     OP_FDIVR: OpName := 'FDIVR';
+    OP_FCHS: OpName := 'FCHS';     OP_FABS: OpName := 'FABS';
+    OP_FSQRT: OpName := 'FSQRT';   OP_FSIN: OpName := 'FSIN';
+    OP_FCOS: OpName := 'FCOS';     OP_FPATAN: OpName := 'FPATAN';
+    OP_FYL2X: OpName := 'FYL2X';   OP_FLDLN2: OpName := 'FLDLN2';
+    OP_FLD1: OpName := 'FLD1';     OP_FLDZ: OpName := 'FLDZ';
+    OP_FXCH: OpName := 'FXCH';     OP_FCOM: OpName := 'FCOM';
+    OP_FCOMP: OpName := 'FCOMP';   OP_FNSTSW: OpName := 'FNSTSW';
+    OP_SAHF: OpName := 'SAHF';
+    OP_DIV: OpName := 'DIV';       OP_JNS: OpName := 'JNS';
+    OP_SHL: OpName := 'SHL';       OP_FTST: OpName := 'FTST';
+    OP_FRNDINT: OpName := 'FRNDINT';  OP_F2XM1: OpName := 'F2XM1';
+    OP_FSCALE: OpName := 'FSCALE';    OP_FLDL2E: OpName := 'FLDL2E';
+    OP_FADDP: OpName := 'FADDP';   OP_FSUBP: OpName := 'FSUBP';
+    OP_FMULP: OpName := 'FMULP';   OP_FDIVP: OpName := 'FDIVP';
+    OP_FISTP: OpName := 'FISTP';   OP_FNSTCW: OpName := 'FNSTCW';
+    OP_FLDCW: OpName := 'FLDCW';
+  Else
+    OpName := '?';
+  End;
+End;
+
+Function SizePtr(Size : Byte) : TString;
+Begin
+  Case Size Of
+    1 : SizePtr := 'BYTE PTR ';
+    2 : SizePtr := 'WORD PTR ';
+    4 : SizePtr := 'DWORD PTR ';
+    8 : SizePtr := 'QWORD PTR ';
+  Else
+    SizePtr := '';
+  End;
+End;
+
+Function SignedStr(V : LongInt) : TString;
+Begin
+  If V >= 0 Then
+    SignedStr := '+' + ItoS(V)
+  Else
+    SignedStr := ItoS(V);
+End;
+
+Function OperandText(Const O : TOperand; Op : TOp) : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  Case O.Kind Of
+    OK_REG    : S := RegName(O.Reg);
+    OK_IMM    : S := ItoS(O.Imm);
+    OK_LABEL  : S := NameTab[O.Sym];
+    OK_ST     : S := 'ST(' + ItoS(O.Imm) + ')';
+    OK_OFFSET :
+      Begin
+        S := 'OFFSET ' + NameTab[O.Sym];
+        If O.Imm <> 0 Then S := S + SignedStr(O.Imm);
+      End;
+    OK_MEM    :
+      Begin
+        If Op <> OP_LEA Then S := SizePtr(O.Size);
+        S := S + '[';
+        If O.Sym >= 0 Then S := S + NameTab[O.Sym];
+        If O.Base <> R_NONE Then
+        Begin
+          If O.Sym >= 0 Then S := S + '+';
+          S := S + RegName(O.Base);
+        End;
+        If O.Index <> R_NONE Then
+        Begin
+          If (O.Sym >= 0) Or (O.Base <> R_NONE) Then S := S + '+';
+          S := S + RegName(O.Index) + '*' + ItoS(O.Scale);
+        End;
+        If O.Imm <> 0 Then S := S + SignedStr(O.Imm);
+        S := S + ']';
+      End;
+  End;
+  OperandText := S;
+End;
+
+Function InstrText(Const I : TInstr) : TString;
+Var
+  S : TString;
+Begin
+  S := '        ' + OpName(I.Op);
+  If I.A.Kind <> OK_NONE Then
+  Begin
+    While Length(S) < 16 Do S := S + ' ';
+    If S[Length(S)] <> ' ' Then S := S + ' ';
+    S := S + OperandText(I.A, I.Op);
+    If I.B.Kind <> OK_NONE Then
+      S := S + ', ' + OperandText(I.B, I.Op);
+  End;
+  InstrText := S;
+End;
+
+{ Texte d'une chaine en DB : 'abc', 13, 10 }
+Function DbText(Const S : TString) : TString;
+Var
+  R      : TString;
+  I      : Integer;
+  InQ    : Boolean;
+Begin
+  R   := '';
+  InQ := False;
+  For I := 1 To Length(S) Do
+  Begin
+    If (S[I] >= ' ') And (S[I] <= '~') And (S[I] <> '''') Then
+    Begin
+      If Not InQ Then
+      Begin
+        If R <> '' Then R := R + ', ';
+        R := R + '''';
+        InQ := True;
+      End;
+      R := R + S[I];
+    End
+    Else
+    Begin
+      If InQ Then
+      Begin
+        R := R + '''';
+        InQ := False;
+      End;
+      If R <> '' Then R := R + ', ';
+      R := R + ItoS(Ord(S[I]));
+    End;
+  End;
+  If InQ Then R := R + '''';
+  If R = '' Then R := '0';
+  DbText := R;
+End;
+
+Function HexDword(V : LongInt) : TString;
+Const
+  Digits : String[16] = '0123456789ABCDEF';
+Var
+  R : TString;
+  I : Integer;
+  W : LongInt;
+Begin
+  R := '';
+  W := V;
+  For I := 1 To 8 Do
+  Begin
+    R := Digits[(W And 15) + 1] + R;
+    W := (W Shr 4) And $0FFFFFFF;
+  End;
+  HexDword := '0' + R + 'h';
+End;
+
+Procedure WriteInstrList(Var F : Text; Const Tab : Array Of TInstr;
+                         Count : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To Count - 1 Do
+    Case Tab[I].Op Of
+      OP_NOP     : ;
+      OP_LABEL   : WriteLn(F, NameTab[Tab[I].A.Sym], ':');
+      OP_COMMENT : WriteLn(F, '        ; ', AsmStrs[Tab[I].A.Imm]);
+      OP_BLANK   : WriteLn(F);
+    Else
+      WriteLn(F, InstrText(Tab[I]));
+    End;
+End;
+
+{ Ecrit le listing .ASM (ML.PAS / MASM 32 bits) }
+Procedure WriteListing(Const FileName : TString);
+Var
+  F    : Text;
+  I, J : Integer;
+  Name : TString;
+Begin
+  Assign(F, FileName);
+  Rewrite(F);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + FileName);
+  WriteLn(F, '; ', FileName, ' - genere par AL60CW32 ',
+          AL60CW32_VERSION, ' a partir de ', Opts.SrcFile);
+  WriteLn(F);
+  WriteLn(F, '.386');
+  WriteLn(F, '.MODEL FLAT');
+  WriteLn(F);
+  WriteLn(F, 'INCLUDELIB kernel32.lib');
+  WriteLn(F, 'EXTERN GetStdHandle:PROC');
+  WriteLn(F, 'EXTERN WriteFile:PROC');
+  WriteLn(F, 'EXTERN ReadFile:PROC');
+  WriteLn(F, 'EXTERN ExitProcess:PROC');
+  WriteLn(F, 'EXTERN GetProcessHeap:PROC');
+  WriteLn(F, 'EXTERN HeapAlloc:PROC');
+  WriteLn(F, 'EXTERN HeapFree:PROC');
+  WriteLn(F);
+  WriteLn(F, '.DATA');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Name := NameTab[DataTab[I].Name];
+    While Length(Name) < 16 Do Name := Name + ' ';
+    Case DataTab[I].Kind Of
+      DK_ZERO  :
+        WriteLn(F, Name, ' DD ', (DataTab[I].Size + 3) Div 4, ' DUP(0)');
+      DK_STR   :
+        WriteLn(F, Name, ' DB ', DbText(AsmStrs[DataTab[I].Str]), ', 0');
+      DK_INT   :
+        WriteLn(F, Name, ' DD ', DataTab[I].Lo);
+      DK_REAL  :
+        WriteLn(F, Name, ' DD ', HexDword(DataTab[I].Lo), ', ',
+                HexDword(DataTab[I].Hi));
+      DK_TABLE :
+        Begin
+          Write(F, Name, ' DD ');
+          For J := 0 To DataTab[I].Count - 1 Do
+          Begin
+            If J > 0 Then Write(F, ', ');
+            Write(F, NameTab[TabEnt[DataTab[I].First + J]]);
+          End;
+          WriteLn(F);
+        End;
+    End;
+  End;
+  WriteLn(F);
+  WriteLn(F, '.CODE');
+  WriteInstrList(F, CodeTab, CodeCount);
+  WriteLn(F);
+  WriteInstrList(F, DeferTab, DeferCount);
+  WriteLn(F);
+  WriteLn(F, 'END ', A60_MAIN_NAME);
+  Close(F);
+  If IOResult <> 0 Then
+    FatalError('erreur d''ecriture de ' + FileName);
+End;
+
+{ ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 09 a 18)
   ============================================================ }
 Procedure PhaseParse;
@@ -2509,7 +3145,21 @@ End;
   ============================================================ }
 Procedure PhaseCodegen;
 Begin
-  { A faire : TODO 07 et 08 }
+  If Opts.Verbose Then
+    WriteLn('  ', CodeCount + DeferCount, ' instruction(s), ',
+            DataCount, ' donnee(s) statique(s), ', NameCount,
+            ' nom(s) interne(s)');
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('Code interne (', CodeCount + DeferCount, ' entrees) :');
+    WriteInstrList(Output, CodeTab, CodeCount);
+    WriteInstrList(Output, DeferTab, DeferCount);
+  End;
+  If Opts.EmitAsm Then
+  Begin
+    WriteListing(Opts.AsmFile);
+    If Opts.Verbose Then WriteLn('  listing : ', Opts.AsmFile);
+  End;
 End;
 
 { ============================================================
@@ -2566,6 +3216,7 @@ Begin
   LexQuiet   := False;
   TypeInit;
   SymInit;
+  CodeInit;
   If Opts.DebugMode Then TypeDump;
   If Opts.Verbose Then
   Begin
