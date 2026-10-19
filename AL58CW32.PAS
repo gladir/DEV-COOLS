@@ -23,10 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 12 implementes (squelette, options, constantes,
+  ETAT : TODO 01 a 13 implementes (squelette, options, constantes,
          lexeur, types, symboles, structure du programme, expressions,
-         booleens, affectations, tableaux, if et for) ; TODO 13 a 25
-         a faire.
+         booleens, affectations, tableaux, if et for, go to et switch) ;
+         TODO 14 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -249,7 +249,7 @@
               conditionnels, mise en place des clauses (init, pas, test
               de fin reevalues a chaque tour, corps partage)
 
-  TODO 13 - GO TO, ETIQUETTES ET SWITCH [A FAIRE]
+  TODO 13 - GO TO, ETIQUETTES ET SWITCH [IMPLEMENTE]
             Etiquettes symboliques (fin:) et numeriques (100:), avec
               etiquette suivie d'une instruction (etiq6b: goto etiq6a)
             go to et goto (un ou deux mots), renvois avant et arriere
@@ -264,6 +264,20 @@
             Indice hors bornes (1..n) : avertissement/continuer sur
               l'instruction suivante
             Exemples : switch.a58, test_switch.a58, test_goto.a58
+            Realise : ParseDesignator (etiquette, nombre, switch[i],
+              designateur entre parentheses ou conditionnel), ParseGoto
+              (go to et goto), definition d'etiquette symbolique ou
+              numerique devant une instruction (y compris vide ou bloc),
+              renvois avant : une etiquette encore inconnue a la sortie
+              d'un bloc est reportee dans la portee englobante (meme
+              procedure), sinon erreur ; go to vers une autre procedure
+              refuse ; switch dont chaque designateur est analyse
+              (indice constant hors bornes : avertissement)
+            Saut hors d'un bloc : aucun reglage de pile n'est requis, les
+              blocs d'une procedure partagent son cadre (ESP/EBP fixes)
+            Reste pour la generation de code (TODO 18) : JMP, table de
+              switch dans .data, JMP indirect, petits blocs pour les
+              designateurs conditionnels
 
   TODO 14 - PROCEDURES ET FONCTIONS [A FAIRE]
             procedure nom(params) ; value ... ; specs ; corps
@@ -2199,23 +2213,41 @@ End;
   symboles et restaure l etat de la pile. }
 Procedure SymLeaveScope;
 Var
-  I, S : Integer;
+  I, S, Dest : Integer;
+  CanHoist   : Boolean;
 Begin
   If ScopeTop = 0 Then
     FatalError('erreur interne: fermeture sans portee ouverte');
   S := ScopeTop - 1;
+  If Opts.DebugMode Then SymDumpScope(S);
+  { Un renvoi avant vers une etiquette pas encore definie dans un
+    bloc interne passe dans la portee englobante (meme procedure) ;
+    sinon l'etiquette doit etre definie ici. }
+  CanHoist := (Not ScopeTab[S].IsProc) And (ScopeTop >= 2);
+  Dest := ScopeTab[S].FirstSym;
   For I := ScopeTab[S].FirstSym To SymCount - 1 Do
+  Begin
     If SymTab[I].Kind = SK_LABEL Then
     Begin
       If Not SymTab[I].IsDefined Then
-        ErrorAt(SymTab[I].Line, SymTab[I].Col,
-                'etiquette non definie: ' + SymTab[I].Name)
+      Begin
+        If CanHoist Then
+        Begin
+          SymTab[Dest] := SymTab[I];
+          SymTab[Dest].ScopeId := ScopeTab[S - 1].Id;
+          Inc(Dest);
+        End
+        Else
+          ErrorAt(SymTab[I].Line, SymTab[I].Col,
+                  'etiquette non definie: ' + SymTab[I].Name +
+                  ' (ou definie dans un bloc interne)');
+      End
       Else If Not SymTab[I].IsUsed Then
         WarnAt(SymTab[I].Line, SymTab[I].Col,
                'etiquette non utilisee: ' + SymTab[I].Name);
     End;
-  If Opts.DebugMode Then SymDumpScope(S);
-  SymCount := ScopeTab[S].FirstSym;
+  End;
+  SymCount := Dest;
   LocalOfs := ScopeTab[S].SavedLocal;
   If ScopeTab[S].IsProc Then
     Dec(CurLevel);
@@ -2233,6 +2265,8 @@ Var
   ProcCount  : LongInt;      { procedures declarees                 }
   AssignCount: LongInt;      { affectations analysees               }
   IfCount    : LongInt;      { instructions if                      }
+  GotoCount  : LongInt;      { instructions go to                   }
+  LabelCount : LongInt;      { etiquettes definies                  }
   ForCount   : LongInt;      { instructions for                     }
   LoopDepth  : Integer;      { imbrication courante des for         }
   ParkValid  : Boolean;      { un token est range (ParserUnget)     }
@@ -2334,6 +2368,8 @@ End;
 
 Procedure ParseItem; Forward;
 Procedure ParseStatement; Forward;
+Procedure ParseLabelDef(Const Name : TString; Line, Col : Integer);
+  Forward;
 
 { ---- Expressions (TODO 08) --------------------------------------
   Les expressions sont analysees en arbre (pool ExprTab) : le
@@ -2372,7 +2408,9 @@ Type
     EX_ASSIGN,      { L := R (L : variable) ; valeur = celle de L }
     EX_OPAQUE,      { appel non encore traduit (StrIdx = nom)  }
     EX_INDEX,       { Sym[L...] : element de tableau (IntVal = nb d indices) }
-    EX_LIST         { liste d indices : L = expression, R = suivant }
+    EX_LIST,        { liste d indices : L = expression, R = suivant }
+    EX_LABEL,       { designateur : etiquette (Sym)               }
+    EX_SWITCHREF    { designateur : Sym[L] (element de switch)    }
   );
 
   TExprNode = Record
@@ -3490,6 +3528,8 @@ Begin
                     WriteLn;
                 End;
     EX_LIST   : WriteLn('list');
+    EX_LABEL  : WriteLn('label ', SymTab[ExprTab[N].Sym].Name);
+    EX_SWITCHREF : WriteLn('switch ', SymTab[ExprTab[N].Sym].Name, '[]');
   End;
   If ExprTab[N].Kind = EX_INDEX Then
   Begin
@@ -3532,13 +3572,6 @@ Var
 Begin
   ExprReset;
   N := ParseExpr;
-  { Etiquette numerique "100: instruction" (traitee au TODO 13) }
-  If (N >= 0) And (ExprTab[N].Kind = EX_INT) And AtPunct(':') Then
-  Begin
-    ParserAdvance;
-    ParseStatement;
-    Exit;
-  End;
   If N < 0 Then
     ParserSync
   Else If Opts.DebugMode Then
@@ -3622,6 +3655,11 @@ Var
 Begin
   Tok := CurToken;
   ParserAdvance;
+  If AtPunct(':') Then
+  Begin
+    ParseLabelDef(Tok.Val, Tok.Line, Tok.Col);
+    Exit;
+  End;
   If Not (AtOp(':=') Or AtPunct('[')) Then
   Begin
     ParserUnget(Tok);
@@ -3850,6 +3888,183 @@ Begin
   Dec(LoopDepth);
 End;
 
+{ ---- go to, etiquettes et designateurs (TODO 13) ----------------- }
+
+{ Designateur : etiquette, element de switch, ou expression
+  conditionnelle de designateurs :
+    fin   100   menu[i + 1]   (d)   if c then fin else menu[2]
+  Retourne un noeud EX_LABEL, EX_SWITCHREF ou EX_COND (type label),
+  -1 en cas d'erreur. Un nom inconnu devient une etiquette en renvoi
+  avant, resolue plus tard par SymDefLabel. }
+Function ParseDesignator : Integer;
+Var
+  Tok       : TToken;
+  C, T, E   : Integer;
+  S, Idx, N : Integer;
+  Conv      : TConv;
+  Line, Col : Integer;
+  Bad       : Boolean;
+Begin
+  ParseDesignator := -1;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+
+  If AtKw('if') Then
+  Begin
+    ParserAdvance;
+    C := ParseCondition;
+    If AtKw('then') Then
+      ParserAdvance
+    Else
+    Begin
+      ParseError('''then'' attendu');
+      Exit;
+    End;
+    T := ParseDesignator;
+    If AtKw('else') Then
+      ParserAdvance
+    Else
+    Begin
+      ParseError('''else'' attendu dans un designateur conditionnel');
+      Exit;
+    End;
+    E := ParseDesignator;
+    If (C < 0) Or (T < 0) Or (E < 0) Then Exit;
+    N := ExprNew(EX_COND, TY_IDX_LABEL, Line, Col);
+    ExprTab[N].L := C;
+    ExprTab[N].R := T;
+    ExprTab[N].E := E;
+    ParseDesignator := N;
+  End
+  Else If AtPunct('(') Then
+  Begin
+    ParserAdvance;
+    N := ParseDesignator;
+    ExpectPunct(')');
+    ParseDesignator := N;
+  End
+  Else If CurToken.Kind = TK_INTEGER Then
+  Begin
+    S := SymRefLabel(ItoS(CurToken.IntVal), Line, Col);
+    ParserAdvance;
+    N := ExprNew(EX_LABEL, TY_IDX_LABEL, Line, Col);
+    ExprTab[N].Sym := S;
+    ParseDesignator := N;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    Tok := CurToken;
+    ParserAdvance;
+    If AtPunct('[') Then
+    Begin
+      Bad := False;
+      S := SymFind(Tok.Val);
+      If (S < 0) Or (SymTab[S].Kind <> SK_SWITCH) Then
+      Begin
+        ErrorAt(Tok.Line, Tok.Col, 'switch attendu: ' + Tok.Val);
+        Bad := True;
+      End;
+      ParserAdvance;                              { [ }
+      Line := CurToken.Line;
+      Col  := CurToken.Col;
+      Idx := ParseExprPrec(1);
+      If Idx >= 0 Then
+        If Not ExprCoerce(Idx, TY_IDX_INTEGER, Conv, Line, Col) Then
+          Idx := -1;
+      ExpectPunct(']');
+      If Bad Or (Idx < 0) Then Exit;
+      If ExprTab[Idx].Kind = EX_INT Then
+        If (SymTab[S].SwitchCount > 0) And
+           ((ExprTab[Idx].IntVal < 1) Or
+            (ExprTab[Idx].IntVal > SymTab[S].SwitchCount)) Then
+          WarnAt(Line, Col, 'indice de switch hors bornes (1..' +
+                 ItoS(SymTab[S].SwitchCount) + '): aucun saut');
+      N := ExprNew(EX_SWITCHREF, TY_IDX_LABEL, Tok.Line, Tok.Col);
+      ExprTab[N].Sym := S;
+      ExprTab[N].L   := Idx;
+      ParseDesignator := N;
+    End
+    Else
+    Begin
+      S := SymFind(Tok.Val);
+      If (S >= 0) And (SymTab[S].Kind = SK_SWITCH) Then
+      Begin
+        ErrorAt(Tok.Line, Tok.Col, 'indice attendu pour le switch ' +
+                Tok.Val);
+        Exit;
+      End;
+      S := SymRefLabel(Tok.Val, Tok.Line, Tok.Col);
+      If SymTab[S].Level <> CurLevel Then
+      Begin
+        ErrorAt(Tok.Line, Tok.Col, 'go to vers une etiquette d''une ' +
+                'autre procedure: non supporte (' + Tok.Val + ')');
+        Exit;
+      End;
+      N := ExprNew(EX_LABEL, TY_IDX_LABEL, Tok.Line, Tok.Col);
+      ExprTab[N].Sym := S;
+      ParseDesignator := N;
+    End;
+  End
+  Else
+    ParseError('designateur attendu (etiquette ou switch[i])');
+End;
+
+{ go to designateur   (le mot go to est le token courant) }
+Procedure ParseGoto;
+Var
+  D, Line : Integer;
+Begin
+  Inc(GotoCount);
+  Line := CurToken.Line;
+  ParserAdvance;                          { go to }
+  ExprReset;
+  D := ParseDesignator;
+  If D < 0 Then
+  Begin
+    ParserSync;
+    Exit;
+  End;
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('Goto ligne ', Line, ' :');
+    ExprDump(D, 1);
+  End;
+  If Not AtStmtEnd Then
+  Begin
+    ParseError('operateur ou '';'' attendu apres go to');
+    ParserSync;
+  End;
+End;
+
+{ etiquette : instruction   (Name = nom ou nombre, ':' est le token
+  courant). L'instruction suivante peut etre vide ou un bloc. }
+Procedure ParseLabelDef(Const Name : TString; Line, Col : Integer);
+Begin
+  SymDefLabel(Name, Line, Col);
+  Inc(LabelCount);
+  If Opts.DebugMode Then
+    WriteLn('Etiquette ', Name, ' ligne ', Line);
+  ParserAdvance;                          { : }
+  ParseStatement;
+End;
+
+{ Instruction commencant par un entier : etiquette numerique
+  (100: instruction) ou expression isolee }
+Procedure ParseNumericStart;
+Var
+  Tok : TToken;
+Begin
+  Tok := CurToken;
+  ParserAdvance;
+  If AtPunct(':') Then
+    ParseLabelDef(ItoS(Tok.IntVal), Tok.Line, Tok.Col)
+  Else
+  Begin
+    ParserUnget(Tok);
+    ParseExprStatement;
+  End;
+End;
+
 { ---- Declarations ----------------------------------------------- }
 
 { integer a, b, c   (declaration de variables, own ou non) }
@@ -4070,11 +4285,13 @@ Begin
 End;
 
 { switch s := l1, l2, if b then l3 else l4
-  Les designateurs sont comptes (virgules de premier niveau) ; leur
-  traduction releve du TODO 13. }
+  Chaque designateur est analyse (ParseDesignator) ; les etiquettes
+  encore inconnues sont des renvois avant. Le generateur (TODO 18)
+  emet la table des adresses et, pour un designateur conditionnel,
+  un petit bloc de code qui calcule la destination. }
 Procedure ParseSwitchDecl;
 Var
-  S, Depth, N : Integer;
+  S, N, D : Integer;
 Begin
   If CurToken.Kind <> TK_IDENT Then
   Begin
@@ -4090,20 +4307,31 @@ Begin
     ParserAdvance
   Else
     ParseError(''':='' attendu apres le nom du switch');
-  N := 1;
-  Depth := 0;
   If AtPunct(';') Or AtEOF Then
-    ParseError('liste de designateurs attendue');
-  While Not (AtEOF Or AtKw('end') Or (Depth = 0) And AtPunct(';')) Do
   Begin
-    If AtPunct('(') Or AtPunct('[') Then
-      Inc(Depth)
-    Else If (AtPunct(')') Or AtPunct(']')) And (Depth > 0) Then
-      Dec(Depth)
-    Else If (Depth = 0) And AtPunct(',') Then
-      Inc(N);
-    ParserAdvance;
+    ParseError('liste de designateurs attendue');
+    Exit;
   End;
+  ExprReset;
+  N := 0;
+  Repeat
+    D := ParseDesignator;
+    Inc(N);
+    If D < 0 Then
+    Begin
+      ParserSync;
+      Break;
+    End;
+    If Opts.DebugMode Then
+    Begin
+      WriteLn('Switch ', SymTab[S].Name, ' designateur ', N, ' :');
+      ExprDump(D, 1);
+    End;
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
   SymTab[S].SwitchCount := N;
 End;
 
@@ -4324,6 +4552,10 @@ Begin
     ParseIf
   Else If AtKw('for') Then
     ParseFor
+  Else If AtKw('goto') Then
+    ParseGoto
+  Else If CurToken.Kind = TK_INTEGER Then
+    ParseNumericStart
   Else If AtExprStart Then
     ParseExprStatement
   Else If CurToken.Kind = TK_IDENT Then
@@ -4403,6 +4635,8 @@ Begin
   ProcCount  := 0;
   AssignCount := 0;
   IfCount    := 0;
+  GotoCount  := 0;
+  LabelCount := 0;
   ForCount   := 0;
   LoopDepth  := 0;
   ParkValid  := False;
@@ -4416,6 +4650,7 @@ Begin
     WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
             ' procedure(s), ', BlockCount, ' bloc(s), ', AssignCount,
             ' affectation(s), ', IfCount, ' if, ', ForCount, ' for, ',
+            GotoCount, ' goto, ', LabelCount, ' etiquette(s), ',
             FoldCount, ' constante(s) repliee(s)');
 End;
 
