@@ -26,9 +26,9 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 03 implementes (squelette, pipeline en 6 phases,
-         options de ligne de commande, constantes, limites et nommage) ;
-         TODO 04 a 25 a faire.
+  ETAT : TODO 01 a 04 implementes (squelette, pipeline en 6 phases,
+         options de ligne de commande, constantes, limites et nommage,
+         lexeur) ; TODO 05 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -108,14 +108,14 @@
               (prefixe MAX_BIN), limites du compilateur (MAX_SYM,
               MAX_LABEL, MAX_SCOPE, MAX_PROC, MAX_PARAM, MAX_ARRAY_DIM =
               8, MAX_SWITCH, MAX_LOOP_NEST, MAX_ERRORS = 30, MAX_STR)
-              avec une valeur reduite sous Turbo Pascal ; noms ASM = prefixe + identificateur en
-              majuscules (autre caractere -> _) : MangleVar, MangleProc,
-              MangleOwn, MangleArr, MangleSwitch, MangleRT,
-              MangleUserLabel, MangleThunk, MangleLabel (5 chiffres),
-              MangleStr ; point d'entree _A60P_Main ; la casse des
-              identificateurs sera confirmee au TODO 04
+              avec une valeur reduite sous Turbo Pascal ; noms ASM =
+              prefixe + identificateur en majuscules (autre caractere
+              -> _) : MangleVar, MangleProc, MangleOwn, MangleArr,
+              MangleSwitch, MangleRT, MangleUserLabel, MangleThunk,
+              MangleLabel (5 chiffres), MangleStr ; point d'entree
+              _A60P_Main ; casse des identificateurs confirmee au TODO 04
 
-  TODO 04 - LEXEUR ALGOL 60 [A FAIRE]
+  TODO 04 - LEXEUR ALGOL 60 [IMPLEMENTE]
             TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_IDENT,
               TK_KEYWORD, TK_OP, TK_PUNCT, TK_STRING
             Format libre, suivi de ligne et colonne pour les erreurs
@@ -137,6 +137,22 @@
               notation 1.5e3 ; detection des depassements
             'go' suivi de 'to' fusionnes en un seul token goto
             Mode debug -d : afficher chaque token
+            Realise : lecture par blocs de 4096 octets avec un caractere
+              d'avance ; ^Z = fin de fichier, NUL = caractere invalide ;
+              mots-cles insensibles a la casse (valeur normalisee en
+              minuscules), identificateurs insensibles a la casse
+              (decision confirmee, orthographe d'origine conservee pour
+              les messages) ; /\ \/ ~ deviennent les mots-cles and, or,
+              not ; != et <> deviennent # ; ** devient ^ ; une chaine
+              ouverte par ` se ferme par ` ou ' (forme du rapport), une
+              chaine ouverte par " se ferme par " ; erreurs lexicales
+              signalees une seule fois (caractere invalide, chaine non
+              fermee ou trop longue, commentaire non termine, entier,
+              exposant et reel hors limites) ; mode -v : lignes et tokens ;
+              le texte qui suit end (jusqu'a ; end else ou le point final)
+              est ignore
+            Verifie : les 33 exemples SAMPLES\ALGOL60 sont decoupes sans
+              erreur ; test_lex.a60 contient tous les symboles
 
   TODO 05 - TYPES DE DONNEES ET CONVERSIONS (32 BITS) [A FAIRE]
             integer : 32 bits signe (DWORD), au lieu des 16 bits d'AL60C86
@@ -460,6 +476,10 @@ Program AL60CW32;
 {$ENDIF}
 {$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
+{$IFDEF FPC}
+Uses Math;
+{$ENDIF}
+
 { ============================================================
   SECTION 1 - CONSTANTES (TODO 01, 03)
   ============================================================ }
@@ -546,6 +566,27 @@ Const
 Type
   TString = String[255];
 
+  { Tokens du lexeur (TODO 04) }
+  TTokenKind = (
+    TK_EOF,
+    TK_INTEGER,
+    TK_REAL,
+    TK_IDENT,
+    TK_KEYWORD,
+    TK_OP,
+    TK_PUNCT,
+    TK_STRING
+  );
+
+  TToken = Record
+    Kind    : TTokenKind;
+    Val     : TString;     { texte ; mot-cle et operateur normalises }
+    IntVal  : LongInt;     { valeur d un TK_INTEGER                  }
+    RealVal : Double;      { valeur d un TK_REAL (et TK_INTEGER)     }
+    Line    : Integer;
+    Col     : Integer;
+  End;
+
   { Options de la ligne de commande (TODO 02) }
   TOptions = Record
     SrcFile   : TString;    { fichier source .a60 / .alg              }
@@ -602,6 +643,16 @@ Begin
   ItoSZ := S;
 End;
 
+{ Vrai si un reel est infini ou invalide (debordement) }
+Function RealBad(D : Double) : Boolean;
+Begin
+  {$IFDEF FPC}
+  RealBad := IsNaN(D) Or IsInfinite(D);
+  {$ELSE}
+  RealBad := False;
+  {$ENDIF}
+End;
+
 Function UpCaseStr(Const S : TString) : TString;
 Var
   I : Integer;
@@ -616,8 +667,8 @@ End;
 
 { Identificateur Algol -> fragment de nom ASM valide : lettres,
   chiffres et souligne conserves, tout autre caractere devient _.
-  La casse est normalisee en majuscules (decision confirmee au
-  TODO 04). }
+  La casse est normalisee en majuscules (identificateurs insensibles
+  a la casse, TODO 04). }
 Function AsmIdent(Const S : TString) : TString;
 Var
   I : Integer;
@@ -778,6 +829,24 @@ Begin
   Inc(WarnCount);
 End;
 
+{ Erreur / avertissement localise dans le source :
+  fichier(ligne,colonne) : erreur : message }
+Procedure ErrorAt(Line, Col : Integer; Const Msg : TString);
+Begin
+  WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : erreur : ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs (' + ItoS(MAX_ERRORS) +
+               '), compilation arretee');
+End;
+
+Procedure WarnAt(Line, Col : Integer; Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : avertissement : ', Msg);
+  Inc(WarnCount);
+End;
+
 Procedure ShowBanner;
 Begin
   WriteLn('AL60CW32 ', AL60CW32_VERSION, ' (', AL60CW32_DATE, ') - ',
@@ -925,9 +994,589 @@ End;
 { ============================================================
   SECTION 6 - LEXEUR (TODO 04)
   ============================================================ }
-Procedure PhaseLex;
+Const
+  KEYWORD_COUNT = 30;
+  KeywordTab : Array[1..KEYWORD_COUNT] Of String[9] = (
+    'begin', 'end', 'if', 'then', 'else', 'for', 'do', 'step', 'until',
+    'while', 'goto', 'procedure', 'value', 'integer', 'real', 'boolean',
+    'string', 'array', 'switch', 'own', 'label', 'true', 'false', 'and',
+    'or', 'not', 'impl', 'equiv', 'div', 'comment'
+  );
+  LEX_BUFSIZE = 4096;
+  LEX_EOF     = #0;   { sentinelle de fin de fichier }
+
+Var
+  LexF       : File;
+  LexOpened  : Boolean;
+  LexBuf     : Array[0..LEX_BUFSIZE - 1] Of Byte;
+  LexBufLen  : LongInt;
+  LexBufPos  : LongInt;
+  LexHitEOF  : Boolean;
+  LexCur     : Char;       { caractere courant                    }
+  LexNxt     : Char;       { caractere suivant (lookahead de 1)   }
+  LexLine    : Integer;    { ligne du caractere courant           }
+  LexCol     : Integer;    { colonne du caractere courant         }
+  LexPending : Boolean;    { un token est en attente (go to)      }
+  LexPendTok : TToken;
+  LexAfterEnd: Boolean;    { le token precedent etait end         }
+  TokenCount : LongInt;    { tokens lus (statistiques)            }
+  LexQuiet   : Boolean;    { vrai : ne pas rapporter les erreurs  }
+
+{ Erreur lexicale ; la 2e passe (parseur) ne les repete pas }
+Procedure LexError(Line, Col : Integer; Const Msg : TString);
 Begin
-  { A faire : TODO 04 }
+  If Not LexQuiet Then ErrorAt(Line, Col, Msg);
+End;
+
+{ Lit un octet du fichier source ; #0 a la fin du fichier.
+  Un octet 0 reel ou ^Z fait partie de la fin / est invalide. }
+Function LexRawChar : Char;
+Var
+  B : Byte;
+Begin
+  LexRawChar := LEX_EOF;
+  If LexHitEOF Then Exit;
+  If LexBufPos >= LexBufLen Then
+  Begin
+    BlockRead(LexF, LexBuf, LEX_BUFSIZE, LexBufLen);
+    LexBufPos := 0;
+    If LexBufLen <= 0 Then
+    Begin
+      LexBufLen := 0;
+      LexHitEOF := True;
+      Exit;
+    End;
+  End;
+  B := LexBuf[LexBufPos];
+  Inc(LexBufPos);
+  If B = 26 Then
+    LexHitEOF := True          { ^Z : fin de fichier DOS }
+  Else If B = 0 Then
+    LexRawChar := #1           { NUL : caractere invalide }
+  Else
+    LexRawChar := Chr(B);
+End;
+
+Procedure LexNextChar;
+Begin
+  If LexCur = #10 Then
+  Begin
+    Inc(LexLine);
+    LexCol := 1;
+  End
+  Else
+    Inc(LexCol);
+  LexCur := LexNxt;
+  LexNxt := LexRawChar;
+End;
+
+Function LexPeekChar : Char;
+Begin
+  LexPeekChar := LexNxt;
+End;
+
+Procedure LexInit;
+Begin
+  Assign(LexF, Opts.SrcFile);
+  Reset(LexF, 1);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le source: ' + Opts.SrcFile);
+  LexOpened   := True;
+  LexBufLen   := 0;
+  LexBufPos   := 0;
+  LexHitEOF   := False;
+  LexPending  := False;
+  LexAfterEnd := False;
+  TokenCount  := 0;
+  LexLine     := 1;
+  LexCol      := 0;
+  LexCur      := LEX_EOF;
+  LexNxt      := LexRawChar;
+  LexNextChar;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexF);
+    LexOpened := False;
+  End;
+End;
+
+Function IsLetter(C : Char) : Boolean;
+Begin
+  IsLetter := C In ['A'..'Z', 'a'..'z', '_'];
+End;
+
+Function IsDigit(C : Char) : Boolean;
+Begin
+  IsDigit := C In ['0'..'9'];
+End;
+
+Function IsKeyword(Const Low : TString) : Boolean;
+Var
+  I : Integer;
+Begin
+  IsKeyword := False;
+  For I := 1 To KEYWORD_COUNT Do
+    If KeywordTab[I] = Low Then
+    Begin
+      IsKeyword := True;
+      Exit;
+    End;
+End;
+
+Function TokenKindName(K : TTokenKind) : TString;
+Begin
+  Case K Of
+    TK_EOF     : TokenKindName := 'EOF';
+    TK_INTEGER : TokenKindName := 'INTEGER';
+    TK_REAL    : TokenKindName := 'REAL';
+    TK_IDENT   : TokenKindName := 'IDENT';
+    TK_KEYWORD : TokenKindName := 'KEYWORD';
+    TK_OP      : TokenKindName := 'OP';
+    TK_PUNCT   : TokenKindName := 'PUNCT';
+    TK_STRING  : TokenKindName := 'STRING';
+  End;
+End;
+
+{ Identificateur ou mot-cle : lettre suivie de lettres/chiffres }
+Procedure LexScanIdent(Var T : TToken);
+Var
+  Low : TString;
+Begin
+  T.Val := '';
+  While IsLetter(LexCur) Or IsDigit(LexCur) Do
+  Begin
+    If Length(T.Val) < 255 Then
+      T.Val := T.Val + LexCur;
+    LexNextChar;
+  End;
+  Low := StrLower(T.Val);
+  If IsKeyword(Low) Then
+  Begin
+    T.Kind := TK_KEYWORD;
+    T.Val  := Low;
+  End
+  Else
+    T.Kind := TK_IDENT;
+End;
+
+{ Nombre : entier (123), reel (3.14, .5), exposant (1.5E3, 2e-2) }
+Procedure LexScanNumber(Var T : TToken);
+Var
+  IntOvf  : Boolean;
+  IsReal  : Boolean;
+  Mant    : Double;
+  E10     : Integer;
+  ExpV    : Integer;
+  ExpNeg  : Boolean;
+  Digit   : Integer;
+  I, N    : Integer;
+  P       : Double;
+Begin
+  T.Val := '';
+  T.IntVal := 0;
+  IntOvf := False;
+  IsReal := False;
+  Mant := 0;
+  E10 := 0;
+
+  { partie entiere }
+  While IsDigit(LexCur) Do
+  Begin
+    Digit := Ord(LexCur) - Ord('0');
+    If T.IntVal > (MaxLongInt - Digit) Div 10 Then
+      IntOvf := True
+    Else
+      T.IntVal := T.IntVal * 10 + Digit;
+    Mant := Mant * 10 + Digit;
+    If Length(T.Val) < 255 Then T.Val := T.Val + LexCur;
+    LexNextChar;
+  End;
+
+  { partie fractionnaire : le point doit etre suivi d un chiffre }
+  If (LexCur = '.') And IsDigit(LexPeekChar) Then
+  Begin
+    IsReal := True;
+    If Length(T.Val) < 255 Then T.Val := T.Val + '.';
+    LexNextChar;
+    While IsDigit(LexCur) Do
+    Begin
+      Mant := Mant * 10 + (Ord(LexCur) - Ord('0'));
+      Dec(E10);
+      If Length(T.Val) < 255 Then T.Val := T.Val + LexCur;
+      LexNextChar;
+    End;
+  End;
+
+  { exposant : E ou e suivi de [+|-] chiffres }
+  If (LexCur In ['E', 'e']) And
+     (IsDigit(LexPeekChar) Or (LexPeekChar In ['+', '-'])) Then
+  Begin
+    IsReal := True;
+    If Length(T.Val) < 255 Then T.Val := T.Val + LexCur;
+    LexNextChar;
+    ExpNeg := False;
+    If LexCur In ['+', '-'] Then
+    Begin
+      ExpNeg := (LexCur = '-');
+      If Length(T.Val) < 255 Then T.Val := T.Val + LexCur;
+      LexNextChar;
+    End;
+    If Not IsDigit(LexCur) Then
+      LexError(LexLine, LexCol, 'exposant invalide: chiffre attendu')
+    Else
+    Begin
+      ExpV := 0;
+      While IsDigit(LexCur) Do
+      Begin
+        If ExpV < 10000 Then
+          ExpV := ExpV * 10 + (Ord(LexCur) - Ord('0'));
+        If Length(T.Val) < 255 Then T.Val := T.Val + LexCur;
+        LexNextChar;
+      End;
+      If ExpNeg Then ExpV := -ExpV;
+      E10 := E10 + ExpV;
+    End;
+  End;
+
+  If IsReal Then
+  Begin
+    T.Kind := TK_REAL;
+    If (E10 > 308) Or (E10 < -308) Then
+    Begin
+      LexError(T.Line, T.Col, 'exposant hors limites: ' + T.Val);
+      T.RealVal := 0;
+    End
+    Else
+    Begin
+      P := 1;
+      N := Abs(E10);
+      For I := 1 To N Do
+        P := P * 10;
+      If E10 < 0 Then
+        T.RealVal := Mant / P
+      Else
+        T.RealVal := Mant * P;
+      If RealBad(T.RealVal) Then
+      Begin
+        LexError(T.Line, T.Col, 'reel hors limites: ' + T.Val);
+        T.RealVal := 0;
+      End;
+    End;
+  End
+  Else
+  Begin
+    T.Kind := TK_INTEGER;
+    If IntOvf Then
+    Begin
+      LexError(T.Line, T.Col, 'entier hors limites: ' + T.Val);
+      T.IntVal := MaxLongInt;
+    End;
+    T.RealVal := T.IntVal;
+  End;
+End;
+
+{ Chaine sur une seule ligne, sans echappement : `...` ou `...'
+  (apostrophe inverse ouvrante) ou "..." }
+Procedure LexScanString(Var T : TToken);
+Var
+  TooLong : Boolean;
+  Quote   : Char;
+  Closed  : Boolean;
+Begin
+  TooLong := False;
+  Closed  := False;
+  Quote   := LexCur;
+  T.Kind := TK_STRING;
+  T.Val  := '';
+  LexNextChar;                           { delimiteur ouvrant }
+  While (LexCur <> #10) And (LexCur <> LEX_EOF) And Not Closed Do
+  Begin
+    If (LexCur = Quote) Or ((Quote = '`') And (LexCur = '''')) Then
+      Closed := True
+    Else
+    Begin
+      If Length(T.Val) < MAX_STR Then
+        T.Val := T.Val + LexCur
+      Else If Not TooLong Then
+      Begin
+        LexError(T.Line, T.Col, 'chaine trop longue (max ' +
+                ItoS(MAX_STR) + ' caracteres)');
+        TooLong := True;                 { une seule erreur par chaine }
+      End;
+      LexNextChar;
+    End;
+  End;
+  If Closed Then
+    LexNextChar
+  Else
+    LexError(T.Line, T.Col, 'chaine non fermee');
+End;
+
+{ Commentaire : "comment" deja lu, ignore tout jusqu au ; inclus. }
+Procedure LexSkipComment(StartLine, StartCol : Integer);
+Begin
+  While (LexCur <> ';') And (LexCur <> LEX_EOF) Do
+    LexNextChar;
+  If LexCur = ';' Then
+    LexNextChar
+  Else
+    LexError(StartLine, StartCol,
+            'commentaire non termine (point-virgule attendu)');
+End;
+
+{ Texte qui suit end : ignore jusqu a ; ou au point final (non
+  consommes), a la fin du fichier, ou jusqu au mot end / else, dont le
+  token est alors retourne dans T (retourne True). }
+Function LexSkipEndComment(Var T : TToken) : Boolean;
+Var
+  Low  : TString;
+  L, C : Integer;
+Begin
+  LexSkipEndComment := False;
+  While True Do
+  Begin
+    If (LexCur = LEX_EOF) Or (LexCur = ';') Then Exit;
+    If (LexCur = '.') And Not IsDigit(LexPeekChar) Then Exit;
+    If IsLetter(LexCur) Then
+    Begin
+      L := LexLine;
+      C := LexCol;
+      Low := '';
+      While IsLetter(LexCur) Or IsDigit(LexCur) Do
+      Begin
+        If Length(Low) < 255 Then Low := Low + LexCur;
+        LexNextChar;
+      End;
+      Low := StrLower(Low);
+      If (Low = 'end') Or (Low = 'else') Then
+      Begin
+        T.Kind := TK_KEYWORD;
+        T.Val  := Low;
+        T.Line := L;
+        T.Col  := C;
+        T.IntVal := 0;
+        T.RealVal := 0;
+        LexSkipEndComment := True;
+        Exit;
+      End;
+    End
+    Else
+      LexNextChar;
+  End;
+End;
+
+{ Un token brut, sans fusion de "go to" }
+Procedure LexScanToken(Var T : TToken);
+Var
+  Done : Boolean;
+  C    : Char;
+Begin
+  If LexAfterEnd Then
+  Begin
+    LexAfterEnd := False;
+    If LexSkipEndComment(T) Then
+    Begin
+      LexAfterEnd := (T.Val = 'end');
+      Exit;
+    End;
+  End;
+  Done := False;
+  Repeat
+    While LexCur In [' ', #9, #10, #12, #13] Do
+      LexNextChar;
+    T.Line := LexLine;
+    T.Col  := LexCol;
+    T.Val  := '';
+    T.IntVal := 0;
+    T.RealVal := 0;
+    C := LexCur;
+    Done := True;
+    If C = LEX_EOF Then
+      T.Kind := TK_EOF
+    Else If IsLetter(C) Then
+    Begin
+      LexScanIdent(T);
+      If (T.Kind = TK_KEYWORD) And (T.Val = 'comment') Then
+      Begin
+        LexSkipComment(T.Line, T.Col);
+        Done := False;
+      End
+      Else If (T.Kind = TK_KEYWORD) And (T.Val = 'end') Then
+        LexAfterEnd := True;
+    End
+    Else If IsDigit(C) Or ((C = '.') And IsDigit(LexPeekChar)) Then
+      LexScanNumber(T)
+    Else If (C = '"') Or (C = '`') Then
+      LexScanString(T)
+    Else
+    Begin
+      T.Kind := TK_OP;
+      T.Val  := C;
+      Case C Of
+        '+', '-', '^', '=', '#':
+          LexNextChar;
+        '/':
+          Begin
+            LexNextChar;
+            If LexCur = '\' Then
+            Begin
+              T.Kind := TK_KEYWORD;      { /\ equivaut a and }
+              T.Val  := 'and';
+              LexNextChar;
+            End;
+          End;
+        '\':
+          Begin
+            LexNextChar;
+            If LexCur = '/' Then
+            Begin
+              T.Kind := TK_KEYWORD;      { \/ equivaut a or }
+              T.Val  := 'or';
+              LexNextChar;
+            End
+            Else
+            Begin
+              LexError(T.Line, T.Col, 'caractere invalide: \');
+              Done := False;
+            End;
+          End;
+        '~':
+          Begin
+            T.Kind := TK_KEYWORD;        { ~ equivaut a not }
+            T.Val  := 'not';
+            LexNextChar;
+          End;
+        '*':
+          Begin
+            LexNextChar;
+            If LexCur = '*' Then
+            Begin
+              T.Val := '^';              { ** equivaut a ^ }
+              LexNextChar;
+            End;
+          End;
+        '<', '>':
+          Begin
+            LexNextChar;
+            If LexCur = '=' Then
+            Begin
+              T.Val := T.Val + '=';
+              LexNextChar;
+            End
+            Else If (C = '<') And (LexCur = '>') Then
+            Begin
+              T.Val := '#';              { <> equivaut a # }
+              LexNextChar;
+            End;
+          End;
+        '!':
+          Begin
+            LexNextChar;
+            If LexCur = '=' Then
+            Begin
+              T.Val := '#';              { != equivaut a # }
+              LexNextChar;
+            End
+            Else
+            Begin
+              LexError(T.Line, T.Col, 'caractere invalide: !');
+              Done := False;
+            End;
+          End;
+        ':':
+          Begin
+            LexNextChar;
+            If LexCur = '=' Then
+            Begin
+              T.Val := ':=';
+              LexNextChar;
+            End
+            Else
+              T.Kind := TK_PUNCT;
+          End;
+        ';', ',', '(', ')', '[', ']', '.':
+          Begin
+            T.Kind := TK_PUNCT;
+            LexNextChar;
+          End;
+      Else
+        Begin
+          If (C < ' ') Or (C > '~') Then
+            LexError(T.Line, T.Col,
+                    'caractere invalide: code ' + ItoS(Ord(C)))
+          Else
+            LexError(T.Line, T.Col, 'caractere invalide: ' + C);
+          LexNextChar;
+          Done := False;
+        End;
+      End;
+    End;
+  Until Done;
+End;
+
+{ Token suivant. "go" suivi de "to" devient le mot-cle unique goto. }
+Procedure LexNextToken(Var T : TToken);
+Var
+  T2 : TToken;
+Begin
+  If LexPending Then
+  Begin
+    T := LexPendTok;
+    LexPending := False;
+  End
+  Else
+    LexScanToken(T);
+  If (T.Kind = TK_IDENT) And (UpCaseStr(T.Val) = 'GO') Then
+  Begin
+    LexScanToken(T2);
+    If (T2.Kind = TK_IDENT) And (UpCaseStr(T2.Val) = 'TO') Then
+    Begin
+      T.Kind := TK_KEYWORD;
+      T.Val  := 'goto';
+    End
+    Else
+    Begin
+      LexPendTok := T2;
+      LexPending := True;
+    End;
+  End;
+  Inc(TokenCount);
+End;
+
+{ Mode debug -d : une ligne par token }
+Procedure PrintToken(Const T : TToken);
+Begin
+  Write(T.Line:5, ':', T.Col:3, ' ', TokenKindName(T.Kind):8);
+  Case T.Kind Of
+    TK_INTEGER : WriteLn(' ', T.IntVal);
+    TK_REAL    : WriteLn(' ', T.RealVal:0:6, '  (', T.Val, ')');
+    TK_STRING  : WriteLn(' "', T.Val, '"');
+    TK_EOF     : WriteLn;
+  Else
+    WriteLn(' ', T.Val);
+  End;
+End;
+
+Procedure PhaseLex;
+Var
+  T : TToken;
+Begin
+  LexInit;
+  Repeat
+    LexNextToken(T);
+    If Opts.DebugMode Then PrintToken(T);
+  Until T.Kind = TK_EOF;
+  If Opts.Verbose Then
+  Begin
+    If LexCol = 1 Then Dec(LexLine);   { dernier octet = fin de ligne }
+    WriteLn('  ', Opts.SrcFile, ': ', LexLine, ' ligne(s), ',
+            TokenCount - 1, ' token(s)');
+  End;
+  LexClose;
 End;
 
 { ============================================================
@@ -1001,6 +1650,7 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  LexQuiet   := False;
   If Opts.Verbose Then
   Begin
     ShowBanner;
