@@ -23,12 +23,13 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : feuille de route seulement, aucun code ecrit pour le moment.
+  ETAT : TODO 01 implemente (squelette et pipeline), les autres TODOs
+         sont a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - ARCHITECTURE ET PIPELINE DU COMPILATEUR [A FAIRE]
+  TODO 01 - ARCHITECTURE ET PIPELINE DU COMPILATEUR [IMPLEMENTE]
             Definir le pipeline complet :
               source .a58 -> lexeur -> parseur -> table des symboles
               -> code genere (ASM 80386) -> .ASM (optionnel)
@@ -371,3 +372,174 @@
             Mettre a jour README.md (ligne AL58CW32.PAS), ajouter
               DOC\TODO\AL58CW32.txt et BIN\AL58CW32.EXE
   ============================================================ *)
+
+{ ============================================================
+  AL58CW32 - Compilateur Algol 58 -> assembleur 80386 / Win32
+  Compilation : fpc -Mtp AL58CW32.PAS
+  ============================================================ }
+
+Program AL58CW32;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
+
+{ ============================================================
+  SECTION 1 - CONSTANTES (TODO 01, 03)
+  ============================================================ }
+Const
+  AL58CW32_VERSION = '0.1';
+  AL58CW32_DATE    = '2026';
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Differences avec AL58C86 (cible 8086, 16 bits, DOS) :
+      - registres 32 bits (EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP)
+      - modele FLAT : pas de segments, pas de limite de 64 Ko
+      - integer sur 32 bits signes
+      - sorties par API Win32 (kernel32) au lieu de INT 21h
+      - sortie finale : .EXE (PE) ou .OBJ (COFF), .ASM optionnel }
+  ABI_WORD_SIZE = 4;   { taille d un registre / d un integer en octets }
+
+{ ============================================================
+  SECTION 2 - TYPES (TODO 01, 04, 05, 06)
+  ============================================================ }
+Type
+  { Etapes du pipeline :
+      source .a58 -> lexeur -> parseur / table des symboles
+      -> generation du code interne (listing .ASM optionnel)
+      -> encodeur binaire x86-32 -> ecrivain COFF (.OBJ) ou PE (.EXE) }
+  TPhase = (
+    PH_LEX,       { TODO 04 : lexeur                                  }
+    PH_PARSE,     { TODO 06-17 : parseur et table des symboles        }
+    PH_CODEGEN,   { TODO 18 : code interne + listing .ASM optionnel   }
+    PH_ENCODE,    { TODO 19 : encodeur binaire x86-32                 }
+    PH_WRITE,     { TODO 20-21 : ecrivain PE (.EXE) ou COFF (.OBJ)    }
+    PH_REPORT     { TODO 23-24 : statistiques et code de retour       }
+  );
+
+{ ============================================================
+  SECTION 3 - VARIABLES GLOBALES (TODO 01, 02, 23)
+  ============================================================ }
+Var
+  ErrorCount : Integer;   { erreurs de compilation signalees  }
+  WarnCount  : Integer;   { avertissements signales           }
+
+{ ============================================================
+  SECTION 4 - UTILITAIRES (TODO 03)
+  ============================================================ }
+Function PhaseName(P : TPhase) : String;
+Begin
+  Case P Of
+    PH_LEX     : PhaseName := 'lexeur';
+    PH_PARSE   : PhaseName := 'parseur';
+    PH_CODEGEN : PhaseName := 'generation du code';
+    PH_ENCODE  : PhaseName := 'encodeur x86-32';
+    PH_WRITE   : PhaseName := 'ecrivain PE/COFF';
+    PH_REPORT  : PhaseName := 'rapport';
+  End;
+End;
+
+{ ============================================================
+  SECTION 5 - OPTIONS DE LIGNE DE COMMANDE (TODO 02)
+  ============================================================ }
+
+{ ============================================================
+  SECTION 6 - LEXEUR (TODO 04)
+  ============================================================ }
+Procedure PhaseLex;
+Begin
+  { A faire : TODO 04 }
+End;
+
+{ ============================================================
+  SECTION 7 - TYPES ALGOL ET TABLE DES SYMBOLES (TODO 05, 06)
+  ============================================================ }
+
+{ ============================================================
+  SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 07 a 17)
+  ============================================================ }
+Procedure PhaseParse;
+Begin
+  { A faire : TODO 07 a 17 }
+End;
+
+{ ============================================================
+  SECTION 9 - CODE INTERNE ET LISTING ASM OPTIONNEL (TODO 18)
+  ============================================================ }
+Procedure PhaseCodegen;
+Begin
+  { A faire : TODO 18 }
+End;
+
+{ ============================================================
+  SECTION 10 - ENCODEUR BINAIRE x86-32 (TODO 19)
+  ============================================================ }
+Procedure PhaseEncode;
+Begin
+  { A faire : TODO 19 }
+End;
+
+{ ============================================================
+  SECTION 11 - ECRIVAINS PE (.EXE) ET COFF (.OBJ) (TODO 20, 21)
+  ============================================================ }
+Procedure PhaseWrite;
+Begin
+  { A faire : TODO 20 et 21 }
+End;
+
+{ ============================================================
+  SECTION 12 - RUNTIME ALGOL 58 POUR WIN32 (TODO 22)
+  ============================================================ }
+
+{ ============================================================
+  SECTION 13 - ERREURS ET RAPPORT FINAL (TODO 23, 24)
+  ============================================================ }
+Procedure PhaseReport;
+Begin
+  { A faire : TODO 23 et 24 }
+End;
+
+{ ============================================================
+  SECTION 14 - PIPELINE PRINCIPAL (TODO 01, 24)
+  ============================================================ }
+Procedure RunPhase(P : TPhase);
+Begin
+  WriteLn('AL58CW32: ', PhaseName(P));
+  Case P Of
+    PH_LEX     : PhaseLex;
+    PH_PARSE   : PhaseParse;
+    PH_CODEGEN : PhaseCodegen;
+    PH_ENCODE  : PhaseEncode;
+    PH_WRITE   : PhaseWrite;
+    PH_REPORT  : PhaseReport;
+  End;
+End;
+
+Procedure Run;
+Var
+  P : TPhase;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  For P := PH_LEX To PH_REPORT Do
+    RunPhase(P);
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+BEGIN
+  WriteLn('AL58CW32 ', AL58CW32_VERSION, ' - Compilateur Algol 58 ',
+          'vers 80386 / Windows 32 bits');
+  Run;
+END.
