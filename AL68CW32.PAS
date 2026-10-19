@@ -28,8 +28,9 @@
     TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 implemente (squelette en sections et pipeline en 7
-         phases) ; TODO 02 a 25 a faire.
+  ETAT : TODO 01 et 02 implementes (squelette en sections, pipeline en 7
+         phases, options, constantes, limites et nommage) ;
+         TODO 03 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -100,7 +101,7 @@
               execution : sept lignes de phases puis code
               de retour 0 ; lignes de 80 colonnes au plus
 
-  TODO 02 - OPTIONS, CONSTANTES, LIMITES ET NOMMAGE [A FAIRE]
+  TODO 02 - OPTIONS, CONSTANTES, LIMITES ET NOMMAGE [IMPLEMENTE]
             TOptions (SrcFile, OutFile, AsmFile, Verbose, DebugMode,
               Warnings, EmitExe, EmitObj, EmitAsm)
             Syntaxe : AL68CW32 source.a68 [-o sortie] [-obj] [-asm]
@@ -128,6 +129,26 @@
               (runtime), _A68T_ (thunk ou temporaire)
             Utilitaires : ItoS, StrLower, AsmIdent (nom ASM valide),
               extension et nom de fichier, FileExists
+            Realise : TOptions et InitOptions ; ParseArgs (options -o,
+              -obj, -asm, -v, -d, -w, -w+, -w-, -h, --help et /?, une seule
+              source, .a68 ajoute (ou .alg) si l'extension manque) ;
+              ShowUsage et ShowBanner ; FatalError, ErrorAt, WarnAt et
+              WarnMsg ; NoteOutput et RemoveOutputs (fichiers crees
+              supprimes sur erreur fatale) ; constantes PE, COFF et ABI,
+              tampons binaires et limites internes (symboles, modes,
+              unites, portees, champs, alternatives d'union...) ;
+              prefixes _A68V_, _A68P_, _A68O_, _A68K_, _A68M_, _A68L_,
+              _A68RT_ et _A68T_ avec MangleVar, MangleProc, MangleOp,
+              MangleMode, MangleRT, MangleUserLabel, MangleTemp,
+              MangleLabel et MangleStr ; ItoS, ItoSZ, UpCaseStr, StrLower,
+              AsmIdent, ExtPos, GetExt, ReplaceExt, FileExists ;
+              Run n'affiche banniere et phases qu'avec -v ; le lexeur,
+              le parseur et le rapport tournent toujours, les autres
+              phases seulement sans erreur
+            Verifie : sans argument -> usage et code 2 ; -h -> code 0 ;
+              source introuvable, extension inconnue, option inconnue,
+              -o vers un .asm ou vers le source -> refus ; fichiers
+              nommes par defaut (.exe, .obj, .asm) pour -o, -obj, -asm
 
   TODO 03 - LEXEUR ALGOL 68 [A FAIRE]
             TTokenKind : TK_EOF, TK_INT, TK_REAL, TK_STRING, TK_CHAR,
@@ -539,8 +560,12 @@ Program AL68CW32;
 {$ENDIF}
 {$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
+{$IFDEF FPC}
+Uses Math;
+{$ENDIF}
+
 { ============================================================
-  SECTION 1 - CONSTANTES (TODO 01, 02)
+  SECTION 1 - CONSTANTES, LIMITES ET NOMMAGE (TODO 01, 02)
   ============================================================ }
 Const
   AL68CW32_VERSION = '0.1';
@@ -558,11 +583,89 @@ Const
       - sorties par API Win32 (kernel32) au lieu de INT 21h
       - sortie finale : .EXE (PE) ou .OBJ (COFF), .ASM optionnel }
   ABI_WORD_SIZE = 4;   { taille d un registre / d un INT en octets }
+  ABI_REAL_SIZE = 8;   { REAL : flottant 64 bits (x87)             }
+  ABI_RET_REG   = 'EAX';
+  ABI_FRAME_REG = 'EBP';
+  ABI_STACK_REG = 'ESP';
+  ABI_PARAM_BASE = 8;  { [EBP+8] = dernier parametre empile : apres
+                         EBP et l adresse de retour ; le lien statique
+                         se trouve a cet endroit (TODO 16) }
+
+  { ---- Format PE (.EXE Windows 32 bits) ---- }
+  PE_DOS_MAGIC     = $5A4D;       { 'MZ'                               }
+  PE_SIGNATURE     = $00004550;   { 'PE',0,0                           }
+  PE_MACHINE_I386  = $014C;
+  PE_OPT_SIZE      = 224;         { taille de l Optional Header 32 bits }
+  PE_MAGIC_32      = $010B;
+  PE_IMG_BASE      = $00400000;
+  PE_SEC_ALIGN     = 4096;
+  PE_FILE_ALIGN    = 512;
+  PE_SUBSYS_CUI    = 3;           { sous-systeme console               }
+  PE_FILE_EXE      = $0002;       { IMAGE_FILE_EXECUTABLE_IMAGE        }
+  PE_FILE_32BIT    = $0100;       { IMAGE_FILE_32BIT_MACHINE           }
+  PE_SCN_TEXT      = $60000020;   { code, execute, read                }
+  PE_SCN_RDATA     = $40000040;   { donnees initialisees, read         }
+  PE_SCN_DATA      = $C0000040;   { donnees initialisees, read, write  }
+
+  { ---- Format COFF (.OBJ) ---- }
+  COFF_SYM_EXTERNAL = 2;
+  COFF_SYM_STATIC   = 3;
+  COFF_REL_DIR32    = $0006;      { IMAGE_REL_I386_DIR32               }
+  COFF_REL_REL32    = $0014;      { IMAGE_REL_I386_REL32               }
+
+  { ---- Tampons du code binaire (TODO 20, 21) ---- }
+  MAX_BIN_CODE  = {$IFDEF FPC}262144{$ELSE}16384{$ENDIF};
+  MAX_BIN_DATA  = {$IFDEF FPC}262144{$ELSE}16384{$ENDIF};
+  MAX_BIN_LBL   = {$IFDEF FPC}8192{$ELSE}512{$ENDIF};
+  MAX_BIN_FIX   = {$IFDEF FPC}131072{$ELSE}512{$ENDIF};
+
+  { ---- Limites internes du compilateur (32 bits) ---- }
+  MAX_SYM       = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};  { identificateurs }
+  MAX_MODE      = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};   { modes (TODO 04)  }
+  MAX_UNIT      = {$IFDEF FPC}32768{$ELSE}512{$ENDIF}; { noeuds de l arbre}
+  MAX_LABEL     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { portees emboitees}
+  MAX_PROC      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_FIELD     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { champs de STRUCT }
+  MAX_ALT       = {$IFDEF FPC}32{$ELSE}8{$ENDIF};      { modes d un UNION }
+  MAX_DATA      = {$IFDEF FPC}2048{$ELSE}128{$ENDIF};
+  MAX_ARRAY_DIM = 8;      { dimensions maximales d un tableau          }
+  MAX_LOOP_NEST = 32;     { imbrication maximale des boucles           }
+  MAX_ERRORS    = 30;     { arret apres ce nombre d erreurs            }
+  MAX_STR       = 255;    { longueur maximale d une chaine litterale   }
+
+  { ---- Prefixes de nommage ASM ---- }
+  A68_VAR_PFX   = '_A68V_';     { variable ou identite                 }
+  A68_PROC_PFX  = '_A68P_';     { procedure                            }
+  A68_OP_PFX    = '_A68O_';     { operateur defini par OP              }
+  A68_STR_PFX   = '_A68K_';     { constante chaine litterale           }
+  A68_MODE_PFX  = '_A68M_';     { descripteur de mode                  }
+  A68_LBL_PFX   = '_A68L_';     { label de saut interne                }
+  A68_USR_PFX   = '_A68L_USR_'; { etiquette Algol (goto)               }
+  A68_RT_PFX    = '_A68RT_';    { routine runtime                      }
+  A68_TEMP_PFX  = '_A68T_';     { temporaire ou thunk                  }
+  A68_MAIN_NAME = '_A68P_Main'; { point d entree du programme          }
 
 { ============================================================
   SECTION 2 - TYPES (TODO 01, 03, 04, 05)
   ============================================================ }
 Type
+  TString = String[255];
+
+  { Options de la ligne de commande (TODO 02) }
+  TOptions = Record
+    SrcFile   : TString;    { fichier source .a68 / .alg              }
+    OutFile   : TString;    { sortie principale (.exe ou .obj)        }
+    AsmFile   : TString;    { listing .asm (si EmitAsm)               }
+    Verbose   : Boolean;    { -v : banniere + statistiques            }
+    DebugMode : Boolean;    { -d : dump des tokens, modes, code       }
+    Warnings  : Boolean;    { -w : activer les avertissements         }
+    EmitExe   : Boolean;    { produire un .EXE PE (defaut)            }
+    EmitObj   : Boolean;    { -obj : produire seulement un .OBJ       }
+    EmitAsm   : Boolean;    { -asm : produire aussi un .ASM           }
+  End;
+
   { Etapes du pipeline :
       source .a68 -> lexeur -> parseur (arbre d unites)
       -> resolution des modes et coercitions
@@ -582,12 +685,118 @@ Type
   SECTION 3 - VARIABLES GLOBALES (TODO 01, 02, 23)
   ============================================================ }
 Var
+  Opts       : TOptions;
   ErrorCount : Integer;   { erreurs de compilation signalees  }
   WarnCount  : Integer;   { avertissements signales           }
 
 { ============================================================
   SECTION 4 - UTILITAIRES (TODO 02)
   ============================================================ }
+Function ItoS(V : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(V, S);
+  ItoS := S;
+End;
+
+{ Nombre sur Width chiffres au moins, complete par des zeros }
+Function ItoSZ(V : LongInt; Width : Integer) : TString;
+Var
+  S : TString;
+Begin
+  S := ItoS(V);
+  While Length(S) < Width Do
+    S := '0' + S;
+  ItoSZ := S;
+End;
+
+{ Vrai si un reel est infini ou invalide (debordement) }
+Function RealBad(D : Double) : Boolean;
+Begin
+  {$IFDEF FPC}
+  RealBad := IsNaN(D) Or IsInfinite(D);
+  {$ELSE}
+  RealBad := False;
+  {$ENDIF}
+End;
+
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If R[I] In ['a'..'z'] Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  UpCaseStr := R;
+End;
+
+{ Identificateur Algol -> fragment de nom ASM valide : lettres,
+  chiffres et souligne conserves, tout autre caractere devient _.
+  La casse est normalisee en majuscules (les identificateurs et les
+  mots reserves sont distingues par leur graphie dans le source, mais
+  deux noms ne different jamais que par la casse dans le listing). }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := UpCaseStr(S);
+  For I := 1 To Length(R) Do
+    If Not (R[I] In ['A'..'Z', '0'..'9', '_']) Then
+      R[I] := '_';
+  AsmIdent := R;
+End;
+
+{ ---- Noms des symboles ASM : prefixe + identificateur ---- }
+Function MangleVar(Const Name : TString) : TString;
+Begin
+  MangleVar := A68_VAR_PFX + AsmIdent(Name);
+End;
+
+Function MangleProc(Const Name : TString) : TString;
+Begin
+  MangleProc := A68_PROC_PFX + AsmIdent(Name);
+End;
+
+Function MangleOp(Const Name : TString; N : LongInt) : TString;
+Begin
+  MangleOp := A68_OP_PFX + AsmIdent(Name) + '_' + ItoS(N);
+End;
+
+Function MangleMode(N : LongInt) : TString;
+Begin
+  MangleMode := A68_MODE_PFX + ItoS(N);
+End;
+
+Function MangleRT(Const Name : TString) : TString;
+Begin
+  MangleRT := A68_RT_PFX + AsmIdent(Name);
+End;
+
+Function MangleUserLabel(Const Name : TString) : TString;
+Begin
+  MangleUserLabel := A68_USR_PFX + AsmIdent(Name);
+End;
+
+Function MangleTemp(N : LongInt) : TString;
+Begin
+  MangleTemp := A68_TEMP_PFX + ItoS(N);
+End;
+
+{ Labels internes et chaines : numerotation }
+Function MangleLabel(N : LongInt) : TString;
+Begin
+  MangleLabel := A68_LBL_PFX + ItoSZ(N, 5);
+End;
+
+Function MangleStr(N : LongInt) : TString;
+Begin
+  MangleStr := A68_STR_PFX + ItoS(N);
+End;
+
 Function PhaseName(P : TPhase) : String;
 Begin
   Case P Of
@@ -601,9 +810,281 @@ Begin
   End;
 End;
 
+Function StrLower(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If R[I] In ['A'..'Z'] Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLower := R;
+End;
+
+{ Position du point de l extension (0 si aucune extension) }
+Function ExtPos(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  ExtPos := 0;
+  I := Length(Name);
+  While I > 0 Do
+  Begin
+    If Name[I] = '.' Then
+    Begin
+      ExtPos := I;
+      Exit;
+    End;
+    If Name[I] In ['\', '/', ':'] Then Exit;
+    Dec(I);
+  End;
+End;
+
+Function GetExt(Const Name : TString) : TString;
+Var
+  P : Integer;
+Begin
+  P := ExtPos(Name);
+  If P = 0 Then
+    GetExt := ''
+  Else
+    GetExt := StrLower(Copy(Name, P, 255));
+End;
+
+Function ReplaceExt(Const Name, Ext : TString) : TString;
+Var
+  P : Integer;
+Begin
+  P := ExtPos(Name);
+  If P = 0 Then
+    ReplaceExt := Name + Ext
+  Else
+    ReplaceExt := Copy(Name, 1, P - 1) + Ext;
+End;
+
+Function FileExists(Const Name : TString) : Boolean;
+Var
+  F : File;
+Begin
+  Assign(F, Name);
+  Reset(F, 1);
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+End;
+
 { ============================================================
   SECTION 5 - OPTIONS DE LIGNE DE COMMANDE (TODO 02)
   ============================================================ }
+{ Fichiers de sortie crees pendant cette compilation : supprimes si une
+  erreur fatale survient, pour ne laisser aucun fichier tronque. }
+Var
+  OutCreated  : Array[0..7] Of TString;
+  OutCreatedN : Integer;
+
+Procedure NoteOutput(Const Name : TString);
+Begin
+  If OutCreatedN <= 7 Then
+  Begin
+    OutCreated[OutCreatedN] := Name;
+    Inc(OutCreatedN);
+  End;
+End;
+
+Procedure RemoveOutputs;
+Var
+  I : Integer;
+  F : File;
+Begin
+  For I := 0 To OutCreatedN - 1 Do
+  Begin
+    Assign(F, OutCreated[I]);
+    Erase(F);
+    If IOResult <> 0 Then ;
+  End;
+  OutCreatedN := 0;
+End;
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('AL68CW32: erreur fatale: ', Msg);
+  RemoveOutputs;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('AL68CW32: avertissement: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ Erreur / avertissement localise dans le source :
+  fichier(ligne,colonne) : erreur : message }
+Procedure ErrorAt(Line, Col : Integer; Const Msg : TString);
+Begin
+  WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : erreur : ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs (' + ItoS(MAX_ERRORS) +
+               '), compilation arretee');
+End;
+
+Procedure WarnAt(Line, Col : Integer; Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : avertissement : ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure ShowBanner;
+Begin
+  WriteLn('AL68CW32 ', AL68CW32_VERSION, ' (', AL68CW32_DATE, ') - ',
+          'Compilateur Algol 68 vers 80386 / Windows 32 bits');
+End;
+
+Procedure ShowUsage(Code : Integer);
+Begin
+  ShowBanner;
+  WriteLn;
+  WriteLn('Syntaxe: AL68CW32 <source.a68> [-o sortie] [-obj] [-asm]',
+          ' [-v] [-d] [-w] [-w-] [-h]');
+  WriteLn;
+  WriteLn('  source.a68 : fichier Algol 68 source (.a68 ou .alg)');
+  WriteLn('  -o nom     : nom du fichier de sortie principal');
+  WriteLn('  -obj       : produire seulement un .OBJ (COFF), pas de .EXE');
+  WriteLn('  -asm       : produire aussi un listing .ASM (optionnel)');
+  WriteLn('  -v         : mode verbeux (phases, tailles, statistiques)');
+  WriteLn('  -d         : debug (tokens, modes, symboles, code interne)');
+  WriteLn('  -w, -w-    : activer / desactiver les avertissements');
+  WriteLn('  -h, --help : cette aide');
+  WriteLn;
+  WriteLn('Par defaut, produit seulement source.exe (PE Windows 32 bits).');
+  WriteLn('Sans -asm aucun .asm n''est cree ; avec -obj aucun .exe.');
+  Halt(Code);
+End;
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.AsmFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.EmitExe   := True;
+  Opts.EmitObj   := False;
+  Opts.EmitAsm   := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Opt : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage(EXIT_USAGE);
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+    Opt := StrLower(Arg);
+
+    If (Opt = '-h') Or (Opt = '--help') Or (Opt = '/?') Then
+      ShowUsage(EXIT_OK)
+    Else If Opt = '-v' Then
+      Opts.Verbose := True
+    Else If Opt = '-d' Then
+      Opts.DebugMode := True
+    Else If (Opt = '-w') Or (Opt = '-w+') Then
+      Opts.Warnings := True
+    Else If Opt = '-w-' Then
+      Opts.Warnings := False
+    Else If Opt = '-obj' Then
+      Opts.EmitObj := True
+    Else If Opt = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Opt = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+      Begin
+        WriteLn('AL68CW32: -o demande un nom de fichier');
+        ShowUsage(EXIT_USAGE);
+      End;
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Arg <> '') And (Arg[1] = '-') Then
+    Begin
+      WriteLn('AL68CW32: option inconnue: ', Arg);
+      ShowUsage(EXIT_USAGE);
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else
+    Begin
+      WriteLn('AL68CW32: argument inattendu: ', Arg);
+      ShowUsage(EXIT_USAGE);
+    End;
+    Inc(I);
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('AL68CW32: fichier source manquant');
+    ShowUsage(EXIT_USAGE);
+  End;
+
+  { Extension du source : .a68 ou .alg (.a68 ajoute si absente) }
+  If ExtPos(Opts.SrcFile) = 0 Then
+  Begin
+    If FileExists(Opts.SrcFile + '.a68') Then
+      Opts.SrcFile := Opts.SrcFile + '.a68'
+    Else
+      Opts.SrcFile := Opts.SrcFile + '.alg';
+  End;
+  Ext := GetExt(Opts.SrcFile);
+  If (Ext <> '.a68') And (Ext <> '.alg') Then
+    FatalError('extension non supportee (attendu .a68 ou .alg): ' +
+               Opts.SrcFile);
+  If Not FileExists(Opts.SrcFile) Then
+    FatalError('fichier source introuvable: ' + Opts.SrcFile);
+
+  { Sortie principale : .EXE par defaut, .OBJ seul avec -obj }
+  If Opts.EmitObj Then
+    Opts.EmitExe := False;
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitExe Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj');
+  End
+  Else If ExtPos(Opts.OutFile) = 0 Then
+  Begin
+    If Opts.EmitExe Then
+      Opts.OutFile := Opts.OutFile + '.exe'
+    Else
+      Opts.OutFile := Opts.OutFile + '.obj';
+  End;
+
+  { Listing assembleur optionnel : meme nom de base que la sortie }
+  Opts.AsmFile := ReplaceExt(Opts.OutFile, '.asm');
+
+  If StrLower(Opts.OutFile) = StrLower(Opts.SrcFile) Then
+    FatalError('la sortie ecraserait le source: ' + Opts.OutFile);
+  If GetExt(Opts.OutFile) = '.asm' Then
+    FatalError('-o ne peut pas designer un .asm; utiliser -asm');
+End;
 
 { ============================================================
   SECTION 6 - LEXEUR (TODO 03)
@@ -678,7 +1159,8 @@ End;
   ============================================================ }
 Procedure RunPhase(P : TPhase);
 Begin
-  WriteLn('AL68CW32: ', PhaseName(P));
+  If Opts.Verbose Then
+    WriteLn('AL68CW32: ', PhaseName(P));
   Case P Of
     PH_LEX     : PhaseLex;
     PH_PARSE   : PhaseParse;
@@ -696,8 +1178,24 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  OutCreatedN := 0;
+  If Opts.Verbose Then
+  Begin
+    ShowBanner;
+    WriteLn('  source : ', Opts.SrcFile);
+    If Opts.EmitExe Then
+      WriteLn('  .EXE   : ', Opts.OutFile);
+    If Opts.EmitObj Then
+      WriteLn('  .OBJ   : ', Opts.OutFile);
+    If Opts.EmitAsm Then
+      WriteLn('  .ASM   : ', Opts.AsmFile);
+  End;
+  { les phases suivant le parseur ne tournent que sans erreur : aucun
+    fichier de sortie n'est ecrit sinon }
   For P := PH_LEX To PH_REPORT Do
-    RunPhase(P);
+    If (ErrorCount = 0) Or (P = PH_LEX) Or (P = PH_PARSE) Or
+       (P = PH_REPORT) Then
+      RunPhase(P);
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
   Else
@@ -708,7 +1206,6 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 BEGIN
-  WriteLn('AL68CW32 ', AL68CW32_VERSION, ' - Compilateur Algol 68 ',
-          'vers 80386 / Windows 32 bits');
+  ParseArgs;
   Run;
 END.
