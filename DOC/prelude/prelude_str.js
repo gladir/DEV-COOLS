@@ -193,15 +193,29 @@ function __su_fromCharCode(...a) {
   for (i = 0; i < a.length; i++) u.push(Number(a[i]) & 65535);
   return __fromu16(u);
 }
+var __collT;
+function __collInit() {
+  var gs = [
+    '\u0061\u00e1\u00e0\u0103\u00e2\u00e5\u00e4\u00e3\u0105\u0101', '\u0063\u0107\u0109\u010d\u010b\u00e7', '\u0064\u010f\u0111', '\u0065\u00e9\u00e8\u0115\u00ea\u011b\u00eb\u0117\u0119\u0113',
+    '\u0067\u011f\u011d\u0121\u0123', '\u0068\u0125\u0127', '\u0069\u00ed\u00ec\u012d\u00ee\u00ef\u0129\u012f\u012b\u0131', '\u006a\u0135', '\u006b\u0137', '\u006c\u013a\u013e\u013c\u0142\u0140',
+    '\u006e\u0144\u0148\u00f1\u0146\u0149', '\u006f\u00f3\u00f2\u014f\u00f4\u00f6\u0151\u00f5\u00f8\u014d', '\u0072\u0155\u0159\u0157', '\u0073\u015b\u015d\u0161\u015f', '\u0074\u0165\u0163\u0167',
+    '\u0075\u00fa\u00f9\u016d\u00fb\u016f\u00fc\u0171\u0169\u0173\u016b', '\u0077\u0175', '\u0079\u00fd\u0177\u00ff', '\u007a\u017a\u017e\u017c'
+  ], i, j, g;
+  __collT = {};
+  for (i = 0; i < gs.length; i++) {
+    g = gs[i];
+    for (j = 0; j < g.length; j++) __collT[g.charAt(j)] = [g.charAt(0), j];
+  }
+}
 function __coll(s, level) {
-  var from = 'a\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5c\u00e7e\u00e8\u00e9\u00ea\u00ebi\u00ec\u00ed\u00ee\u00efn\u00f1o\u00f2\u00f3\u00f4\u00f5\u00f6u\u00f9\u00fa\u00fb\u00fcy\u00fd\u00ff';
-  var base = 'aaaaaaaccceeeeeiiiiinnooooooouuuuuyyy', out = '', i, c, k, lo, cp;
+  var out = '', i, c, k, lo, cp;
+  if (__collT === undefined) __collInit();
   for (i = 0; i < s.length; i++) {
     c = s.charAt(i);
     cp = s.charCodeAt(i);
     if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) { c += s.charAt(i + 1); i++; cp = 65536 + ((cp - 55296) << 10) + (s.charCodeAt(i) - 56320); }
     lo = c.toLowerCase();
-    k = from.indexOf(lo);
+    k = __collT[lo];
     if (level === 0) {
       if (cp === 32 || (cp >= 9 && cp <= 13) || cp === 160) out += '1';
       else if (cp < 48 || (cp > 57 && cp < 65) || (cp > 90 && cp < 97) || (cp > 122 && cp < 128)) out += '2' + lo;
@@ -209,14 +223,14 @@ function __coll(s, level) {
       else if (cp >= 119808 && cp <= 120831) out += '5' + lo;
       else if (cp >= 65536) out += '3' + lo;
       else if (lo === '\u00df') out += '5ss';
-      else if (k >= 0) out += '5' + base.charAt(k);
+      else if (k !== undefined) out += '5' + k[0];
       else if (cp < 128 || (cp >= 192 && cp < 592)) out += '5' + lo;
       else if (cp >= 880 && cp < 1024) out += '6' + lo;
       else if (cp >= 1024 && cp < 1328) out += '7' + lo;
       else if (cp >= 8192 && cp < 12288) out += '3' + lo;
       else out += '8' + lo;
     }
-    else if (level === 1) out += k > 0 && lo !== base.charAt(k) ? '1' : '0';
+    else if (level === 1) out += k !== undefined ? String(k[1]) : '0';
     else out += c === lo ? '0' : '1';
   }
   return out;

@@ -24,6 +24,34 @@ function __init_web() {}
 function __init_bin() {}
 function __init_proxy() {}
 function __init_fs() {}
+function __init_intl() {}
+function __init_il_cs() {}
+function __init_il_da() {}
+function __init_il_de() {}
+function __init_il_el() {}
+function __init_il_en() {}
+function __init_il_es() {}
+function __init_il_fi() {}
+function __init_il_fr() {}
+function __init_il_he() {}
+function __init_il_hi() {}
+function __init_il_hu() {}
+function __init_il_id() {}
+function __init_il_it() {}
+function __init_il_ja() {}
+function __init_il_ko() {}
+function __init_il_nb() {}
+function __init_il_nl() {}
+function __init_il_pl() {}
+function __init_il_pt() {}
+function __init_il_ru() {}
+function __init_il_sv() {}
+function __init_il_tr() {}
+function __init_il_uk() {}
+function __init_il_zh() {}
+function __ilreg() {}
+function __intlDate() { return null; }
+function __intlNum() { return null; }
 var __proxyOp, __Proxy;
 var __global;
 function __i_init() {
@@ -252,4 +280,5 @@ function __i_init() {
   __init_proxy();
   __init_fs();
   __init_globals();
+  __init_intl();
 }

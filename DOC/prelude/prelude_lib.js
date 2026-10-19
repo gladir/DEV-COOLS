@@ -41,6 +41,51 @@ function __dparts(t) {
     wd: ((days % 7) + 11) % 7
   };
 }
+var __tzc;
+function __tzinfo() {
+  var ab, c, i, ch;
+  if (__tzc !== undefined) return __tzc;
+  ab = __abnew({}, 176);
+  __k32(23, ab);
+  c = { bias: __abget(ab, 0, 5, true), sb: __abget(ab, 84, 5, true), db: __abget(ab, 168, 5, true), dst: false, sn: '', dn: '', se: null, ds: null };
+  for (i = 0; i < 32; i++) { ch = __abget(ab, 4 + 2 * i, 4, true); if (ch === 0) break; c.sn += String.fromCharCode(ch); }
+  for (i = 0; i < 32; i++) { ch = __abget(ab, 88 + 2 * i, 4, true); if (ch === 0) break; c.dn += String.fromCharCode(ch); }
+  if (__abget(ab, 70, 4, true) !== 0 && __abget(ab, 154, 4, true) !== 0) {
+    c.dst = true;
+    c.se = [__abget(ab, 70, 4, true), __abget(ab, 72, 4, true), __abget(ab, 74, 4, true), __abget(ab, 76, 4, true)];
+    c.ds = [__abget(ab, 154, 4, true), __abget(ab, 156, 4, true), __abget(ab, 158, 4, true), __abget(ab, 160, 4, true)];
+  }
+  __tzc = c;
+  return c;
+}
+function __tzTrans(y, d) {
+  var first = __mktime(y, d[0] - 1, 1, 0, 0, 0, 0), dow0 = __dparts(first).wd, day = 1 + ((d[1] - dow0 + 7) % 7) + 7 * (d[2] - 1);
+  var dim = __civil(__days_from_civil(d[0] === 12 ? y + 1 : y, d[0] === 12 ? 1 : d[0] + 1, 1) - 1)[2];
+  if (day > dim) day -= 7;
+  return __mktime(y, d[0] - 1, day, d[3], 0, 0, 0);
+}
+function __tzoff(t) {
+  var c = __tzinfo(), so = -(c.bias + c.sb), dof, y, a, b;
+  if (!c.dst) return so;
+  dof = -(c.bias + c.db);
+  y = __dparts(t + so * 60000).y;
+  a = __tzTrans(y, c.ds) - so * 60000;
+  b = __tzTrans(y, c.se) - dof * 60000;
+  return (a < b ? (t >= a && t < b) : (t >= a || t < b)) ? dof : so;
+}
+function __loc2utc(l) {
+  var c = __tzinfo(), o1 = __tzoff(l - (-(c.bias + c.sb)) * 60000), t = l - o1 * 60000, o2 = __tzoff(t);
+  if (o2 !== o1) t = l - o2 * 60000;
+  return t;
+}
+function __tzname(t) {
+  var c = __tzinfo();
+  return c.dst && __tzoff(t) === -(c.bias + c.db) ? c.dn : c.sn;
+}
+function __tzgmt(t) {
+  var o = __tzoff(t), a = o < 0 ? -o : o;
+  return 'GMT' + (o < 0 ? '-' : '+') + __p2(Math.floor(a / 60)) + __p2(a % 60);
+}
 function __dparse(str) {
   str = String(str).trim();
   var m = /^([+-]\d{6}|\d{4})(?:-(\d\d)(?:-(\d\d))?)?(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:[.,](\d{1,9}))?)?)?\s*(Z|[+-]\d\d(?::?\d\d)?)?$/.exec(str);
@@ -49,6 +94,7 @@ function __dparse(str) {
     var t = __mktime(Number(m[1]), m[2] ? m[2] - 1 : 0, m[3] ? Number(m[3]) : 1,
                      m[4] ? Number(m[4]) : 0, m[5] ? Number(m[5]) : 0, m[6] ? Number(m[6]) : 0, ms);
     var z = m[8];
+    if (!z && m[4]) return __loc2utc(t);
     if (z && z !== 'Z') {
       var sign = z.charAt(0) === '-' ? -1 : 1;
       var hh = Number(z.slice(1, 3));
@@ -73,12 +119,13 @@ function __dparse(str) {
                       tm ? Number(tm[1]) : 0, tm ? Number(tm[2]) : 0, tm && tm[3] ? Number(tm[3]) : 0, 0);
     if (/PM/i.test(str) && tm && Number(tm[1]) < 12) tt += 12 * 3600000;
     if (off) tt -= (off[1] === '-' ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3])) * 60000;
+    else if (!/\b(GMT|UTC|Z)\b/.test(str)) tt = __loc2utc(tt);
     return tt;
   }
   var sl = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(str) || /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str);
   if (sl) {
-    if (sl[1].length === 4) return __mktime(Number(sl[1]), sl[2] - 1, Number(sl[3]), 0, 0, 0, 0);
-    return __mktime(Number(sl[3]), sl[1] - 1, Number(sl[2]), 0, 0, 0, 0);
+    if (sl[1].length === 4) return __loc2utc(__mktime(Number(sl[1]), sl[2] - 1, Number(sl[3]), 0, 0, 0, 0));
+    return __loc2utc(__mktime(Number(sl[3]), sl[1] - 1, Number(sl[2]), 0, 0, 0, 0));
   }
   return NaN;
 }
@@ -486,10 +533,11 @@ function __init_lib() {
       else if (typeof a === 'string') t = __dparse(a);
       else t = Number(a);
     } else {
-      t = __mktime(Number(a), Number(b), c === undefined ? 1 : Number(c), d === undefined ? 0 : Number(d),
-                   e === undefined ? 0 : Number(e), f === undefined ? 0 : Number(f), g === undefined ? 0 : Number(g));
       var yy = Number(a);
-      if (yy >= 0 && yy <= 99) t += (1900 * 365 + 17 + 0) * 0;
+      if (yy >= 0 && yy <= 99) yy += 1900;
+      t = __mktime(yy, Number(b), c === undefined ? 1 : Number(c), d === undefined ? 0 : Number(d),
+                   e === undefined ? 0 : Number(e), f === undefined ? 0 : Number(f), g === undefined ? 0 : Number(g));
+      t = __loc2utc(t);
     }
     if (!(Math.abs(t) <= 8.64e15)) t = NaN;
     else t = Math.trunc(t);
@@ -507,35 +555,40 @@ function __init_lib() {
   var getters = { FullYear: 'y', Month: 'm', Date: 'd', Hours: 'h', Minutes: 'mi', Seconds: 's', Milliseconds: 'ms', Day: 'wd' };
   Object.keys(getters).forEach(function (k) {
     var comp = getters[k];
-    var fn = function () {
+    P['getUTC' + k] = function () {
       var t = this[TT];
       return t !== t ? NaN : __dparts(t)[comp];
     };
-    P['get' + k] = fn;
-    P['getUTC' + k] = fn;
+    P['get' + k] = function () {
+      var t = this[TT];
+      return t !== t ? NaN : __dparts(t + __tzoff(t) * 60000)[comp];
+    };
   });
   var setters = { FullYear: [0, 'y'], Month: [1, 'm'], Date: [2, 'd'], Hours: [3, 'h'], Minutes: [4, 'mi'], Seconds: [5, 's'], Milliseconds: [6, 'ms'] };
   Object.keys(setters).forEach(function (k) {
     var idx = setters[k][0];
-    var fn = function (...args) {
-      var t = this[TT];
-      if (t !== t) {
-        if (idx !== 0) return NaN;
-        t = 0;
-      }
-      var p = __dparts(t);
-      var v = [p.y, p.m, p.d, p.h, p.mi, p.s, p.ms];
-      for (var i = 0; i < args.length && idx + i < 7; i++) v[idx + i] = Number(args[i]);
-      this[TT] = __mktime(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
-      return this[TT];
+    var mk = function (loc) {
+      return function (...args) {
+        var t = this[TT];
+        if (t !== t) {
+          if (idx !== 0) return NaN;
+          t = 0;
+        }
+        var p = __dparts(loc ? t + __tzoff(t) * 60000 : t);
+        var v = [p.y, p.m, p.d, p.h, p.mi, p.s, p.ms];
+        for (var i = 0; i < args.length && idx + i < 7; i++) v[idx + i] = Number(args[i]);
+        t = __mktime(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+        this[TT] = loc ? __loc2utc(t) : t;
+        return this[TT];
+      };
     };
-    P['set' + k] = fn;
-    P['setUTC' + k] = fn;
+    P['set' + k] = mk(true);
+    P['setUTC' + k] = mk(false);
   });
   P.getTime = P.valueOf = function () { return this[TT]; };
   P.setTime = function (t) { this[TT] = Number(t); return this[TT]; };
   P.getYear = function () { return this.getFullYear() - 1900; };
-  P.getTimezoneOffset = function () { return this[TT] !== this[TT] ? NaN : 0; };
+  P.getTimezoneOffset = function () { return this[TT] !== this[TT] ? NaN : -__tzoff(this[TT]) + 0; };
   P.toISOString = function () {
     var t = this[TT];
     if (t !== t) throw new RangeError('Invalid time value');
@@ -547,14 +600,14 @@ function __init_lib() {
   P.toDateString = function () {
     var t = this[TT];
     if (t !== t) return 'Invalid Date';
-    var p = __dparts(t);
+    var p = __dparts(t + __tzoff(t) * 60000);
     return __DN[p.wd].slice(0, 3) + ' ' + __MN[p.m].slice(0, 3) + ' ' + __p2(p.d) + ' ' + (p.y < 1000 ? ('000' + p.y).slice(-4) : p.y);
   };
   P.toTimeString = function () {
     var t = this[TT];
     if (t !== t) return 'Invalid Date';
-    var p = __dparts(t);
-    return __p2(p.h) + ':' + __p2(p.mi) + ':' + __p2(p.s) + ' GMT+0000 (Coordinated Universal Time)';
+    var p = __dparts(t + __tzoff(t) * 60000);
+    return __p2(p.h) + ':' + __p2(p.mi) + ':' + __p2(p.s) + ' ' + __tzgmt(t) + ' (' + (__tzoff(t) === 0 && __tzinfo().sn === '' ? 'Coordinated Universal Time' : __tzname(t)) + ')';
   };
   P.toString = function () {
     return this[TT] !== this[TT] ? 'Invalid Date' : this.toDateString() + ' ' + this.toTimeString();
@@ -566,9 +619,11 @@ function __init_lib() {
     return __DN[p.wd].slice(0, 3) + ', ' + __p2(p.d) + ' ' + __MN[p.m].slice(0, 3) + ' ' + p.y + ' ' + __p2(p.h) + ':' + __p2(p.mi) + ':' + __p2(p.s) + ' GMT';
   };
   P.toLocaleDateString = function (loc, o) {
-    var t = this[TT];
+    var t = this[TT], r;
     if (t !== t) return 'Invalid Date';
-    var p = __dparts(t);
+    r = __intlDate(t, loc, o, 1);
+    if (r !== null) return r;
+    var p = __dparts(t + __tzoff(t) * 60000);
     if (o && (o.month === 'long' || o.month === 'short')) {
       var mn = o.month === 'long' ? __MN[p.m] : __MN[p.m].slice(0, 3);
       var s = mn + ' ' + p.d + ', ' + p.y;
@@ -577,14 +632,20 @@ function __init_lib() {
     }
     return (p.m + 1) + '/' + p.d + '/' + p.y;
   };
-  P.toLocaleTimeString = function () {
-    var t = this[TT];
+  P.toLocaleTimeString = function (loc, o) {
+    var t = this[TT], r;
     if (t !== t) return 'Invalid Date';
-    var p = __dparts(t);
+    r = __intlDate(t, loc, o, 2);
+    if (r !== null) return r;
+    var p = __dparts(t + __tzoff(t) * 60000);
     return (p.h % 12 === 0 ? 12 : p.h % 12) + ':' + __p2(p.mi) + ':' + __p2(p.s) + ' ' + (p.h < 12 ? 'AM' : 'PM');
   };
   P.toLocaleString = function (loc, o) {
-    return this[TT] !== this[TT] ? 'Invalid Date' : this.toLocaleDateString(loc, o) + ', ' + this.toLocaleTimeString();
+    var t = this[TT], r;
+    if (t !== t) return 'Invalid Date';
+    r = __intlDate(t, loc, o, 3);
+    if (r !== null) return r;
+    return this.toLocaleDateString(loc, o) + ', ' + this.toLocaleTimeString();
   };
   P['\x01Symbol.toPrimitive\x02'] = function (hint) { return hint === 'number' ? this[TT] : this.toString(); };
   __AggregateError = class AggregateError extends Error {
