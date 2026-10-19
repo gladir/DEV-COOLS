@@ -23,10 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 13 implementes (squelette, options, constantes,
+  ETAT : TODO 01 a 14 implementes (squelette, options, constantes,
          lexeur, types, symboles, structure du programme, expressions,
-         booleens, affectations, tableaux, if et for, go to et switch) ;
-         TODO 14 a 25 a faire.
+         booleens, affectations, tableaux, if et for, go to et switch,
+         procedures et appels) ; TODO 15 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -279,7 +279,7 @@
               switch dans .data, JMP indirect, petits blocs pour les
               designateurs conditionnels
 
-  TODO 14 - PROCEDURES ET FONCTIONS [A FAIRE]
+  TODO 14 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
             procedure nom(params) ; value ... ; specs ; corps
             Procedure sans parametre et appelee avec "()" (greet())
             Fonctions typees : integer / real / Boolean procedure, valeur
@@ -291,8 +291,24 @@
               acces aux variables de l'englobante
             Variables globales modifiees par effet de bord (counter)
             Recursion, convention d'appel interne documentee (empilage
-              droite a gauche, nettoyage par l'appelant, EBP sauvegarde)
+              droite a gauche, nettoyage par la procedure, EBP sauvegarde)
             Exemples : procs.a58, test_procedures.a58
+            Realise : appel comme instruction (nom(args), nom() ou nom seul)
+              et comme valeur (noeud EX_CALL) ; nombre d'arguments
+              verifie, argument value converti vers le type du
+              parametre, argument par nom controle (convertible), tableau
+              passe par son nom (type des elements verifie), argument
+              simple marque 'reference' (TODO 15), procedure sans valeur
+              refusee dans une expression ; recursion (la procedure est
+              visible dans son propre corps) ; les parametres sont
+              conserves apres la fermeture du corps pour les appels
+              ulterieurs ; un nom inconnu suivi de ( reste une fonction
+              intrinseque (TODO 17)
+            Convention d'appel retenue : arguments empiles de droite a
+              gauche, puis le lien statique (procedure declaree dans une
+              autre procedure), CALL ; la procedure nettoie la pile avec
+              RET n (n = ParamBytes) ; resultat dans EAX (integer,
+              Boolean) ou ST(0) (real)
 
   TODO 15 - PARAMETRES PAR NOM ET THUNKS [A FAIRE]
             Par defaut un parametre est passe par nom (substitution
@@ -1701,6 +1717,7 @@ Const
   PARAM_NAME_SIZE = 8;
   MAX_IMPLICIT    = {$IFDEF FPC}256{$ELSE}16{$ENDIF};
   SYM_TOTAL       = MAX_SYM + MAX_IMPLICIT;
+  MAX_PARAM_SYMS  = {$IFDEF FPC}2048{$ELSE}64{$ENDIF};
 
 Type
   TName    = String[SYM_NAME_MAX];
@@ -1771,7 +1788,12 @@ Type
   End;
 
 Var
-  SymTab       : Array[0..SYM_TOTAL - 1] Of TSymRec;
+  { SymTab : [0..MAX_SYM-1] pile des symboles visibles, puis les
+    symboles implicites, puis (a partir de SYM_TOTAL) les copies des
+    parametres des procedures dont le corps est ferme : un appel
+    ulterieur en a besoin (nom, mode, type, decalage). }
+  SymTab       : Array[0..SYM_TOTAL + MAX_PARAM_SYMS - 1] Of TSymRec;
+  ParamSymCount: Integer;
   SymCount     : Integer;     { symboles de la pile (0..SymCount-1)  }
   ImpCount     : Integer;     { symboles implicites (MAX_SYM..)      }
   ScopeTab     : Array[0..MAX_SCOPE - 1] Of TScopeRec;
@@ -1839,6 +1861,7 @@ Begin
   CurProcScope := -1;
   LocalOfs     := 0;
   UseCount     := 0;
+  ParamSymCount := 0;
 End;
 
 { ---- Recherche ------------------------------------------------- }
@@ -2213,8 +2236,8 @@ End;
   symboles et restaure l etat de la pile. }
 Procedure SymLeaveScope;
 Var
-  I, S, Dest : Integer;
-  CanHoist   : Boolean;
+  I, S, Dest, P : Integer;
+  CanHoist      : Boolean;
 Begin
   If ScopeTop = 0 Then
     FatalError('erreur interne: fermeture sans portee ouverte');
@@ -2223,6 +2246,21 @@ Begin
   { Un renvoi avant vers une etiquette pas encore definie dans un
     bloc interne passe dans la portee englobante (meme procedure) ;
     sinon l'etiquette doit etre definie ici. }
+  { parametres d'une procedure : copies conservees pour les appels }
+  If ScopeTab[S].IsProc Then
+  Begin
+    P := ScopeTab[S].ProcSym;
+    For I := 1 To SymTab[P].ParamCount Do
+    Begin
+      If ParamSymCount >= MAX_PARAM_SYMS Then
+        FatalError('trop de parametres de procedures (max ' +
+                   ItoS(MAX_PARAM_SYMS) + ')');
+      SymTab[SYM_TOTAL + ParamSymCount] :=
+        SymTab[SymTab[P].ParamSym[I]];
+      SymTab[P].ParamSym[I] := SYM_TOTAL + ParamSymCount;
+      Inc(ParamSymCount);
+    End;
+  End;
   CanHoist := (Not ScopeTab[S].IsProc) And (ScopeTop >= 2);
   Dest := ScopeTab[S].FirstSym;
   For I := ScopeTab[S].FirstSym To SymCount - 1 Do
@@ -2266,6 +2304,7 @@ Var
   AssignCount: LongInt;      { affectations analysees               }
   IfCount    : LongInt;      { instructions if                      }
   GotoCount  : LongInt;      { instructions go to                   }
+  CallCount  : LongInt;      { appels de procedure ou fonction      }
   LabelCount : LongInt;      { etiquettes definies                  }
   ForCount   : LongInt;      { instructions for                     }
   LoopDepth  : Integer;      { imbrication courante des for         }
@@ -2410,7 +2449,8 @@ Type
     EX_INDEX,       { Sym[L...] : element de tableau (IntVal = nb d indices) }
     EX_LIST,        { liste d indices : L = expression, R = suivant }
     EX_LABEL,       { designateur : etiquette (Sym)               }
-    EX_SWITCHREF    { designateur : Sym[L] (element de switch)    }
+    EX_SWITCHREF,   { designateur : Sym[L] (element de switch)    }
+    EX_CALL         { appel de Sym ; L = liste des arguments      }
   );
 
   TExprNode = Record
@@ -3041,19 +3081,20 @@ End;
   verifie la compatibilite et plie la conversion des constantes ;
   Conv indique la conversion a generer pour une valeur non constante.
   Retourne False apres avoir signale une erreur. }
-Function ExprCoerce(N, Dest : Integer; Var Conv : TConv;
-                    Line, Col : Integer) : Boolean;
+Function ExprCoerceCtx(N, Dest : Integer; Var Conv : TConv;
+                       Line, Col : Integer; Const Ctx : TString)
+         : Boolean;
 Begin
-  ExprCoerce := False;
+  ExprCoerceCtx := False;
   Conv := TypeConversion(ExprTab[N].Typ, Dest);
   If Conv = CV_ERROR Then
   Begin
-    ErrorAt(Line, Col, 'affectation incompatible: ' +
+    ErrorAt(Line, Col, Ctx + ' incompatible: ' +
             TypeName(ExprTab[N].Typ) + ' vers ' + TypeName(Dest));
     Exit;
   End;
   If Conv = CV_REAL_TO_INT Then
-    WarnAt(Line, Col, 'real affecte a un integer: arrondi au plus proche');
+    WarnAt(Line, Col, 'real converti en integer: arrondi au plus proche');
   Case ExprTab[N].Kind Of
     EX_INT:
       If Dest = TY_IDX_REAL Then
@@ -3098,7 +3139,14 @@ Begin
         Conv := CV_NONE;
       End;
   End;
-  ExprCoerce := True;
+  ExprCoerceCtx := True;
+End;
+
+{ Affectation : voir ExprCoerceCtx }
+Function ExprCoerce(N, Dest : Integer; Var Conv : TConv;
+                    Line, Col : Integer) : Boolean;
+Begin
+  ExprCoerce := ExprCoerceCtx(N, Dest, Conv, Line, Col, 'affectation');
 End;
 
 { if C then T else E : valeur de T ou de E. Les branches ont un type
@@ -3298,8 +3346,149 @@ Begin
   ParseIndexed := Node;
 End;
 
-{ Appel : saute le groupe ( ... ) courant et le remplace par un noeud
-  opaque de type T (TODO 14, 17). }
+{ Argument d'appel pour le parametre P. Un parametre tableau recoit le
+  nom d'un tableau ; un parametre value, une expression convertie vers
+  son type ; un parametre par nom, une expression (thunk au TODO 15)
+  dont le type doit etre convertible vers celui du parametre. Item.Flag
+  indique un argument qui est une variable ou un element de tableau du
+  bon type : il pourra etre passe par reference au lieu d'un thunk. }
+Function ParseCallArg(P : Integer; Const ProcName : TString;
+                      Var Item : Integer) : Boolean;
+Var
+  Tok       : TToken;
+  E, S      : Integer;
+  Conv      : TConv;
+  Line, Col : Integer;
+Begin
+  ParseCallArg := False;
+  Item := -1;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  Conv := CV_NONE;
+  If SymTab[P].TypeIdx = TY_IDX_ARRAY Then
+  Begin
+    Tok := CurToken;
+    If Tok.Kind <> TK_IDENT Then
+    Begin
+      ParseError('nom de tableau attendu pour le parametre ' +
+                 SymTab[P].Name);
+      Exit;
+    End;
+    ParserAdvance;
+    S := SymFind(Tok.Val);
+    If (S < 0) Or (Not SymIsArrayLike(S)) Then
+    Begin
+      ErrorAt(Tok.Line, Tok.Col, 'tableau attendu pour le parametre ' +
+              SymTab[P].Name + ': ' + Tok.Val);
+      Exit;
+    End;
+    If SymTab[S].ElemType <> SymTab[P].ElemType Then
+    Begin
+      ErrorAt(Tok.Line, Tok.Col, 'tableau ' + Tok.Val + ' de ' +
+              TypeName(SymTab[S].ElemType) + ' au lieu de ' +
+              TypeName(SymTab[P].ElemType));
+      Exit;
+    End;
+    E := ExprNew(EX_VAR, TY_IDX_ARRAY, Tok.Line, Tok.Col);
+    ExprTab[E].Sym := S;
+  End
+  Else If SymTab[P].TypeIdx In [TY_IDX_PROCEDURE, TY_IDX_SWITCH,
+                                TY_IDX_LABEL] Then
+  Begin
+    ErrorAt(Line, Col, 'parametre ' + SymTab[P].Name + ' de ' +
+            ProcName + ': procedure, switch ou etiquette en parametre ' +
+            'non supporte');
+    Exit;
+  End
+  Else
+  Begin
+    E := ParseExprPrec(1);
+    If E < 0 Then Exit;
+    If Not ExprCoerceCtx(E, SymTab[P].TypeIdx, Conv, Line, Col,
+                         'argument') Then Exit;
+  End;
+  Item := ExprNew(EX_LIST, ExprTab[E].Typ, Line, Col);
+  ExprTab[Item].L    := E;
+  ExprTab[Item].Conv := Conv;
+  ExprTab[Item].Flag := (SymTab[P].Kind = SK_PARAM_NAME) And
+                        (ExprTab[E].Kind In [EX_VAR, EX_INDEX]) And
+                        (Conv = CV_NONE) And
+                        (ExprTab[E].Typ <> TY_IDX_ARRAY);
+  ParseCallArg := True;
+End;
+
+{ nom(arg, arg...) ou nom (sans parentheses) : appel de la procedure
+  ou fonction S. Tok = le nom, deja consomme. Le nombre d'arguments
+  est verifie. Valeur : le type de retour d'une fonction, ou le type
+  procedure (aucune valeur). Convention d'appel :
+    - arguments empiles de droite a gauche, puis le lien statique
+      pour une procedure declaree dans une autre procedure
+    - CALL, la procedure nettoie la pile (RET n, n = ParamBytes)
+    - resultat dans EAX (integer, Boolean) ou ST(0) (real) }
+Function ParseCall(Const Tok : TToken; S : Integer) : Integer;
+Var
+  Head, Tail, Item, Expected, N, Node : Integer;
+  Bad                                  : Boolean;
+Begin
+  ParseCall := -1;
+  Expected := SymTab[S].ParamCount;
+  Head := -1;
+  Tail := -1;
+  N    := 0;
+  Bad  := False;
+  If AtPunct('(') Then
+  Begin
+    ParserAdvance;
+    If Not AtPunct(')') Then
+      Repeat
+        Inc(N);
+        If N <= Expected Then
+        Begin
+          If ParseCallArg(SymTab[S].ParamSym[N], SymTab[S].Name,
+                          Item) Then
+          Begin
+            If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+            Tail := Item;
+          End
+          Else
+            Bad := True;
+        End
+        Else
+        Begin
+          If N = Expected + 1 Then
+            ErrorAt(CurToken.Line, CurToken.Col, 'trop d''arguments ' +
+                    'pour ' + SymTab[S].Name + ' (' + ItoS(Expected) +
+                    ' attendu(s))');
+          Bad := True;
+          If ParseExprPrec(1) < 0 Then ;
+        End;
+        If AtPunct(',') Then
+          ParserAdvance
+        Else
+          Break;
+      Until False;
+    ExpectPunct(')');
+  End;
+  If (N < Expected) Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, 'appel de ' + Tok.Val + ': ' + ItoS(N) +
+            ' argument(s) au lieu de ' + ItoS(Expected));
+    Bad := True;
+  End;
+  If Bad Then Exit;
+  Inc(CallCount);
+  If SymTab[S].Kind = SK_FUNC Then
+    Node := ExprNew(EX_CALL, SymTab[S].TypeIdx, Tok.Line, Tok.Col)
+  Else
+    Node := ExprNew(EX_CALL, TY_IDX_PROCEDURE, Tok.Line, Tok.Col);
+  ExprTab[Node].Sym    := S;
+  ExprTab[Node].L      := Head;
+  ExprTab[Node].IntVal := N;
+  ParseCall := Node;
+End;
+
+{ Appel d'une fonction inconnue : saute le groupe ( ... ) courant et le
+  remplace par un noeud opaque de type T (TODO 17 : intrinseques). }
 Function ParseOpaque(Const Tok : TToken; T : Integer) : Integer;
 Var
   N, Depth : Integer;
@@ -3319,8 +3508,8 @@ End;
 
 Function ParsePrimary : Integer;
 Var
-  N, S, T : Integer;
-  Tok     : TToken;
+  N, S : Integer;
+  Tok  : TToken;
 Begin
   ParsePrimary := -1;
   Tok := CurToken;
@@ -3388,19 +3577,22 @@ Begin
             ParsePrimary := ParseIndexed(Tok, S);
           Exit;
         End;
-        If AtPunct('(') Then
+        S := SymFind(Tok.Val);
+        { procedure ou fonction declaree : appel (le nom de la
+          fonction en cours suivi de := est une cible, pas un appel) }
+        If (S >= 0) And (SymTab[S].Kind In [SK_PROC, SK_FUNC]) And
+           Not ((S = SymCurProc) And AtOp(':=')) Then
         Begin
-          { appel : saute les arguments ; la traduction releve des
-            TODO 14 (procedures) et 17 (fonctions intrinseques) }
-          S := SymFind(Tok.Val);
-          T := TY_IDX_INTEGER;
-          If S >= 0 Then
-            If SymTab[S].Kind = SK_FUNC Then
-              T := SymTab[S].TypeIdx;
-          ParsePrimary := ParseOpaque(Tok, T);
+          ParsePrimary := ParseCall(Tok, S);
           Exit;
         End;
-        S := SymFind(Tok.Val);
+        If AtPunct('(') Then
+        Begin
+          { nom inconnu : fonction intrinseque (TODO 17), saute les
+            arguments }
+          ParsePrimary := ParseOpaque(Tok, TY_IDX_INTEGER);
+          Exit;
+        End;
         If S < 0 Then
           S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
         If SymIsArrayLike(S) Then
@@ -3491,8 +3683,8 @@ End;
 { Mode debug -d : arbre d'une expression }
 Procedure ExprDump(N, Depth : Integer);
 Var
-  Pad : TString;
-  I   : Integer;
+  Pad  : TString;
+  I, K : Integer;
 Begin
   If N < 0 Then Exit;
   Pad := '';
@@ -3530,6 +3722,32 @@ Begin
     EX_LIST   : WriteLn('list');
     EX_LABEL  : WriteLn('label ', SymTab[ExprTab[N].Sym].Name);
     EX_SWITCHREF : WriteLn('switch ', SymTab[ExprTab[N].Sym].Name, '[]');
+    EX_CALL   : WriteLn('call ', SymTab[ExprTab[N].Sym].Name, '(',
+                        ExprTab[N].IntVal, ') : ',
+                        TypeName(ExprTab[N].Typ));
+  End;
+  If ExprTab[N].Kind = EX_CALL Then
+  Begin
+    I := ExprTab[N].L;
+    K := 0;
+    While I >= 0 Do
+    Begin
+      Inc(K);
+      Write(Pad, '  arg ', K, ' ');
+      If SymTab[SymTab[ExprTab[N].Sym].ParamSym[K]].Kind =
+         SK_PARAM_VALUE Then
+        Write('value')
+      Else If ExprTab[ExprTab[I].L].Typ = TY_IDX_ARRAY Then
+        Write('array/ref')
+      Else If ExprTab[I].Flag Then
+        Write('name/ref')
+      Else
+        Write('name/thunk');
+      WriteLn(' ', ConvName(ExprTab[I].Conv));
+      ExprDump(ExprTab[I].L, Depth + 2);
+      I := ExprTab[I].R;
+    End;
+    Exit;
   End;
   If ExprTab[N].Kind = EX_INDEX Then
   Begin
@@ -3650,14 +3868,39 @@ End;
   sautes pour le moment. }
 Procedure ParseIdentStatement;
 Var
-  Tok : TToken;
-  Tgt, N : Integer;
+  Tok       : TToken;
+  Tgt, N, S : Integer;
 Begin
   Tok := CurToken;
   ParserAdvance;
   If AtPunct(':') Then
   Begin
     ParseLabelDef(Tok.Val, Tok.Line, Tok.Col);
+    Exit;
+  End;
+  S := SymFind(Tok.Val);
+  If (S >= 0) And (SymTab[S].Kind In [SK_PROC, SK_FUNC]) And
+     (Not AtOp(':=')) And (Not AtPunct('[')) Then
+  Begin
+    { appel de procedure comme instruction }
+    ParserUnget(Tok);
+    ExprReset;
+    N := ParsePrimary;
+    If N < 0 Then
+      ParserSync
+    Else
+    Begin
+      If Opts.DebugMode Then
+      Begin
+        WriteLn('Appel ligne ', ExprTab[N].Line, ' :');
+        ExprDump(N, 1);
+      End;
+      If Not AtStmtEnd Then
+      Begin
+        ParseError('operateur ou '';'' attendu apres l''appel');
+        ParserSync;
+      End;
+    End;
     Exit;
   End;
   If Not (AtOp(':=') Or AtPunct('[')) Then
@@ -4636,6 +4879,7 @@ Begin
   AssignCount := 0;
   IfCount    := 0;
   GotoCount  := 0;
+  CallCount  := 0;
   LabelCount := 0;
   ForCount   := 0;
   LoopDepth  := 0;
@@ -4651,7 +4895,8 @@ Begin
             ' procedure(s), ', BlockCount, ' bloc(s), ', AssignCount,
             ' affectation(s), ', IfCount, ' if, ', ForCount, ' for, ',
             GotoCount, ' goto, ', LabelCount, ' etiquette(s), ',
-            FoldCount, ' constante(s) repliee(s)');
+            CallCount, ' appel(s), ', FoldCount,
+            ' constante(s) repliee(s)');
 End;
 
 { ============================================================
