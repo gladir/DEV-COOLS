@@ -26,10 +26,11 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 08 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 09 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
-         et listing .ASM, segment de donnees) ; TODO 09 a 25 a faire.
+         et listing .ASM, segment de donnees, expressions primaires) ;
+         TODO 10 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -275,7 +276,7 @@
               own, est faite avec les tableaux (TODO 15) ; l'ecriture des
               octets en .data est faite par l'encodeur (TODO 19)
 
-  TODO 09 - EXPRESSIONS PRIMAIRES ET VARIABLES [A FAIRE]
+  TODO 09 - EXPRESSIONS PRIMAIRES ET VARIABLES [IMPLEMENTE]
             Arbre d'expression (pool reinitialise a chaque instruction) :
               constantes, chaines, variables, elements de tableau,
               appels de fonction, expressions entre parentheses
@@ -286,6 +287,24 @@
             Chargement dans EAX (integer, Boolean) ou ST(0) (real)
             Verification : test_primary.a60, test_variables.a60,
               test_literals.a60, test_symbols.a60
+            Realise : primitives du parseur (ParserAdvance, ParserUnget,
+              AtKw, AtPunct, AtOp, ExpectPunct, ParseError, ParserSync) ;
+              pool ExprTab (EX_INT, EX_REAL, EX_BOOL, EX_STR, EX_VAR,
+              EX_INDEX, EX_LIST, EX_CALL, et les noeuds reserves aux
+              TODO suivants) ; ParsePrimary : constantes, chaines,
+              variables (declaration implicite avec avertissement si
+              inconnue), element de tableau (ParseIndexed : indices
+              convertis en integer, bornes constantes verifiees),
+              appel de fonction (ParseCall : nombre d'arguments verifie),
+              parentheses ; ExprCoerceCtx (conversion et repliement des
+              constantes, avertissements de TypeConvNote) ; ExprDump ;
+              generation : LoadImm, constantes reelles en memoire, chaine
+              par OFFSET, GenFrameReg (remontee des liens statiques),
+              SymCell, GenByName (parametre par nom), GenLoadVar,
+              GenAddrVar, GenExpr pour les noeuds primaires ; les
+              expressions a operateurs, l'affectation, les blocs et
+              declarations sont faits aux TODO 10 a 12 ; PhaseParse
+              n'analyse pas encore de programme complet
 
   TODO 10 - EXPRESSIONS ARITHMETIQUES [A FAIRE]
             Priorites (Revised Report) : puissance ^ > * / div > + -
@@ -3280,9 +3299,840 @@ End;
 { ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 09 a 18)
   ============================================================ }
+{ ---- Primitives du parseur -------------------------------------- }
+Var
+  CurToken   : TToken;       { token courant du parseur             }
+  ParkValid  : Boolean;      { un token est range (ParserUnget)     }
+  ParkTok    : TToken;
+  SyncLine, SyncCol : Integer;   { position du dernier arret de ParserSync }
+
+Procedure ParserInit;
+Begin
+  ParkValid := False;
+  SyncLine  := 0;
+  SyncCol   := 0;
+End;
+
+Procedure ParserAdvance;
+Begin
+  If ParkValid Then
+  Begin
+    CurToken  := ParkTok;
+    ParkValid := False;
+  End
+  Else
+    LexNextToken(CurToken);
+End;
+
+{ Rend Saved (le token precedent) courant ; le token courant est
+  range et reviendra au prochain ParserAdvance. Permet de regarder un
+  token apres un identificateur avant de decider du type d'instruction. }
+Procedure ParserUnget(Const Saved : TToken);
+Begin
+  ParkTok   := CurToken;
+  ParkValid := True;
+  CurToken  := Saved;
+End;
+
+Function TokText(Const T : TToken) : TString;
+Begin
+  Case T.Kind Of
+    TK_EOF    : TokText := 'fin de fichier';
+    TK_STRING : TokText := '"' + T.Val + '"';
+    TK_INTEGER,
+    TK_REAL   : TokText := T.Val;
+  Else
+    TokText := '''' + T.Val + '''';
+  End;
+End;
+
+Procedure ParseError(Const Msg : TString);
+Begin
+  ErrorAt(CurToken.Line, CurToken.Col,
+          Msg + ' (trouve: ' + TokText(CurToken) + ')');
+End;
+
+Function AtEOF : Boolean;
+Begin
+  AtEOF := (CurToken.Kind = TK_EOF);
+End;
+
+Function AtKw(Const S : TString) : Boolean;
+Begin
+  AtKw := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = S);
+End;
+
+Function AtPunct(C : Char) : Boolean;
+Begin
+  AtPunct := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = C);
+End;
+
+Function AtOp(Const S : TString) : Boolean;
+Begin
+  AtOp := (CurToken.Kind = TK_OP) And (CurToken.Val = S);
+End;
+
+Function AtTypeKw : Boolean;
+Begin
+  AtTypeKw := AtKw('integer') Or AtKw('real') Or AtKw('boolean') Or
+              AtKw('string');
+End;
+
+Function AtDeclKw : Boolean;
+Begin
+  AtDeclKw := AtTypeKw Or AtKw('own') Or AtKw('array') Or
+              AtKw('procedure') Or AtKw('switch');
+End;
+
+{ Fin d'une instruction simple : ';' end, else ou fin de fichier }
+Function AtStmtEnd : Boolean;
+Begin
+  AtStmtEnd := AtEOF Or AtPunct(';') Or AtKw('end') Or AtKw('else');
+End;
+
+Procedure ExpectPunct(C : Char);
+Begin
+  If AtPunct(C) Then
+    ParserAdvance
+  Else
+    ParseError('''' + C + ''' attendu');
+End;
+
+{ Recuperation apres une erreur : avance jusqu au prochain ';', end,
+  begin, for, if ou procedure (non consommes) pour reprendre l analyse
+  (TODO 23). }
+Function AtSyncKw : Boolean;
+Begin
+  AtSyncKw := AtKw('begin') Or AtKw('for') Or AtKw('if') Or
+              AtKw('procedure');
+End;
+
+Procedure ParserSync;
+Begin
+  { garantie de progression : un arret repete sur le meme mot-cle est
+    franchi }
+  If AtSyncKw And (CurToken.Line = SyncLine) And
+     (CurToken.Col = SyncCol) Then
+    ParserAdvance;
+  While Not (AtEOF Or AtPunct(';') Or AtKw('end') Or AtSyncKw) Do
+    ParserAdvance;
+  SyncLine := CurToken.Line;
+  SyncCol  := CurToken.Col;
+End;
+
+{ ---- Expressions : arbre ----------------------------------------
+  Les expressions sont analysees en arbre (pool ExprTab, vide avant
+  chaque instruction) que le generateur parcourt. Chaque noeud porte
+  son type. Ce TODO couvre les expressions primaires ; les operateurs
+  (TODO 10 et 11) s'ajoutent au-dessus de ParsePrimary. ----------- }
+Const
+  MAX_EXPR     = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
+  MAX_EXPR_STR = {$IFDEF FPC}256{$ELSE}16{$ENDIF};
+
+Type
+  TExprKind = (
+    EX_INT,         { constante entiere                     }
+    EX_REAL,        { constante reelle                      }
+    EX_BOOL,        { true / false (IntVal = 1 ou 0)        }
+    EX_STR,         { chaine litterale (StrIdx)             }
+    EX_VAR,         { variable scalaire (Sym)               }
+    EX_UNARY,       { Op appliquee a L                      }
+    EX_BINARY,      { L Op R                                }
+    EX_COND,        { if L then R else E                    }
+    EX_ASSIGN,      { L := R (L : variable) ; valeur = celle de L }
+    EX_INDEX,       { Sym[L...] : element de tableau (IntVal = nb d indices) }
+    EX_LIST,        { liste : L = expression, R = suivant   }
+    EX_LABEL,       { designateur : etiquette (Sym)         }
+    EX_SWITCHREF,   { designateur : Sym[L] (element de switch) }
+    EX_CALL         { appel de Sym ; L = liste des arguments }
+  );
+
+  TExprNode = Record
+    Kind    : TExprKind;
+    Op      : String[4];
+    Typ     : Integer;      { TY_IDX_* ou TY_UNKNOWN            }
+    IntVal  : LongInt;
+    RealVal : Double;
+    StrIdx  : Integer;
+    Conv    : TConv;        { EX_ASSIGN, EX_LIST : conversion a generer }
+    Flag    : Boolean;      { EX_INDEX : controle de bornes a l execution }
+    Sym     : Integer;
+    L, R, E : Integer;      { fils, -1 si absent (E : sinon)    }
+    Line    : Integer;
+    Col     : Integer;
+  End;
+
+Var
+  ExprTab      : Array[0..MAX_EXPR - 1] Of TExprNode;
+  ExprCount    : Integer;
+  ExprStrTab   : Array[0..MAX_EXPR_STR - 1] Of TString;
+  ExprStrCount : Integer;
+
+{ Vide le pool : appele avant chaque instruction }
+Procedure ExprReset;
+Begin
+  ExprCount    := 0;
+  ExprStrCount := 0;
+End;
+
+Function ExprNew(K : TExprKind; Typ : Integer; Line, Col : Integer)
+         : Integer;
+Begin
+  If ExprCount >= MAX_EXPR Then
+    FatalError('expression trop complexe (max ' + ItoS(MAX_EXPR) +
+               ' noeuds)');
+  FillChar(ExprTab[ExprCount], SizeOf(TExprNode), 0);
+  ExprTab[ExprCount].Kind := K;
+  ExprTab[ExprCount].Typ  := Typ;
+  ExprTab[ExprCount].L    := -1;
+  ExprTab[ExprCount].R    := -1;
+  ExprTab[ExprCount].E    := -1;
+  ExprTab[ExprCount].Sym  := -1;
+  ExprTab[ExprCount].Line := Line;
+  ExprTab[ExprCount].Col  := Col;
+  ExprNew := ExprCount;
+  Inc(ExprCount);
+End;
+
+Function ExprMakeInt(V : LongInt; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_INT, TY_IDX_INTEGER, Line, Col);
+  ExprTab[N].IntVal := V;
+  ExprMakeInt := N;
+End;
+
+Function ExprMakeReal(V : Double; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_REAL, TY_IDX_REAL, Line, Col);
+  ExprTab[N].RealVal := V;
+  ExprMakeReal := N;
+End;
+
+Function ExprMakeBool(V : Boolean; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_BOOL, TY_IDX_BOOLEAN, Line, Col);
+  If V Then ExprTab[N].IntVal := 1;
+  ExprMakeBool := N;
+End;
+
+{ Range S dans la table des chaines de l'expression ; retourne l'indice }
+Function ExprAddStr(Const S : TString) : Integer;
+Begin
+  If ExprStrCount >= MAX_EXPR_STR Then
+    FatalError('trop de chaines dans une expression');
+  ExprStrTab[ExprStrCount] := S;
+  ExprAddStr := ExprStrCount;
+  Inc(ExprStrCount);
+End;
+
+Function ExprMakeStr(Const S : TString; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_STR, TY_IDX_STRING, Line, Col);
+  ExprTab[N].StrIdx := ExprAddStr(S);
+  ExprMakeStr := N;
+End;
+
+Function ExprMakeVar(Sym : Integer; Line, Col : Integer) : Integer;
+Var
+  N : Integer;
+Begin
+  N := ExprNew(EX_VAR, SymTab[Sym].TypeIdx, Line, Col);
+  ExprTab[N].Sym := Sym;
+  ExprMakeVar := N;
+End;
+
+Function ConvName(C : TConv) : TString;
+Begin
+  Case C Of
+    CV_NONE        : ConvName := 'none';
+    CV_INT_TO_REAL : ConvName := 'int->real';
+    CV_REAL_TO_INT : ConvName := 'real->int';
+    CV_INT_TO_BOOL : ConvName := 'int->bool';
+    CV_ERROR       : ConvName := 'error';
+  End;
+End;
+
+{ Arrondi au plus proche, demi vers le haut : entier(x + 0.5) }
+Function RoundHalfUp(X : Double) : LongInt;
+Var
+  Y : Double;
+  I : LongInt;
+Begin
+  Y := X + 0.5;
+  I := Trunc(Y);
+  If (Y < 0) And (Frac(Y) <> 0) Then Dec(I);
+  RoundHalfUp := I;
+End;
+
+{ Convertit la valeur du noeud N vers le type Dest : verifie la
+  compatibilite, signale les conversions implicites (TypeConvNote) et
+  plie la conversion des constantes ; Conv indique la conversion a
+  generer pour une valeur non constante. Retourne False apres avoir
+  signale une erreur. }
+Function ExprCoerceCtx(N, Dest : Integer; Var Conv : TConv;
+                       Line, Col : Integer; Const Ctx : TString)
+         : Boolean;
+Var
+  Note : TString;
+Begin
+  ExprCoerceCtx := False;
+  Conv := TypeConversion(ExprTab[N].Typ, Dest);
+  If Conv = CV_ERROR Then
+  Begin
+    ErrorAt(Line, Col, Ctx + ' incompatible: ' +
+            TypeName(ExprTab[N].Typ) + ' vers ' + TypeName(Dest));
+    Exit;
+  End;
+  Note := TypeConvNote(ExprTab[N].Typ, Dest);
+  If Note <> '' Then WarnAt(Line, Col, Note);
+  Case ExprTab[N].Kind Of
+    EX_INT:
+      If Dest = TY_IDX_REAL Then
+      Begin
+        ExprTab[N].RealVal := ExprTab[N].IntVal;
+        ExprTab[N].Kind := EX_REAL;
+        ExprTab[N].Typ  := TY_IDX_REAL;
+        Conv := CV_NONE;
+      End
+      Else If Dest = TY_IDX_BOOLEAN Then
+      Begin
+        If ExprTab[N].IntVal <> 0 Then ExprTab[N].IntVal := 1;
+        ExprTab[N].Kind := EX_BOOL;
+        ExprTab[N].Typ  := TY_IDX_BOOLEAN;
+        Conv := CV_NONE;
+      End;
+    EX_REAL:
+      If Dest = TY_IDX_INTEGER Then
+      Begin
+        If Abs(ExprTab[N].RealVal) >= 2147483647.0 Then
+        Begin
+          ErrorAt(Line, Col, 'constante reelle hors de l''intervalle ' +
+                  'integer');
+          Exit;
+        End;
+        ExprTab[N].IntVal := RoundHalfUp(ExprTab[N].RealVal);
+        ExprTab[N].Kind := EX_INT;
+        ExprTab[N].Typ  := TY_IDX_INTEGER;
+        Conv := CV_NONE;
+      End;
+    EX_BOOL:
+      If Dest = TY_IDX_INTEGER Then
+      Begin
+        ExprTab[N].Kind := EX_INT;
+        ExprTab[N].Typ  := TY_IDX_INTEGER;
+      End
+      Else If Dest = TY_IDX_REAL Then
+      Begin
+        ExprTab[N].RealVal := ExprTab[N].IntVal;
+        ExprTab[N].Kind := EX_REAL;
+        ExprTab[N].Typ  := TY_IDX_REAL;
+        Conv := CV_NONE;
+      End;
+  End;
+  ExprCoerceCtx := True;
+End;
+
+{ Affectation : voir ExprCoerceCtx }
+Function ExprCoerce(N, Dest : Integer; Var Conv : TConv;
+                    Line, Col : Integer) : Boolean;
+Begin
+  ExprCoerce := ExprCoerceCtx(N, Dest, Conv, Line, Col, 'affectation');
+End;
+
+{ ---- Expressions primaires -------------------------------------- }
+
+Function ParseExpr : Integer; Forward;
+
+Function SymIsArrayLike(S : Integer) : Boolean;
+Begin
+  SymIsArrayLike := (SymTab[S].Kind = SK_ARRAY) Or
+    ((SymTab[S].Kind In [SK_PARAM_VALUE, SK_PARAM_NAME]) And
+     (SymTab[S].TypeIdx = TY_IDX_ARRAY));
+End;
+
+{ nom[i] ou nom[i, j] : le token courant est le '[' qui suit le nom.
+  Chaque indice est converti en integer ; les constantes sont
+  verifiees contre les bornes connues. Flag = True quand le generateur
+  doit controler les bornes a l'execution (_A60RT_CHKIDX). }
+Function ParseIndexed(Const Tok : TToken; S : Integer) : Integer;
+Var
+  Head, Tail, Item, E, N, Dims, Node : Integer;
+  Bad, NeedCheck                     : Boolean;
+  Conv                               : TConv;
+  Line, Col                          : Integer;
+Begin
+  Dims := SymTab[S].ArrDims;
+  Head := -1;
+  Tail := -1;
+  N    := 0;
+  Bad  := False;
+  NeedCheck := (Dims = 0) Or SymTab[S].ArrDynamic;
+  ParserAdvance;                            { [ }
+  Repeat
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    E := ParseExpr;
+    If E >= 0 Then
+      If Not ExprCoerceCtx(E, TY_IDX_INTEGER, Conv, Line, Col,
+                           'indice') Then E := -1;
+    Inc(N);
+    If E < 0 Then
+      Bad := True
+    Else
+    Begin
+      Item := ExprNew(EX_LIST, TY_IDX_INTEGER, Line, Col);
+      ExprTab[Item].L    := E;
+      ExprTab[Item].Conv := Conv;
+      If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+      Tail := Item;
+      If ExprTab[E].Kind = EX_INT Then
+      Begin
+        If (Dims > 0) And (N <= Dims) And (Not SymTab[S].ArrDynamic) Then
+        Begin
+          If (ExprTab[E].IntVal < SymTab[S].ArrLo[N]) Or
+             (ExprTab[E].IntVal > SymTab[S].ArrHi[N]) Then
+          Begin
+            ErrorAt(Line, Col, 'indice hors bornes: ' +
+                    ItoS(ExprTab[E].IntVal) + ' (' + Tok.Val + '[' +
+                    ItoS(SymTab[S].ArrLo[N]) + ':' +
+                    ItoS(SymTab[S].ArrHi[N]) + '])');
+            Bad := True;
+          End;
+        End;
+      End
+      Else
+        NeedCheck := True;
+    End;
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+  If AtPunct(']') Then
+    ParserAdvance
+  Else
+    ParseError(''']'' attendu');
+  If (Dims > 0) And (N <> Dims) Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, 'tableau ' + Tok.Val + ': ' + ItoS(N) +
+            ' indice(s) au lieu de ' + ItoS(Dims));
+    Bad := True;
+  End;
+  ParseIndexed := -1;
+  If Bad Then Exit;
+  Node := ExprNew(EX_INDEX, SymTab[S].ElemType, Tok.Line, Tok.Col);
+  ExprTab[Node].Sym    := S;
+  ExprTab[Node].L      := Head;
+  ExprTab[Node].IntVal := N;
+  ExprTab[Node].Flag   := NeedCheck;
+  ParseIndexed := Node;
+End;
+
+{ Appel de procedure ou de fonction : nom ( arg, arg ) ou nom seul.
+  Les arguments sont des expressions ; leur mode de passage (valeur,
+  par nom, thunk) est decide aux TODO 16 et 17. }
+Function ParseCall(Const Tok : TToken; S : Integer) : Integer;
+Var
+  Head, Tail, Item, E, N : Integer;
+  Bad                    : Boolean;
+  Node                   : Integer;
+Begin
+  Head := -1;
+  Tail := -1;
+  N    := 0;
+  Bad  := False;
+  If AtPunct('(') Then
+  Begin
+    ParserAdvance;
+    Repeat
+      E := ParseExpr;
+      Inc(N);
+      If E < 0 Then
+        Bad := True
+      Else
+      Begin
+        Item := ExprNew(EX_LIST, ExprTab[E].Typ, ExprTab[E].Line,
+                        ExprTab[E].Col);
+        ExprTab[Item].L := E;
+        If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+        Tail := Item;
+      End;
+      If AtPunct(',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+    If AtPunct(')') Then
+      ParserAdvance
+    Else
+      ParseError(''')'' attendu');
+  End;
+  ParseCall := -1;
+  If Bad Then Exit;
+  If N < SymTab[S].ParamCount Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, 'appel de ' + Tok.Val + ': ' + ItoS(N) +
+            ' argument(s) au lieu de ' + ItoS(SymTab[S].ParamCount));
+    Exit;
+  End;
+  If N > SymTab[S].ParamCount Then
+  Begin
+    ErrorAt(Tok.Line, Tok.Col, 'trop d''arguments pour ' + Tok.Val +
+            ' (' + ItoS(SymTab[S].ParamCount) + ' attendu(s))');
+    Exit;
+  End;
+  If SymTab[S].Kind = SK_FUNC Then
+    Node := ExprNew(EX_CALL, SymTab[S].TypeIdx, Tok.Line, Tok.Col)
+  Else
+    Node := ExprNew(EX_CALL, TY_UNKNOWN, Tok.Line, Tok.Col);
+  ExprTab[Node].Sym    := S;
+  ExprTab[Node].L      := Head;
+  ExprTab[Node].IntVal := N;
+  ParseCall := Node;
+End;
+
+{ Expression primaire : constante, chaine, variable, element de tableau,
+  appel de fonction ou expression entre parentheses }
+Function ParsePrimary : Integer;
+Var
+  N, S : Integer;
+  Tok  : TToken;
+Begin
+  ParsePrimary := -1;
+  Tok := CurToken;
+  Case Tok.Kind Of
+    TK_INTEGER:
+      Begin
+        ParsePrimary := ExprMakeInt(Tok.IntVal, Tok.Line, Tok.Col);
+        ParserAdvance;
+      End;
+    TK_REAL:
+      Begin
+        ParsePrimary := ExprMakeReal(Tok.RealVal, Tok.Line, Tok.Col);
+        ParserAdvance;
+      End;
+    TK_STRING:
+      Begin
+        ParsePrimary := ExprMakeStr(Tok.Val, Tok.Line, Tok.Col);
+        ParserAdvance;
+      End;
+    TK_KEYWORD:
+      If (Tok.Val = 'true') Or (Tok.Val = 'false') Then
+      Begin
+        ParsePrimary := ExprMakeBool(Tok.Val = 'true', Tok.Line, Tok.Col);
+        ParserAdvance;
+      End
+      Else
+        ParseError('expression attendue');
+    TK_PUNCT:
+      If Tok.Val = '(' Then
+      Begin
+        ParserAdvance;
+        N := ParseExpr;
+        If AtPunct(')') Then
+          ParserAdvance
+        Else
+          ParseError(''')'' attendu');
+        ParsePrimary := N;
+      End
+      Else
+        ParseError('expression attendue');
+    TK_IDENT:
+      Begin
+        ParserAdvance;
+        S := SymFind(Tok.Val);
+        If AtPunct('[') Then
+        Begin
+          If S < 0 Then
+            ErrorAt(Tok.Line, Tok.Col, 'tableau non declare: ' + Tok.Val)
+          Else If Not SymIsArrayLike(S) Then
+            ErrorAt(Tok.Line, Tok.Col, 'ce n''est pas un tableau: ' +
+                    Tok.Val)
+          Else
+            ParsePrimary := ParseIndexed(Tok, S);
+          Exit;
+        End;
+        { procedure typee : appel (le nom de la fonction en cours suivi
+          de := est une cible, pas un appel) }
+        If (S >= 0) And (SymTab[S].Kind = SK_FUNC) And
+           Not ((S = SymCurProc) And AtOp(':=')) Then
+        Begin
+          ParsePrimary := ParseCall(Tok, S);
+          Exit;
+        End;
+        If (S >= 0) And (SymTab[S].Kind = SK_PROC) Then
+        Begin
+          ErrorAt(Tok.Line, Tok.Col, 'procedure sans valeur dans une ' +
+                  'expression: ' + Tok.Val);
+          Exit;
+        End;
+        If AtPunct('(') Then
+        Begin
+          If S >= 0 Then
+            ErrorAt(Tok.Line, Tok.Col, 'ce n''est pas une procedure: ' +
+                    Tok.Val)
+          Else
+            ErrorAt(Tok.Line, Tok.Col, 'procedure ou fonction ' +
+                    'inconnue: ' + Tok.Val);
+          Exit;
+        End;
+        If S < 0 Then
+        Begin
+          S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
+          DataDeclareSym(S);
+        End;
+        If SymIsArrayLike(S) Then
+          ErrorAt(Tok.Line, Tok.Col, 'indice attendu pour le tableau ' +
+                  Tok.Val)
+        Else If SymTab[S].Kind In [SK_VAR, SK_OWN, SK_PARAM_VALUE,
+                              SK_PARAM_NAME] Then
+          ParsePrimary := ExprMakeVar(S, Tok.Line, Tok.Col)
+        Else If (SymTab[S].Kind = SK_FUNC) And (S = SymCurProc) And
+                AtOp(':=') Then
+          ParsePrimary := ExprMakeVar(S, Tok.Line, Tok.Col)
+        Else
+          ErrorAt(Tok.Line, Tok.Col,
+                  'variable attendue: ' + Tok.Val + ' (' +
+                  SymKindName(SymTab[S].Kind) + ')');
+      End;
+  Else
+    ParseError('expression attendue');
+  End;
+End;
+
+{ Expression : pour le moment une expression primaire ; les operateurs
+  arithmetiques (TODO 10), booleens et conditionnels (TODO 11) s'y
+  ajouteront. }
+Function ParseExpr : Integer;
+Begin
+  ParseExpr := ParsePrimary;
+End;
+
+{ Mode debug -d : arbre d'une expression }
+Procedure ExprDump(N, Depth : Integer);
+Var
+  Pad  : TString;
+Begin
+  If N < 0 Then Exit;
+  Pad := '';
+  While Length(Pad) < 2 * Depth + 2 Do
+    Pad := Pad + ' ';
+  Write(Pad);
+  Case ExprTab[N].Kind Of
+    EX_INT    : WriteLn('int ', ExprTab[N].IntVal);
+    EX_REAL   : WriteLn('real ', ExprTab[N].RealVal:0:6);
+    EX_BOOL   : If ExprTab[N].IntVal <> 0 Then
+                  WriteLn('bool true')
+                Else
+                  WriteLn('bool false');
+    EX_STR    : WriteLn('str "', ExprStrTab[ExprTab[N].StrIdx], '"');
+    EX_VAR    : WriteLn('var ', SymTab[ExprTab[N].Sym].Name, ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_UNARY  : WriteLn('unary ', ExprTab[N].Op, ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_BINARY : WriteLn('binary ', ExprTab[N].Op, ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_COND   : WriteLn('cond : ', TypeName(ExprTab[N].Typ));
+    EX_ASSIGN : WriteLn('assign := ', ConvName(ExprTab[N].Conv), ' : ',
+                        TypeName(ExprTab[N].Typ));
+    EX_INDEX  : Begin
+                  Write('index ', SymTab[ExprTab[N].Sym].Name, '[',
+                        ExprTab[N].IntVal, '] : ',
+                        TypeName(ExprTab[N].Typ));
+                  If ExprTab[N].Flag Then
+                    WriteLn(' (controle de bornes)')
+                  Else
+                    WriteLn;
+                End;
+    EX_LIST   : WriteLn('list');
+    EX_LABEL  : WriteLn('label ', SymTab[ExprTab[N].Sym].Name);
+    EX_SWITCHREF : WriteLn('switch ', SymTab[ExprTab[N].Sym].Name, '[]');
+    EX_CALL   : WriteLn('call ', SymTab[ExprTab[N].Sym].Name, '(',
+                        ExprTab[N].IntVal, ' argument(s)) : ',
+                        TypeName(ExprTab[N].Typ));
+  End;
+  ExprDump(ExprTab[N].L, Depth + 1);
+  ExprDump(ExprTab[N].R, Depth + 1);
+End;
+
+{ ---- Generation du code : operandes et variables ------------------ }
+
+Procedure CallRT(Const Name : TString);
+Begin
+  Emit1(OP_CALL, OpLabel(Intern(A60_RT_PFX + Name)));
+End;
+
+Procedure LoadImm(R : TReg; V : LongInt);
+Begin
+  If V = 0 Then
+    Emit(OP_XOR, OpReg(R), OpReg(R))
+  Else
+    Emit(OP_MOV, OpReg(R), OpImm(V));
+End;
+
+{ ST(0) -> pile machine (SUB ESP,8 ; FSTP QWORD [ESP]) }
+Procedure SpillReal;
+Begin
+  Emit(OP_SUB, OpReg(R_ESP), OpImm(8));
+  Emit1(OP_FSTP, OpMem(R_ESP, 0, 8));
+End;
+
+Function IsRealT(T : Integer) : Boolean;
+Begin
+  IsRealT := (T = TY_IDX_REAL);
+End;
+
+Function ValSize(T : Integer) : Byte;
+Begin
+  If T = TY_IDX_REAL Then ValSize := 8 Else ValSize := 4;
+End;
+
+{ Registre contenant le cadre de la procedure de niveau Level : EBP
+  pour le niveau courant, sinon ECX apres remontee des liens
+  statiques ([cadre+8]). }
+Function GenFrameReg(Level : Integer) : TReg;
+Var
+  K : Integer;
+Begin
+  K := CurLevel - Level;
+  If K <= 0 Then
+  Begin
+    GenFrameReg := R_EBP;
+    Exit;
+  End;
+  Emit(OP_MOV, OpReg(R_ECX), OpMem(R_EBP, ABI_PARAM_BASE, 4));
+  Dec(K);
+  While K > 0 Do
+  Begin
+    Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ECX, ABI_PARAM_BASE, 4));
+    Dec(K);
+  End;
+  GenFrameReg := R_ECX;
+End;
+
+{ Cellule d'une variable scalaire (globale, locale ou parametre par
+  valeur) ; resultat d'une fonction pour SK_FUNC. }
+Function SymCell(S : Integer; Extra : LongInt; Size : Byte) : TOperand;
+Var
+  F : TReg;
+Begin
+  If SymTab[S].Kind = SK_FUNC Then
+  Begin
+    SymCell := OpMem(R_EBP, SymResultOfs + Extra, Size);
+    Exit;
+  End;
+  If SymTab[S].Storage = SC_GLOBAL Then
+    SymCell := OpMemSym(Intern(SymTab[S].Mangled), Extra, Size)
+  Else
+  Begin
+    F := GenFrameReg(SymTab[S].Level);
+    SymCell := OpMem(F, SymTab[S].Offset + Extra, Size);
+  End;
+End;
+
+{ Acces a un parametre par nom : EAX := valeur (WantAddr = False) ou
+  adresse de l'argument (WantAddr = True). Paire [mot0, mot1] : mot0 =
+  thunk (0 = reference directe), mot1 = contexte ou adresse. Un
+  thunk est appele avec EAX = contexte, ECX = 0 (valeur) ou 1 (adresse),
+  et rend la valeur en EAX / ST(0) ou l'adresse en EAX. }
+Procedure GenByName(S : Integer; WantAddr : Boolean);
+Var
+  F            : TReg;
+  Off          : LongInt;
+  Lref, Ldone  : Integer;
+Begin
+  F   := GenFrameReg(SymTab[S].Level);
+  Off := SymTab[S].Offset;
+  Lref  := NewLabel;
+  Ldone := NewLabel;
+  Emit(OP_MOV, OpReg(R_EDX), OpMem(F, Off, 4));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(F, Off + 4, 4));
+  Emit(OP_TEST, OpReg(R_EDX), OpReg(R_EDX));
+  If WantAddr Then
+    Emit1(OP_JE, OpLabel(Ldone))
+  Else
+    Emit1(OP_JE, OpLabel(Lref));
+  If WantAddr Then
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(1))
+  Else
+    Emit(OP_XOR, OpReg(R_ECX), OpReg(R_ECX));
+  Emit1(OP_CALL, OpReg(R_EDX));
+  If Not WantAddr Then
+  Begin
+    Emit1(OP_JMP, OpLabel(Ldone));
+    EmitLabel(Lref);
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_EAX));
+    If IsRealT(SymTab[S].TypeIdx) Then
+      Emit1(OP_FLD, OpMem(R_EDX, 0, 8))
+    Else
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
+  End;
+  EmitLabel(Ldone);
+End;
+
+{ Valeur d'une variable scalaire -> EAX ou ST(0) }
+Procedure GenLoadVar(S : Integer);
+Var
+  T : Integer;
+Begin
+  T := SymTab[S].TypeIdx;
+  If SymTab[S].Kind = SK_PARAM_NAME Then
+    GenByName(S, False)
+  Else If IsRealT(T) Then
+    Emit1(OP_FLD, SymCell(S, 0, 8))
+  Else
+    Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 0, 4));
+End;
+
+{ Adresse d'une variable scalaire -> EAX }
+Procedure GenAddrVar(S : Integer);
+Var
+  O : TOperand;
+Begin
+  If SymTab[S].Kind = SK_PARAM_NAME Then
+  Begin
+    GenByName(S, True);
+    Exit;
+  End;
+  O := SymCell(S, 0, 0);
+  If O.Sym >= 0 Then
+    Emit(OP_MOV, OpReg(R_EAX), OpOffset(O.Sym))
+  Else
+    Emit(OP_LEA, OpReg(R_EAX), O);
+End;
+
+{ Evalue le noeud N : integer, Boolean ou chaine (adresse) dans EAX,
+  real dans ST(0). Les autres noeuds viendront avec leurs TODO. }
+Procedure GenExpr(N : Integer);
+Begin
+  Case ExprTab[N].Kind Of
+    EX_INT, EX_BOOL:
+      LoadImm(R_EAX, ExprTab[N].IntVal);
+    EX_REAL:
+      Emit1(OP_FLD, OpMemSym(DataReal(ExprTab[N].RealVal), 0, 8));
+    EX_STR:
+      Emit(OP_MOV, OpReg(R_EAX),
+           OpOffset(DataStr(ExprStrTab[ExprTab[N].StrIdx])));
+    EX_VAR:
+      GenLoadVar(ExprTab[N].Sym);
+  Else
+    FatalError('erreur interne: noeud d''expression non genere ' +
+               '(TODO 10 a 17)');
+  End;
+End;
+
 Procedure PhaseParse;
 Begin
-  { A faire : TODO 09 a 18 }
+  ParserInit;
+  { A faire : TODO 10 a 18 (le programme complet) }
 End;
 
 { ============================================================
