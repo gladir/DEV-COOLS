@@ -30,8 +30,8 @@
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
-         expressions arithmetiques, booleennes et conditionnelles) ;
-         TODO 12 a 25 a faire.
+         expressions arithmetiques, booleennes et conditionnelles,
+         instructions et blocs) ; TODO 13 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -376,7 +376,7 @@
               executees ; les 30 cas du TODO 10 donnent les memes
               resultats (27 valeurs et 3 refus attendus)
 
-  TODO 12 - INSTRUCTIONS : AFFECTATION, IF ET BLOCS [A FAIRE]
+  TODO 12 - INSTRUCTIONS : AFFECTATION, IF ET BLOCS [IMPLEMENTE]
             Affectation x := E avec conversion de type ; affectations
               multiples a := b := E (liste de parties gauches)
             Instruction conditionnelle if B then S1 [else S2], sans
@@ -386,6 +386,31 @@
             Instruction vide, instruction etiquetee, point final de END.
             Verification : test_if.a60, test_blocks.a60, blocks.a60,
               ifthen.a60, test_emitter.a60
+            Realise : ParseProgram (un bloc begin ... end suivi du point
+              final facultatif), ParseBlock (portee propre, declarations
+              et instructions melangees comme dans les exemples),
+              ParseItem, ParseStatement (instruction vide, bloc, if,
+              affectation, appel, etiquette), ParseDeclaration et
+              ParseVarList (variables [own] integer, real, boolean : une
+              cellule .data au niveau 0 ou own, sinon locale [EBP-n]),
+              ParseAssignTail (liste a := b := expr, meme type exige
+              comme dans le rapport, parametre par nom marque ecrit),
+              ParseLabelDef (etiquette devant une instruction), ParseIf
+              (saut Lelse si faux, else rattache au if le plus proche),
+              GenAssign (variable simple et resultat de fonction),
+              GenStmtExpr, GenMainBegin / GenMainEnd (ExitProcess(0)) ;
+              extension toleree par les exemples : une expression isolee
+              (a + b ; `texte` ;) est ignoree avec un avertissement
+              sauf si elle appelle une procedure ; les affectations a
+              un element de tableau ou a un parametre par nom, for, goto,
+              les declarations de tableau, switch et procedure, les
+              appels d'entree/sortie viennent avec les TODO 13 a 18
+            Verifie : 4 programmes (affectations, if imbriques, blocs
+              freres de meme nom, own, reels, Boolean) compiles, le
+              resultat lu par le code de retour apres assemblage avec
+              ML.PAS ; 7 exemples compilent sans erreur : test_arithbool,
+              test_emitter, test_operators, test_primary, test_types,
+              test_variables, test_data
 
   TODO 13 - BOUCLE FOR [A FAIRE]
             for v := liste do S ; elements de la liste : expression
@@ -4944,6 +4969,7 @@ End;
 
 
 Procedure GenExpr(N : Integer); Forward;
+Procedure GenAssign(N : Integer; NeedValue : Boolean); Forward;
 
 { Conversion de la valeur courante (EAX ou ST(0)) du type From vers
   le type Dest }
@@ -5315,16 +5341,468 @@ Begin
         GenExprAs(ExprTab[N].E, ExprTab[N].Typ);
         EmitLabel(Lend);
       End;
+    EX_ASSIGN:
+      GenAssign(N, True);
   Else
     FatalError('erreur interne: noeud d''expression non genere ' +
                '(TODO 12 a 17)');
   End;
 End;
 
+{ ---- Generation du code : instructions --------------------------- }
+
+{ nom := valeur  (NeedValue : la valeur reste dans EAX / ST(0), pour
+  les affectations multiples ; sinon un real est depile) }
+Procedure GenAssign(N : Integer; NeedValue : Boolean);
+Var
+  Tgt, Val, TT, Sym : Integer;
+  Cell              : TOperand;
+Begin
+  Tgt := ExprTab[N].L;
+  Val := ExprTab[N].R;
+  TT  := ExprTab[Tgt].Typ;
+  If (ExprTab[Tgt].Kind <> EX_VAR) Or
+     (SymTab[ExprTab[Tgt].Sym].Kind = SK_PARAM_NAME) Then
+    FatalError('erreur interne: affectation a un element de tableau ou ' +
+               'a un parametre par nom (TODO 15 et 17)');
+  Sym := ExprTab[Tgt].Sym;
+  GenExprAs(Val, TT);
+  Cell := SymCell(Sym, 0, ValSize(TT));
+  If IsRealT(TT) Then
+  Begin
+    If NeedValue Then Emit1(OP_FST, Cell) Else Emit1(OP_FSTP, Cell);
+  End
+  Else
+    Emit(OP_MOV, Cell, OpReg(R_EAX));
+End;
+
+{ Instruction dont l'arbre est N : affectation ou appel }
+Procedure GenStmtExpr(N : Integer);
+Begin
+  If N < 0 Then Exit;
+  Case ExprTab[N].Kind Of
+    EX_ASSIGN: GenAssign(N, False);
+  Else
+    Begin
+      GenExpr(N);
+      If IsRealT(ExprTab[N].Typ) Then Emit1(OP_FSTP, OpST(0));
+    End;
+  End;
+End;
+
+Procedure GenMainBegin;
+Begin
+  EmitComment('programme principal');
+  EmitLabel(Intern(A60_MAIN_NAME));
+  Emit1(OP_PUSH, OpReg(R_EBP));
+  Emit(OP_MOV, OpReg(R_EBP), OpReg(R_ESP));
+End;
+
+Procedure GenMainEnd;
+Begin
+  Emit1(OP_PUSH, OpImm(0));
+  Emit1(OP_CALL, OpLabel(Intern('ExitProcess')));
+End;
+
+{ ---- Analyse des instructions ------------------------------------ }
+Var
+  DeclCount   : LongInt;      { variables declarees (statistiques)   }
+  BlockCount  : LongInt;      { blocs begin...end analyses           }
+  AssignCount : LongInt;      { affectations analysees               }
+  IfCount     : LongInt;      { instructions if                      }
+  LabelCount  : LongInt;      { etiquettes definies                  }
+
+Procedure ParseStatement; Forward;
+Procedure ParseBlock; Forward;
+
+{ Vrai si l'evaluation de N a un effet (appel, affectation) }
+Function ExprHasEffect(N : Integer) : Boolean;
+Begin
+  ExprHasEffect := False;
+  If N < 0 Then Exit;
+  If ExprTab[N].Kind In [EX_ASSIGN, EX_CALL] Then
+  Begin
+    ExprHasEffect := True;
+    Exit;
+  End;
+  If ExprHasEffect(ExprTab[N].L) Or ExprHasEffect(ExprTab[N].R) Or
+     ExprHasEffect(ExprTab[N].E) Then
+    ExprHasEffect := True;
+End;
+
+{ Debut d'une expression isolee utilisee comme instruction (extension
+  toleree par les exemples : a + b ; `texte` ; 42 ;). Elle est evaluee
+  seulement si elle a un effet ; sinon avertissement. }
+Function AtExprStart : Boolean;
+Begin
+  AtExprStart := (CurToken.Kind In [TK_INTEGER, TK_REAL, TK_STRING]) Or
+                 AtKw('true') Or AtKw('false') Or AtKw('not') Or
+                 AtOp('+') Or AtOp('-') Or AtPunct('(');
+End;
+
+Procedure ParseExprStatement;
+Var
+  N, Line, Col : Integer;
+Begin
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  ExprReset;
+  N := ParseExpr;
+  If N < 0 Then
+  Begin
+    ParserSync;
+    Exit;
+  End;
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('Expression ligne ', Line, ' :');
+    ExprDump(N, 0);
+  End;
+  If ExprHasEffect(N) Then
+    GenStmtExpr(N)
+  Else
+  Begin
+    WarnAt(Line, Col, 'expression sans effet ignoree');
+    If ExprTab[N].Kind = EX_STR Then
+      DataStr(ExprStrTab[ExprTab[N].StrIdx]);
+  End;
+  If Not AtStmtEnd Then
+  Begin
+    ParseError('operateur ou '';'' attendu');
+    ParserSync;
+  End;
+End;
+
+{ Cible deja analysee (variable ou element de tableau) suivie de ':='
+  (token courant). Liste d'affectations a := b := expr : le membre
+  droit est analyse comme une expression ; si un ':=' suit et que
+  c'est une cible, l'affectation continue (associative a droite).
+  Toutes les variables de la liste ont le meme type (rapport, 4.2.4). }
+Function ParseAssignTail(Tgt : Integer) : Integer;
+Var
+  Val, N    : Integer;
+  Conv      : TConv;
+  Line, Col : Integer;
+Begin
+  ParseAssignTail := -1;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  ParserAdvance;                          { :=  }
+  Val := ParseExpr;
+  If (Val >= 0) And AtOp(':=') And
+     (ExprTab[Val].Kind In [EX_VAR, EX_INDEX]) Then
+  Begin
+    If (Tgt >= 0) And (ExprTab[Val].Typ <> ExprTab[Tgt].Typ) Then
+      ErrorAt(Line, Col, 'les variables d''une liste d''affectation ' +
+              'doivent avoir le meme type: ' + TypeName(ExprTab[Tgt].Typ) +
+              ', ' + TypeName(ExprTab[Val].Typ));
+    Val := ParseAssignTail(Val);
+  End;
+  If (Tgt < 0) Or (Val < 0) Then Exit;
+  If Not ExprCoerce(Val, ExprTab[Tgt].Typ, Conv, Line, Col) Then Exit;
+  { affectation d'un parametre par nom : l'argument doit pouvoir etre
+    ecrit (TODO 17) }
+  If (ExprTab[Tgt].Kind = EX_VAR) And
+     (SymTab[ExprTab[Tgt].Sym].Kind = SK_PARAM_NAME) Then
+    SymTab[ExprTab[Tgt].Sym].IsWritten := True;
+  N := ExprNew(EX_ASSIGN, ExprTab[Tgt].Typ, Line, Col);
+  ExprTab[N].Op   := ':=';
+  ExprTab[N].L    := Tgt;
+  ExprTab[N].R    := Val;
+  ExprTab[N].Conv := Conv;
+  Inc(AssignCount);
+  ParseAssignTail := N;
+End;
+
+{ nom : instruction   (etiquette ; le ':' est le token courant) }
+Procedure ParseLabelDef(Const Name : TString; Line, Col : Integer);
+Var
+  S : Integer;
+Begin
+  S := SymDefLabel(Name, Line, Col);
+  EmitLabel(Intern(SymTab[S].Mangled));
+  Inc(LabelCount);
+  If Opts.DebugMode Then
+    WriteLn('Etiquette ', Name, ' ligne ', Line);
+  ParserAdvance;                          { : }
+  ParseStatement;
+End;
+
+{ Instruction commencant par un identificateur : etiquette (nom :),
+  affectation (nom := ou nom[...] :=) ou appel de procedure. }
+Procedure ParseIdentStatement;
+Var
+  Tok       : TToken;
+  Tgt, N, S : Integer;
+Begin
+  Tok := CurToken;
+  ParserAdvance;
+  If AtPunct(':') Then
+  Begin
+    ParseLabelDef(Tok.Val, Tok.Line, Tok.Col);
+    Exit;
+  End;
+  S := SymFind(Tok.Val);
+  If (S >= 0) And (SymTab[S].Kind In [SK_PROC, SK_FUNC]) And
+     (Not AtOp(':=')) And (Not AtPunct('[')) Then
+  Begin
+    { appel de procedure comme instruction }
+    ExprReset;
+    N := ParseCall(Tok, S);
+    If N < 0 Then
+      ParserSync
+    Else
+    Begin
+      If Opts.DebugMode Then
+      Begin
+        WriteLn('Appel ligne ', ExprTab[N].Line, ' :');
+        ExprDump(N, 1);
+      End;
+      GenStmtExpr(N);
+    End;
+    Exit;
+  End;
+  If (Not (AtOp(':=') Or AtPunct('['))) And
+     (AtStmtEnd Or (CurToken.Kind = TK_OP) Or AtKw('div') Or AtKw('and') Or
+      AtKw('or') Or AtKw('impl') Or AtKw('equiv')) Then
+  Begin
+    { variable ou expression commencant par un nom : sans effet }
+    ParserUnget(Tok);
+    ParseExprStatement;
+    Exit;
+  End;
+  If Not (AtOp(':=') Or AtPunct('[')) Then
+  Begin
+    If AtPunct('(') Then
+      ErrorAt(Tok.Line, Tok.Col, 'procedure inconnue: ' + Tok.Val)
+    Else
+      ErrorAt(Tok.Line, Tok.Col, 'instruction incorrecte apres ' +
+              Tok.Val + ' (affectation, appel ou etiquette attendu)');
+    ParserSync;
+    Exit;
+  End;
+  ParserUnget(Tok);                       { nom de nouveau courant }
+  ExprReset;
+  Tgt := ParseExpr;
+  N := -1;
+  If Tgt >= 0 Then
+    If AtOp(':=') And (ExprTab[Tgt].Kind In [EX_VAR, EX_INDEX]) Then
+      N := ParseAssignTail(Tgt)
+    Else
+      ParseError(''':='' attendu apres ' + Tok.Val);
+  If N < 0 Then
+    ParserSync
+  Else
+  Begin
+    If Opts.DebugMode Then
+    Begin
+      WriteLn('Affectation ligne ', ExprTab[N].Line, ' :');
+      ExprDump(N, 0);
+    End;
+    GenStmtExpr(N);
+  End;
+End;
+
+{ if condition then instruction [else instruction]
+  Le else se rattache au if le plus proche (appel recursif). Code :
+    saut vers Lelse si la condition est fausse ; then ; [JMP Lend ;
+    Lelse : else ; Lend :]. }
+Procedure ParseIf;
+Var
+  C           : Integer;
+  Line        : Integer;
+  Lelse, Lend : Integer;
+Begin
+  Inc(IfCount);
+  Line := CurToken.Line;
+  ParserAdvance;                          { if }
+  ExprReset;
+  C := ParseCondition;
+  If Opts.DebugMode And (C >= 0) Then
+  Begin
+    WriteLn('If ligne ', Line, ' : condition');
+    ExprDump(C, 1);
+  End;
+  Lelse := NewLabel;
+  If C >= 0 Then GenJump(C, Lelse, False);
+  If AtKw('then') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError('''then'' attendu apres la condition');
+    ParserSync;
+    Exit;
+  End;
+  ParseStatement;
+  If AtKw('else') Then
+  Begin
+    If Opts.DebugMode Then WriteLn('Else (if ligne ', Line, ')');
+    Lend := NewLabel;
+    Emit1(OP_JMP, OpLabel(Lend));
+    EmitLabel(Lelse);
+    ParserAdvance;
+    ParseStatement;
+    EmitLabel(Lend);
+  End
+  Else
+    EmitLabel(Lelse);
+End;
+
+{ Declaration de variables : type nom, nom, ... ; own type nom, ... }
+Procedure ParseVarList(K : TSymKind; T : Integer; IsOwn : Boolean);
+Var
+  Done : Boolean;
+  S    : Integer;
+Begin
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParseError('identificateur attendu dans la declaration');
+      ParserSync;
+      Exit;
+    End;
+    S := SymAdd(CurToken.Val, K, T, IsOwn, CurToken.Line, CurToken.Col);
+    DataDeclareSym(S);
+    Inc(DeclCount);
+    ParserAdvance;
+    Done := Not AtPunct(',');
+    If Not Done Then ParserAdvance;
+  Until Done;
+End;
+
+{ Declaration : [own] integer|real|boolean liste. Les tableaux, les
+  switch et les procedures sont l'objet des TODO 14 a 16. }
+Procedure ParseDeclaration;
+Var
+  IsOwn : Boolean;
+  T     : Integer;
+Begin
+  IsOwn := AtKw('own');
+  If IsOwn Then ParserAdvance;
+  If AtKw('integer') Or AtKw('real') Or AtKw('boolean') Then
+  Begin
+    T := TypeFromKeyword(CurToken.Val);
+    ParserAdvance;
+    If AtKw('array') Or AtKw('procedure') Then
+    Begin
+      ParseError('declaration de tableau ou de procedure non disponible ' +
+                 '(TODO 15 et 16)');
+      ParserSync;
+    End
+    Else If IsOwn Then
+      ParseVarList(SK_OWN, T, True)
+    Else
+      ParseVarList(SK_VAR, T, False);
+  End
+  Else
+  Begin
+    ParseError('declaration non disponible ou type attendu ' +
+               '(tableaux, switch et procedures : TODO 14 a 16)');
+    ParserSync;
+  End;
+End;
+
+{ Instruction : bloc, if, affectation, appel, etiquette ; rien devant
+  ';' 'end' ou 'else' (instruction vide). for et goto viendront avec
+  les TODO 13 et 14. }
+Procedure ParseStatement;
+Begin
+  If AtStmtEnd Then
+    Exit
+  Else If AtKw('begin') Then
+    ParseBlock
+  Else If AtKw('if') Then
+    ParseIf
+  Else If CurToken.Kind = TK_IDENT Then
+    ParseIdentStatement
+  Else If AtExprStart Then
+    ParseExprStatement
+  Else
+  Begin
+    ParseError('instruction attendue');
+    ParserSync;
+  End;
+End;
+
+{ Element d un bloc : declaration ou instruction. }
+Procedure ParseItem;
+Begin
+  If AtDeclKw Then
+    ParseDeclaration
+  Else
+    ParseStatement;
+End;
+
+{ begin item ; item ; ... end   (portee propre). Un bloc sans
+  declaration est une instruction composee. }
+Procedure ParseBlock;
+Begin
+  Inc(BlockCount);
+  ParserAdvance;                      { begin }
+  SymEnterScope;
+  Repeat
+    ParseItem;
+    If AtPunct(';') Then
+      ParserAdvance
+    Else If AtKw('end') Or AtEOF Then
+      Break
+    Else
+    Begin
+      ParseError(''';'' ou ''end'' attendu');
+      ParserSync;
+      If AtPunct(';') Then ParserAdvance;
+    End;
+  Until False;
+  If AtKw('end') Then
+    ParserAdvance
+  Else
+    ParseError('''end'' attendu (begin non ferme)');
+  SymLeaveScope;
+End;
+
+{ Programme : un bloc begin ... end, suivi du point final facultatif }
+Procedure ParseProgram;
+Begin
+  ParserAdvance;
+  If AtEOF Then
+  Begin
+    ParseError('programme vide: ''begin'' attendu');
+    Exit;
+  End;
+  If Not AtKw('begin') Then
+  Begin
+    ParseError('''begin'' attendu au debut du programme');
+    Exit;
+  End;
+  ParseBlock;
+  If AtPunct('.') Then ParserAdvance;
+  If Not AtEOF Then
+    ParseError('texte apres la fin du programme');
+End;
+
 Procedure PhaseParse;
 Begin
   ParserInit;
-  { A faire : TODO 10 a 18 (le programme complet) }
+  DeclCount   := 0;
+  BlockCount  := 0;
+  AssignCount := 0;
+  IfCount     := 0;
+  LabelCount  := 0;
+  FoldCount   := 0;
+  LexQuiet    := True;           { erreurs lexicales deja signalees }
+  LexInit;
+  CodeInit;
+  SymEnterScope;                 { portee globale (identifiant 1) }
+  GenMainBegin;
+  ParseProgram;
+  GenMainEnd;
+  SymLeaveScope;
+  LexClose;
+  If Opts.Verbose Then
+    WriteLn('  ', DeclCount, ' declaration(s), ', BlockCount, ' bloc(s), ',
+            AssignCount, ' affectation(s), ', IfCount, ' if, ',
+            LabelCount, ' etiquette(s), ', FoldCount,
+            ' constante(s) repliee(s)');
 End;
 
 { ============================================================
