@@ -32,7 +32,7 @@
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
          instructions et blocs, boucle for, goto et switch, tableaux,
-         procedures) ; TODO 17 a 25 a faire.
+         procedures, appel par nom) ; TODO 18 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -517,8 +517,9 @@
               corps : instruction ou bloc ; resultat par affectation au
               nom de la fonction (integer, real, Boolean)
             Convention d'appel : arguments empiles de droite a gauche,
-              lien statique, appelee nettoie la pile (RET n), resultat
-              dans EAX ou ST(0), cadre EBP
+              lien statique (toujours present, voir TODO 17), appelee
+              nettoie la pile (RET n), resultat dans EAX ou ST(0), cadre
+              EBP
             Passage par valeur (value) avec conversion de type
             Recursivite, procedures imbriquees (acces aux variables des
               procedures englobantes), procedures sans parametre
@@ -538,8 +539,7 @@
               procedure modifie le parametre) ; GenProcBegin (cadre,
               locales mises a zero, [EBP-4] := ESP) et GenProcEnd (taille
               du cadre, resultat d'une fonction en EAX ou ST(0), RET n) ;
-              GenCall (arguments de droite a gauche, lien statique si la
-              procedure est declaree dans une procedure, CALL) ; une
+              GenCall (arguments de droite a gauche, lien statique, CALL) ; une
               procedure peut s'appeler elle-meme ; une procedure
               imbriquee accede aux variables des procedures englobantes
               par les liens statiques ; GenAssign vers un parametre par
@@ -562,7 +562,7 @@
               pile) compiles, assembles avec ML.PAS et executes ; 10
               erreurs d'appel diagnostiquees
 
-  TODO 17 - APPEL PAR NOM (THUNKS) [A FAIRE]
+  TODO 17 - APPEL PAR NOM (THUNKS) [IMPLEMENTE]
             Passage par nom par defaut des parametres non declares value
             Thunk : petit code genere pour chaque argument reel qui
               evalue l'expression dans le contexte de l'appelant (variable,
@@ -574,6 +574,41 @@
               i * i) avec variable de controle passee par nom
             Echange de deux elements de tableau par nom (swap(a[i], a[j]))
             Verification : byname.a60, test_callbyname.a60
+            Realise : ParseCallArg classe chaque argument d'un parametre
+              par nom : AC_CONST (constante en .data), AC_REF (variable ou
+              element a indices constants, adresse directe), AC_FORWARD
+              (parametre par nom de l'appelant, paire reprise), AC_THUNK
+              (expression, lecture), AC_THUNK_RW (element a indice
+              variable ou argument converti que la procedure modifie :
+              le thunk rend aussi l'adresse) ; GenThunk (petit
+              sous-programme apres le programme : PUSH EBP, EBP := EAX =
+              contexte de l'appelant, evaluation, retour ; ECX = 1
+              demande l'adresse) ; GenByName lit ou ecrit via la paire
+              (thunk ou 0, contexte ou adresse) ; la conversion de type
+              est faite dans le thunk ; un argument non assignable pour
+              un parametre modifie est refuse
+            Procedures formelles : un parametre specifie procedure (type
+              du resultat de la specification, integer par defaut) recoit
+              une paire (adresse, lien statique) ; l'appel f(a, b) passe
+              ses arguments par valeur avec leur propre type, empile le
+              lien puis CALL ; une procedure formelle peut etre transmise
+              a une autre (AC_PROC, paire reprise) ; toute procedure
+              recoit maintenant un mot de lien en [EBP+8] (0 pour une
+              procedure du programme principal), ce qui rend l'appel par
+              une procedure formelle independant du niveau de l'effective
+            Limites : l'effective passee a une procedure formelle doit
+              avoir des parametres par valeur du type des arguments (pas
+              de signature a verifier) ; parametres switch et label non
+              supportes (aucun exemple n'en utilise)
+            Verifie : 10 programmes (dispositif de Jensen avec a[i] et
+              i * i, echange de deux elements de tableau, factorielle par
+              nom, parametre par nom transmis et ecrit en cascade, conversion
+              integer vers real dans le thunk, argument Boolean, thunk lisant
+              un tableau local et une variable locale d'une procedure,
+              procedures formelles imbriquees et transmises) compiles,
+              assembles avec ML.PAS et executes ; 18 programmes des
+              TODOs 12 a 16 rendent les memes resultats ; 5 erreurs
+              diagnostiquees
 
   TODO 18 - ENTREES/SORTIES ET FONCTIONS STANDARD [A FAIRE]
             Sorties avec numero de canal (1 = sortie standard) :
@@ -1901,8 +1936,9 @@ Type
     AC_REF,            { variable simple : adresse directe             }
     AC_FORWARD,        { parametre par nom de l'appelant : paire reprise }
     AC_THUNK,          { expression : thunk de lecture (TODO 17)       }
-    AC_THUNK_RW        { variable indicee ou convertie ecrite par la
+    AC_THUNK_RW,       { variable indicee ou convertie ecrite par la
                          procedure : thunk qui rend l'adresse (TODO 17) }
+    AC_PROC            { procedure effective : paire (adresse, lien)   }
   );
 
 Var
@@ -2604,9 +2640,10 @@ Var
   K, S : Integer;
   Ofs  : LongInt;
 Begin
-  Ofs := ABI_PARAM_BASE;
-  If SymTab[ProcIdx].Level >= 1 Then
-    Ofs := Ofs + ABI_WORD_SIZE;           { lien statique }
+  { toute procedure recoit un mot de lien statique en [EBP+8] (0 pour
+    une procedure du programme principal) : un appel par une procedure
+    formelle n'a pas a connaitre le niveau de l'effective }
+  Ofs := ABI_PARAM_BASE + ABI_WORD_SIZE;
   For K := 1 To SymTab[ProcIdx].ParamCount Do
   Begin
     S := SymTab[ProcIdx].ParamSym[K];
@@ -3524,6 +3561,7 @@ Var
   SyncLine, SyncCol : Integer;   { position du dernier arret de ParserSync }
   ProcCount   : LongInt;     { procedures declarees (statistiques)  }
   CallCount   : LongInt;     { appels de procedure ou fonction      }
+  ThunkCount  : LongInt;     { thunks d'arguments par nom           }
 
 Procedure ParserInit;
 Begin
@@ -4549,12 +4587,41 @@ Begin
     E := ExprNew(EX_VAR, TY_IDX_ARRAY, Tok.Line, Tok.Col);
     ExprTab[E].Sym := S;
   End
-  Else If SymTab[P].TypeIdx In [TY_IDX_PROCEDURE, TY_IDX_SWITCH,
-                                TY_IDX_LABEL] Then
+  Else If SymTab[P].TypeIdx = TY_IDX_PROCEDURE Then
+  Begin
+    { procedure effective (ou formelle) passee en argument }
+    Tok := CurToken;
+    S := -1;
+    If Tok.Kind = TK_IDENT Then
+    Begin
+      ParserAdvance;
+      S := SymFind(Tok.Val);
+    End;
+    If (S < 0) Or (Not ((SymTab[S].Kind In [SK_PROC, SK_FUNC]) Or
+        (SymTab[S].Kind In [SK_PARAM_NAME, SK_PARAM_VALUE]) And
+        (SymTab[S].TypeIdx = TY_IDX_PROCEDURE))) Then
+    Begin
+      If Tok.Kind <> TK_IDENT Then
+        ParseError('nom de procedure attendu pour le parametre ' +
+                   SymTab[P].Name)
+      Else
+        ErrorAt(Tok.Line, Tok.Col, 'procedure attendue pour le ' +
+                'parametre ' + SymTab[P].Name + ': ' + Tok.Val);
+      Exit;
+    End;
+    E := ExprNew(EX_VAR, TY_IDX_PROCEDURE, Tok.Line, Tok.Col);
+    ExprTab[E].Sym := S;
+    Item := ExprNew(EX_LIST, TY_IDX_PROCEDURE, Line, Col);
+    ExprTab[Item].L      := E;
+    ExprTab[Item].IntVal := Ord(AC_PROC);
+    ParseCallArg := True;
+    Exit;
+  End
+  Else If SymTab[P].TypeIdx In [TY_IDX_SWITCH, TY_IDX_LABEL] Then
   Begin
     ErrorAt(Line, Col, 'parametre ' + SymTab[P].Name + ' de ' +
-            ProcName + ': procedure, switch ou etiquette en parametre ' +
-            'non supporte encore (TODO 17)');
+            ProcName + ': switch ou etiquette en parametre non ' +
+            'supporte');
     Exit;
   End
   Else
@@ -4612,19 +4679,27 @@ Begin
       Cls := AC_THUNK;
   End;
 
-  If Cls In [AC_THUNK, AC_THUNK_RW] Then
-  Begin
-    ErrorAt(Line, Col, 'argument de ' + ProcName + ' (parametre ' +
-            SymTab[P].Name + ') : expression passee par nom, ' +
-            'thunk disponible au TODO 17');
-    Exit;
-  End;
   Item := ExprNew(EX_LIST, ExprTab[E].Typ, Line, Col);
   ExprTab[Item].L      := E;
   ExprTab[Item].Conv   := Conv;
   ExprTab[Item].IntVal := Ord(Cls);
   ExprTab[Item].Flag   := (Cls = AC_REF);
+  If Cls In [AC_THUNK, AC_THUNK_RW] Then
+  Begin
+    { le thunk est emis par le generateur au moment de l'appel : il
+      evalue (ou localise) l'argument dans le contexte de l'appelant }
+    ExprTab[Item].StrIdx :=
+      ExprAddStr(UniqueMangle(MangleThunk(ProcName, SymTab[P].Name)));
+    Inc(ThunkCount);
+  End;
   ParseCallArg := True;
+End;
+
+{ Parametre de type procedure (procedure formelle) ? }
+Function IsFormalProc(S : Integer) : Boolean;
+Begin
+  IsFormalProc := (SymTab[S].Kind In [SK_PARAM_NAME, SK_PARAM_VALUE]) And
+                  (SymTab[S].TypeIdx = TY_IDX_PROCEDURE);
 End;
 
 { nom(arg, arg...) ou nom (sans parentheses) : appel de la procedure
@@ -4638,10 +4713,61 @@ End;
 Function ParseCall(Const Tok : TToken; S : Integer) : Integer;
 Var
   Head, Tail, Item, Expected, N, Node : Integer;
+  Arg, Line0, Col0                     : Integer;
   Bad                                  : Boolean;
 Begin
   ParseCall := -1;
+  Bad := False;
   Expected := SymTab[S].ParamCount;
+  If IsFormalProc(S) Then
+  Begin
+    { procedure formelle : arguments passes par valeur avec leur propre
+      type, nombre libre }
+    Head := -1;
+    Tail := -1;
+    N    := 0;
+    If AtPunct('(') Then
+    Begin
+      ParserAdvance;
+      If Not AtPunct(')') Then
+        Repeat
+          Inc(N);
+          If N > MAX_PARAM Then
+          Begin
+            ErrorAt(CurToken.Line, CurToken.Col,
+                    'trop d''arguments (max ' + ItoS(MAX_PARAM) + ')');
+            Exit;
+          End;
+          Line0 := CurToken.Line;
+          Col0  := CurToken.Col;
+          Arg := ParseExpr;
+          If Arg < 0 Then
+            Bad := True
+          Else
+          Begin
+            Item := ExprNew(EX_LIST, ExprTab[Arg].Typ, Line0, Col0);
+            ExprTab[Item].L      := Arg;
+            ExprTab[Item].IntVal := Ord(AC_VALUE);
+            ExprTab[Item].Conv   := CV_NONE;
+            If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+            Tail := Item;
+          End;
+          If AtPunct(',') Then
+            ParserAdvance
+          Else
+            Break;
+        Until False;
+      ExpectPunct(')');
+    End;
+    If Bad Then Exit;
+    Inc(CallCount);
+    Node := ExprNew(EX_CALL, SymTab[S].ElemType, Tok.Line, Tok.Col);
+    ExprTab[Node].Sym    := S;
+    ExprTab[Node].L      := Head;
+    ExprTab[Node].IntVal := N;
+    ParseCall := Node;
+    Exit;
+  End;
   Head := -1;
   Tail := -1;
   N    := 0;
@@ -4761,7 +4887,7 @@ Begin
         End;
         { procedure typee : appel (le nom de la fonction en cours suivi
           de := est une cible, pas un appel) }
-        If (S >= 0) And (SymTab[S].Kind = SK_FUNC) And
+        If (S >= 0) And ((SymTab[S].Kind = SK_FUNC) Or IsFormalProc(S)) And
            Not ((S = SymCurProc) And AtOp(':=')) Then
         Begin
           ParsePrimary := ParseCall(Tok, S);
@@ -5799,11 +5925,68 @@ End;
 
 
 
+{ Thunk d'un argument passe par nom : petit sous-programme appele avec
+  EAX = contexte (EBP de l'appelant) et ECX = 0 (valeur) ou 1 (adresse
+  de l'argument, thunk d'ecriture). Il evalue l'argument dans le cadre
+  de l'appelant, a chaque utilisation du parametre. }
+Procedure GenThunk(Item, Param : Integer; Cls : TArgClass);
+Var
+  Start, Lth, Laddr, E : Integer;
+Begin
+  Start := CodeCount;
+  Lth   := Intern(ExprStrTab[ExprTab[Item].StrIdx]);
+  E     := ExprTab[Item].L;
+  EmitLabel(Lth);
+  Emit1(OP_PUSH, OpReg(R_EBP));
+  Emit(OP_MOV, OpReg(R_EBP), OpReg(R_EAX));
+  Laddr := -1;
+  If Cls = AC_THUNK_RW Then
+  Begin
+    Laddr := NewLabel;
+    Emit(OP_TEST, OpReg(R_ECX), OpReg(R_ECX));
+    Emit1(OP_JNE, OpLabel(Laddr));
+  End;
+  GenExprAs(E, SymTab[Param].TypeIdx);
+  Emit1(OP_POP, OpReg(R_EBP));
+  Emit0(OP_RET);
+  If Cls = AC_THUNK_RW Then
+  Begin
+    EmitLabel(Laddr);
+    GenAddrNode(E);
+    Emit1(OP_POP, OpReg(R_EBP));
+    Emit0(OP_RET);
+  End;
+  MoveToDeferred(Start);
+End;
+
+{ Lien statique a empiler pour appeler la procedure S (declaree au
+  niveau SymTab[S].Level) : cadre de ce niveau, ou 0 au niveau 0 ->
+  valeur dans EAX }
+Procedure GenStaticLink(S : Integer);
+Var
+  Delta : Integer;
+Begin
+  If SymTab[S].Level >= 1 Then
+  Begin
+    Delta := CurLevel - SymTab[S].Level;
+    Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EBP));
+    While Delta > 0 Do
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, ABI_PARAM_BASE, 4));
+      Dec(Delta);
+    End;
+  End
+  Else
+    Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+End;
+
 { Appel : arguments de droite a gauche, lien statique, CALL ; la
-  procedure nettoie la pile (RET n). Resultat : EAX ou ST(0). }
+  procedure nettoie la pile (RET n). Resultat : EAX ou ST(0). Une
+  procedure formelle est appelee par la paire (adresse, lien) de son
+  parametre ; ses arguments sont passes par valeur. }
 Procedure GenCall(N : Integer);
 Var
-  S, K, Item, PS, E, Delta : Integer;
+  S, K, Item, PS, PT, E    : Integer;
   Items                    : Array[1..MAX_PARAM] Of Integer;
   Cls                      : TArgClass;
   F                        : TReg;
@@ -5820,14 +6003,23 @@ Begin
   While K >= 1 Do
   Begin
     Item := Items[K];
-    PS   := SymTab[S].ParamSym[K];
     E    := ExprTab[Item].L;
     Cls  := TArgClass(ExprTab[Item].IntVal);
+    If IsFormalProc(S) Then
+    Begin
+      PS := -1;
+      PT := ExprTab[E].Typ;                { par valeur, type propre }
+    End
+    Else
+    Begin
+      PS := SymTab[S].ParamSym[K];
+      PT := SymTab[PS].TypeIdx;
+    End;
     Case Cls Of
       AC_VALUE:
         Begin
-          GenExprAs(E, SymTab[PS].TypeIdx);
-          If IsRealT(SymTab[PS].TypeIdx) Then
+          GenExprAs(E, PT);
+          If IsRealT(PT) Then
             SpillReal
           Else
             Emit1(OP_PUSH, OpReg(R_EAX));
@@ -5860,23 +6052,51 @@ Begin
           Emit1(OP_PUSH, OpMem(F, SymTab[ExprTab[E].Sym].Offset + 4, 4));
           Emit1(OP_PUSH, OpMem(F, SymTab[ExprTab[E].Sym].Offset, 4));
         End;
+      AC_THUNK, AC_THUNK_RW:
+        Begin
+          GenThunk(Item, PS, Cls);
+          Emit1(OP_PUSH, OpReg(R_EBP));
+          { passer par un registre : ML.PAS ne dimensionne pas bien
+            PUSH OFFSET etiquette_en_avant a la passe 1 }
+          Emit(OP_MOV, OpReg(R_EDX), OpOffset(Intern(
+               ExprStrTab[ExprTab[Item].StrIdx])));
+          Emit1(OP_PUSH, OpReg(R_EDX));
+        End;
+      AC_PROC:
+        Begin
+          { paire (adresse, lien) : mot 0 = adresse, mot 1 = lien }
+          E := ExprTab[Item].L;
+          If IsFormalProc(ExprTab[E].Sym) Then
+          Begin
+            F := GenFrameReg(SymTab[ExprTab[E].Sym].Level);
+            Emit1(OP_PUSH, OpMem(F, SymTab[ExprTab[E].Sym].Offset + 4, 4));
+            Emit1(OP_PUSH, OpMem(F, SymTab[ExprTab[E].Sym].Offset, 4));
+          End
+          Else
+          Begin
+            GenStaticLink(ExprTab[E].Sym);
+            Emit1(OP_PUSH, OpReg(R_EAX));
+            Emit(OP_MOV, OpReg(R_EDX),
+                 OpOffset(Intern(SymTab[ExprTab[E].Sym].Mangled)));
+            Emit1(OP_PUSH, OpReg(R_EDX));
+          End;
+        End;
     Else
-      FatalError('erreur interne: argument par nom avec thunk (TODO 17)');
+      FatalError('erreur interne: classe d''argument inconnue');
     End;
     Dec(K);
   End;
-  { lien statique : cadre de la procedure qui contient la declaration }
-  If SymTab[S].Level >= 1 Then
+  If IsFormalProc(S) Then
   Begin
-    Delta := CurLevel - SymTab[S].Level;
-    Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EBP));
-    While Delta > 0 Do
-    Begin
-      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, ABI_PARAM_BASE, 4));
-      Dec(Delta);
-    End;
-    Emit1(OP_PUSH, OpReg(R_EAX));
+    F := GenFrameReg(SymTab[S].Level);
+    Emit1(OP_PUSH, OpMem(F, SymTab[S].Offset + 4, 4));     { lien }
+    Emit(OP_MOV, OpReg(R_EDX), OpMem(F, SymTab[S].Offset, 4));
+    Emit1(OP_CALL, OpReg(R_EDX));
+    Exit;
   End;
+  { lien statique : cadre de la procedure qui contient la declaration }
+  GenStaticLink(S);
+  Emit1(OP_PUSH, OpReg(R_EAX));
   Emit1(OP_CALL, OpLabel(Intern(SymTab[S].Mangled)));
 End;
 
@@ -6686,7 +6906,8 @@ Begin
     Exit;
   End;
   S := SymFind(Tok.Val);
-  If (S >= 0) And (SymTab[S].Kind In [SK_PROC, SK_FUNC]) And
+  If (S >= 0) And ((SymTab[S].Kind In [SK_PROC, SK_FUNC]) Or
+                   IsFormalProc(S)) And
      (Not AtOp(':=')) And (Not AtPunct('[')) Then
   Begin
     { appel de procedure comme instruction }
@@ -7366,13 +7587,16 @@ End;
 Procedure ParseParamSpec(P : Integer);
 Var
   T, Elem, S : Integer;
+  HasT       : Boolean;
 Begin
   T := TY_UNKNOWN;
   Elem := TY_IDX_REAL;
+  HasT := False;
   If AtTypeKw Then
   Begin
     T := TypeFromKeyword(CurToken.Val);
     Elem := T;
+    HasT := True;
     ParserAdvance;
   End;
   If AtKw('array') Then
@@ -7383,6 +7607,9 @@ Begin
   Else If AtKw('procedure') Then
   Begin
     T := TY_IDX_PROCEDURE;
+    { type du resultat d'une procedure formelle : celui de la
+      specification, integer par defaut }
+    If Not HasT Then Elem := TY_IDX_INTEGER;
     ParserAdvance;
   End
   Else If AtKw('switch') Then
@@ -7700,6 +7927,7 @@ Begin
   IfCount     := 0;
   ProcCount   := 0;
   CallCount   := 0;
+  ThunkCount  := 0;
   LabelCount  := 0;
   ForCount    := 0;
   GotoCount   := 0;
@@ -7719,7 +7947,8 @@ Begin
   If Opts.Verbose Then
     WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
             ' procedure(s), ', BlockCount, ' bloc(s), ', CallCount,
-            ' appel(s), ', AssignCount, ' affectation(s), ', IfCount, ' if, ',
+            ' appel(s), ', ThunkCount, ' thunk(s), ', AssignCount,
+            ' affectation(s), ', IfCount, ' if, ',
             ForCount, ' for, ', GotoCount, ' goto, ', LabelCount,
             ' etiquette(s), ', FoldCount,
             ' constante(s) repliee(s)');
