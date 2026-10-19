@@ -1,0 +1,632 @@
+  AL58CW32.PAS - Compilateur Algol 58 vers assembleur 80386
+    pour Windows 32 bits
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32 (console)
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un listing .ASM lisible
+    (la production du .ASM est optionnelle et jamais implicite).
+  Supporte toutes les exemples SAMPLES\ALGOL58\*.a58
+
+  Reference : DOC\ALGOL58_SPEC_LANG.txt
+  Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
+  Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
+
+  ETAT : TODO 01 a 25 implementes (analyse complete du langage,
+         generation du code, listing .ASM, encodeur x86-32, ecrivains
+         PE et COFF, runtime integre, gestion des erreurs, pilotage,
+         validation sur les 31 exemples SAMPLES\ALGOL58).
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - ARCHITECTURE ET PIPELINE DU COMPILATEUR [IMPLEMENTE]
+            Definir le pipeline complet :
+              source .a58 -> lexeur -> parseur -> table des symboles
+              -> code genere (ASM 80386) -> .ASM (optionnel)
+              -> encodeur binaire x86-32 -> .OBJ (COFF) ou .EXE (PE)
+            Choix retenu : encodeur binaire interne (comme JOVCW32), le
+              .ASM n'etant qu'un listing parallele, pas une etape requise
+            Differences avec AL58C86 : registres 32 bits (EAX..EBP),
+              modele FLAT, entier 32 bits, appels API Win32 au lieu de
+              INT 21h, aucune limite de segment 64 Ko
+            Decouper le source en sections commentees : constantes, types,
+              options, lexeur, symboles, types Algol, parseur/generateur,
+              runtime, ecrivains OBJ/EXE, programme principal
+            Garder la compatibilite Turbo Pascal 7 / Free Pascal 3.2
+              ({$MODE TP}, {$H-}, {$I-}), lignes de 80 colonnes maximum
+
+  TODO 02 - OPTIONS DE LIGNE DE COMMANDE ET FICHIERS DE SORTIE [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm)
+            Syntaxe : AL58CW32 source.a58 [-o sortie] [-obj] [-asm]
+              [-v] [-d] [-w] [-h]
+            Par defaut : produire source.exe (PE Windows 32 bits)
+            -obj : produire uniquement source.obj (aucun .EXE)
+            -asm : produire en plus source.asm (listing MASM 80386)
+            -o nom : nom du fichier de sortie principal
+            Extensions d'entree acceptees : .a58 et .alg
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Aide en ligne (-h), version et date, message d'usage si
+              aucun argument
+
+  TODO 03 - CONSTANTES, LIMITES ET CONVENTIONS DE NOMMAGE [IMPLEMENTE]
+            Constantes PE/COFF : PE_MACHINE_I386 ($014C), PE_MAGIC_32
+              ($010B), PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (3), indicateurs de
+              sections (code, donnees initialisees, lecture/ecriture)
+            Limites internes 32 bits (pas de reduction "Turbo Pascal 16
+              bits") : symboles, labels, portees, tailles de pile
+            Prefixes de nommage ASM : _A58V_ (variable), _A58P_
+              (procedure), _A58K_ (chaine), _A58RT_ (runtime), _A58L_
+              (label interne), _A58SW_ (switch), _A58OWN_ (own),
+              _A58ARR_ (tableau), _A58TH_ (thunk)
+            Utilitaires : ItoS, UpCaseStr, AsmIdent (nom ASM valide)
+
+  TODO 04 - LEXEUR ALGOL 58 [IMPLEMENTE]
+            TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_IDENT,
+              TK_KEYWORD, TK_OP, TK_PUNCT, TK_STRING
+            Format libre, suivi de ligne et colonne pour les erreurs
+            Insensible a la casse pour les mots-cles (Boolean, BEGIN...)
+            Mots-cles : begin end if then else for do step until while
+              go to goto procedure value integer real Boolean array
+              switch own true false comment and or not imp eqv div mod
+            Operateurs : + - * / ^ ** = # != < <= > >= :=
+            Ponctuation : ; , : ( ) [ ]
+            Commentaire "comment ... ;" ignore jusqu'au prochain point-
+              virgule (y compris sur plusieurs lignes)
+            Chaines entre guillemets "..." (extension pour write/writeln)
+            Nombres : entiers, reels avec point (3.14), exposant (10)
+            Mode debug -d : afficher chaque token
+
+  TODO 05 - TYPES DE DONNEES ET CONVERSIONS (32 BITS) [IMPLEMENTE]
+            integer : 32 bits signe (DWORD), au lieu des 16 bits d'AL58C86
+            real : flottant 64 bits via x87 (FLD/FSTP QWORD), decision
+              retenue : la cible 386 permet un vrai support (3.14 de
+              hello.a58, test_literals)
+            Boolean : 0 ou 1 (DWORD) ; true et false
+            string : pointeur vers donnees .data (litteraux seulement)
+            label, switch, procedure : types d'entites du programme
+            Conversions implicites (TypeConversion) :
+              integer -> real (FILD), real -> integer (FISTP, arrondi au
+              plus pres), integer -> Boolean (<> 0), Boolean -> integer
+              (rien), real -> Boolean interdit
+            Un entier utilise comme condition (if x then ...) est vrai
+              s'il est different de zero (test_primexpr.a58)
+            Table des types et TypeSizeof (integer=4, real=8, Boolean=4)
+            Mode de passage des parametres : value (PM_VALUE) ou par nom
+              (PM_NAME, thunk)
+
+  TODO 06 - TABLE DES SYMBOLES ET PORTEES [IMPLEMENTE]
+            TSymKind : SK_VAR, SK_ARRAY, SK_PROC, SK_FUNC, SK_LABEL,
+              SK_SWITCH, SK_PARAM_VALUE, SK_PARAM_NAME, SK_OWN
+            SymAdd, SymFind, SymFindInScope, SymEnterScope, SymLeaveScope
+            Une portee par bloc begin...end et par procedure (le parseur
+              ouvre aussi une portee pour tout autre bloc au besoin)
+            Masquage lexical : t declare dans deux blocs freres
+              (blocks.a58 : t=100 puis t=200)
+            Variable non declaree (x := 42 dans test_errors.a58) :
+              avertissement, declaration implicite integer, compilation
+              poursuivie
+            Calcul des offsets locaux [EBP-n] et des parametres [EBP+n]
+            Niveau d'imbrication statique pour les procedures imbriquees
+
+  TODO 07 - STRUCTURE D'UN PROGRAMME ET DECLARATIONS MELANGEES [IMPLEMENTE]
+            Un programme est un bloc begin ... end ou une suite
+              d'instructions sans begin/end englobant (test_types.a58,
+              test_symbols.a58, test_emitter.a58)
+            Plusieurs blocs begin...end consecutifs au niveau supreme
+              (test_thunks.a58) executes en sequence dans un meme main
+            Declarations melangees aux instructions, apres des
+              instructions (hello.a58 : array, procedure, integer en
+              plein corps, comme dans blocks.a58 et arrays.a58)
+            Declarations : integer, real, Boolean, own, array, procedure,
+              switch, y compris "integer a, b, c ;" (liste d'identificateurs)
+            Instruction vide et expression isolee ("42;", "3 + 4;",
+              "true and false;") : evaluee puis ignoree
+
+  TODO 08 - EXPRESSIONS ARITHMETIQUES ET PRECEDENCE [IMPLEMENTE]
+            Parseur a precedence (Pratt) a 9 niveaux, du plus fort :
+              not et unaire +/- ; ^ et ** (droite) ; * / div mod ;
+              + - ; relationnels ; and ; or ; imp ; eqv
+            Entiers : ADD, SUB, IMUL, CDQ + IDIV, mod via EDX
+            "/" : division entiere entre entiers (42 / 6), division
+              reelle si un operande est real
+            Puissance : appel de _A58RT_POW (entiers) ou x87 (reels)
+            Pliage de constantes a la compilation
+            Debordement et division par zero : erreur de compilation
+              sur constantes (implemente) ; message runtime pour les
+              valeurs variables (TODO 22)
+            Expressions couvertes : test_binexpr, test_operators, math
+            Realise : arbre d'expressions (ExprTab, ExprDump en mode -d),
+              ParseExprPrec / ParseUnary / ParsePrimary, typage et
+              repliement des constantes entieres (32 bits, debordement
+              detecte) et reelles ; unaire plus prioritaire que ^ (donc
+              -2 ^ 2 = 4, selon DOC\ALGOL58_SPEC_LANG.txt) ; exposant
+              entier negatif : resultat entier tronque (avertissement)
+            Reste pour la generation de code : TODO 18 (parcours de
+              l'arbre : ADD, SUB, IMUL, CDQ/IDIV, appel de POW, x87)
+
+  TODO 09 - RELATIONNELS, BOOLEENS ET EXPRESSIONS CONDITIONNELLES [IMPLEMENTE]
+            Comparaisons = # != < <= > >= : CMP + SETcc / Jcc, resultat
+              0 ou 1 dans EAX
+            and, or en court-circuit ; not ; imp (not a or b) ; eqv
+              ((a and b) or (not a and not b))
+            Expression conditionnelle : if c then e1 else e2 comme valeur
+              (x := if b then 1 else 2), imbriquee (test_primexpr)
+            Boolean procedure retournant "if ... then 1 else 0"
+            Conditions utilisables dans if, for while, switch
+            Refuser les comparaisons chainees (a < b < c) avec erreur
+            Exemples : bool.a58, test_boolexpr.a58
+            Realise : relationnels et operateurs logiques types Boolean
+              (entier accepte comme condition), repliement des
+              constantes (relationnels, and, or, not, imp, eqv) et du
+              court-circuit quand le cote gauche est constant ;
+              noeud EX_COND (if c then e1 else e2), repli si la
+              condition est constante ; ParseCondition (pour if, while,
+              switch) ; comparaison chainee refusee (a < b < c)
+            Reste pour la generation de code (TODO 18) : TEST / Jcc,
+              SETcc, court-circuit de and / or sur valeurs variables
+
+  TODO 10 - VARIABLES, AFFECTATIONS ET VARIABLES OWN [IMPLEMENTE]
+            Variables globales : section .data, label _A58V_nom
+            Variables locales de bloc/procedure : [EBP-n]
+            Variables own : section .data, persistantes entre appels,
+              initialisees a zero ; accessibles seulement dans leur bloc
+              (blocks.a58, test_vars.a58, test_primexpr.a58)
+            Affectation := avec conversion de type selon la cible
+            Affectation multiple a := b := expr (associative a droite)
+            Valeur negative et litteral signe ("b := -7")
+            Initialisation des variables locales non specifiee en Algol
+              58 : choix retenu, zero (les variables statiques sont a
+              zero dans .data ; les locales de procedure seront mises a
+              zero au prologue par le generateur, TODO 18)
+            Realise : cible = variable, own, parametre (valeur ou nom),
+              ou nom de la fonction dont le corps est en cours (valeur de
+              retour) ; noeud EX_ASSIGN avec conversion (ExprCoerce) :
+              constantes converties a la compilation, real -> integer
+              arrondi au plus proche (demi vers le haut, avec
+              avertissement), real -> Boolean interdit ; affectations
+              multiples a droite ; variable non declaree : avertissement
+              et declaration implicite ; appels, indices et fonctions
+              intrinseques (mod(a, b), max...) : noeuds opaques types
+              integer en attendant les TODO 11, 14 et 17
+
+  TODO 11 - TABLEAUX [IMPLEMENTE]
+            Declaration : [integer|real|Boolean] array nom[lo:hi] et
+              multidimensionnelle nom[lo1:hi1, lo2:hi2] (matrice 3x3)
+            Bornes constantes (declarations globales) et bornes
+              calculees a l'execution (tableaux locaux dynamiques,
+              allocation sur la pile ou sur le tas Win32)
+            Acces : calcul (i - lo) * taille, multidimensionnel en
+              row-major, expression comme indice (V[j + 1])
+            Bornes non standard (W[5:9], R[0:2] real, flags[0:4] Boolean)
+            Verification de bornes a l'execution : _A58RT_CHKIDX
+            Tableau en parametre de procedure (adresse + bornes)
+            Exemples : arrays.a58, test_arrays.a58, test_dataseg.a58
+            Realise : declaration (bornes constantes ou expressions entieres
+              evaluees a l'execution, octets calcules, donnees statiques
+              au niveau 0 ou dans le cadre d'une procedure), noeud
+              EX_INDEX (indices convertis en integer, nombre d'indices
+              verifie, constantes controlees contre les bornes connues,
+              Flag = controle _A58RT_CHKIDX necessaire), element de
+              tableau comme cible d'affectation, chaine a := V[i] := 7
+            Reste pour la generation de code : calcul d'adresse et
+              descripteur (TODO 18), allocation sur le tas des tableaux
+              dynamiques (TODO 22), passage en parametre (TODO 14, 15)
+
+  TODO 12 - INSTRUCTIONS CONDITIONNELLES ET BOUCLES FOR [IMPLEMENTE]
+            if cond then stmt [else stmt], else lie au if le plus proche
+            for v := e1 step e2 until e3 do stmt (pas positif ou negatif ;
+              boucle vide si bornes inversees ; reevaluation des bornes
+              a chaque iteration selon la semantique Algol)
+            for v := e while cond do stmt
+            for v := e do stmt (clause simple, test_forloop test 7)
+            Liste de clauses separees par virgule, de types differents :
+              for v := a, b step c until d, e while f do stmt
+            Corps simple ou bloc begin...end
+            Exemples : control.a58, test_forloop.a58, test_ifthenelse.a58
+            Realise : ParseStatement (bloc, if, for, affectation,
+              expression, instruction vide), ParseIf (else lie au if le
+              plus proche, then et else = instructions quelconques),
+              ParseFor avec liste de clauses (valeur, step-until, while),
+              variable de boucle simple numerique, init converti vers
+              son type, avertissements (pas nul, boucle jamais executee),
+              imbrication limitee a MAX_LOOP_NEST ; le corps des
+              procedures est maintenant analyse comme une instruction
+            Reste pour la generation de code (TODO 18) : sauts
+              conditionnels, mise en place des clauses (init, pas, test
+              de fin reevalues a chaque tour, corps partage)
+
+  TODO 13 - GO TO, ETIQUETTES ET SWITCH [IMPLEMENTE]
+            Etiquettes symboliques (fin:) et numeriques (100:), avec
+              etiquette suivie d'une instruction (etiq6b: goto etiq6a)
+            go to et goto (un ou deux mots), renvois avant et arriere
+            Resolution par table de fixups (etiquette utilisee avant sa
+              declaration)
+            Saut hors d'un bloc : restaurer ESP/EBP du bloc cible
+            Avertissement : etiquette non utilisee ; erreur : etiquette
+              inconnue, dupliquee ou saut dans un bloc interne
+            switch s := l1, l2, l3 ; avec go to s[i], indice expression
+              (s3[1 + 1]), switch contenant des expressions conditionnelles
+            Table de switch dans .data, saut indirect JMP [table+idx*4]
+            Indice hors bornes (1..n) : avertissement/continuer sur
+              l'instruction suivante
+            Exemples : switch.a58, test_switch.a58, test_goto.a58
+            Realise : ParseDesignator (etiquette, nombre, switch[i],
+              designateur entre parentheses ou conditionnel), ParseGoto
+              (go to et goto), definition d'etiquette symbolique ou
+              numerique devant une instruction (y compris vide ou bloc),
+              renvois avant : une etiquette encore inconnue a la sortie
+              d'un bloc est reportee dans la portee englobante (meme
+              procedure), sinon erreur ; go to vers une autre procedure
+              refuse ; switch dont chaque designateur est analyse
+              (indice constant hors bornes : avertissement)
+            Saut hors d'un bloc : aucun reglage de pile n'est requis, les
+              blocs d'une procedure partagent son cadre (ESP/EBP fixes)
+            Reste pour la generation de code (TODO 18) : JMP, table de
+              switch dans .data, JMP indirect, petits blocs pour les
+              designateurs conditionnels
+
+  TODO 14 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+            procedure nom(params) ; value ... ; specs ; corps
+            Procedure sans parametre et appelee avec "()" (greet())
+            Fonctions typees : integer / real / Boolean procedure, valeur
+              retournee dans EAX (ou ST0 pour real) via "nom := expr"
+            Specifications des parametres : value a, b ; integer a ;
+              integer b ; (plusieurs lignes de specifications)
+            Parametres par valeur : copie sur la pile
+            Procedures imbriquees (outer/inner) avec lien statique et
+              acces aux variables de l'englobante
+            Variables globales modifiees par effet de bord (counter)
+            Recursion, convention d'appel interne documentee (empilage
+              droite a gauche, nettoyage par la procedure, EBP sauvegarde)
+            Exemples : procs.a58, test_procedures.a58
+            Realise : appel comme instruction (nom(args), nom() ou nom seul)
+              et comme valeur (noeud EX_CALL) ; nombre d'arguments
+              verifie, argument value converti vers le type du
+              parametre, argument par nom controle (convertible), tableau
+              passe par son nom (type des elements verifie), argument
+              simple marque 'reference' (TODO 15), procedure sans valeur
+              refusee dans une expression ; recursion (la procedure est
+              visible dans son propre corps) ; les parametres sont
+              conserves apres la fermeture du corps pour les appels
+              ulterieurs ; un nom inconnu suivi de ( reste une fonction
+              intrinseque (TODO 17)
+            Convention d'appel retenue : arguments empiles de droite a
+              gauche, puis le lien statique (procedure declaree dans une
+              autre procedure), CALL ; la procedure nettoie la pile avec
+              RET n (n = ParamBytes) ; resultat dans EAX (integer,
+              Boolean) ou ST(0) (real)
+
+  TODO 15 - PARAMETRES PAR NOM ET THUNKS [IMPLEMENTE]
+            Par defaut un parametre est passe par nom (substitution
+              textuelle reevaluee a chaque acces)
+            Un thunk _A58TH_proc_param par argument : evalue l'expression
+              dans le contexte de l'appelant (lien statique restaure) et
+              retourne la valeur dans EAX
+            Argument variable simple : optimisation par reference
+            Argument constant : constante directe (showconst(123))
+            Argument expression (b + 5, f * f + 1) : thunk complet
+            Parametre par nom ecrit par la procedure : thunk d'ecriture
+              (L-value) quand l'argument est une variable ou un tableau
+            Melange value / name dans un meme appel (twoparam)
+            Jensen's device : somme d'une expression indicee par i
+            Exemples : test_thunks.a58, procs.a58
+            Realise : classement de chaque argument par nom (TArgClass) :
+              constante (cellule .data, par reference), variable simple
+              ou element a indices constants (reference directe),
+              parametre par nom de l'appelant (paire reprise telle
+              quelle), expression ou element a indices variables (thunk
+              de lecture, reevalue a chaque acces : Jensen's device),
+              variable ou element ecrit par la procedure et converti ou
+              indice (thunk d'ecriture qui rend l'adresse) ; un thunk
+              recoit le nom _A58TH_proc_param (unique) ; IsWritten marque
+              les parametres affectes (affectation, variable de for) et
+              se propage aux parametres transmis ; un argument non
+              assignable pour un parametre modifie est une erreur
+            Paire transmise : mot 0 = adresse du thunk (0 = reference
+              directe), mot 1 = BP de l'appelant (ou adresse de la
+              variable si mot 0 = 0) ; le thunk est appele avec EAX =
+              contexte, fixe EBP, rend la valeur ou l'adresse dans EAX
+              (ST(0) pour un real)
+            Reste pour la generation de code (TODO 18) : emission des
+              thunks au moment de l'appel, acces au parametre dans le
+              corps (appel du thunk ou lecture par reference)
+
+  TODO 16 - ENTREES/SORTIES : WRITE, WRITELN, READ, READLN [IMPLEMENTE]
+            write(a, b, ...) avec liste d'arguments heterogenes :
+              chaines, entiers, reels, booleens, expressions
+              (write("x=", x, " y=", y))
+            writeln(...) : ajoute CR LF ; writeln() et writeln("") seuls
+            write d'un booleen affiche "true" ou "false"
+            Entiers signes positifs et negatifs (write(-7))
+            Constantes immediates (writeln(123))
+            read(var) / readln(var) : lire un entier au clavier et
+              l'affecter, y compris element de tableau
+            Sortie sur stdout par defaut, runtime en WriteFile Win32
+            Exemples : hello.a58, test_readwrite.a58, test_literals.a58
+            Realise : write / writeln / read / readln reconnus par leur nom
+              (non reserves : une declaration du meme nom est prioritaire),
+              parentheses facultatives, noeuds EX_WRITE et EX_READ ;
+              write accepte chaine, integer, real, Boolean ; les entiers
+              et booleens constants sont convertis en texte puis fusionnes
+              avec les chaines voisines ; read demande des variables
+              numeriques ou Boolean, elements de tableau ou parametres par
+              nom (marques ecrits) ; stdout seulement (pas de syntaxe
+              pour stderr dans le langage)
+            Reste pour le runtime (TODO 22) : format des reels, lecture
+              des Boolean (true / false), WriteFile et ReadFile
+
+  TODO 17 - FONCTIONS INTRINSEQUES [IMPLEMENTE]
+            abs, sign, entier, sqrt, max, min, mod(a, b) en fonction
+            Avec x87 : sin, cos, arctan, ln, exp, sqrt reels corrects
+              (au lieu des stubs 16 bits), puissance reelle
+            Resultat integer ou real selon le type de l'argument
+            Verification du nombre et du type d'arguments (erreur sinon)
+            Un identificateur intrinseque peut etre redefini par une
+              procedure utilisateur (la declaration utilisateur gagne)
+              (exemple : integer procedure max(a, b) dans hello.a58)
+            Exemples : test_intrinsics.a58, math.a58, test_runtime.a58
+            Realise : table des intrinseques (abs, sign, entier, sqrt, sin,
+              cos, arctan, ln, exp, max, min, mod, div), noeud EX_INTRIN ;
+              entier = plancher (entier(-2.1) = -3, identite sur un
+              integer) ; sqrt suit son argument (racine entiere pour un
+              integer, x87 pour un real) ; max / min convertissent vers le
+              type commun ; mod(a, b) et div(a, b) exigent des entiers ;
+              repliement des appels a arguments constants (avec erreurs :
+              sqrt negatif, ln <= 0, division par zero) ; un nom inconnu
+              suivi de ( est maintenant une erreur, ainsi qu'une
+              instruction commencant par un nom inconnu
+            Reste pour la generation de code (TODO 18) et le runtime
+              (TODO 22) : appels _A58RT_ABS, SIGN, SQRT, MAX, MIN,
+              instructions x87 FSIN, FCOS, FPATAN, FYL2X, F2XM1...
+
+  TODO 18 - GENERATION DU CODE ASSEMBLEUR 80386 [IMPLEMENTE]
+            Representation du code : liste d'instructions internes avec
+              labels et operandes (registres 32 bits, memoire, immediats)
+              CodeTab (programme) et DeferTab (procedures et thunks,
+              places apres le programme) ; noms internes (Intern)
+            Emetteur ASM textuel (actif seulement avec -asm) :
+              .386 / .MODEL FLAT / INCLUDELIB kernel32.lib / .DATA /
+              .CODE / END _A58P_Main (syntaxe de ML.PAS)
+            Emit, EmitLabel, EmitComment, EmitBlank, NewLabel
+            Prologue/epilogue : PUSH EBP / MOV EBP,ESP / SUB ESP,n /
+              locales mises a zero (REP STOSD) ... MOV ESP,EBP /
+              POP EBP / RET n ; taille du cadre corrigee en fin de corps
+            Sections : .CODE, .DATA (variables, own, tableaux et leurs
+              descripteurs, tables de switch, constantes reelles, chaines
+              litterales dedoublonnees avec 0 final)
+            Imports Win32 declares via EXTERN/INCLUDELIB kernel32.lib
+            Generation en une passe, au fil de l'analyse : expressions
+              entieres (EAX) et reelles (x87, valeurs intermediaires sur
+              la pile machine), comparaisons, and / or / imp en sauts,
+              expressions conditionnelles, affectations (adresse de la
+              cible puis valeur), if, for a plusieurs clauses (selecteur
+              de clause), go to / switch (table + JMP indirect), appels
+              avec lien statique, arguments value / par nom (paire,
+              thunks), tableaux (descripteur, controle de bornes,
+              bornes dynamiques sur le tas), E/S et intrinseques
+            Contrat avec le runtime (TODO 22) : routines _A58RT_* appelees
+              avec arguments en registres : WRITESTR (EAX, EDX), WRITEZ,
+              WRITEINT, WRITEREAL (ST0), WRITEBOOL, NEWLINE, READINT,
+              READREAL, READBOOL, READLN, POW, RPOW, EXP, FLOOR, RTOI,
+              RSIGN, ISQRT, CHKIDX (conserve les registres), DIVZERO, ALLOC
+            Verifie avec ML.PAS : les 31 exemples SAMPLES\ALGOL58 sont
+              compiles, assembles, lies puis executes avec un runtime de
+              test ; les sorties correspondent aux resultats attendus
+            Contournements de ML.PAS (bogues observees) : PUSH OFFSET
+              etiquette_en_avant mal dimensionne a la passe 1 (passer par
+              un registre), TEST reg,imm mal encode, immediats 16 bits
+              emis sur 32 bits (AND AX,imm)
+
+  TODO 19 - ENCODEUR BINAIRE x86-32 [IMPLEMENTE]
+            Encoder en octets le sous-ensemble 80386 genere : MOV, MOVZX,
+              LEA, PUSH, POP, ADD/SUB/AND/OR/XOR/CMP (reg, memoire,
+              immediat 8 ou 32 bits), TEST, IMUL, IDIV, DIV, CDQ, NEG,
+              NOT, INC, DEC, SHL, SHR, SAR, SETcc, Jcc, JMP (direct et
+              indirect), CALL (direct, registre, memoire), RET, REP
+              STOSD, SAHF et les instructions x87 (FLD, FST, FSTP, FILD,
+              FISTP, FADD..FDIVR en memoire et en ST(i), FADDP..FDIVP,
+              FCOM, FCOMP, FXCH, FNSTSW, FNSTCW, FLDCW et les operations
+              sans operande : FCHS FABS FTST FLD1 FLDZ FLDL2E FLDLN2
+              F2XM1 FYL2X FPATAN FRNDINT FSCALE FSQRT FSIN FCOS)
+            Operandes 8, 16 et 32 bits, ModRM / SIB / deplacement 8 ou 32
+              bits (cas [EBP], [ESP], [sym], [sym + index*echelle])
+            Tampons de code et de donnees (BinCode, BinData) ; table des
+              etiquettes BinLbl (code, donnees, externe) ; relocations
+              BinFix : BF_ABS32 (adresse d'un symbole : champ code ou
+              donnees, la valeur en place est l'addendum) et BF_REL32
+              (appel ou saut vers un symbole externe)
+            Sauts courts ou longs choisis par relaxation : tous courts au
+              depart, agrandis tant qu'un deplacement deborde (converge,
+              les tailles ne font que croitre) ; cibles externes en rel32
+            Donnees : DataTab -> octets (zeros, chaines avec 0 final,
+              entiers, reels, tables d'adresses avec relocations)
+            Imports : toute cible d'appel non definie est un import
+              (BinImport), a resoudre par l'ecrivain PE ou COFF
+            Mode -d : <sortie>.lst, un listing hexadecimal (decalage,
+              octets, instruction)
+            Verification : chaque instruction du listing est re-decodee
+              avec objdump et comparee (mnemonique, longueur, operandes)
+              sur les 31 exemples et sur une serie de 131 instructions
+              couvrant toutes les formes (dont celles du futur runtime) ;
+              aucun ecart
+
+  TODO 20 - ECRIVAIN PE (.EXE WINDOWS 32 BITS) [IMPLEMENTE]
+            En-tete MZ + souche DOS, signature PE, COFF File Header
+              (machine 386, 3 sections, sans relocation), Optional Header
+              (magic $010B, ImageBase $00400000, alignements 4096 / 512,
+              sous-systeme console, piles et tas de 1 Mo reserves)
+            Sections .text (code + une souche JMP [IAT] par import),
+              .data (donnees), .idata (import de kernel32.dll : table
+              des descripteurs, ILT, IAT, noms avec indice, nom de la DLL)
+            Repertoires : importation (1) et IAT (12) ; point d'entree =
+              _A58P_Main
+            Relocations resolues a l'ecriture : adresses absolues
+              (code -> donnees, donnees -> code pour les tables de
+              switch) et appels aux imports (deplacement vers la souche)
+            Un symbole non defini dont le nom commence par _A58 est une
+              erreur (routine du runtime absente, TODO 22) ; tout autre
+              nom est importe de kernel32.dll (GetStdHandle, WriteFile,
+              ReadFile, ExitProcess, GetProcessHeap, HeapAlloc...)
+            Fichier .EXE par defaut (option -o pour le nom)
+            Verifie : objdump -x / -p lit l'en-tete et la table
+              d'importation ; un programme assemble a la main (appels
+              GetStdHandle, WriteFile, ExitProcess, saut par table de
+              switch) s'execute correctement avec un code de retour 42 ;
+              l'execution des 31 exemples attend le runtime (TODO 22)
+
+  TODO 21 - ECRIVAIN COFF (.OBJ, OPTION -obj) [IMPLEMENTE]
+            COFF File Header (machine 386, 2 sections, sans en-tete
+              optionnel), sections .text (code, alignement 4) et .data
+              (donnees) avec leurs relocations (IMAGE_REL_I386_DIR32 pour
+              les adresses absolues, REL32 pour les appels externes)
+            Table des symboles : .text et .data (statiques, avec entree
+              auxiliaire : taille et nombre de relocations), _A58P_Main
+              (externe, defini dans .text), puis un symbole externe non
+              defini par import (routines _A58RT_* du runtime, fonctions
+              Win32) ; table des chaines pour les noms de plus de 8
+              caracteres
+            Une adresse absolue vers une etiquette definie vise le symbole
+              de section, le decalage de l'etiquette etant ajoute a la
+              valeur en place (addendum COFF)
+            Option -obj : un seul .OBJ, jamais de .EXE ; -obj -asm produit
+              .OBJ et .ASM
+            Verifie : les 31 exemples donnent un .OBJ lisible par objdump
+              et llvm-objdump (sections, symboles, relocations) ; lies
+              avec lld-link a un runtime de test et une bibliotheque
+              d'import kernel32, hello, switch, procs et test_thunks
+              s'executent avec la meme sortie que l'.EXE direct
+
+  TODO 22 - RUNTIME ALGOL 58 POUR WIN32 [IMPLEMENTE]
+            Runtime ecrit en assembleur 80386, integre au compilateur sous
+              forme de texte (RtText, section 12), sans bibliotheque C :
+              seules les fonctions de kernel32.dll sont importees
+              (GetStdHandle, WriteFile, ReadFile, ExitProcess,
+              GetProcessHeap, HeapAlloc)
+            Mini-assembleur (RtAssembleLine) : convertit les lignes en
+              instructions internes (registres, immediats decimaux ou
+              hexadecimaux, [Sym+Base+Index*Echelle+Depl], BYTE/WORD/DWORD/
+              QWORD PTR, OFFSET, ST(i)), reutilisees par le listing .ASM
+              et l'encodeur ; JZ / JNZ sont des synonymes de JE / JNE
+            Emission des seules routines utilisees : fermeture transitive
+              des appels _A58RT_* (RtMark) a partir du code du programme ;
+              les cellules de donnees _A58_* sont creees a la demande
+            Le runtime est ajoute apres le code du programme (RtLink, au
+              debut de la phase codegen) : le listing .ASM est donc
+              autonome (assemblable seul avec ML.PAS) et le .OBJ ne
+              depend plus que de kernel32
+            Routines : WRITESTR (EAX adresse, EDX longueur), WRITEZ,
+              WRITEINT, WRITEREAL (ST0), WRITEBOOL, NEWLINE, READINT,
+              READREAL, READBOOL, READLN (avec GETC / UNGETC / SKIPWS),
+              POW (entiers), RPOW (reels), EXP, EXP2, FLOOR, RTOI (arrondi,
+              demi vers le haut), RSIGN, ISQRT, CHKIDX (conserve tous les
+              registres), DIVZERO, ALLOC (tas du processus, memoire a zero)
+            Messages d'erreur d'execution (code de sortie 1) : 'Erreur:
+              indice hors bornes', 'Erreur: division par zero'
+            Formats : entier en decimal, signe '-' ; reel en notation fixe,
+              6 decimales au plus, zeros finaux supprimes (au moins un
+              chiffre apres le point), partie entiere limitee a environ
+              2 milliards ; Boolean true / false ; fin de ligne CR LF ;
+              lecture : blancs ignores, signe, chiffres, point decimal ;
+              Boolean lu : true si le premier mot commence par t ou T
+            Verifie : les 31 exemples compilent directement en .EXE et
+              donnent les memes sorties qu'avec le runtime de test assemble
+              par ML.PAS ; les listings .ASM seuls (hello, math,
+              test_readwrite) s'assemblent avec ML.PAS et s'executent ;
+              objdump confirme l'encodage du runtime (0 ecart) ; des .OBJ
+              lies avec lld-link a une bibliotheque d'import kernel32
+              (math, procs, arrays, test_final) s'executent correctement ;
+              lecture de l'entree standard testee (entier, reel, Boolean)
+
+  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [IMPLEMENTE]
+            Erreurs lexicales : caractere invalide, chaine non fermee,
+              commentaire non termine, entier / reel / exposant hors
+              limites ; signalees en une passe, puis le parseur tourne
+              quand meme et ajoute les erreurs syntaxiques
+            Erreurs syntaxiques : token inattendu (avec le token trouve),
+              begin / end non apparie, parenthese ou crochet non ferme,
+              point-virgule manquant, instruction ou expression attendue
+            Erreurs semantiques : type incompatible, nombre d'arguments
+              incorrect, procedure inconnue, etiquette non definie,
+              declaration en double dans une portee, indice ou tableau
+              invalide, division par zero constante
+            Avertissements (affiches avec -w) : variable non declaree
+              (declaration implicite), etiquette non utilisee, indice de
+              switch hors bornes, real converti en integer, integer
+              converti en Boolean, Boolean converti en integer
+            Recuperation : ParserSync avance jusqu'a ; end begin for if
+              ou procedure (non consommes) ; garantie de progression
+              (un arret repete sur le meme mot-cle est franchi)
+            Format : fichier(ligne,colonne) : erreur|avertissement :
+              message ; erreur fatale : AL58CW32: erreur fatale: message
+            Compteurs finaux (PhaseReport) : 'Compilation echouee : N
+              erreur(s), M avertissement(s)' ou 'Compilation terminee :
+              0 erreur, M avertissement(s)' ; arret apres 30 erreurs
+            Code de retour EXIT_ERROR (1) si erreur ; les phases de
+              generation ne tournent pas, donc aucun fichier de sortie
+              n'est ecrit ; les fichiers deja crees sont supprimes si une
+              erreur fatale survient (NoteOutput / RemoveOutputs)
+            Verifie sur une batterie de 16 programmes fautifs (lexicaux,
+              syntaxiques, semantiques) et sur test_errors.a58 (compile,
+              avertissement de la variable x avec -w) ; les 31 exemples
+              compilent toujours avec les memes sorties
+
+  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [IMPLEMENTE]
+            Run : lexeur -> parseur/generateur -> (runtime) -> encodeur ->
+              ecrivain (PE ou COFF) -> rapport ; .ASM optionnel ecrit
+              avant l'encodage ; les phases de generation ne tournent
+              pas s'il y a des erreurs
+            Mode -v : banniere, fichiers de sortie, une ligne par phase,
+              lignes et tokens, declarations et instructions analysees,
+              instructions / donnees / noms internes, tailles .text et
+              .data, relocations et imports, taille du fichier ecrit,
+              bilan final
+            Mode -d : tokens, types, table des symboles par portee,
+              decisions du parseur, code interne (liste complete des
+              instructions, runtime compris) et listing hexadecimal
+              <sortie>.lst
+            Mode -w / -w+ : activer les avertissements ; -w- : les
+              desactiver (defaut : desactives)
+            Suppression de sortie partielle si erreur (TODO 23)
+            Verifie (matrice des fichiers produits pour hello.a58) :
+              sans option -> h.exe seul ; -asm -> h.exe + h.asm ;
+              -obj -> h.obj seul ; -obj -asm -> h.obj + h.asm ;
+              -d -> h.exe + h.lst ; -v et -w- -> h.exe seul ;
+              -o nom -> nom.exe (ou nom.obj / nom.asm)
+
+  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL58\* [IMPLEMENTE]
+            Les 31 fichiers (arrays, blocks, bool, control, hello, math,
+              procs, switch, test_arrays ... test_vars) sont compiles en
+              .EXE, executes et compares aux sorties attendues
+              TESTS\AL58CW32\exp\*.exp
+            Script TESTS\test_al58cw32.sh (modele : test_adacw32.sh) :
+              compile AL58CW32.PAS, puis pour chaque exemple
+                - mode par defaut : .EXE seul (aucun .asm ni .obj)
+                - -asm : .EXE + .ASM ; -obj : .OBJ seul ; -obj -asm :
+                  .OBJ + .ASM
+                - execution et comparaison de la sortie
+                - .OBJ lisible par objdump ; encodage de chaque
+                  instruction verifie par objdump (chkenc.py)
+              puis des programmes fautifs (erreurs lexicale, syntaxique,
+              semantique : message, code de retour 1, aucun .EXE),
+              plusieurs erreurs en une compilation, avertissements avec
+              et sans -w, options -h / sans argument / source introuvable
+            Executeur des .EXE : Wine s'il est installe, sinon le
+              chargeur PE minimal TESTS\AL58CW32\runpe.c (Linux x86-64,
+              gcc ; stubs.asm / stubs.bin fournissent les fonctions
+              kernel32 par appels systeme) ; sans executeur les
+              comparaisons de sortie sont ignorees
+            Cas speciaux verifies : test_errors.a58 compile en signalant
+              l'avertissement avec -w ; test_types, test_symbols,
+              test_emitter, test_operators, test_primexpr, test_vars et
+              test_binexpr (expressions isolees, sans sortie) produisent
+              un .EXE valide
+            Resultat : 232 verifications reussies, 0 echec
+            Livrables : README.md (ligne AL58CW32.PAS),
+              DOC\TODO\AL58CW32.txt, BINLINUX\AL58CW32 ; WIN32\
+              al58cw32.exe n'a pas pu etre genere ici (pas de
+              compilateur croise Free Pascal vers Win32) : a produire
+              avec fpc -Mtp AL58CW32.PAS sous Windows

@@ -23,10 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 24 implementes (analyse complete du langage,
+  ETAT : TODO 01 a 25 implementes (analyse complete du langage,
          generation du code, listing .ASM, encodeur x86-32, ecrivains
-         PE et COFF, runtime integre, gestion des erreurs, pilotage) ;
-         TODO 25 a faire (validation sur tous les exemples).
+         PE et COFF, runtime integre, gestion des erreurs, pilotage,
+         validation sur les 31 exemples SAMPLES\ALGOL58).
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -607,27 +607,39 @@
               -d -> h.exe + h.lst ; -v et -w- -> h.exe seul ;
               -o nom -> nom.exe (ou nom.obj / nom.asm)
 
-  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL58\* [A FAIRE]
-            Compiler les 31 fichiers : arrays, blocks, bool, control,
-              hello, math, procs, switch, test_arrays, test_binexpr,
-              test_blocks, test_boolexpr, test_dataseg, test_emitter,
-              test_errors, test_final, test_forloop, test_goto,
-              test_ifthenelse, test_intrinsics, test_literals,
-              test_operators, test_primexpr, test_procedures,
-              test_readwrite, test_runtime, test_switch, test_symbols,
-              test_thunks, test_types, test_vars
-            Creer les sorties attendues (.exp) puis un script
-              TESTS\test_al58cw32.sh (modele : test_cscw32.sh,
-              test_adacw32.sh) executant chaque .EXE via Wine ou EMUW32
-              et comparant la sortie
-            Tester les trois modes : .EXE (defaut), .OBJ (-obj) et
-              .ASM (-asm), verifier que -asm est optionnel
-            Cas speciaux : test_errors.a58 doit compiler en signalant
-              les avertissements ; test_types, test_symbols et
-              test_emitter (expressions isolees, sans begin) doivent
-              produire un .EXE valide
-            Mettre a jour README.md (ligne AL58CW32.PAS), ajouter
-              DOC\TODO\AL58CW32.txt et BIN\AL58CW32.EXE
+  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL58\* [IMPLEMENTE]
+            Les 31 fichiers (arrays, blocks, bool, control, hello, math,
+              procs, switch, test_arrays ... test_vars) sont compiles en
+              .EXE, executes et compares aux sorties attendues
+              TESTS\AL58CW32\exp\*.exp
+            Script TESTS\test_al58cw32.sh (modele : test_adacw32.sh) :
+              compile AL58CW32.PAS, puis pour chaque exemple
+                - mode par defaut : .EXE seul (aucun .asm ni .obj)
+                - -asm : .EXE + .ASM ; -obj : .OBJ seul ; -obj -asm :
+                  .OBJ + .ASM
+                - execution et comparaison de la sortie
+                - .OBJ lisible par objdump ; encodage de chaque
+                  instruction verifie par objdump (chkenc.py)
+              puis des programmes fautifs (erreurs lexicale, syntaxique,
+              semantique : message, code de retour 1, aucun .EXE),
+              plusieurs erreurs en une compilation, avertissements avec
+              et sans -w, options -h / sans argument / source introuvable
+            Executeur des .EXE : Wine s'il est installe, sinon le
+              chargeur PE minimal TESTS\AL58CW32\runpe.c (Linux x86-64,
+              gcc ; stubs.asm / stubs.bin fournissent les fonctions
+              kernel32 par appels systeme) ; sans executeur les
+              comparaisons de sortie sont ignorees
+            Cas speciaux verifies : test_errors.a58 compile en signalant
+              l'avertissement avec -w ; test_types, test_symbols,
+              test_emitter, test_operators, test_primexpr, test_vars et
+              test_binexpr (expressions isolees, sans sortie) produisent
+              un .EXE valide
+            Resultat : 232 verifications reussies, 0 echec
+            Livrables : README.md (ligne AL58CW32.PAS),
+              DOC\TODO\AL58CW32.txt, BINLINUX\AL58CW32 ; WIN32\
+              al58cw32.exe n'a pas pu etre genere ici (pas de
+              compilateur croise Free Pascal vers Win32) : a produire
+              avec fpc -Mtp AL58CW32.PAS sous Windows
   ============================================================ *)
 
 { ============================================================
