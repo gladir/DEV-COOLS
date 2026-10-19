@@ -425,6 +425,9 @@ Function ValEq(Const a, b: TVal): Boolean; Forward;
 Function CallValue(Const fn: TVal; a: PVal; n: Integer;
  kw: TPyDict): TVal; Forward;
 Var ReprSkipObj: TObject = Nil;
+Var BytesImplLoaded: Boolean = False;
+Function ImportByName(Const name: AnsiString): TVal; Forward;
+Procedure LoadBytesImpl; Forward;
 Function ReprVal(Const v: TVal): AnsiString; Forward;
 Function StrVal(Const v: TVal): AnsiString; Forward;
 Procedure RaiseExc(c: TPyType; Const msg: AnsiString); Forward;
@@ -6435,6 +6438,42 @@ Begin
  End;
 End;
 
+Procedure CgAnnotations(g: TGen; nd, args: TNode; Var flags: Integer);
+Var
+ names: TStrArr;
+ cnt, j: Integer;
+ names2: TPyTuple;
+
+ Procedure AddP(p: TNode);
+ Begin
+  If (p <> Nil) And (p.b <> Nil) Then Begin
+   CgExpr(g, p.b);
+   SetLength(names, Length(names) + 1);
+   names[High(names)] := p.s;
+  End;
+ End;
+
+Begin
+ If nd.k <> nFuncDef Then Exit;
+ SetLength(names, 0);
+ For j := 0 To High(args.l1) Do AddP(args.l1[j]);
+ AddP(args.c);
+ For j := 0 To High(args.l2) Do AddP(args.l2[j]);
+ AddP(args.d);
+ If nd.b <> Nil Then Begin
+  CgExpr(g, nd.b);
+  SetLength(names, Length(names) + 1);
+  names[High(names)] := 'return';
+ End;
+ cnt := Length(names);
+ If cnt = 0 Then Exit;
+ names2 := NewTuple(cnt);
+ For j := 0 To cnt - 1 Do names2.items[j] := VStr(names[j]);
+ EmitConst(g, VObj(names2));
+ Emit(g, BUILD_CONST_KEY_MAP, cnt);
+ flags := flags Or 4;
+End;
+
 Procedure CgMakeFunction(g: TGen; nd: TNode; args: TNode; Const nm: AnsiString);
 Var
  flags: Integer;
@@ -6445,6 +6484,7 @@ Begin
  flags := 0;
  cs := ScopeOf(nd);
  CgFuncDefaults(g, args, flags);
+ CgAnnotations(g, nd, args, flags);
  qual := ChildQual(g, nm);
  code := CgFunction(g, nd, cs, nm, qual);
  CgClosureTuple(g, cs, flags);
@@ -7431,6 +7471,22 @@ Function VBytes(Const s: AnsiString): TVal;
 Begin
  Result.k := vkObj;
  Result.o := TPyBytes.Make(s);
+End;
+
+Function VByteArray(Const s: AnsiString): TVal;
+Var
+ b: TPyBytes;
+Begin
+ b := TPyBytes.Make(s);
+ b.cls := tyBytearray;
+ Result.k := vkObj;
+ Result.o := b;
+End;
+
+Function VBytesLike(src: TPyObj; Const s: AnsiString): TVal;
+Begin
+ If src.cls = tyBytearray Then Result := VByteArray(s)
+ Else Result := VBytes(s);
 End;
 
 Function NewList: TPyList;
@@ -8453,7 +8509,10 @@ Begin
      Result := Int64(acc);
     End
     Else If v.o Is TPyBigInt Then Result := IntHash(v)
-    Else If v.o Is TPyBytes Then Result := HashBytes(TPyBytes(v.o).s) Xor 7
+    Else If v.o Is TPyBytes Then Begin
+     If v.o.cls = tyBytearray Then TypeErr('unhashable type: ''bytearray''');
+     Result := HashBytes(TPyBytes(v.o).s) Xor 7;
+    End
     Else If (v.o Is TPySet) And TPySet(v.o).frozen Then Begin
      s := TPySet(v.o);
      acc := 0;
@@ -9073,7 +9132,10 @@ Begin
   End;
  If o Is TPyStr Then Result := StrReprEsc(TPyStr(o).s, False)
  Else If o Is TPyBigInt Then Result := IntToStrVal(v)
- Else If o Is TPyBytes Then Result := BytesReprEsc(TPyBytes(o).s)
+ Else If o Is TPyBytes Then Begin
+  Result := BytesReprEsc(TPyBytes(o).s);
+  If o.cls = tyBytearray Then Result := 'bytearray(' + Result + ')';
+ End
  Else If o Is TPyList Then Begin
   If ReprBusy(o) Then Result := '[...]'
   Else Begin
@@ -10255,7 +10317,7 @@ Begin
   res := VObj(t);
  End
  Else If (a.o Is TPyBytes) And (b.o Is TPyBytes) Then
-  res := VBytes(TPyBytes(a.o).s + TPyBytes(b.o).s)
+  res := VBytesLike(a.o, TPyBytes(a.o).s + TPyBytes(b.o).s)
  Else Result := False;
 End;
 
@@ -10293,7 +10355,8 @@ Begin
  Result := True;
  If n < 0 Then n := 0;
  If a.o Is TPyStr Then res := VStr(StrMulRepeat(TPyStr(a.o).s, n))
- Else If a.o Is TPyBytes Then res := VBytes(StrMulRepeat(TPyBytes(a.o).s, n))
+ Else If a.o Is TPyBytes Then
+  res := VBytesLike(a.o, StrMulRepeat(TPyBytes(a.o).s, n))
  Else If a.o Is TPyList Then Begin
   l := NewList;
   k := TPyList(a.o).cnt * n;
@@ -10423,6 +10486,12 @@ Begin
   { vues de dict comme ensembles }
   Result := VNone;
  End;
+ If Not BytesImplLoaded And (((a.k = vkObj) And (a.o Is TPyBytes)) Or
+  ((b.k = vkObj) And (b.o Is TPyBytes))) Then Begin
+  LoadBytesImpl;
+  Result := BinaryOp(op, a, b);
+  Exit;
+ End;
  TypeErr('unsupported operand type(s) for ' + BinSyms[op] + ': ''' +
   TypeName(a) + ''' and ''' + TypeName(b) + '''');
  Result := vNone;
@@ -10446,6 +10515,12 @@ Begin
      For i := 0 To TPyList(r.o).cnt - 1 Do
       TPyList(a.o).Add(TPyList(r.o).items[i]);
     End;
+    Result := a;
+    Exit;
+   End;
+   If (a.o Is TPyBytes) And (a.o.cls = tyBytearray) And
+    (op = bopAdd) And (b.k = vkObj) And (b.o Is TPyBytes) Then Begin
+    TPyBytes(a.o).s := TPyBytes(a.o).s + TPyBytes(b.o).s;
     Result := a;
     Exit;
    End;
@@ -10669,7 +10744,7 @@ Var
  nl: TPyList;
  nt: TPyTuple;
  start, stop, step, count, j: Int64;
- s: AnsiString;
+ s, bs: AnsiString;
  cps: TCpArr;
  rg: TPyRange;
  ix: Integer;
@@ -10764,10 +10839,10 @@ Begin
   s := TPyBytes(o.o).s;
   If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
    SliceIndices(TPySlice(k.o), Length(s), start, stop, step, count);
-   r := VBytes('');
-   For j := 0 To count - 1 Do
-    TPyBytes(r.o).s := TPyBytes(r.o).s + s[start + j * step + 1];
-   Result := r;
+   bs := '';
+   SetLength(bs, count);
+   For j := 0 To count - 1 Do bs[j + 1] := s[start + j * step + 1];
+   Result := VBytesLike(o.o, bs);
    Exit;
   End;
   i := IndexVal(k);
@@ -10815,6 +10890,86 @@ Begin
  Result := vNone;
 End;
 
+Function BytesFromAny(Const v: TVal): AnsiString;
+Var
+ arr: TValArr;
+ i: Integer;
+ x: Int64;
+Begin
+ If (v.k = vkObj) And (v.o Is TPyBytes) Then Begin
+  Result := TPyBytes(v.o).s;
+  Exit;
+ End;
+ If IsStrVal(v) Then
+  TypeErr('a bytes-like object is required, not ''str''');
+ arr := IterToArr(v);
+ SetLength(Result, Length(arr));
+ For i := 0 To High(arr) Do Begin
+  x := IndexVal(arr[i]);
+  If (x < 0) Or (x > 255) Then ValueErr('byte must be in range(0, 256)');
+  Result[i + 1] := Chr(x);
+ End;
+End;
+
+Procedure ByteArraySetItem(b: TPyBytes; Const k, v: TVal);
+Var
+ start, stop, step, count, j: Int64;
+ i: Int64;
+ vs, s, ns: AnsiString;
+Begin
+ s := b.s;
+ If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  SliceIndices(TPySlice(k.o), Length(s), start, stop, step, count);
+  vs := BytesFromAny(v);
+  If step = 1 Then Begin
+   If stop < start Then stop := start;
+   b.s := Copy(s, 1, start) + vs + Copy(s, stop + 1, Length(s));
+  End
+  Else Begin
+   If Length(vs) <> count Then
+    ValueErr('attempt to assign bytes of size ' + IntToStr(Length(vs)) +
+     ' to extended slice of size ' + IntToStr(count));
+   ns := s;
+   For j := 0 To count - 1 Do ns[start + j * step + 1] := vs[j + 1];
+   b.s := ns;
+  End;
+  Exit;
+ End;
+ i := IndexVal(k);
+ If i < 0 Then i := i + Length(s);
+ If (i < 0) Or (i >= Length(s)) Then
+  RaiseExc(exIndexError, 'bytearray index out of range');
+ j := IndexVal(v);
+ If (j < 0) Or (j > 255) Then ValueErr('byte must be in range(0, 256)');
+ b.s[i + 1] := Chr(j);
+End;
+
+Procedure ByteArrayDelItem(b: TPyBytes; Const k: TVal);
+Var
+ start, stop, step, count, j: Int64;
+ i: Int64;
+ s, ns: AnsiString;
+ keep: Array Of Boolean;
+Begin
+ s := b.s;
+ If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  SliceIndices(TPySlice(k.o), Length(s), start, stop, step, count);
+  SetLength(keep, Length(s));
+  For j := 0 To High(keep) Do keep[j] := True;
+  For j := 0 To count - 1 Do keep[start + j * step] := False;
+  ns := '';
+  For j := 0 To High(keep) Do
+   If keep[j] Then ns := ns + s[j + 1];
+  b.s := ns;
+  Exit;
+ End;
+ i := IndexVal(k);
+ If i < 0 Then i := i + Length(s);
+ If (i < 0) Or (i >= Length(s)) Then
+  RaiseExc(exIndexError, 'bytearray index out of range');
+ Delete(b.s, i + 1, 1);
+End;
+
 Procedure SetItem(Const o, k, v: TVal);
 Var
  f: TVal;
@@ -10835,6 +10990,10 @@ Begin
   End;
  If o.o Is TPyDict Then Begin
   TPyDict(o.o).SetItem(k, v);
+  Exit;
+ End;
+ If (o.o Is TPyBytes) And (o.o.cls = tyBytearray) Then Begin
+  ByteArraySetItem(TPyBytes(o.o), k, v);
   Exit;
  End;
  If o.o Is TPyList Then Begin
@@ -10895,6 +11054,10 @@ Begin
   End;
  If o.o Is TPyDict Then Begin
   If Not TPyDict(o.o).DelItem(k) Then RaiseKeyError(k);
+  Exit;
+ End;
+ If (o.o Is TPyBytes) And (o.o.cls = tyBytearray) Then Begin
+  ByteArrayDelItem(TPyBytes(o.o), k);
   Exit;
  End;
  If o.o Is TPyList Then Begin
@@ -11130,6 +11293,82 @@ Begin
  For i := 0 To High(co.co) Do Result[i + 1] := Chr(co.co[i]);
 End;
 
+Function SnapLocals(f: TFrame): TPyDict;
+Var
+ i: Integer;
+Begin
+ If f.locals <> Nil Then Begin
+  Result := f.locals;
+  Exit;
+ End;
+ Result := TPyDict.Make;
+ If f.base = Nil Then Exit;
+ For i := 0 To Length(f.code.varnames) - 1 Do
+  If (i < f.nfast) And (f.base[i].k <> vkNull) And
+   Not ((f.base[i].k = vkObj) And (f.base[i].o Is TPyCell)) Then
+   Result.SetS(f.code.varnames[i], f.base[i]);
+End;
+
+Function MakeFrameObj(f: TFrame; depth: Integer): TVal;
+Var
+ o: TPyObj;
+Begin
+ If (f = Nil) Or (depth > 200) Then Begin
+  Result := vNone;
+  Exit;
+ End;
+ o := TPyObj.Create(tyFrame);
+ o.idict := TPyDict.Make;
+ Result := VObj(o);
+ o.idict.SetS('f_code', VObj(f.code));
+ o.idict.SetS('f_lineno', VInt(LineForFrame(f)));
+ o.idict.SetS('f_globals', VObj(f.globals));
+ o.idict.SetS('f_locals', VObj(SnapLocals(f)));
+ o.idict.SetS('f_builtins', VObj(f.builtins));
+ o.idict.SetS('f_lasti', VInt(f.lasti));
+ o.idict.SetS('f_trace', vNone);
+ o.idict.SetS('f_back', MakeFrameObj(f.back, depth + 1));
+End;
+
+Function MakeTbChain(exc: TPyObj): TVal;
+Var
+ tb, e, nxt, fr, co: TVal;
+ l: TPyList;
+ i: Integer;
+ t: TPyObj;
+ fo, cobj: TPyObj;
+Begin
+ Result := vNone;
+ If (exc.idict = Nil) Or Not exc.idict.GetS('__tb__', tb) Then Exit;
+ l := TPyList(tb.o);
+ nxt := vNone;
+ For i := 0 To l.cnt - 1 Do Begin
+  e := l.items[i];
+  cobj := TPyObj.Create(tyObject);
+  cobj.idict := TPyDict.Make;
+  co := VObj(cobj);
+  cobj.idict.SetS('co_filename', TPyTuple(e.o).items[0]);
+  cobj.idict.SetS('co_name', TPyTuple(e.o).items[2]);
+  fo := TPyObj.Create(tyFrame);
+  fo.idict := TPyDict.Make;
+  fr := VObj(fo);
+  fo.idict.SetS('f_code', co);
+  fo.idict.SetS('f_lineno', TPyTuple(e.o).items[1]);
+  fo.idict.SetS('f_back', vNone);
+  fo.idict.SetS('f_globals', VObj(TPyDict.Make));
+  fo.idict.SetS('f_locals', VObj(TPyDict.Make));
+  t := TPyObj.Create(tyTraceback);
+  t.idict := TPyDict.Make;
+  t.idict.SetS('tb_frame', fr);
+  t.idict.SetS('tb_lineno', TPyTuple(e.o).items[1]);
+  t.idict.SetS('tb_lasti', VInt(0));
+  t.idict.SetS('tb_next', nxt);
+  t.idict.SetS('_line', TPyTuple(e.o).items[3]);
+  nxt := VObj(t);
+ End;
+ Result := nxt;
+End;
+
 Function SpecialGetAttr(Const o: TVal; Const attr: AnsiString;
  Var res: TVal): Boolean;
 Var
@@ -11204,6 +11443,14 @@ Begin
    End;
    If attr = '__kwdefaults__' Then Begin
     If kwdefaults = Nil Then res := vNone Else res := VObj(kwdefaults);
+    Exit;
+   End;
+   If attr = '__annotations__' Then Begin
+    If idict = Nil Then idict := TPyDict.Make;
+    If Not idict.GetS('__annotations__', res) Then Begin
+     res := VObj(TPyDict.Make);
+     idict.SetS('__annotations__', res);
+    End;
     Exit;
    End;
    If attr = '__closure__' Then Begin
@@ -11372,9 +11619,7 @@ Begin
  End;
  If TypeIsSub(ob.cls, exBaseException) Then Begin
   If attr = '__traceback__' Then Begin
-   If (ob.idict <> Nil) And ob.idict.GetS('__tb__', v) Then
-    res := vNone
-   Else res := vNone;
+   res := MakeTbChain(ob);
    Exit;
   End;
   If (attr = '__cause__') Or (attr = '__context__') Then Begin
@@ -11576,6 +11821,12 @@ Begin
    Result := True;
    Exit;
   End;
+ If Not BytesImplLoaded And (o.k = vkObj) And ((o.o Is TPyBytes) Or
+  (o.o = tyBytes) Or (o.o = tyBytearray)) Then Begin
+  LoadBytesImpl;
+  Result := GetAttrOpt(o, nm, res);
+  Exit;
+ End;
  Result := False;
 End;
 
@@ -12118,6 +12369,10 @@ Begin
   t.qualname := TPyStr(v.o).s;
   d.DelS('__qualname__');
  End;
+ If d.GetS('__init_subclass__', v) And (v.k = vkObj) And (v.o Is TPyFunc)
+  Then d.SetS('__init_subclass__', VObj(NewWrapper(tyClassMethod, v)));
+ If d.GetS('__class_getitem__', v) And (v.k = vkObj) And (v.o Is TPyFunc)
+  Then d.SetS('__class_getitem__', VObj(NewWrapper(tyClassMethod, v)));
  If Length(bases) = 0 Then Begin
   SetLength(t.bases, 1);
   t.bases[0] := tyObject;
@@ -12177,21 +12432,45 @@ Var
  fr: TFrame;
  r: TVal;
  prep: TVal;
- btuple: TPyTuple;
+ btuple, origBases: TPyTuple;
  j: Integer;
+ exp: TValArr;
 Begin
  If (n < 2) Or Not ((a[0].k = vkObj) And (a[0].o Is TPyFunc)) Then
   TypeErr('__build_class__: func must be a function');
  func := TPyFunc(a[0].o);
  nm := StrOf(a[1]);
  nb := n - 2;
+ origBases := Nil;
+ SetLength(exp, 0);
+ For i := 0 To nb - 1 Do Begin
+  If (a[i + 2].k = vkObj) And Not (a[i + 2].o Is TPyType) And
+   GetAttrOpt(a[i + 2], InternStr('__mro_entries__'), mv) Then Begin
+   If origBases = Nil Then Begin
+    origBases := NewTuple(nb);
+    For j := 0 To nb - 1 Do origBases.items[j] := a[j + 2];
+   End;
+   r := Call1(mv, VObj(origBases));
+   If Not ((r.k = vkObj) And (r.o Is TPyTuple)) Then
+    TypeErr('__mro_entries__ must return a tuple');
+   For j := 0 To High(TPyTuple(r.o).items) Do Begin
+    SetLength(exp, Length(exp) + 1);
+    exp[High(exp)] := TPyTuple(r.o).items[j];
+   End;
+  End
+  Else Begin
+   SetLength(exp, Length(exp) + 1);
+   exp[High(exp)] := a[i + 2];
+  End;
+ End;
+ nb := Length(exp);
  SetLength(bases, nb);
  btuple := NewTuple(nb);
  For i := 0 To nb - 1 Do Begin
-  If Not ((a[i + 2].k = vkObj) And (a[i + 2].o Is TPyType)) Then
+  If Not ((exp[i].k = vkObj) And (exp[i].o Is TPyType)) Then
    TypeErr('bases must be types');
-  bases[i] := TPyType(a[i + 2].o);
-  btuple.items[i] := a[i + 2];
+  bases[i] := TPyType(exp[i].o);
+  btuple.items[i] := exp[i];
  End;
  meta := Nil;
  kw2 := Nil;
@@ -12224,6 +12503,7 @@ Begin
   If (r.k = vkObj) And (r.o Is TPyDict) Then ns := TPyDict(r.o);
  End;
  If ns = Nil Then ns := TPyDict.Make;
+ If origBases <> Nil Then ns.SetS('__orig_bases__', VObj(origBases));
  { execution du corps de la classe }
  fr := NewFrame(func.code, func, func.globals, ns, False);
  Try
@@ -12672,7 +12952,11 @@ Begin
   fn.kwdefaults := TPyDict(sp[k].o);
   Inc(k);
  End;
- If (flags And 4) <> 0 Then Inc(k);
+ If (flags And 4) <> 0 Then Begin
+  If fn.idict = Nil Then fn.idict := TPyDict.Make;
+  fn.idict.SetS('__annotations__', sp[k]);
+  Inc(k);
+ End;
  If (flags And 8) <> 0 Then Begin
   clos := TPyTuple(sp[k].o);
   Inc(k);
@@ -13183,7 +13467,8 @@ Begin
      End;
     STORE_NAME: Begin
       nm := nameObjs[arg];
-      DictSetO(f.locals, nm, sp[-1]);
+      If f.locals.cls <> tyDict Then SetItem(VObj(f.locals), VObj(nm), sp[-1])
+      Else DictSetO(f.locals, nm, sp[-1]);
       Dec(sp);
      End;
     DELETE_NAME: Begin
@@ -15884,6 +16169,56 @@ Begin
  Result := VObj(NewWrapper(tyClassMethod, a[0]));
 End;
 
+Function FuncGetM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If (n < 2) Or (a[1].k = vkNone) Then Result := a[0]
+ Else Result := BindMethod(a[0], a[1]);
+End;
+
+Function SelfGetM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := a[0];
+End;
+
+Function PropGetM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If (n < 2) Or (a[1].k = vkNone) Then Begin
+  Result := a[0];
+  Exit;
+ End;
+ If TPyProperty(a[0].o).fget.k = vkNone Then
+  RaiseExc(exAttributeError, 'unreadable attribute');
+ Result := Call1(TPyProperty(a[0].o).fget, a[1]);
+End;
+
+Function PropSetM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If TPyProperty(a[0].o).fset.k = vkNone Then
+  RaiseExc(exAttributeError, 'can''t set attribute');
+ Result := Call2(TPyProperty(a[0].o).fset, a[1], a[2]);
+ Result := vNone;
+End;
+
+Function PropDelM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If TPyProperty(a[0].o).fdel.k = vkNone Then
+  RaiseExc(exAttributeError, 'can''t delete attribute');
+ Result := Call1(TPyProperty(a[0].o).fdel, a[1]);
+ Result := vNone;
+End;
+
+Function StaticGetM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := TPyWrapper(a[0].o).fn;
+End;
+
+Function ClassGetM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If (n >= 3) And (a[2].k <> vkNone) Then
+  Result := BindMethod(TPyWrapper(a[0].o).fn, a[2])
+ Else Result := BindMethod(TPyWrapper(a[0].o).fn, VObj(TypeOf(a[1])));
+End;
+
 Function BiExit(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If n > 0 Then
@@ -16083,6 +16418,27 @@ Begin
  Result := VBytes(s);
 End;
 
+Function SliceIndicesM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ start, stop, step, count: Int64;
+ t: TPyTuple;
+Begin
+ SliceIndices(TPySlice(a[0].o), IndexVal(a[1]), start, stop, step, count);
+ t := NewTuple(3);
+ t.items[0] := VInt(start);
+ t.items[1] := VInt(stop);
+ t.items[2] := VInt(step);
+ Result := VObj(t);
+End;
+
+Function BiBytearrayCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: TVal;
+Begin
+ r := BiBytesCtor(a, n, kw);
+ Result := VByteArray(TPyBytes(r.o).s);
+End;
+
 Procedure InitBuiltinFuncs;
 Begin
  DefFunc(BuiltinsDict, 'print', @BiPrint);
@@ -16139,16 +16495,24 @@ Begin
  tyBool.ctor := @BoolCtor;
  tyRange.ctor := @RangeCtor;
  tySlice.ctor := @BiSlice;
+ DefMethod(tySlice, 'indices', @SliceIndicesM);
  tySuper.ctor := @BiSuper;
  tyProperty.ctor := @PropertyCtor;
  tyStaticMethod.ctor := @StaticMethodCtor;
  tyClassMethod.ctor := @ClassMethodCtor;
  tyBytes.ctor := @BiBytesCtor;
- tyBytearray.ctor := @BiBytesCtor;
+ tyBytearray.ctor := @BiBytearrayCtor;
  tyObject.ctor := Nil;
  DefMethod(tyProperty, 'getter', @PropGetterSet);
  DefMethod(tyProperty, 'setter', @PropSetter);
  DefMethod(tyProperty, 'deleter', @PropDeleter);
+ DefMethod(tyProperty, '__get__', @PropGetM);
+ DefMethod(tyProperty, '__set__', @PropSetM);
+ DefMethod(tyProperty, '__delete__', @PropDelM);
+ DefMethod(tyFunction, '__get__', @FuncGetM);
+ DefMethod(tyMethod, '__get__', @SelfGetM);
+ DefMethod(tyStaticMethod, '__get__', @StaticGetM);
+ DefMethod(tyClassMethod, '__get__', @ClassGetM);
 End;
 
 { ------------------------------------------------------------
@@ -19116,6 +19480,103 @@ Begin
  Result := VBool(TPyBytes(a[0].o).s = TPyBytes(a[1].o).s);
 End;
 
+Function BaAppendM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ x: Int64;
+Begin
+ x := IndexVal(a[1]);
+ If (x < 0) Or (x > 255) Then ValueErr('byte must be in range(0, 256)');
+ TPyBytes(a[0].o).s := TPyBytes(a[0].o).s + Chr(x);
+ Result := vNone;
+End;
+
+Function BaExtendM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ TPyBytes(a[0].o).s := TPyBytes(a[0].o).s + BytesFromAny(a[1]);
+ Result := vNone;
+End;
+
+Function BaPopM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ i: Int64;
+ b: TPyBytes;
+Begin
+ b := TPyBytes(a[0].o);
+ If Length(b.s) = 0 Then RaiseExc(exIndexError, 'pop from empty bytearray');
+ If n > 1 Then i := IndexVal(a[1]) Else i := -1;
+ If i < 0 Then i := i + Length(b.s);
+ If (i < 0) Or (i >= Length(b.s)) Then
+  RaiseExc(exIndexError, 'pop index out of range');
+ Result := VInt(Ord(b.s[i + 1]));
+ Delete(b.s, i + 1, 1);
+End;
+
+Function BaInsertM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ i, x: Int64;
+ b: TPyBytes;
+Begin
+ b := TPyBytes(a[0].o);
+ i := IndexVal(a[1]);
+ x := IndexVal(a[2]);
+ If (x < 0) Or (x > 255) Then ValueErr('byte must be in range(0, 256)');
+ If i < 0 Then i := i + Length(b.s);
+ If i < 0 Then i := 0;
+ If i > Length(b.s) Then i := Length(b.s);
+ Insert(Chr(x), b.s, i + 1);
+ Result := vNone;
+End;
+
+Function BaRemoveM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ x: Int64;
+ p: Integer;
+ b: TPyBytes;
+Begin
+ b := TPyBytes(a[0].o);
+ x := IndexVal(a[1]);
+ If (x < 0) Or (x > 255) Then ValueErr('byte must be in range(0, 256)');
+ p := Pos(Chr(x), b.s);
+ If p = 0 Then ValueErr('value not found in bytearray');
+ Delete(b.s, p, 1);
+ Result := vNone;
+End;
+
+Function BaClearM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ TPyBytes(a[0].o).s := '';
+ Result := vNone;
+End;
+
+Function BaReverseM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ s, r: AnsiString;
+ i: Integer;
+Begin
+ s := TPyBytes(a[0].o).s;
+ SetLength(r, Length(s));
+ For i := 1 To Length(s) Do r[i] := s[Length(s) + 1 - i];
+ TPyBytes(a[0].o).s := r;
+ Result := vNone;
+End;
+
+Function BaCopyM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBytesLike(a[0].o, TPyBytes(a[0].o).s);
+End;
+
+Function BaIAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ TPyBytes(a[0].o).s := TPyBytes(a[0].o).s + BytesFromAny(a[1]);
+ Result := a[0];
+End;
+
+Procedure DefBytesBoth(Const nm: AnsiString; f: TNativeFn);
+Begin
+ DefMethod(tyBytes, nm, f);
+ DefMethod(tyBytearray, nm, f);
+End;
+
 Function BytesHashM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := VInt(HashVal(a[0]));
@@ -19475,24 +19936,32 @@ Begin
  DefMethod(tyFloat, '__gt__', @NumGtM);
  DefMethod(tyFloat, '__ge__', @NumGeM);
  { bytes }
- DefMethod(tyBytes, 'decode', @BytesDecodeM);
- DefMethod(tyBytes, 'hex', @BytesHexM);
- DefStaticMethod(tyBytes, 'fromhex', @BytesFromHexM);
- DefMethod(tyBytes, '__len__', @BytesLenM);
- DefMethod(tyBytes, '__getitem__', @BytesGetItemM);
- DefMethod(tyBytes, '__iter__', @BytesIterM);
- DefMethod(tyBytes, 'join', @BytesJoinM);
- DefMethod(tyBytes, 'startswith', @BytesStartsWithM);
- DefMethod(tyBytes, 'endswith', @BytesEndsWithM);
- DefMethod(tyBytes, 'find', @BytesFindM);
- DefMethod(tyBytes, 'replace', @BytesReplaceM);
- DefMethod(tyBytes, 'upper', @BytesUpperM);
- DefMethod(tyBytes, 'lower', @BytesLowerM);
- DefMethod(tyBytes, 'strip', @BytesStripM);
- DefMethod(tyBytes, 'split', @BytesSplitM);
- DefMethod(tyBytes, '__add__', @BytesAddM);
- DefMethod(tyBytes, '__eq__', @BytesEqM);
+ DefBytesBoth('decode', @BytesDecodeM);
+ DefBytesBoth('hex', @BytesHexM);
+ DefBytesBoth('__len__', @BytesLenM);
+ DefBytesBoth('__getitem__', @BytesGetItemM);
+ DefBytesBoth('__iter__', @BytesIterM);
+ DefBytesBoth('join', @BytesJoinM);
+ DefBytesBoth('startswith', @BytesStartsWithM);
+ DefBytesBoth('endswith', @BytesEndsWithM);
+ DefBytesBoth('find', @BytesFindM);
+ DefBytesBoth('replace', @BytesReplaceM);
+ DefBytesBoth('upper', @BytesUpperM);
+ DefBytesBoth('lower', @BytesLowerM);
+ DefBytesBoth('strip', @BytesStripM);
+ DefBytesBoth('split', @BytesSplitM);
+ DefBytesBoth('__add__', @BytesAddM);
+ DefBytesBoth('__eq__', @BytesEqM);
  DefMethod(tyBytes, '__hash__', @BytesHashM);
+ DefMethod(tyBytearray, 'append', @BaAppendM);
+ DefMethod(tyBytearray, 'extend', @BaExtendM);
+ DefMethod(tyBytearray, 'pop', @BaPopM);
+ DefMethod(tyBytearray, 'insert', @BaInsertM);
+ DefMethod(tyBytearray, 'remove', @BaRemoveM);
+ DefMethod(tyBytearray, 'clear', @BaClearM);
+ DefMethod(tyBytearray, 'reverse', @BaReverseM);
+ DefMethod(tyBytearray, 'copy', @BaCopyM);
+ DefMethod(tyBytearray, '__iadd__', @BaIAddM);
  { generateurs et iterateurs }
  DefMethod(tyGenerator, '__next__', @GenNextM);
  DefMethod(tyGenerator, 'send', @GenSendM);
@@ -20106,6 +20575,16 @@ Begin
  Result.idict.SetS('__spec__', vNone);
 End;
 
+Function ModuleCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyModule;
+Begin
+ If n < 1 Then TypeErr('module() missing required argument ''name'' (pos 1)');
+ m := NewModule(StrOf(a[0]));
+ If n > 1 Then m.idict.SetS('__doc__', a[1]);
+ Result := VObj(m);
+End;
+
 Procedure RegNative(Const name: AnsiString; p: TModInit);
 Begin
  NativeMods.AddObject(name, TObject(Pointer(p)));
@@ -20136,7 +20615,6 @@ Begin
  Else Result := a + '/' + b;
 End;
 
-Function ImportByName(Const name: AnsiString): TVal; Forward;
 
 Function LoadModuleFile(Const fullname, path: AnsiString; isPkg: Boolean;
  Const pkgdir: AnsiString): TVal;
@@ -20319,6 +20797,38 @@ Begin
  If name = '' Then Result := base Else Result := base + '.' + name;
 End;
 
+Procedure LoadBytesImpl;
+Var
+ m: TPyModule;
+ names: TVal;
+ arr: TValArr;
+ i: Integer;
+ v: TVal;
+ nm: AnsiString;
+Begin
+ If BytesImplLoaded Then Exit;
+ BytesImplLoaded := True;
+ m := TPyModule(ImportByName('_bytesimpl').o);
+ If Not m.idict.GetS('_METHODS', names) Then Exit;
+ arr := IterToArr(names);
+ For i := 0 To High(arr) Do Begin
+  nm := StrOf(arr[i]);
+  If Not m.idict.GetS(nm, v) Then Continue;
+  If Not tyBytes.idict.HasS(nm) Then tyBytes.idict.SetS(nm, v);
+  If Not tyBytearray.idict.HasS(nm) Then tyBytearray.idict.SetS(nm, v);
+ End;
+End;
+
+Function BiMemoryView(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TPyModule;
+ c: TVal;
+Begin
+ m := TPyModule(ImportByName('_bytesimpl').o);
+ m.idict.GetS('memoryview', c);
+ Result := CallValue(c, a, n, kw);
+End;
+
 Function ImportName(Const name: AnsiString; globals: TPyDict;
  Const fromlist: TVal; level: Integer): TVal;
 Var
@@ -20462,7 +20972,7 @@ Begin
  If ExcInfo.k = vkObj Then Begin
   t.items[0] := VObj(ExcInfo.o.cls);
   t.items[1] := ExcInfo;
-  t.items[2] := vNone;
+  t.items[2] := MakeTbChain(ExcInfo.o);
  End
  Else Begin
   t.items[0] := vNone;
@@ -20513,9 +21023,19 @@ Begin
 End;
 
 Function SysGetFrame(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ f: TFrame;
+ d: Integer;
 Begin
- Result := VObj(CurFrame.func);
- If CurFrame.func = Nil Then Result := vNone;
+ f := CurFrame;
+ d := 0;
+ If n > 0 Then d := ToInt64(a[0]);
+ While (d > 0) And (f <> Nil) Do Begin
+  f := f.back;
+  Dec(d);
+ End;
+ If f = Nil Then ValueErr('call stack is not deep enough');
+ Result := MakeFrameObj(f, 0);
 End;
 
 Procedure InitSysModule(m: TPyModule);
@@ -20523,6 +21043,7 @@ Var
  d: TPyDict;
  mv: TVal;
 Begin
+ tyModule.ctor := @ModuleCtor;
  d := m.idict;
  d.SetS('modules', VObj(ModulesDict));
  d.SetS('path', VObj(SysPathList));
@@ -21722,6 +22243,158 @@ Begin
  Result := VStr(ExpandFileName(StrOf(a[0])));
 End;
 
+Function PosixStatCommon(Const p: AnsiString; lnk: Boolean): TVal;
+{$IFDEF UNIX}
+Var
+ st: Stat;
+ r: LongInt;
+ t: TPyTuple;
+Begin
+ If lnk Then r := FpLStat(p, st) Else r := FpStat(p, st);
+ If r <> 0 Then Begin
+  If fpgeterrno = 13 Then RaiseOSErr(exPermissionError, 13,
+   'Permission denied', p)
+  Else RaiseNoEnt(p);
+ End;
+ t := NewTuple(10);
+ t.items[0] := VInt(st.st_mode);
+ t.items[1] := VInt(st.st_ino);
+ t.items[2] := VInt(st.st_dev);
+ t.items[3] := VInt(st.st_nlink);
+ t.items[4] := VInt(st.st_uid);
+ t.items[5] := VInt(st.st_gid);
+ t.items[6] := VInt(st.st_size);
+ t.items[7] := VInt(st.st_atime);
+ t.items[8] := VInt(st.st_mtime);
+ t.items[9] := VInt(st.st_ctime);
+ Result := VObj(t);
+End;
+{$ELSE}
+Begin
+ Result := vNone;
+End;
+{$ENDIF}
+
+Function PosixStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := PosixStatCommon(StrOf(a[0]), False);
+End;
+
+Function PosixLStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := PosixStatCommon(StrOf(a[0]), True);
+End;
+
+Function PosixChmod(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ If FpChmod(StrOf(a[0]), ToInt64(a[1])) <> 0 Then RaiseNoEnt(StrOf(a[0]));
+ {$ENDIF}
+ Result := vNone;
+End;
+
+Function PosixGetuid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ Result := VInt(FpGetuid);
+ {$ELSE}
+ Result := VInt(0);
+ {$ENDIF}
+End;
+
+Function PosixGetgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ Result := VInt(FpGetgid);
+ {$ELSE}
+ Result := VInt(0);
+ {$ENDIF}
+End;
+
+Function PosixGetppid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ Result := VInt(FpGetppid);
+ {$ELSE}
+ Result := VInt(0);
+ {$ENDIF}
+End;
+
+Function PosixAccess(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ Result := VBool(FpAccess(StrOf(a[0]), ToInt64(a[1])) = 0);
+ {$ELSE}
+ Result := VBool(FileExists(StrOf(a[0])) Or DirectoryExists(StrOf(a[0])));
+ {$ENDIF}
+End;
+
+Function PosixSymlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ If FpSymlink(PChar(StrOf(a[0])), PChar(StrOf(a[1]))) <> 0 Then
+  RaiseOSErr(exFileExists, 17, 'File exists', StrOf(a[1]));
+ {$ENDIF}
+ Result := vNone;
+End;
+
+Function PosixReadlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ {$IFDEF UNIX}
+ Result := VStr(fpReadLink(StrOf(a[0])));
+ If TPyStr(Result.o).s = '' Then
+  RaiseOSErr(exOSError, 22, 'Invalid argument', StrOf(a[0]));
+ {$ELSE}
+ Result := a[0];
+ {$ENDIF}
+End;
+
+Function PosixUname(a: PVal; n: Integer; kw: TPyDict): TVal;
+{$IFDEF UNIX}
+Var
+ u: UtsName;
+ t: TPyTuple;
+Begin
+ FpUname(u);
+ t := NewTuple(5);
+ t.items[0] := VStr(u.sysname);
+ t.items[1] := VStr(u.nodename);
+ t.items[2] := VStr(u.release);
+ t.items[3] := VStr(u.version);
+ t.items[4] := VStr(u.machine);
+ Result := VObj(t);
+End;
+{$ELSE}
+Var
+ t: TPyTuple;
+Begin
+ t := NewTuple(5);
+ t.items[0] := VStr('Windows');
+ t.items[1] := VStr('localhost');
+ t.items[2] := VStr('');
+ t.items[3] := VStr('');
+ t.items[4] := VStr('x86_64');
+ Result := VObj(t);
+End;
+{$ENDIF}
+
+Function PosixIsatty(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBool(IsATTY(ToInt64(a[0])) <> 0);
+End;
+
+Function PosixUtime(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := vNone;
+End;
+
+Function PosixExit(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ OutFlush;
+ Halt(ToInt64(a[0]));
+ Result := vNone;
+End;
+
 Procedure InitPosixModule(m: TPyModule);
 Var
  d: TPyDict;
@@ -21738,6 +22411,19 @@ Begin
  DefFunc(d, 'isfile', @PosixIsFile);
  DefFunc(d, 'isdir', @PosixIsDir);
  DefFunc(d, 'getsize', @PosixGetSize);
+ DefFunc(d, 'stat', @PosixStat);
+ DefFunc(d, 'lstat', @PosixLStat);
+ DefFunc(d, 'chmod', @PosixChmod);
+ DefFunc(d, 'getuid', @PosixGetuid);
+ DefFunc(d, 'getgid', @PosixGetgid);
+ DefFunc(d, 'getppid', @PosixGetppid);
+ DefFunc(d, 'access', @PosixAccess);
+ DefFunc(d, 'symlink', @PosixSymlink);
+ DefFunc(d, 'readlink', @PosixReadlink);
+ DefFunc(d, 'uname', @PosixUname);
+ DefFunc(d, 'isatty', @PosixIsatty);
+ DefFunc(d, 'utime', @PosixUtime);
+ DefFunc(d, '_exit', @PosixExit);
  DefFunc(d, 'getmtime', @PosixGetMTime);
  DefFunc(d, 'environ', @PosixEnviron);
  DefFunc(d, 'getpid', @PosixGetpid);
@@ -22215,7 +22901,10 @@ Begin
  BuiltinsDict := TPyDict.Make;
  ModulesDict := TPyDict.Make;
  InitTypes;
+ BuiltinsDict.cls := tyDict;
+ ModulesDict.cls := tyDict;
  InitBuiltinFuncs;
+ DefFunc(BuiltinsDict, 'memoryview', @BiMemoryView);
  InitStrMethods;
  InitContainerMethods;
  InitFileType;
@@ -23025,6 +23714,851 @@ Begin
  End;
  FinishAndHalt(ExitCode);
 End;
+Function Src__bytesimpl: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '_METHODS = [''count'', ''index'', ''rindex'', ''rfind'', ''isalpha'', ' +
+   '''isdigit'','#10;
+ s := s +
+   '    ''isalnum'', ''isspace'', ''isupper'', ''islower'', ''istitle'', ''' +
+   'isascii'','#10;
+ s := s +
+   '    ''ljust'', ''rjust'', ''center'', ''zfill'', ''partition'', ''rpart' +
+   'ition'','#10;
+ s := s +
+   '    ''splitlines'', ''translate'', ''capitalize'', ''title'', ''swapc' +
+   'ase'', ''lstrip'','#10;
+ s := s +
+   '    ''rstrip'', ''rsplit'', ''expandtabs'', ''__mod__'', ''fromhex'', ' +
+   '''maketrans'','#10;
+ s := s +
+   '    ''__bytes__'', ''__lt__'', ''__le__'', ''__gt__'', ''__ge__'', ''__' +
+   'ne__'']'#10;
+ s := s + #10;
+ s := s +
+   '_WS = b'' \t\n\r\x0b\x0c'''#10;
+ s := s + #10;
+ s := s +
+   'def _lat(x):'#10;
+ s := s +
+   '    if isinstance(x, (bytes, bytearray)):'#10;
+ s := s +
+   '        return x.decode(''latin-1'')'#10;
+ s := s +
+   '    if isinstance(x, memoryview):'#10;
+ s := s +
+   '        return x.tobytes().decode(''latin-1'')'#10;
+ s := s +
+   '    raise TypeError("a bytes-like object is required, not ''%' +
+   's''" % type(x).__name__)'#10;
+ s := s + #10;
+ s := s +
+   'def _new(self, s):'#10;
+ s := s +
+   '    if isinstance(self, bytearray):'#10;
+ s := s +
+   '        return bytearray(s, ''latin-1'')'#10;
+ s := s +
+   '    return bytes(s, ''latin-1'')'#10;
+ s := s + #10;
+ s := s +
+   'def _ci(self, sub, start, end):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    if start is not None or end is not None:'#10;
+ s := s +
+   '        s = s[start:end]'#10;
+ s := s +
+   '    if isinstance(sub, int):'#10;
+ s := s +
+   '        if not 0 <= sub < 256:'#10;
+ s := s +
+   '            raise ValueError(''byte must be in range(0, 256)''' +
+   ')'#10;
+ s := s +
+   '        sub = chr(sub)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        sub = _lat(sub)'#10;
+ s := s +
+   '    return s, sub'#10;
+ s := s + #10;
+ s := s +
+   'def count(self, sub, start=None, end=None):'#10;
+ s := s +
+   '    s, sub = _ci(self, sub, start, end)'#10;
+ s := s +
+   '    return s.count(sub)'#10;
+ s := s + #10;
+ s := s +
+   'def rfind(self, sub, start=None, end=None):'#10;
+ s := s +
+   '    n = len(self)'#10;
+ s := s +
+   '    s, sub = _ci(self, sub, start, end)'#10;
+ s := s +
+   '    r = s.rfind(sub)'#10;
+ s := s +
+   '    if r >= 0 and start:'#10;
+ s := s +
+   '        st = start if start >= 0 else max(n + start, 0)'#10;
+ s := s +
+   '        r += st'#10;
+ s := s +
+   '    return r'#10;
+ s := s + #10;
+ s := s +
+   'def index(self, sub, start=None, end=None):'#10;
+ s := s +
+   '    r = self.find(sub, start, end) if end is not None or sta' +
+   'rt is not None else self.find(sub)'#10;
+ s := s +
+   '    if r < 0:'#10;
+ s := s +
+   '        raise ValueError(''subsection not found'')'#10;
+ s := s +
+   '    return r'#10;
+ s := s + #10;
+ s := s +
+   'def rindex(self, sub, start=None, end=None):'#10;
+ s := s +
+   '    r = rfind(self, sub, start, end)'#10;
+ s := s +
+   '    if r < 0:'#10;
+ s := s +
+   '        raise ValueError(''subsection not found'')'#10;
+ s := s +
+   '    return r'#10;
+ s := s + #10;
+ s := s +
+   'def _all(self, pred):'#10;
+ s := s +
+   '    if not len(self):'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if not pred(c):'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '    return True'#10;
+ s := s + #10;
+ s := s +
+   'def isalpha(self): return _all(self, lambda c: 65 <= c <= 90' +
+   ' or 97 <= c <= 122)'#10;
+ s := s +
+   'def isdigit(self): return _all(self, lambda c: 48 <= c <= 57' +
+   ')'#10;
+ s := s +
+   'def isalnum(self): return _all(self, lambda c: 65 <= c <= 90' +
+   ' or 97 <= c <= 122 or 48 <= c <= 57)'#10;
+ s := s +
+   'def isspace(self): return _all(self, lambda c: c in (32, 9, ' +
+   '10, 13, 11, 12))'#10;
+ s := s +
+   'def isascii(self):'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if c > 127:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '    return True'#10;
+ s := s + #10;
+ s := s +
+   'def isupper(self):'#10;
+ s := s +
+   '    seen = False'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if 97 <= c <= 122:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        if 65 <= c <= 90:'#10;
+ s := s +
+   '            seen = True'#10;
+ s := s +
+   '    return seen'#10;
+ s := s + #10;
+ s := s +
+   'def islower(self):'#10;
+ s := s +
+   '    seen = False'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if 65 <= c <= 90:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        if 97 <= c <= 122:'#10;
+ s := s +
+   '            seen = True'#10;
+ s := s +
+   '    return seen'#10;
+ s := s + #10;
+ s := s +
+   'def istitle(self):'#10;
+ s := s +
+   '    seen = False'#10;
+ s := s +
+   '    prev_cased = False'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if 65 <= c <= 90:'#10;
+ s := s +
+   '            if prev_cased:'#10;
+ s := s +
+   '                return False'#10;
+ s := s +
+   '            prev_cased = True'#10;
+ s := s +
+   '            seen = True'#10;
+ s := s +
+   '        elif 97 <= c <= 122:'#10;
+ s := s +
+   '            if not prev_cased:'#10;
+ s := s +
+   '                return False'#10;
+ s := s +
+   '            prev_cased = True'#10;
+ s := s +
+   '            seen = True'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            prev_cased = False'#10;
+ s := s +
+   '    return seen'#10;
+ s := s + #10;
+ s := s +
+   'def _fill(fill):'#10;
+ s := s +
+   '    if isinstance(fill, (bytes, bytearray)) and len(fill) ==' +
+   ' 1:'#10;
+ s := s +
+   '        return fill.decode(''latin-1'')'#10;
+ s := s +
+   '    raise TypeError(''argument 2 must be a byte string of len' +
+   'gth 1, not %s'' % type(fill).__name__)'#10;
+ s := s + #10;
+ s := s +
+   'def ljust(self, width, fill=b'' ''):'#10;
+ s := s +
+   '    f = _fill(fill)'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    if len(s) >= width:'#10;
+ s := s +
+   '        return _new(self, s)'#10;
+ s := s +
+   '    return _new(self, s + f * (width - len(s)))'#10;
+ s := s + #10;
+ s := s +
+   'def rjust(self, width, fill=b'' ''):'#10;
+ s := s +
+   '    f = _fill(fill)'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    if len(s) >= width:'#10;
+ s := s +
+   '        return _new(self, s)'#10;
+ s := s +
+   '    return _new(self, f * (width - len(s)) + s)'#10;
+ s := s + #10;
+ s := s +
+   'def center(self, width, fill=b'' ''):'#10;
+ s := s +
+   '    f = _fill(fill)'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    n = len(s)'#10;
+ s := s +
+   '    if n >= width:'#10;
+ s := s +
+   '        return _new(self, s)'#10;
+ s := s +
+   '    marg = width - n'#10;
+ s := s +
+   '    left = marg // 2 + (marg & width & 1)'#10;
+ s := s +
+   '    return _new(self, f * left + s + f * (marg - left))'#10;
+ s := s + #10;
+ s := s +
+   'def zfill(self, width):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    n = len(s)'#10;
+ s := s +
+   '    if n >= width:'#10;
+ s := s +
+   '        return _new(self, s)'#10;
+ s := s +
+   '    fill = width - n'#10;
+ s := s +
+   '    if s[:1] in (''+'', ''-''):'#10;
+ s := s +
+   '        return _new(self, s[0] + ''0'' * fill + s[1:])'#10;
+ s := s +
+   '    return _new(self, ''0'' * fill + s)'#10;
+ s := s + #10;
+ s := s +
+   'def partition(self, sep):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    t = _lat(sep)'#10;
+ s := s +
+   '    a, b, c = s.partition(t)'#10;
+ s := s +
+   '    return (_new(self, a), _new(self, b), _new(self, c))'#10;
+ s := s + #10;
+ s := s +
+   'def rpartition(self, sep):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    t = _lat(sep)'#10;
+ s := s +
+   '    a, b, c = s.rpartition(t)'#10;
+ s := s +
+   '    return (_new(self, a), _new(self, b), _new(self, c))'#10;
+ s := s + #10;
+ s := s +
+   'def splitlines(self, keepends=False):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    n = len(s)'#10;
+ s := s +
+   '    start = 0'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = s[i]'#10;
+ s := s +
+   '        if c == ''\n'' or c == ''\r'':'#10;
+ s := s +
+   '            j = i + 1'#10;
+ s := s +
+   '            if c == ''\r'' and j < n and s[j] == ''\n'':'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '            out.append(_new(self, s[start:j] if keepends els' +
+   'e s[start:i]))'#10;
+ s := s +
+   '            start = i = j'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '    if start < n:'#10;
+ s := s +
+   '        out.append(_new(self, s[start:]))'#10;
+ s := s +
+   '    return out'#10;
+ s := s + #10;
+ s := s +
+   'def translate(self, table, delete=b''''):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    d = _lat(delete)'#10;
+ s := s +
+   '    if table is None:'#10;
+ s := s +
+   '        out = ''''.join(c for c in s if c not in d)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if len(table) != 256:'#10;
+ s := s +
+   '            raise ValueError(''translation table must be 256 ' +
+   'characters long'')'#10;
+ s := s +
+   '        t = _lat(table)'#10;
+ s := s +
+   '        out = ''''.join(t[ord(c)] for c in s if c not in d)'#10;
+ s := s +
+   '    return _new(self, out)'#10;
+ s := s + #10;
+ s := s +
+   'def maketrans(frm, to):'#10;
+ s := s +
+   '    if len(frm) != len(to):'#10;
+ s := s +
+   '        raise ValueError(''maketrans arguments must have same' +
+   ' length'')'#10;
+ s := s +
+   '    t = list(range(256))'#10;
+ s := s +
+   '    for a, b in zip(frm, to):'#10;
+ s := s +
+   '        t[a] = b'#10;
+ s := s +
+   '    return bytes(t)'#10;
+ s := s + #10;
+ s := s +
+   'def capitalize(self):'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    for i, c in enumerate(self):'#10;
+ s := s +
+   '        if i == 0:'#10;
+ s := s +
+   '            out.append(c - 32 if 97 <= c <= 122 else c)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            out.append(c + 32 if 65 <= c <= 90 else c)'#10;
+ s := s +
+   '    return _new(self, ''''.join(map(chr, out)))'#10;
+ s := s + #10;
+ s := s +
+   'def title(self):'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    prev = False'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if 97 <= c <= 122:'#10;
+ s := s +
+   '            out.append(c if prev else c - 32)'#10;
+ s := s +
+   '            prev = True'#10;
+ s := s +
+   '        elif 65 <= c <= 90:'#10;
+ s := s +
+   '            out.append(c + 32 if prev else c)'#10;
+ s := s +
+   '            prev = True'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            out.append(c)'#10;
+ s := s +
+   '            prev = False'#10;
+ s := s +
+   '    return _new(self, ''''.join(map(chr, out)))'#10;
+ s := s + #10;
+ s := s +
+   'def swapcase(self):'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    for c in self:'#10;
+ s := s +
+   '        if 97 <= c <= 122:'#10;
+ s := s +
+   '            out.append(c - 32)'#10;
+ s := s +
+   '        elif 65 <= c <= 90:'#10;
+ s := s +
+   '            out.append(c + 32)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            out.append(c)'#10;
+ s := s +
+   '    return _new(self, ''''.join(map(chr, out)))'#10;
+ s := s + #10;
+ s := s +
+   'def lstrip(self, chars=None):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    cs = _WS.decode(''latin-1'') if chars is None else _lat(ch' +
+   'ars)'#10;
+ s := s +
+   '    return _new(self, s.lstrip(cs))'#10;
+ s := s + #10;
+ s := s +
+   'def rstrip(self, chars=None):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    cs = _WS.decode(''latin-1'') if chars is None else _lat(ch' +
+   'ars)'#10;
+ s := s +
+   '    return _new(self, s.rstrip(cs))'#10;
+ s := s + #10;
+ s := s +
+   'def rsplit(self, sep=None, maxsplit=-1):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    if sep is None:'#10;
+ s := s +
+   '        parts = s.rsplit(None, maxsplit)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        parts = s.rsplit(_lat(sep), maxsplit)'#10;
+ s := s +
+   '    return [_new(self, p) for p in parts]'#10;
+ s := s + #10;
+ s := s +
+   'def expandtabs(self, tabsize=8):'#10;
+ s := s +
+   '    return _new(self, _lat(self).expandtabs(tabsize))'#10;
+ s := s + #10;
+ s := s +
+   'def __bytes__(self):'#10;
+ s := s +
+   '    return bytes(self)'#10;
+ s := s + #10;
+ s := s +
+   'def _cmp(a, b):'#10;
+ s := s +
+   '    if not isinstance(b, (bytes, bytearray)):'#10;
+ s := s +
+   '        return None'#10;
+ s := s +
+   '    x = bytes(a)'#10;
+ s := s +
+   '    y = bytes(b)'#10;
+ s := s +
+   '    return (x > y) - (x < y)'#10;
+ s := s + #10;
+ s := s +
+   'def __lt__(self, o):'#10;
+ s := s +
+   '    c = _cmp(self, o)'#10;
+ s := s +
+   '    return NotImplemented if c is None else c < 0'#10;
+ s := s +
+   'def __le__(self, o):'#10;
+ s := s +
+   '    c = _cmp(self, o)'#10;
+ s := s +
+   '    return NotImplemented if c is None else c <= 0'#10;
+ s := s +
+   'def __gt__(self, o):'#10;
+ s := s +
+   '    c = _cmp(self, o)'#10;
+ s := s +
+   '    return NotImplemented if c is None else c > 0'#10;
+ s := s +
+   'def __ge__(self, o):'#10;
+ s := s +
+   '    c = _cmp(self, o)'#10;
+ s := s +
+   '    return NotImplemented if c is None else c >= 0'#10;
+ s := s +
+   'def __ne__(self, o):'#10;
+ s := s +
+   '    if not isinstance(o, (bytes, bytearray)):'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s +
+   '    return bytes(self) != bytes(o)'#10;
+ s := s + #10;
+ s := s +
+   'def fromhex(cls, string):'#10;
+ s := s +
+   '    if not isinstance(string, str):'#10;
+ s := s +
+   '        raise TypeError(''fromhex() argument must be str, not' +
+   ' %s'' % type(string).__name__)'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    n = len(string)'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = string[i]'#10;
+ s := s +
+   '        if c in '' \t\n\r\x0b\x0c'':'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        d = string[i + 1:i + 2]'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            if not d or d in '' \t\n\r'':'#10;
+ s := s +
+   '                raise ValueError'#10;
+ s := s +
+   '            out.append(int(c + d, 16) if (c in ''0123456789ab' +
+   'cdefABCDEF'' and d in ''0123456789abcdefABCDEF'') else int(''x'',' +
+   ' 16))'#10;
+ s := s +
+   '        except ValueError:'#10;
+ s := s +
+   '            raise ValueError(''non-hexadecimal number found i' +
+   'n fromhex() arg at position %d'' % (i if not d or d in '' \t\n' +
+   '\r'' or c not in ''0123456789abcdefABCDEF'' else i + 1)) from N' +
+   'one'#10;
+ s := s +
+   '        i += 2'#10;
+ s := s +
+   '    return cls(out)'#10;
+ s := s + #10;
+ s := s +
+   'fromhex = classmethod(fromhex)'#10;
+ s := s +
+   'maketrans = staticmethod(maketrans)'#10;
+ s := s + #10;
+ s := s +
+   'def __mod__(self, args):'#10;
+ s := s +
+   '    s = _lat(self)'#10;
+ s := s +
+   '    def conv(a):'#10;
+ s := s +
+   '        if isinstance(a, (bytes, bytearray)):'#10;
+ s := s +
+   '            return _lat(a)'#10;
+ s := s +
+   '        return a'#10;
+ s := s +
+   '    if isinstance(args, tuple):'#10;
+ s := s +
+   '        args = tuple(conv(a) for a in args)'#10;
+ s := s +
+   '    elif isinstance(args, dict):'#10;
+ s := s +
+   '        args = {k: conv(v) for k, v in args.items()}'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        args = conv(args)'#10;
+ s := s +
+   '    s = s.replace(''%b'', ''%s'')'#10;
+ s := s +
+   '    return _new(self, s % args)'#10;
+ s := s + #10;
+ s := s +
+   'class memoryview:'#10;
+ s := s +
+   '    def __init__(self, obj):'#10;
+ s := s +
+   '        if not isinstance(obj, (bytes, bytearray, memoryview' +
+   ')):'#10;
+ s := s +
+   '            raise TypeError("memoryview: a bytes-like object' +
+   ' is required, not ''%s''" % type(obj).__name__)'#10;
+ s := s +
+   '        if isinstance(obj, memoryview):'#10;
+ s := s +
+   '            self._base = obj._base'#10;
+ s := s +
+   '            self._lo = obj._lo'#10;
+ s := s +
+   '            self._hi = obj._hi'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._base = obj'#10;
+ s := s +
+   '            self._lo = 0'#10;
+ s := s +
+   '            self._hi = len(obj)'#10;
+ s := s +
+   '        self.obj = obj'#10;
+ s := s +
+   '        self.format = ''B'''#10;
+ s := s +
+   '        self.itemsize = 1'#10;
+ s := s +
+   '        self.ndim = 1'#10;
+ s := s +
+   '        self.readonly = not isinstance(self._base, bytearray' +
+   ')'#10;
+ s := s +
+   '        self._released = False'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def nbytes(self):'#10;
+ s := s +
+   '        return self._hi - self._lo'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def shape(self):'#10;
+ s := s +
+   '        return (self._hi - self._lo,)'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(self):'#10;
+ s := s +
+   '        return self._hi - self._lo'#10;
+ s := s + #10;
+ s := s +
+   '    def _norm(self, i):'#10;
+ s := s +
+   '        n = self._hi - self._lo'#10;
+ s := s +
+   '        if i < 0:'#10;
+ s := s +
+   '            i += n'#10;
+ s := s +
+   '        if not 0 <= i < n:'#10;
+ s := s +
+   '            raise IndexError(''index out of bounds'')'#10;
+ s := s +
+   '        return self._lo + i'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(self, k):'#10;
+ s := s +
+   '        if isinstance(k, slice):'#10;
+ s := s +
+   '            idx = range(*k.indices(self._hi - self._lo))'#10;
+ s := s +
+   '            if idx.step == 1:'#10;
+ s := s +
+   '                m = memoryview(self._base)'#10;
+ s := s +
+   '                m._lo = self._lo + idx.start'#10;
+ s := s +
+   '                m._hi = self._lo + max(idx.stop, idx.start)'#10;
+ s := s +
+   '                return m'#10;
+ s := s +
+   '            return memoryview(bytes(self._base[self._lo + i]' +
+   ' for i in idx))'#10;
+ s := s +
+   '        return self._base[self._norm(k)]'#10;
+ s := s + #10;
+ s := s +
+   '    def __setitem__(self, k, v):'#10;
+ s := s +
+   '        if self.readonly:'#10;
+ s := s +
+   '            raise TypeError(''cannot modify read-only memory''' +
+   ')'#10;
+ s := s +
+   '        if isinstance(k, slice):'#10;
+ s := s +
+   '            idx = range(*k.indices(self._hi - self._lo))'#10;
+ s := s +
+   '            v = bytes(v)'#10;
+ s := s +
+   '            if len(v) != len(idx):'#10;
+ s := s +
+   '                raise ValueError(''memoryview assignment: lva' +
+   'lue and rvalue have different structures'')'#10;
+ s := s +
+   '            for j, i in enumerate(idx):'#10;
+ s := s +
+   '                self._base[self._lo + i] = v[j]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._base[self._norm(k)] = v'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        for i in range(self._lo, self._hi):'#10;
+ s := s +
+   '            yield self._base[i]'#10;
+ s := s + #10;
+ s := s +
+   '    def tobytes(self, order=None):'#10;
+ s := s +
+   '        return bytes(self._base[self._lo:self._hi])'#10;
+ s := s + #10;
+ s := s +
+   '    def tolist(self):'#10;
+ s := s +
+   '        return list(self._base[self._lo:self._hi])'#10;
+ s := s + #10;
+ s := s +
+   '    def hex(self):'#10;
+ s := s +
+   '        return self.tobytes().hex()'#10;
+ s := s + #10;
+ s := s +
+   '    def release(self):'#10;
+ s := s +
+   '        self._released = True'#10;
+ s := s + #10;
+ s := s +
+   '    def cast(self, fmt, shape=None):'#10;
+ s := s +
+   '        if fmt not in (''B'', ''b'', ''c''):'#10;
+ s := s +
+   '            raise NotImplementedError(''memoryview.cast only ' +
+   'supports byte formats'')'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __exit__(self, *a):'#10;
+ s := s +
+   '        self.release()'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if isinstance(other, (bytes, bytearray)):'#10;
+ s := s +
+   '            return self.tobytes() == bytes(other)'#10;
+ s := s +
+   '        if isinstance(other, memoryview):'#10;
+ s := s +
+   '            return self.tobytes() == other.tobytes()'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        if not self.readonly:'#10;
+ s := s +
+   '            raise ValueError(''cannot hash writable memoryvie' +
+   'w object'')'#10;
+ s := s +
+   '        return hash(self.tobytes())'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<memory at 0x%x>'' % id(self)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_abc: AnsiString;
 Var
  s: AnsiString;
@@ -24312,37 +25846,18 @@ Begin
    'ield_names) + '')'''#10;
  s := s + #10;
  s := s +
-   '    def __new__(_cls, *args, **kwargs):'#10;
+   '    s = ''lambda _cls, %s: _tuple_new(_cls, (%s))'' % ('', ''.jo' +
+   'in(field_names), arg_list)'#10;
  s := s +
-   '        if len(args) > num_fields:'#10;
+   '    __new__ = eval(s, {''_tuple_new'': tuple.__new__})'#10;
  s := s +
-   '            raise TypeError(''__new__() takes %d positional a' +
-   'rguments but %d were given'' % (num_fields + 1, len(args) + 1' +
-   '))'#10;
+   '    __new__.__name__ = ''__new__'''#10;
  s := s +
-   '        vals = list(args)'#10;
+   '    __new__.__qualname__ = ''%s.__new__'' % typename'#10;
  s := s +
-   '        for name in field_names[len(args):]:'#10;
- s := s +
-   '            if name in kwargs:'#10;
- s := s +
-   '                vals.append(kwargs.pop(name))'#10;
- s := s +
-   '            elif name in field_defaults:'#10;
- s := s +
-   '                vals.append(field_defaults[name])'#10;
- s := s +
-   '            else:'#10;
- s := s +
-   '                raise TypeError("__new__() missing 1 require' +
-   'd positional argument: ''%s''" % name)'#10;
- s := s +
-   '        if kwargs:'#10;
- s := s +
-   '            raise TypeError("__new__() got an unexpected key' +
-   'word argument ''%s''" % list(kwargs)[0])'#10;
- s := s +
-   '        return tuple.__new__(_cls, vals)'#10;
+   '    __new__.__defaults__ = tuple(field_defaults[n] for n in ' +
+   'field_names if n in field_defaults) if defaults is not None ' +
+   'else None'#10;
  s := s + #10;
  s := s +
    '    @classmethod'#10;
@@ -25497,6 +27012,362 @@ Begin
  Result := s;
 End;
 
+Function Src_contextlib: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'from collections import deque'#10;
+ s := s +
+   'from functools import wraps'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["asynccontextmanager", "contextmanager", "closing' +
+   '", "nullcontext",'#10;
+ s := s +
+   '           "AbstractContextManager", "ContextDecorator", "Ex' +
+   'itStack",'#10;
+ s := s +
+   '           "redirect_stdout", "redirect_stderr", "suppress"]'#10;
+ s := s + #10;
+ s := s +
+   'class AbstractContextManager:'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s +
+   '    def __exit__(self, exc_type, exc_value, traceback):'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   'class ContextDecorator(object):'#10;
+ s := s +
+   '    def _recreate_cm(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s +
+   '    def __call__(self, func):'#10;
+ s := s +
+   '        @wraps(func)'#10;
+ s := s +
+   '        def inner(*args, **kwds):'#10;
+ s := s +
+   '            with self._recreate_cm():'#10;
+ s := s +
+   '                return func(*args, **kwds)'#10;
+ s := s +
+   '        return inner'#10;
+ s := s + #10;
+ s := s +
+   'class _GeneratorContextManagerBase:'#10;
+ s := s +
+   '    def __init__(self, func, args, kwds):'#10;
+ s := s +
+   '        self.gen = func(*args, **kwds)'#10;
+ s := s +
+   '        self.func, self.args, self.kwds = func, args, kwds'#10;
+ s := s +
+   '        doc = getattr(func, "__doc__", None)'#10;
+ s := s +
+   '        if doc is None:'#10;
+ s := s +
+   '            doc = type(self).__doc__'#10;
+ s := s +
+   '        self.__doc__ = doc'#10;
+ s := s + #10;
+ s := s +
+   'class _GeneratorContextManager(_GeneratorContextManagerBase,' +
+   ' AbstractContextManager, ContextDecorator):'#10;
+ s := s +
+   '    def _recreate_cm(self):'#10;
+ s := s +
+   '        return self.__class__(self.func, self.args, self.kwd' +
+   's)'#10;
+ s := s + #10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        del self.args, self.kwds, self.func'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return next(self.gen)'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            raise RuntimeError("generator didn''t yield") fro' +
+   'm None'#10;
+ s := s + #10;
+ s := s +
+   '    def __exit__(self, type, value, traceback):'#10;
+ s := s +
+   '        if type is None:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                next(self.gen)'#10;
+ s := s +
+   '            except StopIteration:'#10;
+ s := s +
+   '                return False'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                raise RuntimeError("generator didn''t stop")'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if value is None:'#10;
+ s := s +
+   '                value = type()'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                self.gen.throw(type, value, traceback)'#10;
+ s := s +
+   '            except StopIteration as exc:'#10;
+ s := s +
+   '                return exc is not value'#10;
+ s := s +
+   '            except RuntimeError as exc:'#10;
+ s := s +
+   '                if exc is value:'#10;
+ s := s +
+   '                    return False'#10;
+ s := s +
+   '                if type is StopIteration and exc.__cause__ i' +
+   's value:'#10;
+ s := s +
+   '                    return False'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '            except BaseException as exc:'#10;
+ s := s +
+   '                if exc is not value:'#10;
+ s := s +
+   '                    raise'#10;
+ s := s +
+   '                return False'#10;
+ s := s +
+   '            raise RuntimeError("generator didn''t stop after ' +
+   'throw()")'#10;
+ s := s + #10;
+ s := s +
+   'def contextmanager(func):'#10;
+ s := s +
+   '    @wraps(func)'#10;
+ s := s +
+   '    def helper(*args, **kwds):'#10;
+ s := s +
+   '        return _GeneratorContextManager(func, args, kwds)'#10;
+ s := s +
+   '    return helper'#10;
+ s := s + #10;
+ s := s +
+   'class closing(AbstractContextManager):'#10;
+ s := s +
+   '    def __init__(self, thing):'#10;
+ s := s +
+   '        self.thing = thing'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        return self.thing'#10;
+ s := s +
+   '    def __exit__(self, *exc_info):'#10;
+ s := s +
+   '        self.thing.close()'#10;
+ s := s + #10;
+ s := s +
+   'class _RedirectStream(AbstractContextManager):'#10;
+ s := s +
+   '    _stream = None'#10;
+ s := s +
+   '    def __init__(self, new_target):'#10;
+ s := s +
+   '        self._new_target = new_target'#10;
+ s := s +
+   '        self._old_targets = []'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        self._old_targets.append(getattr(sys, self._stream))'#10;
+ s := s +
+   '        setattr(sys, self._stream, self._new_target)'#10;
+ s := s +
+   '        return self._new_target'#10;
+ s := s +
+   '    def __exit__(self, exctype, excinst, exctb):'#10;
+ s := s +
+   '        setattr(sys, self._stream, self._old_targets.pop())'#10;
+ s := s + #10;
+ s := s +
+   'class redirect_stdout(_RedirectStream):'#10;
+ s := s +
+   '    _stream = "stdout"'#10;
+ s := s + #10;
+ s := s +
+   'class redirect_stderr(_RedirectStream):'#10;
+ s := s +
+   '    _stream = "stderr"'#10;
+ s := s + #10;
+ s := s +
+   'class suppress(AbstractContextManager):'#10;
+ s := s +
+   '    def __init__(self, *exceptions):'#10;
+ s := s +
+   '        self._exceptions = exceptions'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        pass'#10;
+ s := s +
+   '    def __exit__(self, exctype, excinst, exctb):'#10;
+ s := s +
+   '        return exctype is not None and issubclass(exctype, s' +
+   'elf._exceptions)'#10;
+ s := s + #10;
+ s := s +
+   'class ExitStack(AbstractContextManager):'#10;
+ s := s +
+   '    def __init__(self):'#10;
+ s := s +
+   '        self._exit_callbacks = deque()'#10;
+ s := s + #10;
+ s := s +
+   '    def pop_all(self):'#10;
+ s := s +
+   '        new_stack = type(self)()'#10;
+ s := s +
+   '        new_stack._exit_callbacks = self._exit_callbacks'#10;
+ s := s +
+   '        self._exit_callbacks = deque()'#10;
+ s := s +
+   '        return new_stack'#10;
+ s := s + #10;
+ s := s +
+   '    def _push_cm_exit(self, cm, cm_exit):'#10;
+ s := s +
+   '        def _exit_wrapper(*exc_details):'#10;
+ s := s +
+   '            return cm_exit(cm, *exc_details)'#10;
+ s := s +
+   '        self._exit_callbacks.append((True, _exit_wrapper))'#10;
+ s := s + #10;
+ s := s +
+   '    def push(self, exit):'#10;
+ s := s +
+   '        _cb_type = type(exit)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            exit_method = _cb_type.__exit__'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            self._exit_callbacks.append((True, exit))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._push_cm_exit(exit, exit_method)'#10;
+ s := s +
+   '        return exit'#10;
+ s := s + #10;
+ s := s +
+   '    def enter_context(self, cm):'#10;
+ s := s +
+   '        _cm_type = type(cm)'#10;
+ s := s +
+   '        _exit = _cm_type.__exit__'#10;
+ s := s +
+   '        result = _cm_type.__enter__(cm)'#10;
+ s := s +
+   '        self._push_cm_exit(cm, _exit)'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def callback(self, callback, *args, **kwds):'#10;
+ s := s +
+   '        def _exit_wrapper(exc_type, exc, tb):'#10;
+ s := s +
+   '            callback(*args, **kwds)'#10;
+ s := s +
+   '        _exit_wrapper.__wrapped__ = callback'#10;
+ s := s +
+   '        self._exit_callbacks.append((True, _exit_wrapper))'#10;
+ s := s +
+   '        return callback'#10;
+ s := s + #10;
+ s := s +
+   '    def close(self):'#10;
+ s := s +
+   '        self.__exit__(None, None, None)'#10;
+ s := s + #10;
+ s := s +
+   '    def __exit__(self, *exc_details):'#10;
+ s := s +
+   '        received_exc = exc_details[0] is not None'#10;
+ s := s +
+   '        suppressed_exc = False'#10;
+ s := s +
+   '        pending_raise = False'#10;
+ s := s +
+   '        while self._exit_callbacks:'#10;
+ s := s +
+   '            is_sync, cb = self._exit_callbacks.pop()'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                if cb(*exc_details):'#10;
+ s := s +
+   '                    suppressed_exc = True'#10;
+ s := s +
+   '                    pending_raise = False'#10;
+ s := s +
+   '                    exc_details = (None, None, None)'#10;
+ s := s +
+   '            except BaseException as e:'#10;
+ s := s +
+   '                pending_raise = True'#10;
+ s := s +
+   '                exc_details = (type(e), e, e.__traceback__)'#10;
+ s := s +
+   '        if pending_raise:'#10;
+ s := s +
+   '            raise exc_details[1]'#10;
+ s := s +
+   '        return received_exc and suppressed_exc'#10;
+ s := s + #10;
+ s := s +
+   'class nullcontext(AbstractContextManager):'#10;
+ s := s +
+   '    def __init__(self, enter_result=None):'#10;
+ s := s +
+   '        self.enter_result = enter_result'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        return self.enter_result'#10;
+ s := s +
+   '    def __exit__(self, *excinfo):'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   'def asynccontextmanager(func):'#10;
+ s := s +
+   '    raise NotImplementedError(''async is not supported'')'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_copy: AnsiString;
 Var
  s: AnsiString;
@@ -25672,6 +27543,1236 @@ Begin
    '    memo[d] = y'#10;
  s := s +
    '    return y'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_enum: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'from types import MappingProxyType, DynamicClassAttribute'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''EnumMeta'', ''Enum'', ''IntEnum'', ''Flag'', ''IntFlag'',' +
+   ' ''auto'', ''unique'']'#10;
+ s := s + #10;
+ s := s +
+   'def _is_descriptor(obj):'#10;
+ s := s +
+   '    return (hasattr(obj, ''__get__'') or hasattr(obj, ''__set__' +
+   ''') or'#10;
+ s := s +
+   '            hasattr(obj, ''__delete__''))'#10;
+ s := s + #10;
+ s := s +
+   'def _is_dunder(name):'#10;
+ s := s +
+   '    return (len(name) > 4 and name[:2] == name[-2:] == ''__'' ' +
+   'and'#10;
+ s := s +
+   '            name[2] != ''_'' and name[-3] != ''_'')'#10;
+ s := s + #10;
+ s := s +
+   'def _is_sunder(name):'#10;
+ s := s +
+   '    return (len(name) > 2 and name[0] == name[-1] == ''_'' and'#10;
+ s := s +
+   '            name[1:2] != ''_'' and name[-2:-1] != ''_'')'#10;
+ s := s + #10;
+ s := s +
+   'class auto:'#10;
+ s := s +
+   '    value = None'#10;
+ s := s + #10;
+ s := s +
+   'class _EnumDict(dict):'#10;
+ s := s +
+   '    def __init__(self):'#10;
+ s := s +
+   '        super().__init__()'#10;
+ s := s +
+   '        self._member_names = []'#10;
+ s := s +
+   '        self._last_values = []'#10;
+ s := s +
+   '        self._ignore = []'#10;
+ s := s + #10;
+ s := s +
+   '    def __setitem__(self, key, value):'#10;
+ s := s +
+   '        if _is_sunder(key):'#10;
+ s := s +
+   '            if key not in (''_order_'', ''_create_pseudo_member' +
+   '_'','#10;
+ s := s +
+   '                           ''_generate_next_value_'', ''_missin' +
+   'g_'', ''_ignore_''):'#10;
+ s := s +
+   '                raise ValueError(''_names_ are reserved for f' +
+   'uture Enum use'')'#10;
+ s := s +
+   '            if key == ''_generate_next_value_'':'#10;
+ s := s +
+   '                self._generate_next_value = value'#10;
+ s := s +
+   '            elif key == ''_ignore_'':'#10;
+ s := s +
+   '                if isinstance(value, str):'#10;
+ s := s +
+   '                    value = value.replace('','', '' '').split()'#10;
+ s := s +
+   '                self._ignore = list(value)'#10;
+ s := s +
+   '        elif _is_dunder(key):'#10;
+ s := s +
+   '            if key == ''__order__'':'#10;
+ s := s +
+   '                key = ''_order_'''#10;
+ s := s +
+   '        elif key in self._member_names:'#10;
+ s := s +
+   '            raise TypeError(''Attempted to reuse key: %r'' % k' +
+   'ey)'#10;
+ s := s +
+   '        elif key in self._ignore:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        elif not _is_descriptor(value):'#10;
+ s := s +
+   '            if key in self:'#10;
+ s := s +
+   '                raise TypeError(''%r already defined as: %r'' ' +
+   '% (key, self[key]))'#10;
+ s := s +
+   '            if isinstance(value, auto):'#10;
+ s := s +
+   '                if value.value is None:'#10;
+ s := s +
+   '                    gen = getattr(self, ''_generate_next_valu' +
+   'e'', None)'#10;
+ s := s +
+   '                    if gen is None:'#10;
+ s := s +
+   '                        gen = Enum._generate_next_value_'#10;
+ s := s +
+   '                    value.value = gen(key, 1, len(self._memb' +
+   'er_names),'#10;
+ s := s +
+   '                                      self._last_values[:])'#10;
+ s := s +
+   '                value = value.value'#10;
+ s := s +
+   '            self._member_names.append(key)'#10;
+ s := s +
+   '            self._last_values.append(value)'#10;
+ s := s +
+   '        super().__setitem__(key, value)'#10;
+ s := s + #10;
+ s := s +
+   '_auto_null = object()'#10;
+ s := s + #10;
+ s := s +
+   'class EnumMeta(type):'#10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __prepare__(metacls, cls, bases, **kwds):'#10;
+ s := s +
+   '        enum_dict = _EnumDict()'#10;
+ s := s +
+   '        member_type, first_enum = metacls._get_mixins_(bases' +
+   ')'#10;
+ s := s +
+   '        if first_enum is not None:'#10;
+ s := s +
+   '            enum_dict[''_generate_next_value_''] = getattr('#10;
+ s := s +
+   '                first_enum, ''_generate_next_value_'', None)'#10;
+ s := s +
+   '            if enum_dict[''_generate_next_value_''] is None:'#10;
+ s := s +
+   '                del enum_dict[''_generate_next_value_'']'#10;
+ s := s +
+   '        return enum_dict'#10;
+ s := s + #10;
+ s := s +
+   '    def __new__(metacls, cls, bases, classdict, **kwds):'#10;
+ s := s +
+   '        if not isinstance(classdict, _EnumDict):'#10;
+ s := s +
+   '            ed = _EnumDict()'#10;
+ s := s +
+   '            for k, v in classdict.items():'#10;
+ s := s +
+   '                ed[k] = v'#10;
+ s := s +
+   '            classdict = ed'#10;
+ s := s +
+   '        member_names = classdict._member_names'#10;
+ s := s +
+   '        __order__ = classdict.get(''_order_'')'#10;
+ s := s +
+   '        ignore = classdict._ignore'#10;
+ s := s +
+   '        member_type, first_enum = metacls._get_mixins_(bases' +
+   ')'#10;
+ s := s +
+   '        __new__, save_new, use_args = metacls._find_new_('#10;
+ s := s +
+   '            classdict, member_type, first_enum)'#10;
+ s := s +
+   '        enum_members = {k: classdict[k] for k in member_name' +
+   's}'#10;
+ s := s +
+   '        for name in member_names:'#10;
+ s := s +
+   '            del classdict[name]'#10;
+ s := s +
+   '        for name in ignore:'#10;
+ s := s +
+   '            if name in classdict:'#10;
+ s := s +
+   '                del classdict[name]'#10;
+ s := s +
+   '        invalid_names = set(enum_members) & {''mro'', ''''}'#10;
+ s := s +
+   '        if invalid_names:'#10;
+ s := s +
+   '            raise ValueError(''Invalid enum member name: {0}''' +
+   '.format('#10;
+ s := s +
+   '                '',''.join(invalid_names)))'#10;
+ s := s +
+   '        if ''__reduce_ex__'' not in classdict:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        enum_class = super().__new__(metacls, cls, bases, di' +
+   'ct(classdict), **kwds)'#10;
+ s := s +
+   '        enum_class._member_names_ = []'#10;
+ s := s +
+   '        enum_class._member_map_ = {}'#10;
+ s := s +
+   '        enum_class._member_type_ = member_type'#10;
+ s := s +
+   '        enum_class._value2member_map_ = {}'#10;
+ s := s +
+   '        dynamic_attributes = {k for c in enum_class.mro()'#10;
+ s := s +
+   '                              for k, v in c.__dict__.items()'#10;
+ s := s +
+   '                              if isinstance(v, DynamicClassA' +
+   'ttribute)}'#10;
+ s := s +
+   '        for member_name in member_names:'#10;
+ s := s +
+   '            value = enum_members[member_name]'#10;
+ s := s +
+   '            if not isinstance(value, tuple):'#10;
+ s := s +
+   '                args = (value, )'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                args = value'#10;
+ s := s +
+   '            if member_type is tuple:'#10;
+ s := s +
+   '                args = (args, )'#10;
+ s := s +
+   '            if not use_args:'#10;
+ s := s +
+   '                enum_member = __new__(enum_class)'#10;
+ s := s +
+   '                if not hasattr(enum_member, ''_value_''):'#10;
+ s := s +
+   '                    enum_member._value_ = value'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                enum_member = __new__(enum_class, *args)'#10;
+ s := s +
+   '                if not hasattr(enum_member, ''_value_''):'#10;
+ s := s +
+   '                    if member_type is object:'#10;
+ s := s +
+   '                        enum_member._value_ = value'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        enum_member._value_ = member_type(*a' +
+   'rgs)'#10;
+ s := s +
+   '            value = enum_member._value_'#10;
+ s := s +
+   '            enum_member._name_ = member_name'#10;
+ s := s +
+   '            enum_member.__objclass__ = enum_class'#10;
+ s := s +
+   '            enum_member.__init__(*args)'#10;
+ s := s +
+   '            for name, canonical_member in enum_class._member' +
+   '_map_.items():'#10;
+ s := s +
+   '                if canonical_member._value_ == enum_member._' +
+   'value_:'#10;
+ s := s +
+   '                    enum_member = canonical_member'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                enum_class._member_names_.append(member_name' +
+   ')'#10;
+ s := s +
+   '            if member_name not in dynamic_attributes:'#10;
+ s := s +
+   '                setattr(enum_class, member_name, enum_member' +
+   ')'#10;
+ s := s +
+   '            enum_class._member_map_[member_name] = enum_memb' +
+   'er'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                enum_class._value2member_map_[value] = enum_' +
+   'member'#10;
+ s := s +
+   '            except TypeError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '        for name in (''__repr__'', ''__str__'', ''__format__'', ''_' +
+   '_reduce_ex__''):'#10;
+ s := s +
+   '            if name in classdict:'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            class_method = getattr(enum_class, name)'#10;
+ s := s +
+   '            obj_method = getattr(member_type, name, None)'#10;
+ s := s +
+   '            enum_method = getattr(first_enum, name, None)'#10;
+ s := s +
+   '            if obj_method is not None and obj_method is clas' +
+   's_method:'#10;
+ s := s +
+   '                setattr(enum_class, name, enum_method)'#10;
+ s := s +
+   '        if Enum is not None:'#10;
+ s := s +
+   '            if save_new:'#10;
+ s := s +
+   '                enum_class.__new_member__ = __new__'#10;
+ s := s +
+   '            enum_class.__new__ = Enum.__new__'#10;
+ s := s +
+   '        if __order__ is not None:'#10;
+ s := s +
+   '            if isinstance(__order__, str):'#10;
+ s := s +
+   '                __order__ = __order__.replace('','', '' '').spli' +
+   't()'#10;
+ s := s +
+   '            if __order__ != enum_class._member_names_:'#10;
+ s := s +
+   '                raise TypeError(''member order does not match' +
+   ' _order_'')'#10;
+ s := s +
+   '        return enum_class'#10;
+ s := s + #10;
+ s := s +
+   '    def __bool__(cls):'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(cls, value, names=None, *, module=None, qua' +
+   'lname=None,'#10;
+ s := s +
+   '                 type=None, start=1):'#10;
+ s := s +
+   '        if names is None:'#10;
+ s := s +
+   '            return cls.__new__(cls, value)'#10;
+ s := s +
+   '        return cls._create_(value, names, module=module, qua' +
+   'lname=qualname,'#10;
+ s := s +
+   '                            type=type, start=start)'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(cls, member):'#10;
+ s := s +
+   '        if not isinstance(member, Enum):'#10;
+ s := s +
+   '            raise TypeError('#10;
+ s := s +
+   '                "unsupported operand type(s) for ''in'': ''%s'' ' +
+   'and ''%s''" % ('#10;
+ s := s +
+   '                    type(member).__qualname__, cls.__class__' +
+   '.__qualname__))'#10;
+ s := s +
+   '        return isinstance(member, cls) and member._name_ in ' +
+   'cls._member_map_'#10;
+ s := s + #10;
+ s := s +
+   '    def __delattr__(cls, attr):'#10;
+ s := s +
+   '        if attr in cls._member_map_:'#10;
+ s := s +
+   '            raise AttributeError("%s: cannot delete Enum mem' +
+   'ber." % cls.__name__)'#10;
+ s := s +
+   '        super().__delattr__(attr)'#10;
+ s := s + #10;
+ s := s +
+   '    def __dir__(self):'#10;
+ s := s +
+   '        return ([''__class__'', ''__doc__'', ''__members__'', ''__m' +
+   'odule__''] +'#10;
+ s := s +
+   '                self._member_names_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __getattr__(cls, name):'#10;
+ s := s +
+   '        if _is_dunder(name):'#10;
+ s := s +
+   '            raise AttributeError(name)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return cls._member_map_[name]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            raise AttributeError(name) from None'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(cls, name):'#10;
+ s := s +
+   '        return cls._member_map_[name]'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(cls):'#10;
+ s := s +
+   '        return (cls._member_map_[name] for name in cls._memb' +
+   'er_names_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(cls):'#10;
+ s := s +
+   '        return len(cls._member_names_)'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def __members__(cls):'#10;
+ s := s +
+   '        return MappingProxyType(cls._member_map_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(cls):'#10;
+ s := s +
+   '        return "<enum %r>" % cls.__name__'#10;
+ s := s + #10;
+ s := s +
+   '    def __reversed__(cls):'#10;
+ s := s +
+   '        return (cls._member_map_[name] for name in reversed(' +
+   'cls._member_names_))'#10;
+ s := s + #10;
+ s := s +
+   '    def __setattr__(cls, name, value):'#10;
+ s := s +
+   '        member_map = cls.__dict__.get(''_member_map_'', {})'#10;
+ s := s +
+   '        if name in member_map:'#10;
+ s := s +
+   '            raise AttributeError(''Cannot reassign members.'')'#10;
+ s := s +
+   '        super().__setattr__(name, value)'#10;
+ s := s + #10;
+ s := s +
+   '    def _create_(cls, class_name, names, *, module=None, qua' +
+   'lname=None,'#10;
+ s := s +
+   '                 type=None, start=1):'#10;
+ s := s +
+   '        metacls = cls.__class__'#10;
+ s := s +
+   '        bases = (cls, ) if type is None else (type, cls)'#10;
+ s := s +
+   '        _, first_enum = cls._get_mixins_(bases)'#10;
+ s := s +
+   '        classdict = metacls.__prepare__(class_name, bases)'#10;
+ s := s +
+   '        if isinstance(names, str):'#10;
+ s := s +
+   '            names = names.replace('','', '' '').split()'#10;
+ s := s +
+   '        if isinstance(names, (tuple, list)) and names and is' +
+   'instance(names[0], str):'#10;
+ s := s +
+   '            original_names, names = names, []'#10;
+ s := s +
+   '            last_values = []'#10;
+ s := s +
+   '            for count, name in enumerate(original_names):'#10;
+ s := s +
+   '                value = first_enum._generate_next_value_(nam' +
+   'e, start, count, last_values[:])'#10;
+ s := s +
+   '                last_values.append(value)'#10;
+ s := s +
+   '                names.append((name, value))'#10;
+ s := s +
+   '        for item in names:'#10;
+ s := s +
+   '            if isinstance(item, str):'#10;
+ s := s +
+   '                member_name, member_value = item, names[item' +
+   ']'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                member_name, member_value = item'#10;
+ s := s +
+   '            classdict[member_name] = member_value'#10;
+ s := s +
+   '        enum_class = metacls.__new__(metacls, class_name, ba' +
+   'ses, classdict)'#10;
+ s := s +
+   '        if module is None:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                module = sys._getframe(2).f_globals[''__name_' +
+   '_'']'#10;
+ s := s +
+   '            except (AttributeError, ValueError, KeyError):'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '        if module is not None:'#10;
+ s := s +
+   '            enum_class.__module__ = module'#10;
+ s := s +
+   '        return enum_class'#10;
+ s := s + #10;
+ s := s +
+   '    @staticmethod'#10;
+ s := s +
+   '    def _get_mixins_(bases):'#10;
+ s := s +
+   '        if not bases:'#10;
+ s := s +
+   '            return object, Enum'#10;
+ s := s +
+   '        def _find_data_type(bases):'#10;
+ s := s +
+   '            for chain in bases:'#10;
+ s := s +
+   '                for base in chain.__mro__:'#10;
+ s := s +
+   '                    if base is object:'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '                    elif ''__new__'' in base.__dict__:'#10;
+ s := s +
+   '                        if issubclass(base, Enum):'#10;
+ s := s +
+   '                            continue'#10;
+ s := s +
+   '                        return base'#10;
+ s := s +
+   '        if not issubclass(bases[0], Enum) and Enum is not No' +
+   'ne:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        first_enum = bases[-1]'#10;
+ s := s +
+   '        if not issubclass(first_enum, Enum):'#10;
+ s := s +
+   '            raise TypeError("new enumerations should be crea' +
+   'ted as "'#10;
+ s := s +
+   '                    "`EnumName([mixin_type, ...] [data_type,' +
+   '] enum_type)`")'#10;
+ s := s +
+   '        member_type = _find_data_type(bases) or object'#10;
+ s := s +
+   '        if first_enum._member_names_:'#10;
+ s := s +
+   '            raise TypeError("Cannot extend enumerations")'#10;
+ s := s +
+   '        return member_type, first_enum'#10;
+ s := s + #10;
+ s := s +
+   '    @staticmethod'#10;
+ s := s +
+   '    def _find_new_(classdict, member_type, first_enum):'#10;
+ s := s +
+   '        __new__ = classdict.get(''__new__'', None)'#10;
+ s := s +
+   '        save_new = __new__ is not None'#10;
+ s := s +
+   '        if __new__ is None:'#10;
+ s := s +
+   '            for method in (''__new_member__'', ''__new__''):'#10;
+ s := s +
+   '                for possible in (member_type, first_enum):'#10;
+ s := s +
+   '                    target = getattr(possible, method, None)'#10;
+ s := s +
+   '                    if target not in {None, None.__new__, ob' +
+   'ject.__new__, Enum.__new__}:'#10;
+ s := s +
+   '                        __new__ = target'#10;
+ s := s +
+   '                        break'#10;
+ s := s +
+   '                if __new__ is not None:'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                __new__ = object.__new__'#10;
+ s := s +
+   '        if __new__ is object.__new__:'#10;
+ s := s +
+   '            use_args = False'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            use_args = True'#10;
+ s := s +
+   '        return __new__, save_new, use_args'#10;
+ s := s + #10;
+ s := s +
+   'Enum = None'#10;
+ s := s + #10;
+ s := s +
+   'class Enum(metaclass=EnumMeta):'#10;
+ s := s +
+   '    def __new__(cls, value):'#10;
+ s := s +
+   '        if type(value) is cls:'#10;
+ s := s +
+   '            return value'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return cls._value2member_map_[value]'#10;
+ s := s +
+   '        except KeyError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        except TypeError:'#10;
+ s := s +
+   '            for member in cls._member_map_.values():'#10;
+ s := s +
+   '                if member._value_ == value:'#10;
+ s := s +
+   '                    return member'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            exc = None'#10;
+ s := s +
+   '            result = cls._missing_(value)'#10;
+ s := s +
+   '        except Exception as e:'#10;
+ s := s +
+   '            exc = e'#10;
+ s := s +
+   '            result = None'#10;
+ s := s +
+   '        if isinstance(result, cls):'#10;
+ s := s +
+   '            return result'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            ve_exc = ValueError("%r is not a valid %s" % (va' +
+   'lue, cls.__name__))'#10;
+ s := s +
+   '            if result is None and exc is None:'#10;
+ s := s +
+   '                raise ve_exc'#10;
+ s := s +
+   '            elif exc is None:'#10;
+ s := s +
+   '                exc = TypeError('#10;
+ s := s +
+   '                        ''error in %s._missing_: returned %r ' +
+   'instead of None or a valid member'''#10;
+ s := s +
+   '                        % (cls.__name__, result))'#10;
+ s := s +
+   '            exc.__context__ = ve_exc'#10;
+ s := s +
+   '            raise exc'#10;
+ s := s + #10;
+ s := s +
+   '    def _generate_next_value_(name, start, count, last_value' +
+   's):'#10;
+ s := s +
+   '        for last_value in reversed(last_values):'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                return last_value + 1'#10;
+ s := s +
+   '            except TypeError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return start'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _missing_(cls, value):'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return "<%s.%s: %r>" % ('#10;
+ s := s +
+   '                self.__class__.__name__, self._name_, self._' +
+   'value_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __str__(self):'#10;
+ s := s +
+   '        return "%s.%s" % (self.__class__.__name__, self._nam' +
+   'e_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __dir__(self):'#10;
+ s := s +
+   '        added_behavior = ['#10;
+ s := s +
+   '                m'#10;
+ s := s +
+   '                for cls in self.__class__.mro()'#10;
+ s := s +
+   '                for m in cls.__dict__'#10;
+ s := s +
+   '                if m[0] != ''_'' and m not in self._member_map' +
+   '_'#10;
+ s := s +
+   '                ]'#10;
+ s := s +
+   '        return ([''__class__'', ''__doc__'', ''__module__''] + add' +
+   'ed_behavior)'#10;
+ s := s + #10;
+ s := s +
+   '    def __format__(self, format_spec):'#10;
+ s := s +
+   '        str_overridden = type(self).__str__ not in (Enum.__s' +
+   'tr__, Flag.__str__)'#10;
+ s := s +
+   '        if self._member_type_ is object or str_overridden:'#10;
+ s := s +
+   '            cls = str'#10;
+ s := s +
+   '            val = str(self)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            cls = self._member_type_'#10;
+ s := s +
+   '            val = self._value_'#10;
+ s := s +
+   '        return cls.__format__(val, format_spec)'#10;
+ s := s + #10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        return hash(self._name_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __reduce_ex__(self, proto):'#10;
+ s := s +
+   '        return self.__class__, (self._value_, )'#10;
+ s := s + #10;
+ s := s +
+   '    @DynamicClassAttribute'#10;
+ s := s +
+   '    def name(self):'#10;
+ s := s +
+   '        return self._name_'#10;
+ s := s + #10;
+ s := s +
+   '    @DynamicClassAttribute'#10;
+ s := s +
+   '    def value(self):'#10;
+ s := s +
+   '        return self._value_'#10;
+ s := s + #10;
+ s := s +
+   'class IntEnum(int, Enum):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def _reduce_ex_by_name(self, proto):'#10;
+ s := s +
+   '    return self.name'#10;
+ s := s + #10;
+ s := s +
+   'class Flag(Enum):'#10;
+ s := s +
+   '    def _generate_next_value_(name, start, count, last_value' +
+   's):'#10;
+ s := s +
+   '        if not count:'#10;
+ s := s +
+   '            return start if start is not None else 1'#10;
+ s := s +
+   '        for last_value in reversed(last_values):'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                high_bit = _high_bit(last_value)'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            except Exception:'#10;
+ s := s +
+   '                raise TypeError(''Invalid Flag value: %r'' % l' +
+   'ast_value) from None'#10;
+ s := s +
+   '        return 2 ** (high_bit + 1)'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _missing_(cls, value):'#10;
+ s := s +
+   '        original_value = value'#10;
+ s := s +
+   '        if value < 0:'#10;
+ s := s +
+   '            value = ~value'#10;
+ s := s +
+   '        possible_member = cls._create_pseudo_member_(value)'#10;
+ s := s +
+   '        if original_value < 0:'#10;
+ s := s +
+   '            possible_member = ~possible_member'#10;
+ s := s +
+   '        return possible_member'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _create_pseudo_member_(cls, value):'#10;
+ s := s +
+   '        pseudo_member = cls._value2member_map_.get(value, No' +
+   'ne)'#10;
+ s := s +
+   '        if pseudo_member is None:'#10;
+ s := s +
+   '            _, extra_flags = _decompose(cls, value)'#10;
+ s := s +
+   '            if extra_flags:'#10;
+ s := s +
+   '                raise ValueError("%r is not a valid %s" % (v' +
+   'alue, cls.__name__))'#10;
+ s := s +
+   '            pseudo_member = object.__new__(cls)'#10;
+ s := s +
+   '            pseudo_member._name_ = None'#10;
+ s := s +
+   '            pseudo_member._value_ = value'#10;
+ s := s +
+   '            pseudo_member = cls._value2member_map_.setdefaul' +
+   't(value, pseudo_member)'#10;
+ s := s +
+   '        return pseudo_member'#10;
+ s := s + #10;
+ s := s +
+   '    def __contains__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, self.__class__):'#10;
+ s := s +
+   '            raise TypeError('#10;
+ s := s +
+   '                "unsupported operand type(s) for ''in'': ''%s'' ' +
+   'and ''%s''" % ('#10;
+ s := s +
+   '                    type(other).__qualname__, self.__class__' +
+   '.__qualname__))'#10;
+ s := s +
+   '        return other._value_ & self._value_ == other._value_'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        cls = self.__class__'#10;
+ s := s +
+   '        if self._name_ is not None:'#10;
+ s := s +
+   '            return ''<%s.%s: %r>'' % (cls.__name__, self._name' +
+   '_, self._value_)'#10;
+ s := s +
+   '        members, uncovered = _decompose(cls, self._value_)'#10;
+ s := s +
+   '        return ''<%s.%s: %r>'' % ('#10;
+ s := s +
+   '                cls.__name__,'#10;
+ s := s +
+   '                ''|''.join([str(m._name_ or m._value_) for m i' +
+   'n members]),'#10;
+ s := s +
+   '                self._value_,'#10;
+ s := s +
+   '                )'#10;
+ s := s + #10;
+ s := s +
+   '    def __str__(self):'#10;
+ s := s +
+   '        cls = self.__class__'#10;
+ s := s +
+   '        if self._name_ is not None:'#10;
+ s := s +
+   '            return ''%s.%s'' % (cls.__name__, self._name_)'#10;
+ s := s +
+   '        members, uncovered = _decompose(cls, self._value_)'#10;
+ s := s +
+   '        if len(members) == 1 and members[0]._name_ is None:'#10;
+ s := s +
+   '            return ''%s.%r'' % (cls.__name__, members[0]._valu' +
+   'e_)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return ''%s.%s'' % ('#10;
+ s := s +
+   '                    cls.__name__,'#10;
+ s := s +
+   '                    ''|''.join([str(m._name_ or m._value_) for' +
+   ' m in members]),'#10;
+ s := s +
+   '                    )'#10;
+ s := s + #10;
+ s := s +
+   '    def __bool__(self):'#10;
+ s := s +
+   '        return bool(self._value_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __or__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, self.__class__):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self.__class__(self._value_ | other._value_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __and__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, self.__class__):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self.__class__(self._value_ & other._value_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __xor__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, self.__class__):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self.__class__(self._value_ ^ other._value_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __invert__(self):'#10;
+ s := s +
+   '        members, uncovered = _decompose(self.__class__, self' +
+   '._value_)'#10;
+ s := s +
+   '        inverted = self.__class__(0)'#10;
+ s := s +
+   '        for m in self.__class__:'#10;
+ s := s +
+   '            if m not in members and not (m._value_ & self._v' +
+   'alue_):'#10;
+ s := s +
+   '                inverted = inverted | m'#10;
+ s := s +
+   '        return self.__class__(inverted)'#10;
+ s := s + #10;
+ s := s +
+   'class IntFlag(int, Flag):'#10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _missing_(cls, value):'#10;
+ s := s +
+   '        if not isinstance(value, int):'#10;
+ s := s +
+   '            raise ValueError("%r is not a valid %s" % (value' +
+   ', cls.__name__))'#10;
+ s := s +
+   '        new_member = cls._create_pseudo_member_(value)'#10;
+ s := s +
+   '        return new_member'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def _create_pseudo_member_(cls, value):'#10;
+ s := s +
+   '        pseudo_member = cls._value2member_map_.get(value, No' +
+   'ne)'#10;
+ s := s +
+   '        if pseudo_member is None:'#10;
+ s := s +
+   '            need_to_create = [value]'#10;
+ s := s +
+   '            _, extra_flags = _decompose(cls, value)'#10;
+ s := s +
+   '            while extra_flags:'#10;
+ s := s +
+   '                bit = _high_bit(extra_flags)'#10;
+ s := s +
+   '                flag_value = 2 ** bit'#10;
+ s := s +
+   '                if (flag_value not in cls._value2member_map_' +
+   ' and'#10;
+ s := s +
+   '                        flag_value not in need_to_create'#10;
+ s := s +
+   '                        ):'#10;
+ s := s +
+   '                    need_to_create.append(flag_value)'#10;
+ s := s +
+   '                if extra_flags == -flag_value:'#10;
+ s := s +
+   '                    extra_flags = 0'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    extra_flags ^= flag_value'#10;
+ s := s +
+   '            for value in reversed(need_to_create):'#10;
+ s := s +
+   '                pseudo_member = int.__new__(cls, value)'#10;
+ s := s +
+   '                pseudo_member._name_ = None'#10;
+ s := s +
+   '                pseudo_member._value_ = value'#10;
+ s := s +
+   '                pseudo_member = cls._value2member_map_.setde' +
+   'fault(value, pseudo_member)'#10;
+ s := s +
+   '        return pseudo_member'#10;
+ s := s + #10;
+ s := s +
+   '    def __or__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, (self.__class__, int)):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        result = self.__class__(self._value_ | self.__class_' +
+   '_(other)._value_)'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __and__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, (self.__class__, int)):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self.__class__(self._value_ & self.__class__(' +
+   'other)._value_)'#10;
+ s := s + #10;
+ s := s +
+   '    def __xor__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, (self.__class__, int)):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self.__class__(self._value_ ^ self.__class__(' +
+   'other)._value_)'#10;
+ s := s + #10;
+ s := s +
+   '    __ror__ = __or__'#10;
+ s := s +
+   '    __rand__ = __and__'#10;
+ s := s +
+   '    __rxor__ = __xor__'#10;
+ s := s + #10;
+ s := s +
+   '    def __invert__(self):'#10;
+ s := s +
+   '        result = self.__class__(~self._value_)'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   'def _high_bit(value):'#10;
+ s := s +
+   '    return value.bit_length() - 1'#10;
+ s := s + #10;
+ s := s +
+   'def unique(enumeration):'#10;
+ s := s +
+   '    duplicates = []'#10;
+ s := s +
+   '    for name, member in enumeration.__members__.items():'#10;
+ s := s +
+   '        if name != member.name:'#10;
+ s := s +
+   '            duplicates.append((name, member.name))'#10;
+ s := s +
+   '    if duplicates:'#10;
+ s := s +
+   '        alias_details = '', ''.join('#10;
+ s := s +
+   '                ["%s -> %s" % (alias, name) for (alias, name' +
+   ') in duplicates])'#10;
+ s := s +
+   '        raise ValueError(''duplicate values found in %r: %s'' ' +
+   '%'#10;
+ s := s +
+   '                (enumeration, alias_details))'#10;
+ s := s +
+   '    return enumeration'#10;
+ s := s + #10;
+ s := s +
+   'def _decompose(flag, value):'#10;
+ s := s +
+   '    not_covered = value'#10;
+ s := s +
+   '    negative = value < 0'#10;
+ s := s +
+   '    if negative:'#10;
+ s := s +
+   '        flags_to_check = ['#10;
+ s := s +
+   '                (m, v)'#10;
+ s := s +
+   '                for v, m in list(flag._value2member_map_.ite' +
+   'ms())'#10;
+ s := s +
+   '                if m.name is not None'#10;
+ s := s +
+   '                ]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        flags_to_check = ['#10;
+ s := s +
+   '                (m, v)'#10;
+ s := s +
+   '                for v, m in list(flag._value2member_map_.ite' +
+   'ms())'#10;
+ s := s +
+   '                if m.name is not None or _power_of_two(v)'#10;
+ s := s +
+   '                ]'#10;
+ s := s +
+   '    members = []'#10;
+ s := s +
+   '    for member, member_value in flags_to_check:'#10;
+ s := s +
+   '        if member_value and member_value & value == member_v' +
+   'alue:'#10;
+ s := s +
+   '            members.append(member)'#10;
+ s := s +
+   '            not_covered &= ~member_value'#10;
+ s := s +
+   '    if not members and value in flag._value2member_map_:'#10;
+ s := s +
+   '        members.append(flag._value2member_map_[value])'#10;
+ s := s +
+   '    members.sort(key=lambda m: m._value_, reverse=True)'#10;
+ s := s +
+   '    if len(members) > 1 and members[0].value == value:'#10;
+ s := s +
+   '        members.pop(0)'#10;
+ s := s +
+   '    return members, not_covered'#10;
+ s := s + #10;
+ s := s +
+   'def _power_of_two(value):'#10;
+ s := s +
+   '    if value < 1:'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    return value == 2 ** _high_bit(value)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_errno: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'EPERM=1; ENOENT=2; ESRCH=3; EINTR=4; EIO=5; ENXIO=6; E2BIG=7' +
+   '; ENOEXEC=8'#10;
+ s := s +
+   'EBADF=9; ECHILD=10; EAGAIN=11; ENOMEM=12; EACCES=13; EFAULT=' +
+   '14; ENOTBLK=15'#10;
+ s := s +
+   'EBUSY=16; EEXIST=17; EXDEV=18; ENODEV=19; ENOTDIR=20; EISDIR' +
+   '=21; EINVAL=22'#10;
+ s := s +
+   'ENFILE=23; EMFILE=24; ENOTTY=25; ETXTBSY=26; EFBIG=27; ENOSP' +
+   'C=28; ESPIPE=29'#10;
+ s := s +
+   'EROFS=30; EMLINK=31; EPIPE=32; EDOM=33; ERANGE=34; EDEADLK=3' +
+   '5; ENAMETOOLONG=36'#10;
+ s := s +
+   'ENOSYS=38; ENOTEMPTY=39; ELOOP=40; EWOULDBLOCK=11; ETIMEDOUT' +
+   '=110'#10;
+ s := s +
+   'ECONNREFUSED=111; ECONNRESET=104; EADDRINUSE=98; ENOTSOCK=88'#10;
+ s := s +
+   'errorcode = {}'#10;
+ s := s +
+   'for _k, _v in list(globals().items()):'#10;
+ s := s +
+   '    if _k[:1] == ''E'' and isinstance(_v, int) and _k != ''EWOU' +
+   'LDBLOCK'':'#10;
+ s := s +
+   '        errorcode[_v] = _k'#10;
+ s := s +
+   'del _k, _v'#10;
  s := s + #10;
  Result := s;
 End;
@@ -26974,6 +30075,84 @@ Begin
  Result := s;
 End;
 
+Function Src_linecache: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s + #10;
+ s := s +
+   'cache = {}'#10;
+ s := s + #10;
+ s := s +
+   'def getlines(filename, module_globals=None):'#10;
+ s := s +
+   '    if filename in cache:'#10;
+ s := s +
+   '        return cache[filename]'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        with open(filename, ''r'') as f:'#10;
+ s := s +
+   '            lines = f.readlines()'#10;
+ s := s +
+   '    except (OSError, UnicodeDecodeError):'#10;
+ s := s +
+   '        return []'#10;
+ s := s +
+   '    if lines and not lines[-1].endswith(''\n''):'#10;
+ s := s +
+   '        lines[-1] += ''\n'''#10;
+ s := s +
+   '    cache[filename] = lines'#10;
+ s := s +
+   '    return lines'#10;
+ s := s + #10;
+ s := s +
+   'def getline(filename, lineno, module_globals=None):'#10;
+ s := s +
+   '    lines = getlines(filename, module_globals)'#10;
+ s := s +
+   '    if 1 <= lineno <= len(lines):'#10;
+ s := s +
+   '        return lines[lineno - 1]'#10;
+ s := s +
+   '    return '''''#10;
+ s := s + #10;
+ s := s +
+   'def clearcache():'#10;
+ s := s +
+   '    cache.clear()'#10;
+ s := s + #10;
+ s := s +
+   'def checkcache(filename=None):'#10;
+ s := s +
+   '    if filename is None:'#10;
+ s := s +
+   '        cache.clear()'#10;
+ s := s +
+   '    elif filename in cache:'#10;
+ s := s +
+   '        del cache[filename]'#10;
+ s := s + #10;
+ s := s +
+   'def updatecache(filename, module_globals=None):'#10;
+ s := s +
+   '    checkcache(filename)'#10;
+ s := s +
+   '    return getlines(filename, module_globals)'#10;
+ s := s + #10;
+ s := s +
+   'def lazycache(filename, module_globals):'#10;
+ s := s +
+   '    return False'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_operator: AnsiString;
 Var
  s: AnsiString;
@@ -27262,6 +30441,1195 @@ Begin
    's.items())'#10;
  s := s +
    '        return ''operator.methodcaller(%s)'' % '', ''.join(args)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_os: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import posix'#10;
+ s := s +
+   'import posixpath as path'#10;
+ s := s +
+   'import stat as st'#10;
+ s := s +
+   'from posix import *'#10;
+ s := s + #10;
+ s := s +
+   'name = ''posix'''#10;
+ s := s +
+   'sys.modules[''os.path''] = path'#10;
+ s := s +
+   'curdir = ''.'''#10;
+ s := s +
+   'pardir = ''..'''#10;
+ s := s +
+   'sep = ''/'''#10;
+ s := s +
+   'altsep = None'#10;
+ s := s +
+   'extsep = ''.'''#10;
+ s := s +
+   'pathsep = '':'''#10;
+ s := s +
+   'defpath = ''/bin:/usr/bin'''#10;
+ s := s +
+   'linesep = ''\n'''#10;
+ s := s +
+   'devnull = ''/dev/null'''#10;
+ s := s +
+   'error = OSError'#10;
+ s := s + #10;
+ s := s +
+   'SEEK_SET = 0'#10;
+ s := s +
+   'SEEK_CUR = 1'#10;
+ s := s +
+   'SEEK_END = 2'#10;
+ s := s +
+   'F_OK = 0'#10;
+ s := s +
+   'X_OK = 1'#10;
+ s := s +
+   'W_OK = 2'#10;
+ s := s +
+   'R_OK = 4'#10;
+ s := s +
+   'O_RDONLY = 0'#10;
+ s := s +
+   'O_WRONLY = 1'#10;
+ s := s +
+   'O_RDWR = 2'#10;
+ s := s +
+   'O_CREAT = 64'#10;
+ s := s +
+   'O_EXCL = 128'#10;
+ s := s +
+   'O_TRUNC = 512'#10;
+ s := s +
+   'O_APPEND = 1024'#10;
+ s := s + #10;
+ s := s +
+   'class PathLike:'#10;
+ s := s +
+   '    def __fspath__(self):'#10;
+ s := s +
+   '        raise NotImplementedError'#10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def __subclasshook__(cls, subclass):'#10;
+ s := s +
+   '        if cls is PathLike:'#10;
+ s := s +
+   '            return hasattr(subclass, ''__fspath__'')'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'def fspath(p):'#10;
+ s := s +
+   '    if isinstance(p, (str, bytes)):'#10;
+ s := s +
+   '        return p'#10;
+ s := s +
+   '    f = getattr(type(p), ''__fspath__'', None)'#10;
+ s := s +
+   '    if f is None:'#10;
+ s := s +
+   '        raise TypeError("expected str, bytes or os.PathLike ' +
+   'object, not "'#10;
+ s := s +
+   '                        + type(p).__name__)'#10;
+ s := s +
+   '    r = f(p)'#10;
+ s := s +
+   '    if isinstance(r, (str, bytes)):'#10;
+ s := s +
+   '        return r'#10;
+ s := s +
+   '    raise TypeError("expected %s.__fspath__() to return str ' +
+   'or bytes, not %s"'#10;
+ s := s +
+   '                    % (type(p).__name__, type(r).__name__))'#10;
+ s := s + #10;
+ s := s +
+   'def fsencode(filename):'#10;
+ s := s +
+   '    filename = fspath(filename)'#10;
+ s := s +
+   '    if isinstance(filename, str):'#10;
+ s := s +
+   '        return filename.encode(''utf-8'')'#10;
+ s := s +
+   '    return filename'#10;
+ s := s + #10;
+ s := s +
+   'def fsdecode(filename):'#10;
+ s := s +
+   '    filename = fspath(filename)'#10;
+ s := s +
+   '    if isinstance(filename, bytes):'#10;
+ s := s +
+   '        return filename.decode(''utf-8'')'#10;
+ s := s +
+   '    return filename'#10;
+ s := s + #10;
+ s := s +
+   'def getcwdb():'#10;
+ s := s +
+   '    return getcwd().encode(''utf-8'')'#10;
+ s := s + #10;
+ s := s +
+   'class _Environ(dict):'#10;
+ s := s +
+   '    def __setitem__(self, key, value):'#10;
+ s := s +
+   '        if not isinstance(key, str) or not isinstance(value,' +
+   ' str):'#10;
+ s := s +
+   '            raise TypeError("str expected, not %s" % type(va' +
+   'lue).__name__)'#10;
+ s := s +
+   '        dict.__setitem__(self, key, value)'#10;
+ s := s +
+   '        posix.putenv(key, value)'#10;
+ s := s +
+   '    def __delitem__(self, key):'#10;
+ s := s +
+   '        dict.__delitem__(self, key)'#10;
+ s := s +
+   '        posix.putenv(key, '''')'#10;
+ s := s +
+   '    def copy(self):'#10;
+ s := s +
+   '        return dict(self)'#10;
+ s := s +
+   '    def setdefault(self, key, value):'#10;
+ s := s +
+   '        if key not in self:'#10;
+ s := s +
+   '            self[key] = value'#10;
+ s := s +
+   '        return self[key]'#10;
+ s := s +
+   '    def update(self, *args, **kw):'#10;
+ s := s +
+   '        for k, v in dict(*args, **kw).items():'#10;
+ s := s +
+   '            self[k] = v'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''environ(%s)'' % dict.__repr__(self)'#10;
+ s := s + #10;
+ s := s +
+   'environ = _Environ(posix.environ())'#10;
+ s := s + #10;
+ s := s +
+   'def getenv(key, default=None):'#10;
+ s := s +
+   '    return environ.get(key, default)'#10;
+ s := s + #10;
+ s := s +
+   'def putenv(key, value):'#10;
+ s := s +
+   '    environ[key] = value'#10;
+ s := s + #10;
+ s := s +
+   'def unsetenv(key):'#10;
+ s := s +
+   '    if key in environ:'#10;
+ s := s +
+   '        del environ[key]'#10;
+ s := s + #10;
+ s := s +
+   'unlink = remove'#10;
+ s := s + #10;
+ s := s +
+   'class stat_result(tuple):'#10;
+ s := s +
+   '    def __new__(cls, t):'#10;
+ s := s +
+   '        return tuple.__new__(cls, t)'#10;
+ s := s +
+   '    st_mode = property(lambda s: s[0])'#10;
+ s := s +
+   '    st_ino = property(lambda s: s[1])'#10;
+ s := s +
+   '    st_dev = property(lambda s: s[2])'#10;
+ s := s +
+   '    st_nlink = property(lambda s: s[3])'#10;
+ s := s +
+   '    st_uid = property(lambda s: s[4])'#10;
+ s := s +
+   '    st_gid = property(lambda s: s[5])'#10;
+ s := s +
+   '    st_size = property(lambda s: s[6])'#10;
+ s := s +
+   '    st_atime = property(lambda s: float(s[7]))'#10;
+ s := s +
+   '    st_mtime = property(lambda s: float(s[8]))'#10;
+ s := s +
+   '    st_ctime = property(lambda s: float(s[9]))'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return (''os.stat_result(st_mode=%d, st_ino=%d, st_de' +
+   'v=%d, st_nlink=%d,'''#10;
+ s := s +
+   '                '' st_uid=%d, st_gid=%d, st_size=%d, st_atime' +
+   '=%d, st_mtime=%d,'''#10;
+ s := s +
+   '                '' st_ctime=%d)'' % tuple(self))'#10;
+ s := s + #10;
+ s := s +
+   '_stat = posix.stat'#10;
+ s := s +
+   '_lstat = posix.lstat'#10;
+ s := s + #10;
+ s := s +
+   'def stat(path, *, dir_fd=None, follow_symlinks=True):'#10;
+ s := s +
+   '    if follow_symlinks:'#10;
+ s := s +
+   '        return stat_result(_stat(fspath(path)))'#10;
+ s := s +
+   '    return stat_result(_lstat(fspath(path)))'#10;
+ s := s + #10;
+ s := s +
+   'def lstat(path, *, dir_fd=None):'#10;
+ s := s +
+   '    return stat_result(_lstat(fspath(path)))'#10;
+ s := s + #10;
+ s := s +
+   'def makedirs(name, mode=0o777, exist_ok=False):'#10;
+ s := s +
+   '    head, tail = path.split(name)'#10;
+ s := s +
+   '    if not tail:'#10;
+ s := s +
+   '        head, tail = path.split(head)'#10;
+ s := s +
+   '    if head and tail and not path.exists(head):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            makedirs(head, exist_ok=exist_ok)'#10;
+ s := s +
+   '        except FileExistsError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        cdir = curdir'#10;
+ s := s +
+   '        if isinstance(tail, bytes):'#10;
+ s := s +
+   '            cdir = bytes(curdir, ''ASCII'')'#10;
+ s := s +
+   '        if tail == cdir:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        mkdir(name, mode)'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        if not exist_ok or not path.isdir(name):'#10;
+ s := s +
+   '            raise'#10;
+ s := s + #10;
+ s := s +
+   'def removedirs(name):'#10;
+ s := s +
+   '    rmdir(name)'#10;
+ s := s +
+   '    head, tail = path.split(name)'#10;
+ s := s +
+   '    if not tail:'#10;
+ s := s +
+   '        head, tail = path.split(head)'#10;
+ s := s +
+   '    while head and tail:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            rmdir(head)'#10;
+ s := s +
+   '        except OSError:'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        head, tail = path.split(head)'#10;
+ s := s + #10;
+ s := s +
+   'def renames(old, new):'#10;
+ s := s +
+   '    head, tail = path.split(new)'#10;
+ s := s +
+   '    if head and tail and not path.exists(head):'#10;
+ s := s +
+   '        makedirs(head)'#10;
+ s := s +
+   '    rename(old, new)'#10;
+ s := s +
+   '    head, tail = path.split(old)'#10;
+ s := s +
+   '    if head and tail:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            removedirs(head)'#10;
+ s := s +
+   '        except OSError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s + #10;
+ s := s +
+   'def replace(src, dst):'#10;
+ s := s +
+   '    rename(src, dst)'#10;
+ s := s + #10;
+ s := s +
+   'def walk(top, topdown=True, onerror=None, followlinks=False)' +
+   ':'#10;
+ s := s +
+   '    top = fspath(top)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        names = listdir(top)'#10;
+ s := s +
+   '    except OSError as err:'#10;
+ s := s +
+   '        if onerror is not None:'#10;
+ s := s +
+   '            onerror(err)'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    dirs = []'#10;
+ s := s +
+   '    nondirs = []'#10;
+ s := s +
+   '    for name in names:'#10;
+ s := s +
+   '        if path.isdir(path.join(top, name)):'#10;
+ s := s +
+   '            dirs.append(name)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            nondirs.append(name)'#10;
+ s := s +
+   '    if topdown:'#10;
+ s := s +
+   '        yield top, dirs, nondirs'#10;
+ s := s +
+   '    for name in dirs:'#10;
+ s := s +
+   '        new_path = path.join(top, name)'#10;
+ s := s +
+   '        if followlinks or not path.islink(new_path):'#10;
+ s := s +
+   '            yield from walk(new_path, topdown, onerror, foll' +
+   'owlinks)'#10;
+ s := s +
+   '    if not topdown:'#10;
+ s := s +
+   '        yield top, dirs, nondirs'#10;
+ s := s + #10;
+ s := s +
+   'class DirEntry:'#10;
+ s := s +
+   '    def __init__(self, dirpath, name):'#10;
+ s := s +
+   '        self.name = name'#10;
+ s := s +
+   '        self.path = path.join(dirpath, name)'#10;
+ s := s +
+   '    def is_dir(self, *, follow_symlinks=True):'#10;
+ s := s +
+   '        return path.isdir(self.path)'#10;
+ s := s +
+   '    def is_file(self, *, follow_symlinks=True):'#10;
+ s := s +
+   '        return path.isfile(self.path)'#10;
+ s := s +
+   '    def is_symlink(self):'#10;
+ s := s +
+   '        return path.islink(self.path)'#10;
+ s := s +
+   '    def stat(self, *, follow_symlinks=True):'#10;
+ s := s +
+   '        return stat(self.path)'#10;
+ s := s +
+   '    def inode(self):'#10;
+ s := s +
+   '        return stat(self.path).st_ino'#10;
+ s := s +
+   '    def __fspath__(self):'#10;
+ s := s +
+   '        return self.path'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<DirEntry %r>'' % self.name'#10;
+ s := s + #10;
+ s := s +
+   'class _ScandirIterator:'#10;
+ s := s +
+   '    def __init__(self, entries):'#10;
+ s := s +
+   '        self._it = iter(entries)'#10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        return next(self._it)'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s +
+   '    def __exit__(self, *a):'#10;
+ s := s +
+   '        return None'#10;
+ s := s +
+   '    def close(self):'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   'def scandir(p=''.''):'#10;
+ s := s +
+   '    p = fspath(p)'#10;
+ s := s +
+   '    return _ScandirIterator([DirEntry(p, n) for n in listdir' +
+   '(p)])'#10;
+ s := s + #10;
+ s := s +
+   'def get_terminal_size(fd=1):'#10;
+ s := s +
+   '    cols = int(environ.get(''COLUMNS'', 80) or 80)'#10;
+ s := s +
+   '    lines = int(environ.get(''LINES'', 24) or 24)'#10;
+ s := s +
+   '    return terminal_size((cols, lines))'#10;
+ s := s + #10;
+ s := s +
+   'class terminal_size(tuple):'#10;
+ s := s +
+   '    columns = property(lambda s: s[0])'#10;
+ s := s +
+   '    lines = property(lambda s: s[1])'#10;
+ s := s + #10;
+ s := s +
+   'def getlogin():'#10;
+ s := s +
+   '    return environ.get(''USER'', environ.get(''LOGNAME'', ''root''' +
+   '))'#10;
+ s := s + #10;
+ s := s +
+   'def get_exec_path(env=None):'#10;
+ s := s +
+   '    if env is None:'#10;
+ s := s +
+   '        env = environ'#10;
+ s := s +
+   '    return env.get(''PATH'', defpath).split(pathsep)'#10;
+ s := s + #10;
+ s := s +
+   'def strerror(code):'#10;
+ s := s +
+   '    import errno'#10;
+ s := s +
+   '    msgs = {1: ''Operation not permitted'', 2: ''No such file o' +
+   'r directory'','#10;
+ s := s +
+   '            13: ''Permission denied'', 17: ''File exists'', 20: ' +
+   '''Not a directory'','#10;
+ s := s +
+   '            21: ''Is a directory'', 22: ''Invalid argument'','#10;
+ s := s +
+   '            39: ''Directory not empty''}'#10;
+ s := s +
+   '    return msgs.get(code, ''Unknown error %d'' % code)'#10;
+ s := s + #10;
+ s := s +
+   'def abort():'#10;
+ s := s +
+   '    _exit(134)'#10;
+ s := s + #10;
+ s := s +
+   'def popen(cmd, mode=''r'', buffering=-1):'#10;
+ s := s +
+   '    raise NotImplementedError(''os.popen is not supported'')'#10;
+ s := s + #10;
+ s := s +
+   'def kill(pid, sig):'#10;
+ s := s +
+   '    raise NotImplementedError(''os.kill is not supported'')'#10;
+ s := s + #10;
+ s := s +
+   'def umask(mask):'#10;
+ s := s +
+   '    return 0o022'#10;
+ s := s + #10;
+ s := s +
+   'def getpgid(pid):'#10;
+ s := s +
+   '    return pid'#10;
+ s := s + #10;
+ s := s +
+   'def times():'#10;
+ s := s +
+   '    import time'#10;
+ s := s +
+   '    t = time.process_time()'#10;
+ s := s +
+   '    return (t, 0.0, 0.0, 0.0, time.monotonic())'#10;
+ s := s + #10;
+ s := s +
+   'def cpu_count():'#10;
+ s := s +
+   '    return posix.cpu_count()'#10;
+ s := s + #10;
+ s := s +
+   'def link(src, dst):'#10;
+ s := s +
+   '    raise NotImplementedError(''os.link is not supported'')'#10;
+ s := s + #10;
+ s := s +
+   'def chown(*a, **k):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def fsync(fd):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def listdir_bytes(p):'#10;
+ s := s +
+   '    return [n.encode() for n in listdir(p)]'#10;
+ s := s + #10;
+ s := s +
+   'from posix import uname as _uname'#10;
+ s := s +
+   'class uname_result(tuple):'#10;
+ s := s +
+   '    sysname = property(lambda s: s[0])'#10;
+ s := s +
+   '    nodename = property(lambda s: s[1])'#10;
+ s := s +
+   '    release = property(lambda s: s[2])'#10;
+ s := s +
+   '    version = property(lambda s: s[3])'#10;
+ s := s +
+   '    machine = property(lambda s: s[4])'#10;
+ s := s +
+   'def uname():'#10;
+ s := s +
+   '    return uname_result(_uname())'#10;
+ s := s + #10;
+ s := s +
+   'def urandom(n):'#10;
+ s := s +
+   '    return posix.urandom(n)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_posixpath: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import stat'#10;
+ s := s +
+   'import posix'#10;
+ s := s + #10;
+ s := s +
+   'curdir = ''.'''#10;
+ s := s +
+   'pardir = ''..'''#10;
+ s := s +
+   'extsep = ''.'''#10;
+ s := s +
+   'sep = ''/'''#10;
+ s := s +
+   'pathsep = '':'''#10;
+ s := s +
+   'defpath = ''/bin:/usr/bin'''#10;
+ s := s +
+   'altsep = None'#10;
+ s := s +
+   'devnull = ''/dev/null'''#10;
+ s := s + #10;
+ s := s +
+   'def _get_sep(path):'#10;
+ s := s +
+   '    if isinstance(path, bytes):'#10;
+ s := s +
+   '        return b''/'''#10;
+ s := s +
+   '    return ''/'''#10;
+ s := s + #10;
+ s := s +
+   'def normcase(s):'#10;
+ s := s +
+   '    return os.fspath(s)'#10;
+ s := s + #10;
+ s := s +
+   'def isabs(s):'#10;
+ s := s +
+   '    s = os.fspath(s)'#10;
+ s := s +
+   '    sep = _get_sep(s)'#10;
+ s := s +
+   '    return s.startswith(sep)'#10;
+ s := s + #10;
+ s := s +
+   'def join(a, *p):'#10;
+ s := s +
+   '    a = os.fspath(a)'#10;
+ s := s +
+   '    sep = _get_sep(a)'#10;
+ s := s +
+   '    path = a'#10;
+ s := s +
+   '    for b in map(os.fspath, p):'#10;
+ s := s +
+   '        if b.startswith(sep):'#10;
+ s := s +
+   '            path = b'#10;
+ s := s +
+   '        elif not path or path.endswith(sep):'#10;
+ s := s +
+   '            path += b'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            path += sep + b'#10;
+ s := s +
+   '    return path'#10;
+ s := s + #10;
+ s := s +
+   'def split(p):'#10;
+ s := s +
+   '    p = os.fspath(p)'#10;
+ s := s +
+   '    sep = _get_sep(p)'#10;
+ s := s +
+   '    i = p.rfind(sep) + 1'#10;
+ s := s +
+   '    head, tail = p[:i], p[i:]'#10;
+ s := s +
+   '    if head and head != sep * len(head):'#10;
+ s := s +
+   '        head = head.rstrip(sep)'#10;
+ s := s +
+   '    return head, tail'#10;
+ s := s + #10;
+ s := s +
+   'def splitext(p):'#10;
+ s := s +
+   '    p = os.fspath(p)'#10;
+ s := s +
+   '    sep = _get_sep(p)'#10;
+ s := s +
+   '    extsep = ''.'''#10;
+ s := s +
+   '    sepIndex = p.rfind(sep)'#10;
+ s := s +
+   '    dotIndex = p.rfind(extsep)'#10;
+ s := s +
+   '    if dotIndex > sepIndex:'#10;
+ s := s +
+   '        filenameIndex = sepIndex + 1'#10;
+ s := s +
+   '        while filenameIndex < dotIndex:'#10;
+ s := s +
+   '            if p[filenameIndex:filenameIndex + 1] != extsep:'#10;
+ s := s +
+   '                return p[:dotIndex], p[dotIndex:]'#10;
+ s := s +
+   '            filenameIndex += 1'#10;
+ s := s +
+   '    return p, p[:0]'#10;
+ s := s + #10;
+ s := s +
+   'def splitdrive(p):'#10;
+ s := s +
+   '    p = os.fspath(p)'#10;
+ s := s +
+   '    return p[:0], p'#10;
+ s := s + #10;
+ s := s +
+   'def basename(p):'#10;
+ s := s +
+   '    p = os.fspath(p)'#10;
+ s := s +
+   '    sep = _get_sep(p)'#10;
+ s := s +
+   '    i = p.rfind(sep) + 1'#10;
+ s := s +
+   '    return p[i:]'#10;
+ s := s + #10;
+ s := s +
+   'def dirname(p):'#10;
+ s := s +
+   '    p = os.fspath(p)'#10;
+ s := s +
+   '    sep = _get_sep(p)'#10;
+ s := s +
+   '    i = p.rfind(sep) + 1'#10;
+ s := s +
+   '    head = p[:i]'#10;
+ s := s +
+   '    if head and head != sep * len(head):'#10;
+ s := s +
+   '        head = head.rstrip(sep)'#10;
+ s := s +
+   '    return head'#10;
+ s := s + #10;
+ s := s +
+   'def islink(path):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        st = posix.lstat(path)'#10;
+ s := s +
+   '    except (OSError, ValueError, AttributeError):'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    return stat.S_ISLNK(st[0])'#10;
+ s := s + #10;
+ s := s +
+   'def lexists(path):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        posix.lstat(path)'#10;
+ s := s +
+   '    except (OSError, ValueError):'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    return True'#10;
+ s := s + #10;
+ s := s +
+   'def exists(path):'#10;
+ s := s +
+   '    return posix.exists(os.fspath(path))'#10;
+ s := s + #10;
+ s := s +
+   'def isfile(path):'#10;
+ s := s +
+   '    return posix.isfile(os.fspath(path))'#10;
+ s := s + #10;
+ s := s +
+   'def isdir(s):'#10;
+ s := s +
+   '    return posix.isdir(os.fspath(s))'#10;
+ s := s + #10;
+ s := s +
+   'def ismount(path):'#10;
+ s := s +
+   '    return False'#10;
+ s := s + #10;
+ s := s +
+   'def getsize(filename):'#10;
+ s := s +
+   '    return posix.getsize(filename)'#10;
+ s := s + #10;
+ s := s +
+   'def getmtime(filename):'#10;
+ s := s +
+   '    return posix.getmtime(filename)'#10;
+ s := s + #10;
+ s := s +
+   'def getatime(filename):'#10;
+ s := s +
+   '    return posix.stat(filename)[7]'#10;
+ s := s + #10;
+ s := s +
+   'def getctime(filename):'#10;
+ s := s +
+   '    return posix.stat(filename)[9]'#10;
+ s := s + #10;
+ s := s +
+   'def samefile(f1, f2):'#10;
+ s := s +
+   '    s1 = posix.stat(f1)'#10;
+ s := s +
+   '    s2 = posix.stat(f2)'#10;
+ s := s +
+   '    return s1[1] == s2[1] and s1[2] == s2[2]'#10;
+ s := s + #10;
+ s := s +
+   'def expanduser(path):'#10;
+ s := s +
+   '    path = os.fspath(path)'#10;
+ s := s +
+   '    if not path.startswith(''~''):'#10;
+ s := s +
+   '        return path'#10;
+ s := s +
+   '    i = path.find(''/'', 1)'#10;
+ s := s +
+   '    if i < 0:'#10;
+ s := s +
+   '        i = len(path)'#10;
+ s := s +
+   '    if i == 1:'#10;
+ s := s +
+   '        userhome = os.environ.get(''HOME'')'#10;
+ s := s +
+   '        if userhome is None:'#10;
+ s := s +
+   '            userhome = ''/root'''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        userhome = ''/home/'' + path[1:i]'#10;
+ s := s +
+   '    userhome = userhome.rstrip(''/'')'#10;
+ s := s +
+   '    return (userhome + path[i:]) or ''/'''#10;
+ s := s + #10;
+ s := s +
+   'def expandvars(path):'#10;
+ s := s +
+   '    path = os.fspath(path)'#10;
+ s := s +
+   '    if ''$'' not in path:'#10;
+ s := s +
+   '        return path'#10;
+ s := s +
+   '    res = '''''#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    n = len(path)'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = path[i]'#10;
+ s := s +
+   '        if c == ''$'' and i + 1 < n:'#10;
+ s := s +
+   '            if path[i + 1] == ''{'':'#10;
+ s := s +
+   '                j = path.find(''}'', i + 2)'#10;
+ s := s +
+   '                if j < 0:'#10;
+ s := s +
+   '                    res += path[i:]'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                name = path[i + 2:j]'#10;
+ s := s +
+   '                if name in os.environ:'#10;
+ s := s +
+   '                    res += os.environ[name]'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    res += path[i:j + 1]'#10;
+ s := s +
+   '                i = j + 1'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            j = i + 1'#10;
+ s := s +
+   '            while j < n and (path[j].isalnum() or path[j] ==' +
+   ' ''_''):'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '            name = path[i + 1:j]'#10;
+ s := s +
+   '            if name and name in os.environ:'#10;
+ s := s +
+   '                res += os.environ[name]'#10;
+ s := s +
+   '                i = j'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            if name:'#10;
+ s := s +
+   '                res += path[i:j]'#10;
+ s := s +
+   '                i = j'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '        res += c'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s +
+   '    return res'#10;
+ s := s + #10;
+ s := s +
+   'def normpath(path):'#10;
+ s := s +
+   '    path = os.fspath(path)'#10;
+ s := s +
+   '    if isinstance(path, bytes):'#10;
+ s := s +
+   '        sep = b''/'''#10;
+ s := s +
+   '        empty = b'''''#10;
+ s := s +
+   '        dot = b''.'''#10;
+ s := s +
+   '        dotdot = b''..'''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        sep = ''/'''#10;
+ s := s +
+   '        empty = '''''#10;
+ s := s +
+   '        dot = ''.'''#10;
+ s := s +
+   '        dotdot = ''..'''#10;
+ s := s +
+   '    if path == empty:'#10;
+ s := s +
+   '        return dot'#10;
+ s := s +
+   '    initial_slashes = path.startswith(sep)'#10;
+ s := s +
+   '    if (initial_slashes and path.startswith(sep * 2) and not' +
+   ' path.startswith(sep * 3)):'#10;
+ s := s +
+   '        initial_slashes = 2'#10;
+ s := s +
+   '    comps = path.split(sep)'#10;
+ s := s +
+   '    new_comps = []'#10;
+ s := s +
+   '    for comp in comps:'#10;
+ s := s +
+   '        if comp in (empty, dot):'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if (comp != dotdot or (not initial_slashes and not n' +
+   'ew_comps) or'#10;
+ s := s +
+   '             (new_comps and new_comps[-1] == dotdot)):'#10;
+ s := s +
+   '            new_comps.append(comp)'#10;
+ s := s +
+   '        elif new_comps:'#10;
+ s := s +
+   '            new_comps.pop()'#10;
+ s := s +
+   '    comps = new_comps'#10;
+ s := s +
+   '    path = sep.join(comps)'#10;
+ s := s +
+   '    if initial_slashes:'#10;
+ s := s +
+   '        path = sep * initial_slashes + path'#10;
+ s := s +
+   '    return path or dot'#10;
+ s := s + #10;
+ s := s +
+   'def abspath(path):'#10;
+ s := s +
+   '    path = os.fspath(path)'#10;
+ s := s +
+   '    if not isabs(path):'#10;
+ s := s +
+   '        if isinstance(path, bytes):'#10;
+ s := s +
+   '            cwd = os.getcwdb()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            cwd = os.getcwd()'#10;
+ s := s +
+   '        path = join(cwd, path)'#10;
+ s := s +
+   '    return normpath(path)'#10;
+ s := s + #10;
+ s := s +
+   'def realpath(filename):'#10;
+ s := s +
+   '    filename = os.fspath(filename)'#10;
+ s := s +
+   '    path = abspath(filename)'#10;
+ s := s +
+   '    parts = path.split(''/'')'#10;
+ s := s +
+   '    cur = '''''#10;
+ s := s +
+   '    seen = 0'#10;
+ s := s +
+   '    i = 1'#10;
+ s := s +
+   '    parts = [p for p in parts if p]'#10;
+ s := s +
+   '    result = '''''#10;
+ s := s +
+   '    while parts:'#10;
+ s := s +
+   '        p = parts.pop(0)'#10;
+ s := s +
+   '        if p == ''.'':'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if p == ''..'':'#10;
+ s := s +
+   '            result = dirname(result)'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        nxt = result + ''/'' + p'#10;
+ s := s +
+   '        if islink(nxt):'#10;
+ s := s +
+   '            seen += 1'#10;
+ s := s +
+   '            if seen > 40:'#10;
+ s := s +
+   '                return nxt'#10;
+ s := s +
+   '            target = posix.readlink(nxt)'#10;
+ s := s +
+   '            if target.startswith(''/''):'#10;
+ s := s +
+   '                result = '''''#10;
+ s := s +
+   '            tp = [q for q in target.split(''/'') if q]'#10;
+ s := s +
+   '            parts = tp + parts'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            result = nxt'#10;
+ s := s +
+   '    return result or ''/'''#10;
+ s := s + #10;
+ s := s +
+   'def relpath(path, start=None):'#10;
+ s := s +
+   '    if not path:'#10;
+ s := s +
+   '        raise ValueError("no path specified")'#10;
+ s := s +
+   '    path = os.fspath(path)'#10;
+ s := s +
+   '    if start is None:'#10;
+ s := s +
+   '        start = ''.'''#10;
+ s := s +
+   '    start = os.fspath(start)'#10;
+ s := s +
+   '    start_list = [x for x in abspath(start).split(''/'') if x]'#10;
+ s := s +
+   '    path_list = [x for x in abspath(path).split(''/'') if x]'#10;
+ s := s +
+   '    i = len(commonprefix([start_list, path_list]))'#10;
+ s := s +
+   '    rel_list = [''..''] * (len(start_list) - i) + path_list[i:' +
+   ']'#10;
+ s := s +
+   '    if not rel_list:'#10;
+ s := s +
+   '        return ''.'''#10;
+ s := s +
+   '    return join(*rel_list)'#10;
+ s := s + #10;
+ s := s +
+   'def commonprefix(m):'#10;
+ s := s +
+   '    if not m:'#10;
+ s := s +
+   '        return '''''#10;
+ s := s +
+   '    if not isinstance(m[0], (list, tuple)):'#10;
+ s := s +
+   '        m = tuple(map(os.fspath, m))'#10;
+ s := s +
+   '    s1 = min(m)'#10;
+ s := s +
+   '    s2 = max(m)'#10;
+ s := s +
+   '    for i, c in enumerate(s1):'#10;
+ s := s +
+   '        if c != s2[i]:'#10;
+ s := s +
+   '            return s1[:i]'#10;
+ s := s +
+   '    return s1'#10;
+ s := s + #10;
+ s := s +
+   'def commonpath(paths):'#10;
+ s := s +
+   '    if not paths:'#10;
+ s := s +
+   '        raise ValueError(''commonpath() arg is an empty seque' +
+   'nce'')'#10;
+ s := s +
+   '    paths = tuple(map(os.fspath, paths))'#10;
+ s := s +
+   '    split_paths = [path.split(''/'') for path in paths]'#10;
+ s := s +
+   '    isabs_ = set(p[:1] == '''' for p in split_paths)'#10;
+ s := s +
+   '    if len(isabs_) > 1:'#10;
+ s := s +
+   '        raise ValueError("Can''t mix absolute and relative pa' +
+   'ths")'#10;
+ s := s +
+   '    split_paths = [[c for c in s if c and c != ''.''] for s in' +
+   ' split_paths]'#10;
+ s := s +
+   '    s1 = min(split_paths)'#10;
+ s := s +
+   '    s2 = max(split_paths)'#10;
+ s := s +
+   '    common = s1'#10;
+ s := s +
+   '    for i, c in enumerate(s1):'#10;
+ s := s +
+   '        if c != s2[i]:'#10;
+ s := s +
+   '            common = s1[:i]'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '    prefix = ''/'' if isabs_.pop() else '''''#10;
+ s := s +
+   '    return prefix + ''/''.join(common)'#10;
  s := s + #10;
  Result := s;
 End;
@@ -28010,6 +32378,54 @@ Begin
  Result := s;
 End;
 
+Function Src_stat: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'ST_MODE = 0; ST_INO = 1; ST_DEV = 2; ST_NLINK = 3; ST_UID = ' +
+   '4; ST_GID = 5'#10;
+ s := s +
+   'ST_SIZE = 6; ST_ATIME = 7; ST_MTIME = 8; ST_CTIME = 9'#10;
+ s := s +
+   'S_IFDIR = 0o040000; S_IFCHR = 0o020000; S_IFBLK = 0o060000'#10;
+ s := s +
+   'S_IFREG = 0o100000; S_IFIFO = 0o010000; S_IFLNK = 0o120000; ' +
+   'S_IFSOCK = 0o140000'#10;
+ s := s +
+   'def S_IMODE(mode): return mode & 0o7777'#10;
+ s := s +
+   'def S_IFMT(mode): return mode & 0o170000'#10;
+ s := s +
+   'def S_ISDIR(mode): return S_IFMT(mode) == S_IFDIR'#10;
+ s := s +
+   'def S_ISCHR(mode): return S_IFMT(mode) == S_IFCHR'#10;
+ s := s +
+   'def S_ISBLK(mode): return S_IFMT(mode) == S_IFBLK'#10;
+ s := s +
+   'def S_ISREG(mode): return S_IFMT(mode) == S_IFREG'#10;
+ s := s +
+   'def S_ISFIFO(mode): return S_IFMT(mode) == S_IFIFO'#10;
+ s := s +
+   'def S_ISLNK(mode): return S_IFMT(mode) == S_IFLNK'#10;
+ s := s +
+   'def S_ISSOCK(mode): return S_IFMT(mode) == S_IFSOCK'#10;
+ s := s +
+   'S_ISUID = 0o4000; S_ISGID = 0o2000; S_ISVTX = 0o1000'#10;
+ s := s +
+   'S_IRWXU = 0o700; S_IRUSR = 0o400; S_IWUSR = 0o200; S_IXUSR =' +
+   ' 0o100'#10;
+ s := s +
+   'S_IRWXG = 0o070; S_IRGRP = 0o040; S_IWGRP = 0o020; S_IXGRP =' +
+   ' 0o010'#10;
+ s := s +
+   'S_IRWXO = 0o007; S_IROTH = 0o004; S_IWOTH = 0o002; S_IXOTH =' +
+   ' 0o001'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_string: AnsiString;
 Var
  s: AnsiString;
@@ -28180,22 +32596,3080 @@ Begin
  Result := s;
 End;
 
+Function Src_traceback: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import linecache'#10;
+ s := s +
+   'import collections'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''extract_stack'', ''extract_tb'', ''format_exception''' +
+   ','#10;
+ s := s +
+   '           ''format_exception_only'', ''format_list'', ''format_s' +
+   'tack'','#10;
+ s := s +
+   '           ''format_tb'', ''print_exc'', ''format_exc'', ''print_ex' +
+   'ception'','#10;
+ s := s +
+   '           ''print_last'', ''print_stack'', ''print_tb'', ''clear_f' +
+   'rames'','#10;
+ s := s +
+   '           ''FrameSummary'', ''StackSummary'', ''TracebackExcepti' +
+   'on'','#10;
+ s := s +
+   '           ''walk_stack'', ''walk_tb'']'#10;
+ s := s + #10;
+ s := s +
+   'def print_list(extracted_list, file=None):'#10;
+ s := s +
+   '    if file is None:'#10;
+ s := s +
+   '        file = sys.stderr'#10;
+ s := s +
+   '    for item in StackSummary.from_list(extracted_list).forma' +
+   't():'#10;
+ s := s +
+   '        print(item, file=file, end="")'#10;
+ s := s + #10;
+ s := s +
+   'def format_list(extracted_list):'#10;
+ s := s +
+   '    return StackSummary.from_list(extracted_list).format()'#10;
+ s := s + #10;
+ s := s +
+   'def print_tb(tb, limit=None, file=None):'#10;
+ s := s +
+   '    print_list(extract_tb(tb, limit=limit), file=file)'#10;
+ s := s + #10;
+ s := s +
+   'def format_tb(tb, limit=None):'#10;
+ s := s +
+   '    return extract_tb(tb, limit=limit).format()'#10;
+ s := s + #10;
+ s := s +
+   'def extract_tb(tb, limit=None):'#10;
+ s := s +
+   '    return StackSummary.extract(walk_tb(tb), limit=limit)'#10;
+ s := s + #10;
+ s := s +
+   '_cause_message = ('#10;
+ s := s +
+   '    "\nThe above exception was the direct cause "'#10;
+ s := s +
+   '    "of the following exception:\n\n")'#10;
+ s := s +
+   '_context_message = ('#10;
+ s := s +
+   '    "\nDuring handling of the above exception, "'#10;
+ s := s +
+   '    "another exception occurred:\n\n")'#10;
+ s := s + #10;
+ s := s +
+   'def print_exception(etype, value, tb, limit=None, file=None,' +
+   ' chain=True):'#10;
+ s := s +
+   '    if file is None:'#10;
+ s := s +
+   '        file = sys.stderr'#10;
+ s := s +
+   '    for line in TracebackException('#10;
+ s := s +
+   '            type(value), value, tb, limit=limit).format(chai' +
+   'n=chain):'#10;
+ s := s +
+   '        print(line, file=file, end="")'#10;
+ s := s + #10;
+ s := s +
+   'def format_exception(etype, value, tb, limit=None, chain=Tru' +
+   'e):'#10;
+ s := s +
+   '    return list(TracebackException('#10;
+ s := s +
+   '        type(value), value, tb, limit=limit).format(chain=ch' +
+   'ain))'#10;
+ s := s + #10;
+ s := s +
+   'def format_exception_only(etype, value):'#10;
+ s := s +
+   '    return list(TracebackException(type(value), value, None)' +
+   '.format_exception_only())'#10;
+ s := s + #10;
+ s := s +
+   'def print_exc(limit=None, file=None, chain=True):'#10;
+ s := s +
+   '    print_exception(*sys.exc_info(), limit=limit, file=file,' +
+   ' chain=chain)'#10;
+ s := s + #10;
+ s := s +
+   'def format_exc(limit=None, chain=True):'#10;
+ s := s +
+   '    return "".join(format_exception(*sys.exc_info(), limit=l' +
+   'imit, chain=chain))'#10;
+ s := s + #10;
+ s := s +
+   'def print_last(limit=None, file=None, chain=True):'#10;
+ s := s +
+   '    if not hasattr(sys, "last_type"):'#10;
+ s := s +
+   '        raise ValueError("no last exception")'#10;
+ s := s +
+   '    print_exception(sys.last_type, sys.last_value, sys.last_' +
+   'traceback,'#10;
+ s := s +
+   '                    limit, file, chain)'#10;
+ s := s + #10;
+ s := s +
+   'def print_stack(f=None, limit=None, file=None):'#10;
+ s := s +
+   '    if f is None:'#10;
+ s := s +
+   '        f = sys._getframe(1)'#10;
+ s := s +
+   '    print_list(extract_stack(f, limit=limit), file=file)'#10;
+ s := s + #10;
+ s := s +
+   'def format_stack(f=None, limit=None):'#10;
+ s := s +
+   '    if f is None:'#10;
+ s := s +
+   '        f = sys._getframe(1)'#10;
+ s := s +
+   '    return format_list(extract_stack(f, limit=limit))'#10;
+ s := s + #10;
+ s := s +
+   'def extract_stack(f=None, limit=None):'#10;
+ s := s +
+   '    if f is None:'#10;
+ s := s +
+   '        f = sys._getframe(1)'#10;
+ s := s +
+   '    stack = StackSummary.extract(walk_stack(f), limit=limit)'#10;
+ s := s +
+   '    stack.reverse()'#10;
+ s := s +
+   '    return stack'#10;
+ s := s + #10;
+ s := s +
+   'def clear_frames(tb):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class FrameSummary:'#10;
+ s := s +
+   '    def __init__(self, filename, lineno, name, *, lookup_lin' +
+   'e=True,'#10;
+ s := s +
+   '                 locals=None, line=None):'#10;
+ s := s +
+   '        self.filename = filename'#10;
+ s := s +
+   '        self.lineno = lineno'#10;
+ s := s +
+   '        self.name = name'#10;
+ s := s +
+   '        self._line = line'#10;
+ s := s +
+   '        if lookup_line:'#10;
+ s := s +
+   '            self.line'#10;
+ s := s +
+   '        self.locals = {k: repr(v) for k, v in locals.items()' +
+   '} if locals else None'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if isinstance(other, FrameSummary):'#10;
+ s := s +
+   '            return (self.filename == other.filename and'#10;
+ s := s +
+   '                    self.lineno == other.lineno and'#10;
+ s := s +
+   '                    self.name == other.name and'#10;
+ s := s +
+   '                    self.locals == other.locals)'#10;
+ s := s +
+   '        if isinstance(other, tuple):'#10;
+ s := s +
+   '            return (self.filename, self.lineno, self.name, s' +
+   'elf.line) == other'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(self, pos):'#10;
+ s := s +
+   '        return (self.filename, self.lineno, self.name, self.' +
+   'line)[pos]'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return iter([self.filename, self.lineno, self.name, ' +
+   'self.line])'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return "<FrameSummary file {filename}, line {lineno}' +
+   ' in {name}>".format('#10;
+ s := s +
+   '            filename=self.filename, lineno=self.lineno, name' +
+   '=self.name)'#10;
+ s := s + #10;
+ s := s +
+   '    def __len__(self):'#10;
+ s := s +
+   '        return 4'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def line(self):'#10;
+ s := s +
+   '        if self._line is None:'#10;
+ s := s +
+   '            self._line = linecache.getline(self.filename, se' +
+   'lf.lineno).strip()'#10;
+ s := s +
+   '        return self._line'#10;
+ s := s + #10;
+ s := s +
+   'def walk_stack(f):'#10;
+ s := s +
+   '    while f is not None:'#10;
+ s := s +
+   '        yield f, f.f_lineno'#10;
+ s := s +
+   '        f = f.f_back'#10;
+ s := s + #10;
+ s := s +
+   'def walk_tb(tb):'#10;
+ s := s +
+   '    while tb is not None:'#10;
+ s := s +
+   '        yield tb.tb_frame, tb.tb_lineno'#10;
+ s := s +
+   '        tb = tb.tb_next'#10;
+ s := s + #10;
+ s := s +
+   'class StackSummary(list):'#10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def extract(klass, frame_gen, *, limit=None, lookup_line' +
+   's=True,'#10;
+ s := s +
+   '                capture_locals=False):'#10;
+ s := s +
+   '        if limit is None:'#10;
+ s := s +
+   '            limit = getattr(sys, ''tracebacklimit'', None)'#10;
+ s := s +
+   '            if limit is not None and limit < 0:'#10;
+ s := s +
+   '                limit = 0'#10;
+ s := s +
+   '        if limit is not None:'#10;
+ s := s +
+   '            if limit >= 0:'#10;
+ s := s +
+   '                frame_gen = itertools_islice(frame_gen, limi' +
+   't)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                frame_gen = collections.deque(frame_gen, max' +
+   'len=-limit)'#10;
+ s := s +
+   '        result = klass()'#10;
+ s := s +
+   '        for f, lineno in frame_gen:'#10;
+ s := s +
+   '            co = f.f_code'#10;
+ s := s +
+   '            filename = co.co_filename'#10;
+ s := s +
+   '            name = co.co_name'#10;
+ s := s +
+   '            fline = None'#10;
+ s := s +
+   '            fl = getattr(f, ''_line'', None)'#10;
+ s := s +
+   '            result.append(FrameSummary(filename, lineno, nam' +
+   'e,'#10;
+ s := s +
+   '                                       lookup_line=False, li' +
+   'ne=fl))'#10;
+ s := s +
+   '        for f in result:'#10;
+ s := s +
+   '            if f._line is None:'#10;
+ s := s +
+   '                f.line'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def from_list(klass, a_list):'#10;
+ s := s +
+   '        result = StackSummary()'#10;
+ s := s +
+   '        for frame in a_list:'#10;
+ s := s +
+   '            if isinstance(frame, FrameSummary):'#10;
+ s := s +
+   '                result.append(frame)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                filename, lineno, name, line = frame'#10;
+ s := s +
+   '                result.append(FrameSummary(filename, lineno,' +
+   ' name, line=line))'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def format(self):'#10;
+ s := s +
+   '        result = []'#10;
+ s := s +
+   '        last_file = None'#10;
+ s := s +
+   '        last_line = None'#10;
+ s := s +
+   '        last_name = None'#10;
+ s := s +
+   '        count = 0'#10;
+ s := s +
+   '        for frame in self:'#10;
+ s := s +
+   '            if (last_file is None or last_file != frame.file' +
+   'name or'#10;
+ s := s +
+   '                last_line is None or last_line != frame.line' +
+   'no or'#10;
+ s := s +
+   '                last_name is None or last_name != frame.name' +
+   '):'#10;
+ s := s +
+   '                if count > 3:'#10;
+ s := s +
+   '                    count -= 3'#10;
+ s := s +
+   '                    result.append(''  [Previous line repeated' +
+   ' {count} more '''#10;
+ s := s +
+   '                                  ''time{s}]\n''.format(count=' +
+   'count,'#10;
+ s := s +
+   '                                  s=''s'' if count > 1 else ''''' +
+   '))'#10;
+ s := s +
+   '                last_file = frame.filename'#10;
+ s := s +
+   '                last_line = frame.lineno'#10;
+ s := s +
+   '                last_name = frame.name'#10;
+ s := s +
+   '                count = 0'#10;
+ s := s +
+   '            count += 1'#10;
+ s := s +
+   '            if count > 3:'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            row = []'#10;
+ s := s +
+   '            row.append(''  File "{}", line {}, in {}\n''.forma' +
+   't('#10;
+ s := s +
+   '                frame.filename, frame.lineno, frame.name))'#10;
+ s := s +
+   '            if frame.line:'#10;
+ s := s +
+   '                row.append(''    {}\n''.format(frame.line.stri' +
+   'p()))'#10;
+ s := s +
+   '            if frame.locals:'#10;
+ s := s +
+   '                for name, value in sorted(frame.locals.items' +
+   '()):'#10;
+ s := s +
+   '                    row.append(''    {name} = {value}\n''.form' +
+   'at(name=name, value=value))'#10;
+ s := s +
+   '            result.append(''''.join(row))'#10;
+ s := s +
+   '        if count > 3:'#10;
+ s := s +
+   '            count -= 3'#10;
+ s := s +
+   '            result.append(''  [Previous line repeated {count}' +
+   ' more '''#10;
+ s := s +
+   '                          ''time{s}]\n''.format(count=count,'#10;
+ s := s +
+   '                          s=''s'' if count > 1 else ''''))'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   'def itertools_islice(it, n):'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    for x in it:'#10;
+ s := s +
+   '        if i >= n:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        yield x'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s + #10;
+ s := s +
+   '_some_str = lambda value: _safe_str(value)'#10;
+ s := s + #10;
+ s := s +
+   'def _safe_str(value):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        return str(value)'#10;
+ s := s +
+   '    except:'#10;
+ s := s +
+   '        return ''<unprintable %s object>'' % type(value).__nam' +
+   'e__'#10;
+ s := s + #10;
+ s := s +
+   'class TracebackException:'#10;
+ s := s +
+   '    def __init__(self, exc_type, exc_value, exc_traceback, *' +
+   ', limit=None,'#10;
+ s := s +
+   '                 lookup_lines=True, capture_locals=False, _s' +
+   'een=None):'#10;
+ s := s +
+   '        if _seen is None:'#10;
+ s := s +
+   '            _seen = set()'#10;
+ s := s +
+   '        _seen.add(id(exc_value))'#10;
+ s := s +
+   '        if (exc_value and exc_value.__cause__ is not None'#10;
+ s := s +
+   '            and id(exc_value.__cause__) not in _seen):'#10;
+ s := s +
+   '            cause = TracebackException('#10;
+ s := s +
+   '                type(exc_value.__cause__), exc_value.__cause' +
+   '__,'#10;
+ s := s +
+   '                exc_value.__cause__.__traceback__, limit=lim' +
+   'it,'#10;
+ s := s +
+   '                lookup_lines=False, _seen=_seen)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            cause = None'#10;
+ s := s +
+   '        if (exc_value and exc_value.__context__ is not None'#10;
+ s := s +
+   '            and id(exc_value.__context__) not in _seen):'#10;
+ s := s +
+   '            context = TracebackException('#10;
+ s := s +
+   '                type(exc_value.__context__), exc_value.__con' +
+   'text__,'#10;
+ s := s +
+   '                exc_value.__context__.__traceback__, limit=l' +
+   'imit,'#10;
+ s := s +
+   '                lookup_lines=False, _seen=_seen)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            context = None'#10;
+ s := s +
+   '        self.exc_traceback = exc_traceback'#10;
+ s := s +
+   '        self.__cause__ = cause'#10;
+ s := s +
+   '        self.__context__ = context'#10;
+ s := s +
+   '        self.__suppress_context__ = \'#10;
+ s := s +
+   '            exc_value.__suppress_context__ if exc_value else' +
+   ' False'#10;
+ s := s +
+   '        self.stack = StackSummary.extract('#10;
+ s := s +
+   '            walk_tb(exc_traceback), limit=limit, lookup_line' +
+   's=lookup_lines)'#10;
+ s := s +
+   '        self.exc_type = exc_type'#10;
+ s := s +
+   '        self._str = _some_str(exc_value)'#10;
+ s := s +
+   '        if exc_type and issubclass(exc_type, SyntaxError):'#10;
+ s := s +
+   '            self.filename = exc_value.filename'#10;
+ s := s +
+   '            self.lineno = str(exc_value.lineno)'#10;
+ s := s +
+   '            self.text = exc_value.text'#10;
+ s := s +
+   '            self.offset = exc_value.offset'#10;
+ s := s +
+   '            self.msg = exc_value.msg'#10;
+ s := s +
+   '            self.print_file_and_line = None'#10;
+ s := s + #10;
+ s := s +
+   '    @classmethod'#10;
+ s := s +
+   '    def from_exception(cls, exc, *args, **kwargs):'#10;
+ s := s +
+   '        return cls(type(exc), exc, exc.__traceback__, *args,' +
+   ' **kwargs)'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        return self.__dict__ == other.__dict__'#10;
+ s := s + #10;
+ s := s +
+   '    def format_exception_only(self):'#10;
+ s := s +
+   '        if self.exc_type is None:'#10;
+ s := s +
+   '            yield _format_final_exc_line(None, self._str)'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        stype = self.exc_type.__qualname__'#10;
+ s := s +
+   '        smod = self.exc_type.__module__'#10;
+ s := s +
+   '        if smod not in ("__main__", "builtins"):'#10;
+ s := s +
+   '            stype = smod + ''.'' + stype'#10;
+ s := s +
+   '        if not issubclass(self.exc_type, SyntaxError):'#10;
+ s := s +
+   '            yield _format_final_exc_line(stype, self._str)'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        filename = self.filename or "<string>"'#10;
+ s := s +
+   '        lineno = str(self.lineno) or ''?'''#10;
+ s := s +
+   '        yield ''  File "{}", line {}\n''.format(filename, line' +
+   'no)'#10;
+ s := s +
+   '        badline = self.text'#10;
+ s := s +
+   '        offset = self.offset'#10;
+ s := s +
+   '        if badline is not None:'#10;
+ s := s +
+   '            yield ''    {}\n''.format(badline.strip())'#10;
+ s := s +
+   '            if offset is not None:'#10;
+ s := s +
+   '                caretspace = badline.rstrip(''\n'')'#10;
+ s := s +
+   '                offset = min(len(caretspace), offset) - 1'#10;
+ s := s +
+   '                caretspace = caretspace[:offset].lstrip()'#10;
+ s := s +
+   '                caretspace = ((c.isspace() and c or '' '') for' +
+   ' c in caretspace)'#10;
+ s := s +
+   '                yield ''    {}^\n''.format(''''.join(caretspace)' +
+   ')'#10;
+ s := s +
+   '        msg = self.msg or "<no detail available>"'#10;
+ s := s +
+   '        yield "{}: {}\n".format(stype, msg)'#10;
+ s := s + #10;
+ s := s +
+   '    def format(self, *, chain=True):'#10;
+ s := s +
+   '        if chain:'#10;
+ s := s +
+   '            if self.__cause__ is not None:'#10;
+ s := s +
+   '                yield from self.__cause__.format(chain=chain' +
+   ')'#10;
+ s := s +
+   '                yield _cause_message'#10;
+ s := s +
+   '            elif (self.__context__ is not None and'#10;
+ s := s +
+   '                  not self.__suppress_context__):'#10;
+ s := s +
+   '                yield from self.__context__.format(chain=cha' +
+   'in)'#10;
+ s := s +
+   '                yield _context_message'#10;
+ s := s +
+   '        if self.exc_traceback is not None:'#10;
+ s := s +
+   '            yield ''Traceback (most recent call last):\n'''#10;
+ s := s +
+   '        yield from self.stack.format()'#10;
+ s := s +
+   '        yield from self.format_exception_only()'#10;
+ s := s + #10;
+ s := s +
+   'def _format_final_exc_line(etype, value):'#10;
+ s := s +
+   '    valuestr = _some_str(value)'#10;
+ s := s +
+   '    if value is None or not valuestr:'#10;
+ s := s +
+   '        line = "%s\n" % etype'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        line = "%s: %s\n" % (etype, valuestr)'#10;
+ s := s +
+   '    return line'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_types: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s + #10;
+ s := s +
+   'def _f(): pass'#10;
+ s := s +
+   'FunctionType = type(_f)'#10;
+ s := s +
+   'LambdaType = type(lambda: None)'#10;
+ s := s +
+   'CodeType = type(_f.__code__)'#10;
+ s := s +
+   'def _g():'#10;
+ s := s +
+   '    yield 1'#10;
+ s := s +
+   'GeneratorType = type(_g())'#10;
+ s := s +
+   'class _C:'#10;
+ s := s +
+   '    def _m(self): pass'#10;
+ s := s +
+   'MethodType = type(_C()._m)'#10;
+ s := s +
+   'BuiltinFunctionType = type(len)'#10;
+ s := s +
+   'BuiltinMethodType = type([].append)'#10;
+ s := s +
+   'ModuleType = type(sys)'#10;
+ s := s +
+   'TracebackType = None'#10;
+ s := s +
+   'FrameType = None'#10;
+ s := s +
+   'try:'#10;
+ s := s +
+   '    raise TypeError'#10;
+ s := s +
+   'except TypeError:'#10;
+ s := s +
+   '    _tb = sys.exc_info()[2]'#10;
+ s := s +
+   '    TracebackType = type(_tb)'#10;
+ s := s +
+   '    FrameType = type(_tb.tb_frame)'#10;
+ s := s +
+   '    del _tb'#10;
+ s := s +
+   'CellType = type(lambda: None)'#10;
+ s := s +
+   'NoneType = type(None)'#10;
+ s := s +
+   'EllipsisType = type(Ellipsis)'#10;
+ s := s +
+   'NotImplementedType = type(NotImplemented)'#10;
+ s := s +
+   'MethodWrapperType = BuiltinMethodType'#10;
+ s := s +
+   'WrapperDescriptorType = BuiltinMethodType'#10;
+ s := s +
+   'MethodDescriptorType = BuiltinMethodType'#10;
+ s := s +
+   'ClassMethodDescriptorType = BuiltinMethodType'#10;
+ s := s +
+   'GetSetDescriptorType = type(_C.__dict__) if False else prope' +
+   'rty'#10;
+ s := s +
+   'MemberDescriptorType = property'#10;
+ s := s +
+   'CoroutineType = None'#10;
+ s := s +
+   'AsyncGeneratorType = None'#10;
+ s := s + #10;
+ s := s +
+   'class SimpleNamespace:'#10;
+ s := s +
+   '    def __init__(self, **kwargs):'#10;
+ s := s +
+   '        self.__dict__.update(kwargs)'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        items = ("{}={!r}".format(k, v) for k, v in self.__d' +
+   'ict__.items())'#10;
+ s := s +
+   '        name = ''namespace'' if type(self) is SimpleNamespace ' +
+   'else type(self).__name__'#10;
+ s := s +
+   '        return "{}({})".format(name, ", ".join(items))'#10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if isinstance(self, SimpleNamespace) and isinstance(' +
+   'other, SimpleNamespace):'#10;
+ s := s +
+   '            return self.__dict__ == other.__dict__'#10;
+ s := s +
+   '        return NotImplemented'#10;
+ s := s + #10;
+ s := s +
+   'class MappingProxyType:'#10;
+ s := s +
+   '    def __init__(self, mapping):'#10;
+ s := s +
+   '        self._m = mapping'#10;
+ s := s +
+   '    def __getitem__(self, k): return self._m[k]'#10;
+ s := s +
+   '    def __iter__(self): return iter(self._m)'#10;
+ s := s +
+   '    def __len__(self): return len(self._m)'#10;
+ s := s +
+   '    def __contains__(self, k): return k in self._m'#10;
+ s := s +
+   '    def get(self, k, d=None): return self._m.get(k, d)'#10;
+ s := s +
+   '    def keys(self): return self._m.keys()'#10;
+ s := s +
+   '    def values(self): return self._m.values()'#10;
+ s := s +
+   '    def items(self): return self._m.items()'#10;
+ s := s +
+   '    def copy(self): return self._m.copy()'#10;
+ s := s +
+   '    def __repr__(self): return ''mappingproxy(%r)'' % (self._m' +
+   ',)'#10;
+ s := s +
+   '    def __eq__(self, o): return self._m == o'#10;
+ s := s + #10;
+ s := s +
+   'def new_class(name, bases=(), kwds=None, exec_body=None):'#10;
+ s := s +
+   '    resolved_bases = resolve_bases(bases)'#10;
+ s := s +
+   '    meta, ns, kwds = prepare_class(name, resolved_bases, kwd' +
+   's)'#10;
+ s := s +
+   '    if exec_body is not None:'#10;
+ s := s +
+   '        exec_body(ns)'#10;
+ s := s +
+   '    return meta(name, resolved_bases, ns, **kwds)'#10;
+ s := s + #10;
+ s := s +
+   'def resolve_bases(bases):'#10;
+ s := s +
+   '    return tuple(bases)'#10;
+ s := s + #10;
+ s := s +
+   'def prepare_class(name, bases=(), kwds=None):'#10;
+ s := s +
+   '    if kwds is None:'#10;
+ s := s +
+   '        kwds = {}'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        kwds = dict(kwds)'#10;
+ s := s +
+   '    if ''metaclass'' in kwds:'#10;
+ s := s +
+   '        meta = kwds.pop(''metaclass'')'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if bases:'#10;
+ s := s +
+   '            meta = type(bases[0])'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            meta = type'#10;
+ s := s +
+   '    if isinstance(meta, type):'#10;
+ s := s +
+   '        for b in bases:'#10;
+ s := s +
+   '            if issubclass(type(b), meta):'#10;
+ s := s +
+   '                meta = type(b)'#10;
+ s := s +
+   '    if hasattr(meta, ''__prepare__''):'#10;
+ s := s +
+   '        ns = meta.__prepare__(name, bases, **kwds)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        ns = {}'#10;
+ s := s +
+   '    return meta, ns, kwds'#10;
+ s := s + #10;
+ s := s +
+   'class DynamicClassAttribute:'#10;
+ s := s +
+   '    def __init__(self, fget=None, fset=None, fdel=None, doc=' +
+   'None):'#10;
+ s := s +
+   '        self.fget = fget'#10;
+ s := s +
+   '        self.fset = fset'#10;
+ s := s +
+   '        self.fdel = fdel'#10;
+ s := s +
+   '        self.__doc__ = doc or (fget.__doc__ if fget else Non' +
+   'e)'#10;
+ s := s +
+   '        self.overwrite_doc = doc is None'#10;
+ s := s +
+   '        self.__isabstractmethod__ = bool(getattr(fget, ''__is' +
+   'abstractmethod__'', False))'#10;
+ s := s +
+   '    def __get__(self, instance, ownerclass=None):'#10;
+ s := s +
+   '        if instance is None:'#10;
+ s := s +
+   '            if self.__isabstractmethod__:'#10;
+ s := s +
+   '                return self'#10;
+ s := s +
+   '            raise AttributeError()'#10;
+ s := s +
+   '        elif self.fget is None:'#10;
+ s := s +
+   '            raise AttributeError("unreadable attribute")'#10;
+ s := s +
+   '        return self.fget(instance)'#10;
+ s := s +
+   '    def __set__(self, instance, value):'#10;
+ s := s +
+   '        if self.fset is None:'#10;
+ s := s +
+   '            raise AttributeError("can''t set attribute")'#10;
+ s := s +
+   '        self.fset(instance, value)'#10;
+ s := s +
+   '    def __delete__(self, instance):'#10;
+ s := s +
+   '        if self.fdel is None:'#10;
+ s := s +
+   '            raise AttributeError("can''t delete attribute")'#10;
+ s := s +
+   '        self.fdel(instance)'#10;
+ s := s +
+   '    def getter(self, fget):'#10;
+ s := s +
+   '        return type(self)(fget, self.fset, self.fdel, self._' +
+   '_doc__)'#10;
+ s := s +
+   '    def setter(self, fset):'#10;
+ s := s +
+   '        return type(self)(self.fget, fset, self.fdel, self._' +
+   '_doc__)'#10;
+ s := s +
+   '    def deleter(self, fdel):'#10;
+ s := s +
+   '        return type(self)(self.fget, self.fset, fdel, self._' +
+   '_doc__)'#10;
+ s := s + #10;
+ s := s +
+   'def coroutine(func):'#10;
+ s := s +
+   '    return func'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [n for n in globals() if n[:1] != ''_'']'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_typing: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import collections'#10;
+ s := s +
+   'import collections.abc'#10;
+ s := s +
+   'import functools'#10;
+ s := s +
+   'import operator'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import types'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ['#10;
+ s := s +
+   '    ''Any'', ''Callable'', ''ClassVar'', ''Final'', ''ForwardRef'', ''G' +
+   'eneric'', ''Literal'','#10;
+ s := s +
+   '    ''Optional'', ''Tuple'', ''Type'', ''TypeVar'', ''Union'', ''Abstra' +
+   'ctSet'','#10;
+ s := s +
+   '    ''ByteString'', ''Container'', ''ContextManager'', ''Hashable'',' +
+   ' ''ItemsView'','#10;
+ s := s +
+   '    ''Iterable'', ''Iterator'', ''KeysView'', ''Mapping'', ''MappingV' +
+   'iew'','#10;
+ s := s +
+   '    ''MutableMapping'', ''MutableSequence'', ''MutableSet'', ''Sequ' +
+   'ence'', ''Sized'','#10;
+ s := s +
+   '    ''ValuesView'', ''Reversible'', ''SupportsAbs'', ''SupportsByte' +
+   's'','#10;
+ s := s +
+   '    ''SupportsComplex'', ''SupportsFloat'', ''SupportsInt'', ''Supp' +
+   'ortsRound'','#10;
+ s := s +
+   '    ''Counter'', ''Deque'', ''Dict'', ''DefaultDict'', ''List'', ''Set''' +
+   ', ''FrozenSet'','#10;
+ s := s +
+   '    ''NamedTuple'', ''TypedDict'', ''Generator'', ''AnyStr'', ''cast''' +
+   ', ''final'','#10;
+ s := s +
+   '    ''get_type_hints'', ''NewType'', ''no_type_check'', ''no_type_c' +
+   'heck_decorator'','#10;
+ s := s +
+   '    ''NoReturn'', ''overload'', ''runtime_checkable'', ''Text'', ''TY' +
+   'PE_CHECKING'','#10;
+ s := s +
+   '    ''Protocol'', ''OrderedDict'', ''ChainMap'', ''Collection'', ''Pa' +
+   'ttern'', ''Match'','#10;
+ s := s +
+   '    ''IO'', ''TextIO'', ''BinaryIO'', ''get_origin'', ''get_args'', ''A' +
+   'waitable'','#10;
+ s := s +
+   '    ''Coroutine'', ''AsyncIterable'', ''AsyncIterator'','#10;
+ s := s +
+   ']'#10;
+ s := s + #10;
+ s := s +
+   'TYPE_CHECKING = False'#10;
+ s := s + #10;
+ s := s +
+   'def _type_repr(obj):'#10;
+ s := s +
+   '    if isinstance(obj, type):'#10;
+ s := s +
+   '        if obj.__module__ == ''builtins'':'#10;
+ s := s +
+   '            return obj.__qualname__'#10;
+ s := s +
+   '        return ''%s.%s'' % (obj.__module__, obj.__qualname__)'#10;
+ s := s +
+   '    if obj is ...:'#10;
+ s := s +
+   '        return ''...'''#10;
+ s := s +
+   '    if isinstance(obj, types.FunctionType):'#10;
+ s := s +
+   '        return obj.__name__'#10;
+ s := s +
+   '    return repr(obj)'#10;
+ s := s + #10;
+ s := s +
+   'class _Final:'#10;
+ s := s +
+   '    __slots__ = (''__weakref__'',)'#10;
+ s := s + #10;
+ s := s +
+   'class _Immutable:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class _SpecialForm(_Final, _Immutable):'#10;
+ s := s +
+   '    def __init__(self, name, doc):'#10;
+ s := s +
+   '        self._name = name'#10;
+ s := s +
+   '        self._doc = doc'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, _SpecialForm):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self._name == other._name'#10;
+ s := s + #10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        return hash((self._name,))'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''typing.'' + self._name'#10;
+ s := s + #10;
+ s := s +
+   '    def __reduce__(self):'#10;
+ s := s +
+   '        return self._name'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, *args, **kwds):'#10;
+ s := s +
+   '        raise TypeError("Cannot instantiate %r" % self)'#10;
+ s := s + #10;
+ s := s +
+   '    def __instancecheck__(self, obj):'#10;
+ s := s +
+   '        raise TypeError("%s cannot be used with isinstance()' +
+   '" % self)'#10;
+ s := s + #10;
+ s := s +
+   '    def __subclasscheck__(self, cls):'#10;
+ s := s +
+   '        raise TypeError("%s cannot be used with issubclass()' +
+   '" % self)'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(self, parameters):'#10;
+ s := s +
+   '        if self._name == ''ClassVar'':'#10;
+ s := s +
+   '            item = _type_check(parameters, ''ClassVar accepts' +
+   ' only single type.'')'#10;
+ s := s +
+   '            return _GenericAlias(self, (item,))'#10;
+ s := s +
+   '        if self._name == ''Final'':'#10;
+ s := s +
+   '            item = _type_check(parameters, ''Final accepts on' +
+   'ly single type.'')'#10;
+ s := s +
+   '            return _GenericAlias(self, (item,))'#10;
+ s := s +
+   '        if self._name == ''Union'':'#10;
+ s := s +
+   '            if parameters == ():'#10;
+ s := s +
+   '                raise TypeError("Cannot take a Union of no t' +
+   'ypes.")'#10;
+ s := s +
+   '            if not isinstance(parameters, tuple):'#10;
+ s := s +
+   '                parameters = (parameters,)'#10;
+ s := s +
+   '            msg = "Union[arg, ...]: each arg must be a type.' +
+   '"'#10;
+ s := s +
+   '            parameters = tuple(_type_check(p, msg) for p in ' +
+   'parameters)'#10;
+ s := s +
+   '            parameters = _remove_dups_flatten(parameters)'#10;
+ s := s +
+   '            if len(parameters) == 1:'#10;
+ s := s +
+   '                return parameters[0]'#10;
+ s := s +
+   '            return _GenericAlias(self, parameters)'#10;
+ s := s +
+   '        if self._name == ''Optional'':'#10;
+ s := s +
+   '            arg = _type_check(parameters, "Optional[t] requi' +
+   'res a single type.")'#10;
+ s := s +
+   '            return Union[arg, type(None)]'#10;
+ s := s +
+   '        if self._name == ''Literal'':'#10;
+ s := s +
+   '            return _GenericAlias(self, parameters)'#10;
+ s := s +
+   '        raise TypeError(str(self) + '' is not subscriptable'')'#10;
+ s := s + #10;
+ s := s +
+   'Any = _SpecialForm(''Any'', doc="Special type indicating an un' +
+   'constrained type.")'#10;
+ s := s +
+   'NoReturn = _SpecialForm(''NoReturn'', doc="Special type indica' +
+   'ting functions that never return.")'#10;
+ s := s +
+   'ClassVar = _SpecialForm(''ClassVar'', doc="Special type constr' +
+   'uct to mark class variables.")'#10;
+ s := s +
+   'Final = _SpecialForm(''Final'', doc="A special typing construc' +
+   't to indicate that a name cannot be re-assigned.")'#10;
+ s := s +
+   'Union = _SpecialForm(''Union'', doc="Union type.")'#10;
+ s := s +
+   'Optional = _SpecialForm(''Optional'', doc="Optional type.")'#10;
+ s := s +
+   'Literal = _SpecialForm(''Literal'', doc="Literal type.")'#10;
+ s := s + #10;
+ s := s +
+   'def _type_check(arg, msg, is_argument=True):'#10;
+ s := s +
+   '    if arg is None:'#10;
+ s := s +
+   '        return type(None)'#10;
+ s := s +
+   '    if isinstance(arg, str):'#10;
+ s := s +
+   '        return ForwardRef(arg)'#10;
+ s := s +
+   '    return arg'#10;
+ s := s + #10;
+ s := s +
+   'def _remove_dups_flatten(parameters):'#10;
+ s := s +
+   '    params = []'#10;
+ s := s +
+   '    for p in parameters:'#10;
+ s := s +
+   '        if isinstance(p, _GenericAlias) and p.__origin__ is ' +
+   'Union:'#10;
+ s := s +
+   '            params.extend(p.__args__)'#10;
+ s := s +
+   '        elif isinstance(p, tuple) and len(p) > 0 and p[0] is' +
+   ' Union:'#10;
+ s := s +
+   '            params.extend(p[1:])'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            params.append(p)'#10;
+ s := s +
+   '    all_params = set(params)'#10;
+ s := s +
+   '    if len(all_params) < len(params):'#10;
+ s := s +
+   '        new_params = []'#10;
+ s := s +
+   '        for t in params:'#10;
+ s := s +
+   '            if t in all_params:'#10;
+ s := s +
+   '                new_params.append(t)'#10;
+ s := s +
+   '                all_params.remove(t)'#10;
+ s := s +
+   '        params = new_params'#10;
+ s := s +
+   '    return tuple(params)'#10;
+ s := s + #10;
+ s := s +
+   'class ForwardRef(_Final):'#10;
+ s := s +
+   '    def __init__(self, arg, is_argument=True):'#10;
+ s := s +
+   '        if not isinstance(arg, str):'#10;
+ s := s +
+   '            raise TypeError("Forward reference must be a str' +
+   'ing -- got %r" % (arg,))'#10;
+ s := s +
+   '        self.__forward_arg__ = arg'#10;
+ s := s +
+   '        self.__forward_evaluated__ = False'#10;
+ s := s +
+   '        self.__forward_value__ = None'#10;
+ s := s +
+   '        self.__forward_is_argument__ = is_argument'#10;
+ s := s + #10;
+ s := s +
+   '    def _evaluate(self, globalns, localns):'#10;
+ s := s +
+   '        if not self.__forward_evaluated__ or localns is not ' +
+   'globalns:'#10;
+ s := s +
+   '            if globalns is None and localns is None:'#10;
+ s := s +
+   '                globalns = localns = {}'#10;
+ s := s +
+   '            elif globalns is None:'#10;
+ s := s +
+   '                globalns = localns'#10;
+ s := s +
+   '            elif localns is None:'#10;
+ s := s +
+   '                localns = globalns'#10;
+ s := s +
+   '            self.__forward_value__ = _type_check('#10;
+ s := s +
+   '                eval(self.__forward_arg__, globalns, localns' +
+   '),'#10;
+ s := s +
+   '                "Forward references must evaluate to types."' +
+   ','#10;
+ s := s +
+   '                is_argument=self.__forward_is_argument__)'#10;
+ s := s +
+   '            self.__forward_evaluated__ = True'#10;
+ s := s +
+   '        return self.__forward_value__'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, ForwardRef):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        return self.__forward_arg__ == other.__forward_arg__'#10;
+ s := s + #10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        return hash(self.__forward_arg__)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''ForwardRef(%r)'' % (self.__forward_arg__,)'#10;
+ s := s + #10;
+ s := s +
+   'class TypeVar(_Final, _Immutable):'#10;
+ s := s +
+   '    def __init__(self, name, *constraints, bound=None,'#10;
+ s := s +
+   '                 covariant=False, contravariant=False):'#10;
+ s := s +
+   '        self.__name__ = name'#10;
+ s := s +
+   '        if covariant and contravariant:'#10;
+ s := s +
+   '            raise ValueError("Bivariant types are not suppor' +
+   'ted.")'#10;
+ s := s +
+   '        self.__covariant__ = bool(covariant)'#10;
+ s := s +
+   '        self.__contravariant__ = bool(contravariant)'#10;
+ s := s +
+   '        if constraints and bound is not None:'#10;
+ s := s +
+   '            raise TypeError("Constraints cannot be combined ' +
+   'with bound=...")'#10;
+ s := s +
+   '        if constraints and len(constraints) == 1:'#10;
+ s := s +
+   '            raise TypeError("A single constraint is not allo' +
+   'wed")'#10;
+ s := s +
+   '        self.__constraints__ = tuple(_type_check(t, "TypeVar' +
+   '(name, constraint, ...): constraints must be types.") for t ' +
+   'in constraints)'#10;
+ s := s +
+   '        if bound:'#10;
+ s := s +
+   '            self.__bound__ = _type_check(bound, "Bound must ' +
+   'be a type.")'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self.__bound__ = None'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            def_mod = sys._getframe(1).f_globals.get(''__name' +
+   '__'', ''__main__'')'#10;
+ s := s +
+   '        except (AttributeError, ValueError):'#10;
+ s := s +
+   '            def_mod = None'#10;
+ s := s +
+   '        if def_mod != ''typing'':'#10;
+ s := s +
+   '            self.__module__ = def_mod'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if self.__covariant__:'#10;
+ s := s +
+   '            prefix = ''+'''#10;
+ s := s +
+   '        elif self.__contravariant__:'#10;
+ s := s +
+   '            prefix = ''-'''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            prefix = ''~'''#10;
+ s := s +
+   '        return prefix + self.__name__'#10;
+ s := s + #10;
+ s := s +
+   '    def __reduce__(self):'#10;
+ s := s +
+   '        return self.__name__'#10;
+ s := s + #10;
+ s := s +
+   'T = TypeVar(''T'')'#10;
+ s := s +
+   'KT = TypeVar(''KT'')'#10;
+ s := s +
+   'VT = TypeVar(''VT'')'#10;
+ s := s +
+   'T_co = TypeVar(''T_co'', covariant=True)'#10;
+ s := s +
+   'V_co = TypeVar(''V_co'', covariant=True)'#10;
+ s := s +
+   'VT_co = TypeVar(''VT_co'', covariant=True)'#10;
+ s := s +
+   'T_contra = TypeVar(''T_contra'', contravariant=True)'#10;
+ s := s +
+   'CT_co = TypeVar(''CT_co'', covariant=True, bound=type)'#10;
+ s := s +
+   'AnyStr = TypeVar(''AnyStr'', bytes, str)'#10;
+ s := s + #10;
+ s := s +
+   'def _collect_type_vars(types_):'#10;
+ s := s +
+   '    tvars = []'#10;
+ s := s +
+   '    for t in types_:'#10;
+ s := s +
+   '        if isinstance(t, TypeVar) and t not in tvars:'#10;
+ s := s +
+   '            tvars.append(t)'#10;
+ s := s +
+   '        if isinstance(t, _GenericAlias) and not t._special:'#10;
+ s := s +
+   '            tvars.extend([t for t in t.__parameters__ if t n' +
+   'ot in tvars])'#10;
+ s := s +
+   '    return tuple(tvars)'#10;
+ s := s + #10;
+ s := s +
+   'def _subs_tvars(tp, tvars, subs):'#10;
+ s := s +
+   '    if not isinstance(tp, _GenericAlias):'#10;
+ s := s +
+   '        return tp'#10;
+ s := s +
+   '    new_args = list(tp.__args__)'#10;
+ s := s +
+   '    for a, arg in enumerate(tp.__args__):'#10;
+ s := s +
+   '        if isinstance(arg, TypeVar):'#10;
+ s := s +
+   '            for i, tvar in enumerate(tvars):'#10;
+ s := s +
+   '                if arg == tvar:'#10;
+ s := s +
+   '                    new_args[a] = subs[i]'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            new_args[a] = _subs_tvars(arg, tvars, subs)'#10;
+ s := s +
+   '    if tp.__origin__ is Union:'#10;
+ s := s +
+   '        return Union[tuple(new_args)]'#10;
+ s := s +
+   '    return tp.copy_with(tuple(new_args))'#10;
+ s := s + #10;
+ s := s +
+   'class _GenericAlias(_Final, _Immutable):'#10;
+ s := s +
+   '    def __init__(self, origin, params, *, inst=True, special' +
+   '=False, name=None):'#10;
+ s := s +
+   '        self._inst = inst'#10;
+ s := s +
+   '        self._special = special'#10;
+ s := s +
+   '        if special and name is None:'#10;
+ s := s +
+   '            orig_name = origin.__name__'#10;
+ s := s +
+   '            name = _normalize_alias.get(orig_name, orig_name' +
+   ')'#10;
+ s := s +
+   '        self._name = name'#10;
+ s := s +
+   '        if not isinstance(params, tuple):'#10;
+ s := s +
+   '            params = (params,)'#10;
+ s := s +
+   '        self.__origin__ = origin'#10;
+ s := s +
+   '        self.__args__ = tuple(... if a is _TypingEllipsis el' +
+   'se'#10;
+ s := s +
+   '                              () if a is _TypingEmpty else'#10;
+ s := s +
+   '                              a for a in params)'#10;
+ s := s +
+   '        self.__parameters__ = _collect_type_vars(params)'#10;
+ s := s +
+   '        self.__slots__ = None'#10;
+ s := s +
+   '        if not name:'#10;
+ s := s +
+   '            self.__module__ = origin.__module__'#10;
+ s := s + #10;
+ s := s +
+   '    def __getitem__(self, params):'#10;
+ s := s +
+   '        if self.__origin__ in (Generic, Protocol):'#10;
+ s := s +
+   '            raise TypeError("Cannot subscript already-subscr' +
+   'ipted %s" % repr(self))'#10;
+ s := s +
+   '        if not isinstance(params, tuple):'#10;
+ s := s +
+   '            params = (params,)'#10;
+ s := s +
+   '        msg = "Parameters to generic types must be types."'#10;
+ s := s +
+   '        params = tuple(_type_check(p, msg) for p in params)'#10;
+ s := s +
+   '        _check_generic(self, params)'#10;
+ s := s +
+   '        return _subs_tvars(self, self.__parameters__, params' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   '    def copy_with(self, params):'#10;
+ s := s +
+   '        return _GenericAlias(self.__origin__, params, name=s' +
+   'elf._name, inst=self._inst)'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if (self._name != ''Callable'' or'#10;
+ s := s +
+   '                len(self.__args__) == 2 and self.__args__[0]' +
+   ' is Ellipsis):'#10;
+ s := s +
+   '            if self._name:'#10;
+ s := s +
+   '                name = ''typing.'' + self._name'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                name = _type_repr(self.__origin__)'#10;
+ s := s +
+   '            if not self._special:'#10;
+ s := s +
+   '                args = ", ".join([_type_repr(a) for a in sel' +
+   'f.__args__])'#10;
+ s := s +
+   '                return "%s[%s]" % (name, args)'#10;
+ s := s +
+   '            return name'#10;
+ s := s +
+   '        if self._special:'#10;
+ s := s +
+   '            return ''typing.Callable'''#10;
+ s := s +
+   '        return (f''typing.Callable[[{", ".join([_type_repr(a)' +
+   ' for a in self.__args__[:-1]])}], '''#10;
+ s := s +
+   '                f''{_type_repr(self.__args__[-1])}]'')'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        if not isinstance(other, _GenericAlias):'#10;
+ s := s +
+   '            return NotImplemented'#10;
+ s := s +
+   '        if self.__origin__ != other.__origin__:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        if self.__origin__ is Union and other.__origin__ is ' +
+   'Union:'#10;
+ s := s +
+   '            return frozenset(self.__args__) == frozenset(oth' +
+   'er.__args__)'#10;
+ s := s +
+   '        return self.__args__ == other.__args__'#10;
+ s := s + #10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        if self.__origin__ is Union:'#10;
+ s := s +
+   '            return hash((Union, frozenset(self.__args__)))'#10;
+ s := s +
+   '        return hash((self.__origin__, self.__args__))'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(self, *args, **kwargs):'#10;
+ s := s +
+   '        if not self._inst:'#10;
+ s := s +
+   '            raise TypeError("Type %s cannot be instantiated;' +
+   ' use %s() instead" % (self._name, self.__origin__.__name__))'#10;
+ s := s +
+   '        result = self.__origin__(*args, **kwargs)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            result.__orig_class__ = self'#10;
+ s := s +
+   '        except AttributeError:'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def __mro_entries__(self, bases):'#10;
+ s := s +
+   '        if self._name:'#10;
+ s := s +
+   '            res = []'#10;
+ s := s +
+   '            if self.__origin__ not in bases:'#10;
+ s := s +
+   '                res.append(self.__origin__)'#10;
+ s := s +
+   '            i = bases.index(self)'#10;
+ s := s +
+   '            if not any(isinstance(b, _GenericAlias) or issub' +
+   'class(b, Generic)'#10;
+ s := s +
+   '                       for b in bases[i+1:]):'#10;
+ s := s +
+   '                res.append(Generic)'#10;
+ s := s +
+   '            return tuple(res)'#10;
+ s := s +
+   '        if self.__origin__ is Generic:'#10;
+ s := s +
+   '            if Protocol in bases:'#10;
+ s := s +
+   '                return ()'#10;
+ s := s +
+   '            i = bases.index(self)'#10;
+ s := s +
+   '            for b in bases[i+1:]:'#10;
+ s := s +
+   '                if isinstance(b, _GenericAlias) and b is not' +
+   ' self:'#10;
+ s := s +
+   '                    return ()'#10;
+ s := s +
+   '        return (self.__origin__,)'#10;
+ s := s + #10;
+ s := s +
+   '    def __getattr__(self, attr):'#10;
+ s := s +
+   '        if ''__origin__'' in self.__dict__ and not (attr[:2] =' +
+   '= ''__'' and attr[-2:] == ''__''):'#10;
+ s := s +
+   '            return getattr(self.__origin__, attr)'#10;
+ s := s +
+   '        raise AttributeError(attr)'#10;
+ s := s + #10;
+ s := s +
+   '    def __setattr__(self, attr, val):'#10;
+ s := s +
+   '        if attr[:1] == ''_'' and attr[-1:] != ''_'' or attr in (' +
+   '''__origin__'', ''__args__'', ''__parameters__'', ''__slots__'', ''__' +
+   'module__'', ''__orig_class__''):'#10;
+ s := s +
+   '            super().__setattr__(attr, val)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            setattr(self.__origin__, attr, val)'#10;
+ s := s + #10;
+ s := s +
+   '    def __instancecheck__(self, obj):'#10;
+ s := s +
+   '        return self.__subclasscheck__(type(obj))'#10;
+ s := s + #10;
+ s := s +
+   '    def __subclasscheck__(self, cls):'#10;
+ s := s +
+   '        if self._special:'#10;
+ s := s +
+   '            if not isinstance(cls, _GenericAlias):'#10;
+ s := s +
+   '                return issubclass(cls, self.__origin__)'#10;
+ s := s +
+   '            if cls._special:'#10;
+ s := s +
+   '                return issubclass(cls.__origin__, self.__ori' +
+   'gin__)'#10;
+ s := s +
+   '        raise TypeError("Subscripted generics cannot be used' +
+   ' with class and instance checks")'#10;
+ s := s + #10;
+ s := s +
+   '    def __reduce__(self):'#10;
+ s := s +
+   '        return self._name'#10;
+ s := s + #10;
+ s := s +
+   'class _TypingEmpty:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class _TypingEllipsis:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   '_normalize_alias = {''list'': ''List'', ''tuple'': ''Tuple'', ''dict''' +
+   ': ''Dict'', ''set'': ''Set'','#10;
+ s := s +
+   '                    ''frozenset'': ''FrozenSet'', ''deque'': ''Dequ' +
+   'e'','#10;
+ s := s +
+   '                    ''defaultdict'': ''DefaultDict'', ''type'': ''T' +
+   'ype'','#10;
+ s := s +
+   '                    ''Set'': ''AbstractSet''}'#10;
+ s := s + #10;
+ s := s +
+   'def _check_generic(cls, parameters):'#10;
+ s := s +
+   '    if not cls.__parameters__:'#10;
+ s := s +
+   '        raise TypeError("%s is not a generic class" % repr(c' +
+   'ls))'#10;
+ s := s +
+   '    alen = len(parameters)'#10;
+ s := s +
+   '    elen = len(cls.__parameters__)'#10;
+ s := s +
+   '    if alen != elen:'#10;
+ s := s +
+   '        raise TypeError("Too %s parameters for %s; actual %s' +
+   ', expected %s" %'#10;
+ s := s +
+   '                        ("many" if alen > elen else "few", r' +
+   'epr(cls), alen, elen))'#10;
+ s := s + #10;
+ s := s +
+   'def _tp_cache(func):'#10;
+ s := s +
+   '    return func'#10;
+ s := s + #10;
+ s := s +
+   'class Generic:'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   '    def __new__(cls, *args, **kwds):'#10;
+ s := s +
+   '        if cls is Generic:'#10;
+ s := s +
+   '            raise TypeError("Type Generic cannot be instanti' +
+   'ated; "'#10;
+ s := s +
+   '                            "it can be used only as a base c' +
+   'lass")'#10;
+ s := s +
+   '        return super().__new__(cls)'#10;
+ s := s + #10;
+ s := s +
+   '    def __class_getitem__(cls, params):'#10;
+ s := s +
+   '        if not isinstance(params, tuple):'#10;
+ s := s +
+   '            params = (params,)'#10;
+ s := s +
+   '        if not params and cls is not Tuple:'#10;
+ s := s +
+   '            raise TypeError("Parameter list to %s[...] canno' +
+   't be empty" % cls.__qualname__)'#10;
+ s := s +
+   '        msg = "Parameters to generic types must be types."'#10;
+ s := s +
+   '        params = tuple(_type_check(p, msg) for p in params)'#10;
+ s := s +
+   '        if cls in (Generic, Protocol):'#10;
+ s := s +
+   '            if not all(isinstance(p, TypeVar) for p in param' +
+   's):'#10;
+ s := s +
+   '                raise TypeError("Parameters to %s[...] must ' +
+   'all be type variables" % cls.__name__)'#10;
+ s := s +
+   '            if len(set(params)) != len(params):'#10;
+ s := s +
+   '                raise TypeError("Parameters to %s[...] must ' +
+   'all be unique" % cls.__name__)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            _check_generic(cls, params)'#10;
+ s := s +
+   '        return _GenericAlias(cls, params)'#10;
+ s := s + #10;
+ s := s +
+   '    def __init_subclass__(cls, *args, **kwargs):'#10;
+ s := s +
+   '        super().__init_subclass__(*args, **kwargs)'#10;
+ s := s +
+   '        tvars = []'#10;
+ s := s +
+   '        if ''__orig_bases__'' in cls.__dict__:'#10;
+ s := s +
+   '            error = Generic in cls.__orig_bases__'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            error = Generic in cls.__bases__ and cls.__name_' +
+   '_ != ''Protocol'''#10;
+ s := s +
+   '        if error:'#10;
+ s := s +
+   '            raise TypeError("Cannot inherit from plain Gener' +
+   'ic")'#10;
+ s := s +
+   '        if ''__orig_bases__'' in cls.__dict__:'#10;
+ s := s +
+   '            tvars = _collect_type_vars(cls.__orig_bases__)'#10;
+ s := s +
+   '            gvars = None'#10;
+ s := s +
+   '            for base in cls.__orig_bases__:'#10;
+ s := s +
+   '                if (isinstance(base, _GenericAlias) and'#10;
+ s := s +
+   '                        base.__origin__ is Generic):'#10;
+ s := s +
+   '                    if gvars is not None:'#10;
+ s := s +
+   '                        raise TypeError("Cannot inherit from' +
+   ' Generic[...] multiple types.")'#10;
+ s := s +
+   '                    gvars = base.__parameters__'#10;
+ s := s +
+   '            if gvars is not None:'#10;
+ s := s +
+   '                tvarset = set(tvars)'#10;
+ s := s +
+   '                gvarset = set(gvars)'#10;
+ s := s +
+   '                if not tvarset <= gvarset:'#10;
+ s := s +
+   '                    s_vars = '', ''.join(str(t) for t in tvars' +
+   ' if t not in gvarset)'#10;
+ s := s +
+   '                    s_args = '', ''.join(str(g) for g in gvars' +
+   ')'#10;
+ s := s +
+   '                    raise TypeError("Some type variables (%s' +
+   ') are not listed in Generic[%s]" % (s_vars, s_args))'#10;
+ s := s +
+   '                tvars = gvars'#10;
+ s := s +
+   '        cls.__parameters__ = tuple(tvars)'#10;
+ s := s + #10;
+ s := s +
+   'class Protocol(Generic):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   '    _is_protocol = True'#10;
+ s := s + #10;
+ s := s +
+   '    def __init_subclass__(cls, *args, **kwargs):'#10;
+ s := s +
+   '        super().__init_subclass__(*args, **kwargs)'#10;
+ s := s +
+   '        if not cls.__dict__.get(''_is_protocol'', False):'#10;
+ s := s +
+   '            cls._is_protocol = any(b is Protocol for b in cl' +
+   's.__bases__)'#10;
+ s := s + #10;
+ s := s +
+   'def runtime_checkable(cls):'#10;
+ s := s +
+   '    cls._is_runtime_protocol = True'#10;
+ s := s +
+   '    return cls'#10;
+ s := s + #10;
+ s := s +
+   'def cast(typ, val):'#10;
+ s := s +
+   '    return val'#10;
+ s := s + #10;
+ s := s +
+   'def final(f):'#10;
+ s := s +
+   '    return f'#10;
+ s := s + #10;
+ s := s +
+   'def overload(func):'#10;
+ s := s +
+   '    def _overload_dummy(*args, **kwds):'#10;
+ s := s +
+   '        raise NotImplementedError("You should not call an ov' +
+   'erloaded function.")'#10;
+ s := s +
+   '    return _overload_dummy'#10;
+ s := s + #10;
+ s := s +
+   'def no_type_check(arg):'#10;
+ s := s +
+   '    return arg'#10;
+ s := s + #10;
+ s := s +
+   'def no_type_check_decorator(decorator):'#10;
+ s := s +
+   '    return decorator'#10;
+ s := s + #10;
+ s := s +
+   'def _make_alias(origin, name=None, nparams=1, inst=True):'#10;
+ s := s +
+   '    if nparams == 1:'#10;
+ s := s +
+   '        return _GenericAlias(origin, T, special=True, inst=i' +
+   'nst, name=name)'#10;
+ s := s +
+   '    return _GenericAlias(origin, tuple([KT, VT][:nparams]), ' +
+   'special=True, inst=inst, name=name)'#10;
+ s := s + #10;
+ s := s +
+   'def _alias(origin, params, inst=True):'#10;
+ s := s +
+   '    return _GenericAlias(origin, params, special=True, inst=' +
+   'inst)'#10;
+ s := s + #10;
+ s := s +
+   'class _TupleAlias(_GenericAlias):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'Hashable = _alias(collections.abc.Hashable, ())'#10;
+ s := s +
+   'Awaitable = _alias(collections.abc.Awaitable, T_co)'#10;
+ s := s +
+   'Coroutine = _alias(collections.abc.Coroutine, (T_co, T_contr' +
+   'a, V_co))'#10;
+ s := s +
+   'AsyncIterable = _alias(collections.abc.AsyncIterable, T_co)'#10;
+ s := s +
+   'AsyncIterator = _alias(collections.abc.AsyncIterator, T_co)'#10;
+ s := s +
+   'Sized = _alias(collections.abc.Sized, ())'#10;
+ s := s +
+   'Container = _alias(collections.abc.Container, T_co)'#10;
+ s := s +
+   'Collection = _alias(collections.abc.Collection, T_co)'#10;
+ s := s +
+   'Callable = _GenericAlias(collections.abc.Callable, (), speci' +
+   'al=True)'#10;
+ s := s +
+   'AbstractSet = _alias(collections.abc.Set, T_co)'#10;
+ s := s +
+   'MutableSet = _alias(collections.abc.MutableSet, T)'#10;
+ s := s +
+   'Mapping = _alias(collections.abc.Mapping, (KT, VT_co))'#10;
+ s := s +
+   'MutableMapping = _alias(collections.abc.MutableMapping, (KT,' +
+   ' VT))'#10;
+ s := s +
+   'Sequence = _alias(collections.abc.Sequence, T_co)'#10;
+ s := s +
+   'MutableSequence = _alias(collections.abc.MutableSequence, T)'#10;
+ s := s +
+   'ByteString = _alias(collections.abc.ByteString, ())'#10;
+ s := s +
+   'Tuple = _GenericAlias(tuple, (), inst=False, special=True)'#10;
+ s := s +
+   'List = _alias(list, T, inst=False)'#10;
+ s := s +
+   'Deque = _alias(collections.deque, T)'#10;
+ s := s +
+   'Set = _alias(set, T, inst=False)'#10;
+ s := s +
+   'FrozenSet = _alias(frozenset, T_co, inst=False)'#10;
+ s := s +
+   'MappingView = _alias(collections.abc.MappingView, T_co)'#10;
+ s := s +
+   'KeysView = _alias(collections.abc.KeysView, KT)'#10;
+ s := s +
+   'ItemsView = _alias(collections.abc.ItemsView, (KT, VT_co))'#10;
+ s := s +
+   'ValuesView = _alias(collections.abc.ValuesView, VT_co)'#10;
+ s := s +
+   'ContextManager = _alias(__import__(''contextlib'').AbstractCon' +
+   'textManager, T_co)'#10;
+ s := s +
+   'Dict = _alias(dict, (KT, VT), inst=False)'#10;
+ s := s +
+   'DefaultDict = _alias(collections.defaultdict, (KT, VT))'#10;
+ s := s +
+   'OrderedDict = _alias(collections.OrderedDict, (KT, VT))'#10;
+ s := s +
+   'Counter = _alias(collections.Counter, T)'#10;
+ s := s +
+   'ChainMap = _alias(collections.ChainMap, (KT, VT))'#10;
+ s := s +
+   'Generator = _alias(collections.abc.Generator, (T_co, T_contr' +
+   'a, V_co))'#10;
+ s := s +
+   'Type = _alias(type, CT_co, inst=False)'#10;
+ s := s +
+   'Iterable = _alias(collections.abc.Iterable, T_co)'#10;
+ s := s +
+   'Iterator = _alias(collections.abc.Iterator, T_co)'#10;
+ s := s +
+   'Reversible = _alias(collections.abc.Reversible, T_co)'#10;
+ s := s +
+   'Text = str'#10;
+ s := s + #10;
+ s := s +
+   'class _TupleSub:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def _tuple_getitem(self, params):'#10;
+ s := s +
+   '    if params == ():'#10;
+ s := s +
+   '        return _GenericAlias(self.__origin__, (_TypingEmpty,' +
+   '), name=self._name, inst=self._inst)'#10;
+ s := s +
+   '    if not isinstance(params, tuple):'#10;
+ s := s +
+   '        params = (params,)'#10;
+ s := s +
+   '    if len(params) == 2 and params[1] is ...:'#10;
+ s := s +
+   '        msg = "Tuple[t, ...]: t must be a type."'#10;
+ s := s +
+   '        p = _type_check(params[0], msg)'#10;
+ s := s +
+   '        return _GenericAlias(self.__origin__, (p, _TypingEll' +
+   'ipsis), name=self._name, inst=self._inst)'#10;
+ s := s +
+   '    msg = "Tuple[t0, t1, ...]: each t must be a type."'#10;
+ s := s +
+   '    params = tuple(_type_check(p, msg) for p in params)'#10;
+ s := s +
+   '    return _GenericAlias(self.__origin__, params, name=self.' +
+   '_name, inst=self._inst)'#10;
+ s := s + #10;
+ s := s +
+   'def _callable_getitem(self, params):'#10;
+ s := s +
+   '    if not isinstance(params, tuple) or len(params) != 2:'#10;
+ s := s +
+   '        raise TypeError("Callable must be used as Callable[[' +
+   'arg, ...], result].")'#10;
+ s := s +
+   '    args, result = params'#10;
+ s := s +
+   '    if args is Ellipsis:'#10;
+ s := s +
+   '        params = (Ellipsis, result)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if not isinstance(args, list):'#10;
+ s := s +
+   '            raise TypeError("Callable[args, result]: args mu' +
+   'st be a list. Got %s" % args)'#10;
+ s := s +
+   '        params = (tuple(args), result)'#10;
+ s := s +
+   '    flat = (tuple(params[0]) if params[0] is not Ellipsis el' +
+   'se (Ellipsis,)) + (result,)'#10;
+ s := s +
+   '    return _GenericAlias(self.__origin__, flat, name=self._n' +
+   'ame, inst=self._inst)'#10;
+ s := s + #10;
+ s := s +
+   '_orig_ga_getitem = _GenericAlias.__getitem__'#10;
+ s := s +
+   'def _ga_getitem(self, params):'#10;
+ s := s +
+   '    if self._special:'#10;
+ s := s +
+   '        if self._name == ''Tuple'':'#10;
+ s := s +
+   '            return _tuple_getitem(self, params)'#10;
+ s := s +
+   '        if self._name == ''Callable'':'#10;
+ s := s +
+   '            return _callable_getitem(self, params)'#10;
+ s := s +
+   '        if self.__origin__ is Union:'#10;
+ s := s +
+   '            return self'#10;
+ s := s +
+   '        if not isinstance(params, tuple):'#10;
+ s := s +
+   '            params = (params,)'#10;
+ s := s +
+   '        params = tuple(_type_check(p, "Parameters to generic' +
+   ' types must be types.") for p in params)'#10;
+ s := s +
+   '        _check_generic(self, params)'#10;
+ s := s +
+   '        return _subs_tvars(self, self.__parameters__, params' +
+   ') if False else _GenericAlias(self.__origin__, params, name=' +
+   'self._name, inst=self._inst)'#10;
+ s := s +
+   '    return _orig_ga_getitem(self, params)'#10;
+ s := s +
+   '_GenericAlias.__getitem__ = _ga_getitem'#10;
+ s := s + #10;
+ s := s +
+   'Callable = _GenericAlias(collections.abc.Callable, (), speci' +
+   'al=True)'#10;
+ s := s +
+   'Callable.__origin__ = collections.abc.Callable'#10;
+ s := s + #10;
+ s := s +
+   'def _get_defaults(func):'#10;
+ s := s +
+   '    code = func.__code__'#10;
+ s := s +
+   '    pos_count = code.co_argcount'#10;
+ s := s +
+   '    arg_names = code.co_varnames'#10;
+ s := s +
+   '    arg_names = arg_names[:pos_count]'#10;
+ s := s +
+   '    defaults = func.__defaults__ or ()'#10;
+ s := s +
+   '    kwdefaults = func.__kwdefaults__'#10;
+ s := s +
+   '    res = dict(kwdefaults) if kwdefaults else {}'#10;
+ s := s +
+   '    pos_offset = pos_count - len(defaults)'#10;
+ s := s +
+   '    for name, value in zip(arg_names[pos_offset:], defaults)' +
+   ':'#10;
+ s := s +
+   '        res[name] = value'#10;
+ s := s +
+   '    return res'#10;
+ s := s + #10;
+ s := s +
+   'def get_type_hints(obj, globalns=None, localns=None):'#10;
+ s := s +
+   '    if getattr(obj, ''__no_type_check__'', None):'#10;
+ s := s +
+   '        return {}'#10;
+ s := s +
+   '    if isinstance(obj, type):'#10;
+ s := s +
+   '        hints = {}'#10;
+ s := s +
+   '        for base in reversed(obj.__mro__):'#10;
+ s := s +
+   '            if globalns is None:'#10;
+ s := s +
+   '                base_globals = sys.modules[base.__module__].' +
+   '__dict__'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                base_globals = globalns'#10;
+ s := s +
+   '            ann = base.__dict__.get(''__annotations__'', {})'#10;
+ s := s +
+   '            for name, value in ann.items():'#10;
+ s := s +
+   '                if value is None:'#10;
+ s := s +
+   '                    value = type(None)'#10;
+ s := s +
+   '                if isinstance(value, str):'#10;
+ s := s +
+   '                    value = ForwardRef(value, is_argument=Fa' +
+   'lse)'#10;
+ s := s +
+   '                value = _eval_type(value, base_globals, loca' +
+   'lns)'#10;
+ s := s +
+   '                hints[name] = value'#10;
+ s := s +
+   '        return hints'#10;
+ s := s +
+   '    if globalns is None:'#10;
+ s := s +
+   '        if isinstance(obj, types.ModuleType):'#10;
+ s := s +
+   '            globalns = obj.__dict__'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            globalns = getattr(obj, ''__globals__'', {})'#10;
+ s := s +
+   '        if localns is None:'#10;
+ s := s +
+   '            localns = globalns'#10;
+ s := s +
+   '    elif localns is None:'#10;
+ s := s +
+   '        localns = globalns'#10;
+ s := s +
+   '    hints = getattr(obj, ''__annotations__'', None)'#10;
+ s := s +
+   '    if hints is None:'#10;
+ s := s +
+   '        if isinstance(obj, (types.FunctionType, types.Method' +
+   'Type, types.ModuleType)):'#10;
+ s := s +
+   '            return {}'#10;
+ s := s +
+   '        raise TypeError(''{!r} is not a module, class, method' +
+   ', or function.''.format(obj))'#10;
+ s := s +
+   '    defaults = _get_defaults(obj) if isinstance(obj, types.F' +
+   'unctionType) else {}'#10;
+ s := s +
+   '    hints = dict(hints)'#10;
+ s := s +
+   '    for name, value in hints.items():'#10;
+ s := s +
+   '        if value is None:'#10;
+ s := s +
+   '            value = type(None)'#10;
+ s := s +
+   '        if isinstance(value, str):'#10;
+ s := s +
+   '            value = ForwardRef(value)'#10;
+ s := s +
+   '        value = _eval_type(value, globalns, localns)'#10;
+ s := s +
+   '        if name in defaults and defaults[name] is None:'#10;
+ s := s +
+   '            value = Optional[value]'#10;
+ s := s +
+   '        hints[name] = value'#10;
+ s := s +
+   '    return hints'#10;
+ s := s + #10;
+ s := s +
+   'def _eval_type(t, globalns, localns):'#10;
+ s := s +
+   '    if isinstance(t, ForwardRef):'#10;
+ s := s +
+   '        return t._evaluate(globalns, localns)'#10;
+ s := s +
+   '    if isinstance(t, _GenericAlias):'#10;
+ s := s +
+   '        ev_args = tuple(_eval_type(a, globalns, localns) for' +
+   ' a in t.__args__)'#10;
+ s := s +
+   '        if ev_args == t.__args__:'#10;
+ s := s +
+   '            return t'#10;
+ s := s +
+   '        res = t.copy_with(ev_args)'#10;
+ s := s +
+   '        res._special = t._special'#10;
+ s := s +
+   '        return res'#10;
+ s := s +
+   '    return t'#10;
+ s := s + #10;
+ s := s +
+   'def get_origin(tp):'#10;
+ s := s +
+   '    if isinstance(tp, _GenericAlias):'#10;
+ s := s +
+   '        return tp.__origin__'#10;
+ s := s +
+   '    if tp is Generic:'#10;
+ s := s +
+   '        return Generic'#10;
+ s := s +
+   '    return None'#10;
+ s := s + #10;
+ s := s +
+   'def get_args(tp):'#10;
+ s := s +
+   '    if isinstance(tp, _GenericAlias) and not tp._special:'#10;
+ s := s +
+   '        res = tp.__args__'#10;
+ s := s +
+   '        if get_origin(tp) is collections.abc.Callable and re' +
+   's[0] is not Ellipsis:'#10;
+ s := s +
+   '            res = (list(res[:-1]), res[-1])'#10;
+ s := s +
+   '        return res'#10;
+ s := s +
+   '    return ()'#10;
+ s := s + #10;
+ s := s +
+   'def NewType(name, tp):'#10;
+ s := s +
+   '    def new_type(x):'#10;
+ s := s +
+   '        return x'#10;
+ s := s +
+   '    new_type.__name__ = name'#10;
+ s := s +
+   '    new_type.__supertype__ = tp'#10;
+ s := s +
+   '    return new_type'#10;
+ s := s + #10;
+ s := s +
+   'class SupportsInt(Protocol):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class SupportsFloat(Protocol):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class SupportsComplex(Protocol):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class SupportsBytes(Protocol):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class SupportsAbs(Protocol):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class SupportsRound(Protocol):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class IO(Generic[AnyStr]):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class BinaryIO(IO):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s +
+   'class TextIO(IO):'#10;
+ s := s +
+   '    __slots__ = ()'#10;
+ s := s + #10;
+ s := s +
+   'class Pattern(Generic[AnyStr]):'#10;
+ s := s +
+   '    pass'#10;
+ s := s +
+   'class Match(Generic[AnyStr]):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def _make_nmtuple(name, types):'#10;
+ s := s +
+   '    msg = "NamedTuple(''Name'', [(f0, t0), (f1, t1), ...]); ea' +
+   'ch t must be a type"'#10;
+ s := s +
+   '    types = [(n, _type_check(t, msg)) for n, t in types]'#10;
+ s := s +
+   '    nm_tpl = collections.namedtuple(name, [n for n, t in typ' +
+   'es])'#10;
+ s := s +
+   '    nm_tpl.__annotations__ = nm_tpl._field_types = dict(type' +
+   's)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        nm_tpl.__module__ = sys._getframe(2).f_globals.get(''' +
+   '__name__'', ''__main__'')'#10;
+ s := s +
+   '    except (AttributeError, ValueError):'#10;
+ s := s +
+   '        pass'#10;
+ s := s +
+   '    return nm_tpl'#10;
+ s := s + #10;
+ s := s +
+   '_prohibited = (''__new__'', ''__init__'', ''__slots__'', ''__getnew' +
+   'args__'','#10;
+ s := s +
+   '               ''_fields'', ''_field_defaults'', ''_field_types'','#10;
+ s := s +
+   '               ''_make'', ''_replace'', ''_asdict'', ''_source'')'#10;
+ s := s + #10;
+ s := s +
+   '_special = (''__module__'', ''__name__'', ''__annotations__'', ''__' +
+   'qualname__'')'#10;
+ s := s + #10;
+ s := s +
+   'class NamedTupleMeta(type):'#10;
+ s := s +
+   '    def __new__(cls, typename, bases, ns):'#10;
+ s := s +
+   '        if ns.get(''_root'', False):'#10;
+ s := s +
+   '            return super().__new__(cls, typename, bases, ns)'#10;
+ s := s +
+   '        types = ns.get(''__annotations__'', {})'#10;
+ s := s +
+   '        nm_tpl = _make_nmtuple(typename, types.items())'#10;
+ s := s +
+   '        defaults = []'#10;
+ s := s +
+   '        defaults_dict = {}'#10;
+ s := s +
+   '        for field_name in types:'#10;
+ s := s +
+   '            if field_name in ns:'#10;
+ s := s +
+   '                default_value = ns[field_name]'#10;
+ s := s +
+   '                defaults.append(default_value)'#10;
+ s := s +
+   '                defaults_dict[field_name] = default_value'#10;
+ s := s +
+   '            elif defaults:'#10;
+ s := s +
+   '                raise TypeError("Non-default namedtuple fiel' +
+   'd {field_name} cannot follow default field(s) {default_names' +
+   '}".format('#10;
+ s := s +
+   '                    field_name=field_name,'#10;
+ s := s +
+   '                    default_names='', ''.join(defaults_dict.ke' +
+   'ys())))'#10;
+ s := s +
+   '        nm_tpl.__new__.__defaults__ = tuple(defaults)'#10;
+ s := s +
+   '        nm_tpl._field_defaults = defaults_dict'#10;
+ s := s +
+   '        for key in ns:'#10;
+ s := s +
+   '            if key in _prohibited:'#10;
+ s := s +
+   '                raise AttributeError("Cannot overwrite Named' +
+   'Tuple attribute " + key)'#10;
+ s := s +
+   '            elif key not in _special and key not in nm_tpl._' +
+   'fields:'#10;
+ s := s +
+   '                setattr(nm_tpl, key, ns[key])'#10;
+ s := s +
+   '        return nm_tpl'#10;
+ s := s + #10;
+ s := s +
+   'class NamedTuple(metaclass=NamedTupleMeta):'#10;
+ s := s +
+   '    _root = True'#10;
+ s := s + #10;
+ s := s +
+   '    def __new__(cls, typename, fields=None, **kwargs):'#10;
+ s := s +
+   '        if fields is None:'#10;
+ s := s +
+   '            fields = kwargs.items()'#10;
+ s := s +
+   '        elif kwargs:'#10;
+ s := s +
+   '            raise TypeError("Either list of fields or keywor' +
+   'ds can be provided to NamedTuple, not both")'#10;
+ s := s +
+   '        return _make_nmtuple(typename, fields)'#10;
+ s := s + #10;
+ s := s +
+   'def _dict_new(cls, /, *args, **kwargs):'#10;
+ s := s +
+   '    return dict(*args, **kwargs)'#10;
+ s := s + #10;
+ s := s +
+   'class _TypedDictMeta(type):'#10;
+ s := s +
+   '    def __new__(cls, name, bases, ns, total=True):'#10;
+ s := s +
+   '        if name == ''TypedDict'' and ns.get(''_root'', False):'#10;
+ s := s +
+   '            return super().__new__(cls, name, bases, ns)'#10;
+ s := s +
+   '        ns[''__new__''] = _dict_new'#10;
+ s := s +
+   '        tp_dict = super().__new__(cls, name, (dict,), ns)'#10;
+ s := s +
+   '        anns = {}'#10;
+ s := s +
+   '        for base in bases:'#10;
+ s := s +
+   '            anns.update(base.__dict__.get(''__annotations__'',' +
+   ' {}))'#10;
+ s := s +
+   '        anns.update(ns.get(''__annotations__'', {}))'#10;
+ s := s +
+   '        msg = "TypedDict(''Name'', {f0: t0, f1: t1, ...}); eac' +
+   'h t must be a type"'#10;
+ s := s +
+   '        anns = {n: _type_check(tp, msg) for n, tp in anns.it' +
+   'ems()}'#10;
+ s := s +
+   '        tp_dict.__annotations__ = anns'#10;
+ s := s +
+   '        if not hasattr(tp_dict, ''__total__''):'#10;
+ s := s +
+   '            tp_dict.__total__ = total'#10;
+ s := s +
+   '        return tp_dict'#10;
+ s := s + #10;
+ s := s +
+   '    def __call__(cls, *args, **kwargs):'#10;
+ s := s +
+   '        if cls is TypedDict:'#10;
+ s := s +
+   '            return _typeddict_functional(*args, **kwargs)'#10;
+ s := s +
+   '        return dict(*args, **kwargs)'#10;
+ s := s + #10;
+ s := s +
+   '    def __subclasscheck__(cls, other):'#10;
+ s := s +
+   '        raise TypeError(''TypedDict does not support instance' +
+   ' and class checks'')'#10;
+ s := s + #10;
+ s := s +
+   '    __instancecheck__ = __subclasscheck__'#10;
+ s := s + #10;
+ s := s +
+   'class TypedDict(dict, metaclass=_TypedDictMeta):'#10;
+ s := s +
+   '    _root = True'#10;
+ s := s + #10;
+ s := s +
+   'def _typeddict_functional(typename, fields=None, *, total=Tr' +
+   'ue, **kwargs):'#10;
+ s := s +
+   '    if fields is None:'#10;
+ s := s +
+   '        fields = kwargs'#10;
+ s := s +
+   '    elif kwargs:'#10;
+ s := s +
+   '        raise TypeError("TypedDict takes either a dict or ke' +
+   'yword arguments, but not both")'#10;
+ s := s +
+   '    ns = {''__annotations__'': dict(fields), ''__total__'': tota' +
+   'l}'#10;
+ s := s +
+   '    return _TypedDictMeta(typename, (TypedDict,), ns)'#10;
+ s := s + #10;
+ s := s +
+   'class _TypedDictBase(dict):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   '_TypedDict = _TypedDictBase'#10;
+ s := s + #10;
+ s := s +
+   're = type(sys)(''typing.re'')'#10;
+ s := s +
+   'io = type(sys)(''typing.io'')'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_warnings: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["warn", "warn_explicit", "showwarning", "formatwa' +
+   'rning",'#10;
+ s := s +
+   '           "filterwarnings", "simplefilter", "resetwarnings"' +
+   ','#10;
+ s := s +
+   '           "catch_warnings"]'#10;
+ s := s + #10;
+ s := s +
+   'filters = []'#10;
+ s := s +
+   'defaultaction = "default"'#10;
+ s := s +
+   'onceregistry = {}'#10;
+ s := s +
+   '_filters_mutated = lambda: None'#10;
+ s := s + #10;
+ s := s +
+   'def showwarning(message, category, filename, lineno, file=No' +
+   'ne, line=None):'#10;
+ s := s +
+   '    if file is None:'#10;
+ s := s +
+   '        file = sys.stderr'#10;
+ s := s +
+   '        if file is None:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        file.write(formatwarning(message, category, filename' +
+   ', lineno, line))'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   'def formatwarning(message, category, filename, lineno, line=' +
+   'None):'#10;
+ s := s +
+   '    s = "%s:%s: %s: %s\n" % (filename, lineno, category.__na' +
+   'me__, message)'#10;
+ s := s +
+   '    if line is None:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            import linecache'#10;
+ s := s +
+   '            line = linecache.getline(filename, lineno)'#10;
+ s := s +
+   '        except Exception:'#10;
+ s := s +
+   '            line = None'#10;
+ s := s +
+   '    if line:'#10;
+ s := s +
+   '        line = line.strip()'#10;
+ s := s +
+   '        s += "  %s\n" % line'#10;
+ s := s +
+   '    return s'#10;
+ s := s + #10;
+ s := s +
+   'def filterwarnings(action, message="", category=Warning, mod' +
+   'ule="", lineno=0,'#10;
+ s := s +
+   '                   append=False):'#10;
+ s := s +
+   '    import re'#10;
+ s := s +
+   '    if message or module:'#10;
+ s := s +
+   '        import re'#10;
+ s := s +
+   '    item = (action, message, category, module, lineno)'#10;
+ s := s +
+   '    if item in filters:'#10;
+ s := s +
+   '        filters.remove(item)'#10;
+ s := s +
+   '    if append:'#10;
+ s := s +
+   '        filters.append(item)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        filters.insert(0, item)'#10;
+ s := s + #10;
+ s := s +
+   'def simplefilter(action, category=Warning, lineno=0, append=' +
+   'False):'#10;
+ s := s +
+   '    item = (action, None, category, None, lineno)'#10;
+ s := s +
+   '    if item in filters:'#10;
+ s := s +
+   '        filters.remove(item)'#10;
+ s := s +
+   '    if append:'#10;
+ s := s +
+   '        filters.append(item)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        filters.insert(0, item)'#10;
+ s := s + #10;
+ s := s +
+   'def resetwarnings():'#10;
+ s := s +
+   '    filters[:] = []'#10;
+ s := s + #10;
+ s := s +
+   'def _match(pat, text):'#10;
+ s := s +
+   '    if pat is None:'#10;
+ s := s +
+   '        return True'#10;
+ s := s +
+   '    if isinstance(pat, str):'#10;
+ s := s +
+   '        return text.startswith(pat) if pat else True'#10;
+ s := s +
+   '    return pat.match(text) is not None'#10;
+ s := s + #10;
+ s := s +
+   'def warn(message, category=None, stacklevel=1, source=None):'#10;
+ s := s +
+   '    if isinstance(message, Warning):'#10;
+ s := s +
+   '        category = message.__class__'#10;
+ s := s +
+   '    if category is None:'#10;
+ s := s +
+   '        category = UserWarning'#10;
+ s := s +
+   '    if not (isinstance(category, type) and issubclass(catego' +
+   'ry, Warning)):'#10;
+ s := s +
+   '        raise TypeError("category must be a Warning subclass' +
+   ', not ''%s''"'#10;
+ s := s +
+   '                        % type(category).__name__)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        frame = sys._getframe(stacklevel)'#10;
+ s := s +
+   '    except ValueError:'#10;
+ s := s +
+   '        frame = None'#10;
+ s := s +
+   '    if frame is None:'#10;
+ s := s +
+   '        globals = sys.__dict__'#10;
+ s := s +
+   '        filename = "sys"'#10;
+ s := s +
+   '        lineno = 1'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        globals = frame.f_globals'#10;
+ s := s +
+   '        filename = frame.f_code.co_filename'#10;
+ s := s +
+   '        lineno = frame.f_lineno'#10;
+ s := s +
+   '    module = globals.get(''__name__'', ''<string>'')'#10;
+ s := s +
+   '    registry = globals.setdefault("__warningregistry__", {})'#10;
+ s := s +
+   '    warn_explicit(message, category, filename, lineno, modul' +
+   'e, registry,'#10;
+ s := s +
+   '                  globals)'#10;
+ s := s + #10;
+ s := s +
+   'def warn_explicit(message, category, filename, lineno, modul' +
+   'e=None,'#10;
+ s := s +
+   '                  registry=None, module_globals=None, source' +
+   '=None):'#10;
+ s := s +
+   '    if module is None:'#10;
+ s := s +
+   '        module = filename or "<unknown>"'#10;
+ s := s +
+   '        if module[-3:].lower() == ".py":'#10;
+ s := s +
+   '            module = module[:-3]'#10;
+ s := s +
+   '    if registry is None:'#10;
+ s := s +
+   '        registry = {}'#10;
+ s := s +
+   '    if isinstance(message, Warning):'#10;
+ s := s +
+   '        text = str(message)'#10;
+ s := s +
+   '        category = message.__class__'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        text = message'#10;
+ s := s +
+   '        message = category(message)'#10;
+ s := s +
+   '    key = (text, category, lineno)'#10;
+ s := s +
+   '    if registry.get(key):'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    for item in filters:'#10;
+ s := s +
+   '        action, msg, cat, mod, ln = item'#10;
+ s := s +
+   '        if ((msg is None or _match(msg, text)) and'#10;
+ s := s +
+   '            issubclass(category, cat) and'#10;
+ s := s +
+   '            (mod is None or _match(mod, module)) and'#10;
+ s := s +
+   '            (ln == 0 or lineno == ln)):'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        action = defaultaction'#10;
+ s := s +
+   '    if action == "ignore":'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    if action == "error":'#10;
+ s := s +
+   '        raise message'#10;
+ s := s +
+   '    if action == "once":'#10;
+ s := s +
+   '        registry[key] = 1'#10;
+ s := s +
+   '        oncekey = (text, category)'#10;
+ s := s +
+   '        if onceregistry.get(oncekey):'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        onceregistry[oncekey] = 1'#10;
+ s := s +
+   '    elif action == "always":'#10;
+ s := s +
+   '        pass'#10;
+ s := s +
+   '    elif action == "module":'#10;
+ s := s +
+   '        registry[key] = 1'#10;
+ s := s +
+   '        altkey = (text, category, 0)'#10;
+ s := s +
+   '        if registry.get(altkey):'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        registry[altkey] = 1'#10;
+ s := s +
+   '    elif action == "default":'#10;
+ s := s +
+   '        registry[key] = 1'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        raise RuntimeError("Unrecognized action (%r) in warn' +
+   'ings.filters:\n %s"'#10;
+ s := s +
+   '                           % (action, item))'#10;
+ s := s +
+   '    showwarning(message, category, filename, lineno)'#10;
+ s := s + #10;
+ s := s +
+   'class WarningMessage(object):'#10;
+ s := s +
+   '    _WARNING_DETAILS = ("message", "category", "filename", "' +
+   'lineno", "file",'#10;
+ s := s +
+   '                        "line", "source")'#10;
+ s := s +
+   '    def __init__(self, message, category, filename, lineno, ' +
+   'file=None,'#10;
+ s := s +
+   '                 line=None, source=None):'#10;
+ s := s +
+   '        self.message = message'#10;
+ s := s +
+   '        self.category = category'#10;
+ s := s +
+   '        self.filename = filename'#10;
+ s := s +
+   '        self.lineno = lineno'#10;
+ s := s +
+   '        self.file = file'#10;
+ s := s +
+   '        self.line = line'#10;
+ s := s +
+   '        self.source = source'#10;
+ s := s +
+   '        self._category_name = category.__name__ if category ' +
+   'else None'#10;
+ s := s +
+   '    def __str__(self):'#10;
+ s := s +
+   '        return ("{message : %r, category : %r, filename : %r' +
+   ', lineno : %s, "'#10;
+ s := s +
+   '                "line : %r}" % (self.message, self._category' +
+   '_name,'#10;
+ s := s +
+   '                                self.filename, self.lineno, ' +
+   'self.line))'#10;
+ s := s + #10;
+ s := s +
+   'class catch_warnings(object):'#10;
+ s := s +
+   '    def __init__(self, *, record=False, module=None):'#10;
+ s := s +
+   '        self._record = record'#10;
+ s := s +
+   '        self._module = sys.modules[''warnings''] if module is ' +
+   'None else module'#10;
+ s := s +
+   '        self._entered = False'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        args = []'#10;
+ s := s +
+   '        if self._record:'#10;
+ s := s +
+   '            args.append("record=True")'#10;
+ s := s +
+   '        name = type(self).__name__'#10;
+ s := s +
+   '        return "%s(%s)" % (name, ", ".join(args))'#10;
+ s := s + #10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        if self._entered:'#10;
+ s := s +
+   '            raise RuntimeError("Cannot enter %r twice" % sel' +
+   'f)'#10;
+ s := s +
+   '        self._entered = True'#10;
+ s := s +
+   '        self._filters = self._module.filters'#10;
+ s := s +
+   '        self._module.filters = self._filters[:]'#10;
+ s := s +
+   '        self._showwarning = self._module.showwarning'#10;
+ s := s +
+   '        if self._record:'#10;
+ s := s +
+   '            log = []'#10;
+ s := s +
+   '            def showwarning(*args, **kwargs):'#10;
+ s := s +
+   '                log.append(WarningMessage(*args, **kwargs))'#10;
+ s := s +
+   '            self._module.showwarning = showwarning'#10;
+ s := s +
+   '            return log'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return None'#10;
+ s := s + #10;
+ s := s +
+   '    def __exit__(self, *exc_info):'#10;
+ s := s +
+   '        if not self._entered:'#10;
+ s := s +
+   '            raise RuntimeError("Cannot exit %r without enter' +
+   'ing first" % self)'#10;
+ s := s +
+   '        self._module.filters = self._filters'#10;
+ s := s +
+   '        self._module.showwarning = self._showwarning'#10;
+ s := s + #10;
+ s := s +
+   'def _setoption(arg):'#10;
+ s := s +
+   '    parts = arg.split('':'')'#10;
+ s := s +
+   '    if len(parts) > 5:'#10;
+ s := s +
+   '        raise ValueError("too many fields (max 5): %r" % (ar' +
+   'g,))'#10;
+ s := s +
+   '    while len(parts) < 5:'#10;
+ s := s +
+   '        parts.append('''')'#10;
+ s := s +
+   '    action, message, category, module, lineno = [s.strip() f' +
+   'or s in parts]'#10;
+ s := s +
+   '    action = _getaction(action)'#10;
+ s := s +
+   '    category = _getcategory(category)'#10;
+ s := s +
+   '    if lineno:'#10;
+ s := s +
+   '        lineno = int(lineno)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        lineno = 0'#10;
+ s := s +
+   '    if message or module:'#10;
+ s := s +
+   '        filters.insert(0, (action, message or None, category' +
+   ', module or None, lineno))'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        filters.insert(0, (action, None, category, None, lin' +
+   'eno))'#10;
+ s := s + #10;
+ s := s +
+   'def _getaction(action):'#10;
+ s := s +
+   '    if not action:'#10;
+ s := s +
+   '        return "default"'#10;
+ s := s +
+   '    if action == "all":'#10;
+ s := s +
+   '        return "always"'#10;
+ s := s +
+   '    for a in (''default'', ''always'', ''ignore'', ''module'', ''once' +
+   ''', ''error''):'#10;
+ s := s +
+   '        if a.startswith(action):'#10;
+ s := s +
+   '            return a'#10;
+ s := s +
+   '    raise ValueError("invalid action: %r" % (action,))'#10;
+ s := s + #10;
+ s := s +
+   'def _getcategory(category):'#10;
+ s := s +
+   '    if not category:'#10;
+ s := s +
+   '        return Warning'#10;
+ s := s +
+   '    import builtins'#10;
+ s := s +
+   '    if ''.'' not in category:'#10;
+ s := s +
+   '        cat = getattr(builtins, category, None)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        i = category.rfind(".")'#10;
+ s := s +
+   '        modname = category[:i]'#10;
+ s := s +
+   '        klass = category[i+1:]'#10;
+ s := s +
+   '        m = __import__(modname, None, None, [klass])'#10;
+ s := s +
+   '        cat = getattr(m, klass)'#10;
+ s := s +
+   '    if not issubclass(cat, Warning):'#10;
+ s := s +
+   '        raise ValueError("invalid warning category: %r" % (c' +
+   'ategory,))'#10;
+ s := s +
+   '    return cat'#10;
+ s := s + #10;
+ s := s +
+   'filters[:] = ['#10;
+ s := s +
+   '    (''default'', None, DeprecationWarning, ''__main__'', 0),'#10;
+ s := s +
+   '    (''ignore'', None, DeprecationWarning, None, 0),'#10;
+ s := s +
+   '    (''ignore'', None, PendingDeprecationWarning, None, 0),'#10;
+ s := s +
+   '    (''ignore'', None, ImportWarning, None, 0),'#10;
+ s := s +
+   '    (''ignore'', None, ResourceWarning, None, 0),'#10;
+ s := s +
+   ']'#10;
+ s := s +
+   'for _w in getattr(sys, ''warnoptions'', []):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        _setoption(_w)'#10;
+ s := s +
+   '    except Exception:'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Procedure RegisterPrelude;
 Begin
+  RegSource('_bytesimpl', @Src__bytesimpl);
   RegSource('abc', @Src_abc);
   RegSource('bisect', @Src_bisect);
   RegSource('collections.abc', @Src_collections_abc);
   RegSource('collections', @Src_collections);
+  RegSource('contextlib', @Src_contextlib);
   RegSource('copy', @Src_copy);
+  RegSource('enum', @Src_enum);
+  RegSource('errno', @Src_errno);
   RegSource('functools', @Src_functools);
   RegSource('heapq', @Src_heapq);
   RegSource('io', @Src_io);
   RegSource('itertools', @Src_itertools);
   RegSource('keyword', @Src_keyword);
+  RegSource('linecache', @Src_linecache);
   RegSource('operator', @Src_operator);
+  RegSource('os', @Src_os);
+  RegSource('posixpath', @Src_posixpath);
   RegSource('random', @Src_random);
   RegSource('site', @Src_site);
+  RegSource('stat', @Src_stat);
   RegSource('string', @Src_string);
+  RegSource('traceback', @Src_traceback);
+  RegSource('types', @Src_types);
+  RegSource('typing', @Src_typing);
+  RegSource('warnings', @Src_warnings);
 End;
 
 Begin
