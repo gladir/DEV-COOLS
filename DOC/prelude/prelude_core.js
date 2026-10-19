@@ -1,4 +1,4 @@
-var __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
+var __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
 function __mk(k) {
   var t = typeof k;
   if (t === 'string') return 's' + k;
@@ -20,6 +20,9 @@ function __sym_str(s) {
   return 'Symbol(' + __sym_desc(s) + ')';
 }
 function __init_eval() {}
+function __init_web() {}
+function __init_bin() {}
+var __global;
 function __i_init() {
   __init_async();
   __init_eval();
@@ -64,6 +67,12 @@ function __i_init() {
     var d = __sym_desc(s);
     return __sym_reg && __sym_reg[d] === s ? d : undefined;
   };
+  __symproto = Object.create(String.prototype);
+  Object.defineProperty(__symproto, 'constructor', { value: __Symbol, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(__symproto, 'toString', { value: function () { return __sym_str(this); }, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(__symproto, 'valueOf', { value: function () { return this; }, writable: true, configurable: true, enumerable: false });
+  Object.defineProperty(__symproto, 'description', { get: function () { return __sym_desc(this); }, configurable: true, enumerable: false });
+  __Symbol.prototype = __symproto;
   var SI = '\x01Symbol.iterator\x02';
   __GenProto = {
     next: function (v) { var x = __gen_resume(this, 0, v); return { value: x, done: __gen_done(this) }; },
@@ -235,4 +244,7 @@ function __i_init() {
       return true;
     }
   };
+  __init_web();
+  __init_bin();
+  __init_globals();
 }

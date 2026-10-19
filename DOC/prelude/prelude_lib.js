@@ -250,8 +250,171 @@ function __init_arr() {
     return o;
   };
 }
+var __Reflect, __WeakRef, __FinalizationRegistry;
+function __isIdx(k) { return typeof k === 'string' && k !== '' && String(k >>> 0) === k && (k >>> 0) !== 4294967295; }
+function __ownDesc(o, k) {
+  var pi, fl, d, fr, n;
+  if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
+  k = String(k);
+  fr = typeof o === 'object' || typeof o === 'function' ? (__oflags(o) & 2) !== 0 : true;
+  if (typeof o === 'string') {
+    if (k === 'length') return { value: o.length, writable: false, enumerable: false, configurable: false };
+    if (__isIdx(k) && Number(k) < o.length) return { value: o.charAt(Number(k)), writable: false, enumerable: true, configurable: false };
+    return undefined;
+  }
+  if (typeof o !== 'object' && typeof o !== 'function') return undefined;
+  if (Array.isArray(o)) {
+    if (k === 'length') return { value: o.length, writable: !fr, enumerable: false, configurable: false };
+    if (__isIdx(k)) {
+      n = Number(k);
+      if (n < o.length) return { value: o[n], writable: !fr, enumerable: true, configurable: !fr };
+      return undefined;
+    }
+  }
+  pi = __propinfo(o, k);
+  if (pi === undefined) {
+    if (typeof o === 'function') {
+      if (k === 'name') return { value: o.name, writable: false, enumerable: false, configurable: true };
+      if (k === 'length') return { value: o.length, writable: false, enumerable: false, configurable: true };
+    }
+    return undefined;
+  }
+  fl = pi[0];
+  d = {};
+  if ((fl & 2) !== 0) { d.get = pi[1]; d.set = pi[2]; }
+  else { d.value = pi[1]; d.writable = (fl & 4) === 0 && !fr; }
+  d.enumerable = (fl & 1) === 0;
+  d.configurable = !fr && (fl & 8) === 0 && (__oflags(o) & 16) === 0;
+  return d;
+}
+function __objToString() {
+  var t = this, tag;
+  if (t === undefined) return '[object Undefined]';
+  if (t === null) return '[object Null]';
+  tag = t['\x01Symbol.toStringTag\x02'];
+  if (typeof tag === 'string' && (typeof t === 'object' || typeof t === 'function')) return '[object ' + tag + ']';
+  if (Array.isArray(t)) return '[object Array]';
+  switch (typeof t) {
+    case 'function': return '[object Function]';
+    case 'symbol': return '[object Symbol]';
+    case 'string': return t.charCodeAt(0) === 1 ? '[object Symbol]' : '[object String]';
+    case 'number': return '[object Number]';
+    case 'boolean': return '[object Boolean]';
+    case 'bigint': return '[object BigInt]';
+  }
+  if (t instanceof Error) return '[object Error]';
+  if (t instanceof RegExp) return '[object RegExp]';
+  if (t instanceof Date) return '[object Date]';
+  return '[object Object]';
+}
+function __init_obj() {
+  Object.defineProperty(Object.prototype, 'toString', { value: __objToString, writable: true, configurable: true, enumerable: false });
+  Object.getOwnPropertyDescriptor = __ownDesc;
+  Object.getOwnPropertyDescriptors = function (o) {
+    var r = {}, ks = Object.getOwnPropertyNames(o), i;
+    for (i = 0; i < ks.length; i++) r[ks[i]] = __ownDesc(o, ks[i]);
+    return r;
+  };
+  Object.preventExtensions = function (o) { if (o !== null && (typeof o === 'object' || typeof o === 'function')) __oflags(o, 8); return o; };
+  Object.seal = function (o) { if (o !== null && (typeof o === 'object' || typeof o === 'function')) __oflags(o, 24); return o; };
+  Object.isExtensible = function (o) { return (typeof o === 'object' && o !== null || typeof o === 'function') && (__oflags(o) & 26) === 0; };
+  Object.isSealed = function (o) { return !(typeof o === 'object' && o !== null || typeof o === 'function') || (__oflags(o) & 18) !== 0; };
+}
+function __init_globals() {
+  var gt = globalThis;
+  gt.Map = Map; gt.Set = Set; gt.WeakMap = WeakMap; gt.WeakSet = WeakSet; gt.Symbol = Symbol; gt.Date = Date; gt.Promise = Promise; gt.BigInt = BigInt;
+  gt.setTimeout = setTimeout; gt.setInterval = setInterval; gt.setImmediate = setImmediate; gt.clearTimeout = clearTimeout; gt.clearInterval = clearInterval;
+  gt.clearImmediate = clearImmediate; gt.queueMicrotask = queueMicrotask; gt.structuredClone = structuredClone; gt.AggregateError = AggregateError;
+  gt.btoa = __btoa; gt.atob = __atob;
+  gt.performance = performance; gt.encodeURIComponent = encodeURIComponent; gt.decodeURIComponent = decodeURIComponent; gt.encodeURI = encodeURI; gt.decodeURI = decodeURI;
+  __WeakRef = class WeakRef {
+    constructor(t) {
+      if (t === null || (typeof t !== 'object' && typeof t !== 'function')) throw new TypeError('WeakRef: invalid target');
+      Object.defineProperty(this, '\x01t', { value: t, writable: true, enumerable: false });
+    }
+    deref() { return this['\x01t']; }
+  };
+  __FinalizationRegistry = class FinalizationRegistry {
+    constructor(cb) { if (typeof cb !== 'function') throw new TypeError('FinalizationRegistry: cleanup must be callable'); }
+    register() { }
+    unregister() { return false; }
+  };
+  __global = gt;
+  gt.global = gt;
+  __Reflect = __mkReflect();
+  gt.Reflect = __Reflect;
+  gt.WeakRef = __WeakRef;
+  gt.FinalizationRegistry = __FinalizationRegistry;
+  __tagOf(Set.prototype, 'Set'); __tagOf(WeakMap.prototype, 'WeakMap'); __tagOf(WeakSet.prototype, 'WeakSet'); __tagOf(__WeakRef.prototype, 'WeakRef');
+  __tagOf(Math, 'Math'); __tagOf(JSON, 'JSON'); __tagOf(__Reflect, 'Reflect'); __tagOf(BigInt.prototype, 'BigInt');
+}
+function __tagOf(o, n) { Object.defineProperty(o, '\x01Symbol.toStringTag\x02', { value: n, enumerable: false, configurable: true }); }
+function __mkReflect() {
+  var R = {};
+  R.apply = function (f, t, a) { return f.apply(t, a); };
+  R.construct = function (F, a, nt) {
+    if (typeof F !== 'function') throw new TypeError(String(F) + ' is not a constructor');
+    var o = new F(...a);
+    if (nt !== undefined && nt !== F && o !== null && typeof o === 'object') Object.setPrototypeOf(o, nt.prototype);
+    return o;
+  };
+  R.defineProperty = function (o, k, d) { try { Object.defineProperty(o, k, d); return true; } catch (e) { return false; } };
+  R.deleteProperty = function (o, k) { return delete o[k]; };
+  R.get = function (o, k, r) {
+    var pi = o !== null && typeof o === 'object' ? __propinfo(o, String(k)) : undefined;
+    if (pi !== undefined && (pi[0] & 2) !== 0) return pi[1] === undefined ? undefined : pi[1].call(r === undefined ? o : r);
+    return o[k];
+  };
+  R.getOwnPropertyDescriptor = __ownDesc;
+  R.getPrototypeOf = function (o) { return Object.getPrototypeOf(o); };
+  R.has = function (o, k) { return k in o; };
+  R.isExtensible = function (o) { return Object.isExtensible(o); };
+  R.ownKeys = function (o) { return Object.getOwnPropertyNames(o); };
+  R.preventExtensions = function (o) { Object.preventExtensions(o); return true; };
+  R.set = function (o, k, v, r) {
+    var pi = typeof o === 'object' && o !== null ? __propinfo(o, String(k)) : undefined;
+    if (pi !== undefined && (pi[0] & 2) !== 0) { if (pi[2] === undefined) return false; pi[2].call(r === undefined ? o : r, v); return true; }
+    if (pi !== undefined && ((pi[0] & 4) !== 0)) return false;
+    if (Object.isFrozen(o)) return false;
+    o[k] = v;
+    return true;
+  };
+  R.setPrototypeOf = function (o, p) { Object.setPrototypeOf(o, p); return true; };
+  return R;
+}
+var __DOMException;
+function __domEx(m, n) {
+  if (__DOMException) return new __DOMException(m, n);
+  var e = new Error(m);
+  e.name = n;
+  return e;
+}
+function __btoa(s) {
+  var tbl = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = '', i, a, b, c, n;
+  s = String(s);
+  for (i = 0; i < s.length; i++) if (s.charCodeAt(i) > 255) throw __domEx('Invalid character', 'InvalidCharacterError');
+  for (i = 0; i < s.length; i += 3) {
+    a = s.charCodeAt(i); b = i + 1 < s.length ? s.charCodeAt(i + 1) : -1; c = i + 2 < s.length ? s.charCodeAt(i + 2) : -1;
+    n = (a << 16) | ((b < 0 ? 0 : b) << 8) | (c < 0 ? 0 : c);
+    out += tbl.charAt((n >> 18) & 63) + tbl.charAt((n >> 12) & 63) + (b < 0 ? '=' : tbl.charAt((n >> 6) & 63)) + (c < 0 ? '=' : tbl.charAt(n & 63));
+  }
+  return out;
+}
+function __atob(s) {
+  var tbl = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = '', i, v, bits = 0, acc = 0, ch;
+  s = String(s).replace(/[\t\n\f\r ]/g, '');
+  if (s.length % 4 === 0) s = s.replace(/==?$/, '');
+  if (s.length % 4 === 1 || /[^A-Za-z0-9+\/]/.test(s)) throw __domEx('The string to be decoded is not correctly encoded.', 'InvalidCharacterError');
+  for (i = 0; i < s.length; i++) {
+    v = tbl.indexOf(s.charAt(i));
+    acc = (acc << 6) | v; bits += 6;
+    if (bits >= 8) { bits -= 8; ch = (acc >> bits) & 255; out += String.fromCharCode(ch); }
+  }
+  return out;
+}
 function __init_lib() {
   __init_arr();
+  __init_obj();
   var rma = String.prototype.matchAll;
   String.prototype.matchAll = function (re) {
     if (re instanceof RegExp && re.flags.indexOf('g') < 0) throw new TypeError('String.prototype.matchAll called with a non-global RegExp argument');
