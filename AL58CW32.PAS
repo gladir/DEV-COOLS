@@ -23,11 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 17 implementes (squelette, options, constantes,
-         lexeur, types, symboles, structure du programme, expressions,
-         booleens, affectations, tableaux, if et for, go to et switch,
-         procedures et appels, parametres par nom, entrees/sorties,
-         fonctions intrinseques) ; TODO 18 a 25 a faire.
+  ETAT : TODO 01 a 18 implementes (analyse complete du langage et
+         generation du code interne / listing .ASM) ; TODO 19 a 25 a
+         faire (encodeur binaire, PE, COFF, runtime, erreurs, pilotage,
+         validation).
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -394,19 +393,43 @@
               (TODO 22) : appels _A58RT_ABS, SIGN, SQRT, MAX, MIN,
               instructions x87 FSIN, FCOS, FPATAN, FYL2X, F2XM1...
 
-  TODO 18 - GENERATION DU CODE ASSEMBLEUR 80386 [A FAIRE]
+  TODO 18 - GENERATION DU CODE ASSEMBLEUR 80386 [IMPLEMENTE]
             Representation du code : liste d'instructions internes avec
               labels et operandes (registres 32 bits, memoire, immediats)
+              CodeTab (programme) et DeferTab (procedures et thunks,
+              places apres le programme) ; noms internes (Intern)
             Emetteur ASM textuel (actif seulement avec -asm) :
-              .386 / .MODEL FLAT, STDCALL / .DATA / .CODE / END
-            EmitInstr, EmitLabel, EmitComment, EmitBlankLine, NewLabel
-            Prologue/epilogue : PUSH EBP / MOV EBP,ESP / SUB ESP,n ...
-              MOV ESP,EBP / POP EBP / RET n
-            Sections : .text (code), .data (variables, own, tableaux,
-              switch), .rdata (chaines litterales dedoublonnees)
+              .386 / .MODEL FLAT / INCLUDELIB kernel32.lib / .DATA /
+              .CODE / END _A58P_Main (syntaxe de ML.PAS)
+            Emit, EmitLabel, EmitComment, EmitBlank, NewLabel
+            Prologue/epilogue : PUSH EBP / MOV EBP,ESP / SUB ESP,n /
+              locales mises a zero (REP STOSD) ... MOV ESP,EBP /
+              POP EBP / RET n ; taille du cadre corrigee en fin de corps
+            Sections : .CODE, .DATA (variables, own, tableaux et leurs
+              descripteurs, tables de switch, constantes reelles, chaines
+              litterales dedoublonnees avec 0 final)
             Imports Win32 declares via EXTERN/INCLUDELIB kernel32.lib
-            Le listing doit pouvoir etre assemble par MASM/ASM.PAS sans
-              modification (point d'entree _A58P_Main)
+            Generation en une passe, au fil de l'analyse : expressions
+              entieres (EAX) et reelles (x87, valeurs intermediaires sur
+              la pile machine), comparaisons, and / or / imp en sauts,
+              expressions conditionnelles, affectations (adresse de la
+              cible puis valeur), if, for a plusieurs clauses (selecteur
+              de clause), go to / switch (table + JMP indirect), appels
+              avec lien statique, arguments value / par nom (paire,
+              thunks), tableaux (descripteur, controle de bornes,
+              bornes dynamiques sur le tas), E/S et intrinseques
+            Contrat avec le runtime (TODO 22) : routines _A58RT_* appelees
+              avec arguments en registres : WRITESTR (EAX, EDX), WRITEZ,
+              WRITEINT, WRITEREAL (ST0), WRITEBOOL, NEWLINE, READINT,
+              READREAL, READBOOL, READLN, POW, RPOW, EXP, FLOOR, RTOI,
+              RSIGN, ISQRT, CHKIDX (conserve les registres), DIVZERO, ALLOC
+            Verifie avec ML.PAS : les 31 exemples SAMPLES\ALGOL58 sont
+              compiles, assembles, lies puis executes avec un runtime de
+              test ; les sorties correspondent aux resultats attendus
+            Contournements de ML.PAS (bogues observees) : PUSH OFFSET
+              etiquette_en_avant mal dimensionne a la passe 1 (passer par
+              un registre), TEST reg,imm mal encode, immediats 16 bits
+              emis sur 32 bits (AND AX,imm)
 
   TODO 19 - ENCODEUR BINAIRE x86-32 [A FAIRE]
             Encoder en octets le sous-ensemble 80386 genere : MOV, ADD,
@@ -1842,6 +1865,7 @@ Type
     ElemType   : Integer;     { tableau : type des elements          }
     ArrBytes   : LongInt;     { tableau : octets de donnees (bornes cst) }
     ArrDataOfs : LongInt;     { tableau local : decalage des donnees  }
+    ArrDescOfs : LongInt;     { tableau local : decalage du descripteur }
     ParamCount : Integer;     { procedure : nombre de parametres     }
     ParamSym   : Array[1..MAX_PARAM] Of Integer;
     ParamBytes : Integer;     { procedure : taille des parametres    }
@@ -2372,6 +2396,718 @@ Begin
 End;
 
 { ============================================================
+  CODE INTERNE ET LISTING ASM (TODO 18)
+
+  Le generateur produit une liste d'instructions 80386 structurees
+  (CodeTab), consommee par le listing .ASM optionnel (WriteListing)
+  puis par l'encodeur binaire (TODO 19). Les procedures et les thunks
+  sont ecrits dans une seconde liste (DeferTab) placee apres le
+  programme principal.
+
+  Conventions de generation :
+    - integer, Boolean, pointeurs : EAX ; real : ST(0) ; les valeurs
+      intermediaires sont rangees sur la pile machine (jamais en
+      registre a travers un appel)
+    - ECX, EDX, ESI, EDI : temporaires ; EBP : cadre ; ESP : pile
+    - appels de procedure : voir ParseCall (TODO 14) ; routines du
+      runtime : arguments dans les registres (TODO 22)
+  ============================================================ }
+Const
+  MAX_CODE      = {$IFDEF FPC}262144{$ELSE}2048{$ENDIF};
+  MAX_NAMES     = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
+  MAX_ASMSTR    = {$IFDEF FPC}4096{$ELSE}64{$ENDIF};
+  MAX_DATAITEMS = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};
+  MAX_TABENT    = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};
+  NAME_HASH     = {$IFDEF FPC}32768{$ELSE}1024{$ENDIF};
+
+Type
+  TReg = (
+    R_NONE,
+    R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI,   { 0..7 }
+    R_AX, R_AL, R_CL, R_DL, R_BL                              { 16/8 bits }
+  );
+
+  TOperandKind = (
+    OK_NONE,
+    OK_REG,       { Reg                                                  }
+    OK_IMM,       { Imm                                                  }
+    OK_MEM,       { [Sym + Base + Index*Scale + Imm], Size octets        }
+    OK_LABEL,     { cible de saut ou d'appel : Sym                       }
+    OK_OFFSET,    { OFFSET Sym + Imm                                     }
+    OK_ST         { ST(Imm)                                              }
+  );
+
+  TOperand = Record
+    Kind  : TOperandKind;
+    Reg   : TReg;
+    Base  : TReg;
+    Index : TReg;
+    Scale : Byte;          { 1, 2, 4 ou 8 }
+    Size  : Byte;          { memoire : 1, 2, 4, 8 octets (0 = non precise) }
+    Imm   : LongInt;
+    Sym   : Integer;       { indice dans NameTab, -1 si aucun }
+  End;
+
+  TOp = (
+    OP_NOP,
+    OP_LABEL,           { A.Sym = nom }
+    OP_COMMENT,         { A.Imm = indice dans AsmStrs }
+    OP_BLANK,
+    OP_MOV, OP_MOVZX, OP_LEA, OP_PUSH, OP_POP,
+    OP_ADD, OP_SUB, OP_IMUL, OP_IDIV, OP_CDQ, OP_NEG, OP_NOT,
+    OP_AND, OP_OR, OP_XOR, OP_CMP, OP_TEST, OP_INC, OP_DEC,
+    OP_SHR, OP_SAR,
+    OP_SETE, OP_SETNE, OP_SETL, OP_SETLE, OP_SETG, OP_SETGE,
+    OP_SETA, OP_SETAE, OP_SETB, OP_SETBE,
+    OP_JMP, OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE,
+    OP_JA, OP_JAE, OP_JB, OP_JBE, OP_JS,
+    OP_CALL, OP_RET, OP_REP_STOSD,
+    OP_FLD, OP_FST, OP_FSTP, OP_FILD,
+    OP_FADD, OP_FSUB, OP_FSUBR, OP_FMUL, OP_FDIV, OP_FDIVR,
+    OP_FCHS, OP_FABS, OP_FSQRT, OP_FSIN, OP_FCOS, OP_FPATAN,
+    OP_FYL2X, OP_FLDLN2, OP_FLD1, OP_FLDZ, OP_FXCH,
+    OP_FCOM, OP_FCOMP, OP_FNSTSW, OP_SAHF
+  );
+
+  TInstr = Record
+    Op   : TOp;
+    A, B : TOperand;
+  End;
+
+  TDataKind = (
+    DK_ZERO,     { Size octets a zero }
+    DK_STR,      { chaine : AsmStrs[Str], sans zero final }
+    DK_INT,      { un DWORD : Lo }
+    DK_REAL,     { un QWORD : Lo, Hi }
+    DK_TABLE     { DWORD d'adresses : TabEnt[First .. First+Count-1] }
+  );
+
+  TDataItem = Record
+    Name         : Integer;
+    Kind         : TDataKind;
+    Size         : LongInt;
+    Lo, Hi       : LongInt;
+    Str          : Integer;
+    First, Count : Integer;
+  End;
+
+  TDoubleBits = Record
+    Case Boolean Of
+      False : (D : Double);
+      True  : (Lo, Hi : LongInt);
+  End;
+
+Var
+  CodeTab    : Array[0..MAX_CODE - 1] Of TInstr;
+  CodeCount  : LongInt;       { Integer = 16 bits en mode TP }
+  DeferTab   : Array[0..MAX_CODE - 1] Of TInstr;
+  DeferCount : LongInt;
+  NameTab    : Array[0..MAX_NAMES - 1] Of TMangled;
+  NameCount  : Integer;
+  NameHash   : Array[0..NAME_HASH - 1] Of Integer;
+  AsmStrs    : Array[0..MAX_ASMSTR - 1] Of TString;
+  AsmStrCount: Integer;
+  DataTab    : Array[0..MAX_DATAITEMS - 1] Of TDataItem;
+  DataCount  : Integer;
+  TabEnt     : Array[0..MAX_TABENT - 1] Of Integer;
+  TabEntCount: Integer;
+  LabelSeq   : LongInt;       { compteur des etiquettes internes     }
+  ConstSeq   : LongInt;       { compteur des constantes en .data     }
+
+{ Nom interne unique (table de hachage) : retourne son indice }
+Function Intern(Const S : TMangled) : Integer;
+Var
+  H, I : LongInt;
+Begin
+  H := 5381;
+  For I := 1 To Length(S) Do
+    H := ((H * 33) + Ord(S[I])) And $7FFFFFF;
+  H := H Mod NAME_HASH;
+  While NameHash[H] >= 0 Do
+  Begin
+    If NameTab[NameHash[H]] = S Then
+    Begin
+      Intern := NameHash[H];
+      Exit;
+    End;
+    H := (H + 1) Mod NAME_HASH;
+  End;
+  If NameCount >= MAX_NAMES Then
+    FatalError('table des noms ASM pleine');
+  NameTab[NameCount] := S;
+  NameHash[H] := NameCount;
+  Intern := NameCount;
+  Inc(NameCount);
+End;
+
+Procedure CodeInit;
+Var
+  I : Integer;
+Begin
+  CodeCount   := 0;
+  DeferCount  := 0;
+  NameCount   := 0;
+  AsmStrCount := 0;
+  DataCount   := 0;
+  TabEntCount := 0;
+  LabelSeq    := 0;
+  ConstSeq    := 0;
+  For I := 0 To NAME_HASH - 1 Do
+    NameHash[I] := -1;
+End;
+
+{ ---- Operandes ---- }
+
+Function OpNone : TOperand;
+Var
+  O : TOperand;
+Begin
+  FillChar(O, SizeOf(O), 0);
+  O.Sym := -1;
+  OpNone := O;
+End;
+
+Function OpReg(R : TReg) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_REG;
+  O.Reg  := R;
+  OpReg := O;
+End;
+
+Function OpImm(V : LongInt) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_IMM;
+  O.Imm  := V;
+  OpImm := O;
+End;
+
+{ [Base + Disp] }
+Function OpMem(Base : TReg; Disp : LongInt; Size : Byte) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_MEM;
+  O.Base := Base;
+  O.Imm  := Disp;
+  O.Size := Size;
+  OpMem := O;
+End;
+
+{ [Sym + Disp] : cellule en .data }
+Function OpMemSym(Sym : Integer; Disp : LongInt; Size : Byte) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_MEM;
+  O.Sym  := Sym;
+  O.Imm  := Disp;
+  O.Size := Size;
+  OpMemSym := O;
+End;
+
+{ [Sym + Base + Index*Scale + Disp] }
+Function OpMemIdx(Sym : Integer; Base, Index : TReg; Scale : Byte;
+                  Disp : LongInt; Size : Byte) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind  := OK_MEM;
+  O.Sym   := Sym;
+  O.Base  := Base;
+  O.Index := Index;
+  O.Scale := Scale;
+  O.Imm   := Disp;
+  O.Size  := Size;
+  OpMemIdx := O;
+End;
+
+Function OpLabel(Sym : Integer) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_LABEL;
+  O.Sym  := Sym;
+  OpLabel := O;
+End;
+
+Function OpOffset(Sym : Integer) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_OFFSET;
+  O.Sym  := Sym;
+  OpOffset := O;
+End;
+
+Function OpST(I : Integer) : TOperand;
+Var
+  O : TOperand;
+Begin
+  O := OpNone;
+  O.Kind := OK_ST;
+  O.Imm  := I;
+  OpST := O;
+End;
+
+{ ---- Emission ---- }
+
+Procedure Emit(Op : TOp; Const A, B : TOperand);
+Begin
+  If CodeCount >= MAX_CODE Then
+    FatalError('programme trop long (code interne plein)');
+  CodeTab[CodeCount].Op := Op;
+  CodeTab[CodeCount].A  := A;
+  CodeTab[CodeCount].B  := B;
+  Inc(CodeCount);
+End;
+
+Procedure Emit0(Op : TOp);
+Begin
+  Emit(Op, OpNone, OpNone);
+End;
+
+Procedure Emit1(Op : TOp; Const A : TOperand);
+Begin
+  Emit(Op, A, OpNone);
+End;
+
+Procedure EmitLabel(Name : Integer);
+Begin
+  Emit(OP_LABEL, OpLabel(Name), OpNone);
+End;
+
+Function AsmStrAdd(Const S : TString) : Integer;
+Begin
+  If AsmStrCount >= MAX_ASMSTR Then
+    FatalError('table des chaines ASM pleine');
+  AsmStrs[AsmStrCount] := S;
+  AsmStrAdd := AsmStrCount;
+  Inc(AsmStrCount);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  Emit(OP_COMMENT, OpImm(AsmStrAdd(S)), OpNone);
+End;
+
+Procedure EmitBlank;
+Begin
+  Emit0(OP_BLANK);
+End;
+
+{ Etiquette interne _A58L_NNNNN }
+Function NewLabel : Integer;
+Begin
+  Inc(LabelSeq);
+  NewLabel := Intern(MangleLabel(LabelSeq));
+End;
+
+{ Deplace CodeTab[Start .. CodeCount-1] a la fin de DeferTab : les
+  procedures et les thunks sortent ainsi du flot du programme. }
+Procedure MoveToDeferred(Start : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := Start To CodeCount - 1 Do
+  Begin
+    If DeferCount >= MAX_CODE Then
+      FatalError('programme trop long (code differe plein)');
+    DeferTab[DeferCount] := CodeTab[I];
+    Inc(DeferCount);
+  End;
+  CodeCount := Start;
+End;
+
+{ ---- Donnees (.data) ---- }
+
+Function DataNew(NameIdx : Integer; K : TDataKind) : Integer;
+Begin
+  If DataCount >= MAX_DATAITEMS Then
+    FatalError('trop de donnees statiques');
+  FillChar(DataTab[DataCount], SizeOf(TDataItem), 0);
+  DataTab[DataCount].Name := NameIdx;
+  DataTab[DataCount].Kind := K;
+  DataTab[DataCount].Str  := -1;
+  DataNew := DataCount;
+  Inc(DataCount);
+End;
+
+{ Cellule de Size octets mise a zero }
+Procedure DataAddZero(NameIdx : Integer; Size : LongInt);
+Begin
+  DataTab[DataNew(NameIdx, DK_ZERO)].Size := Size;
+End;
+
+{ Chaine litterale : retourne le nom du label ; deux chaines egales
+  partagent la meme cellule. }
+Function DataStr(Const S : TString) : Integer;
+Var
+  I, N : Integer;
+Begin
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And
+       (AsmStrs[DataTab[I].Str] = S) Then
+    Begin
+      DataStr := DataTab[I].Name;
+      Exit;
+    End;
+  Inc(ConstSeq);
+  N := Intern(A58_STR_PFX + ItoS(ConstSeq));
+  I := DataNew(N, DK_STR);
+  DataTab[I].Str  := AsmStrAdd(S);
+  DataTab[I].Size := Length(S);
+  DataStr := N;
+End;
+
+{ Constante entiere en memoire (argument par nom, par reference) }
+Function DataInt(V : LongInt) : Integer;
+Var
+  I, N : Integer;
+Begin
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_INT) And (DataTab[I].Lo = V) Then
+    Begin
+      DataInt := DataTab[I].Name;
+      Exit;
+    End;
+  Inc(ConstSeq);
+  N := Intern('_A58C_' + ItoS(ConstSeq));
+  I := DataNew(N, DK_INT);
+  DataTab[I].Lo   := V;
+  DataTab[I].Size := 4;
+  DataInt := N;
+End;
+
+{ Constante reelle (QWORD) }
+Function DataReal(V : Double) : Integer;
+Var
+  I, N : Integer;
+  B    : TDoubleBits;
+Begin
+  B.D := V;
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_REAL) And (DataTab[I].Lo = B.Lo) And
+       (DataTab[I].Hi = B.Hi) Then
+    Begin
+      DataReal := DataTab[I].Name;
+      Exit;
+    End;
+  Inc(ConstSeq);
+  N := Intern('_A58C_' + ItoS(ConstSeq));
+  I := DataNew(N, DK_REAL);
+  DataTab[I].Lo   := B.Lo;
+  DataTab[I].Hi   := B.Hi;
+  DataTab[I].Size := 8;
+  DataReal := N;
+End;
+
+{ Table d'adresses (switch) : Entries = indices de noms }
+Procedure DataTable(NameIdx : Integer; Const Entries : Array Of Integer;
+                    Count : Integer);
+Var
+  I, K : Integer;
+Begin
+  K := DataNew(NameIdx, DK_TABLE);
+  DataTab[K].First := TabEntCount;
+  DataTab[K].Count := Count;
+  DataTab[K].Size  := 4 * Count;
+  For I := 0 To Count - 1 Do
+  Begin
+    If TabEntCount >= MAX_TABENT Then
+      FatalError('tables de switch trop grandes');
+    TabEnt[TabEntCount] := Entries[I];
+    Inc(TabEntCount);
+  End;
+End;
+
+{ ---- Listing texte (MASM / ML.PAS) ---- }
+
+Function RegName(R : TReg) : TString;
+Begin
+  Case R Of
+    R_EAX : RegName := 'EAX';
+    R_ECX : RegName := 'ECX';
+    R_EDX : RegName := 'EDX';
+    R_EBX : RegName := 'EBX';
+    R_ESP : RegName := 'ESP';
+    R_EBP : RegName := 'EBP';
+    R_ESI : RegName := 'ESI';
+    R_EDI : RegName := 'EDI';
+    R_AL  : RegName := 'AL';
+    R_CL  : RegName := 'CL';
+    R_DL  : RegName := 'DL';
+    R_BL  : RegName := 'BL';
+    R_AX  : RegName := 'AX';
+  Else
+    RegName := '?';
+  End;
+End;
+
+Function OpName(Op : TOp) : TString;
+Begin
+  Case Op Of
+    OP_MOV: OpName := 'MOV';       OP_MOVZX: OpName := 'MOVZX';
+    OP_LEA: OpName := 'LEA';       OP_PUSH: OpName := 'PUSH';
+    OP_POP: OpName := 'POP';       OP_ADD: OpName := 'ADD';
+    OP_SUB: OpName := 'SUB';       OP_IMUL: OpName := 'IMUL';
+    OP_IDIV: OpName := 'IDIV';     OP_CDQ: OpName := 'CDQ';
+    OP_NEG: OpName := 'NEG';       OP_NOT: OpName := 'NOT';
+    OP_AND: OpName := 'AND';       OP_OR: OpName := 'OR';
+    OP_XOR: OpName := 'XOR';       OP_CMP: OpName := 'CMP';
+    OP_TEST: OpName := 'TEST';     OP_INC: OpName := 'INC';
+    OP_DEC: OpName := 'DEC';       OP_SHR: OpName := 'SHR';
+    OP_SAR: OpName := 'SAR';
+    OP_SETE: OpName := 'SETE';     OP_SETNE: OpName := 'SETNE';
+    OP_SETL: OpName := 'SETL';     OP_SETLE: OpName := 'SETLE';
+    OP_SETG: OpName := 'SETG';     OP_SETGE: OpName := 'SETGE';
+    OP_SETA: OpName := 'SETA';     OP_SETAE: OpName := 'SETAE';
+    OP_SETB: OpName := 'SETB';     OP_SETBE: OpName := 'SETBE';
+    OP_JMP: OpName := 'JMP';       OP_JE: OpName := 'JE';
+    OP_JNE: OpName := 'JNE';       OP_JL: OpName := 'JL';
+    OP_JLE: OpName := 'JLE';       OP_JG: OpName := 'JG';
+    OP_JGE: OpName := 'JGE';       OP_JA: OpName := 'JA';
+    OP_JAE: OpName := 'JAE';       OP_JB: OpName := 'JB';
+    OP_JBE: OpName := 'JBE';       OP_JS: OpName := 'JS';
+    OP_CALL: OpName := 'CALL';     OP_RET: OpName := 'RET';
+    OP_REP_STOSD: OpName := 'REP STOSD';
+    OP_FLD: OpName := 'FLD';       OP_FST: OpName := 'FST';
+    OP_FSTP: OpName := 'FSTP';     OP_FILD: OpName := 'FILD';
+    OP_FADD: OpName := 'FADD';     OP_FSUB: OpName := 'FSUB';
+    OP_FSUBR: OpName := 'FSUBR';   OP_FMUL: OpName := 'FMUL';
+    OP_FDIV: OpName := 'FDIV';     OP_FDIVR: OpName := 'FDIVR';
+    OP_FCHS: OpName := 'FCHS';     OP_FABS: OpName := 'FABS';
+    OP_FSQRT: OpName := 'FSQRT';   OP_FSIN: OpName := 'FSIN';
+    OP_FCOS: OpName := 'FCOS';     OP_FPATAN: OpName := 'FPATAN';
+    OP_FYL2X: OpName := 'FYL2X';   OP_FLDLN2: OpName := 'FLDLN2';
+    OP_FLD1: OpName := 'FLD1';     OP_FLDZ: OpName := 'FLDZ';
+    OP_FXCH: OpName := 'FXCH';     OP_FCOM: OpName := 'FCOM';
+    OP_FCOMP: OpName := 'FCOMP';   OP_FNSTSW: OpName := 'FNSTSW';
+    OP_SAHF: OpName := 'SAHF';
+  Else
+    OpName := '?';
+  End;
+End;
+
+Function SizePtr(Size : Byte) : TString;
+Begin
+  Case Size Of
+    1 : SizePtr := 'BYTE PTR ';
+    2 : SizePtr := 'WORD PTR ';
+    4 : SizePtr := 'DWORD PTR ';
+    8 : SizePtr := 'QWORD PTR ';
+  Else
+    SizePtr := '';
+  End;
+End;
+
+Function SignedStr(V : LongInt) : TString;
+Begin
+  If V >= 0 Then
+    SignedStr := '+' + ItoS(V)
+  Else
+    SignedStr := ItoS(V);
+End;
+
+Function OperandText(Const O : TOperand; Op : TOp) : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  Case O.Kind Of
+    OK_REG    : S := RegName(O.Reg);
+    OK_IMM    : S := ItoS(O.Imm);
+    OK_LABEL  : S := NameTab[O.Sym];
+    OK_ST     : S := 'ST(' + ItoS(O.Imm) + ')';
+    OK_OFFSET :
+      Begin
+        S := 'OFFSET ' + NameTab[O.Sym];
+        If O.Imm <> 0 Then S := S + SignedStr(O.Imm);
+      End;
+    OK_MEM    :
+      Begin
+        If Op <> OP_LEA Then S := SizePtr(O.Size);
+        S := S + '[';
+        If O.Sym >= 0 Then S := S + NameTab[O.Sym];
+        If O.Base <> R_NONE Then
+        Begin
+          If O.Sym >= 0 Then S := S + '+';
+          S := S + RegName(O.Base);
+        End;
+        If O.Index <> R_NONE Then
+        Begin
+          If (O.Sym >= 0) Or (O.Base <> R_NONE) Then S := S + '+';
+          S := S + RegName(O.Index) + '*' + ItoS(O.Scale);
+        End;
+        If O.Imm <> 0 Then S := S + SignedStr(O.Imm);
+        S := S + ']';
+      End;
+  End;
+  OperandText := S;
+End;
+
+Function InstrText(Const I : TInstr) : TString;
+Var
+  S : TString;
+Begin
+  S := '        ' + OpName(I.Op);
+  If I.A.Kind <> OK_NONE Then
+  Begin
+    While Length(S) < 16 Do S := S + ' ';
+    If S[Length(S)] <> ' ' Then S := S + ' ';
+    S := S + OperandText(I.A, I.Op);
+    If I.B.Kind <> OK_NONE Then
+      S := S + ', ' + OperandText(I.B, I.Op);
+  End;
+  InstrText := S;
+End;
+
+{ Texte d'une chaine en DB : 'abc', 13, 10 }
+Function DbText(Const S : TString) : TString;
+Var
+  R      : TString;
+  I      : Integer;
+  InQ    : Boolean;
+Begin
+  R   := '';
+  InQ := False;
+  For I := 1 To Length(S) Do
+  Begin
+    If (S[I] >= ' ') And (S[I] <= '~') And (S[I] <> '''') Then
+    Begin
+      If Not InQ Then
+      Begin
+        If R <> '' Then R := R + ', ';
+        R := R + '''';
+        InQ := True;
+      End;
+      R := R + S[I];
+    End
+    Else
+    Begin
+      If InQ Then
+      Begin
+        R := R + '''';
+        InQ := False;
+      End;
+      If R <> '' Then R := R + ', ';
+      R := R + ItoS(Ord(S[I]));
+    End;
+  End;
+  If InQ Then R := R + '''';
+  If R = '' Then R := '0';
+  DbText := R;
+End;
+
+Function HexDword(V : LongInt) : TString;
+Const
+  Digits : String[16] = '0123456789ABCDEF';
+Var
+  R : TString;
+  I : Integer;
+  W : LongInt;
+Begin
+  R := '';
+  W := V;
+  For I := 1 To 8 Do
+  Begin
+    R := Digits[(W And 15) + 1] + R;
+    W := (W Shr 4) And $0FFFFFFF;
+  End;
+  HexDword := '0' + R + 'h';
+End;
+
+Procedure WriteInstrList(Var F : Text; Const Tab : Array Of TInstr;
+                         Count : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To Count - 1 Do
+    Case Tab[I].Op Of
+      OP_NOP     : ;
+      OP_LABEL   : WriteLn(F, NameTab[Tab[I].A.Sym], ':');
+      OP_COMMENT : WriteLn(F, '        ; ', AsmStrs[Tab[I].A.Imm]);
+      OP_BLANK   : WriteLn(F);
+    Else
+      WriteLn(F, InstrText(Tab[I]));
+    End;
+End;
+
+{ Ecrit le listing .ASM (ML.PAS / MASM 32 bits) }
+Procedure WriteListing(Const FileName : TString);
+Var
+  F    : Text;
+  I, J : Integer;
+  Name : TString;
+Begin
+  Assign(F, FileName);
+  Rewrite(F);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + FileName);
+  WriteLn(F, '; ', FileName, ' - genere par AL58CW32 ',
+          AL58CW32_VERSION, ' a partir de ', Opts.SrcFile);
+  WriteLn(F);
+  WriteLn(F, '.386');
+  WriteLn(F, '.MODEL FLAT');
+  WriteLn(F);
+  WriteLn(F, 'INCLUDELIB kernel32.lib');
+  WriteLn(F, 'EXTERN GetStdHandle:PROC');
+  WriteLn(F, 'EXTERN WriteFile:PROC');
+  WriteLn(F, 'EXTERN ReadFile:PROC');
+  WriteLn(F, 'EXTERN ExitProcess:PROC');
+  WriteLn(F, 'EXTERN GetProcessHeap:PROC');
+  WriteLn(F, 'EXTERN HeapAlloc:PROC');
+  WriteLn(F);
+  WriteLn(F, '.DATA');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Name := NameTab[DataTab[I].Name];
+    While Length(Name) < 16 Do Name := Name + ' ';
+    Case DataTab[I].Kind Of
+      DK_ZERO  :
+        WriteLn(F, Name, ' DD ', (DataTab[I].Size + 3) Div 4, ' DUP(0)');
+      DK_STR   :
+        WriteLn(F, Name, ' DB ', DbText(AsmStrs[DataTab[I].Str]), ', 0');
+      DK_INT   :
+        WriteLn(F, Name, ' DD ', DataTab[I].Lo);
+      DK_REAL  :
+        WriteLn(F, Name, ' DD ', HexDword(DataTab[I].Lo), ', ',
+                HexDword(DataTab[I].Hi));
+      DK_TABLE :
+        Begin
+          Write(F, Name, ' DD ');
+          For J := 0 To DataTab[I].Count - 1 Do
+          Begin
+            If J > 0 Then Write(F, ', ');
+            Write(F, NameTab[TabEnt[DataTab[I].First + J]]);
+          End;
+          WriteLn(F);
+        End;
+    End;
+  End;
+  WriteLn(F);
+  WriteLn(F, '.CODE');
+  WriteInstrList(F, CodeTab, CodeCount);
+  WriteLn(F);
+  WriteInstrList(F, DeferTab, DeferCount);
+  WriteLn(F);
+  WriteLn(F, 'END ', A58_MAIN_NAME);
+  Close(F);
+  If IOResult <> 0 Then
+    FatalError('erreur d''ecriture de ' + FileName);
+End;
+
+{ ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 07 a 17)
   ============================================================ }
 Var
@@ -2499,6 +3235,7 @@ End;
 Procedure ParseItem; Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseIO(Const Tok : TToken); Forward;
+Procedure GenDeclareData(S : Integer); Forward;
 Procedure ParseLabelDef(Const Name : TString; Line, Col : Integer);
   Forward;
 
@@ -3554,6 +4291,14 @@ Begin
                 ' modifie le parametre ' + SymTab[P].Name);
         Exit;
       End;
+      If Conv <> CV_NONE Then
+      Begin
+        ErrorAt(Line, Col, 'argument de type ' +
+                TypeName(ExprTab[E].Typ) + ': ' + ProcName +
+                ' modifie le parametre ' + SymTab[P].Name + ' (' +
+                TypeName(SymTab[P].TypeIdx) + '), meme type exige');
+        Exit;
+      End;
       { l'ecriture traverse l'appelant : son parametre par nom aussi }
       If (ExprTab[E].Kind = EX_VAR) And
          (SymTab[ExprTab[E].Sym].Kind = SK_PARAM_NAME) Then
@@ -4033,7 +4778,10 @@ Begin
           Exit;
         End;
         If S < 0 Then
+        Begin
           S := SymImplicit(Tok.Val, Tok.Line, Tok.Col);
+          GenDeclareData(S);
+        End;
         If SymIsArrayLike(S) Then
           ErrorAt(Tok.Line, Tok.Col, 'indice attendu pour le tableau ' +
                   Tok.Val)
@@ -4227,6 +4975,1323 @@ Begin
   ExprDump(ExprTab[N].R, Depth + 1);
 End;
 
+{ ---- Generation du code : operandes et variables (TODO 18) ------- }
+
+Procedure CallRT(Const Name : TString);
+Begin
+  Emit1(OP_CALL, OpLabel(Intern(A58_RT_PFX + Name)));
+End;
+
+Procedure LoadImm(R : TReg; V : LongInt);
+Begin
+  If V = 0 Then
+    Emit(OP_XOR, OpReg(R), OpReg(R))
+  Else
+    Emit(OP_MOV, OpReg(R), OpImm(V));
+End;
+
+{ ST(0) -> pile machine (SUB ESP,8 ; FSTP QWORD [ESP]) }
+Procedure SpillReal;
+Begin
+  Emit(OP_SUB, OpReg(R_ESP), OpImm(8));
+  Emit1(OP_FSTP, OpMem(R_ESP, 0, 8));
+End;
+
+Function IsRealT(T : Integer) : Boolean;
+Begin
+  IsRealT := (T = TY_IDX_REAL);
+End;
+
+Function ValSize(T : Integer) : Byte;
+Begin
+  If T = TY_IDX_REAL Then ValSize := 8 Else ValSize := 4;
+End;
+
+{ Registre contenant le cadre de la procedure de niveau Level : EBP
+  pour le niveau courant, sinon ECX apres remontee des liens
+  statiques ([cadre+8]). }
+Function GenFrameReg(Level : Integer) : TReg;
+Var
+  K : Integer;
+Begin
+  K := CurLevel - Level;
+  If K <= 0 Then
+  Begin
+    GenFrameReg := R_EBP;
+    Exit;
+  End;
+  Emit(OP_MOV, OpReg(R_ECX), OpMem(R_EBP, ABI_PARAM_BASE, 4));
+  Dec(K);
+  While K > 0 Do
+  Begin
+    Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ECX, ABI_PARAM_BASE, 4));
+    Dec(K);
+  End;
+  GenFrameReg := R_ECX;
+End;
+
+{ Cellule d'une variable scalaire (globale, locale ou parametre par
+  valeur) ; resultat d'une fonction pour SK_FUNC. }
+Function SymCell(S : Integer; Extra : LongInt; Size : Byte) : TOperand;
+Var
+  F : TReg;
+Begin
+  If SymTab[S].Kind = SK_FUNC Then
+  Begin
+    SymCell := OpMem(R_EBP, SymResultOfs + Extra, Size);
+    Exit;
+  End;
+  If SymTab[S].Storage = SC_GLOBAL Then
+    SymCell := OpMemSym(Intern(SymTab[S].Mangled), Extra, Size)
+  Else
+  Begin
+    F := GenFrameReg(SymTab[S].Level);
+    SymCell := OpMem(F, SymTab[S].Offset + Extra, Size);
+  End;
+End;
+
+Function DescName(S : Integer) : Integer;
+Begin
+  DescName := Intern('_A58DSC_' + Copy(SymTab[S].Mangled,
+                     Length(A58_ARR_PFX) + 1, 120));
+End;
+
+{ ESI := adresse du descripteur du tableau S : declare (global ou
+  local) ou parametre tableau (pointeur recu). Descripteur (DWORD) :
+  [0] base, [1] nombre de dimensions, puis par dimension lo, hi,
+  pas (en elements). }
+Procedure GenDescToESI(S : Integer);
+Var
+  F : TReg;
+Begin
+  If SymTab[S].Kind = SK_ARRAY Then
+  Begin
+    If SymTab[S].Storage = SC_GLOBAL Then
+      Emit(OP_MOV, OpReg(R_ESI), OpOffset(DescName(S)))
+    Else
+    Begin
+      F := GenFrameReg(SymTab[S].Level);
+      Emit(OP_LEA, OpReg(R_ESI), OpMem(F, SymTab[S].ArrDescOfs, 0));
+    End;
+  End
+  Else
+  Begin
+    F := GenFrameReg(SymTab[S].Level);
+    Emit(OP_MOV, OpReg(R_ESI), OpMem(F, SymTab[S].Offset, 4));
+  End;
+End;
+
+{ Acces a un parametre par nom : EAX := valeur (WantAddr = False) ou
+  adresse de l'argument (WantAddr = True). Paire [mot0, mot1] : mot0 =
+  thunk (0 = reference directe), mot1 = contexte ou adresse. Un
+  thunk est appele avec EAX = contexte, ECX = 0 (valeur) ou 1 (adresse),
+  et rend la valeur en EAX / ST(0) ou l'adresse en EAX. }
+Procedure GenByName(S : Integer; WantAddr : Boolean);
+Var
+  F            : TReg;
+  Off          : LongInt;
+  Lref, Ldone  : Integer;
+Begin
+  F   := GenFrameReg(SymTab[S].Level);
+  Off := SymTab[S].Offset;
+  Lref  := NewLabel;
+  Ldone := NewLabel;
+  Emit(OP_MOV, OpReg(R_EDX), OpMem(F, Off, 4));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(F, Off + 4, 4));
+  Emit(OP_TEST, OpReg(R_EDX), OpReg(R_EDX));
+  If WantAddr Then
+    Emit1(OP_JE, OpLabel(Ldone))
+  Else
+    Emit1(OP_JE, OpLabel(Lref));
+  If WantAddr Then
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(1))
+  Else
+    Emit(OP_XOR, OpReg(R_ECX), OpReg(R_ECX));
+  Emit1(OP_CALL, OpReg(R_EDX));
+  If Not WantAddr Then
+  Begin
+    Emit1(OP_JMP, OpLabel(Ldone));
+    EmitLabel(Lref);
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_EAX));
+    If IsRealT(SymTab[S].TypeIdx) Then
+      Emit1(OP_FLD, OpMem(R_EDX, 0, 8))
+    Else
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
+  End;
+  EmitLabel(Ldone);
+End;
+
+{ Valeur d'une variable scalaire -> EAX ou ST(0) }
+Procedure GenLoadVar(S : Integer);
+Var
+  T : Integer;
+Begin
+  T := SymTab[S].TypeIdx;
+  If SymTab[S].Kind = SK_PARAM_NAME Then
+    GenByName(S, False)
+  Else If IsRealT(T) Then
+    Emit1(OP_FLD, SymCell(S, 0, 8))
+  Else
+    Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 0, 4));
+End;
+
+{ Adresse d'une variable scalaire -> EAX }
+Procedure GenAddrVar(S : Integer);
+Var
+  O : TOperand;
+Begin
+  If SymTab[S].Kind = SK_PARAM_NAME Then
+  Begin
+    GenByName(S, True);
+    Exit;
+  End;
+  O := SymCell(S, 0, 0);
+  If O.Sym >= 0 Then
+    Emit(OP_MOV, OpReg(R_EAX), OpOffset(O.Sym))
+  Else
+    Emit(OP_LEA, OpReg(R_EAX), O);
+End;
+
+{ Pas (en elements) de la dimension K d'un tableau a bornes connues }
+Function KnownStride(S, K : Integer) : LongInt;
+Var
+  J       : Integer;
+  Stride  : LongInt;
+Begin
+  Stride := 1;
+  For J := K + 1 To SymTab[S].ArrDims Do
+    Stride := Stride * (SymTab[S].ArrHi[J] - SymTab[S].ArrLo[J] + 1);
+  KnownStride := Stride;
+End;
+
+Procedure GenExpr(N : Integer); Forward;
+Procedure GenExprAs(N, T : Integer); Forward;
+Procedure GenAssign(N : Integer; NeedValue : Boolean); Forward;
+
+{ Adresse d'un element de tableau -> EAX. Chaque indice est controle
+  par _A58RT_CHKIDX (sauf constante verifiee a la compilation) ;
+  indice lineaire = somme (i_k - lo_k) * pas_k. }
+Procedure GenIndexAddr(N : Integer);
+Var
+  S, K, Dims, Item, E : Integer;
+  Known, Chk          : Boolean;
+  Off                 : LongInt;
+Begin
+  S    := ExprTab[N].Sym;
+  Dims := ExprTab[N].IntVal;
+  Known := (SymTab[S].Kind = SK_ARRAY) And (Not SymTab[S].ArrDynamic) And
+           (SymTab[S].ArrDims = Dims);
+  Item := ExprTab[N].L;
+  K := 0;
+  While Item >= 0 Do
+  Begin
+    Inc(K);
+    E := ExprTab[Item].L;
+    If K > 1 Then Emit1(OP_PUSH, OpReg(R_EAX));        { cumul partiel }
+    GenExprAs(E, TY_IDX_INTEGER);
+    Off := 8 + 12 * (K - 1);                           { lo ; hi = +4 }
+    Chk := (Not Known) Or (ExprTab[E].Kind <> EX_INT);
+    GenDescToESI(S);
+    If Chk Then
+    Begin
+      If Known Then
+      Begin
+        Emit(OP_MOV, OpReg(R_ECX), OpImm(SymTab[S].ArrLo[K]));
+        Emit(OP_MOV, OpReg(R_EDX), OpImm(SymTab[S].ArrHi[K]));
+      End
+      Else
+      Begin
+        Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, Off, 4));
+        Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESI, Off + 4, 4));
+      End;
+      CallRT('CHKIDX');
+    End;
+    If Known Then
+    Begin
+      If SymTab[S].ArrLo[K] <> 0 Then
+        Emit(OP_SUB, OpReg(R_EAX), OpImm(SymTab[S].ArrLo[K]));
+      If KnownStride(S, K) <> 1 Then
+      Begin
+        Emit(OP_MOV, OpReg(R_ECX), OpImm(KnownStride(S, K)));
+        Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+      End;
+    End
+    Else
+    Begin
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, Off, 4));
+      Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, Off + 8, 4));
+      Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+    End;
+    If K > 1 Then
+    Begin
+      Emit1(OP_POP, OpReg(R_ECX));
+      Emit(OP_ADD, OpReg(R_EAX), OpReg(R_ECX));
+    End;
+    Item := ExprTab[Item].R;
+  End;
+  GenDescToESI(S);
+  Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, 0, 4));
+  Emit(OP_LEA, OpReg(R_EAX),
+       OpMemIdx(-1, R_ECX, R_EAX, ValSize(ExprTab[N].Typ), 0, 0));
+End;
+
+{ Adresse d'une variable ou d'un element -> EAX }
+Procedure GenAddrNode(E : Integer);
+Begin
+  If ExprTab[E].Kind = EX_INDEX Then
+    GenIndexAddr(E)
+  Else
+    GenAddrVar(ExprTab[E].Sym);
+End;
+
+{ Conversion de la valeur courante de From vers Dest }
+Procedure GenConvert(From, Dest : Integer);
+Begin
+  If From = Dest Then Exit;
+  If (Dest = TY_IDX_REAL) And
+     ((From = TY_IDX_INTEGER) Or (From = TY_IDX_BOOLEAN)) Then
+  Begin
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+  End
+  Else If (Dest = TY_IDX_INTEGER) And (From = TY_IDX_REAL) Then
+    CallRT('RTOI')
+  Else If (Dest = TY_IDX_BOOLEAN) And (From = TY_IDX_INTEGER) Then
+  Begin
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_SETNE, OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+  End;
+End;
+
+Procedure GenExprAs(N, T : Integer);
+Begin
+  GenExpr(N);
+  GenConvert(ExprTab[N].Typ, T);
+End;
+
+{ ---- Comparaisons et sauts conditionnels ---- }
+
+Function InvRel(Const Op : TString) : TString;
+Begin
+  If Op = '=' Then InvRel := '#'
+  Else If Op = '#' Then InvRel := '='
+  Else If Op = '<' Then InvRel := '>='
+  Else If Op = '<=' Then InvRel := '>'
+  Else If Op = '>' Then InvRel := '<='
+  Else InvRel := '<';
+End;
+
+{ Saut selon Op ; entiers : drapeaux signes ; reels : apres
+  FCOMP [ESP] (droite en ST0, gauche en memoire) et SAHF, la
+  relation est inversee et lue avec les drapeaux non signes. }
+Function JccFor(Const Op : TString; IsReal : Boolean) : TOp;
+Begin
+  If Op = '=' Then JccFor := OP_JE
+  Else If Op = '#' Then JccFor := OP_JNE
+  Else If IsReal Then
+  Begin
+    If Op = '<' Then JccFor := OP_JA
+    Else If Op = '<=' Then JccFor := OP_JAE
+    Else If Op = '>' Then JccFor := OP_JB
+    Else JccFor := OP_JBE;
+  End
+  Else
+  Begin
+    If Op = '<' Then JccFor := OP_JL
+    Else If Op = '<=' Then JccFor := OP_JLE
+    Else If Op = '>' Then JccFor := OP_JG
+    Else JccFor := OP_JGE;
+  End;
+End;
+
+Function SetFor(Const Op : TString; IsReal : Boolean) : TOp;
+Begin
+  If Op = '=' Then SetFor := OP_SETE
+  Else If Op = '#' Then SetFor := OP_SETNE
+  Else If IsReal Then
+  Begin
+    If Op = '<' Then SetFor := OP_SETA
+    Else If Op = '<=' Then SetFor := OP_SETAE
+    Else If Op = '>' Then SetFor := OP_SETB
+    Else SetFor := OP_SETBE;
+  End
+  Else
+  Begin
+    If Op = '<' Then SetFor := OP_SETL
+    Else If Op = '<=' Then SetFor := OP_SETLE
+    Else If Op = '>' Then SetFor := OP_SETG
+    Else SetFor := OP_SETGE;
+  End;
+End;
+
+{ Evalue les deux operandes d'une relation et positionne les drapeaux.
+  Retourne True si la comparaison est reelle (mapping non signe). }
+Function GenCompareFlags(N : Integer) : Boolean;
+Var
+  L, R, Dom : Integer;
+Begin
+  L := ExprTab[N].L;
+  R := ExprTab[N].R;
+  Dom := TypeArith(ExprTab[L].Typ, ExprTab[R].Typ);
+  If Dom = TY_IDX_REAL Then
+  Begin
+    GenExprAs(L, TY_IDX_REAL);
+    SpillReal;
+    GenExprAs(R, TY_IDX_REAL);
+    Emit1(OP_FCOMP, OpMem(R_ESP, 0, 8));
+    Emit1(OP_FNSTSW, OpReg(R_AX));
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(8));
+    Emit0(OP_SAHF);
+    GenCompareFlags := True;
+  End
+  Else
+  Begin
+    GenExprAs(L, TY_IDX_INTEGER);
+    If ExprTab[R].Kind = EX_INT Then
+      Emit(OP_CMP, OpReg(R_EAX), OpImm(ExprTab[R].IntVal))
+    Else
+    Begin
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      GenExprAs(R, TY_IDX_INTEGER);
+      Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+      Emit1(OP_POP, OpReg(R_EAX));
+      Emit(OP_CMP, OpReg(R_EAX), OpReg(R_ECX));
+    End;
+    GenCompareFlags := False;
+  End;
+End;
+
+{ Saute vers Lbl si la condition N est vraie (OnTrue) ou fausse }
+Procedure GenJump(N, Lbl : Integer; OnTrue : Boolean);
+Var
+  Skip   : Integer;
+  Op     : TString;
+  IsReal : Boolean;
+Begin
+  If ExprTab[N].Kind In [EX_BOOL, EX_INT] Then
+  Begin
+    If (ExprTab[N].IntVal <> 0) = OnTrue Then
+      Emit1(OP_JMP, OpLabel(Lbl));
+    Exit;
+  End;
+  If (ExprTab[N].Kind = EX_UNARY) And (ExprTab[N].Op = 'not') Then
+  Begin
+    GenJump(ExprTab[N].L, Lbl, Not OnTrue);
+    Exit;
+  End;
+  If ExprTab[N].Kind = EX_BINARY Then
+  Begin
+    Op := ExprTab[N].Op;
+    If OpIsRel(Op) Then
+    Begin
+      IsReal := GenCompareFlags(N);
+      If Not OnTrue Then Op := InvRel(Op);
+      Emit1(JccFor(Op, IsReal), OpLabel(Lbl));
+      Exit;
+    End;
+    If (Op = 'and') Or (Op = 'or') Or (Op = 'imp') Then
+    Begin
+      If Op = 'imp' Then
+      Begin
+        { a imp b = (non a) ou b }
+        If OnTrue Then
+        Begin
+          GenJump(ExprTab[N].L, Lbl, False);
+          GenJump(ExprTab[N].R, Lbl, True);
+        End
+        Else
+        Begin
+          Skip := NewLabel;
+          GenJump(ExprTab[N].L, Skip, False);
+          GenJump(ExprTab[N].R, Lbl, False);
+          EmitLabel(Skip);
+        End;
+        Exit;
+      End;
+      If (Op = 'and') = (Not OnTrue) Then
+      Begin
+        { and / faux  ou  or / vrai : l'un des deux suffit }
+        GenJump(ExprTab[N].L, Lbl, OnTrue);
+        GenJump(ExprTab[N].R, Lbl, OnTrue);
+      End
+      Else
+      Begin
+        Skip := NewLabel;
+        GenJump(ExprTab[N].L, Skip, Not OnTrue);
+        GenJump(ExprTab[N].R, Lbl, OnTrue);
+        EmitLabel(Skip);
+      End;
+      Exit;
+    End;
+  End;
+  GenExpr(N);
+  Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+  If OnTrue Then
+    Emit1(OP_JNE, OpLabel(Lbl))
+  Else
+    Emit1(OP_JE, OpLabel(Lbl));
+End;
+
+{ ---- Generation du code : expressions ---------------------------- }
+
+{ Operation arithmetique entiere : EAX := EAX op ECX }
+Procedure GenIntOp(Const Op : TString; RightIsConst : Boolean);
+Var
+  Ok : Integer;
+Begin
+  If Op = '+' Then
+    Emit(OP_ADD, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '-' Then
+    Emit(OP_SUB, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '*' Then
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '^' Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_ECX));
+    CallRT('POW');
+  End
+  Else
+  Begin
+    { / div mod : division par zero controlee si le diviseur varie }
+    If Not RightIsConst Then
+    Begin
+      Ok := NewLabel;
+      Emit(OP_TEST, OpReg(R_ECX), OpReg(R_ECX));
+      Emit1(OP_JNE, OpLabel(Ok));
+      CallRT('DIVZERO');
+      EmitLabel(Ok);
+    End;
+    Emit0(OP_CDQ);
+    Emit1(OP_IDIV, OpReg(R_ECX));
+    If Op = 'mod' Then Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+  End;
+End;
+
+Procedure GenBinary(N : Integer);
+Var
+  Op        : TString;
+  L, R, T   : Integer;
+  IsReal    : Boolean;
+  Lf, Le    : Integer;
+Begin
+  Op := ExprTab[N].Op;
+  L  := ExprTab[N].L;
+  R  := ExprTab[N].R;
+  T  := ExprTab[N].Typ;
+
+  If OpIsRel(Op) Then
+  Begin
+    IsReal := GenCompareFlags(N);
+    Emit1(SetFor(Op, IsReal), OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    Exit;
+  End;
+
+  If OpIsLogic(Op) Then
+  Begin
+    If Op = 'eqv' Then
+    Begin
+      GenExprAs(L, TY_IDX_BOOLEAN);
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      GenExprAs(R, TY_IDX_BOOLEAN);
+      Emit1(OP_POP, OpReg(R_ECX));
+      Emit(OP_CMP, OpReg(R_ECX), OpReg(R_EAX));
+      Emit1(OP_SETE, OpReg(R_AL));
+      Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    End
+    Else
+    Begin
+      Lf := NewLabel;
+      Le := NewLabel;
+      GenJump(N, Lf, False);
+      Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+      Emit1(OP_JMP, OpLabel(Le));
+      EmitLabel(Lf);
+      Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+      EmitLabel(Le);
+    End;
+    Exit;
+  End;
+
+  If T = TY_IDX_REAL Then
+  Begin
+    GenExprAs(L, TY_IDX_REAL);
+    SpillReal;
+    GenExprAs(R, TY_IDX_REAL);
+    If Op = '^' Then
+    Begin
+      Emit1(OP_FLD, OpMem(R_ESP, 0, 8));       { ST0 = base, ST1 = exposant }
+      CallRT('RPOW');
+    End
+    Else If Op = '+' Then
+      Emit1(OP_FADD, OpMem(R_ESP, 0, 8))
+    Else If Op = '*' Then
+      Emit1(OP_FMUL, OpMem(R_ESP, 0, 8))
+    Else If Op = '-' Then
+      Emit1(OP_FSUBR, OpMem(R_ESP, 0, 8))
+    Else
+      Emit1(OP_FDIVR, OpMem(R_ESP, 0, 8));     { / }
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(8));
+    Exit;
+  End;
+
+  { entiers }
+  GenExprAs(L, TY_IDX_INTEGER);
+  If (ExprTab[R].Kind = EX_INT) And (Op <> '^') And (Op <> '*') And
+     (Op <> '/') And (Op <> 'div') And (Op <> 'mod') Then
+  Begin
+    If Op = '+' Then
+      Emit(OP_ADD, OpReg(R_EAX), OpImm(ExprTab[R].IntVal))
+    Else
+      Emit(OP_SUB, OpReg(R_EAX), OpImm(ExprTab[R].IntVal));
+    Exit;
+  End;
+  If ExprTab[R].Kind = EX_INT Then
+  Begin
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(ExprTab[R].IntVal));
+    GenIntOp(Op, True);
+    Exit;
+  End;
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  GenExprAs(R, TY_IDX_INTEGER);
+  Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+  Emit1(OP_POP, OpReg(R_EAX));
+  GenIntOp(Op, False);
+End;
+
+Procedure GenIntrinsic(N : Integer);
+Var
+  I          : TIntrinsic;
+  A1, A2     : Integer;
+  T, Lk, Ld  : Integer;
+Begin
+  I  := TIntrinsic(ExprTab[N].IntVal);
+  A1 := ExprTab[N].L;
+  A2 := -1;
+  If ExprTab[A1].R >= 0 Then A2 := ExprTab[A1].R;
+  T  := ExprTab[N].Typ;
+  Case I Of
+    IN_ABS:
+      Begin
+        GenExprAs(ExprTab[A1].L, ExprTab[A1].Typ);
+        If T = TY_IDX_REAL Then
+          Emit0(OP_FABS)
+        Else
+        Begin
+          Emit0(OP_CDQ);
+          Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EDX));
+          Emit(OP_SUB, OpReg(R_EAX), OpReg(R_EDX));
+        End;
+      End;
+    IN_SIGN:
+      Begin
+        GenExprAs(ExprTab[A1].L, ExprTab[A1].Typ);
+        If ExprTab[A1].Typ = TY_IDX_REAL Then
+          CallRT('RSIGN')
+        Else
+        Begin
+          Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+          Emit0(OP_CDQ);
+          Emit1(OP_NEG, OpReg(R_ECX));
+          Emit(OP_SHR, OpReg(R_ECX), OpImm(31));
+          Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+          Emit(OP_OR, OpReg(R_EAX), OpReg(R_ECX));
+        End;
+      End;
+    IN_ENTIER:
+      Begin
+        GenExprAs(ExprTab[A1].L, TY_IDX_REAL);
+        CallRT('FLOOR');
+      End;
+    IN_SQRT:
+      Begin
+        GenExprAs(ExprTab[A1].L, ExprTab[A1].Typ);
+        If T = TY_IDX_REAL Then Emit0(OP_FSQRT) Else CallRT('ISQRT');
+      End;
+    IN_SIN, IN_COS, IN_ARCTAN, IN_LN, IN_EXP:
+      Begin
+        GenExprAs(ExprTab[A1].L, TY_IDX_REAL);
+        Case I Of
+          IN_SIN    : Emit0(OP_FSIN);
+          IN_COS    : Emit0(OP_FCOS);
+          IN_ARCTAN :
+            Begin
+              Emit0(OP_FLD1);
+              Emit0(OP_FPATAN);
+            End;
+          IN_LN     :
+            Begin
+              Emit0(OP_FLDLN2);
+              Emit1(OP_FXCH, OpST(1));
+              Emit0(OP_FYL2X);
+            End;
+          IN_EXP    : CallRT('EXP');
+        End;
+      End;
+    IN_MAX, IN_MIN:
+      Begin
+        Lk := NewLabel;
+        Ld := NewLabel;
+        If T = TY_IDX_REAL Then
+        Begin
+          GenExprAs(ExprTab[A1].L, TY_IDX_REAL);
+          SpillReal;
+          GenExprAs(ExprTab[A2].L, TY_IDX_REAL);
+          Emit1(OP_FLD, OpMem(R_ESP, 0, 8));    { ST0 = gauche, ST1 = droite }
+          Emit(OP_ADD, OpReg(R_ESP), OpImm(8));
+          Emit1(OP_FCOM, OpST(1));
+          Emit1(OP_FNSTSW, OpReg(R_AX));
+          Emit0(OP_SAHF);
+          { max : garder la gauche si gauche >= droite ; min : si <= }
+          If I = IN_MAX Then
+            Emit1(OP_JAE, OpLabel(Lk))
+          Else
+            Emit1(OP_JBE, OpLabel(Lk));
+          Emit1(OP_FSTP, OpST(0));              { garder la droite }
+          Emit1(OP_JMP, OpLabel(Ld));
+          EmitLabel(Lk);
+          Emit1(OP_FSTP, OpST(1));              { garder la gauche }
+          EmitLabel(Ld);
+        End
+        Else
+        Begin
+          GenExprAs(ExprTab[A1].L, TY_IDX_INTEGER);
+          Emit1(OP_PUSH, OpReg(R_EAX));
+          GenExprAs(ExprTab[A2].L, TY_IDX_INTEGER);
+          Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+          Emit1(OP_POP, OpReg(R_EAX));
+          Emit(OP_CMP, OpReg(R_EAX), OpReg(R_ECX));
+          If I = IN_MAX Then
+            Emit1(OP_JGE, OpLabel(Lk))
+          Else
+            Emit1(OP_JLE, OpLabel(Lk));
+          Emit(OP_MOV, OpReg(R_EAX), OpReg(R_ECX));
+          EmitLabel(Lk);
+        End;
+      End;
+    IN_MOD, IN_DIV:
+      Begin
+        GenExprAs(ExprTab[A1].L, TY_IDX_INTEGER);
+        Emit1(OP_PUSH, OpReg(R_EAX));
+        GenExprAs(ExprTab[A2].L, TY_IDX_INTEGER);
+        Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+        Emit1(OP_POP, OpReg(R_EAX));
+        If I = IN_MOD Then GenIntOp('mod', False) Else GenIntOp('div', False);
+      End;
+  End;
+End;
+
+{ Thunk d'un argument par nom (emis a l'ecart, dans DeferTab) : appele
+  avec EAX = contexte (BP de l'appelant) et ECX = 0 pour la valeur
+  (convertie vers le type du parametre) ou 1 pour l'adresse (thunk
+  d'ecriture seulement). }
+Procedure GenThunk(Item, Param : Integer; Cls : TArgClass);
+Var
+  Start, Lth, Laddr, E : Integer;
+Begin
+  Start := CodeCount;
+  Lth   := Intern(ExprStrTab[ExprTab[Item].StrIdx]);
+  E     := ExprTab[Item].L;
+  EmitLabel(Lth);
+  Emit1(OP_PUSH, OpReg(R_EBP));
+  Emit(OP_MOV, OpReg(R_EBP), OpReg(R_EAX));
+  Laddr := -1;
+  If Cls = AC_THUNK_RW Then
+  Begin
+    Laddr := NewLabel;
+    Emit(OP_TEST, OpReg(R_ECX), OpReg(R_ECX));
+    Emit1(OP_JNE, OpLabel(Laddr));
+  End;
+  GenExprAs(E, SymTab[Param].TypeIdx);
+  Emit1(OP_POP, OpReg(R_EBP));
+  Emit0(OP_RET);
+  If Cls = AC_THUNK_RW Then
+  Begin
+    EmitLabel(Laddr);
+    GenAddrNode(E);
+    Emit1(OP_POP, OpReg(R_EBP));
+    Emit0(OP_RET);
+  End;
+  MoveToDeferred(Start);
+End;
+
+{ Appel : arguments de droite a gauche, lien statique, CALL ; la
+  procedure nettoie la pile (RET n). Resultat : EAX ou ST(0). }
+Procedure GenCall(N : Integer);
+Var
+  S, K, Item, PS, E, Delta : Integer;
+  Items                    : Array[1..MAX_PARAM] Of Integer;
+  Cls                      : TArgClass;
+  F                        : TReg;
+Begin
+  S := ExprTab[N].Sym;
+  Item := ExprTab[N].L;
+  K := 0;
+  While Item >= 0 Do
+  Begin
+    Inc(K);
+    Items[K] := Item;
+    Item := ExprTab[Item].R;
+  End;
+  While K >= 1 Do
+  Begin
+    Item := Items[K];
+    PS   := SymTab[S].ParamSym[K];
+    E    := ExprTab[Item].L;
+    Cls  := TArgClass(ExprTab[Item].IntVal);
+    Case Cls Of
+      AC_VALUE:
+        Begin
+          GenExprAs(E, SymTab[PS].TypeIdx);
+          If IsRealT(SymTab[PS].TypeIdx) Then
+            SpillReal
+          Else
+            Emit1(OP_PUSH, OpReg(R_EAX));
+        End;
+      AC_ARRAY:
+        Begin
+          GenDescToESI(ExprTab[E].Sym);
+          Emit1(OP_PUSH, OpReg(R_ESI));
+        End;
+      AC_CONST:
+        Begin
+          If IsRealT(SymTab[PS].TypeIdx) Then
+            Emit(OP_MOV, OpReg(R_EDX),
+                 OpOffset(DataReal(ExprTab[E].RealVal)))
+          Else
+            Emit(OP_MOV, OpReg(R_EDX),
+                 OpOffset(DataInt(ExprTab[E].IntVal)));
+          Emit1(OP_PUSH, OpReg(R_EDX));
+          Emit1(OP_PUSH, OpImm(0));
+        End;
+      AC_REF:
+        Begin
+          GenAddrNode(E);
+          Emit1(OP_PUSH, OpReg(R_EAX));
+          Emit1(OP_PUSH, OpImm(0));
+        End;
+      AC_FORWARD:
+        Begin
+          F := GenFrameReg(SymTab[ExprTab[E].Sym].Level);
+          Emit1(OP_PUSH, OpMem(F, SymTab[ExprTab[E].Sym].Offset + 4, 4));
+          Emit1(OP_PUSH, OpMem(F, SymTab[ExprTab[E].Sym].Offset, 4));
+        End;
+      AC_THUNK, AC_THUNK_RW:
+        Begin
+          GenThunk(Item, PS, Cls);
+          Emit1(OP_PUSH, OpReg(R_EBP));
+          { passer par un registre : ML.PAS ne dimensionne pas bien
+            PUSH OFFSET etiquette_en_avant a la passe 1 }
+          Emit(OP_MOV, OpReg(R_EDX), OpOffset(Intern(
+               ExprStrTab[ExprTab[Item].StrIdx])));
+          Emit1(OP_PUSH, OpReg(R_EDX));
+        End;
+    End;
+    Dec(K);
+  End;
+  { lien statique : cadre de la procedure qui contient la declaration }
+  If SymTab[S].Level >= 1 Then
+  Begin
+    Delta := CurLevel - SymTab[S].Level;
+    Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EBP));
+    While Delta > 0 Do
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, ABI_PARAM_BASE, 4));
+      Dec(Delta);
+    End;
+    Emit1(OP_PUSH, OpReg(R_EAX));
+  End;
+  Emit1(OP_CALL, OpLabel(Intern(SymTab[S].Mangled)));
+End;
+
+{ Valeur de N -> EAX ou ST(0) }
+Procedure GenExpr(N : Integer);
+Var
+  T, Lelse, Lend : Integer;
+Begin
+  T := ExprTab[N].Typ;
+  Case ExprTab[N].Kind Of
+    EX_INT, EX_BOOL:
+      LoadImm(R_EAX, ExprTab[N].IntVal);
+    EX_REAL:
+      Begin
+        If ExprTab[N].RealVal = 0 Then
+          Emit0(OP_FLDZ)
+        Else If ExprTab[N].RealVal = 1 Then
+          Emit0(OP_FLD1)
+        Else
+          Emit1(OP_FLD, OpMemSym(DataReal(ExprTab[N].RealVal), 0, 8));
+      End;
+    EX_STR:
+      Emit(OP_MOV, OpReg(R_EAX),
+           OpOffset(DataStr(ExprStrTab[ExprTab[N].StrIdx])));
+    EX_VAR:
+      GenLoadVar(ExprTab[N].Sym);
+    EX_INDEX:
+      Begin
+        GenIndexAddr(N);
+        If IsRealT(T) Then
+          Emit1(OP_FLD, OpMem(R_EAX, 0, 8))
+        Else
+          Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 0, 4));
+      End;
+    EX_UNARY:
+      Begin
+        If ExprTab[N].Op = 'not' Then
+        Begin
+          GenExpr(ExprTab[N].L);
+          Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+          Emit1(OP_SETE, OpReg(R_AL));
+          Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+        End
+        Else
+        Begin
+          GenExprAs(ExprTab[N].L, T);
+          If ExprTab[N].Op = '-' Then
+          Begin
+            If IsRealT(T) Then
+              Emit0(OP_FCHS)
+            Else
+              Emit1(OP_NEG, OpReg(R_EAX));
+          End;
+        End;
+      End;
+    EX_BINARY:
+      GenBinary(N);
+    EX_COND:
+      Begin
+        Lelse := NewLabel;
+        Lend  := NewLabel;
+        GenJump(ExprTab[N].L, Lelse, False);
+        GenExprAs(ExprTab[N].R, T);
+        Emit1(OP_JMP, OpLabel(Lend));
+        EmitLabel(Lelse);
+        GenExprAs(ExprTab[N].E, T);
+        EmitLabel(Lend);
+      End;
+    EX_ASSIGN:
+      GenAssign(N, True);
+    EX_CALL:
+      GenCall(N);
+    EX_INTRIN:
+      GenIntrinsic(N);
+  End;
+End;
+
+{ ---- Generation du code : instructions --------------------------- }
+
+{ nom := valeur  (NeedValue : la valeur reste dans EAX / ST(0), pour
+  les affectations multiples ; sinon un real est depile) }
+Procedure GenAssign(N : Integer; NeedValue : Boolean);
+Var
+  Tgt, Val, TT, Sym : Integer;
+  Simple            : Boolean;
+  Cell              : TOperand;
+Begin
+  Tgt := ExprTab[N].L;
+  Val := ExprTab[N].R;
+  TT  := ExprTab[Tgt].Typ;
+  Simple := (ExprTab[Tgt].Kind = EX_VAR) And
+            (SymTab[ExprTab[Tgt].Sym].Kind <> SK_PARAM_NAME);
+  If Simple Then
+  Begin
+    Sym := ExprTab[Tgt].Sym;
+    GenExprAs(Val, TT);
+    Cell := SymCell(Sym, 0, ValSize(TT));
+    If IsRealT(TT) Then
+    Begin
+      If NeedValue Then Emit1(OP_FST, Cell) Else Emit1(OP_FSTP, Cell);
+    End
+    Else
+      Emit(OP_MOV, Cell, OpReg(R_EAX));
+  End
+  Else
+  Begin
+    { adresse de la cible d'abord (indices), puis la valeur }
+    GenAddrNode(Tgt);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenExprAs(Val, TT);
+    Emit1(OP_POP, OpReg(R_ECX));
+    If IsRealT(TT) Then
+    Begin
+      If NeedValue Then
+        Emit1(OP_FST, OpMem(R_ECX, 0, 8))
+      Else
+        Emit1(OP_FSTP, OpMem(R_ECX, 0, 8));
+    End
+    Else
+      Emit(OP_MOV, OpMem(R_ECX, 0, 4), OpReg(R_EAX));
+  End;
+End;
+
+{ Vrai si l'evaluation de N a un effet (appel, affectation, E/S) }
+Function ExprHasEffect(N : Integer) : Boolean;
+Begin
+  ExprHasEffect := False;
+  If N < 0 Then Exit;
+  If ExprTab[N].Kind In [EX_ASSIGN, EX_CALL, EX_WRITE, EX_READ] Then
+  Begin
+    ExprHasEffect := True;
+    Exit;
+  End;
+  If ExprHasEffect(ExprTab[N].L) Or ExprHasEffect(ExprTab[N].R) Or
+     ExprHasEffect(ExprTab[N].E) Then
+    ExprHasEffect := True;
+End;
+
+Procedure GenWrite(N : Integer);
+Var
+  Item, E, T, Len : Integer;
+Begin
+  Item := ExprTab[N].L;
+  While Item >= 0 Do
+  Begin
+    E := ExprTab[Item].L;
+    T := ExprTab[E].Typ;
+    If ExprTab[E].Kind = EX_STR Then
+    Begin
+      Len := Length(ExprStrTab[ExprTab[E].StrIdx]);
+      If Len > 0 Then
+      Begin
+        Emit(OP_MOV, OpReg(R_EAX),
+             OpOffset(DataStr(ExprStrTab[ExprTab[E].StrIdx])));
+        Emit(OP_MOV, OpReg(R_EDX), OpImm(Len));
+        CallRT('WRITESTR');
+      End;
+    End
+    Else If T = TY_IDX_STRING Then
+    Begin
+      GenExpr(E);
+      CallRT('WRITEZ');
+    End
+    Else If IsRealT(T) Then
+    Begin
+      GenExpr(E);
+      CallRT('WRITEREAL');
+    End
+    Else If T = TY_IDX_BOOLEAN Then
+    Begin
+      GenExpr(E);
+      CallRT('WRITEBOOL');
+    End
+    Else
+    Begin
+      GenExpr(E);
+      CallRT('WRITEINT');
+    End;
+    Item := ExprTab[Item].R;
+  End;
+  If ExprTab[N].Flag Then CallRT('NEWLINE');
+End;
+
+Procedure GenRead(N : Integer);
+Var
+  Item, E, T : Integer;
+  Simple     : Boolean;
+  RdName     : TString;
+  Cell       : TOperand;
+Begin
+  Item := ExprTab[N].L;
+  While Item >= 0 Do
+  Begin
+    E := ExprTab[Item].L;
+    T := ExprTab[E].Typ;
+    If IsRealT(T) Then
+      RdName := 'READREAL'
+    Else If T = TY_IDX_BOOLEAN Then
+      RdName := 'READBOOL'
+    Else
+      RdName := 'READINT';
+    Simple := (ExprTab[E].Kind = EX_VAR) And
+              (SymTab[ExprTab[E].Sym].Kind <> SK_PARAM_NAME);
+    If Simple Then
+    Begin
+      CallRT(RdName);
+      Cell := SymCell(ExprTab[E].Sym, 0, ValSize(T));
+      If IsRealT(T) Then
+        Emit1(OP_FSTP, Cell)
+      Else
+        Emit(OP_MOV, Cell, OpReg(R_EAX));
+    End
+    Else
+    Begin
+      GenAddrNode(E);
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      CallRT(RdName);
+      Emit1(OP_POP, OpReg(R_ECX));
+      If IsRealT(T) Then
+        Emit1(OP_FSTP, OpMem(R_ECX, 0, 8))
+      Else
+        Emit(OP_MOV, OpMem(R_ECX, 0, 4), OpReg(R_EAX));
+    End;
+    Item := ExprTab[Item].R;
+  End;
+  If ExprTab[N].Flag Then CallRT('READLN');
+End;
+
+{ Instruction expression (affectation, appel, E/S ou expression a
+  effet) : la valeur eventuelle est jetee. }
+Procedure GenStmtExpr(N : Integer);
+Begin
+  If N < 0 Then Exit;
+  Case ExprTab[N].Kind Of
+    EX_ASSIGN: GenAssign(N, False);
+    EX_WRITE:  GenWrite(N);
+    EX_READ:   GenRead(N);
+    EX_CALL:
+      Begin
+        GenCall(N);
+        If IsRealT(ExprTab[N].Typ) Then Emit1(OP_FSTP, OpST(0));
+      End;
+  Else
+    If ExprHasEffect(N) Then
+    Begin
+      GenExpr(N);
+      If IsRealT(ExprTab[N].Typ) Then Emit1(OP_FSTP, OpST(0));
+    End;
+  End;
+End;
+
+{ Saut vers un designateur (go to) }
+Procedure GenDesignator(D : Integer);
+Var
+  S, Cnt, Lskip, Lelse : Integer;
+Begin
+  Case ExprTab[D].Kind Of
+    EX_LABEL:
+      Emit1(OP_JMP, OpLabel(Intern(SymTab[ExprTab[D].Sym].Mangled)));
+    EX_SWITCHREF:
+      Begin
+        S   := ExprTab[D].Sym;
+        Cnt := SymTab[S].SwitchCount;
+        Lskip := NewLabel;
+        GenExprAs(ExprTab[D].L, TY_IDX_INTEGER);
+        Emit(OP_CMP, OpReg(R_EAX), OpImm(1));
+        Emit1(OP_JL, OpLabel(Lskip));
+        Emit(OP_CMP, OpReg(R_EAX), OpImm(Cnt));
+        Emit1(OP_JG, OpLabel(Lskip));
+        Emit1(OP_JMP, OpMemIdx(Intern(SymTab[S].Mangled), R_NONE, R_EAX,
+                               4, -4, 4));
+        EmitLabel(Lskip);
+      End;
+    EX_COND:
+      Begin
+        Lelse := NewLabel;
+        GenJump(ExprTab[D].L, Lelse, False);
+        GenDesignator(ExprTab[D].R);
+        EmitLabel(Lelse);
+        GenDesignator(ExprTab[D].E);
+      End;
+  End;
+End;
+
+{ Declaration d'un switch : table des adresses dans .data ; un
+  designateur qui n'est pas une simple etiquette recoit un petit bloc
+  de code (saute par un JMP) qui calcule la destination. }
+Procedure GenSwitchDecl(S : Integer; Const Ds : Array Of Integer;
+                        Count : Integer);
+Var
+  Entries : Array[0..MAX_SWITCH - 1] Of Integer;
+  Stubs   : Array[0..MAX_SWITCH - 1] Of Integer;
+  I, Lskip : Integer;
+  AnyStub  : Boolean;
+Begin
+  AnyStub := False;
+  For I := 0 To Count - 1 Do
+    If ExprTab[Ds[I]].Kind = EX_LABEL Then
+    Begin
+      Entries[I] := Intern(SymTab[ExprTab[Ds[I]].Sym].Mangled);
+      Stubs[I] := -1;
+    End
+    Else
+    Begin
+      Stubs[I] := NewLabel;
+      Entries[I] := Stubs[I];
+      AnyStub := True;
+    End;
+  If AnyStub Then
+  Begin
+    Lskip := NewLabel;
+    Emit1(OP_JMP, OpLabel(Lskip));
+    For I := 0 To Count - 1 Do
+      If Stubs[I] >= 0 Then
+      Begin
+        EmitLabel(Stubs[I]);
+        GenDesignator(Ds[I]);
+      End;
+    EmitLabel(Lskip);
+  End;
+  DataTable(Intern(SymTab[S].Mangled), Entries, Count);
+End;
+
+{ Declaration d'un tableau : remplit le descripteur a l'execution et,
+  pour des bornes variables, alloue les donnees sur le tas. }
+Procedure GenArrayDecl(S : Integer; Const NLo, NHi : Array Of Integer);
+Var
+  K, Dims, Es : Integer;
+  Local       : Boolean;
+  Base        : LongInt;
+
+  Function Cell(Off : LongInt) : TOperand;
+  Begin
+    If Local Then
+      Cell := OpMem(R_EBP, SymTab[S].ArrDescOfs + Off, 4)
+    Else
+      Cell := OpMemSym(DescName(S), Off, 4);
+  End;
+
+Begin
+  Dims  := SymTab[S].ArrDims;
+  Es    := TypeSizeof(SymTab[S].ElemType);
+  Local := SymTab[S].Storage = SC_LOCAL;
+  Emit(OP_MOV, Cell(4), OpImm(Dims));
+  If Not SymTab[S].ArrDynamic Then
+  Begin
+    For K := 1 To Dims Do
+    Begin
+      Base := 8 + 12 * (K - 1);
+      Emit(OP_MOV, Cell(Base), OpImm(SymTab[S].ArrLo[K]));
+      Emit(OP_MOV, Cell(Base + 4), OpImm(SymTab[S].ArrHi[K]));
+      Emit(OP_MOV, Cell(Base + 8), OpImm(KnownStride(S, K)));
+    End;
+    If Local Then
+    Begin
+      Emit(OP_LEA, OpReg(R_EAX),
+           OpMem(R_EBP, SymTab[S].ArrDataOfs, 0));
+      Emit(OP_MOV, Cell(0), OpReg(R_EAX));
+    End
+    Else
+      Emit(OP_MOV, Cell(0), OpOffset(Intern(SymTab[S].Mangled)));
+    Exit;
+  End;
+  { bornes a l'execution }
+  For K := 1 To Dims Do
+  Begin
+    Base := 8 + 12 * (K - 1);
+    If NLo[K - 1] >= 0 Then
+      GenExprAs(NLo[K - 1], TY_IDX_INTEGER)
+    Else
+      LoadImm(R_EAX, SymTab[S].ArrLo[K]);
+    Emit(OP_MOV, Cell(Base), OpReg(R_EAX));
+    If NHi[K - 1] >= 0 Then
+      GenExprAs(NHi[K - 1], TY_IDX_INTEGER)
+    Else
+      LoadImm(R_EAX, SymTab[S].ArrHi[K]);
+    Emit(OP_MOV, Cell(Base + 4), OpReg(R_EAX));
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+  For K := Dims Downto 1 Do
+  Begin
+    Base := 8 + 12 * (K - 1);
+    Emit(OP_MOV, Cell(Base + 8), OpReg(R_EAX));         { pas }
+    Emit(OP_MOV, OpReg(R_ECX), Cell(Base + 4));
+    Emit(OP_SUB, OpReg(R_ECX), Cell(Base));
+    Emit1(OP_INC, OpReg(R_ECX));
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));          { elements }
+  End;
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(Es));
+  Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+  CallRT('ALLOC');
+  Emit(OP_MOV, Cell(0), OpReg(R_EAX));
+End;
+
+{ Declare les donnees statiques d'un symbole (variable globale ou
+  own, tableau a bornes constantes et descripteur) }
+Procedure GenDeclareData(S : Integer);
+Begin
+  Case SymTab[S].Kind Of
+    SK_VAR, SK_OWN:
+      If SymTab[S].Storage = SC_GLOBAL Then
+        DataAddZero(Intern(SymTab[S].Mangled),
+                    TypeSizeof(SymTab[S].TypeIdx));
+    SK_ARRAY:
+      Begin
+        If SymTab[S].Storage = SC_GLOBAL Then
+        Begin
+          If (Not SymTab[S].ArrDynamic) And (SymTab[S].ArrBytes > 0) Then
+            DataAddZero(Intern(SymTab[S].Mangled), SymTab[S].ArrBytes);
+          DataAddZero(DescName(S), 4 * (2 + 3 * SymTab[S].ArrDims));
+        End;
+      End;
+  End;
+End;
+
+{ ---- Procedures : prologue et epilogue ---- }
+
+Type
+  TProcGen = Record
+    Start     : LongInt;     { debut dans CodeTab }
+    PatchSub  : LongInt;     { SUB ESP, taille }
+    PatchMov  : LongInt;     { MOV ECX, taille / 4 }
+  End;
+
+Procedure GenProcBegin(Var PG : TProcGen; S : Integer);
+Begin
+  PG.Start := CodeCount;
+  EmitBlank;
+  EmitComment('procedure ' + SymTab[S].Name);
+  EmitLabel(Intern(SymTab[S].Mangled));
+  Emit1(OP_PUSH, OpReg(R_EBP));
+  Emit(OP_MOV, OpReg(R_EBP), OpReg(R_ESP));
+  PG.PatchSub := CodeCount;
+  Emit(OP_SUB, OpReg(R_ESP), OpImm(0));
+  { les locales sont mises a zero }
+  Emit(OP_MOV, OpReg(R_EDI), OpReg(R_ESP));
+  Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+  PG.PatchMov := CodeCount;
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(0));
+  Emit0(OP_REP_STOSD);
+End;
+
+{ A appeler avant SymLeaveScope : la taille du cadre est connue }
+Procedure GenProcEnd(Var PG : TProcGen; S : Integer);
+Var
+  Frame : LongInt;
+  I     : LongInt;
+Begin
+  Frame := SymFrameSize;
+  If Frame = 0 Then
+  Begin
+    For I := PG.PatchSub To PG.PatchMov + 1 Do
+      CodeTab[I].Op := OP_NOP;
+  End
+  Else
+  Begin
+    CodeTab[PG.PatchSub].B := OpImm(Frame);
+    CodeTab[PG.PatchMov].B := OpImm(Frame Div 4);
+  End;
+  If SymTab[S].Kind = SK_FUNC Then
+  Begin
+    If IsRealT(SymTab[S].TypeIdx) Then
+      Emit1(OP_FLD, OpMem(R_EBP, SymResultOfs, 8))
+    Else
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EBP, SymResultOfs, 4));
+  End;
+  Emit(OP_MOV, OpReg(R_ESP), OpReg(R_EBP));
+  Emit1(OP_POP, OpReg(R_EBP));
+  If SymTab[S].ParamBytes > 0 Then
+    Emit1(OP_RET, OpImm(SymTab[S].ParamBytes))
+  Else
+    Emit0(OP_RET);
+  MoveToDeferred(PG.Start);
+End;
+
+Procedure GenMainBegin;
+Begin
+  EmitComment('programme principal');
+  EmitLabel(Intern(A58_MAIN_NAME));
+  Emit1(OP_PUSH, OpReg(R_EBP));
+  Emit(OP_MOV, OpReg(R_EBP), OpReg(R_ESP));
+End;
+
+Procedure GenMainEnd;
+Begin
+  Emit1(OP_PUSH, OpImm(0));
+  Emit1(OP_CALL, OpLabel(Intern('ExitProcess')));
+End;
+
 { Debut d'une instruction expression : 42 ; 3 + 4 ; (2 + 3) * 4 ;
   "hello" ; true and false ; -5 ; not true ;  Elle est evaluee puis
   ignoree. Les instructions commencant par un identificateur
@@ -4251,6 +6316,7 @@ Begin
     WriteLn('Expression ligne ', ExprTab[N].Line, ' :');
     ExprDump(N, 0);
   End;
+  If N >= 0 Then GenStmtExpr(N);
   If Not AtStmtEnd Then
   Begin
     If N >= 0 Then ParseError('operateur ou '';'' attendu');
@@ -4336,6 +6402,7 @@ Begin
         WriteLn('Appel ligne ', ExprTab[N].Line, ' :');
         ExprDump(N, 1);
       End;
+      GenStmtExpr(N);
       If Not AtStmtEnd Then
       Begin
         ParseError('operateur ou '';'' attendu apres l''appel');
@@ -4372,6 +6439,7 @@ Begin
       WriteLn('Affectation ligne ', ExprTab[N].Line, ' :');
       ExprDump(N, 0);
     End;
+    GenStmtExpr(N);
     If Not AtStmtEnd Then
     Begin
       ParseError('operateur ou '';'' attendu');
@@ -4380,16 +6448,17 @@ Begin
   End;
 End;
 
-{ ---- Instructions de controle : if et for (TODO 12) -------------- }
+{ ---- Instructions de controle : if et for (TODO 12, 18) ---------- }
 
 { if condition then instruction [else instruction]
-  Le else se rattache au if le plus proche (appel recursif). Le code
-  de la condition et des branches est genere au TODO 18 : saut
-  conditionnel vers l'etiquette else / fin. }
+  Le else se rattache au if le plus proche (appel recursif). Code :
+    saut vers Lelse si la condition est fausse ; then ; [JMP Lend ;
+    Lelse : else ; Lend :]. }
 Procedure ParseIf;
 Var
   C         : Integer;
   Line      : Integer;
+  Lelse, Lend : Integer;
 Begin
   Inc(IfCount);
   Line := CurToken.Line;
@@ -4401,6 +6470,8 @@ Begin
     WriteLn('If ligne ', Line, ' : condition');
     ExprDump(C, 1);
   End;
+  Lelse := NewLabel;
+  If C >= 0 Then GenJump(C, Lelse, False);
   If AtKw('then') Then
     ParserAdvance
   Else
@@ -4413,29 +6484,118 @@ Begin
   If AtKw('else') Then
   Begin
     If Opts.DebugMode Then WriteLn('Else (if ligne ', Line, ')');
+    Lend := NewLabel;
+    Emit1(OP_JMP, OpLabel(Lend));
+    EmitLabel(Lelse);
     ParserAdvance;
     ParseStatement;
-  End;
+    EmitLabel(Lend);
+  End
+  Else
+    EmitLabel(Lelse);
 End;
 
-{ Un element de liste de for : valeur, step-until ou while.
-  VT = type de la variable de boucle. }
-Procedure ParseForClause(VT : Integer);
+Const
+  MAX_FOR_CLAUSES = 16;
+
+Type
+  { Contexte d'une instruction for pendant l'analyse de sa liste.
+    Disposition du code : les clauses d'abord (chacune saute vers le
+    corps), puis le corps, puis le retour a la clause active, puis la
+    sortie. }
+  TForCtx = Record
+    Valid     : Boolean;               { variable de boucle utilisable }
+    Sym       : Integer;               { variable de boucle           }
+    VT        : Integer;               { son type                     }
+    Line, Col : Integer;
+    LBody     : Integer;               { etiquette du corps           }
+    LExit     : Integer;               { etiquette de sortie          }
+    LEnd      : Integer;               { fin de la clause en cours    }
+    Count     : Integer;               { clauses analysees            }
+    Next      : Array[1..MAX_FOR_CLAUSES] Of Integer;
+    HasSel    : Boolean;               { selecteur de clause alloue   }
+    SelName   : Integer;               { selecteur global (niveau 0)  }
+    SelOfs    : LongInt;               { ou local [EBP+SelOfs]        }
+  End;
+
+{ Cellule du selecteur de clause active (allouee a la demande) }
+Function ForSelCell(Var C : TForCtx) : TOperand;
+Begin
+  If Not C.HasSel Then
+  Begin
+    C.HasSel := True;
+    If CurLevel > 0 Then
+    Begin
+      C.SelName := -1;
+      C.SelOfs  := SymAllocLocal(4);
+    End
+    Else
+    Begin
+      Inc(ConstSeq);
+      C.SelName := Intern('_A58FSEL_' + ItoS(ConstSeq));
+      DataAddZero(C.SelName, 4);
+    End;
+  End;
+  If C.SelName >= 0 Then
+    ForSelCell := OpMemSym(C.SelName, 0, 4)
+  Else
+    ForSelCell := OpMem(R_EBP, C.SelOfs, 4);
+End;
+
+{ variable de boucle := valeur }
+Procedure ForAssign(Var C : TForCtx; Val : Integer);
 Var
-  E1, E2, E3, C : Integer;
-  Conv          : TConv;
-  Line, Col     : Integer;
-  Empty         : Boolean;
+  A : Integer;
+Begin
+  A := ExprNew(EX_ASSIGN, C.VT, C.Line, C.Col);
+  ExprTab[A].L := ExprMakeVar(C.Sym, C.Line, C.Col);
+  ExprTab[A].R := Val;
+  GenAssign(A, False);
+End;
+
+{ Compare la variable de boucle a Limit (Op = '>' ou '<') et saute
+  vers Target quand la comparaison est vraie }
+Procedure ForCompareJump(Var C : TForCtx; Const Op : TString;
+                         Limit, Target : Integer);
+Var
+  Cmp : Integer;
+Begin
+  Cmp := ExprNew(EX_BINARY, TY_IDX_BOOLEAN, C.Line, C.Col);
+  ExprTab[Cmp].Op := Op;
+  ExprTab[Cmp].L  := ExprMakeVar(C.Sym, C.Line, C.Col);
+  ExprTab[Cmp].R  := Limit;
+  GenJump(Cmp, Target, True);
+End;
+
+{ Un element de liste de for : valeur, step-until ou while. }
+Procedure ParseForClause(Var C : TForCtx);
+Var
+  E1, E2, E3, Cd : Integer;
+  Conv           : TConv;
+  Line, Col      : Integer;
+  Empty, Multi   : Boolean;
+  Lnext, Ltest   : Integer;
+  Lneg, Lcont    : Integer;
+  Plus, A, Z, Sg : Integer;
+  Kind           : Integer;      { 1 valeur, 2 step-until, 3 while }
+  Good           : Boolean;
 Begin
   ExprReset;
+  Inc(C.Count);
   Line := CurToken.Line;
   Col  := CurToken.Col;
   E1 := ParseExpr;
   If E1 >= 0 Then
-    If Not ExprCoerce(E1, VT, Conv, Line, Col) Then E1 := -1;
+    If Not ExprCoerce(E1, C.VT, Conv, Line, Col) Then E1 := -1;
+  E2 := -1;
+  E3 := -1;
+  Cd := -1;
+  Kind := 1;
+  Good := E1 >= 0;
 
   If AtKw('step') Then
   Begin
+    Kind := 2;
     ParserAdvance;
     Line := CurToken.Line;
     Col  := CurToken.Col;
@@ -4459,7 +6619,8 @@ Begin
               TypeName(ExprTab[E3].Typ) + ')');
       E3 := -1;
     End;
-    If (E1 >= 0) And (E2 >= 0) And (E3 >= 0) Then
+    Good := Good And (E2 >= 0) And (E3 >= 0);
+    If Good Then
     Begin
       If Opts.DebugMode Then
       Begin
@@ -4484,23 +6645,102 @@ Begin
   End
   Else If AtKw('while') Then
   Begin
+    Kind := 3;
     ParserAdvance;
-    C := ParseCondition;
-    If (E1 >= 0) And (C >= 0) And Opts.DebugMode Then
+    Cd := ParseCondition;
+    Good := Good And (Cd >= 0);
+    If Good And Opts.DebugMode Then
     Begin
       WriteLn('  clause while :');
       WriteLn('    init :');  ExprDump(E1, 3);
-      WriteLn('    while :'); ExprDump(C, 3);
+      WriteLn('    while :'); ExprDump(Cd, 3);
     End;
-    If (C >= 0) And (ExprTab[C].Kind = EX_BOOL) And
-       (ExprTab[C].IntVal = 0) Then
+    If (Cd >= 0) And (ExprTab[Cd].Kind = EX_BOOL) And
+       (ExprTab[Cd].IntVal = 0) Then
       WarnAt(Line, Col, 'condition toujours fausse: ' +
              'boucle jamais executee');
   End
-  Else If (E1 >= 0) And Opts.DebugMode Then
+  Else If Good And Opts.DebugMode Then
   Begin
     WriteLn('  clause valeur :');
     ExprDump(E1, 2);
+  End;
+
+  { fin de la clause : cible des sauts "clause epuisee" }
+  C.LEnd := NewLabel;
+  If C.Count <= MAX_FOR_CLAUSES Then C.Next[C.Count] := C.LEnd
+  Else ErrorAt(Line, Col, 'trop de clauses dans le for');
+  If (Not Good) Or (Not C.Valid) Or (C.Count > MAX_FOR_CLAUSES) Then
+    Exit;
+  Multi := (C.Count > 1) Or AtPunct(',');
+
+  Case Kind Of
+    1:
+      Begin
+        ForAssign(C, E1);
+        If Multi Then
+          Emit(OP_MOV, ForSelCell(C), OpImm(C.Count));
+        Emit1(OP_JMP, OpLabel(C.LBody));
+      End;
+    2:
+      Begin
+        Lnext := NewLabel;
+        Ltest := NewLabel;
+        C.Next[C.Count] := Lnext;
+        ForAssign(C, E1);
+        Emit1(OP_JMP, OpLabel(Ltest));
+        EmitLabel(Lnext);
+        { variable := variable + pas }
+        Plus := ExprNew(EX_BINARY, TypeArith(C.VT, ExprTab[E2].Typ),
+                        C.Line, C.Col);
+        ExprTab[Plus].Op := '+';
+        ExprTab[Plus].L  := ExprMakeVar(C.Sym, C.Line, C.Col);
+        ExprTab[Plus].R  := E2;
+        A := ExprNew(EX_ASSIGN, C.VT, C.Line, C.Col);
+        ExprTab[A].L := ExprMakeVar(C.Sym, C.Line, C.Col);
+        ExprTab[A].R := Plus;
+        GenAssign(A, False);
+        EmitLabel(Ltest);
+        { clause epuisee quand la variable depasse la limite dans le
+          sens du pas }
+        If ExprIsConst(E2) Then
+        Begin
+          If ExprConstReal(E2) > 0 Then
+            ForCompareJump(C, '>', E3, C.LEnd)
+          Else
+            ForCompareJump(C, '<', E3, C.LEnd);
+        End
+        Else
+        Begin
+          Lneg  := NewLabel;
+          Lcont := NewLabel;
+          Z  := ExprMakeInt(0, C.Line, C.Col);
+          Sg := ExprNew(EX_BINARY, TY_IDX_BOOLEAN, C.Line, C.Col);
+          ExprTab[Sg].Op := '>=';
+          ExprTab[Sg].L  := E2;
+          ExprTab[Sg].R  := Z;
+          GenJump(Sg, Lneg, False);
+          ForCompareJump(C, '>', E3, C.LEnd);
+          Emit1(OP_JMP, OpLabel(Lcont));
+          EmitLabel(Lneg);
+          ForCompareJump(C, '<', E3, C.LEnd);
+          EmitLabel(Lcont);
+        End;
+        If Multi Then
+          Emit(OP_MOV, ForSelCell(C), OpImm(C.Count));
+        Emit1(OP_JMP, OpLabel(C.LBody));
+      End;
+    3:
+      Begin
+        Lnext := NewLabel;
+        C.Next[C.Count] := Lnext;
+        EmitLabel(Lnext);
+        ForAssign(C, E1);
+        GenJump(Cd, C.LEnd, False);
+        If Multi Then
+          Emit(OP_MOV, ForSelCell(C), OpImm(C.Count));
+        Emit1(OP_JMP, OpLabel(C.LBody));
+      End;
   End;
 End;
 
@@ -4509,41 +6749,49 @@ End;
   while ; ils sont executes dans l'ordre (le corps est partage). }
 Procedure ParseFor;
 Var
-  Tgt, VT   : Integer;
+  Tgt       : Integer;
   Line, Col : Integer;
-  Sym       : Integer;
+  Ctx       : TForCtx;
+  K         : Integer;
 Begin
   Inc(ForCount);
+  FillChar(Ctx, SizeOf(Ctx), 0);
+  Ctx.Sym := -1;
+  Ctx.VT  := TY_UNKNOWN;
   Line := CurToken.Line;
   ParserAdvance;                          { for }
   ExprReset;
   Col := CurToken.Col;
   Tgt := ParsePrimary;
-  VT  := TY_UNKNOWN;
   If Tgt >= 0 Then
   Begin
     If ExprTab[Tgt].Kind <> EX_VAR Then
     Begin
       ErrorAt(Line, Col, 'variable de boucle simple attendue');
-      Tgt := -1;
     End
     Else
     Begin
-      Sym := ExprTab[Tgt].Sym;
-      VT  := ExprTab[Tgt].Typ;
-      If SymTab[Sym].Kind = SK_PARAM_NAME Then
-        SymTab[Sym].IsWritten := True;      { variable de boucle }
-      If Not TypeIsNumeric(VT) Then
+      Ctx.Sym := ExprTab[Tgt].Sym;
+      Ctx.VT  := ExprTab[Tgt].Typ;
+      If Not TypeIsNumeric(Ctx.VT) Then
       Begin
         ErrorAt(Line, Col, 'variable de boucle numerique attendue ' +
-                '(type: ' + TypeName(VT) + ')');
-        Tgt := -1;
+                '(type: ' + TypeName(Ctx.VT) + ')');
+        Ctx.VT := TY_UNKNOWN;
       End
-      Else If Opts.DebugMode Then
-        WriteLn('For ligne ', Line, ' : variable ', SymTab[Sym].Name,
-                ' (', TypeName(VT), ')');
+      Else
+      Begin
+        Ctx.Valid := True;
+        If SymTab[Ctx.Sym].Kind = SK_PARAM_NAME Then
+          SymTab[Ctx.Sym].IsWritten := True;      { variable de boucle }
+        If Opts.DebugMode Then
+          WriteLn('For ligne ', Line, ' : variable ',
+                  SymTab[Ctx.Sym].Name, ' (', TypeName(Ctx.VT), ')');
+      End;
     End;
   End;
+  Ctx.Line := Line;
+  Ctx.Col  := Col;
   If AtOp(':=') Then
     ParserAdvance
   Else
@@ -4552,19 +6800,24 @@ Begin
     ParserSync;
     Exit;
   End;
-  If Tgt < 0 Then VT := TY_UNKNOWN;
+  Ctx.LBody := NewLabel;
+  Ctx.LExit := NewLabel;
 
   If LoopDepth >= MAX_LOOP_NEST Then
     ErrorAt(Line, Col, 'boucles trop imbriquees (max ' +
             ItoS(MAX_LOOP_NEST) + ')');
   Inc(LoopDepth);
   Repeat
-    ParseForClause(VT);
+    ParseForClause(Ctx);
+    EmitLabel(Ctx.LEnd);                  { fin de la clause }
     If AtPunct(',') Then
       ParserAdvance
     Else
       Break;
   Until False;
+  { toutes les clauses epuisees : sortie ; sinon le corps }
+  Emit1(OP_JMP, OpLabel(Ctx.LExit));
+  EmitLabel(Ctx.LBody);
   If AtKw('do') Then
     ParserAdvance
   Else
@@ -4575,6 +6828,23 @@ Begin
     Exit;
   End;
   ParseStatement;
+  { retour a la clause active }
+  If Ctx.Valid Then
+  Begin
+    If Ctx.Count <= 1 Then
+      Emit1(OP_JMP, OpLabel(Ctx.Next[1]))
+    Else
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), ForSelCell(Ctx));
+      For K := 1 To Ctx.Count - 1 Do
+      Begin
+        Emit(OP_CMP, OpReg(R_EAX), OpImm(K));
+        Emit1(OP_JE, OpLabel(Ctx.Next[K]));
+      End;
+      Emit1(OP_JMP, OpLabel(Ctx.Next[Ctx.Count]));
+    End;
+  End;
+  EmitLabel(Ctx.LExit);
   Dec(LoopDepth);
 End;
 
@@ -4719,6 +6989,7 @@ Begin
     WriteLn('Goto ligne ', Line, ' :');
     ExprDump(D, 1);
   End;
+  GenDesignator(D);
   If Not AtStmtEnd Then
   Begin
     ParseError('operateur ou '';'' attendu apres go to');
@@ -4729,8 +7000,11 @@ End;
 { etiquette : instruction   (Name = nom ou nombre, ':' est le token
   courant). L'instruction suivante peut etre vide ou un bloc. }
 Procedure ParseLabelDef(Const Name : TString; Line, Col : Integer);
+Var
+  S : Integer;
 Begin
-  SymDefLabel(Name, Line, Col);
+  S := SymDefLabel(Name, Line, Col);
+  EmitLabel(Intern(SymTab[S].Mangled));
   Inc(LabelCount);
   If Opts.DebugMode Then
     WriteLn('Etiquette ', Name, ' ligne ', Line);
@@ -4874,6 +7148,7 @@ Begin
     WriteLn('E/S ligne ', Tok.Line, ' :');
     ExprDump(Node, 1);
   End;
+  GenStmtExpr(Node);
   If Not AtStmtEnd Then
   Begin
     ParseError('operateur ou '';'' attendu apres ' + Tok.Val);
@@ -4887,6 +7162,7 @@ End;
 Procedure ParseVarList(K : TSymKind; T : Integer; IsOwn : Boolean);
 Var
   Done : Boolean;
+  S    : Integer;
 Begin
   Repeat
     If CurToken.Kind <> TK_IDENT Then
@@ -4895,7 +7171,8 @@ Begin
       ParserSync;
       Exit;
     End;
-    SymAdd(CurToken.Val, K, T, IsOwn, CurToken.Line, CurToken.Col);
+    S := SymAdd(CurToken.Val, K, T, IsOwn, CurToken.Line, CurToken.Col);
+    GenDeclareData(S);
     Inc(DeclCount);
     ParserAdvance;
     Done := Not AtPunct(',');
@@ -5069,6 +7346,14 @@ Begin
         If (CurLevel > 0) And (Not IsOwn) Then
           SymTab[Cur].ArrDataOfs := SymAllocLocal(SymTab[Cur].ArrBytes);
       End;
+      If SymTab[Cur].ArrDims > 0 Then
+      Begin
+        If SymTab[Cur].Storage = SC_LOCAL Then
+          SymTab[Cur].ArrDescOfs :=
+            SymAllocLocal(4 * (2 + 3 * SymTab[Cur].ArrDims));
+        GenDeclareData(Cur);
+        GenArrayDecl(Cur, NLo, NHi);
+      End;
       If Opts.DebugMode Then
       Begin
         Write('Tableau ', SymTab[Cur].Name, ' ', TypeName(ElemType),
@@ -5108,7 +7393,10 @@ End;
 Procedure ParseSwitchDecl;
 Var
   S, N, D : Integer;
+  Ds      : Array[0..MAX_SWITCH - 1] Of Integer;
+  Failed  : Boolean;
 Begin
+  Failed := False;
   If CurToken.Kind <> TK_IDENT Then
   Begin
     ParseError('nom de switch attendu');
@@ -5135,9 +7423,19 @@ Begin
     Inc(N);
     If D < 0 Then
     Begin
+      Failed := True;
       ParserSync;
       Break;
     End;
+    If N > MAX_SWITCH Then
+    Begin
+      ErrorAt(CurToken.Line, CurToken.Col, 'switch trop long (max ' +
+              ItoS(MAX_SWITCH) + ')');
+      Failed := True;
+      ParserSync;
+      Break;
+    End;
+    Ds[N - 1] := D;
     If Opts.DebugMode Then
     Begin
       WriteLn('Switch ', SymTab[S].Name, ' designateur ', N, ' :');
@@ -5149,6 +7447,7 @@ Begin
       Break;
   Until False;
   SymTab[S].SwitchCount := N;
+  If Not Failed Then GenSwitchDecl(S, Ds, N);
 End;
 
 { Specification d'un parametre : integer a, b ;  Boolean array t ;
@@ -5213,6 +7512,7 @@ Procedure ParseProcDecl(RetType : Integer; HasType : Boolean);
 Var
   P, K, S : Integer;
   Kind    : TSymKind;
+  PG      : TProcGen;
 Begin
   If CurToken.Kind <> TK_IDENT Then
   Begin
@@ -5295,7 +7595,9 @@ Begin
   End;
   SymLayoutParams(P);
 
+  GenProcBegin(PG, P);
   ParseStatement;                { corps de la procedure }
+  GenProcEnd(PG, P);
   SymLeaveScope;
 End;
 
@@ -5465,8 +7767,11 @@ Begin
   ParkValid  := False;
   LexQuiet   := True;            { erreurs lexicales deja signalees }
   LexInit;
+  CodeInit;
   SymEnterScope;                 { portee globale (identifiant 1) }
+  GenMainBegin;
   ParseProgram;
+  GenMainEnd;
   SymLeaveScope;
   LexClose;
   If Opts.Verbose Then
@@ -5484,7 +7789,14 @@ End;
   ============================================================ }
 Procedure PhaseCodegen;
 Begin
-  { A faire : TODO 18 }
+  If Opts.Verbose Then
+    WriteLn('  ', CodeCount + DeferCount, ' instruction(s), ',
+            DataCount, ' donnee(s) statique(s)');
+  If Opts.EmitAsm Then
+  Begin
+    WriteListing(Opts.AsmFile);
+    If Opts.Verbose Then WriteLn('  listing : ', Opts.AsmFile);
+  End;
 End;
 
 { ============================================================
