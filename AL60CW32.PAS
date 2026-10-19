@@ -26,8 +26,9 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 et 02 implementes (squelette, pipeline en 6 phases,
-         options de ligne de commande) ; TODO 03 a 25 a faire.
+  ETAT : TODO 01 a 03 implementes (squelette, pipeline en 6 phases,
+         options de ligne de commande, constantes, limites et nommage) ;
+         TODO 04 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -85,7 +86,7 @@
               fichiers de sortie annonces (seuls les fichiers demandes
               seront crees)
 
-  TODO 03 - CONSTANTES, LIMITES ET CONVENTIONS DE NOMMAGE [A FAIRE]
+  TODO 03 - CONSTANTES, LIMITES ET CONVENTIONS DE NOMMAGE [IMPLEMENTE]
             Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_SIGNATURE,
               PE_MACHINE_I386 ($014C), PE_OPT_SIZE, PE_MAGIC_32,
               PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
@@ -100,8 +101,19 @@
               (procedure), _A60K_ (chaine), _A60RT_ (runtime), _A60L_
               (label interne), _A60S_ (switch), _A60O_ (own), _A60A_
               (tableau), _A60T_ (thunk)
-            Utilitaires : ItoS, UpCaseStr, AsmIdent (nom ASM valide),
+            Utilitaires : ItoS, ItoSZ, UpCaseStr, AsmIdent (nom ASM valide),
               extension et nom de fichier
+            Realise : constantes de la convention d'appel (prefixe ABI),
+              PE et COFF (prefixes PE et COFF), tampons du code binaire
+              (prefixe MAX_BIN), limites du compilateur (MAX_SYM,
+              MAX_LABEL, MAX_SCOPE, MAX_PROC, MAX_PARAM, MAX_ARRAY_DIM =
+              8, MAX_SWITCH, MAX_LOOP_NEST, MAX_ERRORS = 30, MAX_STR)
+              avec une valeur reduite sous Turbo Pascal ; noms ASM = prefixe + identificateur en
+              majuscules (autre caractere -> _) : MangleVar, MangleProc,
+              MangleOwn, MangleArr, MangleSwitch, MangleRT,
+              MangleUserLabel, MangleThunk, MangleLabel (5 chiffres),
+              MangleStr ; point d'entree _A60P_Main ; la casse des
+              identificateurs sera confirmee au TODO 04
 
   TODO 04 - LEXEUR ALGOL 60 [A FAIRE]
             TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_IDENT,
@@ -467,6 +479,66 @@ Const
       - sorties par API Win32 (kernel32) au lieu de INT 21h
       - sortie finale : .EXE (PE) ou .OBJ (COFF), .ASM optionnel }
   ABI_WORD_SIZE = 4;   { taille d un registre / d un integer en octets }
+  ABI_REAL_SIZE = 8;   { real : flottant 64 bits (x87)                   }
+  ABI_RET_REG   = 'EAX';
+  ABI_FRAME_REG = 'EBP';
+  ABI_STACK_REG = 'ESP';
+  ABI_PARAM_BASE = 8;  { [EBP+8] = premier parametre (apres EBP, retour) }
+
+  { ---- Format PE (.EXE Windows 32 bits) ---- }
+  PE_DOS_MAGIC     = $5A4D;       { 'MZ'                               }
+  PE_SIGNATURE     = $00004550;   { 'PE',0,0                           }
+  PE_MACHINE_I386  = $014C;
+  PE_OPT_SIZE      = 224;         { taille de l Optional Header 32 bits }
+  PE_MAGIC_32      = $010B;
+  PE_IMG_BASE      = $00400000;
+  PE_SEC_ALIGN     = 4096;
+  PE_FILE_ALIGN    = 512;
+  PE_SUBSYS_CUI    = 3;           { sous-systeme console               }
+  PE_FILE_EXE      = $0002;       { IMAGE_FILE_EXECUTABLE_IMAGE        }
+  PE_FILE_32BIT    = $0100;       { IMAGE_FILE_32BIT_MACHINE           }
+  PE_SCN_TEXT      = $60000020;   { code, execute, read                }
+  PE_SCN_RDATA     = $40000040;   { donnees initialisees, read         }
+  PE_SCN_DATA      = $C0000040;   { donnees initialisees, read, write  }
+
+  { ---- Format COFF (.OBJ) ---- }
+  COFF_SYM_EXTERNAL = 2;
+  COFF_SYM_STATIC   = 3;
+  COFF_REL_DIR32    = $0006;      { IMAGE_REL_I386_DIR32               }
+  COFF_REL_REL32    = $0014;      { IMAGE_REL_I386_REL32               }
+
+  { ---- Tampons du code binaire (TODO 19 a 21) ---- }
+  MAX_BIN_CODE  = {$IFDEF FPC}262144{$ELSE}16384{$ENDIF};
+  MAX_BIN_DATA  = {$IFDEF FPC}262144{$ELSE}16384{$ENDIF};
+  MAX_BIN_LBL   = {$IFDEF FPC}8192{$ELSE}512{$ENDIF};
+  MAX_BIN_FIX   = {$IFDEF FPC}131072{$ELSE}512{$ENDIF};
+
+  { ---- Limites internes du compilateur (32 bits) ---- }
+  MAX_SYM       = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_PROC      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}2048{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_ARRAY_DIM = 8;      { dimensions maximales d un tableau          }
+  MAX_SWITCH    = 256;    { designateurs maximaux d un switch          }
+  MAX_LOOP_NEST = 32;     { imbrication maximale des boucles for       }
+  MAX_ERRORS    = 30;     { arret apres ce nombre d erreurs            }
+  MAX_STR       = 255;    { longueur maximale d une chaine litterale   }
+
+  { ---- Prefixes de nommage ASM ---- }
+  A60_VAR_PFX   = '_A60V_';     { variable scalaire                    }
+  A60_PROC_PFX  = '_A60P_';     { procedure / fonction                 }
+  A60_STR_PFX   = '_A60K_';     { constante chaine litterale           }
+  A60_RT_PFX    = '_A60RT_';    { routine runtime                      }
+  A60_LBL_PFX   = '_A60L_';     { label de saut interne                }
+  A60_USR_PFX   = '_A60L_USR_'; { etiquette Algol (goto)               }
+  A60_SW_PFX    = '_A60S_';     { table switch                         }
+  A60_OWN_PFX   = '_A60O_';     { variable own                         }
+  A60_ARR_PFX   = '_A60A_';     { tableau                              }
+  A60_THUNK_PFX = '_A60T_';     { thunk de parametre par nom           }
+  A60_MAIN_NAME = '_A60P_Main'; { point d entree du programme          }
 
 { ============================================================
   SECTION 2 - TYPES (TODO 01, 04, 05, 06)
@@ -511,6 +583,105 @@ Var
 { ============================================================
   SECTION 4 - UTILITAIRES (TODO 03)
   ============================================================ }
+Function ItoS(V : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(V, S);
+  ItoS := S;
+End;
+
+{ Nombre sur Width chiffres au moins, complete par des zeros }
+Function ItoSZ(V : LongInt; Width : Integer) : TString;
+Var
+  S : TString;
+Begin
+  S := ItoS(V);
+  While Length(S) < Width Do
+    S := '0' + S;
+  ItoSZ := S;
+End;
+
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If R[I] In ['a'..'z'] Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  UpCaseStr := R;
+End;
+
+{ Identificateur Algol -> fragment de nom ASM valide : lettres,
+  chiffres et souligne conserves, tout autre caractere devient _.
+  La casse est normalisee en majuscules (decision confirmee au
+  TODO 04). }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := UpCaseStr(S);
+  For I := 1 To Length(R) Do
+    If Not (R[I] In ['A'..'Z', '0'..'9', '_']) Then
+      R[I] := '_';
+  AsmIdent := R;
+End;
+
+{ ---- Noms des symboles ASM : prefixe + identificateur ---- }
+Function MangleVar(Const Name : TString) : TString;
+Begin
+  MangleVar := A60_VAR_PFX + AsmIdent(Name);
+End;
+
+Function MangleProc(Const Name : TString) : TString;
+Begin
+  MangleProc := A60_PROC_PFX + AsmIdent(Name);
+End;
+
+Function MangleOwn(Const Name : TString) : TString;
+Begin
+  MangleOwn := A60_OWN_PFX + AsmIdent(Name);
+End;
+
+Function MangleArr(Const Name : TString) : TString;
+Begin
+  MangleArr := A60_ARR_PFX + AsmIdent(Name);
+End;
+
+Function MangleSwitch(Const Name : TString) : TString;
+Begin
+  MangleSwitch := A60_SW_PFX + AsmIdent(Name);
+End;
+
+Function MangleRT(Const Name : TString) : TString;
+Begin
+  MangleRT := A60_RT_PFX + AsmIdent(Name);
+End;
+
+Function MangleUserLabel(Const Name : TString) : TString;
+Begin
+  MangleUserLabel := A60_USR_PFX + AsmIdent(Name);
+End;
+
+Function MangleThunk(Const Proc, Param : TString) : TString;
+Begin
+  MangleThunk := A60_THUNK_PFX + AsmIdent(Proc) + '_' + AsmIdent(Param);
+End;
+
+{ Labels internes et chaines : numerotation }
+Function MangleLabel(N : LongInt) : TString;
+Begin
+  MangleLabel := A60_LBL_PFX + ItoSZ(N, 5);
+End;
+
+Function MangleStr(N : LongInt) : TString;
+Begin
+  MangleStr := A60_STR_PFX + ItoS(N);
+End;
+
 Function PhaseName(P : TPhase) : String;
 Begin
   Case P Of
