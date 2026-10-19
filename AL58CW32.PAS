@@ -24,8 +24,8 @@
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
   ETAT : TODO 01 (squelette et pipeline), TODO 02 (options), TODO 03
-         (constantes, limites, nommage) et TODO 04 (lexeur) implementes,
-         les autres TODOs sont a faire.
+         (constantes, limites, nommage), TODO 04 (lexeur) et TODO 05
+         (types) implementes, les autres TODOs sont a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -89,18 +89,23 @@
             Nombres : entiers, reels avec point (3.14), exposant (10)
             Mode debug -d : afficher chaque token
 
-  TODO 05 - TYPES DE DONNEES ET CONVERSIONS (32 BITS) [A FAIRE]
-            integer : 32 bits signe (DWORD), plus le 16 bits de AL58C86
-            real : decision a trancher et documenter ; recommande :
-              flottant 64 bits via x87 (FLD/FSTP QWORD), car la cible
-              386 permet un vrai support (3.14 de hello.a58, test_literals)
+  TODO 05 - TYPES DE DONNEES ET CONVERSIONS (32 BITS) [IMPLEMENTE]
+            integer : 32 bits signe (DWORD), au lieu des 16 bits d'AL58C86
+            real : flottant 64 bits via x87 (FLD/FSTP QWORD), decision
+              retenue : la cible 386 permet un vrai support (3.14 de
+              hello.a58, test_literals)
             Boolean : 0 ou 1 (DWORD) ; true et false
             string : pointeur vers donnees .data (litteraux seulement)
             label, switch, procedure : types d'entites du programme
-            Conversions implicites integer <-> real selon le contexte
+            Conversions implicites (TypeConversion) :
+              integer -> real (FILD), real -> integer (FISTP, arrondi au
+              plus pres), integer -> Boolean (<> 0), Boolean -> integer
+              (rien), real -> Boolean interdit
             Un entier utilise comme condition (if x then ...) est vrai
               s'il est different de zero (test_primexpr.a58)
             Table des types et TypeSizeof (integer=4, real=8, Boolean=4)
+            Mode de passage des parametres : value (PM_VALUE) ou par nom
+              (PM_NAME, thunk)
 
   TODO 06 - TABLE DES SYMBOLES ET PORTEES [A FAIRE]
             TSymKind : SK_VAR, SK_ARRAY, SK_PROC, SK_FUNC, SK_LABEL,
@@ -1365,6 +1370,222 @@ End;
 { ============================================================
   SECTION 7 - TYPES ALGOL ET TABLE DES SYMBOLES (TODO 05, 06)
   ============================================================ }
+Const
+  { Indices des types primitifs Algol 58 dans TypeTab }
+  TY_UNKNOWN       = -1;   { type indetermine (apres une erreur)      }
+  TY_IDX_INTEGER   = 0;    { entier 32 bits signe                      }
+  TY_IDX_REAL      = 1;    { flottant 64 bits (x87)                    }
+  TY_IDX_BOOLEAN   = 2;    { 0 ou 1 dans un DWORD                      }
+  TY_IDX_STRING    = 3;    { pointeur vers une chaine litterale        }
+  TY_IDX_LABEL     = 4;    { etiquette (adresse de code)               }
+  TY_IDX_SWITCH    = 5;    { aiguillage (adresse de table)             }
+  TY_IDX_PROCEDURE = 6;    { procedure sans valeur de retour           }
+  TY_IDX_ARRAY     = 7;    { descripteur de tableau (pointeur)         }
+  TY_PRIM_COUNT    = 8;
+
+Type
+  TTypeKind = (
+    TYK_INTEGER,
+    TYK_REAL,
+    TYK_BOOLEAN,
+    TYK_STRING,
+    TYK_LABEL,
+    TYK_SWITCH,
+    TYK_PROCEDURE,
+    TYK_ARRAY
+  );
+
+  TTypeRec = Record
+    Kind : TTypeKind;
+    Name : String[12];
+    Size : Integer;          { taille en octets d une valeur }
+  End;
+
+  { Conversion implicite a generer pour passer d un type a un autre }
+  TConv = (
+    CV_NONE,           { meme representation : rien a generer          }
+    CV_INT_TO_REAL,    { FILD : entier ou booleen -> real              }
+    CV_REAL_TO_INT,    { FISTP : real -> integer, arrondi au plus pres }
+    CV_INT_TO_BOOL,    { TEST / SETNE : integer -> Boolean (<> 0)      }
+    CV_ERROR           { conversion interdite                          }
+  );
+
+  { Mode de passage d un parametre de procedure }
+  TParamMode = (
+    PM_VALUE,          { value : copie de la valeur sur la pile        }
+    PM_NAME            { par defaut : thunk reevalue a chaque acces    }
+  );
+
+Var
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+Function TypeAdd(K : TTypeKind; Const Name : TString;
+                 Size : Integer) : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+    FatalError('table des types pleine');
+  TypeTab[TypeCount].Kind := K;
+  TypeTab[TypeCount].Name := Name;
+  TypeTab[TypeCount].Size := Size;
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ Enregistre les types primitifs, dans l ordre des TY_IDX_* }
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+  TypeAdd(TYK_INTEGER,   'integer',   ABI_WORD_SIZE);
+  TypeAdd(TYK_REAL,      'real',      ABI_REAL_SIZE);
+  TypeAdd(TYK_BOOLEAN,   'Boolean',   ABI_WORD_SIZE);
+  TypeAdd(TYK_STRING,    'string',    ABI_WORD_SIZE);
+  TypeAdd(TYK_LABEL,     'label',     ABI_WORD_SIZE);
+  TypeAdd(TYK_SWITCH,    'switch',    ABI_WORD_SIZE);
+  TypeAdd(TYK_PROCEDURE, 'procedure', ABI_WORD_SIZE);
+  TypeAdd(TYK_ARRAY,     'array',     ABI_WORD_SIZE);
+End;
+
+Function TypeValid(T : Integer) : Boolean;
+Begin
+  TypeValid := (T >= 0) And (T < TypeCount);
+End;
+
+Function TypeName(T : Integer) : TString;
+Begin
+  If TypeValid(T) Then
+    TypeName := TypeTab[T].Name
+  Else
+    TypeName := '?';
+End;
+
+{ Taille en octets : integer=4, real=8, Boolean=4, pointeurs=4 }
+Function TypeSizeof(T : Integer) : Integer;
+Begin
+  If TypeValid(T) Then
+    TypeSizeof := TypeTab[T].Size
+  Else
+    TypeSizeof := ABI_WORD_SIZE;
+End;
+
+Function TypeIsReal(T : Integer) : Boolean;
+Begin
+  TypeIsReal := (T = TY_IDX_REAL);
+End;
+
+Function TypeIsNumeric(T : Integer) : Boolean;
+Begin
+  TypeIsNumeric := (T = TY_IDX_INTEGER) Or (T = TY_IDX_REAL);
+End;
+
+{ Types admis dans une expression arithmetique ou relationnelle :
+  le Boolean est stocke comme 0 ou 1 et se comporte comme un entier. }
+Function TypeIsArith(T : Integer) : Boolean;
+Begin
+  TypeIsArith := (T = TY_IDX_INTEGER) Or (T = TY_IDX_REAL) Or
+                 (T = TY_IDX_BOOLEAN);
+End;
+
+{ Condition de if / while / expression conditionnelle : un entier
+  est vrai s il est different de zero (test_primexpr.a58). }
+Function TypeIsCondition(T : Integer) : Boolean;
+Begin
+  TypeIsCondition := (T = TY_IDX_BOOLEAN) Or (T = TY_IDX_INTEGER);
+End;
+
+{ Type d un mot-cle de declaration : integer, real, boolean }
+Function TypeFromKeyword(Const Kw : TString) : Integer;
+Begin
+  If Kw = 'integer' Then
+    TypeFromKeyword := TY_IDX_INTEGER
+  Else If Kw = 'real' Then
+    TypeFromKeyword := TY_IDX_REAL
+  Else If Kw = 'boolean' Then
+    TypeFromKeyword := TY_IDX_BOOLEAN
+  Else
+    TypeFromKeyword := TY_UNKNOWN;
+End;
+
+{ Type d un litteral : 42, 3.14, "abc", true, false }
+Function TypeFromToken(Const T : TToken) : Integer;
+Begin
+  Case T.Kind Of
+    TK_INTEGER : TypeFromToken := TY_IDX_INTEGER;
+    TK_REAL    : TypeFromToken := TY_IDX_REAL;
+    TK_STRING  : TypeFromToken := TY_IDX_STRING;
+    TK_KEYWORD :
+      If (T.Val = 'true') Or (T.Val = 'false') Then
+        TypeFromToken := TY_IDX_BOOLEAN
+      Else
+        TypeFromToken := TY_UNKNOWN;
+  Else
+    TypeFromToken := TY_UNKNOWN;
+  End;
+End;
+
+{ Conversion implicite de From vers To (affectation, parametre) :
+    integer -> real     : CV_INT_TO_REAL
+    real    -> integer  : CV_REAL_TO_INT (arrondi au plus pres)
+    integer -> Boolean  : CV_INT_TO_BOOL (<> 0)
+    Boolean -> integer  : CV_NONE (0 ou 1)
+    Boolean -> real     : CV_INT_TO_REAL
+    real    -> Boolean  : CV_ERROR
+  Un type indetermine ne produit pas d erreur en cascade. }
+Function TypeConversion(From, Dest : Integer) : TConv;
+Begin
+  TypeConversion := CV_ERROR;
+  If (Not TypeValid(From)) Or (Not TypeValid(Dest)) Then
+    TypeConversion := CV_NONE
+  Else If From = Dest Then
+    TypeConversion := CV_NONE
+  Else If Dest = TY_IDX_INTEGER Then
+  Begin
+    If From = TY_IDX_REAL Then
+      TypeConversion := CV_REAL_TO_INT
+    Else If From = TY_IDX_BOOLEAN Then
+      TypeConversion := CV_NONE;
+  End
+  Else If Dest = TY_IDX_REAL Then
+  Begin
+    If (From = TY_IDX_INTEGER) Or (From = TY_IDX_BOOLEAN) Then
+      TypeConversion := CV_INT_TO_REAL;
+  End
+  Else If Dest = TY_IDX_BOOLEAN Then
+  Begin
+    If From = TY_IDX_INTEGER Then
+      TypeConversion := CV_INT_TO_BOOL;
+  End;
+End;
+
+Function TypeAssignable(From, Dest : Integer) : Boolean;
+Begin
+  TypeAssignable := (TypeConversion(From, Dest) <> CV_ERROR);
+End;
+
+{ Type resultat de A op B pour + - * : real des qu un operande est
+  real, sinon integer. TY_UNKNOWN si un operande n est pas arithmetique. }
+Function TypeArith(A, B : Integer) : Integer;
+Begin
+  If (Not TypeValid(A)) Or (Not TypeValid(B)) Then
+    TypeArith := TY_UNKNOWN
+  Else If (Not TypeIsArith(A)) Or (Not TypeIsArith(B)) Then
+    TypeArith := TY_UNKNOWN
+  Else If (A = TY_IDX_REAL) Or (B = TY_IDX_REAL) Then
+    TypeArith := TY_IDX_REAL
+  Else
+    TypeArith := TY_IDX_INTEGER;
+End;
+
+{ Mode debug -d : liste des types enregistres }
+Procedure TypeDump;
+Var
+  I : Integer;
+Begin
+  WriteLn('Types (', TypeCount, ') :');
+  For I := 0 To TypeCount - 1 Do
+    WriteLn('  ', I:2, '  ', Copy(TypeTab[I].Name + '          ', 1, 10),
+            TypeTab[I].Size:3, ' octets');
+End;
 
 { ============================================================
   SECTION 8 - PARSEUR ET GENERATEUR DE CODE (TODO 07 a 17)
@@ -1433,6 +1654,8 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  TypeInit;
+  If Opts.DebugMode Then TypeDump;
   If Opts.Verbose Then
   Begin
     ShowBanner;
