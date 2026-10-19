@@ -33,7 +33,8 @@
          expressions arithmetiques, booleennes et conditionnelles,
          instructions et blocs, boucle for, goto et switch, tableaux,
          procedures, appel par nom, entrees/sorties et fonctions
-         standard, encodeur x86-32, ecrivains PE et COFF, runtime integre, erreurs et rapport) ;
+         standard, encodeur x86-32, ecrivains PE et COFF, runtime integre,
+         erreurs et rapport) ;
          TODO 24 et 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
