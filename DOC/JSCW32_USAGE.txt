@@ -52,97 +52,133 @@ Harnais de validation (-test)
 
 Limites connues
 ---------------
+  Ce chapitre decrit ce qui est implemente et, pour chaque domaine, ce qui
+  reste different de Node (les comparaisons se font avec Node 22 / V8). Les
+  programmes d'essai comparant les sorties a celles de Node sont dans
+  SAMPLES\NODE (lancer SAMPLES/NODE/run_diff.sh <compilateur>) ; les tests
+  de SAMPLES\JS passent par -test.
+
+  Cible, optimisation, validation
+  - Cible unique : 80386, 32 bits, executable PE32 console (KERNEL32).
+    Pas de 64 bits, pas d'autre systeme.
+  - Optimisation : repli des constantes entieres, un judas local sur l'IR
+    (rechargement d'un emplacement deja present dans un registre), boucle
+    d'initialisation des variables, prelude decoupe en blocs optionnels
+    (chemin, eval, URL/fetch, binaire/fs, Proxy, Unicode, Intl, formats de
+    nombres, modules, tables de langues). Pas d'allocation de registres :
+    le code reste de style « machine a pile ». Les blocs optionnels sont
+    choisis par recherche de mots dans le source (par exemple toFixed,
+    encodeURIComponent, btoa, require, Proxy...) : une methode appelee par un
+    nom construit a l'execution (obj['to' + 'Fixed']) sans que le mot
+    apparaisse ailleurs dans le programme n'est pas disponible (erreur
+    « module non charge »), sauf si le source contient eval ou Function. Un « hello » pese environ
+    780 Ko (le prelude de base est toujours present : console, nombres,
+    chaines, tableaux, Map/Set, Date, Promise, JSON, BigInt).
+  - Les .exe ont ete valides sous Wine et avec l'emulateur 80386 integre
+    (-run), jamais sur un vrai Windows par l'auteur du harnais.
   - Aucune table interne n'a de taille fixe : source, jetons, AST, symboles,
     portees, pool de donnees, instructions, tampons COFF/PE et sorties du
-    harnais sont des listes chainees par blocs allouees sur le tas (bloc de
-    32 Ko, curseur sur le dernier bloc utilise). Seules la memoire disponible
-    et l'espace d'adressage de l'emulateur -run (64 Mo, memoire simulee d'une
-    machine) bornent la taille d'un programme. Restent fixes par nature :
-    les registres et la pile FPU de l'emulateur, les 4 sections COFF, les
-    tables constantes (mots-cles, operateurs, prelude) et les tampons de
-    lecture de fichier.
-  - Chaines : le texte est stocke en UTF-8 (WTF-8 pour les demi-paires isolees)
-    mais length, les indices, charAt, charCodeAt, slice, substring, indexOf,
-    split(''), les iterateurs et les expressions regulieres comptent des
-    unites UTF-16, comme Node ('e accent'.length vaut 1, un emoji vaut 2). Les
-    chaines ASCII gardent un chemin rapide sans conversion. toUpperCase et
-    toLowerCase suivent les tables Unicode (ß devient SS, sigma final...) ;
-    localeCompare et normalize sont des approximations (pas de tables
-    de collation ni de decomposition complete). Une demi-paire isolee peut
-    exister dans une chaine mais est ecrite U+FFFD en sortie ; chercher une
-    demi-paire isolee avec indexOf ne la retrouve pas toujours.
-  - Ramasse-miettes : marquage et balayage conservatif, sans deplacement, qui
-    se declenche tous les 8 Mo alloues (puis autant que la memoire vivante).
-    Les racines sont les piles, les registres et la section .data ; un
-    entier ou un double qui ressemble a une adresse de tas peut retenir une
-    cellule a tort (jamais l'inverse). WeakMap et WeakSet tiennent leurs cles
-    fortement ; il n'y a ni finaliseur ni WeakRef. Les grands blocs sont
-    rendus au systeme (VirtualFree), les pages de petites cellules sont
-    reutilisees mais pas rendues. __gc(), __gcstats() ([octets vivants,
-    collectes]) et __gcstress(n) (collecte tous les n octets, pour les essais)
-    sont disponibles. L'emulateur -run ne reutilise pas la memoire des grands
-    blocs.
-  - Expressions regulieres : lookbehind, groupes nommes ((?<nom>...), \k<nom>,
-    $<nom>), matchAll (iterateur), drapeau u avec \u{...} et plages hors BMP
-    dans les classes sont pris en charge. Le drapeau i replie la casse ASCII
-    et la casse Unicode simple (tables du prelude) pour les caracteres
-    litteraux et les classes (intervalles de moins de 700 points de code).
-    Ecarts : pas de \p{...} ; le point (.) consomme un point de code entier
-    meme sans drapeau u (Node : une unite UTF-16).
-  - Classes : l'appel d'une classe sans new leve un TypeError ; super.methode()
-    fonctionne dans les fleches, mais super(...) (appel du constructeur
-    parent) dans une fleche n'est pas gere.
-  - JSON.parse (reviver) et JSON.stringify (replacer fonction ou tableau,
-    indentation) suivent Node. toFixed et l'affichage des doubles sont exacts
-    (arithmetique entiere en precision arbitraire).
-  - Traces de pile : « at fonction (fichier:ligne) » avec la ligne de l'appel,
-    sans numero de colonne.
-  - Ajouts de bibliotheque (prelude) : Array.prototype at, reduceRight,
-    findLast, findLastIndex, flat, flatMap, keys, values, entries,
-    copyWithin, toReversed, toSorted, toSpliced, with ; Math cbrt, sinh, cosh,
-    tanh, asinh, acosh, atanh, expm1, log1p, clz32, fround (approximation) ;
-    Object.defineProperties ; encodeURI, decodeURI, encodeURIComponent,
-    decodeURIComponent ; la propriete constructor des prototypes natifs.
-    Toujours absents : Object.getOwnPropertyDescriptor(s), seal,
-    preventExtensions, isExtensible, Reflect, Proxy, Intl,
-    Symbol comme type distinct (les symboles sont des chaines marquees).
-  - Les messages d'erreur du runtime (TypeError, RangeError... produits par le
-    moteur) peuvent differer de ceux de V8.
-  - Date, Map, Set, WeakMap, WeakSet, Symbol, Promise, async/await, les
-    generateurs (function*, yield), BigInt, setTimeout/setInterval/
-    setImmediate, require, eval, new.target, les gabarits etiquetes,
-    toPrecision et toExponential sont implementes, en grande partie par un
-    Â« prelude Â» JavaScript (DOC/prelude/*.js) ajoute au programme a la
-    compilation. Limites de ces ajouts :
-      * Date : fuseau UTC uniquement ; analyse de chaines limitee aux
-        formats ISO, Â« Mar 5, 2021 08:09:10 Â» et jj/mm/aaaa.
-      * async/await et generateurs : coroutines a pile propre (64 Ko) ;
-        pas de generateurs asynchrones ni de Â« for await Â».
-      * BigInt : precision arbitraire (objet du prelude) ; 0n est faux, x++
-        et x-- rendent un BigInt, les BigInt sont egaux par valeur (===,
-        indexOf, Map, Set). typeof rend 'bigint'.
-      * new.target : propre a chaque fonction (symbole cache lu a l'entree
-        puis efface) ; un appel ordinaire depuis un constructeur voit
-        undefined, les fleches heritent de la fonction englobante.
-      * require : util, assert, events, os, path, timers, timers/promises,
-        perf_hooks, process. fs, http, crypto... levent une erreur
-        explicite. Pas de require de fichiers relatifs. path suit Node sous
-        Windows (path = path.win32, separateur \, lecteurs et UNC), path.posix
-        donne la variante POSIX ; les deux sont portes de lib/path.js de Node.
-      * eval et new Function : un interprete JavaScript ecrit dans le prelude
-        (bloc optionnel, ajoute seulement si le source contient « eval » ou
-        « Function »). Il traite var/let/const, destructuration, fonctions,
-        fleches, classes (champs, statiques, accesseurs, super, #prive),
-        if/for/for-in/for-of/while/do/switch/try, etiquettes, modeles,
-        spread, ?. ?? et ses affectations. Les variables globales du
-        programme (var, let, const, function, class de premier niveau) sont
-        lues et modifiees par nom ; les variables creees par eval ne sont
-        visibles que d'autres eval ; les variables locales d'une fonction
-        ne sont pas visibles (eval se comporte comme un eval indirect) ;
-        generateurs, async/await, with, import/export ne sont pas geres
-        dans le code evalue. eval est lent (arbre interprete).
-      * Gabarits etiquetes : le tableau strings (et strings.raw) est cree une
-        fois par site d'appel, comme sous Node (non gele).
-  - Les .exe n'ont pas ete executes sur une machine Windows par l'auteur du
-    harnais : leur validation repose sur l'emulateur, binutils, DISEXE et des
-    controles de relocation.
+    harnais sont des listes chainees par blocs allouees sur le tas. Seules la
+    memoire disponible et l'espace d'adressage de l'emulateur -run (64 Mo)
+    bornent la taille d'un programme.
+
+  Langage
+  - Modules : require de fichiers relatifs, JSON, node_modules, import/export
+    ESM (liaisons par instantane, pas « vivantes »), import() dynamique et
+    await de premier niveau sont assembles a la compilation en un seul
+    executable (les fichiers ne sont pas lus a l'execution). require des
+    modules integres : util, assert, events, os, path, timers,
+    timers/promises, perf_hooks, process, fs, readline, child_process.
+  - async/await, generateurs, generateurs asynchrones (async function*,
+    yield*, for await ... of, sur iterables synchrones ou asynchrones).
+    Les coroutines ont une pile propre de 64 Ko : une recursion tres profonde
+    a l'interieur d'un generateur ou d'une fonction async peut la depasser.
+  - for-of ferme l'iterateur (return()) sur break, return, continue
+    etiquete et exception, comme Node.
+  - Mode non strict : this vaut globalThis (ou le receveur) dans un appel nu ;
+    arguments est lie aux parametres simples (ecrire un parametre change
+    arguments[i] et inversement). Exception : un parametre capture par une
+    fonction imbriquee n'est pas lie. with (objet) instruction fonctionne mais
+    son corps est interprete (voir eval) : return, break et continue non
+    etiquetes y sont geres ; var, class et yield/await dans le corps ne le
+    sont pas completement ; les variables du corps sont lues et ecrites par
+    nom (lent).
+  - Function.prototype.toString rend le texte source des fonctions et des
+    classes du programme (« [native code] » pour les natives).
+  - super(...) fonctionne dans une fleche d'un constructeur derive.
+  - Variable inconnue a la compilation : lue dans globalThis a l'execution
+    (ReferenceError si absente), comme Node.
+  - Symboles : chaines marquees. typeof rend 'symbol', Symbol('a').constructor
+    est Symbol, Object.getOwnPropertySymbols existe ; un symbole reste
+    pourtant une chaine pour certains operateurs peu courants.
+
+  eval et new Function
+  - Interprete JavaScript ecrit dans le prelude (bloc ajoute seulement si le
+    source contient « eval », « Function » ou « with »). Il traite var/let/
+    const, destructuration, fonctions, fleches, classes (champs, statiques,
+    accesseurs, super, #prive), generateurs, async/await, for await,
+    import(), if/for/while/do/switch/try, etiquettes, modeles, spread, ?. ??,
+    with.
+  - eval direct : voit les variables locales et les parametres de la
+    fonction appelante, ses fonctions locales et this (les variables sont
+    passees par cellules nommees ; le compilateur place alors dans des
+    cellules toutes les variables visibles de la fonction). Les variables
+    creees par un eval deviennent globales (pas locales a la fonction).
+    Un parametre ou une variable const reste modifiable depuis eval.
+  - import / export statiques ne sont pas geres dans le code evalue.
+  - eval est lent (arbre interprete).
+
+  Chaines, nombres, dates, Intl
+  - Chaines UTF-16 comme Node (length, indices, charCodeAt, regex...), stockage
+    UTF-8/WTF-8. toUpperCase/toLowerCase suivent Unicode (tables du
+    prelude). normalize NFC/NFD/NFKC/NFKD exact (tables generees depuis Node).
+    localeCompare : classement par groupes de base + tables de langues, pas
+    la collation ICU complete.
+  - Expressions regulieres : lookbehind, groupes nommes, matchAll, drapeaux
+    u, i (repli de casse Unicode simple), \p{...} / \P{...} (proprietes
+    Unicode generees depuis ICU 77). Ecart : le point sans drapeau u consomme
+    un point de code entier, pas une unite UTF-16.
+  - Nombres : affichage exact des doubles, toFixed/toPrecision/toExponential
+    exacts (arithmetique entiere en precision arbitraire), BigInt a precision
+    arbitraire.
+  - Dates : fuseau local lu du systeme (GetTimeZoneInformation) avec regles
+    d'heure d'ete (periode moderne uniquement) ; noms de fuseaux IANA
+    approximes. toLocale*String et Intl : DateTimeFormat, NumberFormat,
+    PluralRules, RelativeTimeFormat, ListFormat, Collator, Locale, Segmenter,
+    DisplayNames, pour une vingtaine de langues (donnees generees depuis
+    Node / ICU 77 / CLDR 47). Ecarts : option era et dayPeriod ignorees,
+    noms de fuseaux, d'unites et de devises traduits partiellement, la
+    langue par defaut est toujours en-US.
+
+  Bibliotheque
+  - Reflect, Proxy (interception native des proprietes ; un mandataire dans la
+    chaine de prototypes n'intercepte que get ; les pieges get/set d'un
+    mandataire de fonction ne sont pas appeles), WeakRef, FinalizationRegistry,
+    Object.getOwnPropertyDescriptor(s), defineProperty, seal, freeze,
+    preventExtensions, isExtensible.
+  - ArrayBuffer, DataView, tableaux types (sauf BigInt64Array /
+    BigUint64Array), Buffer, TextEncoder/TextDecoder. SharedArrayBuffer est
+    un simple alias d'ArrayBuffer (un seul fil d'execution).
+  - URL, URLSearchParams, AbortController, EventTarget, fs (par KERNEL32 en
+    UTF-16 ; version synchrone, fs.promises, flux de lecture/ecriture),
+    readline, process.stdin, child_process (CreateProcess ; sous l'emulateur
+    -run : /bin/sh). Il n'y a pas de reseau : fetch existe mais rejette
+    toujours la promesse, http / net / crypto levent une erreur.
+  - Erreurs : les messages produits par le moteur (TypeError, RangeError...)
+    sont en francais et different de V8. Traces de pile : « at fonction
+    (fichier:ligne) » sans numero de colonne.
+
+  Memoire
+  - Ramasse-miettes : marquage et balayage conservatif, sans deplacement,
+    declenche tous les 8 Mo alloues (puis autant que la memoire vivante).
+    Racines : piles, registres, section .data. Un entier qui ressemble a une
+    adresse de tas peut retenir une cellule a tort (jamais l'inverse).
+  - WeakMap / WeakSet : la valeur est portee par la cle (propriete cachee)
+    et disparait avec elle ; une cle qui n'est pas un objet ordinaire
+    (tableau, fonction, expression reguliere) est conservee fortement.
+  - WeakRef et FinalizationRegistry : cellules faibles videes par le
+    ramasse-miettes ; les callbacks de finalisation sont lances entre deux
+    taches (apres un ramasse-miettes). Comme la pile est analysee de facon
+    conservative, une cible peut survivre plus longtemps qu'avec V8.
+  - __gc(), __gcstats() ([octets vivants, collectes]) et __gcstress(n)
+    sont disponibles pour les essais.

@@ -24,6 +24,13 @@ function __init_web() {}
 function __init_bin() {}
 function __withrun() { return undefined; }
 function __evlocal(x) { return x; }
+function __toFixed() { throw new Error("__toFixed: module non charge"); }
+function __toPrecision() { throw new Error("__toPrecision: module non charge"); }
+function __toExponential() { throw new Error("__toExponential: module non charge"); }
+function __uriEnc() { throw new Error("__uriEnc: module non charge"); }
+function __uriDec() { throw new Error("__uriDec: module non charge"); }
+function __btoa() { throw new Error("__btoa: module non charge"); }
+function __atob() { throw new Error("__atob: module non charge"); }
 function __init_proxy() {}
 function __init_uni() {}
 function __init_norm() {}

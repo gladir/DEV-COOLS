@@ -339,6 +339,41 @@ function __bigop_impl(op, a, b) {
   if (op === 10) return __bshl(a, -Number(__btos(b)));
   throw new TypeError('BigInts have no unsigned right shift, use >> instead');
 }
+function __init_big() {
+  var P = {};
+  __bigproto = P;
+  __bigop = __bigop_impl;
+  __bseq = function (b) { return __bsg(this) === __bsg(b) && __mcmp(__bm(this), __bm(b)) === 0; };
+  __btruthy = function (x) { return x['\x01m'].length !== 0; };
+  __BigInt = function BigInt(v) {
+    if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError('BigInt is not a constructor');
+    return __bto(v);
+  };
+  __BigInt.prototype = P;
+  P.constructor = __BigInt;
+  P.toString = function (radix) { return __btos(this, radix === undefined ? 10 : radix); };
+  P.valueOf = function () { return Number(__btos(this)); };
+  P.toJSON = function () { throw new TypeError('Do not know how to serialize a BigInt'); };
+  P.toLocaleString = function () {
+    var s = __btos(this), neg = s.charAt(0) === '-', o = '', i;
+    if (neg) s = s.slice(1);
+    for (i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 === 0) o += ',';
+      o += s.charAt(i);
+    }
+    return neg ? '-' + o : o;
+  };
+  __BigInt.asUintN = function (bits, x) {
+    var m = __bpow(__bmk(1, [2]), __bfromnum(bits)), r = __bdivmod(__bto(x), m)[1];
+    if (__bsg(r) < 0) r = __badd(r, m);
+    return r;
+  };
+  __BigInt.asIntN = function (bits, x) {
+    var u = __BigInt.asUintN(bits, x), h = __bpow(__bmk(1, [2]), __bfromnum(bits - 1));
+    if (bits > 0 && __bcmp(u, h) >= 0) u = __badd(u, __bneg(__bpow(__bmk(1, [2]), __bfromnum(bits))));
+    return u;
+  };
+}
 function __dtoa(x) {
   var neg = x < 0, ax = neg ? -x : x, e = 0, f = ax, k, r, s, mp, mm, d, ds = '', n, even, tc1, tc2, t, boundary, F, be, ten, i, ex;
   while (f >= 9007199254740992) { f = f / 2; e++; }
@@ -385,39 +420,4 @@ function __dtoa(x) {
     t = ds.charAt(0) + (n > 1 ? '.' + ds.slice(1) : '') + 'e' + (ex < 0 ? '-' : '+') + (ex < 0 ? -ex : ex);
   }
   return neg ? '-' + t : t;
-}
-function __init_big() {
-  var P = {};
-  __bigproto = P;
-  __bigop = __bigop_impl;
-  __bseq = function (b) { return __bsg(this) === __bsg(b) && __mcmp(__bm(this), __bm(b)) === 0; };
-  __btruthy = function (x) { return x['\x01m'].length !== 0; };
-  __BigInt = function BigInt(v) {
-    if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError('BigInt is not a constructor');
-    return __bto(v);
-  };
-  __BigInt.prototype = P;
-  P.constructor = __BigInt;
-  P.toString = function (radix) { return __btos(this, radix === undefined ? 10 : radix); };
-  P.valueOf = function () { return Number(__btos(this)); };
-  P.toJSON = function () { throw new TypeError('Do not know how to serialize a BigInt'); };
-  P.toLocaleString = function () {
-    var s = __btos(this), neg = s.charAt(0) === '-', o = '', i;
-    if (neg) s = s.slice(1);
-    for (i = 0; i < s.length; i++) {
-      if (i > 0 && (s.length - i) % 3 === 0) o += ',';
-      o += s.charAt(i);
-    }
-    return neg ? '-' + o : o;
-  };
-  __BigInt.asUintN = function (bits, x) {
-    var m = __bpow(__bmk(1, [2]), __bfromnum(bits)), r = __bdivmod(__bto(x), m)[1];
-    if (__bsg(r) < 0) r = __badd(r, m);
-    return r;
-  };
-  __BigInt.asIntN = function (bits, x) {
-    var u = __BigInt.asUintN(bits, x), h = __bpow(__bmk(1, [2]), __bfromnum(bits - 1));
-    if (bits > 0 && __bcmp(u, h) >= 0) u = __badd(u, __bneg(__bpow(__bmk(1, [2]), __bfromnum(bits))));
-    return u;
-  };
 }

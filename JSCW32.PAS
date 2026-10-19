@@ -133,6 +133,8 @@ Const
   RK_ARGUMENTS = 5;
   RK_UNDECLARED_OK = 6;
   RK_UNRESOLVED = 7;
+  RK_DYNGLOBAL = 8;        { lecture dynamique de globalThis (ReferenceError si absent) }
+  RK_DYNSOFT = 9;          { idem sous typeof : undefined si absent }
   { Liaison de this (champ aux d'un noeud THIS) }
   TB_GLOBAL = 1;
   TB_FUNCTION = 2;
@@ -1677,11 +1679,11 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 13855;
-  PRELUDE_BASE = 3167;
-  PRELUDE_CHUNKS = 33;
-  PreludeChunkEnd: Array[1..33] Of LongInt = (3802, 5594, 5931, 6493, 6673, 8136, 8644, 9447, 10632, 10737, 10816, 10897, 11095, 11394, 11562, 11647, 11819, 11995, 12160, 12255, 12329, 12411, 12508, 12603, 12685, 12764, 12858, 13033, 13257, 13340, 13422, 13668, 13855);
-  PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function|with (|with(', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
+  PRELUDE_LINES = 13854;
+  PRELUDE_BASE = 2689;
+  PRELUDE_CHUNKS = 35;
+  PreludeChunkEnd: Array[1..35] Of LongInt = (3015, 3166, 3801, 5593, 5930, 6492, 6672, 8135, 8643, 9446, 10631, 10736, 10815, 10896, 11094, 11393, 11561, 11646, 11818, 11994, 12159, 12254, 12328, 12410, 12507, 12602, 12684, 12763, 12857, 13032, 13256, 13339, 13421, 13667, 13854);
+  PreludeChunkKeys: Array[1..35] Of String[255] = ('require|module|exports|import|export|__esm|__umods|__filename|__dirname|eval|Function|globalThis', 'Event|Abort|URL|fetch|DOMException|Intl|toLocale|localeCompare|toFixed|toPrecision|toExponential|encodeURI|decodeURI|btoa|atob|eval|Function|globalThis|Reflect|Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'path', 'eval|Function|with (|with(', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -2129,6 +2131,13 @@ Const
     'function __init_bin() {}',
     'function __withrun() { return undefined; }',
     'function __evlocal(x) { return x; }',
+    'function __toFixed() { throw new Error("__toFixed: module non charge"); }',
+    'function __toPrecision() { throw new Error("__toPrecision: module non charge"); }',
+    'function __toExponential() { throw new Error("__toExponential: module non charge"); }',
+    'function __uriEnc() { throw new Error("__uriEnc: module non charge"); }',
+    'function __uriDec() { throw new Error("__uriDec: module non charge"); }',
+    'function __btoa() { throw new Error("__btoa: module non charge"); }',
+    'function __atob() { throw new Error("__atob: module non charge"); }',
     'function __init_proxy() {}',
     'function __init_uni() {}',
     'function __init_norm() {}',
@@ -3023,45 +3032,6 @@ Const
     '  if (parts.length === 0) return ''{}'';',
     '  return st.gap === '''' ? ''{'' + parts.join('','') + ''}'' : ''{\n'' + inner + parts.join('',\n'' + inner) + ''\n'' + indent + ''}'';',
     '}',
-    'function __toFixed(f) {',
-    '  var x = Number(this), neg = '''', r, d, E, keep, t, a, i, n, ip, fp;',
-    '  f = f === undefined ? 0 : Math.floor(Number(f));',
-    '  if (f !== f) f = 0;',
-    '  if (f < 0 || f > 100) throw new RangeError(''toFixed() digits argument must be between 0 and 100'');',
-    '  if (x !== x) return ''NaN'';',
-    '  if (x >= 1e21 || x <= -1e21) return String(x);',
-    '  if (x < 0) { neg = ''-''; x = -x; }',
-    '  if (x === 0) {',
-    '    n = ''0'';',
-    '  } else {',
-    '    r = __exact(x);',
-    '    d = r[0];',
-    '    E = r[1];',
-    '    keep = E + 1 + f;',
-    '    if (keep < 0) n = ''0'';',
-    '    else if (keep >= d.length) { n = d; while (n.length < keep) n += ''0''; }',
-    '    else {',
-    '      t = d.slice(0, keep);',
-    '      if (d.charCodeAt(keep) >= 53) {',
-    '        a = t.split('''');',
-    '        i = keep - 1;',
-    '        while (i >= 0) {',
-    '          if (a[i] === ''9'') { a[i] = ''0''; i--; }',
-    '          else { a[i] = String.fromCharCode(a[i].charCodeAt(0) + 1); break; }',
-    '        }',
-    '        t = a.join('''');',
-    '        if (i < 0) t = ''1'' + t;',
-    '      }',
-    '      n = t === '''' ? ''0'' : t;',
-    '    }',
-    '  }',
-    '  while (n.length < f + 1) n = ''0'' + n;',
-    '  ip = n.slice(0, n.length - f);',
-    '  fp = n.slice(n.length - f);',
-    '  ip = ip.replace(/^0+(?=\d)/, '''');',
-    '  if (neg !== '''' && /^0*$/.test(ip + fp)) neg = Number(this) < 0 ? ''-'' : '''';',
-    '  return neg + ip + (f > 0 ? ''.'' + fp : '''');',
-    '}',
     '',
     'function __defm(o, name, fn) {',
     '  Object.defineProperty(o, name, { value: fn, writable: true, configurable: true, enumerable: false });',
@@ -3290,29 +3260,6 @@ Const
     '  var e = new Error(m);',
     '  e.name = n;',
     '  return e;',
-    '}',
-    'function __btoa(s) {',
-    '  var tbl = ''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'', out = '''', i, a, b, c, n;',
-    '  s = String(s);',
-    '  for (i = 0; i < s.length; i++) if (s.charCodeAt(i) > 255) throw __domEx(''Invalid character'', ''InvalidCharacterError'');',
-    '  for (i = 0; i < s.length; i += 3) {',
-    '    a = s.charCodeAt(i); b = i + 1 < s.length ? s.charCodeAt(i + 1) : -1; c = i + 2 < s.length ? s.charCodeAt(i + 2) : -1;',
-    '    n = (a << 16) | ((b < 0 ? 0 : b) << 8) | (c < 0 ? 0 : c);',
-    '    out += tbl.charAt((n >> 18) & 63) + tbl.charAt((n >> 12) & 63) + (b < 0 ? ''='' : tbl.charAt((n >> 6) & 63)) + (c < 0 ? ''='' : tbl.charAt(n & 63));',
-    '  }',
-    '  return out;',
-    '}',
-    'function __atob(s) {',
-    '  var tbl = ''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'', out = '''', i, v, bits = 0, acc = 0, ch;',
-    '  s = String(s).replace(/[\t\n\f\r ]/g, '''');',
-    '  if (s.length % 4 === 0) s = s.replace(/==?$/, '''');',
-    '  if (s.length % 4 === 1 || /[^A-Za-z0-9+\/]/.test(s)) throw __domEx(''The string to be decoded is not correctly encoded.'', ''InvalidCharacterError'');',
-    '  for (i = 0; i < s.length; i++) {',
-    '    v = tbl.indexOf(s.charAt(i));',
-    '    acc = (acc << 6) | v; bits += 6;',
-    '    if (bits >= 8) { bits -= 8; ch = (acc >> bits) & 255; out += String.fromCharCode(ch); }',
-    '  }',
-    '  return out;',
     '}',
     'function __init_lib() {',
     '  __init_arr();',
@@ -3619,37 +3566,6 @@ Const
     '  while (n-- > 0) z += ''0'';',
     '  return z;',
     '}',
-    'function __toPrecision(p) {',
-    '  var x = Number(this), neg = '''', r;',
-    '  if (p === undefined) return String(x);',
-    '  p = Math.floor(Number(p));',
-    '  if (x !== x || x === Infinity || x === -Infinity) return String(x);',
-    '  if (p < 1 || p > 100) throw new RangeError(''toPrecision() argument must be between 1 and 100'');',
-    '  if (x < 0) { neg = ''-''; x = -x; }',
-    '  if (x === 0) return p > 1 ? ''0.'' + __zeros(p - 1) : ''0'';',
-    '  r = __sig(x, p);',
-    '  var d = r[0], E = r[1];',
-    '  if (E < -6 || E >= p) return neg + __expo(d, E);',
-    '  if (E >= 0) return neg + d.slice(0, E + 1) + (p > E + 1 ? ''.'' + d.slice(E + 1) : '''');',
-    '  return neg + ''0.'' + __zeros(-(E + 1)) + d;',
-    '}',
-    'function __toExponential(f) {',
-    '  var x = Number(this), neg = '''', r, p;',
-    '  if (x !== x || x === Infinity || x === -Infinity) return String(x);',
-    '  if (f !== undefined) {',
-    '    f = Math.floor(Number(f));',
-    '    if (f < 0 || f > 100) throw new RangeError(''toExponential() argument must be between 0 and 100'');',
-    '  }',
-    '  if (x < 0) { neg = ''-''; x = -x; }',
-    '  if (x === 0) return neg + (f > 0 ? ''0.'' + __zeros(f) : ''0'') + ''e+0'';',
-    '  if (f === undefined) {',
-    '    for (p = 1; p <= 17; p++) {',
-    '      r = __sig(x, p);',
-    '      if (Number(__expo(r[0], r[1])) === x) break;',
-    '    }',
-    '  } else r = __sig(x, f + 1);',
-    '  return neg + __expo(r[0], r[1]);',
-    '}',
     'var __tplc;',
     'function __tpl(site) {',
     '  if (!__tplc) __tplc = {};',
@@ -3659,64 +3575,6 @@ Const
     '  a.raw = r;',
     '  __tplc[site] = a;',
     '  return a;',
-    '}',
-    'function __uriEnc(s, keep) {',
-    '  var out = '''', i, c, cp, lo, b, k, hx = ''0123456789ABCDEF'';',
-    '  s = String(s);',
-    '  for (i = 0; i < s.length; i++) {',
-    '    c = s.charAt(i);',
-    '    if (keep.indexOf(c) >= 0) { out += c; continue; }',
-    '    cp = s.charCodeAt(i);',
-    '    if (cp >= 56320 && cp <= 57343) throw new URIError(''URI malformed'');',
-    '    if (cp >= 55296 && cp <= 56319) {',
-    '      if (i + 1 >= s.length) throw new URIError(''URI malformed'');',
-    '      lo = s.charCodeAt(i + 1);',
-    '      if (lo < 56320 || lo > 57343) throw new URIError(''URI malformed'');',
-    '      cp = 65536 + ((cp - 55296) << 10) + (lo - 56320);',
-    '      i++;',
-    '    }',
-    '    if (cp < 128) b = [cp];',
-    '    else if (cp < 2048) b = [192 | (cp >> 6), 128 | (cp & 63)];',
-    '    else if (cp < 65536) b = [224 | (cp >> 12), 128 | ((cp >> 6) & 63), 128 | (cp & 63)];',
-    '    else b = [240 | (cp >> 18), 128 | ((cp >> 12) & 63), 128 | ((cp >> 6) & 63), 128 | (cp & 63)];',
-    '    for (k = 0; k < b.length; k++) out += ''%'' + hx.charAt(b[k] >> 4) + hx.charAt(b[k] & 15);',
-    '  }',
-    '  return out;',
-    '}',
-    'function __uriDec(s, reserved) {',
-    '  var out = '''', i = 0, n, c, b, need, cp, k, h, j, raw;',
-    '  s = String(s);',
-    '  n = s.length;',
-    '  while (i < n) {',
-    '    c = s.charAt(i);',
-    '    if (c !== ''%'') { out += c; i++; continue; }',
-    '    raw = i;',
-    '    if (i + 2 > n - 1) throw new URIError(''URI malformed'');',
-    '    h = parseInt(s.substr(i + 1, 2), 16);',
-    '    if (!/^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) throw new URIError(''URI malformed'');',
-    '    b = h;',
-    '    i += 3;',
-    '    if (b < 128) {',
-    '      if (reserved.indexOf(String.fromCharCode(b)) >= 0) out += s.slice(raw, i);',
-    '      else out += String.fromCharCode(b);',
-    '      continue;',
-    '    }',
-    '    if (b >= 192 && b < 224) { need = 1; cp = b & 31; }',
-    '    else if (b >= 224 && b < 240) { need = 2; cp = b & 15; }',
-    '    else if (b >= 240 && b < 248) { need = 3; cp = b & 7; }',
-    '    else throw new URIError(''URI malformed'');',
-    '    for (k = 0; k < need; k++) {',
-    '      if (s.charAt(i) !== ''%'' || !/^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) throw new URIError(''URI malformed'');',
-    '      j = parseInt(s.substr(i + 1, 2), 16);',
-    '      if ((j & 192) !== 128) throw new URIError(''URI malformed'');',
-    '      cp = (cp << 6) | (j & 63);',
-    '      i += 3;',
-    '    }',
-    '    if ((need === 1 && cp < 128) || (need === 2 && cp < 2048) || (need === 3 && cp < 65536) || cp > 1114111 || (cp >= 55296 && cp <= 57343)) throw new URIError(''URI malformed'');',
-    '    if (cp >= 65536) { cp -= 65536; out += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023)); }',
-    '    else out += String.fromCharCode(cp);',
-    '  }',
-    '  return out;',
     '}',
     'function __encodeURIComponent(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*''()"); }',
     'function __encodeURI(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*''();/?:@&=+$,#"); }',
@@ -4077,6 +3935,41 @@ Const
     '  if (op === 10) return __bshl(a, -Number(__btos(b)));',
     '  throw new TypeError(''BigInts have no unsigned right shift, use >> instead'');',
     '}',
+    'function __init_big() {',
+    '  var P = {};',
+    '  __bigproto = P;',
+    '  __bigop = __bigop_impl;',
+    '  __bseq = function (b) { return __bsg(this) === __bsg(b) && __mcmp(__bm(this), __bm(b)) === 0; };',
+    '  __btruthy = function (x) { return x[''\x01m''].length !== 0; };',
+    '  __BigInt = function BigInt(v) {',
+    '    if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError(''BigInt is not a constructor'');',
+    '    return __bto(v);',
+    '  };',
+    '  __BigInt.prototype = P;',
+    '  P.constructor = __BigInt;',
+    '  P.toString = function (radix) { return __btos(this, radix === undefined ? 10 : radix); };',
+    '  P.valueOf = function () { return Number(__btos(this)); };',
+    '  P.toJSON = function () { throw new TypeError(''Do not know how to serialize a BigInt''); };',
+    '  P.toLocaleString = function () {',
+    '    var s = __btos(this), neg = s.charAt(0) === ''-'', o = '''', i;',
+    '    if (neg) s = s.slice(1);',
+    '    for (i = 0; i < s.length; i++) {',
+    '      if (i > 0 && (s.length - i) % 3 === 0) o += '','';',
+    '      o += s.charAt(i);',
+    '    }',
+    '    return neg ? ''-'' + o : o;',
+    '  };',
+    '  __BigInt.asUintN = function (bits, x) {',
+    '    var m = __bpow(__bmk(1, [2]), __bfromnum(bits)), r = __bdivmod(__bto(x), m)[1];',
+    '    if (__bsg(r) < 0) r = __badd(r, m);',
+    '    return r;',
+    '  };',
+    '  __BigInt.asIntN = function (bits, x) {',
+    '    var u = __BigInt.asUintN(bits, x), h = __bpow(__bmk(1, [2]), __bfromnum(bits - 1));',
+    '    if (bits > 0 && __bcmp(u, h) >= 0) u = __badd(u, __bneg(__bpow(__bmk(1, [2]), __bfromnum(bits))));',
+    '    return u;',
+    '  };',
+    '}',
     'function __dtoa(x) {',
     '  var neg = x < 0, ax = neg ? -x : x, e = 0, f = ax, k, r, s, mp, mm, d, ds = '''', n, even, tc1, tc2, t, boundary, F, be, ten, i, ex;',
     '  while (f >= 9007199254740992) { f = f / 2; e++; }',
@@ -4124,39 +4017,361 @@ Const
     '  }',
     '  return neg ? ''-'' + t : t;',
     '}',
-    'function __init_big() {',
-    '  var P = {};',
-    '  __bigproto = P;',
-    '  __bigop = __bigop_impl;',
-    '  __bseq = function (b) { return __bsg(this) === __bsg(b) && __mcmp(__bm(this), __bm(b)) === 0; };',
-    '  __btruthy = function (x) { return x[''\x01m''].length !== 0; };',
-    '  __BigInt = function BigInt(v) {',
-    '    if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError(''BigInt is not a constructor'');',
-    '    return __bto(v);',
-    '  };',
-    '  __BigInt.prototype = P;',
-    '  P.constructor = __BigInt;',
-    '  P.toString = function (radix) { return __btos(this, radix === undefined ? 10 : radix); };',
-    '  P.valueOf = function () { return Number(__btos(this)); };',
-    '  P.toJSON = function () { throw new TypeError(''Do not know how to serialize a BigInt''); };',
-    '  P.toLocaleString = function () {',
-    '    var s = __btos(this), neg = s.charAt(0) === ''-'', o = '''', i;',
-    '    if (neg) s = s.slice(1);',
-    '    for (i = 0; i < s.length; i++) {',
-    '      if (i > 0 && (s.length - i) % 3 === 0) o += '','';',
-    '      o += s.charAt(i);',
+    'var __UPR, __LOR, __UPM, __LOM;',
+    'function __case_init() {',
+    '  __UPR = JSON.parse(',
+    '    "[181,181,743,1,224,246,-32,1,248,254,-32,1,255,255,121,1,257,303,-1,2,305,305,-232,1,307,311,-1,2,314,328,-1,2,331,375,-1,2,378,382,-1,2,383,383,-300," +',
+    '    "1,384,384,195,1,387,389,-1,2,392,392,-1,1,396,396,-1,1,402,402,-1,1,405,405,97,1,409,409,-1,1,410,410,163,1,411,411,42561,1,414,414,130,1,417,421,-1,2" +',
+    '    ",424,424,-1,1,429,429,-1,1,432,432,-1,1,436,438,-1,2,441,441,-1,1,445,445,-1,1,447,447,56,1,453,453,-1,1,454,454,-2,1,456,456,-1,1,457,457,-2,1,459,45" +',
+    '    "9,-1,1,460,460,-2,1,462,476,-1,2,477,477,-79,1,479,495,-1,2,498,498,-1,1,499,499,-2,1,501,501,-1,1,505,543,-1,2,547,563,-1,2,572,572,-1,1,575,576,1081" +',
+    '    "5,1,578,578,-1,1,583,591,-1,2,592,592,10783,1,593,593,10780,1,594,594,10782,1,595,595,-210,1,596,596,-206,1,598,599,-205,1,601,601,-202,1,603,603,-203" +',
+    '    ",1,604,604,42319,1,608,608,-205,1,609,609,42315,1,611,611,-207,1,612,612,42343,1,613,613,42280,1,614,614,42308,1,616,616,-209,1,617,617,-211,1,618,618" +',
+    '    ",42308,1,619,619,10743,1,620,620,42305,1,623,623,-211,1,625,625,10749,1,626,626,-213,1,629,629,-214,1,637,637,10727,1,640,640,-218,1,642,642,42307,1,6" +',
+    '    "43,643,-218,1,647,647,42282,1,648,648,-218,1,649,649,-69,1,650,651,-217,1,652,652,-71,1,658,658,-219,1,669,669,42261,1,670,670,42258,1,837,837,84,1,88" +',
+    '    "1,883,-1,2,887,887,-1,1,891,893,130,1,940,940,-38,1,941,943,-37,1,945,961,-32,1,962,962,-31,1,963,971,-32,1,972,972,-64,1,973,974,-63,1,976,976,-62,1," +',
+    '    "977,977,-57,1,981,981,-47,1,982,982,-54,1,983,983,-8,1,985,1007,-1,2,1008,1008,-86,1,1009,1009,-80,1,1010,1010,7,1,1011,1011,-116,1,1013,1013,-96,1,10" +',
+    '    "16,1016,-1,1,1019,1019,-1,1,1072,1103,-32,1,1104,1119,-80,1,1121,1153,-1,2,1163,1215,-1,2,1218,1230,-1,2,1231,1231,-15,1,1233,1327,-1,2,1377,1414,-48," +',
+    '    "1,4304,4346,3008,1,4349,4351,3008,1,5112,5117,-8,1,7296,7296,-6254,1,7297,7297,-6253,1,7298,7298,-6244,1,7299,7300,-6242,1,7301,7301,-6243,1,7302,7302" +',
+    '    ",-6236,1,7303,7303,-6181,1,7304,7304,35266,1,7306,7306,-1,1,7545,7545,35332,1,7549,7549,3814,1,7566,7566,35384,1,7681,7829,-1,2,7835,7835,-59,1,7841,7" +',
+    '    "935,-1,2,7936,7943,8,1,7952,7957,8,1,7968,7975,8,1,7984,7991,8,1,8000,8005,8,1,8017,8023,8,2,8032,8039,8,1,8048,8049,74,1,8050,8053,86,1,8054,8055,100" +',
+    '    ",1,8056,8057,128,1,8058,8059,112,1,8060,8061,126,1,8112,8113,8,1,8126,8126,-7205,1,8144,8145,8,1,8160,8161,8,1,8165,8165,7,1,8526,8526,-28,1,8560,8575" +',
+    '    ",-16,1,8580,8580,-1,1,9424,9449,-26,1,11312,11359,-48,1,11361,11361,-1,1,11365,11365,-10795,1,11366,11366,-10792,1,11368,11372,-1,2,11379,11379,-1,1,1" +',
+    '    "1382,11382,-1,1,11393,11491,-1,2,11500,11502,-1,2,11507,11507,-1,1,11520,11557,-7264,1,11559,11559,-7264,1,11565,11565,-7264,1,42561,42605,-1,2,42625," +',
+    '    "42651,-1,2,42787,42799,-1,2,42803,42863,-1,2,42874,42876,-1,2,42879,42887,-1,2,42892,42892,-1,1,42897,42899,-1,2,42900,42900,48,1,42903,42921,-1,2,429" +',
+    '    "33,42947,-1,2,42952,42954,-1,2,42957,42957,-1,1,42961,42961,-1,1,42967,42971,-1,2,42998,42998,-1,1,43859,43859,-928,1,43888,43967,-38864,1,65345,65370" +',
+    '    ",-32,1,66600,66639,-40,1,66776,66811,-40,1,66967,66977,-39,1,66979,66993,-39,1,66995,67001,-39,1,67003,67004,-39,1,68800,68850,-64,1,68976,68997,-32,1" +',
+    '    ",71872,71903,-32,1,93792,93823,-32,1,125218,125251,-34,1]");',
+    '  __LOR = JSON.parse(',
+    '    "[192,214,32,1,216,222,32,1,256,302,1,2,306,310,1,2,313,327,1,2,330,374,1,2,376,376,-121,1,377,381,1,2,385,385,210,1,386,388,1,2,390,390,206,1,391,391," +',
+    '    "1,1,393,394,205,1,395,395,1,1,398,398,79,1,399,399,202,1,400,400,203,1,401,401,1,1,403,403,205,1,404,404,207,1,406,406,211,1,407,407,209,1,408,408,1,1" +',
+    '    ",412,412,211,1,413,413,213,1,415,415,214,1,416,420,1,2,422,422,218,1,423,423,1,1,425,425,218,1,428,428,1,1,430,430,218,1,431,431,1,1,433,434,217,1,435" +',
+    '    ",437,1,2,439,439,219,1,440,440,1,1,444,444,1,1,452,452,2,1,453,453,1,1,455,455,2,1,456,456,1,1,458,458,2,1,459,475,1,2,478,494,1,2,497,497,2,1,498,500" +',
+    '    ",1,2,502,502,-97,1,503,503,-56,1,504,542,1,2,544,544,-130,1,546,562,1,2,570,570,10795,1,571,571,1,1,573,573,-163,1,574,574,10792,1,577,577,1,1,579,579" +',
+    '    ",-195,1,580,580,69,1,581,581,71,1,582,590,1,2,880,882,1,2,886,886,1,1,895,895,116,1,902,902,38,1,904,906,37,1,908,908,64,1,910,911,63,1,913,929,32,1,9" +',
+    '    "31,939,32,1,975,975,8,1,984,1006,1,2,1012,1012,-60,1,1015,1015,1,1,1017,1017,-7,1,1018,1018,1,1,1021,1023,-130,1,1024,1039,80,1,1040,1071,32,1,1120,11" +',
+    '    "52,1,2,1162,1214,1,2,1216,1216,15,1,1217,1229,1,2,1232,1326,1,2,1329,1366,48,1,4256,4293,7264,1,4295,4295,7264,1,4301,4301,7264,1,5024,5103,38864,1,51" +',
+    '    "04,5109,8,1,7305,7305,1,1,7312,7354,-3008,1,7357,7359,-3008,1,7680,7828,1,2,7838,7838,-7615,1,7840,7934,1,2,7944,7951,-8,1,7960,7965,-8,1,7976,7983,-8" +',
+    '    ",1,7992,7999,-8,1,8008,8013,-8,1,8025,8031,-8,2,8040,8047,-8,1,8072,8079,-8,1,8088,8095,-8,1,8104,8111,-8,1,8120,8121,-8,1,8122,8123,-74,1,8124,8124,-" +',
+    '    "9,1,8136,8139,-86,1,8140,8140,-9,1,8152,8153,-8,1,8154,8155,-100,1,8168,8169,-8,1,8170,8171,-112,1,8172,8172,-7,1,8184,8185,-128,1,8186,8187,-126,1,81" +',
+    '    "88,8188,-9,1,8486,8486,-7517,1,8490,8490,-8383,1,8491,8491,-8262,1,8498,8498,28,1,8544,8559,16,1,8579,8579,1,1,9398,9423,26,1,11264,11311,48,1,11360,1" +',
+    '    "1360,1,1,11362,11362,-10743,1,11363,11363,-3814,1,11364,11364,-10727,1,11367,11371,1,2,11373,11373,-10780,1,11374,11374,-10749,1,11375,11375,-10783,1," +',
+    '    "11376,11376,-10782,1,11378,11378,1,1,11381,11381,1,1,11390,11391,-10815,1,11392,11490,1,2,11499,11501,1,2,11506,11506,1,1,42560,42604,1,2,42624,42650," +',
+    '    "1,2,42786,42798,1,2,42802,42862,1,2,42873,42875,1,2,42877,42877,-35332,1,42878,42886,1,2,42891,42891,1,1,42893,42893,-42280,1,42896,42898,1,2,42902,42" +',
+    '    "920,1,2,42922,42922,-42308,1,42923,42923,-42319,1,42924,42924,-42315,1,42925,42925,-42305,1,42926,42926,-42308,1,42928,42928,-42258,1,42929,42929,-422" +',
+    '    "82,1,42930,42930,-42261,1,42931,42931,928,1,42932,42946,1,2,42948,42948,-48,1,42949,42949,-42307,1,42950,42950,-35384,1,42951,42953,1,2,42955,42955,-4" +',
+    '    "2343,1,42956,42956,1,1,42960,42960,1,1,42966,42970,1,2,42972,42972,-42561,1,42997,42997,1,1,65313,65338,32,1,66560,66599,40,1,66736,66771,40,1,66928,6" +',
+    '    "6938,39,1,66940,66954,39,1,66956,66962,39,1,66964,66965,39,1,68736,68786,64,1,68944,68965,32,1,71840,71871,32,1,93760,93791,32,1,125184,125217,34,1]");',
+    '  __UPM = JSON.parse(',
+    '    "[223,\"SS\",329,\"ʼN\",496,\"J̌\",912,\"Ϊ́\",944,\"Ϋ́\",1415,\"ԵՒ\",7830,\"H̱\",7831,\"T̈\",7832,\"W̊\",7833,\"Y̊\",7834,\"Aʾ\",8016,\"Υ̓\",8018,\"Υ̓̀\",8020,\"Υ̓́\",8022,\"Υ̓͂\"" +',
+    '    ",8064,\"ἈΙ\",8065,\"ἉΙ\",8066,\"ἊΙ\",8067,\"ἋΙ\",8068,\"ἌΙ\",8069,\"ἍΙ\",8070,\"ἎΙ\",8071,\"ἏΙ\",8072,\"ἈΙ\",8073,\"ἉΙ\",8074,\"ἊΙ\",8075,\"ἋΙ\",8076,\"ἌΙ\",8077,\"ἍΙ\",8078,\"ἎΙ\"" +',
+    '    ",8079,\"ἏΙ\",8080,\"ἨΙ\",8081,\"ἩΙ\",8082,\"ἪΙ\",8083,\"ἫΙ\",8084,\"ἬΙ\",8085,\"ἭΙ\",8086,\"ἮΙ\",8087,\"ἯΙ\",8088,\"ἨΙ\",8089,\"ἩΙ\",8090,\"ἪΙ\",8091,\"ἫΙ\",8092,\"ἬΙ\",8093,\"ἭΙ\"" +',
+    '    ",8094,\"ἮΙ\",8095,\"ἯΙ\",8096,\"ὨΙ\",8097,\"ὩΙ\",8098,\"ὪΙ\",8099,\"ὫΙ\",8100,\"ὬΙ\",8101,\"ὭΙ\",8102,\"ὮΙ\",8103,\"ὯΙ\",8104,\"ὨΙ\",8105,\"ὩΙ\",8106,\"ὪΙ\",8107,\"ὫΙ\",8108,\"ὬΙ\"" +',
+    '    ",8109,\"ὭΙ\",8110,\"ὮΙ\",8111,\"ὯΙ\",8114,\"ᾺΙ\",8115,\"ΑΙ\",8116,\"ΆΙ\",8118,\"Α͂\",8119,\"Α͂Ι\",8124,\"ΑΙ\",8130,\"ῊΙ\",8131,\"ΗΙ\",8132,\"ΉΙ\",8134,\"Η͂\",8135,\"Η͂Ι\",8140,\"Η" +',
+    '    "Ι\",8146,\"Ϊ̀\",8147,\"Ϊ́\",8150,\"Ι͂\",8151,\"Ϊ͂\",8162,\"Ϋ̀\",8163,\"Ϋ́\",8164,\"Ρ̓\",8166,\"Υ͂\",8167,\"Ϋ͂\",8178,\"ῺΙ\",8179,\"ΩΙ\",8180,\"ΏΙ\",8182,\"Ω͂\",8183,\"Ω͂Ι\"," +',
+    '    "8188,\"ΩΙ\",64256,\"FF\",64257,\"FI\",64258,\"FL\",64259,\"FFI\",64260,\"FFL\",64261,\"ST\",64262,\"ST\",64275,\"ՄՆ\",64276,\"ՄԵ\",64277,\"ՄԻ\",64278,\"ՎՆ\",64279,\"ՄԽ\"]");',
+    '  __LOM = JSON.parse(',
+    '    "[304,\"i̇\"]");',
+    '}',
+    'function __su_this(t) { return typeof t === ''string'' ? t : String(t); }',
+    'function __su_int(x) {',
+    '  x = Number(x);',
+    '  if (x !== x) return 0;',
+    '  return x < 0 ? Math.ceil(x) : Math.floor(x);',
+    '}',
+    'function __rc(m, s, a, b) {',
+    '  __raw(1);',
+    '  var r = __nsm[m].call(s, a, b);',
+    '  __raw(0);',
+    '  return r;',
+    '}',
+    'function __su_charAt(i) {',
+    '  var s = __su_this(this), u = __u16(s);',
+    '  i = __su_int(i);',
+    '  if (i < 0 || i >= u.length) return '''';',
+    '  return __fromu16([u[i]]);',
+    '}',
+    'function __su_charCodeAt(i) {',
+    '  var s = __su_this(this), u = __u16(s);',
+    '  i = __su_int(i);',
+    '  if (i < 0 || i >= u.length) return NaN;',
+    '  return u[i];',
+    '}',
+    'function __su_pos(s, p, n) {',
+    '  var b;',
+    '  if (p < 0) p = 0;',
+    '  if (p > n) p = n;',
+    '  b = __u2b(s, p);',
+    '  if (b < 0) b = __u2b(s, p + 1);',
+    '  return b;',
+    '}',
+    'function __su_indexOf(sub, pos) {',
+    '  var s = __su_this(this), n = s.length, r;',
+    '  sub = String(sub);',
+    '  if (sub === '''') return Math.min(Math.max(__su_int(pos), 0), n);',
+    '  r = __rc(''indexOf'', s, sub, __su_pos(s, __su_int(pos), n));',
+    '  return r < 0 ? -1 : __b2u(s, r);',
+    '}',
+    'function __su_lastIndexOf(sub, pos) {',
+    '  var s = __su_this(this), n = s.length, r;',
+    '  sub = String(sub);',
+    '  pos = (pos === undefined || Number(pos) !== Number(pos)) ? n : __su_int(pos);',
+    '  if (sub === '''') return Math.min(Math.max(pos, 0), n);',
+    '  r = __rc(''lastIndexOf'', s, sub, __su_pos(s, pos, n));',
+    '  return r < 0 ? -1 : __b2u(s, r);',
+    '}',
+    'function __su_includes(sub, pos) {',
+    '  return __su_indexOf.call(__su_this(this), sub, pos) !== -1;',
+    '}',
+    'function __su_startsWith(sub, pos) {',
+    '  var s = __su_this(this), n = s.length;',
+    '  return __rc(''startsWith'', s, String(sub), __su_pos(s, __su_int(pos), n));',
+    '}',
+    'function __su_endsWith(sub, pos) {',
+    '  var s = __su_this(this), n = s.length;',
+    '  pos = pos === undefined ? n : __su_int(pos);',
+    '  return __rc(''endsWith'', s, String(sub), __su_pos(s, pos, n));',
+    '}',
+    'function __su_range(s, a, b) {',
+    '  var ba, bb, u;',
+    '  if (a >= b) return '''';',
+    '  ba = __u2b(s, a);',
+    '  bb = __u2b(s, b);',
+    '  if (ba < 0 || bb < 0) {',
+    '    u = __u16(s);',
+    '    return __fromu16(u.slice(a, b));',
+    '  }',
+    '  return __rc(''slice'', s, ba, bb);',
+    '}',
+    'function __su_slice(a, b) {',
+    '  var s = __su_this(this), n = s.length;',
+    '  a = __su_int(a);',
+    '  b = b === undefined ? n : __su_int(b);',
+    '  a = a < 0 ? Math.max(n + a, 0) : Math.min(a, n);',
+    '  b = b < 0 ? Math.max(n + b, 0) : Math.min(b, n);',
+    '  return __su_range(s, a, b);',
+    '}',
+    'function __su_substring(a, b) {',
+    '  var s = __su_this(this), n = s.length, t;',
+    '  a = Math.min(Math.max(__su_int(a), 0), n);',
+    '  b = b === undefined ? n : Math.min(Math.max(__su_int(b), 0), n);',
+    '  if (a > b) { t = a; a = b; b = t; }',
+    '  return __su_range(s, a, b);',
+    '}',
+    'function __su_fill(s, target, pad, atStart) {',
+    '  var n = s.length, need, f, k;',
+    '  target = __su_int(target);',
+    '  pad = pad === undefined ? '' '' : String(pad);',
+    '  if (target <= n || pad === '''') return s;',
+    '  need = target - n;',
+    '  k = Math.ceil(need / pad.length);',
+    '  f = pad.repeat(k).slice(0, need);',
+    '  return atStart ? f + s : s + f;',
+    '}',
+    'function __su_padStart(target, pad) { return __su_fill(__su_this(this), target, pad, true); }',
+    'function __su_padEnd(target, pad) { return __su_fill(__su_this(this), target, pad, false); }',
+    'function __su_isws(c) {',
+    '  return c === 32 || (c >= 9 && c <= 13) || c === 160 || c === 5760 || (c >= 8192 && c <= 8202) ||',
+    '    c === 8232 || c === 8233 || c === 8239 || c === 8287 || c === 12288 || c === 65279;',
+    '}',
+    'function __su_trimmed(s, front, back) {',
+    '  var u = __u16(s), a = 0, b = u.length;',
+    '  if (front) while (a < b && __su_isws(u[a])) a++;',
+    '  if (back) while (b > a && __su_isws(u[b - 1])) b--;',
+    '  return __su_range(s, a, b);',
+    '}',
+    'function __su_trim() { return __su_trimmed(__su_this(this), true, true); }',
+    'function __su_trimStart() { return __su_trimmed(__su_this(this), true, false); }',
+    'function __su_trimEnd() { return __su_trimmed(__su_this(this), false, true); }',
+    'function __su_split(sep, limit) {',
+    '  var s = __su_this(this), u, out = [], i, lim;',
+    '  if (typeof sep === ''string'' && sep === '''') {',
+    '    u = __u16(s);',
+    '    lim = limit === undefined ? 4294967295 : limit >>> 0;',
+    '    for (i = 0; i < u.length && out.length < lim; i++) out.push(__fromu16([u[i]]));',
+    '    return out;',
+    '  }',
+    '  __raw(1);',
+    '  out = __nsm.split.call(s, sep, limit);',
+    '  __raw(0);',
+    '  return out;',
+    '}',
+    'function __case_find(t, cp) {',
+    '  var lo = 0, hi = t.length / 4 - 1, mid, s, e;',
+    '  while (lo <= hi) {',
+    '    mid = (lo + hi) >> 1;',
+    '    s = t[mid * 4];',
+    '    e = t[mid * 4 + 1];',
+    '    if (cp < s) hi = mid - 1;',
+    '    else if (cp > e) lo = mid + 1;',
+    '    else return (t[mid * 4 + 3] === 1 || (cp - s) % 2 === 0) ? t[mid * 4 + 2] : 0;',
+    '  }',
+    '  return 0;',
+    '}',
+    'function __case_multi(m, cp) {',
+    '  for (var i = 0; i < m.length; i += 2) if (m[i] === cp) return m[i + 1];',
+    '  return null;',
+    '}',
+    'function __cpat(u, i) {',
+    '  var c = u[i];',
+    '  if (c >= 56320 && c <= 57343 && i > 0 && u[i - 1] >= 55296 && u[i - 1] <= 56319) return 65536 + ((u[i - 1] - 55296) << 10) + (c - 56320);',
+    '  if (c >= 55296 && c <= 56319 && i + 1 < u.length && u[i + 1] >= 56320 && u[i + 1] <= 57343) return 65536 + ((c - 55296) << 10) + (u[i + 1] - 56320);',
+    '  return c;',
+    '}',
+    'function __iscased(c) {',
+    '  if (c < 128) return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);',
+    '  if (c >= 119808 && c <= 120831) return true;',
+    '  return __case_find(__UPR, c) !== 0 || __case_find(__LOR, c) !== 0 || __case_multi(__UPM, c) !== null || __case_multi(__LOM, c) !== null;',
+    '}',
+    'function __case_conv(s, upper) {',
+    '  var t, m, out = [], i, cp, d, r, n, u;',
+    '  if (__UPR === undefined) __case_init();',
+    '  t = upper ? __UPR : __LOR;',
+    '  m = upper ? __UPM : __LOM;',
+    '  u = __u16(s);',
+    '  n = u.length;',
+    '  for (i = 0; i < n; i++) {',
+    '    cp = u[i];',
+    '    if (cp >= 55296 && cp <= 56319 && i + 1 < n && u[i + 1] >= 56320 && u[i + 1] <= 57343) {',
+    '      cp = 65536 + ((cp - 55296) << 10) + (u[i + 1] - 56320);',
+    '      d = __case_find(t, cp);',
+    '      if (d !== 0) { cp += d; out.push(55296 + ((cp - 65536) >> 10), 56320 + ((cp - 65536) & 1023)); }',
+    '      else out.push(u[i], u[i + 1]);',
+    '      i++;',
+    '      continue;',
     '    }',
-    '    return neg ? ''-'' + o : o;',
+    '    if (cp < 128) {',
+    '      if (upper) { if (cp >= 97 && cp <= 122) cp -= 32; }',
+    '      else if (cp >= 65 && cp <= 90) cp += 32;',
+    '      out.push(cp);',
+    '      continue;',
+    '    }',
+    '    r = __case_multi(m, cp);',
+    '    if (r !== null) {',
+    '      r = __u16(r);',
+    '      for (d = 0; d < r.length; d++) out.push(r[d]);',
+    '      continue;',
+    '    }',
+    '    if (!upper && cp === 931) {',
+    '      /* sigma final : precede d''une lettre et non suivi d''une lettre */',
+    '      if (i > 0 && __iscased(__cpat(u, i - 1)) && !(i + 1 < n && __iscased(__cpat(u, i + 1)))) { out.push(962); continue; }',
+    '    }',
+    '    d = __case_find(t, cp);',
+    '    out.push(d !== 0 ? cp + d : cp);',
+    '  }',
+    '  return __fromu16(out);',
+    '}',
+    'function __su_toUpperCase() { return __case_conv(__su_this(this), true); }',
+    'function __su_toLowerCase() { return __case_conv(__su_this(this), false); }',
+    'function __su_fromCharCode(...a) {',
+    '  var u = [], i;',
+    '  for (i = 0; i < a.length; i++) u.push(Number(a[i]) & 65535);',
+    '  return __fromu16(u);',
+    '}',
+    'var __collT;',
+    'function __collInit() {',
+    '  var gs = [',
+    '    ''\u0061\u00e1\u00e0\u0103\u00e2\u00e5\u00e4\u00e3\u0105\u0101'', ''\u0063\u0107\u0109\u010d\u010b\u00e7'', ''\u0064\u010f\u0111'', ''\u0065\u00e9\u00e8\u0115\u00ea\u011b\u00eb\u0117\u0119\u0113'',',
+    '    ''\u0067\u011f\u011d\u0121\u0123'', ''\u0068\u0125\u0127'', ''\u0069\u00ed\u00ec\u012d\u00ee\u00ef\u0129\u012f\u012b\u0131'', ''\u006a\u0135'', ''\u006b\u0137'', ''\u006c\u013a\u013e\u013c\u0142\u0140'',',
+    '    ''\u006e\u0144\u0148\u00f1\u0146\u0149'', ''\u006f\u00f3\u00f2\u014f\u00f4\u00f6\u0151\u00f5\u00f8\u014d'', ''\u0072\u0155\u0159\u0157'', ''\u0073\u015b\u015d\u0161\u015f'', ''\u0074\u0165\u0163\u0167'',',
+    '    ''\u0075\u00fa\u00f9\u016d\u00fb\u016f\u00fc\u0171\u0169\u0173\u016b'', ''\u0077\u0175'', ''\u0079\u00fd\u0177\u00ff'', ''\u007a\u017a\u017e\u017c''',
+    '  ], i, j, g;',
+    '  __collT = {};',
+    '  for (i = 0; i < gs.length; i++) {',
+    '    g = gs[i];',
+    '    for (j = 0; j < g.length; j++) __collT[g.charAt(j)] = [g.charAt(0), j];',
+    '  }',
+    '}',
+    'function __coll(s, level) {',
+    '  var out = '''', i, c, k, lo, cp;',
+    '  if (__collT === undefined) __collInit();',
+    '  for (i = 0; i < s.length; i++) {',
+    '    c = s.charAt(i);',
+    '    cp = s.charCodeAt(i);',
+    '    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) { c += s.charAt(i + 1); i++; cp = 65536 + ((cp - 55296) << 10) + (s.charCodeAt(i) - 56320); }',
+    '    lo = c.toLowerCase();',
+    '    k = __collT[lo];',
+    '    if (level === 0) {',
+    '      if (cp === 32 || (cp >= 9 && cp <= 13) || cp === 160) out += ''1'';',
+    '      else if (cp < 48 || (cp > 57 && cp < 65) || (cp > 90 && cp < 97) || (cp > 122 && cp < 128)) out += ''2'' + lo;',
+    '      else if (cp >= 48 && cp <= 57) out += ''4'' + lo;',
+    '      else if (cp >= 119808 && cp <= 120831) out += ''5'' + lo;',
+    '      else if (cp >= 65536) out += ''3'' + lo;',
+    '      else if (lo === ''\u00df'') out += ''5ss'';',
+    '      else if (k !== undefined) out += ''5'' + k[0];',
+    '      else if (cp < 128 || (cp >= 192 && cp < 592)) out += ''5'' + lo;',
+    '      else if (cp >= 880 && cp < 1024) out += ''6'' + lo;',
+    '      else if (cp >= 1024 && cp < 1328) out += ''7'' + lo;',
+    '      else if (cp >= 8192 && cp < 12288) out += ''3'' + lo;',
+    '      else out += ''8'' + lo;',
+    '    }',
+    '    else if (level === 1) out += k !== undefined ? String(k[1]) : ''0'';',
+    '    else out += c === lo ? ''0'' : ''1'';',
+    '  }',
+    '  return out;',
+    '}',
+    'var __cfold;',
+    'function __init_str() {',
+    '  var SP = String.prototype;',
+    '  // variantes de casse des points de code lo..lo+n (valeur empaquetee), pour les regex /i',
+    '  __cfold = function (packed) {',
+    '    var lo = packed & 2097151, n = packed >> 21, out = [], i, cp, s, v, k, c1, c2, vs;',
+    '    for (i = 0; i <= n; i++) {',
+    '      cp = lo + i;',
+    '      if (cp >= 55296 && cp <= 57343) continue;',
+    '      s = String.fromCodePoint(cp);',
+    '      c1 = s.toUpperCase(); c2 = s.toLowerCase();',
+    '      vs = [c1, c2, c1.toLowerCase(), c2.toUpperCase()];',
+    '      for (k = 0; k < 4; k++) {',
+    '        v = vs[k];',
+    '        if (v.length === 0 || v.length > 2) continue;',
+    '        if (v.codePointAt(0) !== cp && String.fromCodePoint(v.codePointAt(0)) === v) out.push(v.codePointAt(0));',
+    '      }',
+    '    }',
+    '    return out;',
     '  };',
-    '  __BigInt.asUintN = function (bits, x) {',
-    '    var m = __bpow(__bmk(1, [2]), __bfromnum(bits)), r = __bdivmod(__bto(x), m)[1];',
-    '    if (__bsg(r) < 0) r = __badd(r, m);',
-    '    return r;',
+    '  SP.at = function (i) {',
+    '    var s = __su_this(this), n = s.length;',
+    '    i = __su_int(i);',
+    '    if (i < 0) i += n;',
+    '    if (i < 0 || i >= n) return undefined;',
+    '    return s.charAt(i);',
     '  };',
-    '  __BigInt.asIntN = function (bits, x) {',
-    '    var u = __BigInt.asUintN(bits, x), h = __bpow(__bmk(1, [2]), __bfromnum(bits - 1));',
-    '    if (bits > 0 && __bcmp(u, h) >= 0) u = __badd(u, __bneg(__bpow(__bmk(1, [2]), __bfromnum(bits))));',
-    '    return u;',
+    '  SP.codePointAt = function (i) {',
+    '    var s = __su_this(this), u = __u16(s), c, d;',
+    '    i = __su_int(i);',
+    '    if (i < 0 || i >= u.length) return undefined;',
+    '    c = u[i];',
+    '    if (c >= 55296 && c <= 56319 && i + 1 < u.length) {',
+    '      d = u[i + 1];',
+    '      if (d >= 56320 && d <= 57343) return 65536 + ((c - 55296) << 10) + (d - 56320);',
+    '    }',
+    '    return c;',
+    '  };',
+    '  SP.normalize = function () { return __su_this(this); };',
+    '  SP.localeCompare = function (o) {',
+    '    var a = __su_this(this), b = String(o), x = __coll(a, 0), y = __coll(b, 0), i;',
+    '    if (x !== y) return x < y ? -1 : 1;',
+    '    x = __coll(a, 1);',
+    '    y = __coll(b, 1);',
+    '    if (x !== y) return x < y ? -1 : 1;',
+    '    x = __coll(a, 2);',
+    '    y = __coll(b, 2);',
+    '    return x === y ? 0 : x < y ? -1 : 1;',
+    '  };',
+    '  SP.concat = function (...a) {',
+    '    var s = __su_this(this), i;',
+    '    for (i = 0; i < a.length; i++) s += String(a[i]);',
+    '    return s;',
+    '  };',
+    '  String.fromCodePoint = function (...a) {',
+    '    var u = [], i, c;',
+    '    for (i = 0; i < a.length; i++) {',
+    '      c = Number(a[i]);',
+    '      if (c !== Math.floor(c) || c < 0 || c > 1114111) throw new RangeError(''Invalid code point '' + a[i]);',
+    '      if (c >= 65536) { c -= 65536; u.push(55296 + (c >> 10), 56320 + (c & 1023)); }',
+    '      else u.push(c);',
+    '    }',
+    '    return __fromu16(u);',
     '  };',
     '}',
     'var __modcache;',
@@ -4485,370 +4700,156 @@ Const
     'function __dynimport(spec) {',
     '  return Promise.resolve().then(function () { return __esm(__require(spec)); });',
     '}',
-    'var __UPR, __LOR, __UPM, __LOM;',
-    'function __case_init() {',
-    '  __UPR = [',
-    '    181,181,743,1,224,246,-32,1,248,254,-32,1,255,255,121,1,257,303,-1,2,305,305,-232,1,307,311,-1,2,314,328,-1,2,331,375,-1,2,378,382,-1,2,383,383,-300,',
-    '    1,384,384,195,1,387,389,-1,2,392,392,-1,1,396,396,-1,1,402,402,-1,1,405,405,97,1,409,409,-1,1,410,410,163,1,411,411,42561,1,414,414,130,1,417,421,-1,',
-    '    2,424,424,-1,1,429,429,-1,1,432,432,-1,1,436,438,-1,2,441,441,-1,1,445,445,-1,1,447,447,56,1,453,453,-1,1,454,454,-2,1,456,456,-1,1,457,457,-2,1,459,',
-    '    459,-1,1,460,460,-2,1,462,476,-1,2,477,477,-79,1,479,495,-1,2,498,498,-1,1,499,499,-2,1,501,501,-1,1,505,543,-1,2,547,563,-1,2,572,572,-1,1,575,576,',
-    '    10815,1,578,578,-1,1,583,591,-1,2,592,592,10783,1,593,593,10780,1,594,594,10782,1,595,595,-210,1,596,596,-206,1,598,599,-205,1,601,601,-202,1,603,603,',
-    '    -203,1,604,604,42319,1,608,608,-205,1,609,609,42315,1,611,611,-207,1,612,612,42343,1,613,613,42280,1,614,614,42308,1,616,616,-209,1,617,617,-211,1,',
-    '    618,618,42308,1,619,619,10743,1,620,620,42305,1,623,623,-211,1,625,625,10749,1,626,626,-213,1,629,629,-214,1,637,637,10727,1,640,640,-218,1,642,642,',
-    '    42307,1,643,643,-218,1,647,647,42282,1,648,648,-218,1,649,649,-69,1,650,651,-217,1,652,652,-71,1,658,658,-219,1,669,669,42261,1,670,670,42258,1,837,',
-    '    837,84,1,881,883,-1,2,887,887,-1,1,891,893,130,1,940,940,-38,1,941,943,-37,1,945,961,-32,1,962,962,-31,1,963,971,-32,1,972,972,-64,1,973,974,-63,1,',
-    '    976,976,-62,1,977,977,-57,1,981,981,-47,1,982,982,-54,1,983,983,-8,1,985,1007,-1,2,1008,1008,-86,1,1009,1009,-80,1,1010,1010,7,1,1011,1011,-116,1,',
-    '    1013,1013,-96,1,1016,1016,-1,1,1019,1019,-1,1,1072,1103,-32,1,1104,1119,-80,1,1121,1153,-1,2,1163,1215,-1,2,1218,1230,-1,2,1231,1231,-15,1,1233,1327,',
-    '    -1,2,1377,1414,-48,1,4304,4346,3008,1,4349,4351,3008,1,5112,5117,-8,1,7296,7296,-6254,1,7297,7297,-6253,1,7298,7298,-6244,1,7299,7300,-6242,1,7301,',
-    '    7301,-6243,1,7302,7302,-6236,1,7303,7303,-6181,1,7304,7304,35266,1,7306,7306,-1,1,7545,7545,35332,1,7549,7549,3814,1,7566,7566,35384,1,7681,7829,-1,2,',
-    '    7835,7835,-59,1,7841,7935,-1,2,7936,7943,8,1,7952,7957,8,1,7968,7975,8,1,7984,7991,8,1,8000,8005,8,1,8017,8023,8,2,8032,8039,8,1,8048,8049,74,1,8050,',
-    '    8053,86,1,8054,8055,100,1,8056,8057,128,1,8058,8059,112,1,8060,8061,126,1,8112,8113,8,1,8126,8126,-7205,1,8144,8145,8,1,8160,8161,8,1,8165,8165,7,1,',
-    '    8526,8526,-28,1,8560,8575,-16,1,8580,8580,-1,1,9424,9449,-26,1,11312,11359,-48,1,11361,11361,-1,1,11365,11365,-10795,1,11366,11366,-10792,1,11368,',
-    '    11372,-1,2,11379,11379,-1,1,11382,11382,-1,1,11393,11491,-1,2,11500,11502,-1,2,11507,11507,-1,1,11520,11557,-7264,1,11559,11559,-7264,1,11565,11565,',
-    '    -7264,1,42561,42605,-1,2,42625,42651,-1,2,42787,42799,-1,2,42803,42863,-1,2,42874,42876,-1,2,42879,42887,-1,2,42892,42892,-1,1,42897,42899,-1,2,42900,',
-    '    42900,48,1,42903,42921,-1,2,42933,42947,-1,2,42952,42954,-1,2,42957,42957,-1,1,42961,42961,-1,1,42967,42971,-1,2,42998,42998,-1,1,43859,43859,-928,1,',
-    '    43888,43967,-38864,1,65345,65370,-32,1,66600,66639,-40,1,66776,66811,-40,1,66967,66977,-39,1,66979,66993,-39,1,66995,67001,-39,1,67003,67004,-39,1,',
-    '    68800,68850,-64,1,68976,68997,-32,1,71872,71903,-32,1,93792,93823,-32,1,125218,125251,-34,1];',
-    '  __LOR = [',
-    '    192,214,32,1,216,222,32,1,256,302,1,2,306,310,1,2,313,327,1,2,330,374,1,2,376,376,-121,1,377,381,1,2,385,385,210,1,386,388,1,2,390,390,206,1,391,391,',
-    '    1,1,393,394,205,1,395,395,1,1,398,398,79,1,399,399,202,1,400,400,203,1,401,401,1,1,403,403,205,1,404,404,207,1,406,406,211,1,407,407,209,1,408,408,1,',
-    '    1,412,412,211,1,413,413,213,1,415,415,214,1,416,420,1,2,422,422,218,1,423,423,1,1,425,425,218,1,428,428,1,1,430,430,218,1,431,431,1,1,433,434,217,1,',
-    '    435,437,1,2,439,439,219,1,440,440,1,1,444,444,1,1,452,452,2,1,453,453,1,1,455,455,2,1,456,456,1,1,458,458,2,1,459,475,1,2,478,494,1,2,497,497,2,1,498,',
-    '    500,1,2,502,502,-97,1,503,503,-56,1,504,542,1,2,544,544,-130,1,546,562,1,2,570,570,10795,1,571,571,1,1,573,573,-163,1,574,574,10792,1,577,577,1,1,579,',
-    '    579,-195,1,580,580,69,1,581,581,71,1,582,590,1,2,880,882,1,2,886,886,1,1,895,895,116,1,902,902,38,1,904,906,37,1,908,908,64,1,910,911,63,1,913,929,32,',
-    '    1,931,939,32,1,975,975,8,1,984,1006,1,2,1012,1012,-60,1,1015,1015,1,1,1017,1017,-7,1,1018,1018,1,1,1021,1023,-130,1,1024,1039,80,1,1040,1071,32,1,',
-    '    1120,1152,1,2,1162,1214,1,2,1216,1216,15,1,1217,1229,1,2,1232,1326,1,2,1329,1366,48,1,4256,4293,7264,1,4295,4295,7264,1,4301,4301,7264,1,5024,5103,',
-    '    38864,1,5104,5109,8,1,7305,7305,1,1,7312,7354,-3008,1,7357,7359,-3008,1,7680,7828,1,2,7838,7838,-7615,1,7840,7934,1,2,7944,7951,-8,1,7960,7965,-8,1,',
-    '    7976,7983,-8,1,7992,7999,-8,1,8008,8013,-8,1,8025,8031,-8,2,8040,8047,-8,1,8072,8079,-8,1,8088,8095,-8,1,8104,8111,-8,1,8120,8121,-8,1,8122,8123,-74,',
-    '    1,8124,8124,-9,1,8136,8139,-86,1,8140,8140,-9,1,8152,8153,-8,1,8154,8155,-100,1,8168,8169,-8,1,8170,8171,-112,1,8172,8172,-7,1,8184,8185,-128,1,8186,',
-    '    8187,-126,1,8188,8188,-9,1,8486,8486,-7517,1,8490,8490,-8383,1,8491,8491,-8262,1,8498,8498,28,1,8544,8559,16,1,8579,8579,1,1,9398,9423,26,1,11264,',
-    '    11311,48,1,11360,11360,1,1,11362,11362,-10743,1,11363,11363,-3814,1,11364,11364,-10727,1,11367,11371,1,2,11373,11373,-10780,1,11374,11374,-10749,1,',
-    '    11375,11375,-10783,1,11376,11376,-10782,1,11378,11378,1,1,11381,11381,1,1,11390,11391,-10815,1,11392,11490,1,2,11499,11501,1,2,11506,11506,1,1,42560,',
-    '    42604,1,2,42624,42650,1,2,42786,42798,1,2,42802,42862,1,2,42873,42875,1,2,42877,42877,-35332,1,42878,42886,1,2,42891,42891,1,1,42893,42893,-42280,1,',
-    '    42896,42898,1,2,42902,42920,1,2,42922,42922,-42308,1,42923,42923,-42319,1,42924,42924,-42315,1,42925,42925,-42305,1,42926,42926,-42308,1,42928,42928,',
-    '    -42258,1,42929,42929,-42282,1,42930,42930,-42261,1,42931,42931,928,1,42932,42946,1,2,42948,42948,-48,1,42949,42949,-42307,1,42950,42950,-35384,1,',
-    '    42951,42953,1,2,42955,42955,-42343,1,42956,42956,1,1,42960,42960,1,1,42966,42970,1,2,42972,42972,-42561,1,42997,42997,1,1,65313,65338,32,1,66560,',
-    '    66599,40,1,66736,66771,40,1,66928,66938,39,1,66940,66954,39,1,66956,66962,39,1,66964,66965,39,1,68736,68786,64,1,68944,68965,32,1,71840,71871,32,1,',
-    '    93760,93791,32,1,125184,125217,34,1];',
-    '  __UPM = [',
-    '    223,"SS",329,"\u02bcN",496,"J\u030c",912,"\u0399\u0308\u0301",944,"\u03a5\u0308\u0301",1415,"\u0535\u0552",7830,"H\u0331",7831,"T\u0308",7832,',
-    '    "W\u030a",7833,"Y\u030a",7834,"A\u02be",8016,"\u03a5\u0313",8018,"\u03a5\u0313\u0300",8020,"\u03a5\u0313\u0301",8022,"\u03a5\u0313\u0342",8064,',
-    '    "\u1f08\u0399",8065,"\u1f09\u0399",8066,"\u1f0a\u0399",8067,"\u1f0b\u0399",8068,"\u1f0c\u0399",8069,"\u1f0d\u0399",8070,"\u1f0e\u0399",8071,',
-    '    "\u1f0f\u0399",8072,"\u1f08\u0399",8073,"\u1f09\u0399",8074,"\u1f0a\u0399",8075,"\u1f0b\u0399",8076,"\u1f0c\u0399",8077,"\u1f0d\u0399",8078,',
-    '    "\u1f0e\u0399",8079,"\u1f0f\u0399",8080,"\u1f28\u0399",8081,"\u1f29\u0399",8082,"\u1f2a\u0399",8083,"\u1f2b\u0399",8084,"\u1f2c\u0399",8085,',
-    '    "\u1f2d\u0399",8086,"\u1f2e\u0399",8087,"\u1f2f\u0399",8088,"\u1f28\u0399",8089,"\u1f29\u0399",8090,"\u1f2a\u0399",8091,"\u1f2b\u0399",8092,',
-    '    "\u1f2c\u0399",8093,"\u1f2d\u0399",8094,"\u1f2e\u0399",8095,"\u1f2f\u0399",8096,"\u1f68\u0399",8097,"\u1f69\u0399",8098,"\u1f6a\u0399",8099,',
-    '    "\u1f6b\u0399",8100,"\u1f6c\u0399",8101,"\u1f6d\u0399",8102,"\u1f6e\u0399",8103,"\u1f6f\u0399",8104,"\u1f68\u0399",8105,"\u1f69\u0399",8106,',
-    '    "\u1f6a\u0399",8107,"\u1f6b\u0399",8108,"\u1f6c\u0399",8109,"\u1f6d\u0399",8110,"\u1f6e\u0399",8111,"\u1f6f\u0399",8114,"\u1fba\u0399",8115,',
-    '    "\u0391\u0399",8116,"\u0386\u0399",8118,"\u0391\u0342",8119,"\u0391\u0342\u0399",8124,"\u0391\u0399",8130,"\u1fca\u0399",8131,"\u0397\u0399",8132,',
-    '    "\u0389\u0399",8134,"\u0397\u0342",8135,"\u0397\u0342\u0399",8140,"\u0397\u0399",8146,"\u0399\u0308\u0300",8147,"\u0399\u0308\u0301",8150,',
-    '    "\u0399\u0342",8151,"\u0399\u0308\u0342",8162,"\u03a5\u0308\u0300",8163,"\u03a5\u0308\u0301",8164,"\u03a1\u0313",8166,"\u03a5\u0342",8167,',
-    '    "\u03a5\u0308\u0342",8178,"\u1ffa\u0399",8179,"\u03a9\u0399",8180,"\u038f\u0399",8182,"\u03a9\u0342",8183,"\u03a9\u0342\u0399",8188,"\u03a9\u0399",',
-    '    64256,"FF",64257,"FI",64258,"FL",64259,"FFI",64260,"FFL",64261,"ST",64262,"ST",64275,"\u0544\u0546",64276,"\u0544\u0535",64277,"\u0544\u053b",64278,',
-    '    "\u054e\u0546",64279,"\u0544\u053d"];',
-    '  __LOM = [304,"i\u0307"];',
-    '}',
-    'function __su_this(t) { return typeof t === ''string'' ? t : String(t); }',
-    'function __su_int(x) {',
-    '  x = Number(x);',
-    '  if (x !== x) return 0;',
-    '  return x < 0 ? Math.ceil(x) : Math.floor(x);',
-    '}',
-    'function __rc(m, s, a, b) {',
-    '  __raw(1);',
-    '  var r = __nsm[m].call(s, a, b);',
-    '  __raw(0);',
-    '  return r;',
-    '}',
-    'function __su_charAt(i) {',
-    '  var s = __su_this(this), u = __u16(s);',
-    '  i = __su_int(i);',
-    '  if (i < 0 || i >= u.length) return '''';',
-    '  return __fromu16([u[i]]);',
-    '}',
-    'function __su_charCodeAt(i) {',
-    '  var s = __su_this(this), u = __u16(s);',
-    '  i = __su_int(i);',
-    '  if (i < 0 || i >= u.length) return NaN;',
-    '  return u[i];',
-    '}',
-    'function __su_pos(s, p, n) {',
-    '  var b;',
-    '  if (p < 0) p = 0;',
-    '  if (p > n) p = n;',
-    '  b = __u2b(s, p);',
-    '  if (b < 0) b = __u2b(s, p + 1);',
-    '  return b;',
-    '}',
-    'function __su_indexOf(sub, pos) {',
-    '  var s = __su_this(this), n = s.length, r;',
-    '  sub = String(sub);',
-    '  if (sub === '''') return Math.min(Math.max(__su_int(pos), 0), n);',
-    '  r = __rc(''indexOf'', s, sub, __su_pos(s, __su_int(pos), n));',
-    '  return r < 0 ? -1 : __b2u(s, r);',
-    '}',
-    'function __su_lastIndexOf(sub, pos) {',
-    '  var s = __su_this(this), n = s.length, r;',
-    '  sub = String(sub);',
-    '  pos = (pos === undefined || Number(pos) !== Number(pos)) ? n : __su_int(pos);',
-    '  if (sub === '''') return Math.min(Math.max(pos, 0), n);',
-    '  r = __rc(''lastIndexOf'', s, sub, __su_pos(s, pos, n));',
-    '  return r < 0 ? -1 : __b2u(s, r);',
-    '}',
-    'function __su_includes(sub, pos) {',
-    '  return __su_indexOf.call(__su_this(this), sub, pos) !== -1;',
-    '}',
-    'function __su_startsWith(sub, pos) {',
-    '  var s = __su_this(this), n = s.length;',
-    '  return __rc(''startsWith'', s, String(sub), __su_pos(s, __su_int(pos), n));',
-    '}',
-    'function __su_endsWith(sub, pos) {',
-    '  var s = __su_this(this), n = s.length;',
-    '  pos = pos === undefined ? n : __su_int(pos);',
-    '  return __rc(''endsWith'', s, String(sub), __su_pos(s, pos, n));',
-    '}',
-    'function __su_range(s, a, b) {',
-    '  var ba, bb, u;',
-    '  if (a >= b) return '''';',
-    '  ba = __u2b(s, a);',
-    '  bb = __u2b(s, b);',
-    '  if (ba < 0 || bb < 0) {',
-    '    u = __u16(s);',
-    '    return __fromu16(u.slice(a, b));',
-    '  }',
-    '  return __rc(''slice'', s, ba, bb);',
-    '}',
-    'function __su_slice(a, b) {',
-    '  var s = __su_this(this), n = s.length;',
-    '  a = __su_int(a);',
-    '  b = b === undefined ? n : __su_int(b);',
-    '  a = a < 0 ? Math.max(n + a, 0) : Math.min(a, n);',
-    '  b = b < 0 ? Math.max(n + b, 0) : Math.min(b, n);',
-    '  return __su_range(s, a, b);',
-    '}',
-    'function __su_substring(a, b) {',
-    '  var s = __su_this(this), n = s.length, t;',
-    '  a = Math.min(Math.max(__su_int(a), 0), n);',
-    '  b = b === undefined ? n : Math.min(Math.max(__su_int(b), 0), n);',
-    '  if (a > b) { t = a; a = b; b = t; }',
-    '  return __su_range(s, a, b);',
-    '}',
-    'function __su_fill(s, target, pad, atStart) {',
-    '  var n = s.length, need, f, k;',
-    '  target = __su_int(target);',
-    '  pad = pad === undefined ? '' '' : String(pad);',
-    '  if (target <= n || pad === '''') return s;',
-    '  need = target - n;',
-    '  k = Math.ceil(need / pad.length);',
-    '  f = pad.repeat(k).slice(0, need);',
-    '  return atStart ? f + s : s + f;',
-    '}',
-    'function __su_padStart(target, pad) { return __su_fill(__su_this(this), target, pad, true); }',
-    'function __su_padEnd(target, pad) { return __su_fill(__su_this(this), target, pad, false); }',
-    'function __su_isws(c) {',
-    '  return c === 32 || (c >= 9 && c <= 13) || c === 160 || c === 5760 || (c >= 8192 && c <= 8202) ||',
-    '    c === 8232 || c === 8233 || c === 8239 || c === 8287 || c === 12288 || c === 65279;',
-    '}',
-    'function __su_trimmed(s, front, back) {',
-    '  var u = __u16(s), a = 0, b = u.length;',
-    '  if (front) while (a < b && __su_isws(u[a])) a++;',
-    '  if (back) while (b > a && __su_isws(u[b - 1])) b--;',
-    '  return __su_range(s, a, b);',
-    '}',
-    'function __su_trim() { return __su_trimmed(__su_this(this), true, true); }',
-    'function __su_trimStart() { return __su_trimmed(__su_this(this), true, false); }',
-    'function __su_trimEnd() { return __su_trimmed(__su_this(this), false, true); }',
-    'function __su_split(sep, limit) {',
-    '  var s = __su_this(this), u, out = [], i, lim;',
-    '  if (typeof sep === ''string'' && sep === '''') {',
-    '    u = __u16(s);',
-    '    lim = limit === undefined ? 4294967295 : limit >>> 0;',
-    '    for (i = 0; i < u.length && out.length < lim; i++) out.push(__fromu16([u[i]]));',
-    '    return out;',
-    '  }',
-    '  __raw(1);',
-    '  out = __nsm.split.call(s, sep, limit);',
-    '  __raw(0);',
-    '  return out;',
-    '}',
-    'function __case_find(t, cp) {',
-    '  var lo = 0, hi = t.length / 4 - 1, mid, s, e;',
-    '  while (lo <= hi) {',
-    '    mid = (lo + hi) >> 1;',
-    '    s = t[mid * 4];',
-    '    e = t[mid * 4 + 1];',
-    '    if (cp < s) hi = mid - 1;',
-    '    else if (cp > e) lo = mid + 1;',
-    '    else return (t[mid * 4 + 3] === 1 || (cp - s) % 2 === 0) ? t[mid * 4 + 2] : 0;',
-    '  }',
-    '  return 0;',
-    '}',
-    'function __case_multi(m, cp) {',
-    '  for (var i = 0; i < m.length; i += 2) if (m[i] === cp) return m[i + 1];',
-    '  return null;',
-    '}',
-    'function __cpat(u, i) {',
-    '  var c = u[i];',
-    '  if (c >= 56320 && c <= 57343 && i > 0 && u[i - 1] >= 55296 && u[i - 1] <= 56319) return 65536 + ((u[i - 1] - 55296) << 10) + (c - 56320);',
-    '  if (c >= 55296 && c <= 56319 && i + 1 < u.length && u[i + 1] >= 56320 && u[i + 1] <= 57343) return 65536 + ((c - 55296) << 10) + (u[i + 1] - 56320);',
-    '  return c;',
-    '}',
-    'function __iscased(c) {',
-    '  if (c < 128) return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);',
-    '  if (c >= 119808 && c <= 120831) return true;',
-    '  return __case_find(__UPR, c) !== 0 || __case_find(__LOR, c) !== 0 || __case_multi(__UPM, c) !== null || __case_multi(__LOM, c) !== null;',
-    '}',
-    'function __case_conv(s, upper) {',
-    '  var t, m, out = [], i, cp, d, r, n, u;',
-    '  if (__UPR === undefined) __case_init();',
-    '  t = upper ? __UPR : __LOR;',
-    '  m = upper ? __UPM : __LOM;',
-    '  u = __u16(s);',
-    '  n = u.length;',
-    '  for (i = 0; i < n; i++) {',
-    '    cp = u[i];',
-    '    if (cp >= 55296 && cp <= 56319 && i + 1 < n && u[i + 1] >= 56320 && u[i + 1] <= 57343) {',
-    '      cp = 65536 + ((cp - 55296) << 10) + (u[i + 1] - 56320);',
-    '      d = __case_find(t, cp);',
-    '      if (d !== 0) { cp += d; out.push(55296 + ((cp - 65536) >> 10), 56320 + ((cp - 65536) & 1023)); }',
-    '      else out.push(u[i], u[i + 1]);',
-    '      i++;',
-    '      continue;',
+    'function __toFixed(f) {',
+    '  var x = Number(this), neg = '''', r, d, E, keep, t, a, i, n, ip, fp;',
+    '  f = f === undefined ? 0 : Math.floor(Number(f));',
+    '  if (f !== f) f = 0;',
+    '  if (f < 0 || f > 100) throw new RangeError(''toFixed() digits argument must be between 0 and 100'');',
+    '  if (x !== x) return ''NaN'';',
+    '  if (x >= 1e21 || x <= -1e21) return String(x);',
+    '  if (x < 0) { neg = ''-''; x = -x; }',
+    '  if (x === 0) {',
+    '    n = ''0'';',
+    '  } else {',
+    '    r = __exact(x);',
+    '    d = r[0];',
+    '    E = r[1];',
+    '    keep = E + 1 + f;',
+    '    if (keep < 0) n = ''0'';',
+    '    else if (keep >= d.length) { n = d; while (n.length < keep) n += ''0''; }',
+    '    else {',
+    '      t = d.slice(0, keep);',
+    '      if (d.charCodeAt(keep) >= 53) {',
+    '        a = t.split('''');',
+    '        i = keep - 1;',
+    '        while (i >= 0) {',
+    '          if (a[i] === ''9'') { a[i] = ''0''; i--; }',
+    '          else { a[i] = String.fromCharCode(a[i].charCodeAt(0) + 1); break; }',
+    '        }',
+    '        t = a.join('''');',
+    '        if (i < 0) t = ''1'' + t;',
+    '      }',
+    '      n = t === '''' ? ''0'' : t;',
     '    }',
-    '    if (cp < 128) {',
-    '      if (upper) { if (cp >= 97 && cp <= 122) cp -= 32; }',
-    '      else if (cp >= 65 && cp <= 90) cp += 32;',
-    '      out.push(cp);',
-    '      continue;',
-    '    }',
-    '    r = __case_multi(m, cp);',
-    '    if (r !== null) {',
-    '      r = __u16(r);',
-    '      for (d = 0; d < r.length; d++) out.push(r[d]);',
-    '      continue;',
-    '    }',
-    '    if (!upper && cp === 931) {',
-    '      /* sigma final : precede d''une lettre et non suivi d''une lettre */',
-    '      if (i > 0 && __iscased(__cpat(u, i - 1)) && !(i + 1 < n && __iscased(__cpat(u, i + 1)))) { out.push(962); continue; }',
-    '    }',
-    '    d = __case_find(t, cp);',
-    '    out.push(d !== 0 ? cp + d : cp);',
     '  }',
-    '  return __fromu16(out);',
+    '  while (n.length < f + 1) n = ''0'' + n;',
+    '  ip = n.slice(0, n.length - f);',
+    '  fp = n.slice(n.length - f);',
+    '  ip = ip.replace(/^0+(?=\d)/, '''');',
+    '  if (neg !== '''' && /^0*$/.test(ip + fp)) neg = Number(this) < 0 ? ''-'' : '''';',
+    '  return neg + ip + (f > 0 ? ''.'' + fp : '''');',
     '}',
-    'function __su_toUpperCase() { return __case_conv(__su_this(this), true); }',
-    'function __su_toLowerCase() { return __case_conv(__su_this(this), false); }',
-    'function __su_fromCharCode(...a) {',
-    '  var u = [], i;',
-    '  for (i = 0; i < a.length; i++) u.push(Number(a[i]) & 65535);',
-    '  return __fromu16(u);',
+    'function __toPrecision(p) {',
+    '  var x = Number(this), neg = '''', r;',
+    '  if (p === undefined) return String(x);',
+    '  p = Math.floor(Number(p));',
+    '  if (x !== x || x === Infinity || x === -Infinity) return String(x);',
+    '  if (p < 1 || p > 100) throw new RangeError(''toPrecision() argument must be between 1 and 100'');',
+    '  if (x < 0) { neg = ''-''; x = -x; }',
+    '  if (x === 0) return p > 1 ? ''0.'' + __zeros(p - 1) : ''0'';',
+    '  r = __sig(x, p);',
+    '  var d = r[0], E = r[1];',
+    '  if (E < -6 || E >= p) return neg + __expo(d, E);',
+    '  if (E >= 0) return neg + d.slice(0, E + 1) + (p > E + 1 ? ''.'' + d.slice(E + 1) : '''');',
+    '  return neg + ''0.'' + __zeros(-(E + 1)) + d;',
     '}',
-    'var __collT;',
-    'function __collInit() {',
-    '  var gs = [',
-    '    ''\u0061\u00e1\u00e0\u0103\u00e2\u00e5\u00e4\u00e3\u0105\u0101'', ''\u0063\u0107\u0109\u010d\u010b\u00e7'', ''\u0064\u010f\u0111'', ''\u0065\u00e9\u00e8\u0115\u00ea\u011b\u00eb\u0117\u0119\u0113'',',
-    '    ''\u0067\u011f\u011d\u0121\u0123'', ''\u0068\u0125\u0127'', ''\u0069\u00ed\u00ec\u012d\u00ee\u00ef\u0129\u012f\u012b\u0131'', ''\u006a\u0135'', ''\u006b\u0137'', ''\u006c\u013a\u013e\u013c\u0142\u0140'',',
-    '    ''\u006e\u0144\u0148\u00f1\u0146\u0149'', ''\u006f\u00f3\u00f2\u014f\u00f4\u00f6\u0151\u00f5\u00f8\u014d'', ''\u0072\u0155\u0159\u0157'', ''\u0073\u015b\u015d\u0161\u015f'', ''\u0074\u0165\u0163\u0167'',',
-    '    ''\u0075\u00fa\u00f9\u016d\u00fb\u016f\u00fc\u0171\u0169\u0173\u016b'', ''\u0077\u0175'', ''\u0079\u00fd\u0177\u00ff'', ''\u007a\u017a\u017e\u017c''',
-    '  ], i, j, g;',
-    '  __collT = {};',
-    '  for (i = 0; i < gs.length; i++) {',
-    '    g = gs[i];',
-    '    for (j = 0; j < g.length; j++) __collT[g.charAt(j)] = [g.charAt(0), j];',
+    'function __toExponential(f) {',
+    '  var x = Number(this), neg = '''', r, p;',
+    '  if (x !== x || x === Infinity || x === -Infinity) return String(x);',
+    '  if (f !== undefined) {',
+    '    f = Math.floor(Number(f));',
+    '    if (f < 0 || f > 100) throw new RangeError(''toExponential() argument must be between 0 and 100'');',
     '  }',
+    '  if (x < 0) { neg = ''-''; x = -x; }',
+    '  if (x === 0) return neg + (f > 0 ? ''0.'' + __zeros(f) : ''0'') + ''e+0'';',
+    '  if (f === undefined) {',
+    '    for (p = 1; p <= 17; p++) {',
+    '      r = __sig(x, p);',
+    '      if (Number(__expo(r[0], r[1])) === x) break;',
+    '    }',
+    '  } else r = __sig(x, f + 1);',
+    '  return neg + __expo(r[0], r[1]);',
     '}',
-    'function __coll(s, level) {',
-    '  var out = '''', i, c, k, lo, cp;',
-    '  if (__collT === undefined) __collInit();',
+    'function __uriEnc(s, keep) {',
+    '  var out = '''', i, c, cp, lo, b, k, hx = ''0123456789ABCDEF'';',
+    '  s = String(s);',
     '  for (i = 0; i < s.length; i++) {',
     '    c = s.charAt(i);',
+    '    if (keep.indexOf(c) >= 0) { out += c; continue; }',
     '    cp = s.charCodeAt(i);',
-    '    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) { c += s.charAt(i + 1); i++; cp = 65536 + ((cp - 55296) << 10) + (s.charCodeAt(i) - 56320); }',
-    '    lo = c.toLowerCase();',
-    '    k = __collT[lo];',
-    '    if (level === 0) {',
-    '      if (cp === 32 || (cp >= 9 && cp <= 13) || cp === 160) out += ''1'';',
-    '      else if (cp < 48 || (cp > 57 && cp < 65) || (cp > 90 && cp < 97) || (cp > 122 && cp < 128)) out += ''2'' + lo;',
-    '      else if (cp >= 48 && cp <= 57) out += ''4'' + lo;',
-    '      else if (cp >= 119808 && cp <= 120831) out += ''5'' + lo;',
-    '      else if (cp >= 65536) out += ''3'' + lo;',
-    '      else if (lo === ''\u00df'') out += ''5ss'';',
-    '      else if (k !== undefined) out += ''5'' + k[0];',
-    '      else if (cp < 128 || (cp >= 192 && cp < 592)) out += ''5'' + lo;',
-    '      else if (cp >= 880 && cp < 1024) out += ''6'' + lo;',
-    '      else if (cp >= 1024 && cp < 1328) out += ''7'' + lo;',
-    '      else if (cp >= 8192 && cp < 12288) out += ''3'' + lo;',
-    '      else out += ''8'' + lo;',
+    '    if (cp >= 56320 && cp <= 57343) throw new URIError(''URI malformed'');',
+    '    if (cp >= 55296 && cp <= 56319) {',
+    '      if (i + 1 >= s.length) throw new URIError(''URI malformed'');',
+    '      lo = s.charCodeAt(i + 1);',
+    '      if (lo < 56320 || lo > 57343) throw new URIError(''URI malformed'');',
+    '      cp = 65536 + ((cp - 55296) << 10) + (lo - 56320);',
+    '      i++;',
     '    }',
-    '    else if (level === 1) out += k !== undefined ? String(k[1]) : ''0'';',
-    '    else out += c === lo ? ''0'' : ''1'';',
+    '    if (cp < 128) b = [cp];',
+    '    else if (cp < 2048) b = [192 | (cp >> 6), 128 | (cp & 63)];',
+    '    else if (cp < 65536) b = [224 | (cp >> 12), 128 | ((cp >> 6) & 63), 128 | (cp & 63)];',
+    '    else b = [240 | (cp >> 18), 128 | ((cp >> 12) & 63), 128 | ((cp >> 6) & 63), 128 | (cp & 63)];',
+    '    for (k = 0; k < b.length; k++) out += ''%'' + hx.charAt(b[k] >> 4) + hx.charAt(b[k] & 15);',
     '  }',
     '  return out;',
     '}',
-    'var __cfold;',
-    'function __init_str() {',
-    '  var SP = String.prototype;',
-    '  // variantes de casse des points de code lo..lo+n (valeur empaquetee), pour les regex /i',
-    '  __cfold = function (packed) {',
-    '    var lo = packed & 2097151, n = packed >> 21, out = [], i, cp, s, v, k, c1, c2, vs;',
-    '    for (i = 0; i <= n; i++) {',
-    '      cp = lo + i;',
-    '      if (cp >= 55296 && cp <= 57343) continue;',
-    '      s = String.fromCodePoint(cp);',
-    '      c1 = s.toUpperCase(); c2 = s.toLowerCase();',
-    '      vs = [c1, c2, c1.toLowerCase(), c2.toUpperCase()];',
-    '      for (k = 0; k < 4; k++) {',
-    '        v = vs[k];',
-    '        if (v.length === 0 || v.length > 2) continue;',
-    '        if (v.codePointAt(0) !== cp && String.fromCodePoint(v.codePointAt(0)) === v) out.push(v.codePointAt(0));',
-    '      }',
+    'function __uriDec(s, reserved) {',
+    '  var out = '''', i = 0, n, c, b, need, cp, k, h, j, raw;',
+    '  s = String(s);',
+    '  n = s.length;',
+    '  while (i < n) {',
+    '    c = s.charAt(i);',
+    '    if (c !== ''%'') { out += c; i++; continue; }',
+    '    raw = i;',
+    '    if (i + 2 > n - 1) throw new URIError(''URI malformed'');',
+    '    h = parseInt(s.substr(i + 1, 2), 16);',
+    '    if (!/^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) throw new URIError(''URI malformed'');',
+    '    b = h;',
+    '    i += 3;',
+    '    if (b < 128) {',
+    '      if (reserved.indexOf(String.fromCharCode(b)) >= 0) out += s.slice(raw, i);',
+    '      else out += String.fromCharCode(b);',
+    '      continue;',
     '    }',
-    '    return out;',
-    '  };',
-    '  SP.at = function (i) {',
-    '    var s = __su_this(this), n = s.length;',
-    '    i = __su_int(i);',
-    '    if (i < 0) i += n;',
-    '    if (i < 0 || i >= n) return undefined;',
-    '    return s.charAt(i);',
-    '  };',
-    '  SP.codePointAt = function (i) {',
-    '    var s = __su_this(this), u = __u16(s), c, d;',
-    '    i = __su_int(i);',
-    '    if (i < 0 || i >= u.length) return undefined;',
-    '    c = u[i];',
-    '    if (c >= 55296 && c <= 56319 && i + 1 < u.length) {',
-    '      d = u[i + 1];',
-    '      if (d >= 56320 && d <= 57343) return 65536 + ((c - 55296) << 10) + (d - 56320);',
+    '    if (b >= 192 && b < 224) { need = 1; cp = b & 31; }',
+    '    else if (b >= 224 && b < 240) { need = 2; cp = b & 15; }',
+    '    else if (b >= 240 && b < 248) { need = 3; cp = b & 7; }',
+    '    else throw new URIError(''URI malformed'');',
+    '    for (k = 0; k < need; k++) {',
+    '      if (s.charAt(i) !== ''%'' || !/^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) throw new URIError(''URI malformed'');',
+    '      j = parseInt(s.substr(i + 1, 2), 16);',
+    '      if ((j & 192) !== 128) throw new URIError(''URI malformed'');',
+    '      cp = (cp << 6) | (j & 63);',
+    '      i += 3;',
     '    }',
-    '    return c;',
-    '  };',
-    '  SP.normalize = function () { return __su_this(this); };',
-    '  SP.localeCompare = function (o) {',
-    '    var a = __su_this(this), b = String(o), x = __coll(a, 0), y = __coll(b, 0), i;',
-    '    if (x !== y) return x < y ? -1 : 1;',
-    '    x = __coll(a, 1);',
-    '    y = __coll(b, 1);',
-    '    if (x !== y) return x < y ? -1 : 1;',
-    '    x = __coll(a, 2);',
-    '    y = __coll(b, 2);',
-    '    return x === y ? 0 : x < y ? -1 : 1;',
-    '  };',
-    '  SP.concat = function (...a) {',
-    '    var s = __su_this(this), i;',
-    '    for (i = 0; i < a.length; i++) s += String(a[i]);',
-    '    return s;',
-    '  };',
-    '  String.fromCodePoint = function (...a) {',
-    '    var u = [], i, c;',
-    '    for (i = 0; i < a.length; i++) {',
-    '      c = Number(a[i]);',
-    '      if (c !== Math.floor(c) || c < 0 || c > 1114111) throw new RangeError(''Invalid code point '' + a[i]);',
-    '      if (c >= 65536) { c -= 65536; u.push(55296 + (c >> 10), 56320 + (c & 1023)); }',
-    '      else u.push(c);',
-    '    }',
-    '    return __fromu16(u);',
-    '  };',
+    '    if ((need === 1 && cp < 128) || (need === 2 && cp < 2048) || (need === 3 && cp < 65536) || cp > 1114111 || (cp >= 55296 && cp <= 57343)) throw new URIError(''URI malformed'');',
+    '    if (cp >= 65536) { cp -= 65536; out += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023)); }',
+    '    else out += String.fromCharCode(cp);',
+    '  }',
+    '  return out;',
+    '}',
+    'function __btoa(s) {',
+    '  var tbl = ''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'', out = '''', i, a, b, c, n;',
+    '  s = String(s);',
+    '  for (i = 0; i < s.length; i++) if (s.charCodeAt(i) > 255) throw __domEx(''Invalid character'', ''InvalidCharacterError'');',
+    '  for (i = 0; i < s.length; i += 3) {',
+    '    a = s.charCodeAt(i); b = i + 1 < s.length ? s.charCodeAt(i + 1) : -1; c = i + 2 < s.length ? s.charCodeAt(i + 2) : -1;',
+    '    n = (a << 16) | ((b < 0 ? 0 : b) << 8) | (c < 0 ? 0 : c);',
+    '    out += tbl.charAt((n >> 18) & 63) + tbl.charAt((n >> 12) & 63) + (b < 0 ? ''='' : tbl.charAt((n >> 6) & 63)) + (c < 0 ? ''='' : tbl.charAt(n & 63));',
+    '  }',
+    '  return out;',
+    '}',
+    'function __atob(s) {',
+    '  var tbl = ''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'', out = '''', i, v, bits = 0, acc = 0, ch;',
+    '  s = String(s).replace(/[\t\n\f\r ]/g, '''');',
+    '  if (s.length % 4 === 0) s = s.replace(/==?$/, '''');',
+    '  if (s.length % 4 === 1 || /[^A-Za-z0-9+\/]/.test(s)) throw __domEx(''The string to be decoded is not correctly encoded.'', ''InvalidCharacterError'');',
+    '  for (i = 0; i < s.length; i++) {',
+    '    v = tbl.indexOf(s.charAt(i));',
+    '    acc = (acc << 6) | v; bits += 6;',
+    '    if (bits >= 8) { bits -= 8; ch = (acc >> bits) & 255; out += String.fromCharCode(ch); }',
+    '  }',
+    '  return out;',
     '}',
     'function __pvs(v, name) {',
     '  if (typeof v !== ''string'') {',
@@ -21390,6 +21391,14 @@ Begin
             NodeP(ctx.ast.nodes, n)^.sym := sy;
             NodeP(ctx.ast.nodes, n)^.aux := RK_GLOBAL_IMPLICIT;
         End
+      Else If TokP(ctx.lex.tokens, tok)^.line <= ctx.source.user_lines Then
+        Begin
+          { variable inconnue a la compilation : cherchee dans globalThis a l'execution }
+          If ctx.sem.in_typeof Then
+            NodeP(ctx.ast.nodes, n)^.aux := RK_DYNSOFT
+          Else
+            NodeP(ctx.ast.nodes, n)^.aux := RK_DYNGLOBAL;
+        End
       Else If ctx.sem.in_typeof Then
         NodeP(ctx.ast.nodes, n)^.aux := RK_UNDECLARED_OK
       Else
@@ -22229,6 +22238,8 @@ Begin
           RK_GLOBAL_IMPLICIT: Write(' globale-implicite #', NodeP(ctx.ast.nodes, n)^.sym);
           RK_ARGUMENTS:       Write(' arguments');
           RK_UNDECLARED_OK:   Write(' non-declare (typeof)');
+          RK_DYNGLOBAL:       Write(' globalThis dynamique');
+          RK_DYNSOFT:         Write(' globalThis dynamique (typeof)');
         Else
           Write(' non-resolu');
         End;
@@ -23445,6 +23456,9 @@ Begin
                (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, e)^.tok)^.num_val = 0) Then
               NodeP(ctx.ast.nodes, i)^.ds := STD_DBL_NEGZERO;
           End;
+        N_IDENT:
+          If (NodeP(ctx.ast.nodes, i)^.aux = RK_DYNGLOBAL) Or (NodeP(ctx.ast.nodes, i)^.aux = RK_DYNSOFT) Then
+            NodeP(ctx.ast.nodes, i)^.ds := InternText(ctx, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text);
         N_MEMBER:
           NodeP(ctx.ast.nodes, i)^.aux := MarkAtom(ctx,
             InternText(ctx, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text));
@@ -23979,13 +23993,140 @@ Begin
   NoOp := o;
 End;
 
-Procedure Emit(Var ctx: TCompilerContext; op: TOpc; a, b: TOperand);
+{ Judas : connaissance locale (jusqu'au prochain label, appel ou instruction inconnue) des
+  registres EAX, ECX, EDX qui sont une copie d'un emplacement [ebp+d] ; un rechargement
+  du meme emplacement dans le meme registre est omis. }
+Const
+  PK_NONE = -2147483000;
+Const
+  pk: Array[0..2] Of LongInt = (PK_NONE, PK_NONE, PK_NONE);
+
+Function PkIdx(r: TReg): Integer;
 Begin
+  Case r Of
+    R_EAX: PkIdx := 0;
+    R_ECX: PkIdx := 1;
+    R_EDX: PkIdx := 2;
+  Else
+    PkIdx := -1;
+  End;
+End;
+
+Function PkReg(i: Integer): TReg;
+Begin
+  Case i Of
+    0: PkReg := R_EAX;
+    1: PkReg := R_ECX;
+  Else
+    PkReg := R_EDX;
+  End;
+End;
+
+Procedure PkClear;
+Begin
+  pk[0] := PK_NONE;
+  pk[1] := PK_NONE;
+  pk[2] := PK_NONE;
+End;
+
+Function PkSlot(Const o: TOperand): Boolean;
+Begin
+  PkSlot := (o.kind = OD_MEM) And (o.base = R_EBP) And (o.index = R_NONE) And
+            (o.symkind = 0) And (o.sym = 0) And (o.size <> 1);
+End;
+
+Procedure PkKillNear(d: LongInt; w: LongInt);
+Var
+  i: Integer;
+Begin
+  For i := 0 To 2 Do
+    If (pk[i] <> PK_NONE) And (Abs(pk[i] - d) < w) Then
+      pk[i] := PK_NONE;
+End;
+
+Procedure PkTrack(op: TOpc; Const a, b: TOperand);
+Var
+  i: Integer;
+Begin
+  Case op Of
+    OP_COMMENT, OP_NOP, OP_PUSH, OP_CMP, OP_TEST, OP_JMP, OP_JE, OP_JNE, OP_JB, OP_JAE,
+    OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JA, OP_JBE, OP_JO, OP_JNO, OP_JS, OP_JNS:
+      ;
+    OP_MOV:
+      Begin
+        If a.kind = OD_REG Then
+          Begin
+            i := PkIdx(a.reg);
+            If i >= 0 Then
+              Begin
+                If PkSlot(b) Then
+                  pk[i] := b.disp
+                Else
+                  pk[i] := PK_NONE;
+              End
+            Else If a.reg In [R_AL, R_CL, R_DL, R_BL] Then
+              PkClear;
+          End
+        Else If PkSlot(a) Then
+          Begin
+            PkKillNear(a.disp, 4);
+            If (b.kind = OD_REG) And (PkIdx(b.reg) >= 0) Then
+              pk[PkIdx(b.reg)] := a.disp;
+          End
+        Else If (a.kind = OD_MEM) And ((a.base = R_ESP) Or ((a.base = R_NONE) And (a.index = R_NONE))) Then
+          { pile sous ESP ou donnee statique : ne touche pas la trame }
+        Else
+          PkClear;
+      End;
+    OP_ADD, OP_SUB, OP_XOR, OP_AND, OP_OR, OP_NOT, OP_NEG, OP_SHL, OP_SHR, OP_SAR,
+    OP_INC, OP_DEC, OP_LEA, OP_MOVZX, OP_POP:
+      Begin
+        If a.kind = OD_REG Then
+          Begin
+            i := PkIdx(a.reg);
+            If i >= 0 Then
+              pk[i] := PK_NONE
+            Else If a.reg In [R_AL, R_CL, R_DL, R_BL] Then
+              PkClear;
+          End
+        Else If PkSlot(a) Then
+          PkKillNear(a.disp, 4)
+        Else If (a.kind = OD_MEM) And ((a.base = R_ESP) Or ((a.base = R_NONE) And (a.index = R_NONE))) Then
+          { sans effet sur la trame }
+        Else
+          PkClear;
+      End;
+  Else
+    PkClear;
+  End;
+End;
+
+Procedure Emit(Var ctx: TCompilerContext; op: TOpc; a, b: TOperand);
+Var
+  i: Integer;
+Begin
+  If (op = OP_MOV) And (a.kind = OD_REG) And PkSlot(b) Then
+    Begin
+      i := PkIdx(a.reg);
+      If (i >= 0) And (pk[i] = b.disp) Then
+        Exit;
+    End;
+  { empilement ou comparaison d'un emplacement dont un registre est une copie }
+  If ((op = OP_PUSH) Or ((op = OP_CMP) And (b.kind = OD_IMM))) And PkSlot(a) Then
+    Begin
+      For i := 0 To 2 Do
+        If pk[i] = a.disp Then
+          Begin
+            a := RegOp(PkReg(i));
+            Break;
+          End;
+    End;
   Inc(ctx.ir.count);
   InstrP(ctx.ir.instrs, ctx.ir.count)^.op := op;
   InstrP(ctx.ir.instrs, ctx.ir.count)^.a := a;
   InstrP(ctx.ir.instrs, ctx.ir.count)^.b := b;
   InstrP(ctx.ir.instrs, ctx.ir.count)^.line := ctx.ir.cur_line;
+  PkTrack(op, a, b);
 End;
 
 Procedure Emit0(Var ctx: TCompilerContext; op: TOpc);
@@ -24369,6 +24510,12 @@ Begin
       End;
     RK_UNDECLARED_OK:
       LoadUndefined(ctx);
+    RK_DYNGLOBAL, RK_DYNSOFT:
+      Begin
+        Emit1(ctx, OP_PUSH, ImmOp(Ord(NodeP(ctx.ast.nodes, n)^.aux = RK_DYNSOFT)));
+        Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, n)^.ds)^.sym));
+        CallRt(ctx, 'get_global', 8);
+      End;
     RK_ARGUMENTS:
       Begin
         If ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.args_slot <> 0 Then
@@ -26833,9 +26980,24 @@ End;
 
 { ---- Entree de portee, declarations, instructions ---- }
 
+{ Variable de trame a initialiser par simple ecriture (ni statique, ni cellule) ; tag recoit
+  la valeur initiale (undefined ou zone morte). }
+Function PlainInitSym(Var ctx: TCompilerContext; sy: LongInt; Var tag: LongInt): Boolean;
+Begin
+  PlainInitSym := False;
+  If SymP(ctx.sem.syms, sy)^.flags And (SF_STATIC Or SF_CELL) <> 0 Then
+    Exit;
+  tag := RT_T_UNDEFINED;
+  If IsLexicalKind(SymP(ctx.sem.syms, sy)^.kind) And
+     (SymP(ctx.sem.syms, sy)^.flags And SF_TDZ_CHECK <> 0) Then
+    tag := RT_T_TDZ;
+  PlainInitSym := (SymP(ctx.sem.syms, sy)^.kind = DK_VAR) Or
+                  (SymP(ctx.sem.syms, sy)^.kind = DK_FUNC) Or (tag = RT_T_TDZ);
+End;
+
 Procedure GenScopeEnter(Var ctx: TCompilerContext; sc: LongInt);
 Var
-  sy, tag: LongInt;
+  sy, tag, tag2, run, last, nx, lp: LongInt;
 Begin
   { premiere passe : cellules et valeurs initiales }
   sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
@@ -26854,13 +27016,39 @@ Begin
               Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)),
                    RegOp(R_EAX));
             End
-          Else If (SymP(ctx.sem.syms, sy)^.kind = DK_VAR) Or
-                  (SymP(ctx.sem.syms, sy)^.kind = DK_FUNC) Or (tag = RT_T_TDZ) Then
+          Else If PlainInitSym(ctx, sy, tag) Then
             Begin
-              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)),
-                   ImmOp(0));
-              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot) + 4),
-                   ImmOp(TagImm(tag)));
+              { suite de variables voisines de meme valeur : une boucle }
+              run := 1;
+              last := sy;
+              nx := SymP(ctx.sem.syms, sy)^.next;
+              While (nx <> 0) And PlainInitSym(ctx, nx, tag2) And (tag2 = tag) And
+                    (SymP(ctx.sem.syms, nx)^.slot = SymP(ctx.sem.syms, last)^.slot + 1) Do
+                Begin
+                  Inc(run);
+                  last := nx;
+                  nx := SymP(ctx.sem.syms, nx)^.next;
+                End;
+              If run >= 4 Then
+                Begin
+                  lp := NewLabel(ctx);
+                  Emit(ctx, OP_MOV, RegOp(R_ECX), ImmOp(run));
+                  Emit(ctx, OP_LEA, RegOp(R_EDX), MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, last)^.slot)));
+                  PlaceLabel(ctx, lp);
+                  Emit(ctx, OP_MOV, MemReg(R_EDX, 0), ImmOp(0));
+                  Emit(ctx, OP_MOV, MemReg(R_EDX, 4), ImmOp(TagImm(tag)));
+                  Emit(ctx, OP_ADD, RegOp(R_EDX), ImmOp(8));
+                  Emit1(ctx, OP_DEC, RegOp(R_ECX));
+                  Emit1(ctx, OP_JNE, LabelOp(lp));
+                  sy := last;
+                End
+              Else
+                Begin
+                  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)),
+                       ImmOp(0));
+                  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot) + 4),
+                       ImmOp(TagImm(tag)));
+                End;
             End;
         End;
       sy := SymP(ctx.sem.syms, sy)^.next;
@@ -26937,6 +27125,9 @@ Var
   v: LongInt;
 Begin
   If line = ctx.ir.last_stmt_line Then
+    Exit;
+  { code du prelude : la ligne 0 est deja posee par le prologue }
+  If (line > ctx.source.user_lines) And (ctx.ir.cg_fs <> 1) And (ctx.ir.last_stmt_line = -1) Then
     Exit;
   ctx.ir.last_stmt_line := line;
   v := line;
@@ -48003,6 +48194,39 @@ Begin
   A('push dword ptr [eax]');
   A('call _JSRT_call_array');
   A('add esp, 20');
+  FEnd;
+
+  { _JSRT_get_global(nom, doux) : lit une propriete de globalThis ; absente : ReferenceError
+    (ou undefined si doux, pour typeof) }
+  FBegin('_JSRT_get_global', 0);
+  A('push dword ptr [ebp+8]');
+  A('push offset _JSNO_globalThis');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .miss');
+  A('push $OBJ');
+  A('push offset _JSNO_globalThis');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('jmp .ret');
+  A('.miss:');
+  A('cmp dword ptr [ebp+12], 0');
+  A('je .throw');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('jmp .ret');
+  A('.throw:');
+  A('push $STR');
+  A('push offset ' + RtStr(' is not defined'));
+  A('push $STR');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push eax');
+  A('push offset _JSNO_ReferenceError_proto');
+  A('call _JSRT_throw_msg');
   FEnd;
 
   { _JSRT_with_direct(objet, this, source, lo, hi, nb, table) : appelle
