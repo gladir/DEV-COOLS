@@ -26,15 +26,15 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 21 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 22 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
          instructions et blocs, boucle for, goto et switch, tableaux,
          procedures, appel par nom, entrees/sorties et fonctions
-         standard, encodeur x86-32, ecrivains PE et COFF) ;
-         TODO 22 a 25 a faire.
+         standard, encodeur x86-32, ecrivains PE et COFF, runtime integre) ;
+         TODO 23 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -770,7 +770,7 @@
               aucun .exe n'est cree avec -obj ; les references au runtime
               (_A60RT_) restent des externes non definis jusqu'au TODO 22
 
-  TODO 22 - RUNTIME ALGOL 60 POUR WIN32 [A FAIRE]
+  TODO 22 - RUNTIME ALGOL 60 POUR WIN32 [IMPLEMENTE]
             Runtime ecrit en assembleur 80386, integre au compilateur
               sous forme de texte et assemble par un mini-assembleur,
               sans bibliotheque C ; seules les fonctions de kernel32.dll
@@ -789,6 +789,29 @@
             Formats a documenter : entier decimal, reel en notation
               fixe (6 decimales au plus, zeros finaux supprimes),
               Boolean true / false, fin de ligne CR LF
+            Realise : section 12 ; le runtime est un texte d'assembleur
+              (RtText, 27 routines) assemble par un mini-assembleur
+              (RtAssembleLine) en instructions internes, ajoutees apres le
+              code du programme par RtLink (appelee avant le listing) ;
+              RtMark calcule la fermeture transitive des appels _A60RT_ ;
+              les cellules de donnees _A60_* (RtData) sont creees a la
+              demande ; GetStdHandle, WriteFile, ReadFile, ExitProcess,
+              GetProcessHeap, HeapAlloc (memoire mise a zero) et HeapFree
+              deviennent des imports de kernel32.dll ; READBOOL, GETC,
+              SKIPWS en plus des routines listees ; FREE conserve EAX,
+              ECX et EDX ; indice hors bornes et division par zero :
+              message sur le canal courant et code de sortie 1
+            Verifie : les 33 exemples compiles directement en .exe puis
+              executes (chargeur TESTS\AL60CW32\runpe.c, qui gagne
+              HeapFree) donnent la meme sortie que la version assemblee
+              avec le runtime de test, sauf test_switch (boucle infinie
+              par construction, arretee par un delai) ; les 32 autres
+              donnent aussi cette sortie une fois les .obj lies avec
+              lld-link ; le listing .ASM est autonome (ML l'assemble sans
+              rien ajouter) ; l'encodage de tout le code, runtime compris,
+              est confirme par objdump (0 ecart) ; indice hors bornes et
+              division par zero : message et code de retour 1 ; canal 2 =
+              erreur standard
 
   TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [A FAIRE]
             Erreurs lexicales : caractere invalide, chaine non fermee,
@@ -10056,7 +10079,990 @@ End;
 
 { ============================================================
   SECTION 12 - RUNTIME ALGOL 60 POUR WIN32 (TODO 22)
-  ============================================================ }
+  ============================================================
+  Le runtime est ecrit en assembleur 80386 (syntaxe du listing) et
+  integre au compilateur sous forme de texte (RtText). Seules les
+  routines atteignables depuis le programme compile (appels _A60RT_*,
+  fermeture transitive) sont assemblees par un mini-assembleur qui les
+  convertit en instructions internes, ajoutees apres le code du
+  programme : elles figurent donc dans le listing .ASM, qui devient
+  autonome, puis sont encodees comme le reste (.EXE et .OBJ
+  independants de toute bibliotheque, hormis kernel32.dll).
+
+  Format de RtText : '@NOM' ouvre une routine, ';texte' est un
+  commentaire, 'NOM:' une etiquette, sinon une instruction.
+  Les cellules de donnees _A60_* (RtData) sont creees a la demande.
+
+  Contrat : arguments en registres, resultat en EAX ou ST(0).
+    WRITESTR EAX = adresse, EDX = longueur ; WRITEZ EAX = chaine
+    terminee par zero ; WRITEINT / WRITEBOOL EAX ; WRITEREAL ST(0)
+    (depile) ; NEWLINE ; SETCHAN EAX = canal (2 = erreur standard,
+    autre = sortie standard) ; READINT / READBOOL -> EAX, READREAL ->
+    ST(0) ; POW EAX ^ EDX entiers ; RPOW ST(0) ^ ST(1) ; EXP ; FLOOR
+    et RTOI ST(0) -> EAX ; RSIGN ST(0) -> -1, 0 ou 1 ; CHKIDX EAX =
+    indice, ECX = borne basse, EDX = borne haute (registres conserves) ;
+    DIVZERO ; ALLOC EAX = octets -> EAX = bloc mis a zero ; FREE EAX =
+    bloc (registres conserves).
+  Formats : un entier s'affiche en decimal ; un reel en notation fixe,
+  6 decimales au plus, zeros finaux supprimes (au moins un chiffre
+  apres le point), partie entiere limitee a environ 2 milliards ; un
+  Boolean s'affiche true ou false ; fin de ligne = CR LF. Un indice
+  hors bornes ou une division par zero ecrit un message sur le canal
+  courant et termine le programme par le code de sortie 1. }
+Type
+  TRtLine = String[70];
+
+Const
+  RT_LINES = 543;
+  RT_MAX_ROUT = 40;
+  RtText : Array[0..RT_LINES - 1] Of TRtLine = (
+  '@_A60RT_GETOUT',
+  '_A60RT_GETOUT:',
+  'CMP DWORD PTR [_A60_HOUT], 0',
+  'JNE _A60R_go1',
+  'PUSH -11',
+  'CALL GetStdHandle',
+  'MOV DWORD PTR [_A60_HOUT], EAX',
+  '_A60R_go1:',
+  'RET',
+  '@_A60RT_WRITESTR',
+  '; EAX = adresse, EDX = longueur',
+  '_A60RT_WRITESTR:',
+  'PUSH EBP',
+  'MOV EBP, ESP',
+  'SUB ESP, 4',
+  'PUSH EAX',
+  'PUSH EDX',
+  'CALL _A60RT_GETOUT',
+  'POP EDX',
+  'POP ECX',
+  'PUSH 0',
+  'LEA EAX, [EBP-4]',
+  'PUSH EAX',
+  'PUSH EDX',
+  'PUSH ECX',
+  'PUSH DWORD PTR [_A60_HOUT]',
+  'CALL WriteFile',
+  'MOV ESP, EBP',
+  'POP EBP',
+  'RET',
+  '@_A60RT_WRITEZ',
+  '_A60RT_WRITEZ:',
+  'MOV EDX, EAX',
+  '_A60R_wz1:',
+  'CMP BYTE PTR [EDX], 0',
+  'JE _A60R_wz2',
+  'INC EDX',
+  'JMP _A60R_wz1',
+  '_A60R_wz2:',
+  'SUB EDX, EAX',
+  'JMP _A60RT_WRITESTR',
+  '@_A60RT_NEWLINE',
+  '_A60RT_NEWLINE:',
+  'MOV EAX, OFFSET _A60_NL',
+  'MOV EDX, 2',
+  'JMP _A60RT_WRITESTR',
+  '@_A60RT_WRITEBOOL',
+  '_A60RT_WRITEBOOL:',
+  'TEST EAX, EAX',
+  'JZ _A60R_wb1',
+  'MOV EAX, OFFSET _A60_TRUE',
+  'MOV EDX, 4',
+  'JMP _A60RT_WRITESTR',
+  '_A60R_wb1:',
+  'MOV EAX, OFFSET _A60_FALSE',
+  'MOV EDX, 5',
+  'JMP _A60RT_WRITESTR',
+  '@_A60RT_WRITEINT',
+  '_A60RT_WRITEINT:',
+  'PUSH EBP',
+  'MOV EBP, ESP',
+  'SUB ESP, 16',
+  'PUSH EBX',
+  'PUSH ESI',
+  'LEA ESI, [EBP-1]',
+  'MOV EBX, EAX',
+  'MOV ECX, 10',
+  'TEST EAX, EAX',
+  'JNS _A60R_wi1',
+  'NEG EAX',
+  '_A60R_wi1:',
+  'XOR EDX, EDX',
+  'DIV ECX',
+  'ADD DL, 48',
+  'MOV BYTE PTR [ESI], DL',
+  'DEC ESI',
+  'TEST EAX, EAX',
+  'JNZ _A60R_wi1',
+  'TEST EBX, EBX',
+  'JNS _A60R_wi2',
+  'MOV BYTE PTR [ESI], 45',
+  'DEC ESI',
+  '_A60R_wi2:',
+  'INC ESI',
+  'MOV EDX, EBP',
+  'SUB EDX, ESI',
+  'MOV EAX, ESI',
+  'CALL _A60RT_WRITESTR',
+  'POP ESI',
+  'POP EBX',
+  'MOV ESP, EBP',
+  'POP EBP',
+  'RET',
+  '@_A60RT_WRITEREAL',
+  '; ST(0) -> texte decimal (6 decimales au plus, zeros finaux retires)',
+  '_A60RT_WRITEREAL:',
+  'PUSH EBP',
+  'MOV EBP, ESP',
+  'SUB ESP, 96',
+  'PUSH EBX',
+  'PUSH ESI',
+  'PUSH EDI',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'SETB BL',
+  'MOVZX EBX, BL',
+  'FABS',
+  'FMUL QWORD PTR [_A60_C1E6]',
+  'FRNDINT',
+  'FLD ST(0)',
+  'FDIV QWORD PTR [_A60_C1E6]',
+  'CALL _A60RT_FLOOR',
+  'MOV DWORD PTR [EBP-4], EAX',
+  'FILD DWORD PTR [EBP-4]',
+  'FMUL QWORD PTR [_A60_C1E6]',
+  'FSUBP ST(1), ST',
+  'FISTP DWORD PTR [EBP-8]',
+  'LEA EDI, [EBP-96]',
+  'TEST EBX, EBX',
+  'JZ _A60R_wr1',
+  'MOV BYTE PTR [EDI], 45',
+  'INC EDI',
+  '_A60R_wr1:',
+  'MOV EAX, DWORD PTR [EBP-4]',
+  'LEA ESI, [EBP-47]',
+  'MOV ECX, 10',
+  '_A60R_wr2:',
+  'XOR EDX, EDX',
+  'DIV ECX',
+  'ADD DL, 48',
+  'MOV BYTE PTR [ESI], DL',
+  'DEC ESI',
+  'TEST EAX, EAX',
+  'JNZ _A60R_wr2',
+  'INC ESI',
+  'LEA EDX, [EBP-46]',
+  '_A60R_wr3:',
+  'CMP ESI, EDX',
+  'JAE _A60R_wr4',
+  'MOV AL, BYTE PTR [ESI]',
+  'MOV BYTE PTR [EDI], AL',
+  'INC ESI',
+  'INC EDI',
+  'JMP _A60R_wr3',
+  '_A60R_wr4:',
+  'MOV BYTE PTR [EDI], 46',
+  'INC EDI',
+  'MOV EAX, DWORD PTR [EBP-8]',
+  'LEA ESI, [EBP-39]',
+  'MOV ECX, 6',
+  '_A60R_wr5:',
+  'XOR EDX, EDX',
+  'PUSH ECX',
+  'MOV ECX, 10',
+  'DIV ECX',
+  'POP ECX',
+  'ADD DL, 48',
+  'MOV BYTE PTR [ESI], DL',
+  'DEC ESI',
+  'DEC ECX',
+  'JNZ _A60R_wr5',
+  'MOV ECX, 6',
+  '_A60R_wr6:',
+  'CMP ECX, 1',
+  'JLE _A60R_wr7',
+  'CMP BYTE PTR [EBP+ECX-45], 48',
+  'JNE _A60R_wr7',
+  'DEC ECX',
+  'JMP _A60R_wr6',
+  '_A60R_wr7:',
+  'LEA ESI, [EBP-44]',
+  '_A60R_wr8:',
+  'MOV AL, BYTE PTR [ESI]',
+  'MOV BYTE PTR [EDI], AL',
+  'INC ESI',
+  'INC EDI',
+  'DEC ECX',
+  'JNZ _A60R_wr8',
+  'LEA EAX, [EBP-96]',
+  'MOV EDX, EDI',
+  'SUB EDX, EAX',
+  'CALL _A60RT_WRITESTR',
+  'POP EDI',
+  'POP ESI',
+  'POP EBX',
+  'MOV ESP, EBP',
+  'POP EBP',
+  'RET',
+  '@_A60RT_GETC',
+  '; ---- lecture ----',
+  '_A60RT_GETC:',
+  'MOV EAX, DWORD PTR [_A60_PEEKC]',
+  'CMP EAX, -2',
+  'JE _A60R_gc1',
+  'MOV DWORD PTR [_A60_PEEKC], -2',
+  'RET',
+  '_A60R_gc1:',
+  'PUSH EBP',
+  'MOV EBP, ESP',
+  'SUB ESP, 8',
+  'CMP DWORD PTR [_A60_HIN], 0',
+  'JNE _A60R_gc2',
+  'PUSH -10',
+  'CALL GetStdHandle',
+  'MOV DWORD PTR [_A60_HIN], EAX',
+  '_A60R_gc2:',
+  'PUSH 0',
+  'LEA EAX, [EBP-4]',
+  'PUSH EAX',
+  'PUSH 1',
+  'LEA EAX, [EBP-8]',
+  'PUSH EAX',
+  'PUSH DWORD PTR [_A60_HIN]',
+  'CALL ReadFile',
+  'TEST EAX, EAX',
+  'JZ _A60R_gc3',
+  'CMP DWORD PTR [EBP-4], 0',
+  'JE _A60R_gc3',
+  'MOVZX EAX, BYTE PTR [EBP-8]',
+  'JMP _A60R_gc4',
+  '_A60R_gc3:',
+  'MOV EAX, -1',
+  '_A60R_gc4:',
+  'MOV ESP, EBP',
+  'POP EBP',
+  'RET',
+  '@_A60RT_UNGETC',
+  '_A60RT_UNGETC:',
+  'MOV DWORD PTR [_A60_PEEKC], EAX',
+  'RET',
+  '@_A60RT_SKIPWS',
+  '; saute les blancs ; retourne le premier caractere utile dans EAX',
+  '_A60RT_SKIPWS:',
+  'CALL _A60RT_GETC',
+  'CMP EAX, 32',
+  'JE _A60RT_SKIPWS',
+  'CMP EAX, 9',
+  'JE _A60RT_SKIPWS',
+  'CMP EAX, 13',
+  'JE _A60RT_SKIPWS',
+  'CMP EAX, 10',
+  'JE _A60RT_SKIPWS',
+  'RET',
+  '@_A60RT_READINT',
+  '_A60RT_READINT:',
+  'PUSH EBX',
+  'PUSH ESI',
+  'XOR ESI, ESI',
+  'XOR EBX, EBX',
+  'CALL _A60RT_SKIPWS',
+  'CMP EAX, 45',
+  'JNE _A60R_ri1',
+  'MOV EBX, 1',
+  'CALL _A60RT_GETC',
+  'JMP _A60R_ri2',
+  '_A60R_ri1:',
+  'CMP EAX, 43',
+  'JNE _A60R_ri2',
+  'CALL _A60RT_GETC',
+  '_A60R_ri2:',
+  'MOV ECX, EAX',
+  'SUB ECX, 48',
+  'CMP ECX, 9',
+  'JBE _A60R_ri3',
+  'CALL _A60RT_UNGETC',
+  'JMP _A60R_ri4',
+  '_A60R_ri3:',
+  'IMUL ESI, ESI, 10',
+  'ADD ESI, ECX',
+  'CALL _A60RT_GETC',
+  'JMP _A60R_ri2',
+  '_A60R_ri4:',
+  'MOV EAX, ESI',
+  'TEST EBX, EBX',
+  'JZ _A60R_ri5',
+  'NEG EAX',
+  '_A60R_ri5:',
+  'POP ESI',
+  'POP EBX',
+  'RET',
+  '@_A60RT_READREAL',
+  '_A60RT_READREAL:',
+  'PUSH EBX',
+  'PUSH ESI',
+  'PUSH EDI',
+  'XOR EBX, EBX',
+  'XOR EDI, EDI',
+  'FLDZ',
+  'CALL _A60RT_SKIPWS',
+  'CMP EAX, 45',
+  'JNE _A60R_rr1',
+  'MOV EBX, 1',
+  'CALL _A60RT_GETC',
+  'JMP _A60R_rr2',
+  '_A60R_rr1:',
+  'CMP EAX, 43',
+  'JNE _A60R_rr2',
+  'CALL _A60RT_GETC',
+  '_A60R_rr2:',
+  'CMP EAX, 46',
+  'JNE _A60R_rr3',
+  'MOV ESI, 1',
+  'CALL _A60RT_GETC',
+  'JMP _A60R_rr2',
+  '_A60R_rr3:',
+  'MOV ECX, EAX',
+  'SUB ECX, 48',
+  'CMP ECX, 9',
+  'JA _A60R_rr6',
+  'FILD DWORD PTR [_A60_TEN]',
+  'FMULP ST(1), ST',
+  'MOV DWORD PTR [_A60_TMP], ECX',
+  'FILD DWORD PTR [_A60_TMP]',
+  'FADDP ST(1), ST',
+  'TEST ESI, ESI',
+  'JZ _A60R_rr4',
+  'INC EDI',
+  '_A60R_rr4:',
+  'CALL _A60RT_GETC',
+  'JMP _A60R_rr2',
+  '_A60R_rr6:',
+  'CALL _A60RT_UNGETC',
+  '_A60R_rr7:',
+  'TEST EDI, EDI',
+  'JZ _A60R_rr8',
+  'FILD DWORD PTR [_A60_TEN]',
+  'FDIVP ST(1), ST',
+  'DEC EDI',
+  'JMP _A60R_rr7',
+  '_A60R_rr8:',
+  'TEST EBX, EBX',
+  'JZ _A60R_rr9',
+  'FCHS',
+  '_A60R_rr9:',
+  'POP EDI',
+  'POP ESI',
+  'POP EBX',
+  'RET',
+  '@_A60RT_READBOOL',
+  '_A60RT_READBOOL:',
+  'CALL _A60RT_SKIPWS',
+  'MOV ECX, EAX',
+  'OR ECX, 32',
+  'XOR EDX, EDX',
+  'CMP ECX, 116',
+  'JNE _A60R_rb1',
+  'MOV EDX, 1',
+  '_A60R_rb1:',
+  'PUSH EDX',
+  '_A60R_rb2:',
+  'CALL _A60RT_GETC',
+  'CMP EAX, 97',
+  'JB _A60R_rb3',
+  'CMP EAX, 122',
+  'JBE _A60R_rb2',
+  '_A60R_rb3:',
+  'CMP EAX, 65',
+  'JB _A60R_rb4',
+  'CMP EAX, 90',
+  'JBE _A60R_rb2',
+  '_A60R_rb4:',
+  'CALL _A60RT_UNGETC',
+  'POP EAX',
+  'RET',
+  '@_A60RT_POW',
+  '; ---- arithmetique ----',
+  '; EAX = base, EDX = exposant -> EAX',
+  '_A60RT_POW:',
+  'PUSH EBX',
+  'MOV ECX, EDX',
+  'MOV EBX, EAX',
+  'MOV EAX, 1',
+  'TEST ECX, ECX',
+  'JS _A60R_pw5',
+  '_A60R_pw1:',
+  'TEST ECX, ECX',
+  'JZ _A60R_pw9',
+  'MOV EDX, ECX',
+  'AND EDX, 1',
+  'JZ _A60R_pw2',
+  'IMUL EAX, EBX',
+  '_A60R_pw2:',
+  'IMUL EBX, EBX',
+  'SHR ECX, 1',
+  'JMP _A60R_pw1',
+  '_A60R_pw5:',
+  'CMP EBX, 1',
+  'JE _A60R_pw9',
+  'CMP EBX, -1',
+  'JNE _A60R_pw6',
+  'MOV EDX, ECX',
+  'AND EDX, 1',
+  'JZ _A60R_pw9',
+  'MOV EAX, -1',
+  'JMP _A60R_pw9',
+  '_A60R_pw6:',
+  'XOR EAX, EAX',
+  '_A60R_pw9:',
+  'POP EBX',
+  'RET',
+  '@_A60RT_EXP2',
+  '; ST(0) = t -> 2^t',
+  '_A60RT_EXP2:',
+  'FLD ST(0)',
+  'FRNDINT',
+  'FSUB ST(1), ST',
+  'FXCH ST(1)',
+  'F2XM1',
+  'FLD1',
+  'FADDP ST(1), ST',
+  'FSCALE',
+  'FSTP ST(1)',
+  'RET',
+  '@_A60RT_EXP',
+  '; ST(0) = x -> e^x',
+  '_A60RT_EXP:',
+  'FLDL2E',
+  'FMULP ST(1), ST',
+  'JMP _A60RT_EXP2',
+  '@_A60RT_RPOW',
+  '; ST(0) = base, ST(1) = exposant -> ST(0) = base ^ exposant',
+  '_A60RT_RPOW:',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'JA _A60R_rp2',
+  'JB _A60R_rp1',
+  'FSTP ST(0)',
+  'FSTP ST(0)',
+  'FLDZ',
+  'RET',
+  '_A60R_rp1:',
+  'FABS',
+  'FLD ST(1)',
+  'FISTP DWORD PTR [_A60_TMP]',
+  'FYL2X',
+  'CALL _A60RT_EXP2',
+  'MOV EAX, DWORD PTR [_A60_TMP]',
+  'AND EAX, 1',
+  'JZ _A60R_rp3',
+  'FCHS',
+  '_A60R_rp3:',
+  'RET',
+  '_A60R_rp2:',
+  'FYL2X',
+  'JMP _A60RT_EXP2',
+  '@_A60RT_FLOOR',
+  '; ST(0) -> EAX = plancher',
+  '_A60RT_FLOOR:',
+  'SUB ESP, 8',
+  'FNSTCW WORD PTR [ESP]',
+  'MOVZX EAX, WORD PTR [ESP]',
+  'AND EAX, 0F3FFh',
+  'OR EAX, 0400h',
+  'MOV WORD PTR [ESP+2], AX',
+  'FLDCW WORD PTR [ESP+2]',
+  'FISTP DWORD PTR [ESP+4]',
+  'FLDCW WORD PTR [ESP]',
+  'MOV EAX, DWORD PTR [ESP+4]',
+  'ADD ESP, 8',
+  'RET',
+  '@_A60RT_RTOI',
+  '; ST(0) -> EAX = arrondi au plus proche, demi vers le haut',
+  '_A60RT_RTOI:',
+  'FADD QWORD PTR [_A60_HALF]',
+  'JMP _A60RT_FLOOR',
+  '@_A60RT_RSIGN',
+  '; ST(0) -> EAX = -1, 0 ou 1',
+  '_A60RT_RSIGN:',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'FSTP ST(0)',
+  'JA _A60R_rs1',
+  'JB _A60R_rs2',
+  'XOR EAX, EAX',
+  'RET',
+  '_A60R_rs1:',
+  'MOV EAX, 1',
+  'RET',
+  '_A60R_rs2:',
+  'MOV EAX, -1',
+  'RET',
+  '@_A60RT_CHKIDX',
+  '; EAX = indice, ECX = bas, EDX = haut : conserve tous les registres',
+  '_A60RT_CHKIDX:',
+  'CMP EAX, ECX',
+  'JL _A60R_ci1',
+  'CMP EAX, EDX',
+  'JG _A60R_ci1',
+  'RET',
+  '_A60R_ci1:',
+  'MOV EAX, OFFSET _A60_M_IDX',
+  'MOV EDX, 28',
+  'CALL _A60RT_WRITESTR',
+  'PUSH 1',
+  'CALL ExitProcess',
+  '@_A60RT_DIVZERO',
+  '_A60RT_DIVZERO:',
+  'MOV EAX, OFFSET _A60_M_DIV',
+  'MOV EDX, 27',
+  'CALL _A60RT_WRITESTR',
+  'PUSH 1',
+  'CALL ExitProcess',
+  '@_A60RT_ALLOC',
+  '; EAX = octets -> EAX = adresse (memoire mise a zero)',
+  '_A60RT_ALLOC:',
+  'PUSH EAX',
+  'CALL GetProcessHeap',
+  'POP ECX',
+  'PUSH ECX',
+  'PUSH 8',
+  'PUSH EAX',
+  'CALL HeapAlloc',
+  'RET',
+  '@_A60RT_FREE',
+  ';EAX = adresse du bloc ; conserve EAX, ECX et EDX',
+  '_A60RT_FREE:',
+  'PUSH EAX',
+  'PUSH ECX',
+  'PUSH EDX',
+  'PUSH EAX',
+  'PUSH 0',
+  'CALL GetProcessHeap',
+  'PUSH EAX',
+  'CALL HeapFree',
+  'POP EDX',
+  'POP ECX',
+  'POP EAX',
+  'RET',
+  '@_A60RT_SETCHAN',
+  '_A60RT_SETCHAN:',
+  'CMP EAX, 2',
+  'JNE _A60R_sc1',
+  'PUSH -12',
+  'JMP _A60R_sc2',
+  '_A60R_sc1:',
+  'PUSH -11',
+  '_A60R_sc2:',
+  'CALL GetStdHandle',
+  'MOV DWORD PTR [_A60_HOUT], EAX',
+  'RET'
+  );
+
+Var
+  RtStart   : Array[0..RT_MAX_ROUT] Of Integer;   { 1re ligne de routine }
+  RtName    : Array[0..RT_MAX_ROUT - 1] Of TString;
+  RtUsed    : Array[0..RT_MAX_ROUT - 1] Of Boolean;
+  RtCount   : Integer;
+  RtLine    : TString;                             { ligne assemblee }
+  RtPos     : Integer;
+  RtDataMade: Array[0..31] Of Integer;
+  RtDataN   : Integer;
+
+Function RtFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  RtFind := -1;
+  For I := 0 To RtCount - 1 Do
+    If RtName[I] = Name Then RtFind := I;
+End;
+
+Function RtIdChar(C : Char) : Boolean;
+Begin
+  RtIdChar := ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+              ((C >= '0') And (C <= '9')) Or (C = '_');
+End;
+
+{ Marque une routine et, transitivement, celles qu'elle appelle }
+Procedure RtMark(Const Name : TString);
+Var
+  R, L, P, E : Integer;
+  S, Id      : TString;
+Begin
+  R := RtFind(Name);
+  If R < 0 Then
+    FatalError('erreur interne: routine du runtime inconnue: ' + Name);
+  If RtUsed[R] Then Exit;
+  RtUsed[R] := True;
+  For L := RtStart[R] To RtStart[R + 1] - 1 Do
+  Begin
+    S := RtText[L];
+    If (S <> '') And (S[1] <> ';') And (S[1] <> '@') Then
+    Begin
+      P := Pos(A60_RT_PFX, S);
+      While P > 0 Do
+      Begin
+        E := P;
+        While (E <= Length(S)) And RtIdChar(S[E]) Do Inc(E);
+        Id := Copy(S, P, E - P);
+        RtMark(Id);
+        S := Copy(S, E, Length(S));
+        P := Pos(A60_RT_PFX, S);
+      End;
+    End;
+  End;
+End;
+
+{ ---- cellules de donnees du runtime, creees a la demande ---- }
+Procedure RtDataInt(Sym : Integer; V : LongInt);
+Var
+  K : Integer;
+Begin
+  K := DataNew(Sym, DK_INT);
+  DataTab[K].Lo   := V;
+  DataTab[K].Size := 4;
+End;
+
+Procedure RtDataStr(Sym : Integer; Const S : TString);
+Var
+  K : Integer;
+Begin
+  K := DataNew(Sym, DK_STR);
+  DataTab[K].Str  := AsmStrAdd(S);
+  DataTab[K].Size := Length(S);
+End;
+
+Procedure RtDataReal(Sym : Integer; Lo, Hi : LongInt);
+Var
+  K : Integer;
+Begin
+  K := DataNew(Sym, DK_REAL);
+  DataTab[K].Lo   := Lo;
+  DataTab[K].Hi   := Hi;
+  DataTab[K].Size := 8;
+End;
+
+Procedure RtData(Sym : Integer);
+Var
+  I : Integer;
+  N : TString;
+Begin
+  For I := 0 To RtDataN - 1 Do
+    If RtDataMade[I] = Sym Then Exit;
+  If RtDataN > 31 Then FatalError('erreur interne: trop de donnees runtime');
+  RtDataMade[RtDataN] := Sym;
+  Inc(RtDataN);
+  N := NameTab[Sym];
+  If (N = '_A60_HOUT') Or (N = '_A60_HIN') Or (N = '_A60_TMP') Then
+    DataAddZero(Sym, 4)
+  Else If N = '_A60_PEEKC' Then RtDataInt(Sym, -2)
+  Else If N = '_A60_TEN'   Then RtDataInt(Sym, 10)
+  Else If N = '_A60_NL'    Then RtDataStr(Sym, #13#10)
+  Else If N = '_A60_TRUE'  Then RtDataStr(Sym, 'true')
+  Else If N = '_A60_FALSE' Then RtDataStr(Sym, 'false')
+  Else If N = '_A60_M_IDX' Then
+    RtDataStr(Sym, 'Erreur: indice hors bornes'#13#10)
+  Else If N = '_A60_M_DIV' Then
+    RtDataStr(Sym, 'Erreur: division par zero'#13#10)
+  Else If N = '_A60_C1E6'  Then RtDataReal(Sym, 0, $412E8480)
+  Else If N = '_A60_HALF'  Then RtDataReal(Sym, 0, $3FE00000)
+  Else
+    FatalError('erreur interne: donnee runtime inconnue: ' + N);
+End;
+
+{ ---- mini-assembleur ---- }
+Procedure RtSkip;
+Begin
+  While (RtPos <= Length(RtLine)) And (RtLine[RtPos] = ' ') Do Inc(RtPos);
+End;
+
+Function RtAtEnd : Boolean;
+Begin
+  RtSkip;
+  RtAtEnd := RtPos > Length(RtLine);
+End;
+
+Function RtIdent : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (RtPos <= Length(RtLine)) And RtIdChar(RtLine[RtPos]) Do
+  Begin
+    S := S + RtLine[RtPos];
+    Inc(RtPos);
+  End;
+  RtIdent := S;
+End;
+
+{ nombre decimal ou hexadecimal (suffixe h), sans signe }
+Function RtNumber : LongInt;
+Var
+  S    : TString;
+  I, D : Integer;
+  V    : LongInt;
+  Hex  : Boolean;
+Begin
+  S := RtIdent;
+  Hex := (S <> '') And ((S[Length(S)] = 'h') Or (S[Length(S)] = 'H'));
+  If Hex Then Delete(S, Length(S), 1);
+  V := 0;
+  For I := 1 To Length(S) Do
+  Begin
+    If (S[I] >= '0') And (S[I] <= '9') Then
+      D := Ord(S[I]) - 48
+    Else
+      D := Ord(UpCase(S[I])) - 55;
+    If Hex Then V := V * 16 + D Else V := V * 10 + D;
+  End;
+  RtNumber := V;
+End;
+
+Function RtReg(Const S : TString) : TReg;
+Begin
+  RtReg := R_NONE;
+  If S = 'EAX' Then RtReg := R_EAX
+  Else If S = 'ECX' Then RtReg := R_ECX
+  Else If S = 'EDX' Then RtReg := R_EDX
+  Else If S = 'EBX' Then RtReg := R_EBX
+  Else If S = 'ESP' Then RtReg := R_ESP
+  Else If S = 'EBP' Then RtReg := R_EBP
+  Else If S = 'ESI' Then RtReg := R_ESI
+  Else If S = 'EDI' Then RtReg := R_EDI
+  Else If S = 'AX' Then RtReg := R_AX
+  Else If S = 'AL' Then RtReg := R_AL
+  Else If S = 'CL' Then RtReg := R_CL
+  Else If S = 'DL' Then RtReg := R_DL
+  Else If S = 'BL' Then RtReg := R_BL;
+End;
+
+Function RtSym(Const Name : TString) : Integer;
+Var
+  K : Integer;
+Begin
+  K := Intern(Name);
+  If Copy(Name, 1, 5) = '_A60_' Then RtData(K);
+  RtSym := K;
+End;
+
+{ [Sym + Base + Index*Echelle + Depl] }
+Function RtMemory(Size : Byte) : TOperand;
+Var
+  O    : TOperand;
+  Sign : LongInt;
+  Id   : TString;
+  R    : TReg;
+  N    : LongInt;
+Begin
+  O := OpNone;
+  O.Kind := OK_MEM;
+  O.Size := Size;
+  Inc(RtPos);                                   { [ }
+  Sign := 1;
+  While (RtPos <= Length(RtLine)) And (RtLine[RtPos] <> ']') Do
+  Begin
+    RtSkip;
+    If RtLine[RtPos] = '+' Then
+    Begin
+      Sign := 1;
+      Inc(RtPos);
+    End
+    Else If RtLine[RtPos] = '-' Then
+    Begin
+      Sign := -1;
+      Inc(RtPos);
+    End
+    Else If (RtLine[RtPos] >= '0') And (RtLine[RtPos] <= '9') Then
+    Begin
+      O.Imm := O.Imm + Sign * RtNumber;
+      Sign := 1;
+    End
+    Else
+    Begin
+      Id := RtIdent;
+      If Id = '' Then FatalError('erreur interne: runtime: ' + RtLine);
+      R := RtReg(Id);
+      If R <> R_NONE Then
+      Begin
+        If (RtPos <= Length(RtLine)) And (RtLine[RtPos] = '*') Then
+        Begin
+          Inc(RtPos);
+          N := RtNumber;
+          O.Index := R;
+          O.Scale := N;
+        End
+        Else If O.Base = R_NONE Then
+          O.Base := R
+        Else
+        Begin
+          O.Index := R;
+          O.Scale := 1;
+        End;
+      End
+      Else
+        O.Sym := RtSym(Id);
+      Sign := 1;
+    End;
+    RtSkip;
+  End;
+  Inc(RtPos);                                   { ] }
+  RtMemory := O;
+End;
+
+Function RtOperand : TOperand;
+Var
+  Id, Id2 : TString;
+  R       : TReg;
+  Size    : Byte;
+  Neg     : Boolean;
+  V       : LongInt;
+Begin
+  RtSkip;
+  Size := 0;
+  If RtLine[RtPos] = '[' Then
+  Begin
+    RtOperand := RtMemory(0);
+    Exit;
+  End;
+  If (RtLine[RtPos] = '-') Or ((RtLine[RtPos] >= '0') And
+                               (RtLine[RtPos] <= '9')) Then
+  Begin
+    Neg := RtLine[RtPos] = '-';
+    If Neg Then Inc(RtPos);
+    V := RtNumber;
+    If Neg Then V := -V;
+    RtOperand := OpImm(V);
+    Exit;
+  End;
+  Id := RtIdent;
+  If (Id = 'BYTE') Or (Id = 'WORD') Or (Id = 'DWORD') Or (Id = 'QWORD') Then
+  Begin
+    If Id = 'BYTE' Then Size := 1
+    Else If Id = 'WORD' Then Size := 2
+    Else If Id = 'DWORD' Then Size := 4
+    Else Size := 8;
+    RtSkip;
+    Id2 := RtIdent;                             { PTR }
+    RtSkip;
+    RtOperand := RtMemory(Size);
+    Exit;
+  End;
+  If Id = 'OFFSET' Then
+  Begin
+    RtSkip;
+    RtOperand := OpOffset(RtSym(RtIdent));
+    Exit;
+  End;
+  If Id = 'ST' Then
+  Begin
+    V := 0;
+    If (RtPos <= Length(RtLine)) And (RtLine[RtPos] = '(') Then
+    Begin
+      Inc(RtPos);
+      V := RtNumber;
+      Inc(RtPos);
+    End;
+    RtOperand := OpST(V);
+    Exit;
+  End;
+  R := RtReg(Id);
+  If R <> R_NONE Then
+    RtOperand := OpReg(R)
+  Else
+    RtOperand := OpLabel(Intern(Id));
+End;
+
+Procedure RtAssembleLine(Const S : TString);
+Var
+  Mn   : TString;
+  Op   : TOp;
+  Found: Boolean;
+  A, B : TOperand;
+Begin
+  RtLine := S;
+  RtPos  := 1;
+  If S[1] = ';' Then
+  Begin
+    EmitComment(Copy(S, 2, Length(S)));
+    Exit;
+  End;
+  If S[Length(S)] = ':' Then
+  Begin
+    EmitLabel(Intern(Copy(S, 1, Length(S) - 1)));
+    Exit;
+  End;
+  Mn := RtIdent;
+  If Mn = 'JZ' Then Mn := 'JE';
+  If Mn = 'JNZ' Then Mn := 'JNE';
+  Found := False;
+  Op := OP_MOV;
+  While (Not Found) And (Op <= OP_FLDCW) Do
+  Begin
+    If OpName(Op) = Mn Then Found := True Else Op := Succ(Op);
+  End;
+  If Not Found Then FatalError('erreur interne: runtime: ' + S);
+  A := OpNone;
+  B := OpNone;
+  If Not RtAtEnd Then
+  Begin
+    A := RtOperand;
+    RtSkip;
+    If (RtPos <= Length(RtLine)) And (RtLine[RtPos] = ',') Then
+    Begin
+      Inc(RtPos);
+      B := RtOperand;
+    End;
+  End;
+  Emit(Op, A, B);
+End;
+
+{ Ajoute au programme les routines du runtime qu'il utilise }
+Procedure RtLink;
+Var
+  I, L, R, Start : LongInt;
+  Any            : Boolean;
+  S              : TString;
+Begin
+  RtCount := 0;
+  RtDataN := 0;
+  For L := 0 To RT_LINES - 1 Do
+    If RtText[L][1] = '@' Then
+    Begin
+      If RtCount >= RT_MAX_ROUT Then
+        FatalError('erreur interne: trop de routines runtime');
+      RtStart[RtCount] := L;
+      RtName[RtCount]  := Copy(RtText[L], 2, 255);
+      RtUsed[RtCount]  := False;
+      Inc(RtCount);
+    End;
+  RtStart[RtCount] := RT_LINES;
+  { routines appelees par le programme }
+  For I := 0 To CodeCount + DeferCount - 1 Do
+    If (InstrAt(I).A.Kind = OK_LABEL) And
+       (InstrAt(I).Op In [OP_CALL, OP_JMP]) Then
+    Begin
+      S := NameTab[InstrAt(I).A.Sym];
+      If Copy(S, 1, Length(A60_RT_PFX)) = A60_RT_PFX Then RtMark(S);
+    End;
+  Any := False;
+  For R := 0 To RtCount - 1 Do
+    If RtUsed[R] Then Any := True;
+  If Not Any Then Exit;
+  Start := CodeCount;
+  EmitBlank;
+  EmitComment('---- runtime AL60CW32 (routines utilisees) ----');
+  For R := 0 To RtCount - 1 Do
+    If RtUsed[R] Then
+    Begin
+      EmitBlank;
+      For L := RtStart[R] + 1 To RtStart[R + 1] - 1 Do
+        RtAssembleLine(RtText[L]);
+    End;
+  MoveToDeferred(Start);
+End;
 
 { ============================================================
   SECTION 13 - ERREURS ET RAPPORT FINAL (TODO 23, 24)
@@ -10076,7 +11082,11 @@ Begin
   Case P Of
     PH_LEX     : PhaseLex;
     PH_PARSE   : PhaseParse;
-    PH_CODEGEN : PhaseCodegen;
+    PH_CODEGEN :
+      Begin
+        RtLink;
+        PhaseCodegen;
+      End;
     PH_ENCODE  : PhaseEncode;
     PH_WRITE   : PhaseWrite;
     PH_REPORT  : PhaseReport;
