@@ -31,7 +31,7 @@
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
          expressions arithmetiques, booleennes et conditionnelles,
-         instructions et blocs) ; TODO 13 a 25 a faire.
+         instructions et blocs, boucle for) ; TODO 14 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -412,7 +412,7 @@
               test_emitter, test_operators, test_primary, test_types,
               test_variables, test_data
 
-  TODO 13 - BOUCLE FOR [A FAIRE]
+  TODO 13 - BOUCLE FOR [IMPLEMENTE]
             for v := liste do S ; elements de la liste : expression
               simple, E1 step E2 until E3, E1 while B, en nombre quelconque
             Evaluation de la borne et du pas a chaque tour (semantique du
@@ -421,6 +421,24 @@
               suivant ; sortie de boucle par goto
             Compteur de profondeur des boucles imbriquees
             Verification : forloop.a60, test_for.a60
+            Realise : ParseFor (variable de boucle numerique simple,
+              profondeur MAX_LOOP_NEST), ParseForClause (valeur, E1 step
+              E2 until E3, E1 while B ; la borne, le pas et la condition
+              sont regeneres, donc reevalues, a chaque tour comme dans le
+              rapport), selecteur de clause pour les listes (cellule
+              .data au niveau 0, locale sinon), TForCtx ; step constant :
+              un seul test (> ou <), sinon test du signe du pas a chaque
+              tour ; avertissements : pas nul, bornes inversees,
+              condition while toujours fausse ; la variable de boucle
+              peut etre modifiee par le corps ; l'analyse continue des
+              erreurs sans bloquer la suite
+            Phases : les phases de generation ne tournent plus quand des
+              erreurs ont ete signalees (aucun .asm ni .exe ecrit)
+            Verifie : 13 boucles (step positif, negatif, variable, reel,
+              listes melangees, while, imbriquees, borne modifiee par le
+              corps, boucle vide, variable de boucle modifiee) compilees,
+              assemblees avec ML.PAS et executees : somme attendue pour
+              chacune ; 9 erreurs de syntaxe donnent les bons messages
 
   TODO 14 - GOTO, ETIQUETTES ET SWITCH [A FAIRE]
             Etiquettes d'instruction, goto vers une etiquette du meme bloc
@@ -5411,6 +5429,8 @@ Var
   AssignCount : LongInt;      { affectations analysees               }
   IfCount     : LongInt;      { instructions if                      }
   LabelCount  : LongInt;      { etiquettes definies                  }
+  ForCount    : LongInt;      { instructions for                     }
+  LoopDepth   : Integer;      { imbrication courante des for         }
 
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
@@ -5648,6 +5668,359 @@ Begin
     EmitLabel(Lelse);
 End;
 
+Const
+  MAX_FOR_CLAUSES = 16;
+
+Type
+  { Contexte d'une instruction for pendant l'analyse de sa liste.
+    Disposition du code : les clauses d'abord (chacune saute vers le
+    corps), puis le corps, puis le retour a la clause active, puis la
+    sortie. }
+  TForCtx = Record
+    Valid     : Boolean;               { variable de boucle utilisable }
+    Sym       : Integer;               { variable de boucle           }
+    VT        : Integer;               { son type                     }
+    Line, Col : Integer;
+    LBody     : Integer;               { etiquette du corps           }
+    LExit     : Integer;               { etiquette de sortie          }
+    LEnd      : Integer;               { fin de la clause en cours    }
+    Count     : Integer;               { clauses analysees            }
+    Next      : Array[1..MAX_FOR_CLAUSES] Of Integer;
+    HasSel    : Boolean;               { selecteur de clause alloue   }
+    SelName   : Integer;               { selecteur global (niveau 0)  }
+    SelOfs    : LongInt;               { ou local [EBP+SelOfs]        }
+  End;
+
+{ Cellule du selecteur de clause active (allouee a la demande) }
+Function ForSelCell(Var C : TForCtx) : TOperand;
+Begin
+  If Not C.HasSel Then
+  Begin
+    C.HasSel := True;
+    If CurLevel > 0 Then
+    Begin
+      C.SelName := -1;
+      C.SelOfs  := SymAllocLocal(4);
+    End
+    Else
+    Begin
+      Inc(ConstSeq);
+      C.SelName := Intern('_A60FSEL_' + ItoS(ConstSeq));
+      DataAddZero(C.SelName, 4);
+    End;
+  End;
+  If C.SelName >= 0 Then
+    ForSelCell := OpMemSym(C.SelName, 0, 4)
+  Else
+    ForSelCell := OpMem(R_EBP, C.SelOfs, 4);
+End;
+
+{ variable de boucle := valeur }
+Procedure ForAssign(Var C : TForCtx; Val : Integer);
+Var
+  A : Integer;
+Begin
+  A := ExprNew(EX_ASSIGN, C.VT, C.Line, C.Col);
+  ExprTab[A].L := ExprMakeVar(C.Sym, C.Line, C.Col);
+  ExprTab[A].R := Val;
+  GenAssign(A, False);
+End;
+
+{ Compare la variable de boucle a Limit (Op = '>' ou '<') et saute
+  vers Target quand la comparaison est vraie }
+Procedure ForCompareJump(Var C : TForCtx; Const Op : TString;
+                         Limit, Target : Integer);
+Var
+  Cmp : Integer;
+Begin
+  Cmp := ExprNew(EX_BINARY, TY_IDX_BOOLEAN, C.Line, C.Col);
+  ExprTab[Cmp].Op := Op;
+  ExprTab[Cmp].L  := ExprMakeVar(C.Sym, C.Line, C.Col);
+  ExprTab[Cmp].R  := Limit;
+  GenJump(Cmp, Target, True);
+End;
+
+{ Un element de liste de for : valeur, step-until ou while. }
+Procedure ParseForClause(Var C : TForCtx);
+Var
+  E1, E2, E3, Cd : Integer;
+  Conv           : TConv;
+  Line, Col      : Integer;
+  Empty, Multi   : Boolean;
+  Lnext, Ltest   : Integer;
+  Lneg, Lcont    : Integer;
+  Plus, A, Z, Sg : Integer;
+  Kind           : Integer;      { 1 valeur, 2 step-until, 3 while }
+  Good           : Boolean;
+Begin
+  ExprReset;
+  Inc(C.Count);
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  E1 := ParseExpr;
+  If E1 >= 0 Then
+    If Not ExprCoerce(E1, C.VT, Conv, Line, Col) Then E1 := -1;
+  E2 := -1;
+  E3 := -1;
+  Cd := -1;
+  Kind := 1;
+  Good := E1 >= 0;
+
+  If AtKw('step') Then
+  Begin
+    Kind := 2;
+    ParserAdvance;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    E2 := ParseExpr;
+    If (E2 >= 0) And (Not TypeIsArith(ExprTab[E2].Typ)) Then
+    Begin
+      ErrorAt(Line, Col, 'pas numerique attendu (type: ' +
+              TypeName(ExprTab[E2].Typ) + ')');
+      E2 := -1;
+    End;
+    If AtKw('until') Then
+      ParserAdvance
+    Else
+      ParseError('''until'' attendu apres step');
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    E3 := ParseExpr;
+    If (E3 >= 0) And (Not TypeIsArith(ExprTab[E3].Typ)) Then
+    Begin
+      ErrorAt(Line, Col, 'limite numerique attendue (type: ' +
+              TypeName(ExprTab[E3].Typ) + ')');
+      E3 := -1;
+    End;
+    Good := Good And (E2 >= 0) And (E3 >= 0);
+    If Good Then
+    Begin
+      If Opts.DebugMode Then
+      Begin
+        WriteLn('  clause step-until :');
+        WriteLn('    init :');  ExprDump(E1, 3);
+        WriteLn('    step :');  ExprDump(E2, 3);
+        WriteLn('    until :'); ExprDump(E3, 3);
+      End;
+      If ExprIsConst(E2) And (ExprConstReal(E2) = 0) Then
+        WarnAt(Line, Col, 'pas nul: boucle infinie');
+      If ExprIsConst(E1) And ExprIsConst(E2) And ExprIsConst(E3) And
+         (ExprConstReal(E2) <> 0) Then
+      Begin
+        If ExprConstReal(E2) > 0 Then
+          Empty := ExprConstReal(E1) > ExprConstReal(E3)
+        Else
+          Empty := ExprConstReal(E1) < ExprConstReal(E3);
+        If Empty Then
+          WarnAt(Line, Col, 'boucle jamais executee (bornes inversees)');
+      End;
+    End;
+  End
+  Else If AtKw('while') Then
+  Begin
+    Kind := 3;
+    ParserAdvance;
+    Cd := ParseCondition;
+    Good := Good And (Cd >= 0);
+    If Good And Opts.DebugMode Then
+    Begin
+      WriteLn('  clause while :');
+      WriteLn('    init :');  ExprDump(E1, 3);
+      WriteLn('    while :'); ExprDump(Cd, 3);
+    End;
+    If (Cd >= 0) And (ExprTab[Cd].Kind = EX_BOOL) And
+       (ExprTab[Cd].IntVal = 0) Then
+      WarnAt(Line, Col, 'condition toujours fausse: ' +
+             'boucle jamais executee');
+  End
+  Else If Good And Opts.DebugMode Then
+  Begin
+    WriteLn('  clause valeur :');
+    ExprDump(E1, 2);
+  End;
+
+  { fin de la clause : cible des sauts "clause epuisee" }
+  C.LEnd := NewLabel;
+  If C.Count <= MAX_FOR_CLAUSES Then C.Next[C.Count] := C.LEnd
+  Else ErrorAt(Line, Col, 'trop de clauses dans le for');
+  If (Not Good) Or (Not C.Valid) Or (C.Count > MAX_FOR_CLAUSES) Then
+    Exit;
+  Multi := (C.Count > 1) Or AtPunct(',');
+
+  Case Kind Of
+    1:
+      Begin
+        ForAssign(C, E1);
+        If Multi Then
+          Emit(OP_MOV, ForSelCell(C), OpImm(C.Count));
+        Emit1(OP_JMP, OpLabel(C.LBody));
+      End;
+    2:
+      Begin
+        Lnext := NewLabel;
+        Ltest := NewLabel;
+        C.Next[C.Count] := Lnext;
+        ForAssign(C, E1);
+        Emit1(OP_JMP, OpLabel(Ltest));
+        EmitLabel(Lnext);
+        { variable := variable + pas }
+        Plus := ExprNew(EX_BINARY, TypeArith(C.VT, ExprTab[E2].Typ),
+                        C.Line, C.Col);
+        ExprTab[Plus].Op := '+';
+        ExprTab[Plus].L  := ExprMakeVar(C.Sym, C.Line, C.Col);
+        ExprTab[Plus].R  := E2;
+        A := ExprNew(EX_ASSIGN, C.VT, C.Line, C.Col);
+        ExprTab[A].L := ExprMakeVar(C.Sym, C.Line, C.Col);
+        ExprTab[A].R := Plus;
+        GenAssign(A, False);
+        EmitLabel(Ltest);
+        { clause epuisee quand la variable depasse la limite dans le
+          sens du pas }
+        If ExprIsConst(E2) Then
+        Begin
+          If ExprConstReal(E2) > 0 Then
+            ForCompareJump(C, '>', E3, C.LEnd)
+          Else
+            ForCompareJump(C, '<', E3, C.LEnd);
+        End
+        Else
+        Begin
+          Lneg  := NewLabel;
+          Lcont := NewLabel;
+          Z  := ExprMakeInt(0, C.Line, C.Col);
+          Sg := ExprNew(EX_BINARY, TY_IDX_BOOLEAN, C.Line, C.Col);
+          ExprTab[Sg].Op := '>=';
+          ExprTab[Sg].L  := E2;
+          ExprTab[Sg].R  := Z;
+          GenJump(Sg, Lneg, False);
+          ForCompareJump(C, '>', E3, C.LEnd);
+          Emit1(OP_JMP, OpLabel(Lcont));
+          EmitLabel(Lneg);
+          ForCompareJump(C, '<', E3, C.LEnd);
+          EmitLabel(Lcont);
+        End;
+        If Multi Then
+          Emit(OP_MOV, ForSelCell(C), OpImm(C.Count));
+        Emit1(OP_JMP, OpLabel(C.LBody));
+      End;
+    3:
+      Begin
+        Lnext := NewLabel;
+        C.Next[C.Count] := Lnext;
+        EmitLabel(Lnext);
+        ForAssign(C, E1);
+        GenJump(Cd, C.LEnd, False);
+        If Multi Then
+          Emit(OP_MOV, ForSelCell(C), OpImm(C.Count));
+        Emit1(OP_JMP, OpLabel(C.LBody));
+      End;
+  End;
+End;
+
+{ for v := e1, e2 step e3 until e4, e5 while c do instruction
+  Chaque element de la liste est une valeur, un step-until ou un
+  while ; ils sont executes dans l'ordre (le corps est partage). }
+Procedure ParseFor;
+Var
+  Tgt       : Integer;
+  Line, Col : Integer;
+  Ctx       : TForCtx;
+  K         : Integer;
+Begin
+  Inc(ForCount);
+  FillChar(Ctx, SizeOf(Ctx), 0);
+  Ctx.Sym := -1;
+  Ctx.VT  := TY_UNKNOWN;
+  Line := CurToken.Line;
+  ParserAdvance;                          { for }
+  ExprReset;
+  Col := CurToken.Col;
+  Tgt := ParsePrimary;
+  If Tgt >= 0 Then
+  Begin
+    If ExprTab[Tgt].Kind <> EX_VAR Then
+    Begin
+      ErrorAt(Line, Col, 'variable de boucle simple attendue');
+    End
+    Else
+    Begin
+      Ctx.Sym := ExprTab[Tgt].Sym;
+      Ctx.VT  := ExprTab[Tgt].Typ;
+      If Not TypeIsNumeric(Ctx.VT) Then
+      Begin
+        ErrorAt(Line, Col, 'variable de boucle numerique attendue ' +
+                '(type: ' + TypeName(Ctx.VT) + ')');
+        Ctx.VT := TY_UNKNOWN;
+      End
+      Else
+      Begin
+        Ctx.Valid := True;
+        If SymTab[Ctx.Sym].Kind = SK_PARAM_NAME Then
+          SymTab[Ctx.Sym].IsWritten := True;      { variable de boucle }
+        If Opts.DebugMode Then
+          WriteLn('For ligne ', Line, ' : variable ',
+                  SymTab[Ctx.Sym].Name, ' (', TypeName(Ctx.VT), ')');
+      End;
+    End;
+  End;
+  Ctx.Line := Line;
+  Ctx.Col  := Col;
+  If AtOp(':=') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError(''':='' attendu apres la variable de boucle');
+    ParserSync;
+    Exit;
+  End;
+  Ctx.LBody := NewLabel;
+  Ctx.LExit := NewLabel;
+
+  If LoopDepth >= MAX_LOOP_NEST Then
+    ErrorAt(Line, Col, 'boucles trop imbriquees (max ' +
+            ItoS(MAX_LOOP_NEST) + ')');
+  Inc(LoopDepth);
+  Repeat
+    ParseForClause(Ctx);
+    EmitLabel(Ctx.LEnd);                  { fin de la clause }
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+  { toutes les clauses epuisees : sortie ; sinon le corps }
+  Emit1(OP_JMP, OpLabel(Ctx.LExit));
+  EmitLabel(Ctx.LBody);
+  If AtKw('do') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError('''do'' attendu apres la liste du for');
+    Dec(LoopDepth);
+    ParserSync;
+    Exit;
+  End;
+  ParseStatement;
+  { retour a la clause active }
+  If Ctx.Valid Then
+  Begin
+    If Ctx.Count <= 1 Then
+      Emit1(OP_JMP, OpLabel(Ctx.Next[1]))
+    Else
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), ForSelCell(Ctx));
+      For K := 1 To Ctx.Count - 1 Do
+      Begin
+        Emit(OP_CMP, OpReg(R_EAX), OpImm(K));
+        Emit1(OP_JE, OpLabel(Ctx.Next[K]));
+      End;
+      Emit1(OP_JMP, OpLabel(Ctx.Next[Ctx.Count]));
+    End;
+  End;
+  EmitLabel(Ctx.LExit);
+  Dec(LoopDepth);
+End;
+
 { Declaration de variables : type nom, nom, ... ; own type nom, ... }
 Procedure ParseVarList(K : TSymKind; T : Integer; IsOwn : Boolean);
 Var
@@ -5702,9 +6075,9 @@ Begin
   End;
 End;
 
-{ Instruction : bloc, if, affectation, appel, etiquette ; rien devant
-  ';' 'end' ou 'else' (instruction vide). for et goto viendront avec
-  les TODO 13 et 14. }
+{ Instruction : bloc, if, for, affectation, appel, etiquette ; rien
+  devant ';' 'end' ou 'else' (instruction vide). goto vient avec le
+  TODO 14. }
 Procedure ParseStatement;
 Begin
   If AtStmtEnd Then
@@ -5713,6 +6086,8 @@ Begin
     ParseBlock
   Else If AtKw('if') Then
     ParseIf
+  Else If AtKw('for') Then
+    ParseFor
   Else If CurToken.Kind = TK_IDENT Then
     ParseIdentStatement
   Else If AtExprStart Then
@@ -5788,6 +6163,8 @@ Begin
   AssignCount := 0;
   IfCount     := 0;
   LabelCount  := 0;
+  ForCount    := 0;
+  LoopDepth   := 0;
   FoldCount   := 0;
   LexQuiet    := True;           { erreurs lexicales deja signalees }
   LexInit;
@@ -5801,7 +6178,7 @@ Begin
   If Opts.Verbose Then
     WriteLn('  ', DeclCount, ' declaration(s), ', BlockCount, ' bloc(s), ',
             AssignCount, ' affectation(s), ', IfCount, ' if, ',
-            LabelCount, ' etiquette(s), ', FoldCount,
+            ForCount, ' for, ', LabelCount, ' etiquette(s), ', FoldCount,
             ' constante(s) repliee(s)');
 End;
 
@@ -5895,8 +6272,12 @@ Begin
     If Opts.EmitAsm Then
       WriteLn('  .ASM   : ', Opts.AsmFile);
   End;
+  { le parseur tourne meme apres des erreurs lexicales (les erreurs
+    syntaxiques s'ajoutent) ; les phases suivantes ne tournent que sans
+    erreur : aucun fichier de sortie n'est ecrit sinon }
   For P := PH_LEX To PH_REPORT Do
-    RunPhase(P);
+    If (ErrorCount = 0) Or (P = PH_PARSE) Or (P = PH_REPORT) Then
+      RunPhase(P);
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
   Else
