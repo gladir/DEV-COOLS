@@ -23,10 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 19 implementes (analyse complete du langage,
-         generation du code interne, listing .ASM et encodeur binaire
-         x86-32) ; TODO 20 a 25 a faire (PE, COFF, runtime, erreurs,
-         pilotage, validation).
+  ETAT : TODO 01 a 20 implementes (analyse complete du langage,
+         generation du code, listing .ASM, encodeur x86-32 et ecrivain
+         PE) ; TODO 21 a 25 a faire (COFF, runtime, erreurs, pilotage,
+         validation).
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -464,16 +464,29 @@
               couvrant toutes les formes (dont celles du futur runtime) ;
               aucun ecart
 
-  TODO 20 - ECRIVAIN PE (.EXE WINDOWS 32 BITS) [A FAIRE]
-            En-tete MZ + stub DOS, signature PE, COFF File Header
-              (machine 386), Optional Header (magic $010B, ImageBase
-              $00400000, alignements 4096/512, subsystem console)
-            Sections .text, .rdata, .data, .idata
-            Table d'import : kernel32.dll (GetStdHandle, WriteFile,
-              ReadFile, ExitProcess, HeapAlloc, GetProcessHeap) avec IAT
-            Resolution des fixups en RVA, SizeOfImage/Headers/Code
-            Fichier .EXE par defaut, executable sous Windows ou EMUW32
-              (TESTS\EMUW32.PAS)
+  TODO 20 - ECRIVAIN PE (.EXE WINDOWS 32 BITS) [IMPLEMENTE]
+            En-tete MZ + souche DOS, signature PE, COFF File Header
+              (machine 386, 3 sections, sans relocation), Optional Header
+              (magic $010B, ImageBase $00400000, alignements 4096 / 512,
+              sous-systeme console, piles et tas de 1 Mo reserves)
+            Sections .text (code + une souche JMP [IAT] par import),
+              .data (donnees), .idata (import de kernel32.dll : table
+              des descripteurs, ILT, IAT, noms avec indice, nom de la DLL)
+            Repertoires : importation (1) et IAT (12) ; point d'entree =
+              _A58P_Main
+            Relocations resolues a l'ecriture : adresses absolues
+              (code -> donnees, donnees -> code pour les tables de
+              switch) et appels aux imports (deplacement vers la souche)
+            Un symbole non defini dont le nom commence par _A58 est une
+              erreur (routine du runtime absente, TODO 22) ; tout autre
+              nom est importe de kernel32.dll (GetStdHandle, WriteFile,
+              ReadFile, ExitProcess, GetProcessHeap, HeapAlloc...)
+            Fichier .EXE par defaut (option -o pour le nom)
+            Verifie : objdump -x / -p lit l'en-tete et la table
+              d'importation ; un programme assemble a la main (appels
+              GetStdHandle, WriteFile, ExitProcess, saut par table de
+              switch) s'execute correctement avec un code de retour 42 ;
+              l'execution des 31 exemples attend le runtime (TODO 22)
 
   TODO 21 - ECRIVAIN COFF (.OBJ, OPTION -obj) [A FAIRE]
             COFF File Header (machine 386), sections .text/.data/.rdata
@@ -8782,9 +8795,267 @@ End;
 { ============================================================
   SECTION 11 - ECRIVAINS PE (.EXE) ET COFF (.OBJ) (TODO 20, 21)
   ============================================================ }
+{ ---- Ecrivain PE : executable Windows 32 bits console (TODO 20) ----
+  Disposition (alignement fichier 512, alignement memoire 4096) :
+    en-tetes (MZ, PE, COFF, optionnel, 3 sections) a 0x000
+    .text   RVA 0x1000 : code + une souche JMP [IAT] par import
+    .data   : donnees (variables, constantes, tables)
+    .idata  : table d'importation de kernel32.dll (ILT, IAT, noms)
+  Pas de table de relocation : l'image est chargee a PE_IMG_BASE. }
+Const
+  PE_MAX_FILE = {$IFDEF FPC}1500000{$ELSE}20000{$ENDIF};
+  PE_HDR_SIZE = $200;
+
+Var
+  PeOut : Array[0..PE_MAX_FILE - 1] Of Byte;
+
+Function AlignUp(V, A : LongInt) : LongInt;
+Begin
+  AlignUp := ((V + A - 1) Div A) * A;
+End;
+
+Procedure PeB(Pos : LongInt; V : LongInt);
+Begin
+  If (Pos < 0) Or (Pos >= PE_MAX_FILE) Then
+    FatalError('executable trop grand');
+  PeOut[Pos] := V And $FF;
+End;
+
+Procedure PeW(Pos : LongInt; V : LongInt);
+Begin
+  PeB(Pos, V);
+  PeB(Pos + 1, V Shr 8);
+End;
+
+Procedure PeD(Pos : LongInt; V : TWide);
+Begin
+  PeB(Pos, V And $FF);
+  PeB(Pos + 1, (V Shr 8) And $FF);
+  PeB(Pos + 2, (V Shr 16) And $FF);
+  PeB(Pos + 3, (V Shr 24) And $FF);
+End;
+
+Function PeGetD(Pos : LongInt) : LongInt;
+Begin
+  PeGetD := PeOut[Pos] Or (PeOut[Pos + 1] Shl 8) Or
+            (PeOut[Pos + 2] Shl 16) Or (PeOut[Pos + 3] Shl 24);
+End;
+
+Procedure PeStr(Pos : LongInt; Const S : TString);
+Var
+  I : Integer;
+Begin
+  For I := 1 To Length(S) Do PeB(Pos + I - 1, Ord(S[I]));
+End;
+
+{ En-tete de section : nom, taille virtuelle, RVA, taille et position
+  dans le fichier, caracteristiques }
+Procedure PeSection(Pos : LongInt; Const Name : TString; VSize, RVA,
+                    RawSize, RawPtr : LongInt; Flags : TWide);
+Begin
+  PeStr(Pos, Name);
+  PeD(Pos + 8, VSize);
+  PeD(Pos + 12, RVA);
+  PeD(Pos + 16, RawSize);
+  PeD(Pos + 20, RawPtr);
+  PeD(Pos + 36, Flags);
+End;
+
+Procedure WritePE(Const FileName : TString);
+Var
+  ImpName    : Array[0..255] Of TString;
+  I, K       : LongInt;
+  Nm         : TString;
+  TextLen, StubOff, DataLen, IdataLen : LongInt;
+  DescOff, IltOff, IatOff, HintOff, DllOff, P : LongInt;
+  HintPos    : Array[0..255] Of LongInt;
+  TextRVA, DataRVA, IdataRVA, ImageSize : LongInt;
+  TextRaw, DataRaw, IdataRaw, FileSize  : LongInt;
+  TextRawSz, DataRawSz, IdataRawSz      : LongInt;
+  Entry      : LongInt;
+  Where      : LongInt;
+  Target     : TWide;
+  F          : File;
+  Written    : LongInt;
+  MainSym    : Integer;
+Begin
+  { imports : toute cible non definie qui n'est pas du runtime }
+  For I := 0 To BinImportCount - 1 Do
+  Begin
+    Nm := NameTab[BinImport[I]];
+    If Copy(Nm, 1, 4) = '_A58' Then
+      FatalError('symbole non defini: ' + Nm +
+                 ' (routine du runtime absente)');
+    ImpName[I] := Nm;
+  End;
+  MainSym := Intern(A58_MAIN_NAME);
+  If BinLbl[MainSym].Sect <> 1 Then
+    FatalError('point d''entree ' + A58_MAIN_NAME + ' introuvable');
+  Entry := BinLbl[MainSym].Off;
+
+  { tailles des sections }
+  StubOff := AlignUp(BinCodeLen, 4);
+  TextLen := StubOff + 8 * BinImportCount;
+  If TextLen = 0 Then TextLen := 4;
+  DataLen := BinDataLen;
+  If DataLen = 0 Then DataLen := 4;
+  K := BinImportCount;
+  DescOff := 0;
+  IltOff  := 40;
+  IatOff  := IltOff + 4 * (K + 1);
+  HintOff := IatOff + 4 * (K + 1);
+  P := HintOff;
+  For I := 0 To K - 1 Do
+  Begin
+    HintPos[I] := P;
+    P := P + AlignUp(2 + Length(ImpName[I]) + 1, 2);
+  End;
+  DllOff := P;
+  IdataLen := DllOff + Length('kernel32.dll') + 1;
+
+  TextRVA   := $1000;
+  DataRVA   := TextRVA + AlignUp(TextLen, PE_SEC_ALIGN);
+  IdataRVA  := DataRVA + AlignUp(DataLen, PE_SEC_ALIGN);
+  ImageSize := IdataRVA + AlignUp(IdataLen, PE_SEC_ALIGN);
+  TextRaw   := PE_HDR_SIZE;
+  TextRawSz := AlignUp(TextLen, PE_FILE_ALIGN);
+  DataRaw   := TextRaw + TextRawSz;
+  DataRawSz := AlignUp(DataLen, PE_FILE_ALIGN);
+  IdataRaw  := DataRaw + DataRawSz;
+  IdataRawSz := AlignUp(IdataLen, PE_FILE_ALIGN);
+  FileSize  := IdataRaw + IdataRawSz;
+  If FileSize > PE_MAX_FILE Then FatalError('executable trop grand');
+  FillChar(PeOut, FileSize, 0);
+
+  { contenu des sections }
+  For I := 0 To BinCodeLen - 1 Do PeOut[TextRaw + I] := BinCode[I];
+  For I := 0 To BinDataLen - 1 Do PeOut[DataRaw + I] := BinData[I];
+  { souches : JMP DWORD PTR [IAT + 4*i] }
+  For I := 0 To K - 1 Do
+  Begin
+    P := TextRaw + StubOff + 8 * I;
+    PeB(P, $FF);
+    PeB(P + 1, $25);
+    PeD(P + 2, TWide(PE_IMG_BASE) + IdataRVA + IatOff + 4 * I);
+    PeB(P + 6, $CC);
+    PeB(P + 7, $CC);
+  End;
+
+  { relocations : adresses absolues et appels vers les imports }
+  For I := 0 To BinFixCount - 1 Do
+  Begin
+    If BinFix[I].Sect = 0 Then
+      Where := TextRaw + BinFix[I].Off
+    Else
+      Where := DataRaw + BinFix[I].Off;
+    If BinFix[I].Kind = BF_ABS32 Then
+    Begin
+      Case BinLbl[BinFix[I].Sym].Sect Of
+        1 : Target := TWide(PE_IMG_BASE) + TextRVA +
+                      BinLbl[BinFix[I].Sym].Off;
+        2 : Target := TWide(PE_IMG_BASE) + DataRVA +
+                      BinLbl[BinFix[I].Sym].Off;
+      Else
+        FatalError('symbole non defini: ' + NameTab[BinFix[I].Sym]);
+      End;
+      PeD(Where, Target + PeGetD(Where));
+    End
+    Else
+    Begin
+      { appel d'un import : deplacement vers sa souche }
+      K := -1;
+      For P := 0 To BinImportCount - 1 Do
+        If BinImport[P] = BinFix[I].Sym Then K := P;
+      If K < 0 Then FatalError('import inconnu');
+      Target := TextRVA + StubOff + 8 * K;
+      PeD(Where, Target - (TextRVA + BinFix[I].Off + 4));
+    End;
+  End;
+
+  { table d'importation (kernel32.dll) }
+  K := BinImportCount;
+  P := IdataRaw;
+  If K > 0 Then
+  Begin
+    PeD(P + DescOff,      IdataRVA + IltOff);        { OriginalFirstThunk }
+    PeD(P + DescOff + 12, IdataRVA + DllOff);        { Name }
+    PeD(P + DescOff + 16, IdataRVA + IatOff);        { FirstThunk }
+    For I := 0 To K - 1 Do
+    Begin
+      PeD(P + IltOff + 4 * I, IdataRVA + HintPos[I]);
+      PeD(P + IatOff + 4 * I, IdataRVA + HintPos[I]);
+      PeW(P + HintPos[I], 0);
+      PeStr(P + HintPos[I] + 2, ImpName[I]);
+    End;
+    PeStr(P + DllOff, 'kernel32.dll');
+  End;
+
+  { en-tete DOS + souche }
+  PeW(0, $5A4D);
+  PeW(2, $0090);
+  PeW(4, 3);
+  PeW(8, 4);
+  PeW(12, $FFFF);
+  PeW(16, $00B8);
+  PeW(24, $0040);
+  PeD($3C, $80);
+  PeStr($40, #$0E#$1F#$BA#$0E#$00#$B4#$09#$CD#$21#$B8#$01#$4C#$CD#$21);
+  PeStr($4E, 'This program cannot be run in DOS mode.'#13#13#10'$');
+  { signature PE et en-tete COFF }
+  PeD($80, PE_SIGNATURE);
+  PeW($84, PE_MACHINE_I386);
+  PeW($86, 3);                                      { sections }
+  PeW($94, PE_OPT_SIZE);
+  PeW($96, PE_FILE_EXE Or PE_FILE_32BIT Or $0001 Or $0004 Or $0008);
+  { en-tete optionnel }
+  PeW($98, PE_MAGIC_32);
+  PeB($9A, 1);
+  PeD($9C, AlignUp(TextLen, PE_FILE_ALIGN));         { SizeOfCode }
+  PeD($A0, DataRawSz + IdataRawSz);                  { SizeOfInitializedData }
+  PeD($A8, TextRVA + Entry);                         { AddressOfEntryPoint }
+  PeD($AC, TextRVA);
+  PeD($B0, DataRVA);
+  PeD($B4, PE_IMG_BASE);
+  PeD($B8, PE_SEC_ALIGN);
+  PeD($BC, PE_FILE_ALIGN);
+  PeW($C0, 4);                                       { version du systeme }
+  PeW($C8, 4);                                       { sous-systeme }
+  PeD($D0, ImageSize);
+  PeD($D4, PE_HDR_SIZE);
+  PeW($DC, PE_SUBSYS_CUI);
+  PeD($E0, $100000);                                 { pile reservee }
+  PeD($E4, $1000);
+  PeD($E8, $100000);                                 { tas reserve }
+  PeD($EC, $1000);
+  PeD($F4, 16);                                      { repertoires }
+  PeD($F8 + 8, IdataRVA + DescOff);                  { import }
+  PeD($F8 + 12, 40);
+  PeD($F8 + 12 * 8, IdataRVA + IatOff);              { IAT }
+  PeD($F8 + 12 * 8 + 4, 4 * (BinImportCount + 1));
+  { table des sections }
+  PeSection($178,       '.text',  TextLen,  TextRVA,  TextRawSz,  TextRaw,
+            PE_SCN_TEXT);
+  PeSection($178 + 40,  '.data',  DataLen,  DataRVA,  DataRawSz,  DataRaw,
+            PE_SCN_DATA);
+  PeSection($178 + 80,  '.idata', IdataLen, IdataRVA, IdataRawSz, IdataRaw,
+            PE_SCN_DATA);
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  If IOResult <> 0 Then FatalError('impossible de creer ' + FileName);
+  BlockWrite(F, PeOut, FileSize, Written);
+  Close(F);
+  If Written <> FileSize Then
+    FatalError('erreur d''ecriture de ' + FileName);
+  If Opts.Verbose Then
+    WriteLn('  executable : ', FileName, ' (', FileSize, ' octets)');
+End;
+
 Procedure PhaseWrite;
 Begin
-  { A faire : TODO 20 et 21 }
+  If Opts.EmitExe Then WritePE(Opts.OutFile);
+  If Opts.EmitObj Then
+    FatalError('option -obj: ecrivain COFF non implemente (TODO 21)');
 End;
 
 { ============================================================
