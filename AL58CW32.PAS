@@ -23,9 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 11 implementes (squelette, options, constantes,
+  ETAT : TODO 01 a 12 implementes (squelette, options, constantes,
          lexeur, types, symboles, structure du programme, expressions,
-         booleens, affectations, tableaux) ; TODO 12 a 25 a faire.
+         booleens, affectations, tableaux, if et for) ; TODO 13 a 25
+         a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -225,7 +226,7 @@
               descripteur (TODO 18), allocation sur le tas des tableaux
               dynamiques (TODO 22), passage en parametre (TODO 14, 15)
 
-  TODO 12 - INSTRUCTIONS CONDITIONNELLES ET BOUCLES FOR [A FAIRE]
+  TODO 12 - INSTRUCTIONS CONDITIONNELLES ET BOUCLES FOR [IMPLEMENTE]
             if cond then stmt [else stmt], else lie au if le plus proche
             for v := e1 step e2 until e3 do stmt (pas positif ou negatif ;
               boucle vide si bornes inversees ; reevaluation des bornes
@@ -236,6 +237,17 @@
               for v := a, b step c until d, e while f do stmt
             Corps simple ou bloc begin...end
             Exemples : control.a58, test_forloop.a58, test_ifthenelse.a58
+            Realise : ParseStatement (bloc, if, for, affectation,
+              expression, instruction vide), ParseIf (else lie au if le
+              plus proche, then et else = instructions quelconques),
+              ParseFor avec liste de clauses (valeur, step-until, while),
+              variable de boucle simple numerique, init converti vers
+              son type, avertissements (pas nul, boucle jamais executee),
+              imbrication limitee a MAX_LOOP_NEST ; le corps des
+              procedures est maintenant analyse comme une instruction
+            Reste pour la generation de code (TODO 18) : sauts
+              conditionnels, mise en place des clauses (init, pas, test
+              de fin reevalues a chaque tour, corps partage)
 
   TODO 13 - GO TO, ETIQUETTES ET SWITCH [A FAIRE]
             Etiquettes symboliques (fin:) et numeriques (100:), avec
@@ -2220,6 +2232,9 @@ Var
   BlockCount : LongInt;      { blocs begin...end analyses           }
   ProcCount  : LongInt;      { procedures declarees                 }
   AssignCount: LongInt;      { affectations analysees               }
+  IfCount    : LongInt;      { instructions if                      }
+  ForCount   : LongInt;      { instructions for                     }
+  LoopDepth  : Integer;      { imbrication courante des for         }
   ParkValid  : Boolean;      { un token est range (ParserUnget)     }
   ParkTok    : TToken;
 
@@ -2295,6 +2310,12 @@ Begin
               AtKw('procedure') Or AtKw('switch');
 End;
 
+{ Fin d'une instruction simple : ';' end, else ou fin de fichier }
+Function AtStmtEnd : Boolean;
+Begin
+  AtStmtEnd := AtEOF Or AtPunct(';') Or AtKw('end') Or AtKw('else');
+End;
+
 Procedure ExpectPunct(C : Char);
 Begin
   If AtPunct(C) Then
@@ -2312,6 +2333,7 @@ Begin
 End;
 
 Procedure ParseItem; Forward;
+Procedure ParseStatement; Forward;
 
 { ---- Expressions (TODO 08) --------------------------------------
   Les expressions sont analysees en arbre (pool ExprTab) : le
@@ -3514,7 +3536,7 @@ Begin
   If (N >= 0) And (ExprTab[N].Kind = EX_INT) And AtPunct(':') Then
   Begin
     ParserAdvance;
-    ParseItem;
+    ParseStatement;
     Exit;
   End;
   If N < 0 Then
@@ -3524,7 +3546,7 @@ Begin
     WriteLn('Expression ligne ', ExprTab[N].Line, ' :');
     ExprDump(N, 0);
   End;
-  If Not (AtEOF Or AtPunct(';') Or AtKw('end')) Then
+  If Not AtStmtEnd Then
   Begin
     If N >= 0 Then ParseError('operateur ou '';'' attendu');
     ParserSync;
@@ -3539,12 +3561,21 @@ Procedure ParseBlock; Forward;
   et sa structure soient verifiees. L'expression isolee "42 ;" est
   donc lue puis ignoree. }
 Procedure SkipStatement;
+Var
+  Depth : Integer;
 Begin
-  While Not (AtEOF Or AtPunct(';') Or AtKw('end')) Do
+  Depth := 0;
+  While Not (AtEOF Or ((Depth = 0) And AtStmtEnd) Or AtPunct(';')) Do
     If AtKw('begin') Then
       ParseBlock
     Else
+    Begin
+      If AtPunct('(') Or AtPunct('[') Then
+        Inc(Depth)
+      Else If (AtPunct(')') Or AtPunct(']')) And (Depth > 0) Then
+        Dec(Depth);
       ParserAdvance;
+    End;
 End;
 
 { ---- Affectations (TODO 10, 11) ---------------------------------- }
@@ -3615,12 +3646,208 @@ Begin
       WriteLn('Affectation ligne ', ExprTab[N].Line, ' :');
       ExprDump(N, 0);
     End;
-    If Not (AtEOF Or AtPunct(';') Or AtKw('end')) Then
+    If Not AtStmtEnd Then
     Begin
       ParseError('operateur ou '';'' attendu');
       ParserSync;
     End;
   End;
+End;
+
+{ ---- Instructions de controle : if et for (TODO 12) -------------- }
+
+{ if condition then instruction [else instruction]
+  Le else se rattache au if le plus proche (appel recursif). Le code
+  de la condition et des branches est genere au TODO 18 : saut
+  conditionnel vers l'etiquette else / fin. }
+Procedure ParseIf;
+Var
+  C         : Integer;
+  Line      : Integer;
+Begin
+  Inc(IfCount);
+  Line := CurToken.Line;
+  ParserAdvance;                          { if }
+  ExprReset;
+  C := ParseCondition;
+  If Opts.DebugMode And (C >= 0) Then
+  Begin
+    WriteLn('If ligne ', Line, ' : condition');
+    ExprDump(C, 1);
+  End;
+  If AtKw('then') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError('''then'' attendu apres la condition');
+    ParserSync;
+    Exit;
+  End;
+  ParseStatement;
+  If AtKw('else') Then
+  Begin
+    If Opts.DebugMode Then WriteLn('Else (if ligne ', Line, ')');
+    ParserAdvance;
+    ParseStatement;
+  End;
+End;
+
+{ Un element de liste de for : valeur, step-until ou while.
+  VT = type de la variable de boucle. }
+Procedure ParseForClause(VT : Integer);
+Var
+  E1, E2, E3, C : Integer;
+  Conv          : TConv;
+  Line, Col     : Integer;
+  Empty         : Boolean;
+Begin
+  ExprReset;
+  Line := CurToken.Line;
+  Col  := CurToken.Col;
+  E1 := ParseExpr;
+  If E1 >= 0 Then
+    If Not ExprCoerce(E1, VT, Conv, Line, Col) Then E1 := -1;
+
+  If AtKw('step') Then
+  Begin
+    ParserAdvance;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    E2 := ParseExpr;
+    If (E2 >= 0) And (Not TypeIsArith(ExprTab[E2].Typ)) Then
+    Begin
+      ErrorAt(Line, Col, 'pas numerique attendu (type: ' +
+              TypeName(ExprTab[E2].Typ) + ')');
+      E2 := -1;
+    End;
+    If AtKw('until') Then
+      ParserAdvance
+    Else
+      ParseError('''until'' attendu apres step');
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    E3 := ParseExpr;
+    If (E3 >= 0) And (Not TypeIsArith(ExprTab[E3].Typ)) Then
+    Begin
+      ErrorAt(Line, Col, 'limite numerique attendue (type: ' +
+              TypeName(ExprTab[E3].Typ) + ')');
+      E3 := -1;
+    End;
+    If (E1 >= 0) And (E2 >= 0) And (E3 >= 0) Then
+    Begin
+      If Opts.DebugMode Then
+      Begin
+        WriteLn('  clause step-until :');
+        WriteLn('    init :');  ExprDump(E1, 3);
+        WriteLn('    step :');  ExprDump(E2, 3);
+        WriteLn('    until :'); ExprDump(E3, 3);
+      End;
+      If ExprIsConst(E2) And (ExprConstReal(E2) = 0) Then
+        WarnAt(Line, Col, 'pas nul: boucle infinie');
+      If ExprIsConst(E1) And ExprIsConst(E2) And ExprIsConst(E3) And
+         (ExprConstReal(E2) <> 0) Then
+      Begin
+        If ExprConstReal(E2) > 0 Then
+          Empty := ExprConstReal(E1) > ExprConstReal(E3)
+        Else
+          Empty := ExprConstReal(E1) < ExprConstReal(E3);
+        If Empty Then
+          WarnAt(Line, Col, 'boucle jamais executee (bornes inversees)');
+      End;
+    End;
+  End
+  Else If AtKw('while') Then
+  Begin
+    ParserAdvance;
+    C := ParseCondition;
+    If (E1 >= 0) And (C >= 0) And Opts.DebugMode Then
+    Begin
+      WriteLn('  clause while :');
+      WriteLn('    init :');  ExprDump(E1, 3);
+      WriteLn('    while :'); ExprDump(C, 3);
+    End;
+    If (C >= 0) And (ExprTab[C].Kind = EX_BOOL) And
+       (ExprTab[C].IntVal = 0) Then
+      WarnAt(Line, Col, 'condition toujours fausse: ' +
+             'boucle jamais executee');
+  End
+  Else If (E1 >= 0) And Opts.DebugMode Then
+  Begin
+    WriteLn('  clause valeur :');
+    ExprDump(E1, 2);
+  End;
+End;
+
+{ for v := e1, e2 step e3 until e4, e5 while c do instruction
+  Chaque element de la liste est une valeur, un step-until ou un
+  while ; ils sont executes dans l'ordre (le corps est partage). }
+Procedure ParseFor;
+Var
+  Tgt, VT   : Integer;
+  Line, Col : Integer;
+  Sym       : Integer;
+Begin
+  Inc(ForCount);
+  Line := CurToken.Line;
+  ParserAdvance;                          { for }
+  ExprReset;
+  Col := CurToken.Col;
+  Tgt := ParsePrimary;
+  VT  := TY_UNKNOWN;
+  If Tgt >= 0 Then
+  Begin
+    If ExprTab[Tgt].Kind <> EX_VAR Then
+    Begin
+      ErrorAt(Line, Col, 'variable de boucle simple attendue');
+      Tgt := -1;
+    End
+    Else
+    Begin
+      Sym := ExprTab[Tgt].Sym;
+      VT  := ExprTab[Tgt].Typ;
+      If Not TypeIsNumeric(VT) Then
+      Begin
+        ErrorAt(Line, Col, 'variable de boucle numerique attendue ' +
+                '(type: ' + TypeName(VT) + ')');
+        Tgt := -1;
+      End
+      Else If Opts.DebugMode Then
+        WriteLn('For ligne ', Line, ' : variable ', SymTab[Sym].Name,
+                ' (', TypeName(VT), ')');
+    End;
+  End;
+  If AtOp(':=') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError(''':='' attendu apres la variable de boucle');
+    ParserSync;
+    Exit;
+  End;
+  If Tgt < 0 Then VT := TY_UNKNOWN;
+
+  If LoopDepth >= MAX_LOOP_NEST Then
+    ErrorAt(Line, Col, 'boucles trop imbriquees (max ' +
+            ItoS(MAX_LOOP_NEST) + ')');
+  Inc(LoopDepth);
+  Repeat
+    ParseForClause(VT);
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+  If AtKw('do') Then
+    ParserAdvance
+  Else
+  Begin
+    ParseError('''do'' attendu apres la liste du for');
+    Dec(LoopDepth);
+    ParserSync;
+    Exit;
+  End;
+  ParseStatement;
+  Dec(LoopDepth);
 End;
 
 { ---- Declarations ----------------------------------------------- }
@@ -4024,7 +4251,7 @@ Begin
   End;
   SymLayoutParams(P);
 
-  SkipStatement;                 { corps : TODO 14 }
+  ParseStatement;                { corps de la procedure }
   SymLeaveScope;
 End;
 
@@ -4083,22 +4310,35 @@ End;
 
 { ---- Structure du programme ------------------------------------- }
 
-{ Element d un bloc : declaration, bloc imbrique, instruction ou
-  rien (instruction vide devant ';' ou 'end'). }
-Procedure ParseItem;
+{ Instruction : bloc, if, for, affectation, expression isolee ; rien
+  devant ';' 'end' ou 'else' (instruction vide). Les autres formes
+  (go to, etiquettes, appels, write...) sont sautees jusqu'aux
+  TODO 13, 14 et 16. }
+Procedure ParseStatement;
 Begin
-  If AtEOF Or AtPunct(';') Or AtKw('end') Then
+  If AtStmtEnd Then
     Exit
   Else If AtKw('begin') Then
     ParseBlock
-  Else If AtDeclKw Then
-    ParseDeclaration
+  Else If AtKw('if') Then
+    ParseIf
+  Else If AtKw('for') Then
+    ParseFor
   Else If AtExprStart Then
     ParseExprStatement
   Else If CurToken.Kind = TK_IDENT Then
     ParseIdentStatement
   Else
     SkipStatement;
+End;
+
+{ Element d un bloc : declaration ou instruction. }
+Procedure ParseItem;
+Begin
+  If AtDeclKw Then
+    ParseDeclaration
+  Else
+    ParseStatement;
 End;
 
 { begin item ; item ; ... end   (portee propre) }
@@ -4162,6 +4402,9 @@ Begin
   BlockCount := 0;
   ProcCount  := 0;
   AssignCount := 0;
+  IfCount    := 0;
+  ForCount   := 0;
+  LoopDepth  := 0;
   ParkValid  := False;
   LexQuiet   := True;            { erreurs lexicales deja signalees }
   LexInit;
@@ -4172,7 +4415,8 @@ Begin
   If Opts.Verbose Then
     WriteLn('  ', DeclCount, ' declaration(s), ', ProcCount,
             ' procedure(s), ', BlockCount, ' bloc(s), ', AssignCount,
-            ' affectation(s), ', FoldCount, ' constante(s) repliee(s)');
+            ' affectation(s), ', IfCount, ' if, ', ForCount, ' for, ',
+            FoldCount, ' constante(s) repliee(s)');
 End;
 
 { ============================================================
