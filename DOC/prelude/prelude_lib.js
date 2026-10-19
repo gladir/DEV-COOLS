@@ -298,7 +298,7 @@ function __init_arr() {
     return o;
   };
 }
-var __Reflect, __WeakRef, __FinalizationRegistry;
+var __Reflect, __WeakRef, __FinalizationRegistry, __frs;
 function __isIdx(k) { return typeof k === 'string' && k !== '' && String(k >>> 0) === k && (k >>> 0) !== 4294967295; }
 function __ownDesc(o, k) {
   var pi, fl, d, fr, n;
@@ -378,14 +378,36 @@ function __init_globals() {
   __WeakRef = class WeakRef {
     constructor(t) {
       if (t === null || (typeof t !== 'object' && typeof t !== 'function')) throw new TypeError('WeakRef: invalid target');
-      Object.defineProperty(this, '\x01t', { value: t, writable: true, enumerable: false });
+      var c = __wcell(t);
+      if (c === undefined) c = { v: t };
+      Object.defineProperty(this, '\x01c', { value: c, writable: true, enumerable: false });
     }
-    deref() { return this['\x01t']; }
+    deref() {
+      var c = this['\x01c'];
+      return typeof c === 'number' ? __wget(c) : c.v;
+    }
   };
   __FinalizationRegistry = class FinalizationRegistry {
-    constructor(cb) { if (typeof cb !== 'function') throw new TypeError('FinalizationRegistry: cleanup must be callable'); }
-    register() { }
-    unregister() { return false; }
+    constructor(cb) {
+      if (typeof cb !== 'function') throw new TypeError('FinalizationRegistry: cleanup must be callable');
+      Object.defineProperty(this, '\x01cb', { value: cb, enumerable: false });
+      Object.defineProperty(this, '\x01e', { value: [], enumerable: false });
+      __frs = __frs || [];
+      __frs.push(this);
+    }
+    register(target, held, token) {
+      if (target === null || (typeof target !== 'object' && typeof target !== 'function')) throw new TypeError('FinalizationRegistry.prototype.register: invalid target');
+      if (target === held) throw new TypeError('FinalizationRegistry.prototype.register: target and holdings must not be same');
+      var c = __wcell(target);
+      if (c !== undefined) this['\x01e'].push({ c: c, h: held, t: token });
+    }
+    unregister(token) {
+      var l = this['\x01e'], n = 0;
+      for (var i = l.length - 1; i >= 0; i--) {
+        if (token !== undefined && l[i].t === token) { l.splice(i, 1); n++; }
+      }
+      return n > 0;
+    }
   };
   __global = gt;
   gt.global = gt;
@@ -418,7 +440,7 @@ function __mkReflect() {
   R.getPrototypeOf = function (o) { return Object.getPrototypeOf(o); };
   R.has = function (o, k) { return k in o; };
   R.isExtensible = function (o) { return Object.isExtensible(o); };
-  R.ownKeys = function (o) { return Object.getOwnPropertyNames(o); };
+  R.ownKeys = function (o) { return Object.getOwnPropertyNames(o).concat(Object.getOwnPropertySymbols(o)); };
   R.preventExtensions = function (o) { Object.preventExtensions(o); return true; };
   R.set = function (o, k, v, r) {
     var pi = typeof o === 'object' && o !== null ? __propinfo(o, String(k)) : undefined;
@@ -511,6 +533,7 @@ function __init_lib() {
   }
   Object.is = __is;
   if (!Object.getOwnPropertyNames) Object.getOwnPropertyNames = Object.keys;
+  Object.getOwnPropertySymbols = function (o) { return __ownall(o).filter(function (k) { return typeof k === 'symbol' && k.indexOf('\x02') > 0; }); };
   String.raw = function (s, ...v) {
     var r = s.raw, out = '';
     for (var i = 0; i < r.length; i++) {
@@ -868,3 +891,17 @@ function __encodeURIComponent(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXY
 function __encodeURI(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#"); }
 function __decodeURIComponent(s) { return __uriDec(s, ''); }
 function __decodeURI(s) { return __uriDec(s, ';/?:@&=+$,#'); }
+
+function __fr_check() {
+  if (!__frs) return;
+  for (var r = 0; r < __frs.length; r++) {
+    let reg = __frs[r], l = reg['\x01e'];
+    for (let i = l.length - 1; i >= 0; i--) {
+      if (__wget(l[i].c) === undefined) {
+        let held = l[i].h;
+        l.splice(i, 1);
+        __job(function () { reg['\x01cb'](held); });
+      }
+    }
+  }
+}

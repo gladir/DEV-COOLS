@@ -325,7 +325,7 @@ Const
     'length', 'prototype', 'constructor', 'name', 'message', 'toString',
     'valueOf'
   );
-  RT_DATA_VAR_COUNT = 26;
+  RT_DATA_VAR_COUNT = 27;
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
@@ -340,7 +340,7 @@ Const
   JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
-    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree', 'newtarget', 'u16s', 'u16a', 'u16raw', 'gcs'
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree', 'newtarget', 'u16s', 'u16a', 'u16raw', 'gcs', 'weakhead'
   );
   PRELUDE_ALIAS_COUNT = 61;
   PreludeAliases: Array[1..PRELUDE_ALIAS_COUNT] Of String[20] = (
@@ -352,7 +352,7 @@ Const
     'AbortController', 'AbortSignal', 'DOMException', 'URL', 'URLSearchParams', 'btoa', 'atob', 'fetch',
     'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Buffer', 'TextDecoder', 'Atomics', 'Proxy', 'Intl'
   );
-  BUILTIN_COUNT = 92;
+  BUILTIN_COUNT = 97;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -365,7 +365,7 @@ Const
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
     '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32', 'Intl', '__fsrc',
-    '__co_await', '__co_yield', '__gen_kind', '__cellget', '__cellset'
+    '__co_await', '__co_yield', '__gen_kind', '__cellget', '__cellset', '__hset', '__hget', '__ownall', '__wcell', '__wget'
   );
 
 Type
@@ -1677,10 +1677,10 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 13793;
-  PRELUDE_BASE = 3105;
+  PRELUDE_LINES = 13855;
+  PRELUDE_BASE = 3167;
   PRELUDE_CHUNKS = 33;
-  PreludeChunkEnd: Array[1..33] Of LongInt = (3740, 5532, 5869, 6431, 6611, 8074, 8582, 9385, 10570, 10675, 10754, 10835, 11033, 11332, 11500, 11585, 11757, 11933, 12098, 12193, 12267, 12349, 12446, 12541, 12623, 12702, 12796, 12971, 13195, 13278, 13360, 13606, 13793);
+  PreludeChunkEnd: Array[1..33] Of LongInt = (3802, 5594, 5931, 6493, 6673, 8136, 8644, 9447, 10632, 10737, 10816, 10897, 11095, 11394, 11562, 11647, 11819, 11995, 12160, 12255, 12329, 12411, 12508, 12603, 12685, 12764, 12858, 13033, 13257, 13340, 13422, 13668, 13855);
   PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function|with (|with(', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
@@ -2103,7 +2103,7 @@ Const
     '  }',
     '}',
     'var __i_g;',
-    'var __fpts, __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
+    'var __wk_n, __fpts, __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
     'function __mk(k) {',
     '  var t = typeof k;',
     '  if (t === ''string'') return ''s'' + k;',
@@ -2349,43 +2349,67 @@ Const
     '  __Set.prototype[SI] = __Set.prototype.values;',
     '  __WeakMap = class WeakMap {',
     '    constructor(iterable) {',
-    '      this[''\x01i''] = {};',
+    '      __wk_n = (__wk_n || 0) + 1;',
+    '      Object.defineProperty(this, ''\x01id'', { value: ''\x01w'' + __wk_n, enumerable: false });',
     '      if (iterable !== undefined && iterable !== null) {',
     '        for (const e of iterable) this.set(e[0], e[1]);',
     '      }',
     '    }',
-    '    get(k) { var e = this[''\x01i''][__mk(k)]; return e === undefined ? undefined : e[0]; }',
-    '    has(k) { return this[''\x01i''][__mk(k)] !== undefined; }',
+    '    get(k) {',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) return undefined;',
+    '      var v = __hget(k, this[''\x01id''], __TOMB);',
+    '      if (v !== __TOMB) return v;',
+    '      var f = this[''\x01f''];',
+    '      return f === undefined ? undefined : f.get(k);',
+    '    }',
+    '    has(k) {',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) return false;',
+    '      if (__hget(k, this[''\x01id''], __TOMB) !== __TOMB) return true;',
+    '      var f = this[''\x01f''];',
+    '      return f !== undefined && f.has(k);',
+    '    }',
     '    set(k, v) {',
     '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) throw new TypeError(''Invalid value used as weak map key'');',
-    '      this[''\x01i''][__mk(k)] = [v];',
+    '      if (!__hset(k, this[''\x01id''], v)) {',
+    '        if (this[''\x01f''] === undefined) Object.defineProperty(this, ''\x01f'', { value: new __Map(), enumerable: false });',
+    '        this[''\x01f''].set(k, v);',
+    '      }',
     '      return this;',
     '    }',
     '    delete(k) {',
-    '      var m = __mk(k);',
-    '      if (this[''\x01i''][m] === undefined) return false;',
-    '      delete this[''\x01i''][m];',
-    '      return true;',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) return false;',
+    '      if (__hget(k, this[''\x01id''], __TOMB) !== __TOMB) { __hset(k, this[''\x01id''], __TOMB); return true; }',
+    '      var f = this[''\x01f''];',
+    '      return f !== undefined && f.delete(k);',
     '    }',
     '  };',
     '  __WeakSet = class WeakSet {',
     '    constructor(iterable) {',
-    '      this[''\x01i''] = {};',
+    '      __wk_n = (__wk_n || 0) + 1;',
+    '      Object.defineProperty(this, ''\x01id'', { value: ''\x01w'' + __wk_n, enumerable: false });',
     '      if (iterable !== undefined && iterable !== null) {',
     '        for (const e of iterable) this.add(e);',
     '      }',
     '    }',
-    '    has(k) { return this[''\x01i''][__mk(k)] !== undefined; }',
+    '    has(k) {',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) return false;',
+    '      if (__hget(k, this[''\x01id''], __TOMB) !== __TOMB) return true;',
+    '      var f = this[''\x01f''];',
+    '      return f !== undefined && f.has(k);',
+    '    }',
     '    add(k) {',
     '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) throw new TypeError(''Invalid value used in weak set'');',
-    '      this[''\x01i''][__mk(k)] = true;',
+    '      if (!__hset(k, this[''\x01id''], true)) {',
+    '        if (this[''\x01f''] === undefined) Object.defineProperty(this, ''\x01f'', { value: new __Set(), enumerable: false });',
+    '        this[''\x01f''].add(k);',
+    '      }',
     '      return this;',
     '    }',
     '    delete(k) {',
-    '      var m = __mk(k);',
-    '      if (this[''\x01i''][m] === undefined) return false;',
-    '      delete this[''\x01i''][m];',
-    '      return true;',
+    '      if (typeof k !== ''object'' && typeof k !== ''function'' || k === null) return false;',
+    '      if (__hget(k, this[''\x01id''], __TOMB) !== __TOMB) { __hset(k, this[''\x01id''], __TOMB); return true; }',
+    '      var f = this[''\x01f''];',
+    '      return f !== undefined && f.delete(k);',
     '    }',
     '  };',
     '  __init_web();',
@@ -2403,6 +2427,7 @@ Const
     '  __mq.push(fn);',
     '}',
     'function __drain() {',
+    '  if (__frs) __fr_check();',
     '  __mq = __mq || [];',
     '  __ticks = __ticks || [];',
     '  var again = true;',
@@ -3104,7 +3129,7 @@ Const
     '    return o;',
     '  };',
     '}',
-    'var __Reflect, __WeakRef, __FinalizationRegistry;',
+    'var __Reflect, __WeakRef, __FinalizationRegistry, __frs;',
     'function __isIdx(k) { return typeof k === ''string'' && k !== '''' && String(k >>> 0) === k && (k >>> 0) !== 4294967295; }',
     'function __ownDesc(o, k) {',
     '  var pi, fl, d, fr, n;',
@@ -3184,14 +3209,36 @@ Const
     '  __WeakRef = class WeakRef {',
     '    constructor(t) {',
     '      if (t === null || (typeof t !== ''object'' && typeof t !== ''function'')) throw new TypeError(''WeakRef: invalid target'');',
-    '      Object.defineProperty(this, ''\x01t'', { value: t, writable: true, enumerable: false });',
+    '      var c = __wcell(t);',
+    '      if (c === undefined) c = { v: t };',
+    '      Object.defineProperty(this, ''\x01c'', { value: c, writable: true, enumerable: false });',
     '    }',
-    '    deref() { return this[''\x01t'']; }',
+    '    deref() {',
+    '      var c = this[''\x01c''];',
+    '      return typeof c === ''number'' ? __wget(c) : c.v;',
+    '    }',
     '  };',
     '  __FinalizationRegistry = class FinalizationRegistry {',
-    '    constructor(cb) { if (typeof cb !== ''function'') throw new TypeError(''FinalizationRegistry: cleanup must be callable''); }',
-    '    register() { }',
-    '    unregister() { return false; }',
+    '    constructor(cb) {',
+    '      if (typeof cb !== ''function'') throw new TypeError(''FinalizationRegistry: cleanup must be callable'');',
+    '      Object.defineProperty(this, ''\x01cb'', { value: cb, enumerable: false });',
+    '      Object.defineProperty(this, ''\x01e'', { value: [], enumerable: false });',
+    '      __frs = __frs || [];',
+    '      __frs.push(this);',
+    '    }',
+    '    register(target, held, token) {',
+    '      if (target === null || (typeof target !== ''object'' && typeof target !== ''function'')) throw new TypeError(''FinalizationRegistry.prototype.register: invalid target'');',
+    '      if (target === held) throw new TypeError(''FinalizationRegistry.prototype.register: target and holdings must not be same'');',
+    '      var c = __wcell(target);',
+    '      if (c !== undefined) this[''\x01e''].push({ c: c, h: held, t: token });',
+    '    }',
+    '    unregister(token) {',
+    '      var l = this[''\x01e''], n = 0;',
+    '      for (var i = l.length - 1; i >= 0; i--) {',
+    '        if (token !== undefined && l[i].t === token) { l.splice(i, 1); n++; }',
+    '      }',
+    '      return n > 0;',
+    '    }',
     '  };',
     '  __global = gt;',
     '  gt.global = gt;',
@@ -3224,7 +3271,7 @@ Const
     '  R.getPrototypeOf = function (o) { return Object.getPrototypeOf(o); };',
     '  R.has = function (o, k) { return k in o; };',
     '  R.isExtensible = function (o) { return Object.isExtensible(o); };',
-    '  R.ownKeys = function (o) { return Object.getOwnPropertyNames(o); };',
+    '  R.ownKeys = function (o) { return Object.getOwnPropertyNames(o).concat(Object.getOwnPropertySymbols(o)); };',
     '  R.preventExtensions = function (o) { Object.preventExtensions(o); return true; };',
     '  R.set = function (o, k, v, r) {',
     '    var pi = typeof o === ''object'' && o !== null ? __propinfo(o, String(k)) : undefined;',
@@ -3317,6 +3364,7 @@ Const
     '  }',
     '  Object.is = __is;',
     '  if (!Object.getOwnPropertyNames) Object.getOwnPropertyNames = Object.keys;',
+    '  Object.getOwnPropertySymbols = function (o) { return __ownall(o).filter(function (k) { return typeof k === ''symbol'' && k.indexOf(''\x02'') > 0; }); };',
     '  String.raw = function (s, ...v) {',
     '    var r = s.raw, out = '''';',
     '    for (var i = 0; i < r.length; i++) {',
@@ -3674,6 +3722,20 @@ Const
     'function __encodeURI(s) { return __uriEnc(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*''();/?:@&=+$,#"); }',
     'function __decodeURIComponent(s) { return __uriDec(s, ''''); }',
     'function __decodeURI(s) { return __uriDec(s, '';/?:@&=+$,#''); }',
+    '',
+    'function __fr_check() {',
+    '  if (!__frs) return;',
+    '  for (var r = 0; r < __frs.length; r++) {',
+    '    let reg = __frs[r], l = reg[''\x01e''];',
+    '    for (let i = l.length - 1; i >= 0; i--) {',
+    '      if (__wget(l[i].c) === undefined) {',
+    '        let held = l[i].h;',
+    '        l.splice(i, 1);',
+    '        __job(function () { reg[''\x01cb''](held); });',
+    '      }',
+    '    }',
+    '  }',
+    '}',
     'var __bigproto, __bigop, __BigInt, __btruthy, __bseq;',
     'function __bmk(sign, m) {',
     '  var o = Object.create(__bigproto);',
@@ -29560,6 +29622,121 @@ Begin
   A('pop ebp');
   A('ret');
   A('endp');
+  { _JSRT_gc_ismarked(pointeur) : 0 si l'objet du tas est alloue et non marque, sinon 1 }
+  A('proc _JSRT_gc_ismarked');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, eax');
+  A('shr ecx, 16');
+  A('shl ecx, 2');
+  A('mov edx, dword ptr [_JSRT_v_gcs]');
+  A('add ecx, dword ptr [edx]');
+  A('mov edx, dword ptr [ecx]');
+  A('test edx, edx');
+  A('jz .yes');
+  A('cmp edx, 2');
+  A('ja .big');
+  A('mov ecx, eax');
+  A('cmp edx, 1');
+  A('jne .jp');
+  A('and ecx, -16384');
+  A('jmp .pg');
+  A('.jp:');
+  A('and ecx, -65536');
+  A('.pg:');
+  A('mov edx, dword ptr [ecx]');
+  A('test edx, edx');
+  A('jz .yes');
+  A('mov edx, eax');
+  A('sub edx, ecx');
+  A('sub edx, 320');
+  A('js .yes');
+  A('push ecx');
+  A('mov eax, edx');
+  A('xor edx, edx');
+  A('div dword ptr [ecx+4]');
+  A('pop ecx');
+  A('cmp eax, dword ptr [ecx+8]');
+  A('jae .yes');
+  A('mov edx, eax');
+  A('shr edx, 3');
+  A('add edx, ecx');
+  A('and eax, 7');
+  A('mov ecx, eax');
+  A('mov eax, 1');
+  A('shl eax, cl');
+  A('movzx ebx, byte ptr [edx+32]');
+  A('and ebx, eax');
+  A('jz .no');
+  A('movzx ebx, byte ptr [edx+160]');
+  A('and ebx, eax');
+  A('jnz .yes');
+  A('.no:');
+  A('xor eax, eax');
+  A('jmp .out');
+  A('.big:');
+  A('mov ecx, eax');
+  A('sub ecx, edx');
+  A('sub ecx, 16');
+  A('js .yes');
+  A('cmp ecx, dword ptr [edx+12]');
+  A('jae .yes');
+  A('mov ecx, dword ptr [edx+8]');
+  A('test ecx, 1');
+  A('jz .no');
+  A('test ecx, 2');
+  A('jz .no');
+  A('.yes:');
+  A('mov eax, 1');
+  A('.out:');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+  { _JSRT_gc_weak : apres le marquage, vide les cellules faibles dont la cible est morte et
+    detache celles qui ne sont plus atteintes. Cellule : -cible, tag, -suivante }
+  A('proc _JSRT_gc_weak');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov edi, offset _JSRT_v_weakhead');
+  A('.l:');
+  A('mov eax, dword ptr [edi]');
+  A('neg eax');
+  A('jz .out');
+  A('mov ebx, eax');
+  A('push ebx');
+  A('call _JSRT_gc_ismarked');
+  A('add esp, 4');
+  A('test eax, eax');
+  A('jnz .alive');
+  A('mov eax, dword ptr [ebx+8]');
+  A('mov dword ptr [edi], eax');
+  A('jmp .l');
+  A('.alive:');
+  A('mov eax, dword ptr [ebx]');
+  A('neg eax');
+  A('jz .adv');
+  A('push eax');
+  A('call _JSRT_gc_ismarked');
+  A('add esp, 4');
+  A('test eax, eax');
+  A('jnz .adv');
+  A('mov dword ptr [ebx], 0');
+  A('.adv:');
+  A('lea edi, [ebx+8]');
+  A('jmp .l');
+  A('.out:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
   A('proc _JSRT_gc_release');
   A('push ebp');
   A('mov ebp, esp');
@@ -29660,6 +29837,7 @@ Begin
   A('call _JSRT_gc_markrange');
   A('add esp, 8');
   A('call _JSRT_gc_drain');
+  A('call _JSRT_gc_weak');
   A('lea edi, [esi+96]');
   A('mov ecx, 58');
   A('.rz:');
@@ -36532,8 +36710,14 @@ Begin
   A('test dword ptr [ebx+4], 1');
   A('jz .vis');
   A('cmp dword ptr [ebp+16], 3');
-  A('jne .pn');
+  A('jb .pn');
   A('.vis:');
+  A('cmp dword ptr [ebp+16], 3');
+  A('jne .emit');
+  A('mov eax, dword ptr [ebx]');
+  A('cmp byte ptr [eax+$STR_DATA], 1');
+  A('je .pn');
+  A('.emit:');
   EmitOwnEntry(0);
   A('.pn:');
   A('inc edi');
@@ -36720,6 +36904,7 @@ Begin
   ObjOwnNative('_JSRT_Object_values', 1);
   ObjOwnNative('_JSRT_Object_entries', 2);
   ObjOwnNative('_JSRT_Object_getOwnPropertyNames', 3);
+  ObjOwnNative('_JSRT_Object_ownall', 4);
 
   { Object.assign(cible, ...sources) }
   FBegin('_JSRT_Object_assign', 3);
@@ -47029,6 +47214,11 @@ Begin
   RtGlobal('__gen_done', RtFuncObj('__gen_done', '_JSRT_n_gen_done', 1), RT_T_FUNCTION);
   RtGlobal('__cellget', RtFuncObj('__cellget', '_JSRT_n_cellget', 1), RT_T_FUNCTION);
   RtGlobal('__cellset', RtFuncObj('__cellset', '_JSRT_n_cellset', 2), RT_T_FUNCTION);
+  RtGlobal('__hset', RtFuncObj('__hset', '_JSRT_n_hset', 3), RT_T_FUNCTION);
+  RtGlobal('__hget', RtFuncObj('__hget', '_JSRT_n_hget', 3), RT_T_FUNCTION);
+  RtGlobal('__ownall', RtFuncObj('__ownall', '_JSRT_Object_ownall', 1), RT_T_FUNCTION);
+  RtGlobal('__wcell', RtFuncObj('__wcell', '_JSRT_n_wcell', 1), RT_T_FUNCTION);
+  RtGlobal('__wget', RtFuncObj('__wget', '_JSRT_n_wget', 1), RT_T_FUNCTION);
   RtGlobal('__gen_kind', RtFuncObj('__gen_kind', '_JSRT_n_gen_kind', 1), RT_T_FUNCTION);
   RtGlobal('__co_await', RtFuncObj('__co_await', '_JSRT_n_co_await', 1), RT_T_FUNCTION);
   RtGlobal('__co_yield', RtFuncObj('__co_yield', '_JSRT_n_co_yield', 1), RT_T_FUNCTION);
@@ -48005,6 +48195,124 @@ Begin
   A('.bad:');
   A('push offset _JSRT_c_type');
   A('call _JSRT_fatal');
+  FEnd;
+
+  { __wcell(cible) : cellule faible (entier = adresse de la cellule) ; __wget(cellule) :
+    la cible, ou undefined si elle a ete collectee }
+  FBegin('_JSRT_n_wcell', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ret');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('cmp ecx, $OBJ');
+  A('je .ok');
+  A('cmp ecx, $FN');
+  A('je .ok');
+  A('cmp ecx, $ARR');
+  A('jne .ret');
+  A('.ok:');
+  A('push 16');
+  A('call _JSRT_alloc_atomic');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('neg eax');
+  A('mov dword ptr [ebx], eax');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('mov dword ptr [ebx+4], eax');
+  A('mov eax, dword ptr [_JSRT_v_weakhead]');
+  A('mov dword ptr [ebx+8], eax');
+  A('mov eax, ebx');
+  A('neg eax');
+  A('mov dword ptr [_JSRT_v_weakhead], eax');
+  A('mov eax, ebx');
+  A('mov edx, $INT');
+  FEnd;
+
+  FBegin('_JSRT_n_wget', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ret');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov eax, dword ptr [ecx]');
+  A('neg eax');
+  A('jz .gone');
+  A('mov edx, dword ptr [ecx+4]');
+  A('jmp .ret');
+  A('.gone:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { __hset(objet, cle, valeur) : propriete cachee posee directement sur un objet (WeakMap) ;
+    rend false si l'objet n'est pas un objet ordinaire. __hget(objet, cle, defaut) la relit. }
+  FBegin('_JSRT_n_hset', 0);
+  A('xor eax, eax');
+  A('mov edx, $BOOL');
+  A('cmp dword ptr [ebp+12], 3');
+  A('jb .ret');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .ret');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + '], $STR');
+  A('jne .ret');
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('test byte ptr [esi+2], 128');
+  A('jnz .ret');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .add');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('mov dword ptr [eax+8], ecx');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('mov dword ptr [eax+12], ecx');
+  A('jmp .ok');
+  A('.add:');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('push 1');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push esi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('.ok:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  FEnd;
+
+  FBegin('_JSRT_n_hget', 0);
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('cmp dword ptr [ebp+12], 3');
+  A('jb .dflt');
+  A('jmp .go');
+  A('.dflt:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('jmp .ret');
+  A('.go:');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $OBJ');
+  A('jne .ret');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + '], $STR');
+  A('jne .ret');
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('test byte ptr [esi+2], 128');
+  A('jnz .ret');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
+  A('test ecx, ecx');
+  A('jz .ret');
+  A('mov eax, dword ptr [ecx+8]');
+  A('mov edx, dword ptr [ecx+12]');
   FEnd;
 
   { __cellget(adresse) et __cellset(adresse, valeur) : cellules des variables locales (eval direct) }

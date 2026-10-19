@@ -4,6 +4,7 @@ function __job(fn) {
   __mq.push(fn);
 }
 function __drain() {
+  if (__frs) __fr_check();
   __mq = __mq || [];
   __ticks = __ticks || [];
   var again = true;

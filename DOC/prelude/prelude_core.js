@@ -1,4 +1,4 @@
-var __fpts, __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
+var __wk_n, __fpts, __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
 function __mk(k) {
   var t = typeof k;
   if (t === 'string') return 's' + k;
@@ -244,43 +244,67 @@ function __i_init() {
   __Set.prototype[SI] = __Set.prototype.values;
   __WeakMap = class WeakMap {
     constructor(iterable) {
-      this['\x01i'] = {};
+      __wk_n = (__wk_n || 0) + 1;
+      Object.defineProperty(this, '\x01id', { value: '\x01w' + __wk_n, enumerable: false });
       if (iterable !== undefined && iterable !== null) {
         for (const e of iterable) this.set(e[0], e[1]);
       }
     }
-    get(k) { var e = this['\x01i'][__mk(k)]; return e === undefined ? undefined : e[0]; }
-    has(k) { return this['\x01i'][__mk(k)] !== undefined; }
+    get(k) {
+      if (typeof k !== 'object' && typeof k !== 'function' || k === null) return undefined;
+      var v = __hget(k, this['\x01id'], __TOMB);
+      if (v !== __TOMB) return v;
+      var f = this['\x01f'];
+      return f === undefined ? undefined : f.get(k);
+    }
+    has(k) {
+      if (typeof k !== 'object' && typeof k !== 'function' || k === null) return false;
+      if (__hget(k, this['\x01id'], __TOMB) !== __TOMB) return true;
+      var f = this['\x01f'];
+      return f !== undefined && f.has(k);
+    }
     set(k, v) {
       if (typeof k !== 'object' && typeof k !== 'function' || k === null) throw new TypeError('Invalid value used as weak map key');
-      this['\x01i'][__mk(k)] = [v];
+      if (!__hset(k, this['\x01id'], v)) {
+        if (this['\x01f'] === undefined) Object.defineProperty(this, '\x01f', { value: new __Map(), enumerable: false });
+        this['\x01f'].set(k, v);
+      }
       return this;
     }
     delete(k) {
-      var m = __mk(k);
-      if (this['\x01i'][m] === undefined) return false;
-      delete this['\x01i'][m];
-      return true;
+      if (typeof k !== 'object' && typeof k !== 'function' || k === null) return false;
+      if (__hget(k, this['\x01id'], __TOMB) !== __TOMB) { __hset(k, this['\x01id'], __TOMB); return true; }
+      var f = this['\x01f'];
+      return f !== undefined && f.delete(k);
     }
   };
   __WeakSet = class WeakSet {
     constructor(iterable) {
-      this['\x01i'] = {};
+      __wk_n = (__wk_n || 0) + 1;
+      Object.defineProperty(this, '\x01id', { value: '\x01w' + __wk_n, enumerable: false });
       if (iterable !== undefined && iterable !== null) {
         for (const e of iterable) this.add(e);
       }
     }
-    has(k) { return this['\x01i'][__mk(k)] !== undefined; }
+    has(k) {
+      if (typeof k !== 'object' && typeof k !== 'function' || k === null) return false;
+      if (__hget(k, this['\x01id'], __TOMB) !== __TOMB) return true;
+      var f = this['\x01f'];
+      return f !== undefined && f.has(k);
+    }
     add(k) {
       if (typeof k !== 'object' && typeof k !== 'function' || k === null) throw new TypeError('Invalid value used in weak set');
-      this['\x01i'][__mk(k)] = true;
+      if (!__hset(k, this['\x01id'], true)) {
+        if (this['\x01f'] === undefined) Object.defineProperty(this, '\x01f', { value: new __Set(), enumerable: false });
+        this['\x01f'].add(k);
+      }
       return this;
     }
     delete(k) {
-      var m = __mk(k);
-      if (this['\x01i'][m] === undefined) return false;
-      delete this['\x01i'][m];
-      return true;
+      if (typeof k !== 'object' && typeof k !== 'function' || k === null) return false;
+      if (__hget(k, this['\x01id'], __TOMB) !== __TOMB) { __hset(k, this['\x01id'], __TOMB); return true; }
+      var f = this['\x01f'];
+      return f !== undefined && f.delete(k);
     }
   };
   __init_web();
