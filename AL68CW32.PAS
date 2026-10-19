@@ -28,10 +28,16 @@
     TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 07 implementes (squelette en sections, pipeline en 7
+  CONTRAINTE : AL68CW32.PAS n'a aucune dependance externe : aucune clause
+    Uses (pas meme Math ni SysUtils), aucune inclusion de fichier par une
+    directive d'inclusion ; tout le code est dans ce seul fichier. La
+    directive de compilation I- ne fait qu'arreter la verification des
+    erreurs d'entree/sortie.
+
+  ETAT : TODO 01 a 08 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
-         clauses) ; TODO 08 a 25 a faire.
+         clauses, declarations) ; TODO 09 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -87,6 +93,7 @@
               pour les indices de tables et les tailles
             Attention : ne jamais ecrire de fermeture de commentaire
               Pascal dans un commentaire (parenthese-etoile, accolade)
+            Aucune dependance externe : ni Uses, ni inclusion de fichier
             Realise : directives {$MODE TP}, {$H-}, {$I-} ; 16 sections
               numerotees (constantes, types, variables, utilitaires,
               options, lexeur, modes, symboles et portees, arbre
@@ -373,7 +380,7 @@
               GOTO sans etiquette ; un programme avec GOTO et etiquettes
               imbriquees s'assemble avec ML et s'execute (code 0)
 
-  TODO 08 - DECLARATIONS : IDENTITE, VARIABLE, MODE ET PRIO [A FAIRE]
+  TODO 08 - DECLARATIONS : IDENTITE, VARIABLE, MODE ET PRIO [IMPLEMENTE]
             Declaration d'identite : INT x = 42 ; BOOL flag = TRUE ;
               CHAR c = "A" ; STRING msg = "Hello" ; listes
               INT a = 1, b = 2, c2 = 3 ; identite constante (pas
@@ -389,6 +396,35 @@
             Initialiseur converti vers le mode declare par coercition
               (TODO 09)
             Verification : test_decl.a68, test_dataseg.a68, hello.a68
+            Realise : ParseDeclarer (INT, REAL, BOOL, CHAR, STRING, BITS,
+              VOID, REF, STRUCT avec noms de champs groupes, UNION, PROC,
+              [l:u, ...] avec bornes, [] et [,] sans bornes, FLEX, noms de
+              modes) ; ParseObjectDecl (LOC ou HEAP, listes separees par
+              des virgules, = pour une identite, := ou rien pour une
+              variable de mode REF m) ; ParseModeDecl (alias direct pour
+              un mode simple, mode nomme pour STRUCT et UNION, ce qui
+              permet les modes recursifs ; recursion sans REF signalee) ;
+              ParsePrioDecl (priorite de 1 a 9) ; denotations en noeuds
+              UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN ;
+              les autres initialiseurs et bornes sont enveloppes
+              provisoirement (ParseOpaqueUntil) ; DenotationFits
+              (INT vers REAL ou BITS, CHAR vers STRING, denotation vers
+              l'une des alternatives d'une UNION) ; DeclareStorage (cellule
+              du segment de donnees ou place dans le cadre) ; PROC et OP
+              restent enveloppes (TODOs 16 et 17) ; GenDecl et
+              GenStoreDenotation : INT, BOOL, CHAR, BITS par MOV, REAL par
+              x87, STRING par descripteur (adresse, 1, longueur, 1), UNION
+              par etiquette de mode puis valeur
+            Verifie : les 27 exemples sont analyses sans erreur ; les
+              modes POINT, VEC3, rect, myint, NOMBRE, WRAPPED et POLYVAL
+              sont crees avec les bonnes tailles ; test_decl s'assemble
+              avec ML et x, y et c2 valent 42, 10 et 3 a l'execution ;
+              erreurs : doublon, mode inconnu, mode recursif sans REF,
+              initialisation incompatible, priorite hors limites, champ
+              en double, VOID dans une union, identite de tableau avec
+              bornes, nom attendu ; STRUCT(INT a, b, REAL c), UNION(INT,
+              REAL) := 3, [1:3, 1:4] REAL, FLEX [] CHAR et PROC (INT) INT
+              sont acceptes
 
   TODO 09 - COERCITIONS [A FAIRE]
             Forces de contexte : forte, ferme, meek, faible, douce
@@ -690,9 +726,6 @@ Program AL68CW32;
 {$ENDIF}
 {$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
-{$IFDEF FPC}
-Uses Math;
-{$ENDIF}
 
 { ============================================================
   SECTION 1 - CONSTANTES, LIMITES ET NOMMAGE (TODO 01, 02)
@@ -791,6 +824,12 @@ Type
   TString = String[255];
 
   TName = String[MAX_NAME];
+
+  TDoubleBits = Record
+    Case Boolean Of
+      False : (D : Double);
+      True  : (Lo, Hi : LongInt);
+  End;
 
   { Tokens du lexeur (TODO 03) : les mots en majuscules sont soit des
     mots reserves de la syntaxe (TK_KEYWORD), soit d autres mots en
@@ -914,7 +953,17 @@ Type
     UK_LABELDEF,   { definition d une etiquette : Sym                 }
     UK_GOTO,       { saut : Name, Scope, Sym apres resolution         }
     UK_SKIP,       { SKIP                                              }
-    UK_DECL,       { declaration pas encore analysee (TODO 08)        }
+    UK_INTDEN,     { denotation entiere : IntVal                       }
+    UK_REALDEN,    { denotation reelle : RealVal                       }
+    UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
+    UK_CHARDEN,    { denotation de caractere : IntVal = code           }
+    UK_STRDEN,     { denotation de chaine : IntVal = indice LitTab     }
+    UK_VARDECL,    { variable : Sym, Mode = mode de l objet, A =
+                     initialiseur, B = bornes, C = dimensions          }
+    UK_IDDECL,     { identite : Sym, Mode, A = initialiseur            }
+    UK_MODEDECL,   { MODE : Sym                                        }
+    UK_PRIODECL,   { PRIO : Sym, IntVal = priorite                     }
+    UK_DECL,       { declaration pas encore analysee (TODOs 16, 17)   }
     UK_OPAQUE      { unite pas encore analysee (TODOs 10 a 19)        }
   );
 
@@ -930,6 +979,7 @@ Type
     Scope   : Integer;     { portee de la clause ou du saut         }
     Name    : TName;
     IntVal  : LongInt;
+    RealVal : Double;
   End;
 
   { Options de la ligne de commande (TODO 02) }
@@ -990,14 +1040,13 @@ Begin
   ItoSZ := S;
 End;
 
-{ Vrai si un reel est infini ou invalide (debordement) }
+{ Vrai si un reel est infini ou invalide (exposant tout a 1) }
 Function RealBad(D : Double) : Boolean;
+Var
+  B : TDoubleBits;
 Begin
-  {$IFDEF FPC}
-  RealBad := IsNaN(D) Or IsInfinite(D);
-  {$ELSE}
-  RealBad := False;
-  {$ENDIF}
+  B.D := D;
+  RealBad := (B.Hi And $7FF00000) = $7FF00000;
 End;
 
 Function UpCaseStr(Const S : TString) : TString;
@@ -2083,6 +2132,7 @@ Var
   ModeTmpM  : Array[0..MAX_FIELD - 1] Of Integer;
   ModeTmpS  : Array[0..MAX_FIELD - 1] Of TName;
   ModeBadRec: Boolean;   { une taille a rencontre un mode recursif }
+  PreludeModes : Integer; { modes crees avant le programme (prelude)  }
 
 Function ModeNewRaw(K : TModeKind) : Integer;
 Begin
@@ -2647,15 +2697,20 @@ Begin
 End;
 
 { Mode debug -d : liste des modes }
-Procedure ModeDump;
+Procedure ModeDump(From : Integer);
 Var
   I : Integer;
 Begin
-  WriteLn('Modes (', ModeCount, ') :');
-  For I := 0 To ModeCount - 1 Do
+  WriteLn('Modes (', ModeCount - From, ') :');
+  For I := From To ModeCount - 1 Do
   Begin
     Write(I:4, '  ', ModeName(I));
-    If ModeTab[I].Kind <> MK_FWD Then
+    If ModeTab[I].Kind = MK_FWD Then
+    Begin
+      If ModeTab[I].Sub <> 0 Then
+        Write(' = ', ModeName(ModeTab[I].Sub));
+    End
+    Else
       Write('  ', ModeSize(I), ' octets');
     WriteLn;
   End;
@@ -3302,11 +3357,6 @@ Type
     First, Count : Integer;
   End;
 
-  TDoubleBits = Record
-    Case Boolean Of
-      False : (D : Double);
-      True  : (Lo, Hi : LongInt);
-  End;
 
 Var
   CodeTab    : Array[0..MAX_CODE - 1] Of TInstr;
@@ -3981,6 +4031,7 @@ Var
   ClauseCount: LongInt;       { clauses fermees analysees              }
   LabelCount : LongInt;       { etiquettes definies                    }
   OpaqueCount: LongInt;       { unites et declarations non analysees   }
+  DeclCount  : LongInt;       { declarations analysees                 }
 
 Function UnitNew(K : TUnitKind; Line, Col : Integer) : LongInt;
 Begin
@@ -3999,6 +4050,7 @@ Begin
   UnitTab[UnitCount].Scope := ScopeCur;
   UnitTab[UnitCount].Name  := '';
   UnitTab[UnitCount].IntVal := 0;
+  UnitTab[UnitCount].RealVal := 0;
   UnitNew := UnitCount;
   Inc(UnitCount);
 End;
@@ -4025,6 +4077,22 @@ End;
 Function AtPunct(Const W : TName) : Boolean;
 Begin
   AtPunct := (TokTab[TokPos].Kind = TK_PUNCT) And (TokTab[TokPos].Val = W);
+End;
+
+Function AtOpSym(Const W : TName) : Boolean;
+Begin
+  AtOpSym := (TokTab[TokPos].Kind = TK_OP) And (TokTab[TokPos].Val = W);
+End;
+
+{ Un mode recursif sans REF a une taille infinie }
+Procedure DeclareModeCheck(M : Integer; Const Name : TName;
+                           Line, Col : Integer);
+Begin
+  ModeBadRec := False;
+  ModeSize(M);
+  If ModeBadRec Then
+    ErrorAt(Line, Col, 'mode recursif sans REF: ' + Name);
+  ModeBadRec := False;
 End;
 
 Function AtEOF : Boolean;
@@ -4272,6 +4340,734 @@ Begin
   ParseGoto := U;
 End;
 
+{ ---- Declarations (TODO 08) ---- }
+
+{ Une unite ordinaire est enveloppee jusqu a une virgule, deux-points
+  ou fermeture de profondeur nulle selon Stops (1 : virgule, 2 : deux-
+  points) ; utilisee pour les initialiseurs et les bornes }
+Function ParseOpaqueUntil(K : TUnitKind; Stops : Integer) : LongInt;
+Var
+  U, Start : LongInt;
+  Depth    : Integer;
+  Done     : Boolean;
+  OL, OC   : Integer;
+Begin
+  U := UnitNew(K, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  Start := TokPos;
+  Depth := 0;
+  OL := 0;
+  OC := 0;
+  Done := False;
+  While Not Done Do
+  Begin
+    If AtEOF Then
+    Begin
+      If Depth > 0 Then
+        ErrorAt(OL, OC, 'construction non fermee (fin de fichier)');
+      Done := True;
+    End
+    Else If (Depth = 0) And (AtPunct(';') Or AtSerialEnd Or
+            (((Stops And 1) <> 0) And AtPunct(',')) Or
+            (((Stops And 2) <> 0) And AtPunct(':'))) Then
+      Done := True
+    Else
+    Begin
+      If TokDepth(TokTab[TokPos]) > 0 Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          OL := TokTab[TokPos].Line;
+          OC := TokTab[TokPos].Col;
+        End;
+        Inc(Depth);
+      End
+      Else If (TokDepth(TokTab[TokPos]) < 0) And (Depth > 0) Then
+        Dec(Depth);
+      ParserAdvance;
+    End;
+  End;
+  If TokPos = Start Then
+  Begin
+    ParseError('expression attendue');
+    ParserAdvance;                          { progression garantie }
+  End;
+  UnitTab[U].A := Start;
+  UnitTab[U].B := TokPos;
+  Inc(OpaqueCount);
+  ParseOpaqueUntil := U;
+End;
+
+{ Le jeton courant (hors signe) est-il une denotation ? }
+Function AtDenotation : Boolean;
+Begin
+  AtDenotation := TokTab[TokPos].Kind In
+                  [TK_INT, TK_REAL, TK_BOOL, TK_CHAR, TK_STRING];
+End;
+
+{ Le jeton suivant les K jetons courants termine-t-il une expression
+  simple : virgule, point-virgule, deux-points ou fermeture ? }
+Function TokEndsExpr(K : LongInt) : Boolean;
+Var
+  T : TToken;
+Begin
+  T := TokAt(K);
+  TokEndsExpr := (T.Kind = TK_EOF) Or
+                 ((T.Kind = TK_PUNCT) And ((T.Val = ',') Or
+                  (T.Val = ';') Or (T.Val = ':') Or (T.Val = ')') Or
+                  (T.Val = ']') Or (T.Val = '|') Or (T.Val = '|:'))) Or
+                 ((T.Kind = TK_KEYWORD) And ((T.Val = 'END') Or
+                  (T.Val = 'FI') Or (T.Val = 'ESAC') Or (T.Val = 'OD') Or
+                  (T.Val = 'ELSE') Or (T.Val = 'ELIF') Or
+                  (T.Val = 'OUT') Or (T.Val = 'OUSE') Or
+                  (T.Val = 'THEN') Or (T.Val = 'IN') Or (T.Val = 'DO')));
+End;
+
+{ Denotation seule (eventuellement precedee de - ou +) : retourne son
+  noeud ; -1 si l expression est plus complexe }
+Function ParseDenotation : LongInt;
+Var
+  U     : LongInt;
+  T     : TToken;
+  Neg   : Boolean;
+  Skip  : LongInt;
+Begin
+  ParseDenotation := -1;
+  Neg := False;
+  Skip := 0;
+  T := TokTab[TokPos];
+  If (T.Kind = TK_OP) And ((T.Val = '-') Or (T.Val = '+')) And
+     (TokAt(1).Kind In [TK_INT, TK_REAL]) Then
+  Begin
+    Neg := T.Val = '-';
+    Skip := 1;
+    T := TokAt(1);
+  End;
+  If Not (T.Kind In [TK_INT, TK_REAL, TK_BOOL, TK_CHAR, TK_STRING]) Then
+    Exit;
+  If Not TokEndsExpr(Skip + 1) Then Exit;
+  Case T.Kind Of
+    TK_INT   : U := UnitNew(UK_INTDEN, T.Line, T.Col);
+    TK_REAL  : U := UnitNew(UK_REALDEN, T.Line, T.Col);
+    TK_BOOL  : U := UnitNew(UK_BOOLDEN, T.Line, T.Col);
+    TK_CHAR  : U := UnitNew(UK_CHARDEN, T.Line, T.Col);
+  Else
+    U := UnitNew(UK_STRDEN, T.Line, T.Col);
+  End;
+  UnitTab[U].IntVal := T.IntVal;
+  UnitTab[U].RealVal := T.RealVal;
+  If Neg Then
+  Begin
+    UnitTab[U].IntVal := -T.IntVal;
+    UnitTab[U].RealVal := -T.RealVal;
+  End;
+  Case T.Kind Of
+    TK_INT  : UnitTab[U].Mode := MD_INT;
+    TK_REAL : UnitTab[U].Mode := MD_REAL;
+    TK_BOOL : UnitTab[U].Mode := MD_BOOL;
+    TK_CHAR : UnitTab[U].Mode := MD_CHAR;
+  Else
+    UnitTab[U].Mode := MD_STRING;
+  End;
+  If Skip = 1 Then ParserAdvance;
+  ParserAdvance;
+  ParseDenotation := U;
+End;
+
+{ Initialiseur ou borne : denotation, sinon enveloppe provisoire }
+Function ParseInitUnit(Stops : Integer) : LongInt;
+Var
+  U : LongInt;
+Begin
+  U := ParseDenotation;
+  If U < 0 Then U := ParseOpaqueUntil(UK_OPAQUE, Stops);
+  ParseInitUnit := U;
+End;
+
+{ Le jeton courant commence-t-il un declarateur ? }
+Function AtDeclarerStart : Boolean;
+Var
+  T : TToken;
+Begin
+  T := TokTab[TokPos];
+  AtDeclarerStart := False;
+  Case T.Kind Of
+    TK_KEYWORD:
+      AtDeclarerStart := (T.Val = 'INT') Or (T.Val = 'REAL') Or
+                         (T.Val = 'BOOL') Or (T.Val = 'CHAR') Or
+                         (T.Val = 'STRING') Or (T.Val = 'BITS') Or
+                         (T.Val = 'VOID') Or (T.Val = 'REF') Or
+                         (T.Val = 'STRUCT') Or (T.Val = 'UNION') Or
+                         (T.Val = 'PROC') Or (T.Val = 'FLEX');
+    TK_PUNCT : AtDeclarerStart := T.Val = '[';
+    TK_BOLD, TK_TAG : AtDeclarerStart := SymFindMode(T.Val) >= 0;
+  End;
+End;
+
+{ Declarateur : retourne le mode M. Pour un tableau de plus haut niveau
+  declare avec des bornes, Bounds = liste des bornes (inferieure puis
+  superieure pour chaque dimension, chainees par Next), Dims = nombre de
+  dimensions. Retourne False apres une erreur (M = MD_ERROR). }
+Function ParseDeclarer(Var M : Integer; Var Bounds : LongInt;
+                       Var Dims : Integer; Nested : Boolean) : Boolean;
+Var
+  Elem, I, K, N, Dm  : Integer;
+  B, Lo, Hi, LastB   : LongInt;
+  InnerBounds        : LongInt;
+  InnerDims          : Integer;
+  Flex, Ok           : Boolean;
+  L, C               : Integer;
+  Name               : TName;
+  FM                 : Array[0..MAX_FIELD - 1] Of Integer;
+  FN                 : Array[0..MAX_FIELD - 1] Of TName;
+  Res                : Integer;
+  Sym                : Integer;
+  Group              : Integer;
+Begin
+  M := MD_ERROR;
+  Bounds := -1;
+  Dims := 0;
+  ParseDeclarer := False;
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  Flex := False;
+  If AtKw('FLEX') Then
+  Begin
+    Flex := True;
+    ParserAdvance;
+    If Not AtPunct('[') Then
+    Begin
+      ParseError('''['' attendu apres FLEX');
+      Exit;
+    End;
+  End;
+  Case TokTab[TokPos].Kind Of
+    TK_KEYWORD:
+      Begin
+        If AtKw('INT') Then M := MD_INT
+        Else If AtKw('REAL') Then M := MD_REAL
+        Else If AtKw('BOOL') Then M := MD_BOOL
+        Else If AtKw('CHAR') Then M := MD_CHAR
+        Else If AtKw('STRING') Then M := MD_STRING
+        Else If AtKw('BITS') Then M := MD_BITS
+        Else If AtKw('VOID') Then M := MD_VOID;
+        If M <> MD_ERROR Then
+        Begin
+          ParserAdvance;
+          ParseDeclarer := True;
+          Exit;
+        End;
+        If AtKw('REF') Then
+        Begin
+          ParserAdvance;
+          Ok := ParseDeclarer(Elem, InnerBounds, InnerDims, True);
+          If InnerDims > 0 Then
+            ErrorAt(L, C, 'bornes interdites apres REF');
+          M := ModeRef(Elem);
+          ParseDeclarer := Ok;
+          Exit;
+        End;
+        If AtKw('STRUCT') Then
+        Begin
+          ParserAdvance;
+          If Not AtPunct('(') Then
+          Begin
+            ParseError('''('' attendu apres STRUCT');
+            Exit;
+          End;
+          ParserAdvance;
+          N := 0;
+          Ok := True;
+          Repeat
+            Ok := ParseDeclarer(Elem, InnerBounds, InnerDims, True) And Ok;
+            If InnerDims > 0 Then
+              ErrorAt(L, C, 'bornes interdites dans un champ');
+            { un ou plusieurs noms de champs pour ce declarateur }
+            Repeat
+              If TokTab[TokPos].Kind <> TK_TAG Then
+              Begin
+                ParseError('nom de champ attendu');
+                Ok := False;
+              End
+              Else
+              Begin
+                If N < MAX_FIELD Then
+                Begin
+                  FM[N] := Elem;
+                  FN[N] := TokTab[TokPos].Val;
+                  Inc(N);
+                End
+                Else
+                  ErrorAt(L, C, 'trop de champs (max ' +
+                          ItoS(MAX_FIELD) + ')');
+                ParserAdvance;
+              End;
+              Group := 0;
+              If AtPunct(',') And (TokAt(1).Kind = TK_TAG) And
+                 (SymFindMode(TokAt(1).Val) < 0) Then
+              Begin
+                ParserAdvance;
+                Group := 1;
+              End;
+            Until (Group = 0) Or AtEOF;
+            Group := 0;
+            If AtPunct(',') Then
+            Begin
+              ParserAdvance;
+              Group := 1;
+            End;
+          Until (Group = 0) Or AtEOF Or (Not Ok);
+          If AtPunct(')') Then
+            ParserAdvance
+          Else
+          Begin
+            ParseError(''')'' attendu pour fermer STRUCT');
+            Ok := False;
+          End;
+          ModeTmpReset;
+          For I := 0 To N - 1 Do
+            ModeTmpAdd(FN[I], FM[I], L, C);
+          M := ModeStructTmp(L, C);
+          ParseDeclarer := Ok;
+          Exit;
+        End;
+        If AtKw('UNION') Then
+        Begin
+          ParserAdvance;
+          If Not AtPunct('(') Then
+          Begin
+            ParseError('''('' attendu apres UNION');
+            Exit;
+          End;
+          ParserAdvance;
+          N := 0;
+          Ok := True;
+          Repeat
+            Ok := ParseDeclarer(Elem, InnerBounds, InnerDims, True) And Ok;
+            If N < MAX_FIELD Then
+            Begin
+              FM[N] := Elem;
+              Inc(N);
+            End;
+            Group := 0;
+            If AtPunct(',') Then
+            Begin
+              ParserAdvance;
+              Group := 1;
+            End;
+          Until (Group = 0) Or AtEOF;
+          If AtPunct(')') Then
+            ParserAdvance
+          Else
+          Begin
+            ParseError(''')'' attendu pour fermer UNION');
+            Ok := False;
+          End;
+          ModeTmpReset;
+          For I := 0 To N - 1 Do
+            ModeTmpAdd('', FM[I], L, C);
+          M := ModeUnionTmp(L, C);
+          ParseDeclarer := Ok;
+          Exit;
+        End;
+        If AtKw('PROC') Then
+        Begin
+          ParserAdvance;
+          N := 0;
+          Ok := True;
+          If AtPunct('(') Then
+          Begin
+            ParserAdvance;
+            Repeat
+              Ok := ParseDeclarer(Elem, InnerBounds, InnerDims, True) And Ok;
+              If N < MAX_FIELD Then
+              Begin
+                FM[N] := Elem;
+                Inc(N);
+              End;
+              Group := 0;
+              If AtPunct(',') Then
+              Begin
+                ParserAdvance;
+                Group := 1;
+              End;
+            Until (Group = 0) Or AtEOF;
+            If AtPunct(')') Then
+              ParserAdvance
+            Else
+            Begin
+              ParseError(''')'' attendu pour fermer la liste de modes');
+              Ok := False;
+            End;
+          End;
+          Ok := ParseDeclarer(Res, InnerBounds, InnerDims, True) And Ok;
+          ModeTmpReset;
+          For I := 0 To N - 1 Do
+            ModeTmpAdd('', FM[I], L, C);
+          M := ModeProcTmp(Res);
+          ParseDeclarer := Ok;
+          Exit;
+        End;
+        ParseError('declarateur attendu');
+        Exit;
+      End;
+    TK_PUNCT:
+      If AtPunct('[') Then
+      Begin
+        ParserAdvance;
+        Dm := 1;
+        LastB := -1;
+        If AtPunct(']') Or AtPunct(',') Then
+        Begin
+          { tableau sans bornes : [] ou [,] }
+          While AtPunct(',') Do
+          Begin
+            Inc(Dm);
+            ParserAdvance;
+          End;
+        End
+        Else
+        Begin
+          Dm := 0;
+          Repeat
+            Inc(Dm);
+            Lo := ParseInitUnit(2);
+            If AtPunct(':') Then
+              ParserAdvance
+            Else
+              ParseError(''':'' attendu entre les bornes');
+            Hi := ParseInitUnit(1);
+            If Bounds < 0 Then Bounds := Lo Else UnitTab[LastB].Next := Lo;
+            UnitTab[Lo].Next := Hi;
+            LastB := Hi;
+            K := 0;
+            If AtPunct(',') Then
+            Begin
+              ParserAdvance;
+              K := 1;
+            End;
+          Until (K = 0) Or AtEOF;
+        End;
+        If AtPunct(']') Then
+          ParserAdvance
+        Else
+        Begin
+          ParseError(''']'' attendu');
+          Exit;
+        End;
+        Ok := ParseDeclarer(Elem, InnerBounds, InnerDims, True);
+        If InnerDims > 0 Then
+          ErrorAt(L, C, 'bornes interieures non supportees');
+        If Nested And (Bounds >= 0) Then
+        Begin
+          ErrorAt(L, C, 'bornes interdites ici');
+          Bounds := -1;
+        End;
+        Dims := Dm;
+        If Bounds < 0 Then Dims := 0;
+        M := ModeRow(Elem, Dm, Flex);
+        ParseDeclarer := Ok;
+        Exit;
+      End
+      Else
+      Begin
+        ParseError('declarateur attendu');
+        Exit;
+      End;
+    TK_BOLD, TK_TAG:
+      Begin
+        Name := TokTab[TokPos].Val;
+        Sym := SymFindMode(Name);
+        If Sym < 0 Then
+        Begin
+          ErrorAt(L, C, 'mode inconnu: ' + Name);
+          ParserAdvance;
+          Exit;
+        End;
+        M := SymTab[Sym].Mode;
+        ParserAdvance;
+        ParseDeclarer := True;
+        Exit;
+      End;
+  Else
+    ParseError('declarateur attendu');
+  End;
+End;
+
+{ Le mode d une denotation convient-il au mode declare (avant les
+  coercitions generales du TODO 09) ? }
+Function DenotationFits(Decl : Integer; U : LongInt) : Boolean;
+Var
+  D : Integer;
+Begin
+  D := ModeResolve(Decl);
+  If (ModeTab[D].Kind = MK_UNION) And
+     (UnitTab[U].Kind In [UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN,
+                          UK_STRDEN]) Then
+  Begin
+    DenotationFits := ModeUnionHas(D, UnitTab[U].Mode);
+    Exit;
+  End;
+  Case UnitTab[U].Kind Of
+    UK_INTDEN  : DenotationFits := (D = MD_INT) Or (D = MD_REAL) Or
+                                   (D = MD_BITS);
+    UK_REALDEN : DenotationFits := D = MD_REAL;
+    UK_BOOLDEN : DenotationFits := D = MD_BOOL;
+    UK_CHARDEN : DenotationFits := (D = MD_CHAR) Or (D = MD_STRING);
+    UK_STRDEN  : DenotationFits := D = MD_STRING;
+  Else
+    DenotationFits := True;
+  End;
+End;
+
+{ Reserve la place d un objet : cellule du segment de donnees au niveau
+  0, sinon place dans le cadre }
+Procedure DeclareStorage(S : Integer; M : Integer; Line, Col : Integer);
+Var
+  Size : LongInt;
+Begin
+  ModeBadRec := False;
+  Size := ModeSize(M);
+  If ModeBadRec Then
+  Begin
+    ErrorAt(Line, Col, 'mode recursif sans REF: ' + ModeName(M));
+    ModeBadRec := False;
+  End;
+  If Size < 4 Then Size := 4;
+  SymAllocate(S, Size);
+  If SymTab[S].Storage = SC_STATIC Then
+    DataAddZero(Intern(SymTab[S].AsmName), Size);
+End;
+
+{ MODE nom = declarateur, nom = declarateur, ... }
+Function ParseModeDecl : LongInt;
+Var
+  First, Last, U : LongInt;
+  Name           : TName;
+  Fwd, S, M, Dm  : Integer;
+  Bnd            : LongInt;
+  L, C           : Integer;
+  More           : Boolean;
+Begin
+  First := -1;
+  Last := -1;
+  ParserAdvance;                       { MODE }
+  Repeat
+    More := False;
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    If Not (TokTab[TokPos].Kind In [TK_BOLD, TK_TAG]) Then
+    Begin
+      ParseError('nom de mode attendu');
+      ParseOpaqueUntil(UK_OPAQUE, 0);
+    End
+    Else
+    Begin
+      Name := TokTab[TokPos].Val;
+      U := UnitNew(UK_MODEDECL, L, C);
+      UnitTab[U].Name := Name;
+      Fwd := ModeFwd(Name);
+      S := SymDeclare(Name, SK_MODE, Fwd, L, C);
+      ParserAdvance;
+      If AtOpSym('=') Then
+        ParserAdvance
+      Else
+        ParseError('''='' attendu apres le nom de mode');
+      ParseDeclarer(M, Bnd, Dm, False);
+      If Dm > 0 Then ErrorAt(L, C, 'bornes interdites dans MODE');
+      ModeDefine(Fwd, M);
+      { un alias direct reste l alias ; seules les structures et les
+        unions gardent leur nom (modes recursifs) }
+      If Not (ModeKind(M) In [MK_STRUCT, MK_UNION]) Then
+        SymTab[S].Mode := M;
+      DeclareModeCheck(Fwd, Name, L, C);
+      UnitTab[U].Sym := S;
+      UnitTab[U].Mode := SymTab[S].Mode;
+      If First < 0 Then First := U Else UnitTab[Last].Next := U;
+      Last := U;
+      Inc(DeclCount);
+      If AtPunct(',') Then
+      Begin
+        ParserAdvance;
+        More := True;
+      End;
+    End;
+  Until (Not More) Or AtEOF;
+  ParseModeDecl := First;
+End;
+
+{ PRIO nom = priorite, nom = priorite, ... (de 1 a 9) }
+Function ParsePrioDecl : LongInt;
+Var
+  First, Last, U : LongInt;
+  Name           : TName;
+  S, P           : Integer;
+  L, C           : Integer;
+  More           : Boolean;
+Begin
+  First := -1;
+  Last := -1;
+  ParserAdvance;                       { PRIO }
+  Repeat
+    More := False;
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    If Not (TokTab[TokPos].Kind In [TK_BOLD, TK_OP]) Then
+    Begin
+      ParseError('nom d''operateur attendu');
+      ParseOpaqueUntil(UK_OPAQUE, 0);
+    End
+    Else
+    Begin
+      Name := TokTab[TokPos].Val;
+      ParserAdvance;
+      If AtOpSym('=') Then
+        ParserAdvance
+      Else
+        ParseError('''='' attendu apres le nom de l''operateur');
+      P := 0;
+      If TokTab[TokPos].Kind = TK_INT Then
+      Begin
+        P := TokTab[TokPos].IntVal;
+        ParserAdvance;
+      End
+      Else
+        ParseError('priorite (entier de 1 a 9) attendue');
+      If (P < 1) Or (P > 9) Then
+      Begin
+        If P <> 0 Then
+          ErrorAt(L, C, 'priorite hors de 1 a 9: ' + ItoS(P));
+        P := 5;
+      End;
+      U := UnitNew(UK_PRIODECL, L, C);
+      UnitTab[U].Name := Name;
+      S := SymDeclare(Name, SK_PRIO, MD_VOID, L, C);
+      SymTab[S].Offset := P;
+      UnitTab[U].Sym := S;
+      UnitTab[U].IntVal := P;
+      If First < 0 Then First := U Else UnitTab[Last].Next := U;
+      Last := U;
+      Inc(DeclCount);
+      If AtPunct(',') Then
+      Begin
+        ParserAdvance;
+        More := True;
+      End;
+    End;
+  Until (Not More) Or AtEOF;
+  ParsePrioDecl := First;
+End;
+
+{ LOC ou HEAP, declarateur, nom, = ou := et initialiseur, repetes
+  avec des virgules : declarations d identite (=) et de variable (:=
+  ou sans initialiseur) }
+Function ParseObjectDecl : LongInt;
+Var
+  First, Last, U, Init : LongInt;
+  Bounds               : LongInt;
+  M                    : Integer;
+  Dims                 : Integer;
+  Name                 : TName;
+  S, L, C              : Integer;
+  Heap, More, IsVar    : Boolean;
+  Ok                   : Boolean;
+Begin
+  First := -1;
+  Last := -1;
+  Heap := False;
+  If AtKw('HEAP') Then
+  Begin
+    Heap := True;
+    ParserAdvance;
+  End
+  Else If AtKw('LOC') Then
+    ParserAdvance;
+  Ok := ParseDeclarer(M, Bounds, Dims, False);
+  If Not Ok Then
+  Begin
+    ParseOpaqueUntil(UK_OPAQUE, 0);
+    ParseObjectDecl := -1;
+    Exit;
+  End;
+  Repeat
+    More := False;
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    If TokTab[TokPos].Kind <> TK_TAG Then
+    Begin
+      ParseError('identificateur attendu dans la declaration');
+      ParseOpaqueUntil(UK_OPAQUE, 0);
+    End
+    Else
+    Begin
+      Name := TokTab[TokPos].Val;
+      ParserAdvance;
+      Init := -1;
+      IsVar := True;
+      If AtOpSym('=') Then
+      Begin
+        IsVar := False;
+        ParserAdvance;
+        Init := ParseInitUnit(1);
+      End
+      Else If AtOpSym(':=') Then
+      Begin
+        ParserAdvance;
+        Init := ParseInitUnit(1);
+      End;
+      If IsVar Then
+      Begin
+        U := UnitNew(UK_VARDECL, L, C);
+        S := SymDeclare(Name, SK_VAR, ModeRef(M), L, C);
+      End
+      Else
+      Begin
+        U := UnitNew(UK_IDDECL, L, C);
+        S := SymDeclare(Name, SK_IDENT, M, L, C);
+      End;
+      UnitTab[U].Name := Name;
+      UnitTab[U].Sym := S;
+      UnitTab[U].Mode := M;
+      UnitTab[U].A := Init;
+      UnitTab[U].B := Bounds;
+      UnitTab[U].C := Dims;
+      If Heap Then UnitTab[U].IntVal := 1;
+      If (Init >= 0) And Not DenotationFits(M, Init) Then
+        ErrorAt(UnitTab[Init].Line, UnitTab[Init].Col,
+                'initialisation incompatible: ' +
+                ModeName(UnitTab[Init].Mode) + ' vers ' + ModeName(M));
+      If (Dims > 0) And (Not IsVar) Then
+        ErrorAt(L, C, 'une identite de tableau ne peut pas avoir de ' +
+                'bornes');
+      DeclareStorage(S, M, L, C);
+      If First < 0 Then First := U Else UnitTab[Last].Next := U;
+      Last := U;
+      Inc(DeclCount);
+      If AtPunct(',') Then
+      Begin
+        ParserAdvance;
+        More := True;
+      End;
+    End;
+  Until (Not More) Or AtEOF;
+  ParseObjectDecl := First;
+End;
+
+{ Declaration : MODE, PRIO, objet (identite ou variable) ; PROC et OP
+  (TODOs 16 et 17) restent enveloppes sans analyse }
+Function ParseDeclaration : LongInt;
+Begin
+  If AtKw('MODE') Then
+    ParseDeclaration := ParseModeDecl
+  Else If AtKw('PRIO') Then
+    ParseDeclaration := ParsePrioDecl
+  Else If AtKw('OP') Or
+          (AtKw('PROC') And (TokAt(1).Kind = TK_TAG) And
+           (TokAt(2).Kind = TK_OP)) Then
+    ParseDeclaration := ParseOpaque(UK_DECL)
+  Else
+    ParseDeclaration := ParseObjectDecl;
+End;
+
 Function ParseSerial(Top : Boolean) : LongInt; Forward;
 
 { Clause fermee : BEGIN ... END ou ( ... ) ; ouvre une portee }
@@ -4327,7 +5123,7 @@ Begin
     ParseUnit := U;
   End
   Else If AtDeclStart Then
-    ParseUnit := ParseOpaque(UK_DECL)
+    ParseUnit := ParseDeclaration
   Else
     ParseUnit := ParseOpaque(UK_OPAQUE);
 End;
@@ -4344,8 +5140,10 @@ Var
 
   Procedure AddItem(N : LongInt);
   Begin
+    If N < 0 Then Exit;
     If First < 0 Then First := N Else UnitTab[Last].Next := N;
     Last := N;
+    While UnitTab[Last].Next >= 0 Do Last := UnitTab[Last].Next;
   End;
 
 Begin
@@ -4455,6 +5253,15 @@ Begin
     UK_LABELDEF : UnitKindName := 'etiquette';
     UK_GOTO     : UnitKindName := 'GOTO';
     UK_SKIP     : UnitKindName := 'SKIP';
+    UK_INTDEN   : UnitKindName := 'denotation INT';
+    UK_REALDEN  : UnitKindName := 'denotation REAL';
+    UK_BOOLDEN  : UnitKindName := 'denotation BOOL';
+    UK_CHARDEN  : UnitKindName := 'denotation CHAR';
+    UK_STRDEN   : UnitKindName := 'denotation STRING';
+    UK_VARDECL  : UnitKindName := 'variable';
+    UK_IDDECL   : UnitKindName := 'identite';
+    UK_MODEDECL : UnitKindName := 'MODE';
+    UK_PRIODECL : UnitKindName := 'PRIO';
     UK_DECL     : UnitKindName := 'declaration (non analysee)';
     UK_OPAQUE   : UnitKindName := 'unite (non analysee)';
   End;
@@ -4471,6 +5278,25 @@ Begin
     Write(UnitKindName(UnitTab[U].Kind), ' ligne ', UnitTab[U].Line);
     Case UnitTab[U].Kind Of
       UK_LABELDEF, UK_GOTO : Write(' ', UnitTab[U].Name);
+      UK_INTDEN, UK_BOOLDEN, UK_CHARDEN : Write(' ', UnitTab[U].IntVal);
+      UK_REALDEN : Write(' ', UnitTab[U].RealVal:0:6);
+      UK_STRDEN  : Write(' "', LitTab[UnitTab[U].IntVal], '"');
+      UK_VARDECL, UK_IDDECL :
+        Begin
+          Write(' ', UnitTab[U].Name, ' : ', ModeName(UnitTab[U].Mode));
+          If UnitTab[U].C > 0 Then
+            Write(' (', UnitTab[U].C, ' dimension(s))');
+          If UnitTab[U].IntVal = 1 Then Write(' HEAP');
+        End;
+      UK_MODEDECL :
+        Begin
+          Write(' ', UnitTab[U].Name, ' = ');
+          If ModeTab[UnitTab[U].Mode].Kind = MK_FWD Then
+            Write(ModeName(ModeTab[UnitTab[U].Mode].Sub))
+          Else
+            Write(ModeName(UnitTab[U].Mode));
+        End;
+      UK_PRIODECL : Write(' ', UnitTab[U].Name, ' = ', UnitTab[U].IntVal);
       UK_DECL, UK_OPAQUE   :
         Begin
           Write(' :');
@@ -4498,6 +5324,7 @@ Begin
   ClauseCount := 0;
   LabelCount := 0;
   OpaqueCount := 0;
+  DeclCount := 0;
   ScopeEnter(SCK_PROGRAM);
   UnitRoot := UnitNew(UK_SERIAL, 1, 1);
   UnitTab[UnitRoot].A := ParseSerial(True);
@@ -4507,12 +5334,14 @@ Begin
   If Opts.Verbose Then
     WriteLn('  ', UnitCount, ' unite(s), ', ClauseCount,
             ' clause(s) fermee(s), ', LabelCount, ' etiquette(s), ',
-            GotoCount, ' goto, ', OpaqueCount,
+            GotoCount, ' goto, ', DeclCount, ' declaration(s), ',
+            OpaqueCount,
             ' unite(s) ou declaration(s) pas encore analysee(s)');
   If Opts.DebugMode Then
   Begin
     WriteLn('Arbre d''unites (', UnitCount, ' noeuds) :');
     UnitDump(UnitTab[UnitRoot].A, 1);
+    ModeDump(PreludeModes);
   End;
 End;
 
@@ -4522,6 +5351,93 @@ End;
 Procedure PhaseModes;
 Begin
   { A faire : TODO 09 et 11 a 19 }
+End;
+
+{ Operande memoire de l objet d un symbole (segment de donnees ou
+  cadre) a Disp octets de son debut }
+Function SymCell(S : Integer; Disp : LongInt; Size : Byte) : TOperand;
+Begin
+  If SymTab[S].Storage = SC_STATIC Then
+    SymCell := OpMemSym(Intern(SymTab[S].AsmName), Disp, Size)
+  Else
+    SymCell := OpMem(R_EBP, Disp - SymTab[S].Offset, Size);
+End;
+
+{ Range une denotation dans l objet du symbole S, a Disp octets de son
+  debut, comme valeur de mode M (INT, REAL, BOOL, CHAR, BITS, STRING) }
+Procedure GenStoreDenotation(S : Integer; Disp : LongInt; M : Integer;
+                             Init : LongInt);
+Var
+  Txt : TString;
+  Lbl : Integer;
+Begin
+  Case UnitTab[Init].Kind Of
+    UK_INTDEN:
+      If M = MD_REAL Then
+      Begin
+        Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[Init].IntVal), 0, 8));
+        Emit1(OP_FSTP, SymCell(S, Disp, 8));
+      End
+      Else
+        Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].IntVal));
+    UK_REALDEN:
+      Begin
+        Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[Init].RealVal), 0, 8));
+        Emit1(OP_FSTP, SymCell(S, Disp, 8));
+      End;
+    UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
+      If M = MD_STRING Then
+      Begin
+        If UnitTab[Init].Kind = UK_STRDEN Then
+          Txt := LitTab[UnitTab[Init].IntVal]
+        Else
+          Txt := Chr(UnitTab[Init].IntVal);
+        Lbl := DataStr(Txt);
+        Emit(OP_MOV, OpReg(R_EAX), OpOffset(Lbl));
+        Emit(OP_MOV, SymCell(S, Disp, 4), OpReg(R_EAX));
+        Emit(OP_MOV, SymCell(S, Disp + 4, 4), OpImm(1));
+        Emit(OP_MOV, SymCell(S, Disp + 8, 4), OpImm(Length(Txt)));
+        Emit(OP_MOV, SymCell(S, Disp + 12, 4), OpImm(1));
+      End
+      Else
+        Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].IntVal));
+  End;
+End;
+
+{ Declaration d identite ou de variable : initialisation de l objet par
+  une denotation (dans une union : etiquette de mode puis valeur) ; les
+  autres initialiseurs viendront avec les TODOs 10 a 19 }
+Procedure GenDecl(U : LongInt);
+Var
+  S, Init : LongInt;
+  M       : Integer;
+Begin
+  S := UnitTab[U].Sym;
+  M := ModeResolve(UnitTab[U].Mode);
+  Init := UnitTab[U].A;
+  If UnitTab[U].IntVal = 1 Then
+    EmitComment('HEAP traite comme LOC (TODO 14)');
+  If UnitTab[U].C > 0 Then
+  Begin
+    EmitComment('tableau ' + UnitTab[U].Name + ' (TODO 15)');
+    Exit;
+  End;
+  If Init < 0 Then Exit;
+  If Not (UnitTab[Init].Kind In [UK_INTDEN, UK_REALDEN, UK_BOOLDEN,
+                                 UK_CHARDEN, UK_STRDEN]) Then
+  Begin
+    EmitComment(UnitTab[U].Name + ' : initialiseur ligne ' +
+                ItoS(UnitTab[Init].Line) + ' pas encore genere');
+    Exit;
+  End;
+  If ModeTab[M].Kind = MK_UNION Then
+  Begin
+    Emit(OP_MOV, SymCell(S, 0, 4),
+         OpImm(ModeResolve(UnitTab[Init].Mode)));
+    GenStoreDenotation(S, 4, ModeResolve(UnitTab[Init].Mode), Init);
+  End
+  Else
+    GenStoreDenotation(S, 0, M, Init);
 End;
 
 { ---- Generation du code a partir de l arbre ---- }
@@ -4538,7 +5454,9 @@ Begin
       UK_GOTO    :
         If UnitTab[U].Sym >= 0 Then
           Emit1(OP_JMP, OpLabel(Intern(SymTab[UnitTab[U].Sym].AsmName)));
-      UK_SKIP    : ;
+      UK_SKIP, UK_MODEDECL, UK_PRIODECL : ;
+      UK_VARDECL, UK_IDDECL : GenDecl(U);
+      UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
       UK_DECL, UK_OPAQUE:
         EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
                     ' : pas encore generee)');
@@ -4624,9 +5542,10 @@ Begin
   WarnCount  := 0;
   OutCreatedN := 0;
   ModeInit;
+  If Opts.DebugMode Then ModeDump(0);
   PreludeInit;
+  PreludeModes := ModeCount;
   CodeInit;
-  If Opts.DebugMode Then ModeDump;
   If Opts.Verbose Then
   Begin
     ShowBanner;
