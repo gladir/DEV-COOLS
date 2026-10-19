@@ -22,6 +22,7 @@ function __sym_str(s) {
 function __init_eval() {}
 function __init_web() {}
 function __init_bin() {}
+function __withrun() { return undefined; }
 function __evlocal(x) { return x; }
 function __init_proxy() {}
 function __init_uni() {}

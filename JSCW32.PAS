@@ -505,7 +505,7 @@ Type
     N_OBJECT_PATTERN, N_PATTERN_ELEM, N_PATTERN_PROP,
     N_IF, N_SWITCH, N_CASE, N_WHILE, N_DO_WHILE, N_FOR, N_FOR_IN, N_FOR_OF,
     N_BREAK, N_CONTINUE, N_RETURN, N_THROW, N_TRY, N_CATCH, N_LABELED,
-    N_DEBUGGER, N_FUNC_DECL, N_PARAM, N_CLASS_DECL, N_METHOD, N_FIELD,
+    N_DEBUGGER, N_WITH, N_FUNC_DECL, N_PARAM, N_CLASS_DECL, N_METHOD, N_FIELD,
     N_STATIC_BLOCK,
     { expressions }
     N_NUMBER, N_STRING, N_REGEX, N_TEMPLATE, N_TEMPLATE_STR, N_IDENT,
@@ -1677,11 +1677,11 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 13748;
-  PRELUDE_BASE = 3104;
+  PRELUDE_LINES = 13793;
+  PRELUDE_BASE = 3105;
   PRELUDE_CHUNKS = 33;
-  PreludeChunkEnd: Array[1..33] Of LongInt = (3739, 5487, 5824, 6386, 6566, 8029, 8537, 9340, 10525, 10630, 10709, 10790, 10988, 11287, 11455, 11540, 11712, 11888, 12053, 12148, 12222, 12304, 12401, 12496, 12578, 12657, 12751, 12926, 13150, 13233, 13315, 13561, 13748);
-  PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
+  PreludeChunkEnd: Array[1..33] Of LongInt = (3740, 5532, 5869, 6431, 6611, 8074, 8582, 9385, 10570, 10675, 10754, 10835, 11033, 11332, 11500, 11585, 11757, 11933, 12098, 12193, 12267, 12349, 12446, 12541, 12623, 12702, 12796, 12971, 13195, 13278, 13360, 13606, 13793);
+  PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function|with (|with(', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -2127,6 +2127,7 @@ Const
     'function __init_eval() {}',
     'function __init_web() {}',
     'function __init_bin() {}',
+    'function __withrun() { return undefined; }',
     'function __evlocal(x) { return x; }',
     'function __init_proxy() {}',
     'function __init_uni() {}',
@@ -5709,8 +5710,8 @@ Const
     '  if (n.t === ''Asg'' && n.op === ''='') return { t: ''DefPat'', a: __evToTarget(n.a), d: n.v };',
     '  return __evToTarget(n);',
     '}',
-    'function __evParse(src) {',
-    '  var T = __evTok(src), p = 0, fctx = { vars: [] }, noIn = false;',
+    'function __evParse(src, inFn) {',
+    '  var T = __evTok(src), p = 0, fctx = { vars: [], fn: !!inFn }, noIn = false;',
     '  function isP(v) { var t = T[p]; return t.k === ''p'' && t.v === v; }',
     '  function isK(v) { var t = T[p]; return t.k === ''i'' && t.v === v; }',
     '  function fail(t) {',
@@ -6296,7 +6297,9 @@ Const
     '          lx = __evLex(bd);',
     '          return { t: ''Switch'', d: a, cases: cases, lex: lx.lex, funs: lx.funs };',
     '        case ''debugger'': p++; semi(); return { t: ''Empty'' };',
-    '        case ''with'': unsup(''with statements'');',
+    '        case ''with'':',
+    '          p++; expectP(''(''); a = expr(); expectP('')'');',
+    '          return { t: ''With'', o: a, body: stmt() };',
     '        case ''import'': case ''export'': unsup(''modules'');',
     '      }',
     '      if (__evKW[t.v] !== 1 && T[p + 1].k === ''p'' && T[p + 1].v === '':'') {',
@@ -6374,7 +6377,22 @@ Const
     '  }',
     '  return __evNone;',
     '}',
-    'function __evScope(p) { return { v: {}, p: p, c: null, fn: null, cl: null }; }',
+    'function __evScope(p) { return { v: {}, p: p, c: null, fn: null, cl: null, o: null }; }',
+    'function __evWHas(o, name) {',
+    '  if (!(name in o)) return false;',
+    '  var u = o[''\x01Symbol.unscopables\x02''];',
+    '  return !(u !== null && typeof u === ''object'' && u[name]);',
+    '}',
+    'function __evWithObj(s, name) {',
+    '  var k = ''$'' + name;',
+    '  while (s !== null) {',
+    '    if (k in s.v) return undefined;',
+    '    if (s.cl !== null && k in s.cl) return undefined;',
+    '    if (s.o !== null && __evWHas(s.o, name)) return s.o;',
+    '    s = s.p;',
+    '  }',
+    '  return undefined;',
+    '}',
     'function __evRefErr(name) { return new ReferenceError(name + '' is not defined''); }',
     'function __evTdzErr(name) { return new ReferenceError("Cannot access ''" + name + "'' before initialization"); }',
     'function __evGlobalGet(name) {',
@@ -6390,6 +6408,7 @@ Const
     '  while (s !== null) {',
     '    if (k in s.v) return true;',
     '    if (s.cl !== null && k in s.cl) return true;',
+    '    if (s.o !== null && __evWHas(s.o, name)) return true;',
     '    s = s.p;',
     '  }',
     '  return (k in __evg) || __ginfo(name) >= 0 || __evBuiltin(name) !== __evNone;',
@@ -6403,6 +6422,7 @@ Const
     '      return x;',
     '    }',
     '    if (s.cl !== null && k in s.cl) return __cellget(s.cl[k]);',
+    '    if (s.o !== null && __evWHas(s.o, name)) return s.o[name];',
     '    s = s.p;',
     '  }',
     '  return __evGlobalGet(name);',
@@ -6417,6 +6437,7 @@ Const
     '      return;',
     '    }',
     '    if (s.cl !== null && k in s.cl) { __cellset(s.cl[k], val); return; }',
+    '    if (s.o !== null && __evWHas(s.o, name)) { s.o[name] = val; return; }',
     '    s = s.p;',
     '  }',
     '  if (k in __evg) { __evg[k] = val; return; }',
@@ -6918,6 +6939,7 @@ Const
     '      } else {',
     '        v = __evEval(f, s);',
     '        if (v === __evSHORT) return __evSHORT;',
+    '        if (f.t === ''Id'') th = __evWithObj(s, f.n);',
     '      }',
     '      if (n.opt && (v === null || v === undefined)) return __evSHORT;',
     '      if (typeof v !== ''function'') throw new TypeError(__evText(n.f) + '' is not a function'');',
@@ -7114,6 +7136,12 @@ Const
     '      }',
     '      if (found) throw cur;',
     '      return sig;',
+    '    case ''With'':',
+    '      v = __evEval(n.o, s);',
+    '      if (v === null || v === undefined) throw new TypeError(''Cannot convert undefined or null to object'');',
+    '      ns = __evScope(s);',
+    '      ns.o = Object(v);',
+    '      return __evExec(n.body, ns, labels);',
     '    case ''Switch'':',
     '      v = __evEval(n.d, s);',
     '      ns = __evScope(s);',
@@ -7138,7 +7166,7 @@ Const
     '  throw new SyntaxError(''eval: unsupported statement '' + n.t);',
     '}',
     'function __evRun(prog, base) {',
-    '  var s = base || { v: {}, p: null, c: null, cl: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;',
+    '  var s = base || { v: {}, p: null, c: null, cl: null, o: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;',
     '  for (i = 0; i < prog.vars.length; i++) {',
     '    k = ''$'' + prog.vars[i];',
     '    if (base && (k in base.cl)) continue;',
@@ -7157,8 +7185,25 @@ Const
     '  var cl = {}, i, base;',
     '  if (typeof x !== ''string'') return x;',
     '  for (i = 0; i < names.length; i++) cl[''$'' + names[i]] = cells[i];',
-    '  base = { v: {}, p: null, c: null, cl: cl, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };',
+    '  base = { v: {}, p: null, c: null, cl: cl, o: null, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };',
     '  return __evRun(__evParse(x), base);',
+    '}',
+    'function __withrun(o, src, lo, hi, thisv, names, cells) {',
+    '  var cl = {}, i, base, sc, prog, sig, text = src.substring(lo, hi);',
+    '  if (o === null || o === undefined) throw new TypeError(''Cannot convert undefined or null to object'');',
+    '  for (i = 0; i < names.length; i++) cl[''$'' + names[i]] = cells[i];',
+    '  base = { v: {}, p: null, c: null, cl: cl, o: null, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };',
+    '  sc = __evScope(base);',
+    '  sc.o = Object(o);',
+    '  prog = __evParse(text, true);',
+    '  __evHoist(prog.lex, [], sc);',
+    '  for (i = 0; i < prog.funs.length; i++) __evDeclare(sc, prog.funs[i].fn.name, __evMkFn(prog.funs[i].fn, sc, undefined), false);',
+    '  sig = __evExecList(prog.body, sc);',
+    '  if (sig === null) return undefined;',
+    '  if (sig.t === 3) return [1, sig.v];',
+    '  if (sig.t === 1 && sig.l === null) return [2];',
+    '  if (sig.t === 2 && sig.l === null) return [3];',
+    '  return undefined;',
     '}',
     'function __eval(x) {',
     '  if (typeof x !== ''string'') return x;',
@@ -20070,6 +20115,27 @@ Begin
   ctx.ast.cur_scope := save_scope;
 End;
 
+{ with (objet) instruction : le corps est analyse puis ecarte ; son texte source est
+  interprete a l'execution dans une portee dont l'objet est le premier maillon. }
+Function ParseWith(Var ctx: TCompilerContext): LongInt;
+Var
+  node, saved_nodes, saved_decls, body: LongInt;
+Begin
+  node := NewNode(ctx, N_WITH, ctx.ast.pt);
+  ParseWith := node;
+  PAdvance(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseParenExpr(ctx);
+  SrcStart(ctx, node, ctx.ast.pt);
+  saved_nodes := ctx.ast.node_count;
+  saved_decls := ctx.ast.decl_count;
+  body := ParseStatement(ctx);
+  SrcEnd(ctx, node);
+  ctx.ast.node_count := saved_nodes;
+  ctx.ast.decl_count := saved_decls;
+  If body = 0 Then
+    Exit;
+End;
+
 Function ParseSwitch(Var ctx: TCompilerContext): LongInt;
 Var
   node, save_scope, cs, first, last, sfirst, slast, st, before: LongInt;
@@ -20337,7 +20403,9 @@ Begin
           ConsumeSemi(ctx);
           ParseStatement := node;
         End
-      Else If (s = 'with') Or (s = 'import') Or (s = 'export') Or
+      Else If s = 'with' Then
+        ParseStatement := ParseWith(ctx)
+      Else If (s = 'import') Or (s = 'export') Or
               (s = 'enum') Then
         Begin
           ParseError(ctx, ctx.ast.pt, '"' + s + '" n''est pas supporte');
@@ -20449,6 +20517,7 @@ Begin
     N_CATCH:          NodeKindName := 'Catch';
     N_LABELED:        NodeKindName := 'Labeled';
     N_DEBUGGER:       NodeKindName := 'Debugger';
+    N_WITH:           NodeKindName := 'With';
     N_FUNC_DECL:      NodeKindName := 'FuncDecl';
     N_PARAM:          NodeKindName := 'Param';
     N_CLASS_DECL:     NodeKindName := 'ClassDecl';
@@ -21793,6 +21862,15 @@ Begin
         sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
         SemList(ctx, NodeP(ctx.ast.nodes, n)^.e2);
         LeaveScope(ctx, sc);
+      End;
+    N_WITH:
+      Begin
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+        If ScopeP(ctx.sem.scopes, ctx.sem.cur_scope)^.strict Then
+          SemError(ctx, NodeP(ctx.ast.nodes, n)^.tok, 'with est interdit en mode strict');
+        If NodeP(ctx.ast.nodes, n)^.sp_lo < 0 Then
+          SemError(ctx, NodeP(ctx.ast.nodes, n)^.tok, 'with : source du corps indisponible');
+        SemDirectEval(ctx, n);
       End;
     N_CATCH:
       Begin
@@ -23349,6 +23427,10 @@ Begin
         SymP(ctx.sem.syms, i)^.name_str :=
           InternText(ctx, TokP(ctx.lex.tokens, SymP(ctx.sem.syms, i)^.name_tok)^.text);
     End;
+  { with : le texte source du corps est interprete a l'execution }
+  For i := 1 To ctx.ast.node_count Do
+    If NodeP(ctx.ast.nodes, i)^.kind = N_WITH Then
+      EnsureSrcStr(ctx);
   { descripteurs de classes : apres ceux des membres }
   For i := 1 To ctx.ast.node_count Do
     If (NodeP(ctx.ast.nodes, i)^.kind = N_CLASS_DECL) Or
@@ -24024,10 +24106,70 @@ Begin
   PlaceLabel(ctx, ok);
 End;
 
+{ Mode non strict : un parametre simple d'une fonction qui utilise arguments est lie a
+  l'element correspondant de arguments. Rend l'indice du parametre, ou -1 ; asym recoit le
+  symbole arguments. }
+Function MappedParam(Var ctx: TCompilerContext; sy: LongInt; Var asym: LongInt): LongInt;
+Var
+  fs, p, i, t, found: LongInt;
+Begin
+  MappedParam := -1;
+  If (SymP(ctx.sem.syms, sy)^.kind <> DK_PARAM) Or
+     (SymP(ctx.sem.syms, sy)^.flags And (SF_CELL Or SF_STATIC) <> 0) Then
+    Exit;
+  fs := SymP(ctx.sem.syms, sy)^.scope;
+  If (ScopeP(ctx.sem.scopes, fs)^.kind <> SK_FUNCTION) Or ScopeP(ctx.sem.scopes, fs)^.strict Or
+     Not ScopeP(ctx.sem.scopes, fs)^.uses_arguments Or
+     Not (ScopeP(ctx.sem.scopes, fs)^.fkind In [FK_FUNCTION, FK_METHOD]) Or
+     (fs <> ctx.ir.cg_fs) Then
+    Exit;
+  asym := ScopeP(ctx.sem.scopes, fs)^.first_sym;
+  While (asym <> 0) And (SymP(ctx.sem.syms, asym)^.kind <> DK_ARGS) Do
+    asym := SymP(ctx.sem.syms, asym)^.next;
+  If asym = 0 Then
+    Exit;
+  p := NodeP(ctx.ast.nodes, ScopeP(ctx.sem.scopes, fs)^.node)^.e1;
+  i := 0;
+  found := -1;
+  While p <> 0 Do
+    Begin
+      t := NodeP(ctx.ast.nodes, p)^.e1;
+      If (NodeP(ctx.ast.nodes, p)^.flags And PF_REST <> 0) Or (NodeP(ctx.ast.nodes, p)^.e2 <> 0) Or
+         (t = 0) Or (NodeP(ctx.ast.nodes, t)^.kind <> N_BIND_IDENT) Then
+        Exit;
+      If NodeP(ctx.ast.nodes, t)^.sym = sy Then
+        found := i;
+      Inc(i);
+      p := NodeP(ctx.ast.nodes, p)^.next;
+    End;
+  MappedParam := found;
+End;
+
 Procedure LoadSym(Var ctx: TCompilerContext; sy: LongInt);
 Var
   lo, hi: TOperand;
+  mi, asym, lloc, ldone: LongInt;
 Begin
+  mi := MappedParam(ctx, sy, asym);
+  If mi >= 0 Then
+    Begin
+      lloc := NewLabel(ctx);
+      ldone := NewLabel(ctx);
+      SymAccess(ctx, asym, lo, hi);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), lo);
+      Emit(ctx, OP_CMP, MemReg(R_ECX, RT_ARR_LEN), ImmOp(mi + 1));
+      Emit1(ctx, OP_JB, LabelOp(lloc));
+      Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_ECX, RT_ARR_ELEMS));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, 8 * mi));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, 8 * mi + 4));
+      Emit1(ctx, OP_JMP, LabelOp(ldone));
+      PlaceLabel(ctx, lloc);
+      SymAccess(ctx, sy, lo, hi);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), lo);
+      Emit(ctx, OP_MOV, RegOp(R_EDX), hi);
+      PlaceLabel(ctx, ldone);
+      Exit;
+    End;
   SymAccess(ctx, sy, lo, hi);
   Emit(ctx, OP_MOV, RegOp(R_EAX), lo);
   Emit(ctx, OP_MOV, RegOp(R_EDX), hi);
@@ -24040,6 +24182,7 @@ End;
 Procedure StoreSym(Var ctx: TCompilerContext; sy: LongInt; init: Boolean);
 Var
   lo, hi: TOperand;
+  mi, asym, lloc: LongInt;
 Begin
   If (SymP(ctx.sem.syms, sy)^.kind = DK_FNAME) And Not init Then
     Exit;
@@ -24048,6 +24191,22 @@ Begin
     TdzCheck(ctx, sy, hi);
   Emit(ctx, OP_MOV, lo, RegOp(R_EAX));
   Emit(ctx, OP_MOV, hi, RegOp(R_EDX));
+  If Not init Then
+    Begin
+      mi := MappedParam(ctx, sy, asym);
+      If mi >= 0 Then
+        Begin
+          lloc := NewLabel(ctx);
+          SymAccess(ctx, asym, lo, hi);
+          Emit(ctx, OP_MOV, RegOp(R_ECX), lo);
+          Emit(ctx, OP_CMP, MemReg(R_ECX, RT_ARR_LEN), ImmOp(mi + 1));
+          Emit1(ctx, OP_JB, LabelOp(lloc));
+          Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_ECX, RT_ARR_ELEMS));
+          Emit(ctx, OP_MOV, MemReg(R_ECX, 8 * mi), RegOp(R_EAX));
+          Emit(ctx, OP_MOV, MemReg(R_ECX, 8 * mi + 4), RegOp(R_EDX));
+          PlaceLabel(ctx, lloc);
+        End;
+    End;
 End;
 
 { ---- Constructions en attente ---- }
@@ -27283,6 +27442,95 @@ Begin
     End;
 End;
 
+{ with (objet) corps : _JSRT_with_direct(objet, this, source, lo, hi, nb, table) ;
+  le resultat est undefined, ou [genre, valeur] (1 return, 2 break, 3 continue) }
+Procedure GenWith(Var ctx: TCompilerContext; n: LongInt);
+Var
+  id, sy, k, tobj, tthis, tres, ti, dn, lret, lbrk, lcont, tx, tg: LongInt;
+  lo, hi: TOperand;
+Begin
+  tobj := TempAcquire(ctx);
+  tthis := TempAcquire(ctx);
+  tres := TempAcquire(ctx);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+  SaveTemp(ctx, tobj);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e4);
+  SaveTemp(ctx, tthis);
+  k := 0;
+  id := NodeP(ctx.ast.nodes, n)^.e3;
+  While id <> 0 Do
+    Begin
+      sy := NodeP(ctx.ast.nodes, id)^.sym;
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, SymP(ctx.sem.syms, sy)^.name_str)^.sym));
+      If SymP(ctx.sem.syms, sy)^.flags And SF_STATIC <> 0 Then
+        Emit(ctx, OP_LEA, RegOp(R_ECX), MemSym(SYMK_D, SymP(ctx.sem.syms, sy)^.ds, -RT_CELL_VALUE))
+      Else
+        SymAccess(ctx, sy, lo, hi);
+      Emit1(ctx, OP_PUSH, RegOp(R_ECX));
+      Inc(k);
+      id := NodeP(ctx.ast.nodes, id)^.next;
+    End;
+  Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ESP));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  Emit1(ctx, OP_PUSH, ImmOp(k));
+  Emit1(ctx, OP_PUSH, ImmOp(NodeP(ctx.ast.nodes, n)^.sp_hi));
+  Emit1(ctx, OP_PUSH, ImmOp(NodeP(ctx.ast.nodes, n)^.sp_lo));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, ctx.data.src_str)^.sym));
+  PushTemp(ctx, tthis);
+  PushTemp(ctx, tobj);
+  CallRt(ctx, 'with_direct', 36 + 8 * k);
+  dn := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+  Emit1(ctx, OP_JE, LabelOp(dn));
+  SaveTemp(ctx, tres);
+  { EAX = tableau ; genre dans le premier element }
+  Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EAX, RT_ARR_ELEMS));
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, 0));
+  lret := NewLabel(ctx);
+  lbrk := NewLabel(ctx);
+  lcont := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EAX), ImmOp(1));
+  Emit1(ctx, OP_JE, LabelOp(lret));
+  Emit(ctx, OP_CMP, RegOp(R_EAX), ImmOp(2));
+  Emit1(ctx, OP_JE, LabelOp(lbrk));
+  Emit(ctx, OP_CMP, RegOp(R_EAX), ImmOp(3));
+  Emit1(ctx, OP_JE, LabelOp(lcont));
+  Emit1(ctx, OP_JMP, LabelOp(dn));
+  PlaceLabel(ctx, lret);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, 8));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, 12));
+  If ctx.ir.try_count > 0 Then
+    Begin
+      tx := TempAcquire(ctx);
+      SaveTemp(ctx, tx);
+      GenExitTries(ctx, 0);
+      LoadTemp(ctx, tx);
+      TempRelease(ctx, tx);
+    End;
+  Emit0(ctx, OP_LEAVE);
+  Emit0(ctx, OP_RET);
+  PlaceLabel(ctx, lbrk);
+  tg := FindTarget(ctx, 0, True);
+  If tg <> 0 Then
+    Begin
+      GenExitTriesX(ctx, tg, False);
+      Emit1(ctx, OP_JMP, LabelOp(JtP(ctx.ir.jt, tg)^.brk));
+    End
+  Else
+    Emit1(ctx, OP_JMP, LabelOp(dn));
+  PlaceLabel(ctx, lcont);
+  tg := FindTarget(ctx, 0, False);
+  If tg <> 0 Then
+    Begin
+      GenExitTriesX(ctx, tg, True);
+      Emit1(ctx, OP_JMP, LabelOp(JtP(ctx.ir.jt, tg)^.cont));
+    End;
+  PlaceLabel(ctx, dn);
+  TempRelease(ctx, tres);
+  TempRelease(ctx, tthis);
+  TempRelease(ctx, tobj);
+End;
+
 Procedure GenStmt(Var ctx: TCompilerContext; n: LongInt);
 Var
   tx: LongInt;
@@ -27350,6 +27598,8 @@ Begin
       GenForInOf(ctx, n, True);
     N_SWITCH:
       GenSwitch(ctx, n);
+    N_WITH:
+      GenWith(ctx, n);
     N_BREAK:
       GenBreakContinue(ctx, n, True);
     N_CONTINUE:
@@ -47556,6 +47806,58 @@ Begin
   PushToArrLocal('$ARR', 'ebx', 'edi');
   PushToArrLocal('$ARR', 'esi', 'edi');
   A('mov eax, offset _JSV___evlocal');
+  A('push edi');
+  A('push $UNDEF');
+  A('push 0');
+  A('push $FN');
+  A('push dword ptr [eax]');
+  A('call _JSRT_call_array');
+  A('add esp, 20');
+  FEnd;
+
+  { _JSRT_with_direct(objet, this, source, lo, hi, nb, table) : appelle
+    __withrun(objet, source, lo, hi, this, noms, cellules) }
+  FBegin('_JSRT_with_direct', 1);
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('call _JSRT_array_new');
+  A('mov esi, eax');
+  A('call _JSRT_array_new');
+  A('mov edi, eax');
+  A('mov dword ptr [ebp-16], 0');
+  A('.l:');
+  A('mov eax, dword ptr [ebp-16]');
+  A('cmp eax, dword ptr [ebp+36]');
+  A('jae .d');
+  A('mov edx, eax');
+  A('shl edx, 3');
+  A('add edx, dword ptr [ebp+40]');
+  A('push $STR');
+  A('push dword ptr [edx+4]');
+  A('push $STR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('mov edx, dword ptr [ebp-16]');
+  A('shl edx, 3');
+  A('add edx, dword ptr [ebp+40]');
+  A('push $INT');
+  A('push dword ptr [edx]');
+  A('push $INT');
+  A('push esi');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('inc dword ptr [ebp-16]');
+  A('jmp .l');
+  A('.d:');
+  PushToArrLocal('dword ptr [ebp+12]', 'dword ptr [ebp+8]', 'edi');
+  PushToArrLocal('$STR', 'dword ptr [ebp+24]', 'edi');
+  PushToArrLocal('$INT', 'dword ptr [ebp+28]', 'edi');
+  PushToArrLocal('$INT', 'dword ptr [ebp+32]', 'edi');
+  PushToArrLocal('dword ptr [ebp+20]', 'dword ptr [ebp+16]', 'edi');
+  PushToArrLocal('$ARR', 'ebx', 'edi');
+  PushToArrLocal('$ARR', 'esi', 'edi');
+  A('mov eax, offset _JSV___withrun');
   A('push edi');
   A('push $UNDEF');
   A('push 0');

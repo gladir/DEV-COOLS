@@ -285,8 +285,8 @@ function __evToElem(n) {
   if (n.t === 'Asg' && n.op === '=') return { t: 'DefPat', a: __evToTarget(n.a), d: n.v };
   return __evToTarget(n);
 }
-function __evParse(src) {
-  var T = __evTok(src), p = 0, fctx = { vars: [] }, noIn = false;
+function __evParse(src, inFn) {
+  var T = __evTok(src), p = 0, fctx = { vars: [], fn: !!inFn }, noIn = false;
   function isP(v) { var t = T[p]; return t.k === 'p' && t.v === v; }
   function isK(v) { var t = T[p]; return t.k === 'i' && t.v === v; }
   function fail(t) {
@@ -872,7 +872,9 @@ function __evParse(src) {
           lx = __evLex(bd);
           return { t: 'Switch', d: a, cases: cases, lex: lx.lex, funs: lx.funs };
         case 'debugger': p++; semi(); return { t: 'Empty' };
-        case 'with': unsup('with statements');
+        case 'with':
+          p++; expectP('('); a = expr(); expectP(')');
+          return { t: 'With', o: a, body: stmt() };
         case 'import': case 'export': unsup('modules');
       }
       if (__evKW[t.v] !== 1 && T[p + 1].k === 'p' && T[p + 1].v === ':') {
@@ -950,7 +952,22 @@ function __evBuiltin(name) {
   }
   return __evNone;
 }
-function __evScope(p) { return { v: {}, p: p, c: null, fn: null, cl: null }; }
+function __evScope(p) { return { v: {}, p: p, c: null, fn: null, cl: null, o: null }; }
+function __evWHas(o, name) {
+  if (!(name in o)) return false;
+  var u = o['\x01Symbol.unscopables\x02'];
+  return !(u !== null && typeof u === 'object' && u[name]);
+}
+function __evWithObj(s, name) {
+  var k = '$' + name;
+  while (s !== null) {
+    if (k in s.v) return undefined;
+    if (s.cl !== null && k in s.cl) return undefined;
+    if (s.o !== null && __evWHas(s.o, name)) return s.o;
+    s = s.p;
+  }
+  return undefined;
+}
 function __evRefErr(name) { return new ReferenceError(name + ' is not defined'); }
 function __evTdzErr(name) { return new ReferenceError("Cannot access '" + name + "' before initialization"); }
 function __evGlobalGet(name) {
@@ -966,6 +983,7 @@ function __evHasVar(s, name) {
   while (s !== null) {
     if (k in s.v) return true;
     if (s.cl !== null && k in s.cl) return true;
+    if (s.o !== null && __evWHas(s.o, name)) return true;
     s = s.p;
   }
   return (k in __evg) || __ginfo(name) >= 0 || __evBuiltin(name) !== __evNone;
@@ -979,6 +997,7 @@ function __evGetVar(s, name) {
       return x;
     }
     if (s.cl !== null && k in s.cl) return __cellget(s.cl[k]);
+    if (s.o !== null && __evWHas(s.o, name)) return s.o[name];
     s = s.p;
   }
   return __evGlobalGet(name);
@@ -993,6 +1012,7 @@ function __evSetVar(s, name, val) {
       return;
     }
     if (s.cl !== null && k in s.cl) { __cellset(s.cl[k], val); return; }
+    if (s.o !== null && __evWHas(s.o, name)) { s.o[name] = val; return; }
     s = s.p;
   }
   if (k in __evg) { __evg[k] = val; return; }
@@ -1494,6 +1514,7 @@ function __evEval(n, s) {
       } else {
         v = __evEval(f, s);
         if (v === __evSHORT) return __evSHORT;
+        if (f.t === 'Id') th = __evWithObj(s, f.n);
       }
       if (n.opt && (v === null || v === undefined)) return __evSHORT;
       if (typeof v !== 'function') throw new TypeError(__evText(n.f) + ' is not a function');
@@ -1690,6 +1711,12 @@ function __evExec(n, s, labels) {
       }
       if (found) throw cur;
       return sig;
+    case 'With':
+      v = __evEval(n.o, s);
+      if (v === null || v === undefined) throw new TypeError('Cannot convert undefined or null to object');
+      ns = __evScope(s);
+      ns.o = Object(v);
+      return __evExec(n.body, ns, labels);
     case 'Switch':
       v = __evEval(n.d, s);
       ns = __evScope(s);
@@ -1714,7 +1741,7 @@ function __evExec(n, s, labels) {
   throw new SyntaxError('eval: unsupported statement ' + n.t);
 }
 function __evRun(prog, base) {
-  var s = base || { v: {}, p: null, c: null, cl: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;
+  var s = base || { v: {}, p: null, c: null, cl: null, o: null, fn: { th: globalThis, nt: undefined, home: undefined, args: [], fo: undefined } }, i, k, f, sig;
   for (i = 0; i < prog.vars.length; i++) {
     k = '$' + prog.vars[i];
     if (base && (k in base.cl)) continue;
@@ -1733,8 +1760,25 @@ function __evlocal(x, thisv, names, cells) {
   var cl = {}, i, base;
   if (typeof x !== 'string') return x;
   for (i = 0; i < names.length; i++) cl['$' + names[i]] = cells[i];
-  base = { v: {}, p: null, c: null, cl: cl, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };
+  base = { v: {}, p: null, c: null, cl: cl, o: null, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };
   return __evRun(__evParse(x), base);
+}
+function __withrun(o, src, lo, hi, thisv, names, cells) {
+  var cl = {}, i, base, sc, prog, sig, text = src.substring(lo, hi);
+  if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
+  for (i = 0; i < names.length; i++) cl['$' + names[i]] = cells[i];
+  base = { v: {}, p: null, c: null, cl: cl, o: null, fn: { th: thisv, nt: undefined, home: undefined, args: [], fo: undefined } };
+  sc = __evScope(base);
+  sc.o = Object(o);
+  prog = __evParse(text, true);
+  __evHoist(prog.lex, [], sc);
+  for (i = 0; i < prog.funs.length; i++) __evDeclare(sc, prog.funs[i].fn.name, __evMkFn(prog.funs[i].fn, sc, undefined), false);
+  sig = __evExecList(prog.body, sc);
+  if (sig === null) return undefined;
+  if (sig.t === 3) return [1, sig.v];
+  if (sig.t === 1 && sig.l === null) return [2];
+  if (sig.t === 2 && sig.l === null) return [3];
+  return undefined;
 }
 function __eval(x) {
   if (typeof x !== 'string') return x;
