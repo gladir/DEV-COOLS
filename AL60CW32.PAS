@@ -29,8 +29,8 @@
   ETAT : TODO 01 a 09 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
-         et listing .ASM, segment de donnees, expressions primaires) ;
-         TODO 10 a 25 a faire.
+         et listing .ASM, segment de donnees, expressions primaires,
+         expressions arithmetiques) ; TODO 11 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -306,7 +306,7 @@
               declarations sont faits aux TODO 10 a 12 ; PhaseParse
               n'analyse pas encore de programme complet
 
-  TODO 10 - EXPRESSIONS ARITHMETIQUES [A FAIRE]
+  TODO 10 - EXPRESSIONS ARITHMETIQUES [IMPLEMENTE]
             Priorites (Revised Report) : puissance ^ > * / div > + -
               avec + et - unaires, associativite a gauche
             Repliement des constantes a la compilation ; division par
@@ -318,6 +318,28 @@
             Puissance : _A60RT_POW (entiers) et x87 (reels) selon les
               types des operandes
             Verification : math.a60, test_arithbool.a60, test_operators.a60
+            Realise : ParseArith (signe en tete applique au premier terme
+              entier : -a div b vaut -(a div b)), ParseTerm (* / div),
+              ParseFactor (^ ou **, associatif a gauche comme dans le
+              rapport, exposant eventuellement signe) ; ExprMakeUnary et
+              ExprMakeBinary : types par TypeArith, TypeDivide,
+              TypeIntDiv, TypePower, repliement des constantes (entiers
+              sur 64 bits avec controle du debordement 32 bits, reels),
+              division par une constante nulle signalee ; mod n'existe pas
+              dans le rapport (non reconnu) ; un signe n'est admis qu'en
+              tete d'expression (x - -3 est refuse comme dans le rapport)
+            Generation : entiers dans EAX (ADD SUB IMUL, CDQ + IDIV avec
+              controle de division par zero, _A60RT_POW), reels dans ST(0)
+              avec operande gauche sur la pile (FADD FMUL FSUBR FDIVR,
+              _A60RT_RPOW), conversions GenConvert (FILD, _A60RT_RTOI,
+              TEST / SETNE) ; une puissance entiere a exposant negatif
+              inconnu a la compilation est tronquee par le runtime
+              (1 ou -1 pour une base 1 ou -1, sinon 0), alors que l'exposant
+              negatif constant donne un real
+            Verifie : 28 expressions (precedences, associativite,
+              promotions, signe, repliement) generees, assemblees avec
+              ML.PAS avec un runtime de test, executees ; le code de
+              retour donne le resultat attendu
 
   TODO 11 - EXPRESSIONS BOOLEENNES ET CONDITIONNELLES [A FAIRE]
             Relationnels = != # < <= > >= (integer et real, resultat
@@ -3647,6 +3669,289 @@ Begin
   ExprCoerce := ExprCoerceCtx(N, Dest, Conv, Line, Col, 'affectation');
 End;
 
+
+{ ---- Expressions arithmetiques : repliement et construction ------- }
+Type
+  {$IFDEF FPC}
+  TWide = Int64;
+  {$ELSE}
+  TWide = Comp;
+  {$ENDIF}
+
+Var
+  FoldCount : LongInt;     { operations repliees (statistiques) }
+
+Function ExprIsConst(N : Integer) : Boolean;
+Begin
+  ExprIsConst := (N >= 0) And
+                 (ExprTab[N].Kind In [EX_INT, EX_REAL]);
+End;
+
+Function ExprConstReal(N : Integer) : Double;
+Begin
+  If ExprTab[N].Kind = EX_INT Then
+    ExprConstReal := ExprTab[N].IntVal
+  Else
+    ExprConstReal := ExprTab[N].RealVal;
+End;
+
+Function FoldRange(W : TWide) : Boolean;
+Begin
+  FoldRange := (W <= MaxLongInt) And (W >= -TWide(MaxLongInt) - 1);
+End;
+
+{ Operation entiere sur constantes (+ - * div ^ avec exposant >= 0) ;
+  Err <> '' en cas d'erreur }
+Procedure FoldIntBin(Const Op : TString; A, B : LongInt;
+                     Var R : LongInt; Var Err : TString);
+Var
+  W, Base : TWide;
+  E       : LongInt;
+Begin
+  Err := '';
+  R := 0;
+  W := 0;
+  If Op = '+' Then
+    W := TWide(A) + TWide(B)
+  Else If Op = '-' Then
+    W := TWide(A) - TWide(B)
+  Else If Op = '*' Then
+    W := TWide(A) * TWide(B)
+  Else If Op = 'div' Then
+  Begin
+    If B = 0 Then
+    Begin
+      Err := 'division par zero';
+      Exit;
+    End;
+    W := TWide(A) Div TWide(B);          { quotient tronque vers zero }
+  End
+  Else If Op = '^' Then
+  Begin
+    W := 1;
+    Base := A;
+    E := B;
+    While E > 0 Do
+    Begin
+      If Odd(E) Then
+      Begin
+        W := W * Base;
+        If Not FoldRange(W) Then Break;
+      End;
+      E := E Div 2;
+      If E > 0 Then
+      Begin
+        Base := Base * Base;
+        If (Base > MaxLongInt) Or (Base < -TWide(MaxLongInt) - 1) Then
+        Begin
+          W := TWide(MaxLongInt) + 1;     { debordement certain }
+          Break;
+        End;
+      End;
+    End;
+  End;
+  If Not FoldRange(W) Then
+  Begin
+    Err := 'debordement entier 32 bits dans une constante';
+    Exit;
+  End;
+  R := W;
+End;
+
+{ Operation reelle sur constantes ; Err <> '' en cas d'erreur }
+Procedure FoldRealBin(Const Op : TString; A, B : Double;
+                      Var R : Double; Var Err : TString);
+Var
+  I, N : LongInt;
+Begin
+  Err := '';
+  R := 0;
+  If Op = '+' Then
+    R := A + B
+  Else If Op = '-' Then
+    R := A - B
+  Else If Op = '*' Then
+    R := A * B
+  Else If Op = '/' Then
+  Begin
+    If B = 0 Then
+    Begin
+      Err := 'division par zero';
+      Exit;
+    End;
+    R := A / B;
+  End
+  Else If Op = '^' Then
+  Begin
+    If (Frac(B) = 0) And (Abs(B) <= 1024) Then
+    Begin
+      N := Trunc(Abs(B));
+      R := 1;
+      For I := 1 To N Do
+      Begin
+        R := R * A;
+        If RealBad(R) Then Break;
+      End;
+      If (B < 0) And (Not RealBad(R)) Then
+      Begin
+        If R = 0 Then
+          Err := 'division par zero (0 ^ exposant negatif)'
+        Else
+          R := 1 / R;
+      End;
+    End
+    Else If A > 0 Then
+      R := Exp(B * Ln(A))
+    Else If (A = 0) And (B > 0) Then
+      R := 0
+    Else
+      Err := 'puissance reelle invalide (base <= 0, exposant non entier)';
+  End;
+  If (Err = '') And RealBad(R) Then
+    Err := 'debordement reel dans une constante';
+End;
+
+Procedure OpTypeError(Const Op : TString; A, B : Integer;
+                      Line, Col : Integer);
+Begin
+  If B = TY_UNKNOWN Then
+    ErrorAt(Line, Col, 'operande incompatible avec ''' + Op + ''': ' +
+            TypeName(A))
+  Else
+    ErrorAt(Line, Col, 'operandes incompatibles avec ''' + Op + ''': ' +
+            TypeName(A) + ', ' + TypeName(B));
+End;
+
+{ + ou - unaire. La constante est repliee ; +x est l'identite. }
+Function ExprMakeUnary(Const Op : TString; A : Integer;
+                       Line, Col : Integer) : Integer;
+Var
+  N, T : Integer;
+Begin
+  ExprMakeUnary := -1;
+  If A < 0 Then Exit;
+  T := TypeArith(ExprTab[A].Typ, ExprTab[A].Typ);
+  If T = TY_UNKNOWN Then
+  Begin
+    OpTypeError(Op, ExprTab[A].Typ, TY_UNKNOWN, Line, Col);
+    Exit;
+  End;
+  If ExprIsConst(A) Then
+  Begin
+    If Op = '-' Then
+    Begin
+      If ExprTab[A].Kind = EX_INT Then
+        ExprTab[A].IntVal := -ExprTab[A].IntVal
+      Else
+        ExprTab[A].RealVal := -ExprTab[A].RealVal;
+      Inc(FoldCount);
+    End;
+    ExprMakeUnary := A;
+    Exit;
+  End;
+  If (Op = '+') And (ExprTab[A].Typ = T) Then
+  Begin
+    ExprMakeUnary := A;
+    Exit;
+  End;
+  N := ExprNew(EX_UNARY, T, Line, Col);
+  ExprTab[N].Op := Op;
+  ExprTab[N].L  := A;
+  ExprMakeUnary := N;
+End;
+
+{ L Op R pour + - * / div ^ (Revised Report, 3.3) : type du resultat
+  par TypeArith, TypeDivide, TypeIntDiv, TypePower ; operations sur
+  deux constantes repliees ; division par une constante nulle signalee }
+Function ExprMakeBinary(Const Op : TString; L, R : Integer;
+                        Line, Col : Integer) : Integer;
+Var
+  N, T, TL, TR, Sign : Integer;
+  IV                 : LongInt;
+  RV                 : Double;
+  Err                : TString;
+Begin
+  ExprMakeBinary := -1;
+  If (L < 0) Or (R < 0) Then Exit;
+  TL := ExprTab[L].Typ;
+  TR := ExprTab[R].Typ;
+
+  { type du resultat }
+  If Op = '/' Then
+    T := TypeDivide(TL, TR)
+  Else If Op = 'div' Then
+    T := TypeIntDiv(TL, TR)
+  Else If Op = '^' Then
+  Begin
+    Sign := 0;
+    If ExprIsConst(R) Then
+    Begin
+      If ExprConstReal(R) < 0 Then Sign := -1 Else Sign := 1;
+    End;
+    T := TypePower(TL, TR, Sign);
+  End
+  Else
+    T := TypeArith(TL, TR);
+  If T = TY_UNKNOWN Then
+  Begin
+    If (Op = 'div') And (TypeArith(TL, TR) <> TY_UNKNOWN) Then
+      ErrorAt(Line, Col, '''div'' demande des operandes entiers')
+    Else
+      OpTypeError(Op, TL, TR, Line, Col);
+    Exit;
+  End;
+
+  { division par une constante nulle }
+  If ((Op = '/') Or (Op = 'div')) And ExprIsConst(R) And
+     (ExprConstReal(R) = 0) Then
+  Begin
+    ErrorAt(Line, Col, 'division par zero');
+    Exit;
+  End;
+
+  { repliement de deux constantes }
+  If ExprIsConst(L) And ExprIsConst(R) Then
+  Begin
+    Err := '';
+    If T = TY_IDX_INTEGER Then
+    Begin
+      FoldIntBin(Op, ExprTab[L].IntVal, ExprTab[R].IntVal, IV, Err);
+      If Err = '' Then
+      Begin
+        ExprTab[L].IntVal := IV;
+        ExprTab[L].Line := Line;
+        ExprTab[L].Col  := Col;
+      End;
+    End
+    Else
+    Begin
+      FoldRealBin(Op, ExprConstReal(L), ExprConstReal(R), RV, Err);
+      If Err = '' Then
+      Begin
+        ExprTab[L].Kind := EX_REAL;
+        ExprTab[L].Typ  := TY_IDX_REAL;
+        ExprTab[L].RealVal := RV;
+        ExprTab[L].Line := Line;
+        ExprTab[L].Col  := Col;
+      End;
+    End;
+    If Err <> '' Then
+    Begin
+      ErrorAt(Line, Col, Err);
+      Exit;
+    End;
+    Inc(FoldCount);
+    ExprMakeBinary := L;
+    Exit;
+  End;
+
+  N := ExprNew(EX_BINARY, T, Line, Col);
+  ExprTab[N].Op := Op;
+  ExprTab[N].L  := L;
+  ExprTab[N].R  := R;
+  ExprMakeBinary := N;
+End;
+
 { ---- Expressions primaires -------------------------------------- }
 
 Function ParseExpr : Integer; Forward;
@@ -3908,12 +4213,96 @@ Begin
   End;
 End;
 
-{ Expression : pour le moment une expression primaire ; les operateurs
-  arithmetiques (TODO 10), booleens et conditionnels (TODO 11) s'y
-  ajouteront. }
+{ ---- Expressions arithmetiques : analyse -------------------------
+  Grammaire du Revised Report (3.3.1), avec [x] optionnel et x...
+  repete :
+    expression arithmetique simple = [signe] terme [(+|-) terme]...
+    terme   = facteur [(multiplication, division, div) facteur]...
+    facteur = primaire [^ primaire]...       (associatif a gauche)
+  Un signe en tete s'applique a tout le premier terme : -a div b vaut
+  -(a div b). ** est un synonyme de ^. ------------------------------ }
+
+{ Facteur : primaire suivi de ^ primaire repetes ; l'exposant peut
+  etre signe }
+Function ParseFactor : Integer;
+Var
+  L, R, Sg   : Integer;
+  Line, Col  : Integer;
+  Neg        : Boolean;
+Begin
+  L := ParsePrimary;
+  While AtOp('^') Do
+  Begin
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    Neg := False;
+    If AtOp('-') Or AtOp('+') Then
+    Begin
+      Neg := AtOp('-');
+      ParserAdvance;
+    End;
+    R := ParsePrimary;
+    If Neg Then R := ExprMakeUnary('-', R, Line, Col);
+    L := ExprMakeBinary('^', L, R, Line, Col);
+  End;
+  ParseFactor := L;
+End;
+
+Function ParseTerm : Integer;
+Var
+  L, R      : Integer;
+  Op        : TString;
+  Line, Col : Integer;
+Begin
+  L := ParseFactor;
+  While AtOp('*') Or AtOp('/') Or AtKw('div') Do
+  Begin
+    Op   := CurToken.Val;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseFactor;
+    L := ExprMakeBinary(Op, L, R, Line, Col);
+  End;
+  ParseTerm := L;
+End;
+
+{ Expression arithmetique simple }
+Function ParseArith : Integer;
+Var
+  L, R      : Integer;
+  Op        : TString;
+  Line, Col : Integer;
+Begin
+  If AtOp('+') Or AtOp('-') Then
+  Begin
+    Op   := CurToken.Val;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    L := ExprMakeUnary(Op, ParseTerm, Line, Col);
+  End
+  Else
+    L := ParseTerm;
+  While AtOp('+') Or AtOp('-') Do
+  Begin
+    Op   := CurToken.Val;
+    Line := CurToken.Line;
+    Col  := CurToken.Col;
+    ParserAdvance;
+    R := ParseTerm;
+    L := ExprMakeBinary(Op, L, R, Line, Col);
+  End;
+  ParseArith := L;
+End;
+
+{ Expression : arithmetique pour le moment ; les relationnels, les
+  operateurs booleens et les expressions conditionnelles (TODO 11)
+  s'ajouteront au-dessus. }
 Function ParseExpr : Integer;
 Begin
-  ParseExpr := ParsePrimary;
+  ParseExpr := ParseArith;
 End;
 
 { Mode debug -d : arbre d'une expression }
@@ -4109,6 +4498,126 @@ Begin
     Emit(OP_LEA, OpReg(R_EAX), O);
 End;
 
+
+Procedure GenExpr(N : Integer); Forward;
+
+{ Conversion de la valeur courante (EAX ou ST(0)) du type From vers
+  le type Dest }
+Procedure GenConvert(From, Dest : Integer);
+Begin
+  If From = Dest Then Exit;
+  If (Dest = TY_IDX_REAL) And
+     ((From = TY_IDX_INTEGER) Or (From = TY_IDX_BOOLEAN)) Then
+  Begin
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+  End
+  Else If (Dest = TY_IDX_INTEGER) And (From = TY_IDX_REAL) Then
+    CallRT('RTOI')
+  Else If (Dest = TY_IDX_BOOLEAN) And (From = TY_IDX_INTEGER) Then
+  Begin
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_SETNE, OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+  End;
+End;
+
+Procedure GenExprAs(N, T : Integer);
+Begin
+  GenExpr(N);
+  GenConvert(ExprTab[N].Typ, T);
+End;
+
+{ EAX := EAX op ECX pour + - * div ^ (entiers) }
+Procedure GenIntOp(Const Op : TString; RightIsConst : Boolean);
+Var
+  Ok : Integer;
+Begin
+  If Op = '+' Then
+    Emit(OP_ADD, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '-' Then
+    Emit(OP_SUB, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '*' Then
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '^' Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_ECX));
+    CallRT('POW');
+  End
+  Else
+  Begin
+    { div : division par zero controlee si le diviseur varie }
+    If Not RightIsConst Then
+    Begin
+      Ok := NewLabel;
+      Emit(OP_TEST, OpReg(R_ECX), OpReg(R_ECX));
+      Emit1(OP_JNE, OpLabel(Ok));
+      CallRT('DIVZERO');
+      EmitLabel(Ok);
+    End;
+    Emit0(OP_CDQ);
+    Emit1(OP_IDIV, OpReg(R_ECX));
+  End;
+End;
+
+{ Operateur binaire arithmetique. Les valeurs intermediaires sont
+  rangees sur la pile machine (jamais en registre a travers un appel). }
+Procedure GenBinary(N : Integer);
+Var
+  Op      : TString;
+  L, R, T : Integer;
+Begin
+  Op := ExprTab[N].Op;
+  L  := ExprTab[N].L;
+  R  := ExprTab[N].R;
+  T  := ExprTab[N].Typ;
+
+  If T = TY_IDX_REAL Then
+  Begin
+    GenExprAs(L, TY_IDX_REAL);
+    SpillReal;
+    GenExprAs(R, TY_IDX_REAL);
+    If Op = '^' Then
+    Begin
+      Emit1(OP_FLD, OpMem(R_ESP, 0, 8));       { ST0 = base, ST1 = exposant }
+      CallRT('RPOW');
+    End
+    Else If Op = '+' Then
+      Emit1(OP_FADD, OpMem(R_ESP, 0, 8))
+    Else If Op = '*' Then
+      Emit1(OP_FMUL, OpMem(R_ESP, 0, 8))
+    Else If Op = '-' Then
+      Emit1(OP_FSUBR, OpMem(R_ESP, 0, 8))
+    Else
+      Emit1(OP_FDIVR, OpMem(R_ESP, 0, 8));     { / }
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(8));
+    Exit;
+  End;
+
+  { entiers }
+  GenExprAs(L, TY_IDX_INTEGER);
+  If (ExprTab[R].Kind = EX_INT) And ((Op = '+') Or (Op = '-')) Then
+  Begin
+    If Op = '+' Then
+      Emit(OP_ADD, OpReg(R_EAX), OpImm(ExprTab[R].IntVal))
+    Else
+      Emit(OP_SUB, OpReg(R_EAX), OpImm(ExprTab[R].IntVal));
+    Exit;
+  End;
+  If ExprTab[R].Kind = EX_INT Then
+  Begin
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(ExprTab[R].IntVal));
+    GenIntOp(Op, True);
+    Exit;
+  End;
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  GenExprAs(R, TY_IDX_INTEGER);
+  Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+  Emit1(OP_POP, OpReg(R_EAX));
+  GenIntOp(Op, False);
+End;
+
 { Evalue le noeud N : integer, Boolean ou chaine (adresse) dans EAX,
   real dans ST(0). Les autres noeuds viendront avec leurs TODO. }
 Procedure GenExpr(N : Integer);
@@ -4117,15 +4626,35 @@ Begin
     EX_INT, EX_BOOL:
       LoadImm(R_EAX, ExprTab[N].IntVal);
     EX_REAL:
-      Emit1(OP_FLD, OpMemSym(DataReal(ExprTab[N].RealVal), 0, 8));
+      Begin
+        If ExprTab[N].RealVal = 0 Then
+          Emit0(OP_FLDZ)
+        Else If ExprTab[N].RealVal = 1 Then
+          Emit0(OP_FLD1)
+        Else
+          Emit1(OP_FLD, OpMemSym(DataReal(ExprTab[N].RealVal), 0, 8));
+      End;
     EX_STR:
       Emit(OP_MOV, OpReg(R_EAX),
            OpOffset(DataStr(ExprStrTab[ExprTab[N].StrIdx])));
     EX_VAR:
       GenLoadVar(ExprTab[N].Sym);
+    EX_UNARY:
+      Begin
+        GenExprAs(ExprTab[N].L, ExprTab[N].Typ);
+        If ExprTab[N].Op = '-' Then
+        Begin
+          If IsRealT(ExprTab[N].Typ) Then
+            Emit0(OP_FCHS)
+          Else
+            Emit1(OP_NEG, OpReg(R_EAX));
+        End;
+      End;
+    EX_BINARY:
+      GenBinary(N);
   Else
     FatalError('erreur interne: noeud d''expression non genere ' +
-               '(TODO 10 a 17)');
+               '(TODO 11 a 17)');
   End;
 End;
 
