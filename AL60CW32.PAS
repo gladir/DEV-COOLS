@@ -26,7 +26,7 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 23 implementes (squelette, pipeline en 6 phases,
+  ETAT : TODO 01 a 24 implementes (squelette, pipeline en 6 phases,
          options de ligne de commande, constantes, limites et nommage,
          lexeur, types et conversions, table des symboles, code interne
          et listing .ASM, segment de donnees, expressions primaires,
@@ -34,8 +34,8 @@
          instructions et blocs, boucle for, goto et switch, tableaux,
          procedures, appel par nom, entrees/sorties et fonctions
          standard, encodeur x86-32, ecrivains PE et COFF, runtime integre,
-         erreurs et rapport) ;
-         TODO 24 et 25 a faire.
+         erreurs et rapport, modes -v et -d) ;
+         TODO 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -863,7 +863,7 @@
               creation du .asm (sortie .exe impossible) supprime le .asm ;
               les 32 exemples executables donnent toujours la meme sortie
 
-  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [A FAIRE]
+  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [IMPLEMENTE]
             Run : lexeur -> parseur/generateur -> runtime -> encodeur ->
               ecrivain (PE ou COFF) -> .ASM optionnel -> statistiques
             Mode -v : phases, tailles .text/.data, nombre de symboles
@@ -874,6 +874,27 @@
             Verifier que l'absence de -asm ne cree jamais de .ASM, que
               -obj ne cree jamais de .EXE, et que sans option on obtient
               uniquement le .EXE
+            Realise : Run enchaine les six phases (lexeur, parseur et
+              generateur, runtime ajoute avant le listing, encodeur,
+              ecrivain, rapport) ; seules les phases lexeur, parseur et
+              rapport tournent s'il y a des erreurs ; -v : banniere,
+              fichiers, une ligne de statistiques par phase (lignes et
+              tokens, declarations et instructions analysees,
+              instructions, donnees et noms internes, tailles .text et
+              .data, relocations et imports, taille du fichier) et liste
+              des fichiers produits ; -d : tokens, types, decisions du
+              parseur, table des symboles par portee, donnees, code
+              interne complet (runtime compris) et listing hexadecimal
+              <sortie>.lst ; -w, -w+ et -w- (derniere option retenue) ;
+              codes de retour 0 (succes ou aide), 1 (erreur), 2 (usage)
+            Verifie (matrice des fichiers produits pour hello.a60) :
+              sans option -> h.exe seul ; -asm -> h.exe + h.asm ;
+              -obj -> h.obj seul ; -obj -asm -> h.obj + h.asm ;
+              -d -> h.exe + h.lst ; -obj -d -> h.obj + h.lst ; -v, -w et
+              -w- -> h.exe seul ; -o n -> n.exe, n.asm, n.obj ; source
+              sans extension (.a60 puis .alg) ; refus de -o vers un
+              .asm ou vers le source, d'une extension inconnue, d'une
+              option inconnue ; sans argument -> usage et code 2
 
   TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL60\* [A FAIRE]
             Compiler les 33 fichiers : arrays, blocks, byname, forloop,
@@ -11150,8 +11171,17 @@ Begin
     WriteLn('Compilation echouee : ', ErrorCount, ' erreur(s), ',
             WarnCount, ' avertissement(s)')
   Else If (WarnCount > 0) Or Opts.Verbose Then
+  Begin
+    If Opts.Verbose Then
+    Begin
+      Write('  fichier(s) produit(s) : ', Opts.OutFile);
+      If Opts.EmitAsm Then Write(', ', Opts.AsmFile);
+      If Opts.DebugMode Then Write(', ', ReplaceExt(Opts.OutFile, '.lst'));
+      WriteLn;
+    End;
     WriteLn('Compilation terminee : 0 erreur, ', WarnCount,
             ' avertissement(s)');
+  End;
 End;
 
 { ============================================================
