@@ -23,11 +23,11 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 15 implementes (squelette, options, constantes,
+  ETAT : TODO 01 a 16 implementes (squelette, options, constantes,
          lexeur, types, symboles, structure du programme, expressions,
          booleens, affectations, tableaux, if et for, go to et switch,
-         procedures et appels, parametres par nom) ; TODO 16 a 25 a
-         faire.
+         procedures et appels, parametres par nom, entrees/sorties) ;
+         TODO 17 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -346,7 +346,7 @@
               thunks au moment de l'appel, acces au parametre dans le
               corps (appel du thunk ou lecture par reference)
 
-  TODO 16 - ENTREES/SORTIES : WRITE, WRITELN, READ, READLN [A FAIRE]
+  TODO 16 - ENTREES/SORTIES : WRITE, WRITELN, READ, READLN [IMPLEMENTE]
             write(a, b, ...) avec liste d'arguments heterogenes :
               chaines, entiers, reels, booleens, expressions
               (write("x=", x, " y=", y))
@@ -358,6 +358,17 @@
               l'affecter, y compris element de tableau
             Sortie sur stdout par defaut, runtime en WriteFile Win32
             Exemples : hello.a58, test_readwrite.a58, test_literals.a58
+            Realise : write / writeln / read / readln reconnus par leur nom
+              (non reserves : une declaration du meme nom est prioritaire),
+              parentheses facultatives, noeuds EX_WRITE et EX_READ ;
+              write accepte chaine, integer, real, Boolean ; les entiers
+              et booleens constants sont convertis en texte puis fusionnes
+              avec les chaines voisines ; read demande des variables
+              numeriques ou Boolean, elements de tableau ou parametres par
+              nom (marques ecrits) ; stdout seulement (pas de syntaxe
+              pour stderr dans le langage)
+            Reste pour le runtime (TODO 22) : format des reels, lecture
+              des Boolean (true / false), WriteFile et ReadFile
 
   TODO 17 - FONCTIONS INTRINSEQUES [A FAIRE]
             abs, sign, entier, sqrt, max, min, mod(a, b) en fonction
@@ -2347,6 +2358,7 @@ Var
   GotoCount  : LongInt;      { instructions go to                   }
   CallCount  : LongInt;      { appels de procedure ou fonction      }
   ThunkCount : LongInt;      { thunks d'arguments par nom           }
+  IOCount    : LongInt;      { instructions write / read            }
   LabelCount : LongInt;      { etiquettes definies                  }
   ForCount   : LongInt;      { instructions for                     }
   LoopDepth  : Integer;      { imbrication courante des for         }
@@ -2425,6 +2437,16 @@ Begin
               AtKw('procedure') Or AtKw('switch');
 End;
 
+{ write, writeln, read, readln : entrees/sorties (TODO 16) }
+Function IsIOName(Const Name : TString) : Boolean;
+Var
+  K : TString;
+Begin
+  K := UpCaseStr(Name);
+  IsIOName := (K = 'WRITE') Or (K = 'WRITELN') Or (K = 'READ') Or
+              (K = 'READLN');
+End;
+
 { Fin d'une instruction simple : ';' end, else ou fin de fichier }
 Function AtStmtEnd : Boolean;
 Begin
@@ -2449,6 +2471,7 @@ End;
 
 Procedure ParseItem; Forward;
 Procedure ParseStatement; Forward;
+Procedure ParseIO(Const Tok : TToken); Forward;
 Procedure ParseLabelDef(Const Name : TString; Line, Col : Integer);
   Forward;
 
@@ -2492,7 +2515,9 @@ Type
     EX_LIST,        { liste d indices : L = expression, R = suivant }
     EX_LABEL,       { designateur : etiquette (Sym)               }
     EX_SWITCHREF,   { designateur : Sym[L] (element de switch)    }
-    EX_CALL         { appel de Sym ; L = liste des arguments      }
+    EX_CALL,        { appel de Sym ; L = liste des arguments      }
+    EX_WRITE,       { write / writeln : L = arguments, Flag = CR LF }
+    EX_READ         { read / readln : L = variables, Flag = fin de ligne }
   );
 
   TExprNode = Record
@@ -3838,6 +3863,16 @@ Begin
                   Else
                     WriteLn;
                 End;
+    EX_WRITE  : Begin
+                  Write('write');
+                  If ExprTab[N].Flag Then Write('ln');
+                  WriteLn(' (', ExprTab[N].IntVal, ' argument(s))');
+                End;
+    EX_READ   : Begin
+                  Write('read');
+                  If ExprTab[N].Flag Then Write('ln');
+                  WriteLn(' (', ExprTab[N].IntVal, ' variable(s))');
+                End;
     EX_LIST   : WriteLn('list');
     EX_LABEL  : WriteLn('label ', SymTab[ExprTab[N].Sym].Name);
     EX_SWITCHREF : WriteLn('switch ', SymTab[ExprTab[N].Sym].Name, '[]');
@@ -3858,6 +3893,16 @@ Begin
         Write(' ', ExprStrTab[ExprTab[I].StrIdx]);
       WriteLn(' ', ConvName(ExprTab[I].Conv));
       ExprDump(ExprTab[I].L, Depth + 2);
+      I := ExprTab[I].R;
+    End;
+    Exit;
+  End;
+  If ExprTab[N].Kind In [EX_WRITE, EX_READ] Then
+  Begin
+    I := ExprTab[N].L;
+    While I >= 0 Do
+    Begin
+      ExprDump(ExprTab[I].L, Depth + 1);
       I := ExprTab[I].R;
     End;
     Exit;
@@ -3997,6 +4042,11 @@ Begin
     Exit;
   End;
   S := SymFind(Tok.Val);
+  If (S < 0) And IsIOName(Tok.Val) And (Not AtOp(':=')) Then
+  Begin
+    ParseIO(Tok);
+    Exit;
+  End;
   If (S >= 0) And (SymTab[S].Kind In [SK_PROC, SK_FUNC]) And
      (Not AtOp(':=')) And (Not AtPunct('[')) Then
   Begin
@@ -4425,6 +4475,132 @@ Begin
   Begin
     ParserUnget(Tok);
     ParseExprStatement;
+  End;
+End;
+
+{ ---- Entrees/sorties : write, writeln, read, readln (TODO 16) ----- }
+
+{ write(a, b, ...) / writeln(...) / read(v, ...) / readln(...)
+  Tok = le nom, deja consomme ; ce ne sont pas des mots reserves : une
+  declaration du programme du meme nom reste prioritaire.
+  write : chaine, integer, real ou Boolean (true / false). Les entiers
+    et booleens constants sont convertis en texte a la compilation et
+    fusionnes avec les chaines voisines ("x=", 5 devient "x=5").
+  read : variables numeriques ou Boolean, elements de tableau ou
+    parametres par nom (marques ecrits).
+  writeln ajoute CR LF ; readln consomme le reste de la ligne.
+  Le format des reels est fixe par le runtime (TODO 22). }
+Procedure ParseIO(Const Tok : TToken);
+Var
+  Key                 : TString;
+  IsWrite, NL         : Boolean;
+  Head, Tail, Item, E : Integer;
+  N, Node             : Integer;
+  Line, Col           : Integer;
+  Txt                 : TString;
+Begin
+  Inc(IOCount);
+  Key     := UpCaseStr(Tok.Val);
+  IsWrite := (Key = 'WRITE') Or (Key = 'WRITELN');
+  NL      := (Key = 'WRITELN') Or (Key = 'READLN');
+  Head := -1;
+  Tail := -1;
+  N    := 0;
+  ExprReset;
+  If AtPunct('(') Then
+  Begin
+    ParserAdvance;
+    If Not AtPunct(')') Then
+      Repeat
+        Line := CurToken.Line;
+        Col  := CurToken.Col;
+        E := ParseExprPrec(1);
+        If E < 0 Then
+        Begin
+          ParserSync;
+          Exit;
+        End;
+        If IsWrite Then
+        Begin
+          If Not ((ExprTab[E].Typ = TY_IDX_STRING) Or
+                  TypeIsArith(ExprTab[E].Typ)) Then
+          Begin
+            ErrorAt(Line, Col, Tok.Val + ': type non imprimable (' +
+                    TypeName(ExprTab[E].Typ) + ')');
+            ParserSync;
+            Exit;
+          End;
+          { constante entiere ou booleenne -> texte }
+          If ExprTab[E].Kind In [EX_INT, EX_BOOL] Then
+          Begin
+            If ExprTab[E].Kind = EX_BOOL Then
+              If ExprTab[E].IntVal <> 0 Then Txt := 'true'
+              Else Txt := 'false'
+            Else
+              Txt := ItoS(ExprTab[E].IntVal);
+            ExprTab[E].Kind   := EX_STR;
+            ExprTab[E].Typ    := TY_IDX_STRING;
+            ExprTab[E].StrIdx := ExprAddStr(Txt);
+          End;
+        End
+        Else
+        Begin
+          If Not (ExprTab[E].Kind In [EX_VAR, EX_INDEX]) Then
+          Begin
+            ErrorAt(Line, Col, Tok.Val + ': variable attendue');
+            ParserSync;
+            Exit;
+          End;
+          If Not (TypeIsArith(ExprTab[E].Typ)) Then
+          Begin
+            ErrorAt(Line, Col, Tok.Val + ': type non lisible (' +
+                    TypeName(ExprTab[E].Typ) + ')');
+            ParserSync;
+            Exit;
+          End;
+          If (ExprTab[E].Kind = EX_VAR) And
+             (SymTab[ExprTab[E].Sym].Kind = SK_PARAM_NAME) Then
+            SymTab[ExprTab[E].Sym].IsWritten := True;
+        End;
+        { fusion de deux chaines consecutives }
+        If IsWrite And (Tail >= 0) And (ExprTab[E].Kind = EX_STR) And
+           (ExprTab[ExprTab[Tail].L].Kind = EX_STR) And
+           (Length(ExprStrTab[ExprTab[ExprTab[Tail].L].StrIdx]) +
+            Length(ExprStrTab[ExprTab[E].StrIdx]) <= MAX_STR) Then
+          ExprStrTab[ExprTab[ExprTab[Tail].L].StrIdx] :=
+            ExprStrTab[ExprTab[ExprTab[Tail].L].StrIdx] +
+            ExprStrTab[ExprTab[E].StrIdx]
+        Else
+        Begin
+          Item := ExprNew(EX_LIST, ExprTab[E].Typ, Line, Col);
+          ExprTab[Item].L := E;
+          If Head < 0 Then Head := Item Else ExprTab[Tail].R := Item;
+          Tail := Item;
+          Inc(N);
+        End;
+        If AtPunct(',') Then
+          ParserAdvance
+        Else
+          Break;
+      Until False;
+    ExpectPunct(')');
+  End;
+  If IsWrite Then
+    Node := ExprNew(EX_WRITE, TY_IDX_PROCEDURE, Tok.Line, Tok.Col)
+  Else
+    Node := ExprNew(EX_READ, TY_IDX_PROCEDURE, Tok.Line, Tok.Col);
+  ExprTab[Node].L      := Head;
+  ExprTab[Node].IntVal := N;
+  ExprTab[Node].Flag   := NL;
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('E/S ligne ', Tok.Line, ' :');
+    ExprDump(Node, 1);
+  End;
+  If Not AtStmtEnd Then
+  Begin
+    ParseError('operateur ou '';'' attendu apres ' + Tok.Val);
+    ParserSync;
   End;
 End;
 
@@ -5001,6 +5177,7 @@ Begin
   GotoCount  := 0;
   CallCount  := 0;
   ThunkCount := 0;
+  IOCount    := 0;
   LabelCount := 0;
   ForCount   := 0;
   LoopDepth  := 0;
@@ -5017,7 +5194,7 @@ Begin
             ' affectation(s), ', IfCount, ' if, ', ForCount, ' for, ',
             GotoCount, ' goto, ', LabelCount, ' etiquette(s), ',
             CallCount, ' appel(s), ', ThunkCount, ' thunk(s), ',
-            FoldCount, ' constante(s) repliee(s)');
+            IOCount, ' e/s, ', FoldCount, ' constante(s) repliee(s)');
 End;
 
 { ============================================================
