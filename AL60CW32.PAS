@@ -26,8 +26,8 @@
     script de test a reprendre ou a adapter : DOC\TODO\AL58CW32.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 implemente (squelette en sections et pipeline en 6
-         phases) ; TODO 02 a 25 a faire.
+  ETAT : TODO 01 et 02 implementes (squelette, pipeline en 6 phases,
+         options de ligne de commande) ; TODO 03 a 25 a faire.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -61,7 +61,7 @@
               remplies par les TODOs suivants) ; code de retour EXIT_OK
               ou EXIT_ERROR selon le nombre d'erreurs
 
-  TODO 02 - OPTIONS DE LIGNE DE COMMANDE ET FICHIERS DE SORTIE [A FAIRE]
+  TODO 02 - OPTIONS DE LIGNE DE COMMANDE ET FICHIERS DE SORTIE [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             Syntaxe : AL60CW32 source.a60 [-o sortie] [-obj] [-asm]
@@ -74,6 +74,16 @@
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
             Aide en ligne (-h), version et date, message d'usage si
               aucun argument
+            Realise : -w / -w+ active et -w- desactive les avertissements
+              (desactives par defaut) ; options insensibles a la casse ;
+              source sans extension : .a60 puis .alg ; sortie sans
+              extension : .exe (ou .obj avec -obj) ajoute ; le .asm
+              porte le nom de la sortie ; refus d'ecraser le source, de
+              designer un .asm avec -o, d'une extension inconnue, d'un
+              source introuvable ; code de retour 2 pour une erreur
+              d'usage, 1 pour une erreur fatale ; en mode -v, banniere et
+              fichiers de sortie annonces (seuls les fichiers demandes
+              seront crees)
 
   TODO 03 - CONSTANTES, LIMITES ET CONVENTIONS DE NOMMAGE [A FAIRE]
             Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_SIGNATURE,
@@ -462,6 +472,21 @@ Const
   SECTION 2 - TYPES (TODO 01, 04, 05, 06)
   ============================================================ }
 Type
+  TString = String[255];
+
+  { Options de la ligne de commande (TODO 02) }
+  TOptions = Record
+    SrcFile   : TString;    { fichier source .a60 / .alg              }
+    OutFile   : TString;    { sortie principale (.exe ou .obj)        }
+    AsmFile   : TString;    { listing .asm (si EmitAsm)               }
+    Verbose   : Boolean;    { -v : banniere + statistiques            }
+    DebugMode : Boolean;    { -d : dump des tokens                    }
+    Warnings  : Boolean;    { -w : activer les avertissements         }
+    EmitExe   : Boolean;    { produire un .EXE PE (defaut)            }
+    EmitObj   : Boolean;    { -obj : produire seulement un .OBJ       }
+    EmitAsm   : Boolean;    { -asm : produire aussi un .ASM           }
+  End;
+
   { Etapes du pipeline :
       source .a60 -> lexeur -> parseur / table des symboles
       -> generation du code interne (listing .ASM optionnel)
@@ -479,6 +504,7 @@ Type
   SECTION 3 - VARIABLES GLOBALES (TODO 01, 02, 23)
   ============================================================ }
 Var
+  Opts       : TOptions;
   ErrorCount : Integer;   { erreurs de compilation signalees  }
   WarnCount  : Integer;   { avertissements signales           }
 
@@ -497,9 +523,233 @@ Begin
   End;
 End;
 
+Function StrLower(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If R[I] In ['A'..'Z'] Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLower := R;
+End;
+
+{ Position du point de l extension (0 si aucune extension) }
+Function ExtPos(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  ExtPos := 0;
+  I := Length(Name);
+  While I > 0 Do
+  Begin
+    If Name[I] = '.' Then
+    Begin
+      ExtPos := I;
+      Exit;
+    End;
+    If Name[I] In ['\', '/', ':'] Then Exit;
+    Dec(I);
+  End;
+End;
+
+Function GetExt(Const Name : TString) : TString;
+Var
+  P : Integer;
+Begin
+  P := ExtPos(Name);
+  If P = 0 Then
+    GetExt := ''
+  Else
+    GetExt := StrLower(Copy(Name, P, 255));
+End;
+
+Function ReplaceExt(Const Name, Ext : TString) : TString;
+Var
+  P : Integer;
+Begin
+  P := ExtPos(Name);
+  If P = 0 Then
+    ReplaceExt := Name + Ext
+  Else
+    ReplaceExt := Copy(Name, 1, P - 1) + Ext;
+End;
+
+Function FileExists(Const Name : TString) : Boolean;
+Var
+  F : File;
+Begin
+  Assign(F, Name);
+  Reset(F, 1);
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+End;
+
 { ============================================================
   SECTION 5 - OPTIONS DE LIGNE DE COMMANDE (TODO 02)
   ============================================================ }
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('AL60CW32: erreur fatale: ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('AL60CW32: avertissement: ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure ShowBanner;
+Begin
+  WriteLn('AL60CW32 ', AL60CW32_VERSION, ' (', AL60CW32_DATE, ') - ',
+          'Compilateur Algol 60 vers 80386 / Windows 32 bits');
+End;
+
+Procedure ShowUsage(Code : Integer);
+Begin
+  ShowBanner;
+  WriteLn;
+  WriteLn('Syntaxe: AL60CW32 <source.a60> [-o sortie] [-obj] [-asm]',
+          ' [-v] [-d] [-w] [-h]');
+  WriteLn;
+  WriteLn('  source.a60 : fichier Algol 60 source (.a60 ou .alg)');
+  WriteLn('  -o nom     : nom du fichier de sortie principal');
+  WriteLn('  -obj       : produire seulement un .OBJ (COFF), pas de .EXE');
+  WriteLn('  -asm       : produire aussi un listing .ASM (optionnel)');
+  WriteLn('  -v         : mode verbeux (phases, tailles, statistiques)');
+  WriteLn('  -d         : debug (tokens, symboles, code interne)');
+  WriteLn('  -w, -w-    : activer / desactiver les avertissements');
+  WriteLn('  -h, --help : cette aide');
+  WriteLn;
+  WriteLn('Par defaut, produit seulement source.exe (PE Windows 32 bits).');
+  WriteLn('Sans -asm aucun .asm n''est cree ; avec -obj aucun .exe.');
+  Halt(Code);
+End;
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.AsmFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.EmitExe   := True;
+  Opts.EmitObj   := False;
+  Opts.EmitAsm   := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Opt : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage(EXIT_USAGE);
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+    Opt := StrLower(Arg);
+
+    If (Opt = '-h') Or (Opt = '--help') Or (Opt = '/?') Then
+      ShowUsage(EXIT_OK)
+    Else If Opt = '-v' Then
+      Opts.Verbose := True
+    Else If Opt = '-d' Then
+      Opts.DebugMode := True
+    Else If (Opt = '-w') Or (Opt = '-w+') Then
+      Opts.Warnings := True
+    Else If Opt = '-w-' Then
+      Opts.Warnings := False
+    Else If Opt = '-obj' Then
+      Opts.EmitObj := True
+    Else If Opt = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Opt = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+      Begin
+        WriteLn('AL60CW32: -o demande un nom de fichier');
+        ShowUsage(EXIT_USAGE);
+      End;
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Arg <> '') And (Arg[1] = '-') Then
+    Begin
+      WriteLn('AL60CW32: option inconnue: ', Arg);
+      ShowUsage(EXIT_USAGE);
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else
+    Begin
+      WriteLn('AL60CW32: argument inattendu: ', Arg);
+      ShowUsage(EXIT_USAGE);
+    End;
+    Inc(I);
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('AL60CW32: fichier source manquant');
+    ShowUsage(EXIT_USAGE);
+  End;
+
+  { Extension du source : .a60 ou .alg (.a60 ajoute si absente) }
+  If ExtPos(Opts.SrcFile) = 0 Then
+  Begin
+    If FileExists(Opts.SrcFile + '.a60') Then
+      Opts.SrcFile := Opts.SrcFile + '.a60'
+    Else
+      Opts.SrcFile := Opts.SrcFile + '.alg';
+  End;
+  Ext := GetExt(Opts.SrcFile);
+  If (Ext <> '.a60') And (Ext <> '.alg') Then
+    FatalError('extension non supportee (attendu .a60 ou .alg): ' +
+               Opts.SrcFile);
+  If Not FileExists(Opts.SrcFile) Then
+    FatalError('fichier source introuvable: ' + Opts.SrcFile);
+
+  { Sortie principale : .EXE par defaut, .OBJ seul avec -obj }
+  If Opts.EmitObj Then
+    Opts.EmitExe := False;
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitExe Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj');
+  End
+  Else If ExtPos(Opts.OutFile) = 0 Then
+  Begin
+    If Opts.EmitExe Then
+      Opts.OutFile := Opts.OutFile + '.exe'
+    Else
+      Opts.OutFile := Opts.OutFile + '.obj';
+  End;
+
+  { Listing assembleur optionnel : meme nom de base que la sortie }
+  Opts.AsmFile := ReplaceExt(Opts.OutFile, '.asm');
+
+  If StrLower(Opts.OutFile) = StrLower(Opts.SrcFile) Then
+    FatalError('la sortie ecraserait le source: ' + Opts.OutFile);
+  If GetExt(Opts.OutFile) = '.asm' Then
+    FatalError('-o ne peut pas designer un .asm; utiliser -asm');
+End;
 
 { ============================================================
   SECTION 6 - LEXEUR (TODO 04)
@@ -562,7 +812,8 @@ End;
   ============================================================ }
 Procedure RunPhase(P : TPhase);
 Begin
-  WriteLn('AL60CW32: ', PhaseName(P));
+  If Opts.Verbose Then
+    WriteLn('AL60CW32: ', PhaseName(P));
   Case P Of
     PH_LEX     : PhaseLex;
     PH_PARSE   : PhaseParse;
@@ -579,6 +830,17 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  If Opts.Verbose Then
+  Begin
+    ShowBanner;
+    WriteLn('  source : ', Opts.SrcFile);
+    If Opts.EmitExe Then
+      WriteLn('  .EXE   : ', Opts.OutFile);
+    If Opts.EmitObj Then
+      WriteLn('  .OBJ   : ', Opts.OutFile);
+    If Opts.EmitAsm Then
+      WriteLn('  .ASM   : ', Opts.AsmFile);
+  End;
   For P := PH_LEX To PH_REPORT Do
     RunPhase(P);
   If ErrorCount > 0 Then
@@ -591,7 +853,6 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 BEGIN
-  WriteLn('AL60CW32 ', AL60CW32_VERSION, ' - Compilateur Algol 60 ',
-          'vers 80386 / Windows 32 bits');
+  ParseArgs;
   Run;
 END.
