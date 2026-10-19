@@ -1,4 +1,4 @@
-var __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
+var __fpts, __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;
 function __mk(k) {
   var t = typeof k;
   if (t === 'string') return 's' + k;
@@ -70,7 +70,8 @@ function __i_init() {
     var f = this;
     return function (...b) { return __invoke(f, t, a.concat(b)); };
   };
-  FP.toString = function () { return 'function ' + this.name + '() { [native code] }'; };
+  FP.toString = function () { var src = __fsrc(this); return src !== undefined ? src : 'function ' + this.name + '() { [native code] }'; };
+  __fpts = FP.toString;
   var __cl = [[Object, 0], [Array, 0], [String, 0], [Number, 0], [Boolean, 0], [RegExp, 0], [Function, 0], [Error, 0], [EvalError, 0], [RangeError, 0],
     [ReferenceError, 0], [SyntaxError, 0], [TypeError, 0], [URIError, 0]];
   for (var __ci = 0; __ci < __cl.length; __ci++) {

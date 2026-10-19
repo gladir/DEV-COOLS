@@ -201,7 +201,10 @@ Const
   RT_FD_NPARAMS = 4;
   RT_FD_FLAGS = 8;
   RT_FD_NCELLS = 12;
-  RT_FD_SIZE = 16;
+  RT_FD_SRC_LO = 16;
+  RT_FD_SRC_HI = 20;
+  RT_FD_SRC = 24;
+  RT_FD_SIZE = 28;
   RT_CELL_VALUE = 8;
   RT_CELL_SIZE = 16;
   RT_ENV_COUNT = 8;
@@ -290,6 +293,7 @@ Const
   FDF_STATIC_BLOCK = 16384;
   FDF_NATIVE = 32768;
   FDF_USES_NT = 65536;
+  FDF_SLOPPY_THIS = 131072;
   { descripteur de classe : nom, constructeur, drapeaux, membres }
   RT_CD_NAME = 0;
   RT_CD_CTOR = 4;
@@ -347,7 +351,7 @@ Const
     'AbortController', 'AbortSignal', 'DOMException', 'URL', 'URLSearchParams', 'btoa', 'atob', 'fetch',
     'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Buffer', 'TextDecoder', 'Atomics', 'Proxy', 'Intl'
   );
-  BUILTIN_COUNT = 86;
+  BUILTIN_COUNT = 87;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -359,7 +363,7 @@ Const
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
-    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32', 'Intl'
+    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo', '__abnew', '__tanew', '__tainfo', '__abget', '__abset', '__abcopy', '__proxynew', '__proxyinfo', '__k32', 'Intl', '__fsrc'
   );
 
 Type
@@ -471,6 +475,7 @@ Type
     char_count  : LongInt;
     max_line_len: LongInt;
     user_lines  : LongInt;     { lignes du programme (hors prelude) }
+    user_chars  : LongInt;     { octets du programme (hors prelude) }
     line_start  : TDynList;
     buf         : TDynList;
   End;
@@ -509,7 +514,7 @@ Type
   );
 
   TDeclKind = (DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS, DK_PARAM, DK_CATCH,
-                 DK_FNAME, DK_ARGS, DK_NEWTARGET);
+                 DK_FNAME, DK_ARGS, DK_NEWTARGET, DK_CTORFN);
 
   { Noeud d'AST : tok est le jeton principal (position, nom) ; e1..e4 sont
     des noeuds enfants (ou des indices de jeton pour break/continue et
@@ -526,6 +531,7 @@ Type
     sym  : LongInt;            { symbole lie ou portee fournissant this }
     aux  : LongInt;            { genre de resolution }
     ds   : LongInt;            { chaine, double ou descripteur associe (donnees) }
+    sp_lo, sp_hi: LongInt;     { etendue du texte source (Function.prototype.toString) }
   End;
 
   { Etat sauvegarde a l'entree d'une fonction }
@@ -577,7 +583,7 @@ Type
     nslots, args_slot, frame_size: LongInt;     { disposition de la trame }
     kind  : TScopeKind;
     fkind : TFuncKind;
-    in_loop, uses_this, this_captured, uses_arguments, has_nested: Boolean;
+    in_loop, uses_this, this_captured, uses_arguments, has_nested, strict: Boolean;
   End;
 
   TSymbol = Record
@@ -594,7 +600,7 @@ Type
 
   TSemInfo = Record
     scope_count, sym_count, cap_count: LongInt;
-    cur_scope, loop_depth, cur_class, nt_tok: LongInt;
+    cur_scope, loop_depth, cur_class, nt_tok, ctor_tok: LongInt;
     in_typeof, stop, next_in_loop: Boolean;
     scopes: TDynList;
     syms  : TDynList;
@@ -624,7 +630,7 @@ Type
   End;
 
   TFuncDesc = Record
-    node, name_str, nparams, flags, ncells, sym: LongInt;
+    node, name_str, nparams, flags, ncells, sym, src_lo, src_hi: LongInt;
     code_sym: String[100];
   End;
 
@@ -654,7 +660,7 @@ Type
     .data, symboles et relocations. }
   TDataInfo = Record
     built, failed: Boolean;
-    str_count, dpool_len, atom_count, atom_table_sym, dbl_count, fd_count,
+    src_str, str_count, dpool_len, atom_count, atom_table_sym, dbl_count, fd_count,
     cd_count, cm_count, sym_count, reloc_count, rd_size, dt_size,
     global_count: LongInt;
     hash  : TDynList;
@@ -1669,10 +1675,10 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 13529;
-  PRELUDE_BASE = 2942;
+  PRELUDE_LINES = 13530;
+  PRELUDE_BASE = 2943;
   PRELUDE_CHUNKS = 33;
-  PreludeChunkEnd: Array[1..33] Of LongInt = (3577, 5268, 5605, 6167, 6347, 7810, 8318, 9121, 10306, 10411, 10490, 10571, 10769, 11068, 11236, 11321, 11493, 11669, 11834, 11929, 12003, 12085, 12182, 12277, 12359, 12438, 12532, 12707, 12931, 13014, 13096, 13342, 13529);
+  PreludeChunkEnd: Array[1..33] Of LongInt = (3578, 5269, 5606, 6168, 6348, 7811, 8319, 9122, 10307, 10412, 10491, 10572, 10770, 11069, 11237, 11322, 11494, 11670, 11835, 11930, 12004, 12086, 12183, 12278, 12360, 12439, 12533, 12708, 12932, 13015, 13097, 13343, 13530);
   PreludeChunkKeys: Array[1..33] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8|nt16Array|nt32Array|Float32A|Float64A|BigInt64|BigUint64|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics|fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Proxy', '\p{|\P{', 'normalize', 'fs''|fs"|fs/|readline|child_process|stdin|process.cwd|process.env|chdir', 'Intl|toLocale|localeCompare', '''cs-|"cs-|''cs''|"cs"|`cs-', '''da-|"da-|''da''|"da"|`da-', '''de-|"de-|''de''|"de"|`de-', '''el-|"el-|''el''|"el"|`el-', 'en-GB|en-AU|en-CA|en-IN', '''es-|"es-|''es''|"es"|`es-', '''fi-|"fi-|''fi''|"fi"|`fi-', '''fr-|"fr-|''fr''|"fr"|`fr-', '''he-|"he-|''he''|"he"|`he-', '''hi-|"hi-|''hi''|"hi"|`hi-', '''hu-|"hu-|''hu''|"hu"|`hu-', '''id-|"id-|''id''|"id"|`id-', '''it-|"it-|''it''|"it"|`it-', '''ja-|"ja-|''ja''|"ja"|`ja-', '''ko-|"ko-|''ko''|"ko"|`ko-', '''nb-|"nb-|''nb''|"nb"|`nb-', '''nl-|"nl-|''nl''|"nl"|`nl-', '''pl-|"pl-|''pl''|"pl"|`pl-', '''pt-|"pt-|''pt''|"pt"|`pt-', '''ru-|"ru-|''ru''|"ru"|`ru-', '''sv-|"sv-|''sv''|"sv"|`sv-', '''tr-|"tr-|''tr''|"tr"|`tr-', '''uk-|"uk-|''uk''|"uk"|`uk-', '''zh-|"zh-|''zh''|"zh"|`zh-');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
@@ -2095,7 +2101,7 @@ Const
     '  }',
     '}',
     'var __i_g;',
-    'var __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
+    'var __fpts, __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
     'function __mk(k) {',
     '  var t = typeof k;',
     '  if (t === ''string'') return ''s'' + k;',
@@ -2167,7 +2173,8 @@ Const
     '    var f = this;',
     '    return function (...b) { return __invoke(f, t, a.concat(b)); };',
     '  };',
-    '  FP.toString = function () { return ''function '' + this.name + ''() { [native code] }''; };',
+    '  FP.toString = function () { var src = __fsrc(this); return src !== undefined ? src : ''function '' + this.name + ''() { [native code] }''; };',
+    '  __fpts = FP.toString;',
     '  var __cl = [[Object, 0], [Array, 0], [String, 0], [Number, 0], [Boolean, 0], [RegExp, 0], [Function, 0], [Error, 0], [EvalError, 0], [RangeError, 0],',
     '    [ReferenceError, 0], [SyntaxError, 0], [TypeError, 0], [URIError, 0]];',
     '  for (var __ci = 0; __ci < __cl.length; __ci++) {',
@@ -15405,6 +15412,7 @@ Begin
   If failed Then
     Exit;
   ctx.source.user_lines := ctx.source.line_count;
+  ctx.source.user_chars := ctx.source.char_count;
   If Not (ctx.options.dump_tokens Or ctx.options.dump_ast Or ctx.options.dump_scopes) Then
     If Not AppendPrelude(ctx) Then
       Exit;
@@ -16569,7 +16577,29 @@ Begin
   NodeP(ctx.ast.nodes, n)^.sym := 0;
   NodeP(ctx.ast.nodes, n)^.aux := 0;
   NodeP(ctx.ast.nodes, n)^.ds := 0;
+  NodeP(ctx.ast.nodes, n)^.sp_lo := 0;
+  NodeP(ctx.ast.nodes, n)^.sp_hi := 0;
   NewNode := n;
+End;
+
+{ Etendue source d'une fonction ou classe : premier jeton, puis dernier jeton consomme. }
+Procedure SrcStart(Var ctx: TCompilerContext; node, tok: LongInt);
+Begin
+  If TokP(ctx.lex.tokens, tok)^.line > ctx.source.user_lines Then
+    Exit;
+  NodeP(ctx.ast.nodes, node)^.sp_lo := TokP(ctx.lex.tokens, tok)^.pos;
+End;
+
+Procedure SrcEnd(Var ctx: TCompilerContext; node: LongInt);
+Var
+  t: LongInt;
+Begin
+  t := ctx.ast.pt - 1;
+  If t < 1 Then
+    Exit;
+  If NodeP(ctx.ast.nodes, node)^.sp_lo >= 0 Then
+    If TokP(ctx.lex.tokens, t)^.line <= ctx.source.user_lines Then
+      NodeP(ctx.ast.nodes, node)^.sp_hi := TokP(ctx.lex.tokens, t)^.pos + TokP(ctx.lex.tokens, t)^.len;
 End;
 
 { Ajoute node a la liste (first, last). }
@@ -17247,6 +17277,7 @@ Begin
           If CurIsP(ctx, '(') Then
             Begin
               fn := NewNode(ctx, N_FUNC_EXPR, key_tok);
+              SrcStart(ctx, fn, key_tok);
               NodeP(ctx.ast.nodes, fn)^.flags := fflags;
               flags := flags Or PR_METHOD;
               ParseFuncRest(ctx, fn);
@@ -17299,10 +17330,11 @@ End;
 
 Function ParseFunctionExpr(Var ctx: TCompilerContext; is_async: Boolean): LongInt;
 Var
-  node, name_tok, save_scope, flags: LongInt;
+  node, name_tok, save_scope, flags, st_tok: LongInt;
   has_name: Boolean;
 Begin
   flags := 0;
+  st_tok := ctx.ast.pt;
   If is_async Then
     Begin
       flags := flags Or FN_ASYNC;
@@ -17319,6 +17351,7 @@ Begin
   If has_name Then
     name_tok := ctx.ast.pt;
   node := NewNode(ctx, N_FUNC_EXPR, name_tok);
+  SrcStart(ctx, node, st_tok);
   NodeP(ctx.ast.nodes, node)^.flags := flags;
   If has_name Then
     Begin
@@ -17340,6 +17373,7 @@ Var
   sv: TFuncSave;
 Begin
   node := NewNode(ctx, N_FUNC_EXPR, ctx.ast.pt);
+  SrcStart(ctx, node, ctx.ast.pt);
   ParseArrowFn := node;
   NodeP(ctx.ast.nodes, node)^.flags := FN_ARROW;
   If is_async Then
@@ -17370,6 +17404,7 @@ Begin
         End;
     End;
   LeaveFunc(ctx, sv);
+  SrcEnd(ctx, node);
 End;
 
 Function ParsePrimary(Var ctx: TCompilerContext): LongInt;
@@ -17970,16 +18005,18 @@ Begin
   ParseParamList(ctx, node);
   NodeP(ctx.ast.nodes, node)^.e2 := ParseFuncBlock(ctx);
   LeaveFunc(ctx, sv);
+  SrcEnd(ctx, node);
 End;
 
 { function [*] nom (...) corps. Le jeton courant est function (ou async
   si is_async). }
 Function ParseFunctionDecl(Var ctx: TCompilerContext; is_async: Boolean): LongInt;
 Var
-  node, name_tok: LongInt;
+  node, name_tok, st_tok: LongInt;
   flags: LongInt;
 Begin
   flags := 0;
+  st_tok := ctx.ast.pt;
   If is_async Then
     Begin
       flags := flags Or FN_ASYNC;
@@ -18001,6 +18038,7 @@ Begin
     End;
   name_tok := ctx.ast.pt;
   node := NewNode(ctx, N_FUNC_DECL, name_tok);
+  SrcStart(ctx, node, st_tok);
   NodeP(ctx.ast.nodes, node)^.flags := flags;
   DeclareName(ctx, DK_FUNC, name_tok, node);
   PAdvance(ctx);
@@ -18012,7 +18050,7 @@ End;
 
 Function ParseClassMember(Var ctx: TCompilerContext; has_ctor: Boolean): LongInt;
 Var
-  node, key_tok, nx, blk: LongInt;
+  node, key_tok, nx, blk, mstart: LongInt;
   flags: LongInt;
   is_method: Boolean;
 
@@ -18043,6 +18081,7 @@ Begin
           Exit;
         End;
     End;
+  mstart := ctx.ast.pt;
   If TkIsId(ctx, ctx.ast.pt, 'async') And IsModifier And
      Not TokP(ctx.lex.tokens, PeekIdx(ctx, 1))^.nl_before Then
     Begin
@@ -18066,6 +18105,7 @@ Begin
 
   key_tok := ctx.ast.pt;
   node := NewNode(ctx, N_METHOD, key_tok);
+  SrcStart(ctx, node, mstart);
   If CurIsP(ctx, '[') Then
     Begin
       PAdvance(ctx);
@@ -18116,10 +18156,11 @@ End;
   expression de classe. }
 Function ParseClass(Var ctx: TCompilerContext; is_decl: Boolean): LongInt;
 Var
-  node, name_tok, first, last, m, before, save_scope: LongInt;
+  node, name_tok, first, last, m, before, save_scope, st_tok: LongInt;
   has_ctor, has_name: Boolean;
 Begin
   name_tok := ctx.ast.pt;
+  st_tok := ctx.ast.pt;
   PAdvance(ctx);
   has_name := TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT;
   If is_decl And Not has_name Then
@@ -18136,6 +18177,7 @@ Begin
     node := NewNode(ctx, N_CLASS_DECL, name_tok)
   Else
     node := NewNode(ctx, N_CLASS_EXPR, name_tok);
+  SrcStart(ctx, node, st_tok);
   If is_decl Then
     DeclareName(ctx, DK_CLASS, name_tok, node);
   If has_name Then
@@ -18178,6 +18220,7 @@ Begin
     End;
   NodeP(ctx.ast.nodes, node)^.e2 := first;
   ctx.ast.cur_scope := save_scope;
+  SrcEnd(ctx, node);
   ParseClass := node;
 End;
 
@@ -18782,6 +18825,7 @@ Begin
     DK_FNAME: DeclKindName := 'fname';
     DK_ARGS:  DeclKindName := 'arguments';
     DK_NEWTARGET: DeclKindName := 'new.target';
+    DK_CTORFN: DeclKindName := 'ctor';
   Else
     DeclKindName := '?';
   End;
@@ -19224,6 +19268,40 @@ End;
 Function CreateArgsSymbol(Var ctx: TCompilerContext; prov, tok: LongInt;
                           kind: TDeclKind): LongInt; Forward;
 
+{ La liste d'instructions commence-t-elle par la directive 'use strict' ? }
+Function HasUseStrict(Var ctx: TCompilerContext; first: LongInt): Boolean;
+Const
+  US = 'use strict';
+Var
+  st, e, t, i: LongInt;
+  same: Boolean;
+Begin
+  HasUseStrict := False;
+  st := first;
+  While st <> 0 Do
+    Begin
+      If NodeP(ctx.ast.nodes, st)^.kind <> N_EXPR_STMT Then
+        Exit;
+      e := NodeP(ctx.ast.nodes, st)^.e1;
+      If (e = 0) Or (NodeP(ctx.ast.nodes, e)^.kind <> N_STRING) Then
+        Exit;
+      t := NodeP(ctx.ast.nodes, e)^.tok;
+      If TokP(ctx.lex.tokens, t)^.sval_len = Length(US) Then
+        Begin
+          same := True;
+          For i := 1 To Length(US) Do
+            If PoolP(ctx.lex.pool, TokP(ctx.lex.tokens, t)^.sval_off + i - 1)^ <> US[i] Then
+              same := False;
+          If same Then
+            Begin
+              HasUseStrict := True;
+              Exit;
+            End;
+        End;
+      st := NodeP(ctx.ast.nodes, st)^.next;
+    End;
+End;
+
 Function EnterScope(Var ctx: TCompilerContext; node: LongInt;
                     kind: TScopeKind; fk: TFuncKind): LongInt;
 Var
@@ -19245,6 +19323,26 @@ Begin
   ctx.sem.next_in_loop := False;
   ScopeP(ctx.sem.scopes, sc)^.first_sym := 0;
   ScopeP(ctx.sem.scopes, sc)^.last_sym := 0;
+  { mode strict : herite, classes, directive 'use strict', code du prelude }
+  If par <> 0 Then
+    ScopeP(ctx.sem.scopes, sc)^.strict := ScopeP(ctx.sem.scopes, par)^.strict
+  Else
+    ScopeP(ctx.sem.scopes, sc)^.strict := False;
+  If kind = SK_CLASS Then
+    ScopeP(ctx.sem.scopes, sc)^.strict := True;
+  If TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, node)^.tok)^.line > ctx.source.user_lines Then
+    ScopeP(ctx.sem.scopes, sc)^.strict := True;
+  If kind = SK_GLOBAL Then
+    Begin
+      If HasUseStrict(ctx, NodeP(ctx.ast.nodes, node)^.e1) Then
+        ScopeP(ctx.sem.scopes, sc)^.strict := True;
+    End
+  Else If (kind = SK_FUNCTION) And (NodeP(ctx.ast.nodes, node)^.kind In [N_FUNC_DECL, N_FUNC_EXPR, N_METHOD]) And
+          (NodeP(ctx.ast.nodes, node)^.e2 <> 0) And (NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, node)^.e2)^.kind = N_BLOCK) Then
+    Begin
+      If HasUseStrict(ctx, NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, node)^.e2)^.e1) Then
+        ScopeP(ctx.sem.scopes, sc)^.strict := True;
+    End;
   ScopeP(ctx.sem.scopes, sc)^.uses_this := False;
   ScopeP(ctx.sem.scopes, sc)^.this_captured := False;
   ScopeP(ctx.sem.scopes, sc)^.uses_arguments := False;
@@ -19264,6 +19362,17 @@ Begin
           TokP(ctx.lex.tokens, ctx.sem.nt_tok)^.text := 'new.target';
         End;
       CreateArgsSymbol(ctx, sc, ctx.sem.nt_tok, DK_NEWTARGET);
+    End;
+  If (kind = SK_FUNCTION) And (fk = FK_DERIVED_CTOR) Then
+    Begin
+      { le constructeur derive garde sa propre fonction : super(...) dans une fleche en a besoin }
+      If ctx.sem.ctor_tok = 0 Then
+        Begin
+          ctx.sem.ctor_tok := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, node)^.tok)^.line,
+                                       TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, node)^.tok)^.col, ctx.lex.pos);
+          TokP(ctx.lex.tokens, ctx.sem.ctor_tok)^.text := '%ctor';
+        End;
+      CreateArgsSymbol(ctx, sc, ctx.sem.ctor_tok, DK_CTORFN);
     End;
   d := NodeP(ctx.ast.nodes, node)^.decl_head;
   While d <> 0 Do
@@ -19417,6 +19526,11 @@ Begin
             sy := CreateArgsSymbol(ctx, prov, tok, DK_ARGS);
           ScopeP(ctx.sem.scopes, prov)^.uses_arguments := True;
         End;
+    End;
+  If name = '%ctor' Then
+    Begin
+      prov := NearestNonArrow(ctx);
+      sy := LookupWithin(ctx, name, prov);
     End;
   If name = 'new.target' Then
     Begin
@@ -19993,7 +20107,20 @@ Begin
       Begin
         e := NodeP(ctx.ast.nodes, n)^.e1;
         If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_SUPER) Then
-          ResolveSuper(ctx, e, True)
+          Begin
+            ResolveSuper(ctx, e, True);
+            If (NodeP(ctx.ast.nodes, e)^.e1 = 1) And (ctx.sem.ctor_tok <> 0) And
+               (ScopeP(ctx.sem.scopes, NodeP(ctx.ast.nodes, e)^.sym)^.fkind = FK_DERIVED_CTOR) Then
+              Begin
+                { super(...) dans une fleche : fonction du constructeur, new.target et this captures }
+                NodeP(ctx.ast.nodes, n)^.e3 := NewNode(ctx, N_IDENT, ctx.sem.ctor_tok);
+                NodeP(ctx.ast.nodes, n)^.e4 := NewNode(ctx, N_IDENT, ctx.sem.nt_tok);
+                NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, n)^.e3)^.next := NewNode(ctx, N_THIS, NodeP(ctx.ast.nodes, e)^.tok);
+                ResolveIdent(ctx, NodeP(ctx.ast.nodes, n)^.e3, RM_READ);
+                ResolveIdent(ctx, NodeP(ctx.ast.nodes, n)^.e4, RM_READ);
+                ResolveThis(ctx, NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, n)^.e3)^.next);
+              End;
+          End
         Else
           SemNode(ctx, e);
         SemList(ctx, NodeP(ctx.ast.nodes, n)^.e2);
@@ -20064,6 +20191,7 @@ Begin
   ctx.sem.loop_depth := 0;
   ctx.sem.cur_class := 0;
   ctx.sem.nt_tok := 0;
+  ctx.sem.ctor_tok := 0;
   ctx.sem.in_typeof := False;
   ctx.sem.stop := False;
   ctx.sem.next_in_loop := False;
@@ -20983,6 +21111,21 @@ Begin
   InternText := InternAt(ctx, start, Length(s));
 End;
 
+{ Texte du programme (hors prelude) comme chaine, pour Function.prototype.toString. }
+Function EnsureSrcStr(Var ctx: TCompilerContext): LongInt;
+Var
+  start, i: LongInt;
+Begin
+  If ctx.data.src_str = 0 Then
+    Begin
+      start := ctx.data.dpool_len;
+      For i := 0 To ctx.source.user_chars - 1 Do
+        DpoolPut(ctx, SrcCharP(ctx.source.buf, i)^);
+      ctx.data.src_str := InternAt(ctx, start, ctx.source.user_chars);
+    End;
+  EnsureSrcStr := ctx.data.src_str;
+End;
+
 { Marque une chaine comme atome (nom de propriete). }
 Function MarkAtom(Var ctx: TCompilerContext; id: LongInt): LongInt;
 Begin
@@ -21173,6 +21316,9 @@ Begin
     Begin
       If ScopeP(ctx.sem.scopes, sc)^.uses_this Then
         fl := fl Or FDF_USES_THIS;
+      If ScopeP(ctx.sem.scopes, sc)^.uses_this And Not ScopeP(ctx.sem.scopes, sc)^.strict And
+         (fl And (FDF_ARROW Or FDF_CTOR Or FDF_FIELD_INIT Or FDF_STATIC_BLOCK) = 0) Then
+        fl := fl Or FDF_SLOPPY_THIS;
       If ScopeP(ctx.sem.scopes, sc)^.uses_arguments Then
         fl := fl Or FDF_USES_ARGS;
       If ScopeP(ctx.sem.scopes, sc)^.this_captured Then
@@ -21194,6 +21340,14 @@ Begin
   FdescP(ctx.data.fdescs, id)^.nparams := ParamLength(ctx, n);
   FdescP(ctx.data.fdescs, id)^.flags := fl;
   FdescP(ctx.data.fdescs, id)^.sym := 0;
+  FdescP(ctx.data.fdescs, id)^.src_lo := 0;
+  FdescP(ctx.data.fdescs, id)^.src_hi := 0;
+  If NodeP(ctx.ast.nodes, n)^.sp_hi > NodeP(ctx.ast.nodes, n)^.sp_lo Then
+    Begin
+      EnsureSrcStr(ctx);
+      FdescP(ctx.data.fdescs, id)^.src_lo := NodeP(ctx.ast.nodes, n)^.sp_lo;
+      FdescP(ctx.data.fdescs, id)^.src_hi := NodeP(ctx.ast.nodes, n)^.sp_hi;
+    End;
   FdescP(ctx.data.fdescs, id)^.code_sym := '_JSF_' + Pad4(id);
   If StrP(ctx.data.strs, nm)^.len > 0 Then
     FdescP(ctx.data.fdescs, id)^.code_sym := FdescP(ctx.data.fdescs, id)^.code_sym + '_' +
@@ -21211,6 +21365,8 @@ Begin
   CdescP(ctx.data.cdescs, id)^.node := n;
   CdescP(ctx.data.cdescs, id)^.name_str := NodeFuncName(ctx, n);
   CdescP(ctx.data.cdescs, id)^.ctor_fd := 0;
+  If NodeP(ctx.ast.nodes, n)^.sp_hi > NodeP(ctx.ast.nodes, n)^.sp_lo Then
+    EnsureSrcStr(ctx);
   CdescP(ctx.data.cdescs, id)^.flags := 0;
   CdescP(ctx.data.cdescs, id)^.first_member := ctx.data.cm_count + 1;
   CdescP(ctx.data.cdescs, id)^.member_count := 0;
@@ -21237,6 +21393,11 @@ Begin
               Begin
                 f := f Or CM_CTOR;
                 CdescP(ctx.data.cdescs, id)^.ctor_fd := NodeP(ctx.ast.nodes, m)^.ds;
+                If NodeP(ctx.ast.nodes, n)^.sp_hi > NodeP(ctx.ast.nodes, n)^.sp_lo Then
+                  Begin
+                    FdescP(ctx.data.fdescs, NodeP(ctx.ast.nodes, m)^.ds)^.src_lo := NodeP(ctx.ast.nodes, n)^.sp_lo;
+                    FdescP(ctx.data.fdescs, NodeP(ctx.ast.nodes, m)^.ds)^.src_hi := NodeP(ctx.ast.nodes, n)^.sp_hi;
+                  End;
               End;
           End;
         N_FIELD:
@@ -21510,6 +21671,13 @@ Begin
       PutDword(ctx, SEC_RDATA, ofs + RT_FD_NPARAMS, FdescP(ctx.data.fdescs, i)^.nparams);
       PutDword(ctx, SEC_RDATA, ofs + RT_FD_FLAGS, FdescP(ctx.data.fdescs, i)^.flags);
       PutDword(ctx, SEC_RDATA, ofs + RT_FD_NCELLS, FdescP(ctx.data.fdescs, i)^.ncells);
+      If FdescP(ctx.data.fdescs, i)^.src_hi > FdescP(ctx.data.fdescs, i)^.src_lo Then
+        Begin
+          PutDword(ctx, SEC_RDATA, ofs + RT_FD_SRC_LO, FdescP(ctx.data.fdescs, i)^.src_lo);
+          PutDword(ctx, SEC_RDATA, ofs + RT_FD_SRC_HI, FdescP(ctx.data.fdescs, i)^.src_hi);
+          PutDword(ctx, SEC_RDATA, ofs + RT_FD_SRC, 0);
+          AddReloc(ctx, SEC_RDATA, ofs + RT_FD_SRC, StrP(ctx.data.strs, ctx.data.src_str)^.sym);
+        End;
       FdescP(ctx.data.fdescs, i)^.sym := NewDataSym(ctx, SymFdesc(i), SEC_RDATA, ofs,
                                            RT_FD_SIZE, DS_FDESC);
     End;
@@ -21614,6 +21782,7 @@ Begin
   ctx.data.atom_count := 0;
   ctx.data.dbl_count := 0;
   ctx.data.fd_count := 0;
+  ctx.data.src_str := 0;
   ctx.data.cd_count := 0;
   ctx.data.cm_count := 0;
   ctx.data.sym_count := 0;
@@ -23601,7 +23770,7 @@ End;
 Procedure GenCall(Var ctx: TCompilerContext; n: LongInt);
 Var
   callee, a, nargs, i, tf, tt, notfn, lbl, old_end, usethis, okl: LongInt;
-  top, has_spread, old_used, is_new, is_super: Boolean;
+  top, has_spread, old_used, is_new, is_super, arrow_super: Boolean;
   nt_old, nt_res: LongInt;
 
   { new.target : sauvegarde puis positionne la cible (new : le constructeur
@@ -23617,13 +23786,18 @@ Var
       PushTemp(ctx, tf)
     Else
       Begin
-        hsy := ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.first_sym;
-        While (hsy <> 0) And (SymP(ctx.sem.syms, hsy)^.kind <> DK_NEWTARGET) Do
-          hsy := SymP(ctx.sem.syms, hsy)^.next;
-        If hsy <> 0 Then
-          LoadSym(ctx, hsy)
+        If arrow_super Then
+          GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e4)
         Else
-          LoadUndefined(ctx);
+          Begin
+            hsy := ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.first_sym;
+            While (hsy <> 0) And (SymP(ctx.sem.syms, hsy)^.kind <> DK_NEWTARGET) Do
+              hsy := SymP(ctx.sem.syms, hsy)^.next;
+            If hsy <> 0 Then
+              LoadSym(ctx, hsy)
+            Else
+              LoadUndefined(ctx);
+          End;
         Emit1(ctx, OP_PUSH, RegOp(R_EDX));
         Emit1(ctx, OP_PUSH, RegOp(R_EAX));
       End;
@@ -23646,7 +23820,8 @@ Begin
   callee := NodeP(ctx.ast.nodes, n)^.e1;
   is_new := NodeP(ctx.ast.nodes, n)^.kind = N_NEW;
   is_super := (callee <> 0) And (NodeP(ctx.ast.nodes, callee)^.kind = N_SUPER);
-  If is_super And ((ctx.ir.cg_fs <= 1) Or
+  arrow_super := is_super And (NodeP(ctx.ast.nodes, n)^.e3 <> 0);
+  If is_super And Not arrow_super And ((ctx.ir.cg_fs <= 1) Or
      (ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind <> FK_DERIVED_CTOR)) Then
     Begin
       PendingNote(ctx, n, 'super(...) hors du constructeur d''une classe derivee');
@@ -23693,7 +23868,13 @@ Begin
       If is_super Then
         Begin
           { constructeur parent : champ this de la classe courante }
-          Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+          If arrow_super Then
+            Begin
+              GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e3);
+              Emit(ctx, OP_MOV, RegOp(R_ECX), RegOp(R_EAX));
+            End
+          Else
+            Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
           Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, RT_FN_THIS));
           Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, RT_FN_THIS + 4));
         End
@@ -23706,8 +23887,13 @@ Begin
       SaveTemp(ctx, tf);
       If is_super Then
         Begin
-          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
-          Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+          If arrow_super Then
+            GenExpr(ctx, NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, n)^.e3)^.next)
+          Else
+            Begin
+              Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
+              Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+            End;
         End
       Else
         LoadUndefined(ctx);
@@ -23812,7 +23998,13 @@ Begin
     Begin
       { champs d'instance de cette classe, puis la valeur de l'expression est this }
       PushTemp(ctx, tt);
-      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+      If arrow_super Then
+        Begin
+          GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e3);
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+        End
+      Else
+        Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
       CallRt(ctx, 'init_fields', 12);
       LoadTemp(ctx, tt);
     End;
@@ -24114,13 +24306,25 @@ Begin
     GenMakeClosure(ctx, ctor)
   Else
     Begin
+      If NodeP(ctx.ast.nodes, n)^.sp_hi > NodeP(ctx.ast.nodes, n)^.sp_lo Then
+        Begin
+          Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, ctx.data.src_str)^.sym));
+          Emit1(ctx, OP_PUSH, ImmOp(NodeP(ctx.ast.nodes, n)^.sp_hi));
+          Emit1(ctx, OP_PUSH, ImmOp(NodeP(ctx.ast.nodes, n)^.sp_lo));
+        End
+      Else
+        Begin
+          Emit1(ctx, OP_PUSH, ImmOp(0));
+          Emit1(ctx, OP_PUSH, ImmOp(0));
+          Emit1(ctx, OP_PUSH, ImmOp(0));
+        End;
       Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
             StrP(ctx.data.strs, CdescP(ctx.data.cdescs, NodeP(ctx.ast.nodes, n)^.ds)^.name_str)^.sym));
       If NodeP(ctx.ast.nodes, n)^.e1 <> 0 Then
         Emit1(ctx, OP_PUSH, ImmOp(1))
       Else
         Emit1(ctx, OP_PUSH, ImmOp(0));
-      CallRt(ctx, 'make_default_ctor', 8);
+      CallRt(ctx, 'make_default_ctor', 20);
     End;
   SaveTemp(ctx, tcls);
   PushTemp(ctx, tpar);
@@ -25441,6 +25645,21 @@ Begin
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
       CallRt(ctx, 'class_call_check', 4);
     End;
+  If FdescP(ctx.data.fdescs, fd)^.flags And FDF_SLOPPY_THIS <> 0 Then
+    Begin
+      { mode non strict : un this absent devient l'objet global }
+      body := NewLabel(ctx);
+      sy := NewLabel(ctx);
+      Emit(ctx, OP_CMP, MemReg(R_EBP, RT_FRAME_THIS + 4), ImmOp(TagImm(RT_T_UNDEFINED)));
+      Emit1(ctx, OP_JE, LabelOp(sy));
+      Emit(ctx, OP_CMP, MemReg(R_EBP, RT_FRAME_THIS + 4), ImmOp(TagImm(RT_T_NULL)));
+      Emit1(ctx, OP_JNE, LabelOp(body));
+      PlaceLabel(ctx, sy);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), AddrSym(SYMK_X, XSym(ctx, '_JSNO_globalThis')));
+      Emit(ctx, OP_MOV, MemReg(R_EBP, RT_FRAME_THIS), RegOp(R_EAX));
+      Emit(ctx, OP_MOV, MemReg(R_EBP, RT_FRAME_THIS + 4), ImmOp(TagImm(RT_T_OBJECT)));
+      PlaceLabel(ctx, body);
+    End;
   GenScopeEnter(ctx, sc);
   { nom d'une expression de fonction : la closure elle-meme }
   sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
@@ -25463,6 +25682,12 @@ Begin
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
           Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
           CallRt(ctx, 'make_arguments', 8);
+          StoreSym(ctx, sy, True);
+        End
+      Else If SymP(ctx.sem.syms, sy)^.kind = DK_CTORFN Then
+        Begin
+          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_FUNCTION)));
           StoreSym(ctx, sy, True);
         End
       Else If SymP(ctx.sem.syms, sy)^.kind = DK_NEWTARGET Then
@@ -27992,6 +28217,17 @@ Begin
   A('leave');
   A('ret');
   A('.fn:');
+  A('mov ecx, offset _JSV___fpts');
+  A('cmp dword ptr [ecx+4], $FN');
+  A('jne .fnplain');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('cmp edx, $STR');
+  A('je .objret');
+  A('.fnplain:');
   A('mov eax, offset ' + RtStr('function'));
   A('jmp .str');
   A('.bool:');
@@ -35022,7 +35258,7 @@ Begin
 
   { _JSRT_make_default_ctor(derive) -> fonction constructeur par defaut }
   FBegin('_JSRT_make_default_ctor', 0);
-  A('push 16');
+  A('push ' + IntToStr(RT_FD_SIZE));
   A('call _JSRT_alloc');
   A('add esp, 4');
   A('mov esi, eax');
@@ -35048,6 +35284,12 @@ Begin
   A('mov dword ptr [esi+12], eax');
   A('mov eax, dword ptr [ebp+12]');
   A('mov dword ptr [esi], eax');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esi+' + IntToStr(RT_FD_SRC_LO) + '], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esi+' + IntToStr(RT_FD_SRC_HI) + '], eax');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov dword ptr [esi+' + IntToStr(RT_FD_SRC) + '], eax');
   A('push $UNDEF');
   A('push 0');
   A('push 0');
@@ -35222,7 +35464,7 @@ Begin
   { _JSRT_class_setup(classe, parent) : proprietes, prototype et lien au parent }
   FBegin('_JSRT_class_setup', 2);
   A('mov esi, dword ptr [ebp+8]');
-  A('mov ' + Lv(1) + ', offset _JSNO_object_proto');
+  A('mov ' + Lv(1) + ', offset _JSNO_function_proto');
   A('mov ' + Lv(2) + ', offset _JSNO_object_proto');
   A('cmp dword ptr [ebp+20], $FN');
   A('je .fnp');
@@ -44324,6 +44566,24 @@ Begin
   A('mov edx, $STR');
   FEnd;
 
+  { __fsrc(f) -> texte source de la fonction ou undefined }
+  FBegin('_JSRT_n_fsrc', 0);
+  HostFnArg('.none');
+  A('mov eax, dword ptr [ecx+' + IntToStr(RT_FD_SRC) + ']');
+  A('test eax, eax');
+  A('jz .none');
+  A('mov edx, dword ptr [ecx+' + IntToStr(RT_FD_SRC_HI) + ']');
+  A('push edx');
+  A('push dword ptr [ecx+' + IntToStr(RT_FD_SRC_LO) + ']');
+  A('push eax');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
   { __fflags(f) -> drapeaux du descripteur (2 async, 4 generateur, 16 classe) }
   FBegin('_JSRT_n_fflags', 0);
   HostFnArg('.none');
@@ -44597,6 +44857,7 @@ Begin
   RtGlobal('alert', RtFuncObj('alert', '_JSRT_console_log', 1), RT_T_FUNCTION);
   RtGlobal('prompt', RtFuncObj('prompt', '_JSRT_prompt', 1), RT_T_FUNCTION);
   RtGlobal('__fname', RtFuncObj('__fname', '_JSRT_n_fname', 1), RT_T_FUNCTION);
+  RtGlobal('__fsrc', RtFuncObj('__fsrc', '_JSRT_n_fsrc', 1), RT_T_FUNCTION);
   RtGlobal('__fflags', RtFuncObj('__fflags', '_JSRT_n_fflags', 1), RT_T_FUNCTION);
   RtGlobal('__fparent', RtFuncObj('__fparent', '_JSRT_n_fparent', 1), RT_T_FUNCTION);
   RtGlobal('__extras', RtFuncObj('__extras', '_JSRT_n_extras', 1), RT_T_FUNCTION);
