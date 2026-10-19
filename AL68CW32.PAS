@@ -28,9 +28,9 @@
     TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 04 implementes (squelette en sections, pipeline en 7
-         phases, options, constantes, limites et nommage, lexeur, modes) ;
-         TODO 05 a 25 a faire.
+  ETAT : TODO 01 a 05 implementes (squelette en sections, pipeline en 7
+         phases, options, constantes, limites et nommage, lexeur, modes,
+         symboles et prelude) ; TODO 06 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -239,7 +239,7 @@
               (POINT, VEC3, NOMBRE, POLYVAL, WRAPPED) seront crees par le
               parseur aux TODOs 08, 13 et 18
 
-  TODO 05 - TABLE DES SYMBOLES, PORTEES ET PRELUDE STANDARD [A FAIRE]
+  TODO 05 - TABLE DES SYMBOLES, PORTEES ET PRELUDE STANDARD [IMPLEMENTE]
             Portees emboitees (clauses fermees, series, boucles,
               procedures) ; recherche du plus interne vers l'externe
             Espaces de noms : identites et variables, modes, operateurs
@@ -249,14 +249,42 @@
               ou nom ASM
             Doublon dans une meme portee signale ; masquage dans une
               portee interne permis
-            Prelude standard : pi, newline, space, print, whole, ABS,
-              SIGN, ODD, LWB, UPB, BIN, SHL, SHR, ENTIER, ROUND, operateurs
+            Prelude standard : pi, newline, space, print, read, whole,
+              sqrt, sin, cos, tan, arctan, exp, ln, ABS, SIGN, ODD, LWB,
+              UPB, BIN, SHL, SHR, ENTIER, ROUND, operateurs
               arithmetiques, de comparaison, booleens et de chaines avec
-              leurs priorites (1 a 9), constantes max int et max real
+              leurs priorites (1 a 9)
             Resolution des operateurs surcharges par les modes des
               operandes (preparer TODO 11 et TODO 17)
             Mode debug -d : afficher chaque portee
             Verification : test_closed.a68, test_decl.a68
+            Realise : section 8 ; TSymbol (nom, genre, mode, portee, chaine
+              des symboles de la portee, stockage, decalage, nom ASM,
+              position, utilise, intrinseque, generique) et TScope
+              (parent, niveau de procedures, genre, cadre) ; genres
+              SK_VAR, SK_IDENT, SK_PROC, SK_PARAM, SK_STD, SK_MODE, SK_OP,
+              SK_PRIO et SK_LABEL en cinq espaces de noms (identificateurs,
+              modes, operateurs, priorites, etiquettes) ; ScopeEnter et
+              ScopeLeave ; SymDeclare (doublon signale, la premiere
+              declaration reste en vigueur ; operateurs distingues par les
+              modes de leurs operandes) ; SymAllocate (segment de donnees au
+              niveau 0, sinon [EBP - Offset] dans le cadre de la procedure
+              englobante) ; SymFindIdent, SymFindMode, SymFindLabel,
+              SymFindPrio, SymFindOp (modes exacts, portee la plus interne
+              d'abord, LWB et UPB generiques sur tout tableau) et
+              SymOpExists ; PreludeInit : priorites standard (OR 2, AND 3,
+              = et /= 4, comparaisons 5, + et - 6, * / OVER MOD 7, ** SHL
+              SHR LWB UPB 8, +* 9, affectations composees 1), 127
+              operateurs (combinaisons INT et REAL explicites, chaines,
+              BOOL, BITS, affectations composees, monadiques) et les
+              identificateurs standard ; SymDumpScope pour -d
+            Verifie : harnais de 40 controles hors depot (prelude, priorites,
+              INT + REAL, INT / INT donne REAL, BOOL + INT refuse, UPB
+              generique, +:= sur REF INT, doublons, espaces de noms
+              distincts, surcharge et doublon d'un operateur utilisateur,
+              PRIO utilisateur, masquage et redefinition d'un operateur du
+              prelude, retour apres sortie de portee, cadre local et
+              decalages dans une procedure) : tous reussis
 
   TODO 06 - CODE INTERNE, LISTING .ASM ET SEGMENT DE DONNEES [A FAIRE]
             TInstr (operation, deux operandes, commentaire) ; operandes :
@@ -672,6 +700,7 @@ Const
   MAX_UNIT      = {$IFDEF FPC}32768{$ELSE}512{$ENDIF}; { noeuds de l arbre}
   MAX_LABEL     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
   MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { portees emboitees}
+  MAX_SCOPETAB  = {$IFDEF FPC}2048{$ELSE}64{$ENDIF};   { portees creees  }
   MAX_PROC      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
   MAX_PARAM     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_FIELD     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { champs de STRUCT }
@@ -760,6 +789,62 @@ Type
     Count : Integer;
     Size  : LongInt;       { -1 : pas calcule, -2 : en cours         }
     Name  : TName;         { nom d un MK_FWD                         }
+  End;
+
+  { Table des symboles et portees (TODO 05) }
+  TSymKind = (
+    SK_VAR,        { variable : identite d un REF m (INT y := 10)    }
+    SK_IDENT,      { identite constante (INT x = 42)                 }
+    SK_PROC,       { procedure : identite d un PROC                  }
+    SK_PARAM,      { parametre formel                                }
+    SK_STD,        { identificateur du prelude standard              }
+    SK_MODE,       { nom de mode (MODE POINT = ...)                  }
+    SK_OP,         { operateur (OP), mode = PROC des operandes       }
+    SK_PRIO,       { priorite d un operateur (PRIO), Offset = 1 a 9  }
+    SK_LABEL       { etiquette                                       }
+  );
+
+  TStorage = (
+    SC_NONE,
+    SC_STATIC,     { segment de donnees (niveau 0)                   }
+    SC_LOCAL,      { cadre de procedure, [EBP - Offset]              }
+    SC_PARAM       { parametre, [EBP + Offset]                       }
+  );
+
+  TScopeKind = (
+    SCK_PRELUDE,   { prelude standard                                }
+    SCK_PROGRAM,   { programme                                       }
+    SCK_CLOSED,    { clause fermee ou serie                          }
+    SCK_LOOP,      { clause repetitive (variable de controle)        }
+    SCK_CHOICE,    { branche d un IF ou d un CASE                    }
+    SCK_PROC,      { corps de procedure ou d operateur               }
+    SCK_CONFORM    { alternative d une clause de conformite          }
+  );
+
+  TSymbol = Record
+    Name      : TName;
+    Kind      : TSymKind;
+    Mode      : Integer;       { mode du symbole (MD_...)             }
+    Scope     : Integer;
+    Prev      : Integer;       { symbole precedent de la meme portee  }
+    Storage   : TStorage;
+    Offset    : LongInt;       { decalage dans le cadre ou priorite   }
+    AsmName   : TString;       { nom ASM du symbole                   }
+    Line      : Integer;
+    Col       : Integer;
+    Used      : Boolean;
+    Intrinsic : Boolean;       { realise en ligne par le generateur   }
+    Generic   : Boolean;       { operande : tout tableau (LWB, UPB)   }
+  End;
+
+  TScope = Record
+    Parent     : Integer;      { -1 pour le prelude                   }
+    Level      : Integer;      { profondeur de procedures             }
+    Kind       : TScopeKind;
+    LastSym    : Integer;      { dernier symbole declare, -1 si aucun }
+    FrameBytes : LongInt;      { octets locaux (portee de procedure)  }
+    FrameScope : Integer;      { portee de procedure du cadre, -1 si
+                                 les objets sont statiques            }
   End;
 
   { Options de la ligne de commande (TODO 02) }
@@ -2494,6 +2579,542 @@ End;
 { ============================================================
   SECTION 8 - TABLE DES SYMBOLES ET PORTEES (TODO 05)
   ============================================================ }
+Var
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymbol;
+  SymCount   : Integer;
+  ScopeTab   : Array[0..MAX_SCOPETAB - 1] Of TScope;
+  ScopeCount : Integer;
+  ScopeCur   : Integer;      { portee courante                        }
+  ScopeDepth : Integer;      { imbrication courante                   }
+
+Function SymKindName(K : TSymKind) : TString;
+Begin
+  Case K Of
+    SK_VAR   : SymKindName := 'var';
+    SK_IDENT : SymKindName := 'identite';
+    SK_PROC  : SymKindName := 'proc';
+    SK_PARAM : SymKindName := 'param';
+    SK_STD   : SymKindName := 'standard';
+    SK_MODE  : SymKindName := 'mode';
+    SK_OP    : SymKindName := 'op';
+    SK_PRIO  : SymKindName := 'prio';
+    SK_LABEL : SymKindName := 'etiquette';
+  End;
+End;
+
+{ ---- portees ---- }
+Function ScopeEnter(K : TScopeKind) : Integer;
+Var
+  S : Integer;
+Begin
+  If ScopeCount >= MAX_SCOPETAB Then
+    FatalError('trop de portees (max ' + ItoS(MAX_SCOPETAB) + ')');
+  If ScopeDepth >= MAX_SCOPE Then
+    FatalError('imbrication trop profonde (max ' + ItoS(MAX_SCOPE) +
+               ' portees)');
+  S := ScopeCount;
+  Inc(ScopeCount);
+  ScopeTab[S].Parent  := ScopeCur;
+  ScopeTab[S].Kind    := K;
+  ScopeTab[S].LastSym := -1;
+  ScopeTab[S].FrameBytes := 0;
+  If ScopeCur < 0 Then
+  Begin
+    ScopeTab[S].Level      := 0;
+    ScopeTab[S].FrameScope := -1;
+  End
+  Else
+  Begin
+    ScopeTab[S].Level      := ScopeTab[ScopeCur].Level;
+    ScopeTab[S].FrameScope := ScopeTab[ScopeCur].FrameScope;
+  End;
+  If K = SCK_PROC Then
+  Begin
+    Inc(ScopeTab[S].Level);
+    ScopeTab[S].FrameScope := S;       { nouveau cadre }
+  End;
+  ScopeCur := S;
+  Inc(ScopeDepth);
+  ScopeEnter := S;
+End;
+
+Procedure SymDumpScope(S : Integer);
+Var
+  Chain : Array[0..255] Of Integer;
+  N, I, J : Integer;
+Begin
+  N := 0;
+  I := ScopeTab[S].LastSym;
+  While (I >= 0) And (N < 256) Do
+  Begin
+    Chain[N] := I;
+    Inc(N);
+    I := SymTab[I].Prev;
+  End;
+  WriteLn('Portee ', S, ' (niveau ', ScopeTab[S].Level, ', locales ',
+          ScopeTab[S].FrameBytes, ' octets) :');
+  For J := N - 1 Downto 0 Do
+  Begin
+    I := Chain[J];
+    Write('  ', SymTab[I].Name, ' ', SymKindName(SymTab[I].Kind), ' ',
+          ModeName(SymTab[I].Mode));
+    Case SymTab[I].Storage Of
+      SC_STATIC : Write(' global ', SymTab[I].AsmName);
+      SC_LOCAL  : Write(' local -', SymTab[I].Offset);
+      SC_PARAM  : Write(' param +', SymTab[I].Offset);
+    End;
+    WriteLn;
+  End;
+End;
+
+Procedure ScopeLeave;
+Begin
+  If (ScopeCur >= 0) And (ScopeTab[ScopeCur].Kind <> SCK_PRELUDE) Then
+  Begin
+    If Opts.DebugMode Then SymDumpScope(ScopeCur);
+    ScopeCur := ScopeTab[ScopeCur].Parent;
+    Dec(ScopeDepth);
+  End;
+End;
+
+{ ---- declaration ---- }
+Function SymNewRaw(Const Name : TName; K : TSymKind; M : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+    FatalError('trop de symboles (max ' + ItoS(MAX_SYM) + ')');
+  I := SymCount;
+  Inc(SymCount);
+  SymTab[I].Name      := Name;
+  SymTab[I].Kind      := K;
+  SymTab[I].Mode      := M;
+  SymTab[I].Scope     := ScopeCur;
+  SymTab[I].Prev      := ScopeTab[ScopeCur].LastSym;
+  SymTab[I].Storage   := SC_NONE;
+  SymTab[I].Offset    := 0;
+  SymTab[I].AsmName       := '';
+  SymTab[I].Line      := 0;
+  SymTab[I].Col       := 0;
+  SymTab[I].Used      := False;
+  SymTab[I].Intrinsic := False;
+  SymTab[I].Generic   := False;
+  ScopeTab[ScopeCur].LastSym := I;
+  SymNewRaw := I;
+End;
+
+{ Nombre d operandes d un operateur (parametres de son mode PROC) }
+Function OpArity(S : Integer) : Integer;
+Begin
+  OpArity := ModeTab[ModeResolve(SymTab[S].Mode)].Count;
+End;
+
+Function OpOperand(S, I : Integer) : Integer;
+Var
+  M : Integer;
+Begin
+  M := ModeResolve(SymTab[S].Mode);
+  OpOperand := ModePoolM[ModeTab[M].First + I];
+End;
+
+Function OpResult(S : Integer) : Integer;
+Begin
+  OpResult := ModeTab[ModeResolve(SymTab[S].Mode)].Sub;
+End;
+
+{ Espace de noms : identificateurs (variables, identites, procedures,
+  parametres, standard), modes, operateurs, priorites, etiquettes }
+Function SymSameSpace(A, B : TSymKind) : Boolean;
+Begin
+  If A In [SK_VAR, SK_IDENT, SK_PROC, SK_PARAM, SK_STD] Then
+    SymSameSpace := B In [SK_VAR, SK_IDENT, SK_PROC, SK_PARAM, SK_STD]
+  Else
+    SymSameSpace := A = B;
+End;
+
+Function SymAllocName(Const Name : TName; K : TSymKind; I : Integer)
+         : TString;
+Begin
+  Case K Of
+    SK_PROC : SymAllocName := A68_PROC_PFX + AsmIdent(Name) + '_' +
+                              ItoS(I);
+    SK_OP   : SymAllocName := MangleOp(Name, I);
+    SK_LABEL: SymAllocName := A68_USR_PFX + AsmIdent(Name) + '_' +
+                              ItoS(I);
+  Else
+    SymAllocName := A68_VAR_PFX + AsmIdent(Name) + '_' + ItoS(I);
+  End;
+End;
+
+{ Declare un symbole dans la portee courante. Un doublon (meme nom, meme
+  espace de noms, memes operandes pour un operateur) dans la meme portee
+  est une erreur : la premiere declaration reste en vigueur et son indice
+  est retourne, ce qui evite des erreurs en cascade. }
+Function SymDeclare(Const Name : TName; K : TSymKind; M : Integer;
+                    Line, Col : Integer) : Integer;
+Var
+  I, J  : Integer;
+  Dup   : Integer;
+  Same  : Boolean;
+Begin
+  I := ScopeTab[ScopeCur].LastSym;
+  Dup := -1;
+  While I >= 0 Do
+  Begin
+    If (SymTab[I].Name = Name) And SymSameSpace(SymTab[I].Kind, K) Then
+    Begin
+      If K = SK_OP Then
+      Begin
+        Same := ModeTab[ModeResolve(SymTab[I].Mode)].Count =
+                ModeTab[ModeResolve(M)].Count;
+        J := 0;
+        While Same And (J < ModeTab[ModeResolve(M)].Count) Do
+        Begin
+          Same := ModeSame(OpOperand(I, J),
+                           ModePoolM[ModeTab[ModeResolve(M)].First + J]);
+          Inc(J);
+        End;
+        If Same Then Dup := I;
+      End
+      Else
+        Dup := I;
+    End;
+    I := SymTab[I].Prev;
+  End;
+  If (Dup >= 0) And (ScopeTab[ScopeCur].Kind <> SCK_PRELUDE) Then
+  Begin
+    ErrorAt(Line, Col, 'declaration en double: ' + Name);
+    SymDeclare := Dup;
+    Exit;
+  End;
+  I := SymNewRaw(Name, K, M);
+  SymTab[I].Line := Line;
+  SymTab[I].Col  := Col;
+  SymTab[I].AsmName := SymAllocName(Name, K, I);
+  SymDeclare := I;
+End;
+
+{ Reserve la place de l objet d une variable ou d une identite : dans le
+  segment de donnees au niveau 0, sinon dans le cadre de la procedure
+  englobante ([EBP - Offset]) }
+Procedure SymAllocate(S : Integer; Size : LongInt);
+Var
+  F : Integer;
+Begin
+  F := ScopeTab[SymTab[S].Scope].FrameScope;
+  If F < 0 Then
+    SymTab[S].Storage := SC_STATIC
+  Else
+  Begin
+    ScopeTab[F].FrameBytes := ScopeTab[F].FrameBytes + ((Size + 3) And -4);
+    SymTab[S].Storage := SC_LOCAL;
+    SymTab[S].Offset  := ScopeTab[F].FrameBytes;
+  End;
+End;
+
+{ ---- recherche (de la portee courante vers le prelude) ---- }
+Function SymLookupKinds(Const Name : TName; K : TSymKind) : Integer;
+Var
+  S, I : Integer;
+Begin
+  SymLookupKinds := -1;
+  S := ScopeCur;
+  While S >= 0 Do
+  Begin
+    I := ScopeTab[S].LastSym;
+    While I >= 0 Do
+    Begin
+      If (SymTab[I].Name = Name) And SymSameSpace(SymTab[I].Kind, K) Then
+      Begin
+        SymLookupKinds := I;
+        Exit;
+      End;
+      I := SymTab[I].Prev;
+    End;
+    S := ScopeTab[S].Parent;
+  End;
+End;
+
+{ identificateur (variable, identite, procedure, parametre, standard) }
+Function SymFindIdent(Const Name : TName) : Integer;
+Begin
+  SymFindIdent := SymLookupKinds(Name, SK_VAR);
+End;
+
+Function SymFindMode(Const Name : TName) : Integer;
+Begin
+  SymFindMode := SymLookupKinds(Name, SK_MODE);
+End;
+
+Function SymFindLabel(Const Name : TName) : Integer;
+Begin
+  SymFindLabel := SymLookupKinds(Name, SK_LABEL);
+End;
+
+{ priorite d un operateur dyadique ; 0 si aucune PRIO n est visible }
+Function SymFindPrio(Const Name : TName) : Integer;
+Var
+  I : Integer;
+Begin
+  I := SymLookupKinds(Name, SK_PRIO);
+  If I < 0 Then
+    SymFindPrio := 0
+  Else
+    SymFindPrio := SymTab[I].Offset;
+End;
+
+{ Un operande de mode M convient-il a l operande attendu (sans
+  coercition) ? }
+Function OpOperandFits(S, I, M : Integer) : Boolean;
+Var
+  E : Integer;
+Begin
+  E := OpOperand(S, I);
+  If SymTab[S].Generic Then
+    OpOperandFits := (ModeKind(E) <> MK_ROW) Or
+                     (ModeKind(M) = MK_ROW)
+  Else
+    OpOperandFits := ModeSame(E, M);
+End;
+
+{ Operateur de ce nom dont les operandes ont exactement ces modes (B
+  ignore si Arity = 1). Le plus interne l emporte. -1 si aucun. }
+Function SymFindOp(Const Name : TName; Arity : Integer; A, B : Integer)
+         : Integer;
+Var
+  S, I : Integer;
+  Ok   : Boolean;
+Begin
+  SymFindOp := -1;
+  S := ScopeCur;
+  While S >= 0 Do
+  Begin
+    I := ScopeTab[S].LastSym;
+    While I >= 0 Do
+    Begin
+      If (SymTab[I].Kind = SK_OP) And (SymTab[I].Name = Name) And
+         (OpArity(I) = Arity) Then
+      Begin
+        Ok := OpOperandFits(I, 0, A);
+        If Ok And (Arity = 2) Then Ok := OpOperandFits(I, 1, B);
+        If Ok Then
+        Begin
+          SymFindOp := I;
+          Exit;
+        End;
+      End;
+      I := SymTab[I].Prev;
+    End;
+    S := ScopeTab[S].Parent;
+  End;
+End;
+
+{ Y a-t-il un operateur de ce nom et de cette arite ? (pour distinguer
+  "operateur inconnu" de "modes d operandes incorrects") }
+Function SymOpExists(Const Name : TName; Arity : Integer) : Boolean;
+Var
+  S, I : Integer;
+Begin
+  SymOpExists := False;
+  S := ScopeCur;
+  While S >= 0 Do
+  Begin
+    I := ScopeTab[S].LastSym;
+    While I >= 0 Do
+    Begin
+      If (SymTab[I].Kind = SK_OP) And (SymTab[I].Name = Name) And
+         (OpArity(I) = Arity) Then
+        SymOpExists := True;
+      I := SymTab[I].Prev;
+    End;
+    S := ScopeTab[S].Parent;
+  End;
+End;
+
+{ ---- prelude standard ---- }
+Procedure PreOp(Const Name : TName; A, B, R : Integer);
+Var
+  S : Integer;
+Begin
+  ModeTmpReset;
+  ModeTmpAdd('', A, 0, 0);
+  If B >= 0 Then ModeTmpAdd('', B, 0, 0);
+  S := SymDeclare(Name, SK_OP, ModeProcTmp(R), 0, 0);
+  SymTab[S].Intrinsic := True;
+End;
+
+Procedure PreOpGeneric(Const Name : TName; Arity, R : Integer);
+Var
+  S : Integer;
+Begin
+  ModeTmpReset;
+  ModeTmpAdd('', ModeRow(MD_INT, 1, False), 0, 0);
+  If Arity = 2 Then ModeTmpAdd('', ModeRow(MD_INT, 1, False), 0, 0);
+  S := SymDeclare(Name, SK_OP, ModeProcTmp(R), 0, 0);
+  SymTab[S].Intrinsic := True;
+  SymTab[S].Generic   := True;
+End;
+
+Procedure PrePrio(Const Name : TName; P : Integer);
+Var
+  S : Integer;
+Begin
+  S := SymDeclare(Name, SK_PRIO, MD_VOID, 0, 0);
+  SymTab[S].Offset := P;
+End;
+
+{ operateur arithmetique sur INT et REAL, avec les combinaisons mixtes }
+Procedure PreArith(Const Name : TName; IntRes, RealRes : Integer);
+Begin
+  PreOp(Name, MD_INT, MD_INT, IntRes);
+  PreOp(Name, MD_REAL, MD_REAL, RealRes);
+  PreOp(Name, MD_INT, MD_REAL, RealRes);
+  PreOp(Name, MD_REAL, MD_INT, RealRes);
+End;
+
+Procedure PreCompare(Const Name : TName);
+Begin
+  PreOp(Name, MD_INT, MD_INT, MD_BOOL);
+  PreOp(Name, MD_REAL, MD_REAL, MD_BOOL);
+  PreOp(Name, MD_INT, MD_REAL, MD_BOOL);
+  PreOp(Name, MD_REAL, MD_INT, MD_BOOL);
+  PreOp(Name, MD_CHAR, MD_CHAR, MD_BOOL);
+  PreOp(Name, MD_STRING, MD_STRING, MD_BOOL);
+End;
+
+Procedure PreAssignOp(Const Name : TName);
+Begin
+  PreOp(Name, ModeRef(MD_INT), MD_INT, ModeRef(MD_INT));
+  PreOp(Name, ModeRef(MD_REAL), MD_REAL, ModeRef(MD_REAL));
+  PreOp(Name, ModeRef(MD_REAL), MD_INT, ModeRef(MD_REAL));
+End;
+
+Procedure PreStd(Const Name : TName; M : Integer);
+Var
+  S : Integer;
+Begin
+  S := SymDeclare(Name, SK_STD, M, 0, 0);
+  SymTab[S].Intrinsic := True;
+  SymTab[S].AsmName := A68_RT_PFX + AsmIdent(Name);
+End;
+
+Procedure PreProc1(Const Name : TName; A, R : Integer);
+Begin
+  ModeTmpReset;
+  ModeTmpAdd('', A, 0, 0);
+  PreStd(Name, ModeProcTmp(R));
+End;
+
+Procedure PreludeInit;
+Begin
+  SymCount   := 0;
+  ScopeCount := 0;
+  ScopeCur   := -1;
+  ScopeDepth := 0;
+  ScopeEnter(SCK_PRELUDE);
+
+  { priorites standard (Revised Report) }
+  PrePrio('OR', 2);
+  PrePrio('AND', 3);
+  PrePrio('=', 4);       PrePrio('/=', 4);
+  PrePrio('<', 5);       PrePrio('<=', 5);
+  PrePrio('>', 5);       PrePrio('>=', 5);
+  PrePrio('+', 6);       PrePrio('-', 6);
+  PrePrio('*', 7);       PrePrio('/', 7);
+  PrePrio('OVER', 7);    PrePrio('%', 7);
+  PrePrio('MOD', 7);     PrePrio('%*', 7);
+  PrePrio('**', 8);      PrePrio('SHL', 8);
+  PrePrio('SHR', 8);     PrePrio('LWB', 8);
+  PrePrio('UPB', 8);
+  PrePrio('+*', 9);
+  PrePrio('+:=', 1);     PrePrio('-:=', 1);
+  PrePrio('*:=', 1);     PrePrio('/:=', 1);
+  PrePrio('%:=', 1);     PrePrio('%*:=', 1);
+
+  { operateurs dyadiques arithmetiques }
+  PreArith('+', MD_INT, MD_REAL);
+  PreArith('-', MD_INT, MD_REAL);
+  PreArith('*', MD_INT, MD_REAL);
+  PreArith('/', MD_REAL, MD_REAL);
+  PreArith('**', MD_INT, MD_REAL);
+  PreOp('OVER', MD_INT, MD_INT, MD_INT);
+  PreOp('%', MD_INT, MD_INT, MD_INT);
+  PreOp('MOD', MD_INT, MD_INT, MD_INT);
+  PreOp('%*', MD_INT, MD_INT, MD_INT);
+  { comparaisons }
+  PreCompare('<');  PreCompare('<=');
+  PreCompare('>');  PreCompare('>=');
+  PreCompare('=');  PreCompare('/=');
+  PreOp('=', MD_BOOL, MD_BOOL, MD_BOOL);
+  PreOp('/=', MD_BOOL, MD_BOOL, MD_BOOL);
+  PreOp('=', MD_BITS, MD_BITS, MD_BOOL);
+  PreOp('/=', MD_BITS, MD_BITS, MD_BOOL);
+  { booleens et bits }
+  PreOp('AND', MD_BOOL, MD_BOOL, MD_BOOL);
+  PreOp('OR', MD_BOOL, MD_BOOL, MD_BOOL);
+  PreOp('AND', MD_BITS, MD_BITS, MD_BITS);
+  PreOp('OR', MD_BITS, MD_BITS, MD_BITS);
+  PreOp('SHL', MD_BITS, MD_INT, MD_BITS);
+  PreOp('SHR', MD_BITS, MD_INT, MD_BITS);
+  PreOp('SHL', MD_INT, MD_INT, MD_INT);       { extension }
+  PreOp('SHR', MD_INT, MD_INT, MD_INT);       { extension }
+  { chaines }
+  PreOp('+', MD_STRING, MD_STRING, MD_STRING);
+  PreOp('+', MD_STRING, MD_CHAR, MD_STRING);
+  PreOp('+', MD_CHAR, MD_STRING, MD_STRING);
+  PreOp('+', MD_CHAR, MD_CHAR, MD_STRING);
+  { affectations composees (et leurs formes en mots) }
+  PreAssignOp('+:=');  PreAssignOp('-:=');
+  PreAssignOp('*:=');  PreAssignOp('/:=');
+  PreAssignOp('PLUSAB');   PreAssignOp('MINUSAB');
+  PreAssignOp('TIMESAB');  PreAssignOp('DIVAB');
+  PreOp('%:=', ModeRef(MD_INT), MD_INT, ModeRef(MD_INT));
+  PreOp('%*:=', ModeRef(MD_INT), MD_INT, ModeRef(MD_INT));
+  PreOp('OVERAB', ModeRef(MD_INT), MD_INT, ModeRef(MD_INT));
+  PreOp('MODAB', ModeRef(MD_INT), MD_INT, ModeRef(MD_INT));
+  PreOp('+:=', ModeRef(MD_STRING), MD_STRING, ModeRef(MD_STRING));
+  PreOp('+:=', ModeRef(MD_STRING), MD_CHAR, ModeRef(MD_STRING));
+  { operateurs monadiques }
+  PreOp('-', MD_INT, -1, MD_INT);
+  PreOp('-', MD_REAL, -1, MD_REAL);
+  PreOp('+', MD_INT, -1, MD_INT);
+  PreOp('+', MD_REAL, -1, MD_REAL);
+  PreOp('ABS', MD_INT, -1, MD_INT);
+  PreOp('ABS', MD_REAL, -1, MD_REAL);
+  PreOp('ABS', MD_CHAR, -1, MD_INT);
+  PreOp('ABS', MD_BOOL, -1, MD_INT);
+  PreOp('SIGN', MD_INT, -1, MD_INT);
+  PreOp('SIGN', MD_REAL, -1, MD_INT);
+  PreOp('ODD', MD_INT, -1, MD_BOOL);
+  PreOp('NOT', MD_BOOL, -1, MD_BOOL);
+  PreOp('NOT', MD_BITS, -1, MD_BITS);
+  PreOp('BIN', MD_INT, -1, MD_BITS);
+  PreOp('ENTIER', MD_REAL, -1, MD_INT);
+  PreOp('ROUND', MD_REAL, -1, MD_INT);
+  PreOp('REPR', MD_INT, -1, MD_CHAR);
+  PreOpGeneric('LWB', 1, MD_INT);
+  PreOpGeneric('UPB', 1, MD_INT);
+  PreOpGeneric('LWB', 2, MD_INT);
+  PreOpGeneric('UPB', 2, MD_INT);
+
+  { identificateurs standard }
+  PreStd('pi', MD_REAL);
+  PreStd('print', MD_VOID);       { forme speciale (TODO 19) }
+  PreStd('read', MD_VOID);        { forme speciale (TODO 19) }
+  PreStd('newline', MD_VOID);     { marqueur de print (TODO 19) }
+  PreStd('space', MD_VOID);       { marqueur de print (TODO 19) }
+  ModeTmpReset;
+  ModeTmpAdd('', MD_INT, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  PreStd('whole', ModeProcTmp(MD_STRING));
+  PreProc1('sqrt', MD_REAL, MD_REAL);
+  PreProc1('sin', MD_REAL, MD_REAL);
+  PreProc1('cos', MD_REAL, MD_REAL);
+  PreProc1('tan', MD_REAL, MD_REAL);
+  PreProc1('arctan', MD_REAL, MD_REAL);
+  PreProc1('exp', MD_REAL, MD_REAL);
+  PreProc1('ln', MD_REAL, MD_REAL);
+End;
 
 { ============================================================
   SECTION 9 - ARBRE D UNITES ET PARSEUR (TODO 07, 08, 10)
@@ -2573,6 +3194,7 @@ Begin
   WarnCount  := 0;
   OutCreatedN := 0;
   ModeInit;
+  PreludeInit;
   If Opts.DebugMode Then ModeDump;
   If Opts.Verbose Then
   Begin
