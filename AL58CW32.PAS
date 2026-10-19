@@ -23,10 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 23 implementes (analyse complete du langage,
+  ETAT : TODO 01 a 24 implementes (analyse complete du langage,
          generation du code, listing .ASM, encodeur x86-32, ecrivains
-         PE et COFF, runtime integre, gestion des erreurs) ; TODO 24 et
-         25 a faire (pilotage, validation).
+         PE et COFF, runtime integre, gestion des erreurs, pilotage) ;
+         TODO 25 a faire (validation sur tous les exemples).
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -584,17 +584,28 @@
               avertissement de la variable x avec -w) ; les 31 exemples
               compilent toujours avec les memes sorties
 
-  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [A FAIRE]
-            Run : lexeur -> parseur/generateur -> encodeur -> ecrivain
-              (PE ou COFF) -> .ASM optionnel -> statistiques
-            Mode -v : phases, tailles .text/.data, nombre de symboles
-            Mode -d : dump des tokens, de la table des symboles et du
-              code interne
-            Mode -w : activer/desactiver les avertissements
-            Suppression de sortie partielle si erreur
-            Verifier que l'absence de -asm ne cree jamais de .ASM, que
-              -obj ne cree jamais de .EXE, et que sans option on obtient
-              uniquement le .EXE
+  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [IMPLEMENTE]
+            Run : lexeur -> parseur/generateur -> (runtime) -> encodeur ->
+              ecrivain (PE ou COFF) -> rapport ; .ASM optionnel ecrit
+              avant l'encodage ; les phases de generation ne tournent
+              pas s'il y a des erreurs
+            Mode -v : banniere, fichiers de sortie, une ligne par phase,
+              lignes et tokens, declarations et instructions analysees,
+              instructions / donnees / noms internes, tailles .text et
+              .data, relocations et imports, taille du fichier ecrit,
+              bilan final
+            Mode -d : tokens, types, table des symboles par portee,
+              decisions du parseur, code interne (liste complete des
+              instructions, runtime compris) et listing hexadecimal
+              <sortie>.lst
+            Mode -w / -w+ : activer les avertissements ; -w- : les
+              desactiver (defaut : desactives)
+            Suppression de sortie partielle si erreur (TODO 23)
+            Verifie (matrice des fichiers produits pour hello.a58) :
+              sans option -> h.exe seul ; -asm -> h.exe + h.asm ;
+              -obj -> h.obj seul ; -obj -asm -> h.obj + h.asm ;
+              -d -> h.exe + h.lst ; -v et -w- -> h.exe seul ;
+              -o nom -> nom.exe (ou nom.obj / nom.asm)
 
   TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL58\* [A FAIRE]
             Compiler les 31 fichiers : arrays, blocks, bool, control,
@@ -1051,12 +1062,14 @@ Begin
   WriteLn('  -o nom     : nom du fichier de sortie principal');
   WriteLn('  -obj       : produire seulement un .OBJ (COFF), pas de .EXE');
   WriteLn('  -asm       : produire aussi un listing .ASM (optionnel)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -v         : mode verbeux (phases, tailles, statistiques)');
+  WriteLn('  -d         : debug (tokens, symboles, code interne) et');
+  WriteLn('               listing hexadecimal sortie.lst');
+  WriteLn('  -w, -w-    : activer / desactiver les avertissements');
   WriteLn('  -h, --help : cette aide');
   WriteLn;
-  WriteLn('Par defaut, produit source.exe (PE Windows 32 bits).');
+  WriteLn('Par defaut, produit seulement source.exe (PE Windows 32 bits).');
+  WriteLn('Sans -asm aucun .asm n''est cree ; avec -obj aucun .exe n''est cree.');
   Halt(Code);
 End;
 
@@ -1096,8 +1109,10 @@ Begin
       Opts.Verbose := True
     Else If Opt = '-d' Then
       Opts.DebugMode := True
-    Else If Opt = '-w' Then
+    Else If (Opt = '-w') Or (Opt = '-w+') Then
       Opts.Warnings := True
+    Else If Opt = '-w-' Then
+      Opts.Warnings := False
     Else If Opt = '-obj' Then
       Opts.EmitObj := True
     Else If Opt = '-asm' Then
@@ -7943,7 +7958,14 @@ Procedure PhaseCodegen;
 Begin
   If Opts.Verbose Then
     WriteLn('  ', CodeCount + DeferCount, ' instruction(s), ',
-            DataCount, ' donnee(s) statique(s)');
+            DataCount, ' donnee(s) statique(s), ', NameCount,
+            ' nom(s) interne(s)');
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('Code interne (', CodeCount + DeferCount, ' entrees) :');
+    WriteInstrList(Output, CodeTab, CodeCount);
+    WriteInstrList(Output, DeferTab, DeferCount);
+  End;
   If Opts.EmitAsm Then
   Begin
     WriteListing(Opts.AsmFile);
@@ -8894,7 +8916,7 @@ Procedure PhaseEncode;
 Begin
   EncodeProgram;
   If Opts.Verbose Then
-    WriteLn('  code : ', BinCodeLen, ' octets, donnees : ', BinDataLen,
+    WriteLn('  .text : ', BinCodeLen, ' octets, .data : ', BinDataLen,
             ' octets, ', BinFixCount, ' relocation(s), ', BinImportCount,
             ' import(s)');
   If Opts.DebugMode Then
