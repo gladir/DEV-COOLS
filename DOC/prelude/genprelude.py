@@ -11,7 +11,7 @@ for f,k in chunks:
     src+=lines(f); ends.append(len(src))
 out=["{ PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }","Const","  PRELUDE_LINES = %d;"%len(src),"  PRELUDE_BASE = %d;"%nbase,"  PRELUDE_CHUNKS = %d;"%len(chunks),
  "  PreludeChunkEnd: Array[1..%d] Of LongInt = (%s);"%(len(chunks),', '.join(map(str,ends))),
- "  PreludeChunkKeys: Array[1..%d] Of String[40] = (%s);"%(len(chunks),', '.join("'%s'"%k for f,k in chunks)),
+ "  PreludeChunkKeys: Array[1..%d] Of String[255] = (%s);"%(len(chunks),', '.join("'%s'"%k for f,k in chunks)),
  "  PreludeText: Array[1..PRELUDE_LINES] Of String[250] = ("]
 for i,l in enumerate(src):
     assert len(l)<=250,(i,len(l))

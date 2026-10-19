@@ -1668,11 +1668,11 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 6005;
-  PRELUDE_BASE = 2796;
+  PRELUDE_LINES = 6048;
+  PRELUDE_BASE = 2823;
   PRELUDE_CHUNKS = 4;
-  PreludeChunkEnd: Array[1..4] Of LongInt = (3431, 5122, 5459, 6005);
-  PreludeChunkKeys: Array[1..4] Of String[40] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8Array|Uint8ClampedArray|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics');
+  PreludeChunkEnd: Array[1..4] Of LongInt = (3458, 5149, 5486, 6048);
+  PreludeChunkKeys: Array[1..4] Of String[255] = ('path', 'eval|Function', 'Event|Abort|URL|fetch|DOMException', 'Int8Array|Uint8Array|Uint8ClampedArray|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|ArrayBuffer|DataView|Buffer|TextEncoder|TextDecoder|Atomics');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -1728,6 +1728,10 @@ Const
     '  }',
     '  return __i_quote(s);',
     '}',
+    'function __fnm(f) {',
+    '  var n = f.name;',
+    '  return typeof n === ''string'' ? n : __fname(f);',
+    '}',
     'function __i_cname(o) {',
     '  var p = Object.getPrototypeOf(o);',
     '  if (p === null) return null;',
@@ -1735,7 +1739,7 @@ Const
     '    if (p.hasOwnProperty(''constructor'')) {',
     '      var c = p.constructor;',
     '      if (typeof c === ''function'') {',
-    '        var n = __fname(c);',
+    '        var n = __fnm(c);',
     '        if (n !== '''') return n;',
     '      }',
     '    }',
@@ -1746,11 +1750,11 @@ Const
     '}',
     'function __i_fnbase(f) {',
     '  var fl = __fflags(f);',
-    '  var nm = __fname(f);',
+    '  var nm = __fnm(f);',
     '  if (fl & 16) {',
     '    var s = ''[class '' + (nm === '''' ? ''(anonymous)'' : nm);',
     '    var par = __fparent(f);',
-    '    if (typeof par === ''function'') s += '' extends '' + __fname(par);',
+    '    if (typeof par === ''function'') s += '' extends '' + __fnm(par);',
     '    return s + '']'';',
     '  }',
     '  var kind = ''Function'';',
@@ -1873,9 +1877,28 @@ Const
     '  }',
     '  return (__i_isId(k) ? k : __i_quote(k)) + '': '' + s;',
     '}',
+    'function __i_bytes(v, off, n, max) {',
+    '  var parts = [], i, lim = n > max ? max : n, h;',
+    '  for (i = 0; i < lim; i++) {',
+    '    h = __abget(v, off + i, 1, false).toString(16);',
+    '    parts.push(h.length < 2 ? ''0'' + h : h);',
+    '  }',
+    '  h = parts.join('' '');',
+    '  if (n > lim) h += '' ... '' + (n - lim) + '' more byte'' + (n - lim > 1 ? ''s'' : '''');',
+    '  return h;',
+    '}',
     'function __i_raw(v, ctx, rt) {',
-    '  var isArr = Array.isArray(v);',
     '  var isFn = typeof v === ''function'';',
+    '  var ti = isFn ? 0 : __tainfo(v, 5);',
+    '  var cname0, tabuf;',
+    '  if (ti === 1) {',
+    '    cname0 = __i_cname(v);',
+    '    if (cname0 === ''Buffer'') {',
+    '      tabuf = __tainfo(v, 0);',
+    '      return ''<Buffer'' + (v.length === 0 ? '''' : '' '' + __i_bytes(tabuf, __tainfo(v, 1), v.length, 50)) + ''>'';',
+    '    }',
+    '  }',
+    '  var isArr = Array.isArray(v) || ti === 1;',
     '  var isRx = !isFn && !isArr && v instanceof RegExp;',
     '  var isErr = !isFn && !isArr && !isRx && v instanceof Error;',
     '  var isMap = !isFn && !isArr && !isRx && !isErr && v instanceof __Map;',
@@ -1883,16 +1906,20 @@ Const
     '  var isWeak = !isFn && !isArr && (v instanceof __WeakMap || v instanceof __WeakSet);',
     '  var isDate = !isFn && !isArr && v instanceof __Date;',
     '  var isProm = !isFn && !isArr && v instanceof __Promise;',
-    '  var cname = isArr ? ''Array'' : __i_cname(v);',
-    '  var ex = isArr ? __extras(v) : undefined;',
+    '  var cname = ti === 1 ? cname0 : (isArr ? ''Array'' : __i_cname(v));',
+    '  var ex = isArr && ti !== 1 ? __extras(v) : undefined;',
     '  var keys = isArr ? (ex ? Object.keys(ex) : []) : __i_order(Object.keys(v));',
     '  var base = '''';',
     '  var b0 = ''{'';',
     '  var b1 = ''}'';',
-    '  if (isArr) {',
-    '    b0 = ''['';',
+    '  if (ti === 2) {',
+    '    b0 = cname + '' {'';',
+    '    if (rt > ctx.depth) return ''['' + cname + '']'';',
+    '    return b0 + '' [Uint8Contents]: <'' + __i_bytes(v, 0, v.byteLength, 50) + ''>, byteLength: '' + v.byteLength + '' }'';',
+    '  } else if (isArr) {',
+    '    b0 = ti === 1 ? cname + ''('' + v.length + '') ['' : ''['';',
     '    b1 = '']'';',
-    '    if (v.length === 0 && keys.length === 0) return ''[]'';',
+    '    if (v.length === 0 && keys.length === 0) return ti === 1 ? b0 + '']'' : ''[]'';',
     '  } else if (isFn) {',
     '    base = __i_fnbase(v);',
     '    if (keys.length === 0) return base;',
@@ -1917,7 +1944,7 @@ Const
     '    else if (cname !== ''Object'') b0 = cname + '' {'';',
     '    if (keys.length === 0) return b0 + ''}'';',
     '  }',
-    '  if (rt > ctx.depth) return isArr ? ''[Array]'' : ''['' + (cname || ''Object'') + '']'';',
+    '  if (rt > ctx.depth) return isArr && ti !== 1 ? ''[Array]'' : ''['' + (cname || ''Object'') + '']'';',
     '  rt += 1;',
     '  ctx.seen.push(v);',
     '  ctx.cur = rt;',
@@ -7307,8 +7334,24 @@ Const
     '  mkProto(TP, ''values'', function () { return Array.prototype.values.call(__taArr(this)); });',
     '  mkProto(TP, ''entries'', function () { return Array.prototype.entries.call(__taArr(this)); });',
     '  TP[Symbol.iterator] = TP.values;',
-    '  mkProto(TP, ''toString'', function () { return Array.prototype.join.call(this, '',''); });',
-    '  mkProto(TP, ''toLocaleString'', function () { return Array.prototype.join.call(this, '',''); });',
+    '  mkProto(TP, ''toJSON'', function () { var r = {}, i; for (i = 0; i < this.length; i++) r[i] = this[i]; return r; });',
+    '  var okeys = Object.keys, oents = Object.entries, ovals = Object.values;',
+    '  Object.keys = function (o) {',
+    '    var r, i;',
+    '    if (o !== null && typeof o === ''object'' && __tainfo(o, 5) === 1) { r = []; for (i = 0; i < o.length; i++) r.push(String(i)); return r.concat(okeys(o)); }',
+    '    return okeys(o);',
+    '  };',
+    '  Object.values = function (o) {',
+    '    if (o !== null && typeof o === ''object'' && __tainfo(o, 5) === 1) return __taArr(o);',
+    '    return ovals(o);',
+    '  };',
+    '  Object.entries = function (o) {',
+    '    var r, i;',
+    '    if (o !== null && typeof o === ''object'' && __tainfo(o, 5) === 1) { r = []; for (i = 0; i < o.length; i++) r.push([String(i), o[i]]); return r; }',
+    '    return oents(o);',
+    '  };',
+    '  mkProto(TP, ''toString'', function () { return __taArr(this).join('',''); });',
+    '  mkProto(TP, ''toLocaleString'', function () { return __taArr(this).join('',''); });',
     '  getter(TP, ''\x01Symbol.toStringTag\x02'', function () { return this.constructor.name; });',
     '  __Int8Array = __mkTA(''Int8Array'', 0, 1);',
     '  __Uint8Array = __mkTA(''Uint8Array'', 1, 1);',
@@ -25467,6 +25510,18 @@ Begin
   A('add esp, 8');
   A('test eax, eax');
   A('jz .fnproto');
+  A('cmp edx, esi');
+  A('je .ownp');
+  A('push eax');
+  A('push dword ptr [ebp+16]');
+  A('push offset ' + RtStr('name'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('pop eax');
+  A('test ecx, ecx');
+  A('jnz .fnproto');
+  A('.ownp:');
   A('push dword ptr [ebp+12]');
   A('push dword ptr [ebp+8]');
   A('push eax');
@@ -38013,7 +38068,7 @@ Begin
   A('jmp .ret');
   A('.fix:');
   A('cmp edx, $INT');
-  A('jb .ret');
+  A('jbe .ret');
   A('xor eax, eax');
   A('mov edx, 0xFFF80000');
   FEnd;

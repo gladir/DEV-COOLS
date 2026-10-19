@@ -52,6 +52,10 @@ function __i_qstr(s, ctx) {
   }
   return __i_quote(s);
 }
+function __fnm(f) {
+  var n = f.name;
+  return typeof n === 'string' ? n : __fname(f);
+}
 function __i_cname(o) {
   var p = Object.getPrototypeOf(o);
   if (p === null) return null;
@@ -59,7 +63,7 @@ function __i_cname(o) {
     if (p.hasOwnProperty('constructor')) {
       var c = p.constructor;
       if (typeof c === 'function') {
-        var n = __fname(c);
+        var n = __fnm(c);
         if (n !== '') return n;
       }
     }
@@ -70,11 +74,11 @@ function __i_cname(o) {
 }
 function __i_fnbase(f) {
   var fl = __fflags(f);
-  var nm = __fname(f);
+  var nm = __fnm(f);
   if (fl & 16) {
     var s = '[class ' + (nm === '' ? '(anonymous)' : nm);
     var par = __fparent(f);
-    if (typeof par === 'function') s += ' extends ' + __fname(par);
+    if (typeof par === 'function') s += ' extends ' + __fnm(par);
     return s + ']';
   }
   var kind = 'Function';
@@ -197,9 +201,28 @@ function __i_prop(v, k, ctx, rt) {
   }
   return (__i_isId(k) ? k : __i_quote(k)) + ': ' + s;
 }
+function __i_bytes(v, off, n, max) {
+  var parts = [], i, lim = n > max ? max : n, h;
+  for (i = 0; i < lim; i++) {
+    h = __abget(v, off + i, 1, false).toString(16);
+    parts.push(h.length < 2 ? '0' + h : h);
+  }
+  h = parts.join(' ');
+  if (n > lim) h += ' ... ' + (n - lim) + ' more byte' + (n - lim > 1 ? 's' : '');
+  return h;
+}
 function __i_raw(v, ctx, rt) {
-  var isArr = Array.isArray(v);
   var isFn = typeof v === 'function';
+  var ti = isFn ? 0 : __tainfo(v, 5);
+  var cname0, tabuf;
+  if (ti === 1) {
+    cname0 = __i_cname(v);
+    if (cname0 === 'Buffer') {
+      tabuf = __tainfo(v, 0);
+      return '<Buffer' + (v.length === 0 ? '' : ' ' + __i_bytes(tabuf, __tainfo(v, 1), v.length, 50)) + '>';
+    }
+  }
+  var isArr = Array.isArray(v) || ti === 1;
   var isRx = !isFn && !isArr && v instanceof RegExp;
   var isErr = !isFn && !isArr && !isRx && v instanceof Error;
   var isMap = !isFn && !isArr && !isRx && !isErr && v instanceof __Map;
@@ -207,16 +230,20 @@ function __i_raw(v, ctx, rt) {
   var isWeak = !isFn && !isArr && (v instanceof __WeakMap || v instanceof __WeakSet);
   var isDate = !isFn && !isArr && v instanceof __Date;
   var isProm = !isFn && !isArr && v instanceof __Promise;
-  var cname = isArr ? 'Array' : __i_cname(v);
-  var ex = isArr ? __extras(v) : undefined;
+  var cname = ti === 1 ? cname0 : (isArr ? 'Array' : __i_cname(v));
+  var ex = isArr && ti !== 1 ? __extras(v) : undefined;
   var keys = isArr ? (ex ? Object.keys(ex) : []) : __i_order(Object.keys(v));
   var base = '';
   var b0 = '{';
   var b1 = '}';
-  if (isArr) {
-    b0 = '[';
+  if (ti === 2) {
+    b0 = cname + ' {';
+    if (rt > ctx.depth) return '[' + cname + ']';
+    return b0 + ' [Uint8Contents]: <' + __i_bytes(v, 0, v.byteLength, 50) + '>, byteLength: ' + v.byteLength + ' }';
+  } else if (isArr) {
+    b0 = ti === 1 ? cname + '(' + v.length + ') [' : '[';
     b1 = ']';
-    if (v.length === 0 && keys.length === 0) return '[]';
+    if (v.length === 0 && keys.length === 0) return ti === 1 ? b0 + ']' : '[]';
   } else if (isFn) {
     base = __i_fnbase(v);
     if (keys.length === 0) return base;
@@ -241,7 +268,7 @@ function __i_raw(v, ctx, rt) {
     else if (cname !== 'Object') b0 = cname + ' {';
     if (keys.length === 0) return b0 + '}';
   }
-  if (rt > ctx.depth) return isArr ? '[Array]' : '[' + (cname || 'Object') + ']';
+  if (rt > ctx.depth) return isArr && ti !== 1 ? '[Array]' : '[' + (cname || 'Object') + ']';
   rt += 1;
   ctx.seen.push(v);
   ctx.cur = rt;

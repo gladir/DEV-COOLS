@@ -172,8 +172,24 @@ function __init_bin() {
   mkProto(TP, 'values', function () { return Array.prototype.values.call(__taArr(this)); });
   mkProto(TP, 'entries', function () { return Array.prototype.entries.call(__taArr(this)); });
   TP[Symbol.iterator] = TP.values;
-  mkProto(TP, 'toString', function () { return Array.prototype.join.call(this, ','); });
-  mkProto(TP, 'toLocaleString', function () { return Array.prototype.join.call(this, ','); });
+  mkProto(TP, 'toJSON', function () { var r = {}, i; for (i = 0; i < this.length; i++) r[i] = this[i]; return r; });
+  var okeys = Object.keys, oents = Object.entries, ovals = Object.values;
+  Object.keys = function (o) {
+    var r, i;
+    if (o !== null && typeof o === 'object' && __tainfo(o, 5) === 1) { r = []; for (i = 0; i < o.length; i++) r.push(String(i)); return r.concat(okeys(o)); }
+    return okeys(o);
+  };
+  Object.values = function (o) {
+    if (o !== null && typeof o === 'object' && __tainfo(o, 5) === 1) return __taArr(o);
+    return ovals(o);
+  };
+  Object.entries = function (o) {
+    var r, i;
+    if (o !== null && typeof o === 'object' && __tainfo(o, 5) === 1) { r = []; for (i = 0; i < o.length; i++) r.push([String(i), o[i]]); return r; }
+    return oents(o);
+  };
+  mkProto(TP, 'toString', function () { return __taArr(this).join(','); });
+  mkProto(TP, 'toLocaleString', function () { return __taArr(this).join(','); });
   getter(TP, '\x01Symbol.toStringTag\x02', function () { return this.constructor.name; });
   __Int8Array = __mkTA('Int8Array', 0, 1);
   __Uint8Array = __mkTA('Uint8Array', 1, 1);
