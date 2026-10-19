@@ -265,6 +265,8 @@ Const
   DS_RTVAR = 6;
   DS_GLOBAL = 7;
   OF_FROZEN = 2;                  { objet gele }
+  OF_NOEXT = 8;                   { extensions interdites }
+  OF_SEALED = 16;                 { scelle : ni ajout ni suppression }
   OF_ROPROPS = 4;                 { tableau de proprietes en lecture seule }
   OF_STATIC = 1;                  { drapeau d'en-tete : cellule statique }
   { drapeaux d'un descripteur de fonction }
@@ -332,15 +334,16 @@ Const
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
     'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree', 'newtarget', 'u16s', 'u16a', 'u16raw', 'gcs'
   );
-  PRELUDE_ALIAS_COUNT = 27;
+  PRELUDE_ALIAS_COUNT = 42;
   PreludeAliases: Array[1..PRELUDE_ALIAS_COUNT] Of String[20] = (
     'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol', 'Date', 'Promise', 'BigInt',
     'setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval',
     'clearImmediate', 'queueMicrotask', 'require', 'eval', 'module', 'exports',
     'structuredClone', 'AggregateError', 'TextEncoder', 'performance', 'encodeURIComponent', 'decodeURIComponent',
-    'encodeURI', 'decodeURI'
+    'encodeURI', 'decodeURI', 'WeakRef', 'FinalizationRegistry', 'Reflect', 'global', 'Event', 'EventTarget', 'CustomEvent',
+    'AbortController', 'AbortSignal', 'DOMException', 'URL', 'URLSearchParams', 'btoa', 'atob', 'fetch'
   );
-  BUILTIN_COUNT = 74;
+  BUILTIN_COUNT = 76;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -352,7 +355,7 @@ Const
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
-    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo'
+    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm', '__gc', '__gcstats', '__gcstress', '__gget', '__gset', '__ginfo', '__oflags', '__propinfo'
   );
 
 Type
@@ -1662,11 +1665,11 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 4947;
-  PRELUDE_BASE = 2621;
-  PRELUDE_CHUNKS = 2;
-  PreludeChunkEnd: Array[1..2] Of LongInt = (3256, 4947);
-  PreludeChunkKeys: Array[1..2] Of String[40] = ('path', 'eval|Function');
+  PRELUDE_LINES = 5425;
+  PRELUDE_BASE = 2739;
+  PRELUDE_CHUNKS = 3;
+  PreludeChunkEnd: Array[1..3] Of LongInt = (3374, 5065, 5425);
+  PreludeChunkKeys: Array[1..3] Of String[40] = ('path', 'eval|Function', 'Event|Abort|URL|btoa|atob|fetch|DOMException');
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -2060,7 +2063,7 @@ Const
     '  }',
     '}',
     'var __i_g;',
-    'var __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
+    'var __symproto, __newfn, __GenProto, __TOMB, __Symbol, __Map, __Set, __WeakMap, __WeakSet, __IterProto, __sym_n, __sym_reg;',
     'function __mk(k) {',
     '  var t = typeof k;',
     '  if (t === ''string'') return ''s'' + k;',
@@ -2082,6 +2085,8 @@ Const
     '  return ''Symbol('' + __sym_desc(s) + '')'';',
     '}',
     'function __init_eval() {}',
+    'function __init_web() {}',
+    'var __global;',
     'function __i_init() {',
     '  __init_async();',
     '  __init_eval();',
@@ -2126,6 +2131,12 @@ Const
     '    var d = __sym_desc(s);',
     '    return __sym_reg && __sym_reg[d] === s ? d : undefined;',
     '  };',
+    '  __symproto = Object.create(String.prototype);',
+    '  Object.defineProperty(__symproto, ''constructor'', { value: __Symbol, writable: true, configurable: true, enumerable: false });',
+    '  Object.defineProperty(__symproto, ''toString'', { value: function () { return __sym_str(this); }, writable: true, configurable: true, enumerable: false });',
+    '  Object.defineProperty(__symproto, ''valueOf'', { value: function () { return this; }, writable: true, configurable: true, enumerable: false });',
+    '  Object.defineProperty(__symproto, ''description'', { get: function () { return __sym_desc(this); }, configurable: true, enumerable: false });',
+    '  __Symbol.prototype = __symproto;',
     '  var SI = ''\x01Symbol.iterator\x02'';',
     '  __GenProto = {',
     '    next: function (v) { var x = __gen_resume(this, 0, v); return { value: x, done: __gen_done(this) }; },',
@@ -2297,6 +2308,8 @@ Const
     '      return true;',
     '    }',
     '  };',
+    '  __init_web();',
+    '  __init_globals();',
     '}',
     'var __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;',
     'function __job(fn) {',
@@ -2860,8 +2873,116 @@ Const
     '    return o;',
     '  };',
     '}',
+    'var __Reflect, __WeakRef, __FinalizationRegistry;',
+    'function __isIdx(k) { return typeof k === ''string'' && k !== '''' && String(k >>> 0) === k && (k >>> 0) !== 4294967295; }',
+    'function __ownDesc(o, k) {',
+    '  var pi, fl, d, fr, n;',
+    '  if (o === null || o === undefined) throw new TypeError(''Cannot convert undefined or null to object'');',
+    '  k = String(k);',
+    '  fr = typeof o === ''object'' || typeof o === ''function'' ? (__oflags(o) & 2) !== 0 : true;',
+    '  if (typeof o === ''string'') {',
+    '    if (k === ''length'') return { value: o.length, writable: false, enumerable: false, configurable: false };',
+    '    if (__isIdx(k) && Number(k) < o.length) return { value: o.charAt(Number(k)), writable: false, enumerable: true, configurable: false };',
+    '    return undefined;',
+    '  }',
+    '  if (typeof o !== ''object'' && typeof o !== ''function'') return undefined;',
+    '  if (Array.isArray(o)) {',
+    '    if (k === ''length'') return { value: o.length, writable: !fr, enumerable: false, configurable: false };',
+    '    if (__isIdx(k)) {',
+    '      n = Number(k);',
+    '      if (n < o.length) return { value: o[n], writable: !fr, enumerable: true, configurable: !fr };',
+    '      return undefined;',
+    '    }',
+    '  }',
+    '  pi = __propinfo(o, k);',
+    '  if (pi === undefined) {',
+    '    if (typeof o === ''function'') {',
+    '      if (k === ''name'') return { value: o.name, writable: false, enumerable: false, configurable: true };',
+    '      if (k === ''length'') return { value: o.length, writable: false, enumerable: false, configurable: true };',
+    '    }',
+    '    return undefined;',
+    '  }',
+    '  fl = pi[0];',
+    '  d = {};',
+    '  if ((fl & 2) !== 0) { d.get = pi[1]; d.set = pi[2]; }',
+    '  else { d.value = pi[1]; d.writable = (fl & 4) === 0 && !fr; }',
+    '  d.enumerable = (fl & 1) === 0;',
+    '  d.configurable = !fr && (fl & 8) === 0 && (__oflags(o) & 16) === 0;',
+    '  return d;',
+    '}',
+    'function __init_obj() {',
+    '  Object.getOwnPropertyDescriptor = __ownDesc;',
+    '  Object.getOwnPropertyDescriptors = function (o) {',
+    '    var r = {}, ks = Object.getOwnPropertyNames(o), i;',
+    '    for (i = 0; i < ks.length; i++) r[ks[i]] = __ownDesc(o, ks[i]);',
+    '    return r;',
+    '  };',
+    '  Object.preventExtensions = function (o) { if (o !== null && (typeof o === ''object'' || typeof o === ''function'')) __oflags(o, 8); return o; };',
+    '  Object.seal = function (o) { if (o !== null && (typeof o === ''object'' || typeof o === ''function'')) __oflags(o, 24); return o; };',
+    '  Object.isExtensible = function (o) { return (typeof o === ''object'' && o !== null || typeof o === ''function'') && (__oflags(o) & 26) === 0; };',
+    '  Object.isSealed = function (o) { return !(typeof o === ''object'' && o !== null || typeof o === ''function'') || (__oflags(o) & 18) !== 0; };',
+    '}',
+    'function __init_globals() {',
+    '  var gt = globalThis;',
+    '  gt.Map = Map; gt.Set = Set; gt.WeakMap = WeakMap; gt.WeakSet = WeakSet; gt.Symbol = Symbol; gt.Date = Date; gt.Promise = Promise; gt.BigInt = BigInt;',
+    '  gt.setTimeout = setTimeout; gt.setInterval = setInterval; gt.setImmediate = setImmediate; gt.clearTimeout = clearTimeout; gt.clearInterval = clearInterval;',
+    '  gt.clearImmediate = clearImmediate; gt.queueMicrotask = queueMicrotask; gt.structuredClone = structuredClone; gt.AggregateError = AggregateError;',
+    '  gt.performance = performance; gt.encodeURIComponent = encodeURIComponent; gt.decodeURIComponent = decodeURIComponent; gt.encodeURI = encodeURI; gt.decodeURI = decodeURI;',
+    '  __WeakRef = class WeakRef {',
+    '    constructor(t) {',
+    '      if (t === null || (typeof t !== ''object'' && typeof t !== ''function'')) throw new TypeError(''WeakRef: invalid target'');',
+    '      Object.defineProperty(this, ''\x01t'', { value: t, writable: true, enumerable: false });',
+    '    }',
+    '    deref() { return this[''\x01t'']; }',
+    '  };',
+    '  __FinalizationRegistry = class FinalizationRegistry {',
+    '    constructor(cb) { if (typeof cb !== ''function'') throw new TypeError(''FinalizationRegistry: cleanup must be callable''); }',
+    '    register() { }',
+    '    unregister() { return false; }',
+    '  };',
+    '  __global = gt;',
+    '  gt.global = gt;',
+    '  __Reflect = __mkReflect();',
+    '  gt.Reflect = __Reflect;',
+    '  gt.WeakRef = __WeakRef;',
+    '  gt.FinalizationRegistry = __FinalizationRegistry;',
+    '}',
+    'function __mkReflect() {',
+    '  var R = {};',
+    '  R.apply = function (f, t, a) { return f.apply(t, a); };',
+    '  R.construct = function (F, a, nt) {',
+    '    if (typeof F !== ''function'') throw new TypeError(String(F) + '' is not a constructor'');',
+    '    var o = new F(...a);',
+    '    if (nt !== undefined && nt !== F && o !== null && typeof o === ''object'') Object.setPrototypeOf(o, nt.prototype);',
+    '    return o;',
+    '  };',
+    '  R.defineProperty = function (o, k, d) { try { Object.defineProperty(o, k, d); return true; } catch (e) { return false; } };',
+    '  R.deleteProperty = function (o, k) { return delete o[k]; };',
+    '  R.get = function (o, k, r) {',
+    '    var pi = o !== null && typeof o === ''object'' ? __propinfo(o, String(k)) : undefined;',
+    '    if (pi !== undefined && (pi[0] & 2) !== 0) return pi[1] === undefined ? undefined : pi[1].call(r === undefined ? o : r);',
+    '    return o[k];',
+    '  };',
+    '  R.getOwnPropertyDescriptor = __ownDesc;',
+    '  R.getPrototypeOf = function (o) { return Object.getPrototypeOf(o); };',
+    '  R.has = function (o, k) { return k in o; };',
+    '  R.isExtensible = function (o) { return Object.isExtensible(o); };',
+    '  R.ownKeys = function (o) { return Object.getOwnPropertyNames(o); };',
+    '  R.preventExtensions = function (o) { Object.preventExtensions(o); return true; };',
+    '  R.set = function (o, k, v, r) {',
+    '    var pi = typeof o === ''object'' && o !== null ? __propinfo(o, String(k)) : undefined;',
+    '    if (pi !== undefined && (pi[0] & 2) !== 0) { if (pi[2] === undefined) return false; pi[2].call(r === undefined ? o : r, v); return true; }',
+    '    if (pi !== undefined && ((pi[0] & 4) !== 0)) return false;',
+    '    if (Object.isFrozen(o)) return false;',
+    '    o[k] = v;',
+    '    return true;',
+    '  };',
+    '  R.setPrototypeOf = function (o, p) { Object.setPrototypeOf(o, p); return true; };',
+    '  return R;',
+    '}',
     'function __init_lib() {',
     '  __init_arr();',
+    '  __init_obj();',
     '  var rma = String.prototype.matchAll;',
     '  String.prototype.matchAll = function (re) {',
     '    if (re instanceof RegExp && re.flags.indexOf(''g'') < 0) throw new TypeError(''String.prototype.matchAll called with a non-global RegExp argument'');',
@@ -6614,6 +6735,366 @@ Const
     '  for (i = 0; i < a.length - 1; i++) ps.push(String(a[i]));',
     '  if (a.length > 0) body = String(a[a.length - 1]);',
     '  return __evRun(__evParse(''(function anonymous('' + ps.join('','') + ''\n) {\n'' + body + ''\n})''));',
+    '}',
+    'var __Event, __EventTarget, __CustomEvent, __AbortController, __AbortSignal, __DOMException, __URL, __URLSearchParams;',
+    'function __btoa(s) {',
+    '  var tbl = ''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'', out = '''', i, a, b, c, n;',
+    '  s = String(s);',
+    '  for (i = 0; i < s.length; i++) if (s.charCodeAt(i) > 255) throw new __DOMException(''Invalid character'', ''InvalidCharacterError'');',
+    '  for (i = 0; i < s.length; i += 3) {',
+    '    a = s.charCodeAt(i); b = i + 1 < s.length ? s.charCodeAt(i + 1) : -1; c = i + 2 < s.length ? s.charCodeAt(i + 2) : -1;',
+    '    n = (a << 16) | ((b < 0 ? 0 : b) << 8) | (c < 0 ? 0 : c);',
+    '    out += tbl.charAt((n >> 18) & 63) + tbl.charAt((n >> 12) & 63) + (b < 0 ? ''='' : tbl.charAt((n >> 6) & 63)) + (c < 0 ? ''='' : tbl.charAt(n & 63));',
+    '  }',
+    '  return out;',
+    '}',
+    'function __atob(s) {',
+    '  var tbl = ''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'', out = '''', i, v, bits = 0, acc = 0, ch;',
+    '  s = String(s).replace(/[\t\n\f\r ]/g, '''');',
+    '  if (s.length % 4 === 0) s = s.replace(/==?$/, '''');',
+    '  if (s.length % 4 === 1 || /[^A-Za-z0-9+\/]/.test(s)) throw new __DOMException(''The string to be decoded is not correctly encoded.'', ''InvalidCharacterError'');',
+    '  for (i = 0; i < s.length; i++) {',
+    '    v = tbl.indexOf(s.charAt(i));',
+    '    acc = (acc << 6) | v; bits += 6;',
+    '    if (bits >= 8) { bits -= 8; ch = (acc >> bits) & 255; out += String.fromCharCode(ch); }',
+    '  }',
+    '  return out;',
+    '}',
+    'function __fetch(url) {',
+    '  return new Promise(function (resolve, reject) {',
+    '    var e = new TypeError(''fetch failed'');',
+    '    e.cause = new Error(''le reseau n\''est pas disponible dans JSCW32'');',
+    '    reject(e);',
+    '  });',
+    '}',
+    'function __init_web() {',
+    '  __DOMException = class DOMException extends Error {',
+    '    constructor(message, name) {',
+    '      super(message === undefined ? '''' : message);',
+    '      Object.defineProperty(this, ''name'', { value: name === undefined ? ''Error'' : name, writable: true, configurable: true, enumerable: false });',
+    '    }',
+    '    get code() {',
+    '      var m = { IndexSizeError: 1, NotFoundError: 8, NotSupportedError: 9, InvalidStateError: 11, SyntaxError: 12, InvalidCharacterError: 5, AbortError: 20, TimeoutError: 23, DataCloneError: 25 };',
+    '      return m[this.name] || 0;',
+    '    }',
+    '  };',
+    '  __Event = class Event {',
+    '    constructor(type, init) {',
+    '      if (arguments.length === 0) throw new TypeError(''The "type" argument must be specified'');',
+    '      this.type = String(type);',
+    '      this.bubbles = !!(init && init.bubbles);',
+    '      this.cancelable = !!(init && init.cancelable);',
+    '      this.composed = !!(init && init.composed);',
+    '      this.defaultPrevented = false;',
+    '      this.target = null;',
+    '      this.currentTarget = null;',
+    '      this.timeStamp = performance.now();',
+    '      Object.defineProperty(this, ''\x01stop'', { value: false, writable: true, enumerable: false });',
+    '    }',
+    '    preventDefault() { if (this.cancelable) this.defaultPrevented = true; }',
+    '    stopPropagation() { }',
+    '    stopImmediatePropagation() { this[''\x01stop''] = true; }',
+    '  };',
+    '  __CustomEvent = class CustomEvent extends __Event {',
+    '    constructor(type, init) {',
+    '      super(type, init);',
+    '      this.detail = init && init.detail !== undefined ? init.detail : null;',
+    '    }',
+    '  };',
+    '  __EventTarget = class EventTarget {',
+    '    constructor() { Object.defineProperty(this, ''\x01l'', { value: {}, enumerable: false }); }',
+    '    addEventListener(type, fn, opts) {',
+    '      if (typeof fn !== ''function'' && !(fn && typeof fn.handleEvent === ''function'')) return;',
+    '      var l = this[''\x01l''], once = typeof opts === ''object'' && opts !== null && !!opts.once, i;',
+    '      if (!l[type]) l[type] = [];',
+    '      for (i = 0; i < l[type].length; i++) if (l[type][i].fn === fn) return;',
+    '      l[type].push({ fn: fn, once: once });',
+    '      if (typeof opts === ''object'' && opts !== null && opts.signal) {',
+    '        var self = this;',
+    '        opts.signal.addEventListener(''abort'', function () { self.removeEventListener(type, fn); });',
+    '      }',
+    '    }',
+    '    removeEventListener(type, fn) {',
+    '      var a = this[''\x01l''][type], i;',
+    '      if (!a) return;',
+    '      for (i = 0; i < a.length; i++) if (a[i].fn === fn) { a.splice(i, 1); return; }',
+    '    }',
+    '    dispatchEvent(ev) {',
+    '      var a = this[''\x01l''][ev.type], i, h, copy, f;',
+    '      ev.target = this; ev.currentTarget = this;',
+    '      f = this[''on'' + ev.type];',
+    '      if (typeof f === ''function'') f.call(this, ev);',
+    '      if (a) {',
+    '        copy = a.slice();',
+    '        for (i = 0; i < copy.length; i++) {',
+    '          h = copy[i];',
+    '          if (h.once) this.removeEventListener(ev.type, h.fn);',
+    '          if (typeof h.fn === ''function'') h.fn.call(this, ev); else h.fn.handleEvent(ev);',
+    '          if (ev[''\x01stop'']) break;',
+    '        }',
+    '      }',
+    '      ev.currentTarget = null;',
+    '      return !ev.defaultPrevented;',
+    '    }',
+    '  };',
+    '  __AbortSignal = class AbortSignal extends __EventTarget {',
+    '    constructor() { super(); this.aborted = false; this.reason = undefined; this.onabort = null; }',
+    '    throwIfAborted() { if (this.aborted) throw this.reason; }',
+    '    static abort(reason) {',
+    '      var s = new __AbortSignal();',
+    '      s.aborted = true;',
+    '      s.reason = reason === undefined ? new __DOMException(''This operation was aborted'', ''AbortError'') : reason;',
+    '      return s;',
+    '    }',
+    '    static timeout(ms) {',
+    '      var s = new __AbortSignal();',
+    '      setTimeout(function () { __abortSignal(s, new __DOMException(''The operation was aborted due to timeout'', ''TimeoutError'')); }, ms);',
+    '      return s;',
+    '    }',
+    '    static any(list) {',
+    '      var s = new __AbortSignal(), i;',
+    '      for (i = 0; i < list.length; i++) {',
+    '        if (list[i].aborted) { s.aborted = true; s.reason = list[i].reason; return s; }',
+    '        list[i].addEventListener(''abort'', function (e) { __abortSignal(s, e.target.reason); });',
+    '      }',
+    '      return s;',
+    '    }',
+    '  };',
+    '  __AbortController = class AbortController {',
+    '    constructor() { this.signal = new __AbortSignal(); }',
+    '    abort(reason) { __abortSignal(this.signal, reason); }',
+    '  };',
+    '  __URLSearchParams = class URLSearchParams {',
+    '    constructor(init) {',
+    '      var i, k, e;',
+    '      Object.defineProperty(this, ''\x01l'', { value: [], enumerable: false });',
+    '      Object.defineProperty(this, ''\x01u'', { value: null, writable: true, enumerable: false });',
+    '      if (init === undefined || init === null) return;',
+    '      if (typeof init === ''string'') this[''\x01parse''](init);',
+    '      else if (init instanceof __URLSearchParams) { for (i = 0; i < init[''\x01l''].length; i++) this[''\x01l''].push(init[''\x01l''][i].slice()); }',
+    '      else if (typeof init === ''object'' && typeof init[Symbol.iterator] === ''function'') {',
+    '        for (e of init) {',
+    '          if (e.length !== 2) throw new TypeError(''Each query pair must be an iterable [name, value] tuple'');',
+    '          this[''\x01l''].push([String(e[0]), String(e[1])]);',
+    '        }',
+    '      } else if (typeof init === ''object'') {',
+    '        for (k of Object.keys(init)) this[''\x01l''].push([k, String(init[k])]);',
+    '      } else this[''\x01parse''](String(init));',
+    '    }',
+    '    ''\x01parse''(s) {',
+    '      var parts, i, p, k, v, q;',
+    '      this[''\x01l''].length = 0;',
+    '      if (s.charAt(0) === ''?'') s = s.slice(1);',
+    '      if (s === '''') return;',
+    '      parts = s.split(''&'');',
+    '      for (i = 0; i < parts.length; i++) {',
+    '        if (parts[i] === '''') continue;',
+    '        p = parts[i].indexOf(''='');',
+    '        k = p < 0 ? parts[i] : parts[i].slice(0, p);',
+    '        v = p < 0 ? '''' : parts[i].slice(p + 1);',
+    '        this[''\x01l''].push([__uqDec(k), __uqDec(v)]);',
+    '      }',
+    '    }',
+    '    ''\x01upd''() { if (this[''\x01u'']) this[''\x01u''][''\x01setq''](this.toString()); }',
+    '    get size() { return this[''\x01l''].length; }',
+    '    append(k, v) { this[''\x01l''].push([String(k), String(v)]); this[''\x01upd''](); }',
+    '    delete(k) { var l = this[''\x01l''], i; for (i = l.length - 1; i >= 0; i--) if (l[i][0] === k) l.splice(i, 1); this[''\x01upd''](); }',
+    '    get(k) { var l = this[''\x01l''], i; for (i = 0; i < l.length; i++) if (l[i][0] === k) return l[i][1]; return null; }',
+    '    getAll(k) { var l = this[''\x01l''], i, r = []; for (i = 0; i < l.length; i++) if (l[i][0] === k) r.push(l[i][1]); return r; }',
+    '    has(k) { return this.get(k) !== null; }',
+    '    set(k, v) {',
+    '      var l = this[''\x01l''], i, f = -1;',
+    '      k = String(k); v = String(v);',
+    '      for (i = 0; i < l.length; i++) if (l[i][0] === k) { if (f < 0) { f = i; l[i][1] = v; } else { l.splice(i, 1); i--; } }',
+    '      if (f < 0) l.push([k, v]);',
+    '      this[''\x01upd'']();',
+    '    }',
+    '    sort() { this[''\x01l''].sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; }); this[''\x01upd''](); }',
+    '    forEach(f, t) { var l = this[''\x01l''], i; for (i = 0; i < l.length; i++) f.call(t, l[i][1], l[i][0], this); }',
+    '    keys() { return this[''\x01l''].map(function (e) { return e[0]; }).values(); }',
+    '    values() { return this[''\x01l''].map(function (e) { return e[1]; }).values(); }',
+    '    entries() { return this[''\x01l''].map(function (e) { return [e[0], e[1]]; }).values(); }',
+    '    toString() { return this[''\x01l''].map(function (e) { return __uqEnc(e[0]) + ''='' + __uqEnc(e[1]); }).join(''&''); }',
+    '  };',
+    '  __URLSearchParams.prototype[Symbol.iterator] = __URLSearchParams.prototype.entries;',
+    '  __URL = class URL {',
+    '    constructor(url, base) {',
+    '      var r = __urlParse(String(url), base === undefined ? undefined : (base instanceof __URL ? base.href : String(base)));',
+    '      if (r === null) { var e = new TypeError(''Invalid URL''); e.code = ''ERR_INVALID_URL''; e.input = String(url); throw e; }',
+    '      Object.defineProperty(this, ''\x01r'', { value: r, writable: true, enumerable: false });',
+    '      Object.defineProperty(this, ''\x01sp'', { value: null, writable: true, enumerable: false });',
+    '    }',
+    '    static canParse(u, b) { try { new __URL(u, b); return true; } catch (e) { return false; } }',
+    '    ''\x01setq''(q) { this[''\x01r''].query = q === '''' ? null : q; }',
+    '    get href() { return __urlHref(this[''\x01r'']); }',
+    '    set href(v) { var r = __urlParse(String(v)); if (r === null) throw new TypeError(''Invalid URL''); this[''\x01r''] = r; }',
+    '    get origin() { var r = this[''\x01r'']; return (r.scheme === ''http'' || r.scheme === ''https'' || r.scheme === ''ws'' || r.scheme === ''wss'' || r.scheme === ''ftp'') ? r.scheme + ''://'' + __urlHost(r) : ''null''; }',
+    '    get protocol() { return this[''\x01r''].scheme + '':''; }',
+    '    set protocol(v) { this[''\x01r''].scheme = String(v).replace(/:.*$/, '''').toLowerCase(); }',
+    '    get username() { return this[''\x01r''].user; }',
+    '    set username(v) { this[''\x01r''].user = __urlEnc(String(v), ''/:;=@[\\]^|?#''); }',
+    '    get password() { return this[''\x01r''].pass; }',
+    '    set password(v) { this[''\x01r''].pass = __urlEnc(String(v), ''/:;=@[\\]^|?#''); }',
+    '    get host() { return __urlHost(this[''\x01r'']); }',
+    '    set host(v) { var m = /^([^:]*)(?::(\d*))?$/.exec(String(v)); if (m) { this[''\x01r''].host = m[1].toLowerCase(); if (m[2] !== undefined) this.port = m[2]; } }',
+    '    get hostname() { return this[''\x01r''].host; }',
+    '    set hostname(v) { this[''\x01r''].host = String(v).toLowerCase(); }',
+    '    get port() { return this[''\x01r''].port; }',
+    '    set port(v) {',
+    '      v = String(v);',
+    '      this[''\x01r''].port = (v === '''' || __urlDefPort(this[''\x01r''].scheme) === Number(v)) ? '''' : String(parseInt(v, 10));',
+    '    }',
+    '    get pathname() { return this[''\x01r''].path; }',
+    '    set pathname(v) { v = String(v); this[''\x01r''].path = __urlNormPath(this[''\x01r''].special && v.charAt(0) !== ''/'' ? ''/'' + v : v, this[''\x01r''].special); }',
+    '    get search() { var q = this[''\x01r''].query; return q === null || q === '''' ? '''' : ''?'' + q; }',
+    '    set search(v) {',
+    '      v = String(v);',
+    '      if (v.charAt(0) === ''?'') v = v.slice(1);',
+    '      this[''\x01r''].query = v === '''' ? null : __urlEnc(v, '' "#<>'');',
+    '      if (this[''\x01sp'']) this[''\x01sp''][''\x01parse''](v);',
+    '    }',
+    '    get hash() { var f = this[''\x01r''].frag; return f === null || f === '''' ? '''' : ''#'' + f; }',
+    '    set hash(v) { v = String(v); if (v.charAt(0) === ''#'') v = v.slice(1); this[''\x01r''].frag = v === '''' ? null : __urlEnc(v, '' "<>`''); }',
+    '    get searchParams() {',
+    '      if (!this[''\x01sp'']) {',
+    '        this[''\x01sp''] = new __URLSearchParams(this[''\x01r''].query === null ? '''' : this[''\x01r''].query);',
+    '        this[''\x01sp''][''\x01u''] = this;',
+    '      }',
+    '      return this[''\x01sp''];',
+    '    }',
+    '    toString() { return this.href; }',
+    '    toJSON() { return this.href; }',
+    '  };',
+    '  var gt = globalThis;',
+    '  gt.Event = __Event; gt.EventTarget = __EventTarget; gt.CustomEvent = __CustomEvent; gt.AbortController = __AbortController; gt.AbortSignal = __AbortSignal;',
+    '  gt.DOMException = __DOMException; gt.URL = __URL; gt.URLSearchParams = __URLSearchParams; gt.btoa = __btoa; gt.atob = __atob; gt.fetch = __fetch;',
+    '}',
+    'function __abortSignal(s, reason) {',
+    '  if (s.aborted) return;',
+    '  s.aborted = true;',
+    '  s.reason = reason === undefined ? new __DOMException(''This operation was aborted'', ''AbortError'') : reason;',
+    '  var ev = new __Event(''abort'');',
+    '  s.dispatchEvent(ev);',
+    '}',
+    'function __uqEnc(s) {',
+    '  var e = __encodeURIComponent(s).replace(/%20/g, ''+'');',
+    '  return e.replace(/[!''()~]/g, function (c) { return ''%'' + c.charCodeAt(0).toString(16).toUpperCase(); });',
+    '}',
+    'function __uqDec(s) {',
+    '  s = s.replace(/\+/g, '' '');',
+    '  try { return __decodeURIComponent(s); } catch (e) { return s; }',
+    '}',
+    'function __urlEnc(s, set) {',
+    '  var out = '''', i, c, b;',
+    '  for (i = 0; i < s.length; i++) {',
+    '    c = s.charAt(i);',
+    '    if (s.charCodeAt(i) < 33 || s.charCodeAt(i) > 126 || set.indexOf(c) >= 0) {',
+    '      if (c === ''%'' && /^%[0-9A-Fa-f]{2}/.test(s.slice(i))) { out += c; continue; }',
+    '      if (c === '' '' && set.indexOf('' '') < 0 && false) { out += c; continue; }',
+    '      out += __encodeURIComponent(s.charCodeAt(i) >= 55296 && s.charCodeAt(i) <= 56319 ? s.charAt(i) + s.charAt(++i) : c);',
+    '    } else out += c;',
+    '  }',
+    '  return out;',
+    '}',
+    'function __urlDefPort(sc) { return { http: 80, https: 443, ftp: 21, ws: 80, wss: 443 }[sc]; }',
+    'function __urlSpecial(sc) { return sc === ''http'' || sc === ''https'' || sc === ''ftp'' || sc === ''ws'' || sc === ''wss'' || sc === ''file''; }',
+    'function __urlHost(r) { return r.host + (r.port === '''' ? '''' : '':'' + r.port); }',
+    'function __urlNormPath(p, special) {',
+    '  var segs = p.split(special ? /[\/\\]/ : ''/''), out = [], i, s, last;',
+    '  if (segs[0] === '''') segs.shift();',
+    '  for (i = 0; i < segs.length; i++) {',
+    '    s = segs[i];',
+    '    last = i === segs.length - 1;',
+    '    if (s === ''..'' || s.toLowerCase() === ''%2e%2e'' || s.toLowerCase() === ''.%2e'' || s.toLowerCase() === ''%2e.'') { if (out.length > 0) out.pop(); if (last) out.push(''''); }',
+    '    else if (s === ''.'' || s.toLowerCase() === ''%2e'') { if (last) out.push(''''); }',
+    '    else out.push(__urlEnc(s, '' "#<>?`{}''));',
+    '  }',
+    '  return ''/'' + out.join(''/'');',
+    '}',
+    'function __urlParse(input, base) {',
+    '  var s = input.replace(/^[\u0000- ]+|[\u0000- ]+$/g, '''').replace(/[\t\n\r]/g, ''''), m, r, b, rest, auth, hp, q, f, pi, hm, special, path;',
+    '  m = /^([A-Za-z][A-Za-z0-9+.\-]*):/.exec(s);',
+    '  r = { scheme: '''', user: '''', pass: '''', host: '''', port: '''', path: '''', query: null, frag: null, special: false, opaque: false };',
+    '  if (m === null) {',
+    '    if (base === undefined) return null;',
+    '    b = __urlParse(base);',
+    '    if (b === null || b.opaque) return null;',
+    '    r.scheme = b.scheme; r.special = b.special;',
+    '    rest = s;',
+    '    f = rest.indexOf(''#''); if (f >= 0) { r.frag = __urlEnc(rest.slice(f + 1), '' "<>`''); rest = rest.slice(0, f); }',
+    '    q = rest.indexOf(''?''); if (q >= 0) { r.query = __urlEnc(rest.slice(q + 1), r.special ? '' "#<>\'''' : '' "#<>''); rest = rest.slice(0, q); }',
+    '    if (rest.slice(0, 2) === ''//'' || (r.special && /^[\/\\]{2}/.test(rest))) return __urlParse(b.scheme + '':'' + s, undefined);',
+    '    r.user = b.user; r.pass = b.pass; r.host = b.host; r.port = b.port;',
+    '    if (rest === '''') { r.path = b.path; if (q < 0) r.query = b.query; }',
+    '    else if (rest.charAt(0) === ''/'' || (r.special && rest.charAt(0) === ''\\'')) r.path = __urlNormPath(rest, r.special);',
+    '    else {',
+    '      path = b.path.slice(0, b.path.lastIndexOf(''/'') + 1) + rest;',
+    '      r.path = __urlNormPath(path, r.special);',
+    '    }',
+    '    return r;',
+    '  }',
+    '  r.scheme = m[1].toLowerCase();',
+    '  r.special = __urlSpecial(r.scheme);',
+    '  rest = s.slice(m[0].length);',
+    '  f = rest.indexOf(''#''); if (f >= 0) { r.frag = __urlEnc(rest.slice(f + 1), '' "<>`''); rest = rest.slice(0, f); }',
+    '  q = rest.indexOf(''?''); if (q >= 0) { r.query = __urlEnc(rest.slice(q + 1), r.special ? '' "#<>\'''' : '' "#<>''); rest = rest.slice(0, q); }',
+    '  if (r.special) {',
+    '    if (r.scheme === ''file'') {',
+    '      rest = rest.replace(/\\/g, ''/'');',
+    '      if (rest.slice(0, 2) === ''//'') { rest = rest.slice(2); pi = rest.indexOf(''/''); r.host = (pi < 0 ? rest : rest.slice(0, pi)).toLowerCase(); rest = pi < 0 ? ''/'' : rest.slice(pi); }',
+    '      else if (rest.charAt(0) !== ''/'') {',
+    '        if (base !== undefined) { b = __urlParse(base); if (b && b.scheme === ''file'') { r.host = b.host; rest = b.path.slice(0, b.path.lastIndexOf(''/'') + 1) + rest; } }',
+    '        if (rest.charAt(0) !== ''/'') rest = ''/'' + rest;',
+    '      }',
+    '      r.path = __urlNormPath(rest, true);',
+    '      return r;',
+    '    }',
+    '    rest = rest.replace(/^[\/\\]*/, '''');',
+    '    pi = rest.search(/[\/\\]/);',
+    '    auth = pi < 0 ? rest : rest.slice(0, pi);',
+    '    path = pi < 0 ? ''/'' : rest.slice(pi);',
+    '  } else if (rest.slice(0, 2) === ''//'') {',
+    '    rest = rest.slice(2);',
+    '    pi = rest.indexOf(''/'');',
+    '    auth = pi < 0 ? rest : rest.slice(0, pi);',
+    '    path = pi < 0 ? '''' : rest.slice(pi);',
+    '  } else {',
+    '    r.opaque = true;',
+    '    r.path = __urlEnc(rest, '''');',
+    '    return r;',
+    '  }',
+    '  hp = auth.lastIndexOf(''@'');',
+    '  if (hp >= 0) {',
+    '    var ui = auth.slice(0, hp), c = ui.indexOf('':'');',
+    '    r.user = __urlEnc(c < 0 ? ui : ui.slice(0, c), ''/:;=@[\\]^|?#'');',
+    '    r.pass = c < 0 ? '''' : __urlEnc(ui.slice(c + 1), ''/:;=@[\\]^|?#'');',
+    '    auth = auth.slice(hp + 1);',
+    '  }',
+    '  hm = /^(\[[^\]]*\]|[^:]*)(?::(.*))?$/.exec(auth);',
+    '  if (hm === null) return null;',
+    '  r.host = hm[1];',
+    '  if (r.special) {',
+    '    if (r.host === '''') return null;',
+    '    try { r.host = __decodeURIComponent(r.host); } catch (e) { return null; }',
+    '    r.host = r.host.toLowerCase();',
+    '    if (/[\u0000\t\n\r #\/:<>?@\[\\\]^|%]/.test(r.host.replace(/^\[.*\]$/, ''''))) return null;',
+    '  } else r.host = r.host.toLowerCase();',
+    '  if (hm[2] !== undefined && hm[2] !== '''') {',
+    '    if (!/^\d+$/.test(hm[2]) || Number(hm[2]) > 65535) return null;',
+    '    r.port = __urlDefPort(r.scheme) === Number(hm[2]) ? '''' : String(Number(hm[2]));',
+    '  }',
+    '  r.path = r.special || path !== '''' ? __urlNormPath(path === '''' ? ''/'' : path, r.special) : '''';',
+    '  return r;',
+    '}',
+    'function __urlHref(r) {',
+    '  var s = r.scheme + '':'';',
+    '  if (r.opaque) return s + r.path + (r.query === null ? '''' : ''?'' + r.query) + (r.frag === null ? '''' : ''#'' + r.frag);',
+    '  if (r.host !== '''' || r.scheme === ''file'' || r.special) {',
+    '    s += ''//'';',
+    '    if (r.user !== '''' || r.pass !== '''') s += r.user + (r.pass === '''' ? '''' : '':'' + r.pass) + ''@'';',
+    '    s += __urlHost(r);',
+    '  }',
+    '  return s + r.path + (r.query === null ? '''' : ''?'' + r.query) + (r.frag === null ? '''' : ''#'' + r.frag);',
     '}'
   );
 { PRELUDE-END }
@@ -15432,7 +15913,7 @@ Begin
             Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, p)^.aux)^.sym));
           Emit1(ctx, OP_PUSH, TempLo(t));
           If fl And (PR_GETTER Or PR_SETTER) <> 0 Then
-            CallRt(ctx, 'obj_define_acc', 24)
+            CallRt(ctx, 'obj_define_acc', 20)
           Else
             CallRt(ctx, 'obj_define', 16);
           If tk <> 0 Then
@@ -19739,6 +20220,31 @@ Begin
   A('leave');
   A('ret');
   A('.proto:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('cmp byte ptr [eax+$STR_DATA], 1');
+  A('jne .sp1');
+  A('cmp dword ptr [_JSV___symproto+4], $OBJ');
+  A('jne .sp1');
+  { symbole (chaine marquee) : proprietes de Symbol.prototype, accesseurs compris }
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [_JSV___symproto]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .symu');
+  A('push $STR');
+  A('push dword ptr [ebp+8]');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('leave');
+  A('ret');
+  A('.symu:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.sp1:');
   A('push dword ptr [ebp+12]');
   A('push offset _JSNO_string_proto');
   A('call _JSRT_obj_lookup_str');
@@ -24517,6 +25023,8 @@ Begin
   A('add esp, 20');
   A('jmp .done');
   A('.newprop:');
+  A('test byte ptr [esi+2], ' + IntToStr(OF_NOEXT Or OF_SEALED));
+  A('jnz .done');
   A('push dword ptr [ebp+24]');
   A('push dword ptr [ebp+20]');
   A('push 0');
@@ -24701,8 +25209,18 @@ Begin
   A('.obj:');
   A('mov esi, dword ptr [ebp+8]');
   A('movzx ecx, byte ptr [esi+2]');
-  A('test ecx, 2');
+  A('test ecx, ' + IntToStr(OF_FROZEN Or OF_SEALED));
   A('jnz .false');
+  { propriete non configurable : la suppression echoue }
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .rm');
+  A('test dword ptr [eax+4], 8');
+  A('jnz .false');
+  A('.rm:');
   A('push dword ptr [ebp+16]');
   A('push esi');
   A('call _JSRT_obj_remove');
@@ -25156,6 +25674,29 @@ Begin
   A('leave');
   A('ret');
   A('.strproto:');
+  A('cmp byte ptr [eax+$STR_DATA], 1');
+  A('jne .sp1');
+  A('cmp dword ptr [_JSV___symproto+4], $OBJ');
+  A('jne .sp1');
+  A('push edx');
+  A('push dword ptr [_JSV___symproto]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .symu');
+  A('push $STR');
+  A('push dword ptr [ebp+8]');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('leave');
+  A('ret');
+  A('.symu:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.sp1:');
   A('push edx');
   A('push offset _JSNO_string_proto');
   A('call _JSRT_obj_lookup');
@@ -25631,6 +26172,101 @@ Begin
   A('mov edx, dword ptr [ebp-20]');
   FEnd;
 
+  { __oflags(objet) -> drapeaux d'en-tete ; __oflags(objet, masque) les ajoute }
+  FBegin('_JSRT_n_oflags', 0);
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .r');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('cmp ecx, $OBJ');
+  A('je .t');
+  A('cmp ecx, $ARR');
+  A('je .t');
+  A('cmp ecx, $FN');
+  A('jne .r');
+  A('.t:');
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .get');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('or byte ptr [esi+2], al');
+  A('.get:');
+  A('movzx eax, byte ptr [esi+2]');
+  A('.r:');
+  A('mov edx, $INT');
+  FEnd;
+
+  { __propinfo(objet, cle) -> [drapeaux, valeur] ou [drapeaux, getter, setter], undefined si absente }
+  FBegin('_JSRT_n_propinfo', 0);
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .u');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + '], $STR');
+  A('jne .u');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('cmp ecx, $OBJ');
+  A('je .o');
+  A('cmp ecx, $FN');
+  A('jne .u');
+  A('mov eax, dword ptr [eax+$FN_PROPS]');
+  A('test eax, eax');
+  A('jz .u');
+  A('.o:');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push eax');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .u');
+  A('mov esi, eax');
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('push $INT');
+  A('push dword ptr [esi+4]');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('test dword ptr [esi+4], 2');
+  A('jnz .acc');
+  A('push dword ptr [esi+12]');
+  A('push dword ptr [esi+8]');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('jmp .done');
+  A('.acc:');
+  A('mov edi, dword ptr [esi+8]');
+  A('mov eax, dword ptr [edi]');
+  A('call .pushfn');
+  A('mov eax, dword ptr [edi+4]');
+  A('call .pushfn');
+  A('jmp .done');
+  A('.pushfn:');
+  A('test eax, eax');
+  A('jz .pu');
+  A('push $FN');
+  A('push eax');
+  A('jmp .pp');
+  A('.pu:');
+  A('push $UNDEF');
+  A('push 0');
+  A('.pp:');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('ret');
+  A('.done:');
+  A('mov eax, ebx');
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  A('.u:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
   FBegin('_JSRT_Object_isFrozen', 2);
   ObjArg(0, 'dword ptr [ebp-16]', 'dword ptr [ebp-20]');
   A('mov eax, dword ptr [ebp-16]');
@@ -25866,7 +26502,7 @@ Begin
   A('add esp, 8');
   A('mov ' + Lv(1) + ', eax');
   { drapeaux de depart : ceux de la propriete existante, sinon cachee et en lecture seule }
-  A('mov ' + Lv(2) + ', 5');
+  A('mov ' + Lv(2) + ', 13');
   A('push esi');
   A('call _JSRT_obj_own');
   A('add esp, 4');
@@ -25881,6 +26517,7 @@ Begin
   A('.fresh:');
   DescAttr('enumerable', 1);
   DescAttr('writable', 4);
+  DescAttr('configurable', 8);
   { accesseur ou donnee }
   A('push offset ' + RtStr('get'));
   A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 20) + ']');
@@ -36689,6 +37326,8 @@ Begin
   RtGlobal('__gget', RtFuncObj('__gget', '_JSRT_n_gget', 1), RT_T_FUNCTION);
   RtGlobal('__gset', RtFuncObj('__gset', '_JSRT_n_gset', 2), RT_T_FUNCTION);
   RtGlobal('__ginfo', RtFuncObj('__ginfo', '_JSRT_n_ginfo', 1), RT_T_FUNCTION);
+  RtGlobal('__oflags', RtFuncObj('__oflags', '_JSRT_n_oflags', 2), RT_T_FUNCTION);
+  RtGlobal('__propinfo', RtFuncObj('__propinfo', '_JSRT_n_propinfo', 2), RT_T_FUNCTION);
 End;
 
 Procedure EmitRuntime(Var ctx: TCompilerContext);
