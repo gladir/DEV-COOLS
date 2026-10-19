@@ -23,10 +23,10 @@
   Compilateur 16 bits de reference : AL58C86.PAS (DOC\TODO\AL58C86.txt)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
-  ETAT : TODO 01 a 22 implementes (analyse complete du langage,
+  ETAT : TODO 01 a 23 implementes (analyse complete du langage,
          generation du code, listing .ASM, encodeur x86-32, ecrivains
-         PE et COFF, runtime integre) ; TODO 23 a 25 a faire (erreurs,
-         pilotage, validation).
+         PE et COFF, runtime integre, gestion des erreurs) ; TODO 24 et
+         25 a faire (pilotage, validation).
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -551,22 +551,38 @@
               (math, procs, arrays, test_final) s'executent correctement ;
               lecture de l'entree standard testee (entier, reel, Boolean)
 
-  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [A FAIRE]
+  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [IMPLEMENTE]
             Erreurs lexicales : caractere invalide, chaine non fermee,
-              commentaire non termine, nombre hors limites
-            Erreurs syntaxiques : token inattendu, begin/end non apparie,
-              parenthese ou crochet non ferme, point-virgule manquant
-            Erreurs semantiques : type incompatible, appel avec mauvais
-              nombre d'arguments, etiquette inconnue, doublon de
-              declaration dans une meme portee
-            Avertissements : variable non declaree (declaration implicite),
-              etiquette non utilisee, indice de switch hors bornes
-            Recuperation : synchronisation sur ; ou mot-cle (begin, end,
-              for, if, procedure) pour reporter plusieurs erreurs
-            Format "fichier(ligne,col) : erreur/avertissement : message"
-            Compteurs finaux, code de retour EXIT_ERROR si erreurs,
-              aucun fichier de sortie corrompu en cas d'erreur
-            Exemple : test_errors.a58 (compilation poursuivie)
+              commentaire non termine, entier / reel / exposant hors
+              limites ; signalees en une passe, puis le parseur tourne
+              quand meme et ajoute les erreurs syntaxiques
+            Erreurs syntaxiques : token inattendu (avec le token trouve),
+              begin / end non apparie, parenthese ou crochet non ferme,
+              point-virgule manquant, instruction ou expression attendue
+            Erreurs semantiques : type incompatible, nombre d'arguments
+              incorrect, procedure inconnue, etiquette non definie,
+              declaration en double dans une portee, indice ou tableau
+              invalide, division par zero constante
+            Avertissements (affiches avec -w) : variable non declaree
+              (declaration implicite), etiquette non utilisee, indice de
+              switch hors bornes, real converti en integer, integer
+              converti en Boolean, Boolean converti en integer
+            Recuperation : ParserSync avance jusqu'a ; end begin for if
+              ou procedure (non consommes) ; garantie de progression
+              (un arret repete sur le meme mot-cle est franchi)
+            Format : fichier(ligne,colonne) : erreur|avertissement :
+              message ; erreur fatale : AL58CW32: erreur fatale: message
+            Compteurs finaux (PhaseReport) : 'Compilation echouee : N
+              erreur(s), M avertissement(s)' ou 'Compilation terminee :
+              0 erreur, M avertissement(s)' ; arret apres 30 erreurs
+            Code de retour EXIT_ERROR (1) si erreur ; les phases de
+              generation ne tournent pas, donc aucun fichier de sortie
+              n'est ecrit ; les fichiers deja crees sont supprimes si une
+              erreur fatale survient (NoteOutput / RemoveOutputs)
+            Verifie sur une batterie de 16 programmes fautifs (lexicaux,
+              syntaxiques, semantiques) et sur test_errors.a58 (compile,
+              avertissement de la variable x avec -w) ; les 31 exemples
+              compilent toujours avec les memes sorties
 
   TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [A FAIRE]
             Run : lexeur -> parseur/generateur -> encodeur -> ecrivain
@@ -957,34 +973,64 @@ End;
 { ============================================================
   SECTION 5 - OPTIONS DE LIGNE DE COMMANDE (TODO 02)
   ============================================================ }
+{ Fichiers de sortie crees pendant cette compilation : supprimes si une
+  erreur fatale survient, pour ne laisser aucun fichier tronque. }
+Var
+  OutCreated  : Array[0..7] Of TString;
+  OutCreatedN : Integer;
+
+Procedure NoteOutput(Const Name : TString);
+Begin
+  If OutCreatedN <= 7 Then
+  Begin
+    OutCreated[OutCreatedN] := Name;
+    Inc(OutCreatedN);
+  End;
+End;
+
+Procedure RemoveOutputs;
+Var
+  I : Integer;
+  F : File;
+Begin
+  For I := 0 To OutCreatedN - 1 Do
+  Begin
+    Assign(F, OutCreated[I]);
+    Erase(F);
+    If IOResult <> 0 Then ;
+  End;
+  OutCreatedN := 0;
+End;
+
 Procedure FatalError(Const Msg : TString);
 Begin
-  WriteLn('AL58CW32: FATAL: ', Msg);
+  WriteLn('AL58CW32: erreur fatale: ', Msg);
+  RemoveOutputs;
   Halt(EXIT_ERROR);
 End;
 
 Procedure WarnMsg(Const Msg : TString);
 Begin
   If Not Opts.Warnings Then Exit;
-  WriteLn('AL58CW32: warning: ', Msg);
+  WriteLn('AL58CW32: avertissement: ', Msg);
   Inc(WarnCount);
 End;
 
-{ Erreur / avertissement localise dans le source (TODO 23 etendra) }
+{ Erreur / avertissement localise dans le source :
+  fichier(ligne,colonne) : erreur : message }
 Procedure ErrorAt(Line, Col : Integer; Const Msg : TString);
 Begin
-  WriteLn('AL58CW32: ', Opts.SrcFile, ':', Line, ':', Col,
-          ': error: ', Msg);
+  WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : erreur : ', Msg);
   Inc(ErrorCount);
   If ErrorCount >= MAX_ERRORS Then
-    FatalError('trop d''erreurs, compilation arretee');
+    FatalError('trop d''erreurs (' + ItoS(MAX_ERRORS) +
+               '), compilation arretee');
 End;
 
 Procedure WarnAt(Line, Col : Integer; Const Msg : TString);
 Begin
   If Not Opts.Warnings Then Exit;
-  WriteLn('AL58CW32: ', Opts.SrcFile, ':', Line, ':', Col,
-          ': warning: ', Msg);
+  WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : avertissement : ', Msg);
   Inc(WarnCount);
 End;
 
@@ -3137,6 +3183,7 @@ Begin
   Rewrite(F);
   If IOResult <> 0 Then
     FatalError('impossible de creer ' + FileName);
+  NoteOutput(FileName);
   WriteLn(F, '; ', FileName, ' - genere par AL58CW32 ',
           AL58CW32_VERSION, ' a partir de ', Opts.SrcFile);
   WriteLn(F);
@@ -3309,10 +3356,26 @@ End;
 
 { Recuperation apres une erreur : avance jusqu au prochain ';' ou
   'end' (non consommes) pour reprendre l analyse (TODO 23). }
+Var
+  SyncLine, SyncCol : Integer;   { position du dernier arret sur un mot-cle }
+
+Function AtSyncKw : Boolean;
+Begin
+  AtSyncKw := AtKw('begin') Or AtKw('for') Or AtKw('if') Or
+              AtKw('procedure');
+End;
+
 Procedure ParserSync;
 Begin
-  While Not (AtEOF Or AtPunct(';') Or AtKw('end')) Do
+  { garantie de progression : un arret repete sur le meme mot-cle est
+    franchi }
+  If AtSyncKw And (CurToken.Line = SyncLine) And
+     (CurToken.Col = SyncCol) Then
     ParserAdvance;
+  While Not (AtEOF Or AtPunct(';') Or AtKw('end') Or AtSyncKw) Do
+    ParserAdvance;
+  SyncLine := CurToken.Line;
+  SyncCol  := CurToken.Col;
 End;
 
 Procedure ParseItem; Forward;
@@ -4013,7 +4076,11 @@ Begin
     Exit;
   End;
   If Conv = CV_REAL_TO_INT Then
-    WarnAt(Line, Col, 'real converti en integer: arrondi au plus proche');
+    WarnAt(Line, Col, 'real converti en integer: arrondi au plus proche')
+  Else If Conv = CV_INT_TO_BOOL Then
+    WarnAt(Line, Col, 'integer converti en Boolean (<> 0)')
+  Else If (ExprTab[N].Typ = TY_IDX_BOOLEAN) And (Dest = TY_IDX_INTEGER) Then
+    WarnAt(Line, Col, 'Boolean converti en integer (0 ou 1)');
   Case ExprTab[N].Kind Of
     EX_INT:
       If Dest = TY_IDX_REAL Then
@@ -7848,6 +7915,8 @@ Begin
   ForCount   := 0;
   LoopDepth  := 0;
   ParkValid  := False;
+  SyncLine   := 0;
+  SyncCol    := 0;
   LexQuiet   := True;            { erreurs lexicales deja signalees }
   LexInit;
   CodeInit;
@@ -8799,6 +8868,7 @@ Begin
   Assign(F, FileName);
   Rewrite(F);
   If IOResult <> 0 Then Exit;
+  NoteOutput(FileName);
   For I := 0 To CodeCount + DeferCount - 1 Do
   Begin
     Ins := InstrAt(I);
@@ -9082,6 +9152,7 @@ Begin
   Assign(F, FileName);
   Rewrite(F, 1);
   If IOResult <> 0 Then FatalError('impossible de creer ' + FileName);
+  NoteOutput(FileName);
   BlockWrite(F, PeOut, FileSize, Written);
   Close(F);
   If Written <> FileSize Then
@@ -9235,6 +9306,7 @@ Begin
   Assign(F, FileName);
   Rewrite(F, 1);
   If IOResult <> 0 Then FatalError('impossible de creer ' + FileName);
+  NoteOutput(FileName);
   BlockWrite(F, PeOut, FileSize, Written);
   Close(F);
   If Written <> FileSize Then
@@ -10222,7 +10294,12 @@ End;
   ============================================================ }
 Procedure PhaseReport;
 Begin
-  { A faire : TODO 23 et 24 }
+  If ErrorCount > 0 Then
+    WriteLn('Compilation echouee : ', ErrorCount, ' erreur(s), ',
+            WarnCount, ' avertissement(s)')
+  Else If (WarnCount > 0) Or Opts.Verbose Then
+    WriteLn('Compilation terminee : 0 erreur, ', WarnCount,
+            ' avertissement(s)');
 End;
 
 { ============================================================
@@ -10252,6 +10329,7 @@ Var
 Begin
   ErrorCount := 0;
   WarnCount  := 0;
+  OutCreatedN := 0;
   {$IFDEF FPC}
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                     exOverflow, exUnderflow, exPrecision]);
@@ -10272,8 +10350,11 @@ Begin
     If Opts.EmitAsm Then
       WriteLn('  .ASM   : ', Opts.AsmFile);
   End;
+  { le parseur tourne meme apres des erreurs lexicales (les erreurs
+    syntaxiques sont signalees en plus) ; les phases suivantes ne
+    tournent que sans erreur }
   For P := PH_LEX To PH_REPORT Do
-    If (ErrorCount = 0) Or (P = PH_REPORT) Then
+    If (ErrorCount = 0) Or (P = PH_PARSE) Or (P = PH_REPORT) Then
       RunPhase(P);
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
