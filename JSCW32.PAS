@@ -170,7 +170,7 @@ Program JSCW32;
 {$ENDIF}
 
 {$IFDEF FPC}
-Uses Math, Dos;
+Uses Dos;
 {$ENDIF}
 
 { ============================================================
@@ -65099,6 +65099,25 @@ Begin
 End;
 {$ENDIF}
 
+{ Remplace Math.ArcTan2 : angle (en radians) du point (X,Y), dans
+  [-Pi, Pi], en tenant compte du quadrant - contrairement a ArcTan(Y/X)
+  (System, deja utilisable sans Math) qui perd le quadrant et divise par
+  zero quand X=0. Utilise ici pour emuler fidelement FPATAN (OP_FPATAN :
+  ST(1) := atan2(ST(1), ST(0))). }
+Function ArcTan2(Y, X: Extended): Extended;
+Begin
+ If X > 0 Then ArcTan2 := ArcTan(Y / X)
+ Else If X < 0 Then Begin
+  If Y >= 0 Then ArcTan2 := ArcTan(Y / X) + Pi
+  Else ArcTan2 := ArcTan(Y / X) - Pi
+ End
+ Else Begin { X = 0 }
+  If Y > 0 Then ArcTan2 := Pi / 2
+  Else If Y < 0 Then ArcTan2 := -Pi / 2
+  Else ArcTan2 := 0;
+ End;
+End;
+
 Procedure FpuBinary(op: TOpc; Var x: Extended; y: Extended);
 Begin
   Case op Of
@@ -68590,6 +68609,26 @@ Begin
   Writeln('Warnings: ', ctx.warnings);
 End;
 
+{ Remplace Math.SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
+  exOverflow, exUnderflow, exPrecision]) : masque directement les 6 bits
+  d'exception du mot de controle x87 (bits 0-5) pour que les operations de
+  l'hote produisent silencieusement NaN/Infinity (semantique IEEE754 requise
+  par le modele numerique JavaScript) plutot que de lever une exception
+  Pascal (EInvalidOp/EZeroDivide/EOverflow/...). }
+{$IFDEF FPC}
+Procedure MaskAllFpuExceptions;
+Var CW: Word;
+Begin
+ Asm
+  FNSTCW CW
+ End;
+ CW := CW Or $003F;
+ Asm
+  FLDCW CW
+ End;
+End;
+{$ENDIF}
+
 Var
   ctx: TCompilerContext;
   parse_result: Integer;
@@ -68617,8 +68656,7 @@ BEGIN
     End;
 
 {$IFDEF FPC}
-  SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow,
-                    exUnderflow, exPrecision]);
+  MaskAllFpuExceptions;
 {$ENDIF}
   { -runtime sans fichier source : decrit seulement le modele }
   If ctx.options.dump_runtime And (ctx.source_name = '') Then
