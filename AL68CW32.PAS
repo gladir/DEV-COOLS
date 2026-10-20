@@ -5068,7 +5068,12 @@ Begin
           A := UnitTab[A].Next;
         End;
         If UnitTab[U].C >= 0 Then
-          UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
+        Begin
+          If UnitTab[UnitTab[U].C].Kind = UK_CONFORM Then
+            UnitTab[U].C := CoerceUnit(UnitTab[U].C, Want, Str)
+          Else
+            UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
+        End;
         UnitTab[U].Mode := Want;
         Exit;
       End;
@@ -5129,7 +5134,19 @@ Begin
             While A >= 0 Do
             Begin
               Nxt := UnitTab[A].Next;
-              Cur := CoerceUnit(A, ModeTab[W].Sub, STR_STRONG);
+              UM := ModeDeref(UnitTab[A].Mode);
+              If (ModeKind(UM) = MK_ROW) And (ModeTab[ModeResolve(UM)].Dims = 1)
+                 And (ModeKind(ModeTab[W].Sub) <> MK_ROW) And
+                 Not ModeSame(UM, ModeTab[W].Sub) And
+                 ModeSame(ModeTab[ModeResolve(UM)].Sub, ModeTab[W].Sub) And
+                 (UnitTab[A].Kind <> UK_DISPLAY) Then
+              Begin
+                { concatenation : l'element est un tableau d'elements }
+                Cur := CoerceUnit(A, UM, STR_MEEK);
+                UnitTab[U].D := 1;
+              End
+              Else
+                Cur := CoerceUnit(A, ModeTab[W].Sub, STR_STRONG);
               UnitTab[Cur].Next := Nxt;
               If Prev < 0 Then UnitTab[U].A := Cur
               Else UnitTab[Prev].Next := Cur;
@@ -6726,6 +6743,7 @@ Var
   First, Last, U, R : LongInt;
   Name              : TName;
   L, C              : Integer;
+  M0, S             : Integer;
   More              : Boolean;
 Begin
   First := -1;
@@ -6755,11 +6773,25 @@ Begin
     End
     Else
     Begin
-      ParseError('texte de routine attendu apres ''=''');
-      SymDeclare(Name, SK_PROC, MD_ERROR, L, C);
-      R := ParseOpaqueUntil(UK_OPAQUE, 1);
-      If First < 0 Then First := R Else UnitTab[Last].Next := R;
-      Last := R;
+      { PROC nom = valeur de procedure (nom de procedure, appel...) }
+      R := ParseInitUnit(1);
+      M0 := ModeDeref(NatMode(R));
+      If (M0 <> MD_ERROR) And (ModeKind(M0) <> MK_PROC) Then
+      Begin
+        ErrorAt(L, C, 'PROC ' + Name + ' = : une valeur de mode PROC ' +
+                'est attendue, pas ' + ModeName(M0));
+        M0 := MD_ERROR;
+      End;
+      U := UnitNew(UK_IDDECL, L, C);
+      S := SymDeclare(Name, SK_IDENT, M0, L, C);
+      UnitTab[U].Name := Name;
+      UnitTab[U].Sym := S;
+      UnitTab[U].Mode := M0;
+      UnitTab[U].A := R;
+      DeclareStorage(S, M0, L, C);
+      If First < 0 Then First := U Else UnitTab[Last].Next := U;
+      Last := U;
+      Inc(DeclCount);
     End;
     If AtPunct(',') And (TokAt(1).Kind = TK_TAG) And
        (TokAt(2).Kind = TK_OP) Then
@@ -6788,10 +6820,41 @@ Var
   L, C              : Integer;
   More              : Boolean;
   T                 : TToken;
+  DeclM, SigM, SigD : Integer;
+  SigB              : LongInt;
+  SigOk             : Boolean;
 Begin
   First := -1;
   Last := -1;
   ParserAdvance;                       { OP }
+  DeclM := MD_ERROR;
+  If AtPunct('(') Then
+  Begin
+    { OP (modes) mode nom = ... : mode annonce de l'operateur }
+    ParserAdvance;
+    ModeTmpReset;
+    SigOk := True;
+    If Not AtPunct(')') Then
+      Repeat
+        More := False;
+        SigOk := ParseDeclarer(SigM, SigB, SigD, True) And SigOk;
+        ModeTmpAdd('', SigM, TokTab[TokPos].Line, TokTab[TokPos].Col);
+        If AtPunct(',') Then
+        Begin
+          ParserAdvance;
+          More := True;
+        End;
+      Until (Not More) Or AtEOF;
+    If AtPunct(')') Then
+      ParserAdvance
+    Else
+    Begin
+      ParseError(''')'' attendu apres les modes des operandes');
+      SigOk := False;
+    End;
+    SigOk := ParseDeclarer(SigM, SigB, SigD, True) And SigOk;
+    If SigOk Then DeclM := ModeProcTmp(SigM);
+  End;
   Repeat
     More := False;
     L := TokTab[TokPos].Line;
@@ -6815,6 +6878,11 @@ Begin
       If AtRoutineStart Then
       Begin
         R := ParseRoutine(Name, L, C, SK_OP);
+        If (DeclM <> MD_ERROR) And (UnitTab[R].Mode <> MD_ERROR) And
+           Not ModeSame(DeclM, UnitTab[R].Mode) Then
+          ErrorAt(L, C, 'OP ' + Name + ' annonce ' + ModeName(DeclM) +
+                  ' mais la routine est de mode ' +
+                  ModeName(UnitTab[R].Mode));
         U := UnitNew(UK_PROCDECL, L, C);
         UnitTab[U].Name := Name;
         UnitTab[U].A := R;
@@ -7105,6 +7173,41 @@ Begin
                     (UnitTab[U].Name = 'space'));
 End;
 
+{ Un mode que print sait afficher : scalaire, STRING, tableau, structure
+  ou union de modes affichables (pas de REF ni de PROC) }
+Function PrintableMode(M : Integer; Depth : Integer) : Boolean;
+Var
+  K  : Integer;
+  Ok : Boolean;
+Begin
+  M := ModeResolve(M);
+  If Depth > 12 Then
+  Begin
+    PrintableMode := False;
+    Exit;
+  End;
+  Ok := False;
+  Case ModeTab[M].Kind Of
+    MK_INT, MK_REAL, MK_BOOL, MK_CHAR, MK_BITS : Ok := True;
+    MK_ROW : Ok := PrintableMode(ModeTab[M].Sub, Depth + 1);
+    MK_STRUCT:
+      Begin
+        Ok := ModeTab[M].Count > 0;
+        For K := 0 To ModeTab[M].Count - 1 Do
+          If Not PrintableMode(ModePoolM[ModeTab[M].First + K],
+                               Depth + 1) Then Ok := False;
+      End;
+    MK_UNION:
+      Begin
+        Ok := ModeTab[M].Count > 0;
+        For K := 0 To ModeTab[M].Count - 1 Do
+          If Not PrintableMode(ModePoolM[ModeTab[M].First + K],
+                               Depth + 1) Then Ok := False;
+      End;
+  End;
+  PrintableMode := Ok;
+End;
+
 { print(( a, b, ... )), print(a), read(( x, y )), read(x) : les
   elements sont des valeurs (print) de mode INT, REAL, BOOL, CHAR, BITS
   ou STRING, ou des noms (read) de mode INT, REAL, CHAR ou STRING ;
@@ -7176,8 +7279,7 @@ Begin
         While ModeIsProc0(Want) Do
           Want := ModeDeref(ModeTab[ModeResolve(Want)].Sub);
         Cur := CoerceUnit(A, Want, STR_MEEK);
-        If Not (ModeKind(Want) In [MK_INT, MK_REAL, MK_BOOL, MK_CHAR,
-                                   MK_BITS]) And Not ModeIsString(Want) Then
+        If Not PrintableMode(Want, 0) Then
           ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
                   'print ne sait pas afficher une valeur de mode ' +
                   ModeName(Want));
@@ -7278,6 +7380,33 @@ Begin
   Else
     ParseError(''')'' attendu apres la conversion');
   ParseConstruct := U;
+End;
+
+{ PROC (modes) mode : unite : l'unite est coercee vers le mode de
+  procedure annonce (forme  PROC p = PROC (INT) INT : g ) }
+Function ParseProcCast : LongInt;
+Var
+  M, Dm : Integer;
+  Bnd   : LongInt;
+  U, A  : LongInt;
+  L, C  : Integer;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  If Not ParseDeclarer(M, Bnd, Dm, True) Then
+  Begin
+    ParseProcCast := -1;
+    Exit;
+  End;
+  If AtPunct(':') Then
+    ParserAdvance
+  Else
+    ParseError(''':'' attendu apres le mode de procedure');
+  A := ParseUnitX(1);
+  U := CoerceUnit(A, M, STR_STRONG);
+  UnitTab[U].Next := -1;
+  If L < 0 Then C := 0;
+  ParseProcCast := U;
 End;
 
 { ---- Clauses conditionnelles et repetitives (TODO 12) ---- }
@@ -7564,20 +7693,25 @@ End;
 { Clause de conformite : CASE selecteur IN (mode nom) : unite, ... OUT
   serie ESAC. Chaque alternative a sa portee (SCK_CONFORM) ou le nom est
   lie a la valeur extraite de l'union. }
-Function ParseConformity : LongInt;
+Function ParseConfTail(U : LongInt; Brief : Boolean) : LongInt;
 Var
-  U, Alt, First, Last : LongInt;
+  Alt, First, Last    : LongInt;
   Bnd, Body           : LongInt;
   M, Dm, MB, S        : Integer;
   Name                : TName;
   L, C, Count         : Integer;
   More                : Boolean;
 Begin
-  U := UnitNew(UK_CONFORM, TokTab[TokPos].Line, TokTab[TokPos].Col);
-  ParserAdvance;                             { CASE }
   UnitTab[U].Scope := ScopeEnter(SCK_CHOICE);
   UnitTab[U].A := ParseSerial(False);
-  If AtKw('IN') Then
+  If Brief Then
+  Begin
+    If AtPunct('|') Then
+      ParserAdvance
+    Else
+      ParseError('''|'' attendu apres le selecteur');
+  End
+  Else If AtKw('IN') Then
     ParserAdvance
   Else
     ParseError('IN attendu apres le selecteur');
@@ -7633,7 +7767,16 @@ Begin
   UnitTab[U].B := First;
   UnitTab[U].IntVal := Count;
   UnitTab[U].C := -1;
-  If AtKw('OUT') Then
+  If ((Not Brief) And AtKw('OUSE')) Or (Brief And AtPunct('|:')) Then
+  Begin
+    { OUSE : nouvelle clause de conformite tenant lieu de partie OUT }
+    If Not Brief And Not CaseIsConformity Then
+      ParseError('OUSE : une clause de conformite doit suivre');
+    ParserAdvance;
+    Alt := UnitNew(UK_CONFORM, TokTab[TokPos].Line, TokTab[TokPos].Col);
+    UnitTab[U].C := ParseConfTail(Alt, Brief);
+  End
+  Else If ((Not Brief) And AtKw('OUT')) Or (Brief And AtPunct('|')) Then
   Begin
     ParserAdvance;
     ScopeEnter(SCK_CHOICE);
@@ -7651,9 +7794,21 @@ Begin
   End;
   If UnitTab[U].C < 0 Then
     MB := MD_VOID
+  Else If UnitTab[UnitTab[U].C].Kind = UK_CONFORM Then
+    MB := UnitTab[UnitTab[U].C].Mode
   Else
     MB := SerialMode(UnitTab[U].C);
   UnitTab[U].Mode := BalanceKnown(M, MB);
+  ParseConfTail := U;
+End;
+
+Function ParseConformity : LongInt;
+Var
+  U : LongInt;
+Begin
+  U := UnitNew(UK_CONFORM, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  ParserAdvance;                             { CASE }
+  ParseConfTail(U, False);
   If AtKw('ESAC') Then
     ParserAdvance
   Else
@@ -7691,8 +7846,10 @@ Var
   Depth  : Integer;
   Commas : Boolean;
   IsCase : Boolean;
+  IsConf : Boolean;
   U      : LongInt;
   S      : Integer;
+  Save, After : LongInt;
 Begin
   Commas := False;
   K := TokPos;
@@ -7715,8 +7872,40 @@ Begin
     If (S >= 0) And (SymTab[S].Mode <> MD_ERROR) Then
       IsCase := ModeKind(ModeDeref(SymTab[S].Mode)) = MK_INT;
   End;
+  { forme abregee d'une clause de conformite : ( sel | (mode nom) : u ... ) }
+  IsConf := False;
+  K := TokPos;
+  Depth := 0;
+  While K < TokCount - 1 Do
+  Begin
+    If TokDepth(TokTab[K]) > 0 Then Inc(Depth)
+    Else If TokDepth(TokTab[K]) < 0 Then Dec(Depth);
+    If (Depth = 1) And (TokTab[K].Kind = TK_PUNCT) And
+       (TokTab[K].Val = '|') Then
+    Begin
+      If (TokTab[K + 1].Kind = TK_PUNCT) And (TokTab[K + 1].Val = '(') Then
+      Begin
+        Save := TokPos;
+        TokPos := K + 1;
+        After := TokAfterClose;
+        TokPos := Save;
+        IsConf := (TokTab[After].Kind = TK_PUNCT) And
+                  (TokTab[After].Val = ':');
+      End;
+      K := TokCount;
+    End
+    Else If Depth <= 0 Then
+      K := TokCount
+    Else
+      Inc(K);
+  End;
   ParserAdvance;                             { ( }
-  If IsCase Then
+  If IsConf Then
+  Begin
+    U := UnitNew(UK_CONFORM, TokTab[TokPos].Line, TokTab[TokPos].Col);
+    ParseConfTail(U, True);
+  End
+  Else If IsCase Then
   Begin
     U := UnitNew(UK_CASE, TokTab[TokPos].Line, TokTab[TokPos].Col);
     ParseCaseTail(U, True);
@@ -7928,6 +8117,8 @@ Begin
           U := ParseRoutine('', 0, 0, SK_PROC)
         Else If AtKw('PAR') Then
           U := ParsePar
+        Else If AtKw('PROC') Then
+          U := ParseProcCast
         Else
           Exit;
       End;
@@ -9090,6 +9281,7 @@ Begin
     UnitTab[U].A := New;
     { affichage de tableau a bornes constantes : nombre d'elements }
     If (UnitTab[New].Kind = UK_DISPLAY) And (UnitTab[U].C = 1) And
+       (UnitTab[New].D < 0) And
        (UnitTab[UnitTab[U].B].Kind = UK_INTDEN) And
        (UnitTab[UnitTab[UnitTab[U].B].Next].Kind = UK_INTDEN) Then
     Begin
@@ -9621,6 +9813,118 @@ Begin
   Emit1(OP_CALL, OpLabel(Intern(MangleRT(Name))));
 End;
 
+Procedure GenPrintMem(M : Integer); Forward;
+
+{ Affiche les elements d'un tableau (parcours ligne par ligne) ;
+  EAX = adresse du descripteur }
+Procedure GenPrintRow(M : Integer);
+Var
+  K, D, LTop, LEnd, LWrap : Integer;
+  SrcT, SoT               : Integer;
+  CntT, CtrT              : Array[0..MAX_ARRAY_DIM - 1] Of Integer;
+Begin
+  D := ModeTab[ModeResolve(M)].Dims;
+  SrcT := NewTemp(4);
+  SoT := NewTemp(4);
+  LEnd := NewLabel;
+  LTop := NewLabel;
+  Emit(OP_MOV, TMem(SrcT, 0, 4), OpReg(R_EAX));
+  For K := 0 To D - 1 Do
+  Begin
+    CntT[K] := NewTemp(4);
+    CtrT[K] := NewTemp(4);
+    Emit(OP_MOV, OpReg(R_ESI), TMem(SrcT, 0, 4));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 8 + 12 * K, 4));
+    Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, 4 + 12 * K, 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JLE, OpLabel(LEnd));
+    Emit(OP_MOV, TMem(CntT[K], 0, 4), OpReg(R_EAX));
+    Emit(OP_MOV, TMem(CtrT[K], 0, 4), OpImm(0));
+  End;
+  Emit(OP_MOV, TMem(SoT, 0, 4), OpImm(0));
+  EmitLabel(LTop);
+  Emit(OP_MOV, OpReg(R_EDX), TMem(SrcT, 0, 4));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
+  Emit(OP_ADD, OpReg(R_EAX), TMem(SoT, 0, 4));
+  GenPrintMem(ModeTab[ModeResolve(M)].Sub);
+  For K := D - 1 Downto 0 Do
+  Begin
+    LWrap := NewLabel;
+    Emit(OP_MOV, OpReg(R_EAX), TMem(CtrT[K], 0, 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_MOV, TMem(CtrT[K], 0, 4), OpReg(R_EAX));
+    Emit(OP_CMP, OpReg(R_EAX), TMem(CntT[K], 0, 4));
+    Emit1(OP_JGE, OpLabel(LWrap));
+    Emit(OP_MOV, OpReg(R_EDX), TMem(SrcT, 0, 4));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+    Emit(OP_ADD, TMem(SoT, 0, 4), OpReg(R_EAX));
+    Emit1(OP_JMP, OpLabel(LTop));
+    EmitLabel(LWrap);
+    Emit(OP_MOV, OpReg(R_EAX), TMem(CntT[K], 0, 4));
+    Emit1(OP_DEC, OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EDX), TMem(SrcT, 0, 4));
+    Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+    Emit(OP_SUB, TMem(SoT, 0, 4), OpReg(R_EAX));
+    Emit(OP_MOV, TMem(CtrT[K], 0, 4), OpImm(0));
+  End;
+  EmitLabel(LEnd);
+End;
+
+{ Affiche un objet de mode M dont l'adresse est dans EAX (STRING,
+  tableau et structure : l'objet meme ; union : etiquette puis valeur) }
+Procedure GenPrintMem(M : Integer);
+Var
+  K, T, LNext, LEnd : Integer;
+  F                 : Integer;
+Begin
+  M := ModeResolve(M);
+  If ModeIsString(M) Then
+  Begin
+    CallRT('WRITESTR');
+    Exit;
+  End;
+  Case ModeKind(M) Of
+    MK_INT, MK_BITS : Begin LoadThrough(M); CallRT('WRITEINT'); End;
+    MK_REAL         : Begin LoadThrough(M); CallRT('WRITEREAL'); End;
+    MK_BOOL         : Begin LoadThrough(M); CallRT('WRITEBOOL'); End;
+    MK_CHAR         : Begin LoadThrough(M); CallRT('WRITECHAR'); End;
+    MK_ROW          : GenPrintRow(M);
+    MK_STRUCT:
+      Begin
+        T := NewTemp(4);
+        Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+        For K := 0 To ModeTab[M].Count - 1 Do
+        Begin
+          F := ModePoolM[ModeTab[M].First + K];
+          Emit(OP_MOV, OpReg(R_EAX), TMem(T, 0, 4));
+          If ModeFieldOffset(M, K) <> 0 Then
+            Emit(OP_ADD, OpReg(R_EAX), OpImm(ModeFieldOffset(M, K)));
+          GenPrintMem(F);
+        End;
+      End;
+    MK_UNION:
+      Begin
+        T := NewTemp(4);
+        LEnd := NewLabel;
+        Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+        For K := 0 To ModeTab[M].Count - 1 Do
+        Begin
+          F := ModeResolve(ModePoolM[ModeTab[M].First + K]);
+          LNext := NewLabel;
+          Emit(OP_MOV, OpReg(R_EAX), TMem(T, 0, 4));
+          Emit(OP_CMP, OpMem(R_EAX, 0, 4), OpImm(F));
+          Emit1(OP_JNE, OpLabel(LNext));
+          Emit(OP_ADD, OpReg(R_EAX), OpImm(4));
+          GenPrintMem(F);
+          Emit1(OP_JMP, OpLabel(LEnd));
+          EmitLabel(LNext);
+        End;
+        EmitLabel(LEnd);
+      End;
+  End;
+End;
+
 { Un element de print }
 Procedure GenPrintItem(A : LongInt);
 Var
@@ -9645,7 +9949,7 @@ Begin
     MK_BOOL         : CallRT('WRITEBOOL');
     MK_CHAR         : CallRT('WRITECHAR');
   Else
-    If ModeIsString(M) Then CallRT('WRITESTR');
+    GenPrintMem(M);
   End;
 End;
 
@@ -10551,7 +10855,12 @@ Begin
   End;
   EmitLabel(LOut);
   If UnitTab[U].C >= 0 Then
-    GenSerialValue(UnitTab[U].C);
+  Begin
+    If UnitTab[UnitTab[U].C].Kind = UK_CONFORM Then
+      GenValue(UnitTab[U].C)
+    Else
+      GenSerialValue(UnitTab[U].C);
+  End;
   EmitLabel(LEnd);
 End;
 
@@ -10831,6 +11140,116 @@ Begin
   End;
 End;
 
+Procedure GenDisplaySpread(U : LongInt);
+Var
+  M, Elem, ES : Integer;
+  A           : LongInt;
+  N, I, K, T  : Integer;
+  Ts          : Array[1..64] Of Integer;
+  IsRow       : Array[1..64] Of Boolean;
+  CntT, PT    : Integer;
+  QT, D, LT   : Integer;
+Begin
+  M := ModeResolve(UnitTab[U].Mode);
+  Elem := ModeResolve(ModeTab[M].Sub);
+  ES := ModeSize(Elem);
+  N := 0;
+  A := UnitTab[U].A;
+  While A >= 0 Do
+  Begin
+    Inc(N);
+    If N > 64 Then
+    Begin
+      GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                     'affichage de plus de 64 elements avec tableaux');
+      Exit;
+    End;
+    IsRow[N] := ModeKind(UnitTab[A].Mode) = MK_ROW;
+    If IsRow[N] Then
+    Begin
+      Ts[N] := NewTemp(4);
+      GenValue(A);
+      Emit(OP_MOV, TMem(Ts[N], 0, 4), OpReg(R_EAX));
+    End
+    Else
+    Begin
+      Ts[N] := NewTemp(ES);
+      GenStringValue(A);
+      StoreValue(-1, Ts[N], 0, Elem);
+    End;
+    A := UnitTab[A].Next;
+  End;
+  { nombre total d'elements }
+  CntT := NewTemp(4);
+  Emit(OP_MOV, TMem(CntT, 0, 4), OpImm(0));
+  For I := 1 To N Do
+    If IsRow[I] Then
+    Begin
+      LT := NewLabel;
+      Emit(OP_MOV, OpReg(R_ESI), TMem(Ts[I], 0, 4));
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 8, 4));
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, 4, 4));
+      Emit1(OP_INC, OpReg(R_EAX));
+      Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+      Emit1(OP_JLE, OpLabel(LT));
+      Emit(OP_ADD, TMem(CntT, 0, 4), OpReg(R_EAX));
+      EmitLabel(LT);
+    End
+    Else
+      Emit(OP_ADD, TMem(CntT, 0, 4), OpImm(1));
+  PT := NewTemp(4);
+  Emit(OP_MOV, OpReg(R_EAX), TMem(CntT, 0, 4));
+  Emit(OP_IMUL, OpReg(R_EAX), OpImm(ES));
+  Emit(OP_ADD, OpReg(R_EAX), OpImm(4));
+  Emit1(OP_CALL, OpLabel(Intern(MangleRT('ALLOC'))));
+  Emit(OP_MOV, TMem(PT, 0, 4), OpReg(R_EAX));
+  QT := NewTemp(4);
+  Emit(OP_MOV, TMem(QT, 0, 4), OpReg(R_EAX));
+  For I := 1 To N Do
+    If IsRow[I] Then
+    Begin
+      LT := NewLabel;
+      K := NewLabel;
+      T := NewTemp(4);
+      Emit(OP_MOV, OpReg(R_EDX), TMem(Ts[I], 0, 4));
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 8, 4));
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDX, 4, 4));
+      Emit1(OP_INC, OpReg(R_EAX));
+      Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+      Emit1(OP_JLE, OpLabel(LT));
+      Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+      Emit(OP_MOV, OpReg(R_ESI), OpMem(R_EDX, 0, 4));
+      Emit(OP_MOV, OpReg(R_EDI), TMem(QT, 0, 4));
+      EmitLabel(K);
+      Emit1(OP_PUSH, OpReg(R_ESI));
+      Emit(OP_MOV, OpReg(R_ECX), OpImm(ES));
+      Emit0(OP_REP_MOVSB);
+      Emit1(OP_POP, OpReg(R_ESI));
+      Emit(OP_MOV, OpReg(R_EDX), TMem(Ts[I], 0, 4));
+      Emit(OP_ADD, OpReg(R_ESI), OpMem(R_EDX, 12, 4));
+      Emit1(OP_DEC, TMem(T, 0, 4));
+      Emit1(OP_JNE, OpLabel(K));
+      Emit(OP_MOV, TMem(QT, 0, 4), OpReg(R_EDI));
+      EmitLabel(LT);
+    End
+    Else
+    Begin
+      TAddr(R_ESI, Ts[I]);
+      Emit(OP_MOV, OpReg(R_EDI), TMem(QT, 0, 4));
+      Emit(OP_MOV, OpReg(R_ECX), OpImm(ES));
+      Emit0(OP_REP_MOVSB);
+      Emit(OP_MOV, TMem(QT, 0, 4), OpReg(R_EDI));
+    End;
+  D := NewTemp(16);
+  Emit(OP_MOV, OpReg(R_EAX), TMem(PT, 0, 4));
+  Emit(OP_MOV, TMem(D, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, TMem(D, 4, 4), OpImm(1));
+  Emit(OP_MOV, OpReg(R_EAX), TMem(CntT, 0, 4));
+  Emit(OP_MOV, TMem(D, 8, 4), OpReg(R_EAX));
+  Emit(OP_MOV, TMem(D, 12, 4), OpImm(ES));
+  TAddr(R_EAX, D);
+End;
+
 Procedure GenDisplay(U : LongInt);
 Var
   M, Elem   : Integer;
@@ -10872,6 +11291,11 @@ Begin
   Begin
     GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
                    'affichage de mode ' + ModeName(M));
+    Exit;
+  End;
+  If UnitTab[U].D = 1 Then
+  Begin
+    GenDisplaySpread(U);
     Exit;
   End;
   { nombre d'elements de chaque dimension : par le premier sous-affichage }
