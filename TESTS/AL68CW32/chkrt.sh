@@ -1,9 +1,12 @@
 #!/bin/bash
 # chkrt.sh [AL68CW32] : verifie le runtime embarque (TODO 22) avec le
 # chargeur PE de test (RUNNER, TESTS/AL60CW32/runpe.c compile) :
-#   - work/rt1.a68 et work/pr2.a68 (avec pr2.in sur l'entree standard)
-#     donnent la sortie de rt1.exp et pr2.exp (fins de ligne CR LF
-#     converties) ;
+#   - work/rt1.a68, pr2.a68 (avec pr2.in sur l'entree standard), slice.a68
+#     (tranches a plusieurs dimensions), copy.a68 (chaines recopiees,
+#     tableaux passes par valeur), display.a68 (affichages a plusieurs
+#     dimensions), gc.a68 et gc2.a68 (plus de 6 millions d'allocations :
+#     le ramasse-miettes doit rendre la memoire) donnent la sortie des
+#     fichiers .exp (fins de ligne CR LF converties) ;
 #   - indice hors bornes, division par zero, reference NIL et tableaux de
 #     dimensions differentes ecrivent un message sur l'erreur standard et
 #     terminent par le code 1 ;
@@ -16,7 +19,7 @@ tmp=$(mktemp -d)
 cd "$tmp" || exit 1
 bad=0
 ko() { echo "ECHEC: $1"; bad=1; }
-for n in rt1 pr2; do
+for n in rt1 pr2 slice copy display gc gc2; do
   cp "$here/work/$n.a68" .
   "$comp" $n.a68 >log 2>&1 || { ko "compilation $n"; continue; }
   in=/dev/null; [ -f "$here/work/$n.in" ] && in="$here/work/$n.in"

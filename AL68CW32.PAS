@@ -749,11 +749,10 @@
               (111), STRING vide (1, 0) ; erreur : affichage de 2 elements
               pour un tableau de 3 ; les 27 exemples restent analyses ;
               les essais des TODOs 8 a 14 donnent les memes valeurs
-            Limites : l'affectation d'une STRING partage les caracteres
-              (pas de copie) ; le stockage dynamique n'est pas libere
-              (pas de FREE) ; tranches et affichages a plusieurs
-              dimensions pas encore supportes ; les temporaires sont
-              statiques (revu au TODO 16)
+            Limites : les temporaires sont statiques (revu au TODO 16) ;
+              la copie des STRING, les tranches et affichages a plusieurs
+              dimensions et la liberation du tas ont ete ajoutes ensuite
+              (voir les corrections apres le TODO 25)
             Reste : (CHKIDX, BOUNDS, ALLOC : TODO 22) ; REP MOVSB, MOV
               d'octet, ADD memoire,registre au codeur du TODO 20
 
@@ -1106,7 +1105,7 @@
               runtime comme le reste ; seules GetStdHandle, WriteFile,
               ReadFile, ExitProcess, GetProcessHeap et HeapAlloc sont
               importees ; routines : PUT, FAIL, DIVZERO, NILREF, BOUNDS,
-              CHKIDX, ALLOC (HeapAlloc avec HEAP_ZERO_MEMORY), NEWLINE,
+              CHKIDX, ALLOC (voir les corrections), NEWLINE,
               SPACE, WRITECHAR, WRITESTR, WRITEBOOL, DIGITS, WRITEINT,
               WRITEREAL, WHOLE, GETC, SKIPWS, READCHAR, READINT, READREAL,
               READSTR, STRCAT, STRCMP, POW, EXP2, RPOW, FLOOR, RTOI, RSIGN
@@ -1115,7 +1114,8 @@
               tableaux de dimensions differentes, reference NIL, division
               par zero, memoire insuffisante) ecrivent un message sur
               l'erreur standard et terminent par le code de sortie 1 ;
-              pas de FREE : le tas n'est jamais libere
+              le tas est gere par un ramasse-miettes (voir les
+              corrections apres le TODO 25)
             Formats : entier en decimal sans remplissage, signe - ; reel en
               notation fixe, 6 decimales au plus, zeros finaux supprimes
               mais une decimale au moins (4.5, 100.0, 0.000001), valeur
@@ -1287,11 +1287,42 @@
               (binaire Linux x86-64 statique) ajoutes ; WIN32\al68cw32.exe
               reste a produire sous Windows
             Limites connues du compilateur (voir les TODOs concernes) :
-              pas de FREE (le tas n'est jamais libere) ; STRING partagee
-              a l'affectation ; pas de tranches ni d'affichages de tableaux
-              a plusieurs dimensions ; print n'affiche ni tableaux, ni
-              structures, ni unions ; PAR sequentiel ; une routine ne doit
-              pas renvoyer une procedure liee a son propre cadre
+              PAR sequentiel ; une routine ne doit pas renvoyer une
+              procedure liee a son propre cadre ; tableaux a plusieurs
+              dimensions : tranches et affichages supportes si les
+              sous-affichages ont tous la meme forme (sinon erreur)
+
+  CORRECTIONS APRES LE TODO 25 [IMPLEMENTE]
+            Realise : (1) plus de code manquant sans erreur : chaque
+              ancienne branche "pas encore generee" (GenUnsupported)
+              signale maintenant une erreur de compilation, et le listing
+              .ASM n'est plus ecrit s'il y a des erreurs ; les cas qui
+              compilaient en silence sont implementes : tranches a
+              plusieurs dimensions m[1:2, 1] (indices et trimmers
+              melanges, GenSlice), copie de tableaux element par element
+              (GenRowElems), affichages a plusieurs dimensions
+              (DisplayUniform, GenDisplayLeaves), elements de print et
+              de read de type quelconque ; (2) memoire : ramasse-miettes
+              conservateur a marquage et balayage dans le runtime (ALLOC,
+              GCMARK, GC) ; blocs de 16 octets d'en-tete, listes libres
+              par classe de taille, tableau trie des blocs pour retrouver
+              un bloc depuis un pointeur interieur ; racines = segment de
+              donnees + pile jusqu'a la base du programme principal ;
+              declenchement par seuil d'allocation ; HEAP, tableaux
+              dynamiques, WHOLE, concatenation et READ de STRING sont donc
+              recuperes ; les tableaux statiques de plus de 64 Ko vont sur
+              le tas ; (3) valeur de STRING : STRDUP copie les caracteres
+              a l'initialisation, l'affectation, l'identite non litterale,
+              les champs de structure et les affichages (GenStringValue,
+              NeedsStrDup) ; un tableau passe en parametre est recopie
+              (GenRowDup) avant l'appel
+            Verifie : work/slice, copy, display, gc, gc2 (chkrt.sh) avec
+              valeurs calculees a part ; 3 erreurs de plus dans errors.txt
+              (affichage mal forme) ; la suite test_al68cw32.sh passe
+            Limites : le ramasse-miettes est conservateur (un entier qui
+              ressemble a une adresse retient un bloc) ; un pointeur
+              present seulement dans un registre x87 ou non sauvegarde
+              n'est pas une racine ; pas de FREE explicite en Algol 68
   ============================================================ *)
 
 Program AL68CW32;
@@ -4896,6 +4927,30 @@ Begin
   CoerceWrap := N;
 End;
 
+{ Les sous-affichages de U ont-ils tous le meme nombre d'elements (a
+  tous les niveaux) ? }
+Function DisplayUniform(U : LongInt) : Boolean;
+Var
+  A  : LongInt;
+  N  : LongInt;
+  Ok : Boolean;
+Begin
+  Ok := True;
+  N := -1;
+  A := UnitTab[U].A;
+  While A >= 0 Do
+  Begin
+    If UnitTab[A].Kind = UK_DISPLAY Then
+    Begin
+      If N < 0 Then N := UnitTab[A].IntVal
+      Else If UnitTab[A].IntVal <> N Then Ok := False;
+      If Not DisplayUniform(A) Then Ok := False;
+    End;
+    A := UnitTab[A].Next;
+  End;
+  DisplayUniform := Ok;
+End;
+
 Function ModesSerial(First : LongInt; Want : Integer) : LongInt; Forward;
 Function SerialMode(First : LongInt) : Integer; Forward;
 
@@ -5038,9 +5093,35 @@ Begin
         Else If ModeTab[W].Kind = MK_ROW Then
         Begin
           If ModeTab[W].Dims <> 1 Then
-            ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
-                    'affichage de tableau a plusieurs dimensions pas ' +
-                    'encore supporte')
+          Begin
+            { tableau a plusieurs dimensions : affichage d'affichages de
+              meme longueur }
+            Prev := -1;
+            A := UnitTab[U].A;
+            While A >= 0 Do
+            Begin
+              Nxt := UnitTab[A].Next;
+              If UnitTab[A].Kind <> UK_DISPLAY Then
+              Begin
+                ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
+                        'un affichage de ' + ModeName(Want) +
+                        ' attend des sous-affichages ( ... , ... )');
+                Cur := A;
+              End
+              Else
+                Cur := CoerceUnit(A, ModeRow(ModeTab[W].Sub,
+                                  ModeTab[W].Dims - 1, False), STR_STRONG);
+              UnitTab[Cur].Next := Nxt;
+              If Prev < 0 Then UnitTab[U].A := Cur
+              Else UnitTab[Prev].Next := Cur;
+              Prev := Cur;
+              A := Nxt;
+            End;
+            If Not DisplayUniform(U) Then
+              ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                      'affichage de ' + ModeName(Want) +
+                      ' dont les lignes n''ont pas toutes la meme longueur');
+          End
           Else
           Begin
             Prev := -1;
@@ -9314,6 +9395,7 @@ Begin
 End;
 
 Procedure GenValue(U : LongInt); Forward;
+Procedure GenStringValue(U : LongInt); Forward;
 
 Procedure GenSelect(U : LongInt);
 Var
@@ -9340,7 +9422,7 @@ Begin
   I := 0;
   While A >= 0 Do
   Begin
-    GenValue(A);
+    GenStringValue(A);
     StoreValue(-1, T, ModeFieldOffset(M, I), ModeFieldMode(M, I));
     A := UnitTab[A].Next;
     Inc(I);
@@ -9392,8 +9474,76 @@ Begin
                 (SymTab[UnitTab[U].Sym].Kind = SK_PROC);
 End;
 
+Procedure GenRowElems(RowMode : Integer); Forward;
+
+{ Copie d'un tableau (passage par valeur) : EAX = descripteur d'origine,
+  rend dans EAX le descripteur d'une copie neuve (elements contigus, memes
+  bornes) }
+Procedure GenRowDup(RowMode : Integer);
+Var
+  K, D, Ok          : Integer;
+  SrcT, NewT, CntT  : Integer;
+  ES                : LongInt;
+Begin
+  D := ModeTab[ModeResolve(RowMode)].Dims;
+  ES := ModeElemSize(RowMode);
+  SrcT := NewTemp(4);
+  NewT := NewTemp(4);
+  CntT := NewTemp(4);
+  Emit(OP_MOV, TMem(SrcT, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+  Emit(OP_MOV, TMem(CntT, 0, 4), OpImm(1));
+  For K := 0 To D - 1 Do
+  Begin
+    Ok := NewLabel;
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 8 + 12 * K, 4));
+    Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, 4 + 12 * K, 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JNS, OpLabel(Ok));
+    Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+    EmitLabel(Ok);
+    Emit(OP_IMUL, OpReg(R_EAX), TMem(CntT, 0, 4));
+    Emit(OP_MOV, TMem(CntT, 0, 4), OpReg(R_EAX));
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), TMem(CntT, 0, 4));
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(ES));
+  Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+  Emit(OP_ADD, OpReg(R_EAX), OpImm(4 + 12 * D));
+  Emit1(OP_CALL, OpLabel(Intern(MangleRT('ALLOC'))));
+  Emit(OP_MOV, TMem(NewT, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpReg(R_EDI), OpReg(R_EAX));
+  Emit(OP_MOV, OpReg(R_ESI), TMem(SrcT, 0, 4));
+  Emit(OP_MOV, OpReg(R_EDX), OpReg(R_EDI));
+  Emit(OP_ADD, OpReg(R_EDX), OpImm(4 + 12 * D));
+  Emit(OP_MOV, OpMem(R_EDI, 0, 4), OpReg(R_EDX));
+  For K := 0 To D - 1 Do
+  Begin
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 4 + 12 * K, 4));
+    Emit(OP_MOV, OpMem(R_EDI, 4 + 12 * K, 4), OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 8 + 12 * K, 4));
+    Emit(OP_MOV, OpMem(R_EDI, 8 + 12 * K, 4), OpReg(R_EAX));
+  End;
+  Emit(OP_MOV, OpMem(R_EDI, 12 + 12 * (D - 1), 4), OpImm(ES));
+  For K := D - 2 Downto 0 Do
+  Begin
+    Ok := NewLabel;
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDI, 8 + 12 * (K + 1), 4));
+    Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDI, 4 + 12 * (K + 1), 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JNS, OpLabel(Ok));
+    Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+    EmitLabel(Ok);
+    Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDI, 12 + 12 * (K + 1), 4));
+    Emit(OP_MOV, OpMem(R_EDI, 12 + 12 * K, 4), OpReg(R_EAX));
+  End;
+  GenRowElems(RowMode);
+  Emit(OP_MOV, OpReg(R_EAX), TMem(NewT, 0, 4));
+End;
+
 { Empile la valeur d'un argument (deja coercee vers le mode du
-  parametre) }
+  parametre) ; un tableau est passe par valeur : copie }
 Procedure GenPushArg(A : LongInt);
 Var
   M  : Integer;
@@ -9401,6 +9551,9 @@ Var
 Begin
   M := ModeResolve(UnitTab[A].Mode);
   GenValue(A);
+  If (ModeKind(M) = MK_ROW) And Not ModeIsString(M) And
+     (UnitTab[A].Kind <> UK_DISPLAY) Then
+    GenRowDup(M);
   Case ValClass(M) Of
     1 : Emit1(OP_PUSH, OpReg(R_EAX));
     2 :
@@ -9456,6 +9609,13 @@ End;
   READSTR (EAX = descripteur d'une nouvelle chaine) ; WHOLE (EAX = n,
   ECX = largeur, EAX = descripteur d'une nouvelle chaine). }
 
+{ Cas que le generateur ne sait pas produire : erreur, jamais de code
+  silencieusement incomplet }
+Procedure GenUnsupported(Line, Col : Integer; Const Msg : TString);
+Begin
+  ErrorAt(Line, Col, 'non supporte par le generateur: ' + Msg);
+End;
+
 Procedure CallRT(Const Name : TName);
 Begin
   Emit1(OP_CALL, OpLabel(Intern(MangleRT(Name))));
@@ -9474,7 +9634,8 @@ Begin
   End;
   If UnitTab[A].Mode = MD_ERROR Then
   Begin
-    EmitComment('element de print pas encore genere');
+    GenUnsupported(UnitTab[A].Line, UnitTab[A].Col,
+                   'element de print de mode inconnu');
     Exit;
   End;
   GenValue(A);
@@ -9496,7 +9657,8 @@ Begin
   If IsPrintMarker(A) Then Exit;
   If UnitTab[A].Mode = MD_ERROR Then
   Begin
-    EmitComment('element de read pas encore genere');
+    GenUnsupported(UnitTab[A].Line, UnitTab[A].Col,
+                   'element de read de mode inconnu');
     Exit;
   End;
   M := ModeResolve(ModeTab[ModeResolve(UnitTab[A].Mode)].Sub);
@@ -9551,6 +9713,32 @@ Begin
   StdCallee := (UnitTab[U].Kind = UK_IDENT) And (UnitTab[U].Sym >= 0) And
                (SymTab[UnitTab[U].Sym].Kind = SK_STD) And
                (ModeKind(SymTab[UnitTab[U].Sym].Mode) = MK_PROC);
+End;
+
+{ Une chaine produite par cette unite appartient-elle a quelqu'un d'autre
+  (variable, denotation, tranche, resultat d'une procedure...) et doit-elle
+  etre copiee quand on la range ? Une concatenation ou whole rend une
+  chaine neuve. }
+Function NeedsStrDup(U : LongInt) : Boolean;
+Begin
+  NeedsStrDup := ModeIsString(UnitTab[U].Mode);
+  If Not ModeIsString(UnitTab[U].Mode) Then Exit;
+  If (UnitTab[U].Kind = UK_FORMULA) And (UnitTab[U].Sym >= 0) Then
+    If SymTab[UnitTab[U].Sym].Intrinsic Then NeedsStrDup := False;
+  If (UnitTab[U].Kind = UK_CALL) And StdCallee(UnitTab[U].A) Then
+    NeedsStrDup := False;
+End;
+
+{ Valeur d'une unite a ranger : une chaine est recopiee (STRDUP), les
+  autres valeurs sont calculees telles quelles }
+Procedure GenStringValue(U : LongInt);
+Begin
+  GenValue(U);
+  If NeedsStrDup(U) Then
+  Begin
+    Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+    CallRT('STRDUP');
+  End;
 End;
 
 { Appel d'une procedure standard : whole par le runtime, les fonctions
@@ -9608,7 +9796,8 @@ Begin
     Emit1(OP_FSTP, OpST(1));
   End
   Else
-    EmitComment('procedure standard ' + Name + ' pas encore generee');
+    GenUnsupported(UnitTab[Args].Line, UnitTab[Args].Col,
+                   'procedure standard ' + Name);
 End;
 
 { Appel de la procedure Callee (mode PROC) avec les arguments Args }
@@ -9829,8 +10018,8 @@ Begin
   Else
     Begin
       GenValue(C);
-      EmitComment('coercition ligne ' + ItoS(UnitTab[U].Line) +
-                  ' pas encore generee');
+      GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                     'coercition de genre ' + ItoS(UnitTab[U].IntVal));
     End;
   End;
 End;
@@ -10375,6 +10564,82 @@ End;
 
 { Copie les elements du tableau decrit par ESI dans celui que decrit EDI
   (memes dimensions, memes bornes) ; detruit EAX, ECX, EDX, ESI, EDI }
+{ Copie, element par element, les elements du tableau decrit par ESI
+  dans celui que decrit EDI (memes nombres d'elements par dimension, pas
+  quelconques : tranches comprises) ; un compteur par dimension, les
+  decalages en octets sont recalcules a chaque changement de dimension }
+Procedure GenRowElems(RowMode : Integer);
+Var
+  K, D, LTop, LEnd, LWrap : Integer;
+  SrcT, DstT, SoT, DoT    : Integer;
+  CntT, CtrT              : Array[0..MAX_ARRAY_DIM - 1] Of Integer;
+  ES                      : LongInt;
+Begin
+  D := ModeTab[ModeResolve(RowMode)].Dims;
+  ES := ModeElemSize(RowMode);
+  SrcT := NewTemp(4);
+  DstT := NewTemp(4);
+  SoT := NewTemp(4);
+  DoT := NewTemp(4);
+  LEnd := NewLabel;
+  LTop := NewLabel;
+  Emit(OP_MOV, TMem(SrcT, 0, 4), OpReg(R_ESI));
+  Emit(OP_MOV, TMem(DstT, 0, 4), OpReg(R_EDI));
+  For K := 0 To D - 1 Do
+  Begin
+    CntT[K] := NewTemp(4);
+    CtrT[K] := NewTemp(4);
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 8 + 12 * K, 4));
+    Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, 4 + 12 * K, 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JLE, OpLabel(LEnd));
+    Emit(OP_MOV, TMem(CntT[K], 0, 4), OpReg(R_EAX));
+    Emit(OP_MOV, TMem(CtrT[K], 0, 4), OpImm(0));
+  End;
+  Emit(OP_MOV, TMem(SoT, 0, 4), OpImm(0));
+  Emit(OP_MOV, TMem(DoT, 0, 4), OpImm(0));
+  EmitLabel(LTop);
+  Emit(OP_MOV, OpReg(R_EDX), TMem(SrcT, 0, 4));
+  Emit(OP_MOV, OpReg(R_ESI), OpMem(R_EDX, 0, 4));
+  Emit(OP_ADD, OpReg(R_ESI), TMem(SoT, 0, 4));
+  Emit(OP_MOV, OpReg(R_EDX), TMem(DstT, 0, 4));
+  Emit(OP_MOV, OpReg(R_EDI), OpMem(R_EDX, 0, 4));
+  Emit(OP_ADD, OpReg(R_EDI), TMem(DoT, 0, 4));
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(ES));
+  Emit0(OP_REP_MOVSB);
+  For K := D - 1 Downto 0 Do
+  Begin
+    LWrap := NewLabel;
+    Emit(OP_MOV, OpReg(R_EAX), TMem(CtrT[K], 0, 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_MOV, TMem(CtrT[K], 0, 4), OpReg(R_EAX));
+    Emit(OP_CMP, OpReg(R_EAX), TMem(CntT[K], 0, 4));
+    Emit1(OP_JGE, OpLabel(LWrap));
+    Emit(OP_MOV, OpReg(R_EDX), TMem(SrcT, 0, 4));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+    Emit(OP_ADD, TMem(SoT, 0, 4), OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EDX), TMem(DstT, 0, 4));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+    Emit(OP_ADD, TMem(DoT, 0, 4), OpReg(R_EAX));
+    Emit1(OP_JMP, OpLabel(LTop));
+    EmitLabel(LWrap);
+    { fin de la dimension : retour au premier element de cette dimension }
+    Emit(OP_MOV, OpReg(R_EAX), TMem(CntT[K], 0, 4));
+    Emit1(OP_DEC, OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EDX), TMem(SrcT, 0, 4));
+    Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+    Emit(OP_SUB, TMem(SoT, 0, 4), OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EAX), TMem(CntT[K], 0, 4));
+    Emit1(OP_DEC, OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EDX), TMem(DstT, 0, 4));
+    Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+    Emit(OP_SUB, TMem(DoT, 0, 4), OpReg(R_EAX));
+    Emit(OP_MOV, TMem(CtrT[K], 0, 4), OpImm(0));
+  End;
+  EmitLabel(LEnd);
+End;
+
 Procedure GenRowCopy(RowMode : Integer);
 Var
   K, D, Ok : Integer;
@@ -10395,27 +10660,7 @@ Begin
     Emit1(OP_CALL, OpLabel(Intern(MangleRT('BOUNDS'))));
     EmitLabel(Ok);
   End;
-  Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
-  For K := 0 To D - 1 Do
-  Begin
-    Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, 8 + 12 * K, 4));
-    Emit(OP_SUB, OpReg(R_ECX), OpMem(R_ESI, 4 + 12 * K, 4));
-    Emit1(OP_INC, OpReg(R_ECX));
-    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
-  End;
-  Emit(OP_MOV, OpReg(R_ECX), OpImm(ES));
-  Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
-  Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
-  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EDI, 0, 4));
-  Emit(OP_MOV, OpReg(R_ESI), OpMem(R_ESI, 0, 4));
-  Emit(OP_MOV, OpReg(R_EDI), OpReg(R_EDX));
-  If ES Mod 4 = 0 Then
-  Begin
-    Emit(OP_SHR, OpReg(R_ECX), OpImm(2));
-    Emit0(OP_REP_MOVSD);
-  End
-  Else
-    Emit0(OP_REP_MOVSB);
+  GenRowElems(RowMode);
 End;
 
 { Le mode M est-il un tableau dont l'affectation copie les elements
@@ -10444,8 +10689,9 @@ Procedure GenSlice(U : LongInt);
 Var
   Op, It  : LongInt;
   Row     : Integer;
-  K, D    : Integer;
-  T       : Integer;
+  K, D, R : Integer;
+  Trims   : Integer;
+  BaseT, OffT, LoT, HiT, ResT : Integer;
   Skip    : Integer;
   Tr      : LongInt;
 Begin
@@ -10478,68 +10724,122 @@ Begin
       LoadThrough(UnitTab[U].Mode);
     Exit;
   End;
-  { tranche d'un tableau a une dimension }
-  Tr := UnitTab[U].B;
-  If (D <> 1) Or (UnitTab[U].IntVal <> 1) Then
+  { tranches : chaque dimension est un indice ou une tranche l:u ; le
+    resultat est un descripteur de Trims dimensions (bornes 1 et nombre
+    d'elements, pas de la dimension d'origine) }
+  Trims := UnitTab[U].C;
+  BaseT := NewTemp(4);
+  OffT := NewTemp(4);
+  LoT := NewTemp(4);
+  HiT := NewTemp(4);
+  ResT := NewTemp(4 + 12 * Trims);
+  Emit(OP_MOV, TMem(BaseT, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, TMem(OffT, 0, 4), OpImm(0));
+  It := UnitTab[U].B;
+  K := 0;
+  R := 0;
+  While It >= 0 Do
   Begin
-    EmitComment('tranche multidimensionnelle : pas encore generee');
-    Exit;
+    If UnitTab[It].Kind = UK_TRIM Then
+    Begin
+      Tr := It;
+      If UnitTab[Tr].A >= 0 Then
+        GenValue(UnitTab[Tr].A)
+      Else
+      Begin
+        Emit(OP_MOV, OpReg(R_EDX), TMem(BaseT, 0, 4));
+        Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 4 + 12 * K, 4));
+      End;
+      Emit(OP_MOV, TMem(LoT, 0, 4), OpReg(R_EAX));
+      If UnitTab[Tr].B >= 0 Then
+        GenValue(UnitTab[Tr].B)
+      Else
+      Begin
+        Emit(OP_MOV, OpReg(R_EDX), TMem(BaseT, 0, 4));
+        Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 8 + 12 * K, 4));
+      End;
+      Emit(OP_MOV, TMem(HiT, 0, 4), OpReg(R_EAX));
+      { bornes verifiees sauf pour une tranche vide }
+      Skip := NewLabel;
+      Emit(OP_MOV, OpReg(R_EAX), TMem(LoT, 0, 4));
+      Emit(OP_CMP, OpReg(R_EAX), TMem(HiT, 0, 4));
+      Emit1(OP_JG, OpLabel(Skip));
+      Emit(OP_MOV, OpReg(R_EDX), TMem(BaseT, 0, 4));
+      GenIndexCheck(K);
+      Emit(OP_MOV, OpReg(R_EAX), TMem(HiT, 0, 4));
+      GenIndexCheck(K);
+      EmitLabel(Skip);
+      { decalage du premier element }
+      Emit(OP_MOV, OpReg(R_EDX), TMem(BaseT, 0, 4));
+      Emit(OP_MOV, OpReg(R_EAX), TMem(LoT, 0, 4));
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDX, 4 + 12 * K, 4));
+      Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+      Emit(OP_ADD, TMem(OffT, 0, 4), OpReg(R_EAX));
+      { dimension du resultat }
+      Emit(OP_MOV, OpReg(R_EAX), TMem(HiT, 0, 4));
+      Emit(OP_SUB, OpReg(R_EAX), TMem(LoT, 0, 4));
+      Emit1(OP_INC, OpReg(R_EAX));
+      Emit(OP_MOV, TMem(ResT, 8 + 12 * R, 4), OpReg(R_EAX));
+      Emit(OP_MOV, TMem(ResT, 4 + 12 * R, 4), OpImm(1));
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+      Emit(OP_MOV, TMem(ResT, 12 + 12 * R, 4), OpReg(R_EAX));
+      Inc(R);
+    End
+    Else
+    Begin
+      GenValue(It);
+      Emit(OP_MOV, OpReg(R_EDX), TMem(BaseT, 0, 4));
+      GenIndexCheck(K);
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDX, 4 + 12 * K, 4));
+      Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+      Emit(OP_ADD, TMem(OffT, 0, 4), OpReg(R_EAX));
+    End;
+    Inc(K);
+    It := UnitTab[It].Next;
   End;
-  T := NewTemp(16);
-  Skip := NewLabel;
-  Emit1(OP_PUSH, OpReg(R_EAX));                { [ESP+8] descripteur }
-  If UnitTab[Tr].A >= 0 Then
-    GenValue(UnitTab[Tr].A)
-  Else
-  Begin
-    Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 0, 4));
-    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 4, 4));
-  End;
-  Emit1(OP_PUSH, OpReg(R_EAX));                { [ESP+4] borne basse }
-  If UnitTab[Tr].B >= 0 Then
-    GenValue(UnitTab[Tr].B)
-  Else
-  Begin
-    Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 4, 4));
-    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 8, 4));
-  End;
-  Emit1(OP_PUSH, OpReg(R_EAX));                { [ESP] borne haute }
-  { bornes verifiees sauf pour une tranche vide }
-  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 4, 4));
-  Emit(OP_CMP, OpReg(R_EAX), OpMem(R_ESP, 0, 4));
-  Emit1(OP_JG, OpLabel(Skip));
-  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 8, 4));
-  GenIndexCheck(0);
-  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 0, 4));
-  GenIndexCheck(0);
-  EmitLabel(Skip);
-  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 8, 4));
-  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 4, 4));
-  Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDX, 4, 4));
-  Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12, 4));
-  Emit(OP_ADD, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
-  Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
-  Emit(OP_MOV, TMem(T, 4, 4), OpImm(1));
-  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 0, 4));
-  Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESP, 4, 4));
-  Emit1(OP_INC, OpReg(R_EAX));
-  Emit(OP_MOV, TMem(T, 8, 4), OpReg(R_EAX));
-  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 12, 4));
-  Emit(OP_MOV, TMem(T, 12, 4), OpReg(R_EAX));
-  Emit(OP_ADD, OpReg(R_ESP), OpImm(12));
-  TAddr(R_EAX, T);
+  Emit(OP_MOV, OpReg(R_EDX), TMem(BaseT, 0, 4));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
+  Emit(OP_ADD, OpReg(R_EAX), TMem(OffT, 0, 4));
+  Emit(OP_MOV, TMem(ResT, 0, 4), OpReg(R_EAX));
+  TAddr(R_EAX, ResT);
 End;
 
 { ( u1, u2, ... ) : tableau d'une dimension ou structure selon le mode
   obtenu par coercition ; les valeurs sont rangees dans des cellules
   temporaires ; le resultat est l'adresse du descripteur ou de la
   structure }
+{ Range dans l'ordre les valeurs des feuilles d'un affichage a Dm
+  dimensions dans le temporaire E (a partir de l'element Pos) }
+Procedure GenDisplayLeaves(U : LongInt; Dm : Integer; E : Integer;
+                           Elem : Integer; ES : LongInt;
+                           Var Pos : LongInt);
+Var
+  A : LongInt;
+Begin
+  A := UnitTab[U].A;
+  While A >= 0 Do
+  Begin
+    If Dm > 1 Then
+      GenDisplayLeaves(A, Dm - 1, E, Elem, ES, Pos)
+    Else
+    Begin
+      GenStringValue(A);
+      StoreValue(-1, E, Pos * ES, Elem);
+      Inc(Pos);
+    End;
+    A := UnitTab[A].Next;
+  End;
+End;
+
 Procedure GenDisplay(U : LongInt);
 Var
   M, Elem   : Integer;
   E, D, I   : Integer;
+  Dm        : Integer;
   A         : LongInt;
-  ES        : LongInt;
+  ES, Total : LongInt;
+  Pos, Str  : LongInt;
+  Cnt       : Array[0..MAX_ARRAY_DIM - 1] Of LongInt;
 Begin
   M := ModeResolve(UnitTab[U].Mode);
   If M = MD_VOID Then
@@ -10560,7 +10860,7 @@ Begin
     I := 0;
     While A >= 0 Do
     Begin
-      GenValue(A);
+      GenStringValue(A);
       StoreValue(-1, D, ModeFieldOffset(M, I), ModeFieldMode(M, I));
       A := UnitTab[A].Next;
       Inc(I);
@@ -10570,28 +10870,36 @@ Begin
   End;
   If ModeTab[M].Kind <> MK_ROW Then
   Begin
-    EmitComment('affichage sans mode (ligne ' + ItoS(UnitTab[U].Line) +
-                ')');
+    GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                   'affichage de mode ' + ModeName(M));
     Exit;
   End;
+  { nombre d'elements de chaque dimension : par le premier sous-affichage }
   Elem := ModeResolve(ModeTab[M].Sub);
   ES := ModeSize(Elem);
-  E := NewTemp(UnitTab[U].IntVal * ES);
-  D := NewTemp(16);
-  A := UnitTab[U].A;
-  I := 0;
-  While A >= 0 Do
+  Dm := ModeTab[M].Dims;
+  A := U;
+  Total := 1;
+  For I := 0 To Dm - 1 Do
   Begin
-    GenValue(A);
-    StoreValue(-1, E, I * ES, Elem);
-    A := UnitTab[A].Next;
-    Inc(I);
+    Cnt[I] := UnitTab[A].IntVal;
+    Total := Total * Cnt[I];
+    A := UnitTab[A].A;
   End;
+  E := NewTemp(Total * ES);
+  D := NewTemp(4 + 12 * Dm);
+  Pos := 0;
+  GenDisplayLeaves(U, Dm, E, Elem, ES, Pos);
   TAddr(R_EAX, E);
   Emit(OP_MOV, TMem(D, 0, 4), OpReg(R_EAX));
-  Emit(OP_MOV, TMem(D, 4, 4), OpImm(1));
-  Emit(OP_MOV, TMem(D, 8, 4), OpImm(UnitTab[U].IntVal));
-  Emit(OP_MOV, TMem(D, 12, 4), OpImm(ES));
+  Str := ES;
+  For I := Dm - 1 Downto 0 Do
+  Begin
+    Emit(OP_MOV, TMem(D, 4 + 12 * I, 4), OpImm(1));
+    Emit(OP_MOV, TMem(D, 8 + 12 * I, 4), OpImm(Cnt[I]));
+    Emit(OP_MOV, TMem(D, 12 + 12 * I, 4), OpImm(Str));
+    Str := Str * Cnt[I];
+  End;
   TAddr(R_EAX, D);
 End;
 
@@ -10620,7 +10928,12 @@ Begin
       valeur (affichage, tranche, autre tableau) }
     If Init >= 0 Then
     Begin
-      GenValue(Init);
+      { une chaine variable (ou identite non litterale) est recopiee }
+      If ModeIsString(M) And ((SymTab[S].Kind = SK_VAR) Or
+         (UnitTab[Init].Kind <> UK_STRDEN)) Then
+        GenStringValue(Init)
+      Else
+        GenValue(Init);
       StoreValue(S, -1, 0, M);
     End
     Else If ModeTab[M].Flex Then
@@ -10636,6 +10949,20 @@ Begin
        (UnitTab[UnitTab[It].Next].Kind <> UK_INTDEN) Then
       ConstB := False;
     It := UnitTab[UnitTab[It].Next].Next;
+  End;
+  { un tableau statique de plus de 64 Ko va sur le tas }
+  If ConstB Then
+  Begin
+    Tot := ES;
+    It := UnitTab[U].B;
+    While (It >= 0) And (Tot <= 65536) Do
+    Begin
+      Count := UnitTab[UnitTab[It].Next].IntVal - UnitTab[It].IntVal + 1;
+      If Count < 0 Then Count := 0;
+      Tot := Tot * Count;
+      It := UnitTab[UnitTab[It].Next].Next;
+    End;
+    If Tot > 65536 Then ConstB := False;
   End;
   If ConstB Then
   Begin
@@ -10746,7 +11073,7 @@ Begin
   GenValue(Ref);
   If MayBeNil(Ref) Then GenNilCheck;
   Emit1(OP_PUSH, OpReg(R_EAX));
-  GenValue(Src);
+  GenStringValue(Src);
   Case ValClass(M) Of
     1 :
       Begin
@@ -10780,8 +11107,8 @@ Begin
   Else
     Begin
       Emit1(OP_POP, OpReg(R_EDX));
-      EmitComment('affectation de mode ' + ModeName(M) +
-                  ' pas encore generee');
+      GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                     'affectation de mode ' + ModeName(M));
     End;
   End;
 End;
@@ -10961,13 +11288,14 @@ Begin
                 (SymTab[S].Name = 'space') Then
           CallRT('SPACE')
         Else
-          EmitComment(SymTab[S].Name + ' : pas encore genere');
+          GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                         'identificateur ' + SymTab[S].Name);
       End;
     UK_COERCE    : GenCoerce(U);
     UK_FORMULA:
       If UnitTab[U].Sym < 0 Then
-        EmitComment('(formule ligne ' + ItoS(UnitTab[U].Line) +
-                    ' : operateur inconnu)')
+        GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                       'operateur inconnu ' + UnitTab[U].Name)
       Else If Not SymTab[UnitTab[U].Sym].Intrinsic Then
         GenOpCall(U)
       Else If UnitTab[U].IntVal = 2 Then
@@ -10990,8 +11318,8 @@ Begin
     UK_CLOSED:
       GenSerialValue(UnitTab[U].A);
   Else
-    EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
-                ' : pas encore generee)');
+    GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                   'unite ' + UnitKindName(UnitTab[U].Kind));
   End;
 End;
 
@@ -11002,6 +11330,16 @@ End;
 Procedure GenInit(S : Integer; Disp : LongInt; Init : LongInt;
                   Const Name : TName; ObjMode : Integer);
 Begin
+  { une chaine rangee dans une variable (ou une identite non litterale)
+    est recopiee : elle ne partage jamais ses caracteres }
+  If ModeIsString(ObjMode) And
+     ((SymTab[S].Kind = SK_VAR) Or (UnitTab[Init].Kind <> UK_STRDEN)) And
+     Not (UnitTab[Init].Kind In [UK_NIL, UK_EMPTY, UK_SKIP, UK_OPAQUE]) Then
+  Begin
+    GenStringValue(Init);
+    StoreValue(S, -1, Disp, ObjMode);
+    Exit;
+  End;
   If SymTab[S].Heap Then
   Begin
     If UnitTab[Init].Kind <> UK_OPAQUE Then
@@ -11010,8 +11348,8 @@ Begin
       StoreValue(S, -1, Disp, ObjMode);
     End
     Else
-      EmitComment(Name + ' : initialiseur ligne ' +
-                  ItoS(UnitTab[Init].Line) + ' pas encore genere');
+      GenUnsupported(UnitTab[Init].Line, UnitTab[Init].Col,
+                     'initialiseur de ' + Name);
     Exit;
   End;
   Case UnitTab[Init].Kind Of
@@ -11022,8 +11360,8 @@ Begin
       Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(0));
     UK_SKIP: ;
     UK_OPAQUE:
-      EmitComment(Name + ' : initialiseur ligne ' +
-                  ItoS(UnitTab[Init].Line) + ' pas encore genere');
+      GenUnsupported(UnitTab[Init].Line, UnitTab[Init].Col,
+                     'initialiseur de ' + Name);
     UK_COERCE:
       If (UnitTab[Init].IntVal = CO_UNITE) And
          (ModeKind(UnitTab[UnitTab[Init].A].Mode) <> MK_UNION) And
@@ -11087,8 +11425,7 @@ Begin
     UK_VARDECL, UK_IDDECL : GenDecl(U);
     UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
     UK_DECL, UK_OPAQUE:
-      EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
-                  ' : pas encore generee)');
+      GenUnsupported(UnitTab[U].Line, UnitTab[U].Col, 'unite inconnue');
   End;
 End;
 
@@ -11122,7 +11459,7 @@ Begin
     WriteInstrList(Output, CodeTab, CodeCount);
     WriteInstrList(Output, DeferTab, DeferCount);
   End;
-  If Opts.EmitAsm Then
+  If Opts.EmitAsm And (ErrorCount = 0) Then
   Begin
     WriteListing(Opts.AsmFile);
     If Opts.Verbose Then WriteLn('  listing : ', Opts.AsmFile);
@@ -12572,7 +12909,7 @@ End;
     FLOOR et RTOI ST(0) -> EAX ; RSIGN ST(0) -> EAX ; CHKIDX EAX =
     indice, ECX = borne basse, EDX = borne haute (registres conserves) ;
     BOUNDS ; NILREF ; DIVZERO ; ALLOC EAX = octets -> EAX = bloc mis a
-    zero (HeapAlloc). Les routines d'erreur ecrivent un message sur
+    zero (ramasse-miettes). Les routines d'erreur ecrivent un message sur
     l'erreur standard et terminent par le code de sortie 1.
   Formats : entier en decimal sans remplissage ; reel en notation fixe,
   6 decimales au plus, zeros finaux supprimes mais une decimale au
@@ -12584,7 +12921,7 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 631;
+  RT_LINES = 972;
   RT_MAX_ROUT = 40;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_PUT',
@@ -12655,8 +12992,177 @@ Const
   'MOV EAX, OFFSET _A68D_M_IDX',
   'JMP _A68RT_FAIL',
   '@_A68RT_ALLOC',
-  '; EAX = octets -> EAX = bloc mis a zero (tas du processus)',
+  '; EAX = octets -> EAX = bloc mis a zero (tas gere par _A68RT_GC)',
   '_A68RT_ALLOC:',
+  'ADD EAX, 7',
+  'AND EAX, -8',
+  'PUSH ECX',
+  'PUSH EDX',
+  'PUSH ESI',
+  'PUSH EDI',
+  'MOV DWORD PTR [_A68D_GA], EAX',
+  'ADD EAX, DWORD PTR [_A68D_GS]',
+  'CMP EAX, DWORD PTR [_A68D_GT]',
+  'JBE _A68R_al1',
+  'CALL _A68RT_GC',
+  '_A68R_al1:',
+  'MOV EAX, DWORD PTR [_A68D_GA]',
+  'SHR EAX, 3',
+  'CMP EAX, 64',
+  'JA _A68R_alh',
+  'MOV EDX, DWORD PTR [_A68D_GF+EAX*4]',
+  'TEST EDX, EDX',
+  'JE _A68R_al6',
+  'MOV ECX, DWORD PTR [EDX+12]',
+  'MOV DWORD PTR [_A68D_GF+EAX*4], ECX',
+  'JMP _A68R_alf',
+  '_A68R_alh:',
+  'XOR ESI, ESI',
+  'MOV EDX, DWORD PTR [_A68D_GF+260]',
+  '_A68R_al2:',
+  'TEST EDX, EDX',
+  'JE _A68R_al6',
+  'MOV ECX, DWORD PTR [EDX+4]',
+  'CMP ECX, DWORD PTR [_A68D_GA]',
+  'JB _A68R_al5',
+  'MOV EAX, DWORD PTR [_A68D_GA]',
+  'ADD EAX, EAX',
+  'ADD EAX, 32',
+  'CMP ECX, EAX',
+  'JA _A68R_al5',
+  '; bloc libre convenable : sorti de la chaine des libres, remis a zero',
+  'MOV EAX, DWORD PTR [EDX+12]',
+  'TEST ESI, ESI',
+  'JE _A68R_alu',
+  'MOV DWORD PTR [ESI+12], EAX',
+  'JMP _A68R_alf',
+  '_A68R_alu:',
+  'MOV DWORD PTR [_A68D_GF+260], EAX',
+  '_A68R_alf:',
+  'MOV DWORD PTR [EDX+8], 0',
+  'MOV DWORD PTR [EDX+12], 0',
+  'LEA EDI, [EDX+16]',
+  'MOV ECX, DWORD PTR [EDX+4]',
+  'SHR ECX, 2',
+  'XOR EAX, EAX',
+  'REP STOSD',
+  'MOV EAX, DWORD PTR [EDX+4]',
+  'ADD DWORD PTR [_A68D_GS], EAX',
+  'LEA EAX, [EDX+16]',
+  'JMP _A68R_al9',
+  '_A68R_al5:',
+  'MOV ESI, EDX',
+  'MOV EDX, DWORD PTR [EDX+12]',
+  'JMP _A68R_al2',
+  '_A68R_al6:',
+  '; nouveau bloc : en-tete de 16 octets (suivant, taille, etat, gris)',
+  'CALL GetProcessHeap',
+  'MOV ECX, DWORD PTR [_A68D_GA]',
+  'ADD ECX, 16',
+  'PUSH ECX',
+  'PUSH 8',
+  'PUSH EAX',
+  'CALL HeapAlloc',
+  'TEST EAX, EAX',
+  'JNE _A68R_al7',
+  'MOV EAX, OFFSET _A68D_M_MEM',
+  'JMP _A68RT_FAIL',
+  '_A68R_al7:',
+  'MOV ECX, DWORD PTR [_A68D_GH]',
+  'MOV DWORD PTR [EAX], ECX',
+  'MOV DWORD PTR [_A68D_GH], EAX',
+  'INC DWORD PTR [_A68D_GK]',
+  'MOV ECX, DWORD PTR [_A68D_GA]',
+  'MOV DWORD PTR [EAX+4], ECX',
+  'ADD DWORD PTR [_A68D_GS], ECX',
+  'LEA EDX, [EAX+16]',
+  'MOV ECX, DWORD PTR [_A68D_GL]',
+  'TEST ECX, ECX',
+  'JE _A68R_al3',
+  'CMP EDX, ECX',
+  'JAE _A68R_al4',
+  '_A68R_al3:',
+  'MOV DWORD PTR [_A68D_GL], EDX',
+  '_A68R_al4:',
+  'ADD EDX, DWORD PTR [_A68D_GA]',
+  'CMP EDX, DWORD PTR [_A68D_GU]',
+  'JBE _A68R_alb',
+  'MOV DWORD PTR [_A68D_GU], EDX',
+  '_A68R_alb:',
+  'ADD EAX, 16',
+  '_A68R_al9:',
+  'POP EDI',
+  'POP ESI',
+  'POP EDX',
+  'POP ECX',
+  'RET',
+  '@_A68RT_GCMARK',
+  '; EAX = mot : marque le bloc qui le contient (recherche dichotomique)',
+  '; dans le tableau trie des blocs (EAX, ECX, EDX detruits)',
+  '_A68RT_GCMARK:',
+  'CMP EAX, DWORD PTR [_A68D_GL]',
+  'JB _A68R_gm9',
+  'CMP EAX, DWORD PTR [_A68D_GU]',
+  'JAE _A68R_gm9',
+  'PUSH ESI',
+  'PUSH EDI',
+  'XOR ESI, ESI',
+  'MOV EDI, DWORD PTR [_A68D_GN]',
+  'DEC EDI',
+  '_A68R_gm1:',
+  'CMP ESI, EDI',
+  'JG _A68R_gm3',
+  'LEA EDX, [ESI+EDI]',
+  'SHR EDX, 1',
+  'MOV ECX, DWORD PTR [_A68D_GR]',
+  'MOV ECX, DWORD PTR [ECX+EDX*4]',
+  'ADD ECX, 16',
+  'CMP ECX, EAX',
+  'JA _A68R_gm2',
+  'LEA ESI, [EDX+1]',
+  'JMP _A68R_gm1',
+  '_A68R_gm2:',
+  'LEA EDI, [EDX-1]',
+  'JMP _A68R_gm1',
+  '_A68R_gm3:',
+  'TEST EDI, EDI',
+  'JS _A68R_gm8',
+  'MOV ECX, DWORD PTR [_A68D_GR]',
+  'MOV EDX, DWORD PTR [ECX+EDI*4]',
+  'LEA ECX, [EDX+16]',
+  'ADD ECX, DWORD PTR [EDX+4]',
+  'CMP EAX, ECX',
+  'JAE _A68R_gm8',
+  'MOV ECX, DWORD PTR [EDX+8]',
+  'AND ECX, 3',
+  'JNE _A68R_gm8',
+  'MOV DWORD PTR [EDX+8], 1',
+  'MOV ECX, DWORD PTR [_A68D_GG]',
+  'MOV DWORD PTR [EDX+12], ECX',
+  'MOV DWORD PTR [_A68D_GG], EDX',
+  '_A68R_gm8:',
+  'POP EDI',
+  'POP ESI',
+  '_A68R_gm9:',
+  'RET',
+  '@_A68RT_GC',
+  '; ramasse-miettes conservateur : marque depuis les donnees et la pile',
+  '; (tout mot qui ressemble a une adresse du tas), puis libere les blocs',
+  '; non marques (ALLOC les reutilise)',
+  '_A68RT_GC:',
+  'PUSH EAX',
+  'PUSH ECX',
+  'PUSH EDX',
+  'PUSH ESI',
+  'PUSH EDI',
+  '; tableau des blocs : agrandi si besoin, rempli, trie (tri de Shell)',
+  'MOV EAX, DWORD PTR [_A68D_GK]',
+  'CMP EAX, DWORD PTR [_A68D_GQ]',
+  'JBE _A68R_gs0',
+  'ADD EAX, EAX',
+  'ADD EAX, 1024',
+  'MOV DWORD PTR [_A68D_GQ], EAX',
+  'SHL EAX, 2',
   'PUSH EAX',
   'CALL GetProcessHeap',
   'POP ECX',
@@ -12665,10 +13171,182 @@ Const
   'PUSH EAX',
   'CALL HeapAlloc',
   'TEST EAX, EAX',
-  'JNE _A68R_al1',
+  'JNE _A68R_gs1',
   'MOV EAX, OFFSET _A68D_M_MEM',
   'JMP _A68RT_FAIL',
-  '_A68R_al1:',
+  '_A68R_gs1:',
+  'MOV DWORD PTR [_A68D_GR], EAX',
+  '_A68R_gs0:',
+  'MOV EDI, DWORD PTR [_A68D_GR]',
+  'XOR ECX, ECX',
+  'MOV EDX, DWORD PTR [_A68D_GH]',
+  '_A68R_gc1:',
+  'TEST EDX, EDX',
+  'JE _A68R_gs2',
+  'MOV EAX, DWORD PTR [EDX+8]',
+  'AND EAX, 2',
+  'MOV DWORD PTR [EDX+8], EAX',
+  'MOV DWORD PTR [EDX+12], 0',
+  'MOV DWORD PTR [EDI+ECX*4], EDX',
+  'INC ECX',
+  'MOV EDX, DWORD PTR [EDX]',
+  'JMP _A68R_gc1',
+  '_A68R_gs2:',
+  'MOV DWORD PTR [_A68D_GN], ECX',
+  'MOV ECX, 1',
+  '_A68R_gs3:',
+  'MOV EAX, ECX',
+  'ADD EAX, EAX',
+  'ADD EAX, ECX',
+  'INC EAX',
+  'CMP EAX, DWORD PTR [_A68D_GN]',
+  'JAE _A68R_gs4',
+  'MOV ECX, EAX',
+  'JMP _A68R_gs3',
+  '_A68R_gs4:',
+  'MOV DWORD PTR [_A68D_GP], ECX',
+  '_A68R_gs5:',
+  'MOV ECX, DWORD PTR [_A68D_GP]',
+  'TEST ECX, ECX',
+  'JE _A68R_gc2',
+  'MOV ESI, ECX',
+  '_A68R_gs6:',
+  'CMP ESI, DWORD PTR [_A68D_GN]',
+  'JAE _A68R_gs9',
+  'MOV EAX, DWORD PTR [EDI+ESI*4]',
+  'MOV EDX, ESI',
+  '_A68R_gs7:',
+  'CMP EDX, DWORD PTR [_A68D_GP]',
+  'JB _A68R_gs8',
+  'MOV ECX, EDX',
+  'SUB ECX, DWORD PTR [_A68D_GP]',
+  'MOV ECX, DWORD PTR [EDI+ECX*4]',
+  'CMP ECX, EAX',
+  'JBE _A68R_gs8',
+  'MOV DWORD PTR [EDI+EDX*4], ECX',
+  'SUB EDX, DWORD PTR [_A68D_GP]',
+  'JMP _A68R_gs7',
+  '_A68R_gs8:',
+  'MOV DWORD PTR [EDI+EDX*4], EAX',
+  'INC ESI',
+  'JMP _A68R_gs6',
+  '_A68R_gs9:',
+  'MOV EAX, DWORD PTR [_A68D_GP]',
+  'DEC EAX',
+  'XOR EDX, EDX',
+  'MOV ECX, 3',
+  'DIV ECX',
+  'MOV DWORD PTR [_A68D_GP], EAX',
+  'JMP _A68R_gs5',
+  '_A68R_gc2:',
+  'MOV DWORD PTR [_A68D_GG], 0',
+  'MOV ESI, OFFSET _A68D_DBEG',
+  'MOV DWORD PTR [_A68D_GE], OFFSET _A68D_DEND',
+  '_A68R_gc3:',
+  'CMP ESI, DWORD PTR [_A68D_GE]',
+  'JAE _A68R_gc4',
+  'MOV EAX, DWORD PTR [ESI]',
+  'CALL _A68RT_GCMARK',
+  'ADD ESI, 4',
+  'JMP _A68R_gc3',
+  '_A68R_gc4:',
+  'MOV ESI, ESP',
+  'MOV EDI, DWORD PTR [_A68_MAINBP]',
+  'ADD EDI, 8',
+  '_A68R_gc5:',
+  'CMP ESI, EDI',
+  'JAE _A68R_gc7',
+  'MOV EAX, DWORD PTR [ESI]',
+  'CALL _A68RT_GCMARK',
+  'ADD ESI, 4',
+  'JMP _A68R_gc5',
+  '_A68R_gc7:',
+  'MOV EDX, DWORD PTR [_A68D_GG]',
+  'TEST EDX, EDX',
+  'JE _A68R_gc9',
+  'MOV EAX, DWORD PTR [EDX+12]',
+  'MOV DWORD PTR [_A68D_GG], EAX',
+  'LEA ESI, [EDX+16]',
+  'MOV EDI, ESI',
+  'ADD EDI, DWORD PTR [EDX+4]',
+  '_A68R_gc8:',
+  'CMP ESI, EDI',
+  'JAE _A68R_gc7',
+  'MOV EAX, DWORD PTR [ESI]',
+  'CALL _A68RT_GCMARK',
+  'ADD ESI, 4',
+  'JMP _A68R_gc8',
+  '_A68R_gc9:',
+  'MOV DWORD PTR [_A68D_GV], 0',
+  'MOV EDI, OFFSET _A68D_GF',
+  'XOR EAX, EAX',
+  'MOV ECX, 66',
+  'REP STOSD',
+  'MOV EDX, DWORD PTR [_A68D_GH]',
+  '_A68R_gca:',
+  'TEST EDX, EDX',
+  'JE _A68R_gcb',
+  'MOV EAX, DWORD PTR [EDX+8]',
+  'AND EAX, 1',
+  'JE _A68R_gcc',
+  'MOV EAX, DWORD PTR [EDX+4]',
+  'ADD DWORD PTR [_A68D_GV], EAX',
+  'JMP _A68R_gcd',
+  '_A68R_gcc:',
+  'MOV DWORD PTR [EDX+8], 2',
+  'MOV EAX, DWORD PTR [EDX+4]',
+  'SHR EAX, 3',
+  'CMP EAX, 64',
+  'JBE _A68R_gcg',
+  'MOV EAX, 65',
+  '_A68R_gcg:',
+  'MOV ECX, DWORD PTR [_A68D_GF+EAX*4]',
+  'MOV DWORD PTR [EDX+12], ECX',
+  'MOV DWORD PTR [_A68D_GF+EAX*4], EDX',
+  '_A68R_gcd:',
+  'MOV EDX, DWORD PTR [EDX]',
+  'JMP _A68R_gca',
+  '_A68R_gcb:',
+  'MOV EAX, DWORD PTR [_A68D_GV]',
+  'ADD EAX, EAX',
+  'CMP EAX, 1048576',
+  'JAE _A68R_gce',
+  'MOV EAX, 1048576',
+  '_A68R_gce:',
+  'MOV DWORD PTR [_A68D_GT], EAX',
+  'MOV DWORD PTR [_A68D_GS], 0',
+  'POP EDI',
+  'POP ESI',
+  'POP EDX',
+  'POP ECX',
+  'POP EAX',
+  'RET',
+  '@_A68RT_STRDUP',
+  '; ESI = descripteur de chaine -> EAX = descripteur d''une copie',
+  '_A68RT_STRDUP:',
+  'MOV EAX, DWORD PTR [ESI+8]',
+  'SUB EAX, DWORD PTR [ESI+4]',
+  'INC EAX',
+  'TEST EAX, EAX',
+  'JGE _A68R_sd1',
+  'XOR EAX, EAX',
+  '_A68R_sd1:',
+  'MOV DWORD PTR [_A68D_CNT], EAX',
+  'PUSH ESI',
+  'ADD EAX, 16',
+  'CALL _A68RT_ALLOC',
+  'POP ESI',
+  'MOV EDX, EAX',
+  'MOV DWORD PTR [EDX+4], 1',
+  'MOV ECX, DWORD PTR [_A68D_CNT]',
+  'MOV DWORD PTR [EDX+8], ECX',
+  'MOV DWORD PTR [EDX+12], 1',
+  'MOV EDI, EDX',
+  'ADD EDI, 16',
+  'MOV DWORD PTR [EDX], EDI',
+  'MOV ESI, DWORD PTR [ESI]',
+  'REP MOVSB',
+  'MOV EAX, EDX',
   'RET',
   '@_A68RT_NEWLINE',
   '_A68RT_NEWLINE:',
@@ -13229,6 +13907,7 @@ Var
   RtPos     : Integer;
   RtDataMade: Array[0..63] Of Integer;
   RtDataN   : Integer;
+  RtDendUsed: Boolean;
 
 Function RtFind(Const Name : TString) : Integer;
 Var
@@ -13319,7 +13998,14 @@ Begin
   Else If N = '_A68D_Q' Then DataAddZero(Sym, 8)
   Else If (N = '_A68D_WR') Or (N = '_A68D_IN') Or (N = '_A68D_SG') Or
           (N = '_A68D_ACC') Or (N = '_A68D_CNT') Or (N = '_A68D_DOT') Or
-          (N = '_A68D_BLK') Then DataAddZero(Sym, 4)
+          (N = '_A68D_BLK') Or (N = '_A68D_GH') Or (N = '_A68D_GS') Or
+          (N = '_A68D_GG') Or (N = '_A68D_GL') Or (N = '_A68D_GU') Or
+          (N = '_A68D_GE') Or (N = '_A68D_GV') Or (N = '_A68D_GA') Or
+          (N = '_A68D_GR') Or (N = '_A68D_GQ') Or
+          (N = '_A68D_GN') Or (N = '_A68D_GP') Or (N = '_A68D_GK') Then
+    DataAddZero(Sym, 4)
+  Else If N = '_A68D_GT' Then RtDataInt(Sym, 1048576)
+  Else If N = '_A68D_GF' Then DataAddZero(Sym, 264)
   Else If N = '_A68D_PEEK' Then RtDataInt(Sym, -2)
   Else If N = '_A68D_TEN'  Then RtDataInt(Sym, 10)
   Else If N = '_A68D_CR'   Then RtDataStr(Sym, #13#10)
@@ -13413,6 +14099,19 @@ Function RtSym(Const Name : TString) : Integer;
 Var
   K : Integer;
 Begin
+  { bornes du segment de donnees explorees par le ramasse-miettes : la
+    premiere cellule de donnees, et une cellule creee en dernier }
+  If Name = '_A68D_DBEG' Then
+  Begin
+    RtSym := DataTab[0].Name;
+    Exit;
+  End;
+  If Name = '_A68D_DEND' Then
+  Begin
+    RtDendUsed := True;
+    RtSym := Intern(Name);
+    Exit;
+  End;
   K := Intern(Name);
   If Copy(Name, 1, 6) = '_A68D_' Then RtData(K);
   RtSym := K;
@@ -13603,6 +14302,7 @@ Var
 Begin
   RtCount := 0;
   RtDataN := 0;
+  RtDendUsed := False;
   For L := 0 To RT_LINES - 1 Do
     If RtText[L][1] = '@' Then
     Begin
@@ -13656,6 +14356,8 @@ Begin
         RtAssembleLine(RtText[L]);
     End;
   MoveToDeferred(Start);
+  { derniere cellule de donnees : fin de la zone explorees par le GC }
+  If RtDendUsed Then DataAddZero(Intern('_A68D_DEND'), 4);
 End;
 
 

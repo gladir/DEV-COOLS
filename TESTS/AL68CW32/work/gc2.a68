@@ -1,0 +1,23 @@
+BEGIN
+  MODE NODE = STRUCT(INT v, STRING name, REF NODE next);
+  REF NODE head := NIL;
+  INT junk := 0;
+  FOR k FROM 1 TO 20000 DO
+    HEAP NODE n := (k, "node" + whole(k, 0), head);
+    head := n;
+    FOR j FROM 1 TO 100 DO
+      STRING g := whole(j * k, 0) + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+      junk +:= UPB g
+    OD
+  OD;
+  INT cnt := 0; INT sum := 0; INT len := 0;
+  REF NODE p := head;
+  WHILE p ISNT NIL DO cnt +:= 1; sum +:= v OF p; len +:= UPB (name OF p); p := next OF p OD;
+  print((cnt, space, sum, space, len, newline));
+  [1:100000] INT arr;
+  FOR r FROM 1 TO 2000 DO
+    [1:50000] INT t;
+    t[50000] := r
+  OD;
+  print((junk, newline))
+END

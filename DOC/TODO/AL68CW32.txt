@@ -739,11 +739,10 @@
               (111), STRING vide (1, 0) ; erreur : affichage de 2 elements
               pour un tableau de 3 ; les 27 exemples restent analyses ;
               les essais des TODOs 8 a 14 donnent les memes valeurs
-            Limites : l'affectation d'une STRING partage les caracteres
-              (pas de copie) ; le stockage dynamique n'est pas libere
-              (pas de FREE) ; tranches et affichages a plusieurs
-              dimensions pas encore supportes ; les temporaires sont
-              statiques (revu au TODO 16)
+            Limites : les temporaires sont statiques (revu au TODO 16) ;
+              la copie des STRING, les tranches et affichages a plusieurs
+              dimensions et la liberation du tas ont ete ajoutes ensuite
+              (voir les corrections apres le TODO 25)
             Reste : (CHKIDX, BOUNDS, ALLOC : TODO 22) ; REP MOVSB, MOV
               d'octet, ADD memoire,registre au codeur du TODO 20
 
@@ -1096,7 +1095,7 @@
               runtime comme le reste ; seules GetStdHandle, WriteFile,
               ReadFile, ExitProcess, GetProcessHeap et HeapAlloc sont
               importees ; routines : PUT, FAIL, DIVZERO, NILREF, BOUNDS,
-              CHKIDX, ALLOC (HeapAlloc avec HEAP_ZERO_MEMORY), NEWLINE,
+              CHKIDX, ALLOC (voir les corrections), NEWLINE,
               SPACE, WRITECHAR, WRITESTR, WRITEBOOL, DIGITS, WRITEINT,
               WRITEREAL, WHOLE, GETC, SKIPWS, READCHAR, READINT, READREAL,
               READSTR, STRCAT, STRCMP, POW, EXP2, RPOW, FLOOR, RTOI, RSIGN
@@ -1105,7 +1104,8 @@
               tableaux de dimensions differentes, reference NIL, division
               par zero, memoire insuffisante) ecrivent un message sur
               l'erreur standard et terminent par le code de sortie 1 ;
-              pas de FREE : le tas n'est jamais libere
+              le tas est gere par un ramasse-miettes (voir les
+              corrections apres le TODO 25)
             Formats : entier en decimal sans remplissage, signe - ; reel en
               notation fixe, 6 decimales au plus, zeros finaux supprimes
               mais une decimale au moins (4.5, 100.0, 0.000001), valeur
@@ -1277,8 +1277,39 @@
               (binaire Linux x86-64 statique) ajoutes ; WIN32\al68cw32.exe
               reste a produire sous Windows
             Limites connues du compilateur (voir les TODOs concernes) :
-              pas de FREE (le tas n'est jamais libere) ; STRING partagee
-              a l'affectation ; pas de tranches ni d'affichages de tableaux
-              a plusieurs dimensions ; print n'affiche ni tableaux, ni
-              structures, ni unions ; PAR sequentiel ; une routine ne doit
-              pas renvoyer une procedure liee a son propre cadre
+              PAR sequentiel ; une routine ne doit pas renvoyer une
+              procedure liee a son propre cadre ; tableaux a plusieurs
+              dimensions : tranches et affichages supportes si les
+              sous-affichages ont tous la meme forme (sinon erreur)
+
+  CORRECTIONS APRES LE TODO 25 [IMPLEMENTE]
+            Realise : (1) plus de code manquant sans erreur : chaque
+              ancienne branche "pas encore generee" (GenUnsupported)
+              signale maintenant une erreur de compilation, et le listing
+              .ASM n'est plus ecrit s'il y a des erreurs ; les cas qui
+              compilaient en silence sont implementes : tranches a
+              plusieurs dimensions m[1:2, 1] (indices et trimmers
+              melanges, GenSlice), copie de tableaux element par element
+              (GenRowElems), affichages a plusieurs dimensions
+              (DisplayUniform, GenDisplayLeaves), elements de print et
+              de read de type quelconque ; (2) memoire : ramasse-miettes
+              conservateur a marquage et balayage dans le runtime (ALLOC,
+              GCMARK, GC) ; blocs de 16 octets d'en-tete, listes libres
+              par classe de taille, tableau trie des blocs pour retrouver
+              un bloc depuis un pointeur interieur ; racines = segment de
+              donnees + pile jusqu'a la base du programme principal ;
+              declenchement par seuil d'allocation ; HEAP, tableaux
+              dynamiques, WHOLE, concatenation et READ de STRING sont donc
+              recuperes ; les tableaux statiques de plus de 64 Ko vont sur
+              le tas ; (3) valeur de STRING : STRDUP copie les caracteres
+              a l'initialisation, l'affectation, l'identite non litterale,
+              les champs de structure et les affichages (GenStringValue,
+              NeedsStrDup) ; un tableau passe en parametre est recopie
+              (GenRowDup) avant l'appel
+            Verifie : work/slice, copy, display, gc, gc2 (chkrt.sh) avec
+              valeurs calculees a part ; 3 erreurs de plus dans errors.txt
+              (affichage mal forme) ; la suite test_al68cw32.sh passe
+            Limites : le ramasse-miettes est conservateur (un entier qui
+              ressemble a une adresse retient un bloc) ; un pointeur
+              present seulement dans un registre x87 ou non sauvegarde
+              n'est pas une racine ; pas de FREE explicite en Algol 68
