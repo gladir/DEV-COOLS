@@ -357,6 +357,7 @@ Type
   native: Integer;       { genre natif alloue par __new__ }
   userdef: Boolean;
   hasSlots, noDict, hasSetattr, hasGetattribute: Boolean;
+  flagGen: Integer;
   slots: TStrArr;
   newFn: TNativeFn;
   ctor: TNativeFn;
@@ -462,6 +463,7 @@ Var
 Function HashVal(Const v: TVal): Int64; Forward;
 Function ValEq(Const a, b: TVal): Boolean; Forward;
 Var
+ TypeFlagsGen: Integer;
  CmpRaw: TVal;
  CmpRawSet: Boolean;
 Function CallValue(Const fn: TVal; a: PVal; n: Integer;
@@ -12791,10 +12793,14 @@ Begin
  Result := False;
 End;
 
+Procedure RefreshHooks(t: TPyType); Forward;
+
 Function GetAttrOpt(Const o: TVal; nm: TPyStr; Var res: TVal): Boolean;
 Var
  f: TVal;
 Begin
+ If (o.k = vkObj) And o.o.cls.userdef And
+  (o.o.cls.flagGen <> TypeFlagsGen) Then RefreshHooks(o.o.cls);
  If (o.k = vkObj) And o.o.cls.hasGetattribute Then Begin
   If LookupType(o.o.cls, '__getattribute__', f) Then Begin
    Try
@@ -12860,6 +12866,23 @@ Begin
  End;
 End;
 
+Procedure RefreshHooks(t: TPyType);
+Var
+ i: Integer;
+ f: TVal;
+Begin
+ t.hasSetattr := False;
+ t.hasGetattribute := False;
+ For i := 0 To High(t.mro) Do
+  If t.mro[i].userdef And (t.mro[i].idict <> Nil) Then Begin
+   If t.mro[i].idict.GetS('__setattr__', f) And (f.k = vkObj) And
+    (f.o Is TPyFunc) Then t.hasSetattr := True;
+   If t.mro[i].idict.GetS('__getattribute__', f) And (f.k = vkObj) And
+    (f.o Is TPyFunc) Then t.hasGetattribute := True;
+  End;
+ t.flagGen := TypeFlagsGen;
+End;
+
 Function SlotAllowed(t: TPyType; Const name: AnsiString): Boolean;
 Var
  i, j: Integer;
@@ -12913,15 +12936,7 @@ Begin
     If Not t.mro[i].hasSlots Then t.noDict := False;
    End Else If (t.mro[i].native <> 0) Then t.noDict := False;
   End;
- t.hasSetattr := False;
- t.hasGetattribute := False;
- For i := 0 To High(t.mro) Do
-  If t.mro[i].userdef And (t.mro[i].idict <> Nil) Then Begin
-   If t.mro[i].idict.GetS('__setattr__', f) And (f.k = vkObj) And
-    (f.o Is TPyFunc) Then t.hasSetattr := True;
-   If t.mro[i].idict.GetS('__getattribute__', f) And (f.k = vkObj) And
-    (f.o Is TPyFunc) Then t.hasGetattribute := True;
-  End;
+ RefreshHooks(t);
 End;
 
 Procedure SetAttrCore(Const o: TVal; nm: TPyStr; Const v: TVal);
@@ -12988,6 +13003,8 @@ Begin
  End;
  If (t.noDict Or (t = tyObject)) And Not SlotAllowed(t, name) Then
   RaiseAttrError(o, name);
+ If (o.o Is TPyType) And ((name = '__setattr__') Or
+  (name = '__getattribute__')) Then Inc(TypeFlagsGen);
  If o.o.idict = Nil Then Begin
   If o.o.cls.userdef Or (o.o Is TPyObj) And (o.o.ClassType = TPyObj) Then
    o.o.idict := TPyDict.Make
@@ -13000,6 +13017,8 @@ Procedure SetAttrO(Const o: TVal; nm: TPyStr; Const v: TVal);
 Var
  f: TVal;
 Begin
+ If (o.k = vkObj) And o.o.cls.userdef And
+  (o.o.cls.flagGen <> TypeFlagsGen) Then RefreshHooks(o.o.cls);
  If (o.k = vkObj) And o.o.cls.hasSetattr Then
   If LookupType(o.o.cls, '__setattr__', f) And (f.k = vkObj) And
    (f.o Is TPyFunc) Then Begin
@@ -15504,6 +15523,36 @@ Begin
  If Not GetAttrCore(a[0], nm, Result) Then RaiseAttrError(a[0], nm.s);
 End;
 
+Function ObjCallSelf(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := CallValue(a[0], @a[1], n - 1, kw);
+End;
+
+Function ObjReduceEx(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ f, m: TVal;
+ proto: Integer;
+Begin
+ proto := 0;
+ If n > 1 Then proto := IndexVal(a[1]);
+ If (a[0].k = vkObj) And a[0].o.cls.userdef And
+  LookupType(a[0].o.cls, '__reduce__', f) And (f.k = vkObj) And
+  (f.o Is TPyFunc) Then Begin
+  Result := Call1(f, a[0]);
+  Exit;
+ End;
+ m := ImportByName('copyreg');
+ Result := Call2(GetAttr(m, '_object_reduce_ex'), a[0], VInt(proto));
+End;
+
+Function ObjReduce(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ m: TVal;
+Begin
+ m := ImportByName('copyreg');
+ Result := Call2(GetAttr(m, '_object_reduce_ex'), a[0], VInt(0));
+End;
+
 Function ObjInitSubclass(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := vNone;
@@ -15953,6 +16002,12 @@ Begin
  DefMethod(tyObject, '__delattr__', @ObjDelAttr);
  DefMethod(tyObject, '__getattribute__', @ObjGetAttribute);
  DefClassMethod(tyObject, '__init_subclass__', @ObjInitSubclass);
+ DefMethod(tyObject, '__reduce_ex__', @ObjReduceEx);
+ DefMethod(tyType, '__call__', @ObjCallSelf);
+ DefMethod(tyFunction, '__call__', @ObjCallSelf);
+ DefMethod(tyBuiltin, '__call__', @ObjCallSelf);
+ DefMethod(tyMethod, '__call__', @ObjCallSelf);
+ DefMethod(tyObject, '__reduce__', @ObjReduce);
  tyObject.idict.SetS('__module__', VStr('builtins'));
  { type }
  tyType.idict.SetS('__new__', VObj(NewBuiltin('__new__', @TypeNewNative)));
@@ -16096,6 +16151,492 @@ End;
 Procedure PyRunTraceback(e: TPyObj);
 Begin
  ErrWrite(FormatException(e, 0));
+End;
+{ ------------------------------------------------------------
+  Codecs natifs : utf-8, ascii, latin-1, utf-16, utf-32, utf-8-sig
+  avec les gestionnaires d'erreurs usuels
+  ------------------------------------------------------------ }
+Const
+ ckNone = 0; ckUtf8 = 1; ckAscii = 2; ckLatin1 = 3; ckUtf16 = 4;
+ ckUtf16LE = 5; ckUtf16BE = 6; ckUtf32 = 7; ckUtf32LE = 8; ckUtf32BE = 9;
+ ckUtf8Sig = 10;
+
+Function CodecKind(Const encRaw: AnsiString; Var canon: AnsiString): Integer;
+Var
+ e: AnsiString;
+Begin
+ e := StringReplace(LowerCase(Trim(encRaw)), '_', '-', [rfReplaceAll]);
+ e := StringReplace(e, ' ', '-', [rfReplaceAll]);
+ Result := ckNone;
+ If (e = 'utf-8') Or (e = 'utf8') Or (e = 'u8') Or (e = 'utf') Or
+  (e = 'utf8-ucs2') Or (e = 'utf8-ucs4') Or (e = 'cp65001') Then Begin
+  Result := ckUtf8;
+  canon := 'utf-8';
+ End
+ Else If (e = 'ascii') Or (e = 'us-ascii') Or (e = '646') Or
+  (e = 'ansi-x3.4-1968') Or (e = 'iso646-us') Then Begin
+  Result := ckAscii;
+  canon := 'ascii';
+ End
+ Else If (e = 'latin-1') Or (e = 'latin1') Or (e = 'latin') Or (e = 'l1') Or
+  (e = 'iso-8859-1') Or (e = 'iso8859-1') Or (e = '8859') Or (e = 'cp819') Or
+  (e = 'iso-ir-100') Or (e = 'iso8859') Then Begin
+  Result := ckLatin1;
+  canon := 'iso8859-1';
+ End
+ Else If (e = 'utf-16') Or (e = 'utf16') Or (e = 'u16') Then Begin
+  Result := ckUtf16;
+  canon := 'utf-16';
+ End
+ Else If (e = 'utf-16-le') Or (e = 'utf-16le') Then Begin
+  Result := ckUtf16LE;
+  canon := 'utf-16-le';
+ End
+ Else If (e = 'utf-16-be') Or (e = 'utf-16be') Then Begin
+  Result := ckUtf16BE;
+  canon := 'utf-16-be';
+ End
+ Else If (e = 'utf-32') Or (e = 'utf32') Or (e = 'u32') Then Begin
+  Result := ckUtf32;
+  canon := 'utf-32';
+ End
+ Else If (e = 'utf-32-le') Or (e = 'utf-32le') Then Begin
+  Result := ckUtf32LE;
+  canon := 'utf-32-le';
+ End
+ Else If (e = 'utf-32-be') Or (e = 'utf-32be') Then Begin
+  Result := ckUtf32BE;
+  canon := 'utf-32-be';
+ End
+ Else If (e = 'utf-8-sig') Or (e = 'utf8-sig') Then Begin
+  Result := ckUtf8Sig;
+  canon := 'utf-8-sig';
+ End;
+End;
+
+Function CanonErrName(Const canon: AnsiString; k: Integer): AnsiString;
+Begin
+ If k = ckLatin1 Then Result := 'latin-1' Else Result := canon;
+End;
+
+Procedure UnknownHandler(Const errs: AnsiString);
+Begin
+ RaiseExc(exLookupError, 'unknown error handler name ''' + errs + '''');
+End;
+
+Function BackslashCp(c: Cardinal): AnsiString;
+Begin
+ If c < $100 Then Result := '\x' + LowerCase(IntToHex(c, 2))
+ Else If c < $10000 Then Result := '\u' + LowerCase(IntToHex(c, 4))
+ Else Result := '\U' + LowerCase(IntToHex(c, 8));
+End;
+
+Procedure PutCpBytes(k: Integer; c: Cardinal; Var o: AnsiString);
+Begin
+ Case k Of
+  ckUtf8, ckUtf8Sig: o := o + Utf8Enc(c);
+  ckAscii, ckLatin1: o := o + Chr(c And 255);
+  ckUtf16, ckUtf16LE:
+   If c < $10000 Then o := o + Chr(c And 255) + Chr(c Shr 8)
+   Else Begin
+    c := c - $10000;
+    o := o + Chr((($D800 + (c Shr 10)) And 255)) +
+     Chr((($D800 + (c Shr 10)) Shr 8)) +
+     Chr((($DC00 + (c And $3FF)) And 255)) +
+     Chr((($DC00 + (c And $3FF)) Shr 8));
+   End;
+  ckUtf16BE:
+   If c < $10000 Then o := o + Chr(c Shr 8) + Chr(c And 255)
+   Else Begin
+    c := c - $10000;
+    o := o + Chr((($D800 + (c Shr 10)) Shr 8)) +
+     Chr((($D800 + (c Shr 10)) And 255)) +
+     Chr((($DC00 + (c And $3FF)) Shr 8)) +
+     Chr((($DC00 + (c And $3FF)) And 255));
+   End;
+  ckUtf32, ckUtf32LE:
+   o := o + Chr(c And 255) + Chr((c Shr 8) And 255) +
+    Chr((c Shr 16) And 255) + Chr(c Shr 24);
+  ckUtf32BE:
+   o := o + Chr(c Shr 24) + Chr((c Shr 16) And 255) +
+    Chr((c Shr 8) And 255) + Chr(c And 255);
+ End;
+End;
+
+Function CpUnencodable(k: Integer; c: Cardinal; Var reason: AnsiString):
+ Boolean;
+Begin
+ Result := False;
+ Case k Of
+  ckAscii: If c >= 128 Then Begin
+    Result := True;
+    reason := 'ordinal not in range(128)';
+   End;
+  ckLatin1: If c >= 256 Then Begin
+    Result := True;
+    reason := 'ordinal not in range(256)';
+   End;
+ Else
+  If (c >= $D800) And (c <= $DFFF) Then Begin
+   Result := True;
+   reason := 'surrogates not allowed';
+  End;
+ End;
+End;
+
+{ encode une chaine (UTF-8 interne) ; retourne les octets }
+Function EncodeNative(Const s: AnsiString; k: Integer; Const canon, errs:
+  AnsiString;
+ Const strv: TVal): AnsiString;
+Var
+ i, cpi, runStart, j, cnt: Integer;
+ c: Cardinal;
+ reason, r2, ename: AnsiString;
+ cps: Array Of Cardinal;
+ bad: Array Of Boolean;
+ n, p: Integer;
+ o: AnsiString;
+ repl: AnsiString;
+Begin
+ o := '';
+ ename := CanonErrName(canon, k);
+ If (k = ckUtf8) And IsAsciiStr(s) Then Begin
+  Result := s;
+  Exit;
+ End;
+ If k = ckUtf16 Then o := #$FF#$FE
+ Else If k = ckUtf32 Then o := #$FF#$FE#0#0
+ Else If k = ckUtf8Sig Then o := #$EF#$BB#$BF;
+ { liste des points de code }
+ n := 0;
+ SetLength(cps, Length(s) + 1);
+ i := 1;
+ While i <= Length(s) Do Begin
+  cps[n] := Utf8Dec(s, i);
+  Inc(n);
+ End;
+ p := 0;
+ While p < n Do Begin
+  c := cps[p];
+  If Not CpUnencodable(k, c, reason) Then Begin
+   PutCpBytes(k, c, o);
+   Inc(p);
+   Continue;
+  End;
+  { groupe de caracteres consecutifs non encodables }
+  runStart := p;
+  j := p;
+  While (j < n) And CpUnencodable(k, cps[j], r2) Do Inc(j);
+  If errs = 'strict' Then
+   Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
+    strv, VInt(runStart), VInt(j), VStr(reason)]));
+  If errs = 'ignore' Then Begin
+   p := j;
+   Continue;
+  End;
+  If errs = 'replace' Then Begin
+   For cnt := runStart To j - 1 Do PutCpBytes(k, Ord('?'), o);
+   p := j;
+   Continue;
+  End;
+  If errs = 'backslashreplace' Then Begin
+   For cnt := runStart To j - 1 Do Begin
+    repl := BackslashCp(cps[cnt]);
+    For i := 1 To Length(repl) Do PutCpBytes(k, Ord(repl[i]), o);
+   End;
+   p := j;
+   Continue;
+  End;
+  If errs = 'xmlcharrefreplace' Then Begin
+   For cnt := runStart To j - 1 Do Begin
+    repl := '&#' + IntToStr(cps[cnt]) + ';';
+    For i := 1 To Length(repl) Do PutCpBytes(k, Ord(repl[i]), o);
+   End;
+   p := j;
+   Continue;
+  End;
+  If (errs = 'surrogateescape') And ((k = ckUtf8) Or (k = ckAscii) Or
+   (k = ckLatin1) Or (k = ckUtf8Sig)) Then Begin
+   For cnt := runStart To j - 1 Do
+    If (cps[cnt] < $DC80) Or (cps[cnt] > $DCFF) Then
+     Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
+      strv, VInt(runStart), VInt(j), VStr(reason)]));
+   For cnt := runStart To j - 1 Do o := o + Chr(cps[cnt] - $DC00);
+   p := j;
+   Continue;
+  End;
+  If (errs = 'surrogatepass') And (reason = 'surrogates not allowed') Then Begin
+   For cnt := runStart To j - 1 Do PutCpBytes(k, cps[cnt], o);
+   p := j;
+   Continue;
+  End;
+  If (errs <> 'surrogateescape') And (errs <> 'surrogatepass') And
+   (errs <> 'namereplace') Then UnknownHandler(errs);
+  Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
+   strv, VInt(runStart), VInt(j), VStr(reason)]));
+ End;
+ Result := o;
+End;
+
+Procedure RaiseDecErr(Const ename: AnsiString; Const bv: TVal; st, en: Integer;
+ Const reason: AnsiString);
+Begin
+ Raise EPyError.Make(MakeExcArgs(exUnicodeDecodeError, [VStr(ename), bv,
+  VInt(st), VInt(en), VStr(reason)]));
+End;
+
+{ gestion d'une erreur de decodage : retourne True si geree (texte ajoute) }
+Function DecHandle(Const errs, ename: AnsiString; Const bv: TVal;
+ Const b: AnsiString; st, en: Integer; Const reason: AnsiString;
+ Var o: AnsiString; k: Integer): Boolean;
+Var
+ j: Integer;
+Begin
+ Result := True;
+ If errs = 'ignore' Then Exit;
+ If errs = 'replace' Then Begin
+  o := o + #$EF#$BF#$BD;
+  Exit;
+ End;
+ If errs = 'backslashreplace' Then Begin
+  For j := st To en - 1 Do o := o + '\x' + LowerCase(IntToHex(Ord(b[j + 1]),
+    2));
+  Exit;
+ End;
+ If (errs = 'surrogateescape') And ((k = ckUtf8) Or (k = ckAscii) Or
+  (k = ckUtf8Sig)) Then Begin
+  For j := st To en - 1 Do Begin
+   If Ord(b[j + 1]) < 128 Then RaiseDecErr(ename, bv, st, en, reason);
+   o := o + Utf8Enc($DC00 + Ord(b[j + 1]));
+  End;
+  Exit;
+ End;
+ If (errs <> 'strict') And (errs <> 'surrogatepass') Then UnknownHandler(errs);
+ RaiseDecErr(ename, bv, st, en, reason);
+End;
+
+Function DecodeUtf8Native(Const b: AnsiString; Const errs, ename: AnsiString;
+ Const bv: TVal; k: Integer): AnsiString;
+Var
+ i, l, need, j, st: Integer;
+ c, c1, lo, hi: Cardinal;
+ o: AnsiString;
+ cp: Cardinal;
+Begin
+ l := Length(b);
+ If IsAsciiStr(b) Then Begin
+  Result := b;
+  Exit;
+ End;
+ o := '';
+ i := 1;
+ While i <= l Do Begin
+  c := Ord(b[i]);
+  If c < $80 Then Begin
+   o := o + b[i];
+   Inc(i);
+   Continue;
+  End;
+  st := i - 1;
+  If (c < $C2) Or (c > $F4) Then Begin
+   DecHandle(errs, ename, bv, b, st, st + 1, 'invalid start byte', o, k);
+   Inc(i);
+   Continue;
+  End;
+  If c < $E0 Then need := 1
+  Else If c < $F0 Then need := 2
+  Else need := 3;
+  lo := $80;
+  hi := $BF;
+  If c = $E0 Then lo := $A0
+  Else If c = $ED Then hi := $9F
+  Else If c = $F0 Then lo := $90
+  Else If c = $F4 Then hi := $8F;
+  { surrogatepass : accepter ED A0..BF }
+  If (c = $ED) And (errs = 'surrogatepass') Then hi := $BF;
+  cp := c And ((1 Shl (6 - need)) - 1);
+  j := 1;
+  While j <= need Do Begin
+   If i + j > l Then Break;
+   c1 := Ord(b[i + j]);
+   If (c1 < lo) Or (c1 > hi) Then Break;
+   lo := $80;
+   hi := $BF;
+   cp := (cp Shl 6) Or (c1 And $3F);
+   Inc(j);
+  End;
+  If j > need Then Begin
+   o := o + Utf8Enc(cp);
+   Inc(i, need + 1);
+   Continue;
+  End;
+  If i + j > l Then
+   DecHandle(errs, ename, bv, b, st, st + j, 'unexpected end of data', o, k)
+  Else
+   DecHandle(errs, ename, bv, b, st, st + j, 'invalid continuation byte', o, k);
+  Inc(i, j);
+ End;
+ Result := o;
+End;
+
+Function DecodeUtf16Native(Const b: AnsiString; Const errs, ename: AnsiString;
+ Const bv: TVal; k: Integer): AnsiString;
+Var
+ i, l, st: Integer;
+ le, bomChecked: Boolean;
+ u, u2: Cardinal;
+ o: AnsiString;
+ Function Rd(p: Integer): Cardinal;
+ Begin
+  If le Then Result := Ord(b[p]) Or (Ord(b[p + 1]) Shl 8)
+  Else Result := Ord(b[p + 1]) Or (Ord(b[p]) Shl 8);
+ End;
+Begin
+ l := Length(b);
+ o := '';
+ i := 1;
+ le := k <> ckUtf16BE;
+ If k = ckUtf16 Then Begin
+  If (l >= 2) And (b[1] = #$FF) And (b[2] = #$FE) Then Begin
+   le := True;
+   i := 3;
+  End
+  Else If (l >= 2) And (b[1] = #$FE) And (b[2] = #$FF) Then Begin
+   le := False;
+   i := 3;
+  End;
+ End;
+ bomChecked := True;
+ While i <= l Do Begin
+  st := i - 1;
+  If i + 1 > l Then Begin
+   DecHandle(errs, ename, bv, b, st, l, 'truncated data', o, k);
+   Break;
+  End;
+  u := Rd(i);
+  If (u < $D800) Or (u > $DFFF) Then Begin
+   o := o + Utf8Enc(u);
+   Inc(i, 2);
+   Continue;
+  End;
+  If u >= $DC00 Then Begin
+   DecHandle(errs, ename, bv, b, st, st + 2, 'illegal encoding', o, k);
+   Inc(i, 2);
+   Continue;
+  End;
+  If i + 3 > l Then Begin
+   DecHandle(errs, ename, bv, b, st, l, 'unexpected end of data', o, k);
+   Break;
+  End;
+  u2 := Rd(i + 2);
+  If (u2 < $DC00) Or (u2 > $DFFF) Then Begin
+   DecHandle(errs, ename, bv, b, st, st + 2, 'illegal UTF-16 surrogate', o, k);
+   Inc(i, 2);
+   Continue;
+  End;
+  o := o + Utf8Enc($10000 + ((u - $D800) Shl 10) + (u2 - $DC00));
+  Inc(i, 4);
+ End;
+ Result := o;
+End;
+
+Function DecodeUtf32Native(Const b: AnsiString; Const errs, ename: AnsiString;
+ Const bv: TVal; k: Integer): AnsiString;
+Var
+ i, l, st: Integer;
+ le: Boolean;
+ u: QWord;
+ o: AnsiString;
+Begin
+ l := Length(b);
+ o := '';
+ i := 1;
+ le := k <> ckUtf32BE;
+ If k = ckUtf32 Then Begin
+  If (l >= 4) And (b[1] = #$FF) And (b[2] = #$FE) And (b[3] = #0) And
+   (b[4] = #0) Then Begin
+   le := True;
+   i := 5;
+  End
+  Else If (l >= 4) And (b[1] = #0) And (b[2] = #0) And (b[3] = #$FE) And
+   (b[4] = #$FF) Then Begin
+   le := False;
+   i := 5;
+  End;
+ End;
+ While i <= l Do Begin
+  st := i - 1;
+  If i + 3 > l Then Begin
+   DecHandle(errs, ename, bv, b, st, l, 'truncated data', o, k);
+   Break;
+  End;
+  If le Then
+   u := QWord(Ord(b[i])) Or (QWord(Ord(b[i + 1])) Shl 8) Or
+    (QWord(Ord(b[i + 2])) Shl 16) Or (QWord(Ord(b[i + 3])) Shl 24)
+  Else
+   u := QWord(Ord(b[i + 3])) Or (QWord(Ord(b[i + 2])) Shl 8) Or
+    (QWord(Ord(b[i + 1])) Shl 16) Or (QWord(Ord(b[i])) Shl 24);
+  If u > $10FFFF Then
+   DecHandle(errs, ename, bv, b, st, st + 4,
+     'code point not in range(0x110000)',
+    o, k)
+  Else If (u >= $D800) And (u <= $DFFF) Then
+   DecHandle(errs, ename, bv, b, st, st + 4, 'code point in surrogate code ' +
+    'point range(0xd800, 0xe000)', o, k)
+  Else o := o + Utf8Enc(u);
+  Inc(i, 4);
+ End;
+ Result := o;
+End;
+
+{ decode : retourne le texte (UTF-8 interne) }
+Function DecodeNative(Const b: AnsiString; k: Integer; Const canon, errs:
+  AnsiString;
+ Const bv: TVal): AnsiString;
+Var
+ ename, o: AnsiString;
+ i: Integer;
+Begin
+ ename := CanonErrName(canon, k);
+ Case k Of
+  ckUtf8: Result := DecodeUtf8Native(b, errs, ename, bv, k);
+  ckUtf8Sig: Begin
+    If Copy(b, 1, 3) = #$EF#$BB#$BF Then
+     Result := DecodeUtf8Native(Copy(b, 4, Length(b)), errs, ename, bv, k)
+    Else Result := DecodeUtf8Native(b, errs, ename, bv, k);
+   End;
+  ckAscii: Begin
+    o := '';
+    i := 1;
+    While i <= Length(b) Do Begin
+     If Ord(b[i]) < 128 Then o := o + b[i]
+     Else DecHandle(errs, ename, bv, b, i - 1, i, 'ordinal not in range(128)',
+       o, k);
+     Inc(i);
+    End;
+    Result := o;
+   End;
+  ckLatin1: Begin
+    o := '';
+    For i := 1 To Length(b) Do
+     If Ord(b[i]) < 128 Then o := o + b[i] Else o := o + Utf8Enc(Ord(b[i]));
+    Result := o;
+   End;
+  ckUtf16, ckUtf16LE, ckUtf16BE: Result := DecodeUtf16Native(b, errs, ename,
+    bv, k);
+ Else
+  Result := DecodeUtf32Native(b, errs, ename, bv, k);
+ End;
+End;
+
+{ repli sur le module Python codecs }
+Function CodecsFallback(Const fnName: AnsiString; Const obj: TVal;
+ Const enc, errs: AnsiString): TVal;
+Var
+ m: TVal;
+Begin
+ m := ImportByName('codecs');
+ Result := Call3Args(GetAttr(m, fnName), obj, VStr(enc), VStr(errs));
 End;
 
 { ------------------------------------------------------------
@@ -17711,27 +18252,30 @@ End;
 
 Function BiBytesCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- s: AnsiString;
+ s, errs, canon: AnsiString;
  f, r: TVal;
  arr: TValArr;
- i: Integer;
- enc: AnsiString;
+ i, k: Integer;
 Begin
  If n = 0 Then Begin
   Result := VBytes('');
   Exit;
  End;
  If IsStrVal(a[0]) Then Begin
-  If (n < 2) And (kw = Nil) Then TypeErr('string argument without an encoding');
-  enc := LowerCase(StrVal(a[1]));
-  s := TPyStr(a[0].o).s;
-  If (enc = 'latin-1') Or (enc = 'latin1') Or (enc = 'iso-8859-1') Or
-   (enc = 'ascii') Then Begin
-   arr := nil;
-   s := '';
-   i := 1;
-   While i <= Length(TPyStr(a[0].o).s) Do
-    s := s + Chr(Utf8Dec(TPyStr(a[0].o).s, i) And 255);
+  If (n < 2) And ((kw = Nil) Or Not KwGet(kw, 'encoding', r)) Then
+   TypeErr('string argument without an encoding');
+  If n >= 2 Then r := a[1];
+  If Not IsStrVal(r) Then
+   TypeErr('bytes() argument ''encoding'' must be str, not ' + TypeName(r));
+  errs := 'strict';
+  If n >= 3 Then errs := StrOf(a[2])
+  Else If (kw <> Nil) And KwGet(kw, 'errors', f) Then errs := StrOf(f);
+  k := CodecKind(StrOf(r), canon);
+  If k <> ckNone Then
+   s := EncodeNative(TPyStr(a[0].o).s, k, canon, errs, a[0])
+  Else Begin
+   f := CodecsFallback('encode', a[0], StrOf(r), errs);
+   s := TPyBytes(f.o).s;
   End;
   Result := VBytes(s);
   Exit;
@@ -19028,43 +19572,26 @@ End;
 
 Function StrEncodeM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- s, enc, r, errs: AnsiString;
+ s, enc, errs, canon: AnsiString;
  v: TVal;
- i, cpi: Integer;
- c: Cardinal;
+ k: Integer;
 Begin
  s := SelfStr(a);
  enc := 'utf-8';
  errs := 'strict';
- If ArgKw(a, n, kw, 1, 'encoding', v) Then enc := LowerCase(StrOf(v));
- If ArgKw(a, n, kw, 2, 'errors', v) Then errs := StrOf(v);
- enc := StringReplace(enc, '_', '-', [rfReplaceAll]);
- If (enc = 'utf-8') Or (enc = 'utf8') Then Begin
-  Result := VBytes(s);
-  Exit;
+ If ArgKw(a, n, kw, 1, 'encoding', v) Then Begin
+  If Not IsStrVal(v) Then
+   TypeErr('encode() argument ''encoding'' must be str, not ' + TypeName(v));
+  enc := StrOf(v);
  End;
- If (enc = 'ascii') Or (enc = 'latin-1') Or (enc = 'latin1') Or
-  (enc = 'iso-8859-1') Then Begin
-  r := '';
-  i := 1;
-  cpi := 0;
-  While i <= Length(s) Do Begin
-   c := Utf8Dec(s, i);
-   Inc(cpi);
-   If (c < 128) Or ((c < 256) And (enc <> 'ascii')) Then r := r + Chr(c)
-   Else If errs = 'ignore' Then
-   Else If errs = 'replace' Then r := r + '?'
-   Else Begin
-    Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError,
-     [VStr(enc), a[0], VInt(cpi - 1), VInt(cpi), VStr('ordinal ' +
-     'not in range(' + IntToStr(128 + 128 * Ord(enc <> 'ascii')) + ')')]));
-   End;
-  End;
-  Result := VBytes(r);
-  Exit;
+ If ArgKw(a, n, kw, 2, 'errors', v) Then Begin
+  If Not IsStrVal(v) Then
+   TypeErr('encode() argument ''errors'' must be str, not ' + TypeName(v));
+  errs := StrOf(v);
  End;
- RaiseExc(exLookupError, 'unknown encoding: ' + enc);
- Result := vNone;
+ k := CodecKind(enc, canon);
+ If k <> ckNone Then Result := VBytes(EncodeNative(s, k, canon, errs, a[0]))
+ Else Result := CodecsFallback('encode', a[0], enc, errs);
 End;
 
 Function StrTranslateM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -20753,79 +21280,26 @@ End;
   ------------------------------------------------------------ }
 Function BytesDecodeM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- enc, errs, s, r: AnsiString;
+ enc, errs, canon: AnsiString;
  v: TVal;
- i: Integer;
+ k: Integer;
 Begin
  enc := 'utf-8';
  errs := 'strict';
- If ArgKw(a, n, kw, 1, 'encoding', v) Then enc := LowerCase(StrOf(v));
- If ArgKw(a, n, kw, 2, 'errors', v) Then errs := StrOf(v);
- s := TPyBytes(a[0].o).s;
- enc := StringReplace(enc, '_', '-', [rfReplaceAll]);
- If (enc = 'latin-1') Or (enc = 'latin1') Or (enc = 'iso-8859-1') Then Begin
-  r := '';
-  For i := 1 To Length(s) Do r := r + Utf8Enc(Ord(s[i]));
-  Result := VStr(r);
-  Exit;
+ If ArgKw(a, n, kw, 1, 'encoding', v) Then Begin
+  If Not IsStrVal(v) Then
+   TypeErr('decode() argument ''encoding'' must be str, not ' + TypeName(v));
+  enc := StrOf(v);
  End;
- If (enc = 'ascii') And Not IsAsciiStr(s) Then Begin
-  If errs = 'strict' Then
-  Begin
-   i := 1;
-   While Ord(s[i]) < 128 Do Inc(i);
-   Raise EPyError.Make(MakeExcArgs(exUnicodeDecodeError, [VStr('ascii'),
-    a[0], VInt(i - 1), VInt(i), VStr('ordinal not in range(128)')]));
-  End;
+ If ArgKw(a, n, kw, 2, 'errors', v) Then Begin
+  If Not IsStrVal(v) Then
+   TypeErr('decode() argument ''errors'' must be str, not ' + TypeName(v));
+  errs := StrOf(v);
  End;
- If (enc = 'utf-8') Or (enc = 'utf8') Or (enc = 'ascii') Then Begin
-  { validation UTF-8 }
-  i := 1;
-  r := '';
-  While i <= Length(s) Do Begin
-   If Ord(s[i]) < $80 Then Begin
-    r := r + s[i];
-    Inc(i);
-   End
-   Else Begin
-    v := vNone;
-    If ((Ord(s[i]) >= $C2) And (Ord(s[i]) < $E0) And (i + 1 <= Length(s)) And
-     ((Ord(s[i + 1]) And $C0) = $80)) Or
-     ((Ord(s[i]) >= $E0) And (Ord(s[i]) < $F0) And (i + 2 <= Length(s)) And
-     ((Ord(s[i + 1]) And $C0) = $80) And ((Ord(s[i + 2]) And $C0) = $80)) Or
-     ((Ord(s[i]) >= $F0) And (Ord(s[i]) < $F5) And (i + 3 <= Length(s)) And
-     ((Ord(s[i + 1]) And $C0) = $80) And ((Ord(s[i + 2]) And $C0) = $80) And
-     ((Ord(s[i + 3]) And $C0) = $80)) Then Begin
-     If Ord(s[i]) < $E0 Then Begin
-      r := r + Copy(s, i, 2);
-      Inc(i, 2);
-     End
-     Else If Ord(s[i]) < $F0 Then Begin
-      r := r + Copy(s, i, 3);
-      Inc(i, 3);
-     End
-     Else Begin
-      r := r + Copy(s, i, 4);
-      Inc(i, 4);
-     End;
-    End
-    Else Begin
-     If errs = 'ignore' Then Inc(i)
-     Else If errs = 'replace' Then Begin
-      r := r + #$EF#$BF#$BD;
-      Inc(i);
-     End
-     Else
-      Raise EPyError.Make(MakeExcArgs(exUnicodeDecodeError, [VStr('utf-8'),
-       a[0], VInt(i - 1), VInt(i), VStr('invalid start byte')]));
-    End;
-   End;
-  End;
-  Result := VStr(r);
-  Exit;
- End;
- RaiseExc(exLookupError, 'unknown encoding: ' + enc);
- Result := vNone;
+ k := CodecKind(enc, canon);
+ If k <> ckNone Then
+  Result := VStr(DecodeNative(TPyBytes(a[0].o).s, k, canon, errs, a[0]))
+ Else Result := CodecsFallback('decode', a[0], enc, errs);
 End;
 
 Function BytesHexM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -21624,6 +22098,13 @@ Begin
  DefMethod(tyDictView, '__iter__', @ViewIterM);
  DefMethod(tyDictView, '__contains__', @ViewContainsM);
  DefMethod(tyDictView, '__repr__', @ViewReprM);
+ DefMethod(tySet, '__repr__', @ListReprM);
+ DefMethod(tyFrozenset, '__repr__', @ListReprM);
+ DefMethod(tyBytes, '__repr__', @ListReprM);
+ DefMethod(tyBytearray, '__repr__', @ListReprM);
+ DefMethod(tyRange, '__repr__', @ListReprM);
+ DefMethod(tySlice, '__repr__', @ListReprM);
+ DefMethod(tyBool, '__repr__', @IntReprM);
  DefMethod(tyDictView, '__or__', @ViewOrM);
  DefMethod(tyDictView, '__and__', @ViewAndM);
  DefMethod(tyDictView, '__sub__', @ViewSubM);
@@ -25698,8 +26179,10 @@ Begin
   If (add = 0) And Not neg Then Exit;
   Err('missing -, : or )', i);
  End;
- If (add And (REF_A Or REF_U Or REF_L)) <> 0 Then
-  Err('bad inline flags: cannot turn on global flag', start);
+ If ((add And REF_L) <> 0) And Not isBytes Then
+  Err('bad inline flags: cannot use ''L'' flag with a str pattern', start);
+ If ((add And REF_A) <> 0) And isBytes Then
+  Err('bad inline flags: cannot use ''a'' flag with a bytes pattern', start);
  If (del And (REF_A Or REF_U Or REF_L)) <> 0 Then
   Err('bad inline flags: cannot turn off flags ''a'', ''u'' and ''L''', start);
  Inc(i);
@@ -28780,7 +29263,7 @@ Begin
  RegNative('math', @InitMathModule);
  RegNative('time', @InitTimeModule);
  RegNative('posix', @InitPosixModule);
- RegNative('_random', @InitRandomModule);
+ RegNative('_mt', @InitRandomModule);
  RegNative('_re', @InitReModule);
  RegNative('marshal', @InitMarshalModule);
  RegNative('_codeop', @InitCodeopModule);
@@ -29971,6 +30454,2425 @@ Begin
 End;
 
 Const
+ Src__charmaps_0: AnsiString =
+  '"""Tables de decodage des codecs a' +
+  ' un octet (generees depuis encodin' + 'gs)."""' + #10 + #10 +
+  'TABLES = {' + #10 + '    ''cp037'': (''cp037'', ''\x00\x01\x' +
+  '02\x03\x9c\t\x86\x7f\x97\x8d\x8e\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '9d\x85\x08\x87\x18\x19\x92\x8f\x1c' +
+  '\x1d\x1e\x1f\x80\x81\x82\x83\x84\n' +
+  '\x17\x1b\x88\x89\x8a\x8b\x8c\x05\x' +
+  '06\x07\x90\x91\x16\x93\x94\x95\x96' +
+  '\x04\x98\x99\x9a\x9b\x14\x15\x9e\x' + '1a \xa0' + #195 + #162 + #195 +
+  #164 + #195 + #160 + #195 + #161 + #195 + #163 + #195 + #165 + #195 + #167 +
+  #195 + #177 + #194 + #162 + '.<(+|&' + #195 + #169 + #195 + #170 + #195 +
+  #171 + #195 + #168 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #172 +
+  #195 + #159 + '!$*' + ');' + #194 + #172 + '-/' + #195 + #130 + #195 +
+  #132 + #195 + #128 + #195 + #129 + #195 + #131 + #195 + #133 + #195 + #135 +
+  #195 + #145 + #194 + #166 + ',%_>?' + #195 + #184 + #195 + #137 + #195 +
+  #138 + #195 + #139 + #195 + #136 + #195 + #141 + #195 + #142 + #195 + #143 +
+  #195 + #140 + '`:#@\''' + '="' + #195 + #152 + 'abcdefghi' + #194 + #171 +
+  #194 + #187 + #195 + #176 + #195 + #189 + #195 + #190 + #194 + #177 + #194 +
+  #176 + 'jklmnopqr' + #194 + #170 + #194 + #186 + #195 + #166 + #194 + #184 +
+  #195 + #134 + #194 + #164 + #194 + #181 + '~stuvwxyz' + #194 + #161 + #194 +
+  #191 + #195 + #144 + #195 + #157 + #195 + #158 + #194 + #174 + '^' + #194 +
+  #163 + #194 + #165 + #194 + #183 + #194 + #169 + #194 + #167 + #194 + #182 +
+  #194 + #188 + #194 + #189 + #194 + #190 + '[]' + #194 + #175 + #194 + #168 +
+  #194 + #180 + #195 + #151 + '{A' + 'BCDEFGHI\xad' + #195 + #180 + #195 +
+  #182 + #195 + #178 + #195 + #179 + #195 + #181 + '}JKLMNOPQR' + #194 +
+  #185 + #195 + #187 + #195 + #188 + #195 + #185 + #195 + #186 + #195 + #191 +
+  '\' + '\' + #195 + #183 + 'STUVWXYZ' + #194 + #178 + #195 + #148 + #195 +
+  #150 + #195 + #146 + #195 + #147 + #195 + #149 + '0123456789' + #194 +
+  #179 + #195 + #155 + #195 + #156 + #195 + #153 + #195 + #154 + '\x9' +
+  'f''),' + #10 + '    ''cp1006'': (''cp1006'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' +
+  'xyz{|}~\x7f\x80\x81\x82\x83\x84\x8' +
+  '5\x86\x87\x88\x89\x8a\x8b\x8c\x8d\' +
+  'x8e\x8f\x90\x91\x92\x93\x94\x95\x9' +
+  '6\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\' + 'x9f\xa0' + #219 + #176 + #219 +
+  #177 + #219 + #178 + #219 + #179 + #219 + #180 + #219 + #181 + #219 + #182 +
+  #219 + #183 + #219 + #184 + #219 + #185 + #216 + #140 + #216 + #155 +
+  '\xad' + #216 + #159 + #239 + #186 + #129 + #239 + #186 + #141 + #239 +
+  #186 + #142 + #239 + #186 + #142 + #239 + #186 + #143 + #239 + #186 + #145 +
+  #239 + #173 + #150 + #239 + #173 + #152 + #239 + #186 + #147 + #239 + #186 +
+  #149 + #239 + #186 + #151 + #239 + #173 + #166 + #239 + #173 + #168 + #239 +
+  #186 + #153 + #239 + #186 + #155 + #239 + #186 + #157 + #239 + #186 + #159 +
+  #239 + #173 + #186 + #239 + #173 + #188 + #239 + #186 + #161 + #239 + #186 +
+  #163 + #239 + #186 + #165 + #239 + #186 + #167 + #239 + #186 + #169 + #239 +
+  #174 + #132 + #239 + #186 + #171 + #239 + #186 + #173 + #239 + #174 + #140 +
+  #239 + #186 + #175 + #239 + #174 + #138 + #239 + #186 + #177 + #239 + #186 +
+  #179 + #239 + #186 + #181 + #239 + #186 + #183 + #239 + #186 + #185 + #239 +
+  #186 + #187 + #239 + #186 + #189 + #239 + #186 + #191 + #239 + #187 + #129 +
+  #239 + #187 + #133 + #239 + #187 + #137 + #239 + #187 + #138 + #239 + #187 +
+  #139 + #239 + #187 + #140 + #239 + #187 + #141 + #239 + #187 + #142 + #239 +
+  #187 + #143 + #239 + #187 + #144 + #239 + #187 + #145 + #239 + #187 + #147 +
+  #239 + #187 + #149 + #239 + #187 + #151 + #239 + #187 + #153 + #239 + #187 +
+  #155 + #239 + #174 + #146 + #239 + #174 + #148 + #239 + #187 + #157 + #239 +
+  #187 + #159 + #239 + #187 + #160 + #239 + #187 + #161 + #239 + #187 + #163 +
+  #239 + #174 + #158 + #239 + #187 + #165 + #239 + #187 + #167 + #239 + #186 +
+  #133 + #239 + #187 + #173 + #239 + #174 + #166 + #239 + #174 + #168 + #239 +
+  #174 + #169 + #239 + #174 + #170 + #239 + #186 + #128 + #239 + #186 + #137 +
+  #239 + #186 + #138 + #239 + #186 + #139 + #239 + #187 + #177 + #239 + #187 +
+  #178 + #239 + #187 + #179 + #239 + #174 + #176 + #239 + #174 + #174 + #239 +
+  #185 + #188 + #239 + #185 + #189 + '''),' + #10 +
+  '    ''cp1026'': (''cp1026'', ''\x00\x01' +
+  '\x02\x03\x9c\t\x86\x7f\x97\x8d\x8e' +
+  '\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13' +
+  '\x9d\x85\x08\x87\x18\x19\x92\x8f\x' +
+  '1c\x1d\x1e\x1f\x80\x81\x82\x83\x84' +
+  '\n\x17\x1b\x88\x89\x8a\x8b\x8c\x05' +
+  '\x06\x07\x90\x91\x16\x93\x94\x95\x' +
+  '96\x04\x98\x99\x9a\x9b\x14\x15\x9e' + '\x1a \xa0' + #195 + #162 + #195 +
+  #164 + #195 + #160 + #195 + #161 + #195 + #163 + #195 + #165 + '{' + #195 +
+  #177 + #195 + #135 + '.<(+!&' + #195 + #169 + #195 + #170 + #195 + #171 +
+  #195 + #168 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #172 + #195 +
+  #159 + #196 + #158 + #196 + #176 + '*);^-/' + #195 + #130 + #195 + #132 +
+  #195 + #128 + #195 + #129 + #195 + #131 + #195 + #133 + '[' + #195 + #145 +
+  #197 + #159 + ',%_>?' + #195 + #184 + #195 + #137 + #195 + #138 + #195 +
+  #139 + #195 + #136 + #195 + #141 + #195 + #142 + #195 + #143 + #195 + #140 +
+  #196 + #177 + ':' + #195 + #150 + #197 + #158 + '\''=' + #195 + #156 +
+  #195 + #152 + 'abcdefghi' + #194 + #171 + #194 + #187 + '}`' + #194 + #166 +
+  #194 + #177 + #194 + #176 + 'jklmnopqr' + #194 + #170 + #194 + #186 + #195 +
+  #166 + #194 + #184 + #195 + #134 + #194 + #164 + #194 + #181 + #195 + #182 +
+  'stuvwxyz' + #194 + #161 + #194 + #191 + ']$@' + #194 + #174 + #194 + #162 +
+  #194 + #163 + #194 + #165 + #194 + #183 + #194 + #169 + #194 + #167 + #194 +
+  #182 + #194 + #188 + #194 + #189 + #194 + #190 + #194 + #172 + '|' + #194 +
+  #175 + #194 + #168 + #194 + #180 + #195 + #151 + #195 + #167 +
+  'ABCDEFGHI\xad' + #195 + #180 + '~' + #195 + #178 + #195 + #179 + #195 +
+  #181 + #196 + #159 + 'JKLMNOPQR' + #194 + #185 + #195 + #187 + '\\' + #195 +
+  #185 + #195 + #186 + #195 + #191 + #195 + #188 + #195 + #183 + 'STUVWXYZ' +
+  #194 + #178 + #195 + #148 + '#' + #195 + #146 + #195 + #147 + #195 + #149 +
+  '0123456789' + #194 + #179 + #195 + #155 + '"' + #195 + #153 + #195 + #154 +
+  '\' + 'x9f''),' + #10 + '    ''cp1125'': (''cp1125'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #208 + #144 + #208 +
+  #145 + #208 + #146 + #208 + #147 + #208 + #148 + #208 + #149 + #208 + #150 +
+  #208 + #151 + #208 + #152 + #208 + #153 + #208 + #154 + #208 + #155 + #208 +
+  #156 + #208 + #157 + #208 + #158 + #208 + #159 + #208 + #160 + #208 + #161 +
+  #208 + #162 + #208 + #163 + #208 + #164 + #208 + #165 + #208 + #166 + #208 +
+  #167 + #208 + #168 + #208 + #169 + #208 + #170 + #208 + #171 + #208 + #172 +
+  #208 + #173 + #208 + #174 + #208 + #175 + #208 + #176 + #208 + #177 + #208 +
+  #178 + #208 + #179 + #208 + #180 + #208 + #181 + #208 + #182 + #208 + #183 +
+  #208 + #184 + #208 + #185 + #208 + #186 + #208 + #187 + #208 + #188 + #208 +
+  #189 + #208 + #190 + #208 + #191 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #226 + #149 +
+  #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 + #149 + #226 +
+  #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 + #149 + #157 +
+  #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 + #226 + #148 +
+  #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 + #156 + #226 +
+  #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 + #149 + #159 +
+  #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 + #226 + #149 +
+  #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 + #172 + #226 +
+  #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 + #149 + #165 +
+  #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 + #226 + #149 +
+  #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 + #152 + #226 +
+  #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 + #150 + #140 +
+  #226 + #150 + #144 + #226 + #150 + #128 + #209 + #128 + #209 + #129 + #209 +
+  #130 + #209 + #131 + #209 + #132 + #209 + #133 + #209 + #134 + #209 + #135 +
+  #209 + #136 + #209 + #137 + #209 + #138 + #209 + #139 + #209 + #140 + #209 +
+  #141 + #209 + #142 + #209 + #143 + #208 + #129 + #209 + #145 + #210 + #144 +
+  #210 + #145 + #208 + #132 + #209 + #148 + #208 + #134 + #209 + #150 + #208 +
+  #135 + #209 + #151 + #194 + #183 + #226 + #136 + #154 + #226 + #132 + #150 +
+  #194 + #164 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp1140'': (''cp1140'', ''\x00\x01' +
+  '\x02\x03\x9c\t\x86\x7f\x97\x8d\x8e' +
+  '\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13' +
+  '\x9d\x85\x08\x87\x18\x19\x92\x8f\x' +
+  '1c\x1d\x1e\x1f\x80\x81\x82\x83\x84' +
+  '\n\x17\x1b\x88\x89\x8a\x8b\x8c\x05' +
+  '\x06\x07\x90\x91\x16\x93\x94\x95\x' +
+  '96\x04\x98\x99\x9a\x9b\x14\x15\x9e' + '\x1a \xa0' + #195 + #162 + #195 +
+  #164 + #195 + #160 + #195 + #161 + #195 + #163 + #195 + #165 + #195 + #167 +
+  #195 + #177 + #194 + #162 + '.<(+|&' + #195 + #169 + #195 + #170 + #195 +
+  #171 + #195 + #168 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #172 +
+  #195 + #159 + '!' + '$*);' + #194 + #172 + '-/' + #195 + #130 + #195 +
+  #132 + #195 + #128 + #195 + #129 + #195 + #131 + #195 + #133 + #195 + #135 +
+  #195 + #145 + #194 + #166 + ',%_>?' + #195 + #184 + #195 + #137 + #195 +
+  #138 + #195 + #139 + #195 + #136 + #195 + #141 + #195 + #142 + #195 + #143 +
+  #195 + #140 + '`:#@' + '\''="' + #195 + #152 + 'abcdefghi' + #194 + #171 +
+  #194 + #187 + #195 + #176 + #195 + #189 + #195 + #190 + #194 + #177 + #194 +
+  #176 + 'jklmnopqr' + #194 + #170 + #194 + #186 + #195 + #166 + #194 + #184 +
+  #195 + #134 + #226 + #130 + #172 + #194 + #181 + '~stuvwxyz' + #194 + #161 +
+  #194 + #191 + #195 + #144 + #195 + #157 + #195 + #158 + #194 + #174 + '^' +
+  #194 + #163 + #194 + #165 + #194 + #183 + #194 + #169 + #194 + #167 + #194 +
+  #182 + #194 + #188 + #194 + #189 + #194 + #190 + '[]' + #194 + #175 + #194 +
+  #168 + #194 + #180 + #195 + #151 + '{ABCDEFGHI\xad' + #195 + #180 + #195 +
+  #182 + #195 + #178 + #195 + #179 + #195 + #181 + '}JKLMNOPQR' + #194 +
+  #185 + #195 + #187 + #195 + #188 + #195 + #185 + #195 + #186 + #195 + #191 +
+  '\\' + #195 + #183 + 'STUVWXYZ' + #194 + #178 + #195 + #148 + #195 + #150 +
+  #195 + #146 + #195 + #147 + #195 + #149 + '0123456789' + #194 + #179 +
+  #195 + #155 + #195 + #156 + #195 + #153 + #195 + #154 + '\' + 'x9f''),' +
+  #10 + '    ''cp1250'': (''cp1250'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + '\ufffe' + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + '\ufff' + 'e' +
+  #226 + #128 + #176 + #197 + #160 + #226 + #128 + #185 + #197 + #154 + #197 +
+  #164 + #197 + #189 + #197 + #185 + '\ufffe' + #226 + #128 + #152 + #226 +
+  #128 + #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 +
+  #226 + #128 + #147 + #226 + #128 + #148 + '\ufffe' + #226 + #132 + #162 +
+  #197 + #161 + #226 + #128 + #186 + #197 + #155 + #197 + #165 + #197 + #190 +
+  #197 + #186 + '\xa0' + #203 + #135 + #203 + #152 + #197 + #129 + #194 +
+  #164 + #196 + #132 + #194 + #166 + #194 + #167 + #194 + #168 + #194 + #169 +
+  #197 + #158 + #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #197 +
+  #187 + #194 + #176 + #194 + #177 + #203 + #155 + #197 + #130 + #194 + #180 +
+  #194 + #181 + #194 + #182 + #194 + #183 + #194 + #184 + #196 + #133 + #197 +
+  #159 + #194 + #187 + #196 + #189 + #203 + #157 + #196 + #190 + #197 + #188 +
+  #197 + #148 + #195 + #129 + #195 + #130 + #196 + #130 + #195 + #132 + #196 +
+  #185 + #196 + #134 + #195 + #135 + #196 + #140 + #195 + #137 + #196 + #152 +
+  #195 + #139 + #196 + #154 + #195 + #141 + #195 + #142 + #196 + #142 + #196 +
+  #144 + #197 + #131 + #197 + #135 + #195 + #147 + #195 + #148 + #197 + #144 +
+  #195 + #150 + #195 + #151 + #197 + #152 + #197 + #174 + #195 + #154 + #197 +
+  #176 + #195 + #156 + #195 + #157 + #197 + #162 + #195 + #159 + #197 + #149 +
+  #195 + #161 + #195 + #162 + #196 + #131 + #195 + #164 + #196 + #186 + #196 +
+  #135 + #195 + #167 + #196 + #141 + #195 + #169 + #196 + #153 + #195 + #171 +
+  #196 + #155 + #195 + #173 + #195 + #174 + #196 + #143 + #196 + #145 + #197 +
+  #132 + #197 + #136 + #195 + #179 + #195 + #180 + #197 + #145 + #195 + #182 +
+  #195 + #183 + #197 + #153 + #197 + #175 + #195 + #186 + #197 + #177 + #195 +
+  #188 + #195 + #189 + #197 + #163 + #203 + #153 + '''),' + #10 +
+  '    ''cp1251'': (''cp1251'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #208 + #130 + #208 +
+  #131 + #226 + #128 + #154 + #209 + #147 + #226 + #128 + #158 + #226 + #128 +
+  #166 + #226 + #128 + #160 + #226 + #128 + #161 + #226 + #130 + #172 + #226 +
+  #128 + #176 + #208 + #137 + #226 + #128 + #185 + #208 + #138 + #208 + #140 +
+  #208 + #139 + #208 + #143 + #209 + #146 + #226 + #128 + #152 + #226 + #128 +
+  #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 +
+  #128 + #147 + #226 + #128 + #148 + '\ufffe' + #226 + #132 + #162 + #209 +
+  #153 + #226 + #128 + #186 + #209 + #154 + #209 + #156 + #209 + #155 + #209 +
+  #159 + '\xa0' + #208 + #142 + #209 + #158 + #208 + #136 + #194 + #164 +
+  #210 + #144 + #194 + #166 + #194 + #167 + #208 + #129 + #194 + #169 + #208 +
+  #132 + #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #208 + #135 +
+  #194 + #176 + #194 + #177 + #208 + #134 + #209 + #150 + #210 + #145 + #194 +
+  #181 + #194 + #182 + #194 + #183 + #209 + #145 + #226 + #132 + #150 + #209 +
+  #148 + #194 + #187 + #209 + #152 + #208 + #133 + #209 + #149 + #209 + #151 +
+  #208 + #144 + #208 + #145 + #208 + #146 + #208 + #147 + #208 + #148 + #208 +
+  #149 + #208 + #150 + #208 + #151 + #208 + #152 + #208 + #153 + #208 + #154 +
+  #208 + #155 + #208 + #156 + #208 + #157 + #208 + #158 + #208 + #159 + #208 +
+  #160 + #208 + #161 + #208 + #162 + #208 + #163 + #208 + #164 + #208 + #165 +
+  #208 + #166 + #208 + #167 + #208 + #168 + #208 + #169 + #208 + #170 + #208 +
+  #171 + #208 + #172 + #208 + #173 + #208 + #174 + #208 + #175 + #208 + #176 +
+  #208 + #177 + #208 + #178 + #208 + #179 + #208 + #180 + #208 + #181 + #208 +
+  #182 + #208 + #183 + #208 + #184 + #208 + #185 + #208 + #186 + #208 + #187 +
+  #208 + #188 + #208 + #189 + #208 + #190 + #208 + #191 + #209 + #128 + #209 +
+  #129 + #209 + #130 + #209 + #131 + #209 + #132 + #209 + #133 + #209 + #134 +
+  #209 + #135 + #209 + #136 + #209 + #137 + #209 + #138 + #209 + #139 + #209 +
+  #140 + #209 + #141 + #209 + #142 + #209 + #143 + '''),' + #10 +
+  '    ''cp1252'': (''cp1252'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + #203 + #134 + #226 +
+  #128 + #176 + #197 + #160 + #226 + #128 + #185 + #197 + #146 + '\ufff' +
+  'e' + #197 + #189 + '\ufffe\ufffe' + #226 + #128 + #152 + #226 + #128 +
+  #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 +
+  #128 + #147 + #226 + #128 + #148 + #203 + #156 + #226 + #132 + #162 + #197 +
+  #161 + #226 + #128 + #186 + #197 + #147 + '\ufffe' + #197 + #190 + #197 +
+  #184 + '\xa0' + #194 + #161 + #194 + #162 + #194 + #163 + #194 + #164 +
+  #194 + #165 + #194 + #166 + #194 + #167 + #194 + #168 + #194 + #169 + #194 +
+  #170 + #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #194 + #175 +
+  #194 + #176 + #194 + #177 + #194 + #178 + #194 + #179 + #194 + #180 + #194 +
+  #181 + #194 + #182 + #194 + #183 + #194 + #184 + #194 + #185 + #194 + #186 +
+  #194 + #187 + #194 + #188 + #194 + #189 + #194 + #190 + #194 + #191 + #195 +
+  #128 + #195 + #129 + #195 + #130 + #195 + #131 + #195 + #132 + #195 + #133 +
+  #195 + #134 + #195 + #135 + #195 + #136 + #195 + #137 + #195 + #138 + #195 +
+  #139 + #195 + #140 + #195 + #141 + #195 + #142 + #195 + #143 + #195 + #144 +
+  #195 + #145 + #195 + #146 + #195 + #147 + #195 + #148 + #195 + #149 + #195 +
+  #150 + #195 + #151 + #195 + #152 + #195 + #153 + #195 + #154 + #195 + #155 +
+  #195 + #156 + #195 + #157 + #195 + #158 + #195 + #159 + #195 + #160 + #195 +
+  #161 + #195 + #162 + #195 + #163 + #195 + #164 + #195 + #165 + #195 + #166 +
+  #195 + #167 + #195 + #168 + #195 + #169 + #195 + #170 + #195 + #171 + #195 +
+  #172 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #176 + #195 + #177 +
+  #195 + #178 + #195 + #179 + #195 + #180 + #195 + #181 + #195 + #182 + #195 +
+  #183 + #195 + #184 + #195 + #185 + #195 + #186 + #195 + #187 + #195 + #188 +
+  #195 + #189 + #195 + #190 + #195 + #191 + '''),' + #10 +
+  '    ''cp1253'': (''cp1253'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + '\ufffe' + #226 +
+  #128 + #176 + '\uf' + 'ffe' + #226 + #128 + #185 +
+  '\ufffe\ufffe\ufffe\ufffe\ufffe' + #226 + #128 + #152 + #226 + #128 + #153 +
+  #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 + #128 +
+  #147 + #226 + #128 + #148 + '\ufffe' + #226 + #132 + #162 + '\ufffe' +
+  #226 + #128 + #186 + '\ufffe\ufffe\' + 'ufffe\ufffe\xa0' + #206 + #133 +
+  #206 + #134 + #194 + #163 + #194 + #164 + #194 + #165 + #194 + #166 + #194 +
+  #167 + #194 + #168 + #194 + #169 + '\ufffe' + #194 + #171 + #194 + #172 +
+  '\x' + 'ad' + #194 + #174 + #226 + #128 + #149 + #194 + #176 + #194 + #177 +
+  #194 + #178 + #194 + #179 + #206 + #132 + #194 + #181 + #194 + #182 + #194 +
+  #183 + #206 + #136 + #206 + #137 + #206 + #138 + #194 + #187 + #206 + #140 +
+  #194 + #189 + #206 + #142 + #206 + #143 + #206 + #144 + #206 + #145 + #206 +
+  #146 + #206 + #147 + #206 + #148 + #206 + #149 + #206 + #150 + #206 + #151 +
+  #206 + #152 + #206 + #153 + #206 + #154 + #206 + #155 + #206 + #156 + #206 +
+  #157 + #206 + #158 + #206 + #159 + #206 + #160 + #206 + #161 + '\ufffe' +
+  #206 + #163 + #206 + #164 + #206 + #165 + #206 + #166 + #206 + #167 + #206 +
+  #168 + #206 + #169 + #206 + #170 + #206 + #171 + #206 + #172 + #206 + #173 +
+  #206 + #174 + #206 + #175 + #206 + #176 + #206 + #177 + #206 + #178 + #206 +
+  #179 + #206 + #180 + #206 + #181 + #206 + #182 + #206 + #183 + #206 + #184 +
+  #206 + #185 + #206 + #186 + #206 + #187 + #206 + #188 + #206 + #189 + #206 +
+  #190 + #206 + #191 + #207 + #128 + #207 + #129 + #207 + #130 + #207 + #131 +
+  #207 + #132 + #207 + #133 + #207 + #134 + #207 + #135 + #207 + #136 + #207 +
+  #137 + #207 + #138 + #207 + #139 + #207 + #140 + #207 + #141 + #207 + #142 +
+  '\ufffe''),' + #10 + '    ''cp1254'': (''cp1254'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + #203 + #134 + #226 +
+  #128 + #176 + #197 + #160 + #226 + #128 + #185 + #197 + #146 + '\ufff' +
+  'e\ufffe\ufffe\ufffe' + #226 + #128 + #152 + #226 + #128 + #153 + #226 +
+  #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 + #128 + #147 +
+  #226 + #128 + #148 + #203 + #156 + #226 + #132 + #162 + #197 + #161 + #226 +
+  #128 + #186 + #197 + #147 + '\uf' + 'ffe\ufffe' + #197 + #184 + '\xa0' +
+  #194 + #161 + #194 + #162 + #194 + #163 + #194 + #164 + #194 + #165 + #194 +
+  #166 + #194 + #167 + #194 + #168 + #194 + #169 + #194 + #170 + #194 + #171 +
+  #194 + #172 + '\xad' + #194 + #174 + #194 + #175 + #194 + #176 + #194 +
+  #177 + #194 + #178 + #194 + #179 + #194 + #180 + #194 + #181 + #194 + #182 +
+  #194 + #183 + #194 + #184 + #194 + #185 + #194 + #186 + #194 + #187 + #194 +
+  #188 + #194 + #189 + #194 + #190 + #194 + #191 + #195 + #128 + #195 + #129 +
+  #195 + #130 + #195 + #131 + #195 + #132 + #195 + #133 + #195 + #134 + #195 +
+  #135 + #195 + #136 + #195 + #137 + #195 + #138 + #195 + #139 + #195 + #140 +
+  #195 + #141 + #195 + #142 + #195 + #143 + #196 + #158 + #195 + #145 + #195 +
+  #146 + #195 + #147 + #195 + #148 + #195 + #149 + #195 + #150 + #195 + #151 +
+  #195 + #152 + #195 + #153 + #195 + #154 + #195 + #155 + #195 + #156 + #196 +
+  #176 + #197 + #158 + #195 + #159 + #195 + #160 + #195 + #161 + #195 + #162 +
+  #195 + #163 + #195 + #164 + #195 + #165 + #195 + #166 + #195 + #167 + #195 +
+  #168 + #195 + #169 + #195 + #170 + #195 + #171 + #195 + #172 + #195 + #173 +
+  #195 + #174 + #195 + #175 + #196 + #159 + #195 + #177 + #195 + #178 + #195 +
+  #179 + #195 + #180 + #195 + #181 + #195 + #182 + #195 + #183 + #195 + #184 +
+  #195 + #185 + #195 + #186 + #195 + #187 + #195 + #188 + #196 + #177 + #197 +
+  #159 + #195 + #191 + '''),' + #10 +
+  '    ''cp1255'': (''cp1255'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + #203 + #134 + #226 +
+  #128 + #176 + '\ufffe' + #226 + #128 + #185 + '\' +
+  'ufffe\ufffe\ufffe\ufffe\ufffe' + #226 + #128 + #152 + #226 + #128 + #153 +
+  #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 + #128 +
+  #147 + #226 + #128 + #148 + #203 + #156 + #226 + #132 + #162 + '\ufffe' +
+  #226 + #128 + #186 + '\ufffe\ufffe\ufffe\ufff' + 'e\xa0' + #194 + #161 +
+  #194 + #162 + #194 + #163 + #226 + #130 + #170 + #194 + #165 + #194 + #166 +
+  #194 + #167 + #194 + #168 + #194 + #169 + #195 + #151 + #194 + #171 + #194 +
+  #172 + '\xad' + #194 + #174 + #194 + #175 + #194 + #176 + #194 + #177 +
+  #194 + #178 + #194 + #179 + #194 + #180 + #194 + #181 + #194 + #182 + #194 +
+  #183 + #194 + #184 + #194 + #185 + #195 + #183 + #194 + #187 + #194 + #188 +
+  #194 + #189 + #194 + #190 + #194 + #191 + #214 + #176 + #214 + #177 + #214 +
+  #178 + #214 + #179 + #214 + #180 + #214 + #181 + #214 + #182 + #214 + #183 +
+  #214 + #184 + #214 + #185 + '\ufffe' + #214 + #187 + #214 + #188 + #214 +
+  #189 + #214 + #190 + #214 + #191 + #215 + #128 + #215 + #129 + #215 + #130 +
+  #215 + #131 + #215 + #176 + #215 + #177 + #215 + #178 + #215 + #179 + #215 +
+  #180 + '\ufffe\ufffe\ufffe\ufffe\ufffe\uf' + 'ffe\ufffe' + #215 + #144 +
+  #215 + #145 + #215 + #146 + #215 + #147 + #215 + #148 + #215 + #149 + #215 +
+  #150 + #215 + #151 + #215 + #152 + #215 + #153 + #215 + #154 + #215 + #155 +
+  #215 + #156 + #215 + #157 + #215 + #158 + #215 + #159 + #215 + #160 + #215 +
+  #161 + #215 + #162 + #215 + #163 + #215 + #164 + #215 + #165 + #215 + #166 +
+  #215 + #167 + #215 + #168 + #215 + #169 + #215 + #170 +
+  '\ufffe\ufffe\u200e\u200f\ufffe'')' + ',' + #10 +
+  '    ''cp1256'': (''cp1256'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  #217 + #190 + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + #203 + #134 + #226 +
+  #128 + #176 + #217 + #185 + #226 + #128 + #185 + #197 + #146 + #218 + #134 +
+  #218 + #152 + #218 + #136 + #218 + #175 + #226 + #128 + #152 + #226 + #128 +
+  #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 +
+  #128 + #147 + #226 + #128 + #148 + #218 + #169 + #226 + #132 + #162 + #218 +
+  #145 + #226 + #128 + #186 + #197 + #147 + '\u200c\u200d' + #218 + #186 +
+  '\xa0' + #216 + #140 + #194 + #162 + #194 + #163 + #194 + #164 + #194 +
+  #165 + #194 + #166 + #194 + #167 + #194 + #168 + #194 + #169 + #218 + #190 +
+  #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #194 + #175 + #194 +
+  #176 + #194 + #177 + #194 + #178 + #194 + #179 + #194 + #180 + #194 + #181 +
+  #194 + #182 + #194 + #183 + #194 + #184 + #194 + #185 + #216 + #155 + #194 +
+  #187 + #194 + #188 + #194 + #189 + #194 + #190 + #216 + #159 + #219 + #129 +
+  #216 + #161 + #216 + #162 + #216 + #163 + #216 + #164 + #216 + #165 + #216 +
+  #166 + #216 + #167 + #216 + #168 + #216 + #169 + #216 + #170 + #216 + #171 +
+  #216 + #172 + #216 + #173 + #216 + #174 + #216 + #175 + #216 + #176 + #216 +
+  #177 + #216 + #178 + #216 + #179 + #216 + #180 + #216 + #181 + #216 + #182 +
+  #195 + #151 + #216 + #183 + #216 + #184 + #216 + #185 + #216 + #186 + #217 +
+  #128 + #217 + #129 + #217 + #130 + #217 + #131 + #195 + #160 + #217 + #132 +
+  #195 + #162 + #217 + #133 + #217 + #134 + #217 + #135 + #217 + #136 + #195 +
+  #167 + #195 + #168 + #195 + #169 + #195 + #170 + #195 + #171 + #217 + #137 +
+  #217 + #138 + #195 + #174 + #195 + #175 + #217 + #139 + #217 + #140 + #217 +
+  #141 + #217 + #142 + #195 + #180 + #217 + #143 + #217 + #144 + #195 + #183 +
+  #217 + #145 + #195 + #185 + #217 + #146 + #195 + #187 + #195 + #188 +
+  '\u200e\u200f' + #219 + #146 + '''),' + #10 +
+  '    ''cp1257'': (''cp1257'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + '\ufffe' + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + '\ufff' + 'e' +
+  #226 + #128 + #176 + '\ufffe' + #226 + #128 + #185 + '\ufffe' + #194 +
+  #168 + #203 + #135 + #194 + #184 + '\ufffe' + #226 + #128 + #152 + #226 +
+  #128 + #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 +
+  #226 + #128 + #147 + #226 + #128 + #148 + '\uf' + 'ffe' + #226 + #132 +
+  #162 + '\ufffe' + #226 + #128 + #186 + '\ufffe' + #194 + #175 + #203 +
+  #155 + '\ufffe\xa0\ufff' + 'e' + #194 + #162 + #194 + #163 + #194 + #164 +
+  '\ufffe' + #194 + #166 + #194 + #167 + #195 + #152 + #194 + #169 + #197 +
+  #150 + #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #195 + #134 +
+  #194 + #176 + #194 + #177 + #194 + #178 + #194 + #179 + #194 + #180 + #194 +
+  #181 + #194 + #182 + #194 + #183 + #195 + #184 + #194 + #185 + #197 + #151 +
+  #194 + #187 + #194 + #188 + #194 + #189 + #194 + #190 + #195 + #166 + #196 +
+  #132 + #196 + #174 + #196 + #128 + #196 + #134 + #195 + #132 + #195 + #133 +
+  #196 + #152 + #196 + #146 + #196 + #140 + #195 + #137 + #197 + #185 + #196 +
+  #150 + #196 + #162 + #196 + #182 + #196 + #170 + #196 + #187 + #197 + #160 +
+  #197 + #131 + #197 + #133 + #195 + #147 + #197 + #140 + #195 + #149 + #195 +
+  #150 + #195 + #151 + #197 + #178 + #197 + #129 + #197 + #154 + #197 + #170 +
+  #195 + #156 + #197 + #187 + #197 + #189 + #195 + #159 + #196 + #133 + #196 +
+  #175 + #196 + #129 + #196 + #135 + #195 + #164 + #195 + #165 + #196 + #153 +
+  #196 + #147 + #196 + #141 + #195 + #169 + #197 + #186 + #196 + #151 + #196 +
+  #163 + #196 + #183 + #196 + #171 + #196 + #188 + #197 + #161 + #197 + #132 +
+  #197 + #134 + #195 + #179 + #197 + #141 + #195 + #181 + #195 + #182 + #195 +
+  #183 + #197 + #179 + #197 + #130 + #197 + #155 + #197 + #171 + #195 + #188 +
+  #197 + #188 + #197 + #190 + #203 + #153 + '''),' + #10 +
+  '    ''cp1258'': (''cp1258'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe' + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + #203 + #134 + #226 +
+  #128 + #176 + '\ufffe' + #226 + #128 + #185 + #197 + #146 +
+  '\ufffe\ufffe\ufffe\ufffe' + #226 + #128 + #152 + #226 + #128 + #153 +
+  #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 + #128 +
+  #147 + #226 + #128 + #148 + #203 + #156 + #226 + #132 + #162 + '\' +
+  'ufffe' + #226 + #128 + #186 + #197 + #147 + '\ufffe\ufffe' + #197 + #184 +
+  '\xa0' + #194 + #161 + #194 + #162 + #194 + #163 + #194 + #164 + #194 +
+  #165 + #194 + #166 + #194 + #167 + #194 + #168 + #194 + #169 + #194 + #170 +
+  #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #194 + #175 + #194 +
+  #176 + #194 + #177 + #194 + #178 + #194 + #179 + #194 + #180 + #194 + #181 +
+  #194 + #182 + #194 + #183 + #194 + #184 + #194 + #185 + #194 + #186 + #194 +
+  #187 + #194 + #188 + #194 + #189 + #194 + #190 + #194 + #191 + #195 + #128 +
+  #195 + #129 + #195 + #130 + #196 + #130 + #195 + #132 + #195 + #133 + #195 +
+  #134 + #195 + #135 + #195 + #136 + #195 + #137 + #195 + #138 + #195 + #139 +
+  #204 + #128 + #195 + #141 + #195 + #142 + #195 + #143 + #196 + #144 + #195 +
+  #145 + #204 + #137 + #195 + #147 + #195 + #148 + #198 + #160 + #195 + #150 +
+  #195 + #151 + #195 + #152 + #195 + #153 + #195 + #154 + #195 + #155 + #195 +
+  #156 + #198 + #175 + #204 + #131 + #195 + #159 + #195 + #160 + #195 + #161 +
+  #195 + #162 + #196 + #131 + #195 + #164 + #195 + #165 + #195 + #166 + #195 +
+  #167 + #195 + #168 + #195 + #169 + #195 + #170 + #195 + #171 + #204 + #129 +
+  #195 + #173 + #195 + #174 + #195 + #175 + #196 + #145 + #195 + #177 + #204 +
+  #163 + #195 + #179 + #195 + #180 + #198 + #161 + #195 + #182 + #195 + #183 +
+  #195 + #184 + #195 + #185 + #195 + #186 + #195 + #187 + #195 + #188 + #198 +
+  #176 + #226 + #130 + #171 + #195 + #191 + '''),' + #10 +
+  '    ''cp273'': (''cp273'', ''\x00\x01\x' +
+  '02\x03\x9c\t\x86\x7f\x97\x8d\x8e\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '9d\x85\x08\x87\x18\x19\x92\x8f\x1c' +
+  '\x1d\x1e\x1f\x80\x81\x82\x83\x84\n' +
+  '\x17\x1b\x88\x89\x8a\x8b\x8c\x05\x' +
+  '06\x07\x90\x91\x16\x93\x94\x95\x96' +
+  '\x04\x98\x99\x9a\x9b\x14\x15\x9e\x' + '1a \xa0' + #195 + #162 + '{' +
+  #195 + #160 + #195 + #161 + #195 + #163 + #195 + #165 + #195 + #167 + #195 +
+  #177 + #195 + #132 + '.<(+!&' + #195 + #169 + #195 + #170 + #195 + #171 +
+  #195 + #168 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #172 + '~' +
+  #195 + #156 + '$*' + ');^-/' + #195 + #130 + '[' + #195 + #128 + #195 +
+  #129 + #195 + #131 + #195 + #133 + #195 + #135 + #195 + #145 + #195 + #182 +
+  ',%_>?' + #195 + #184 + #195 + #137 + #195 + #138 + #195 + #139 + #195 +
+  #136 + #195 + #141 + #195 + #142 + #195 + #143 + #195 + #140 + '`:#' +
+  #194 + #167 + '\''' + '="' + #195 + #152 + 'abcdefghi' + #194 + #171 +
+  #194 + #187 + #195 + #176 + #195 + #189 + #195 + #190 + #194 + #177 + #194 +
+  #176 + 'jklmnopqr' + #194 + #170 + #194 + #186 + #195 + #166 + #194 + #184 +
+  #195 + #134 + #194 + #164 + #194 + #181 + #195 + #159 + 'stuvwxyz' + #194 +
+  #161 + #194 + #191 + #195 + #144 + #195 + #157 + #195 + #158 + #194 + #174 +
+  #194 + #162 + #194 + #163 + #194 + #165 + #194 + #183 + #194 + #169 + '@' +
+  #194 + #182 + #194 + #188 + #194 + #189 + #194 + #190 + #194 + #172 + '|' +
+  #226 + #128 + #190 + #194 + #168 + #194 + #180 + #195 + #151 + #195 + #164 +
+  'A' + 'BCDEFGHI\xad' + #195 + #180 + #194 + #166 + #195 + #178 + #195 +
+  #179 + #195 + #181 + #195 + #188 + 'JKLMNOPQR' + #194 + #185 + #195 + #187 +
+  '}' + #195 + #185 + #195 + #186 + #195 + #191 + #195 + #150 + #195 + #183 +
+  'STUVWXYZ' + #194 + #178 + #195 + #148 + '\\' + #195 + #146 + #195 + #147 +
+  #195 + #149 + '0123456789' + #194 + #179 + #195 + #155 + ']' + #195 + #153 +
+  #195 + #154 + '\x9' + 'f''),' + #10 +
+  '    ''cp424'': (''cp424'', ''\x00\x01\x' +
+  '02\x03\x9c\t\x86\x7f\x97\x8d\x8e\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '9d\x85\x08\x87\x18\x19\x92\x8f\x1c' +
+  '\x1d\x1e\x1f\x80\x81\x82\x83\x84\n' +
+  '\x17\x1b\x88\x89\x8a\x8b\x8c\x05\x' +
+  '06\x07\x90\x91\x16\x93\x94\x95\x96' +
+  '\x04\x98\x99\x9a\x9b\x14\x15\x9e\x' + '1a ' + #215 + #144 + #215 + #145 +
+  #215 + #146 + #215 + #147 + #215 + #148 + #215 + #149 + #215 + #150 + #215 +
+  #151 + #215 + #152 + #194 + #162 + '.<(+|&' + #215 + #153 + #215 + #154 +
+  #215 + #155 + #215 + #156 + #215 + #157 + #215 + #158 + #215 + #159 + #215 +
+  #160 + #215 + #161 + '!$*);' + #194 + #172 + '-/' + #215 + #162 + #215 +
+  #163 + #215 + #164 + #215 + #165 + #215 + #166 + #215 + #167 + #215 + #168 +
+  #215 + #169 + #194 + #166 + ',%_>?\ufffe' + #215 + #170 + '\ufffe\ufff' +
+  'e\xa0\ufffe\ufffe\ufffe' + #226 + #128 + #151 + '`:#@\''="\u' +
+  'fffeabcdefghi' + #194 + #171 + #194 + #187 + '\ufffe\ufffe\ufffe' + #194 +
+  #177 + #194 + #176 + 'jklmnopqr\ufffe\ufffe\ufffe' + #194 + #184 + '\ufff' +
+  'e' + #194 + #164 + #194 + #181 + '~stuvwxyz\ufffe\ufffe\ufffe\uff' +
+  'fe\ufffe' + #194 + #174 + '^' + #194 + #163 + #194 + #165 + #194 + #183 +
+  #194 + #169 + #194 + #167 + #194 + #182 + #194 + #188 + #194 + #189 + #194 +
+  #190 + '[]' + #194 + #175 + #194 + #168 + #194 + #180 + #195 + #151 +
+  '{ABCDEFGH' + 'I\xad\ufffe\ufffe\ufffe\ufffe\ufff' + 'e}JKLMNOPQR' + #194 +
+  #185 + '\ufffe\ufffe\ufffe\uff' + 'fe\ufffe\\' + #195 + #183 + 'STUVWXYZ' +
+  #194 + #178 + '\ufffe\ufffe\u' + 'fffe\ufffe\ufffe0123456789' + #194 +
+  #179 + '\ufffe\' + 'ufffe\ufffe\ufffe\x9f''),' + #10 +
+  '    ''cp437'': (''cp437'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #195 + #160 + #195 + #165 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #175 + #195 +
+  #174 + #195 + #172 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #195 + #180 + #195 + #182 + #195 + #178 + #195 + #187 + #195 +
+  #185 + #195 + #191 + #195 + #150 + #195 + #156 + #194 + #162 + #194 + #163 +
+  #194 + #165 + #226 + #130 + #167 + #198 + #146 + #195 + #161 + #195 + #173 +
+  #195 + #179 + #195 + #186 + #195 + #177 + #195 + #145 + #194 + #170 + #194 +
+  #186 + #194 + #191 + #226 + #140 + #144 + #194 + #172 + #194 + #189 + #194 +
+  #188 + #194 + #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 +
+  #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 +
+  #226 + #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 +
+  #149 + #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 +
+  #149 + #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 +
+  #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 +
+  #156 + #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 +
+  #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 +
+  #172 + #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 +
+  #149 + #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 +
+  #226 + #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 +
+  #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 +
+  #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 + #206 + #177 + #195 +
+  #159 + #206 + #147 + #207 + #128 + #206 + #163 + #207 + #131 + #194 + #181 +
+  #207 + #132 + #206 + #166 + #206 + #152 + #206 + #169 + #206 + #180 + #226 +
+  #136 + #158 + #207 + #134 + #206 + #181 + #226 + #136 + #169 + #226 + #137 +
+  #161 + #194 + #177 + #226 + #137 + #165 + #226 + #137 + #164 + #226 + #140 +
+  #160 + #226 + #140 + #161 + #195 + #183 + #226 + #137 + #136 + #194 + #176 +
+  #226 + #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #129 + #191 +
+  #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp500'': (''cp500'', ''\x00\x01\x' +
+  '02\x03\x9c\t\x86\x7f\x97\x8d\x8e\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '9d\x85\x08\x87\x18\x19\x92\x8f\x1c' +
+  '\x1d\x1e\x1f\x80\x81\x82\x83\x84\n' +
+  '\x17\x1b\x88\x89\x8a\x8b\x8c\x05\x' +
+  '06\x07\x90\x91\x16\x93\x94\x95\x96' +
+  '\x04\x98\x99\x9a\x9b\x14\x15\x9e\x' + '1a \xa0' + #195 + #162 + #195 +
+  #164 + #195 + #160 + #195 + #161 + #195 + #163 + #195 + #165 + #195 + #167 +
+  #195 + #177 + '[.<(+!&' + #195 + #169 + #195 + #170 + #195 + #171 + #195 +
+  #168 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #172 + #195 + #159 +
+  ']$*' + ');^-/' + #195 + #130 + #195 + #132 + #195 + #128 + #195 + #129 +
+  #195 + #131 + #195 + #133 + #195 + #135 + #195 + #145 + #194 + #166 +
+  ',%_>?' + #195 + #184 + #195 + #137 + #195 + #138 + #195 + #139 + #195 +
+  #136 + #195 + #141 + #195 + #142 + #195 + #143 + #195 + #140 + '`:#@\''' +
+  '="' + #195 + #152 + 'abcdefghi' + #194 + #171 + #194 + #187 + #195 + #176 +
+  #195 + #189 + #195 + #190 + #194 + #177 + #194 + #176 + 'jklmnopqr' + #194 +
+  #170 + #194 + #186 + #195 + #166 + #194 + #184 + #195 + #134 + #194 + #164 +
+  #194 + #181 + '~stuvwxyz' + #194 + #161 + #194 + #191 + #195 + #144 + #195 +
+  #157 + #195 + #158 + #194 + #174 + #194 + #162 + #194 + #163 + #194 + #165 +
+  #194 + #183 + #194 + #169 + #194 + #167 + #194 + #182 + #194 + #188 + #194 +
+  #189 + #194 + #190 + #194 + #172 + '|' + #194 + #175 + #194 + #168 + #194 +
+  #180 + #195 + #151 + '{A' + 'BCDEFGHI\xad' + #195 + #180 + #195 + #182 +
+  #195 + #178 + #195 + #179 + #195 + #181 + '}JKLMNOPQR' + #194 + #185 +
+  #195 + #187 + #195 + #188 + #195 + #185 + #195 + #186 + #195 + #191 + '\' +
+  '\' + #195 + #183 + 'STUVWXYZ' + #194 + #178 + #195 + #148 + #195 + #150 +
+  #195 + #146 + #195 + #147 + #195 + #149 + '0123456789' + #194 + #179 +
+  #195 + #155 + #195 + #156 + #195 + #153 + #195 + #154 + '\x9' + 'f''),' +
+  #10 + '    ''cp720'': (''cp720'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f\x80\x81' + #195 + #169 +
+  #195 + #162 + '\x84' + #195 + #160 + '\x86' + #195 + #167 + #195 + #170 +
+  #195 + #171 + #195 + #168 + #195 + #175 + #195 + #174 + '\x8d\x8e\x8f\x90' +
+  #217 + #145 + #217 + #146 + #195 + #180 + #194 + #164 + #217 + #128 + #195 +
+  #187 + #195 + #185 + #216 + #161 + #216 + #162 + #216 + #163 + #216 + #164 +
+  #194 + #163 + #216 + #165 + #216 + #166 + #216 + #167 + #216 + #168 + #216 +
+  #169 + #216 + #170 + #216 + #171 + #216 + #172 + #216 + #173 + #216 + #174 +
+  #216 + #175 + #216 + #176 + #216 + #177 + #216 + #178 + #216 + #179 + #216 +
+  #180 + #216 + #181 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 +
+  #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 +
+  #226 + #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 +
+  #149 + #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 +
+  #149 + #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 +
+  #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 +
+  #156 + #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 +
+  #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 +
+  #172 + #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 +
+  #149 + #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 +
+  #226 + #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 +
+  #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 +
+  #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 + #216 + #182 + #216 +
+  #183 + #216 + #184 + #216 + #185 + #216 + #186 + #217 + #129 + #194 + #181 +
+  #217 + #130 + #217 + #131 + #217 + #132 + #217 + #133 + #217 + #134 + #217 +
+  #135 + #217 + #136 + #217 + #137 + #217 + #138 + #226 + #137 + #161 + #217 +
+  #139 + #217 + #140 + #217 + #141 + #217 + #142 + #217 + #143 + #217 + #144 +
+  #226 + #137 + #136 + #194 + #176 + #226 + #136 + #153 + #194 + #183 + #226 +
+  #136 + #154 + #226 + #129 + #191 + #194 + #178 + #226 + #150 + #160 +
+  '\xa0''),' + #10 + '    ''cp737'': (''cp737'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #206 + #145 + #206 +
+  #146 + #206 + #147 + #206 + #148 + #206 + #149 + #206 + #150 + #206 + #151 +
+  #206 + #152 + #206 + #153 + #206 + #154 + #206 + #155 + #206 + #156 + #206 +
+  #157 + #206 + #158 + #206 + #159 + #206 + #160 + #206 + #161 + #206 + #163 +
+  #206 + #164 + #206 + #165 + #206 + #166 + #206 + #167 + #206 + #168 + #206 +
+  #169 + #206 + #177 + #206 + #178 + #206 + #179 + #206 + #180 + #206 + #181 +
+  #206 + #182 + #206 + #183 + #206 + #184 + #206 + #185 + #206 + #186 + #206 +
+  #187 + #206 + #188 + #206 + #189 + #206 + #190 + #206 + #191 + #207 + #128 +
+  #207 + #129 + #207 + #131 + #207 + #130 + #207 + #132 + #207 + #133 + #207 +
+  #134 + #207 + #135 + #207 + #136 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #226 + #149 +
+  #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 + #149 + #226 +
+  #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 + #149 + #157 +
+  #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 + #226 + #148 +
+  #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 + #156 + #226 +
+  #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 + #149 + #159 +
+  #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 + #226 + #149 +
+  #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 + #172 + #226 +
+  #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 + #149 + #165 +
+  #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 + #226 + #149 +
+  #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 + #152 + #226 +
+  #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 + #150 + #140 +
+  #226 + #150 + #144 + #226 + #150 + #128 + #207 + #137 + #206 + #172 + #206 +
+  #173 + #206 + #174 + #207 + #138 + #206 + #175 + #207 + #140 + #207 + #141 +
+  #207 + #139 + #207 + #142 + #206 + #134 + #206 + #136 + #206 + #137 + #206 +
+  #138 + #206 + #140 + #206 + #142 + #206 + #143 + #194 + #177 + #226 + #137 +
+  #165 + #226 + #137 + #164 + #206 + #170 + #206 + #171 + #195 + #183 + #226 +
+  #137 + #136 + #194 + #176 + #226 + #136 + #153 + #194 + #183 + #226 + #136 +
+  #154 + #226 + #129 + #191 + #194 + #178 + #226 + #150 + #160 + '\xa0''),' +
+  #10 + '    ''cp775'': (''cp775'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #196 + #134 + #195 +
+  #188 + #195 + #169 + #196 + #129 + #195 + #164 + #196 + #163 + #195 + #165 +
+  #196 + #135 + #197 + #130 + #196 + #147 + #197 + #150 + #197 + #151 + #196 +
+  #171 + #197 + #185 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #197 + #141 + #195 + #182 + #196 + #162 + #194 + #162 + #197 +
+  #154 + #197 + #155 + #195 + #150 + #195 + #156 + #195 + #184 + #194 + #163 +
+  #195 + #152 + #195 + #151 + #194 + #164 + #196 + #128 + #196 + #170 + #195 +
+  #179 + #197 + #187 + #197 + #188 + #197 + #186 + #226 + #128 + #157 + #194 +
+  #166 + #194 + #169 + #194 + #174 + #194 + #172 + #194 + #189 + #194 + #188 +
+  #197 + #129 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 +
+  #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #196 +
+  #132 + #196 + #140 + #196 + #152 + #196 + #150 + #226 + #149 + #163 + #226 +
+  #149 + #145 + #226 + #149 + #151 + #226 + #149 + #157 + #196 + #174 + #197 +
+  #160 + #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 + #180 + #226 +
+  #148 + #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 + #148 + #188 +
+  #197 + #178 + #197 + #170 + #226 + #149 + #154 + #226 + #149 + #148 + #226 +
+  #149 + #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 +
+  #226 + #149 + #172 + #197 + #189 + #196 + #133 + #196 + #141 + #196 + #153 +
+  #196 + #151 + #196 + #175 + #197 + #161 + #197 + #179 + #197 + #171 + #197 +
+  #190 + #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 +
+  #150 + #132 + #226 + #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 +
+  #195 + #147 + #195 + #159 + #197 + #140 + #197 + #131 + #195 + #181 + #195 +
+  #149 + #194 + #181 + #197 + #132 + #196 + #182 + #196 + #183 + #196 + #187 +
+  #196 + #188 + #197 + #134 + #196 + #146 + #197 + #133 + #226 + #128 + #153 +
+  '\xad' + #194 + #177 + #226 + #128 + #156 + #194 + #190 + #194 + #182 +
+  #194 + #167 + #195 + #183 + #226 + #128 + #158 + #194 + #176 + #226 + #136 +
+  #153 + #194 + #183 + #194 + #185 + #194 + #179 + #194 + #178 + #226 + #150 +
+  #160 + '\xa0''),' + #10 + '    ''cp850'': (''cp850'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #195 + #160 + #195 + #165 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #175 + #195 +
+  #174 + #195 + #172 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #195 + #180 + #195 + #182 + #195 + #178 + #195 + #187 + #195 +
+  #185 + #195 + #191 + #195 + #150 + #195 + #156 + #195 + #184 + #194 + #163 +
+  #195 + #152 + #195 + #151 + #198 + #146 + #195 + #161 + #195 + #173 + #195 +
+  #179 + #195 + #186 + #195 + #177 + #195 + #145 + #194 + #170 + #194 + #186 +
+  #194 + #191 + #194 + #174 + #194 + #172 + #194 + #189 + #194 + #188 + #194 +
+  #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #195 + #129 +
+  #195 + #130 + #195 + #128 + #194 + #169 + #226 + #149 + #163 + #226 + #149 +
+  #145 + #226 + #149 + #151 + #226 + #149 + #157 + #194 + #162 + #194 + #165 +
+  #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 +
+  #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 + #148 + #188 + #195 +
+  #163 + #195 + #131 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 +
+  #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 +
+  #149 + #172 + #194 + #164 + #195 + #176 + #195 + #144 + #195 + #138 + #195 +
+  #139 + #195 + #136 + #196 + #177 + #195 + #141 + #195 + #142 + #195 + #143 +
+  #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 +
+  #132 + #194 + #166 + #195 + #140 + #226 + #150 + #128 + #195 + #147 + #195 +
+  #159 + #195 + #148 + #195 + #146 + #195 + #181 + #195 + #149 + #194 + #181 +
+  #195 + #190 + #195 + #158 + #195 + #154 + #195 + #155 + #195 + #153 + #195 +
+  #189 + #195 + #157 + #194 + #175 + #194 + #180 + '\xad' + #194 + #177 +
+  #226 + #128 + #151 + #194 + #190 + #194 + #182 + #194 + #167 + #195 + #183 +
+  #194 + #184 + #194 + #176 + #194 + #168 + #194 + #183 + #194 + #185 + #194 +
+  #179 + #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp852'': (''cp852'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #197 + #175 + #196 + #135 +
+  #195 + #167 + #197 + #130 + #195 + #171 + #197 + #144 + #197 + #145 + #195 +
+  #174 + #197 + #185 + #195 + #132 + #196 + #134 + #195 + #137 + #196 + #185 +
+  #196 + #186 + #195 + #180 + #195 + #182 + #196 + #189 + #196 + #190 + #197 +
+  #154 + #197 + #155 + #195 + #150 + #195 + #156 + #197 + #164 + #197 + #165 +
+  #197 + #129 + #195 + #151 + #196 + #141 + #195 + #161 + #195 + #173 + #195 +
+  #179 + #195 + #186 + #196 + #132 + #196 + #133 + #197 + #189 + #197 + #190 +
+  #196 + #152 + #196 + #153 + #194 + #172 + #197 + #186 + #196 + #140 + #197 +
+  #159 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #195 + #129 +
+  #195 + #130 + #196 + #154 + #197 + #158 + #226 + #149 + #163 + #226 + #149 +
+  #145 + #226 + #149 + #151 + #226 + #149 + #157 + #197 + #187 + #197 + #188 +
+  #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 +
+  #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 + #148 + #188 + #196 +
+  #130 + #196 + #131 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 +
+  #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 +
+  #149 + #172 + #194 + #164 + #196 + #145 + #196 + #144 + #196 + #142 + #195 +
+  #139 + #196 + #143 + #197 + #135 + #195 + #141 + #195 + #142 + #196 + #155 +
+  #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 +
+  #132 + #197 + #162 + #197 + #174 + #226 + #150 + #128 + #195 + #147 + #195 +
+  #159 + #195 + #148 + #197 + #131 + #197 + #132 + #197 + #136 + #197 + #160 +
+  #197 + #161 + #197 + #148 + #195 + #154 + #197 + #149 + #197 + #176 + #195 +
+  #189 + #195 + #157 + #197 + #163 + #194 + #180 + '\xad' + #203 + #157 +
+  #203 + #155 + #203 + #135 + #203 + #152 + #194 + #167 + #195 + #183 + #194 +
+  #184 + #194 + #176 + #194 + #168 + #203 + #153 + #197 + #177 + #197 + #152 +
+  #197 + #153 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp855'': (''cp855'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #209 + #146 + #208 +
+  #130 + #209 + #147 + #208 + #131 + #209 + #145 + #208 + #129 + #209 + #148 +
+  #208 + #132 + #209 + #149 + #208 + #133 + #209 + #150 + #208 + #134 + #209 +
+  #151 + #208 + #135 + #209 + #152 + #208 + #136 + #209 + #153 + #208 + #137 +
+  #209 + #154 + #208 + #138 + #209 + #155 + #208 + #139 + #209 + #156 + #208 +
+  #140 + #209 + #158 + #208 + #142 + #209 + #159 + #208 + #143 + #209 + #142 +
+  #208 + #174 + #209 + #138 + #208 + #170 + #208 + #176 + #208 + #144 + #208 +
+  #177 + #208 + #145 + #209 + #134 + #208 + #166 + #208 + #180 + #208 + #148 +
+  #208 + #181 + #208 + #149 + #209 + #132 + #208 + #164 + #208 + #179 + #208 +
+  #147 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #209 + #133 +
+  #208 + #165 + #208 + #184 + #208 + #152 + #226 + #149 + #163 + #226 + #149 +
+  #145 + #226 + #149 + #151 + #226 + #149 + #157 + #208 + #185 + #208 + #153 +
+  #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 +
+  #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 + #148 + #188 + #208 +
+  #186 + #208 + #154 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 +
+  #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 +
+  #149 + #172 + #194 + #164 + #208 + #187 + #208 + #155 + #208 + #188 + #208 +
+  #156 + #208 + #189 + #208 + #157 + #208 + #190 + #208 + #158 + #208 + #191 +
+  #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 +
+  #132 + #208 + #159 + #209 + #143 + #226 + #150 + #128 + #208 + #175 + #209 +
+  #128 + #208 + #160 + #209 + #129 + #208 + #161 + #209 + #130 + #208 + #162 +
+  #209 + #131 + #208 + #163 + #208 + #182 + #208 + #150 + #208 + #178 + #208 +
+  #146 + #209 + #140 + #208 + #172 + #226 + #132 + #150 + '\xad' + #209 +
+  #139 + #208 + #171 + #208 + #183 + #208 + #151 + #209 + #136 + #208 + #168 +
+  #209 + #141 + #208 + #173 + #209 + #137 + #208 + #169 + #209 + #135 + #208 +
+  #167 + #194 + #167 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp856'': (''cp856'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #215 + #144 + #215 +
+  #145 + #215 + #146 + #215 + #147 + #215 + #148 + #215 + #149 + #215 + #150 +
+  #215 + #151 + #215 + #152 + #215 + #153 + #215 + #154 + #215 + #155 + #215 +
+  #156 + #215 + #157 + #215 + #158 + #215 + #159 + #215 + #160 + #215 + #161 +
+  #215 + #162 + #215 + #163 + #215 + #164 + #215 + #165 + #215 + #166 + #215 +
+  #167 + #215 + #168 + #215 + #169 + #215 + #170 + '\ufffe' + #194 + #163 +
+  '\ufffe' + #195 + #151 + '\ufffe\ufffe\ufffe' +
+  '\ufffe\ufffe\ufffe\ufffe\ufffe\uff' + 'fe\ufffe' + #194 + #174 + #194 +
+  #172 + #194 + #189 + #194 + #188 + '\ufffe' + #194 + #171 + #194 + #187 +
+  #226 + #150 + #145 + #226 + #150 + #146 + #226 + #150 + #147 + #226 + #148 +
+  #130 + #226 + #148 + #164 + '\ufffe\uf' + 'ffe\ufffe' + #194 + #169 + #226 +
+  #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 + #149 + #157 +
+  #194 + #162 + #194 + #165 + #226 + #148 + #144 + #226 + #148 + #148 + #226 +
+  #148 + #180 + #226 + #148 + #172 + #226 + #148 + #156 + #226 + #148 + #128 +
+  #226 + #148 + #188 + '\ufffe\ufff' + 'e' + #226 + #149 + #154 + #226 +
+  #149 + #148 + #226 + #149 + #169 + #226 + #149 + #166 + #226 + #149 + #160 +
+  #226 + #149 + #144 + #226 + #149 + #172 + #194 + #164 +
+  '\ufffe\ufffe\ufffe\ufffe\' + 'ufffe\ufffe\ufffe\ufffe\ufffe' + #226 +
+  #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 +
+  #194 + #166 + '\ufffe' + #226 + #150 + #128 +
+  '\ufffe\ufffe\ufffe\ufffe\uf' + 'ffe\ufffe' + #194 + #181 +
+  '\ufffe\ufffe\ufffe\ufffe' + '\ufffe\ufffe\ufffe' + #194 + #175 + #194 +
+  #180 + '\xad' + #194 + #177 + #226 + #128 + #151 + #194 + #190 + #194 +
+  #182 + #194 + #167 + #195 + #183 + #194 + #184 + #194 + #176 + #194 + #168 +
+  #194 + #183 + #194 + #185 + #194 + #179 + #194 + #178 + #226 + #150 + #160 +
+  '\xa0''),' + #10 + '    ''cp857'': (''cp857'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #195 + #160 + #195 + #165 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #175 + #195 +
+  #174 + #196 + #177 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #195 + #180 + #195 + #182 + #195 + #178 + #195 + #187 + #195 +
+  #185 + #196 + #176 + #195 + #150 + #195 + #156 + #195 + #184 + #194 + #163 +
+  #195 + #152 + #197 + #158 + #197 + #159 + #195 + #161 + #195 + #173 + #195 +
+  #179 + #195 + #186 + #195 + #177 + #195 + #145 + #196 + #158 + #196 + #159 +
+  #194 + #191 + #194 + #174 + #194 + #172 + #194 + #189 + #194 + #188 + #194 +
+  #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #195 + #129 +
+  #195 + #130 + #195 + #128 + #194 + #169 + #226 + #149 + #163 + #226 + #149 +
+  #145 + #226 + #149 + #151 + #226 + #149 + #157 + #194 + #162 + #194 + #165 +
+  #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 +
+  #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 + #148 + #188 + #195 +
+  #163 + #195 + #131 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 +
+  #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 +
+  #149 + #172 + #194 + #164 + #194 + #186 + #194 + #170 + #195 + #138 + #195 +
+  #139 + #195 + #136 + '\ufffe' + #195 + #141 + #195 + #142 + #195 + #143 +
+  #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 +
+  #132 + #194 + #166 + #195 + #140 + #226 + #150 + #128 + #195 + #147 + #195 +
+  #159 + #195 + #148 + #195 + #146 + #195 + #181 + #195 + #149 + #194 + #181 +
+  '\ufffe' + #195 + #151 + #195 + #154 + #195 + #155 + #195 + #153 + #195 +
+  #172 + #195 + #191 + #194 + #175 + #194 + #180 + '\xad' + #194 + #177 +
+  '\ufffe' + #194 + #190 + #194 + #182 + #194 + #167 + #195 + #183 + #194 +
+  #184 + #194 + #176 + #194 + #168 + #194 + #183 + #194 + #185 + #194 + #179 +
+  #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp858'': (''cp858'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #195 + #160 + #195 + #165 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #175 + #195 +
+  #174 + #195 + #172 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #195 + #180 + #195 + #182 + #195 + #178 + #195 + #187 + #195 +
+  #185 + #195 + #191 + #195 + #150 + #195 + #156 + #195 + #184 + #194 + #163 +
+  #195 + #152 + #195 + #151 + #198 + #146 + #195 + #161 + #195 + #173 + #195 +
+  #179 + #195 + #186 + #195 + #177 + #195 + #145 + #194 + #170 + #194 + #186 +
+  #194 + #191 + #194 + #174 + #194 + #172 + #194 + #189 + #194 + #188 + #194 +
+  #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #195 + #129 +
+  #195 + #130 + #195 + #128 + #194 + #169 + #226 + #149 + #163 + #226 + #149 +
+  #145 + #226 + #149 + #151 + #226 + #149 + #157 + #194 + #162 + #194 + #165 +
+  #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 +
+  #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 + #148 + #188 + #195 +
+  #163 + #195 + #131 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 +
+  #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 +
+  #149 + #172 + #194 + #164 + #195 + #176 + #195 + #144 + #195 + #138 + #195 +
+  #139 + #195 + #136 + #226 + #130 + #172 + #195 + #141 + #195 + #142 + #195 +
+  #143 + #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 +
+  #150 + #132 + #194 + #166 + #195 + #140 + #226 + #150 + #128 + #195 + #147 +
+  #195 + #159 + #195 + #148 + #195 + #146 + #195 + #181 + #195 + #149 + #194 +
+  #181 + #195 + #190 + #195 + #158 + #195 + #154 + #195 + #155 + #195 + #153 +
+  #195 + #189 + #195 + #157 + #194 + #175 + #194 + #180 + '\xad' + #194 +
+  #177 + #226 + #128 + #151 + #194 + #190 + #194 + #182 + #194 + #167 + #195 +
+  #183 + #194 + #184 + #194 + #176 + #194 + #168 + #194 + #183 + #194 + #185 +
+  #194 + #179 + #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp860'': (''cp860'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #163 + #195 + #160 + #195 + #129 +
+  #195 + #167 + #195 + #170 + #195 + #138 + #195 + #168 + #195 + #141 + #195 +
+  #148 + #195 + #172 + #195 + #131 + #195 + #130 + #195 + #137 + #195 + #128 +
+  #195 + #136 + #195 + #180 + #195 + #181 + #195 + #178 + #195 + #154 + #195 +
+  #185 + #195 + #140 + #195 + #149 + #195 + #156 + #194 + #162 + #194 + #163 +
+  #195 + #153 + #226 + #130 + #167 + #195 + #147 + #195 + #161 + #195 + #173 +
+  #195 + #179 + #195 + #186 + #195 + #177 + #195 + #145 + #194 + #170 + #194 +
+  #186 + #194 + #191 + #195 + #146 + #194 + #172 + #194 + #189 + #194 + #188 +
+  #194 + #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 + #150 +
+  #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #226 +
+  #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 + #149 +
+  #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 + #149 +
+  #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 + #226 +
+  #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 + #156 +
+  #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 + #149 +
+  #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 + #226 +
+  #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 + #172 +
+  #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 + #149 +
+  #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 + #226 +
+  #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 + #152 +
+  #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 + #150 +
+  #140 + #226 + #150 + #144 + #226 + #150 + #128 + #206 + #177 + #195 + #159 +
+  #206 + #147 + #207 + #128 + #206 + #163 + #207 + #131 + #194 + #181 + #207 +
+  #132 + #206 + #166 + #206 + #152 + #206 + #169 + #206 + #180 + #226 + #136 +
+  #158 + #207 + #134 + #206 + #181 + #226 + #136 + #169 + #226 + #137 + #161 +
+  #194 + #177 + #226 + #137 + #165 + #226 + #137 + #164 + #226 + #140 + #160 +
+  #226 + #140 + #161 + #195 + #183 + #226 + #137 + #136 + #194 + #176 + #226 +
+  #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #129 + #191 + #194 +
+  #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp861'': (''cp861'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #195 + #160 + #195 + #165 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #144 + #195 +
+  #176 + #195 + #158 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #195 + #180 + #195 + #182 + #195 + #190 + #195 + #187 + #195 +
+  #157 + #195 + #189 + #195 + #150 + #195 + #156 + #195 + #184 + #194 + #163 +
+  #195 + #152 + #226 + #130 + #167 + #198 + #146 + #195 + #161 + #195 + #173 +
+  #195 + #179 + #195 + #186 + #195 + #129 + #195 + #141 + #195 + #147 + #195 +
+  #154 + #194 + #191 + #226 + #140 + #144 + #194 + #172 + #194 + #189 + #194 +
+  #188 + #194 + #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 +
+  #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 +
+  #226 + #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 +
+  #149 + #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 +
+  #149 + #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 +
+  #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 +
+  #156 + #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 +
+  #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 +
+  #172 + #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 +
+  #149 + #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 +
+  #226 + #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 +
+  #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 +
+  #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 + #206 + #177 + #195 +
+  #159 + #206 + #147 + #207 + #128 + #206 + #163 + #207 + #131 + #194 + #181 +
+  #207 + #132 + #206 + #166 + #206 + #152 + #206 + #169 + #206 + #180 + #226 +
+  #136 + #158 + #207 + #134 + #206 + #181 + #226 + #136 + #169 + #226 + #137 +
+  #161 + #194 + #177 + #226 + #137 + #165 + #226 + #137 + #164 + #226 + #140 +
+  #160 + #226 + #140 + #161 + #195 + #183 + #226 + #137 + #136 + #194 + #176 +
+  #226 + #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #129 + #191 +
+  #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp862'': (''cp862'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #215 + #144 + #215 +
+  #145 + #215 + #146 + #215 + #147 + #215 + #148 + #215 + #149 + #215 + #150 +
+  #215 + #151 + #215 + #152 + #215 + #153 + #215 + #154 + #215 + #155 + #215 +
+  #156 + #215 + #157 + #215 + #158 + #215 + #159 + #215 + #160 + #215 + #161 +
+  #215 + #162 + #215 + #163 + #215 + #164 + #215 + #165 + #215 + #166 + #215 +
+  #167 + #215 + #168 + #215 + #169 + #215 + #170 + #194 + #162 + #194 + #163 +
+  #194 + #165 + #226 + #130 + #167 + #198 + #146 + #195 + #161 + #195 + #173 +
+  #195 + #179 + #195 + #186 + #195 + #177 + #195 + #145 + #194 + #170 + #194 +
+  #186 + #194 + #191 + #226 + #140 + #144 + #194 + #172 + #194 + #189 + #194 +
+  #188 + #194 + #161 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 +
+  #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 +
+  #226 + #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 +
+  #149 + #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 +
+  #149 + #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 +
+  #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 +
+  #156 + #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 +
+  #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 +
+  #172 + #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 +
+  #149 + #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 +
+  #226 + #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 +
+  #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 +
+  #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 + #206 + #177 + #195 +
+  #159 + #206 + #147 + #207 + #128 + #206 + #163 + #207 + #131 + #194 + #181 +
+  #207 + #132 + #206 + #166 + #206 + #152 + #206 + #169 + #206 + #180 + #226 +
+  #136 + #158 + #207 + #134 + #206 + #181 + #226 + #136 + #169 + #226 + #137 +
+  #161 + #194 + #177 + #226 + #137 + #165 + #226 + #137 + #164 + #226 + #140 +
+  #160 + #226 + #140 + #161 + #195 + #183 + #226 + #137 + #136 + #194 + #176 +
+  #226 + #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #129 + #191 +
+  #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp863'': (''cp863'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #130 + #195 + #160 + #194 + #182 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #175 + #195 +
+  #174 + #226 + #128 + #151 + #195 + #128 + #194 + #167 + #195 + #137 + #195 +
+  #136 + #195 + #138 + #195 + #180 + #195 + #139 + #195 + #143 + #195 + #187 +
+  #195 + #185 + #194 + #164 + #195 + #148 + #195 + #156 + #194 + #162 + #194 +
+  #163 + #195 + #153 + #195 + #155 + #198 + #146 + #194 + #166 + #194 + #180 +
+  #195 + #179 + #195 + #186 + #194 + #168 + #194 + #184 + #194 + #179 + #194 +
+  #175 + #195 + #142 + #226 + #140 + #144 + #194 + #172 + #194 + #189 + #194 +
+  #188 + #194 + #190 + #194 + #171 + #194 + #187 + #226 + #150 + #145 + #226 +
+  #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 +
+  #226 + #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 +
+  #149 + #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 +
+  #149 + #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 +
+  #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 +
+  #156 + #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 +
+  #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 +
+  #172 + #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 +
+  #149 + #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 +
+  #226 + #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 +
+  #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 +
+  #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 + #206 + #177 + #195 +
+  #159 + #206 + #147 + #207 + #128 + #206 + #163 + #207 + #131 + #194 + #181 +
+  #207 + #132 + #206 + #166 + #206 + #152 + #206 + #169 + #206 + #180 + #226 +
+  #136 + #158 + #207 + #134 + #206 + #181 + #226 + #136 + #169 + #226 + #137 +
+  #161 + #194 + #177 + #226 + #137 + #165 + #226 + #137 + #164 + #226 + #140 +
+  #160 + #226 + #140 + #161 + #195 + #183 + #226 + #137 + #136 + #194 + #176 +
+  #226 + #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #129 + #191 +
+  #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp864'': (''cp864'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' + '1d\x1e\x1f !"#$' + #217 + #170 +
+  '&\''()*+,-./0123456' + '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #194 + #176 + #194 +
+  #183 + #226 + #136 + #153 + #226 + #136 + #154 + #226 + #150 + #146 + #226 +
+  #148 + #128 + #226 + #148 + #130 + #226 + #148 + #188 + #226 + #148 + #164 +
+  #226 + #148 + #172 + #226 + #148 + #156 + #226 + #148 + #180 + #226 + #148 +
+  #144 + #226 + #148 + #140 + #226 + #148 + #148 + #226 + #148 + #152 + #206 +
+  #178 + #226 + #136 + #158 + #207 + #134 + #194 + #177 + #194 + #189 + #194 +
+  #188 + #226 + #137 + #136 + #194 + #171 + #194 + #187 + #239 + #187 + #183 +
+  #239 + #187 + #184 + '\ufffe\ufffe' + #239 + #187 + #187 + #239 + #187 +
+  #188 + '\ufffe\xa0\xad' + #239 + #186 + #130 + #194 + #163 + #194 + #164 +
+  #239 + #186 + #132 + '\ufffe\ufffe' + #239 + #186 + #142 + #239 + #186 +
+  #143 + #239 + #186 + #149 + #239 + #186 + #153 + #216 + #140 + #239 + #186 +
+  #157 + #239 + #186 + #161 + #239 + #186 + #165 + #217 + #160 + #217 + #161 +
+  #217 + #162 + #217 + #163 + #217 + #164 + #217 + #165 + #217 + #166 + #217 +
+  #167 + #217 + #168 + #217 + #169 + #239 + #187 + #145 + #216 + #155 + #239 +
+  #186 + #177 + #239 + #186 + #181 + #239 + #186 + #185 + #216 + #159 + #194 +
+  #162 + #239 + #186 + #128 + #239 + #186 + #129 + #239 + #186 + #131 + #239 +
+  #186 + #133 + #239 + #187 + #138 + #239 + #186 + #139 + #239 + #186 + #141 +
+  #239 + #186 + #145 + #239 + #186 + #147 + #239 + #186 + #151 + #239 + #186 +
+  #155 + #239 + #186 + #159 + #239 + #186 + #163 + #239 + #186 + #167 + #239 +
+  #186 + #169 + #239 + #186 + #171 + #239 + #186 + #173 + #239 + #186 + #175 +
+  #239 + #186 + #179 + #239 + #186 + #183 + #239 + #186 + #187 + #239 + #186 +
+  #191 + #239 + #187 + #129 + #239 + #187 + #133 + #239 + #187 + #139 + #239 +
+  #187 + #143 + #194 + #166 + #194 + #172 + #195 + #183 + #195 + #151 + #239 +
+  #187 + #137 + #217 + #128 + #239 + #187 + #147 + #239 + #187 + #151 + #239 +
+  #187 + #155 + #239 + #187 + #159 + #239 + #187 + #163 + #239 + #187 + #167 +
+  #239 + #187 + #171 + #239 + #187 + #173 + #239 + #187 + #175 + #239 + #187 +
+  #179 + #239 + #186 + #189 + #239 + #187 + #140 + #239 + #187 + #142 + #239 +
+  #187 + #141 + #239 + #187 + #161 + #239 + #185 + #189 + #217 + #145 + #239 +
+  #187 + #165 + #239 + #187 + #169 + #239 + #187 + #172 + #239 + #187 + #176 +
+  #239 + #187 + #178 + #239 + #187 + #144 + #239 + #187 + #149 + #239 + #187 +
+  #181 + #239 + #187 + #182 + #239 + #187 + #157 + #239 + #187 + #153 + #239 +
+  #187 + #177 + #226 + #150 + #160 + '\uf' + 'ffe''),' + #10 +
+  '    ''cp865'': (''cp865'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #195 + #135 + #195 +
+  #188 + #195 + #169 + #195 + #162 + #195 + #164 + #195 + #160 + #195 + #165 +
+  #195 + #167 + #195 + #170 + #195 + #171 + #195 + #168 + #195 + #175 + #195 +
+  #174 + #195 + #172 + #195 + #132 + #195 + #133 + #195 + #137 + #195 + #166 +
+  #195 + #134 + #195 + #180 + #195 + #182 + #195 + #178 + #195 + #187 + #195 +
+  #185 + #195 + #191 + #195 + #150 + #195 + #156 + #195 + #184 + #194 + #163 +
+  #195 + #152 + #226 + #130 + #167 + #198 + #146 + #195 + #161 + #195 + #173 +
+  #195 + #179 + #195 + #186 + #195 + #177 + #195 + #145 + #194 + #170 + #194 +
+  #186 + #194 + #191 + #226 + #140 + #144 + #194 + #172 + #194 + #189 + #194 +
+  #188 + #194 + #161 + #194 + #171 + #194 + #164 + #226 + #150 + #145 + #226 +
+  #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 +
+  #226 + #149 + #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 +
+  #149 + #226 + #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 +
+  #149 + #157 + #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 +
+  #226 + #148 + #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 +
+  #156 + #226 + #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 +
+  #226 + #149 + #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 +
+  #172 + #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 +
+  #149 + #165 + #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 +
+  #226 + #149 + #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 +
+  #152 + #226 + #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 +
+  #150 + #140 + #226 + #150 + #144 + #226 + #150 + #128 + #206 + #177 + #195 +
+  #159 + #206 + #147 + #207 + #128 + #206 + #163 + #207 + #131 + #194 + #181 +
+  #207 + #132 + #206 + #166 + #206 + #152 + #206 + #169 + #206 + #180 + #226 +
+  #136 + #158 + #207 + #134 + #206 + #181 + #226 + #136 + #169 + #226 + #137 +
+  #161 + #194 + #177 + #226 + #137 + #165 + #226 + #137 + #164 + #226 + #140 +
+  #160 + #226 + #140 + #161 + #195 + #183 + #226 + #137 + #136 + #194 + #176 +
+  #226 + #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #129 + #191 +
+  #194 + #178 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp866'': (''cp866'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #208 + #144 + #208 +
+  #145 + #208 + #146 + #208 + #147 + #208 + #148 + #208 + #149 + #208 + #150 +
+  #208 + #151 + #208 + #152 + #208 + #153 + #208 + #154 + #208 + #155 + #208 +
+  #156 + #208 + #157 + #208 + #158 + #208 + #159 + #208 + #160 + #208 + #161 +
+  #208 + #162 + #208 + #163 + #208 + #164 + #208 + #165 + #208 + #166 + #208 +
+  #167 + #208 + #168 + #208 + #169 + #208 + #170 + #208 + #171 + #208 + #172 +
+  #208 + #173 + #208 + #174 + #208 + #175 + #208 + #176 + #208 + #177 + #208 +
+  #178 + #208 + #179 + #208 + #180 + #208 + #181 + #208 + #182 + #208 + #183 +
+  #208 + #184 + #208 + #185 + #208 + #186 + #208 + #187 + #208 + #188 + #208 +
+  #189 + #208 + #190 + #208 + #191 + #226 + #150 + #145 + #226 + #150 + #146 +
+  #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 + #164 + #226 + #149 +
+  #161 + #226 + #149 + #162 + #226 + #149 + #150 + #226 + #149 + #149 + #226 +
+  #149 + #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 + #149 + #157 +
+  #226 + #149 + #156 + #226 + #149 + #155 + #226 + #148 + #144 + #226 + #148 +
+  #148 + #226 + #148 + #180 + #226 + #148 + #172 + #226 + #148 + #156 + #226 +
+  #148 + #128 + #226 + #148 + #188 + #226 + #149 + #158 + #226 + #149 + #159 +
+  #226 + #149 + #154 + #226 + #149 + #148 + #226 + #149 + #169 + #226 + #149 +
+  #166 + #226 + #149 + #160 + #226 + #149 + #144 + #226 + #149 + #172 + #226 +
+  #149 + #167 + #226 + #149 + #168 + #226 + #149 + #164 + #226 + #149 + #165 +
+  #226 + #149 + #153 + #226 + #149 + #152 + #226 + #149 + #146 + #226 + #149 +
+  #147 + #226 + #149 + #171 + #226 + #149 + #170 + #226 + #148 + #152 + #226 +
+  #148 + #140 + #226 + #150 + #136 + #226 + #150 + #132 + #226 + #150 + #140 +
+  #226 + #150 + #144 + #226 + #150 + #128 + #209 + #128 + #209 + #129 + #209 +
+  #130 + #209 + #131 + #209 + #132 + #209 + #133 + #209 + #134 + #209 + #135 +
+  #209 + #136 + #209 + #137 + #209 + #138 + #209 + #139 + #209 + #140 + #209 +
+  #141 + #209 + #142 + #209 + #143 + #208 + #129 + #209 + #145 + #208 + #132 +
+  #209 + #148 + #208 + #135 + #209 + #151 + #208 + #142 + #209 + #158 + #194 +
+  #176 + #226 + #136 + #153 + #194 + #183 + #226 + #136 + #154 + #226 + #132 +
+  #150 + #194 + #164 + #226 + #150 + #160 + '\xa0''),' + #10 +
+  '    ''cp869'': (''cp869'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' +
+  'z{|}~\x7f\ufffe\ufffe\ufffe\ufffe\' + 'ufffe\ufffe' + #206 + #134 +
+  '\ufffe' + #194 + #183 + #194 + #172 + #194 + #166 + #226 + #128 + #152 +
+  #226 + #128 + #153 + #206 + #136 + #226 + #128 + #149 + #206 + #137 + #206 +
+  #138 + #206 + #170 + #206 + #140 + '\ufff' + 'e\ufffe' + #206 + #142 +
+  #206 + #171 + #194 + #169 + #206 + #143 + #194 + #178 + #194 + #179 + #206 +
+  #172 + #194 + #163 + #206 + #173 + #206 + #174 + #206 + #175 + #207 + #138 +
+  #206 + #144 + #207 + #140 + #207 + #141 + #206 + #145 + #206 + #146 + #206 +
+  #147 + #206 + #148 + #206 + #149 + #206 + #150 + #206 + #151 + #194 + #189 +
+  #206 + #152 + #206 + #153 + #194 + #171 + #194 + #187 + #226 + #150 + #145 +
+  #226 + #150 + #146 + #226 + #150 + #147 + #226 + #148 + #130 + #226 + #148 +
+  #164 + #206 + #154 + #206 + #155 + #206 + #156 + #206 + #157 + #226 + #149 +
+  #163 + #226 + #149 + #145 + #226 + #149 + #151 + #226 + #149 + #157 + #206 +
+  #158 + #206 + #159 + #226 + #148 + #144 + #226 + #148 + #148 + #226 + #148 +
+  #180 + #226 + #148 + #172 + #226 + #148 + #156 + #226 + #148 + #128 + #226 +
+  #148 + #188 + #206 + #160 + #206 + #161 + #226 + #149 + #154 + #226 + #149 +
+  #148 + #226 + #149 + #169 + #226 + #149 + #166 + #226 + #149 + #160 + #226 +
+  #149 + #144 + #226 + #149 + #172 + #206 + #163 + #206 + #164 + #206 + #165 +
+  #206 + #166 + #206 + #167 + #206 + #168 + #206 + #169 + #206 + #177 + #206 +
+  #178 + #206 + #179 + #226 + #148 + #152 + #226 + #148 + #140 + #226 + #150 +
+  #136 + #226 + #150 + #132 + #206 + #180 + #206 + #181 + #226 + #150 + #128 +
+  #206 + #182 + #206 + #183 + #206 + #184 + #206 + #185 + #206 + #186 + #206 +
+  #187 + #206 + #188 + #206 + #189 + #206 + #190 + #206 + #191 + #207 + #128 +
+  #207 + #129 + #207 + #131 + #207 + #130 + #207 + #132 + #206 + #132 +
+  '\xad' + #194 + #177 + #207 + #133 + #207 + #134 + #207 + #135 + #194 +
+  #167 + #207 + #136 + #206 + #133 + #194 + #176 + #194 + #168 + #207 + #137 +
+  #207 + #139 + #206 + #176 + #207 + #142 + #226 + #150 + #160 + '\xa0''),' +
+  #10 + '    ''cp874'': (''cp874'', ''\x00\x01\x' +
+  '02\x03\x04\x05\x06\x07\x08\t\n\x0b' +
+  '\x0c\r\x0e\x0f\x10\x11\x12\x13\x14' +
+  '\x15\x16\x17\x18\x19\x1a\x1b\x1c\x' +
+  '1d\x1e\x1f !"#$%&\''()*+,-./0123456' +
+  '789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWX' +
+  'YZ[\\]^_`abcdefghijklmnopqrstuvwxy' + 'z{|}~\x7f' + #226 + #130 + #172 +
+  '\ufffe\ufffe\ufffe\ufffe' + #226 + #128 + #166 +
+  '\ufffe\ufffe\ufffe\ufffe\ufffe\uf' + 'ffe\ufffe\ufffe\ufffe\ufffe\ufffe' +
+  #226 + #128 + #152 + #226 + #128 + #153 + #226 + #128 + #156 + #226 + #128 +
+  #157 + #226 + #128 + #162 + #226 + #128 + #147 + #226 + #128 + #148 +
+  '\ufffe\ufffe\ufffe\ufffe\uff' + 'fe\ufffe\ufffe\ufffe\xa0' + #224 + #184 +
+  #129 + #224 + #184 + #130 + #224 + #184 + #131 + #224 + #184 + #132 + #224 +
+  #184 + #133 + #224 + #184 + #134 + #224 + #184 + #135 + #224 + #184 + #136 +
+  #224 + #184 + #137 + #224 + #184 + #138 + #224 + #184 + #139 + #224 + #184 +
+  #140 + #224 + #184 + #141 + #224 + #184 + #142 + #224 + #184 + #143 + #224 +
+  #184 + #144 + #224 + #184 + #145 + #224 + #184 + #146 + #224 + #184 + #147 +
+  #224 + #184 + #148 + #224 + #184 + #149 + #224 + #184 + #150 + #224 + #184 +
+  #151 + #224 + #184 + #152 + #224 + #184 + #153 + #224 + #184 + #154 + #224 +
+  #184 + #155 + #224 + #184 + #156 + #224 + #184 + #157 + #224 + #184 + #158 +
+  #224 + #184 + #159 + #224 + #184 + #160 + #224 + #184 + #161 + #224 + #184 +
+  #162 + #224 + #184 + #163 + #224 + #184 + #164 + #224 + #184 + #165 + #224 +
+  #184 + #166 + #224 + #184 + #167 + #224 + #184 + #168 + #224 + #184 + #169 +
+  #224 + #184 + #170 + #224 + #184 + #171 + #224 + #184 + #172 + #224 + #184 +
+  #173 + #224 + #184 + #174 + #224 + #184 + #175 + #224 + #184 + #176 + #224 +
+  #184 + #177 + #224 + #184 + #178 + #224 + #184 + #179 + #224 + #184 + #180 +
+  #224 + #184 + #181 + #224 + #184 + #182 + #224 + #184 + #183 + #224 + #184 +
+  #184 + #224 + #184 + #185 + #224 + #184 + #186 + '\ufffe\ufffe\ufffe\u' +
+  'fffe' + #224 + #184 + #191 + #224 + #185 + #128 + #224 + #185 + #129 +
+  #224 + #185 + #130 + #224 + #185 + #131 + #224 + #185 + #132 + #224 + #185 +
+  #133 + #224 + #185 + #134 + #224 + #185 + #135 + #224 + #185 + #136 + #224 +
+  #185 + #137 + #224 + #185 + #138 + #224 + #185 + #139 + #224 + #185 + #140 +
+  #224 + #185 + #141 + #224 + #185 + #142 + #224 + #185 + #143 + #224 + #185 +
+  #144 + #224 + #185 + #145 + #224 + #185 + #146 + #224 + #185 + #147 + #224 +
+  #185 + #148 + #224 + #185 + #149 + #224 + #185 + #150 + #224 + #185 + #151 +
+  #224 + #185 + #152 + #224 + #185 + #153 + #224 + #185 + #154 + #224 + #185 +
+  #155 + '\' + 'ufffe\ufffe\ufffe\ufffe''),' + #10 +
+  '    ''cp875'': (''cp875'', ''\x00\x01\x' +
+  '02\x03\x9c\t\x86\x7f\x97\x8d\x8e\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '9d\x85\x08\x87\x18\x19\x92\x8f\x1c' +
+  '\x1d\x1e\x1f\x80\x81\x82\x83\x84\n' +
+  '\x17\x1b\x88\x89\x8a\x8b\x8c\x05\x' +
+  '06\x07\x90\x91\x16\x93\x94\x95\x96' +
+  '\x04\x98\x99\x9a\x9b\x14\x15\x9e\x' + '1a ' + #206 + #145 + #206 + #146 +
+  #206 + #147 + #206 + #148 + #206 + #149 + #206 + #150 + #206 + #151 + #206 +
+  #152 + #206 + #153 + '[.<(+!&' + #206 + #154 + #206 + #155 + #206 + #156 +
+  #206 + #157 + #206 + #158 + #206 + #159 + #206 + #160 + #206 + #161 + #206 +
+  #163 + ']$*);^' + '-/' + #206 + #164 + #206 + #165 + #206 + #166 + #206 +
+  #167 + #206 + #168 + #206 + #169 + #206 + #170 + #206 + #171 + '|,%_>?' +
+  #194 + #168 + #206 + #134 + #206 + #136 + #206 + #137 + '\xa0' + #206 +
+  #138 + #206 + #140 + #206 + #142 + #206 + #143 + '`:#@\''' + '="' + #206 +
+  #133 + 'abcdefghi' + #206 + #177 + #206 + #178 + #206 + #179 + #206 + #180 +
+  #206 + #181 + #206 + #182 + #194 + #176 + 'jklmnopqr' + #206 + #183 + #206 +
+  #184 + #206 + #185 + #206 + #186 + #206 + #187 + #206 + #188 + #194 + #180 +
+  '~stuvwxyz' + #206 + #189 + #206 + #190 + #206 + #191 + #207 + #128 + #207 +
+  #129 + #207 + #131 + #194 + #163 + #206 + #172 + #206 + #173 + #206 + #174 +
+  #207 + #138 + #206 + #175 + #207 + #140 + #207 + #141 + #207 + #139 + #207 +
+  #142 + #207 + #130 + #207 + #132 + #207 + #133 + #207 + #134 + #207 + #135 +
+  #207 + #136 + '{A' + 'BCDEFGHI\xad' + #207 + #137 + #206 + #144 + #206 +
+  #176 + #226 + #128 + #152 + #226 + #128 + #149 + '}JKLMNOPQR' + #194 +
+  #177 + #194 + #189 + '\x1a' + #206 + #135 + #226 + #128 + #153 + #194 +
+  #166 + '\\\x1aSTUVWXYZ' + #194 + #178 + #194 + #167 + '\x1a\x1a' + #194 +
+  #171 + #194 + #172 + '012345' + '6789' + #194 + #179 + #194 + #169 +
+  '\x1a\x1a' + #194 + #187 + '\x9f''),' + #10 +
+  '    ''hp_roman8'': (''hp-roman8'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #195 + #128 +
+  #195 + #130 + #195 + #136 + #195 + #138 + #195 + #139 + #195 + #142 + #195 +
+  #143 + #194 + #180 + #203 + #139 + #203 + #134 + #194 + #168 + #203 + #156 +
+  #195 + #153 + #195 + #155 + #226 + #130 + #164 + #194 + #175 + #195 + #157 +
+  #195 + #189 + #194 + #176 + #195 + #135 + #195 + #167 + #195 + #145 + #195 +
+  #177 + #194 + #161 + #194 + #191 + #194 + #164 + #194 + #163 + #194 + #165 +
+  #194 + #167 + #198 + #146 + #194 + #162 + #195 + #162 + #195 + #170 + #195 +
+  #180 + #195 + #187 + #195 + #161 + #195 + #169 + #195 + #179 + #195 + #186 +
+  #195 + #160 + #195 + #168 + #195 + #178 + #195 + #185 + #195 + #164 + #195 +
+  #171 + #195 + #182 + #195 + #188 + #195 + #133 + #195 + #174 + #195 + #152 +
+  #195 + #134 + #195 + #165 + #195 + #173 + #195 + #184 + #195 + #166 + #195 +
+  #132 + #195 + #172 + #195 + #150 + #195 + #156 + #195 + #137 + #195 + #175 +
+  #195 + #159 + #195 + #148 + #195 + #129 + #195 + #131 + #195 + #163 + #195 +
+  #144 + #195 + #176 + #195 + #141 + #195 + #140 + #195 + #147 + #195 + #146 +
+  #195 + #149 + #195 + #181 + #197 + #160 + #197 + #161 + #195 + #154 + #197 +
+  #184 + #195 + #191 + #195 + #158 + #195 + #190 + #194 + #183 + #194 + #181 +
+  #194 + #182 + #194 + #190 + #226 + #128 + #148 + #194 + #188 + #194 + #189 +
+  #194 + #170 + #194 + #186 + #194 + #171 + #226 + #150 + #160 + #194 + #187 +
+  #194 + #177 + '\ufffe''),' + #10 +
+  '    ''iso8859_1'': (''iso8859-1'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #194 + #161 +
+  #194 + #162 + #194 + #163 + #194 + #164 + #194 + #165 + #194 + #166 + #194 +
+  #167 + #194 + #168 + #194 + #169 + #194 + #170 + #194 + #171 + #194 + #172 +
+  '\xad' + #194 + #174 + #194 + #175 + #194 + #176 + #194 + #177 + #194 +
+  #178 + #194 + #179 + #194 + #180 + #194 + #181 + #194 + #182 + #194 + #183 +
+  #194 + #184 + #194 + #185 + #194 + #186 + #194 + #187 + #194 + #188 + #194 +
+  #189 + #194 + #190 + #194 + #191 + #195 + #128 + #195 + #129 + #195 + #130 +
+  #195 + #131 + #195 + #132 + #195 + #133 + #195 + #134 + #195 + #135 + #195 +
+  #136 + #195 + #137 + #195 + #138 + #195 + #139 + #195 + #140 + #195 + #141 +
+  #195 + #142 + #195 + #143 + #195 + #144 + #195 + #145 + #195 + #146 + #195 +
+  #147 + #195 + #148 + #195 + #149 + #195 + #150 + #195 + #151 + #195 + #152 +
+  #195 + #153 + #195 + #154 + #195 + #155 + #195 + #156 + #195 + #157 + #195 +
+  #158 + #195 + #159 + #195 + #160 + #195 + #161 + #195 + #162 + #195 + #163 +
+  #195 + #164 + #195 + #165 + #195 + #166 + #195 + #167 + #195 + #168 + #195 +
+  #169 + #195 + #170 + #195 + #171 + #195 + #172 + #195 + #173 + #195 + #174 +
+  #195 + #175 + #195 + #176 + #195 + #177 + #195 + #178 + #195 + #179 + #195 +
+  #180 + #195 + #181 + #195 + #182 + #195 + #183 + #195 + #184 + #195 + #185 +
+  #195 + #186 + #195 + #187 + #195 + #188 + #195 + #189 + #195 + #190 + #195 +
+  #191 + '''),' + #10 + '    ''iso8859_10'': (''iso8859-10'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' +
+  'pqrstuvwxyz{|}~\x7f\x80\x81\x82\x8' +
+  '3\x84\x85\x86\x87\x88\x89\x8a\x8b\' +
+  'x8c\x8d\x8e\x8f\x90\x91\x92\x93\x9' +
+  '4\x95\x96\x97\x98\x99\x9a\x9b\x9c\' + 'x9d\x9e\x9f\xa0' + #196 + #132 +
+  #196 + #146 + #196 + #162 + #196 + #170 + #196 + #168 + #196 + #182 + #194 +
+  #167 + #196 + #187 + #196 + #144 + #197 + #160 + #197 + #166 + #197 + #189 +
+  '\xad' + #197 + #170 + #197 + #138 + #194 + #176 + #196 + #133 + #196 +
+  #147 + #196 + #163 + #196 + #171 + #196 + #169 + #196 + #183 + #194 + #183 +
+  #196 + #188 + #196 + #145 + #197 + #161 + #197 + #167 + #197 + #190 + #226 +
+  #128 + #149 + #197 + #171 + #197 + #139 + #196 + #128 + #195 + #129 + #195 +
+  #130 + #195 + #131 + #195 + #132 + #195 + #133 + #195 + #134 + #196 + #174 +
+  #196 + #140 + #195 + #137 + #196 + #152 + #195 + #139 + #196 + #150 + #195 +
+  #141 + #195 + #142 + #195 + #143 + #195 + #144 + #197 + #133 + #197 + #140 +
+  #195 + #147 + #195 + #148 + #195 + #149 + #195 + #150 + #197 + #168 + #195 +
+  #152 + #197 + #178 + #195 + #154 + #195 + #155 + #195 + #156 + #195 + #157 +
+  #195 + #158 + #195 + #159 + #196 + #129 + #195 + #161 + #195 + #162 + #195 +
+  #163 + #195 + #164 + #195 + #165 + #195 + #166 + #196 + #175 + #196 + #141 +
+  #195 + #169 + #196 + #153 + #195 + #171 + #196 + #151 + #195 + #173 + #195 +
+  #174 + #195 + #175 + #195 + #176 + #197 + #134 + #197 + #141 + #195 + #179 +
+  #195 + #180 + #195 + #181 + #195 + #182 + #197 + #169 + #195 + #184 + #197 +
+  #179 + #195 + #186 + #195 + #187 + #195 + #188 + #195 + #189 + #195 + #190 +
+  #196 + #184 + '''),' + #10 + '    ''iso8859_11'': (''iso8859-11'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' +
+  'pqrstuvwxyz{|}~\x7f\x80\x81\x82\x8' +
+  '3\x84\x85\x86\x87\x88\x89\x8a\x8b\' +
+  'x8c\x8d\x8e\x8f\x90\x91\x92\x93\x9' +
+  '4\x95\x96\x97\x98\x99\x9a\x9b\x9c\' + 'x9d\x9e\x9f\xa0' + #224 + #184 +
+  #129 + #224 + #184 + #130 + #224 + #184 + #131 + #224 + #184 + #132 + #224 +
+  #184 + #133 + #224 + #184 + #134 + #224 + #184 + #135 + #224 + #184 + #136 +
+  #224 + #184 + #137 + #224 + #184 + #138 + #224 + #184 + #139 + #224 + #184 +
+  #140 + #224 + #184 + #141 + #224 + #184 + #142 + #224 + #184 + #143 + #224 +
+  #184 + #144 + #224 + #184 + #145 + #224 + #184 + #146 + #224 + #184 + #147 +
+  #224 + #184 + #148 + #224 + #184 + #149 + #224 + #184 + #150 + #224 + #184 +
+  #151 + #224 + #184 + #152 + #224 + #184 + #153 + #224 + #184 + #154 + #224 +
+  #184 + #155 + #224 + #184 + #156 + #224 + #184 + #157 + #224 + #184 + #158 +
+  #224 + #184 + #159 + #224 + #184 + #160 + #224 + #184 + #161 + #224 + #184 +
+  #162 + #224 + #184 + #163 + #224 + #184 + #164 + #224 + #184 + #165 + #224 +
+  #184 + #166 + #224 + #184 + #167 + #224 + #184 + #168 + #224 + #184 + #169 +
+  #224 + #184 + #170 + #224 + #184 + #171 + #224 + #184 + #172 + #224 + #184 +
+  #173 + #224 + #184 + #174 + #224 + #184 + #175 + #224 + #184 + #176 + #224 +
+  #184 + #177 + #224 + #184 + #178 + #224 + #184 + #179 + #224 + #184 + #180 +
+  #224 + #184 + #181 + #224 + #184 + #182 + #224 + #184 + #183 + #224 + #184 +
+  #184 + #224 + #184 + #185 + #224 + #184 + #186 +
+  '\ufffe\ufffe\ufffe\ufffe' + #224 + #184 + #191 + #224 + #185 + #128 +
+  #224 + #185 + #129 + #224 + #185 + #130 + #224 + #185 + #131 + #224 + #185 +
+  #132 + #224 + #185 + #133 + #224 + #185 + #134 + #224 + #185 + #135 + #224 +
+  #185 + #136 + #224 + #185 + #137 + #224 + #185 + #138 + #224 + #185 + #139 +
+  #224 + #185 + #140 + #224 + #185 + #141 + #224 + #185 + #142 + #224 + #185 +
+  #143 + #224 + #185 + #144 + #224 + #185 + #145 + #224 + #185 + #146 + #224 +
+  #185 + #147 + #224 + #185 + #148 + #224 + #185 + #149 + #224 + #185 + #150 +
+  #224 + #185 + #151 + #224 + #185 + #152 + #224 + #185 + #153 + #224 + #185 +
+  #154 + #224 + #185 + #155 + '\ufffe\uff' + 'fe\ufffe\ufffe''),' + #10 +
+  '    ''iso8859_13'': (''iso8859-13'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' +
+  'pqrstuvwxyz{|}~\x7f\x80\x81\x82\x8' +
+  '3\x84\x85\x86\x87\x88\x89\x8a\x8b\' +
+  'x8c\x8d\x8e\x8f\x90\x91\x92\x93\x9' +
+  '4\x95\x96\x97\x98\x99\x9a\x9b\x9c\' + 'x9d\x9e\x9f\xa0' + #226 + #128 +
+  #157 + #194 + #162 + #194 + #163 + #194 + #164 + #226 + #128 + #158 + #194 +
+  #166 + #194 + #167 + #195 + #152 + #194 + #169 + #197 + #150 + #194 + #171 +
+  #194 + #172 + '\xad' + #194 + #174 + #195 + #134 + #194 + #176 + #194 +
+  #177 + #194 + #178 + #194 + #179 + #226 + #128 + #156 + #194 + #181 + #194 +
+  #182 + #194 + #183 + #195 + #184 + #194 + #185 + #197 + #151 + #194 + #187 +
+  #194 + #188 + #194 + #189 + #194 + #190 + #195 + #166 + #196 + #132 + #196 +
+  #174 + #196 + #128 + #196 + #134 + #195 + #132 + #195 + #133 + #196 + #152 +
+  #196 + #146 + #196 + #140 + #195 + #137 + #197 + #185 + #196 + #150 + #196 +
+  #162 + #196 + #182 + #196 + #170 + #196 + #187 + #197 + #160 + #197 + #131 +
+  #197 + #133 + #195 + #147 + #197 + #140 + #195 + #149 + #195 + #150 + #195 +
+  #151 + #197 + #178 + #197 + #129 + #197 + #154 + #197 + #170 + #195 + #156 +
+  #197 + #187 + #197 + #189 + #195 + #159 + #196 + #133 + #196 + #175 + #196 +
+  #129 + #196 + #135 + #195 + #164 + #195 + #165 + #196 + #153 + #196 + #147 +
+  #196 + #141 + #195 + #169 + #197 + #186 + #196 + #151 + #196 + #163 + #196 +
+  #183 + #196 + #171 + #196 + #188 + #197 + #161 + #197 + #132 + #197 + #134 +
+  #195 + #179 + #197 + #141 + #195 + #181 + #195 + #182 + #195 + #183 + #197 +
+  #179 + #197 + #130 + #197 + #155 + #197 + #171 + #195 + #188 + #197 + #188 +
+  #197 + #190 + #226 + #128 + #153 + '''),' + #10 +
+  '    ''iso8859_14'': (''iso8859-14'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' +
+  'pqrstuvwxyz{|}~\x7f\x80\x81\x82\x8' +
+  '3\x84\x85\x86\x87\x88\x89\x8a\x8b\' +
+  'x8c\x8d\x8e\x8f\x90\x91\x92\x93\x9' +
+  '4\x95\x96\x97\x98\x99\x9a\x9b\x9c\' + 'x9d\x9e\x9f\xa0' + #225 + #184 +
+  #130 + #225 + #184 + #131 + #194 + #163 + #196 + #138 + #196 + #139 + #225 +
+  #184 + #138 + #194 + #167 + #225 + #186 + #128 + #194 + #169 + #225 + #186 +
+  #130 + #225 + #184 + #139 + #225 + #187 + #178 + '\xad' + #194 + #174 +
+  #197 + #184 + #225 + #184 + #158 + #225 + #184 + #159 + #196 + #160 + #196 +
+  #161 + #225 + #185 + #128 + #225 + #185 + #129 + #194 + #182 + #225 + #185 +
+  #150 + #225 + #186 + #129 + #225 + #185 + #151 + #225 + #186 + #131 + #225 +
+  #185 + #160 + #225 + #187 + #179 + #225 + #186 + #132 + #225 + #186 + #133 +
+  #225 + #185 + #161 + #195 + #128 + #195 + #129 + #195 + #130 + #195 + #131 +
+  #195 + #132 + #195 + #133 + #195 + #134 + #195 + #135 + #195 + #136 + #195 +
+  #137 + #195 + #138 + #195 + #139 + #195 + #140 + #195 + #141 + #195 + #142 +
+  #195 + #143 + #197 + #180 + #195 + #145 + #195 + #146 + #195 + #147 + #195 +
+  #148 + #195 + #149 + #195 + #150 + #225 + #185 + #170 + #195 + #152 + #195 +
+  #153 + #195 + #154 + #195 + #155 + #195 + #156 + #195 + #157 + #197 + #182 +
+  #195 + #159 + #195 + #160 + #195 + #161 + #195 + #162 + #195 + #163 + #195 +
+  #164 + #195 + #165 + #195 + #166 + #195 + #167 + #195 + #168 + #195 + #169 +
+  #195 + #170 + #195 + #171 + #195 + #172 + #195 + #173 + #195 + #174 + #195 +
+  #175 + #197 + #181 + #195 + #177 + #195 + #178 + #195 + #179 + #195 + #180 +
+  #195 + #181 + #195 + #182 + #225 + #185 + #171 + #195 + #184 + #195 + #185 +
+  #195 + #186 + #195 + #187 + #195 + #188 + #195 + #189 + #197 + #183 + #195 +
+  #191 + '''),' + #10 + '    ''iso8859_15'': (''iso8859-15'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' +
+  'pqrstuvwxyz{|}~\x7f\x80\x81\x82\x8' +
+  '3\x84\x85\x86\x87\x88\x89\x8a\x8b\' +
+  'x8c\x8d\x8e\x8f\x90\x91\x92\x93\x9' +
+  '4\x95\x96\x97\x98\x99\x9a\x9b\x9c\' + 'x9d\x9e\x9f\xa0' + #194 + #161 +
+  #194 + #162 + #194 + #163 + #226 + #130 + #172 + #194 + #165 + #197 + #160 +
+  #194 + #167 + #197 + #161 + #194 + #169 + #194 + #170 + #194 + #171 + #194 +
+  #172 + '\xad' + #194 + #174 + #194 + #175 + #194 + #176 + #194 + #177 +
+  #194 + #178 + #194 + #179 + #197 + #189 + #194 + #181 + #194 + #182 + #194 +
+  #183 + #197 + #190 + #194 + #185 + #194 + #186 + #194 + #187 + #197 + #146 +
+  #197 + #147 + #197 + #184 + #194 + #191 + #195 + #128 + #195 + #129 + #195 +
+  #130 + #195 + #131 + #195 + #132 + #195 + #133 + #195 + #134 + #195 + #135 +
+  #195 + #136 + #195 + #137 + #195 + #138 + #195 + #139 + #195 + #140 + #195 +
+  #141 + #195 + #142 + #195 + #143 + #195 + #144 + #195 + #145 + #195 + #146 +
+  #195 + #147 + #195 + #148 + #195 + #149 + #195 + #150 + #195 + #151 + #195 +
+  #152 + #195 + #153 + #195 + #154 + #195 + #155 + #195 + #156 + #195 + #157 +
+  #195 + #158 + #195 + #159 + #195 + #160 + #195 + #161 + #195 + #162 + #195 +
+  #163 + #195 + #164 + #195 + #165 + #195 + #166 + #195 + #167 + #195 + #168 +
+  #195 + #169 + #195 + #170 + #195 + #171 + #195 + #172 + #195 + #173 + #195 +
+  #174 + #195 + #175 + #195 + #176 + #195 + #177 + #195 + #178 + #195 + #179 +
+  #195 + #180 + #195 + #181 + #195 + #182 + #195 + #183 + #195 + #184 + #195 +
+  #185 + #195 + #186 + #195 + #187 + #195 + #188 + #195 + #189 + #195 + #190 +
+  #195 + #191 + '''),' + #10 + '    ''iso8859_16'': (''iso8859-16'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' +
+  'pqrstuvwxyz{|}~\x7f\x80\x81\x82\x8' +
+  '3\x84\x85\x86\x87\x88\x89\x8a\x8b\' +
+  'x8c\x8d\x8e\x8f\x90\x91\x92\x93\x9' +
+  '4\x95\x96\x97\x98\x99\x9a\x9b\x9c\' + 'x9d\x9e\x9f\xa0' + #196 + #132 +
+  #196 + #133 + #197 + #129 + #226 + #130 + #172 + #226 + #128 + #158 + #197 +
+  #160 + #194 + #167 + #197 + #161 + #194 + #169 + #200 + #152 + #194 + #171 +
+  #197 + #185 + '\xad' + #197 + #186 + #197 + #187 + #194 + #176 + #194 +
+  #177 + #196 + #140 + #197 + #130 + #197 + #189 + #226 + #128 + #157 + #194 +
+  #182 + #194 + #183 + #197 + #190 + #196 + #141 + #200 + #153 + #194 + #187 +
+  #197 + #146 + #197 + #147 + #197 + #184 + #197 + #188 + #195 + #128 + #195 +
+  #129 + #195 + #130 + #196 + #130 + #195 + #132 + #196 + #134 + #195 + #134 +
+  #195 + #135 + #195 + #136 + #195 + #137 + #195 + #138 + #195 + #139 + #195 +
+  #140 + #195 + #141 + #195 + #142 + #195 + #143 + #196 + #144 + #197 + #131 +
+  #195 + #146 + #195 + #147 + #195 + #148 + #197 + #144 + #195 + #150 + #197 +
+  #154 + #197 + #176 + #195 + #153 + #195 + #154 + #195 + #155 + #195 + #156 +
+  #196 + #152 + #200 + #154 + #195 + #159 + #195 + #160 + #195 + #161 + #195 +
+  #162 + #196 + #131 + #195 + #164 + #196 + #135 + #195 + #166 + #195 + #167 +
+  #195 + #168 + #195 + #169 + #195 + #170 + #195 + #171 + #195 + #172 + #195 +
+  #173 + #195 + #174 + #195 + #175 + #196 + #145 + #197 + #132 + #195 + #178 +
+  #195 + #179 + #195 + #180 + #197 + #145 + #195 + #182 + #197 + #155 + #197 +
+  #177 + #195 + #185 + #195 + #186 + #195 + #187 + #195 + #188 + #196 + #153 +
+  #200 + #155 + #195 + #191 + '''),' + #10 +
+  '    ''iso8859_2'': (''iso8859-2'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #196 + #132 +
+  #203 + #152 + #197 + #129 + #194 + #164 + #196 + #189 + #197 + #154 + #194 +
+  #167 + #194 + #168 + #197 + #160 + #197 + #158 + #197 + #164 + #197 + #185 +
+  '\xad' + #197 + #189 + #197 + #187 + #194 + #176 + #196 + #133 + #203 +
+  #155 + #197 + #130 + #194 + #180 + #196 + #190 + #197 + #155 + #203 + #135 +
+  #194 + #184 + #197 + #161 + #197 + #159 + #197 + #165 + #197 + #186 + #203 +
+  #157 + #197 + #190 + #197 + #188 + #197 + #148 + #195 + #129 + #195 + #130 +
+  #196 + #130 + #195 + #132 + #196 + #185 + #196 + #134 + #195 + #135 + #196 +
+  #140 + #195 + #137 + #196 + #152 + #195 + #139 + #196 + #154 + #195 + #141 +
+  #195 + #142 + #196 + #142 + #196 + #144 + #197 + #131 + #197 + #135 + #195 +
+  #147 + #195 + #148 + #197 + #144 + #195 + #150 + #195 + #151 + #197 + #152 +
+  #197 + #174 + #195 + #154 + #197 + #176 + #195 + #156 + #195 + #157 + #197 +
+  #162 + #195 + #159 + #197 + #149 + #195 + #161 + #195 + #162 + #196 + #131 +
+  #195 + #164 + #196 + #186 + #196 + #135 + #195 + #167 + #196 + #141 + #195 +
+  #169 + #196 + #153 + #195 + #171 + #196 + #155 + #195 + #173 + #195 + #174 +
+  #196 + #143 + #196 + #145 + #197 + #132 + #197 + #136 + #195 + #179 + #195 +
+  #180 + #197 + #145 + #195 + #182 + #195 + #183 + #197 + #153 + #197 + #175 +
+  #195 + #186 + #197 + #177 + #195 + #188 + #195 + #189 + #197 + #163 + #203 +
+  #153 + '''),' + #10 + '    ''iso8859_3'': (''iso8859-3'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #196 + #166 +
+  #203 + #152 + #194 + #163 + #194 + #164 + '\ufffe' + #196 + #164 + #194 +
+  #167 + #194 + #168 + #196 + #176 + #197 + #158 + #196 + #158 + #196 + #180 +
+  '\xad' + '\ufffe' + #197 + #187 + #194 + #176 + #196 + #167 + #194 + #178 +
+  #194 + #179 + #194 + #180 + #194 + #181 + #196 + #165 + #194 + #183 + #194 +
+  #184 + #196 + #177 + #197 + #159 + #196 + #159 + #196 + #181 + #194 + #189 +
+  '\ufffe' + #197 + #188 + #195 + #128 + #195 + #129 + #195 + #130 + '\uf' +
+  'ffe' + #195 + #132 + #196 + #138 + #196 + #136 + #195 + #135 + #195 +
+  #136 + #195 + #137 + #195 + #138 + #195 + #139 + #195 + #140 + #195 + #141 +
+  #195 + #142 + #195 + #143 + '\ufffe' + #195 + #145 + #195 + #146 + #195 +
+  #147 + #195 + #148 + #196 + #160 + #195 + #150 + #195 + #151 + #196 + #156 +
+  #195 + #153 + #195 + #154 + #195 + #155 + #195 + #156 + #197 + #172 + #197 +
+  #156 + #195 + #159 + #195 + #160 + #195 + #161 + #195 + #162 + '\ufffe' +
+  #195 + #164 + #196 + #139 + #196 + #137 + #195 + #167 + #195 + #168 + #195 +
+  #169 + #195 + #170 + #195 + #171 + #195 + #172 + #195 + #173 + #195 + #174 +
+  #195 + #175 + '\ufffe' + #195 + #177 + #195 + #178 + #195 + #179 + #195 +
+  #180 + #196 + #161 + #195 + #182 + #195 + #183 + #196 + #157 + #195 + #185 +
+  #195 + #186 + #195 + #187 + #195 + #188 + #197 + #173 + #197 + #157 + #203 +
+  #153 + '''),' + #10 + '    ''iso8859_4'': (''iso8859-4'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #196 + #132 +
+  #196 + #184 + #197 + #150 + #194 + #164 + #196 + #168 + #196 + #187 + #194 +
+  #167 + #194 + #168 + #197 + #160 + #196 + #146 + #196 + #162 + #197 + #166 +
+  '\xad' + #197 + #189 + #194 + #175 + #194 + #176 + #196 + #133 + #203 +
+  #155 + #197 + #151 + #194 + #180 + #196 + #169 + #196 + #188 + #203 + #135 +
+  #194 + #184 + #197 + #161 + #196 + #147 + #196 + #163 + #197 + #167 + #197 +
+  #138 + #197 + #190 + #197 + #139 + #196 + #128 + #195 + #129 + #195 + #130 +
+  #195 + #131 + #195 + #132 + #195 + #133 + #195 + #134 + #196 + #174 + #196 +
+  #140 + #195 + #137 + #196 + #152 + #195 + #139 + #196 + #150 + #195 + #141 +
+  #195 + #142 + #196 + #170 + #196 + #144 + #197 + #133 + #197 + #140 + #196 +
+  #182 + #195 + #148 + #195 + #149 + #195 + #150 + #195 + #151 + #195 + #152 +
+  #197 + #178 + #195 + #154 + #195 + #155 + #195 + #156 + #197 + #168 + #197 +
+  #170 + #195 + #159 + #196 + #129 + #195 + #161 + #195 + #162 + #195 + #163 +
+  #195 + #164 + #195 + #165 + #195 + #166 + #196 + #175 + #196 + #141 + #195 +
+  #169 + #196 + #153 + #195 + #171 + #196 + #151 + #195 + #173 + #195 + #174 +
+  #196 + #171 + #196 + #145 + #197 + #134 + #197 + #141 + #196 + #183 + #195 +
+  #180 + #195 + #181 + #195 + #182 + #195 + #183 + #195 + #184 + #197 + #179 +
+  #195 + #186 + #195 + #187 + #195 + #188 + #197 + #169 + #197 + #171 + #203 +
+  #153 + '''),' + #10 + '    ''iso8859_5'': (''iso8859-5'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #208 + #129 +
+  #208 + #130 + #208 + #131 + #208 + #132 + #208 + #133 + #208 + #134 + #208 +
+  #135 + #208 + #136 + #208 + #137 + #208 + #138 + #208 + #139 + #208 + #140 +
+  '\xad' + #208 + #142 + #208 + #143 + #208 + #144 + #208 + #145 + #208 +
+  #146 + #208 + #147 + #208 + #148 + #208 + #149 + #208 + #150 + #208 + #151 +
+  #208 + #152 + #208 + #153 + #208 + #154 + #208 + #155 + #208 + #156 + #208 +
+  #157 + #208 + #158 + #208 + #159 + #208 + #160 + #208 + #161 + #208 + #162 +
+  #208 + #163 + #208 + #164 + #208 + #165 + #208 + #166 + #208 + #167 + #208 +
+  #168 + #208 + #169 + #208 + #170 + #208 + #171 + #208 + #172 + #208 + #173 +
+  #208 + #174 + #208 + #175 + #208 + #176 + #208 + #177 + #208 + #178 + #208 +
+  #179 + #208 + #180 + #208 + #181 + #208 + #182 + #208 + #183 + #208 + #184 +
+  #208 + #185 + #208 + #186 + #208 + #187 + #208 + #188 + #208 + #189 + #208 +
+  #190 + #208 + #191 + #209 + #128 + #209 + #129 + #209 + #130 + #209 + #131 +
+  #209 + #132 + #209 + #133 + #209 + #134 + #209 + #135 + #209 + #136 + #209 +
+  #137 + #209 + #138 + #209 + #139 + #209 + #140 + #209 + #141 + #209 + #142 +
+  #209 + #143 + #226 + #132 + #150 + #209 + #145 + #209 + #146 + #209 + #147 +
+  #209 + #148 + #209 + #149 + #209 + #150 + #209 + #151 + #209 + #152 + #209 +
+  #153 + #209 + #154 + #209 + #155 + #209 + #156 + #194 + #167 + #209 + #158 +
+  #209 + #159 + '''),' + #10 + '    ''iso8859_6'': (''iso8859-6'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0\ufffe\ufffe\ufffe' +
+  #194 + #164 + '\u' + 'fffe\ufffe\ufffe\ufffe\ufffe\ufffe' + '\ufffe' +
+  #216 + #140 + '\xad\ufffe\ufffe\ufffe\ufff' +
+  'e\ufffe\ufffe\ufffe\ufffe\ufffe\uf' + 'ffe\ufffe\ufffe\ufffe' + #216 +
+  #155 + '\ufffe\ufffe' + '\ufffe' + #216 + #159 + '\ufffe' + #216 + #161 +
+  #216 + #162 + #216 + #163 + #216 + #164 + #216 + #165 + #216 + #166 + #216 +
+  #167 + #216 + #168 + #216 + #169 + #216 + #170 + #216 + #171 + #216 + #172 +
+  #216 + #173 + #216 + #174 + #216 + #175 + #216 + #176 + #216 + #177 + #216 +
+  #178 + #216 + #179 + #216 + #180 + #216 + #181 + #216 + #182 + #216 + #183 +
+  #216 + #184 + #216 + #185 + #216 + #186 + '\ufffe\ufffe\ufffe\ufffe\ufff' +
+  'e' + #217 + #128 + #217 + #129 + #217 + #130 + #217 + #131 + #217 + #132 +
+  #217 + #133 + #217 + #134 + #217 + #135 + #217 + #136 + #217 + #137 + #217 +
+  #138 + #217 + #139 + #217 + #140 + #217 + #141 + #217 + #142 + #217 + #143 +
+  #217 + #144 + #217 + #145 + #217 + #146 + '\ufffe\ufffe\u' +
+  'fffe\ufffe\ufffe\ufffe\ufffe\ufffe' +
+  '\ufffe\ufffe\ufffe\ufffe\ufffe''),' + #10 +
+  '    ''iso8859_7'': (''iso8859-7'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #226 + #128 +
+  #152 + #226 + #128 + #153 + #194 + #163 + #226 + #130 + #172 + #226 + #130 +
+  #175 + #194 + #166 + #194 + #167 + #194 + #168 + #194 + #169 + #205 + #186 +
+  #194 + #171 + #194 + #172 + '\xad\ufff' + 'e' + #226 + #128 + #149 + #194 +
+  #176 + #194 + #177 + #194 + #178 + #194 + #179 + #206 + #132 + #206 + #133 +
+  #206 + #134 + #194 + #183 + #206 + #136 + #206 + #137 + #206 + #138 + #194 +
+  #187 + #206 + #140 + #194 + #189 + #206 + #142 + #206 + #143 + #206 + #144 +
+  #206 + #145 + #206 + #146 + #206 + #147 + #206 + #148 + #206 + #149 + #206 +
+  #150 + #206 + #151 + #206 + #152 + #206 + #153 + #206 + #154 + #206 + #155 +
+  #206 + #156 + #206 + #157 + #206 + #158 + #206 + #159 + #206 + #160 + #206 +
+  #161 + '\ufffe' + #206 + #163 + #206 + #164 + #206 + #165 + #206 + #166 +
+  #206 + #167 + #206 + #168 + #206 + #169 + #206 + #170 + #206 + #171 + #206 +
+  #172 + #206 + #173 + #206 + #174 + #206 + #175 + #206 + #176 + #206 + #177 +
+  #206 + #178 + #206 + #179 + #206 + #180 + #206 + #181 + #206 + #182 + #206 +
+  #183 + #206 + #184 + #206 + #185 + #206 + #186 + #206 + #187 + #206 + #188 +
+  #206 + #189 + #206 + #190 + #206 + #191 + #207 + #128 + #207 + #129 + #207 +
+  #130 + #207 + #131 + #207 + #132 + #207 + #133 + #207 + #134 + #207 + #135 +
+  #207 + #136 + #207 + #137 + #207 + #138 + #207 + #139 + #207 + #140 + #207 +
+  #141 + #207 + #142 + '\ufffe''),' + #10 +
+  '    ''iso8859_8'': (''iso8859-8'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0\ufffe' + #194 + #162 +
+  #194 + #163 + #194 + #164 + #194 + #165 + #194 + #166 + #194 + #167 + #194 +
+  #168 + #194 + #169 + #195 + #151 + #194 + #171 + #194 + #172 + '\xad' +
+  #194 + #174 + #194 + #175 + #194 + #176 + #194 + #177 + #194 + #178 + #194 +
+  #179 + #194 + #180 + #194 + #181 + #194 + #182 + #194 + #183 + #194 + #184 +
+  #194 + #185 + #195 + #183 + #194 + #187 + #194 + #188 + #194 + #189 + #194 +
+  #190 + '\ufffe\ufffe\ufff' + 'e\ufffe\ufffe\ufffe\ufffe\ufffe\uf' +
+  'ffe\ufffe\ufffe\ufffe\ufffe\ufffe\' +
+  'ufffe\ufffe\ufffe\ufffe\ufffe\ufff' +
+  'e\ufffe\ufffe\ufffe\ufffe\ufffe\uf' +
+  'ffe\ufffe\ufffe\ufffe\ufffe\ufffe\' + 'ufffe' + #226 + #128 + #151 + #215 +
+  #144 + #215 + #145 + #215 + #146 + #215 + #147 + #215 + #148 + #215 + #149 +
+  #215 + #150 + #215 + #151 + #215 + #152 + #215 + #153 + #215 + #154 + #215 +
+  #155 + #215 + #156 + #215 + #157 + #215 + #158 + #215 + #159 + #215 + #160 +
+  #215 + #161 + #215 + #162 + #215 + #163 + #215 + #164 + #215 + #165 + #215 +
+  #166 + #215 + #167 + #215 + #168 + #215 + #169 + #215 + #170 + '\' +
+  'ufffe\ufffe\u200e\u200f\ufffe''),' + #10 +
+  '    ''iso8859_9'': (''iso8859-9'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' +
+  'rstuvwxyz{|}~\x7f\x80\x81\x82\x83\' +
+  'x84\x85\x86\x87\x88\x89\x8a\x8b\x8' +
+  'c\x8d\x8e\x8f\x90\x91\x92\x93\x94\' +
+  'x95\x96\x97\x98\x99\x9a\x9b\x9c\x9' + 'd\x9e\x9f\xa0' + #194 + #161 +
+  #194 + #162 + #194 + #163 + #194 + #164 + #194 + #165 + #194 + #166 + #194 +
+  #167 + #194 + #168 + #194 + #169 + #194 + #170 + #194 + #171 + #194 + #172 +
+  '\xad' + #194 + #174 + #194 + #175 + #194 + #176 + #194 + #177 + #194 +
+  #178 + #194 + #179 + #194 + #180 + #194 + #181 + #194 + #182 + #194 + #183 +
+  #194 + #184 + #194 + #185 + #194 + #186 + #194 + #187 + #194 + #188 + #194 +
+  #189 + #194 + #190 + #194 + #191 + #195 + #128 + #195 + #129 + #195 + #130 +
+  #195 + #131 + #195 + #132 + #195 + #133 + #195 + #134 + #195 + #135 + #195 +
+  #136 + #195 + #137 + #195 + #138 + #195 + #139 + #195 + #140 + #195 + #141 +
+  #195 + #142 + #195 + #143 + #196 + #158 + #195 + #145 + #195 + #146 + #195 +
+  #147 + #195 + #148 + #195 + #149 + #195 + #150 + #195 + #151 + #195 + #152 +
+  #195 + #153 + #195 + #154 + #195 + #155 + #195 + #156 + #196 + #176 + #197 +
+  #158 + #195 + #159 + #195 + #160 + #195 + #161 + #195 + #162 + #195 + #163 +
+  #195 + #164 + #195 + #165 + #195 + #166 + #195 + #167 + #195 + #168 + #195 +
+  #169 + #195 + #170 + #195 + #171 + #195 + #172 + #195 + #173 + #195 + #174 +
+  #195 + #175 + #196 + #159 + #195 + #177 + #195 + #178 + #195 + #179 + #195 +
+  #180 + #195 + #181 + #195 + #182 + #195 + #183 + #195 + #184 + #195 + #185 +
+  #195 + #186 + #195 + #187 + #195 + #188 + #196 + #177 + #197 + #159 + #195 +
+  #191 + '''),' + #10 + '    ''koi8_r'': (''koi8-r'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #148 + #128 +
+  #226 + #148 + #130 + #226 + #148 + #140 + #226 + #148 + #144 + #226 + #148 +
+  #148 + #226 + #148 + #152 + #226 + #148 + #156 + #226 + #148 + #164 + #226 +
+  #148 + #172 + #226 + #148 + #180 + #226 + #148 + #188 + #226 + #150 + #128 +
+  #226 + #150 + #132 + #226 + #150 + #136 + #226 + #150 + #140 + #226 + #150 +
+  #144 + #226 + #150 + #145 + #226 + #150 + #146 + #226 + #150 + #147 + #226 +
+  #140 + #160 + #226 + #150 + #160 + #226 + #136 + #153 + #226 + #136 + #154 +
+  #226 + #137 + #136 + #226 + #137 + #164 + #226 + #137 + #165 + '\xa0' +
+  #226 + #140 + #161 + #194 + #176 + #194 + #178 + #194 + #183 + #195 + #183 +
+  #226 + #149 + #144 + #226 + #149 + #145 + #226 + #149 + #146 + #209 + #145 +
+  #226 + #149 + #147 + #226 + #149 + #148 + #226 + #149 + #149 + #226 + #149 +
+  #150 + #226 + #149 + #151 + #226 + #149 + #152 + #226 + #149 + #153 + #226 +
+  #149 + #154 + #226 + #149 + #155 + #226 + #149 + #156 + #226 + #149 + #157 +
+  #226 + #149 + #158 + #226 + #149 + #159 + #226 + #149 + #160 + #226 + #149 +
+  #161 + #208 + #129 + #226 + #149 + #162 + #226 + #149 + #163 + #226 + #149 +
+  #164 + #226 + #149 + #165 + #226 + #149 + #166 + #226 + #149 + #167 + #226 +
+  #149 + #168 + #226 + #149 + #169 + #226 + #149 + #170 + #226 + #149 + #171 +
+  #226 + #149 + #172 + #194 + #169 + #209 + #142 + #208 + #176 + #208 + #177 +
+  #209 + #134 + #208 + #180 + #208 + #181 + #209 + #132 + #208 + #179 + #209 +
+  #133 + #208 + #184 + #208 + #185 + #208 + #186 + #208 + #187 + #208 + #188 +
+  #208 + #189 + #208 + #190 + #208 + #191 + #209 + #143 + #209 + #128 + #209 +
+  #129 + #209 + #130 + #209 + #131 + #208 + #182 + #208 + #178 + #209 + #140 +
+  #209 + #139 + #208 + #183 + #209 + #136 + #209 + #141 + #209 + #137 + #209 +
+  #135 + #209 + #138 + #208 + #174 + #208 + #144 + #208 + #145 + #208 + #166 +
+  #208 + #148 + #208 + #149 + #208 + #164 + #208 + #147 + #208 + #165 + #208 +
+  #152 + #208 + #153 + #208 + #154 + #208 + #155 + #208 + #156 + #208 + #157 +
+  #208 + #158 + #208 + #159 + #208 + #175 + #208 + #160 + #208 + #161 + #208 +
+  #162 + #208 + #163 + #208 + #150 + #208 + #146 + #208 + #172 + #208 + #171 +
+  #208 + #151 + #208 + #168 + #208 + #173 + #208 + #169 + #208 + #167 + #208 +
+  #170 + '''),' + #10 + '    ''koi8_t'': (''koi8-t'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #210 + #155 + #210 +
+  #147 + #226 + #128 + #154 + #210 + #146 + #226 + #128 + #158 + #226 + #128 +
+  #166 + #226 + #128 + #160 + #226 + #128 + #161 + '\ufffe' + #226 + #128 +
+  #176 + #210 + #179 + #226 + #128 + #185 + #210 + #178 + #210 + #183 + #210 +
+  #182 + '\uf' + 'ffe' + #210 + #154 + #226 + #128 + #152 + #226 + #128 +
+  #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 +
+  #128 + #147 + #226 + #128 + #148 + '\ufffe' + #226 + #132 + #162 +
+  '\ufffe' + #226 + #128 + #186 + '\ufffe\uf' + 'ffe\ufffe\ufffe\ufffe' +
+  #211 + #175 + #211 + #174 + #209 + #145 + #194 + #164 + #211 + #163 + #194 +
+  #166 + #194 + #167 + '\ufffe' + '\ufffe\ufffe' + #194 + #171 + #194 + #172 +
+  '\xad' + #194 + #174 + '\ufffe' + #194 + #176 + #194 + #177 + #194 + #178 +
+  #208 + #129 + '\ufff' + 'e' + #211 + #162 + #194 + #182 + #194 + #183 +
+  '\ufffe' + #226 + #132 + #150 + '\ufffe' + #194 + #187 +
+  '\ufffe\ufffe\uff' + 'fe' + #194 + #169 + #209 + #142 + #208 + #176 + #208 +
+  #177 + #209 + #134 + #208 + #180 + #208 + #181 + #209 + #132 + #208 + #179 +
+  #209 + #133 + #208 + #184 + #208 + #185 + #208 + #186 + #208 + #187 + #208 +
+  #188 + #208 + #189 + #208 + #190 + #208 + #191 + #209 + #143 + #209 + #128 +
+  #209 + #129 + #209 + #130 + #209 + #131 + #208 + #182 + #208 + #178 + #209 +
+  #140 + #209 + #139 + #208 + #183 + #209 + #136 + #209 + #141 + #209 + #137 +
+  #209 + #135 + #209 + #138 + #208 + #174 + #208 + #144 + #208 + #145 + #208 +
+  #166 + #208 + #148 + #208 + #149 + #208 + #164 + #208 + #147 + #208 + #165 +
+  #208 + #152 + #208 + #153 + #208 + #154 + #208 + #155 + #208 + #156 + #208 +
+  #157 + #208 + #158 + #208 + #159 + #208 + #175 + #208 + #160 + #208 + #161 +
+  #208 + #162 + #208 + #163 + #208 + #150 + #208 + #146 + #208 + #172 + #208 +
+  #171 + #208 + #151 + #208 + #168 + #208 + #173 + #208 + #169 + #208 + #167 +
+  #208 + #170 + '''' + '),' + #10 +
+  '    ''koi8_u'': (''koi8-u'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #148 + #128 +
+  #226 + #148 + #130 + #226 + #148 + #140 + #226 + #148 + #144 + #226 + #148 +
+  #148 + #226 + #148 + #152 + #226 + #148 + #156 + #226 + #148 + #164 + #226 +
+  #148 + #172 + #226 + #148 + #180 + #226 + #148 + #188 + #226 + #150 + #128 +
+  #226 + #150 + #132 + #226 + #150 + #136 + #226 + #150 + #140 + #226 + #150 +
+  #144 + #226 + #150 + #145 + #226 + #150 + #146 + #226 + #150 + #147 + #226 +
+  #140 + #160 + #226 + #150 + #160 + #226 + #136 + #153 + #226 + #136 + #154 +
+  #226 + #137 + #136 + #226 + #137 + #164 + #226 + #137 + #165 + '\xa0' +
+  #226 + #140 + #161 + #194 + #176 + #194 + #178 + #194 + #183 + #195 + #183 +
+  #226 + #149 + #144 + #226 + #149 + #145 + #226 + #149 + #146 + #209 + #145 +
+  #209 + #148 + #226 + #149 + #148 + #209 + #150 + #209 + #151 + #226 + #149 +
+  #151 + #226 + #149 + #152 + #226 + #149 + #153 + #226 + #149 + #154 + #226 +
+  #149 + #155 + #210 + #145 + #226 + #149 + #157 + #226 + #149 + #158 + #226 +
+  #149 + #159 + #226 + #149 + #160 + #226 + #149 + #161 + #208 + #129 + #208 +
+  #132 + #226 + #149 + #163 + #208 + #134 + #208 + #135 + #226 + #149 + #166 +
+  #226 + #149 + #167 + #226 + #149 + #168 + #226 + #149 + #169 + #226 + #149 +
+  #170 + #210 + #144 + #226 + #149 + #172 + #194 + #169 + #209 + #142 + #208 +
+  #176 + #208 + #177 + #209 + #134 + #208 + #180 + #208 + #181 + #209 + #132 +
+  #208 + #179 + #209 + #133 + #208 + #184 + #208 + #185 + #208 + #186 + #208 +
+  #187 + #208 + #188 + #208 + #189 + #208 + #190 + #208 + #191 + #209 + #143 +
+  #209 + #128 + #209 + #129 + #209 + #130 + #209 + #131 + #208 + #182 + #208 +
+  #178 + #209 + #140 + #209 + #139 + #208 + #183 + #209 + #136 + #209 + #141 +
+  #209 + #137 + #209 + #135 + #209 + #138 + #208 + #174 + #208 + #144 + #208 +
+  #145 + #208 + #166 + #208 + #148 + #208 + #149 + #208 + #164 + #208 + #147 +
+  #208 + #165 + #208 + #152 + #208 + #153 + #208 + #154 + #208 + #155 + #208 +
+  #156 + #208 + #157 + #208 + #158 + #208 + #159 + #208 + #175 + #208 + #160 +
+  #208 + #161 + #208 + #162 + #208 + #163 + #208 + #150 + #208 + #146 + #208 +
+  #172 + #208 + #171 + #208 + #151 + #208 + #168 + #208 + #173 + #208 + #169 +
+  #208 + #167 + #208 + #170 + '''),' + #10 +
+  '    ''kz1048'': (''kz1048'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #208 + #130 + #208 +
+  #131 + #226 + #128 + #154 + #209 + #147 + #226 + #128 + #158 + #226 + #128 +
+  #166 + #226 + #128 + #160 + #226 + #128 + #161 + #226 + #130 + #172 + #226 +
+  #128 + #176 + #208 + #137 + #226 + #128 + #185 + #208 + #138 + #210 + #154 +
+  #210 + #186 + #208 + #143 + #209 + #146 + #226 + #128 + #152 + #226 + #128 +
+  #153 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #162 + #226 +
+  #128 + #147 + #226 + #128 + #148 + '\ufffe' + #226 + #132 + #162 + #209 +
+  #153 + #226 + #128 + #186 + #209 + #154 + #210 + #155 + #210 + #187 + #209 +
+  #159 + '\xa0' + #210 + #176 + #210 + #177 + #211 + #152 + #194 + #164 +
+  #211 + #168 + #194 + #166 + #194 + #167 + #208 + #129 + #194 + #169 + #210 +
+  #146 + #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #210 + #174 +
+  #194 + #176 + #194 + #177 + #208 + #134 + #209 + #150 + #211 + #169 + #194 +
+  #181 + #194 + #182 + #194 + #183 + #209 + #145 + #226 + #132 + #150 + #210 +
+  #147 + #194 + #187 + #211 + #153 + #210 + #162 + #210 + #163 + #210 + #175 +
+  #208 + #144 + #208 + #145 + #208 + #146 + #208 + #147 + #208 + #148 + #208 +
+  #149 + #208 + #150 + #208 + #151 + #208 + #152 + #208 + #153 + #208 + #154 +
+  #208 + #155 + #208 + #156 + #208 + #157 + #208 + #158 + #208 + #159 + #208 +
+  #160 + #208 + #161 + #208 + #162 + #208 + #163 + #208 + #164 + #208 + #165 +
+  #208 + #166 + #208 + #167 + #208 + #168 + #208 + #169 + #208 + #170 + #208 +
+  #171 + #208 + #172 + #208 + #173 + #208 + #174 + #208 + #175 + #208 + #176 +
+  #208 + #177 + #208 + #178 + #208 + #179 + #208 + #180 + #208 + #181 + #208 +
+  #182 + #208 + #183 + #208 + #184 + #208 + #185 + #208 + #186 + #208 + #187 +
+  #208 + #188 + #208 + #189 + #208 + #190 + #208 + #191 + #209 + #128 + #209 +
+  #129 + #209 + #130 + #209 + #131 + #209 + #132 + #209 + #133 + #209 + #134 +
+  #209 + #135 + #209 + #136 + #209 + #137 + #209 + #138 + #209 + #139 + #209 +
+  #140 + #209 + #141 + #209 + #142 + #209 + #143 + '''),' + #10 +
+  '    ''mac_arabic'': (''mac-arabic'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' + 'pqrstuvwxyz{|}~\x7f' + #195 + #132 +
+  '\xa0' + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 + #195 +
+  #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #218 + #186 +
+  #194 + #171 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 + #195 +
+  #171 + #195 + #173 + #226 + #128 + #166 + #195 + #174 + #195 + #175 + #195 +
+  #177 + #195 + #179 + #194 + #187 + #195 + #180 + #195 + #182 + #195 + #183 +
+  #195 + #186 + #195 + #185 + #195 + #187 + #195 + #188 + ' !"#$' + #217 +
+  #170 + '&\''()*+' + #216 + #140 + '-./' + #217 + #160 + #217 + #161 + #217 +
+  #162 + #217 + #163 + #217 + #164 + #217 + #165 + #217 + #166 + #217 + #167 +
+  #217 + #168 + #217 + #169 + ':' + #216 + #155 + '<=>' + #216 + #159 + #226 +
+  #157 + #138 + #216 + #161 + #216 + #162 + #216 + #163 + #216 + #164 + #216 +
+  #165 + #216 + #166 + #216 + #167 + #216 + #168 + #216 + #169 + #216 + #170 +
+  #216 + #171 + #216 + #172 + #216 + #173 + #216 + #174 + #216 + #175 + #216 +
+  #176 + #216 + #177 + #216 + #178 + #216 + #179 + #216 + #180 + #216 + #181 +
+  #216 + #182 + #216 + #183 + #216 + #184 + #216 + #185 + #216 + #186 +
+  '[\\]^_' + #217 + #128 + #217 + #129 + #217 + #130 + #217 + #131 + #217 +
+  #132 + #217 + #133 + #217 + #134 + #217 + #135 + #217 + #136 + #217 + #137 +
+  #217 + #138 + #217 + #139 + #217 + #140 + #217 + #141 + #217 + #142 + #217 +
+  #143 + #217 + #144 + #217 + #145 + #217 + #146 + #217 + #190 + #217 + #185 +
+  #218 + #134 + #219 + #149 + #218 + #164 + #218 + #175 + #218 + #136 + #218 +
+  #145 + '{|}' + #218 + #152 + #219 + #146 + '''),' + #10 +
+  '    ''mac_centeuro'': (''mac-centeuro' +
+  ''', ''\x00\x01\x02\x03\x04\x05\x06\x' +
+  '07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x' +
+  '11\x12\x13\x14\x15\x16\x17\x18\x19' +
+  '\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\''(' +
+  ')*+,-./0123456789:;<=>?@ABCDEFGHIJ' +
+  'KLMNOPQRSTUVWXYZ[\\]^_`abcdefghijk' + 'lmnopqrstuvwxyz{|}~\x7f' + #195 +
+  #132 + #196 + #128 + #196 + #129 + #195 + #137 + #196 + #132 + #195 + #150 +
+  #195 + #156 + #195 + #161 + #196 + #133 + #196 + #140 + #195 + #164 + #196 +
+  #141 + #196 + #134 + #196 + #135 + #195 + #169 + #197 + #185 + #197 + #186 +
+  #196 + #142 + #195 + #173 + #196 + #143 + #196 + #146 + #196 + #147 + #196 +
+  #150 + #195 + #179 + #196 + #151 + #195 + #180 + #195 + #182 + #195 + #181 +
+  #195 + #186 + #196 + #154 + #196 + #155 + #195 + #188 + #226 + #128 + #160 +
+  #194 + #176 + #196 + #152 + #194 + #163 + #194 + #167 + #226 + #128 + #162 +
+  #194 + #182 + #195 + #159 + #194 + #174 + #194 + #169 + #226 + #132 + #162 +
+  #196 + #153 + #194 + #168 + #226 + #137 + #160 + #196 + #163 + #196 + #174 +
+  #196 + #175 + #196 + #170 + #226 + #137 + #164 + #226 + #137 + #165 + #196 +
+  #171 + #196 + #182 + #226 + #136 + #130 + #226 + #136 + #145 + #197 + #130 +
+  #196 + #187 + #196 + #188 + #196 + #189 + #196 + #190 + #196 + #185 + #196 +
+  #186 + #197 + #133 + #197 + #134 + #197 + #131 + #194 + #172 + #226 + #136 +
+  #154 + #197 + #132 + #197 + #135 + #226 + #136 + #134 + #194 + #171 + #194 +
+  #187 + #226 + #128 + #166 + '\xa0' + #197 + #136 + #197 + #144 + #195 +
+  #149 + #197 + #145 + #197 + #140 + #226 + #128 + #147 + #226 + #128 + #148 +
+  #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #152 + #226 + #128 +
+  #153 + #195 + #183 + #226 + #151 + #138 + #197 + #141 + #197 + #148 + #197 +
+  #149 + #197 + #152 + #226 + #128 + #185 + #226 + #128 + #186 + #197 + #153 +
+  #197 + #150 + #197 + #151 + #197 + #160 + #226 + #128 + #154 + #226 + #128 +
+  #158 + #197 + #161 + #197 + #154 + #197 + #155 + #195 + #129 + #197 + #164 +
+  #197 + #165 + #195 + #141 + #197 + #189 + #197 + #190 + #197 + #170 + #195 +
+  #147 + #195 + #148 + #197 + #171 + #197 + #174 + #195 + #154 + #197 + #175 +
+  #197 + #176 + #197 + #177 + #197 + #178 + #197 + #179 + #195 + #157 + #195 +
+  #189 + #196 + #183 + #197 + #187 + #197 + #129 + #197 + #188 + #196 + #162 +
+  #203 + #135 + '''),' + #10 + '    ''mac_croatian'': (''mac-croatian' +
+  ''', ''\x00\x01\x02\x03\x04\x05\x06\x' +
+  '07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x' +
+  '11\x12\x13\x14\x15\x16\x17\x18\x19' +
+  '\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\''(' +
+  ')*+,-./0123456789:;<=>?@ABCDEFGHIJ' +
+  'KLMNOPQRSTUVWXYZ[\\]^_`abcdefghijk' + 'lmnopqrstuvwxyz{|}~\x7f' + #195 +
+  #132 + #195 + #133 + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 +
+  #195 + #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #195 +
+  #163 + #195 + #165 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 +
+  #195 + #171 + #195 + #173 + #195 + #172 + #195 + #174 + #195 + #175 + #195 +
+  #177 + #195 + #179 + #195 + #178 + #195 + #180 + #195 + #182 + #195 + #181 +
+  #195 + #186 + #195 + #185 + #195 + #187 + #195 + #188 + #226 + #128 + #160 +
+  #194 + #176 + #194 + #162 + #194 + #163 + #194 + #167 + #226 + #128 + #162 +
+  #194 + #182 + #195 + #159 + #194 + #174 + #197 + #160 + #226 + #132 + #162 +
+  #194 + #180 + #194 + #168 + #226 + #137 + #160 + #197 + #189 + #195 + #152 +
+  #226 + #136 + #158 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 +
+  #226 + #136 + #134 + #194 + #181 + #226 + #136 + #130 + #226 + #136 + #145 +
+  #226 + #136 + #143 + #197 + #161 + #226 + #136 + #171 + #194 + #170 + #194 +
+  #186 + #206 + #169 + #197 + #190 + #195 + #184 + #194 + #191 + #194 + #161 +
+  #194 + #172 + #226 + #136 + #154 + #198 + #146 + #226 + #137 + #136 + #196 +
+  #134 + #194 + #171 + #196 + #140 + #226 + #128 + #166 + '\xa0' + #195 +
+  #128 + #195 + #131 + #195 + #149 + #197 + #146 + #197 + #147 + #196 + #144 +
+  #226 + #128 + #148 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 +
+  #152 + #226 + #128 + #153 + #195 + #183 + #226 + #151 + #138 + '\uf8ff' +
+  #194 + #169 + #226 + #129 + #132 + #226 + #130 + #172 + #226 + #128 + #185 +
+  #226 + #128 + #186 + #195 + #134 + #194 + #187 + #226 + #128 + #147 + #194 +
+  #183 + #226 + #128 + #154 + #226 + #128 + #158 + #226 + #128 + #176 + #195 +
+  #130 + #196 + #135 + #195 + #129 + #196 + #141 + #195 + #136 + #195 + #141 +
+  #195 + #142 + #195 + #143 + #195 + #140 + #195 + #147 + #195 + #148 + #196 +
+  #145 + #195 + #146 + #195 + #154 + #195 + #155 + #195 + #153 + #196 + #177 +
+  #203 + #134 + #203 + #156 + #194 + #175 + #207 + #128 + #195 + #139 + #203 +
+  #154 + #194 + #184 + #195 + #138 + #195 + #166 + #203 + #135 + '''),' +
+  #10 + '    ''mac_cyrillic'': (''mac-cyrillic' +
+  ''', ''\x00\x01\x02\x03\x04\x05\x06\x' +
+  '07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x' +
+  '11\x12\x13\x14\x15\x16\x17\x18\x19' +
+  '\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\''(' +
+  ')*+,-./0123456789:;<=>?@ABCDEFGHIJ' +
+  'KLMNOPQRSTUVWXYZ[\\]^_`abcdefghijk' + 'lmnopqrstuvwxyz{|}~\x7f' + #208 +
+  #144 + #208 + #145 + #208 + #146 + #208 + #147 + #208 + #148 + #208 + #149 +
+  #208 + #150 + #208 + #151 + #208 + #152 + #208 + #153 + #208 + #154 + #208 +
+  #155 + #208 + #156 + #208 + #157 + #208 + #158 + #208 + #159 + #208 + #160 +
+  #208 + #161 + #208 + #162 + #208 + #163 + #208 + #164 + #208 + #165 + #208 +
+  #166 + #208 + #167 + #208 + #168 + #208 + #169 + #208 + #170 + #208 + #171 +
+  #208 + #172 + #208 + #173 + #208 + #174 + #208 + #175 + #226 + #128 + #160 +
+  #194 + #176 + #210 + #144 + #194 + #163 + #194 + #167 + #226 + #128 + #162 +
+  #194 + #182 + #208 + #134 + #194 + #174 + #194 + #169 + #226 + #132 + #162 +
+  #208 + #130 + #209 + #146 + #226 + #137 + #160 + #208 + #131 + #209 + #147 +
+  #226 + #136 + #158 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 +
+  #209 + #150 + #194 + #181 + #210 + #145 + #208 + #136 + #208 + #132 + #209 +
+  #148 + #208 + #135 + #209 + #151 + #208 + #137 + #209 + #153 + #208 + #138 +
+  #209 + #154 + #209 + #152 + #208 + #133 + #194 + #172 + #226 + #136 + #154 +
+  #198 + #146 + #226 + #137 + #136 + #226 + #136 + #134 + #194 + #171 + #194 +
+  #187 + #226 + #128 + #166 + '\xa0' + #208 + #139 + #209 + #155 + #208 +
+  #140 + #209 + #156 + #209 + #149 + #226 + #128 + #147 + #226 + #128 + #148 +
+  #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 + #152 + #226 + #128 +
+  #153 + #195 + #183 + #226 + #128 + #158 + #208 + #142 + #209 + #158 + #208 +
+  #143 + #209 + #159 + #226 + #132 + #150 + #208 + #129 + #209 + #145 + #209 +
+  #143 + #208 + #176 + #208 + #177 + #208 + #178 + #208 + #179 + #208 + #180 +
+  #208 + #181 + #208 + #182 + #208 + #183 + #208 + #184 + #208 + #185 + #208 +
+  #186 + #208 + #187 + #208 + #188 + #208 + #189 + #208 + #190 + #208 + #191 +
+  #209 + #128 + #209 + #129 + #209 + #130 + #209 + #131 + #209 + #132 + #209 +
+  #133 + #209 + #134 + #209 + #135 + #209 + #136 + #209 + #137 + #209 + #138 +
+  #209 + #139 + #209 + #140 + #209 + #141 + #209 + #142 + #226 + #130 + #172 +
+  '''),' + #10 + '    ''mac_farsi'': (''mac-farsi'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' + 'rstuvwxyz{|}~\x7f' + #195 + #132 +
+  '\xa0' + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 + #195 +
+  #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #218 + #186 +
+  #194 + #171 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 + #195 +
+  #171 + #195 + #173 + #226 + #128 + #166 + #195 + #174 + #195 + #175 + #195 +
+  #177 + #195 + #179 + #194 + #187 + #195 + #180 + #195 + #182 + #195 + #183 +
+  #195 + #186 + #195 + #185 + #195 + #187 + #195 + #188 + ' !"#$' + #217 +
+  #170 + '&\''()*+' + #216 + #140 + '-.' + '/' + #219 + #176 + #219 + #177 +
+  #219 + #178 + #219 + #179 + #219 + #180 + #219 + #181 + #219 + #182 + #219 +
+  #183 + #219 + #184 + #219 + #185 + ':' + #216 + #155 + '<=>' + #216 + #159 +
+  #226 + #157 + #138 + #216 + #161 + #216 + #162 + #216 + #163 + #216 + #164 +
+  #216 + #165 + #216 + #166 + #216 + #167 + #216 + #168 + #216 + #169 + #216 +
+  #170 + #216 + #171 + #216 + #172 + #216 + #173 + #216 + #174 + #216 + #175 +
+  #216 + #176 + #216 + #177 + #216 + #178 + #216 + #179 + #216 + #180 + #216 +
+  #181 + #216 + #182 + #216 + #183 + #216 + #184 + #216 + #185 + #216 + #186 +
+  '[\\]^_' + #217 + #128 + #217 + #129 + #217 + #130 + #217 + #131 + #217 +
+  #132 + #217 + #133 + #217 + #134 + #217 + #135 + #217 + #136 + #217 + #137 +
+  #217 + #138 + #217 + #139 + #217 + #140 + #217 + #141 + #217 + #142 + #217 +
+  #143 + #217 + #144 + #217 + #145 + #217 + #146 + #217 + #190 + #217 + #185 +
+  #218 + #134 + #219 + #149 + #218 + #164 + #218 + #175 + #218 + #136 + #218 +
+  #145 + '{|}' + #218 + #152 + #219 + #146 + '''),' + #10 +
+  '    ''mac_greek'': (''mac-greek'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' + 'rstuvwxyz{|}~\x7f' + #195 + #132 +
+  #194 + #185 + #194 + #178 + #195 + #137 + #194 + #179 + #195 + #150 + #195 +
+  #156 + #206 + #133 + #195 + #160 + #195 + #162 + #195 + #164 + #206 + #132 +
+  #194 + #168 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 + #195 +
+  #171 + #194 + #163 + #226 + #132 + #162 + #195 + #174 + #195 + #175 + #226 +
+  #128 + #162 + #194 + #189 + #226 + #128 + #176 + #195 + #180 + #195 + #182 +
+  #194 + #166 + #226 + #130 + #172 + #195 + #185 + #195 + #187 + #195 + #188 +
+  #226 + #128 + #160 + #206 + #147 + #206 + #148 + #206 + #152 + #206 + #155 +
+  #206 + #158 + #206 + #160 + #195 + #159 + #194 + #174 + #194 + #169 + #206 +
+  #163 + #206 + #170 + #194 + #167 + #226 + #137 + #160 + #194 + #176 + #194 +
+  #183 + #206 + #145 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 +
+  #194 + #165 + #206 + #146 + #206 + #149 + #206 + #150 + #206 + #151 + #206 +
+  #153 + #206 + #154 + #206 + #156 + #206 + #166 + #206 + #171 + #206 + #168 +
+  #206 + #169 + #206 + #172 + #206 + #157 + #194 + #172 + #206 + #159 + #206 +
+  #161 + #226 + #137 + #136 + #206 + #164 + #194 + #171 + #194 + #187 + #226 +
+  #128 + #166 + '\xa0' + #206 + #165 + #206 + #167 + #206 + #134 + #206 +
+  #136 + #197 + #147 + #226 + #128 + #147 + #226 + #128 + #149 + #226 + #128 +
+  #156 + #226 + #128 + #157 + #226 + #128 + #152 + #226 + #128 + #153 + #195 +
+  #183 + #206 + #137 + #206 + #138 + #206 + #140 + #206 + #142 + #206 + #173 +
+  #206 + #174 + #206 + #175 + #207 + #140 + #206 + #143 + #207 + #141 + #206 +
+  #177 + #206 + #178 + #207 + #136 + #206 + #180 + #206 + #181 + #207 + #134 +
+  #206 + #179 + #206 + #183 + #206 + #185 + #206 + #190 + #206 + #186 + #206 +
+  #187 + #206 + #188 + #206 + #189 + #206 + #191 + #207 + #128 + #207 + #142 +
+  #207 + #129 + #207 + #131 + #207 + #132 + #206 + #184 + #207 + #137 + #207 +
+  #130 + #207 + #135 + #207 + #133 + #206 + #182 + #207 + #138 + #207 + #139 +
+  #206 + #144 + #206 + #176 + '\xad''),' + #10 +
+  '    ''mac_iceland'': (''mac-iceland'',' +
+  ' ''\x00\x01\x02\x03\x04\x05\x06\x07' +
+  '\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11' +
+  '\x12\x13\x14\x15\x16\x17\x18\x19\x' +
+  '1a\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*' +
+  '+,-./0123456789:;<=>?@ABCDEFGHIJKL' +
+  'MNOPQRSTUVWXYZ[\\]^_`abcdefghijklm' + 'nopqrstuvwxyz{|}~\x7f' + #195 +
+  #132 + #195 + #133 + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 +
+  #195 + #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #195 +
+  #163 + #195 + #165 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 +
+  #195 + #171 + #195 + #173 + #195 + #172 + #195 + #174 + #195 + #175 + #195 +
+  #177 + #195 + #179 + #195 + #178 + #195 + #180 + #195 + #182 + #195 + #181 +
+  #195 + #186 + #195 + #185 + #195 + #187 + #195 + #188 + #195 + #157 + #194 +
+  #176 + #194 + #162 + #194 + #163 + #194 + #167 + #226 + #128 + #162 + #194 +
+  #182 + #195 + #159 + #194 + #174 + #194 + #169 + #226 + #132 + #162 + #194 +
+  #180 + #194 + #168 + #226 + #137 + #160 + #195 + #134 + #195 + #152 + #226 +
+  #136 + #158 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 + #194 +
+  #165 + #194 + #181 + #226 + #136 + #130 + #226 + #136 + #145 + #226 + #136 +
+  #143 + #207 + #128 + #226 + #136 + #171 + #194 + #170 + #194 + #186 + #206 +
+  #169 + #195 + #166 + #195 + #184 + #194 + #191 + #194 + #161 + #194 + #172 +
+  #226 + #136 + #154 + #198 + #146 + #226 + #137 + #136 + #226 + #136 + #134 +
+  #194 + #171 + #194 + #187 + #226 + #128 + #166 + '\xa0' + #195 + #128 +
+  #195 + #131 + #195 + #149 + #197 + #146 + #197 + #147 + #226 + #128 + #147 +
+  #226 + #128 + #148 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 +
+  #152 + #226 + #128 + #153 + #195 + #183 + #226 + #151 + #138 + #195 + #191 +
+  #197 + #184 + #226 + #129 + #132 + #226 + #130 + #172 + #195 + #144 + #195 +
+  #176 + #195 + #158 + #195 + #190 + #195 + #189 + #194 + #183 + #226 + #128 +
+  #154 + #226 + #128 + #158 + #226 + #128 + #176 + #195 + #130 + #195 + #138 +
+  #195 + #129 + #195 + #139 + #195 + #136 + #195 + #141 + #195 + #142 + #195 +
+  #143 + #195 + #140 + #195 + #147 + #195 + #148 + '\uf8ff' + #195 + #146 +
+  #195 + #154 + #195 + #155 + #195 + #153 + #196 + #177 + #203 + #134 + #203 +
+  #156 + #194 + #175 + #203 + #152 + #203 + #153 + #203 + #154 + #194 + #184 +
+  #203 + #157 + #203 + #155 + #203 + #135 + '''),' + #10 +
+  '    ''mac_latin2'': (''mac-latin2'', ''' +
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x' +
+  '08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x' +
+  '12\x13\x14\x15\x16\x17\x18\x19\x1a' +
+  '\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,' +
+  '-./0123456789:;<=>?@ABCDEFGHIJKLMN' +
+  'OPQRSTUVWXYZ[\\]^_`abcdefghijklmno' + 'pqrstuvwxyz{|}~\x7f' + #195 + #132 +
+  #196 + #128 + #196 + #129 + #195 + #137 + #196 + #132 + #195 + #150 + #195 +
+  #156 + #195 + #161 + #196 + #133 + #196 + #140 + #195 + #164 + #196 + #141 +
+  #196 + #134 + #196 + #135 + #195 + #169 + #197 + #185 + #197 + #186 + #196 +
+  #142 + #195 + #173 + #196 + #143 + #196 + #146 + #196 + #147 + #196 + #150 +
+  #195 + #179 + #196 + #151 + #195 + #180 + #195 + #182 + #195 + #181 + #195 +
+  #186 + #196 + #154 + #196 + #155 + #195 + #188 + #226 + #128 + #160 + #194 +
+  #176 + #196 + #152 + #194 + #163 + #194 + #167 + #226 + #128 + #162 + #194 +
+  #182 + #195 + #159 + #194 + #174 + #194 + #169 + #226 + #132 + #162 + #196 +
+  #153 + #194 + #168 + #226 + #137 + #160 + #196 + #163 + #196 + #174 + #196 +
+  #175 + #196 + #170 + #226 + #137 + #164 + #226 + #137 + #165 + #196 + #171 +
+  #196 + #182 + #226 + #136 + #130 + #226 + #136 + #145 + #197 + #130 + #196 +
+  #187 + #196 + #188 + #196 + #189 + #196 + #190 + #196 + #185 + #196 + #186 +
+  #197 + #133 + #197 + #134 + #197 + #131 + #194 + #172 + #226 + #136 + #154 +
+  #197 + #132 + #197 + #135 + #226 + #136 + #134 + #194 + #171 + #194 + #187 +
+  #226 + #128 + #166 + '\xa0' + #197 + #136 + #197 + #144 + #195 + #149 +
+  #197 + #145 + #197 + #140 + #226 + #128 + #147 + #226 + #128 + #148 + #226 +
+  #128 + #156 + #226 + #128 + #157 + #226 + #128 + #152 + #226 + #128 + #153 +
+  #195 + #183 + #226 + #151 + #138 + #197 + #141 + #197 + #148 + #197 + #149 +
+  #197 + #152 + #226 + #128 + #185 + #226 + #128 + #186 + #197 + #153 + #197 +
+  #150 + #197 + #151 + #197 + #160 + #226 + #128 + #154 + #226 + #128 + #158 +
+  #197 + #161 + #197 + #154 + #197 + #155 + #195 + #129 + #197 + #164 + #197 +
+  #165 + #195 + #141 + #197 + #189 + #197 + #190 + #197 + #170 + #195 + #147 +
+  #195 + #148 + #197 + #171 + #197 + #174 + #195 + #154 + #197 + #175 + #197 +
+  #176 + #197 + #177 + #197 + #178 + #197 + #179 + #195 + #157 + #195 + #189 +
+  #196 + #183 + #197 + #187 + #197 + #129 + #197 + #188 + #196 + #162 + #203 +
+  #135 + '''),' + #10 + '    ''mac_roman'': (''mac-roman'', ''\x' +
+  '00\x01\x02\x03\x04\x05\x06\x07\x08' +
+  '\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12' +
+  '\x13\x14\x15\x16\x17\x18\x19\x1a\x' +
+  '1b\x1c\x1d\x1e\x1f !"#$%&\''()*+,-.' +
+  '/0123456789:;<=>?@ABCDEFGHIJKLMNOP' +
+  'QRSTUVWXYZ[\\]^_`abcdefghijklmnopq' + 'rstuvwxyz{|}~\x7f' + #195 + #132 +
+  #195 + #133 + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 + #195 +
+  #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #195 + #163 +
+  #195 + #165 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 + #195 +
+  #171 + #195 + #173 + #195 + #172 + #195 + #174 + #195 + #175 + #195 + #177 +
+  #195 + #179 + #195 + #178 + #195 + #180 + #195 + #182 + #195 + #181 + #195 +
+  #186 + #195 + #185 + #195 + #187 + #195 + #188 + #226 + #128 + #160 + #194 +
+  #176 + #194 + #162 + #194 + #163 + #194 + #167 + #226 + #128 + #162 + #194 +
+  #182 + #195 + #159 + #194 + #174 + #194 + #169 + #226 + #132 + #162 + #194 +
+  #180 + #194 + #168 + #226 + #137 + #160 + #195 + #134 + #195 + #152 + #226 +
+  #136 + #158 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 + #194 +
+  #165 + #194 + #181 + #226 + #136 + #130 + #226 + #136 + #145 + #226 + #136 +
+  #143 + #207 + #128 + #226 + #136 + #171 + #194 + #170 + #194 + #186 + #206 +
+  #169 + #195 + #166 + #195 + #184 + #194 + #191 + #194 + #161 + #194 + #172 +
+  #226 + #136 + #154 + #198 + #146 + #226 + #137 + #136 + #226 + #136 + #134 +
+  #194 + #171 + #194 + #187 + #226 + #128 + #166 + '\xa0' + #195 + #128 +
+  #195 + #131 + #195 + #149 + #197 + #146 + #197 + #147 + #226 + #128 + #147 +
+  #226 + #128 + #148 + #226 + #128 + #156 + #226 + #128 + #157 + #226 + #128 +
+  #152 + #226 + #128 + #153 + #195 + #183 + #226 + #151 + #138 + #195 + #191 +
+  #197 + #184 + #226 + #129 + #132 + #226 + #130 + #172 + #226 + #128 + #185 +
+  #226 + #128 + #186 + #239 + #172 + #129 + #239 + #172 + #130 + #226 + #128 +
+  #161 + #194 + #183 + #226 + #128 + #154 + #226 + #128 + #158 + #226 + #128 +
+  #176 + #195 + #130 + #195 + #138 + #195 + #129 + #195 + #139 + #195 + #136 +
+  #195 + #141 + #195 + #142 + #195 + #143 + #195 + #140 + #195 + #147 + #195 +
+  #148 + '\uf8' + 'ff' + #195 + #146 + #195 + #154 + #195 + #155 + #195 +
+  #153 + #196 + #177 + #203 + #134 + #203 + #156 + #194 + #175 + #203 + #152 +
+  #203 + #153 + #203 + #154 + #194 + #184 + #203 + #157 + #203 + #155 + #203 +
+  #135 + '''),' + #10 + '    ''mac_romanian'': (''mac-romanian' +
+  ''', ''\x00\x01\x02\x03\x04\x05\x06\x' +
+  '07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x' +
+  '11\x12\x13\x14\x15\x16\x17\x18\x19' +
+  '\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\''(' +
+  ')*+,-./0123456789:;<=>?@ABCDEFGHIJ' +
+  'KLMNOPQRSTUVWXYZ[\\]^_`abcdefghijk' + 'lmnopqrstuvwxyz{|}~\x7f' + #195 +
+  #132 + #195 + #133 + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 +
+  #195 + #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #195 +
+  #163 + #195 + #165 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 +
+  #195 + #171 + #195 + #173 + #195 + #172 + #195 + #174 + #195 + #175 + #195 +
+  #177 + #195 + #179 + #195 + #178 + #195 + #180 + #195 + #182 + #195 + #181 +
+  #195 + #186 + #195 + #185 + #195 + #187 + #195 + #188 + #226 + #128 + #160 +
+  #194 + #176 + #194 + #162 + #194 + #163 + #194 + #167 + #226 + #128 + #162 +
+  #194 + #182 + #195 + #159 + #194 + #174 + #194 + #169 + #226 + #132 + #162 +
+  #194 + #180 + #194 + #168 + #226 + #137 + #160 + #196 + #130 + #200 + #152 +
+  #226 + #136 + #158 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 +
+  #194 + #165 + #194 + #181 + #226 + #136 + #130 + #226 + #136 + #145 + #226 +
+  #136 + #143 + #207 + #128 + #226 + #136 + #171 + #194 + #170 + #194 + #186 +
+  #206 + #169 + #196 + #131 + #200 + #153 + #194 + #191 + #194 + #161 + #194 +
+  #172 + #226 + #136 + #154 + #198 + #146 + #226 + #137 + #136 + #226 + #136 +
+  #134 + #194 + #171 + #194 + #187 + #226 + #128 + #166 + '\xa0' + #195 +
+  #128 + #195 + #131 + #195 + #149 + #197 + #146 + #197 + #147 + #226 + #128 +
+  #147 + #226 + #128 + #148 + #226 + #128 + #156 + #226 + #128 + #157 + #226 +
+  #128 + #152 + #226 + #128 + #153 + #195 + #183 + #226 + #151 + #138 + #195 +
+  #191 + #197 + #184 + #226 + #129 + #132 + #226 + #130 + #172 + #226 + #128 +
+  #185 + #226 + #128 + #186 + #200 + #154 + #200 + #155 + #226 + #128 + #161 +
+  #194 + #183 + #226 + #128 + #154 + #226 + #128 + #158 + #226 + #128 + #176 +
+  #195 + #130 + #195 + #138 + #195 + #129 + #195 + #139 + #195 + #136 + #195 +
+  #141 + #195 + #142 + #195 + #143 + #195 + #140 + #195 + #147 + #195 + #148 +
+  '\uf8ff' + #195 + #146 + #195 + #154 + #195 + #155 + #195 + #153 + #196 +
+  #177 + #203 + #134 + #203 + #156 + #194 + #175 + #203 + #152 + #203 + #153 +
+  #203 + #154 + #194 + #184 + #203 + #157 + #203 + #155 + #203 + #135 +
+  '''),' + #10 + '    ''mac_turkish'': (''mac-turkish'',' +
+  ' ''\x00\x01\x02\x03\x04\x05\x06\x07' +
+  '\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11' +
+  '\x12\x13\x14\x15\x16\x17\x18\x19\x' +
+  '1a\x1b\x1c\x1d\x1e\x1f !"#$%&\''()*' +
+  '+,-./0123456789:;<=>?@ABCDEFGHIJKL' +
+  'MNOPQRSTUVWXYZ[\\]^_`abcdefghijklm' + 'nopqrstuvwxyz{|}~\x7f' + #195 +
+  #132 + #195 + #133 + #195 + #135 + #195 + #137 + #195 + #145 + #195 + #150 +
+  #195 + #156 + #195 + #161 + #195 + #160 + #195 + #162 + #195 + #164 + #195 +
+  #163 + #195 + #165 + #195 + #167 + #195 + #169 + #195 + #168 + #195 + #170 +
+  #195 + #171 + #195 + #173 + #195 + #172 + #195 + #174 + #195 + #175 + #195 +
+  #177 + #195 + #179 + #195 + #178 + #195 + #180 + #195 + #182 + #195 + #181 +
+  #195 + #186 + #195 + #185 + #195 + #187 + #195 + #188 + #226 + #128 + #160 +
+  #194 + #176 + #194 + #162 + #194 + #163 + #194 + #167 + #226 + #128 + #162 +
+  #194 + #182 + #195 + #159 + #194 + #174 + #194 + #169 + #226 + #132 + #162 +
+  #194 + #180 + #194 + #168 + #226 + #137 + #160 + #195 + #134 + #195 + #152 +
+  #226 + #136 + #158 + #194 + #177 + #226 + #137 + #164 + #226 + #137 + #165 +
+  #194 + #165 + #194 + #181 + #226 + #136 + #130 + #226 + #136 + #145 + #226 +
+  #136 + #143 + #207 + #128 + #226 + #136 + #171 + #194 + #170 + #194 + #186 +
+  #206 + #169 + #195 + #166 + #195 + #184 + #194 + #191 + #194 + #161 + #194 +
+  #172 + #226 + #136 + #154 + #198 + #146 + #226 + #137 + #136 + #226 + #136 +
+  #134 + #194 + #171 + #194 + #187 + #226 + #128 + #166 + '\xa0' + #195 +
+  #128 + #195 + #131 + #195 + #149 + #197 + #146 + #197 + #147 + #226 + #128 +
+  #147 + #226 + #128 + #148 + #226 + #128 + #156 + #226 + #128 + #157 + #226 +
+  #128 + #152 + #226 + #128 + #153 + #195 + #183 + #226 + #151 + #138 + #195 +
+  #191 + #197 + #184 + #196 + #158 + #196 + #159 + #196 + #176 + #196 + #177 +
+  #197 + #158 + #197 + #159 + #226 + #128 + #161 + #194 + #183 + #226 + #128 +
+  #154 + #226 + #128 + #158 + #226 + #128 + #176 + #195 + #130 + #195 + #138 +
+  #195 + #129 + #195 + #139 + #195 + #136 + #195 + #141 + #195 + #142 + #195 +
+  #143 + #195 + #140 + #195 + #147 + #195 + #148 + '\uf8ff' + #195 + #146 +
+  #195 + #154 + #195 + #155 + #195 + #153 + '\uf8a0' + #203 + #134 + #203 +
+  #156 + #194 + #175 + #203 + #152 + #203 + #153 + #203 + #154 + #194 + #184 +
+  #203 + #157 + #203 + #155 + #203 + #135 + '''),' + #10 +
+  '    ''palmos'': (''palmos'', ''\x00\x01' +
+  '\x02\x03\x04\x05\x06\x07\x08\t\n\x' +
+  '0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x' +
+  '14\x15\x16\x17\x18\x19\x1a\x1b\x1c' +
+  '\x1d\x1e\x1f !"#$%&\''()*+,-./01234' +
+  '56789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV' +
+  'WXYZ[\\]^_`abcdefghijklmnopqrstuvw' + 'xyz{|}~\x7f' + #226 + #130 + #172 +
+  '\x81' + #226 + #128 + #154 + #198 + #146 + #226 + #128 + #158 + #226 +
+  #128 + #166 + #226 + #128 + #160 + #226 + #128 + #161 + #203 + #134 + #226 +
+  #128 + #176 + #197 + #160 + #226 + #128 + #185 + #197 + #146 + #226 + #153 +
+  #166 + #226 + #153 + #163 + #226 + #153 + #165 + #226 + #153 + #160 + #226 +
+  #128 + #152 + #226 + #128 + #153 + #226 + #128 + #156 + #226 + #128 + #157 +
+  #226 + #128 + #162 + #226 + #128 + #147 + #226 + #128 + #148 + #203 + #156 +
+  #226 + #132 + #162 + #197 + #161 + '\x9b' + #197 + #147 + '\x9d\x9e' +
+  #197 + #184 + '\xa0' + #194 + #161 + #194 + #162 + #194 + #163 + #194 +
+  #164 + #194 + #165 + #194 + #166 + #194 + #167 + #194 + #168 + #194 + #169 +
+  #194 + #170 + #194 + #171 + #194 + #172 + '\xad' + #194 + #174 + #194 +
+  #175 + #194 + #176 + #194 + #177 + #194 + #178 + #194 + #179 + #194 + #180 +
+  #194 + #181 + #194 + #182 + #194 + #183 + #194 + #184 + #194 + #185 + #194 +
+  #186 + #194 + #187 + #194 + #188 + #194 + #189 + #194 + #190 + #194 + #191 +
+  #195 + #128 + #195 + #129 + #195 + #130 + #195 + #131 + #195 + #132 + #195 +
+  #133 + #195 + #134 + #195 + #135 + #195 + #136 + #195 + #137 + #195 + #138 +
+  #195 + #139 + #195 + #140 + #195 + #141 + #195 + #142 + #195 + #143 + #195 +
+  #144 + #195 + #145 + #195 + #146 + #195 + #147 + #195 + #148 + #195 + #149 +
+  #195 + #150 + #195 + #151 + #195 + #152 + #195 + #153 + #195 + #154 + #195 +
+  #155 + #195 + #156 + #195 + #157 + #195 + #158 + #195 + #159 + #195 + #160 +
+  #195 + #161 + #195 + #162 + #195 + #163 + #195 + #164 + #195 + #165 + #195 +
+  #166 + #195 + #167 + #195 + #168 + #195 + #169 + #195 + #170 + #195 + #171 +
+  #195 + #172 + #195 + #173 + #195 + #174 + #195 + #175 + #195 + #176 + #195 +
+  #177 + #195 + #178 + #195 + #179 + #195 + #180 + #195 + #181 + #195 + #182 +
+  #195 + #183 + #195 + #184 + #195 + #185 + #195 + #186 + #195 + #187 + #195 +
+  #188 + #195 + #189 + #195 + #190 + #195 + #191 + '''),' + #10 +
+  '    ''ptcp154'': (''ptcp154'', ''\x00\x' +
+  '01\x02\x03\x04\x05\x06\x07\x08\t\n' +
+  '\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13' +
+  '\x14\x15\x16\x17\x18\x19\x1a\x1b\x' +
+  '1c\x1d\x1e\x1f !"#$%&\''()*+,-./012' +
+  '3456789:;<=>?@ABCDEFGHIJKLMNOPQRST' +
+  'UVWXYZ[\\]^_`abcdefghijklmnopqrstu' + 'vwxyz{|}~\x7f' + #210 + #150 +
+  #210 + #146 + #211 + #174 + #210 + #147 + #226 + #128 + #158 + #226 + #128 +
+  #166 + #210 + #182 + #210 + #174 + #210 + #178 + #210 + #175 + #210 + #160 +
+  #211 + #162 + #210 + #162 + #210 + #154 + #210 + #186 + #210 + #184 + #210 +
+  #151 + #226 + #128 + #152 + #226 + #128 + #153 + #226 + #128 + #156 + #226 +
+  #128 + #157 + #226 + #128 + #162 + #226 + #128 + #147 + #226 + #128 + #148 +
+  #210 + #179 + #210 + #183 + #210 + #161 + #211 + #163 + #210 + #163 + #210 +
+  #155 + #210 + #187 + #210 + #185 + '\xa0' + #208 + #142 + #209 + #158 +
+  #208 + #136 + #211 + #168 + #210 + #152 + #210 + #176 + #194 + #167 + #208 +
+  #129 + #194 + #169 + #211 + #152 + #194 + #171 + #194 + #172 + #211 + #175 +
+  #194 + #174 + #210 + #156 + #194 + #176 + #210 + #177 + #208 + #134 + #209 +
+  #150 + #210 + #153 + #211 + #169 + #194 + #182 + #194 + #183 + #209 + #145 +
+  #226 + #132 + #150 + #211 + #153 + #194 + #187 + #209 + #152 + #210 + #170 +
+  #210 + #171 + #210 + #157 + #208 + #144 + #208 + #145 + #208 + #146 + #208 +
+  #147 + #208 + #148 + #208 + #149 + #208 + #150 + #208 + #151 + #208 + #152 +
+  #208 + #153 + #208 + #154 + #208 + #155 + #208 + #156 + #208 + #157 + #208 +
+  #158 + #208 + #159 + #208 + #160 + #208 + #161 + #208 + #162 + #208 + #163 +
+  #208 + #164 + #208 + #165 + #208 + #166 + #208 + #167 + #208 + #168 + #208 +
+  #169 + #208 + #170 + #208 + #171 + #208 + #172 + #208 + #173 + #208 + #174 +
+  #208 + #175 + #208 + #176 + #208 + #177 + #208 + #178 + #208 + #179 + #208 +
+  #180 + #208 + #181 + #208 + #182 + #208 + #183 + #208 + #184 + #208 + #185 +
+  #208 + #186 + #208 + #187 + #208 + #188 + #208 + #189 + #208 + #190 + #208 +
+  #191 + #209 + #128 + #209 + #129 + #209 + #130 + #209 + #131 + #209 + #132 +
+  #209 + #133 + #209 + #134 + #209 + #135 + #209 + #136 + #209 + #137 + #209 +
+  #138 + #209 + #139 + #209 + #140 + #209 + #141 + #209 + #142 + #209 + #143 +
+  '''),' + #10 + '    ''tis_620'': (''tis-620'', ''\x00\x' +
+  '01\x02\x03\x04\x05\x06\x07\x08\t\n' +
+  '\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13' +
+  '\x14\x15\x16\x17\x18\x19\x1a\x1b\x' +
+  '1c\x1d\x1e\x1f !"#$%&\''()*+,-./012' +
+  '3456789:;<=>?@ABCDEFGHIJKLMNOPQRST' +
+  'UVWXYZ[\\]^_`abcdefghijklmnopqrstu' +
+  'vwxyz{|}~\x7f\x80\x81\x82\x83\x84\' +
+  'x85\x86\x87\x88\x89\x8a\x8b\x8c\x8' +
+  'd\x8e\x8f\x90\x91\x92\x93\x94\x95\' +
+  'x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9' + 'e\x9f\ufffe' + #224 + #184 + #129 +
+  #224 + #184 + #130 + #224 + #184 + #131 + #224 + #184 + #132 + #224 + #184 +
+  #133 + #224 + #184 + #134 + #224 + #184 + #135 + #224 + #184 + #136 + #224 +
+  #184 + #137 + #224 + #184 + #138 + #224 + #184 + #139 + #224 + #184 + #140 +
+  #224 + #184 + #141 + #224 + #184 + #142 + #224 + #184 + #143 + #224 + #184 +
+  #144 + #224 + #184 + #145 + #224 + #184 + #146 + #224 + #184 + #147 + #224 +
+  #184 + #148 + #224 + #184 + #149 + #224 + #184 + #150 + #224 + #184 + #151 +
+  #224 + #184 + #152 + #224 + #184 + #153 + #224 + #184 + #154 + #224 + #184 +
+  #155 + #224 + #184 + #156 + #224 + #184 + #157 + #224 + #184 + #158 + #224 +
+  #184 + #159 + #224 + #184 + #160 + #224 + #184 + #161 + #224 + #184 + #162 +
+  #224 + #184 + #163 + #224 + #184 + #164 + #224 + #184 + #165 + #224 + #184 +
+  #166 + #224 + #184 + #167 + #224 + #184 + #168 + #224 + #184 + #169 + #224 +
+  #184 + #170 + #224 + #184 + #171 + #224 + #184 + #172 + #224 + #184 + #173 +
+  #224 + #184 + #174 + #224 + #184 + #175 + #224 + #184 + #176 + #224 + #184 +
+  #177 + #224 + #184 + #178 + #224 + #184 + #179 + #224 + #184 + #180 + #224 +
+  #184 + #181 + #224 + #184 + #182 + #224 + #184 + #183 + #224 + #184 + #184 +
+  #224 + #184 + #185 + #224 + #184 + #186 + '\ufffe\ufffe\ufffe\ufffe' +
+  #224 + #184 + #191 + #224 + #185 + #128 + #224 + #185 + #129 + #224 + #185 +
+  #130 + #224 + #185 + #131 + #224 + #185 + #132 + #224 + #185 + #133 + #224 +
+  #185 + #134 + #224 + #185 + #135 + #224 + #185 + #136 + #224 + #185 + #137 +
+  #224 + #185 + #138 + #224 + #185 + #139 + #224 + #185 + #140 + #224 + #185 +
+  #141 + #224 + #185 + #142 + #224 + #185 + #143 + #224 + #185 + #144 + #224 +
+  #185 + #145 + #224 + #185 + #146 + #224 + #185 + #147 + #224 + #185 + #148 +
+  #224 + #185 + #149 + #224 + #185 + #150 + #224 + #185 + #151 + #224 + #185 +
+  #152 + #224 + #185 + #153 + #224 + #185 + #154 + #224 + #185 + #155 +
+  '\ufffe\ufffe\u' + 'fffe\ufffe''),' + #10 + '}' + #10 + #10 +
+  'ALIASES = {' + #10 + '    ''037'': ''cp037'',' + #10 +
+  '    ''1026'': ''cp1026'',' + #10 + '    ''1125'': ''cp1125'',' + #10 +
+  '    ''1140'': ''cp1140'',' + #10 + '    ''1250'': ''cp1250'',' + #10 +
+  '    ''1251'': ''cp1251'',' + #10 + '    ''1252'': ''cp1252'',' + #10 +
+  '    ''1253'': ''cp1253'',' + #10 + '    ''1254'': ''cp1254'',' + #10 +
+  '    ''1255'': ''cp1255'',' + #10 + '    ''1256'': ''cp1256'',' + #10 +
+  '    ''1257'': ''cp1257'',' + #10 + '    ''1258'': ''cp1258'',' + #10 +
+  '    ''273'': ''cp273'',' + #10 + '    ''424'': ''cp424'',' + #10 +
+  '    ''437'': ''cp437'',' + #10 + '    ''500'': ''cp500'',' + #10 +
+  '    ''775'': ''cp775'',' + #10 + '    ''850'': ''cp850'',' + #10 +
+  '    ''852'': ''cp852'',' + #10 + '    ''855'': ''cp855'',' + #10 +
+  '    ''857'': ''cp857'',' + #10 + '    ''858'': ''cp858'',' + #10 +
+  '    ''860'': ''cp860'',' + #10 + '    ''861'': ''cp861'',' + #10 +
+  '    ''862'': ''cp862'',' + #10 + '    ''863'': ''cp863'',' + #10 +
+  '    ''864'': ''cp864'',' + #10 + '    ''865'': ''cp865'',' + #10 +
+  '    ''866'': ''cp866'',' + #10 + '    ''869'': ''cp869'',' + #10 +
+  '    ''arabic'': ''iso8859_6'',' + #10 +
+  '    ''asmo_708'': ''iso8859_6'',' + #10 +
+  '    ''cp1051'': ''hp_roman8'',' + #10 + '    ''cp154'': ''ptcp154'',' +
+  #10 + '    ''cp866u'': ''cp1125'',' + #10 + '    ''cp_gr'': ''cp869'',' +
+  #10 + '    ''cp_is'': ''cp861'',' + #10 +
+  '    ''csHPRoman8'': ''hp_roman8'',' + #10 +
+  '    ''csibm037'': ''cp037'',' + #10 + '    ''csibm1026'': ''cp1026'',' +
+  #10 + '    ''csibm273'': ''cp273'',' + #10 +
+  '    ''csibm424'': ''cp424'',' + #10 + '    ''csibm500'': ''cp500'',' +
+  #10 + '    ''csibm855'': ''cp855'',' + #10 +
+  '    ''csibm857'': ''cp857'',' + #10 + '    ''csibm858'': ''cp858'',' +
+  #10 + '    ''csibm860'': ''cp860'',' + #10 +
+  '    ''csibm861'': ''cp861'',' + #10 + '    ''csibm863'': ''cp863'',' +
+  #10 + '    ''csibm864'': ''cp864'',' + #10 +
+  '    ''csibm865'': ''cp865'',' + #10 + '    ''csibm866'': ''cp866'',' +
+  #10 + '    ''csibm869'': ''cp869'',' + #10 +
+  '    ''csisolatin2'': ''iso8859_2'',' + #10 +
+  '    ''csisolatin3'': ''iso8859_3'',' + #10 +
+  '    ''csisolatin4'': ''iso8859_4'',' + #10 +
+  '    ''csisolatin5'': ''iso8859_9'',' + #10 +
+  '    ''csisolatin6'': ''iso8859_10'',' + #10 +
+  '    ''csisolatinarabic'': ''iso8859_6' + ''',' + #10 +
+  '    ''csisolatincyrillic'': ''iso8859' + '_5'',' + #10 +
+  '    ''csisolatingreek'': ''iso8859_7''' + ',' + #10 +
+  '    ''csisolatinhebrew'': ''iso8859_8' + ''',' + #10 +
+  '    ''cskoi8r'': ''koi8_r'',' + #10 + '    ''cspc775baltic'': ''cp775'',' +
+  #10 + '    ''cspc850multilingual'': ''cp850''' + ',' + #10 +
+  '    ''cspc862latinhebrew'': ''cp862'',' + #10 +
+  '    ''cspc8codepage437'': ''cp437'',' + #10 +
+  '    ''cspcp852'': ''cp852'',' + #10 + '    ''csptcp154'': ''ptcp154'',' +
+  #10 + '    ''cyrillic'': ''iso8859_5'',' + #10 +
+  '    ''cyrillic_asian'': ''ptcp154'',' + #10 +
+  '    ''ebcdic_cp_be'': ''cp500'',' + #10 +
+  '    ''ebcdic_cp_ca'': ''cp037'',' + #10 +
+  '    ''ebcdic_cp_ch'': ''cp500'',' + #10 +
+  '    ''ebcdic_cp_he'': ''cp424'',' + #10 +
+  '    ''ebcdic_cp_nl'': ''cp037'',' + #10 +
+  '    ''ebcdic_cp_us'': ''cp037'',' + #10 +
+  '    ''ebcdic_cp_wt'': ''cp037'',' + #10 +
+  '    ''ecma_114'': ''iso8859_6'',' + #10 +
+  '    ''ecma_118'': ''iso8859_7'',' + #10 +
+  '    ''elot_928'': ''iso8859_7'',' + #10 + '    ''greek'': ''iso8859_7'',' +
+  #10 + '    ''greek8'': ''iso8859_7'',' + #10 +
+  '    ''hebrew'': ''iso8859_8'',' + #10 + '    ''ibm037'': ''cp037'',' +
+  #10 + '    ''ibm039'': ''cp037'',' + #10 + '    ''ibm1026'': ''cp1026'',' +
+  #10 + '    ''ibm1051'': ''hp_roman8'',' + #10 +
+  '    ''ibm1125'': ''cp1125'',' + #10 + '    ''ibm1140'': ''cp1140'',' +
+  #10 + '    ''ibm273'': ''cp273'',' + #10 + '    ''ibm424'': ''cp424'',' +
+  #10 + '    ''ibm437'': ''cp437'',' + #10 + '    ''ibm500'': ''cp500'',' +
+  #10 + '    ''ibm775'': ''cp775'',' + #10 + '    ''ibm850'': ''cp850'',' +
+  #10 + '    ''ibm852'': ''cp852'',' + #10 + '    ''ibm855'': ''cp855'',' +
+  #10 + '    ''ibm857'': ''cp857'',' + #10 + '    ''ibm858'': ''cp858'',' +
+  #10 + '    ''ibm860'': ''cp860'',' + #10 + '    ''ibm861'': ''cp861'',' +
+  #10 + '    ''ibm862'': ''cp862'',' + #10 + '    ''ibm863'': ''cp863'',' +
+  #10 + '    ''ibm864'': ''cp864'',' + #10 + '    ''ibm865'': ''cp865'',' +
+  #10 + '    ''ibm866'': ''cp866'',' + #10 + '    ''ibm869'': ''cp869'',' +
+  #10 + '    ''iso_8859_10'': ''iso8859_10'',' + #10 +
+  '    ''iso_8859_10_1992'': ''iso8859_1' + '0'',' + #10 +
+  '    ''iso_8859_11'': ''iso8859_11'',' + #10 +
+  '    ''iso_8859_11_2001'': ''iso8859_1' + '1'',' + #10 +
+  '    ''iso_8859_13'': ''iso8859_13'',' + #10 +
+  '    ''iso_8859_14'': ''iso8859_14'',' + #10 +
+  '    ''iso_8859_14_1998'': ''iso8859_1' + '4'',' + #10 +
+  '    ''iso_8859_15'': ''iso8859_15'',' + #10 +
+  '    ''iso_8859_16'': ''iso8859_16'',' + #10 +
+  '    ''iso_8859_16_2001'': ''iso8859_1' + '6'',' + #10 +
+  '    ''iso_8859_2'': ''iso8859_2'',' + #10 +
+  '    ''iso_8859_2_1987'': ''iso8859_2''' + ',' + #10 +
+  '    ''iso_8859_3'': ''iso8859_3'',' + #10 +
+  '    ''iso_8859_3_1988'': ''iso8859_3''' + ',' + #10 +
+  '    ''iso_8859_4'': ''iso8859_4'',' + #10 +
+  '    ''iso_8859_4_1988'': ''iso8859_4''' + ',' + #10 +
+  '    ''iso_8859_5'': ''iso8859_5'',' + #10 +
+  '    ''iso_8859_5_1988'': ''iso8859_5''' + ',' + #10 +
+  '    ''iso_8859_6'': ''iso8859_6'',' + #10 +
+  '    ''iso_8859_6_1987'': ''iso8859_6''' + ',' + #10 +
+  '    ''iso_8859_7'': ''iso8859_7'',' + #10 +
+  '    ''iso_8859_7_1987'': ''iso8859_7''' + ',' + #10 +
+  '    ''iso_8859_8'': ''iso8859_8'',' + #10 +
+  '    ''iso_8859_8_1988'': ''iso8859_8''' + ',' + #10 +
+  '    ''iso_8859_9'': ''iso8859_9'',' + #10 +
+  '    ''iso_8859_9_1989'': ''iso8859_9''' + ',' + #10 +
+  '    ''iso_celtic'': ''iso8859_14'',' + #10 +
+  '    ''iso_ir_101'': ''iso8859_2'',' + #10 +
+  '    ''iso_ir_109'': ''iso8859_3'',' + #10 +
+  '    ''iso_ir_110'': ''iso8859_4'',' + #10 +
+  '    ''iso_ir_126'': ''iso8859_7'',' + #10 +
+  '    ''iso_ir_127'': ''iso8859_6'',' + #10 +
+  '    ''iso_ir_138'': ''iso8859_8'',' + #10 +
+  '    ''iso_ir_144'': ''iso8859_5'',' + #10 +
+  '    ''iso_ir_148'': ''iso8859_9'',' + #10 +
+  '    ''iso_ir_157'': ''iso8859_10'',' + #10 +
+  '    ''iso_ir_166'': ''tis_620'',' + #10 +
+  '    ''iso_ir_199'': ''iso8859_14'',' + #10 +
+  '    ''iso_ir_226'': ''iso8859_16'',' + #10 +
+  '    ''kz_1048'': ''kz1048'',' + #10 + '    ''l10'': ''iso8859_16'',' +
+  #10 + '    ''l2'': ''iso8859_2'',' + #10 + '    ''l3'': ''iso8859_3'',' +
+  #10 + '    ''l4'': ''iso8859_4'',' + #10 + '    ''l5'': ''iso8859_9'',' +
+  #10 + '    ''l6'': ''iso8859_10'',' + #10 + '    ''l7'': ''iso8859_13'',' +
+  #10 + '    ''l8'': ''iso8859_14'',' + #10 + '    ''l9'': ''iso8859_15'',' +
+  #10 + '    ''latin10'': ''iso8859_16'',' + #10 +
+  '    ''latin2'': ''iso8859_2'',' + #10 + '    ''latin3'': ''iso8859_3'',' +
+  #10 + '    ''latin4'': ''iso8859_4'',' + #10 +
+  '    ''latin5'': ''iso8859_9'',' + #10 + '    ''latin6'': ''iso8859_10'',' +
+  #10 + '    ''latin7'': ''iso8859_13'',' + #10 +
+  '    ''latin8'': ''iso8859_14'',' + #10 +
+  '    ''latin9'': ''iso8859_15'',' + #10 +
+  '    ''maccentraleurope'': ''mac_latin' + '2'',' + #10 +
+  '    ''maccyrillic'': ''mac_cyrillic'',' + #10 +
+  '    ''macgreek'': ''mac_greek'',' + #10 +
+  '    ''maciceland'': ''mac_iceland'',' + #10 +
+  '    ''macintosh'': ''mac_roman'',' + #10 +
+  '    ''maclatin2'': ''mac_latin2'',' + #10;
+
+Const
+ Src__charmaps_1: AnsiString =
+  '    ''macroman'': ''mac_roman'',' + #10 +
+  '    ''macturkish'': ''mac_turkish'',' + #10 +
+  '    ''pt154'': ''ptcp154'',' + #10 + '    ''r8'': ''hp_roman8'',' + #10 +
+  '    ''rk1048'': ''kz1048'',' + #10 + '    ''roman8'': ''hp_roman8'',' +
+  #10 + '    ''ruscii'': ''cp1125'',' + #10 +
+  '    ''strk1048_2002'': ''kz1048'',' + #10 +
+  '    ''thai'': ''iso8859_11'',' + #10 + '    ''tis620'': ''tis_620'',' +
+  #10 + '    ''tis_620_0'': ''tis_620'',' + #10 +
+  '    ''tis_620_2529_0'': ''tis_620'',' + #10 +
+  '    ''tis_620_2529_1'': ''tis_620'',' + #10 +
+  '    ''windows_1250'': ''cp1250'',' + #10 +
+  '    ''windows_1251'': ''cp1251'',' + #10 +
+  '    ''windows_1252'': ''cp1252'',' + #10 +
+  '    ''windows_1253'': ''cp1253'',' + #10 +
+  '    ''windows_1254'': ''cp1254'',' + #10 +
+  '    ''windows_1255'': ''cp1255'',' + #10 +
+  '    ''windows_1256'': ''cp1256'',' + #10 +
+  '    ''windows_1257'': ''cp1257'',' + #10 +
+  '    ''windows_1258'': ''cp1258'',' + #10 + '}' + #10 + #10;
+
+Function Src__charmaps: AnsiString;
+Begin
+ Result := Src__charmaps_0 + Src__charmaps_1;
+End;
+
+Const
+ Src__collections_abc_0: AnsiString =
+  'from collections.abc import *' + #10 + 'import collections.abc as _abc' +
+  #10 + '__all__ = list(_abc.__all__) if ha' +
+  'sattr(_abc, ''__all__'') else []' + #10 + 'for _n in __all__:' + #10 +
+  '    globals()[_n] = getattr(_abc, ' + '_n)' + #10 + #10;
+
+Function Src__collections_abc: AnsiString;
+Begin
+ Result := Src__collections_abc_0;
+End;
+
+Const
  Src__compat_pickle_0: AnsiString =
   '# This module is used to map the o' +
   'ld Python 2 names to the new names' + ' used in' + #10 +
@@ -31037,6 +33939,117 @@ Const
 Function Src__markupbase: AnsiString;
 Begin
  Result := Src__markupbase_0 + Src__markupbase_1;
+End;
+
+Const
+ Src__random_0: AnsiString =
+  '"""Random : generateur Mersenne Tw' +
+  'ister (compatible CPython) au-dess' + 'us de _mt."""' + #10 +
+  'import _mt' + #10 + 'import time as _time' + #10 + #10 + #10 +
+  'class Random:' + #10 + '    def __new__(cls, *args, **kwar' + 'gs):' +
+  #10 + '        self = object.__new__(cls)' + #10 +
+  '        self._st = _mt.new()' + #10 + '        return self' + #10 + #10 +
+  '    def __init__(self, x=None):' + #10 + '        self.seed(x)' + #10 +
+  #10 + '    def seed(self, a=None):' + #10 + '        if a is None:' + #10 +
+  '            a = int(_time.time() *' + ' 256)' + #10 +
+  '        elif isinstance(a, int):' + #10 + '            if a < 0:' + #10 +
+  '                a = -a' + #10 + '        else:' + #10 +
+  '            a = hash(a) & 0xFFFFFF' + 'FFFFFFFFFF' + #10 +
+  '        _mt.seed(self._st, a)' + #10 + #10 + '    def random(self):' +
+  #10 + '        return _mt.random(self._st' + ')' + #10 + #10 +
+  '    def getrandbits(self, k):' + #10 +
+  '        return _mt.getrandbits(sel' + 'f._st, k)' + #10 + #10 +
+  '    def getstate(self):' + #10 + '        return _mt.getstate(self._' +
+  'st)' + #10 + #10 + '    def setstate(self, state):' + #10 +
+  '        if not isinstance(state, t' + 'uple):' + #10 +
+  '            raise TypeError("state' + ' vector must be a tuple")' + #10 +
+  '        if len(state) != 625:' + #10 +
+  '            raise ValueError("stat' + 'e vector is the wrong size")' +
+  #10 + '        _mt.setstate(self._st, sta' + 'te)' + #10 + #10;
+
+Function Src__random: AnsiString;
+Begin
+ Result := Src__random_0;
+End;
+
+Const
+ Src__string_0: AnsiString =
+  '"""Support for string.Formatter (f' +
+  'ormatter_parser, formatter_field_n' + 'ame_split)."""' + #10 + #10 + #10 +
+  'def formatter_parser(s):' + #10 + '    if not isinstance(s, str):' + #10 +
+  '        raise TypeError("expected ' + 'str, got %s" % type(s).__name__)' +
+  #10 + '    res = []' + #10 + '    i = 0' + #10 + '    n = len(s)' + #10 +
+  '    lit = ''''' + #10 + '    while i < n:' + #10 + '        c = s[i]' +
+  #10 + '        if c == ''{'':' + #10 +
+  '            if i + 1 < n and s[i +' + ' 1] == ''{'':' + #10 +
+  '                lit += ''{''' + #10 + '                i += 2' + #10 +
+  '                continue' + #10 + '            depth = 1' + #10 +
+  '            j = i + 1' + #10 + '            while j < n and depth:' + #10 +
+  '                if s[j] == ''{'':' + #10 +
+  '                    depth += 1' + #10 +
+  '                elif s[j] == ''}'':' + #10 +
+  '                    depth -= 1' + #10 +
+  '                    if depth == 0:' + #10 +
+  '                        break' + #10 + '                j += 1' + #10 +
+  '            if depth:' + #10 + '                raise ValueError("' +
+  'expected ''}'' before end of string"' + ')' + #10 +
+  '            field = s[i + 1:j]' + #10 + '            conv = None' + #10 +
+  '            spec = ''''' + #10 + '            k = 0' + #10 +
+  '            br = 0' + #10 + '            name_end = len(field)' + #10 +
+  '            for k, ch in enumerate' + '(field):' + #10 +
+  '                if ch == ''['':' + #10 + '                    br += 1' +
+  #10 + '                elif ch == '']'':' + #10 +
+  '                    br -= 1' + #10 + '                elif br == 0 and c' +
+  'h in ''!:'':' + #10 + '                    name_end = k' + #10 +
+  '                    break' + #10 + '            name = field[:name_end' +
+  ']' + #10 + '            rest = field[name_end:' + ']' + #10 +
+  '            if rest.startswith(''!''' + '):' + #10 +
+  '                if len(rest) < 2:' + #10 +
+  '                    raise ValueErr' +
+  'or("end of string while looking fo' + 'r conversion specifier")' + #10 +
+  '                conv = rest[1]' + #10 + '                rest = rest[2:]' +
+  #10 + '                if rest and rest[0' + '] != '':'':' + #10 +
+  '                    raise ValueErr' +
+  'or("expected '':'' after conversion ' + 'specifier")' + #10 +
+  '            if rest.startswith('':''' + '):' + #10 +
+  '                spec = rest[1:]' + #10 +
+  '            res.append((lit, name,' + ' spec, conv))' + #10 +
+  '            lit = ''''' + #10 + '            i = j + 1' + #10 +
+  '        elif c == ''}'':' + #10 + '            if i + 1 < n and s[i +' +
+  ' 1] == ''}'':' + #10 + '                lit += ''}''' + #10 +
+  '                i += 2' + #10 + '                continue' + #10 +
+  '            raise ValueError("Sing' +
+  'le ''}'' encountered in format strin' + 'g")' + #10 + '        else:' +
+  #10 + '            lit += c' + #10 + '            i += 1' + #10 +
+  '    if lit:' + #10 + '        res.append((lit, None, Non' + 'e, None))' +
+  #10 + '    return iter(res)' + #10 + #10 + #10 +
+  'def formatter_field_name_split(nam' + 'e):' + #10 +
+  '    if not isinstance(name, str):' + #10 +
+  '        raise TypeError("expected ' +
+  'str, got %s" % type(name).__name__' + ')' + #10 + '    i = 0' + #10 +
+  '    n = len(name)' + #10 + '    while i < n and name[i] not in' +
+  ' ''.['':' + #10 + '        i += 1' + #10 + '    first = name[:i]' + #10 +
+  '    if first.isdigit():' + #10 + '        first = int(first)' + #10 +
+  '    rest = []' + #10 + '    while i < n:' + #10 +
+  '        if name[i] == ''.'':' + #10 + '            j = i + 1' + #10 +
+  '            while j < n and name[j' + '] not in ''.['':' + #10 +
+  '                j += 1' + #10 + '            rest.append((True, nam' +
+  'e[i + 1:j]))' + #10 + '            i = j' + #10 +
+  '        elif name[i] == ''['':' + #10 +
+  '            j = name.find('']'', i)' + #10 + '            if j < 0:' +
+  #10 + '                raise ValueError("' +
+  'Missing '']'' in format string")' + #10 +
+  '            key = name[i + 1:j]' + #10 + '            if key.isdigit():' +
+  #10 + '                key = int(key)' + #10 +
+  '            rest.append((False, ke' + 'y))' + #10 +
+  '            i = j + 1' + #10 + '        else:' + #10 +
+  '            raise ValueError("Only' +
+  ' ''.'' or ''['' may follow '']'' in form' + 'at field specifier")' + #10 +
+  '    return first, iter(rest)' + #10 + #10;
+
+Function Src__string: AnsiString;
+Begin
+ Result := Src__string_0;
 End;
 
 Const
@@ -37888,7 +40901,15 @@ End;
 
 Const
  Src_calendar_0: AnsiString =
-  'import sys' + #10 + 'import datetime' + #10 + 'from enum import IntEnum' +
+  '"""Calendar printing functions' + #10 + #10 +
+  'Note when comparing these calendar' +
+  's to the ones printed by cal(1): B' + 'y' + #10 +
+  'default, these calendars have Mond' +
+  'ay as the first day of the week, a' + 'nd' + #10 +
+  'Sunday as the last (the European c' +
+  'onvention). Use setfirstweekday() ' + 'to' + #10 +
+  'set the first day of the week (0=M' + 'onday, 6=Sunday)."""' + #10 + #10 +
+  'import sys' + #10 + 'import datetime' + #10 + 'import locale as _locale' +
   #10 + 'from itertools import repeat' + #10 + #10 +
   '__all__ = ["IllegalMonthError", "I' +
   'llegalWeekdayError", "setfirstweek' + 'day",' + #10 +
@@ -37900,127 +40921,139 @@ Const
   ' "month_abbr", "day_name", "day_ab' + 'br",' + #10 +
   '           "Calendar", "TextCalend' +
   'ar", "HTMLCalendar", "LocaleTextCa' + 'lendar",' + #10 +
-  '           "LocaleHTMLCalendar", "' + 'weekheader",' + #10 +
-  '           "Day", "Month", "JANUAR' + 'Y", "FEBRUARY", "MARCH",' + #10 +
-  '           "APRIL", "MAY", "JUNE",' + ' "JULY",' + #10 +
-  '           "AUGUST", "SEPTEMBER", ' +
-  '"OCTOBER", "NOVEMBER", "DECEMBER",' + #10 +
-  '           "MONDAY", "TUESDAY", "W' + 'EDNESDAY", "THURSDAY", "FRIDAY",' +
-  #10 + '           "SATURDAY", "SUNDAY"]' + #10 + #10 +
-  'error = ValueError' + #10 + #10 + 'class IllegalMonthError(ValueError' +
-  ', IndexError):' + #10 + '    def __init__(self, month):' + #10 +
-  '        self.month = month' + #10 + '    def __str__(self):' + #10 +
+  '           "LocaleHTMLCalendar", "' + 'weekheader"]' + #10 + #10 +
+  '# Exception raised for bad input (' +
+  'with string parameter for details)' + #10 + 'error = ValueError' + #10 +
+  #10 + '# Exceptions raised for bad input' + #10 +
+  'class IllegalMonthError(ValueError' + '):' + #10 +
+  '    def __init__(self, month):' + #10 + '        self.month = month' +
+  #10 + '    def __str__(self):' + #10 +
   '        return "bad month number %' + 'r; must be 1-12" % self.month' +
-  #10 + #10 + 'class IllegalWeekdayError(ValueErr' + 'or):' + #10 +
+  #10 + #10 + #10 + 'class IllegalWeekdayError(ValueErr' + 'or):' + #10 +
   '    def __init__(self, weekday):' + #10 +
   '        self.weekday = weekday' + #10 + '    def __str__(self):' + #10 +
   '        return "bad weekday number' +
   ' %r; must be 0 (Monday) to 6 (Sund' + 'ay)" % self.weekday' + #10 + #10 +
-  'class Month(IntEnum):' + #10 + '    JANUARY = 1' + #10 +
-  '    FEBRUARY = 2' + #10 + '    MARCH = 3' + #10 + '    APRIL = 4' + #10 +
-  '    MAY = 5' + #10 + '    JUNE = 6' + #10 + '    JULY = 7' + #10 +
-  '    AUGUST = 8' + #10 + '    SEPTEMBER = 9' + #10 + '    OCTOBER = 10' +
-  #10 + '    NOVEMBER = 11' + #10 + '    DECEMBER = 12' + #10 + #10 +
-  '    def __repr__(self):' + #10 + '        return ''calendar.'' + self.' +
-  'name' + #10 + #10 + '    def __str__(self):' + #10 +
-  '        return str(int(self))' + #10 + #10 +
-  '    def __format__(self, spec):' + #10 +
-  '        return (''{:'' + spec + ''}'')' + '.format(int(self))' + #10 +
-  #10 + 'class Day(IntEnum):' + #10 + '    MONDAY = 0' + #10 +
-  '    TUESDAY = 1' + #10 + '    WEDNESDAY = 2' + #10 + '    THURSDAY = 3' +
-  #10 + '    FRIDAY = 4' + #10 + '    SATURDAY = 5' + #10 + '    SUNDAY = 6' +
-  #10 + #10 + '    def __repr__(self):' + #10 +
-  '        return ''calendar.'' + self.' + 'name' + #10 + #10 +
-  '    def __str__(self):' + #10 + '        return str(int(self))' + #10 +
-  #10 + '    def __format__(self, spec):' + #10 +
-  '        return (''{:'' + spec + ''}'')' + '.format(int(self))' + #10 +
-  #10 + 'Month.__module__ = ''calendar''' + #10 +
-  'Day.__module__ = ''calendar''' + #10 +
-  '(JANUARY, FEBRUARY, MARCH, APRIL, ' +
-  'MAY, JUNE, JULY, AUGUST, SEPTEMBER' + ',' + #10 +
-  ' OCTOBER, NOVEMBER, DECEMBER) = li' + 'st(Month)' + #10 +
-  '(MONDAY, TUESDAY, WEDNESDAY, THURS' +
-  'DAY, FRIDAY, SATURDAY, SUNDAY) = l' + 'ist(Day)' + #10 + #10 +
-  'January = 1' + #10 + 'February = 2' + #10 + #10 +
+  #10 + '# Constants for months referenced ' + 'later' + #10 + 'January = 1' +
+  #10 + 'February = 2' + #10 + #10 + '# Number of days per month (except' +
+  ' for February in leap years)' + #10 +
   'mdays = [0, 31, 28, 31, 30, 31, 30' + ', 31, 31, 30, 31, 30, 31]' + #10 +
-  #10 + '_MONTH_FULL = ["", "January", "Feb' +
-  'ruary", "March", "April", "May", "' + 'June",' + #10 +
-  '               "July", "August", "' +
-  'September", "October", "November",' + #10 + '               "December"]' +
-  #10 + '_DAY_FULL = ["Monday", "Tuesday", ' +
-  '"Wednesday", "Thursday", "Friday",' + #10 +
-  '             "Saturday", "Sunday"]' + #10 + #10 +
-  'class _localized_month:' + #10 + #10 + '    def __init__(self, format):' +
-  #10 + '        self.format = format' + #10 + #10 +
-  '    def _name(self, i):' + #10 + '        n = _MONTH_FULL[i]' + #10 +
-  '        if self.format == ''%b'':' + #10 + '            return n[:3]' +
-  #10 + '        return n' + #10 + #10 + '    def __getitem__(self, i):' +
-  #10 + '        if isinstance(i, slice):' + #10 +
-  '            return [self._name(k) ' + 'for k in range(13)[i]]' + #10 +
-  '        return self._name(i)' + #10 + #10 + '    def __len__(self):' +
-  #10 + '        return 13' + #10 + #10 + 'class _localized_day:' + #10 +
-  #10 + '    def __init__(self, format):' + #10 +
-  '        self.format = format' + #10 + #10 + '    def _name(self, i):' +
-  #10 + '        n = _DAY_FULL[i]' + #10 +
-  '        if self.format == ''%a'':' + #10 + '            return n[:3]' +
-  #10 + '        return n' + #10 + #10 + '    def __getitem__(self, i):' +
-  #10 + '        if isinstance(i, slice):' + #10 +
-  '            return [self._name(k) ' + 'for k in range(7)[i]]' + #10 +
-  '        return self._name(i)' + #10 + #10 + '    def __len__(self):' +
-  #10 + '        return 7' + #10 + #10 + 'day_name = _localized_day(''%A'')' +
-  #10 + 'day_abbr = _localized_day(''%a'')' + #10 + #10 +
+  #10 + '# This module used to have hard-co' +
+  'ded lists of day and month names, ' + 'as' + #10 +
+  '# English strings.  The classes fo' +
+  'llowing emulate a read-only versio' + 'n of' + #10 +
+  '# that, but supply localized names' +
+  '.  Note that the values are comput' + 'ed' + #10 +
+  '# fresh on each call, in case the ' +
+  'user changes locale between calls.' + #10 + #10 +
+  'class _localized_month:' + #10 + #10 +
+  '    _months = [datetime.date(2001,' +
+  ' i+1, 1).strftime for i in range(1' + '2)]' + #10 +
+  '    _months.insert(0, lambda x: ""' + ')' + #10 + #10 +
+  '    def __init__(self, format):' + #10 + '        self.format = format' +
+  #10 + #10 + '    def __getitem__(self, i):' + #10 +
+  '        funcs = self._months[i]' + #10 +
+  '        if isinstance(i, slice):' + #10 +
+  '            return [f(self.format)' + ' for f in funcs]' + #10 +
+  '        else:' + #10 + '            return funcs(self.form' + 'at)' + #10 +
+  #10 + '    def __len__(self):' + #10 + '        return 13' + #10 + #10 +
+  #10 + 'class _localized_day:' + #10 + #10 +
+  '    # January 1, 2001, was a Monda' + 'y.' + #10 +
+  '    _days = [datetime.date(2001, 1' +
+  ', i+1).strftime for i in range(7)]' + #10 + #10 +
+  '    def __init__(self, format):' + #10 + '        self.format = format' +
+  #10 + #10 + '    def __getitem__(self, i):' + #10 +
+  '        funcs = self._days[i]' + #10 + '        if isinstance(i, slice):' +
+  #10 + '            return [f(self.format)' + ' for f in funcs]' + #10 +
+  '        else:' + #10 + '            return funcs(self.form' + 'at)' + #10 +
+  #10 + '    def __len__(self):' + #10 + '        return 7' + #10 + #10 +
+  #10 + '# Full and abbreviated names of we' + 'ekdays' + #10 +
+  'day_name = _localized_day(''%A'')' + #10 +
+  'day_abbr = _localized_day(''%a'')' + #10 + #10 +
+  '# Full and abbreviated names of mo' + 'nths (1-based arrays!!!)' + #10 +
   'month_name = _localized_month(''%B''' + ')' + #10 +
   'month_abbr = _localized_month(''%b''' + ')' + #10 + #10 +
-  'def isleap(year):' + #10 + '    return year % 4 == 0 and (year' +
-  ' % 100 != 0 or year % 400 == 0)' + #10 + #10 + 'def leapdays(y1, y2):' +
-  #10 + '    y1 -= 1' + #10 + '    y2 -= 1' + #10 +
-  '    return (y2//4 - y1//4) - (y2//' +
-  '100 - y1//100) + (y2//400 - y1//40' + '0)' + #10 + #10 +
+  '# Constants for weekdays' + #10 + '(MONDAY, TUESDAY, WEDNESDAY, THURS' +
+  'DAY, FRIDAY, SATURDAY, SUNDAY) = r' + 'ange(7)' + #10 + #10 + #10 +
+  'def isleap(year):' + #10 + '    """Return True for leap years,' +
+  ' False for non-leap years."""' + #10 +
+  '    return year % 4 == 0 and (year' + ' % 100 != 0 or year % 400 == 0)' +
+  #10 + #10 + #10 + 'def leapdays(y1, y2):' + #10 +
+  '    """Return number of leap years' + ' in range [y1, y2).' + #10 +
+  '       Assume y1 <= y2."""' + #10 + '    y1 -= 1' + #10 + '    y2 -= 1' +
+  #10 + '    return (y2//4 - y1//4) - (y2//' +
+  '100 - y1//100) + (y2//400 - y1//40' + '0)' + #10 + #10 + #10 +
   'def weekday(year, month, day):' + #10 +
+  '    """Return weekday (0-6 ~ Mon-S' +
+  'un) for year, month (1-12), day (1' + '-31)."""' + #10 +
   '    if not datetime.MINYEAR <= yea' + 'r <= datetime.MAXYEAR:' + #10 +
   '        year = 2000 + year % 400' + #10 +
-  '    return Day(datetime.date(year,' + ' month, day).weekday())' + #10 +
+  '    return datetime.date(year, mon' + 'th, day).weekday()' + #10 + #10 +
   #10 + 'def monthrange(year, month):' + #10 +
-  '    if not 1 <= month <= 12:' + #10 +
+  '    """Return weekday (0-6 ~ Mon-S' +
+  'un) and number of days (28-31) for' + #10 + '       year, month."""' +
+  #10 + '    if not 1 <= month <= 12:' + #10 +
   '        raise IllegalMonthError(mo' + 'nth)' + #10 +
   '    day1 = weekday(year, month, 1)' + #10 +
-  '    ndays = mdays[month] + (month ' + '== FEBRUARY and isleap(year))' +
-  #10 + '    return day1, ndays' + #10 + #10 + 'def _monthlen(year, month):' +
-  #10 + '    return mdays[month] + (month =' +
-  '= FEBRUARY and isleap(year))' + #10 + #10 +
+  '    ndays = mdays[month] + (month ' + '== February and isleap(year))' +
+  #10 + '    return day1, ndays' + #10 + #10 + #10 +
+  'def _monthlen(year, month):' + #10 + '    return mdays[month] + (month =' +
+  '= February and isleap(year))' + #10 + #10 + #10 +
   'def _prevmonth(year, month):' + #10 + '    if month == 1:' + #10 +
   '        return year-1, 12' + #10 + '    else:' + #10 +
-  '        return year, month-1' + #10 + #10 +
+  '        return year, month-1' + #10 + #10 + #10 +
   'def _nextmonth(year, month):' + #10 + '    if month == 12:' + #10 +
   '        return year+1, 1' + #10 + '    else:' + #10 +
-  '        return year, month+1' + #10 + #10 + 'class Calendar(object):' +
-  #10 + #10 + '    def __init__(self, firstweekda' + 'y=0):' + #10 +
-  '        self.firstweekday = firstw' + 'eekday' + #10 + #10 +
-  '    def getfirstweekday(self):' + #10 +
+  '        return year, month+1' + #10 + #10 + #10 +
+  'class Calendar(object):' + #10 + '    """' + #10 +
+  '    Base calendar class. This clas' +
+  's doesn''t do any formatting. It si' + 'mply' + #10 +
+  '    provides data to subclasses.' + #10 + '    """' + #10 + #10 +
+  '    def __init__(self, firstweekda' + 'y=0):' + #10 +
+  '        self.firstweekday = firstw' + 'eekday # 0 = Monday, 6 = Sunday' +
+  #10 + #10 + '    def getfirstweekday(self):' + #10 +
   '        return self._firstweekday ' + '% 7' + #10 + #10 +
   '    def setfirstweekday(self, firs' + 'tweekday):' + #10 +
   '        self._firstweekday = first' + 'weekday' + #10 + #10 +
   '    firstweekday = property(getfir' + 'stweekday, setfirstweekday)' + #10 +
-  #10 + '    def iterweekdays(self):' + #10 +
+  #10 + '    def iterweekdays(self):' + #10 + '        """' + #10 +
+  '        Return an iterator for one' +
+  ' week of weekday numbers starting ' + 'with the' + #10 +
+  '        configured first one.' + #10 + '        """' + #10 +
   '        for i in range(self.firstw' + 'eekday, self.firstweekday + 7):' +
   #10 + '            yield i%7' + #10 + #10 +
-  '    def itermonthdates(self, year,' + ' month):' + #10 +
-  '        for y, m, d in self.itermo' + 'nthdays3(year, month):' + #10 +
-  '            yield datetime.date(y,' + ' m, d)' + #10 + #10 +
-  '    def itermonthdays(self, year, ' + 'month):' + #10 +
-  '        day1, ndays = monthrange(y' + 'ear, month)' + #10 +
-  '        days_before = (day1 - self' + '.firstweekday) % 7' + #10 +
+  '    def itermonthdates(self, year,' + ' month):' + #10 + '        """' +
+  #10 + '        Return an iterator for one' +
+  ' month. The iterator will yield da' + 'tetime.date' + #10 +
+  '        values and will always ite' +
+  'rate through complete weeks, so it' + ' will yield' + #10 +
+  '        dates outside the specifie' + 'd month.' + #10 + '        """' +
+  #10 + '        for y, m, d in self.itermo' + 'nthdays3(year, month):' +
+  #10 + '            yield datetime.date(y,' + ' m, d)' + #10 + #10 +
+  '    def itermonthdays(self, year, ' + 'month):' + #10 + '        """' +
+  #10 + '        Like itermonthdates(), but' +
+  ' will yield day numbers. For days ' + 'outside' + #10 +
+  '        the specified month the da' + 'y number is 0.' + #10 +
+  '        """' + #10 + '        day1, ndays = monthrange(y' + 'ear, month)' +
+  #10 + '        days_before = (day1 - self' + '.firstweekday) % 7' + #10 +
   '        yield from repeat(0, days_' + 'before)' + #10 +
   '        yield from range(1, ndays ' + '+ 1)' + #10 +
   '        days_after = (self.firstwe' + 'ekday - day1 - ndays) % 7' + #10 +
   '        yield from repeat(0, days_' + 'after)' + #10 + #10 +
-  '    def itermonthdays2(self, year,' + ' month):' + #10 +
+  '    def itermonthdays2(self, year,' + ' month):' + #10 + '        """' +
+  #10 + '        Like itermonthdates(), but' +
+  ' will yield (day number, weekday n' + 'umber)' + #10 +
+  '        tuples. For days outside t' +
+  'he specified month the day number ' + 'is 0.' + #10 + '        """' + #10 +
   '        for i, d in enumerate(self' +
   '.itermonthdays(year, month), self.' + 'firstweekday):' + #10 +
   '            yield d, i % 7' + #10 + #10 +
-  '    def itermonthdays3(self, year,' + ' month):' + #10 +
-  '        day1, ndays = monthrange(y' + 'ear, month)' + #10 +
-  '        days_before = (day1 - self' + '.firstweekday) % 7' + #10 +
+  '    def itermonthdays3(self, year,' + ' month):' + #10 + '        """' +
+  #10 + '        Like itermonthdates(), but' +
+  ' will yield (year, month, day) tup' + 'les.  Can be' + #10 +
+  '        used for dates outside of ' + 'datetime.date range.' + #10 +
+  '        """' + #10 + '        day1, ndays = monthrange(y' + 'ear, month)' +
+  #10 + '        days_before = (day1 - self' + '.firstweekday) % 7' + #10 +
   '        days_after = (self.firstwe' + 'ekday - day1 - ndays) % 7' + #10 +
   '        y, m = _prevmonth(year, mo' + 'nth)' + #10 +
   '        end = _monthlen(y, m) + 1' + #10 +
@@ -38030,66 +41063,114 @@ Const
   '        y, m = _nextmonth(year, mo' + 'nth)' + #10 +
   '        for d in range(1, days_aft' + 'er + 1):' + #10 +
   '            yield y, m, d' + #10 + #10 +
-  '    def itermonthdays4(self, year,' + ' month):' + #10 +
-  '        for i, (y, m, d) in enumer' +
+  '    def itermonthdays4(self, year,' + ' month):' + #10 + '        """' +
+  #10 + '        Like itermonthdates(), but' +
+  ' will yield (year, month, day, day' + '_of_week) tuples.' + #10 +
+  '        Can be used for dates outs' + 'ide of datetime.date range.' + #10 +
+  '        """' + #10 + '        for i, (y, m, d) in enumer' +
   'ate(self.itermonthdays3(year, mont' + 'h)):' + #10 +
   '            yield y, m, d, (self.f' + 'irstweekday + i) % 7' + #10 + #10 +
   '    def monthdatescalendar(self, y' + 'ear, month):' + #10 +
-  '        dates = list(self.itermont' + 'hdates(year, month))' + #10 +
+  '        """' + #10 + '        Return a matrix (list of l' +
+  'ists) representing a month''s calen' + 'dar.' + #10 +
+  '        Each row represents a week' +
+  '; week entries are datetime.date v' + 'alues.' + #10 + '        """' +
+  #10 + '        dates = list(self.itermont' + 'hdates(year, month))' + #10 +
   '        return [ dates[i:i+7] for ' + 'i in range(0, len(dates), 7) ]' +
   #10 + #10 + '    def monthdays2calendar(self, y' + 'ear, month):' + #10 +
+  '        """' + #10 + '        Return a matrix representi' +
+  'ng a month''s calendar.' + #10 + '        Each row represents a week' +
+  '; week entries are' + #10 + '        (day number, weekday numbe' +
+  'r) tuples. Day numbers outside thi' + 's month' + #10 +
+  '        are zero.' + #10 + '        """' + #10 +
   '        days = list(self.itermonth' + 'days2(year, month))' + #10 +
   '        return [ days[i:i+7] for i' + ' in range(0, len(days), 7) ]' +
   #10 + #10 + '    def monthdayscalendar(self, ye' + 'ar, month):' + #10 +
-  '        days = list(self.itermonth' + 'days(year, month))' + #10 +
-  '        return [ days[i:i+7] for i' + ' in range(0, len(days), 7) ]' +
-  #10 + #10 + '    def yeardatescalendar(self, ye' + 'ar, width=3):' + #10 +
-  '        months = [' + #10 + '            self.monthdatescalenda' +
-  'r(year, i)' + #10 + '            for i in range(JANUARY' +
-  ', JANUARY+12)' + #10 + '        ]' + #10 +
-  '        return [months[i:i+width] ' +
-  'for i in range(0, len(months), wid' + 'th) ]' + #10 + #10 +
-  '    def yeardays2calendar(self, ye' + 'ar, width=3):' + #10 +
-  '        months = [' + #10 + '            self.monthdays2calenda' +
-  'r(year, i)' + #10 + '            for i in range(JANUARY' +
-  ', JANUARY+12)' + #10 + '        ]' + #10 +
-  '        return [months[i:i+width] ' +
-  'for i in range(0, len(months), wid' + 'th) ]' + #10 + #10 +
-  '    def yeardayscalendar(self, yea' + 'r, width=3):' + #10 +
-  '        months = [' + #10 + '            self.monthdayscalendar' +
-  '(year, i)' + #10 + '            for i in range(JANUARY' + ', JANUARY+12)' +
-  #10 + '        ]' + #10;
+  '        """' + #10 + '        Return a matrix representi' +
+  'ng a month''s calendar.' + #10 + '        Each row represents a week' +
+  '; days outside this month are zero' + '.' + #10 + '        """' + #10;
 
 Const
  Src_calendar_1: AnsiString =
+  '        days = list(self.itermonth' + 'days(year, month))' + #10 +
+  '        return [ days[i:i+7] for i' + ' in range(0, len(days), 7) ]' +
+  #10 + #10 + '    def yeardatescalendar(self, ye' + 'ar, width=3):' + #10 +
+  '        """' + #10 + '        Return the data for the sp' +
+  'ecified year ready for formatting.' + ' The return' + #10 +
+  '        value is a list of month r' +
+  'ows. Each month row contains up to' + ' width months.' + #10 +
+  '        Each month contains betwee' +
+  'n 4 and 6 weeks and each week cont' + 'ains 1-7' + #10 +
+  '        days. Days are datetime.da' + 'te objects.' + #10 + '        """' +
+  #10 + '        months = [' + #10 + '            self.monthdatescalenda' +
+  'r(year, i)' + #10 + '            for i in range(January' +
+  ', January+12)' + #10 + '        ]' + #10 +
   '        return [months[i:i+width] ' +
   'for i in range(0, len(months), wid' + 'th) ]' + #10 + #10 +
-  'class TextCalendar(Calendar):' + #10 + #10 +
-  '    def prweek(self, theweek, widt' + 'h):' + #10 +
-  '        print(self.formatweek(thew' + 'eek, width), end='''')' + #10 +
-  #10 + '    def formatday(self, day, weekd' + 'ay, width):' + #10 +
-  '        if day == 0:' + #10 + '            s = ''''' + #10 +
-  '        else:' + #10 + '            s = ''%2i'' % day' + #10 +
+  '    def yeardays2calendar(self, ye' + 'ar, width=3):' + #10 +
+  '        """' + #10 + '        Return the data for the sp' +
+  'ecified year ready for formatting ' + '(similar to' + #10 +
+  '        yeardatescalendar()). Entr' + 'ies in the week lists are' + #10 +
+  '        (day number, weekday numbe' +
+  'r) tuples. Day numbers outside thi' + 's month are' + #10 +
+  '        zero.' + #10 + '        """' + #10 + '        months = [' + #10 +
+  '            self.monthdays2calenda' + 'r(year, i)' + #10 +
+  '            for i in range(January' + ', January+12)' + #10 + '        ]' +
+  #10 + '        return [months[i:i+width] ' +
+  'for i in range(0, len(months), wid' + 'th) ]' + #10 + #10 +
+  '    def yeardayscalendar(self, yea' + 'r, width=3):' + #10 +
+  '        """' + #10 + '        Return the data for the sp' +
+  'ecified year ready for formatting ' + '(similar to' + #10 +
+  '        yeardatescalendar()). Entr' +
+  'ies in the week lists are day numb' + 'ers.' + #10 +
+  '        Day numbers outside this m' + 'onth are zero.' + #10 +
+  '        """' + #10 + '        months = [' + #10 +
+  '            self.monthdayscalendar' + '(year, i)' + #10 +
+  '            for i in range(January' + ', January+12)' + #10 + '        ]' +
+  #10 + '        return [months[i:i+width] ' +
+  'for i in range(0, len(months), wid' + 'th) ]' + #10 + #10 + #10 +
+  'class TextCalendar(Calendar):' + #10 + '    """' + #10 +
+  '    Subclass of Calendar that outp' +
+  'uts a calendar as a simple plain t' + 'ext' + #10 +
+  '    similar to the UNIX program ca' + 'l.' + #10 + '    """' + #10 + #10 +
+  '    def prweek(self, theweek, widt' + 'h):' + #10 + '        """' + #10 +
+  '        Print a single week (no ne' + 'wline).' + #10 + '        """' +
+  #10 + '        print(self.formatweek(thew' + 'eek, width), end='''')' +
+  #10 + #10 + '    def formatday(self, day, weekd' + 'ay, width):' + #10 +
+  '        """' + #10 + '        Returns a formatted day.' + #10 +
+  '        """' + #10 + '        if day == 0:' + #10 +
+  '            s = ''''' + #10 + '        else:' + #10 +
+  '            s = ''%2i'' % day       ' +
+  '      # right-align single-digit d' + 'ays' + #10 +
   '        return s.center(width)' + #10 + #10 +
-  '    def formatweek(self, theweek, ' + 'width):' + #10 +
-  '        return '' ''.join(self.forma' +
+  '    def formatweek(self, theweek, ' + 'width):' + #10 + '        """' +
+  #10 + '        Returns a single week in a' + ' string (no newline).' + #10 +
+  '        """' + #10 + '        return '' ''.join(self.forma' +
   'tday(d, wd, width) for (d, wd) in ' + 'theweek)' + #10 + #10 +
-  '    def formatweekday(self, day, w' + 'idth):' + #10 +
-  '        if width >= 9:' + #10 + '            names = day_name' + #10 +
-  '        else:' + #10 + '            names = day_abbr' + #10 +
+  '    def formatweekday(self, day, w' + 'idth):' + #10 + '        """' +
+  #10 + '        Returns a formatted week d' + 'ay name.' + #10 +
+  '        """' + #10 + '        if width >= 9:' + #10 +
+  '            names = day_name' + #10 + '        else:' + #10 +
+  '            names = day_abbr' + #10 +
   '        return names[day][:width].' + 'center(width)' + #10 + #10 +
-  '    def formatweekheader(self, wid' + 'th):' + #10 +
+  '    def formatweekheader(self, wid' + 'th):' + #10 + '        """' + #10 +
+  '        Return a header for a week' + '.' + #10 + '        """' + #10 +
   '        return '' ''.join(self.forma' +
   'tweekday(i, width) for i in self.i' + 'terweekdays())' + #10 + #10 +
   '    def formatmonthname(self, they' +
-  'ear, themonth, width, withyear=Tru' + 'e):' + #10 +
+  'ear, themonth, width, withyear=Tru' + 'e):' + #10 + '        """' + #10 +
+  '        Return a formatted month n' + 'ame.' + #10 + '        """' + #10 +
   '        s = month_name[themonth]' + #10 + '        if withyear:' + #10 +
   '            s = "%s %r" % (s, they' + 'ear)' + #10 +
   '        return s.center(width)' + #10 + #10 +
   '    def prmonth(self, theyear, the' + 'month, w=0, l=0):' + #10 +
-  '        print(self.formatmonth(the' + 'year, themonth, w, l), end='''')' +
-  #10 + #10 + '    def formatmonth(self, theyear,' + ' themonth, w=0, l=0):' +
-  #10 + '        w = max(2, w)' + #10 + '        l = max(1, l)' + #10 +
+  '        """' + #10 + '        Print a month''s calendar.' + #10 +
+  '        """' + #10 + '        print(self.formatmonth(the' +
+  'year, themonth, w, l), end='''')' + #10 + #10 +
+  '    def formatmonth(self, theyear,' + ' themonth, w=0, l=0):' + #10 +
+  '        """' + #10 + '        Return a month''s calendar ' +
+  'string (multi-line).' + #10 + '        """' + #10 +
+  '        w = max(2, w)' + #10 + '        l = max(1, l)' + #10 +
   '        s = self.formatmonthname(t' +
   'heyear, themonth, 7 * (w + 1) - 1)' + #10 + '        s = s.rstrip()' +
   #10 + '        s += ''\n'' * l' + #10 +
@@ -38099,6 +41180,8 @@ Const
   '            s += self.formatweek(w' + 'eek, w).rstrip()' + #10 +
   '            s += ''\n'' * l' + #10 + '        return s' + #10 + #10 +
   '    def formatyear(self, theyear, ' + 'w=2, l=1, c=6, m=3):' + #10 +
+  '        """' + #10 + '        Returns a year''s calendar ' +
+  'as a multi-line string.' + #10 + '        """' + #10 +
   '        w = max(2, w)' + #10 + '        l = max(1, l)' + #10 +
   '        c = max(2, c)' + #10 + '        colwidth = (w + 1) * 7 - 1' + #10 +
   '        v = []' + #10 + '        a = v.append' + #10 +
@@ -38106,6 +41189,7 @@ Const
   '        a(''\n''*l)' + #10 + '        header = self.formatweekhe' +
   'ader(w)' + #10 + '        for (i, row) in enumerate(' +
   'self.yeardays2calendar(theyear, m)' + '):' + #10 +
+  '            # months in this row' + #10 +
   '            months = range(m*i+1, ' + 'min(m*(i+1)+1, 13))' + #10 +
   '            a(''\n''*l)' + #10 + '            names = (self.formatmo' +
   'nthname(theyear, k, colwidth, Fals' + 'e)' + #10 +
@@ -38114,6 +41198,7 @@ Const
   '            a(''\n''*l)' + #10 + '            headers = (header for ' +
   'k in months)' + #10 + '            a(formatstring(headers' +
   ', colwidth, c).rstrip())' + #10 + '            a(''\n''*l)' + #10 +
+  '            # max number of weeks ' + 'for this row' + #10 +
   '            height = max(len(cal) ' + 'for cal in row)' + #10 +
   '            for j in range(height)' + ':' + #10 +
   '                weeks = []' + #10 + '                for cal in row:' +
@@ -38124,40 +41209,56 @@ Const
   '                a(formatstring(wee' + 'ks, colwidth, c).rstrip())' + #10 +
   '                a(''\n'' * l)' + #10 + '        return ''''.join(v)' +
   #10 + #10 + '    def pryear(self, theyear, w=0,' + ' l=0, c=6, m=3):' +
-  #10 + '        print(self.formatyear(they' + 'ear, w, l, c, m), end='''')' +
-  #10 + #10 + 'class HTMLCalendar(Calendar):' + #10 + #10 +
+  #10 + '        """Print a year''s calendar' + '."""' + #10 +
+  '        print(self.formatyear(they' + 'ear, w, l, c, m), end='''')' + #10 +
+  #10 + #10 + 'class HTMLCalendar(Calendar):' + #10 + '    """' + #10 +
+  '    This calendar returns complete' + ' HTML pages.' + #10 + '    """' +
+  #10 + #10 + '    # CSS classes for the day <td>' + 's' + #10 +
   '    cssclasses = ["mon", "tue", "w' + 'ed", "thu", "fri", "sat", "sun"]' +
-  #10 + #10 + '    cssclasses_weekday_head = cssc' + 'lasses' + #10 + #10 +
+  #10 + #10 + '    # CSS classes for the day <th>' + 's' + #10 +
+  '    cssclasses_weekday_head = cssc' + 'lasses' + #10 + #10 +
+  '    # CSS class for the days befor' + 'e and after current month' + #10 +
   '    cssclass_noday = "noday"' + #10 + #10 +
+  '    # CSS class for the month''s he' + 'ad' + #10 +
   '    cssclass_month_head = "month"' + #10 + #10 +
-  '    cssclass_month = "month"' + #10 + #10 +
+  '    # CSS class for the month' + #10 + '    cssclass_month = "month"' +
+  #10 + #10 + '    # CSS class for the year''s tab' + 'le head' + #10 +
   '    cssclass_year_head = "year"' + #10 + #10 +
+  '    # CSS class for the whole year' + ' table' + #10 +
   '    cssclass_year = "year"' + #10 + #10 +
-  '    def formatday(self, day, weekd' + 'ay):' + #10 +
-  '        if day == 0:' + #10 + '            return ''<td class="%s"' +
+  '    def formatday(self, day, weekd' + 'ay):' + #10 + '        """' + #10 +
+  '        Return a day as a table ce' + 'll.' + #10 + '        """' + #10 +
+  '        if day == 0:' + #10 + '            # day outside month' + #10 +
+  '            return ''<td class="%s"' +
   '>&nbsp;</td>'' % self.cssclass_noda' + 'y' + #10 + '        else:' + #10 +
   '            return ''<td class="%s"' +
   '>%d</td>'' % (self.cssclasses[weekd' + 'ay], day)' + #10 + #10 +
-  '    def formatweek(self, theweek):' + #10 +
-  '        s = ''''.join(self.formatday' + '(d, wd) for (d, wd) in theweek)' +
-  #10 + '        return ''<tr>%s</tr>'' % s' + #10 + #10 +
-  '    def formatweekday(self, day):' + #10 +
-  '        return ''<th class="%s">%s<' + '/th>'' % (' + #10 +
-  '            self.cssclasses_weekda' + 'y_head[day], day_abbr[day])' + #10 +
-  #10 + '    def formatweekheader(self):' + #10 +
-  '        s = ''''.join(self.formatwee' +
+  '    def formatweek(self, theweek):' + #10 + '        """' + #10 +
+  '        Return a complete week as ' + 'a table row.' + #10 +
+  '        """' + #10 + '        s = ''''.join(self.formatday' +
+  '(d, wd) for (d, wd) in theweek)' + #10 +
+  '        return ''<tr>%s</tr>'' % s' + #10 + #10 +
+  '    def formatweekday(self, day):' + #10 + '        """' + #10 +
+  '        Return a weekday name as a' + ' table header.' + #10 +
+  '        """' + #10 + '        return ''<th class="%s">%s<' + '/th>'' % (' +
+  #10 + '            self.cssclasses_weekda' + 'y_head[day], day_abbr[day])' +
+  #10 + #10 + '    def formatweekheader(self):' + #10 + '        """' + #10 +
+  '        Return a header for a week' + ' as a table row.' + #10 +
+  '        """' + #10 + '        s = ''''.join(self.formatwee' +
   'kday(i) for i in self.iterweekdays' + '())' + #10 +
   '        return ''<tr>%s</tr>'' % s' + #10 + #10 +
   '    def formatmonthname(self, they' + 'ear, themonth, withyear=True):' +
-  #10 + '        if withyear:' + #10 +
+  #10 + '        """' + #10 + '        Return a month name as a t' +
+  'able row.' + #10 + '        """' + #10 + '        if withyear:' + #10 +
   '            s = ''%s %s'' % (month_n' + 'ame[themonth], theyear)' + #10 +
   '        else:' + #10 + '            s = ''%s'' % month_name[' +
   'themonth]' + #10 + '        return ''<tr><th colspan="7' +
   '" class="%s">%s</th></tr>'' % (' + #10 +
   '            self.cssclass_month_he' + 'ad, s)' + #10 + #10 +
   '    def formatmonth(self, theyear,' + ' themonth, withyear=True):' + #10 +
-  '        v = []' + #10 + '        a = v.append' + #10 +
-  '        a(''<table border="0" cellp' +
+  '        """' + #10 + '        Return a formatted month a' + 's a table.' +
+  #10 + '        """' + #10 + '        v = []' + #10 +
+  '        a = v.append' + #10 + '        a(''<table border="0" cellp' +
   'adding="0" cellspacing="0" class="' + '%s">'' % (' + #10 +
   '            self.cssclass_month))' + #10 + '        a(''\n'')' + #10 +
   '        a(self.formatmonthname(the' +
@@ -38168,15 +41269,20 @@ Const
   '            a(self.formatweek(week' + '))' + #10 +
   '            a(''\n'')' + #10 + '        a(''</table>'')' + #10 +
   '        a(''\n'')' + #10 + '        return ''''.join(v)' + #10 + #10 +
-  '    def formatyear(self, theyear, ' + 'width=3):' + #10 +
-  '        v = []' + #10 + '        a = v.append' + #10 +
-  '        width = max(width, 1)' + #10 +
+  '    def formatyear(self, theyear, ' + 'width=3):' + #10 + '        """' +
+  #10 + '        Return a formatted year as' + ' a table of tables.' + #10;
+
+Const
+ Src_calendar_2: AnsiString =
+  '        """' + #10 + '        v = []' + #10 + '        a = v.append' +
+  #10 + '        width = max(width, 1)' + #10 +
   '        a(''<table border="0" cellp' +
   'adding="0" cellspacing="0" class="' + '%s">'' %' + #10 +
   '          self.cssclass_year)' + #10 + '        a(''\n'')' + #10 +
   '        a(''<tr><th colspan="%d" cl' + 'ass="%s">%s</th></tr>'' % (' +
   #10 + '            width, self.cssclass_y' + 'ear_head, theyear))' + #10 +
-  '        for i in range(JANUARY, JA' + 'NUARY+12, width):' + #10 +
+  '        for i in range(January, Ja' + 'nuary+12, width):' + #10 +
+  '            # months in this row' + #10 +
   '            months = range(i, min(' + 'i+width, 13))' + #10 +
   '            a(''<tr>'')' + #10 + '            for m in months:' + #10 +
   '                a(''<td>'')' + #10 + '                a(self.formatmonth' +
@@ -38185,6 +41291,8 @@ Const
   '        return ''''.join(v)' + #10 + #10 +
   '    def formatyearpage(self, theye' +
   'ar, width=3, css=''calendar.css'', e' + 'ncoding=None):' + #10 +
+  '        """' + #10 + '        Return a formatted year as' +
+  ' a complete HTML page.' + #10 + '        """' + #10 +
   '        if encoding is None:' + #10 +
   '            encoding = sys.getdefa' + 'ultencoding()' + #10 +
   '        v = []' + #10 + '        a = v.append' + #10 +
@@ -38203,19 +41311,61 @@ Const
   '        a(self.formatyear(theyear,' + ' width))' + #10 +
   '        a(''</body>\n'')' + #10 + '        a(''</html>\n'')' + #10 +
   '        return ''''.join(v).encode(e' + 'ncoding, "xmlcharrefreplace")' +
-  #10 + #10 + 'class LocaleTextCalendar(TextCalen' + 'dar):' + #10 + #10 +
+  #10 + #10 + #10 + 'class different_locale:' + #10 +
+  '    def __init__(self, locale):' + #10 + '        self.locale = locale' +
+  #10 + #10 + '    def __enter__(self):' + #10 +
+  '        self.oldlocale = _locale.g' + 'etlocale(_locale.LC_TIME)' + #10 +
+  '        _locale.setlocale(_locale.' + 'LC_TIME, self.locale)' + #10 + #10 +
+  '    def __exit__(self, *args):' + #10 +
+  '        _locale.setlocale(_locale.' + 'LC_TIME, self.oldlocale)' + #10 +
+  #10 + #10 + 'class LocaleTextCalendar(TextCalen' + 'dar):' + #10 +
+  '    """' + #10 + '    This class can be passed a loc' +
+  'ale name in the constructor and wi' + 'll return' + #10 +
+  '    month and weekday names in the' +
+  ' specified locale. If this locale ' + 'includes' + #10 +
+  '    an encoding all strings contai' +
+  'ning month and weekday names will ' + 'be returned' + #10 +
+  '    as unicode.' + #10 + '    """' + #10 + #10 +
   '    def __init__(self, firstweekda' + 'y=0, locale=None):' + #10 +
   '        TextCalendar.__init__(self' + ', firstweekday)' + #10 +
-  '        self.locale = locale' + #10 + #10 +
-  'class LocaleHTMLCalendar(HTMLCalen' + 'dar):' + #10 +
+  '        if locale is None:' + #10 + '            locale = _locale.getde' +
+  'faultlocale()' + #10 + '        self.locale = locale' + #10 + #10 +
+  '    def formatweekday(self, day, w' + 'idth):' + #10 +
+  '        with different_locale(self' + '.locale):' + #10 +
+  '            if width >= 9:' + #10 + '                names = day_name' +
+  #10 + '            else:' + #10 + '                names = day_abbr' + #10 +
+  '            name = names[day]' + #10 +
+  '            return name[:width].ce' + 'nter(width)' + #10 + #10 +
+  '    def formatmonthname(self, they' +
+  'ear, themonth, width, withyear=Tru' + 'e):' + #10 +
+  '        with different_locale(self' + '.locale):' + #10 +
+  '            s = month_name[themont' + 'h]' + #10 +
+  '            if withyear:' + #10 + '                s = "%s %r" % (s, ' +
+  'theyear)' + #10 + '            return s.center(width)' + #10 + #10 + #10 +
+  'class LocaleHTMLCalendar(HTMLCalen' + 'dar):' + #10 + '    """' + #10 +
+  '    This class can be passed a loc' +
+  'ale name in the constructor and wi' + 'll return' + #10 +
+  '    month and weekday names in the' +
+  ' specified locale. If this locale ' + 'includes' + #10 +
+  '    an encoding all strings contai' +
+  'ning month and weekday names will ' + 'be returned' + #10 +
+  '    as unicode.' + #10 + '    """' + #10 +
   '    def __init__(self, firstweekda' + 'y=0, locale=None):' + #10 +
   '        HTMLCalendar.__init__(self' + ', firstweekday)' + #10 +
-  '        self.locale = locale' + #10 + #10 +
+  '        if locale is None:' + #10 + '            locale = _locale.getde' +
+  'faultlocale()' + #10 + '        self.locale = locale' + #10 + #10 +
   '    def formatweekday(self, day):' + #10 +
-  '        return HTMLCalendar.format' + 'weekday(self, day)' + #10 + #10 +
+  '        with different_locale(self' + '.locale):' + #10 +
+  '            s = day_abbr[day]' + #10 +
+  '            return ''<th class="%s"' +
+  '>%s</th>'' % (self.cssclasses[day],' + ' s)' + #10 + #10 +
   '    def formatmonthname(self, they' + 'ear, themonth, withyear=True):' +
-  #10 + '        return HTMLCalendar.format' +
-  'monthname(self, theyear, themonth,' + ' withyear)' + #10 + #10 +
+  #10 + '        with different_locale(self' + '.locale):' + #10 +
+  '            s = month_name[themont' + 'h]' + #10 +
+  '            if withyear:' + #10 + '                s = ''%s %s'' % (s, ' +
+  'theyear)' + #10 + '            return ''<tr><th colspa' +
+  'n="7" class="month">%s</th></tr>'' ' + '% s' + #10 + #10 + #10 +
+  '# Support for old module level int' + 'erface' + #10 +
   'c = TextCalendar()' + #10 + #10 + 'firstweekday = c.getfirstweekday' +
   #10 + #10 + 'def setfirstweekday(firstweekday):' + #10 +
   '    if not MONDAY <= firstweekday ' + '<= SUNDAY:' + #10 +
@@ -38224,24 +41374,108 @@ Const
   'monthcalendar = c.monthdayscalenda' + 'r' + #10 + 'prweek = c.prweek' +
   #10 + 'week = c.formatweek' + #10 + 'weekheader = c.formatweekheader' +
   #10 + 'prmonth = c.prmonth' + #10 + 'month = c.formatmonth' + #10 +
-  'calendar = c.formatyear' + #10 + 'prcal = c.pryear' + #10 + #10 +
-  '_colwidth = 7*3 - 1' + #10 + '_spacing = 6' + #10 + #10 +
-  'def format(cols, colwidth=_colwidt' + 'h, spacing=_spacing):' + #10 +
-  '    print(formatstring(cols, colwi' + 'dth, spacing))' + #10 + #10 +
-  'def formatstring(cols, colwidth=_c' + 'olwidth, spacing=_spacing):' + #10 +
+  'calendar = c.formatyear' + #10 + 'prcal = c.pryear' + #10 + #10 + #10 +
+  '# Spacing of month columns for mul' + 'ti-column year calendar' + #10 +
+  '_colwidth = 7*3 - 1         # Amou' + 'nt printed by prweek()' + #10 +
+  '_spacing = 6                # Numb' + 'er of spaces between columns' +
+  #10 + #10 + #10 + 'def format(cols, colwidth=_colwidt' +
+  'h, spacing=_spacing):' + #10 + '    """Prints multi-column formatt' +
+  'ing for year calendars"""' + #10 + '    print(formatstring(cols, colwi' +
+  'dth, spacing))' + #10 + #10 + #10 + 'def formatstring(cols, colwidth=_c' +
+  'olwidth, spacing=_spacing):' + #10 + '    """Returns a string formatted ' +
+  'from n strings, centered within n ' + 'columns."""' + #10 +
   '    spacing *= '' ''' + #10 + '    return spacing.join(c.center(c' +
-  'olwidth) for c in cols)' + #10 + #10 + 'EPOCH = 1970' + #10 +
+  'olwidth) for c in cols)' + #10 + #10 + #10 + 'EPOCH = 1970' + #10 +
   '_EPOCH_ORD = datetime.date(EPOCH, ' + '1, 1).toordinal()' + #10 + #10 +
-  'def timegm(tuple):' + #10 + '    year, month, day, hour, minute' +
-  ', second = tuple[:6]' + #10 + '    days = datetime.date(year, mon' +
+  #10 + 'def timegm(tuple):' + #10 + '    """Unrelated but handy functio' +
+  'n to calculate Unix timestamp from' + ' GMT."""' + #10 +
+  '    year, month, day, hour, minute' + ', second = tuple[:6]' + #10 +
+  '    days = datetime.date(year, mon' +
   'th, 1).toordinal() - _EPOCH_ORD + ' + 'day - 1' + #10 +
   '    hours = days*24 + hour' + #10 + '    minutes = hours*60 + minute' +
   #10 + '    seconds = minutes*60 + second' + #10 + '    return seconds' +
-  #10 + #10;
+  #10 + #10 + #10 + 'def main(args):' + #10 + '    import argparse' + #10 +
+  '    parser = argparse.ArgumentPars' + 'er()' + #10 +
+  '    textgroup = parser.add_argumen' + 't_group(''text only arguments'')' +
+  #10 + '    htmlgroup = parser.add_argumen' +
+  't_group(''html only arguments'')' + #10 + '    textgroup.add_argument(' +
+  #10 + '        "-w", "--width",' + #10 + '        type=int, default=2,' +
+  #10 + '        help="width of date column' + ' (default 2)"' + #10 +
+  '    )' + #10 + '    textgroup.add_argument(' + #10 +
+  '        "-l", "--lines",' + #10 + '        type=int, default=1,' + #10 +
+  '        help="number of lines for ' + 'each week (default 1)"' + #10 +
+  '    )' + #10 + '    textgroup.add_argument(' + #10 +
+  '        "-s", "--spacing",' + #10 + '        type=int, default=6,' + #10 +
+  '        help="spacing between mont' + 'hs (default 6)"' + #10 + '    )' +
+  #10 + '    textgroup.add_argument(' + #10 + '        "-m", "--months",' +
+  #10 + '        type=int, default=3,' + #10 +
+  '        help="months per row (defa' + 'ult 3)"' + #10 + '    )' + #10 +
+  '    htmlgroup.add_argument(' + #10 + '        "-c", "--css",' + #10 +
+  '        default="calendar.css",' + #10 +
+  '        help="CSS to use for page"' + #10 + '    )' + #10 +
+  '    parser.add_argument(' + #10 + '        "-L", "--locale",' + #10 +
+  '        default=None,' + #10 + '        help="locale to be used fr' +
+  'om month and weekday names"' + #10 + '    )' + #10 +
+  '    parser.add_argument(' + #10 + '        "-e", "--encoding",' + #10 +
+  '        default=None,' + #10 + '        help="encoding to use for ' +
+  'output"' + #10 + '    )' + #10 + '    parser.add_argument(' + #10 +
+  '        "-t", "--type",' + #10 + '        default="text",' + #10 +
+  '        choices=("text", "html"),' + #10 +
+  '        help="output type (text or' + ' html)"' + #10 + '    )' + #10 +
+  '    parser.add_argument(' + #10 + '        "year",' + #10 +
+  '        nargs=''?'', type=int,' + #10 +
+  '        help="year number (1-9999)' + '"' + #10 + '    )' + #10 +
+  '    parser.add_argument(' + #10 + '        "month",' + #10 +
+  '        nargs=''?'', type=int,' + #10 +
+  '        help="month number (1-12, ' + 'text only)"' + #10 + '    )' + #10 +
+  #10 + '    options = parser.parse_args(ar' + 'gs[1:])' + #10 + #10 +
+  '    if options.locale and not opti' + 'ons.encoding:' + #10 +
+  '        parser.error("if --locale ' +
+  'is specified --encoding is require' + 'd")' + #10 + '        sys.exit(1)' +
+  #10 + #10 + '    locale = options.locale, optio' + 'ns.encoding' + #10 +
+  #10 + '    if options.type == "html":' + #10 +
+  '        if options.locale:' + #10 + '            cal = LocaleHTMLCalend' +
+  'ar(locale=locale)' + #10 + '        else:' + #10 +
+  '            cal = HTMLCalendar()' + #10 +
+  '        encoding = options.encodin' + 'g' + #10 +
+  '        if encoding is None:' + #10 +
+  '            encoding = sys.getdefa' + 'ultencoding()' + #10 +
+  '        optdict = dict(encoding=en' + 'coding, css=options.css)' + #10 +
+  '        write = sys.stdout.buffer.' + 'write' + #10 +
+  '        if options.year is None:' + #10 +
+  '            write(cal.formatyearpa' +
+  'ge(datetime.date.today().year, **o' + 'ptdict))' + #10 +
+  '        elif options.month is None' + ':' + #10 +
+  '            write(cal.formatyearpa' + 'ge(options.year, **optdict))' +
+  #10 + '        else:' + #10 + '            parser.error("incorrec' +
+  't number of arguments")' + #10 + '            sys.exit(1)' + #10 +
+  '    else:' + #10 + '        if options.locale:' + #10 +
+  '            cal = LocaleTextCalend' + 'ar(locale=locale)' + #10 +
+  '        else:' + #10;
+
+Const
+ Src_calendar_3: AnsiString =
+  '            cal = TextCalendar()' + #10 +
+  '        optdict = dict(w=options.w' + 'idth, l=options.lines)' + #10 +
+  '        if options.month is None:' + #10 +
+  '            optdict["c"] = options' + '.spacing' + #10 +
+  '            optdict["m"] = options' + '.months' + #10 +
+  '        if options.year is None:' + #10 +
+  '            result = cal.formatyea' +
+  'r(datetime.date.today().year, **op' + 'tdict)' + #10 +
+  '        elif options.month is None' + ':' + #10 +
+  '            result = cal.formatyea' + 'r(options.year, **optdict)' + #10 +
+  '        else:' + #10 + '            result = cal.formatmon' +
+  'th(options.year, options.month, **' + 'optdict)' + #10 +
+  '        write = sys.stdout.write' + #10 + '        if options.encoding:' +
+  #10 + '            result = result.encode' + '(options.encoding)' + #10 +
+  '            write = sys.stdout.buf' + 'fer.write' + #10 +
+  '        write(result)' + #10 + #10 + #10 + 'if __name__ == "__main__":' +
+  #10 + '    main(sys.argv)' + #10 + #10;
 
 Function Src_calendar: AnsiString;
 Begin
- Result := Src_calendar_0 + Src_calendar_1;
+ Result := Src_calendar_0 + Src_calendar_1 + Src_calendar_2 + Src_calendar_3;
 End;
 
 Const
@@ -38426,22 +41660,9 @@ Const
   #10 + 'listings of documented functions, ' +
   'miscellaneous topics, and undocume' + 'nted' + #10 +
   'functions respectively.' + #10 + '"""' + #10 + #10 + 'import string, sys' +
-  #10 + #10 + '__all__ = ["Cmd"]' + #10 + #10 + 'def _cleandoc(doc):' + #10 +
-  '    """Clean up indentation from d' + 'ocstrings (inspect.cleandoc)."""' +
-  #10 + '    lines = doc.expandtabs().split' + '(''\n'')' + #10 +
-  '    margin = sys.maxsize' + #10 + '    for line in lines[1:]:' + #10 +
-  '        content = len(line.lstrip(' + '))' + #10 + '        if content:' +
-  #10 + '            indent = len(line) - c' + 'ontent' + #10 +
-  '            margin = min(margin, i' + 'ndent)' + #10 + '    if lines:' +
-  #10 + '        lines[0] = lines[0].lstrip' + '()' + #10 +
-  '    if margin < sys.maxsize:' + #10 +
-  '        for i in range(1, len(line' + 's)):' + #10 +
-  '            lines[i] = lines[i][ma' + 'rgin:]' + #10 +
-  '    while lines and not lines[-1]:' + #10 + '        lines.pop()' + #10 +
-  '    while lines and not lines[0]:' + #10 + '        lines.pop(0)' + #10 +
-  '    return ''\n''.join(lines)' + #10 + #10 + #10 + 'PROMPT = ''(Cmd) ''' +
-  #10 + 'IDENTCHARS = string.ascii_letters ' + '+ string.digits + ''_''' +
-  #10 + #10 + 'class Cmd:' + #10 + '    """A simple framework for writ' +
+  #10 + #10 + '__all__ = ["Cmd"]' + #10 + #10 + 'PROMPT = ''(Cmd) ''' + #10 +
+  'IDENTCHARS = string.ascii_letters ' + '+ string.digits + ''_''' + #10 +
+  #10 + 'class Cmd:' + #10 + '    """A simple framework for writ' +
   'ing line-oriented command interpre' + 'ters.' + #10 + #10 +
   '    These are often useful for tes' +
   't harnesses, administrative tools,' + ' and' + #10 +
@@ -38575,10 +41796,8 @@ Const
   '        self.lastcmd = line' + #10 + '        if line == ''EOF'' :' + #10 +
   '            self.lastcmd = ''''' + #10 + '        if cmd == '''':' + #10 +
   '            return self.default(li' + 'ne)' + #10 + '        else:' + #10 +
-  '            func = None' + #10 + '            try:' + #10 +
-  '                func = getattr(sel' + 'f, ''do_'' + cmd)' + #10 +
-  '            except AttributeError:' + #10 + '                pass' + #10 +
-  '            if func is None:' + #10 +
+  '            try:' + #10 + '                func = getattr(sel' +
+  'f, ''do_'' + cmd)' + #10 + '            except AttributeError:' + #10 +
   '                return self.defaul' + 't(line)' + #10 +
   '            return func(arg)' + #10 + #10 + '    def emptyline(self):' +
   #10 + '        """Called when an empty li' +
@@ -38586,12 +41805,8 @@ Const
   '        If this method is not over' +
   'ridden, it repeats the last nonemp' + 'ty' + #10 +
   '        command entered.' + #10 + #10 + '        """' + #10 +
-  '        if self.lastcmd:' + #10;
-
-Const
- Src_cmd_1: AnsiString =
-  '            return self.onecmd(sel' + 'f.lastcmd)' + #10 + #10 +
-  '    def default(self, line):' + #10 +
+  '        if self.lastcmd:' + #10 + '            return self.onecmd(sel' +
+  'f.lastcmd)' + #10 + #10 + '    def default(self, line):' + #10 +
   '        """Called on an input line' +
   ' when the command prefix is not re' + 'cognized.' + #10 + #10 +
   '        If this method is not over' +
@@ -38607,28 +41822,24 @@ Const
   '    def completenames(self, text, ' + '*ignored):' + #10 +
   '        dotext = ''do_''+text' + #10 +
   '        return [a[3:] for a in sel' +
-  'f.get_names() if a.startswith(dote' + 'xt)]' + #10 + #10 +
+  'f.get_names() if a.startswith(dote' + 'xt)]' + #10 + #10;
+
+Const
+ Src_cmd_1: AnsiString =
   '    def complete(self, text, state' + '):' + #10 +
   '        """Return the next possibl' + 'e completion for ''text''.' + #10 +
   #10 + '        If a command has not been ' +
   'entered, then complete against com' + 'mand list.' + #10 +
   '        Otherwise try to call comp' +
   'lete_<command> to get list of comp' + 'letions.' + #10 + '        """' +
-  #10 + '        if state == 0:' + #10 + '            try:' + #10 +
-  '                import readline' + #10 +
-  '            except ImportError:' + #10 +
-  '                readline = None' + #10 +
-  '            if readline is not Non' + 'e:' + #10 +
-  '                origline = readlin' + 'e.get_line_buffer()' + #10 +
-  '                line = origline.ls' + 'trip()' + #10 +
-  '                stripped = len(ori' + 'gline) - len(line)' + #10 +
-  '                begidx = readline.' + 'get_begidx() - stripped' + #10 +
-  '                endidx = readline.' + 'get_endidx() - stripped' + #10 +
-  '            else:' + #10 + '                line = text' + #10 +
-  '                begidx = 0' + #10 + '                endidx = len(text)' +
-  #10 + '            if begidx>0:' + #10 +
-  '                cmd, args, foo = s' + 'elf.parseline(line)' + #10 +
-  '                if cmd == '''':' + #10 +
+  #10 + '        if state == 0:' + #10 + '            import readline' + #10 +
+  '            origline = readline.ge' + 't_line_buffer()' + #10 +
+  '            line = origline.lstrip' + '()' + #10 +
+  '            stripped = len(origlin' + 'e) - len(line)' + #10 +
+  '            begidx = readline.get_' + 'begidx() - stripped' + #10 +
+  '            endidx = readline.get_' + 'endidx() - stripped' + #10 +
+  '            if begidx>0:' + #10 + '                cmd, args, foo = s' +
+  'elf.parseline(line)' + #10 + '                if cmd == '''':' + #10 +
   '                    compfunc = sel' + 'f.completedefault' + #10 +
   '                else:' + #10 + '                    try:' + #10 +
   '                        compfunc =' +
@@ -38637,14 +41848,12 @@ Const
   '                        compfunc =' + ' self.completedefault' + #10 +
   '            else:' + #10 + '                compfunc = self.co' +
   'mpletenames' + #10 + '            self.completion_matche' +
-  's = compfunc(text, line, begidx, e' + 'ndidx)' + #10 +
-  '        result = None' + #10 + '        try:' + #10 +
-  '            result = self.completi' + 'on_matches[state]' + #10 +
-  '        except IndexError:' + #10 + '            pass' + #10 +
-  '        return result' + #10 + #10 + '    def get_names(self):' + #10 +
-  '        # This method used to pull' + ' in base class attributes' + #10 +
-  '        # at a time dir() didn''t d' + 'o it yet.' + #10 +
-  '        return dir(self.__class__)' + #10 + #10 +
+  's = compfunc(text, line, begidx, e' + 'ndidx)' + #10 + '        try:' +
+  #10 + '            return self.completion' + '_matches[state]' + #10 +
+  '        except IndexError:' + #10 + '            return None' + #10 + #10 +
+  '    def get_names(self):' + #10 + '        # This method used to pull' +
+  ' in base class attributes' + #10 + '        # at a time dir() didn''t d' +
+  'o it yet.' + #10 + '        return dir(self.__class__)' + #10 + #10 +
   '    def complete_help(self, *args)' + ':' + #10 +
   '        commands = set(self.comple' + 'tenames(*args))' + #10 +
   '        topics = set(a[5:] for a i' + 'n self.get_names()' + #10 +
@@ -38654,23 +41863,21 @@ Const
   '        ''List available commands w' +
   'ith "help" or detailed help with "' + 'help cmd".''' + #10 +
   '        if arg:' + #10 + '            # XXX check arg syntax' + #10 +
-  '            func = None' + #10 + '            try:' + #10 +
-  '                func = getattr(sel' + 'f, ''help_'' + arg)' + #10 +
-  '            except AttributeError:' + #10 + '                pass' + #10 +
-  '            if func is None:' + #10 + '                doc = None' + #10 +
+  '            try:' + #10 + '                func = getattr(sel' +
+  'f, ''help_'' + arg)' + #10 + '            except AttributeError:' + #10 +
   '                try:' + #10 + '                    doc=getattr(se' +
-  'lf, ''do_'' + arg).__doc__' + #10 + '                except AttributeEr' +
-  'ror:' + #10 + '                    pass' + #10 +
-  '                if doc:' + #10 + '                    doc = _cleando' +
-  'c(doc)' + #10 + '                    self.stdout.wr' +
-  'ite("%s\n"%str(doc))' + #10 + '                    return' + #10 +
-  '                self.stdout.write(' + '"%s\n"%str(self.nohelp % (arg,)))' +
-  #10 + '                return' + #10 + '            func()' + #10 +
-  '        else:' + #10 + '            names = self.get_names' + '()' + #10 +
+  'lf, ''do_'' + arg).__doc__' + #10 + '                    if doc:' + #10 +
+  '                        self.stdou' + 't.write("%s\n"%str(doc))' + #10 +
+  '                        return' + #10 +
+  '                except AttributeEr' + 'ror:' + #10 +
+  '                    pass' + #10 + '                self.stdout.write(' +
+  '"%s\n"%str(self.nohelp % (arg,)))' + #10 + '                return' + #10 +
+  '            func()' + #10 + '        else:' + #10 +
+  '            names = self.get_names' + '()' + #10 +
   '            cmds_doc = []' + #10 + '            cmds_undoc = []' + #10 +
-  '            topics = set()' + #10 + '            for name in names:' +
-  #10 + '                if name[:5] == ''he' + 'lp_'':' + #10 +
-  '                    topics.add(nam' + 'e[5:])' + #10 +
+  '            help = {}' + #10 + '            for name in names:' + #10 +
+  '                if name[:5] == ''he' + 'lp_'':' + #10 +
+  '                    help[name[5:]]' + '=1' + #10 +
   '            names.sort()' + #10 + '            # There can be duplica' +
   'tes if routines overridden' + #10 + '            prevname = ''''' + #10 +
   '            for name in names:' + #10 +
@@ -38679,9 +41886,9 @@ Const
   '                        continue' + #10 +
   '                    prevname = nam' + 'e' + #10 +
   '                    cmd=name[3:]' + #10 +
-  '                    if cmd in topi' + 'cs:' + #10 +
+  '                    if cmd in help' + ':' + #10 +
   '                        cmds_doc.a' + 'ppend(cmd)' + #10 +
-  '                        topics.rem' + 'ove(cmd)' + #10 +
+  '                        del help[c' + 'md]' + #10 +
   '                    elif getattr(s' + 'elf, name).__doc__:' + #10 +
   '                        cmds_doc.a' + 'ppend(cmd)' + #10 +
   '                    else:' + #10 + '                        cmds_undoc' +
@@ -38689,7 +41896,7 @@ Const
   'n"%str(self.doc_leader))' + #10 + '            self.print_topics(self' +
   '.doc_header,   cmds_doc,   15,80)' + #10 +
   '            self.print_topics(self' +
-  '.misc_header,  sorted(topics),15,8' + '0)' + #10 +
+  '.misc_header,  list(help.keys()),1' + '5,80)' + #10 +
   '            self.print_topics(self' + '.undoc_header, cmds_undoc, 15,80)' +
   #10 + #10 + '    def print_topics(self, header,' +
   ' cmds, cmdlen, maxcol):' + #10 + '        if cmds:' + #10 +
@@ -40243,8 +43450,43 @@ Const
   'def unregister(search_function):' + #10 +
   '    if search_function in _search_' + 'functions:' + #10 +
   '        _search_functions.remove(s' + 'earch_function)' + #10 +
-  '    _cache.clear()' + #10 + #10 + #10 + 'def _normalize(encoding):' + #10 +
-  '    return encoding.lower().replac' +
+  '    _cache.clear()' + #10 + #10 + #10 + 'def _make_charmap(n):' + #10 +
+  '    import _charmaps' + #10 + '    pretty, table = _charmaps.TABL' +
+  'ES[n]' + #10 + '    rev = {}' + #10 +
+  '    for i, ch in enumerate(table):' + #10 +
+  '        if ch != ''\ufffe'':' + #10 + '            rev[ch] = i' + #10 +
+  #10 + '    def enc(s, errors=None):' + #10 +
+  '        s = _as_str(s, ''charmap_en' + 'code'')' + #10 +
+  '        errors = _check_errors(err' + 'ors)' + #10 + '        out = []' +
+  #10 + '        ln = len(s)' + #10 + '        i = 0' + #10 +
+  '        while i < ln:' + #10 + '            b = rev.get(s[i])' + #10 +
+  '            if b is not None:' + #10 +
+  '                out.append(bytes([' + 'b]))' + #10 +
+  '                i += 1' + #10 + '            else:' + #10 +
+  '                j = i + 1' + #10 + '                while j < ln and s' +
+  '[j] not in rev:' + #10 + '                    j += 1' + #10 +
+  '                exc = _enc_exc(''ch' +
+  'armap'', s, i, j, ''character maps t' + 'o <undefined>'')' + #10 +
+  '                i = _handle_enc(er' + 'rors, exc, out)' + #10 +
+  '        return (b''''.join(out), ln)' + #10 + #10 +
+  '    def dec(data, errors=None, fin' + 'al=True):' + #10 +
+  '        data = _as_bytes(data)' + #10 +
+  '        errors = _check_errors(err' + 'ors)' + #10 + '        out = []' +
+  #10 + '        ln = len(data)' + #10 + '        i = 0' + #10 +
+  '        while i < ln:' + #10 + '            ch = table[data[i]]' + #10 +
+  '            if ch != ''\ufffe'':' + #10 +
+  '                out.append(ch)' + #10 + '                i += 1' + #10 +
+  '            else:' + #10 + '                exc = _dec_exc(''ch' +
+  'armap'', data, i, i + 1, ''character' + ' maps to <undefined>'')' + #10 +
+  '                i = _handle_dec(er' + 'rors, exc, out)' + #10 +
+  '        return (''''.join(out), ln)' + #10 + '    _PRETTY[n] = pretty' +
+  #10 + '    C, IE, ID, SR, SW = _mk_classe' + 's(n, enc, dec, True)' + #10 +
+  '    return CodecInfo(name=pretty, ' + 'encode=enc, decode=_final(dec),' +
+  #10 + '                     incrementalen' +
+  'coder=IE, incrementaldecoder=ID,' + #10 +
+  '                     streamreader=' + 'SR, streamwriter=SW,' + #10 +
+  '                     _is_text_enco' + 'ding=True)' + #10 + #10 + #10 +
+  'def _normalize(encoding):' + #10 + '    return encoding.lower().replac' +
   'e(''-'', ''_'').replace('' '', ''_'')' + #10 + #10 + #10 +
   'def lookup(encoding):' + #10 + '    if not isinstance(encoding, st' +
   'r):' + #10 + '        raise TypeError("lookup() ' +
@@ -40256,9 +43498,13 @@ Const
   '    if canon is None and key in _P' + 'RETTY:' + #10 +
   '        canon = key' + #10 + '    result = None' + #10 +
   '    if canon is not None:' + #10 + '        result = _build_builtin(ca' +
-  'non)' + #10 + '    if result is None:' + #10 +
-  '        for func in _search_functi' + 'ons:' + #10 +
-  '            result = func(key)' + #10 +
+  'non)' + #10 + '    if result is None and canon is' + ' None:' + #10 +
+  '        import _charmaps' + #10 + '        cm = _charmaps.ALIASES.get' +
+  '(key)' + #10 + '        if cm is None and key in _' + 'charmaps.TABLES:' +
+  #10 + '            cm = key' + #10 + '        if cm is not None:' + #10 +
+  '            result = _make_charmap' + '(cm)' + #10 +
+  '    if result is None:' + #10 + '        for func in _search_functi' +
+  'ons:' + #10 + '            result = func(key)' + #10 +
   '            if result is not None:' + #10 + '                break' + #10 +
   '    if result is None:' + #10 + '        raise LookupError("unknown' +
   ' encoding: %s" % encoding)' + #10 + '    if not isinstance(result, Code' +
@@ -40298,7 +43544,10 @@ Const
   '    return lookup(encoding).stream' + 'writer' + #10 + #10 + #10 +
   'def open(filename, mode=''r'', encod' +
   'ing=None, errors=''strict'', bufferi' + 'ng=-1):' + #10 +
-  '    if encoding is not None and ''b' + ''' not in mode:' + #10 +
+  '    if encoding is not None and ''b' + ''' not in mode:' + #10;
+
+Const
+ Src_codecs_8: AnsiString =
   '        mode = mode + ''b''' + #10 + '    file = builtins.open(filename,' +
   ' mode, buffering)' + #10 + '    if encoding is None:' + #10 +
   '        return file' + #10 + '    info = lookup(encoding)' + #10 +
@@ -40336,11 +43585,7 @@ Const
   '    m = {}' + #10 + '    for k, v in decoding_map.items' + '():' + #10 +
   '        if not v in m:' + #10 + '            m[v] = k' + #10 +
   '        else:' + #10 + '            m[v] = None' + #10 + '    return m' +
-  #10 + #10;
-
-Const
- Src_codecs_8: AnsiString =
-  #10 + 'def charmap_build(decoding_table):' + #10 +
+  #10 + #10 + #10 + 'def charmap_build(decoding_table):' + #10 +
   '    return {ord(c): i for i, c in ' + 'enumerate(decoding_table)}' + #10 +
   #10 + #10 + 'def register_error_alias():' + #10 + '    pass' + #10 + #10;
 
@@ -41143,14 +44388,42 @@ End;
 
 Const
  Src_colorsys_0: AnsiString =
+  '"""Conversion functions between RG' + 'B and other color systems.' + #10 +
+  #10 + 'This modules provides two function' +
+  's for each color system ABC:' + #10 + #10 +
+  '  rgb_to_abc(r, g, b) --> a, b, c' + #10 +
+  '  abc_to_rgb(a, b, c) --> r, g, b' + #10 + #10 +
+  'All inputs and outputs are triples' +
+  ' of floats in the range [0.0...1.0' + ']' + #10 +
+  '(with the exception of I and Q, wh' +
+  'ich covers a slightly larger range' + ').' + #10 +
+  'Inputs outside the valid range may' +
+  ' cause exceptions or invalid outpu' + 'ts.' + #10 + #10 +
+  'Supported color systems:' + #10 + 'RGB: Red, Green, Blue components' +
+  #10 + 'YIQ: Luminance, Chrominance (used ' + 'by composite video signals)' +
+  #10 + 'HLS: Hue, Luminance, Saturation' + #10 +
+  'HSV: Hue, Saturation, Value' + #10 + '"""' + #10 + #10 + '# References:' +
+  #10 + '# http://en.wikipedia.org/wiki/YIQ' + #10 +
+  '# http://en.wikipedia.org/wiki/HLS' + '_color_space' + #10 +
+  '# http://en.wikipedia.org/wiki/HSV' + '_color_space' + #10 + #10 +
   '__all__ = ["rgb_to_yiq","yiq_to_rg' + 'b","rgb_to_hls","hls_to_rgb",' +
   #10 + '           "rgb_to_hsv","hsv_to_rg' + 'b"]' + #10 + #10 +
-  'ONE_THIRD = 1.0/3.0' + #10 + 'ONE_SIXTH = 1.0/6.0' + #10 +
-  'TWO_THIRD = 2.0/3.0' + #10 + #10 + 'def rgb_to_yiq(r, g, b):' + #10 +
-  '    y = 0.30*r + 0.59*g + 0.11*b' + #10 +
-  '    i = 0.74*(r-y) - 0.27*(b-y)' + #10 +
+  '# Some floating point constants' + #10 + #10 + 'ONE_THIRD = 1.0/3.0' +
+  #10 + 'ONE_SIXTH = 1.0/6.0' + #10 + 'TWO_THIRD = 2.0/3.0' + #10 + #10 +
+  '# YIQ: used by composite video sig' + 'nals (linear combinations of RGB)' +
+  #10 + '# Y: perceived grey level (0.0 == ' + 'black, 1.0 == white)' + #10 +
+  '# I, Q: color components' + #10 + '#' + #10 +
+  '# There are a great many versions ' +
+  'of the constants used in these for' + 'mulae.' + #10 +
+  '# The ones in this library uses co' +
+  'nstants from the FCC version of NT' + 'SC.' + #10 + #10 +
+  'def rgb_to_yiq(r, g, b):' + #10 + '    y = 0.30*r + 0.59*g + 0.11*b' +
+  #10 + '    i = 0.74*(r-y) - 0.27*(b-y)' + #10 +
   '    q = 0.48*(r-y) + 0.41*(b-y)' + #10 + '    return (y, i, q)' + #10 +
-  #10 + 'def yiq_to_rgb(y, i, q):' + #10 + #10 +
+  #10 + 'def yiq_to_rgb(y, i, q):' + #10 +
+  '    # r = y + (0.27*q + 0.41*i) / ' + '(0.74*0.41 + 0.27*0.48)' + #10 +
+  '    # b = y + (0.74*q - 0.48*i) / ' + '(0.74*0.41 + 0.27*0.48)' + #10 +
+  '    # g = y - (0.30*(r-y) + 0.11*(' + 'b-y)) / 0.59' + #10 + #10 +
   '    r = y + 0.9468822170900693*i +' + ' 0.6235565819861433*q' + #10 +
   '    g = y - 0.27478764629897834*i ' + '- 0.6356910791873801*q' + #10 +
   '    b = y - 1.1085450346420322*i +' + ' 1.7090069284064666*q' + #10 + #10 +
@@ -41159,14 +44432,18 @@ Const
   '        b = 0.0' + #10 + '    if r > 1.0:' + #10 + '        r = 1.0' +
   #10 + '    if g > 1.0:' + #10 + '        g = 1.0' + #10 +
   '    if b > 1.0:' + #10 + '        b = 1.0' + #10 + '    return (r, g, b)' +
-  #10 + #10 + 'def rgb_to_hls(r, g, b):' + #10 + '    maxc = max(r, g, b)' +
-  #10 + '    minc = min(r, g, b)' + #10 + '    sumc = (maxc+minc)' + #10 +
-  '    rangec = (maxc-minc)' + #10 + '    l = sumc/2.0' + #10 +
-  '    if minc == maxc:' + #10 + '        return 0.0, l, 0.0' + #10 +
-  '    if l <= 0.5:' + #10 + '        s = rangec / sumc' + #10 + '    else:' +
-  #10 + '        s = rangec / (2.0-maxc-min' + 'c)' + #10 +
-  '    rc = (maxc-r) / rangec' + #10 + '    gc = (maxc-g) / rangec' + #10 +
-  '    bc = (maxc-b) / rangec' + #10 + '    if r == maxc:' + #10 +
+  #10 + #10 + #10 + '# HLS: Hue, Luminance, Saturation' + #10 +
+  '# H: position in the spectrum' + #10 + '# L: color lightness' + #10 +
+  '# S: color saturation' + #10 + #10 + 'def rgb_to_hls(r, g, b):' + #10 +
+  '    maxc = max(r, g, b)' + #10 + '    minc = min(r, g, b)' + #10 +
+  '    # XXX Can optimize (maxc+minc)' + ' and (maxc-minc)' + #10 +
+  '    l = (minc+maxc)/2.0' + #10 + '    if minc == maxc:' + #10 +
+  '        return 0.0, l, 0.0' + #10 + '    if l <= 0.5:' + #10 +
+  '        s = (maxc-minc) / (maxc+mi' + 'nc)' + #10 + '    else:' + #10 +
+  '        s = (maxc-minc) / (2.0-max' + 'c-minc)' + #10 +
+  '    rc = (maxc-r) / (maxc-minc)' + #10 +
+  '    gc = (maxc-g) / (maxc-minc)' + #10 +
+  '    bc = (maxc-b) / (maxc-minc)' + #10 + '    if r == maxc:' + #10 +
   '        h = bc-gc' + #10 + '    elif g == maxc:' + #10 +
   '        h = 2.0+rc-bc' + #10 + '    else:' + #10 +
   '        h = 4.0+gc-rc' + #10 + '    h = (h/6.0) % 1.0' + #10 +
@@ -41180,27 +44457,29 @@ Const
   '    if hue < ONE_SIXTH:' + #10 + '        return m1 + (m2-m1)*hue*6.' +
   '0' + #10 + '    if hue < 0.5:' + #10 + '        return m2' + #10 +
   '    if hue < TWO_THIRD:' + #10 + '        return m1 + (m2-m1)*(TWO_T' +
-  'HIRD-hue)*6.0' + #10 + '    return m1' + #10 + #10 +
-  'def rgb_to_hsv(r, g, b):' + #10 + '    maxc = max(r, g, b)' + #10 +
-  '    minc = min(r, g, b)' + #10 + '    rangec = (maxc-minc)' + #10 +
-  '    v = maxc' + #10 + '    if minc == maxc:' + #10 +
-  '        return 0.0, 0.0, v' + #10 + '    s = rangec / maxc' + #10 +
-  '    rc = (maxc-r) / rangec' + #10 + '    gc = (maxc-g) / rangec' + #10 +
-  '    bc = (maxc-b) / rangec' + #10 + '    if r == maxc:' + #10 +
+  'HIRD-hue)*6.0' + #10 + '    return m1' + #10 + #10 + #10 +
+  '# HSV: Hue, Saturation, Value' + #10 + '# H: position in the spectrum' +
+  #10 + '# S: color saturation ("purity")' + #10 + '# V: color brightness' +
+  #10 + #10 + 'def rgb_to_hsv(r, g, b):' + #10 + '    maxc = max(r, g, b)' +
+  #10 + '    minc = min(r, g, b)' + #10 + '    v = maxc' + #10 +
+  '    if minc == maxc:' + #10 + '        return 0.0, 0.0, v' + #10 +
+  '    s = (maxc-minc) / maxc' + #10 + '    rc = (maxc-r) / (maxc-minc)' +
+  #10 + '    gc = (maxc-g) / (maxc-minc)' + #10 +
+  '    bc = (maxc-b) / (maxc-minc)' + #10 + '    if r == maxc:' + #10 +
   '        h = bc-gc' + #10 + '    elif g == maxc:' + #10 +
   '        h = 2.0+rc-bc' + #10 + '    else:' + #10 +
   '        h = 4.0+gc-rc' + #10 + '    h = (h/6.0) % 1.0' + #10 +
   '    return h, s, v' + #10 + #10 + 'def hsv_to_rgb(h, s, v):' + #10 +
   '    if s == 0.0:' + #10 + '        return v, v, v' + #10 +
-  '    i = int(h*6.0)' + #10 + '    f = (h*6.0) - i' + #10 +
-  '    p = v*(1.0 - s)' + #10 + '    q = v*(1.0 - s*f)' + #10 +
-  '    t = v*(1.0 - s*(1.0-f))' + #10 + '    i = i%6' + #10 +
-  '    if i == 0:' + #10 + '        return v, t, p' + #10 + '    if i == 1:' +
-  #10 + '        return q, v, p' + #10 + '    if i == 2:' + #10 +
-  '        return p, v, t' + #10 + '    if i == 3:' + #10 +
-  '        return p, q, v' + #10 + '    if i == 4:' + #10 +
+  '    i = int(h*6.0) # XXX assume in' + 't() truncates!' + #10 +
+  '    f = (h*6.0) - i' + #10 + '    p = v*(1.0 - s)' + #10 +
+  '    q = v*(1.0 - s*f)' + #10 + '    t = v*(1.0 - s*(1.0-f))' + #10 +
+  '    i = i%6' + #10 + '    if i == 0:' + #10 + '        return v, t, p' +
+  #10 + '    if i == 1:' + #10 + '        return q, v, p' + #10 +
+  '    if i == 2:' + #10 + '        return p, v, t' + #10 + '    if i == 3:' +
+  #10 + '        return p, q, v' + #10 + '    if i == 4:' + #10 +
   '        return t, p, v' + #10 + '    if i == 5:' + #10 +
-  '        return v, p, q' + #10 + #10;
+  '        return v, p, q' + #10 + '    # Cannot get here' + #10 + #10;
 
 Function Src_colorsys: AnsiString;
 Begin
@@ -42424,58 +45703,210 @@ End;
 
 Const
  Src_copy_0: AnsiString =
-  'class Error(Exception):' + #10 + '    pass' + #10 + 'error = Error' + #10 +
-  #10 + 'def copy(x):' + #10 + '    cls = type(x)' + #10 +
-  '    if cls in (int, float, bool, s' +
-  'tr, bytes, type(None), tuple, froz' + 'enset, type, range):' + #10 +
-  '        return x' + #10 + '    if cls is list:' + #10 +
-  '        return list(x)' + #10 + '    if cls is dict:' + #10 +
-  '        return dict(x)' + #10 + '    if cls is set:' + #10 +
-  '        return set(x)' + #10 + '    f = getattr(cls, ''__copy__'', N' +
-  'one)' + #10 + '    if f is not None:' + #10 + '        return f(x)' + #10 +
-  '    if isinstance(x, type) or call' +
-  'able(x) and not hasattr(x, ''__dict' + '__''):' + #10 +
-  '        return x' + #10 + '    return _reconstruct(x, False, ' + '{})' +
-  #10 + #10 + 'def _reconstruct(x, deep, memo):' + #10 + '    cls = type(x)' +
-  #10 + '    if hasattr(cls, ''__new__''):' + #10 +
-  '        y = cls.__new__(cls)' + #10 + '    else:' + #10 +
-  '        y = object.__new__(cls)' + #10 +
-  '    if hasattr(x, ''__dict__''):' + #10 + '        if deep:' + #10 +
-  '            y.__dict__.update(deep' + 'copy(x.__dict__, memo))' + #10 +
-  '        else:' + #10 + '            y.__dict__.update(x.__' + 'dict__)' +
-  #10 + '    return y' + #10 + #10 + 'def deepcopy(x, memo=None, _nil=[]' +
-  '):' + #10 + '    if memo is None:' + #10 + '        memo = {}' + #10 +
-  '    d = id(x)' + #10 + '    y = memo.get(d, _nil)' + #10 +
-  '    if y is not _nil:' + #10 + '        return y' + #10 +
-  '    cls = type(x)' + #10 + '    if cls in (int, float, bool, s' +
-  'tr, bytes, type(None), type, range' + '):' + #10 + '        return x' +
-  #10 + '    if cls is list:' + #10 + '        y = []' + #10 +
-  '        memo[d] = y' + #10 + '        for a in x:' + #10 +
-  '            y.append(deepcopy(a, m' + 'emo))' + #10 + '        return y' +
-  #10 + '    if cls is tuple:' + #10 + '        y = tuple([deepcopy(a, mem' +
-  'o) for a in x])' + #10 + '        for k, j in zip(x, y):' + #10 +
-  '            if k is not j:' + #10 + '                memo[d] = y' + #10 +
-  '                return y' + #10 + '        return x' + #10 +
-  '    if cls is dict:' + #10 + '        y = {}' + #10 +
-  '        memo[d] = y' + #10 + '        for k, v in x.items():' + #10 +
-  '            y[deepcopy(k, memo)] =' + ' deepcopy(v, memo)' + #10 +
-  '        return y' + #10 + '    if cls is set:' + #10 +
-  '        y = set()' + #10 + '        memo[d] = y' + #10 +
-  '        for a in x:' + #10 + '            y.add(deepcopy(a, memo' + '))' +
-  #10 + '        return y' + #10 + '    if cls is frozenset:' + #10 +
-  '        y = frozenset([deepcopy(a,' + ' memo) for a in x])' + #10 +
-  '        memo[d] = y' + #10 + '        return y' + #10 +
-  '    f = getattr(cls, ''__deepcopy__' + ''', None)' + #10 +
-  '    if f is not None:' + #10 + '        y = f(x, memo)' + #10 +
-  '        memo[d] = y' + #10 + '        return y' + #10 +
-  '    if isinstance(x, type):' + #10 + '        return x' + #10 +
-  '    if callable(x) and not hasattr' + '(x, ''__dict__''):' + #10 +
-  '        return x' + #10 + '    y = _reconstruct(x, True, memo' + ')' +
-  #10 + '    memo[d] = y' + #10 + '    return y' + #10 + #10;
+  '"""Generic (shallow and deep) copy' + 'ing operations.' + #10 + #10 +
+  'Interface summary:' + #10 + #10 + '        import copy' + #10 + #10 +
+  '        x = copy.copy(y)        # ' + 'make a shallow copy of y' + #10 +
+  '        x = copy.deepcopy(y)    # ' + 'make a deep copy of y' + #10 + #10 +
+  'For module specific errors, copy.E' + 'rror is raised.' + #10 + #10 +
+  'The difference between shallow and' +
+  ' deep copying is only relevant for' + #10 +
+  'compound objects (objects that con' + 'tain other objects, like lists or' +
+  #10 + 'class instances).' + #10 + #10 +
+  '- A shallow copy constructs a new ' + 'compound object and then (to the' +
+  #10 + '  extent possible) inserts *the sa' +
+  'me objects* into it that the' + #10 + '  original contains.' + #10 + #10 +
+  '- A deep copy constructs a new com' +
+  'pound object and then, recursively' + ',' + #10 +
+  '  inserts *copies* into it of the ' + 'objects found in the original.' +
+  #10 + #10 + 'Two problems often exist with deep' +
+  ' copy operations that don''t exist' + #10 +
+  'with shallow copy operations:' + #10 + #10 +
+  ' a) recursive objects (compound ob' +
+  'jects that, directly or indirectly' + ',' + #10 +
+  '    contain a reference to themsel' + 'ves) may cause a recursive loop' +
+  #10 + #10 + ' b) because deep copy copies *ever' +
+  'ything* it may copy too much, e.g.' + #10 +
+  '    administrative data structures' +
+  ' that should be shared even betwee' + 'n' + #10 + '    copies' + #10 +
+  #10 + 'Python''s deep copy operation avoid' + 's these problems by:' + #10 +
+  #10 + ' a) keeping a table of objects alr' +
+  'eady copied during the current' + #10 + '    copying pass' + #10 + #10 +
+  ' b) letting user-defined classes o' +
+  'verride the copying operation or t' + 'he' + #10 +
+  '    set of components copied' + #10 + #10 +
+  'This version does not copy types l' +
+  'ike module, class, function, metho' + 'd,' + #10 +
+  'nor stack trace, stack frame, nor ' +
+  'file, socket, window, nor array, n' + 'or' + #10 + 'any similar types.' +
+  #10 + #10 + 'Classes can use the same interface' +
+  's to control copying that they use' + #10 +
+  'to control pickling: they can defi' +
+  'ne methods called __getinitargs__(' + '),' + #10 +
+  '__getstate__() and __setstate__().' +
+  '  See the documentation for module' + #10 +
+  '"pickle" for information on these ' + 'methods.' + #10 + '"""' + #10 +
+  #10 + 'import types' + #10 + 'import weakref' + #10 +
+  'from copyreg import dispatch_table' + #10 + #10 +
+  'class Error(Exception):' + #10 + '    pass' + #10 +
+  'error = Error   # backward compati' + 'bility' + #10 + #10 + 'try:' + #10 +
+  '    from org.python.core import Py' + 'StringMap' + #10 +
+  'except ImportError:' + #10 + '    PyStringMap = None' + #10 + #10 +
+  '__all__ = ["Error", "copy", "deepc' + 'opy"]' + #10 + #10 +
+  'def copy(x):' + #10 + '    """Shallow copy operation on a' +
+  'rbitrary Python objects.' + #10 + #10 +
+  '    See the module''s __doc__ strin' + 'g for more info.' + #10 +
+  '    """' + #10 + #10 + '    cls = type(x)' + #10 + #10 +
+  '    copier = _copy_dispatch.get(cl' + 's)' + #10 + '    if copier:' + #10 +
+  '        return copier(x)' + #10 + #10 + '    if issubclass(cls, type):' +
+  #10 + '        # treat it as a regular cl' + 'ass:' + #10 +
+  '        return _copy_immutable(x)' + #10 + #10 +
+  '    copier = getattr(cls, "__copy_' + '_", None)' + #10 +
+  '    if copier is not None:' + #10 + '        return copier(x)' + #10 +
+  #10 + '    reductor = dispatch_table.get(' + 'cls)' + #10 +
+  '    if reductor is not None:' + #10 + '        rv = reductor(x)' + #10 +
+  '    else:' + #10 + '        reductor = getattr(x, "__r' +
+  'educe_ex__", None)' + #10 + '        if reductor is not None:' + #10 +
+  '            rv = reductor(4)' + #10 + '        else:' + #10 +
+  '            reductor = getattr(x, ' + '"__reduce__", None)' + #10 +
+  '            if reductor:' + #10 + '                rv = reductor()' + #10 +
+  '            else:' + #10 + '                raise Error("un(sh' +
+  'allow)copyable object of type %s" ' + '% cls)' + #10 + #10 +
+  '    if isinstance(rv, str):' + #10 + '        return x' + #10 +
+  '    return _reconstruct(x, None, *' + 'rv)' + #10 + #10 + #10 +
+  '_copy_dispatch = d = {}' + #10 + #10 + 'def _copy_immutable(x):' + #10 +
+  '    return x' + #10 + 'for t in (type(None), int, float, ' +
+  'bool, complex, str, tuple,' + #10 + '          bytes, frozenset, type, ' +
+  'range, slice, property,' + #10 + '          types.BuiltinFunctionTyp' +
+  'e, type(Ellipsis), type(NotImpleme' + 'nted),' + #10 +
+  '          types.FunctionType, weak' + 'ref.ref):' + #10 +
+  '    d[t] = _copy_immutable' + #10 + 't = getattr(types, "CodeType", Non' +
+  'e)' + #10 + 'if t is not None:' + #10 + '    d[t] = _copy_immutable' +
+  #10 + #10 + 'd[list] = list.copy' + #10 + 'd[dict] = dict.copy' + #10 +
+  'd[set] = set.copy' + #10 + 'd[bytearray] = bytearray.copy' + #10 + #10 +
+  'if PyStringMap is not None:' + #10 + '    d[PyStringMap] = PyStringMap.c' +
+  'opy' + #10 + #10 + 'del d, t' + #10 + #10 +
+  'def deepcopy(x, memo=None, _nil=[]' + '):' + #10 +
+  '    """Deep copy operation on arbi' + 'trary Python objects.' + #10 + #10 +
+  '    See the module''s __doc__ strin' + 'g for more info.' + #10 +
+  '    """' + #10 + #10 + '    if memo is None:' + #10 + '        memo = {}' +
+  #10 + #10 + '    d = id(x)' + #10 + '    y = memo.get(d, _nil)' + #10 +
+  '    if y is not _nil:' + #10 + '        return y' + #10 + #10 +
+  '    cls = type(x)' + #10 + #10 + '    copier = _deepcopy_dispatch.ge' +
+  't(cls)' + #10 + '    if copier is not None:' + #10 +
+  '        y = copier(x, memo)' + #10 + '    else:' + #10 +
+  '        if issubclass(cls, type):' + #10 +
+  '            y = _deepcopy_atomic(x' + ', memo)' + #10 + '        else:' +
+  #10 + '            copier = getattr(x, "_' + '_deepcopy__", None)' + #10 +
+  '            if copier is not None:' + #10 +
+  '                y = copier(memo)' + #10 + '            else:' + #10 +
+  '                reductor = dispatc' + 'h_table.get(cls)' + #10 +
+  '                if reductor:' + #10 +
+  '                    rv = reductor(' + 'x)' + #10 +
+  '                else:' + #10 + '                    reductor = get' +
+  'attr(x, "__reduce_ex__", None)' + #10 +
+  '                    if reductor is' + ' not None:' + #10 +
+  '                        rv = reduc' + 'tor(4)' + #10 +
+  '                    else:' + #10 + '                        reductor =' +
+  ' getattr(x, "__reduce__", None)' + #10 +
+  '                        if reducto' + 'r:' + #10 +
+  '                            rv = r' + 'eductor()' + #10 +
+  '                        else:' + #10 +
+  '                            raise ' + 'Error(' + #10 +
+  '                                "u' +
+  'n(deep)copyable object of type %s"' + ' % cls)' + #10 +
+  '                if isinstance(rv, ' + 'str):' + #10 +
+  '                    y = x' + #10 + '                else:' + #10 +
+  '                    y = _reconstru' + 'ct(x, memo, *rv)' + #10 + #10 +
+  '    # If is its own copy, don''t me' + 'moize.' + #10 +
+  '    if y is not x:' + #10 + '        memo[d] = y' + #10 +
+  '        _keep_alive(x, memo) # Mak' +
+  'e sure x lives at least as long as' + ' d' + #10 + '    return y' + #10 +
+  #10 + '_deepcopy_dispatch = d = {}' + #10 + #10 +
+  'def _deepcopy_atomic(x, memo):' + #10 + '    return x' + #10 +
+  'd[type(None)] = _deepcopy_atomic' + #10 +
+  'd[type(Ellipsis)] = _deepcopy_atom' + 'ic' + #10 +
+  'd[type(NotImplemented)] = _deepcop' + 'y_atomic' + #10 +
+  'd[int] = _deepcopy_atomic' + #10 + 'd[float] = _deepcopy_atomic' + #10 +
+  'd[bool] = _deepcopy_atomic' + #10 + 'd[complex] = _deepcopy_atomic' + #10 +
+  'd[bytes] = _deepcopy_atomic' + #10 + 'd[str] = _deepcopy_atomic' + #10 +
+  'd[types.CodeType] = _deepcopy_atom' + 'ic' + #10 +
+  'd[type] = _deepcopy_atomic' + #10 + 'd[types.BuiltinFunctionType] = _de' +
+  'epcopy_atomic' + #10 + 'd[types.FunctionType] = _deepcopy_' + 'atomic' +
+  #10 + 'd[weakref.ref] = _deepcopy_atomic' + #10 +
+  'd[property] = _deepcopy_atomic' + #10 + #10 +
+  'def _deepcopy_list(x, memo, deepco' + 'py=deepcopy):' + #10 +
+  '    y = []' + #10 + '    memo[id(x)] = y' + #10 + '    append = y.append' +
+  #10 + '    for a in x:' + #10 + '        append(deepcopy(a, memo))' + #10 +
+  '    return y' + #10 + 'd[list] = _deepcopy_list' + #10 + #10 +
+  'def _deepcopy_tuple(x, memo, deepc' + 'opy=deepcopy):' + #10 +
+  '    y = [deepcopy(a, memo) for a i' + 'n x]' + #10 +
+  '    # We''re not going to put the t' +
+  'uple in the memo, but it''s still i' + 'mportant we' + #10 +
+  '    # check for it, in case the tu' +
+  'ple contains recursive mutable str' + 'uctures.' + #10 + '    try:' + #10 +
+  '        return memo[id(x)]' + #10 + '    except KeyError:' + #10 +
+  '        pass' + #10 + '    for k, j in zip(x, y):' + #10 +
+  '        if k is not j:' + #10 + '            y = tuple(y)' + #10 +
+  '            break' + #10 + '    else:' + #10 + '        y = x' + #10 +
+  '    return y' + #10 + 'd[tuple] = _deepcopy_tuple' + #10 + #10 +
+  'def _deepcopy_dict(x, memo, deepco' + 'py=deepcopy):' + #10 +
+  '    y = {}' + #10 + '    memo[id(x)] = y' + #10 +
+  '    for key, value in x.items():' + #10 +
+  '        y[deepcopy(key, memo)] = d' + 'eepcopy(value, memo)' + #10 +
+  '    return y' + #10 + 'd[dict] = _deepcopy_dict' + #10 +
+  'if PyStringMap is not None:' + #10 + '    d[PyStringMap] = _deepcopy_dic' +
+  't' + #10 + #10 + 'def _deepcopy_method(x, memo): # C' +
+  'opy instance methods' + #10 + '    return type(x)(x.__func__, dee' +
+  'pcopy(x.__self__, memo))' + #10 + 'd[types.MethodType] = _deepcopy_me' +
+  'thod' + #10 + #10 + 'del d' + #10 + #10 + 'def _keep_alive(x, memo):' +
+  #10 + '    """Keeps a reference to the ob' + 'ject x in the memo.' + #10 +
+  #10 + '    Because we remember objects by' + ' their id, we have' + #10 +
+  '    to assure that possibly tempor' + 'ary objects are kept' + #10 +
+  '    alive by referencing them.' + #10 +
+  '    We store a reference at the id' + ' of the memo, which should' + #10 +
+  '    normally not be used unless so' + 'meone tries to deepcopy' + #10 +
+  '    the memo itself...' + #10;
+
+Const
+ Src_copy_1: AnsiString =
+  '    """' + #10 + '    try:' + #10 + '        memo[id(memo)].append(x)' +
+  #10 + '    except KeyError:' + #10 + '        # aha, this is the first o' +
+  'ne :-)' + #10 + '        memo[id(memo)]=[x]' + #10 + #10 +
+  'def _reconstruct(x, memo, func, ar' + 'gs,' + #10 +
+  '                 state=None, listi' + 'ter=None, dictiter=None,' + #10 +
+  '                 deepcopy=deepcopy' + '):' + #10 +
+  '    deep = memo is not None' + #10 + '    if deep and args:' + #10 +
+  '        args = (deepcopy(arg, memo' + ') for arg in args)' + #10 +
+  '    y = func(*args)' + #10 + '    if deep:' + #10 +
+  '        memo[id(x)] = y' + #10 + #10 + '    if state is not None:' + #10 +
+  '        if deep:' + #10 + '            state = deepcopy(state' +
+  ', memo)' + #10 + '        if hasattr(y, ''__setstate_' + '_''):' + #10 +
+  '            y.__setstate__(state)' + #10 + '        else:' + #10 +
+  '            if isinstance(state, t' + 'uple) and len(state) == 2:' + #10 +
+  '                state, slotstate =' + ' state' + #10 +
+  '            else:' + #10 + '                slotstate = None' + #10 +
+  '            if state is not None:' + #10 +
+  '                y.__dict__.update(' + 'state)' + #10 +
+  '            if slotstate is not No' + 'ne:' + #10 +
+  '                for key, value in ' + 'slotstate.items():' + #10 +
+  '                    setattr(y, key' + ', value)' + #10 + #10 +
+  '    if listiter is not None:' + #10 + '        if deep:' + #10 +
+  '            for item in listiter:' + #10 +
+  '                item = deepcopy(it' + 'em, memo)' + #10 +
+  '                y.append(item)' + #10 + '        else:' + #10 +
+  '            for item in listiter:' + #10 +
+  '                y.append(item)' + #10 + '    if dictiter is not None:' +
+  #10 + '        if deep:' + #10 + '            for key, value in dict' +
+  'iter:' + #10 + '                key = deepcopy(key' + ', memo)' + #10 +
+  '                value = deepcopy(v' + 'alue, memo)' + #10 +
+  '                y[key] = value' + #10 + '        else:' + #10 +
+  '            for key, value in dict' + 'iter:' + #10 +
+  '                y[key] = value' + #10 + '    return y' + #10 + #10 +
+  'del types, weakref, PyStringMap' + #10 + #10;
 
 Function Src_copy: AnsiString;
 Begin
- Result := Src_copy_0;
+ Result := Src_copy_0 + Src_copy_1;
 End;
 
 Const
@@ -43182,107 +46613,306 @@ End;
 
 Const
  Src_dataclasses_0: AnsiString =
-  'import sys' + #10 + 'import copy' + #10 + 'import types' + #10 +
-  'import keyword' + #10 + 'import builtins' + #10 + 'import functools' +
-  #10 + #10 + '__all__ = [''dataclass'',' + #10 + '           ''field'',' +
-  #10 + '           ''Field'',' + #10 +
+  'import re' + #10 + 'import sys' + #10 + 'import copy' + #10 +
+  'import types' + #10 + 'import inspect' + #10 + 'import keyword' + #10 +
+  'import builtins' + #10 + 'import functools' + #10 + 'import _thread' +
+  #10 + #10 + #10 + '__all__ = [''dataclass'',' + #10 +
+  '           ''field'',' + #10 + '           ''Field'',' + #10 +
   '           ''FrozenInstanceError'',' + #10 + '           ''InitVar'',' +
   #10 + '           ''MISSING'',' + #10 + #10 +
   '           # Helper functions.' + #10 + '           ''fields'',' + #10 +
   '           ''asdict'',' + #10 + '           ''astuple'',' + #10 +
   '           ''make_dataclass'',' + #10 + '           ''replace'',' + #10 +
-  '           ''is_dataclass'',' + #10 + '           ]' + #10 + #10 + #10 +
-  'class FrozenInstanceError(Attribut' + 'eError): pass' + #10 + #10 + #10 +
+  '           ''is_dataclass'',' + #10 + '           ]' + #10 + #10 +
+  '# Conditions for adding methods.  ' +
+  'The boxes indicate what action the' + #10 +
+  '# dataclass decorator takes.  For ' + 'all of these tables, when I talk' +
+  #10 + '# about init=, repr=, eq=, order=,' +
+  ' unsafe_hash=, or frozen=, I''m' + #10 +
+  '# referring to the arguments to th' + 'e @dataclass decorator.  When' +
+  #10 + '# checking if a dunder method alre' +
+  'ady exists, I mean check for an' + #10 +
+  '# entry in the class''s __dict__.  ' +
+  'I never check to see if an attribu' + 'te' + #10 +
+  '# is defined in a base class.' + #10 + #10 + '# Key:' + #10 +
+  '# +=========+=====================' + '====================+' + #10 +
+  '# + Value   | Meaning             ' + '                    |' + #10 +
+  '# +=========+=====================' + '====================+' + #10 +
+  '# | <blank> | No action: no method' + ' is added.          |' + #10 +
+  '# +---------+---------------------' + '--------------------+' + #10 +
+  '# | add     | Generated method is ' + 'added.              |' + #10 +
+  '# +---------+---------------------' + '--------------------+' + #10 +
+  '# | raise   | TypeError is raised.' + '                    |' + #10 +
+  '# +---------+---------------------' + '--------------------+' + #10 +
+  '# | None    | Attribute is set to ' + 'None.               |' + #10 +
+  '# +=========+=====================' + '====================+' + #10 + #10 +
+  '# __init__' + #10 + '#' + #10 + '#   +--- init= parameter' + #10 +
+  '#   |' + #10 + '#   v     |       |       |' + #10 +
+  '#         |  no   |  yes  |  <--- ' + 'class has __init__ in __dict__?' +
+  #10 + '# +=======+=======+=======+' + #10 + '# | False |       |       |' +
+  #10 + '# +-------+-------+-------+' + #10 +
+  '# | True  | add   |       |  <- th' + 'e default' + #10 +
+  '# +=======+=======+=======+' + #10 + #10 + '# __repr__' + #10 + '#' + #10 +
+  '#    +--- repr= parameter' + #10 + '#    |' + #10 +
+  '#    v    |       |       |' + #10 + '#         |  no   |  yes  |  <--- ' +
+  'class has __repr__ in __dict__?' + #10 + '# +=======+=======+=======+' +
+  #10 + '# | False |       |       |' + #10 + '# +-------+-------+-------+' +
+  #10 + '# | True  | add   |       |  <- th' + 'e default' + #10 +
+  '# +=======+=======+=======+' + #10 + #10 + #10 + '# __setattr__' + #10 +
+  '# __delattr__' + #10 + '#' + #10 + '#    +--- frozen= parameter' + #10 +
+  '#    |' + #10 + '#    v    |       |       |' + #10 +
+  '#         |  no   |  yes  |  <--- ' +
+  'class has __setattr__ or __delattr' + '__ in __dict__?' + #10 +
+  '# +=======+=======+=======+' + #10 + '# | False |       |       |  <- th' +
+  'e default' + #10 + '# +-------+-------+-------+' + #10 +
+  '# | True  | add   | raise |' + #10 + '# +=======+=======+=======+' + #10 +
+  '# Raise because not adding these m' +
+  'ethods would break the "frozen-nes' + 's"' + #10 + '# of the class.' +
+  #10 + #10 + '# __eq__' + #10 + '#' + #10 + '#    +--- eq= parameter' + #10 +
+  '#    |' + #10 + '#    v    |       |       |' + #10 +
+  '#         |  no   |  yes  |  <--- ' + 'class has __eq__ in __dict__?' +
+  #10 + '# +=======+=======+=======+' + #10 + '# | False |       |       |' +
+  #10 + '# +-------+-------+-------+' + #10 +
+  '# | True  | add   |       |  <- th' + 'e default' + #10 +
+  '# +=======+=======+=======+' + #10 + #10 + '# __lt__' + #10 + '# __le__' +
+  #10 + '# __gt__' + #10 + '# __ge__' + #10 + '#' + #10 +
+  '#    +--- order= parameter' + #10 + '#    |' + #10 +
+  '#    v    |       |       |' + #10 + '#         |  no   |  yes  |  <--- ' +
+  'class has any comparison method in' + ' __dict__?' + #10 +
+  '# +=======+=======+=======+' + #10 + '# | False |       |       |  <- th' +
+  'e default' + #10 + '# +-------+-------+-------+' + #10 +
+  '# | True  | add   | raise |' + #10 + '# +=======+=======+=======+' + #10 +
+  '# Raise because to allow this case' + ' would interfere with using' + #10 +
+  '# functools.total_ordering.' + #10 + #10 + '# __hash__' + #10 + #10 +
+  '#    +------------------- unsafe_h' + 'ash= parameter' + #10 +
+  '#    |       +----------- eq= para' + 'meter' + #10 +
+  '#    |       |       +--- frozen= ' + 'parameter' + #10 +
+  '#    |       |       |' + #10 + '#    v       v       v    |       ' +
+  ' |        |' + #10 + '#                         |   no  ' +
+  ' |  yes   |  <--- class has explic' + 'itly defined __hash__' + #10 +
+  '# +=======+=======+=======+=======' + '=+========+' + #10 +
+  '# | False | False | False |       ' +
+  ' |        | No __eq__, use the bas' + 'e class __hash__' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | False | False | True  |       ' +
+  ' |        | No __eq__, use the bas' + 'e class __hash__' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | False | True  | False | None  ' +
+  ' |        | <-- the default, not h' + 'ashable' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | False | True  | True  | add   ' +
+  ' |        | Frozen, so hashable, a' + 'llows override' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | True  | False | False | add   ' +
+  ' | raise  | Has no __eq__, but has' + 'hable' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | True  | False | True  | add   ' +
+  ' | raise  | Has no __eq__, but has' + 'hable' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | True  | True  | False | add   ' +
+  ' | raise  | Not frozen, but hashab' + 'le' + #10 +
+  '# +-------+-------+-------+-------' + '-+--------+' + #10 +
+  '# | True  | True  | True  | add   ' + ' | raise  | Frozen, so hashable' +
+  #10 + '# +=======+=======+=======+=======' + '=+========+' + #10 +
+  '# For boxes that are blank, __hash' + '__ is untouched and therefore' +
+  #10 + '# inherited from the base class.  ' + 'If the base is object, then' +
+  #10 + '# id-based hashing is used.' + #10 + '#' + #10 +
+  '# Note that a class may already ha' +
+  've __hash__=None if it specified a' + 'n' + #10 +
+  '# __eq__ method in the class body ' + '(not one that was created by' +
+  #10 + '# @dataclass).' + #10 + '#' + #10 +
+  '# See _hash_action (below) for a c' + 'oded version of this table.' + #10 +
+  #10 + #10 + '# Raised when an attempt is made t' +
+  'o modify a frozen class.' + #10 + 'class FrozenInstanceError(Attribut' +
+  'eError): pass' + #10 + #10 + '# A sentinel object for default va' +
+  'lues to signal that a default' + #10 +
+  '# factory will be used.  This is g' +
+  'iven a nice repr() which will appe' + 'ar' + #10 +
+  '# in the function signature of dat' + 'aclasses'' constructors.' + #10 +
   'class _HAS_DEFAULT_FACTORY_CLASS:' + #10 + '    def __repr__(self):' +
   #10 + '        return ''<factory>''' + #10 +
   '_HAS_DEFAULT_FACTORY = _HAS_DEFAUL' + 'T_FACTORY_CLASS()' + #10 + #10 +
-  #10 + 'class _MISSING_TYPE:' + #10 + '    pass' + #10 +
-  'MISSING = _MISSING_TYPE()' + #10 + #10 +
-  '_EMPTY_METADATA = types.MappingPro' + 'xyType({})' + #10 + #10 + #10 +
+  '# A sentinel object to detect if a' +
+  ' parameter is supplied or not.  Us' + 'e' + #10 +
+  '# a class to give it a better repr' + '.' + #10 + 'class _MISSING_TYPE:' +
+  #10 + '    pass' + #10 + 'MISSING = _MISSING_TYPE()' + #10 + #10 +
+  '# Since most per-field metadata wi' + 'll be unused, create an empty' +
+  #10 + '# read-only proxy that can be shar' + 'ed among all fields.' + #10 +
+  '_EMPTY_METADATA = types.MappingPro' + 'xyType({})' + #10 + #10 +
+  '# Markers for the various kinds of' + ' fields and pseudo-fields.' + #10 +
   'class _FIELD_BASE:' + #10 + '    def __init__(self, name):' + #10 +
   '        self.name = name' + #10 + '    def __repr__(self):' + #10 +
   '        return self.name' + #10 + '_FIELD = _FIELD_BASE(''_FIELD'')' +
   #10 + '_FIELD_CLASSVAR = _FIELD_BASE(''_FI' + 'ELD_CLASSVAR'')' + #10 +
   '_FIELD_INITVAR = _FIELD_BASE(''_FIE' + 'LD_INITVAR'')' + #10 + #10 +
-  '_FIELDS = ''__dataclass_fields__''' + #10 +
-  '_PARAMS = ''__dataclass_params__''' + #10 +
-  '_POST_INIT_NAME = ''__post_init__''' + #10 + #10 + #10 + 'class InitVar:' +
-  #10 + '    __slots__ = (''type'', )' + #10 + #10 +
+  '# The name of an attribute on the ' + 'class where we store the Field' +
+  #10 + '# objects.  Also used to check if ' + 'a class is a Data Class.' +
+  #10 + '_FIELDS = ''__dataclass_fields__''' + #10 + #10 +
+  '# The name of an attribute on the ' +
+  'class that stores the parameters t' + 'o' + #10 + '# @dataclass.' + #10 +
+  '_PARAMS = ''__dataclass_params__''' + #10 + #10 +
+  '# The name of the function, that i' +
+  'f it exists, is called at the end ' + 'of' + #10 + '# __init__.' + #10 +
+  '_POST_INIT_NAME = ''__post_init__''' + #10 + #10 +
+  '# String regex that string annotat' +
+  'ions for ClassVar or InitVar must ' + 'match.' + #10 +
+  '# Allows "identifier.identifier[" ' + 'or "identifier[".' + #10 +
+  '# https://bugs.python.org/issue334' + '53 for details.' + #10 +
+  '_MODULE_IDENTIFIER_RE = re.compile' +
+  '(r''^(?:\s*(\w+)\s*\.)?\s*(\w+)'')' + #10 + #10 +
+  'class _InitVarMeta(type):' + #10 + '    def __getitem__(self, params):' +
+  #10 + '        return InitVar(params)' + #10 + #10 +
+  'class InitVar(metaclass=_InitVarMe' + 'ta):' + #10 +
+  '    __slots__ = (''type'', )' + #10 + #10 +
   '    def __init__(self, type):' + #10 + '        self.type = type' + #10 +
   #10 + '    def __repr__(self):' + #10 +
   '        if isinstance(self.type, t' + 'ype):' + #10 +
   '            type_name = self.type.' + '__name__' + #10 + '        else:' +
-  #10 + '            type_name = repr(self.' + 'type)' + #10 +
-  '        return ''dataclasses.InitVa' + 'r['' + type_name + '']''' + #10 +
-  #10 + '    def __class_getitem__(cls, typ' + 'e):' + #10 +
-  '        return InitVar(type)' + #10 + #10 + #10 + 'class Field:' + #10 +
-  '    __slots__ = (''name'',' + #10 + '                 ''type'',' + #10 +
-  '                 ''default'',' + #10 +
+  #10 + '            # typing objects, e.g.' + ' List[int]' + #10 +
+  '            type_name = repr(self.' + 'type)' + #10 +
+  '        return f''dataclasses.InitV' + 'ar[{type_name}]''' + #10 + #10 +
+  #10 + '# Instances of Field are only ever' +
+  ' created from within this module,' + #10 +
+  '# and only from the field() functi' + 'on, although Field instances are' +
+  #10 + '# exposed externally as (conceptua' + 'lly) read-only objects.' +
+  #10 + '#' + #10 + '# name and type are filled in afte' +
+  'r the fact, not in __init__.' + #10 +
+  '# They''re not known at the time th' +
+  'is class is instantiated, but it''s' + #10 +
+  '# convenient if they''re available ' + 'later.' + #10 + '#' + #10 +
+  '# When cls._FIELDS is filled in wi' +
+  'th a list of Field objects, the na' + 'me' + #10 +
+  '# and type fields will have been p' + 'opulated.' + #10 + 'class Field:' +
+  #10 + '    __slots__ = (''name'',' + #10 + '                 ''type'',' +
+  #10 + '                 ''default'',' + #10 +
   '                 ''default_factory''' + ',' + #10 +
   '                 ''repr'',' + #10 + '                 ''hash'',' + #10 +
   '                 ''init'',' + #10 + '                 ''compare'',' + #10 +
   '                 ''metadata'',' + #10 +
-  '                 ''_field_type'',' + #10 + '                 )' + #10 +
-  #10 + '    def __init__(self, default, de' +
+  '                 ''_field_type'',  #' +
+  ' Private: not to be used by user c' + 'ode.' + #10 + '                 )' +
+  #10 + #10 + '    def __init__(self, default, de' +
   'fault_factory, init, repr, hash, c' + 'ompare,' + #10 +
   '                 metadata):' + #10 + '        self.name = None' + #10 +
   '        self.type = None' + #10 + '        self.default = default' + #10 +
   '        self.default_factory = def' + 'ault_factory' + #10 +
-  '        self.init = init' + #10 + '        self.repr = repr' + #10 +
-  '        self.hash = hash' + #10 + '        self.compare = compare' + #10 +
+  '        self.init = init' + #10;
+
+Const
+ Src_dataclasses_1: AnsiString =
+  '        self.repr = repr' + #10 + '        self.hash = hash' + #10 +
+  '        self.compare = compare' + #10 +
   '        self.metadata = (_EMPTY_ME' + 'TADATA' + #10 +
-  '                         if metada' +
-  'ta is None or len(metadata) == 0 e' + 'lse' + #10 +
+  '                         if metada' + 'ta is None else' + #10 +
   '                         types.Map' + 'pingProxyType(metadata))' + #10 +
   '        self._field_type = None' + #10 + #10 + '    def __repr__(self):' +
   #10 + '        return (''Field(''' + #10 +
-  '                ''name='' + repr(sel' + 'f.name) + '',''' + #10 +
-  '                ''type='' + repr(sel' + 'f.type) + '',''' + #10 +
-  '                ''default='' + repr(' + 'self.default) + '',''' + #10 +
-  '                ''default_factory=''' +
-  ' + repr(self.default_factory) + '',' + '''' + #10 +
-  '                ''init='' + repr(sel' + 'f.init) + '',''' + #10 +
-  '                ''repr='' + repr(sel' + 'f.repr) + '',''' + #10 +
-  '                ''hash='' + repr(sel' + 'f.hash) + '',''' + #10 +
-  '                ''compare='' + repr(' + 'self.compare) + '',''' + #10 +
-  '                ''metadata='' + repr' + '(self.metadata) + '',''' + #10 +
-  '                ''_field_type='' + r' + 'epr(self._field_type) +' + #10 +
+  '                f''name={self.name!' + 'r},''' + #10 +
+  '                f''type={self.type!' + 'r},''' + #10 +
+  '                f''default={self.de' + 'fault!r},''' + #10 +
+  '                f''default_factory=' + '{self.default_factory!r},''' +
+  #10 + '                f''init={self.init!' + 'r},''' + #10 +
+  '                f''repr={self.repr!' + 'r},''' + #10 +
+  '                f''hash={self.hash!' + 'r},''' + #10 +
+  '                f''compare={self.co' + 'mpare!r},''' + #10 +
+  '                f''metadata={self.m' + 'etadata!r},''' + #10 +
+  '                f''_field_type={sel' + 'f._field_type}''' + #10 +
   '                '')'')' + #10 + #10 +
+  '    # This is used to support the ' +
+  'PEP 487 __set_name__ protocol in t' + 'he' + #10 +
+  '    # case where we''re using a fie' +
+  'ld that contains a descriptor as a' + #10 +
+  '    # default value.  For details ' + 'on __set_name__, see' + #10 +
+  '    # https://www.python.org/dev/p' +
+  'eps/pep-0487/#implementation-detai' + 'ls.' + #10 + '    #' + #10 +
+  '    # Note that in _process_class,' + ' this Field object is overwritten' +
+  #10 + '    # with the default value, so t' +
+  'he end result is a descriptor that' + #10 +
+  '    # had __set_name__ called on i' + 't at the right time.' + #10 +
   '    def __set_name__(self, owner, ' + 'name):' + #10 +
   '        func = getattr(type(self.d' + 'efault), ''__set_name__'', None)' +
-  #10 + '        if func:' + #10 + '            func(self.default, own' +
-  'er, name)' + #10 + #10 + #10 + 'class _DataclassParams:' + #10 +
-  '    __slots__ = (''init'',' + #10 + '                 ''repr'',' + #10 +
-  '                 ''eq'',' + #10 + '                 ''order'',' + #10 +
-  '                 ''unsafe_hash'',' + #10 + '                 ''frozen'',' +
-  #10 + '                 )' + #10 + #10 +
-  '    def __init__(self, init, repr,' + ' eq, order, unsafe_hash, frozen):' +
-  #10 + '        self.init = init' + #10 + '        self.repr = repr' + #10 +
-  '        self.eq = eq' + #10 + '        self.order = order' + #10 +
-  '        self.unsafe_hash = unsafe_' + 'hash' + #10 +
-  '        self.frozen = frozen' + #10 + #10 + '    def __repr__(self):' +
-  #10 + '        return (''_DataclassParams(' + '''' + #10 +
-  '                ''init='' + repr(sel' + 'f.init) + '',''' + #10 +
-  '                ''repr='' + repr(sel' + 'f.repr) + '',''' + #10 +
-  '                ''eq='' + repr(self.' + 'eq) + '',''' + #10 +
-  '                ''order='' + repr(se' + 'lf.order) + '',''' + #10 +
-  '                ''unsafe_hash='' + r' + 'epr(self.unsafe_hash) + '',''' +
-  #10 + '                ''frozen='' + repr(s' + 'elf.frozen) +' + #10 +
+  #10 + '        if func:' + #10 + '            # There is a __set_nam' +
+  'e__ method on the descriptor, call' + #10 + '            # it.' + #10 +
+  '            func(self.default, own' + 'er, name)' + #10 + #10 + #10 +
+  'class _DataclassParams:' + #10 + '    __slots__ = (''init'',' + #10 +
+  '                 ''repr'',' + #10 + '                 ''eq'',' + #10 +
+  '                 ''order'',' + #10 + '                 ''unsafe_hash'',' +
+  #10 + '                 ''frozen'',' + #10 + '                 )' + #10 +
+  #10 + '    def __init__(self, init, repr,' +
+  ' eq, order, unsafe_hash, frozen):' + #10 + '        self.init = init' +
+  #10 + '        self.repr = repr' + #10 + '        self.eq = eq' + #10 +
+  '        self.order = order' + #10 + '        self.unsafe_hash = unsafe_' +
+  'hash' + #10 + '        self.frozen = frozen' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        return (''_DataclassParams(' +
+  '''' + #10 + '                f''init={self.init!' + 'r},''' + #10 +
+  '                f''repr={self.repr!' + 'r},''' + #10 +
+  '                f''eq={self.eq!r},''' + #10 +
+  '                f''order={self.orde' + 'r!r},''' + #10 +
+  '                f''unsafe_hash={sel' + 'f.unsafe_hash!r},''' + #10 +
+  '                f''frozen={self.fro' + 'zen!r}''' + #10 +
   '                '')'')' + #10 + #10 + #10 +
+  '# This function is used instead of' +
+  ' exposing Field creation directly,' + #10 +
+  '# so that a type checker can be to' + 'ld (via overloads) that this is a' +
+  #10 + '# function whose type depends on i' + 'ts parameters.' + #10 +
   'def field(*, default=MISSING, defa' +
   'ult_factory=MISSING, init=True, re' + 'pr=True,' + #10 +
   '          hash=None, compare=True,' + ' metadata=None):' + #10 +
-  '    if default is not MISSING and ' + 'default_factory is not MISSING:' +
-  #10 + '        raise ValueError(''cannot s' +
+  '    """Return an object to identif' + 'y dataclass fields.' + #10 + #10 +
+  '    default is the default value o' +
+  'f the field.  default_factory is a' + #10 +
+  '    0-argument function called to ' +
+  'initialize a field''s value.  If in' + 'it' + #10 +
+  '    is True, the field will be a p' +
+  'arameter to the class''s __init__()' + #10 +
+  '    function.  If repr is True, th' + 'e field will be included in the' +
+  #10 + '    object''s repr().  If hash is T' +
+  'rue, the field will be included in' + #10 +
+  '    the object''s hash().  If compa' +
+  're is True, the field will be used' + #10 +
+  '    in comparison functions.  meta' + 'data, if specified, must be a' +
+  #10 + '    mapping which is stored but no' +
+  't otherwise examined by dataclass.' + #10 + #10 +
+  '    It is an error to specify both' + ' default and default_factory.' +
+  #10 + '    """' + #10 + #10 + '    if default is not MISSING and ' +
+  'default_factory is not MISSING:' + #10 +
+  '        raise ValueError(''cannot s' +
   'pecify both default and default_fa' + 'ctory'')' + #10 +
   '    return Field(default, default_' +
   'factory, init, repr, hash, compare' + ',' + #10 +
   '                 metadata)' + #10 + #10 + #10 +
-  'def _tuple_str(obj_name, fields):' + #10 + '    if not fields:' + #10 +
-  '        return ''()''' + #10 + '    return ''('' + '',''.join([obj_nam' +
-  'e + ''.'' + f.name for f in fields])' + ' + '',)''' + #10 + #10 + #10 +
-  'def _create_fn(name, args, body, *' + ', globals=None, locals=None,' +
-  #10 + '               return_type=MISSING' + '):' + #10 +
+  'def _tuple_str(obj_name, fields):' + #10 +
+  '    # Return a string representing' +
+  ' each field of obj_name as a tuple' + #10 +
+  '    # member.  So, if fields is [''' +
+  'x'', ''y''] and obj_name is "self",' + #10 +
+  '    # return "(self.x,self.y)".' + #10 + #10 +
+  '    # Special case for the 0-tuple' + '.' + #10 + '    if not fields:' +
+  #10 + '        return ''()''' + #10 + '    # Note the trailing comma, nee' +
+  'ded if this turns out to be a 1-tu' + 'ple.' + #10 +
+  '    return f''({",".join([f"{obj_na' +
+  'me}.{f.name}" for f in fields])},)' + '''' + #10 + #10 + #10 +
+  '# This function''s logic is copied ' +
+  'from "recursive_repr" function in' + #10 +
+  '# reprlib module to avoid dependen' + 'cy.' + #10 +
+  'def _recursive_repr(user_function)' + ':' + #10 +
+  '    # Decorator to make a repr fun' +
+  'ction return "..." for a recursive' + #10 + '    # call.' + #10 +
+  '    repr_running = set()' + #10 + #10 +
+  '    @functools.wraps(user_function' + ')' + #10 +
+  '    def wrapper(self):' + #10 + '        key = id(self), _thread.ge' +
+  't_ident()' + #10 + '        if key in repr_running:' + #10 +
+  '            return ''...''' + #10 + '        repr_running.add(key)' + #10 +
+  '        try:' + #10 + '            result = user_function' + '(self)' +
+  #10 + '        finally:' + #10 + '            repr_running.discard(k' +
+  'ey)' + #10 + '        return result' + #10 + '    return wrapper' + #10 +
+  #10 + #10 + 'def _create_fn(name, args, body, *' +
+  ', globals=None, locals=None,' + #10 +
+  '               return_type=MISSING' + '):' + #10 +
+  '    # Note that we mutate locals w' + 'hen exec() is called.  Caller' +
+  #10 + '    # beware!  The only callers ar' +
+  'e internal to this module, so no' + #10 +
+  '    # worries about external calle' + 'rs.' + #10 +
   '    if locals is None:' + #10 + '        locals = {}' + #10 +
   '    if ''BUILTINS'' not in locals:' + #10 +
   '        locals[''BUILTINS''] = built' + 'ins' + #10 +
@@ -43291,349 +46921,656 @@ Const
   '        locals[''_return_type''] = r' + 'eturn_type' + #10 +
   '        return_annotation = ''->_re' + 'turn_type''' + #10 +
   '    args = '',''.join(args)' + #10 +
-  '    body = ''\n''.join(''  '' + b for ' + 'b in body)' + #10 + #10 +
-  '    txt = '' def '' + name + ''('' + a' +
-  'rgs + '')'' + return_annotation + '':' + '\n'' + body + ''\n''' + #10 +
-  '    local_vars = '', ''.join(locals.' + 'keys())' + #10 +
-  '    txt = ''def __create_fn__('' + l' +
-  'ocal_vars + ''):\n'' + txt + ''\n ret' + 'urn '' + name' + #10 +
-  '    ns = {}' + #10 + '    exec(txt, globals, ns)' + #10 +
+  '    body = ''\n''.join(f''  {b}'' for ' + 'b in body)' + #10 + #10 +
+  '    # Compute the text of the enti' + 're function.' + #10 +
+  '    txt = f'' def {name}({args}){re' + 'turn_annotation}:\n{body}''' +
+  #10 + #10 + '    local_vars = '', ''.join(locals.' + 'keys())' + #10 +
+  '    txt = f"def __create_fn__({loc' +
+  'al_vars}):\n{txt}\n return {name}"' + #10 + #10 + '    ns = {}' + #10 +
+  '    exec(txt, globals, ns)' + #10 +
   '    return ns[''__create_fn__''](**l' + 'ocals)' + #10 + #10 + #10 +
   'def _field_assign(frozen, name, va' + 'lue, self_name):' + #10 +
-  '    if frozen:' + #10 + '        return ''BUILTINS.object.__' +
-  'setattr__('' + self_name + '',"'' + n' + 'ame + ''",'' + value + '')''' +
-  #10 + '    return self_name + ''.'' + name ' + '+ ''='' + value' + #10 +
-  #10 + #10 + 'def _field_init(f, frozen, globals' + ', self_name):' + #10 +
-  '    default_name = ''_dflt_'' + f.na' + 'me' + #10 +
+  '    # If we''re a frozen class, the' +
+  'n assign to our fields in __init__' + #10 +
+  '    # via object.__setattr__.  Oth' + 'erwise, just use a simple' + #10 +
+  '    # assignment.' + #10 + '    #' + #10 +
+  '    # self_name is what "self" is ' + 'called in this function: don''t' +
+  #10 + '    # hard-code "self", since that' + ' might be a field name.' +
+  #10 + '    if frozen:' + #10 + '        return f''BUILTINS.object._' +
+  '_setattr__({self_name},{name!r},{v' + 'alue})''' + #10 +
+  '    return f''{self_name}.{name}={v' + 'alue}''' + #10 + #10 + #10 +
+  'def _field_init(f, frozen, globals' + ', self_name):' + #10 +
+  '    # Return the text of the line ' + 'in the body of __init__ that will' +
+  #10 + '    # initialize this field.' + #10 + #10 +
+  '    default_name = f''_dflt_{f.name' + '}''' + #10 +
   '    if f.default_factory is not MI' + 'SSING:' + #10 +
-  '        if f.init:' + #10 + '            globals[default_name] ' +
-  '= f.default_factory' + #10 + '            value = ('''' + default_' +
-  'name + ''() ''' + #10 + '                     ''if '' + f.nam' +
-  'e + '' is _HAS_DEFAULT_FACTORY ''' + #10 +
-  '                     ''else '' + f.n' + 'ame)' + #10 + '        else:' +
-  #10 + '            globals[default_name] ' + '= f.default_factory' + #10 +
-  '            value = default_name +' + ' ''()''' + #10 + '    else:' + #10 +
-  '        if f.init:' + #10 + '            if f.default is MISSIN' + 'G:' +
-  #10 + '                value = f.name' + #10 +
+  '        if f.init:' + #10 + '            # This field has a def' +
+  'ault factory.  If a parameter is' + #10 +
+  '            # given, use it.  If n' + 'ot, call the factory.' + #10 +
+  '            globals[default_name] ' + '= f.default_factory' + #10 +
+  '            value = (f''{default_na' + 'me}() ''' + #10 +
+  '                     f''if {f.name}' + ' is _HAS_DEFAULT_FACTORY ''' +
+  #10 + '                     f''else {f.nam' + 'e}'')' + #10 +
+  '        else:' + #10 + '            # This is a field that' +
+  '''s not in the __init__ params, but' + #10 +
+  '            # has a default factor' + 'y function.  It needs to be' + #10 +
+  '            # initialized here by ' + 'calling the factory function,' +
+  #10 + '            # because there''s no o' + 'ther way to initialize it.' +
+  #10 + #10 + '            # For a field initiali' +
+  'zed with a default=defaultvalue, t' + 'he' + #10 +
+  '            # class dict just has ' + 'the default value' + #10 +
+  '            # (cls.fieldname=defau' +
+  'ltvalue).  But that won''t work for' + ' a' + #10 +
+  '            # default factory, the' +
+  ' factory must be called in __init_' + '_' + #10 +
+  '            # and we must assign t' + 'hat to self.fieldname.  We can''t' +
+  #10 + '            # fall back to the cla' +
+  'ss dict''s value, both because it''s' + #10 +
+  '            # not set, and because' + ' it might be different per-class' +
+  #10 + '            # (which, after all, i' +
+  's why we have a factory function!)' + '.' + #10 + #10 +
+  '            globals[default_name] ' + '= f.default_factory' + #10 +
+  '            value = f''{default_nam' + 'e}()''' + #10 + '    else:' + #10 +
+  '        # No default factory.' + #10 + '        if f.init:' + #10 +
+  '            if f.default is MISSIN' + 'G:' + #10 +
+  '                # There''s no defau' + 'lt, just do an assignment.' + #10 +
+  '                value = f.name' + #10 +
   '            elif f.default is not ' + 'MISSING:' + #10 +
   '                globals[default_na' + 'me] = f.default' + #10 +
   '                value = f.name' + #10 + '        else:' + #10 +
+  '            # This field does not ' +
+  'need initialization.  Signify that' + #10 +
+  '            # to the caller by ret' + 'urning None.' + #10 +
   '            return None' + #10 + #10 +
+  '    # Only test this now, so that ' + 'we can create variables for the' +
+  #10 + '    # default.  However, return No' +
+  'ne to signify that we''re not going' + #10 +
+  '    # to actually do the assignmen' + 't statement for InitVars.' + #10 +
   '    if f._field_type is _FIELD_INI' + 'TVAR:' + #10 +
-  '        return None' + #10 + #10 + '    return _field_assign(frozen, f' +
+  '        return None' + #10 + #10 + '    # Now, actually generate the f' +
+  'ield assignment.' + #10 + '    return _field_assign(frozen, f' +
   '.name, value, self_name)' + #10 + #10 + #10 + 'def _init_param(f):' + #10 +
-  '    if f.default is MISSING and f.' + 'default_factory is MISSING:' + #10 +
-  '        default = ''''' + #10 + '    elif f.default is not MISSING:' +
-  #10 + '        default = ''=_dflt_'' + f.na' + 'me' + #10 +
+  '    # Return the __init__ paramete' + 'r string for this field.  For' +
+  #10 + '    # example, the equivalent of ''' +
+  'x:int=3'' (except instead of ''int'',' + #10 +
+  '    # reference a variable set to ' +
+  'int, and instead of ''3'', reference' + ' a' + #10 +
+  '    # variable set to 3).' + #10 + '    if f.default is MISSING and f.' +
+  'default_factory is MISSING:' + #10 +
+  '        # There''s no default, and ' +
+  'no default_factory, just output th' + 'e' + #10 +
+  '        # variable name and type.' + #10 + '        default = ''''' + #10 +
+  '    elif f.default is not MISSING:' + #10 +
+  '        # There''s a default, this ' +
+  'will be the name that''s used to lo' + 'ok' + #10 + '        # it up.' +
+  #10 + '        default = f''=_dflt_{f.name' + '}''' + #10 +
   '    elif f.default_factory is not ' + 'MISSING:' + #10 +
+  '        # There''s a factory functi' + 'on.  Set a marker.' + #10 +
   '        default = ''=_HAS_DEFAULT_F' + 'ACTORY''' + #10 +
-  '    return f.name + '':_type_'' + f.' + 'name + default' + #10 + #10 +
-  #10 + 'def _init_fn(fields, frozen, has_p' +
-  'ost_init, self_name, globals):' + #10 + '    seen_default = False' + #10 +
-  '    for f in fields:' + #10 + '        if f.init:' + #10 +
-  '            if not (f.default is M' +
+  '    return f''{f.name}:_type_{f.nam' + 'e}{default}''' + #10 + #10 + #10 +
+  'def _init_fn(fields, frozen, has_p' + 'ost_init, self_name, globals):' +
+  #10 + '    # fields contains both real fi' +
+  'elds and InitVar pseudo-fields.' + #10 + #10 +
+  '    # Make sure we don''t have fiel' +
+  'ds without defaults following fiel' + 'ds' + #10 +
+  '    # with defaults.  This actuall' +
+  'y would be caught when exec-ing th' + 'e' + #10 +
+  '    # function source code, but ca' +
+  'tching it here gives a better erro' + 'r' + #10 +
+  '    # message, and future-proofs u' +
+  's in case we build up the function' + #10 + '    # using ast.' + #10 +
+  '    seen_default = False' + #10 + '    for f in fields:' + #10 +
+  '        # Only consider fields in ' + 'the __init__ call.' + #10 +
+  '        if f.init:' + #10 + '            if not (f.default is M' +
   'ISSING and f.default_factory is MI' + 'SSING):' + #10 +
-  '                seen_default = Tru' + 'e' + #10 +
-  '            elif seen_default:' + #10 +
-  '                raise TypeError(''n' +
-  'on-default argument '' + repr(f.nam' + 'e) + '' ''' + #10 +
-  '                                ''f' + 'ollows default argument'')' + #10 +
-  #10 + '    locals = {}' + #10 + '    for f in fields:' + #10 +
-  '        locals[''_type_'' + f.name] ' + '= f.type' + #10 +
-  '    locals[''MISSING''] = MISSING' + #10 +
-  '    locals[''_HAS_DEFAULT_FACTORY'']' + ' = _HAS_DEFAULT_FACTORY' + #10 +
-  #10 + '    body_lines = []' + #10 + '    for f in fields:' + #10 +
-  '        line = _field_init(f, froz' + 'en, locals, self_name)' + #10 +
-  '        if line:' + #10 + '            body_lines.append(line' + ')' +
-  #10 + #10 + '    if has_post_init:' + #10 +
-  '        params_str = '',''.join([f.n' + 'ame for f in fields' + #10 +
-  '                               if ' + 'f._field_type is _FIELD_INITVAR])' +
-  #10;
+  '                seen_default = Tru' + 'e' + #10;
 
 Const
- Src_dataclasses_1: AnsiString =
-  '        body_lines.append(self_nam' +
-  'e + ''.'' + _POST_INIT_NAME + ''('' + ' + 'params_str + '')'')' + #10 +
-  #10 + '    if not body_lines:' + #10 + '        body_lines = [''pass'']' +
-  #10 + #10 + '    # globals in locals (names _df' +
-  'lt_x go to locals dict via _field_' + 'init)' + #10 +
-  '    return _create_fn(''__init__'',' + #10 +
+ Src_dataclasses_2: AnsiString =
+  '            elif seen_default:' + #10 +
+  '                raise TypeError(f''' +
+  'non-default argument {f.name!r} ''' + #10 +
+  '                                ''f' + 'ollows default argument'')' + #10 +
+  #10 + '    locals = {f''_type_{f.name}'': f' + '.type for f in fields}' +
+  #10 + '    locals.update({' + #10 + '        ''MISSING'': MISSING,' + #10 +
+  '        ''_HAS_DEFAULT_FACTORY'': _H' + 'AS_DEFAULT_FACTORY,' + #10 +
+  '    })' + #10 + #10 + '    body_lines = []' + #10 +
+  '    for f in fields:' + #10 + '        line = _field_init(f, froz' +
+  'en, locals, self_name)' + #10 + '        # line is None means that ' +
+  'this field doesn''t require' + #10 +
+  '        # initialization (it''s a p' + 'seudo-field).  Just skip it.' +
+  #10 + '        if line:' + #10 + '            body_lines.append(line' +
+  ')' + #10 + #10 + '    # Does this class have a post-' + 'init function?' +
+  #10 + '    if has_post_init:' + #10 +
+  '        params_str = '',''.join(f.na' + 'me for f in fields' + #10 +
+  '                              if f' + '._field_type is _FIELD_INITVAR)' +
+  #10 + '        body_lines.append(f''{self_' +
+  'name}.{_POST_INIT_NAME}({params_st' + 'r})'')' + #10 + #10 +
+  '    # If no body lines, use ''pass''' + '.' + #10 +
+  '    if not body_lines:' + #10 + '        body_lines = [''pass'']' + #10 +
+  #10 + '    return _create_fn(''__init__'',' + #10 +
   '                      [self_name] ' +
   '+ [_init_param(f) for f in fields ' + 'if f.init],' + #10 +
   '                      body_lines,' + #10 +
   '                      locals=local' + 's,' + #10 +
   '                      globals=glob' + 'als,' + #10 +
   '                      return_type=' + 'None)' + #10 + #10 + #10 +
-  'def _repr_fn(fields):' + #10 + '    fn = _create_fn(''__repr__'',' + #10 +
+  'def _repr_fn(fields, globals):' + #10 +
+  '    fn = _create_fn(''__repr__'',' + #10 +
   '                    (''self'',),' + #10 +
   '                    [''return self.' + '__class__.__qualname__ + f"('' +' +
-  #10 + '                     '', ''.join([f.' +
-  'name + ''={self.'' + f.name + ''!r}''' + #10 +
-  '                                fo' + 'r f in fields if f.repr]) +' + #10 +
-  '                     '')"''])' + #10 + '    return _recursive_repr(fn)' +
-  #10 + #10 + #10 + 'def _recursive_repr(user_function)' + ':' + #10 +
-  '    repr_running = set()' + #10 + #10 +
-  '    @functools.wraps(user_function' + ')' + #10 +
-  '    def wrapper(self):' + #10 + '        key = id(self), _get_ident' +
-  '()' + #10 + '        if key in repr_running:' + #10 +
-  '            return ''...''' + #10 + '        repr_running.add(key)' + #10 +
-  '        try:' + #10 + '            result = user_function' + '(self)' +
-  #10 + '        finally:' + #10 + '            repr_running.discard(k' +
-  'ey)' + #10 + '        return result' + #10 + '    return wrapper' + #10 +
-  #10 + #10 + 'def _get_ident():' + #10 + '    return 0' + #10 + #10 + #10 +
-  'def _frozen_get_del_attr(cls, fiel' + 'ds):' + #10 +
+  #10 + '                     '', ''.join([f"' +
+  '{f.name}={{self.{f.name}!r}}"' + #10 +
+  '                                fo' + 'r f in fields]) +' + #10 +
+  '                     '')"''],' + #10 +
+  '                     globals=globa' + 'ls)' + #10 +
+  '    return _recursive_repr(fn)' + #10 + #10 + #10 +
+  'def _frozen_get_del_attr(cls, fiel' + 'ds, globals):' + #10 +
   '    locals = {''cls'': cls,' + #10 +
   '              ''FrozenInstanceError' + ''': FrozenInstanceError}' + #10 +
   '    if fields:' + #10 + '        fields_str = ''('' + '',''.joi' +
   'n(repr(f.name) for f in fields) + ' + ''',)''' + #10 + '    else:' + #10 +
+  '        # Special case for the zer' + 'o-length tuple.' + #10 +
   '        fields_str = ''()''' + #10 +
   '    return (_create_fn(''__setattr_' + '_'',' + #10 +
-  '                       (''self'', ''n' + 'ame'', ''value''),' + #10 +
-  '                       (''if type(s' +
-  'elf) is cls or name in '' + fields_' + 'str + '':'',' + #10 +
+  '                      (''self'', ''na' + 'me'', ''value''),' + #10 +
+  '                      (f''if type(s' +
+  'elf) is cls or name in {fields_str' + '}:'',' + #10 +
   '                        '' raise Fr' +
   'ozenInstanceError(f"cannot assign ' + 'to field {name!r}")'',' + #10 +
-  '                        ''super(cls' +
+  '                       f''super(cls' +
   ', self).__setattr__(name, value)'')' + ',' + #10 +
-  '                       locals=loca' + 'ls),' + #10 +
+  '                       locals=loca' + 'ls,' + #10 +
+  '                       globals=glo' + 'bals),' + #10 +
   '            _create_fn(''__delattr_' + '_'',' + #10 +
-  '                       (''self'', ''n' + 'ame''),' + #10 +
-  '                       (''if type(s' +
-  'elf) is cls or name in '' + fields_' + 'str + '':'',' + #10 +
+  '                      (''self'', ''na' + 'me''),' + #10 +
+  '                      (f''if type(s' +
+  'elf) is cls or name in {fields_str' + '}:'',' + #10 +
   '                        '' raise Fr' +
   'ozenInstanceError(f"cannot delete ' + 'field {name!r}")'',' + #10 +
-  '                        ''super(cls' + ', self).__delattr__(name)''),' +
-  #10 + '                       locals=loca' + 'ls),' + #10 +
-  '            )' + #10 + #10 + #10 + 'def _cmp_fn(name, op, self_tuple, ' +
-  'other_tuple):' + #10 + '    return _create_fn(name,' + #10 +
-  '                      (''self'', ''ot' + 'her''),' + #10 +
-  '                      [''if other._' + '_class__ is self.__class__:'',' +
-  #10 + '                       '' return '' ' +
-  '+ self_tuple + op + other_tuple,' + #10 +
-  '                       ''return Not' + 'Implemented''])' + #10 + #10 +
-  #10 + 'def _hash_fn(fields):' + #10 +
+  '                       f''super(cls' + ', self).__delattr__(name)''),' +
+  #10 + '                       locals=loca' + 'ls,' + #10 +
+  '                       globals=glo' + 'bals),' + #10 + '            )' +
+  #10 + #10 + #10 + 'def _cmp_fn(name, op, self_tuple, ' +
+  'other_tuple, globals):' + #10 + '    # Create a comparison function' +
+  '.  If the fields in the object are' + #10 +
+  '    # named ''x'' and ''y'', then self' + '_tuple is the string' + #10 +
+  '    # ''(self.x,self.y)'' and other_' + 'tuple is the string' + #10 +
+  '    # ''(other.x,other.y)''.' + #10 + #10 + '    return _create_fn(name,' +
+  #10 + '                      (''self'', ''ot' + 'her''),' + #10 +
+  '                      [ ''if other.' + '__class__ is self.__class__:'',' +
+  #10 + '                       f'' return {' +
+  'self_tuple}{op}{other_tuple}'',' + #10 +
+  '                        ''return No' + 'tImplemented''],' + #10 +
+  '                      globals=glob' + 'als)' + #10 + #10 + #10 +
+  'def _hash_fn(fields, globals):' + #10 +
   '    self_tuple = _tuple_str(''self''' + ', fields)' + #10 +
   '    return _create_fn(''__hash__'',' + #10 +
   '                      (''self'',),' + #10 +
-  '                      [''return has' + 'h('' + self_tuple + '')''])' +
-  #10 + #10 + #10 + 'def _is_classvar(a_type, typing):' + #10 +
+  '                      [f''return ha' + 'sh({self_tuple})''],' + #10 +
+  '                      globals=glob' + 'als)' + #10 + #10 + #10 +
+  'def _is_classvar(a_type, typing):' + #10 +
+  '    # This test uses a typing inte' +
+  'rnal class, but it''s the best way ' + 'to' + #10 +
+  '    # test if this is a ClassVar.' + #10 +
   '    return (a_type is typing.Class' + 'Var' + #10 +
   '            or (type(a_type) is ty' + 'ping._GenericAlias' + #10 +
   '                and a_type.__origi' + 'n__ is typing.ClassVar))' + #10 +
   #10 + #10 + 'def _is_initvar(a_type, dataclasse' + 's):' + #10 +
+  '    # The module we''re checking ag' + 'ainst is the module we''re' + #10 +
+  '    # currently in (dataclasses.py' + ').' + #10 +
   '    return (a_type is dataclasses.' + 'InitVar' + #10 +
   '            or type(a_type) is dat' + 'aclasses.InitVar)' + #10 + #10 +
   #10 + 'def _is_type(annotation, cls, a_mo' +
-  'dule, a_type, is_type_predicate):' + #10 + '    return False' + #10 + #10 +
-  #10 + 'def _get_field(cls, a_name, a_type' + '):' + #10 +
+  'dule, a_type, is_type_predicate):' + #10 +
+  '    # Given a type annotation stri' + 'ng, does it refer to a_type in' +
+  #10 + '    # a_module?  For example, when' +
+  ' checking that annotation denotes ' + 'a' + #10 +
+  '    # ClassVar, then a_module is t' + 'yping, and a_type is' + #10 +
+  '    # typing.ClassVar.' + #10 + #10 +
+  '    # It''s possible to look up a_m' +
+  'odule given a_type, but it involve' + 's' + #10 +
+  '    # looking in sys.modules (agai' + 'n!), and seems like a waste since' +
+  #10 + '    # the caller already knows a_m' + 'odule.' + #10 + #10 +
+  '    # - annotation is a string typ' + 'e annotation' + #10 +
+  '    # - cls is the class that this' + ' annotation was found in' + #10 +
+  '    # - a_module is the module we ' + 'want to match' + #10 +
+  '    # - a_type is the type in that' + ' module we want to match' + #10 +
+  '    # - is_type_predicate is a fun' + 'ction called with (obj, a_module)' +
+  #10 + '    #   that determines if obj is ' + 'of the desired type.' + #10 +
+  #10 + '    # Since this test does not do ' +
+  'a local namespace lookup (and' + #10 +
+  '    # instead only a module (globa' +
+  'l) lookup), there are some things ' + 'it' + #10 + '    # gets wrong.' +
+  #10 + #10 + '    # With string annotations, cv0' +
+  ' will be detected as a ClassVar:' + #10 + '    #   CV = ClassVar' + #10 +
+  '    #   @dataclass' + #10 + '    #   class C0:' + #10 +
+  '    #     cv0: CV' + #10 + #10 + '    # But in this example cv1 will' +
+  ' not be detected as a ClassVar:' + #10 + '    #   @dataclass' + #10 +
+  '    #   class C1:' + #10 + '    #     CV = ClassVar' + #10 +
+  '    #     cv1: CV' + #10 + #10 + '    # In C1, the code in this func' +
+  'tion (_is_type) will look up "CV" ' + 'in' + #10 +
+  '    # the module and not find it, ' + 'so it will not consider cv1 as a' +
+  #10 + '    # ClassVar.  This is a fairly ' +
+  'obscure corner case, and the best' + #10 +
+  '    # way to fix it would be to ev' + 'al() the string "CV" with the' +
+  #10 + '    # correct global and local nam' +
+  'espaces.  However that would invol' + 've' + #10 +
+  '    # a eval() penalty for every s' + 'ingle field of every dataclass' +
+  #10 + '    # that''s defined.  It was judg' + 'ed not worth it.' + #10 +
+  #10 + '    match = _MODULE_IDENTIFIER_RE.' + 'match(annotation)' + #10 +
+  '    if match:' + #10 + '        ns = None' + #10 +
+  '        module_name = match.group(' + '1)' + #10 +
+  '        if not module_name:' + #10 + '            # No module name, assu' +
+  'me the class''s module did' + #10 + '            # "from dataclasses im' +
+  'port InitVar".' + #10 + '            ns = sys.modules.get(c' +
+  'ls.__module__).__dict__' + #10 + '        else:' + #10 +
+  '            # Look up module_name ' + 'in the class''s module.' + #10 +
+  '            module = sys.modules.g' + 'et(cls.__module__)' + #10 +
+  '            if module and module._' +
+  '_dict__.get(module_name) is a_modu' + 'le:' + #10 +
+  '                ns = sys.modules.g' + 'et(a_type.__module__).__dict__' +
+  #10 + '        if ns and is_type_predicat' +
+  'e(ns.get(match.group(2)), a_module' + '):' + #10 +
+  '            return True' + #10 + '    return False' + #10 + #10 + #10 +
+  'def _get_field(cls, a_name, a_type' + '):' + #10 +
+  '    # Return a Field object for th' +
+  'is field name and type.  ClassVars' + #10 +
+  '    # and InitVars are also return' + 'ed, but marked as such (see' + #10 +
+  '    # f._field_type).' + #10 + #10 +
+  '    # If the default value isn''t d' +
+  'erived from Field, then it''s only ' + 'a' + #10 +
+  '    # normal default value.  Conve' + 'rt it to a Field().' + #10 +
   '    default = getattr(cls, a_name,' + ' MISSING)' + #10 +
   '    if isinstance(default, Field):' + #10 + '        f = default' + #10 +
   '    else:' + #10 + '        if isinstance(default, typ' +
   'es.MemberDescriptorType):' + #10 + '            # This is a field in _' +
   '_slots__, so it has no default val' + 'ue.' + #10 +
   '            default = MISSING' + #10 +
-  '        f = field(default=default)' + #10 + #10 + '    f.name = a_name' +
-  #10 + '    f.type = a_type' + #10 + #10 + '    f._field_type = _FIELD' +
-  #10 + #10 + '    typing = sys.modules.get(''typi' + 'ng'')' + #10 +
-  '    if typing:' + #10 + '        if _is_classvar_any(a_type' +
-  ', typing):' + #10 + '            f._field_type = _FIELD' + '_CLASSVAR' +
-  #10 + '    if f._field_type is _FIELD:' + #10 +
-  '        if _is_initvar(a_type, sys' + '.modules[__name__]):' + #10 +
-  '            f._field_type = _FIELD' + '_INITVAR' + #10 +
-  '        elif isinstance(a_type, st' + 'r):' + #10 +
-  '            # string annotations, ' + 'as in CPython: crude detection' +
-  #10 + '            if _is_string_classvar' + '(a_type, cls):' + #10 +
-  '                f._field_type = _F' + 'IELD_CLASSVAR' + #10 +
-  '            elif _is_string_initva' + 'r(a_type, cls):' + #10 +
-  '                f._field_type = _F' + 'IELD_INITVAR' + #10 + #10 +
+  '        f = field(default=default)' + #10 + #10 +
+  '    # Only at this point do we kno' +
+  'w the name and the type.  Set them' + '.' + #10 + '    f.name = a_name' +
+  #10 + '    f.type = a_type' + #10 + #10 +
+  '    # Assume it''s a normal field u' +
+  'ntil proven otherwise.  We''re next' + #10 +
+  '    # going to decide if it''s a Cl' +
+  'assVar or InitVar, everything else' + #10 +
+  '    # is just a normal field.' + #10 + '    f._field_type = _FIELD' + #10 +
+  #10 + '    # In addition to checking for ' +
+  'actual types here, also check for' + #10 +
+  '    # string annotations.  get_typ' +
+  'e_hints() won''t always work for us' + #10 +
+  '    # (see https://github.com/pyth' +
+  'on/typing/issues/508 for example),' + #10 +
+  '    # plus it''s expensive and woul' +
+  'd require an eval for every string' + #10 +
+  '    # annotation.  So, make a best' +
+  ' effort to see if this is a ClassV' + 'ar' + #10 +
+  '    # or InitVar using regex''s and' +
+  ' checking that the thing reference' + 'd' + #10 +
+  '    # is actually of the correct t' + 'ype.' + #10 + #10 +
+  '    # For the complete discussion,' +
+  ' see https://bugs.python.org/issue' + '33453' + #10 + #10 +
+  '    # If typing has not been impor' +
+  'ted, then it''s impossible for any' + #10 +
+  '    # annotation to be a ClassVar.' + '  So, only look for ClassVar if' +
+  #10 + '    # typing has been imported by ' +
+  'any module (not necessarily cls''s' + #10 + '    # module).' + #10 +
+  '    typing = sys.modules.get(''typi' + 'ng'')' + #10 + '    if typing:' +
+  #10 + '        if (_is_classvar(a_type, t' + 'yping)' + #10 +
+  '            or (isinstance(f.type,' + ' str)' + #10 +
+  '                and _is_type(f.typ' + 'e, cls, typing, typing.ClassVar,' +
+  #10 + '                             _is_c' + 'lassvar))):' + #10 +
+  '            f._field_type = _FIELD' + '_CLASSVAR' + #10 + #10 +
+  '    # If the type is InitVar, or i' +
+  'f it''s a matching string annotatio' + 'n,' + #10 +
+  '    # then it''s an InitVar.' + #10 + '    if f._field_type is _FIELD:' +
+  #10 + '        # The module we''re checkin' +
+  'g against is the module we''re' + #10 +
+  '        # currently in (dataclasse' + 's.py).' + #10 +
+  '        dataclasses = sys.modules[' + '__name__]' + #10 +
+  '        if (_is_initvar(a_type, da' + 'taclasses)' + #10 +
+  '            or (isinstance(f.type,' + ' str)' + #10 +
+  '                and _is_type(f.typ' +
+  'e, cls, dataclasses, dataclasses.I' + 'nitVar,' + #10 +
+  '                             _is_i' + 'nitvar))):' + #10 +
+  '            f._field_type = _FIELD' + '_INITVAR' + #10 + #10 +
+  '    # Validations for individual f' +
+  'ields.  This is delayed until now,' + #10 +
+  '    # instead of in the Field() co' + 'nstructor, since only here do we' +
+  #10 + '    # know the field name, which a' +
+  'llows for better error reporting.' + #10 + #10 +
+  '    # Special restrictions for Cla' + 'ssVar and InitVar.' + #10 +
   '    if f._field_type in (_FIELD_CL' + 'ASSVAR, _FIELD_INITVAR):' + #10 +
   '        if f.default_factory is no' + 't MISSING:' + #10 +
-  '            raise TypeError(''field' +
-  ' '' + f.name + '' cannot have a ''' + #10 +
-  '                            ''defau' + 'lt factory'')' + #10 + #10 +
+  '            raise TypeError(f''fiel' + 'd {f.name} cannot have a ''' +
+  #10 + '                            ''defau' + 'lt factory'')' + #10 +
+  '        # Should I check for other' + ' field settings? default_factory' +
+  #10 + '        # seems the most serious t' +
+  'o check for.  Maybe add others.  F' + 'or' + #10 +
+  '        # example, how about init=' + 'False (or really,' + #10 +
+  '        # init=<not-the-default-in' +
+  'it-value>)?  It makes no sense for' + #10 +
+  '        # ClassVar and InitVar to ' + 'specify init=<anything>.' + #10 +
+  #10 + '    # For real fields, disallow mu' +
+  'table defaults for known types.' + #10 +
   '    if f._field_type is _FIELD and' +
   ' isinstance(f.default, (list, dict' + ', set)):' + #10 +
-  '        raise ValueError(''mutable ' +
-  'default '' + str(type(f.default)) +' + ' '' for field ''' + #10 +
-  '                         + f.name ' +
-  '+ '' is not allowed: use default_fa' + 'ctory'')' + #10 + #10 +
-  '    return f' + #10 + #10 + #10 + 'def _is_classvar_any(a_type, typin' +
-  'g):' + #10 + '    if a_type is typing.ClassVar:' + #10 +
-  '        return True' + #10 + '    origin = getattr(a_type, ''__or' +
-  'igin__'', None)' + #10 + '    return origin is typing.ClassV' + 'ar' +
-  #10 + #10 + #10 + 'def _string_head(s):' + #10 +
-  '    # returns (module_prefix or No' + 'ne, name) of an annotation string' +
-  #10 + '    s = s.strip()' + #10 + '    i = s.find(''['')' + #10 +
-  '    if i >= 0:' + #10 + '        s = s[:i]' + #10 + '    s = s.strip()' +
-  #10 + '    if ''.'' in s:' + #10 + '        mod, _, name = s.rpartitio' +
-  'n(''.'')' + #10 + '        return mod, name' + #10 + '    return None, s' +
-  #10 + #10 + #10 + 'def _is_string_classvar(s, cls):' + #10 +
-  '    mod, name = _string_head(s)' + #10 + '    if name != ''ClassVar'':' +
-  #10 + '        return False' + #10 + '    ns = sys.modules.get(cls.__mod' +
-  'ule__)' + #10 + '    ns = ns.__dict__ if ns else {}' + #10 +
-  '    if mod is None:' + #10 + '        return ns.get(''ClassVar'') ' +
-  'is sys.modules[''typing''].ClassVar' + #10 +
-  '    return ns.get(mod) is sys.modu' + 'les.get(''typing'')' + #10 + #10 +
-  #10 + 'def _is_string_initvar(s, cls):' + #10 +
-  '    mod, name = _string_head(s)' + #10 + '    if name != ''InitVar'':' +
-  #10 + '        return False' + #10 + '    ns = sys.modules.get(cls.__mod' +
-  'ule__)' + #10 + '    ns = ns.__dict__ if ns else {}' + #10 +
-  '    me = sys.modules[__name__]' + #10 + '    if mod is None:' + #10 +
-  '        return ns.get(''InitVar'') i' + 's InitVar' + #10 +
-  '    return ns.get(mod) is me' + #10 + #10 + #10 +
+  '        raise ValueError(f''mutable' +
+  ' default {type(f.default)} for fie' + 'ld ''' + #10 +
+  '                         f''{f.name' +
+  '} is not allowed: use default_fact' + 'ory'')' + #10 + #10 +
+  '    return f' + #10 + #10 + #10;
+
+Const
+ Src_dataclasses_3: AnsiString =
   'def _set_new_attribute(cls, name, ' + 'value):' + #10 +
+  '    # Never overwrites an existing' + ' attribute.  Returns True if the' +
+  #10 + '    # attribute already exists.' + #10 +
   '    if name in cls.__dict__:' + #10 + '        return True' + #10 +
   '    setattr(cls, name, value)' + #10 + '    return False' + #10 + #10 +
-  #10 + 'def _hash_set_none(cls, fields):' + #10 + '    return None' + #10 +
-  #10 + #10 + 'def _hash_add(cls, fields):' + #10 +
+  #10 + '# Decide if/how we''re going to cre' +
+  'ate a hash function.  Key is' + #10 +
+  '# (unsafe_hash, eq, frozen, does-h' +
+  'ash-exist).  Value is the action t' + 'o' + #10 +
+  '# take.  The common case is to do ' +
+  'nothing, so instead of providing a' + #10 +
+  '# function that is a no-op, use No' + 'ne to signify that.' + #10 + #10 +
+  'def _hash_set_none(cls, fields, gl' + 'obals):' + #10 + '    return None' +
+  #10 + #10 + 'def _hash_add(cls, fields, globals' + '):' + #10 +
   '    flds = [f for f in fields if (' +
   'f.compare if f.hash is None else f' + '.hash)]' + #10 +
-  '    return _hash_fn(flds)' + #10 + #10 + #10 +
-  'def _hash_exception(cls, fields):' + #10 +
-  '    raise TypeError(''Cannot overwr' + 'ite attribute __hash__ '' +' +
-  #10 + '                    ''in class '' + ' + 'cls.__name__)' + #10 + #10 +
-  #10 + '_hash_action = {(False, False, Fal' + 'se, False): None,' + #10 +
-  '                (False, False, Fal' + 'se, True): None,' + #10 +
-  '                (False, False, Tru' + 'e, False): None,' + #10 +
-  '                (False, False, Tru' + 'e, True): None,' + #10 +
-  '                (False, True, Fals' + 'e, False): _hash_set_none,' + #10 +
-  '                (False, True, Fals' + 'e, True): None,' + #10 +
-  '                (False, True, True' + ', False): _hash_add,' + #10 +
-  '                (False, True, True' + ', True): None,' + #10 +
-  '                (True, False, Fals' + 'e, False): _hash_add,' + #10 +
-  '                (True, False, Fals' + 'e, True): _hash_exception,' + #10 +
-  '                (True, False, True' + ', False): _hash_add,' + #10 +
-  '                (True, False, True' + ', True): _hash_exception,' + #10 +
-  '                (True, True, False' + ', False): _hash_add,' + #10 +
-  '                (True, True, False' + ', True): _hash_exception,' + #10 +
-  '                (True, True, True,' + ' False): _hash_add,' + #10 +
-  '                (True, True, True,' + ' True): _hash_exception,' + #10 +
-  '                }' + #10 + #10 + #10 +
+  '    return _hash_fn(flds, globals)' + #10 + #10 +
+  'def _hash_exception(cls, fields, g' + 'lobals):' + #10 +
+  '    # Raise an exception.' + #10 + '    raise TypeError(f''Cannot overw' +
+  'rite attribute __hash__ ''' + #10 + '                    f''in class {cl' +
+  's.__name__}'')' + #10 + #10 + '#' + #10 +
+  '#                +----------------' +
+  '---------------------- unsafe_hash' + '?' + #10 +
+  '#                |      +---------' + '---------------------- eq?' + #10 +
+  '#                |      |      +--' + '---------------------- frozen?' +
+  #10 + '#                |      |      |  ' +
+  '    +----------------  has-explici' + 't-hash?' + #10 +
+  '#                |      |      |  ' + '    |' + #10 +
+  '#                |      |      |  ' + '    |        +-------  action' +
+  #10 + '#                |      |      |  ' + '    |        |' + #10 +
+  '#                v      v      v  ' + '    v        v' + #10 +
+  '_hash_action = {(False, False, Fal' + 'se, False): None,' + #10 +
+  '                (False, False, Fal' + 'se, True ): None,' + #10 +
+  '                (False, False, Tru' + 'e,  False): None,' + #10 +
+  '                (False, False, Tru' + 'e,  True ): None,' + #10 +
+  '                (False, True,  Fal' + 'se, False): _hash_set_none,' + #10 +
+  '                (False, True,  Fal' + 'se, True ): None,' + #10 +
+  '                (False, True,  Tru' + 'e,  False): _hash_add,' + #10 +
+  '                (False, True,  Tru' + 'e,  True ): None,' + #10 +
+  '                (True,  False, Fal' + 'se, False): _hash_add,' + #10 +
+  '                (True,  False, Fal' + 'se, True ): _hash_exception,' +
+  #10 + '                (True,  False, Tru' + 'e,  False): _hash_add,' +
+  #10 + '                (True,  False, Tru' +
+  'e,  True ): _hash_exception,' + #10 +
+  '                (True,  True,  Fal' + 'se, False): _hash_add,' + #10 +
+  '                (True,  True,  Fal' + 'se, True ): _hash_exception,' +
+  #10 + '                (True,  True,  Tru' + 'e,  False): _hash_add,' +
+  #10 + '                (True,  True,  Tru' +
+  'e,  True ): _hash_exception,' + #10 + '                }' + #10 +
+  '# See https://bugs.python.org/issu' +
+  'e32929#msg312829 for an if-stateme' + 'nt' + #10 +
+  '# version of this table.' + #10 + #10 + #10 +
   'def _process_class(cls, init, repr' +
-  ', eq, order, unsafe_hash, frozen):' + #10 + '    fields = {}' + #10 + #10 +
+  ', eq, order, unsafe_hash, frozen):' + #10 +
+  '    # Now that dicts retain insert' +
+  'ion order, there''s no reason to us' + 'e' + #10 +
+  '    # an ordered dict.  I am lever' + 'aging that ordering here, because' +
+  #10 + '    # derived class fields overwri' +
+  'te base class fields, but the orde' + 'r' + #10 +
+  '    # is defined by the base class' + ', which is found first.' + #10 +
+  '    fields = {}' + #10 + #10 + '    if cls.__module__ in sys.modul' +
+  'es:' + #10 + '        globals = sys.modules[cls.' +
+  '__module__].__dict__' + #10 + '    else:' + #10 +
+  '        # Theoretically this can h' + 'appen if someone writes' + #10 +
+  '        # a custom string to cls._' + '_module__.  In which case' + #10 +
+  '        # such dataclass won''t be ' + 'fully introspectable' + #10 +
+  '        # (w.r.t. typing.get_type_' + 'hints) but will still function' +
+  #10 + '        # correctly.' + #10 + '        globals = {}' + #10 + #10 +
   '    setattr(cls, _PARAMS, _Datacla' + 'ssParams(init, repr, eq, order,' +
   #10 + '                                  ' +
   '         unsafe_hash, frozen))' + #10 + #10 +
+  '    # Find our base classes in rev' + 'erse MRO order, and exclude' + #10 +
+  '    # ourselves.  In reversed orde' + 'r so that more derived classes' +
+  #10 + '    # override earlier field defin' +
+  'itions in base classes.  As long a' + 's' + #10 +
+  '    # we''re iterating over them, s' + 'ee if any are frozen.' + #10 +
   '    any_frozen_base = False' + #10 + '    has_dataclass_bases = False' +
   #10 + '    for b in cls.__mro__[-1:0:-1]:' + #10 +
-  '        base_fields = getattr(b, _' + 'FIELDS, None)' + #10 +
-  '        if base_fields:' + #10 + '            has_dataclass_bases = ' +
-  'True' + #10 + '            for f in base_fields.v' + 'alues():' + #10 +
+  '        # Only process classes tha' + 't have been processed by our' +
+  #10 + '        # decorator.  That is, the' + 'y have a _FIELDS attribute.' +
+  #10 + '        base_fields = getattr(b, _' + 'FIELDS, None)' + #10 +
+  '        if base_fields is not None' + ':' + #10 +
+  '            has_dataclass_bases = ' + 'True' + #10 +
+  '            for f in base_fields.v' + 'alues():' + #10 +
   '                fields[f.name] = f' + #10 +
   '            if getattr(b, _PARAMS)' + '.frozen:' + #10 +
   '                any_frozen_base = ' + 'True' + #10 + #10 +
-  '    cls_annotations = cls.__dict__' + '.get(''__annotations__'', {})' +
-  #10 + #10 + '    cls_fields = [_get_field(cls, ' + 'name, type)' + #10 +
+  '    # Annotations that are defined' + ' in this class (not in base' + #10 +
+  '    # classes).  If __annotations_' + '_ isn''t present, then this class' +
+  #10 + '    # adds no new annotations.  We' +
+  ' use this to compute fields that a' + 're' + #10 +
+  '    # added by this class.' + #10 + '    #' + #10 +
+  '    # Fields are found from cls_an' +
+  'notations, which is guaranteed to ' + 'be' + #10 +
+  '    # ordered.  Default values are' +
+  ' from class attributes, if a field' + #10 +
+  '    # has a default.  If the defau' + 'lt value is a Field(), then it' +
+  #10 + '    # contains additional info bey' +
+  'ond (and possibly including) the' + #10 +
+  '    # actual default value.  Pseud' +
+  'o-fields ClassVars and InitVars ar' + 'e' + #10 +
+  '    # included, despite the fact t' +
+  'hat they''re not real fields.  That' + '''s' + #10 +
+  '    # dealt with later.' + #10 + '    cls_annotations = cls.__dict__' +
+  '.get(''__annotations__'', {})' + #10 + #10 +
+  '    # Now find fields in our class' + '.  While doing so, validate some' +
+  #10 + '    # things, and set the default ' +
+  'values (as class attributes) where' + #10 + '    # we can.' + #10 +
+  '    cls_fields = [_get_field(cls, ' + 'name, type)' + #10 +
   '                  for name, type i' + 'n cls_annotations.items()]' + #10 +
   '    for f in cls_fields:' + #10 + '        fields[f.name] = f' + #10 +
-  #10 + '        if isinstance(getattr(cls,' + ' f.name, None), Field):' +
-  #10 + '            if f.default is MISSIN' + 'G:' + #10 +
+  #10 + '        # If the class attribute (' +
+  'which is the default value for thi' + 's' + #10 +
+  '        # field) exists and is of ' +
+  'type ''Field'', replace it with the' + #10 +
+  '        # real default.  This is s' + 'o that normal class introspection' +
+  #10 + '        # sees a real default valu' + 'e, not a Field.' + #10 +
+  '        if isinstance(getattr(cls,' + ' f.name, None), Field):' + #10 +
+  '            if f.default is MISSIN' + 'G:' + #10 +
+  '                # If there''s no de' +
+  'fault, delete the class attribute.' + #10 +
+  '                # This happens if ' + 'we specify field(repr=False), for' +
+  #10 + '                # example (that is' +
+  ', we specified a field object, but' + #10 +
+  '                # no default value' +
+  ').  Also if we''re using a default' + #10 +
+  '                # factory.  The cl' +
+  'ass attribute should not be set at' + #10 +
+  '                # all in the post-' + 'processed class.' + #10 +
   '                delattr(cls, f.nam' + 'e)' + #10 + '            else:' +
-  #10 + '                setattr(cls, f.nam' + 'e, f.default)' + #10;
-
-Const
- Src_dataclasses_2: AnsiString =
-  #10 + '    for name, value in cls.__dict_' + '_.items():' + #10 +
+  #10 + '                setattr(cls, f.nam' + 'e, f.default)' + #10 + #10 +
+  '    # Do we have any Field members' +
+  ' that don''t also have annotations?' + #10 +
+  '    for name, value in cls.__dict_' + '_.items():' + #10 +
   '        if isinstance(value, Field' +
   ') and not name in cls_annotations:' + #10 +
-  '            raise TypeError(''field' +
-  ' '' + name + '' is a Field but has n' + 'o type annotation'')' + #10 +
-  #10 + '    if has_dataclass_bases:' + #10 +
+  '            raise TypeError(f''{nam' +
+  'e!r} is a field but has no type an' + 'notation'')' + #10 + #10 +
+  '    # Check rules that apply if we' +
+  ' are derived from any dataclasses.' + #10 + '    if has_dataclass_bases:' +
+  #10 + '        # Raise an exception if an' +
+  'y of our bases are frozen, but we''' + 're not.' + #10 +
   '        if any_frozen_base and not' + ' frozen:' + #10 +
   '            raise TypeError(''canno' +
   't inherit non-frozen dataclass fro' + 'm a ''' + #10 +
-  '                            ''froze' + 'n one'')' + #10 +
+  '                            ''froze' + 'n one'')' + #10 + #10 +
+  '        # Raise an exception if we' +
+  '''re frozen, but none of our bases ' + 'are.' + #10 +
   '        if not any_frozen_base and' + ' frozen:' + #10 +
   '            raise TypeError(''canno' +
   't inherit frozen dataclass from a ' + '''' + #10 +
   '                            ''non-f' + 'rozen one'')' + #10 + #10 +
+  '    # Remember all of the fields o' +
+  'n our class (including bases).  Th' + 'is' + #10 +
+  '    # also marks this class as bei' + 'ng a dataclass.' + #10 +
   '    setattr(cls, _FIELDS, fields)' + #10 + #10 +
+  '    # Was this class defined with ' +
+  'an explicit __hash__?  Note that i' + 'f' + #10 +
+  '    # __eq__ is defined in this cl' +
+  'ass, then python will automaticall' + 'y' + #10 +
+  '    # set __hash__ to None.  This ' + 'is a heuristic, as it''s possible' +
+  #10 + '    # that such a __hash__ == None' +
+  ' was not auto-generated, but it' + #10 + '    # close enough.' + #10 +
   '    class_hash = cls.__dict__.get(' + '''__hash__'', MISSING)' + #10 +
   '    has_explicit_hash = not (class' + '_hash is MISSING or' + #10 +
   '                             (clas' +
   's_hash is None and ''__eq__'' in cls' + '.__dict__))' + #10 + #10 +
-  '    if init:' + #10 + '        has_post_init = hasattr(cl' +
-  's, _POST_INIT_NAME)' + #10 + #10 + '        flds = [f for f in fields.' +
-  'values()' + #10 + '                if f._field_type i' +
-  'n (_FIELD, _FIELD_INITVAR)]' + #10 +
+  '    # If we''re generating ordering' +
+  ' methods, we must be generating th' + 'e' + #10 + '    # eq methods.' +
+  #10 + '    if order and not eq:' + #10 +
+  '        raise ValueError(''eq must ' + 'be true if order is true'')' +
+  #10 + #10 + '    if init:' + #10 + '        # Does this class have a p' +
+  'ost-init function?' + #10 + '        has_post_init = hasattr(cl' +
+  's, _POST_INIT_NAME)' + #10 + #10 + '        # Include InitVars and reg' +
+  'ular fields (so, not ClassVars).' + #10 +
+  '        flds = [f for f in fields.' + 'values()' + #10 +
+  '                if f._field_type i' + 'n (_FIELD, _FIELD_INITVAR)]' + #10 +
   '        _set_new_attribute(cls, ''_' + '_init__'',' + #10 +
   '                           _init_f' + 'n(flds,' + #10 +
   '                                  ' + '  frozen,' + #10 +
   '                                  ' + '  has_post_init,' + #10 +
   '                                  ' +
+  '  # The name to use for the "self"' + #10 +
+  '                                  ' +
+  '  # param in __init__.  Use "self"' + #10 +
+  '                                  ' + '  # if possible.' + #10 +
+  '                                  ' +
   '  ''__dataclass_self__'' if ''self'' i' + 'n fields' + #10 +
-  '                                  ' + '  else ''self'',' + #10 +
-  '                                  ' +
-  '  sys.modules[cls.__module__].__di' + 'ct__' + #10 +
-  '                                  ' +
-  '  if cls.__module__ in sys.modules' + ' else {},' + #10 +
-  '                                  ' + '  ))' + #10 + #10 +
-  '    flds = [f for f in fields.valu' + 'es() if f._field_type is _FIELD]' +
-  #10 + #10 + '    if repr:' + #10 + '        _set_new_attribute(cls, ''_' +
-  '_repr__'', _repr_fn(flds))' + #10 + #10 + '    if eq:' + #10 +
-  '        flds_eq = [f for f in flds' + ' if f.compare]' + #10 +
-  '        self_tuple = _tuple_str(''s' + 'elf'', flds_eq)' + #10 +
-  '        other_tuple = _tuple_str(''' + 'other'', flds_eq)' + #10 +
+  '                                  ' + '          else ''self'',' + #10 +
+  '                                  ' + '  globals,' + #10 +
+  '                          ))' + #10 + #10 +
+  '    # Get the fields as a list, an' +
+  'd include only real fields.  This ' + 'is' + #10 +
+  '    # used in all of the following' + ' methods.' + #10 +
+  '    field_list = [f for f in field' +
+  's.values() if f._field_type is _FI' + 'ELD]' + #10 + #10 + '    if repr:' +
+  #10 + '        flds = [f for f in field_l' + 'ist if f.repr]' + #10 +
+  '        _set_new_attribute(cls, ''_' +
+  '_repr__'', _repr_fn(flds, globals))' + #10 + #10 + '    if eq:' + #10 +
+  '        # Create _eq__ method.  Th' +
+  'ere''s no need for a __ne__ method,' + #10 +
+  '        # since python will call _' + '_eq__ and negate it.' + #10 +
+  '        flds = [f for f in field_l' + 'ist if f.compare]' + #10 +
+  '        self_tuple = _tuple_str(''s' + 'elf'', flds)' + #10 +
+  '        other_tuple = _tuple_str(''' + 'other'', flds)' + #10 +
   '        _set_new_attribute(cls, ''_' + '_eq__'',' + #10 +
   '                           _cmp_fn' + '(''__eq__'', ''=='',' + #10 +
-  '                                  ' + ' self_tuple, other_tuple))' + #10 +
-  #10 + '    if order:' + #10 + '        flds_o = [f for f in flds ' +
-  'if f.compare]' + #10 + '        self_tuple = _tuple_str(''s' +
-  'elf'', flds_o)' + #10 + '        other_tuple = _tuple_str(''' +
-  'other'', flds_o)' + #10 + '        for name, op in [(''__lt__''' +
+  '                                  ' + ' self_tuple, other_tuple,' + #10 +
+  '                                  ' + ' globals=globals))' + #10 + #10 +
+  '    if order:' + #10 + '        # Create and set the order' +
+  'ing methods.' + #10 + '        flds = [f for f in field_l' +
+  'ist if f.compare]' + #10 + '        self_tuple = _tuple_str(''s' +
+  'elf'', flds)' + #10 + '        other_tuple = _tuple_str(''' +
+  'other'', flds)' + #10 + '        for name, op in [(''__lt__''' +
   ', ''<''),' + #10 + '                         (''__le__''' + ', ''<=''),' +
   #10 + '                         (''__gt__''' + ', ''>''),' + #10 +
   '                         (''__ge__''' + ', ''>=''),' + #10 +
   '                         ]:' + #10 + '            if _set_new_attribute(' +
   'cls, name,' + #10 + '                                  ' +
-  '_cmp_fn(name, op, self_tuple, othe' + 'r_tuple)):' + #10 +
-  '                raise TypeError(''C' +
-  'annot overwrite attribute '' + name' + ' + '' ''' + #10 +
-  '                                ''i' +
-  'n class '' + cls.__name__ + ''. Cons' + 'ider using ''' + #10 +
+  '_cmp_fn(name, op, self_tuple, othe' + 'r_tuple,' + #10 +
+  '                                  ' + '        globals=globals)):' + #10 +
+  '                raise TypeError(f''' +
+  'Cannot overwrite attribute {name} ' + '''' + #10 +
+  '                                f''' +
+  'in class {cls.__name__}. Consider ' + 'using ''' + #10 +
   '                                ''f' + 'unctools.total_ordering'')' + #10 +
   #10 + '    if frozen:' + #10 + '        for fn in _frozen_get_del_' +
-  'attr(cls, flds):' + #10 + '            if _set_new_attribute(' +
-  'cls, fn.__name__, fn):' + #10 + '                raise TypeError(''C' +
-  'annot overwrite attribute '' + fn._' + '_name__ + '' ''' + #10 +
-  '                                ''i' + 'n class '' + cls.__name__)' + #10 +
+  'attr(cls, field_list, globals):' + #10 +
+  '            if _set_new_attribute(' + 'cls, fn.__name__, fn):' + #10 +
+  '                raise TypeError(f''' +
+  'Cannot overwrite attribute {fn.__n' + 'ame__} ''' + #10 +
+  '                                f''' + 'in class {cls.__name__}'')' + #10 +
+  #10 + '    # Decide if/how we''re going to' + ' create a hash function.' +
   #10 + '    hash_action = _hash_action[boo' + 'l(unsafe_hash),' + #10 +
   '                               boo' + 'l(eq),' + #10 +
   '                               boo' + 'l(frozen),' + #10 +
   '                               has' + '_explicit_hash]' + #10 +
-  '    if hash_action:' + #10 + '        cls.__hash__ = hash_action' +
-  '(cls, flds)' + #10 + #10 + '    if not getattr(cls, ''__doc__'')' + ':' +
-  #10 + '        cls.__doc__ = (cls.__name_' + '_ + _doc_signature(fields))' +
-  #10 + #10 + '    return cls' + #10 + #10 + #10 +
-  'def _doc_signature(fields):' + #10 + '    parts = []' + #10 +
-  '    for f in fields.values():' + #10 +
-  '        if f._field_type is _FIELD' + '_CLASSVAR or not f.init:' + #10 +
-  '            continue' + #10 + '        if isinstance(f.type, type' + '):' +
-  #10 + '            t = f.type.__name__' + #10 + '        else:' + #10 +
-  '            t = repr(f.type)' + #10 + '        s = f.name + '': '' + t' +
-  #10 + '        if f.default is not MISSIN' + 'G:' + #10 +
-  '            s += '' = '' + repr(f.de' + 'fault)' + #10 +
-  '        elif f.default_factory is ' + 'not MISSING:' + #10 +
-  '            s += '' = <factory>''' + #10 + '        parts.append(s)' +
-  #10 + '    return ''('' + '', ''.join(parts) ' + '+ '')''' + #10 + #10 +
-  #10 + 'def dataclass(cls=None, /, *, init' +
+  '    if hash_action:' + #10 + '        # No need to call _set_new' +
+  '_attribute here, since by the time' + #10 +
+  '        # we''re here the overwriti' + 'ng is unconditional.' + #10 +
+  '        cls.__hash__ = hash_action' + '(cls, field_list, globals)' + #10 +
+  #10 + '    if not getattr(cls, ''__doc__'')' + ':' + #10 +
+  '        # Create a class doc-strin' + 'g.' + #10 +
+  '        cls.__doc__ = (cls.__name_' + '_ +' + #10 +
+  '                       str(inspect' +
+  '.signature(cls)).replace('' -> None' + ''', ''''))' + #10 + #10 +
+  '    return cls' + #10 + #10 + #10 + 'def dataclass(cls=None, /, *, init' +
   '=True, repr=True, eq=True, order=F' + 'alse,' + #10 +
   '              unsafe_hash=False, f' + 'rozen=False):' + #10 +
-  '    def wrap(cls):' + #10 + '        return _process_class(cls,' +
+  '    """Returns the same class as w' + 'as passed in, with dunder methods' +
+  #10 + '    added based on the fields defi' + 'ned in the class.' + #10 +
+  #10;
+
+Const
+ Src_dataclasses_4: AnsiString =
+  '    Examines PEP 526 __annotations' + '__ to determine fields.' + #10 +
+  #10 + '    If init is true, an __init__()' +
+  ' method is added to the class. If' + #10 +
+  '    repr is true, a __repr__() met' +
+  'hod is added. If order is true, ri' + 'ch' + #10 +
+  '    comparison dunder methods are ' + 'added. If unsafe_hash is true, a' +
+  #10 + '    __hash__() method function is ' +
+  'added. If frozen is true, fields m' + 'ay' + #10 +
+  '    not be assigned to after insta' + 'nce creation.' + #10 + '    """' +
+  #10 + #10 + '    def wrap(cls):' + #10 +
+  '        return _process_class(cls,' +
   ' init, repr, eq, order, unsafe_has' + 'h, frozen)' + #10 + #10 +
-  '    if cls is None:' + #10 + '        return wrap' + #10 +
+  '    # See if we''re being called as' + ' @dataclass or @dataclass().' +
+  #10 + '    if cls is None:' + #10 + '        # We''re called with parens' +
+  '.' + #10 + '        return wrap' + #10 + #10 +
+  '    # We''re called as @dataclass w' + 'ithout parens.' + #10 +
   '    return wrap(cls)' + #10 + #10 + #10 +
-  'def fields(class_or_instance):' + #10 + '    try:' + #10 +
+  'def fields(class_or_instance):' + #10 +
+  '    """Return a tuple describing t' + 'he fields of this dataclass.' +
+  #10 + #10 + '    Accepts a dataclass or an inst' +
+  'ance of one. Tuple elements are of' + #10 + '    type Field.' + #10 +
+  '    """' + #10 + #10 + '    # Might it be worth caching th' +
+  'is, per class?' + #10 + '    try:' + #10 +
   '        fields = getattr(class_or_' + 'instance, _FIELDS)' + #10 +
   '    except AttributeError:' + #10 + '        raise TypeError(''must be c' +
-  'alled with a dataclass type or ins' + 'tance'')' + #10 +
+  'alled with a dataclass type or ins' + 'tance'')' + #10 + #10 +
+  '    # Exclude pseudo-fields.  Note' +
+  ' that fields is sorted by insertio' + 'n' + #10 +
+  '    # order, so the order of the t' +
+  'uple is as the fields were defined' + '.' + #10 +
   '    return tuple(f for f in fields' +
   '.values() if f._field_type is _FIE' + 'LD)' + #10 + #10 + #10 +
   'def _is_dataclass_instance(obj):' + #10 +
+  '    """Returns True if obj is an i' + 'nstance of a dataclass."""' + #10 +
   '    return hasattr(type(obj), _FIE' + 'LDS)' + #10 + #10 + #10 +
-  'def is_dataclass(obj):' + #10 + '    cls = obj if isinstance(obj, t' +
-  'ype) else type(obj)' + #10 + '    return hasattr(cls, _FIELDS)' + #10 +
-  #10 + #10 + 'def asdict(obj, *, dict_factory=di' + 'ct):' + #10 +
+  'def is_dataclass(obj):' + #10 + '    """Returns True if obj is a da' +
+  'taclass or an instance of a' + #10 + '    dataclass."""' + #10 +
+  '    cls = obj if isinstance(obj, t' + 'ype) else type(obj)' + #10 +
+  '    return hasattr(cls, _FIELDS)' + #10 + #10 + #10 +
+  'def asdict(obj, *, dict_factory=di' + 'ct):' + #10 +
+  '    """Return the fields of a data' +
+  'class instance as a new dictionary' + ' mapping' + #10 +
+  '    field names to field values.' + #10 + #10 + '    Example usage:' +
+  #10 + #10 + '      @dataclass' + #10 + '      class C:' + #10 +
+  '          x: int' + #10 + '          y: int' + #10 + #10 +
+  '      c = C(1, 2)' + #10 + '      assert asdict(c) == {''x'': 1,' +
+  ' ''y'': 2}' + #10 + #10 + '    If given, ''dict_factory'' will ' +
+  'be used instead of built-in dict.' + #10 +
+  '    The function applies recursive' + 'ly to field values that are' + #10 +
+  '    dataclass instances. This will' +
+  ' also look into built-in container' + 's:' + #10 +
+  '    tuples, lists, and dicts.' + #10 + '    """' + #10 +
   '    if not _is_dataclass_instance(' + 'obj):' + #10 +
   '        raise TypeError("asdict() ' +
   'should be called on dataclass inst' + 'ances")' + #10 +
@@ -43646,10 +47583,36 @@ Const
   '            result.append((f.name,' + ' value))' + #10 +
   '        return dict_factory(result' + ')' + #10 +
   '    elif isinstance(obj, tuple) an' + 'd hasattr(obj, ''_fields''):' +
-  #10 + '        return type(obj)(*[_asdict' +
+  #10 + '        # obj is a namedtuple.  Re' +
+  'curse into it, but the returned' + #10 +
+  '        # object is another namedt' + 'uple of the same type.  This is' +
+  #10 + '        # similar to how other lis' +
+  't- or tuple-derived classes are' + #10 +
+  '        # treated (see below), but' + ' we just need to create them' +
+  #10 + '        # differently because a na' +
+  'medtuple''s __init__ needs to be' + #10 +
+  '        # called differently (see ' + 'bpo-34363).' + #10 + #10 +
+  '        # I''m not using namedtuple' + '''s _asdict()' + #10 +
+  '        # method, because:' + #10 + '        # - it does not recurse in' +
+  ' to the namedtuple fields and' + #10 +
+  '        #   convert them to dicts ' + '(using dict_factory).' + #10 +
+  '        # - I don''t actually want ' + 'to return a dict here.  The main' +
+  #10 + '        #   use case here is json.' +
+  'dumps, and it handles converting' + #10 +
+  '        #   namedtuples to lists. ' + ' Admittedly we''re losing some' +
+  #10 + '        #   information here when ' +
+  'we produce a json list instead of ' + 'a' + #10 +
+  '        #   dict.  Note that if we' + ' returned dicts here instead of' +
+  #10 + '        #   namedtuples, we could ' +
+  'no longer call asdict() on a data' + #10 +
+  '        #   structure where a name' + 'dtuple was used as a dict key.' +
+  #10 + #10 + '        return type(obj)(*[_asdict' +
   '_inner(v, dict_factory) for v in o' + 'bj])' + #10 +
   '    elif isinstance(obj, (list, tu' + 'ple)):' + #10 +
-  '        return type(obj)(_asdict_i' +
+  '        # Assume we can create an ' +
+  'object of this type by passing in ' + 'a' + #10 +
+  '        # generator (which is not ' + 'true for namedtuples, handled' +
+  #10 + '        # above).' + #10 + '        return type(obj)(_asdict_i' +
   'nner(v, dict_factory) for v in obj' + ')' + #10 +
   '    elif isinstance(obj, dict):' + #10 +
   '        return type(obj)((_asdict_' + 'inner(k, dict_factory),' + #10 +
@@ -43657,6 +47620,17 @@ Const
   '                         for k, v ' + 'in obj.items())' + #10 +
   '    else:' + #10 + '        return copy.deepcopy(obj)' + #10 + #10 + #10 +
   'def astuple(obj, *, tuple_factory=' + 'tuple):' + #10 +
+  '    """Return the fields of a data' +
+  'class instance as a new tuple of f' + 'ield values.' + #10 + #10 +
+  '    Example usage::' + #10 + #10 + '      @dataclass' + #10 +
+  '      class C:' + #10 + '          x: int' + #10 + '          y: int' +
+  #10 + #10 + '    c = C(1, 2)' + #10 + '    assert astuple(c) == (1, 2)' +
+  #10 + #10 + '    If given, ''tuple_factory'' will' +
+  ' be used instead of built-in tuple' + '.' + #10 +
+  '    The function applies recursive' + 'ly to field values that are' + #10 +
+  '    dataclass instances. This will' +
+  ' also look into built-in container' + 's:' + #10 +
+  '    tuples, lists, and dicts.' + #10 + '    """' + #10 + #10 +
   '    if not _is_dataclass_instance(' + 'obj):' + #10 +
   '        raise TypeError("astuple()' +
   ' should be called on dataclass ins' + 'tances")' + #10 +
@@ -43669,23 +47643,57 @@ Const
   '            result.append(value)' + #10 +
   '        return tuple_factory(resul' + 't)' + #10 +
   '    elif isinstance(obj, tuple) an' + 'd hasattr(obj, ''_fields''):' +
-  #10 + '        return type(obj)(*[_astupl' +
+  #10 + '        # obj is a namedtuple.  Re' +
+  'curse into it, but the returned' + #10 +
+  '        # object is another namedt' + 'uple of the same type.  This is' +
+  #10 + '        # similar to how other lis' +
+  't- or tuple-derived classes are' + #10 +
+  '        # treated (see below), but' + ' we just need to create them' +
+  #10 + '        # differently because a na' +
+  'medtuple''s __init__ needs to be' + #10 +
+  '        # called differently (see ' + 'bpo-34363).' + #10 +
+  '        return type(obj)(*[_astupl' +
   'e_inner(v, tuple_factory) for v in' + ' obj])' + #10 +
   '    elif isinstance(obj, (list, tu' + 'ple)):' + #10 +
-  '        return type(obj)(_astuple_' +
+  '        # Assume we can create an ' +
+  'object of this type by passing in ' + 'a' + #10 +
+  '        # generator (which is not ' + 'true for namedtuples, handled' +
+  #10 + '        # above).' + #10 + '        return type(obj)(_astuple_' +
   'inner(v, tuple_factory) for v in o' + 'bj)' + #10 +
   '    elif isinstance(obj, dict):' + #10 +
-  '        return type(obj)((_astuple' + '_inner(k, tuple_factory),' + #10 +
-  '                          _astuple' + '_inner(v, tuple_factory))' + #10 +
-  '                         for k, v ' + 'in obj.items())' + #10 +
+  '        return type(obj)((_astuple' +
+  '_inner(k, tuple_factory), _astuple' + '_inner(v, tuple_factory))' + #10 +
+  '                          for k, v' + ' in obj.items())' + #10 +
   '    else:' + #10 + '        return copy.deepcopy(obj)' + #10 + #10 + #10 +
   'def make_dataclass(cls_name, field' +
   's, *, bases=(), namespace=None, in' + 'it=True,' + #10 +
   '                   repr=True, eq=T' +
   'rue, order=False, unsafe_hash=Fals' + 'e,' + #10 +
-  '                   frozen=False):' + #10 + '    if namespace is None:' +
-  #10 + '        namespace = {}' + #10 + '    else:' + #10 +
-  '        namespace = namespace.copy' + '()' + #10 + #10 +
+  '                   frozen=False):' + #10 +
+  '    """Return a new dynamically cr' + 'eated dataclass.' + #10 + #10 +
+  '    The dataclass name will be ''cl' +
+  's_name''.  ''fields'' is an iterable' + #10 +
+  '    of either (name), (name, type)' +
+  ' or (name, type, Field) objects. I' + 'f type is' + #10 +
+  '    omitted, use the string ''typin' +
+  'g.Any''.  Field objects are created' + ' by' + #10 +
+  '    the equivalent of calling ''fie' + 'ld(name, type [, Field-info])''.' +
+  #10 + #10 + '      C = make_dataclass(''C'', [''x''' +
+  ', (''y'', int), (''z'', int, field(ini' + 't=False))], bases=(Base,))' +
+  #10 + #10 + '    is equivalent to:' + #10 + #10 + '      @dataclass' + #10 +
+  '      class C(Base):' + #10 + '          x: ''typing.Any''' + #10 +
+  '          y: int' + #10 + '          z: int = field(init=Fals' + 'e)' +
+  #10 + #10 + '    For the bases and namespace pa' +
+  'rameters, see the builtin type() f' + 'unction.' + #10 + #10 +
+  '    The parameters init, repr, eq,' +
+  ' order, unsafe_hash, and frozen ar' + 'e passed to' + #10 +
+  '    dataclass().' + #10 + '    """' + #10 + #10 +
+  '    if namespace is None:' + #10 + '        namespace = {}' + #10 +
+  '    else:' + #10 + '        # Copy namespace since we''' +
+  're going to mutate it.' + #10 + '        namespace = namespace.copy' +
+  '()' + #10 + #10 + '    # While we''re looking through ' +
+  'the field names, validate that the' + 'y' + #10 +
+  '    # are identifiers, are not key' + 'words, and not duplicates.' + #10 +
   '    seen = set()' + #10 + '    anns = {}' + #10 +
   '    for item in fields:' + #10 + '        if isinstance(item, str):' +
   #10 + '            name = item' + #10 + '            tp = ''typing.Any''' +
@@ -43693,53 +47701,87 @@ Const
   '            name, tp, = item' + #10 + '        elif len(item) == 3:' +
   #10 + '            name, tp, spec = item' + #10 +
   '            namespace[name] = spec' + #10 + '        else:' + #10 +
-  '            raise TypeError(''Inval' +
-  'id field: '' + builtins.repr(item))' + #10 + #10 +
-  '        if not isinstance(name, st' + 'r) or not name.isidentifier():' +
-  #10 + '            raise TypeError(''Field' +
-  ' names must be valid identifiers: ' + ''' + builtins.repr(name))' + #10 +
+  '            raise TypeError(f''Inva' + 'lid field: {item!r}'')' + #10 +
+  #10 + '        if not isinstance(name, st' +
+  'r) or not name.isidentifier():' + #10 +
+  '            raise TypeError(f''Fiel' +
+  'd names must be valid identifiers:' + ' {name!r}'')' + #10 +
   '        if keyword.iskeyword(name)' + ':' + #10 +
-  '            raise TypeError(''Field' +
-  ' names must not be keywords: '' + b' + 'uiltins.repr(name))' + #10 +
-  '        if name in seen:' + #10 + '            raise TypeError(''Field' +
-  ' name duplicated: '' + builtins.rep' + 'r(name))' + #10 + #10 +
-  '        seen.add(name)' + #10 + '        anns[name] = tp' + #10 + #10 +
+  '            raise TypeError(f''Fiel' +
+  'd names must not be keywords: {nam' + 'e!r}'')' + #10 +
+  '        if name in seen:' + #10 + '            raise TypeError(f''Fiel' +
+  'd name duplicated: {name!r}'')' + #10 + #10 + '        seen.add(name)' +
+  #10 + '        anns[name] = tp' + #10 + #10 +
   '    namespace[''__annotations__''] =' + ' anns' + #10 +
+  '    # We use `types.new_class()` i' +
+  'nstead of simply `type()` to allow' + ' dynamic creation' + #10 +
+  '    # of generic dataclassses.' + #10 +
   '    cls = types.new_class(cls_name' +
   ', bases, {}, lambda ns: ns.update(' + 'namespace))' + #10 +
   '    return dataclass(cls, init=ini' + 't, repr=repr, eq=eq, order=order,' +
   #10 + '                     unsafe_hash=u' + 'nsafe_hash, frozen=frozen)' +
   #10 + #10 + #10 + 'def replace(*args, **changes):' + #10 +
-  '    if len(args) > 1:' + #10 + '        raise TypeError(''replace()' +
-  ' takes 1 positional argument but ''' +
-  ' + str(len(args)) + '' were given'')' + #10 + '    if args:' + #10 +
+  '    """Return a new object replaci' +
+  'ng specified fields with new value' + 's.' + #10 + #10 +
+  '    This is especially useful for ' + 'frozen classes.  Example usage:' +
+  #10 + #10 + '      @dataclass(frozen=True)' + #10 + '      class C:' + #10 +
+  '          x: int' + #10 + '          y: int' + #10 + #10 +
+  '      c = C(1, 2)' + #10 + '      c1 = replace(c, x=3)' + #10 +
+  '      assert c1.x == 3 and c1.y ==' + ' 2' + #10 + '      """' + #10 +
+  '    if len(args) > 1:' + #10 + '        raise TypeError(f''replace(' +
+  ') takes 1 positional argument but ' + '{len(args)} were given'')' + #10 +
+  '    if args:' + #10;
+
+Const
+ Src_dataclasses_5: AnsiString =
   '        obj, = args' + #10 + '    elif ''obj'' in changes:' + #10 +
-  '        obj = changes.pop(''obj'')' + #10 + '    else:' + #10 +
-  '        raise TypeError("replace()' +
+  '        obj = changes.pop(''obj'')' + #10 + '        import warnings' +
+  #10 + '        warnings.warn("Passing ''ob' +
+  'j'' as keyword argument is deprecat' + 'ed",' + #10 +
+  '                      DeprecationW' + 'arning, stacklevel=2)' + #10 +
+  '    else:' + #10 + '        raise TypeError("replace()' +
   ' missing 1 required positional arg' + 'ument: ''obj''")' + #10 + #10 +
-  '    if not _is_dataclass_instance(' + 'obj):' + #10 +
+  '    # We''re going to mutate ''chang' +
+  'es'', but that''s okay because it''s ' + 'a' + #10 +
+  '    # new dict, even if called wit' + 'h ''replace(obj, **my_changes)''.' +
+  #10 + #10 + '    if not _is_dataclass_instance(' + 'obj):' + #10 +
   '        raise TypeError("replace()' +
   ' should be called on dataclass ins' + 'tances")' + #10 + #10 +
+  '    # It''s an error to have init=F' + 'alse fields in ''changes''.' +
+  #10 + '    # If a field is not in ''change' +
+  's'', read its value from the provid' + 'ed obj.' + #10 + #10 +
   '    for f in getattr(obj, _FIELDS)' + '.values():' + #10 +
+  '        # Only consider normal fie' + 'lds or InitVars.' + #10 +
   '        if f._field_type is _FIELD' + '_CLASSVAR:' + #10 +
   '            continue' + #10 + #10 + '        if not f.init:' + #10 +
+  '            # Error if this field ' + 'is specified in changes.' + #10 +
   '            if f.name in changes:' + #10 +
-  '                raise ValueError(''' +
-  'field '' + f.name + '' is declared w' + 'ith ''' + #10 +
+  '                raise ValueError(f' +
+  '''field {f.name} is declared with ''' + #10 +
   '                                 ''' +
   'init=False, it cannot be specified' + ' with ''' + #10 +
   '                                 ''' + 'replace()'')' + #10 +
   '            continue' + #10 + #10 + '        if f.name not in changes:' +
-  #10 + '            if f._field_type is _F' + 'IELD_INITVAR:' + #10 +
-  '                raise ValueError("' + 'InitVar ''" + f.name + "'' "' +
-  #10 + '                                 ''' +
+  #10 + '            if f._field_type is _F' +
+  'IELD_INITVAR and f.default is MISS' + 'ING:' + #10 +
+  '                raise ValueError(f' + '"InitVar {f.name!r} "' + #10 +
+  '                                 ''' +
   'must be specified with replace()'')' + #10 +
   '            changes[f.name] = geta' + 'ttr(obj, f.name)' + #10 + #10 +
-  '    return obj.__class__(**changes' + ')' + #10 + #10;
+  '    # Create the new object, which' + ' calls __init__() and' + #10 +
+  '    # __post_init__() (if defined)' +
+  ', using all of the init fields we''' + 've' + #10 +
+  '    # added and/or left in ''change' +
+  's''.  If there are values supplied ' + 'in' + #10 +
+  '    # changes that aren''t fields, ' + 'this will correctly raise a' +
+  #10 + '    # TypeError.' + #10 + '    return obj.__class__(**changes' +
+  ')' + #10 + 'replace.__text_signature__ = ''(obj' + ', /, **kwargs)''' +
+  #10 + #10;
 
 Function Src_dataclasses: AnsiString;
 Begin
- Result := Src_dataclasses_0 + Src_dataclasses_1 + Src_dataclasses_2;
+ Result := Src_dataclasses_0 + Src_dataclasses_1 + Src_dataclasses_2 +
+  Src_dataclasses_3 + Src_dataclasses_4 + Src_dataclasses_5;
 End;
 
 Const
@@ -44416,8 +48458,8 @@ Const
   #10 + '        return (self.toordinal() +' + ' 6) % 7' + #10 + #10 +
   '    def isoweekday(self):' + #10 + '        return self.toordinal() % ' +
   '7 or 7' + #10 + #10 + '    def isocalendar(self):' + #10 +
-  '        return _IsoCalendarDate(*_' +
-  'isocalendar_of(self._year, self._m' + 'onth, self._day))' + #10 + #10 +
+  '        return tuple(_isocalendar_' +
+  'of(self._year, self._month, self._' + 'day))' + #10 + #10 +
   '    def __reduce__(self):' + #10 + '        return (self.__class__, (s' +
   'elf._year, self._month, self._day)' + ')' + #10 + #10 +
   '    def __copy__(self):' + #10 + '        if type(self) is date:' + #10 +
@@ -48309,6 +52351,27 @@ End;
 
 Const
  Src_difflib_0: AnsiString =
+  '"""' + #10 + 'Module difflib -- helpers for comp' +
+  'uting deltas between objects.' + #10 + #10 +
+  'Function get_close_matches(word, p' + 'ossibilities, n=3, cutoff=0.6):' +
+  #10 + '    Use SequenceMatcher to return ' +
+  'list of the best "good enough" mat' + 'ches.' + #10 + #10 +
+  'Function context_diff(a, b):' + #10 +
+  '    For two lists of strings, retu' +
+  'rn a delta in context diff format.' + #10 + #10 + 'Function ndiff(a, b):' +
+  #10 + '    Return a delta: the difference' +
+  ' between `a` and `b` (lists of str' + 'ings).' + #10 + #10 +
+  'Function restore(delta, which):' + #10 +
+  '    Return one of the two sequence' + 's that generated an ndiff delta.' +
+  #10 + #10 + 'Function unified_diff(a, b):' + #10 +
+  '    For two lists of strings, retu' +
+  'rn a delta in unified diff format.' + #10 + #10 +
+  'Class SequenceMatcher:' + #10 + '    A flexible class for comparing' +
+  ' pairs of sequences of any type.' + #10 + #10 + 'Class Differ:' + #10 +
+  '    For producing human-readable d' +
+  'eltas from sequences of lines of t' + 'ext.' + #10 + #10 +
+  'Class HtmlDiff:' + #10 + '    For producing HTML side by sid' +
+  'e comparison with change highlight' + 's.' + #10 + '"""' + #10 + #10 +
   '__all__ = [''get_close_matches'', ''n' +
   'diff'', ''restore'', ''SequenceMatcher' + ''',' + #10 +
   '           ''Differ'',''IS_CHARACTER_' +
@@ -48321,54 +52384,372 @@ Const
   'def _calculate_ratio(matches, leng' + 'th):' + #10 + '    if length:' +
   #10 + '        return 2.0 * matches / len' + 'gth' + #10 +
   '    return 1.0' + #10 + #10 + 'class SequenceMatcher:' + #10 + #10 +
-  '    def __init__(self, isjunk=None' + ', a='''', b='''', autojunk=True):' +
-  #10 + #10 + '        self.isjunk = isjunk' + #10 +
-  '        self.a = self.b = None' + #10 +
-  '        self.autojunk = autojunk' + #10 + '        self.set_seqs(a, b)' +
-  #10 + #10 + '    def set_seqs(self, a, b):' + #10 + #10 +
-  '        self.set_seq1(a)' + #10 + '        self.set_seq2(b)' + #10 + #10 +
-  '    def set_seq1(self, a):' + #10 + #10 + '        if a is self.a:' + #10 +
-  '            return' + #10 + '        self.a = a' + #10 +
+  '    """' + #10 + '    SequenceMatcher is a flexible ' +
+  'class for comparing pairs of seque' + 'nces of' + #10 +
+  '    any type, so long as the seque' +
+  'nce elements are hashable.  The ba' + 'sic' + #10 +
+  '    algorithm predates, and is a l' + 'ittle fancier than, an algorithm' +
+  #10 + '    published in the late 1980''s b' +
+  'y Ratcliff and Obershelp under the' + #10 +
+  '    hyperbolic name "gestalt patte' +
+  'rn matching".  The basic idea is t' + 'o find' + #10 +
+  '    the longest contiguous matchin' +
+  'g subsequence that contains no "ju' + 'nk"' + #10 +
+  '    elements (R-O doesn''t address ' +
+  'junk).  The same idea is then appl' + 'ied' + #10 +
+  '    recursively to the pieces of t' +
+  'he sequences to the left and to th' + 'e right' + #10 +
+  '    of the matching subsequence.  ' + 'This does not yield minimal edit' +
+  #10 + '    sequences, but does tend to yi' +
+  'eld matches that "look right" to p' + 'eople.' + #10 + #10 +
+  '    SequenceMatcher tries to compu' +
+  'te a "human-friendly diff" between' + ' two' + #10 +
+  '    sequences.  Unlike e.g. UNIX(t' +
+  'm) diff, the fundamental notion is' + ' the' + #10 +
+  '    longest *contiguous* & junk-fr' +
+  'ee matching subsequence.  That''s w' + 'hat' + #10 +
+  '    catches peoples'' eyes.  The Wi' +
+  'ndows(tm) windiff has another inte' + 'resting' + #10 +
+  '    notion, pairing up elements th' +
+  'at appear uniquely in each sequenc' + 'e.' + #10 +
+  '    That, and the method here, app' +
+  'ear to yield more intuitive differ' + 'ence' + #10 +
+  '    reports than does diff.  This ' +
+  'method appears to be the least vul' + 'nerable' + #10 +
+  '    to synching up on blocks of "j' +
+  'unk lines", though (like blank lin' + 'es in' + #10 +
+  '    ordinary text files, or maybe ' +
+  '"<P>" lines in HTML files).  That ' + 'may be' + #10 +
+  '    because this is the only metho' +
+  'd of the 3 that has a *concept* of' + #10 + '    "junk" <wink>.' + #10 +
+  #10 + '    Example, comparing two strings' +
+  ', and considering blanks to be "ju' + 'nk":' + #10 + #10 +
+  '    >>> s = SequenceMatcher(lambda' + ' x: x == " ",' + #10 +
+  '    ...                     "priva' + 'te Thread currentThread;",' + #10 +
+  '    ...                     "priva' +
+  'te volatile Thread currentThread;"' + ')' + #10 + '    >>>' + #10 + #10 +
+  '    .ratio() returns a float in [0' +
+  ', 1], measuring the "similarity" o' + 'f the' + #10 +
+  '    sequences.  As a rule of thumb' +
+  ', a .ratio() value over 0.6 means ' + 'the' + #10 +
+  '    sequences are close matches:' + #10 + #10 +
+  '    >>> print(round(s.ratio(), 3))' + #10 + '    0.866' + #10 + '    >>>' +
+  #10 + #10 + '    If you''re only interested in w' +
+  'here the sequences match,' + #10 + '    .get_matching_blocks() is hand' +
+  'y:' + #10 + #10 + '    >>> for block in s.get_matchin' + 'g_blocks():' +
+  #10 + '    ...     print("a[%d] and b[%d]' +
+  ' match for %d elements" % block)' + #10 +
+  '    a[0] and b[0] match for 8 elem' + 'ents' + #10 +
+  '    a[8] and b[17] match for 21 el' + 'ements' + #10 +
+  '    a[29] and b[38] match for 0 el' + 'ements' + #10 + #10 +
+  '    Note that the last tuple retur' +
+  'ned by .get_matching_blocks() is a' + 'lways a' + #10 +
+  '    dummy, (len(a), len(b), 0), an' +
+  'd this is the only case in which t' + 'he last' + #10 +
+  '    tuple element (number of eleme' + 'nts matched) is 0.' + #10 + #10 +
+  '    If you want to know how to cha' +
+  'nge the first sequence into the se' + 'cond,' + #10 +
+  '    use .get_opcodes():' + #10 + #10 +
+  '    >>> for opcode in s.get_opcode' + 's():' + #10 +
+  '    ...     print("%6s a[%d:%d] b[' + '%d:%d]" % opcode)' + #10 +
+  '     equal a[0:8] b[0:8]' + #10 + '    insert a[8:8] b[8:17]' + #10 +
+  '     equal a[8:29] b[17:38]' + #10 + #10 +
+  '    See the Differ class for a fan' +
+  'cy human-friendly file differencer' + ', which' + #10 +
+  '    uses SequenceMatcher both to c' +
+  'ompare sequences of lines, and to ' + 'compare' + #10 +
+  '    sequences of characters within' + ' similar (near-matching) lines.' +
+  #10 + #10 + '    See also function get_close_ma' +
+  'tches() in this module, which show' + 's how' + #10 +
+  '    simple code building on Sequen' +
+  'ceMatcher can be used to do useful' + ' work.' + #10 + #10 +
+  '    Timing:  Basic R-O is cubic ti' +
+  'me worst case and quadratic time e' + 'xpected' + #10 +
+  '    case.  SequenceMatcher is quad' +
+  'ratic time for the worst case and ' + 'has' + #10 +
+  '    expected-case behavior depende' +
+  'nt in a complicated way on how man' + 'y' + #10 +
+  '    elements the sequences have in' +
+  ' common; best case time is linear.' + #10 + #10 + '    Methods:' + #10 +
+  #10 + '    __init__(isjunk=None, a='''', b=' + ''''')' + #10 +
+  '        Construct a SequenceMatche' + 'r.' + #10 + #10 +
+  '    set_seqs(a, b)' + #10 + '        Set the two sequences to b' +
+  'e compared.' + #10 + #10 + '    set_seq1(a)' + #10 +
+  '        Set the first sequence to ' + 'be compared.' + #10 + #10 +
+  '    set_seq2(b)' + #10 + '        Set the second sequence to' +
+  ' be compared.' + #10 + #10 + '    find_longest_match(alo, ahi, b' +
+  'lo, bhi)' + #10 + '        Find longest matching bloc' +
+  'k in a[alo:ahi] and b[blo:bhi].' + #10 + #10 +
+  '    get_matching_blocks()' + #10 + '        Return list of triples des' +
+  'cribing matching subsequences.' + #10 + #10 + '    get_opcodes()' + #10 +
+  '        Return list of 5-tuples de' + 'scribing how to turn a into b.' +
+  #10 + #10 + '    ratio()' + #10 + '        Return a measure of the se' +
+  'quences'' similarity (float in [0,1' + ']).' + #10 + #10 +
+  '    quick_ratio()' + #10 + '        Return an upper bound on .' +
+  'ratio() relatively quickly.' + #10 + #10 + '    real_quick_ratio()' + #10 +
+  '        Return an upper bound on r' + 'atio() very quickly.' + #10 +
+  '    """' + #10 + #10 + '    def __init__(self, isjunk=None' +
+  ', a='''', b='''', autojunk=True):' + #10 +
+  '        """Construct a SequenceMat' + 'cher.' + #10 + #10 +
+  '        Optional arg isjunk is Non' +
+  'e (the default), or a one-argument' + #10 +
+  '        function that takes a sequ' +
+  'ence element and returns true iff ' + 'the' + #10 +
+  '        element is junk.  None is ' +
+  'equivalent to passing "lambda x: 0' + '", i.e.' + #10 +
+  '        no elements are considered' + ' to be junk.  For example, pass' +
+  #10 + '            lambda x: x in " \\t"' + #10 +
+  '        if you''re comparing lines ' +
+  'as sequences of characters, and do' + 'n''t' + #10 +
+  '        want to synch up on blanks' + ' or hard tabs.' + #10 + #10 +
+  '        Optional arg a is the firs' +
+  't of two sequences to be compared.' + '  By' + #10 +
+  '        default, an empty string. ' +
+  ' The elements of a must be hashabl' + 'e.  See' + #10 +
+  '        also .set_seqs() and .set_' + 'seq1().' + #10 + #10 +
+  '        Optional arg b is the seco' +
+  'nd of two sequences to be compared' + '.  By' + #10 +
+  '        default, an empty string. ' +
+  ' The elements of b must be hashabl' + 'e. See' + #10 +
+  '        also .set_seqs() and .set_' + 'seq2().' + #10 + #10 +
+  '        Optional arg autojunk shou' + 'ld be set to False to disable the' +
+  #10 + '        "automatic junk heuristic"' +
+  ' that treats popular elements as j' + 'unk' + #10 +
+  '        (see module documentation ' + 'for more information).' + #10 +
+  '        """' + #10 + #10 + '        # Members:' + #10 + '        # a' +
+  #10 + '        #      first sequence' + #10 + '        # b' + #10 +
+  '        #      second sequence; di' +
+  'fferences are computed as "what do' + #10 +
+  '        #      we need to do to ''a' + ''' to change it into ''b''?"' +
+  #10 + '        # b2j' + #10 + '        #      for x in b, b2j[x] ' +
+  'is a list of the indices (into b)' + #10 +
+  '        #      at which x appears;' +
+  ' junk and popular elements do not ' + 'appear' + #10 +
+  '        # fullbcount' + #10 + '        #      for x in b, fullbco' +
+  'unt[x] == the number of times x' + #10 +
+  '        #      appears in b; only ' +
+  'materialized if really needed (use' + 'd' + #10 +
+  '        #      only for computing ' + 'quick_ratio())' + #10 +
+  '        # matching_blocks' + #10 + '        #      a list of (i, j, k)' +
+  ' triples, where a[i:i+k] == b[j:j+' + 'k];' + #10 +
+  '        #      ascending & non-ove' +
+  'rlapping in i and in j; terminated' + ' by' + #10 +
+  '        #      a dummy (len(a), le' + 'n(b), 0) sentinel' + #10 +
+  '        # opcodes' + #10 + '        #      a list of (tag, i1,' +
+  ' i2, j1, j2) tuples, where tag is' + #10 + '        #      one of' + #10 +
+  '        #          ''replace''   a[i' +
+  '1:i2] should be replaced by b[j1:j' + '2]' + #10 +
+  '        #          ''delete''    a[i' + '1:i2] should be deleted' + #10 +
+  '        #          ''insert''    b[j' + '1:j2] should be inserted' + #10 +
+  '        #          ''equal''     a[i' + '1:i2] == b[j1:j2]' + #10 +
+  '        # isjunk' + #10 + '        #      a user-supplied fun' +
+  'ction taking a sequence element an' + 'd' + #10 +
+  '        #      returning true iff ' + 'the element is "junk" -- this has' +
+  #10 + '        #      subtle but helpful ' +
+  'effects on the algorithm, which I''' + 'll' + #10 +
+  '        #      get around to writi' + 'ng up someday <0.9 wink>.' + #10 +
+  '        #      DON''T USE!  Only __' +
+  'chain_b uses this.  Use "in self.b' + 'junk".' + #10 + '        # bjunk' +
+  #10 + '        #      the items in b for ' + 'which isjunk is True.' + #10 +
+  '        # bpopular' + #10 + '        #      nonjunk items in b ' +
+  'treated as junk by the heuristic (' + 'if used).' + #10 + #10 +
+  '        self.isjunk = isjunk' + #10 + '        self.a = self.b = None' +
+  #10 + '        self.autojunk = autojunk' + #10 +
+  '        self.set_seqs(a, b)' + #10 + #10 +
+  '    def set_seqs(self, a, b):' + #10 +
+  '        """Set the two sequences t' + 'o be compared.' + #10 + #10 +
+  '        >>> s = SequenceMatcher()' + #10 +
+  '        >>> s.set_seqs("abcd", "bc' + 'de")' + #10 +
+  '        >>> s.ratio()' + #10 + '        0.75' + #10 + '        """' + #10 +
+  #10 + '        self.set_seq1(a)' + #10 + '        self.set_seq2(b)' + #10 +
+  #10 + '    def set_seq1(self, a):' + #10 +
+  '        """Set the first sequence ' + 'to be compared.' + #10 + #10 +
+  '        The second sequence to be ' + 'compared is not changed.' + #10 +
+  #10 + '        >>> s = SequenceMatcher(No' + 'ne, "abcd", "bcde")' + #10 +
+  '        >>> s.ratio()' + #10 + '        0.75' + #10 +
+  '        >>> s.set_seq1("bcde")' + #10 + '        >>> s.ratio()' + #10 +
+  '        1.0' + #10 + '        >>>' + #10 + #10 +
+  '        SequenceMatcher computes a' +
+  'nd caches detailed information abo' + 'ut the' + #10 +
+  '        second sequence, so if you' +
+  ' want to compare one sequence S ag' + 'ainst' + #10 +
+  '        many sequences, use .set_s' + 'eq2(S) once and call .set_seq1(x)' +
+  #10 + '        repeatedly for each of the' + ' other sequences.' + #10 +
+  #10 + '        See also set_seqs() and se' + 't_seq2().' + #10 +
+  '        """' + #10 + #10 + '        if a is self.a:' + #10 +
+  '            return' + #10 + '        self.a = a' + #10;
+
+Const
+ Src_difflib_1: AnsiString =
   '        self.matching_blocks = sel' + 'f.opcodes = None' + #10 + #10 +
-  '    def set_seq2(self, b):' + #10 + #10 + '        if b is self.b:' + #10 +
+  '    def set_seq2(self, b):' + #10 + '        """Set the second sequence' +
+  ' to be compared.' + #10 + #10 + '        The first sequence to be c' +
+  'ompared is not changed.' + #10 + #10 +
+  '        >>> s = SequenceMatcher(No' + 'ne, "abcd", "bcde")' + #10 +
+  '        >>> s.ratio()' + #10 + '        0.75' + #10 +
+  '        >>> s.set_seq2("abcd")' + #10 + '        >>> s.ratio()' + #10 +
+  '        1.0' + #10 + '        >>>' + #10 + #10 +
+  '        SequenceMatcher computes a' +
+  'nd caches detailed information abo' + 'ut the' + #10 +
+  '        second sequence, so if you' +
+  ' want to compare one sequence S ag' + 'ainst' + #10 +
+  '        many sequences, use .set_s' + 'eq2(S) once and call .set_seq1(x)' +
+  #10 + '        repeatedly for each of the' + ' other sequences.' + #10 +
+  #10 + '        See also set_seqs() and se' + 't_seq1().' + #10 +
+  '        """' + #10 + #10 + '        if b is self.b:' + #10 +
   '            return' + #10 + '        self.b = b' + #10 +
   '        self.matching_blocks = sel' + 'f.opcodes = None' + #10 +
   '        self.fullbcount = None' + #10 + '        self.__chain_b()' + #10 +
-  #10 + '    def __chain_b(self):' + #10 + '        b = self.b' + #10 +
+  #10 + '    # For each element x in b, set' +
+  ' b2j[x] to a list of the indices i' + 'n' + #10 +
+  '    # b where x appears; the indic' +
+  'es are in increasing order; note t' + 'hat' + #10 +
+  '    # the number of times x appear' + 's in b is len(b2j[x]) ...' + #10 +
+  '    # when self.isjunk is defined,' +
+  ' junk elements don''t show up in th' + 'is' + #10 +
+  '    # map at all, which stops the ' + 'central find_longest_match method' +
+  #10 + '    # from starting any matching b' + 'lock at a junk element ...' +
+  #10 + '    # b2j also does not contain en' +
+  'tries for "popular" elements, mean' + 'ing' + #10 +
+  '    # elements that account for mo' +
+  're than 1 + 1% of the total elemen' + 'ts, and' + #10 +
+  '    # when the sequence is reasona' +
+  'bly large (>= 200 elements); this ' + 'can' + #10 +
+  '    # be viewed as an adaptive not' +
+  'ion of semi-junk, and yields an en' + 'ormous' + #10 +
+  '    # speedup when, e.g., comparin' + 'g program files with hundreds of' +
+  #10 + '    # instances of "return NULL;" ' + '...' + #10 +
+  '    # note that this is only calle' +
+  'd when b changes; so for cross-pro' + 'duct' + #10 +
+  '    # kinds of matches, it''s best ' +
+  'to call set_seq2 once, then set_se' + 'q1' + #10 + '    # repeatedly' +
+  #10 + #10 + '    def __chain_b(self):' + #10 +
+  '        # Because isjunk is a user' +
+  '-defined (not C) function, and we ' + 'test' + #10 +
+  '        # for junk a LOT, it''s imp' +
+  'ortant to minimize the number of c' + 'alls.' + #10 +
+  '        # Before the tricks descri' +
+  'bed here, __chain_b was by far the' + ' most' + #10 +
+  '        # time-consuming routine i' +
+  'n the whole module!  If anyone see' + 's' + #10 +
+  '        # Jim Roskind, thank him a' +
+  'gain for profile.py -- I never wou' + 'ld' + #10 +
+  '        # have guessed that.' + #10 +
+  '        # The first trick is to bu' + 'ild b2j ignoring the possibility' +
+  #10 + '        # of junk.  I.e., we don''t' +
+  ' call isjunk at all yet.  Throwing' + #10 +
+  '        # out the junk later is mu' +
+  'ch cheaper than building b2j "righ' + 't"' + #10 +
+  '        # from the start.' + #10 + '        b = self.b' + #10 +
   '        self.b2j = b2j = {}' + #10 + #10 +
   '        for i, elt in enumerate(b)' + ':' + #10 +
   '            indices = b2j.setdefau' + 'lt(elt, [])' + #10 +
   '            indices.append(i)' + #10 + #10 +
+  '        # Purge junk elements' + #10 +
   '        self.bjunk = junk = set()' + #10 + '        isjunk = self.isjunk' +
   #10 + '        if isjunk:' + #10 + '            for elt in b2j.keys():' +
   #10 + '                if isjunk(elt):' + #10 +
-  '                    junk.add(elt)' + #10 + '            for elt in junk:' +
-  #10 + '                del b2j[elt]' + #10 + #10 +
+  '                    junk.add(elt)' + #10 +
+  '            for elt in junk: # sep' +
+  'arate loop avoids separate list of' + ' keys' + #10 +
+  '                del b2j[elt]' + #10 + #10 +
+  '        # Purge popular elements t' + 'hat are not junk' + #10 +
   '        self.bpopular = popular = ' + 'set()' + #10 +
   '        n = len(b)' + #10 + '        if self.autojunk and n >= ' + '200:' +
   #10 + '            ntest = n // 100 + 1' + #10 +
   '            for elt, idxs in b2j.i' + 'tems():' + #10 +
   '                if len(idxs) > nte' + 'st:' + #10 +
   '                    popular.add(el' + 't)' + #10 +
-  '            for elt in popular:' + #10 + '                del b2j[elt]' +
-  #10 + #10 + '    def find_longest_match(self, a' +
-  'lo=0, ahi=None, blo=0, bhi=None):' + #10 + #10 +
-  '        a, b, b2j, isbjunk = self.' +
+  '            for elt in popular: # ' + 'ditto; as fast for 1% deletion' +
+  #10 + '                del b2j[elt]' + #10 + #10 +
+  '    def find_longest_match(self, a' + 'lo, ahi, blo, bhi):' + #10 +
+  '        """Find longest matching b' +
+  'lock in a[alo:ahi] and b[blo:bhi].' + #10 + #10 +
+  '        If isjunk is not defined:' + #10 + #10 +
+  '        Return (i,j,k) such that a' +
+  '[i:i+k] is equal to b[j:j+k], wher' + 'e' + #10 +
+  '            alo <= i <= i+k <= ahi' + #10 +
+  '            blo <= j <= j+k <= bhi' + #10 +
+  '        and for all (i'',j'',k'') mee' + 'ting those conditions,' + #10 +
+  '            k >= k''' + #10 + '            i <= i''' + #10 +
+  '            and if i == i'', j <= j' + '''' + #10 + #10 +
+  '        In other words, of all max' +
+  'imal matching blocks, return one t' + 'hat' + #10 +
+  '        starts earliest in a, and ' +
+  'of all those maximal matching bloc' + 'ks that' + #10 +
+  '        start earliest in a, retur' +
+  'n the one that starts earliest in ' + 'b.' + #10 + #10 +
+  '        >>> s = SequenceMatcher(No' + 'ne, " abcd", "abcd abcd")' + #10 +
+  '        >>> s.find_longest_match(0' + ', 5, 0, 9)' + #10 +
+  '        Match(a=0, b=4, size=5)' + #10 + #10 +
+  '        If isjunk is defined, firs' + 't the longest matching block is' +
+  #10 + '        determined as above, but w' +
+  'ith the additional restriction tha' + 't no' + #10 +
+  '        junk element appears in th' +
+  'e block.  Then that block is exten' + 'ded as' + #10 +
+  '        far as possible by matchin' +
+  'g (only) junk elements on both sid' + 'es.  So' + #10 +
+  '        the resulting block never ' +
+  'matches on junk except as identica' + 'l junk' + #10 +
+  '        happens to be adjacent to ' + 'an "interesting" match.' + #10 +
+  #10 + '        Here''s the same example as' +
+  ' before, but considering blanks to' + ' be' + #10 +
+  '        junk.  That prevents " abc' +
+  'd" from matching the " abcd" at th' + 'e tail' + #10 +
+  '        end of the second sequence' +
+  ' directly.  Instead only the "abcd' + '" can' + #10 +
+  '        match, and matches the lef' +
+  'tmost "abcd" in the second sequenc' + 'e:' + #10 + #10 +
+  '        >>> s = SequenceMatcher(la' +
+  'mbda x: x==" ", " abcd", "abcd abc' + 'd")' + #10 +
+  '        >>> s.find_longest_match(0' + ', 5, 0, 9)' + #10 +
+  '        Match(a=1, b=0, size=4)' + #10 + #10 +
+  '        If no blocks match, return' + ' (alo, blo, 0).' + #10 + #10 +
+  '        >>> s = SequenceMatcher(No' + 'ne, "ab", "c")' + #10 +
+  '        >>> s.find_longest_match(0' + ', 2, 0, 1)' + #10 +
+  '        Match(a=0, b=0, size=0)' + #10 + '        """' + #10 + #10 +
+  '        # CAUTION:  stripping comm' +
+  'on prefix or suffix would be incor' + 'rect.' + #10 + '        # E.g.,' +
+  #10 + '        #    ab' + #10 + '        #    acab' + #10 +
+  '        # Longest matching block i' + 's "ab", but if common prefix is' +
+  #10 + '        # stripped, it''s "a" (tied' +
+  ' with "b").  UNIX(tm) diff does so' + #10 +
+  '        # strip, so ends up claimi' + 'ng that ab is changed to acab by' +
+  #10 + '        # inserting "ca" in the mi' +
+  'ddle.  That''s minimal but unintuit' + 'ive:' + #10 +
+  '        # "it''s obvious" that some' + 'one inserted "ac" at the front.' +
+  #10 + '        # Windiff ends up at the s' +
+  'ame place as diff, but by pairing ' + 'up' + #10 +
+  '        # the unique ''b''s and then' + ' matching the first two ''a''s.' +
+  #10 + #10 + '        a, b, b2j, isbjunk = self.' +
   'a, self.b, self.b2j, self.bjunk.__' + 'contains__' + #10 +
-  '        if ahi is None:' + #10 + '            ahi = len(a)' + #10 +
-  '        if bhi is None:' + #10 + '            bhi = len(b)' + #10 +
   '        besti, bestj, bestsize = a' + 'lo, blo, 0' + #10 +
+  '        # find longest junk-free m' + 'atch' + #10 +
+  '        # during an iteration of t' +
+  'he loop, j2len[j] = length of long' + 'est' + #10 +
+  '        # junk-free match ending w' + 'ith a[i-1] and b[j]' + #10 +
   '        j2len = {}' + #10 + '        nothing = []' + #10 +
   '        for i in range(alo, ahi):' + #10 +
+  '            # look at all instance' + 's of a[i] in b; note that because' +
+  #10 + '            # b2j has no junk keys' +
+  ', the loop is skipped if a[i] is j' + 'unk' + #10 +
   '            j2lenget = j2len.get' + #10 + '            newj2len = {}' +
   #10 + '            for j in b2j.get(a[i],' + ' nothing):' + #10 +
+  '                # a[i] matches b[j' + ']' + #10 +
   '                if j < blo:' + #10 + '                    continue' + #10 +
   '                if j >= bhi:' + #10 + '                    break' + #10 +
   '                k = newj2len[j] = ' + 'j2lenget(j-1, 0) + 1' + #10 +
   '                if k > bestsize:' + #10 +
   '                    besti, bestj, ' + 'bestsize = i-k+1, j-k+1, k' + #10 +
   '            j2len = newj2len' + #10 + #10 +
-  '        while besti > alo and best' + 'j > blo and \' + #10 +
+  '        # Extend the best by non-j' +
+  'unk elements on each end.  In part' + 'icular,' + #10 +
+  '        # "popular" non-junk eleme' +
+  'nts aren''t in b2j, which greatly s' + 'peeds' + #10 +
+  '        # the inner loop above, bu' +
+  't also means "the best" match so f' + 'ar' + #10 +
+  '        # doesn''t contain any junk' + ' *or* popular non-junk elements.' +
+  #10 + '        while besti > alo and best' + 'j > blo and \' + #10 +
   '              not isbjunk(b[bestj-' + '1]) and \' + #10 +
   '              a[besti-1] == b[best' + 'j-1]:' + #10 +
   '            besti, bestj, bestsize' + ' = besti-1, bestj-1, bestsize+1' +
@@ -48377,6 +52758,18 @@ Const
   '              not isbjunk(b[bestj+' + 'bestsize]) and \' + #10 +
   '              a[besti+bestsize] ==' + ' b[bestj+bestsize]:' + #10 +
   '            bestsize += 1' + #10 + #10 +
+  '        # Now that we have a wholl' +
+  'y interesting match (albeit possib' + 'ly' + #10 +
+  '        # empty!), we may as well ' + 'suck up the matching junk on each' +
+  #10 + '        # side of it too.  Can''t t' +
+  'hink of a good reason not to, and ' + 'it' + #10 +
+  '        # saves post-processing th' +
+  'e (possibly considerable) expense ' + 'of' + #10 +
+  '        # figuring out what to do ' + 'with it.  In the case of an empty' +
+  #10 + '        # interesting match, this ' +
+  'is clearly the right thing to do,' + #10 +
+  '        # because no other kind of' +
+  ' match is possible in the regions.' + #10 +
   '        while besti > alo and best' + 'j > blo and \' + #10 +
   '              isbjunk(b[bestj-1]) ' + 'and \' + #10 +
   '              a[besti-1] == b[best' + 'j-1]:' + #10 +
@@ -48387,24 +52780,76 @@ Const
   '              a[besti+bestsize] ==' + ' b[bestj+bestsize]:' + #10 +
   '            bestsize = bestsize + ' + '1' + #10 + #10 +
   '        return Match(besti, bestj,' + ' bestsize)' + #10 + #10 +
-  '    def get_matching_blocks(self):' + #10 + #10 +
-  '        if self.matching_blocks is' + ' not None:' + #10 +
-  '            return self.matching_b' + 'locks' + #10 +
+  '    def get_matching_blocks(self):' + #10 +
+  '        """Return list of triples ' + 'describing matching subsequences.' +
+  #10 + #10 + '        Each triple is of the form' +
+  ' (i, j, n), and means that' + #10 + '        a[i:i+n] == b[j:j+n].  The' +
+  ' triples are monotonically increas' + 'ing in' + #10 +
+  '        i and in j.  New in Python' +
+  ' 2.5, it''s also guaranteed that if' + #10 +
+  '        (i, j, n) and (i'', j'', n'')' +
+  ' are adjacent triples in the list,' + ' and' + #10 +
+  '        the second is not the last' +
+  ' triple in the list, then i+n != i' + ''' or' + #10 +
+  '        j+n != j''.  IOW, adjacent ' +
+  'triples never describe adjacent eq' + 'ual' + #10 + '        blocks.' +
+  #10 + #10 + '        The last triple is a dummy' +
+  ', (len(a), len(b), 0), and is the ' + 'only' + #10 +
+  '        triple with n==0.' + #10 + #10 +
+  '        >>> s = SequenceMatcher(No' + 'ne, "abxcd", "abcd")' + #10 +
+  '        >>> list(s.get_matching_bl' + 'ocks())' + #10 +
+  '        [Match(a=0, b=0, size=2), ' +
+  'Match(a=3, b=2, size=2), Match(a=5' + ', b=4, size=0)]' + #10 +
+  '        """' + #10 + #10 + '        if self.matching_blocks is' +
+  ' not None:' + #10 + '            return self.matching_b' + 'locks' + #10 +
   '        la, lb = len(self.a), len(' + 'self.b)' + #10 + #10 +
-  '        queue = [(0, la, 0, lb)]' + #10 + '        matching_blocks = []' +
-  #10 + '        while queue:' + #10 + '            alo, ahi, blo, bhi = q' +
-  'ueue.pop()' + #10 + '            i, j, k = x = self.fin' +
-  'd_longest_match(alo, ahi, blo, bhi' + ')' + #10 + '            if k:' +
-  #10 + '                matching_blocks.ap' + 'pend(x)' + #10 +
+  '        # This is most naturally e' +
+  'xpressed as a recursive algorithm,' + ' but' + #10 +
+  '        # at least one user bumped' +
+  ' into extreme use cases that excee' + 'ded' + #10 +
+  '        # the recursion limit on t' +
+  'heir box.  So, now we maintain a l' + 'ist' + #10 +
+  '        # (''queue`) of blocks we s' +
+  'till need to look at, and append p' + 'artial' + #10 +
+  '        # results to `matching_blo' +
+  'cks` in a loop; the matches are so' + 'rted' + #10 +
+  '        # at the end.' + #10 + '        queue = [(0, la, 0, lb)]' + #10 +
+  '        matching_blocks = []' + #10 + '        while queue:' + #10 +
+  '            alo, ahi, blo, bhi = q' + 'ueue.pop()' + #10 +
+  '            i, j, k = x = self.fin' +
+  'd_longest_match(alo, ahi, blo, bhi' + ')' + #10 +
+  '            # a[alo:i] vs b[blo:j]' + ' unknown' + #10 +
+  '            # a[i:i+k] same as b[j' + ':j+k]' + #10 +
+  '            # a[i+k:ahi] vs b[j+k:' + 'bhi] unknown' + #10 +
+  '            if k:   # if k is 0, t' + 'here was no matching block' + #10 +
+  '                matching_blocks.ap' + 'pend(x)' + #10 +
   '                if alo < i and blo' + ' < j:' + #10 +
   '                    queue.append((' + 'alo, i, blo, j))' + #10 +
   '                if i+k < ahi and j' + '+k < bhi:' + #10 +
   '                    queue.append((' + 'i+k, ahi, j+k, bhi))' + #10 +
-  '        matching_blocks.sort()' + #10 + #10 + '        i1 = j1 = k1 = 0' +
-  #10 + '        non_adjacent = []' + #10 +
-  '        for i2, j2, k2 in matching' + '_blocks:' + #10 +
-  '            if i1 + k1 == i2 and j' + '1 + k1 == j2:' + #10 +
+  '        matching_blocks.sort()' + #10 + #10 +
+  '        # It''s possible that we ha' + 've adjacent equal blocks in the' +
+  #10 + '        # matching_blocks list now' +
+  '.  Starting with 2.5, this code wa' + 's added' + #10 +
+  '        # to collapse them.' + #10 + '        i1 = j1 = k1 = 0' + #10 +
+  '        non_adjacent = []' + #10 + '        for i2, j2, k2 in matching' +
+  '_blocks:' + #10 + '            # Is this block adjace' +
+  'nt to i1, j1, k1?' + #10 + '            if i1 + k1 == i2 and j' +
+  '1 + k1 == j2:' + #10 + '                # Yes, so collapse' +
+  ' them -- this just increases the l' + 'ength of' + #10 +
+  '                # the first block ' +
+  'by the length of the second, and t' + 'he first' + #10;
+
+Const
+ Src_difflib_2: AnsiString =
+  '                # block so lengthe' +
+  'ned remains the block to compare a' + 'gainst.' + #10 +
   '                k1 += k2' + #10 + '            else:' + #10 +
+  '                # Not adjacent.  R' +
+  'emember the first block (k1==0 mea' + 'ns it''s' + #10 +
+  '                # the dummy we sta' +
+  'rted with), and make the second bl' + 'ock the' + #10 +
+  '                # new block to com' + 'pare against.' + #10 +
   '                if k1:' + #10 + '                    non_adjacent.a' +
   'ppend((i1, j1, k1))' + #10 + '                i1, j1, k1 = i2, j' +
   '2, k2' + #10 + '        if k1:' + #10 +
@@ -48412,22 +52857,80 @@ Const
   '        non_adjacent.append( (la, ' + 'lb, 0) )' + #10 +
   '        self.matching_blocks = lis' + 't(map(Match._make, non_adjacent))' +
   #10 + '        return self.matching_block' + 's' + #10 + #10 +
-  '    def get_opcodes(self):' + #10 + #10 +
-  '        if self.opcodes is not Non' + 'e:' + #10 +
+  '    def get_opcodes(self):' + #10 + '        """Return list of 5-tuples' +
+  ' describing how to turn a into b.' + #10 + #10 +
+  '        Each tuple is of the form ' +
+  '(tag, i1, i2, j1, j2).  The first ' + 'tuple' + #10 +
+  '        has i1 == j1 == 0, and rem' +
+  'aining tuples have i1 == the i2 fr' + 'om the' + #10 +
+  '        tuple preceding it, and li' + 'kewise for j1 == the previous j2.' +
+  #10 + #10 + '        The tags are strings, with' + ' these meanings:' +
+  #10 + #10 + '        ''replace'':  a[i1:i2] shoul' +
+  'd be replaced by b[j1:j2]' + #10 + '        ''delete'':   a[i1:i2] shoul' +
+  'd be deleted.' + #10 + '                    Note that j1==' +
+  'j2 in this case.' + #10 + '        ''insert'':   b[j1:j2] shoul' +
+  'd be inserted at a[i1:i1].' + #10 + '                    Note that i1==' +
+  'i2 in this case.' + #10 + '        ''equal'':    a[i1:i2] == b[' +
+  'j1:j2]' + #10 + #10 + '        >>> a = "qabxcd"' + #10 +
+  '        >>> b = "abycdf"' + #10 + '        >>> s = SequenceMatcher(No' +
+  'ne, a, b)' + #10 + '        >>> for tag, i1, i2, j1, j' +
+  '2 in s.get_opcodes():' + #10 + '        ...    print(("%7s a[%d:%d' +
+  '] (%s) b[%d:%d] (%s)" %' + #10 + '        ...           (tag, i1, i2' +
+  ', a[i1:i2], j1, j2, b[j1:j2])))' + #10 +
+  '         delete a[0:1] (q) b[0:0] ' + '()' + #10 +
+  '          equal a[1:3] (ab) b[0:2]' + ' (ab)' + #10 +
+  '        replace a[3:4] (x) b[2:3] ' + '(y)' + #10 +
+  '          equal a[4:6] (cd) b[3:5]' + ' (cd)' + #10 +
+  '         insert a[6:6] () b[5:6] (' + 'f)' + #10 + '        """' + #10 +
+  #10 + '        if self.opcodes is not Non' + 'e:' + #10 +
   '            return self.opcodes' + #10 + '        i = j = 0' + #10 +
   '        self.opcodes = answer = []' + #10 +
   '        for ai, bj, size in self.g' + 'et_matching_blocks():' + #10 +
-  '            tag = ''''' + #10 + '            if i < ai and j < bj:' + #10 +
-  '                tag = ''replace''' + #10 + '            elif i < ai:' +
-  #10 + '                tag = ''delete''' + #10 +
-  '            elif j < bj:' + #10 + '                tag = ''insert''' +
-  #10 + '            if tag:' + #10 + '                answer.append( (ta' +
-  'g, i, ai, j, bj) )' + #10 + '            i, j = ai+size, bj+siz' + 'e' +
-  #10 + '            if size:' + #10 + '                answer.append( (''e' +
-  'qual'', ai, i, bj, j) )' + #10 + '        return answer' + #10 + #10 +
-  '    def get_grouped_opcodes(self, ' + 'n=3):' + #10 + #10 +
-  '        codes = self.get_opcodes()' + #10 + '        if not codes:' + #10 +
-  '            codes = [("equal", 0, ' + '1, 0, 1)]' + #10 +
+  '            # invariant:  we''ve pu' + 'mped out correct diffs to change' +
+  #10 + '            # a[:i] into b[:j], an' +
+  'd the next matching block is' + #10 +
+  '            # a[ai:ai+size] == b[b' + 'j:bj+size].  So we need to pump' +
+  #10 + '            # out a diff to change' +
+  ' a[i:ai] into b[j:bj], pump out' + #10 +
+  '            # the matching block, ' + 'and move (i,j) beyond the match' +
+  #10 + '            tag = ''''' + #10 + '            if i < ai and j < bj:' +
+  #10 + '                tag = ''replace''' + #10 +
+  '            elif i < ai:' + #10 + '                tag = ''delete''' +
+  #10 + '            elif j < bj:' + #10 +
+  '                tag = ''insert''' + #10 + '            if tag:' + #10 +
+  '                answer.append( (ta' + 'g, i, ai, j, bj) )' + #10 +
+  '            i, j = ai+size, bj+siz' + 'e' + #10 +
+  '            # the list of matching' + ' blocks is terminated by a' + #10 +
+  '            # sentinel with size 0' + #10 + '            if size:' + #10 +
+  '                answer.append( (''e' + 'qual'', ai, i, bj, j) )' + #10 +
+  '        return answer' + #10 + #10 + '    def get_grouped_opcodes(self, ' +
+  'n=3):' + #10 + '        """ Isolate change cluster' +
+  's by eliminating ranges with no ch' + 'anges.' + #10 + #10 +
+  '        Return a generator of grou' + 'ps with up to n lines of context.' +
+  #10 + '        Each group is in the same ' +
+  'format as returned by get_opcodes(' + ').' + #10 + #10 +
+  '        >>> from pprint import ppr' + 'int' + #10 +
+  '        >>> a = list(map(str, rang' + 'e(1,40)))' + #10 +
+  '        >>> b = a[:]' + #10 + '        >>> b[8:8] = [''i'']     # M' +
+  'ake an insertion' + #10 + '        >>> b[20] += ''x''       # M' +
+  'ake a replacement' + #10 + '        >>> b[23:28] = []      # M' +
+  'ake a deletion' + #10 + '        >>> b[30] += ''y''       # M' +
+  'ake another replacement' + #10 + '        >>> pprint(list(SequenceMa' +
+  'tcher(None,a,b).get_grouped_opcode' + 's()))' + #10 +
+  '        [[(''equal'', 5, 8, 5, 8), (' +
+  '''insert'', 8, 8, 8, 9), (''equal'', 8' + ', 11, 9, 12)],' + #10 +
+  '         [(''equal'', 16, 19, 17, 20' + '),' + #10 +
+  '          (''replace'', 19, 20, 20, ' + '21),' + #10 +
+  '          (''equal'', 20, 22, 21, 23' + '),' + #10 +
+  '          (''delete'', 22, 27, 23, 2' + '3),' + #10 +
+  '          (''equal'', 27, 30, 23, 26' + ')],' + #10 +
+  '         [(''equal'', 31, 34, 27, 30' + '),' + #10 +
+  '          (''replace'', 34, 35, 30, ' + '31),' + #10 +
+  '          (''equal'', 35, 38, 31, 34' + ')]]' + #10 + '        """' + #10 +
+  #10 + '        codes = self.get_opcodes()' + #10 + '        if not codes:' +
+  #10 + '            codes = [("equal", 0, ' + '1, 0, 1)]' + #10 +
+  '        # Fixup leading and traili' +
+  'ng groups if they show no changes.' + #10 +
   '        if codes[0][0] == ''equal'':' + #10 +
   '            tag, i1, i2, j1, j2 = ' + 'codes[0]' + #10 +
   '            codes[0] = tag, max(i1' + ', i2-n), i2, max(j1, j2-n), j2' +
@@ -48436,6 +52939,8 @@ Const
   '            codes[-1] = tag, i1, m' + 'in(i2, i1+n), j1, min(j2, j1+n)' +
   #10 + #10 + '        nn = n + n' + #10 + '        group = []' + #10 +
   '        for tag, i1, i2, j1, j2 in' + ' codes:' + #10 +
+  '            # End the current grou' + 'p and start a new one whenever' +
+  #10 + '            # there is a large ran' + 'ge with no changes.' + #10 +
   '            if tag == ''equal'' and ' + 'i2-i1 > nn:' + #10 +
   '                group.append((tag,' +
   ' i1, min(i2, i1+n), j1, min(j2, j1' + '+n)))' + #10 +
@@ -48444,29 +52949,92 @@ Const
   '            group.append((tag, i1,' + ' i2, j1 ,j2))' + #10 +
   '        if group and not (len(grou' +
   'p)==1 and group[0][0] == ''equal''):' + #10 + '            yield group' +
-  #10 + #10 + '    def ratio(self):' + #10 + #10 +
+  #10 + #10 + '    def ratio(self):' + #10 +
+  '        """Return a measure of the' +
+  ' sequences'' similarity (float in [' + '0,1]).' + #10 + #10 +
+  '        Where T is the total numbe' +
+  'r of elements in both sequences, a' + 'nd' + #10 +
+  '        M is the number of matches' + ', this is 2.0*M / T.' + #10 +
+  '        Note that this is 1 if the' +
+  ' sequences are identical, and 0 if' + #10 +
+  '        they have nothing in commo' + 'n.' + #10 + #10 +
+  '        .ratio() is expensive to c' +
+  'ompute if you haven''t already comp' + 'uted' + #10 +
+  '        .get_matching_blocks() or ' +
+  '.get_opcodes(), in which case you ' + 'may' + #10 +
+  '        want to try .quick_ratio()' +
+  ' or .real_quick_ratio() first to g' + 'et an' + #10 +
+  '        upper bound.' + #10 + #10 + '        >>> s = SequenceMatcher(No' +
+  'ne, "abcd", "bcde")' + #10 + '        >>> s.ratio()' + #10 +
+  '        0.75' + #10 + '        >>> s.quick_ratio()' + #10 +
+  '        0.75' + #10 + '        >>> s.real_quick_ratio()' + #10 +
+  '        1.0' + #10 + '        """' + #10 + #10 +
   '        matches = sum(triple[-1] f' +
   'or triple in self.get_matching_blo' + 'cks())' + #10 +
   '        return _calculate_ratio(ma' + 'tches, len(self.a) + len(self.b))' +
-  #10 + #10 + '    def quick_ratio(self):' + #10 + #10 +
+  #10 + #10 + '    def quick_ratio(self):' + #10 +
+  '        """Return an upper bound o' + 'n ratio() relatively quickly.' +
+  #10 + #10 + '        This isn''t defined beyond ' +
+  'that it is an upper bound on .rati' + 'o(), and' + #10 +
+  '        is faster to compute.' + #10 + '        """' + #10 + #10 +
+  '        # viewing a and b as multi' +
+  'sets, set matches to the cardinali' + 'ty' + #10 +
+  '        # of their intersection; t' + 'his counts the number of matches' +
+  #10 + '        # without regard to order,' +
+  ' so is clearly an upper bound' + #10 +
   '        if self.fullbcount is None' + ':' + #10 +
   '            self.fullbcount = full' + 'bcount = {}' + #10 +
   '            for elt in self.b:' + #10 +
   '                fullbcount[elt] = ' + 'fullbcount.get(elt, 0) + 1' + #10 +
-  '        fullbcount = self.fullbcou' + 'nt' + #10 + '        avail = {}' +
-  #10 + '        availhas, matches = avail.' + '__contains__, 0' + #10 +
-  '        for elt in self.a:' + #10 + '            if availhas(elt):' + #10 +
+  '        fullbcount = self.fullbcou' + 'nt' + #10 +
+  '        # avail[x] is the number o' +
+  'f times x appears in ''b'' less the' + #10 +
+  '        # number of times we''ve se' + 'en it in ''a'' so far ... kinda' +
+  #10 + '        avail = {}' + #10 + '        availhas, matches = avail.' +
+  '__contains__, 0' + #10 + '        for elt in self.a:' + #10 +
+  '            if availhas(elt):' + #10 +
   '                numb = avail[elt]' + #10 + '            else:' + #10 +
   '                numb = fullbcount.' + 'get(elt, 0)' + #10 +
   '            avail[elt] = numb - 1' + #10 + '            if numb > 0:' +
   #10 + '                matches = matches ' + '+ 1' + #10 +
   '        return _calculate_ratio(ma' + 'tches, len(self.a) + len(self.b))' +
-  #10 + #10 + '    def real_quick_ratio(self):' + #10 + #10 +
+  #10 + #10 + '    def real_quick_ratio(self):' + #10 +
+  '        """Return an upper bound o' + 'n ratio() very quickly.' + #10 +
+  #10 + '        This isn''t defined beyond ' +
+  'that it is an upper bound on .rati' + 'o(), and' + #10 +
+  '        is faster to compute than ' +
+  'either .ratio() or .quick_ratio().' + #10 + '        """' + #10 + #10 +
   '        la, lb = len(self.a), len(' + 'self.b)' + #10 +
-  '        return _calculate_ratio(mi' + 'n(la, lb), la + lb)' + #10 + #10 +
-  'def get_close_matches(word, possib' + 'ilities, n=3, cutoff=0.6):' + #10 +
-  #10 + '    if not n >  0:' + #10 + '        raise ValueError("n must b' +
-  'e > 0: %r" % (n,))' + #10 + '    if not 0.0 <= cutoff <= 1.0:' + #10 +
+  '        # can''t have more matches ' +
+  'than the number of elements in the' + #10 + '        # shorter sequence' +
+  #10 + '        return _calculate_ratio(mi' + 'n(la, lb), la + lb)' + #10 +
+  #10 + 'def get_close_matches(word, possib' + 'ilities, n=3, cutoff=0.6):' +
+  #10 + '    """Use SequenceMatcher to retu' +
+  'rn list of the best "good enough" ' + 'matches.' + #10 + #10 +
+  '    word is a sequence for which c' +
+  'lose matches are desired (typicall' + 'y a' + #10 + '    string).' + #10 +
+  #10 + '    possibilities is a list of seq' +
+  'uences against which to match word' + #10 +
+  '    (typically a list of strings).' + #10 + #10 +
+  '    Optional arg n (default 3) is ' +
+  'the maximum number of close matche' + 's to' + #10 +
+  '    return.  n must be > 0.' + #10 + #10 +
+  '    Optional arg cutoff (default 0' +
+  '.6) is a float in [0, 1].  Possibi' + 'lities' + #10 +
+  '    that don''t score at least that' + ' similar to word are ignored.' +
+  #10 + #10 + '    The best (no more than n) matc' +
+  'hes among the possibilities are re' + 'turned' + #10 +
+  '    in a list, sorted by similarit' + 'y score, most similar first.' +
+  #10 + #10 + '    >>> get_close_matches("appel",' +
+  ' ["ape", "apple", "peach", "puppy"' + '])' + #10 +
+  '    [''apple'', ''ape'']' + #10 + '    >>> import keyword as _keyword' +
+  #10 + '    >>> get_close_matches("wheel",' + ' _keyword.kwlist)' + #10 +
+  '    [''while'']' + #10 + '    >>> get_close_matches("Apple",' +
+  ' _keyword.kwlist)' + #10 + '    []' + #10 +
+  '    >>> get_close_matches("accept"' + ', _keyword.kwlist)' + #10 +
+  '    [''except'']' + #10 + '    """' + #10 + #10 + '    if not n >  0:' +
+  #10 + '        raise ValueError("n must b' + 'e > 0: %r" % (n,))' + #10 +
+  '    if not 0.0 <= cutoff <= 1.0:' + #10 +
   '        raise ValueError("cutoff m' +
   'ust be in [0.0, 1.0]: %r" % (cutof' + 'f,))' + #10 + '    result = []' +
   #10 + '    s = SequenceMatcher()' + #10 + '    s.set_seq2(word)' + #10 +
@@ -48475,19 +53043,144 @@ Const
   '           s.quick_ratio() >= cuto' + 'ff and \' + #10 +
   '           s.ratio() >= cutoff:' + #10 +
   '            result.append((s.ratio' + '(), x))' + #10 + #10 +
+  '    # Move the best scorers to hea' + 'd of list' + #10 +
   '    result = _nlargest(n, result)' + #10 +
-  '    return [x for score, x in resu' + 'lt]' + #10 + #10 +
-  'def _keep_original_ws(s, tag_s):' + #10 + '    return ''''.join(' + #10 +
-  '        c if tag_c == " " and c.is' + 'space() else tag_c' + #10 +
-  '        for c, tag_c in zip(s, tag' + '_s)' + #10 + '    )' + #10 + #10 +
-  'class Differ:' + #10 + #10;
+  '    # Strip scores for the best n ' + 'matches' + #10 +
+  '    return [x for score, x in resu' + 'lt]' + #10 + #10 + #10 +
+  'def _keep_original_ws(s, tag_s):' + #10 +
+  '    """Replace whitespace with the' +
+  ' original whitespace characters in' + ' `s`"""' + #10 +
+  '    return ''''.join(' + #10 + '        c if tag_c == " " and c.is' +
+  'space() else tag_c' + #10 + '        for c, tag_c in zip(s, tag' + '_s)' +
+  #10 + '    )' + #10 + #10 + #10 + #10 + 'class Differ:' + #10 + '    r"""' +
+  #10 + '    Differ is a class for comparin' +
+  'g sequences of lines of text, and' + #10 +
+  '    producing human-readable diffe' + 'rences or deltas.  Differ uses' +
+  #10 + '    SequenceMatcher both to compar' +
+  'e sequences of lines, and to compa' + 're' + #10;
 
 Const
- Src_difflib_1: AnsiString =
-  '    def __init__(self, linejunk=No' + 'ne, charjunk=None):' + #10 + #10 +
-  '        self.linejunk = linejunk' + #10 +
+ Src_difflib_3: AnsiString =
+  '    sequences of characters within' + ' similar (near-matching) lines.' +
+  #10 + #10 + '    Each line of a Differ delta be' +
+  'gins with a two-letter code:' + #10 + #10 +
+  '        ''- ''    line unique to seq' + 'uence 1' + #10 +
+  '        ''+ ''    line unique to seq' + 'uence 2' + #10 +
+  '        ''  ''    line common to bot' + 'h sequences' + #10 +
+  '        ''? ''    line not present i' + 'n either input sequence' + #10 +
+  #10 + '    Lines beginning with ''? '' atte' +
+  'mpt to guide the eye to intraline' + #10 +
+  '    differences, and were not pres' +
+  'ent in either input sequence.  The' + 'se lines' + #10 +
+  '    can be confusing if the sequen' + 'ces contain tab characters.' + #10 +
+  #10 + '    Note that Differ makes no clai' +
+  'm to produce a *minimal* diff.  To' + ' the' + #10 +
+  '    contrary, minimal diffs are of' +
+  'ten counter-intuitive, because the' + 'y synch' + #10 +
+  '    up anywhere possible, sometime' +
+  's accidental matches 100 pages apa' + 'rt.' + #10 +
+  '    Restricting synch points to co' +
+  'ntiguous matches preserves some no' + 'tion of' + #10 +
+  '    locality, at the occasional co' + 'st of producing a longer diff.' +
+  #10 + #10 + '    Example: Comparing two texts.' + #10 + #10 +
+  '    First we set up the texts, seq' +
+  'uences of individual single-line s' + 'trings' + #10 +
+  '    ending with newlines (such seq' +
+  'uences can also be obtained from t' + 'he' + #10 +
+  '    `readlines()` method of file-l' + 'ike objects):' + #10 + #10 +
+  '    >>> text1 = ''''''  1. Beautiful ' + 'is better than ugly.' + #10 +
+  '    ...   2. Explicit is better th' + 'an implicit.' + #10 +
+  '    ...   3. Simple is better than' + ' complex.' + #10 +
+  '    ...   4. Complex is better tha' + 'n complicated.' + #10 +
+  '    ... ''''''.splitlines(keepends=Tr' + 'ue)' + #10 +
+  '    >>> len(text1)' + #10 + '    4' + #10 + '    >>> text1[0][-1]' + #10 +
+  '    ''\n''' + #10 + '    >>> text2 = ''''''  1. Beautiful ' +
+  'is better than ugly.' + #10 + '    ...   3.   Simple is better th' +
+  'an complex.' + #10 + '    ...   4. Complicated is better' +
+  ' than complex.' + #10 + '    ...   5. Flat is better than n' + 'ested.' +
+  #10 + '    ... ''''''.splitlines(keepends=Tr' + 'ue)' + #10 + #10 +
+  '    Next we instantiate a Differ o' + 'bject:' + #10 + #10 +
+  '    >>> d = Differ()' + #10 + #10 + '    Note that when instantiating a' +
+  ' Differ object we may pass functio' + 'ns to' + #10 +
+  '    filter out line and character ' +
+  '''junk''.  See Differ.__init__ for d' + 'etails.' + #10 + #10 +
+  '    Finally, we compare the two:' + #10 + #10 +
+  '    >>> result = list(d.compare(te' + 'xt1, text2))' + #10 + #10 +
+  '    ''result'' is a list of strings,' + ' so let''s pretty-print it:' +
+  #10 + #10 + '    >>> from pprint import pprint ' + 'as _pprint' + #10 +
+  '    >>> _pprint(result)' + #10 + '    [''    1. Beautiful is better t' +
+  'han ugly.\n'',' + #10 + '     ''-   2. Explicit is better th' +
+  'an implicit.\n'',' + #10 + '     ''-   3. Simple is better than' +
+  ' complex.\n'',' + #10 + '     ''+   3.   Simple is better th' +
+  'an complex.\n'',' + #10 + '     ''?     ++\n'',' + #10 +
+  '     ''-   4. Complex is better tha' + 'n complicated.\n'',' + #10 +
+  '     ''?            ^              ' + '       ---- ^\n'',' + #10 +
+  '     ''+   4. Complicated is better' + ' than complex.\n'',' + #10 +
+  '     ''?           ++++ ^          ' + '            ^\n'',' + #10 +
+  '     ''+   5. Flat is better than n' + 'ested.\n'']' + #10 + #10 +
+  '    As a single multi-line string ' + 'it looks like this:' + #10 + #10 +
+  '    >>> print(''''.join(result), end' + '="")' + #10 +
+  '        1. Beautiful is better tha' + 'n ugly.' + #10 +
+  '    -   2. Explicit is better than' + ' implicit.' + #10 +
+  '    -   3. Simple is better than c' + 'omplex.' + #10 +
+  '    +   3.   Simple is better than' + ' complex.' + #10 + '    ?     ++' +
+  #10 + '    -   4. Complex is better than ' + 'complicated.' + #10 +
+  '    ?            ^                ' + '     ---- ^' + #10 +
+  '    +   4. Complicated is better t' + 'han complex.' + #10 +
+  '    ?           ++++ ^            ' + '          ^' + #10 +
+  '    +   5. Flat is better than nes' + 'ted.' + #10 + #10 + '    Methods:' +
+  #10 + #10 + '    __init__(linejunk=None, charju' + 'nk=None)' + #10 +
+  '        Construct a text differenc' + 'er, with optional filters.' + #10 +
+  #10 + '    compare(a, b)' + #10 + '        Compare two sequences of l' +
+  'ines; generate the resulting delta' + '.' + #10 + '    """' + #10 + #10 +
+  '    def __init__(self, linejunk=No' + 'ne, charjunk=None):' + #10 +
+  '        """' + #10 + '        Construct a text differenc' +
+  'er, with optional filters.' + #10 + #10 +
+  '        The two optional keyword p' +
+  'arameters are for filter functions' + ':' + #10 + #10 +
+  '        - `linejunk`: A function t' +
+  'hat should accept a single string ' + 'argument,' + #10 +
+  '          and return true iff the ' +
+  'string is junk. The module-level f' + 'unction' + #10 +
+  '          `IS_LINE_JUNK` may be us' +
+  'ed to filter out lines without vis' + 'ible' + #10 +
+  '          characters, except for a' +
+  't most one splat (''#'').  It is rec' + 'ommended' + #10 +
+  '          to leave linejunk None; ' +
+  'the underlying SequenceMatcher cla' + 'ss has' + #10 +
+  '          an adaptive notion of "n' +
+  'oise" lines that''s better than any' + ' static' + #10 +
+  '          definition the author ha' + 's ever been able to craft.' + #10 +
+  #10 + '        - `charjunk`: A function t' +
+  'hat should accept a string of leng' + 'th 1. The' + #10 +
+  '          module-level function `I' +
+  'S_CHARACTER_JUNK` may be used to f' + 'ilter out' + #10 +
+  '          whitespace characters (a' +
+  ' blank or tab; **note**: bad idea ' + 'to include' + #10 +
+  '          newline in this!).  Use ' +
+  'of IS_CHARACTER_JUNK is recommende' + 'd.' + #10 + '        """' + #10 +
+  #10 + '        self.linejunk = linejunk' + #10 +
   '        self.charjunk = charjunk' + #10 + #10 +
-  '    def compare(self, a, b):' + #10 + #10 +
+  '    def compare(self, a, b):' + #10 + '        r"""' + #10 +
+  '        Compare two sequences of l' +
+  'ines; generate the resulting delta' + '.' + #10 + #10 +
+  '        Each sequence must contain' +
+  ' individual single-line strings en' + 'ding with' + #10 +
+  '        newlines. Such sequences c' +
+  'an be obtained from the `readlines' + '()` method' + #10 +
+  '        of file-like objects.  The' +
+  ' delta generated also consists of ' + 'newline-' + #10 +
+  '        terminated strings, ready ' +
+  'to be printed as-is via the writel' + 'ine()' + #10 +
+  '        method of a file-like obje' + 'ct.' + #10 + #10 +
+  '        Example:' + #10 + #10 + '        >>> print(''''.join(Differ()' +
+  '.compare(''one\ntwo\nthree\n''.split' + 'lines(True),' + #10 +
+  '        ...                       ' +
+  '         ''ore\ntree\nemu\n''.splitl' + 'ines(True))),' + #10 +
+  '        ...       end="")' + #10 + '        - one' + #10 + '        ?  ^' +
+  #10 + '        + ore' + #10 + '        ?  ^' + #10 + '        - two' + #10 +
+  '        - three' + #10 + '        ?  -' + #10 + '        + tree' + #10 +
+  '        + emu' + #10 + '        """' + #10 + #10 +
   '        cruncher = SequenceMatcher' + '(self.linejunk, a, b)' + #10 +
   '        for tag, alo, ahi, blo, bh' + 'i in cruncher.get_opcodes():' +
   #10 + '            if tag == ''replace'':' + #10 +
@@ -48501,10 +53194,14 @@ Const
   '            else:' + #10 + '                raise ValueError(''' +
   'unknown tag %r'' % (tag,))' + #10 + #10 + '            yield from g' +
   #10 + #10 + '    def _dump(self, tag, x, lo, hi' + '):' + #10 +
-  '        for i in range(lo, hi):' + #10 +
+  '        """Generate comparison res' + 'ults for a same-tagged range."""' +
+  #10 + '        for i in range(lo, hi):' + #10 +
   '            yield ''%s %s'' % (tag, ' + 'x[i])' + #10 + #10 +
   '    def _plain_replace(self, a, al' + 'o, ahi, b, blo, bhi):' + #10 +
   '        assert alo < ahi and blo <' + ' bhi' + #10 +
+  '        # dump the shorter block f' +
+  'irst -- reduces the burden on shor' + 't-term' + #10 +
+  '        # memory if the blocks are' + ' of very different sizes' + #10 +
   '        if bhi - blo < ahi - alo:' + #10 +
   '            first  = self._dump(''+' + ''', b, blo, bhi)' + #10 +
   '            second = self._dump(''-' + ''', a, alo, ahi)' + #10 +
@@ -48512,10 +53209,34 @@ Const
   ''', a, alo, ahi)' + #10 + '            second = self._dump(''+' +
   ''', b, blo, bhi)' + #10 + #10 + '        for g in first, second:' + #10 +
   '            yield from g' + #10 + #10 +
-  '    def _fancy_replace(self, a, al' + 'o, ahi, b, blo, bhi):' + #10 + #10 +
+  '    def _fancy_replace(self, a, al' + 'o, ahi, b, blo, bhi):' + #10 +
+  '        r"""' + #10 + '        When replacing one block o' +
+  'f lines with another, search the b' + 'locks' + #10 +
+  '        for *similar* lines; the b' +
+  'est-matching pair (if any) is used' + ' as a' + #10 +
+  '        synch point, and intraline' +
+  ' difference marking is done on the' + #10 +
+  '        similar pair. Lots of work' + ', but often worth it.' + #10 + #10 +
+  '        Example:' + #10 + #10 + '        >>> d = Differ()' + #10 +
+  '        >>> results = d._fancy_rep' + 'lace([''abcDefghiJkl\n''], 0, 1,' +
+  #10 + '        ...                       ' +
+  '     [''abcdefGhijkl\n''], 0, 1)' + #10 +
+  '        >>> print(''''.join(results)' + ', end="")' + #10 +
+  '        - abcDefghiJkl' + #10 + '        ?    ^  ^  ^' + #10 +
+  '        + abcdefGhijkl' + #10 + '        ?    ^  ^  ^' + #10 +
+  '        """' + #10 + #10 + '        # don''t synch up unless th' +
+  'e lines have a similarity score of' + ' at' + #10 +
+  '        # least cutoff; best_ratio' +
+  ' tracks the best score seen so far' + #10 +
   '        best_ratio, cutoff = 0.74,' + ' 0.75' + #10 +
   '        cruncher = SequenceMatcher' + '(self.charjunk)' + #10 +
-  '        eqi, eqj = None, None' + #10 + #10 +
+  '        eqi, eqj = None, None   # ' +
+  '1st indices of equal lines (if any' + ')' + #10 + #10 +
+  '        # search for the pair that' +
+  ' matches best without being identi' + 'cal' + #10 +
+  '        # (identical lines must be' +
+  ' junk lines, & we don''t want to sy' + 'nch up' + #10 +
+  '        # on junk -- unless we hav' + 'e to)' + #10 +
   '        for j in range(blo, bhi):' + #10 + '            bj = b[j]' + #10 +
   '            cruncher.set_seq2(bj)' + #10 +
   '            for i in range(alo, ah' + 'i):' + #10 +
@@ -48524,29 +53245,54 @@ Const
   '                        eqi, eqj =' + ' i, j' + #10 +
   '                    continue' + #10 +
   '                cruncher.set_seq1(' + 'ai)' + #10 +
+  '                # computing simila' +
+  'rity is expensive, so use the quic' + 'k' + #10 +
+  '                # upper bounds fir' +
+  'st -- have seen this speed up mess' + 'y' + #10 +
+  '                # compares by a fa' + 'ctor of 3.' + #10 +
+  '                # note that ratio(' +
+  ') is only expensive to compute the' + ' first' + #10 +
+  '                # time it''s called' +
+  ' on a sequence pair; the expensive' + ' part' + #10 +
+  '                # of the computati' + 'on is cached by cruncher' + #10 +
   '                if cruncher.real_q' + 'uick_ratio() > best_ratio and \' +
   #10 + '                      cruncher.qui' +
   'ck_ratio() > best_ratio and \' + #10 +
   '                      cruncher.rat' + 'io() > best_ratio:' + #10 +
   '                    best_ratio, be' +
   'st_i, best_j = cruncher.ratio(), i' + ', j' + #10 +
-  '        if best_ratio < cutoff:' + #10 + '            if eqi is None:' +
-  #10 + '                yield from self._p' +
+  '        if best_ratio < cutoff:' + #10 +
+  '            # no non-identical "pr' + 'etty close" pair' + #10 +
+  '            if eqi is None:' + #10 + '                # no identical pai' +
+  'r either -- treat it as a straight' + ' replace' + #10 +
+  '                yield from self._p' +
   'lain_replace(a, alo, ahi, b, blo, ' + 'bhi)' + #10 +
-  '                return' + #10 + '            best_i, best_j, best_r' +
-  'atio = eqi, eqj, 1.0' + #10 + '        else:' + #10 +
+  '                return' + #10 + '            # no close pair, but a' +
+  'n identical pair -- synch up on th' + 'at' + #10 +
+  '            best_i, best_j, best_r' + 'atio = eqi, eqj, 1.0' + #10 +
+  '        else:' + #10 + '            # there''s a close pair' +
+  ', so forget the identical pair (if' + ' any)' + #10 +
   '            eqi = None' + #10 + #10 +
-  '        yield from self._fancy_hel' +
+  '        # a[best_i] very similar t' +
+  'o b[best_j]; eqi is None iff they''' + 're not' + #10 +
+  '        # identical' + #10 + #10 + '        # pump out diffs from befo' +
+  're the synch point' + #10 + '        yield from self._fancy_hel' +
   'per(a, alo, best_i, b, blo, best_j' + ')' + #10 + #10 +
+  '        # do intraline marking on ' + 'the synch pair' + #10 +
   '        aelt, belt = a[best_i], b[' + 'best_j]' + #10 +
-  '        if eqi is None:' + #10 + '            atags = btags = ""' + #10 +
+  '        if eqi is None:' + #10 + '            # pump out a ''-'', ''?'',' +
+  ' ''+'', ''?'' quad for the synched lin' + 'es' + #10 +
+  '            atags = btags = ""' + #10 +
   '            cruncher.set_seqs(aelt' + ', belt)' + #10 +
   '            for tag, ai1, ai2, bj1' + ', bj2 in cruncher.get_opcodes():' +
   #10 + '                la, lb = ai2 - ai1' + ', bj2 - bj1' + #10 +
   '                if tag == ''replace' + ''':' + #10 +
   '                    atags += ''^'' *' + ' la' + #10 +
   '                    btags += ''^'' *' + ' lb' + #10 +
-  '                elif tag == ''delet' + 'e'':' + #10 +
+  '                elif tag == ''delet' + 'e'':' + #10;
+
+Const
+ Src_difflib_4: AnsiString =
   '                    atags += ''-'' *' + ' la' + #10 +
   '                elif tag == ''inser' + 't'':' + #10 +
   '                    btags += ''+'' *' + ' lb' + #10 +
@@ -48556,8 +53302,10 @@ Const
   '                else:' + #10 + '                    raise ValueErr' +
   'or(''unknown tag %r'' % (tag,))' + #10 +
   '            yield from self._qform' + 'at(aelt, belt, atags, btags)' +
-  #10 + '        else:' + #10 + '            yield ''  '' + aelt' + #10 +
-  #10 + '        yield from self._fancy_hel' +
+  #10 + '        else:' + #10 + '            # the synch pair is id' +
+  'entical' + #10 + '            yield ''  '' + aelt' + #10 + #10 +
+  '        # pump out diffs from afte' + 'r the synch point' + #10 +
+  '        yield from self._fancy_hel' +
   'per(a, best_i+1, ahi, b, best_j+1,' + ' bhi)' + #10 + #10 +
   '    def _fancy_helper(self, a, alo' + ', ahi, b, blo, bhi):' + #10 +
   '        g = []' + #10 + '        if alo < ahi:' + #10 +
@@ -48567,25 +53315,122 @@ Const
   '        elif blo < bhi:' + #10 + '            g = self._dump(''+'', b,' +
   ' blo, bhi)' + #10 + #10 + '        yield from g' + #10 + #10 +
   '    def _qformat(self, aline, blin' + 'e, atags, btags):' + #10 +
+  '        r"""' + #10 + '        Format "?" output and deal' +
+  ' with tabs.' + #10 + #10 + '        Example:' + #10 + #10 +
+  '        >>> d = Differ()' + #10 + '        >>> results = d._qformat(''' +
+  '\tabcDefghiJkl\n'', ''\tabcdefGhijkl' + '\n'',' + #10 +
+  '        ...                      ''' +
+  '  ^ ^  ^      '', ''  ^ ^  ^      '')' + #10 +
+  '        >>> for line in results: p' + 'rint(repr(line))' + #10 +
+  '        ...' + #10 + '        ''- \tabcDefghiJkl\n''' + #10 +
+  '        ''? \t ^ ^  ^\n''' + #10 + '        ''+ \tabcdefGhijkl\n''' + #10 +
+  '        ''? \t ^ ^  ^\n''' + #10 + '        """' + #10 +
   '        atags = _keep_original_ws(' + 'aline, atags).rstrip()' + #10 +
   '        btags = _keep_original_ws(' + 'bline, btags).rstrip()' + #10 +
   #10 + '        yield "- " + aline' + #10 + '        if atags:' + #10 +
   '            yield f"? {atags}\n"' + #10 + #10 +
   '        yield "+ " + bline' + #10 + '        if btags:' + #10 +
   '            yield f"? {btags}\n"' + #10 + #10 +
-  'def IS_LINE_JUNK(line, pat=None):' + #10 + #10 + '    s = line.lstrip()' +
-  #10 + '    if s[:1] == ''#'':' + #10 + '        s = s[1:].lstrip()' + #10 +
-  '    return s == ''''' + #10 + #10 + 'def IS_CHARACTER_JUNK(ch, ws=" \t"' +
-  '):' + #10 + #10 + '    return ch in ws' + #10 + #10 +
+  '# With respect to junk, an earlier' +
+  ' version of ndiff simply refused t' + 'o' + #10 +
+  '# *start* a match with a junk elem' +
+  'ent.  The result was cases like th' + 'is:' + #10 +
+  '#     before: private Thread curre' + 'ntThread;' + #10 +
+  '#     after:  private volatile Thr' + 'ead currentThread;' + #10 +
+  '# If you consider whitespace to be' +
+  ' junk, the longest contiguous matc' + 'h' + #10 +
+  '# not starting with junk is "e Thr' +
+  'ead currentThread".  So ndiff repo' + 'rted' + #10 +
+  '# that "e volatil" was inserted be' +
+  'tween the ''t'' and the ''e'' in "priv' + 'ate".' + #10 +
+  '# While an accurate view, to peopl' +
+  'e that''s absurd.  The current vers' + 'ion' + #10 +
+  '# looks for matching blocks that a' +
+  're entirely junk-free, then extend' + 's the' + #10 +
+  '# longest one of those as far as p' +
+  'ossible but only with matching jun' + 'k.' + #10 +
+  '# So now "currentThread" is matche' + 'd, then extended to suck up the' +
+  #10 + '# preceding blank; then "private" ' +
+  'is matched, and extended to suck u' + 'p the' + #10 +
+  '# following blank; then "Thread" i' +
+  's matched; and finally ndiff repor' + 'ts' + #10 +
+  '# that "volatile " was inserted be' + 'fore "Thread".  The only quibble' +
+  #10 + '# remaining is that perhaps it was' +
+  ' really the case that " volatile"' + #10 +
+  '# was inserted after "private".  I' + ' can live with that <wink>.' + #10 +
+  #10 + 'import re' + #10 + #10 + 'def IS_LINE_JUNK(line, pat=re.comp' +
+  'ile(r"\s*(?:#\s*)?$").match):' + #10 + '    r"""' + #10 +
+  '    Return True for ignorable line' +
+  ': iff `line` is blank or contains ' + 'a single ''#''.' + #10 + #10 +
+  '    Examples:' + #10 + #10 + '    >>> IS_LINE_JUNK(''\n'')' + #10 +
+  '    True' + #10 + '    >>> IS_LINE_JUNK(''  #   \n'')' + #10 + '    True' +
+  #10 + '    >>> IS_LINE_JUNK(''hello\n'')' + #10 + '    False' + #10 +
+  '    """' + #10 + #10 + '    return pat(line) is not None' + #10 + #10 +
+  'def IS_CHARACTER_JUNK(ch, ws=" \t"' + '):' + #10 + '    r"""' + #10 +
+  '    Return True for ignorable char' +
+  'acter: iff `ch` is a space or tab.' + #10 + #10 + '    Examples:' + #10 +
+  #10 + '    >>> IS_CHARACTER_JUNK('' '')' + #10 + '    True' + #10 +
+  '    >>> IS_CHARACTER_JUNK(''\t'')' + #10 + '    True' + #10 +
+  '    >>> IS_CHARACTER_JUNK(''\n'')' + #10 + '    False' + #10 +
+  '    >>> IS_CHARACTER_JUNK(''x'')' + #10 + '    False' + #10 + '    """' +
+  #10 + #10 + '    return ch in ws' + #10 + #10 + #10 +
+  '##################################' +
+  '##################################' + '####' + #10 + '###  Unified Diff' +
+  #10 + '##################################' +
+  '##################################' + '####' + #10 + #10 +
   'def _format_range_unified(start, s' + 'top):' + #10 +
-  '    beginning = start + 1' + #10 + '    length = stop - start' + #10 +
-  '    if length == 1:' + #10 + '        return ''{}''.format(beginni' +
-  'ng)' + #10 + '    if not length:' + #10 + '        beginning -= 1' + #10 +
+  '    ''Convert range to the "ed" for' + 'mat''' + #10 +
+  '    # Per the diff spec at http://' +
+  'www.unix.org/single_unix_specifica' + 'tion/' + #10 +
+  '    beginning = start + 1     # li' + 'nes start numbering with one' +
+  #10 + '    length = stop - start' + #10 + '    if length == 1:' + #10 +
+  '        return ''{}''.format(beginni' + 'ng)' + #10 +
+  '    if not length:' + #10 + '        beginning -= 1        # em' +
+  'pty ranges begin at line just befo' + 're the range' + #10 +
   '    return ''{},{}''.format(beginnin' + 'g, length)' + #10 + #10 +
   'def unified_diff(a, b, fromfile=''''' +
   ', tofile='''', fromfiledate='''',' + #10 +
   '                 tofiledate='''', n=' + '3, lineterm=''\n''):' + #10 +
-  #10 + '    _check_types(a, b, fromfile, t' +
+  '    r"""' + #10 + '    Compare two sequences of lines' +
+  '; generate the delta as a unified ' + 'diff.' + #10 + #10 +
+  '    Unified diffs are a compact wa' +
+  'y of showing line changes and a fe' + 'w' + #10 +
+  '    lines of context.  The number ' +
+  'of context lines is set by ''n'' whi' + 'ch' + #10 +
+  '    defaults to three.' + #10 + #10 +
+  '    By default, the diff control l' +
+  'ines (those with ---, +++, or @@) ' + 'are' + #10 +
+  '    created with a trailing newlin' +
+  'e.  This is helpful so that inputs' + #10 +
+  '    created from file.readlines() ' +
+  'result in diffs that are suitable ' + 'for' + #10 +
+  '    file.writelines() since both t' +
+  'he inputs and outputs have trailin' + 'g' + #10 + '    newlines.' + #10 +
+  #10 + '    For inputs that do not have tr' +
+  'ailing newlines, set the lineterm' + #10 +
+  '    argument to "" so that the out' +
+  'put will be uniformly newline free' + '.' + #10 + #10 +
+  '    The unidiff format normally ha' +
+  's a header for filenames and modif' + 'ication' + #10 +
+  '    times.  Any or all of these ma' + 'y be specified using strings for' +
+  #10 + '    ''fromfile'', ''tofile'', ''fromfil' +
+  'edate'', and ''tofiledate''.' + #10 +
+  '    The modification times are nor' +
+  'mally expressed in the ISO 8601 fo' + 'rmat.' + #10 + #10 +
+  '    Example:' + #10 + #10 + '    >>> for line in unified_diff(''' +
+  'one two three four''.split(),' + #10 +
+  '    ...             ''zero one tree' +
+  ' four''.split(), ''Original'', ''Curre' + 'nt'',' + #10 +
+  '    ...             ''2005-01-26 23' +
+  ':30:50'', ''2010-04-02 10:20:52'',' + #10 +
+  '    ...             lineterm=''''):' + #10 +
+  '    ...     print(line)           ' +
+  '      # doctest: +NORMALIZE_WHITES' + 'PACE' + #10 +
+  '    --- Original        2005-01-26' + ' 23:30:50' + #10 +
+  '    +++ Current         2010-04-02' + ' 10:20:52' + #10 +
+  '    @@ -1,4 +1,4 @@' + #10 + '    +zero' + #10 + '     one' + #10 +
+  '    -two' + #10 + '    -three' + #10 + '    +tree' + #10 + '     four' +
+  #10 + '    """' + #10 + #10 + '    _check_types(a, b, fromfile, t' +
   'ofile, fromfiledate, tofiledate, l' + 'ineterm)' + #10 +
   '    started = False' + #10 + '    for group in SequenceMatcher(N' +
   'one,a,b).get_grouped_opcodes(n):' + #10 + '        if not started:' + #10 +
@@ -48612,16 +53457,65 @@ Const
   '                    yield ''-'' + li' + 'ne' + #10 +
   '            if tag in {''replace'', ' + '''insert''}:' + #10 +
   '                for line in b[j1:j' + '2]:' + #10 +
-  '                    yield ''+'' + li' + 'ne' + #10 + #10 +
+  '                    yield ''+'' + li' + 'ne' + #10 + #10 + #10 +
+  '##################################' +
+  '##################################' + '####' + #10 + '###  Context Diff' +
+  #10 + '##################################' +
+  '##################################' + '####' + #10 + #10 +
   'def _format_range_context(start, s' + 'top):' + #10 +
-  '    beginning = start + 1' + #10 + '    length = stop - start' + #10 +
-  '    if not length:' + #10 + '        beginning -= 1' + #10 +
+  '    ''Convert range to the "ed" for' + 'mat''' + #10 +
+  '    # Per the diff spec at http://' +
+  'www.unix.org/single_unix_specifica' + 'tion/' + #10 +
+  '    beginning = start + 1     # li' + 'nes start numbering with one' +
+  #10 + '    length = stop - start' + #10 + '    if not length:' + #10 +
+  '        beginning -= 1        # em' +
+  'pty ranges begin at line just befo' + 're the range' + #10 +
   '    if length <= 1:' + #10 + '        return ''{}''.format(beginni' +
   'ng)' + #10 + '    return ''{},{}''.format(beginnin' +
   'g, beginning + length - 1)' + #10 + #10 +
+  '# See http://www.unix.org/single_u' + 'nix_specification/' + #10 +
   'def context_diff(a, b, fromfile=''''' + ', tofile='''',' + #10 +
   '                 fromfiledate='''', ' +
-  'tofiledate='''', n=3, lineterm=''\n'')' + ':' + #10 + #10 +
+  'tofiledate='''', n=3, lineterm=''\n'')' + ':' + #10 + '    r"""' + #10 +
+  '    Compare two sequences of lines' +
+  '; generate the delta as a context ' + 'diff.' + #10 + #10 +
+  '    Context diffs are a compact wa' +
+  'y of showing line changes and a fe' + 'w' + #10 +
+  '    lines of context.  The number ' +
+  'of context lines is set by ''n'' whi' + 'ch' + #10 +
+  '    defaults to three.' + #10 + #10 +
+  '    By default, the diff control l' + 'ines (those with *** or ---) are' +
+  #10 + '    created with a trailing newlin' +
+  'e.  This is helpful so that inputs' + #10 +
+  '    created from file.readlines() ' +
+  'result in diffs that are suitable ' + 'for' + #10 +
+  '    file.writelines() since both t' +
+  'he inputs and outputs have trailin' + 'g' + #10 + '    newlines.' + #10 +
+  #10 + '    For inputs that do not have tr' +
+  'ailing newlines, set the lineterm' + #10 +
+  '    argument to "" so that the out' +
+  'put will be uniformly newline free' + '.' + #10 + #10 +
+  '    The context diff format normal' + 'ly has a header for filenames and' +
+  #10 + '    modification times.  Any or al' +
+  'l of these may be specified using' + #10 +
+  '    strings for ''fromfile'', ''tofil' +
+  'e'', ''fromfiledate'', and ''tofiledat' + 'e''.' + #10 +
+  '    The modification times are nor' +
+  'mally expressed in the ISO 8601 fo' + 'rmat.' + #10 +
+  '    If not specified, the strings ' + 'default to blanks.' + #10 + #10 +
+  '    Example:' + #10 + #10 + '    >>> print(''''.join(context_diff' +
+  '(''one\ntwo\nthree\nfour\n''.splitli' + 'nes(True),' + #10 +
+  '    ...       ''zero\none\ntree\nfo' +
+  'ur\n''.splitlines(True), ''Original''' + ', ''Current'')),' + #10 +
+  '    ...       end="")' + #10 + '    *** Original' + #10 +
+  '    --- Current' + #10 + '    ***************' + #10 + '    *** 1,4 ****' +
+  #10 + '      one' + #10 + '    ! two' + #10 + '    ! three' + #10 +
+  '      four' + #10 + '    --- 1,4 ----' + #10 + '    + zero' + #10 +
+  '      one' + #10 + '    ! tree' + #10;
+
+Const
+ Src_difflib_5: AnsiString =
+  '      four' + #10 + '    """' + #10 + #10 +
   '    _check_types(a, b, fromfile, t' +
   'ofile, fromfiledate, tofiledate, l' + 'ineterm)' + #10 +
   '    prefix = dict(insert=''+ '', del' +
@@ -48655,7 +53549,15 @@ Const
   '                    for line in b[' + 'j1:j2]:' + #10 +
   '                        yield pref' + 'ix[tag] + line' + #10 + #10 +
   'def _check_types(a, b, *args):' + #10 +
-  '    if a and not isinstance(a[0], ' + 'str):' + #10 +
+  '    # Checking types is weird, but' +
+  ' the alternative is garbled output' + ' when' + #10 +
+  '    # someone passes mixed bytes a' +
+  'nd str to {unified,context}_diff()' + '. E.g.' + #10 +
+  '    # without this check, passing ' +
+  'filenames as bytes results in outp' + 'ut like' + #10 +
+  '    #   --- b''oldfile.txt''' + #10 + '    #   +++ b''newfile.txt''' +
+  #10 + '    # because of how str.format() ' + 'incorporates bytes objects.' +
+  #10 + '    if a and not isinstance(a[0], ' + 'str):' + #10 +
   '        raise TypeError(''lines to ' +
   'compare must be str, not %s (%r)'' ' + '%' + #10 +
   '                        (type(a[0]' + ').__name__, a[0]))' + #10 +
@@ -48668,7 +53570,20 @@ Const
   'rguments must be str, not: %r'' % (' + 'arg,))' + #10 + #10 +
   'def diff_bytes(dfunc, a, b, fromfi' + 'le=b'''', tofile=b'''',' + #10 +
   '               fromfiledate=b'''', t' +
-  'ofiledate=b'''', n=3, lineterm=b''\n''' + '):' + #10 +
+  'ofiledate=b'''', n=3, lineterm=b''\n''' + '):' + #10 + '    r"""' + #10 +
+  '    Compare `a` and `b`, two seque' +
+  'nces of lines represented as bytes' + ' rather' + #10 +
+  '    than str. This is a wrapper fo' +
+  'r `dfunc`, which is typically eith' + 'er' + #10 +
+  '    unified_diff() or context_diff' +
+  '(). Inputs are losslessly converte' + 'd to' + #10 +
+  '    strings so that `dfunc` only h' +
+  'as to worry about strings, and enc' + 'oded' + #10 +
+  '    back to bytes on return. This ' +
+  'is necessary to compare files with' + #10 +
+  '    unknown or inconsistent encodi' +
+  'ng. All other inputs (except `n`) ' + 'must be' + #10 +
+  '    bytes rather than str.' + #10 + '    """' + #10 +
   '    def decode(s):' + #10 + '        try:' + #10 +
   '            return s.decode(''ascii' + ''', ''surrogateescape'')' + #10 +
   '        except AttributeError as e' + 'rr:' + #10 +
@@ -48684,79 +53599,247 @@ Const
   'tofile, fromfiledate, tofiledate, ' + 'n, lineterm)' + #10 +
   '    for line in lines:' + #10 + '        yield line.encode(''ascii'',' +
   ' ''surrogateescape'')' + #10 + #10 + 'def ndiff(a, b, linejunk=None, cha' +
-  'rjunk=IS_CHARACTER_JUNK):' + #10 + '    return Differ(linejunk, charju' +
+  'rjunk=IS_CHARACTER_JUNK):' + #10 + '    r"""' + #10 +
+  '    Compare `a` and `b` (lists of ' +
+  'strings); return a `Differ`-style ' + 'delta.' + #10 + #10 +
+  '    Optional keyword parameters `l' +
+  'inejunk` and `charjunk` are for fi' + 'lter' + #10 +
+  '    functions, or can be None:' + #10 + #10 +
+  '    - linejunk: A function that sh' +
+  'ould accept a single string argume' + 'nt and' + #10 +
+  '      return true iff the string i' +
+  's junk.  The default is None, and ' + 'is' + #10 +
+  '      recommended; the underlying ' +
+  'SequenceMatcher class has an adapt' + 'ive' + #10 +
+  '      notion of "noise" lines.' + #10 + #10 +
+  '    - charjunk: A function that ac' +
+  'cepts a character (string of lengt' + 'h' + #10 +
+  '      1), and returns true iff the' +
+  ' character is junk. The default is' + #10 +
+  '      the module-level function IS' +
+  '_CHARACTER_JUNK, which filters out' + #10 +
+  '      whitespace characters (a bla' +
+  'nk or tab; note: it''s a bad idea t' + 'o' + #10 +
+  '      include newline in this!).' + #10 + #10 +
+  '    Tools/scripts/ndiff.py is a co' +
+  'mmand-line front-end to this funct' + 'ion.' + #10 + #10 + '    Example:' +
+  #10 + #10 + '    >>> diff = ndiff(''one\ntwo\nth' +
+  'ree\n''.splitlines(keepends=True),' + #10 +
+  '    ...              ''ore\ntree\ne' +
+  'mu\n''.splitlines(keepends=True))' + #10 +
+  '    >>> print(''''.join(diff), end="' + '")' + #10 + '    - one' + #10 +
+  '    ?  ^' + #10 + '    + ore' + #10 + '    ?  ^' + #10 + '    - two' +
+  #10 + '    - three' + #10 + '    ?  -' + #10 + '    + tree' + #10 +
+  '    + emu' + #10 + '    """' + #10 + '    return Differ(linejunk, charju' +
   'nk).compare(a, b)' + #10 + #10 + 'def _mdiff(fromlines, tolines, con' +
   'text=None, linejunk=None,' + #10 + '           charjunk=IS_CHARACTER_J' +
-  'UNK):' + #10 + #10 + '    diff_lines_iterator = ndiff(fr' +
-  'omlines,tolines,linejunk,charjunk)' + #10 + #10;
-
-Const
- Src_difflib_2: AnsiString =
+  'UNK):' + #10 + '    r"""Returns generator yielding' +
+  ' marked up from/to side by side di' + 'fferences.' + #10 + #10 +
+  '    Arguments:' + #10 + '    fromlines -- list of text line' +
+  's to compared to tolines' + #10 + '    tolines -- list of text lines ' +
+  'to be compared to fromlines' + #10 + '    context -- number of context l' +
+  'ines to display on each side of di' + 'fference,' + #10 +
+  '               if None, all from/t' + 'o text lines will be generated.' +
+  #10 + '    linejunk -- passed on to ndiff' + ' (see ndiff documentation)' +
+  #10 + '    charjunk -- passed on to ndiff' + ' (see ndiff documentation)' +
+  #10 + #10 + '    This function returns an itera' +
+  'tor which returns a tuple:' + #10 + '    (from line tuple, to line tupl' +
+  'e, boolean flag)' + #10 + #10 + '    from/to line tuple -- (line nu' +
+  'm, line text)' + #10 + '        line num -- integer or Non' +
+  'e (to indicate a context separatio' + 'n)' + #10 +
+  '        line text -- original line' +
+  ' text with following markers inser' + 'ted:' + #10 +
+  '            ''\0+'' -- marks start o' + 'f added text' + #10 +
+  '            ''\0-'' -- marks start o' + 'f deleted text' + #10 +
+  '            ''\0^'' -- marks start o' + 'f changed text' + #10 +
+  '            ''\1'' -- marks end of a' + 'dded/deleted/changed text' + #10 +
+  #10 + '    boolean flag -- None indicates' +
+  ' context separation, True indicate' + 's' + #10 +
+  '        either "from" or "to" line' +
+  ' contains a change, otherwise Fals' + 'e.' + #10 + #10 +
+  '    This function/iterator was ori' +
+  'ginally developed to generate side' + ' by side' + #10 +
+  '    file difference for making HTM' +
+  'L pages (see HtmlDiff class for ex' + 'ample' + #10 + '    usage).' + #10 +
+  #10 + '    Note, this function utilizes t' +
+  'he ndiff function to generate the ' + 'side by' + #10 +
+  '    side difference markup.  Optio' +
+  'nal ndiff arguments may be passed ' + 'to this' + #10 +
+  '    function and they in turn will' + ' be passed to ndiff.' + #10 +
+  '    """' + #10 + '    import re' + #10 + #10 +
+  '    # regular expression for findi' + 'ng intraline change indices' + #10 +
+  '    change_re = re.compile(r''(\++|' + '\-+|\^+)'')' + #10 + #10 +
+  '    # create the difference iterat' + 'or to generate the differences' +
+  #10 + '    diff_lines_iterator = ndiff(fr' +
+  'omlines,tolines,linejunk,charjunk)' + #10 + #10 +
   '    def _make_line(lines, format_k' + 'ey, side, num_lines=[0,0]):' + #10 +
-  '        num_lines[side] += 1' + #10 + '        if format_key is None:' +
-  #10 + '            return (num_lines[side' + '],lines.pop(0)[2:])' + #10 +
+  '        """Returns line of text wi' +
+  'th user''s change markup and line f' + 'ormatting.' + #10 + #10 +
+  '        lines -- list of lines fro' +
+  'm the ndiff generator to produce a' + ' line of' + #10 +
+  '                 text from.  When ' +
+  'producing the line of text to retu' + 'rn, the' + #10 +
+  '                 lines used are re' + 'moved from this list.' + #10 +
+  '        format_key -- ''+'' return f' +
+  'irst line in list with "add" marku' + 'p around' + #10 +
+  '                          the enti' + 're line.' + #10 +
+  '                      ''-'' return f' +
+  'irst line in list with "delete" ma' + 'rkup around' + #10 +
+  '                          the enti' + 're line.' + #10 +
+  '                      ''?'' return f' +
+  'irst line in list with add/delete/' + 'change' + #10 +
+  '                          intralin' +
+  'e markup (indices obtained from se' + 'cond line)' + #10 +
+  '                      None return ' + 'first line in list with no markup' +
+  #10 + '        side -- indice into the nu' + 'm_lines list (0=from,1=to)' +
+  #10 + '        num_lines -- from/to curre' +
+  'nt line number.  This is NOT inten' + 'ded to be a' + #10 +
+  '                     passed parame' +
+  'ter.  It is present as a keyword a' + 'rgument to' + #10 +
+  '                     maintain memo' +
+  'ry of the current line numbers bet' + 'ween calls' + #10 +
+  '                     of this funct' + 'ion.' + #10 + #10 +
+  '        Note, this function is pur' +
+  'posefully not defined at the modul' + 'e scope so' + #10 +
+  '        that data it needs from it' +
+  's parent function (within whose co' + 'ntext it' + #10 +
+  '        is defined) does not need ' + 'to be of module scope.' + #10 +
+  '        """' + #10 + '        num_lines[side] += 1' + #10 +
+  '        # Handle case where no use' +
+  'r markup is to be added, just retu' + 'rn line of' + #10 +
+  '        # text with user''s line fo' +
+  'rmat to allow for usage of the lin' + 'e number.' + #10 +
+  '        if format_key is None:' + #10 +
+  '            return (num_lines[side' + '],lines.pop(0)[2:])' + #10 +
+  '        # Handle case of intraline' + ' changes' + #10 +
   '        if format_key == ''?'':' + #10 +
   '            text, markers = lines.' + 'pop(0), lines.pop(0)' + #10 +
-  '            sub_info = []' + #10 + '            _i = 0' + #10 +
-  '            _n = len(markers)' + #10 + '            while _i < _n:' + #10 +
-  '                _c = markers[_i]' + #10 +
-  '                if _c == ''+'' or _c' + ' == ''-'' or _c == ''^'':' + #10 +
-  '                    _j = _i + 1' + #10 +
-  '                    while _j < _n ' + 'and markers[_j] == _c:' + #10 +
-  '                        _j += 1' + #10 +
-  '                    sub_info.appen' + 'd([_c, (_i, _j)])' + #10 +
-  '                    _i = _j' + #10 + '                else:' + #10 +
-  '                    _i += 1' + #10 + '            for key,(begin,end) in' +
-  ' reversed(sub_info):' + #10 + '                text = text[0:begi' +
+  '            # find intraline chang' +
+  'es (store change type and indices ' + 'in tuples)' + #10 +
+  '            sub_info = []' + #10 + '            def record_sub_info(ma' +
+  'tch_object,sub_info=sub_info):' + #10 +
+  '                sub_info.append([m' +
+  'atch_object.group(1)[0],match_obje' + 'ct.span()])' + #10 +
+  '                return match_objec' + 't.group(1)' + #10 +
+  '            change_re.sub(record_s' + 'ub_info,markers)' + #10 +
+  '            # process each tuple i' +
+  'nserting our special marks that wo' + 'n''t be' + #10 +
+  '            # noticed by an xml/ht' + 'ml escaper.' + #10 +
+  '            for key,(begin,end) in' + ' reversed(sub_info):' + #10 +
+  '                text = text[0:begi' +
   'n]+''\0''+key+text[begin:end]+''\1''+t' + 'ext[end:]' + #10 +
-  '            text = text[2:]' + #10 + '        else:' + #10 +
+  '            text = text[2:]' + #10 + '        # Handle case of add/delet' +
+  'e entire line' + #10 + '        else:' + #10 +
   '            text = lines.pop(0)[2:' + ']' + #10 +
+  '            # if line of text is j' +
+  'ust a newline, insert a space so t' + 'here is' + #10 +
+  '            # something for the us' + 'er to highlight and see.' + #10 +
   '            if not text:' + #10 + '                text = '' ''' + #10 +
+  '            # insert marks that wo' +
+  'n''t be noticed by an xml/html esca' + 'per.' + #10 +
   '            text = ''\0'' + format_k' + 'ey + text + ''\1''' + #10 +
+  '        # Return line of text, fir' +
+  'st allow user''s line formatter to ' + 'do its' + #10 +
+  '        # thing (such as adding th' +
+  'e line number) then replace the sp' + 'ecial' + #10 +
+  '        # marks with what the user' + '''s change markup.' + #10 +
   '        return (num_lines[side],te' + 'xt)' + #10 + #10 +
-  '    def _line_iterator():' + #10 + '        lines = []' + #10 +
+  '    def _line_iterator():' + #10 + '        """Yields from/to lines of' +
+  ' text with a change indication.' + #10 + #10 +
+  '        This function is an iterat' + 'or.  It itself pulls lines from a' +
+  #10 + '        differencing iterator, pro' +
+  'cesses them and yields them.  When' + ' it can' + #10 +
+  '        it yields both a "from" an' +
+  'd a "to" line, otherwise it will y' + 'ield one' + #10 +
+  '        or the other.  In addition' +
+  ' to yielding the lines of from/to ' + 'text, a' + #10 +
+  '        boolean flag is yielded to' +
+  ' indicate if the text line(s) have' + #10 +
+  '        differences in them.' + #10 + #10 +
+  '        Note, this function is pur' +
+  'posefully not defined at the modul' + 'e scope so' + #10 +
+  '        that data it needs from it' +
+  's parent function (within whose co' + 'ntext it' + #10 +
+  '        is defined) does not need ' + 'to be of module scope.' + #10 +
+  '        """' + #10 + '        lines = []' + #10 +
   '        num_blanks_pending, num_bl' + 'anks_to_yield = 0, 0' + #10 +
-  '        while True:' + #10 + '            while len(lines) < 4:' + #10 +
+  '        while True:' + #10 + '            # Load up next 4 lines' +
+  ' so we can look ahead, create stri' + 'ngs which' + #10 +
+  '            # are a concatenation ' +
+  'of the first character of each of ' + 'the 4 lines' + #10 +
+  '            # so we can do some ve' + 'ry readable comparisons.' + #10 +
+  '            while len(lines) < 4:' + #10 +
   '                lines.append(next(' + 'diff_lines_iterator, ''X''))' +
   #10 + '            s = ''''.join([line[0] f' + 'or line in lines])' + #10 +
   '            if s.startswith(''X''):' + #10 +
-  '                num_blanks_to_yiel' + 'd = num_blanks_pending' + #10 +
-  '            elif s.startswith(''-?+' + '?''):' + #10 +
+  '                # When no more lin' +
+  'es, pump out any remaining blank l' + 'ines so the' + #10 +
+  '                # corresponding ad' +
+  'd/delete lines get a matching blan' + 'k line so' + #10 +
+  '                # all line pairs g' + 'et yielded at the next level.' +
+  #10 + '                num_blanks_to_yiel' + 'd = num_blanks_pending' +
+  #10 + '            elif s.startswith(''-?+' + '?''):' + #10 +
+  '                # simple intraline' + ' change' + #10 +
   '                yield _make_line(l' +
   'ines,''?'',0), _make_line(lines,''?'',' + '1), True' + #10 +
   '                continue' + #10 + '            elif s.startswith(''--+' +
-  '+''):' + #10 + '                num_blanks_pending' + ' -= 1' + #10 +
+  '+''):' + #10;
+
+Const
+ Src_difflib_6: AnsiString =
+  '                # in delete block,' +
+  ' add block coming: we do NOT want ' + 'to get' + #10 +
+  '                # caught up on bla' +
+  'nk lines yet, just process the del' + 'ete line' + #10 +
+  '                num_blanks_pending' + ' -= 1' + #10 +
   '                yield _make_line(l' + 'ines,''-'',0), None, True' + #10 +
   '                continue' + #10 + '            elif s.startswith((''--' +
-  '?+'', ''--+'', ''- '')):' + #10 + '                from_line,to_line ' +
+  '?+'', ''--+'', ''- '')):' + #10 + '                # in delete block ' +
+  'and see an intraline change or unc' + 'hanged line' + #10 +
+  '                # coming: yield th' + 'e delete line and then blanks' +
+  #10 + '                from_line,to_line ' +
   '= _make_line(lines,''-'',0), None' + #10 +
   '                num_blanks_to_yiel' +
   'd,num_blanks_pending = num_blanks_' + 'pending-1,0' + #10 +
   '            elif s.startswith(''-+?' + '''):' + #10 +
+  '                # intraline change' + #10 +
   '                yield _make_line(l' +
   'ines,None,0), _make_line(lines,''?''' + ',1), True' + #10 +
   '                continue' + #10 + '            elif s.startswith(''-?+' +
-  '''):' + #10 + '                yield _make_line(l' +
+  '''):' + #10 + '                # intraline change' + #10 +
+  '                yield _make_line(l' +
   'ines,''?'',0), _make_line(lines,None' + ',1), True' + #10 +
   '                continue' + #10 + '            elif s.startswith(''-'')' +
-  ':' + #10 + '                num_blanks_pending' + ' -= 1' + #10 +
+  ':' + #10 + '                # delete FROM line' + #10 +
+  '                num_blanks_pending' + ' -= 1' + #10 +
   '                yield _make_line(l' + 'ines,''-'',0), None, True' + #10 +
   '                continue' + #10 + '            elif s.startswith(''+--' +
-  '''):' + #10 + '                num_blanks_pending' + ' += 1' + #10 +
+  '''):' + #10 + '                # in add block, de' +
+  'lete block coming: we do NOT want ' + 'to get' + #10 +
+  '                # caught up on bla' +
+  'nk lines yet, just process the add' + ' line' + #10 +
+  '                num_blanks_pending' + ' += 1' + #10 +
   '                yield None, _make_' + 'line(lines,''+'',1), True' + #10 +
   '                continue' + #10 + '            elif s.startswith((''+ ' +
-  ''', ''+-'')):' + #10 + '                from_line, to_line' +
+  ''', ''+-'')):' + #10 + '                # will be leaving ' +
+  'an add block: yield blanks then ad' + 'd line' + #10 +
+  '                from_line, to_line' +
   ' = None, _make_line(lines,''+'',1)' + #10 +
   '                num_blanks_to_yiel' +
   'd,num_blanks_pending = num_blanks_' + 'pending+1,0' + #10 +
   '            elif s.startswith(''+'')' + ':' + #10 +
+  '                # inside an add bl' + 'ock, yield the add line' + #10 +
   '                num_blanks_pending' + ' += 1' + #10 +
   '                yield None, _make_' + 'line(lines,''+'',1), True' + #10 +
   '                continue' + #10 + '            elif s.startswith('' '')' +
-  ':' + #10 + '                yield _make_line(l' +
+  ':' + #10 + '                # unchanged text, ' +
+  'yield it to both sides' + #10 + '                yield _make_line(l' +
   'ines[:],None,0),_make_line(lines,N' + 'one,1),False' + #10 +
-  '                continue' + #10 + '            while(num_blanks_to_yi' +
-  'eld < 0):' + #10 + '                num_blanks_to_yiel' + 'd += 1' + #10 +
+  '                continue' + #10 + '            # Catch up on the blan' +
+  'k lines so when we yield the next ' + 'from/to' + #10 +
+  '            # pair, they are lined' + ' up.' + #10 +
+  '            while(num_blanks_to_yi' + 'eld < 0):' + #10 +
+  '                num_blanks_to_yiel' + 'd += 1' + #10 +
   '                yield None,('''',''\n' + '''),True' + #10 +
   '            while(num_blanks_to_yi' + 'eld > 0):' + #10 +
   '                num_blanks_to_yiel' + 'd -= 1' + #10 +
@@ -48764,8 +53847,24 @@ Const
   '            if s.startswith(''X''):' + #10 + '                return' +
   #10 + '            else:' + #10 + '                yield from_line,to' +
   '_line,True' + #10 + #10 + '    def _line_pair_iterator():' + #10 +
-  '        line_iterator = _line_iter' + 'ator()' + #10 +
-  '        fromlines,tolines=[],[]' + #10 + '        while True:' + #10 +
+  '        """Yields from/to lines of' + ' text with a change indication.' +
+  #10 + #10 + '        This function is an iterat' +
+  'or.  It itself pulls lines from th' + 'e line' + #10 +
+  '        iterator.  Its difference ' +
+  'from that iterator is that this fu' + 'nction' + #10 +
+  '        always yields a pair of fr' + 'om/to text lines (with the change' +
+  #10 + '        indication).  If necessary' +
+  ' it will collect single from/to li' + 'nes' + #10 +
+  '        until it has a matching pa' + 'ir from/to pair to yield.' + #10 +
+  #10 + '        Note, this function is pur' +
+  'posefully not defined at the modul' + 'e scope so' + #10 +
+  '        that data it needs from it' +
+  's parent function (within whose co' + 'ntext it' + #10 +
+  '        is defined) does not need ' + 'to be of module scope.' + #10 +
+  '        """' + #10 + '        line_iterator = _line_iter' + 'ator()' +
+  #10 + '        fromlines,tolines=[],[]' + #10 + '        while True:' +
+  #10 + '            # Collecting lines of ' +
+  'text until we have a from/to pair' + #10 +
   '            while (len(fromlines)=' + '=0 or len(tolines)==0):' + #10 +
   '                try:' + #10 + '                    from_line, to_' +
   'line, found_diff = next(line_itera' + 'tor)' + #10 +
@@ -48774,14 +53873,26 @@ Const
   't None:' + #10 + '                    fromlines.appe' +
   'nd((from_line,found_diff))' + #10 + '                if to_line is not ' +
   'None:' + #10 + '                    tolines.append' +
-  '((to_line,found_diff))' + #10 + '            from_line, fromDiff = ' +
-  'fromlines.pop(0)' + #10 + '            to_line, to_diff = tol' +
-  'ines.pop(0)' + #10 + '            yield (from_line,to_li' +
-  'ne,fromDiff or to_diff)' + #10 + #10 +
+  '((to_line,found_diff))' + #10 + '            # Once we have a pair,' +
+  ' remove them from the collection a' + 'nd yield it' + #10 +
+  '            from_line, fromDiff = ' + 'fromlines.pop(0)' + #10 +
+  '            to_line, to_diff = tol' + 'ines.pop(0)' + #10 +
+  '            yield (from_line,to_li' + 'ne,fromDiff or to_diff)' + #10 +
+  #10 + '    # Handle case where user does ' +
+  'not want context differencing, jus' + 't yield' + #10 +
+  '    # them up without doing anythi' + 'ng else with them.' + #10 +
   '    line_pair_iterator = _line_pai' + 'r_iterator()' + #10 +
   '    if context is None:' + #10 + '        yield from line_pair_itera' +
-  'tor' + #10 + '    else:' + #10 + '        context += 1' + #10 +
-  '        lines_to_write = 0' + #10 + '        while True:' + #10 +
+  'tor' + #10 + '    # Handle case where user wants' +
+  ' context differencing.  We must do' + ' some' + #10 +
+  '    # storage of lines until we kn' +
+  'ow for sure that they are to be yi' + 'elded.' + #10 + '    else:' + #10 +
+  '        context += 1' + #10 + '        lines_to_write = 0' + #10 +
+  '        while True:' + #10 + '            # Store lines up until' +
+  ' we find a difference, note use of' + ' a' + #10 +
+  '            # circular queue becau' +
+  'se we only need to keep around wha' + 't' + #10 +
+  '            # we need for context.' + #10 +
   '            index, contextLines = ' + '0, [None]*(context)' + #10 +
   '            found_diff = False' + #10 +
   '            while(found_diff is Fa' + 'lse):' + #10 +
@@ -48791,7 +53902,10 @@ Const
   '                    return' + #10 + '                i = index % contex' +
   't' + #10 + '                contextLines[i] = ' +
   '(from_line, to_line, found_diff)' + #10 + '                index += 1' +
-  #10 + '            if index > context:' + #10 +
+  #10 + '            # Yield lines that we ' +
+  'have collected so far, but first y' + 'ield' + #10 +
+  '            # the user''s separator' + '.' + #10 +
+  '            if index > context:' + #10 +
   '                yield None, None, ' + 'None' + #10 +
   '                lines_to_write = c' + 'ontext' + #10 +
   '            else:' + #10 + '                lines_to_write = i' + 'ndex' +
@@ -48800,30 +53914,33 @@ Const
   '                i = index % contex' + 't' + #10 +
   '                index += 1' + #10 + '                yield contextLines' +
   '[i]' + #10 + '                lines_to_write -= ' + '1' + #10 +
+  '            # Now yield the contex' + 't lines after the change' + #10 +
   '            lines_to_write = conte' + 'xt-1' + #10 + '            try:' +
   #10 + '                while(lines_to_wri' + 'te):' + #10 +
   '                    from_line, to_' +
   'line, found_diff = next(line_pair_' + 'iterator)' + #10 +
+  '                    # If another c' +
+  'hange within the context, extend t' + 'he context' + #10 +
   '                    if found_diff:' + #10 +
   '                        lines_to_w' + 'rite = context-1' + #10 +
   '                    else:' + #10 + '                        lines_to_w' +
   'rite -= 1' + #10 + '                    yield from_lin' +
   'e, to_line, found_diff' + #10 + '            except StopIteration:' + #10 +
-  '                return' + #10 + #10 + '_file_template = """' + #10 +
-  '<!DOCTYPE html PUBLIC "-//W3C//DTD' + ' XHTML 1.0 Transitional//EN"' +
-  #10 + '          "http://www.w3.org/TR/xh' +
+  '                # Catch exception ' + 'from next() and return normally' +
+  #10 + '                return' + #10 + #10 + #10 + '_file_template = """' +
+  #10 + '<!DOCTYPE html PUBLIC "-//W3C//DTD' +
+  ' XHTML 1.0 Transitional//EN"' + #10 +
+  '          "http://www.w3.org/TR/xh' +
   'tml1/DTD/xhtml1-transitional.dtd">' + #10 + #10 + '<html>' + #10 + #10 +
   '<head>' + #10 + '    <meta http-equiv="Content-Type' + '"' + #10 +
   '          content="text/html; char' + 'set=%(charset)s" />' + #10 +
   '    <title></title>' + #10 + '    <style type="text/css">%(style' + 's)s' +
   #10 + '    </style>' + #10 + '</head>' + #10 + #10 + '<body>' + #10 +
   '    %(table)s%(legend)s' + #10 + '</body>' + #10 + #10 + '</html>"""' +
-  #10 + #10 + '_styles = """' + #10 + '        table.diff {font-family: M' +
-  'enlo, Consolas, Monaco, Liberation' +
-  ' Mono, Lucida Console, monospace; ' + 'border:medium}' + #10 +
-  '        .diff_header {background-c' + 'olor:#e0e0e0}' + #10 +
-  '        td.diff_header {text-align' + ':right}' + #10 +
-  '        .diff_next {background-col' + 'or:#c0c0c0}' + #10 +
+  #10 + #10 + '_styles = """' + #10 + '        table.diff {font-family:Co' +
+  'urier; border:medium;}' + #10 + '        .diff_header {background-c' +
+  'olor:#e0e0e0}' + #10 + '        td.diff_header {text-align' + ':right}' +
+  #10 + '        .diff_next {background-col' + 'or:#c0c0c0}' + #10 +
   '        .diff_add {background-colo' + 'r:#aaffaa}' + #10 +
   '        .diff_chg {background-colo' + 'r:#ffff77}' + #10 +
   '        .diff_sub {background-colo' + 'r:#ffaaaa}"""' + #10 + #10 +
@@ -48851,21 +53968,70 @@ Const
   '                      <tr><td>(n)e' + 'xt change</td> </tr>' + #10 +
   '                      <tr><td>(t)o' + 'p</td> </tr>' + #10 +
   '                  </table></td> </' + 'tr>' + #10 + '    </table>"""' +
-  #10 + #10 + 'class HtmlDiff(object):' + #10 + #10 +
-  '    _file_template = _file_templat' + 'e' + #10 + '    _styles = _styles' +
-  #10 + '    _table_template = _table_templ' + 'ate' + #10 +
-  '    _legend = _legend' + #10 + '    _default_prefix = 0' + #10 + #10 +
-  '    def __init__(self,tabsize=8,wr' + 'apcolumn=None,linejunk=None,' +
-  #10 + '                 charjunk=IS_CHARA' + 'CTER_JUNK):' + #10 +
-  '        self._tabsize = tabsize' + #10 +
+  #10 + #10 + 'class HtmlDiff(object):' + #10 +
+  '    """For producing HTML side by ' +
+  'side comparison with change highli' + 'ghts.' + #10 + #10 +
+  '    This class can be used to crea' +
+  'te an HTML table (or a complete HT' + 'ML file' + #10 +
+  '    containing the table) showing ' +
+  'a side by side, line by line compa' + 'rison' + #10 +
+  '    of text with inter-line and in' +
+  'tra-line change highlights.  The t' + 'able can' + #10 +
+  '    be generated in either full or' + ' contextual difference mode.' +
+  #10 + #10 + '    The following methods are prov' +
+  'ided for HTML generation:' + #10 + #10 +
+  '    make_table -- generates HTML f' + 'or a single side by side table' +
+  #10 + '    make_file -- generates complet' +
+  'e HTML file with a single side by ' + 'side table' + #10 + #10 +
+  '    See tools/scripts/diff.py for ' + 'an example usage of this class.' +
+  #10 + '    """' + #10 + #10 + '    _file_template = _file_templat' + 'e' +
+  #10 + '    _styles = _styles' + #10 + '    _table_template = _table_templ' +
+  'ate' + #10 + '    _legend = _legend' + #10 + '    _default_prefix = 0' +
+  #10 + #10 + '    def __init__(self,tabsize=8,wr' +
+  'apcolumn=None,linejunk=None,' + #10 +
+  '                 charjunk=IS_CHARA' + 'CTER_JUNK):' + #10 +
+  '        """HtmlDiff instance initi' + 'alizer' + #10 + #10 +
+  '        Arguments:' + #10 + '        tabsize -- tab stop spacin' +
+  'g, defaults to 8.' + #10 + '        wrapcolumn -- column numbe' +
+  'r where lines are broken and wrapp' + 'ed,' + #10 +
+  '            defaults to None where' + ' lines are not wrapped.' + #10 +
+  '        linejunk,charjunk -- keywo' +
+  'rd arguments passed into ndiff() (' + 'used by' + #10 +
+  '            HtmlDiff() to generate' +
+  ' the side by side HTML differences' + ').  See' + #10 +
+  '            ndiff() documentation ' +
+  'for argument default values and de' + 'scriptions.' + #10 + '        """' +
+  #10 + '        self._tabsize = tabsize' + #10 +
   '        self._wrapcolumn = wrapcol' + 'umn' + #10 +
   '        self._linejunk = linejunk' + #10 +
   '        self._charjunk = charjunk' + #10 + #10 +
   '    def make_file(self, fromlines,' +
   ' tolines, fromdesc='''', todesc='''',' + #10 +
   '                  context=False, n' + 'umlines=5, *, charset=''utf-8''):' +
-  #10 + #10 + '        return (self._file_templat' + 'e % dict(' + #10 +
-  '            styles=self._styles,' + #10 +
+  #10 + '        """Returns HTML file of si' +
+  'de by side comparison with change ' + 'highlights' + #10 + #10 +
+  '        Arguments:' + #10 + '        fromlines -- list of "from' +
+  '" lines' + #10 + '        tolines -- list of "to" li' + 'nes' + #10 +
+  '        fromdesc -- "from" file co' + 'lumn header string' + #10 +
+  '        todesc -- "to" file column' + ' header string' + #10 +
+  '        context -- set to True for' +
+  ' contextual differences (defaults ' + 'to False' + #10 +
+  '            which shows full diffe' + 'rences).' + #10 +
+  '        numlines -- number of cont' +
+  'ext lines.  When context is set Tr' + 'ue,' + #10 +
+  '            controls number of lin' +
+  'es displayed before and after the ' + 'change.' + #10 +
+  '            When context is False,' +
+  ' controls the number of lines to p' + 'lace' + #10 +
+  '            the "next" link anchor' +
+  's before the next change (so click' + ' of' + #10 +
+  '            "next" link jumps to j' + 'ust before the change).' + #10;
+
+Const
+ Src_difflib_7: AnsiString =
+  '        charset -- charset of the ' + 'HTML document' + #10 +
+  '        """' + #10 + #10 + '        return (self._file_templat' +
+  'e % dict(' + #10 + '            styles=self._styles,' + #10 +
   '            legend=self._legend,' + #10 +
   '            table=self.make_table(' +
   'fromlines, tolines, fromdesc, tode' + 'sc,' + #10 +
@@ -48874,47 +54040,97 @@ Const
   '            charset=charset' + #10 +
   '        )).encode(charset, ''xmlcha' + 'rrefreplace'').decode(charset)' +
   #10 + #10 + '    def _tab_newline_replace(self,' + 'fromlines,tolines):' +
-  #10 + '        def expand_tabs(line):' + #10 +
+  #10 + '        """Returns from/to line li' +
+  'sts with tabs expanded and newline' + 's removed.' + #10 + #10 +
+  '        Instead of tab characters ' +
+  'being replaced by the number of sp' + 'aces' + #10 +
+  '        needed to fill in to the n' +
+  'ext tab stop, this function will f' + 'ill' + #10 +
+  '        the space with tab charact' +
+  'ers.  This is done so that the dif' + 'ference' + #10 +
+  '        algorithms can identify ch' +
+  'anges in a file when tabs are repl' + 'aced by' + #10 +
+  '        spaces and vice versa.  At' +
+  ' the end of the HTML generation, t' + 'he tab' + #10 +
+  '        characters will be replace' + 'd with a nonbreakable space.' +
+  #10 + '        """' + #10 + '        def expand_tabs(line):' + #10 +
+  '            # hide real spaces' + #10 +
   '            line = line.replace('' ' + ''',''\0'')' + #10 +
+  '            # expand tabs into spa' + 'ces' + #10 +
   '            line = line.expandtabs' + '(self._tabsize)' + #10 +
+  '            # replace spaces from ' +
+  'expanded tabs back into tab charac' + 'ters' + #10 +
+  '            # (we''ll replace them ' +
+  'with markup after we do differenci' + 'ng)' + #10 +
   '            line = line.replace('' ' + ''',''\t'')' + #10 +
   '            return line.replace(''\' + '0'','' '').rstrip(''\n'')' + #10 +
   '        fromlines = [expand_tabs(l' + 'ine) for line in fromlines]' + #10 +
   '        tolines = [expand_tabs(lin' + 'e) for line in tolines]' + #10 +
   '        return fromlines,tolines' + #10 + #10 +
   '    def _split_line(self,data_list' + ',line_num,text):' + #10 +
+  '        """Builds list of text lin' +
+  'es by splitting text lines at wrap' + ' point' + #10 + #10 +
+  '        This function will determi' +
+  'ne if the input text line needs to' + ' be' + #10 +
+  '        wrapped (split) into separ' +
+  'ate lines.  If so, the first wrap ' + 'point' + #10 +
+  '        will be determined and the' +
+  ' first line appended to the output' + #10 +
+  '        text line list.  This func' +
+  'tion is used recursively to handle' + #10 +
+  '        the second part of the spl' + 'it line to further split it.' +
+  #10 + '        """' + #10 + '        # if blank line or context' +
+  ' separator, just add it to the out' + 'put list' + #10 +
   '        if not line_num:' + #10 + '            data_list.append((line' +
   '_num,text))' + #10 + '            return' + #10 + #10 +
+  '        # if line text doesn''t nee' +
+  'd wrapping, just add it to the out' + 'put list' + #10 +
   '        size = len(text)' + #10 + '        max = self._wrapcolumn' + #10 +
   '        if (size <= max) or ((size' +
   ' -(text.count(''\0'')*3)) <= max):' + #10 +
   '            data_list.append((line' + '_num,text))' + #10 +
-  '            return' + #10 + #10 + '        i = 0' + #10 + '        n = 0' +
-  #10 + '        mark = ''''' + #10 + '        while n < max and i < size' +
-  ':' + #10 + '            if text[i] == ''\0'':' + #10 +
-  '                i += 1' + #10 + '                mark = text[i]' + #10;
-
-Const
- Src_difflib_3: AnsiString =
-  '                i += 1' + #10 + '            elif text[i] == ''\1'':' +
-  #10 + '                i += 1' + #10 + '                mark = ''''' + #10 +
-  '            else:' + #10 + '                i += 1' + #10 +
-  '                n += 1' + #10 + #10 + '        line1 = text[:i]' + #10 +
-  '        line2 = text[i:]' + #10 + #10 + '        if mark:' + #10 +
-  '            line1 = line1 + ''\1''' + #10 +
+  '            return' + #10 + #10 + '        # scan text looking for th' +
+  'e wrap point, keeping track if the' + ' wrap' + #10 +
+  '        # point is inside markers' + #10 + '        i = 0' + #10 +
+  '        n = 0' + #10 + '        mark = ''''' + #10 +
+  '        while n < max and i < size' + ':' + #10 +
+  '            if text[i] == ''\0'':' + #10 + '                i += 1' + #10 +
+  '                mark = text[i]' + #10 + '                i += 1' + #10 +
+  '            elif text[i] == ''\1'':' + #10 + '                i += 1' +
+  #10 + '                mark = ''''' + #10 + '            else:' + #10 +
+  '                i += 1' + #10 + '                n += 1' + #10 + #10 +
+  '        # wrap point is inside tex' +
+  't, break it up into separate lines' + #10 + '        line1 = text[:i]' +
+  #10 + '        line2 = text[i:]' + #10 + #10 +
+  '        # if wrap point is inside ' +
+  'markers, place end marker at end o' + 'f first' + #10 +
+  '        # line and start marker at' +
+  ' beginning of second line because ' + 'each' + #10 +
+  '        # line will have its own t' + 'able tag markup around it.' + #10 +
+  '        if mark:' + #10 + '            line1 = line1 + ''\1''' + #10 +
   '            line2 = ''\0'' + mark + ' + 'line2' + #10 + #10 +
+  '        # tack on first line onto ' + 'the output list' + #10 +
   '        data_list.append((line_num' + ',line1))' + #10 + #10 +
+  '        # use this routine again t' + 'o wrap the remaining text' + #10 +
   '        self._split_line(data_list' + ',''>'',line2)' + #10 + #10 +
-  '    def _line_wrapper(self,diffs):' + #10 + #10 +
-  '        for fromdata,todata,flag i' + 'n diffs:' + #10 +
-  '            if flag is None:' + #10 +
-  '                yield fromdata,tod' + 'ata,flag' + #10 +
+  '    def _line_wrapper(self,diffs):' + #10 +
+  '        """Returns iterator that s' + 'plits (wraps) mdiff text lines"""' +
+  #10 + #10 + '        # pull from/to data and fl' +
+  'ags from mdiff iterator' + #10 + '        for fromdata,todata,flag i' +
+  'n diffs:' + #10 + '            # check for context se' +
+  'parators and pass them through' + #10 + '            if flag is None:' +
+  #10 + '                yield fromdata,tod' + 'ata,flag' + #10 +
   '                continue' + #10 + '            (fromline,fromtext),(t' +
   'oline,totext) = fromdata,todata' + #10 +
+  '            # for each from/to lin' +
+  'e split it at the wrap column to f' + 'orm' + #10 +
+  '            # list of text lines.' + #10 +
   '            fromlist,tolist = [],[' + ']' + #10 +
   '            self._split_line(froml' + 'ist,fromline,fromtext)' + #10 +
   '            self._split_line(tolis' + 't,toline,totext)' + #10 +
-  '            while fromlist or toli' + 'st:' + #10 +
+  '            # yield from/to line i' + 'n pairs inserting blank lines as' +
+  #10 + '            # necessary when one s' + 'ide has more wrapped lines' +
+  #10 + '            while fromlist or toli' + 'st:' + #10 +
   '                if fromlist:' + #10 +
   '                    fromdata = fro' + 'mlist.pop(0)' + #10 +
   '                else:' + #10 + '                    fromdata = (''''' +
@@ -48922,35 +54138,63 @@ Const
   '                    todata = tolis' + 't.pop(0)' + #10 +
   '                else:' + #10 + '                    todata = ('''',''' +
   ' '')' + #10 + '                yield fromdata,tod' + 'ata,flag' + #10 +
-  #10 + '    def _collect_lines(self,diffs)' + ':' + #10 + #10 +
-  '        fromlist,tolist,flaglist =' + ' [],[],[]' + #10 +
+  #10 + '    def _collect_lines(self,diffs)' + ':' + #10 +
+  '        """Collects mdiff output i' + 'nto separate lists' + #10 + #10 +
+  '        Before storing the mdiff f' +
+  'rom/to data into a list, it is con' + 'verted' + #10 +
+  '        into a single line of text' + ' with HTML markup.' + #10 +
+  '        """' + #10 + #10 + '        fromlist,tolist,flaglist =' +
+  ' [],[],[]' + #10 + '        # pull from/to data and fl' +
+  'ags from mdiff style iterator' + #10 +
   '        for fromdata,todata,flag i' + 'n diffs:' + #10 +
-  '            try:' + #10 + '                fromlist.append(se' +
+  '            try:' + #10 + '                # store HTML marku' +
+  'p of the lines into the lists' + #10 +
+  '                fromlist.append(se' +
   'lf._format_line(0,flag,*fromdata))' + #10 +
   '                tolist.append(self' + '._format_line(1,flag,*todata))' +
   #10 + '            except TypeError:' + #10 +
+  '                # exceptions occur' +
+  ' for lines where context separator' + 's go' + #10 +
   '                fromlist.append(No' + 'ne)' + #10 +
   '                tolist.append(None' + ')' + #10 +
   '            flaglist.append(flag)' + #10 +
   '        return fromlist,tolist,fla' + 'glist' + #10 + #10 +
   '    def _format_line(self,side,fla' + 'g,linenum,text):' + #10 +
-  '        try:' + #10 + '            linenum = ''%d'' % linen' + 'um' + #10 +
-  '            id = '' id="%s%s"'' % (s' + 'elf._prefix[side],linenum)' +
-  #10 + '        except TypeError:' + #10 + '            id = ''''' + #10 +
+  '        """Returns HTML markup of ' + '"from" / "to" text lines' + #10 +
+  #10 + '        side -- 0 or 1 indicating ' + '"from" or "to" text' + #10 +
+  '        flag -- indicates if diffe' + 'rence on line' + #10 +
+  '        linenum -- line number (us' + 'ed for line number column)' + #10 +
+  '        text -- line text to be ma' + 'rked up' + #10 + '        """' +
+  #10 + '        try:' + #10 + '            linenum = ''%d'' % linen' + 'um' +
+  #10 + '            id = '' id="%s%s"'' % (s' +
+  'elf._prefix[side],linenum)' + #10 + '        except TypeError:' + #10 +
+  '            # handle blank lines w' + 'here linenum is ''>'' or ''''' +
+  #10 + '            id = ''''' + #10 + '        # replace those things tha' +
+  't would get confused with HTML sym' + 'bols' + #10 +
   '        text=text.replace("&","&am' +
   'p;").replace(">","&gt;").replace("' + '<","&lt;")' + #10 + #10 +
+  '        # make space non-breakable' +
+  ' so they don''t get compressed or l' + 'ine wrapped' + #10 +
   '        text = text.replace('' '',''&' + 'nbsp;'').rstrip()' + #10 + #10 +
   '        return ''<td class="diff_he' +
   'ader"%s>%s</td><td nowrap="nowrap"' + '>%s</td>'' \' + #10 +
   '               % (id,linenum,text)' + #10 + #10 +
-  '    def _make_prefix(self):' + #10 + #10 +
-  '        fromprefix = "from%d_" % H' + 'tmlDiff._default_prefix' + #10 +
-  '        toprefix = "to%d_" % HtmlD' + 'iff._default_prefix' + #10 +
-  '        HtmlDiff._default_prefix +' + '= 1' + #10 +
-  '        self._prefix = [fromprefix' + ',toprefix]' + #10 + #10 +
+  '    def _make_prefix(self):' + #10 + '        """Create unique anchor pr' +
+  'efixes"""' + #10 + #10 + '        # Generate a unique anchor' +
+  ' prefix so multiple tables' + #10 + '        # can exist on the same HT' +
+  'ML page without conflicts.' + #10 + '        fromprefix = "from%d_" % H' +
+  'tmlDiff._default_prefix' + #10 + '        toprefix = "to%d_" % HtmlD' +
+  'iff._default_prefix' + #10 + '        HtmlDiff._default_prefix +' + '= 1' +
+  #10 + '        # store prefixes so line f' + 'ormat method has access' +
+  #10 + '        self._prefix = [fromprefix' + ',toprefix]' + #10 + #10 +
   '    def _convert_flags(self,fromli' +
-  'st,tolist,flaglist,context,numline' + 's):' + #10 + #10 +
+  'st,tolist,flaglist,context,numline' + 's):' + #10 +
+  '        """Makes list of "next" li' + 'nks"""' + #10 + #10 +
+  '        # all anchor names will be' +
+  ' generated using the unique "to" p' + 'refix' + #10 +
   '        toprefix = self._prefix[1]' + #10 + #10 +
+  '        # process change flags, ge' +
+  'nerating middle column of next anc' + 'hors/links' + #10 +
   '        next_id = ['''']*len(flaglis' + 't)' + #10 +
   '        next_href = ['''']*len(flagl' + 'ist)' + #10 +
   '        num_chg, in_change = 0, Fa' + 'lse' + #10 + '        last = 0' +
@@ -48958,14 +54202,22 @@ Const
   '            if flag:' + #10 + '                if not in_change:' + #10 +
   '                    in_change = Tr' + 'ue' + #10 +
   '                    last = i' + #10 +
-  '                    i = max([0,i-n' + 'umlines])' + #10 +
-  '                    next_id[i] = ''' +
+  '                    # at the begin' +
+  'ning of a change, drop an anchor a' + ' few lines' + #10 +
+  '                    # (the context' +
+  ' lines) before the change for the ' + 'previous' + #10 +
+  '                    # link' + #10 + '                    i = max([0,i-n' +
+  'umlines])' + #10 + '                    next_id[i] = ''' +
   ' id="difflib_chg_%s_%d"'' % (topref' + 'ix,num_chg)' + #10 +
-  '                    num_chg += 1' + #10 +
-  '                    next_href[last' +
+  '                    # at the begin' +
+  'ning of a change, drop a link to t' + 'he next' + #10 +
+  '                    # change' + #10 + '                    num_chg += 1' +
+  #10 + '                    next_href[last' +
   '] = ''<a href="#difflib_chg_%s_%d">' + 'n</a>'' % (' + #10 +
   '                         toprefix,' + 'num_chg)' + #10 +
   '            else:' + #10 + '                in_change = False' + #10 +
+  '        # check for cases where th' +
+  'ere is no content to avoid excepti' + 'ons' + #10 +
   '        if not flaglist:' + #10 + '            flaglist = [False]' + #10 +
   '            next_id = ['''']' + #10 + '            next_href = ['''']' +
   #10 + '            last = 0' + #10 + '            if context:' + #10 +
@@ -48974,27 +54226,62 @@ Const
   '                tolist = fromlist' + #10 + '            else:' + #10 +
   '                fromlist = tolist ' +
   '= [''<td></td><td>&nbsp;Empty File&' + 'nbsp;</td>'']' + #10 +
+  '        # if not a change on first' + ' line, drop a link' + #10 +
   '        if not flaglist[0]:' + #10 +
   '            next_href[0] = ''<a hre' +
   'f="#difflib_chg_%s_0">f</a>'' % top' + 'refix' + #10 +
+  '        # redo the last link to li' + 'nk to the top' + #10 +
   '        next_href[last] = ''<a href' +
   '="#difflib_chg_%s_top">t</a>'' % (t' + 'oprefix)' + #10 + #10 +
   '        return fromlist,tolist,fla' + 'glist,next_href,next_id' + #10 +
   #10 + '    def make_table(self,fromlines,' +
   'tolines,fromdesc='''',todesc='''',cont' + 'ext=False,' + #10 +
-  '                   numlines=5):' + #10 + #10 +
+  '                   numlines=5):' + #10 +
+  '        """Returns HTML table of s' +
+  'ide by side comparison with change' + ' highlights' + #10 + #10 +
+  '        Arguments:' + #10 + '        fromlines -- list of "from' +
+  '" lines' + #10 + '        tolines -- list of "to" li' + 'nes' + #10 +
+  '        fromdesc -- "from" file co' + 'lumn header string' + #10 +
+  '        todesc -- "to" file column' + ' header string' + #10 +
+  '        context -- set to True for' +
+  ' contextual differences (defaults ' + 'to False' + #10 +
+  '            which shows full diffe' + 'rences).' + #10 +
+  '        numlines -- number of cont' +
+  'ext lines.  When context is set Tr' + 'ue,' + #10 +
+  '            controls number of lin' +
+  'es displayed before and after the ' + 'change.' + #10 +
+  '            When context is False,' +
+  ' controls the number of lines to p' + 'lace' + #10 +
+  '            the "next" link anchor' +
+  's before the next change (so click' + ' of' + #10 +
+  '            "next" link jumps to j' + 'ust before the change).' + #10 +
+  '        """' + #10 + #10 + '        # make unique anchor prefi' +
+  'xes so that multiple tables may ex' + 'ist' + #10 +
+  '        # on the same page without' + ' conflict.' + #10 +
   '        self._make_prefix()' + #10 + #10 +
-  '        fromlines,tolines = self._' +
+  '        # change tabs to spaces be' +
+  'fore it gets more difficult after ' + 'we insert' + #10 +
+  '        # markup' + #10 + '        fromlines,tolines = self._' +
   'tab_newline_replace(fromlines,toli' + 'nes)' + #10 + #10 +
+  '        # create diffs iterator wh' +
+  'ich generates side by side from/to' + ' data' + #10 +
   '        if context:' + #10 + '            context_lines = numlin' + 'es' +
-  #10 + '        else:' + #10 + '            context_lines = None' + #10 +
+  #10 + '        else:' + #10 + '            context_lines = None' + #10;
+
+Const
+ Src_difflib_8: AnsiString =
   '        diffs = _mdiff(fromlines,t' +
   'olines,context_lines,linejunk=self' + '._linejunk,' + #10 +
   '                      charjunk=sel' + 'f._charjunk)' + #10 + #10 +
-  '        if self._wrapcolumn:' + #10 +
+  '        # set up iterator to wrap ' + 'lines that exceed desired width' +
+  #10 + '        if self._wrapcolumn:' + #10 +
   '            diffs = self._line_wra' + 'pper(diffs)' + #10 + #10 +
+  '        # collect up from/to lines' +
+  ' and flags into lists (also format' + ' the lines)' + #10 +
   '        fromlist,tolist,flaglist =' + ' self._collect_lines(diffs)' + #10 +
-  #10 + '        fromlist,tolist,flaglist,n' +
+  #10 + '        # process change flags, ge' +
+  'nerating middle column of next anc' + 'hors/links' + #10 +
+  '        fromlist,tolist,flaglist,n' +
   'ext_href,next_id = self._convert_f' + 'lags(' + #10 +
   '            fromlist,tolist,flagli' + 'st,context,numlines)' + #10 + #10 +
   '        s = []' + #10 + '        fmt = ''            <tr><td' +
@@ -49002,6 +54289,9 @@ Const
   '              ''<td class="diff_nex' + 't">%s</td>%s</tr>\n''' + #10 +
   '        for i in range(len(flaglis' + 't)):' + #10 +
   '            if flaglist[i] is None' + ':' + #10 +
+  '                # mdiff yields Non' +
+  'e on separator lines skip the bogu' + 's ones' + #10 +
+  '                # generated for th' + 'e first line' + #10 +
   '                if i > 0:' + #10 + '                    s.append(''    ' +
   '    </tbody>        \n        <tbo' + 'dy>\n'')' + #10 +
   '            else:' + #10 + '                s.append( fmt % (n' +
@@ -49028,9 +54318,23 @@ Const
   ',''<span class="diff_chg">''). \' + #10 +
   '                     replace(''\1'',' + '''</span>''). \' + #10 +
   '                     replace(''\t'',' + '''&nbsp;'')' + #10 + #10 +
-  'def restore(delta, which):' + #10 + '    try:' + #10 +
-  '        tag = {1: "- ", 2: "+ "}[i' + 'nt(which)]' + #10 +
-  '    except KeyError:' + #10 + '        raise ValueError(''unknown ' +
+  'del re' + #10 + #10 + 'def restore(delta, which):' + #10 + '    r"""' +
+  #10 + '    Generate one of the two sequen' + 'ces that generated a delta.' +
+  #10 + #10 + '    Given a `delta` produced by `D' +
+  'iffer.compare()` or `ndiff()`, ext' + 'ract' + #10 +
+  '    lines originating from file 1 ' +
+  'or 2 (parameter `which`), strippin' + 'g off line' + #10 +
+  '    prefixes.' + #10 + #10 + '    Examples:' + #10 + #10 +
+  '    >>> diff = ndiff(''one\ntwo\nth' +
+  'ree\n''.splitlines(keepends=True),' + #10 +
+  '    ...              ''ore\ntree\ne' +
+  'mu\n''.splitlines(keepends=True))' + #10 + '    >>> diff = list(diff)' +
+  #10 + '    >>> print(''''.join(restore(diff' + ', 1)), end="")' + #10 +
+  '    one' + #10 + '    two' + #10 + '    three' + #10 +
+  '    >>> print(''''.join(restore(diff' + ', 2)), end="")' + #10 +
+  '    ore' + #10 + '    tree' + #10 + '    emu' + #10 + '    """' + #10 +
+  '    try:' + #10 + '        tag = {1: "- ", 2: "+ "}[i' + 'nt(which)]' +
+  #10 + '    except KeyError:' + #10 + '        raise ValueError(''unknown ' +
   'delta choice (must be 1 or 2): %r''' + #10 +
   '                           % which' + ') from None' + #10 +
   '    prefixes = ("  ", tag)' + #10 + '    for line in delta:' + #10 +
@@ -49041,7 +54345,9 @@ Const
 
 Function Src_difflib: AnsiString;
 Begin
- Result := Src_difflib_0 + Src_difflib_1 + Src_difflib_2 + Src_difflib_3;
+ Result := Src_difflib_0 + Src_difflib_1 + Src_difflib_2 + Src_difflib_3 +
+  Src_difflib_4 + Src_difflib_5 + Src_difflib_6 + Src_difflib_7 +
+  Src_difflib_8;
 End;
 
 Const
@@ -52768,34 +58074,35 @@ Const
   'fnmatchcase(FILENAME, PATTERN) alw' + 'ays takes case in account.' + #10 +
   #10 + 'The functions operate by translati' +
   'ng the pattern into a regular' + #10 +
-  'expression (translate()), but matc' +
-  'hing is done by a small hand writt' + 'en' + #10 +
-  'matcher so that the `re` module is' + ' not needed.' + #10 + #10 +
-  'Patterns are Unix shell style:' + #10 + #10 +
-  '*       matches everything' + #10 + '?       matches any single charact' +
-  'er' + #10 + '[seq]   matches any character in s' + 'eq' + #10 +
-  '[!seq]  matches any char not in se' + 'q' + #10 + '"""' + #10 +
-  'import os' + #10 + 'import posixpath' + #10 + #10 +
-  '__all__ = ["filter", "fnmatch", "f' + 'nmatchcase", "translate"]' + #10 +
-  #10 + '_MAGIC = ''*?[''' + #10 + #10 + #10 + 'def fnmatch(name, pat):' +
-  #10 + '    """Test whether FILENAME match' + 'es PATTERN."""' + #10 +
-  '    name = os.path.normcase(name)' + #10 +
+  'expression.  They cache the compil' + 'ed regular expressions for speed.' +
+  #10 + #10 + 'The function translate(PATTERN) re' +
+  'turns a regular expression' + #10 + 'corresponding to PATTERN.  (It doe' +
+  's not compile it.)' + #10 + '"""' + #10 + 'import os' + #10 +
+  'import posixpath' + #10 + 'import re' + #10 + 'import functools' + #10 +
+  #10 + '__all__ = ["filter", "fnmatch", "f' + 'nmatchcase", "translate"]' +
+  #10 + #10 + 'def fnmatch(name, pat):' + #10 +
+  '    """Test whether FILENAME match' + 'es PATTERN.' + #10 + #10 +
+  '    Patterns are Unix shell style:' + #10 + #10 +
+  '    *       matches everything' + #10 +
+  '    ?       matches any single cha' + 'racter' + #10 +
+  '    [seq]   matches any character ' + 'in seq' + #10 +
+  '    [!seq]  matches any char not i' + 'n seq' + #10 + #10 +
+  '    An initial period in FILENAME ' + 'is not special.' + #10 +
+  '    Both FILENAME and PATTERN are ' + 'first case-normalized' + #10 +
+  '    if the operating system requir' + 'es it.' + #10 +
+  '    If you don''t want this, use fn' + 'matchcase(FILENAME, PATTERN).' +
+  #10 + '    """' + #10 + '    name = os.path.normcase(name)' + #10 +
   '    pat = os.path.normcase(pat)' + #10 +
-  '    return fnmatchcase(name, pat)' + #10 + #10 + #10 + '_cache = {}' +
-  #10 + '_cache_bytes = {}' + #10 + #10 + #10 + 'def _compile_pattern(pat):' +
-  #10 + '    is_bytes = isinstance(pat, byt' + 'es)' + #10 +
-  '    cache = _cache_bytes if is_byt' + 'es else _cache' + #10 +
-  '    m = cache.get(pat)' + #10 + '    if m is None:' + #10 +
-  '        if is_bytes:' + #10 + '            pat_str = str(pat, ''IS' +
-  'O-8859-1'')' + #10 + '            m = _make_matcher(pat_' + 'str)' + #10 +
-  '            m = _bytes_matcher(m)' + #10 + '        else:' + #10 +
-  '            m = _make_matcher(pat)' + #10 +
-  '        if len(cache) >= 256:' + #10 + '            cache.clear()' + #10 +
-  '        cache[pat] = m' + #10 + '    return m' + #10 + #10 + #10 +
-  'def _bytes_matcher(m):' + #10 + '    def match(name):' + #10 +
-  '        return m(str(name, ''ISO-88' + '59-1''))' + #10 +
-  '    return match' + #10 + #10 + #10 + 'def filter(names, pat):' + #10 +
-  '    """Return the subset of the li' + 'st NAMES that match PAT."""' + #10 +
+  '    return fnmatchcase(name, pat)' + #10 + #10 +
+  '@functools.lru_cache(maxsize=256, ' + 'typed=True)' + #10 +
+  'def _compile_pattern(pat):' + #10 + '    if isinstance(pat, bytes):' +
+  #10 + '        pat_str = str(pat, ''ISO-88' + '59-1'')' + #10 +
+  '        res_str = translate(pat_st' + 'r)' + #10 +
+  '        res = bytes(res_str, ''ISO-' + '8859-1'')' + #10 + '    else:' +
+  #10 + '        res = translate(pat)' + #10 +
+  '    return re.compile(res).match' + #10 + #10 + 'def filter(names, pat):' +
+  #10 + '    """Construct a list from those' +
+  ' elements of the iterable NAMES th' + 'at match PAT."""' + #10 +
   '    result = []' + #10 + '    pat = os.path.normcase(pat)' + #10 +
   '    match = _compile_pattern(pat)' + #10 + '    if os.path is posixpath:' +
   #10 + '        # normcase on posix is NOP' +
@@ -52804,315 +58111,145 @@ Const
   '                result.append(name' + ')' + #10 + '    else:' + #10 +
   '        for name in names:' + #10 + '            if match(os.path.normc' +
   'ase(name)):' + #10 + '                result.append(name' + ')' + #10 +
-  '    return result' + #10 + #10 + #10 + 'def fnmatchcase(name, pat):' +
-  #10 + '    """Test whether FILENAME match' +
-  'es PATTERN, including case."""' + #10 +
-  '    match = _compile_pattern(pat)' + #10 +
+  '    return result' + #10 + #10 + 'def fnmatchcase(name, pat):' + #10 +
+  '    """Test whether FILENAME match' + 'es PATTERN, including case.' + #10 +
+  #10 + '    This is a version of fnmatch()' +
+  ' which doesn''t case-normalize' + #10 + '    its arguments.' + #10 +
+  '    """' + #10 + '    match = _compile_pattern(pat)' + #10 +
   '    return match(name) is not None' + #10 + #10 + #10 +
-  '# --------------------------------' +
-  '----------------------------------' + '---------' + #10 +
-  '# regex text generation (same outp' + 'ut as CPython 3.8)' + #10 +
-  '# --------------------------------' +
-  '----------------------------------' + '---------' + #10 + #10 +
-  '_SPECIAL = ''()[]{}?*+-|^$\\.&~# \t' + '\n\r\v\f''' + #10 + #10 + #10 +
-  'def _re_escape(c):' + #10 + '    if c in _SPECIAL:' + #10 +
-  '        return ''\\'' + c' + #10 + '    return c' + #10 + #10 + #10 +
-  'def _class_stuff(pat, i, j):' + #10 +
-  '    """Body of the regex character' +
-  ' class for pat[i:j] (as translate(' + ') builds it)."""' + #10 +
-  '    stuff = pat[i:j]' + #10 + '    if ''--'' not in stuff:' + #10 +
-  '        stuff = stuff.replace(''\\''' + ', ''\\\\'')' + #10 + '    else:' +
-  #10 + '        chunks = []' + #10 + '        k = i + 2 if pat[i] == ''!''' +
-  ' else i + 1' + #10 + '        while True:' + #10 +
-  '            k = pat.find(''-'', k, j' + ')' + #10 +
-  '            if k < 0:' + #10 + '                break' + #10 +
-  '            chunks.append(pat[i:k]' + ')' + #10 + '            i = k + 1' +
-  #10 + '            k = k + 3' + #10 + '        chunks.append(pat[i:j])' +
-  #10 + '        # Escape backslashes and h' +
-  'yphens for set difference (--).' + #10 +
-  '        # Hyphens that create rang' + 'es shouldn''t be escaped.' + #10 +
-  '        stuff = ''-''.join(s.replace' +
-  '(''\\'', ''\\\\'').replace(''-'', ''\\-'')' + #10 +
-  '                         for s in ' + 'chunks)' + #10 +
-  '    # Escape set operations (&&, ~' + '~ and ||).' + #10 +
-  '    for ch in ''&~|'':' + #10 + '        stuff = stuff.replace(ch, ' +
-  '''\\'' + ch)' + #10 + '    return stuff' + #10 + #10 + #10 +
   'def translate(pat):' + #10 + '    """Translate a shell PATTERN t' +
   'o a regular expression.' + #10 + #10 +
   '    There is no way to quote meta-' + 'characters.' + #10 + '    """' +
-  #10 + '    i, n = 0, len(pat)' + #10 + '    res = ''''' + #10 +
-  '    while i < n:' + #10 + '        c = pat[i]' + #10 +
-  '        i = i + 1' + #10 + '        if c == ''*'':' + #10 +
-  '            res = res + ''.*''' + #10 + '        elif c == ''?'':' + #10 +
-  '            res = res + ''.''' + #10 + '        elif c == ''['':' + #10 +
-  '            j = i' + #10 + '            if j < n and pat[j] ==' +
-  ' ''!'':' + #10 + '                j = j + 1' + #10 +
-  '            if j < n and pat[j] ==' + ' '']'':' + #10 +
-  '                j = j + 1' + #10 + '            while j < n and pat[j]' +
-  ' != '']'':' + #10 + '                j = j + 1' + #10 +
-  '            if j >= n:' + #10 + '                res = res + ''\\[''' +
-  #10 + '            else:' + #10 + '                stuff = _class_stu' +
-  'ff(pat, i, j)' + #10 + '                i = j + 1' + #10 +
+  #10 + #10 + '    i, n = 0, len(pat)' + #10 + '    res = ''''' + #10 +
+  '    while i < n:' + #10 + '        c = pat[i]' + #10 + '        i = i+1' +
+  #10 + '        if c == ''*'':' + #10 + '            res = res + ''.*''' +
+  #10 + '        elif c == ''?'':' + #10 + '            res = res + ''.''' +
+  #10 + '        elif c == ''['':' + #10 + '            j = i' + #10 +
+  '            if j < n and pat[j] ==' + ' ''!'':' + #10 +
+  '                j = j+1' + #10 + '            if j < n and pat[j] ==' +
+  ' '']'':' + #10 + '                j = j+1' + #10 +
+  '            while j < n and pat[j]' + ' != '']'':' + #10 +
+  '                j = j+1' + #10 + '            if j >= n:' + #10 +
+  '                res = res + ''\\[''' + #10 + '            else:' + #10 +
+  '                stuff = pat[i:j]' + #10 +
+  '                if ''--'' not in stu' + 'ff:' + #10 +
+  '                    stuff = stuff.' + 'replace(''\\'', r''\\'')' + #10 +
+  '                else:' + #10 + '                    chunks = []' + #10 +
+  '                    k = i+2 if pat' + '[i] == ''!'' else i+1' + #10 +
+  '                    while True:' + #10 +
+  '                        k = pat.fi' + 'nd(''-'', k, j)' + #10 +
+  '                        if k < 0:' + #10 +
+  '                            break' + #10 +
+  '                        chunks.app' + 'end(pat[i:k])' + #10 +
+  '                        i = k+1' + #10 +
+  '                        k = k+3' + #10 +
+  '                    chunks.append(' + 'pat[i:j])' + #10 +
+  '                    # Escape backs' +
+  'lashes and hyphens for set differe' + 'nce (--).' + #10 +
+  '                    # Hyphens that' +
+  ' create ranges shouldn''t be escape' + 'd.' + #10 +
+  '                    stuff = ''-''.jo' +
+  'in(s.replace(''\\'', r''\\'').replace(' + '''-'', r''\-'')' + #10 +
+  '                                  ' + '   for s in chunks)' + #10 +
+  '                # Escape set opera' + 'tions (&&, ~~ and ||).' + #10 +
+  '                stuff = re.sub(r''(' + '[&~|])'', r''\\\1'', stuff)' +
+  #10 + '                i = j+1' + #10 +
   '                if stuff[0] == ''!''' + ':' + #10 +
   '                    stuff = ''^'' + ' + 'stuff[1:]' + #10 +
   '                elif stuff[0] in (' + '''^'', ''[''):' + #10 +
   '                    stuff = ''\\'' +' + ' stuff' + #10 +
   '                res = ''%s[%s]'' % (' + 'res, stuff)' + #10 +
-  '        else:' + #10 + '            res = res + _re_escape' + '(c)' + #10 +
-  '    return r''(?s:%s)\Z'' % res' + #10 + #10 + #10 +
-  '# --------------------------------' +
-  '----------------------------------' + '---------' + #10 +
-  '# matcher (no `re`)' + #10 + '# --------------------------------' +
-  '----------------------------------' + '---------' + #10 + #10 +
-  'def _parse_class(stuff):' + #10 + '    """Parse a regex class body (a' +
-  's built by _class_stuff) into' + #10 +
-  '    (negate, singles, ranges)."""' + #10 + '    n = len(stuff)' + #10 +
-  '    i = 0' + #10 + '    negate = False' + #10 +
-  '    if n and stuff[0] == ''^'':' + #10 + '        negate = True' + #10 +
-  '        i = 1' + #10 + '    singles = set()' + #10 + '    ranges = []' +
-  #10 + '    while i < n:' + #10 + '        c = stuff[i]' + #10 +
-  '        i += 1' + #10 + '        if c == ''\\'' and i < n:' + #10 +
-  '            c = stuff[i]' + #10 + '            i += 1' + #10 +
-  '        # range?' + #10 + '        if i + 1 < n and stuff[i] ' +
-  '== ''-'':' + #10 + '            hi = stuff[i + 1]' + #10 +
-  '            i += 2' + #10 + '            if hi == ''\\'' and i < ' + 'n:' +
-  #10 + '                hi = stuff[i]' + #10 + '                i += 1' +
-  #10 + '            if hi < c:' + #10 +
-  '                raise ValueError(''' +
-  'bad character range %s-%s'' % (c, h' + 'i))' + #10 +
-  '            ranges.append((c, hi))' + #10 + '        else:' + #10 +
-  '            singles.add(c)' + #10 + '    return negate, singles, ranges' +
-  #10 + #10 + #10 + 'def _tokenize(pat):' + #10 +
-  '    """Pattern -> list of tokens: ' +
-  'str (literal char), 1 (any), 2 (st' + 'ar),' + #10 +
-  '    tuple (negate, singles, ranges' + ')."""' + #10 + '    toks = []' +
-  #10 + '    i, n = 0, len(pat)' + #10 + '    while i < n:' + #10 +
-  '        c = pat[i]' + #10 + '        i += 1' + #10 +
-  '        if c == ''*'':' + #10 + '            if not toks or toks[-1' +
-  '] != 2:' + #10 + '                toks.append(2)' + #10 +
-  '        elif c == ''?'':' + #10 + '            toks.append(1)' + #10 +
-  '        elif c == ''['':' + #10 + '            j = i' + #10 +
-  '            if j < n and pat[j] ==' + ' ''!'':' + #10 +
-  '                j += 1' + #10 + '            if j < n and pat[j] ==' +
-  ' '']'':' + #10 + '                j += 1' + #10 +
-  '            while j < n and pat[j]' + ' != '']'':' + #10 +
-  '                j += 1' + #10 + '            if j >= n:' + #10 +
-  '                toks.append(''['')' + #10 + '            else:' + #10 +
-  '                stuff = _class_stu' + 'ff(pat, i, j)' + #10 +
-  '                i = j + 1' + #10 + '                if stuff[0] == ''!''' +
-  ':' + #10 + '                    stuff = ''^'' + ' + 'stuff[1:]' + #10 +
-  '                elif stuff[0] in (' + '''^'', ''[''):' + #10 +
-  '                    stuff = ''\\'' +' + ' stuff' + #10 +
-  '                toks.append(_parse' + '_class(stuff))' + #10 +
-  '        else:' + #10 + '            toks.append(c)' + #10 +
-  '    return toks' + #10 + #10 + #10 + 'def _class_match(cls, ch):' + #10 +
-  '    negate, singles, ranges = cls' + #10 + '    ok = ch in singles' + #10 +
-  '    if not ok:' + #10 + '        for lo, hi in ranges:' + #10 +
-  '            if lo <= ch <= hi:' + #10 + '                ok = True' + #10 +
-  '                break' + #10 + '    return ok != negate' + #10 + #10 +
-  #10 + 'def _make_matcher(pat):' + #10 +
-  '    """Return a function name -> T' +
-  'rue/None implementing translate(pa' + 't)."""' + #10 +
-  '    has_magic = False' + #10 + '    for c in _MAGIC:' + #10 +
-  '        if c in pat:' + #10 + '            has_magic = True' + #10 +
-  '            break' + #10 + '    if not has_magic:' + #10 +
-  '        def match_lit(name):' + #10 +
-  '            return True if name ==' + ' pat else None' + #10;
-
-Const
- Src_fnmatch_1: AnsiString =
-  '        return match_lit' + #10 + '    toks = _tokenize(pat)' + #10 +
-  '    # simple shapes' + #10 + '    if toks == [2]:' + #10 +
-  '        def match_all(name):' + #10 + '            return True' + #10 +
-  '        return match_all' + #10 + '    nt = len(toks)' + #10 +
-  '    if nt >= 2 and toks[0] == 2 an' +
-  'd all(type(t) is str for t in toks' + '[1:]):' + #10 +
-  '        suffix = ''''.join(toks[1:])' + #10 +
-  '        def match_suffix(name):' + #10 +
-  '            return True if name.en' + 'dswith(suffix) else None' + #10 +
-  '        return match_suffix' + #10 + '    if nt >= 2 and toks[-1] == 2 a' +
-  'nd all(type(t) is str for t in tok' + 's[:-1]):' + #10 +
-  '        prefix = ''''.join(toks[:-1]' + ')' + #10 +
-  '        def match_prefix(name):' + #10 +
-  '            return True if name.st' + 'artswith(prefix) else None' + #10 +
-  '        return match_prefix' + #10 + #10 + '    toks = tuple(toks)' + #10 +
-  #10 + '    def match(name):' + #10 + '        n = len(name)' + #10 +
-  '        i = 0           # index in' + ' name' + #10 +
-  '        t = 0           # index in' + ' toks' + #10 +
-  '        star_t = -1     # token in' + 'dex after the last star' + #10 +
-  '        star_i = 0      # name ind' +
-  'ex the last star currently covers ' + 'up to' + #10 +
-  '        while True:' + #10 + '            if t < nt:' + #10 +
-  '                tok = toks[t]' + #10 +
-  '                if tok == 2 and ty' + 'pe(tok) is int:' + #10 +
-  '                    star_t = t + 1' + #10 +
-  '                    star_i = i' + #10 + '                    t += 1' +
-  #10 + '                    continue' + #10 + '                if i < n:' +
-  #10 + '                    ch = name[i]' + #10 +
-  '                    tt = type(tok)' + #10 +
-  '                    if tt is str:' + #10 +
-  '                        ok = tok =' + '= ch' + #10 +
-  '                    elif tt is int' + ':' + #10 +
-  '                        ok = True' + #10 + '                    else:' +
-  #10 + '                        ok = _clas' + 's_match(tok, ch)' + #10 +
-  '                    if ok:' + #10 + '                        i += 1' +
-  #10 + '                        t += 1' + #10 +
-  '                        continue' + #10 + '            elif i == n:' +
-  #10 + '                return True' + #10 +
-  '            # mismatch: backtrack ' + 'to the last star' + #10 +
-  '            if star_t >= 0 and sta' + 'r_i < n:' + #10 +
-  '                star_i += 1' + #10 + '                i = star_i' + #10 +
-  '                t = star_t' + #10 + '                continue' + #10 +
-  '            return None' + #10 + #10 + '    return match' + #10 + #10;
+  '        else:' + #10 + '            res = res + re.escape(' + 'c)' + #10 +
+  '    return r''(?s:%s)\Z'' % res' + #10 + #10;
 
 Function Src_fnmatch: AnsiString;
 Begin
- Result := Src_fnmatch_0 + Src_fnmatch_1;
+ Result := Src_fnmatch_0;
 End;
 
 Const
  Src_fractions_0: AnsiString =
-  'import math' + #10 + 'import numbers' + #10 + 'import operator' + #10 +
-  'import sys' + #10 + #10 + 'try:' + #10 + '    _complex = complex' + #10 +
-  'except NameError:' + #10 + '    class _complex:' + #10 + '        pass' +
-  #10 + #10 + '__all__ = [''Fraction'', ''gcd'']' + #10 + #10 +
-  'def gcd(a, b):' + #10 + '    import warnings' + #10 +
+  '# Originally contributed by Sjoerd' + ' Mullender.' + #10 +
+  '# Significantly modified by Jeffre' +
+  'y Yasskin <jyasskin at gmail.com>.' + #10 + #10 +
+  '"""Fraction, infinite-precision, r' + 'eal numbers."""' + #10 + #10 +
+  'from decimal import Decimal' + #10 + 'import math' + #10 +
+  'import numbers' + #10 + 'import operator' + #10 + 'import re' + #10 +
+  'import sys' + #10 + #10 + '__all__ = [''Fraction'', ''gcd'']' + #10 + #10 +
+  #10 + #10 + 'def gcd(a, b):' + #10 + '    """Calculate the Greatest Comm' +
+  'on Divisor of a and b.' + #10 + #10 +
+  '    Unless b==0, the result will h' +
+  'ave the same sign as b (so that wh' + 'en' + #10 +
+  '    b is divided by it, the result' + ' comes out positive).' + #10 +
+  '    """' + #10 + '    import warnings' + #10 +
   '    warnings.warn(''fractions.gcd()' +
   ' is deprecated. Use math.gcd() ins' + 'tead.'',' + #10 +
   '                  DeprecationWarni' + 'ng, 2)' + #10 +
-  '    if type(a) is int is type(b):' + #10 +
+  '    if type(a) is int is type(b):' + #10 + '        if (b or a) < 0:' +
+  #10 + '            return -math.gcd(a, b)' + #10 +
   '        return math.gcd(a, b)' + #10 + '    return _gcd(a, b)' + #10 +
-  #10 + 'def _gcd(a, b):' + #10 + '    while b:' + #10 +
-  '        a, b = b, a % b' + #10 + '    return a' + #10 + #10 +
-  '_PyHASH_MODULUS = sys.hash_info.mo' + 'dulus' + #10 +
-  '_PyHASH_INF = sys.hash_info.inf' + #10 + #10 + 'def _int_truediv(n, d):' +
-  #10 + '    if -9007199254740992 <= n <= 9' + '007199254740992 and \' + #10 +
-  '            -9007199254740992 <= d' + ' <= 9007199254740992:' + #10 +
-  '        return n / d' + #10 + '    if d == 0:' + #10 +
-  '        raise ZeroDivisionError(''d' + 'ivision by zero'')' + #10 +
-  '    neg = (n < 0) != (d < 0)' + #10 + '    a = -n if n < 0 else n' + #10 +
-  '    b = -d if d < 0 else d' + #10 + '    if a == 0:' + #10 +
-  '        return -0.0 if neg else 0.' + '0' + #10 +
-  '    shift = 55 - (a.bit_length() -' + ' b.bit_length())' + #10 +
-  '    if shift >= 0:' + #10 + '        q, r = divmod(a << shift, ' + 'b)' +
-  #10 + '    else:' + #10 + '        q, r = divmod(a, b << -shi' + 'ft)' +
-  #10 + '    if r:' + #10 + '        q |= 1' + #10 + '    try:' + #10 +
-  '        res = math.ldexp(float(q),' + ' -shift)' + #10 +
-  '    except OverflowError:' + #10 + '        raise OverflowError(''integ' +
-  'er division result too large for a' + ' float'')' + #10 +
-  '    return -res if neg else res' + #10 + #10 + 'def _isdigits(s):' + #10 +
-  '    if not s:' + #10 + '        return False' + #10 + '    for c in s:' +
-  #10 + '        if c < ''0'' or c > ''9'':' + #10 +
-  '            return False' + #10 + '    return True' + #10 + #10 +
-  'def _us_digits_end(s, i):' + #10 + '    n = len(s)' + #10 + '    j = i' +
-  #10 + '    while j < n and ''0'' <= s[j] <=' + ' ''9'':' + #10 +
-  '        j += 1' + #10 + '    if j == i:' + #10 + '        return i' + #10 +
-  '    while j + 1 < n and s[j] == ''_' +
-  ''' and ''0'' <= s[j + 1] <= ''9'':' + #10 + '        j += 1' + #10 +
-  '        while j < n and ''0'' <= s[j' + '] <= ''9'':' + #10 +
-  '            j += 1' + #10 + '    return j' + #10 + #10 +
-  'def _parse_rational(s):' + #10 + '    s = s.strip()' + #10 +
-  '    sign = ''''' + #10 + '    if s[:1] in (''-'', ''+''):' + #10 +
-  '        sign = s[0]' + #10 + '        s = s[1:]' + #10 + '    n = len(s)' +
-  #10 + '    if not (s[:1] and ''0'' <= s[0] ' + '<= ''9'' or' + #10 +
-  '            (s[:1] == ''.'' and s[1:' +
-  '2] and ''0'' <= s[1] <= ''9'')):' + #10 + '        return None' + #10 +
-  '    k = _us_digits_end(s, 0)' + #10 + '    num = s[:k]' + #10 +
-  '    if k == n:' + #10 + '        return (sign, num, None, N' +
-  'one, None)' + #10 + '    m = k' + #10 +
-  '    while m < n and s[m] in '' \t\n' + '\r\f\v'':' + #10 +
-  '        m += 1' + #10 + '    if m < n and s[m] == ''/'' and k' + ' > 0:' +
-  #10 + '        m += 1' + #10 + '        while m < n and s[m] in '' ' +
-  '\t\n\r\f\v'':' + #10 + '            m += 1' + #10 +
-  '        e = _us_digits_end(s, m)' + #10 + '        if e > m and e == n:' +
-  #10 + '            return (sign, num, s[m' + ':e], None, None)' + #10 +
-  '        return None' + #10 + '    decimal = None' + #10 +
-  '    exp = None' + #10 + '    if s[k] == ''.'':' + #10 +
-  '        e = _us_digits_end(s, k + ' + '1)' + #10 +
-  '        decimal = s[k + 1:e]' + #10 + '        k = e' + #10 +
-  '    if k < n and s[k] in ''eE'':' + #10 + '        k2 = k + 1' + #10 +
-  '        if k2 < n and s[k2] in ''+-' + ''':' + #10 +
-  '            k2 += 1' + #10 + '        e = _us_digits_end(s, k2)' + #10 +
-  '        if e == k2:' + #10 + '            return None' + #10 +
-  '        exp = s[k + 1:e]' + #10 + '        k = e' + #10 +
-  '    if k != n:' + #10 + '        return None' + #10 +
-  '    return (sign, num, None, decim' + 'al, exp)' + #10 + #10 +
-  'def _round_to_exponent(n, d, expon' + 'ent, no_neg_zero=False):' + #10 +
-  '    if exponent >= 0:' + #10 + '        d *= 10**exponent' + #10 +
-  '    else:' + #10 + '        n *= 10**-exponent' + #10 + #10 +
-  '    q, r = divmod(n + (d >> 1), d)' + #10 +
-  '    if r == 0 and d & 1 == 0:' + #10 + '        q &= -2' + #10 + #10 +
-  '    sign = q < 0 if no_neg_zero el' + 'se n < 0' + #10 +
-  '    return sign, abs(q)' + #10 + #10 +
-  'def _round_to_figures(n, d, figure' + 's):' + #10 + '    if n == 0:' +
-  #10 + '        return False, 0, 1 - figur' + 'es' + #10 + #10 +
-  '    str_n, str_d = str(abs(n)), st' + 'r(d)' + #10 +
-  '    m = len(str_n) - len(str_d) + ' + '(str_d <= str_n)' + #10 + #10 +
-  '    exponent = m - figures' + #10 + '    sign, significand = _round_to_' +
-  'exponent(n, d, exponent)' + #10 + #10 +
-  '    if len(str(significand)) == fi' + 'gures + 1:' + #10 +
-  '        significand //= 10' + #10 + '        exponent += 1' + #10 + #10 +
-  '    return sign, significand, expo' + 'nent' + #10 + #10 +
-  'def _spec_fill_align(spec):' + #10 + '    if len(spec) >= 2 and spec[1] ' +
-  'in ''<>=^'':' + #10 + '        return spec[0], spec[1], 2' + #10 +
-  '    if len(spec) >= 1 and spec[0] ' + 'in ''<>=^'':' + #10 +
-  '        return None, spec[0], 1' + #10 + '    return None, None, 0' + #10 +
-  #10 + 'def _match_general_format(spec):' + #10 +
-  '    fill, align, i = _spec_fill_al' + 'ign(spec)' + #10 +
-  '    n = len(spec)' + #10 + '    d = {''fill'': fill, ''align'': al' +
-  'ign, ''sign'': '''', ''alt'': None,' + #10 +
-  '         ''minimumwidth'': None, ''th' + 'ousands_sep'': None}' + #10 +
-  '    if i < n and spec[i] in ''-+ '':' + #10 +
-  '        d[''sign''] = spec[i]' + #10 + '        i += 1' + #10 +
-  '    if i < n and spec[i] == ''#'':' + #10 + '        d[''alt''] = ''#''' +
-  #10 + '        i += 1' + #10 + '    if i < n and spec[i] == ''0'':' + #10 +
-  '        d[''minimumwidth''] = ''0''' + #10 + '        i += 1' + #10 +
-  '    elif i < n and ''1'' <= spec[i] ' + '<= ''9'':' + #10 +
-  '        j = i' + #10 + '        while j < n and ''0'' <= spe' +
-  'c[j] <= ''9'':' + #10 + '            j += 1' + #10 +
-  '        d[''minimumwidth''] = spec[i' + ':j]' + #10 + '        i = j' +
-  #10 + '    if i < n and spec[i] in '',_'':' + #10 +
-  '        d[''thousands_sep''] = spec[' + 'i]' + #10 + '        i += 1' +
-  #10 + '    if i != n:' + #10 + '        return None' + #10 +
-  '    return d' + #10 + #10 + 'def _match_float_format(spec):' + #10 +
-  '    fill, align, i = _spec_fill_al' + 'ign(spec)' + #10 +
-  '    n = len(spec)' + #10 + '    d = {''fill'': fill, ''align'': al' +
-  'ign, ''sign'': '''', ''no_neg_zero'': No' + 'ne,' + #10 +
-  '         ''alt'': None, ''zeropad'': N' + 'one, ''minimumwidth'': None,' +
-  #10 + '         ''thousands_sep'': None, ''p' + 'recision'': None,' + #10 +
-  '         ''presentation_type'': None' + '}' + #10 +
-  '    if i < n and spec[i] in ''-+ '':' + #10 +
-  '        d[''sign''] = spec[i]' + #10 + '        i += 1' + #10 +
-  '    if i < n and spec[i] == ''z'':' + #10 +
-  '        d[''no_neg_zero''] = ''z''' + #10 + '        i += 1' + #10 +
-  '    if i < n and spec[i] == ''#'':' + #10 + '        d[''alt''] = ''#''' +
-  #10 + '        i += 1' + #10 + '    if i + 1 < n and spec[i] == ''0' +
-  ''' and ''0'' <= spec[i + 1] <= ''9'':' + #10 +
-  '        d[''zeropad''] = ''0''' + #10 + '        i += 1' + #10 +
-  '    if i < n and spec[i] == ''0'':' + #10 +
-  '        d[''minimumwidth''] = ''0''' + #10 + '        i += 1' + #10 +
-  '    elif i < n and ''1'' <= spec[i] ' + '<= ''9'':' + #10 +
-  '        j = i' + #10 + '        while j < n and ''0'' <= spe' +
-  'c[j] <= ''9'':' + #10 + '            j += 1' + #10 +
-  '        d[''minimumwidth''] = spec[i' + ':j]' + #10 + '        i = j' +
-  #10 + '    if i < n and spec[i] in '',_'':' + #10 +
-  '        d[''thousands_sep''] = spec[' + 'i]' + #10 + '        i += 1' +
-  #10 + '    if i < n and spec[i] == ''.'':' + #10 + '        i += 1' + #10 +
-  '        if i < n and spec[i] == ''0' + ''':' + #10 +
-  '            d[''precision''] = ''0''' + #10 + '            i += 1' + #10 +
-  '        elif i < n and ''1'' <= spec' + '[i] <= ''9'':' + #10 +
-  '            j = i' + #10 + '            while j < n and ''0'' <=' +
-  ' spec[j] <= ''9'':' + #10 + '                j += 1' + #10 +
-  '            d[''precision''] = spec[' + 'i:j]' + #10 +
-  '            i = j' + #10 + '        else:' + #10 +
-  '            return None' + #10 + '    if i < n and spec[i] in ''eEfFg' +
-  'G%'':' + #10 + '        d[''presentation_type''] = s' + 'pec[i]' + #10 +
-  '        i += 1' + #10 + '    else:' + #10 + '        return None' + #10 +
-  '    if i != n:' + #10 + '        return None' + #10 + '    return d' +
-  #10 + #10 + 'class Fraction(numbers.Rational):' + #10 + #10 +
-  '    __slots__ = (''_numerator'', ''_d' + 'enominator'')' + #10 + #10 +
-  '    def __new__(cls, numerator=0, ' +
+  #10 + 'def _gcd(a, b):' + #10 + '    # Supports non-integers for ba' +
+  'ckward compatibility.' + #10 + '    while b:' + #10 +
+  '        a, b = b, a%b' + #10 + '    return a' + #10 + #10 +
+  '# Constants related to the hash im' + 'plementation;  hash(x) is based' +
+  #10 + '# on the reduction of x modulo the' + ' prime _PyHASH_MODULUS.' +
+  #10 + '_PyHASH_MODULUS = sys.hash_info.mo' + 'dulus' + #10 +
+  '# Value to be used for rationals t' + 'hat reduce to infinity modulo' +
+  #10 + '# _PyHASH_MODULUS.' + #10 + '_PyHASH_INF = sys.hash_info.inf' + #10 +
+  #10 + '_RATIONAL_FORMAT = re.compile(r"""' + #10 +
+  '    \A\s*                      # o' +
+  'ptional whitespace at the start, t' + 'hen' + #10 +
+  '    (?P<sign>[-+]?)            # a' + 'n optional sign, then' + #10 +
+  '    (?=\d|\.\d)                # l' + 'ookahead for digit or .digit' +
+  #10 + '    (?P<num>\d*)               # n' + 'umerator (possibly empty)' +
+  #10 + '    (?:                        # f' + 'ollowed by' + #10 +
+  '       (?:/(?P<denom>\d+))?    # a' + 'n optional denominator' + #10 +
+  '    |                          # o' + 'r' + #10 +
+  '       (?:\.(?P<decimal>\d*))? # a' + 'n optional fractional part' + #10 +
+  '       (?:E(?P<exp>[-+]?\d+))? # a' + 'nd optional exponent' + #10 +
+  '    )' + #10 + '    \s*\Z                      # a' +
+  'nd optional whitespace to finish' + #10 +
+  '""", re.VERBOSE | re.IGNORECASE)' + #10 + #10 + #10 +
+  'class Fraction(numbers.Rational):' + #10 +
+  '    """This class implements ratio' + 'nal numbers.' + #10 + #10 +
+  '    In the two-argument form of th' +
+  'e constructor, Fraction(8, 6) will' + #10 +
+  '    produce a rational number equi' +
+  'valent to 4/3. Both arguments must' + #10 +
+  '    be Rational. The numerator def' + 'aults to 0 and the denominator' +
+  #10 + '    defaults to 1 so that Fraction' +
+  '(3) == 3 and Fraction() == 0.' + #10 + #10 +
+  '    Fractions can also be construc' + 'ted from:' + #10 + #10 +
+  '      - numeric strings similar to' + ' those accepted by the' + #10 +
+  '        float constructor (for exa' + 'mple, ''-2.3'' or ''1e10'')' + #10 +
+  #10 + '      - strings of the form ''123/4' + '56''' + #10 + #10 +
+  '      - float and Decimal instance' + 's' + #10 + #10 +
+  '      - other Rational instances (' + 'including integers)' + #10 + #10 +
+  '    """' + #10 + #10 + '    __slots__ = (''_numerator'', ''_d' +
+  'enominator'')' + #10 + #10 + '    # We''re immutable, so use __ne' +
+  'w__ not __init__' + #10 + '    def __new__(cls, numerator=0, ' +
   'denominator=None, *, _normalize=Tr' + 'ue):' + #10 +
+  '        """Constructs a Rational.' + #10 + #10 +
+  '        Takes a string like ''3/2'' ' +
+  'or ''1.5'', another Rational instanc' + 'e, a' + #10 +
+  '        numerator/denominator pair' + ', or a float.' + #10 + #10 +
+  '        Examples' + #10 + '        --------' + #10 + #10 +
+  '        >>> Fraction(10, -8)' + #10 + '        Fraction(-5, 4)' + #10 +
+  '        >>> Fraction(Fraction(1, 7' + '), 5)' + #10 +
+  '        Fraction(1, 35)' + #10 + '        >>> Fraction(Fraction(1, 7' +
+  '), Fraction(2, 3))' + #10 + '        Fraction(3, 14)' + #10 +
+  '        >>> Fraction(''314'')' + #10 + '        Fraction(314, 1)' + #10 +
+  '        >>> Fraction(''-35/4'')' + #10 + '        Fraction(-35, 4)' + #10 +
+  '        >>> Fraction(''3.1415'') # c' + 'onversion from numeric string' +
+  #10 + '        Fraction(6283, 2000)' + #10 +
+  '        >>> Fraction(''-47e-2'') # s' +
+  'tring may include a decimal expone' + 'nt' + #10 +
+  '        Fraction(-47, 100)' + #10 + '        >>> Fraction(1.47)  # dire' +
+  'ct construction from float (exact ' + 'conversion)' + #10 +
+  '        Fraction(6620291452234629,' + ' 4503599627370496)' + #10 +
+  '        >>> Fraction(2.25)' + #10 + '        Fraction(9, 4)' + #10 +
+  '        >>> Fraction(Decimal(''1.47' + '''))' + #10 +
+  '        Fraction(147, 100)' + #10 + #10 + '        """' + #10 +
   '        self = super(Fraction, cls' + ').__new__(cls)' + #10 + #10 +
   '        if denominator is None:' + #10 +
   '            if type(numerator) is ' + 'int:' + #10 +
@@ -53121,46 +58258,44 @@ Const
   '                return self' + #10 + #10 +
   '            elif isinstance(numera' + 'tor, numbers.Rational):' + #10 +
   '                self._numerator = ' + 'numerator.numerator' + #10 +
-  '                self._denominator ' + '= numerator.denominator' + #10;
-
-Const
- Src_fractions_1: AnsiString =
+  '                self._denominator ' + '= numerator.denominator' + #10 +
   '                return self' + #10 + #10 +
-  '            elif (isinstance(numer' + 'ator, float) or' + #10 +
-  '                  type(numerator).' + '__name__ == ''Decimal''):' + #10 +
+  '            elif isinstance(numera' + 'tor, (float, Decimal)):' + #10 +
+  '                # Exact conversion' + #10 +
   '                self._numerator, s' +
   'elf._denominator = numerator.as_in' + 'teger_ratio()' + #10 +
   '                return self' + #10 + #10 +
   '            elif isinstance(numera' + 'tor, str):' + #10 +
-  '                m = _parse_rationa' + 'l(numerator)' + #10 +
+  '                # Handle construct' + 'ion from strings.' + #10 +
+  '                m = _RATIONAL_FORM' + 'AT.match(numerator)' + #10 +
   '                if m is None:' + #10 +
   '                    raise ValueErr' +
   'or(''Invalid literal for Fraction: ' + '%r'' %' + #10 +
   '                                  ' + '   numerator)' + #10 +
-  '                sign, num, denom, ' + 'decimal, exp = m' + #10 +
-  '                numerator = int((n' +
-  'um or ''0'').replace(''_'', ''''))' + #10 + '                if denom:' +
-  #10 + '                    denominator = ' +
-  'int(denom.replace(''_'', ''''))' + #10 + '                else:' + #10 +
+  '                numerator = int(m.' + 'group(''num'') or ''0'')' + #10 +
+  '                denom = m.group(''d' + 'enom'')' + #10 +
+  '                if denom:' + #10 + '                    denominator = ' +
+  'int(denom)' + #10 + '                else:' + #10 +
   '                    denominator = ' + '1' + #10 +
+  '                    decimal = m.gr' + 'oup(''decimal'')' + #10 +
   '                    if decimal:' + #10 +
-  '                        decimal = ' + 'decimal.replace(''_'', '''')' +
-  #10 + '                        scale = 10' + '**len(decimal)' + #10 +
+  '                        scale = 10' + '**len(decimal)' + #10 +
   '                        numerator ' +
   '= numerator * scale + int(decimal)' + #10 +
   '                        denominato' + 'r *= scale' + #10 +
+  '                    exp = m.group(' + '''exp'')' + #10 +
   '                    if exp:' + #10 + '                        exp = int(' +
-  'exp.replace(''_'', ''''))' + #10 + '                        if exp >= ' +
-  '0:' + #10 + '                            numera' + 'tor *= 10**exp' + #10 +
+  'exp)' + #10 + '                        if exp >= ' + '0:' + #10 +
+  '                            numera' + 'tor *= 10**exp' + #10 +
   '                        else:' + #10 +
   '                            denomi' + 'nator *= 10**-exp' + #10 +
-  '                if sign == ''-'':' + #10 +
+  '                if m.group(''sign'')' + ' == ''-'':' + #10 +
   '                    numerator = -n' + 'umerator' + #10 + #10 +
   '            else:' + #10 + '                raise TypeError("a' +
   'rgument should be a string "' + #10 +
   '                                "o' + 'r a Rational instance")' + #10 +
   #10 + '        elif type(numerator) is in' + 't is type(denominator):' +
-  #10 + '            pass' + #10 + #10 +
+  #10 + '            pass # *very* normal c' + 'ase' + #10 + #10 +
   '        elif (isinstance(numerator' + ', numbers.Rational) and' + #10 +
   '            isinstance(denominator' + ', numbers.Rational)):' + #10 +
   '            numerator, denominator' + ' = (' + #10 +
@@ -53173,7 +58308,8 @@ Const
   '            raise ZeroDivisionErro' +
   'r(''Fraction(%s, 0)'' % numerator)' + #10 + '        if _normalize:' +
   #10 + '            if type(numerator) is ' + 'int is type(denominator):' +
-  #10 + '                g = math.gcd(numer' + 'ator, denominator)' + #10 +
+  #10 + '                # *very* normal ca' + 'se' + #10 +
+  '                g = math.gcd(numer' + 'ator, denominator)' + #10 +
   '                if denominator < 0' + ':' + #10 +
   '                    g = -g' + #10 + '            else:' + #10 +
   '                g = _gcd(numerator' + ', denominator)' + #10 +
@@ -53181,7 +58317,10 @@ Const
   #10 + '        self._numerator = numerato' + 'r' + #10 +
   '        self._denominator = denomi' + 'nator' + #10 +
   '        return self' + #10 + #10 + '    @classmethod' + #10 +
-  '    def from_float(cls, f):' + #10 + '        if isinstance(f, numbers.I' +
+  '    def from_float(cls, f):' + #10 + '        """Converts a finite float' +
+  ' to a rational number, exactly.' + #10 + #10 +
+  '        Beware that Fraction.from_' + 'float(0.3) != Fraction(3, 10).' +
+  #10 + #10 + '        """' + #10 + '        if isinstance(f, numbers.I' +
   'ntegral):' + #10 + '            return cls(f)' + #10 +
   '        elif not isinstance(f, flo' + 'at):' + #10 +
   '            raise TypeError("%s.fr' +
@@ -53189,6 +58328,8 @@ Const
   '                            (cls._' + '_name__, f, type(f).__name__))' +
   #10 + '        return cls(*f.as_integer_r' + 'atio())' + #10 + #10 +
   '    @classmethod' + #10 + '    def from_decimal(cls, dec):' + #10 +
+  '        """Converts a finite Decim' +
+  'al instance to a rational number, ' + 'exactly."""' + #10 +
   '        from decimal import Decima' + 'l' + #10 +
   '        if isinstance(dec, numbers' + '.Integral):' + #10 +
   '            dec = Decimal(int(dec)' + ')' + #10 +
@@ -53198,13 +58339,49 @@ Const
   ' only takes Decimals, not %r (%s)"' + ' %' + #10 +
   '                (cls.__name__, dec' + ', type(dec).__name__))' + #10 +
   '        return cls(*dec.as_integer' + '_ratio())' + #10 + #10 +
-  '    def __float__(self):' + #10 + '        return _int_truediv(self._' +
-  'numerator, self._denominator)' + #10 + #10 + '    def is_integer(self):' +
-  #10 + '        return self._denominator =' + '= 1' + #10 + #10 +
   '    def as_integer_ratio(self):' + #10 +
-  '        return (self._numerator, s' + 'elf._denominator)' + #10 + #10 +
-  '    def limit_denominator(self, ma' + 'x_denominator=1000000):' + #10 +
-  '        if max_denominator < 1:' + #10 +
+  '        """Return the integer rati' + 'o as a tuple.' + #10 + #10 +
+  '        Return a tuple of two inte' + 'gers, whose ratio is equal to the' +
+  #10 + '        Fraction and with a positi' + 've denominator.' + #10 +
+  '        """' + #10 + '        return (self._numerator, s' +
+  'elf._denominator)' + #10 + #10 + '    def limit_denominator(self, ma' +
+  'x_denominator=1000000):' + #10 + '        """Closest Fraction to sel' +
+  'f with denominator at most max_den' + 'ominator.' + #10 + #10 +
+  '        >>> Fraction(''3.1415926535' + '89793'').limit_denominator(10)' +
+  #10 + '        Fraction(22, 7)' + #10 +
+  '        >>> Fraction(''3.1415926535' + '89793'').limit_denominator(100)' +
+  #10 + '        Fraction(311, 99)' + #10 +
+  '        >>> Fraction(4321, 8765).l' + 'imit_denominator(10000)' + #10 +
+  '        Fraction(4321, 8765)' + #10 + #10 + '        """' + #10 +
+  '        # Algorithm notes: For any' +
+  ' real number x, define a *best upp' + 'er' + #10 +
+  '        # approximation* to x to b' +
+  'e a rational number p/q such that:' + #10 + '        #' + #10 +
+  '        #   (1) p/q >= x, and' + #10 +
+  '        #   (2) if p/q > r/s >= x ' + 'then s > q, for any rational r/s.' +
+  #10 + '        #' + #10 + '        # Define *best lower appro' +
+  'ximation* similarly.  Then it can ' + 'be' + #10 +
+  '        # proved that a rational n' + 'umber is a best upper or lower' +
+  #10 + '        # approximation to x if, a' +
+  'nd only if, it is a convergent or' + #10 +
+  '        # semiconvergent of the (u' +
+  'nique shortest) continued fraction' + #10 + '        # associated to x.' +
+  #10 + '        #' + #10 + '        # To find a best rational ' +
+  'approximation with denominator <= ' + 'M,' + #10;
+
+Const
+ Src_fractions_1: AnsiString =
+  '        # we find the best upper a' + 'nd lower approximations with' +
+  #10 + '        # denominator <= M and tak' +
+  'e whichever of these is closer to ' + 'x.' + #10 +
+  '        # In the event of a tie, t' +
+  'he bound with smaller denominator ' + 'is' + #10 +
+  '        # chosen.  If both denomin' + 'ators are equal (which can happen' +
+  #10 + '        # only when max_denominato' +
+  'r == 1 and self is midway between' + #10 +
+  '        # two integers) the lower ' +
+  'bound---i.e., the floor of self, i' + 's' + #10 + '        # taken.' +
+  #10 + #10 + '        if max_denominator < 1:' + #10 +
   '            raise ValueError("max_' +
   'denominator should be at least 1")' + #10 +
   '        if self._denominator <= ma' + 'x_denominator:' + #10 +
@@ -53225,174 +58402,173 @@ Const
   '    def numerator(a):' + #10 + '        return a._numerator' + #10 + #10 +
   '    @property' + #10 + '    def denominator(a):' + #10 +
   '        return a._denominator' + #10 + #10 + '    def __repr__(self):' +
-  #10 + '        return ''%s(%s, %s)'' % (sel' + 'f.__class__.__name__,' +
-  #10 + '                               sel' +
-  'f._numerator, self._denominator)' + #10 + #10 + '    def __str__(self):' +
+  #10 + '        """repr(self)"""' + #10 +
+  '        return ''%s(%s, %s)'' % (sel' + 'f.__class__.__name__,' + #10 +
+  '                               sel' + 'f._numerator, self._denominator)' +
+  #10 + #10 + '    def __str__(self):' + #10 + '        """str(self)"""' +
   #10 + '        if self._denominator == 1:' + #10 +
   '            return str(self._numer' + 'ator)' + #10 + '        else:' +
   #10 + '            return ''%s/%s'' % (self' +
   '._numerator, self._denominator)' + #10 + #10 +
-  '    def _format_general(self, matc' + 'h):' + #10 +
-  '        fill = match["fill"] or " ' + '"' + #10 +
-  '        align = match["align"] or ' + '">"' + #10 +
-  '        pos_sign = "" if match["si' + 'gn"] == "-" else match["sign"]' +
-  #10 + '        alternate_form = bool(matc' + 'h["alt"])' + #10 +
-  '        minimumwidth = int(match["' + 'minimumwidth"] or "0")' + #10 +
-  '        thousands_sep = match["tho' + 'usands_sep"] or ''''' + #10 + #10 +
-  '        n, d = self._numerator, se' + 'lf._denominator' + #10 +
-  '        if d > 1 or alternate_form' + ':' + #10 +
-  '            body = f"{abs(n):{thou' + 'sands_sep}}/{d:{thousands_sep}}"' +
-  #10 + '        else:' + #10 + '            body = f"{abs(n):{thou' +
-  'sands_sep}}"' + #10 + '        sign = ''-'' if n < 0 else p' + 'os_sign' +
-  #10 + #10 + '        padding = fill * (minimumw' +
-  'idth - len(sign) - len(body))' + #10 + '        if align == ">":' + #10 +
-  '            return padding + sign ' + '+ body' + #10 +
-  '        elif align == "<":' + #10 + '            return sign + body + p' +
-  'adding' + #10 + '        elif align == "^":' + #10 +
-  '            half = len(padding) //' + ' 2' + #10 +
-  '            return padding[:half] ' + '+ sign + body + padding[half:]' +
-  #10 + '        else:' + #10 + '            return sign + padding ' +
-  '+ body' + #10 + #10 + '    def _format_float_style(self, ' + 'match):' +
-  #10 + '        fill = match["fill"] or " ' + '"' + #10 +
-  '        align = match["align"] or ' + '">"' + #10 +
-  '        pos_sign = "" if match["si' + 'gn"] == "-" else match["sign"]' +
-  #10 + '        no_neg_zero = bool(match["' + 'no_neg_zero"])' + #10 +
-  '        alternate_form = bool(matc' + 'h["alt"])' + #10 +
-  '        zeropad = bool(match["zero' + 'pad"])' + #10 +
-  '        minimumwidth = int(match["' + 'minimumwidth"] or "0")' + #10 +
-  '        thousands_sep = match["tho' + 'usands_sep"]' + #10 +
-  '        precision = int(match["pre' + 'cision"] or "6")' + #10 +
-  '        presentation_type = match[' + '"presentation_type"]' + #10 +
-  '        trim_zeros = presentation_' +
-  'type in "gG" and not alternate_for' + 'm' + #10 +
-  '        trim_point = not alternate' + '_form' + #10 +
-  '        exponent_indicator = "E" i' +
-  'f presentation_type in "EFG" else ' + '"e"' + #10 + #10 +
-  '        if align == ''='' and fill =' + '= ''0'':' + #10 +
-  '            zeropad = True' + #10 + #10 +
-  '        if presentation_type in "f' + 'F%":' + #10 +
-  '            exponent = -precision' + #10 +
-  '            if presentation_type =' + '= "%":' + #10 +
-  '                exponent -= 2' + #10 +
-  '            negative, significand ' + '= _round_to_exponent(' + #10 +
-  '                self._numerator, s' +
-  'elf._denominator, exponent, no_neg' + '_zero)' + #10 +
-  '            scientific = False' + #10 +
-  '            point_pos = precision' + #10 + '        else:' + #10 +
-  '            figures = (' + #10 + '                max(precision, 1)' +
-  #10 + '                if presentation_ty' + 'pe in "gG"' + #10 +
-  '                else precision + 1' + #10 + '            )' + #10 +
-  '            negative, significand,' + ' exponent = _round_to_figures(' +
-  #10 + '                self._numerator, s' + 'elf._denominator, figures)' +
-  #10 + '            scientific = (' + #10 +
-  '                presentation_type ' + 'in "eE"' + #10 +
-  '                or exponent > 0' + #10 +
-  '                or exponent + figu' + 'res <= -4' + #10 + '            )' +
-  #10 + '            point_pos = figures - ' +
-  '1 if scientific else -exponent' + #10 + #10 +
-  '        if presentation_type == "%' + '":' + #10 +
-  '            suffix = "%"' + #10 + '        elif scientific:' + #10 +
-  '            suffix = f"{exponent_i' +
-  'ndicator}{exponent + point_pos:+03' + 'd}"' + #10 + '        else:' + #10 +
-  '            suffix = ""' + #10 + #10 +
-  '        digits = f"{significand:0{' + 'point_pos + 1}d}"' + #10 + #10 +
-  '        sign = "-" if negative els' + 'e pos_sign' + #10 +
-  '        leading = digits[: len(dig' + 'its) - point_pos]' + #10 +
-  '        frac_part = digits[len(dig' + 'its) - point_pos :]' + #10 +
-  '        if trim_zeros:' + #10 + '            frac_part = frac_part.' +
-  'rstrip("0")' + #10 + '        separator = "" if trim_poi' +
-  'nt and not frac_part else "."' + #10 +
-  '        trailing = separator + fra' + 'c_part + suffix' + #10 + #10 +
-  '        if zeropad:' + #10 + '            min_leading = minimumw' +
-  'idth - len(sign) - len(trailing)' + #10 +
-  '            leading = leading.zfil' + 'l(' + #10 +
-  '                3 * min_leading //' +
-  ' 4 + 1 if thousands_sep else min_l' + 'eading' + #10 + '            )' +
-  #10 + #10 + '        if thousands_sep:' + #10 +
-  '            first_pos = 1 + (len(l' + 'eading) - 1) % 3' + #10 +
-  '            leading = leading[:fir' + 'st_pos] + "".join(' + #10 +
-  '                thousands_sep + le' + 'ading[pos : pos + 3]' + #10 +
-  '                for pos in range(f' + 'irst_pos, len(leading), 3)' + #10 +
-  '            )' + #10 + #10 + '        body = leading + trailing' + #10 +
-  '        padding = fill * (minimumw' + 'idth - len(sign) - len(body))' +
-  #10 + '        if align == ">":' + #10 +
-  '            return padding + sign ' + '+ body' + #10 +
-  '        elif align == "<":' + #10 + '            return sign + body + p' +
-  'adding' + #10 + '        elif align == "^":' + #10 +
-  '            half = len(padding) //' + ' 2' + #10 +
-  '            return padding[:half] ' + '+ sign + body + padding[half:]' +
-  #10 + '        else:' + #10 + '            return sign + padding ' +
-  '+ body' + #10 + #10 + '    def __format__(self, format_sp' + 'ec, /):' +
-  #10 + #10 + '        match = _match_general_for' + 'mat(format_spec)' +
-  #10 + '        if match is not None:' + #10 +
-  '            return self._format_ge' + 'neral(match)' + #10 + #10;
-
-Const
- Src_fractions_2: AnsiString =
-  '        match = _match_float_forma' + 't(format_spec)' + #10 +
-  '        if match is not None:' + #10 +
-  '            if match["align"] is N' + 'one or match["zeropad"] is None:' +
-  #10 + '                return self._forma' + 't_float_style(match)' + #10 +
-  #10 + '        raise ValueError(' + #10 +
-  '            f"Invalid format speci' + 'fier {format_spec!r} "' + #10 +
-  '            f"for object of type {' + 'type(self).__name__!r}"' + #10 +
-  '        )' + #10 + #10 + '    def _operator_fallbacks(monomo' +
+  '    def _operator_fallbacks(monomo' +
   'rphic_operator, fallback_operator)' + ':' + #10 +
-  '        def forward(a, b):' + #10 + '            if isinstance(b, (int,' +
-  ' Fraction)):' + #10 + '                return monomorphic' +
-  '_operator(a, b)' + #10 + '            elif isinstance(b, flo' + 'at):' +
-  #10 + '                return fallback_op' + 'erator(float(a), b)' + #10 +
-  '            elif isinstance(b, _co' + 'mplex):' + #10 +
-  '                return fallback_op' + 'erator(_complex(a), b)' + #10 +
+  '        """Generates forward and r' +
+  'everse operators given a purely-ra' + 'tional' + #10 +
+  '        operator and a function fr' + 'om the operator module.' + #10 +
+  #10 + '        Use this like:' + #10 +
+  '        __op__, __rop__ = _operato' +
+  'r_fallbacks(just_rational_op, oper' + 'ator.op)' + #10 + #10 +
+  '        In general, we want to imp' +
+  'lement the arithmetic operations s' + 'o' + #10 +
+  '        that mixed-mode operations' +
+  ' either call an implementation who' + 'se' + #10 +
+  '        author knew about the type' +
+  's of both arguments, or convert bo' + 'th' + #10 +
+  '        to the nearest built in ty' + 'pe and do the operation there. In' +
+  #10 + '        Fraction, that means that ' +
+  'we define __add__ and __radd__ as:' + #10 + #10 +
+  '            def __add__(self, othe' + 'r):' + #10 +
+  '                # Both types have ' +
+  'numerators/denominator attributes,' + #10 +
+  '                # so do the operat' + 'ion directly' + #10 +
+  '                if isinstance(othe' + 'r, (int, Fraction)):' + #10 +
+  '                    return Fractio' +
+  'n(self.numerator * other.denominat' + 'or +' + #10 +
+  '                                  ' +
+  '  other.numerator * self.denominat' + 'or,' + #10 +
+  '                                  ' +
+  '  self.denominator * other.denomin' + 'ator)' + #10 +
+  '                # float and comple' +
+  'x don''t have those operations, but' + ' we' + #10 +
+  '                # know about those' + ' types, so special case them.' +
+  #10 + '                elif isinstance(ot' + 'her, float):' + #10 +
+  '                    return float(s' + 'elf) + other' + #10 +
+  '                elif isinstance(ot' + 'her, complex):' + #10 +
+  '                    return complex' + '(self) + other' + #10 +
+  '                # Let the other ty' + 'pe take over.' + #10 +
+  '                return NotImplemen' + 'ted' + #10 + #10 +
+  '            def __radd__(self, oth' + 'er):' + #10 +
+  '                # radd handles mor' + 'e types than add because there''s' +
+  #10 + '                # nothing left to ' + 'fall back to.' + #10 +
+  '                if isinstance(othe' + 'r, numbers.Rational):' + #10 +
+  '                    return Fractio' +
+  'n(self.numerator * other.denominat' + 'or +' + #10 +
+  '                                  ' +
+  '  other.numerator * self.denominat' + 'or,' + #10 +
+  '                                  ' +
+  '  self.denominator * other.denomin' + 'ator)' + #10 +
+  '                elif isinstance(ot' + 'her, Real):' + #10 +
+  '                    return float(o' + 'ther) + float(self)' + #10 +
+  '                elif isinstance(ot' + 'her, Complex):' + #10 +
+  '                    return complex' + '(other) + complex(self)' + #10 +
+  '                return NotImplemen' + 'ted' + #10 + #10 + #10 +
+  '        There are 5 different case' + 's for a mixed-type addition on' +
+  #10 + '        Fraction. I''ll refer to al' +
+  'l of the above code that doesn''t' + #10 +
+  '        refer to Fraction, float, ' +
+  'or complex as "boilerplate". ''r''' + #10 +
+  '        will be an instance of Fra' + 'ction, which is a subtype of' +
+  #10 + '        Rational (r : Fraction <: ' + 'Rational), and b : B <:' +
+  #10 + '        Complex. The first three i' + 'nvolve ''r + b'':' + #10 +
+  #10 + '            1. If B <: Fraction, i' +
+  'nt, float, or complex, we handle' + #10 +
+  '               that specially, and' + ' all is well.' + #10 +
+  '            2. If Fraction falls b' +
+  'ack to the boilerplate code, and i' + 't' + #10 +
+  '               were to return a va' + 'lue from __add__, we''d miss the' +
+  #10 + '               possibility that B ' +
+  'defines a more intelligent __radd_' + '_,' + #10 +
+  '               so the boilerplate ' + 'should return NotImplemented from' +
+  #10 + '               __add__. In particu' +
+  'lar, we don''t handle Rational' + #10 +
+  '               here, even though w' +
+  'e could get an exact answer, in ca' + 'se' + #10 +
+  '               the other type want' + 's to do something special.' + #10 +
+  '            3. If B <: Fraction, P' + 'ython tries B.__radd__ before' +
+  #10 + '               Fraction.__add__. T' + 'his is ok, because it was' +
+  #10 + '               implemented with kn' +
+  'owledge of Fraction, so it can' + #10 +
+  '               handle those instan' + 'ces before delegating to Real or' +
+  #10 + '               Complex.' + #10 + #10 +
+  '        The next two situations de' +
+  'scribe ''b + r''. We assume that b' + #10 +
+  '        didn''t know about Fraction' +
+  ' in its implementation, and that i' + 't' + #10 +
+  '        uses similar boilerplate c' + 'ode:' + #10 + #10 +
+  '            4. If B <: Rational, t' + 'hen __radd_ converts both to the' +
+  #10 + '               builtin rational ty' +
+  'pe (hey look, that''s us) and' + #10 + '               proceeds.' + #10 +
+  '            5. Otherwise, __radd__' + ' tries to find the nearest common' +
+  #10 + '               base ABC, and fall ' +
+  'back to its builtin type. Since th' + 'is' + #10 +
+  '               class doesn''t subcl' + 'ass a concrete type, there''s no' +
+  #10 + '               implementation to f' +
+  'all back to, so we need to try as' + #10 +
+  '               hard as possible to' +
+  ' return an actual value, or the us' + 'er' + #10 +
+  '               will get a TypeErro' + 'r.' + #10 + #10 + '        """' +
+  #10 + '        def forward(a, b):' + #10 +
+  '            if isinstance(b, (int,' + ' Fraction)):' + #10 +
+  '                return monomorphic' + '_operator(a, b)' + #10 +
+  '            elif isinstance(b, flo' + 'at):' + #10 +
+  '                return fallback_op' + 'erator(float(a), b)' + #10 +
+  '            elif isinstance(b, com' + 'plex):' + #10 +
+  '                return fallback_op' + 'erator(complex(a), b)' + #10 +
   '            else:' + #10 + '                return NotImplemen' + 'ted' +
   #10 + '        forward.__name__ = ''__'' + ' +
   'fallback_operator.__name__ + ''__''' + #10 +
   '        forward.__doc__ = monomorp' + 'hic_operator.__doc__' + #10 + #10 +
   '        def reverse(b, a):' + #10 + '            if isinstance(a, numbe' +
-  'rs.Rational):' + #10 + '                return monomorphic' +
-  '_operator(a, b)' + #10 + '            elif isinstance(a, num' +
-  'bers.Real):' + #10 + '                return fallback_op' +
-  'erator(float(a), float(b))' + #10 + '            elif isinstance(a, num' +
-  'bers.Complex):' + #10 + '                return fallback_op' +
-  'erator(_complex(a), _complex(b))' + #10 + '            else:' + #10 +
-  '                return NotImplemen' + 'ted' + #10 +
-  '        reverse.__name__ = ''__r'' +' +
+  'rs.Rational):' + #10 + '                # Includes ints.' + #10 +
+  '                return monomorphic' + '_operator(a, b)' + #10 +
+  '            elif isinstance(a, num' + 'bers.Real):' + #10 +
+  '                return fallback_op' + 'erator(float(a), float(b))' + #10 +
+  '            elif isinstance(a, num' + 'bers.Complex):' + #10 +
+  '                return fallback_op' + 'erator(complex(a), complex(b))' +
+  #10 + '            else:' + #10 + '                return NotImplemen' +
+  'ted' + #10 + '        reverse.__name__ = ''__r'' +' +
   ' fallback_operator.__name__ + ''__''' + #10 +
   '        reverse.__doc__ = monomorp' + 'hic_operator.__doc__' + #10 + #10 +
   '        return forward, reverse' + #10 + #10 + '    def _add(a, b):' +
-  #10 + '        da, db = a.denominator, b.' + 'denominator' + #10 +
-  '        return Fraction(a.numerato' + 'r * db + b.numerator * da,' + #10 +
-  '                        da * db)' + #10 + #10 +
-  '    __add__, __radd__ = _operator_' + 'fallbacks(_add, operator.add)' +
-  #10 + #10 + '    def _sub(a, b):' + #10 +
-  '        da, db = a.denominator, b.' + 'denominator' + #10 +
-  '        return Fraction(a.numerato' + 'r * db - b.numerator * da,' + #10 +
-  '                        da * db)' + #10 + #10 +
-  '    __sub__, __rsub__ = _operator_' + 'fallbacks(_sub, operator.sub)' +
-  #10 + #10 + '    def _mul(a, b):' + #10 +
-  '        return Fraction(a.numerato' +
+  #10 + '        """a + b"""' + #10 + '        da, db = a.denominator, b.' +
+  'denominator' + #10 + '        return Fraction(a.numerato' +
+  'r * db + b.numerator * da,' + #10 + '                        da * db)' +
+  #10 + #10 + '    __add__, __radd__ = _operator_' +
+  'fallbacks(_add, operator.add)' + #10 + #10 + '    def _sub(a, b):' + #10 +
+  '        """a - b"""' + #10 + '        da, db = a.denominator, b.' +
+  'denominator' + #10 + '        return Fraction(a.numerato' +
+  'r * db - b.numerator * da,' + #10 + '                        da * db)' +
+  #10 + #10 + '    __sub__, __rsub__ = _operator_' +
+  'fallbacks(_sub, operator.sub)' + #10 + #10 + '    def _mul(a, b):' + #10 +
+  '        """a * b"""' + #10 + '        return Fraction(a.numerato' +
   'r * b.numerator, a.denominator * b' + '.denominator)' + #10 + #10 +
   '    __mul__, __rmul__ = _operator_' + 'fallbacks(_mul, operator.mul)' +
-  #10 + #10 + '    def _div(a, b):' + #10 +
+  #10 + #10 + '    def _div(a, b):' + #10 + '        """a / b"""' + #10 +
   '        return Fraction(a.numerato' + 'r * b.denominator,' + #10 +
   '                        a.denomina' + 'tor * b.numerator)' + #10 + #10 +
   '    __truediv__, __rtruediv__ = _o' +
   'perator_fallbacks(_div, operator.t' + 'ruediv)' + #10 + #10 +
-  '    def _floordiv(a, b):' + #10 + '        return (a.numerator * b.de' +
+  '    def _floordiv(a, b):' + #10 + '        """a // b"""' + #10 +
+  '        return (a.numerator * b.de' +
   'nominator) // (a.denominator * b.n' + 'umerator)' + #10 + #10 +
   '    __floordiv__, __rfloordiv__ = ' +
   '_operator_fallbacks(_floordiv, ope' + 'rator.floordiv)' + #10 + #10 +
-  '    def _divmod(a, b):' + #10 + '        da, db = a.denominator, b.' +
-  'denominator' + #10 + '        div, n_mod = divmod(a.nume' +
-  'rator * db, da * b.numerator)' + #10 +
-  '        return div, Fraction(n_mod' + ', da * db)' + #10 + #10 +
+  '    def _divmod(a, b):' + #10 + '        """(a // b, a % b)"""' + #10 +
+  '        da, db = a.denominator, b.' + 'denominator' + #10 +
+  '        div, n_mod = divmod(a.nume' + 'rator * db, da * b.numerator)' +
+  #10 + '        return div, Fraction(n_mod' + ', da * db)' + #10 + #10 +
   '    __divmod__, __rdivmod__ = _ope' + 'rator_fallbacks(_divmod, divmod)' +
-  #10 + #10 + '    def _mod(a, b):' + #10 +
+  #10 + #10 + '    def _mod(a, b):' + #10 + '        """a % b"""' + #10 +
   '        da, db = a.denominator, b.' + 'denominator' + #10 +
   '        return Fraction((a.numerat' +
   'or * db) % (b.numerator * da), da ' + '* db)' + #10 + #10 +
   '    __mod__, __rmod__ = _operator_' + 'fallbacks(_mod, operator.mod)' +
-  #10 + #10 + '    def __pow__(a, b):' + #10 +
+  #10 + #10 + '    def __pow__(a, b):' + #10 + '        """a ** b' + #10 +
+  #10 + '        If b is not an integer, th' +
+  'e result will be a float or comple' + 'x' + #10 +
+  '        since roots are generally ' +
+  'irrational. If b is an integer, th' + 'e' + #10 +
+  '        result will be rational.' + #10 + #10 + '        """' + #10 +
   '        if isinstance(b, numbers.R' + 'ational):' + #10 +
   '            if b.denominator == 1:' + #10 +
   '                power = b.numerato' + 'r' + #10 +
@@ -53400,78 +58576,120 @@ Const
   '                    return Fractio' + 'n(a._numerator ** power,' + #10 +
   '                                  ' + '  a._denominator ** power,' + #10 +
   '                                  ' + '  _normalize=False)' + #10 +
-  '                elif a._numerator ' + '> 0:' + #10 +
+  '                elif a._numerator ' + '>= 0:' + #10 +
   '                    return Fractio' + 'n(a._denominator ** -power,' + #10 +
   '                                  ' + '  a._numerator ** -power,' + #10 +
   '                                  ' + '  _normalize=False)' + #10 +
-  '                elif a._numerator ' + '== 0:' + #10 +
-  '                    raise ZeroDivi' + 'sionError(''Fraction(%s, 0)'' %' +
-  #10 + '                                  ' +
-  '          a._denominator ** -power' + ')' + #10 + '                else:' +
-  #10 + '                    return Fractio' +
+  '                else:' + #10 + '                    return Fractio' +
   'n((-a._denominator) ** -power,' + #10 +
   '                                  ' + '  (-a._numerator) ** -power,' +
   #10 + '                                  ' + '  _normalize=False)' + #10 +
-  '            else:' + #10 + '                return float(a) **' +
-  ' float(b)' + #10 + '        elif isinstance(b, (float,' + ' _complex)):' +
-  #10 + '            return float(a) ** b' + #10 + '        else:' + #10 +
-  '            return NotImplemented' + #10 + #10 +
-  '    def __rpow__(b, a):' + #10 + '        if b._denominator == 1 and' +
-  ' b._numerator >= 0:' + #10 + '            return a ** b._numerat' + 'or' +
-  #10 + #10 + '        if isinstance(a, numbers.R' + 'ational):' + #10 +
+  '            else:' + #10 + '                # A fractional pow' +
+  'er will generally produce an' + #10 +
+  '                # irrational numbe' + 'r.' + #10 +
+  '                return float(a) **' + ' float(b)' + #10 + '        else:' +
+  #10 + '            return float(a) ** b' + #10 + #10 +
+  '    def __rpow__(b, a):' + #10 + '        """a ** b"""' + #10 +
+  '        if b._denominator == 1 and' + ' b._numerator >= 0:' + #10 +
+  '            # If a is an int, keep' + ' it that way if possible.' + #10 +
+  '            return a ** b._numerat' + 'or' + #10 + #10 +
+  '        if isinstance(a, numbers.R' + 'ational):' + #10 +
   '            return Fraction(a.nume' + 'rator, a.denominator) ** b' + #10 +
   #10 + '        if b._denominator == 1:' + #10 +
-  '            return a ** b._numerat' + 'or' + #10 + #10 +
+  '            return a ** b._numerat' + 'or' + #10 + #10;
+
+Const
+ Src_fractions_2: AnsiString =
   '        return a ** float(b)' + #10 + #10 + '    def __pos__(a):' + #10 +
+  '        """+a: Coerces a subclass ' + 'instance to Fraction"""' + #10 +
   '        return Fraction(a._numerat' +
   'or, a._denominator, _normalize=Fal' + 'se)' + #10 + #10 +
-  '    def __neg__(a):' + #10 + '        return Fraction(-a._numera' +
+  '    def __neg__(a):' + #10 + '        """-a"""' + #10 +
+  '        return Fraction(-a._numera' +
   'tor, a._denominator, _normalize=Fa' + 'lse)' + #10 + #10 +
-  '    def __abs__(a):' + #10 + '        return Fraction(abs(a._num' +
+  '    def __abs__(a):' + #10 + '        """abs(a)"""' + #10 +
+  '        return Fraction(abs(a._num' +
   'erator), a._denominator, _normaliz' + 'e=False)' + #10 + #10 +
-  '    def __int__(a):' + #10 + '        if a._numerator < 0:' + #10 +
-  '            return -(-a._numerator' + ' // a._denominator)' + #10 +
-  '        else:' + #10 + '            return a._numerator //' +
-  ' a._denominator' + #10 + #10 + '    def __trunc__(a):' + #10 +
+  '    def __trunc__(a):' + #10 + '        """trunc(a)"""' + #10 +
   '        if a._numerator < 0:' + #10 +
   '            return -(-a._numerator' + ' // a._denominator)' + #10 +
   '        else:' + #10 + '            return a._numerator //' +
   ' a._denominator' + #10 + #10 + '    def __floor__(a):' + #10 +
-  '        return a.numerator // a.de' + 'nominator' + #10 + #10 +
-  '    def __ceil__(a):' + #10 + '        return -(-a.numerator // a' +
-  '.denominator)' + #10 + #10 + '    def __round__(self, ndigits=No' +
-  'ne):' + #10 + '        if ndigits is None:' + #10 +
-  '            floor, remainder = div' +
+  '        """math.floor(a)"""' + #10 + '        return a.numerator // a.de' +
+  'nominator' + #10 + #10 + '    def __ceil__(a):' + #10 +
+  '        """math.ceil(a)"""' + #10 + '        # The negations cleverly c' +
+  'onvince floordiv to return the cei' + 'ling.' + #10 +
+  '        return -(-a.numerator // a' + '.denominator)' + #10 + #10 +
+  '    def __round__(self, ndigits=No' + 'ne):' + #10 +
+  '        """round(self, ndigits)' + #10 + #10 +
+  '        Rounds half toward even.' + #10 + '        """' + #10 +
+  '        if ndigits is None:' + #10 + '            floor, remainder = div' +
   'mod(self.numerator, self.denominat' + 'or)' + #10 +
   '            if remainder * 2 < sel' + 'f.denominator:' + #10 +
   '                return floor' + #10 +
   '            elif remainder * 2 > s' + 'elf.denominator:' + #10 +
   '                return floor + 1' + #10 +
+  '            # Deal with the half c' + 'ase:' + #10 +
   '            elif floor % 2 == 0:' + #10 + '                return floor' +
   #10 + '            else:' + #10 + '                return floor + 1' + #10 +
-  '        shift = 10**abs(ndigits)' + #10 + '        if ndigits > 0:' + #10 +
+  '        shift = 10**abs(ndigits)' + #10 +
+  '        # See _operator_fallbacks.' +
+  'forward to check that the results ' + 'of' + #10 +
+  '        # these operations will al' +
+  'ways be Fraction and therefore hav' + 'e' + #10 + '        # round().' +
+  #10 + '        if ndigits > 0:' + #10 +
   '            return Fraction(round(' + 'self * shift), shift)' + #10 +
   '        else:' + #10 + '            return Fraction(round(' +
   'self / shift) * shift)' + #10 + #10 + '    def __hash__(self):' + #10 +
+  '        """hash(self)"""' + #10 + #10 +
+  '        # XXX since this method is' +
+  ' expensive, consider caching the r' + 'esult' + #10 + #10 +
+  '        # In order to make sure th' + 'at the hash of a Fraction agrees' +
+  #10 + '        # with the hash of a numer' +
+  'ically equal integer, float or' + #10 +
+  '        # Decimal instance, we fol' + 'low the rules for numeric hashes' +
+  #10 + '        # outlined in the document' +
+  'ation.  (See library docs, ''Built-' + 'in' + #10 + '        # Types'').' +
+  #10 + #10 + '        # dinv is the inverse of s' +
+  'elf._denominator modulo the prime' + #10 +
+  '        # _PyHASH_MODULUS, or 0 if' +
+  ' self._denominator is divisible by' + #10 + '        # _PyHASH_MODULUS.' +
   #10 + '        dinv = pow(self._denominat' +
   'or, _PyHASH_MODULUS - 2, _PyHASH_M' + 'ODULUS)' + #10 +
-  '        if not dinv or self._denom' + 'inator % _PyHASH_MODULUS == 0:' +
-  #10 + '            hash_ = _PyHASH_INF' + #10 + '        else:' + #10 +
-  '            hash_ = abs(self._nume' + 'rator) * dinv % _PyHASH_MODULUS' +
-  #10 + '        result = hash_ if self >= ' + '0 else -hash_' + #10 +
+  '        if not dinv:' + #10 + '            hash_ = _PyHASH_INF' + #10 +
+  '        else:' + #10 + '            hash_ = abs(self._nume' +
+  'rator) * dinv % _PyHASH_MODULUS' + #10 +
+  '        result = hash_ if self >= ' + '0 else -hash_' + #10 +
   '        return -2 if result == -1 ' + 'else result' + #10 + #10 +
-  '    def __eq__(a, b):' + #10 + '        if type(b) is int:' + #10 +
-  '            return a._numerator ==' + ' b and a._denominator == 1' + #10 +
-  '        if isinstance(b, numbers.R' + 'ational):' + #10 +
-  '            return (a._numerator =' + '= b.numerator and' + #10 +
-  '                    a._denominator' + ' == b.denominator)' + #10 +
-  '        if isinstance(b, numbers.C' + 'omplex) and b.imag == 0:' + #10 +
-  '            b = b.real' + #10 + '        if isinstance(b, float):' + #10 +
+  '    def __eq__(a, b):' + #10 + '        """a == b"""' + #10 +
+  '        if type(b) is int:' + #10 + '            return a._numerator ==' +
+  ' b and a._denominator == 1' + #10 + '        if isinstance(b, numbers.R' +
+  'ational):' + #10 + '            return (a._numerator =' +
+  '= b.numerator and' + #10 + '                    a._denominator' +
+  ' == b.denominator)' + #10 + '        if isinstance(b, numbers.C' +
+  'omplex) and b.imag == 0:' + #10 + '            b = b.real' + #10 +
+  '        if isinstance(b, float):' + #10 +
   '            if math.isnan(b) or ma' + 'th.isinf(b):' + #10 +
+  '                # comparisons with' +
+  ' an infinity or nan should behave ' + 'in' + #10 +
+  '                # the same way for' +
+  ' any finite a, so treat a as zero.' + #10 +
   '                return 0.0 == b' + #10 + '            else:' + #10 +
   '                return a == a.from' + '_float(b)' + #10 + '        else:' +
-  #10 + '            return NotImplemented' + #10 + #10 +
+  #10 + '            # Since a doesn''t know' +
+  ' how to compare with b, let''s give' + ' b' + #10 +
+  '            # a chance to compare ' + 'itself with a.' + #10 +
+  '            return NotImplemented' + #10 + #10 +
   '    def _richcmp(self, other, op):' + #10 +
+  '        """Helper for comparison o' + 'perators, for internal use only.' +
+  #10 + #10 + '        Implement comparison betwe' +
+  'en a Rational instance `self`, and' + #10 +
+  '        either another Rational in' + 'stance or a float `other`.  If' +
+  #10 + '        `other` is not a Rational ' + 'instance or a float, return' +
+  #10 + '        NotImplemented. `op` shoul' +
+  'd be one of the six standard' + #10 + '        comparison operators.' +
+  #10 + #10 + '        """' + #10 + '        # convert other to a Ratio' +
+  'nal instance where reasonable.' + #10 +
   '        if isinstance(other, numbe' + 'rs.Rational):' + #10 +
   '            return op(self._numera' + 'tor * other.denominator,' + #10 +
   '                      self._denomi' + 'nator * other.numerator)' + #10 +
@@ -53480,20 +58698,29 @@ Const
   '                return op(0.0, oth' + 'er)' + #10 + '            else:' +
   #10 + '                return op(self, se' + 'lf.from_float(other))' + #10 +
   '        else:' + #10 + '            return NotImplemented' + #10 + #10 +
-  '    def __lt__(a, b):' + #10 + '        return a._richcmp(b, opera' +
-  'tor.lt)' + #10 + #10 + '    def __gt__(a, b):' + #10 +
+  '    def __lt__(a, b):' + #10 + '        """a < b"""' + #10 +
+  '        return a._richcmp(b, opera' + 'tor.lt)' + #10 + #10 +
+  '    def __gt__(a, b):' + #10 + '        """a > b"""' + #10 +
   '        return a._richcmp(b, opera' + 'tor.gt)' + #10 + #10 +
-  '    def __le__(a, b):' + #10 + '        return a._richcmp(b, opera' +
-  'tor.le)' + #10 + #10 + '    def __ge__(a, b):' + #10 +
+  '    def __le__(a, b):' + #10 + '        """a <= b"""' + #10 +
+  '        return a._richcmp(b, opera' + 'tor.le)' + #10 + #10 +
+  '    def __ge__(a, b):' + #10 + '        """a >= b"""' + #10 +
   '        return a._richcmp(b, opera' + 'tor.ge)' + #10 + #10 +
-  '    def __bool__(a):' + #10 + '        return a._numerator != 0' + #10 +
-  #10 + '    def __reduce__(self):' + #10 +
-  '        return (self.__class__, (s' + 'tr(self),))' + #10 + #10 +
-  '    def __copy__(self):' + #10 + '        if type(self) == Fraction:' +
-  #10 + '            return self' + #10 +
+  '    def __bool__(a):' + #10 + '        """a != 0"""' + #10 +
+  '        # bpo-39274: Use bool() be' +
+  'cause (a._numerator != 0) can retu' + 'rn an' + #10 +
+  '        # object which is not a bo' + 'ol.' + #10 +
+  '        return bool(a._numerator)' + #10 + #10 +
+  '    # support for pickling, copy, ' + 'and deepcopy' + #10 + #10 +
+  '    def __reduce__(self):' + #10 + '        return (self.__class__, (s' +
+  'tr(self),))' + #10 + #10 + '    def __copy__(self):' + #10 +
+  '        if type(self) == Fraction:' + #10 +
+  '            return self     # I''m ' +
+  'immutable; therefore I am my own c' + 'lone' + #10 +
   '        return self.__class__(self' + '._numerator, self._denominator)' +
   #10 + #10 + '    def __deepcopy__(self, memo):' + #10 +
-  '        if type(self) == Fraction:' + #10 + '            return self' +
+  '        if type(self) == Fraction:' + #10 +
+  '            return self     # My c' + 'omponents are also immutable' +
   #10 + '        return self.__class__(self' +
   '._numerator, self._denominator)' + #10 + #10;
 
@@ -53725,21 +58952,73 @@ Const
   'anings of arguments of the form `-' + '''' + #10 +
   'and `--'').  Long options similar t' +
   'o those supported by GNU software' + #10 +
-  'may be used as well via an optiona' + 'l third argument.' + #10 + '"""' +
-  #10 + #10 + '# Many thanks to Guido van Rossum ' +
-  'and Fred Drake for the original mo' + 'dule.' + #10 + #10 +
-  '__all__ = ["GetoptError", "error",' + ' "getopt", "gnu_getopt"]' + #10 +
-  #10 + 'import os' + #10 + #10 + #10 + 'def _(s):' + #10 +
-  '    # gettext is not available' + #10 + '    return s' + #10 + #10 + #10 +
+  'may be used as well via an optiona' + 'l third argument.  This module' +
+  #10 + 'provides two functions and an exce' + 'ption:' + #10 + #10 +
+  'getopt() -- Parse command line opt' + 'ions' + #10 +
+  'gnu_getopt() -- Like getopt(), but' +
+  ' allow option and non-option argum' + 'ents' + #10 + 'to be intermixed.' +
+  #10 + 'GetoptError -- exception (class) r' +
+  'aised with ''opt'' attribute, which ' + 'is the' + #10 +
+  'option involved with the exception' + '.' + #10 + '"""' + #10 + #10 +
+  '# Long option support added by Lar' + 's Wirzenius <liw@iki.fi>.' + #10 +
+  '#' + #10 + '# Gerrit Holl <gerrit@nl.linux.org' +
+  '> moved the string-based exception' + 's' + #10 +
+  '# to class-based exceptions.' + #10 + '#' + #10 + '# Peter ' + #195 +
+  #133 + 'strand <astrand@lysator.l' + 'iu.se> added gnu_getopt().' + #10 +
+  '#' + #10 + '# TODO for gnu_getopt():' + #10 + '#' + #10 +
+  '# - GNU getopt_long_only mechanism' + #10 +
+  '# - allow the caller to specify or' + 'dering' + #10 +
+  '# - RETURN_IN_ORDER option' + #10 +
+  '# - GNU extension with ''-'' as firs' + 't character of option string' +
+  #10 + '# - optional arguments, specified ' + 'by double colons' + #10 +
+  '# - an option string with a W foll' + 'owed by semicolon should' + #10 +
+  '#   treat "-W foo" as "--foo"' + #10 + #10 +
+  '__all__ = ["GetoptError","error","' + 'getopt","gnu_getopt"]' + #10 + #10 +
+  'import os' + #10 + 'try:' + #10 + '    from gettext import gettext as' +
+  ' _' + #10 + 'except ImportError:' + #10 +
+  '    # Bootstrapping Python: gettex' + 't''s dependencies not built yet' +
+  #10 + '    def _(s): return s' + #10 + #10 +
   'class GetoptError(Exception):' + #10 + '    opt = ''''' + #10 +
-  '    msg = ''''' + #10 + #10 + '    def __init__(self, msg, opt=''''' +
-  '):' + #10 + '        self.msg = msg' + #10 + '        self.opt = opt' +
-  #10 + '        Exception.__init__(self, m' + 'sg, opt)' + #10 + #10 +
+  '    msg = ''''' + #10 + '    def __init__(self, msg, opt=''''' + '):' +
+  #10 + '        self.msg = msg' + #10 + '        self.opt = opt' + #10 +
+  '        Exception.__init__(self, m' + 'sg, opt)' + #10 + #10 +
   '    def __str__(self):' + #10 + '        return self.msg' + #10 + #10 +
-  'error = GetoptError  # backward co' + 'mpatibility' + #10 + #10 + #10 +
-  'def getopt(args, shortopts, longop' + 'ts=[]):' + #10 +
-  '    """getopt(args, options[, long' + '_options]) -> opts, args"""' + #10 +
-  #10 + '    opts = []' + #10 + '    if type(longopts) == type(""):' + #10 +
+  'error = GetoptError # backward com' + 'patibility' + #10 + #10 +
+  'def getopt(args, shortopts, longop' + 'ts = []):' + #10 +
+  '    """getopt(args, options[, long' + '_options]) -> opts, args' + #10 +
+  #10 + '    Parses command line options an' +
+  'd parameter list.  args is the' + #10 +
+  '    argument list to be parsed, wi' +
+  'thout the leading reference to the' + #10 +
+  '    running program.  Typically, t' +
+  'his means "sys.argv[1:]".  shortop' + 'ts' + #10 +
+  '    is the string of option letter' + 's that the script wants to' + #10 +
+  '    recognize, with options that r' + 'equire an argument followed by a' +
+  #10 + '    colon (i.e., the same format t' +
+  'hat Unix getopt() uses).  If' + #10 +
+  '    specified, longopts is a list ' + 'of strings with the names of the' +
+  #10 + '    long options which should be s' +
+  'upported.  The leading ''--''' + #10 +
+  '    characters should not be inclu' + 'ded in the option name.  Options' +
+  #10 + '    which require an argument shou' +
+  'ld be followed by an equal sign' + #10 + '    (''='').' + #10 + #10 +
+  '    The return value consists of t' +
+  'wo elements: the first is a list o' + 'f' + #10 +
+  '    (option, value) pairs; the sec' +
+  'ond is the list of program argumen' + 'ts' + #10 +
+  '    left after the option list was' +
+  ' stripped (this is a trailing slic' + 'e' + #10 +
+  '    of the first argument).  Each ' +
+  'option-and-value pair returned has' + #10 +
+  '    the option as its first elemen' + 't, prefixed with a hyphen (e.g.,' +
+  #10 + '    ''-x''), and the option argument' +
+  ' as its second element, or an empt' + 'y' + #10 +
+  '    string if the option has no ar' + 'gument.  The options occur in the' +
+  #10 + '    list in the same order in whic' +
+  'h they were found, thus allowing' + #10 +
+  '    multiple occurrences.  Long an' + 'd short options may be mixed.' +
+  #10 + #10 + '    """' + #10 + #10 + '    opts = []' + #10 +
+  '    if type(longopts) == type(""):' + #10 +
   '        longopts = [longopts]' + #10 + '    else:' + #10 +
   '        longopts = list(longopts)' + #10 +
   '    while args and args[0].startsw' + 'ith(''-'') and args[0] != ''-'':' +
@@ -53750,9 +59029,19 @@ Const
   'opts, args[0][2:], longopts, args[' + '1:])' + #10 + '        else:' +
   #10 + '            opts, args = do_shorts' +
   '(opts, args[0][1:], shortopts, arg' + 's[1:])' + #10 + #10 +
-  '    return opts, args' + #10 + #10 + #10 +
-  'def gnu_getopt(args, shortopts, lo' + 'ngopts=[]):' + #10 +
-  '    """getopt(args, options[, long' + '_options]) -> opts, args"""' + #10 +
+  '    return opts, args' + #10 + #10 + 'def gnu_getopt(args, shortopts, lo' +
+  'ngopts = []):' + #10 + '    """getopt(args, options[, long' +
+  '_options]) -> opts, args' + #10 + #10 +
+  '    This function works like getop' +
+  't(), except that GNU style scannin' + 'g' + #10 +
+  '    mode is used by default. This ' + 'means that option and non-option' +
+  #10 + '    arguments may be intermixed. T' + 'he getopt() function stops' +
+  #10 + '    processing options as soon as ' + 'a non-option argument is' +
+  #10 + '    encountered.' + #10 + #10 +
+  '    If the first character of the ' + 'option string is `+'', or if the' +
+  #10 + '    environment variable POSIXLY_C' + 'ORRECT is set, then option' +
+  #10 + '    processing stops as soon as a ' +
+  'non-option argument is encountered' + '.' + #10 + #10 + '    """' + #10 +
   #10 + '    opts = []' + #10 + '    prog_args = []' + #10 +
   '    if isinstance(longopts, str):' + #10 +
   '        longopts = [longopts]' + #10 + '    else:' + #10 +
@@ -53776,7 +59065,7 @@ Const
   '                prog_args += args' + #10 + '                break' + #10 +
   '            else:' + #10 + '                prog_args.append(a' +
   'rgs[0])' + #10 + '                args = args[1:]' + #10 + #10 +
-  '    return opts, prog_args' + #10 + #10 + #10 +
+  '    return opts, prog_args' + #10 + #10 +
   'def do_longs(opts, opt, longopts, ' + 'args):' + #10 + '    try:' + #10 +
   '        i = opt.index(''='')' + #10 + '    except ValueError:' + #10 +
   '        optarg = None' + #10 + '    else:' + #10 +
@@ -53914,32 +59203,670 @@ Begin
 End;
 
 Const
+ Src_gettext_0: AnsiString =
+  '"""Internationalization and locali' + 'zation support.' + #10 + #10 +
+  'This module provides international' +
+  'ization (I18N) and localization (L' + '10N)' + #10 +
+  'support for your Python programs b' +
+  'y providing an interface to the GN' + 'U gettext' + #10 +
+  'message catalog library.' + #10 + #10 +
+  'I18N refers to the operation by wh' +
+  'ich a program is made aware of mul' + 'tiple' + #10 +
+  'languages.  L10N refers to the ada' + 'ptation of your program, once' +
+  #10 + 'internationalized, to the local la' + 'nguage and cultural habits.' +
+  #10 + #10 + '"""' + #10 + #10 + '# This module represents the integ' +
+  'ration of work, contributions, fee' + 'dback, and' + #10 +
+  '# suggestions from the following p' + 'eople:' + #10 + '#' + #10 +
+  '# Martin von Loewis, who wrote the' +
+  ' initial implementation of the und' + 'erlying' + #10 +
+  '# C-based libintlmodule (later ren' +
+  'amed _gettext), along with a skele' + 'tal' + #10 +
+  '# gettext.py implementation.' + #10 + '#' + #10 +
+  '# Peter Funk, who wrote fintl.py, ' +
+  'a fairly complete wrapper around i' + 'ntlmodule,' + #10 +
+  '# which also included a pure-Pytho' +
+  'n implementation to read .mo files' + ' if' + #10 +
+  '# intlmodule wasn''t available.' + #10 + '#' + #10 +
+  '# James Henstridge, who also wrote' +
+  ' a gettext.py module, which has so' + 'me' + #10 +
+  '# interesting, but currently unsup' +
+  'ported experimental features: the ' + 'notion of' + #10 +
+  '# a Catalog class and instances, a' +
+  'nd the ability to add to a catalog' + ' file via' + #10 +
+  '# a Python API.' + #10 + '#' + #10 + '# Barry Warsaw integrated these mo' +
+  'dules, wrote the .install() API an' + 'd code,' + #10 +
+  '# and conformed all C and Python c' +
+  'ode to Python''s coding standards.' + #10 + '#' + #10 +
+  '# Francois Pinard and Marc-Andre L' +
+  'emburg also contributed valuably t' + 'o this' + #10 + '# module.' + #10 +
+  '#' + #10 + '# J. David Ibanez implemented plur' +
+  'al forms. Bruno Haible fixed some ' + 'bugs.' + #10 + '#' + #10 +
+  '# TODO:' + #10 + '# - Lazy loading of .mo files.  Cu' +
+  'rrently the entire catalog is load' + 'ed into' + #10 +
+  '#   memory, but that''s probably ba' +
+  'd for large translated programs.  ' + 'Instead,' + #10 +
+  '#   the lexical sort of original s' +
+  'trings in GNU .mo files should be ' + 'exploited' + #10 +
+  '#   to do binary searches and lazy' +
+  ' initializations.  Or you might wa' + 'nt to use' + #10 +
+  '#   the undocumented double-hash a' +
+  'lgorithm for .mo files with hash t' + 'ables, but' + #10 +
+  '#   you''ll need to study the GNU g' + 'ettext code to do this.' + #10 +
+  '#' + #10 + '# - Support Solaris .mo file forma' +
+  'ts.  Unfortunately, we''ve been una' + 'ble to' + #10 +
+  '#   find this format documented an' + 'ywhere.' + #10 + #10 + #10 +
+  'import locale' + #10 + 'import os' + #10 + 'import re' + #10 +
+  'import sys' + #10 + #10 + #10 + '__all__ = [''NullTranslations'', ''GN' +
+  'UTranslations'', ''Catalog'',' + #10 +
+  '           ''find'', ''translation'', ' +
+  '''install'', ''textdomain'', ''bindtext' + 'domain'',' + #10 +
+  '           ''bind_textdomain_codese' + 't'',' + #10 +
+  '           ''dgettext'', ''dngettext''' +
+  ', ''gettext'', ''lgettext'', ''ldgettex' + 't'',' + #10 +
+  '           ''ldngettext'', ''lngettex' + 't'', ''ngettext'',' + #10 +
+  '           ''pgettext'', ''dpgettext''' +
+  ', ''npgettext'', ''dnpgettext'',' + #10 + '           ]' + #10 + #10 +
+  '_default_localedir = os.path.join(' +
+  'sys.base_prefix, ''share'', ''locale''' + ')' + #10 + #10 +
+  '# Expression parsing for plural fo' + 'rm selection.' + #10 + '#' + #10 +
+  '# The gettext library supports a s' +
+  'mall subset of C syntax.  The only' + #10 +
+  '# incompatible difference is that ' +
+  'integer literals starting with zer' + 'o are' + #10 + '# decimal.' + #10 +
+  '#' + #10 + '# https://www.gnu.org/software/get' +
+  'text/manual/gettext.html#Plural-fo' + 'rms' + #10 +
+  '# http://git.savannah.gnu.org/cgit' +
+  '/gettext.git/tree/gettext-runtime/' + 'intl/plural.y' + #10 + #10 +
+  '_token_pattern = re.compile(r"""' + #10 +
+  '        (?P<WHITESPACES>[ \t]+)   ' +
+  '                 | # spaces and ho' + 'rizontal tabs' + #10 +
+  '        (?P<NUMBER>[0-9]+\b)      ' +
+  '                 | # decimal integ' + 'er' + #10 +
+  '        (?P<NAME>n\b)             ' +
+  '                 | # only n is all' + 'owed' + #10 +
+  '        (?P<PARENTHESIS>[()])     ' + '                 |' + #10 +
+  '        (?P<OPERATOR>[-*/%+?:]|[><' +
+  '!]=?|==|&&|\|\|) | # !, *, /, %, +' + ', -, <, >,' + #10 +
+  '                                  ' +
+  '                   # <=, >=, ==, !' + '=, &&, ||,' + #10 +
+  '                                  ' + '                   # ? :' + #10 +
+  '                                  ' +
+  '                   # unary and bit' + 'wise ops' + #10 +
+  '                                  ' + '                   # not allowed' +
+  #10 + '        (?P<INVALID>\w+|.)        ' +
+  '                   # invalid token' + #10 +
+  '    """, re.VERBOSE|re.DOTALL)' + #10 + #10 + 'def _tokenize(plural):' +
+  #10 + '    for mo in re.finditer(_token_p' + 'attern, plural):' + #10 +
+  '        kind = mo.lastgroup' + #10 +
+  '        if kind == ''WHITESPACES'':' + #10 + '            continue' + #10 +
+  '        value = mo.group(kind)' + #10 + '        if kind == ''INVALID'':' +
+  #10 + '            raise ValueError(''inva' +
+  'lid token in plural form: %s'' % va' + 'lue)' + #10 +
+  '        yield value' + #10 + '    yield ''''' + #10 + #10 +
+  'def _error(value):' + #10 + '    if value:' + #10 +
+  '        return ValueError(''unexpec' +
+  'ted token in plural form: %s'' % va' + 'lue)' + #10 + '    else:' + #10 +
+  '        return ValueError(''unexpec' + 'ted end of plural form'')' + #10 +
+  #10 + '_binary_ops = (' + #10 + '    (''||'',),' + #10 + '    (''&&'',),' +
+  #10 + '    (''=='', ''!=''),' + #10 +
+  '    (''<'', ''>'', ''<='', ''>=''),' + #10 + '    (''+'', ''-''),' + #10 +
+  '    (''*'', ''/'', ''%''),' + #10 + ')' + #10 +
+  '_binary_ops = {op: i for i, ops in' +
+  ' enumerate(_binary_ops, 1) for op ' + 'in ops}' + #10 +
+  '_c2py_ops = {''||'': ''or'', ''&&'': ''an' + 'd'', ''/'': ''//''}' + #10 +
+  #10 + 'def _parse(tokens, priority=-1):' + #10 + '    result = ''''' + #10 +
+  '    nexttok = next(tokens)' + #10 + '    while nexttok == ''!'':' + #10 +
+  '        result += ''not ''' + #10 + '        nexttok = next(tokens)' +
+  #10 + #10 + '    if nexttok == ''('':' + #10 +
+  '        sub, nexttok = _parse(toke' + 'ns)' + #10 +
+  '        result = ''%s(%s)'' % (resul' + 't, sub)' + #10 +
+  '        if nexttok != '')'':' + #10 +
+  '            raise ValueError(''unba' +
+  'lanced parenthesis in plural form''' + ')' + #10 +
+  '    elif nexttok == ''n'':' + #10 +
+  '        result = ''%s%s'' % (result,' + ' nexttok)' + #10 + '    else:' +
+  #10 + '        try:' + #10 + '            value = int(nexttok, 1' + '0)' +
+  #10 + '        except ValueError:' + #10 +
+  '            raise _error(nexttok) ' + 'from None' + #10 +
+  '        result = ''%s%d'' % (result,' + ' value)' + #10 +
+  '    nexttok = next(tokens)' + #10 + #10 + '    j = 100' + #10 +
+  '    while nexttok in _binary_ops:' + #10 +
+  '        i = _binary_ops[nexttok]' + #10 + '        if i < priority:' +
+  #10 + '            break' + #10 + '        # Break chained comparison' +
+  's' + #10 + '        if i in (3, 4) and j in (3' +
+  ', 4):  # ''=='', ''!='', ''<'', ''>'', ''<=' + ''', ''>=''' + #10 +
+  '            result = ''(%s)'' % resu' + 'lt' + #10 +
+  '        # Replace some C operators' + ' by their Python equivalents' +
+  #10 + '        op = _c2py_ops.get(nexttok' + ', nexttok)' + #10 +
+  '        right, nexttok = _parse(to' + 'kens, i + 1)' + #10 +
+  '        result = ''%s %s %s'' % (res' + 'ult, op, right)' + #10 +
+  '        j = i' + #10 + '    if j == priority == 4:  # ''<'',' +
+  ' ''>'', ''<='', ''>=''' + #10 + '        result = ''(%s)'' % result' +
+  #10 + #10 + '    if nexttok == ''?'' and priority' + ' <= 0:' + #10 +
+  '        if_true, nexttok = _parse(' + 'tokens, 0)' + #10 +
+  '        if nexttok != '':'':' + #10 + '            raise _error(nexttok)' +
+  #10 + '        if_false, nexttok = _parse' + '(tokens)' + #10 +
+  '        result = ''%s if %s else %s' + ''' % (if_true, result, if_false)' +
+  #10 + '        if priority == 0:' + #10 +
+  '            result = ''(%s)'' % resu' + 'lt' + #10 + #10 +
+  '    return result, nexttok' + #10 + #10 + 'def _as_int(n):' + #10 +
+  '    try:' + #10 + '        i = round(n)' + #10 + '    except TypeError:' +
+  #10 + '        raise TypeError(''Plural va' +
+  'lue must be an integer, got %s'' %' + #10 +
+  '                        (n.__class' + '__.__name__,)) from None' + #10 +
+  '    import warnings' + #10 + '    warnings.warn(''Plural value mu' +
+  'st be an integer, got %s'' %' + #10 +
+  '                  (n.__class__.__n' + 'ame__,),' + #10 +
+  '                  DeprecationWarni' + 'ng, 4)' + #10 + '    return n' +
+  #10 + #10 + 'def c2py(plural):' + #10 +
+  '    """Gets a C expression as used' +
+  ' in PO files for plural forms and ' + 'returns a' + #10 +
+  '    Python function that implement' + 's an equivalent expression.' + #10 +
+  '    """' + #10 + #10 + '    if len(plural) > 1000:' + #10 +
+  '        raise ValueError(''plural f' + 'orm expression is too long'')' +
+  #10 + '    try:' + #10 + '        result, nexttok = _parse(_' +
+  'tokenize(plural))' + #10 + '        if nexttok:' + #10 +
+  '            raise _error(nexttok)' + #10 + #10 + '        depth = 0' +
+  #10 + '        for c in result:' + #10 + '            if c == ''('':' +
+  #10 + '                depth += 1' + #10 +
+  '                if depth > 20:' + #10 +
+  '                    # Python compi' + 'ler limit is about 90.' + #10 +
+  '                    # The most com' + 'plex example has 2.' + #10 +
+  '                    raise ValueErr' +
+  'or(''plural form expression is too ' + 'complex'')' + #10 +
+  '            elif c == '')'':' + #10 + '                depth -= 1' + #10 +
+  #10 + '        ns = {''_as_int'': _as_int}' + #10 +
+  '        exec(''''''if True:' + #10 + '            def func(n):' + #10 +
+  '                if not isinstance(' + 'n, int):' + #10 +
+  '                    n = _as_int(n)' + #10 +
+  '                return int(%s)' + #10 +
+  '            '''''' % result, ns)' + #10 + '        return ns[''func'']' +
+  #10 + '    except RecursionError:' + #10 +
+  '        # Recursion error can be r' + 'aised in _parse() or exec().' +
+  #10 + '        raise ValueError(''plural f' +
+  'orm expression is too complex'')' + #10 + #10 + #10 +
+  'def _expand_lang(loc):' + #10 + '    loc = locale.normalize(loc)' + #10 +
+  '    COMPONENT_CODESET   = 1 << 0' + #10 +
+  '    COMPONENT_TERRITORY = 1 << 1' + #10 +
+  '    COMPONENT_MODIFIER  = 1 << 2' + #10 +
+  '    # split up the locale into its' + ' base components' + #10 +
+  '    mask = 0' + #10 + '    pos = loc.find(''@'')' + #10 +
+  '    if pos >= 0:' + #10 + '        modifier = loc[pos:]' + #10 +
+  '        loc = loc[:pos]' + #10 + '        mask |= COMPONENT_MODIFIER' +
+  #10 + '    else:' + #10 + '        modifier = ''''' + #10 +
+  '    pos = loc.find(''.'')' + #10 + '    if pos >= 0:' + #10 +
+  '        codeset = loc[pos:]' + #10 + '        loc = loc[:pos]' + #10 +
+  '        mask |= COMPONENT_CODESET' + #10 + '    else:' + #10 +
+  '        codeset = ''''' + #10 + '    pos = loc.find(''_'')' + #10 +
+  '    if pos >= 0:' + #10 + '        territory = loc[pos:]' + #10 +
+  '        loc = loc[:pos]' + #10 + '        mask |= COMPONENT_TERRITOR' +
+  'Y' + #10 + '    else:' + #10 + '        territory = ''''' + #10 +
+  '    language = loc' + #10 + '    ret = []' + #10 +
+  '    for i in range(mask+1):' + #10 + '        if not (i & ~mask):  # if ' +
+  'all components for this combo exis' + 't ...' + #10 +
+  '            val = language' + #10 + '            if i & COMPONENT_TERRI' +
+  'TORY: val += territory' + #10 + '            if i & COMPONENT_CODES' +
+  'ET:   val += codeset' + #10 + '            if i & COMPONENT_MODIF' +
+  'IER:  val += modifier' + #10 + '            ret.append(val)' + #10 +
+  '    ret.reverse()' + #10 + '    return ret' + #10;
+
+Const
+ Src_gettext_1: AnsiString =
+  #10 + #10 + #10 + 'class NullTranslations:' + #10 +
+  '    def __init__(self, fp=None):' + #10 + '        self._info = {}' + #10 +
+  '        self._charset = None' + #10 +
+  '        self._output_charset = Non' + 'e' + #10 +
+  '        self._fallback = None' + #10 + '        if fp is not None:' + #10 +
+  '            self._parse(fp)' + #10 + #10 + '    def _parse(self, fp):' +
+  #10 + '        pass' + #10 + #10 + '    def add_fallback(self, fallbac' +
+  'k):' + #10 + '        if self._fallback:' + #10 +
+  '            self._fallback.add_fal' + 'lback(fallback)' + #10 +
+  '        else:' + #10 + '            self._fallback = fallb' + 'ack' + #10 +
+  #10 + '    def gettext(self, message):' + #10 +
+  '        if self._fallback:' + #10 + '            return self._fallback.' +
+  'gettext(message)' + #10 + '        return message' + #10 + #10 +
+  '    def lgettext(self, message):' + #10 + '        import warnings' + #10 +
+  '        warnings.warn(''lgettext() ' +
+  'is deprecated, use gettext() inste' + 'ad'',' + #10 +
+  '                      DeprecationW' + 'arning, 2)' + #10 +
+  '        if self._fallback:' + #10 + '            with warnings.catch_wa' +
+  'rnings():' + #10 + '                warnings.filterwar' +
+  'nings(''ignore'', r''.*\blgettext\b.*' + ''',' + #10 +
+  '                                  ' + '      DeprecationWarning)' + #10 +
+  '                return self._fallb' + 'ack.lgettext(message)' + #10 +
+  '        if self._output_charset:' + #10 +
+  '            return message.encode(' + 'self._output_charset)' + #10 +
+  '        return message.encode(loca' + 'le.getpreferredencoding())' + #10 +
+  #10 + '    def ngettext(self, msgid1, msg' + 'id2, n):' + #10 +
+  '        if self._fallback:' + #10 + '            return self._fallback.' +
+  'ngettext(msgid1, msgid2, n)' + #10 + '        if n == 1:' + #10 +
+  '            return msgid1' + #10 + '        else:' + #10 +
+  '            return msgid2' + #10 + #10 +
+  '    def lngettext(self, msgid1, ms' + 'gid2, n):' + #10 +
+  '        import warnings' + #10 + '        warnings.warn(''lngettext()' +
+  ' is deprecated, use ngettext() ins' + 'tead'',' + #10 +
+  '                      DeprecationW' + 'arning, 2)' + #10 +
+  '        if self._fallback:' + #10 + '            with warnings.catch_wa' +
+  'rnings():' + #10 + '                warnings.filterwar' +
+  'nings(''ignore'', r''.*\blngettext\b.' + '*'',' + #10 +
+  '                                  ' + '      DeprecationWarning)' + #10 +
+  '                return self._fallb' + 'ack.lngettext(msgid1, msgid2, n)' +
+  #10 + '        if n == 1:' + #10 + '            tmsg = msgid1' + #10 +
+  '        else:' + #10 + '            tmsg = msgid2' + #10 +
+  '        if self._output_charset:' + #10 +
+  '            return tmsg.encode(sel' + 'f._output_charset)' + #10 +
+  '        return tmsg.encode(locale.' + 'getpreferredencoding())' + #10 +
+  #10 + '    def pgettext(self, context, me' + 'ssage):' + #10 +
+  '        if self._fallback:' + #10 + '            return self._fallback.' +
+  'pgettext(context, message)' + #10 + '        return message' + #10 + #10 +
+  '    def npgettext(self, context, m' + 'sgid1, msgid2, n):' + #10 +
+  '        if self._fallback:' + #10 + '            return self._fallback.' +
+  'npgettext(context, msgid1, msgid2,' + ' n)' + #10 + '        if n == 1:' +
+  #10 + '            return msgid1' + #10 + '        else:' + #10 +
+  '            return msgid2' + #10 + #10 + '    def info(self):' + #10 +
+  '        return self._info' + #10 + #10 + '    def charset(self):' + #10 +
+  '        return self._charset' + #10 + #10 +
+  '    def output_charset(self):' + #10 + '        import warnings' + #10 +
+  '        warnings.warn(''output_char' + 'set() is deprecated'',' + #10 +
+  '                      DeprecationW' + 'arning, 2)' + #10 +
+  '        return self._output_charse' + 't' + #10 + #10 +
+  '    def set_output_charset(self, c' + 'harset):' + #10 +
+  '        import warnings' + #10 + '        warnings.warn(''set_output_' +
+  'charset() is deprecated'',' + #10 + '                      DeprecationW' +
+  'arning, 2)' + #10 + '        self._output_charset = cha' + 'rset' + #10 +
+  #10 + '    def install(self, names=None):' + #10 +
+  '        import builtins' + #10 + '        builtins.__dict__[''_''] = s' +
+  'elf.gettext' + #10 + '        if names is not None:' + #10 +
+  '            allowed = {''gettext'', ' + '''lgettext'', ''lngettext'',' +
+  #10 + '                       ''ngettext'',' +
+  ' ''npgettext'', ''pgettext''}' + #10 +
+  '            for name in allowed & ' + 'set(names):' + #10 +
+  '                builtins.__dict__[' + 'name] = getattr(self, name)' + #10 +
+  #10 + #10 + 'class GNUTranslations(NullTranslat' + 'ions):' + #10 +
+  '    # Magic number of .mo files' + #10 + '    LE_MAGIC = 0x950412de' +
+  #10 + '    BE_MAGIC = 0xde120495' + #10 + #10 +
+  '    # The encoding of a msgctxt an' + 'd a msgid in a .mo file is' + #10 +
+  '    # msgctxt + "\x04" + msgid (ge' + 'ttext version >= 0.15)' + #10 +
+  '    CONTEXT = "%s\x04%s"' + #10 + #10 + '    # Acceptable .mo versions' +
+  #10 + '    VERSIONS = (0, 1)' + #10 + #10 +
+  '    def _get_versions(self, versio' + 'n):' + #10 +
+  '        """Returns a tuple of majo' + 'r version, minor version"""' + #10 +
+  '        return (version >> 16, ver' + 'sion & 0xffff)' + #10 + #10 +
+  '    def _parse(self, fp):' + #10 + '        """Override this method to' +
+  ' support alternative .mo formats."' + '""' + #10 +
+  '        # Delay struct import for ' +
+  'speeding up gettext import when .m' + 'o files' + #10 +
+  '        # are not used.' + #10 + '        from struct import unpack' +
+  #10 + '        filename = getattr(fp, ''na' + 'me'', '''')' + #10 +
+  '        # Parse the .mo file heade' +
+  'r, which consists of 5 little endi' + 'an 32' + #10 +
+  '        # bit words.' + #10 + '        self._catalog = catalog = ' + '{}' +
+  #10 + '        self.plural = lambda n: in' +
+  't(n != 1) # germanic plural by def' + 'ault' + #10 +
+  '        buf = fp.read()' + #10 + '        buflen = len(buf)' + #10 +
+  '        # Are we big endian or lit' + 'tle endian?' + #10 +
+  '        magic = unpack(''<I'', buf[:' + '4])[0]' + #10 +
+  '        if magic == self.LE_MAGIC:' + #10 +
+  '            version, msgcount, mas' +
+  'teridx, transidx = unpack(''<4I'', b' + 'uf[4:20])' + #10 +
+  '            ii = ''<II''' + #10 + '        elif magic == self.BE_MAGI' +
+  'C:' + #10 + '            version, msgcount, mas' +
+  'teridx, transidx = unpack(''>4I'', b' + 'uf[4:20])' + #10 +
+  '            ii = ''>II''' + #10 + '        else:' + #10 +
+  '            raise OSError(0, ''Bad ' + 'magic number'', filename)' + #10 +
+  #10 + '        major_version, minor_versi' +
+  'on = self._get_versions(version)' + #10 + #10 +
+  '        if major_version not in se' + 'lf.VERSIONS:' + #10 +
+  '            raise OSError(0, ''Bad ' +
+  'version number '' + str(major_versi' + 'on), filename)' + #10 + #10 +
+  '        # Now put all messages fro' +
+  'm the .mo file buffer into the cat' + 'alog' + #10 +
+  '        # dictionary.' + #10 + '        for i in range(0, msgcount' +
+  '):' + #10 + '            mlen, moff = unpack(ii' +
+  ', buf[masteridx:masteridx+8])' + #10 + '            mend = moff + mlen' +
+  #10 + '            tlen, toff = unpack(ii' + ', buf[transidx:transidx+8])' +
+  #10 + '            tend = toff + tlen' + #10 +
+  '            if mend < buflen and t' + 'end < buflen:' + #10 +
+  '                msg = buf[moff:men' + 'd]' + #10 +
+  '                tmsg = buf[toff:te' + 'nd]' + #10 + '            else:' +
+  #10 + '                raise OSError(0, ''' +
+  'File is corrupt'', filename)' + #10 +
+  '            # See if we''re looking' +
+  ' at GNU .mo conventions for metada' + 'ta' + #10 +
+  '            if mlen == 0:' + #10 + '                # Catalog descript' +
+  'ion' + #10 + '                lastk = None' + #10 +
+  '                for b_item in tmsg' + '.split(b''\n''):' + #10 +
+  '                    item = b_item.' + 'decode().strip()' + #10 +
+  '                    if not item:' + #10 +
+  '                        continue' + #10 +
+  '                    # Skip over co' + 'mment lines:' + #10 +
+  '                    if item.starts' +
+  'with(''#-#-#-#-#'') and item.endswit' + 'h(''#-#-#-#-#''):' + #10 +
+  '                        continue' + #10 +
+  '                    k = v = None' + #10 +
+  '                    if '':'' in item' + ':' + #10 +
+  '                        k, v = ite' + 'm.split('':'', 1)' + #10 +
+  '                        k = k.stri' + 'p().lower()' + #10 +
+  '                        v = v.stri' + 'p()' + #10 +
+  '                        self._info' + '[k] = v' + #10 +
+  '                        lastk = k' + #10 +
+  '                    elif lastk:' + #10 +
+  '                        self._info' + '[lastk] += ''\n'' + item' + #10 +
+  '                    if k == ''conte' + 'nt-type'':' + #10 +
+  '                        self._char' + 'set = v.split(''charset='')[1]' +
+  #10 + '                    elif k == ''plu' + 'ral-forms'':' + #10 +
+  '                        v = v.spli' + 't('';'')' + #10 +
+  '                        plural = v' + '[1].split(''plural='')[1]' + #10 +
+  '                        self.plura' + 'l = c2py(plural)' + #10 +
+  '            # Note: we uncondition' +
+  'ally convert both msgids and msgst' + 'rs to' + #10 +
+  '            # Unicode using the ch' +
+  'aracter encoding specified in the ' + 'charset' + #10 +
+  '            # parameter of the Con' +
+  'tent-Type header.  The gettext doc' + 'umentation' + #10 +
+  '            # strongly encourages ' +
+  'msgids to be us-ascii, but some ap' + 'plications' + #10 +
+  '            # require alternative ' +
+  'encodings (e.g. Zope''s ZCML and ZP' + 'T).  For' + #10 +
+  '            # traditional gettext ' +
+  'applications, the msgid conversion' + ' will' + #10 +
+  '            # cause no problems si' +
+  'nce us-ascii should always be a su' + 'bset of' + #10 +
+  '            # the charset encoding' +
+  '.  We may want to fall back to 8-b' + 'it msgids' + #10 +
+  '            # if the Unicode conve' + 'rsion fails.' + #10 +
+  '            charset = self._charse' + 't or ''ascii''' + #10 +
+  '            if b''\x00'' in msg:' + #10 +
+  '                # Plural forms' + #10 +
+  '                msgid1, msgid2 = m' + 'sg.split(b''\x00'')' + #10 +
+  '                tmsg = tmsg.split(' + 'b''\x00'')' + #10 +
+  '                msgid1 = str(msgid' + '1, charset)' + #10 +
+  '                for i, x in enumer' + 'ate(tmsg):' + #10 +
+  '                    catalog[(msgid' + '1, i)] = str(x, charset)' + #10 +
+  '            else:' + #10 + '                catalog[str(msg, c' +
+  'harset)] = str(tmsg, charset)' + #10 +
+  '            # advance to next entr' + 'y in the seek tables' + #10 +
+  '            masteridx += 8' + #10 + '            transidx += 8' + #10 +
+  #10 + '    def lgettext(self, message):' + #10 + '        import warnings' +
+  #10 + '        warnings.warn(''lgettext() ' +
+  'is deprecated, use gettext() inste' + 'ad'',' + #10 +
+  '                      DeprecationW' + 'arning, 2)' + #10 +
+  '        missing = object()' + #10 + '        tmsg = self._catalog.get(m' +
+  'essage, missing)' + #10 + '        if tmsg is missing:' + #10 +
+  '            if self._fallback:' + #10 +
+  '                return self._fallb' + 'ack.lgettext(message)' + #10 +
+  '            tmsg = message' + #10 + '        if self._output_charset:' +
+  #10 + '            return tmsg.encode(sel' + 'f._output_charset)' + #10 +
+  '        return tmsg.encode(locale.' + 'getpreferredencoding())' + #10 +
+  #10 + '    def lngettext(self, msgid1, ms' + 'gid2, n):' + #10 +
+  '        import warnings' + #10 + '        warnings.warn(''lngettext()' +
+  ' is deprecated, use ngettext() ins' + 'tead'',' + #10 +
+  '                      DeprecationW' + 'arning, 2)' + #10 + '        try:' +
+  #10 + '            tmsg = self._catalog[(' + 'msgid1, self.plural(n))]' +
+  #10 + '        except KeyError:' + #10 + '            if self._fallback:' +
+  #10 + '                return self._fallb' +
+  'ack.lngettext(msgid1, msgid2, n)' + #10 + '            if n == 1:' + #10 +
+  '                tmsg = msgid1' + #10 + '            else:' + #10 +
+  '                tmsg = msgid2' + #10 + '        if self._output_charset:' +
+  #10 + '            return tmsg.encode(sel' + 'f._output_charset)' + #10 +
+  '        return tmsg.encode(locale.' + 'getpreferredencoding())' + #10 +
+  #10 + '    def gettext(self, message):' + #10 +
+  '        missing = object()' + #10 + '        tmsg = self._catalog.get(m' +
+  'essage, missing)' + #10 + '        if tmsg is missing:' + #10 +
+  '            if self._fallback:' + #10 +
+  '                return self._fallb' + 'ack.gettext(message)' + #10 +
+  '            return message' + #10 + '        return tmsg' + #10 + #10;
+
+Const
+ Src_gettext_2: AnsiString =
+  '    def ngettext(self, msgid1, msg' + 'id2, n):' + #10 + '        try:' +
+  #10 + '            tmsg = self._catalog[(' + 'msgid1, self.plural(n))]' +
+  #10 + '        except KeyError:' + #10 + '            if self._fallback:' +
+  #10 + '                return self._fallb' +
+  'ack.ngettext(msgid1, msgid2, n)' + #10 + '            if n == 1:' + #10 +
+  '                tmsg = msgid1' + #10 + '            else:' + #10 +
+  '                tmsg = msgid2' + #10 + '        return tmsg' + #10 + #10 +
+  '    def pgettext(self, context, me' + 'ssage):' + #10 +
+  '        ctxt_msg_id = self.CONTEXT' + ' % (context, message)' + #10 +
+  '        missing = object()' + #10 + '        tmsg = self._catalog.get(c' +
+  'txt_msg_id, missing)' + #10 + '        if tmsg is missing:' + #10 +
+  '            if self._fallback:' + #10 +
+  '                return self._fallb' + 'ack.pgettext(context, message)' +
+  #10 + '            return message' + #10 + '        return tmsg' + #10 +
+  #10 + '    def npgettext(self, context, m' + 'sgid1, msgid2, n):' + #10 +
+  '        ctxt_msg_id = self.CONTEXT' + ' % (context, msgid1)' + #10 +
+  '        try:' + #10 + '            tmsg = self._catalog[c' +
+  'txt_msg_id, self.plural(n)]' + #10 + '        except KeyError:' + #10 +
+  '            if self._fallback:' + #10 +
+  '                return self._fallb' +
+  'ack.npgettext(context, msgid1, msg' + 'id2, n)' + #10 +
+  '            if n == 1:' + #10 + '                tmsg = msgid1' + #10 +
+  '            else:' + #10 + '                tmsg = msgid2' + #10 +
+  '        return tmsg' + #10 + #10 + #10 +
+  '# Locate a .mo file using the gett' + 'ext strategy' + #10 +
+  'def find(domain, localedir=None, l' + 'anguages=None, all=False):' + #10 +
+  '    # Get some reasonable defaults' +
+  ' for arguments that were not suppl' + 'ied' + #10 +
+  '    if localedir is None:' + #10 + '        localedir = _default_local' +
+  'edir' + #10 + '    if languages is None:' + #10 +
+  '        languages = []' + #10 + '        for envar in (''LANGUAGE'', ' +
+  '''LC_ALL'', ''LC_MESSAGES'', ''LANG''):' + #10 +
+  '            val = os.environ.get(e' + 'nvar)' + #10 +
+  '            if val:' + #10 + '                languages = val.sp' +
+  'lit('':'')' + #10 + '                break' + #10 +
+  '        if ''C'' not in languages:' + #10 +
+  '            languages.append(''C'')' + #10 +
+  '    # now normalize and expand the' + ' languages' + #10 +
+  '    nelangs = []' + #10 + '    for lang in languages:' + #10 +
+  '        for nelang in _expand_lang' + '(lang):' + #10 +
+  '            if nelang not in nelan' + 'gs:' + #10 +
+  '                nelangs.append(nel' + 'ang)' + #10 +
+  '    # select a language' + #10 + '    if all:' + #10 +
+  '        result = []' + #10 + '    else:' + #10 + '        result = None' +
+  #10 + '    for lang in nelangs:' + #10 + '        if lang == ''C'':' + #10 +
+  '            break' + #10 + '        mofile = os.path.join(loca' +
+  'ledir, lang, ''LC_MESSAGES'', ''%s.mo' + ''' % domain)' + #10 +
+  '        if os.path.exists(mofile):' + #10 + '            if all:' + #10 +
+  '                result.append(mofi' + 'le)' + #10 + '            else:' +
+  #10 + '                return mofile' + #10 + '    return result' + #10 +
+  #10 + #10 + #10 + '# a mapping between absolute .mo f' +
+  'ile path and Translation object' + #10 + '_translations = {}' + #10 +
+  '_unspecified = [''unspecified'']' + #10 + #10 +
+  'def translation(domain, localedir=' + 'None, languages=None,' + #10 +
+  '                class_=None, fallb' + 'ack=False, codeset=_unspecified):' +
+  #10 + '    if class_ is None:' + #10 + '        class_ = GNUTranslations' +
+  #10 + '    mofiles = find(domain, localed' + 'ir, languages, all=True)' +
+  #10 + '    if not mofiles:' + #10 + '        if fallback:' + #10 +
+  '            return NullTranslation' + 's()' + #10 +
+  '        from errno import ENOENT' + #10 +
+  '        raise FileNotFoundError(EN' + 'OENT,' + #10 +
+  '                                ''N' +
+  'o translation file found for domai' + 'n'', domain)' + #10 +
+  '    # Avoid opening, reading, and ' +
+  'parsing the .mo file after it''s be' + 'en done' + #10 + '    # once.' +
+  #10 + '    result = None' + #10 + '    for mofile in mofiles:' + #10 +
+  '        key = (class_, os.path.abs' + 'path(mofile))' + #10 +
+  '        t = _translations.get(key)' + #10 + '        if t is None:' + #10 +
+  '            with open(mofile, ''rb''' + ') as fp:' + #10 +
+  '                t = _translations.' + 'setdefault(key, class_(fp))' + #10 +
+  '        # Copy the translation obj' +
+  'ect to allow setting fallbacks and' + #10 +
+  '        # output charset. All othe' +
+  'r instance data is shared with the' + #10 + '        # cached object.' +
+  #10 + '        # Delay copy import for sp' +
+  'eeding up gettext import when .mo ' + 'files' + #10 +
+  '        # are not used.' + #10 + '        import copy' + #10 +
+  '        t = copy.copy(t)' + #10 + '        if codeset is not _unspeci' +
+  'fied:' + #10 + '            import warnings' + #10 +
+  '            warnings.warn(''paramet' + 'er codeset is deprecated'',' +
+  #10 + '                          Deprecat' + 'ionWarning, 2)' + #10 +
+  '            if codeset:' + #10 + '                with warnings.catc' +
+  'h_warnings():' + #10 + '                    warnings.filte' +
+  'rwarnings(''ignore'', r''.*\bset_outp' + 'ut_charset\b.*'',' + #10 +
+  '                                  ' + '          DeprecationWarning)' +
+  #10 + '                    t.set_output_c' + 'harset(codeset)' + #10 +
+  '        if result is None:' + #10 + '            result = t' + #10 +
+  '        else:' + #10 + '            result.add_fallback(t)' + #10 +
+  '    return result' + #10 + #10 + #10 +
+  'def install(domain, localedir=None' +
+  ', codeset=_unspecified, names=None' + '):' + #10 +
+  '    t = translation(domain, locale' +
+  'dir, fallback=True, codeset=codese' + 't)' + #10 + '    t.install(names)' +
+  #10 + #10 + #10 + #10 + '# a mapping b/w domains and locale' +
+  ' directories' + #10 + '_localedirs = {}' + #10 +
+  '# a mapping b/w domains and codese' + 'ts' + #10 + '_localecodesets = {}' +
+  #10 + '# current global domain, `messages' +
+  ''' used for compatibility w/ GNU ge' + 'ttext' + #10 +
+  '_current_domain = ''messages''' + #10 + #10 + #10 +
+  'def textdomain(domain=None):' + #10 + '    global _current_domain' + #10 +
+  '    if domain is not None:' + #10 + '        _current_domain = domain' +
+  #10 + '    return _current_domain' + #10 + #10 + #10 +
+  'def bindtextdomain(domain, localed' + 'ir=None):' + #10 +
+  '    global _localedirs' + #10 + '    if localedir is not None:' + #10 +
+  '        _localedirs[domain] = loca' + 'ledir' + #10 +
+  '    return _localedirs.get(domain,' + ' _default_localedir)' + #10 + #10 +
+  #10 + 'def bind_textdomain_codeset(domain' + ', codeset=None):' + #10 +
+  '    import warnings' + #10 + '    warnings.warn(''bind_textdomain' +
+  '_codeset() is deprecated'',' + #10 + '                  DeprecationWarni' +
+  'ng, 2)' + #10 + '    global _localecodesets' + #10 +
+  '    if codeset is not None:' + #10 + '        _localecodesets[domain] = ' +
+  'codeset' + #10 + '    return _localecodesets.get(dom' + 'ain)' + #10 +
+  #10 + #10 + 'def dgettext(domain, message):' + #10 + '    try:' + #10 +
+  '        t = translation(domain, _l' + 'ocaledirs.get(domain, None))' +
+  #10 + '    except OSError:' + #10 + '        return message' + #10 +
+  '    return t.gettext(message)' + #10 + #10 +
+  'def ldgettext(domain, message):' + #10 + '    import warnings' + #10 +
+  '    warnings.warn(''ldgettext() is ' +
+  'deprecated, use dgettext() instead' + ''',' + #10 +
+  '                  DeprecationWarni' + 'ng, 2)' + #10 +
+  '    codeset = _localecodesets.get(' + 'domain)' + #10 + '    try:' + #10 +
+  '        with warnings.catch_warnin' + 'gs():' + #10 +
+  '            warnings.filterwarning' +
+  's(''ignore'', r''.*\bparameter codese' + 't\b.*'',' + #10 +
+  '                                  ' + '  DeprecationWarning)' + #10 +
+  '            t = translation(domain' +
+  ', _localedirs.get(domain, None), c' + 'odeset=codeset)' + #10 +
+  '    except OSError:' + #10 + '        return message.encode(code' +
+  'set or locale.getpreferredencoding' + '())' + #10 +
+  '    with warnings.catch_warnings()' + ':' + #10 +
+  '        warnings.filterwarnings(''i' + 'gnore'', r''.*\blgettext\b.*'',' +
+  #10 + '                                De' + 'precationWarning)' + #10 +
+  '        return t.lgettext(message)' + #10 + #10 +
+  'def dngettext(domain, msgid1, msgi' + 'd2, n):' + #10 + '    try:' + #10 +
+  '        t = translation(domain, _l' + 'ocaledirs.get(domain, None))' +
+  #10 + '    except OSError:' + #10 + '        if n == 1:' + #10 +
+  '            return msgid1' + #10 + '        else:' + #10 +
+  '            return msgid2' + #10 + '    return t.ngettext(msgid1, msgi' +
+  'd2, n)' + #10 + #10 + 'def ldngettext(domain, msgid1, msg' + 'id2, n):' +
+  #10 + '    import warnings' + #10 + '    warnings.warn(''ldngettext() is' +
+  ' deprecated, use dngettext() inste' + 'ad'',' + #10 +
+  '                  DeprecationWarni' + 'ng, 2)' + #10 +
+  '    codeset = _localecodesets.get(' + 'domain)' + #10 + '    try:' + #10 +
+  '        with warnings.catch_warnin' + 'gs():' + #10 +
+  '            warnings.filterwarning' +
+  's(''ignore'', r''.*\bparameter codese' + 't\b.*'',' + #10 +
+  '                                  ' + '  DeprecationWarning)' + #10 +
+  '            t = translation(domain' +
+  ', _localedirs.get(domain, None), c' + 'odeset=codeset)' + #10 +
+  '    except OSError:' + #10 + '        if n == 1:' + #10 +
+  '            tmsg = msgid1' + #10 + '        else:' + #10 +
+  '            tmsg = msgid2' + #10 + '        return tmsg.encode(codeset' +
+  ' or locale.getpreferredencoding())' + #10 +
+  '    with warnings.catch_warnings()' + ':' + #10 +
+  '        warnings.filterwarnings(''i' + 'gnore'', r''.*\blngettext\b.*'',' +
+  #10 + '                                De' + 'precationWarning)' + #10 +
+  '        return t.lngettext(msgid1,' + ' msgid2, n)' + #10 + #10 + #10 +
+  'def dpgettext(domain, context, mes' + 'sage):' + #10 + '    try:' + #10 +
+  '        t = translation(domain, _l' + 'ocaledirs.get(domain, None))' +
+  #10 + '    except OSError:' + #10 + '        return message' + #10 +
+  '    return t.pgettext(context, mes' + 'sage)' + #10 + #10 + #10 +
+  'def dnpgettext(domain, context, ms' + 'gid1, msgid2, n):' + #10 +
+  '    try:' + #10 + '        t = translation(domain, _l' +
+  'ocaledirs.get(domain, None))' + #10 + '    except OSError:' + #10 +
+  '        if n == 1:' + #10 + '            return msgid1' + #10 +
+  '        else:' + #10 + '            return msgid2' + #10 +
+  '    return t.npgettext(context, ms' + 'gid1, msgid2, n)' + #10 + #10 +
+  #10 + 'def gettext(message):' + #10 + '    return dgettext(_current_domai' +
+  'n, message)' + #10 + #10 + 'def lgettext(message):' + #10 +
+  '    import warnings' + #10 + '    warnings.warn(''lgettext() is d' +
+  'eprecated, use gettext() instead'',' + #10 +
+  '                  DeprecationWarni' + 'ng, 2)' + #10 +
+  '    with warnings.catch_warnings()' + ':' + #10 +
+  '        warnings.filterwarnings(''i' + 'gnore'', r''.*\bldgettext\b.*'',' +
+  #10 + '                                De' + 'precationWarning)' + #10 +
+  '        return ldgettext(_current_' + 'domain, message)' + #10 + #10 +
+  'def ngettext(msgid1, msgid2, n):' + #10 +
+  '    return dngettext(_current_doma' + 'in, msgid1, msgid2, n)' + #10 +
+  #10 + 'def lngettext(msgid1, msgid2, n):' + #10;
+
+Const
+ Src_gettext_3: AnsiString =
+  '    import warnings' + #10 + '    warnings.warn(''lngettext() is ' +
+  'deprecated, use ngettext() instead' + ''',' + #10 +
+  '                  DeprecationWarni' + 'ng, 2)' + #10 +
+  '    with warnings.catch_warnings()' + ':' + #10 +
+  '        warnings.filterwarnings(''i' +
+  'gnore'', r''.*\bldngettext\b.*'',' + #10 +
+  '                                De' + 'precationWarning)' + #10 +
+  '        return ldngettext(_current' + '_domain, msgid1, msgid2, n)' + #10 +
+  #10 + #10 + 'def pgettext(context, message):' + #10 +
+  '    return dpgettext(_current_doma' + 'in, context, message)' + #10 + #10 +
+  #10 + 'def npgettext(context, msgid1, msg' + 'id2, n):' + #10 +
+  '    return dnpgettext(_current_dom' + 'ain, context, msgid1, msgid2, n)' +
+  #10 + #10 + #10 + '# dcgettext() has been deemed unne' +
+  'cessary and is not implemented.' + #10 + #10 +
+  '# James Henstridge''s Catalog const' +
+  'ructor from GNOME gettext.  Docume' + 'nted usage' + #10 + '# was:' + #10 +
+  '#' + #10 + '#    import gettext' + #10 +
+  '#    cat = gettext.Catalog(PACKAGE' + ', localedir=LOCALEDIR)' + #10 +
+  '#    _ = cat.gettext' + #10 + '#    print _(''Hello World'')' + #10 + #10 +
+  '# The resulting catalog object cur' +
+  'rently don''t support access throug' + 'h a' + #10 +
+  '# dictionary API, which was suppor' +
+  'ted (but apparently unused) in GNO' + 'ME' + #10 + '# gettext.' + #10 +
+  #10 + 'Catalog = translation' + #10 + #10;
+
+Function Src_gettext: AnsiString;
+Begin
+ Result := Src_gettext_0 + Src_gettext_1 + Src_gettext_2 + Src_gettext_3;
+End;
+
+Const
  Src_glob_0: AnsiString =
   '"""Filename globbing utility."""' + #10 + #10 + 'import os' + #10 +
-  'import fnmatch' + #10 + #10 + '__all__ = ["glob", "iglob", "escap' +
-  'e"]' + #10 + #10 + #10 + 'def glob(pathname, *, recursive=Fa' + 'lse):' +
-  #10 + '    """Return a list of paths matc' + 'hing a pathname pattern.' +
-  #10 + #10 + '    The pattern may contain simple' +
-  ' shell-style wildcards a la' + #10 + '    fnmatch. However, unlike fnmat' +
+  'import re' + #10 + 'import fnmatch' + #10 + 'import sys' + #10 + #10 +
+  '__all__ = ["glob", "iglob", "escap' + 'e"]' + #10 + #10 +
+  'def glob(pathname, *, recursive=Fa' + 'lse):' + #10 +
+  '    """Return a list of paths matc' + 'hing a pathname pattern.' + #10 +
+  #10 + '    The pattern may contain simple' + ' shell-style wildcards a la' +
+  #10 + '    fnmatch. However, unlike fnmat' +
   'ch, filenames starting with a' + #10 +
   '    dot are special cases that are' + ' not matched by ''*'' and ''?''' +
   #10 + '    patterns.' + #10 + #10 + '    If recursive is true, the patt' +
   'ern ''**'' will match any files and' + #10 +
   '    zero or more directories and s' + 'ubdirectories.' + #10 + '    """' +
   #10 + '    return list(iglob(pathname, re' + 'cursive=recursive))' + #10 +
-  #10 + #10 + 'def iglob(pathname, *, recursive=F' + 'alse):' + #10 +
+  #10 + 'def iglob(pathname, *, recursive=F' + 'alse):' + #10 +
   '    """Return an iterator which yi' +
-  'elds the paths matching a pathname' + ' pattern."""' + #10 +
+  'elds the paths matching a pathname' + ' pattern.' + #10 + #10 +
+  '    The pattern may contain simple' + ' shell-style wildcards a la' + #10 +
+  '    fnmatch. However, unlike fnmat' + 'ch, filenames starting with a' +
+  #10 + '    dot are special cases that are' +
+  ' not matched by ''*'' and ''?''' + #10 + '    patterns.' + #10 + #10 +
+  '    If recursive is true, the patt' +
+  'ern ''**'' will match any files and' + #10 +
+  '    zero or more directories and s' + 'ubdirectories.' + #10 + '    """' +
+  #10 + '    sys.audit("glob.glob", pathnam' + 'e, recursive)' + #10 +
   '    it = _iglob(pathname, recursiv' + 'e, False)' + #10 +
   '    if recursive and _isrecursive(' + 'pathname):' + #10 +
   '        s = next(it)  # skip empty' + ' string' + #10 +
-  '        assert not s' + #10 + '    return it' + #10 + #10 + #10 +
+  '        assert not s' + #10 + '    return it' + #10 + #10 +
   'def _iglob(pathname, recursive, di' + 'ronly):' + #10 +
   '    dirname, basename = os.path.sp' + 'lit(pathname)' + #10 +
   '    if not has_magic(pathname):' + #10 + '        assert not dironly' +
-  #10 + '        if basename:' + #10 + '            if _lexists(pathname):' +
-  #10 + '                yield pathname' + #10 + '        else:' + #10 +
-  '            # Patterns ending with' +
+  #10 + '        if basename:' + #10 + '            if os.path.lexists(pat' +
+  'hname):' + #10 + '                yield pathname' + #10 + '        else:' +
+  #10 + '            # Patterns ending with' +
   ' a slash should match only directo' + 'ries' + #10 +
   '            if os.path.isdir(dirna' + 'me):' + #10 +
   '                yield pathname' + #10 + '        return' + #10 +
@@ -53966,18 +59893,12 @@ Const
   '# They return a list of basenames.' +
   '  _glob1 accepts a pattern while _' + 'glob0' + #10 +
   '# takes a literal basename (so it ' +
-  'only has to check for its existenc' + 'e).' + #10 + #10 + #10 +
-  'def _lexists(path):' + #10 + '    # os.path.lexists() written wi' +
-  'thout `return` inside `except`' + #10 +
-  '    # (interpreter bug B1 makes th' +
-  'e stock implementation unreliable)' + #10 + '    ok = True' + #10 +
-  '    try:' + #10 + '        os.lstat(path)' + #10 +
-  '    except (OSError, ValueError):' + #10 + '        ok = False' + #10 +
-  '    return ok' + #10 + #10 + #10 + 'def _glob1(dirname, pattern, diron' +
-  'ly):' + #10 + '    names = list(_iterdir(dirname,' + ' dironly))' + #10 +
+  'only has to check for its existenc' + 'e).' + #10 + #10 +
+  'def _glob1(dirname, pattern, diron' + 'ly):' + #10 +
+  '    names = list(_iterdir(dirname,' + ' dironly))' + #10 +
   '    if not _ishidden(pattern):' + #10 +
-  '        names = [x for x in names ' + 'if not _ishidden(x)]' + #10 +
-  '    return fnmatch.filter(names, p' + 'attern)' + #10 + #10 + #10 +
+  '        names = (x for x in names ' + 'if not _ishidden(x))' + #10 +
+  '    return fnmatch.filter(names, p' + 'attern)' + #10 + #10 +
   'def _glob0(dirname, basename, diro' + 'nly):' + #10 +
   '    if not basename:' + #10 + '        # `os.path.split()` return' +
   's an empty basename for paths endi' + 'ng with a' + #10 +
@@ -53985,66 +59906,58 @@ Const
   '*x/'' should match only directories' + '.' + #10 +
   '        if os.path.isdir(dirname):' + #10 +
   '            return [basename]' + #10 + '    else:' + #10 +
-  '        if _lexists(os.path.join(d' + 'irname, basename)):' + #10 +
+  '        if os.path.lexists(os.path' + '.join(dirname, basename)):' + #10 +
   '            return [basename]' + #10 + '    return []' + #10 + #10 +
   '# Following functions are not publ' +
-  'ic but can be used by third-party ' + 'code.' + #10 + #10 + #10 +
+  'ic but can be used by third-party ' + 'code.' + #10 + #10 +
   'def glob0(dirname, pattern):' + #10 +
-  '    return _glob0(dirname, pattern' + ', False)' + #10 + #10 + #10 +
+  '    return _glob0(dirname, pattern' + ', False)' + #10 + #10 +
   'def glob1(dirname, pattern):' + #10 +
   '    return _glob1(dirname, pattern' + ', False)' + #10 + #10 +
   '# This helper function recursively' +
   ' yields relative pathnames inside ' + 'a literal' + #10 + '# directory.' +
-  #10 + #10 + #10 + 'def _glob2(dirname, pattern, diron' + 'ly):' + #10 +
+  #10 + #10 + 'def _glob2(dirname, pattern, diron' + 'ly):' + #10 +
   '    assert _isrecursive(pattern)' + #10 + '    yield pattern[:0]' + #10 +
-  '    yield from _rlistdir(dirname, ' + 'dironly)' + #10 + #10 + #10 +
+  '    yield from _rlistdir(dirname, ' + 'dironly)' + #10 + #10 +
   '# If dironly is false, yields all ' + 'file names inside a directory.' +
   #10 + '# If dironly is true, yields only ' + 'directory names.' + #10 +
   'def _iterdir(dirname, dironly):' + #10 + '    if not dirname:' + #10 +
   '        if isinstance(dirname, byt' + 'es):' + #10 +
   '            dirname = bytes(os.cur' + 'dir, ''ASCII'')' + #10 +
   '        else:' + #10 + '            dirname = os.curdir' + #10 +
-  '    names = []' + #10 + '    try:' + #10 +
-  '        with os.scandir(dirname) a' + 's it:' + #10 +
+  '    try:' + #10 + '        with os.scandir(dirname) a' + 's it:' + #10 +
   '            for entry in it:' + #10 + '                try:' + #10 +
   '                    if not dironly' + ' or entry.is_dir():' + #10 +
-  '                        names.appe' + 'nd(entry.name)' + #10 +
+  '                        yield entr' + 'y.name' + #10 +
   '                except OSError:' + #10 + '                    pass' + #10 +
-  '    except OSError:' + #10 + '        pass' + #10 + '    return names' +
-  #10 + #10 + #10 + '# Recursively yields relative path' +
-  'names inside a literal directory.' + #10 +
-  'def _rlistdir(dirname, dironly):' + #10 +
-  '    names = _iterdir(dirname, diro' + 'nly)' + #10 +
+  '    except OSError:' + #10 + '        return' + #10 + #10 +
+  '# Recursively yields relative path' + 'names inside a literal directory.' +
+  #10 + 'def _rlistdir(dirname, dironly):' + #10 +
+  '    names = list(_iterdir(dirname,' + ' dironly))' + #10 +
   '    for x in names:' + #10 + '        if not _ishidden(x):' + #10 +
   '            yield x' + #10 + '            path = os.path.join(di' +
   'rname, x) if dirname else x' + #10 + '            for y in _rlistdir(pat' +
   'h, dironly):' + #10 + '                yield os.path.join' + '(x, y)' +
-  #10 + #10 + #10 + 'def has_magic(s):' + #10 +
-  '    if isinstance(s, bytes):' + #10 +
-  '        return b''*'' in s or b''?'' i' + 'n s or b''['' in s' + #10 +
-  '    return ''*'' in s or ''?'' in s or' + ' ''['' in s' + #10 + #10 + #10 +
-  'def _ishidden(path):' + #10 + '    return path[0] == ''.''' + #10 + #10 +
-  #10 + 'def _isrecursive(pattern):' + #10 +
-  '    if isinstance(pattern, bytes):' + #10 +
-  '        return pattern == b''**''' + #10 + '    else:' + #10 +
-  '        return pattern == ''**''' + #10 + #10 + #10 +
-  'def escape(pathname):' + #10 + '    """Escape all special characte' +
-  'rs.' + #10 + '    """' + #10 + '    # Escaping is done by wrapping' +
+  #10 + #10 + #10 + 'magic_check = re.compile(''([*?[])''' + ')' + #10 +
+  'magic_check_bytes = re.compile(b''(' + '[*?[])'')' + #10 + #10 +
+  'def has_magic(s):' + #10 + '    if isinstance(s, bytes):' + #10 +
+  '        match = magic_check_bytes.' + 'search(s)' + #10 + '    else:' +
+  #10 + '        match = magic_check.search' + '(s)' + #10 +
+  '    return match is not None' + #10 + #10 + 'def _ishidden(path):' + #10 +
+  '    return path[0] in (''.'', b''.''[0' + '])' + #10 + #10 +
+  'def _isrecursive(pattern):' + #10 + '    if isinstance(pattern, bytes):' +
+  #10 + '        return pattern == b''**''' + #10 + '    else:' + #10 +
+  '        return pattern == ''**''' + #10 + #10 + 'def escape(pathname):' +
+  #10 + '    """Escape all special characte' + 'rs.' + #10 + '    """' + #10 +
+  '    # Escaping is done by wrapping' +
   ' any of "*?[" between square brack' + 'ets.' + #10 +
   '    # Metacharacters do not work i' +
   'n the drive part and shouldn''t be ' + 'escaped.' + #10 +
   '    drive, pathname = os.path.spli' + 'tdrive(pathname)' + #10 +
   '    if isinstance(pathname, bytes)' + ':' + #10 +
-  '        for ch in (b''*'', b''?'', b''[' + '''):' + #10 +
-  '            pathname = pathname.re' + 'place(ch, b''['' + ch + b'']'')' +
-  #10 + '    else:' + #10 + '        # order matters: do not re' +
-  '-escape the brackets we add' + #10 + '        out = []' + #10 +
-  '        for ch in pathname:' + #10 +
-  '            if ch == ''*'' or ch == ' + '''?'' or ch == ''['':' + #10 +
-  '                out.append(''['' + c' + 'h + '']'')' + #10 +
-  '            else:' + #10 + '                out.append(ch)' + #10 +
-  '        pathname = ''''.join(out)' + #10 + '    return drive + pathname' +
-  #10 + #10;
+  '        pathname = magic_check_byt' + 'es.sub(br''[\1]'', pathname)' +
+  #10 + '    else:' + #10 + '        pathname = magic_check.sub' +
+  '(r''[\1]'', pathname)' + #10 + '    return drive + pathname' + #10 + #10;
 
 Function Src_glob: AnsiString;
 Begin
@@ -60940,16 +66853,29 @@ End;
 
 Const
  Src_keyword_0: AnsiString =
-  'kwlist = [''False'', ''None'', ''True'',' +
-  ' ''and'', ''as'', ''assert'', ''async'', ''' +
-  'await'', ''break'', ''class'', ''continu' +
-  'e'', ''def'', ''del'', ''elif'', ''else'', ' +
-  '''except'', ''finally'', ''for'', ''from''' +
-  ', ''global'', ''if'', ''import'', ''in'', ' +
-  '''is'', ''lambda'', ''nonlocal'', ''not'',' +
-  ' ''or'', ''pass'', ''raise'', ''return'', ' +
-  '''try'', ''while'', ''with'', ''yield'']' + #10 + 'softkwlist = []' + #10 +
-  'def iskeyword(s):' + #10 + '    return s in kwlist' + #10 + #10;
+  '"""Keywords (from "Grammar/Grammar' + '")' + #10 + #10 +
+  'This file is automatically generat' + 'ed; please don''t muck it up!' +
+  #10 + #10 + 'To update the symbols in this file' +
+  ', ''cd'' to the top directory of' + #10 +
+  'the python source tree and run:' + #10 + #10 +
+  '    python3 -m Parser.pgen.keyword' + 'gen Grammar/Grammar \' + #10 +
+  '                                  ' + '    Grammar/Tokens \' + #10 +
+  '                                  ' + '    Lib/keyword.py' + #10 + #10 +
+  'Alternatively, you can run ''make r' + 'egen-keyword''.' + #10 + '"""' +
+  #10 + #10 + '__all__ = ["iskeyword", "kwlist"]' + #10 + #10 + 'kwlist = [' +
+  #10 + '    ''False'',' + #10 + '    ''None'',' + #10 + '    ''True'',' +
+  #10 + '    ''and'',' + #10 + '    ''as'',' + #10 + '    ''assert'',' + #10 +
+  '    ''async'',' + #10 + '    ''await'',' + #10 + '    ''break'',' + #10 +
+  '    ''class'',' + #10 + '    ''continue'',' + #10 + '    ''def'',' + #10 +
+  '    ''del'',' + #10 + '    ''elif'',' + #10 + '    ''else'',' + #10 +
+  '    ''except'',' + #10 + '    ''finally'',' + #10 + '    ''for'',' + #10 +
+  '    ''from'',' + #10 + '    ''global'',' + #10 + '    ''if'',' + #10 +
+  '    ''import'',' + #10 + '    ''in'',' + #10 + '    ''is'',' + #10 +
+  '    ''lambda'',' + #10 + '    ''nonlocal'',' + #10 + '    ''not'',' + #10 +
+  '    ''or'',' + #10 + '    ''pass'',' + #10 + '    ''raise'',' + #10 +
+  '    ''return'',' + #10 + '    ''try'',' + #10 + '    ''while'',' + #10 +
+  '    ''with'',' + #10 + '    ''yield''' + #10 + ']' + #10 + #10 +
+  'iskeyword = frozenset(kwlist).__co' + 'ntains__' + #10 + #10;
 
 Function Src_keyword: AnsiString;
 Begin
@@ -64233,141 +70159,236 @@ Const
  Src_numbers_0: AnsiString =
   '# Copyright 2007 Google, Inc. All ' + 'Rights Reserved.' + #10 +
   '# Licensed to PSF under a Contribu' + 'tor Agreement.' + #10 + #10 +
-  '"""Abstract Base Classes (ABCs) fo' +
-  'r numbers, according to PEP 3141."' + '""' + #10 + #10 +
+  '"""Abstract Base Classes (ABCs) fo' + 'r numbers, according to PEP 3141.' +
+  #10 + #10 + 'TODO: Fill out more detailed docum' +
+  'entation on the operators."""' + #10 + #10 +
   'from abc import ABCMeta, abstractm' + 'ethod' + #10 + #10 +
   '__all__ = ["Number", "Complex", "R' + 'eal", "Rational", "Integral"]' +
-  #10 + #10 + #10 + 'class Number(metaclass=ABCMeta):' + #10 +
-  '    """All numbers inherit from th' + 'is class."""' + #10 +
-  '    __slots__ = ()' + #10 + #10 + '    # Concrete numeric types must ' +
+  #10 + #10 + 'class Number(metaclass=ABCMeta):' + #10 +
+  '    """All numbers inherit from th' + 'is class.' + #10 + #10 +
+  '    If you just want to check if a' + 'n argument x is a number, without' +
+  #10 + '    caring what kind, use isinstan' + 'ce(x, Number).' + #10 +
+  '    """' + #10 + '    __slots__ = ()' + #10 + #10 +
+  '    # Concrete numeric types must ' +
   'provide their own hash implementat' + 'ion' + #10 + '    __hash__ = None' +
-  #10 + #10 + #10 + 'class Complex(Number):' + #10 +
-  '    """Complex defines the operati' +
-  'ons that work on the builtin compl' + 'ex type."""' + #10 + #10 +
+  #10 + #10 + #10 + '## Notes on Decimal' + #10 + '## ----------------' +
+  #10 + '## Decimal has all of the methods ' +
+  'specified by the Real abc, but it ' + 'should' + #10 +
+  '## not be registered as a Real bec' +
+  'ause decimals do not interoperate ' + 'with' + #10 +
+  '## binary floats (i.e.  Decimal(''3' +
+  '.14'') + 2.71828 is undefined).  Bu' + 't,' + #10 +
+  '## abstract reals are expected to ' +
+  'interoperate (i.e. R1 + R2 should ' + 'be' + #10 +
+  '## expected to work if R1 and R2 a' + 're both Reals).' + #10 + #10 +
+  'class Complex(Number):' + #10 + '    """Complex defines the operati' +
+  'ons that work on the builtin compl' + 'ex type.' + #10 + #10 +
+  '    In short, those are: a convers' +
+  'ion to complex, .real, .imag, +, -' + ',' + #10 +
+  '    *, /, abs(), .conjugate, ==, a' + 'nd !=.' + #10 + #10 +
+  '    If it is given heterogeneous a' +
+  'rguments, and doesn''t have special' + #10 +
+  '    knowledge about them, it shoul' +
+  'd fall back to the builtin complex' + #10 +
+  '    type as described below.' + #10 + '    """' + #10 + #10 +
   '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
   '    def __complex__(self):' + #10 + '        """Return a builtin comple' +
   'x instance. Called for complex(sel' + 'f)."""' + #10 + #10 +
   '    def __bool__(self):' + #10 + '        """True if self != 0. Call' +
   'ed for bool(self)."""' + #10 + '        return self != 0' + #10 + #10 +
   '    @property' + #10 + '    @abstractmethod' + #10 +
-  '    def real(self):' + #10 + '        raise NotImplementedError' + #10 +
+  '    def real(self):' + #10 + '        """Retrieve the real compo' +
+  'nent of this number.' + #10 + #10 + '        This should subclass Real.' +
+  #10 + '        """' + #10 + '        raise NotImplementedError' + #10 +
   #10 + '    @property' + #10 + '    @abstractmethod' + #10 +
-  '    def imag(self):' + #10 + '        raise NotImplementedError' + #10 +
-  #10 + '    @abstractmethod' + #10 + '    def __add__(self, other):' + #10 +
+  '    def imag(self):' + #10 + '        """Retrieve the imaginary ' +
+  'component of this number.' + #10 + #10 +
+  '        This should subclass Real.' + #10 + '        """' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __radd__(self, other):' + #10 +
+  #10 + '    def __add__(self, other):' + #10 + '        """self + other"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __radd__(self, other):' + #10 +
+  '        """other + self"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 + '    def __neg__(self):' + #10 +
+  '        """-self"""' + #10 + '        raise NotImplementedError' + #10 +
+  #10 + '    @abstractmethod' + #10 + '    def __pos__(self):' + #10 +
+  '        """+self"""' + #10 + '        raise NotImplementedError' + #10 +
+  #10 + '    def __sub__(self, other):' + #10 + '        """self - other"""' +
+  #10 + '        return self + -other' + #10 + #10 +
+  '    def __rsub__(self, other):' + #10 + '        """other - self"""' +
+  #10 + '        return -self + other' + #10 + #10 + '    @abstractmethod' +
+  #10 + '    def __mul__(self, other):' + #10 + '        """self * other"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __rmul__(self, other):' + #10 +
+  '        """other * self"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __truediv__(self, other):' + #10 +
+  '        """self / other: Should pr' + 'omote to float when necessary."""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __rtruediv__(self, other):' + #10 +
+  '        """other / self"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __pow__(self, exponent):' + #10 +
+  '        """self**exponent; should ' +
+  'promote to float or complex when n' + 'ecessary."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __neg__(self):' + #10 + '        raise NotImplementedError' +
-  #10 + #10 + '    @abstractmethod' + #10 + '    def __pos__(self):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 +
-  '    def __sub__(self, other):' + #10 + '        return self + -other' +
-  #10 + #10 + '    def __rsub__(self, other):' + #10 +
-  '        return -self + other' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __mul__(self, other):' + #10 +
+  #10 + '    def __rpow__(self, base):' + #10 + '        """base ** self"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __abs__(self):' + #10 +
+  '        """Returns the Real distan' +
+  'ce from 0. Called for abs(self).""' + '"' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rmul__(self, other):' + #10 +
+  #10 + '    def conjugate(self):' + #10 +
+  '        """(x+y*i).conjugate() ret' + 'urns (x-y*i)."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __truediv__(self, other):' + #10 +
+  #10 + '    def __eq__(self, other):' + #10 + '        """self == other"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  'Complex.register(complex)' + #10 + #10 + #10 + 'class Real(Complex):' +
+  #10 + '    """To Complex, Real adds the o' +
+  'perations that work on real number' + 's.' + #10 + #10 +
+  '    In short, those are: a convers' + 'ion to float, trunc(), divmod,' +
+  #10 + '    %, <, <=, >, and >=.' + #10 + #10 +
+  '    Real also provides defaults fo' + 'r the derived operations.' + #10 +
+  '    """' + #10 + #10 + '    __slots__ = ()' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __float__(self):' + #10 +
+  '        """Any Real can be convert' + 'ed to a native float object.' +
+  #10 + #10 + '        Called for float(self)."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rtruediv__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __pow__(self, exponent):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rpow__(self, base):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __abs__(self):' + #10 + '        raise NotImplementedError' +
-  #10 + #10 + '    @abstractmethod' + #10 + '    def conjugate(self):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __eq__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + #10 +
-  'class Real(Complex):' + #10 + '    """To Complex, Real adds the o' +
-  'perations that work on real number' + 's."""' + #10 + #10 +
-  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __float__(self):' + #10 + '        raise NotImplementedError' +
-  #10 + #10 + '    @abstractmethod' + #10 + '    def __trunc__(self):' + #10 +
+  #10 + '    def __trunc__(self):' + #10 +
+  '        """trunc(self): Truncates ' + 'self to an Integral.' + #10 + #10 +
+  '        Returns an Integral i such' + ' that:' + #10 +
+  '          * i>0 iff self>0;' + #10 + '          * abs(i) <= abs(self);' +
+  #10 + '          * for any Integral j sat' +
+  'isfying the first two conditions,' + #10 +
+  '            abs(i) >= abs(j) [i.e.' +
+  ' i has "maximal" abs among those].' + #10 +
+  '        i.e. "truncate towards 0".' + #10 + '        """' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
   #10 + '    def __floor__(self):' + #10 +
+  '        """Finds the greatest Inte' + 'gral <= self."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
   #10 + '    def __ceil__(self):' + #10 +
+  '        """Finds the least Integra' + 'l >= self."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
   #10 + '    def __round__(self, ndigits=No' + 'ne):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 +
+  '        """Rounds self to ndigits ' + 'decimal places, defaulting to 0.' +
+  #10 + #10 + '        If ndigits is omitted or N' +
+  'one, returns an Integral, otherwis' + 'e' + #10 +
+  '        returns a Real. Rounds hal' + 'f toward even.' + #10 +
+  '        """' + #10 + '        raise NotImplementedError' + #10 + #10 +
   '    def __divmod__(self, other):' + #10 +
+  '        """divmod(self, other): Th' +
+  'e pair (self // other, self % othe' + 'r).' + #10 + #10 +
+  '        Sometimes this can be comp' + 'uted faster than the pair of' +
+  #10 + '        operations.' + #10 + '        """' + #10 +
   '        return (self // other, sel' + 'f % other)' + #10 + #10 +
   '    def __rdivmod__(self, other):' + #10 +
+  '        """divmod(other, self): Th' +
+  'e pair (self // other, self % othe' + 'r).' + #10 + #10 +
+  '        Sometimes this can be comp' + 'uted faster than the pair of' +
+  #10 + '        operations.' + #10 + '        """' + #10 +
   '        return (other // self, oth' + 'er % self)' + #10 + #10 +
   '    @abstractmethod' + #10 + '    def __floordiv__(self, other):' + #10 +
+  '        """self // other: The floo' + 'r() of self/other."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
   #10 + '    def __rfloordiv__(self, other)' + ':' + #10 +
+  '        """other // self: The floo' + 'r() of other/self."""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __mod__(self, other):' + #10 +
+  #10 + '    def __mod__(self, other):' + #10 + '        """self % other"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __rmod__(self, other):' + #10 +
+  '        """other % self"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 + '    def __lt__(self, other):' +
+  #10 + '        """self < other' + #10 + #10 +
+  '        < on Reals defines a total' +
+  ' ordering, except perhaps for NaN.' + '"""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rmod__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __lt__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __le__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 +
+  #10 + '    def __le__(self, other):' + #10 + '        """self <= other"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    # Concrete implementations of ' + 'Complex abstract methods.' + #10 +
   '    def __complex__(self):' + #10 + '        """complex(self) == comple' +
   'x(float(self), 0)"""' + #10 + '        return complex(float(self)' + ')' +
-  #10 + #10 + '    @property' + #10 + '    def real(self):' + #10 +
-  '        """Real numbers are their ' + 'real component."""' + #10 +
-  '        return +self' + #10 + #10 + '    @property' + #10 +
-  '    def imag(self):' + #10 + '        """Real numbers have no im' +
-  'aginary component."""' + #10 + '        return 0' + #10 + #10 +
-  '    def conjugate(self):' + #10 + '        """Conjugate is a no-op fo' +
-  'r Reals."""' + #10 + '        return +self' + #10 + #10 + #10 +
-  'class Rational(Real):' + #10 + '    """.numerator and .denominator' +
+  #10 + #10 + '    @property' + #10;
+
+Const
+ Src_numbers_1: AnsiString =
+  '    def real(self):' + #10 + '        """Real numbers are their ' +
+  'real component."""' + #10 + '        return +self' + #10 + #10 +
+  '    @property' + #10 + '    def imag(self):' + #10 +
+  '        """Real numbers have no im' + 'aginary component."""' + #10 +
+  '        return 0' + #10 + #10 + '    def conjugate(self):' + #10 +
+  '        """Conjugate is a no-op fo' + 'r Reals."""' + #10 +
+  '        return +self' + #10 + #10 + 'Real.register(float)' + #10 + #10 +
+  #10 + 'class Rational(Real):' + #10 + '    """.numerator and .denominator' +
   ' should be in lowest terms."""' + #10 + #10 + '    __slots__ = ()' + #10 +
   #10 + '    @property' + #10 + '    @abstractmethod' + #10 +
   '    def numerator(self):' + #10 + '        raise NotImplementedError' +
   #10 + #10 + '    @property' + #10 + '    @abstractmethod' + #10 +
   '    def denominator(self):' + #10 + '        raise NotImplementedError' +
-  #10 + #10 + '    def __float__(self):' + #10 +
+  #10 + #10 + '    # Concrete implementation of R' +
+  'eal''s conversion to float.' + #10 + '    def __float__(self):' + #10 +
+  '        """float(self) = self.nume' + 'rator / self.denominator' + #10 +
+  #10 + '        It''s important that this c' +
+  'onversion use the integer''s "true"' + #10 +
+  '        division rather than casti' +
+  'ng one side to float before dividi' + 'ng' + #10 +
+  '        so that ratios of huge int' +
+  'egers convert without overflowing.' + #10 + #10 + '        """' + #10 +
   '        return self.numerator / se' + 'lf.denominator' + #10 + #10 + #10 +
   'class Integral(Rational):' + #10 + '    """Integral adds a conversion ' +
   'to int and the bit-string operatio' + 'ns."""' + #10 + #10 +
   '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __int__(self):' + #10 + '        raise NotImplementedError' + #10 +
-  #10 + '    def __index__(self):' + #10 +
-  '        """Called whenever an inde' +
+  '    def __int__(self):' + #10 + '        """int(self)"""' + #10 +
+  '        raise NotImplementedError' + #10 + #10 +
+  '    def __index__(self):' + #10 + '        """Called whenever an inde' +
   'x is needed, such as in slicing"""' + #10 + '        return int(self)' +
   #10 + #10 + '    @abstractmethod' + #10 +
   '    def __pow__(self, exponent, mo' + 'dulus=None):' + #10 +
+  '        """self ** exponent % modu' + 'lus, but maybe faster.' + #10 +
+  #10 + '        Accept the modulus argumen' +
+  't if you want to support the' + #10 +
+  '        3-argument version of pow(' +
+  '). Raise a TypeError if exponent <' + ' 0' + #10 +
+  '        or any argument isn''t Inte' +
+  'gral. Otherwise, just implement th' + 'e' + #10 +
+  '        2-argument version describ' + 'ed in Complex.' + #10 +
+  '        """' + #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __lshift__(self, other):' + #10 +
+  '        """self << other"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __rlshift__(self, other):' + #10 + '        """other << self"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __rshift__(self, other):' + #10 +
+  '        """self >> other"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __rrshift__(self, other):' + #10 + '        """other >> self"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __and__(self, other):' + #10 +
+  '        """self & other"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 + '    def __rand__(self, other):' +
+  #10 + '        """other & self"""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __lshift__(self, other):' + #10 +
+  #10 + '    def __xor__(self, other):' + #10 + '        """self ^ other"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __rxor__(self, other):' + #10 +
+  '        """other ^ self"""' + #10 + '        raise NotImplementedError' +
+  #10 + #10 + '    @abstractmethod' + #10 + '    def __or__(self, other):' +
+  #10 + '        """self | other"""' + #10 +
   '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rlshift__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rshift__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rrshift__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __and__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rand__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __xor__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __rxor__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __or__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
-  #10 + '    def __ror__(self, other):' + #10 +
-  '        raise NotImplementedError' + #10 + #10;
-
-Const
- Src_numbers_1: AnsiString =
+  #10 + '    def __ror__(self, other):' + #10 + '        """other | self"""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
   '    @abstractmethod' + #10 + '    def __invert__(self):' + #10 +
-  '        raise NotImplementedError' + #10 + #10 +
+  '        """~self"""' + #10 + '        raise NotImplementedError' + #10 +
+  #10 + '    # Concrete implementations of ' +
+  'Rational and Real abstract methods' + '.' + #10 +
   '    def __float__(self):' + #10 + '        """float(self) == float(in' +
   't(self))"""' + #10 + '        return float(int(self))' + #10 + #10 +
   '    @property' + #10 + '    def numerator(self):' + #10 +
   '        """Integers are their own ' + 'numerators."""' + #10 +
   '        return +self' + #10 + #10 + '    @property' + #10 +
   '    def denominator(self):' + #10 + '        """Integers have a denomin' +
-  'ator of 1."""' + #10 + '        return 1' + #10 + #10 + #10 +
-  'Integral.register(int)' + #10 + 'Real.register(float)' + #10 + #10;
+  'ator of 1."""' + #10 + '        return 1' + #10 + #10 +
+  'Integral.register(int)' + #10 + #10;
 
 Function Src_numbers: AnsiString;
 Begin
@@ -68275,12 +74296,38 @@ End;
 
 Const
  Src_pprint_0: AnsiString =
+  '#  Author:      Fred L. Drake, Jr.' + #10 +
+  '#               fdrake@acm.org' + #10 + '#' + #10 +
+  '#  This is a simple little module ' +
+  'I wrote to make life easier.  I di' + 'dn''t' + #10 +
+  '#  see anything quite like it in t' +
+  'he library, though I may have over' + 'looked' + #10 +
+  '#  something.  I wrote this when I' +
+  ' was trying to read some heavily n' + 'ested' + #10 +
+  '#  tuples with fairly non-descript' +
+  'ive content.  This is modeled very' + ' much' + #10 +
+  '#  after Lisp/Scheme - style prett' +
+  'y-printing of lists.  If you find ' + 'it' + #10 +
+  '#  useful, thank small children wh' + 'o sleep at night.' + #10 + #10 +
   '"""Support to pretty-print lists, ' +
-  'tuples, & dictionaries recursively' + '."""' + #10 + #10 +
-  'import collections as _collections' + #10 + 'import sys as _sys' + #10 +
-  'import types as _types' + #10 + 'from io import StringIO as _String' +
-  'IO' + #10 + #10 + '__all__ = ["pprint", "pformat", "i' +
-  'sreadable", "isrecursive", "safere' + 'pr",' + #10 +
+  'tuples, & dictionaries recursively' + '.' + #10 + #10 +
+  'Very simple, but useful, especiall' + 'y in debugging data structures.' +
+  #10 + #10 + 'Classes' + #10 + '-------' + #10 + #10 + 'PrettyPrinter()' +
+  #10 + '    Handle pretty-printing operati' +
+  'ons onto a stream using a configur' + 'ed' + #10 +
+  '    set of formatting parameters.' + #10 + #10 + 'Functions' + #10 +
+  '---------' + #10 + #10 + 'pformat()' + #10 +
+  '    Format a Python object into a ' + 'pretty-printed representation.' +
+  #10 + #10 + 'pprint()' + #10 + '    Pretty-print a Python object t' +
+  'o a stream [default is sys.stdout]' + '.' + #10 + #10 + 'saferepr()' +
+  #10 + '    Generate a ''standard'' repr()-l' +
+  'ike value, but protect against rec' + 'ursive' + #10 +
+  '    data structures.' + #10 + #10 + '"""' + #10 + #10 +
+  'import collections as _collections' + #10 + 'import re' + #10 +
+  'import sys as _sys' + #10 + 'import types as _types' + #10 +
+  'from io import StringIO as _String' + 'IO' + #10 + #10 +
+  '__all__ = ["pprint","pformat","isr' +
+  'eadable","isrecursive","saferepr",' + #10 +
   '           "PrettyPrinter", "pp"]' + #10 + #10 + #10 +
   'def pprint(object, stream=None, in' + 'dent=1, width=80, depth=None, *,' +
   #10 + '           compact=False, sort_dic' + 'ts=True):' + #10 +
@@ -68289,57 +74336,70 @@ Const
   '    printer = PrettyPrinter(' + #10 +
   '        stream=stream, indent=inde' + 'nt, width=width, depth=depth,' +
   #10 + '        compact=compact, sort_dict' + 's=sort_dicts)' + #10 +
-  '    printer.pprint(object)' + #10 + #10 + #10 +
+  '    printer.pprint(object)' + #10 + #10 +
   'def pformat(object, indent=1, widt' + 'h=80, depth=None, *,' + #10 +
   '            compact=False, sort_di' + 'cts=True):' + #10 +
   '    """Format a Python object into' +
   ' a pretty-printed representation."' + '""' + #10 +
   '    return PrettyPrinter(indent=in' + 'dent, width=width, depth=depth,' +
   #10 + '                         compact=c' +
-  'ompact, sort_dicts=sort_dicts).pfo' + 'rmat(object)' + #10 + #10 + #10 +
+  'ompact, sort_dicts=sort_dicts).pfo' + 'rmat(object)' + #10 + #10 +
   'def pp(object, *args, sort_dicts=F' + 'alse, **kwargs):' + #10 +
   '    """Pretty-print a Python objec' + 't"""' + #10 +
   '    pprint(object, *args, sort_dic' + 'ts=sort_dicts, **kwargs)' + #10 +
-  #10 + #10 + 'def saferepr(object):' + #10 +
-  '    """Version of repr() which can' +
+  #10 + 'def saferepr(object):' + #10 + '    """Version of repr() which can' +
   ' handle recursive data structures.' + '"""' + #10 +
   '    return _safe_repr(object, {}, ' + 'None, 0, True)[0]' + #10 + #10 +
-  #10 + 'def isreadable(object):' + #10 +
-  '    """Determine if saferepr(objec' + 't) is readable by eval()."""' +
-  #10 + '    return _safe_repr(object, {}, ' + 'None, 0, True)[1]' + #10 +
-  #10 + #10 + 'def isrecursive(object):' + #10 +
-  '    """Determine if object require' + 's a recursive representation."""' +
-  #10 + '    return _safe_repr(object, {}, ' + 'None, 0, True)[2]' + #10 +
-  #10 + #10 + 'class _safe_key:' + #10 +
-  '    """Helper function for key fun' +
-  'ctions when sorting unorderable ob' + 'jects."""' + #10 + #10 +
-  '    __slots__ = [''obj'']' + #10 + #10 + '    def __init__(self, obj):' +
-  #10 + '        self.obj = obj' + #10 + #10 +
-  '    def __lt__(self, other):' + #10 +
-  '        # NB: no `return` inside `' +
-  'except` (interpreter bug B1, see B' + 'UGS_A.md)' + #10 +
-  '        failed = False' + #10 + '        try:' + #10 +
-  '            res = self.obj < other' + '.obj' + #10 +
-  '        except TypeError:' + #10 + '            failed = True' + #10 +
-  '        if failed:' + #10 + '            res = ((str(type(self.' +
-  'obj)), id(self.obj)) <' + #10 + '                   (str(type(other' +
-  '.obj)), id(other.obj)))' + #10 + '        return res' + #10 + #10 + #10 +
-  'def _safe_tuple(t):' + #10 + '    "Helper function for comparing' +
-  ' 2-tuples"' + #10 + '    return _safe_key(t[0]), _safe_' + 'key(t[1])' +
-  #10 + #10 + #10 + 'class PrettyPrinter:' + #10 +
-  '    def __init__(self, indent=1, w' +
+  'def isreadable(object):' + #10 + '    """Determine if saferepr(objec' +
+  't) is readable by eval()."""' + #10 +
+  '    return _safe_repr(object, {}, ' + 'None, 0, True)[1]' + #10 + #10 +
+  'def isrecursive(object):' + #10 + '    """Determine if object require' +
+  's a recursive representation."""' + #10 +
+  '    return _safe_repr(object, {}, ' + 'None, 0, True)[2]' + #10 + #10 +
+  'class _safe_key:' + #10 + '    """Helper function for key fun' +
+  'ctions when sorting unorderable ob' + 'jects.' + #10 + #10 +
+  '    The wrapped-object will fallba' +
+  'ck to a Py2.x style comparison for' + #10 +
+  '    unorderable types (sorting fir' +
+  'st comparing the type name and the' + 'n by' + #10 +
+  '    the obj ids).  Does not work r' +
+  'ecursively, so dict.items() must h' + 'ave' + #10 +
+  '    _safe_key applied to both the ' + 'key and the value.' + #10 + #10 +
+  '    """' + #10 + #10 + '    __slots__ = [''obj'']' + #10 + #10 +
+  '    def __init__(self, obj):' + #10 + '        self.obj = obj' + #10 +
+  #10 + '    def __lt__(self, other):' + #10 + '        try:' + #10 +
+  '            return self.obj < othe' + 'r.obj' + #10 +
+  '        except TypeError:' + #10 + '            return ((str(type(self' +
+  '.obj)), id(self.obj)) < \' + #10 + '                    (str(type(othe' +
+  'r.obj)), id(other.obj)))' + #10 + #10 + 'def _safe_tuple(t):' + #10 +
+  '    "Helper function for comparing' + ' 2-tuples"' + #10 +
+  '    return _safe_key(t[0]), _safe_' + 'key(t[1])' + #10 + #10 +
+  'class PrettyPrinter:' + #10 + '    def __init__(self, indent=1, w' +
   'idth=80, depth=None, stream=None, ' + '*,' + #10 +
   '                 compact=False, so' + 'rt_dicts=True):' + #10 +
-  '        indent = int(indent)' + #10 + '        width = int(width)' + #10 +
-  '        if indent < 0:' + #10 + '            raise ValueError(''inde' +
-  'nt must be >= 0'')' + #10 + '        if depth is not None and d' +
-  'epth <= 0:' + #10 + '            raise ValueError(''dept' +
-  'h must be > 0'')' + #10 + '        if not width:' + #10 +
-  '            raise ValueError(''widt' + 'h must be != 0'')' + #10 +
-  '        self._depth = depth' + #10 + '        self._indent_per_level = i' +
-  'ndent' + #10 + '        self._width = width' + #10 +
-  '        if stream is not None:' + #10 +
-  '            self._stream = stream' + #10 + '        else:' + #10 +
+  '        """Handle pretty printing ' +
+  'operations onto a stream using a s' + 'et of' + #10 +
+  '        configured parameters.' + #10 + #10 + '        indent' + #10 +
+  '            Number of spaces to in' + 'dent for each level of nesting.' +
+  #10 + #10 + '        width' + #10 + '            Attempted maximum numb' +
+  'er of columns in the output.' + #10 + #10 + '        depth' + #10 +
+  '            The maximum depth to p' + 'rint out nested structures.' + #10 +
+  #10 + '        stream' + #10 + '            The desired output str' +
+  'eam.  If omitted (or false), the s' + 'tandard' + #10 +
+  '            output stream availabl' + 'e at construction will be used.' +
+  #10 + #10 + '        compact' + #10 + '            If true, several items' +
+  ' will be combined in one line.' + #10 + #10 + '        sort_dicts' + #10 +
+  '            If true, dict keys are' + ' sorted.' + #10 + #10 +
+  '        """' + #10 + '        indent = int(indent)' + #10 +
+  '        width = int(width)' + #10 + '        if indent < 0:' + #10 +
+  '            raise ValueError(''inde' + 'nt must be >= 0'')' + #10 +
+  '        if depth is not None and d' + 'epth <= 0:' + #10 +
+  '            raise ValueError(''dept' + 'h must be > 0'')' + #10 +
+  '        if not width:' + #10 + '            raise ValueError(''widt' +
+  'h must be != 0'')' + #10 + '        self._depth = depth' + #10 +
+  '        self._indent_per_level = i' + 'ndent' + #10 +
+  '        self._width = width' + #10 + '        if stream is not None:' +
+  #10 + '            self._stream = stream' + #10 + '        else:' + #10 +
   '            self._stream = _sys.st' + 'dout' + #10 +
   '        self._compact = bool(compa' + 'ct)' + #10 +
   '        self._sort_dicts = sort_di' + 'cts' + #10 + #10 +
@@ -68363,8 +74423,8 @@ Const
   '        rep = self._repr(object, c' + 'ontext, level)' + #10 +
   '        max_width = self._width - ' + 'indent - allowance' + #10 +
   '        if len(rep) > max_width:' + #10 +
-  '            p = _find_handler(obje' + 'ct)' + #10 +
-  '            if p is not None:' + #10 +
+  '            p = self._dispatch.get' + '(type(object).__repr__, None)' +
+  #10 + '            if p is not None:' + #10 +
   '                context[objid] = 1' + #10 +
   '                p(self, object, st' +
   'ream, indent, allowance, context, ' + 'level + 1)' + #10 +
@@ -68375,10 +74435,8 @@ Const
   'object, stream, indent, allowance,' + #10 +
   '                                  ' + 'context, level + 1)' + #10 +
   '                del context[objid]' + #10 + '                return' +
-  #10 + '        stream.write(rep)' + #10 + #10 +
-  '    _dispatch = {}  # kept for API' +
-  ' compatibility; see _find_handler(' + ')' + #10 + #10 +
-  '    def _pprint_dict(self, object,' +
+  #10 + '        stream.write(rep)' + #10 + #10 + '    _dispatch = {}' + #10 +
+  #10 + '    def _pprint_dict(self, object,' +
   ' stream, indent, allowance, contex' + 't, level):' + #10 +
   '        write = stream.write' + #10 + '        write(''{'')' + #10 +
   '        if self._indent_per_level ' + '> 1:' + #10 +
@@ -68390,8 +74448,8 @@ Const
   'ms()' + #10 + '            self._format_dict_item' +
   's(items, stream, indent, allowance' + ' + 1,' + #10 +
   '                                  ' + '  context, level)' + #10 +
-  '        write(''}'')' + #10 + #10 + #10 +
-  '    def _pprint_ordered_dict(self,' +
+  '        write(''}'')' + #10 + #10 + '    _dispatch[dict.__repr__] = _pp' +
+  'rint_dict' + #10 + #10 + '    def _pprint_ordered_dict(self,' +
   ' object, stream, indent, allowance' + ', context, level):' + #10 +
   '        if not len(object):' + #10 + '            stream.write(repr(obje' +
   'ct))' + #10 + '            return' + #10 +
@@ -68400,13 +74458,16 @@ Const
   '        self._format(list(object.i' + 'tems()), stream,' + #10 +
   '                     indent + len(' + 'cls.__name__) + 1, allowance + 1,' +
   #10 + '                     context, leve' + 'l)' + #10 +
-  '        stream.write('')'')' + #10 + #10 + #10 +
+  '        stream.write('')'')' + #10 + #10 +
+  '    _dispatch[_collections.Ordered' +
+  'Dict.__repr__] = _pprint_ordered_d' + 'ict' + #10 + #10 +
   '    def _pprint_list(self, object,' +
   ' stream, indent, allowance, contex' + 't, level):' + #10 +
   '        stream.write(''['')' + #10 + '        self._format_items(object,' +
   ' stream, indent, allowance + 1,' + #10 +
   '                           context' + ', level)' + #10 +
-  '        stream.write('']'')' + #10 + #10 + #10 +
+  '        stream.write('']'')' + #10 + #10 +
+  '    _dispatch[list.__repr__] = _pp' + 'rint_list' + #10 + #10 +
   '    def _pprint_tuple(self, object' +
   ', stream, indent, allowance, conte' + 'xt, level):' + #10 +
   '        stream.write(''('')' + #10 +
@@ -68414,7 +74475,8 @@ Const
   '        self._format_items(object,' +
   ' stream, indent, allowance + len(e' + 'ndchar),' + #10 +
   '                           context' + ', level)' + #10 +
-  '        stream.write(endchar)' + #10 + #10 + #10 +
+  '        stream.write(endchar)' + #10 + #10 +
+  '    _dispatch[tuple.__repr__] = _p' + 'print_tuple' + #10 + #10 +
   '    def _pprint_set(self, object, ' +
   'stream, indent, allowance, context' + ', level):' + #10 +
   '        if not len(object):' + #10 + '            stream.write(repr(obje' +
@@ -68427,8 +74489,13 @@ Const
   '        object = sorted(object, ke' + 'y=_safe_key)' + #10 +
   '        self._format_items(object,' +
   ' stream, indent, allowance + len(e' + 'ndchar),' + #10 +
-  '                           context' + ', level)' + #10 +
-  '        stream.write(endchar)' + #10 + #10 + #10 +
+  '                           context' + ', level)' + #10;
+
+Const
+ Src_pprint_1: AnsiString =
+  '        stream.write(endchar)' + #10 + #10 +
+  '    _dispatch[set.__repr__] = _ppr' + 'int_set' + #10 +
+  '    _dispatch[frozenset.__repr__] ' + '= _pprint_set' + #10 + #10 +
   '    def _pprint_str(self, object, ' +
   'stream, indent, allowance, context' + ', level):' + #10 +
   '        write = stream.write' + #10 + '        if not len(object):' + #10 +
@@ -68444,7 +74511,10 @@ Const
   '            if len(rep) <= max_wid' + 'th1:' + #10 +
   '                chunks.append(rep)' + #10 + '            else:' + #10 +
   '                # A list of altern' + 'ating (non-space, space) strings' +
-  #10 + '                parts = _split_wor' + 'ds(line)' + #10 +
+  #10 + '                parts = re.findall' + '(r''\S*\s*'', line)' + #10 +
+  '                assert parts' + #10 +
+  '                assert not parts[-' + '1]' + #10 +
+  '                parts.pop()  # dro' + 'p empty last part' + #10 +
   '                max_width2 = max_w' + 'idth' + #10 +
   '                current = ''''' + #10 +
   '                for j, part in enu' + 'merate(parts):' + #10 +
@@ -68462,38 +74532,40 @@ Const
   '            return' + #10 + '        if level == 1:' + #10 +
   '            write(''('')' + #10 + '        for i, rep in enumerate(ch' +
   'unks):' + #10 + '            if i > 0:' + #10 +
-  '                write(''\n'' + '' '' *' + ' indent)' + #10 +
+  '                write(''\n'' + '' ''*i' + 'ndent)' + #10 +
   '            write(rep)' + #10 + '        if level == 1:' + #10 +
-  '            write('')'')' + #10 + #10 + #10 +
+  '            write('')'')' + #10 + #10 +
+  '    _dispatch[str.__repr__] = _ppr' + 'int_str' + #10 + #10 +
   '    def _pprint_bytes(self, object' +
   ', stream, indent, allowance, conte' + 'xt, level):' + #10 +
   '        write = stream.write' + #10 + '        if len(object) <= 4:' +
   #10 + '            write(repr(object))' + #10 + '            return' + #10 +
-  '        parens = level == 1' + #10;
-
-Const
- Src_pprint_1: AnsiString =
-  '        if parens:' + #10 + '            indent += 1' + #10 +
-  '            allowance += 1' + #10 + '            write(''('')' + #10 +
-  '        delim = ''''' + #10 + '        for rep in _wrap_bytes_rep' +
+  '        parens = level == 1' + #10 + '        if parens:' + #10 +
+  '            indent += 1' + #10 + '            allowance += 1' + #10 +
+  '            write(''('')' + #10 + '        delim = ''''' + #10 +
+  '        for rep in _wrap_bytes_rep' +
   'r(object, self._width - indent, al' + 'lowance):' + #10 +
   '            write(delim)' + #10 + '            write(rep)' + #10 +
   '            if not delim:' + #10 +
-  '                delim = ''\n'' + '' ''' + ' * indent' + #10 +
-  '        if parens:' + #10 + '            write('')'')' + #10 + #10 + #10 +
+  '                delim = ''\n'' + '' ''' + '*indent' + #10 +
+  '        if parens:' + #10 + '            write('')'')' + #10 + #10 +
+  '    _dispatch[bytes.__repr__] = _p' + 'print_bytes' + #10 + #10 +
   '    def _pprint_bytearray(self, ob' +
   'ject, stream, indent, allowance, c' + 'ontext, level):' + #10 +
   '        write = stream.write' + #10 + '        write(''bytearray('')' +
   #10 + '        self._pprint_bytes(bytes(o' +
   'bject), stream, indent + 10,' + #10 +
   '                           allowan' + 'ce + 1, context, level + 1)' + #10 +
-  '        write('')'')' + #10 + #10 + '    def _pprint_mappingproxy(self,' +
+  '        write('')'')' + #10 + #10 + '    _dispatch[bytearray.__repr__] ' +
+  '= _pprint_bytearray' + #10 + #10 + '    def _pprint_mappingproxy(self,' +
   ' object, stream, indent, allowance' + ', context, level):' + #10 +
   '        stream.write(''mappingproxy' + '('')' + #10 +
   '        self._format(object.copy()' +
   ', stream, indent + 13, allowance +' + ' 1,' + #10 +
   '                     context, leve' + 'l)' + #10 +
-  '        stream.write('')'')' + #10 + #10 + #10 +
+  '        stream.write('')'')' + #10 + #10 +
+  '    _dispatch[_types.MappingProxyT' +
+  'ype.__repr__] = _pprint_mappingpro' + 'xy' + #10 + #10 +
   '    def _format_dict_items(self, i' +
   'tems, stream, indent, allowance, c' + 'ontext,' + #10 +
   '                           level):' + #10 +
@@ -68518,15 +74590,14 @@ Const
   '        delimnl = '',\n'' + '' '' * in' + 'dent' + #10 +
   '        delim = ''''' + #10 + '        width = max_width = self._' +
   'width - indent + 1' + #10 + '        it = iter(items)' + #10 +
-  '        empty = False' + #10 + '        try:' + #10 +
-  '            next_ent = next(it)' + #10 + '        except StopIteration:' +
-  #10 + '            empty = True' + #10 + '        if empty:' + #10 +
-  '            return' + #10 + '        last = False' + #10 +
-  '        while not last:' + #10 + '            ent = next_ent' + #10 +
-  '            try:' + #10 + '                next_ent = next(it' + ')' +
-  #10 + '            except StopIteration:' + #10 +
-  '                last = True' + #10 + '                max_width -= allow' +
-  'ance' + #10 + '                width -= allowance' + #10 +
+  '        try:' + #10 + '            next_ent = next(it)' + #10 +
+  '        except StopIteration:' + #10 + '            return' + #10 +
+  '        last = False' + #10 + '        while not last:' + #10 +
+  '            ent = next_ent' + #10 + '            try:' + #10 +
+  '                next_ent = next(it' + ')' + #10 +
+  '            except StopIteration:' + #10 + '                last = True' +
+  #10 + '                max_width -= allow' + 'ance' + #10 +
+  '                width -= allowance' + #10 +
   '            if self._compact:' + #10 +
   '                rep = self._repr(e' + 'nt, context, level)' + #10 +
   '                w = len(rep) + 2' + #10 + '                if width < w:' +
@@ -68567,7 +74638,9 @@ Const
   '% (cls.__name__, rdf, '' '' * indent' + '))' + #10 +
   '        self._pprint_dict(object, ' +
   'stream, indent, allowance + 1, con' + 'text, level)' + #10 +
-  '        stream.write('')'')' + #10 + #10 + #10 +
+  '        stream.write('')'')' + #10 + #10 +
+  '    _dispatch[_collections.default' +
+  'dict.__repr__] = _pprint_default_d' + 'ict' + #10 + #10 +
   '    def _pprint_counter(self, obje' +
   'ct, stream, indent, allowance, con' + 'text, level):' + #10 +
   '        if not len(object):' + #10 + '            stream.write(repr(obje' +
@@ -68581,8 +74654,9 @@ Const
   '                                in' +
   'dent + len(cls.__name__) + 1, allo' + 'wance + 2,' + #10 +
   '                                co' + 'ntext, level)' + #10 +
-  '        stream.write(''})'')' + #10 + #10 + #10 +
-  '    def _pprint_chain_map(self, ob' +
+  '        stream.write(''})'')' + #10 + #10 +
+  '    _dispatch[_collections.Counter' + '.__repr__] = _pprint_counter' +
+  #10 + #10 + '    def _pprint_chain_map(self, ob' +
   'ject, stream, indent, allowance, c' + 'ontext, level):' + #10 +
   '        if not len(object.maps):' + #10 +
   '            stream.write(repr(obje' + 'ct))' + #10 + '            return' +
@@ -68596,7 +74670,9 @@ Const
   '                stream.write('')'')' + #10 + '            else:' + #10 +
   '                self._format(m, st' + 'ream, indent, 1, context, level)' +
   #10 + '                stream.write('',\n''' + ' + '' '' * indent)' + #10 +
-  #10 + #10 + '    def _pprint_deque(self, object' +
+  #10 + '    _dispatch[_collections.ChainMa' +
+  'p.__repr__] = _pprint_chain_map' + #10 + #10 +
+  '    def _pprint_deque(self, object' +
   ', stream, indent, allowance, conte' + 'xt, level):' + #10 +
   '        if not len(object):' + #10 + '            stream.write(repr(obje' +
   'ct))' + #10 + '            return' + #10 +
@@ -68612,76 +74688,32 @@ Const
   '                               con' + 'text, level)' + #10 +
   '            rml = self._repr(objec' + 't.maxlen, context, level)' + #10 +
   '            stream.write(''],\n%sma' +
-  'xlen=%s)'' % ('' '' * indent, rml))' + #10 + #10 + #10 +
-  '    def _pprint_user_dict(self, ob' +
+  'xlen=%s)'' % ('' '' * indent, rml))' + #10 + #10 +
+  '    _dispatch[_collections.deque._' + '_repr__] = _pprint_deque' + #10 +
+  #10 + '    def _pprint_user_dict(self, ob' +
   'ject, stream, indent, allowance, c' + 'ontext, level):' + #10 +
   '        self._format(object.data, ' +
-  'stream, indent, allowance, context' + ', level - 1)' + #10 + #10 + #10 +
-  '    def _pprint_user_list(self, ob' +
+  'stream, indent, allowance, context' + ', level - 1)' + #10 + #10 +
+  '    _dispatch[_collections.UserDic' + 't.__repr__] = _pprint_user_dict' +
+  #10 + #10 + '    def _pprint_user_list(self, ob' +
   'ject, stream, indent, allowance, c' + 'ontext, level):' + #10 +
   '        self._format(object.data, ' +
-  'stream, indent, allowance, context' + ', level - 1)' + #10 + #10 + #10 +
-  '    def _pprint_user_string(self, ' +
+  'stream, indent, allowance, context' + ', level - 1)' + #10 + #10 +
+  '    _dispatch[_collections.UserLis' + 't.__repr__] = _pprint_user_list' +
+  #10 + #10 + '    def _pprint_user_string(self, ' +
   'object, stream, indent, allowance,' + ' context, level):' + #10 +
   '        self._format(object.data, ' +
-  'stream, indent, allowance, context' + ', level - 1)' + #10 + #10 + #10 +
-  #10 + '_handlers = [' + #10 + '    (_collections.OrderedDict, Pre' +
-  'ttyPrinter._pprint_ordered_dict),' + #10 +
-  '    (_collections.defaultdict, Pre' + 'ttyPrinter._pprint_default_dict),' +
-  #10 + '    (_collections.Counter, PrettyP' + 'rinter._pprint_counter),' +
-  #10 + '    (dict, PrettyPrinter._pprint_d' + 'ict),' + #10 +
-  '    (list, PrettyPrinter._pprint_l' + 'ist),' + #10 +
-  '    (tuple, PrettyPrinter._pprint_' + 'tuple),' + #10 +
-  '    (set, PrettyPrinter._pprint_se' + 't),' + #10 +
-  '    (frozenset, PrettyPrinter._ppr' + 'int_set),' + #10 +
-  '    (str, PrettyPrinter._pprint_st' + 'r),' + #10 +
-  '    (bytes, PrettyPrinter._pprint_' + 'bytes),' + #10 +
-  '    (bytearray, PrettyPrinter._ppr' + 'int_bytearray),' + #10 +
-  '    (_types.MappingProxyType, Pret' + 'tyPrinter._pprint_mappingproxy),' +
-  #10 + '    (_collections.ChainMap, Pretty' + 'Printer._pprint_chain_map),' +
-  #10 + '    (_collections.deque, PrettyPri' + 'nter._pprint_deque),' + #10 +
-  '    (_collections.UserDict, Pretty' + 'Printer._pprint_user_dict),' + #10 +
-  '    (_collections.UserList, Pretty' + 'Printer._pprint_user_list),' + #10 +
-  '    (_collections.UserString, Pret' + 'tyPrinter._pprint_user_string),' +
-  #10 + ']' + #10 + #10 + #10 + 'def _find_handler(object):' + #10 +
-  '    # NB: dispatch on type(object)' +
-  '.__repr__ identity like CPython, b' + 'ut some' + #10 +
-  '    # builtin types share one gene' +
-  'ric __repr__ here, so also check i' + 'sinstance.' + #10 +
-  '    r = type(object).__repr__' + #10 + '    for T, handler in _handlers:' +
-  #10 + '        if r is T.__repr__ and isi' + 'nstance(object, T):' + #10 +
-  '            return handler' + #10 + '    return None' + #10 + #10 + #10 +
-  'def _split_words(line):' + #10 + '    """Equivalent of re.findall(r''' +
-  '\\S*\\s*'', line) without the empty' + ' last item."""' + #10 +
-  '    tokens = []' + #10 + '    if line.isprintable():' + #10 +
-  '        # the only whitespace char' + ' possible is '' ''' + #10 +
-  '        pieces = line.split('' '')' + #10 + '        cur = pieces[0]' +
-  #10 + '        first = True' + #10 + '        for p in pieces:' + #10 +
-  '            if first:' + #10 + '                first = False' + #10 +
-  '                continue' + #10 + '            if p:' + #10 +
-  '                tokens.append(cur ' + '+ '' '')' + #10 +
-  '                cur = p' + #10 + '            else:' + #10 +
-  '                cur += '' ''' + #10 + '        if cur:' + #10 +
-  '            tokens.append(cur)' + #10 + '        return tokens' + #10 +
-  '    cur = []' + #10 + '    in_space = False' + #10 +
-  '    for ch in line:' + #10 + '        sp = ch.isspace()' + #10 +
-  '        if in_space and not sp:' + #10 +
-  '            tokens.append(''''.join(' + 'cur))' + #10 +
-  '            cur = []' + #10 + '            in_space = False' + #10 +
-  '        cur.append(ch)' + #10 + '        if sp:' + #10 +
-  '            in_space = True' + #10 + '    if cur:' + #10 +
-  '        tokens.append(''''.join(cur)' + ')' + #10 + '    return tokens' +
-  #10 + #10 + #10 + '_builtin_scalars = frozenset({str,' +
-  ' bytes, bytearray, int, float, boo' + 'l, type(None)})' + #10 + #10 + #10;
+  'stream, indent, allowance, context' + ', level - 1)' + #10 + #10 +
+  '    _dispatch[_collections.UserStr' +
+  'ing.__repr__] = _pprint_user_strin' + 'g' + #10 + #10 +
+  '# Return triple (repr_string, isre' + 'adable, isrecursive).' + #10;
 
 Const
  Src_pprint_2: AnsiString =
-  'def _recursion(object):' + #10 + '    return ("<Recursion on %s with' +
-  ' id=%s>"' + #10 + '            % (type(object).__name' +
-  '__, id(object)))' + #10 + #10 + #10 +
-  'def _safe_repr(object, context, ma' + 'xlevels, level, sort_dicts):' +
-  #10 + '    typ = type(object)' + #10 + '    if typ in _builtin_scalars:' +
-  #10 + '        return repr(object), True,' + ' False' + #10 + #10 +
+  #10 + 'def _safe_repr(object, context, ma' +
+  'xlevels, level, sort_dicts):' + #10 + '    typ = type(object)' + #10 +
+  '    if typ in _builtin_scalars:' + #10 +
+  '        return repr(object), True,' + ' False' + #10 + #10 +
   '    r = getattr(typ, "__repr__", N' + 'one)' + #10 +
   '    if issubclass(typ, dict) and r' + ' is dict.__repr__:' + #10 +
   '        if not object:' + #10 + '            return "{}", True, Fal' +
@@ -68729,17 +74761,32 @@ Const
   #10 + '        return format % ", ".join(' +
   'components), readable, recursive' + #10 + #10 + '    rep = repr(object)' +
   #10 + '    return rep, (rep and not rep.s' + 'tartswith(''<'')), False' +
-  #10 + #10 + #10 + 'def _wrap_bytes_repr(object, width' + ', allowance):' +
-  #10 + '    current = b''''' + #10 + '    last = len(object) // 4 * 4' +
-  #10 + '    for i in range(0, len(object),' + ' 4):' + #10 +
-  '        part = object[i: i + 4]' + #10 +
+  #10 + #10 + '_builtin_scalars = frozenset({str,' +
+  ' bytes, bytearray, int, float, com' + 'plex,' + #10 +
+  '                              bool' + ', type(None)})' + #10 + #10 +
+  'def _recursion(object):' + #10 + '    return ("<Recursion on %s with' +
+  ' id=%s>"' + #10 + '            % (type(object).__name' +
+  '__, id(object)))' + #10 + #10 + #10 + 'def _perfcheck(object=None):' +
+  #10 + '    import time' + #10 + '    if object is None:' + #10 +
+  '        object = [("string", (1, 2' +
+  '), [3, 4], {5: 6, 7: 8})] * 100000' + #10 + '    p = PrettyPrinter()' +
+  #10 + '    t1 = time.perf_counter()' + #10 +
+  '    _safe_repr(object, {}, None, 0' + ', True)' + #10 +
+  '    t2 = time.perf_counter()' + #10 + '    p.pformat(object)' + #10 +
+  '    t3 = time.perf_counter()' + #10 + '    print("_safe_repr:", t2 - t1)' +
+  #10 + '    print("pformat:", t3 - t2)' + #10 + #10 +
+  'def _wrap_bytes_repr(object, width' + ', allowance):' + #10 +
+  '    current = b''''' + #10 + '    last = len(object) // 4 * 4' + #10 +
+  '    for i in range(0, len(object),' + ' 4):' + #10 +
+  '        part = object[i: i+4]' + #10 +
   '        candidate = current + part' + #10 + '        if i == last:' + #10 +
   '            width -= allowance' + #10 +
   '        if len(repr(candidate)) > ' + 'width:' + #10 +
   '            if current:' + #10 + '                yield repr(current' +
   ')' + #10 + '            current = part' + #10 + '        else:' + #10 +
   '            current = candidate' + #10 + '    if current:' + #10 +
-  '        yield repr(current)' + #10 + #10;
+  '        yield repr(current)' + #10 + #10 + 'if __name__ == "__main__":' +
+  #10 + '    _perfcheck()' + #10 + #10;
 
 Function Src_pprint: AnsiString;
 Begin
@@ -69163,101 +75210,324 @@ End;
 
 Const
  Src_random_0: AnsiString =
-  'import _random' + #10 + 'from math import log as _log, exp ' +
+  '"""Random variable generators.' + #10 + #10 + '    integers' + #10 +
+  '    --------' + #10 + '           uniform within range' + #10 + #10 +
+  '    sequences' + #10 + '    ---------' + #10 +
+  '           pick random element' + #10 + '           pick random sample' +
+  #10 + '           pick weighted random sa' + 'mple' + #10 +
+  '           generate random permuta' + 'tion' + #10 + #10 +
+  '    distributions on the real line' + ':' + #10 +
+  '    ------------------------------' + #10 + '           uniform' + #10 +
+  '           triangular' + #10 + '           normal (Gaussian)' + #10 +
+  '           lognormal' + #10 + '           negative exponential' + #10 +
+  '           gamma' + #10 + '           beta' + #10 + '           pareto' +
+  #10 + '           Weibull' + #10 + #10 +
+  '    distributions on the circle (a' + 'ngles 0 to 2pi)' + #10 +
+  '    ------------------------------' + '---------------' + #10 +
+  '           circular uniform' + #10 + '           von Mises' + #10 + #10 +
+  'General notes on the underlying Me' + 'rsenne Twister core generator:' +
+  #10 + #10 + '* The period is 2**19937-1.' + #10 +
+  '* It is one of the most extensivel' + 'y tested generators in existence.' +
+  #10 + '* The random() method is implement' +
+  'ed in C, executes in a single Pyth' + 'on step,' + #10 +
+  '  and is, therefore, threadsafe.' + #10 + #10 + '"""' + #10 + #10 +
+  'from warnings import warn as _warn' + #10 +
+  'from math import log as _log, exp ' +
   'as _exp, pi as _pi, e as _e, ceil ' + 'as _ceil' + #10 +
   'from math import sqrt as _sqrt, ac' +
   'os as _acos, cos as _cos, sin as _' + 'sin' + #10 +
-  'from math import tau as TWOPI' + #10 +
-  'from bisect import bisect as _bise' + 'ct' + #10 + #10 +
-  '__all__ = ["Random", "seed", "rand' +
-  'om", "uniform", "randint", "choice' +
-  '", "sample", "randrange", "shuffle' +
-  '", "normalvariate", "lognormvariat' +
-  'e", "expovariate", "vonmisesvariat' +
-  'e", "gammavariate", "triangular", ' +
-  '"gauss", "betavariate", "paretovar' +
-  'iate", "weibullvariate", "getstate' +
-  '", "setstate", "getrandbits", "cho' + 'ices", "SystemRandom"]' + #10 +
-  #10 + 'NV_MAGICCONST = 4 * _exp(-0.5) / _' + 'sqrt(2.0)' + #10 +
-  'LOG4 = _log(4.0)' + #10 + 'SG_MAGICCONST = 1.0 + _log(4.5)' + #10 +
-  'BPF = 53' + #10 + 'RECIP_BPF = 2 ** -BPF' + #10 + #10 + 'class Random:' +
-  #10 + '    VERSION = 3' + #10 + #10 + '    def __init__(self, x=None):' +
-  #10 + '        self._st = _random.new()' + #10 +
-  '        self.gauss_next = None' + #10 + '        self.seed(x)' + #10 +
-  #10 + '    def seed(self, a=None, version' + '=2):' + #10 +
-  '        _random.seed(self._st, a)' + #10 +
-  '        self.gauss_next = None' + #10 + #10 + '    def getstate(self):' +
-  #10 + '        return self.VERSION, _rand' +
-  'om.getstate(self._st), self.gauss_' + 'next' + #10 + #10 +
-  '    def setstate(self, state):' + #10 +
-  '        version, internalstate, se' + 'lf.gauss_next = state' + #10 +
-  '        _random.setstate(self._st,' + ' internalstate)' + #10 + #10 +
-  '    def random(self):' + #10 + '        return _random.random(self' +
-  '._st)' + #10 + #10 + '    def getrandbits(self, k):' + #10 +
-  '        return _random.getrandbits' + '(self._st, k)' + #10 + #10 +
-  '    def _randbelow(self, n):' + #10 + '        if n == 0:' + #10 +
-  '            return 0' + #10 + '        getrandbits = self.getrand' +
-  'bits' + #10 + '        k = n.bit_length()' + #10 +
-  '        r = getrandbits(k)' + #10 + '        while r >= n:' + #10 +
-  '            r = getrandbits(k)' + #10 + '        return r' + #10 + #10 +
-  '    def randrange(self, start, sto' + 'p=None, step=1):' + #10 +
-  '        istart = int(start)' + #10 + '        if istart != start:' + #10 +
-  '            raise ValueError(''non-' + 'integer arg 1 for randrange()'')' +
-  #10 + '        if stop is None:' + #10 + '            if istart > 0:' +
-  #10 + '                return self._randb' + 'elow(istart)' + #10 +
-  '            raise ValueError(''empt' + 'y range for randrange()'')' + #10 +
-  '        istop = int(stop)' + #10 + '        if istop != stop:' + #10 +
-  '            raise ValueError(''non-' + 'integer stop for randrange()'')' +
+  'from os import urandom as _urandom' + #10 +
+  'from _collections_abc import Set a' + 's _Set, Sequence as _Sequence' +
+  #10 + 'from itertools import accumulate a' +
+  's _accumulate, repeat as _repeat' + #10 +
+  'from bisect import bisect as _bise' + 'ct' + #10 + 'import os as _os' +
+  #10 + #10 + 'try:' + #10 + '    # hashlib is pretty heavy to l' +
+  'oad, try lean internal module firs' + 't' + #10 +
+  '    from _sha512 import sha512 as ' + '_sha512' + #10 +
+  'except ImportError:' + #10 + '    # fallback to official impleme' +
+  'ntation' + #10 + '    from hashlib import sha512 as ' + '_sha512' + #10 +
+  #10 + #10 + '__all__ = ["Random","seed","random' +
+  '","uniform","randint","choice","sa' + 'mple",' + #10 +
+  '           "randrange","shuffle","' + 'normalvariate","lognormvariate",' +
+  #10 + '           "expovariate","vonmises' +
+  'variate","gammavariate","triangula' + 'r",' + #10 +
+  '           "gauss","betavariate","' + 'paretovariate","weibullvariate",' +
+  #10 + '           "getstate","setstate", ' + '"getrandbits", "choices",' +
+  #10 + '           "SystemRandom"]' + #10 + #10 +
+  'NV_MAGICCONST = 4 * _exp(-0.5)/_sq' + 'rt(2.0)' + #10 + 'TWOPI = 2.0*_pi' +
+  #10 + 'LOG4 = _log(4.0)' + #10 + 'SG_MAGICCONST = 1.0 + _log(4.5)' + #10 +
+  'BPF = 53        # Number of bits i' + 'n a float' + #10 +
+  'RECIP_BPF = 2**-BPF' + #10 + #10 + #10 +
+  '# Translated by Guido van Rossum f' + 'rom C source provided by' + #10 +
+  '# Adrian Baddeley.  Adapted by Ray' + 'mond Hettinger for use with' + #10 +
+  '# the Mersenne Twister  and os.ura' + 'ndom() core generators.' + #10 +
+  #10 + 'import _random' + #10 + #10 + 'class Random(_random.Random):' + #10 +
+  '    """Random number generator bas' +
+  'e class used by bound module funct' + 'ions.' + #10 + #10 +
+  '    Used to instantiate instances ' +
+  'of Random to get generators that d' + 'on''t' + #10 + '    share state.' +
+  #10 + #10 + '    Class Random can also be subcl' +
+  'assed if you want to use a differe' + 'nt basic' + #10 +
+  '    generator of your own devising' +
+  ': in that case, override the follo' + 'wing' + #10 +
+  '    methods:  random(), seed(), ge' + 'tstate(), and setstate().' + #10 +
+  '    Optionally, implement a getran' +
+  'dbits() method so that randrange()' + #10 +
+  '    can cover arbitrarily large ra' + 'nges.' + #10 + #10 + '    """' +
+  #10 + #10 + '    VERSION = 3     # used by gets' + 'tate/setstate' + #10 +
+  #10 + '    def __init__(self, x=None):' + #10 +
+  '        """Initialize an instance.' + #10 + #10 +
+  '        Optional argument x contro' + 'ls seeding, as for Random.seed().' +
+  #10 + '        """' + #10 + #10 + '        self.seed(x)' + #10 +
+  '        self.gauss_next = None' + #10 + #10 +
+  '    def __init_subclass__(cls, /, ' + '**kwargs):' + #10 +
+  '        """Control how subclasses ' + 'generate random integers.' + #10 +
+  #10 + '        The algorithm a subclass c' +
+  'an use depends on the random() and' + '/or' + #10 +
+  '        getrandbits() implementati' + 'on available to it and determines' +
+  #10 + '        whether it can generate ra' +
+  'ndom integers from arbitrarily lar' + 'ge' + #10 + '        ranges.' +
+  #10 + '        """' + #10 + #10 + '        for c in cls.__mro__:' + #10 +
+  '            if ''_randbelow'' in c._' + '_dict__:' + #10 +
+  '                # just inherit it' + #10 + '                break' + #10 +
+  '            if ''getrandbits'' in c.' + '__dict__:' + #10 +
+  '                cls._randbelow = c' + 'ls._randbelow_with_getrandbits' +
+  #10 + '                break' + #10 +
+  '            if ''random'' in c.__dic' + 't__:' + #10 +
+  '                cls._randbelow = c' + 'ls._randbelow_without_getrandbits' +
+  #10 + '                break' + #10 + #10 +
+  '    def seed(self, a=None, version' + '=2):' + #10 +
+  '        """Initialize internal sta' + 'te from hashable object.' + #10 +
+  #10 + '        None or no argument seeds ' +
+  'from current time or from an opera' + 'ting' + #10 +
+  '        system specific randomness' + ' source if available.' + #10 + #10 +
+  '        If *a* is an int, all bits' + ' are used.' + #10 + #10 +
+  '        For version 2 (the default' +
+  '), all of the bits are used if *a*' + ' is a str,' + #10 +
+  '        bytes, or bytearray.  For ' +
+  'version 1 (provided for reproducin' + 'g random' + #10 +
+  '        sequences from older versi' +
+  'ons of Python), the algorithm for ' + 'str and' + #10 +
+  '        bytes generates a narrower' + ' range of seeds.' + #10 + #10 +
+  '        """' + #10 + #10 + '        if version == 1 and isinst' +
+  'ance(a, (str, bytes)):' + #10 + '            a = a.decode(''latin-1''' +
+  ') if isinstance(a, bytes) else a' + #10 +
+  '            x = ord(a[0]) << 7 if ' + 'a else 0' + #10 +
+  '            for c in map(ord, a):' + #10 +
+  '                x = ((1000003 * x)' + ' ^ c) & 0xFFFFFFFFFFFFFFFF' + #10 +
+  '            x ^= len(a)' + #10 + '            a = -2 if x == -1 else' +
+  ' x' + #10 + #10 + '        if version == 2 and isinst' +
+  'ance(a, (str, bytes, bytearray)):' + #10 +
+  '            if isinstance(a, str):' + #10 +
+  '                a = a.encode()' + #10 +
+  '            a += _sha512(a).digest' + '()' + #10 +
+  '            a = int.from_bytes(a, ' + '''big'')' + #10 + #10 +
+  '        super().seed(a)' + #10 + '        self.gauss_next = None' + #10 +
+  #10 + '    def getstate(self):' + #10 +
+  '        """Return internal state; ' +
+  'can be passed to setstate() later.' + '"""' + #10 +
+  '        return self.VERSION, super' + '().getstate(), self.gauss_next' +
+  #10 + #10 + '    def setstate(self, state):' + #10 +
+  '        """Restore internal state ' +
+  'from object returned by getstate()' + '."""' + #10 +
+  '        version = state[0]' + #10 + '        if version == 3:' + #10 +
+  '            version, internalstate' + ', self.gauss_next = state' + #10 +
+  '            super().setstate(inter' + 'nalstate)' + #10 +
+  '        elif version == 2:' + #10 + '            version, internalstate' +
+  ', self.gauss_next = state' + #10 + '            # In version 2, the st' +
+  'ate was saved as signed ints, whic' + 'h causes' + #10 +
+  '            #   inconsistencies be' +
+  'tween 32/64-bit systems. The state' + ' is' + #10 +
+  '            #   really unsigned 32' +
+  '-bit ints, so we convert negative ' + 'ints from' + #10 +
+  '            #   version 2 to posit' + 'ive longs for version 3.' + #10 +
+  '            try:' + #10 + '                internalstate = tu' +
+  'ple(x % (2**32) for x in internals' + 'tate)' + #10 +
+  '            except ValueError as e' + ':' + #10 +
+  '                raise TypeError fr' + 'om e' + #10 +
+  '            super().setstate(inter' + 'nalstate)' + #10 + '        else:' +
+  #10 + '            raise ValueError("stat' +
+  'e with version %s passed to "' + #10 +
+  '                             "Rand' + 'om.setstate() of version %s" %' +
+  #10 + '                             (vers' + 'ion, self.VERSION))' + #10 +
+  #10 + '## ---- Methods below this point d' +
+  'o not need to be overridden when' + #10 +
+  '## ---- subclassing for the purpos' +
+  'e of using a different core genera' + 'tor.' + #10 + #10 +
+  '## -------------------- pickle sup' + 'port  -------------------' + #10 +
+  #10 + '    # Issue 17489: Since __reduce_' +
+  '_ was defined to fix #759889 this ' + 'is no' + #10 +
+  '    # longer called; we leave it h' +
+  'ere because it has been here since' + ' random was' + #10 +
+  '    # rewritten back in 2001 and w' + 'hy risk breaking something.' + #10 +
+  '    def __getstate__(self): # for ' + 'pickle' + #10 +
+  '        return self.getstate()' + #10 + #10 +
+  '    def __setstate__(self, state):' + '  # for pickle' + #10 +
+  '        self.setstate(state)' + #10 + #10 + '    def __reduce__(self):' +
+  #10 + '        return self.__class__, (),' + ' self.getstate()' + #10 +
+  #10 + '## -------------------- integer me' + 'thods  -------------------' +
+  #10 + #10 + '    def randrange(self, start, sto' +
+  'p=None, step=1, _int=int):' + #10 + '        """Choose a random item fr' +
+  'om range(start, stop[, step]).' + #10 + #10 +
+  '        This fixes the problem wit' + 'h randint() which includes the' +
+  #10 + '        endpoint; in Python this i' +
+  's usually not what you want.' + #10 + #10 + '        """' + #10 + #10 +
+  '        # This code is a bit messy' + ' to make it fast for the' + #10 +
+  '        # common case while still ' + 'doing adequate error checking.' +
+  #10 + '        istart = _int(start)' + #10 + '        if istart != start:' +
+  #10 + '            raise ValueError("non-' +
+  'integer arg 1 for randrange()")' + #10 + '        if stop is None:' + #10 +
+  '            if istart > 0:' + #10 + '                return self._randb' +
+  'elow(istart)' + #10 + '            raise ValueError("empt' +
+  'y range for randrange()")' + #10 + #10 +
+  '        # stop argument supplied.' + #10 + '        istop = _int(stop)' +
+  #10 + '        if istop != stop:' + #10 +
+  '            raise ValueError("non-' + 'integer stop for randrange()")' +
   #10 + '        width = istop - istart' + #10 +
   '        if step == 1 and width > 0' + ':' + #10 +
   '            return istart + self._' + 'randbelow(width)' + #10 +
-  '        if step == 1:' + #10 + '            raise ValueError(''empt' +
-  'y range for randrange() (%d, %d, %' + 'd)'' % (istart, istop, width))' +
-  #10 + '        istep = int(step)' + #10 + '        if istep != step:' +
-  #10 + '            raise ValueError(''non-' +
-  'integer step for randrange()'')' + #10 + '        if istep > 0:' + #10 +
-  '            n = (width + istep - 1' + ') // istep' + #10 +
-  '        elif istep < 0:' + #10 + '            n = (width + istep + 1' +
-  ') // istep' + #10 + '        else:' + #10 +
-  '            raise ValueError(''zero' + ' step for randrange()'')' + #10 +
-  '        if n <= 0:' + #10 + '            raise ValueError(''empt' +
-  'y range for randrange()'')' + #10 + '        return istart + istep * se' +
-  'lf._randbelow(n)' + #10 + #10 + '    def randint(self, a, b):' + #10 +
-  '        return self.randrange(a, b' + ' + 1)' + #10 + #10 +
-  '    def randbytes(self, n):' + #10 + '        return self.getrandbits(n ' +
-  '* 8).to_bytes(n, ''little'')' + #10 + #10 + '    def choice(self, seq):' +
+  '        if step == 1:' + #10 + '            raise ValueError("empt' +
+  'y range for randrange() (%d, %d, %' + 'd)" % (istart, istop, width))' +
+  #10 + #10 + '        # Non-unit step argument s' + 'upplied.' + #10 +
+  '        istep = _int(step)' + #10 + '        if istep != step:' + #10 +
+  '            raise ValueError("non-' + 'integer step for randrange()")' +
+  #10 + '        if istep > 0:' + #10 + '            n = (width + istep - 1' +
+  ') // istep' + #10 + '        elif istep < 0:' + #10 +
+  '            n = (width + istep + 1' + ') // istep' + #10 +
+  '        else:' + #10 + '            raise ValueError("zero' +
+  ' step for randrange()")' + #10 + #10 + '        if n <= 0:' + #10 +
+  '            raise ValueError("empt' + 'y range for randrange()")' + #10 +
+  #10 + '        return istart + istep*self' + '._randbelow(n)' + #10 + #10 +
+  '    def randint(self, a, b):' + #10 +
+  '        """Return random integer i' +
+  'n range [a, b], including both end' + ' points.' + #10 + '        """' +
+  #10 + #10 + '        return self.randrange(a, b' + '+1)' + #10 + #10 +
+  '    def _randbelow_with_getrandbit' + 's(self, n):' + #10;
+
+Const
+ Src_random_1: AnsiString =
+  '        "Return a random int in th' +
+  'e range [0,n).  Raises ValueError ' + 'if n==0."' + #10 + #10 +
+  '        getrandbits = self.getrand' + 'bits' + #10 +
+  '        k = n.bit_length()  # don''' +
+  't use (n-1) here because n can be ' + '1' + #10 +
+  '        r = getrandbits(k)        ' + '  # 0 <= r < 2**k' + #10 +
+  '        while r >= n:' + #10 + '            r = getrandbits(k)' + #10 +
+  '        return r' + #10 + #10 + '    def _randbelow_without_getrand' +
+  'bits(self, n, int=int, maxsize=1<<' + 'BPF):' + #10 +
+  '        """Return a random int in ' +
+  'the range [0,n).  Raises ValueErro' + 'r if n==0.' + #10 + #10 +
+  '        The implementation does no' +
+  't use getrandbits, but only random' + '.' + #10 + '        """' + #10 +
+  #10 + '        random = self.random' + #10 + '        if n >= maxsize:' +
+  #10 + '            _warn("Underlying rand' +
+  'om() generator does not supply \n"' + #10 +
+  '                "enough bits to ch' +
+  'oose from a population range this ' + 'large.\n"' + #10 +
+  '                "To remove the ran' +
+  'ge limitation, add a getrandbits()' + ' method.")' + #10 +
+  '            return int(random() * ' + 'n)' + #10 + '        if n == 0:' +
+  #10 + '            raise ValueError("Boun' + 'dary cannot be zero")' + #10 +
+  '        rem = maxsize % n' + #10 + '        limit = (maxsize - rem) / ' +
+  'maxsize   # int(limit * maxsize) %' + ' n == 0' + #10 +
+  '        r = random()' + #10 + '        while r >= limit:' + #10 +
+  '            r = random()' + #10 + '        return int(r*maxsize) % n' +
+  #10 + #10 + '    _randbelow = _randbelow_with_g' + 'etrandbits' + #10 +
+  #10 + '## -------------------- sequence m' + 'ethods  -------------------' +
+  #10 + #10 + '    def choice(self, seq):' + #10 +
+  '        """Choose a random element' + ' from a non-empty sequence."""' +
   #10 + '        try:' + #10 + '            i = self._randbelow(le' +
   'n(seq))' + #10 + '        except ValueError:' + #10 +
   '            raise IndexError(''Cann' +
   'ot choose from an empty sequence'')' + ' from None' + #10 +
   '        return seq[i]' + #10 + #10 + '    def shuffle(self, x, random=No' +
-  'ne):' + #10 + '        if random is None:' + #10 +
+  'ne):' + #10 + '        """Shuffle list x in place' + ', and return None.' +
+  #10 + #10 + '        Optional argument random i' +
+  's a 0-argument function returning ' + 'a' + #10 +
+  '        random float in [0.0, 1.0)' + '; if it is the default None, the' +
+  #10 + '        standard random.random wil' + 'l be used.' + #10 + #10 +
+  '        """' + #10 + #10 + '        if random is None:' + #10 +
   '            randbelow = self._rand' + 'below' + #10 +
   '            for i in reversed(rang' + 'e(1, len(x))):' + #10 +
-  '                j = randbelow(i + ' + '1)' + #10 +
+  '                # pick an element ' +
+  'in x[:i+1] with which to exchange ' + 'x[i]' + #10 +
+  '                j = randbelow(i+1)' + #10 +
   '                x[i], x[j] = x[j],' + ' x[i]' + #10 + '        else:' +
-  #10 + '            for i in reversed(rang' + 'e(1, len(x))):' + #10 +
-  '                j = int(random() *' + ' (i + 1))' + #10 +
+  #10 + '            _int = int' + #10 +
+  '            for i in reversed(rang' + 'e(1, len(x))):' + #10 +
+  '                # pick an element ' +
+  'in x[:i+1] with which to exchange ' + 'x[i]' + #10 +
+  '                j = _int(random() ' + '* (i+1))' + #10 +
   '                x[i], x[j] = x[j],' + ' x[i]' + #10 + #10 +
   '    def sample(self, population, k' + '):' + #10 +
-  '        if isinstance(population, ' + 'set):' + #10 +
+  '        """Chooses k unique random' +
+  ' elements from a population sequen' + 'ce or set.' + #10 + #10 +
+  '        Returns a new list contain' +
+  'ing elements from the population w' + 'hile' + #10 +
+  '        leaving the original popul' +
+  'ation unchanged.  The resulting li' + 'st is' + #10 +
+  '        in selection order so that' +
+  ' all sub-slices will also be valid' + ' random' + #10 +
+  '        samples.  This allows raff' +
+  'le winners (the sample) to be part' + 'itioned' + #10 +
+  '        into grand prize and secon' + 'd place winners (the subslices).' +
+  #10 + #10 + '        Members of the population ' +
+  'need not be hashable or unique.  I' + 'f the' + #10 +
+  '        population contains repeat' +
+  's, then each occurrence is a possi' + 'ble' + #10 +
+  '        selection in the sample.' + #10 + #10 +
+  '        To choose a sample in a ra' +
+  'nge of integers, use range as an a' + 'rgument.' + #10 +
+  '        This is especially fast an' +
+  'd space efficient for sampling fro' + 'm a' + #10 +
+  '        large population:   sample' + '(range(10000000), 60)' + #10 +
+  '        """' + #10 + #10 + '        # Sampling without replace' +
+  'ment entails tracking either poten' + 'tial' + #10 +
+  '        # selections (the pool) in' +
+  ' a list or previous selections in ' + 'a set.' + #10 + #10 +
+  '        # When the number of selec' + 'tions is small compared to the' +
+  #10 + '        # population, then trackin' +
+  'g selections is efficient, requiri' + 'ng' + #10 +
+  '        # only a small set and an ' + 'occasional reselection.  For' +
+  #10 + '        # a larger number of selec' +
+  'tions, the pool tracking method is' + #10 +
+  '        # preferred since the list' + ' takes less space than the' + #10 +
+  '        # set and it doesn''t suffe' + 'r from frequent reselections.' +
+  #10 + #10 + '        # The number of calls to _' +
+  'randbelow() is kept at or near k, ' + 'the' + #10 +
+  '        # theoretical minimum.  Th' +
+  'is is important because running ti' + 'me' + #10 +
+  '        # is dominated by _randbel' + 'ow() and because it extracts the' +
+  #10 + '        # least entropy from the u' +
+  'nderlying random number generators' + '.' + #10 + #10 +
+  '        # Memory requirements are ' + 'kept to the smaller of a k-length' +
+  #10 + '        # set or an n-length list.' + #10 + #10 +
+  '        # There are other sampling' + ' algorithms that do not require' +
+  #10 + '        # auxiliary memory, but th' +
+  'ey were rejected because they made' + #10 +
+  '        # too many calls to _randb' + 'elow(), making them slower and' +
+  #10 + '        # causing them to eat more' + ' entropy than necessary.' +
+  #10 + #10 + '        if isinstance(population, ' + '_Set):' + #10 +
   '            population = tuple(pop' + 'ulation)' + #10 +
-  '        if not hasattr(population,' +
-  ' ''__len__'') or not hasattr(populat' + 'ion, ''__getitem__''):' + #10 +
-  '            raise TypeError(''Popul' +
-  'ation must be a sequence or set.  ' + 'For dicts, use list(d).'')' + #10 +
+  '        if not isinstance(populati' + 'on, _Sequence):' + #10 +
+  '            raise TypeError("Popul' +
+  'ation must be a sequence or set.  ' + 'For dicts, use list(d).")' + #10 +
   '        randbelow = self._randbelo' + 'w' + #10 +
   '        n = len(population)' + #10 + '        if not 0 <= k <= n:' + #10 +
-  '            raise ValueError(''Samp' +
-  'le larger than population or is ne' + 'gative'')' + #10 +
-  '        result = [None] * k' + #10 + '        setsize = 21' + #10 +
+  '            raise ValueError("Samp' +
+  'le larger than population or is ne' + 'gative")' + #10 +
+  '        result = [None] * k' + #10 + '        setsize = 21        # size' +
+  ' of a small set minus size of an e' + 'mpty list' + #10 +
   '        if k > 5:' + #10 + '            setsize += 4 ** _ceil(' +
-  '_log(k * 3, 4))' + #10 + '        if n <= setsize:' + #10 +
-  '            pool = list(population' + ')' + #10 +
-  '            for i in range(k):' + #10 +
-  '                j = randbelow(n - ' + 'i)' + #10 +
+  '_log(k * 3, 4)) # table size for b' + 'ig sets' + #10 +
+  '        if n <= setsize:' + #10 + '            # An n-length list is ' +
+  'smaller than a k-length set' + #10 + '            pool = list(population' +
+  ')' + #10 + '            for i in range(k):    ' +
+  '     # invariant:  non-selected at' + ' [0,n-i)' + #10 +
+  '                j = randbelow(n-i)' + #10 +
   '                result[i] = pool[j' + ']' + #10 +
-  '                pool[j] = pool[n -' + ' i - 1]' + #10 + '        else:' +
+  '                pool[j] = pool[n-i' +
+  '-1]   # move non-selected item int' + 'o vacancy' + #10 + '        else:' +
   #10 + '            selected = set()' + #10 +
   '            selected_add = selecte' + 'd.add' + #10 +
   '            for i in range(k):' + #10 +
@@ -69268,111 +75538,315 @@ Const
   '                result[i] = popula' + 'tion[j]' + #10 +
   '        return result' + #10 + #10 + '    def choices(self, population, ' +
   'weights=None, *, cum_weights=None,' + ' k=1):' + #10 +
-  '        random = self.random' + #10 + '        n = len(population)' + #10 +
-  '        if cum_weights is None:' + #10 +
-  '            if weights is None:' + #10 + '                floor = int' +
-  #10 + '                n += 0.0' + #10 +
+  '        """Return a k sized list o' +
+  'f population elements chosen with ' + 'replacement.' + #10 + #10 +
+  '        If the relative weights or' +
+  ' cumulative weights are not specif' + 'ied,' + #10 +
+  '        the selections are made wi' + 'th equal probability.' + #10 + #10 +
+  '        """' + #10 + '        random = self.random' + #10 +
+  '        n = len(population)' + #10 + '        if cum_weights is None:' +
+  #10 + '            if weights is None:' + #10 +
+  '                _int = int' + #10 + '                n += 0.0    # conv' +
+  'ert to float for a small speed imp' + 'rovement' + #10 +
   '                return [population' +
-  '[floor(random() * n)] for i in ran' + 'ge(k)]' + #10 +
-  '            cum_weights = []' + #10 + '            t = 0' + #10 +
-  '            for w in weights:' + #10 + '                t += w' + #10 +
-  '                cum_weights.append' + '(t)' + #10 +
+  '[_int(random() * n)] for i in _rep' + 'eat(None, k)]' + #10 +
+  '            cum_weights = list(_ac' + 'cumulate(weights))' + #10 +
   '        elif weights is not None:' + #10 +
   '            raise TypeError(''Canno' +
   't specify both weights and cumulat' + 'ive weights'')' + #10 +
   '        if len(cum_weights) != n:' + #10 +
   '            raise ValueError(''The ' +
   'number of weights does not match t' + 'he population'')' + #10 +
-  '        total = cum_weights[-1] + ' + '0.0' + #10 + '        hi = n - 1' +
-  #10 + '        return [population[_bisect' +
-  '(cum_weights, random() * total, 0,' + ' hi)] for i in range(k)]' + #10 +
-  #10 + '    def uniform(self, a, b):' + #10 +
-  '        return a + (b - a) * self.' + 'random()' + #10 + #10 +
+  '        bisect = _bisect' + #10 + '        total = cum_weights[-1] + ' +
+  '0.0   # convert to float' + #10 + '        hi = n - 1' + #10 +
+  '        return [population[bisect(' +
+  'cum_weights, random() * total, 0, ' + 'hi)]' + #10 +
+  '                for i in _repeat(N' + 'one, k)]' + #10 + #10 +
+  '## -------------------- real-value' +
+  'd distributions  -----------------' + '--' + #10 + #10 +
+  '## -------------------- uniform di' + 'stribution -------------------' +
+  #10 + #10 + '    def uniform(self, a, b):' + #10 +
+  '        "Get a random number in th' +
+  'e range [a, b) or [a, b] depending' + ' on rounding."' + #10 +
+  '        return a + (b-a) * self.ra' + 'ndom()' + #10 + #10 +
+  '## -------------------- triangular' + ' --------------------' + #10 + #10 +
   '    def triangular(self, low=0.0, ' + 'high=1.0, mode=None):' + #10 +
-  '        u = self.random()' + #10 + '        try:' + #10 +
-  '            c = 0.5 if mode is Non' +
+  '        """Triangular distribution' + '.' + #10 + #10 +
+  '        Continuous distribution bo' +
+  'unded by given lower and upper lim' + 'its,' + #10 +
+  '        and having a given mode va' + 'lue in-between.' + #10 + #10 +
+  '        http://en.wikipedia.org/wi' + 'ki/Triangular_distribution' + #10 +
+  #10 + '        """' + #10 + '        u = self.random()' + #10 +
+  '        try:' + #10 + '            c = 0.5 if mode is Non' +
   'e else (mode - low) / (high - low)' + #10 +
   '        except ZeroDivisionError:' + #10 + '            return low' + #10 +
   '        if u > c:' + #10 + '            u = 1.0 - u' + #10 +
   '            c = 1.0 - c' + #10 + '            low, high = high, low' +
   #10 + '        return low + (high - low) ' + '* _sqrt(u * c)' + #10 + #10 +
-  '    def normalvariate(self, mu, si' + 'gma):' + #10 +
+  '## -------------------- normal dis' + 'tribution --------------------' +
+  #10 + #10 + '    def normalvariate(self, mu, si' + 'gma):' + #10 +
+  '        """Normal distribution.' + #10 + #10 +
+  '        mu is the mean, and sigma ' + 'is the standard deviation.' + #10 +
+  #10 + '        """' + #10 + '        # mu = mean, sigma = stand' +
+  'ard deviation' + #10 + #10 + '        # Uses Kinderman and Monah' +
+  'an method. Reference: Kinderman,' + #10 +
+  '        # A.J. and Monahan, J.F., ' + '"Computer generation of random' +
+  #10 + '        # variables using the rati' +
+  'o of uniform deviates", ACM Trans' + #10 +
+  '        # Math Software, 3, (1977)' + ', pp257-260.' + #10 + #10 +
   '        random = self.random' + #10 + '        while 1:' + #10 +
   '            u1 = random()' + #10 + '            u2 = 1.0 - random()' +
-  #10 + '            z = NV_MAGICCONST * (u' + '1 - 0.5) / u2' + #10 +
-  '            zz = z * z / 4.0' + #10 + '            if zz <= -_log(u2):' +
-  #10 + '                break' + #10 + '        return mu + z * sigma' +
-  #10 + #10 + '    def gauss(self, mu, sigma):' + #10 +
-  '        random = self.random' + #10 + '        z = self.gauss_next' + #10 +
-  '        self.gauss_next = None' + #10 + '        if z is None:' + #10 +
-  '            x2pi = random() * TWOP' + 'I' + #10 +
-  '            g2rad = _sqrt(-2.0 * _' + 'log(1.0 - random()))' + #10 +
-  '            z = _cos(x2pi) * g2rad' + #10 +
-  '            self.gauss_next = _sin' + '(x2pi) * g2rad' + #10 +
-  '        return mu + z * sigma' + #10 + #10 +
-  '    def lognormvariate(self, mu, s' + 'igma):' + #10 +
-  '        return _exp(self.normalvar' + 'iate(mu, sigma))' + #10 + #10 +
+  #10 + '            z = NV_MAGICCONST*(u1-' + '0.5)/u2' + #10 +
+  '            zz = z*z/4.0' + #10 + '            if zz <= -_log(u2):' + #10 +
+  '                break' + #10 + '        return mu + z*sigma' + #10 + #10 +
+  '## -------------------- lognormal ' + 'distribution --------------------' +
+  #10 + #10 + '    def lognormvariate(self, mu, s' + 'igma):' + #10 +
+  '        """Log normal distribution' + '.' + #10 + #10 +
+  '        If you take the natural lo' +
+  'garithm of this distribution, you''' + 'll get a' + #10 +
+  '        normal distribution with m' +
+  'ean mu and standard deviation sigm' + 'a.' + #10 +
+  '        mu can have any value, and' + ' sigma must be greater than zero.' +
+  #10 + #10 + '        """' + #10 + '        return _exp(self.normalvar' +
+  'iate(mu, sigma))' + #10 + #10 + '## -------------------- exponentia' +
+  'l distribution -------------------' + '-' + #10 + #10 +
   '    def expovariate(self, lambd):' + #10 +
-  '        return -_log(1.0 - self.ra' + 'ndom()) / lambd' + #10 + #10 +
-  '    def betavariate(self, alpha, b' + 'eta):' + #10 +
-  '        y = self.gammavariate(alph' + 'a, 1.0)' + #10 +
-  '        if y == 0:' + #10 + '            return 0.0' + #10 +
-  '        return y / (y + self.gamma' + 'variate(beta, 1.0))' + #10 + #10 +
+  '        """Exponential distributio' + 'n.' + #10 + #10 +
+  '        lambd is 1.0 divided by th' + 'e desired mean.  It should be' +
+  #10 + '        nonzero.  (The parameter w' +
+  'ould be called "lambda", but that ' + 'is' + #10 +
+  '        a reserved word in Python.' +
+  ')  Returned values range from 0 to' + #10 +
+  '        positive infinity if lambd' + ' is positive, and from negative' +
+  #10 + '        infinity to 0 if lambd is ' + 'negative.' + #10 + #10 +
+  '        """' + #10 + '        # lambd: rate lambd = 1/me' + 'an' + #10 +
+  '        # (''lambda'' is a Python re' + 'served word)' + #10 + #10 +
+  '        # we use 1-random() instea' + 'd of random() to preclude the' +
+  #10 + '        # possibility of taking th' + 'e log of zero.' + #10 +
+  '        return -_log(1.0 - self.ra' + 'ndom())/lambd' + #10 + #10 +
+  '## -------------------- von Mises ' + 'distribution --------------------' +
+  #10 + #10 + '    def vonmisesvariate(self, mu, ' + 'kappa):' + #10 +
+  '        """Circular data distribut' + 'ion.' + #10;
+
+Const
+ Src_random_2: AnsiString =
+  #10 + '        mu is the mean angle, expr' +
+  'essed in radians between 0 and 2*p' + 'i, and' + #10 +
+  '        kappa is the concentration' +
+  ' parameter, which must be greater ' + 'than or' + #10 +
+  '        equal to zero.  If kappa i' +
+  's equal to zero, this distribution' + ' reduces' + #10 +
+  '        to a uniform random angle ' + 'over the range 0 to 2*pi.' + #10 +
+  #10 + '        """' + #10 + '        # mu:    mean angle (in ra' +
+  'dians between 0 and 2*pi)' + #10 + '        # kappa: concentration par' +
+  'ameter kappa (>= 0)' + #10 + '        # if kappa = 0 generate un' +
+  'iform random angle' + #10 + #10 + '        # Based upon an algorithm ' +
+  'published in: Fisher, N.I.,' + #10 + '        # "Statistical Analysis of' +
+  ' Circular Data", Cambridge' + #10 + '        # University Press, 1993.' +
+  #10 + #10 + '        # Thanks to Magnus Kessler' +
+  ' for a correction to the' + #10 + '        # implementation of step 4' +
+  '.' + #10 + #10 + '        random = self.random' + #10 +
+  '        if kappa <= 1e-6:' + #10 + '            return TWOPI * random(' +
+  ')' + #10 + #10 + '        s = 0.5 / kappa' + #10 +
+  '        r = s + _sqrt(1.0 + s * s)' + #10 + #10 + '        while 1:' +
+  #10 + '            u1 = random()' + #10 + '            z = _cos(_pi * u1)' +
+  #10 + #10 + '            d = z / (r + z)' + #10 +
+  '            u2 = random()' + #10 + '            if u2 < 1.0 - d * d or' +
+  ' u2 <= (1.0 - d) * _exp(d):' + #10 + '                break' + #10 + #10 +
+  '        q = 1.0 / r' + #10 + '        f = (q + z) / (1.0 + q * z' + ')' +
+  #10 + '        u3 = random()' + #10 + '        if u3 > 0.5:' + #10 +
+  '            theta = (mu + _acos(f)' + ') % TWOPI' + #10 + '        else:' +
+  #10 + '            theta = (mu - _acos(f)' + ') % TWOPI' + #10 + #10 +
+  '        return theta' + #10 + #10 + '## -------------------- gamma dist' +
+  'ribution --------------------' + #10 + #10 +
   '    def gammavariate(self, alpha, ' + 'beta):' + #10 +
-  '        if alpha <= 0.0 or beta <=' + ' 0.0:' + #10 +
-  '            raise ValueError(''gamm' +
-  'avariate: alpha and beta must be >' + ' 0.0'')' + #10 +
+  '        """Gamma distribution.  No' + 't the gamma function!' + #10 + #10 +
+  '        Conditions on the paramete' + 'rs are alpha > 0 and beta > 0.' +
+  #10 + #10 + '        The probability distributi' + 'on function is:' + #10 +
+  #10 + '                    x ** (alpha - ' + '1) * math.exp(-x / beta)' +
+  #10 + '          pdf(x) =  --------------' + '------------------------' +
+  #10 + '                      math.gamma(a' + 'lpha) * beta ** alpha' + #10 +
+  #10 + '        """' + #10 + #10 + '        # alpha > 0, beta > 0, mea' +
+  'n is alpha*beta, variance is alpha' + '*beta**2' + #10 + #10 +
+  '        # Warning: a few older sou' +
+  'rces define the gamma distribution' + ' in terms' + #10 +
+  '        # of alpha > -1.0' + #10 + '        if alpha <= 0.0 or beta <=' +
+  ' 0.0:' + #10 + '            raise ValueError(''gamm' +
+  'avariate: alpha and beta must be >' + ' 0.0'')' + #10 + #10 +
   '        random = self.random' + #10 + '        if alpha > 1.0:' + #10 +
-  '            ainv = _sqrt(2.0 * alp' + 'ha - 1.0)' + #10 +
+  #10 + '            # Uses R.C.H. Cheng, "' + 'The generation of Gamma' +
+  #10 + '            # variables with non-i' + 'ntegral shape parameters",' +
+  #10 + '            # Applied Statistics, ' + '(1977), 26, No. 1, p71-74' +
+  #10 + #10 + '            ainv = _sqrt(2.0 * alp' + 'ha - 1.0)' + #10 +
   '            bbb = alpha - LOG4' + #10 + '            ccc = alpha + ainv' +
-  #10 + '            while 1:' + #10 + '                u1 = random()' + #10 +
-  '                if not 1e-7 < u1 <' + ' .9999999:' + #10 +
+  #10 + #10 + '            while 1:' + #10 + '                u1 = random()' +
+  #10 + '                if not 1e-7 < u1 <' + ' .9999999:' + #10 +
   '                    continue' + #10 +
   '                u2 = 1.0 - random(' + ')' + #10 +
-  '                v = _log(u1 / (1.0' + ' - u1)) / ainv' + #10 +
-  '                x = alpha * _exp(v' + ')' + #10 +
-  '                z = u1 * u1 * u2' + #10 +
-  '                r = bbb + ccc * v ' + '- x' + #10 +
+  '                v = _log(u1/(1.0-u' + '1))/ainv' + #10 +
+  '                x = alpha*_exp(v)' + #10 + '                z = u1*u1*u2' +
+  #10 + '                r = bbb+ccc*v-x' + #10 +
   '                if r + SG_MAGICCON' +
-  'ST - 4.5 * z >= 0.0 or r >= _log(z' + '):' + #10 +
-  '                    return x * bet' + 'a' + #10 +
-  '        elif alpha == 1.0:' + #10 + '            return -_log(1.0 - ran' +
-  'dom()) * beta' + #10 + '        else:' + #10 + '            while 1:' +
-  #10 + '                u = random()' + #10 +
-  '                b = (_e + alpha) /' + ' _e' + #10 +
-  '                p = b * u' + #10 + '                if p <= 1.0:' + #10 +
-  '                    x = p ** (1.0 ' + '/ alpha)' + #10 +
-  '                else:' + #10 + '                    x = -_log((b -' +
-  ' p) / alpha)' + #10 + '                u1 = random()' + #10 +
+  'ST - 4.5*z >= 0.0 or r >= _log(z):' + #10 +
+  '                    return x * bet' + 'a' + #10 + #10 +
+  '        elif alpha == 1.0:' + #10 + '            # expovariate(1/beta)' +
+  #10 + '            return -_log(1.0 - ran' + 'dom()) * beta' + #10 + #10 +
+  '        else:   # alpha is between' + ' 0 and 1 (exclusive)' + #10 + #10 +
+  '            # Uses ALGORITHM GS of' +
+  ' Statistical Computing - Kennedy &' + ' Gentle' + #10 + #10 +
+  '            while 1:' + #10 + '                u = random()' + #10 +
+  '                b = (_e + alpha)/_' + 'e' + #10 +
+  '                p = b*u' + #10 + '                if p <= 1.0:' + #10 +
+  '                    x = p ** (1.0/' + 'alpha)' + #10 +
+  '                else:' + #10 + '                    x = -_log((b-p' +
+  ')/alpha)' + #10 + '                u1 = random()' + #10 +
   '                if p > 1.0:' + #10 + '                    if u1 <= x ** ' +
   '(alpha - 1.0):' + #10 + '                        break' + #10 +
   '                elif u1 <= _exp(-x' + '):' + #10 +
   '                    break' + #10 + '            return x * beta' + #10 +
-  #10 + '    def paretovariate(self, alpha)' + ':' + #10 +
+  #10 + '## -------------------- Gauss (fas' +
+  'ter alternative) -----------------' + '---' + #10 + #10 +
+  '    def gauss(self, mu, sigma):' + #10 +
+  '        """Gaussian distribution.' + #10 + #10 +
+  '        mu is the mean, and sigma ' +
+  'is the standard deviation.  This i' + 's' + #10 +
+  '        slightly faster than the n' + 'ormalvariate() function.' + #10 +
+  #10 + '        Not thread-safe without a ' + 'lock around calls.' + #10 +
+  #10 + '        """' + #10 + #10 + '        # When x and y are two var' +
+  'iables from [0, 1), uniformly' + #10 + '        # distributed, then' +
+  #10 + '        #' + #10 + '        #    cos(2*pi*x)*sqrt(-2*l' +
+  'og(1-y))' + #10 + '        #    sin(2*pi*x)*sqrt(-2*l' + 'og(1-y))' + #10 +
+  '        #' + #10 + '        # are two *independent* va' +
+  'riables with normal distribution' + #10 +
+  '        # (mu = 0, sigma = 1).' + #10 + '        # (Lambert Meertens)' +
+  #10 + '        # (corrected version; bug ' +
+  'discovered by Mike Miller, fixed b' + 'y LM)' + #10 + #10 +
+  '        # Multithreading note: Whe' + 'n two threads call this function' +
+  #10 + '        # simultaneously, it is po' +
+  'ssible that they will receive the' + #10 +
+  '        # same return value.  The ' + 'window is very small though.  To' +
+  #10 + '        # avoid this, you have to ' +
+  'use a lock around all calls.  (I' + #10 +
+  '        # didn''t want to slow this' +
+  ' down in the serial case by using ' + 'a' + #10 + '        # lock here.)' +
+  #10 + #10 + '        random = self.random' + #10 +
+  '        z = self.gauss_next' + #10 + '        self.gauss_next = None' +
+  #10 + '        if z is None:' + #10 + '            x2pi = random() * TWOP' +
+  'I' + #10 + '            g2rad = _sqrt(-2.0 * _' + 'log(1.0 - random()))' +
+  #10 + '            z = _cos(x2pi) * g2rad' + #10 +
+  '            self.gauss_next = _sin' + '(x2pi) * g2rad' + #10 + #10 +
+  '        return mu + z*sigma' + #10 + #10 +
+  '## -------------------- beta -----' + '---------------' + #10 + '## See' +
+  #10 + '## http://mail.python.org/pipermai' +
+  'l/python-bugs-list/2001-January/00' + '3752.html' + #10 +
+  '## for Ivan Frohne''s insightful an' +
+  'alysis of why the original impleme' + 'ntation:' + #10 + '##' + #10 +
+  '##    def betavariate(self, alpha,' + ' beta):' + #10 +
+  '##        # Discrete Event Simulat' + 'ion in C, pp 87-88.' + #10 + '##' +
+  #10 + '##        y = self.expovariate(alp' + 'ha)' + #10 +
+  '##        z = self.expovariate(1.0' + '/beta)' + #10 +
+  '##        return z/(y+z)' + #10 + '##' + #10 +
+  '## was dead wrong, and how it prob' + 'ably got that way.' + #10 + #10 +
+  '    def betavariate(self, alpha, b' + 'eta):' + #10 +
+  '        """Beta distribution.' + #10 + #10 +
+  '        Conditions on the paramete' + 'rs are alpha > 0 and beta > 0.' +
+  #10 + '        Returned values range betw' + 'een 0 and 1.' + #10 + #10 +
+  '        """' + #10 + #10 + '        # This version due to Jann' +
+  'e Sinkkonen, and matches all the s' + 'td' + #10 +
+  '        # texts (e.g., Knuth Vol 2' +
+  ' Ed 3 pg 134 "the beta distributio' + 'n").' + #10 +
+  '        y = self.gammavariate(alph' + 'a, 1.0)' + #10 +
+  '        if y == 0:' + #10 + '            return 0.0' + #10 +
+  '        else:' + #10 + '            return y / (y + self.g' +
+  'ammavariate(beta, 1.0))' + #10 + #10 +
+  '## -------------------- Pareto ---' + '-----------------' + #10 + #10 +
+  '    def paretovariate(self, alpha)' + ':' + #10 +
+  '        """Pareto distribution.  a' + 'lpha is the shape parameter."""' +
+  #10 + '        # Jain, pg. 495' + #10 + #10 +
   '        u = 1.0 - self.random()' + #10 +
-  '        return 1.0 / u ** (1.0 / a' + 'lpha)' + #10 + #10 +
+  '        return 1.0 / u ** (1.0/alp' + 'ha)' + #10 + #10 +
+  '## -------------------- Weibull --' + '------------------' + #10 + #10 +
   '    def weibullvariate(self, alpha' + ', beta):' + #10 +
-  '        u = 1.0 - self.random()' + #10 +
-  '        return alpha * (-_log(u)) ' + '** (1.0 / beta)' + #10 + #10 +
-  '    def vonmisesvariate(self, mu, ' + 'kappa):' + #10 +
-  '        random = self.random' + #10;
+  '        """Weibull distribution.' + #10 + #10 +
+  '        alpha is the scale paramet' +
+  'er and beta is the shape parameter' + '.' + #10 + #10 + '        """' +
+  #10 + '        # Jain, pg. 499; bug fix c' + 'ourtesy Bill Arms' + #10 +
+  #10 + '        u = 1.0 - self.random()' + #10 +
+  '        return alpha * (-_log(u)) ' + '** (1.0/beta)' + #10 + #10 +
+  '## --------------- Operating Syste' +
+  'm Random Source  -----------------' + '-' + #10 + #10 +
+  'class SystemRandom(Random):' + #10 + '    """Alternate random number gen' +
+  'erator using sources provided' + #10 +
+  '    by the operating system (such ' + 'as /dev/urandom on Unix or' + #10 +
+  '    CryptGenRandom on Windows).' + #10 + #10 +
+  '     Not available on all systems ' + '(see os.urandom() for details).' +
+  #10 + '    """' + #10 + #10 + '    def random(self):' + #10 +
+  '        """Get the next random num' + 'ber in the range [0.0, 1.0)."""' +
+  #10 + '        return (int.from_bytes(_ur' +
+  'andom(7), ''big'') >> 3) * RECIP_BPF' + #10 + #10 +
+  '    def getrandbits(self, k):' + #10 +
+  '        """getrandbits(k) -> x.  G' +
+  'enerates an int with k random bits' + '."""' + #10 + '        if k <= 0:' +
+  #10 + '            raise ValueError(''numb' +
+  'er of bits must be greater than ze' + 'ro'')' + #10 +
+  '        numbytes = (k + 7) // 8   ' +
+  '                    # bits / 8 and' + ' rounded up' + #10 +
+  '        x = int.from_bytes(_urando' + 'm(numbytes), ''big'')' + #10 +
+  '        return x >> (numbytes * 8 ' +
+  '- k)                # trim excess ' + 'bits' + #10 + #10 +
+  '    def seed(self, *args, **kwds):' + #10 +
+  '        "Stub method.  Not used fo' +
+  'r a system random number generator' + '."' + #10 + '        return None' +
+  #10 + #10 + '    def _notimplemented(self, *arg' + 's, **kwds):' + #10 +
+  '        "Method should not be call' +
+  'ed for a system random number gene' + 'rator."' + #10 +
+  '        raise NotImplementedError(' +
+  '''System entropy source does not ha' + 've state.'')' + #10 +
+  '    getstate = setstate = _notimpl' + 'emented' + #10 + #10 +
+  '## -------------------- test progr' + 'am --------------------' + #10 +
+  #10 + 'def _test_generator(n, func, args)' + ':' + #10 + '    import time' +
+  #10 + '    print(n, ''times'', func.__name_' + '_)' + #10 +
+  '    total = 0.0' + #10 + '    sqsum = 0.0' + #10 + '    smallest = 1e10' +
+  #10 + '    largest = -1e10' + #10 + '    t0 = time.perf_counter()' + #10 +
+  '    for i in range(n):' + #10 + '        x = func(*args)' + #10 +
+  '        total += x' + #10;
 
 Const
- Src_random_1: AnsiString =
-  '        if kappa <= 1e-6:' + #10 + '            return TWOPI * random(' +
-  ')' + #10 + '        s = 0.5 / kappa' + #10 +
-  '        r = s + _sqrt(1.0 + s * s)' + #10 + '        while 1:' + #10 +
-  '            u1 = random()' + #10 + '            z = _cos(_pi * u1)' + #10 +
-  '            d = z / (r + z)' + #10 + '            u2 = random()' + #10 +
-  '            if u2 < 1.0 - d * d or' + ' u2 <= (1.0 - d) * _exp(d):' + #10 +
-  '                break' + #10 + '        q = 1.0 / r' + #10 +
-  '        f = (q + z) / (1.0 + q * z' + ')' + #10 + '        u3 = random()' +
-  #10 + '        if u3 > 0.5:' + #10 + '            theta = (mu + _acos(f)' +
-  ') % TWOPI' + #10 + '        else:' + #10 +
-  '            theta = (mu - _acos(f)' + ') % TWOPI' + #10 +
-  '        return theta' + #10 + #10 + 'class SystemRandom(Random):' + #10 +
-  '    pass' + #10 + #10 + '_inst = Random()' + #10 + 'seed = _inst.seed' +
-  #10 + 'random = _inst.random' + #10 + 'uniform = _inst.uniform' + #10 +
+ Src_random_3: AnsiString =
+  '        sqsum = sqsum + x*x' + #10 + '        smallest = min(x, smallest' +
+  ')' + #10 + '        largest = max(x, largest)' + #10 +
+  '    t1 = time.perf_counter()' + #10 +
+  '    print(round(t1-t0, 3), ''sec,'',' + ' end='' '')' + #10 +
+  '    avg = total/n' + #10 + '    stddev = _sqrt(sqsum/n - avg*a' + 'vg)' +
+  #10 + '    print(''avg %g, stddev %g, min ' + '%g, max %g\n'' % \' + #10 +
+  '              (avg, stddev, smalle' + 'st, largest))' + #10 + #10 + #10 +
+  'def _test(N=2000):' + #10 + '    _test_generator(N, random, ())' + #10 +
+  '    _test_generator(N, normalvaria' + 'te, (0.0, 1.0))' + #10 +
+  '    _test_generator(N, lognormvari' + 'ate, (0.0, 1.0))' + #10 +
+  '    _test_generator(N, vonmisesvar' + 'iate, (0.0, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (0.01, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (0.1, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (0.1, 2.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (0.5, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (0.9, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (1.0, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (2.0, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (20.0, 1.0))' + #10 +
+  '    _test_generator(N, gammavariat' + 'e, (200.0, 1.0))' + #10 +
+  '    _test_generator(N, gauss, (0.0' + ', 1.0))' + #10 +
+  '    _test_generator(N, betavariate' + ', (3.0, 3.0))' + #10 +
+  '    _test_generator(N, triangular,' + ' (0.0, 1.0, 1.0/3.0))' + #10 + #10 +
+  '# Create one instance, seeded from' +
+  ' current time, and export its meth' + 'ods' + #10 +
+  '# as module-level functions.  The ' +
+  'functions share state across all u' + 'ses' + #10 +
+  '#(both in the user''s code and in t' +
+  'he Python libraries), but that''s f' + 'ine' + #10 +
+  '# for most programs and is easier ' +
+  'for the casual user than making th' + 'em' + #10 +
+  '# instantiate their own Random() i' + 'nstance.' + #10 + #10 +
+  '_inst = Random()' + #10 + 'seed = _inst.seed' + #10 +
+  'random = _inst.random' + #10 + 'uniform = _inst.uniform' + #10 +
   'triangular = _inst.triangular' + #10 + 'randint = _inst.randint' + #10 +
   'choice = _inst.choice' + #10 + 'randrange = _inst.randrange' + #10 +
   'sample = _inst.sample' + #10 + 'shuffle = _inst.shuffle' + #10 +
@@ -69385,12 +75859,14 @@ Const
   'paretovariate = _inst.paretovariat' + 'e' + #10 +
   'weibullvariate = _inst.weibullvari' + 'ate' + #10 +
   'getstate = _inst.getstate' + #10 + 'setstate = _inst.setstate' + #10 +
-  'getrandbits = _inst.getrandbits' + #10 + 'randbytes = _inst.randbytes' +
-  #10 + #10;
+  'getrandbits = _inst.getrandbits' + #10 + #10 + 'if hasattr(_os, "fork"):' +
+  #10 + '    _os.register_at_fork(after_in_' + 'child=_inst.seed)' + #10 +
+  #10 + #10 + 'if __name__ == ''__main__'':' + #10 + '    _test()' + #10 +
+  #10;
 
 Function Src_random: AnsiString;
 Begin
- Result := Src_random_0 + Src_random_1;
+ Result := Src_random_0 + Src_random_1 + Src_random_2 + Src_random_3;
 End;
 
 Const
@@ -69501,9 +75977,8 @@ Const
   '"""Redo the builtin repr() (repres' +
   'entation) but with limits on most ' + 'sizes."""' + #10 + #10 +
   '__all__ = ["Repr", "repr", "recurs' + 'ive_repr"]' + #10 + #10 +
-  'import builtins' + #10 + 'from itertools import islice' + #10 + 'try:' +
-  #10 + '    from _thread import get_ident' + #10 + 'except ImportError:' +
-  #10 + '    def get_ident():' + #10 + '        return 0' + #10 + #10 + #10 +
+  'import builtins' + #10 + 'from itertools import islice' + #10 +
+  'from _thread import get_ident' + #10 + #10 +
   'def recursive_repr(fillvalue=''...''' + '):' + #10 +
   '    ''Decorator to make a repr func' +
   'tion return fillvalue for a recurs' + 'ive call''' + #10 + #10 +
@@ -69527,9 +76002,9 @@ Const
   '        wrapper.__annotations__ = ' +
   'getattr(user_function, ''__annotati' + 'ons__'', {})' + #10 +
   '        return wrapper' + #10 + #10 + '    return decorating_function' +
-  #10 + #10 + #10 + 'class Repr:' + #10 + #10 + '    def __init__(self):' +
-  #10 + '        self.maxlevel = 6' + #10 + '        self.maxtuple = 6' +
-  #10 + '        self.maxlist = 6' + #10 + '        self.maxarray = 5' + #10 +
+  #10 + #10 + 'class Repr:' + #10 + #10 + '    def __init__(self):' + #10 +
+  '        self.maxlevel = 6' + #10 + '        self.maxtuple = 6' + #10 +
+  '        self.maxlist = 6' + #10 + '        self.maxarray = 5' + #10 +
   '        self.maxdict = 4' + #10 + '        self.maxset = 6' + #10 +
   '        self.maxfrozenset = 6' + #10 + '        self.maxdeque = 6' + #10 +
   '        self.maxstring = 30' + #10 + '        self.maxlong = 40' + #10 +
@@ -69551,11 +76026,9 @@ Const
   '            repr1 = self.repr1' + #10 +
   '            pieces = [repr1(elem, ' +
   'newlevel) for elem in islice(x, ma' + 'xiter)]' + #10 +
-  '            if n > maxiter:' + #10 +
-  '                pieces.append(''...' + ''')' + #10 +
+  '            if n > maxiter:  piece' + 's.append(''...'')' + #10 +
   '            s = '', ''.join(pieces)' + #10 +
-  '            if n == 1 and trail:' + #10 +
-  '                right = trail + ri' + 'ght' + #10 +
+  '            if n == 1 and trail:  ' + 'right = trail + right' + #10 +
   '        return ''%s%s%s'' % (left, s' + ', right)' + #10 + #10 +
   '    def repr_tuple(self, x, level)' + ':' + #10 +
   '        return self._repr_iterable' +
@@ -69582,52 +76055,45 @@ Const
   '        return self._repr_iterable' +
   '(x, level, ''deque(['', ''])'', self.m' + 'axdeque)' + #10 + #10 +
   '    def repr_dict(self, x, level):' + #10 + '        n = len(x)' + #10 +
-  '        if n == 0:' + #10 + '            return ''{}''' + #10 +
-  '        if level <= 0:' + #10 + '            return ''{...}''' + #10 +
+  '        if n == 0: return ''{}''' + #10 +
+  '        if level <= 0: return ''{..' + '.}''' + #10 +
   '        newlevel = level - 1' + #10 + '        repr1 = self.repr1' + #10 +
   '        pieces = []' + #10 + '        for key in islice(_possibl' +
   'y_sorted(x), self.maxdict):' + #10 + '            keyrepr = repr1(key, n' +
   'ewlevel)' + #10 + '            valrepr = repr1(x[key]' + ', newlevel)' +
   #10 + '            pieces.append(''%s: %s''' + ' % (keyrepr, valrepr))' +
-  #10 + '        if n > self.maxdict:' + #10 +
-  '            pieces.append(''...'')' + #10 +
+  #10 + '        if n > self.maxdict: piece' + 's.append(''...'')' + #10 +
   '        s = '', ''.join(pieces)' + #10 + '        return ''{%s}'' % (s,)' +
   #10 + #10 + '    def repr_str(self, x, level):' + #10 +
   '        s = builtins.repr(x[:self.' + 'maxstring])' + #10 +
   '        if len(s) > self.maxstring' + ':' + #10 +
-  '            i = max(0, (self.maxst' + 'ring - 3) // 2)' + #10 +
-  '            j = max(0, self.maxstr' + 'ing - 3 - i)' + #10 +
-  '            s = builtins.repr(x[:i' + '] + x[len(x) - j:])' + #10 +
-  '            s = s[:i] + ''...'' + s[' + 'len(s) - j:]' + #10 +
+  '            i = max(0, (self.maxst' + 'ring-3)//2)' + #10 +
+  '            j = max(0, self.maxstr' + 'ing-3-i)' + #10 +
+  '            s = builtins.repr(x[:i' + '] + x[len(x)-j:])' + #10 +
+  '            s = s[:i] + ''...'' + s[' + 'len(s)-j:]' + #10 +
   '        return s' + #10 + #10 + '    def repr_int(self, x, level):' + #10 +
-  '        s = builtins.repr(x)  # XX' + 'X Hope this isn''t too slow...' +
+  '        s = builtins.repr(x) # XXX' + ' Hope this isn''t too slow...' +
   #10 + '        if len(s) > self.maxlong:' + #10 +
-  '            i = max(0, (self.maxlo' + 'ng - 3) // 2)' + #10 +
-  '            j = max(0, self.maxlon' + 'g - 3 - i)' + #10 +
-  '            s = s[:i] + ''...'' + s[' + 'len(s) - j:]' + #10 +
+  '            i = max(0, (self.maxlo' + 'ng-3)//2)' + #10 +
+  '            j = max(0, self.maxlon' + 'g-3-i)' + #10 +
+  '            s = s[:i] + ''...'' + s[' + 'len(s)-j:]' + #10 +
   '        return s' + #10 + #10 + '    def repr_instance(self, x, lev' +
-  'el):' + #10 + '        failed = False' + #10 + '        try:' + #10 +
-  '            s = builtins.repr(x)' + #10 +
-  '            # Bugs in x.__repr__()' + ' can cause arbitrary' + #10 +
+  'el):' + #10 + '        try:' + #10 + '            s = builtins.repr(x)' +
+  #10 + '            # Bugs in x.__repr__()' + ' can cause arbitrary' + #10 +
   '            # exceptions -- then m' + 'ake up something' + #10 +
-  '        except Exception:' + #10 + '            failed = True' + #10 +
-  '        if failed:' + #10 + '            # NB: no `return` insi' +
-  'de `except` (interpreter bug B1, s' + 'ee BUGS_A.md)' + #10 +
-  '            return ''<%s instance a' +
+  '        except Exception:' + #10 + '            return ''<%s instance a' +
   't %#x>'' % (x.__class__.__name__, i' + 'd(x))' + #10 +
   '        if len(s) > self.maxother:' + #10 +
-  '            i = max(0, (self.maxot' + 'her - 3) // 2)' + #10 +
-  '            j = max(0, self.maxoth' + 'er - 3 - i)' + #10 +
-  '            s = s[:i] + ''...'' + s[' + 'len(s) - j:]' + #10 +
+  '            i = max(0, (self.maxot' + 'her-3)//2)' + #10 +
+  '            j = max(0, self.maxoth' + 'er-3-i)' + #10 +
+  '            s = s[:i] + ''...'' + s[' + 'len(s)-j:]' + #10 +
   '        return s' + #10 + #10 + #10 + 'def _possibly_sorted(x):' + #10 +
   '    # Since not all sequences of i' + 'tems can be sorted and comparison' +
   #10 + '    # functions may raise arbitrar' +
   'y exceptions, return an unsorted' + #10 + '    # sequence in that case.' +
-  #10 + '    try:' + #10 + '        res = sorted(x)' + #10 +
-  '    except Exception:' + #10 + '        res = None' + #10 +
-  '    if res is None:' + #10 + '        res = list(x)' + #10 +
-  '    return res' + #10 + #10 + 'aRepr = Repr()' + #10 +
-  'repr = aRepr.repr' + #10 + #10;
+  #10 + '    try:' + #10 + '        return sorted(x)' + #10 +
+  '    except Exception:' + #10 + '        return list(x)' + #10 + #10 +
+  'aRepr = Repr()' + #10 + 'repr = aRepr.repr' + #10 + #10;
 
 Function Src_reprlib: AnsiString;
 Begin
@@ -69697,7 +76163,7 @@ Const
   'also be used to integrate scheduli' + 'ng with STDWIN events; the delay' +
   #10 + 'function is allowed to modify the ' +
   'queue.  Time can be expressed as' + #10 +
-  'integers or floating-point numbers' + ', as long as it is consistent.' +
+  'integers or floating point numbers' + ', as long as it is consistent.' +
   #10 + #10 + 'Events are specified by tuples (ti' +
   'me, priority, action, argument, kw' + 'args).' + #10 +
   'As in UNIX, lower priority numbers' + ' mean higher priority; in this' +
@@ -69712,35 +76178,50 @@ Const
   'has another way to reference priva' +
   'te data (besides global variables)' + '.' + #10 + '"""' + #10 + #10 +
   'import time' + #10 + 'import heapq' + #10 +
-  'from collections import namedtuple' + #10 + 'from itertools import count' +
-  #10 + 'from time import monotonic as _tim' + 'e' + #10 + #10 +
+  'from collections import namedtuple' + #10 + 'import threading' + #10 +
+  'from time import monotonic as _tim' + 'e' + #10 + #10 +
   '__all__ = ["scheduler"]' + #10 + #10 +
-  'Event = namedtuple(''Event'', ''time,' +
-  ' priority, sequence, action, argum' + 'ent, kwargs'')' + #10 + #10 +
-  'class _DummyLock:' + #10 + '    # There are no threads in this' +
-  ' implementation.' + #10 + '    def __enter__(self):' + #10 +
-  '        return self' + #10 + #10 + '    def __exit__(self, *args):' + #10 +
-  '        return False' + #10 + #10 + '    def acquire(self, *args, **kwa' +
-  'rgs):' + #10 + '        return True' + #10 + #10 +
-  '    def release(self):' + #10 + '        pass' + #10 + #10 + #10 +
-  '_sentinel = object()' + #10 + #10 + 'class scheduler:' + #10 + #10 +
+  'class Event(namedtuple(''Event'', ''t' +
+  'ime, priority, action, argument, k' + 'wargs'')):' + #10 +
+  '    __slots__ = []' + #10 + '    def __eq__(s, o): return (s.ti' +
+  'me, s.priority) == (o.time, o.prio' + 'rity)' + #10 +
+  '    def __lt__(s, o): return (s.ti' +
+  'me, s.priority) <  (o.time, o.prio' + 'rity)' + #10 +
+  '    def __le__(s, o): return (s.ti' +
+  'me, s.priority) <= (o.time, o.prio' + 'rity)' + #10 +
+  '    def __gt__(s, o): return (s.ti' +
+  'me, s.priority) >  (o.time, o.prio' + 'rity)' + #10 +
+  '    def __ge__(s, o): return (s.ti' +
+  'me, s.priority) >= (o.time, o.prio' + 'rity)' + #10 + #10 +
+  'Event.time.__doc__ = (''''''Numeric t' +
+  'ype compatible with the return val' + 'ue of the' + #10 +
+  'timefunc function passed to the co' + 'nstructor.'''''')' + #10 +
+  'Event.priority.__doc__ = (''''''Event' +
+  's scheduled for the same time will' + ' be executed' + #10 +
+  'in the order of their priority.''''''' + ')' + #10 +
+  'Event.action.__doc__ = (''''''Executi' + 'ng the event means executing' +
+  #10 + 'action(*argument, **kwargs)'''''')' + #10 +
+  'Event.argument.__doc__ = (''''''argum' +
+  'ent is a sequence holding the posi' + 'tional' + #10 +
+  'arguments for the action.'''''')' + #10 +
+  'Event.kwargs.__doc__ = (''''''kwargs ' +
+  'is a dictionary holding the keywor' + 'd' + #10 +
+  'arguments for the action.'''''')' + #10 + #10 + '_sentinel = object()' +
+  #10 + #10 + 'class scheduler:' + #10 + #10 +
   '    def __init__(self, timefunc=_t' + 'ime, delayfunc=time.sleep):' + #10 +
   '        """Initialize a new instan' + 'ce, passing the time and delay' +
   #10 + '        functions"""' + #10 + '        self._queue = []' + #10 +
-  '        self._lock = _DummyLock()' + #10 +
+  '        self._lock = threading.RLo' + 'ck()' + #10 +
   '        self.timefunc = timefunc' + #10 +
-  '        self.delayfunc = delayfunc' + #10 +
-  '        self._sequence_generator =' + ' count()' + #10 + #10 +
+  '        self.delayfunc = delayfunc' + #10 + #10 +
   '    def enterabs(self, time, prior' +
   'ity, action, argument=(), kwargs=_' + 'sentinel):' + #10 +
   '        """Enter a new event in th' + 'e queue at an absolute time.' +
   #10 + #10 + '        Returns an ID for the even' +
   't which can be used to remove it,' + #10 + '        if necessary.' + #10 +
   #10 + '        """' + #10 + '        if kwargs is _sentinel:' + #10 +
-  '            kwargs = {}' + #10 + #10 + '        with self._lock:' + #10 +
-  '            event = Event(time, pr' +
-  'iority, next(self._sequence_genera' + 'tor),' + #10 +
-  '                          action, ' + 'argument, kwargs)' + #10 +
+  '            kwargs = {}' + #10 + '        event = Event(time, priori' +
+  'ty, action, argument, kwargs)' + #10 + '        with self._lock:' + #10 +
   '            heapq.heappush(self._q' + 'ueue, event)' + #10 +
   '        return event # The ID' + #10 + #10 +
   '    def enter(self, delay, priorit' +
@@ -69792,9 +76273,8 @@ Const
   '        timefunc = self.timefunc' + #10 + '        pop = heapq.heappop' +
   #10 + '        while True:' + #10 + '            with lock:' + #10 +
   '                if not q:' + #10 + '                    break' + #10 +
-  '                (time, priority, s' + 'equence, action,' + #10 +
-  '                 argument, kwargs)' + ' = q[0]' + #10 +
-  '                now = timefunc()' + #10 +
+  '                time, priority, ac' + 'tion, argument, kwargs = q[0]' +
+  #10 + '                now = timefunc()' + #10 +
   '                if time > now:' + #10 +
   '                    delay = True' + #10 + '                else:' + #10 +
   '                    delay = False' + #10 + '                    pop(q)' +
@@ -69828,99 +76308,50 @@ Const
   'managing secrets such as account a' +
   'uthentication, tokens, and similar' + '.' + #10 + #10 +
   'See PEP 506 for more information.' + #10 +
-  'https://www.python.org/dev/peps/pe' + 'p-0506/' + #10 + '"""' + #10 + #10 +
-  '__all__ = [''choice'', ''randbelow'', ' +
+  'https://www.python.org/dev/peps/pe' + 'p-0506/' + #10 + #10 + '"""' + #10 +
+  #10 + '__all__ = [''choice'', ''randbelow'', ' +
   '''randbits'', ''SystemRandom'',' + #10 +
   '           ''token_bytes'', ''token_h' + 'ex'', ''token_urlsafe'',' + #10 +
-  '           ''compare_digest'',' + #10 + '           ]' + #10 + #10 +
-  'import os' + #10 + #10 + 'from random import SystemRandom' + #10 + #10 +
+  '           ''compare_digest'',' + #10 + '           ]' + #10 + #10 + #10 +
+  'import base64' + #10 + 'import binascii' + #10 + 'import os' + #10 + #10 +
+  'from hmac import compare_digest' + #10 +
+  'from random import SystemRandom' + #10 + #10 +
   '_sysrand = SystemRandom()' + #10 + #10 +
-  'randbits = _sysrand.getrandbits' + #10 + #10 + #10 + 'def choice(seq):' +
-  #10 + '    """Choose a random element fro' + 'm a non-empty sequence."""' +
-  #10 + '    if not len(seq):' + #10 + '        raise IndexError(''Cannot c' +
-  'hoose from an empty sequence'')' + #10 +
-  '    return _sysrand.choice(seq)' + #10 + #10 + #10 +
-  'def randbelow(exclusive_upper_boun' + 'd):' + #10 +
+  'randbits = _sysrand.getrandbits' + #10 + 'choice = _sysrand.choice' + #10 +
+  #10 + 'def randbelow(exclusive_upper_boun' + 'd):' + #10 +
   '    """Return a random int in the ' + 'range [0, n)."""' + #10 +
   '    if exclusive_upper_bound <= 0:' + #10 +
   '        raise ValueError("Upper bo' + 'und must be positive.")' + #10 +
-  '    return _sysrand.randrange(excl' + 'usive_upper_bound)' + #10 + #10 +
-  #10 + 'DEFAULT_ENTROPY = 32  # number of ' + 'bytes to return by default' +
-  #10 + #10 + #10 + 'def token_bytes(nbytes=None):' + #10 +
+  '    return _sysrand._randbelow(exc' + 'lusive_upper_bound)' + #10 + #10 +
+  'DEFAULT_ENTROPY = 32  # number of ' + 'bytes to return by default' + #10 +
+  #10 + 'def token_bytes(nbytes=None):' + #10 +
   '    """Return a random byte string' + ' containing *nbytes* bytes.' + #10 +
   #10 + '    If *nbytes* is ``None`` or not' + ' supplied, a reasonable' +
-  #10 + '    default is used.' + #10 + '    """' + #10 +
-  '    if nbytes is None:' + #10 + '        nbytes = DEFAULT_ENTROPY' + #10 +
-  '    return os.urandom(nbytes)' + #10 + #10 + #10 +
-  'def token_hex(nbytes=None):' + #10 + '    """Return a random text string' +
-  ', in hexadecimal.' + #10 + #10 + '    The string has *nbytes* random' +
+  #10 + '    default is used.' + #10 + #10 +
+  '    >>> token_bytes(16)  #doctest:' + '+SKIP' + #10 +
+  '    b''\\xebr\\x17D*t\\xae\\xd4\\xe' + '3S\\xb6\\xe2\\xebP1\\x8b''' + #10 +
+  #10 + '    """' + #10 + '    if nbytes is None:' + #10 +
+  '        nbytes = DEFAULT_ENTROPY' + #10 + '    return os.urandom(nbytes)' +
+  #10 + #10 + 'def token_hex(nbytes=None):' + #10 +
+  '    """Return a random text string' + ', in hexadecimal.' + #10 + #10 +
+  '    The string has *nbytes* random' +
   ' bytes, each byte converted to two' + #10 +
   '    hex digits.  If *nbytes* is ``' +
   'None`` or not supplied, a reasonab' + 'le' + #10 + '    default is used.' +
-  #10 + '    """' + #10 + '    return token_bytes(nbytes).hex' + '()' + #10 +
-  #10 + #10 + '_B64 = ''ABCDEFGHIJKLMNOPQRSTUVWXYZ' +
-  'abcdefghijklmnopqrstuvwxyz01234567' + '89-_''' + #10 + #10 + #10 +
+  #10 + #10 + '    >>> token_hex(16)  #doctest:+S' + 'KIP' + #10 +
+  '    ''f9bf78b9a18ce6d46a0cd2b0b86df' + '9da''' + #10 + #10 + '    """' +
+  #10 + '    return binascii.hexlify(token_' +
+  'bytes(nbytes)).decode(''ascii'')' + #10 + #10 +
   'def token_urlsafe(nbytes=None):' + #10 +
   '    """Return a random URL-safe te' + 'xt string, in Base64 encoding.' +
   #10 + #10 + '    The string has *nbytes* random' +
   ' bytes.  If *nbytes* is ``None``' + #10 +
-  '    or not supplied, a reasonable ' + 'default is used.' + #10 +
-  '    """' + #10 + '    tok = token_bytes(nbytes)' + #10 +
-  '    data = list(tok)' + #10 + '    out = []' + #10 + '    i = 0' + #10 +
-  '    n = len(data)' + #10 + '    while i + 2 < n:' + #10 +
-  '        v = (data[i] << 16) | (dat' + 'a[i + 1] << 8) | data[i + 2]' +
-  #10 + '        out.append(_B64[(v >> 18) ' + '& 63])' + #10 +
-  '        out.append(_B64[(v >> 12) ' + '& 63])' + #10 +
-  '        out.append(_B64[(v >> 6) &' + ' 63])' + #10 +
-  '        out.append(_B64[v & 63])' + #10 + '        i += 3' + #10 +
-  '    rest = n - i' + #10 + '    if rest == 1:' + #10 +
-  '        v = data[i] << 16' + #10 + '        out.append(_B64[(v >> 18) ' +
-  '& 63])' + #10 + '        out.append(_B64[(v >> 12) ' + '& 63])' + #10 +
-  '    elif rest == 2:' + #10 + '        v = (data[i] << 16) | (dat' +
-  'a[i + 1] << 8)' + #10 + '        out.append(_B64[(v >> 18) ' + '& 63])' +
-  #10 + '        out.append(_B64[(v >> 12) ' + '& 63])' + #10 +
-  '        out.append(_B64[(v >> 6) &' + ' 63])' + #10 +
-  '    return ''''.join(out)' + #10 + #10 + #10 +
-  'def compare_digest(a, b):' + #10 + '    """Return ''a == b''.' + #10 +
-  #10 + '    This function uses an approach' + ' designed to prevent' + #10 +
-  '    timing analysis, making it app' + 'ropriate for cryptography.' + #10 +
-  #10 + '    a and b must both be of the sa' +
-  'me type: either str (ASCII only),' + #10 +
-  '    or any bytes-like object.' + #10 + '    """' + #10 +
-  '    if isinstance(a, str) and isin' + 'stance(b, str):' + #10 +
-  '        for ch in a:' + #10 + '            if ord(ch) > 127:' + #10 +
-  '                raise TypeError("c' +
-  'omparing strings with non-ASCII ch' + 'aracters "' + #10 +
-  '                                "i' + 's not supported")' + #10 +
-  '        for ch in b:' + #10 + '            if ord(ch) > 127:' + #10 +
-  '                raise TypeError("c' +
-  'omparing strings with non-ASCII ch' + 'aracters "' + #10 +
-  '                                "i' + 's not supported")' + #10 +
-  '        x = [ord(c) for c in a]' + #10 +
-  '        y = [ord(c) for c in b]' + #10 + '    else:' + #10 +
-  '        ba = isinstance(a, (bytes,' + ' bytearray))' + #10 +
-  '        bb = isinstance(b, (bytes,' + ' bytearray))' + #10 +
-  '        if ba and bb:' + #10 + '            x = list(a)' + #10 +
-  '            y = list(b)' + #10 + '        elif isinstance(a, str) or' +
-  ' isinstance(b, str):' + #10 + '            if ba or bb:' + #10 +
-  '                raise TypeError("a' +
-  ' bytes-like object is required, no' + 't ''str''")' + #10 +
-  '            raise TypeError("unsup' +
-  'ported operand types(s) or combina' + 'tion of "' + #10 +
-  '                            "types' + ': ''%s'' and ''%s''" %' + #10 +
-  '                            (type(' + 'a).__name__, type(b).__name__))' +
-  #10 + '        elif ba or bb:' + #10 + '            bad = b if ba else a' +
-  #10 + '            raise TypeError("a byt' +
-  'es-like object is required, not ''%' + 's''" %' + #10 +
-  '                            type(b' + 'ad).__name__)' + #10 +
-  '        else:' + #10 + '            raise TypeError("unsup' +
-  'ported operand types(s) or combina' + 'tion of "' + #10 +
-  '                            "types' + ': ''%s'' and ''%s''" %' + #10 +
-  '                            (type(' + 'a).__name__, type(b).__name__))' +
-  #10 + '    result = len(x) ^ len(y)' + #10 + '    n = len(y)' + #10 +
-  '    for i in range(len(x)):' + #10 + '        if n:' + #10 +
-  '            result |= x[i] ^ y[i %' + ' n]' + #10 + '        else:' + #10 +
-  '            result |= x[i]' + #10 + '    return result == 0' + #10 + #10;
+  '    or not supplied, a reasonable ' + 'default is used.' + #10 + #10 +
+  '    >>> token_urlsafe(16)  #doctes' + 't:+SKIP' + #10 +
+  '    ''Drmhze6EPcv0fN_81Bj-nA''' + #10 + #10 + '    """' + #10 +
+  '    tok = token_bytes(nbytes)' + #10 +
+  '    return base64.urlsafe_b64encod' +
+  'e(tok).rstrip(b''='').decode(''ascii''' + ')' + #10 + #10;
 
 Function Src_secrets: AnsiString;
 Begin
@@ -69939,10 +76370,10 @@ Const
   '# iterator interface by Gustavo Ni' + 'emeyer, April 2003.' + #10 +
   '# changes to tokenize more like Po' +
   'six shells by Vinay Sajip, July 20' + '16.' + #10 + #10 + 'import os' +
-  #10 + 'import sys' + #10 + 'from collections import deque' + #10 + #10 +
-  'from io import StringIO' + #10 + #10 +
-  '__all__ = ["shlex", "split", "quot' + 'e", "join"]' + #10 + #10 + #10 +
-  'class shlex:' + #10 + '    "A lexical analyzer class for ' +
+  #10 + 'import re' + #10 + 'import sys' + #10 +
+  'from collections import deque' + #10 + #10 + 'from io import StringIO' +
+  #10 + #10 + '__all__ = ["shlex", "split", "quot' + 'e", "join"]' + #10 +
+  #10 + 'class shlex:' + #10 + '    "A lexical analyzer class for ' +
   'simple shell-like syntaxes."' + #10 +
   '    def __init__(self, instream=No' + 'ne, infile=None, posix=False,' +
   #10 + '                 punctuation_chars' + '=False):' + #10 +
@@ -69992,7 +76423,7 @@ Const
   '            # these chars added be' +
   'cause allowed in file names, args,' + ' wildcards' + #10 +
   '            self.wordchars += ''~-.' + '/*?=''' + #10 +
-  '            # remove any punctuati' + 'on chars from wordchars' + #10 +
+  '            #remove any punctuatio' + 'n chars from wordchars' + #10 +
   '            t = self.wordchars.mak' +
   'etrans(dict.fromkeys(punctuation_c' + 'hars))' + #10 +
   '            self.wordchars = self.' + 'wordchars.translate(t)' + #10 +
@@ -70023,7 +76454,7 @@ Const
   '        (self.infile, self.instrea' +
   'm, self.lineno) = self.filestack.p' + 'opleft()' + #10 +
   '        if self.debug:' + #10 + '            print(''shlex: popping ' +
-  'to %s, line %d''' + #10 + '                  % (self.instream' +
+  'to %s, line %d'' \' + #10 + '                  % (self.instream' +
   ', self.lineno))' + #10 + '        self.state = '' ''' + #10 + #10 +
   '    def get_token(self):' + #10 + '        "Get a token from the inpu' +
   't stream (or from stack if it''s no' + 'nempty)"' + #10 +
@@ -70211,26 +76642,17 @@ Const
   '    def __iter__(self):' + #10 + '        return self' + #10 + #10 +
   '    def __next__(self):' + #10 + '        token = self.get_token()' + #10 +
   '        if token == self.eof:' + #10 + '            raise StopIteration' +
-  #10 + '        return token' + #10 + #10 + #10 +
+  #10 + '        return token' + #10 + #10 +
   'def split(s, comments=False, posix' + '=True):' + #10 +
   '    """Split the string *s* using ' + 'shell-like syntax."""' + #10 +
-  '    if s is None:' + #10 + '        import warnings' + #10 +
-  '        warnings.warn("Passing Non' +
-  'e for ''s'' to shlex.split() is depr' + 'ecated.",' + #10 +
-  '                      DeprecationW' + 'arning, stacklevel=2)' + #10 +
   '    lex = shlex(s, posix=posix)' + #10 +
   '    lex.whitespace_split = True' + #10 + '    if not comments:' + #10 +
   '        lex.commenters = ''''' + #10 + '    return list(lex)' + #10 + #10 +
   #10 + 'def join(split_command):' + #10 +
   '    """Return a shell-escaped stri' + 'ng from *split_command*."""' + #10 +
   '    return '' ''.join(quote(arg) for' + ' arg in split_command)' + #10 +
-  #10 + #10 + '_SAFE = frozenset(''abcdefghijklmno' +
-  'pqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW' + 'XYZ0123456789_@%+=:,./-'')' + #10 +
-  #10 + #10 + 'def _find_unsafe(s):' + #10 +
-  '    # equivalent of re.compile(r''[' +
-  '^\w@%+=:,./-]'', re.ASCII).search(s' + ')' + #10 + '    for ch in s:' +
-  #10 + '        if ch not in _SAFE:' + #10 + '            return ch' + #10 +
-  '    return None' + #10 + #10 + #10 + 'def quote(s):' + #10 +
+  #10 + #10 + '_find_unsafe = re.compile(r''[^\w@%' +
+  '+=:,./-]'', re.ASCII).search' + #10 + #10 + 'def quote(s):' + #10 +
   '    """Return a shell-escaped vers' + 'ion of the string *s*."""' + #10 +
   '    if not s:' + #10 + '        return "''''"' + #10 +
   '    if _find_unsafe(s) is None:' + #10 + '        return s' + #10 + #10 +
@@ -71114,7 +77536,12 @@ Const
   '    _t.strftime = strftime' + #10 + '    _t.asctime = asctime' + #10 +
   '    def ctime(secs=None):' + #10 + '        return asctime(localtime(s' +
   'ecs))' + #10 + '    _t.ctime = ctime' + #10 + #10 + '_setup_time()' + #10 +
-  'del _setup_time' + #10 + #10;
+  'del _setup_time' + #10 + #10 + #10 + '_audit_hooks = []' + #10 + #10 +
+  #10 + 'def _addaudithook(hook):' + #10 + '    _audit_hooks.append(hook)' +
+  #10 + #10 + #10 + 'def _audit(event, *args):' + #10 +
+  '    for _h in list(_audit_hooks):' + #10 + '        _h(event, *args)' +
+  #10 + #10 + #10 + 'sys.addaudithook = _addaudithook' + #10 +
+  'sys.audit = _audit' + #10 + #10;
 
 Function Src_site: AnsiString;
 Begin
@@ -71152,7 +77579,69 @@ End;
 
 Const
  Src_statistics_0: AnsiString =
-  '__all__ = [' + #10 + '    ''NormalDist'',' + #10 +
+  '"""' + #10 + 'Basic statistics module.' + #10 + #10 +
+  'This module provides functions for' +
+  ' calculating statistics of data, i' + 'ncluding' + #10 +
+  'averages, variance, and standard d' + 'eviation.' + #10 + #10 +
+  'Calculating averages' + #10 + '--------------------' + #10 + #10 +
+  '==================  ==============' +
+  '==================================' + '==' + #10 +
+  'Function            Description' + #10 +
+  '==================  ==============' +
+  '==================================' + '==' + #10 +
+  'mean                Arithmetic mea' + 'n (average) of data.' + #10 +
+  'fmean               Fast, floating' + ' point arithmetic mean.' + #10 +
+  'geometric_mean      Geometric mean' + ' of data.' + #10 +
+  'harmonic_mean       Harmonic mean ' + 'of data.' + #10 +
+  'median              Median (middle' + ' value) of data.' + #10 +
+  'median_low          Low median of ' + 'data.' + #10 +
+  'median_high         High median of' + ' data.' + #10 +
+  'median_grouped      Median, or 50t' + 'h percentile, of grouped data.' +
+  #10 + 'mode                Mode (most com' + 'mon value) of data.' + #10 +
+  'multimode           List of modes ' + '(most common values of data).' +
+  #10 + 'quantiles           Divide data in' +
+  'to intervals with equal probabilit' + 'y.' + #10 +
+  '==================  ==============' +
+  '==================================' + '==' + #10 + #10 +
+  'Calculate the arithmetic mean ("th' + 'e average") of data:' + #10 + #10 +
+  '>>> mean([-1.0, 2.5, 3.25, 5.75])' + #10 + '2.625' + #10 + #10 + #10 +
+  'Calculate the standard median of d' + 'iscrete data:' + #10 + #10 +
+  '>>> median([2, 3, 4, 5])' + #10 + '3.5' + #10 + #10 + #10 +
+  'Calculate the median, or 50th perc' +
+  'entile, of data grouped into class' + ' intervals' + #10 +
+  'centred on the data values provide' +
+  'd. E.g. if your data points are ro' + 'unded to' + #10 +
+  'the nearest whole number:' + #10 + #10 +
+  '>>> median_grouped([2, 2, 3, 3, 3,' + ' 4])  #doctest: +ELLIPSIS' + #10 +
+  '2.8333333333...' + #10 + #10 + 'This should be interpreted in this' +
+  ' way: you have two data points in ' + 'the class' + #10 +
+  'interval 1.5-2.5, three data point' +
+  's in the class interval 2.5-3.5, a' + 'nd one in' + #10 +
+  'the class interval 3.5-4.5. The me' +
+  'dian of these data points is 2.833' + '3...' + #10 + #10 + #10 +
+  'Calculating variability or spread' + #10 +
+  '---------------------------------' + #10 + #10 +
+  '==================  ==============' + '===============================' +
+  #10 + 'Function            Description' + #10 +
+  '==================  ==============' + '===============================' +
+  #10 + 'pvariance           Population var' + 'iance of data.' + #10 +
+  'variance            Sample varianc' + 'e of data.' + #10 +
+  'pstdev              Population sta' + 'ndard deviation of data.' + #10 +
+  'stdev               Sample standar' + 'd deviation of data.' + #10 +
+  '==================  ==============' + '===============================' +
+  #10 + #10 + 'Calculate the standard deviation o' + 'f sample data:' + #10 +
+  #10 + '>>> stdev([2.5, 3.25, 5.5, 11.25, ' +
+  '11.75])  #doctest: +ELLIPSIS' + #10 + '4.38961843444...' + #10 + #10 +
+  'If you have previously calculated ' +
+  'the mean, you can pass it as the o' + 'ptional' + #10 +
+  'second argument to the four "sprea' +
+  'd" functions to avoid recalculatin' + 'g it:' + #10 + #10 +
+  '>>> data = [1, 2, 2, 4, 4, 4, 5, 6' + ']' + #10 + '>>> mu = mean(data)' +
+  #10 + '>>> pvariance(data, mu)' + #10 + '2.5' + #10 + #10 + #10 +
+  'Exceptions' + #10 + '----------' + #10 + #10 +
+  'A single exception is defined: Sta' +
+  'tisticsError is a subclass of Valu' + 'eError.' + #10 + #10 + '"""' + #10 +
+  #10 + '__all__ = [' + #10 + '    ''NormalDist'',' + #10 +
   '    ''StatisticsError'',' + #10 + '    ''fmean'',' + #10 +
   '    ''geometric_mean'',' + #10 + '    ''harmonic_mean'',' + #10 +
   '    ''mean'',' + #10 + '    ''median'',' + #10 +
@@ -71161,403 +77650,565 @@ Const
   #10 + '    ''pstdev'',' + #10 + '    ''pvariance'',' + #10 +
   '    ''quantiles'',' + #10 + '    ''stdev'',' + #10 + '    ''variance'',' +
   #10 + ']' + #10 + #10 + 'import math' + #10 + 'import numbers' + #10 +
-  'import sys' + #10 + #10 + 'from fractions import Fraction, _i' +
-  'nt_truediv' + #10 + 'from itertools import count, group' + 'by, repeat' +
+  'import random' + #10 + #10 + 'from fractions import Fraction' + #10 +
+  'from decimal import Decimal' + #10 + 'from itertools import groupby' +
   #10 + 'from bisect import bisect_left, bi' + 'sect_right' + #10 +
   'from math import hypot, sqrt, fabs' + ', exp, erf, tau, log, fsum' + #10 +
-  'from functools import reduce' + #10 + 'from operator import itemgetter' +
-  #10 + 'from collections import Counter, n' + 'amedtuple, defaultdict' +
-  #10 + #10 + '_SQRT2 = sqrt(2.0)' + #10 + #10 + 'def _decimal_cls():' + #10 +
-  '    m = sys.modules.get(''decimal'')' + #10 + '    if m is None:' + #10 +
-  '        return None' + #10 + '    return getattr(m, ''Decimal'', N' +
-  'one)' + #10 + #10 + 'def _is_decimal_type(T):' + #10 +
-  '    D = _decimal_cls()' + #10 + '    return D is not None and issub' +
-  'class(T, D)' + #10 + #10 + 'from math import exp as _math_exp,' +
-  ' frexp as _math_frexp, ldexp as _m' + 'ath_ldexp' + #10 +
-  'from math import floor as _math_fl' + 'oor, fabs as _math_fabs' + #10 +
-  'from math import isnan as _math_is' + 'nan, isinf as _math_isinf' + #10 +
-  #10 + '_erx = 8.45062911510467529297e-01' + #10 +
-  '_efx = 1.28379167095512586316e-01' + #10 +
-  '_efx8 = 1.02703333676410069053e+00' + #10 +
-  '_pp0 = 1.28379167095512558561e-01' + #10 +
-  '_pp1 = -3.25042107247001499370e-01' + #10 +
-  '_pp2 = -2.84817495755985104766e-02' + #10 +
-  '_pp3 = -5.77027029648944159157e-03' + #10 +
-  '_pp4 = -2.37630166566501626084e-05' + #10 +
-  '_qq1 = 3.97917223959155352819e-01' + #10 +
-  '_qq2 = 6.50222499887672944485e-02' + #10 +
-  '_qq3 = 5.08130628187576562776e-03' + #10 +
-  '_qq4 = 1.32494738004321644526e-04' + #10 +
-  '_qq5 = -3.96022827877536812320e-06' + #10 +
-  '_pa0 = -2.36211856075265944077e-03' + #10 +
-  '_pa1 = 4.14856118683748331666e-01' + #10 +
-  '_pa2 = -3.72207876035701323847e-01' + #10 +
-  '_pa3 = 3.18346619901161753674e-01' + #10 +
-  '_pa4 = -1.10894694282396677476e-01' + #10 +
-  '_pa5 = 3.54783043256182359371e-02' + #10 +
-  '_pa6 = -2.16637559486879084300e-03' + #10 +
-  '_qa1 = 1.06420880400844228286e-01' + #10 +
-  '_qa2 = 5.40397917702171048937e-01' + #10 +
-  '_qa3 = 7.18286544141962662868e-02' + #10 +
-  '_qa4 = 1.26171219808761642112e-01' + #10 +
-  '_qa5 = 1.36370839120290507362e-02' + #10 +
-  '_qa6 = 1.19844998467991074170e-02' + #10 +
-  '_ra0 = -9.86494403484714822705e-03' + #10 +
-  '_ra1 = -6.93858572707181764372e-01' + #10 +
-  '_ra2 = -1.05586262253232909814e+01' + #10 +
-  '_ra3 = -6.23753324503260060396e+01' + #10 +
-  '_ra4 = -1.62396669462573470355e+02' + #10 +
-  '_ra5 = -1.84605092906711035994e+02' + #10 +
-  '_ra6 = -8.12874355063065934246e+01' + #10 +
-  '_ra7 = -9.81432934416914548592e+00' + #10 +
-  '_sa1 = 1.96512716674392571292e+01' + #10 +
-  '_sa2 = 1.37657754143519042600e+02' + #10 +
-  '_sa3 = 4.34565877475229228821e+02' + #10 +
-  '_sa4 = 6.45387271733267880336e+02' + #10 +
-  '_sa5 = 4.29008140027567833386e+02' + #10 +
-  '_sa6 = 1.08635005541779435134e+02' + #10 +
-  '_sa7 = 6.57024977031928170135e+00' + #10 +
-  '_sa8 = -6.04244152148580987438e-02' + #10 +
-  '_rb0 = -9.86494292470009928597e-03' + #10 +
-  '_rb1 = -7.99283237680523006574e-01' + #10 +
-  '_rb2 = -1.77579549177547519889e+01' + #10 +
-  '_rb3 = -1.60636384855821916062e+02' + #10 +
-  '_rb4 = -6.37566443368389627722e+02' + #10 +
-  '_rb5 = -1.02509513161107724954e+03' + #10 +
-  '_rb6 = -4.83519191608651397019e+02' + #10 +
-  '_sb1 = 3.03380607434824582924e+01' + #10 +
-  '_sb2 = 3.25792512996573918826e+02' + #10 +
-  '_sb3 = 1.53672958608443695994e+03' + #10 +
-  '_sb4 = 3.19985821950859553908e+03' + #10 +
-  '_sb5 = 2.55305040643316442583e+03' + #10 +
-  '_sb6 = 4.74528541206955367215e+02' + #10 +
-  '_sb7 = -2.24409524465858183362e+01' + #10 + #10 + 'def _trunc_low(x):' +
-  #10 + '    m, e = _math_frexp(x)' + #10 +
-  '    return _math_ldexp(_math_floor' + '(m * 2097152.0) / 2097152.0, e)' +
-  #10 + #10 + 'def _erf_tail(x):' + #10 + '    s = 1.0 / (x * x)' + #10 +
-  '    if x < 2.857142857142857:' + #10 + '        R1 = _ra0 + s * _ra1' +
-  #10 + '        s2 = s * s' + #10 + '        S1 = 1.0 + s * _sa1' + #10 +
-  '        s4 = s2 * s2' + #10 + '        R2 = _ra2 + s * _ra3' + #10 +
-  '        s6 = s4 * s2' + #10 + '        S2 = _sa2 + s * _sa3' + #10 +
-  '        s8 = s4 * s4' + #10 + '        R3 = _ra4 + s * _ra5' + #10 +
-  '        S3 = _sa4 + s * _sa5' + #10 + '        R4 = _ra6 + s * _ra7' +
-  #10 + '        S4 = _sa6 + s * _sa7' + #10 +
-  '        R = R1 + s2 * R2 + s4 * R3' + ' + s6 * R4' + #10 +
-  '        S = S1 + s2 * S2 + s4 * S3' + ' + s6 * S4 + s8 * _sa8' + #10 +
-  '    else:' + #10 + '        R1 = _rb0 + s * _rb1' + #10 +
-  '        s2 = s * s' + #10 + '        S1 = 1.0 + s * _sb1' + #10 +
-  '        s4 = s2 * s2' + #10 + '        R2 = _rb2 + s * _rb3' + #10 +
-  '        s6 = s4 * s2' + #10 + '        S2 = _sb2 + s * _sb3' + #10 +
-  '        R3 = _rb4 + s * _rb5' + #10 + '        S3 = _sb4 + s * _sb5' +
-  #10 + '        S4 = _sb6 + s * _sb7' + #10 +
-  '        R = R1 + s2 * R2 + s4 * R3' + ' + s6 * _rb6' + #10 +
-  '        S = S1 + s2 * S2 + s4 * S3' + ' + s6 * S4' + #10 +
-  '    z = _trunc_low(x)' + #10 + '    return _math_exp(-z * z - 0.56' +
-  '25) * _math_exp((z - x) * (z + x) ' + '+ R / S)' + #10 + #10 +
-  'def _erf_py(x):' + #10 + '    x = float(x)' + #10 +
-  '    if _math_isnan(x):' + #10 + '        return x' + #10 +
-  '    neg = x < 0.0 or (x == 0.0 and' + ' str(x)[0] == ''-'')' + #10 +
-  '    ax = _math_fabs(x)' + #10 + '    if _math_isinf(x):' + #10 +
-  '        return -1.0 if neg else 1.' + '0' + #10 + '    if ax < 0.84375:' +
-  #10 + '        if ax < 3.725290298461914e' + '-09:' + #10 +
-  '            if ax < 1.175494350822' + '2875e-38:' + #10 +
-  '                return 0.125 * (8.' + '0 * x + _efx8 * x)' + #10 +
-  '            return x + _efx * x' + #10 + '        z = x * x' + #10 +
-  '        r1 = _pp0 + z * _pp1' + #10 + '        z2 = z * z' + #10 +
-  '        r2 = _pp2 + z * _pp3' + #10 + '        z4 = z2 * z2' + #10 +
-  '        s1 = 1.0 + z * _qq1' + #10 + '        s2 = _qq2 + z * _qq3' + #10 +
-  '        s3 = _qq4 + z * _qq5' + #10 +
-  '        r = r1 + z2 * r2 + z4 * _p' + 'p4' + #10 +
-  '        s = s1 + z2 * s2 + z4 * s3' + #10 + '        y = r / s' + #10 +
-  '        return x + x * y' + #10 + '    if ax < 1.25:' + #10 +
-  '        s = ax - 1.0' + #10 + '        P1 = _pa0 + s * _pa1' + #10 +
-  '        s2 = s * s' + #10 + '        Q1 = 1.0 + s * _qa1' + #10 +
-  '        s4 = s2 * s2' + #10 + '        P2 = _pa2 + s * _pa3' + #10 +
-  '        s6 = s4 * s2' + #10 + '        Q2 = _qa2 + s * _qa3' + #10 +
-  '        P3 = _pa4 + s * _pa5' + #10 + '        Q3 = _qa4 + s * _qa5' +
-  #10 + '        P = P1 + s2 * P2 + s4 * P3' + ' + s6 * _pa6' + #10 +
-  '        Q = Q1 + s2 * Q2 + s4 * Q3' + ' + s6 * _qa6' + #10 +
-  '        if not neg:' + #10 + '            return _erx + P / Q' + #10 +
-  '        return -_erx - P / Q' + #10 + '    if ax >= 6.0:' + #10 +
-  '        return -1.0 if neg else 1.' + '0' + #10 + '    r = _erf_tail(ax)' +
-  #10 + '    if not neg:' + #10 + '        return 1.0 - r / ax' + #10 +
-  '    return r / ax - 1.0' + #10 + #10 +
-  'if erf(0.5) != 0.5204998778130465 ' + 'or erf(0.0) != 0.0:' + #10 +
-  '    erf = _erf_py' + #10 + #10 + 'def _real(x):' + #10 +
-  '    t = type(x)' + #10 + '    if t is float or t is int or t' +
-  ' is bool:' + #10 + '        return x' + #10 +
-  '    if hasattr(t, ''__float__''):' + #10 + '        return float(x)' +
-  #10 + '    return x' + #10 + #10 + 'def _log(x):' + #10 + '    try:' + #10 +
-  '        r = log(x)' + #10 + '    except TypeError:' + #10 +
-  '        r = log(_real(x))' + #10 + '    return r' + #10 + #10 +
-  'def _fsum(data):' + #10 + '    return fsum([_real(x) for x in' +
-  ' data])' + #10 + #10 + 'def _sumprod(p, q):' + #10 + '    p = list(p)' +
-  #10 + '    q = list(q)' + #10 + '    if len(p) != len(q):' + #10 +
-  '        raise ValueError(''Inputs a' + 're not the same length'')' + #10 +
-  '    return fsum([a * b for a, b in' + ' zip(p, q)])' + #10 + #10 +
-  'class StatisticsError(ValueError):' + #10 + '    pass' + #10 + #10 +
-  'def _sum(data):' + #10 + '    count = 0' + #10 + '    types = set()' +
-  #10 + '    types_add = types.add' + #10 + '    partials = {}' + #10 +
-  '    partials_get = partials.get' + #10 +
+  'from operator import itemgetter' + #10 +
+  'from collections import Counter' + #10 + #10 + '# === Exceptions ===' +
+  #10 + #10 + 'class StatisticsError(ValueError):' + #10 + '    pass' + #10 +
+  #10 + #10 + '# === Private utilities ===' + #10 + #10 +
+  'def _sum(data, start=0):' + #10 + '    """_sum(data [, start]) -> (ty' +
+  'pe, sum, count)' + #10 + #10 + '    Return a high-precision sum of' +
+  ' the given numeric data as a fract' + 'ion,' + #10 +
+  '    together with the type to be c' +
+  'onverted to and the count of items' + '.' + #10 + #10 +
+  '    If optional argument ``start``' +
+  ' is given, it is added to the tota' + 'l.' + #10 +
+  '    If ``data`` is empty, ``start`' + '` (defaulting to 0) is returned.' +
+  #10 + #10 + #10 + '    Examples' + #10 + '    --------' + #10 + #10 +
+  '    >>> _sum([3, 2.25, 4.5, -0.5, ' + '1.0], 0.75)' + #10 +
+  '    (<class ''float''>, Fraction(11,' + ' 1), 5)' + #10 + #10 +
+  '    Some sources of round-off erro' + 'r will be avoided:' + #10 + #10 +
+  '    # Built-in sum returns zero.' + #10 +
+  '    >>> _sum([1e50, 1, -1e50] * 10' + '00)' + #10 +
+  '    (<class ''float''>, Fraction(100' + '0, 1), 3000)' + #10 + #10 +
+  '    Fractions and Decimals are als' + 'o supported:' + #10 + #10 +
+  '    >>> from fractions import Frac' + 'tion as F' + #10 +
+  '    >>> _sum([F(2, 3), F(7, 5), F(' + '1, 4), F(5, 6)])' + #10 +
+  '    (<class ''fractions.Fraction''>,' + ' Fraction(63, 20), 4)' + #10 +
+  #10 + '    >>> from decimal import Decima' + 'l as D' + #10 +
+  '    >>> data = [D("0.1375"), D("0.' + '2108"), D("0.3061"), D("0.0419")]' +
+  #10 + '    >>> _sum(data)' + #10 + '    (<class ''decimal.Decimal''>, Fr' +
+  'action(6963, 10000), 4)' + #10 + #10 +
+  '    Mixed types are currently trea' +
+  'ted as an error, except that int i' + 's' + #10 + '    allowed.' + #10 +
+  '    """' + #10 + '    count = 0' + #10 + '    n, d = _exact_ratio(start)' +
+  #10 + '    partials = {d: n}' + #10 + '    partials_get = partials.get' +
+  #10 + '    T = _coerce(int, type(start))' + #10 +
   '    for typ, values in groupby(dat' + 'a, type):' + #10 +
-  '        types_add(typ)' + #10 + '        for n, d in map(_exact_rat' +
-  'io, values):' + #10 + '            count += 1' + #10 +
-  '            partials[d] = partials' + '_get(d, 0) + n' + #10 +
-  '    if None in partials:' + #10 + '        total = partials[None]' + #10 +
+  '        T = _coerce(T, typ)  # or ' + 'raise TypeError' + #10 +
+  '        for n,d in map(_exact_rati' + 'o, values):' + #10 +
+  '            count += 1' + #10 + '            partials[d] = partials' +
+  '_get(d, 0) + n' + #10 + '    if None in partials:' + #10 +
+  '        # The sum will be a NAN or' +
+  ' INF. We can ignore all the finite' + #10 +
+  '        # partials, and just look ' + 'at this special one.' + #10 +
+  '        total = partials[None]' + #10 +
   '        assert not _isfinite(total' + ')' + #10 + '    else:' + #10 +
-  '        total = sum(Fraction(n, d)' + ' for d, n in partials.items())' +
-  #10 + '    T = reduce(_coerce, types, int' + ')' + #10 +
-  '    return (T, total, count)' + #10 + #10 + 'def _ss(data, c=None):' +
-  #10 + '    if c is not None:' + #10 + '        T, ssd, count = _sum((d :=' +
-  ' x - c) * d for x in data)' + #10 + '        return (T, ssd, c, count)' +
-  #10 + '    count = 0' + #10 + '    types = set()' + #10 +
-  '    types_add = types.add' + #10 + '    sx_partials = defaultdict(int)' +
-  #10 + '    sxx_partials = defaultdict(int' + ')' + #10 +
-  '    for typ, values in groupby(dat' + 'a, type):' + #10;
+  '        # Sum all the partial sums' + ' using builtin sum.' + #10 +
+  '        # FIXME is this faster if ' +
+  'we sum them in order of the denomi' + 'nator?' + #10 +
+  '        total = sum(Fraction(n, d)' +
+  ' for d, n in sorted(partials.items' + '()))' + #10 +
+  '    return (T, total, count)' + #10 + #10 + #10 + 'def _isfinite(x):' +
+  #10 + '    try:' + #10 + '        return x.is_finite()  # Li' +
+  'kely a Decimal.' + #10 + '    except AttributeError:' + #10 +
+  '        return math.isfinite(x)  #' + ' Coerces to float first.' + #10 +
+  #10 + #10 + 'def _coerce(T, S):' + #10 +
+  '    """Coerce types T and S to a c' + 'ommon type, or raise TypeError.' +
+  #10 + #10 + '    Coercion rules are currently a' +
+  'n implementation detail. See the C' + 'oerceTest' + #10 +
+  '    test class in test_statistics ' + 'for details.' + #10 + '    """' +
+  #10 + '    # See http://bugs.python.org/i' + 'ssue24068.' + #10 +
+  '    assert T is not bool, "initial' + ' type T is bool"' + #10 +
+  '    # If the types are the same, n' +
+  'o need to coerce anything. Put thi' + 's' + #10 +
+  '    # first, so that the usual cas' +
+  'e (no coercion needed) happens as ' + 'soon' + #10 + '    # as possible.' +
+  #10 + '    if T is S:  return T' + #10 +
+  '    # Mixed int & other coerce to ' + 'the other type.' + #10 +
+  '    if S is int or S is bool:  ret' + 'urn T' + #10 +
+  '    if T is int:  return S' + #10 + '    # If one is a (strict) subclas' +
+  's of the other, coerce to the subc' + 'lass.' + #10 +
+  '    if issubclass(S, T):  return S' + #10 +
+  '    if issubclass(T, S):  return T' + #10 +
+  '    # Ints coerce to the other typ' + 'e.' + #10 +
+  '    if issubclass(T, int):  return' + ' S' + #10 +
+  '    if issubclass(S, int):  return' + ' T' + #10 +
+  '    # Mixed fraction & float coerc' + 'es to float (or float subclass).' +
+  #10 + '    if issubclass(T, Fraction) and' + ' issubclass(S, float):' +
+  #10 + '        return S' + #10 + '    if issubclass(T, float) and is' +
+  'subclass(S, Fraction):' + #10 + '        return T' + #10 +
+  '    # Any other combination is dis' + 'allowed.' + #10 +
+  '    msg = "don''t know how to coerc' + 'e %s and %s"' + #10 +
+  '    raise TypeError(msg % (T.__nam' + 'e__, S.__name__))' + #10 + #10 +
+  #10 + 'def _exact_ratio(x):' + #10 + '    """Return Real number x to exa' +
+  'ct (numerator, denominator) pair.' + #10 + #10 +
+  '    >>> _exact_ratio(0.25)' + #10 + '    (1, 4)' + #10 + #10 +
+  '    x is expected to be an int, Fr' + 'action, Decimal or float.' + #10 +
+  '    """' + #10 + '    try:' + #10 + '        # Optimise the common case' +
+  ' of floats. We expect that the mos' + 't often' + #10 +
+  '        # used numeric type will b' +
+  'e builtin floats, so try to make t' + 'his as' + #10 +
+  '        # fast as possible.' + #10 + '        if type(x) is float or typ' +
+  'e(x) is Decimal:' + #10 + '            return x.as_integer_ra' + 'tio()' +
+  #10 + '        try:' + #10 + '            # x may be an int, Fra' +
+  'ction, or Integral ABC.' + #10 + '            return (x.numerator, x' +
+  '.denominator)' + #10 + '        except AttributeError:' + #10 +
+  '            try:' + #10 + '                # x may be a float' +
+  ' or Decimal subclass.' + #10 + '                return x.as_intege' +
+  'r_ratio()' + #10 + '            except AttributeError:' + #10 +
+  '                # Just give up?' + #10 + '                pass' + #10 +
+  '    except (OverflowError, ValueEr' + 'ror):' + #10 +
+  '        # float NAN or INF.' + #10 + '        assert not _isfinite(x)' +
+  #10 + '        return (x, None)' + #10 +
+  '    msg = "can''t convert type ''{}''' + ' to numerator/denominator"' +
+  #10 + '    raise TypeError(msg.format(typ' + 'e(x).__name__))' + #10 + #10 +
+  #10;
 
 Const
  Src_statistics_1: AnsiString =
-  '        types_add(typ)' + #10 + '        for n, d in map(_exact_rat' +
-  'io, values):' + #10 + '            count += 1' + #10 +
-  '            sx_partials[d] += n' + #10 +
-  '            sxx_partials[d] += n *' + ' n' + #10 + '    if not count:' +
-  #10 + '        ssd = c = Fraction(0)' + #10 +
-  '    elif None in sx_partials:' + #10 +
-  '        ssd = c = sx_partials[None' + ']' + #10 +
-  '        assert not _isfinite(ssd)' + #10 + '    else:' + #10 +
-  '        sx = sum(Fraction(n, d) fo' + 'r d, n in sx_partials.items())' +
-  #10 + '        sxx = sum(Fraction(n, d*d)' +
-  ' for d, n in sxx_partials.items())' + #10 +
-  '        ssd = (count * sxx - sx * ' + 'sx) / count' + #10 +
-  '        c = sx / count' + #10 + '    T = reduce(_coerce, types, int' +
-  ')' + #10 + '    return (T, ssd, c, count)' + #10 + #10 +
-  'def _isfinite(x):' + #10 + '    try:' + #10 + '        r = x.is_finite()' +
-  #10 + '    except AttributeError:' + #10 + '        r = math.isfinite(x)' +
-  #10 + '    return r' + #10 + #10 + 'def _coerce(T, S):' + #10 +
-  '    assert T is not bool, "initial' + ' type T is bool"' + #10 +
-  '    if T is S:  return T' + #10 + '    if S is int or S is bool:  ret' +
-  'urn T' + #10 + '    if T is int:  return S' + #10 +
-  '    if issubclass(S, T):  return S' + #10 +
-  '    if issubclass(T, S):  return T' + #10 +
-  '    if issubclass(T, int):  return' + ' S' + #10 +
-  '    if issubclass(S, int):  return' + ' T' + #10 +
-  '    if issubclass(T, Fraction) and' + ' issubclass(S, float):' + #10 +
-  '        return S' + #10 + '    if issubclass(T, float) and is' +
-  'subclass(S, Fraction):' + #10 + '        return T' + #10 +
-  '    msg = "don''t know how to coerc' + 'e %s and %s"' + #10 +
-  '    raise TypeError(msg % (T.__nam' + 'e__, S.__name__))' + #10 + #10 +
-  'def _exact_ratio(x):' + #10 + #10 + '    r = None' + #10 + '    try:' +
-  #10 + '        r = x.as_integer_ratio()' + #10 +
-  '    except AttributeError:' + #10 + '        pass' + #10 +
-  '    except (OverflowError, ValueEr' + 'ror):' + #10 +
-  '        assert not _isfinite(x)' + #10 + '        r = (x, None)' + #10 +
-  '    if r is not None:' + #10 + '        return r' + #10 + '    try:' +
-  #10 + '        r = (x.numerator, x.denomi' + 'nator)' + #10 +
-  '    except AttributeError:' + #10 + '        msg = f"can''t convert type' +
-  ' ''{type(x).__name__}'' to numerator' + '/denominator"' + #10 +
-  '        raise TypeError(msg)' + #10 + '    return r' + #10 + #10 +
-  'def _convert(value, T):' + #10 + '    if type(value) is T:' + #10 +
+  'def _convert(value, T):' + #10 + '    """Convert value to given nume' +
+  'ric type T."""' + #10 + '    if type(value) is T:' + #10 +
+  '        # This covers the cases wh' +
+  'ere T is Fraction, or where value ' + 'is' + #10 +
+  '        # a NAN or INF (Decimal or' + ' float).' + #10 +
   '        return value' + #10 + '    if issubclass(T, int) and valu' +
   'e.denominator != 1:' + #10 + '        T = float' + #10 + '    try:' + #10 +
-  '        r = T(value)' + #10 + '    except TypeError:' + #10 +
-  '        if _is_decimal_type(T):' + #10 +
-  '            r = T(value.numerator)' + ' / T(value.denominator)' + #10 +
-  '        else:' + #10 + '            raise' + #10 + '    return r' + #10 +
-  #10 + 'def _fail_neg(values, errmsg=''nega' + 'tive value''):' + #10 +
-  '    for x in values:' + #10 + '        if x < 0:' + #10 +
+  '        # FIXME: what do we do if ' + 'this overflows?' + #10 +
+  '        return T(value)' + #10 + '    except TypeError:' + #10 +
+  '        if issubclass(T, Decimal):' + #10 +
+  '            return T(value.numerat' + 'or)/T(value.denominator)' + #10 +
+  '        else:' + #10 + '            raise' + #10 + #10 + #10 +
+  'def _find_lteq(a, x):' + #10 + '    ''Locate the leftmost value exa' +
+  'ctly equal to x''' + #10 + '    i = bisect_left(a, x)' + #10 +
+  '    if i != len(a) and a[i] == x:' + #10 + '        return i' + #10 +
+  '    raise ValueError' + #10 + #10 + #10 + 'def _find_rteq(a, l, x):' +
+  #10 + '    ''Locate the rightmost value ex' + 'actly equal to x''' + #10 +
+  '    i = bisect_right(a, x, lo=l)' + #10 +
+  '    if i != (len(a)+1) and a[i-1] ' + '== x:' + #10 +
+  '        return i-1' + #10 + '    raise ValueError' + #10 + #10 + #10 +
+  'def _fail_neg(values, errmsg=''nega' + 'tive value''):' + #10 +
+  '    """Iterate over values, failin' + 'g if any are less than zero."""' +
+  #10 + '    for x in values:' + #10 + '        if x < 0:' + #10 +
   '            raise StatisticsError(' + 'errmsg)' + #10 + '        yield x' +
-  #10 + #10 + 'def _integer_sqrt_of_frac_rto(n, m' + '):' + #10 +
-  '    a = math.isqrt(n // m)' + #10 + '    return a | (a*a*m != n)' + #10 +
-  #10 + '_sqrt_bit_width = 2 * sys.float_in' + 'fo.mant_dig + 3' + #10 + #10 +
-  'def _float_sqrt_of_frac(n, m):' + #10 +
-  '    q = (n.bit_length() - m.bit_le' + 'ngth() - _sqrt_bit_width) // 2' +
-  #10 + '    if q >= 0:' + #10 + '        numerator = _integer_sqrt_' +
-  'of_frac_rto(n, m << 2 * q) << q' + #10 + '        denominator = 1' + #10 +
-  '    else:' + #10 + '        numerator = _integer_sqrt_' +
-  'of_frac_rto(n << -2 * q, m)' + #10 + '        denominator = 1 << -q' +
-  #10 + '    return _int_truediv(numerator,' + ' denominator)' + #10 + #10 +
-  'def _decimal_sqrt_of_frac(n, m):' + #10 +
-  '    from decimal import Decimal' + #10 + '    if n <= 0:' + #10 +
-  '        if not n:' + #10 + '            return Decimal(''0.0'')' + #10 +
-  '        n, m = -n, -m' + #10 + #10 + '    root = (Decimal(n) / Decimal(m' +
-  ')).sqrt()' + #10 + '    nr, dr = root.as_integer_ratio' + '()' + #10 +
-  #10 + '    plus = root.next_plus()' + #10 +
-  '    np, dp = plus.as_integer_ratio' + '()' + #10 +
-  '    if 4 * n * (dr*dp)**2 > m * (d' + 'r*np + dp*nr)**2:' + #10 +
-  '        return plus' + #10 + #10 + '    minus = root.next_minus()' + #10 +
-  '    nm, dm = minus.as_integer_rati' + 'o()' + #10 +
-  '    if 4 * n * (dr*dm)**2 < m * (d' + 'r*nm + dm*nr)**2:' + #10 +
-  '        return minus' + #10 + #10 + '    return root' + #10 + #10 +
-  'def mean(data):' + #10 + '    T, total, n = _sum(data)' + #10 +
+  #10 + #10 + #10 + '# === Measures of central tendency' + ' (averages) ===' +
+  #10 + #10 + 'def mean(data):' + #10 + '    """Return the sample arithmeti' +
+  'c mean of data.' + #10 + #10 + '    >>> mean([1, 2, 3, 4, 4])' + #10 +
+  '    2.8' + #10 + #10 + '    >>> from fractions import Frac' + 'tion as F' +
+  #10 + '    >>> mean([F(3, 7), F(1, 21), F' + '(5, 3), F(1, 3)])' + #10 +
+  '    Fraction(13, 21)' + #10 + #10 + '    >>> from decimal import Decima' +
+  'l as D' + #10 + '    >>> mean([D("0.5"), D("0.75"),' +
+  ' D("0.625"), D("0.375")])' + #10 + '    Decimal(''0.5625'')' + #10 + #10 +
+  '    If ``data`` is empty, Statisti' + 'csError will be raised.' + #10 +
+  '    """' + #10 + '    if iter(data) is data:' + #10 +
+  '        data = list(data)' + #10 + '    n = len(data)' + #10 +
   '    if n < 1:' + #10 + '        raise StatisticsError(''mea' +
   'n requires at least one data point' + ''')' + #10 +
-  '    return _convert(total / n, T)' + #10 + #10 +
-  'def fmean(data, weights=None):' + #10 + '    if weights is None:' + #10 +
-  '        try:' + #10 + '            n = len(data)' + #10 +
-  '        except TypeError:' + #10 + '            n = 0' + #10 +
-  '            def count(iterable):' + #10 + '                nonlocal n' +
-  #10 + '                for n, x in enumer' + 'ate(iterable, start=1):' +
-  #10 + '                    yield x' + #10 +
-  '            data = count(data)' + #10 + '        total = _fsum(data)' +
-  #10 + '        if not n:' + #10 + '            raise StatisticsError(' +
-  '''fmean requires at least one data ' + 'point'')' + #10 +
-  '        return total / n' + #10 + '    if not isinstance(weights, (li' +
-  'st, tuple)):' + #10 + '        weights = list(weights)' + #10 +
-  '    try:' + #10 + '        num = _sumprod(data, weigh' + 'ts)' + #10 +
-  '    except ValueError:' + #10 + '        raise StatisticsError(''dat' +
-  'a and weights must be the same len' + 'gth'')' + #10 +
-  '    den = _fsum(weights)' + #10 + '    if not den:' + #10 +
-  '        raise StatisticsError(''sum' + ' of weights must be non-zero'')' +
-  #10 + '    return num / den' + #10 + #10 + 'def geometric_mean(data):' +
-  #10 + '    n = 0' + #10 + '    found_zero = False' + #10 +
-  '    def count_positive(iterable):' + #10 +
-  '        nonlocal n, found_zero' + #10 +
-  '        for n, x in enumerate(iter' + 'able, start=1):' + #10 +
-  '            if x > 0.0 or math.isn' + 'an(x):' + #10 +
-  '                yield x' + #10 + '            elif x == 0.0:' + #10 +
-  '                found_zero = True' + #10 + '            else:' + #10 +
-  '                raise StatisticsEr' +
-  'ror(''No negative inputs allowed'', ' + 'x)' + #10 +
-  '    total = _fsum(map(_log, count_' + 'positive(data)))' + #10 +
-  '    if not n:' + #10 + '        raise StatisticsError(''Mus' +
-  't have a non-empty dataset'')' + #10 + '    if math.isnan(total):' + #10 +
-  '        return math.nan' + #10 + '    if found_zero:' + #10 +
-  '        return math.nan if total =' + '= math.inf else 0.0' + #10 +
-  '    return exp(total / n)' + #10 + #10 +
-  'def harmonic_mean(data, weights=No' + 'ne):' + #10 +
-  '    if iter(data) is data:' + #10 + '        data = list(data)' + #10 +
-  '    errmsg = ''harmonic mean does n' + 'ot support negative values''' +
-  #10 + '    n = len(data)' + #10 + '    if n < 1:' + #10 +
-  '        raise StatisticsError(''har' +
+  '    T, total, count = _sum(data)' + #10 + '    assert count == n' + #10 +
+  '    return _convert(total/n, T)' + #10 + #10 + #10 + 'def fmean(data):' +
+  #10 + '    """Convert data to floats and ' +
+  'compute the arithmetic mean.' + #10 + #10 +
+  '    This runs faster than the mean' +
+  '() function and it always returns ' + 'a float.' + #10 +
+  '    If the input dataset is empty,' + ' it raises a StatisticsError.' +
+  #10 + #10 + '    >>> fmean([3.5, 4.0, 5.25])' + #10 + '    4.25' + #10 +
+  '    """' + #10 + '    try:' + #10 + '        n = len(data)' + #10 +
+  '    except TypeError:' + #10 + '        # Handle iterators that do' +
+  ' not define __len__().' + #10 + '        n = 0' + #10 +
+  '        def count(iterable):' + #10 + '            nonlocal n' + #10 +
+  '            for n, x in enumerate(' + 'iterable, start=1):' + #10 +
+  '                yield x' + #10 + '        total = fsum(count(data))' +
+  #10 + '    else:' + #10 + '        total = fsum(data)' + #10 + '    try:' +
+  #10 + '        return total / n' + #10 + '    except ZeroDivisionError:' +
+  #10 + '        raise StatisticsError(''fme' +
+  'an requires at least one data poin' + 't'') from None' + #10 + #10 + #10 +
+  'def geometric_mean(data):' + #10 + '    """Convert data to floats and ' +
+  'compute the geometric mean.' + #10 + #10 +
+  '    Raises a StatisticsError if th' + 'e input dataset is empty,' + #10 +
+  '    if it contains a zero, or if i' + 't contains a negative value.' +
+  #10 + #10 + '    No special efforts are made to' +
+  ' achieve exact results.' + #10 + '    (However, this may change in t' +
+  'he future.)' + #10 + #10 + '    >>> round(geometric_mean([54, ' +
+  '24, 36]), 9)' + #10 + '    36.0' + #10 + '    """' + #10 + '    try:' +
+  #10 + '        return exp(fmean(map(log, ' + 'data)))' + #10 +
+  '    except ValueError:' + #10 + '        raise StatisticsError(''geo' +
+  'metric mean requires a non-empty d' + 'ataset ''' + #10 +
+  '                              '' co' +
+  'ntaining positive numbers'') from N' + 'one' + #10 + #10 + #10 +
+  'def harmonic_mean(data):' + #10 + '    """Return the harmonic mean of' +
+  ' data.' + #10 + #10 + '    The harmonic mean, sometimes c' +
+  'alled the subcontrary mean, is the' + #10 +
+  '    reciprocal of the arithmetic m' +
+  'ean of the reciprocals of the data' + ',' + #10 +
+  '    and is often appropriate when ' +
+  'averaging quantities which are rat' + 'es' + #10 +
+  '    or ratios, for example speeds.' + ' Example:' + #10 + #10 +
+  '    Suppose an investor purchases ' +
+  'an equal value of shares in each o' + 'f' + #10 +
+  '    three companies, with P/E (pri' +
+  'ce/earning) ratios of 2.5, 3 and 1' + '0.' + #10 +
+  '    What is the average P/E ratio ' + 'for the investor''s portfolio?' +
+  #10 + #10 + '    >>> harmonic_mean([2.5, 3, 10]' +
+  ')  # For an equal investment portf' + 'olio.' + #10 + '    3.6' + #10 +
+  #10 + '    Using the arithmetic mean woul' +
+  'd give an average of about 5.167, ' + 'which' + #10 + '    is too high.' +
+  #10 + #10 + '    If ``data`` is empty, or any e' +
+  'lement is less than zero,' + #10 + '    ``harmonic_mean`` will raise `' +
+  '`StatisticsError``.' + #10 + '    """' + #10 +
+  '    # For a justification for usin' +
+  'g harmonic mean for P/E ratios, se' + 'e' + #10 +
+  '    # http://fixthepitch.pellucid.' +
+  'com/comps-analysis-the-missing-har' + 'mony-of-summary-statistics/' + #10 +
+  '    # http://papers.ssrn.com/sol3/' + 'papers.cfm?abstract_id=2621087' +
+  #10 + '    if iter(data) is data:' + #10 + '        data = list(data)' +
+  #10 + '    errmsg = ''harmonic mean does n' +
+  'ot support negative values''' + #10 + '    n = len(data)' + #10 +
+  '    if n < 1:' + #10 + '        raise StatisticsError(''har' +
   'monic_mean requires at least one d' + 'ata point'')' + #10 +
-  '    elif n == 1 and weights is Non' + 'e:' + #10 + '        x = data[0]' +
-  #10 + '        if isinstance(x, numbers.R' +
-  'eal) or _is_decimal_type(type(x)):' + #10 + '            if x < 0:' + #10 +
-  '                raise StatisticsEr' + 'ror(errmsg)' + #10 +
-  '            return x' + #10 + '        else:' + #10 +
+  '    elif n == 1:' + #10 + '        x = data[0]' + #10 +
+  '        if isinstance(x, (numbers.' + 'Real, Decimal)):' + #10 +
+  '            if x < 0:' + #10 + '                raise StatisticsEr' +
+  'ror(errmsg)' + #10 + '            return x' + #10 + '        else:' + #10 +
   '            raise TypeError(''unsup' + 'ported type'')' + #10 +
-  '    if weights is None:' + #10 + '        weights = repeat(1, n)' + #10 +
-  '        sum_weights = n' + #10 + '    else:' + #10 +
-  '        if iter(weights) is weight' + 's:' + #10 +
-  '            weights = list(weights' + ')' + #10 +
-  '        if len(weights) != n:' + #10 +
-  '            raise StatisticsError(' +
-  '''Number of weights does not match ' + 'data size'')' + #10 +
-  '        _, sum_weights, _ = _sum(w' +
-  ' for w in _fail_neg(weights, errms' + 'g))' + #10 +
-  '    zero_div = False' + #10 + '    try:' + #10 +
-  '        data = _fail_neg(data, err' + 'msg)' + #10 +
-  '        T, total, count = _sum(w /' +
-  ' x if w else 0 for w, x in zip(wei' + 'ghts, data))' + #10 +
-  '    except ZeroDivisionError:' + #10 + '        zero_div = True' + #10 +
-  '    if zero_div:' + #10 + '        return 0' + #10 + '    if total <= 0:' +
-  #10 + '        raise StatisticsError(''Wei' +
-  'ghted sum must be positive'')' + #10 +
-  '    return _convert(sum_weights / ' + 'total, T)' + #10 + #10 +
-  'def median(data):' + #10 + '    data = sorted(data)' + #10 +
-  '    n = len(data)' + #10 + '    if n == 0:' + #10 +
-  '        raise StatisticsError("no ' + 'median for empty data")' + #10 +
-  '    if n % 2 == 1:' + #10 + '        return data[n // 2]' + #10 +
-  '    else:' + #10 + '        i = n // 2' + #10 +
-  '        return (data[i - 1] + data' + '[i]) / 2' + #10 + #10 +
-  'def median_low(data):' + #10 + '    data = sorted(data)' + #10 +
-  '    n = len(data)' + #10 + '    if n == 0:' + #10 +
-  '        raise StatisticsError("no ' + 'median for empty data")' + #10 +
-  '    if n % 2 == 1:' + #10 + '        return data[n // 2]' + #10 +
-  '    else:' + #10 + '        return data[n // 2 - 1]' + #10 + #10 +
-  'def median_high(data):' + #10 + '    data = sorted(data)' + #10 +
-  '    n = len(data)' + #10 + '    if n == 0:' + #10 +
-  '        raise StatisticsError("no ' + 'median for empty data")' + #10 +
-  '    return data[n // 2]' + #10 + #10 +
-  'def median_grouped(data, interval=' + '1.0):' + #10 +
-  '    data = sorted(data)' + #10 + '    n = len(data)' + #10 +
-  '    if not n:' + #10 + '        raise StatisticsError("no ' +
-  'median for empty data")' + #10 + #10 + '    x = data[n // 2]' + #10 + #10 +
-  '    i = bisect_left(data, x)' + #10 +
-  '    j = bisect_right(data, x, lo=i' + ')' + #10 + #10 + '    try:' + #10 +
-  '        interval = float(interval)' + #10 + '        x = float(x)' + #10 +
-  '    except ValueError:' + #10;
+  '    try:' + #10 + '        T, total, count = _sum(1/x' +
+  ' for x in _fail_neg(data, errmsg))' + #10 +
+  '    except ZeroDivisionError:' + #10 + '        return 0' + #10 +
+  '    assert count == n' + #10 + '    return _convert(n/total, T)' + #10 +
+  #10 + #10 + '# FIXME: investigate ways to calcu' +
+  'late medians without sorting? Quic' + 'kselect?' + #10 +
+  'def median(data):' + #10 + '    """Return the median (middle v' +
+  'alue) of numeric data.' + #10 + #10 +
+  '    When the number of data points' +
+  ' is odd, return the middle data po' + 'int.' + #10 +
+  '    When the number of data points' +
+  ' is even, the median is interpolat' + 'ed by' + #10 +
+  '    taking the average of the two ' + 'middle values:' + #10 + #10 +
+  '    >>> median([1, 3, 5])' + #10 + '    3' + #10 +
+  '    >>> median([1, 3, 5, 7])' + #10 + '    4.0' + #10 + #10 + '    """' +
+  #10 + '    data = sorted(data)' + #10 + '    n = len(data)' + #10 +
+  '    if n == 0:' + #10 + '        raise StatisticsError("no ' +
+  'median for empty data")' + #10 + '    if n%2 == 1:' + #10 +
+  '        return data[n//2]' + #10 + '    else:' + #10 + '        i = n//2' +
+  #10 + '        return (data[i - 1] + data' + '[i])/2' + #10 + #10 + #10 +
+  'def median_low(data):' + #10 + '    """Return the low median of nu' +
+  'meric data.' + #10 + #10 + '    When the number of data points' +
+  ' is odd, the middle value is retur' + 'ned.' + #10 +
+  '    When it is even, the smaller o' +
+  'f the two middle values is returne' + 'd.' + #10 + #10 +
+  '    >>> median_low([1, 3, 5])' + #10 + '    3' + #10 +
+  '    >>> median_low([1, 3, 5, 7])' + #10 + '    3' + #10 + #10 + '    """' +
+  #10 + '    data = sorted(data)' + #10 + '    n = len(data)' + #10 +
+  '    if n == 0:' + #10 + '        raise StatisticsError("no ' +
+  'median for empty data")' + #10 + '    if n%2 == 1:' + #10 +
+  '        return data[n//2]' + #10 + '    else:' + #10 +
+  '        return data[n//2 - 1]' + #10 + #10 + #10 +
+  'def median_high(data):' + #10 + '    """Return the high median of d' +
+  'ata.' + #10 + #10 + '    When the number of data points' +
+  ' is odd, the middle value is retur' + 'ned.' + #10 +
+  '    When it is even, the larger of' +
+  ' the two middle values is returned' + '.' + #10 + #10 +
+  '    >>> median_high([1, 3, 5])' + #10 + '    3' + #10 +
+  '    >>> median_high([1, 3, 5, 7])' + #10 + '    5' + #10 + #10 +
+  '    """' + #10 + '    data = sorted(data)' + #10 + '    n = len(data)' +
+  #10 + '    if n == 0:' + #10 + '        raise StatisticsError("no ' +
+  'median for empty data")' + #10 + '    return data[n//2]' + #10 + #10 +
+  #10 + 'def median_grouped(data, interval=' + '1):' + #10 +
+  '    """Return the 50th percentile ' +
+  '(median) of grouped continuous dat' + 'a.' + #10 + #10 +
+  '    >>> median_grouped([1, 2, 2, 3' + ', 4, 4, 4, 4, 4, 5])' + #10 +
+  '    3.7' + #10 + '    >>> median_grouped([52, 52, 53' + ', 54])' + #10 +
+  '    52.5' + #10 + #10 + '    This calculates the median as ' +
+  'the 50th percentile, and should be' + #10 +
+  '    used when your data is continu' +
+  'ous and grouped. In the above exam' + 'ple,' + #10 +
+  '    the values 1, 2, 3, etc. actua' +
+  'lly represent the midpoint of clas' + 'ses' + #10 +
+  '    0.5-1.5, 1.5-2.5, 2.5-3.5, etc' +
+  '. The middle value falls somewhere' + ' in' + #10 +
+  '    class 3.5-4.5, and interpolati' + 'on is used to estimate it.' + #10 +
+  #10 + '    Optional argument ``interval``' +
+  ' represents the class interval, an' + 'd' + #10 +
+  '    defaults to 1. Changing the cl' +
+  'ass interval naturally will change' + ' the' + #10 +
+  '    interpolated 50th percentile v' + 'alue:' + #10 + #10 +
+  '    >>> median_grouped([1, 3, 3, 5' + ', 7], interval=1)' + #10 +
+  '    3.25' + #10 + '    >>> median_grouped([1, 3, 3, 5' +
+  ', 7], interval=2)' + #10 + '    3.5' + #10;
 
 Const
  Src_statistics_2: AnsiString =
-  '        raise TypeError(f''Value ca' + 'nnot be converted to a float'')' +
-  #10 + #10 + '    L = x - interval / 2.0' + #10 + '    cf = i' + #10 +
-  '    f = j - i' + #10 + '    return L + interval * (n / 2 -' + ' cf) / f' +
-  #10 + #10 + 'def mode(data):' + #10 + '    pairs = Counter(iter(data)).mo' +
-  'st_common(1)' + #10 + '    try:' + #10 + '        return pairs[0][0]' +
-  #10 + '    except IndexError:' + #10 +
+  #10 + '    This function does not check w' +
+  'hether the data points are at leas' + 't' + #10 +
+  '    ``interval`` apart.' + #10 + '    """' + #10 +
+  '    data = sorted(data)' + #10 + '    n = len(data)' + #10 +
+  '    if n == 0:' + #10 + '        raise StatisticsError("no ' +
+  'median for empty data")' + #10 + '    elif n == 1:' + #10 +
+  '        return data[0]' + #10 + '    # Find the value at the midpoi' +
+  'nt. Remember this corresponds to t' + 'he' + #10 +
+  '    # centre of the class interval' + '.' + #10 + '    x = data[n//2]' +
+  #10 + '    for obj in (x, interval):' + #10 +
+  '        if isinstance(obj, (str, b' + 'ytes)):' + #10 +
+  '            raise TypeError(''expec' + 'ted number but got %r'' % obj)' +
+  #10 + '    try:' + #10 + '        L = x - interval/2  # The ' +
+  'lower limit of the median interval' + '.' + #10 + '    except TypeError:' +
+  #10 + '        # Mixed type. For now we j' + 'ust coerce to float.' + #10 +
+  '        L = float(x) - float(inter' + 'val)/2' + #10 + #10 +
+  '    # Uses bisection search to sea' +
+  'rch for x in data with log(n) time' + ' complexity' + #10 +
+  '    # Find the position of leftmos' + 't occurrence of x in data' + #10 +
+  '    l1 = _find_lteq(data, x)' + #10 +
+  '    # Find the position of rightmo' +
+  'st occurrence of x in data[l1...le' + 'n(data)]' + #10 +
+  '    # Assuming always l1 <= l2' + #10 +
+  '    l2 = _find_rteq(data, l1, x)' + #10 + '    cf = l1' + #10 +
+  '    f = l2 - l1 + 1' + #10 + '    return L + interval*(n/2 - cf)' + '/f' +
+  #10 + #10 + #10 + 'def mode(data):' + #10 +
+  '    """Return the most common data' +
+  ' point from discrete or nominal da' + 'ta.' + #10 + #10 +
+  '    ``mode`` assumes discrete data' +
+  ', and returns a single value. This' + ' is the' + #10 +
+  '    standard treatment of the mode' + ' as commonly taught in schools:' +
+  #10 + #10 + '        >>> mode([1, 1, 2, 3, 3, 3' + ', 3, 4])' + #10 +
+  '        3' + #10 + #10 + '    This also works with nominal (' +
+  'non-numeric) data:' + #10 + #10 + '        >>> mode(["red", "blue", "' +
+  'blue", "red", "green", "red", "red' + '"])' + #10 + '        ''red''' +
+  #10 + #10 + '    If there are multiple modes wi' +
+  'th same frequency, return the firs' + 't one' + #10 + '    encountered:' +
+  #10 + #10 + '        >>> mode([''red'', ''red'', ''g' +
+  'reen'', ''blue'', ''blue''])' + #10 + '        ''red''' + #10 + #10 +
+  '    If *data* is empty, ``mode``, ' + 'raises StatisticsError.' + #10 +
+  #10 + '    """' + #10 + '    data = iter(data)' + #10 +
+  '    pairs = Counter(data).most_com' + 'mon(1)' + #10 + '    try:' + #10 +
+  '        return pairs[0][0]' + #10 + '    except IndexError:' + #10 +
   '        raise StatisticsError(''no ' + 'mode for empty data'') from None' +
-  #10 + #10 + 'def multimode(data):' + #10 +
-  '    counts = Counter(iter(data))' + #10 + '    if not counts:' + #10 +
-  '        return []' + #10 + '    maxcount = max(counts.values()' + ')' +
-  #10 + '    return [value for value, count' +
-  ' in counts.items() if count == max' + 'count]' + #10 + #10 +
-  'def quantiles(data, *, n=4, method' + '=''exclusive''):' + #10 +
-  '    if n < 1:' + #10 + '        raise StatisticsError(''n m' +
-  'ust be at least 1'')' + #10 + '    data = sorted(data)' + #10 +
-  '    ld = len(data)' + #10 + '    if ld < 2:' + #10 +
-  '        if ld == 1:' + #10 + '            return data * (n - 1)' + #10 +
-  '        raise StatisticsError(''mus' +
-  't have at least one data point'')' + #10 + #10 +
+  #10 + #10 + #10 + 'def multimode(data):' + #10 +
+  '    """Return a list of the most f' + 'requently occurring values.' + #10 +
+  #10 + '    Will return more than one resu' +
+  'lt if there are multiple modes' + #10 +
+  '    or an empty list if *data* is ' + 'empty.' + #10 + #10 +
+  '    >>> multimode(''aabbbbbbbbcc'')' + #10 + '    [''b'']' + #10 +
+  '    >>> multimode(''aabbbbccddddeef' + 'fffgg'')' + #10 +
+  '    [''b'', ''d'', ''f'']' + #10 + '    >>> multimode('''')' + #10 +
+  '    []' + #10 + '    """' + #10 + '    counts = Counter(iter(data)).m' +
+  'ost_common()' + #10 + '    maxcount, mode_items = next(gr' +
+  'oupby(counts, key=itemgetter(1)), ' + '(0, []))' + #10 +
+  '    return list(map(itemgetter(0),' + ' mode_items))' + #10 + #10 + #10 +
+  '# Notes on methods for computing q' + 'uantiles' + #10 +
+  '# --------------------------------' + '--------' + #10 + '#' + #10 +
+  '# There is no one perfect way to c' + 'ompute quantiles.  Here we offer' +
+  #10 + '# two methods that serve common ne' + 'eds.  Most other packages' +
+  #10 + '# surveyed offered at least one or' +
+  ' both of these two, making them' + #10 +
+  '# "standard" in the sense of "wide' + 'ly-adopted and reproducible".' +
+  #10 + '# They are also easy to explain, e' +
+  'asy to compute manually, and have' + #10 +
+  '# straight-forward interpretations' + ' that aren''t surprising.' + #10 +
+  #10 + '# The default method is known as "' +
+  'R6", "PERCENTILE.EXC", or "expecte' + 'd' + #10 +
+  '# value of rank order statistics".' +
+  ' The alternative method is known a' + 's' + #10 +
+  '# "R7", "PERCENTILE.INC", or "mode' + ' of rank order statistics".' + #10 +
+  #10 + '# For sample data where there is a' +
+  ' positive probability for values' + #10 +
+  '# beyond the range of the data, th' + 'e R6 exclusive method is a' + #10 +
+  '# reasonable choice.  Consider a r' +
+  'andom sample of nine values from a' + #10 +
+  '# population with a uniform distri' + 'bution from 0.0 to 100.0.  The' +
+  #10 + '# distribution of the third ranked' +
+  ' sample point is described by' + #10 +
+  '# betavariate(alpha=3, beta=7) whi' +
+  'ch has mode=0.250, median=0.286, a' + 'nd' + #10 +
+  '# mean=0.300.  Only the latter (wh' +
+  'ich corresponds with R6) gives the' + #10 +
+  '# desired cut point with 30% of th' + 'e population falling below that' +
+  #10 + '# value, making it comparable to a' +
+  ' result from an inv_cdf() function' + '.' + #10 +
+  '# The R6 exclusive method is also ' + 'idempotent.' + #10 + #10 +
+  '# For describing population data w' + 'here the end points are known to' +
+  #10 + '# be included in the data, the R7 ' +
+  'inclusive method is a reasonable' + #10 +
+  '# choice.  Instead of the mean, it' + ' uses the mode of the beta' + #10 +
+  '# distribution for the interior po' +
+  'ints.  Per Hyndman & Fan, "One nic' + 'e' + #10 +
+  '# property is that the vertices of' +
+  ' Q7(p) divide the range into n - 1' + #10 +
+  '# intervals, and exactly 100p% of ' + 'the intervals lie to the left of' +
+  #10 + '# Q7(p) and 100(1 - p)% of the int' +
+  'ervals lie to the right of Q7(p)."' + #10 + #10 +
+  '# If needed, other methods could b' + 'e added.  However, for now, the' +
+  #10 + '# position is that fewer options m' +
+  'ake for easier choices and that' + #10 +
+  '# external packages can be used fo' + 'r anything more advanced.' + #10 +
+  #10 + 'def quantiles(data, *, n=4, method' + '=''exclusive''):' + #10 +
+  '    """Divide *data* into *n* cont' +
+  'inuous intervals with equal probab' + 'ility.' + #10 + #10 +
+  '    Returns a list of (n - 1) cut ' + 'points separating the intervals.' +
+  #10 + #10 + '    Set *n* to 4 for quartiles (th' +
+  'e default).  Set *n* to 10 for dec' + 'iles.' + #10 +
+  '    Set *n* to 100 for percentiles' +
+  ' which gives the 99 cuts points th' + 'at' + #10 +
+  '    separate *data* in to 100 equa' + 'l sized groups.' + #10 + #10 +
+  '    The *data* can be any iterable' + ' containing sample.' + #10 +
+  '    The cut points are linearly in' + 'terpolated between data points.' +
+  #10 + #10 + '    If *method* is set to *inclusi' +
+  've*, *data* is treated as populati' + 'on' + #10 +
+  '    data.  The minimum value is tr' +
+  'eated as the 0th percentile and th' + 'e' + #10 +
+  '    maximum value is treated as th' + 'e 100th percentile.' + #10 +
+  '    """' + #10 + '    if n < 1:' + #10 +
+  '        raise StatisticsError(''n m' + 'ust be at least 1'')' + #10 +
+  '    data = sorted(data)' + #10 + '    ld = len(data)' + #10 +
+  '    if ld < 2:' + #10 + '        raise StatisticsError(''mus' +
+  't have at least two data points'')' + #10 +
   '    if method == ''inclusive'':' + #10 + '        m = ld - 1' + #10 +
   '        result = []' + #10 + '        for i in range(1, n):' + #10 +
-  '            j, delta = divmod(i * ' + 'm, n)' + #10 +
+  '            j = i * m // n' + #10 + '            delta = i*m - j*n' + #10 +
   '            interpolated = (data[j' +
-  '] * (n - delta) + data[j + 1] * de' + 'lta) / n' + #10 +
+  '] * (n - delta) + data[j+1] * delt' + 'a) / n' + #10 +
   '            result.append(interpol' + 'ated)' + #10 +
-  '        return result' + #10 + #10 + '    if method == ''exclusive'':' +
-  #10 + '        m = ld + 1' + #10 + '        result = []' + #10 +
-  '        for i in range(1, n):' + #10 + '            j = i * m // n' + #10 +
-  '            j = 1 if j < 1 else ld' + '-1 if j > ld-1 else j' + #10 +
-  '            delta = i*m - j*n' + #10 +
+  '        return result' + #10 + '    if method == ''exclusive'':' + #10 +
+  '        m = ld + 1' + #10 + '        result = []' + #10 +
+  '        for i in range(1, n):' + #10 +
+  '            j = i * m // n        ' +
+  '                       # rescale i' + ' to m/n' + #10 +
+  '            j = 1 if j < 1 else ld' +
+  '-1 if j > ld-1 else j  # clamp to ' + '1 .. ld-1' + #10 +
+  '            delta = i*m - j*n     ' +
+  '                       # exact int' + 'eger math' + #10 +
   '            interpolated = (data[j' +
-  ' - 1] * (n - delta) + data[j] * de' + 'lta) / n' + #10 +
+  '-1] * (n - delta) + data[j] * delt' + 'a) / n' + #10 +
   '            result.append(interpol' + 'ated)' + #10 +
-  '        return result' + #10 + #10 +
-  '    raise ValueError(f''Unknown met' + 'hod: {method!r}'')' + #10 + #10 +
+  '        return result' + #10 + '    raise ValueError(f''Unknown met' +
+  'hod: {method!r}'')' + #10 + #10 + #10 + '# === Measures of spread ===' +
+  #10 + #10 + '# See http://mathworld.wolfram.com' + '/Variance.html' + #10 +
+  '#     http://mathworld.wolfram.com' + '/SampleVariance.html' + #10 +
+  '#     http://en.wikipedia.org/wiki' +
+  '/Algorithms_for_calculating_varian' + 'ce' + #10 + '#' + #10 +
+  '# Under no circumstances use the s' +
+  'o-called "computational formula fo' + 'r' + #10 +
+  '# variance", as that is only suita' +
+  'ble for hand calculations with a s' + 'mall' + #10 +
+  '# amount of low-precision data. It' + ' has terrible numeric properties.' +
+  #10 + '#' + #10 + '# See a comparison of three comput' +
+  'ational methods here:' + #10 + '# http://www.johndcook.com/blog/20' +
+  '08/09/26/comparing-three-methods-o' + 'f-computing-standard-deviation/' +
+  #10 + #10 + 'def _ss(data, c=None):' + #10 +
+  '    """Return sum of square deviat' + 'ions of sequence data.' + #10 +
+  #10 + '    If ``c`` is None, the mean is ' +
+  'calculated in one pass, and the de' + 'viations' + #10 +
+  '    from the mean are calculated i' +
+  'n a second pass. Otherwise, deviat' + 'ions are' + #10 +
+  '    calculated from ``c`` as given' +
+  '. Use the second case with care, a' + 's it can' + #10 +
+  '    lead to garbage results.' + #10 + '    """' + #10 +
+  '    if c is not None:' + #10 + '        T, total, count = _sum((x-' +
+  'c)**2 for x in data)' + #10 + '        return (T, total)' + #10 +
+  '    c = mean(data)' + #10 + '    T, total, count = _sum((x-c)**' +
+  '2 for x in data)' + #10 + '    # The following sum should mat' +
+  'hematically equal zero, but due to' + ' rounding' + #10 +
+  '    # error may not.' + #10 + '    U, total2, count2 = _sum((x-c)' +
+  ' for x in data)' + #10 + '    assert T == U and count == cou' + 'nt2' +
+  #10 + '    total -=  total2**2/len(data)' + #10 +
+  '    assert not total < 0, ''negativ' +
+  'e sum of square deviations: %f'' % ' + 'total' + #10 +
+  '    return (T, total)' + #10 + #10 + #10 +
   'def variance(data, xbar=None):' + #10 +
-  '    T, ss, c, n = _ss(data, xbar)' + #10 + '    if n < 2:' + #10 +
+  '    """Return the sample variance ' + 'of data.' + #10 + #10 +
+  '    data should be an iterable of ' +
+  'Real-valued numbers, with at least' + ' two' + #10 +
+  '    values. The optional argument ' +
+  'xbar, if given, should be the mean' + ' of' + #10 +
+  '    the data. If it is missing or ' +
+  'None, the mean is automatically ca' + 'lculated.' + #10 + #10 +
+  '    Use this function when your da' +
+  'ta is a sample from a population. ' + 'To' + #10 +
+  '    calculate the variance from th' +
+  'e entire population, see ``pvarian' + 'ce``.' + #10 + #10 +
+  '    Examples:' + #10 + #10 + '    >>> data = [2.75, 1.75, 1.25, ' +
+  '0.25, 0.5, 1.25, 3.5]' + #10 + '    >>> variance(data)' + #10 +
+  '    1.3720238095238095' + #10 + #10 +
+  '    If you have already calculated' +
+  ' the mean of your data, you can pa' + 'ss it as' + #10 +
+  '    the optional second argument `' +
+  '`xbar`` to avoid recalculating it:' + #10 + #10 +
+  '    >>> m = mean(data)' + #10 + '    >>> variance(data, m)' + #10 +
+  '    1.3720238095238095' + #10 + #10 +
+  '    This function does not check t' +
+  'hat ``xbar`` is actually the mean ' + 'of' + #10 +
+  '    ``data``. Giving arbitrary val' +
+  'ues for ``xbar`` may lead to inval' + 'id or' + #10 +
+  '    impossible results.' + #10 + #10 +
+  '    Decimals and Fractions are sup' + 'ported:' + #10 + #10 +
+  '    >>> from decimal import Decima' + 'l as D' + #10 +
+  '    >>> variance([D("27.5"), D("30' +
+  '.25"), D("30.25"), D("34.5"), D("4' + '1.75")])' + #10 +
+  '    Decimal(''31.01875'')' + #10 + #10 +
+  '    >>> from fractions import Frac' + 'tion as F' + #10 +
+  '    >>> variance([F(1, 6), F(1, 2)' + ', F(5, 3)])' + #10 +
+  '    Fraction(67, 108)' + #10 + #10 + '    """' + #10 +
+  '    if iter(data) is data:' + #10 + '        data = list(data)' + #10 +
+  '    n = len(data)' + #10 + '    if n < 2:' + #10 +
   '        raise StatisticsError(''var' +
   'iance requires at least two data p' + 'oints'')' + #10 +
-  '    return _convert(ss / (n - 1), ' + 'T)' + #10 + #10 +
-  'def pvariance(data, mu=None):' + #10 + '    T, ss, c, n = _ss(data, mu)' +
-  #10 + '    if n < 1:' + #10 + '        raise StatisticsError(''pva' +
+  '    T, ss = _ss(data, xbar)' + #10 + '    return _convert(ss/(n-1), T)' +
+  #10 + #10 + #10 + 'def pvariance(data, mu=None):' + #10 +
+  '    """Return the population varia' + 'nce of ``data``.' + #10 + #10 +
+  '    data should be a sequence or i' +
+  'terable of Real-valued numbers, wi' + 'th at least one' + #10 +
+  '    value. The optional argument m' +
+  'u, if given, should be the mean of' + #10;
+
+Const
+ Src_statistics_3: AnsiString =
+  '    the data. If it is missing or ' +
+  'None, the mean is automatically ca' + 'lculated.' + #10 + #10 +
+  '    Use this function to calculate' +
+  ' the variance from the entire popu' + 'lation.' + #10 +
+  '    To estimate the variance from ' +
+  'a sample, the ``variance`` functio' + 'n is' + #10 +
+  '    usually a better choice.' + #10 + #10 + '    Examples:' + #10 + #10 +
+  '    >>> data = [0.0, 0.25, 0.25, 1' + '.25, 1.5, 1.75, 2.75, 3.25]' + #10 +
+  '    >>> pvariance(data)' + #10 + '    1.25' + #10 + #10 +
+  '    If you have already calculated' +
+  ' the mean of the data, you can pas' + 's it as' + #10 +
+  '    the optional second argument t' + 'o avoid recalculating it:' + #10 +
+  #10 + '    >>> mu = mean(data)' + #10 + '    >>> pvariance(data, mu)' +
+  #10 + '    1.25' + #10 + #10 + '    Decimals and Fractions are sup' +
+  'ported:' + #10 + #10 + '    >>> from decimal import Decima' + 'l as D' +
+  #10 + '    >>> pvariance([D("27.5"), D("3' +
+  '0.25"), D("30.25"), D("34.5"), D("' + '41.75")])' + #10 +
+  '    Decimal(''24.815'')' + #10 + #10 +
+  '    >>> from fractions import Frac' + 'tion as F' + #10 +
+  '    >>> pvariance([F(1, 4), F(5, 4' + '), F(1, 2)])' + #10 +
+  '    Fraction(13, 72)' + #10 + #10 + '    """' + #10 +
+  '    if iter(data) is data:' + #10 + '        data = list(data)' + #10 +
+  '    n = len(data)' + #10 + '    if n < 1:' + #10 +
+  '        raise StatisticsError(''pva' +
   'riance requires at least one data ' + 'point'')' + #10 +
-  '    return _convert(ss / n, T)' + #10 + #10 +
-  'def stdev(data, xbar=None):' + #10 + '    T, ss, c, n = _ss(data, xbar)' +
-  #10 + '    if n < 2:' + #10 + '        raise StatisticsError(''std' +
-  'ev requires at least two data poin' + 'ts'')' + #10 +
-  '    mss = ss / (n - 1)' + #10 + '    try:' + #10 +
-  '        mss_numerator = mss.numera' + 'tor' + #10 +
-  '        mss_denominator = mss.deno' + 'minator' + #10 +
-  '    except AttributeError:' + #10 + '        raise ValueError(''inf or n' +
-  'an encountered in data'')' + #10 + '    if _is_decimal_type(T):' + #10 +
-  '        return _decimal_sqrt_of_fr' +
-  'ac(mss_numerator, mss_denominator)' + #10 +
-  '    return _float_sqrt_of_frac(mss' + '_numerator, mss_denominator)' +
-  #10 + #10 + 'def pstdev(data, mu=None):' + #10 +
-  '    T, ss, c, n = _ss(data, mu)' + #10 + '    if n < 1:' + #10 +
-  '        raise StatisticsError(''pst' +
-  'dev requires at least one data poi' + 'nt'')' + #10 + '    mss = ss / n' +
-  #10 + '    try:' + #10 + '        mss_numerator = mss.numera' + 'tor' +
-  #10 + '        mss_denominator = mss.deno' + 'minator' + #10 +
-  '    except AttributeError:' + #10 + '        raise ValueError(''inf or n' +
-  'an encountered in data'')' + #10 + '    if _is_decimal_type(T):' + #10 +
-  '        return _decimal_sqrt_of_fr' +
-  'ac(mss_numerator, mss_denominator)' + #10 +
-  '    return _float_sqrt_of_frac(mss' + '_numerator, mss_denominator)' +
-  #10 + #10 + 'def _mean_stdev(data):' + #10 +
-  '    T, ss, xbar, n = _ss(data)' + #10 + '    if n < 2:' + #10 +
-  '        raise StatisticsError(''std' +
-  'ev requires at least two data poin' + 'ts'')' + #10 +
-  '    mss = ss / (n - 1)' + #10 + '    try:' + #10 +
-  '        res = (float(xbar), _float' +
-  '_sqrt_of_frac(mss.numerator, mss.d' + 'enominator))' + #10 +
-  '    except AttributeError:' + #10 + '        res = (float(xbar), float(' +
-  'xbar) / float(ss))' + #10 + '    return res' + #10 + #10 + #10 +
-  'def _normal_dist_inv_cdf(p, mu, si' + 'gma):' + #10 + '    q = p - 0.5' +
-  #10 + '    if fabs(q) <= 0.425:' + #10 + '        r = 0.180625 - q * q' +
-  #10 + '        num = (((((((2.50908_09287' + '_30122_6727e+3 * r +' + #10 +
+  '    T, ss = _ss(data, mu)' + #10 + '    return _convert(ss/n, T)' + #10 +
+  #10 + #10 + 'def stdev(data, xbar=None):' + #10 +
+  '    """Return the square root of t' + 'he sample variance.' + #10 + #10 +
+  '    See ``variance`` for arguments' + ' and other details.' + #10 + #10 +
+  '    >>> stdev([1.5, 2.5, 2.5, 2.75' + ', 3.25, 4.75])' + #10 +
+  '    1.0810874155219827' + #10 + #10 + '    """' + #10 +
+  '    var = variance(data, xbar)' + #10 + '    try:' + #10 +
+  '        return var.sqrt()' + #10 + '    except AttributeError:' + #10 +
+  '        return math.sqrt(var)' + #10 + #10 + #10 +
+  'def pstdev(data, mu=None):' + #10 + '    """Return the square root of t' +
+  'he population variance.' + #10 + #10 +
+  '    See ``pvariance`` for argument' + 's and other details.' + #10 + #10 +
+  '    >>> pstdev([1.5, 2.5, 2.5, 2.7' + '5, 3.25, 4.75])' + #10 +
+  '    0.986893273527251' + #10 + #10 + '    """' + #10 +
+  '    var = pvariance(data, mu)' + #10 + '    try:' + #10 +
+  '        return var.sqrt()' + #10 + '    except AttributeError:' + #10 +
+  '        return math.sqrt(var)' + #10 + #10 + #10 +
+  '## Normal Distribution ###########' +
+  '##################################' + '########' + #10 + #10 + #10 +
+  'def _normal_dist_inv_cdf(p, mu, si' + 'gma):' + #10 +
+  '    # There is no closed-form solu' +
+  'tion to the inverse CDF for the no' + 'rmal' + #10 +
+  '    # distribution, so we use a ra' + 'tional approximation instead:' +
+  #10 + '    # Wichura, M.J. (1988). "Algor' +
+  'ithm AS241: The Percentage Points ' + 'of the' + #10 +
+  '    # Normal Distribution".  Appli' +
+  'ed Statistics. Blackwell Publishin' + 'g. 37' + #10 + '    # (3): 477' +
+  #226 + #128 + #147 + '484. doi:10.2307/23' + '47330. JSTOR 2347330.' + #10 +
+  '    q = p - 0.5' + #10 + '    if fabs(q) <= 0.425:' + #10 +
+  '        r = 0.180625 - q * q' + #10 +
+  '        # Hash sum: 55.88319_28806' + '_14901_4439' + #10 +
+  '        num = (((((((2.50908_09287' + '_30122_6727e+3 * r +' + #10 +
   '                     3.34305_75583' + '_58812_8105e+4) * r +' + #10 +
   '                     6.72657_70927' + '_00870_0853e+4) * r +' + #10 +
   '                     4.59219_53931' + '_54987_1457e+4) * r +' + #10 +
@@ -71576,6 +78227,7 @@ Const
   '        return mu + (x * sigma)' + #10 +
   '    r = p if q <= 0.0 else 1.0 - p' + #10 + '    r = sqrt(-log(r))' + #10 +
   '    if r <= 5.0:' + #10 + '        r = r - 1.6' + #10 +
+  '        # Hash sum: 49.33206_50330' + '_16102_89036' + #10 +
   '        num = (((((((7.74545_01427' + '_83414_07640e-4 * r +' + #10 +
   '                     2.27238_44989' + '_26918_45833e-2) * r +' + #10 +
   '                     2.41780_72517' + '_74506_11770e-1) * r +' + #10 +
@@ -71592,7 +78244,8 @@ Const
   '                     1.67638_48301' + '_83803_84940e+0) * r +' + #10 +
   '                     2.05319_16266' + '_37758_82187e+0) * r +' + #10 +
   '                     1.0)' + #10 + '    else:' + #10 +
-  '        r = r - 5.0' + #10 + '        num = (((((((2.01033_43992' +
+  '        r = r - 5.0' + #10 + '        # Hash sum: 47.52583_31754' +
+  '_92896_71629' + #10 + '        num = (((((((2.01033_43992' +
   '_92288_13265e-7 * r +' + #10 + '                     2.71155_55687' +
   '_43487_57815e-5) * r +' + #10 + '                     1.24266_09473' +
   '_88078_43860e-3) * r +' + #10 + '                     2.65321_89526' +
@@ -71609,112 +78262,267 @@ Const
   '_27358_05310e-1) * r +' + #10 + '                     5.99832_20655' +
   '_58879_37690e-1) * r +' + #10 + '                     1.0)' + #10 +
   '    x = num / den' + #10 + '    if q < 0.0:' + #10 + '        x = -x' +
-  #10 + '    return mu + (x * sigma)' + #10 + #10 + 'try:' + #10 +
-  '    from _statistics import _norma' + 'l_dist_inv_cdf' + #10 +
-  'except ImportError:' + #10 + '    pass' + #10 + #10 + 'class NormalDist:' +
-  #10 + #10 + '    __slots__ = {' + #10 +
+  #10 + '    return mu + (x * sigma)' + #10 + #10 + #10 +
+  'class NormalDist:' + #10 + '    "Normal distribution of a rand' +
+  'om variable"' + #10 + '    # https://en.wikipedia.org/wik' +
+  'i/Normal_distribution' + #10 + '    # https://en.wikipedia.org/wik' +
+  'i/Variance#Properties' + #10 + #10 + '    __slots__ = {' + #10 +
   '        ''_mu'': ''Arithmetic mean of' + ' a normal distribution'',' +
   #10 + '        ''_sigma'': ''Standard deviat' +
   'ion of a normal distribution'',' + #10 + '    }' + #10 + #10 +
   '    def __init__(self, mu=0.0, sig' + 'ma=1.0):' + #10 +
+  '        "NormalDist where mu is th' +
+  'e mean and sigma is the standard d' + 'eviation."' + #10 +
   '        if sigma < 0.0:' + #10 + '            raise StatisticsError(' +
   '''sigma must be non-negative'')' + #10 + '        self._mu = float(mu)' +
   #10 + '        self._sigma = float(sigma)' + #10 + #10 +
   '    @classmethod' + #10 + '    def from_samples(cls, data):' + #10 +
-  '        return cls(*_mean_stdev(da' + 'ta))' + #10 + #10 +
+  '        "Make a normal distributio' + 'n instance from sample data."' +
+  #10 + '        if not isinstance(data, (l' + 'ist, tuple)):' + #10 +
+  '            data = list(data)' + #10 + '        xbar = fmean(data)' + #10 +
+  '        return cls(xbar, stdev(dat' + 'a, xbar))' + #10 + #10 +
   '    def samples(self, n, *, seed=N' + 'one):' + #10 +
-  '        import random' + #10 + '        rnd = random.random if see' +
-  'd is None else random.Random(seed)' + '.random' + #10 +
-  '        inv_cdf = _normal_dist_inv' + '_cdf' + #10 +
-  '        mu = self._mu' + #10 + '        sigma = self._sigma' + #10 +
-  '        return [inv_cdf(rnd(), mu,' + ' sigma) for _ in repeat(None, n)]' +
-  #10 + #10 + '    def pdf(self, x):' + #10 +
-  '        variance = self._sigma * s' + 'elf._sigma' + #10 +
+  '        "Generate *n* samples for ' +
+  'a given mean and standard deviatio' + 'n."' + #10 +
+  '        gauss = random.gauss if se' +
+  'ed is None else random.Random(seed' + ').gauss' + #10 +
+  '        mu, sigma = self._mu, self' + '._sigma' + #10 +
+  '        return [gauss(mu, sigma) f' + 'or i in range(n)]' + #10 + #10 +
+  '    def pdf(self, x):' + #10 + '        "Probability density funct' +
+  'ion.  P(x <= X < x+dx) / dx"' + #10 +
+  '        variance = self._sigma ** ' + '2.0' + #10 +
   '        if not variance:' + #10 + '            raise StatisticsError(' +
   '''pdf() not defined when sigma is z' + 'ero'')' + #10 +
-  '        diff = x - self._mu' + #10 + '        return exp(diff * diff / (' +
-  '-2.0 * variance)) / sqrt(tau * var' + 'iance)' + #10 + #10 +
-  '    def cdf(self, x):' + #10 + '        if not self._sigma:' + #10 +
+  '        return exp((x - self._mu)*' +
+  '*2.0 / (-2.0*variance)) / sqrt(tau' + '*variance)' + #10 + #10 +
+  '    def cdf(self, x):' + #10 + '        "Cumulative distribution f' +
+  'unction.  P(X <= x)"' + #10 + '        if not self._sigma:' + #10 +
   '            raise StatisticsError(' +
   '''cdf() not defined when sigma is z' + 'ero'')' + #10 +
   '        return 0.5 * (1.0 + erf((x' +
-  ' - self._mu) / (self._sigma * _SQR' + 'T2)))' + #10 + #10 +
-  '    def inv_cdf(self, p):' + #10 + '        if p <= 0.0 or p >= 1.0:' +
-  #10 + '            raise StatisticsError(' +
+  ' - self._mu) / (self._sigma * sqrt' + '(2.0))))' + #10 + #10 +
+  '    def inv_cdf(self, p):' + #10 + '        """Inverse cumulative dist' +
+  'ribution function.  x : P(X <= x) ' + '= p' + #10 + #10 +
+  '        Finds the value of the ran' +
+  'dom variable such that the probabi' + 'lity of' + #10 +
+  '        the variable being less th' +
+  'an or equal to that value equals t' + 'he given' + #10 +
+  '        probability.' + #10 + #10 + '        This function is also call' +
+  'ed the percent point function or q' + 'uantile' + #10 +
+  '        function.' + #10 + '        """' + #10 +
+  '        if p <= 0.0 or p >= 1.0:' + #10 +
+  '            raise StatisticsError(' +
   '''p must be in the range 0.0 < p < ' + '1.0'')' + #10 +
+  '        if self._sigma <= 0.0:' + #10 +
+  '            raise StatisticsError(' +
+  '''cdf() not defined when sigma at o' + 'r below zero'')' + #10 +
   '        return _normal_dist_inv_cd' + 'f(p, self._mu, self._sigma)' + #10 +
   #10 + '    def quantiles(self, n=4):' + #10 +
+  '        """Divide into *n* continu' +
+  'ous intervals with equal probabili' + 'ty.' + #10 + #10 +
+  '        Returns a list of (n - 1) ' +
+  'cut points separating the interval' + 's.' + #10 + #10 +
+  '        Set *n* to 4 for quartiles' +
+  ' (the default).  Set *n* to 10 for' + ' deciles.' + #10 +
+  '        Set *n* to 100 for percent' +
+  'iles which gives the 99 cuts point' + 's that' + #10 +
+  '        separate the normal distri' +
+  'bution in to 100 equal sized group' + 's.' + #10 + '        """' + #10 +
   '        return [self.inv_cdf(i / n' + ') for i in range(1, n)]' + #10 +
   #10 + '    def overlap(self, other):' + #10 +
+  '        """Compute the overlapping' +
+  ' coefficient (OVL) between two nor' + 'mal distributions.' + #10 + #10 +
+  '        Measures the agreement bet' +
+  'ween two normal probability distri' + 'butions.' + #10 +
+  '        Returns a value between 0.' +
+  '0 and 1.0 giving the overlapping a' + 'rea in' + #10 +
+  '        the two underlying probabi' + 'lity density functions.' + #10 +
+  #10 + '            >>> N1 = NormalDist(2.' + '4, 1.6)' + #10 +
+  '            >>> N2 = NormalDist(3.' + '2, 2.0)' + #10 +
+  '            >>> N1.overlap(N2)' + #10 + '            0.8035050657330205' +
+  #10 + '        """' + #10 + '        # See: "The overlapping co' +
+  'efficient as a measure of agreemen' + 't between' + #10 +
+  '        # probability distribution' +
+  's and point estimation of the over' + 'lap of two' + #10 +
+  '        # normal densities" -- Hen' +
+  'ry F. Inman and Edwin L. Bradley J' + 'r' + #10 +
+  '        # http://dx.doi.org/10.108' + '0/03610928908830127' + #10 +
   '        if not isinstance(other, N' + 'ormalDist):' + #10 +
   '            raise TypeError(''Expec' +
   'ted another NormalDist instance'')' + #10 + '        X, Y = self, other' +
-  #10 + '        if (Y._sigma, Y._mu) < (X.' + '_sigma, X._mu):' + #10 +
+  #10 + '        if (Y._sigma, Y._mu) < (X.' +
+  '_sigma, X._mu):   # sort to assure' + ' commutativity' + #10 +
   '            X, Y = Y, X' + #10 + '        X_var, Y_var = X.variance,' +
   ' Y.variance' + #10 + '        if not X_var or not Y_var:' + #10 +
   '            raise StatisticsError(' +
   '''overlap() not defined when sigma ' + 'is zero'')' + #10 +
   '        dv = Y_var - X_var' + #10 + '        dm = fabs(Y._mu - X._mu)' +
   #10 + '        if not dv:' + #10 + '            return 1.0 - erf(dm / ' +
-  '(2.0 * X._sigma * _SQRT2))' + #10 + '        a = X._mu * Y_var - Y._mu ' +
-  '* X_var' + #10 + '        b = X._sigma * Y._sigma * ' +
-  'sqrt(dm * dm + dv * log(Y_var / X_' + 'var))' + #10 +
-  '        x1 = (a + b) / dv' + #10 + '        x2 = (a - b) / dv' + #10 +
-  '        return 1.0 - (fabs(Y.cdf(x' +
-  '1) - X.cdf(x1)) + fabs(Y.cdf(x2) -' + ' X.cdf(x2)))' + #10 + #10 +
-  '    def zscore(self, x):' + #10 + '        if not self._sigma:' + #10 +
-  '            raise StatisticsError(' +
-  '''zscore() not defined when sigma i' + 's zero'')' + #10 +
-  '        return (x - self._mu) / se' + 'lf._sigma' + #10 + #10 +
-  '    @property' + #10 + '    def mean(self):' + #10 +
-  '        return self._mu' + #10 + #10 + '    @property' + #10 +
-  '    def median(self):' + #10;
+  '(2.0 * X._sigma * sqrt(2.0)))' + #10 +
+  '        a = X._mu * Y_var - Y._mu ' + '* X_var' + #10 +
+  '        b = X._sigma * Y._sigma * ' +
+  'sqrt(dm**2.0 + dv * log(Y_var / X_' + 'var))' + #10 +
+  '        x1 = (a + b) / dv' + #10;
 
 Const
- Src_statistics_3: AnsiString =
+ Src_statistics_4: AnsiString =
+  '        x2 = (a - b) / dv' + #10 + '        return 1.0 - (fabs(Y.cdf(x' +
+  '1) - X.cdf(x1)) + fabs(Y.cdf(x2) -' + ' X.cdf(x2)))' + #10 + #10 +
+  '    @property' + #10 + '    def mean(self):' + #10 +
+  '        "Arithmetic mean of the no' + 'rmal distribution."' + #10 +
   '        return self._mu' + #10 + #10 + '    @property' + #10 +
-  '    def mode(self):' + #10 + '        return self._mu' + #10 + #10 +
+  '    def median(self):' + #10 + '        "Return the median of the ' +
+  'normal distribution"' + #10 + '        return self._mu' + #10 + #10 +
+  '    @property' + #10 + '    def mode(self):' + #10 +
+  '        """Return the mode of the ' + 'normal distribution' + #10 + #10 +
+  '        The mode is the value x wh' + 'ere which the probability density' +
+  #10 + '        function (pdf) takes its m' + 'aximum value.' + #10 +
+  '        """' + #10 + '        return self._mu' + #10 + #10 +
   '    @property' + #10 + '    def stdev(self):' + #10 +
+  '        "Standard deviation of the' + ' normal distribution."' + #10 +
   '        return self._sigma' + #10 + #10 + '    @property' + #10 +
-  '    def variance(self):' + #10 + '        return self._sigma * self.' +
-  '_sigma' + #10 + #10 + '    def __add__(x1, x2):' + #10 +
-  '        if isinstance(x2, NormalDi' + 'st):' + #10 +
-  '            return NormalDist(x1._' +
+  '    def variance(self):' + #10 + '        "Square of the standard de' +
+  'viation."' + #10 + '        return self._sigma ** 2.0' + #10 + #10 +
+  '    def __add__(x1, x2):' + #10 + '        """Add a constant or anoth' +
+  'er NormalDist instance.' + #10 + #10 +
+  '        If *other* is a constant, ' + 'translate mu by the constant,' +
+  #10 + '        leaving sigma unchanged.' + #10 + #10 +
+  '        If *other* is a NormalDist' +
+  ', add both the means and the varia' + 'nces.' + #10 +
+  '        Mathematically, this works' +
+  ' only if the two distributions are' + #10 +
+  '        independent or if they are' + ' jointly normally distributed.' +
+  #10 + '        """' + #10 + '        if isinstance(x2, NormalDi' + 'st):' +
+  #10 + '            return NormalDist(x1._' +
   'mu + x2._mu, hypot(x1._sigma, x2._' + 'sigma))' + #10 +
   '        return NormalDist(x1._mu +' + ' x2, x1._sigma)' + #10 + #10 +
-  '    def __sub__(x1, x2):' + #10 + '        if isinstance(x2, NormalDi' +
-  'st):' + #10 + '            return NormalDist(x1._' +
+  '    def __sub__(x1, x2):' + #10 + '        """Subtract a constant or ' +
+  'another NormalDist instance.' + #10 + #10 +
+  '        If *other* is a constant, ' + 'translate by the constant mu,' +
+  #10 + '        leaving sigma unchanged.' + #10 + #10 +
+  '        If *other* is a NormalDist' +
+  ', subtract the means and add the v' + 'ariances.' + #10 +
+  '        Mathematically, this works' +
+  ' only if the two distributions are' + #10 +
+  '        independent or if they are' + ' jointly normally distributed.' +
+  #10 + '        """' + #10 + '        if isinstance(x2, NormalDi' + 'st):' +
+  #10 + '            return NormalDist(x1._' +
   'mu - x2._mu, hypot(x1._sigma, x2._' + 'sigma))' + #10 +
   '        return NormalDist(x1._mu -' + ' x2, x1._sigma)' + #10 + #10 +
-  '    def __mul__(x1, x2):' + #10 + '        return NormalDist(x1._mu *' +
+  '    def __mul__(x1, x2):' + #10 + '        """Multiply both mu and si' +
+  'gma by a constant.' + #10 + #10 + '        Used for rescaling, perhap' +
+  's to change measurement units.' + #10 +
+  '        Sigma is scaled with the a' + 'bsolute value of the constant.' +
+  #10 + '        """' + #10 + '        return NormalDist(x1._mu *' +
   ' x2, x1._sigma * fabs(x2))' + #10 + #10 + '    def __truediv__(x1, x2):' +
-  #10 + '        return NormalDist(x1._mu /' + ' x2, x1._sigma / fabs(x2))' +
-  #10 + #10 + '    def __pos__(x1):' + #10 +
+  #10 + '        """Divide both mu and sigm' + 'a by a constant.' + #10 +
+  #10 + '        Used for rescaling, perhap' +
+  's to change measurement units.' + #10 +
+  '        Sigma is scaled with the a' + 'bsolute value of the constant.' +
+  #10 + '        """' + #10 + '        return NormalDist(x1._mu /' +
+  ' x2, x1._sigma / fabs(x2))' + #10 + #10 + '    def __pos__(x1):' + #10 +
+  '        "Return a copy of the inst' + 'ance."' + #10 +
   '        return NormalDist(x1._mu, ' + 'x1._sigma)' + #10 + #10 +
-  '    def __neg__(x1):' + #10 + '        return NormalDist(-x1._mu,' +
+  '    def __neg__(x1):' + #10 + '        "Negates mu while keeping ' +
+  'sigma the same."' + #10 + '        return NormalDist(-x1._mu,' +
   ' x1._sigma)' + #10 + #10 + '    __radd__ = __add__' + #10 + #10 +
-  '    def __rsub__(x1, x2):' + #10 + '        return -(x1 - x2)' + #10 +
-  #10 + '    __rmul__ = __mul__' + #10 + #10 + '    def __eq__(x1, x2):' +
-  #10 + '        if not isinstance(x2, Norm' + 'alDist):' + #10 +
+  '    def __rsub__(x1, x2):' + #10 + '        "Subtract a NormalDist fro' +
+  'm a constant or another NormalDist' + '."' + #10 +
+  '        return -(x1 - x2)' + #10 + #10 + '    __rmul__ = __mul__' + #10 +
+  #10 + '    def __eq__(x1, x2):' + #10 +
+  '        "Two NormalDist objects ar' +
+  'e equal if their mu and sigma are ' + 'both equal."' + #10 +
+  '        if not isinstance(x2, Norm' + 'alDist):' + #10 +
   '            return NotImplemented' + #10 +
   '        return x1._mu == x2._mu an' + 'd x1._sigma == x2._sigma' + #10 +
   #10 + '    def __hash__(self):' + #10 +
+  '        "NormalDist objects hash e' +
+  'qual if their mu and sigma are bot' + 'h equal."' + #10 +
   '        return hash((self._mu, sel' + 'f._sigma))' + #10 + #10 +
   '    def __repr__(self):' + #10 + '        return f''{type(self).__nam' +
   'e__}(mu={self._mu!r}, sigma={self.' + '_sigma!r})''' + #10 + #10 +
-  '    def __getstate__(self):' + #10 + '        return self._mu, self._sig' +
-  'ma' + #10 + #10 + '    def __setstate__(self, state):' + #10 +
-  '        self._mu, self._sigma = st' + 'ate' + #10 + #10;
+  '# If available, use C implementati' + 'on' + #10 + 'try:' + #10 +
+  '    from _statistics import _norma' + 'l_dist_inv_cdf' + #10 +
+  'except ImportError:' + #10 + '    pass' + #10 + #10 + #10 +
+  'if __name__ == ''__main__'':' + #10 + #10 +
+  '    # Show math operations compute' + 'd analytically in comparsion' +
+  #10 + '    # to a monte carlo simulation ' + 'of the same operations' +
+  #10 + #10 + '    from math import isclose' + #10 +
+  '    from operator import add, sub,' + ' mul, truediv' + #10 +
+  '    from itertools import repeat' + #10 + '    import doctest' + #10 +
+  #10 + '    g1 = NormalDist(10, 20)' + #10 + '    g2 = NormalDist(-5, 25)' +
+  #10 + #10 + '    # Test scaling by a constant' + #10 +
+  '    assert (g1 * 5 / 5).mean == g1' + '.mean' + #10 +
+  '    assert (g1 * 5 / 5).stdev == g' + '1.stdev' + #10 + #10 +
+  '    n = 100_000' + #10 + '    G1 = g1.samples(n)' + #10 +
+  '    G2 = g2.samples(n)' + #10 + #10 + '    for func in (add, sub):' + #10 +
+  '        print(f''\nTest {func.__nam' + 'e__} with another NormalDist:'')' +
+  #10 + '        print(func(g1, g2))' + #10 +
+  '        print(NormalDist.from_samp' + 'les(map(func, G1, G2)))' + #10 +
+  #10 + '    const = 11' + #10 + '    for func in (add, sub, mul, tr' +
+  'uediv):' + #10 + '        print(f''\nTest {func.__nam' +
+  'e__} with a constant:'')' + #10 + '        print(func(g1, const))' + #10 +
+  '        print(NormalDist.from_samp' +
+  'les(map(func, G1, repeat(const))))' + #10 + #10 + '    const = 19' + #10 +
+  '    for func in (add, sub, mul):' + #10 +
+  '        print(f''\nTest constant wi' + 'th {func.__name__}:'')' + #10 +
+  '        print(func(const, g1))' + #10 +
+  '        print(NormalDist.from_samp' +
+  'les(map(func, repeat(const), G1)))' + #10 + #10 +
+  '    def assert_close(G1, G2):' + #10 +
+  '        assert isclose(G1.mean, G1' + '.mean, rel_tol=0.01), (G1, G2)' +
+  #10 + '        assert isclose(G1.stdev, G' +
+  '2.stdev, rel_tol=0.01), (G1, G2)' + #10 + #10 +
+  '    X = NormalDist(-105, 73)' + #10 + '    Y = NormalDist(31, 47)' + #10 +
+  '    s = 32.75' + #10 + '    n = 100_000' + #10 + #10 +
+  '    S = NormalDist.from_samples([x' + ' + s for x in X.samples(n)])' +
+  #10 + '    assert_close(X + s, S)' + #10 + #10 +
+  '    S = NormalDist.from_samples([x' + ' - s for x in X.samples(n)])' +
+  #10 + '    assert_close(X - s, S)' + #10 + #10 +
+  '    S = NormalDist.from_samples([x' + ' * s for x in X.samples(n)])' +
+  #10 + '    assert_close(X * s, S)' + #10 + #10 +
+  '    S = NormalDist.from_samples([x' + ' / s for x in X.samples(n)])' +
+  #10 + '    assert_close(X / s, S)' + #10 + #10 +
+  '    S = NormalDist.from_samples([x' +
+  ' + y for x, y in zip(X.samples(n),' + #10 +
+  '                                  ' +
+  '                     Y.samples(n))' + '])' + #10 +
+  '    assert_close(X + Y, S)' + #10 + #10 +
+  '    S = NormalDist.from_samples([x' +
+  ' - y for x, y in zip(X.samples(n),' + #10 +
+  '                                  ' +
+  '                     Y.samples(n))' + '])' + #10 +
+  '    assert_close(X - Y, S)' + #10 + #10 + '    print(doctest.testmod())' +
+  #10 + #10;
 
 Function Src_statistics: AnsiString;
 Begin
  Result := Src_statistics_0 + Src_statistics_1 + Src_statistics_2 +
-  Src_statistics_3;
+  Src_statistics_3 + Src_statistics_4;
 End;
 
 Const
  Src_string_0: AnsiString =
-  'whitespace = '' \t\n\r\v\f''' + #10 +
+  '"""A collection of string constant' + 's.' + #10 + #10 +
+  'Public module variables:' + #10 + #10 +
+  'whitespace -- a string containing ' + 'all ASCII whitespace' + #10 +
+  'ascii_lowercase -- a string contai' + 'ning all ASCII lowercase letters' +
+  #10 + 'ascii_uppercase -- a string contai' +
+  'ning all ASCII uppercase letters' + #10 +
+  'ascii_letters -- a string containi' + 'ng all ASCII letters' + #10 +
+  'digits -- a string containing all ' + 'ASCII decimal digits' + #10 +
+  'hexdigits -- a string containing a' + 'll ASCII hexadecimal digits' + #10 +
+  'octdigits -- a string containing a' + 'll ASCII octal digits' + #10 +
+  'punctuation -- a string containing' + ' all ASCII punctuation characters' +
+  #10 + 'printable -- a string containing a' +
+  'll ASCII characters considered pri' + 'ntable' + #10 + #10 + '"""' + #10 +
+  #10 + '__all__ = ["ascii_letters", "ascii' +
+  '_lowercase", "ascii_uppercase", "c' + 'apwords",' + #10 +
+  '           "digits", "hexdigits", ' +
+  '"octdigits", "printable", "punctua' + 'tion",' + #10 +
+  '           "whitespace", "Formatte' + 'r", "Template"]' + #10 + #10 +
+  'import _string' + #10 + #10 + '# Some strings for ctype-style cha' +
+  'racter classification' + #10 + 'whitespace = '' \t\n\r\v\f''' + #10 +
   'ascii_lowercase = ''abcdefghijklmno' + 'pqrstuvwxyz''' + #10 +
   'ascii_uppercase = ''ABCDEFGHIJKLMNO' + 'PQRSTUVWXYZ''' + #10 +
   'ascii_letters = ascii_lowercase + ' + 'ascii_uppercase' + #10 +
@@ -71722,58 +78530,221 @@ Const
   'BCDEF''' + #10 + 'octdigits = ''01234567''' + #10 +
   'punctuation = r"""!"#$%&''()*+,-./:' + ';<=>?@[\]^_`{|}~"""' + #10 +
   'printable = digits + ascii_letters' + ' + punctuation + whitespace' + #10 +
-  #10 + 'def capwords(s, sep=None):' + #10 +
-  '    return (sep or '' '').join(x.cap' +
-  'italize() for x in s.split(sep))' + #10 + #10 + 'class Template:' + #10 +
-  '    delimiter = ''$''' + #10 + #10 + '    def __init__(self, template):' +
-  #10 + '        self.template = template' + #10 + #10 +
-  '    def _sub(self, mapping, safe):' + #10 + '        import re' + #10 +
-  '        t = self.template' + #10 + '        out = []' + #10 +
-  '        i = 0' + #10 + '        n = len(t)' + #10 +
-  '        while i < n:' + #10 + '            c = t[i]' + #10 +
-  '            if c != ''$'':' + #10 + '                out.append(c)' + #10 +
-  '                i += 1' + #10 + '                continue' + #10 +
-  '            i += 1' + #10 + '            if i < n and t[i] == ''' +
-  '$'':' + #10 + '                out.append(''$'')' + #10 +
-  '                i += 1' + #10 + '            elif i < n and t[i] ==' +
-  ' ''{'':' + #10 + '                j = t.find(''}'', i)' + #10 +
-  '                if j < 0:' + #10 + '                    if safe:' + #10 +
-  '                        out.append' + '(''${'')' + #10 +
-  '                        i += 1' + #10 +
-  '                        continue' + #10 +
-  '                    raise ValueErr' +
-  'or(''Invalid placeholder in string''' + ')' + #10 +
-  '                name = t[i + 1:j]' + #10 + '                i = j + 1' +
-  #10 + '                try:' + #10 + '                    out.append(str' +
-  '(mapping[name]))' + #10 + '                except KeyError:' + #10 +
-  '                    if safe:' + #10 +
-  '                        out.append' + '(''${'' + name + ''}'')' + #10 +
-  '                    else:' + #10 + '                        raise' + #10 +
-  '            else:' + #10 + '                j = i' + #10 +
-  '                while j < n and (t' + '[j].isalnum() or t[j] == ''_''):' +
-  #10 + '                    j += 1' + #10 + '                if j == i:' +
-  #10 + '                    if safe:' + #10 +
-  '                        out.append' + '(''$'')' + #10 +
-  '                        continue' + #10 +
-  '                    raise ValueErr' +
-  'or(''Invalid placeholder in string''' + ')' + #10 +
-  '                name = t[i:j]' + #10 + '                i = j' + #10 +
-  '                try:' + #10 + '                    out.append(str' +
-  '(mapping[name]))' + #10 + '                except KeyError:' + #10 +
-  '                    if safe:' + #10 +
-  '                        out.append' + '(''$'' + name)' + #10 +
-  '                    else:' + #10 + '                        raise' + #10 +
-  '        return ''''.join(out)' + #10 + #10 +
-  '    def substitute(self, mapping=N' + 'one, **kws):' + #10 +
-  '        m = dict(mapping or {})' + #10 + '        m.update(kws)' + #10 +
-  '        return self._sub(m, False)' + #10 + #10 +
-  '    def safe_substitute(self, mapp' + 'ing=None, **kws):' + #10 +
-  '        m = dict(mapping or {})' + #10 + '        m.update(kws)' + #10 +
-  '        return self._sub(m, True)' + #10 + #10;
+  #10 + '# Functions which aren''t available' + ' as string methods.' + #10 +
+  #10 + '# Capitalize the words in a string' +
+  ', e.g. " aBc  dEf " -> "Abc Def".' + #10 + 'def capwords(s, sep=None):' +
+  #10 + '    """capwords(s [,sep]) -> strin' + 'g' + #10 + #10 +
+  '    Split the argument into words ' + 'using split, capitalize each' +
+  #10 + '    word using capitalize, and joi' +
+  'n the capitalized words using' + #10 +
+  '    join.  If the optional second ' + 'argument sep is absent or None,' +
+  #10 + '    runs of whitespace characters ' +
+  'are replaced by a single space' + #10 +
+  '    and leading and trailing white' + 'space are removed, otherwise' +
+  #10 + '    sep is used to split and join ' + 'the words.' + #10 + #10 +
+  '    """' + #10 + '    return (sep or '' '').join(x.cap' +
+  'italize() for x in s.split(sep))' + #10 + #10 + #10 +
+  '##################################' +
+  '##################################' + #10 + 'import re as _re' + #10 +
+  'from collections import ChainMap a' + 's _ChainMap' + #10 + #10 +
+  '_sentinel_dict = {}' + #10 + #10 + 'class _TemplateMetaclass(type):' +
+  #10 + '    pattern = r"""' + #10 + '    %(delim)s(?:' + #10 +
+  '      (?P<escaped>%(delim)s) |   #' +
+  ' Escape sequence of two delimiters' + #10 +
+  '      (?P<named>%(id)s)      |   #' +
+  ' delimiter and a Python identifier' + #10 +
+  '      {(?P<braced>%(bid)s)}  |   #' +
+  ' delimiter and a braced identifier' + #10 +
+  '      (?P<invalid>)              #' + ' Other ill-formed delimiter exprs' +
+  #10 + '    )' + #10 + '    """' + #10 + #10 +
+  '    def __init__(cls, name, bases,' + ' dct):' + #10 +
+  '        super(_TemplateMetaclass, ' + 'cls).__init__(name, bases, dct)' +
+  #10 + '        if ''pattern'' in dct:' + #10 +
+  '            pattern = cls.pattern' + #10 + '        else:' + #10 +
+  '            pattern = _TemplateMet' + 'aclass.pattern % {' + #10 +
+  '                ''delim'' : _re.esca' + 'pe(cls.delimiter),' + #10 +
+  '                ''id''    : cls.idpa' + 'ttern,' + #10 +
+  '                ''bid''   : cls.brac' + 'eidpattern or cls.idpattern,' +
+  #10 + '                }' + #10 + '        cls.pattern = _re.compile(' +
+  'pattern, cls.flags | _re.VERBOSE)' + #10 + #10 + #10 +
+  'class Template(metaclass=_Template' + 'Metaclass):' + #10 +
+  '    """A string class for supporti' + 'ng $-substitutions."""' + #10 +
+  #10 + '    delimiter = ''$''' + #10 +
+  '    # r''[a-z]'' matches to non-ASCI' +
+  'I letters when used with IGNORECAS' + 'E, but' + #10 +
+  '    # without the ASCII flag.  We ' +
+  'can''t add re.ASCII to flags becaus' + 'e of' + #10 +
+  '    # backward compatibility.  So ' +
+  'we use the ?a local flag and [a-z]' + ' pattern.' + #10 +
+  '    # See https://bugs.python.org/' + 'issue31672' + #10 +
+  '    idpattern = r''(?a:[_a-z][_a-z0' + '-9]*)''' + #10 +
+  '    braceidpattern = None' + #10 + '    flags = _re.IGNORECASE' + #10 +
+  #10 + '    def __init__(self, template):' + #10 +
+  '        self.template = template' + #10 + #10 +
+  '    # Search for $$, $identifier, ' + '${identifier}, and any bare $''s' +
+  #10 + #10 + '    def _invalid(self, mo):' + #10 +
+  '        i = mo.start(''invalid'')' + #10 +
+  '        lines = self.template[:i].' + 'splitlines(keepends=True)' + #10 +
+  '        if not lines:' + #10 + '            colno = 1' + #10 +
+  '            lineno = 1' + #10 + '        else:' + #10 +
+  '            colno = i - len(''''.joi' + 'n(lines[:-1]))' + #10 +
+  '            lineno = len(lines)' + #10 +
+  '        raise ValueError(''Invalid ' +
+  'placeholder in string: line %d, co' + 'l %d'' %' + #10 +
+  '                         (lineno, ' + 'colno))' + #10 + #10 +
+  '    def substitute(self, mapping=_' + 'sentinel_dict, /, **kws):' + #10 +
+  '        if mapping is _sentinel_di' + 'ct:' + #10 +
+  '            mapping = kws' + #10 + '        elif kws:' + #10 +
+  '            mapping = _ChainMap(kw' + 's, mapping)' + #10 +
+  '        # Helper function for .sub' + '()' + #10 +
+  '        def convert(mo):' + #10 + '            # Check the most commo' +
+  'n path first.' + #10 + '            named = mo.group(''name' +
+  'd'') or mo.group(''braced'')' + #10 + '            if named is not None:' +
+  #10 + '                return str(mapping' + '[named])' + #10 +
+  '            if mo.group(''escaped'')' + ' is not None:' + #10 +
+  '                return self.delimi' + 'ter' + #10 +
+  '            if mo.group(''invalid'')' + ' is not None:' + #10 +
+  '                self._invalid(mo)' + #10 +
+  '            raise ValueError(''Unre' +
+  'cognized named group in pattern'',' + #10 +
+  '                             self.' + 'pattern)' + #10 +
+  '        return self.pattern.sub(co' + 'nvert, self.template)' + #10 + #10 +
+  '    def safe_substitute(self, mapp' + 'ing=_sentinel_dict, /, **kws):' +
+  #10 + '        if mapping is _sentinel_di' + 'ct:' + #10 +
+  '            mapping = kws' + #10 + '        elif kws:' + #10 +
+  '            mapping = _ChainMap(kw' + 's, mapping)' + #10 +
+  '        # Helper function for .sub' + '()' + #10 +
+  '        def convert(mo):' + #10 + '            named = mo.group(''name' +
+  'd'') or mo.group(''braced'')' + #10 + '            if named is not None:' +
+  #10 + '                try:' + #10 + '                    return str(map' +
+  'ping[named])' + #10 + '                except KeyError:' + #10 +
+  '                    return mo.grou' + 'p()' + #10 +
+  '            if mo.group(''escaped'')' + ' is not None:' + #10 +
+  '                return self.delimi' + 'ter' + #10 +
+  '            if mo.group(''invalid'')' + ' is not None:' + #10 +
+  '                return mo.group()' + #10 +
+  '            raise ValueError(''Unre' +
+  'cognized named group in pattern'',' + #10 +
+  '                             self.' + 'pattern)' + #10 +
+  '        return self.pattern.sub(co' + 'nvert, self.template)' + #10 + #10 +
+  #10 + #10 + '##################################' +
+  '##################################' + '####' + #10 +
+  '# the Formatter class' + #10 + '# see PEP 3101 for details and pur' +
+  'pose of this class' + #10 + #10 + '# The hard parts are reused from t' +
+  'he C implementation.  They''re expo' + 'sed as "_"' + #10 +
+  '# prefixed methods of str.' + #10 + #10 +
+  '# The overall parser is implemente' + 'd in _string.formatter_parser.' +
+  #10 + '# The field name parser is impleme' +
+  'nted in _string.formatter_field_na' + 'me_split' + #10 + #10 +
+  'class Formatter:' + #10 + '    def format(self, format_string' +
+  ', /, *args, **kwargs):' + #10 + '        return self.vformat(format' +
+  '_string, args, kwargs)' + #10 + #10 +
+  '    def vformat(self, format_strin' + 'g, args, kwargs):' + #10 +
+  '        used_args = set()' + #10 + '        result, _ = self._vformat(' +
+  'format_string, args, kwargs, used_' + 'args, 2)' + #10 +
+  '        self.check_unused_args(use' + 'd_args, args, kwargs)' + #10 +
+  '        return result' + #10 + #10 + '    def _vformat(self, format_stri' +
+  'ng, args, kwargs, used_args, recur' + 'sion_depth,' + #10 +
+  '                 auto_arg_index=0)' + ':' + #10 +
+  '        if recursion_depth < 0:' + #10 +
+  '            raise ValueError(''Max ' + 'string recursion exceeded'')' +
+  #10 + '        result = []' + #10 + '        for literal_text, field_na' +
+  'me, format_spec, conversion in \' + #10 +
+  '                self.parse(format_' + 'string):' + #10 + #10 +
+  '            # output the literal t' + 'ext' + #10 +
+  '            if literal_text:' + #10 +
+  '                result.append(lite' + 'ral_text)' + #10 + #10 +
+  '            # if there''s a field, ' + 'output it' + #10 +
+  '            if field_name is not N' + 'one:' + #10 +
+  '                # this is some mar' + 'kup, find the object and do' + #10 +
+  '                #  the formatting' + #10 + #10 +
+  '                # handle arg index' +
+  'ing when empty field_names are giv' + 'en.' + #10 +
+  '                if field_name == ''' + ''':' + #10 +
+  '                    if auto_arg_in' + 'dex is False:' + #10 +
+  '                        raise Valu' +
+  'eError(''cannot switch from manual ' + 'field ''' + #10 +
+  '                                  ' +
+  '       ''specification to automatic' + ' field ''' + #10 +
+  '                                  ' + '       ''numbering'')' + #10 +
+  '                    field_name = s' + 'tr(auto_arg_index)' + #10 +
+  '                    auto_arg_index' + ' += 1' + #10 +
+  '                elif field_name.is' + 'digit():' + #10 +
+  '                    if auto_arg_in' + 'dex:' + #10 +
+  '                        raise Valu' +
+  'eError(''cannot switch from manual ' + 'field ''' + #10 +
+  '                                  ' +
+  '       ''specification to automatic' + ' field ''' + #10 +
+  '                                  ' + '       ''numbering'')' + #10 +
+  '                    # disable auto' + ' arg incrementing, if it gets' +
+  #10 + '                    # used later o' +
+  'n, then an exception will be raise' + 'd' + #10 +
+  '                    auto_arg_index' + ' = False' + #10 + #10 +
+  '                # given the field_' +
+  'name, find the object it reference' + 's' + #10 +
+  '                #  and the argumen' + 't it came from' + #10 +
+  '                obj, arg_used = se' +
+  'lf.get_field(field_name, args, kwa' + 'rgs)' + #10 +
+  '                used_args.add(arg_' + 'used)' + #10 + #10 +
+  '                # do any conversio' + 'n on the resulting object' + #10 +
+  '                obj = self.convert' + '_field(obj, conversion)' + #10 +
+  #10 + '                # expand the forma' + 't spec, if needed' + #10 +
+  '                format_spec, auto_' + 'arg_index = self._vformat(' + #10 +
+  '                    format_spec, a' + 'rgs, kwargs,' + #10 +
+  '                    used_args, rec' + 'ursion_depth-1,' + #10 +
+  '                    auto_arg_index' + '=auto_arg_index)' + #10 + #10 +
+  '                # format the objec' + 't and append to the result' + #10 +
+  '                result.append(self' + '.format_field(obj, format_spec))' +
+  #10 + #10 + '        return ''''.join(result), au' + 'to_arg_index' + #10 +
+  #10 + #10 + '    def get_value(self, key, args,' + ' kwargs):' + #10 +
+  '        if isinstance(key, int):' + #10 + '            return args[key]' +
+  #10 + '        else:' + #10 + '            return kwargs[key]' + #10 + #10 +
+  #10 + '    def check_unused_args(self, us' + 'ed_args, args, kwargs):' +
+  #10 + '        pass' + #10 + #10 + #10 +
+  '    def format_field(self, value, ' + 'format_spec):' + #10 +
+  '        return format(value, forma' + 't_spec)' + #10 + #10 + #10 +
+  '    def convert_field(self, value,' + ' conversion):' + #10 +
+  '        # do any conversion on the' + ' resulting object' + #10 +
+  '        if conversion is None:' + #10 + '            return value' + #10 +
+  '        elif conversion == ''s'':' + #10 +
+  '            return str(value)' + #10 +
+  '        elif conversion == ''r'':' + #10 +
+  '            return repr(value)' + #10 +
+  '        elif conversion == ''a'':' + #10 +
+  '            return ascii(value)' + #10 +
+  '        raise ValueError("Unknown ' +
+  'conversion specifier {0!s}".format' + '(conversion))' + #10;
+
+Const
+ Src_string_1: AnsiString =
+  #10 + #10 + '    # returns an iterable that con' +
+  'tains tuples of the form:' + #10 + '    # (literal_text, field_name, f' +
+  'ormat_spec, conversion)' + #10 + '    # literal_text can be zero len' +
+  'gth' + #10 + '    # field_name can be None, in w' +
+  'hich case there''s no' + #10 + '    #  object to format and output' + #10 +
+  '    # if field_name is not None, i' + 't is looked up, formatted' + #10 +
+  '    #  with format_spec and conver' + 'sion and then used' + #10 +
+  '    def parse(self, format_string)' + ':' + #10 +
+  '        return _string.formatter_p' + 'arser(format_string)' + #10 + #10 +
+  #10 + '    # given a field_name, find the' + ' object it references.' +
+  #10 + '    #  field_name:   the field bei' + 'ng looked up, e.g. "0.name"' +
+  #10 + '    #                 or "lookup[3' + ']"' + #10 +
+  '    #  used_args:    a set of whic' + 'h args have been used' + #10 +
+  '    #  args, kwargs: as passed in ' + 'to vformat' + #10 +
+  '    def get_field(self, field_name' + ', args, kwargs):' + #10 +
+  '        first, rest = _string.form' +
+  'atter_field_name_split(field_name)' + #10 + #10 +
+  '        obj = self.get_value(first' + ', args, kwargs)' + #10 + #10 +
+  '        # loop through the rest of' + ' the field_name, doing' + #10 +
+  '        #  getattr or getitem as n' + 'eeded' + #10 +
+  '        for is_attr, i in rest:' + #10 + '            if is_attr:' + #10 +
+  '                obj = getattr(obj,' + ' i)' + #10 + '            else:' +
+  #10 + '                obj = obj[i]' + #10 + #10 +
+  '        return obj, first' + #10 + #10;
 
 Function Src_string: AnsiString;
 Begin
- Result := Src_string_0;
+ Result := Src_string_0 + Src_string_1;
 End;
 
 Const
@@ -73507,82 +80478,114 @@ End;
 
 Const
  Src_textwrap_0: AnsiString =
-  '"""Text wrapping and filling (hand' + ' written splitter, no regex)."""' +
+  '"""Text wrapping and filling.' + #10 + '"""' + #10 + #10 +
+  '# Copyright (C) 1999-2001 Gregory ' + 'P. Ward.' + #10 +
+  '# Copyright (C) 2002, 2003 Python ' + 'Software Foundation.' + #10 +
+  '# Written by Greg Ward <gward@pyth' + 'on.net>' + #10 + #10 + 'import re' +
   #10 + #10 + '__all__ = [''TextWrapper'', ''wrap'', ' +
   '''fill'', ''dedent'', ''indent'', ''short' + 'en'']' + #10 + #10 +
   '# Hardcode the recognized whitespa' + 'ce characters to the US-ASCII' +
   #10 + '# whitespace characters.  The main' +
-  ' reason for doing this is that' + #10 + '# some Unicode spaces (like ' +
-  #194 + #160 + ') are' + ' non-breaking whitespaces.' + #10 +
-  '_whitespace = ''\t\n\x0b\x0c\r ''' + #10 + #10 + #10 +
-  'def _is_wordpunct(c):' + #10 + '    # [\w!"\''&.,?]' + #10 +
-  '    return c in ''!"\''&.,?'' or c ==' + ' ''_'' or c.isalnum()' + #10 +
-  #10 + #10 + 'def _is_letter(c):' + #10 + '    # [^\d\W]' + #10 +
-  '    return (c == ''_'' or c.isalnum(' + ')) and not c.isdecimal()' + #10 +
-  #10 + #10 + 'def _is_word(c):' + #10 +
-  '    return c == ''_'' or c.isalnum()' + #10 + #10 + #10 +
-  'class _SentenceEnd(object):' + #10 +
-  '    """Stand-in for re.compile(r''[' +
-  'a-z][\\.\\!\\?][\\"\\'']?\\Z'')."""' + #10 +
-  '    pattern = r''[a-z][\.\!\?][\"\''' + ']?\Z''' + #10 + #10 +
-  '    def search(self, chunk):' + #10 +
-  '        if chunk[-1:] == ''"'' or ch' + 'unk[-1:] == "''":' + #10 +
-  '            chunk = chunk[:-1]' + #10 +
-  '        if len(chunk) >= 2 and chu' +
-  'nk[-1] in ''.!?'' and ''a'' <= chunk[-' + '2] <= ''z'':' + #10 +
-  '            return True' + #10 + '        return None' + #10 + #10 +
-  '    match = search' + #10 + #10 + #10 + 'def _split_hyphens(w):' + #10 +
-  '    """Split a whitespace-free wor' +
-  'd the way textwrap''s wordsep_re do' + 'es."""' + #10 + '    n = len(w)' +
-  #10 + '    out = []' + #10 + '    i = 0' + #10 + '    while i < n:' + #10 +
-  '        # em-dash between words: (' + '?<=wp) -{2,} (?=\w)' + #10 +
-  '        if w[i] == ''-'' and i > 0 a' + 'nd _is_wordpunct(w[i - 1]):' +
-  #10 + '            k = i' + #10 + '            while k < n and w[k] =' +
-  '= ''-'':' + #10 + '                k += 1' + #10 +
-  '            if k - i >= 2 and k < ' + 'n and _is_word(w[k]):' + #10 +
-  '                out.append(w[i:k])' + #10 + '                i = k' + #10 +
-  '                continue' + #10 + '        j = i + 1' + #10 +
-  '        while True:' + #10 + '            if j >= n:' + #10 +
-  '                out.append(w[i:n])' + #10 + '                i = n' + #10 +
-  '                break' + #10 + '            c = w[j]' + #10 +
-  '            if c == ''-'':' + #10 + '                # hyphenated word' +
-  #10 + '                if j >= 2 and _is_' +
-  'letter(w[j - 1]) and _is_letter(w[' + 'j - 2]):' + #10 +
-  '                    ok = True' + #10 +
-  '                elif (j >= 3 and _' +
-  'is_letter(w[j - 1]) and w[j - 2] =' + '= ''-''' + #10 +
-  '                      and _is_lett' + 'er(w[j - 3])):' + #10 +
-  '                    ok = True' + #10 + '                else:' + #10 +
-  '                    ok = False' + #10 + '                if ok:' + #10 +
-  '                    # lookahead: l' + 'etter -? letter' + #10 +
-  '                    p = j + 1' + #10 +
-  '                    if p < n and _' + 'is_letter(w[p]):' + #10 +
-  '                        p += 1' + #10 +
-  '                        if p < n a' + 'nd w[p] == ''-'':' + #10 +
-  '                            p += 1' + #10 +
-  '                        if p < n a' + 'nd _is_letter(w[p]):' + #10 +
-  '                            out.ap' + 'pend(w[i:j + 1])' + #10 +
-  '                            i = j ' + '+ 1' + #10 +
-  '                            break' + #10 +
-  '            # em-dash: (?<=wp) (?=' + '-{2,}\w)' + #10 +
-  '            if c == ''-'' and _is_wo' + 'rdpunct(w[j - 1]):' + #10 +
-  '                k = j' + #10 + '                while k < n and w[' +
-  'k] == ''-'':' + #10 + '                    k += 1' + #10 +
-  '                if k - j >= 2 and ' + 'k < n and _is_word(w[k]):' + #10 +
-  '                    out.append(w[i' + ':j])' + #10 +
-  '                    i = j' + #10 + '                    break' + #10 +
-  '            j += 1' + #10 + '    return out' + #10 + #10 + #10 +
+  ' reason for doing this is that' + #10 +
+  '# some Unicode spaces (like \u00a0' + ') are non-breaking whitespaces.' +
+  #10 + '_whitespace = ''\t\n\x0b\x0c\r ''' + #10 + #10 +
   'class TextWrapper:' + #10 + '    """' + #10 +
   '    Object for wrapping/filling te' +
   'xt.  The public interface consists' + ' of' + #10 +
   '    the wrap() and fill() methods;' +
   ' the other methods are just there ' + 'for' + #10 +
   '    subclasses to override in orde' + 'r to tweak the default behaviour.' +
-  #10 + '    """' + #10 + #10 + '    unicode_whitespace_trans = {}' + #10 +
-  '    uspace = ord('' '')' + #10 + '    for _whitespace_char in _white' +
-  'space:' + #10 + '        unicode_whitespace_trans[o' +
-  'rd(_whitespace_char)] = uspace' + #10 + '    del _whitespace_char' + #10 +
-  #10 + '    sentence_end_re = _SentenceEnd' + '()' + #10 + #10 +
+  #10 + '    If you want to completely repl' +
+  'ace the main wrapping algorithm,' + #10 +
+  '    you''ll probably have to overri' + 'de _wrap_chunks().' + #10 + #10 +
+  '    Several instance attributes co' +
+  'ntrol various aspects of wrapping:' + #10 + '      width (default: 70)' +
+  #10 + '        the maximum width of wrapp' +
+  'ed lines (unless break_long_words' + #10 + '        is false)' + #10 +
+  '      initial_indent (default: "")' + #10 +
+  '        string that will be prepen' + 'ded to the first line of wrapped' +
+  #10 + '        output.  Counts towards th' + 'e line''s width.' + #10 +
+  '      subsequent_indent (default: ' + '"")' + #10 +
+  '        string that will be prepen' + 'ded to all lines save the first' +
+  #10 + '        of wrapped output; also co' +
+  'unts towards each line''s width.' + #10 +
+  '      expand_tabs (default: true)' + #10 +
+  '        Expand tabs in input text ' +
+  'to spaces before further processin' + 'g.' + #10 +
+  '        Each tab will become 0 .. ' +
+  '''tabsize'' spaces, depending on its' + ' position' + #10 +
+  '        in its line.  If false, ea' +
+  'ch tab is treated as a single char' + 'acter.' + #10 +
+  '      tabsize (default: 8)' + #10 + '        Expand tabs in input text ' +
+  'to 0 .. ''tabsize'' spaces, unless' + #10 +
+  '        ''expand_tabs'' is false.' + #10 +
+  '      replace_whitespace (default:' + ' true)' + #10 +
+  '        Replace all whitespace cha' +
+  'racters in the input text by space' + 's' + #10 +
+  '        after tab expansion.  Note' + ' that if expand_tabs is false and' +
+  #10 + '        replace_whitespace is true' +
+  ', every tab will be converted to a' + #10 + '        single space!' + #10 +
+  '      fix_sentence_endings (defaul' + 't: false)' + #10 +
+  '        Ensure that sentence-endin' + 'g punctuation is always followed' +
+  #10 + '        by two spaces.  Off by def' +
+  'ault because the algorithm is' + #10 + '        (unavoidably) imperfect.' +
+  #10 + '      break_long_words (default: t' + 'rue)' + #10 +
+  '        Break words longer than ''w' +
+  'idth''.  If false, those words will' + ' not' + #10 +
+  '        be broken, and some lines ' + 'might be longer than ''width''.' +
+  #10 + '      break_on_hyphens (default: t' + 'rue)' + #10 +
+  '        Allow breaking hyphenated ' +
+  'words. If true, wrapping will occu' + 'r' + #10 +
+  '        preferably on whitespaces ' + 'and right after hyphens part of' +
+  #10 + '        compound words.' + #10 +
+  '      drop_whitespace (default: tr' + 'ue)' + #10 +
+  '        Drop leading and trailing ' + 'whitespace from lines.' + #10 +
+  '      max_lines (default: None)' + #10 +
+  '        Truncate wrapped lines.' + #10 +
+  '      placeholder (default: '' [...' + ']'')' + #10 +
+  '        Append to the last line of' + ' truncated text.' + #10 +
+  '    """' + #10 + #10 + '    unicode_whitespace_trans = {}' + #10 +
+  '    uspace = ord('' '')' + #10 + '    for x in _whitespace:' + #10 +
+  '        unicode_whitespace_trans[o' + 'rd(x)] = uspace' + #10 + #10 +
+  '    # This funky little regex is j' + 'ust the trick for splitting' + #10 +
+  '    # text up into word-wrappable ' + 'chunks.  E.g.' + #10 +
+  '    #   "Hello there -- you goof-b' + 'all, use the -b option!"' + #10 +
+  '    # splits into' + #10 + '    #   Hello/ /there/ /--/ /you/ ' +
+  '/goof-/ball,/ /use/ /the/ /-b/ /op' + 'tion!' + #10 +
+  '    # (after stripping out empty s' + 'trings).' + #10 +
+  '    word_punct = r''[\w!"\''&.,?]''' + #10 + '    letter = r''[^\d\W]''' +
+  #10 + '    whitespace = r''[%s]'' % re.esca' + 'pe(_whitespace)' + #10 +
+  '    nowhitespace = ''[^'' + whitespa' + 'ce[1:]' + #10 +
+  '    wordsep_re = re.compile(r''''''' + #10 + '        ( # any whitespace' +
+  #10 + '          %(ws)s+' + #10 + '        | # em-dash between words' +
+  #10 + '          (?<=%(wp)s) -{2,} (?=\w)' + #10 +
+  '        | # word, possibly hyphena' + 'ted' + #10 +
+  '          %(nws)s+? (?:' + #10 + '            # hyphenated word' + #10 +
+  '              -(?: (?<=%(lt)s{2}-)' + ' | (?<=%(lt)s-%(lt)s-))' + #10 +
+  '              (?= %(lt)s -? %(lt)s' + ')' + #10 +
+  '            | # end of word' + #10 + '              (?=%(ws)s|\Z)' + #10 +
+  '            | # em-dash' + #10 + '              (?<=%(wp)s) (?=-{2,}' +
+  '\w)' + #10 + '            )' + #10 +
+  '        )'''''' % {''wp'': word_punct, ' + '''lt'': letter,' + #10 +
+  '                ''ws'': whitespace, ' + '''nws'': nowhitespace},' + #10 +
+  '        re.VERBOSE)' + #10 + '    del word_punct, letter, nowhit' +
+  'espace' + #10 + #10 + '    # This less funky little regex' +
+  ' just split on recognized spaces. ' + 'E.g.' + #10 +
+  '    #   "Hello there -- you goof-b' + 'all, use the -b option!"' + #10 +
+  '    # splits into' + #10 + '    #   Hello/ /there/ /--/ /you/ ' +
+  '/goof-ball,/ /use/ /the/ /-b/ /opt' + 'ion!/' + #10 +
+  '    wordsep_simple_re = re.compile' + '(r''(%s+)'' % whitespace)' + #10 +
+  '    del whitespace' + #10 + #10 + '    # XXX this is not locale- or c' +
+  'harset-aware -- string.lowercase' + #10 +
+  '    # is US-ASCII only (and theref' + 'ore English-only)' + #10 +
+  '    sentence_end_re = re.compile(r' +
+  '''[a-z]''             # lowercase le' + 'tter' + #10 +
+  '                                 r' +
+  '''[\.\!\?]''          # sentence-end' + 'ing punct.' + #10 +
+  '                                 r' +
+  '''[\"\'']?''           # optional end' + '-of-quote' + #10 +
+  '                                 r' +
+  '''\Z'')               # end of chunk' + #10 + #10 +
   '    def __init__(self,' + #10 + '                 width=70,' + #10 +
   '                 initial_indent=""' + ',' + #10 +
   '                 subsequent_indent' + '="",' + #10 +
@@ -73605,60 +80608,65 @@ Const
   '        self.break_on_hyphens = br' + 'eak_on_hyphens' + #10 +
   '        self.tabsize = tabsize' + #10 +
   '        self.max_lines = max_lines' + #10 +
-  '        self.placeholder = placeho' + 'lder' + #10 + #10 +
+  '        self.placeholder = placeho' + 'lder' + #10 + #10 + #10 +
   '    # -- Private methods ---------' +
-  '----------------------------------' + '----' + #10 + #10 +
+  '----------------------------------' + '----' + #10 +
+  '    # (possibly useful for subclas' + 'ses to override)' + #10 + #10 +
   '    def _munge_whitespace(self, te' + 'xt):' + #10 +
+  '        """_munge_whitespace(text ' + ': string) -> string' + #10 + #10 +
+  '        Munge whitespace in text: ' + 'expand tabs and convert all other' +
+  #10 + '        whitespace characters to s' +
+  'paces.  Eg. " foo\\tbar\\n\\nbaz"' + #10 +
+  '        becomes " foo    bar  baz"' + '.' + #10 + '        """' + #10 +
   '        if self.expand_tabs:' + #10 +
   '            text = text.expandtabs' + '(self.tabsize)' + #10 +
   '        if self.replace_whitespace' + ':' + #10 +
-  '            text = text.replace(''\' +
-  't'', '' '').replace(''\n'', '' '').replac' + 'e(''\x0b'', '' '')' + #10 +
-  '            text = text.replace(''\' +
-  'x0c'', '' '').replace(''\r'', '' '')' + #10 + '        return text' + #10 +
-  #10 + '    def _split(self, text):' + #10 +
-  '        # Split on runs of ASCII w' +
-  'hitespace; hyphenated words are fu' + 'rther' + #10 +
-  '        # split by _split_hyphens(' + ').' + #10 +
-  '        hyph = self.break_on_hyphe' + 'ns' + #10 +
-  '        plain = not (text.find(''\t' +
-  ''') >= 0 or text.find(''\n'') >= 0' + #10 +
-  '                     or text.find(' +
-  '''\r'') >= 0 or text.find(''\x0b'') >=' + ' 0' + #10 +
-  '                     or text.find(' + '''\x0c'') >= 0)' + #10 +
-  '        if plain:' + #10 + '            masked = text' + #10 +
-  '        else:' + #10 + '            masked = (text.replace' +
-  '(''\t'', '' '').replace(''\n'', '' '')' + #10 +
-  '                      .replace(''\x' +
-  '0b'', '' '').replace(''\x0c'', '' '').rep' + 'lace(''\r'', '' ''))' + #10 +
-  '        chunks = []' + #10 + '        append = chunks.append' + #10 +
-  '        run = 0' + #10 + '        spacepos = 0' + #10 + '        pos = 0' +
-  #10 + '        first = True' + #10 +
-  '        for w in masked.split('' '')' + ':' + #10 +
-  '            if first:' + #10 + '                first = False' + #10 +
-  '            else:' + #10 + '                if run == 0:' + #10 +
-  '                    spacepos = pos' + #10 + '                run += 1' +
-  #10 + '                pos += 1' + #10 + '            if w:' + #10 +
-  '                if run:' + #10 + '                    if plain:' + #10 +
-  '                        append('' ''' + ' * run)' + #10 +
-  '                    else:' + #10 + '                        append(tex' +
-  't[spacepos:spacepos + run])' + #10 + '                    run = 0' + #10 +
-  '                if hyph and ''-'' in' + ' w:' + #10 +
-  '                    chunks.extend(' + '_split_hyphens(w))' + #10 +
-  '                else:' + #10 + '                    append(w)' + #10 +
-  '                pos += len(w)' + #10 + '        if run:' + #10 +
-  '            if plain:' + #10 + '                append('' '' * run)' +
-  #10 + '            else:' + #10 + '                append(text[spacep' +
-  'os:spacepos + run])' + #10 + '        return chunks' + #10 + #10 +
+  '            text = text.translate(' + 'self.unicode_whitespace_trans)' +
+  #10 + '        return text' + #10 + #10 + #10 +
+  '    def _split(self, text):' + #10 + '        """_split(text : string) -' +
+  '> [string]' + #10 + #10 + '        Split the text to wrap int' +
+  'o indivisible chunks.  Chunks are' + #10 +
+  '        not quite the same as word' + 's; see _wrap_chunks() for full' +
+  #10 + '        details.  As an example, t' + 'he text' + #10 +
+  '          Look, goof-ball -- use t' + 'he -b option!' + #10 +
+  '        breaks into the following ' + 'chunks:' + #10 +
+  '          ''Look,'', '' '', ''goof-'', ''' +
+  'ball'', '' '', ''--'', '' '',' + #10 +
+  '          ''use'', '' '', ''the'', '' '', ' +
+  '''-b'', '' '', ''option!''' + #10 + '        if break_on_hyphens is Tru' +
+  'e, or in:' + #10 + '          ''Look,'', '' '', ''goof-ball' +
+  ''', '' '', ''--'', '' '',' + #10 +
+  '          ''use'', '' '', ''the'', '' '', ' + '''-b'', '' '', option!''' +
+  #10 + '        otherwise.' + #10 + '        """' + #10 +
+  '        if self.break_on_hyphens i' + 's True:' + #10 +
+  '            chunks = self.wordsep_' + 're.split(text)' + #10 +
+  '        else:' + #10 + '            chunks = self.wordsep_' +
+  'simple_re.split(text)' + #10 + '        chunks = [c for c in chunk' +
+  's if c]' + #10 + '        return chunks' + #10 + #10 +
   '    def _fix_sentence_endings(self' + ', chunks):' + #10 +
-  '        i = 0' + #10 + '        patsearch = self.sentence_' +
-  'end_re.search' + #10 + '        while i < len(chunks) - 1:' + #10 +
-  '            if chunks[i + 1] == " ' + '" and patsearch(chunks[i]):' + #10 +
-  '                chunks[i + 1] = " ' + ' "' + #10 +
-  '                i += 2' + #10 + '            else:' + #10 +
-  '                i += 1' + #10 + #10 +
+  '        """_fix_sentence_endings(c' + 'hunks : [string])' + #10 + #10 +
+  '        Correct for sentence endin' +
+  'gs buried in ''chunks''.  Eg. when t' + 'he' + #10 +
+  '        original text contains "..' +
+  '. foo.\\nBar ...", munge_whitespac' + 'e()' + #10 +
+  '        and split() will convert t' +
+  'hat to [..., "foo.", " ", "Bar", .' + '..]' + #10 +
+  '        which has one too few spac' +
+  'es; this method simply changes the' + ' one' + #10 +
+  '        space to two.' + #10 + '        """' + #10 + '        i = 0' +
+  #10 + '        patsearch = self.sentence_' + 'end_re.search' + #10 +
+  '        while i < len(chunks)-1:' + #10 +
+  '            if chunks[i+1] == " " ' + 'and patsearch(chunks[i]):' + #10 +
+  '                chunks[i+1] = "  "' + #10 + '                i += 2' +
+  #10 + '            else:' + #10 + '                i += 1' + #10 + #10 +
   '    def _handle_long_word(self, re' +
   'versed_chunks, cur_line, cur_len, ' + 'width):' + #10 +
+  '        """_handle_long_word(chunk' + 's : [string],' + #10 +
+  '                             cur_l' + 'ine : [string],' + #10 +
+  '                             cur_l' + 'en : int, width : int)' + #10 +
+  #10 + '        Handle a chunk of text (mo' +
+  'st likely a word, not whitespace) ' + 'that' + #10 +
+  '        is too long to fit in any ' + 'line.' + #10 + '        """' + #10 +
   '        # Figure out when indent i' +
   's larger than the specified width,' + ' and make' + #10 +
   '        # sure at least one charac' + 'ter is stripped off on every pass' +
@@ -73677,12 +80685,41 @@ Const
   '        # that minimizes how much ' + 'we violate the width constraint.' +
   #10 + '        elif not cur_line:' + #10 +
   '            cur_line.append(revers' + 'ed_chunks.pop())' + #10 + #10 +
-  '    def _wrap_chunks(self, chunks)' + ':' + #10 + '        lines = []' +
-  #10 + '        if self.width <= 0:' + #10 +
-  '            raise ValueError("inva' +
+  '        # If we''re not allowed to ' +
+  'break long words, and there''s alre' + 'ady' + #10 +
+  '        # text on the current line' +
+  ', do nothing.  Next time through t' + 'he' + #10 +
+  '        # main loop of _wrap_chunk' +
+  's(), we''ll wind up here again, but' + #10 +
+  '        # cur_len will be zero, so' + ' the next line will be entirely' +
+  #10 + '        # devoted to the long word' +
+  ' that we can''t handle right now.' + #10 + #10 +
+  '    def _wrap_chunks(self, chunks)' + ':' + #10 +
+  '        """_wrap_chunks(chunks : [' + 'string]) -> [string]' + #10 + #10 +
+  '        Wrap a sequence of text ch' +
+  'unks and return a list of lines of' + #10 +
+  '        length ''self.width'' or les' +
+  's.  (If ''break_long_words'' is fals' + 'e,' + #10 +
+  '        some lines may be longer t' +
+  'han this.)  Chunks correspond roug' + 'hly' + #10 +
+  '        to words and the whitespac' + 'e between them: each chunk is' +
+  #10 + '        indivisible (modulo ''break' +
+  '_long_words''), but a line break ca' + 'n' + #10 +
+  '        come between any two chunk' +
+  's.  Chunks should not have interna' + 'l' + #10 +
+  '        whitespace; ie. a chunk is' +
+  ' either all whitespace or a "word"' + '.' + #10 +
+  '        Whitespace chunks will be ' +
+  'removed from the beginning and end' + ' of' + #10 +
+  '        lines, but apart from that' + ' whitespace is preserved.' + #10 +
+  '        """' + #10 + '        lines = []' + #10 +
+  '        if self.width <= 0:' + #10 + '            raise ValueError("inva' +
   'lid width %r (must be > 0)" % self' + '.width)' + #10 +
   '        if self.max_lines is not N' + 'one:' + #10 +
-  '            if self.max_lines > 1:' + #10 +
+  '            if self.max_lines > 1:' + #10;
+
+Const
+ Src_textwrap_1: AnsiString =
   '                indent = self.subs' + 'equent_indent' + #10 +
   '            else:' + #10 + '                indent = self.init' +
   'ial_indent' + #10 + '            if len(indent) + len(s' +
@@ -73692,19 +80729,18 @@ Const
   '        # Arrange in reverse order' +
   ' so items can be efficiently poppe' + 'd' + #10 +
   '        # from a stack of chucks.' + #10 + '        chunks.reverse()' +
-  #10 + #10 + '        while chunks:' + #10 +
+  #10 + #10 + '        while chunks:' + #10 + #10 +
   '            # Start the list of ch' +
   'unks that will make up the current' + ' line.' + #10 +
+  '            # cur_len is just the ' +
+  'length of all the chunks in cur_li' + 'ne.' + #10 +
   '            cur_line = []' + #10 + '            cur_len = 0' + #10 + #10 +
   '            # Figure out which sta' + 'tic string will prefix this line.' +
   #10 + '            if lines:' + #10 + '                indent = self.subs' +
   'equent_indent' + #10 + '            else:' + #10 +
   '                indent = self.init' + 'ial_indent' + #10 + #10 +
   '            # Maximum width for th' + 'is line.' + #10 +
-  '            width = self.width - l' + 'en(indent)' + #10 + #10;
-
-Const
- Src_textwrap_1: AnsiString =
+  '            width = self.width - l' + 'en(indent)' + #10 + #10 +
   '            # First chunk on line ' +
   'is whitespace -- drop it, unless t' + 'his' + #10 +
   '            # is the very beginnin' +
@@ -73769,57 +80805,131 @@ Const
   '        return self._split(text)' + #10 + #10 +
   '    # -- Public interface --------' +
   '----------------------------------' + '----' + #10 + #10 +
-  '    def wrap(self, text):' + #10 + '        chunks = self._split_chunk' +
-  's(text)' + #10 + '        if self.fix_sentence_endin' + 'gs:' + #10 +
+  '    def wrap(self, text):' + #10 + '        """wrap(text : string) -> ' +
+  '[string]' + #10 + #10 + '        Reformat the single paragr' +
+  'aph in ''text'' so it fits in lines ' + 'of' + #10 +
+  '        no more than ''self.width'' ' +
+  'columns, and return a list of wrap' + 'ped' + #10 +
+  '        lines.  Tabs in ''text'' are' +
+  ' expanded with string.expandtabs()' + ',' + #10 +
+  '        and all other whitespace c' + 'haracters (including newline) are' +
+  #10 + '        converted to space.' + #10 + '        """' + #10 +
+  '        chunks = self._split_chunk' + 's(text)' + #10 +
+  '        if self.fix_sentence_endin' + 'gs:' + #10 +
   '            self._fix_sentence_end' + 'ings(chunks)' + #10 +
   '        return self._wrap_chunks(c' + 'hunks)' + #10 + #10 +
-  '    def fill(self, text):' + #10 + '        return "\n".join(self.wrap' +
-  '(text))' + #10 + #10 + #10 + '# -- Convenience interface -------' +
+  '    def fill(self, text):' + #10 + '        """fill(text : string) -> ' +
+  'string' + #10 + #10 + '        Reformat the single paragr' +
+  'aph in ''text'' to fit in lines of n' + 'o' + #10 +
+  '        more than ''self.width'' col' + 'umns, and return a new string' +
+  #10 + '        containing the entire wrap' + 'ped paragraph.' + #10 +
+  '        """' + #10 + '        return "\n".join(self.wrap' + '(text))' +
+  #10 + #10 + #10 + '# -- Convenience interface -------' +
   '----------------------------------' + '----' + #10 + #10 +
   'def wrap(text, width=70, **kwargs)' + ':' + #10 +
+  '    """Wrap a single paragraph of ' +
+  'text, returning a list of wrapped ' + 'lines.' + #10 + #10 +
+  '    Reformat the single paragraph ' +
+  'in ''text'' so it fits in lines of n' + 'o' + #10 +
+  '    more than ''width'' columns, and' +
+  ' return a list of wrapped lines.  ' + 'By' + #10 +
+  '    default, tabs in ''text'' are ex' +
+  'panded with string.expandtabs(), a' + 'nd' + #10 +
+  '    all other whitespace character' +
+  's (including newline) are converte' + 'd to' + #10 +
+  '    space.  See TextWrapper class ' +
+  'for available keyword args to cust' + 'omize' + #10 +
+  '    wrapping behaviour.' + #10 + '    """' + #10 +
   '    w = TextWrapper(width=width, *' + '*kwargs)' + #10 +
-  '    return w.wrap(text)' + #10 + #10 + #10 +
+  '    return w.wrap(text)' + #10 + #10 +
   'def fill(text, width=70, **kwargs)' + ':' + #10 +
-  '    w = TextWrapper(width=width, *' + '*kwargs)' + #10 +
-  '    return w.fill(text)' + #10 + #10 + #10 +
+  '    """Fill a single paragraph of ' + 'text, returning a new string.' +
+  #10 + #10 + '    Reformat the single paragraph ' +
+  'in ''text'' to fit in lines of no mo' + 're' + #10 +
+  '    than ''width'' columns, and retu' +
+  'rn a new string containing the ent' + 'ire' + #10 +
+  '    wrapped paragraph.  As with wr' + 'ap(), tabs are expanded and other' +
+  #10 + '    whitespace characters converte' +
+  'd to space.  See TextWrapper class' + ' for' + #10 +
+  '    available keyword args to cust' + 'omize wrapping behaviour.' + #10 +
+  '    """' + #10 + '    w = TextWrapper(width=width, *' + '*kwargs)' + #10 +
+  '    return w.fill(text)' + #10 + #10 +
   'def shorten(text, width, **kwargs)' + ':' + #10 +
-  '    w = TextWrapper(width=width, m' + 'ax_lines=1, **kwargs)' + #10 +
-  '    return w.fill('' ''.join(text.st' + 'rip().split()))' + #10 + #10 +
-  #10 + '# -- Loosely related functionality' +
+  '    """Collapse and truncate the g' +
+  'iven text to fit in the given widt' + 'h.' + #10 + #10 +
+  '    The text first has its whitesp' +
+  'ace collapsed.  If it then fits in' + #10 +
+  '    the *width*, it is returned as' + ' is.  Otherwise, as many words' +
+  #10 + '    as possible are joined and the' +
+  'n the placeholder is appended::' + #10 + #10 +
+  '        >>> textwrap.shorten("Hell' + 'o  world!", width=12)' + #10 +
+  '        ''Hello world!''' + #10 + '        >>> textwrap.shorten("Hell' +
+  'o  world!", width=11)' + #10 + '        ''Hello [...]''' + #10 +
+  '    """' + #10 + '    w = TextWrapper(width=width, m' +
+  'ax_lines=1, **kwargs)' + #10 + '    return w.fill('' ''.join(text.st' +
+  'rip().split()))' + #10 + #10 + #10 + '# -- Loosely related functionality' +
   ' ---------------------------------' + '----' + #10 + #10 +
+  '_whitespace_only_re = re.compile(''' + '^[ \t]+$'', re.MULTILINE)' + #10 +
+  '_leading_whitespace_re = re.compil' +
+  'e(''(^[ \t]*)(?:[^ \t\n])'', re.MULT' + 'ILINE)' + #10 + #10 +
   'def dedent(text):' + #10 + '    """Remove any common leading w' +
-  'hitespace from every line in `text' + '`."""' + #10 + '    margin = None' +
-  #10 + '    lines = text.split(''\n'')' + #10 +
-  '    for k in range(len(lines)):' + #10 + '        line = lines[k]' + #10 +
-  '        body = line.lstrip('' \t'')' + #10 + '        if not body:' + #10 +
-  '            # whitespace-only line' + ' (or empty): normalized to empty' +
-  #10 + '            if line:' + #10 + '                lines[k] = ''''' +
-  #10 + '            continue' + #10 +
-  '        if body[0] == ''\n'':   # ca' +
-  'nnot happen (split on \n), kept fo' + 'r symmetry' + #10 +
-  '            continue' + #10 + '        ind = line[:len(line) - le' +
-  'n(body)]' + #10 + '        if margin is None:' + #10 +
-  '            margin = ind' + #10 + '        elif ind.startswith(margin' +
-  '):' + #10 + '            pass' + #10 +
-  '        elif margin.startswith(ind' + '):' + #10 +
-  '            margin = ind' + #10 + '        else:' + #10 +
-  '            for i in range(min(len' + '(margin), len(ind))):' + #10 +
-  '                if margin[i] != in' + 'd[i]:' + #10 +
-  '                    margin = margi' + 'n[:i]' + #10 +
-  '                    break' + #10 + '    if margin:' + #10 +
-  '        m = len(margin)' + #10 + '        for k in range(len(lines))' +
-  ':' + #10 + '            if lines[k].startswith' + '(margin):' + #10 +
-  '                lines[k] = lines[k' + '][m:]' + #10 +
-  '    return ''\n''.join(lines)' + #10 + #10 + #10 +
-  'def indent(text, prefix, predicate' + '=None):' + #10 +
-  '    if predicate is None:' + #10 + '        def predicate(line):' + #10 +
-  '            return line.strip()' + #10 + #10 +
+  'hitespace from every line in `text' + '`.' + #10 + #10 +
+  '    This can be used to make tripl' +
+  'e-quoted strings line up with the ' + 'left' + #10 +
+  '    edge of the display, while sti' +
+  'll presenting them in the source c' + 'ode' + #10 +
+  '    in indented form.' + #10 + #10 + '    Note that tabs and spaces are ' +
+  'both treated as whitespace, but th' + 'ey' + #10 +
+  '    are not equal: the lines "  he' + 'llo" and "\\thello" are' + #10 +
+  '    considered to have no common l' + 'eading whitespace.' + #10 + #10 +
+  '    Entirely blank lines are norma' + 'lized to a newline character.' +
+  #10 + '    """' + #10 + '    # Look for the longest leading' +
+  ' string of spaces and tabs common ' + 'to' + #10 + '    # all lines.' +
+  #10 + '    margin = None' + #10 + '    text = _whitespace_only_re.sub' +
+  '('''', text)' + #10 + '    indents = _leading_whitespace_' +
+  're.findall(text)' + #10 + '    for indent in indents:' + #10 +
+  '        if margin is None:' + #10 + '            margin = indent' + #10 +
+  #10 + '        # Current line more deeply' +
+  ' indented than previous winner:' + #10 +
+  '        # no change (previous winn' + 'er is still on top).' + #10 +
+  '        elif indent.startswith(mar' + 'gin):' + #10 + '            pass' +
+  #10 + #10 + '        # Current line consistent ' +
+  'with and no deeper than previous w' + 'inner:' + #10 +
+  '        # it''s the new winner.' + #10 +
+  '        elif margin.startswith(ind' + 'ent):' + #10 +
+  '            margin = indent' + #10 + #10 +
+  '        # Find the largest common ' +
+  'whitespace between current line an' + 'd previous' + #10 +
+  '        # winner.' + #10 + '        else:' + #10 +
+  '            for i, (x, y) in enume' + 'rate(zip(margin, indent)):' + #10 +
+  '                if x != y:' + #10 + '                    margin = margi' +
+  'n[:i]' + #10 + '                    break' + #10 + #10 +
+  '    # sanity check (testing/debugg' + 'ing only)' + #10 +
+  '    if 0 and margin:' + #10 + '        for line in text.split("\n' +
+  '"):' + #10 + '            assert not line or lin' +
+  'e.startswith(margin), \' + #10 + '                   "line = %r, mar' +
+  'gin = %r" % (line, margin)' + #10 + #10 + '    if margin:' + #10 +
+  '        text = re.sub(r''(?m)^'' + m' + 'argin, '''', text)' + #10 +
+  '    return text' + #10 + #10 + #10 + 'def indent(text, prefix, predicate' +
+  '=None):' + #10 + '    """Adds ''prefix'' to the beginn' +
+  'ing of selected lines in ''text''.' + #10 + #10 +
+  '    If ''predicate'' is provided, ''p' +
+  'refix'' will only be added to the l' + 'ines' + #10 +
+  '    where ''predicate(line)'' is Tru' +
+  'e. If ''predicate'' is not provided,' + #10 +
+  '    it will default to adding ''pre' +
+  'fix'' to all non-empty lines that d' + 'o not' + #10 +
+  '    consist solely of whitespace c' + 'haracters.' + #10 + '    """' +
+  #10 + '    if predicate is None:' + #10 + '        def predicate(line):' +
+  #10 + '            return line.strip()' + #10 + #10 +
   '    def prefixed_lines():' + #10 + '        for line in text.splitline' +
   's(True):' + #10 + '            yield (prefix + line i' +
   'f predicate(line) else line)' + #10 +
   '    return ''''.join(prefixed_lines(' + '))' + #10 + #10 + #10 +
-  'if __name__ == "__main__":' + #10 + '    print(dedent("Hello there.\n  ' +
-  'This is indented."))' + #10 + #10;
+  'if __name__ == "__main__":' + #10 + '    #print dedent("\tfoo\n\tbar")' +
+  #10 + '    #print dedent("  \thello there' + '\n  \t  how are you?")' +
+  #10 + '    print(dedent("Hello there.\n  ' + 'This is indented."))' + #10 +
+  #10;
 
 Function Src_textwrap: AnsiString;
 Begin
@@ -75042,6 +82152,678 @@ Begin
 End;
 
 Const
+ Src_token_0: AnsiString =
+  '"""Token constants."""' + #10 + '# Auto-generated by Tools/scripts/' +
+  'generate_token.py' + #10 + #10 + '__all__ = [''tok_name'', ''ISTERMINAL' +
+  ''', ''ISNONTERMINAL'', ''ISEOF'']' + #10 + #10 + 'ENDMARKER = 0' + #10 +
+  'NAME = 1' + #10 + 'NUMBER = 2' + #10 + 'STRING = 3' + #10 + 'NEWLINE = 4' +
+  #10 + 'INDENT = 5' + #10 + 'DEDENT = 6' + #10 + 'LPAR = 7' + #10 +
+  'RPAR = 8' + #10 + 'LSQB = 9' + #10 + 'RSQB = 10' + #10 + 'COLON = 11' +
+  #10 + 'COMMA = 12' + #10 + 'SEMI = 13' + #10 + 'PLUS = 14' + #10 +
+  'MINUS = 15' + #10 + 'STAR = 16' + #10 + 'SLASH = 17' + #10 + 'VBAR = 18' +
+  #10 + 'AMPER = 19' + #10 + 'LESS = 20' + #10 + 'GREATER = 21' + #10 +
+  'EQUAL = 22' + #10 + 'DOT = 23' + #10 + 'PERCENT = 24' + #10 +
+  'LBRACE = 25' + #10 + 'RBRACE = 26' + #10 + 'EQEQUAL = 27' + #10 +
+  'NOTEQUAL = 28' + #10 + 'LESSEQUAL = 29' + #10 + 'GREATEREQUAL = 30' + #10 +
+  'TILDE = 31' + #10 + 'CIRCUMFLEX = 32' + #10 + 'LEFTSHIFT = 33' + #10 +
+  'RIGHTSHIFT = 34' + #10 + 'DOUBLESTAR = 35' + #10 + 'PLUSEQUAL = 36' + #10 +
+  'MINEQUAL = 37' + #10 + 'STAREQUAL = 38' + #10 + 'SLASHEQUAL = 39' + #10 +
+  'PERCENTEQUAL = 40' + #10 + 'AMPEREQUAL = 41' + #10 + 'VBAREQUAL = 42' +
+  #10 + 'CIRCUMFLEXEQUAL = 43' + #10 + 'LEFTSHIFTEQUAL = 44' + #10 +
+  'RIGHTSHIFTEQUAL = 45' + #10 + 'DOUBLESTAREQUAL = 46' + #10 +
+  'DOUBLESLASH = 47' + #10 + 'DOUBLESLASHEQUAL = 48' + #10 + 'AT = 49' + #10 +
+  'ATEQUAL = 50' + #10 + 'RARROW = 51' + #10 + 'ELLIPSIS = 52' + #10 +
+  'COLONEQUAL = 53' + #10 + 'OP = 54' + #10 + 'AWAIT = 55' + #10 +
+  'ASYNC = 56' + #10 + 'TYPE_IGNORE = 57' + #10 + 'TYPE_COMMENT = 58' + #10 +
+  '# These aren''t used by the C token' +
+  'izer but are needed for tokenize.p' + 'y' + #10 + 'ERRORTOKEN = 59' + #10 +
+  'COMMENT = 60' + #10 + 'NL = 61' + #10 + 'ENCODING = 62' + #10 +
+  'N_TOKENS = 63' + #10 + '# Special definitions for cooperat' +
+  'ion with parser' + #10 + 'NT_OFFSET = 256' + #10 + #10 +
+  'tok_name = {value: name' + #10 + '            for name, value in glo' +
+  'bals().items()' + #10 + '            if isinstance(value, i' +
+  'nt) and not name.startswith(''_'')}' + #10 +
+  '__all__.extend(tok_name.values())' + #10 + #10 + 'EXACT_TOKEN_TYPES = {' +
+  #10 + '    ''!='': NOTEQUAL,' + #10 + '    ''%'': PERCENT,' + #10 +
+  '    ''%='': PERCENTEQUAL,' + #10 + '    ''&'': AMPER,' + #10 +
+  '    ''&='': AMPEREQUAL,' + #10 + '    ''('': LPAR,' + #10 +
+  '    '')'': RPAR,' + #10 + '    ''*'': STAR,' + #10 +
+  '    ''**'': DOUBLESTAR,' + #10 + '    ''**='': DOUBLESTAREQUAL,' + #10 +
+  '    ''*='': STAREQUAL,' + #10 + '    ''+'': PLUS,' + #10 +
+  '    ''+='': PLUSEQUAL,' + #10 + '    '','': COMMA,' + #10 +
+  '    ''-'': MINUS,' + #10 + '    ''-='': MINEQUAL,' + #10 +
+  '    ''->'': RARROW,' + #10 + '    ''.'': DOT,' + #10 +
+  '    ''...'': ELLIPSIS,' + #10 + '    ''/'': SLASH,' + #10 +
+  '    ''//'': DOUBLESLASH,' + #10 + '    ''//='': DOUBLESLASHEQUAL,' + #10 +
+  '    ''/='': SLASHEQUAL,' + #10 + '    '':'': COLON,' + #10 +
+  '    '':='': COLONEQUAL,' + #10 + '    '';'': SEMI,' + #10 +
+  '    ''<'': LESS,' + #10 + '    ''<<'': LEFTSHIFT,' + #10 +
+  '    ''<<='': LEFTSHIFTEQUAL,' + #10 + '    ''<='': LESSEQUAL,' + #10 +
+  '    ''='': EQUAL,' + #10 + '    ''=='': EQEQUAL,' + #10 +
+  '    ''>'': GREATER,' + #10 + '    ''>='': GREATEREQUAL,' + #10 +
+  '    ''>>'': RIGHTSHIFT,' + #10 + '    ''>>='': RIGHTSHIFTEQUAL,' + #10 +
+  '    ''@'': AT,' + #10 + '    ''@='': ATEQUAL,' + #10 + '    ''['': LSQB,' +
+  #10 + '    '']'': RSQB,' + #10 + '    ''^'': CIRCUMFLEX,' + #10 +
+  '    ''^='': CIRCUMFLEXEQUAL,' + #10 + '    ''{'': LBRACE,' + #10 +
+  '    ''|'': VBAR,' + #10 + '    ''|='': VBAREQUAL,' + #10 +
+  '    ''}'': RBRACE,' + #10 + '    ''~'': TILDE,' + #10 + '}' + #10 + #10 +
+  'def ISTERMINAL(x):' + #10 + '    return x < NT_OFFSET' + #10 + #10 +
+  'def ISNONTERMINAL(x):' + #10 + '    return x >= NT_OFFSET' + #10 + #10 +
+  'def ISEOF(x):' + #10 + '    return x == ENDMARKER' + #10 + #10;
+
+Function Src_token: AnsiString;
+Begin
+ Result := Src_token_0;
+End;
+
+Const
+ Src_tokenize_0: AnsiString =
+  '"""Tokenization help for Python pr' + 'ograms.' + #10 + #10 +
+  'tokenize(readline) is a generator ' +
+  'that breaks a stream of bytes into' + #10 +
+  'Python tokens.  It decodes the byt' + 'es according to PEP-0263 for' +
+  #10 + 'determining source file encoding.' + #10 + #10 +
+  'It accepts a readline-like method ' +
+  'which is called repeatedly to get ' + 'the' + #10 +
+  'next line of input (or b"" for EOF' +
+  ').  It generates 5-tuples with the' + 'se' + #10 + 'members:' + #10 + #10 +
+  '    the token type (see token.py)' + #10 + '    the token (a string)' +
+  #10 + '    the starting (row, column) ind' +
+  'ices of the token (a 2-tuple of in' + 'ts)' + #10 +
+  '    the ending (row, column) indic' +
+  'es of the token (a 2-tuple of ints' + ')' + #10 +
+  '    the original line (string)' + #10 + #10 +
+  'It is designed to match the workin' +
+  'g of the Python tokenizer exactly,' + ' except' + #10 +
+  'that it produces COMMENT tokens fo' +
+  'r comments and gives type OP for a' + 'll' + #10 +
+  'operators.  Additionally, all toke' +
+  'n lists start with an ENCODING tok' + 'en' + #10 +
+  'which tells you which encoding was' + ' used to decode the bytes stream.' +
+  #10 + '"""' + #10 + #10 + '__author__ = ''Ka-Ping Yee <ping@lf' +
+  'w.org>''' + #10 + '__credits__ = (''GvR, ESR, Tim Pete' +
+  'rs, Thomas Wouters, Fred Drake, ''' + #10 +
+  '               ''Skip Montanaro, Ra' +
+  'ymond Hettinger, Trent Nelson, ''' + #10 +
+  '               ''Michael Foord'')' + #10 +
+  'from builtins import open as _buil' + 'tin_open' + #10 +
+  'from codecs import lookup, BOM_UTF' + '8' + #10 + 'import collections' +
+  #10 + 'from io import TextIOWrapper' + #10 +
+  'import itertools as _itertools' + #10 + 'import re' + #10 + 'import sys' +
+  #10 + 'from token import *' + #10 + 'from token import EXACT_TOKEN_TYPE' +
+  'S' + #10 + #10 + 'cookie_re = re.compile(r''^[ \t\f]*' +
+  '#.*?coding[:=][ \t]*([-\w.]+)'', re' + '.ASCII)' + #10 +
+  'blank_re = re.compile(br''^[ \t\f]*' + '(?:[#\r\n]|$)'', re.ASCII)' + #10 +
+  #10 + 'import token' + #10 + '__all__ = token.__all__ + ["tokeni' +
+  'ze", "generate_tokens", "detect_en' + 'coding",' + #10 +
+  '                           "untoke' + 'nize", "TokenInfo"]' + #10 +
+  'del token' + #10 + #10 + 'class TokenInfo(collections.namedt' +
+  'uple(''TokenInfo'', ''type string sta' + 'rt end line'')):' + #10 +
+  '    def __repr__(self):' + #10 + '        annotated_type = ''%d (%s)''' +
+  ' % (self.type, tok_name[self.type]' + ')' + #10 +
+  '        return (''TokenInfo(type=%s' +
+  ', string=%r, start=%r, end=%r, lin' + 'e=%r)'' %' + #10 +
+  '                self._replace(type' + '=annotated_type))' + #10 + #10 +
+  '    @property' + #10 + '    def exact_type(self):' + #10 +
+  '        if self.type == OP and sel' + 'f.string in EXACT_TOKEN_TYPES:' +
+  #10 + '            return EXACT_TOKEN_TYP' + 'ES[self.string]' + #10 +
+  '        else:' + #10 + '            return self.type' + #10 + #10 +
+  'def group(*choices): return ''('' + ' + '''|''.join(choices) + '')''' +
+  #10 + 'def any(*choices): return group(*c' + 'hoices) + ''*''' + #10 +
+  'def maybe(*choices): return group(' + '*choices) + ''?''' + #10 + #10 +
+  '# Note: we use unicode matching fo' +
+  'r names ("\w") but ascii matching ' + 'for' + #10 + '# number literals.' +
+  #10 + 'Whitespace = r''[ \f\t]*''' + #10 + 'Comment = r''#[^\r\n]*''' +
+  #10 + 'Ignore = Whitespace + any(r''\\\r?\' +
+  'n'' + Whitespace) + maybe(Comment)' + #10 + 'Name = r''\w+''' + #10 + #10 +
+  'Hexnumber = r''0[xX](?:_?[0-9a-fA-F' + '])+''' + #10 +
+  'Binnumber = r''0[bB](?:_?[01])+''' + #10 +
+  'Octnumber = r''0[oO](?:_?[0-7])+''' + #10 +
+  'Decnumber = r''(?:0(?:_?0)*|[1-9](?' + ':_?[0-9])*)''' + #10 +
+  'Intnumber = group(Hexnumber, Binnu' + 'mber, Octnumber, Decnumber)' + #10 +
+  'Exponent = r''[eE][-+]?[0-9](?:_?[0' + '-9])*''' + #10 +
+  'Pointfloat = group(r''[0-9](?:_?[0-' + '9])*\.(?:[0-9](?:_?[0-9])*)?'',' +
+  #10 + '                   r''\.[0-9](?:_?[' +
+  '0-9])*'') + maybe(Exponent)' + #10 +
+  'Expfloat = r''[0-9](?:_?[0-9])*'' + ' + 'Exponent' + #10 +
+  'Floatnumber = group(Pointfloat, Ex' + 'pfloat)' + #10 +
+  'Imagnumber = group(r''[0-9](?:_?[0-' +
+  '9])*[jJ]'', Floatnumber + r''[jJ]'')' + #10 +
+  'Number = group(Imagnumber, Floatnu' + 'mber, Intnumber)' + #10 + #10 +
+  '# Return the empty string, plus al' + 'l of the valid string prefixes.' +
+  #10 + 'def _all_string_prefixes():' + #10 +
+  '    # The valid string prefixes. O' +
+  'nly contain the lower case version' + 's,' + #10 +
+  '    #  and don''t contain any permu' + 'tations (include ''fr'', but not' +
+  #10 + '    #  ''rf''). The various permutat' + 'ions will be generated.' +
+  #10 + '    _valid_string_prefixes = [''b'',' +
+  ' ''r'', ''u'', ''f'', ''br'', ''fr'']' + #10 +
+  '    # if we add binary f-strings, ' + 'add: [''fb'', ''fbr'']' + #10 +
+  '    result = {''''}' + #10 + '    for prefix in _valid_string_pr' +
+  'efixes:' + #10 + '        for t in _itertools.permut' + 'ations(prefix):' +
+  #10 + '            # create a list with u' +
+  'pper and lower versions of each' + #10 + '            #  character' + #10 +
+  '            for u in _itertools.pr' +
+  'oduct(*[(c, c.upper()) for c in t]' + '):' + #10 +
+  '                result.add(''''.join' + '(u))' + #10 +
+  '    return result' + #10 + #10 + 'def _compile(expr):' + #10 +
+  '    return re.compile(expr, re.UNI' + 'CODE)' + #10 + #10 +
+  '# Note that since _all_string_pref' + 'ixes includes the empty string,' +
+  #10 + '#  StringPrefix can be the empty s' + 'tring (making it optional).' +
+  #10 + 'StringPrefix = group(*_all_string_' + 'prefixes())' + #10 + #10 +
+  '# Tail end of '' string.' + #10 + 'Single = r"[^''\\]*(?:\\.[^''\\]*)*''' +
+  '"' + #10 + '# Tail end of " string.' + #10 +
+  'Double = r''[^"\\]*(?:\\.[^"\\]*)*"' + '''' + #10 +
+  '# Tail end of '''''' string.' + #10 +
+  'Single3 = r"[^''\\]*(?:(?:\\.|''(?!''' + '''))[^''\\]*)*''''''"' + #10 +
+  '# Tail end of """ string.' + #10 + 'Double3 = r''[^"\\]*(?:(?:\\.|"(?!"' +
+  '"))[^"\\]*)*"""''' + #10 + 'Triple = group(StringPrefix + "''''''' +
+  '", StringPrefix + ''"""'')' + #10 + '# Single-line '' or " string.' + #10 +
+  'String = group(StringPrefix + r"''[' + '^\n''\\]*(?:\\.[^\n''\\]*)*''",' +
+  #10 + '               StringPrefix + r''"[' +
+  '^\n"\\]*(?:\\.[^\n"\\]*)*"'')' + #10 + #10 +
+  '# Sorting in reverse order puts th' +
+  'e long operators before their pref' + 'ixes.' + #10 +
+  '# Otherwise if = came before ==, =' +
+  '= would get recognized as two inst' + 'ances' + #10 + '# of =.' + #10 +
+  'Special = group(*map(re.escape, so' +
+  'rted(EXACT_TOKEN_TYPES, reverse=Tr' + 'ue)))' + #10 +
+  'Funny = group(r''\r?\n'', Special)' + #10 + #10 +
+  'PlainToken = group(Number, Funny, ' + 'String, Name)' + #10 +
+  'Token = Ignore + PlainToken' + #10 + #10 +
+  '# First (or only) line of '' or " s' + 'tring.' + #10 +
+  'ContStr = group(StringPrefix + r"''' + '[^\n''\\]*(?:\\.[^\n''\\]*)*" +' +
+  #10 + '                group("''", r''\\\r?' + '\n''),' + #10 +
+  '                StringPrefix + r''"' + '[^\n"\\]*(?:\\.[^\n"\\]*)*'' +' +
+  #10 + '                group(''"'', r''\\\r?' + '\n''))' + #10 +
+  'PseudoExtras = group(r''\\\r?\n|\Z''' + ', Comment, Triple)' + #10 +
+  'PseudoToken = Whitespace + group(P' +
+  'seudoExtras, Number, Funny, ContSt' + 'r, Name)' + #10 + #10 +
+  '# For a given string prefix plus q' + 'uotes, endpats maps it to a regex' +
+  #10 + '#  to match the remainder of that ' +
+  'string. _prefix can be empty, for' + #10 +
+  '#  a normal single or triple quote' + 'd string (with no prefix).' + #10 +
+  'endpats = {}' + #10 + 'for _prefix in _all_string_prefixe' + 's():' + #10 +
+  '    endpats[_prefix + "''"] = Singl' + 'e' + #10 +
+  '    endpats[_prefix + ''"''] = Doubl' + 'e' + #10 +
+  '    endpats[_prefix + "''''''"] = Sin' + 'gle3' + #10 +
+  '    endpats[_prefix + ''"""''] = Dou' + 'ble3' + #10 + #10 +
+  '# A set of all of the single and t' + 'riple quoted string prefixes,' +
+  #10 + '#  including the opening quotes.' + #10 + 'single_quoted = set()' +
+  #10 + 'triple_quoted = set()' + #10 + 'for t in _all_string_prefixes():' +
+  #10 + '    for u in (t + ''"'', t + "''"):' + #10 +
+  '        single_quoted.add(u)' + #10 +
+  '    for u in (t + ''"""'', t + "''''''"' + '):' + #10 +
+  '        triple_quoted.add(u)' + #10 + #10 + 'tabsize = 8' + #10 + #10 +
+  'class TokenError(Exception): pass' + #10 + #10 +
+  'class StopTokenizing(Exception): p' + 'ass' + #10 + #10 + #10 +
+  'class Untokenizer:' + #10 + #10 + '    def __init__(self):' + #10 +
+  '        self.tokens = []' + #10 + '        self.prev_row = 1' + #10 +
+  '        self.prev_col = 0' + #10 + '        self.encoding = None' + #10 +
+  #10 + '    def add_whitespace(self, start' + '):' + #10 +
+  '        row, col = start' + #10 + '        if row < self.prev_row or ' +
+  'row == self.prev_row and col < sel' + 'f.prev_col:' + #10 +
+  '            raise ValueError("star' +
+  't ({},{}) precedes previous end ({' + '},{})"' + #10 +
+  '                             .form' +
+  'at(row, col, self.prev_row, self.p' + 'rev_col))' + #10 +
+  '        row_offset = row - self.pr' + 'ev_row' + #10 +
+  '        if row_offset:' + #10 + '            self.tokens.append("\\' +
+  '\n" * row_offset)' + #10 + '            self.prev_col = 0' + #10 +
+  '        col_offset = col - self.pr' + 'ev_col' + #10 +
+  '        if col_offset:' + #10 + '            self.tokens.append(" "' +
+  ' * col_offset)' + #10 + #10 + '    def untokenize(self, iterable)' + ':' +
+  #10 + '        it = iter(iterable)' + #10 + '        indents = []' + #10 +
+  '        startline = False' + #10 + '        for t in it:' + #10 +
+  '            if len(t) == 2:' + #10 + '                self.compat(t, it)' +
+  #10 + '                break' + #10 + '            tok_type, token, start' +
+  ', end, line = t' + #10 + '            if tok_type == ENCODIN' + 'G:' +
+  #10 + '                self.encoding = to' + 'ken' + #10 +
+  '                continue' + #10 + '            if tok_type == ENDMARK' +
+  'ER:' + #10 + '                break' + #10 +
+  '            if tok_type == INDENT:' + #10 +
+  '                indents.append(tok' + 'en)' + #10 +
+  '                continue' + #10 + '            elif tok_type == DEDEN' +
+  'T:' + #10 + '                indents.pop()' + #10 +
+  '                self.prev_row, sel' + 'f.prev_col = end' + #10 +
+  '                continue' + #10 + '            elif tok_type in (NEWL' +
+  'INE, NL):' + #10 + '                startline = True' + #10 +
+  '            elif startline and ind' + 'ents:' + #10 +
+  '                indent = indents[-' + '1]' + #10 +
+  '                if start[1] >= len' + '(indent):' + #10 +
+  '                    self.tokens.ap' + 'pend(indent)' + #10 +
+  '                    self.prev_col ' + '= len(indent)' + #10 +
+  '                startline = False' + #10 +
+  '            self.add_whitespace(st' + 'art)' + #10 +
+  '            self.tokens.append(tok' + 'en)' + #10 +
+  '            self.prev_row, self.pr' + 'ev_col = end' + #10 +
+  '            if tok_type in (NEWLIN' + 'E, NL):' + #10 +
+  '                self.prev_row += 1' + #10 +
+  '                self.prev_col = 0' + #10 +
+  '        return "".join(self.tokens' + ')' + #10 + #10 +
+  '    def compat(self, token, iterab' + 'le):' + #10 +
+  '        indents = []' + #10 + '        toks_append = self.tokens.' +
+  'append' + #10 + '        startline = token[0] in (N' + 'EWLINE, NL)' +
+  #10 + '        prevstring = False' + #10 + #10 +
+  '        for tok in _itertools.chai' + 'n([token], iterable):' + #10 +
+  '            toknum, tokval = tok[:' + '2]' + #10 +
+  '            if toknum == ENCODING:' + #10 +
+  '                self.encoding = to' + 'kval' + #10 +
+  '                continue' + #10 + #10 +
+  '            if toknum in (NAME, NU' + 'MBER):' + #10 +
+  '                tokval += '' ''' + #10 + #10 +
+  '            # Insert a space betwe' + 'en two consecutive strings' + #10 +
+  '            if toknum == STRING:' + #10 +
+  '                if prevstring:' + #10 +
+  '                    tokval = '' '' +' + ' tokval' + #10 +
+  '                prevstring = True' + #10 + '            else:' + #10 +
+  '                prevstring = False' + #10 + #10 +
+  '            if toknum == INDENT:' + #10 +
+  '                indents.append(tok' + 'val)' + #10 +
+  '                continue' + #10 + '            elif toknum == DEDENT:' +
+  #10 + '                indents.pop()' + #10 + '                continue' +
+  #10 + '            elif toknum in (NEWLIN' + 'E, NL):' + #10 +
+  '                startline = True' + #10;
+
+Const
+ Src_tokenize_1: AnsiString =
+  '            elif startline and ind' + 'ents:' + #10 +
+  '                toks_append(indent' + 's[-1])' + #10 +
+  '                startline = False' + #10 +
+  '            toks_append(tokval)' + #10 + #10 + #10 +
+  'def untokenize(iterable):' + #10 + '    """Transform tokens back into ' +
+  'Python source code.' + #10 + '    It returns a bytes object, enc' +
+  'oded using the ENCODING' + #10 + '    token, which is the first toke' +
+  'n sequence output by tokenize.' + #10 + #10 +
+  '    Each element returned by the i' + 'terable must be a token sequence' +
+  #10 + '    with at least two elements, a ' +
+  'token number and token value.  If' + #10 +
+  '    only two tokens are passed, th' + 'e resulting output is poor.' + #10 +
+  #10 + '    Round-trip invariant for full ' + 'input:' + #10 +
+  '        Untokenized source will ma' + 'tch input source exactly' + #10 +
+  #10 + '    Round-trip invariant for limit' + 'ed input:' + #10 +
+  '        # Output bytes will tokeni' + 'ze back to the input' + #10 +
+  '        t1 = [tok[:2] for tok in t' + 'okenize(f.readline)]' + #10 +
+  '        newcode = untokenize(t1)' + #10 +
+  '        readline = BytesIO(newcode' + ').readline' + #10 +
+  '        t2 = [tok[:2] for tok in t' + 'okenize(readline)]' + #10 +
+  '        assert t1 == t2' + #10 + '    """' + #10 +
+  '    ut = Untokenizer()' + #10 + '    out = ut.untokenize(iterable)' + #10 +
+  '    if ut.encoding is not None:' + #10 +
+  '        out = out.encode(ut.encodi' + 'ng)' + #10 + '    return out' +
+  #10 + #10 + #10 + 'def _get_normal_name(orig_enc):' + #10 +
+  '    """Imitates get_normal_name in' + ' tokenizer.c."""' + #10 +
+  '    # Only care about the first 12' + ' characters.' + #10 +
+  '    enc = orig_enc[:12].lower().re' + 'place("_", "-")' + #10 +
+  '    if enc == "utf-8" or enc.start' + 'swith("utf-8-"):' + #10 +
+  '        return "utf-8"' + #10 + '    if enc in ("latin-1", "iso-885' +
+  '9-1", "iso-latin-1") or \' + #10 + '       enc.startswith(("latin-1-",' +
+  ' "iso-8859-1-", "iso-latin-1-")):' + #10 + '        return "iso-8859-1"' +
+  #10 + '    return orig_enc' + #10 + #10 + 'def detect_encoding(readline):' +
+  #10 + '    """' + #10 + '    The detect_encoding() function' +
+  ' is used to detect the encoding th' + 'at should' + #10 +
+  '    be used to decode a Python sou' +
+  'rce file.  It requires one argumen' + 't, readline,' + #10 +
+  '    in the same way as the tokeniz' + 'e() generator.' + #10 + #10 +
+  '    It will call readline a maximu' +
+  'm of twice, and return the encodin' + 'g used' + #10 +
+  '    (as a string) and a list of an' +
+  'y lines (left as bytes) it has rea' + 'd in.' + #10 + #10 +
+  '    It detects the encoding from t' +
+  'he presence of a utf-8 bom or an e' + 'ncoding' + #10 +
+  '    cookie as specified in pep-026' +
+  '3.  If both a bom and a cookie are' + ' present,' + #10 +
+  '    but disagree, a SyntaxError wi' +
+  'll be raised.  If the encoding coo' + 'kie is an' + #10 +
+  '    invalid charset, raise a Synta' +
+  'xError.  Note that if a utf-8 bom ' + 'is found,' + #10 +
+  '    ''utf-8-sig'' is returned.' + #10 + #10 +
+  '    If no encoding is specified, t' +
+  'hen the default of ''utf-8'' will be' + ' returned.' + #10 + '    """' +
+  #10 + '    try:' + #10 + '        filename = readline.__self' + '__.name' +
+  #10 + '    except AttributeError:' + #10 + '        filename = None' + #10 +
+  '    bom_found = False' + #10 + '    encoding = None' + #10 +
+  '    default = ''utf-8''' + #10 + '    def read_or_stop():' + #10 +
+  '        try:' + #10 + '            return readline()' + #10 +
+  '        except StopIteration:' + #10 + '            return b''''' + #10 +
+  #10 + '    def find_cookie(line):' + #10 + '        try:' + #10 +
+  '            # Decode as UTF-8. Eit' +
+  'her the line is an encoding declar' + 'ation,' + #10 +
+  '            # in which case it sho' +
+  'uld be pure ASCII, or it must be U' + 'TF-8' + #10 +
+  '            # per default encoding' + '.' + #10 +
+  '            line_string = line.dec' + 'ode(''utf-8'')' + #10 +
+  '        except UnicodeDecodeError:' + #10 +
+  '            msg = "invalid or miss' + 'ing encoding declaration"' + #10 +
+  '            if filename is not Non' + 'e:' + #10 +
+  '                msg = ''{} for {!r}' + '''.format(msg, filename)' + #10 +
+  '            raise SyntaxError(msg)' + #10 + #10 +
+  '        match = cookie_re.match(li' + 'ne_string)' + #10 +
+  '        if not match:' + #10 + '            return None' + #10 +
+  '        encoding = _get_normal_nam' + 'e(match.group(1))' + #10 +
+  '        try:' + #10 + '            codec = lookup(encodin' + 'g)' + #10 +
+  '        except LookupError:' + #10 + '            # This behaviour mimic' +
+  's the Python interpreter' + #10 + '            if filename is None:' +
+  #10 + '                msg = "unknown enc' + 'oding: " + encoding' + #10 +
+  '            else:' + #10 + '                msg = "unknown enc' +
+  'oding for {!r}: {}".format(filenam' + 'e,' + #10 +
+  '                        encoding)' + #10 +
+  '            raise SyntaxError(msg)' + #10 + #10 + '        if bom_found:' +
+  #10 + '            if encoding != ''utf-8''' + ':' + #10 +
+  '                # This behaviour m' + 'imics the Python interpreter' +
+  #10 + '                if filename is Non' + 'e:' + #10 +
+  '                    msg = ''encodin' + 'g problem: utf-8''' + #10 +
+  '                else:' + #10 + '                    msg = ''encodin' +
+  'g problem for {!r}: utf-8''.format(' + 'filename)' + #10 +
+  '                raise SyntaxError(' + 'msg)' + #10 +
+  '            encoding += ''-sig''' + #10 + '        return encoding' + #10 +
+  #10 + '    first = read_or_stop()' + #10 +
+  '    if first.startswith(BOM_UTF8):' + #10 + '        bom_found = True' +
+  #10 + '        first = first[3:]' + #10 +
+  '        default = ''utf-8-sig''' + #10 + '    if not first:' + #10 +
+  '        return default, []' + #10 + #10 +
+  '    encoding = find_cookie(first)' + #10 + '    if encoding:' + #10 +
+  '        return encoding, [first]' + #10 +
+  '    if not blank_re.match(first):' + #10 +
+  '        return default, [first]' + #10 + #10 +
+  '    second = read_or_stop()' + #10 + '    if not second:' + #10 +
+  '        return default, [first]' + #10 + #10 +
+  '    encoding = find_cookie(second)' + #10 + '    if encoding:' + #10 +
+  '        return encoding, [first, s' + 'econd]' + #10 + #10 +
+  '    return default, [first, second' + ']' + #10 + #10 + #10 +
+  'def open(filename):' + #10 + '    """Open a file in read only mo' +
+  'de using the encoding detected by' + #10 + '    detect_encoding().' + #10 +
+  '    """' + #10 + '    buffer = _builtin_open(filenam' + 'e, ''rb'')' +
+  #10 + '    try:' + #10 + '        encoding, lines = detect_e' +
+  'ncoding(buffer.readline)' + #10 + '        buffer.seek(0)' + #10 +
+  '        text = TextIOWrapper(buffe' + 'r, encoding, line_buffering=True)' +
+  #10 + '        text.mode = ''r''' + #10 + '        return text' + #10 +
+  '    except:' + #10 + '        buffer.close()' + #10 + '        raise' +
+  #10 + #10 + #10 + 'def tokenize(readline):' + #10 + '    """' + #10 +
+  '    The tokenize() generator requi' + 'res one argument, readline, which' +
+  #10 + '    must be a callable object whic' +
+  'h provides the same interface as t' + 'he' + #10 +
+  '    readline() method of built-in ' +
+  'file objects.  Each call to the fu' + 'nction' + #10 +
+  '    should return one line of inpu' +
+  't as bytes.  Alternatively, readli' + 'ne' + #10 +
+  '    can be a callable function ter' + 'minating with StopIteration:' +
+  #10 + '        readline = open(myfile, ''r' +
+  'b'').__next__  # Example of alterna' + 'te readline' + #10 + #10 +
+  '    The generator produces 5-tuple' +
+  's with these members: the token ty' + 'pe; the' + #10 +
+  '    token string; a 2-tuple (srow,' +
+  ' scol) of ints specifying the row ' + 'and' + #10 +
+  '    column where the token begins ' +
+  'in the source; a 2-tuple (erow, ec' + 'ol) of' + #10 +
+  '    ints specifying the row and co' +
+  'lumn where the token ends in the s' + 'ource;' + #10 +
+  '    and the line on which the toke' +
+  'n was found.  The line passed is t' + 'he' + #10 + '    physical line.' +
+  #10 + #10 + '    The first token sequence will ' +
+  'always be an ENCODING token' + #10 + '    which tells you which encoding' +
+  ' was used to decode the bytes stre' + 'am.' + #10 + '    """' + #10 +
+  '    encoding, consumed = detect_en' + 'coding(readline)' + #10 +
+  '    empty = _itertools.repeat(b"")' + #10 +
+  '    rl_gen = _itertools.chain(cons' + 'umed, iter(readline, b""), empty)' +
+  #10 + '    return _tokenize(rl_gen.__next' + '__, encoding)' + #10 + #10 +
+  #10 + 'def _tokenize(readline, encoding):' + #10 +
+  '    lnum = parenlev = continued = ' + '0' + #10 +
+  '    numchars = ''0123456789''' + #10 + '    contstr, needcont = '''', 0' +
+  #10 + '    contline = None' + #10 + '    indents = [0]' + #10 + #10 +
+  '    if encoding is not None:' + #10 +
+  '        if encoding == "utf-8-sig"' + ':' + #10 +
+  '            # BOM will already hav' + 'e been stripped.' + #10 +
+  '            encoding = "utf-8"' + #10 +
+  '        yield TokenInfo(ENCODING, ' + 'encoding, (0, 0), (0, 0), '''')' +
+  #10 + '    last_line = b''''' + #10 + '    line = b''''' + #10 +
+  '    while True:                   ' +
+  '             # loop over lines in ' + 'stream' + #10 + '        try:' +
+  #10 + '            # We capture the value' +
+  ' of the line variable here because' + #10 +
+  '            # readline uses the em' +
+  'pty string '''' to signal end of inp' + 'ut,' + #10 +
+  '            # hence `line` itself ' +
+  'will always be overwritten at the ' + 'end' + #10 +
+  '            # of this loop.' + #10 + '            last_line = line' + #10 +
+  '            line = readline()' + #10 + '        except StopIteration:' +
+  #10 + '            line = b''''' + #10 + #10 +
+  '        if encoding is not None:' + #10 +
+  '            line = line.decode(enc' + 'oding)' + #10 +
+  '        lnum += 1' + #10 + '        pos, max = 0, len(line)' + #10 + #10 +
+  '        if contstr:               ' + '             # continued string' +
+  #10 + '            if not line:' + #10 +
+  '                raise TokenError("' +
+  'EOF in multi-line string", strstar' + 't)' + #10 +
+  '            endmatch = endprog.mat' + 'ch(line)' + #10 +
+  '            if endmatch:' + #10 + '                pos = end = endmat' +
+  'ch.end(0)' + #10 + '                yield TokenInfo(ST' +
+  'RING, contstr + line[:end],' + #10 + '                       strstart, (' +
+  'lnum, end), contline + line)' + #10 +
+  '                contstr, needcont ' + '= '''', 0' + #10 +
+  '                contline = None' + #10 +
+  '            elif needcont and line' +
+  '[-2:] != ''\\\n'' and line[-3:] != ''' + '\\\r\n'':' + #10 +
+  '                yield TokenInfo(ER' + 'RORTOKEN, contstr + line,' + #10 +
+  '                           strstar' + 't, (lnum, len(line)), contline)' +
+  #10 + '                contstr = ''''' + #10 +
+  '                contline = None' + #10 + '                continue' + #10 +
+  '            else:' + #10 + '                contstr = contstr ' +
+  '+ line' + #10 + '                contline = contlin' + 'e + line' + #10 +
+  '                continue' + #10 + #10 +
+  '        elif parenlev == 0 and not' + ' continued:  # new statement' +
+  #10 + '            if not line: break' + #10 + '            column = 0' +
+  #10 + '            while pos < max:      ' +
+  '             # measure leading whi' + 'tespace' + #10 +
+  '                if line[pos] == '' ' + ''':' + #10 +
+  '                    column += 1' + #10 +
+  '                elif line[pos] == ' + '''\t'':' + #10 +
+  '                    column = (colu' + 'mn//tabsize + 1)*tabsize' + #10 +
+  '                elif line[pos] == ' + '''\f'':' + #10 +
+  '                    column = 0' + #10 + '                else:' + #10 +
+  '                    break' + #10 + '                pos += 1' + #10 +
+  '            if pos == max:' + #10 + '                break' + #10 + #10 +
+  '            if line[pos] in ''#\r\n' +
+  ''':           # skip comments or bl' + 'ank lines' + #10 +
+  '                if line[pos] == ''#' + ''':' + #10 +
+  '                    comment_token ' + '= line[pos:].rstrip(''\r\n'')' +
+  #10 + '                    yield TokenInf' + 'o(COMMENT, comment_token,' +
+  #10 + '                           (lnum, ' +
+  'pos), (lnum, pos + len(comment_tok' + 'en)), line)' + #10;
+
+Const
+ Src_tokenize_2: AnsiString =
+  '                    pos += len(com' + 'ment_token)' + #10 + #10 +
+  '                yield TokenInfo(NL' + ', line[pos:],' + #10 +
+  '                           (lnum, ' + 'pos), (lnum, len(line)), line)' +
+  #10 + '                continue' + #10 + #10 +
+  '            if column > indents[-1' +
+  ']:           # count indents or de' + 'dents' + #10 +
+  '                indents.append(col' + 'umn)' + #10 +
+  '                yield TokenInfo(IN' +
+  'DENT, line[:pos], (lnum, 0), (lnum' + ', pos), line)' + #10 +
+  '            while column < indents' + '[-1]:' + #10 +
+  '                if column not in i' + 'ndents:' + #10 +
+  '                    raise Indentat' + 'ionError(' + #10 +
+  '                        "unindent ' +
+  'does not match any outer indentati' + 'on level",' + #10 +
+  '                        ("<tokeniz' + 'e>", lnum, pos, line))' + #10 +
+  '                indents = indents[' + ':-1]' + #10 + #10 +
+  '                yield TokenInfo(DE' +
+  'DENT, '''', (lnum, pos), (lnum, pos)' + ', line)' + #10 + #10 +
+  '        else:                     ' +
+  '             # continued statement' + #10 + '            if not line:' +
+  #10 + '                raise TokenError("' +
+  'EOF in multi-line statement", (lnu' + 'm, 0))' + #10 +
+  '            continued = 0' + #10 + #10 + '        while pos < max:' + #10 +
+  '            pseudomatch = _compile' + '(PseudoToken).match(line, pos)' +
+  #10 + '            if pseudomatch:       ' +
+  '                         # scan fo' + 'r tokens' + #10 +
+  '                start, end = pseud' + 'omatch.span(1)' + #10 +
+  '                spos, epos, pos = ' + '(lnum, start), (lnum, end), end' +
+  #10 + '                if start == end:' + #10 +
+  '                    continue' + #10 +
+  '                token, initial = l' + 'ine[start:end], line[start]' + #10 +
+  #10 + '                if (initial in num' +
+  'chars or                 # ordinar' + 'y number' + #10 +
+  '                    (initial == ''.' +
+  ''' and token != ''.'' and token != ''.' + '..'')):' + #10 +
+  '                    yield TokenInf' +
+  'o(NUMBER, token, spos, epos, line)' + #10 +
+  '                elif initial in ''\' + 'r\n'':' + #10 +
+  '                    if parenlev > ' + '0:' + #10 +
+  '                        yield Toke' +
+  'nInfo(NL, token, spos, epos, line)' + #10 + '                    else:' +
+  #10 + '                        yield Toke' +
+  'nInfo(NEWLINE, token, spos, epos, ' + 'line)' + #10 + #10 +
+  '                elif initial == ''#' + ''':' + #10 +
+  '                    assert not tok' + 'en.endswith("\n")' + #10 +
+  '                    yield TokenInf' +
+  'o(COMMENT, token, spos, epos, line' + ')' + #10 + #10 +
+  '                elif token in trip' + 'le_quoted:' + #10 +
+  '                    endprog = _com' + 'pile(endpats[token])' + #10 +
+  '                    endmatch = end' + 'prog.match(line, pos)' + #10 +
+  '                    if endmatch:  ' +
+  '                         # all on ' + 'one line' + #10 +
+  '                        pos = endm' + 'atch.end(0)' + #10 +
+  '                        token = li' + 'ne[start:pos]' + #10 +
+  '                        yield Toke' +
+  'nInfo(STRING, token, spos, (lnum, ' + 'pos), line)' + #10 +
+  '                    else:' + #10 + '                        strstart =' +
+  ' (lnum, start)           # multipl' + 'e lines' + #10 +
+  '                        contstr = ' + 'line[start:]' + #10 +
+  '                        contline =' + ' line' + #10 +
+  '                        break' + #10 + #10 +
+  '                # Check up to the ' +
+  'first 3 chars of the token to see ' + 'if' + #10 +
+  '                #  they''re in the ' +
+  'single_quoted set. If so, they sta' + 'rt' + #10 +
+  '                #  a string.' + #10 +
+  '                # We''re using the ' +
+  'first 3, because we''re looking for' + #10 +
+  '                #  "rb''" (for exam' +
+  'ple) at the start of the token. If' + #10 +
+  '                #  we switch to lo' + 'nger prefixes, this needs to be' +
+  #10 + '                #  adjusted.' + #10 +
+  '                # Note that initia' + 'l == token[:1].' + #10 +
+  '                # Also note that s' +
+  'ingle quote checking must come aft' + 'er' + #10 +
+  '                #  triple quote ch' + 'ecking (above).' + #10 +
+  '                elif (initial in s' + 'ingle_quoted or' + #10 +
+  '                      token[:2] in' + ' single_quoted or' + #10 +
+  '                      token[:3] in' + ' single_quoted):' + #10 +
+  '                    if token[-1] =' +
+  '= ''\n'':                  # continu' + 'ed string' + #10 +
+  '                        strstart =' + ' (lnum, start)' + #10 +
+  '                        # Again, u' + 'sing the first 3 chars of the' +
+  #10 + '                        #  token. ' +
+  'This is looking for the matching e' + 'nd' + #10 +
+  '                        #  regex f' + 'or the correct type of quote' +
+  #10 + '                        #  charact' +
+  'er. So it''s really looking for' + #10 +
+  '                        #  endpats' +
+  '["''"] or endpats[''"''], by trying t' + 'o' + #10 +
+  '                        #  skip st' + 'ring prefix characters, if any.' +
+  #10 + '                        endprog = ' +
+  '_compile(endpats.get(initial) or' + #10 +
+  '                                  ' + '         endpats.get(token[1]) or' +
+  #10 + '                                  ' +
+  '         endpats.get(token[2]))' + #10 +
+  '                        contstr, n' + 'eedcont = line[start:], 1' + #10 +
+  '                        contline =' + ' line' + #10 +
+  '                        break' + #10 +
+  '                    else:         ' +
+  '                         # ordinar' + 'y string' + #10 +
+  '                        yield Toke' +
+  'nInfo(STRING, token, spos, epos, l' + 'ine)' + #10 + #10 +
+  '                elif initial.iside' +
+  'ntifier():               # ordinar' + 'y name' + #10 +
+  '                    yield TokenInf' + 'o(NAME, token, spos, epos, line)' +
+  #10 + '                elif initial == ''\' +
+  '\'':                      # continu' + 'ed stmt' + #10 +
+  '                    continued = 1' + #10 + '                else:' + #10 +
+  '                    if initial in ' + '''([{'':' + #10 +
+  '                        parenlev +' + '= 1' + #10 +
+  '                    elif initial i' + 'n '')]}'':' + #10 +
+  '                        parenlev -' + '= 1' + #10 +
+  '                    yield TokenInf' + 'o(OP, token, spos, epos, line)' +
+  #10 + '            else:' + #10 + '                yield TokenInfo(ER' +
+  'RORTOKEN, line[pos],' + #10 + '                           (lnum, ' +
+  'pos), (lnum, pos+1), line)' + #10 + '                pos += 1' + #10 +
+  #10 + '    # Add an implicit NEWLINE if t' +
+  'he input doesn''t end in one' + #10 +
+  '    if last_line and last_line[-1]' + ' not in ''\r\n'':' + #10 +
+  '        yield TokenInfo(NEWLINE, ''' +
+  ''', (lnum - 1, len(last_line)), (ln' +
+  'um - 1, len(last_line) + 1), '''')' + #10 +
+  '    for indent in indents[1:]:    ' +
+  '             # pop remaining inden' + 't levels' + #10 +
+  '        yield TokenInfo(DEDENT, ''''' + ', (lnum, 0), (lnum, 0), '''')' +
+  #10 + '    yield TokenInfo(ENDMARKER, '''',' +
+  ' (lnum, 0), (lnum, 0), '''')' + #10 + #10 + #10 +
+  'def generate_tokens(readline):' + #10 +
+  '    """Tokenize a source reading P' + 'ython code as unicode strings.' +
+  #10 + #10 + '    This has the same API as token' +
+  'ize(), except that it expects the ' + '*readline*' + #10 +
+  '    callable to return str objects' + ' instead of bytes.' + #10 +
+  '    """' + #10 + '    return _tokenize(readline, Non' + 'e)' + #10 + #10 +
+  'def main():' + #10 + '    import argparse' + #10 + #10 +
+  '    # Helper error handling routin' + 'es' + #10 +
+  '    def perror(message):' + #10 + '        sys.stderr.write(message)' +
+  #10 + '        sys.stderr.write(''\n'')' + #10 + #10 +
+  '    def error(message, filename=No' + 'ne, location=None):' + #10 +
+  '        if location:' + #10 + '            args = (filename,) + l' +
+  'ocation + (message,)' + #10 + '            perror("%s:%d:%d: erro' +
+  'r: %s" % args)' + #10 + '        elif filename:' + #10 +
+  '            perror("%s: error: %s"' + ' % (filename, message))' + #10 +
+  '        else:' + #10 + '            perror("error: %s" % m' + 'essage)' +
+  #10 + '        sys.exit(1)' + #10 + #10 +
+  '    # Parse the arguments and opti' + 'ons' + #10 +
+  '    parser = argparse.ArgumentPars' + 'er(prog=''python -m tokenize'')' +
+  #10 + '    parser.add_argument(dest=''file' + 'name'', nargs=''?'',' + #10 +
+  '                        metavar=''f' + 'ilename.py'',' + #10 +
+  '                        help=''the ' +
+  'file to tokenize; defaults to stdi' + 'n'')' + #10 +
+  '    parser.add_argument(''-e'', ''--e' +
+  'xact'', dest=''exact'', action=''store' + '_true'',' + #10 +
+  '                        help=''disp' +
+  'lay token names using the exact ty' + 'pe'')' + #10 +
+  '    args = parser.parse_args()' + #10 + #10 + '    try:' + #10 +
+  '        # Tokenize the input' + #10 + '        if args.filename:' + #10 +
+  '            filename = args.filena' + 'me' + #10 +
+  '            with _builtin_open(fil' + 'ename, ''rb'') as f:' + #10 +
+  '                tokens = list(toke' + 'nize(f.readline))' + #10 +
+  '        else:' + #10 + '            filename = "<stdin>"' + #10 +
+  '            tokens = _tokenize(sys' + '.stdin.readline, None)' + #10 +
+  #10 + '        # Output the tokenization' + #10 +
+  '        for token in tokens:' + #10 +
+  '            token_type = token.typ' + 'e' + #10 +
+  '            if args.exact:' + #10 + '                token_type = token' +
+  '.exact_type' + #10 + '            token_range = "%d,%d-%' +
+  'd,%d:" % (token.start + token.end)' + #10 +
+  '            print("%-20s%-15s%-15r' + '" %' + #10 +
+  '                  (token_range, to' +
+  'k_name[token_type], token.string))' + #10 +
+  '    except IndentationError as err' + ':' + #10 +
+  '        line, column = err.args[1]' + '[1:3]' + #10 +
+  '        error(err.args[0], filenam' + 'e, (line, column))' + #10 +
+  '    except TokenError as err:' + #10 +
+  '        line, column = err.args[1]' + #10 +
+  '        error(err.args[0], filenam' + 'e, (line, column))' + #10 +
+  '    except SyntaxError as err:' + #10 + '        error(err, filename)' +
+  #10 + '    except OSError as err:' + #10 + '        error(err)' + #10 +
+  '    except KeyboardInterrupt:' + #10 + '        print("interrupted\n")' +
+  #10 + '    except Exception as err:' + #10 +
+  '        perror("unexpected error: ' + '%s" % err)' + #10 +
+  '        raise' + #10 + #10 + 'if __name__ == "__main__":' + #10 +
+  '    main()' + #10 + #10;
+
+Function Src_tokenize: AnsiString;
+Begin
+ Result := Src_tokenize_0 + Src_tokenize_1 + Src_tokenize_2;
+End;
+
+Const
  Src_traceback_0: AnsiString =
   'import sys' + #10 + 'import linecache' + #10 + 'import collections' + #10 +
   #10 + '__all__ = [''extract_stack'', ''extra' +
@@ -75347,19 +83129,27 @@ Const
   '        if isinstance(self, Simple' +
   'Namespace) and isinstance(other, S' + 'impleNamespace):' + #10 +
   '            return self.__dict__ =' + '= other.__dict__' + #10 +
-  '        return NotImplemented' + #10 + #10 + 'class MappingProxyType:' +
-  #10 + '    def __init__(self, mapping):' + #10 +
-  '        self._m = mapping' + #10 + '    def __getitem__(self, k): retu' +
-  'rn self._m[k]' + #10 + '    def __iter__(self): return ite' +
-  'r(self._m)' + #10 + '    def __len__(self): return len(' + 'self._m)' +
-  #10 + '    def __contains__(self, k): ret' + 'urn k in self._m' + #10 +
+  '        return NotImplemented' + #10 + #10 + 'class mappingproxy:' + #10 +
+  '    __module__ = ''builtins''' + #10 + '    def __init__(self, mapping):' +
+  #10 + '        self._m = mapping' + #10 +
+  '    def __str__(self): return str(' + 'self._m)' + #10 +
+  '    def __hash__(self): raise Type' +
+  'Error("unhashable type: ''mappingpr' + 'oxy''")' + #10 +
+  '    def __reversed__(self): return' + ' reversed(self._m)' + #10 +
+  '    def __getitem__(self, k): retu' + 'rn self._m[k]' + #10 +
+  '    def __iter__(self): return ite' + 'r(self._m)' + #10 +
+  '    def __len__(self): return len(' + 'self._m)' + #10 +
+  '    def __contains__(self, k): ret' + 'urn k in self._m' + #10 +
   '    def get(self, k, d=None): retu' + 'rn self._m.get(k, d)' + #10 +
   '    def keys(self): return self._m' + '.keys()' + #10 +
   '    def values(self): return self.' + '_m.values()' + #10 +
   '    def items(self): return self._' + 'm.items()' + #10 +
   '    def copy(self): return self._m' + '.copy()' + #10 +
   '    def __repr__(self): return ''ma' + 'ppingproxy(%r)'' % (self._m,)' +
-  #10 + '    def __eq__(self, o): return se' + 'lf._m == o' + #10 + #10 +
+  #10 + '    def __eq__(self, o): return se' + 'lf._m == o' + #10 +
+  '    def __ne__(self, o): return se' + 'lf._m != o' + #10 +
+  '    def __or__(self, o): return No' + 'tImplemented' + #10 +
+  'MappingProxyType = mappingproxy' + #10 + #10 +
   'def new_class(name, bases=(), kwds' + '=None, exec_body=None):' + #10 +
   '    resolved_bases = resolve_bases' + '(bases)' + #10 +
   '    meta, ns, kwds = prepare_class' + '(name, resolved_bases, kwds)' +
@@ -85118,10 +92908,14 @@ Procedure RegisterPrelude;
 Begin
   RegSource('__future__', @Src___future__);
   RegSource('_bytesimpl', @Src__bytesimpl);
+  RegSource('_charmaps', @Src__charmaps);
+  RegSource('_collections_abc', @Src__collections_abc);
   RegSource('_compat_pickle', @Src__compat_pickle);
   RegSource('_contextvars', @Src__contextvars);
   RegSource('_csv', @Src__csv);
   RegSource('_markupbase', @Src__markupbase);
+  RegSource('_random', @Src__random);
+  RegSource('_string', @Src__string);
   RegSource('_thread', @Src__thread);
   RegSource('_ut_difflib', @Src__ut_difflib);
   RegSource('_ut_pprint', @Src__ut_pprint);
@@ -85169,6 +92963,7 @@ Begin
   RegSource('functools', @Src_functools);
   RegSource('getopt', @Src_getopt);
   RegSource('getpass', @Src_getpass);
+  RegSource('gettext', @Src_gettext);
   RegSource('glob', @Src_glob);
   RegSource('gzip', @Src_gzip);
   RegSource('hashlib', @Src_hashlib);
@@ -85224,6 +93019,8 @@ Begin
   RegSource('this', @Src_this);
   RegSource('threading', @Src_threading);
   RegSource('timeit', @Src_timeit);
+  RegSource('token', @Src_token);
+  RegSource('tokenize', @Src_tokenize);
   RegSource('traceback', @Src_traceback);
   RegSource('types', @Src_types);
   RegSource('typing', @Src_typing);
