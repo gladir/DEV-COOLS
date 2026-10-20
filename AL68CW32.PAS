@@ -34,12 +34,13 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 16 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 17 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
-         affectations, tableaux, procedures) ; TODO 17 a 25 a faire.
+         affectations, tableaux, procedures, operateurs) ; TODO 18 a 25
+         a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -818,7 +819,7 @@
             Reste : le codeur du TODO 20 doit prendre en charge CALL
               indirect par memoire, RET n, MOV ESP,EBP et SUB ESP
 
-  TODO 17 - DEFINITIONS D'OPERATEURS : OP ET PRIO [A FAIRE]
+  TODO 17 - DEFINITIONS D'OPERATEURS : OP ET PRIO [IMPLEMENTE]
             OP ADDX = (INT a, INT b) INT : a + b + 1 ; operateur
               dyadique utilisateur et monadique (OP DBL = (INT x) INT)
             PRIO MYMUL = 5 : priorite de 1 a 9 declaree avant ou apres
@@ -830,6 +831,36 @@
             Un operateur est une procedure appelee avec les memes
               conventions (TODO 16), nom ASM _A68O_
             Verification : ops.a68, test_op.a68
+            Realise : OP nom = texte de routine (ParseOpDecl, meme
+              analyse que PROC avec ParseRoutine, symbole SK_OP declare
+              avant le corps), nom bold ou symbole, un ou deux operandes
+              (sinon erreur), plusieurs definitions separees par des
+              virgules ; surcharge selon les modes des operandes
+              (DBL pour INT et pour REAL, + pour des STRUCT) et
+              redefinition d'un operateur du prelude dans une portee
+              interne ; identification par coercitions fermes comme pour
+              les operateurs du prelude ; PRIO avant ou apres l'OP ;
+              dyadique sans PRIO : priorite 1 par defaut, signalee avec
+              -w a la fin de l'analyse ; formule d'un operateur
+              utilisateur (GenOpCall) : appel direct de la routine, mots
+              de la pile et lien statique comme pour les procedures
+              (GenCallDirect), operateurs declares dans une procedure
+              inclus ; nom ASM _A68O_ nom _ indice
+            Verifie : test_op.a68 execute (31, 14, 12, -42, 2, 32, 42) ;
+              ot.a68 : priorites (1 ADDX 2 MYMUL 3 = 8, avec parentheses
+              12, 2 LATE 3 ADDX 1 = 25), surcharge INT et REAL (42 et
+              2,5), + de deux STRUCT (11 et 22), 3 + 4 intact (7),
+              monadique sur STRUCT (25), appel de PROC dans un OP (26), OP
+              dans une procedure avec acces a son parametre (22),
+              associativite a gauche (3 MAX2 9 MAX2 5 = 9), OP recursif
+              (120), OP rendant BOOL ; erreurs : trois operandes, OP en
+              double, routine attendue, operande de mauvais mode (monadique
+              et dyadique), nom d'operateur '=' ; les 27 exemples restent
+              analyses ; les essais des TODOs 8 a 16 donnent les memes
+              valeurs
+            Limites : pas de forme OP (modes) mode nom = ... ; un operateur
+              inconnu entre deux operandes reste une unite non analysee
+              sans erreur (jusqu'au TODO 23)
 
   TODO 18 - MODES UNIS (UNION) ET CLAUSE DE CONFORMITE [A FAIRE]
             MODE NOMBRE = UNION(INT, REAL) ; alternatives distinctes ;
@@ -3366,11 +3397,12 @@ End;
 
 { Y a-t-il un operateur de ce nom et de cette arite ? (pour distinguer
   "operateur inconnu" de "modes d operandes incorrects") }
-Function SymOpExists(Const Name : TName; Arity : Integer) : Boolean;
+Function SymOpExistsK(Const Name : TName; Arity : Integer;
+                      UserOnly : Boolean) : Boolean;
 Var
   S, I : Integer;
 Begin
-  SymOpExists := False;
+  SymOpExistsK := False;
   S := ScopeCur;
   While S >= 0 Do
   Begin
@@ -3378,8 +3410,34 @@ Begin
     While I >= 0 Do
     Begin
       If (SymTab[I].Kind = SK_OP) And (SymTab[I].Name = Name) And
-         (OpArity(I) = Arity) Then
-        SymOpExists := True;
+         (OpArity(I) = Arity) And
+         (Not UserOnly Or Not SymTab[I].Intrinsic) Then
+        SymOpExistsK := True;
+      I := SymTab[I].Prev;
+    End;
+    S := ScopeTab[S].Parent;
+  End;
+End;
+
+Function SymOpExists(Const Name : TName; Arity : Integer) : Boolean;
+Begin
+  SymOpExists := SymOpExistsK(Name, Arity, False);
+End;
+
+{ La priorite de Name est-elle declaree (PRIO) dans la portee S ou une
+  portee englobante ? }
+Function PrioVisibleFrom(S : Integer; Const Name : TName) : Boolean;
+Var
+  I : Integer;
+Begin
+  PrioVisibleFrom := False;
+  While S >= 0 Do
+  Begin
+    I := ScopeTab[S].LastSym;
+    While I >= 0 Do
+    Begin
+      If (SymTab[I].Kind = SK_PRIO) And (SymTab[I].Name = Name) Then
+        PrioVisibleFrom := True;
       I := SymTab[I].Prev;
     End;
     S := ScopeTab[S].Parent;
@@ -5838,9 +5896,10 @@ Begin
 End;
 
 Function ParseProcDecl : LongInt; Forward;
+Function ParseOpDecl : LongInt; Forward;
 
-{ Declaration : MODE, PRIO, PROC nom = routine, objet (identite ou
-  variable) ; OP (TODO 17) reste enveloppe sans analyse }
+{ Declaration : MODE, PRIO, PROC nom = routine, OP nom = routine, objet
+  (identite ou variable) }
 Function ParseDeclaration : LongInt;
 Begin
   If AtKw('MODE') Then
@@ -5851,7 +5910,7 @@ Begin
           (TokAt(2).Kind = TK_OP) Then
     ParseDeclaration := ParseProcDecl
   Else If AtKw('OP') Then
-    ParseDeclaration := ParseOpaque(UK_DECL)
+    ParseDeclaration := ParseOpDecl
   Else
     ParseDeclaration := ParseObjectDecl;
 End;
@@ -6040,7 +6099,8 @@ End;
   lien statique, puis [EBP+12] l'adresse du resultat s'il est
   structure, puis les parametres (le premier a l'adresse la plus
   basse). }
-Function ParseRoutine(Const PName : TName; NL, NC : Integer) : LongInt;
+Function ParseRoutine(Const PName : TName; NL, NC : Integer;
+                      K : TSymKind) : LongInt;
 Var
   U, Body, Bnd  : LongInt;
   L, C          : Integer;
@@ -6134,7 +6194,7 @@ Begin
   If Not Ok Then
   Begin
     { texte de routine incorrect : le reste est saute }
-    If PName <> '' Then
+    If (PName <> '') And (K = SK_PROC) Then
       SymDeclare(PName, SK_PROC, MD_ERROR, NL, NC);
     Body := ParseOpaqueUntil(UK_OPAQUE, 1);
     UnitTab[U].A := Body;
@@ -6165,7 +6225,7 @@ Begin
   If PName <> '' Then
   Begin
     ScopeCur := ScopeTab[Sc].Parent;
-    S := SymDeclare(PName, SK_PROC, M, NL, NC);
+    S := SymDeclare(PName, K, M, NL, NC);
     ScopeCur := Sc;
     SymTab[S].Used := True;
     UnitTab[U].Sym := S;
@@ -6200,7 +6260,7 @@ Begin
       ParseError('''='' attendu apres le nom de la procedure');
     If AtRoutineStart Then
     Begin
-      R := ParseRoutine(Name, L, C);
+      R := ParseRoutine(Name, L, C, SK_PROC);
       U := UnitNew(UK_PROCDECL, L, C);
       UnitTab[U].Name := Name;
       UnitTab[U].A := R;
@@ -6226,6 +6286,90 @@ Begin
     End;
   Until (Not More) Or AtEOF;
   ParseProcDecl := First;
+End;
+
+{ Operateurs definis par l'utilisateur dont la priorite sera verifiee }
+Const
+  MAX_USEROP = 256;
+Var
+  UserOpTab   : Array[0..MAX_USEROP - 1] Of Integer;
+  UserOpCount : Integer;
+
+{ OP nom = texte de routine, nom = ... : operateur monadique (un
+  operande) ou dyadique (deux) ; la routine est appelee avec la
+  convention des procedures }
+Function ParseOpDecl : LongInt;
+Var
+  First, Last, U, R : LongInt;
+  Name              : TName;
+  L, C              : Integer;
+  More              : Boolean;
+  T                 : TToken;
+Begin
+  First := -1;
+  Last := -1;
+  ParserAdvance;                       { OP }
+  Repeat
+    More := False;
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    T := TokTab[TokPos];
+    If Not (T.Kind In [TK_BOLD, TK_OP]) Or (T.Val = '=') Then
+    Begin
+      ParseError('nom d''operateur attendu');
+      R := ParseOpaqueUntil(UK_OPAQUE, 1);
+      If First < 0 Then First := R Else UnitTab[Last].Next := R;
+      Last := R;
+    End
+    Else
+    Begin
+      Name := T.Val;
+      ParserAdvance;                   { nom }
+      If AtOpSym('=') Then
+        ParserAdvance
+      Else
+        ParseError('''='' attendu apres le nom de l''operateur');
+      If AtRoutineStart Then
+      Begin
+        R := ParseRoutine(Name, L, C, SK_OP);
+        U := UnitNew(UK_PROCDECL, L, C);
+        UnitTab[U].Name := Name;
+        UnitTab[U].A := R;
+        UnitTab[U].Sym := UnitTab[R].Sym;
+        UnitTab[U].Mode := UnitTab[R].Mode;
+        If (UnitTab[R].Sym >= 0) Then
+        Begin
+          If (ModeTab[ModeResolve(UnitTab[R].Mode)].Count < 1) Or
+             (ModeTab[ModeResolve(UnitTab[R].Mode)].Count > 2) Then
+            ErrorAt(L, C, 'un operateur a un ou deux operandes, pas ' +
+                    ItoS(ModeTab[ModeResolve(UnitTab[R].Mode)].Count))
+          Else If (ModeTab[ModeResolve(UnitTab[R].Mode)].Count = 2) And
+                  (UserOpCount < MAX_USEROP) Then
+          Begin
+            UserOpTab[UserOpCount] := UnitTab[R].Sym;
+            Inc(UserOpCount);
+          End;
+        End;
+        If First < 0 Then First := U Else UnitTab[Last].Next := U;
+        Last := U;
+        Inc(DeclCount);
+      End
+      Else
+      Begin
+        ParseError('texte de routine attendu apres ''=''');
+        R := ParseOpaqueUntil(UK_OPAQUE, 1);
+        If First < 0 Then First := R Else UnitTab[Last].Next := R;
+        Last := R;
+      End;
+      If AtPunct(',') And (TokAt(1).Kind In [TK_BOLD, TK_OP]) And
+         (TokAt(2).Kind = TK_OP) And (TokAt(2).Val = '=') Then
+      Begin
+        ParserAdvance;
+        More := True;
+      End;
+    End;
+  Until (Not More) Or AtEOF;
+  ParseOpDecl := First;
 End;
 
 { Liste d unites separees par des virgules jusqu a la parenthese
@@ -7071,14 +7215,14 @@ Begin
                 (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
           U := ParseConstruct
         Else If AtBareRoutine Then
-          U := ParseRoutine('', 0, 0)
+          U := ParseRoutine('', 0, 0, SK_PROC)
         Else
           Exit;
       End;
     TK_PUNCT:
       Begin
         If AtPunct('(') And ParenIsRoutine Then
-          U := ParseRoutine('', 0, 0)
+          U := ParseRoutine('', 0, 0, SK_PROC)
         Else If AtPunct('(') And ParenIsClosed And
            ClauseFollowOk(TokAfterClose) Then
           U := ParseClosed
@@ -7565,6 +7709,9 @@ Begin
   Name := T.Val;
   If (Name = ':=') Or (Name = '=:') Then Exit;
   P := SymFindPrio(Name);
+  { operateur utilisateur sans PRIO : priorite 1 (signalee avec -w) }
+  If (P = 0) And (T.Kind = TK_BOLD) And SymOpExistsK(Name, 2, True) Then
+    P := 1;
   If (P > 0) And SymOpExists(Name, 2) Then AtDyadic := P;
 End;
 
@@ -8096,7 +8243,10 @@ Begin
 End;
 
 Procedure PhaseParse;
+Var
+  K : Integer;
 Begin
+  UserOpCount := 0;
   UnitCount := 0;
   TokPos := 0;
   GotoCount := 0;
@@ -8108,7 +8258,16 @@ Begin
   UnitRoot := UnitNew(UK_SERIAL, 1, 1);
   UnitTab[UnitRoot].A := ParseSerial(True);
   ResolveGotos;
-  If Opts.Warnings Then WarnUnusedLabels;
+  If Opts.Warnings Then
+  Begin
+    WarnUnusedLabels;
+    For K := 0 To UserOpCount - 1 Do
+      If Not PrioVisibleFrom(SymTab[UserOpTab[K]].Scope,
+                             SymTab[UserOpTab[K]].Name) Then
+        WarnAt(SymTab[UserOpTab[K]].Line, SymTab[UserOpTab[K]].Col,
+               'operateur ' + SymTab[UserOpTab[K]].Name +
+               ' sans PRIO : priorite 1 par defaut');
+  End;
   ScopeLeave;
   If Opts.Verbose Then
     WriteLn('  ', UnitCount, ' unite(s), ', ClauseCount,
@@ -8588,6 +8747,34 @@ Begin
   End;
 End;
 
+{ Fin d'un appel direct de la procedure ou de l'operateur S, arguments
+  deja empiles : adresse du resultat, lien statique, CALL }
+Procedure GenCallDirect(S : Integer; Res : Integer);
+Var
+  RT : Integer;
+Begin
+  If ResultInMemory(Res) Then
+  Begin
+    RT := NewTemp(ModeSize(Res));
+    TAddr(R_EAX, RT);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+  End;
+  LoadFrameECX(ProcDeclLevel(S));
+  Emit1(OP_PUSH, OpReg(R_ECX));
+  Emit1(OP_CALL, OpLabel(Intern(SymTab[S].AsmName)));
+End;
+
+{ Formule dont l'operateur est defini par l'utilisateur : appel }
+Procedure GenOpCall(U : LongInt);
+Var
+  S : Integer;
+Begin
+  S := UnitTab[U].Sym;
+  If UnitTab[U].IntVal = 2 Then GenPushArg(UnitTab[U].B);
+  GenPushArg(UnitTab[U].A);
+  GenCallDirect(S, ModeResolve(OpResult(S)));
+End;
+
 { Appel de la procedure Callee (mode PROC) avec les arguments Args }
 Procedure GenCallCore(Callee, Args : LongInt; PM : Integer);
 Var
@@ -8610,22 +8797,13 @@ Begin
   End;
   For K := N - 1 Downto 0 Do
     GenPushArg(Arr[K]);
-  Agg := ResultInMemory(Res);
-  RT := 0;
-  If Agg Then RT := NewTemp(ModeSize(Res));
   If DirectProc(Callee) Then
-  Begin
-    If Agg Then
-    Begin
-      TAddr(R_EAX, RT);
-      Emit1(OP_PUSH, OpReg(R_EAX));
-    End;
-    LoadFrameECX(ProcDeclLevel(UnitTab[Callee].Sym));
-    Emit1(OP_PUSH, OpReg(R_ECX));
-    Emit1(OP_CALL, OpLabel(Intern(SymTab[UnitTab[Callee].Sym].AsmName)));
-  End
+    GenCallDirect(UnitTab[Callee].Sym, Res)
   Else
   Begin
+    Agg := ResultInMemory(Res);
+    RT := 0;
+    If Agg Then RT := NewTemp(ModeSize(Res));
     GenValue(Callee);                      { EAX = adresse de la paire }
     Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
     If Agg Then
@@ -9634,7 +9812,8 @@ End;
 { L'unite rend-elle une reference lue en memoire (qui peut etre NIL) ? }
 Function MayBeNil(U : LongInt) : Boolean;
 Begin
-  MayBeNil := UnitTab[U].Kind In [UK_COERCE, UK_NIL, UK_CALL, UK_CAST];
+  MayBeNil := UnitTab[U].Kind In [UK_COERCE, UK_NIL, UK_CALL, UK_CAST,
+                                  UK_FORMULA];
 End;
 
 { Affectation : adresse du nom, valeur, rangement ; le resultat est le
@@ -9866,6 +10045,8 @@ Begin
       If UnitTab[U].Sym < 0 Then
         EmitComment('(formule ligne ' + ItoS(UnitTab[U].Line) +
                     ' : operateur inconnu)')
+      Else If Not SymTab[UnitTab[U].Sym].Intrinsic Then
+        GenOpCall(U)
       Else If UnitTab[U].IntVal = 2 Then
         GenDyadic(U)
       Else
