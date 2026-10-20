@@ -34,10 +34,11 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 09 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 10 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
-         clauses, declarations, coercitions) ; TODO 10 a 25 a faire.
+         clauses, declarations, coercitions, primaires) ;
+         TODO 11 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -472,7 +473,7 @@
               s'assemble avec ML et les unions contiennent l'etiquette de
               mode puis la valeur (par exemple 2 puis 42 pour un INT)
 
-  TODO 10 - UNITES PRIMAIRES [A FAIRE]
+  TODO 10 - UNITES PRIMAIRES [IMPLEMENTE]
             Identificateurs (variables, identites, parametres) avec
               chargement par adresse ou par valeur
             Denotations : INT, REAL, BOOL, CHAR et STRING
@@ -485,6 +486,41 @@
             Cast : mode suivi d'une clause fermee si les exemples en ont
             Adresse d'un champ ou d'un element pour les affectations
             Verification : test_primary.a68, structs.a68, refs.a68
+            Realise : section 10 ; ParsePrimary (denotation, identificateur,
+              clause fermee, champ OF operande, constructeur de structure
+              ou conversion, suivis d'indexations et d'appels) qui rend -1
+              sans rien consommer devant ce qui n'est pas encore analyse ;
+              ParseUnitX : une unite est une primaire seule, sinon elle est
+              enveloppee (formules, conditionnelles, boucles : TODOs 11 a
+              19) ; ParseSelection (operande coerce en nom, champ et decalage
+              trouves, mode REF champ si l'operande est un nom) ;
+              ParseSlice (nombre d'indices verifie, indices coerces en INT,
+              tranches l:u, mode element ou tableau, REF si nom) ;
+              ParseCall (procedure deduite du mode, nombre d'arguments
+              verifie, arguments coerces vers les modes des parametres) ;
+              ParseConstruct (POINT(3, 7), valeurs coercees vers les
+              champs, INT(x) conversion) ; identificateur non declare
+              signale ; les noms de PROC sont declares des maintenant, de
+              mode inconnu ; deflexion (un tableau de meme element convient
+              a un STRING) ; la section des coercitions precede le
+              parseur ; generation : GenValue (mot dans EAX, reel dans
+              ST(0), adresse dans EAX pour les objets en memoire),
+              StoreValue (MOV, FSTP ou REP MOVSD), identificateurs,
+              pi, selection, constructeur (cellule temporaire), coercitions
+              (dereferencement, elargissement par FILD, vidage, union),
+              GenInit pour tous les initialiseurs ; indexation, appels et
+              conversions : TODOs 15, 16 et 19
+            Verifie : les 27 exemples sont analyses sans erreur et
+              assembles par ML ; programme d'essai execute (valeurs lues
+              dans les cellules par le code de sortie) : x OF p = 3,
+              y OF p = 7, variable copiee, identite, REAL := 2.5 (5 une fois
+              doublee), REAL := 7 (14), REAL := entier (10), pi (6),
+              union (etiquette 2 puis 5), structure copiee (7), NIL (0),
+              STRING copiee (longueur 2), x OF POINT(40, 2) = 40 ; erreurs :
+              identificateur inconnu, champ inconnu, constructeur ou appel
+              avec un mauvais nombre de valeurs, selection ou indexation
+              d'un mode qui ne convient pas, nombre d'indices, coercition
+              impossible dans INT(r)
 
   TODO 11 - FORMULES ET OPERATEURS STANDARD [A FAIRE]
             Priorites : monadiques (ABS SIGN ODD NOT BIN LWB UPB) au plus
@@ -984,6 +1020,14 @@ Type
     UK_NIL,        { NIL : mode MD_NIL                                 }
     UK_EMPTY,      { EMPTY : union vide                                }
     UK_COERCE,     { coercition : A = unite, IntVal = genre (CO_...)   }
+    UK_IDENT,      { identificateur : Sym, Mode du symbole            }
+    UK_SELECT,     { champ OF operande : A, IntVal = champ, C = decalage }
+    UK_SLICE,      { A = operande, B = indices, IntVal = nombre, C =
+                     nombre de tranches                                }
+    UK_TRIM,       { tranche l:u : A = l, B = u (-1 si absent)         }
+    UK_CALL,       { A = procedure, B = arguments, IntVal = nombre     }
+    UK_CONSTRUCT,  { constructeur de structure : A = valeurs           }
+    UK_CAST,       { conversion mode(unite) : A = unite                }
     UK_INTDEN,     { denotation entiere : IntVal                       }
     UK_REALDEN,    { denotation reelle : RealVal                       }
     UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
@@ -4086,6 +4130,324 @@ Begin
   Inc(UnitCount);
 End;
 
+{ ---- Coercitions (TODO 09) ----
+  Un noeud UK_COERCE enveloppe une unite : A = unite, IntVal = genre de
+  coercition (CO_...), Mode = mode obtenu. Forces de contexte, de la
+  plus faible a la plus forte :
+    douce  : deprocedurage
+    faible : deprocedurage et dereferencement qui laisse un nom (REF)
+    meek   : deprocedurage et dereferencement
+    ferme  : meek puis union (operandes de formules)
+    forte  : ferme puis elargissement, enrobage en tableau et vidage }
+Const
+  CO_DEREF  = 1;      { REF m vers m                                  }
+  CO_DEPROC = 2;      { PROC m (sans parametre) vers m : appel        }
+  CO_WIDEN  = 3;      { INT vers REAL                                 }
+  CO_ROW    = 4;      { m vers [] m (un element)                      }
+  CO_UNITE  = 5;      { m vers UNION(... m ...) : B = etiquette       }
+  CO_VOID   = 6;      { toute valeur vers VOID                        }
+
+  FIT_NONE  = 0;
+  FIT_UNITE = 1;
+  FIT_WIDEN = 2;
+  FIT_ROW   = 3;
+  FIT_NIL   = 4;
+  FIT_DEFLEX = 5;
+
+Type
+  TStrength = (STR_SOFT, STR_WEAK, STR_MEEK, STR_FIRM, STR_STRONG);
+
+Var
+  CoerceCount : LongInt;      { coercitions inserees (statistiques)   }
+
+Function ModeIsProc0(M : Integer) : Boolean;
+Begin
+  M := ModeResolve(M);
+  ModeIsProc0 := (ModeTab[M].Kind = MK_PROC) And (ModeTab[M].Count = 0);
+End;
+
+{ Alternative de l union U equivalente au mode M ; -1 si aucune }
+Function ModeUnionAlt(U, M : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  ModeUnionAlt := -1;
+  U := ModeResolve(U);
+  If ModeTab[U].Kind <> MK_UNION Then Exit;
+  For I := 0 To ModeTab[U].Count - 1 Do
+    If ModeSame(ModePoolM[ModeTab[U].First + I], M) Then
+      ModeUnionAlt := ModeResolve(ModePoolM[ModeTab[U].First + I]);
+End;
+
+{ Union M contenue dans l union Want (chaque alternative de M en est
+  une de Want) }
+Function ModeUnionSubset(M, Want : Integer) : Boolean;
+Var
+  I : Integer;
+Begin
+  M := ModeResolve(M);
+  ModeUnionSubset := False;
+  If ModeTab[M].Kind <> MK_UNION Then Exit;
+  For I := 0 To ModeTab[M].Count - 1 Do
+    If ModeUnionAlt(Want, ModePoolM[ModeTab[M].First + I]) < 0 Then Exit;
+  ModeUnionSubset := True;
+End;
+
+{ Coercion finale (sans dereferencement ni deprocedurage) qui fait du
+  mode M le mode Want, selon la force du contexte }
+Function CoerceFit(M, Want : Integer; Str : TStrength) : Integer;
+Var
+  W, E : Integer;
+Begin
+  CoerceFit := FIT_NONE;
+  M := ModeResolve(M);
+  W := ModeResolve(Want);
+  If (ModeTab[M].Kind = MK_NIL) And (ModeTab[W].Kind = MK_REF) Then
+  Begin
+    CoerceFit := FIT_NIL;
+    Exit;
+  End;
+  If (Str >= STR_FIRM) And (ModeTab[W].Kind = MK_UNION) Then
+  Begin
+    If (ModeUnionAlt(W, M) >= 0) Or ModeUnionSubset(M, W) Then
+    Begin
+      CoerceFit := FIT_UNITE;
+      Exit;
+    End;
+  End;
+  { un tableau de meme element et meme dimension, flexible ou non,
+    convient (deflexion) }
+  If (ModeTab[M].Kind = MK_ROW) And (ModeTab[W].Kind = MK_ROW) And
+     (ModeTab[M].Dims = ModeTab[W].Dims) And
+     ModeSame(ModeTab[M].Sub, ModeTab[W].Sub) Then
+  Begin
+    CoerceFit := FIT_DEFLEX;
+    Exit;
+  End;
+  If Str = STR_STRONG Then
+  Begin
+    If (ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_REAL) Then
+    Begin
+      CoerceFit := FIT_WIDEN;
+      Exit;
+    End;
+    If (ModeTab[W].Kind = MK_ROW) And (ModeTab[W].Dims = 1) Then
+    Begin
+      E := ModeResolve(ModeTab[W].Sub);
+      If ModeSame(M, E) Then CoerceFit := FIT_ROW;
+    End;
+  End;
+End;
+
+Function CoerceWrap(U : LongInt; Kind : Integer; NewMode : Integer)
+         : LongInt;
+Var
+  N : LongInt;
+Begin
+  N := UnitNew(UK_COERCE, UnitTab[U].Line, UnitTab[U].Col);
+  UnitTab[N].A := U;
+  UnitTab[N].IntVal := Kind;
+  UnitTab[N].Mode := NewMode;
+  Inc(CoerceCount);
+  CoerceWrap := N;
+End;
+
+Function ModesSerial(First : LongInt; Want : Integer) : LongInt; Forward;
+
+{ Coerce l unite U vers le mode Want dans un contexte de force Str ;
+  retourne l unite (eventuellement enveloppee). Une unite de mode
+  inconnu (pas encore analysee) est laissee telle quelle. }
+Function CoerceUnit(U : LongInt; Want : Integer; Str : TStrength)
+         : LongInt;
+Var
+  M, W, Fit, Tag, Steps : Integer;
+  Cur                   : LongInt;
+  Lit                   : TString;
+  Done                  : Boolean;
+Begin
+  CoerceUnit := U;
+  If (U < 0) Or (Want = MD_ERROR) Then Exit;
+  W := ModeResolve(Want);
+  Cur := U;
+  { unites qui prennent le mode demande }
+  Case UnitTab[U].Kind Of
+    UK_SKIP, UK_GOTO:
+      Begin
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_EMPTY:
+      Begin
+        If ModeTab[W].Kind <> MK_UNION Then
+          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                  'EMPTY demande une UNION, pas ' + ModeName(Want));
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_CLOSED:
+      Begin
+        UnitTab[U].A := ModesSerial(UnitTab[U].A, Want);
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+  End;
+  M := UnitTab[U].Mode;
+  If M = MD_ERROR Then Exit;               { mode pas encore connu }
+  M := ModeResolve(M);
+  Done := False;
+  Steps := 0;
+  While Not Done Do
+  Begin
+    Inc(Steps);
+    If Steps > 16 Then
+    Begin
+      ErrorAt(UnitTab[U].Line, UnitTab[U].Col, 'coercition trop longue');
+      Done := True;
+    End
+    Else If W = MD_VOID Then
+    Begin
+      { vidage : un PROC sans parametre est d abord appele }
+      If ModeIsProc0(M) And (Str = STR_STRONG) Then
+      Begin
+        M := ModeResolve(ModeTab[M].Sub);
+        Cur := CoerceWrap(Cur, CO_DEPROC, M);
+      End
+      Else
+      Begin
+        If (Str = STR_STRONG) And (M <> MD_VOID) Then
+          Cur := CoerceWrap(Cur, CO_VOID, MD_VOID);
+        Done := True;
+      End;
+    End
+    Else If ModeSame(M, W) Then
+      Done := True
+    Else
+    Begin
+      Fit := CoerceFit(M, W, Str);
+      If Fit <> FIT_NONE Then
+      Begin
+        Case Fit Of
+          FIT_NIL, FIT_DEFLEX:
+            UnitTab[Cur].Mode := Want;
+          FIT_UNITE:
+            Begin
+              If ModeTab[M].Kind = MK_UNION Then
+                Tag := 0
+              Else
+                Tag := ModeUnionAlt(W, M);
+              Cur := CoerceWrap(Cur, CO_UNITE, Want);
+              UnitTab[Cur].B := Tag;
+            End;
+          FIT_WIDEN:
+            If UnitTab[Cur].Kind = UK_INTDEN Then
+            Begin
+              { repliement : la denotation devient reelle }
+              UnitTab[Cur].Kind := UK_REALDEN;
+              UnitTab[Cur].RealVal := UnitTab[Cur].IntVal;
+              UnitTab[Cur].Mode := MD_REAL;
+            End
+            Else
+              Cur := CoerceWrap(Cur, CO_WIDEN, MD_REAL);
+          FIT_ROW:
+            If (UnitTab[Cur].Kind = UK_CHARDEN) And ModeIsString(W) Then
+            Begin
+              { repliement : un caractere devient une chaine }
+              Lit := Chr(UnitTab[Cur].IntVal);
+              If LitCount >= MAX_STRLIT Then
+                FatalError('trop de denotations de chaines (max ' +
+                           ItoS(MAX_STRLIT) + ')');
+              LitTab[LitCount] := Lit;
+              UnitTab[Cur].Kind := UK_STRDEN;
+              UnitTab[Cur].IntVal := LitCount;
+              UnitTab[Cur].Mode := MD_STRING;
+              Inc(LitCount);
+            End
+            Else
+              Cur := CoerceWrap(Cur, CO_ROW, Want);
+        End;
+        Done := True;
+      End
+      Else If (ModeTab[M].Kind = MK_REF) And (Str >= STR_WEAK) And
+              ((Str >= STR_MEEK) Or
+               (ModeKind(ModeTab[M].Sub) = MK_REF)) Then
+      Begin
+        M := ModeResolve(ModeTab[M].Sub);
+        Cur := CoerceWrap(Cur, CO_DEREF, M);
+      End
+      Else If ModeIsProc0(M) Then
+      Begin
+        M := ModeResolve(ModeTab[M].Sub);
+        Cur := CoerceWrap(Cur, CO_DEPROC, M);
+      End
+      Else
+      Begin
+        ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                'coercition impossible: ' + ModeName(UnitTab[U].Mode) +
+                ' vers ' + ModeName(Want));
+        UnitTab[Cur].Mode := Want;
+        Done := True;
+      End;
+    End;
+  End;
+  CoerceUnit := Cur;
+End;
+
+{ Mode commun de deux branches (IF, CASE) : equilibrage }
+Function ModeBalance(A, B : Integer) : Integer;
+Var
+  RA, RB : Integer;
+Begin
+  ModeBalance := MD_ERROR;
+  RA := ModeDeref(A);
+  RB := ModeDeref(B);
+  If ModeSame(A, B) Then
+    ModeBalance := ModeResolve(A)
+  Else If (RA = MD_VOID) Or (RB = MD_VOID) Then
+    ModeBalance := MD_VOID
+  Else If ModeSame(RA, RB) Then
+    ModeBalance := RA
+  Else If ((RA = MD_INT) And (RB = MD_REAL)) Or
+          ((RA = MD_REAL) And (RB = MD_INT)) Then
+    ModeBalance := MD_REAL;
+End;
+
+{ Dereferencement jusqu a un nom (REF m avec m non REF) et deprocedurage :
+  force faible, pour une selection x OF p ou un indice a[i] }
+Function CoerceName(U : LongInt) : LongInt;
+Var
+  M : Integer;
+  Cur : LongInt;
+  Steps : Integer;
+Begin
+  Cur := U;
+  If (U < 0) Or (UnitTab[U].Mode = MD_ERROR) Then
+  Begin
+    CoerceName := U;
+    Exit;
+  End;
+  M := ModeResolve(UnitTab[U].Mode);
+  Steps := 0;
+  While Steps < 16 Do
+  Begin
+    Inc(Steps);
+    If (ModeTab[M].Kind = MK_REF) And
+       (ModeKind(ModeTab[M].Sub) = MK_REF) Then
+    Begin
+      M := ModeResolve(ModeTab[M].Sub);
+      Cur := CoerceWrap(Cur, CO_DEREF, M);
+    End
+    Else If ModeIsProc0(M) Then
+    Begin
+      M := ModeResolve(ModeTab[M].Sub);
+      Cur := CoerceWrap(Cur, CO_DEPROC, M);
+    End
+    Else
+      Steps := 99;
+  End;
+  CoerceName := Cur;
+End;
+
+
 { ---- acces aux jetons ---- }
 Function TokAt(K : LongInt) : TToken;
 Begin
@@ -4381,6 +4743,7 @@ Var
   U, Start : LongInt;
   Depth    : Integer;
   Done     : Boolean;
+  LoopHead : Boolean;
   OL, OC   : Integer;
 Begin
   U := UnitNew(K, TokTab[TokPos].Line, TokTab[TokPos].Col);
@@ -4389,6 +4752,9 @@ Begin
   OL := 0;
   OC := 0;
   Done := False;
+  { une clause repetitive FOR ... DO ... OD : son DO ouvre le corps }
+  LoopHead := AtKw('FOR') Or AtKw('WHILE') Or AtKw('FROM') Or
+              AtKw('BY') Or AtKw('TO') Or AtKw('DOWNTO');
   While Not Done Do
   Begin
     If AtEOF Then
@@ -4396,6 +4762,14 @@ Begin
       If Depth > 0 Then
         ErrorAt(OL, OC, 'construction non fermee (fin de fichier)');
       Done := True;
+    End
+    Else If (Depth = 0) And LoopHead And AtKw('DO') Then
+    Begin
+      OL := TokTab[TokPos].Line;
+      OC := TokTab[TokPos].Col;
+      LoopHead := False;
+      Inc(Depth);
+      ParserAdvance;
     End
     Else If (Depth = 0) And (AtPunct(';') Or AtSerialEnd Or
             (((Stops And 1) <> 0) And AtPunct(',')) Or
@@ -4520,14 +4894,12 @@ Begin
   ParseDenotation := U;
 End;
 
-{ Initialiseur ou borne : denotation, sinon enveloppe provisoire }
+Function ParseUnitX(Stops : Integer) : LongInt; Forward;
+
+{ Initialiseur ou borne : unite simple, sinon enveloppe provisoire }
 Function ParseInitUnit(Stops : Integer) : LongInt;
-Var
-  U : LongInt;
 Begin
-  U := ParseDenotation;
-  If U < 0 Then U := ParseOpaqueUntil(UK_OPAQUE, Stops);
-  ParseInitUnit := U;
+  ParseInitUnit := ParseUnitX(Stops);
 End;
 
 { Le jeton courant commence-t-il un declarateur ? }
@@ -5077,9 +5449,15 @@ Begin
     ParseDeclaration := ParseModeDecl
   Else If AtKw('PRIO') Then
     ParseDeclaration := ParsePrioDecl
-  Else If AtKw('OP') Or
-          (AtKw('PROC') And (TokAt(1).Kind = TK_TAG) And
-           (TokAt(2).Kind = TK_OP)) Then
+  Else If AtKw('PROC') And (TokAt(1).Kind = TK_TAG) And
+          (TokAt(2).Kind = TK_OP) Then
+  Begin
+    { le nom existe des maintenant, de mode inconnu (TODO 16) }
+    SymDeclare(TokAt(1).Val, SK_PROC, MD_ERROR, TokAt(1).Line,
+               TokAt(1).Col);
+    ParseDeclaration := ParseOpaque(UK_DECL);
+  End
+  Else If AtKw('OP') Then
     ParseDeclaration := ParseOpaque(UK_DECL)
   Else
     ParseDeclaration := ParseObjectDecl;
@@ -5123,6 +5501,508 @@ Begin
   ParseClosed := U;
 End;
 
+{ ---- Unites primaires (TODO 10) ---- }
+
+{ Mode naturel d une unite : celui de son dernier element pour une
+  clause fermee, le mode memorise sinon }
+Function NatMode(U : LongInt) : Integer;
+Var
+  P, Last : LongInt;
+Begin
+  NatMode := MD_ERROR;
+  If U < 0 Then Exit;
+  If UnitTab[U].Kind = UK_CLOSED Then
+  Begin
+    Last := -1;
+    P := UnitTab[U].A;
+    While P >= 0 Do
+    Begin
+      If Not (UnitTab[P].Kind In [UK_LABELDEF, UK_VARDECL, UK_IDDECL,
+                                  UK_MODEDECL, UK_PRIODECL, UK_DECL]) Then
+        Last := P;
+      P := UnitTab[P].Next;
+    End;
+    If Last >= 0 Then NatMode := NatMode(Last);
+  End
+  Else
+    NatMode := UnitTab[U].Mode;
+End;
+
+{ Indice du jeton qui suit la construction ouverte au jeton courant
+  (BEGIN, parenthese ou crochet) ; TokCount - 1 si elle n est pas fermee }
+Function TokAfterClose : LongInt;
+Var
+  K     : LongInt;
+  Depth : Integer;
+Begin
+  Depth := 0;
+  K := TokPos;
+  While K < TokCount - 1 Do
+  Begin
+    If TokDepth(TokTab[K]) > 0 Then
+      Inc(Depth)
+    Else If TokDepth(TokTab[K]) < 0 Then
+      Dec(Depth);
+    Inc(K);
+    If Depth <= 0 Then
+    Begin
+      TokAfterClose := K;
+      Exit;
+    End;
+  End;
+  TokAfterClose := TokCount - 1;
+End;
+
+{ Le jeton d indice K (absolu) termine-t-il une expression ? }
+Function TokEndsExprAbs(K : LongInt) : Boolean;
+Begin
+  TokEndsExprAbs := TokEndsExpr(K - TokPos);
+End;
+
+{ Denotation d un seul jeton (sans signe) }
+Function DenotationNode : LongInt;
+Var
+  U : LongInt;
+  T : TToken;
+Begin
+  T := TokTab[TokPos];
+  Case T.Kind Of
+    TK_INT  : U := UnitNew(UK_INTDEN, T.Line, T.Col);
+    TK_REAL : U := UnitNew(UK_REALDEN, T.Line, T.Col);
+    TK_BOOL : U := UnitNew(UK_BOOLDEN, T.Line, T.Col);
+    TK_CHAR : U := UnitNew(UK_CHARDEN, T.Line, T.Col);
+  Else
+    U := UnitNew(UK_STRDEN, T.Line, T.Col);
+  End;
+  UnitTab[U].IntVal := T.IntVal;
+  UnitTab[U].RealVal := T.RealVal;
+  Case T.Kind Of
+    TK_INT  : UnitTab[U].Mode := MD_INT;
+    TK_REAL : UnitTab[U].Mode := MD_REAL;
+    TK_BOOL : UnitTab[U].Mode := MD_BOOL;
+    TK_CHAR : UnitTab[U].Mode := MD_CHAR;
+  Else
+    UnitTab[U].Mode := MD_STRING;
+  End;
+  ParserAdvance;
+  DenotationNode := U;
+End;
+
+Function ParsePrimary : LongInt; Forward;
+
+{ Liste d unites separees par des virgules jusqu a la parenthese
+  fermante (consommee) ; retourne la tete de liste, Count = nombre }
+Function ParseArgList(Var Count : Integer) : LongInt;
+Var
+  First, Last, A : LongInt;
+  More           : Boolean;
+Begin
+  First := -1;
+  Last := -1;
+  Count := 0;
+  ParserAdvance;                             { ( }
+  Repeat
+    More := False;
+    A := ParseUnitX(1);
+    UnitTab[A].Next := -1;
+    If First < 0 Then First := A Else UnitTab[Last].Next := A;
+    Last := A;
+    Inc(Count);
+    If AtPunct(',') Then
+    Begin
+      ParserAdvance;
+      More := True;
+    End;
+  Until (Not More) Or AtEOF;
+  If AtPunct(')') Then
+    ParserAdvance
+  Else
+    ParseError(''')'' attendu pour fermer la liste d''arguments');
+  ParseArgList := First;
+End;
+
+{ Selection : champ OF operande }
+Function ParseSelection : LongInt;
+Var
+  U, Op      : LongInt;
+  Name       : TName;
+  L, C       : Integer;
+  M, St, Idx : Integer;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  Name := TokTab[TokPos].Val;
+  ParserAdvance;                             { le champ }
+  ParserAdvance;                             { OF }
+  U := UnitNew(UK_SELECT, L, C);
+  UnitTab[U].Name := Name;
+  Op := ParsePrimary;
+  If Op < 0 Then
+  Begin
+    ParseError('operande attendu apres OF');
+    ParseSelection := U;
+    Exit;
+  End;
+  Op := CoerceName(Op);
+  UnitTab[U].A := Op;
+  M := NatMode(Op);
+  If M = MD_ERROR Then
+  Begin
+    ParseSelection := U;
+    Exit;
+  End;
+  St := ModeDeref(M);
+  If ModeKind(St) <> MK_STRUCT Then
+  Begin
+    ErrorAt(L, C, 'selection sur un mode qui n''est pas une structure: ' +
+            ModeName(M));
+    ParseSelection := U;
+    Exit;
+  End;
+  Idx := ModeFindField(St, Name);
+  If Idx < 0 Then
+  Begin
+    ErrorAt(L, C, 'champ inconnu: ' + Name + ' dans ' + ModeName(St));
+    ParseSelection := U;
+    Exit;
+  End;
+  UnitTab[U].IntVal := Idx;
+  UnitTab[U].C := ModeFieldOffset(St, Idx);
+  If ModeKind(M) = MK_REF Then
+    UnitTab[U].Mode := ModeRef(ModeFieldMode(St, Idx))
+  Else
+    UnitTab[U].Mode := ModeFieldMode(St, Idx);
+  ParseSelection := U;
+End;
+
+{ Indexation et tranche : operande [ indices ] }
+Function ParseSlice(Op : LongInt) : LongInt;
+Var
+  U, First, Last, It, Lo, Hi : LongInt;
+  M, Row, Elem               : Integer;
+  Count, Trims               : Integer;
+  L, C                       : Integer;
+  More                       : Boolean;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  Op := CoerceName(Op);
+  U := UnitNew(UK_SLICE, L, C);
+  UnitTab[U].A := Op;
+  M := NatMode(Op);
+  Row := ModeDeref(M);
+  ParserAdvance;                             { [ }
+  First := -1;
+  Last := -1;
+  Count := 0;
+  Trims := 0;
+  Repeat
+    More := False;
+    Lo := -1;
+    Hi := -1;
+    If Not AtPunct(':') Then
+    Begin
+      Lo := ParseUnitX(3);
+      Lo := CoerceUnit(Lo, MD_INT, STR_MEEK);
+    End;
+    If AtPunct(':') Then
+    Begin
+      ParserAdvance;
+      If Not (AtPunct(',') Or AtPunct(']')) Then
+      Begin
+        Hi := ParseUnitX(1);
+        Hi := CoerceUnit(Hi, MD_INT, STR_MEEK);
+      End;
+      It := UnitNew(UK_TRIM, L, C);
+      UnitTab[It].A := Lo;
+      UnitTab[It].B := Hi;
+      Inc(Trims);
+    End
+    Else
+      It := Lo;
+    UnitTab[It].Next := -1;
+    If First < 0 Then First := It Else UnitTab[Last].Next := It;
+    Last := It;
+    Inc(Count);
+    If AtPunct(',') Then
+    Begin
+      ParserAdvance;
+      More := True;
+    End;
+  Until (Not More) Or AtEOF;
+  If AtPunct(']') Then
+    ParserAdvance
+  Else
+    ParseError(''']'' attendu');
+  UnitTab[U].B := First;
+  UnitTab[U].IntVal := Count;
+  UnitTab[U].C := Trims;
+  If M = MD_ERROR Then
+  Begin
+    ParseSlice := U;
+    Exit;
+  End;
+  If ModeKind(Row) <> MK_ROW Then
+  Begin
+    ErrorAt(L, C, 'indice sur un mode qui n''est pas un tableau: ' +
+            ModeName(M));
+    ParseSlice := U;
+    Exit;
+  End;
+  If ModeTab[Row].Dims <> Count Then
+  Begin
+    ErrorAt(L, C, 'tableau de ' + ItoS(ModeTab[Row].Dims) +
+            ' dimension(s) indice avec ' + ItoS(Count) + ' indice(s)');
+    ParseSlice := U;
+    Exit;
+  End;
+  Elem := ModeTab[Row].Sub;
+  If Trims > 0 Then
+    Elem := ModeRow(Elem, Trims, False);
+  If ModeKind(M) = MK_REF Then
+    UnitTab[U].Mode := ModeRef(Elem)
+  Else
+    UnitTab[U].Mode := Elem;
+  ParseSlice := U;
+End;
+
+{ Appel de procedure : callee ( arguments ) ; le nombre d arguments et
+  leurs modes sont verifies, chaque argument est coerce vers le mode du
+  parametre (contexte fort) }
+Function ParseCall(Callee : LongInt) : LongInt;
+Var
+  U, A, Args : LongInt;
+  Prev, Cur  : LongInt;
+  M, Proc, I : Integer;
+  Count      : Integer;
+  L, C       : Integer;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  Callee := CoerceUnit(Callee, ModeDeref(NatMode(Callee)), STR_MEEK);
+  M := NatMode(Callee);
+  Proc := ModeDeref(M);
+  U := UnitNew(UK_CALL, L, C);
+  UnitTab[U].A := Callee;
+  Args := ParseArgList(Count);
+  UnitTab[U].B := Args;
+  UnitTab[U].IntVal := Count;
+  If ModeKind(Proc) <> MK_PROC Then
+  Begin
+    ErrorAt(L, C, 'appel d''une valeur qui n''est pas une procedure: ' +
+            ModeName(M));
+    ParseCall := U;
+    Exit;
+  End;
+  UnitTab[U].Mode := ModeTab[Proc].Sub;
+  If ModeTab[Proc].Count <> Count Then
+  Begin
+    ErrorAt(L, C, 'appel avec ' + ItoS(Count) + ' argument(s) au lieu de ' +
+            ItoS(ModeTab[Proc].Count));
+    ParseCall := U;
+    Exit;
+  End;
+  { coercition de chaque argument vers le mode du parametre }
+  Prev := -1;
+  A := Args;
+  I := 0;
+  While A >= 0 Do
+  Begin
+    Cur := A;
+    A := UnitTab[Cur].Next;
+    Cur := CoerceUnit(Cur, ModePoolM[ModeTab[Proc].First + I], STR_STRONG);
+    UnitTab[Cur].Next := A;
+    If Prev < 0 Then UnitTab[U].B := Cur Else UnitTab[Prev].Next := Cur;
+    Prev := Cur;
+    Inc(I);
+  End;
+  ParseCall := U;
+End;
+
+{ Mode suivi d une parenthese : constructeur de structure POINT(3, 7)
+  ou conversion (cast) d une unite vers un mode }
+Function ParseConstruct : LongInt;
+Var
+  U, A, Args : LongInt;
+  M, I       : Integer;
+  Count      : Integer;
+  Bnd        : LongInt;
+  Dm         : Integer;
+  L, C       : Integer;
+  Prev, Cur  : LongInt;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  If Not ParseDeclarer(M, Bnd, Dm, True) Then
+  Begin
+    ParseConstruct := -1;
+    Exit;
+  End;
+  If ModeKind(M) = MK_STRUCT Then
+  Begin
+    U := UnitNew(UK_CONSTRUCT, L, C);
+    UnitTab[U].Mode := M;
+    Args := ParseArgList(Count);
+    UnitTab[U].A := Args;
+    UnitTab[U].IntVal := Count;
+    If ModeFieldCount(M) <> Count Then
+    Begin
+      ErrorAt(L, C, 'constructeur de ' + ModeName(M) + ' avec ' +
+              ItoS(Count) + ' valeur(s) au lieu de ' +
+              ItoS(ModeFieldCount(M)));
+      ParseConstruct := U;
+      Exit;
+    End;
+    { coercition de chaque valeur vers le mode du champ }
+    Prev := -1;
+    A := Args;
+    I := 0;
+    While A >= 0 Do
+    Begin
+      Cur := A;
+      A := UnitTab[Cur].Next;
+      Cur := CoerceUnit(Cur, ModeFieldMode(M, I), STR_STRONG);
+      UnitTab[Cur].Next := A;
+      If Prev < 0 Then UnitTab[U].A := Cur Else UnitTab[Prev].Next := Cur;
+      Prev := Cur;
+      Inc(I);
+    End;
+    ParseConstruct := U;
+    Exit;
+  End;
+  { conversion : un seul element }
+  U := UnitNew(UK_CAST, L, C);
+  UnitTab[U].Mode := M;
+  ParserAdvance;                             { ( }
+  A := ParseUnitX(1);
+  UnitTab[U].A := CoerceUnit(A, M, STR_STRONG);
+  If AtPunct(')') Then
+    ParserAdvance
+  Else
+    ParseError(''')'' attendu apres la conversion');
+  ParseConstruct := U;
+End;
+
+{ Unite primaire : denotation, identificateur, clause fermee, selection,
+  tranche, appel, constructeur. Retourne -1 (sans rien consommer) si ce
+  n est pas une primaire connue a ce stade (formules, conditionnelles,
+  boucles... : TODOs 11 a 19). }
+Function ParsePrimary : LongInt;
+Var
+  U       : LongInt;
+  T       : TToken;
+  S, M    : Integer;
+  Going   : Boolean;
+Begin
+  ParsePrimary := -1;
+  T := TokTab[TokPos];
+  Case T.Kind Of
+    TK_INT, TK_REAL, TK_BOOL, TK_CHAR, TK_STRING:
+      U := DenotationNode;
+    TK_KEYWORD:
+      Begin
+        If AtKw('BEGIN') And TokEndsExprAbs(TokAfterClose) Then
+          U := ParseClosed
+        Else If (AtKw('INT') Or AtKw('REAL') Or AtKw('BOOL') Or
+                 AtKw('CHAR') Or AtKw('STRING') Or AtKw('BITS')) And
+                (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
+          U := ParseConstruct
+        Else
+          Exit;
+      End;
+    TK_PUNCT:
+      Begin
+        If AtPunct('(') And ParenIsClosed And
+           TokEndsExprAbs(TokAfterClose) Then
+          U := ParseClosed
+        Else
+          Exit;
+      End;
+    TK_TAG, TK_BOLD:
+      Begin
+        If (T.Kind = TK_TAG) And (TokAt(1).Kind = TK_KEYWORD) And
+           (TokAt(1).Val = 'OF') Then
+          U := ParseSelection
+        Else
+        Begin
+          S := SymFindIdent(T.Val);
+          If S >= 0 Then
+          Begin
+            If (SymTab[S].Kind = SK_STD) And (SymTab[S].Mode = MD_VOID) Then
+              Exit;                          { print, read, newline... }
+            U := UnitNew(UK_IDENT, T.Line, T.Col);
+            UnitTab[U].Sym := S;
+            UnitTab[U].Name := T.Val;
+            UnitTab[U].Mode := SymTab[S].Mode;
+            SymTab[S].Used := True;
+            ParserAdvance;
+          End
+          Else If (SymFindMode(T.Val) >= 0) And (TokAt(1).Kind = TK_PUNCT) And
+                  (TokAt(1).Val = '(') Then
+            U := ParseConstruct
+          Else If T.Kind = TK_TAG Then
+          Begin
+            ErrorAt(T.Line, T.Col, 'identificateur non declare: ' + T.Val);
+            U := UnitNew(UK_IDENT, T.Line, T.Col);
+            UnitTab[U].Name := T.Val;
+            ParserAdvance;
+          End
+          Else
+            Exit;
+        End;
+      End;
+  Else
+    Exit;
+  End;
+  { suffixes : tranches et appels }
+  Going := True;
+  While Going And (U >= 0) Do
+  Begin
+    M := NatMode(U);
+    If AtPunct('[') And (M <> MD_ERROR) Then
+      U := ParseSlice(U)
+    Else If AtPunct('(') And (M <> MD_ERROR) And
+            (ModeKind(ModeDeref(M)) = MK_PROC) Then
+      U := ParseCall(U)
+    Else If AtPunct('[') And (UnitTab[U].Kind = UK_IDENT) Then
+      Going := False                       { mode inconnu : enveloppe }
+    Else
+      Going := False;
+  End;
+  ParsePrimary := U;
+End;
+
+{ Unite jusqu a une virgule / un deux-points / une fermeture : primaire
+  si elle forme toute l unite, enveloppe provisoire sinon (formules,
+  conditionnelles, boucles...). Stops comme ParseOpaqueUntil. }
+Function ParseUnitX(Stops : Integer) : LongInt;
+Var
+  U, SaveUnits : LongInt;
+  SavePos      : LongInt;
+  SaveGotos    : Integer;
+Begin
+  U := ParseDenotation;
+  If U >= 0 Then
+  Begin
+    ParseUnitX := U;
+    Exit;
+  End;
+  SavePos := TokPos;
+  SaveUnits := UnitCount;
+  SaveGotos := GotoCount;
+  U := ParsePrimary;
+  If (U >= 0) And TokEndsExpr(0) Then
+  Begin
+    ParseUnitX := U;
+    Exit;
+  End;
+  { pas une primaire seule : on reprend au debut, en enveloppe }
+  TokPos := SavePos;
+  UnitCount := SaveUnits;
+  GotoCount := SaveGotos;
+  ParseUnitX := ParseOpaqueUntil(UK_OPAQUE, Stops);
+End;
+
 { Une unite ; les unites autres que la clause fermee, GOTO et SKIP sont
   provisoirement enveloppees (TODOs 10 a 19) }
 Function ParseUnit : LongInt;
@@ -5142,7 +6022,7 @@ Begin
   Else If AtDeclStart Then
     ParseUnit := ParseDeclaration
   Else
-    ParseUnit := ParseOpaque(UK_OPAQUE);
+    ParseUnit := ParseUnitX(0);
 End;
 
 { Clause serie : unites, declarations et etiquettes separees par des
@@ -5273,6 +6153,13 @@ Begin
     UK_NIL      : UnitKindName := 'NIL';
     UK_EMPTY    : UnitKindName := 'EMPTY';
     UK_COERCE   : UnitKindName := 'coercition';
+    UK_IDENT    : UnitKindName := 'identificateur';
+    UK_SELECT   : UnitKindName := 'selection';
+    UK_SLICE    : UnitKindName := 'indexation';
+    UK_TRIM     : UnitKindName := 'tranche';
+    UK_CALL     : UnitKindName := 'appel';
+    UK_CONSTRUCT: UnitKindName := 'constructeur';
+    UK_CAST     : UnitKindName := 'conversion';
     UK_INTDEN   : UnitKindName := 'denotation INT';
     UK_REALDEN  : UnitKindName := 'denotation REAL';
     UK_BOOLDEN  : UnitKindName := 'denotation BOOL';
@@ -5317,6 +6204,16 @@ Begin
     UK_STRDEN  : Write(' "', LitTab[UnitTab[U].IntVal], '"');
     UK_COERCE  : Write(' ', CoerceName_(UnitTab[U].IntVal), ' -> ',
                        ModeName(UnitTab[U].Mode));
+    UK_IDENT   : Write(' ', UnitTab[U].Name, ' : ',
+                       ModeName(UnitTab[U].Mode));
+    UK_SELECT  : Write(' ', UnitTab[U].Name, ' OF (decalage ',
+                       UnitTab[U].C, ') : ', ModeName(UnitTab[U].Mode));
+    UK_SLICE   : Write(' ', UnitTab[U].IntVal, ' indice(s), ',
+                       UnitTab[U].C, ' tranche(s) : ',
+                       ModeName(UnitTab[U].Mode));
+    UK_CALL    : Write(' ', UnitTab[U].IntVal, ' argument(s) : ',
+                       ModeName(UnitTab[U].Mode));
+    UK_CONSTRUCT, UK_CAST : Write(' : ', ModeName(UnitTab[U].Mode));
     UK_VARDECL, UK_IDDECL :
       Begin
         Write(' ', UnitTab[U].Name, ' : ', ModeName(UnitTab[U].Mode));
@@ -5355,8 +6252,20 @@ Begin
     WriteLn;
   If UnitTab[U].Kind = UK_CLOSED Then
     UnitDump(UnitTab[U].A, Depth + 1)
-  Else If UnitTab[U].Kind = UK_COERCE Then
+  Else If UnitTab[U].Kind In [UK_COERCE, UK_SELECT, UK_CAST] Then
+    UnitDumpOne(UnitTab[U].A, Depth + 1)
+  Else If UnitTab[U].Kind In [UK_SLICE, UK_CALL] Then
+  Begin
     UnitDumpOne(UnitTab[U].A, Depth + 1);
+    UnitDump(UnitTab[U].B, Depth + 1);
+  End
+  Else If UnitTab[U].Kind = UK_CONSTRUCT Then
+    UnitDump(UnitTab[U].A, Depth + 1)
+  Else If UnitTab[U].Kind = UK_TRIM Then
+  Begin
+    If UnitTab[U].A >= 0 Then UnitDumpOne(UnitTab[U].A, Depth + 1);
+    If UnitTab[U].B >= 0 Then UnitDumpOne(UnitTab[U].B, Depth + 1);
+  End;
 End;
 
 Procedure UnitDump(U : LongInt; Depth : Integer);
@@ -5400,313 +6309,6 @@ End;
 { ============================================================
   SECTION 11 - COERCITIONS, MODES ET GENERATION (TODO 09, 11 a 19)
   ============================================================ }
-{ ---- Coercitions (TODO 09) ----
-  Un noeud UK_COERCE enveloppe une unite : A = unite, IntVal = genre de
-  coercition (CO_...), Mode = mode obtenu. Forces de contexte, de la
-  plus faible a la plus forte :
-    douce  : deprocedurage
-    faible : deprocedurage et dereferencement qui laisse un nom (REF)
-    meek   : deprocedurage et dereferencement
-    ferme  : meek puis union (operandes de formules)
-    forte  : ferme puis elargissement, enrobage en tableau et vidage }
-Const
-  CO_DEREF  = 1;      { REF m vers m                                  }
-  CO_DEPROC = 2;      { PROC m (sans parametre) vers m : appel        }
-  CO_WIDEN  = 3;      { INT vers REAL                                 }
-  CO_ROW    = 4;      { m vers [] m (un element)                      }
-  CO_UNITE  = 5;      { m vers UNION(... m ...) : B = etiquette       }
-  CO_VOID   = 6;      { toute valeur vers VOID                        }
-
-  FIT_NONE  = 0;
-  FIT_UNITE = 1;
-  FIT_WIDEN = 2;
-  FIT_ROW   = 3;
-  FIT_NIL   = 4;
-
-Type
-  TStrength = (STR_SOFT, STR_WEAK, STR_MEEK, STR_FIRM, STR_STRONG);
-
-Var
-  CoerceCount : LongInt;      { coercitions inserees (statistiques)   }
-
-Function ModeIsProc0(M : Integer) : Boolean;
-Begin
-  M := ModeResolve(M);
-  ModeIsProc0 := (ModeTab[M].Kind = MK_PROC) And (ModeTab[M].Count = 0);
-End;
-
-{ Alternative de l union U equivalente au mode M ; -1 si aucune }
-Function ModeUnionAlt(U, M : Integer) : Integer;
-Var
-  I : Integer;
-Begin
-  ModeUnionAlt := -1;
-  U := ModeResolve(U);
-  If ModeTab[U].Kind <> MK_UNION Then Exit;
-  For I := 0 To ModeTab[U].Count - 1 Do
-    If ModeSame(ModePoolM[ModeTab[U].First + I], M) Then
-      ModeUnionAlt := ModeResolve(ModePoolM[ModeTab[U].First + I]);
-End;
-
-{ Union M contenue dans l union Want (chaque alternative de M en est
-  une de Want) }
-Function ModeUnionSubset(M, Want : Integer) : Boolean;
-Var
-  I : Integer;
-Begin
-  M := ModeResolve(M);
-  ModeUnionSubset := False;
-  If ModeTab[M].Kind <> MK_UNION Then Exit;
-  For I := 0 To ModeTab[M].Count - 1 Do
-    If ModeUnionAlt(Want, ModePoolM[ModeTab[M].First + I]) < 0 Then Exit;
-  ModeUnionSubset := True;
-End;
-
-{ Coercion finale (sans dereferencement ni deprocedurage) qui fait du
-  mode M le mode Want, selon la force du contexte }
-Function CoerceFit(M, Want : Integer; Str : TStrength) : Integer;
-Var
-  W, E : Integer;
-Begin
-  CoerceFit := FIT_NONE;
-  M := ModeResolve(M);
-  W := ModeResolve(Want);
-  If (ModeTab[M].Kind = MK_NIL) And (ModeTab[W].Kind = MK_REF) Then
-  Begin
-    CoerceFit := FIT_NIL;
-    Exit;
-  End;
-  If (Str >= STR_FIRM) And (ModeTab[W].Kind = MK_UNION) Then
-  Begin
-    If (ModeUnionAlt(W, M) >= 0) Or ModeUnionSubset(M, W) Then
-    Begin
-      CoerceFit := FIT_UNITE;
-      Exit;
-    End;
-  End;
-  If Str = STR_STRONG Then
-  Begin
-    If (ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_REAL) Then
-    Begin
-      CoerceFit := FIT_WIDEN;
-      Exit;
-    End;
-    If (ModeTab[W].Kind = MK_ROW) And (ModeTab[W].Dims = 1) Then
-    Begin
-      E := ModeResolve(ModeTab[W].Sub);
-      If ModeSame(M, E) Then CoerceFit := FIT_ROW;
-    End;
-  End;
-End;
-
-Function CoerceWrap(U : LongInt; Kind : Integer; NewMode : Integer)
-         : LongInt;
-Var
-  N : LongInt;
-Begin
-  N := UnitNew(UK_COERCE, UnitTab[U].Line, UnitTab[U].Col);
-  UnitTab[N].A := U;
-  UnitTab[N].IntVal := Kind;
-  UnitTab[N].Mode := NewMode;
-  Inc(CoerceCount);
-  CoerceWrap := N;
-End;
-
-Function ModesSerial(First : LongInt; Want : Integer) : LongInt; Forward;
-
-{ Coerce l unite U vers le mode Want dans un contexte de force Str ;
-  retourne l unite (eventuellement enveloppee). Une unite de mode
-  inconnu (pas encore analysee) est laissee telle quelle. }
-Function CoerceUnit(U : LongInt; Want : Integer; Str : TStrength)
-         : LongInt;
-Var
-  M, W, Fit, Tag, Steps : Integer;
-  Cur                   : LongInt;
-  Lit                   : TString;
-  Done                  : Boolean;
-Begin
-  CoerceUnit := U;
-  If (U < 0) Or (Want = MD_ERROR) Then Exit;
-  W := ModeResolve(Want);
-  Cur := U;
-  { unites qui prennent le mode demande }
-  Case UnitTab[U].Kind Of
-    UK_SKIP, UK_GOTO:
-      Begin
-        UnitTab[U].Mode := Want;
-        Exit;
-      End;
-    UK_EMPTY:
-      Begin
-        If ModeTab[W].Kind <> MK_UNION Then
-          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
-                  'EMPTY demande une UNION, pas ' + ModeName(Want));
-        UnitTab[U].Mode := Want;
-        Exit;
-      End;
-    UK_CLOSED:
-      Begin
-        UnitTab[U].A := ModesSerial(UnitTab[U].A, Want);
-        UnitTab[U].Mode := Want;
-        Exit;
-      End;
-  End;
-  M := UnitTab[U].Mode;
-  If M = MD_ERROR Then Exit;               { mode pas encore connu }
-  M := ModeResolve(M);
-  Done := False;
-  Steps := 0;
-  While Not Done Do
-  Begin
-    Inc(Steps);
-    If Steps > 16 Then
-    Begin
-      ErrorAt(UnitTab[U].Line, UnitTab[U].Col, 'coercition trop longue');
-      Done := True;
-    End
-    Else If W = MD_VOID Then
-    Begin
-      { vidage : un PROC sans parametre est d abord appele }
-      If ModeIsProc0(M) And (Str = STR_STRONG) Then
-      Begin
-        M := ModeResolve(ModeTab[M].Sub);
-        Cur := CoerceWrap(Cur, CO_DEPROC, M);
-      End
-      Else
-      Begin
-        If (Str = STR_STRONG) And (M <> MD_VOID) Then
-          Cur := CoerceWrap(Cur, CO_VOID, MD_VOID);
-        Done := True;
-      End;
-    End
-    Else If ModeSame(M, W) Then
-      Done := True
-    Else
-    Begin
-      Fit := CoerceFit(M, W, Str);
-      If Fit <> FIT_NONE Then
-      Begin
-        Case Fit Of
-          FIT_NIL:
-            UnitTab[Cur].Mode := Want;
-          FIT_UNITE:
-            Begin
-              If ModeTab[M].Kind = MK_UNION Then
-                Tag := 0
-              Else
-                Tag := ModeUnionAlt(W, M);
-              Cur := CoerceWrap(Cur, CO_UNITE, Want);
-              UnitTab[Cur].B := Tag;
-            End;
-          FIT_WIDEN:
-            If UnitTab[Cur].Kind = UK_INTDEN Then
-            Begin
-              { repliement : la denotation devient reelle }
-              UnitTab[Cur].Kind := UK_REALDEN;
-              UnitTab[Cur].RealVal := UnitTab[Cur].IntVal;
-              UnitTab[Cur].Mode := MD_REAL;
-            End
-            Else
-              Cur := CoerceWrap(Cur, CO_WIDEN, MD_REAL);
-          FIT_ROW:
-            If (UnitTab[Cur].Kind = UK_CHARDEN) And ModeIsString(W) Then
-            Begin
-              { repliement : un caractere devient une chaine }
-              Lit := Chr(UnitTab[Cur].IntVal);
-              If LitCount >= MAX_STRLIT Then
-                FatalError('trop de denotations de chaines (max ' +
-                           ItoS(MAX_STRLIT) + ')');
-              LitTab[LitCount] := Lit;
-              UnitTab[Cur].Kind := UK_STRDEN;
-              UnitTab[Cur].IntVal := LitCount;
-              UnitTab[Cur].Mode := MD_STRING;
-              Inc(LitCount);
-            End
-            Else
-              Cur := CoerceWrap(Cur, CO_ROW, Want);
-        End;
-        Done := True;
-      End
-      Else If (ModeTab[M].Kind = MK_REF) And (Str >= STR_WEAK) And
-              ((Str >= STR_MEEK) Or
-               (ModeKind(ModeTab[M].Sub) = MK_REF)) Then
-      Begin
-        M := ModeResolve(ModeTab[M].Sub);
-        Cur := CoerceWrap(Cur, CO_DEREF, M);
-      End
-      Else If ModeIsProc0(M) Then
-      Begin
-        M := ModeResolve(ModeTab[M].Sub);
-        Cur := CoerceWrap(Cur, CO_DEPROC, M);
-      End
-      Else
-      Begin
-        ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
-                'coercition impossible: ' + ModeName(UnitTab[U].Mode) +
-                ' vers ' + ModeName(Want));
-        UnitTab[Cur].Mode := Want;
-        Done := True;
-      End;
-    End;
-  End;
-  CoerceUnit := Cur;
-End;
-
-{ Mode commun de deux branches (IF, CASE) : equilibrage }
-Function ModeBalance(A, B : Integer) : Integer;
-Var
-  RA, RB : Integer;
-Begin
-  ModeBalance := MD_ERROR;
-  RA := ModeDeref(A);
-  RB := ModeDeref(B);
-  If ModeSame(A, B) Then
-    ModeBalance := ModeResolve(A)
-  Else If (RA = MD_VOID) Or (RB = MD_VOID) Then
-    ModeBalance := MD_VOID
-  Else If ModeSame(RA, RB) Then
-    ModeBalance := RA
-  Else If ((RA = MD_INT) And (RB = MD_REAL)) Or
-          ((RA = MD_REAL) And (RB = MD_INT)) Then
-    ModeBalance := MD_REAL;
-End;
-
-{ Dereferencement jusqu a un nom (REF m avec m non REF) et deprocedurage :
-  force faible, pour une selection x OF p ou un indice a[i] }
-Function CoerceName(U : LongInt) : LongInt;
-Var
-  M : Integer;
-  Cur : LongInt;
-  Steps : Integer;
-Begin
-  Cur := U;
-  If (U < 0) Or (UnitTab[U].Mode = MD_ERROR) Then
-  Begin
-    CoerceName := U;
-    Exit;
-  End;
-  M := ModeResolve(UnitTab[U].Mode);
-  Steps := 0;
-  While Steps < 16 Do
-  Begin
-    Inc(Steps);
-    If (ModeTab[M].Kind = MK_REF) And
-       (ModeKind(ModeTab[M].Sub) = MK_REF) Then
-    Begin
-      M := ModeResolve(ModeTab[M].Sub);
-      Cur := CoerceWrap(Cur, CO_DEREF, M);
-    End
-    Else If ModeIsProc0(M) Then
-    Begin
-      M := ModeResolve(ModeTab[M].Sub);
-      Cur := CoerceWrap(Cur, CO_DEPROC, M);
-    End
-    Else
-      Steps := 99;
-  End;
-  CoerceName := Cur;
-End;
-
 { ---- Passe de resolution des modes ---- }
 
 { Est-ce une unite (par opposition a une declaration ou une etiquette) ? }
@@ -5795,6 +6397,8 @@ Begin
   End;
 End;
 
+Procedure GenUnit(U : LongInt); Forward;
+
 { Operande memoire de l objet d un symbole (segment de donnees ou
   cadre) a Disp octets de son debut }
 Function SymCell(S : Integer; Disp : LongInt; Size : Byte) : TOperand;
@@ -5805,27 +6409,83 @@ Begin
     SymCell := OpMem(R_EBP, Disp - SymTab[S].Offset, Size);
 End;
 
-{ Range une denotation dans l objet du symbole S, a Disp octets de son
-  debut, comme valeur de mode M (INT, REAL, BOOL, CHAR, BITS, STRING) }
-Procedure GenStoreDenotation(S : Integer; Disp : LongInt; M : Integer;
-                             Init : LongInt);
+{ Destination d un rangement : un symbole (Sym >= 0) ou une cellule
+  anonyme du segment de donnees (Lbl) }
+Function DestOp(Sym, Lbl : Integer; Disp : LongInt; Size : Byte)
+         : TOperand;
+Begin
+  If Sym >= 0 Then
+    DestOp := SymCell(Sym, Disp, Size)
+  Else
+    DestOp := OpMemSym(Lbl, Disp, Size);
+End;
+
+{ EDI = adresse de la destination }
+Procedure DestAddrEDI(Sym, Lbl : Integer; Disp : LongInt);
+Begin
+  If (Sym >= 0) And (SymTab[Sym].Storage <> SC_STATIC) Then
+    Emit(OP_LEA, OpReg(R_EDI), SymCell(Sym, Disp, 4))
+  Else
+  Begin
+    If Sym >= 0 Then Lbl := Intern(SymTab[Sym].AsmName);
+    Emit(OP_MOV, OpReg(R_EDI), OpOffset(Lbl));
+    If Disp <> 0 Then
+      Emit(OP_ADD, OpReg(R_EDI), OpImm(Disp));
+  End;
+End;
+
+{ Cellule anonyme du segment de donnees, initialisee a zero }
+Var
+  TempSeq : LongInt;
+
+Function NewTemp(Size : LongInt) : Integer;
+Var
+  N : Integer;
+Begin
+  Inc(TempSeq);
+  N := Intern(MangleTemp(TempSeq));
+  If Size < 4 Then Size := 4;
+  DataAddZero(N, Size);
+  NewTemp := N;
+End;
+
+{ Classe de representation d un mode : 0 vide, 1 mot de 4 octets dans
+  EAX, 2 reel dans ST(0), 3 objet en memoire (adresse dans EAX), 4
+  procedure }
+Function ValClass(M : Integer) : Integer;
+Begin
+  Case ModeKind(M) Of
+    MK_VOID                          : ValClass := 0;
+    MK_REAL                          : ValClass := 2;
+    MK_STRUCT, MK_ROW, MK_UNION      : ValClass := 3;
+    MK_PROC                          : ValClass := 4;
+  Else
+    ValClass := 1;
+  End;
+End;
+
+{ Range une denotation dans la destination, comme valeur de mode M
+  (INT, REAL, BOOL, CHAR, BITS, STRING) }
+Procedure GenStoreDenotation(Sym, Lbl : Integer; Disp : LongInt;
+                             M : Integer; Init : LongInt);
 Var
   Txt : TString;
-  Lbl : Integer;
+  L   : Integer;
 Begin
   Case UnitTab[Init].Kind Of
     UK_INTDEN:
       If M = MD_REAL Then
       Begin
         Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[Init].IntVal), 0, 8));
-        Emit1(OP_FSTP, SymCell(S, Disp, 8));
+        Emit1(OP_FSTP, DestOp(Sym, Lbl, Disp, 8));
       End
       Else
-        Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].IntVal));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4),
+             OpImm(UnitTab[Init].IntVal));
     UK_REALDEN:
       Begin
         Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[Init].RealVal), 0, 8));
-        Emit1(OP_FSTP, SymCell(S, Disp, 8));
+        Emit1(OP_FSTP, DestOp(Sym, Lbl, Disp, 8));
       End;
     UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
       If M = MD_STRING Then
@@ -5834,31 +6494,202 @@ Begin
           Txt := LitTab[UnitTab[Init].IntVal]
         Else
           Txt := Chr(UnitTab[Init].IntVal);
-        Lbl := DataStr(Txt);
-        Emit(OP_MOV, OpReg(R_EAX), OpOffset(Lbl));
-        Emit(OP_MOV, SymCell(S, Disp, 4), OpReg(R_EAX));
-        Emit(OP_MOV, SymCell(S, Disp + 4, 4), OpImm(1));
-        Emit(OP_MOV, SymCell(S, Disp + 8, 4), OpImm(Length(Txt)));
-        Emit(OP_MOV, SymCell(S, Disp + 12, 4), OpImm(1));
+        L := DataStr(Txt);
+        Emit(OP_MOV, OpReg(R_EAX), OpOffset(L));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4), OpReg(R_EAX));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp + 4, 4), OpImm(1));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp + 8, 4), OpImm(Length(Txt)));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp + 12, 4), OpImm(1));
       End
       Else
-        Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].IntVal));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4),
+             OpImm(UnitTab[Init].IntVal));
   End;
 End;
 
-{ Initialise l objet du symbole S (a Disp octets de son debut) avec
-  l unite Init, deja coercee vers le mode de l objet : denotation,
-  NIL, EMPTY, union (etiquette de mode puis valeur) ; les autres
-  initialiseurs viendront avec les TODOs 10 a 19 }
+{ Range la valeur calculee (EAX, ST(0) ou adresse dans EAX) de mode M
+  dans la destination }
+Procedure StoreValue(Sym, Lbl : Integer; Disp : LongInt; M : Integer);
+Begin
+  Case ValClass(M) Of
+    1 : Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4), OpReg(R_EAX));
+    2 : Emit1(OP_FSTP, DestOp(Sym, Lbl, Disp, 8));
+    3 :
+      Begin
+        Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+        DestAddrEDI(Sym, Lbl, Disp);
+        Emit(OP_MOV, OpReg(R_ECX), OpImm(ModeSize(M) Div 4));
+        Emit0(OP_REP_MOVSD);
+      End;
+  End;
+End;
+
+{ Charge dans EAX l adresse de l objet d un symbole }
+Procedure LoadSymAddress(S : Integer);
+Begin
+  If SymTab[S].Storage = SC_STATIC Then
+    Emit(OP_MOV, OpReg(R_EAX), OpOffset(Intern(SymTab[S].AsmName)))
+  Else
+    Emit(OP_LEA, OpReg(R_EAX), SymCell(S, 0, 4));
+End;
+
+{ Charge la valeur d un objet dont EAX contient l adresse }
+Procedure LoadThrough(M : Integer);
+Begin
+  Case ValClass(M) Of
+    1 : Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 0, 4));
+    2 : Emit1(OP_FLD, OpMem(R_EAX, 0, 8));
+  End;
+End;
+
+Procedure GenValue(U : LongInt); Forward;
+
+Procedure GenSelect(U : LongInt);
+Var
+  M : Integer;
+Begin
+  GenValue(UnitTab[U].A);
+  If UnitTab[U].C <> 0 Then
+    Emit(OP_ADD, OpReg(R_EAX), OpImm(UnitTab[U].C));
+  M := UnitTab[U].Mode;
+  If ModeKind(M) <> MK_REF Then
+    LoadThrough(M);               { selection dans une valeur }
+End;
+
+Procedure GenConstruct(U : LongInt);
+Var
+  T, I : Integer;
+  A    : LongInt;
+  M    : Integer;
+Begin
+  M := UnitTab[U].Mode;
+  T := NewTemp(ModeSize(M));
+  A := UnitTab[U].A;
+  I := 0;
+  While A >= 0 Do
+  Begin
+    GenValue(A);
+    StoreValue(-1, T, ModeFieldOffset(M, I), ModeFieldMode(M, I));
+    A := UnitTab[A].Next;
+    Inc(I);
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), OpOffset(T));
+End;
+
+Procedure GenCoerce(U : LongInt);
+Var
+  C  : LongInt;
+  T  : Integer;
+  CM : Integer;
+Begin
+  C := UnitTab[U].A;
+  CM := UnitTab[C].Mode;
+  Case UnitTab[U].IntVal Of
+    CO_DEREF:
+      Begin
+        GenValue(C);
+        LoadThrough(UnitTab[U].Mode);
+      End;
+    CO_WIDEN:
+      Begin
+        GenValue(C);
+        Emit1(OP_PUSH, OpReg(R_EAX));
+        Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+        Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+      End;
+    CO_VOID:
+      Begin
+        GenValue(C);
+        If ValClass(CM) = 2 Then Emit1(OP_FSTP, OpST(0));
+      End;
+    CO_UNITE:
+      If ModeKind(CM) = MK_UNION Then
+        EmitComment('union vers union : pas encore generee')
+      Else
+      Begin
+        T := NewTemp(ModeSize(UnitTab[U].Mode));
+        Emit(OP_MOV, OpMemSym(T, 0, 4), OpImm(UnitTab[U].B));
+        GenValue(C);
+        StoreValue(-1, T, 4, CM);
+        Emit(OP_MOV, OpReg(R_EAX), OpOffset(T));
+      End;
+  Else
+    Begin
+      GenValue(C);
+      EmitComment('coercition ligne ' + ItoS(UnitTab[U].Line) +
+                  ' pas encore generee');
+    End;
+  End;
+End;
+
+{ Valeur d une unite : mot dans EAX, reel dans ST(0), ou adresse dans
+  EAX pour les objets en memoire ; une variable (mode REF m) a pour
+  valeur son adresse }
+Procedure GenValue(U : LongInt);
+Var
+  S, T : Integer;
+Begin
+  Case UnitTab[U].Kind Of
+    UK_INTDEN, UK_BOOLDEN, UK_CHARDEN:
+      Emit(OP_MOV, OpReg(R_EAX), OpImm(UnitTab[U].IntVal));
+    UK_REALDEN:
+      Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[U].RealVal), 0, 8));
+    UK_STRDEN:
+      Begin
+        T := NewTemp(ModeSize(MD_STRING));
+        GenStoreDenotation(-1, T, 0, MD_STRING, U);
+        Emit(OP_MOV, OpReg(R_EAX), OpOffset(T));
+      End;
+    UK_NIL, UK_EMPTY:
+      Emit(OP_MOV, OpReg(R_EAX), OpImm(0));
+    UK_SKIP: ;
+    UK_IDENT:
+      Begin
+        S := UnitTab[U].Sym;
+        If S < 0 Then Exit;
+        If SymTab[S].Kind = SK_VAR Then
+          LoadSymAddress(S)
+        Else If (SymTab[S].Kind = SK_STD) And (SymTab[S].Name = 'pi') Then
+          Emit1(OP_FLD, OpMemSym(DataReal(3.14159265358979323846), 0, 8))
+        Else If SymTab[S].Kind = SK_IDENT Then
+        Begin
+          Case ValClass(SymTab[S].Mode) Of
+            1 : Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 0, 4));
+            2 : Emit1(OP_FLD, SymCell(S, 0, 8));
+            3 : LoadSymAddress(S);
+          End;
+        End
+        Else
+          EmitComment(SymTab[S].Name + ' : pas encore genere');
+      End;
+    UK_COERCE    : GenCoerce(U);
+    UK_SELECT    : GenSelect(U);
+    UK_CONSTRUCT : GenConstruct(U);
+    UK_CLOSED:
+      GenUnit(UnitTab[U].A);
+  Else
+    EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
+                ' : pas encore generee)');
+  End;
+End;
+
+{ Initialise l objet du symbole S (a Disp octets de son debut, de mode
+  ObjMode) avec l unite Init, deja coercee vers ce mode : denotations,
+  NIL, EMPTY et union d'une denotation directement, le reste par la
+  valeur calculee }
 Procedure GenInit(S : Integer; Disp : LongInt; Init : LongInt;
-                  Const Name : TName);
+                  Const Name : TName; ObjMode : Integer);
 Begin
   Case UnitTab[Init].Kind Of
     UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
-      GenStoreDenotation(S, Disp, ModeResolve(UnitTab[Init].Mode), Init);
+      GenStoreDenotation(S, -1, Disp, ModeResolve(UnitTab[Init].Mode),
+                         Init);
     UK_NIL, UK_EMPTY:
       Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(0));
     UK_SKIP: ;
+    UK_OPAQUE:
+      EmitComment(Name + ' : initialiseur ligne ' +
+                  ItoS(UnitTab[Init].Line) + ' pas encore genere');
     UK_COERCE:
       If (UnitTab[Init].IntVal = CO_UNITE) And
          (ModeKind(UnitTab[UnitTab[Init].A].Mode) <> MK_UNION) And
@@ -5866,14 +6697,18 @@ Begin
           UK_BOOLDEN, UK_CHARDEN, UK_STRDEN]) Then
       Begin
         Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].B));
-        GenInit(S, Disp + 4, UnitTab[Init].A, Name);
+        GenInit(S, Disp + 4, UnitTab[Init].A, Name, ObjMode);
       End
       Else
-        EmitComment(Name + ' : coercition ligne ' +
-                    ItoS(UnitTab[Init].Line) + ' pas encore generee');
+      Begin
+        GenValue(Init);
+        StoreValue(S, -1, Disp, ObjMode);
+      End;
   Else
-    EmitComment(Name + ' : initialiseur ligne ' +
-                ItoS(UnitTab[Init].Line) + ' pas encore genere');
+    Begin
+      GenValue(Init);
+      StoreValue(S, -1, Disp, ObjMode);
+    End;
   End;
 End;
 
@@ -5888,25 +6723,26 @@ Begin
     Exit;
   End;
   If UnitTab[U].A >= 0 Then
-    GenInit(UnitTab[U].Sym, 0, UnitTab[U].A, UnitTab[U].Name);
+    GenInit(UnitTab[U].Sym, 0, UnitTab[U].A, UnitTab[U].Name,
+            UnitTab[U].Mode);
 End;
 
 { ---- Generation du code a partir de l arbre ---- }
-Procedure GenUnit(U : LongInt); Forward;
 
 Procedure GenOne(U : LongInt);
 Begin
   Case UnitTab[U].Kind Of
     UK_SERIAL  : GenUnit(UnitTab[U].A);
     UK_CLOSED  : GenUnit(UnitTab[U].A);
-    UK_COERCE  : GenOne(UnitTab[U].A);
+    UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
+    UK_CAST    : GenValue(U);
     UK_LABELDEF:
       If UnitTab[U].Sym >= 0 Then
         EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
     UK_GOTO    :
       If UnitTab[U].Sym >= 0 Then
         Emit1(OP_JMP, OpLabel(Intern(SymTab[UnitTab[U].Sym].AsmName)));
-    UK_SKIP, UK_NIL, UK_EMPTY, UK_MODEDECL, UK_PRIODECL : ;
+    UK_SKIP, UK_NIL, UK_EMPTY, UK_MODEDECL, UK_PRIODECL, UK_TRIM : ;
     UK_VARDECL, UK_IDDECL : GenDecl(U);
     UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
     UK_DECL, UK_OPAQUE:
@@ -6005,6 +6841,7 @@ Begin
   PreludeInit;
   PreludeModes := ModeCount;
   CodeInit;
+  TempSeq := 0;
   If Opts.Verbose Then
   Begin
     ShowBanner;
