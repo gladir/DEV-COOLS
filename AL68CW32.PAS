@@ -1461,6 +1461,8 @@ Type
     Val     : TName;       { texte ; symboles normalises            }
     IntVal  : LongInt;     { TK_INT, TK_BOOL, TK_CHAR, TK_STRING    }
     RealVal : Double;      { TK_REAL (et TK_INT)                    }
+    Hi      : LongInt;     { TK_INT long : mot de poids fort        }
+    Long    : Boolean;     { TK_INT : denotation de LONG INT        }
     Line    : Integer;
     Col     : Integer;
   End;
@@ -1480,7 +1482,8 @@ Type
     MK_STRUCT,     { Count champs dans le pool a partir de First     }
     MK_UNION,      { Count alternatives triees, dans le pool         }
     MK_PROC,       { Sub = resultat, Count parametres dans le pool   }
-    MK_FWD         { mode nomme en cours de definition (recursion)   }
+    MK_FWD,        { mode nomme en cours de definition (recursion)   }
+    MK_LINT        { LONG INT : entier sur 64 bits (en memoire)      }
   );
 
   TMode = Record
@@ -1606,6 +1609,8 @@ Type
     UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
     UK_CHARDEN,    { denotation de caractere : IntVal = code           }
     UK_STRDEN,     { denotation de chaine : IntVal = indice LitTab     }
+    UK_LINTDEN,    { denotation de LONG INT : IntVal = mot de poids
+                     faible, D = mot de poids fort                     }
     UK_VARDECL,    { variable : Sym, Mode = mode de l objet, A =
                      initialiseur, B = bornes, C = dimensions          }
     UK_IDDECL,     { identite : Sym, Mode, A = initialiseur            }
@@ -2084,14 +2089,14 @@ End;
   SECTION 6 - LEXEUR (TODO 03)
   ============================================================ }
 Const
-  KEYWORD_COUNT = 50;
+  KEYWORD_COUNT = 51;
   KeywordTab : Array[1..KEYWORD_COUNT] Of String[7] = (
     'BEGIN', 'END', 'IF', 'THEN', 'ELIF', 'ELSE', 'FI', 'CASE', 'IN',
     'OUSE', 'OUT', 'ESAC', 'FOR', 'FROM', 'BY', 'TO', 'DOWNTO', 'WHILE',
     'DO', 'OD', 'MODE', 'STRUCT', 'UNION', 'PROC', 'OP', 'PRIO', 'REF',
     'HEAP', 'LOC', 'INT', 'REAL', 'BOOL', 'CHAR', 'STRING', 'BITS',
     'BYTES', 'COMPL', 'VOID', 'FLEX', 'PAR', 'GOTO', 'SKIP', 'NIL',
-    'EMPTY', 'OF', 'IS', 'ISNT', 'AT', 'EXIT', 'LONG'
+    'EMPTY', 'OF', 'IS', 'ISNT', 'AT', 'EXIT', 'LONG', 'SHORT'
   );
 
 Var
@@ -2274,9 +2279,15 @@ Var
   P       : Double;
   Base    : LongInt;
   BaseOK  : Boolean;
+  Acc     : Int64;
+  AccOvf  : Boolean;
 Begin
   T.Val := '';
   T.IntVal := 0;
+  T.Hi := 0;
+  T.Long := False;
+  Acc := 0;
+  AccOvf := False;
   IntOvf := False;
   IsReal := False;
   Mant := 0;
@@ -2290,6 +2301,13 @@ Begin
       IntOvf := True
     Else
       T.IntVal := T.IntVal * 10 + Digit;
+    If Not AccOvf Then
+    Begin
+      If Acc > (Int64(9223372036854775807) - Digit) Div 10 Then
+        AccOvf := True
+      Else
+        Acc := Acc * 10 + Digit;
+    End;
     Mant := Mant * 10 + Digit;
     If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
     LexNextChar;
@@ -2306,6 +2324,7 @@ Begin
     If Length(T.Val) < MAX_NAME Then T.Val := T.Val + 'r';
     LexNextChar;
     T.IntVal := 0;
+    Acc := 0;
     IntOvf := False;
     While DigitValue(LexCur) >= 0 Do
     Begin
@@ -2316,20 +2335,25 @@ Begin
                 ItoS(Base) + ': ' + LexCur);
         BaseOK := False;
       End;
-      If T.IntVal > (MaxLongInt - Digit) Div Base Then
+      If Acc > (Int64(4294967295) - Digit) Div Base Then
         IntOvf := True
       Else
-        T.IntVal := T.IntVal * Base + Digit;
+        Acc := Acc * Base + Digit;
       If Length(T.Val) < MAX_NAME Then T.Val := T.Val + LexCur;
       LexNextChar;
     End;
     T.Kind := TK_INT;
     If IntOvf Then
     Begin
-      ErrorAt(T.Line, T.Col, 'entier hors limites: ' + T.Val);
-      T.IntVal := MaxLongInt;
+      ErrorAt(T.Line, T.Col, 'denotation de bits hors limites: ' + T.Val);
+      Acc := 0;
     End;
-    T.RealVal := T.IntVal;
+    { BITS sur 32 bits : les valeurs au-dela de 2**31 - 1 sont negatives }
+    If Acc > 2147483647 Then
+      T.IntVal := Acc - Int64(4294967296)
+    Else
+      T.IntVal := Acc;
+    T.RealVal := Acc;
     Exit;
   End;
 
@@ -2409,12 +2433,28 @@ Begin
   Else
   Begin
     T.Kind := TK_INT;
-    If IntOvf Then
+    If IntOvf And Not AccOvf Then
     Begin
-      ErrorAt(T.Line, T.Col, 'entier hors limites: ' + T.Val);
-      T.IntVal := MaxLongInt;
+      { au-dela de INT : denotation de LONG INT (64 bits) }
+      T.Long := True;
+      T.Hi := Acc Div Int64(4294967296);
+      Digit := 0;
+      Acc := Acc Mod Int64(4294967296);
+      If Acc > 2147483647 Then
+        T.IntVal := Acc - Int64(4294967296)
+      Else
+        T.IntVal := Acc;
+      T.RealVal := Mant;
+    End
+    Else
+    Begin
+      If IntOvf Then
+      Begin
+        ErrorAt(T.Line, T.Col, 'entier hors limites: ' + T.Val);
+        T.IntVal := MaxLongInt;
+      End;
+      T.RealVal := T.IntVal;
     End;
-    T.RealVal := T.IntVal;
   End;
 End;
 
@@ -2753,6 +2793,67 @@ Begin
   Inc(TokCount);
 End;
 
+{ Noms du prelude standard ecrits avec des espaces (max int, long pi...) :
+  les mots consecutifs sont fusionnes en un seul identificateur }
+Const
+  STDWORD_COUNT = 20;
+  StdWords : Array[1..STDWORD_COUNT] Of String[17] = (
+    'max int', 'max real', 'small real', 'int width', 'real width',
+    'exp width', 'bits width', 'max abs char', 'null character',
+    'blank', 'flip', 'flop', 'error char', 'long max int',
+    'long int width', 'long pi', 'long max real', 'long small real',
+    'long real width', 'long exp width'
+  );
+
+Function StdWordIndex(Const S : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  StdWordIndex := 0;
+  For I := 1 To STDWORD_COUNT Do
+    If StdWords[I] = S Then StdWordIndex := I;
+End;
+
+Procedure LexMergeStdWords;
+Var
+  I, J, K, N : LongInt;
+  Cat        : TString;
+  Done       : Boolean;
+Begin
+  I := 0;
+  N := 0;
+  While I < TokCount Do
+  Begin
+    Done := False;
+    If TokTab[I].Kind = TK_TAG Then
+      For K := 3 Downto 2 Do
+        If (Not Done) And (I + K <= TokCount) Then
+        Begin
+          Cat := TokTab[I].Val;
+          For J := 1 To K - 1 Do
+            If TokTab[I + J].Kind = TK_TAG Then
+              Cat := Cat + ' ' + TokTab[I + J].Val
+            Else
+              Cat := Cat + '?';
+          If StdWordIndex(Cat) > 0 Then
+          Begin
+            TokTab[N] := TokTab[I];
+            TokTab[N].Val := Cat;
+            Inc(N);
+            I := I + K;
+            Done := True;
+          End;
+        End;
+    If Not Done Then
+    Begin
+      TokTab[N] := TokTab[I];
+      Inc(N);
+      Inc(I);
+    End;
+  End;
+  TokCount := N;
+End;
+
 Procedure PhaseLex;
 Var
   T : TToken;
@@ -2766,6 +2867,7 @@ Begin
     If Opts.DebugMode Then PrintToken(T);
     LexStore(T);
   Until T.Kind = TK_EOF;
+  LexMergeStdWords;
   If Opts.Verbose Then
   Begin
     If (LexCol = 1) And (LexLine > 1) Then Dec(LexLine);
@@ -2788,6 +2890,7 @@ Const
   MD_BITS   = 6;
   MD_NIL    = 7;
   MD_STRING = 8;     { FLEX [] CHAR }
+  MD_LINT   = 9;     { LONG INT }
 
   { dimensions d un descripteur de tableau : pointeur + (borne
     inferieure, borne superieure, pas) par dimension }
@@ -2857,6 +2960,7 @@ Begin
   ModeTab[I].Sub  := MD_CHAR;
   ModeTab[I].Dims := 1;
   ModeTab[I].Flex := True;
+  ModeNewRaw(MK_LINT);               { MD_LINT }
 End;
 
 Function ModeRef(M : Integer) : Integer;
@@ -3249,7 +3353,7 @@ Begin
     MK_VOID          : Total := 0;
     MK_INT, MK_BOOL, MK_BITS, MK_NIL, MK_REF : Total := 4;
     MK_CHAR          : Total := 1;
-    MK_REAL          : Total := 8;
+    MK_REAL, MK_LINT : Total := 8;
     MK_PROC          : Total := 8;       { entree + lien statique }
     MK_ROW           : Total := ROW_DESC_BASE +
                                 ROW_DESC_DIM * ModeTab[M].Dims;
@@ -3325,6 +3429,7 @@ Begin
     MK_BOOL  : S := 'BOOL';
     MK_CHAR  : S := 'CHAR';
     MK_BITS  : S := 'BITS';
+    MK_LINT  : S := 'LONG INT';
     MK_NIL   : S := 'NIL';
     MK_FWD   : S := ModeTab[M].Name;
     MK_REF   : S := 'REF ' + ModeName(ModeTab[M].Sub);
@@ -3858,6 +3963,66 @@ Begin
   SymTab[S].AsmName := A68_RT_PFX + AsmIdent(Name);
 End;
 
+{ operateur realise par une routine du runtime (convention des
+  procedures : voir GenOpCall) }
+Procedure PreRtOp(Const Name : TName; A, B, R : Integer;
+                  Const Rt : TName);
+Var
+  S : Integer;
+Begin
+  ModeTmpReset;
+  ModeTmpAdd('', A, 0, 0);
+  If B >= 0 Then ModeTmpAdd('', B, 0, 0);
+  S := SymDeclare(Name, SK_OP, ModeProcTmp(R), 0, 0);
+  SymTab[S].AsmName := A68_RT_PFX + Rt;
+End;
+
+{ operateur dyadique sur LONG INT : formes (LONG INT, LONG INT),
+  (LONG INT, INT) et (INT, LONG INT) ; Rt est le nom de base }
+Procedure PreLong3(Const Name : TName; R1 : Integer; Const Rt : TName);
+Begin
+  PreRtOp(Name, MD_LINT, MD_LINT, R1, Rt);
+  PreRtOp(Name, MD_LINT, MD_INT, R1, Rt + 'LI');
+  PreRtOp(Name, MD_INT, MD_LINT, R1, Rt + 'IL');
+End;
+
+{ affectation composee sur LONG INT }
+Procedure PreLongAB(Const Name : TName; Const Rt : TName);
+Begin
+  PreRtOp(Name, ModeRef(MD_LINT), MD_LINT, ModeRef(MD_LINT), Rt);
+  PreRtOp(Name, ModeRef(MD_LINT), MD_INT, ModeRef(MD_LINT), Rt + 'I');
+End;
+
+Procedure PreLongOps;
+Begin
+  PreLong3('+', MD_LINT, 'LADD');
+  PreLong3('-', MD_LINT, 'LSUB');
+  PreLong3('*', MD_LINT, 'LMUL');
+  PreLong3('OVER', MD_LINT, 'LDIV');
+  PreLong3('%', MD_LINT, 'LDIV');
+  PreLong3('MOD', MD_LINT, 'LMOD');
+  PreLong3('%*', MD_LINT, 'LMOD');
+  PreLong3('/', MD_REAL, 'LRDIV');
+  PreRtOp('**', MD_LINT, MD_INT, MD_LINT, 'LPOW');
+  PreLong3('=', MD_BOOL, 'LEQ');   PreLong3('/=', MD_BOOL, 'LNE');
+  PreLong3('<', MD_BOOL, 'LLT');   PreLong3('<=', MD_BOOL, 'LLE');
+  PreLong3('>', MD_BOOL, 'LGT');   PreLong3('>=', MD_BOOL, 'LGE');
+  PreLongAB('+:=', 'LADDAB');      PreLongAB('PLUSAB', 'LADDAB');
+  PreLongAB('-:=', 'LSUBAB');      PreLongAB('MINUSAB', 'LSUBAB');
+  PreLongAB('*:=', 'LMULAB');      PreLongAB('TIMESAB', 'LMULAB');
+  PreLongAB('%:=', 'LDIVAB');      PreLongAB('OVERAB', 'LDIVAB');
+  PreLongAB('%*:=', 'LMODAB');     PreLongAB('MODAB', 'LMODAB');
+  PreRtOp('-', MD_LINT, -1, MD_LINT, 'LNEG');
+  PreRtOp('+', MD_LINT, -1, MD_LINT, 'LPOS');
+  PreRtOp('ABS', MD_LINT, -1, MD_LINT, 'LABS');
+  PreRtOp('SIGN', MD_LINT, -1, MD_INT, 'LSIGN');
+  PreRtOp('ODD', MD_LINT, -1, MD_BOOL, 'LODD');
+  PreRtOp('LENG', MD_INT, -1, MD_LINT, 'LLENG');
+  PreRtOp('SHORTEN', MD_LINT, -1, MD_INT, 'LSHORTEN');
+  PreRtOp('LENG', MD_REAL, -1, MD_REAL, 'RLENG');
+  PreRtOp('SHORTEN', MD_REAL, -1, MD_REAL, 'RLENG');
+End;
+
 Procedure PreProc1(Const Name : TName; A, R : Integer);
 Begin
   ModeTmpReset;
@@ -3956,9 +4121,20 @@ Begin
   PreOpGeneric('UPB', 1, MD_INT);
   PreOpGeneric('LWB', 2, MD_INT);
   PreOpGeneric('UPB', 2, MD_INT);
+  PreLongOps;
 
   { identificateurs standard }
   PreStd('pi', MD_REAL);
+  PreStd('max int', MD_INT);        PreStd('max real', MD_REAL);
+  PreStd('small real', MD_REAL);    PreStd('int width', MD_INT);
+  PreStd('real width', MD_INT);     PreStd('exp width', MD_INT);
+  PreStd('bits width', MD_INT);     PreStd('max abs char', MD_INT);
+  PreStd('null character', MD_CHAR); PreStd('blank', MD_CHAR);
+  PreStd('flip', MD_CHAR);          PreStd('flop', MD_CHAR);
+  PreStd('error char', MD_CHAR);    PreStd('long max int', MD_LINT);
+  PreStd('long int width', MD_INT); PreStd('long pi', MD_REAL);
+  PreStd('long max real', MD_REAL); PreStd('long small real', MD_REAL);
+  PreStd('long real width', MD_INT); PreStd('long exp width', MD_INT);
   PreStd('print', MD_VOID);       { forme speciale (TODO 19) }
   PreStd('read', MD_VOID);        { forme speciale (TODO 19) }
   PreStd('newline', MD_VOID);     { marqueur de print (TODO 19) }
@@ -4052,7 +4228,7 @@ Type
     OP_FCOM, OP_FCOMP, OP_FNSTSW, OP_SAHF,
     OP_DIV, OP_JNS, OP_SHL, OP_FTST, OP_FRNDINT, OP_F2XM1, OP_FSCALE,
     OP_FLDL2E, OP_FADDP, OP_FSUBP, OP_FMULP, OP_FDIVP, OP_FISTP,
-    OP_FNSTCW, OP_FLDCW
+    OP_FNSTCW, OP_FLDCW, OP_ADC, OP_SBB, OP_MUL
   );
 
   TInstr = Record
@@ -4382,7 +4558,8 @@ Begin
     OP_FADDP: OpName := 'FADDP';   OP_FSUBP: OpName := 'FSUBP';
     OP_FMULP: OpName := 'FMULP';   OP_FDIVP: OpName := 'FDIVP';
     OP_FISTP: OpName := 'FISTP';   OP_FNSTCW: OpName := 'FNSTCW';
-    OP_FLDCW: OpName := 'FLDCW';
+    OP_FLDCW: OpName := 'FLDCW';   OP_ADC: OpName := 'ADC';
+    OP_SBB: OpName := 'SBB';       OP_MUL: OpName := 'MUL';
   Else
     OpName := '?';
   End;
@@ -4874,7 +5051,9 @@ Begin
   End;
   If Str = STR_STRONG Then
   Begin
-    If (ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_REAL) Then
+    If ((ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_REAL)) Or
+       ((ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_LINT)) Or
+       ((ModeTab[M].Kind = MK_LINT) And (ModeTab[W].Kind = MK_REAL)) Then
     Begin
       CoerceFit := FIT_WIDEN;
       Exit;
@@ -4932,7 +5111,8 @@ Begin
   If (Kind = CO_DEREF) And Opts.Warnings Then WarnUninit(U);
   If Kind = CO_WIDEN Then
     WarnAt(UnitTab[U].Line, UnitTab[U].Col,
-           'conversion implicite de INT en REAL');
+           'conversion implicite de ' + ModeName(UnitTab[U].Mode) +
+           ' en ' + ModeName(NewMode));
   N := UnitNew(UK_COERCE, UnitTab[U].Line, UnitTab[U].Col);
   UnitTab[N].A := U;
   UnitTab[N].IntVal := Kind;
@@ -5263,7 +5443,21 @@ Begin
               UnitTab[Cur].B := Tag;
             End;
           FIT_WIDEN:
-            If UnitTab[Cur].Kind = UK_INTDEN Then
+            If ModeTab[W].Kind = MK_LINT Then
+            Begin
+              If UnitTab[Cur].Kind = UK_INTDEN Then
+              Begin
+                { repliement : la denotation devient LONG INT }
+                UnitTab[Cur].Kind := UK_LINTDEN;
+                If UnitTab[Cur].IntVal < 0 Then UnitTab[Cur].D := -1
+                Else UnitTab[Cur].D := 0;
+                UnitTab[Cur].Mode := MD_LINT;
+              End
+              Else
+                Cur := CoerceWrap(Cur, CO_WIDEN, MD_LINT);
+            End
+            Else If (UnitTab[Cur].Kind = UK_INTDEN) And
+                    (ModeTab[M].Kind = MK_INT) Then
             Begin
               { repliement : la denotation devient reelle }
               UnitTab[Cur].Kind := UK_REALDEN;
@@ -5525,7 +5719,8 @@ Begin
                    (T.Val = 'BYTES') Or (T.Val = 'COMPL') Or
                    (T.Val = 'REF') Or (T.Val = 'HEAP') Or
                    (T.Val = 'LOC') Or (T.Val = 'FLEX') Or
-                   (T.Val = 'LONG') Or (T.Val = 'STRUCT') Or
+                   (T.Val = 'LONG') Or (T.Val = 'SHORT') Or
+                   (T.Val = 'STRUCT') Or
                    (T.Val = 'UNION')
   Else If T.Kind = TK_PUNCT Then
     AtDeclStart := T.Val = '['
@@ -5783,6 +5978,22 @@ End;
 
 { Denotation seule (eventuellement precedee de - ou +) : retourne son
   noeud ; -1 si l expression est plus complexe }
+{ Oppose un entier de 64 bits (Lo, Hi) : resultat dans (RLo, RHi) }
+Procedure LongNegate(Var RLo, RHi : LongInt; Lo, Hi : LongInt);
+Var
+  V : Int64;
+Begin
+  V := Int64(Hi) * Int64(4294967296);
+  If Lo < 0 Then V := V + Int64(Lo) + Int64(4294967296)
+  Else V := V + Lo;
+  V := -V;
+  RHi := V Div Int64(4294967296);
+  If V < 0 Then RHi := (V - Int64(4294967295)) Div Int64(4294967296);
+  V := V - Int64(RHi) * Int64(4294967296);
+  If V > 2147483647 Then V := V - Int64(4294967296);
+  RLo := V;
+End;
+
 Function ParseDenotation : LongInt;
 Var
   U     : LongInt;
@@ -5821,7 +6032,8 @@ Begin
     Exit;
   If Not TokEndsExpr(Skip + 1) Then Exit;
   Case T.Kind Of
-    TK_INT   : U := UnitNew(UK_INTDEN, T.Line, T.Col);
+    TK_INT   : If T.Long Then U := UnitNew(UK_LINTDEN, T.Line, T.Col)
+               Else U := UnitNew(UK_INTDEN, T.Line, T.Col);
     TK_REAL  : U := UnitNew(UK_REALDEN, T.Line, T.Col);
     TK_BOOL  : U := UnitNew(UK_BOOLDEN, T.Line, T.Col);
     TK_CHAR  : U := UnitNew(UK_CHARDEN, T.Line, T.Col);
@@ -5830,13 +6042,18 @@ Begin
   End;
   UnitTab[U].IntVal := T.IntVal;
   UnitTab[U].RealVal := T.RealVal;
+  UnitTab[U].D := T.Hi;
   If Neg Then
   Begin
     UnitTab[U].IntVal := -T.IntVal;
     UnitTab[U].RealVal := -T.RealVal;
+    If T.Long Then LongNegate(UnitTab[U].IntVal, UnitTab[U].D, T.IntVal,
+                              T.Hi);
   End;
   Case T.Kind Of
-    TK_INT  : UnitTab[U].Mode := MD_INT;
+    TK_INT  : If T.Long Then UnitTab[U].Mode := MD_LINT
+              Else If Pos('r', T.Val) > 0 Then UnitTab[U].Mode := MD_BITS
+              Else UnitTab[U].Mode := MD_INT;
     TK_REAL : UnitTab[U].Mode := MD_REAL;
     TK_BOOL : UnitTab[U].Mode := MD_BOOL;
     TK_CHAR : UnitTab[U].Mode := MD_CHAR;
@@ -5870,7 +6087,9 @@ Begin
                          (T.Val = 'STRING') Or (T.Val = 'BITS') Or
                          (T.Val = 'VOID') Or (T.Val = 'REF') Or
                          (T.Val = 'STRUCT') Or (T.Val = 'UNION') Or
-                         (T.Val = 'PROC') Or (T.Val = 'FLEX');
+                         (T.Val = 'PROC') Or (T.Val = 'FLEX') Or
+                         (T.Val = 'LONG') Or (T.Val = 'SHORT') Or
+                         (T.Val = 'BYTES') Or (T.Val = 'COMPL');
     TK_PUNCT : AtDeclarerStart := T.Val = '[';
     TK_BOLD, TK_TAG : AtDeclarerStart := SymFindMode(T.Val) >= 0;
   End;
@@ -5895,6 +6114,7 @@ Var
   Res                : Integer;
   Sym                : Integer;
   Group              : Integer;
+  Long               : Integer;
 Begin
   M := MD_ERROR;
   Bounds := -1;
@@ -5925,6 +6145,39 @@ Begin
         Else If AtKw('VOID') Then M := MD_VOID;
         If M <> MD_ERROR Then
         Begin
+          ParserAdvance;
+          ParseDeclarer := True;
+          Exit;
+        End;
+        If AtKw('LONG') Or AtKw('SHORT') Then
+        Begin
+          { LONG INT : 64 bits ; SHORT INT = INT ; LONG REAL, SHORT REAL
+            = REAL ; LONG BITS = BITS (memes representations) }
+          Long := 0;
+          While AtKw('LONG') Or AtKw('SHORT') Do
+          Begin
+            If AtKw('LONG') Then Inc(Long) Else Dec(Long);
+            ParserAdvance;
+          End;
+          If AtKw('INT') Then
+          Begin
+            If Long > 0 Then M := MD_LINT Else M := MD_INT;
+          End
+          Else If AtKw('REAL') Then M := MD_REAL
+          Else If AtKw('BITS') Then M := MD_BITS
+          Else
+          Begin
+            ParseError('INT, REAL ou BITS attendu apres LONG ou SHORT');
+            Exit;
+          End;
+          ParserAdvance;
+          ParseDeclarer := True;
+          Exit;
+        End;
+        If (AtKw('BYTES') Or AtKw('COMPL')) And
+           (SymFindMode(TokTab[TokPos].Val) >= 0) Then
+        Begin
+          M := SymTab[SymFindMode(TokTab[TokPos].Val)].Mode;
           ParserAdvance;
           ParseDeclarer := True;
           Exit;
@@ -6534,7 +6787,8 @@ Var
 Begin
   T := TokTab[TokPos];
   Case T.Kind Of
-    TK_INT  : U := UnitNew(UK_INTDEN, T.Line, T.Col);
+    TK_INT  : If T.Long Then U := UnitNew(UK_LINTDEN, T.Line, T.Col)
+              Else U := UnitNew(UK_INTDEN, T.Line, T.Col);
     TK_REAL : U := UnitNew(UK_REALDEN, T.Line, T.Col);
     TK_BOOL : U := UnitNew(UK_BOOLDEN, T.Line, T.Col);
     TK_CHAR : U := UnitNew(UK_CHARDEN, T.Line, T.Col);
@@ -6543,8 +6797,11 @@ Begin
   End;
   UnitTab[U].IntVal := T.IntVal;
   UnitTab[U].RealVal := T.RealVal;
+  UnitTab[U].D := T.Hi;
   Case T.Kind Of
-    TK_INT  : UnitTab[U].Mode := MD_INT;
+    TK_INT  : If T.Long Then UnitTab[U].Mode := MD_LINT
+              Else If Pos('r', T.Val) > 0 Then UnitTab[U].Mode := MD_BITS
+              Else UnitTab[U].Mode := MD_INT;
     TK_REAL : UnitTab[U].Mode := MD_REAL;
     TK_BOOL : UnitTab[U].Mode := MD_BOOL;
     TK_CHAR : UnitTab[U].Mode := MD_CHAR;
@@ -6882,7 +7139,7 @@ Begin
   UnitTab[U].Mode := M;
   Sc := ScopeEnter(SCK_PROC);
   UnitTab[U].Scope := Sc;
-  Agg := ModeKind(Res) In [MK_STRUCT, MK_ROW, MK_UNION, MK_PROC];
+  Agg := ModeKind(Res) In [MK_STRUCT, MK_ROW, MK_UNION, MK_PROC, MK_LINT];
   Off := 12;
   If Agg Then Off := 16;
   For I := 0 To N - 1 Do
@@ -7372,7 +7629,7 @@ Begin
   End;
   Ok := False;
   Case ModeTab[M].Kind Of
-    MK_INT, MK_REAL, MK_BOOL, MK_CHAR, MK_BITS : Ok := True;
+    MK_INT, MK_REAL, MK_BOOL, MK_CHAR, MK_BITS, MK_LINT : Ok := True;
     MK_ROW : Ok := PrintableMode(ModeTab[M].Sub, Depth + 1);
     MK_STRUCT:
       Begin
@@ -7451,7 +7708,8 @@ Begin
         MarkAssigned(Cur, UnitTab[A].Line, UnitTab[A].Col);
         M := NatMode(Cur);
         If (ModeKind(M) <> MK_REF) Or
-           Not (ModeKind(ModeDeref(M)) In [MK_INT, MK_REAL, MK_CHAR]) And
+           Not (ModeKind(ModeDeref(M)) In [MK_INT, MK_REAL, MK_CHAR,
+                                           MK_LINT]) And
            Not ModeIsString(ModeDeref(M)) Then
           ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
                   'read demande un nom de mode INT, REAL, CHAR ou ' +
@@ -8257,6 +8515,64 @@ Begin
   ParseDisplay := U;
 End;
 
+{ Constante du prelude standard (max int, blank...) : denotation }
+Function StdConstUnit(Const T : TToken) : LongInt;
+Var
+  U : LongInt;
+  N : TName;
+Begin
+  N := T.Val;
+  If (N = 'max real') Or (N = 'long max real') Or (N = 'small real') Or
+     (N = 'long small real') Or (N = 'long pi') Then
+  Begin
+    U := UnitNew(UK_REALDEN, T.Line, T.Col);
+    UnitTab[U].Mode := MD_REAL;
+    If (N = 'max real') Or (N = 'long max real') Then
+      UnitTab[U].RealVal := 1.7976931348623157E308
+    Else If N = 'long pi' Then
+      UnitTab[U].RealVal := 3.14159265358979323846
+    Else
+      UnitTab[U].RealVal := 2.220446049250313E-16;
+    StdConstUnit := U;
+    Exit;
+  End;
+  If (N = 'null character') Or (N = 'blank') Or (N = 'flip') Or
+     (N = 'flop') Or (N = 'error char') Then
+  Begin
+    U := UnitNew(UK_CHARDEN, T.Line, T.Col);
+    UnitTab[U].Mode := MD_CHAR;
+    If N = 'null character' Then UnitTab[U].IntVal := 0
+    Else If N = 'blank' Then UnitTab[U].IntVal := 32
+    Else If N = 'flip' Then UnitTab[U].IntVal := Ord('T')
+    Else If N = 'flop' Then UnitTab[U].IntVal := Ord('F')
+    Else UnitTab[U].IntVal := Ord('*');
+    StdConstUnit := U;
+    Exit;
+  End;
+  If N = 'long max int' Then
+  Begin
+    U := UnitNew(UK_LINTDEN, T.Line, T.Col);
+    UnitTab[U].Mode := MD_LINT;
+    UnitTab[U].IntVal := -1;
+    UnitTab[U].D := 2147483647;
+    StdConstUnit := U;
+    Exit;
+  End;
+  U := UnitNew(UK_INTDEN, T.Line, T.Col);
+  UnitTab[U].Mode := MD_INT;
+  If N = 'max int' Then UnitTab[U].IntVal := 2147483647
+  Else If N = 'int width' Then UnitTab[U].IntVal := 10
+  Else If N = 'real width' Then UnitTab[U].IntVal := 15
+  Else If N = 'exp width' Then UnitTab[U].IntVal := 3
+  Else If N = 'bits width' Then UnitTab[U].IntVal := 32
+  Else If N = 'max abs char' Then UnitTab[U].IntVal := 255
+  Else If N = 'long int width' Then UnitTab[U].IntVal := 19
+  Else If N = 'long real width' Then UnitTab[U].IntVal := 15
+  Else UnitTab[U].IntVal := 3;
+  UnitTab[U].RealVal := UnitTab[U].IntVal;
+  StdConstUnit := U;
+End;
+
 { Unite primaire : denotation, identificateur, clause fermee, selection,
   tranche, appel, constructeur. Retourne -1 (sans rien consommer) si ce
   n est pas une primaire connue a ce stade (formules, conditionnelles,
@@ -8341,6 +8657,12 @@ Begin
                 U := ParsePrintCall
               Else
                 Exit;
+            End
+            Else If (SymTab[S].Kind = SK_STD) And
+                    (StdWordIndex(T.Val) > 0) Then
+            Begin
+              U := StdConstUnit(T);
+              ParserAdvance;
             End
             Else
             Begin
@@ -8473,7 +8795,8 @@ Var
 
 Function IsNumDen(U : LongInt) : Boolean;
 Begin
-  IsNumDen := UnitTab[U].Kind In [UK_INTDEN, UK_REALDEN];
+  IsNumDen := (UnitTab[U].Kind In [UK_INTDEN, UK_REALDEN]) And
+              (UnitTab[U].Mode <> MD_BITS);
 End;
 
 Function NumReal(U : LongInt) : Double;
@@ -9224,6 +9547,7 @@ Begin
     UK_BOOLDEN  : UnitKindName := 'denotation BOOL';
     UK_CHARDEN  : UnitKindName := 'denotation CHAR';
     UK_STRDEN   : UnitKindName := 'denotation STRING';
+    UK_LINTDEN  : UnitKindName := 'denotation LONG INT';
     UK_VARDECL  : UnitKindName := 'variable';
     UK_IDDECL   : UnitKindName := 'identite';
     UK_MODEDECL : UnitKindName := 'MODE';
@@ -9261,6 +9585,7 @@ Begin
   Case UnitTab[U].Kind Of
     UK_LABELDEF, UK_GOTO : Write(' ', UnitTab[U].Name);
     UK_INTDEN, UK_BOOLDEN, UK_CHARDEN : Write(' ', UnitTab[U].IntVal);
+    UK_LINTDEN : Write(' ', UnitTab[U].D, ':', UnitTab[U].IntVal);
     UK_REALDEN : Write(' ', UnitTab[U].RealVal:0:6);
     UK_STRDEN  : Write(' "', LitTab[UnitTab[U].IntVal], '"');
     UK_COERCE  : Write(' ', CoerceName_(UnitTab[U].IntVal), ' -> ',
@@ -9662,7 +9987,7 @@ Begin
   Case ModeKind(M) Of
     MK_VOID                          : ValClass := 0;
     MK_REAL                          : ValClass := 2;
-    MK_STRUCT, MK_ROW, MK_UNION      : ValClass := 3;
+    MK_STRUCT, MK_ROW, MK_UNION, MK_LINT : ValClass := 3;
     MK_PROC                          : ValClass := 4;
   Else
     ValClass := 1;
@@ -9691,6 +10016,12 @@ Begin
       Begin
         Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[Init].RealVal), 0, 8));
         Emit1(OP_FSTP, DestOp(Sym, Lbl, Disp, 8));
+      End;
+    UK_LINTDEN:
+      Begin
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4), OpImm(UnitTab[Init].IntVal));
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp + 4, 4),
+             OpImm(UnitTab[Init].D));
       End;
     UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
       If M = MD_STRING Then
@@ -10090,6 +10421,7 @@ Begin
     MK_REAL         : Begin LoadThrough(M); CallRT('WRITEREAL'); End;
     MK_BOOL         : Begin LoadThrough(M); CallRT('WRITEBOOL'); End;
     MK_CHAR         : Begin LoadThrough(M); CallRT('WRITECHAR'); End;
+    MK_LINT         : CallRT('WRITELINT');
     MK_ROW          : GenPrintRow(M);
     MK_STRUCT:
       Begin
@@ -10188,6 +10520,13 @@ Begin
         CallRT('READCHAR');
         Emit1(OP_POP, OpReg(R_EDX));
         Emit(OP_MOV, OpMem(R_EDX, 0, 1), OpReg(R_AL));
+      End;
+    MK_LINT :
+      Begin
+        CallRT('READLINT');
+        Emit1(OP_POP, OpReg(R_ECX));
+        Emit(OP_MOV, OpMem(R_ECX, 0, 4), OpReg(R_EAX));
+        Emit(OP_MOV, OpMem(R_ECX, 4, 4), OpReg(R_EDX));
       End;
   Else
     Begin
@@ -10541,9 +10880,22 @@ Begin
     CO_WIDEN:
       Begin
         GenValue(C);
-        Emit1(OP_PUSH, OpReg(R_EAX));
-        Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
-        Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+        If ModeKind(CM) = MK_LINT Then
+          Emit1(OP_FILD, OpMem(R_EAX, 0, 8))
+        Else If ModeKind(UnitTab[U].Mode) = MK_LINT Then
+        Begin
+          T := NewTemp(8);
+          Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+          Emit0(OP_CDQ);
+          Emit(OP_MOV, TMem(T, 4, 4), OpReg(R_EDX));
+          TAddr(R_EAX, T);
+        End
+        Else
+        Begin
+          Emit1(OP_PUSH, OpReg(R_EAX));
+          Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+          Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+        End;
       End;
     CO_VOID:
       Begin
@@ -11927,6 +12279,13 @@ Begin
       Emit(OP_MOV, OpReg(R_EAX), OpImm(UnitTab[U].IntVal));
     UK_REALDEN:
       Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[U].RealVal), 0, 8));
+    UK_LINTDEN:
+      Begin
+        T := NewTemp(8);
+        Emit(OP_MOV, TMem(T, 0, 4), OpImm(UnitTab[U].IntVal));
+        Emit(OP_MOV, TMem(T, 4, 4), OpImm(UnitTab[U].D));
+        TAddr(R_EAX, T);
+      End;
     UK_STRDEN:
       Begin
         T := NewTemp(ModeSize(MD_STRING));
@@ -12042,7 +12401,7 @@ Begin
     Exit;
   End;
   Case UnitTab[Init].Kind Of
-    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
+    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN, UK_LINTDEN:
       GenStoreDenotation(S, -1, Disp, ModeResolve(UnitTab[Init].Mode),
                          Init);
     UK_NIL, UK_EMPTY:
@@ -12055,7 +12414,7 @@ Begin
       If (UnitTab[Init].IntVal = CO_UNITE) And
          (ModeKind(UnitTab[UnitTab[Init].A].Mode) <> MK_UNION) And
          (UnitTab[UnitTab[Init].A].Kind In [UK_INTDEN, UK_REALDEN,
-          UK_BOOLDEN, UK_CHARDEN, UK_STRDEN]) Then
+          UK_BOOLDEN, UK_CHARDEN, UK_STRDEN, UK_LINTDEN]) Then
       Begin
         Emit(OP_MOV, SymCell(S, Disp, 4), OpImm(UnitTab[Init].B));
         GenInit(S, Disp + 4, UnitTab[Init].A, Name, ObjMode);
@@ -12137,7 +12496,8 @@ Begin
       If UnitTab[U].Sym >= 0 Then GenGoto(U);
     UK_SKIP, UK_NIL, UK_EMPTY, UK_MODEDECL, UK_PRIODECL, UK_TRIM : ;
     UK_VARDECL, UK_IDDECL : GenDecl(U);
-    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
+    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN,
+    UK_LINTDEN : ;
     UK_DECL, UK_OPAQUE:
       GenUnsupported(UnitTab[U].Line, UnitTab[U].Col, 'unite inconnue');
   End;
@@ -12411,6 +12771,8 @@ Begin
   Case Op Of
     OP_ADD : AluNum := 0;
     OP_OR  : AluNum := 1;
+    OP_ADC : AluNum := 2;
+    OP_SBB : AluNum := 3;
     OP_AND : AluNum := 4;
     OP_SUB : AluNum := 5;
     OP_XOR : AluNum := 6;
@@ -12748,7 +13110,8 @@ Begin
         PutB($8F);
         EncRM(0, I.A);
       End;
-    OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_CMP: EncAlu(I);
+    OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_CMP, OP_ADC, OP_SBB:
+      EncAlu(I);
     OP_IMUL:
       If I.B.Kind = OK_IMM Then
       Begin
@@ -12770,6 +13133,7 @@ Begin
       End;
     OP_IDIV: EncUnary(I, 7);
     OP_DIV : EncUnary(I, 6);
+    OP_MUL : EncUnary(I, 4);
     OP_NEG : EncUnary(I, 3);
     OP_NOT : EncUnary(I, 2);
     OP_CDQ : PutB($99);
@@ -13635,8 +13999,8 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 977;
-  RT_MAX_ROUT = 40;
+  RT_LINES = 1886;
+  RT_MAX_ROUT = 200;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_PUT',
   '; ESI = octets, ECX = longueur : ecrit sur la sortie standard',
@@ -14614,6 +14978,915 @@ Const
   'RET',
   '_A68R_sg2:',
   'MOV EAX, -1',
+  'RET',
+  '@_A68RT_LKADD',
+  '; noyau LONG INT : [EDX] = [ESI] + [EDI]',
+  '_A68RT_LKADD:',
+  'MOV EAX, DWORD PTR [ESI]',
+  'MOV ECX, DWORD PTR [ESI+4]',
+  'ADD EAX, DWORD PTR [EDI]',
+  'ADC ECX, DWORD PTR [EDI+4]',
+  'MOV DWORD PTR [EDX], EAX',
+  'MOV DWORD PTR [EDX+4], ECX',
+  'RET',
+  '@_A68RT_LKSUB',
+  '_A68RT_LKSUB:',
+  'MOV EAX, DWORD PTR [ESI]',
+  'MOV ECX, DWORD PTR [ESI+4]',
+  'SUB EAX, DWORD PTR [EDI]',
+  'SBB ECX, DWORD PTR [EDI+4]',
+  'MOV DWORD PTR [EDX], EAX',
+  'MOV DWORD PTR [EDX+4], ECX',
+  'RET',
+  '@_A68RT_LKMUL',
+  '_A68RT_LKMUL:',
+  'PUSH EDX',
+  'PUSH EBX',
+  'MOV EAX, DWORD PTR [ESI]',
+  'MUL DWORD PTR [EDI]',
+  'MOV EBX, EDX',
+  'MOV ECX, EAX',
+  'MOV EAX, DWORD PTR [ESI+4]',
+  'IMUL EAX, DWORD PTR [EDI]',
+  'ADD EBX, EAX',
+  'MOV EAX, DWORD PTR [ESI]',
+  'IMUL EAX, DWORD PTR [EDI+4]',
+  'ADD EBX, EAX',
+  'MOV EAX, DWORD PTR [ESP+4]',
+  'MOV DWORD PTR [EAX], ECX',
+  'MOV DWORD PTR [EAX+4], EBX',
+  'POP EBX',
+  'ADD ESP, 4',
+  'RET',
+  '@_A68RT_LKCOPY',
+  '_A68RT_LKCOPY:',
+  'MOV EAX, DWORD PTR [ESI]',
+  'MOV ECX, DWORD PTR [ESI+4]',
+  'MOV DWORD PTR [EDX], EAX',
+  'MOV DWORD PTR [EDX+4], ECX',
+  'RET',
+  '@_A68RT_LKNEG',
+  '_A68RT_LKNEG:',
+  'MOV EAX, DWORD PTR [ESI]',
+  'MOV ECX, DWORD PTR [ESI+4]',
+  'NEG ECX',
+  'NEG EAX',
+  'SBB ECX, 0',
+  'MOV DWORD PTR [EDX], EAX',
+  'MOV DWORD PTR [EDX+4], ECX',
+  'RET',
+  '@_A68RT_LKCMP',
+  '; noyau : EAX = -1, 0 ou 1 selon [ESI] <=> [EDI] (signe)',
+  '_A68RT_LKCMP:',
+  'MOV EAX, DWORD PTR [ESI+4]',
+  'CMP EAX, DWORD PTR [EDI+4]',
+  'JL _A68R_l1',
+  'JG _A68R_l2',
+  'MOV EAX, DWORD PTR [ESI]',
+  'CMP EAX, DWORD PTR [EDI]',
+  'JB _A68R_l1',
+  'JA _A68R_l2',
+  'XOR EAX, EAX',
+  'RET',
+  '_A68R_l1:',
+  'MOV EAX, -1',
+  'RET',
+  '_A68R_l2:',
+  'MOV EAX, 1',
+  'RET',
+  '@_A68RT_LKUDIV',
+  '; EDX:EAX / EDI:ESI -> quotient EDX:EAX, reste EBX:ECX',
+  '_A68RT_LKUDIV:',
+  'XOR ECX, ECX',
+  'XOR EBX, EBX',
+  'PUSH 64',
+  '_A68R_l4:',
+  'ADD EAX, EAX',
+  'ADC EDX, EDX',
+  'ADC ECX, ECX',
+  'ADC EBX, EBX',
+  'SUB ECX, ESI',
+  'SBB EBX, EDI',
+  'JAE _A68R_l5',
+  'ADD ECX, ESI',
+  'ADC EBX, EDI',
+  'JMP _A68R_l6',
+  '_A68R_l5:',
+  'INC EAX',
+  '_A68R_l6:',
+  'DEC DWORD PTR [ESP]',
+  'JNE _A68R_l4',
+  'ADD ESP, 4',
+  'RET',
+  '@_A68RT_LKDIVC',
+  '; division signee, ECX = 0 (OVER) ou 1 (MOD)',
+  '_A68RT_LKDIVC:',
+  'PUSH EBX',
+  'PUSH EDX',
+  'PUSH ECX',
+  'MOV EAX, DWORD PTR [EDI]',
+  'OR EAX, DWORD PTR [EDI+4]',
+  'JNE _A68R_l7',
+  'JMP _A68RT_DIVZERO',
+  '_A68R_l7:',
+  'MOV EDX, DWORD PTR [ESI+4]',
+  'SAR EDX, 31',
+  'PUSH EDX',
+  'MOV EDX, DWORD PTR [EDI+4]',
+  'SAR EDX, 31',
+  'PUSH EDX',
+  'MOV EBX, DWORD PTR [EDI]',
+  'MOV ECX, DWORD PTR [EDI+4]',
+  'MOV EAX, DWORD PTR [ESI]',
+  'MOV EDX, DWORD PTR [ESI+4]',
+  'CMP DWORD PTR [ESP+4], 0',
+  'JE _A68R_l8',
+  'NEG EDX',
+  'NEG EAX',
+  'SBB EDX, 0',
+  '_A68R_l8:',
+  'CMP DWORD PTR [ESP], 0',
+  'JE _A68R_l9',
+  'NEG ECX',
+  'NEG EBX',
+  'SBB ECX, 0',
+  '_A68R_l9:',
+  'PUSH ECX',
+  'PUSH EBX',
+  'MOV ESI, EBX',
+  'MOV EDI, ECX',
+  'CALL _A68RT_LKUDIV',
+  'CMP DWORD PTR [ESP+16], 0',
+  'JNE _A68R_l11',
+  'MOV ESI, DWORD PTR [ESP+12]',
+  'XOR ESI, DWORD PTR [ESP+8]',
+  'JE _A68R_l10',
+  'NEG EDX',
+  'NEG EAX',
+  'SBB EDX, 0',
+  '_A68R_l10:',
+  'MOV ESI, DWORD PTR [ESP+20]',
+  'MOV DWORD PTR [ESI], EAX',
+  'MOV DWORD PTR [ESI+4], EDX',
+  'JMP _A68R_l13',
+  '_A68R_l11:',
+  'MOV EAX, ECX',
+  'MOV EDX, EBX',
+  'CMP DWORD PTR [ESP+12], 0',
+  'JE _A68R_l12',
+  'MOV ESI, EAX',
+  'OR ESI, EDX',
+  'JE _A68R_l12',
+  'MOV EAX, DWORD PTR [ESP]',
+  'MOV EDX, DWORD PTR [ESP+4]',
+  'SUB EAX, ECX',
+  'SBB EDX, EBX',
+  '_A68R_l12:',
+  'MOV ESI, DWORD PTR [ESP+20]',
+  'MOV DWORD PTR [ESI], EAX',
+  'MOV DWORD PTR [ESI+4], EDX',
+  '_A68R_l13:',
+  'ADD ESP, 24',
+  'POP EBX',
+  'RET',
+  '@_A68RT_LKDIV',
+  '_A68RT_LKDIV:',
+  'XOR ECX, ECX',
+  'JMP _A68RT_LKDIVC',
+  '@_A68RT_LKMOD',
+  '_A68RT_LKMOD:',
+  'MOV ECX, 1',
+  'JMP _A68RT_LKDIVC',
+  '@_A68RT_LADD',
+  '; LONG INT ADD LONG INT',
+  '_A68RT_LADD:',
+  'LEA ESI, [ESP+12]',
+  'LEA EDI, [ESP+20]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKADD',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 24',
+  '@_A68RT_LADDLI',
+  '_A68RT_LADDLI:',
+  'MOV EAX, DWORD PTR [ESP+20]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+20]',
+  'MOV EDI, ESP',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKADD',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LADDIL',
+  '_A68RT_LADDIL:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+24]',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKADD',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LADDAB',
+  '; LONG INT op:= LONG INT',
+  '_A68RT_LADDAB:',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'LEA EDI, [ESP+12]',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKADD',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LADDABI',
+  '_A68RT_LADDABI:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, DWORD PTR [ESP+16]',
+  'MOV EDI, ESP',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKADD',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LSUB',
+  '; LONG INT SUB LONG INT',
+  '_A68RT_LSUB:',
+  'LEA ESI, [ESP+12]',
+  'LEA EDI, [ESP+20]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKSUB',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 24',
+  '@_A68RT_LSUBLI',
+  '_A68RT_LSUBLI:',
+  'MOV EAX, DWORD PTR [ESP+20]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+20]',
+  'MOV EDI, ESP',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKSUB',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LSUBIL',
+  '_A68RT_LSUBIL:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+24]',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKSUB',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LSUBAB',
+  '; LONG INT op:= LONG INT',
+  '_A68RT_LSUBAB:',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'LEA EDI, [ESP+12]',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKSUB',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LSUBABI',
+  '_A68RT_LSUBABI:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, DWORD PTR [ESP+16]',
+  'MOV EDI, ESP',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKSUB',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LMUL',
+  '; LONG INT MUL LONG INT',
+  '_A68RT_LMUL:',
+  'LEA ESI, [ESP+12]',
+  'LEA EDI, [ESP+20]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKMUL',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 24',
+  '@_A68RT_LMULLI',
+  '_A68RT_LMULLI:',
+  'MOV EAX, DWORD PTR [ESP+20]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+20]',
+  'MOV EDI, ESP',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKMUL',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LMULIL',
+  '_A68RT_LMULIL:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+24]',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKMUL',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LMULAB',
+  '; LONG INT op:= LONG INT',
+  '_A68RT_LMULAB:',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'LEA EDI, [ESP+12]',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKMUL',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LMULABI',
+  '_A68RT_LMULABI:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, DWORD PTR [ESP+16]',
+  'MOV EDI, ESP',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKMUL',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LDIV',
+  '; LONG INT DIV LONG INT',
+  '_A68RT_LDIV:',
+  'LEA ESI, [ESP+12]',
+  'LEA EDI, [ESP+20]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKDIV',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 24',
+  '@_A68RT_LDIVLI',
+  '_A68RT_LDIVLI:',
+  'MOV EAX, DWORD PTR [ESP+20]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+20]',
+  'MOV EDI, ESP',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKDIV',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LDIVIL',
+  '_A68RT_LDIVIL:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+24]',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKDIV',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LDIVAB',
+  '; LONG INT op:= LONG INT',
+  '_A68RT_LDIVAB:',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'LEA EDI, [ESP+12]',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKDIV',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LDIVABI',
+  '_A68RT_LDIVABI:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, DWORD PTR [ESP+16]',
+  'MOV EDI, ESP',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKDIV',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LMOD',
+  '; LONG INT MOD LONG INT',
+  '_A68RT_LMOD:',
+  'LEA ESI, [ESP+12]',
+  'LEA EDI, [ESP+20]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKMOD',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 24',
+  '@_A68RT_LMODLI',
+  '_A68RT_LMODLI:',
+  'MOV EAX, DWORD PTR [ESP+20]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+20]',
+  'MOV EDI, ESP',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKMOD',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LMODIL',
+  '_A68RT_LMODIL:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+24]',
+  'MOV EDX, DWORD PTR [ESP+16]',
+  'CALL _A68RT_LKMOD',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LMODAB',
+  '; LONG INT op:= LONG INT',
+  '_A68RT_LMODAB:',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'LEA EDI, [ESP+12]',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKMOD',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 20',
+  '@_A68RT_LMODABI',
+  '_A68RT_LMODABI:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, DWORD PTR [ESP+16]',
+  'MOV EDI, ESP',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKMOD',
+  'ADD ESP, 8',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LEQ',
+  '; comparaison de LONG INT',
+  '_A68RT_LEQ:',
+  'LEA ESI, [ESP+8]',
+  'LEA EDI, [ESP+16]',
+  'CALL _A68RT_LKCMP',
+  'CMP EAX, 0',
+  'SETE AL',
+  'MOVZX EAX, AL',
+  'RET 20',
+  '@_A68RT_LEQLI',
+  '_A68RT_LEQLI:',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+16]',
+  'MOV EDI, ESP',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LEQIL',
+  '_A68RT_LEQIL:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+20]',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LNE',
+  '; comparaison de LONG INT',
+  '_A68RT_LNE:',
+  'LEA ESI, [ESP+8]',
+  'LEA EDI, [ESP+16]',
+  'CALL _A68RT_LKCMP',
+  'CMP EAX, 0',
+  'SETNE AL',
+  'MOVZX EAX, AL',
+  'RET 20',
+  '@_A68RT_LNELI',
+  '_A68RT_LNELI:',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+16]',
+  'MOV EDI, ESP',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETNE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LNEIL',
+  '_A68RT_LNEIL:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+20]',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETNE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LLT',
+  '; comparaison de LONG INT',
+  '_A68RT_LLT:',
+  'LEA ESI, [ESP+8]',
+  'LEA EDI, [ESP+16]',
+  'CALL _A68RT_LKCMP',
+  'CMP EAX, 0',
+  'SETL AL',
+  'MOVZX EAX, AL',
+  'RET 20',
+  '@_A68RT_LLTLI',
+  '_A68RT_LLTLI:',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+16]',
+  'MOV EDI, ESP',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETL AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LLTIL',
+  '_A68RT_LLTIL:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+20]',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETL AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LLE',
+  '; comparaison de LONG INT',
+  '_A68RT_LLE:',
+  'LEA ESI, [ESP+8]',
+  'LEA EDI, [ESP+16]',
+  'CALL _A68RT_LKCMP',
+  'CMP EAX, 0',
+  'SETLE AL',
+  'MOVZX EAX, AL',
+  'RET 20',
+  '@_A68RT_LLELI',
+  '_A68RT_LLELI:',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+16]',
+  'MOV EDI, ESP',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETLE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LLEIL',
+  '_A68RT_LLEIL:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+20]',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETLE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LGT',
+  '; comparaison de LONG INT',
+  '_A68RT_LGT:',
+  'LEA ESI, [ESP+8]',
+  'LEA EDI, [ESP+16]',
+  'CALL _A68RT_LKCMP',
+  'CMP EAX, 0',
+  'SETG AL',
+  'MOVZX EAX, AL',
+  'RET 20',
+  '@_A68RT_LGTLI',
+  '_A68RT_LGTLI:',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+16]',
+  'MOV EDI, ESP',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETG AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LGTIL',
+  '_A68RT_LGTIL:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+20]',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETG AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LGE',
+  '; comparaison de LONG INT',
+  '_A68RT_LGE:',
+  'LEA ESI, [ESP+8]',
+  'LEA EDI, [ESP+16]',
+  'CALL _A68RT_LKCMP',
+  'CMP EAX, 0',
+  'SETGE AL',
+  'MOVZX EAX, AL',
+  'RET 20',
+  '@_A68RT_LGELI',
+  '_A68RT_LGELI:',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'LEA ESI, [ESP+16]',
+  'MOV EDI, ESP',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETGE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LGEIL',
+  '_A68RT_LGEIL:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'CDQ',
+  'PUSH EDX',
+  'PUSH EAX',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+20]',
+  'CALL _A68RT_LKCMP',
+  'ADD ESP, 8',
+  'CMP EAX, 0',
+  'SETGE AL',
+  'MOVZX EAX, AL',
+  'RET 16',
+  '@_A68RT_LRDIV',
+  '; LONG INT / LONG INT -> REAL',
+  '_A68RT_LRDIV:',
+  'FILD QWORD PTR [ESP+8]',
+  'FILD QWORD PTR [ESP+16]',
+  'FDIVP ST(1), ST(0)',
+  'RET 20',
+  '@_A68RT_LRDIVLI',
+  '_A68RT_LRDIVLI:',
+  'FILD QWORD PTR [ESP+8]',
+  'FILD DWORD PTR [ESP+16]',
+  'FDIVP ST(1), ST(0)',
+  'RET 16',
+  '@_A68RT_LRDIVIL',
+  '_A68RT_LRDIVIL:',
+  'FILD DWORD PTR [ESP+8]',
+  'FILD QWORD PTR [ESP+12]',
+  'FDIVP ST(1), ST(0)',
+  'RET 16',
+  '@_A68RT_LNEG',
+  '; - LONG INT',
+  '_A68RT_LNEG:',
+  'LEA ESI, [ESP+12]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKNEG',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LPOS',
+  '; + LONG INT',
+  '_A68RT_LPOS:',
+  'LEA ESI, [ESP+12]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CALL _A68RT_LKCOPY',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LABS',
+  '; ABS LONG INT',
+  '_A68RT_LABS:',
+  'LEA ESI, [ESP+12]',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'CMP DWORD PTR [ESI+4], 0',
+  'JL _A68R_l16',
+  'CALL _A68RT_LKCOPY',
+  'JMP _A68R_l17',
+  '_A68R_l16:',
+  'CALL _A68RT_LKNEG',
+  '_A68R_l17:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 16',
+  '@_A68RT_LSIGN',
+  '; SIGN LONG INT -> INT',
+  '_A68RT_LSIGN:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CMP EAX, 0',
+  'JL _A68R_l18',
+  'JG _A68R_l19',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'TEST EAX, EAX',
+  'JE _A68R_l20',
+  '_A68R_l19:',
+  'MOV EAX, 1',
+  'RET 12',
+  '_A68R_l18:',
+  'MOV EAX, -1',
+  'RET 12',
+  '_A68R_l20:',
+  'XOR EAX, EAX',
+  'RET 12',
+  '@_A68RT_LODD',
+  '; ODD LONG INT',
+  '_A68RT_LODD:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'AND EAX, 1',
+  'RET 12',
+  '@_A68RT_LLENG',
+  '; LENG INT -> LONG INT',
+  '_A68RT_LLENG:',
+  'MOV EAX, DWORD PTR [ESP+12]',
+  'CDQ',
+  'MOV ECX, DWORD PTR [ESP+8]',
+  'MOV DWORD PTR [ECX], EAX',
+  'MOV DWORD PTR [ECX+4], EDX',
+  'MOV EAX, ECX',
+  'RET 12',
+  '@_A68RT_LSHORTEN',
+  '; SHORTEN LONG INT -> INT',
+  '_A68RT_LSHORTEN:',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'RET 12',
+  '@_A68RT_RLENG',
+  '; LENG / SHORTEN REAL : meme precision',
+  '_A68RT_RLENG:',
+  'FLD QWORD PTR [ESP+8]',
+  'RET 12',
+  '@_A68RT_LPOW',
+  '; LONG INT ** INT',
+  '_A68RT_LPOW:',
+  'SUB ESP, 20',
+  'MOV DWORD PTR [ESP], 1',
+  'MOV DWORD PTR [ESP+4], 0',
+  'MOV EAX, DWORD PTR [ESP+32]',
+  'MOV DWORD PTR [ESP+8], EAX',
+  'MOV EAX, DWORD PTR [ESP+36]',
+  'MOV DWORD PTR [ESP+12], EAX',
+  'MOV EAX, DWORD PTR [ESP+40]',
+  'MOV DWORD PTR [ESP+16], EAX',
+  'CMP EAX, 0',
+  'JGE _A68R_l21',
+  'MOV DWORD PTR [ESP], 0',
+  'JMP _A68R_l23',
+  '_A68R_l21:',
+  'CMP DWORD PTR [ESP+16], 0',
+  'JLE _A68R_l23',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'AND EAX, 1',
+  'JE _A68R_l22',
+  'MOV ESI, ESP',
+  'LEA EDI, [ESP+8]',
+  'MOV EDX, ESP',
+  'CALL _A68RT_LKMUL',
+  '_A68R_l22:',
+  'LEA ESI, [ESP+8]',
+  'MOV EDI, ESI',
+  'MOV EDX, ESI',
+  'CALL _A68RT_LKMUL',
+  'MOV EAX, DWORD PTR [ESP+16]',
+  'SHR EAX, 1',
+  'MOV DWORD PTR [ESP+16], EAX',
+  'JMP _A68R_l21',
+  '_A68R_l23:',
+  'MOV EAX, DWORD PTR [ESP+28]',
+  'MOV ECX, DWORD PTR [ESP]',
+  'MOV DWORD PTR [EAX], ECX',
+  'MOV ECX, DWORD PTR [ESP+4]',
+  'MOV DWORD PTR [EAX+4], ECX',
+  'ADD ESP, 20',
+  'RET 20',
+  '@_A68RT_WRITELINT',
+  '; EAX = adresse dun LONG INT',
+  '_A68RT_WRITELINT:',
+  'MOV ECX, DWORD PTR [EAX]',
+  'MOV EDX, DWORD PTR [EAX+4]',
+  'MOV DWORD PTR [_A68D_SG], EDX',
+  'TEST EDX, EDX',
+  'JNS _A68R_l25',
+  'NEG EDX',
+  'NEG ECX',
+  'SBB EDX, 0',
+  '_A68R_l25:',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'ADD EDI, 60',
+  'MOV ESI, EDI',
+  '_A68R_l26:',
+  'MOV EAX, EDX',
+  'XOR EDX, EDX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'PUSH EAX',
+  'MOV EAX, ECX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'MOV ECX, EAX',
+  'ADD EDX, 48',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], DL',
+  'POP EDX',
+  'MOV EAX, ECX',
+  'OR EAX, EDX',
+  'JNE _A68R_l26',
+  'CMP DWORD PTR [_A68D_SG], 0',
+  'JNS _A68R_l27',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], 45',
+  '_A68R_l27:',
+  'MOV ECX, ESI',
+  'SUB ECX, EDI',
+  'MOV ESI, EDI',
+  'JMP _A68RT_PUT',
+  '@_A68RT_READLINT',
+  '; lecture dun LONG INT -> EDX:EAX',
+  '_A68RT_READLINT:',
+  'CALL _A68RT_SKIPWS',
+  'MOV DWORD PTR [_A68D_SG], 0',
+  'MOV DWORD PTR [_A68D_ACC], 0',
+  'MOV DWORD PTR [_A68D_CNT], 0',
+  'CMP EAX, 45',
+  'JNE _A68R_l28',
+  'MOV DWORD PTR [_A68D_SG], 1',
+  'CALL _A68RT_GETC',
+  '_A68R_l28:',
+  'SUB EAX, 48',
+  'CMP EAX, 9',
+  'JA _A68R_l29',
+  'PUSH EAX',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  'MUL DWORD PTR [_A68D_TEN]',
+  'MOV ECX, EAX',
+  'MOV ESI, EDX',
+  'MOV EAX, DWORD PTR [_A68D_CNT]',
+  'IMUL EAX, DWORD PTR [_A68D_TEN]',
+  'ADD ESI, EAX',
+  'POP EAX',
+  'ADD ECX, EAX',
+  'ADC ESI, 0',
+  'MOV DWORD PTR [_A68D_ACC], ECX',
+  'MOV DWORD PTR [_A68D_CNT], ESI',
+  'CALL _A68RT_GETC',
+  'JMP _A68R_l28',
+  '_A68R_l29:',
+  'ADD EAX, 48',
+  'MOV DWORD PTR [_A68D_PEEK], EAX',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  'MOV EDX, DWORD PTR [_A68D_CNT]',
+  'CMP DWORD PTR [_A68D_SG], 0',
+  'JE _A68R_l30',
+  'NEG EDX',
+  'NEG EAX',
+  'SBB EDX, 0',
+  '_A68R_l30:',
   'RET'
   );
 
@@ -14992,7 +16265,7 @@ Begin
   If Mn = 'JNZ' Then Mn := 'JNE';
   Found := False;
   Op := OP_MOV;
-  While (Not Found) And (Op <= OP_FLDCW) Do
+  While (Not Found) And (Op <= OP_MUL) Do
   Begin
     If OpName(Op) = Mn Then Found := True Else Op := Succ(Op);
   End;

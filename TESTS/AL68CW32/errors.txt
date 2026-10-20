@@ -2,7 +2,7 @@
 lex1|BEGIN INT x := 3 @ 4 END|E|1,18|caractere invalide: @
 lex2|BEGIN STRING s := "abc END|E|1,19|chaine non fermee
 lex3|BEGIN CO commentaire non ferme END|E|1,7|commentaire non termine (CO attendu)
-lex4|BEGIN INT x := 99999999999 END|E|1,16|entier hors limites: 99999999999
+lex4|BEGIN INT x := 99999999999999999999 END|E|1,16|entier hors limites: 99999999999999999999
 lex5|BEGIN REAL x := 1.5e END|E|1,20|exposant incomplet apres 1.5
 lex6|BEGIN CHAR c := "ab"; INT y := 1 END|E|1,17|coercition impossible: STRING vers CHAR
 syn1|BEGIN INT x := 1|E|2,1|'END' attendu
