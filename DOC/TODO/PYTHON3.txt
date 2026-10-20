@@ -95,5 +95,14 @@
   - Pas d'extensions C (_ctypes, sockets, ssl, sqlite3, ...).
   - Pas de multithreading preemptif (threading cooperatif).
   - Les signaux asynchrones ne sont pas delivres aux gestionnaires.
-  - Les noms Unicode \N{...} et les tables de caracteres
-    multi-octets (CJK) ne sont pas fournis.
+  - Les codecs multi-octets CJK (gbk, big5, shift_jis, ...) ne sont
+    pas fournis.
+  - Les SyntaxWarning emis a la compilation ne sont pas affiches.
+
+  TODO 13 - UNICODE 12.1 [IMPLEMENTE]
+            Base de donnees Unicode 12.1 integree (comme python3.8) :
+            categories, casse (complete et simple), valeurs numeriques,
+            decompositions, classes de combinaison, bidi, largeur EAW,
+            noms (\N{...}, unicodedata.name/lookup), normalisation
+            NFC/NFD/NFKC/NFKD, identifiants XID, str.isalpha & co,
+            re avec IGNORECASE Unicode. Module unicodedata.
