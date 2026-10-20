@@ -4953,12 +4953,17 @@ Function ParseSuite: TNodes;
 Var
  body: TNodes;
  t: TToken;
+ k: Integer;
 Begin
  SetLength(body, 0);
  ExpectOp(':');
  If Cur.kind = tkNewline Then Begin
   Advance;
   If Cur.kind <> tkIndent Then Begin
+   k := PPos;
+   While (k < High(PTok)) And (PTok[k].kind = tkDedent) Do Inc(k);
+   If (PTok[k].kind = tkEOF) And (PTok[PPos].kind = tkDedent) Then
+    SynErr('unexpected EOF while parsing', PTok[k].line, PTok[k].col, True);
    If Cur.kind = tkEOF Then
     SynErr('unexpected EOF while parsing', Cur.line, Cur.col, True)
    Else
@@ -5456,6 +5461,12 @@ Begin
   While Cur.kind = tkNewline Do Advance;
   root.a := ParseTestListStar(True);
   While Cur.kind = tkNewline Do Advance;
+  If Cur.kind <> tkEOF Then ErrAt(Cur);
+ End
+ Else If mode = 2 Then Begin
+  While Cur.kind = tkNewline Do Advance;
+  If Cur.kind <> tkEOF Then ParseStatement(body);
+  While (Cur.kind = tkNewline) Or (Cur.kind = tkDedent) Do Advance;
   If Cur.kind <> tkEOF Then ErrAt(Cur);
  End
  Else Begin
@@ -13739,6 +13750,7 @@ Var
  l: TPyList;
  e: TPyTuple;
 Begin
+ If f.code.filename = '<frozen warnings>' Then Exit;
  If exc.idict = Nil Then exc.idict := TPyDict.Make;
  If Not exc.idict.GetS('__tb__', tb) Then Begin
   tb := VObj(NewList);
@@ -16263,9 +16275,12 @@ Begin
    If off.k = vkInt Then col := off.i;
    i := 1;
    While (i <= Length(t)) And (t[i] In [' ', #9]) Do Inc(i);
+   While (Length(t) > 0) And (t[Length(t)] In [#10, #13]) Do
+    SetLength(t, Length(t) - 1);
    s := s + '    ' + Copy(t, i, Length(t)) + #10;
    If col > 0 Then Begin
     col := col - (i - 1);
+    If col > Length(t) - i + 1 Then col := Length(t) - i + 1;
     If col < 1 Then col := 1;
     s := s + '    ' + StringOfChar(' ', col - 1) + '^' + #10;
    End;
@@ -18297,7 +18312,8 @@ Begin
  info.items[1] := VInt(e.line);
  col := Utf8Len(Copy(e.text, 1, e.col)) + 1;
  info.items[2] := VInt(col);
- If e.text <> '' Then info.items[3] := VStr(e.text) Else info.items[3] := vNone;
+ If e.text <> '' Then info.items[3] := VStr(e.text + #10) Else info.items[3] :=
+   vNone;
  o.idict.SetS('args', Tup2(VStr(e.msg), VObj(info)));
  o.idict.SetS('msg', VStr(e.msg));
  o.idict.SetS('filename', VStr(fname));
@@ -30621,7 +30637,7 @@ Begin
  If SysDict.GetS(nm, v) Then Result := StrVal(v) Else Result := deflt;
 End;
 
-Procedure RunInteractive;
+Procedure RunInteractive(pure: Boolean);
 Var
  buf, line, p: AnsiString;
  code: TPyCode;
@@ -30630,14 +30646,15 @@ Var
 Begin
  SysDict.SetS('ps1', VStr('>>> '));
  SysDict.SetS('ps2', VStr('... '));
- If Not Opts.optQ Then Begin
+ If pure And (StdinIsTTY Or Opts.optI) And Not Opts.optQ Then Begin
   ErrWrite('Python ' + PY_VERSION + ' ' + PY_BUILD + ' ' + #10 +
    PY_COMPILER + ' on ' + Copy('linux', 1, 5 * Ord(True)) + #10 +
    'Type "help", "copyright", "credits" or "license" for more information.'
    + #10);
  End;
  { fichier de demarrage }
- If (Not Opts.optE) And (Not Opts.optIso) And (GetEnv('PYTHONSTARTUP') <> '')
+ If pure And (Not Opts.optE) And (Not Opts.optIso) And (GetEnv('PYTHONSTARTUP')
+   <> '')
   Then Begin
   If ReadWholeFile(GetEnv('PYTHONSTARTUP'), line) Then
    RunSource(line, GetEnv('PYTHONSTARTUP'));
@@ -30648,7 +30665,7 @@ Begin
   If buf = '' Then p := GetPrompt('ps1', '>>> ')
   Else p := GetPrompt('ps2', '... ');
   If Not ReadPromptLine(p, line) Then Begin
-   If StdinIsTTY Then ErrWrite(#10);
+   ErrWrite(#10);
    Break;
   End;
   If line = #3 Then Begin
@@ -30663,6 +30680,20 @@ Begin
   If IsCompoundStart(buf) Then Begin
    If Not ((Length(buf) >= 2) And (buf[Length(buf)] = #10) And
     (buf[Length(buf) - 1] = #10)) Then more := True;
+  End;
+  If more Then Begin
+   Try
+    code := CompileSource(buf, '<stdin>', 2);
+    code.source := Nil;
+   Except
+    On E: ESyntax Do Begin
+     If Not E.incomplete Then Begin
+      PyRunTraceback(ExcFromSyntax(E, '<stdin>'));
+      buf := '';
+      Continue;
+     End;
+    End;
+   End;
   End;
   If Not more Then Begin
    ok := True;
@@ -30707,119 +30738,190 @@ Procedure ShowUsage(toErr: Boolean);
 Var
  s: AnsiString;
 Begin
- s := 'usage: python3 [option] ... [-c cmd | -m mod | file | -] [arg] ...' +
-  #10;
+ s := 'usage: ' + ParamStr(0) +
+  ' [option] ... [-c cmd | -m mod | file | -] [arg] ...' + #10;
  If toErr Then ErrWrite(s) Else OutWrite(s);
 End;
 
 Procedure ShowHelp;
 Begin
- OutWrite('usage: python3 [option] ... [-c cmd | -m mod | file | -] [arg] ' +
-  '...' + #10 +
-  'Options and arguments (and corresponding environment variables):' + #10 +
-  '-b     : issue warnings about str(bytes_instance), str(bytearray_instance)'
-  + #10 + '         and comparing bytes/bytearray with str. (-bb: issue ' +
-  'errors)' + #10 +
-  '-B     : don''t write .pyc files on import; also PYTHONDONTWRITEBYTECODE=x'
-  + #10 +
-  '-c cmd : program passed in as string (terminates option list)' + #10 +
-  '-d     : turn on parser debugging output (for experts only, only works on'
-  + #10 + '         debug builds); also PYTHONDEBUG=x' + #10 +
-  '-E     : ignore PYTHON* environment variables (such as PYTHONPATH)' + #10 +
-  '-h     : print this help message and exit (also --help)' + #10 +
-  '-i     : inspect interactively after running script; forces a prompt even'
-  + #10 + '         if stdin does not appear to be a terminal; also ' +
-  'PYTHONINSPECT=x' + #10 +
-  '-I     : isolate Python from the user''s environment (implies -E and -s)'
-  + #10 +
-  '-m mod : run library module as a script (terminates option list)' + #10 +
-  '-O     : remove assert and __debug__-dependent statements; add .opt-1 ' +
-  'before' + #10 + '         .pyc extension; also PYTHONOPTIMIZE=x' + #10 +
-  '-OO    : do -O changes and also discard docstrings; add .opt-2 before' +
-  #10 + '         .pyc extension' + #10 +
-  '-q     : don''t print version and copyright messages on interactive ' +
-  'startup' + #10 +
-  '-s     : don''t add user site directory to sys.path; also PYTHONNOUSERSITE'
-  + #10 +
-  '-S     : don''t imply ''import site'' on initialization' + #10 +
-  '-u     : force the stdout and stderr streams to be unbuffered;' + #10 +
-  '         this option has no effect on stdin; also PYTHONUNBUFFERED=x' + #10
-  + '-v     : verbose (trace import statements); also PYTHONVERBOSE=x' + #10 +
-  '         can be supplied multiple times to increase verbosity' + #10 +
-  '-V     : print the Python version number and exit (also --version)' + #10 +
-  '         when given twice, print more information about the build' + #10 +
-  '-W arg : warning control; arg is action:message:category:module:lineno' +
-  #10 + '         also PYTHONWARNINGS=arg' + #10 +
-  '-x     : skip first line of source, allowing use of non-Unix forms of ' +
-  '#!cmd' + #10 + '-X opt : set implementation-specific option' + #10 +
+ OutWrite('usage: ' + ParamStr(0) +
+  ' [option] ... [-c cmd | -m mod | file | -] [arg] ...' + #10 +
+  'Options and arguments (and corresponding environ' +
+  'ment variables):' + #10 +
+  '-b     : issue warnings about str(bytes_instance' +
+  '), str(bytearray_instance)' + #10 +
+  '         and comparing bytes/bytearray with str.' +
+  ' (-bb: issue errors)' + #10 +
+  '-B     : don''t write .pyc files on import; also ' +
+  'PYTHONDONTWRITEBYTECODE=x' + #10 +
+  '-c cmd : program passed in as string (terminates' +
+  ' option list)' + #10 +
+  '-d     : debug output from parser; also PYTHONDE' +
+  'BUG=x' + #10 +
+  '-E     : ignore PYTHON* environment variables (s' +
+  'uch as PYTHONPATH)' + #10 +
+  '-h     : print this help message and exit (also ' +
+  '--help)' + #10 +
+  '-i     : inspect interactively after running scr' +
+  'ipt; forces a prompt even' + #10 +
+  '         if stdin does not appear to be a termin' +
+  'al; also PYTHONINSPECT=x' + #10 +
+  '-I     : isolate Python from the user''s environm' +
+  'ent (implies -E and -s)' + #10 +
+  '-m mod : run library module as a script (termina' +
+  'tes option list)' + #10 +
+  '-O     : remove assert and __debug__-dependent s' +
+  'tatements; add .opt-1 before' + #10 +
+  '         .pyc extension; also PYTHONOPTIMIZE=x' + #10 +
+  '-OO    : do -O changes and also discard docstrin' +
+  'gs; add .opt-2 before' + #10 +
+  '         .pyc extension' + #10 +
+  '-q     : don''t print version and copyright messa' +
+  'ges on interactive startup' + #10 +
+  '-s     : don''t add user site directory to sys.pa' +
+  'th; also PYTHONNOUSERSITE' + #10 +
+  '-S     : don''t imply ''import site'' on initializa' +
+  'tion' + #10 +
+  '-u     : force the stdout and stderr streams to ' +
+  'be unbuffered;' + #10 +
+  '         this option has no effect on stdin; als' +
+  'o PYTHONUNBUFFERED=x' + #10 +
+  '-v     : verbose (trace import statements); also' +
+  ' PYTHONVERBOSE=x' + #10 +
+  '         can be supplied multiple times to incre' +
+  'ase verbosity' + #10 +
+  '-V     : print the Python version number and exi' +
+  't (also --version)' + #10 +
+  '         when given twice, print more informatio' +
+  'n about the build' + #10 +
+  '-W arg : warning control; arg is action:message:' +
+  'category:module:lineno' + #10 +
+  '         also PYTHONWARNINGS=arg' + #10 +
+  '-x     : skip first line of source, allowing use' +
+  ' of non-Unix forms of #!cmd' + #10 +
+  '-X opt : set implementation-specific option. The' +
+  ' following options are available:' + #10 +
+  #10 +
+  '         -X faulthandler: enable faulthandler' + #10 +
+  '         -X showrefcount: output the total refer' +
+  'ence count and number of used' + #10 +
+  '             memory blocks when the program fini' +
+  'shes or after each statement in the' + #10 +
+  '             interactive interpreter. This only ' +
+  'works on debug builds' + #10 +
+  '         -X tracemalloc: start tracing Python me' +
+  'mory allocations using the' + #10 +
+  '             tracemalloc module. By default, onl' +
+  'y the most recent frame is stored in a' + #10 +
+  '             traceback of a trace. Use -X tracem' +
+  'alloc=NFRAME to start tracing with a' + #10 +
+  '             traceback limit of NFRAME frames' + #10 +
+  '         -X showalloccount: output the total cou' +
+  'nt of allocated objects for each' + #10 +
+  '             type when the program finishes. Thi' +
+  's only works when Python was built with' + #10 +
+  '             COUNT_ALLOCS defined' + #10 +
+  '         -X importtime: show how long each impor' +
+  't takes. It shows module name,' + #10 +
+  '             cumulative time (including nested i' +
+  'mports) and self time (excluding' + #10 +
+  '             nested imports). Note that its outp' +
+  'ut may be broken in multi-threaded' + #10 +
+  '             application. Typical usage is pytho' +
+  'n3 -X importtime -c ''import asyncio''' + #10 +
+  '         -X dev: enable CPython''s "development m' +
+  'ode", introducing additional runtime' + #10 +
+  '             checks which are too expensive to b' +
+  'e enabled by default. Effect of the' + #10 +
+  '             developer mode:' + #10 +
+  '                * Add default warning filter, as' +
+  ' -W default' + #10 +
+  '                * Install debug hooks on memory ' +
+  'allocators: see the PyMem_SetupDebugHooks() C fu' +
+  'nction' + #10 +
+  '                * Enable the faulthandler module' +
+  ' to dump the Python traceback on a crash' + #10 +
+  '                * Enable asyncio debug mode' + #10 +
+  '                * Set the dev_mode attribute of ' +
+  'sys.flags to True' + #10 +
+  '                * io.IOBase destructor logs clos' +
+  'e() exceptions' + #10 +
+  '         -X utf8: enable UTF-8 mode for operatin' +
+  'g system interfaces, overriding the default' + #10 +
+  '             locale-aware mode. -X utf8=0 explic' +
+  'itly disables UTF-8 mode (even when it would' + #10 +
+  '             otherwise activate automatically)' + #10 +
+  '         -X pycache_prefix=PATH: enable writing ' +
+  '.pyc files to a parallel tree rooted at the' + #10 +
+  '             given directory instead of to the c' +
+  'ode tree' + #10 +
+  '         -X int_max_str_digits=number: limit the' +
+  ' size of int<->str conversions.' + #10 +
+  '             This helps avoid denial of service ' +
+  'attacks when parsing untrusted data.' + #10 +
+  '             The default is sys.int_info.default' +
+  '_max_str_digits.  0 disables.' + #10 +
+  #10 +
   '--check-hash-based-pycs always|default|never:' + #10 +
-  '    control how Python invalidates hash-based .pyc files' + #10 +
+  '    control how Python invalidates hash-based .p' +
+  'yc files' + #10 +
   'file   : program read from script file' + #10 +
-  '-      : program read from stdin (default; interactive mode if a tty)' +
-  #10 + 'arg ...: arguments passed to program in sys.argv[1:]' + #10#10 +
+  '-      : program read from stdin (default; inter' +
+  'active mode if a tty)' + #10 +
+  'arg ...: arguments passed to program in sys.argv' +
+  '[1:]' + #10 +
+  #10 +
   'Other environment variables:' + #10 +
-  'PYTHONSTARTUP: file executed on interactive startup (no default)' + #10 +
-  'PYTHONPATH   : '':''-separated list of directories prefixed to the' + #10 +
-  '               default module search path.  The result is sys.path.' + #10
-  + 'PYTHONHOME   : alternate <prefix> directory (or <prefix>:' +
-  '<exec_prefix>).' + #10 + '               The default module search path ' +
-  'uses <prefix>/lib/pythonX.X.' + #10 +
-  'PYTHONCASEOK : ignore case in ''import'' statements (Windows).' + #10 +
-  'PYTHONIOENCODING: Encoding[:errors] used for stdin/stdout/stderr.' + #10 +
-  'PYTHONFAULTHANDLER: dump the Python traceback on fatal errors.' + #10 +
-  'PYTHONHASHSEED: if this variable is set to ''random'', a random value ' +
-  'is used' + #10 + '   to seed the hashes of str, bytes and datetime ' +
-  'objects.  It can also be' + #10 + '   set to an integer in the range ' +
-  '[0,4294967295] to get hash values with a' + #10 +
+  'PYTHONSTARTUP: file executed on interactive star' +
+  'tup (no default)' + #10 +
+  'PYTHONPATH   : '':''-separated list of directories' +
+  ' prefixed to the' + #10 +
+  '               default module search path.  The ' +
+  'result is sys.path.' + #10 +
+  'PYTHONHOME   : alternate <prefix> directory (or ' +
+  '<prefix>:<exec_prefix>).' + #10 +
+  '               The default module search path us' +
+  'es <prefix>/lib/pythonX.X.' + #10 +
+  'PYTHONCASEOK : ignore case in ''import'' statement' +
+  's (Windows).' + #10 +
+  'PYTHONUTF8: if set to 1, enable the UTF-8 mode.' + #10 +
+  'PYTHONIOENCODING: Encoding[:errors] used for std' +
+  'in/stdout/stderr.' + #10 +
+  'PYTHONFAULTHANDLER: dump the Python traceback on' +
+  ' fatal errors.' + #10 +
+  'PYTHONHASHSEED: if this variable is set to ''rand' +
+  'om'', a random value is used' + #10 +
+  '   to seed the hashes of str and bytes objects. ' +
+  ' It can also be set to an' + #10 +
+  '   integer in the range [0,4294967295] to get ha' +
+  'sh values with a' + #10 +
   '   predictable seed.' + #10 +
-  'PYTHONMALLOC: set the Python memory allocators and/or install debug ' +
-  'hooks' + #10 + '   on Python memory allocators. Use PYTHONMALLOC=debug ' +
-  'to install debug' + #10 + '   hooks.' + #10 +
-  'PYTHONCOERCECLOCALE: if this variable is set to 0, it disables the ' +
-  'locale' + #10 + '   coercion behavior. Use PYTHONCOERCECLOCALE=warn to ' +
-  'request display of' + #10 + '   locale coercion and locale ' +
-  'compatibility warnings on stderr.' + #10 +
-  'PYTHONBREAKPOINT: if this variable is set to 0, it disables the default'
-  + #10 + '   debugger. It can be set to the callable of your debugger of ' +
-  'choice.' + #10 + 'PYTHONDEVMODE: enable the development mode.' + #10 +
-  'PYTHONPYCACHEPREFIX: root directory for bytecode cache (pyc) files.' +
-  #10);
-End;
-
-Procedure ShowHelpEnv;
-Begin
- OutWrite('Environment variables that change the behavior of python3:' + #10 +
-  'PYTHONSTARTUP: file executed on interactive startup (no default)' + #10 +
-  'PYTHONPATH   : '':''-separated list of directories prefixed to the' + #10 +
-  '               default module search path.  The result is sys.path.' + #10 +
-  'PYTHONHOME   : alternate <prefix> directory' + #10 +
-  'PYTHONOPTIMIZE: enable level 1 optimizations (-O); >=2 for -OO' + #10 +
-  'PYTHONDONTWRITEBYTECODE: don''t write .pyc files (-B)' + #10 +
-  'PYTHONINSPECT: inspect interactively after running a script (-i)' + #10 +
-  'PYTHONUNBUFFERED: unbuffered stdout/stderr (-u)' + #10 +
-  'PYTHONVERBOSE: trace imports (-v)' + #10 +
-  'PYTHONWARNINGS: warning control (-W)' + #10 +
-  'PYTHONNOUSERSITE: don''t add the user site directory (-s)' + #10 +
-  'PYTHONDEBUG  : parser debugging output (-d)' + #10 +
-  'PYTHONIOENCODING: Encoding[:errors] used for stdin/stdout/stderr' + #10 +
-  'PYTHONHASHSEED: random or an integer in [0,4294967295]' + #10 +
-  'PYTHONDEVMODE: enable the development mode' + #10);
-End;
-
-Procedure ShowHelpX;
-Begin
- OutWrite('The following implementation-specific options are available:' + #10 +
-  '-X dev: enable CPython''s "development mode", introducing additional ' +
-  'runtime' + #10 + '         checks which are too expensive to be enabled ' +
-  'by default.' + #10 +
-  '-X faulthandler: enable faulthandler' + #10 +
-  '-X importtime: show how long each import takes' + #10 +
-  '-X showrefcount: output the total reference count and number of used' + #10 +
-  '         memory blocks when the program finishes' + #10 +
-  '-X tracemalloc: start tracing Python memory allocations' + #10 +
-  '-X utf8: enable UTF-8 mode for operating system interfaces' + #10 +
-  '-X pycache_prefix=PATH: write .pyc files to a parallel tree rooted at ' +
-  'PATH' + #10);
+  'PYTHONINTMAXSTRDIGITS: limits the maximum digit ' +
+  'characters in an int value' + #10 +
+  '   when converting from a string and when conver' +
+  'ting an int back to a str.' + #10 +
+  '   A value of 0 disables the limit.  Conversions' +
+  ' to or from bases 2, 4, 8,' + #10 +
+  '   16, and 32 are never limited.' + #10 +
+  'PYTHONMALLOC: set the Python memory allocators a' +
+  'nd/or install debug hooks' + #10 +
+  '   on Python memory allocators. Use PYTHONMALLOC' +
+  '=debug to install debug' + #10 +
+  '   hooks.' + #10 +
+  'PYTHONCOERCECLOCALE: if this variable is set to ' +
+  '0, it disables the locale' + #10 +
+  '   coercion behavior. Use PYTHONCOERCECLOCALE=wa' +
+  'rn to request display of' + #10 +
+  '   locale coercion and locale compatibility warn' +
+  'ings on stderr.' + #10 +
+  'PYTHONBREAKPOINT: if this variable is set to 0, ' +
+  'it disables the default' + #10 +
+  '   debugger. It can be set to the callable of yo' +
+  'ur debugger of choice.' + #10 +
+  'PYTHONDEVMODE: enable the development mode.' + #10 +
+  'PYTHONPYCACHEPREFIX: root directory for bytecode' +
+  ' cache (pyc) files.' + #10);
 End;
 
 { ------------------------------------------------------------
@@ -30835,7 +30937,7 @@ Procedure Fail(Const msg: AnsiString);
 Begin
  ErrWrite(msg + #10);
  ShowUsage(True);
- ErrWrite('Try `python3 -h'' for more information.' + #10);
+ ErrWrite('Try `python -h'' for more information.' + #10);
  Halt(2);
 End;
 
@@ -30851,7 +30953,7 @@ Var
   If i + 1 > n Then Begin
    ErrWrite('Argument expected for the ' + opt + ' option' + #10);
    ShowUsage(True);
-   ErrWrite('Try `python3 -h'' for more information.' + #10);
+   ErrWrite('Try `python -h'' for more information.' + #10);
    Halt(2);
   End;
   Inc(i);
@@ -30873,13 +30975,10 @@ Begin
   If (Length(a) > 1) And (a[2] = '-') Then Begin
    If a = '--help' Then Opts.optH := True
    Else If a = '--version' Then Inc(Opts.optVersion)
-   Else If a = '--help-env' Then Opts.helpEnv := True
-   Else If a = '--help-xoptions' Then Opts.helpX := True
-   Else If a = '--help-all' Then Opts.helpAll := True
    Else If a = '--check-hash-based-pycs' Then Opts.checkHash := NextArg(a)
    Else If Copy(a, 1, 24) = '--check-hash-based-pycs=' Then
     Opts.checkHash := Copy(a, 25, 20)
-   Else Fail('Unknown option: ' + a);
+   Else Fail('unknown option ' + a);
    Inc(i);
    Continue;
   End;
@@ -31025,7 +31124,7 @@ Begin
    VStr(Copy(Opts.xopts[i], p + 1, Length(Opts.xopts[i]))))
   Else xd.SetItem(VStr(Opts.xopts[i]), vTrue);
  End;
- fl := NewTuple(15);
+ fl := NewTuple(16);
  fl.items[0] := VInt(Ord(Opts.optD));
  fl.items[1] := VInt(Ord(Opts.optI));
  fl.items[2] := VInt(Ord(InteractiveMode));
@@ -31039,8 +31138,11 @@ Begin
  fl.items[10] := VInt(Ord(Opts.optQ));
  fl.items[11] := VInt(1);
  fl.items[12] := VInt(Ord(Opts.optIso));
- fl.items[13] := VInt(0);
+ fl.items[13] := vFalse;
+ For i := 0 To High(Opts.xopts) Do
+  If Opts.xopts[i] = 'dev' Then fl.items[13] := vTrue;
  fl.items[14] := VInt(0);
+ fl.items[15] := VInt(-1);
  d.SetS('_flags_tuple', VObj(fl));
  x := NewList;
  l := x;
@@ -31138,8 +31240,11 @@ Begin
  d := MainDict;
  d.SetS('__file__', VStr(fname));
  d.SetS('__name__', VStr('__main__'));
- d.SetS('__package__', VStr(Copy(name, 1, Max(0, LastDelimiter('.', name) -
-  1))));
+ If ExtractFileName(fname) = '__main__.py' Then
+  d.SetS('__package__', VStr(name))
+ Else
+  d.SetS('__package__', VStr(Copy(name, 1, Max(0, LastDelimiter('.', name) -
+   1))));
  m := nil;
  Result := RunSource(src, fname);
  code := Nil;
@@ -31153,22 +31258,8 @@ Begin
  ExitCode := 0;
  InteractiveMode := False;
  ParseCmdLine;
- If Opts.optH Or Opts.helpAll Then Begin
+ If Opts.optH Then Begin
   ShowHelp;
-  If Opts.helpAll Then Begin
-   OutWrite(#10);
-   ShowHelpEnv;
-   OutWrite(#10);
-   ShowHelpX;
-  End;
-  Halt(0);
- End;
- If Opts.helpEnv Then Begin
-  ShowHelpEnv;
-  Halt(0);
- End;
- If Opts.helpX Then Begin
-  ShowHelpX;
   Halt(0);
  End;
  If Opts.optVersion >= 2 Then Begin
@@ -31197,11 +31288,11 @@ Begin
   rc := FindScriptFile(Opts.script, src, rn);
   If rc <> 0 Then Begin
    Case rc Of
-    2: ErrWrite('python3: can''t open file ''' + Opts.script +
+    2: ErrWrite(ParamStr(0) + ': can''t open file ''' + Opts.script +
         ''': [Errno 2] No such file or directory' + #10);
-    13: ErrWrite('python3: can''t open file ''' + Opts.script +
+    13: ErrWrite(ParamStr(0) + ': can''t open file ''' + Opts.script +
          ''': [Errno 13] Permission denied' + #10);
-    21: ErrWrite('python3: can''t find ''__main__'' module in ''' +
+    21: ErrWrite(ParamStr(0) + ': can''t find ''__main__'' module in ''' +
          Opts.script + '''' + #10);
    End;
    Halt(2);
@@ -31219,11 +31310,11 @@ Begin
   SetSysArgv('-c');
   MainDict.SetS('__name__', VStr('__main__'));
   ExitCode := RunSource(Opts.cmd, '<string>');
-  If Opts.optI Then RunInteractive;
+  If Opts.optI Then RunInteractive(False);
  End
  Else If Opts.hasMod Then Begin
   ExitCode := RunModuleAsMain(Opts.modName);
-  If Opts.optI Then RunInteractive;
+  If Opts.optI Then RunInteractive(False);
  End
  Else If Opts.hasScript And (Opts.script <> '-') Then Begin
   SetSysArgv(Opts.script);
@@ -31236,14 +31327,14 @@ Begin
   fname := Opts.script;
   If DirectoryExists(Opts.script) Then fname := Opts.script + '/__main__.py';
   ExitCode := RunSource(src, fname);
-  If Opts.optI Then RunInteractive;
+  If Opts.optI Then RunInteractive(False);
  End
  Else Begin
   { stdin }
   If Opts.hasScript Then SetSysArgv('-') Else SetSysArgv('');
   If StdinIsTTY Or Opts.optI Then Begin
    InteractiveMode := True;
-   RunInteractive;
+   RunInteractive(Not Opts.hasScript);
   End
   Else Begin
    src := StdinReadAll;
@@ -84771,7 +84862,7 @@ Const
   'gnore_environment'', ''verbose'', ''by' +
   'tes_warning'', ''quiet'', ''hash_rando' +
   'mization'', ''isolated'', ''dev_mode'',' +
-  ' ''utf8_mode''])(sys._flags_tuple)' + #10 +
+  ' ''utf8_mode'', ''int_max_str_digits''' + '])(sys._flags_tuple)' + #10 +
   'sys.float_info = _structseq(''sys.f' +
   'loat_info'', [''max'', ''max_exp'', ''ma' +
   'x_10_exp'', ''min'', ''min_exp'', ''min_' +
@@ -84926,11 +85017,56 @@ Const
   'isable.exc_type, unraisable.exc_va' +
   'lue, unraisable.exc_traceback, fil' + 'e=sys.stderr)' + #10 + #10 + #10 +
   'sys.unraisablehook = _unraisableho' + 'ok' + #10 +
-  'sys.__unraisablehook__ = _unraisab' + 'lehook' + #10 + #10;
+  'sys.__unraisablehook__ = _unraisab' + 'lehook' + #10 + #10 + #10 +
+  'class _Helper:' + #10 + '    def __repr__(self):' + #10 +
+  '        return "Type help() for in' +
+  'teractive help, or help(object) fo' + 'r help about object."' + #10 + #10 +
+  '    def __call__(self, *args, **kw' + 'ds):' + #10 +
+  '        if not args:' + #10 + '            print("""\' + #10 +
+  'Welcome to Python 3.8''s help utili' + 'ty!' + #10 + #10 +
+  'If this is your first time using P' +
+  'ython, you should definitely check' + ' out' + #10;
+
+Const
+ Src_site_1: AnsiString =
+  'the tutorial on the Internet at ht' +
+  'tps://docs.python.org/3.8/tutorial' + '/.' + #10 + #10 +
+  'Enter the name of any module, keyw' +
+  'ord, or topic to get help on writi' + 'ng' + #10 +
+  'Python programs and using Python m' +
+  'odules.  To quit this help utility' + ' and' + #10 +
+  'return to the interpreter, just ty' + 'pe "quit".' + #10 + '""")' + #10 +
+  '            return None' + #10 + '        obj = args[0]' + #10 +
+  '        if isinstance(obj, str):' + #10 + '            try:' + #10 +
+  '                import importlib' + #10 +
+  '                obj = importlib.im' + 'port_module(obj)' + #10 +
+  '            except Exception:' + #10 +
+  '                print("No Python d' +
+  'ocumentation found for %r." % obj)' + #10 + '                return None' +
+  #10 + '        import inspect' + #10 +
+  '        name = getattr(obj, ''__nam' + 'e__'', type(obj).__name__)' + #10 +
+  '        if inspect.ismodule(obj):' + #10 +
+  '            kind = ''module''' + #10 +
+  '        elif inspect.isclass(obj):' + #10 +
+  '            kind = ''class''' + #10 + '        elif callable(obj):' + #10 +
+  '            kind = ''function'' if i' +
+  'nspect.isfunction(obj) else ''built' + '-in function''' + #10 +
+  '        else:' + #10 + '            kind = ''object''' + #10 +
+  '            name = type(obj).__nam' + 'e__' + #10 +
+  '        doc = inspect.getdoc(obj) ' + 'or ''''' + #10 +
+  '        head = "Help on %s %s:" % ' + '(kind, name)' + #10 +
+  '        if kind in (''function'', ''b' + 'uilt-in function''):' + #10 +
+  '            try:' + #10 + '                head = "Help on %s' +
+  ' %s%s:" % (kind, name, inspect.sig' + 'nature(obj))' + #10 +
+  '            except (TypeError, Val' + 'ueError):' + #10 +
+  '                pass' + #10 + '        print(head)' + #10 +
+  '        print()' + #10 + '        if doc:' + #10 +
+  '            print(doc)' + #10 + '        return None' + #10 + #10 + #10 +
+  'builtins.help = _Helper()' + #10 + #10;
 
 Function Src_site: AnsiString;
 Begin
- Result := Src_site_0;
+ Result := Src_site_0 + Src_site_1;
 End;
 
 Const
