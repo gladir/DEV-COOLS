@@ -50,8 +50,7 @@ Program PYTHON3;
 {$WARN 3123 OFF}
 
 Uses
- SysUtils, Classes, StrUtils, DateUtils {$IFDEF UNIX}, BaseUnix, Unix,
-   Termio{$ENDIF};
+ SysUtils, Classes, DateUtils {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF};
 
 { ------------------------------------------------------------
   Fonctions mathematiques internes (remplacent l'unite Math)
@@ -304,6 +303,26 @@ Begin
  Else fl := CopySignD(0, vx / wx);
  fdiv := fl;
  fmod_ := m;
+End;
+
+{ Pos a partir d'une position (remplace StrUtils.PosEx) }
+Function PosEx(Const sub, s: AnsiString; start: Integer): Integer;
+Var
+ i, j, n, m: Integer;
+Begin
+ Result := 0;
+ n := Length(s);
+ m := Length(sub);
+ If (start < 1) Or (m = 0) Or (start + m - 1 > n) Then Exit;
+ For i := start To n - m + 1 Do
+  If s[i] = sub[1] Then Begin
+   j := 2;
+   While (j <= m) And (s[i + j - 1] = sub[j]) Do Inc(j);
+   If j > m Then Begin
+    Result := i;
+    Exit;
+   End;
+  End;
 End;
 
 Const
