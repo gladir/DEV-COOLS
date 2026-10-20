@@ -34,13 +34,13 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 18 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 19 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
-         affectations, tableaux, procedures, operateurs, unions) ;
-         TODO 19 a 25 a faire.
+         affectations, tableaux, procedures, operateurs, unions,
+         transput) ; TODO 20 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -905,7 +905,7 @@
               pour la conformite ; les alternatives sont comparees par
               leur mode exact (pas de REF dans une alternative)
 
-  TODO 19 - TRANSPUT, CLAUSES COLLATERALES ET PARALLELES [A FAIRE]
+  TODO 19 - TRANSPUT, CLAUSES COLLATERALES ET PARALLELES [IMPLEMENTE]
             print((a, b, c)) : liste collaterale de valeurs de modes
               differents ; chaque element appelle la routine du runtime
               selon son mode : INT, REAL, BOOL, CHAR, STRING, newline,
@@ -925,6 +925,47 @@
               trancher d'apres les exemples), fin de ligne CR LF
             Verification : transput.a68, hello.a68, test_transput.a68,
               test_collateral.a68
+            Realise : print((a, b, ...)) et print(a) (ParsePrintCall,
+              UK_PRINT) : chaque element est coerce en force ferme vers
+              INT, REAL, BOOL, CHAR, BITS ou STRING (erreur pour les autres
+              modes) et newline / space sont des marqueurs ; GenPrint
+              appelle une routine du runtime par element : WRITEINT (EAX),
+              WRITEREAL (ST(0)), WRITEBOOL, WRITECHAR, WRITESTR (EAX =
+              descripteur), NEWLINE, SPACE ; read((x, y)) et read(x) :
+              noms de mode INT, REAL, CHAR ou STRING, READINT, READREAL,
+              READCHAR, READSTR puis rangement a l'adresse du nom ;
+              whole(n, largeur) : WHOLE (EAX = n, ECX = largeur, rend le
+              descripteur d'une chaine nouvelle, largeur 0 = minimale,
+              remplissage a gauche par des espaces) ; procedures standard
+              sqrt, sin, cos, tan, arctan, ln, exp generees en ligne en
+              x87 ; clause collaterale (u1, u2) en contexte vide :
+              unites elaborees de gauche a droite ; PAR ( ... ) et PAR
+              BEGIN ... END : clause fermee ou collaterale elaboree
+              sequentiellement, avec avertissement (-w)
+            Formats retenus (a realiser au TODO 22) : entier en decimal
+              sans remplissage, signe - ; REAL en notation fixe, 6
+              decimales au plus, zeros finaux supprimes mais une decimale
+              au moins (4.5, 100.0, 0.666667) ; BOOL TRUE / FALSE ; CHAR
+              et STRING tels quels ; fin de ligne CR LF ; read ignore les
+              blancs avant un nombre, lit un caractere pour CHAR et le
+              reste de la ligne pour STRING (256 caracteres au plus)
+            Verifie : un runtime d'essai en assembleur (TESTS/AL68CW32/work,
+              stubs.py, rt_code.inc), assemble avec ML et execute avec le
+              chargeur PE, affiche pour hello.a68, transput.a68,
+              test_transput.a68 et test_collateral.a68 les textes attendus
+              (Hello, World!, TRUE, whole(-7,0) = -7, Algol 68, PAR: x=1
+              y=2...) ; pr2.a68 : reels (3.14159, -0.5, 100.0, 0.666667),
+              sqrt(16.0) = 4.0, arctan(1.0) * 4.0 = 3.141593, exp, ln, tan,
+              whole avec largeur (42 sur 6, -5 sur 3, 123456 sur 2),
+              (n := 1, x := 9.5), read de -42, 3.25, X et hello world ;
+              erreurs : print d'une structure, read d'une valeur, PAR sans
+              clause, element manquant ; les 27 exemples sont analyses
+              sans aucune unite non analysee ; les essais des TODOs 8 a 18
+              donnent les memes valeurs
+            Limites : print n'affiche ni tableaux ni structures ni unions ;
+              pas de formats (printf style), pas de fichiers ; read((x,
+              newline)) ignore newline ; PAR n'a pas de parallelisme ;
+              WRITEREAL du runtime d'essai est limite a 4 millions
 
   TODO 20 - ENCODEUR BINAIRE x86-32 [A FAIRE]
             Reprendre et adapter l'encodeur d'AL60CW32 : chaque
@@ -1307,6 +1348,8 @@ Type
                      autre UK_IF pour ELIF), Scope                     }
     UK_CASE,       { A = selecteur, B = alternatives (IntVal), C = OUT
                      (serie, ou un autre UK_CASE pour OUSE)            }
+    UK_PRINT,      { print((...)) ou read((...)) : Name, A = elements,
+                     IntVal = nombre, Mode VOID                         }
     UK_CONFORM,    { CASE x IN (mode nom) : u ... : A = selecteur, B =
                      alternatives UK_CONFALT, IntVal = nombre, C = OUT,
                      Scope                                              }
@@ -4710,7 +4753,23 @@ Begin
       End;
     UK_DISPLAY:
       Begin
-        If ModeTab[W].Kind = MK_ROW Then
+        If W = MD_VOID Then
+        Begin
+          { clause collaterale : unites elaborees de gauche a droite }
+          Prev := -1;
+          A := UnitTab[U].A;
+          While A >= 0 Do
+          Begin
+            Nxt := UnitTab[A].Next;
+            Cur := CoerceUnit(A, MD_VOID, STR_STRONG);
+            UnitTab[Cur].Next := Nxt;
+            If Prev < 0 Then UnitTab[U].A := Cur
+            Else UnitTab[Prev].Next := Cur;
+            Prev := Cur;
+            A := Nxt;
+          End;
+        End
+        Else If ModeTab[W].Kind = MK_ROW Then
         Begin
           If ModeTab[W].Dims <> 1 Then
             ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
@@ -6681,6 +6740,129 @@ Begin
   ParseCall := U;
 End;
 
+{ ---- Transput, clauses paralleles (TODO 19) ---- }
+
+Function ParseDisplay : LongInt; Forward;
+
+{ Marqueur de print : newline ou space }
+Function IsPrintMarker(U : LongInt) : Boolean;
+Begin
+  IsPrintMarker := (UnitTab[U].Kind = UK_IDENT) And
+                   (UnitTab[U].Mode = MD_VOID) And
+                   ((UnitTab[U].Name = 'newline') Or
+                    (UnitTab[U].Name = 'space'));
+End;
+
+{ print(( a, b, ... )), print(a), read(( x, y )), read(x) : les
+  elements sont des valeurs (print) de mode INT, REAL, BOOL, CHAR, BITS
+  ou STRING, ou des noms (read) de mode INT, REAL, CHAR ou STRING ;
+  newline et space sont admis dans les deux }
+Function ParsePrintCall : LongInt;
+Var
+  U, Args, A, Cur, Prev, Nxt : LongInt;
+  After                      : LongInt;
+  Count, Save                : Integer;
+  SaveTok                    : LongInt;
+  IsRead, ListForm           : Boolean;
+  M, Want                    : Integer;
+Begin
+  U := UnitNew(UK_PRINT, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  UnitTab[U].Name := TokTab[TokPos].Val;
+  UnitTab[U].Mode := MD_VOID;
+  IsRead := UnitTab[U].Name = 'read';
+  ParserAdvance;                             { print ou read }
+  ListForm := False;
+  If (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
+  Begin
+    SaveTok := TokPos;
+    TokPos := TokPos + 1;
+    After := TokAfterClose;
+    TokPos := SaveTok;
+    ListForm := (TokTab[After].Kind = TK_PUNCT) And
+                (TokTab[After].Val = ')');
+  End;
+  ParserAdvance;                             { ( }
+  Count := 0;
+  If ListForm Then
+    Args := ParseArgList(Count)
+  Else
+  Begin
+    Args := ParseUnitX(1);
+    UnitTab[Args].Next := -1;
+    Count := 1;
+  End;
+  If AtPunct(')') Then
+    ParserAdvance
+  Else
+    ParseError(''')'' attendu apres les elements de ' + UnitTab[U].Name);
+  { chaque element : valeur (print) ou nom (read) du bon mode }
+  Prev := -1;
+  A := Args;
+  UnitTab[U].A := Args;
+  While A >= 0 Do
+  Begin
+    Nxt := UnitTab[A].Next;
+    Cur := A;
+    M := NatMode(A);
+    If (M <> MD_ERROR) And Not IsPrintMarker(A) Then
+    Begin
+      If IsRead Then
+      Begin
+        Cur := CoerceName(A);
+        M := NatMode(Cur);
+        If (ModeKind(M) <> MK_REF) Or
+           Not (ModeKind(ModeDeref(M)) In [MK_INT, MK_REAL, MK_CHAR]) And
+           Not ModeIsString(ModeDeref(M)) Then
+          ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
+                  'read demande un nom de mode INT, REAL, CHAR ou ' +
+                  'STRING, pas ' + ModeName(M));
+      End
+      Else
+      Begin
+        Want := ModeDeref(M);
+        While ModeIsProc0(Want) Do
+          Want := ModeDeref(ModeTab[ModeResolve(Want)].Sub);
+        Cur := CoerceUnit(A, Want, STR_MEEK);
+        If Not (ModeKind(Want) In [MK_INT, MK_REAL, MK_BOOL, MK_CHAR,
+                                   MK_BITS]) And Not ModeIsString(Want) Then
+          ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
+                  'print ne sait pas afficher une valeur de mode ' +
+                  ModeName(Want));
+      End;
+    End;
+    UnitTab[Cur].Next := Nxt;
+    If Prev < 0 Then UnitTab[U].A := Cur Else UnitTab[Prev].Next := Cur;
+    Prev := Cur;
+    A := Nxt;
+  End;
+  UnitTab[U].IntVal := Count;
+  ParsePrintCall := U;
+End;
+
+{ PAR ( ... ) ou PAR BEGIN ... END : pas de processus, les unites sont
+  elaborees l'une apres l'autre (avertissement) }
+Function ParsePar : LongInt;
+Var
+  U : LongInt;
+  L, C : Integer;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  WarnAt(L, C, 'PAR : unites elaborees sequentiellement, sans processus ' +
+         'paralleles');
+  ParserAdvance;                             { PAR }
+  If AtKw('BEGIN') Or (AtPunct('(') And ParenIsClosed) Then
+    U := ParseClosed
+  Else If AtPunct('(') Then
+    U := ParseDisplay
+  Else
+  Begin
+    ParseError('clause collaterale attendue apres PAR');
+    U := -1;
+  End;
+  ParsePar := U;
+End;
+
 { Mode suivi d une parenthese : constructeur de structure POINT(3, 7)
   ou conversion (cast) d une unite vers un mode }
 Function ParseConstruct : LongInt;
@@ -7391,6 +7573,8 @@ Begin
           U := ParseConstruct
         Else If AtBareRoutine Then
           U := ParseRoutine('', 0, 0, SK_PROC)
+        Else If AtKw('PAR') Then
+          U := ParsePar
         Else
           Exit;
       End;
@@ -7420,14 +7604,24 @@ Begin
           S := SymFindIdent(T.Val);
           If S >= 0 Then
           Begin
-            If (SymTab[S].Kind = SK_STD) And (SymTab[S].Mode = MD_VOID) Then
-              Exit;                          { print, read, newline... }
-            U := UnitNew(UK_IDENT, T.Line, T.Col);
-            UnitTab[U].Sym := S;
-            UnitTab[U].Name := T.Val;
-            UnitTab[U].Mode := SymTab[S].Mode;
-            SymTab[S].Used := True;
-            ParserAdvance;
+            If (SymTab[S].Kind = SK_STD) And (SymTab[S].Mode = MD_VOID) And
+               (T.Val <> 'newline') And (T.Val <> 'space') Then
+            Begin
+              If ((T.Val = 'print') Or (T.Val = 'read')) And
+                 (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
+                U := ParsePrintCall
+              Else
+                Exit;
+            End
+            Else
+            Begin
+              U := UnitNew(UK_IDENT, T.Line, T.Col);
+              UnitTab[U].Sym := S;
+              UnitTab[U].Name := T.Val;
+              UnitTab[U].Mode := SymTab[S].Mode;
+              SymTab[S].Used := True;
+              ParserAdvance;
+            End
           End
           Else If (SymFindMode(T.Val) >= 0) And (TokAt(1).Kind = TK_PUNCT) And
                   (TokAt(1).Val = '(') Then
@@ -8264,6 +8458,7 @@ Begin
     UK_IDREL    : UnitKindName := 'identite';
     UK_IF       : UnitKindName := 'IF';
     UK_CASE     : UnitKindName := 'CASE';
+    UK_PRINT    : UnitKindName := 'transput';
     UK_CONFORM  : UnitKindName := 'clause de conformite';
     UK_CONFALT  : UnitKindName := 'alternative';
     UK_LOOP     : UnitKindName := 'boucle';
@@ -8322,6 +8517,8 @@ Begin
                        ModeName(UnitTab[U].Mode));
     UK_LOOP    : Write(' ', UnitTab[U].Name);
     UK_CONFALT : Write(' ', ModeName(UnitTab[U].Mode));
+    UK_PRINT   : Write(' ', UnitTab[U].Name, ' ', UnitTab[U].IntVal,
+                       ' element(s)');
     UK_IDREL   : Write(' ', UnitTab[U].Name);
     UK_DISPLAY : Write(' ', UnitTab[U].IntVal, ' element(s) : ',
                        ModeName(UnitTab[U].Mode));
@@ -8406,7 +8603,7 @@ Begin
     UnitDumpOne(UnitTab[U].A, Depth + 1);
     UnitDump(UnitTab[U].B, Depth + 1);
   End
-  Else If UnitTab[U].Kind In [UK_CONSTRUCT, UK_DISPLAY] Then
+  Else If UnitTab[U].Kind In [UK_CONSTRUCT, UK_DISPLAY, UK_PRINT] Then
     UnitDump(UnitTab[U].A, Depth + 1)
   Else If UnitTab[U].Kind In [UK_ROUTINE, UK_PROCDECL] Then
   Begin
@@ -8961,6 +9158,169 @@ Begin
   GenCallDirect(S, ModeResolve(OpResult(S)));
 End;
 
+{ ---- Transput et procedures standard (TODO 19) ----
+  Routines du runtime (TODO 22), arguments dans les registres, EAX, ECX,
+  EDX, ESI, EDI detruits : WRITEINT (EAX), WRITEREAL (ST(0), depile),
+  WRITEBOOL (EAX), WRITECHAR (EAX), WRITESTR (EAX = descripteur),
+  NEWLINE, SPACE ; READINT (EAX), READREAL (ST(0)), READCHAR (EAX),
+  READSTR (EAX = descripteur d'une nouvelle chaine) ; WHOLE (EAX = n,
+  ECX = largeur, EAX = descripteur d'une nouvelle chaine). }
+
+Procedure CallRT(Const Name : TName);
+Begin
+  Emit1(OP_CALL, OpLabel(Intern(MangleRT(Name))));
+End;
+
+{ Un element de print }
+Procedure GenPrintItem(A : LongInt);
+Var
+  M : Integer;
+Begin
+  M := ModeResolve(UnitTab[A].Mode);
+  If IsPrintMarker(A) Then
+  Begin
+    If UnitTab[A].Name = 'newline' Then CallRT('NEWLINE') Else CallRT('SPACE');
+    Exit;
+  End;
+  If UnitTab[A].Mode = MD_ERROR Then
+  Begin
+    EmitComment('element de print pas encore genere');
+    Exit;
+  End;
+  GenValue(A);
+  Case ModeKind(M) Of
+    MK_INT, MK_BITS : CallRT('WRITEINT');
+    MK_REAL         : CallRT('WRITEREAL');
+    MK_BOOL         : CallRT('WRITEBOOL');
+    MK_CHAR         : CallRT('WRITECHAR');
+  Else
+    If ModeIsString(M) Then CallRT('WRITESTR');
+  End;
+End;
+
+{ Un nom de read : lecture puis rangement a l'adresse du nom }
+Procedure GenReadItem(A : LongInt);
+Var
+  M : Integer;
+Begin
+  If IsPrintMarker(A) Then Exit;
+  If UnitTab[A].Mode = MD_ERROR Then
+  Begin
+    EmitComment('element de read pas encore genere');
+    Exit;
+  End;
+  M := ModeResolve(ModeTab[ModeResolve(UnitTab[A].Mode)].Sub);
+  GenValue(A);
+  If MayBeNil(A) Then GenNilCheck;
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  Case ModeKind(M) Of
+    MK_INT :
+      Begin
+        CallRT('READINT');
+        Emit1(OP_POP, OpReg(R_EDX));
+        Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
+      End;
+    MK_REAL :
+      Begin
+        CallRT('READREAL');
+        Emit1(OP_POP, OpReg(R_EDX));
+        Emit1(OP_FSTP, OpMem(R_EDX, 0, 8));
+      End;
+    MK_CHAR :
+      Begin
+        CallRT('READCHAR');
+        Emit1(OP_POP, OpReg(R_EDX));
+        Emit(OP_MOV, OpMem(R_EDX, 0, 1), OpReg(R_AL));
+      End;
+  Else
+    Begin
+      CallRT('READSTR');
+      Emit1(OP_POP, OpReg(R_EDI));
+      Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+      Emit(OP_MOV, OpReg(R_ECX), OpImm(4));
+      Emit0(OP_REP_MOVSD);
+    End;
+  End;
+End;
+
+Procedure GenPrint(U : LongInt);
+Var
+  A : LongInt;
+Begin
+  A := UnitTab[U].A;
+  While A >= 0 Do
+  Begin
+    If UnitTab[U].Name = 'read' Then GenReadItem(A) Else GenPrintItem(A);
+    A := UnitTab[A].Next;
+  End;
+End;
+
+{ Le callee est-il une procedure standard du prelude (whole, sqrt...) ? }
+Function StdCallee(U : LongInt) : Boolean;
+Begin
+  StdCallee := (UnitTab[U].Kind = UK_IDENT) And (UnitTab[U].Sym >= 0) And
+               (SymTab[UnitTab[U].Sym].Kind = SK_STD) And
+               (ModeKind(SymTab[UnitTab[U].Sym].Mode) = MK_PROC);
+End;
+
+{ Appel d'une procedure standard : whole par le runtime, les fonctions
+  mathematiques en ligne (x87) }
+Procedure GenStdCall(Const Name : TName; Args : LongInt);
+Begin
+  If Name = 'whole' Then
+  Begin
+    GenValue(UnitTab[Args].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(Args);
+    Emit1(OP_POP, OpReg(R_ECX));
+    CallRT('WHOLE');
+    Exit;
+  End;
+  GenValue(Args);                            { argument REAL dans ST(0) }
+  If Name = 'sqrt' Then
+    Emit0(OP_FSQRT)
+  Else If Name = 'sin' Then
+    Emit0(OP_FSIN)
+  Else If Name = 'cos' Then
+    Emit0(OP_FCOS)
+  Else If Name = 'tan' Then
+  Begin
+    Emit1(OP_FLD, OpST(0));
+    Emit0(OP_FSIN);
+    Emit1(OP_FXCH, OpST(1));
+    Emit0(OP_FCOS);
+    Emit(OP_FDIVP, OpST(1), OpST(0));
+  End
+  Else If Name = 'arctan' Then
+  Begin
+    Emit0(OP_FLD1);
+    Emit0(OP_FPATAN);
+  End
+  Else If Name = 'ln' Then
+  Begin
+    Emit0(OP_FLDLN2);
+    Emit1(OP_FXCH, OpST(1));
+    Emit0(OP_FYL2X);
+  End
+  Else If Name = 'exp' Then
+  Begin
+    { 2 ** (x log2 e) = 2 ** frac * 2 ** n }
+    Emit0(OP_FLDL2E);
+    Emit(OP_FMULP, OpST(1), OpST(0));
+    Emit1(OP_FLD, OpST(0));
+    Emit0(OP_FRNDINT);
+    Emit1(OP_FXCH, OpST(1));
+    Emit(OP_FSUB, OpST(0), OpST(1));
+    Emit0(OP_F2XM1);
+    Emit0(OP_FLD1);
+    Emit(OP_FADDP, OpST(1), OpST(0));
+    Emit0(OP_FSCALE);
+    Emit1(OP_FSTP, OpST(1));
+  End
+  Else
+    EmitComment('procedure standard ' + Name + ' pas encore generee');
+End;
+
 { Appel de la procedure Callee (mode PROC) avec les arguments Args }
 Procedure GenCallCore(Callee, Args : LongInt; PM : Integer);
 Var
@@ -8971,6 +9331,11 @@ Var
   RT    : Integer;
   Agg   : Boolean;
 Begin
+  If StdCallee(Callee) Then
+  Begin
+    GenStdCall(SymTab[UnitTab[Callee].Sym].Name, Args);
+    Exit;
+  End;
   PM := ModeResolve(PM);
   Res := ModeResolve(ModeTab[PM].Sub);
   N := 0;
@@ -9887,6 +10252,17 @@ Var
   ES        : LongInt;
 Begin
   M := ModeResolve(UnitTab[U].Mode);
+  If M = MD_VOID Then
+  Begin
+    { clause collaterale en contexte vide }
+    A := UnitTab[U].A;
+    While A >= 0 Do
+    Begin
+      GenValue(A);
+      A := UnitTab[A].Next;
+    End;
+    Exit;
+  End;
   If ModeTab[M].Kind = MK_STRUCT Then
   Begin
     D := NewTemp(ModeSize(M));
@@ -10288,6 +10664,12 @@ Begin
         End
         Else If SymTab[S].Kind = SK_PROC Then
           GenProcValue(S)
+        Else If (SymTab[S].Kind = SK_STD) And
+                (SymTab[S].Name = 'newline') Then
+          CallRT('NEWLINE')
+        Else If (SymTab[S].Kind = SK_STD) And
+                (SymTab[S].Name = 'space') Then
+          CallRT('SPACE')
         Else
           EmitComment(SymTab[S].Name + ' : pas encore genere');
       End;
@@ -10307,6 +10689,7 @@ Begin
     UK_DISPLAY   : GenDisplay(U);
     UK_ASSIGN    : GenAssign(U);
     UK_CALL      : GenCall(U);
+    UK_PRINT     : GenPrint(U);
     UK_ROUTINE   : GenRoutineValue(U);
     UK_IDREL     : GenIdRel(U);
     UK_IF        : GenIf(U);
@@ -10402,7 +10785,7 @@ Begin
     UK_CLOSED  : GenUnit(UnitTab[U].A);
     UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
     UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_CONFORM, UK_LOOP, UK_ASSIGN,
-    UK_IDREL, UK_DISPLAY, UK_ROUTINE : GenValue(U);
+    UK_IDREL, UK_DISPLAY, UK_ROUTINE, UK_PRINT : GenValue(U);
     UK_PROCDECL : GenRoutineBody(UnitTab[U].A);
     UK_LABELDEF:
       If UnitTab[U].Sym >= 0 Then
