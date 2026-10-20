@@ -1,0 +1,1284 @@
+  AL68CW32.PAS - Compilateur Algol 68 vers assembleur 80386
+    pour Windows 32 bits
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32 (console)
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un listing .ASM lisible
+    (la production du .ASM est optionnelle et jamais implicite).
+  Supporte toutes les exemples SAMPLES\ALGOL68\*.a68
+
+  Reference : DOC\ALGOL68_SPEC_LANG.txt
+  Compilateur 16 bits de reference : AL68C86.PAS (DOC\TODO\AL68C86.txt)
+  Compilateurs 32 bits de meme famille : AL58CW32.PAS et AL60CW32.PAS
+    (encodeur x86-32, ecrivains PE et COFF, runtime Win32 integre avec
+    mini-assembleur, gestion des erreurs, chargeur PE de test et script
+    de test : DOC\TODO\AL60CW32.txt, TESTS\test_al60cw32.sh,
+    TESTS\AL60CW32\ ; ceux d'AL68CW32 : TESTS\test_al68cw32.sh et
+    TESTS\AL68CW32\)
+  Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
+
+  CONTRAINTE : AL68CW32.PAS n'a aucune dependance externe : aucune clause
+    Uses (pas meme Math ni SysUtils), aucune inclusion de fichier par une
+    directive d'inclusion ; tout le code est dans ce seul fichier. La
+    directive de compilation I- ne fait qu'arreter la verification des
+    erreurs d'entree/sortie.
+
+  ETAT : TODO 01 a 25 implementes (squelette en sections, pipeline en 7
+         phases, options, constantes, limites et nommage, lexeur, modes,
+         symboles et prelude, code interne et listing, parseur de
+         clauses, declarations, coercitions, primaires, formules,
+         conditionnelles et boucles, structures,
+         affectations, tableaux, procedures, operateurs, unions,
+         transput, encodeur x86-32, ecrivains PE et COFF, runtime,
+         erreurs et avertissements, programme principal et modes -v et -d,
+         validation sur les 27 exemples : TESTS\test_al68cw32.sh).
+
+  PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
+    - Langage fortement type par les modes : le type d'une unite depend
+      de son contexte (coercitions : dereferencement, deprocedurage,
+      elargissement, enrobage en tableau, union, vidage). Le parseur
+      construit donc un arbre d'unites typees ; le code n'est genere
+      qu'apres la resolution des modes et des coercitions.
+    - Mots reserves en majuscules (BEGIN END IF THEN ELIF ELSE FI CASE IN
+      OUSE OUT ESAC FOR FROM BY TO DOWNTO WHILE DO OD MODE STRUCT UNION
+      PROC OP PRIO REF HEAP LOC INT REAL BOOL CHAR STRING BITS VOID PAR
+      GOTO SKIP NIL EMPTY OF IS ISNT AND OR NOT OVER MOD ABS SIGN ODD
+      SHL SHR BIN LWB UPB TRUE FALSE) ; identificateurs en minuscules.
+    - Commentaires CO ... CO (aussi COMMENT ... COMMENT et # ... #).
+    - Un programme est une clause serie : les exemples peuvent etre
+      encadres par BEGIN ... END ou ecrits sans encadrement (arrays,
+      structs, test_array, test_loop, test_ref...), avec des
+      declarations MODE au niveau le plus externe.
+    - Entrees/sorties par print((liste)) : la liste est une clause
+      collaterale de valeurs de modes differents (INT, BOOL, CHAR,
+      STRING, newline, space), print(chaine) accepte une seule valeur.
+    - Extensions tolerees par les exemples : DOWNTO, SHL et SHR sur
+      INT, /:= sur INT (division entiere), PAR execute sequentiellement
+      (avertissement), declarations apres des instructions.
+    - Pas de ramasse-miettes : HEAP alloue sur le tas Win32 sans
+      liberation ; LOC (par defaut) vit dans le cadre de la clause.
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - ARCHITECTURE ET PIPELINE DU COMPILATEUR [IMPLEMENTE]
+            Definir le pipeline complet :
+              source .a68 -> lexeur -> parseur (arbre d'unites)
+              -> resolution des modes et coercitions -> generation
+              (ASM 80386) -> .ASM (optionnel) -> encodeur binaire x86-32
+              -> .OBJ (COFF) ou .EXE (PE) -> rapport
+            Choix retenu : encodeur binaire interne (comme JOVCW32,
+              AL58CW32 et AL60CW32), le .ASM n'etant qu'un listing
+              parallele, pas une etape requise
+            Difference avec AL60CW32 : la generation en une seule passe
+              ne suffit pas, le mode d'une unite n'etant connu qu'avec
+              son contexte ; l'arbre est donc complet avant la generation
+            Differences avec AL68C86 : registres 32 bits (EAX..EBP),
+              modele FLAT, INT sur 32 bits, vrai type REAL (x87), appels
+              API Win32 au lieu de INT 21h, aucune limite de segment
+            Decouper le source en sections commentees : constantes, types
+              Pascal, options, lexeur, modes, symboles et portees,
+              arbre d'unites, parseur, coercitions, generateur, code
+              interne, encodeur, ecrivains OBJ/EXE, runtime, erreurs,
+              programme principal
+            Garder la compatibilite Turbo Pascal 7 / Free Pascal 3.2
+              ({$MODE TP}, {$H-}, {$I-}), lignes de 80 colonnes maximum
+            Attention : Integer vaut 16 bits en mode TP, utiliser LongInt
+              pour les indices de tables et les tailles
+            Attention : ne jamais ecrire de fermeture de commentaire
+              Pascal dans un commentaire (parenthese-etoile, accolade)
+            Aucune dependance externe : ni Uses, ni inclusion de fichier
+            Realise : directives {$MODE TP}, {$H-}, {$I-} ; 16 sections
+              numerotees (constantes, types, variables, utilitaires,
+              options, lexeur, modes, symboles et portees, arbre
+              d'unites et parseur, coercitions, generateur et code
+              interne, encodeur, ecrivains, runtime, erreurs et
+              rapport, pipeline) ; type TPhase a sept phases (PH_LEX,
+              PH_PARSE, PH_MODES, PH_CODEGEN, PH_ENCODE, PH_WRITE,
+              PH_REPORT) ; Run execute les phases dans l'ordre (les
+              phases vides seront remplies par les TODOs suivants) ;
+              code de retour EXIT_OK ou EXIT_ERROR selon le nombre
+              d'erreurs
+            Verifie : compilation avec fpc -Mtp sans erreur (une seule note),
+              execution : sept lignes de phases puis code
+              de retour 0 ; lignes de 80 colonnes au plus
+
+  TODO 02 - OPTIONS, CONSTANTES, LIMITES ET NOMMAGE [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, AsmFile, Verbose, DebugMode,
+              Warnings, EmitExe, EmitObj, EmitAsm)
+            Syntaxe : AL68CW32 source.a68 [-o sortie] [-obj] [-asm]
+              [-v] [-d] [-w] [-w-] [-h]
+            Par defaut : produire source.exe (PE Windows 32 bits)
+            -obj : produire uniquement source.obj (aucun .EXE)
+            -asm : produire aussi source.asm ; jamais cree sans -asm
+            -o nom : nom de la sortie principale ; extension .exe ou
+              .obj ajoutee si absente ; .asm de meme nom de base
+            Source .a68 (ou .alg) ; extension ajoutee si absente
+            Refus : sortie identique au source, -o vers un .asm, option
+              inconnue (code 2), source introuvable (code 1)
+            Codes de retour : 0 succes, 1 erreur, 2 usage
+            Constantes PE/COFF : PE_DOS_MAGIC, PE_SIGNATURE,
+              PE_MACHINE_I386 ($014C), PE_IMG_BASE ($00400000),
+              PE_SEC_ALIGN (4096), PE_FILE_ALIGN (512), sous-systeme
+              console, indicateurs de sections ; COFF_SYM_EXTERNAL,
+              COFF_SYM_STATIC, IMAGE_REL_I386_DIR32 et REL32
+            Limites internes 32 bits : symboles, modes, portees, unites,
+              parametres, champs, dimensions, tailles de code et de
+              donnees, relocations, profondeur d'imbrication
+            Prefixes de nommage ASM : _A68V_ (variable ou identite),
+              _A68P_ (procedure), _A68O_ (operateur), _A68K_ (chaine),
+              _A68M_ (descripteur de mode), _A68L_ (label), _A68RT_
+              (runtime), _A68T_ (thunk ou temporaire)
+            Utilitaires : ItoS, StrLower, AsmIdent (nom ASM valide),
+              extension et nom de fichier, FileExists
+            Realise : TOptions et InitOptions ; ParseArgs (options -o,
+              -obj, -asm, -v, -d, -w, -w+, -w-, -h, --help et /?, une seule
+              source, .a68 ajoute (ou .alg) si l'extension manque) ;
+              ShowUsage et ShowBanner ; FatalError, ErrorAt, WarnAt et
+              WarnMsg ; NoteOutput et RemoveOutputs (fichiers crees
+              supprimes sur erreur fatale) ; constantes PE, COFF et ABI,
+              tampons binaires et limites internes (symboles, modes,
+              unites, portees, champs, alternatives d'union...) ;
+              prefixes _A68V_, _A68P_, _A68O_, _A68K_, _A68M_, _A68L_,
+              _A68RT_ et _A68T_ avec MangleVar, MangleProc, MangleOp,
+              MangleMode, MangleRT, MangleUserLabel, MangleTemp,
+              MangleLabel et MangleStr ; ItoS, ItoSZ, UpCaseStr, StrLower,
+              AsmIdent, ExtPos, GetExt, ReplaceExt, FileExists ;
+              Run n'affiche banniere et phases qu'avec -v ; le lexeur,
+              le parseur et le rapport tournent toujours, les autres
+              phases seulement sans erreur
+            Verifie : sans argument -> usage et code 2 ; -h -> code 0 ;
+              source introuvable, extension inconnue, option inconnue,
+              -o vers un .asm ou vers le source -> refus ; fichiers
+              nommes par defaut (.exe, .obj, .asm) pour -o, -obj, -asm
+
+  TODO 03 - LEXEUR ALGOL 68 [IMPLEMENTE]
+            TTokenKind : TK_EOF, TK_INT, TK_REAL, TK_BOOL, TK_CHAR,
+              TK_STRING, TK_TAG (identificateur contenant une
+              minuscule), TK_KEYWORD (mot reserve de la syntaxe), TK_BOLD
+              (autre mot en majuscules : nom de mode ou d'operateur),
+              TK_OP (symbole d'operateur), TK_PUNCT
+            Format libre, suivi de ligne et colonne pour les erreurs
+            Mots en majuscules = mots reserves ou noms de modes et
+              d'operateurs ; table des mots reserves du TODO 01
+            Commentaires : CO ... CO et COMMENT ... COMMENT (plusieurs
+              lignes), # ... # ; commentaire non termine detecte
+            Denotations : entiers (42), reels (3.14, 1.5e3, 1e-2),
+              booleens TRUE et FALSE, caractere "A" (un seul caractere),
+              chaine "texte" avec "" pour inclure un guillemet ; chaine
+              ou caractere non ferme detecte, depassement INT detecte
+            Symboles : := =: + - * / ** = /= < <= > >= et les formes
+              composees +:= -:= *:= /:= %:= ; | et |: (formes abregees),
+              : ; , ( ) [ ] et le separateur de lignes
+            Les formes ELIF, OUSE, DOWNTO et les symboles abreges sont
+              reconnus comme des tokens uniques
+            Mode debug -d : afficher chaque token
+            Verification : hello.a68 (denotations), test_formula.a68
+              (tous les operateurs)
+            Realise : source charge en memoire (LexLoad, LexAt avec
+              regard en avant de plusieurs caracteres) ; PhaseLex range
+              tous les tokens dans TokTab (EOF inclus), ce qui permet au
+              parseur de regarder en avant ; denotations de chaines dans
+              LitTab ; mots reserves dans KeywordTab ; &, ~, :=: et :/=:
+              donnent AND, NOT, IS et ISNT ; GO suivi de TO devient GOTO ;
+              nombres en base (16rFF, 2r1010) avec controle de la base et
+              des chiffres ; un seul caractere "A" donne TK_CHAR, ""
+              donne une chaine vide ; erreurs : caractere invalide,
+              chaine non fermee ou trop longue, commentaire non termine
+              (mot ou dieze attendu), entier, exposant ou reel hors
+              limites, base invalide, identificateur trop long
+            Verifie : les 27 exemples sont lus sans erreur (de 18 tokens
+              pour test_dataseg a 353 pour control) ; tous les symboles
+              composes (+:= -:= *:= /:= %:= %*:= =: := :=: :/=: +* ** /=
+              <= >= |: et les autres), les trois formes de commentaires
+              et les pragmats, les denotations (3.14, .5e2, 1.5e-3, 2e5,
+              16rFF), GO TO et les erreurs ci-dessus donnent le resultat
+              attendu avec -d
+
+  TODO 04 - MODES (TYPES) ET LEUR REPRESENTATION [IMPLEMENTE]
+            Modes de base : INT (32 bits), REAL (64 bits, x87), BOOL,
+              CHAR, BITS (32 bits), VOID
+            Modes construits : REF m (pointeur 4 octets), [] m (tableau
+              avec descripteur), STRUCT(champs), UNION(modes), PROC
+              (parametres) m, STRING (tableau flexible de CHAR)
+            Table des modes avec partage structurel : deux modes
+              equivalents ont le meme indice (equivalence structurelle,
+              MODE POINT = STRUCT(INT x, INT y) et alias MODE myint = INT)
+            Declaration MODE : alias et modes recursifs a deux passes
+              (la declaration doit pouvoir referencer son propre nom
+              via un REF ou un tableau)
+            Representation : INT, BOOL, BITS, CHAR scalaires sur un DWORD,
+              REAL sur un QWORD, REF et PROC sur un DWORD (PROC = paire
+              entree + lien statique), STRUCT = champs consecutifs alignes
+              sur 4, tableau et STRING = descripteur (pointeur, bornes,
+              pas), UNION = etiquette de mode + valeur la plus large
+            Tailles et alignements calcules une fois par mode
+            Mode debug -d : liste des modes
+            Verification : test_decl.a68, test_struct.a68, test_union.a68
+            Realise : section 7 ; TMode (genre, element, dimensions,
+              FLEX, liste dans un pool, taille) ; modes de base aux
+              indices fixes MD_ERROR, MD_VOID, MD_INT, MD_REAL, MD_BOOL,
+              MD_CHAR, MD_BITS, MD_NIL et MD_STRING (FLEX [] CHAR) ;
+              constructeurs ModeRef et ModeRow (modes partages),
+              ModeStructTmp, ModeUnionTmp et ModeProcTmp (liste en cours
+              ModeTmpAdd) ; union : alternatives aplaties, sans doublon et
+              triees, VOID refuse ; structure : doublon de champ signale ;
+              ModeFwd et ModeDefine pour les modes recursifs ; ModeSame :
+              equivalence structurelle, recursion comprise (paires deja
+              rencontrees supposees equivalentes) ; ModeDeref, ModeDeref1,
+              ModeFindField, ModeUnionHas ; ModeSize : INT, BOOL, CHAR,
+              BITS, REF 4 octets, REAL 8, PROC 8 (entree et lien statique),
+              tableau 4 + 12 par dimension (STRING 16), STRUCT somme des
+              champs, UNION 4 + alternative la plus large, recursion sans
+              REF detectee (ModeBadRec) ; ModeFieldOffset, ModeElemSize (1
+              octet pour un CHAR) ; ModeName et ModeDump (-d)
+            Verifie : harnais de 25 controles hors depot (tailles,
+              partage, noms, STRING different de [] CHAR, structures de
+              noms differents, NODE et NODE2 recursifs equivalents,
+              recursion sans REF, unions dans un ordre quelconque,
+              aplatissement, UNION a une alternative, VOID refuse,
+              procedures) : tous reussis ; les modes des exemples
+              (POINT, VEC3, NOMBRE, POLYVAL, WRAPPED) seront crees par le
+              parseur aux TODOs 08, 13 et 18
+
+  TODO 05 - TABLE DES SYMBOLES, PORTEES ET PRELUDE STANDARD [IMPLEMENTE]
+            Portees emboitees (clauses fermees, series, boucles,
+              procedures) ; recherche du plus interne vers l'externe
+            Espaces de noms : identites et variables, modes, operateurs
+              (avec modes des operandes), priorites, labels
+            Entree : nom, genre, mode, portee, niveau d'imbrication,
+              classe de stockage (statique, local, parametre), decalage
+              ou nom ASM
+            Doublon dans une meme portee signale ; masquage dans une
+              portee interne permis
+            Prelude standard : pi, newline, space, print, read, whole,
+              sqrt, sin, cos, tan, arctan, exp, ln, ABS, SIGN, ODD, LWB,
+              UPB, BIN, SHL, SHR, ENTIER, ROUND, operateurs
+              arithmetiques, de comparaison, booleens et de chaines avec
+              leurs priorites (1 a 9)
+            Resolution des operateurs surcharges par les modes des
+              operandes (preparer TODO 11 et TODO 17)
+            Mode debug -d : afficher chaque portee
+            Verification : test_closed.a68, test_decl.a68
+            Realise : section 8 ; TSymbol (nom, genre, mode, portee, chaine
+              des symboles de la portee, stockage, decalage, nom ASM,
+              position, utilise, intrinseque, generique) et TScope
+              (parent, niveau de procedures, genre, cadre) ; genres
+              SK_VAR, SK_IDENT, SK_PROC, SK_PARAM, SK_STD, SK_MODE, SK_OP,
+              SK_PRIO et SK_LABEL en cinq espaces de noms (identificateurs,
+              modes, operateurs, priorites, etiquettes) ; ScopeEnter et
+              ScopeLeave ; SymDeclare (doublon signale, la premiere
+              declaration reste en vigueur ; operateurs distingues par les
+              modes de leurs operandes) ; SymAllocate (segment de donnees au
+              niveau 0, sinon [EBP - Offset] dans le cadre de la procedure
+              englobante) ; SymFindIdent, SymFindMode, SymFindLabel,
+              SymFindPrio, SymFindOp (modes exacts, portee la plus interne
+              d'abord, LWB et UPB generiques sur tout tableau) et
+              SymOpExists ; PreludeInit : priorites standard (OR 2, AND 3,
+              = et /= 4, comparaisons 5, + et - 6, * / OVER MOD 7, ** SHL
+              SHR LWB UPB 8, +* 9, affectations composees 1), 127
+              operateurs (combinaisons INT et REAL explicites, chaines,
+              BOOL, BITS, affectations composees, monadiques) et les
+              identificateurs standard ; SymDumpScope pour -d
+            Verifie : harnais de 40 controles hors depot (prelude, priorites,
+              INT + REAL, INT / INT donne REAL, BOOL + INT refuse, UPB
+              generique, +:= sur REF INT, doublons, espaces de noms
+              distincts, surcharge et doublon d'un operateur utilisateur,
+              PRIO utilisateur, masquage et redefinition d'un operateur du
+              prelude, retour apres sortie de portee, cadre local et
+              decalages dans une procedure) : tous reussis
+
+  TODO 06 - CODE INTERNE, LISTING .ASM ET SEGMENT DE DONNEES [IMPLEMENTE]
+            TInstr (operation, deux operandes, commentaire) ; operandes :
+              registre, immediat, memoire [base + index*echelle + depl],
+              etiquette, symbole, registre ST(i)
+            Emission : Emit, EmitLabel, EmitComment, EmitBlank,
+              NewLabel ; code differe (corps de procedures emis a part,
+              puis rattache apres le programme principal)
+            Listing .ASM : en-tete .386 / .MODEL FLAT, EXTERN des
+              fonctions Win32, .DATA, .CODE, END <entree>
+            Segment de donnees : variables statiques du niveau externe,
+              chaines des denotations (avec zero final et descripteur),
+              reels, descripteurs de modes et tables, cellules du runtime
+              creees a la demande
+            Entree du programme : _A68P_Main, tampon de pile et
+              ExitProcess a la fin
+            Verification : test_dataseg.a68, test_closed.a68
+            Realise : section 9, reprise de celle d'AL60CW32 ; TReg, TOperand
+              (registre, immediat, memoire [symbole + base + index*echelle +
+              deplacement], etiquette, OFFSET, ST(i)), TOp (MOV, MOVZX, LEA,
+              PUSH, POP, arithmetique, SETcc, Jcc, CALL, RET, REP STOSD,
+              REP MOVSD pour copier les structures, instructions x87) et
+              TInstr ; CodeTab / DeferTab, MoveToDeferred ; noms ASM uniques
+              (Intern, table de hachage) ; OpReg, OpImm, OpMem, OpMemSym,
+              OpMemIdx, OpLabel, OpOffset, OpST ; Emit, Emit0, Emit1,
+              EmitLabel, EmitComment, EmitBlank, NewLabel ; WriteListing
+              (.386, .MODEL FLAT, EXTERN des fonctions kernel32, .DATA,
+              .CODE, END _A68P_Main) ; DataNew, DataAddZero, DataStr,
+              DataInt, DataReal (cellules partagees), DataTable ; DataDump ;
+              GenMainBegin (_A68P_Main, cadre memorise dans _A68_MAINBP) et
+              GenMainEnd (ExitProcess(0)), appeles par le parseur en
+              attendant le TODO 07 ; PhaseCodegen : statistiques (-v),
+              code interne et donnees (-d), listing .ASM (-asm) ; les
+              sections 9 a 11 sont reordonnees pour que le code interne
+              precede le parseur ; descripteurs de modes : pas necessaires
+              (l'etiquette d'une union est l'indice du mode)
+            Verifie : un programme vide compile avec -asm, s'assemble avec
+              ML et s'execute (code 0) ; un programme construit a la main
+              avec chaine, entier, reel, table d'adresses, saut indexe,
+              appel d'une procedure differee et x87 s'assemble avec ML et
+              s'execute : il ecrit Salut A68 et rend le code 49
+
+  TODO 07 - PARSEUR : PROGRAMME, CLAUSES SERIES ET FERMEES [IMPLEMENTE]
+            Un programme est une clause serie, avec ou sans BEGIN ... END
+              ou parentheses autour (arrays, structs, test_loop...)
+            Clause serie : suite d'unites, declarations et labels
+              separes par ; ou EXIT ; la derniere unite donne la valeur
+            Clause fermee : BEGIN ... END et ( ... ), avec declarations
+              locales (INT tmp := 5; tmp * 2) et valeur de la clause
+            Labels : loop: et done: devant une unite ; GOTO etiquette et
+              etiquette seule comme saut ; label non defini signale
+            Declarations melangees aux unites, SKIP et unite vide
+            Recuperation apres erreur : synchronisation sur ; ou sur un
+              mot de fermeture (END OD FI ESAC) avec progression garantie
+            Verification : test_closed.a68, test_primary.a68
+            Realise : section 10 ; arbre d'unites (TUnit : genre, mode,
+              position, enfants A B C, element suivant, symbole, portee) ;
+              genres UK_SERIAL, UK_CLOSED, UK_LABELDEF, UK_GOTO, UK_SKIP,
+              UK_DECL et UK_OPAQUE ; jetons lus dans TokTab (TokAt,
+              ParserAdvance, AtKw, AtPunct) ; ParseSerial (au niveau le plus
+              externe seule la fin du fichier ferme la clause) ;
+              ParseClosed (BEGIN ... END et parentheses, une portee par
+              clause, fermeture manquante signalee avec la ligne et la
+              colonne de l'ouverture) ; ParenIsClosed distingue une clause
+              fermee de (c | a | b) et des listes a virgules ; etiquettes
+              devant une unite ou une declaration (ParseLabelDef, doublon
+              signale) ; GOTO (ParseGoto) resolu en fin d'analyse
+              (ResolveGotos : etiquette visible depuis la portee du saut
+              ou une portee englobante, sinon erreur) ; avertissement
+              d'etiquette inutilisee avec -w ; unites vides et point-
+              virgule final tolerees ; recuperation : message puis saut
+              jusqu'au prochain point-virgule ou a une fermeture, avec
+              progression garantie ; en attendant les TODOs 08 a 19, les
+              declarations (AtDeclStart) et les autres unites sont
+              enveloppees sans analyse (ParseOpaque : jetons equilibres
+              jusqu'au point-virgule, le DO d'une clause repetitive
+              ouvrant son corps) ; PhaseCodegen genere maintenant le code
+              depuis l'arbre (GenUnit : etiquettes et JMP) ; -d affiche
+              l'arbre, -v les statistiques
+            Verifie : les 27 exemples sont analyses sans erreur (de 6 unites
+              pour test_dataseg a 39 pour math) ; test_closed donne deux
+              clauses fermees, deux etiquettes et un GOTO resolu ; erreurs :
+              GOTO vers une etiquette inconnue, etiquette dupliquee, END ou
+              parenthese manquants, fermeture isolee, point-virgule oublie,
+              GOTO sans etiquette ; un programme avec GOTO et etiquettes
+              imbriquees s'assemble avec ML et s'execute (code 0)
+
+  TODO 08 - DECLARATIONS : IDENTITE, VARIABLE, MODE ET PRIO [IMPLEMENTE]
+            Declaration d'identite : INT x = 42 ; BOOL flag = TRUE ;
+              CHAR c = "A" ; STRING msg = "Hello" ; listes
+              INT a = 1, b = 2, c2 = 3 ; identite constante (pas
+              d'affectation possible)
+            Declaration de variable : INT y := 10 ; REF INT p := NIL ;
+              [1:5] INT a := (10, 20, 30, 40, 50) ; [1:3] INT b ;
+              HEAP INT h ; LOC par defaut ; variable = identite d'un
+              REF generateur
+            Variable sans initialiseur : valeur indefinie initialisee a
+              zero pour eviter les surprises
+            Declaration MODE (TODO 04), PRIO (TODO 17), PROC (TODO 16) et
+              OP (TODO 17) reconnues ici
+            Initialiseur converti vers le mode declare par coercition
+              (TODO 09)
+            Verification : test_decl.a68, test_dataseg.a68, hello.a68
+            Realise : ParseDeclarer (INT, REAL, BOOL, CHAR, STRING, BITS,
+              VOID, REF, STRUCT avec noms de champs groupes, UNION, PROC,
+              [l:u, ...] avec bornes, [] et [,] sans bornes, FLEX, noms de
+              modes) ; ParseObjectDecl (LOC ou HEAP, listes separees par
+              des virgules, = pour une identite, := ou rien pour une
+              variable de mode REF m) ; ParseModeDecl (alias direct pour
+              un mode simple, mode nomme pour STRUCT et UNION, ce qui
+              permet les modes recursifs ; recursion sans REF signalee) ;
+              ParsePrioDecl (priorite de 1 a 9) ; denotations en noeuds
+              UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN ;
+              les autres initialiseurs et bornes sont enveloppes
+              provisoirement (ParseOpaqueUntil) ; DenotationFits
+              (INT vers REAL ou BITS, CHAR vers STRING, denotation vers
+              l'une des alternatives d'une UNION) ; DeclareStorage (cellule
+              du segment de donnees ou place dans le cadre) ; PROC et OP
+              restent enveloppes (TODOs 16 et 17) ; GenDecl et
+              GenStoreDenotation : INT, BOOL, CHAR, BITS par MOV, REAL par
+              x87, STRING par descripteur (adresse, 1, longueur, 1), UNION
+              par etiquette de mode puis valeur
+            Verifie : les 27 exemples sont analyses sans erreur ; les
+              modes POINT, VEC3, rect, myint, NOMBRE, WRAPPED et POLYVAL
+              sont crees avec les bonnes tailles ; test_decl s'assemble
+              avec ML et x, y et c2 valent 42, 10 et 3 a l'execution ;
+              erreurs : doublon, mode inconnu, mode recursif sans REF,
+              initialisation incompatible, priorite hors limites, champ
+              en double, VOID dans une union, identite de tableau avec
+              bornes, nom attendu ; STRUCT(INT a, b, REAL c), UNION(INT,
+              REAL) := 3, [1:3, 1:4] REAL, FLEX [] CHAR et PROC (INT) INT
+              sont acceptes
+
+  TODO 09 - COERCITIONS [IMPLEMENTE]
+            Forces de contexte : forte, ferme, meek, faible, douce
+            Coercitions : dereferencement (REF INT vers INT, plusieurs
+              niveaux), deprocedurage (PROC INT vers INT), elargissement
+              (INT vers REAL), enrobage (valeur vers tableau d'un
+              element), union (valeur vers UNION), vidage (valeur
+              ignoree, voiding)
+            Application selon le contexte : operande de formule (ferme),
+              source d'affectation (forte), condition (meek, BOOL),
+              argument de procedure (fort), selecteur de CASE (meek)
+            Une valeur utilisee comme instruction est videe : a + 5 ;
+              ou un appel de PROC INT sans utiliser le resultat
+            Erreur si aucune suite de coercitions ne convient ; mode
+              equilibre des branches de IF et de CASE (balancing)
+            Constantes : repliement INT vers REAL au moment de la
+              compilation
+            Verification : coerce.a68, test_primary.a68
+            Realise : section 11 ; noeud UK_COERCE (unite enveloppee, genre
+              CO_DEREF, CO_DEPROC, CO_WIDEN, CO_ROW, CO_UNITE ou CO_VOID,
+              mode obtenu) ; TStrength (douce, faible, meek, ferme, forte) ;
+              CoerceFit (union, elargissement, enrobage d'un element,
+              NIL vers REF) ; CoerceUnit : suite de deprocedurages et
+              dereferencements puis coercition finale, repliement des
+              denotations (7 vers REAL, caractere vers chaine), SKIP, GOTO,
+              EMPTY et NIL qui prennent le mode demande, clause fermee dont
+              le dernier element prend le mode demande, unite de mode
+              inconnu laissee telle quelle, erreur coercition impossible ;
+              l'etiquette d'une union est l'indice de l'alternative (B) ;
+              CoerceName (force faible : un nom reste un REF) ;
+              ModeBalance (equilibrage de deux branches) ; PhaseModes :
+              ModesSerial (unites non finales videes, derniere coercee ;
+              la parse ne verifie plus les initialiseurs) et ModesDecl
+              (initialiseur coerce vers le mode de l'objet) ; NIL, EMPTY
+              et SKIP reconnus comme initialiseurs ; GenInit genere
+              denotation, NIL, EMPTY et union ; -d affiche l'arbre apres
+              coercitions
+            Verifie : harnais de 33 controles hors depot (REF REF INT vers
+              INT, 7 vers REAL, INT vers REAL refuse en contexte ferme,
+              REF INT vers REAL, INT et REAL vers UNION, BOOL vers UNION
+              refuse, UNION(INT) vers UNION(INT, REAL), caractere vers
+              STRING, enrobage, PROC INT vers INT, vidage, NIL, SKIP, force
+              faible et douce, equilibrage, clause serie et clause fermee) :
+              tous reussis ; les 27 exemples passent sans erreur ; test_union
+              s'assemble avec ML et les unions contiennent l'etiquette de
+              mode puis la valeur (par exemple 2 puis 42 pour un INT)
+
+  TODO 10 - UNITES PRIMAIRES [IMPLEMENTE]
+            Identificateurs (variables, identites, parametres) avec
+              chargement par adresse ou par valeur
+            Denotations : INT, REAL, BOOL, CHAR et STRING
+            Appel de procedure f(a, b) et constructeur de structure
+              POINT(3, 7) distingues par le mode du nom
+            Selection x OF p (priorite la plus haute) en lecture et en
+              ecriture ; selection sur une structure referencee
+            Indexation a[i] et tranche a[1:5] (details au TODO 15)
+            Clause fermee ou conditionnelle utilisee comme primaire
+            Cast : mode suivi d'une clause fermee si les exemples en ont
+            Adresse d'un champ ou d'un element pour les affectations
+            Verification : test_primary.a68, structs.a68, refs.a68
+            Realise : section 10 ; ParsePrimary (denotation, identificateur,
+              clause fermee, champ OF operande, constructeur de structure
+              ou conversion, suivis d'indexations et d'appels) qui rend -1
+              sans rien consommer devant ce qui n'est pas encore analyse ;
+              ParseUnitX : une unite est une primaire seule, sinon elle est
+              enveloppee (formules, conditionnelles, boucles : TODOs 11 a
+              19) ; ParseSelection (operande coerce en nom, champ et decalage
+              trouves, mode REF champ si l'operande est un nom) ;
+              ParseSlice (nombre d'indices verifie, indices coerces en INT,
+              tranches l:u, mode element ou tableau, REF si nom) ;
+              ParseCall (procedure deduite du mode, nombre d'arguments
+              verifie, arguments coerces vers les modes des parametres) ;
+              ParseConstruct (POINT(3, 7), valeurs coercees vers les
+              champs, INT(x) conversion) ; identificateur non declare
+              signale ; les noms de PROC sont declares des maintenant, de
+              mode inconnu ; deflexion (un tableau de meme element convient
+              a un STRING) ; la section des coercitions precede le
+              parseur ; generation : GenValue (mot dans EAX, reel dans
+              ST(0), adresse dans EAX pour les objets en memoire),
+              StoreValue (MOV, FSTP ou REP MOVSD), identificateurs,
+              pi, selection, constructeur (cellule temporaire), coercitions
+              (dereferencement, elargissement par FILD, vidage, union),
+              GenInit pour tous les initialiseurs ; indexation, appels et
+              conversions : TODOs 15, 16 et 19
+            Verifie : les 27 exemples sont analyses sans erreur et
+              assembles par ML ; programme d'essai execute (valeurs lues
+              dans les cellules par le code de sortie) : x OF p = 3,
+              y OF p = 7, variable copiee, identite, REAL := 2.5 (5 une fois
+              doublee), REAL := 7 (14), REAL := entier (10), pi (6),
+              union (etiquette 2 puis 5), structure copiee (7), NIL (0),
+              STRING copiee (longueur 2), x OF POINT(40, 2) = 40 ; erreurs :
+              identificateur inconnu, champ inconnu, constructeur ou appel
+              avec un mauvais nombre de valeurs, selection ou indexation
+              d'un mode qui ne convient pas, nombre d'indices, coercition
+              impossible dans INT(r)
+
+  TODO 11 - FORMULES ET OPERATEURS STANDARD [IMPLEMENTE]
+            Priorites : monadiques (ABS SIGN ODD NOT BIN LWB UPB) au plus
+              haut ; ** SHL SHR (8) ; * / OVER MOD (7) ; + - (6) ;
+              < <= > >= (5) ; = /= (4) ; AND (3) ; OR (2)
+            Arithmetique INT et REAL : + - * / OVER MOD **, avec
+              elargissement INT vers REAL ; / sur deux INT donne un REAL
+            Comparaisons sur INT, REAL, CHAR, BOOL ; AND OR NOT ; BITS
+              avec SHL SHR AND OR, BIN et ABS
+            Chaines : concatenation + et comparaisons < <= = /= >= >
+              (routines du runtime)
+            Monadiques : ABS, SIGN, ODD, NOT, - et + unaires
+            Repliement des constantes (2 ** 8, ABS -5) avec detection du
+              debordement et de la division par zero constante
+            Division par zero a l'execution : controle avant IDIV
+            Mode de resultat de chaque operateur, erreur si les modes
+              des operandes ne conviennent pas
+            Verification : test_formula.a68, math.a68, ops.a68
+            Realise : section 10 ; ParseFormula (operateurs a priorites,
+              associatifs a gauche, priorites lues dans la table des
+              symboles : OR 2 a ** 8, monadiques au-dessus) et ParseOperand
+              (operateurs monadiques puis primaire) ; operateurs
+              reconnus seulement s'ils existent dans le prelude ou chez
+              l'utilisateur, sinon l'unite reste enveloppee (OP du TODO
+              17, affectations du TODO 14) ; CoercePossible et
+              SymFindOpFirm : l'operateur est identifie d'apres les modes
+              des operandes apres coercitions fermes (le plus interne et le
+              plus recent d'abord) ; MakeDyadic et MakeMonadic (operandes
+              coerces vers les modes de l'operateur, erreur operateur
+              impossible pour les modes X et Y) ; FoldBinary et FoldUnary :
+              repliement entier (Int64, debordement signale), reel,
+              booleen, comparaisons, ABS, SIGN, ODD, NOT, ENTIER, ROUND,
+              division par zero constante signalee une seule fois ; une
+              clause fermee suivie d'un operateur est une primaire ;
+              GenDyadic et GenMonadic : entiers (ADD, SUB, IMUL, IDIV
+              avec controle du diviseur puis appel de DIVZERO, MOD toujours
+              positif ou nul), reels sur la pile x87 (FADDP, FSUBP, FMULP,
+              FDIVP, comparaison par FCOMP, FNSTSW, SAHF et SETcc), / sur
+              deux INT donne un REAL, comparaisons, AND, OR, NOT, SHL, SHR,
+              ABS, SIGN, ODD, chaines par STRCAT et STRCMP (adresses des
+              descripteurs dans ESI et EDI) ; les routines _A68RT_ (POW,
+              RPOW, FLOOR, RTOI, RSIGN, DIVZERO, STRCAT, STRCMP) seront
+              fournies par le TODO 22
+            Verifie : les 27 exemples sont analyses sans erreur ; programme
+              d'essai de 28 formules assemble par ML et execute (valeurs lues
+              par le code de sortie) : + - * OVER MOD (reste positif, -7 MOD
+              3 = 2), OVER tronque (-7 OVER 2 = -3), ** avec un POW de
+              substitution, ABS, SIGN, - unaire, comparaisons, AND avec
+              priorite, NOT (clause fermee), ODD, reels (1.5 + 15 = 16.5, 15 /
+              5 = 3, 2 * 16.5 - 1 = 32), SHL, SHR, priorites (15 + 4 * 2 = 23,
+              (15 + 4) * 2 = 38, 2 + 3 * 4 = 14 replie) ; erreurs : division
+              par zero constante ou variable constante, BOOL + INT, REF
+              STRING * INT, debordement de constante
+
+  TODO 12 - CLAUSES CONDITIONNELLES ET REPETITIVES [IMPLEMENTE]
+            IF ... THEN ... ELIF ... ELSE ... FI avec valeur (INT a :=
+              IF TRUE THEN 42 ELSE 0 FI) et sans ELSE (valeur vide)
+            CASE ... IN u1, u2, u3 OUT autre ESAC avec selecteur INT,
+              OUSE enchaine, choix hors liste vers OUT ou SKIP
+            Formes abregees : (cond | alors | sinon) et
+              (indice | u1, u2 | defaut)
+            Mode du resultat : equilibrage des branches (INT et INT,
+              INT et REAL vers REAL, VOID si l'une est VOID)
+            Boucles : FOR i FROM a BY b TO c WHILE cond DO ... OD ; FROM
+              par defaut 1, BY par defaut 1, TO ou DOWNTO, BY negatif,
+              WHILE seul, boucle infinie sans TO ; variable de controle
+              INT locale a la boucle, bornes evaluees une fois
+            Boucles imbriquees, labels et GOTO de sortie
+            Verification : control.a68, test_cond.a68, test_loop.a68
+            Realise : section 10 ; ParseIfTail et ParseIf (IF, ELIF, ELSE,
+              FI, chaque partie dans sa portee, la condition et la partie
+              alors partageant la leur) ; ParseCaseTail et ParseCase (IN,
+              alternatives separees par des virgules, OUT, OUSE chaine,
+              ESAC ; une clause de conformite (INT i) : est laissee au
+              TODO 18) ; ParseBrief (formes ( c | a | b ) et ( s | u1, u2
+              | d ), |: pour la suite ; IF ou CASE d'apres le mode du
+              selecteur ou les virgules) ; ParseLoop (FOR, FROM, BY, TO,
+              DOWNTO, WHILE, DO, OD dans n'importe quel ordre pour FROM, BY
+              et TO, variable de controle INT locale, bornes evaluees dans
+              la portee exterieure) ; mode d'une clause : equilibre des
+              branches (VOID sans ELSE) ; CoerceUnit propage le mode demande
+              aux branches et aux alternatives, la condition devient BOOL, le
+              selecteur et les bornes INT, IF sans ELSE comme valeur est une
+              erreur ; GenIf, GenCase (comparaisons successives), GenLoop
+              (bornes et pas dans des cellules, test du signe du pas a la
+              compilation ou a l'execution, WHILE apres le test de borne) ;
+              GenSerialValue (valeur de la derniere unite) ; les mots de
+              boucle terminent une expression ; un nom de mode n'est plus
+              confondu avec un operateur monadique
+            Verifie : les 27 exemples sont analyses sans erreur ; 13 valeurs
+              de IF, ELIF, CASE, OUSE, formes abregees avec |: et IF dans
+              une formule sont correctes a l'execution (42, 99, 20, 20, 99,
+              42, 20, 99, 30, 7, 9, 6, 2 et 1.0 * 2 = 2 pour des branches
+              INT et REAL) ; 11 boucles : 1 a 10 (55), TO 5 (15), BY 2 (25),
+              DOWNTO (55), WHILE seul (5 tours), FOR avec WHILE (21), deux
+              boucles imbriquees (9), BY -1 (15), aucune iteration (0), BY
+              variable negative (25), boucle sans borne quittee par GOTO ;
+              erreurs : IF sans ELSE comme valeur, THEN, FI, OD manquants,
+              condition non booleenne, borne reelle, selecteur booleen
+
+  TODO 13 - STRUCTURES (STRUCT) [IMPLEMENTE]
+            MODE POINT = STRUCT(INT x, INT y) ; champs de modes
+              differents, alias de mode, structures emboitees
+            Disposition des champs (decalage de chaque champ, taille
+              totale alignee)
+            Constructeur POINT(3, 7) et initialisation d'une variable
+            Selection x OF p en lecture et en ecriture : x OF p := 5
+            Affectation d'une structure entiere (copie des octets)
+            Passage et retour de structures par les procedures
+            Verification : structs.a68, test_struct.a68
+            Realise : l'essentiel vient des TODOs 04, 08, 09 et 10 et est
+              verifie ici : modes STRUCT a champs groupes (INT a, b),
+              equivalence structurelle (deux structures de meme forme sont
+              le meme mode), decalages calcules par ModeFieldOffset (REAL
+              sur 8 octets, STRING sur 16, UNION sur 4 + la plus large,
+              structure emboitee en ligne), constructeur POINT(3, 7) dont
+              chaque valeur est coercee vers son champ (INT vers REAL, un
+              identificateur, une structure, une chaine, une union),
+              constructeurs imbriques, selection a plusieurs niveaux
+              (x OF tl OF r) et sur un constructeur (x OF POINT(40, 2)),
+              selection qui rend un nom (REF champ) quand l'operande en est
+              un, ce qui prepare x OF p := 5 du TODO 14, copie d'une
+              structure entiere par REP MOVSD pour une initialisation ou un
+              champ, mode recursif par REF (NODE avec NIL), message STRUCT
+              sans champ ; l'affectation de structures et x OF p := v
+              viennent avec le TODO 14, le passage et le retour par
+              procedure avec le TODO 16
+            Verifie : structs.a68 en entier (3, 7, 10, 20, 30, 99, l'aire
+              40 * 25 = 1000 soit 232 modulo 256, 100) ; programme d'essai
+              de 25 valeurs : rectangle de deux points (1, 40, 30), copie
+              d'un champ structure (30), identite (6), structure mixte
+              INT REAL STRING BOOL CHAR (7, 5 pour 2.5 double, longueur 2,
+              1, 90), liste chainee (9, NIL), structure contenant une
+              union (etiquette 2 puis 4), copie d'un rectangle (1, 40) ;
+              erreurs : champ inconnu, selection sur un INT, constructeur
+              avec un mauvais nombre ou un mauvais mode de valeur, STRUCT
+              vide, mode inconnu dans un champ, mode redeclare ; les
+              programmes d'essai sont conserves dans TESTS\AL68CW32\work
+
+  TODO 14 - REFERENCES ET AFFECTATIONS [IMPLEMENTE]
+            Mode REF m : adresse ; variable locale = identite d'un
+              REF m ; generateurs LOC (cadre de la clause) et HEAP
+              (tas Win32, appel du runtime)
+            Affectation := avec dereferencement automatique du membre de
+              droite ; affectation inversee =: ; affectations composees
+              +:= -:= *:= /:= (division entiere sur INT) %:=
+            Identite IS et ISNT sur des references ; NIL ; test
+              p IS NIL ; dereferencement d'un NIL detecte a l'execution
+            REF REF m : niveaux multiples de dereferencement
+            Valeur d'une affectation : la reference du membre de gauche
+            Verification : refs.a68, test_ref.a68, coerce.a68
+            Realise : section 10 ; MakeAssign (membre gauche en force douce :
+              un nom REF m, valeur coercee vers m en contexte fort, valeur
+              de l'affectation = le nom ; erreur si le membre gauche n'est
+              pas un nom, par exemple une identite) ; := et =: reconnus par
+              ParseUnitX, le membre droit etant lui-meme une unite (a := b
+              := c) ; MakeIdRel et UK_IDREL (IS, ISNT : deux noms REF de
+              meme mode ou NIL, operandes en force faible, comparaison des
+              adresses) ; affectations composees +:= -:= *:= /:= %:= %*:=
+              et PLUSAB MINUSAB TIMESAB DIVAB OVERAB MODAB traitees comme
+              operateurs du prelude (GenCompound : entiers en place, reels
+              par x87, / et % entiers avec controle du diviseur, STRING par
+              STRCAT) ; NIL comme primaire ; variables HEAP : la cellule
+              contient l'adresse de l'objet, allocation par _A68RT_ALLOC,
+              initialisation et lecture a travers le pointeur ; controle de
+              la reference nulle (_A68RT_NILREF) avant tout
+              dereferencement d'une reference lue en memoire et avant une
+              selection ; GenAssign (nom, valeur, rangement par MOV, FSTP
+              ou REP MOVSD) ; les corps de boucle et de conditionnelle sont
+              maintenant vraiment generes
+            Verifie : programme d'essai execute (cellules lues par le code
+              de sortie) : x := 42, 99 =: z, a IS b faux et a ISNT b vrai
+              pour deux variables de meme valeur, p IS NIL vrai, p := a puis
+              p IS a vrai et lecture a travers p (5 puis 77 apres
+              b := 77), HEAP INT initialise (31 puis 32) ou non (0),
+              +:= -:= *:= /:= %:= (15, 13, 39, 19, 4), %*:= (2), reels (7,
+              12, 3), n := m (100), w := q := 7, y1 OF pt := 9, copie d'une
+              structure (9), HEAP de structure (3), somme d'une boucle FOR
+              (55), IF avec affectations (1), WHILE (7) ; la lecture d'une
+              reference NIL appelle NILREF ; erreurs : affectation a une
+              constante, IS sur des modes differents ou sur un INT,
+              coercition impossible a droite, -:= sur un STRING avec un
+              CHAR ; refs.a68 est analyse entierement ; les boucles du
+              TODO 12 s'executent sans remplacer leurs corps
+            Reste : fait au TODO 22
+
+  TODO 15 - TABLEAUX, TRANCHES ET CHAINES [IMPLEMENTE]
+            Declaration [l:u] mode, [1:5] INT a := (10, 20, 30, 40, 50) ;
+              dimensions multiples, bornes dynamiques (expressions
+              evaluees a l'entree de la clause), tableau sans initialiseur
+            Descripteur : pointeur, borne inferieure, borne superieure,
+              pas ; reserve sur le tas (ou dans le cadre) et liberee a la
+              sortie de la clause pour LOC
+            Acces a[i] avec controle des bornes (runtime CHKIDX),
+              tranche a[l:u] (nouveau descripteur sans copie), LWB et UPB
+            Affichage de rangee (10, 20, 30) comme initialiseur
+            STRING = tableau flexible de CHAR : denotation, concatenation
+              +, tranche hello[1:5], comparaison, passage a print
+            Verification : arrays.a68, test_array.a68, test_runtime.a68
+            Realise : descripteur de 4 mots pour une dimension (adresse,
+              borne inf., borne sup., pas en octets) et 3 mots par
+              dimension supplementaire ; tableau statique (bornes
+              constantes, stockage reserve en donnees) ou dynamique (bornes
+              evaluees a l'entree, stockage par _A68RT_ALLOC) ; CHAR sur
+              un octet (MOVZX, ecriture d'octet), structures realignees ;
+              UK_DISPLAY (affichage) coerce vers un tableau ou une
+              structure, avec controle du nombre d'elements ; a[i] et
+              a[i, j] avec controle _A68RT_CHKIDX ; tranche a[l:u] en
+              nouveau descripteur sans copie ; LWB et UPB (forme
+              dyadique n UPB a) ; copie de tableau par blocs (REP MOVSD) avec
+              controle des dimensions (_A68RT_BOUNDS) ; identite
+              [] INT t = (...) ; STRING = rangee flexible de CHAR (16
+              octets), STRING e vide de bornes 1 et 0, h[2:4], h[5]
+            Verifie : programme d'essai execute (ar.a68) : a[1], a[3],
+              a[5] (10, 30, 50), LWB et UPB (1, 5), tableau sans valeur
+              initiale (0), b[2] := 7, somme FOR de tab[i] (30), tableau
+              dynamique [1:n] (9, 4), matrice m[2, 3] (55) et 2 UPB m (3),
+              bornes [0:4], copie c := a puis a[1] := 99 (c reste a 10),
+              identite [] INT (3, 7), tranches a[2:4] et a[2:4][2] (20,
+              30), STRING sub = h[2:4] (3, premier caractere 101), h[5]
+              (111), STRING vide (1, 0) ; erreur : affichage de 2 elements
+              pour un tableau de 3 ; les 27 exemples restent analyses ;
+              les essais des TODOs 8 a 14 donnent les memes valeurs
+            Limites : l'affectation d'une STRING partage les caracteres
+              (pas de copie) ; le stockage dynamique n'est pas libere
+              (pas de FREE) ; tranches et affichages a plusieurs
+              dimensions pas encore supportes ; les temporaires sont
+              statiques (revu au TODO 16)
+            Reste : (CHKIDX, BOUNDS, ALLOC : TODO 22) ; REP MOVSB, MOV
+              d'octet, ADD memoire,registre au codeur du TODO 20
+
+  TODO 16 - PROCEDURES (PROC) [IMPLEMENTE]
+            Declaration PROC double = (INT x) INT : x + x ; parametres
+              multiples, resultat VOID, corps = unite quelconque
+            Appels : f(a, b), imbriques (double(add(3, 4))), recursion
+              (factorial, fib) ; appel sans parametres noop()
+            Convention d'appel : arguments empiles de droite a gauche,
+              puis le lien statique, l'appelee nettoie la pile (RET n),
+              resultat dans EAX (REAL dans ST(0), structures par adresse
+              de retour)
+            Procedures imbriquees (acces aux variables des niveaux
+              englobants par chaine de liens statiques)
+            Procedures comme valeurs : variable PROC, paire (entree,
+              lien), appel indirect, deprocedurage (TODO 09)
+            Cadre de pile : prologue, variables locales initialisees a
+              zero, epilogue
+            Verification : procs.a68, test_proc.a68
+            Realise : texte de routine (UK_ROUTINE) ( parametres ) mode :
+              unite, aussi sous la forme mode : unite sans parametres ;
+              portee de procedure (SCK_PROC) contenant les parametres
+              (SK_PARAM, [EBP + decalage]) ; PROC nom = routine (UK_PROCDECL,
+              SK_PROC declare avant le corps pour la recursion) ; corps
+              coerce vers le mode du resultat ; appel f(a, b) et f()
+              (UK_CALL), arguments coerces vers les modes des parametres ;
+              pile a l'entree : [EBP+8] lien statique, [EBP+12] adresse du
+              resultat s'il est en memoire (structure, tableau, PROC), puis
+              les parametres, le premier a l'adresse la plus basse ;
+              appelee nettoie la pile (RET n) ; resultat dans EAX, ST(0) ou
+              recopie a l'adresse fournie ; corps ecrits a part (DeferTab) ;
+              prologue qui reserve le cadre (locales et temporaires, taille
+              connue a la fin du corps) et le met a zero ; acces aux objets
+              des cadres englobants par la chaine des liens statiques
+              (cadre voulu dans EBX) ; les objets du niveau 0 restent
+              statiques ; temporaires du generateur dans le cadre
+              ([EBP - n]) des qu'on est dans une procedure, donc surs pour
+              la recursion ; valeur de mode PROC = paire (entree, lien) de
+              8 octets : identificateur de procedure, routine anonyme,
+              variable ou parametre PROC, appel indirect CALL [paire] ;
+              deprocedurage d'un PROC sans parametre (CO_DEPROC)
+            Verifie : programmes d'essai executes (pt.a68, pt2.a68, cellules
+              lues par le code de sortie) : double, add, sub3 (42, 42, 50),
+              fact(5) = 120, fib(10) = 55, boucle FOR dans une procedure
+              (55), REAL en parametre et resultat (4.5 et 2.5), STRUCT en
+              parametre et resultat (swap, addp, mkchain recursif a
+              resultat structure), REF INT en parametre (inc), procedures
+              imbriquees sur trois niveaux avec acces aux variables
+              englobantes (27 et 111), PROC (INT) INT en identite, en
+              variable puis reaffectee (13, 24, 21), PROC en parametre
+              avec procedure declaree ou routine anonyme (7 et 82), tableau
+              en parametre (10), tableau local de taille dynamique (25),
+              STRING en parametre et resultat, recursion avec boucle et
+              temporaires (tri(3) = 14), PROC INT sans parametre appelee
+              avec et sans parentheses (5, 5), BOOL et CHAR (1 et 65),
+              variable globale lue et modifiee depuis une procedure (7 et
+              9) ; erreurs : nombre d'arguments, mode d'argument, parametre
+              en double, procedure en double, ':' manquant, routine
+              attendue apres '=' ; les 27 exemples restent analyses ; les
+              essais des TODOs 8 a 15 donnent les memes valeurs
+            Limites : une routine qui renvoie une procedure liee a son
+              propre cadre n'est pas sure (le cadre disparait) ; pas de
+              GOTO hors d'une procedure ; pas de procedures mutuellement
+              recursives (declaration avant usage) ; tableaux passes par
+              descripteur (les elements ne sont pas recopies)
+            Reste : le codeur du TODO 20 doit prendre en charge CALL
+              indirect par memoire, RET n, MOV ESP,EBP et SUB ESP
+
+  TODO 17 - DEFINITIONS D'OPERATEURS : OP ET PRIO [IMPLEMENTE]
+            OP ADDX = (INT a, INT b) INT : a + b + 1 ; operateur
+              dyadique utilisateur et monadique (OP DBL = (INT x) INT)
+            PRIO MYMUL = 5 : priorite de 1 a 9 declaree avant ou apres
+              l'operateur ; priorite par defaut pour un dyadique sans
+              PRIO (a signaler)
+            Surcharge : plusieurs definitions d'un meme symbole selon les
+              modes des operandes ; resolution dans la table du TODO 05
+            Operateurs composes dans une formule : (10 ADDX 5) MYMUL 2
+            Un operateur est une procedure appelee avec les memes
+              conventions (TODO 16), nom ASM _A68O_
+            Verification : ops.a68, test_op.a68
+            Realise : OP nom = texte de routine (ParseOpDecl, meme
+              analyse que PROC avec ParseRoutine, symbole SK_OP declare
+              avant le corps), nom bold ou symbole, un ou deux operandes
+              (sinon erreur), plusieurs definitions separees par des
+              virgules ; surcharge selon les modes des operandes
+              (DBL pour INT et pour REAL, + pour des STRUCT) et
+              redefinition d'un operateur du prelude dans une portee
+              interne ; identification par coercitions fermes comme pour
+              les operateurs du prelude ; PRIO avant ou apres l'OP ;
+              dyadique sans PRIO : priorite 1 par defaut, signalee avec
+              -w a la fin de l'analyse ; formule d'un operateur
+              utilisateur (GenOpCall) : appel direct de la routine, mots
+              de la pile et lien statique comme pour les procedures
+              (GenCallDirect), operateurs declares dans une procedure
+              inclus ; nom ASM _A68O_ nom _ indice
+            Verifie : test_op.a68 execute (31, 14, 12, -42, 2, 32, 42) ;
+              ot.a68 : priorites (1 ADDX 2 MYMUL 3 = 8, avec parentheses
+              12, 2 LATE 3 ADDX 1 = 25), surcharge INT et REAL (42 et
+              2,5), + de deux STRUCT (11 et 22), 3 + 4 intact (7),
+              monadique sur STRUCT (25), appel de PROC dans un OP (26), OP
+              dans une procedure avec acces a son parametre (22),
+              associativite a gauche (3 MAX2 9 MAX2 5 = 9), OP recursif
+              (120), OP rendant BOOL ; erreurs : trois operandes, OP en
+              double, routine attendue, operande de mauvais mode (monadique
+              et dyadique), nom d'operateur '=' ; les 27 exemples restent
+              analyses ; les essais des TODOs 8 a 16 donnent les memes
+              valeurs
+            Limites : pas de forme OP (modes) mode nom = ... ; un operateur
+              inconnu entre deux operandes reste une unite non analysee
+              sans erreur (jusqu'au TODO 23)
+
+  TODO 18 - MODES UNIS (UNION) ET CLAUSE DE CONFORMITE [IMPLEMENTE]
+            MODE NOMBRE = UNION(INT, REAL) ; alternatives distinctes ;
+              union a une alternative (UNION(INT)) ; union de trois modes
+            Representation : etiquette de mode puis valeur ; coercition
+              d'union d'une valeur INT, BOOL ou CHAR
+            EMPTY : union sans valeur
+            Clause de conformite :
+              CASE x IN (INT i) : unite, (REAL r) : unite OUT unite ESAC
+              avec liaison du nom i a la valeur extraite
+            Corps composes (BEGIN ... END) dans une alternative, OUT
+              facultatif, selection selon l'etiquette
+            Mode du resultat equilibre comme au TODO 12
+            Verification : union.a68, test_union.a68
+            Realise : les modes UNION, la coercition d'une valeur vers une
+              union (etiquette = indice du mode de l'alternative, 0 pour
+              EMPTY) et EMPTY existaient depuis les TODOs 4 et 9 ; ajout de
+              la coercition d'une union vers une union plus large (meme
+              etiquettes, recopie de l'objet) ; clause de conformite
+              CASE x IN (mode nom) : unite, ... OUT serie ESAC
+              (ParseConformity, UK_CONFORM et UK_CONFALT) : une portee
+              SCK_CONFORM par alternative ou le nom est lie (identite) a la
+              valeur extraite, nom facultatif ((INT) : unite), selecteur
+              deference jusqu'a l'union (variable ou valeur), corps
+              quelconques (BEGIN ... END, affectation, SKIP), OUT
+              facultatif ; mode du resultat equilibre comme pour CASE ;
+              controles : le selecteur est une UNION, chaque mode est une
+              alternative de l'union, unites coercees vers le mode demande ;
+              GenConform : comparaison de l'etiquette puis liaison du nom
+              (LoadThrough et StoreValue du mode de l'alternative,
+              structures comprises) ; fonctionne dans les procedures
+            Verifie : test_union.a68 (52, 99, 1) ; un.a68 : INT, REAL, BOOL
+              et CHAR dans des unions (14, 3,5, 30, 81), union vide qui
+              prend la branche OUT (99), union avec STRUCT (56), copie d'une
+              union (42), union vers union plus large (107), union en
+              parametre (11 et 50), union locale dans une procedure (12),
+              alternatives sans nom ; erreurs : mode qui n'est pas une
+              alternative, selecteur qui n'est pas une union, branche de
+              mode incorrect ; les 27 exemples restent analyses ; les
+              essais des TODOs 8 a 17 donnent les memes valeurs
+            Limites : pas de OUSE ni de forme abregee ( x | (INT i) : ... )
+              pour la conformite ; les alternatives sont comparees par
+              leur mode exact (pas de REF dans une alternative)
+
+  TODO 19 - TRANSPUT, CLAUSES COLLATERALES ET PARALLELES [IMPLEMENTE]
+            print((a, b, c)) : liste collaterale de valeurs de modes
+              differents ; chaque element appelle la routine du runtime
+              selon son mode : INT, REAL, BOOL, CHAR, STRING, newline,
+              space ; print(chaine) a un seul element sans parentheses
+              internes ; print((newline)) ; valeurs calculees
+              (x + y, nom + ver)
+            whole(n, largeur) : INT vers STRING (largeur 0 = minimale),
+              nombres negatifs
+            Lecture minimale read((x)) pour INT, REAL, CHAR, STRING si
+              utile (a documenter, entree standard)
+            Clause collaterale (u1, u2, u3) : evaluation de gauche a
+              droite, utilisee aussi pour les initialiseurs de rangees
+            PAR (u1, u2) et PAR BEGIN ... END : execution sequentielle
+              avec avertissement (pas de vrais processus)
+            Formats d'affichage a documenter : entier decimal, reel en
+              notation fixe, BOOL TRUE / FALSE ou true / false (a
+              trancher d'apres les exemples), fin de ligne CR LF
+            Verification : transput.a68, hello.a68, test_transput.a68,
+              test_collateral.a68
+            Realise : print((a, b, ...)) et print(a) (ParsePrintCall,
+              UK_PRINT) : chaque element est coerce en force ferme vers
+              INT, REAL, BOOL, CHAR, BITS ou STRING (erreur pour les autres
+              modes) et newline / space sont des marqueurs ; GenPrint
+              appelle une routine du runtime par element : WRITEINT (EAX),
+              WRITEREAL (ST(0)), WRITEBOOL, WRITECHAR, WRITESTR (EAX =
+              descripteur), NEWLINE, SPACE ; read((x, y)) et read(x) :
+              noms de mode INT, REAL, CHAR ou STRING, READINT, READREAL,
+              READCHAR, READSTR puis rangement a l'adresse du nom ;
+              whole(n, largeur) : WHOLE (EAX = n, ECX = largeur, rend le
+              descripteur d'une chaine nouvelle, largeur 0 = minimale,
+              remplissage a gauche par des espaces) ; procedures standard
+              sqrt, sin, cos, tan, arctan, ln, exp generees en ligne en
+              x87 ; clause collaterale (u1, u2) en contexte vide :
+              unites elaborees de gauche a droite ; PAR ( ... ) et PAR
+              BEGIN ... END : clause fermee ou collaterale elaboree
+              sequentiellement, avec avertissement (-w)
+            Formats retenus (a realiser au TODO 22) : entier en decimal
+              sans remplissage, signe - ; REAL en notation fixe, 6
+              decimales au plus, zeros finaux supprimes mais une decimale
+              au moins (4.5, 100.0, 0.666667) ; BOOL TRUE / FALSE ; CHAR
+              et STRING tels quels ; fin de ligne CR LF ; read ignore les
+              blancs avant un nombre, lit un caractere pour CHAR et le
+              reste de la ligne pour STRING (256 caracteres au plus)
+            Verifie : un runtime d'essai en assembleur (TESTS/AL68CW32/work,
+              stubs.py, rt_code.inc), assemble avec ML et execute avec le
+              chargeur PE, affiche pour hello.a68, transput.a68,
+              test_transput.a68 et test_collateral.a68 les textes attendus
+              (Hello, World!, TRUE, whole(-7,0) = -7, Algol 68, PAR: x=1
+              y=2...) ; pr2.a68 : reels (3.14159, -0.5, 100.0, 0.666667),
+              sqrt(16.0) = 4.0, arctan(1.0) * 4.0 = 3.141593, exp, ln, tan,
+              whole avec largeur (42 sur 6, -5 sur 3, 123456 sur 2),
+              (n := 1, x := 9.5), read de -42, 3.25, X et hello world ;
+              erreurs : print d'une structure, read d'une valeur, PAR sans
+              clause, element manquant ; les 27 exemples sont analyses
+              sans aucune unite non analysee ; les essais des TODOs 8 a 18
+              donnent les memes valeurs
+            Limites : print n'affiche ni tableaux ni structures ni unions ;
+              pas de formats (printf style), pas de fichiers ; read((x,
+              newline)) ignore newline ; PAR n'a pas de parallelisme ;
+              WRITEREAL est limite a 9.2E12 (voir TODO 22)
+
+  TODO 20 - ENCODEUR BINAIRE x86-32 [IMPLEMENTE]
+            Reprendre et adapter l'encodeur d'AL60CW32 : chaque
+              instruction du code interne en octets (MOV, MOVZX, LEA,
+              PUSH, POP, ADD, SUB, IMUL, IDIV, CDQ, NEG, NOT, AND, OR,
+              XOR, CMP, TEST, INC, DEC, SHL, SHR, SAR, SETcc, Jcc, JMP,
+              CALL, RET, REP MOVSD, REP STOSD et les instructions x87)
+            Operandes 8, 16 et 32 bits, ModRM / SIB / deplacement 8 ou 32
+              bits (cas [EBP], [ESP], [sym], [sym + index*echelle])
+            Tampons de code et de donnees ; table des etiquettes (code,
+              donnees, externe) ; relocations ABS32 et REL32
+            Sauts courts ou longs choisis par relaxation
+            Donnees : zeros, chaines avec 0 final, entiers, reels,
+              descripteurs et tables d'adresses avec relocations ;
+              imports = cibles d'appel non definies
+            Mode -d : <sortie>.lst, listing hexadecimal
+            Verification : decoder chaque instruction avec objdump
+              (TESTS\AL60CW32\chkenc.py) sur tous les exemples
+            Realise : section 12, reprise de l'encodeur d'AL60CW32 :
+              EncodeInstr (ModRM, SIB, deplacement 8 ou 32 bits, cas
+              [EBP], [ESP], [sym], [sym + index * echelle]), registres de
+              8, 16 et 32 bits, MOV (dont MOV d'octet et MOV memoire,
+              OFFSET), MOVZX, LEA, PUSH, POP, ALU (ADD OR AND SUB XOR CMP,
+              forme memoire,registre comprise), IMUL, IDIV, DIV, CDQ, NEG,
+              NOT, INC, DEC, TEST, SHL SHR SAR (par constante ou par CL),
+              SETcc, Jcc et JMP, CALL et JMP indirects par memoire, RET et
+              RET n, REP STOSD, REP MOVSD et REP MOVSB (nouveaux), x87
+              (formes memoire de 4 et 8 octets, FILD et FISTP de 2, 4 et
+              8 octets, formes ST(i), ST(0) et ST(0), ST(i) -- nouvelle --
+              et instructions sans operande) ; EncodeData (zeros,
+              chaines avec 0 final, entiers, reels, tables d'adresses avec
+              relocations ABS32) ; EncodeCode : sauts courts d'abord puis
+              agrandis tant qu'un deplacement deborde (relaxation),
+              etiquettes code et donnees, relocations REL32 vers les
+              cibles non definies, qui sont les imports (kernel32 et, tant
+              que le runtime n'est pas emis, les routines _A68RT_) ;
+              CheckFixups ; PhaseEncode affiche en -v la taille de .text et
+              de .data, les relocations et les imports et ecrit en -d le
+              listing hexadecimal <sortie>.lst ; BinCode, BinData, BinFix,
+              BinLbl et BinImport sont destines aux ecrivains du TODO 21
+            Verifie : TESTS/AL68CW32/chkenc.py decode avec objdump chaque
+              instruction du listing hexadecimal (octets, mnemonique,
+              operandes, cible des sauts et appels vers des etiquettes
+              locales) ; 91 programmes (les 27 exemples et les programmes
+              d'essai des TODOs 8 a 19) donnent 0 ecart ;
+              TESTS/AL68CW32/chkall.sh refait la verification des 27
+              exemples
+            Reste : faits aux TODOs 21 et 22 (les instructions du runtime
+              sont passees par chkenc avec les exemples)
+
+  TODO 21 - ECRIVAINS PE (.EXE) ET COFF (.OBJ) [IMPLEMENTE]
+            PE : en-tete MZ + souche DOS, signature PE, COFF File Header
+              (machine 386, 3 sections), Optional Header (magic $010B,
+              ImageBase $00400000, alignements 4096 / 512, console),
+              sections .text, .data et .idata (import de kernel32.dll :
+              descripteurs, ILT, IAT, noms avec indice), relocations
+              resolues a l'ecriture, point d'entree _A68P_Main
+            COFF (option -obj) : sections .text et .data avec
+              relocations DIR32 et REL32, table des symboles (sections
+              avec entree auxiliaire, point d'entree externe, externes
+              non definis), table des chaines
+            Un symbole du runtime non defini est une erreur ; tout autre
+              nom est importe de kernel32.dll
+            Option -obj : ne jamais produire de .EXE ; -obj -asm :
+              .OBJ et .ASM ; sans -obj : .EXE seulement
+            Verification : objdump -x / -p / -h -t -r ; un .OBJ lie avec
+              lld-link doit donner le meme comportement que l'.EXE direct
+              (TESTS\AL60CW32\runpe.c comme executeur de test)
+            Realise : section 13, reprise des ecrivains d'AL60CW32 :
+              WritePE (en-tete MZ avec souche DOS, signature PE, en-tete
+              COFF, en-tete optionnel PE32 de 224 octets, base 0x00400000,
+              alignements 4096 et 512, sous-systeme console, pile et tas
+              de 1 Mo reserves, 3 sections .text, .data, .idata ; une
+              souche JMP [IAT] par import ajoutee au code ; table
+              d'importation de kernel32.dll avec ILT, IAT et noms avec
+              indice ; relocations ABS32 et REL32 resolues a l'ecriture,
+              point d'entree _A68P_Main, pas de table de relocation) ;
+              WriteCOFF (en-tete, sections .text et .data avec leurs
+              relocations DIR32 et REL32, table des symboles : sections
+              avec entree auxiliaire, _A68P_Main externe defini, externes
+              non definis, table des chaines) ; PhaseWrite : .EXE seul par
+              defaut, .OBJ seul avec -obj, .ASM en plus avec -asm ; un
+              symbole _A68... non defini est une erreur fatale pour l'.EXE
+              ("routine du runtime absente", elle disparaitra avec le
+              runtime du TODO 22), mais reste un externe du .OBJ ; sur
+              erreur fatale les fichiers deja crees sont supprimes
+            Corrige au passage : une unite qui commence par une
+              parenthese et continue par un operateur ( (a + 1) /= 2 ) n'est
+              plus prise pour une clause fermee
+            Verifie : objdump -p / -h / -t / -r sur l'.EXE et le .OBJ
+              (en-tetes, import de kernel32.dll, sections, symboles,
+              relocations DIR32 et DISP32) ; TESTS/AL68CW32/chkpe.sh :
+              work/exec.a68, un programme sans runtime dont les WHILE ne
+              se terminent que si les resultats sont corrects (fact, fib,
+              STRUCT, OP, REAL, UNION, FOR), s'execute avec le code 0 sous
+              le chargeur PE, aussi bien en .EXE direct qu'en .OBJ lie avec
+              lld-link (bibliotheque d'import kernel32 construite avec
+              llvm-dlltool) ; avec un resultat faux le programme boucle
+              (arrete par timeout) ; les 27 exemples donnent un .OBJ
+              valide (chkall.sh, qui utilise maintenant -obj)
+            Reste : les routines _A68RT_ : faites au TODO 22
+
+  TODO 22 - RUNTIME ALGOL 68 POUR WIN32 [IMPLEMENTE]
+            Runtime ecrit en assembleur 80386, integre au compilateur
+              sous forme de texte et assemble par un mini-assembleur,
+              sans bibliotheque C ; seules les fonctions de kernel32.dll
+              sont importees (GetStdHandle, WriteFile, ReadFile,
+              ExitProcess, GetProcessHeap, HeapAlloc, HeapFree)
+            Emission des seules routines utilisees (fermeture
+              transitive des appels _A68RT_) ; le runtime figure dans le
+              listing .ASM qui devient autonome
+            Routines : WRITESTR, WRITEINT, WRITEREAL, WRITEBOOL,
+              WRITECHAR, NEWLINE, SPACE, WHOLE, STRCAT, STRCMP,
+              STRSLICE, POW, CHKIDX, DIVZERO, NILREF, ALLOC (tas, memoire
+              mise a zero), FREE, READINT, READREAL, READCHAR
+            Messages d'erreur d'execution (indice hors bornes, division
+              par zero, reference NIL) et code de sortie 1
+            Formats documentes : entier decimal, reel en notation fixe
+              (6 decimales au plus, zeros finaux supprimes), BOOL,
+              fin de ligne CR LF
+            Verification : exemples executes (chargeur PE de test),
+              programmes fautifs a l'execution
+            Realise : section 14 : RtText, 30 routines en assembleur
+              (lignes de 70 caracteres au plus) ; mini-assembleur
+              (RtAssembleLine : mnemoniques de OpName, operandes
+              registre, immediat, OFFSET, ST(i), [base + index * echelle
+              + depl], BYTE / WORD / DWORD / QWORD PTR, REP + instruction)
+              qui produit des instructions internes ; RtLink, appele par
+              PhaseCodegen apres le programme : marque les routines
+              appelees (CALL ou JMP vers _A68RT_...) puis, de proche en
+              proche, celles qu'elles appellent, et n'ajoute que celles-la
+              dans DeferTab avec leurs cellules de donnees _A68D_...
+              (RtData, creees a la demande) ; le listing .ASM est donc
+              autonome et l'encodeur, les ecrivains PE et COFF traitent le
+              runtime comme le reste ; seules GetStdHandle, WriteFile,
+              ReadFile, ExitProcess, GetProcessHeap et HeapAlloc sont
+              importees ; routines : PUT, FAIL, DIVZERO, NILREF, BOUNDS,
+              CHKIDX, ALLOC (HeapAlloc avec HEAP_ZERO_MEMORY), NEWLINE,
+              SPACE, WRITECHAR, WRITESTR, WRITEBOOL, DIGITS, WRITEINT,
+              WRITEREAL, WHOLE, GETC, SKIPWS, READCHAR, READINT, READREAL,
+              READSTR, STRCAT, STRCMP, POW, EXP2, RPOW, FLOOR, RTOI, RSIGN
+              (le contrat registre par registre est dans le commentaire de
+              la section) ; les erreurs d'execution (indice hors bornes,
+              tableaux de dimensions differentes, reference NIL, division
+              par zero, memoire insuffisante) ecrivent un message sur
+              l'erreur standard et terminent par le code de sortie 1 ;
+              pas de FREE : le tas n'est jamais libere
+            Formats : entier en decimal sans remplissage, signe - ; reel en
+              notation fixe, 6 decimales au plus, zeros finaux supprimes
+              mais une decimale au moins (4.5, 100.0, 0.000001), valeur
+              absolue inferieure a 9.2E12 ; BOOL TRUE / FALSE ; CHAR et
+              STRING tels quels ; fin de ligne CR LF ; read ignore les
+              blancs avant un nombre, lit un caractere pour CHAR et la
+              ligne (256 caracteres au plus) pour STRING
+            Corrige au passage : une clause fermee dont la valeur est une
+              denotation ( (-1) ) ne produisait aucun code quand elle servait
+              de valeur
+            Verifie : les 26 exemples terminant (test_closed boucle par
+              construction avec GOTO done) donnent des .EXE qui s'executent
+              sous le chargeur PE de test avec les sorties attendues (les
+              textes de procs.a68, math.a68, ops.a68, union.a68,
+              control.a68... sont ceux que les exemples decrivent) ; le
+              listing .ASM autonome assemble avec ML donne la meme sortie
+              que l'.EXE direct pour les 26 ; TESTS/AL68CW32/chkrt.sh :
+              work/rt1.a68 (reels, **, ENTIER, ROUND, SIGN, comparaisons
+              de chaines, whole avec largeur), work/pr2.a68 (lecture de
+              -42, 3.25, X et d'une ligne) et les quatre erreurs
+              d'execution (message, pas de sortie apres l'erreur, code 1) ;
+              chkall.sh (encodage) inclut maintenant le runtime
+            Reste : les messages d'erreur du compilateur (TODO 23), le
+              programme principal et les options (TODO 24), la validation
+              complete (TODO 25)
+
+  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [IMPLEMENTE]
+            Erreurs lexicales : caractere invalide, chaine ou
+              commentaire non ferme, entier hors limites
+            Erreurs syntaxiques : unite inattendue, END FI OD ESAC
+              manquant ou mal apparie, parenthese ou crochet non ferme,
+              point-virgule manquant
+            Erreurs de modes : coercition impossible, operateur sans
+              definition pour les modes des operandes, nombre ou modes
+              d'arguments incorrects, identificateur non declare,
+              doublon dans une meme portee, selection sur un mode qui
+              n'est pas une structure, indice sur un non-tableau,
+              clause de conformite incorrecte, division par zero
+              constante
+            Avertissements : PAR execute sequentiellement, PRIO absente,
+              etiquette inutilisee, conversions implicites, variable non
+              initialisee
+            Format "fichier(ligne,col) : erreur/avertissement : message"
+            Recuperation pour reporter plusieurs erreurs
+            Compteurs finaux, code de retour 1 si erreurs, aucun fichier
+              de sortie corrompu ou partiel (les fichiers crees sont
+              supprimes sur erreur fatale)
+            Exemples : programmes fautifs du script de test
+            Realise : la plupart des diagnostics existaient deja (lexeur,
+              parseur, modes) ; ajouts : toute unite que l'analyse ne
+              reconnait pas est maintenant une erreur au jeton ou elle
+              s'arrete ( INT x := 1 INT y := 2, 1 FOO 2, x(2),
+              print((1 +)) ) au lieu d'etre ignoree en silence ; erreur
+              lexicale "exposant incomplet" (1.5e) ; une seule erreur
+              par position (plus de cascade "END attendu" puis
+              "fermeture sans ouverture" au meme endroit) ; avertissements
+              (option -w) : variable scalaire sans initialiseur lue avant
+              sa premiere affectation dans l'ordre du texte (affectation,
+              +:= et autres, read, argument d'un parametre REF), conversion
+              implicite de INT en REAL, en plus de l'etiquette inutilisee,
+              de la PRIO absente et de PAR ; PhaseReport : "Compilation
+              echouee : n erreur(s), m avertissement(s)" ou, avec des
+              avertissements ou -v, "Compilation terminee : 0 erreur, m
+              avertissement(s)" ; apres une erreur seules les phases
+              d'analyse tournent : aucun .EXE, .OBJ ni .ASM n'est ecrit, et
+              les fichiers deja crees sont supprimes sur erreur fatale ou
+              apres 30 erreurs
+            Verifie : TESTS/AL68CW32/chkerr.sh : 44 programmes fautifs
+              (errors.txt : erreurs lexicales, syntaxiques et de modes,
+              avertissements) dont le premier diagnostic a la nature, la
+              position et le message attendus, code de retour 1 (0 pour les
+              avertissements), aucun fichier de sortie apres une erreur,
+              rapport final ; fuzz.py : 3 400 mutations des exemples (jeton
+              supprime, double, echange ou parasite) sans arret anormal ni
+              boucle ; les 27 exemples ne produisent aucune erreur
+            Limites : pas de recuperation fine apres une erreur de
+              declaration (les erreurs en cascade sont possibles) ; la
+              detection des variables non initialisees suit l'ordre du
+              texte, pas le flot d'execution
+
+  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [IMPLEMENTE]
+            Run : lexeur -> parseur -> modes et coercitions ->
+              generation -> runtime -> encodeur -> ecrivain (PE ou
+              COFF) -> .ASM optionnel -> rapport
+            Mode -v : phases, tailles .text et .data, relocations,
+              imports, fichiers produits
+            Mode -d : tokens, modes, table des symboles, arbre d'unites,
+              code interne et listing hexadecimal
+            Mode -w / -w+ : activer les avertissements ; -w- : les
+              desactiver
+            Verifier que l'absence de -asm ne cree jamais de .ASM, que
+              -obj ne cree jamais de .EXE, et que sans option on obtient
+              uniquement le .EXE
+            Realise : la ligne de commande (ParseArgs : source .a68 ou
+              .alg, extension ajoutee si absente, -o, -obj, -asm, -v, -d,
+              -w, -w+, -w-, -h, codes 0 / 1 / 2) et le pipeline (Run,
+              RunPhase) existaient depuis les TODOs 1 et 2 ; ce TODO les
+              verifie et les complete : -v affiche la banniere, chaque
+              phase, les nombres de lignes et de jetons, d'unites,
+              d'instructions et de donnees, les routines du runtime
+              emises, la taille de .text et de .data, les relocations, les
+              imports de kernel32.dll, les fichiers produits et le rapport
+              (la mention d'unites non analysees ne reste que s'il y en a) ;
+              -d affiche les modes, les jetons (avec un titre), les portees
+              de la table des symboles (avec un titre), l'arbre d'unites
+              avant et apres les coercitions, les donnees, le code interne
+              (runtime compris) et ecrit <sortie>.lst : listing
+              hexadecimal du code puis carte des donnees (decalage, nom)
+            Verifie : TESTS/AL68CW32/chkopt.sh : 17 combinaisons de
+              fichiers produits (defaut : .exe seul ; -asm ; -obj : jamais
+              de .exe ; -obj -asm ; -o avec et sans extension ; -d ; source
+              sans extension ou en .alg ; -v), -o vers le source ou vers un
+              .asm refuses, option inconnue (code 2), source introuvable
+              (code 1), sans argument (code 2), -h (code 0), -w, -w+ et -w-
+              et aucun fichier apres une erreur ; chkenc.py accepte
+              toujours les .lst (carte des donnees en commentaire)
+
+  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL68\* [IMPLEMENTE]
+            Compiler les 27 fichiers : arrays, coerce, control, hello,
+              math, ops, procs, refs, structs, test_array, test_closed,
+              test_collateral, test_cond, test_dataseg, test_decl,
+              test_formula, test_loop, test_op, test_primary, test_proc,
+              test_ref, test_runtime, test_struct, test_transput,
+              test_union, transput, union
+            Creer les sorties attendues (.exp) puis un script
+              TESTS\test_al68cw32.sh (modele : test_al60cw32.sh)
+              executant chaque .EXE via Wine ou le chargeur PE minimal
+              et comparant la sortie, a completer par des resultats
+              calcules a la main pour ne pas dependre uniquement du
+              compilateur
+            Tester les trois modes : .EXE (defaut), .OBJ (-obj) et
+              .ASM (-asm), verifier que -asm est optionnel
+            Controler l'encodage avec objdump, lier les .OBJ avec
+              lld-link, et verifier les erreurs avec des programmes
+              fautifs (message, code de retour, aucun fichier)
+            Cas speciaux : test_dataseg, test_decl, test_closed,
+              test_formula, test_cond, test_op, test_primary, test_proc,
+              test_struct et test_union sont des expressions et
+              declarations isolees (peu ou pas de sortie) qui doivent
+              produire un .EXE valide
+            Mettre a jour README.md (ligne AL68CW32.PAS), ajouter
+              DOC\TODO\AL68CW32.txt et BINLINUX\AL68CW32 (WIN32\
+              al68cw32.exe a produire sous Windows)
+            Realise : TESTS/AL68CW32/exp : 27 sorties attendues, ecrites a
+              la main d'apres les sources puis confrontees au compilateur
+              (14 exemples affichent du texte ; les 13 autres, sans sortie,
+              ont un fichier vide) ; TESTS/AL68CW32/vars : pour les 12
+              exemples de declarations et d'expressions isolees, les valeurs
+              finales de leurs variables calculees a la main
+              (test_formula : a = 15, c = 26, d = 3, 2 ** 8 = 256,
+              a SHL 2 = 40... ; test_loop : 55, 15, 25, 55, 5, 21, 9, 15 ;
+              test_cond, test_ref, test_union, etc.) et vars.py, qui
+              ajoute un print de ces variables a une copie de l'exemple ;
+              TESTS/test_al68cw32.sh (modele : test_al60cw32.sh) : compile
+              AL68CW32.PAS puis, pour chaque exemple, .EXE par defaut sans
+              .asm ni .obj, execution et comparaison a l'exp (Wine ou
+              chargeur PE minimal TESTS/AL60CW32/runpe.c), -asm, -obj,
+              -obj -asm, .obj lisible par objdump, .obj lie avec lld-link
+              qui doit donner la meme sortie, listing .ASM autonome,
+              encodage verifie par objdump (chkenc.py) ; puis les valeurs
+              des exemples sans sortie, chkerr.sh (44 programmes fautifs,
+              mutations), chkopt.sh (options), chkrt.sh (runtime) et
+              chkpe.sh (ecrivains) ; test_closed.a68 boucle par
+              construction et est execute sous un delai
+            Verifie : 260 controles reussis, 0 echec, 0 ignore (Linux
+              x86-64, chargeur PE minimal, objdump, lld-link) ; une exp
+              modifiee volontairement est bien detectee ; README.md (ligne
+              AL68CW32.PAS), DOC/TODO/AL68CW32.txt et BINLINUX/AL68CW32
+              (binaire Linux x86-64 statique) ajoutes ; WIN32\al68cw32.exe
+              reste a produire sous Windows
+            Limites connues du compilateur (voir les TODOs concernes) :
+              pas de FREE (le tas n'est jamais libere) ; STRING partagee
+              a l'affectation ; pas de tranches ni d'affichages de tableaux
+              a plusieurs dimensions ; print n'affiche ni tableaux, ni
+              structures, ni unions ; PAR sequentiel ; une routine ne doit
+              pas renvoyer une procedure liee a son propre cadre

@@ -1,0 +1,8 @@
+concat: Hello World
+2**10 = 1024
+3**3 = 27
+abc < abd: TRUE
+abc = abc: TRUE
+slice [1:5]: Hello
+x = 42
+y = -7

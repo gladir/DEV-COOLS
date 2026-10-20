@@ -24,8 +24,9 @@
   Compilateurs 32 bits de meme famille : AL58CW32.PAS et AL60CW32.PAS
     (encodeur x86-32, ecrivains PE et COFF, runtime Win32 integre avec
     mini-assembleur, gestion des erreurs, chargeur PE de test et script
-    de test a reprendre ou a adapter : DOC\TODO\AL60CW32.txt,
-    TESTS\test_al60cw32.sh, TESTS\AL60CW32\)
+    de test : DOC\TODO\AL60CW32.txt, TESTS\test_al60cw32.sh,
+    TESTS\AL60CW32\ ; ceux d'AL68CW32 : TESTS\test_al68cw32.sh et
+    TESTS\AL68CW32\)
   Modele PE/COFF 32 bits de reference : JOVCW32.PAS, BCPLCW32.PAS
 
   CONTRAINTE : AL68CW32.PAS n'a aucune dependance externe : aucune clause
@@ -34,15 +35,15 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 24 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 25 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
          affectations, tableaux, procedures, operateurs, unions,
          transput, encodeur x86-32, ecrivains PE et COFF, runtime,
-         erreurs et avertissements, programme principal et modes -v et -d)
-         ; TODO 25 a faire.
+         erreurs et avertissements, programme principal et modes -v et -d,
+         validation sur les 27 exemples : TESTS\test_al68cw32.sh).
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -1232,7 +1233,7 @@
               et aucun fichier apres une erreur ; chkenc.py accepte
               toujours les .lst (carte des donnees en commentaire)
 
-  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL68\* [A FAIRE]
+  TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL68\* [IMPLEMENTE]
             Compiler les 27 fichiers : arrays, coerce, control, hello,
               math, ops, procs, refs, structs, test_array, test_closed,
               test_collateral, test_cond, test_dataseg, test_decl,
@@ -1258,6 +1259,39 @@
             Mettre a jour README.md (ligne AL68CW32.PAS), ajouter
               DOC\TODO\AL68CW32.txt et BINLINUX\AL68CW32 (WIN32\
               al68cw32.exe a produire sous Windows)
+            Realise : TESTS/AL68CW32/exp : 27 sorties attendues, ecrites a
+              la main d'apres les sources puis confrontees au compilateur
+              (14 exemples affichent du texte ; les 13 autres, sans sortie,
+              ont un fichier vide) ; TESTS/AL68CW32/vars : pour les 12
+              exemples de declarations et d'expressions isolees, les valeurs
+              finales de leurs variables calculees a la main
+              (test_formula : a = 15, c = 26, d = 3, 2 ** 8 = 256,
+              a SHL 2 = 40... ; test_loop : 55, 15, 25, 55, 5, 21, 9, 15 ;
+              test_cond, test_ref, test_union, etc.) et vars.py, qui
+              ajoute un print de ces variables a une copie de l'exemple ;
+              TESTS/test_al68cw32.sh (modele : test_al60cw32.sh) : compile
+              AL68CW32.PAS puis, pour chaque exemple, .EXE par defaut sans
+              .asm ni .obj, execution et comparaison a l'exp (Wine ou
+              chargeur PE minimal TESTS/AL60CW32/runpe.c), -asm, -obj,
+              -obj -asm, .obj lisible par objdump, .obj lie avec lld-link
+              qui doit donner la meme sortie, listing .ASM autonome,
+              encodage verifie par objdump (chkenc.py) ; puis les valeurs
+              des exemples sans sortie, chkerr.sh (44 programmes fautifs,
+              mutations), chkopt.sh (options), chkrt.sh (runtime) et
+              chkpe.sh (ecrivains) ; test_closed.a68 boucle par
+              construction et est execute sous un delai
+            Verifie : 260 controles reussis, 0 echec, 0 ignore (Linux
+              x86-64, chargeur PE minimal, objdump, lld-link) ; une exp
+              modifiee volontairement est bien detectee ; README.md (ligne
+              AL68CW32.PAS), DOC/TODO/AL68CW32.txt et BINLINUX/AL68CW32
+              (binaire Linux x86-64 statique) ajoutes ; WIN32\al68cw32.exe
+              reste a produire sous Windows
+            Limites connues du compilateur (voir les TODOs concernes) :
+              pas de FREE (le tas n'est jamais libere) ; STRING partagee
+              a l'affectation ; pas de tranches ni d'affichages de tableaux
+              a plusieurs dimensions ; print n'affiche ni tableaux, ni
+              structures, ni unions ; PAR sequentiel ; une routine ne doit
+              pas renvoyer une procedure liee a son propre cadre
   ============================================================ *)
 
 Program AL68CW32;

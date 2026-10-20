@@ -1,0 +1,5 @@
+conformite INT: result = 43
+wrapped: 99
+polyval INT: 55
+polyval BOOL: 1
+compose: result = 52
