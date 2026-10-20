@@ -24,7 +24,7 @@
   Usage : python3 [option] ... [-c cmd | -m mod | file | -] [arg] ...
   Voir  : python3 --help
 
-  Compilation : fpc -Mtp PYTHON3.PAS -o./BINLINUX/PYTHON3
+  Compilation : fpc -Mobjfpc PYTHON3.PAS -o./BINLINUX/PYTHON3
   ============================================================ *)
 
 Program PYTHON3;
@@ -50,8 +50,228 @@ Program PYTHON3;
 {$WARN 3123 OFF}
 
 Uses
- SysUtils, Classes, StrUtils, DateUtils, Math {$IFDEF UNIX}, BaseUnix, Unix,
+ SysUtils, Classes, StrUtils, DateUtils {$IFDEF UNIX}, BaseUnix, Unix,
    Termio{$ENDIF};
+
+{ ------------------------------------------------------------
+  Fonctions mathematiques internes (remplacent l'unite Math)
+  ------------------------------------------------------------ }
+Var
+ InfBits: QWord = $7FF0000000000000;
+ Infinity: Double absolute InfBits;
+
+Function DblBits(d: Double): QWord; Inline;
+Var
+ b: QWord absolute d;
+Begin
+ Result := b;
+End;
+
+Function BitsDbl(q: QWord): Double; Inline;
+Var
+ d: Double absolute q;
+Begin
+ Result := d;
+End;
+
+Function IsNan(d: Double): Boolean;
+Var
+ q: QWord;
+Begin
+ q := DblBits(d);
+ Result := ((q shr 52) and $7FF = $7FF) And ((q and $FFFFFFFFFFFFF) <> 0);
+End;
+
+Function IsInfinite(d: Double): Boolean;
+Var
+ q: QWord;
+Begin
+ q := DblBits(d);
+ Result := (q and $7FFFFFFFFFFFFFFF) = $7FF0000000000000;
+End;
+
+Function Min(a, b: Integer): Integer;
+Begin
+ If a < b Then Result := a Else Result := b;
+End;
+
+Function Max(a, b: Integer): Integer;
+Begin
+ If a > b Then Result := a Else Result := b;
+End;
+
+Function IfThen(c: Boolean; a, b: Int64): Int64; Overload;
+Begin
+ If c Then Result := a Else Result := b;
+End;
+
+{ plafond exact (resultat flottant) }
+Function Ceil(x: Double): Double;
+Begin
+ Result := Int(x);
+ If (x > 0) And (Result <> x) Then Result := Result + 1;
+End;
+
+{ plancher exact (resultat flottant : pas de depassement d'entier) }
+Function Floor(x: Double): Double;
+Begin
+ Result := Int(x);
+ If (x < 0) And (Result <> x) Then Result := Result - 1;
+End;
+
+Function Log10(x: Double): Double;
+Begin
+ Result := Ln(x) * (1 / Ln(10));
+End;
+
+Function IntPower(base: Extended; ex: Integer): Extended;
+Var
+ i: Integer;
+Begin
+ If ex < 0 Then Begin
+  base := 1 / base;
+  ex := -ex;
+ End;
+ Result := 1;
+ i := ex;
+ While i > 0 Do Begin
+  If Odd(i) Then Result := Result * base;
+  base := base * base;
+  i := i shr 1;
+ End;
+End;
+
+Function Power(base, ex: Double): Double;
+Begin
+ If ex = 0 Then Result := 1
+ Else If (base = 0) And (ex > 0) Then Result := 0
+ Else If (Abs(ex) <= MaxInt) And (Frac(ex) = 0) Then
+  Result := IntPower(base, Trunc(ex))
+ Else Result := Exp(ex * Ln(base));
+End;
+
+{ x * 2^p sans depassement intermediaire }
+Function Pow2(n: Integer): Double; Inline;
+Begin
+ Result := BitsDbl(QWord(n + 1023) shl 52);
+End;
+
+Function Ldexp(x: Double; p: Integer): Double;
+Begin
+ Result := x;
+ If p > 1023 Then Begin
+  Result := Result * Pow2(1023);
+  p := p - 1023;
+  If p > 1023 Then Begin
+   Result := Result * Pow2(1023);
+   p := p - 1023;
+   If p > 1023 Then p := 1023;
+  End;
+ End
+ Else If p < -1022 Then Begin
+  Result := Result * (Pow2(-1022) * Pow2(53));
+  p := p + 1022 - 53;
+  If p < -1022 Then Begin
+   Result := Result * (Pow2(-1022) * Pow2(53));
+   p := p + 1022 - 53;
+   If p < -1022 Then p := -1022;
+  End;
+ End;
+ Result := Result * Pow2(p);
+End;
+
+Procedure Frexp(x: Double; Out mant: Double; Out ex: Integer);
+Var
+ q: QWord;
+ e: Integer;
+Begin
+ q := DblBits(x);
+ e := Integer((q shr 52) and $7FF);
+ If (x = 0) Or (e = $7FF) Then Begin
+  mant := x;
+  ex := 0;
+  Exit;
+ End;
+ If e = 0 Then Begin
+  { sous-normal : normaliser d'abord }
+  x := x * Pow2(54);
+  q := DblBits(x);
+  e := Integer((q shr 52) and $7FF) - 54;
+ End;
+ ex := e - 1022;
+ q := (q and $800FFFFFFFFFFFFF) or (QWord(1022) shl 52);
+ mant := BitsDbl(q);
+End;
+
+{ reste exact de x / y (signe de x), comme fmod de la libm }
+Function FMod(x, y: Double): Double;
+Var
+ ux, uy, sx, mx, my: QWord;
+ ex, ey: Integer;
+Begin
+ ux := DblBits(x);
+ uy := DblBits(y);
+ sx := ux and $8000000000000000;
+ ex := Integer((ux shr 52) and $7FF);
+ ey := Integer((uy shr 52) and $7FF);
+ If (y = 0) Or (ex = $7FF) Or IsNan(y) Then Begin
+  Result := BitsDbl($7FF8000000000000);
+  Exit;
+ End;
+ If Abs(x) < Abs(y) Then Begin
+  Result := x;
+  Exit;
+ End;
+ If Abs(x) = Abs(y) Then Begin
+  Result := BitsDbl(sx);
+  Exit;
+ End;
+ mx := ux and $FFFFFFFFFFFFF;
+ my := uy and $FFFFFFFFFFFFF;
+ If ex = 0 Then Begin
+  ex := 1;
+  While (mx shr 52) = 0 Do Begin
+   mx := mx shl 1;
+   Dec(ex);
+  End;
+  { mx normalise : bit 52 positionne }
+ End
+ Else mx := mx or (QWord(1) shl 52);
+ If ey = 0 Then Begin
+  ey := 1;
+  While (my shr 52) = 0 Do Begin
+   my := my shl 1;
+   Dec(ey);
+  End;
+ End
+ Else my := my or (QWord(1) shl 52);
+ While ex > ey Do Begin
+  If mx >= my Then Begin
+   mx := mx - my;
+   If mx = 0 Then Begin
+    Result := BitsDbl(sx);
+    Exit;
+   End;
+  End;
+  mx := mx shl 1;
+  Dec(ex);
+ End;
+ If mx >= my Then Begin
+  mx := mx - my;
+  If mx = 0 Then Begin
+   Result := BitsDbl(sx);
+   Exit;
+  End;
+ End;
+ While (mx shr 52) = 0 Do Begin
+  mx := mx shl 1;
+  Dec(ex);
+ End;
+ If ex > 0 Then
+  mx := (mx - (QWord(1) shl 52)) or (QWord(ex) shl 52)
+ Else mx := mx shr (1 - ex);
+ Result := BitsDbl(mx or sx);
+End;
 
 Const
  PY_MAJOR = 3;
@@ -9459,7 +9679,7 @@ Begin
   E := 0;
   Exit;
  End;
- E := Floor(Log10(Abs(d)));
+ E := Trunc(Floor(Log10(Abs(d))));
  guard := 0;
  Repeat
   t := DblDigits(d, p - E);
@@ -17666,7 +17886,7 @@ Const
  P = QWord($1FFFFFFFFFFFFFFF);
 Var
  m: Double;
- mx: Extended;
+ mx: Double;
  e, ee: Integer;
  x, y: QWord;
  neg: Boolean;
@@ -32807,7 +33027,7 @@ End;
 Function MFrexp(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  x: Double;
- m: Extended;
+ m: Double;
  e: Integer;
 Begin
  x := MathArg(a, 0, n, 'frexp');
@@ -39963,7 +40183,12 @@ Var
  stackSize: PtrUInt;
  m: TPyModule;
 Begin
+ {$IFDEF CPUX86_64}
+ Set8087CW(Get8087CW or $3F);
+ SetMXCSR(GetMXCSR or $1F80);
+ {$ELSE}
  SetExceptionMask([Low(TFPUException)..High(TFPUException)]);
+ {$ENDIF}
  GcInit := True;
  GcEnabled := True;
  GcThreshold := 300000;
