@@ -277,6 +277,7 @@ Type
   nameObjs: Array Of TPyStr;
   varnames, freevars, cellvars: Array Of AnsiString;
   filename, name: AnsiString;
+  fnameObj, cnameObj: TPyStr;
   firstline: Integer;
   lnotab: AnsiString;
   source: TStrArr;
@@ -373,6 +374,7 @@ Type
   readable, writable, appendm, dirty, closed, binary: Boolean;
   mem: Boolean;
   std: Integer;          { 0 fichier, 1 stdin, 2 stdout, 3 stderr }
+  bufObj: TPyFile;
   Procedure MarkKids; Override;
  End;
 
@@ -477,6 +479,7 @@ Procedure LoadBytesImpl; Forward;
 Function ViewToSet(Const v: TVal): TVal; Forward;
 Function CxPow(ar, ai, br, bi: Double; Var rr, ri: Double): Boolean; Forward;
 Procedure EnsureCodeSource(c: TPyCode); Forward;
+Function TbSrcLine(Const codeV: TVal; ln: Integer): AnsiString; Forward;
 Function ReprVal(Const v: TVal): AnsiString; Forward;
 Function StrVal(Const v: TVal): AnsiString; Forward;
 Procedure RaiseExc(c: TPyType; Const msg: AnsiString); Forward;
@@ -772,6 +775,7 @@ End;
 Procedure TPyFile.MarkKids;
 Begin
  Inherited MarkKids;
+ If bufObj <> Nil Then MarkObj(bufObj);
 End;
 
 Constructor EPyError.Make(e: TPyObj);
@@ -2762,6 +2766,12 @@ Begin
  t := fs.typ;
  If t In ['e', 'E', 'f', 'F', 'g', 'G', '%'] Then Begin
   Result := '';
+  Exit;
+ End;
+ If (v.k <> vkObj) And (v.i <> Low(Int64)) And (t In [#0, 'd', 'n']) Then Begin
+  neg := v.i < 0;
+  If neg Then digs := IntToStr(-v.i) Else digs := IntToStr(v.i);
+  Result := AssembleNum(neg, '', digs, '', fs, '>');
   Exit;
  End;
  IntToMag(v, neg, m);
@@ -8305,7 +8315,7 @@ Var
  p: Integer;
  perturb: QWord;
 Begin
- If newcap < 8 Then newcap := 8;
+ If newcap < 4 Then newcap := 4;
  SetLength(ne, newcap);
  j := 0;
  For i := 0 To nent - 1 Do
@@ -10083,6 +10093,14 @@ Begin
     HexAddr(o) + '>'
  Else If o Is TPyCell Then
   Result := '<cell at ' + HexAddr(o) + '>'
+ Else If (o Is TPyFile) And TPyFile(o).binary And (TPyFile(o).std <> 0) Then
+   Begin
+  Case TPyFile(o).std Of
+   1: Result := '<_io.BufferedReader name=''<stdin>''>';
+   2: Result := '<_io.BufferedWriter name=''<stdout>''>';
+  Else Result := '<_io.BufferedWriter name=''<stderr>''>';
+  End;
+ End
  Else If o Is TPyFile Then Begin
   If TPyFile(o).std = 1 Then Result :=
     '<_io.TextIOWrapper name=''<stdin>'' mode=''r'' encoding=''utf-8''>'
@@ -12298,7 +12316,8 @@ Begin
   t.idict.SetS('tb_lineno', TPyTuple(e.o).items[1]);
   t.idict.SetS('tb_lasti', VInt(0));
   t.idict.SetS('tb_next', nxt);
-  t.idict.SetS('_line', TPyTuple(e.o).items[3]);
+  t.idict.SetS('_line', VStr(TbSrcLine(TPyTuple(e.o).items[3],
+   TPyTuple(e.o).items[1].i)));
   nxt := VObj(t);
  End;
  Result := nxt;
@@ -12571,6 +12590,23 @@ Begin
    If attr = 'encoding' Then Begin res := VStr('utf-8'); Exit; End;
    If attr = 'errors' Then Begin res := VStr('strict'); Exit; End;
    If attr = 'newlines' Then Begin res := vNone; Exit; End;
+   If (attr = 'line_buffering') Or (attr = 'write_through') Then Begin
+    res := vFalse;
+    Exit;
+   End;
+   If (attr = 'buffer') And (std <> 0) And Not binary Then Begin
+    If bufObj = Nil Then Begin
+     bufObj := TPyFile.Create(cls);
+     bufObj.std := std;
+     bufObj.binary := True;
+     bufObj.mode := mode + 'b';
+     bufObj.readable := readable;
+     bufObj.writable := writable;
+     bufObj.closed := False;
+    End;
+    res := VObj(bufObj);
+    Exit;
+   End;
   End;
  End;
  If TypeIsSub(ob.cls, exBaseException) Then Begin
@@ -13685,13 +13721,23 @@ End;
 { ------------------------------------------------------------
   Chaine d'exception : traceback
   ------------------------------------------------------------ }
+Function TbSrcLine(Const codeV: TVal; ln: Integer): AnsiString;
+Var
+ code: TPyCode;
+Begin
+ Result := '';
+ If (codeV.k <> vkObj) Or Not (codeV.o Is TPyCode) Then Exit;
+ code := TPyCode(codeV.o);
+ EnsureCodeSource(code);
+ If (ln >= 1) And (ln <= Length(code.source)) Then
+  Result := Trim(code.source[ln - 1]);
+End;
+
 Procedure AddTraceback(exc: TPyObj; f: TFrame);
 Var
  tb: TVal;
  l: TPyList;
- ln: Integer;
  e: TPyTuple;
- src: AnsiString;
 Begin
  If exc.idict = Nil Then exc.idict := TPyDict.Make;
  If Not exc.idict.GetS('__tb__', tb) Then Begin
@@ -13699,16 +13745,15 @@ Begin
   exc.idict.SetS('__tb__', tb);
  End;
  l := TPyList(tb.o);
- ln := LineForFrame(f);
- src := '';
- EnsureCodeSource(f.code);
- If (ln >= 1) And (ln <= Length(f.code.source)) Then
-  src := Trim(f.code.source[ln - 1]);
+ If f.code.fnameObj = Nil Then Begin
+  f.code.fnameObj := InternStr(f.code.filename);
+  f.code.cnameObj := InternStr(f.code.name);
+ End;
  e := NewTuple(5);
- e.items[0] := VStr(f.code.filename);
- e.items[1] := VInt(ln);
- e.items[2] := VStr(f.code.name);
- e.items[3] := VStr(src);
+ e.items[0] := VObj(f.code.fnameObj);
+ e.items[1] := VInt(LineForFrame(f));
+ e.items[2] := VObj(f.code.cnameObj);
+ e.items[3] := VObj(f.code);
  e.items[4] := VObj(f.globals);
  l.Add(VObj(e));
 End;
@@ -15721,6 +15766,24 @@ Begin
 End;
 
 { ---- exceptions ---- }
+Function ErrnoClass(e: Integer): TPyType;
+Begin
+ Case e Of
+  1, 13: Result := exPermissionError;
+  2: Result := exFileNotFound;
+  3: Result := exProcessLookup;
+  4: Result := exInterrupted;
+  10: Result := exChildProcess;
+  11, 114, 115: Result := exBlockingIOError;
+  17: Result := exFileExists;
+  20: Result := exNotADirectory;
+  21: Result := exIsADirectory;
+  32, 108: Result := exBrokenPipe;
+  110: Result := exTimeoutError;
+ Else Result := exOSError;
+ End;
+End;
+
 Function ExcNew(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  t: TPyType;
@@ -15729,6 +15792,8 @@ Var
  i: Integer;
 Begin
  t := TPyType(a[0].o);
+ If (t = exOSError) And (n >= 3) And (n <= 6) And (a[1].k = vkInt) Then
+  t := ErrnoClass(a[1].i);
  o := TPyObj.Create(t);
  o.idict := TPyDict.Make;
  tup := NewTuple(n - 1);
@@ -15789,28 +15854,43 @@ Begin
 End;
 
 Function OSErrInit(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ tup: TPyTuple;
 Begin
  ExcInit(a, n, kw);
  a[0].o.idict.SetS('errno', vNone);
  a[0].o.idict.SetS('strerror', vNone);
  a[0].o.idict.SetS('filename', vNone);
- If n > 2 Then Begin
+ a[0].o.idict.SetS('filename2', vNone);
+ If (n >= 3) And (n <= 6) Then Begin
   a[0].o.idict.SetS('errno', a[1]);
   a[0].o.idict.SetS('strerror', a[2]);
   If n > 3 Then a[0].o.idict.SetS('filename', a[3]);
+  If n > 5 Then a[0].o.idict.SetS('filename2', a[5]);
+  If n > 3 Then Begin
+   tup := NewTuple(2);
+   tup.items[0] := a[1];
+   tup.items[1] := a[2];
+   a[0].o.idict.SetS('args', VObj(tup));
+  End;
  End;
  Result := vNone;
 End;
 
 Function OSErrStr(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- e, s, fn: TVal;
+ e, s, fn, fn2: TVal;
 Begin
  If a[0].o.idict.GetS('errno', e) And (e.k <> vkNone) Then Begin
   a[0].o.idict.GetS('strerror', s);
-  If a[0].o.idict.GetS('filename', fn) And (fn.k <> vkNone) Then
-   Result := VStr('[Errno ' + StrVal(e) + '] ' + StrVal(s) + ': ' +
-    ReprVal(fn))
+  If a[0].o.idict.GetS('filename', fn) And (fn.k <> vkNone) Then Begin
+   If a[0].o.idict.GetS('filename2', fn2) And (fn2.k <> vkNone) Then
+    Result := VStr('[Errno ' + StrVal(e) + '] ' + StrVal(s) + ': ' +
+     ReprVal(fn) + ' -> ' + ReprVal(fn2))
+   Else
+    Result := VStr('[Errno ' + StrVal(e) + '] ' + StrVal(s) + ': ' +
+     ReprVal(fn));
+  End
   Else Result := VStr('[Errno ' + StrVal(e) + '] ' + StrVal(s));
  End
  Else Result := VStr(ExcArgsStr(a[0].o));
@@ -16226,8 +16306,8 @@ Begin
    ent := TPyTuple(l.items[i].o);
    s := s + '  File "' + StrVal(ent.items[0]) + '", line ' +
     StrVal(ent.items[1]) + ', in ' + StrVal(ent.items[2]) + #10;
-   If StrVal(ent.items[3]) <> '' Then
-    s := s + '    ' + StrVal(ent.items[3]) + #10;
+   If TbSrcLine(ent.items[3], ent.items[1].i) <> '' Then
+    s := s + '    ' + TbSrcLine(ent.items[3], ent.items[1].i) + #10;
   End;
  End;
  If TypeIsSub(e.cls, exSyntaxError) Then s := s + SyntaxErrDisplay(e) + #10
@@ -21456,6 +21536,9 @@ End;
 Function BytesFromStr(Const v: TVal): AnsiString;
 Begin
  If (v.k = vkObj) And (v.o Is TPyBytes) Then Result := TPyBytes(v.o).s
+ Else If (v.k = vkObj) And v.o.cls.userdef And HasAttr(v, 'tobytes') And
+  HasAttr(v, 'nbytes') Then
+  Result := TPyBytes(Call0(GetAttr(v, 'tobytes')).o).s
  Else Begin
   TypeErr('a bytes-like object is required, not ''' + TypeName(v) + '''');
   Result := '';
@@ -24820,24 +24903,6 @@ Type
  End;
 {$ENDIF}
 
-Function ErrnoClass(e: Integer): TPyType;
-Begin
- Case e Of
-  1, 13: Result := exPermissionError;
-  2: Result := exFileNotFound;
-  3: Result := exProcessLookup;
-  4: Result := exInterrupted;
-  10: Result := exChildProcess;
-  11, 114, 115: Result := exBlockingIOError;
-  17: Result := exFileExists;
-  20: Result := exNotADirectory;
-  21: Result := exIsADirectory;
-  32, 108: Result := exBrokenPipe;
-  110: Result := exTimeoutError;
- Else Result := exOSError;
- End;
-End;
-
 Function ErrnoMsg(e: Integer): AnsiString;
 Begin
  {$IFDEF UNIX}
@@ -25053,9 +25118,7 @@ Var
  fd: Int64;
 Begin
  fd := ToInt64(a[0]);
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyBytes)) Then
-  TypeErr('a bytes-like object is required, not ''' + TypeName(a[1]) + '''');
- s := TPyBytes(a[1].o).s;
+ s := BytesFromStr(a[1]);
  If (fd = 1) Or (fd = 2) Then OutFlush;
  If Length(s) = 0 Then Begin
   Result := VInt(0);
@@ -25944,6 +26007,199 @@ Begin
  DefFunc(d, 'sync', @PxSync);
  DefFunc(d, 'device_encoding', @PxDeviceEncoding);
  DefFunc(d, 'fspath', @PxFspath);
+End;
+{ ------------------------------------------------------------
+  Modules _posixsubprocess et select
+  ------------------------------------------------------------ }
+Function BytesOrStrArg(Const v: TVal): AnsiString;
+Begin
+ If (v.k = vkObj) And (v.o Is TPyBytes) Then Result := TPyBytes(v.o).s
+ Else Result := FsPath(v);
+End;
+
+Procedure ChildFail(errfd: Integer; Const what: AnsiString; e: Integer;
+ noexec: Boolean = True);
+Var
+ s: AnsiString;
+Begin
+ s := what + ':' + LowerCase(IntToHex(e, 1)) + ':';
+ If noexec Then s := s + 'noexec';
+ FpWrite(errfd, @s[1], Length(s));
+ FpExit(255);
+End;
+
+Function FEFork(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ args, exes, keep, envl: TValArr;
+ sa, se, sx: Array Of AnsiString;
+ pa, pe: Array Of PChar;
+ i, j: Integer;
+ closeFds, hasEnv, setsid, keepIt: Boolean;
+ cwd: AnsiString;
+ hasCwd: Boolean;
+ p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite, errpr, errpw: LongInt;
+ pid: LongInt;
+ e, firstErr: Integer;
+ fd: LongInt;
+ preexec: TVal;
+Begin
+ args := IterToArr(a[0]);
+ exes := IterToArr(a[1]);
+ closeFds := IsTrue(a[2]);
+ keep := IterToArr(a[3]);
+ hasCwd := a[4].k <> vkNone;
+ If hasCwd Then cwd := BytesOrStrArg(a[4]);
+ hasEnv := a[5].k <> vkNone;
+ p2cread := ToInt64(a[6]);
+ p2cwrite := ToInt64(a[7]);
+ c2pread := ToInt64(a[8]);
+ c2pwrite := ToInt64(a[9]);
+ errread := ToInt64(a[10]);
+ errwrite := ToInt64(a[11]);
+ errpr := ToInt64(a[12]);
+ errpw := ToInt64(a[13]);
+ setsid := IsTrue(a[15]);
+ preexec := a[16];
+ SetLength(sa, Length(args));
+ SetLength(pa, Length(args) + 1);
+ For i := 0 To High(args) Do Begin
+  sa[i] := BytesOrStrArg(args[i]);
+  pa[i] := PChar(sa[i]);
+ End;
+ pa[Length(args)] := Nil;
+ SetLength(sx, Length(exes));
+ For i := 0 To High(exes) Do sx[i] := BytesOrStrArg(exes[i]);
+ If hasEnv Then Begin
+  envl := IterToArr(a[5]);
+  SetLength(se, Length(envl));
+  SetLength(pe, Length(envl) + 1);
+  For i := 0 To High(envl) Do Begin
+   se[i] := BytesOrStrArg(envl[i]);
+   pe[i] := PChar(se[i]);
+  End;
+  pe[Length(envl)] := Nil;
+ End;
+ FlushTracked;
+ FlushAllFiles;
+ OutFlush;
+ pid := FpFork;
+ If pid < 0 Then RaiseErrnoN(fpgeterrno);
+ If pid > 0 Then Begin
+  Result := VInt(pid);
+  Exit;
+ End;
+ { ---- enfant ---- }
+ If p2cwrite <> -1 Then FpClose(p2cwrite);
+ If c2pread <> -1 Then FpClose(c2pread);
+ If errread <> -1 Then FpClose(errread);
+ FpClose(errpr);
+ If c2pwrite = 0 Then Begin
+  c2pwrite := FpDup(c2pwrite);
+ End;
+ While (errwrite = 0) Or (errwrite = 1) Do errwrite := FpDup(errwrite);
+ If p2cread = 0 Then FpFcntl(0, 2, 0)
+ Else If p2cread <> -1 Then FpDup2(p2cread, 0);
+ If c2pwrite = 1 Then FpFcntl(1, 2, 0)
+ Else If c2pwrite <> -1 Then FpDup2(c2pwrite, 1);
+ If errwrite = 2 Then FpFcntl(2, 2, 0)
+ Else If errwrite <> -1 Then FpDup2(errwrite, 2);
+ If (p2cread > 2) Then FpClose(p2cread);
+ If (c2pwrite > 2) Then FpClose(c2pwrite);
+ If (errwrite > 2) And (errwrite <> c2pwrite) Then FpClose(errwrite);
+ If hasCwd Then
+  If FpChdir(PChar(cwd)) <> 0 Then ChildFail(errpw, 'OSError', fpgeterrno);
+ If setsid Then FpSetsid;
+ If preexec.k <> vkNone Then Begin
+  Try
+   Call0(preexec);
+  Except
+   ChildFail(errpw, 'SubprocessError', 0);
+  End;
+ End;
+ If closeFds Then Begin
+  For fd := 3 To 4095 Do Begin
+   If fd = errpw Then Continue;
+   keepIt := False;
+   For j := 0 To High(keep) Do
+    If keep[j].i = fd Then keepIt := True;
+   If Not keepIt Then FpClose(fd);
+  End;
+ End;
+ firstErr := 0;
+ For i := 0 To High(sx) Do Begin
+  If hasEnv Then FpExecve(sx[i], PPChar(@pa[0]), PPChar(@pe[0]))
+  Else FpExecv(sx[i], PPChar(@pa[0]));
+  e := fpgeterrno;
+  If (e <> 2) And (e <> 20) And (firstErr = 0) Then firstErr := e;
+ End;
+ If firstErr = 0 Then firstErr := e;
+ ChildFail(errpw, 'OSError', firstErr, False);
+ Result := vNone;
+End;
+
+Procedure InitPosixSubprocessModule(m: TPyModule);
+Begin
+ DefFunc(m.idict, 'fork_exec', @FEFork);
+End;
+
+Function SelFdOf(Const v: TVal): LongInt;
+Begin
+ If v.k = vkInt Then Result := v.i
+ Else Result := ToInt64(Call0(GetAttr(v, 'fileno')));
+End;
+
+Function SelSelect(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ lists: Array[0..2] Of TValArr;
+ sets: Array[0..2] Of TFDSet;
+ i, k: Integer;
+ mx, r: LongInt;
+ tv: TTimeVal;
+ ptv: PTimeVal;
+ res: Array[0..2] Of TPyList;
+ t: TPyTuple;
+ fd: LongInt;
+ timeout: Double;
+Begin
+ mx := -1;
+ For k := 0 To 2 Do Begin
+  lists[k] := IterToArr(a[k]);
+  fpFD_ZERO(sets[k]);
+  For i := 0 To High(lists[k]) Do Begin
+   fd := SelFdOf(lists[k][i]);
+   If fd < 0 Then ValueErr('file descriptor cannot be a negative integer (' +
+     IntToStr(fd) + ')');
+   fpFD_SET(fd, sets[k]);
+   If fd > mx Then mx := fd;
+  End;
+ End;
+ ptv := Nil;
+ If (n > 3) And (a[3].k <> vkNone) Then Begin
+  timeout := NumToDouble(a[3]);
+  If timeout < 0 Then ValueErr('timeout must be non-negative');
+  tv.tv_sec := Trunc(timeout);
+  tv.tv_usec := Trunc((timeout - Trunc(timeout)) * 1000000);
+  ptv := @tv;
+ End;
+ OutFlush;
+ FlushTracked;
+ r := fpSelect(mx + 1, @sets[0], @sets[1], @sets[2], ptv);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ For k := 0 To 2 Do Begin
+  res[k] := NewList;
+  For i := 0 To High(lists[k]) Do
+   If fpFD_ISSET(SelFdOf(lists[k][i]), sets[k]) = 1 Then
+     res[k].Add(lists[k][i]);
+ End;
+ t := NewTuple(3);
+ For k := 0 To 2 Do t.items[k] := VObj(res[k]);
+ Result := VObj(t);
+End;
+
+Procedure InitSelectModule(m: TPyModule);
+Begin
+ DefFunc(m.idict, 'select', @SelSelect);
+ m.idict.SetS('error', VObj(exOSError));
 End;
 
 { ------------------------------------------------------------
@@ -30150,6 +30406,8 @@ Begin
  RegNative('time', @InitTimeModule);
  RegNative('_posix', @InitPosix2Module);
  RegNative('_mt', @InitRandomModule);
+ RegNative('_posixsubprocess', @InitPosixSubprocessModule);
+ RegNative('select', @InitSelectModule);
  RegNative('_re', @InitReModule);
  RegNative('marshal', @InitMarshalModule);
  RegNative('_codeop', @InitCodeopModule);
@@ -82215,6 +82473,437 @@ Begin
 End;
 
 Const
+ Src_selectors_0: AnsiString =
+  '"""Selectors module.' + #10 + #10 + 'This module allows high-level and ' +
+  'efficient I/O multiplexing, built ' + 'upon the' + #10 +
+  '`select` module primitives.' + #10 + '"""' + #10 + #10 + #10 +
+  'from abc import ABCMeta, abstractm' + 'ethod' + #10 +
+  'from collections import namedtuple' + #10 +
+  'from collections.abc import Mappin' + 'g' + #10 + 'import math' + #10 +
+  'import select' + #10 + 'import sys' + #10 + #10 + #10 +
+  '# generic events, that must be map' +
+  'ped to implementation-specific one' + 's' + #10 + 'EVENT_READ = (1 << 0)' +
+  #10 + 'EVENT_WRITE = (1 << 1)' + #10 + #10 + #10 +
+  'def _fileobj_to_fd(fileobj):' + #10 +
+  '    """Return a file descriptor fr' + 'om a file object.' + #10 + #10 +
+  '    Parameters:' + #10 + '    fileobj -- file object or file' +
+  ' descriptor' + #10 + #10 + '    Returns:' + #10 +
+  '    corresponding file descriptor' + #10 + #10 + '    Raises:' + #10 +
+  '    ValueError if the object is in' + 'valid' + #10 + '    """' + #10 +
+  '    if isinstance(fileobj, int):' + #10 + '        fd = fileobj' + #10 +
+  '    else:' + #10 + '        try:' + #10 +
+  '            fd = int(fileobj.filen' + 'o())' + #10 +
+  '        except (AttributeError, Ty' + 'peError, ValueError):' + #10 +
+  '            raise ValueError("Inva' + 'lid file object: "' + #10 +
+  '                             "{!r}' + '".format(fileobj)) from None' +
+  #10 + '    if fd < 0:' + #10 + '        raise ValueError("Invalid ' +
+  'file descriptor: {}".format(fd))' + #10 + '    return fd' + #10 + #10 +
+  #10 + 'SelectorKey = namedtuple(''Selector' +
+  'Key'', [''fileobj'', ''fd'', ''events'', ' + '''data''])' + #10 + #10 +
+  'SelectorKey.__doc__ = """SelectorK' + 'ey(fileobj, fd, events, data)' +
+  #10 + #10 + '    Object used to associate a fil' +
+  'e object to its backing' + #10 + '    file descriptor, selected even' +
+  't mask, and attached data.' + #10 + '"""' + #10 +
+  'if sys.version_info >= (3, 5):' + #10 +
+  '    SelectorKey.fileobj.__doc__ = ' + '''File object registered.''' + #10 +
+  '    SelectorKey.fd.__doc__ = ''Unde' + 'rlying file descriptor.''' + #10 +
+  '    SelectorKey.events.__doc__ = ''' +
+  'Events that must be waited for on ' + 'this file object.''' + #10 +
+  '    SelectorKey.data.__doc__ = (''''' +
+  '''Optional opaque data associated t' + 'o this file object.' + #10 +
+  '    For example, this could be use' +
+  'd to store a per-client session ID' + '.'''''')' + #10 + #10 +
+  'class _SelectorMapping(Mapping):' + #10 +
+  '    """Mapping of file objects to ' + 'selector keys."""' + #10 + #10 +
+  '    def __init__(self, selector):' + #10 +
+  '        self._selector = selector' + #10 + #10 + '    def __len__(self):' +
+  #10 + '        return len(self._selector.' + '_fd_to_key)' + #10 + #10 +
+  '    def __getitem__(self, fileobj)' + ':' + #10 + '        try:' + #10 +
+  '            fd = self._selector._f' + 'ileobj_lookup(fileobj)' + #10 +
+  '            return self._selector.' + '_fd_to_key[fd]' + #10 +
+  '        except KeyError:' + #10 + '            raise KeyError("{!r} i' +
+  's not registered".format(fileobj))' + ' from None' + #10 + #10 +
+  '    def __iter__(self):' + #10 + '        return iter(self._selector' +
+  '._fd_to_key)' + #10 + #10 + #10 + 'class BaseSelector(metaclass=ABCMe' +
+  'ta):' + #10 + '    """Selector abstract base clas' + 's.' + #10 + #10 +
+  '    A selector supports registerin' +
+  'g file objects to be monitored for' + ' specific' + #10 +
+  '    I/O events.' + #10 + #10 + '    A file object is a file descri' +
+  'ptor or any object with a `fileno(' + ')` method.' + #10 +
+  '    An arbitrary object can be att' +
+  'ached to the file object, which ca' + 'n be used' + #10 +
+  '    for example to store context i' + 'nformation, a callback, etc.' +
+  #10 + #10 + '    A selector can use various imp' +
+  'lementations (select(), poll(), ep' + 'oll()...)' + #10 +
+  '    depending on the platform. The' +
+  ' default `Selector` class uses the' + ' most' + #10 +
+  '    efficient implementation on th' + 'e current platform.' + #10 +
+  '    """' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def register(self, fileobj, ev' + 'ents, data=None):' + #10 +
+  '        """Register a file object.' + #10 + #10 + '        Parameters:' +
+  #10 + '        fileobj -- file object or ' + 'file descriptor' + #10 +
+  '        events  -- events to monit' +
+  'or (bitwise mask of EVENT_READ|EVE' + 'NT_WRITE)' + #10 +
+  '        data    -- attached data' + #10 + #10 + '        Returns:' + #10 +
+  '        SelectorKey instance' + #10 + #10 + '        Raises:' + #10 +
+  '        ValueError if events is in' + 'valid' + #10 +
+  '        KeyError if fileobj is alr' + 'eady registered' + #10 +
+  '        OSError if fileobj is clos' +
+  'ed or otherwise is unacceptable to' + #10 +
+  '                the underlying sys' +
+  'tem call (if a system call is made' + ')' + #10 + #10 + '        Note:' +
+  #10 + '        OSError may or may not be ' + 'raised' + #10 +
+  '        """' + #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def unregister(self, fileobj):' + #10 +
+  '        """Unregister a file objec' + 't.' + #10 + #10 +
+  '        Parameters:' + #10 + '        fileobj -- file object or ' +
+  'file descriptor' + #10 + #10 + '        Returns:' + #10 +
+  '        SelectorKey instance' + #10 + #10 + '        Raises:' + #10 +
+  '        KeyError if fileobj is not' + ' registered' + #10 + #10 +
+  '        Note:' + #10 + '        If fileobj is registered b' +
+  'ut has since been closed this does' + #10 +
+  '        *not* raise OSError (even ' + 'if the wrapped syscall does)' +
+  #10 + '        """' + #10 + '        raise NotImplementedError' + #10 +
+  #10 + '    def modify(self, fileobj, even' + 'ts, data=None):' + #10 +
+  '        """Change a registered fil' +
+  'e object monitored events or attac' + 'hed data.' + #10 + #10 +
+  '        Parameters:' + #10 + '        fileobj -- file object or ' +
+  'file descriptor' + #10 + '        events  -- events to monit' +
+  'or (bitwise mask of EVENT_READ|EVE' + 'NT_WRITE)' + #10 +
+  '        data    -- attached data' + #10 + #10 + '        Returns:' + #10 +
+  '        SelectorKey instance' + #10 + #10 + '        Raises:' + #10 +
+  '        Anything that unregister()' + ' or register() raises' + #10 +
+  '        """' + #10 + '        self.unregister(fileobj)' + #10 +
+  '        return self.register(fileo' + 'bj, events, data)' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def select(self, timeout=None)' + ':' +
+  #10 + '        """Perform the actual sele' +
+  'ction, until some monitored file o' + 'bjects are' + #10 +
+  '        ready or a timeout expires' + '.' + #10 + #10 +
+  '        Parameters:' + #10 + '        timeout -- if timeout > 0,' +
+  ' this specifies the maximum wait t' + 'ime, in' + #10 +
+  '                   seconds' + #10 + '                   if timeout <= 0' +
+  ', the select() call won''t block, a' + 'nd will' + #10 +
+  '                   report the curr' + 'ently ready file objects' + #10 +
+  '                   if timeout is N' +
+  'one, select() will block until a m' + 'onitored' + #10 +
+  '                   file object bec' + 'omes ready' + #10 + #10 +
+  '        Returns:' + #10 + '        list of (key, events) for ' +
+  'ready file objects' + #10 + '        `events` is a bitwise mask' +
+  ' of EVENT_READ|EVENT_WRITE' + #10 + '        """' + #10 +
+  '        raise NotImplementedError' + #10 + #10 + '    def close(self):' +
+  #10 + '        """Close the selector.' + #10 + #10 +
+  '        This must be called to mak' +
+  'e sure that any underlying resourc' + 'e is freed.' + #10 + '        """' +
+  #10 + '        pass' + #10 + #10 + '    def get_key(self, fileobj):' + #10 +
+  '        """Return the key associat' + 'ed to a registered file object.' +
+  #10 + #10 + '        Returns:' + #10 +
+  '        SelectorKey for this file ' + 'object' + #10 + '        """' +
+  #10 + '        mapping = self.get_map()' + #10 +
+  '        if mapping is None:' + #10 +
+  '            raise RuntimeError(''Se' + 'lector is closed'')' + #10 +
+  '        try:' + #10 + '            return mapping[fileobj' + ']' + #10 +
+  '        except KeyError:' + #10 + '            raise KeyError("{!r} i' +
+  's not registered".format(fileobj))' + ' from None' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def get_map(self):' + #10 +
+  '        """Return a mapping of fil' + 'e objects to selector keys."""' +
+  #10 + '        raise NotImplementedError' + #10 + #10 +
+  '    def __enter__(self):' + #10 + '        return self' + #10 + #10 +
+  '    def __exit__(self, *args):' + #10 + '        self.close()' + #10 +
+  #10 + #10 + 'class _BaseSelectorImpl(BaseSelect' + 'or):' + #10 +
+  '    """Base selector implementatio' + 'n."""' + #10 + #10 +
+  '    def __init__(self):' + #10 + '        # this maps file descripto' +
+  'rs to keys' + #10 + '        self._fd_to_key = {}' + #10 +
+  '        # read-only mapping return' + 'ed by get_map()' + #10 +
+  '        self._map = _SelectorMappi' + 'ng(self)' + #10 + #10 +
+  '    def _fileobj_lookup(self, file' + 'obj):' + #10 +
+  '        """Return a file descripto' + 'r from a file object.' + #10 + #10 +
+  '        This wraps _fileobj_to_fd(' +
+  ') to do an exhaustive search in ca' + 'se' + #10 +
+  '        the object is invalid but ' +
+  'we still have it in our map.  This' + #10 +
+  '        is used by unregister() so' + ' we can unregister an object that' +
+  #10 + '        was previously registered ' +
+  'even if it is closed.  It is also' + #10 +
+  '        used by _SelectorMapping.' + #10 + '        """' + #10 +
+  '        try:' + #10 + '            return _fileobj_to_fd(' + 'fileobj)' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Do an exhaustive sea' + 'rch.' + #10 +
+  '            for key in self._fd_to' + '_key.values():' + #10 +
+  '                if key.fileobj is ' + 'fileobj:' + #10 +
+  '                    return key.fd' + #10 +
+  '            # Raise ValueError aft' + 'er all.' + #10 +
+  '            raise' + #10 + #10 + '    def register(self, fileobj, ev' +
+  'ents, data=None):' + #10 + '        if (not events) or (events' +
+  ' & ~(EVENT_READ | EVENT_WRITE)):' + #10 +
+  '            raise ValueError("Inva' + 'lid events: {!r}".format(events))' +
+  #10 + #10 + '        key = SelectorKey(fileobj,' +
+  ' self._fileobj_lookup(fileobj), ev' + 'ents, data)' + #10 + #10 +
+  '        if key.fd in self._fd_to_k' + 'ey:' + #10 +
+  '            raise KeyError("{!r} (' + 'FD {}) is already registered"' +
+  #10 + '                           .format' + '(fileobj, key.fd))' + #10 +
+  #10 + '        self._fd_to_key[key.fd] = ' + 'key' + #10 +
+  '        return key' + #10 + #10 + '    def unregister(self, fileobj):' +
+  #10 + '        try:' + #10 + '            key = self._fd_to_key.' +
+  'pop(self._fileobj_lookup(fileobj))' + #10 + '        except KeyError:' +
+  #10;
+
+Const
+ Src_selectors_1: AnsiString =
+  '            raise KeyError("{!r} i' +
+  's not registered".format(fileobj))' + ' from None' + #10 +
+  '        return key' + #10 + #10 + '    def modify(self, fileobj, even' +
+  'ts, data=None):' + #10 + '        try:' + #10 +
+  '            key = self._fd_to_key[' + 'self._fileobj_lookup(fileobj)]' +
+  #10 + '        except KeyError:' + #10 +
+  '            raise KeyError("{!r} i' +
+  's not registered".format(fileobj))' + ' from None' + #10 +
+  '        if events != key.events:' + #10 +
+  '            self.unregister(fileob' + 'j)' + #10 +
+  '            key = self.register(fi' + 'leobj, events, data)' + #10 +
+  '        elif data != key.data:' + #10 +
+  '            # Use a shortcut to up' + 'date the data.' + #10 +
+  '            key = key._replace(dat' + 'a=data)' + #10 +
+  '            self._fd_to_key[key.fd' + '] = key' + #10 +
+  '        return key' + #10 + #10 + '    def close(self):' + #10 +
+  '        self._fd_to_key.clear()' + #10 + '        self._map = None' + #10 +
+  #10 + '    def get_map(self):' + #10 + '        return self._map' + #10 +
+  #10 + '    def _key_from_fd(self, fd):' + #10 +
+  '        """Return the key associat' + 'ed to a given file descriptor.' +
+  #10 + #10 + '        Parameters:' + #10 + '        fd -- file descriptor' +
+  #10 + #10 + '        Returns:' + #10 +
+  '        corresponding key, or None' + ' if not found' + #10 +
+  '        """' + #10 + '        try:' + #10 +
+  '            return self._fd_to_key' + '[fd]' + #10 +
+  '        except KeyError:' + #10 + '            return None' + #10 + #10 +
+  #10 + 'class SelectSelector(_BaseSelector' + 'Impl):' + #10 +
+  '    """Select-based selector."""' + #10 + #10 + '    def __init__(self):' +
+  #10 + '        super().__init__()' + #10 + '        self._readers = set()' +
+  #10 + '        self._writers = set()' + #10 + #10 +
+  '    def register(self, fileobj, ev' + 'ents, data=None):' + #10 +
+  '        key = super().register(fil' + 'eobj, events, data)' + #10 +
+  '        if events & EVENT_READ:' + #10 +
+  '            self._readers.add(key.' + 'fd)' + #10 +
+  '        if events & EVENT_WRITE:' + #10 +
+  '            self._writers.add(key.' + 'fd)' + #10 + '        return key' +
+  #10 + #10 + '    def unregister(self, fileobj):' + #10 +
+  '        key = super().unregister(f' + 'ileobj)' + #10 +
+  '        self._readers.discard(key.' + 'fd)' + #10 +
+  '        self._writers.discard(key.' + 'fd)' + #10 + '        return key' +
+  #10 + #10 + '    if sys.platform == ''win32'':' + #10 +
+  '        def _select(self, r, w, _,' + ' timeout=None):' + #10 +
+  '            r, w, x = select.selec' + 't(r, w, w, timeout)' + #10 +
+  '            return r, w + x, []' + #10 + '    else:' + #10 +
+  '        _select = select.select' + #10 + #10 +
+  '    def select(self, timeout=None)' + ':' + #10 +
+  '        timeout = None if timeout ' + 'is None else max(timeout, 0)' +
+  #10 + '        ready = []' + #10 + '        try:' + #10 +
+  '            r, w, _ = self._select' +
+  '(self._readers, self._writers, [],' + ' timeout)' + #10 +
+  '        except InterruptedError:' + #10 + '            return ready' +
+  #10 + '        r = set(r)' + #10 + '        w = set(w)' + #10 +
+  '        for fd in r | w:' + #10 + '            events = 0' + #10 +
+  '            if fd in r:' + #10 + '                events |= EVENT_RE' +
+  'AD' + #10 + '            if fd in w:' + #10 +
+  '                events |= EVENT_WR' + 'ITE' + #10 + #10 +
+  '            key = self._key_from_f' + 'd(fd)' + #10 +
+  '            if key:' + #10 + '                ready.append((key,' +
+  ' events & key.events))' + #10 + '        return ready' + #10 + #10 + #10 +
+  'class _PollLikeSelector(_BaseSelec' + 'torImpl):' + #10 +
+  '    """Base class shared between p' +
+  'oll, epoll and devpoll selectors."' + '""' + #10 +
+  '    _selector_cls = None' + #10 + '    _EVENT_READ = None' + #10 +
+  '    _EVENT_WRITE = None' + #10 + #10 + '    def __init__(self):' + #10 +
+  '        super().__init__()' + #10 + '        self._selector = self._sel' +
+  'ector_cls()' + #10 + #10 + '    def register(self, fileobj, ev' +
+  'ents, data=None):' + #10 + '        key = super().register(fil' +
+  'eobj, events, data)' + #10 + '        poller_events = 0' + #10 +
+  '        if events & EVENT_READ:' + #10 +
+  '            poller_events |= self.' + '_EVENT_READ' + #10 +
+  '        if events & EVENT_WRITE:' + #10 +
+  '            poller_events |= self.' + '_EVENT_WRITE' + #10 +
+  '        try:' + #10 + '            self._selector.registe' +
+  'r(key.fd, poller_events)' + #10 + '        except:' + #10 +
+  '            super().unregister(fil' + 'eobj)' + #10 + '            raise' +
+  #10 + '        return key' + #10 + #10 +
+  '    def unregister(self, fileobj):' + #10 +
+  '        key = super().unregister(f' + 'ileobj)' + #10 + '        try:' +
+  #10 + '            self._selector.unregis' + 'ter(key.fd)' + #10 +
+  '        except OSError:' + #10 + '            # This can happen if t' +
+  'he FD was closed since it' + #10 + '            # was registered.' + #10 +
+  '            pass' + #10 + '        return key' + #10 + #10 +
+  '    def modify(self, fileobj, even' + 'ts, data=None):' + #10 +
+  '        try:' + #10 + '            key = self._fd_to_key[' +
+  'self._fileobj_lookup(fileobj)]' + #10 + '        except KeyError:' + #10 +
+  '            raise KeyError(f"{file' +
+  'obj!r} is not registered") from No' + 'ne' + #10 + #10 +
+  '        changed = False' + #10 + '        if events != key.events:' + #10 +
+  '            selector_events = 0' + #10 +
+  '            if events & EVENT_READ' + ':' + #10 +
+  '                selector_events |=' + ' self._EVENT_READ' + #10 +
+  '            if events & EVENT_WRIT' + 'E:' + #10 +
+  '                selector_events |=' + ' self._EVENT_WRITE' + #10 +
+  '            try:' + #10 + '                self._selector.mod' +
+  'ify(key.fd, selector_events)' + #10 + '            except:' + #10 +
+  '                super().unregister' + '(fileobj)' + #10 +
+  '                raise' + #10 + '            changed = True' + #10 +
+  '        if data != key.data:' + #10 + '            changed = True' + #10 +
+  #10 + '        if changed:' + #10 + '            key = key._replace(eve' +
+  'nts=events, data=data)' + #10 + '            self._fd_to_key[key.fd' +
+  '] = key' + #10 + '        return key' + #10 + #10 +
+  '    def select(self, timeout=None)' + ':' + #10 +
+  '        # This is shared between p' + 'oll() and epoll().' + #10 +
+  '        # epoll() has a different ' +
+  'signature and handling of timeout ' + 'parameter.' + #10 +
+  '        if timeout is None:' + #10 + '            timeout = None' + #10 +
+  '        elif timeout <= 0:' + #10 + '            timeout = 0' + #10 +
+  '        else:' + #10 + '            # poll() has a resolut' +
+  'ion of 1 millisecond, round away f' + 'rom' + #10 +
+  '            # zero to wait *at lea' + 'st* timeout seconds.' + #10 +
+  '            timeout = math.ceil(ti' + 'meout * 1e3)' + #10 +
+  '        ready = []' + #10 + '        try:' + #10 +
+  '            fd_event_list = self._' + 'selector.poll(timeout)' + #10 +
+  '        except InterruptedError:' + #10 + '            return ready' +
+  #10 + '        for fd, event in fd_event_' + 'list:' + #10 +
+  '            events = 0' + #10 + '            if event & ~self._EVEN' +
+  'T_READ:' + #10 + '                events |= EVENT_WR' + 'ITE' + #10 +
+  '            if event & ~self._EVEN' + 'T_WRITE:' + #10 +
+  '                events |= EVENT_RE' + 'AD' + #10 + #10 +
+  '            key = self._key_from_f' + 'd(fd)' + #10 +
+  '            if key:' + #10 + '                ready.append((key,' +
+  ' events & key.events))' + #10 + '        return ready' + #10 + #10 + #10 +
+  'if hasattr(select, ''poll''):' + #10 + #10 +
+  '    class PollSelector(_PollLikeSe' + 'lector):' + #10 +
+  '        """Poll-based selector."""' + #10 +
+  '        _selector_cls = select.pol' + 'l' + #10 +
+  '        _EVENT_READ = select.POLLI' + 'N' + #10 +
+  '        _EVENT_WRITE = select.POLL' + 'OUT' + #10 + #10 + #10 +
+  'if hasattr(select, ''epoll''):' + #10 + #10 +
+  '    class EpollSelector(_PollLikeS' + 'elector):' + #10 +
+  '        """Epoll-based selector.""' + '"' + #10 +
+  '        _selector_cls = select.epo' + 'll' + #10 +
+  '        _EVENT_READ = select.EPOLL' + 'IN' + #10 +
+  '        _EVENT_WRITE = select.EPOL' + 'LOUT' + #10 + #10 +
+  '        def fileno(self):' + #10 + '            return self._selector.' +
+  'fileno()' + #10 + #10 + '        def select(self, timeout=N' + 'one):' +
+  #10 + '            if timeout is None:' + #10 +
+  '                timeout = -1' + #10 + '            elif timeout <= 0:' +
+  #10 + '                timeout = 0' + #10 + '            else:' + #10 +
+  '                # epoll_wait() has' +
+  ' a resolution of 1 millisecond, ro' + 'und away' + #10 +
+  '                # from zero to wai' + 't *at least* timeout seconds.' +
+  #10 + '                timeout = math.cei' + 'l(timeout * 1e3) * 1e-3' +
+  #10 + #10 + '            # epoll_wait() expects' +
+  ' `maxevents` to be greater than ze' + 'ro;' + #10 +
+  '            # we want to make sure' +
+  ' that `select()` can be called whe' + 'n no' + #10 +
+  '            # FD is registered.' + #10 +
+  '            max_ev = max(len(self.' + '_fd_to_key), 1)' + #10 + #10 +
+  '            ready = []' + #10 + '            try:' + #10 +
+  '                fd_event_list = se' +
+  'lf._selector.poll(timeout, max_ev)' + #10 +
+  '            except InterruptedErro' + 'r:' + #10 +
+  '                return ready' + #10 +
+  '            for fd, event in fd_ev' + 'ent_list:' + #10 +
+  '                events = 0' + #10 + '                if event & ~select' +
+  '.EPOLLIN:' + #10 + '                    events |= EVEN' + 'T_WRITE' + #10 +
+  '                if event & ~select' + '.EPOLLOUT:' + #10 +
+  '                    events |= EVEN' + 'T_READ' + #10 + #10 +
+  '                key = self._key_fr' + 'om_fd(fd)' + #10 +
+  '                if key:' + #10 + '                    ready.append((' +
+  'key, events & key.events))' + #10 + '            return ready' + #10 +
+  #10 + '        def close(self):' + #10 +
+  '            self._selector.close()' + #10 + '            super().close()' +
+  #10 + #10 + #10 + 'if hasattr(select, ''devpoll''):' + #10 + #10 +
+  '    class DevpollSelector(_PollLik' + 'eSelector):' + #10 +
+  '        """Solaris /dev/poll selec' + 'tor."""' + #10 +
+  '        _selector_cls = select.dev' + 'poll' + #10 +
+  '        _EVENT_READ = select.POLLI' + 'N' + #10 +
+  '        _EVENT_WRITE = select.POLL' + 'OUT' + #10 + #10 +
+  '        def fileno(self):' + #10 + '            return self._selector.' +
+  'fileno()' + #10 + #10 + '        def close(self):' + #10 +
+  '            self._selector.close()' + #10;
+
+Const
+ Src_selectors_2: AnsiString =
+  '            super().close()' + #10 + #10 + #10 +
+  'if hasattr(select, ''kqueue''):' + #10 + #10 +
+  '    class KqueueSelector(_BaseSele' + 'ctorImpl):' + #10 +
+  '        """Kqueue-based selector."' + '""' + #10 + #10 +
+  '        def __init__(self):' + #10 + '            super().__init__()' +
+  #10 + '            self._selector = selec' + 't.kqueue()' + #10 + #10 +
+  '        def fileno(self):' + #10 + '            return self._selector.' +
+  'fileno()' + #10 + #10 + '        def register(self, fileobj' +
+  ', events, data=None):' + #10 + '            key = super().register' +
+  '(fileobj, events, data)' + #10 + '            try:' + #10 +
+  '                if events & EVENT_' + 'READ:' + #10 +
+  '                    kev = select.k' +
+  'event(key.fd, select.KQ_FILTER_REA' + 'D,' + #10 +
+  '                                  ' + '      select.KQ_EV_ADD)' + #10 +
+  '                    self._selector' + '.control([kev], 0, 0)' + #10 +
+  '                if events & EVENT_' + 'WRITE:' + #10 +
+  '                    kev = select.k' +
+  'event(key.fd, select.KQ_FILTER_WRI' + 'TE,' + #10 +
+  '                                  ' + '      select.KQ_EV_ADD)' + #10 +
+  '                    self._selector' + '.control([kev], 0, 0)' + #10 +
+  '            except:' + #10 + '                super().unregister' +
+  '(fileobj)' + #10 + '                raise' + #10 +
+  '            return key' + #10 + #10 +
+  '        def unregister(self, fileo' + 'bj):' + #10 +
+  '            key = super().unregist' + 'er(fileobj)' + #10 +
+  '            if key.events & EVENT_' + 'READ:' + #10 +
+  '                kev = select.keven' + 't(key.fd, select.KQ_FILTER_READ,' +
+  #10 + '                                  ' + '  select.KQ_EV_DELETE)' +
+  #10 + '                try:' + #10 + '                    self._selector' +
+  '.control([kev], 0, 0)' + #10 + '                except OSError:' + #10 +
+  '                    # This can hap' + 'pen if the FD was closed since it' +
+  #10 + '                    # was register' + 'ed.' + #10 +
+  '                    pass' + #10 + '            if key.events & EVENT_' +
+  'WRITE:' + #10 + '                kev = select.keven' +
+  't(key.fd, select.KQ_FILTER_WRITE,' + #10 +
+  '                                  ' + '  select.KQ_EV_DELETE)' + #10 +
+  '                try:' + #10 + '                    self._selector' +
+  '.control([kev], 0, 0)' + #10 + '                except OSError:' + #10 +
+  '                    # See comment ' + 'above.' + #10 +
+  '                    pass' + #10 + '            return key' + #10 + #10 +
+  '        def select(self, timeout=N' + 'one):' + #10 +
+  '            timeout = None if time' + 'out is None else max(timeout, 0)' +
+  #10 + '            max_ev = len(self._fd_' + 'to_key)' + #10 +
+  '            ready = []' + #10 + '            try:' + #10 +
+  '                kev_list = self._s' +
+  'elector.control(None, max_ev, time' + 'out)' + #10 +
+  '            except InterruptedErro' + 'r:' + #10 +
+  '                return ready' + #10 + '            for kev in kev_list:' +
+  #10 + '                fd = kev.ident' + #10 +
+  '                flag = kev.filter' + #10 + '                events = 0' +
+  #10 + '                if flag == select.' + 'KQ_FILTER_READ:' + #10 +
+  '                    events |= EVEN' + 'T_READ' + #10 +
+  '                if flag == select.' + 'KQ_FILTER_WRITE:' + #10 +
+  '                    events |= EVEN' + 'T_WRITE' + #10 + #10 +
+  '                key = self._key_fr' + 'om_fd(fd)' + #10 +
+  '                if key:' + #10 + '                    ready.append((' +
+  'key, events & key.events))' + #10 + '            return ready' + #10 +
+  #10 + '        def close(self):' + #10 +
+  '            self._selector.close()' + #10 + '            super().close()' +
+  #10 + #10 + #10 + '# Choose the best implementation, ' + 'roughly:' + #10 +
+  '#    epoll|kqueue|devpoll > poll >' + ' select.' + #10 +
+  '# select() also can''t accept a FD ' +
+  '> FD_SETSIZE (usually around 1024)' + #10 +
+  'if ''KqueueSelector'' in globals():' + #10 +
+  '    DefaultSelector = KqueueSelect' + 'or' + #10 +
+  'elif ''EpollSelector'' in globals():' + #10 +
+  '    DefaultSelector = EpollSelecto' + 'r' + #10 +
+  'elif ''DevpollSelector'' in globals(' + '):' + #10 +
+  '    DefaultSelector = DevpollSelec' + 'tor' + #10 +
+  'elif ''PollSelector'' in globals():' + #10 +
+  '    DefaultSelector = PollSelector' + #10 + 'else:' + #10 +
+  '    DefaultSelector = SelectSelect' + 'or' + #10 + #10;
+
+Function Src_selectors: AnsiString;
+Begin
+ Result := Src_selectors_0 + Src_selectors_1 + Src_selectors_2;
+End;
+
+Const
  Src_shlex_0: AnsiString =
   '"""A lexical analyzer class for si' + 'mple shell-like syntaxes."""' +
   #10 + #10 + '# Module and documentation by Eric' +
@@ -85898,40 +86587,82 @@ End;
 Const
  Src_subprocess_0: AnsiString =
   '# subprocess - Subprocesses with a' + 'ccessible I/O streams' + #10 + '#' +
-  #10 + '# Emulation of CPython 3.8''s subpr' +
-  'ocess for an interpreter that can ' + 'only run' + #10 +
-  '# commands through os.system():  e' +
-  'very child is run to completion by' + #10 +
-  '# "sh -c" with its standard stream' +
-  's redirected to temporary files in' + ' /tmp.' + #10 + '#' + #10 +
-  '# Limits (see also BUGS_D2.md):' + #10 +
-  '#   * the child runs *synchronousl' +
-  'y*: Popen(...) returns once it has' + ' finished' + #10 +
-  '#     (with stdin=PIPE the run is ' +
-  'deferred until communicate()/wait(' + ')/a read of' + #10 +
-  '#     stdout/stderr/close of stdin' +
-  '); there is no interactive communi' + 'cation' + #10 +
-  '#   * Popen.pid is a fake number; ' +
-  'kill()/terminate()/send_signal() c' + 'annot signal' + #10 +
-  '#     a real process (they only ma' +
-  'rk a not yet started deferred proc' + 'ess as killed)' + #10 +
-  '#   * exit statuses 129..192 are r' +
-  'eported as negative signal numbers' + #10 +
-  '#     (-1..-64) because os.system(' + ') cannot report death by signal' +
-  #10 + '#   * timeout= needs the coreutils' + ' "timeout" command' + #10 +
-  '#   * preexec_fn, pass_fds, start_' +
-  'new_session, close_fds, umask... a' + 're ignored' + #10 +
-  '#   * stdout/stderr/stdin can be P' +
-  'IPE, STDOUT, DEVNULL, None, 0/1/2,' + ' or a file' + #10 +
-  '#     object having a real path in' +
-  ' .name (opened in append mode for ' + 'output)' + #10 + #10 + 'import io' +
-  #10 + 'import os' + #10 + 'import sys' + #10 + 'import time as _time' +
-  #10 + #10 + '__all__ = ["Popen", "PIPE", "STDOU' +
+  #10 + '# For more information about this ' + 'module, see PEP 324.' + #10 +
+  '#' + #10 + '# Copyright (c) 2003-2005 by Peter' +
+  ' Astrand <astrand@lysator.liu.se>' + #10 + '#' + #10 +
+  '# Licensed to PSF under a Contribu' + 'tor Agreement.' + #10 +
+  '# See http://www.python.org/2.4/li' + 'cense for licensing details.' +
+  #10 + #10 + 'r"""Subprocesses with accessible I' + '/O streams' + #10 +
+  #10 + 'This module allows you to spawn pr' + 'ocesses, connect to their' +
+  #10 + 'input/output/error pipes, and obta' + 'in their return codes.' +
+  #10 + #10 + 'For a complete description of this' +
+  ' module see the Python documentati' + 'on.' + #10 + #10 + 'Main API' +
+  #10 + '========' + #10 + 'run(...): Runs a command, waits fo' +
+  'r it to complete, then returns a' + #10 +
+  '          CompletedProcess instanc' + 'e.' + #10 +
+  'Popen(...): A class for flexibly e' +
+  'xecuting a command in a new proces' + 's' + #10 + #10 + 'Constants' + #10 +
+  '---------' + #10 + 'DEVNULL: Special value that indica' +
+  'tes that os.devnull should be used' + #10 +
+  'PIPE:    Special value that indica' + 'tes a pipe should be created' +
+  #10 + 'STDOUT:  Special value that indica' +
+  'tes that stderr should go to stdou' + 't' + #10 + #10 + #10 + 'Older API' +
+  #10 + '=========' + #10 + 'call(...): Runs a command, waits f' +
+  'or it to complete, then returns' + #10 + '    the return code.' + #10 +
+  'check_call(...): Same as call() bu' + 't raises CalledProcessError()' +
+  #10 + '    if return code is not 0' + #10 +
+  'check_output(...): Same as check_c' + 'all() but returns the contents of' +
+  #10 + '    stdout instead of a return cod' + 'e' + #10 +
+  'getoutput(...): Runs a command in ' +
+  'the shell, waits for it to complet' + 'e,' + #10 +
+  '    then returns the output' + #10 + 'getstatusoutput(...): Runs a comma' +
+  'nd in the shell, waits for it to c' + 'omplete,' + #10 +
+  '    then returns a (exitcode, outp' + 'ut) tuple' + #10 + '"""' + #10 +
+  #10 + 'import builtins' + #10 + 'import errno' + #10 + 'import io' + #10 +
+  'import os' + #10 + 'import time' + #10 + 'import signal' + #10 +
+  'import sys' + #10 + 'import threading' + #10 + 'import warnings' + #10 +
+  'import contextlib' + #10 + 'from time import monotonic as _tim' + 'e' +
+  #10 + #10 + #10 + '__all__ = ["Popen", "PIPE", "STDOU' +
   'T", "call", "check_call", "getstat' + 'usoutput",' + #10 +
   '           "getoutput", "check_out' +
   'put", "run", "CalledProcessError",' + ' "DEVNULL",' + #10 +
   '           "SubprocessError", "Tim' + 'eoutExpired", "CompletedProcess"]' +
-  #10 + #10 + '_mswindows = False' + #10 + #10 +
+  #10 + '           # NOTE: We intentionall' +
+  'y exclude list2cmdline as it is' + #10 +
+  '           # considered an interna' +
+  'l implementation detail.  issue108' + '38.' + #10 + #10 + 'try:' + #10 +
+  '    import msvcrt' + #10 + '    import _winapi' + #10 +
+  '    _mswindows = True' + #10 + 'except ModuleNotFoundError:' + #10 +
+  '    _mswindows = False' + #10 + '    import _posixsubprocess' + #10 +
+  '    import select' + #10 + '    import selectors' + #10 + 'else:' + #10 +
+  '    from _winapi import (CREATE_NE' +
+  'W_CONSOLE, CREATE_NEW_PROCESS_GROU' + 'P,' + #10 +
+  '                         STD_INPUT' + '_HANDLE, STD_OUTPUT_HANDLE,' + #10 +
+  '                         STD_ERROR' + '_HANDLE, SW_HIDE,' + #10 +
+  '                         STARTF_US' +
+  'ESTDHANDLES, STARTF_USESHOWWINDOW,' + #10 +
+  '                         ABOVE_NOR' +
+  'MAL_PRIORITY_CLASS, BELOW_NORMAL_P' + 'RIORITY_CLASS,' + #10 +
+  '                         HIGH_PRIO' + 'RITY_CLASS, IDLE_PRIORITY_CLASS,' +
+  #10 + '                         NORMAL_PR' +
+  'IORITY_CLASS, REALTIME_PRIORITY_CL' + 'ASS,' + #10 +
+  '                         CREATE_NO' + '_WINDOW, DETACHED_PROCESS,' + #10 +
+  '                         CREATE_DE' +
+  'FAULT_ERROR_MODE, CREATE_BREAKAWAY' + '_FROM_JOB)' + #10 + #10 +
+  '    __all__.extend(["CREATE_NEW_CO' +
+  'NSOLE", "CREATE_NEW_PROCESS_GROUP"' + ',' + #10 +
+  '                    "STD_INPUT_HAN' + 'DLE", "STD_OUTPUT_HANDLE",' + #10 +
+  '                    "STD_ERROR_HAN' + 'DLE", "SW_HIDE",' + #10 +
+  '                    "STARTF_USESTD' + 'HANDLES", "STARTF_USESHOWWINDOW",' +
+  #10 + '                    "STARTUPINFO",' + #10 +
+  '                    "ABOVE_NORMAL_' +
+  'PRIORITY_CLASS", "BELOW_NORMAL_PRI' + 'ORITY_CLASS",' + #10 +
+  '                    "HIGH_PRIORITY' + '_CLASS", "IDLE_PRIORITY_CLASS",' +
+  #10 + '                    "NORMAL_PRIORI' +
+  'TY_CLASS", "REALTIME_PRIORITY_CLAS' + 'S",' + #10 +
+  '                    "CREATE_NO_WIN' + 'DOW", "DETACHED_PROCESS",' + #10 +
+  '                    "CREATE_DEFAUL' +
+  'T_ERROR_MODE", "CREATE_BREAKAWAY_F' + 'ROM_JOB"])' + #10 + #10 + #10 +
   '# Exception classes used by this m' + 'odule.' + #10 +
   'class SubprocessError(Exception): ' + 'pass' + #10 + #10 + #10 +
   'class CalledProcessError(Subproces' + 'sError):' + #10 +
@@ -85944,17 +86675,14 @@ Const
   '        self.cmd = cmd' + #10 + '        self.output = output' + #10 +
   '        self.stderr = stderr' + #10 + #10 + '    def __str__(self):' +
   #10 + '        if self.returncode and sel' + 'f.returncode < 0:' + #10 +
-  '            _rf1 = 0' + #10 + '            try:' + #10 +
-  '                import signal' + #10 +
-  '                return "Command ''%' + 's'' died with %r." % (' + #10 +
-  '                        self.cmd, ' + 'signal.Signals(-self.returncode))' +
-  #10 + '            except ValueError:' + #10 +
-  '                _rv1 = "Command ''%' +
+  '            try:' + #10 + '                return "Command ''%' +
+  's'' died with %r." % (' + #10 + '                        self.cmd, ' +
+  'signal.Signals(-self.returncode))' + #10 +
+  '            except ValueError:' + #10 +
+  '                return "Command ''%' +
   's'' died with unknown signal %d." %' + ' (' + #10 +
   '                        self.cmd, ' + '-self.returncode)' + #10 +
-  '                _rf1 = 1' + #10 + '            if _rf1:' + #10 +
-  '                return _rv1' + #10 + '        else:' + #10 +
-  '            return "Command ''%s'' r' +
+  '        else:' + #10 + '            return "Command ''%s'' r' +
   'eturned non-zero exit status %d." ' + '% (' + #10 +
   '                    self.cmd, self' + '.returncode)' + #10 + #10 +
   '    @property' + #10 + '    def stdout(self):' + #10 +
@@ -85982,31 +86710,147 @@ Const
   '        # There''s no obvious reaso' +
   'n to set this, but allow it anyway' + ' so' + #10 +
   '        # .stdout is a transparent' + ' alias for .output' + #10 +
-  '        self.output = value' + #10 + #10 + #10 +
-  '# Constants for stdin/stdout/stder' + 'r' + #10 + 'PIPE = -1' + #10 +
-  'STDOUT = -2' + #10 + 'DEVNULL = -3' + #10 + #10 + '_active = []' + #10 +
-  #10 + 'def _cleanup():' + #10 + '    pass' + #10 + #10 + #10 +
-  'def _args_from_interpreter_flags()' + ':' + #10 +
+  '        self.output = value' + #10 + #10 + #10 + 'if _mswindows:' + #10 +
+  '    class STARTUPINFO:' + #10 + '        def __init__(self, *, dwFl' +
+  'ags=0, hStdInput=None, hStdOutput=' + 'None,' + #10 +
+  '                     hStdError=Non' +
+  'e, wShowWindow=0, lpAttributeList=' + 'None):' + #10 +
+  '            self.dwFlags = dwFlags' + #10 +
+  '            self.hStdInput = hStdI' + 'nput' + #10 +
+  '            self.hStdOutput = hStd' + 'Output' + #10 +
+  '            self.hStdError = hStdE' + 'rror' + #10 +
+  '            self.wShowWindow = wSh' + 'owWindow' + #10 +
+  '            self.lpAttributeList =' +
+  ' lpAttributeList or {"handle_list"' + ': []}' + #10 + #10 +
+  '        def copy(self):' + #10 + '            attr_list = self.lpAtt' +
+  'ributeList.copy()' + #10 + '            if ''handle_list'' in at' +
+  'tr_list:' + #10 + '                attr_list[''handle_' +
+  'list''] = list(attr_list[''handle_li' + 'st''])' + #10 + #10 +
+  '            return STARTUPINFO(dwF' + 'lags=self.dwFlags,' + #10 +
+  '                               hSt' + 'dInput=self.hStdInput,' + #10 +
+  '                               hSt' + 'dOutput=self.hStdOutput,' + #10 +
+  '                               hSt' + 'dError=self.hStdError,' + #10 +
+  '                               wSh' + 'owWindow=self.wShowWindow,' + #10 +
+  '                               lpA' + 'ttributeList=attr_list)' + #10 +
+  #10 + #10 + '    class Handle(int):' + #10 + '        closed = False' +
+  #10 + #10 + '        def Close(self, CloseHandl' +
+  'e=_winapi.CloseHandle):' + #10 + '            if not self.closed:' + #10 +
+  '                self.closed = True' + #10 +
+  '                CloseHandle(self)' + #10 + #10 +
+  '        def Detach(self):' + #10 + '            if not self.closed:' +
+  #10 + '                self.closed = True' + #10 +
+  '                return int(self)' + #10 +
+  '            raise ValueError("alre' + 'ady closed")' + #10 + #10 +
+  '        def __repr__(self):' + #10 + '            return "%s(%d)" % (sel' +
+  'f.__class__.__name__, int(self))' + #10 + #10 + '        __del__ = Close' +
+  #10 + 'else:' + #10 + '    # When select or poll has indi' +
+  'cated that the file is writable,' + #10 +
+  '    # we can write up to _PIPE_BUF' + ' bytes without risk of blocking.' +
+  #10 + '    # POSIX defines PIPE_BUF as >=' + ' 512.' + #10 +
+  '    _PIPE_BUF = getattr(select, ''P' + 'IPE_BUF'', 512)' + #10 + #10 +
+  '    # poll/select have the advanta' +
+  'ge of not requiring any extra file' + #10 +
+  '    # descriptor, contrarily to ep' +
+  'oll/kqueue (also, they require a s' + 'ingle' + #10 + '    # syscall).' +
+  #10 + '    if hasattr(selectors, ''PollSel' + 'ector''):' + #10 +
+  '        _PopenSelector = selectors' + '.PollSelector' + #10 + '    else:' +
+  #10 + '        _PopenSelector = selectors' + '.SelectSelector' + #10 + #10 +
+  #10 + 'if _mswindows:' + #10 + '    # On Windows we just need to c' +
+  'lose `Popen._handle` when we no lo' + 'nger need' + #10 +
+  '    # it, so that the kernel can f' +
+  'ree it. `Popen._handle` gets close' + 'd' + #10 +
+  '    # implicitly when the `Popen` ' +
+  'instance is finalized (see `Handle' + '.__del__`,' + #10 +
+  '    # which is calling `CloseHandl' +
+  'e` as requested in [1]), so there ' + 'is nothing' + #10 +
+  '    # for `_cleanup` to do.' + #10 + '    #' + #10 +
+  '    # [1] https://docs.microsoft.c' +
+  'om/en-us/windows/desktop/ProcThrea' + 'd/' + #10 +
+  '    # creating-processes' + #10 + '    _active = None' + #10 + #10 +
+  '    def _cleanup():' + #10 + '        pass' + #10 + 'else:' + #10 +
+  '    # This lists holds Popen insta' +
+  'nces for which the underlying proc' + 'ess had not' + #10 +
+  '    # exited at the time its __del' +
+  '__ method got called: those proces' + 'ses are' + #10 +
+  '    # wait()ed for synchronously f' +
+  'rom _cleanup() when a new Popen ob' + 'ject is' + #10 +
+  '    # created, to avoid zombie pro' + 'cesses.' + #10 +
+  '    _active = []' + #10 + #10 + '    def _cleanup():' + #10 +
+  '        if _active is None:' + #10 + '            return' + #10 +
+  '        for inst in _active[:]:' + #10 +
+  '            res = inst._internal_p' + 'oll(_deadstate=sys.maxsize)' + #10 +
+  '            if res is not None:' + #10 + '                try:' + #10 +
+  '                    _active.remove' + '(inst)' + #10 +
+  '                except ValueError:' + #10 +
+  '                    # This can hap' +
+  'pen if two threads create a new Po' + 'pen instance.' + #10;
+
+Const
+ Src_subprocess_1: AnsiString =
+  '                    # It''s harmles' +
+  's that it was already removed, so ' + 'ignore.' + #10 +
+  '                    pass' + #10 + #10 + 'PIPE = -1' + #10 + 'STDOUT = -2' +
+  #10 + 'DEVNULL = -3' + #10 + #10 + #10 +
+  '# XXX This function is only used b' +
+  'y multiprocessing and the test sui' + 'te,' + #10 +
+  '# but it''s here so that it can be ' +
+  'imported when Python is compiled w' + 'ithout' + #10 + '# threads.' + #10 +
+  #10 + 'def _optim_args_from_interpreter_f' + 'lags():' + #10 +
   '    """Return a list of command-li' +
+  'ne arguments reproducing the curre' + 'nt' + #10 +
+  '    optimization settings in sys.f' + 'lags."""' + #10 + '    args = []' +
+  #10 + '    value = sys.flags.optimize' + #10 + '    if value > 0:' + #10 +
+  '        args.append(''-'' + ''O'' * va' + 'lue)' + #10 +
+  '    return args' + #10 + #10 + #10 + 'def _args_from_interpreter_flags()' +
+  ':' + #10 + '    """Return a list of command-li' +
   'ne arguments reproducing the curre' + 'nt' + #10 +
   '    settings in sys.flags, sys.war' + 'noptions and sys._xoptions."""' +
-  #10 + '    return []' + #10 + #10 + #10 +
-  'def _optim_args_from_interpreter_f' + 'lags():' + #10 +
-  '    """Return a list of command-li' +
-  'ne arguments reproducing the curre' + 'nt' + #10 +
-  '    optimization settings in sys.f' + 'lags."""' + #10 + '    return []' +
-  #10 + #10 + #10 + 'def call(*popenargs, timeout=None,' + ' **kwargs):' +
-  #10 + '    """Run command with arguments.' +
-  '  Wait for command to complete or' + #10 +
-  '    timeout, then return the retur' + 'ncode attribute.' + #10 + #10 +
-  '    The arguments are the same as ' +
+  #10 + '    flag_opt_map = {' + #10 + '        ''debug'': ''d'',' + #10 +
+  '        # ''inspect'': ''i'',' + #10 +
+  '        # ''interactive'': ''i'',' + #10 +
+  '        ''dont_write_bytecode'': ''B''' + ',' + #10 +
+  '        ''no_site'': ''S'',' + #10 + '        ''verbose'': ''v'',' + #10 +
+  '        ''bytes_warning'': ''b'',' + #10 + '        ''quiet'': ''q'',' +
+  #10 + '        # -O is handled in _optim_' +
+  'args_from_interpreter_flags()' + #10 + '    }' + #10 +
+  '    args = _optim_args_from_interp' + 'reter_flags()' + #10 +
+  '    for flag, opt in flag_opt_map.' + 'items():' + #10 +
+  '        v = getattr(sys.flags, fla' + 'g)' + #10 + '        if v > 0:' +
+  #10 + '            args.append(''-'' + opt ' + '* v)' + #10 + #10 +
+  '    if sys.flags.isolated:' + #10 + '        args.append(''-I'')' + #10 +
+  '    else:' + #10 + '        if sys.flags.ignore_enviro' + 'nment:' + #10 +
+  '            args.append(''-E'')' + #10 +
+  '        if sys.flags.no_user_site:' + #10 +
+  '            args.append(''-s'')' + #10 + #10 + '    # -W options' + #10 +
+  '    warnopts = sys.warnoptions[:]' + #10 +
+  '    bytes_warning = sys.flags.byte' + 's_warning' + #10 +
+  '    xoptions = getattr(sys, ''_xopt' + 'ions'', {})' + #10 +
+  '    dev_mode = (''dev'' in xoptions)' + #10 + #10 +
+  '    if bytes_warning > 1:' + #10 + '        warnopts.remove("error::By' +
+  'tesWarning")' + #10 + '    elif bytes_warning:' + #10 +
+  '        warnopts.remove("default::' + 'BytesWarning")' + #10 +
+  '    if dev_mode:' + #10 + '        warnopts.remove(''default'')' + #10 +
+  '    for opt in warnopts:' + #10 + '        args.append(''-W'' + opt)' +
+  #10 + #10 + '    # -X options' + #10 + '    if dev_mode:' + #10 +
+  '        args.extend((''-X'', ''dev''))' + #10 +
+  '    for opt in (''faulthandler'', ''t' + 'racemalloc'', ''importtime'',' +
+  #10 + '                ''showalloccount'', ' +
+  '''showrefcount'', ''utf8''):' + #10 + '        if opt in xoptions:' + #10 +
+  '            value = xoptions[opt]' + #10 +
+  '            if value is True:' + #10 + '                arg = opt' + #10 +
+  '            else:' + #10 + '                arg = ''%s=%s'' % (o' +
+  'pt, value)' + #10 + '            args.extend((''-X'', arg' + '))' + #10 +
+  #10 + '    return args' + #10 + #10 + #10 +
+  'def call(*popenargs, timeout=None,' + ' **kwargs):' + #10 +
+  '    """Run command with arguments.' + '  Wait for command to complete or' +
+  #10 + '    timeout, then return the retur' + 'ncode attribute.' + #10 +
+  #10 + '    The arguments are the same as ' +
   'for the Popen constructor.  Exampl' + 'e:' + #10 + #10 +
   '    retcode = call(["ls", "-l"])' + #10 + '    """' + #10 +
-  '    with Popen(*popenargs, _run_ti' + 'meout=timeout, **kwargs) as p:' +
-  #10 + '        try:' + #10 + '            return p.wait(timeout=' +
-  'timeout)' + #10 + '        except:  # Including Keybo' +
-  'ardInterrupt, wait handled that.' + #10 + '            p.kill()' + #10 +
-  '            # We don''t call p.wait' +
+  '    with Popen(*popenargs, **kwarg' + 's) as p:' + #10 + '        try:' +
+  #10 + '            return p.wait(timeout=' + 'timeout)' + #10 +
+  '        except:  # Including Keybo' + 'ardInterrupt, wait handled that.' +
+  #10 + '            p.kill()' + #10 + '            # We don''t call p.wait' +
   '() again as p.__exit__ does that f' + 'or us.' + #10 +
   '            raise' + #10 + #10 + #10 +
   'def check_call(*popenargs, **kwarg' + 's):' + #10 +
@@ -86070,8 +86914,10 @@ Const
   '=None was previously equivalent to' + ' passing an' + #10 +
   '        # empty string. That is ma' +
   'intained here for backwards compat' + 'ibility.' + #10 +
-  '        kwargs[''input''] = '''' if kw' +
-  'args.get(''universal_newlines'', Fal' + 'se) else b''''' + #10 + #10 +
+  '        if kwargs.get(''universal_n' +
+  'ewlines'') or kwargs.get(''text''):' + #10 + '            empty = ''''' +
+  #10 + '        else:' + #10 + '            empty = b''''' + #10 +
+  '        kwargs[''input''] = empty' + #10 + #10 +
   '    return run(*popenargs, stdout=' +
   'PIPE, timeout=timeout, check=True,' + #10 +
   '               **kwargs).stdout' + #10 + #10 + #10 +
@@ -86111,13 +86957,9 @@ Const
   '    stderr. By default, stdout and' +
   ' stderr are not captured, and thos' + 'e attributes' + #10 +
   '    will be None. Pass stdout=PIPE' +
-  ' and/or stderr=PIPE in order to ca' + 'pture them.' + #10;
-
-Const
- Src_subprocess_1: AnsiString =
-  #10 + '    If check is True and the exit ' +
-  'code was non-zero, it raises a' + #10 +
-  '    CalledProcessError. The Called' +
+  ' and/or stderr=PIPE in order to ca' + 'pture them.' + #10 + #10 +
+  '    If check is True and the exit ' + 'code was non-zero, it raises a' +
+  #10 + '    CalledProcessError. The Called' +
   'ProcessError object will have the ' + 'return code' + #10 +
   '    in the returncode attribute, a' +
   'nd output & stderr attributes if t' + 'hose streams' + #10 +
@@ -86153,14 +86995,28 @@ Const
   '                             ''with' + ' capture_output.'')' + #10 +
   '        kwargs[''stdout''] = PIPE' + #10 +
   '        kwargs[''stderr''] = PIPE' + #10 + #10 +
-  '    with Popen(*popenargs, _run_ti' +
-  'meout=timeout, **kwargs) as proces' + 's:' + #10 + '        try:' + #10 +
-  '            stdout, stderr = proce' +
+  '    with Popen(*popenargs, **kwarg' + 's) as process:' + #10 +
+  '        try:' + #10 + '            stdout, stderr = proce' +
   'ss.communicate(input, timeout=time' + 'out)' + #10 +
   '        except TimeoutExpired as e' + 'xc:' + #10 +
-  '            process.kill()' + #10 + '            exc.stdout = process._' +
-  'timeout_stdout' + #10 + '            exc.stderr = process._' +
-  'timeout_stderr' + #10 + '            raise' + #10 +
+  '            process.kill()' + #10 + '            if _mswindows:' + #10 +
+  '                # Windows accumula' +
+  'tes the output in a single blockin' + 'g' + #10 +
+  '                # read() call run ' +
+  'on child threads, with the timeout' + #10;
+
+Const
+ Src_subprocess_2: AnsiString =
+  '                # being done in a ' +
+  'join() on those threads.  communic' + 'ate()' + #10 +
+  '                # _after_ kill() i' +
+  's required to collect that and add' + ' it' + #10 +
+  '                # to the exception' + '.' + #10 +
+  '                exc.stdout, exc.st' + 'derr = process.communicate()' +
+  #10 + '            else:' + #10 + '                # POSIX _communica' +
+  'te already populated the output so' + #10 +
+  '                # far into the Tim' + 'eoutExpired exception.' + #10 +
+  '                process.wait()' + #10 + '            raise' + #10 +
   '        except:  # Including Keybo' +
   'ardInterrupt, communicate handled ' + 'that.' + #10 +
   '            process.kill()' + #10 + '            # We don''t call proces' +
@@ -86215,13 +87071,15 @@ Const
   '        if bs_buf:' + #10 + '            result.extend(bs_buf)' + #10 +
   #10 + '        if needquote:' + #10 + '            result.extend(bs_buf)' +
   #10 + '            result.append(''"'')' + #10 + #10 +
-  '    return ''''.join(result)' + #10 + #10 + #10 + #10 +
-  'def getstatusoutput(cmd):' + #10 + '    """Return (exitcode, output) o' +
-  'f executing cmd in a shell.' + #10 + #10 +
-  '    Execute the string ''cmd'' in a ' + 'shell with ''check_output'' and' +
-  #10 + '    return a 2-tuple (status, outp' +
-  'ut). The locale encoding is used' + #10 +
-  '    to decode the output and proce' + 'ss newlines.' + #10 + #10 +
+  '    return ''''.join(result)' + #10 + #10 + #10 +
+  '# Various tools for executing comm' +
+  'ands and looking at their output a' + 'nd status.' + #10 + '#' + #10 +
+  #10 + 'def getstatusoutput(cmd):' + #10 +
+  '    """Return (exitcode, output) o' + 'f executing cmd in a shell.' + #10 +
+  #10 + '    Execute the string ''cmd'' in a ' +
+  'shell with ''check_output'' and' + #10 +
+  '    return a 2-tuple (status, outp' + 'ut). The locale encoding is used' +
+  #10 + '    to decode the output and proce' + 'ss newlines.' + #10 + #10 +
   '    A trailing newline is stripped' + ' from the output.' + #10 +
   '    The exit status for the comman' + 'd can be interpreted' + #10 +
   '    according to the rules for the' + ' function ''wait''. Example:' +
@@ -86238,8 +87096,8 @@ Const
   #10 + '    except CalledProcessError as e' + 'x:' + #10 +
   '        data = ex.output' + #10 + '        exitcode = ex.returncode' +
   #10 + '    if data[-1:] == ''\n'':' + #10 + '        data = data[:-1]' +
-  #10 + '    return exitcode, data' + #10 + #10 + #10 +
-  'def getoutput(cmd):' + #10 + '    """Return output (stdout or st' +
+  #10 + '    return exitcode, data' + #10 + #10 + 'def getoutput(cmd):' +
+  #10 + '    """Return output (stdout or st' +
   'derr) of executing cmd in a shell.' + #10 + #10 +
   '    Like getstatusoutput(), except' +
   ' the exit status is ignored and th' + 'e return' + #10 +
@@ -86248,140 +87106,85 @@ Const
   '    >>> subprocess.getoutput(''ls /' + 'bin/ls'')' + #10 +
   '    ''/bin/ls''' + #10 + '    """' + #10 +
   '    return getstatusoutput(cmd)[1]' + #10 + #10 + #10 +
-  '# --------------------------------' +
-  '----------------------------------' + ' helpers' + #10 + #10 +
-  '_safe_chars = frozenset(''abcdefghi' +
-  'jklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ' + 'RSTUVWXYZ''' + #10 +
-  '                        ''012345678' + '9@%+=:,./-_'')' + #10 + #10 + #10 +
-  'def _quote(s):' + #10 + '    """Quote a string for /bin/sh ' +
-  '(home made shlex.quote)."""' + #10 + '    if not s:' + #10 +
-  '        return "''''"' + #10 + '    for c in s:' + #10 +
-  '        if c not in _safe_chars:' + #10 +
-  '            return "''" + s.replace' + '("''", "''\"''\"''") + "''"' +
-  #10 + '    return s' + #10 + #10 + #10 + '_counter = [0]' + #10 +
-  '_pid_counter = [0]' + #10 + '_have_timeout = []' + #10 + #10 + #10 +
-  'def _tmpname(kind):' + #10 + '    _counter[0] += 1' + #10 +
-  '    return ''/tmp/.pysubp_%d_%d_%s''' +
-  ' % (os.getpid(), _counter[0], kind' + ')' + #10 + #10 + #10 +
-  'def _remove(path):' + #10 + '    try:' + #10 + '        os.remove(path)' +
-  #10 + '    except OSError:' + #10 + '        pass' + #10 + #10 + #10 +
-  'def _read_file(path):' + #10 + '    try:' + #10 +
-  '        f = open(path, ''rb'')' + #10 + '    except OSError:' + #10 +
-  '        data = b''''' + #10 + '    else:' + #10 +
-  '        data = f.read()' + #10 + '        f.close()' + #10 +
-  '    return data' + #10 + #10 + #10 + 'def _write_file(path, data):' + #10 +
-  '    f = open(path, ''wb'')' + #10 + '    f.write(data)' + #10 +
-  '    f.close()' + #10 + #10 + #10 + 'def _which(prog, env):' + #10 +
-  '    """Find an executable like exe' +
-  'cvp() would; raise like Popen does' + '."""' + #10 +
-  '    if ''/'' in prog:' + #10 + '        if not os.path.exists(prog' +
-  '):' + #10 + '            raise FileNotFoundErro' +
-  'r(2, ''No such file or directory'', ' + 'prog)' + #10 +
-  '        if os.path.isdir(prog) or ' + 'not os.access(prog, os.X_OK):' +
-  #10 + '            raise PermissionError(' +
-  '13, ''Permission denied'', prog)' + #10 + '        return prog' + #10 +
-  '    if env is not None:' + #10 + '        path = env.get(''PATH'', os.' +
-  'defpath)' + #10 + '    else:' + #10 +
-  '        path = os.environ.get(''PAT' + 'H'', os.defpath)' + #10 +
-  '    denied = False' + #10 + '    for d in path.split(os.pathsep' + '):' +
-  #10 + '        cand = os.path.join(d or ''' + '.'', prog)' + #10 +
-  '        if os.path.exists(cand) an' + 'd not os.path.isdir(cand):' + #10 +
-  '            if os.access(cand, os.' + 'X_OK):' + #10 +
-  '                return cand' + #10 + '            denied = True' + #10 +
-  '    if denied:' + #10 + '        raise PermissionError(13, ' +
-  '''Permission denied'', prog)' + #10 +
-  '    raise FileNotFoundError(2, ''No' + ' such file or directory'', prog)' +
-  #10 + #10 + #10 + 'class _PipeReader:' + #10 +
-  '    """Read side of a PIPE: filled' +
-  ' when the child has been run (lazi' + 'ly)."""' + #10 + #10 +
-  '    def __init__(self, popen, whic' + 'h, text, encoding, errors):' + #10 +
-  '        self._popen = popen' + #10 + '        self._which = which' + #10 +
-  '        self._buf = None' + #10;
-
-Const
- Src_subprocess_2: AnsiString =
-  '        self._text = text' + #10 + '        self._encoding = encoding' +
-  #10 + '        self._errors = errors' + #10 +
-  '        self.closed = False' + #10 +
-  '        self.name = ''<%s>'' % which' + #10 +
-  '        self.mode = ''r'' if text el' + 'se ''rb''' + #10 + #10 +
-  '    def _fill(self, data):' + #10 + '        if self._text:' + #10 +
-  '            self._buf = io.StringI' +
-  'O(_decode_text(data, self._encodin' + 'g, self._errors))' + #10 +
-  '        else:' + #10 + '            self._buf = io.BytesIO' + '(data)' +
-  #10 + #10 + '    def _ensure(self):' + #10 + '        if self.closed:' +
-  #10 + '            raise ValueError(''I/O ' +
-  'operation on closed file'')' + #10 + '        if self._buf is None:' +
-  #10 + '            self._popen._run()' + #10 + '        return self._buf' +
-  #10 + #10 + '    def read(self, size=-1):' + #10 +
-  '        return self._ensure().read' + '(size)' + #10 + #10 +
-  '    def readline(self, size=-1):' + #10 +
-  '        return self._ensure().read' + 'line()' + #10 + #10 +
-  '    def readlines(self, hint=-1):' + #10 +
-  '        return self._ensure().read' + 'lines()' + #10 + #10 +
-  '    def readable(self):' + #10 + '        return True' + #10 + #10 +
-  '    def writable(self):' + #10 + '        return False' + #10 + #10 +
-  '    def seekable(self):' + #10 + '        return False' + #10 + #10 +
-  '    def fileno(self):' + #10 + '        raise io.UnsupportedOperat' +
-  'ion(''fileno'')' + #10 + #10 + '    def flush(self):' + #10 +
-  '        pass' + #10 + #10 + '    def isatty(self):' + #10 +
-  '        return False' + #10 + #10 + '    def __iter__(self):' + #10 +
-  '        return self' + #10 + #10 + '    def __next__(self):' + #10 +
-  '        line = self.readline()' + #10 + '        if not line:' + #10 +
-  '            raise StopIteration' + #10 + '        return line' + #10 +
-  #10 + '    def close(self):' + #10 + '        self.closed = True' + #10 +
-  #10 + '    def __enter__(self):' + #10 + '        return self' + #10 + #10 +
-  '    def __exit__(self, *exc):' + #10 + '        self.close()' + #10 + #10 +
-  #10 + 'class _PipeWriter:' + #10 + '    """Write side of stdin=PIPE: c' +
-  'ollected, handed to the child when' + ' it runs."""' + #10 + #10 +
-  '    def __init__(self, popen, text' + ', encoding, errors):' + #10 +
-  '        self._popen = popen' + #10 + '        self._chunks = []' + #10 +
-  '        self._text = text' + #10 + '        self._encoding = encoding' +
-  #10 + '        self._errors = errors' + #10 +
-  '        self.closed = False' + #10 + '        self.name = ''<stdin>''' +
-  #10 + '        self.mode = ''w'' if text el' + 'se ''wb''' + #10 + #10 +
-  '    def write(self, data):' + #10 + '        if self.closed:' + #10 +
-  '            raise ValueError(''writ' + 'e to closed file'')' + #10 +
-  '        if self._text:' + #10 + '            if not isinstance(data' +
-  ', str):' + #10 + '                raise TypeError(''w' +
-  'rite() argument must be str, not %' + 's'' % type(data).__name__)' + #10 +
-  '            self._chunks.append(_e' +
-  'ncode_text(data, self._encoding, s' + 'elf._errors))' + #10 +
-  '            return len(data)' + #10 + '        if isinstance(data, str):' +
-  #10 + '            raise TypeError("a byt' +
-  'es-like object is required, not ''s' + 'tr''")' + #10 +
-  '        b = bytes(data)' + #10 + '        self._chunks.append(b)' + #10 +
-  '        return len(b)' + #10 + #10 + '    def writelines(self, lines):' +
-  #10 + '        for line in lines:' + #10 + '            self.write(line)' +
-  #10 + #10 + '    def writable(self):' + #10 + '        return True' + #10 +
-  #10 + '    def readable(self):' + #10 + '        return False' + #10 + #10 +
-  '    def flush(self):' + #10 + '        if self.closed:' + #10 +
-  '            raise ValueError(''flus' + 'h of closed file'')' + #10 + #10 +
-  '    def fileno(self):' + #10 + '        raise io.UnsupportedOperat' +
-  'ion(''fileno'')' + #10 + #10 + '    def isatty(self):' + #10 +
-  '        return False' + #10 + #10 + '    def close(self):' + #10 +
-  '        self.closed = True' + #10 + #10 + '    def getvalue(self):' + #10 +
-  '        return b''''.join(self._chun' + 'ks)' + #10 + #10 +
-  '    def __enter__(self):' + #10 + '        return self' + #10 + #10 +
-  '    def __exit__(self, *exc):' + #10 + '        self.close()' + #10 + #10 +
-  #10 + 'def _decode_text(data, encoding, e' + 'rrors):' + #10 +
-  '    text = data.decode(encoding or' + ' ''utf-8'', errors or ''strict'')' +
-  #10 + '    if ''\r'' in text:' + #10 +
-  '        text = text.replace(''\r\n''' +
-  ', ''\n'').replace(''\r'', ''\n'')' + #10 + '    return text' + #10 + #10 +
-  #10 + 'def _encode_text(text, encoding, e' + 'rrors):' + #10 +
-  '    return text.encode(encoding or' + ' ''utf-8'', errors or ''strict'')' +
-  #10 + #10 + #10 + 'def _fspath_arg(a):' + #10 + '    a = os.fspath(a)' +
-  #10 + '    if isinstance(a, bytes):' + #10 + '        a = os.fsdecode(a)' +
-  #10 + '    return a' + #10 + #10 + #10 + 'class Popen(object):' + #10 +
-  '    """ Execute a child program in' + ' a new process.' + #10 + #10 +
-  '    For a complete description of ' +
-  'the arguments see the Python docum' + 'entation.' + #10 +
-  '    (This emulation runs the child' +
-  ' synchronously through os.system()' + ', see the' + #10 +
-  '    comment at the top of this mod' + 'ule for the limitations.)' + #10 +
-  #10 + '    Attributes:' + #10 + '        stdin, stdout, stderr, pid' +
-  ', returncode, args' + #10 + '    """' + #10 +
+  'def _use_posix_spawn():' + #10 + '    """Check if posix_spawn() can ' +
+  'be used for subprocess.' + #10 + #10 +
+  '    subprocess requires a posix_sp' +
+  'awn() implementation that properly' + ' reports' + #10 +
+  '    errors to the parent process, ' +
+  '& sets errno on the following fail' + 'ures:' + #10 + #10 +
+  '    * Process attribute actions fa' + 'iled.' + #10 +
+  '    * File actions failed.' + #10 + '    * exec() failed.' + #10 + #10 +
+  '    Prefer an implementation which' +
+  ' can use vfork() in some cases for' + ' best' + #10 + '    performance.' +
+  #10 + '    """' + #10 + '    if _mswindows or not hasattr(o' +
+  's, ''posix_spawn''):' + #10 + '        # os.posix_spawn() is not ' +
+  'available' + #10 + '        return False' + #10 + #10 +
+  '    if sys.platform == ''darwin'':' + #10 +
+  '        # posix_spawn() is a sysca' +
+  'll on macOS and properly reports e' + 'rrors' + #10 +
+  '        return True' + #10 + #10 + '    # Check libc name and runtime ' +
+  'libc version' + #10 + '    try:' + #10 +
+  '        ver = os.confstr(''CS_GNU_L' + 'IBC_VERSION'')' + #10 +
+  '        # parse ''glibc 2.28'' as (''' + 'glibc'', (2, 28))' + #10 +
+  '        parts = ver.split(maxsplit' + '=1)' + #10 +
+  '        if len(parts) != 2:' + #10 + '            # reject unknown forma' +
+  't' + #10 + '            raise ValueError' + #10 +
+  '        libc = parts[0]' + #10 + '        version = tuple(map(int, p' +
+  'arts[1].split(''.'')))' + #10 + #10 +
+  '        if sys.platform == ''linux''' +
+  ' and libc == ''glibc'' and version >' + '= (2, 24):' + #10 +
+  '            # glibc 2.24 has a new' +
+  ' Linux posix_spawn implementation ' + 'using vfork' + #10 +
+  '            # which properly repor' + 'ts errors to the parent process.' +
+  #10 + '            return True' + #10 +
+  '        # Note: Don''t use the impl' +
+  'ementation in earlier glibc becaus' + 'e it doesn''t' + #10 +
+  '        # use vfork (even if glibc' +
+  ' 2.26 added a pipe to properly rep' + 'ort errors' + #10 +
+  '        # to the parent process).' + #10 +
+  '    except (AttributeError, ValueE' + 'rror, OSError):' + #10 +
+  '        # os.confstr() or CS_GNU_L' + 'IBC_VERSION value not available' +
+  #10 + '        pass' + #10 + #10 + '    # By default, assume that posi' +
+  'x_spawn() does not properly report' + ' errors.' + #10 +
+  '    return False' + #10 + #10 + #10 +
+  '_USE_POSIX_SPAWN = _use_posix_spaw' + 'n()' + #10 + #10 + #10 +
+  'class Popen(object):' + #10 + '    """ Execute a child program in' +
+  ' a new process.' + #10 + #10 + '    For a complete description of ' +
+  'the arguments see the Python docum' + 'entation.' + #10 + #10 +
+  '    Arguments:' + #10 + '      args: A string, or a sequenc' +
+  'e of program arguments.' + #10 + #10 +
+  '      bufsize: supplied as the buf' +
+  'fering argument to the open() func' + 'tion when' + #10 +
+  '          creating the stdin/stdou' + 't/stderr pipe file objects' + #10 +
+  #10 + '      executable: A replacement pr' + 'ogram to execute.' + #10 +
+  #10 + '      stdin, stdout and stderr: Th' +
+  'ese specify the executed programs''' + ' standard' + #10 +
+  '          input, standard output a' +
+  'nd standard error file handles, re' + 'spectively.' + #10 + #10 +
+  '      preexec_fn: (POSIX only) An ' +
+  'object to be called in the child p' + 'rocess' + #10 +
+  '          just before the child is' + ' executed.' + #10 + #10 +
+  '      close_fds: Controls closing ' +
+  'or inheriting of file descriptors.' + #10 + #10 +
+  '      shell: If true, the command ' +
+  'will be executed through the shell' + '.' + #10 + #10 +
+  '      cwd: Sets the current direct' + 'ory before the child is executed.' +
+  #10 + #10 + '      env: Defines the environment' +
+  ' variables for the new process.' + #10 + #10 +
+  '      text: If true, decode stdin,' +
+  ' stdout and stderr using the given' + ' encoding' + #10 +
+  '          (if set) or the system d' + 'efault otherwise.' + #10 + #10 +
+  '      universal_newlines: Alias of' +
+  ' text, provided for backwards comp' + 'atibility.' + #10 + #10 +
+  '      startupinfo and creationflag' + 's (Windows only)' + #10 + #10 +
+  '      restore_signals (POSIX only)' + #10 + #10 +
+  '      start_new_session (POSIX onl' + 'y)' + #10 + #10 +
+  '      pass_fds (POSIX only)' + #10 + #10 +
+  '      encoding and errors: Text mo' +
+  'de encoding and error handling to ' + 'use for' + #10 +
+  '          file objects stdin, stdo' + 'ut and stderr.' + #10 + #10 +
+  '    Attributes:' + #10 + '        stdin, stdout, stderr, pid' +
+  ', returncode' + #10 + '    """' + #10 +
   '    _child_created = False  # Set ' + 'here since __del__ checks it' +
   #10 + #10 + '    def __init__(self, args, bufsi' +
   'ze=-1, executable=None,' + #10 + '                 stdin=None, stdou' +
@@ -86391,267 +87194,240 @@ Const
   '                 startupinfo=None,' + ' creationflags=0,' + #10 +
   '                 restore_signals=T' + 'rue, start_new_session=False,' +
   #10 + '                 pass_fds=(), *, e' +
-  'ncoding=None, errors=None, text=No' + 'ne,' + #10 +
-  '                 _run_timeout=None' + '):' + #10 +
+  'ncoding=None, errors=None, text=No' + 'ne):' + #10 +
   '        """Create new Popen instan' + 'ce."""' + #10 +
-  '        _cleanup()' + #10 + '        if bufsize is None:' + #10 +
-  '            bufsize = -1  # Restor' + 'e default' + #10 +
-  '        if not isinstance(bufsize,' + ' int):' + #10 +
+  '        _cleanup()' + #10 + '        # Held while anything is c' +
+  'alling waitpid before returncode h' + 'as been' + #10 +
+  '        # updated to prevent clobb' +
+  'ering returncode if wait() or poll' + '() are' + #10 +
+  '        # called from multiple thr' +
+  'eads at once.  After acquiring the' + ' lock,' + #10 +
+  '        # code must re-check self.' +
+  'returncode to see if another threa' + 'd just' + #10 +
+  '        # finished a waitpid() cal' + 'l.' + #10 +
+  '        self._waitpid_lock = threa' + 'ding.Lock()' + #10;
+
+Const
+ Src_subprocess_3: AnsiString =
+  #10 + '        self._input = None' + #10 +
+  '        self._communication_starte' + 'd = False' + #10 +
+  '        if bufsize is None:' + #10 + '            bufsize = -1  # Restor' +
+  'e default' + #10 + '        if not isinstance(bufsize,' + ' int):' + #10 +
   '            raise TypeError("bufsi' + 'ze must be an integer")' + #10 +
-  '        if creationflags != 0:' + #10 +
-  '            raise ValueError("crea' +
-  'tionflags is only supported on Win' + 'dows "' + #10 +
-  '                             "plat' + 'forms")' + #10 + #10 +
+  #10 + '        if _mswindows:' + #10 +
+  '            if preexec_fn is not N' + 'one:' + #10 +
+  '                raise ValueError("' +
+  'preexec_fn is not supported on Win' + 'dows "' + #10 +
+  '                                 "' + 'platforms")' + #10 +
+  '        else:' + #10 + '            # POSIX' + #10 +
+  '            if pass_fds and not cl' + 'ose_fds:' + #10 +
+  '                warnings.warn("pas' +
+  's_fds overriding close_fds.", Runt' + 'imeWarning)' + #10 +
+  '                close_fds = True' + #10 +
+  '            if startupinfo is not ' + 'None:' + #10 +
+  '                raise ValueError("' +
+  'startupinfo is only supported on W' + 'indows "' + #10 +
+  '                                 "' + 'platforms")' + #10 +
+  '            if creationflags != 0:' + #10 +
+  '                raise ValueError("' +
+  'creationflags is only supported on' + ' Windows "' + #10 +
+  '                                 "' + 'platforms")' + #10 + #10 +
   '        self.args = args' + #10 + '        self.stdin = None' + #10 +
   '        self.stdout = None' + #10 + '        self.stderr = None' + #10 +
   '        self.pid = None' + #10 + '        self.returncode = None' + #10 +
   '        self.encoding = encoding' + #10 + '        self.errors = errors' +
-  #10 + #10 + '        if (text is not None and u' +
-  'niversal_newlines is not None' + #10 +
-  '            and bool(universal_new' + 'lines) != bool(text)):' + #10 +
-  '            raise SubprocessError(' +
+  #10 + #10 + '        # Validate the combination' +
+  's of text and universal_newlines' + #10 +
+  '        if (text is not None and u' + 'niversal_newlines is not None' +
+  #10 + '            and bool(universal_new' + 'lines) != bool(text)):' +
+  #10 + '            raise SubprocessError(' +
   '''Cannot disambiguate when both tex' + 't ''' + #10 +
   '                                  ' +
   '''and universal_newlines are suppli' + 'ed but ''' + #10 +
   '                                  ' +
-  '''different. Pass one or the other.' + ''')' + #10 +
+  '''different. Pass one or the other.' + ''')' + #10 + #10 +
+  '        # Input and output objects' + '. The general principle is like' +
+  #10 + '        # this:' + #10 + '        #' + #10 +
+  '        # Parent                  ' + ' Child' + #10 +
+  '        # ------                  ' + ' -----' + #10 +
+  '        # p2cwrite   ---stdin---> ' + ' p2cread' + #10 +
+  '        # c2pread    <--stdout--- ' + ' c2pwrite' + #10 +
+  '        # errread    <--stderr--- ' + ' errwrite' + #10 + '        #' +
+  #10 + '        # On POSIX, the child obje' +
+  'cts are file descriptors.  On' + #10 +
+  '        # Windows, these are Windo' +
+  'ws file handles.  The parent objec' + 'ts' + #10 +
+  '        # are file descriptors on ' +
+  'both platforms.  The parent object' + 's' + #10 +
+  '        # are -1 when not using PI' + 'PEs. The child objects are -1' +
+  #10 + '        # when not redirecting.' + #10 + #10 +
+  '        (p2cread, p2cwrite,' + #10 + '         c2pread, c2pwrite,' + #10 +
+  '         errread, errwrite) = self' +
+  '._get_handles(stdin, stdout, stder' + 'r)' + #10 + #10 +
+  '        # We wrap OS handles *befo' +
+  're* launching the child, otherwise' + ' a' + #10 +
+  '        # quickly terminating chil' + 'd could make our fds unwrappable' +
+  #10 + '        # (see #8458).' + #10 + #10 + '        if _mswindows:' +
+  #10 + '            if p2cwrite != -1:' + #10 +
+  '                p2cwrite = msvcrt.' +
+  'open_osfhandle(p2cwrite.Detach(), ' + '0)' + #10 +
+  '            if c2pread != -1:' + #10 +
+  '                c2pread = msvcrt.o' +
+  'pen_osfhandle(c2pread.Detach(), 0)' + #10 +
+  '            if errread != -1:' + #10 +
+  '                errread = msvcrt.o' +
+  'pen_osfhandle(errread.Detach(), 0)' + #10 + #10 +
   '        self.text_mode = encoding ' +
-  'or errors or text or universal_new' + 'lines' + #10 +
-  '        self.universal_newlines = ' + 'self.text_mode' + #10 + #10 +
-  '        self._shell = shell' + #10 + '        self._executable = executa' +
-  'ble' + #10 + '        self._cwd = cwd' + #10 + '        self._env = env' +
-  #10 + '        self._stdin_spec = stdin' + #10 +
-  '        self._stdout_spec = stdout' + #10 +
-  '        self._stderr_spec = stderr' + #10 + '        self._done = False' +
-  #10 + '        self._status = None' + #10 + '        self._outdata = None' +
-  #10 + '        self._errdata = None' + #10 + '        self._killed = None' +
-  #10 + '        self._timeout_stdout = Non' + 'e' + #10 +
-  '        self._timeout_stderr = Non' + 'e' + #10 +
-  '        self._communication_starte' + 'd = False' + #10 +
-  '        self._defer = (stdin == PI' + 'PE)' + #10 +
-  '        self._timeout = _run_timeo' + 'ut' + #10 +
-  '        self._elapsed = 0.0' + #10 + '        self._timeout_reported = F' +
-  'alse' + #10 + #10 + '        # validate / pre-flight ch' +
-  'ecks done at construction (as exec' + ' errors are' + #10 +
-  '        # raised by the real const' + 'ructor)' + #10 +
-  '        argv = self._argv()' + #10 + '        if not shell:' + #10 +
-  '            prog = executable if e' +
-  'xecutable is not None else argv[0]' + #10 +
-  '            _which(_fspath_arg(pro' + 'g), env)' + #10 +
-  '        if cwd is not None:' + #10 + '            cwd_s = _fspath_arg(cw' +
-  'd)' + #10 + '            if not os.path.isdir(c' + 'wd_s):' + #10 +
-  '                if os.path.exists(' + 'cwd_s):' + #10 +
-  '                    raise NotADire' +
-  'ctoryError(20, ''Not a directory'', ' + 'cwd_s)' + #10 +
-  '                raise FileNotFound' +
-  'Error(2, ''No such file or director' + 'y'', cwd_s)' + #10 + #10 +
-  '        _pid_counter[0] += 1' + #10 +
-  '        self.pid = os.getpid() + _' + 'pid_counter[0]' + #10 +
-  '        self._child_created = True' + #10 + #10 +
-  '        if stdin == PIPE:' + #10 + '            self.stdin = _PipeWrit' +
-  'er(self, bool(self.text_mode), enc' + 'oding, errors)' + #10 +
-  '        if stdout == PIPE:' + #10 + '            self.stdout = _PipeRea' +
-  'der(self, ''stdout'', bool(self.text' + '_mode), encoding, errors)' + #10 +
-  '        if stderr == PIPE:' + #10 + '            self.stderr = _PipeRea' +
-  'der(self, ''stderr'', bool(self.text' + '_mode), encoding, errors)' + #10 +
-  '        if stdout == STDOUT:' + #10 +
-  '            raise OSError(9, ''Bad ' + 'file descriptor'')' + #10 + #10 +
-  '        if not self._defer:' + #10 + '            self._run(self._timeou' +
-  't)' + #10 + #10 + '    # ----------------------------' +
-  '-------------------------------- i' + 'nternals' + #10 + #10 +
-  '    def _argv(self):' + #10 + '        args = self.args' + #10 +
-  '        if self._shell:' + #10 + '            if isinstance(args, (s' +
-  'tr, bytes, os.PathLike)):' + #10 + '                return [_fspath_ar' +
-  'g(args)]' + #10 + '            return [_fspath_arg(a)' +
-  ' for a in args]' + #10 + '        if isinstance(args, (str, ' +
-  'bytes, os.PathLike)):' + #10 + '            return [_fspath_arg(ar' +
-  'gs)]' + #10;
-
-Const
- Src_subprocess_3: AnsiString =
-  '        return [_fspath_arg(a) for' + ' a in args]' + #10 + #10 +
-  '    def _redirect(self, spec, fd, ' + 'files, mode):' + #10 +
-  '        """Return the shell redire' + 'ction text for descriptor fd."""' +
-  #10 + '        if spec is None:' + #10 + '            return ''''' + #10 +
-  '        if spec == PIPE:' + #10 + '            path = _tmpname(''out'' ' +
-  'if fd == 1 else (''err'' if fd == 2 ' + 'else ''in''))' + #10 +
-  '            files[fd] = path' + #10 +
-  '            return '' %d%s%s'' % (fd' +
-  ', ''<'' if fd == 0 else ''>'', _quote(' + 'path))' + #10 +
-  '        if spec == DEVNULL:' + #10 +
-  '            return '' %d%s/dev/null' +
-  ''' % (fd, ''<'' if fd == 0 else ''>'')' + #10 +
-  '        if spec == STDOUT:' + #10 + '            return '' 2>&1''' + #10 +
-  '        if isinstance(spec, int):' + #10 +
-  '            if spec in (0, 1, 2):' + #10 +
-  '                if spec == fd:' + #10 + '                    return ''''' +
-  #10 + '                return '' %d%s&%d'' ' +
-  '% (fd, ''<'' if fd == 0 else ''>'', sp' + 'ec)' + #10 +
-  '            raise ValueError(''unsu' +
-  'pported file descriptor %d'' % spec' + ')' + #10 +
-  '        # a file object' + #10 + '        try:' + #10 +
-  '            no = spec.fileno()' + #10 +
-  '        except (AttributeError, OS' + 'Error, ValueError):' + #10 +
-  '            no = None' + #10 + '            if not isinstance(geta' +
-  'ttr(spec, ''name'', None), str):' + #10 +
-  '                raise io.Unsupport' + 'edOperation(''fileno'')' + #10 +
-  '        if isinstance(no, int) and' + ' no in (0, 1, 2):' + #10 +
-  '            if no == fd:' + #10 + '                return ''''' + #10 +
-  '            return '' %d%s&%d'' % (f' +
-  'd, ''<'' if fd == 0 else ''>'', no)' + #10 +
-  '        name = getattr(spec, ''name' + ''', None)' + #10 +
-  '        if not isinstance(name, st' + 'r) or name[:1] == ''<'':' + #10 +
-  '            raise io.UnsupportedOp' + 'eration(''fileno'')' + #10 +
-  '        try:' + #10 + '            spec.flush()' + #10 +
-  '        except Exception:' + #10 + '            pass' + #10 +
-  '        if fd == 0:' + #10 + '            return '' <%s'' % _quote' +
-  '(name)' + #10 + '        return '' %d>>%s'' % (fd, _q' + 'uote(name))' +
-  #10 + #10 + '    def _build(self, timeout):' + #10 + '        files = {}' +
-  #10 + '        argv = self._argv()' + #10 + '        if self._shell:' +
-  #10 + '            if len(argv) == 1:' + #10 +
-  '                body = ''sh -c '' + ' + '_quote(argv[0])' + #10 +
-  '            else:' + #10 + '                body = ''sh -c '' + ' +
-  ''' ''.join(_quote(a) for a in argv)' + #10 +
-  '            if self._executable is' + ' not None:' + #10 +
-  '                body = _quote(_fsp' +
-  'ath_arg(self._executable)) + body[' + '2:]' + #10 + '        else:' + #10 +
-  '            if self._executable is' + ' not None:' + #10 +
-  '                argv = [_fspath_ar' + 'g(self._executable)] + argv[1:]' +
-  #10 + '            body = '' ''.join(_quote' + '(a) for a in argv)' + #10 +
-  '        if self._env is not None:' + #10 +
-  '            assigns = '' ''.join(''%s' +
-  '=%s'' % (_quote(_fspath_arg(k)), _q' + 'uote(_fspath_arg(v)))' + #10 +
-  '                               for' + ' k, v in self._env.items())' + #10 +
-  '            body = ''env -i '' + ass' + 'igns + '' '' + body' + #10 +
-  '        if timeout is not None:' + #10 +
-  '            body = ''timeout -s KIL' + 'L %s %s'' % (timeout, body)' +
-  #10 + '        redirs = ''''' + #10 + '        if self._stdin_spec is not' +
-  ' None:' + #10 + '            if self._stdin_spec ==' + ' PIPE:' + #10 +
-  '                path = _tmpname(''i' + 'n'')' + #10 +
-  '                _write_file(path, ' +
-  'self.stdin.getvalue() if self.stdi' + 'n is not None else b'''')' + #10 +
-  '                files[0] = path' + #10 +
-  '                redirs += '' <'' + _' + 'quote(path)' + #10 +
-  '            else:' + #10 + '                redirs += self._re' +
-  'direct(self._stdin_spec, 0, files,' + ' ''r'')' + #10 + '        else:' +
-  #10 + '            # a child must not rea' +
-  'd our (possibly interactive) stdin' + ' by accident' + #10 +
-  '            pass' + #10 + '        # stdout first, then stder' +
-  'r (so that 2>&1 follows the stdout' + ' redirection)' + #10 +
-  '        redirs += self._redirect(s' +
-  'elf._stdout_spec, 1, files, ''w'')' + #10 +
-  '        r2 = self._redirect(self._' + 'stderr_spec, 2, files, ''w'')' +
-  #10 + '        if not r2:' + #10 + '            r2 = '' 2>&3''      # in' +
-  'herited stderr (the shell''s own st' + 'derr is silenced below)' + #10 +
-  '        redirs += r2' + #10 + '        stfile = _tmpname(''st'')' + #10 +
-  '        files[''st''] = stfile' + #10 +
-  '        cmd = ''exec '' + body + red' + 'irs' + #10 +
-  '        if self._cwd is not None:' + #10 +
-  '            cmd = ''cd '' + _quote(_' +
-  'fspath_arg(self._cwd)) + '' && '' + ' + 'cmd' + #10 +
-  '        # the child is exec''d in a' +
-  ' subshell so that the waiting shel' + 'l (whose stderr' + #10 +
-  '        # is silenced) does not pr' +
-  'int "Killed"/"Terminated" job mess' + 'ages' + #10 +
-  '        cmd = ''exec 3>&2 2>/dev/nu' +
-  'll; ( '' + cmd + ''\n); echo $? >'' +' + ' _quote(stfile)' + #10 +
-  '        return cmd, files' + #10 + #10 + '    def _have_timeout(self):' +
-  #10 + '        if not _have_timeout:' + #10 +
-  '            _have_timeout.append(o' +
-  's.system(''command -v timeout >/dev' + '/null 2>&1'') == 0)' + #10 +
-  '        return _have_timeout[0]' + #10 + #10 +
-  '    def _run(self, timeout=None):' + #10 + '        if self._done:' + #10 +
-  '            return' + #10 + '        self._done = True' + #10 +
-  '        if self._killed is not Non' + 'e:' + #10 +
-  '            self.returncode = self' + '._killed' + #10 +
-  '            self._status = self._k' + 'illed' + #10 +
-  '            self._set_outputs(b'''',' + ' b'''')' + #10 +
-  '            return' + #10 + '        use_timeout = timeout if (' +
-  'timeout is not None and self._have' + '_timeout()) else None' + #10 +
-  '        cmd, files = self._build(u' + 'se_timeout)' + #10 +
-  '        try:' + #10 + '            sys.stdout.flush()' + #10 +
-  '            sys.stderr.flush()' + #10 + '        except Exception:' + #10 +
-  '            pass' + #10 + '        t0 = _time.monotonic()' + #10 +
-  '        try:' + #10 + '            os.system(cmd)' + #10 +
-  '        finally:' + #10 + '            elapsed = _time.monoto' +
-  'nic() - t0' + #10 + '            st = _read_file(files[' +
-  '''st'']).strip()' + #10 + '            out = _read_file(files' +
-  '[1]) if 1 in files else b''''' + #10 +
-  '            err = _read_file(files' + '[2]) if 2 in files else b''''' +
-  #10 + '            for p in files.values(' + '):' + #10 +
-  '                _remove(p)' + #10 + '        try:' + #10 +
-  '            rc = int(st)' + #10 + '        except ValueError:' + #10 +
-  '            rc = 127' + #10 + '        if 128 < rc <= 192:' + #10 +
-  '            rc = -(rc - 128)' + #10 + '        self._status = rc' + #10 +
-  '        self._elapsed = elapsed' + #10 +
-  '        self._set_outputs(out, err' + ')' + #10 +
-  '        if use_timeout is not None' +
-  ' and rc == -9 and elapsed >= use_t' + 'imeout * 0.9:' + #10 +
-  '            self._timeout_stdout =' +
-  ' self._outdata if self._stdout_spe' + 'c == PIPE else None' + #10 +
-  '            self._timeout_stderr =' +
-  ' self._errdata if self._stderr_spe' + 'c == PIPE else None' + #10 +
-  '            self.returncode = -9' + #10 +
-  '            raise TimeoutExpired(s' +
-  'elf.args, timeout, output=self._ti' + 'meout_stdout,' + #10 +
-  '                                 s' + 'tderr=self._timeout_stderr)' + #10 +
-  #10 + '    def _set_outputs(self, out, er' + 'r):' + #10 +
-  '        if self.stdout is not None' + ':' + #10 +
-  '            self.stdout._fill(out)' + #10 +
-  '        if self.stderr is not None' + ':' + #10 +
-  '            self.stderr._fill(err)' + #10 +
-  '        self._outdata = self._conv' +
-  '(out) if self._stdout_spec == PIPE' + ' else None' + #10 +
-  '        self._errdata = self._conv' +
-  '(err) if self._stderr_spec == PIPE' + ' else None' + #10 + #10 +
-  '    def _conv(self, data):' + #10 + '        if self.text_mode:' + #10 +
-  '            return _decode_text(da' + 'ta, self.encoding, self.errors)' +
-  #10 + '        return data' + #10 + #10 +
-  '    # ----------------------------' +
-  '----------------------------------' + '- public' + #10 + #10 +
-  '    def __repr__(self):' + #10 + '        return ''<Popen: returncode' +
-  ': {} args: {!r}>''.format(' + #10 + '            self.returncode, self.' +
-  'args)' + #10 + #10 + '    def __enter__(self):' + #10 +
-  '        return self' + #10 + #10 + '    def __exit__(self, exc_type, v' +
-  'alue, traceback):' + #10 + '        for f in (self.stdout, sel' +
-  'f.stderr, self.stdin):' + #10 + '            if f is not None:' + #10 +
-  '                f.close()' + #10 + '        # Wait for the process to ' +
-  'terminate, to avoid zombies.' + #10 + '        self.wait()' + #10 + #10 +
-  '    def __del__(self, _maxsize=sys' + '.maxsize, _warn=None):' + #10 +
-  '        pass' + #10 + #10 + '    def poll(self):' + #10 +
-  '        """Check if child process ' +
-  'has terminated. Set and return ret' + 'urncode' + #10 +
-  '        attribute. Otherwise, retu' + 'rns None."""' + #10 +
+  'or errors or text or universal_new' + 'lines' + #10 + #10 +
+  '        # How long to resume waiti' + 'ng on a child after the first ^C.' +
+  #10 + '        # There is no right value ' +
+  'for this.  The purpose is to be po' + 'lite' + #10 +
+  '        # yet remain good for inte' +
+  'ractive users trying to exit a too' + 'l.' + #10 +
+  '        self._sigint_wait_secs = 0' +
+  '.25  # 1/xkcd221.getRandomNumber()' + #10 + #10 +
+  '        self._closed_child_pipe_fd' + 's = False' + #10 + #10 +
+  '        if self.text_mode:' + #10 + '            if bufsize == 1:' + #10 +
+  '                line_buffering = T' + 'rue' + #10 +
+  '                # Use the default ' +
+  'buffer size for the underlying bin' + 'ary streams' + #10 +
+  '                # since they don''t' + ' support line buffering.' + #10 +
+  '                bufsize = -1' + #10 + '            else:' + #10 +
+  '                line_buffering = F' + 'alse' + #10 + #10 + '        try:' +
+  #10 + '            if p2cwrite != -1:' + #10 +
+  '                self.stdin = io.op' + 'en(p2cwrite, ''wb'', bufsize)' +
+  #10 + '                if self.text_mode:' + #10 +
+  '                    self.stdin = i' +
+  'o.TextIOWrapper(self.stdin, write_' + 'through=True,' + #10 +
+  '                            line_b' + 'uffering=line_buffering,' + #10 +
+  '                            encodi' + 'ng=encoding, errors=errors)' + #10 +
+  '            if c2pread != -1:' + #10 +
+  '                self.stdout = io.o' + 'pen(c2pread, ''rb'', bufsize)' +
+  #10 + '                if self.text_mode:' + #10 +
+  '                    self.stdout = ' + 'io.TextIOWrapper(self.stdout,' +
+  #10 + '                            encodi' + 'ng=encoding, errors=errors)' +
+  #10 + '            if errread != -1:' + #10 +
+  '                self.stderr = io.o' + 'pen(errread, ''rb'', bufsize)' +
+  #10 + '                if self.text_mode:' + #10 +
+  '                    self.stderr = ' + 'io.TextIOWrapper(self.stderr,' +
+  #10 + '                            encodi' + 'ng=encoding, errors=errors)' +
+  #10 + #10 + '            self._execute_child(ar' +
+  'gs, executable, preexec_fn, close_' + 'fds,' + #10 +
+  '                                pa' + 'ss_fds, cwd, env,' + #10 +
+  '                                st' + 'artupinfo, creationflags, shell,' +
+  #10 + '                                p2' + 'cread, p2cwrite,' + #10 +
+  '                                c2' + 'pread, c2pwrite,' + #10 +
+  '                                er' + 'rread, errwrite,' + #10 +
+  '                                re' + 'store_signals, start_new_session)' +
+  #10 + '        except:' + #10 + '            # Cleanup if the child' +
+  ' failed starting.' + #10 + '            for f in filter(None, ' +
+  '(self.stdin, self.stdout, self.std' + 'err)):' + #10 +
+  '                try:' + #10 + '                    f.close()' + #10 +
+  '                except OSError:' + #10 +
+  '                    pass  # Ignore' + ' EBADF or other errors.' + #10 +
+  #10 + '            if not self._closed_ch' + 'ild_pipe_fds:' + #10 +
+  '                to_close = []' + #10 +
+  '                if stdin == PIPE:' + #10 +
+  '                    to_close.appen' + 'd(p2cread)' + #10 +
+  '                if stdout == PIPE:' + #10 +
+  '                    to_close.appen' + 'd(c2pwrite)' + #10 +
+  '                if stderr == PIPE:' + #10 +
+  '                    to_close.appen' + 'd(errwrite)' + #10 +
+  '                if hasattr(self, ''' + '_devnull''):' + #10 +
+  '                    to_close.appen' + 'd(self._devnull)' + #10 +
+  '                for fd in to_close' + ':' + #10 +
+  '                    try:' + #10 + '                        if _mswind' +
+  'ows and isinstance(fd, Handle):' + #10 +
+  '                            fd.Clo' + 'se()' + #10 +
+  '                        else:' + #10 +
+  '                            os.clo' + 'se(fd)' + #10 +
+  '                    except OSError' + ':' + #10 +
+  '                        pass' + #10 + #10 + '            raise' + #10 +
+  #10 + '    @property' + #10 + '    def universal_newlines(self):' + #10 +
+  '        # universal_newlines as re' +
+  'tained as an alias of text_mode fo' + 'r API' + #10 +
+  '        # compatibility. bpo-31756' + #10 +
+  '        return self.text_mode' + #10 + #10 +
+  '    @universal_newlines.setter' + #10 +
+  '    def universal_newlines(self, u' + 'niversal_newlines):' + #10 +
+  '        self.text_mode = bool(univ' + 'ersal_newlines)' + #10 + #10 +
+  '    def _translate_newlines(self, ' + 'data, encoding, errors):' + #10 +
+  '        data = data.decode(encodin' + 'g, errors)' + #10 +
+  '        return data.replace("\r\n"' + ', "\n").replace("\r", "\n")' + #10 +
+  #10 + '    def __enter__(self):' + #10 + '        return self' + #10 + #10 +
+  '    def __exit__(self, exc_type, v' + 'alue, traceback):' + #10 +
+  '        if self.stdout:' + #10 + '            self.stdout.close()' + #10 +
+  '        if self.stderr:' + #10 + '            self.stderr.close()' + #10 +
+  '        try:  # Flushing a Buffere' + 'dWriter may raise an error' + #10 +
+  '            if self.stdin:' + #10 + '                self.stdin.close()' +
+  #10 + '        finally:' + #10 + '            if exc_type == Keyboar' +
+  'dInterrupt:' + #10 + '                # https://bugs.pyt' +
+  'hon.org/issue25942' + #10 + '                # In the case of a' +
+  ' KeyboardInterrupt we assume the S' + 'IGINT' + #10 +
+  '                # was also already' +
+  ' sent to our child processes.  We ' + 'can''t' + #10 +
+  '                # block indefinite' + 'ly as that is not user friendly.' +
+  #10 + '                # If we have not a' +
+  'lready waited a brief amount of ti' + 'me in' + #10 +
+  '                # an interrupted .' +
+  'wait() or .communicate() call, do ' + 'so here' + #10 +
+  '                # for consistency.' + #10 +
+  '                if self._sigint_wa' + 'it_secs > 0:' + #10 +
+  '                    try:' + #10 + '                        self._wait' +
+  '(timeout=self._sigint_wait_secs)' + #10 +
+  '                    except Timeout' + 'Expired:' + #10 +
+  '                        pass' + #10 +
+  '                self._sigint_wait_' +
+  'secs = 0  # Note that this has bee' + 'n done.' + #10 +
+  '                return  # resume t' + 'he KeyboardInterrupt' + #10 + #10 +
+  '            # Wait for the process' + ' to terminate, to avoid zombies.' +
+  #10 + '            self.wait()' + #10 + #10 +
+  '    def __del__(self, _maxsize=sys' + '.maxsize, _warn=warnings.warn):' +
+  #10 + '        if not self._child_created' + ':' + #10 +
+  '            # We didn''t get to suc' +
+  'cessfully create a child process.' + #10 + '            return' + #10 +
   '        if self.returncode is None' + ':' + #10 +
-  '            if self._done:' + #10 + '                self.returncode = ' +
-  'self._status' + #10 + '            elif self._defer and (' +
-  'self.stdin is None or self.stdin.c' + 'losed):' + #10 +
-  '                self._run()' + #10 + '                self.returncode = ' +
-  'self._status' + #10 + '        return self.returncode' + #10 + #10 +
-  '    def _late_timeout(self, timeou' + 't):' + #10 +
-  '        # the child already ran to' +
-  ' completion: report a timeout if i' + 't ran too long' + #10 +
-  '        if (timeout is not None an' +
-  'd self._done and not self._timeout' + '_reported' + #10 +
-  '                and self._killed i' +
-  's None and self._elapsed > timeout' + '):' + #10 +
-  '            self._timeout_reported' + ' = True' + #10 +
-  '            raise TimeoutExpired(s' +
-  'elf.args, timeout, output=self._ou' + 'tdata,' + #10 +
-  '                                 s' + 'tderr=self._errdata)' + #10 + #10 +
-  '    def wait(self, timeout=None):' + #10 +
-  '        """Wait for child process ' +
-  'to terminate; returns self.returnc' + 'ode."""' + #10 +
-  '        if self.returncode is None' + ':' + #10 +
-  '            self._run(timeout)' + #10 +
-  '            self._late_timeout(tim' + 'eout)' + #10 +
-  '            self.returncode = self' + '._status' + #10 +
-  '        return self.returncode' + #10 + #10 +
-  '    def communicate(self, input=No' + 'ne, timeout=None):' + #10 +
-  '        """Interact with process: ' + 'Send data to stdin and close it.' +
-  #10 + '        Read data from stdout and ' +
-  'stderr, until end-of-file is' + #10 +
-  '        reached.  Wait for process' + ' to terminate.' + #10 + #10 +
+  '            # Not reading subproce' +
+  'ss exit status creates a zombie pr' + 'ocess which' + #10 +
+  '            # is only destroyed at' + ' the parent python process exit' +
+  #10 + '            _warn("subprocess %s i' +
+  's still running" % self.pid,' + #10 +
+  '                  ResourceWarning,' + ' source=self)' + #10 +
+  '        # In case the child hasn''t' +
+  ' been waited on, check if it''s don' + 'e.' + #10 +
+  '        self._internal_poll(_deads' + 'tate=_maxsize)' + #10 +
+  '        if self.returncode is None' + ' and _active is not None:' + #10 +
+  '            # Child is still runni' +
+  'ng, keep us alive until we can wai' + 't on it.' + #10 +
+  '            _active.append(self)' + #10 + #10 +
+  '    def _get_devnull(self):' + #10 +
+  '        if not hasattr(self, ''_dev' + 'null''):' + #10 +
+  '            self._devnull = os.ope' + 'n(os.devnull, os.O_RDWR)' + #10 +
+  '        return self._devnull' + #10 + #10 +
+  '    def _stdin_write(self, input):' + #10 + '        if input:' + #10 +
+  '            try:' + #10 + '                self.stdin.write(i' + 'nput)' +
+  #10 + '            except BrokenPipeError' + ':' + #10 +
+  '                pass  # communicat' +
+  'e() must ignore broken pipe errors' + '.' + #10 +
+  '            except OSError as exc:' + #10 +
+  '                if exc.errno == er' + 'rno.EINVAL:' + #10 +
+  '                    # bpo-19612, b' +
+  'po-30418: On Windows, stdin.write(' + ') fails' + #10 +
+  '                    # with EINVAL ' +
+  'if the child process exited or if ' + 'the child' + #10 +
+  '                    # process is s' + 'till running but closed the pipe.' +
+  #10 + '                    pass' + #10 + '                else:' + #10 +
+  '                    raise' + #10 + #10 + '        try:' + #10 +
+  '            self.stdin.close()' + #10 + '        except BrokenPipeError:' +
+  #10 + '            pass  # communicate() ' +
+  'must ignore broken pipe errors.' + #10 + '        except OSError as exc:' +
+  #10 + '            if exc.errno == errno.' + 'EINVAL:' + #10 +
+  '                pass' + #10 + '            else:' + #10 +
+  '                raise' + #10 + #10 + '    def communicate(self, input=No' +
+  'ne, timeout=None):' + #10 + '        """Interact with process: ' +
+  'Send data to stdin and close it.' + #10 +
+  '        Read data from stdout and ' + 'stderr, until end-of-file is' +
+  #10 + '        reached.  Wait for process' + ' to terminate.' + #10 + #10 +
   '        The optional "input" argum' +
   'ent should be data to be sent to t' + 'he' + #10 +
   '        child process, or None, if' +
@@ -86667,44 +87443,954 @@ Const
   #10 + '        according to locale encodi' +
   'ng, or by "encoding" if set. Text ' + 'mode' + #10 +
   '        is triggered by setting an' + 'y of text, encoding, errors or' +
-  #10 + '        universal_newlines.' + #10 + '        """' + #10 +
-  '        if self._communication_sta' + 'rted and input:' + #10 +
+  #10 + '        universal_newlines.' + #10 + '        """' + #10;
+
+Const
+ Src_subprocess_4: AnsiString =
+  #10 + '        if self._communication_sta' + 'rted and input:' + #10 +
   '            raise ValueError("Cann' +
-  'ot send input after starting commu' + 'nication")' + #10 +
-  '        self._communication_starte' + 'd = True' + #10 +
-  '        if input is not None and s' +
-  'elf.stdin is not None and not self' + '._done:' + #10 +
-  '            if self.text_mode:' + #10 +
-  '                if not isinstance(' + 'input, str):' + #10 +
+  'ot send input after starting commu' + 'nication")' + #10 + #10 +
+  '        # Optimization: If we are ' +
+  'not worried about timeouts, we hav' + 'en''t' + #10 +
+  '        # started communicating, a' +
+  'nd we have one or zero pipes, usin' + 'g select()' + #10 +
+  '        # or threads is unnecessar' + 'y.' + #10 +
+  '        if (timeout is None and no' + 't self._communication_started and' +
+  #10 + '            [self.stdin, self.stdo' +
+  'ut, self.stderr].count(None) >= 2)' + ':' + #10 +
+  '            stdout = None' + #10 + '            stderr = None' + #10 +
+  '            if self.stdin:' + #10 + '                self._stdin_write(' +
+  'input)' + #10 + '            elif self.stdout:' + #10 +
+  '                stdout = self.stdo' + 'ut.read()' + #10 +
+  '                self.stdout.close(' + ')' + #10 +
+  '            elif self.stderr:' + #10 +
+  '                stderr = self.stde' + 'rr.read()' + #10 +
+  '                self.stderr.close(' + ')' + #10 +
+  '            self.wait()' + #10 + '        else:' + #10 +
+  '            if timeout is not None' + ':' + #10 +
+  '                endtime = _time() ' + '+ timeout' + #10 +
+  '            else:' + #10 + '                endtime = None' + #10 + #10 +
+  '            try:' + #10 + '                stdout, stderr = s' +
+  'elf._communicate(input, endtime, t' + 'imeout)' + #10 +
+  '            except KeyboardInterru' + 'pt:' + #10 +
+  '                # https://bugs.pyt' + 'hon.org/issue25942' + #10 +
+  '                # See the detailed' + ' comment in .wait().' + #10 +
+  '                if timeout is not ' + 'None:' + #10 +
+  '                    sigint_timeout' + ' = min(self._sigint_wait_secs,' +
+  #10 + '                                  ' +
+  '       self._remaining_time(endtim' + 'e))' + #10 +
+  '                else:' + #10 + '                    sigint_timeout' +
+  ' = self._sigint_wait_secs' + #10 + '                self._sigint_wait_' +
+  'secs = 0  # nothing else should wa' + 'it.' + #10 +
+  '                try:' + #10 + '                    self._wait(tim' +
+  'eout=sigint_timeout)' + #10 + '                except TimeoutExpi' +
+  'red:' + #10 + '                    pass' + #10 +
+  '                raise  # resume th' + 'e KeyboardInterrupt' + #10 + #10 +
+  '            finally:' + #10 + '                self._communicatio' +
+  'n_started = True' + #10 + #10 + '            sts = self.wait(timeou' +
+  't=self._remaining_time(endtime))' + #10 + #10 +
+  '        return (stdout, stderr)' + #10 + #10 + #10 +
+  '    def poll(self):' + #10 + '        """Check if child process ' +
+  'has terminated. Set and return ret' + 'urncode' + #10 +
+  '        attribute."""' + #10 + '        return self._internal_poll' +
+  '()' + #10 + #10 + #10 + '    def _remaining_time(self, endt' + 'ime):' +
+  #10 + '        """Convenience for _commun' +
+  'icate when computing timeouts."""' + #10 + '        if endtime is None:' +
+  #10 + '            return None' + #10 + '        else:' + #10 +
+  '            return endtime - _time' + '()' + #10 + #10 + #10 +
+  '    def _check_timeout(self, endti' +
+  'me, orig_timeout, stdout_seq, stde' + 'rr_seq,' + #10 +
+  '                       skip_check_' + 'and_raise=False):' + #10 +
+  '        """Convenience for checkin' + 'g if a timeout has expired."""' +
+  #10 + '        if endtime is None:' + #10 + '            return' + #10 +
+  '        if skip_check_and_raise or' + ' _time() > endtime:' + #10 +
+  '            raise TimeoutExpired(' + #10 +
+  '                    self.args, ori' + 'g_timeout,' + #10 +
+  '                    output=b''''.joi' +
+  'n(stdout_seq) if stdout_seq else N' + 'one,' + #10 +
+  '                    stderr=b''''.joi' +
+  'n(stderr_seq) if stderr_seq else N' + 'one)' + #10 + #10 + #10 +
+  '    def wait(self, timeout=None):' + #10 +
+  '        """Wait for child process ' +
+  'to terminate; returns self.returnc' + 'ode."""' + #10 +
+  '        if timeout is not None:' + #10 +
+  '            endtime = _time() + ti' + 'meout' + #10 + '        try:' +
+  #10 + '            return self._wait(time' + 'out=timeout)' + #10 +
+  '        except KeyboardInterrupt:' + #10 +
+  '            # https://bugs.python.' + 'org/issue25942' + #10 +
+  '            # The first keyboard i' +
+  'nterrupt waits briefly for the chi' + 'ld to' + #10 +
+  '            # exit under the commo' +
+  'n assumption that it also received' + ' the ^C' + #10 +
+  '            # generated SIGINT and' + ' will exit rapidly.' + #10 +
+  '            if timeout is not None' + ':' + #10 +
+  '                sigint_timeout = m' + 'in(self._sigint_wait_secs,' + #10 +
+  '                                  ' + '   self._remaining_time(endtime))' +
+  #10 + '            else:' + #10 + '                sigint_timeout = s' +
+  'elf._sigint_wait_secs' + #10 + '            self._sigint_wait_secs' +
+  ' = 0  # nothing else should wait.' + #10 + '            try:' + #10 +
+  '                self._wait(timeout' + '=sigint_timeout)' + #10 +
+  '            except TimeoutExpired:' + #10 + '                pass' + #10 +
+  '            raise  # resume the Ke' + 'yboardInterrupt' + #10 + #10 +
+  '    def _close_pipe_fds(self,' + #10 +
+  '                        p2cread, p' + '2cwrite,' + #10 +
+  '                        c2pread, c' + '2pwrite,' + #10 +
+  '                        errread, e' + 'rrwrite):' + #10 +
+  '        # self._devnull is not alw' + 'ays defined.' + #10 +
+  '        devnull_fd = getattr(self,' + ' ''_devnull'', None)' + #10 + #10 +
+  '        with contextlib.ExitStack(' + ') as stack:' + #10 +
+  '            if _mswindows:' + #10 + '                if p2cread != -1:' +
+  #10 + '                    stack.callback' + '(p2cread.Close)' + #10 +
+  '                if c2pwrite != -1:' + #10 +
+  '                    stack.callback' + '(c2pwrite.Close)' + #10 +
+  '                if errwrite != -1:' + #10 +
+  '                    stack.callback' + '(errwrite.Close)' + #10 +
+  '            else:' + #10 + '                if p2cread != -1 a' +
+  'nd p2cwrite != -1 and p2cread != d' + 'evnull_fd:' + #10 +
+  '                    stack.callback' + '(os.close, p2cread)' + #10 +
+  '                if c2pwrite != -1 ' +
+  'and c2pread != -1 and c2pwrite != ' + 'devnull_fd:' + #10 +
+  '                    stack.callback' + '(os.close, c2pwrite)' + #10 +
+  '                if errwrite != -1 ' +
+  'and errread != -1 and errwrite != ' + 'devnull_fd:' + #10 +
+  '                    stack.callback' + '(os.close, errwrite)' + #10 + #10 +
+  '            if devnull_fd is not N' + 'one:' + #10 +
+  '                stack.callback(os.' + 'close, devnull_fd)' + #10 + #10 +
+  '        # Prevent a double close o' +
+  'f these handles/fds from __init__ ' + 'on error.' + #10 +
+  '        self._closed_child_pipe_fd' + 's = True' + #10 + #10 +
+  '    if _mswindows:' + #10 + '        #' + #10 +
+  '        # Windows methods' + #10 + '        #' + #10 +
+  '        def _get_handles(self, std' + 'in, stdout, stderr):' + #10 +
+  '            """Construct and retur' + 'n tuple with IO objects:' + #10 +
+  '            p2cread, p2cwrite, c2p' + 'read, c2pwrite, errread, errwrite' +
+  #10 + '            """' + #10 + '            if stdin is None and s' +
+  'tdout is None and stderr is None:' + #10 +
+  '                return (-1, -1, -1' + ', -1, -1, -1)' + #10 + #10 +
+  '            p2cread, p2cwrite = -1' + ', -1' + #10 +
+  '            c2pread, c2pwrite = -1' + ', -1' + #10 +
+  '            errread, errwrite = -1' + ', -1' + #10 + #10 +
+  '            if stdin is None:' + #10 +
+  '                p2cread = _winapi.' +
+  'GetStdHandle(_winapi.STD_INPUT_HAN' + 'DLE)' + #10 +
+  '                if p2cread is None' + ':' + #10 +
+  '                    p2cread, _ = _' + 'winapi.CreatePipe(None, 0)' + #10 +
+  '                    p2cread = Hand' + 'le(p2cread)' + #10 +
+  '                    _winapi.CloseH' + 'andle(_)' + #10 +
+  '            elif stdin == PIPE:' + #10 +
+  '                p2cread, p2cwrite ' + '= _winapi.CreatePipe(None, 0)' +
+  #10 + '                p2cread, p2cwrite ' +
+  '= Handle(p2cread), Handle(p2cwrite' + ')' + #10 +
+  '            elif stdin == DEVNULL:' + #10 +
+  '                p2cread = msvcrt.g' + 'et_osfhandle(self._get_devnull())' +
+  #10 + '            elif isinstance(stdin,' + ' int):' + #10 +
+  '                p2cread = msvcrt.g' + 'et_osfhandle(stdin)' + #10 +
+  '            else:' + #10 + '                # Assuming file-li' +
+  'ke object' + #10 + '                p2cread = msvcrt.g' +
+  'et_osfhandle(stdin.fileno())' + #10 +
+  '            p2cread = self._make_i' + 'nheritable(p2cread)' + #10 + #10 +
+  '            if stdout is None:' + #10 +
+  '                c2pwrite = _winapi' +
+  '.GetStdHandle(_winapi.STD_OUTPUT_H' + 'ANDLE)' + #10 +
+  '                if c2pwrite is Non' + 'e:' + #10 +
+  '                    _, c2pwrite = ' + '_winapi.CreatePipe(None, 0)' + #10 +
+  '                    c2pwrite = Han' + 'dle(c2pwrite)' + #10 +
+  '                    _winapi.CloseH' + 'andle(_)' + #10 +
+  '            elif stdout == PIPE:' + #10 +
+  '                c2pread, c2pwrite ' + '= _winapi.CreatePipe(None, 0)' +
+  #10 + '                c2pread, c2pwrite ' +
+  '= Handle(c2pread), Handle(c2pwrite' + ')' + #10 +
+  '            elif stdout == DEVNULL' + ':' + #10 +
+  '                c2pwrite = msvcrt.' +
+  'get_osfhandle(self._get_devnull())' + #10 +
+  '            elif isinstance(stdout' + ', int):' + #10 +
+  '                c2pwrite = msvcrt.' + 'get_osfhandle(stdout)' + #10 +
+  '            else:' + #10 + '                # Assuming file-li' +
+  'ke object' + #10 + '                c2pwrite = msvcrt.' +
+  'get_osfhandle(stdout.fileno())' + #10 +
+  '            c2pwrite = self._make_' + 'inheritable(c2pwrite)' + #10 + #10 +
+  '            if stderr is None:' + #10 +
+  '                errwrite = _winapi' +
+  '.GetStdHandle(_winapi.STD_ERROR_HA' + 'NDLE)' + #10 +
+  '                if errwrite is Non' + 'e:' + #10 +
+  '                    _, errwrite = ' + '_winapi.CreatePipe(None, 0)' + #10 +
+  '                    errwrite = Han' + 'dle(errwrite)' + #10 +
+  '                    _winapi.CloseH' + 'andle(_)' + #10 +
+  '            elif stderr == PIPE:' + #10 +
+  '                errread, errwrite ' + '= _winapi.CreatePipe(None, 0)' +
+  #10 + '                errread, errwrite ' +
+  '= Handle(errread), Handle(errwrite' + ')' + #10 +
+  '            elif stderr == STDOUT:' + #10 +
+  '                errwrite = c2pwrit' + 'e' + #10 +
+  '            elif stderr == DEVNULL' + ':' + #10 +
+  '                errwrite = msvcrt.' +
+  'get_osfhandle(self._get_devnull())' + #10 +
+  '            elif isinstance(stderr' + ', int):' + #10 +
+  '                errwrite = msvcrt.' + 'get_osfhandle(stderr)' + #10 +
+  '            else:' + #10 + '                # Assuming file-li' +
+  'ke object' + #10 + '                errwrite = msvcrt.' +
+  'get_osfhandle(stderr.fileno())' + #10 +
+  '            errwrite = self._make_' + 'inheritable(errwrite)' + #10 + #10 +
+  '            return (p2cread, p2cwr' + 'ite,' + #10 +
+  '                    c2pread, c2pwr' + 'ite,' + #10 +
+  '                    errread, errwr' + 'ite)' + #10 + #10 + #10 +
+  '        def _make_inheritable(self' + ', handle):' + #10 +
+  '            """Return a duplicate ' +
+  'of handle, which is inheritable"""' + #10 +
+  '            h = _winapi.DuplicateH' + 'andle(' + #10 +
+  '                _winapi.GetCurrent' + 'Process(), handle,' + #10 +
+  '                _winapi.GetCurrent' + 'Process(), 0, 1,' + #10 +
+  '                _winapi.DUPLICATE_' + 'SAME_ACCESS)' + #10 +
+  '            return Handle(h)' + #10 + #10 + #10 +
+  '        def _filter_handle_list(se' + 'lf, handle_list):' + #10 +
+  '            """Filter out console ' + 'handles that can''t be used' + #10 +
+  '            in lpAttributeList["ha' +
+  'ndle_list"] and make sure the list' + #10 +
+  '            isn''t empty. This also' + ' removes duplicate handles."""' +
+  #10 + '            # An handle with it''s ' +
+  'lowest two bits set might be a spe' + 'cial console' + #10 +
+  '            # handle that if passe' +
+  'd in lpAttributeList["handle_list"' + '], will' + #10 +
+  '            # cause it to fail.' + #10 +
+  '            return list({handle fo' + 'r handle in handle_list' + #10 +
+  '                         if handle' + ' & 0x3 != 0x3' + #10 +
+  '                         or _winap' + 'i.GetFileType(handle) !=' + #10 +
+  '                            _winap' + 'i.FILE_TYPE_CHAR})' + #10 + #10 +
+  #10 + '        def _execute_child(self, a' +
+  'rgs, executable, preexec_fn, close' + '_fds,' + #10 +
+  '                           pass_fd' + 's, cwd, env,' + #10 +
+  '                           startup' + 'info, creationflags, shell,' + #10 +
+  '                           p2cread' + ', p2cwrite,' + #10 +
+  '                           c2pread' + ', c2pwrite,' + #10 +
+  '                           errread' + ', errwrite,' + #10 +
+  '                           unused_' +
+  'restore_signals, unused_start_new_' + 'session):' + #10 +
+  '            """Execute program (MS' + ' Windows version)"""' + #10 + #10 +
+  '            assert not pass_fds, "' +
+  'pass_fds not supported on Windows.' + '"' + #10 + #10 +
+  '            if isinstance(args, st' + 'r):' + #10 +
+  '                pass' + #10 + '            elif isinstance(args, ' +
+  'bytes):' + #10 + '                if shell:' + #10 +
   '                    raise TypeErro' +
-  'r(''input must be a str, not %s'' % ' + 'type(input).__name__)' + #10 +
-  '            elif isinstance(input,' + ' str):' + #10 +
-  '                raise TypeError("a' +
-  ' bytes-like object is required, no' + 't ''str''")' + #10 +
-  '            self.stdin.write(input' + ')' + #10 +
-  '        if self.stdin is not None:' + #10 +
-  '            self.stdin.close()' + #10 +
-  '        if self.returncode is None' + ':' + #10 +
-  '            self._run(timeout)' + #10 +
-  '            self._late_timeout(tim' + 'eout)' + #10 +
-  '            self.returncode = self' + '._status' + #10 +
-  '        stdout = self._outdata' + #10 + '        stderr = self._errdata' +
-  #10 + '        return (stdout, stderr)' + #10 + #10 +
-  '    def send_signal(self, sig):' + #10 +
-  '        """Send a signal to the pr' + 'ocess."""' + #10 +
-  '        if self.returncode is None' + ' and not self._done:' + #10 +
-  '            self._killed = -int(si' + 'g)' + #10 +
-  '            self.returncode = None' + #10 + #10 +
-  '    def terminate(self):' + #10 + '        """Terminate the process w' +
-  'ith SIGTERM' + #10 + '        """' + #10 + '        self.send_signal(15)' +
-  #10 + #10 + '    def kill(self):' + #10 +
-  '        """Kill the process with S' + 'IGKILL' + #10 + '        """' +
-  #10 + '        self.send_signal(9)' + #10 + #10;
+  'r(''bytes args is not allowed on Wi' + 'ndows'')' + #10 +
+  '                args = list2cmdlin' + 'e([args])' + #10 +
+  '            elif isinstance(args, ' + 'os.PathLike):' + #10 +
+  '                if shell:' + #10 + '                    raise TypeErro' +
+  'r(''path-like args is not allowed w' + 'hen ''' + #10 +
+  '                                  ' + '  ''shell is true'')' + #10 +
+  '                args = list2cmdlin' + 'e([args])' + #10 +
+  '            else:' + #10;
+
+Const
+ Src_subprocess_5: AnsiString =
+  '                args = list2cmdlin' + 'e(args)' + #10 + #10 +
+  '            if executable is not N' + 'one:' + #10 +
+  '                executable = os.fs' + 'decode(executable)' + #10 + #10 +
+  '            # Process startup deta' + 'ils' + #10 +
+  '            if startupinfo is None' + ':' + #10 +
+  '                startupinfo = STAR' + 'TUPINFO()' + #10 +
+  '            else:' + #10 + '                # bpo-34044: Copy ' +
+  'STARTUPINFO since it is modified a' + 'bove,' + #10 +
+  '                # so the caller ca' + 'n reuse it multiple times.' + #10 +
+  '                startupinfo = star' + 'tupinfo.copy()' + #10 + #10 +
+  '            use_std_handles = -1 n' +
+  'ot in (p2cread, c2pwrite, errwrite' + ')' + #10 +
+  '            if use_std_handles:' + #10 +
+  '                startupinfo.dwFlag' + 's |= _winapi.STARTF_USESTDHANDLES' +
+  #10 + '                startupinfo.hStdIn' + 'put = p2cread' + #10 +
+  '                startupinfo.hStdOu' + 'tput = c2pwrite' + #10 +
+  '                startupinfo.hStdEr' + 'ror = errwrite' + #10 + #10 +
+  '            attribute_list = start' + 'upinfo.lpAttributeList' + #10 +
+  '            have_handle_list = boo' + 'l(attribute_list and' + #10 +
+  '                                  ' +
+  '  "handle_list" in attribute_list ' + 'and' + #10 +
+  '                                  ' + '  attribute_list["handle_list"])' +
+  #10 + #10 + '            # If we were given an ' +
+  'handle_list or need to create one' + #10 +
+  '            if have_handle_list or' + ' (use_std_handles and close_fds):' +
+  #10 + '                if attribute_list ' + 'is None:' + #10 +
+  '                    attribute_list' +
+  ' = startupinfo.lpAttributeList = {' + '}' + #10 +
+  '                handle_list = attr' + 'ibute_list["handle_list"] = \' +
+  #10 + '                    list(attribute' +
+  '_list.get("handle_list", []))' + #10 + #10 +
+  '                if use_std_handles' + ':' + #10 +
+  '                    handle_list +=' +
+  ' [int(p2cread), int(c2pwrite), int' + '(errwrite)]' + #10 + #10 +
+  '                handle_list[:] = s' +
+  'elf._filter_handle_list(handle_lis' + 't)' + #10 + #10 +
+  '                if handle_list:' + #10 +
+  '                    if not close_f' + 'ds:' + #10 +
+  '                        warnings.w' +
+  'arn("startupinfo.lpAttributeList[''' + 'handle_list''] "' + #10 +
+  '                                  ' +
+  '    "overriding close_fds", Runtim' + 'eWarning)' + #10 + #10 +
+  '                    # When using t' +
+  'he handle_list we always request t' + 'o inherit' + #10 +
+  '                    # handles but ' +
+  'the only handles that will be inhe' + 'rited are' + #10 +
+  '                    # the ones in ' + 'the handle_list' + #10 +
+  '                    close_fds = Fa' + 'lse' + #10 + #10 +
+  '            if shell:' + #10 + '                startupinfo.dwFlag' +
+  's |= _winapi.STARTF_USESHOWWINDOW' + #10 +
+  '                startupinfo.wShowW' + 'indow = _winapi.SW_HIDE' + #10 +
+  '                if not executable:' + #10 +
+  '                    # gh-101283: w' +
+  'ithout a fully-qualified path, bef' + 'ore Windows' + #10 +
+  '                    # checks the s' +
+  'ystem directories, it first looks ' + 'in the' + #10 +
+  '                    # application ' +
+  'directory, and also the current di' + 'rectory if' + #10 +
+  '                    # NeedCurrentD' +
+  'irectoryForExePathW(ExeName) is tr' + 'ue, so try' + #10 +
+  '                    # to avoid exe' + 'cuting unqualified "cmd.exe".' +
+  #10 + '                    comspec = os.e' + 'nviron.get(''ComSpec'')' +
+  #10 + '                    if not comspec' + ':' + #10 +
+  '                        system_roo' +
+  't = os.environ.get(''SystemRoot'', ''' + ''')' + #10 +
+  '                        comspec = ' +
+  'os.path.join(system_root, ''System3' + '2'', ''cmd.exe'')' + #10 +
+  '                        if not os.' + 'path.isabs(comspec):' + #10 +
+  '                            raise ' +
+  'FileNotFoundError(''shell not found' +
+  ': neither %ComSpec% nor %SystemRoo' + 't% is set'')' + #10 +
+  '                    if os.path.isa' + 'bs(comspec):' + #10 +
+  '                        executable' + ' = comspec' + #10 +
+  '                else:' + #10 + '                    comspec = exec' +
+  'utable' + #10 + #10 + '                args = ''{} /c "{}"' +
+  '''.format (comspec, args)' + #10 + #10 +
+  '            if cwd is not None:' + #10 +
+  '                cwd = os.fsdecode(' + 'cwd)' + #10 + #10 +
+  '            sys.audit("subprocess.' +
+  'Popen", executable, args, cwd, env' + ')' + #10 + #10 +
+  '            # Start the process' + #10 + '            try:' + #10 +
+  '                hp, ht, pid, tid =' +
+  ' _winapi.CreateProcess(executable,' + ' args,' + #10 +
+  '                                  ' + '       # no special security' +
+  #10 + '                                  ' + '       None, None,' + #10 +
+  '                                  ' + '       int(not close_fds),' + #10 +
+  '                                  ' + '       creationflags,' + #10 +
+  '                                  ' + '       env,' + #10 +
+  '                                  ' + '       cwd,' + #10 +
+  '                                  ' + '       startupinfo)' + #10 +
+  '            finally:' + #10 + '                # Child is launche' +
+  'd. Close the parent''s copy of thos' + 'e pipe' + #10 +
+  '                # handles that onl' +
+  'y the child should have open.  You' + ' need' + #10 +
+  '                # to make sure tha' +
+  't no handles to the write end of t' + 'he' + #10 +
+  '                # output pipe are ' +
+  'maintained in this process or else' + ' the' + #10 +
+  '                # pipe will not cl' +
+  'ose when the child process exits a' + 'nd the' + #10 +
+  '                # ReadFile will ha' + 'ng.' + #10 +
+  '                self._close_pipe_f' + 'ds(p2cread, p2cwrite,' + #10 +
+  '                                  ' + '   c2pread, c2pwrite,' + #10 +
+  '                                  ' + '   errread, errwrite)' + #10 + #10 +
+  '            # Retain the process h' +
+  'andle, but close the thread handle' + #10 +
+  '            self._child_created = ' + 'True' + #10 +
+  '            self._handle = Handle(' + 'hp)' + #10 +
+  '            self.pid = pid' + #10 + '            _winapi.CloseHandle(ht' +
+  ')' + #10 + #10 + '        def _internal_poll(self, _' + 'deadstate=None,' +
+  #10 + '                _WaitForSingleObje' +
+  'ct=_winapi.WaitForSingleObject,' + #10 +
+  '                _WAIT_OBJECT_0=_wi' + 'napi.WAIT_OBJECT_0,' + #10 +
+  '                _GetExitCodeProces' + 's=_winapi.GetExitCodeProcess):' +
+  #10 + '            """Check if child proc' +
+  'ess has terminated.  Returns retur' + 'ncode' + #10 +
+  '            attribute.' + #10 + #10 +
+  '            This method is called ' +
+  'by __del__, so it can only refer t' + 'o objects' + #10 +
+  '            in its local scope.' + #10 + #10 + '            """' + #10 +
+  '            if self.returncode is ' + 'None:' + #10 +
+  '                if _WaitForSingleO' +
+  'bject(self._handle, 0) == _WAIT_OB' + 'JECT_0:' + #10 +
+  '                    self.returncod' +
+  'e = _GetExitCodeProcess(self._hand' + 'le)' + #10 +
+  '            return self.returncode' + #10 + #10 + #10 +
+  '        def _wait(self, timeout):' + #10 +
+  '            """Internal implementa' + 'tion of wait() on Windows."""' +
+  #10 + '            if timeout is None:' + #10 +
+  '                timeout_millis = _' + 'winapi.INFINITE' + #10 +
+  '            else:' + #10 + '                timeout_millis = i' +
+  'nt(timeout * 1000)' + #10 + '            if self.returncode is ' +
+  'None:' + #10 + '                # API note: Return' +
+  's immediately if timeout_millis ==' + ' 0.' + #10 +
+  '                result = _winapi.W' + 'aitForSingleObject(self._handle,' +
+  #10 + '                                  ' +
+  '                   timeout_millis)' + #10 +
+  '                if result == _wina' + 'pi.WAIT_TIMEOUT:' + #10 +
+  '                    raise TimeoutE' + 'xpired(self.args, timeout)' + #10 +
+  '                self.returncode = ' +
+  '_winapi.GetExitCodeProcess(self._h' + 'andle)' + #10 +
+  '            return self.returncode' + #10 + #10 + #10 +
+  '        def _readerthread(self, fh' + ', buffer):' + #10 +
+  '            buffer.append(fh.read(' + '))' + #10 +
+  '            fh.close()' + #10 + #10 + #10 +
+  '        def _communicate(self, inp' + 'ut, endtime, orig_timeout):' + #10 +
+  '            # Start reader threads' +
+  ' feeding into a list hanging off o' + 'f this' + #10 +
+  '            # object, unless they''' + 've already been started.' + #10 +
+  '            if self.stdout and not' + ' hasattr(self, "_stdout_buff"):' +
+  #10 + '                self._stdout_buff ' + '= []' + #10 +
+  '                self.stdout_thread' + ' = \' + #10 +
+  '                        threading.' + 'Thread(target=self._readerthread,' +
+  #10 + '                                  ' +
+  '       args=(self.stdout, self._st' + 'dout_buff))' + #10 +
+  '                self.stdout_thread' + '.daemon = True' + #10 +
+  '                self.stdout_thread' + '.start()' + #10 +
+  '            if self.stderr and not' + ' hasattr(self, "_stderr_buff"):' +
+  #10 + '                self._stderr_buff ' + '= []' + #10 +
+  '                self.stderr_thread' + ' = \' + #10 +
+  '                        threading.' + 'Thread(target=self._readerthread,' +
+  #10 + '                                  ' +
+  '       args=(self.stderr, self._st' + 'derr_buff))' + #10 +
+  '                self.stderr_thread' + '.daemon = True' + #10 +
+  '                self.stderr_thread' + '.start()' + #10 + #10 +
+  '            if self.stdin:' + #10 + '                self._stdin_write(' +
+  'input)' + #10 + #10 + '            # Wait for the reader ' +
+  'threads, or time out.  If we time ' + 'out, the' + #10 +
+  '            # threads remain readi' +
+  'ng and the fds left open in case t' + 'he user' + #10 +
+  '            # calls communicate ag' + 'ain.' + #10 +
+  '            if self.stdout is not ' + 'None:' + #10 +
+  '                self.stdout_thread' +
+  '.join(self._remaining_time(endtime' + '))' + #10 +
+  '                if self.stdout_thr' + 'ead.is_alive():' + #10 +
+  '                    raise TimeoutE' + 'xpired(self.args, orig_timeout)' +
+  #10 + '            if self.stderr is not ' + 'None:' + #10 +
+  '                self.stderr_thread' +
+  '.join(self._remaining_time(endtime' + '))' + #10 +
+  '                if self.stderr_thr' + 'ead.is_alive():' + #10 +
+  '                    raise TimeoutE' + 'xpired(self.args, orig_timeout)' +
+  #10 + #10 + '            # Collect the output f' +
+  'rom and close both pipes, now that' + ' we know' + #10 +
+  '            # both have been read ' + 'successfully.' + #10 +
+  '            stdout = None' + #10 + '            stderr = None' + #10 +
+  '            if self.stdout:' + #10 + '                stdout = self._std' +
+  'out_buff' + #10 + '                self.stdout.close(' + ')' + #10 +
+  '            if self.stderr:' + #10 + '                stderr = self._std' +
+  'err_buff' + #10 + '                self.stderr.close(' + ')' + #10 + #10 +
+  '            # All data exchanged. ' + ' Translate lists into strings.' +
+  #10 + '            stdout = stdout[0] if ' + 'stdout else None' + #10 +
+  '            stderr = stderr[0] if ' + 'stderr else None' + #10 + #10 +
+  '            return (stdout, stderr' + ')' + #10 + #10 +
+  '        def send_signal(self, sig)' + ':' + #10 +
+  '            """Send a signal to th' + 'e process."""' + #10 +
+  '            # Don''t signal a proce' +
+  'ss that we know has already died.' + #10 +
+  '            if self.returncode is ' + 'not None:' + #10 +
+  '                return' + #10 + '            if sig == signal.SIGTE' +
+  'RM:' + #10 + '                self.terminate()' + #10 +
+  '            elif sig == signal.CTR' + 'L_C_EVENT:' + #10 +
+  '                os.kill(self.pid, ' + 'signal.CTRL_C_EVENT)' + #10 +
+  '            elif sig == signal.CTR' + 'L_BREAK_EVENT:' + #10 +
+  '                os.kill(self.pid, ' + 'signal.CTRL_BREAK_EVENT)' + #10 +
+  '            else:' + #10 + '                raise ValueError("' +
+  'Unsupported signal: {}".format(sig' + '))' + #10 + #10 +
+  '        def terminate(self):' + #10 +
+  '            """Terminates the proc' + 'ess."""' + #10 +
+  '            # Don''t terminate a pr' +
+  'ocess that we know has already die' + 'd.' + #10 +
+  '            if self.returncode is ' + 'not None:' + #10 +
+  '                return' + #10 + '            try:' + #10 +
+  '                _winapi.TerminateP' + 'rocess(self._handle, 1)' + #10 +
+  '            except PermissionError' + ':' + #10 +
+  '                # ERROR_ACCESS_DEN' +
+  'IED (winerror 5) is received when ' + 'the' + #10 +
+  '                # process already ' + 'died.' + #10 +
+  '                rc = _winapi.GetEx' + 'itCodeProcess(self._handle)' + #10 +
+  '                if rc == _winapi.S' + 'TILL_ACTIVE:' + #10 +
+  '                    raise' + #10 + '                self.returncode = ' +
+  'rc' + #10 + #10 + '        kill = terminate' + #10 + #10 + '    else:' +
+  #10 + '        #' + #10 + '        # POSIX methods' + #10 + '        #' +
+  #10 + '        def _get_handles(self, std' + 'in, stdout, stderr):' + #10 +
+  '            """Construct and retur' + 'n tuple with IO objects:' + #10 +
+  '            p2cread, p2cwrite, c2p' + 'read, c2pwrite, errread, errwrite' +
+  #10 + '            """' + #10 + '            p2cread, p2cwrite = -1' +
+  ', -1' + #10 + '            c2pread, c2pwrite = -1' + ', -1' + #10 +
+  '            errread, errwrite = -1' + ', -1' + #10 + #10 +
+  '            if stdin is None:' + #10 + '                pass' + #10 +
+  '            elif stdin == PIPE:' + #10 +
+  '                p2cread, p2cwrite ' + '= os.pipe()' + #10 +
+  '            elif stdin == DEVNULL:' + #10 +
+  '                p2cread = self._ge' + 't_devnull()' + #10 +
+  '            elif isinstance(stdin,' + ' int):' + #10 +
+  '                p2cread = stdin' + #10 + '            else:' + #10 +
+  '                # Assuming file-li' + 'ke object' + #10 +
+  '                p2cread = stdin.fi' + 'leno()' + #10 + #10 +
+  '            if stdout is None:' + #10 + '                pass' + #10 +
+  '            elif stdout == PIPE:' + #10 +
+  '                c2pread, c2pwrite ' + '= os.pipe()' + #10 +
+  '            elif stdout == DEVNULL' + ':' + #10 +
+  '                c2pwrite = self._g' + 'et_devnull()' + #10;
+
+Const
+ Src_subprocess_6: AnsiString =
+  '            elif isinstance(stdout' + ', int):' + #10 +
+  '                c2pwrite = stdout' + #10 + '            else:' + #10 +
+  '                # Assuming file-li' + 'ke object' + #10 +
+  '                c2pwrite = stdout.' + 'fileno()' + #10 + #10 +
+  '            if stderr is None:' + #10 + '                pass' + #10 +
+  '            elif stderr == PIPE:' + #10 +
+  '                errread, errwrite ' + '= os.pipe()' + #10 +
+  '            elif stderr == STDOUT:' + #10 +
+  '                if c2pwrite != -1:' + #10 +
+  '                    errwrite = c2p' + 'write' + #10 +
+  '                else: # child''s st' +
+  'dout is not set, use parent''s stdo' + 'ut' + #10 +
+  '                    errwrite = sys' + '.__stdout__.fileno()' + #10 +
+  '            elif stderr == DEVNULL' + ':' + #10 +
+  '                errwrite = self._g' + 'et_devnull()' + #10 +
+  '            elif isinstance(stderr' + ', int):' + #10 +
+  '                errwrite = stderr' + #10 + '            else:' + #10 +
+  '                # Assuming file-li' + 'ke object' + #10 +
+  '                errwrite = stderr.' + 'fileno()' + #10 + #10 +
+  '            return (p2cread, p2cwr' + 'ite,' + #10 +
+  '                    c2pread, c2pwr' + 'ite,' + #10 +
+  '                    errread, errwr' + 'ite)' + #10 + #10 + #10 +
+  '        def _posix_spawn(self, arg' +
+  's, executable, env, restore_signal' + 's,' + #10 +
+  '                         p2cread, ' + 'p2cwrite,' + #10 +
+  '                         c2pread, ' + 'c2pwrite,' + #10 +
+  '                         errread, ' + 'errwrite):' + #10 +
+  '            """Execute program usi' + 'ng os.posix_spawn()."""' + #10 +
+  '            if env is None:' + #10 + '                env = os.environ' +
+  #10 + #10 + '            kwargs = {}' + #10 +
+  '            if restore_signals:' + #10 +
+  '                # See _Py_RestoreS' + 'ignals() in Python/pylifecycle.c' +
+  #10 + '                sigset = []' + #10 +
+  '                for signame in (''S' +
+  'IGPIPE'', ''SIGXFZ'', ''SIGXFSZ''):' + #10 +
+  '                    signum = getat' + 'tr(signal, signame, None)' + #10 +
+  '                    if signum is n' + 'ot None:' + #10 +
+  '                        sigset.app' + 'end(signum)' + #10 +
+  '                kwargs[''setsigdef''' + '] = sigset' + #10 + #10 +
+  '            file_actions = []' + #10 +
+  '            for fd in (p2cwrite, c' + '2pread, errread):' + #10 +
+  '                if fd != -1:' + #10 +
+  '                    file_actions.a' + 'ppend((os.POSIX_SPAWN_CLOSE, fd))' +
+  #10 + '            for fd, fd2 in (' + #10 +
+  '                (p2cread, 0),' + #10 + '                (c2pwrite, 1),' +
+  #10 + '                (errwrite, 2),' + #10 + '            ):' + #10 +
+  '                if fd != -1:' + #10 +
+  '                    file_actions.a' +
+  'ppend((os.POSIX_SPAWN_DUP2, fd, fd' + '2))' + #10 +
+  '            if file_actions:' + #10 +
+  '                kwargs[''file_actio' + 'ns''] = file_actions' + #10 + #10 +
+  '            self.pid = os.posix_sp' +
+  'awn(executable, args, env, **kwarg' + 's)' + #10 +
+  '            self._child_created = ' + 'True' + #10 + #10 +
+  '            self._close_pipe_fds(p' + '2cread, p2cwrite,' + #10 +
+  '                                 c' + '2pread, c2pwrite,' + #10 +
+  '                                 e' + 'rrread, errwrite)' + #10 + #10 +
+  '        def _execute_child(self, a' +
+  'rgs, executable, preexec_fn, close' + '_fds,' + #10 +
+  '                           pass_fd' + 's, cwd, env,' + #10 +
+  '                           startup' + 'info, creationflags, shell,' + #10 +
+  '                           p2cread' + ', p2cwrite,' + #10 +
+  '                           c2pread' + ', c2pwrite,' + #10 +
+  '                           errread' + ', errwrite,' + #10 +
+  '                           restore' + '_signals, start_new_session):' +
+  #10 + '            """Execute program (PO' + 'SIX version)"""' + #10 + #10 +
+  '            if isinstance(args, (s' + 'tr, bytes)):' + #10 +
+  '                args = [args]' + #10 +
+  '            elif isinstance(args, ' + 'os.PathLike):' + #10 +
+  '                if shell:' + #10 + '                    raise TypeErro' +
+  'r(''path-like args is not allowed w' + 'hen ''' + #10 +
+  '                                  ' + '  ''shell is true'')' + #10 +
+  '                args = [args]' + #10 + '            else:' + #10 +
+  '                args = list(args)' + #10 + #10 + '            if shell:' +
+  #10 + '                # On Android the d' +
+  'efault shell is at ''/system/bin/sh' + '''.' + #10 +
+  '                unix_shell = (''/sy' + 'stem/bin/sh'' if' + #10 +
+  '                          hasattr(' +
+  'sys, ''getandroidapilevel'') else ''/' + 'bin/sh'')' + #10 +
+  '                args = [unix_shell' + ', "-c"] + args' + #10 +
+  '                if executable:' + #10 +
+  '                    args[0] = exec' + 'utable' + #10 + #10 +
+  '            if executable is None:' + #10 +
+  '                executable = args[' + '0]' + #10 + #10 +
+  '            sys.audit("subprocess.' +
+  'Popen", executable, args, cwd, env' + ')' + #10 + #10 +
+  '            if (_USE_POSIX_SPAWN' + #10 +
+  '                    and os.path.di' + 'rname(executable)' + #10 +
+  '                    and preexec_fn' + ' is None' + #10 +
+  '                    and not close_' + 'fds' + #10 +
+  '                    and not pass_f' + 'ds' + #10 +
+  '                    and cwd is Non' + 'e' + #10 +
+  '                    and (p2cread =' + '= -1 or p2cread > 2)' + #10 +
+  '                    and (c2pwrite ' + '== -1 or c2pwrite > 2)' + #10 +
+  '                    and (errwrite ' + '== -1 or errwrite > 2)' + #10 +
+  '                    and not start_' + 'new_session):' + #10 +
+  '                self._posix_spawn(' +
+  'args, executable, env, restore_sig' + 'nals,' + #10 +
+  '                                  ' + 'p2cread, p2cwrite,' + #10 +
+  '                                  ' + 'c2pread, c2pwrite,' + #10 +
+  '                                  ' + 'errread, errwrite)' + #10 +
+  '                return' + #10 + #10 +
+  '            orig_executable = exec' + 'utable' + #10 + #10 +
+  '            # For transferring pos' +
+  'sible exec failure from child to p' + 'arent.' + #10 +
+  '            # Data format: "except' + 'ion name:hex errno:description"' +
+  #10 + '            # Pickle is not used; ' +
+  'it is complex and involves memory ' + 'allocation.' + #10 +
+  '            errpipe_read, errpipe_' + 'write = os.pipe()' + #10 +
+  '            # errpipe_write must n' +
+  'ot be in the standard io 0, 1, or ' + '2 fd range.' + #10 +
+  '            low_fds_to_close = []' + #10 +
+  '            while errpipe_write < ' + '3:' + #10 +
+  '                low_fds_to_close.a' + 'ppend(errpipe_write)' + #10 +
+  '                errpipe_write = os' + '.dup(errpipe_write)' + #10 +
+  '            for low_fd in low_fds_' + 'to_close:' + #10 +
+  '                os.close(low_fd)' + #10 + '            try:' + #10 +
+  '                try:' + #10 + '                    # We must avoi' +
+  'd complex work that could involve' + #10 +
+  '                    # malloc or fr' + 'ee in the child process to avoid' +
+  #10 + '                    # potential de' +
+  'adlocks, thus we do all this here.' + #10 +
+  '                    # and pass it ' + 'to fork_exec()' + #10 + #10 +
+  '                    if env is not ' + 'None:' + #10 +
+  '                        env_list =' + ' []' + #10 +
+  '                        for k, v i' + 'n env.items():' + #10 +
+  '                            k = os' + '.fsencode(k)' + #10 +
+  '                            if b''=' + ''' in k:' + #10 +
+  '                                ra' +
+  'ise ValueError("illegal environmen' + 't variable name")' + #10 +
+  '                            env_li' +
+  'st.append(k + b''='' + os.fsencode(v' + '))' + #10 +
+  '                    else:' + #10 + '                        env_list =' +
+  ' None  # Use execv instead of exec' + 've.' + #10 +
+  '                    executable = o' + 's.fsencode(executable)' + #10 +
+  '                    if os.path.dir' + 'name(executable):' + #10 +
+  '                        executable' + '_list = (executable,)' + #10 +
+  '                    else:' + #10 + '                        # This mat' +
+  'ches the behavior of os._execvpe()' + '.' + #10 +
+  '                        executable' + '_list = tuple(' + #10 +
+  '                            os.pat' +
+  'h.join(os.fsencode(dir), executabl' + 'e)' + #10 +
+  '                            for di' + 'r in os.get_exec_path(env))' + #10 +
+  '                    fds_to_keep = ' + 'set(pass_fds)' + #10 +
+  '                    fds_to_keep.ad' + 'd(errpipe_write)' + #10 +
+  '                    self.pid = _po' + 'sixsubprocess.fork_exec(' + #10 +
+  '                            args, ' + 'executable_list,' + #10 +
+  '                            close_' +
+  'fds, tuple(sorted(map(int, fds_to_' + 'keep))),' + #10 +
+  '                            cwd, e' + 'nv_list,' + #10 +
+  '                            p2crea' + 'd, p2cwrite, c2pread, c2pwrite,' +
+  #10 + '                            errrea' + 'd, errwrite,' + #10 +
+  '                            errpip' + 'e_read, errpipe_write,' + #10 +
+  '                            restor' +
+  'e_signals, start_new_session, pree' + 'xec_fn)' + #10 +
+  '                    self._child_cr' + 'eated = True' + #10 +
+  '                finally:' + #10 + '                    # be sure the ' +
+  'FD is closed no matter what' + #10 + '                    os.close(errpi' +
+  'pe_write)' + #10 + #10 + '                self._close_pipe_f' +
+  'ds(p2cread, p2cwrite,' + #10 + '                                  ' +
+  '   c2pread, c2pwrite,' + #10 + '                                  ' +
+  '   errread, errwrite)' + #10 + #10 + '                # Wait for exec to' +
+  ' fail or succeed; possibly raising' + ' an' + #10 +
+  '                # exception (limit' + 'ed in size)' + #10 +
+  '                errpipe_data = byt' + 'earray()' + #10 +
+  '                while True:' + #10 + '                    part = os.read' +
+  '(errpipe_read, 50000)' + #10 + '                    errpipe_data +' +
+  '= part' + #10 + '                    if not part or' +
+  ' len(errpipe_data) > 50000:' + #10 + '                        break' +
+  #10 + '            finally:' + #10 + '                # be sure the FD i' +
+  's closed no matter what' + #10 + '                os.close(errpipe_r' +
+  'ead)' + #10 + #10 + '            if errpipe_data:' + #10 +
+  '                try:' + #10 + '                    pid, sts = os.' +
+  'waitpid(self.pid, 0)' + #10 + '                    if pid == self' +
+  '.pid:' + #10 + '                        self._hand' +
+  'le_exitstatus(sts)' + #10 + '                    else:' + #10 +
+  '                        self.retur' + 'ncode = sys.maxsize' + #10 +
+  '                except ChildProces' + 'sError:' + #10 +
+  '                    pass' + #10 + #10 + '                try:' + #10 +
+  '                    exception_name' + ', hex_errno, err_msg = (' + #10 +
+  '                            errpip' + 'e_data.split(b'':'', 2))' + #10 +
+  '                    # The encoding' + ' here should match the encoding' +
+  #10 + '                    # written in b' +
+  'y the subprocess implementations' + #10 +
+  '                    # like _posixs' + 'ubprocess' + #10 +
+  '                    err_msg = err_' + 'msg.decode()' + #10 +
+  '                except ValueError:' + #10 +
+  '                    exception_name' + ' = b''SubprocessError''' + #10 +
+  '                    hex_errno = b''' + '0''' + #10 +
+  '                    err_msg = ''Bad' +
+  ' exception data from child: {!r}''.' + 'format(' + #10 +
+  '                                  ' + 'bytes(errpipe_data))' + #10 +
+  '                child_exception_ty' + 'pe = getattr(' + #10 +
+  '                        builtins, ' + 'exception_name.decode(''ascii''),' +
+  #10 + '                        Subprocess' + 'Error)' + #10 +
+  '                if issubclass(chil' +
+  'd_exception_type, OSError) and hex' + '_errno:' + #10 +
+  '                    errno_num = in' + 't(hex_errno, 16)' + #10 +
+  '                    child_exec_nev' + 'er_called = (err_msg == "noexec")' +
+  #10 + '                    if child_exec_' + 'never_called:' + #10 +
+  '                        err_msg = ' + '""' + #10 +
+  '                        # The erro' + 'r must be from chdir(cwd).' + #10 +
+  '                        err_filena' + 'me = cwd' + #10 +
+  '                    else:' + #10 + '                        err_filena' +
+  'me = orig_executable' + #10 + '                    if errno_num !' +
+  '= 0:' + #10 + '                        err_msg = ' +
+  'os.strerror(errno_num)' + #10 + '                    raise child_ex' +
+  'ception_type(errno_num, err_msg, e' + 'rr_filename)' + #10 +
+  '                raise child_except' + 'ion_type(err_msg)' + #10 + #10 +
+  #10 + '        def _handle_exitstatus(sel' +
+  'f, sts, _WIFSIGNALED=os.WIFSIGNALE' + 'D,' + #10 +
+  '                _WTERMSIG=os.WTERM' + 'SIG, _WIFEXITED=os.WIFEXITED,' +
+  #10 + '                _WEXITSTATUS=os.WE' +
+  'XITSTATUS, _WIFSTOPPED=os.WIFSTOPP' + 'ED,' + #10 +
+  '                _WSTOPSIG=os.WSTOP' + 'SIG):' + #10 +
+  '            """All callers to this' +
+  ' function MUST hold self._waitpid_' + 'lock."""' + #10 +
+  '            # This method is calle' +
+  'd (indirectly) by __del__, so it c' + 'annot' + #10 +
+  '            # refer to anything ou' + 'tside of its local scope.' + #10 +
+  '            if _WIFSIGNALED(sts):' + #10 +
+  '                self.returncode = ' + '-_WTERMSIG(sts)' + #10 +
+  '            elif _WIFEXITED(sts):' + #10 +
+  '                self.returncode = ' + '_WEXITSTATUS(sts)' + #10 +
+  '            elif _WIFSTOPPED(sts):' + #10 +
+  '                self.returncode = ' + '-_WSTOPSIG(sts)' + #10 +
+  '            else:' + #10 + '                # Should never hap' + 'pen' +
+  #10 + '                raise SubprocessEr' +
+  'ror("Unknown child exit status!")' + #10 + #10 + #10 +
+  '        def _internal_poll(self, _' +
+  'deadstate=None, _waitpid=os.waitpi' + 'd,' + #10 +
+  '                _WNOHANG=os.WNOHAN' + 'G, _ECHILD=errno.ECHILD):' + #10 +
+  '            """Check if child proc' +
+  'ess has terminated.  Returns retur' + 'ncode' + #10 +
+  '            attribute.' + #10 + #10 +
+  '            This method is called ' +
+  'by __del__, so it cannot reference' + ' anything' + #10 +
+  '            outside of the local s' +
+  'cope (nor can any methods it calls' + ').' + #10 + #10 +
+  '            """' + #10;
+
+Const
+ Src_subprocess_7: AnsiString =
+  '            if self.returncode is ' + 'None:' + #10 +
+  '                if not self._waitp' + 'id_lock.acquire(False):' + #10 +
+  '                    # Something el' +
+  'se is busy calling waitpid.  Don''t' + ' allow two' + #10 +
+  '                    # at once.  We' + ' know nothing yet.' + #10 +
+  '                    return None' + #10 + '                try:' + #10 +
+  '                    if self.return' + 'code is not None:' + #10 +
+  '                        return sel' +
+  'f.returncode  # Another thread wai' + 'ted.' + #10 +
+  '                    pid, sts = _wa' + 'itpid(self.pid, _WNOHANG)' + #10 +
+  '                    if pid == self' + '.pid:' + #10 +
+  '                        self._hand' + 'le_exitstatus(sts)' + #10 +
+  '                except OSError as ' + 'e:' + #10 +
+  '                    if _deadstate ' + 'is not None:' + #10 +
+  '                        self.retur' + 'ncode = _deadstate' + #10 +
+  '                    elif e.errno =' + '= _ECHILD:' + #10 +
+  '                        # This hap' +
+  'pens if SIGCLD is set to be ignore' + 'd or' + #10 +
+  '                        # waiting ' +
+  'for child processes has otherwise ' + 'been' + #10 +
+  '                        # disabled' +
+  ' for our process.  This child is d' + 'ead, we' + #10 +
+  '                        # can''t ge' + 't the status.' + #10 +
+  '                        # http://b' + 'ugs.python.org/issue15756' + #10 +
+  '                        self.retur' + 'ncode = 0' + #10 +
+  '                finally:' + #10 + '                    self._waitpid_' +
+  'lock.release()' + #10 + '            return self.returncode' + #10 + #10 +
+  #10 + '        def _try_wait(self, wait_f' + 'lags):' + #10 +
+  '            """All callers to this' +
+  ' function MUST hold self._waitpid_' + 'lock."""' + #10 +
+  '            try:' + #10 + '                (pid, sts) = os.wa' +
+  'itpid(self.pid, wait_flags)' + #10 + '            except ChildProcessErr' +
+  'or:' + #10 + '                # This happens if ' +
+  'SIGCLD is set to be ignored or wai' + 'ting' + #10 +
+  '                # for child proces' +
+  'ses has otherwise been disabled fo' + 'r our' + #10 +
+  '                # process.  This c' +
+  'hild is dead, we can''t get the sta' + 'tus.' + #10 +
+  '                pid = self.pid' + #10 + '                sts = 0' + #10 +
+  '            return (pid, sts)' + #10 + #10 + #10 +
+  '        def _wait(self, timeout):' + #10 +
+  '            """Internal implementa' + 'tion of wait() on POSIX."""' + #10 +
+  '            if self.returncode is ' + 'not None:' + #10 +
+  '                return self.return' + 'code' + #10 + #10 +
+  '            if timeout is not None' + ':' + #10 +
+  '                endtime = _time() ' + '+ timeout' + #10 +
+  '                # Enter a busy loo' +
+  'p if we have a timeout.  This busy' + ' loop was' + #10 +
+  '                # cribbed from Lib' +
+  '/threading.py in Thread.wait() at ' + 'r71065.' + #10 +
+  '                delay = 0.0005 # 5' + '00 us -> initial delay of 1 ms' +
+  #10 + '                while True:' + #10 +
+  '                    if self._waitp' + 'id_lock.acquire(False):' + #10 +
+  '                        try:' + #10 +
+  '                            if sel' + 'f.returncode is not None:' + #10 +
+  '                                br' + 'eak  # Another thread waited.' +
+  #10 + '                            (pid, ' +
+  'sts) = self._try_wait(os.WNOHANG)' + #10 +
+  '                            assert' + ' pid == self.pid or pid == 0' +
+  #10 + '                            if pid' + ' == self.pid:' + #10 +
+  '                                se' + 'lf._handle_exitstatus(sts)' + #10 +
+  '                                br' + 'eak' + #10 +
+  '                        finally:' + #10 +
+  '                            self._' + 'waitpid_lock.release()' + #10 +
+  '                    remaining = se' + 'lf._remaining_time(endtime)' + #10 +
+  '                    if remaining <' + '= 0:' + #10 +
+  '                        raise Time' + 'outExpired(self.args, timeout)' +
+  #10 + '                    delay = min(de' + 'lay * 2, remaining, .05)' +
+  #10 + '                    time.sleep(del' + 'ay)' + #10 +
+  '            else:' + #10 + '                while self.returnc' +
+  'ode is None:' + #10 + '                    with self._wai' + 'tpid_lock:' +
+  #10 + '                        if self.re' + 'turncode is not None:' + #10 +
+  '                            break ' + ' # Another thread waited.' + #10 +
+  '                        (pid, sts)' + ' = self._try_wait(0)' + #10 +
+  '                        # Check th' +
+  'e pid and loop as waitpid has been' + ' known to' + #10 +
+  '                        # return 0' +
+  ' even without WNOHANG in odd situa' + 'tions.' + #10 +
+  '                        # http://b' + 'ugs.python.org/issue14396.' + #10 +
+  '                        if pid == ' + 'self.pid:' + #10 +
+  '                            self._' + 'handle_exitstatus(sts)' + #10 +
+  '            return self.returncode' + #10 + #10 + #10 +
+  '        def _communicate(self, inp' + 'ut, endtime, orig_timeout):' + #10 +
+  '            if self.stdin and not ' + 'self._communication_started:' +
+  #10 + '                # Flush stdio buff' +
+  'er.  This might block, if the user' + ' has' + #10 +
+  '                # been writing to ' +
+  '.stdin in an uncontrolled fashion.' + #10 + '                try:' + #10 +
+  '                    self.stdin.flu' + 'sh()' + #10 +
+  '                except BrokenPipeE' + 'rror:' + #10 +
+  '                    pass  # commun' +
+  'icate() must ignore BrokenPipeErro' + 'r.' + #10 +
+  '                if not input:' + #10 + '                    try:' + #10 +
+  '                        self.stdin' + '.close()' + #10 +
+  '                    except BrokenP' + 'ipeError:' + #10 +
+  '                        pass  # co' +
+  'mmunicate() must ignore BrokenPipe' + 'Error.' + #10 + #10 +
+  '            stdout = None' + #10 + '            stderr = None' + #10 +
+  #10 + '            # Only create this map' +
+  'ping if we haven''t already.' + #10 +
+  '            if not self._communica' + 'tion_started:' + #10 +
+  '                self._fileobj2outp' + 'ut = {}' + #10 +
+  '                if self.stdout:' + #10 +
+  '                    self._fileobj2' + 'output[self.stdout] = []' + #10 +
+  '                if self.stderr:' + #10 +
+  '                    self._fileobj2' + 'output[self.stderr] = []' + #10 +
+  #10 + '            if self.stdout:' + #10 +
+  '                stdout = self._fil' + 'eobj2output[self.stdout]' + #10 +
+  '            if self.stderr:' + #10 + '                stderr = self._fil' +
+  'eobj2output[self.stderr]' + #10 + #10 +
+  '            self._save_input(input' + ')' + #10 + #10 +
+  '            if self._input:' + #10 + '                input_view = memor' +
+  'yview(self._input)' + #10 + #10 + '            with _PopenSelector() ' +
+  'as selector:' + #10 + '                if self.stdin and ' + 'input:' +
+  #10 + '                    selector.regis' +
+  'ter(self.stdin, selectors.EVENT_WR' + 'ITE)' + #10 +
+  '                if self.stdout and' + ' not self.stdout.closed:' + #10 +
+  '                    selector.regis' +
+  'ter(self.stdout, selectors.EVENT_R' + 'EAD)' + #10 +
+  '                if self.stderr and' + ' not self.stderr.closed:' + #10 +
+  '                    selector.regis' +
+  'ter(self.stderr, selectors.EVENT_R' + 'EAD)' + #10 + #10 +
+  '                while selector.get' + '_map():' + #10 +
+  '                    timeout = self' + '._remaining_time(endtime)' + #10 +
+  '                    if timeout is ' + 'not None and timeout < 0:' + #10 +
+  '                        self._chec' + 'k_timeout(endtime, orig_timeout,' +
+  #10 + '                                  ' + '          stdout, stderr,' +
+  #10 + '                                  ' +
+  '          skip_check_and_raise=Tru' + 'e)' + #10 +
+  '                        raise Runt' + 'imeError(  # Impossible :)' + #10 +
+  '                            ''_chec' +
+  'k_timeout(..., skip_check_and_rais' + 'e=True) ''' + #10 +
+  '                            ''faile' + 'd to raise TimeoutExpired.'')' +
+  #10 + #10 + '                    ready = select' + 'or.select(timeout)' +
+  #10 + '                    self._check_ti' +
+  'meout(endtime, orig_timeout, stdou' + 't, stderr)' + #10 + #10 +
+  '                    # XXX Rewrite ' +
+  'these to use non-blocking I/O on t' + 'he file' + #10 +
+  '                    # objects; the' + 'y are no longer using C stdio!' +
+  #10 + #10 + '                    for key, event' + 's in ready:' + #10 +
+  '                        if key.fil' + 'eobj is self.stdin:' + #10 +
+  '                            chunk ' + '= input_view[self._input_offset :' +
+  #10 + '                                  ' +
+  '             self._input_offset + ' + '_PIPE_BUF]' + #10 +
+  '                            try:' + #10 +
+  '                                se' +
+  'lf._input_offset += os.write(key.f' + 'd, chunk)' + #10 +
+  '                            except' + ' BrokenPipeError:' + #10 +
+  '                                se' + 'lector.unregister(key.fileobj)' +
+  #10 + '                                ke' + 'y.fileobj.close()' + #10 +
+  '                            else:' + #10 +
+  '                                if' +
+  ' self._input_offset >= len(self._i' + 'nput):' + #10 +
+  '                                  ' +
+  '  selector.unregister(key.fileobj)' + #10 +
+  '                                  ' + '  key.fileobj.close()' + #10 +
+  '                        elif key.f' +
+  'ileobj in (self.stdout, self.stder' + 'r):' + #10 +
+  '                            data =' + ' os.read(key.fd, 32768)' + #10 +
+  '                            if not' + ' data:' + #10 +
+  '                                se' + 'lector.unregister(key.fileobj)' +
+  #10 + '                                ke' + 'y.fileobj.close()' + #10 +
+  '                            self._' +
+  'fileobj2output[key.fileobj].append' + '(data)' + #10 + #10 +
+  '            self.wait(timeout=self' + '._remaining_time(endtime))' + #10 +
+  #10 + '            # All data exchanged. ' +
+  ' Translate lists into strings.' + #10 +
+  '            if stdout is not None:' + #10 +
+  '                stdout = b''''.join(' + 'stdout)' + #10 +
+  '            if stderr is not None:' + #10 +
+  '                stderr = b''''.join(' + 'stderr)' + #10 + #10 +
+  '            # Translate newlines, ' + 'if requested.' + #10 +
+  '            # This also turns byte' + 's into strings.' + #10 +
+  '            if self.text_mode:' + #10 +
+  '                if stdout is not N' + 'one:' + #10 +
+  '                    stdout = self.' + '_translate_newlines(stdout,' + #10 +
+  '                                  ' +
+  '                    self.stdout.en' + 'coding,' + #10 +
+  '                                  ' +
+  '                    self.stdout.er' + 'rors)' + #10 +
+  '                if stderr is not N' + 'one:' + #10 +
+  '                    stderr = self.' + '_translate_newlines(stderr,' + #10 +
+  '                                  ' +
+  '                    self.stderr.en' + 'coding,' + #10 +
+  '                                  ' +
+  '                    self.stderr.er' + 'rors)' + #10 + #10 +
+  '            return (stdout, stderr' + ')' + #10 + #10 + #10 +
+  '        def _save_input(self, inpu' + 't):' + #10 +
+  '            # This method is calle' +
+  'd from the _communicate_with_*() m' + 'ethods' + #10 +
+  '            # so that if we time o' +
+  'ut while communicating, we can con' + 'tinue' + #10 +
+  '            # sending input if we ' + 'retry.' + #10 +
+  '            if self.stdin and self' + '._input is None:' + #10 +
+  '                self._input_offset' + ' = 0' + #10 +
+  '                self._input = inpu' + 't' + #10 +
+  '                if input is not No' + 'ne and self.text_mode:' + #10 +
+  '                    self._input = ' +
+  'self._input.encode(self.stdin.enco' + 'ding,' + #10 +
+  '                                  ' +
+  '                   self.stdin.erro' + 'rs)' + #10 + #10 + #10 +
+  '        def send_signal(self, sig)' + ':' + #10 +
+  '            """Send a signal to th' + 'e process."""' + #10 +
+  '            # Skip signalling a pr' +
+  'ocess that we know has already die' + 'd.' + #10 +
+  '            if self.returncode is ' + 'None:' + #10 +
+  '                os.kill(self.pid, ' + 'sig)' + #10 + #10 +
+  '        def terminate(self):' + #10 +
+  '            """Terminate the proce' + 'ss with SIGTERM' + #10 +
+  '            """' + #10 + '            self.send_signal(signa' +
+  'l.SIGTERM)' + #10 + #10 + '        def kill(self):' + #10 +
+  '            """Kill the process wi' + 'th SIGKILL' + #10 +
+  '            """' + #10 + '            self.send_signal(signa' +
+  'l.SIGKILL)' + #10 + #10;
 
 Function Src_subprocess: AnsiString;
 Begin
  Result := Src_subprocess_0 + Src_subprocess_1 + Src_subprocess_2 +
-  Src_subprocess_3;
+  Src_subprocess_3 + Src_subprocess_4 + Src_subprocess_5 + Src_subprocess_6 +
+  Src_subprocess_7;
 End;
 
 Const
@@ -99898,6 +101584,7 @@ Begin
   RegSource('runpy', @Src_runpy);
   RegSource('sched', @Src_sched);
   RegSource('secrets', @Src_secrets);
+  RegSource('selectors', @Src_selectors);
   RegSource('shlex', @Src_shlex);
   RegSource('shutil', @Src_shutil);
   RegSource('signal', @Src_signal);
