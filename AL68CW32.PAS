@@ -34,11 +34,12 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 13 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 14 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
-         conditionnelles et boucles, structures) ; TODO 14 a 25 a faire.
+         conditionnelles et boucles, structures,
+         affectations) ; TODO 15 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -660,7 +661,7 @@
               vide, mode inconnu dans un champ, mode redeclare ; les
               programmes d'essai sont conserves dans TESTS\AL68CW32\work
 
-  TODO 14 - REFERENCES ET AFFECTATIONS [A FAIRE]
+  TODO 14 - REFERENCES ET AFFECTATIONS [IMPLEMENTE]
             Mode REF m : adresse ; variable locale = identite d'un
               REF m ; generateurs LOC (cadre de la clause) et HEAP
               (tas Win32, appel du runtime)
@@ -672,6 +673,40 @@
             REF REF m : niveaux multiples de dereferencement
             Valeur d'une affectation : la reference du membre de gauche
             Verification : refs.a68, test_ref.a68, coerce.a68
+            Realise : section 10 ; MakeAssign (membre gauche en force douce :
+              un nom REF m, valeur coercee vers m en contexte fort, valeur
+              de l'affectation = le nom ; erreur si le membre gauche n'est
+              pas un nom, par exemple une identite) ; := et =: reconnus par
+              ParseUnitX, le membre droit etant lui-meme une unite (a := b
+              := c) ; MakeIdRel et UK_IDREL (IS, ISNT : deux noms REF de
+              meme mode ou NIL, operandes en force faible, comparaison des
+              adresses) ; affectations composees +:= -:= *:= /:= %:= %*:=
+              et PLUSAB MINUSAB TIMESAB DIVAB OVERAB MODAB traitees comme
+              operateurs du prelude (GenCompound : entiers en place, reels
+              par x87, / et % entiers avec controle du diviseur, STRING par
+              STRCAT) ; NIL comme primaire ; variables HEAP : la cellule
+              contient l'adresse de l'objet, allocation par _A68RT_ALLOC,
+              initialisation et lecture a travers le pointeur ; controle de
+              la reference nulle (_A68RT_NILREF) avant tout
+              dereferencement d'une reference lue en memoire et avant une
+              selection ; GenAssign (nom, valeur, rangement par MOV, FSTP
+              ou REP MOVSD) ; les corps de boucle et de conditionnelle sont
+              maintenant vraiment generes
+            Verifie : programme d'essai execute (cellules lues par le code
+              de sortie) : x := 42, 99 =: z, a IS b faux et a ISNT b vrai
+              pour deux variables de meme valeur, p IS NIL vrai, p := a puis
+              p IS a vrai et lecture a travers p (5 puis 77 apres
+              b := 77), HEAP INT initialise (31 puis 32) ou non (0),
+              +:= -:= *:= /:= %:= (15, 13, 39, 19, 4), %*:= (2), reels (7,
+              12, 3), n := m (100), w := q := 7, y1 OF pt := 9, copie d'une
+              structure (9), HEAP de structure (3), somme d'une boucle FOR
+              (55), IF avec affectations (1), WHILE (7) ; la lecture d'une
+              reference NIL appelle NILREF ; erreurs : affectation a une
+              constante, IS sur des modes differents ou sur un INT,
+              coercition impossible a droite, -:= sur un STRING avec un
+              CHAR ; refs.a68 est analyse entierement ; les boucles du
+              TODO 12 s'executent sans remplacer leurs corps
+            Reste : les routines ALLOC, NILREF, DIVZERO, STRCAT du TODO 22
 
   TODO 15 - TABLEAUX, TRANCHES ET CHAINES [A FAIRE]
             Declaration [l:u] mode, [1:5] INT a := (10, 20, 30, 40, 50) ;
@@ -1088,6 +1123,8 @@ Type
     Used      : Boolean;
     Intrinsic : Boolean;       { realise en ligne par le generateur   }
     Generic   : Boolean;       { operande : tout tableau (LWB, UPB)   }
+    Heap      : Boolean;       { variable HEAP : la cellule contient
+                                 l adresse de l objet                 }
   End;
 
   TScope = Record
@@ -1123,6 +1160,8 @@ Type
     UK_CAST,       { conversion mode(unite) : A = unite                }
     UK_FORMULA,    { formule : Name, Sym = operateur, A, B (-1 si
                      monadique), IntVal = 1 ou 2                       }
+    UK_ASSIGN,     { affectation : A = nom, B = valeur, Mode = REF m   }
+    UK_IDREL,      { a IS b, a ISNT b : Name, A, B, Mode BOOL          }
     UK_IF,         { A = condition, B = alors, C = sinon (serie, ou un
                      autre UK_IF pour ELIF), Scope                     }
     UK_CASE,       { A = selecteur, B = alternatives (IntVal), C = OUT
@@ -3017,6 +3056,7 @@ Begin
   SymTab[I].Used      := False;
   SymTab[I].Intrinsic := False;
   SymTab[I].Generic   := False;
+  SymTab[I].Heap      := False;
   ScopeTab[ScopeCur].LastSym := I;
   SymNewRaw := I;
 End;
@@ -4609,6 +4649,30 @@ Begin
   CoerceName := Cur;
 End;
 
+{ Deprocedurage seul (force douce) : membre gauche d'une affectation }
+Function CoerceSoft(U : LongInt) : LongInt;
+Var
+  M     : Integer;
+  Cur   : LongInt;
+  Steps : Integer;
+Begin
+  Cur := U;
+  If (U < 0) Or (UnitTab[U].Mode = MD_ERROR) Then
+  Begin
+    CoerceSoft := U;
+    Exit;
+  End;
+  M := ModeResolve(UnitTab[U].Mode);
+  Steps := 0;
+  While (Steps < 16) And ModeIsProc0(M) Do
+  Begin
+    Inc(Steps);
+    M := ModeResolve(ModeTab[M].Sub);
+    Cur := CoerceWrap(Cur, CO_DEPROC, M);
+  End;
+  CoerceSoft := Cur;
+End;
+
 
 { ---- acces aux jetons ---- }
 Function TokAt(K : LongInt) : TToken;
@@ -5602,7 +5666,14 @@ Begin
       If (Dims > 0) And (Not IsVar) Then
         ErrorAt(L, C, 'une identite de tableau ne peut pas avoir de ' +
                 'bornes');
-      DeclareStorage(S, M, L, C);
+      If Heap And IsVar Then
+      Begin
+        { variable HEAP : la cellule contient l adresse de l objet }
+        SymTab[S].Heap := True;
+        DeclareStorage(S, ModeRef(M), L, C);
+      End
+      Else
+        DeclareStorage(S, M, L, C);
       If First < 0 Then First := U Else UnitTab[Last].Next := U;
       Last := U;
       Inc(DeclCount);
@@ -6538,7 +6609,13 @@ Begin
       U := DenotationNode;
     TK_KEYWORD:
       Begin
-        If AtKw('BEGIN') And ClauseFollowOk(TokAfterClose) Then
+        If AtKw('NIL') Then
+        Begin
+          U := UnitNew(UK_NIL, T.Line, T.Col);
+          UnitTab[U].Mode := MD_NIL;
+          ParserAdvance;
+        End
+        Else If AtKw('BEGIN') And ClauseFollowOk(TokAfterClose) Then
           U := ParseClosed
         Else If (AtKw('IF') Or AtKw('CASE')) And
                 ClauseFollowOk(TokAfterClose) Then
@@ -7034,9 +7111,7 @@ Begin
   T := TokTab[TokPos];
   If (T.Kind <> TK_OP) And (T.Kind <> TK_BOLD) Then Exit;
   Name := T.Val;
-  If (Name = ':=') Or (Name = '=:') Or
-     ((Length(Name) >= 3) And (Copy(Name, Length(Name) - 1, 2) = ':=')) Then
-    Exit;
+  If (Name = ':=') Or (Name = '=:') Then Exit;
   P := SymFindPrio(Name);
   If (P > 0) And SymOpExists(Name, 2) Then AtDyadic := P;
 End;
@@ -7051,6 +7126,66 @@ Begin
   If (T.Kind = TK_BOLD) And (SymFindMode(T.Val) >= 0) Then Exit;
   Name := T.Val;
   AtMonadic := SymOpExists(Name, 1);
+End;
+
+{ ---- References et affectations (TODO 14) ---- }
+
+{ Identite entre deux noms : a IS b, a ISNT b, p IS NIL }
+Function MakeIdRel(Const Op : TName; L, R : LongInt; Line, Col : Integer)
+         : LongInt;
+Var
+  U      : LongInt;
+  ML, MR : Integer;
+Begin
+  L := CoerceName(L);
+  R := CoerceName(R);
+  ML := NatMode(L);
+  MR := NatMode(R);
+  U := UnitNew(UK_IDREL, Line, Col);
+  UnitTab[U].Name := Op;
+  UnitTab[U].A := L;
+  UnitTab[U].B := R;
+  UnitTab[U].Mode := MD_BOOL;
+  MakeIdRel := U;
+  If (ML = MD_ERROR) Or (MR = MD_ERROR) Then Exit;
+  If Not (ModeKind(ML) In [MK_REF, MK_NIL]) Or
+     Not (ModeKind(MR) In [MK_REF, MK_NIL]) Then
+  Begin
+    ErrorAt(Line, Col, Op + ' demande deux noms (REF) ou NIL, pas ' +
+            ModeName(ML) + ' et ' + ModeName(MR));
+    Exit;
+  End;
+  If (ModeKind(ML) = MK_REF) And (ModeKind(MR) = MK_REF) And
+     Not ModeSame(ML, MR) Then
+    ErrorAt(Line, Col, Op + ' entre des modes differents: ' +
+            ModeName(ML) + ' et ' + ModeName(MR));
+End;
+
+{ Affectation Dest := Src (ou Src =: Dest) : le membre de gauche doit
+  etre un nom (REF m) apres deprocedurage et dereferencement faibles, le
+  membre de droite est coerce vers m (contexte fort) ; la valeur de
+  l'affectation est le nom du membre de gauche }
+Function MakeAssign(Dest, Src : LongInt; Line, Col : Integer) : LongInt;
+Var
+  U : LongInt;
+  M : Integer;
+Begin
+  Dest := CoerceSoft(Dest);
+  M := NatMode(Dest);
+  U := UnitNew(UK_ASSIGN, Line, Col);
+  UnitTab[U].A := Dest;
+  UnitTab[U].B := Src;
+  UnitTab[U].Mode := M;
+  MakeAssign := U;
+  If M = MD_ERROR Then Exit;
+  If ModeKind(M) <> MK_REF Then
+  Begin
+    ErrorAt(Line, Col, 'le membre gauche d''une affectation doit etre ' +
+            'un nom (REF), pas ' + ModeName(M));
+    Exit;
+  End;
+  UnitTab[U].B := CoerceUnit(Src, ModeTab[ModeResolve(M)].Sub,
+                             STR_STRONG);
 End;
 
 Function ParseFormula(MinPrio : Integer) : LongInt; Forward;
@@ -7096,6 +7231,11 @@ Begin
     Exit;
   End;
   P := AtDyadic(Name);
+  If AtKw('IS') Or AtKw('ISNT') Then
+  Begin
+    Name := TokTab[TokPos].Val;
+    P := 4;
+  End;
   While (P > 0) And (P >= MinPrio) Do
   Begin
     L := TokTab[TokPos].Line;
@@ -7107,8 +7247,16 @@ Begin
       ParseFormula := -1;
       Exit;
     End;
-    Left := MakeDyadic(Name, Left, Right, L, C);
+    If (Name = 'IS') Or (Name = 'ISNT') Then
+      Left := MakeIdRel(Name, Left, Right, L, C)
+    Else
+      Left := MakeDyadic(Name, Left, Right, L, C);
     P := AtDyadic(Name);
+    If AtKw('IS') Or AtKw('ISNT') Then
+    Begin
+      Name := TokTab[TokPos].Val;
+      P := 4;
+    End;
   End;
   ParseFormula := Left;
 End;
@@ -7134,8 +7282,10 @@ End;
 Function ParseUnitX(Stops : Integer) : LongInt;
 Var
   U, SaveUnits : LongInt;
-  SavePos      : LongInt;
+  SavePos, R   : LongInt;
   SaveGotos    : Integer;
+  Rev          : Boolean;
+  OL, OC       : Integer;
 Begin
   U := ParseDenotation;
   If U >= 0 Then
@@ -7147,6 +7297,23 @@ Begin
   SaveUnits := UnitCount;
   SaveGotos := GotoCount;
   U := ParseFormula(0);
+  If (U >= 0) And (AtOpSym(':=') Or AtOpSym('=:')) Then
+  Begin
+    Rev := AtOpSym('=:');
+    OL := TokTab[TokPos].Line;
+    OC := TokTab[TokPos].Col;
+    ParserAdvance;
+    R := ParseUnitX(Stops);
+    If UnitTab[R].Kind <> UK_OPAQUE Then
+    Begin
+      If Rev Then
+        U := MakeAssign(R, U, OL, OC)
+      Else
+        U := MakeAssign(U, R, OL, OC);
+    End
+    Else
+      U := -1;                         { valeur pas encore analysee }
+  End;
   If (U >= 0) And TokEndsExpr(0) Then
   Begin
     ParseUnitX := U;
@@ -7317,6 +7484,8 @@ Begin
     UK_CONSTRUCT: UnitKindName := 'constructeur';
     UK_CAST     : UnitKindName := 'conversion';
     UK_FORMULA  : UnitKindName := 'formule';
+    UK_ASSIGN   : UnitKindName := 'affectation';
+    UK_IDREL    : UnitKindName := 'identite';
     UK_IF       : UnitKindName := 'IF';
     UK_CASE     : UnitKindName := 'CASE';
     UK_LOOP     : UnitKindName := 'boucle';
@@ -7372,6 +7541,8 @@ Begin
                        UnitTab[U].C, ' tranche(s) : ',
                        ModeName(UnitTab[U].Mode));
     UK_LOOP    : Write(' ', UnitTab[U].Name);
+    UK_IDREL   : Write(' ', UnitTab[U].Name);
+    UK_ASSIGN  : Write(' : ', ModeName(UnitTab[U].Mode));
     UK_FORMULA : Write(' ', UnitTab[U].Name, ' : ',
                        ModeName(UnitTab[U].Mode));
     UK_CALL    : Write(' ', UnitTab[U].IntVal, ' argument(s) : ',
@@ -7431,7 +7602,7 @@ Begin
     If UnitTab[U].D >= 0 Then UnitDump(UnitTab[U].D, Depth + 1);
     UnitDump(UnitTab[U].E, Depth + 1);
   End
-  Else If UnitTab[U].Kind = UK_FORMULA Then
+  Else If UnitTab[U].Kind In [UK_FORMULA, UK_ASSIGN, UK_IDREL] Then
   Begin
     UnitDumpOne(UnitTab[U].A, Depth + 1);
     If UnitTab[U].B >= 0 Then UnitDumpOne(UnitTab[U].B, Depth + 1);
@@ -7581,6 +7752,8 @@ End;
 
 Procedure GenUnit(U : LongInt); Forward;
 Procedure GenOne(U : LongInt); Forward;
+Procedure GenNilCheck; Forward;
+Function MayBeNil(U : LongInt) : Boolean; Forward;
 
 { Operande memoire de l objet d un symbole (segment de donnees ou
   cadre) a Disp octets de son debut }
@@ -7694,6 +7867,32 @@ End;
   dans la destination }
 Procedure StoreValue(Sym, Lbl : Integer; Disp : LongInt; M : Integer);
 Begin
+  If (Sym >= 0) And SymTab[Sym].Heap Then
+  Begin
+    { objet HEAP : la cellule du symbole contient son adresse }
+    Case ValClass(M) Of
+      1 :
+        Begin
+          Emit(OP_MOV, OpReg(R_EDX), SymCell(Sym, 0, 4));
+          Emit(OP_MOV, OpMem(R_EDX, Disp, 4), OpReg(R_EAX));
+        End;
+      2 :
+        Begin
+          Emit(OP_MOV, OpReg(R_EDX), SymCell(Sym, 0, 4));
+          Emit1(OP_FSTP, OpMem(R_EDX, Disp, 8));
+        End;
+      3 :
+        Begin
+          Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+          Emit(OP_MOV, OpReg(R_EDI), SymCell(Sym, 0, 4));
+          If Disp <> 0 Then
+            Emit(OP_ADD, OpReg(R_EDI), OpImm(Disp));
+          Emit(OP_MOV, OpReg(R_ECX), OpImm(ModeSize(M) Div 4));
+          Emit0(OP_REP_MOVSD);
+        End;
+    End;
+    Exit;
+  End;
   Case ValClass(M) Of
     1 : Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4), OpReg(R_EAX));
     2 : Emit1(OP_FSTP, DestOp(Sym, Lbl, Disp, 8));
@@ -7710,7 +7909,9 @@ End;
 { Charge dans EAX l adresse de l objet d un symbole }
 Procedure LoadSymAddress(S : Integer);
 Begin
-  If SymTab[S].Storage = SC_STATIC Then
+  If SymTab[S].Heap Then
+    Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 0, 4))
+  Else If SymTab[S].Storage = SC_STATIC Then
     Emit(OP_MOV, OpReg(R_EAX), OpOffset(Intern(SymTab[S].AsmName)))
   Else
     Emit(OP_LEA, OpReg(R_EAX), SymCell(S, 0, 4));
@@ -7732,6 +7933,7 @@ Var
   M : Integer;
 Begin
   GenValue(UnitTab[U].A);
+  If MayBeNil(UnitTab[U].A) Then GenNilCheck;
   If UnitTab[U].C <> 0 Then
     Emit(OP_ADD, OpReg(R_EAX), OpImm(UnitTab[U].C));
   M := UnitTab[U].Mode;
@@ -7771,6 +7973,7 @@ Begin
     CO_DEREF:
       Begin
         GenValue(C);
+        If MayBeNil(C) Then GenNilCheck;
         LoadThrough(UnitTab[U].Mode);
       End;
     CO_WIDEN:
@@ -7806,6 +8009,9 @@ Begin
 End;
 
 { ---- Formules (TODO 11) ---- }
+
+Procedure GenCompound(U : LongInt); Forward;
+Function IsCompoundOp(Const Op : TName) : Boolean; Forward;
 
 { Charge l unite U comme reel dans ST(0) (un INT est converti) }
 Procedure GenAsReal(U : LongInt);
@@ -7890,6 +8096,11 @@ Var
   Skip, AddL : Integer;
 Begin
   Op := UnitTab[U].Name;
+  If IsCompoundOp(Op) Then
+  Begin
+    GenCompound(U);
+    Exit;
+  End;
   L := UnitTab[U].A;
   R := UnitTab[U].B;
   ML := ModeResolve(OpOperand(UnitTab[U].Sym, 0));
@@ -8246,6 +8457,184 @@ Begin
   EmitLabel(LExit);
 End;
 
+{ ---- References et affectations (TODO 14) ---- }
+
+{ Verifie que EAX n'est pas la reference nulle (appelle NILREF) }
+Procedure GenNilCheck;
+Var
+  Ok : Integer;
+Begin
+  Ok := NewLabel;
+  Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+  Emit1(OP_JNE, OpLabel(Ok));
+  Emit1(OP_CALL, OpLabel(Intern(MangleRT('NILREF'))));
+  EmitLabel(Ok);
+End;
+
+{ L'unite rend-elle une reference lue en memoire (qui peut etre NIL) ? }
+Function MayBeNil(U : LongInt) : Boolean;
+Begin
+  MayBeNil := UnitTab[U].Kind In [UK_COERCE, UK_NIL, UK_CALL, UK_CAST];
+End;
+
+{ Affectation : adresse du nom, valeur, rangement ; le resultat est le
+  nom (adresse dans EAX) }
+Procedure GenAssign(U : LongInt);
+Var
+  Ref, Src : LongInt;
+  M        : Integer;
+Begin
+  Ref := UnitTab[U].A;
+  Src := UnitTab[U].B;
+  M := ModeResolve(ModeTab[ModeResolve(UnitTab[U].Mode)].Sub);
+  GenValue(Ref);
+  If MayBeNil(Ref) Then GenNilCheck;
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  GenValue(Src);
+  Case ValClass(M) Of
+    1 :
+      Begin
+        Emit1(OP_POP, OpReg(R_EDX));
+        Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
+        Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+      End;
+    2 :
+      Begin
+        Emit1(OP_POP, OpReg(R_EDX));
+        Emit1(OP_FSTP, OpMem(R_EDX, 0, 8));
+        Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+      End;
+    3 :
+      Begin
+        Emit1(OP_POP, OpReg(R_EDI));
+        Emit1(OP_PUSH, OpReg(R_EDI));
+        Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+        Emit(OP_MOV, OpReg(R_ECX), OpImm(ModeSize(M) Div 4));
+        Emit0(OP_REP_MOVSD);
+        Emit1(OP_POP, OpReg(R_EAX));
+      End;
+  Else
+    Begin
+      Emit1(OP_POP, OpReg(R_EDX));
+      EmitComment('affectation de mode ' + ModeName(M) +
+                  ' pas encore generee');
+    End;
+  End;
+End;
+
+{ IS et ISNT : comparaison des adresses }
+Procedure GenIdRel(U : LongInt);
+Begin
+  GenValue(UnitTab[U].A);
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  GenValue(UnitTab[U].B);
+  Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+  Emit1(OP_POP, OpReg(R_EAX));
+  Emit(OP_CMP, OpReg(R_EAX), OpReg(R_ECX));
+  If UnitTab[U].Name = 'IS' Then
+    Emit1(OP_SETE, OpReg(R_AL))
+  Else
+    Emit1(OP_SETNE, OpReg(R_AL));
+  Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+End;
+
+Function IsCompoundOp(Const Op : TName) : Boolean;
+Begin
+  IsCompoundOp := (Op = '+:=') Or (Op = '-:=') Or (Op = '*:=') Or
+                  (Op = '/:=') Or (Op = '%:=') Or (Op = '%*:=') Or
+                  (Op = 'PLUSAB') Or (Op = 'MINUSAB') Or
+                  (Op = 'TIMESAB') Or (Op = 'DIVAB') Or
+                  (Op = 'OVERAB') Or (Op = 'MODAB');
+End;
+
+{ Affectation composee : cible op= valeur ; le resultat est le nom de la
+  cible (adresse dans EAX) }
+Procedure GenCompound(U : LongInt);
+Var
+  Op     : TName;
+  Target : Integer;
+  Skip, AddL : Integer;
+Begin
+  Op := UnitTab[U].Name;
+  Target := ModeResolve(ModeTab[ModeResolve(
+            OpOperand(UnitTab[U].Sym, 0))].Sub);
+  GenValue(UnitTab[U].A);
+  If MayBeNil(UnitTab[U].A) Then GenNilCheck;
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  If ModeIsString(Target) Then
+  Begin
+    { cible + chaine : nouvelle chaine, descripteur recopie dans la cible }
+    GenAsString(UnitTab[U].B);
+    Emit(OP_MOV, OpReg(R_EDI), OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_ESI), OpMem(R_ESP, 0, 4));
+    Emit1(OP_CALL, OpLabel(Intern(MangleRT('STRCAT'))));
+    Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+    Emit1(OP_POP, OpReg(R_EDI));
+    Emit1(OP_PUSH, OpReg(R_EDI));
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(4));
+    Emit0(OP_REP_MOVSD);
+    Emit1(OP_POP, OpReg(R_EAX));
+    Exit;
+  End;
+  If Target = MD_REAL Then
+  Begin
+    GenAsReal(UnitTab[U].B);
+    Emit1(OP_POP, OpReg(R_ESI));
+    Emit1(OP_FLD, OpMem(R_ESI, 0, 8));
+    Emit1(OP_FXCH, OpST(1));
+    If (Op = '+:=') Or (Op = 'PLUSAB') Then
+      Emit(OP_FADDP, OpST(1), OpST(0))
+    Else If (Op = '-:=') Or (Op = 'MINUSAB') Then
+      Emit(OP_FSUBP, OpST(1), OpST(0))
+    Else If (Op = '*:=') Or (Op = 'TIMESAB') Then
+      Emit(OP_FMULP, OpST(1), OpST(0))
+    Else
+      Emit(OP_FDIVP, OpST(1), OpST(0));
+    Emit1(OP_FSTP, OpMem(R_ESI, 0, 8));
+    Emit(OP_MOV, OpReg(R_EAX), OpReg(R_ESI));
+    Exit;
+  End;
+  { cible entiere }
+  GenValue(UnitTab[U].B);
+  Emit1(OP_POP, OpReg(R_ESI));
+  If (Op = '+:=') Or (Op = 'PLUSAB') Then
+    Emit(OP_ADD, OpMem(R_ESI, 0, 4), OpReg(R_EAX))
+  Else If (Op = '-:=') Or (Op = 'MINUSAB') Then
+    Emit(OP_SUB, OpMem(R_ESI, 0, 4), OpReg(R_EAX))
+  Else If (Op = '*:=') Or (Op = 'TIMESAB') Then
+  Begin
+    Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, 0, 4));
+    Emit(OP_IMUL, OpReg(R_ECX), OpReg(R_EAX));
+    Emit(OP_MOV, OpMem(R_ESI, 0, 4), OpReg(R_ECX));
+  End
+  Else
+  Begin
+    { division entiere (le reste pour %*:= et MODAB, toujours >= 0) }
+    Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+    GenDivZeroCheck;
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 0, 4));
+    Emit0(OP_CDQ);
+    Emit1(OP_IDIV, OpReg(R_ECX));
+    If (Op = '%*:=') Or (Op = 'MODAB') Then
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+      Skip := NewLabel;
+      AddL := NewLabel;
+      Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+      Emit1(OP_JNS, OpLabel(Skip));
+      Emit(OP_MOV, OpReg(R_EDX), OpReg(R_ECX));
+      Emit(OP_TEST, OpReg(R_EDX), OpReg(R_EDX));
+      Emit1(OP_JNS, OpLabel(AddL));
+      Emit1(OP_NEG, OpReg(R_EDX));
+      EmitLabel(AddL);
+      Emit(OP_ADD, OpReg(R_EAX), OpReg(R_EDX));
+      EmitLabel(Skip);
+    End;
+    Emit(OP_MOV, OpMem(R_ESI, 0, 4), OpReg(R_EAX));
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), OpReg(R_ESI));
+End;
+
 { Valeur d une unite : mot dans EAX, reel dans ST(0), ou adresse dans
   EAX pour les objets en memoire ; une variable (mode REF m) a pour
   valeur son adresse }
@@ -8298,6 +8687,8 @@ Begin
       Else
         GenMonadic(U);
     UK_SELECT    : GenSelect(U);
+    UK_ASSIGN    : GenAssign(U);
+    UK_IDREL     : GenIdRel(U);
     UK_IF        : GenIf(U);
     UK_CASE      : GenCase(U);
     UK_LOOP      : GenLoop(U);
@@ -8317,6 +8708,18 @@ End;
 Procedure GenInit(S : Integer; Disp : LongInt; Init : LongInt;
                   Const Name : TName; ObjMode : Integer);
 Begin
+  If SymTab[S].Heap Then
+  Begin
+    If UnitTab[Init].Kind <> UK_OPAQUE Then
+    Begin
+      GenValue(Init);
+      StoreValue(S, -1, Disp, ObjMode);
+    End
+    Else
+      EmitComment(Name + ' : initialiseur ligne ' +
+                  ItoS(UnitTab[Init].Line) + ' pas encore genere');
+    Exit;
+  End;
   Case UnitTab[Init].Kind Of
     UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN:
       GenStoreDenotation(S, -1, Disp, ModeResolve(UnitTab[Init].Mode),
@@ -8352,8 +8755,13 @@ End;
 { Declaration d identite ou de variable }
 Procedure GenDecl(U : LongInt);
 Begin
-  If UnitTab[U].IntVal = 1 Then
-    EmitComment('HEAP traite comme LOC (TODO 14)');
+  If SymTab[UnitTab[U].Sym].Heap Then
+  Begin
+    { generateur HEAP : memoire du tas, adresse rangee dans la cellule }
+    Emit(OP_MOV, OpReg(R_EAX), OpImm(ModeSize(UnitTab[U].Mode)));
+    Emit1(OP_CALL, OpLabel(Intern(MangleRT('ALLOC'))));
+    Emit(OP_MOV, SymCell(UnitTab[U].Sym, 0, 4), OpReg(R_EAX));
+  End;
   If UnitTab[U].C > 0 Then
   Begin
     EmitComment('tableau ' + UnitTab[U].Name + ' (TODO 15)');
@@ -8372,7 +8780,8 @@ Begin
     UK_SERIAL  : GenUnit(UnitTab[U].A);
     UK_CLOSED  : GenUnit(UnitTab[U].A);
     UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
-    UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_LOOP : GenValue(U);
+    UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_LOOP, UK_ASSIGN,
+    UK_IDREL : GenValue(U);
     UK_LABELDEF:
       If UnitTab[U].Sym >= 0 Then
         EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
