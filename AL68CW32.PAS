@@ -10767,7 +10767,7 @@ Begin
     UK_LOOP      : GenLoop(U);
     UK_CONSTRUCT : GenConstruct(U);
     UK_CLOSED:
-      GenUnit(UnitTab[U].A);
+      GenSerialValue(UnitTab[U].A);
   Else
     EmitComment('(ligne ' + ItoS(UnitTab[U].Line) +
                 ' : pas encore generee)');
@@ -10880,6 +10880,8 @@ Begin
   End;
 End;
 
+Procedure RtLink; Forward;
+
 Procedure PhaseCodegen;
 Begin
   GenFrame := -1;
@@ -10887,6 +10889,7 @@ Begin
   GenMainBegin;
   GenUnit(UnitRoot);
   GenMainEnd;
+  RtLink;
   If Opts.Verbose Then
     WriteLn('  ', CodeCount + DeferCount, ' instruction(s), ',
             DataCount, ' donnee(s) statique(s), ', NameCount,
@@ -12309,6 +12312,1104 @@ End;
 { ============================================================
   SECTION 14 - RUNTIME ALGOL 68 POUR WIN32 (TODO 22)
   ============================================================ }
+{ Le runtime est ecrit en assembleur 80386 (syntaxe du listing) et
+  integre au compilateur sous forme de texte (RtText). Seules les
+  routines atteignables depuis le programme compile (appels _A68RT_*,
+  fermeture transitive) sont assemblees par un mini-assembleur qui les
+  convertit en instructions internes, ajoutees apres le code du
+  programme : elles figurent donc dans le listing .ASM, qui devient
+  autonome, puis sont encodees comme le reste (.EXE et .OBJ
+  independants de toute bibliotheque, hormis kernel32.dll).
+
+  Format de RtText : '@NOM' ouvre une routine, ';texte' est un
+  commentaire, 'NOM:' une etiquette, sinon une instruction. Les
+  cellules de donnees _A68D_* sont creees a la demande (RtData).
+
+  Contrat (registres detruits : EAX, ECX, EDX, ESI, EDI ; EBX et EBP
+  conserves) :
+    WRITEINT, WRITEBOOL, WRITECHAR EAX ; WRITEREAL ST(0) (depile) ;
+    WRITESTR EAX = descripteur ; NEWLINE ; SPACE ; WHOLE EAX = n,
+    ECX = largeur -> EAX = descripteur ; READINT, READCHAR -> EAX ;
+    READREAL -> ST(0) ; READSTR -> EAX = descripteur ; STRCAT ESI,
+    EDI = descripteurs -> EAX = descripteur ; STRCMP ESI, EDI -> EAX
+    (< 0, 0, > 0) ; POW EAX ** EDX ; RPOW ST(0) ** ST(1) -> ST(0) ;
+    FLOOR et RTOI ST(0) -> EAX ; RSIGN ST(0) -> EAX ; CHKIDX EAX =
+    indice, ECX = borne basse, EDX = borne haute (registres conserves) ;
+    BOUNDS ; NILREF ; DIVZERO ; ALLOC EAX = octets -> EAX = bloc mis a
+    zero (HeapAlloc). Les routines d'erreur ecrivent un message sur
+    l'erreur standard et terminent par le code de sortie 1.
+  Formats : entier en decimal sans remplissage ; reel en notation fixe,
+  6 decimales au plus, zeros finaux supprimes mais une decimale au
+  moins, valeur absolue inferieure a 9.2E12 ; BOOL TRUE ou FALSE ; fin
+  de ligne CR LF ; read ignore les blancs avant un nombre, lit un
+  caractere pour CHAR et la ligne (256 caracteres au plus) pour
+  STRING. }
+Type
+  TRtLine = String[70];
+
+Const
+  RT_LINES = 631;
+  RT_MAX_ROUT = 40;
+  RtText : Array[0..RT_LINES - 1] Of TRtLine = (
+  '@_A68RT_PUT',
+  '; ESI = octets, ECX = longueur : ecrit sur la sortie standard',
+  '_A68RT_PUT:',
+  'TEST ECX, ECX',
+  'JLE _A68R_pt1',
+  'PUSH ESI',
+  'PUSH ECX',
+  'PUSH -11',
+  'CALL GetStdHandle',
+  'POP ECX',
+  'POP ESI',
+  'PUSH 0',
+  'PUSH OFFSET _A68D_WR',
+  'PUSH ECX',
+  'PUSH ESI',
+  'PUSH EAX',
+  'CALL WriteFile',
+  '_A68R_pt1:',
+  'RET',
+  '@_A68RT_FAIL',
+  '; EAX = message termine par zero : erreur standard, code de sortie 1',
+  '_A68RT_FAIL:',
+  'PUSH EAX',
+  'XOR ECX, ECX',
+  '_A68R_fl1:',
+  'MOVZX EDX, BYTE PTR [EAX+ECX]',
+  'TEST EDX, EDX',
+  'JE _A68R_fl2',
+  'INC ECX',
+  'JMP _A68R_fl1',
+  '_A68R_fl2:',
+  'PUSH ECX',
+  'PUSH -12',
+  'CALL GetStdHandle',
+  'POP ECX',
+  'POP EDX',
+  'PUSH 0',
+  'PUSH OFFSET _A68D_WR',
+  'PUSH ECX',
+  'PUSH EDX',
+  'PUSH EAX',
+  'CALL WriteFile',
+  'PUSH 1',
+  'CALL ExitProcess',
+  '@_A68RT_DIVZERO',
+  '_A68RT_DIVZERO:',
+  'MOV EAX, OFFSET _A68D_M_DIV',
+  'JMP _A68RT_FAIL',
+  '@_A68RT_NILREF',
+  '_A68RT_NILREF:',
+  'MOV EAX, OFFSET _A68D_M_NIL',
+  'JMP _A68RT_FAIL',
+  '@_A68RT_BOUNDS',
+  '_A68RT_BOUNDS:',
+  'MOV EAX, OFFSET _A68D_M_BND',
+  'JMP _A68RT_FAIL',
+  '@_A68RT_CHKIDX',
+  '; EAX = indice, ECX = borne basse, EDX = borne haute (conserves)',
+  '_A68RT_CHKIDX:',
+  'CMP EAX, ECX',
+  'JL _A68R_ck1',
+  'CMP EAX, EDX',
+  'JG _A68R_ck1',
+  'RET',
+  '_A68R_ck1:',
+  'MOV EAX, OFFSET _A68D_M_IDX',
+  'JMP _A68RT_FAIL',
+  '@_A68RT_ALLOC',
+  '; EAX = octets -> EAX = bloc mis a zero (tas du processus)',
+  '_A68RT_ALLOC:',
+  'PUSH EAX',
+  'CALL GetProcessHeap',
+  'POP ECX',
+  'PUSH ECX',
+  'PUSH 8',
+  'PUSH EAX',
+  'CALL HeapAlloc',
+  'TEST EAX, EAX',
+  'JNE _A68R_al1',
+  'MOV EAX, OFFSET _A68D_M_MEM',
+  'JMP _A68RT_FAIL',
+  '_A68R_al1:',
+  'RET',
+  '@_A68RT_NEWLINE',
+  '_A68RT_NEWLINE:',
+  'MOV ESI, OFFSET _A68D_CR',
+  'MOV ECX, 2',
+  'JMP _A68RT_PUT',
+  '@_A68RT_SPACE',
+  '_A68RT_SPACE:',
+  'MOV ESI, OFFSET _A68D_SP',
+  'MOV ECX, 1',
+  'JMP _A68RT_PUT',
+  '@_A68RT_WRITECHAR',
+  '; EAX = code du caractere',
+  '_A68RT_WRITECHAR:',
+  'MOV BYTE PTR [_A68D_BUF], AL',
+  'MOV ESI, OFFSET _A68D_BUF',
+  'MOV ECX, 1',
+  'JMP _A68RT_PUT',
+  '@_A68RT_WRITESTR',
+  '; EAX = adresse du descripteur de chaine',
+  '_A68RT_WRITESTR:',
+  'MOV ECX, DWORD PTR [EAX+8]',
+  'SUB ECX, DWORD PTR [EAX+4]',
+  'INC ECX',
+  'MOV ESI, DWORD PTR [EAX]',
+  'JMP _A68RT_PUT',
+  '@_A68RT_WRITEBOOL',
+  '_A68RT_WRITEBOOL:',
+  'TEST EAX, EAX',
+  'JE _A68R_wb1',
+  'MOV ESI, OFFSET _A68D_TRUE',
+  'MOV ECX, 4',
+  'JMP _A68RT_PUT',
+  '_A68R_wb1:',
+  'MOV ESI, OFFSET _A68D_FALSE',
+  'MOV ECX, 5',
+  'JMP _A68RT_PUT',
+  '@_A68RT_DIGITS',
+  '; EAX = entier : chiffres decimaux dans [EDI, ESI) de _A68D_BUF',
+  '_A68RT_DIGITS:',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'ADD EDI, 60',
+  'MOV ESI, EDI',
+  'MOV ECX, EAX',
+  'TEST EAX, EAX',
+  'JNS _A68R_dg1',
+  'NEG EAX',
+  '_A68R_dg1:',
+  'XOR EDX, EDX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'PUSH EAX',
+  'MOV EAX, EDX',
+  'ADD EAX, 48',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], AL',
+  'POP EAX',
+  'TEST EAX, EAX',
+  'JNE _A68R_dg1',
+  'TEST ECX, ECX',
+  'JNS _A68R_dg2',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], 45',
+  '_A68R_dg2:',
+  'RET',
+  '@_A68RT_WRITEINT',
+  '; EAX = entier',
+  '_A68RT_WRITEINT:',
+  'CALL _A68RT_DIGITS',
+  'MOV ECX, ESI',
+  'SUB ECX, EDI',
+  'MOV ESI, EDI',
+  'JMP _A68RT_PUT',
+  '@_A68RT_WRITEREAL',
+  '; ST(0) = reel (depile) : notation fixe, 6 decimales au plus',
+  '_A68RT_WRITEREAL:',
+  'FSTP QWORD PTR [_A68D_Q]',
+  'MOV EAX, DWORD PTR [_A68D_Q+4]',
+  'MOV DWORD PTR [_A68D_SG], EAX',
+  'AND EAX, 2147483647',
+  'MOV DWORD PTR [_A68D_Q+4], EAX',
+  'FLD QWORD PTR [_A68D_Q]',
+  'FMUL QWORD PTR [_A68D_MILR]',
+  'FISTP QWORD PTR [_A68D_Q]',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'ADD EDI, 60',
+  'MOV DWORD PTR [_A68D_ACC], EDI',
+  'XOR ECX, ECX',
+  '_A68R_wr1:',
+  'MOV EAX, DWORD PTR [_A68D_Q+4]',
+  'XOR EDX, EDX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'MOV DWORD PTR [_A68D_Q+4], EAX',
+  'MOV EAX, DWORD PTR [_A68D_Q]',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'MOV DWORD PTR [_A68D_Q], EAX',
+  'ADD EDX, 48',
+  'MOV EAX, EDX',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], AL',
+  'INC ECX',
+  'MOV EAX, DWORD PTR [_A68D_Q]',
+  'OR EAX, DWORD PTR [_A68D_Q+4]',
+  'JNE _A68R_wr1',
+  'CMP ECX, 7',
+  'JL _A68R_wr1',
+  '; chiffres entiers : ECX - 6, a decaler d''une place pour la virgule',
+  'MOV EDX, ECX',
+  'SUB EDX, 6',
+  'MOV ESI, EDI',
+  'DEC EDI',
+  'PUSH EDI',
+  'MOV ECX, EDX',
+  'REP MOVSB',
+  'MOV BYTE PTR [EDI], 46',
+  'POP ESI',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  '; zeros finaux : au moins une decimale',
+  '_A68R_wr2:',
+  'MOV EDX, EAX',
+  'DEC EDX',
+  'MOV ECX, EDI',
+  'INC ECX',
+  'CMP EDX, ECX',
+  'JLE _A68R_wr3',
+  'MOVZX ECX, BYTE PTR [EDX]',
+  'CMP ECX, 48',
+  'JNE _A68R_wr3',
+  'MOV EAX, EDX',
+  'JMP _A68R_wr2',
+  '_A68R_wr3:',
+  'MOV ECX, DWORD PTR [_A68D_SG]',
+  'TEST ECX, ECX',
+  'JNS _A68R_wr4',
+  'DEC ESI',
+  'MOV BYTE PTR [ESI], 45',
+  '_A68R_wr4:',
+  'MOV ECX, EAX',
+  'SUB ECX, ESI',
+  'JMP _A68RT_PUT',
+  '@_A68RT_WHOLE',
+  '; EAX = n, ECX = largeur -> EAX = descripteur d''une chaine nouvelle',
+  '_A68RT_WHOLE:',
+  'PUSH ECX',
+  'CALL _A68RT_DIGITS',
+  'POP EDX',
+  'MOV ECX, ESI',
+  'SUB ECX, EDI',
+  'CMP EDX, ECX',
+  'JGE _A68R_wh1',
+  'MOV EDX, ECX',
+  '_A68R_wh1:',
+  'PUSH EDI',
+  'PUSH ECX',
+  'PUSH EDX',
+  'MOV EAX, EDX',
+  'ADD EAX, 16',
+  'CALL _A68RT_ALLOC',
+  'POP EDX',
+  'POP ECX',
+  'POP ESI',
+  'MOV DWORD PTR [EAX+4], 1',
+  'MOV DWORD PTR [EAX+8], EDX',
+  'MOV DWORD PTR [EAX+12], 1',
+  'MOV EDI, EAX',
+  'ADD EDI, 16',
+  'MOV DWORD PTR [EAX], EDI',
+  'PUSH EAX',
+  'MOV EAX, EDX',
+  'SUB EAX, ECX',
+  '_A68R_wh2:',
+  'TEST EAX, EAX',
+  'JLE _A68R_wh3',
+  'MOV BYTE PTR [EDI], 32',
+  'INC EDI',
+  'DEC EAX',
+  'JMP _A68R_wh2',
+  '_A68R_wh3:',
+  'REP MOVSB',
+  'POP EAX',
+  'RET',
+  '@_A68RT_GETC',
+  '; EAX = caractere suivant de l''entree standard, -1 en fin de fichier',
+  '_A68RT_GETC:',
+  'MOV EAX, DWORD PTR [_A68D_PEEK]',
+  'CMP EAX, -2',
+  'JE _A68R_gc1',
+  'MOV DWORD PTR [_A68D_PEEK], -2',
+  'RET',
+  '_A68R_gc1:',
+  'PUSH -10',
+  'CALL GetStdHandle',
+  'PUSH 0',
+  'PUSH OFFSET _A68D_WR',
+  'PUSH 1',
+  'PUSH OFFSET _A68D_IN',
+  'PUSH EAX',
+  'CALL ReadFile',
+  'MOV EAX, DWORD PTR [_A68D_WR]',
+  'TEST EAX, EAX',
+  'JE _A68R_gc2',
+  'MOVZX EAX, BYTE PTR [_A68D_IN]',
+  'RET',
+  '_A68R_gc2:',
+  'MOV EAX, -1',
+  'RET',
+  '@_A68RT_SKIPWS',
+  '_A68RT_SKIPWS:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 32',
+  'JE _A68RT_SKIPWS',
+  'CMP EAX, 9',
+  'JE _A68RT_SKIPWS',
+  'CMP EAX, 10',
+  'JE _A68RT_SKIPWS',
+  'CMP EAX, 13',
+  'JE _A68RT_SKIPWS',
+  'RET',
+  '@_A68RT_READCHAR',
+  '_A68RT_READCHAR:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, -1',
+  'JNE _A68R_rc1',
+  'XOR EAX, EAX',
+  '_A68R_rc1:',
+  'RET',
+  '@_A68RT_READINT',
+  '_A68RT_READINT:',
+  'CALL _A68RT_SKIPWS',
+  'MOV DWORD PTR [_A68D_SG], 0',
+  'MOV DWORD PTR [_A68D_ACC], 0',
+  'CMP EAX, 45',
+  'JNE _A68R_ri1',
+  'MOV DWORD PTR [_A68D_SG], 1',
+  'CALL _A68RT_GETC',
+  '_A68R_ri1:',
+  'SUB EAX, 48',
+  'CMP EAX, 9',
+  'JA _A68R_ri2',
+  'PUSH EAX',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  'IMUL EAX, DWORD PTR [_A68D_TEN]',
+  'POP ECX',
+  'ADD EAX, ECX',
+  'MOV DWORD PTR [_A68D_ACC], EAX',
+  'CALL _A68RT_GETC',
+  'JMP _A68R_ri1',
+  '_A68R_ri2:',
+  'ADD EAX, 48',
+  'MOV DWORD PTR [_A68D_PEEK], EAX',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  'MOV ECX, DWORD PTR [_A68D_SG]',
+  'TEST ECX, ECX',
+  'JE _A68R_ri3',
+  'NEG EAX',
+  '_A68R_ri3:',
+  'RET',
+  '@_A68RT_READREAL',
+  '_A68RT_READREAL:',
+  'CALL _A68RT_SKIPWS',
+  'MOV DWORD PTR [_A68D_SG], 0',
+  'MOV DWORD PTR [_A68D_CNT], 0',
+  'MOV DWORD PTR [_A68D_DOT], 0',
+  'CMP EAX, 45',
+  'JNE _A68R_rr1',
+  'MOV DWORD PTR [_A68D_SG], 1',
+  'CALL _A68RT_GETC',
+  '_A68R_rr1:',
+  'FLDZ',
+  '_A68R_rr2:',
+  'CMP EAX, 46',
+  'JNE _A68R_rr3',
+  'MOV ECX, DWORD PTR [_A68D_DOT]',
+  'TEST ECX, ECX',
+  'JNE _A68R_rr5',
+  'MOV DWORD PTR [_A68D_DOT], 1',
+  'CALL _A68RT_GETC',
+  'JMP _A68R_rr2',
+  '_A68R_rr3:',
+  'SUB EAX, 48',
+  'CMP EAX, 9',
+  'JA _A68R_rr4',
+  'PUSH EAX',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'FILD DWORD PTR [ESP]',
+  'FADDP ST(1), ST(0)',
+  'POP EAX',
+  'MOV ECX, DWORD PTR [_A68D_DOT]',
+  'ADD DWORD PTR [_A68D_CNT], ECX',
+  'CALL _A68RT_GETC',
+  'JMP _A68R_rr2',
+  '_A68R_rr4:',
+  'ADD EAX, 48',
+  '_A68R_rr5:',
+  'MOV DWORD PTR [_A68D_PEEK], EAX',
+  '_A68R_rr6:',
+  'MOV ECX, DWORD PTR [_A68D_CNT]',
+  'TEST ECX, ECX',
+  'JE _A68R_rr7',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'DEC ECX',
+  'MOV DWORD PTR [_A68D_CNT], ECX',
+  'JMP _A68R_rr6',
+  '_A68R_rr7:',
+  'MOV EAX, DWORD PTR [_A68D_SG]',
+  'TEST EAX, EAX',
+  'JE _A68R_rr8',
+  'FCHS',
+  '_A68R_rr8:',
+  'RET',
+  '@_A68RT_READSTR',
+  '; lit une ligne (256 caracteres au plus) -> EAX = descripteur',
+  '_A68RT_READSTR:',
+  'MOV EAX, 272',
+  'CALL _A68RT_ALLOC',
+  'MOV DWORD PTR [_A68D_BLK], EAX',
+  'MOV EDX, EAX',
+  'ADD EAX, 16',
+  'MOV DWORD PTR [EDX], EAX',
+  'MOV DWORD PTR [EDX+4], 1',
+  'MOV DWORD PTR [EDX+12], 1',
+  'MOV DWORD PTR [_A68D_ACC], 0',
+  '_A68R_rs1:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 10',
+  'JE _A68R_rs2',
+  'CMP EAX, -1',
+  'JE _A68R_rs2',
+  'CMP EAX, 13',
+  'JE _A68R_rs1',
+  'MOV ECX, DWORD PTR [_A68D_ACC]',
+  'CMP ECX, 256',
+  'JGE _A68R_rs1',
+  'MOV EDX, DWORD PTR [_A68D_BLK]',
+  'MOV EDX, DWORD PTR [EDX]',
+  'ADD EDX, ECX',
+  'MOV BYTE PTR [EDX], AL',
+  'INC ECX',
+  'MOV DWORD PTR [_A68D_ACC], ECX',
+  'JMP _A68R_rs1',
+  '_A68R_rs2:',
+  'MOV EDX, DWORD PTR [_A68D_BLK]',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  'MOV DWORD PTR [EDX+8], EAX',
+  'MOV EAX, EDX',
+  'RET',
+  '@_A68RT_STRCAT',
+  '; ESI et EDI = descripteurs -> EAX = descripteur de ESI + EDI',
+  '_A68RT_STRCAT:',
+  'PUSH ESI',
+  'PUSH EDI',
+  'MOV EAX, DWORD PTR [ESI+8]',
+  'SUB EAX, DWORD PTR [ESI+4]',
+  'INC EAX',
+  'TEST EAX, EAX',
+  'JGE _A68R_sc1',
+  'XOR EAX, EAX',
+  '_A68R_sc1:',
+  'MOV DWORD PTR [_A68D_ACC], EAX',
+  'MOV EAX, DWORD PTR [EDI+8]',
+  'SUB EAX, DWORD PTR [EDI+4]',
+  'INC EAX',
+  'TEST EAX, EAX',
+  'JGE _A68R_sc2',
+  'XOR EAX, EAX',
+  '_A68R_sc2:',
+  'MOV DWORD PTR [_A68D_CNT], EAX',
+  'ADD EAX, DWORD PTR [_A68D_ACC]',
+  'ADD EAX, 16',
+  'CALL _A68RT_ALLOC',
+  'POP EDI',
+  'POP ESI',
+  'MOV EDX, EAX',
+  'MOV DWORD PTR [EDX+4], 1',
+  'MOV ECX, DWORD PTR [_A68D_ACC]',
+  'ADD ECX, DWORD PTR [_A68D_CNT]',
+  'MOV DWORD PTR [EDX+8], ECX',
+  'MOV DWORD PTR [EDX+12], 1',
+  'MOV EAX, EDX',
+  'ADD EAX, 16',
+  'MOV DWORD PTR [EDX], EAX',
+  'PUSH EDI',
+  'MOV EDI, EAX',
+  'MOV ECX, DWORD PTR [_A68D_ACC]',
+  'MOV ESI, DWORD PTR [ESI]',
+  'REP MOVSB',
+  'POP ESI',
+  'MOV ECX, DWORD PTR [_A68D_CNT]',
+  'MOV ESI, DWORD PTR [ESI]',
+  'REP MOVSB',
+  'MOV EAX, EDX',
+  'RET',
+  '@_A68RT_STRCMP',
+  '; ESI et EDI = descripteurs -> EAX < 0, 0 ou > 0',
+  '_A68RT_STRCMP:',
+  'MOV EAX, DWORD PTR [ESI+8]',
+  'SUB EAX, DWORD PTR [ESI+4]',
+  'INC EAX',
+  'TEST EAX, EAX',
+  'JGE _A68R_sm1',
+  'XOR EAX, EAX',
+  '_A68R_sm1:',
+  'MOV EDX, DWORD PTR [EDI+8]',
+  'SUB EDX, DWORD PTR [EDI+4]',
+  'INC EDX',
+  'TEST EDX, EDX',
+  'JGE _A68R_sm2',
+  'XOR EDX, EDX',
+  '_A68R_sm2:',
+  'PUSH EAX',
+  'PUSH EDX',
+  'MOV ECX, EAX',
+  'CMP EDX, ECX',
+  'JGE _A68R_sm3',
+  'MOV ECX, EDX',
+  '_A68R_sm3:',
+  'MOV ESI, DWORD PTR [ESI]',
+  'MOV EDI, DWORD PTR [EDI]',
+  '_A68R_sm4:',
+  'TEST ECX, ECX',
+  'JE _A68R_sm6',
+  'MOVZX EAX, BYTE PTR [ESI]',
+  'MOVZX EDX, BYTE PTR [EDI]',
+  'CMP EAX, EDX',
+  'JNE _A68R_sm5',
+  'INC ESI',
+  'INC EDI',
+  'DEC ECX',
+  'JMP _A68R_sm4',
+  '_A68R_sm5:',
+  'SUB EAX, EDX',
+  'ADD ESP, 8',
+  'RET',
+  '_A68R_sm6:',
+  'POP EDX',
+  'POP EAX',
+  'SUB EAX, EDX',
+  'RET',
+  '@_A68RT_POW',
+  '; EAX ** EDX, entiers',
+  '_A68RT_POW:',
+  'TEST EDX, EDX',
+  'JS _A68R_pw4',
+  'MOV ECX, EAX',
+  'MOV EAX, 1',
+  '_A68R_pw1:',
+  'TEST EDX, EDX',
+  'JE _A68R_pw3',
+  'SHR EDX, 1',
+  'JAE _A68R_pw2',
+  'IMUL EAX, ECX',
+  '_A68R_pw2:',
+  'IMUL ECX, ECX',
+  'JMP _A68R_pw1',
+  '_A68R_pw3:',
+  'RET',
+  '_A68R_pw4:',
+  'CMP EAX, 1',
+  'JE _A68R_pw5',
+  'CMP EAX, -1',
+  'JE _A68R_pw6',
+  'XOR EAX, EAX',
+  'RET',
+  '_A68R_pw5:',
+  'MOV EAX, 1',
+  'RET',
+  '_A68R_pw6:',
+  'SHR EDX, 1',
+  'JAE _A68R_pw5',
+  'RET',
+  '@_A68RT_EXP2',
+  '; ST(0) = v -> ST(0) = 2 ** v',
+  '_A68RT_EXP2:',
+  'FLD ST(0)',
+  'FRNDINT',
+  'FXCH ST(1)',
+  'FSUB ST(0), ST(1)',
+  'F2XM1',
+  'FLD1',
+  'FADDP ST(1), ST(0)',
+  'FSCALE',
+  'FSTP ST(1)',
+  'RET',
+  '@_A68RT_RPOW',
+  '; ST(0) = base, ST(1) = exposant -> ST(0) = base ** exposant',
+  '_A68RT_RPOW:',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'JA _A68R_rp1',
+  'JB _A68R_rp2',
+  'FSTP ST(0)',
+  'FSTP ST(0)',
+  'FLDZ',
+  'RET',
+  '_A68R_rp1:',
+  'FYL2X',
+  'JMP _A68RT_EXP2',
+  '_A68R_rp2:',
+  'FABS',
+  'FXCH ST(1)',
+  'FLD ST(0)',
+  'FISTP DWORD PTR [_A68D_ACC]',
+  'FXCH ST(1)',
+  'FYL2X',
+  'CALL _A68RT_EXP2',
+  'MOV EAX, DWORD PTR [_A68D_ACC]',
+  'SHR EAX, 1',
+  'JAE _A68R_rp3',
+  'FCHS',
+  '_A68R_rp3:',
+  'RET',
+  '@_A68RT_FLOOR',
+  '; ST(0) -> EAX = partie entiere par defaut (depile)',
+  '_A68RT_FLOOR:',
+  'SUB ESP, 12',
+  'FNSTCW WORD PTR [ESP]',
+  'MOVZX EAX, WORD PTR [ESP]',
+  'AND EAX, 62463',
+  'OR EAX, 1024',
+  'MOV DWORD PTR [ESP+4], EAX',
+  'FLDCW WORD PTR [ESP+4]',
+  'FISTP DWORD PTR [ESP+8]',
+  'FLDCW WORD PTR [ESP]',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'ADD ESP, 12',
+  'RET',
+  '@_A68RT_RTOI',
+  '; ST(0) -> EAX = entier le plus proche (demi vers le haut)',
+  '_A68RT_RTOI:',
+  'FLD QWORD PTR [_A68D_HALF]',
+  'FADDP ST(1), ST(0)',
+  'JMP _A68RT_FLOOR',
+  '@_A68RT_RSIGN',
+  '; ST(0) -> EAX = -1, 0 ou 1 (depile)',
+  '_A68RT_RSIGN:',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'FSTP ST(0)',
+  'JA _A68R_sg1',
+  'JB _A68R_sg2',
+  'XOR EAX, EAX',
+  'RET',
+  '_A68R_sg1:',
+  'MOV EAX, 1',
+  'RET',
+  '_A68R_sg2:',
+  'MOV EAX, -1',
+  'RET'
+  );
+
+Var
+  RtStart   : Array[0..RT_MAX_ROUT] Of Integer;   { 1re ligne de routine }
+  RtName    : Array[0..RT_MAX_ROUT - 1] Of TString;
+  RtUsed    : Array[0..RT_MAX_ROUT - 1] Of Boolean;
+  RtCount   : Integer;
+  RtLine    : TString;                             { ligne assemblee }
+  RtPos     : Integer;
+  RtDataMade: Array[0..63] Of Integer;
+  RtDataN   : Integer;
+
+Function RtFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  RtFind := -1;
+  For I := 0 To RtCount - 1 Do
+    If RtName[I] = Name Then RtFind := I;
+End;
+
+Function RtIdChar(C : Char) : Boolean;
+Begin
+  RtIdChar := ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+              ((C >= '0') And (C <= '9')) Or (C = '_');
+End;
+
+{ Marque une routine et, transitivement, celles qu'elle appelle }
+Procedure RtMark(Const Name : TString);
+Var
+  R, L, P, E : Integer;
+  S, Id      : TString;
+Begin
+  R := RtFind(Name);
+  If R < 0 Then
+    FatalError('erreur interne: routine du runtime inconnue: ' + Name);
+  If RtUsed[R] Then Exit;
+  RtUsed[R] := True;
+  For L := RtStart[R] To RtStart[R + 1] - 1 Do
+  Begin
+    S := RtText[L];
+    If (S <> '') And (S[1] <> ';') And (S[1] <> '@') Then
+    Begin
+      P := Pos(A68_RT_PFX, S);
+      While P > 0 Do
+      Begin
+        E := P;
+        While (E <= Length(S)) And RtIdChar(S[E]) Do Inc(E);
+        Id := Copy(S, P, E - P);
+        RtMark(Id);
+        S := Copy(S, E, Length(S));
+        P := Pos(A68_RT_PFX, S);
+      End;
+    End;
+  End;
+End;
+
+{ ---- cellules de donnees du runtime, creees a la demande ---- }
+Procedure RtDataInt(Sym : Integer; V : LongInt);
+Var
+  K : Integer;
+Begin
+  K := DataNew(Sym, DK_INT);
+  DataTab[K].Lo   := V;
+  DataTab[K].Size := 4;
+End;
+
+Procedure RtDataStr(Sym : Integer; Const S : TString);
+Var
+  K : Integer;
+Begin
+  K := DataNew(Sym, DK_STR);
+  DataTab[K].Str  := AsmStrAdd(S);
+  DataTab[K].Size := Length(S);
+End;
+
+Procedure RtDataReal(Sym : Integer; Lo, Hi : LongInt);
+Var
+  K : Integer;
+Begin
+  K := DataNew(Sym, DK_REAL);
+  DataTab[K].Lo   := Lo;
+  DataTab[K].Hi   := Hi;
+  DataTab[K].Size := 8;
+End;
+
+Procedure RtData(Sym : Integer);
+Var
+  I : Integer;
+  N : TString;
+Begin
+  For I := 0 To RtDataN - 1 Do
+    If RtDataMade[I] = Sym Then Exit;
+  If RtDataN > 63 Then FatalError('erreur interne: trop de donnees runtime');
+  RtDataMade[RtDataN] := Sym;
+  Inc(RtDataN);
+  N := NameTab[Sym];
+  If N = '_A68D_BUF' Then DataAddZero(Sym, 64)
+  Else If N = '_A68D_Q' Then DataAddZero(Sym, 8)
+  Else If (N = '_A68D_WR') Or (N = '_A68D_IN') Or (N = '_A68D_SG') Or
+          (N = '_A68D_ACC') Or (N = '_A68D_CNT') Or (N = '_A68D_DOT') Or
+          (N = '_A68D_BLK') Then DataAddZero(Sym, 4)
+  Else If N = '_A68D_PEEK' Then RtDataInt(Sym, -2)
+  Else If N = '_A68D_TEN'  Then RtDataInt(Sym, 10)
+  Else If N = '_A68D_CR'   Then RtDataStr(Sym, #13#10)
+  Else If N = '_A68D_SP'   Then RtDataStr(Sym, ' ')
+  Else If N = '_A68D_TRUE' Then RtDataStr(Sym, 'TRUE')
+  Else If N = '_A68D_FALSE' Then RtDataStr(Sym, 'FALSE')
+  Else If N = '_A68D_M_IDX' Then
+    RtDataStr(Sym, 'Erreur: indice hors bornes'#13#10)
+  Else If N = '_A68D_M_BND' Then
+    RtDataStr(Sym, 'Erreur: tableaux de dimensions differentes'#13#10)
+  Else If N = '_A68D_M_NIL' Then
+    RtDataStr(Sym, 'Erreur: reference NIL'#13#10)
+  Else If N = '_A68D_M_DIV' Then
+    RtDataStr(Sym, 'Erreur: division par zero'#13#10)
+  Else If N = '_A68D_M_MEM' Then
+    RtDataStr(Sym, 'Erreur: memoire insuffisante'#13#10)
+  Else If N = '_A68D_MILR' Then RtDataReal(Sym, 0, $412E8480)
+  Else If N = '_A68D_TEN8' Then RtDataReal(Sym, 0, $40240000)
+  Else If N = '_A68D_HALF' Then RtDataReal(Sym, 0, $3FE00000)
+  Else
+    FatalError('erreur interne: donnee runtime inconnue: ' + N);
+End;
+
+{ ---- mini-assembleur ---- }
+Procedure RtSkip;
+Begin
+  While (RtPos <= Length(RtLine)) And (RtLine[RtPos] = ' ') Do Inc(RtPos);
+End;
+
+Function RtAtEnd : Boolean;
+Begin
+  RtSkip;
+  RtAtEnd := RtPos > Length(RtLine);
+End;
+
+Function RtIdent : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (RtPos <= Length(RtLine)) And RtIdChar(RtLine[RtPos]) Do
+  Begin
+    S := S + RtLine[RtPos];
+    Inc(RtPos);
+  End;
+  RtIdent := S;
+End;
+
+{ nombre decimal ou hexadecimal (suffixe h), sans signe }
+Function RtNumber : LongInt;
+Var
+  S    : TString;
+  I, D : Integer;
+  V    : LongInt;
+  Hex  : Boolean;
+Begin
+  S := RtIdent;
+  Hex := (S <> '') And ((S[Length(S)] = 'h') Or (S[Length(S)] = 'H'));
+  If Hex Then Delete(S, Length(S), 1);
+  V := 0;
+  For I := 1 To Length(S) Do
+  Begin
+    If (S[I] >= '0') And (S[I] <= '9') Then
+      D := Ord(S[I]) - 48
+    Else
+      D := Ord(UpCase(S[I])) - 55;
+    If Hex Then V := V * 16 + D Else V := V * 10 + D;
+  End;
+  RtNumber := V;
+End;
+
+Function RtReg(Const S : TString) : TReg;
+Begin
+  RtReg := R_NONE;
+  If S = 'EAX' Then RtReg := R_EAX
+  Else If S = 'ECX' Then RtReg := R_ECX
+  Else If S = 'EDX' Then RtReg := R_EDX
+  Else If S = 'EBX' Then RtReg := R_EBX
+  Else If S = 'ESP' Then RtReg := R_ESP
+  Else If S = 'EBP' Then RtReg := R_EBP
+  Else If S = 'ESI' Then RtReg := R_ESI
+  Else If S = 'EDI' Then RtReg := R_EDI
+  Else If S = 'AX' Then RtReg := R_AX
+  Else If S = 'AL' Then RtReg := R_AL
+  Else If S = 'CL' Then RtReg := R_CL
+  Else If S = 'DL' Then RtReg := R_DL
+  Else If S = 'BL' Then RtReg := R_BL;
+End;
+
+Function RtSym(Const Name : TString) : Integer;
+Var
+  K : Integer;
+Begin
+  K := Intern(Name);
+  If Copy(Name, 1, 6) = '_A68D_' Then RtData(K);
+  RtSym := K;
+End;
+
+{ [Sym + Base + Index*Echelle + Depl] }
+Function RtMemory(Size : Byte) : TOperand;
+Var
+  O    : TOperand;
+  Sign : LongInt;
+  Id   : TString;
+  R    : TReg;
+  N    : LongInt;
+Begin
+  O := OpNone;
+  O.Kind := OK_MEM;
+  O.Size := Size;
+  Inc(RtPos);                                   { [ }
+  Sign := 1;
+  While (RtPos <= Length(RtLine)) And (RtLine[RtPos] <> ']') Do
+  Begin
+    RtSkip;
+    If RtLine[RtPos] = '+' Then
+    Begin
+      Sign := 1;
+      Inc(RtPos);
+    End
+    Else If RtLine[RtPos] = '-' Then
+    Begin
+      Sign := -1;
+      Inc(RtPos);
+    End
+    Else If (RtLine[RtPos] >= '0') And (RtLine[RtPos] <= '9') Then
+    Begin
+      O.Imm := O.Imm + Sign * RtNumber;
+      Sign := 1;
+    End
+    Else
+    Begin
+      Id := RtIdent;
+      If Id = '' Then FatalError('erreur interne: runtime: ' + RtLine);
+      R := RtReg(Id);
+      If R <> R_NONE Then
+      Begin
+        If (RtPos <= Length(RtLine)) And (RtLine[RtPos] = '*') Then
+        Begin
+          Inc(RtPos);
+          N := RtNumber;
+          O.Index := R;
+          O.Scale := N;
+        End
+        Else If O.Base = R_NONE Then
+          O.Base := R
+        Else
+        Begin
+          O.Index := R;
+          O.Scale := 1;
+        End;
+      End
+      Else
+        O.Sym := RtSym(Id);
+      Sign := 1;
+    End;
+    RtSkip;
+  End;
+  Inc(RtPos);                                   { ] }
+  RtMemory := O;
+End;
+
+Function RtOperand : TOperand;
+Var
+  Id, Id2 : TString;
+  R       : TReg;
+  Size    : Byte;
+  Neg     : Boolean;
+  V       : LongInt;
+Begin
+  RtSkip;
+  Size := 0;
+  If RtLine[RtPos] = '[' Then
+  Begin
+    RtOperand := RtMemory(0);
+    Exit;
+  End;
+  If (RtLine[RtPos] = '-') Or ((RtLine[RtPos] >= '0') And
+                               (RtLine[RtPos] <= '9')) Then
+  Begin
+    Neg := RtLine[RtPos] = '-';
+    If Neg Then Inc(RtPos);
+    V := RtNumber;
+    If Neg Then V := -V;
+    RtOperand := OpImm(V);
+    Exit;
+  End;
+  Id := RtIdent;
+  If (Id = 'BYTE') Or (Id = 'WORD') Or (Id = 'DWORD') Or (Id = 'QWORD') Then
+  Begin
+    If Id = 'BYTE' Then Size := 1
+    Else If Id = 'WORD' Then Size := 2
+    Else If Id = 'DWORD' Then Size := 4
+    Else Size := 8;
+    RtSkip;
+    Id2 := RtIdent;                             { PTR }
+    RtSkip;
+    RtOperand := RtMemory(Size);
+    Exit;
+  End;
+  If Id = 'OFFSET' Then
+  Begin
+    RtSkip;
+    RtOperand := OpOffset(RtSym(RtIdent));
+    Exit;
+  End;
+  If Id = 'ST' Then
+  Begin
+    V := 0;
+    If (RtPos <= Length(RtLine)) And (RtLine[RtPos] = '(') Then
+    Begin
+      Inc(RtPos);
+      V := RtNumber;
+      Inc(RtPos);
+    End;
+    RtOperand := OpST(V);
+    Exit;
+  End;
+  R := RtReg(Id);
+  If R <> R_NONE Then
+    RtOperand := OpReg(R)
+  Else
+    RtOperand := OpLabel(Intern(Id));
+End;
+
+Procedure RtAssembleLine(Const S : TString);
+Var
+  Mn   : TString;
+  Op   : TOp;
+  Found: Boolean;
+  A, B : TOperand;
+Begin
+  RtLine := S;
+  RtPos  := 1;
+  If S[1] = ';' Then
+  Begin
+    EmitComment(Copy(S, 2, Length(S)));
+    Exit;
+  End;
+  If S[Length(S)] = ':' Then
+  Begin
+    EmitLabel(Intern(Copy(S, 1, Length(S) - 1)));
+    Exit;
+  End;
+  Mn := RtIdent;
+  If Mn = 'REP' Then
+  Begin
+    RtSkip;
+    Mn := 'REP ' + RtIdent;
+  End;
+  If Mn = 'JZ' Then Mn := 'JE';
+  If Mn = 'JNZ' Then Mn := 'JNE';
+  Found := False;
+  Op := OP_MOV;
+  While (Not Found) And (Op <= OP_FLDCW) Do
+  Begin
+    If OpName(Op) = Mn Then Found := True Else Op := Succ(Op);
+  End;
+  If Not Found Then FatalError('erreur interne: runtime: ' + S);
+  A := OpNone;
+  B := OpNone;
+  If Not RtAtEnd Then
+  Begin
+    A := RtOperand;
+    RtSkip;
+    If (RtPos <= Length(RtLine)) And (RtLine[RtPos] = ',') Then
+    Begin
+      Inc(RtPos);
+      B := RtOperand;
+    End;
+  End;
+  Emit(Op, A, B);
+End;
+
+{ Ajoute au programme les routines du runtime qu'il utilise }
+Procedure RtLink;
+Var
+  I, L, R, Start : LongInt;
+  Any            : Boolean;
+  S              : TString;
+Begin
+  RtCount := 0;
+  RtDataN := 0;
+  For L := 0 To RT_LINES - 1 Do
+    If RtText[L][1] = '@' Then
+    Begin
+      If RtCount >= RT_MAX_ROUT Then
+        FatalError('erreur interne: trop de routines runtime');
+      RtStart[RtCount] := L;
+      RtName[RtCount]  := Copy(RtText[L], 2, 255);
+      RtUsed[RtCount]  := False;
+      Inc(RtCount);
+    End;
+  RtStart[RtCount] := RT_LINES;
+  { routines appelees par le programme }
+  For I := 0 To CodeCount - 1 Do
+    If (CodeTab[I].A.Kind = OK_LABEL) And
+       (CodeTab[I].Op In [OP_CALL, OP_JMP]) Then
+    Begin
+      S := NameTab[CodeTab[I].A.Sym];
+      If Copy(S, 1, Length(A68_RT_PFX)) = A68_RT_PFX Then RtMark(S);
+    End;
+  For I := 0 To DeferCount - 1 Do
+    If (DeferTab[I].A.Kind = OK_LABEL) And
+       (DeferTab[I].Op In [OP_CALL, OP_JMP]) Then
+    Begin
+      S := NameTab[DeferTab[I].A.Sym];
+      If Copy(S, 1, Length(A68_RT_PFX)) = A68_RT_PFX Then RtMark(S);
+    End;
+  Any := False;
+  For R := 0 To RtCount - 1 Do
+    If RtUsed[R] Then Any := True;
+  If Not Any Then Exit;
+  Start := CodeCount;
+  EmitBlank;
+  EmitComment('---- runtime AL68CW32 (routines utilisees) ----');
+  For R := 0 To RtCount - 1 Do
+    If RtUsed[R] Then
+    Begin
+      EmitBlank;
+      For L := RtStart[R] + 1 To RtStart[R + 1] - 1 Do
+        RtAssembleLine(RtText[L]);
+    End;
+  MoveToDeferred(Start);
+End;
+
 
 { ============================================================
   SECTION 15 - ERREURS ET RAPPORT FINAL (TODO 23, 24)
