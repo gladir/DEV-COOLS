@@ -1936,7 +1936,7 @@ End;
 
 Procedure WarnAt(Line, Col : Integer; Const Msg : TString);
 Begin
-  If Not Opts.Warnings Then Exit;
+  If (Not Opts.Warnings) Or (Line <= 0) Then Exit;
   WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : avertissement : ', Msg);
   Inc(WarnCount);
 End;
@@ -2793,16 +2793,136 @@ Begin
   Inc(TokCount);
 End;
 
+Const
+  PreludeCompl : Array[1..95] Of TString = (
+  'PROC atantwo = (REAL y, x) REAL :',
+  '  IF x > 0 THEN arctan(y / x)',
+  '  ELIF x < 0 THEN',
+  '    (y >= 0 | arctan(y / x) + pi | arctan(y / x) - pi)',
+  '  ELIF y > 0 THEN pi / 2 ELIF y < 0 THEN -pi / 2 ELSE 0 FI;',
+  'OP +* = (REAL a, b) COMPL : (a, b);',
+  'OP +* = (INT a, b) COMPL : (a, b);',
+  'OP +* = (REAL a, INT b) COMPL : (a, b);',
+  'OP +* = (INT a, REAL b) COMPL : (a, b);',
+  'OP RE = (COMPL z) REAL : re OF z;',
+  'OP IM = (COMPL z) REAL : im OF z;',
+  'OP ABS = (COMPL z) REAL :',
+  '  sqrt(re OF z * re OF z + im OF z * im OF z);',
+  'OP ARG = (COMPL z) REAL : atantwo(im OF z, re OF z);',
+  'OP CONJ = (COMPL z) COMPL : (re OF z, - im OF z);',
+  'OP - = (COMPL z) COMPL : (- re OF z, - im OF z);',
+  'OP + = (COMPL z) COMPL : z;',
+  'OP + = (COMPL a, b) COMPL :',
+  '  (re OF a + re OF b, im OF a + im OF b);',
+  'OP - = (COMPL a, b) COMPL :',
+  '  (re OF a - re OF b, im OF a - im OF b);',
+  'OP * = (COMPL a, b) COMPL :',
+  '  (re OF a * re OF b - im OF a * im OF b,',
+  '   re OF a * im OF b + im OF a * re OF b);',
+  'OP / = (COMPL a, b) COMPL :',
+  '  BEGIN REAL d = re OF b * re OF b + im OF b * im OF b;',
+  '    ((re OF a * re OF b + im OF a * im OF b) / d,',
+  '     (im OF a * re OF b - re OF a * im OF b) / d) END;',
+  'OP = = (COMPL a, b) BOOL :',
+  '  re OF a = re OF b AND im OF a = im OF b;',
+  'OP /= = (COMPL a, b) BOOL : NOT (a = b);',
+  'OP + = (COMPL a, REAL b) COMPL : a + COMPL (b, 0);',
+  'OP + = (REAL a, COMPL b) COMPL : COMPL (a, 0) + b;',
+  'OP + = (COMPL a, INT b) COMPL : a + COMPL (b, 0);',
+  'OP + = (INT a, COMPL b) COMPL : COMPL (a, 0) + b;',
+  'OP - = (COMPL a, REAL b) COMPL : a - COMPL (b, 0);',
+  'OP - = (REAL a, COMPL b) COMPL : COMPL (a, 0) - b;',
+  'OP - = (COMPL a, INT b) COMPL : a - COMPL (b, 0);',
+  'OP - = (INT a, COMPL b) COMPL : COMPL (a, 0) - b;',
+  'OP * = (COMPL a, REAL b) COMPL : a * COMPL (b, 0);',
+  'OP * = (REAL a, COMPL b) COMPL : COMPL (a, 0) * b;',
+  'OP * = (COMPL a, INT b) COMPL : a * COMPL (b, 0);',
+  'OP * = (INT a, COMPL b) COMPL : COMPL (a, 0) * b;',
+  'OP / = (COMPL a, REAL b) COMPL : a / COMPL (b, 0);',
+  'OP / = (REAL a, COMPL b) COMPL : COMPL (a, 0) / b;',
+  'OP / = (COMPL a, INT b) COMPL : a / COMPL (b, 0);',
+  'OP / = (INT a, COMPL b) COMPL : COMPL (a, 0) / b;',
+  'OP +:= = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a + b);',
+  'OP +:= = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a + COMPL (b, 0));',
+  'OP +:= = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a + COMPL (b, 0));',
+  'OP PLUSAB = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a + b);',
+  'OP PLUSAB = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a + COMPL (b, 0));',
+  'OP PLUSAB = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a + COMPL (b, 0));',
+  'OP -:= = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a - b);',
+  'OP -:= = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a - COMPL (b, 0));',
+  'OP -:= = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a - COMPL (b, 0));',
+  'OP MINUSAB = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a - b);',
+  'OP MINUSAB = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a - COMPL (b, 0));',
+  'OP MINUSAB = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a - COMPL (b, 0));',
+  'OP *:= = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a * b);',
+  'OP *:= = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a * COMPL (b, 0));',
+  'OP *:= = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a * COMPL (b, 0));',
+  'OP TIMESAB = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a * b);',
+  'OP TIMESAB = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a * COMPL (b, 0));',
+  'OP TIMESAB = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a * COMPL (b, 0));',
+  'OP /:= = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a / b);',
+  'OP /:= = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a / COMPL (b, 0));',
+  'OP /:= = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a / COMPL (b, 0));',
+  'OP DIVAB = (REF COMPL a, COMPL b) REF COMPL :',
+  '  (a := a / b);',
+  'OP DIVAB = (REF COMPL a, REAL b) REF COMPL :',
+  '  (a := a / COMPL (b, 0));',
+  'OP DIVAB = (REF COMPL a, INT b) REF COMPL :',
+  '  (a := a / COMPL (b, 0));'
+  );
+
+  PreludeBytes : Array[1..17] Of TString = (
+  'PROC bytes pack = (STRING s) BYTES :',
+  '  (UPB s > 32 | BYTES (s[1:32]) | BYTES (s));',
+  'PRIO ELEM = 9;',
+  'OP ELEMS = (BYTES b) INT : UPB s OF b;',
+  'OP LWB = (BYTES b) INT : 1;',
+  'OP UPB = (BYTES b) INT : UPB s OF b;',
+  'OP ELEM = (INT i, BYTES b) CHAR : (s OF b)[i];',
+  'PROC bytes string = (BYTES b) STRING : s OF b;',
+  'OP + = (BYTES a, b) BYTES : bytes pack(s OF a + s OF b);',
+  'OP = = (BYTES a, b) BOOL : s OF a = s OF b;',
+  'OP /= = (BYTES a, b) BOOL : s OF a /= s OF b;',
+  'OP < = (BYTES a, b) BOOL : s OF a < s OF b;',
+  'OP <= = (BYTES a, b) BOOL : s OF a <= s OF b;',
+  'OP > = (BYTES a, b) BOOL : s OF a > s OF b;',
+  'OP >= = (BYTES a, b) BOOL : s OF a >= s OF b;',
+  'OP +:= = (REF BYTES a, BYTES b) REF BYTES : (a := a + b);',
+  'OP PLUSAB = (REF BYTES a, BYTES b) REF BYTES : (a := a + b);'
+  );
+
 { Noms du prelude standard ecrits avec des espaces (max int, long pi...) :
   les mots consecutifs sont fusionnes en un seul identificateur }
 Const
-  STDWORD_COUNT = 20;
+  STDWORD_COUNT = 23;
   StdWords : Array[1..STDWORD_COUNT] Of String[17] = (
     'max int', 'max real', 'small real', 'int width', 'real width',
     'exp width', 'bits width', 'max abs char', 'null character',
     'blank', 'flip', 'flop', 'error char', 'long max int',
     'long int width', 'long pi', 'long max real', 'long small real',
-    'long real width', 'long exp width'
+    'long real width', 'long exp width', 'bytes pack', 'bytes string',
+    'bytes width'
   );
 
 Function StdWordIndex(Const S : TString) : Integer;
@@ -2854,6 +2974,82 @@ Begin
   TokCount := N;
 End;
 
+Var
+  SaveBuf : Array[0..MAX_SRC] Of Char;
+  SaveSrc : Pointer;
+  SaveLen : LongInt;
+
+{ Le source contient-il ce mot ? }
+Function SrcHas(Const W : TString) : Boolean;
+Var
+  I, J : LongInt;
+  Ok   : Boolean;
+Begin
+  SrcHas := False;
+  I := 0;
+  While I + Length(W) <= SrcLen Do
+  Begin
+    Ok := True;
+    J := 1;
+    While Ok And (J <= Length(W)) Do
+    Begin
+      If SrcBuf[I + J - 1] <> W[J] Then Ok := False;
+      Inc(J);
+    End;
+    If Ok Then
+    Begin
+      SrcHas := True;
+      Exit;
+    End;
+    Inc(I);
+  End;
+End;
+
+{ Analyse lexicale d'un texte Algol 68 du prelude (jetons de ligne 0) ;
+  le source du programme est mis de cote puis restaure }
+Procedure LexPreludeText(Const Lines : Array Of TString);
+Var
+  I, J, N : LongInt;
+  T       : TToken;
+  K       : Integer;
+Begin
+  N := 0;
+  For I := 0 To High(Lines) Do
+  Begin
+    For J := 1 To Length(Lines[I]) Do
+    Begin
+      SaveBuf[N] := Lines[I][J];
+      Inc(N);
+    End;
+    SaveBuf[N] := #10;
+    Inc(N);
+  End;
+  SaveBuf[N] := #0;
+  { echange des tampons }
+  Move(SrcBuf, SaveSrc^, SizeOf(SrcBuf));
+  Move(SaveBuf, SrcBuf, N + 1);
+  SrcLen := N;
+  LexPos := 0;
+  LexLine := 1;
+  LexCol := 1;
+  K := 0;
+  Repeat
+    LexScanToken(T);
+    If T.Kind <> TK_EOF Then
+    Begin
+      Inc(K);
+      T.Line := 0;
+      T.Col := K;
+      LexStore(T);
+    End;
+  Until T.Kind = TK_EOF;
+  Move(SaveSrc^, SrcBuf, SizeOf(SrcBuf));
+  SrcLen := SaveLen;
+  LexPos := 0;
+  LexLine := 1;
+  LexCol := 1;
+End;
+
 Procedure PhaseLex;
 Var
   T : TToken;
@@ -2861,6 +3057,14 @@ Begin
   LexLoad;
   TokCount := 0;
   LitCount := 0;
+  If SrcHas('COMPL') Or SrcHas('BYTES') Then
+  Begin
+    GetMem(SaveSrc, SizeOf(SrcBuf));
+    SaveLen := SrcLen;
+    If SrcHas('COMPL') Then LexPreludeText(PreludeCompl);
+    If SrcHas('BYTES') Then LexPreludeText(PreludeBytes);
+    FreeMem(SaveSrc, SizeOf(SrcBuf));
+  End;
   If Opts.DebugMode Then WriteLn('Jetons (ligne : colonne, genre, texte) :');
   Repeat
     LexScanToken(T);
@@ -2909,6 +3113,7 @@ Var
   ModeTmpS  : Array[0..MAX_FIELD - 1] Of TName;
   ModeBadRec: Boolean;   { une taille a rencontre un mode recursif }
   PreludeModes : Integer; { modes crees avant le programme (prelude)  }
+  ModeCompl, ModeBytes : Integer;   { COMPL et BYTES                   }
 
 Function ModeNewRaw(K : TModeKind) : Integer;
 Begin
@@ -4038,6 +4243,17 @@ Begin
   ScopeDepth := 0;
   ScopeEnter(SCK_PRELUDE);
 
+  { modes COMPL = STRUCT (REAL re, im) et BYTES = STRUCT (STRING s) }
+  ModeTmpReset;
+  ModeTmpAdd('re', MD_REAL, 0, 0);
+  ModeTmpAdd('im', MD_REAL, 0, 0);
+  ModeCompl := ModeStructTmp(0, 0);
+  SymDeclare('COMPL', SK_MODE, ModeCompl, 0, 0);
+  ModeTmpReset;
+  ModeTmpAdd('s', MD_STRING, 0, 0);
+  ModeBytes := ModeStructTmp(0, 0);
+  SymDeclare('BYTES', SK_MODE, ModeBytes, 0, 0);
+
   { priorites standard (Revised Report) }
   PrePrio('OR', 2);
   PrePrio('AND', 3);
@@ -5051,6 +5267,11 @@ Begin
   End;
   If Str = STR_STRONG Then
   Begin
+    If (W = ModeCompl) And (ModeTab[M].Kind In [MK_INT, MK_REAL]) Then
+    Begin
+      CoerceFit := FIT_WIDEN;
+      Exit;
+    End;
     If ((ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_REAL)) Or
        ((ModeTab[M].Kind = MK_INT) And (ModeTab[W].Kind = MK_LINT)) Or
        ((ModeTab[M].Kind = MK_LINT) And (ModeTab[W].Kind = MK_REAL)) Then
@@ -5443,7 +5664,9 @@ Begin
               UnitTab[Cur].B := Tag;
             End;
           FIT_WIDEN:
-            If ModeTab[W].Kind = MK_LINT Then
+            If W = ModeCompl Then
+              Cur := CoerceWrap(Cur, CO_WIDEN, W)
+            Else If ModeTab[W].Kind = MK_LINT Then
             Begin
               If UnitTab[Cur].Kind = UK_INTDEN Then
               Begin
@@ -5710,7 +5933,9 @@ Begin
   T := TokTab[TokPos];
   N := TokAt(1);
   AtDeclStart := False;
-  If T.Kind = TK_KEYWORD Then
+  If (T.Kind = TK_KEYWORD) And ((T.Val = 'BYTES') Or (T.Val = 'COMPL')) Then
+    AtDeclStart := N.Kind = TK_TAG
+  Else If T.Kind = TK_KEYWORD Then
     AtDeclStart := (T.Val = 'MODE') Or (T.Val = 'PRIO') Or
                    (T.Val = 'OP') Or (T.Val = 'PROC') Or
                    (T.Val = 'INT') Or (T.Val = 'REAL') Or
@@ -7301,7 +7526,9 @@ Begin
     L := TokTab[TokPos].Line;
     C := TokTab[TokPos].Col;
     T := TokTab[TokPos];
-    If Not (T.Kind In [TK_BOLD, TK_OP]) Or (T.Val = '=') Then
+    If Not (T.Kind In [TK_BOLD, TK_OP]) Or
+       ((T.Val = '=') And Not ((TokAt(1).Kind = TK_OP) And
+                               (TokAt(1).Val = '='))) Then
     Begin
       ParseError('nom d''operateur attendu');
       R := ParseOpaqueUntil(UK_OPAQUE, 1);
@@ -8610,7 +8837,8 @@ Begin
                  AtKw('DO')) And ClauseFollowOk(TokAfterLoop) Then
           U := ParseLoop
         Else If (AtKw('INT') Or AtKw('REAL') Or AtKw('BOOL') Or
-                 AtKw('CHAR') Or AtKw('STRING') Or AtKw('BITS')) And
+                 AtKw('CHAR') Or AtKw('STRING') Or AtKw('BITS') Or
+                 AtKw('COMPL') Or AtKw('BYTES')) And
                 (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
           U := ParseConstruct
         Else If AtBareRoutine Then
@@ -9298,6 +9526,7 @@ Var
 Begin
   ClauseFollowOk := True;
   If TokEndsExprAbs(K) Then Exit;
+  If (TokTab[K].Kind = TK_PUNCT) And (TokTab[K].Val = '[') Then Exit;
   Save := TokPos;
   TokPos := K;
   ClauseFollowOk := AtDyadic(Name) > 0;
@@ -10424,6 +10653,9 @@ Begin
     MK_LINT         : CallRT('WRITELINT');
     MK_ROW          : GenPrintRow(M);
     MK_STRUCT:
+      If M = ModeCompl Then
+        CallRT('WRITECOMPL')
+      Else
       Begin
         T := NewTemp(4);
         Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
@@ -10880,7 +11112,22 @@ Begin
     CO_WIDEN:
       Begin
         GenValue(C);
-        If ModeKind(CM) = MK_LINT Then
+        If ModeResolve(UnitTab[U].Mode) = ModeCompl Then
+        Begin
+          { REAL ou INT vers COMPL : partie imaginaire nulle }
+          T := NewTemp(16);
+          If ModeKind(CM) = MK_INT Then
+          Begin
+            Emit1(OP_PUSH, OpReg(R_EAX));
+            Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+            Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+          End;
+          Emit1(OP_FSTP, TMem(T, 0, 8));
+          Emit(OP_MOV, TMem(T, 8, 4), OpImm(0));
+          Emit(OP_MOV, TMem(T, 12, 4), OpImm(0));
+          TAddr(R_EAX, T);
+        End
+        Else If ModeKind(CM) = MK_LINT Then
           Emit1(OP_FILD, OpMem(R_EAX, 0, 8))
         Else If ModeKind(UnitTab[U].Mode) = MK_LINT Then
         Begin
@@ -13999,7 +14246,7 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 1886;
+  RT_LINES = 1913;
   RT_MAX_ROUT = 200;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_PUT',
@@ -15887,7 +16134,34 @@ Const
   'NEG EAX',
   'SBB EDX, 0',
   '_A68R_l30:',
-  'RET'
+  'RET',
+  '@_A68RT_WRITECOMPL',
+  '; EAX = adresse d''un COMPL : ecrit re+imi (ou re-imi)',
+  '_A68RT_WRITECOMPL:',
+  'PUSH EAX',
+  'FLD QWORD PTR [EAX]',
+  'CALL _A68RT_WRITEREAL',
+  'POP EAX',
+  'MOV EDX, DWORD PTR [EAX+12]',
+  'TEST EDX, EDX',
+  'JNS _A68R_wc1',
+  'PUSH EAX',
+  'MOV EAX, 45',
+  'CALL _A68RT_WRITECHAR',
+  'POP EAX',
+  'FLD QWORD PTR [EAX+8]',
+  'FABS',
+  'JMP _A68R_wc2',
+  '_A68R_wc1:',
+  'PUSH EAX',
+  'MOV EAX, 43',
+  'CALL _A68RT_WRITECHAR',
+  'POP EAX',
+  'FLD QWORD PTR [EAX+8]',
+  '_A68R_wc2:',
+  'CALL _A68RT_WRITEREAL',
+  'MOV EAX, 105',
+  'JMP _A68RT_WRITECHAR'
   );
 
 Var
