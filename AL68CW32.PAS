@@ -34,12 +34,12 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 14 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 15 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
-         affectations) ; TODO 15 a 25 a faire.
+         affectations, tableaux) ; TODO 16 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -708,7 +708,7 @@
               TODO 12 s'executent sans remplacer leurs corps
             Reste : les routines ALLOC, NILREF, DIVZERO, STRCAT du TODO 22
 
-  TODO 15 - TABLEAUX, TRANCHES ET CHAINES [A FAIRE]
+  TODO 15 - TABLEAUX, TRANCHES ET CHAINES [IMPLEMENTE]
             Declaration [l:u] mode, [1:5] INT a := (10, 20, 30, 40, 50) ;
               dimensions multiples, bornes dynamiques (expressions
               evaluees a l'entree de la clause), tableau sans initialiseur
@@ -721,6 +721,37 @@
             STRING = tableau flexible de CHAR : denotation, concatenation
               +, tranche hello[1:5], comparaison, passage a print
             Verification : arrays.a68, test_array.a68, test_runtime.a68
+            Realise : descripteur de 4 mots pour une dimension (adresse,
+              borne inf., borne sup., pas en octets) et 3 mots par
+              dimension supplementaire ; tableau statique (bornes
+              constantes, stockage reserve en donnees) ou dynamique (bornes
+              evaluees a l'entree, stockage par _A68RT_ALLOC) ; CHAR sur
+              un octet (MOVZX, ecriture d'octet), structures realignees ;
+              UK_DISPLAY (affichage) coerce vers un tableau ou une
+              structure, avec controle du nombre d'elements ; a[i] et
+              a[i, j] avec controle _A68RT_CHKIDX ; tranche a[l:u] en
+              nouveau descripteur sans copie ; LWB et UPB (forme
+              dyadique n UPB a) ; copie de tableau par blocs (REP MOVSD) avec
+              controle des dimensions (_A68RT_BOUNDS) ; identite
+              [] INT t = (...) ; STRING = rangee flexible de CHAR (16
+              octets), STRING e vide de bornes 1 et 0, h[2:4], h[5]
+            Verifie : programme d'essai execute (ar.a68) : a[1], a[3],
+              a[5] (10, 30, 50), LWB et UPB (1, 5), tableau sans valeur
+              initiale (0), b[2] := 7, somme FOR de tab[i] (30), tableau
+              dynamique [1:n] (9, 4), matrice m[2, 3] (55) et 2 UPB m (3),
+              bornes [0:4], copie c := a puis a[1] := 99 (c reste a 10),
+              identite [] INT (3, 7), tranches a[2:4] et a[2:4][2] (20,
+              30), STRING sub = h[2:4] (3, premier caractere 101), h[5]
+              (111), STRING vide (1, 0) ; erreur : affichage de 2 elements
+              pour un tableau de 3 ; les 27 exemples restent analyses ;
+              les essais des TODOs 8 a 14 donnent les memes valeurs
+            Limites : l'affectation d'une STRING partage les caracteres
+              (pas de copie) ; le stockage dynamique n'est pas libere
+              (pas de FREE) ; tranches et affichages a plusieurs
+              dimensions pas encore supportes ; les temporaires sont
+              statiques (revu au TODO 16)
+            Reste : CHKIDX, BOUNDS, ALLOC du TODO 22 ; REP MOVSB, MOV
+              d'octet, ADD memoire,registre au codeur du TODO 20
 
   TODO 16 - PROCEDURES (PROC) [A FAIRE]
             Declaration PROC double = (INT x) INT : x + x ; parametres
@@ -1160,6 +1191,8 @@ Type
     UK_CAST,       { conversion mode(unite) : A = unite                }
     UK_FORMULA,    { formule : Name, Sym = operateur, A, B (-1 si
                      monadique), IntVal = 1 ou 2                       }
+    UK_DISPLAY,    { ( u1, u2, ... ) : A = elements, IntVal = nombre ;
+                     mode donne par la coercition                      }
     UK_ASSIGN,     { affectation : A = nom, B = valeur, Mode = REF m   }
     UK_IDREL,      { a IS b, a ISNT b : Name, A, B, Mode BOOL          }
     UK_IF,         { A = condition, B = alors, C = sinon (serie, ou un
@@ -2765,6 +2798,8 @@ Begin
 End;
 
 { ---- representation en memoire ---- }
+Function ModeFieldOffset(M, I : Integer) : LongInt; Forward;
+
 Function ModeSize(M : Integer) : LongInt;
 Var
   K     : Integer;
@@ -2789,14 +2824,19 @@ Begin
   Case ModeTab[M].Kind Of
     MK_ERROR, MK_FWD : Total := 4;
     MK_VOID          : Total := 0;
-    MK_INT, MK_BOOL, MK_CHAR, MK_BITS, MK_NIL, MK_REF : Total := 4;
+    MK_INT, MK_BOOL, MK_BITS, MK_NIL, MK_REF : Total := 4;
+    MK_CHAR          : Total := 1;
     MK_REAL          : Total := 8;
     MK_PROC          : Total := 8;       { entree + lien statique }
     MK_ROW           : Total := ROW_DESC_BASE +
                                 ROW_DESC_DIM * ModeTab[M].Dims;
     MK_STRUCT:
-      For K := 0 To ModeTab[M].Count - 1 Do
-        Total := Total + ModeSize(ModePoolM[ModeTab[M].First + K]);
+      Begin
+        For K := 0 To ModeTab[M].Count - 1 Do
+          Total := ModeFieldOffset(M, K) +
+                   ModeSize(ModePoolM[ModeTab[M].First + K]);
+        Total := (Total + 3) And -4;
+      End;
     MK_UNION:
       Begin
         Max := 0;
@@ -2805,11 +2845,17 @@ Begin
           S := ModeSize(ModePoolM[ModeTab[M].First + K]);
           If S > Max Then Max := S;
         End;
-        Total := 4 + Max;                { etiquette + valeur }
+        Total := (4 + Max + 3) And -4;   { etiquette + valeur }
       End;
   End;
   ModeTab[M].Size := Total;
   ModeSize := Total;
+End;
+
+{ alignement d un champ : 1 pour un CHAR, 4 sinon }
+Function ModeAlign(M : Integer) : LongInt;
+Begin
+  If ModeKind(M) = MK_CHAR Then ModeAlign := 1 Else ModeAlign := 4;
 End;
 
 { decalage d un champ dans une structure }
@@ -2817,24 +2863,23 @@ Function ModeFieldOffset(M, I : Integer) : LongInt;
 Var
   K   : Integer;
   Off : LongInt;
+  F   : Integer;
 Begin
   M := ModeResolve(M);
   Off := 0;
-  For K := 0 To I - 1 Do
-    Off := Off + ModeSize(ModePoolM[ModeTab[M].First + K]);
+  For K := 0 To I Do
+  Begin
+    F := ModePoolM[ModeTab[M].First + K];
+    Off := (Off + ModeAlign(F) - 1) And -ModeAlign(F);
+    If K < I Then Off := Off + ModeSize(F);
+  End;
   ModeFieldOffset := Off;
 End;
 
-{ taille d un element de tableau : 1 octet pour un CHAR }
+{ taille d un element de tableau }
 Function ModeElemSize(Row : Integer) : LongInt;
-Var
-  E : Integer;
 Begin
-  E := ModeResolve(ModeTab[ModeResolve(Row)].Sub);
-  If ModeTab[E].Kind = MK_CHAR Then
-    ModeElemSize := 1
-  Else
-    ModeElemSize := ModeSize(E);
+  ModeElemSize := ModeSize(ModeTab[ModeResolve(Row)].Sub);
 End;
 
 { ---- noms des modes (messages d erreur et mode -d) ---- }
@@ -3542,7 +3587,7 @@ Type
     OP_SETA, OP_SETAE, OP_SETB, OP_SETBE,
     OP_JMP, OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE,
     OP_JA, OP_JAE, OP_JB, OP_JBE, OP_JS,
-    OP_CALL, OP_RET, OP_REP_STOSD, OP_REP_MOVSD,
+    OP_CALL, OP_RET, OP_REP_STOSD, OP_REP_MOVSD, OP_REP_MOVSB,
     OP_FLD, OP_FST, OP_FSTP, OP_FILD,
     OP_FADD, OP_FSUB, OP_FSUBR, OP_FMUL, OP_FDIV, OP_FDIVR,
     OP_FCHS, OP_FABS, OP_FSQRT, OP_FSIN, OP_FCOS, OP_FPATAN,
@@ -3859,6 +3904,7 @@ Begin
     OP_CALL: OpName := 'CALL';     OP_RET: OpName := 'RET';
     OP_REP_STOSD: OpName := 'REP STOSD';
     OP_REP_MOVSD: OpName := 'REP MOVSD';
+    OP_REP_MOVSB: OpName := 'REP MOVSB';
     OP_FLD: OpName := 'FLD';       OP_FST: OpName := 'FST';
     OP_FSTP: OpName := 'FSTP';     OP_FILD: OpName := 'FILD';
     OP_FADD: OpName := 'FADD';     OP_FSUB: OpName := 'FSUB';
@@ -4475,6 +4521,61 @@ Begin
           Else
             UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
         End;
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_DISPLAY:
+      Begin
+        If ModeTab[W].Kind = MK_ROW Then
+        Begin
+          If ModeTab[W].Dims <> 1 Then
+            ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                    'affichage de tableau a plusieurs dimensions pas ' +
+                    'encore supporte')
+          Else
+          Begin
+            Prev := -1;
+            A := UnitTab[U].A;
+            While A >= 0 Do
+            Begin
+              Nxt := UnitTab[A].Next;
+              Cur := CoerceUnit(A, ModeTab[W].Sub, STR_STRONG);
+              UnitTab[Cur].Next := Nxt;
+              If Prev < 0 Then UnitTab[U].A := Cur
+              Else UnitTab[Prev].Next := Cur;
+              Prev := Cur;
+              A := Nxt;
+            End;
+          End;
+        End
+        Else If ModeTab[W].Kind = MK_STRUCT Then
+        Begin
+          If ModeTab[W].Count <> UnitTab[U].IntVal Then
+            ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                    'affichage de ' + ModeName(Want) + ' avec ' +
+                    ItoS(UnitTab[U].IntVal) + ' valeur(s) au lieu de ' +
+                    ItoS(ModeTab[W].Count))
+          Else
+          Begin
+            Prev := -1;
+            A := UnitTab[U].A;
+            Tag := 0;
+            While A >= 0 Do
+            Begin
+              Nxt := UnitTab[A].Next;
+              Cur := CoerceUnit(A, ModeFieldMode(W, Tag), STR_STRONG);
+              UnitTab[Cur].Next := Nxt;
+              If Prev < 0 Then UnitTab[U].A := Cur
+              Else UnitTab[Prev].Next := Cur;
+              Prev := Cur;
+              A := Nxt;
+              Inc(Tag);
+            End;
+          End;
+        End
+        Else
+          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                  'un affichage ne peut devenir ' + ModeName(Want));
         UnitTab[U].Mode := Want;
         Exit;
       End;
@@ -5663,9 +5764,6 @@ Begin
       UnitTab[U].B := Bounds;
       UnitTab[U].C := Dims;
       If Heap Then UnitTab[U].IntVal := 1;
-      If (Dims > 0) And (Not IsVar) Then
-        ErrorAt(L, C, 'une identite de tableau ne peut pas avoir de ' +
-                'bornes');
       If Heap And IsVar Then
       Begin
         { variable HEAP : la cellule contient l adresse de l objet }
@@ -6591,6 +6689,47 @@ Begin
   ParseLoop := U;
 End;
 
+{ La parenthese courante ouvre-t-elle un affichage ( u1, u2, ... ) ? }
+Function ParenIsDisplay : Boolean;
+Begin
+  ParenIsDisplay := Not ParenIsClosed And Not ParenIsBrief;
+End;
+
+{ Affichage : elements separes par des virgules ; son mode est donne
+  par le contexte (tableau ou structure), voir CoerceUnit }
+Function ParseDisplay : LongInt;
+Var
+  U, First, Last, A : LongInt;
+  Count             : Integer;
+  More              : Boolean;
+Begin
+  U := UnitNew(UK_DISPLAY, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  ParserAdvance;                             { ( }
+  First := -1;
+  Last := -1;
+  Count := 0;
+  Repeat
+    More := False;
+    A := ParseUnitX(1);
+    UnitTab[A].Next := -1;
+    If First < 0 Then First := A Else UnitTab[Last].Next := A;
+    Last := A;
+    Inc(Count);
+    If AtPunct(',') Then
+    Begin
+      ParserAdvance;
+      More := True;
+    End;
+  Until (Not More) Or AtEOF;
+  If AtPunct(')') Then
+    ParserAdvance
+  Else
+    ParseError(''')'' attendu pour fermer l''affichage');
+  UnitTab[U].A := First;
+  UnitTab[U].IntVal := Count;
+  ParseDisplay := U;
+End;
+
 { Unite primaire : denotation, identificateur, clause fermee, selection,
   tranche, appel, constructeur. Retourne -1 (sans rien consommer) si ce
   n est pas une primaire connue a ce stade (formules, conditionnelles,
@@ -6642,6 +6781,9 @@ Begin
         Else If AtPunct('(') And ParenIsBrief And
                 ClauseFollowOk(TokAfterClose) Then
           U := ParseBrief
+        Else If AtPunct('(') And ParenIsDisplay And
+                ClauseFollowOk(TokAfterClose) Then
+          U := ParseDisplay
         Else
           Exit;
       End;
@@ -6736,7 +6878,12 @@ End;
 Function OpOperandFirm(S, I, M : Integer) : Boolean;
 Begin
   If SymTab[S].Generic Then
-    OpOperandFirm := ModeKind(ModeDeref(M)) = MK_ROW
+  Begin
+    If (OpArity(S) = 2) And (I = 0) Then
+      OpOperandFirm := CoercePossible(M, MD_INT, STR_FIRM)
+    Else
+      OpOperandFirm := ModeKind(ModeDeref(M)) = MK_ROW;
+  End
   Else
     OpOperandFirm := CoercePossible(M, OpOperand(S, I), STR_FIRM);
 End;
@@ -7040,7 +7187,8 @@ Begin
   UnitTab[U].Mode := OpResult(S);
   If SymTab[S].Generic Then
   Begin
-    UnitTab[U].A := CoerceName(L);
+    UnitTab[U].A := CoerceUnit(L, MD_INT, STR_FIRM);
+    UnitTab[U].B := CoerceName(R);
     Exit;
   End;
   L := CoerceUnit(L, OpOperand(S, 0), STR_FIRM);
@@ -7484,6 +7632,7 @@ Begin
     UK_CONSTRUCT: UnitKindName := 'constructeur';
     UK_CAST     : UnitKindName := 'conversion';
     UK_FORMULA  : UnitKindName := 'formule';
+    UK_DISPLAY  : UnitKindName := 'affichage';
     UK_ASSIGN   : UnitKindName := 'affectation';
     UK_IDREL    : UnitKindName := 'identite';
     UK_IF       : UnitKindName := 'IF';
@@ -7542,6 +7691,8 @@ Begin
                        ModeName(UnitTab[U].Mode));
     UK_LOOP    : Write(' ', UnitTab[U].Name);
     UK_IDREL   : Write(' ', UnitTab[U].Name);
+    UK_DISPLAY : Write(' ', UnitTab[U].IntVal, ' element(s) : ',
+                       ModeName(UnitTab[U].Mode));
     UK_ASSIGN  : Write(' : ', ModeName(UnitTab[U].Mode));
     UK_FORMULA : Write(' ', UnitTab[U].Name, ' : ',
                        ModeName(UnitTab[U].Mode));
@@ -7612,7 +7763,7 @@ Begin
     UnitDumpOne(UnitTab[U].A, Depth + 1);
     UnitDump(UnitTab[U].B, Depth + 1);
   End
-  Else If UnitTab[U].Kind = UK_CONSTRUCT Then
+  Else If UnitTab[U].Kind In [UK_CONSTRUCT, UK_DISPLAY] Then
     UnitDump(UnitTab[U].A, Depth + 1)
   Else If UnitTab[U].Kind = UK_TRIM Then
   Begin
@@ -7690,13 +7841,37 @@ End;
 
 Procedure ModesDecl(U : LongInt);
 Var
-  Init, New : LongInt;
+  Init, New, P, Prev, Nxt : LongInt;
 Begin
+  { bornes d'un tableau : entieres }
+  Prev := -1;
+  P := UnitTab[U].B;
+  While P >= 0 Do
+  Begin
+    Nxt := UnitTab[P].Next;
+    New := CoerceUnit(P, MD_INT, STR_MEEK);
+    UnitTab[New].Next := Nxt;
+    If Prev < 0 Then UnitTab[U].B := New Else UnitTab[Prev].Next := New;
+    Prev := New;
+    P := Nxt;
+  End;
   Init := UnitTab[U].A;
   If Init >= 0 Then
   Begin
     New := CoerceUnit(Init, UnitTab[U].Mode, STR_STRONG);
     UnitTab[U].A := New;
+    { affichage de tableau a bornes constantes : nombre d'elements }
+    If (UnitTab[New].Kind = UK_DISPLAY) And (UnitTab[U].C = 1) And
+       (UnitTab[UnitTab[U].B].Kind = UK_INTDEN) And
+       (UnitTab[UnitTab[UnitTab[U].B].Next].Kind = UK_INTDEN) Then
+    Begin
+      P := UnitTab[UnitTab[UnitTab[U].B].Next].IntVal -
+           UnitTab[UnitTab[U].B].IntVal + 1;
+      If P <> UnitTab[New].IntVal Then
+        ErrorAt(UnitTab[New].Line, UnitTab[New].Col,
+                'affichage de ' + ItoS(UnitTab[New].IntVal) +
+                ' element(s) pour un tableau de ' + ItoS(P));
+    End;
   End;
 End;
 
@@ -7857,6 +8032,9 @@ Begin
         Emit(OP_MOV, DestOp(Sym, Lbl, Disp + 8, 4), OpImm(Length(Txt)));
         Emit(OP_MOV, DestOp(Sym, Lbl, Disp + 12, 4), OpImm(1));
       End
+      Else If M = MD_CHAR Then
+        Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 1),
+             OpImm(UnitTab[Init].IntVal))
       Else
         Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4),
              OpImm(UnitTab[Init].IntVal));
@@ -7874,7 +8052,10 @@ Begin
       1 :
         Begin
           Emit(OP_MOV, OpReg(R_EDX), SymCell(Sym, 0, 4));
-          Emit(OP_MOV, OpMem(R_EDX, Disp, 4), OpReg(R_EAX));
+          If ModeKind(M) = MK_CHAR Then
+            Emit(OP_MOV, OpMem(R_EDX, Disp, 1), OpReg(R_AL))
+          Else
+            Emit(OP_MOV, OpMem(R_EDX, Disp, 4), OpReg(R_EAX));
         End;
       2 :
         Begin
@@ -7894,7 +8075,10 @@ Begin
     Exit;
   End;
   Case ValClass(M) Of
-    1 : Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4), OpReg(R_EAX));
+    1 : If ModeKind(M) = MK_CHAR Then
+          Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 1), OpReg(R_AL))
+        Else
+          Emit(OP_MOV, DestOp(Sym, Lbl, Disp, 4), OpReg(R_EAX));
     2 : Emit1(OP_FSTP, DestOp(Sym, Lbl, Disp, 8));
     3 :
       Begin
@@ -7921,7 +8105,10 @@ End;
 Procedure LoadThrough(M : Integer);
 Begin
   Case ValClass(M) Of
-    1 : Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 0, 4));
+    1 : If ModeKind(M) = MK_CHAR Then
+          Emit(OP_MOVZX, OpReg(R_EAX), OpMem(R_EAX, 0, 1))
+        Else
+          Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 0, 4));
     2 : Emit1(OP_FLD, OpMem(R_EAX, 0, 8));
   End;
 End;
@@ -7964,7 +8151,7 @@ End;
 Procedure GenCoerce(U : LongInt);
 Var
   C  : LongInt;
-  T  : Integer;
+  T, CT : Integer;
   CM : Integer;
 Begin
   C := UnitTab[U].A;
@@ -7987,6 +8174,21 @@ Begin
       Begin
         GenValue(C);
         If ValClass(CM) = 2 Then Emit1(OP_FSTP, OpST(0));
+      End;
+    CO_ROW:
+      Begin
+        { valeur vers tableau d'un element }
+        T := NewTemp(ModeSize(CM));
+        GenValue(C);
+        StoreValue(-1, T, 0, CM);
+        Emit(OP_MOV, OpReg(R_EAX), OpImm(0));
+        Emit(OP_MOV, OpReg(R_EAX), OpOffset(T));
+        CT := NewTemp(16);
+        Emit(OP_MOV, OpMemSym(CT, 0, 4), OpReg(R_EAX));
+        Emit(OP_MOV, OpMemSym(CT, 4, 4), OpImm(1));
+        Emit(OP_MOV, OpMemSym(CT, 8, 4), OpImm(1));
+        Emit(OP_MOV, OpMemSym(CT, 12, 4), OpImm(ModeSize(CM)));
+        Emit(OP_MOV, OpReg(R_EAX), OpOffset(CT));
       End;
     CO_UNITE:
       If ModeKind(CM) = MK_UNION Then
@@ -8103,6 +8305,22 @@ Begin
   End;
   L := UnitTab[U].A;
   R := UnitTab[U].B;
+  If SymTab[UnitTab[U].Sym].Generic Then
+  Begin
+    { n LWB a, n UPB a : dimension n du tableau }
+    GenValue(R);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(L);
+    Emit1(OP_POP, OpReg(R_EDX));
+    Emit1(OP_DEC, OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(12));
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+    If Op = 'LWB' Then
+      Emit(OP_MOV, OpReg(R_EAX), OpMemIdx(-1, R_EDX, R_EAX, 1, 4, 4))
+    Else
+      Emit(OP_MOV, OpReg(R_EAX), OpMemIdx(-1, R_EDX, R_EAX, 1, 8, 4));
+    Exit;
+  End;
   ML := ModeResolve(OpOperand(UnitTab[U].Sym, 0));
   MR := ModeResolve(OpOperand(UnitTab[U].Sym, 1));
   KL := ModeTab[ML].Kind;
@@ -8232,9 +8450,13 @@ Begin
   Res := ModeResolve(OpResult(UnitTab[U].Sym));
   If SymTab[UnitTab[U].Sym].Generic Then
   Begin
-    { LWB et UPB : TODO 15 }
+    { LWB et UPB d'un tableau : champs du descripteur }
     GenValue(A);
-    EmitComment(Op + ' : pas encore genere (TODO 15)');
+    If MayBeNil(A) Then GenNilCheck;
+    If Op = 'LWB' Then
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 4, 4))
+    Else
+      Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EAX, 8, 4));
     Exit;
   End;
   GenValue(A);
@@ -8457,6 +8679,341 @@ Begin
   EmitLabel(LExit);
 End;
 
+{ ---- Tableaux, tranches et chaines (TODO 15) ----
+  Descripteur d'un tableau a D dimensions : adresse des elements, puis
+  pour chaque dimension borne inferieure, borne superieure et pas en
+  octets (4 + 12 * D octets). Un STRING est un tableau flexible de
+  CHAR d'une dimension (16 octets). Le nom d'un tableau (REF) et sa
+  valeur ont la meme representation : l'adresse de son descripteur. }
+
+{ Copie les elements du tableau decrit par ESI dans celui que decrit EDI
+  (memes dimensions, memes bornes) ; detruit EAX, ECX, EDX, ESI, EDI }
+Procedure GenRowCopy(RowMode : Integer);
+Var
+  K, D, Ok : Integer;
+  ES       : LongInt;
+Begin
+  D := ModeTab[ModeResolve(RowMode)].Dims;
+  ES := ModeElemSize(RowMode);
+  { les deux tableaux doivent avoir les memes dimensions }
+  For K := 0 To D - 1 Do
+  Begin
+    Ok := NewLabel;
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESI, 8 + 12 * K, 4));
+    Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESI, 4 + 12 * K, 4));
+    Emit(OP_MOV, OpReg(R_ECX), OpMem(R_EDI, 8 + 12 * K, 4));
+    Emit(OP_SUB, OpReg(R_ECX), OpMem(R_EDI, 4 + 12 * K, 4));
+    Emit(OP_CMP, OpReg(R_EAX), OpReg(R_ECX));
+    Emit1(OP_JE, OpLabel(Ok));
+    Emit1(OP_CALL, OpLabel(Intern(MangleRT('BOUNDS'))));
+    EmitLabel(Ok);
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+  For K := 0 To D - 1 Do
+  Begin
+    Emit(OP_MOV, OpReg(R_ECX), OpMem(R_ESI, 8 + 12 * K, 4));
+    Emit(OP_SUB, OpReg(R_ECX), OpMem(R_ESI, 4 + 12 * K, 4));
+    Emit1(OP_INC, OpReg(R_ECX));
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+  End;
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(ES));
+  Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX));
+  Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EDI, 0, 4));
+  Emit(OP_MOV, OpReg(R_ESI), OpMem(R_ESI, 0, 4));
+  Emit(OP_MOV, OpReg(R_EDI), OpReg(R_EDX));
+  If ES Mod 4 = 0 Then
+  Begin
+    Emit(OP_SHR, OpReg(R_ECX), OpImm(2));
+    Emit0(OP_REP_MOVSD);
+  End
+  Else
+    Emit0(OP_REP_MOVSB);
+End;
+
+{ Le mode M est-il un tableau dont l'affectation copie les elements
+  (tableau non flexible) ? }
+Function IsFixedRow(M : Integer) : Boolean;
+Begin
+  M := ModeResolve(M);
+  IsFixedRow := (ModeTab[M].Kind = MK_ROW) And Not ModeTab[M].Flex;
+End;
+
+{ Verifie l'indice EAX contre les bornes de la dimension K du
+  descripteur dont l'adresse est dans EDX (registres conserves) }
+Procedure GenIndexCheck(K : Integer);
+Begin
+  Emit(OP_MOV, OpReg(R_ECX), OpMem(R_EDX, 4 + 12 * K, 4));
+  Emit1(OP_PUSH, OpReg(R_EDX));
+  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EDX, 8 + 12 * K, 4));
+  Emit1(OP_CALL, OpLabel(Intern(MangleRT('CHKIDX'))));
+  Emit1(OP_POP, OpReg(R_EDX));
+End;
+
+{ a[i, j] : adresse de l'element, puis valeur si le tableau n'est pas
+  un nom ; a[l:u] : descripteur d'une tranche (nouveau descripteur, sans
+  copie des elements, de bornes 1 : u - l + 1) }
+Procedure GenSlice(U : LongInt);
+Var
+  Op, It  : LongInt;
+  Row     : Integer;
+  K, D    : Integer;
+  T       : Integer;
+  Skip    : Integer;
+  Tr      : LongInt;
+Begin
+  Op := UnitTab[U].A;
+  Row := ModeDeref(NatMode(Op));
+  D := ModeTab[Row].Dims;
+  GenValue(Op);
+  If MayBeNil(Op) Then GenNilCheck;
+  If UnitTab[U].C = 0 Then
+  Begin
+    Emit1(OP_PUSH, OpReg(R_EAX));              { descripteur }
+    Emit1(OP_PUSH, OpImm(0));                  { decalage cumule }
+    It := UnitTab[U].B;
+    K := 0;
+    While It >= 0 Do
+    Begin
+      GenValue(It);
+      Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 4, 4));
+      GenIndexCheck(K);
+      Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDX, 4 + 12 * K, 4));
+      Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12 + 12 * K, 4));
+      Emit(OP_ADD, OpMem(R_ESP, 0, 4), OpReg(R_EAX));
+      It := UnitTab[It].Next;
+      Inc(K);
+    End;
+    Emit1(OP_POP, OpReg(R_EAX));
+    Emit1(OP_POP, OpReg(R_EDX));
+    Emit(OP_ADD, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
+    If ModeKind(UnitTab[U].Mode) <> MK_REF Then
+      LoadThrough(UnitTab[U].Mode);
+    Exit;
+  End;
+  { tranche d'un tableau a une dimension }
+  Tr := UnitTab[U].B;
+  If (D <> 1) Or (UnitTab[U].IntVal <> 1) Then
+  Begin
+    EmitComment('tranche multidimensionnelle : pas encore generee');
+    Exit;
+  End;
+  T := NewTemp(16);
+  Skip := NewLabel;
+  Emit1(OP_PUSH, OpReg(R_EAX));                { [ESP+8] descripteur }
+  If UnitTab[Tr].A >= 0 Then
+    GenValue(UnitTab[Tr].A)
+  Else
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 0, 4));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 4, 4));
+  End;
+  Emit1(OP_PUSH, OpReg(R_EAX));                { [ESP+4] borne basse }
+  If UnitTab[Tr].B >= 0 Then
+    GenValue(UnitTab[Tr].B)
+  Else
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 4, 4));
+    Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 8, 4));
+  End;
+  Emit1(OP_PUSH, OpReg(R_EAX));                { [ESP] borne haute }
+  { bornes verifiees sauf pour une tranche vide }
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 4, 4));
+  Emit(OP_CMP, OpReg(R_EAX), OpMem(R_ESP, 0, 4));
+  Emit1(OP_JG, OpLabel(Skip));
+  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 8, 4));
+  GenIndexCheck(0);
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 0, 4));
+  GenIndexCheck(0);
+  EmitLabel(Skip);
+  Emit(OP_MOV, OpReg(R_EDX), OpMem(R_ESP, 8, 4));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 4, 4));
+  Emit(OP_SUB, OpReg(R_EAX), OpMem(R_EDX, 4, 4));
+  Emit(OP_IMUL, OpReg(R_EAX), OpMem(R_EDX, 12, 4));
+  Emit(OP_ADD, OpReg(R_EAX), OpMem(R_EDX, 0, 4));
+  Emit(OP_MOV, OpMemSym(T, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpMemSym(T, 4, 4), OpImm(1));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_ESP, 0, 4));
+  Emit(OP_SUB, OpReg(R_EAX), OpMem(R_ESP, 4, 4));
+  Emit1(OP_INC, OpReg(R_EAX));
+  Emit(OP_MOV, OpMemSym(T, 8, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EDX, 12, 4));
+  Emit(OP_MOV, OpMemSym(T, 12, 4), OpReg(R_EAX));
+  Emit(OP_ADD, OpReg(R_ESP), OpImm(12));
+  Emit(OP_MOV, OpReg(R_EAX), OpOffset(T));
+End;
+
+{ ( u1, u2, ... ) : tableau d'une dimension ou structure selon le mode
+  obtenu par coercition ; les valeurs sont rangees dans des cellules
+  temporaires ; le resultat est l'adresse du descripteur ou de la
+  structure }
+Procedure GenDisplay(U : LongInt);
+Var
+  M, Elem   : Integer;
+  E, D, I   : Integer;
+  A         : LongInt;
+  ES        : LongInt;
+Begin
+  M := ModeResolve(UnitTab[U].Mode);
+  If ModeTab[M].Kind = MK_STRUCT Then
+  Begin
+    D := NewTemp(ModeSize(M));
+    A := UnitTab[U].A;
+    I := 0;
+    While A >= 0 Do
+    Begin
+      GenValue(A);
+      StoreValue(-1, D, ModeFieldOffset(M, I), ModeFieldMode(M, I));
+      A := UnitTab[A].Next;
+      Inc(I);
+    End;
+    Emit(OP_MOV, OpReg(R_EAX), OpOffset(D));
+    Exit;
+  End;
+  If ModeTab[M].Kind <> MK_ROW Then
+  Begin
+    EmitComment('affichage sans mode (ligne ' + ItoS(UnitTab[U].Line) +
+                ')');
+    Exit;
+  End;
+  Elem := ModeResolve(ModeTab[M].Sub);
+  ES := ModeSize(Elem);
+  E := NewTemp(UnitTab[U].IntVal * ES);
+  D := NewTemp(16);
+  A := UnitTab[U].A;
+  I := 0;
+  While A >= 0 Do
+  Begin
+    GenValue(A);
+    StoreValue(-1, E, I * ES, Elem);
+    A := UnitTab[A].Next;
+    Inc(I);
+  End;
+  Emit(OP_MOV, OpReg(R_EAX), OpOffset(E));
+  Emit(OP_MOV, OpMemSym(D, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpMemSym(D, 4, 4), OpImm(1));
+  Emit(OP_MOV, OpMemSym(D, 8, 4), OpImm(UnitTab[U].IntVal));
+  Emit(OP_MOV, OpMemSym(D, 12, 4), OpImm(ES));
+  Emit(OP_MOV, OpReg(R_EAX), OpOffset(D));
+End;
+
+{ Declaration d'un tableau : descripteur de l'objet du symbole S, avec
+  reservation des elements (cellule statique si toutes les bornes sont
+  constantes, sinon memoire du tas) ; initialisation par un affichage
+  ou un autre tableau }
+Procedure GenRowDecl(U : LongInt);
+Var
+  S, Init, It    : LongInt;
+  M, E, K, D     : Integer;
+  ES, Tot, Count : LongInt;
+  ConstB         : Boolean;
+  Lbl, LblOk     : Integer;
+  LoA, HiA, Cnt, StrideA : Array[0..MAX_ARRAY_DIM - 1] Of LongInt;
+Begin
+  S := UnitTab[U].Sym;
+  M := ModeResolve(UnitTab[U].Mode);
+  Init := UnitTab[U].A;
+  E := ModeResolve(ModeTab[M].Sub);
+  ES := ModeSize(E);
+  D := ModeTab[M].Dims;
+  If UnitTab[U].C = 0 Then
+  Begin
+    { sans bornes : identite ou variable prenant le descripteur de la
+      valeur (affichage, tranche, autre tableau) }
+    If Init >= 0 Then
+    Begin
+      GenValue(Init);
+      StoreValue(S, -1, 0, M);
+    End
+    Else If ModeTab[M].Flex Then
+      Emit(OP_MOV, SymCell(S, 4, 4), OpImm(1));
+    Exit;
+  End;
+  { bornes constantes ? }
+  ConstB := SymTab[S].Storage = SC_STATIC;
+  It := UnitTab[U].B;
+  While It >= 0 Do
+  Begin
+    If (UnitTab[It].Kind <> UK_INTDEN) Or
+       (UnitTab[UnitTab[It].Next].Kind <> UK_INTDEN) Then
+      ConstB := False;
+    It := UnitTab[UnitTab[It].Next].Next;
+  End;
+  If ConstB Then
+  Begin
+    It := UnitTab[U].B;
+    K := 0;
+    While (It >= 0) And (K < MAX_ARRAY_DIM) Do
+    Begin
+      LoA[K] := UnitTab[It].IntVal;
+      HiA[K] := UnitTab[UnitTab[It].Next].IntVal;
+      Cnt[K] := HiA[K] - LoA[K] + 1;
+      If Cnt[K] < 0 Then Cnt[K] := 0;
+      It := UnitTab[UnitTab[It].Next].Next;
+      Inc(K);
+    End;
+    StrideA[D - 1] := ES;
+    For K := D - 2 Downto 0 Do
+      StrideA[K] := StrideA[K + 1] * Cnt[K + 1];
+    Tot := StrideA[0] * Cnt[0];
+    Lbl := Intern(SymTab[S].AsmName + '_E');
+    DataAddZero(Lbl, Tot);
+    Emit(OP_MOV, SymCell(S, 0, 4), OpOffset(Lbl));
+    For K := 0 To D - 1 Do
+    Begin
+      Emit(OP_MOV, SymCell(S, 4 + 12 * K, 4), OpImm(LoA[K]));
+      Emit(OP_MOV, SymCell(S, 8 + 12 * K, 4), OpImm(HiA[K]));
+      Emit(OP_MOV, SymCell(S, 12 + 12 * K, 4), OpImm(StrideA[K]));
+    End;
+  End
+  Else
+  Begin
+    { bornes calculees a l'execution }
+    It := UnitTab[U].B;
+    K := 0;
+    While It >= 0 Do
+    Begin
+      GenValue(It);
+      Emit(OP_MOV, SymCell(S, 4 + 12 * K, 4), OpReg(R_EAX));
+      GenValue(UnitTab[It].Next);
+      Emit(OP_MOV, SymCell(S, 8 + 12 * K, 4), OpReg(R_EAX));
+      It := UnitTab[UnitTab[It].Next].Next;
+      Inc(K);
+    End;
+    Emit(OP_MOV, SymCell(S, 12 + 12 * (D - 1), 4), OpImm(ES));
+    For K := D - 2 Downto 0 Do
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 8 + 12 * (K + 1), 4));
+      Emit(OP_SUB, OpReg(R_EAX), SymCell(S, 4 + 12 * (K + 1), 4));
+      Emit1(OP_INC, OpReg(R_EAX));
+      Emit(OP_IMUL, OpReg(R_EAX), SymCell(S, 12 + 12 * (K + 1), 4));
+      Emit(OP_MOV, SymCell(S, 12 + 12 * K, 4), OpReg(R_EAX));
+    End;
+    Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 8, 4));
+    Emit(OP_SUB, OpReg(R_EAX), SymCell(S, 4, 4));
+    Emit1(OP_INC, OpReg(R_EAX));
+    Emit(OP_IMUL, OpReg(R_EAX), SymCell(S, 12, 4));
+    LblOk := NewLabel;
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JNS, OpLabel(LblOk));
+    Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+    EmitLabel(LblOk);
+    Emit1(OP_CALL, OpLabel(Intern(MangleRT('ALLOC'))));
+    Emit(OP_MOV, SymCell(S, 0, 4), OpReg(R_EAX));
+  End;
+  { initialisation : copie des elements }
+  If Init >= 0 Then
+  Begin
+    GenValue(Init);
+    Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
+    If SymTab[S].Storage = SC_STATIC Then
+      Emit(OP_MOV, OpReg(R_EDI), OpOffset(Intern(SymTab[S].AsmName)))
+    Else
+      Emit(OP_LEA, OpReg(R_EDI), SymCell(S, 0, 4));
+    GenRowCopy(M);
+  End;
+End;
+
 { ---- References et affectations (TODO 14) ---- }
 
 { Verifie que EAX n'est pas la reference nulle (appelle NILREF) }
@@ -8495,7 +9052,10 @@ Begin
     1 :
       Begin
         Emit1(OP_POP, OpReg(R_EDX));
-        Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
+        If ModeKind(M) = MK_CHAR Then
+          Emit(OP_MOV, OpMem(R_EDX, 0, 1), OpReg(R_AL))
+        Else
+          Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
         Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
       End;
     2 :
@@ -8509,8 +9069,13 @@ Begin
         Emit1(OP_POP, OpReg(R_EDI));
         Emit1(OP_PUSH, OpReg(R_EDI));
         Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EAX));
-        Emit(OP_MOV, OpReg(R_ECX), OpImm(ModeSize(M) Div 4));
-        Emit0(OP_REP_MOVSD);
+        If IsFixedRow(M) Then
+          GenRowCopy(M)                { copie des elements }
+        Else
+        Begin
+          Emit(OP_MOV, OpReg(R_ECX), OpImm(ModeSize(M) Div 4));
+          Emit0(OP_REP_MOVSD);
+        End;
         Emit1(OP_POP, OpReg(R_EAX));
       End;
   Else
@@ -8669,7 +9234,10 @@ Begin
         Else If SymTab[S].Kind = SK_IDENT Then
         Begin
           Case ValClass(SymTab[S].Mode) Of
-            1 : Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 0, 4));
+            1 : If ModeKind(SymTab[S].Mode) = MK_CHAR Then
+                  Emit(OP_MOVZX, OpReg(R_EAX), SymCell(S, 0, 1))
+                Else
+                  Emit(OP_MOV, OpReg(R_EAX), SymCell(S, 0, 4));
             2 : Emit1(OP_FLD, SymCell(S, 0, 8));
             3 : LoadSymAddress(S);
           End;
@@ -8687,6 +9255,8 @@ Begin
       Else
         GenMonadic(U);
     UK_SELECT    : GenSelect(U);
+    UK_SLICE     : GenSlice(U);
+    UK_DISPLAY   : GenDisplay(U);
     UK_ASSIGN    : GenAssign(U);
     UK_IDREL     : GenIdRel(U);
     UK_IF        : GenIf(U);
@@ -8762,9 +9332,9 @@ Begin
     Emit1(OP_CALL, OpLabel(Intern(MangleRT('ALLOC'))));
     Emit(OP_MOV, SymCell(UnitTab[U].Sym, 0, 4), OpReg(R_EAX));
   End;
-  If UnitTab[U].C > 0 Then
+  If ModeKind(UnitTab[U].Mode) = MK_ROW Then
   Begin
-    EmitComment('tableau ' + UnitTab[U].Name + ' (TODO 15)');
+    GenRowDecl(U);
     Exit;
   End;
   If UnitTab[U].A >= 0 Then
@@ -8781,7 +9351,7 @@ Begin
     UK_CLOSED  : GenUnit(UnitTab[U].A);
     UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
     UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_LOOP, UK_ASSIGN,
-    UK_IDREL : GenValue(U);
+    UK_IDREL, UK_DISPLAY : GenValue(U);
     UK_LABELDEF:
       If UnitTab[U].Sym >= 0 Then
         EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
