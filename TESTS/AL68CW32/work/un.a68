@@ -1,0 +1,35 @@
+BEGIN
+  MODE NUM = UNION(INT, REAL);
+  MODE POLY = UNION(INT, REAL, BOOL, CHAR);
+  MODE PT = STRUCT(INT x, INT y);
+  MODE SH = UNION(INT, PT);
+  NUM a := 7;
+  NUM b := 2.5;
+  NUM e := EMPTY;
+  INT ra := CASE a IN (INT i) : i * 2, (REAL r) : 0 OUT -1 ESAC;
+  REAL rb := CASE b IN (INT i) : 0.0, (REAL r) : r + 1.0 OUT 0.0 ESAC;
+  INT re := CASE e IN (INT i) : i, (REAL r) : 5 OUT 99 ESAC;
+  POLY p1 := TRUE;
+  POLY p2 := "Q";
+  INT k1 := CASE p1 IN (INT i) : 1, (REAL r) : 2, (BOOL t) : IF t THEN 30 ELSE 31 FI, (CHAR c) : 4 ESAC;
+  INT k2 := CASE p2 IN (INT i) : 1, (REAL r) : 2, (BOOL t) : 3, (CHAR c) : ABS c ESAC;
+  SH s := PT(5, 6);
+  INT sx := CASE s IN (INT i) : i, (PT q) : x OF q * 10 + y OF q ESAC;
+  NUM c := a;
+  POLY pp := a;
+  INT cv := CASE pp IN (INT i) : i + 100, (REAL r) : 0, (BOOL t) : 0, (CHAR c2) : 0 ESAC;
+  PROC desc = (NUM n) INT : CASE n IN (INT i) : i + 1, (REAL r) : 50 ESAC;
+  INT d1 := desc(10);
+  INT d2 := desc(1.5);
+  PROC wrap = (INT n) INT :
+    BEGIN
+      NUM loc := n;
+      INT acc := 0;
+      CASE loc IN (INT i) : acc := i * 3, (REAL r) : acc := 0 ESAC;
+      acc
+    END;
+  INT w1 := wrap(4);
+  INT side := 0;
+  CASE a IN (INT) : side := 1, (REAL) : side := 2 ESAC;
+  SKIP
+END

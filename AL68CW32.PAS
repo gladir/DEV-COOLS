@@ -34,13 +34,13 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 17 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 18 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
-         affectations, tableaux, procedures, operateurs) ; TODO 18 a 25
-         a faire.
+         affectations, tableaux, procedures, operateurs, unions) ;
+         TODO 19 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -862,7 +862,7 @@
               inconnu entre deux operandes reste une unite non analysee
               sans erreur (jusqu'au TODO 23)
 
-  TODO 18 - MODES UNIS (UNION) ET CLAUSE DE CONFORMITE [A FAIRE]
+  TODO 18 - MODES UNIS (UNION) ET CLAUSE DE CONFORMITE [IMPLEMENTE]
             MODE NOMBRE = UNION(INT, REAL) ; alternatives distinctes ;
               union a une alternative (UNION(INT)) ; union de trois modes
             Representation : etiquette de mode puis valeur ; coercition
@@ -875,6 +875,35 @@
               facultatif, selection selon l'etiquette
             Mode du resultat equilibre comme au TODO 12
             Verification : union.a68, test_union.a68
+            Realise : les modes UNION, la coercition d'une valeur vers une
+              union (etiquette = indice du mode de l'alternative, 0 pour
+              EMPTY) et EMPTY existaient depuis les TODOs 4 et 9 ; ajout de
+              la coercition d'une union vers une union plus large (meme
+              etiquettes, recopie de l'objet) ; clause de conformite
+              CASE x IN (mode nom) : unite, ... OUT serie ESAC
+              (ParseConformity, UK_CONFORM et UK_CONFALT) : une portee
+              SCK_CONFORM par alternative ou le nom est lie (identite) a la
+              valeur extraite, nom facultatif ((INT) : unite), selecteur
+              deference jusqu'a l'union (variable ou valeur), corps
+              quelconques (BEGIN ... END, affectation, SKIP), OUT
+              facultatif ; mode du resultat equilibre comme pour CASE ;
+              controles : le selecteur est une UNION, chaque mode est une
+              alternative de l'union, unites coercees vers le mode demande ;
+              GenConform : comparaison de l'etiquette puis liaison du nom
+              (LoadThrough et StoreValue du mode de l'alternative,
+              structures comprises) ; fonctionne dans les procedures
+            Verifie : test_union.a68 (52, 99, 1) ; un.a68 : INT, REAL, BOOL
+              et CHAR dans des unions (14, 3,5, 30, 81), union vide qui
+              prend la branche OUT (99), union avec STRUCT (56), copie d'une
+              union (42), union vers union plus large (107), union en
+              parametre (11 et 50), union locale dans une procedure (12),
+              alternatives sans nom ; erreurs : mode qui n'est pas une
+              alternative, selecteur qui n'est pas une union, branche de
+              mode incorrect ; les 27 exemples restent analyses ; les
+              essais des TODOs 8 a 17 donnent les memes valeurs
+            Limites : pas de OUSE ni de forme abregee ( x | (INT i) : ... )
+              pour la conformite ; les alternatives sont comparees par
+              leur mode exact (pas de REF dans une alternative)
 
   TODO 19 - TRANSPUT, CLAUSES COLLATERALES ET PARALLELES [A FAIRE]
             print((a, b, c)) : liste collaterale de valeurs de modes
@@ -1278,6 +1307,11 @@ Type
                      autre UK_IF pour ELIF), Scope                     }
     UK_CASE,       { A = selecteur, B = alternatives (IntVal), C = OUT
                      (serie, ou un autre UK_CASE pour OUSE)            }
+    UK_CONFORM,    { CASE x IN (mode nom) : u ... : A = selecteur, B =
+                     alternatives UK_CONFALT, IntVal = nombre, C = OUT,
+                     Scope                                              }
+    UK_CONFALT,    { alternative : Mode, Sym = nom lie (ou -1), A = unite,
+                     IntVal = etiquette de l alternative dans l union   }
     UK_LOOP,       { A = FROM, B = BY, C = TO, D = WHILE, E = corps,
                      Sym = variable de controle, IntVal bit 0 = DOWNTO,
                      bit 1 = WHILE                                     }
@@ -4554,6 +4588,7 @@ Begin
 End;
 
 Function ModesSerial(First : LongInt; Want : Integer) : LongInt; Forward;
+Function SerialMode(First : LongInt) : Integer; Forward;
 
 { Coerce l unite U vers le mode Want dans un contexte de force Str ;
   retourne l unite (eventuellement enveloppee). Une unite de mode
@@ -4562,6 +4597,7 @@ Function CoerceUnit(U : LongInt; Want : Integer; Str : TStrength)
          : LongInt;
 Var
   M, W, Fit, Tag, Steps : Integer;
+  UM                    : Integer;
   Cur, A, Prev, Nxt     : LongInt;
   Lit                   : TString;
   Done                  : Boolean;
@@ -4631,6 +4667,44 @@ Begin
           Else
             UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
         End;
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_CONFORM:
+      Begin
+        { selecteur : une union (apres dereferencement) ; chaque
+          alternative doit en etre une ; les unites prennent le mode
+          demande }
+        UM := ModeDeref(SerialMode(UnitTab[U].A));
+        If UM = MD_ERROR Then
+          UM := MD_ERROR
+        Else If ModeKind(UM) <> MK_UNION Then
+        Begin
+          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                  'le selecteur d''une clause de conformite doit etre ' +
+                  'une UNION, pas ' + ModeName(UM));
+          UM := MD_ERROR;
+        End
+        Else
+          UnitTab[U].A := ModesSerial(UnitTab[U].A, UM);
+        A := UnitTab[U].B;
+        While A >= 0 Do
+        Begin
+          If UM <> MD_ERROR Then
+          Begin
+            Tag := ModeUnionAlt(UM, UnitTab[A].Mode);
+            If Tag < 0 Then
+              ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
+                      ModeName(UnitTab[A].Mode) + ' n''est pas une ' +
+                      'alternative de ' + ModeName(UM))
+            Else
+              UnitTab[A].IntVal := Tag;
+          End;
+          UnitTab[A].A := CoerceUnit(UnitTab[A].A, Want, STR_STRONG);
+          A := UnitTab[A].Next;
+        End;
+        If UnitTab[U].C >= 0 Then
+          UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
         UnitTab[U].Mode := Want;
         Exit;
       End;
@@ -6952,13 +7026,114 @@ Begin
   ParseCaseTail := U;
 End;
 
+{ Clause de conformite : CASE selecteur IN (mode nom) : unite, ... OUT
+  serie ESAC. Chaque alternative a sa portee (SCK_CONFORM) ou le nom est
+  lie a la valeur extraite de l'union. }
+Function ParseConformity : LongInt;
+Var
+  U, Alt, First, Last : LongInt;
+  Bnd, Body           : LongInt;
+  M, Dm, MB, S        : Integer;
+  Name                : TName;
+  L, C, Count         : Integer;
+  More                : Boolean;
+Begin
+  U := UnitNew(UK_CONFORM, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  ParserAdvance;                             { CASE }
+  UnitTab[U].Scope := ScopeEnter(SCK_CHOICE);
+  UnitTab[U].A := ParseSerial(False);
+  If AtKw('IN') Then
+    ParserAdvance
+  Else
+    ParseError('IN attendu apres le selecteur');
+  First := -1;
+  Last := -1;
+  Count := 0;
+  M := MD_ERROR;
+  Repeat
+    More := False;
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    If AtPunct('(') Then
+      ParserAdvance
+    Else
+      ParseError('''('' attendu : alternative de la clause de conformite');
+    ParseDeclarer(M, Bnd, Dm, True);
+    Alt := UnitNew(UK_CONFALT, L, C);
+    UnitTab[Alt].Mode := M;
+    UnitTab[Alt].Sym := -1;
+    UnitTab[Alt].IntVal := 0;
+    UnitTab[Alt].Scope := ScopeEnter(SCK_CONFORM);
+    If TokTab[TokPos].Kind = TK_TAG Then
+    Begin
+      Name := TokTab[TokPos].Val;
+      S := SymDeclare(Name, SK_IDENT, M, TokTab[TokPos].Line,
+                      TokTab[TokPos].Col);
+      DeclareStorage(S, M, TokTab[TokPos].Line, TokTab[TokPos].Col);
+      SymTab[S].Used := True;
+      UnitTab[Alt].Sym := S;
+      ParserAdvance;
+    End;
+    If AtPunct(')') Then
+      ParserAdvance
+    Else
+      ParseError(''')'' attendu apres le mode de l''alternative');
+    If AtPunct(':') Then
+      ParserAdvance
+    Else
+      ParseError(''':'' attendu apres l''alternative');
+    Body := ParseUnitX(1);
+    UnitTab[Alt].A := Body;
+    ScopeLeave;
+    UnitTab[Alt].Next := -1;
+    If First < 0 Then First := Alt Else UnitTab[Last].Next := Alt;
+    Last := Alt;
+    Inc(Count);
+    If AtPunct(',') Then
+    Begin
+      ParserAdvance;
+      More := True;
+    End;
+  Until (Not More) Or AtEOF;
+  UnitTab[U].B := First;
+  UnitTab[U].IntVal := Count;
+  UnitTab[U].C := -1;
+  If AtKw('OUT') Then
+  Begin
+    ParserAdvance;
+    ScopeEnter(SCK_CHOICE);
+    UnitTab[U].C := ParseSerial(False);
+    ScopeLeave;
+  End;
+  ScopeLeave;
+  { mode naturel : equilibre des alternatives et de la partie OUT }
+  M := NatMode(UnitTab[First].A);
+  Alt := UnitTab[First].Next;
+  While Alt >= 0 Do
+  Begin
+    M := BalanceKnown(M, NatMode(UnitTab[Alt].A));
+    Alt := UnitTab[Alt].Next;
+  End;
+  If UnitTab[U].C < 0 Then
+    MB := MD_VOID
+  Else
+    MB := SerialMode(UnitTab[U].C);
+  UnitTab[U].Mode := BalanceKnown(M, MB);
+  If AtKw('ESAC') Then
+    ParserAdvance
+  Else
+    ParseError('ESAC attendu');
+  Inc(ClauseCount);
+  ParseConformity := U;
+End;
+
 Function ParseCase : LongInt;
 Var
   U : LongInt;
 Begin
   If CaseIsConformity Then
   Begin
-    ParseCase := -1;                         { TODO 18 }
+    ParseCase := ParseConformity;
     Exit;
   End;
   U := UnitNew(UK_CASE, TokTab[TokPos].Line, TokTab[TokPos].Col);
@@ -8089,6 +8264,8 @@ Begin
     UK_IDREL    : UnitKindName := 'identite';
     UK_IF       : UnitKindName := 'IF';
     UK_CASE     : UnitKindName := 'CASE';
+    UK_CONFORM  : UnitKindName := 'clause de conformite';
+    UK_CONFALT  : UnitKindName := 'alternative';
     UK_LOOP     : UnitKindName := 'boucle';
     UK_INTDEN   : UnitKindName := 'denotation INT';
     UK_REALDEN  : UnitKindName := 'denotation REAL';
@@ -8144,6 +8321,7 @@ Begin
                        UnitTab[U].C, ' tranche(s) : ',
                        ModeName(UnitTab[U].Mode));
     UK_LOOP    : Write(' ', UnitTab[U].Name);
+    UK_CONFALT : Write(' ', ModeName(UnitTab[U].Mode));
     UK_IDREL   : Write(' ', UnitTab[U].Name);
     UK_DISPLAY : Write(' ', UnitTab[U].IntVal, ' element(s) : ',
                        ModeName(UnitTab[U].Mode));
@@ -8202,6 +8380,14 @@ Begin
     UnitDump(UnitTab[U].B, Depth + 1);
     If UnitTab[U].C >= 0 Then UnitDump(UnitTab[U].C, Depth + 1);
   End
+  Else If UnitTab[U].Kind = UK_CONFORM Then
+  Begin
+    UnitDump(UnitTab[U].A, Depth + 1);
+    UnitDump(UnitTab[U].B, Depth + 1);
+    If UnitTab[U].C >= 0 Then UnitDump(UnitTab[U].C, Depth + 1);
+  End
+  Else If UnitTab[U].Kind = UK_CONFALT Then
+    UnitDumpOne(UnitTab[U].A, Depth + 1)
   Else If UnitTab[U].Kind = UK_LOOP Then
   Begin
     If UnitTab[U].A >= 0 Then UnitDumpOne(UnitTab[U].A, Depth + 1);
@@ -8970,7 +9156,13 @@ Begin
       GenCallCore(C, -1, CM);
     CO_UNITE:
       If ModeKind(CM) = MK_UNION Then
-        EmitComment('union vers union : pas encore generee')
+      Begin
+        { union vers une union plus large : meme etiquettes }
+        T := NewTemp(ModeSize(UnitTab[U].Mode));
+        GenValue(C);
+        StoreValue(-1, T, 0, CM);
+        TAddr(R_EAX, T);
+      End
       Else
       Begin
         T := NewTemp(ModeSize(UnitTab[U].Mode));
@@ -9458,6 +9650,65 @@ Begin
   Emit(OP_ADD, CtrOp, OpReg(R_EAX));
   Emit1(OP_JMP, OpLabel(LTop));
   EmitLabel(LExit);
+End;
+
+{ Clause de conformite : l'etiquette de l'union choisit l'alternative ;
+  le nom de l'alternative est lie a la valeur (apres l'etiquette) }
+Procedure GenConform(U : LongInt);
+Var
+  T            : Integer;
+  LOut, LEnd   : Integer;
+  Alt          : LongInt;
+  Lbls         : Array[1..128] Of Integer;
+  K, N         : Integer;
+  S            : Integer;
+Begin
+  N := UnitTab[U].IntVal;
+  If N > 128 Then
+  Begin
+    FatalError('clause de conformite avec plus de 128 alternatives');
+    Exit;
+  End;
+  T := NewTemp(4);
+  For K := 1 To N Do
+    Lbls[K] := NewLabel;
+  LOut := NewLabel;
+  LEnd := NewLabel;
+  GenSerialValue(UnitTab[U].A);
+  Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+  Alt := UnitTab[U].B;
+  K := 1;
+  While Alt >= 0 Do
+  Begin
+    Emit(OP_MOV, OpReg(R_EAX), TMem(T, 0, 4));
+    Emit(OP_CMP, OpMem(R_EAX, 0, 4), OpImm(UnitTab[Alt].IntVal));
+    Emit1(OP_JE, OpLabel(Lbls[K]));
+    Alt := UnitTab[Alt].Next;
+    Inc(K);
+  End;
+  Emit1(OP_JMP, OpLabel(LOut));
+  Alt := UnitTab[U].B;
+  K := 1;
+  While Alt >= 0 Do
+  Begin
+    EmitLabel(Lbls[K]);
+    S := UnitTab[Alt].Sym;
+    If S >= 0 Then
+    Begin
+      Emit(OP_MOV, OpReg(R_EAX), TMem(T, 0, 4));
+      Emit(OP_ADD, OpReg(R_EAX), OpImm(4));
+      LoadThrough(ModeResolve(UnitTab[Alt].Mode));
+      StoreValue(S, -1, 0, ModeResolve(UnitTab[Alt].Mode));
+    End;
+    GenValue(UnitTab[Alt].A);
+    Emit1(OP_JMP, OpLabel(LEnd));
+    Alt := UnitTab[Alt].Next;
+    Inc(K);
+  End;
+  EmitLabel(LOut);
+  If UnitTab[U].C >= 0 Then
+    GenSerialValue(UnitTab[U].C);
+  EmitLabel(LEnd);
 End;
 
 { ---- Tableaux, tranches et chaines (TODO 15) ----
@@ -10060,6 +10311,7 @@ Begin
     UK_IDREL     : GenIdRel(U);
     UK_IF        : GenIf(U);
     UK_CASE      : GenCase(U);
+    UK_CONFORM   : GenConform(U);
     UK_LOOP      : GenLoop(U);
     UK_CONSTRUCT : GenConstruct(U);
     UK_CLOSED:
@@ -10149,7 +10401,7 @@ Begin
     UK_SERIAL  : GenUnit(UnitTab[U].A);
     UK_CLOSED  : GenUnit(UnitTab[U].A);
     UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
-    UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_LOOP, UK_ASSIGN,
+    UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_CONFORM, UK_LOOP, UK_ASSIGN,
     UK_IDREL, UK_DISPLAY, UK_ROUTINE : GenValue(U);
     UK_PROCDECL : GenRoutineBody(UnitTab[U].A);
     UK_LABELDEF:
