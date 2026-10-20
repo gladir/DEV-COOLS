@@ -656,9 +656,6 @@ Program AL58CW32;
 {$IFNDEF FPC}{$N+}{$ENDIF}
 {$I-} { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
-{$IFDEF FPC}
-Uses Math;
-{$ENDIF}
 
 { ============================================================
   SECTION 1 - CONSTANTES (TODO 01, 03)
@@ -746,6 +743,12 @@ Const
 Type
   TString = String[255];
 
+  TDoubleBits = Record
+    Case Boolean Of
+      False : (D : Double);
+      True  : (Lo, Hi : LongInt);
+  End;
+
   { Tokens du lexeur (TODO 04) }
   TTokenKind = (
     TK_EOF,
@@ -825,12 +828,11 @@ End;
 
 { Vrai si un reel est infini ou invalide (debordement) }
 Function RealBad(D : Double) : Boolean;
+Var
+  B : TDoubleBits;
 Begin
-  {$IFDEF FPC}
-  RealBad := IsNaN(D) Or IsInfinite(D);
-  {$ELSE}
-  RealBad := False;
-  {$ENDIF}
+  B.D := D;
+  RealBad := (B.Hi And $7FF00000) = $7FF00000;
 End;
 
 Function UpCaseStr(Const S : TString) : TString;
@@ -2639,11 +2641,6 @@ Type
     First, Count : Integer;
   End;
 
-  TDoubleBits = Record
-    Case Boolean Of
-      False : (D : Double);
-      True  : (Lo, Hi : LongInt);
-  End;
 
 Var
   CodeTab    : Array[0..MAX_CODE - 1] Of TInstr;
@@ -10365,8 +10362,10 @@ Begin
   WarnCount  := 0;
   OutCreatedN := 0;
   {$IFDEF FPC}
-  SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
-                    exOverflow, exUnderflow, exPrecision]);
+  Set8087CW($133F);            { x87 : toutes les exceptions masquees }
+  {$IFDEF CPUX86_64}
+  SetMXCSR($1F80);             { SSE : toutes les exceptions masquees }
+  {$ENDIF}
   {$ENDIF}
   FoldCount := 0;
   TypeInit;
