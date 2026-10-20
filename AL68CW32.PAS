@@ -1544,6 +1544,7 @@ Type
     AsgCol    : Integer;
     Heap      : Boolean;       { variable HEAP : la cellule contient
                                  l adresse de l objet                 }
+    Fwd       : Boolean;       { procedure annoncee avant son texte    }
   End;
 
   TScope = Record
@@ -1552,6 +1553,9 @@ Type
     Kind       : TScopeKind;
     LastSym    : Integer;      { dernier symbole declare, -1 si aucun }
     FrameBytes : LongInt;      { octets locaux (portee de procedure)  }
+    NeedSP     : Boolean;      { cadre vise par un GOTO d'une autre
+                                 procedure : ESP est range au cadre   }
+    SPSlot     : LongInt;      { decalage de cet emplacement          }
     FrameScope : Integer;      { portee de procedure du cadre, -1 si
                                  les objets sont statiques            }
   End;
@@ -1667,6 +1671,8 @@ Var
   ErrorCount : Integer;   { erreurs de compilation signalees  }
   LastErrLine, LastErrCol : Integer;   { derniere erreur signalee    }
   WarnCount  : Integer;   { avertissements signales           }
+  ErrQuiet   : Integer;   { > 0 : erreurs retenues, pas affichees }
+  ErrHidden  : Integer;   { erreurs retenues                      }
 
 { ============================================================
   SECTION 4 - UTILITAIRES (TODO 02)
@@ -1906,6 +1912,11 @@ End;
   fichier(ligne,colonne) : erreur : message }
 Procedure ErrorAt(Line, Col : Integer; Const Msg : TString);
 Begin
+  If ErrQuiet > 0 Then
+  Begin
+    Inc(ErrHidden);
+    Exit;
+  End;
   { une seule erreur par position : evite les cascades }
   If (ErrorCount > 0) And (Line = LastErrLine) And (Col = LastErrCol) Then
     Exit;
@@ -3432,6 +3443,8 @@ Begin
   ScopeTab[S].Kind    := K;
   ScopeTab[S].LastSym := -1;
   ScopeTab[S].FrameBytes := 0;
+  ScopeTab[S].NeedSP := False;
+  ScopeTab[S].SPSlot := 0;
   If ScopeCur < 0 Then
   Begin
     ScopeTab[S].Level      := 0;
@@ -3514,6 +3527,7 @@ Begin
   SymTab[I].Intrinsic := False;
   SymTab[I].Generic   := False;
   SymTab[I].Heap      := False;
+  SymTab[I].Fwd       := False;
   SymTab[I].NoInit    := False;
   SymTab[I].Warned    := False;
   SymTab[I].AsgLine   := 0;
@@ -6576,6 +6590,17 @@ End;
 { Texte de routine sans parametres : mode de base suivi de deux-points }
 Function AtBareRoutine : Boolean;
 Begin
+  { PROC INT : unite -- routine sans parametre dont le resultat est
+    une procedure }
+  If AtKw('PROC') And (TokAt(1).Kind = TK_KEYWORD) And
+     ((TokAt(1).Val = 'INT') Or (TokAt(1).Val = 'REAL') Or
+      (TokAt(1).Val = 'BOOL') Or (TokAt(1).Val = 'CHAR') Or
+      (TokAt(1).Val = 'STRING') Or (TokAt(1).Val = 'VOID')) And
+     (TokAt(2).Kind = TK_PUNCT) And (TokAt(2).Val = ':') Then
+  Begin
+    AtBareRoutine := True;
+    Exit;
+  End;
   AtBareRoutine := (TokTab[TokPos].Kind = TK_KEYWORD) And
                    ((TokTab[TokPos].Val = 'INT') Or
                     (TokTab[TokPos].Val = 'REAL') Or
@@ -6590,6 +6615,155 @@ End;
 Function AtRoutineStart : Boolean;
 Begin
   AtRoutineStart := ParenIsRoutine Or AtBareRoutine;
+End;
+
+{ Procedure annoncee (Fwd) dans la portee courante, ou -1 }
+Function SymFindFwd(Const Name : TName; K : TSymKind) : Integer;
+Var
+  I : Integer;
+Begin
+  SymFindFwd := -1;
+  I := ScopeTab[ScopeCur].LastSym;
+  While I >= 0 Do
+  Begin
+    If (SymTab[I].Name = Name) And (SymTab[I].Kind = K) And
+       SymTab[I].Fwd Then
+    Begin
+      SymFindFwd := I;
+      Exit;
+    End;
+    I := SymTab[I].Prev;
+  End;
+End;
+
+{ Mode d'une procedure annoncee : K est l'indice du jeton PROC de
+  'PROC nom = ( parametres ) mode : ...' ; MD_ERROR si l'en-tete est
+  incorrect (le vrai texte signalera l'erreur) }
+Function PreProcMode(K : LongInt) : Integer;
+Var
+  Save, Bnd   : LongInt;
+  N, I, Dm    : Integer;
+  Elem, Res   : Integer;
+  Ok, Grp, More : Boolean;
+  PM          : Array[0..MAX_FIELD - 1] Of Integer;
+Begin
+  Save := TokPos;
+  TokPos := K + 3;
+  Inc(ErrQuiet);
+  ErrHidden := 0;
+  PreProcMode := MD_ERROR;
+  N := 0;
+  Ok := AtRoutineStart;
+  If AtPunct('(') And Ok Then
+  Begin
+    ParserAdvance;
+    If AtPunct(')') Then
+      ParserAdvance
+    Else
+    Begin
+      Repeat
+        More := False;
+        Ok := ParseDeclarer(Elem, Bnd, Dm, True) And Ok;
+        If Dm > 0 Then Ok := False;
+        Repeat
+          Grp := False;
+          If TokTab[TokPos].Kind <> TK_TAG Then
+            Ok := False
+          Else
+          Begin
+            If N < MAX_FIELD Then
+            Begin
+              PM[N] := Elem;
+              Inc(N);
+            End
+            Else
+              Ok := False;
+            ParserAdvance;
+            If AtPunct(',') And (TokAt(1).Kind = TK_TAG) And
+               (SymFindMode(TokAt(1).Val) < 0) Then
+            Begin
+              ParserAdvance;
+              Grp := True;
+            End;
+          End;
+        Until (Not Grp) Or AtEOF;
+        If Ok And AtPunct(',') Then
+        Begin
+          ParserAdvance;
+          More := True;
+        End;
+      Until (Not More) Or AtEOF;
+      If AtPunct(')') Then ParserAdvance Else Ok := False;
+    End;
+  End;
+  Res := MD_ERROR;
+  If Ok Then Ok := ParseDeclarer(Res, Bnd, Dm, True);
+  If Ok And Not AtPunct(':') Then Ok := False;
+  If Ok And (ErrHidden = 0) Then
+  Begin
+    ModeTmpReset;
+    For I := 0 To N - 1 Do
+      ModeTmpAdd('', PM[I], 0, 0);
+    PreProcMode := ModeProcTmp(Res);
+  End;
+  Dec(ErrQuiet);
+  TokPos := Save;
+End;
+
+{ Annonce les procedures 'PROC nom = texte de routine' de la clause
+  serie qui commence au jeton courant (portee courante) : elles sont
+  alors visibles avant leur declaration (procedures mutuellement
+  recursives, usage avant declaration) }
+Procedure PreDeclProcs;
+Var
+  K     : LongInt;
+  Depth : Integer;
+  M, S  : Integer;
+  Stop  : Boolean;
+  T     : TToken;
+Begin
+  K := TokPos;
+  Depth := 0;
+  Stop := False;
+  While (K < TokCount - 1) And Not Stop Do
+  Begin
+    T := TokTab[K];
+    If Depth = 0 Then
+    Begin
+      If (T.Kind = TK_EOF) Or
+         ((T.Kind = TK_KEYWORD) And
+          ((T.Val = 'END') Or (T.Val = 'FI') Or (T.Val = 'ESAC') Or
+           (T.Val = 'OD') Or (T.Val = 'ELSE') Or (T.Val = 'ELIF') Or
+           (T.Val = 'OUT') Or (T.Val = 'OUSE') Or (T.Val = 'THEN') Or
+           (T.Val = 'IN') Or (T.Val = 'DO'))) Or
+         ((T.Kind = TK_PUNCT) And
+          ((T.Val = ')') Or (T.Val = ']') Or (T.Val = '|') Or
+           (T.Val = '|:'))) Then
+        Stop := True;
+    End;
+    If Not Stop Then
+    Begin
+      If (Depth = 0) And (T.Kind = TK_KEYWORD) And (T.Val = 'PROC') And
+         (TokTab[K + 1].Kind = TK_TAG) And (TokTab[K + 2].Kind = TK_OP) And
+         (TokTab[K + 2].Val = '=') Then
+      Begin
+        M := PreProcMode(K);
+        If M <> MD_ERROR Then
+        Begin
+          S := SymLookupKinds(TokTab[K + 1].Val, SK_VAR);
+          If (S < 0) Or (SymTab[S].Scope <> ScopeCur) Then
+          Begin
+            S := SymDeclare(TokTab[K + 1].Val, SK_PROC, M,
+                            TokTab[K + 1].Line, TokTab[K + 1].Col);
+            SymTab[S].Fwd := True;
+          End;
+        End;
+      End;
+      If TokDepth(T) > 0 Then Inc(Depth)
+      Else If TokDepth(T) < 0 Then Dec(Depth);
+      Inc(K);
+    End;
+  End;
 End;
 
 { Texte de routine : ( parametres ) mode : unite. Une portee de
@@ -6725,7 +6899,17 @@ Begin
   If PName <> '' Then
   Begin
     ScopeCur := ScopeTab[Sc].Parent;
-    S := SymDeclare(PName, K, M, NL, NC);
+    S := SymFindFwd(PName, K);
+    If S >= 0 Then
+    Begin
+      { annoncee par PreDeclProcs : meme mode exige }
+      SymTab[S].Fwd := False;
+      SymTab[S].Mode := M;
+      SymTab[S].Line := NL;
+      SymTab[S].Col := NC;
+    End
+    Else
+      S := SymDeclare(PName, K, M, NL, NC);
     ScopeCur := Sc;
     SymTab[S].Used := True;
     UnitTab[U].Sym := S;
@@ -8117,7 +8301,8 @@ Begin
           U := ParseRoutine('', 0, 0, SK_PROC)
         Else If AtKw('PAR') Then
           U := ParsePar
-        Else If AtKw('PROC') Then
+        Else If AtKw('PROC') And (TokAt(1).Kind = TK_PUNCT) And
+                (TokAt(1).Val = '(') Then
           U := ParseProcCast
         Else
           Exit;
@@ -8805,6 +8990,11 @@ Var
   Rev          : Boolean;
   OL, OC       : Integer;
 Begin
+  If AtKw('GOTO') Then
+  Begin
+    ParseUnitX := ParseGoto;
+    Exit;
+  End;
   U := ParseDenotation;
   If U >= 0 Then
   Begin
@@ -8895,6 +9085,7 @@ Begin
   First := -1;
   Last := -1;
   NeedSep := False;
+  PreDeclProcs;
   While Not AtEOF Do
   Begin
     Start := TokPos;
@@ -8962,7 +9153,7 @@ Procedure ResolveGotos;
 Var
   K : Integer;
   U : LongInt;
-  S : Integer;
+  S, F : Integer;
 Begin
   For K := 0 To GotoCount - 1 Do
   Begin
@@ -8975,6 +9166,16 @@ Begin
     Begin
       UnitTab[U].Sym := S;
       SymTab[S].Used := True;
+      { saut vers un cadre de procedure englobant : ESP du cadre cible
+        est range dans le cadre }
+      F := ScopeTab[SymTab[S].Scope].FrameScope;
+      If (F >= 0) And (F <> ScopeTab[UnitTab[U].Scope].FrameScope) And
+         Not ScopeTab[F].NeedSP Then
+      Begin
+        ScopeTab[F].NeedSP := True;
+        ScopeTab[F].FrameBytes := ScopeTab[F].FrameBytes + 4;
+        ScopeTab[F].SPSlot := ScopeTab[F].FrameBytes;
+      End;
     End;
   End;
 End;
@@ -10171,8 +10372,31 @@ End;
 { Corps d'une routine, ecrit a part (DeferTab) : prologue, variables
   locales mises a zero, corps, recopie d'un resultat en memoire,
   epilogue }
+{ Le mode contient-il une procedure (resultat pouvant retenir le cadre
+  de l'appelant) ? }
+Function ModeHasProc(M : Integer; Depth : Integer) : Boolean;
+Var
+  K  : Integer;
+  Ok : Boolean;
+Begin
+  M := ModeResolve(M);
+  Ok := False;
+  If Depth <= 8 Then
+    Case ModeTab[M].Kind Of
+      MK_PROC : Ok := True;
+      MK_REF, MK_ROW : Ok := ModeHasProc(ModeTab[M].Sub, Depth + 1);
+      MK_STRUCT, MK_UNION:
+        For K := 0 To ModeTab[M].Count - 1 Do
+          If ModeHasProc(ModePoolM[ModeTab[M].First + K], Depth + 1) Then
+            Ok := True;
+    End;
+  ModeHasProc := Ok;
+End;
+
 Procedure GenRoutineBody(R : LongInt);
 Var
+  HeapFr             : Boolean;
+  Fix2, Fix3, HB     : LongInt;
   Start, Fix         : LongInt;
   SaveFrame, SaveLvl : Integer;
   PM, Res            : Integer;
@@ -10207,12 +10431,45 @@ Begin
   EmitLabel(Lbl);
   Emit1(OP_PUSH, OpReg(R_EBP));
   Emit(OP_MOV, OpReg(R_EBP), OpReg(R_ESP));
+  { une routine qui rend une procedure garde son cadre sur le tas : la
+    procedure rendue peut s'y referer apres le retour }
+  HeapFr := ModeHasProc(Res, 0);
+  If HeapFr And Not ScopeTab[GenFrame].NeedSP Then
+  Begin
+    ScopeTab[GenFrame].NeedSP := True;
+    ScopeTab[GenFrame].FrameBytes := ScopeTab[GenFrame].FrameBytes + 4;
+    ScopeTab[GenFrame].SPSlot := ScopeTab[GenFrame].FrameBytes;
+  End;
+  HB := UnitTab[R].IntVal + 8;             { en-tete et parametres }
   Fix := CodeCount;
-  Emit(OP_SUB, OpReg(R_ESP), OpImm(0));
-  Emit(OP_MOV, OpReg(R_EDI), OpReg(R_ESP));
-  Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
-  Emit(OP_MOV, OpReg(R_ECX), OpImm(0));
-  Emit0(OP_REP_STOSD);
+  If HeapFr Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EAX), OpImm(0));
+    Emit1(OP_CALL, OpLabel(Intern(MangleRT('ALLOC'))));
+    Emit(OP_MOV, OpReg(R_ESI), OpReg(R_EBP));
+    Emit(OP_MOV, OpReg(R_EDI), OpReg(R_EAX));
+    Fix2 := CodeCount;
+    Emit(OP_ADD, OpReg(R_EDI), OpImm(0));
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_EDI));
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(HB Div 4));
+    Emit0(OP_REP_MOVSD);
+    Emit(OP_MOV, OpMem(R_EDX, -ScopeTab[GenFrame].SPSlot, 4),
+         OpReg(R_EBP));
+    Emit(OP_MOV, OpReg(R_EBP), OpReg(R_EDX));
+  End
+  Else
+  Begin
+    Fix2 := -1;
+    Emit(OP_SUB, OpReg(R_ESP), OpImm(0));
+    Emit(OP_MOV, OpReg(R_EDI), OpReg(R_ESP));
+    Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(0));
+    Emit0(OP_REP_STOSD);
+    If ScopeTab[GenFrame].NeedSP Then
+      Emit(OP_MOV, OpMem(R_EBP, -ScopeTab[GenFrame].SPSlot, 4),
+           OpReg(R_ESP));
+  End;
+  Fix3 := Fix;
   GenValue(UnitTab[R].A);
   If ResultInMemory(Res) Then
   Begin
@@ -10222,12 +10479,20 @@ Begin
     Emit0(OP_REP_MOVSD);
     Emit(OP_MOV, OpReg(R_EAX), OpMem(R_EBP, 12, 4));
   End;
-  Emit(OP_MOV, OpReg(R_ESP), OpReg(R_EBP));
+  If HeapFr Then
+    Emit(OP_MOV, OpReg(R_ESP), OpMem(R_EBP, -ScopeTab[GenFrame].SPSlot, 4))
+  Else
+    Emit(OP_MOV, OpReg(R_ESP), OpReg(R_EBP));
   Emit1(OP_POP, OpReg(R_EBP));
   Emit1(OP_RET, OpImm(UnitTab[R].IntVal));
   { taille definitive du cadre : locales et temporaires }
   N := (ScopeTab[GenFrame].FrameBytes + 3) And -4;
-  If N = 0 Then
+  If HeapFr Then
+  Begin
+    CodeTab[Fix3].B.Imm := N + HB;
+    CodeTab[Fix2].B.Imm := N;
+  End
+  Else If N = 0 Then
   Begin
     For I := 0 To 4 Do CodeTab[Fix + I].Op := OP_NOP;
   End
@@ -11830,6 +12095,32 @@ End;
 
 { ---- Generation du code a partir de l arbre ---- }
 
+{ GOTO : saut local, ou saut vers le cadre d'une procedure englobante
+  (EBP et ESP du cadre cible sont retablis, les cadres intermediaires
+  sont abandonnes) }
+Procedure GenGoto(U : LongInt);
+Var
+  S, F, Lv : Integer;
+  Lbl      : Integer;
+Begin
+  S := UnitTab[U].Sym;
+  Lbl := Intern(SymTab[S].AsmName);
+  F := ScopeTab[SymTab[S].Scope].FrameScope;
+  If F < 0 Then Lv := 0 Else Lv := ScopeTab[F].Level;
+  If Lv >= GenLevel Then
+    Emit1(OP_JMP, OpLabel(Lbl))
+  Else
+  Begin
+    LoadFrameECX(Lv);
+    Emit(OP_MOV, OpReg(R_EBP), OpReg(R_ECX));
+    If F < 0 Then
+      Emit(OP_MOV, OpReg(R_ESP), OpReg(R_ECX))
+    Else
+      Emit(OP_MOV, OpReg(R_ESP), OpMem(R_ECX, -ScopeTab[F].SPSlot, 4));
+    Emit1(OP_JMP, OpLabel(Lbl));
+  End;
+End;
+
 Procedure GenOne(U : LongInt);
 Begin
   Case UnitTab[U].Kind Of
@@ -11843,8 +12134,7 @@ Begin
       If UnitTab[U].Sym >= 0 Then
         EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
     UK_GOTO    :
-      If UnitTab[U].Sym >= 0 Then
-        Emit1(OP_JMP, OpLabel(Intern(SymTab[UnitTab[U].Sym].AsmName)));
+      If UnitTab[U].Sym >= 0 Then GenGoto(U);
     UK_SKIP, UK_NIL, UK_EMPTY, UK_MODEDECL, UK_PRIODECL, UK_TRIM : ;
     UK_VARDECL, UK_IDDECL : GenDecl(U);
     UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN : ;
@@ -13345,7 +13635,7 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 972;
+  RT_LINES = 977;
   RT_MAX_ROUT = 40;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_PUT',
@@ -13674,6 +13964,9 @@ Const
   'ADD ESI, 4',
   'JMP _A68R_gc3',
   '_A68R_gc4:',
+  '; EBX et EBP sont des racines : ils sont empiles avant la pile',
+  'PUSH EBX',
+  'PUSH EBP',
   'MOV ESI, ESP',
   'MOV EDI, DWORD PTR [_A68_MAINBP]',
   'ADD EDI, 8',
@@ -13739,6 +14032,8 @@ Const
   '_A68R_gce:',
   'MOV DWORD PTR [_A68D_GT], EAX',
   'MOV DWORD PTR [_A68D_GS], 0',
+  'POP EBP',
+  'POP EBX',
   'POP EDI',
   'POP ESI',
   'POP EDX',
