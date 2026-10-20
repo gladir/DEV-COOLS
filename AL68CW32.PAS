@@ -34,11 +34,11 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 11 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 12 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
-         clauses, declarations, coercitions, primaires, formules) ;
-         TODO 12 a 25 a faire.
+         clauses, declarations, coercitions, primaires, formules, conditionnelles et boucles) ;
+         TODO 13 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -575,7 +575,7 @@
               par zero constante ou variable constante, BOOL + INT, REF
               STRING * INT, debordement de constante
 
-  TODO 12 - CLAUSES CONDITIONNELLES ET REPETITIVES [A FAIRE]
+  TODO 12 - CLAUSES CONDITIONNELLES ET REPETITIVES [IMPLEMENTE]
             IF ... THEN ... ELIF ... ELSE ... FI avec valeur (INT a :=
               IF TRUE THEN 42 ELSE 0 FI) et sans ELSE (valeur vide)
             CASE ... IN u1, u2, u3 OUT autre ESAC avec selecteur INT,
@@ -590,6 +590,36 @@
               INT locale a la boucle, bornes evaluees une fois
             Boucles imbriquees, labels et GOTO de sortie
             Verification : control.a68, test_cond.a68, test_loop.a68
+            Realise : section 10 ; ParseIfTail et ParseIf (IF, ELIF, ELSE,
+              FI, chaque partie dans sa portee, la condition et la partie
+              alors partageant la leur) ; ParseCaseTail et ParseCase (IN,
+              alternatives separees par des virgules, OUT, OUSE chaine,
+              ESAC ; une clause de conformite (INT i) : est laissee au
+              TODO 18) ; ParseBrief (formes ( c | a | b ) et ( s | u1, u2
+              | d ), |: pour la suite ; IF ou CASE d'apres le mode du
+              selecteur ou les virgules) ; ParseLoop (FOR, FROM, BY, TO,
+              DOWNTO, WHILE, DO, OD dans n'importe quel ordre pour FROM, BY
+              et TO, variable de controle INT locale, bornes evaluees dans
+              la portee exterieure) ; mode d'une clause : equilibre des
+              branches (VOID sans ELSE) ; CoerceUnit propage le mode demande
+              aux branches et aux alternatives, la condition devient BOOL, le
+              selecteur et les bornes INT, IF sans ELSE comme valeur est une
+              erreur ; GenIf, GenCase (comparaisons successives), GenLoop
+              (bornes et pas dans des cellules, test du signe du pas a la
+              compilation ou a l'execution, WHILE apres le test de borne) ;
+              GenSerialValue (valeur de la derniere unite) ; les mots de
+              boucle terminent une expression ; un nom de mode n'est plus
+              confondu avec un operateur monadique
+            Verifie : les 27 exemples sont analyses sans erreur ; 13 valeurs
+              de IF, ELIF, CASE, OUSE, formes abregees avec |: et IF dans
+              une formule sont correctes a l'execution (42, 99, 20, 20, 99,
+              42, 20, 99, 30, 7, 9, 6, 2 et 1.0 * 2 = 2 pour des branches
+              INT et REAL) ; 11 boucles : 1 a 10 (55), TO 5 (15), BY 2 (25),
+              DOWNTO (55), WHILE seul (5 tours), FOR avec WHILE (21), deux
+              boucles imbriquees (9), BY -1 (15), aucune iteration (0), BY
+              variable negative (25), boucle sans borne quittee par GOTO ;
+              erreurs : IF sans ELSE comme valeur, THEN, FI, OD manquants,
+              condition non booleenne, borne reelle, selecteur booleen
 
   TODO 13 - STRUCTURES (STRUCT) [A FAIRE]
             MODE POINT = STRUCT(INT x, INT y) ; champs de modes
@@ -1065,6 +1095,13 @@ Type
     UK_CAST,       { conversion mode(unite) : A = unite                }
     UK_FORMULA,    { formule : Name, Sym = operateur, A, B (-1 si
                      monadique), IntVal = 1 ou 2                       }
+    UK_IF,         { A = condition, B = alors, C = sinon (serie, ou un
+                     autre UK_IF pour ELIF), Scope                     }
+    UK_CASE,       { A = selecteur, B = alternatives (IntVal), C = OUT
+                     (serie, ou un autre UK_CASE pour OUSE)            }
+    UK_LOOP,       { A = FROM, B = BY, C = TO, D = WHILE, E = corps,
+                     Sym = variable de controle, IntVal bit 0 = DOWNTO,
+                     bit 1 = WHILE                                     }
     UK_INTDEN,     { denotation entiere : IntVal                       }
     UK_REALDEN,    { denotation reelle : RealVal                       }
     UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
@@ -1086,6 +1123,7 @@ Type
     Col     : Integer;
     A, B, C : LongInt;     { enfants (-1 : aucun) ; UK_DECL et
                              UK_OPAQUE : jetons A a B - 1           }
+    D, E    : LongInt;     { enfants supplementaires (UK_LOOP)      }
     Next    : LongInt;     { element suivant d une liste            }
     Sym     : Integer;     { symbole associe, -1 si aucun           }
     Scope   : Integer;     { portee de la clause ou du saut         }
@@ -4157,6 +4195,8 @@ Begin
   UnitTab[UnitCount].A     := -1;
   UnitTab[UnitCount].B     := -1;
   UnitTab[UnitCount].C     := -1;
+  UnitTab[UnitCount].D     := -1;
+  UnitTab[UnitCount].E     := -1;
   UnitTab[UnitCount].Next  := -1;
   UnitTab[UnitCount].Sym   := -1;
   UnitTab[UnitCount].Scope := ScopeCur;
@@ -4298,7 +4338,7 @@ Function CoerceUnit(U : LongInt; Want : Integer; Str : TStrength)
          : LongInt;
 Var
   M, W, Fit, Tag, Steps : Integer;
-  Cur                   : LongInt;
+  Cur, A, Prev, Nxt     : LongInt;
   Lit                   : TString;
   Done                  : Boolean;
 Begin
@@ -4326,6 +4366,63 @@ Begin
         UnitTab[U].A := ModesSerial(UnitTab[U].A, Want);
         UnitTab[U].Mode := Want;
         Exit;
+      End;
+    UK_IF:
+      Begin
+        UnitTab[U].A := ModesSerial(UnitTab[U].A, MD_BOOL);
+        UnitTab[U].B := ModesSerial(UnitTab[U].B, Want);
+        If UnitTab[U].C >= 0 Then
+        Begin
+          If UnitTab[UnitTab[U].C].Kind In [UK_IF, UK_CASE] Then
+            UnitTab[U].C := CoerceUnit(UnitTab[U].C, Want, Str)
+          Else
+            UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
+        End
+        Else If W <> MD_VOID Then
+          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                  'IF sans ELSE utilise comme valeur de mode ' +
+                  ModeName(Want));
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_CASE:
+      Begin
+        UnitTab[U].A := ModesSerial(UnitTab[U].A, MD_INT);
+        { alternatives : chaque unite est coercee vers le mode demande }
+        Prev := -1;
+        A := UnitTab[U].B;
+        While A >= 0 Do
+        Begin
+          Nxt := UnitTab[A].Next;
+          Cur := CoerceUnit(A, Want, STR_STRONG);
+          UnitTab[Cur].Next := Nxt;
+          If Prev < 0 Then UnitTab[U].B := Cur Else UnitTab[Prev].Next := Cur;
+          Prev := Cur;
+          A := Nxt;
+        End;
+        If UnitTab[U].C >= 0 Then
+        Begin
+          If UnitTab[UnitTab[U].C].Kind In [UK_IF, UK_CASE] Then
+            UnitTab[U].C := CoerceUnit(UnitTab[U].C, Want, Str)
+          Else
+            UnitTab[U].C := ModesSerial(UnitTab[U].C, Want);
+        End;
+        UnitTab[U].Mode := Want;
+        Exit;
+      End;
+    UK_LOOP:
+      Begin
+        { bornes entieres, condition booleenne, corps vide }
+        If UnitTab[U].A >= 0 Then
+          UnitTab[U].A := CoerceUnit(UnitTab[U].A, MD_INT, STR_MEEK);
+        If UnitTab[U].B >= 0 Then
+          UnitTab[U].B := CoerceUnit(UnitTab[U].B, MD_INT, STR_MEEK);
+        If UnitTab[U].C >= 0 Then
+          UnitTab[U].C := CoerceUnit(UnitTab[U].C, MD_INT, STR_MEEK);
+        If UnitTab[U].D >= 0 Then
+          UnitTab[U].D := ModesSerial(UnitTab[U].D, MD_BOOL);
+        UnitTab[U].E := ModesSerial(UnitTab[U].E, MD_VOID);
+        UnitTab[U].Mode := MD_VOID;
       End;
   End;
   M := UnitTab[U].Mode;
@@ -4618,7 +4715,9 @@ Begin
                    (T.Val = 'UNION')
   Else If T.Kind = TK_PUNCT Then
     AtDeclStart := T.Val = '['
-  Else If (T.Kind = TK_BOLD) Or (T.Kind = TK_TAG) Then
+  Else If T.Kind = TK_BOLD Then
+    AtDeclStart := (N.Kind = TK_TAG) And Not SymOpExists(T.Val, 1)
+  Else If T.Kind = TK_TAG Then
     AtDeclStart := N.Kind = TK_TAG;
 End;
 
@@ -4810,7 +4909,9 @@ Begin
     End
     Else If (Depth = 0) And (AtPunct(';') Or AtSerialEnd Or
             (((Stops And 1) <> 0) And AtPunct(',')) Or
-            (((Stops And 2) <> 0) And AtPunct(':'))) Then
+            (((Stops And 2) <> 0) And AtPunct(':')) Or
+            (((Stops And 4) <> 0) And (AtKw('BY') Or AtKw('TO') Or
+             AtKw('DOWNTO') Or AtKw('WHILE')))) Then
       Done := True
     Else
     Begin
@@ -4861,7 +4962,9 @@ Begin
                   (T.Val = 'FI') Or (T.Val = 'ESAC') Or (T.Val = 'OD') Or
                   (T.Val = 'ELSE') Or (T.Val = 'ELIF') Or
                   (T.Val = 'OUT') Or (T.Val = 'OUSE') Or
-                  (T.Val = 'THEN') Or (T.Val = 'IN') Or (T.Val = 'DO')));
+                  (T.Val = 'THEN') Or (T.Val = 'IN') Or (T.Val = 'DO') Or
+                  (T.Val = 'BY') Or (T.Val = 'TO') Or (T.Val = 'DOWNTO') Or
+                  (T.Val = 'WHILE') Or (T.Val = 'FROM')));
 End;
 
 { Denotation seule (eventuellement precedee de - ou +) : retourne son
@@ -5921,6 +6024,467 @@ Begin
   ParseConstruct := U;
 End;
 
+{ ---- Clauses conditionnelles et repetitives (TODO 12) ---- }
+
+{ Derniere unite (hors declaration et etiquette) d'une chaine }
+Function LastValueUnit(First : LongInt) : LongInt;
+Var
+  P : LongInt;
+Begin
+  LastValueUnit := -1;
+  P := First;
+  While P >= 0 Do
+  Begin
+    If Not (UnitTab[P].Kind In [UK_LABELDEF, UK_VARDECL, UK_IDDECL,
+                                UK_MODEDECL, UK_PRIODECL, UK_DECL]) Then
+      LastValueUnit := P;
+    P := UnitTab[P].Next;
+  End;
+End;
+
+{ Mode naturel d'une clause serie : celui de sa derniere unite }
+Function SerialMode(First : LongInt) : Integer;
+Var
+  L : LongInt;
+Begin
+  L := LastValueUnit(First);
+  If L < 0 Then
+    SerialMode := MD_VOID
+  Else
+    SerialMode := NatMode(L);
+End;
+
+{ Mode equilibre de deux modes naturels, inconnu si l un l'est }
+Function BalanceKnown(A, B : Integer) : Integer;
+Begin
+  If (A = MD_ERROR) Or (B = MD_ERROR) Then
+    BalanceKnown := MD_ERROR
+  Else
+    BalanceKnown := ModeBalance(A, B);
+End;
+
+{ La parenthese courante ouvre-t-elle une forme abregee ( c | a | b ) ? }
+Function ParenIsBrief : Boolean;
+Var
+  K     : LongInt;
+  Depth : Integer;
+  T     : TToken;
+  Bar   : Boolean;
+Begin
+  Bar := False;
+  Depth := 0;
+  K := TokPos;
+  While K < TokCount Do
+  Begin
+    T := TokTab[K];
+    If T.Kind = TK_EOF Then
+      K := TokCount
+    Else
+    Begin
+      If TokDepth(T) > 0 Then
+        Inc(Depth)
+      Else If TokDepth(T) < 0 Then
+        Dec(Depth)
+      Else If (Depth = 1) And (T.Kind = TK_PUNCT) And
+              ((T.Val = '|') Or (T.Val = '|:')) Then
+        Bar := True;
+      If Depth <= 0 Then K := TokCount Else Inc(K);
+    End;
+  End;
+  ParenIsBrief := Bar;
+End;
+
+{ Le CASE courant (jeton CASE ou OUSE) est-il une clause de conformite
+  ((INT i) : unite) ? Les clauses de conformite sont analysees au TODO 18 }
+Function CaseIsConformity : Boolean;
+Var
+  Save, After : LongInt;
+  Res         : Boolean;
+  Depth       : Integer;
+  K           : LongInt;
+Begin
+  Res := False;
+  K := TokPos;
+  Depth := 0;
+  { cherche le IN de cette clause (a profondeur nulle) }
+  While (K < TokCount - 1) And Not Res Do
+  Begin
+    Inc(K);
+    If TokDepth(TokTab[K]) > 0 Then Inc(Depth)
+    Else If TokDepth(TokTab[K]) < 0 Then Dec(Depth);
+    If (Depth = 0) And (TokTab[K].Kind = TK_KEYWORD) And
+       (TokTab[K].Val = 'IN') Then
+    Begin
+      If (TokTab[K + 1].Kind = TK_PUNCT) And (TokTab[K + 1].Val = '(') Then
+      Begin
+        Save := TokPos;
+        TokPos := K + 1;
+        After := TokAfterClose;
+        TokPos := Save;
+        Res := (TokTab[After].Kind = TK_PUNCT) And
+               (TokTab[After].Val = ':');
+      End;
+      K := TokCount;
+    End;
+  End;
+  CaseIsConformity := Res;
+End;
+
+Function ParseCaseTail(U : LongInt; Brief : Boolean) : LongInt; Forward;
+
+{ Reste d'une clause IF apres le IF (ou ELIF) deja consomme : condition,
+  THEN, partie alors, puis ELIF, ELSE ou FI ; la forme abregee utilise
+  | et |: }
+Function ParseIfTail(Brief : Boolean) : LongInt;
+Var
+  U, Inner : LongInt;
+  M1, M2   : Integer;
+  Last     : LongInt;
+Begin
+  U := UnitNew(UK_IF, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  UnitTab[U].Scope := ScopeEnter(SCK_CHOICE);
+  UnitTab[U].A := ParseSerial(False);
+  If Brief Then
+  Begin
+    If AtPunct('|') Then
+      ParserAdvance
+    Else
+      ParseError('''|'' attendu apres la condition');
+  End
+  Else
+  Begin
+    If AtKw('THEN') Then
+      ParserAdvance
+    Else
+      ParseError('THEN attendu apres la condition');
+  End;
+  UnitTab[U].B := ParseSerial(False);
+  ScopeLeave;
+  UnitTab[U].C := -1;
+  If (Not Brief) And AtKw('ELIF') Then
+  Begin
+    ParserAdvance;
+    Inner := ParseIfTail(False);
+    UnitTab[U].C := Inner;
+  End
+  Else If Brief And AtPunct('|:') Then
+  Begin
+    ParserAdvance;
+    Inner := ParseIfTail(True);
+    UnitTab[U].C := Inner;
+  End
+  Else If (Not Brief) And AtKw('ELSE') Then
+  Begin
+    ParserAdvance;
+    ScopeEnter(SCK_CHOICE);
+    UnitTab[U].C := ParseSerial(False);
+    ScopeLeave;
+  End
+  Else If Brief And AtPunct('|') Then
+  Begin
+    ParserAdvance;
+    ScopeEnter(SCK_CHOICE);
+    UnitTab[U].C := ParseSerial(False);
+    ScopeLeave;
+  End;
+  { mode naturel : equilibre des deux branches ; VOID sans ELSE }
+  M1 := SerialMode(UnitTab[U].B);
+  If UnitTab[U].C < 0 Then
+    M2 := MD_VOID
+  Else If UnitTab[UnitTab[U].C].Kind = UK_IF Then
+    M2 := UnitTab[UnitTab[U].C].Mode
+  Else
+    M2 := SerialMode(UnitTab[U].C);
+  UnitTab[U].Mode := BalanceKnown(M1, M2);
+  Last := U;
+  ParseIfTail := Last;
+End;
+
+Function ParseIf : LongInt;
+Var
+  U : LongInt;
+Begin
+  ParserAdvance;                             { IF }
+  U := ParseIfTail(False);
+  If AtKw('FI') Then
+    ParserAdvance
+  Else
+    ParseError('FI attendu');
+  Inc(ClauseCount);
+  ParseIf := U;
+End;
+
+{ CASE selecteur IN unites separees par des virgules OUT serie ESAC ;
+  forme abregee ( selecteur | unites | defaut ) }
+Function ParseCaseTail(U : LongInt; Brief : Boolean) : LongInt;
+Var
+  First, Last, A, Inner : LongInt;
+  Count                 : Integer;
+  M, MB                 : Integer;
+  More                  : Boolean;
+Begin
+  UnitTab[U].Scope := ScopeEnter(SCK_CHOICE);
+  UnitTab[U].A := ParseSerial(False);
+  If Brief Then
+  Begin
+    If AtPunct('|') Then
+      ParserAdvance
+    Else
+      ParseError('''|'' attendu apres le selecteur');
+  End
+  Else
+  Begin
+    If AtKw('IN') Then
+      ParserAdvance
+    Else
+      ParseError('IN attendu apres le selecteur');
+  End;
+  First := -1;
+  Last := -1;
+  Count := 0;
+  Repeat
+    More := False;
+    A := ParseUnitX(1);
+    UnitTab[A].Next := -1;
+    If First < 0 Then First := A Else UnitTab[Last].Next := A;
+    Last := A;
+    Inc(Count);
+    If AtPunct(',') Then
+    Begin
+      ParserAdvance;
+      More := True;
+    End;
+  Until (Not More) Or AtEOF;
+  UnitTab[U].B := First;
+  UnitTab[U].IntVal := Count;
+  ScopeLeave;
+  UnitTab[U].C := -1;
+  If (Not Brief) And AtKw('OUSE') Then
+  Begin
+    ParserAdvance;
+    Inner := UnitNew(UK_CASE, TokTab[TokPos].Line, TokTab[TokPos].Col);
+    UnitTab[U].C := ParseCaseTail(Inner, False);
+  End
+  Else If Brief And AtPunct('|:') Then
+  Begin
+    ParserAdvance;
+    Inner := UnitNew(UK_CASE, TokTab[TokPos].Line, TokTab[TokPos].Col);
+    UnitTab[U].C := ParseCaseTail(Inner, True);
+  End
+  Else If (Not Brief) And AtKw('OUT') Then
+  Begin
+    ParserAdvance;
+    ScopeEnter(SCK_CHOICE);
+    UnitTab[U].C := ParseSerial(False);
+    ScopeLeave;
+  End
+  Else If Brief And AtPunct('|') Then
+  Begin
+    ParserAdvance;
+    ScopeEnter(SCK_CHOICE);
+    UnitTab[U].C := ParseSerial(False);
+    ScopeLeave;
+  End;
+  { mode naturel : equilibre des alternatives et de la partie OUT ;
+    VOID s'il n'y a pas de partie OUT }
+  M := NatMode(First);
+  A := First;
+  While A >= 0 Do
+  Begin
+    M := BalanceKnown(M, NatMode(A));
+    A := UnitTab[A].Next;
+  End;
+  If UnitTab[U].C < 0 Then
+    MB := MD_VOID
+  Else If UnitTab[UnitTab[U].C].Kind = UK_CASE Then
+    MB := UnitTab[UnitTab[U].C].Mode
+  Else
+    MB := SerialMode(UnitTab[U].C);
+  UnitTab[U].Mode := BalanceKnown(M, MB);
+  ParseCaseTail := U;
+End;
+
+Function ParseCase : LongInt;
+Var
+  U : LongInt;
+Begin
+  If CaseIsConformity Then
+  Begin
+    ParseCase := -1;                         { TODO 18 }
+    Exit;
+  End;
+  U := UnitNew(UK_CASE, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  ParserAdvance;                             { CASE }
+  ParseCaseTail(U, False);
+  If AtKw('ESAC') Then
+    ParserAdvance
+  Else
+    ParseError('ESAC attendu');
+  Inc(ClauseCount);
+  ParseCase := U;
+End;
+
+{ ( condition | alors | sinon ) ou ( selecteur | unites | defaut ) : un
+  identificateur seul en tete dont le mode est INT designe un CASE, un
+  mode BOOL un IF ; sinon, une virgule dans la suite designe un CASE }
+Function ParseBrief : LongInt;
+Var
+  K      : LongInt;
+  Depth  : Integer;
+  Commas : Boolean;
+  IsCase : Boolean;
+  U      : LongInt;
+  S      : Integer;
+Begin
+  Commas := False;
+  K := TokPos;
+  Depth := 0;
+  While K < TokCount - 1 Do
+  Begin
+    If TokDepth(TokTab[K]) > 0 Then Inc(Depth)
+    Else If TokDepth(TokTab[K]) < 0 Then Dec(Depth);
+    If (Depth = 1) And (TokTab[K].Kind = TK_PUNCT) And
+       (TokTab[K].Val = ',') Then
+      Commas := True;
+    Inc(K);
+    If Depth <= 0 Then K := TokCount;
+  End;
+  IsCase := Commas;
+  If (TokAt(1).Kind = TK_TAG) And (TokAt(2).Kind = TK_PUNCT) And
+     (TokAt(2).Val = '|') Then
+  Begin
+    S := SymFindIdent(TokAt(1).Val);
+    If (S >= 0) And (SymTab[S].Mode <> MD_ERROR) Then
+      IsCase := ModeKind(ModeDeref(SymTab[S].Mode)) = MK_INT;
+  End;
+  ParserAdvance;                             { ( }
+  If IsCase Then
+  Begin
+    U := UnitNew(UK_CASE, TokTab[TokPos].Line, TokTab[TokPos].Col);
+    ParseCaseTail(U, True);
+  End
+  Else
+    U := ParseIfTail(True);
+  If AtPunct(')') Then
+    ParserAdvance
+  Else
+    ParseError(''')'' attendu pour fermer la forme abregee');
+  Inc(ClauseCount);
+  ParseBrief := U;
+End;
+
+{ Indice du jeton qui suit la clause repetitive courante : apres le
+  OD qui ferme son DO ; TokCount - 1 si elle n est pas fermee }
+Function TokAfterLoop : LongInt;
+Var
+  K     : LongInt;
+  Depth : Integer;
+  InBody: Boolean;
+Begin
+  K := TokPos;
+  Depth := 0;
+  InBody := False;
+  While K < TokCount - 1 Do
+  Begin
+    If (Not InBody) And (Depth = 0) And (TokTab[K].Kind = TK_KEYWORD) And
+       (TokTab[K].Val = 'DO') Then
+    Begin
+      InBody := True;
+      Depth := 1;
+    End
+    Else If TokDepth(TokTab[K]) > 0 Then
+      Inc(Depth)
+    Else If TokDepth(TokTab[K]) < 0 Then
+    Begin
+      Dec(Depth);
+      If InBody And (Depth = 0) Then
+      Begin
+        TokAfterLoop := K + 1;
+        Exit;
+      End;
+    End;
+    Inc(K);
+  End;
+  TokAfterLoop := TokCount - 1;
+End;
+
+{ FOR i FROM a BY b TO c WHILE condition DO corps OD ; toutes les
+  parties sont facultatives sauf DO ... OD }
+Function ParseLoop : LongInt;
+Var
+  U     : LongInt;
+  Name  : TName;
+  L, C  : Integer;
+  S     : Integer;
+Begin
+  L := TokTab[TokPos].Line;
+  C := TokTab[TokPos].Col;
+  U := UnitNew(UK_LOOP, L, C);
+  UnitTab[U].Mode := MD_VOID;
+  Name := '';
+  If AtKw('FOR') Then
+  Begin
+    ParserAdvance;
+    If TokTab[TokPos].Kind = TK_TAG Then
+    Begin
+      Name := TokTab[TokPos].Val;
+      ParserAdvance;
+    End
+    Else
+      ParseError('nom de variable de controle attendu apres FOR');
+  End;
+  { bornes evaluees dans la portee exterieure ; FROM, BY et TO (ou
+    DOWNTO) sont acceptes dans un ordre quelconque }
+  While AtKw('FROM') Or AtKw('BY') Or AtKw('TO') Or AtKw('DOWNTO') Do
+  Begin
+    If AtKw('FROM') Then
+    Begin
+      ParserAdvance;
+      UnitTab[U].A := ParseUnitX(4);
+    End
+    Else If AtKw('BY') Then
+    Begin
+      ParserAdvance;
+      UnitTab[U].B := ParseUnitX(4);
+    End
+    Else
+    Begin
+      If AtKw('DOWNTO') Then UnitTab[U].IntVal := 1;
+      ParserAdvance;
+      UnitTab[U].C := ParseUnitX(4);
+    End;
+  End;
+  UnitTab[U].Scope := ScopeEnter(SCK_LOOP);
+  If Name <> '' Then
+  Begin
+    S := SymDeclare(Name, SK_IDENT, MD_INT, L, C);
+    DeclareStorage(S, MD_INT, L, C);
+    SymTab[S].Used := True;
+    UnitTab[U].Sym := S;
+    UnitTab[U].Name := Name;
+  End;
+  UnitTab[U].D := -1;
+  If AtKw('WHILE') Then
+  Begin
+    ParserAdvance;
+    UnitTab[U].D := ParseSerial(False);
+    UnitTab[U].IntVal := UnitTab[U].IntVal Or 2;
+  End;
+  If AtKw('DO') Then
+    ParserAdvance
+  Else
+    ParseError('DO attendu');
+  UnitTab[U].E := ParseSerial(False);
+  If AtKw('OD') Then
+    ParserAdvance
+  Else
+    ParseError('OD attendu (clause repetitive ouverte ligne ' + ItoS(L) +
+               ', colonne ' + ItoS(C) + ')');
+  ScopeLeave;
+  Inc(ClauseCount);
+  ParseLoop := U;
+End;
+
 { Unite primaire : denotation, identificateur, clause fermee, selection,
   tranche, appel, constructeur. Retourne -1 (sans rien consommer) si ce
   n est pas une primaire connue a ce stade (formules, conditionnelles,
@@ -5941,6 +6505,16 @@ Begin
       Begin
         If AtKw('BEGIN') And ClauseFollowOk(TokAfterClose) Then
           U := ParseClosed
+        Else If (AtKw('IF') Or AtKw('CASE')) And
+                ClauseFollowOk(TokAfterClose) Then
+        Begin
+          If AtKw('IF') Then U := ParseIf Else U := ParseCase;
+          If U < 0 Then Exit;
+        End
+        Else If (AtKw('FOR') Or AtKw('FROM') Or AtKw('WHILE') Or
+                 AtKw('TO') Or AtKw('DOWNTO') Or AtKw('BY') Or
+                 AtKw('DO')) And ClauseFollowOk(TokAfterLoop) Then
+          U := ParseLoop
         Else If (AtKw('INT') Or AtKw('REAL') Or AtKw('BOOL') Or
                  AtKw('CHAR') Or AtKw('STRING') Or AtKw('BITS')) And
                 (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
@@ -5953,6 +6527,9 @@ Begin
         If AtPunct('(') And ParenIsClosed And
            ClauseFollowOk(TokAfterClose) Then
           U := ParseClosed
+        Else If AtPunct('(') And ParenIsBrief And
+                ClauseFollowOk(TokAfterClose) Then
+          U := ParseBrief
         Else
           Exit;
       End;
@@ -6705,6 +7282,9 @@ Begin
     UK_CONSTRUCT: UnitKindName := 'constructeur';
     UK_CAST     : UnitKindName := 'conversion';
     UK_FORMULA  : UnitKindName := 'formule';
+    UK_IF       : UnitKindName := 'IF';
+    UK_CASE     : UnitKindName := 'CASE';
+    UK_LOOP     : UnitKindName := 'boucle';
     UK_INTDEN   : UnitKindName := 'denotation INT';
     UK_REALDEN  : UnitKindName := 'denotation REAL';
     UK_BOOLDEN  : UnitKindName := 'denotation BOOL';
@@ -6756,6 +7336,7 @@ Begin
     UK_SLICE   : Write(' ', UnitTab[U].IntVal, ' indice(s), ',
                        UnitTab[U].C, ' tranche(s) : ',
                        ModeName(UnitTab[U].Mode));
+    UK_LOOP    : Write(' ', UnitTab[U].Name);
     UK_FORMULA : Write(' ', UnitTab[U].Name, ' : ',
                        ModeName(UnitTab[U].Mode));
     UK_CALL    : Write(' ', UnitTab[U].IntVal, ' argument(s) : ',
@@ -6801,6 +7382,20 @@ Begin
     UnitDump(UnitTab[U].A, Depth + 1)
   Else If UnitTab[U].Kind In [UK_COERCE, UK_SELECT, UK_CAST] Then
     UnitDumpOne(UnitTab[U].A, Depth + 1)
+  Else If UnitTab[U].Kind In [UK_IF, UK_CASE] Then
+  Begin
+    UnitDump(UnitTab[U].A, Depth + 1);
+    UnitDump(UnitTab[U].B, Depth + 1);
+    If UnitTab[U].C >= 0 Then UnitDump(UnitTab[U].C, Depth + 1);
+  End
+  Else If UnitTab[U].Kind = UK_LOOP Then
+  Begin
+    If UnitTab[U].A >= 0 Then UnitDumpOne(UnitTab[U].A, Depth + 1);
+    If UnitTab[U].B >= 0 Then UnitDumpOne(UnitTab[U].B, Depth + 1);
+    If UnitTab[U].C >= 0 Then UnitDumpOne(UnitTab[U].C, Depth + 1);
+    If UnitTab[U].D >= 0 Then UnitDump(UnitTab[U].D, Depth + 1);
+    UnitDump(UnitTab[U].E, Depth + 1);
+  End
   Else If UnitTab[U].Kind = UK_FORMULA Then
   Begin
     UnitDumpOne(UnitTab[U].A, Depth + 1);
@@ -6950,6 +7545,7 @@ Begin
 End;
 
 Procedure GenUnit(U : LongInt); Forward;
+Procedure GenOne(U : LongInt); Forward;
 
 { Operande memoire de l objet d un symbole (segment de donnees ou
   cadre) a Disp octets de son debut }
@@ -7444,6 +8040,177 @@ Begin
   If Res = MD_VOID Then ;
 End;
 
+{ Une clause serie : les unites sont generees dans l ordre, la derniere
+  laisse sa valeur (EAX, ST(0) ou adresse dans EAX) }
+Procedure GenSerialValue(First : LongInt);
+Var
+  P, Last : LongInt;
+Begin
+  Last := LastValueUnit(First);
+  P := First;
+  While P >= 0 Do
+  Begin
+    If P = Last Then GenValue(P) Else GenOne(P);
+    P := UnitTab[P].Next;
+  End;
+End;
+
+Procedure GenIf(U : LongInt);
+Var
+  LElse, LEnd : Integer;
+Begin
+  LElse := NewLabel;
+  LEnd := NewLabel;
+  GenSerialValue(UnitTab[U].A);
+  Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+  If UnitTab[U].C < 0 Then
+    Emit1(OP_JE, OpLabel(LEnd))
+  Else
+    Emit1(OP_JE, OpLabel(LElse));
+  GenSerialValue(UnitTab[U].B);
+  If UnitTab[U].C >= 0 Then
+  Begin
+    Emit1(OP_JMP, OpLabel(LEnd));
+    EmitLabel(LElse);
+    If UnitTab[UnitTab[U].C].Kind In [UK_IF, UK_CASE] Then
+      GenValue(UnitTab[U].C)
+    Else
+      GenSerialValue(UnitTab[U].C);
+  End;
+  EmitLabel(LEnd);
+End;
+
+Procedure GenCase(U : LongInt);
+Var
+  Labels      : Array[1..128] Of Integer;
+  K, N        : Integer;
+  LOut, LEnd  : Integer;
+  A           : LongInt;
+Begin
+  N := UnitTab[U].IntVal;
+  If N > 128 Then
+  Begin
+    FatalError('CASE avec plus de 128 alternatives');
+    Exit;
+  End;
+  For K := 1 To N Do
+    Labels[K] := NewLabel;
+  LOut := NewLabel;
+  LEnd := NewLabel;
+  GenSerialValue(UnitTab[U].A);
+  For K := 1 To N Do
+  Begin
+    Emit(OP_CMP, OpReg(R_EAX), OpImm(K));
+    Emit1(OP_JE, OpLabel(Labels[K]));
+  End;
+  Emit1(OP_JMP, OpLabel(LOut));
+  A := UnitTab[U].B;
+  K := 1;
+  While A >= 0 Do
+  Begin
+    EmitLabel(Labels[K]);
+    GenValue(A);
+    Emit1(OP_JMP, OpLabel(LEnd));
+    A := UnitTab[A].Next;
+    Inc(K);
+  End;
+  EmitLabel(LOut);
+  If UnitTab[U].C >= 0 Then
+  Begin
+    If UnitTab[UnitTab[U].C].Kind In [UK_IF, UK_CASE] Then
+      GenValue(UnitTab[U].C)
+    Else
+      GenSerialValue(UnitTab[U].C);
+  End;
+  EmitLabel(LEnd);
+End;
+
+{ FOR i FROM a BY b TO c WHILE cond DO corps OD : les bornes et le pas
+  sont evalues une fois, dans des cellules temporaires }
+Procedure GenLoop(U : LongInt);
+Var
+  Ctr, Lim, Stp         : Integer;
+  LTop, LBody, LExit, LNeg : Integer;
+  S                     : Integer;
+  CtrOp                 : TOperand;
+  Down                  : Boolean;
+  StepKnown, StepNeg    : Boolean;
+  B                     : LongInt;
+Begin
+  S := UnitTab[U].Sym;
+  Down := (UnitTab[U].IntVal And 1) <> 0;
+  B := UnitTab[U].B;
+  Lim := -1;
+  Stp := NewTemp(4);
+  If S >= 0 Then
+    CtrOp := SymCell(S, 0, 4)
+  Else
+  Begin
+    Ctr := NewTemp(4);
+    CtrOp := OpMemSym(Ctr, 0, 4);
+  End;
+  If UnitTab[U].A >= 0 Then
+    GenValue(UnitTab[U].A)
+  Else
+    Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+  Emit(OP_MOV, CtrOp, OpReg(R_EAX));
+  If UnitTab[U].C >= 0 Then
+  Begin
+    Lim := NewTemp(4);
+    GenValue(UnitTab[U].C);
+    Emit(OP_MOV, OpMemSym(Lim, 0, 4), OpReg(R_EAX));
+  End;
+  If B >= 0 Then
+    GenValue(B)
+  Else
+    Emit(OP_MOV, OpReg(R_EAX), OpImm(1));
+  If Down Then Emit1(OP_NEG, OpReg(R_EAX));
+  Emit(OP_MOV, OpMemSym(Stp, 0, 4), OpReg(R_EAX));
+  { signe du pas connu a la compilation s il est constant }
+  StepKnown := (B < 0) Or (UnitTab[B].Kind = UK_INTDEN);
+  StepNeg := Down;
+  If (B >= 0) And (UnitTab[B].Kind = UK_INTDEN) Then
+    StepNeg := (UnitTab[B].IntVal < 0) <> Down;
+  LTop := NewLabel;
+  LBody := NewLabel;
+  LExit := NewLabel;
+  LNeg := NewLabel;
+  EmitLabel(LTop);
+  If Lim >= 0 Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EAX), CtrOp);
+    If StepKnown Then
+    Begin
+      Emit(OP_CMP, OpReg(R_EAX), OpMemSym(Lim, 0, 4));
+      If StepNeg Then Emit1(OP_JL, OpLabel(LExit))
+      Else Emit1(OP_JG, OpLabel(LExit));
+    End
+    Else
+    Begin
+      Emit(OP_CMP, OpMemSym(Stp, 0, 4), OpImm(0));
+      Emit1(OP_JL, OpLabel(LNeg));
+      Emit(OP_CMP, OpReg(R_EAX), OpMemSym(Lim, 0, 4));
+      Emit1(OP_JG, OpLabel(LExit));
+      Emit1(OP_JMP, OpLabel(LBody));
+      EmitLabel(LNeg);
+      Emit(OP_CMP, OpReg(R_EAX), OpMemSym(Lim, 0, 4));
+      Emit1(OP_JL, OpLabel(LExit));
+      EmitLabel(LBody);
+    End;
+  End;
+  If UnitTab[U].D >= 0 Then
+  Begin
+    GenSerialValue(UnitTab[U].D);
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JE, OpLabel(LExit));
+  End;
+  GenUnit(UnitTab[U].E);
+  Emit(OP_MOV, OpReg(R_EAX), OpMemSym(Stp, 0, 4));
+  Emit(OP_ADD, CtrOp, OpReg(R_EAX));
+  Emit1(OP_JMP, OpLabel(LTop));
+  EmitLabel(LExit);
+End;
+
 { Valeur d une unite : mot dans EAX, reel dans ST(0), ou adresse dans
   EAX pour les objets en memoire ; une variable (mode REF m) a pour
   valeur son adresse }
@@ -7465,6 +8232,8 @@ Begin
     UK_NIL, UK_EMPTY:
       Emit(OP_MOV, OpReg(R_EAX), OpImm(0));
     UK_SKIP: ;
+    UK_GOTO, UK_LABELDEF:
+      GenOne(U);
     UK_IDENT:
       Begin
         S := UnitTab[U].Sym;
@@ -7494,6 +8263,9 @@ Begin
       Else
         GenMonadic(U);
     UK_SELECT    : GenSelect(U);
+    UK_IF        : GenIf(U);
+    UK_CASE      : GenCase(U);
+    UK_LOOP      : GenLoop(U);
     UK_CONSTRUCT : GenConstruct(U);
     UK_CLOSED:
       GenUnit(UnitTab[U].A);
@@ -7565,7 +8337,7 @@ Begin
     UK_SERIAL  : GenUnit(UnitTab[U].A);
     UK_CLOSED  : GenUnit(UnitTab[U].A);
     UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
-    UK_CAST, UK_FORMULA : GenValue(U);
+    UK_CAST, UK_FORMULA, UK_IF, UK_CASE, UK_LOOP : GenValue(U);
     UK_LABELDEF:
       If UnitTab[U].Sym >= 0 Then
         EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
