@@ -1,0 +1,45 @@
+# nom|programme|E ou W|ligne,colonne|debut du message du premier diagnostic
+lex1|BEGIN INT x := 3 @ 4 END|E|1,18|caractere invalide: @
+lex2|BEGIN STRING s := "abc END|E|1,19|chaine non fermee
+lex3|BEGIN CO commentaire non ferme END|E|1,7|commentaire non termine (CO attendu)
+lex4|BEGIN INT x := 99999999999 END|E|1,16|entier hors limites: 99999999999
+lex5|BEGIN REAL x := 1.5e END|E|1,20|exposant incomplet apres 1.5
+lex6|BEGIN CHAR c := "ab"; INT y := 1 END|E|1,17|coercition impossible: STRING vers CHAR
+syn1|BEGIN INT x := 1|E|2,1|'END' attendu
+syn2|BEGIN IF TRUE THEN SKIP END|E|1,25|FI attendu
+syn3|BEGIN WHILE TRUE DO SKIP END|E|1,26|OD attendu (clause repetitive ouverte ligne 1, colonne 7)
+syn4|BEGIN CASE 1 IN SKIP END|E|1,22|ESAC attendu
+syn5|BEGIN INT x := (1 + 2 END|E|1,23|')' attendu (parenthese ouverte ligne 1, colonne 16)
+syn6|BEGIN INT x := 1 INT y := 2 END|E|1,18|expression incorrecte ou incomplete
+syn7|BEGIN INT x := 1; ) END|E|1,19|'END' attendu
+syn8|BEGIN [1:3] INT a; a[1 := 2 END|E|1,24|le membre gauche d'une affectation doit etre un nom (REF), pas INT
+syn9|BEGIN FOR i FROM 1 TO 3 DO SKIP; END|E|1,34|OD attendu (clause repetitive ouverte ligne 1, colonne 7)
+syn10|BEGIN THEN SKIP END|E|1,7|'END' attendu
+syn11|BEGIN IF TRUE THEN 1 ELSE 2 FI; OD END|E|1,33|'END' attendu
+mod1|BEGIN INT x := TRUE END|E|1,16|coercition impossible: BOOL vers INT
+mod2|BEGIN INT x := y + 1 END|E|1,16|identificateur non declare: y
+mod3|BEGIN INT x := 1; INT x := 2 END|E|1,23|declaration en double: x
+mod4|BEGIN INT x := 1; INT y := x OF x END|E|1,28|selection sur un mode qui n'est pas une structure: REF INT
+mod5|BEGIN INT x := 1; INT y := x[1] END|E|1,29|indice sur un mode qui n'est pas un tableau: REF INT
+mod6|BEGIN PROC f = (INT a) INT : a; INT y := f(1, 2) END|E|1,43|appel avec 2 argument(s) au lieu de 1
+mod7|BEGIN INT y := 1 FOO 2 END|E|1,18|expression incorrecte ou incomplete
+mod8|BEGIN INT y := 10 OVER 0 END|E|1,19|division par zero
+mod9|BEGIN INT x = 3; x := 4 END|E|1,20|le membre gauche d'une affectation doit etre un nom (REF), pas INT
+mod10|BEGIN INT x := 3; x(2) END|E|1,20|expression incorrecte ou incomplete
+mod11|BEGIN MODE U = UNION(INT, REAL); U u := 1; CASE u IN (BOOL b) : 1 ESAC END|E|1,54|BOOL n'est pas une alternative de UNION(INT, REAL)
+mod12|BEGIN REAL r := 1.5; INT i := r END|E|1,31|coercition impossible: REF REAL vers INT
+mod13|BEGIN GOTO nowhere END|E|1,7|etiquette non definie: nowhere
+mod14|BEGIN BOOL b := 1 < 2 < 3 END|E|1,23|operateur < impossible pour les modes BOOL et INT
+mod15|BEGIN STRING s := 5 END|E|1,19|coercition impossible: INT vers STRING
+mod16|BEGIN print((1 +)) END|E|1,17|expression incorrecte ou incomplete
+mod17|BEGIN INT i := NIL END|E|1,16|coercition impossible: NIL vers INT
+mod18|BEGIN MODE P = STRUCT(INT a); P p := P(1, 2) END|E|1,38|constructeur de P avec 2 valeur(s) au lieu de 1
+mod19|BEGIN [1:3] INT a := (1, 2) END|E|1,22|affichage de 2 element(s) pour un tableau de 3
+mod20|BEGIN INT i := 1; i := i := END|E|1,29|expression incorrecte ou incomplete
+mod21|BEGIN FOO BAR END|E|1,7|expression incorrecte ou incomplete
+mod22|BEGIN INT i := LWB 5 END|E|1,16|operateur monadique LWB impossible pour le mode INT
+warn1|BEGIN lab: SKIP END|W|1,7|etiquette non utilisee: lab
+warn2|BEGIN OP ADDX = (INT a, INT b) INT : a + b; INT r := 1 ADDX 2 END|W|1,10|operateur ADDX sans PRIO : priorite 1 par defaut
+warn3|BEGIN INT u; INT v := u + 1 END|W|1,23|variable u lue avant toute affectation
+warn4|BEGIN REAL r := 3; INT i := 2; REAL q := i END|W|1,42|conversion implicite de INT en REAL
+warn5|BEGIN PAR (SKIP, SKIP) END|W|1,7|PAR : unites elaborees sequentiellement, sans processus paralleles

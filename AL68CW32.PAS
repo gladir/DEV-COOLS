@@ -34,14 +34,14 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 22 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 23 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
          affectations, tableaux, procedures, operateurs, unions,
-         transput, encodeur x86-32, ecrivains PE et COFF, runtime) ;
-         TODO 23 a 25 a faire.
+         transput, encodeur x86-32, ecrivains PE et COFF, runtime,
+         erreurs et avertissements) ; TODO 24 et 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -1140,7 +1140,7 @@
               programme principal et les options (TODO 24), la validation
               complete (TODO 25)
 
-  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [A FAIRE]
+  TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [IMPLEMENTE]
             Erreurs lexicales : caractere invalide, chaine ou
               commentaire non ferme, entier hors limites
             Erreurs syntaxiques : unite inattendue, END FI OD ESAC
@@ -1162,6 +1162,37 @@
               de sortie corrompu ou partiel (les fichiers crees sont
               supprimes sur erreur fatale)
             Exemples : programmes fautifs du script de test
+            Realise : la plupart des diagnostics existaient deja (lexeur,
+              parseur, modes) ; ajouts : toute unite que l'analyse ne
+              reconnait pas est maintenant une erreur au jeton ou elle
+              s'arrete ( INT x := 1 INT y := 2, 1 FOO 2, x(2),
+              print((1 +)) ) au lieu d'etre ignoree en silence ; erreur
+              lexicale "exposant incomplet" (1.5e) ; une seule erreur
+              par position (plus de cascade "END attendu" puis
+              "fermeture sans ouverture" au meme endroit) ; avertissements
+              (option -w) : variable scalaire sans initialiseur lue avant
+              sa premiere affectation dans l'ordre du texte (affectation,
+              +:= et autres, read, argument d'un parametre REF), conversion
+              implicite de INT en REAL, en plus de l'etiquette inutilisee,
+              de la PRIO absente et de PAR ; PhaseReport : "Compilation
+              echouee : n erreur(s), m avertissement(s)" ou, avec des
+              avertissements ou -v, "Compilation terminee : 0 erreur, m
+              avertissement(s)" ; apres une erreur seules les phases
+              d'analyse tournent : aucun .EXE, .OBJ ni .ASM n'est ecrit, et
+              les fichiers deja crees sont supprimes sur erreur fatale ou
+              apres 30 erreurs
+            Verifie : TESTS/AL68CW32/chkerr.sh : 44 programmes fautifs
+              (errors.txt : erreurs lexicales, syntaxiques et de modes,
+              avertissements) dont le premier diagnostic a la nature, la
+              position et le message attendus, code de retour 1 (0 pour les
+              avertissements), aucun fichier de sortie apres une erreur,
+              rapport final ; fuzz.py : 3 400 mutations des exemples (jeton
+              supprime, double, echange ou parasite) sans arret anormal ni
+              boucle ; les 27 exemples ne produisent aucune erreur
+            Limites : pas de recuperation fine apres une erreur de
+              declaration (les erreurs en cascade sont possibles) ; la
+              detection des variables non initialisees suit l'ordre du
+              texte, pas le flot d'execution
 
   TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [A FAIRE]
             Run : lexeur -> parseur -> modes et coercitions ->
@@ -1418,6 +1449,10 @@ Type
     Used      : Boolean;
     Intrinsic : Boolean;       { realise en ligne par le generateur   }
     Generic   : Boolean;       { operande : tout tableau (LWB, UPB)   }
+    NoInit    : Boolean;       { variable scalaire sans initialiseur   }
+    Warned    : Boolean;       { avertissement deja emis               }
+    AsgLine   : Integer;       { premiere affectation (0 : aucune)     }
+    AsgCol    : Integer;
     Heap      : Boolean;       { variable HEAP : la cellule contient
                                  l adresse de l objet                 }
   End;
@@ -1541,6 +1576,7 @@ Type
 Var
   Opts       : TOptions;
   ErrorCount : Integer;   { erreurs de compilation signalees  }
+  LastErrLine, LastErrCol : Integer;   { derniere erreur signalee    }
   WarnCount  : Integer;   { avertissements signales           }
 
 { ============================================================
@@ -1781,6 +1817,11 @@ End;
   fichier(ligne,colonne) : erreur : message }
 Procedure ErrorAt(Line, Col : Integer; Const Msg : TString);
 Begin
+  { une seule erreur par position : evite les cascades }
+  If (ErrorCount > 0) And (Line = LastErrLine) And (Col = LastErrCol) Then
+    Exit;
+  LastErrLine := Line;
+  LastErrCol := Col;
   WriteLn(Opts.SrcFile, '(', Line, ',', Col, ') : erreur : ', Msg);
   Inc(ErrorCount);
   If ErrorCount >= MAX_ERRORS Then
@@ -2232,6 +2273,12 @@ Begin
     End;
     If ExpNeg Then ExpV := -ExpV;
     E10 := E10 + ExpV;
+  End
+  Else If LexCur In ['E', 'e'] Then
+  Begin
+    { exposant sans chiffres : 1.5e }
+    ErrorAt(LexLine, LexCol, 'exposant incomplet apres ' + T.Val);
+    LexNextChar;
   End;
 
   If IsReal Then
@@ -3377,6 +3424,10 @@ Begin
   SymTab[I].Intrinsic := False;
   SymTab[I].Generic   := False;
   SymTab[I].Heap      := False;
+  SymTab[I].NoInit    := False;
+  SymTab[I].Warned    := False;
+  SymTab[I].AsgLine   := 0;
+  SymTab[I].AsgCol    := 0;
   ScopeTab[ScopeCur].LastSym := I;
   SymNewRaw := I;
 End;
@@ -4732,11 +4783,52 @@ Begin
   End;
 End;
 
+{ Le nom de variable U (identificateur) est affecte a la position
+  (Line, Col) : premiere affectation connue }
+Procedure MarkAssigned(U : LongInt; Line, Col : Integer);
+Var
+  S : Integer;
+Begin
+  If (U < 0) Or (UnitTab[U].Kind <> UK_IDENT) Then Exit;
+  S := UnitTab[U].Sym;
+  If (S < 0) Or (SymTab[S].Kind <> SK_VAR) Then Exit;
+  If (SymTab[S].AsgLine = 0) Or (Line < SymTab[S].AsgLine) Or
+     ((Line = SymTab[S].AsgLine) And (Col < SymTab[S].AsgCol)) Then
+  Begin
+    SymTab[S].AsgLine := Line;
+    SymTab[S].AsgCol := Col;
+  End;
+End;
+
+{ Lecture d'une variable scalaire sans initialiseur avant sa premiere
+  affectation (dans l'ordre du texte) }
+Procedure WarnUninit(U : LongInt);
+Var
+  S : Integer;
+Begin
+  If UnitTab[U].Kind <> UK_IDENT Then Exit;
+  S := UnitTab[U].Sym;
+  If (S < 0) Or (SymTab[S].Kind <> SK_VAR) Or Not SymTab[S].NoInit Or
+     SymTab[S].Warned Then Exit;
+  If (SymTab[S].AsgLine = 0) Or (UnitTab[U].Line < SymTab[S].AsgLine) Or
+     ((UnitTab[U].Line = SymTab[S].AsgLine) And
+      (UnitTab[U].Col < SymTab[S].AsgCol)) Then
+  Begin
+    SymTab[S].Warned := True;
+    WarnAt(UnitTab[U].Line, UnitTab[U].Col, 'variable ' + SymTab[S].Name +
+           ' lue avant toute affectation');
+  End;
+End;
+
 Function CoerceWrap(U : LongInt; Kind : Integer; NewMode : Integer)
          : LongInt;
 Var
   N : LongInt;
 Begin
+  If (Kind = CO_DEREF) And Opts.Warnings Then WarnUninit(U);
+  If Kind = CO_WIDEN Then
+    WarnAt(UnitTab[U].Line, UnitTab[U].Col,
+           'conversion implicite de INT en REAL');
   N := UnitNew(UK_COERCE, UnitTab[U].Line, UnitTab[U].Col);
   UnitTab[N].A := U;
   UnitTab[N].IntVal := Kind;
@@ -6122,6 +6214,9 @@ Begin
       UnitTab[U].B := Bounds;
       UnitTab[U].C := Dims;
       If Heap Then UnitTab[U].IntVal := 1;
+      If IsVar And (Init < 0) And (Dims = 0) And Not Heap And
+         (ModeKind(M) In [MK_INT, MK_REAL, MK_BOOL, MK_CHAR]) Then
+        SymTab[S].NoInit := True;
       If Heap And IsVar Then
       Begin
         { variable HEAP : la cellule contient l adresse de l objet }
@@ -6846,6 +6941,8 @@ Begin
   Begin
     Cur := A;
     A := UnitTab[Cur].Next;
+    If ModeKind(ModePoolM[ModeTab[Proc].First + I]) = MK_REF Then
+      MarkAssigned(Cur, UnitTab[Cur].Line, UnitTab[Cur].Col);
     Cur := CoerceUnit(Cur, ModePoolM[ModeTab[Proc].First + I], STR_STRONG);
     UnitTab[Cur].Next := A;
     If Prev < 0 Then UnitTab[U].B := Cur Else UnitTab[Prev].Next := Cur;
@@ -6924,6 +7021,7 @@ Begin
       If IsRead Then
       Begin
         Cur := CoerceName(A);
+        MarkAssigned(Cur, UnitTab[A].Line, UnitTab[A].Col);
         M := NatMode(Cur);
         If (ModeKind(M) <> MK_REF) Or
            Not (ModeKind(ModeDeref(M)) In [MK_INT, MK_REAL, MK_CHAR]) And
@@ -8101,6 +8199,10 @@ Var
 Begin
   ML := NatMode(L);
   MR := NatMode(R);
+  If ((Length(Op) >= 2) And (Copy(Op, Length(Op) - 1, 2) = ':=')) Or
+     (Op = 'PLUSAB') Or (Op = 'MINUSAB') Or (Op = 'TIMESAB') Or
+     (Op = 'DIVAB') Or (Op = 'OVERAB') Or (Op = 'MODAB') Then
+    MarkAssigned(L, Line, Col);
   U := UnitNew(UK_FORMULA, Line, Col);
   UnitTab[U].Name := Op;
   UnitTab[U].A := L;
@@ -8254,6 +8356,7 @@ Var
   M : Integer;
 Begin
   Dest := CoerceSoft(Dest);
+  MarkAssigned(Dest, Line, Col);
   M := NatMode(Dest);
   U := UnitNew(UK_ASSIGN, Line, Col);
   UnitTab[U].A := Dest;
@@ -8364,6 +8467,7 @@ End;
 
 Function ParseUnitX(Stops : Integer) : LongInt;
 Var
+  ErrStart     : Integer;
   U, SaveUnits : LongInt;
   SavePos, R   : LongInt;
   SaveGotos    : Integer;
@@ -8379,6 +8483,7 @@ Begin
   SavePos := TokPos;
   SaveUnits := UnitCount;
   SaveGotos := GotoCount;
+  ErrStart := ErrorCount;
   U := ParseFormula(0);
   If (U >= 0) And (AtOpSym(':=') Or AtOpSym('=:')) Then
   Begin
@@ -8402,7 +8507,11 @@ Begin
     ParseUnitX := U;
     Exit;
   End;
-  { pas une primaire seule : on reprend au debut, en enveloppe }
+  { pas une primaire seule : l'unite n'est pas reconnue ; erreur au jeton
+    ou l'analyse s'est arretee (sauf si une erreur plus precise a deja ete
+    signalee), puis on reprend au debut pour sauter les jetons }
+  If ErrorCount = ErrStart Then
+    ParseError('expression incorrecte ou incomplete');
   TokPos := SavePos;
   UnitCount := SaveUnits;
   GotoCount := SaveGotos;
@@ -13463,7 +13572,21 @@ End;
   ============================================================ }
 Procedure PhaseReport;
 Begin
-  { A faire : TODO 23 et 24 }
+  If ErrorCount > 0 Then
+    WriteLn('Compilation echouee : ', ErrorCount, ' erreur(s), ',
+            WarnCount, ' avertissement(s)')
+  Else If (WarnCount > 0) Or Opts.Verbose Then
+  Begin
+    If Opts.Verbose Then
+    Begin
+      Write('  fichier(s) produit(s) : ', Opts.OutFile);
+      If Opts.EmitAsm Then Write(', ', Opts.AsmFile);
+      If Opts.DebugMode Then Write(', ', ReplaceExt(Opts.OutFile, '.lst'));
+      WriteLn;
+    End;
+    WriteLn('Compilation terminee : 0 erreur, ', WarnCount,
+            ' avertissement(s)');
+  End;
 End;
 
 { ============================================================
