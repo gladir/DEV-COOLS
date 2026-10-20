@@ -79,6 +79,9 @@ Const
  CO_NESTED = 16;
  CO_GENERATOR = 32;
  CO_NOFREE = 64;
+ CO_COROUTINE = 128;
+ CO_ITERABLE_COROUTINE = 256;
+ CO_ASYNC_GENERATOR = 512;
 
  MAX_BLOCKS = 24;
 
@@ -144,6 +147,11 @@ Type
   Constructor Make(r, i: Double);
   Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
   Function NativeRepr(Var s: AnsiString): Boolean; Override;
+ End;
+
+ TPyAsyncGenWrapped = Class(TPyObj)
+  val: TVal;
+  Procedure MarkKids; Override;
  End;
 
  TPyList = Class(TPyObj)
@@ -325,6 +333,22 @@ Type
   Destructor Destroy; Override;
  End;
 
+ TPyDoneIter = Class(TPyIter)
+  retval: TVal;
+  Function Next(Var r: TVal): Boolean; Override;
+  Procedure MarkKids; Override;
+ End;
+
+ TPyAsyncGenASend = Class(TPyIter)
+  gen: TPyGen;
+  mode: Integer;        { 0 asend, 1 athrow, 2 aclose }
+  val, exc, retval: TVal;
+  started: Boolean;
+  Function Next(Var r: TVal): Boolean; Override;
+  Function Step(Const sendv: TVal; Var r: TVal): Boolean;
+  Procedure MarkKids; Override;
+ End;
+
  TPyType = Class(TPyObj)
   name, qualname: AnsiString;
   bases: Array Of TPyType;
@@ -341,6 +365,7 @@ Type
   data: AnsiString;
   pos: Integer;
   readable, writable, appendm, dirty, closed, binary: Boolean;
+  mem: Boolean;
   std: Integer;          { 0 fichier, 1 stdin, 2 stdout, 3 stderr }
   Procedure MarkKids; Override;
  End;
@@ -389,7 +414,8 @@ Var
  tyList, tyTuple, tyDict, tySet, tyFrozenset, tyNone, tyFunction,
  tyBuiltin, tyMethod, tyModule, tyCode, tyCell, tyGenerator, tyRange,
  tySlice, tyProperty, tyStaticMethod, tyClassMethod, tySuper,
- tyEllipsis, tyNotImpl, tyFile, tyIter, tyDictView, tyFrame, tyComplex,
+ tyEllipsis, tyNotImpl, tyFile, tyIter, tyDictView, tyFrame, tyComplex, tyCoroutine, tyAsyncGen,
+ tyAsyncGenASend,
  tyTraceback: TPyType;
 
  { exceptions }
@@ -437,6 +463,7 @@ Var ReprSkipObj: TObject = Nil;
 Var BytesImplLoaded: Boolean = False;
 Function ImportByName(Const name: AnsiString): TVal; Forward;
 Procedure LoadBytesImpl; Forward;
+Function ViewToSet(Const v: TVal): TVal; Forward;
 Procedure EnsureCodeSource(c: TPyCode); Forward;
 Function ReprVal(Const v: TVal): AnsiString; Forward;
 Function StrVal(Const v: TVal): AnsiString; Forward;
@@ -574,6 +601,12 @@ Begin
  Inherited Create(tyComplex);
  re := r;
  im := i;
+End;
+
+Procedure TPyAsyncGenWrapped.MarkKids;
+Begin
+ Inherited MarkKids;
+ MarkVal(val);
 End;
 
 Function VComplex(r, i: Double): TVal;
@@ -780,6 +813,26 @@ Begin
  If frame <> Nil Then frame.MarkAll;
 End;
 
+Function TPyDoneIter.Next(Var r: TVal): Boolean;
+Begin
+ Result := False;
+End;
+
+Procedure TPyDoneIter.MarkKids;
+Begin
+ Inherited MarkKids;
+ MarkVal(retval);
+End;
+
+Procedure TPyAsyncGenASend.MarkKids;
+Begin
+ Inherited MarkKids;
+ If gen <> Nil Then MarkObj(gen);
+ MarkVal(val);
+ MarkVal(exc);
+ MarkVal(retval);
+End;
+
 Destructor TPyGen.Destroy;
 Begin
  If frame <> Nil Then Begin
@@ -843,26 +896,72 @@ Begin
  Result := c;
 End;
 
+Var
+ CpIdxStr: AnsiString;
+ CpIdxLen: Integer;
+ CpIdx: Array Of Integer;
+
+Procedure CpBuild(Const s: AnsiString);
+Var
+ i, n, k: Integer;
+Begin
+ If (Pointer(s) = Pointer(CpIdxStr)) And (Length(s) = Length(CpIdxStr)) Then
+  Exit;
+ SetLength(CpIdx, Length(s) Div 128 + 2);
+ n := 0;
+ k := 0;
+ For i := 1 To Length(s) Do
+  If (Ord(s[i]) And $C0) <> $80 Then Begin
+   If (n And 127) = 0 Then Begin
+    CpIdx[k] := i;
+    Inc(k);
+   End;
+   Inc(n);
+  End;
+ CpIdxLen := n;
+ CpIdxStr := s;
+End;
+
 Function Utf8Len(Const s: AnsiString): Integer;
 Var
  i, n: Integer;
 Begin
+ If Length(s) > 256 Then Begin
+  CpBuild(s);
+  Result := CpIdxLen;
+  Exit;
+ End;
  n := 0;
  For i := 1 To Length(s) Do
   If (Ord(s[i]) And $C0) <> $80 Then Inc(n);
  Result := n;
 End;
 
+Var
+ AsciiCacheStr: AnsiString;
+ AsciiCacheVal: Boolean;
+
 Function IsAsciiStr(Const s: AnsiString): Boolean;
 Var
  i: Integer;
 Begin
+ If Length(s) > 48 Then Begin
+  If (Pointer(s) = Pointer(AsciiCacheStr)) And
+   (Length(s) = Length(AsciiCacheStr)) Then Begin
+   Result := AsciiCacheVal;
+   Exit;
+  End;
+ End;
  Result := True;
  For i := 1 To Length(s) Do
   If Ord(s[i]) >= $80 Then Begin
    Result := False;
-   Exit;
+   Break;
   End;
+ If Length(s) > 48 Then Begin
+  AsciiCacheStr := s;
+  AsciiCacheVal := Result;
+ End;
 End;
 
 Function StrToCps(Const s: AnsiString): TCpArr;
@@ -893,36 +992,26 @@ Begin
  Result := o.n;
 End;
 
-{ Sous-chaine en points de code [lo, hi[ }
-Function CpSub(Const s: AnsiString; lo, hi: Integer): AnsiString;
-Var
- i, k, b0, b1: Integer;
-Begin
- If lo >= hi Then Begin
-  Result := '';
-  Exit;
- End;
- i := 1;
- k := 0;
- b0 := 1;
- b1 := Length(s) + 1;
- While i <= Length(s) Do Begin
-  If k = lo Then b0 := i;
-  If k = hi Then Begin
-   b1 := i;
-   Break;
-  End;
-  Utf8Dec(s, i);
-  Inc(k);
- End;
- If k < hi Then b1 := Length(s) + 1;
- Result := Copy(s, b0, b1 - b0);
-End;
-
 Function ByteToCpIndex(Const s: AnsiString; b: Integer): Integer;
 Var
- i, n: Integer;
+ i, n, lo, hi, mid, st: Integer;
 Begin
+ If Length(s) > 256 Then Begin
+  CpBuild(s);
+  lo := 0;
+  hi := (CpIdxLen - 1) Div 128;
+  While lo < hi Do Begin
+   mid := (lo + hi + 1) Div 2;
+   If CpIdx[mid] <= b Then lo := mid Else hi := mid - 1;
+  End;
+  st := CpIdx[lo];
+  n := lo * 128;
+  For i := st To b - 1 Do
+   If (Ord(s[i]) And $C0) <> $80 Then Inc(n);
+  If st <= b - 1 Then Result := n Else Result := lo * 128;
+  If st > b - 1 Then Result := lo * 128;
+  Exit;
+ End;
  n := 0;
  For i := 1 To b - 1 Do
   If (Ord(s[i]) And $C0) <> $80 Then Inc(n);
@@ -931,8 +1020,24 @@ End;
 
 Function CpToByteIndex(Const s: AnsiString; c: Integer): Integer;
 Var
- i, k: Integer;
+ i, k, blk: Integer;
 Begin
+ If Length(s) > 256 Then Begin
+  CpBuild(s);
+  If c >= CpIdxLen Then Begin
+   Result := Length(s) + 1;
+   Exit;
+  End;
+  blk := c Div 128;
+  i := CpIdx[blk];
+  k := blk * 128;
+  While (i <= Length(s)) And (k < c) Do Begin
+   Utf8Dec(s, i);
+   Inc(k);
+  End;
+  Result := i;
+  Exit;
+ End;
  i := 1;
  k := 0;
  While (i <= Length(s)) And (k < c) Do Begin
@@ -940,6 +1045,20 @@ Begin
   Inc(k);
  End;
  Result := i;
+End;
+
+{ Sous-chaine en points de code [lo, hi[ }
+Function CpSub(Const s: AnsiString; lo, hi: Integer): AnsiString;
+Var
+ b0, b1: Integer;
+Begin
+ If lo >= hi Then Begin
+  Result := '';
+  Exit;
+ End;
+ b0 := CpToByteIndex(s, lo);
+ b1 := CpToByteIndex(s, hi);
+ Result := Copy(s, b0, b1 - b0);
 End;
 
 Function CpUpper(c: Cardinal): Cardinal;
@@ -3230,6 +3349,7 @@ Type
   l1, l2, l3, l4: TNodes;
   sl: TStrArr;
   flag: Boolean;
+  isAsync: Boolean;
   scope: TObject;
  End;
 
@@ -3581,6 +3701,7 @@ End;
 
 Function ParseCompFor(): TNodes;
 Var
+ isA: Boolean;
  gens: TNodes;
  g: TNode;
  t: TToken;
@@ -3588,10 +3709,15 @@ Begin
  SetLength(gens, 0);
  While IsKw('for') Or IsKw('async') Do Begin
   t := Cur;
-  If IsKw('async') Then
-   SynErr('asynchronous comprehensions are not supported', t.line, t.col);
+  isA := False;
+  If IsKw('async') Then Begin
+   Advance;
+   isA := True;
+   If Not IsKw('for') Then ErrAt(Cur);
+  End;
   Advance;
   g := NewNode(nCompFor, t.line, t.col);
+  g.isAsync := isA;
   g.a := ParseTargetList;
   CheckTarget(g.a, False);
   ExpectKw('in');
@@ -3673,7 +3799,7 @@ Begin
   End
   Else Begin
    e := ParseNamedTest;
-   If IsKw('for') Then Begin
+   If (IsKw('for') Or IsKw('async')) Then Begin
     kw := NewNode(nGenExp, t.line, t.col);
     kw.a := e;
     kw.l1 := ParseCompFor;
@@ -3878,7 +4004,7 @@ Begin
       Exit;
      End;
      If IsOp('*') Then e := ParseStarExpr Else e := ParseNamedTest;
-     If IsKw('for') Then Begin
+     If (IsKw('for') Or IsKw('async')) Then Begin
       nd := NewNode(nGenExp, t.line, t.col);
       nd.a := e;
       nd.l1 := ParseCompFor;
@@ -3914,7 +4040,7 @@ Begin
       Exit;
      End;
      If IsOp('*') Then e := ParseStarExpr Else e := ParseNamedTest;
-     If IsKw('for') Then Begin
+     If (IsKw('for') Or IsKw('async')) Then Begin
       nd.k := nListComp;
       nd.a := e;
       nd.l1 := ParseCompFor;
@@ -3954,7 +4080,7 @@ Begin
         If (Not first) And (nd.k = nSet) Then ErrAt(Cur);
         Advance;
         d := ParseTest;
-        If first And IsKw('for') Then Begin
+        If first And (IsKw('for') Or IsKw('async')) Then Begin
          nd.k := nDictComp;
          nd.a := e;
          nd.b := d;
@@ -3969,7 +4095,7 @@ Begin
        Else Begin
         If first Then nd.k := nSet
         Else If nd.k <> nSet Then ErrAt(Cur);
-        If first And IsKw('for') Then Begin
+        If first And (IsKw('for') Or IsKw('async')) Then Begin
          nd.k := nSetComp;
          nd.a := e;
          nd.l1 := ParseCompFor;
@@ -4003,9 +4129,11 @@ Var
 Begin
  t := Cur;
  If IsKw('await') Then Begin
-  SynErr('async/await is not supported', t.line, t.col);
- End;
- nd := ParseTrailers(ParseAtom);
+  Advance;
+  nd := NewNode(nAwait, t.line, t.col);
+  nd.a := ParseTrailers(ParseAtom);
+ End
+ Else nd := ParseTrailers(ParseAtom);
  If IsOp('**') Then Begin
   Advance;
   r := ParseFactorExpr;
@@ -4835,6 +4963,7 @@ Var
  nd, h, it, cur_if, el: TNode;
  decos: TNodes;
  tgt: TNode;
+ n0: Integer;
 Begin
  t := Cur;
  If t.kind = tkNewline Then Begin
@@ -4940,8 +5069,14 @@ Begin
    AddNode(body, ParseClassDef(decos));
    Exit;
   End;
-  If t.s = 'async' Then
-   SynErr('async/await is not supported', t.line, t.col);
+  If t.s = 'async' Then Begin
+   Advance;
+   If Not (IsKw('def') Or IsKw('for') Or IsKw('with')) Then ErrAt(Cur);
+   n0 := Length(body);
+   ParseStatement(body);
+   body[n0].isAsync := True;
+   Exit;
+  End;
  End;
  If IsOp('@') Then Begin
   SetLength(decos, 0);
@@ -4951,7 +5086,14 @@ Begin
    If Cur.kind <> tkNewline Then ErrAt(Cur);
    Advance;
   End;
-  If IsKw('def') Then AddNode(body, ParseFuncDef(decos))
+  If IsKw('async') Then Begin
+   Advance;
+   If Not IsKw('def') Then ErrAt(Cur);
+   it := ParseFuncDef(decos);
+   it.isAsync := True;
+   AddNode(body, it);
+  End
+  Else If IsKw('def') Then AddNode(body, ParseFuncDef(decos))
   Else If IsKw('class') Then AddNode(body, ParseClassDef(decos))
   Else ErrAt(Cur);
   Exit;
@@ -5138,6 +5280,7 @@ Type
   order: TStrArr;
   children: Array Of TScope;
   isGen: Boolean;
+  isAsync, coro: Boolean;
   needsClassCell: Boolean;
   hasAnnot: Boolean;
   varnames, cellvars, freevars: TStrArr;
@@ -5254,7 +5397,7 @@ End;
 
 Procedure SymComp(sc: TScope; nd: TNode);
 Var
- cs: TScope;
+ cs, tt: TScope;
  j, i: Integer;
  g: TNode;
 Begin
@@ -5269,6 +5412,17 @@ Begin
  cs.nparams := 1;
  For j := 0 To High(nd.l1) Do Begin
   g := nd.l1[j];
+  If g.isAsync Then Begin
+   cs.coro := True;
+   tt := sc;
+   While tt.kind = scComp Do Begin
+    tt.coro := True;
+    tt := tt.parent;
+   End;
+   If Not (tt.IsFunc And tt.isAsync) Then
+    SynErr('asynchronous comprehension outside of an asynchronous function',
+     nd.line, nd.col);
+  End;
   SymStore(cs, g.a);
   If j > 0 Then SymExpr(cs, g.b);
   For i := 0 To High(g.l1) Do SymExpr(cs, g.l1[i]);
@@ -5324,11 +5478,25 @@ Begin
     End
     Else sc.Add(nd.a.s, symLocal);
    End;
+  nAwait: Begin
+    t := sc;
+    While t.kind = scComp Do Begin
+     t.coro := True;
+     t := t.parent;
+    End;
+    If Not t.IsFunc Then
+     SynErr('''await'' outside function', nd.line, nd.col);
+    If Not t.isAsync Then
+     SynErr('''await'' outside async function', nd.line, nd.col);
+    SymExpr(sc, nd.a);
+   End;
   nYield, nYieldFrom: Begin
     If Not sc.IsFunc Then
      SynErr('''yield'' outside function', nd.line, nd.col);
     If sc.kind = scComp Then
      SynErr('''yield'' inside list comprehension', nd.line, nd.col);
+    If (nd.k = nYieldFrom) And sc.isAsync Then
+     SynErr('''yield from'' inside async function', nd.line, nd.col);
     sc.isGen := True;
     SymExpr(sc, nd.a);
    End;
@@ -5475,6 +5643,7 @@ Begin
      SymDefaults(sc, nd.a);
      sc.Add(nd.s, symLocal);
      cs := NewScope(scFunction, nd.s, nd, sc);
+     cs.isAsync := nd.isAsync;
      SymParams(cs, nd.a);
      SymStmts(cs, nd.l1);
      nd.scope := cs;
@@ -6262,6 +6431,10 @@ Begin
   CALL_METHOD: Result := -arg - 1;
   CALL_FINALLY: If jump Then Result := 6 Else Result := 0;
   EXTENDED_ARG: Result := 0;
+  GET_AWAITABLE, GET_AITER: Result := 0;
+  GET_ANEXT, BEFORE_ASYNC_WITH: Result := 1;
+  END_ASYNC_FOR: Result := -7;
+  SETUP_ASYNC_WITH: If jump Then Result := 5 Else Result := 0;
  Else
   Result := 0;
  End;
@@ -6430,7 +6603,11 @@ Begin
   code.kwonly := sc.nkwonly;
   If sc.hasVarArgs Then fl := fl Or CO_VARARGS;
   If sc.hasKwArgs Then fl := fl Or CO_VARKEYWORDS;
-  If sc.isGen Then fl := fl Or CO_GENERATOR;
+  If sc.isAsync Or sc.coro Then Begin
+   If sc.isGen Then fl := fl Or CO_ASYNC_GENERATOR
+   Else fl := fl Or CO_COROUTINE;
+  End
+  Else If sc.isGen Then fl := fl Or CO_GENERATOR;
   If (sc.parent <> Nil) And (sc.parent.kind <> scModule) Then
    fl := fl Or CO_NESTED;
  End;
@@ -6550,10 +6727,17 @@ Var
   Else Begin
    c.curLine := gen.line;
    CgExpr(c, gen.b);
-   Emit(c, GET_ITER);
+   If gen.isAsync Then Emit(c, GET_AITER) Else Emit(c, GET_ITER);
   End;
   SetLabel(c, ltop);
-  EmitJ(c, FOR_ITER, lend);
+  If gen.isAsync Then Begin
+   EmitJ(c, SETUP_FINALLY, lend);
+   Emit(c, GET_ANEXT);
+   EmitConst(c, vNone);
+   Emit(c, YIELD_FROM);
+   Emit(c, POP_BLOCK);
+  End
+  Else EmitJ(c, FOR_ITER, lend);
   CgStore(c, gen.a);
   For j := 0 To High(gen.l1) Do CgJumpIf(c, gen.l1[j], ltop, False);
   If idx + 1 < Length(nd.l1) Then Loops(idx + 1)
@@ -6580,6 +6764,7 @@ Var
   End;
   EmitJ(c, JUMP_ABSOLUTE, ltop);
   SetLabel(c, lend);
+  If gen.isAsync Then Emit(c, END_ASYNC_FOR);
  End;
 
 Begin
@@ -6616,8 +6801,13 @@ Begin
  Emit(g, MAKE_FUNCTION, flags);
  g.curLine := nd.line;
  CgExpr(g, nd.l1[0].b);
- Emit(g, GET_ITER);
+ If nd.l1[0].isAsync Then Emit(g, GET_AITER) Else Emit(g, GET_ITER);
  Emit(g, CALL_FUNCTION, 1);
+ If cs.coro And (nd.k <> nGenExp) Then Begin
+  Emit(g, GET_AWAITABLE);
+  EmitConst(g, vNone);
+  Emit(g, YIELD_FROM);
+ End;
 End;
 
 Procedure CgDict(g: TGen; nd: TNode);
@@ -6812,6 +7002,13 @@ Begin
     CgExpr(g, nd.c);
     SetLabel(g, lend);
    End;
+  nAwait: Begin
+    CgExpr(g, nd.a);
+    g.curLine := nd.line;
+    Emit(g, GET_AWAITABLE);
+    EmitConst(g, vNone);
+    Emit(g, YIELD_FROM);
+   End;
   nYield: Begin
     If nd.a <> Nil Then CgExpr(g, nd.a) Else EmitConst(g, vNone);
     g.curLine := nd.line;
@@ -6951,6 +7148,11 @@ Begin
      If preserve Then Emit(g, ROT_TWO);
      Emit(g, BEGIN_FINALLY);
      Emit(g, WITH_CLEANUP_START);
+     If g.fb[i].lbl1 <> 0 Then Begin
+      Emit(g, GET_AWAITABLE);
+      EmitConst(g, vNone);
+      Emit(g, YIELD_FROM);
+     End;
      Emit(g, WITH_CLEANUP_FINISH);
      Emit(g, POP_FINALLY, 0);
     End;
@@ -7067,9 +7269,16 @@ Begin
  CgExpr(g, it.a);
  lclean := NewLabel(g);
  g.curLine := it.line;
- EmitJ(g, SETUP_WITH, lclean);
+ If nd.isAsync Then Begin
+  Emit(g, BEFORE_ASYNC_WITH);
+  Emit(g, GET_AWAITABLE);
+  EmitConst(g, vNone);
+  Emit(g, YIELD_FROM);
+  EmitJ(g, SETUP_ASYNC_WITH, lclean);
+ End
+ Else EmitJ(g, SETUP_WITH, lclean);
  If it.b <> Nil Then CgStore(g, it.b) Else Emit(g, POP_TOP);
- PushFB(g, fbWith, 0, 0);
+ PushFB(g, fbWith, Ord(nd.isAsync), 0);
  If idx + 1 < Length(nd.l1) Then CgWith(g, nd, idx + 1)
  Else CgStmts(g, nd.l2);
  PopFB(g);
@@ -7077,6 +7286,11 @@ Begin
  Emit(g, BEGIN_FINALLY);
  SetLabel(g, lclean);
  Emit(g, WITH_CLEANUP_START);
+ If nd.isAsync Then Begin
+  Emit(g, GET_AWAITABLE);
+  EmitConst(g, vNone);
+  Emit(g, YIELD_FROM);
+ End;
  Emit(g, WITH_CLEANUP_FINISH);
  Emit(g, END_FINALLY);
 End;
@@ -7355,16 +7569,29 @@ Begin
     lelse := NewLabel(g);
     lend := NewLabel(g);
     CgExpr(g, nd.b);
-    Emit(g, GET_ITER);
-    SetLabel(g, ltop);
-    g.curLine := nd.line;
-    EmitJ(g, FOR_ITER, lelse);
+    If nd.isAsync Then Begin
+     Emit(g, GET_AITER);
+     SetLabel(g, ltop);
+     g.curLine := nd.line;
+     EmitJ(g, SETUP_FINALLY, lelse);
+     Emit(g, GET_ANEXT);
+     EmitConst(g, vNone);
+     Emit(g, YIELD_FROM);
+     Emit(g, POP_BLOCK);
+    End
+    Else Begin
+     Emit(g, GET_ITER);
+     SetLabel(g, ltop);
+     g.curLine := nd.line;
+     EmitJ(g, FOR_ITER, lelse);
+    End;
     CgStore(g, nd.a);
     PushFB(g, fbLoopFor, ltop, lend);
     CgStmts(g, nd.l1);
     PopFB(g);
     EmitJ(g, JUMP_ABSOLUTE, ltop);
     SetLabel(g, lelse);
+    If nd.isAsync Then Emit(g, END_ASYNC_FOR);
     CgStmts(g, nd.l2);
     SetLabel(g, lend);
    End;
@@ -8221,6 +8448,11 @@ Begin
  t := NewTuple(Length(args));
  For i := 0 To High(args) Do t.items[i] := args[i];
  o.idict.SetS('args', VObj(t));
+ If (exSystemExit <> Nil) And TypeIsSub(c, exSystemExit) Then Begin
+  If Length(args) = 0 Then o.idict.SetS('code', vNone)
+  Else If Length(args) = 1 Then o.idict.SetS('code', args[0])
+  Else o.idict.SetS('code', VObj(t));
+ End;
  Result := o;
 End;
 
@@ -8503,7 +8735,7 @@ Begin
    r := Call1(hv, v);
    If Not IsIntVal(r) Then
     TypeErr('__hash__ method should return an integer');
-   Result := IntHash(r);
+   If (r.k <> vkObj) Then Result := r.i Else Result := IntHash(r);
    If Result = -1 Then Result := -2;
    Exit;
   End;
@@ -8867,6 +9099,14 @@ Begin
   (b.o Is TPyComplex))) And (op >= 2) And (op <= 3) And CxEqualParts(a, b, r2) Then Begin
   Result := r2 = (op = 2);
   Exit;
+ End;
+ If (a.k = vkObj) And (b.k = vkObj) And ((a.o.cls = tyDictView) Or
+  (b.o.cls = tyDictView)) Then Begin
+  If ((a.o.cls = tyDictView) Or (a.o Is TPySet)) And
+   ((b.o.cls = tyDictView) Or (b.o Is TPySet)) Then Begin
+   Result := ValCompare(ViewToSet(a), ViewToSet(b), op);
+   Exit;
+  End;
  End;
  If (a.k = vkNone) Or (b.k = vkNone) Then Begin
   If op = 2 Then Begin
@@ -9314,7 +9554,7 @@ Begin
    ', file "' + TPyCode(o).filename + '", line ' +
    IntToStr(TPyCode(o).firstline) + '>'
  Else If o Is TPyGen Then
-  Result := '<generator object ' + TPyGen(o).name + ' at ' + HexAddr(o) + '>'
+  Result := '<' + o.cls.name + ' object ' + TPyGen(o).name + ' at ' + HexAddr(o) + '>'
  Else If o Is TPyCell Then
   Result := '<cell at ' + HexAddr(o) + '>'
  Else If o Is TPyFile Then Begin
@@ -10176,9 +10416,13 @@ Begin
   For i := 0 To count - 1 Do Result[i + 1] := s[start + i * step + 1];
   Exit;
  End;
- cps := StrToCps(s);
- n := Length(cps);
+ n := Utf8Len(s);
  SliceIndices(sl, n, start, stop, step, count);
+ If step = 1 Then Begin
+  Result := CpSub(s, start, start + count);
+  Exit;
+ End;
+ cps := StrToCps(s);
  Result := '';
  For i := 0 To count - 1 Do Result := Result + Utf8Enc(cps[start + i * step]);
 End;
@@ -10832,7 +11076,7 @@ Var
  s, bs: AnsiString;
  cps: TCpArr;
  rg: TPyRange;
- ix: Integer;
+ ix, jx: Integer;
  d: TPyDict;
 Begin
  If o.k <> vkObj Then Begin
@@ -10913,11 +11157,14 @@ Begin
    Result := VStr(s[i + 1]);
    Exit;
   End;
-  cps := StrToCps(s);
-  If i < 0 Then i := i + Length(cps);
-  If (i < 0) Or (i >= Length(cps)) Then
+  ix := Utf8Len(s);
+  If i < 0 Then i := i + ix;
+  If (i < 0) Or (i >= ix) Then
    RaiseExc(exIndexError, 'string index out of range');
-  Result := VStr(Utf8Enc(cps[i]));
+  ix := CpToByteIndex(s, i);
+  jx := ix;
+  Utf8Dec(s, jx);
+  Result := VStr(Copy(s, ix, jx - ix));
   Exit;
  End;
  If o.o Is TPyBytes Then Begin
@@ -11440,7 +11687,9 @@ Begin
   fo.idict.SetS('f_code', co);
   fo.idict.SetS('f_lineno', TPyTuple(e.o).items[1]);
   fo.idict.SetS('f_back', vNone);
-  fo.idict.SetS('f_globals', VObj(TPyDict.Make));
+  If Length(TPyTuple(e.o).items) > 4 Then
+   fo.idict.SetS('f_globals', TPyTuple(e.o).items[4])
+  Else fo.idict.SetS('f_globals', VObj(TPyDict.Make));
   fo.idict.SetS('f_locals', VObj(TPyDict.Make));
   t := TPyObj.Create(tyTraceback);
   t.idict := TPyDict.Make;
@@ -11651,8 +11900,24 @@ Begin
    res := VBool(TPyGen(ob).state = 2);
    Exit;
   End;
-  If attr = 'gi_frame' Then Begin
-   If TPyGen(ob).state = 3 Then res := vNone Else res := VObj(ob);
+  If (attr = 'gi_frame') Or (attr = 'cr_frame') Or (attr = 'ag_frame') Then
+  Begin
+   If (TPyGen(ob).state = 3) Or (TPyGen(ob).frame = Nil) Then res := vNone
+   Else res := MakeFrameObj(TPyGen(ob).frame, 0);
+   Exit;
+  End;
+  If (attr = 'gi_code') Or (attr = 'cr_code') Or (attr = 'ag_code') Then Begin
+   If TPyGen(ob).frame = Nil Then res := vNone
+   Else res := VObj(TPyGen(ob).frame.code);
+   Exit;
+  End;
+  If (attr = 'gi_running') Or (attr = 'cr_running') Or (attr = 'ag_running')
+  Then Begin
+   res := VBool(TPyGen(ob).state = 2);
+   Exit;
+  End;
+  If (attr = '__qualname__') Then Begin
+   res := VStr(TPyGen(ob).name);
    Exit;
   End;
   Result := False;
@@ -11900,6 +12165,12 @@ Begin
    Exit;
   End;
  End;
+ If (o.k = vkObj) And (o.o Is TPyMethod) And (TPyMethod(o.o).fn.k = vkObj) And
+  (TPyMethod(o.o).fn.o Is TPyFunc) Then
+  If GetAttrOpt(TPyMethod(o.o).fn, nm, res) Then Begin
+   Result := True;
+   Exit;
+  End;
  { __getattr__ }
  If (o.k = vkObj) And o.o.cls.userdef Then
   If LookupType(o.o.cls, '__getattr__', f) Then Begin
@@ -12278,7 +12549,11 @@ Function MakeGenerator(fr: TFrame; fn: TPyFunc): TVal;
 Var
  g: TPyGen;
 Begin
- g := TPyGen.Create(tyGenerator);
+ If (fn.code.flags And CO_ASYNC_GENERATOR) <> 0 Then
+  g := TPyGen.Create(tyAsyncGen)
+ Else If (fn.code.flags And CO_COROUTINE) <> 0 Then
+  g := TPyGen.Create(tyCoroutine)
+ Else g := TPyGen.Create(tyGenerator);
  g.frame := fr;
  g.state := 0;
  g.retval := vNull;
@@ -12296,7 +12571,7 @@ Var
  code: TPyCode;
 Begin
  code := fn.code;
- gen := (code.flags And CO_GENERATOR) <> 0;
+ gen := (code.flags And (CO_GENERATOR Or CO_COROUTINE Or CO_ASYNC_GENERATOR)) <> 0;
  If CallDepth >= RecursionLimit Then
   RaiseExc(exRecursionError, 'maximum recursion depth exceeded');
  fr := NewFrame(code, fn, fn.globals, Nil, gen);
@@ -12687,11 +12962,12 @@ Begin
  EnsureCodeSource(f.code);
  If (ln >= 1) And (ln <= Length(f.code.source)) Then
   src := Trim(f.code.source[ln - 1]);
- e := NewTuple(4);
+ e := NewTuple(5);
  e.items[0] := VStr(f.code.filename);
  e.items[1] := VInt(ln);
  e.items[2] := VStr(f.code.name);
  e.items[3] := VStr(src);
+ e.items[4] := VObj(f.globals);
  l.Add(VObj(e));
 End;
 
@@ -12980,7 +13256,7 @@ Begin
  code := fn.code;
  If CallDepth >= RecursionLimit Then
   RaiseExc(exRecursionError, 'maximum recursion depth exceeded');
- gen := (code.flags And CO_GENERATOR) <> 0;
+ gen := (code.flags And (CO_GENERATOR Or CO_COROUTINE Or CO_ASYNC_GENERATOR)) <> 0;
  fr := NewFrame(code, fn, fn.globals, Nil, gen);
  If (kwNames = Nil) And (kwd = Nil) And (npos = code.argcount) And
   ((code.flags And (CO_VARARGS Or CO_VARKEYWORDS)) = 0) And
@@ -13154,6 +13430,37 @@ Begin
  BinIdx[INPLACE_AND] := 9;
  BinIdx[INPLACE_XOR] := 11;
  BinIdx[INPLACE_OR] := 10;
+End;
+
+Function AwaitableOf(Const v: TVal; Const what: AnsiString): TVal;
+Var
+ f, r: TVal;
+Begin
+ If (v.k = vkObj) And (v.o Is TPyGen) Then Begin
+  If (v.o.cls = tyCoroutine) Or
+   ((TPyGen(v.o).frame <> Nil) And
+   ((TPyGen(v.o).frame.code.flags And CO_ITERABLE_COROUTINE) <> 0)) Then Begin
+   Result := v;
+   Exit;
+  End;
+ End;
+ If (v.k = vkObj) And (v.o Is TPyAsyncGenASend) Then Begin
+  Result := v;
+  Exit;
+ End;
+ If LookupType(TypeOf(v), '__await__', f) Then Begin
+  r := Call1(f, v);
+  If (r.k = vkObj) And (r.o Is TPyGen) And (r.o.cls = tyCoroutine) Then
+   TypeErr('__await__() returned a coroutine');
+  If Not ((r.k = vkObj) And ((r.o Is TPyIter) Or LookupType(TypeOf(r),
+   '__next__', f))) Then
+   TypeErr('__await__() returned non-iterator of type ''' + TypeName(r) + '''');
+  Result := r;
+  Exit;
+ End;
+ TypeErr('object ' + TypeName(v) + ' can''t be used in ''await'' expression');
+ Result := vNone;
+ If what = '' Then Result := v;
 End;
 
 Function ExecLoop: TVal;
@@ -13343,6 +13650,77 @@ Begin
       If Not ((sp[-1].k = vkObj) And (sp[-1].o Is TPyGen)) Then
        sp[-1] := IterOf(sp[-1]);
      End;
+    GET_AWAITABLE: Begin
+      f.sp := sp;
+      sp[-1] := AwaitableOf(sp[-1], 'await');
+     End;
+    GET_AITER: Begin
+      a := sp[-1];
+      f.sp := sp;
+      If Not LookupType(TypeOf(a), '__aiter__', meth) Then
+       TypeErr('''async for'' requires an object with __aiter__ method, got ' +
+        TypeName(a));
+      r := Call1(meth, a);
+      If Not LookupType(TypeOf(r), '__anext__', meth) Then
+       TypeErr('''async for'' received an object from __aiter__ that does ' +
+        'not implement __anext__: ' + TypeName(r));
+      sp[-1] := r;
+     End;
+    GET_ANEXT: Begin
+      a := sp[-1];
+      f.sp := sp;
+      If Not LookupType(TypeOf(a), '__anext__', meth) Then
+       TypeErr('''async for'' requires an iterator with __anext__ method, got '
+        + TypeName(a));
+      r := Call1(meth, a);
+      sp^ := AwaitableOf(r, 'async for');
+      Inc(sp);
+     End;
+    BEFORE_ASYNC_WITH: Begin
+      a := sp[-1];
+      f.sp := sp;
+      t := TypeOf(a);
+      If Not LookupType(t, '__aenter__', meth) Then
+       RaiseExc(exAttributeError, '__aenter__');
+      If Not LookupType(t, '__aexit__', c) Then
+       RaiseExc(exAttributeError, '__aexit__');
+      sp[-1] := BindMethod(c, a);
+      r := Call1(meth, a);
+      sp^ := r;
+      Inc(sp);
+     End;
+    SETUP_ASYNC_WITH: Begin
+      r := sp[-1];
+      Dec(sp);
+      f.blocks[f.nb].kind := 1;
+      f.blocks[f.nb].handler := ip + arg;
+      f.blocks[f.nb].level := sp - stackBase;
+      Inc(f.nb);
+      sp^ := r;
+      Inc(sp);
+     End;
+    END_ASYNC_FOR: Begin
+      a := sp[-1];
+      If ExcMatch(a, VObj(exStopAsyncIteration)) Then Begin
+       Dec(f.nb);
+       blk := f.blocks[f.nb];
+       sp := stackBase + blk.level + 3;
+       If sp[-2].k = vkNone Then ExcInfo := vNone Else ExcInfo := sp[-2];
+       Dec(sp, 3);
+       Dec(sp);
+      End
+      Else Begin
+       Dec(sp);
+       b := sp[-1];
+       Dec(sp, 2);
+       f.sp := sp;
+       If b.k = vkObj Then Begin
+        NoTbOnce := True;
+        Raise EPyError.Make(b.o);
+       End;
+       RaiseExc(exSystemError, 'bad END_ASYNC_FOR state');
+      End;
+     End;
     PRINT_EXPR: Begin
       a := sp[-1];
       Dec(sp);
@@ -13358,6 +13736,11 @@ Begin
     YIELD_VALUE: Begin
       a := sp[-1];
       Dec(sp);
+      If (code.flags And CO_ASYNC_GENERATOR) <> 0 Then Begin
+       b := VObj(TPyAsyncGenWrapped.Create(tyObject));
+       TPyAsyncGenWrapped(b.o).val := a;
+       a := b;
+      End;
       f.ip := ip;
       f.sp := sp;
       LoopYielded := True;
@@ -13384,6 +13767,10 @@ Begin
        Exit;
       End;
       If (b.k = vkObj) And (b.o Is TPyGen) Then r := TPyGen(b.o).retval
+      Else If (b.k = vkObj) And (b.o Is TPyAsyncGenASend) Then
+       r := TPyAsyncGenASend(b.o).retval
+      Else If (b.k = vkObj) And (b.o Is TPyDoneIter) Then
+       r := TPyDoneIter(b.o).retval
       Else r := vNone;
       If r.k = vkNull Then r := vNone;
       sp[-1] := r;
@@ -13449,8 +13836,6 @@ Begin
      End;
     POP_EXCEPT: Begin
       Dec(f.nb);
-      blk := f.blocks[f.nb];
-      sp := stackBase + blk.level + 3;
       If sp[-2].k = vkNone Then ExcInfo := vNone Else ExcInfo := sp[-2];
       Dec(sp, 3);
      End;
@@ -13524,6 +13909,7 @@ Begin
        b := sp[-1];
        c := sp[-2];
        vv := sp[-3];
+       If (vv.k = vkNone) And (c.k = vkObj) Then vv := MakeTbChain(c.o);
        sp[-7] := sp[-6];
        sp[-6] := sp[-5];
        sp[-5] := sp[-4];
@@ -14534,9 +14920,13 @@ Begin
 End;
 
 Function SysExitInit(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ av: TVal;
 Begin
  ExcInit(a, n, kw);
- If n > 1 Then a[0].o.idict.SetS('code', a[1])
+ If n = 2 Then a[0].o.idict.SetS('code', a[1])
+ Else If (n > 2) And a[0].o.idict.GetS('args', av) Then
+  a[0].o.idict.SetS('code', av)
  Else a[0].o.idict.SetS('code', vNone);
  Result := vNone;
 End;
@@ -14688,6 +15078,9 @@ Begin
  tyCode := NewType('code', tyObject, nkNoNew);
  tyCell := NewType('cell', tyObject, nkNoNew);
  tyGenerator := NewType('generator', tyObject, nkNoNew);
+ tyCoroutine := NewType('coroutine', tyObject, nkNoNew);
+ tyAsyncGen := NewType('async_generator', tyObject, nkNoNew);
+ tyAsyncGenASend := NewType('async_generator_asend', tyObject, nkNoNew);
  tyEllipsis := NewType('ellipsis', tyObject, nkNoNew);
  tyNotImpl := NewType('NotImplementedType', tyObject, nkNoNew);
  tyFile := NewType('TextIOWrapper', tyObject, nkFile);
@@ -15220,9 +15613,36 @@ Begin
   Result := Call2(f, a[0], a[1]);
   Exit;
  End;
+ If (a[1].k = vkObj) And LookupType(a[1].o.cls, '__rdivmod__', f) Then Begin
+  Result := Call2(f, a[1], a[0]);
+  Exit;
+ End;
  TypeErr('unsupported operand type(s) for divmod(): ''' + TypeName(a[0]) +
   ''' and ''' + TypeName(a[1]) + '''');
  Result := vNone;
+End;
+
+Function ModInverse(Const a, m: TVal): TVal;
+Var
+ mabs, r0, r1, s0, s1, q, t, rem: TVal;
+Begin
+ If IntSign(m) < 0 Then mabs := IntNeg(m) Else mabs := m;
+ IntDivMod(a, mabs, q, r0);
+ r1 := mabs;
+ s0 := VInt(1);
+ s1 := VInt(0);
+ While IntSign(r1) <> 0 Do Begin
+  IntDivMod(r0, r1, q, rem);
+  t := IntSub(s0, IntMul(q, s1));
+  s0 := s1;
+  s1 := t;
+  r0 := r1;
+  r1 := rem;
+ End;
+ If IntCmp(r0, VInt(1)) <> 0 Then
+  ValueErr('base is not invertible for the given modulus');
+ IntDivMod(s0, mabs, q, rem);
+ Result := rem;
 End;
 
 Function BiPow(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -15233,8 +15653,10 @@ Begin
    TypeErr('pow() 3rd argument not allowed unless all arguments are ' +
     'integers');
   If IntSign(a[2]) = 0 Then ValueErr('pow() 3rd argument cannot be 0');
-  If IntSign(a[1]) < 0 Then ValueErr('pow() 2nd argument cannot be negative' +
-   ' when 3rd argument specified');
+  If IntSign(a[1]) < 0 Then Begin
+   Result := IntPowMod(ModInverse(a[0], a[2]), IntNeg(a[1]), a[2]);
+   Exit;
+  End;
   Result := IntPowMod(a[0], a[1], a[2]);
   Exit;
  End;
@@ -15552,6 +15974,8 @@ Begin
  If IterNextVal(a[0], r) Then Result := r
  Else Begin
   If n > 1 Then Result := a[1]
+  Else If (a[0].k = vkObj) And (a[0].o Is TPyGen) Then
+   RaiseStopIteration(NoneIfNull(TPyGen(a[0].o).retval))
   Else RaiseStopIteration(vNone);
  End;
 End;
@@ -19180,7 +19604,9 @@ End;
 
 Function IntReprM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
+ If a[0].k = vkObj Then ReprSkipObj := a[0].o;
  Result := VStr(ReprVal(a[0]));
+ ReprSkipObj := Nil;
 End;
 
 Function IntArith(a: PVal; op: Integer; swap: Boolean): TVal;
@@ -19474,23 +19900,55 @@ Begin
  End;
 End;
 
-Function BytesStartsWithM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Procedure BytesSliceArgs(a: PVal; n: Integer; Var s: AnsiString);
 Var
- s, p: AnsiString;
+ st, en: Int64;
+ l: Integer;
 Begin
  s := TPyBytes(a[0].o).s;
- p := BytesFromStr(a[1]);
- Result := VBool(Copy(s, 1, Length(p)) = p);
+ l := Length(s);
+ st := 0;
+ en := l;
+ If (n > 2) And (a[2].k <> vkNone) Then st := IndexVal(a[2]);
+ If (n > 3) And (a[3].k <> vkNone) Then en := IndexVal(a[3]);
+ If st < 0 Then Begin st := st + l; If st < 0 Then st := 0; End;
+ If en < 0 Then Begin en := en + l; If en < 0 Then en := 0; End;
+ If en > l Then en := l;
+ If st > en Then s := '' Else s := Copy(s, st + 1, en - st);
+End;
+
+Function BytesStartsEnds(a: PVal; n: Integer; ends: Boolean): TVal;
+Var
+ s, p: AnsiString;
+ i: Integer;
+ ok: Boolean;
+ arr: TValArr;
+Begin
+ BytesSliceArgs(a, n, s);
+ ok := False;
+ If (a[1].k = vkObj) And (a[1].o Is TPyTuple) Then arr := TPyTuple(a[1].o).items
+ Else Begin
+  SetLength(arr, 1);
+  arr[0] := a[1];
+ End;
+ For i := 0 To High(arr) Do Begin
+  p := BytesFromStr(arr[i]);
+  If ends Then ok := (Length(s) >= Length(p)) And
+   (Copy(s, Length(s) - Length(p) + 1, Length(p)) = p)
+  Else ok := Copy(s, 1, Length(p)) = p;
+  If ok Then Break;
+ End;
+ Result := VBool(ok);
+End;
+
+Function BytesStartsWithM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := BytesStartsEnds(a, n, False);
 End;
 
 Function BytesEndsWithM(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- s, p: AnsiString;
 Begin
- s := TPyBytes(a[0].o).s;
- p := BytesFromStr(a[1]);
- Result := VBool((Length(s) >= Length(p)) And
-  (Copy(s, Length(s) - Length(p) + 1, Length(p)) = p));
+ Result := BytesStartsEnds(a, n, True);
 End;
 
 Function BytesFindM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -19693,6 +20151,77 @@ Begin
  Else RaiseStopIteration(NoneIfNull(g.retval));
 End;
 
+{ throw avec delegation yield from / await }
+Function GenSuspendedDelegate(g: TPyGen; Var dlg: TVal): Boolean;
+Var
+ fr: TFrame;
+Begin
+ Result := False;
+ If g.state <> 1 Then Exit;
+ fr := g.frame;
+ If fr = Nil Then Exit;
+ If fr.ip >= Length(fr.code.co) Then Exit;
+ If fr.code.co[fr.ip] <> YIELD_FROM Then Exit;
+ dlg := fr.sp[-1];
+ Result := (dlg.k = vkObj);
+End;
+
+Function GenThrowDeleg(g: TPyGen; Const e: TVal; Var r: TVal): Boolean;
+Var
+ dlg, v, m: TVal;
+ fr: TFrame;
+ yielded: Boolean;
+ d: TPyDoneIter;
+Begin
+ fr := g.frame;
+ If Not GenSuspendedDelegate(g, dlg) Then Begin
+  If (g.state = 0) Or (g.state = 3) Then Begin
+   g.state := 3;
+   Raise EPyError.Make(e.o);
+  End;
+  fr.throwExc := e.o;
+  Result := GenResume(g, vNone, r);
+  Exit;
+ End;
+ yielded := False;
+ Try
+  If (dlg.o Is TPyGen) Then
+   yielded := GenThrowDeleg(TPyGen(dlg.o), e, r)
+  Else If LookupType(TypeOf(dlg), 'throw', m) Then Begin
+   r := Call1(GetAttr(dlg, 'throw'), e);
+   yielded := True;
+  End
+  Else Begin
+   fr.throwExc := e.o;
+   Result := GenResume(g, vNone, r);
+   Exit;
+  End;
+ Except
+  On E2: EPyError Do Begin
+   If IsInstance(VObj(E2.exc), exStopIteration) Then Begin
+    If Not GetAttrOpt(VObj(E2.exc), InternStr('value'), v) Then v := vNone;
+    d := TPyDoneIter.Create(tyIter);
+    d.retval := v;
+    fr.sp[-1] := VObj(d);
+    Result := GenResume(g, vNone, r);
+    Exit;
+   End;
+   fr.throwExc := E2.exc;
+   Result := GenResume(g, vNone, r);
+   Exit;
+  End;
+ End;
+ If yielded Then Begin
+  Result := True;
+  Exit;
+ End;
+ { le delegue est termine : sa valeur de retour devient celle du yield from }
+ d := TPyDoneIter.Create(tyIter);
+ d.retval := NoneIfNull(TPyGen(dlg.o).retval);
+ fr.sp[-1] := VObj(d);
+ Result := GenResume(g, vNone, r);
+End;
+
 Function GenThrowM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  g: TPyGen;
@@ -19703,19 +20232,14 @@ Begin
  g := TPyGen(a[0].o);
  If n > 2 Then e := CallValue(a[1], @a[2], 1, Nil)
  Else e := NormalizeExc(a[1], False);
- If (g.state = 0) Or (g.state = 3) Then Begin
-  g.state := 3;
-  Raise EPyError.Make(e.o);
- End;
- g.frame.throwExc := e.o;
- If GenResume(g, vNone, r) Then Result := r
+ If GenThrowDeleg(g, e, r) Then Result := r
  Else RaiseStopIteration(NoneIfNull(g.retval));
 End;
 
 Function GenCloseM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  g: TPyGen;
- r: TVal;
+ r, c: TVal;
 Begin
  g := TPyGen(a[0].o);
  Result := vNone;
@@ -19724,6 +20248,10 @@ Begin
   Exit;
  End;
  If g.state = 3 Then Exit;
+ If GenSuspendedDelegate(g, r) Then Begin
+  If (r.o Is TPyGen) Then GenCloseM(@r, 1, Nil)
+  Else If LookupType(TypeOf(r), 'close', c) Then Call0(GetAttr(r, 'close'));
+ End;
  g.frame.throwExc := MakeExc(exGeneratorExit, '');
  Try
   If GenResume(g, vNone, r) Then
@@ -19748,6 +20276,181 @@ Var
 Begin
  If IterNextVal(a[0], r) Then Result := r
  Else RaiseStopIteration(vNone);
+End;
+
+{ ------------------------------------------------------------
+  Coroutines et generateurs asynchrones
+  ------------------------------------------------------------ }
+Function TPyAsyncGenASend.Step(Const sendv: TVal; Var r: TVal): Boolean;
+Var
+ v, sv: TVal;
+ e: TVal;
+Begin
+ sv := sendv;
+ If Not started Then Begin
+  started := True;
+  If mode = 0 Then sv := val
+  Else Begin
+   If mode = 2 Then Begin
+    If (gen.state = 0) Or (gen.state = 3) Then Begin
+     gen.state := 3;
+     retval := vNone;
+     Result := False;
+     Exit;
+    End;
+    e := VObj(MakeExc(exGeneratorExit, ''));
+   End
+   Else e := exc;
+   If (gen.state = 0) Or (gen.state = 3) Then Begin
+    gen.state := 3;
+    Raise EPyError.Make(e.o);
+   End;
+   gen.frame.throwExc := e.o;
+  End;
+ End;
+ Try
+  Result := GenResume(gen, sv, v);
+ Except
+  On E2: EPyError Do Begin
+   If (mode = 2) And (IsInstance(VObj(E2.exc), exGeneratorExit) Or
+    IsInstance(VObj(E2.exc), exStopAsyncIteration)) Then Begin
+    retval := vNone;
+    Result := False;
+    Exit;
+   End;
+   Raise;
+  End;
+ End;
+ If Result Then Begin
+  If (v.k = vkObj) And (v.o Is TPyAsyncGenWrapped) Then Begin
+   If mode = 2 Then
+    RaiseExc(exRuntimeError, 'async generator ignored GeneratorExit');
+   retval := TPyAsyncGenWrapped(v.o).val;
+   Result := False;
+  End
+  Else r := v;
+ End
+ Else Begin
+  If mode = 2 Then Begin
+   retval := vNone;
+   Exit;
+  End;
+  RaiseExc(exStopAsyncIteration, '');
+ End;
+End;
+
+Function TPyAsyncGenASend.Next(Var r: TVal): Boolean;
+Begin
+ Result := Step(vNone, r);
+End;
+
+Function NewASend(g: TPyGen; mode: Integer; Const v, e: TVal): TVal;
+Var
+ s: TPyAsyncGenASend;
+Begin
+ s := TPyAsyncGenASend.Create(tyAsyncGenASend);
+ s.gen := g;
+ s.mode := mode;
+ s.val := v;
+ s.exc := e;
+ s.retval := vNone;
+ Result := VObj(s);
+End;
+
+Function AGAiterM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := a[0];
+End;
+
+Function AGAnextM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := NewASend(TPyGen(a[0].o), 0, vNone, vNone);
+End;
+
+Function AGAsendM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ NeedArgs(n, 2, 2, 'asend');
+ Result := NewASend(TPyGen(a[0].o), 0, a[1], vNone);
+End;
+
+Function AGAthrowM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ e: TVal;
+Begin
+ NeedArgs(n, 2, 4, 'athrow');
+ If n > 2 Then e := CallValue(a[1], @a[2], 1, Nil)
+ Else e := NormalizeExc(a[1], False);
+ Result := NewASend(TPyGen(a[0].o), 1, vNone, e);
+End;
+
+Function AGAcloseM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := NewASend(TPyGen(a[0].o), 2, vNone, vNone);
+End;
+
+Function ASendNextM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: TVal;
+ s: TPyAsyncGenASend;
+Begin
+ s := TPyAsyncGenASend(a[0].o);
+ If s.Step(vNone, r) Then Result := r
+ Else RaiseStopIteration(s.retval);
+End;
+
+Function ASendSendM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: TVal;
+ s: TPyAsyncGenASend;
+Begin
+ NeedArgs(n, 2, 2, 'send');
+ s := TPyAsyncGenASend(a[0].o);
+ If s.Step(a[1], r) Then Result := r
+ Else RaiseStopIteration(s.retval);
+End;
+
+Function ASendThrowM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r, e: TVal;
+ s: TPyAsyncGenASend;
+Begin
+ NeedArgs(n, 2, 4, 'throw');
+ s := TPyAsyncGenASend(a[0].o);
+ If n > 2 Then e := CallValue(a[1], @a[2], 1, Nil)
+ Else e := NormalizeExc(a[1], False);
+ s.started := True;
+ If (s.gen.state = 0) Or (s.gen.state = 3) Then Begin
+  s.gen.state := 3;
+  Raise EPyError.Make(e.o);
+ End;
+ s.gen.frame.throwExc := e.o;
+ If s.Step(vNone, r) Then Result := r
+ Else RaiseStopIteration(s.retval);
+End;
+
+Function ASendCloseM(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ TPyAsyncGenASend(a[0].o).started := True;
+ Result := vNone;
+End;
+
+Procedure InitAsyncMethods;
+Begin
+ DefMethod(tyCoroutine, 'send', @GenSendM);
+ DefMethod(tyCoroutine, 'throw', @GenThrowM);
+ DefMethod(tyCoroutine, 'close', @GenCloseM);
+ DefMethod(tyCoroutine, '__await__', @IterSelfM);
+ DefMethod(tyAsyncGen, '__aiter__', @AGAiterM);
+ DefMethod(tyAsyncGen, '__anext__', @AGAnextM);
+ DefMethod(tyAsyncGen, 'asend', @AGAsendM);
+ DefMethod(tyAsyncGen, 'athrow', @AGAthrowM);
+ DefMethod(tyAsyncGen, 'aclose', @AGAcloseM);
+ DefMethod(tyAsyncGenASend, '__await__', @IterSelfM);
+ DefMethod(tyAsyncGenASend, '__iter__', @IterSelfM);
+ DefMethod(tyAsyncGenASend, '__next__', @ASendNextM);
+ DefMethod(tyAsyncGenASend, 'send', @ASendSendM);
+ DefMethod(tyAsyncGenASend, 'throw', @ASendThrowM);
+ DefMethod(tyAsyncGenASend, 'close', @ASendCloseM);
 End;
 
 Function ListLenHintM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -20050,6 +20753,7 @@ Begin
  DefMethod(tyBytearray, 'copy', @BaCopyM);
  DefMethod(tyBytearray, '__iadd__', @BaIAddM);
  { generateurs et iterateurs }
+ InitAsyncMethods;
  DefMethod(tyGenerator, '__next__', @GenNextM);
  DefMethod(tyGenerator, 'send', @GenSendM);
  DefMethod(tyGenerator, 'throw', @GenThrowM);
@@ -20129,10 +20833,13 @@ Procedure FileFlushObj(f: TPyFile);
 Var
  h: THandle;
 Begin
- If (f.std <> 0) Or Not f.dirty Or f.closed Then Exit;
+ If (f.std <> 0) Or f.mem Or Not f.dirty Or f.closed Then Exit;
  h := FileCreate(f.fname);
- If h = THandle(-1) Then
+ If h = THandle(-1) Then Begin
+  If Not DirectoryExists(ExtractFileDir(ExpandFileName(f.fname))) Then
+   RaiseNoEnt(f.fname);
   RaiseOSErr(exPermissionError, 13, 'Permission denied', f.fname);
+ End;
  If Length(f.data) > 0 Then FileWrite(h, f.data[1], Length(f.data));
  FileClose(h);
  f.dirty := False;
@@ -20202,6 +20909,7 @@ Var
  plus, ok: Boolean;
  m: Char;
 Begin
+ FlushAllFiles;
  m := #0;
  plus := Pos('+', mode) > 0;
  For i := 1 To Length(mode) Do
@@ -21069,6 +21777,14 @@ Begin
  Result := VObj(t);
 End;
 
+Function SysMakeIterCoro(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If (a[0].k = vkObj) And (a[0].o Is TPyFunc) Then
+  TPyFunc(a[0].o).code.flags := TPyFunc(a[0].o).code.flags Or
+   CO_ITERABLE_COROUTINE;
+ Result := a[0];
+End;
+
 Function SysGetSizeOf(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If a[0].k = vkObj Then Begin
@@ -21181,6 +21897,7 @@ Begin
  DefFunc(d, 'getfilesystemencoding', @SysGetDefEnc);
  DefFunc(d, 'getrefcount', @SysGetRefCount);
  DefFunc(d, '_getframe', @SysGetFrame);
+ DefFunc(d, '_make_iterable_coroutine', @SysMakeIterCoro);
  DefFunc(d, 'setswitchinterval', @SysNoop);
  If d.GetS('displayhook', mv) Then d.SetS('__displayhook__', mv);
 End;
@@ -22249,29 +22966,55 @@ End;
 
 Function TimeStructArr(t: Double; local: Boolean): TVal;
 Var
- dt: TDateTime;
- y, mo, d, h, mi, s, ms: Word;
- wd, yd: Integer;
  tp: TPyTuple;
+ days, secs, z, era, doe, yoe, y, doy, mp, d, m, tt: Int64;
+ wd, yd: Int64;
+ isLeap: Boolean;
 Begin
- dt := EncodeDate(1970, 1, 1) + t / 86400.0;
+ tt := Trunc(t);
+ If t < tt Then Dec(tt);
  If local Then Begin
   {$IFDEF UNIX}
-  dt := dt + (-GetLocalTimeOffset * 60) / 86400.0;
+  tt := tt + (-GetLocalTimeOffset) * 60;
   {$ENDIF}
  End;
- DecodeDate(dt, y, mo, d);
- DecodeTime(dt, h, mi, s, ms);
- wd := DayOfWeek(dt) - 2;
- If wd < 0 Then wd := 6;
- yd := Trunc(dt) - Trunc(EncodeDate(y, 1, 1)) + 1;
+ If tt >= 0 Then days := tt Div 86400 Else days := -((-tt + 86399) Div 86400);
+ secs := tt - days * 86400;
+ z := days + 719468;
+ If z >= 0 Then era := z Div 146097 Else era := (z - 146096) Div 146097;
+ doe := z - era * 146097;
+ yoe := (doe - doe Div 1460 + doe Div 36524 - doe Div 146096) Div 365;
+ y := yoe + era * 400;
+ doy := doe - (365 * yoe + yoe Div 4 - yoe Div 100);
+ mp := (5 * doy + 2) Div 153;
+ d := doy - (153 * mp + 2) Div 5 + 1;
+ If mp < 10 Then m := mp + 3 Else m := mp - 9;
+ If m <= 2 Then y := y + 1;
+ wd := (days + 3) Mod 7;
+ If wd < 0 Then wd := wd + 7;
+ isLeap := ((y Mod 4 = 0) And (y Mod 100 <> 0)) Or (y Mod 400 = 0);
+ Case m Of
+  1: yd := d;
+  2: yd := 31 + d;
+  3: yd := 59 + d;
+  4: yd := 90 + d;
+  5: yd := 120 + d;
+  6: yd := 151 + d;
+  7: yd := 181 + d;
+  8: yd := 212 + d;
+  9: yd := 243 + d;
+  10: yd := 273 + d;
+  11: yd := 304 + d;
+ Else yd := 334 + d;
+ End;
+ If isLeap And (m > 2) Then Inc(yd);
  tp := NewTuple(9);
  tp.items[0] := VInt(y);
- tp.items[1] := VInt(mo);
+ tp.items[1] := VInt(m);
  tp.items[2] := VInt(d);
- tp.items[3] := VInt(h);
- tp.items[4] := VInt(mi);
- tp.items[5] := VInt(s);
+ tp.items[3] := VInt(secs Div 3600);
+ tp.items[4] := VInt((secs Mod 3600) Div 60);
+ tp.items[5] := VInt(secs Mod 60);
  tp.items[6] := VInt(wd);
  tp.items[7] := VInt(yd);
  tp.items[8] := VInt(0);
@@ -22284,7 +23027,7 @@ Var
 Begin
  If (n > 0) And (a[0].k <> vkNone) Then t := NumToDouble(a[0])
  Else t := NowSeconds;
- Result := TimeStructArr(Floor(t), False);
+ Result := TimeStructArr(t, False);
 End;
 
 Function TimeLocaltime(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -22293,19 +23036,43 @@ Var
 Begin
  If (n > 0) And (a[0].k <> vkNone) Then t := NumToDouble(a[0])
  Else t := NowSeconds;
- Result := TimeStructArr(Floor(t), True);
+ Result := TimeStructArr(t, True);
+End;
+
+Function DaysFromCivil(y, m, d: Int64): Int64;
+Var
+ era, yoe, doy, doe: Int64;
+Begin
+ If m <= 2 Then y := y - 1;
+ If y >= 0 Then era := y Div 400 Else era := (y - 399) Div 400;
+ yoe := y - era * 400;
+ If m > 2 Then doy := (153 * (m - 3) + 2) Div 5 + d - 1
+ Else doy := (153 * (m + 9) + 2) Div 5 + d - 1;
+ doe := yoe * 365 + yoe Div 4 - yoe Div 100 + doy;
+ Result := era * 146097 + doe - 719468;
 End;
 
 Function TimeMktime(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  arr: TValArr;
- dt: TDateTime;
+ y, mo, secs: Int64;
 Begin
  arr := IterToArr(a[0]);
- dt := EncodeDate(arr[0].i, arr[1].i, arr[2].i) + EncodeTime(arr[3].i,
-  arr[4].i, arr[5].i, 0);
- Result := VFloat((dt - EncodeDate(1970, 1, 1)) * 86400.0
-  {$IFDEF UNIX} - (-GetLocalTimeOffset * 60) {$ENDIF});
+ If Length(arr) < 9 Then TypeErr('mktime(): illegal time tuple argument');
+ y := ToInt64(arr[0]);
+ mo := ToInt64(arr[1]) - 1;
+ y := y + mo Div 12;
+ mo := mo Mod 12;
+ If mo < 0 Then Begin
+  mo := mo + 12;
+  Dec(y);
+ End;
+ secs := DaysFromCivil(y, mo + 1, 1) * 86400 + (ToInt64(arr[2]) - 1) * 86400 +
+  ToInt64(arr[3]) * 3600 + ToInt64(arr[4]) * 60 + ToInt64(arr[5]);
+ {$IFDEF UNIX}
+ secs := secs - (-GetLocalTimeOffset) * 60;
+ {$ENDIF}
+ Result := VFloat(secs);
 End;
 
 Function TimeStrftime(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -22324,7 +23091,7 @@ Const
 Begin
  fmt := StrOf(a[0]);
  If n > 1 Then arr := IterToArr(a[1])
- Else arr := IterToArr(TimeStructArr(Floor(NowSeconds), True));
+ Else arr := IterToArr(TimeStructArr(NowSeconds, True));
  y := arr[0].i;
  mo := arr[1].i;
  d := arr[2].i;
@@ -22383,7 +23150,7 @@ Begin
  args[0] := VStr('%a %b %e %H:%M:%S %Y');
  If (n > 0) And (a[0].k <> vkNone) Then
   args[1] := TimeStructArr(Floor(NumToDouble(a[0])), True)
- Else args[1] := TimeStructArr(Floor(NowSeconds), True);
+ Else args[1] := TimeStructArr(NowSeconds, True);
  Result := TimeStrftime(@args[0], 2, Nil);
 End;
 
@@ -22436,8 +23203,14 @@ End;
 Function PosixListdir(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  p: AnsiString;
- sr: TSearchRec;
  l: TPyList;
+{$IFDEF UNIX}
+ d: PDir;
+ e: PDirent;
+ nm: AnsiString;
+{$ELSE}
+ sr: TSearchRec;
+{$ENDIF}
 Begin
  If n > 0 Then p := StrOf(a[0]) Else p := '.';
  If Not DirectoryExists(p) Then Begin
@@ -22445,26 +23218,51 @@ Begin
   Else RaiseNoEnt(p);
  End;
  l := NewList;
+ {$IFDEF UNIX}
+ d := FpOpenDir(p);
+ If d <> Nil Then Begin
+  Repeat
+   e := FpReadDir(d^);
+   If e <> Nil Then Begin
+    nm := PChar(@e^.d_name[0]);
+    If (nm <> '.') And (nm <> '..') Then l.Add(VStr(nm));
+   End;
+  Until e = Nil;
+  FpCloseDir(d^);
+ End;
+ {$ELSE}
  If FindFirst(JoinPath(p, '*'), faAnyFile, sr) = 0 Then Begin
   Repeat
    If (sr.Name <> '.') And (sr.Name <> '..') Then l.Add(VStr(sr.Name));
   Until FindNext(sr) <> 0;
   FindClose(sr);
  End;
+ {$ENDIF}
  Result := VObj(l);
 End;
 
 Function PosixMkdir(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  p: AnsiString;
+ mode: Integer;
 Begin
  p := StrOf(a[0]);
+ mode := $1FF;
+ If n > 1 Then mode := ToInt64(a[1]);
  If DirectoryExists(p) Or FileExists(p) Then
   RaiseOSErr(exFileExists, 17, 'File exists', p);
+ {$IFDEF UNIX}
+ If FpMkdir(p, mode) <> 0 Then Begin
+  If fpgeterrno = 2 Then RaiseNoEnt(p)
+  Else If fpgeterrno = 17 Then RaiseOSErr(exFileExists, 17, 'File exists', p)
+  Else RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
+ End;
+ {$ELSE}
  If Not CreateDir(p) Then Begin
   If Not DirectoryExists(ExtractFileDir(ExpandFileName(p))) Then RaiseNoEnt(p)
   Else RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
  End;
+ {$ENDIF}
  Result := vNone;
 End;
 
@@ -22473,11 +23271,21 @@ Var
  p: AnsiString;
 Begin
  p := StrOf(a[0]);
+ {$IFDEF UNIX}
+ If FpUnlink(p) <> 0 Then Begin
+  Case fpgeterrno Of
+   2: RaiseNoEnt(p);
+   21: RaiseOSErr(exIsADirectory, 21, 'Is a directory', p);
+  Else RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
+  End;
+ End;
+ {$ELSE}
  If DirectoryExists(p) Then
   RaiseOSErr(exIsADirectory, 21, 'Is a directory', p);
  If Not FileExists(p) Then RaiseNoEnt(p);
  If Not DeleteFile(p) Then
   RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
+ {$ENDIF}
  Result := vNone;
 End;
 
@@ -22757,7 +23565,24 @@ Begin
 End;
 
 Function PosixUtime(a: PVal; n: Integer; kw: TPyDict): TVal;
+{$IFDEF UNIX}
+Var
+ ub: TUtimBuf;
+ arr: TValArr;
+{$ENDIF}
 Begin
+ {$IFDEF UNIX}
+ If (n > 1) And (a[1].k = vkObj) Then Begin
+  arr := IterToArr(a[1]);
+  ub.actime := Trunc(NumToDouble(arr[0]));
+  ub.modtime := Trunc(NumToDouble(arr[1]));
+ End
+ Else Begin
+  ub.actime := Trunc(NowSeconds);
+  ub.modtime := ub.actime;
+ End;
+ FpUtime(PChar(StrOf(a[0])), @ub);
+ {$ENDIF}
  Result := vNone;
 End;
 
@@ -23136,6 +23961,7 @@ Var
 Begin
  f := TPyFile.Create(tyFile);
  f.fname := '<StringIO>';
+ f.mem := True;
  f.mode := 'w+';
  f.readable := True;
  f.writable := True;
@@ -26875,7 +27701,7 @@ Begin
  GcEnabled := True;
  GcThreshold := 300000;
  GcLastLive := 0;
- NestLimit := 180;
+ NestLimit := 950;
  RecursionLimit := 1000;
  SetLength(OutBuf, 65536);
  OutLen := 0;
@@ -28740,6 +29566,2390 @@ Begin
    'def get_cache_token():'#10;
  s := s +
    '    return 0'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_asyncio: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s + #10;
+ s := s +
+   '"""Boucle d''evenements asyncio simplifiee (sans E/S reseau).' +
+   '"""'#10;
+ s := s +
+   'import collections'#10;
+ s := s +
+   'import heapq'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import time'#10;
+ s := s +
+   'import types'#10;
+ s := s +
+   'import functools'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ['#10;
+ s := s +
+   '    ''run'', ''get_event_loop'', ''new_event_loop'', ''set_event_lo' +
+   'op'','#10;
+ s := s +
+   '    ''get_running_loop'', ''sleep'', ''gather'', ''wait'', ''wait_for' +
+   ''', ''as_completed'','#10;
+ s := s +
+   '    ''ensure_future'', ''create_task'', ''shield'', ''current_task''' +
+   ', ''all_tasks'','#10;
+ s := s +
+   '    ''iscoroutine'', ''iscoroutinefunction'', ''isfuture'', ''Futur' +
+   'e'', ''Task'','#10;
+ s := s +
+   '    ''CancelledError'', ''TimeoutError'', ''InvalidStateError'', ''' +
+   'Queue'','#10;
+ s := s +
+   '    ''PriorityQueue'', ''LifoQueue'', ''QueueEmpty'', ''QueueFull'',' +
+   ' ''Lock'', ''Event'','#10;
+ s := s +
+   '    ''Condition'', ''Semaphore'', ''BoundedSemaphore'', ''FIRST_COM' +
+   'PLETED'','#10;
+ s := s +
+   '    ''FIRST_EXCEPTION'', ''ALL_COMPLETED'', ''AbstractEventLoop'',' +
+   ' ''Handle'','#10;
+ s := s +
+   '    ''TimerHandle'', ''coroutine'', ''get_event_loop_policy'', ''ru' +
+   'n_coroutine_threadsafe'','#10;
+ s := s +
+   '    ''wrap_future'', ''iscoroutine'', ''Transport'', ''sleep'','#10;
+ s := s +
+   ']'#10;
+ s := s + #10;
+ s := s +
+   'FIRST_COMPLETED = ''FIRST_COMPLETED'''#10;
+ s := s +
+   'FIRST_EXCEPTION = ''FIRST_EXCEPTION'''#10;
+ s := s +
+   'ALL_COMPLETED = ''ALL_COMPLETED'''#10;
+ s := s + #10;
+ s := s +
+   'class CancelledError(BaseException):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class TimeoutError(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class InvalidStateError(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class QueueEmpty(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class QueueFull(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class Transport:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'def coroutine(func):'#10;
+ s := s +
+   '    return types.coroutine(func)'#10;
+ s := s + #10;
+ s := s +
+   'def iscoroutinefunction(func):'#10;
+ s := s +
+   '    return (callable(func) and hasattr(func, ''__code__'') and'#10;
+ s := s +
+   '            bool(func.__code__.co_flags & 0x80)) or getattr(' +
+   'func, ''_is_coroutine'', None) is True'#10;
+ s := s + #10;
+ s := s +
+   'def iscoroutine(obj):'#10;
+ s := s +
+   '    return isinstance(obj, types.CoroutineType) or ('#10;
+ s := s +
+   '        isinstance(obj, types.GeneratorType) and bool(obj.gi' +
+   '_code.co_flags & 0x100))'#10;
+ s := s + #10;
+ s := s +
+   'def isfuture(obj):'#10;
+ s := s +
+   '    return hasattr(obj.__class__, ''_asyncio_future_blocking''' +
+   ') and obj._asyncio_future_blocking is not None'#10;
+ s := s + #10;
+ s := s +
+   '_PENDING = ''PENDING'''#10;
+ s := s +
+   '_CANCELLED = ''CANCELLED'''#10;
+ s := s +
+   '_FINISHED = ''FINISHED'''#10;
+ s := s + #10;
+ s := s +
+   'class Handle:'#10;
+ s := s +
+   '    def __init__(self, callback, args, loop):'#10;
+ s := s +
+   '        self._callback = callback'#10;
+ s := s +
+   '        self._args = args'#10;
+ s := s +
+   '        self._loop = loop'#10;
+ s := s +
+   '        self._cancelled = False'#10;
+ s := s + #10;
+ s := s +
+   '    def cancel(self):'#10;
+ s := s +
+   '        self._cancelled = True'#10;
+ s := s +
+   '        self._callback = None'#10;
+ s := s +
+   '        self._args = None'#10;
+ s := s + #10;
+ s := s +
+   '    def cancelled(self):'#10;
+ s := s +
+   '        return self._cancelled'#10;
+ s := s + #10;
+ s := s +
+   '    def _run(self):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            self._callback(*self._args)'#10;
+ s := s +
+   '        except (SystemExit, KeyboardInterrupt):'#10;
+ s := s +
+   '            raise'#10;
+ s := s +
+   '        except BaseException as exc:'#10;
+ s := s +
+   '            self._loop.call_exception_handler({'#10;
+ s := s +
+   '                ''message'': ''Exception in callback %r'' % (sel' +
+   'f._callback,),'#10;
+ s := s +
+   '                ''exception'': exc, ''handle'': self})'#10;
+ s := s + #10;
+ s := s +
+   'class TimerHandle(Handle):'#10;
+ s := s +
+   '    def __init__(self, when, callback, args, loop):'#10;
+ s := s +
+   '        Handle.__init__(self, callback, args, loop)'#10;
+ s := s +
+   '        self._when = when'#10;
+ s := s + #10;
+ s := s +
+   '    def when(self):'#10;
+ s := s +
+   '        return self._when'#10;
+ s := s + #10;
+ s := s +
+   '    def __lt__(self, other):'#10;
+ s := s +
+   '        return self._when < other._when'#10;
+ s := s + #10;
+ s := s +
+   '    def __le__(self, other):'#10;
+ s := s +
+   '        return self._when <= other._when'#10;
+ s := s + #10;
+ s := s +
+   '    def __eq__(self, other):'#10;
+ s := s +
+   '        return self is other'#10;
+ s := s + #10;
+ s := s +
+   '    def __hash__(self):'#10;
+ s := s +
+   '        return id(self)'#10;
+ s := s + #10;
+ s := s +
+   'class Future:'#10;
+ s := s +
+   '    _asyncio_future_blocking = False'#10;
+ s := s +
+   '    _state = _PENDING'#10;
+ s := s +
+   '    _result = None'#10;
+ s := s +
+   '    _exception = None'#10;
+ s := s +
+   '    _loop = None'#10;
+ s := s +
+   '    _log_traceback = False'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, *, loop=None):'#10;
+ s := s +
+   '        if loop is None:'#10;
+ s := s +
+   '            loop = get_event_loop()'#10;
+ s := s +
+   '        self._loop = loop'#10;
+ s := s +
+   '        self._callbacks = []'#10;
+ s := s + #10;
+ s := s +
+   '    def get_loop(self):'#10;
+ s := s +
+   '        return self._loop'#10;
+ s := s + #10;
+ s := s +
+   '    def cancel(self):'#10;
+ s := s +
+   '        if self._state != _PENDING:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        self._state = _CANCELLED'#10;
+ s := s +
+   '        self._schedule_callbacks()'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def _schedule_callbacks(self):'#10;
+ s := s +
+   '        callbacks = self._callbacks[:]'#10;
+ s := s +
+   '        if not callbacks:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        self._callbacks[:] = []'#10;
+ s := s +
+   '        for callback in callbacks:'#10;
+ s := s +
+   '            self._loop.call_soon(callback, self)'#10;
+ s := s + #10;
+ s := s +
+   '    def cancelled(self):'#10;
+ s := s +
+   '        return self._state == _CANCELLED'#10;
+ s := s + #10;
+ s := s +
+   '    def done(self):'#10;
+ s := s +
+   '        return self._state != _PENDING'#10;
+ s := s + #10;
+ s := s +
+   '    def result(self):'#10;
+ s := s +
+   '        if self._state == _CANCELLED:'#10;
+ s := s +
+   '            raise CancelledError()'#10;
+ s := s +
+   '        if self._state != _FINISHED:'#10;
+ s := s +
+   '            raise InvalidStateError(''Result is not ready.'')'#10;
+ s := s +
+   '        self._log_traceback = False'#10;
+ s := s +
+   '        if self._exception is not None:'#10;
+ s := s +
+   '            raise self._exception'#10;
+ s := s +
+   '        return self._result'#10;
+ s := s + #10;
+ s := s +
+   '    def exception(self):'#10;
+ s := s +
+   '        if self._state == _CANCELLED:'#10;
+ s := s +
+   '            raise CancelledError()'#10;
+ s := s +
+   '        if self._state != _FINISHED:'#10;
+ s := s +
+   '            raise InvalidStateError(''Exception is not set.'')'#10;
+ s := s +
+   '        self._log_traceback = False'#10;
+ s := s +
+   '        return self._exception'#10;
+ s := s + #10;
+ s := s +
+   '    def add_done_callback(self, fn, *, context=None):'#10;
+ s := s +
+   '        if self._state != _PENDING:'#10;
+ s := s +
+   '            self._loop.call_soon(fn, self)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._callbacks.append(fn)'#10;
+ s := s + #10;
+ s := s +
+   '    def remove_done_callback(self, fn):'#10;
+ s := s +
+   '        filtered = [f for f in self._callbacks if f != fn]'#10;
+ s := s +
+   '        removed = len(self._callbacks) - len(filtered)'#10;
+ s := s +
+   '        if removed:'#10;
+ s := s +
+   '            self._callbacks[:] = filtered'#10;
+ s := s +
+   '        return removed'#10;
+ s := s + #10;
+ s := s +
+   '    def set_result(self, result):'#10;
+ s := s +
+   '        if self._state != _PENDING:'#10;
+ s := s +
+   '            raise InvalidStateError(''%s: %r'' % (self._state,' +
+   ' self))'#10;
+ s := s +
+   '        self._result = result'#10;
+ s := s +
+   '        self._state = _FINISHED'#10;
+ s := s +
+   '        self._schedule_callbacks()'#10;
+ s := s + #10;
+ s := s +
+   '    def set_exception(self, exception):'#10;
+ s := s +
+   '        if self._state != _PENDING:'#10;
+ s := s +
+   '            raise InvalidStateError(''%s: %r'' % (self._state,' +
+   ' self))'#10;
+ s := s +
+   '        if isinstance(exception, type):'#10;
+ s := s +
+   '            exception = exception()'#10;
+ s := s +
+   '        if type(exception) is StopIteration:'#10;
+ s := s +
+   '            raise TypeError("StopIteration interacts badly w' +
+   'ith generators "'#10;
+ s := s +
+   '                            "and cannot be raised into a Fut' +
+   'ure")'#10;
+ s := s +
+   '        self._exception = exception'#10;
+ s := s +
+   '        self._state = _FINISHED'#10;
+ s := s +
+   '        self._schedule_callbacks()'#10;
+ s := s +
+   '        self._log_traceback = True'#10;
+ s := s + #10;
+ s := s +
+   '    def __await__(self):'#10;
+ s := s +
+   '        if not self.done():'#10;
+ s := s +
+   '            self._asyncio_future_blocking = True'#10;
+ s := s +
+   '            yield self'#10;
+ s := s +
+   '        if not self.done():'#10;
+ s := s +
+   '            raise RuntimeError("await wasn''t used with futur' +
+   'e")'#10;
+ s := s +
+   '        return self.result()'#10;
+ s := s + #10;
+ s := s +
+   '    __iter__ = __await__'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<%s %s>'' % (self.__class__.__name__, self._s' +
+   'tate)'#10;
+ s := s + #10;
+ s := s +
+   '    def __del__(self):'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   'class Task(Future):'#10;
+ s := s +
+   '    _all_tasks = []'#10;
+ s := s +
+   '    _current_tasks = {}'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, coro, *, loop=None, name=None):'#10;
+ s := s +
+   '        super().__init__(loop=loop)'#10;
+ s := s +
+   '        if not iscoroutine(coro):'#10;
+ s := s +
+   '            raise TypeError(''a coroutine was expected, got %' +
+   'r'' % (coro,))'#10;
+ s := s +
+   '        self._coro = coro'#10;
+ s := s +
+   '        self._fut_waiter = None'#10;
+ s := s +
+   '        self._must_cancel = False'#10;
+ s := s +
+   '        if name is None:'#10;
+ s := s +
+   '            name = ''Task-%d'' % _next_task_id()'#10;
+ s := s +
+   '        self._name = name'#10;
+ s := s +
+   '        self._loop.call_soon(self.__step)'#10;
+ s := s +
+   '        Task._all_tasks.append(self)'#10;
+ s := s + #10;
+ s := s +
+   '    def get_name(self):'#10;
+ s := s +
+   '        return self._name'#10;
+ s := s + #10;
+ s := s +
+   '    def set_name(self, value):'#10;
+ s := s +
+   '        self._name = str(value)'#10;
+ s := s + #10;
+ s := s +
+   '    def get_coro(self):'#10;
+ s := s +
+   '        return self._coro'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<Task %s name=%r coro=%r>'' % (self._state.lo' +
+   'wer(), self._name, self._coro)'#10;
+ s := s + #10;
+ s := s +
+   '    def cancel(self):'#10;
+ s := s +
+   '        if self.done():'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        if self._fut_waiter is not None:'#10;
+ s := s +
+   '            if self._fut_waiter.cancel():'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '        self._must_cancel = True'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def __step(self, exc=None):'#10;
+ s := s +
+   '        if self.done():'#10;
+ s := s +
+   '            raise InvalidStateError(''_step(): already done: ' +
+   '%r, %r'' % (self, exc))'#10;
+ s := s +
+   '        if self._must_cancel:'#10;
+ s := s +
+   '            if not isinstance(exc, CancelledError):'#10;
+ s := s +
+   '                exc = CancelledError()'#10;
+ s := s +
+   '            self._must_cancel = False'#10;
+ s := s +
+   '        coro = self._coro'#10;
+ s := s +
+   '        self._fut_waiter = None'#10;
+ s := s +
+   '        Task._current_tasks[self._loop] = self'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                if exc is None:'#10;
+ s := s +
+   '                    result = coro.send(None)'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    result = coro.throw(exc)'#10;
+ s := s +
+   '            except StopIteration as stop:'#10;
+ s := s +
+   '                if self._must_cancel:'#10;
+ s := s +
+   '                    self._must_cancel = False'#10;
+ s := s +
+   '                    super().cancel()'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    self.set_result(stop.value)'#10;
+ s := s +
+   '            except CancelledError:'#10;
+ s := s +
+   '                super().cancel()'#10;
+ s := s +
+   '            except (KeyboardInterrupt, SystemExit) as exc2:'#10;
+ s := s +
+   '                super().set_exception(exc2)'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '            except BaseException as exc2:'#10;
+ s := s +
+   '                super().set_exception(exc2)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                blocking = getattr(result, ''_asyncio_future_' +
+   'blocking'', None)'#10;
+ s := s +
+   '                if blocking is not None:'#10;
+ s := s +
+   '                    if result._loop is not self._loop:'#10;
+ s := s +
+   '                        new_exc = RuntimeError(''Task %r got ' +
+   'Future %r attached to a different loop'' % (self, result))'#10;
+ s := s +
+   '                        self._loop.call_soon(self.__step, ne' +
+   'w_exc)'#10;
+ s := s +
+   '                    elif blocking:'#10;
+ s := s +
+   '                        if result is self:'#10;
+ s := s +
+   '                            new_exc = RuntimeError(''Task can' +
+   'not await on itself: %r'' % (self,))'#10;
+ s := s +
+   '                            self._loop.call_soon(self.__step' +
+   ', new_exc)'#10;
+ s := s +
+   '                        else:'#10;
+ s := s +
+   '                            result._asyncio_future_blocking ' +
+   '= False'#10;
+ s := s +
+   '                            result.add_done_callback(self.__' +
+   'wakeup)'#10;
+ s := s +
+   '                            self._fut_waiter = result'#10;
+ s := s +
+   '                            if self._must_cancel:'#10;
+ s := s +
+   '                                if self._fut_waiter.cancel()' +
+   ':'#10;
+ s := s +
+   '                                    self._must_cancel = Fals' +
+   'e'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        new_exc = RuntimeError(''yield was us' +
+   'ed instead of yield from in task %r with %r'' % (self, result' +
+   '))'#10;
+ s := s +
+   '                        self._loop.call_soon(self.__step, ne' +
+   'w_exc)'#10;
+ s := s +
+   '                elif result is None:'#10;
+ s := s +
+   '                    self._loop.call_soon(self.__step)'#10;
+ s := s +
+   '                elif hasattr(result, ''__iter__'') and not isi' +
+   'nstance(result, (str, bytes)):'#10;
+ s := s +
+   '                    new_exc = RuntimeError(''yield was used i' +
+   'nstead of yield from for generator in task %r with %r'' % (se' +
+   'lf, result))'#10;
+ s := s +
+   '                    self._loop.call_soon(self.__step, new_ex' +
+   'c)'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    new_exc = RuntimeError(''Task got bad yie' +
+   'ld: %r'' % (result,))'#10;
+ s := s +
+   '                    self._loop.call_soon(self.__step, new_ex' +
+   'c)'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            Task._current_tasks.pop(self._loop, None)'#10;
+ s := s +
+   '            if self.done():'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    Task._all_tasks.remove(self)'#10;
+ s := s +
+   '                except ValueError:'#10;
+ s := s +
+   '                    pass'#10;
+ s := s + #10;
+ s := s +
+   '    def __wakeup(self, future):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            future.result()'#10;
+ s := s +
+   '        except BaseException as exc:'#10;
+ s := s +
+   '            self.__step(exc)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self.__step()'#10;
+ s := s + #10;
+ s := s +
+   '_task_counter = [0]'#10;
+ s := s + #10;
+ s := s +
+   'def _next_task_id():'#10;
+ s := s +
+   '    _task_counter[0] += 1'#10;
+ s := s +
+   '    return _task_counter[0]'#10;
+ s := s + #10;
+ s := s +
+   'class AbstractEventLoop:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class BaseEventLoop(AbstractEventLoop):'#10;
+ s := s +
+   '    def __init__(self):'#10;
+ s := s +
+   '        self._ready = collections.deque()'#10;
+ s := s +
+   '        self._scheduled = []'#10;
+ s := s +
+   '        self._closed = False'#10;
+ s := s +
+   '        self._stopping = False'#10;
+ s := s +
+   '        self._running = False'#10;
+ s := s +
+   '        self._debug = False'#10;
+ s := s +
+   '        self._exception_handler = None'#10;
+ s := s +
+   '        self._counter = 0'#10;
+ s := s +
+   '        self._clock_resolution = 1e-9'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<%s running=%s closed=%s debug=%s>'' % ('#10;
+ s := s +
+   '            self.__class__.__name__, self.is_running(), self' +
+   '.is_closed(), self.get_debug())'#10;
+ s := s + #10;
+ s := s +
+   '    def create_future(self):'#10;
+ s := s +
+   '        return Future(loop=self)'#10;
+ s := s + #10;
+ s := s +
+   '    def create_task(self, coro, *, name=None):'#10;
+ s := s +
+   '        self._check_closed()'#10;
+ s := s +
+   '        return Task(coro, loop=self, name=name)'#10;
+ s := s + #10;
+ s := s +
+   '    def time(self):'#10;
+ s := s +
+   '        return time.monotonic()'#10;
+ s := s + #10;
+ s := s +
+   '    def _check_closed(self):'#10;
+ s := s +
+   '        if self._closed:'#10;
+ s := s +
+   '            raise RuntimeError(''Event loop is closed'')'#10;
+ s := s + #10;
+ s := s +
+   '    def call_soon(self, callback, *args, context=None):'#10;
+ s := s +
+   '        self._check_closed()'#10;
+ s := s +
+   '        handle = Handle(callback, args, self)'#10;
+ s := s +
+   '        self._ready.append(handle)'#10;
+ s := s +
+   '        return handle'#10;
+ s := s + #10;
+ s := s +
+   '    call_soon_threadsafe = call_soon'#10;
+ s := s + #10;
+ s := s +
+   '    def call_later(self, delay, callback, *args, context=Non' +
+   'e):'#10;
+ s := s +
+   '        return self.call_at(self.time() + delay, callback, *' +
+   'args)'#10;
+ s := s + #10;
+ s := s +
+   '    def call_at(self, when, callback, *args, context=None):'#10;
+ s := s +
+   '        self._check_closed()'#10;
+ s := s +
+   '        timer = TimerHandle(when, callback, args, self)'#10;
+ s := s +
+   '        self._counter += 1'#10;
+ s := s +
+   '        heapq.heappush(self._scheduled, (when, self._counter' +
+   ', timer))'#10;
+ s := s +
+   '        return timer'#10;
+ s := s + #10;
+ s := s +
+   '    def stop(self):'#10;
+ s := s +
+   '        self._stopping = True'#10;
+ s := s + #10;
+ s := s +
+   '    def is_running(self):'#10;
+ s := s +
+   '        return self._running'#10;
+ s := s + #10;
+ s := s +
+   '    def is_closed(self):'#10;
+ s := s +
+   '        return self._closed'#10;
+ s := s + #10;
+ s := s +
+   '    def close(self):'#10;
+ s := s +
+   '        if self._running:'#10;
+ s := s +
+   '            raise RuntimeError(''Cannot close a running event' +
+   ' loop'')'#10;
+ s := s +
+   '        self._ready.clear()'#10;
+ s := s +
+   '        self._scheduled.clear()'#10;
+ s := s +
+   '        self._closed = True'#10;
+ s := s + #10;
+ s := s +
+   '    def get_debug(self):'#10;
+ s := s +
+   '        return self._debug'#10;
+ s := s + #10;
+ s := s +
+   '    def set_debug(self, enabled):'#10;
+ s := s +
+   '        self._debug = enabled'#10;
+ s := s + #10;
+ s := s +
+   '    def _run_once(self):'#10;
+ s := s +
+   '        timeout = None'#10;
+ s := s +
+   '        if self._ready or self._stopping:'#10;
+ s := s +
+   '            timeout = 0'#10;
+ s := s +
+   '        elif self._scheduled:'#10;
+ s := s +
+   '            when = self._scheduled[0][0]'#10;
+ s := s +
+   '            timeout = max(0, when - self.time())'#10;
+ s := s +
+   '        if timeout:'#10;
+ s := s +
+   '            time.sleep(timeout)'#10;
+ s := s +
+   '        end_time = self.time() + self._clock_resolution'#10;
+ s := s +
+   '        while self._scheduled:'#10;
+ s := s +
+   '            when, _, handle = self._scheduled[0]'#10;
+ s := s +
+   '            if handle._cancelled:'#10;
+ s := s +
+   '                heapq.heappop(self._scheduled)'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            if handle._when >= end_time:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            heapq.heappop(self._scheduled)'#10;
+ s := s +
+   '            self._ready.append(handle)'#10;
+ s := s +
+   '        ntodo = len(self._ready)'#10;
+ s := s +
+   '        for i in range(ntodo):'#10;
+ s := s +
+   '            handle = self._ready.popleft()'#10;
+ s := s +
+   '            if handle._cancelled:'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            handle._run()'#10;
+ s := s +
+   '        handle = None'#10;
+ s := s + #10;
+ s := s +
+   '    def run_forever(self):'#10;
+ s := s +
+   '        self._check_closed()'#10;
+ s := s +
+   '        if self._running:'#10;
+ s := s +
+   '            raise RuntimeError(''This event loop is already r' +
+   'unning'')'#10;
+ s := s +
+   '        if _get_running_loop() is not None:'#10;
+ s := s +
+   '            raise RuntimeError(''Cannot run the event loop wh' +
+   'ile another loop is running'')'#10;
+ s := s +
+   '        self._running = True'#10;
+ s := s +
+   '        _set_running_loop(self)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                self._run_once()'#10;
+ s := s +
+   '                if self._stopping:'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            self._stopping = False'#10;
+ s := s +
+   '            self._running = False'#10;
+ s := s +
+   '            _set_running_loop(None)'#10;
+ s := s + #10;
+ s := s +
+   '    def run_until_complete(self, future):'#10;
+ s := s +
+   '        self._check_closed()'#10;
+ s := s +
+   '        new_task = not isfuture(future)'#10;
+ s := s +
+   '        future = ensure_future(future, loop=self)'#10;
+ s := s +
+   '        if new_task:'#10;
+ s := s +
+   '            future._log_destroy_pending = False'#10;
+ s := s +
+   '        future.add_done_callback(_run_until_complete_cb)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            self.run_forever()'#10;
+ s := s +
+   '        except BaseException:'#10;
+ s := s +
+   '            if new_task and future.done() and not future.can' +
+   'celled():'#10;
+ s := s +
+   '                future.exception()'#10;
+ s := s +
+   '            raise'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            future.remove_done_callback(_run_until_complete_' +
+   'cb)'#10;
+ s := s +
+   '        if not future.done():'#10;
+ s := s +
+   '            raise RuntimeError(''Event loop stopped before Fu' +
+   'ture completed.'')'#10;
+ s := s +
+   '        return future.result()'#10;
+ s := s + #10;
+ s := s +
+   '    def run_in_executor(self, executor, func, *args):'#10;
+ s := s +
+   '        fut = self.create_future()'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            fut.set_result(func(*args))'#10;
+ s := s +
+   '        except BaseException as exc:'#10;
+ s := s +
+   '            fut.set_exception(exc)'#10;
+ s := s +
+   '        return fut'#10;
+ s := s + #10;
+ s := s +
+   '    def set_default_executor(self, executor):'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   '    def set_exception_handler(self, handler):'#10;
+ s := s +
+   '        self._exception_handler = handler'#10;
+ s := s + #10;
+ s := s +
+   '    def get_exception_handler(self):'#10;
+ s := s +
+   '        return self._exception_handler'#10;
+ s := s + #10;
+ s := s +
+   '    def default_exception_handler(self, context):'#10;
+ s := s +
+   '        message = context.get(''message'')'#10;
+ s := s +
+   '        if not message:'#10;
+ s := s +
+   '            message = ''Unhandled exception in event loop'''#10;
+ s := s +
+   '        exception = context.get(''exception'')'#10;
+ s := s +
+   '        log = [message]'#10;
+ s := s +
+   '        for key in sorted(context):'#10;
+ s := s +
+   '            if key in (''message'', ''exception''):'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            log.append(''%s: %r'' % (key, context[key]))'#10;
+ s := s +
+   '        text = ''\n''.join(log)'#10;
+ s := s +
+   '        if exception is not None:'#10;
+ s := s +
+   '            import traceback'#10;
+ s := s +
+   '            text += ''\n'' + ''''.join(traceback.format_exceptio' +
+   'n(type(exception), exception, exception.__traceback__))'#10;
+ s := s +
+   '        sys.stderr.write(text + ''\n'')'#10;
+ s := s + #10;
+ s := s +
+   '    def call_exception_handler(self, context):'#10;
+ s := s +
+   '        if self._exception_handler is None:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                self.default_exception_handler(context)'#10;
+ s := s +
+   '            except (SystemExit, KeyboardInterrupt):'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '            except BaseException:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                self._exception_handler(self, context)'#10;
+ s := s +
+   '            except (SystemExit, KeyboardInterrupt):'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '            except BaseException:'#10;
+ s := s +
+   '                pass'#10;
+ s := s + #10;
+ s := s +
+   '    async def shutdown_asyncgens(self):'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   '    async def shutdown_default_executor(self):'#10;
+ s := s +
+   '        pass'#10;
+ s := s + #10;
+ s := s +
+   '    def add_signal_handler(self, sig, callback, *args):'#10;
+ s := s +
+   '        raise NotImplementedError'#10;
+ s := s + #10;
+ s := s +
+   '    def remove_signal_handler(self, sig):'#10;
+ s := s +
+   '        return False'#10;
+ s := s + #10;
+ s := s +
+   'def _run_until_complete_cb(fut):'#10;
+ s := s +
+   '    fut._loop.stop()'#10;
+ s := s + #10;
+ s := s +
+   '_running_loop = [None]'#10;
+ s := s + #10;
+ s := s +
+   'def _get_running_loop():'#10;
+ s := s +
+   '    return _running_loop[0]'#10;
+ s := s + #10;
+ s := s +
+   'def _set_running_loop(loop):'#10;
+ s := s +
+   '    _running_loop[0] = loop'#10;
+ s := s + #10;
+ s := s +
+   'def get_running_loop():'#10;
+ s := s +
+   '    loop = _get_running_loop()'#10;
+ s := s +
+   '    if loop is None:'#10;
+ s := s +
+   '        raise RuntimeError(''no running event loop'')'#10;
+ s := s +
+   '    return loop'#10;
+ s := s + #10;
+ s := s +
+   'class _Policy:'#10;
+ s := s +
+   '    def __init__(self):'#10;
+ s := s +
+   '        self._loop = None'#10;
+ s := s +
+   '        self._set_called = False'#10;
+ s := s + #10;
+ s := s +
+   '    def get_event_loop(self):'#10;
+ s := s +
+   '        if self._loop is None and not self._set_called:'#10;
+ s := s +
+   '            self._loop = self.new_event_loop()'#10;
+ s := s +
+   '        if self._loop is None:'#10;
+ s := s +
+   '            raise RuntimeError(''There is no current event lo' +
+   'op'')'#10;
+ s := s +
+   '        return self._loop'#10;
+ s := s + #10;
+ s := s +
+   '    def set_event_loop(self, loop):'#10;
+ s := s +
+   '        self._set_called = True'#10;
+ s := s +
+   '        self._loop = loop'#10;
+ s := s + #10;
+ s := s +
+   '    def new_event_loop(self):'#10;
+ s := s +
+   '        return BaseEventLoop()'#10;
+ s := s + #10;
+ s := s +
+   '_policy = _Policy()'#10;
+ s := s + #10;
+ s := s +
+   'def get_event_loop_policy():'#10;
+ s := s +
+   '    return _policy'#10;
+ s := s + #10;
+ s := s +
+   'def set_event_loop_policy(policy):'#10;
+ s := s +
+   '    global _policy'#10;
+ s := s +
+   '    _policy = policy'#10;
+ s := s + #10;
+ s := s +
+   'def get_event_loop():'#10;
+ s := s +
+   '    loop = _get_running_loop()'#10;
+ s := s +
+   '    if loop is not None:'#10;
+ s := s +
+   '        return loop'#10;
+ s := s +
+   '    return _policy.get_event_loop()'#10;
+ s := s + #10;
+ s := s +
+   'def set_event_loop(loop):'#10;
+ s := s +
+   '    _policy.set_event_loop(loop)'#10;
+ s := s + #10;
+ s := s +
+   'def new_event_loop():'#10;
+ s := s +
+   '    return _policy.new_event_loop()'#10;
+ s := s + #10;
+ s := s +
+   'def run(main, *, debug=False):'#10;
+ s := s +
+   '    if _get_running_loop() is not None:'#10;
+ s := s +
+   '        raise RuntimeError(''asyncio.run() cannot be called f' +
+   'rom a running event loop'')'#10;
+ s := s +
+   '    if not iscoroutine(main):'#10;
+ s := s +
+   '        raise ValueError(''a coroutine was expected, got {!r}' +
+   '''.format(main))'#10;
+ s := s +
+   '    loop = new_event_loop()'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        set_event_loop(loop)'#10;
+ s := s +
+   '        loop.set_debug(debug)'#10;
+ s := s +
+   '        return loop.run_until_complete(main)'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            _cancel_all_tasks(loop)'#10;
+ s := s +
+   '            loop.run_until_complete(loop.shutdown_asyncgens(' +
+   '))'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            set_event_loop(None)'#10;
+ s := s +
+   '            loop.close()'#10;
+ s := s + #10;
+ s := s +
+   'def _cancel_all_tasks(loop):'#10;
+ s := s +
+   '    to_cancel = [t for t in Task._all_tasks if t._loop is lo' +
+   'op and not t.done()]'#10;
+ s := s +
+   '    if not to_cancel:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    for task in to_cancel:'#10;
+ s := s +
+   '        task.cancel()'#10;
+ s := s +
+   '    loop.run_until_complete(gather(*to_cancel, loop=loop, re' +
+   'turn_exceptions=True))'#10;
+ s := s +
+   '    for task in to_cancel:'#10;
+ s := s +
+   '        if task.cancelled():'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if task.exception() is not None:'#10;
+ s := s +
+   '            loop.call_exception_handler({'#10;
+ s := s +
+   '                ''message'': ''unhandled exception during async' +
+   'io.run() shutdown'','#10;
+ s := s +
+   '                ''exception'': task.exception(), ''task'': task}' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   'def ensure_future(coro_or_future, *, loop=None):'#10;
+ s := s +
+   '    if isfuture(coro_or_future):'#10;
+ s := s +
+   '        if loop is not None and loop is not coro_or_future._' +
+   'loop:'#10;
+ s := s +
+   '            raise ValueError(''The future belongs to a differ' +
+   'ent loop than the one specified as the loop argument'')'#10;
+ s := s +
+   '        return coro_or_future'#10;
+ s := s +
+   '    if iscoroutine(coro_or_future):'#10;
+ s := s +
+   '        if loop is None:'#10;
+ s := s +
+   '            loop = get_event_loop()'#10;
+ s := s +
+   '        return loop.create_task(coro_or_future)'#10;
+ s := s +
+   '    if hasattr(coro_or_future, ''__await__''):'#10;
+ s := s +
+   '        async def _wrap_awaitable(aw):'#10;
+ s := s +
+   '            return await aw'#10;
+ s := s +
+   '        return ensure_future(_wrap_awaitable(coro_or_future)' +
+   ', loop=loop)'#10;
+ s := s +
+   '    raise TypeError(''An asyncio.Future, a coroutine or an aw' +
+   'aitable is required'')'#10;
+ s := s + #10;
+ s := s +
+   'def create_task(coro, *, name=None):'#10;
+ s := s +
+   '    loop = get_running_loop()'#10;
+ s := s +
+   '    return loop.create_task(coro, name=name)'#10;
+ s := s + #10;
+ s := s +
+   'def current_task(loop=None):'#10;
+ s := s +
+   '    if loop is None:'#10;
+ s := s +
+   '        loop = get_running_loop()'#10;
+ s := s +
+   '    return Task._current_tasks.get(loop)'#10;
+ s := s + #10;
+ s := s +
+   'def all_tasks(loop=None):'#10;
+ s := s +
+   '    if loop is None:'#10;
+ s := s +
+   '        loop = get_running_loop()'#10;
+ s := s +
+   '    return {t for t in Task._all_tasks if t._loop is loop an' +
+   'd not t.done()}'#10;
+ s := s + #10;
+ s := s +
+   '@types.coroutine'#10;
+ s := s +
+   'def __sleep0():'#10;
+ s := s +
+   '    yield'#10;
+ s := s + #10;
+ s := s +
+   'async def sleep(delay, result=None, *, loop=None):'#10;
+ s := s +
+   '    if delay <= 0:'#10;
+ s := s +
+   '        await __sleep0()'#10;
+ s := s +
+   '        return result'#10;
+ s := s +
+   '    loop = get_running_loop()'#10;
+ s := s +
+   '    future = loop.create_future()'#10;
+ s := s +
+   '    h = loop.call_later(delay, _set_result_unless_cancelled,' +
+   ' future, result)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        return await future'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        h.cancel()'#10;
+ s := s + #10;
+ s := s +
+   'def _set_result_unless_cancelled(fut, result):'#10;
+ s := s +
+   '    if fut.cancelled():'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    fut.set_result(result)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _GatheringFuture(Future):'#10;
+ s := s +
+   '    def __init__(self, children, *, loop=None):'#10;
+ s := s +
+   '        super().__init__(loop=loop)'#10;
+ s := s +
+   '        self._children = children'#10;
+ s := s +
+   '        self._cancel_requested = False'#10;
+ s := s + #10;
+ s := s +
+   '    def cancel(self):'#10;
+ s := s +
+   '        if self.done():'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        ret = False'#10;
+ s := s +
+   '        for child in self._children:'#10;
+ s := s +
+   '            if child.cancel():'#10;
+ s := s +
+   '                ret = True'#10;
+ s := s +
+   '        if ret:'#10;
+ s := s +
+   '            self._cancel_requested = True'#10;
+ s := s +
+   '        return ret'#10;
+ s := s + #10;
+ s := s +
+   'def gather(*coros_or_futures, loop=None, return_exceptions=F' +
+   'alse):'#10;
+ s := s +
+   '    if not coros_or_futures:'#10;
+ s := s +
+   '        if loop is None:'#10;
+ s := s +
+   '            loop = get_event_loop()'#10;
+ s := s +
+   '        outer = loop.create_future()'#10;
+ s := s +
+   '        outer.set_result([])'#10;
+ s := s +
+   '        return outer'#10;
+ s := s +
+   '    arg_to_fut = {}'#10;
+ s := s +
+   '    children = []'#10;
+ s := s +
+   '    for arg in coros_or_futures:'#10;
+ s := s +
+   '        key = id(arg)'#10;
+ s := s +
+   '        if key not in arg_to_fut:'#10;
+ s := s +
+   '            fut = ensure_future(arg, loop=loop)'#10;
+ s := s +
+   '            if loop is None:'#10;
+ s := s +
+   '                loop = fut._loop'#10;
+ s := s +
+   '            arg_to_fut[key] = fut'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            fut = arg_to_fut[key]'#10;
+ s := s +
+   '        children.append(fut)'#10;
+ s := s +
+   '    nfuts = len(arg_to_fut)'#10;
+ s := s +
+   '    state = [0]'#10;
+ s := s +
+   '    outer = _GatheringFuture(children, loop=loop)'#10;
+ s := s + #10;
+ s := s +
+   '    def _done_callback(fut):'#10;
+ s := s +
+   '        state[0] += 1'#10;
+ s := s +
+   '        if outer.done():'#10;
+ s := s +
+   '            if not fut.cancelled():'#10;
+ s := s +
+   '                fut.exception()'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if not return_exceptions:'#10;
+ s := s +
+   '            if fut.cancelled():'#10;
+ s := s +
+   '                outer.set_exception(CancelledError())'#10;
+ s := s +
+   '                return'#10;
+ s := s +
+   '            exc = fut.exception()'#10;
+ s := s +
+   '            if exc is not None:'#10;
+ s := s +
+   '                outer.set_exception(exc)'#10;
+ s := s +
+   '                return'#10;
+ s := s +
+   '        if state[0] == nfuts:'#10;
+ s := s +
+   '            results = []'#10;
+ s := s +
+   '            for f in children:'#10;
+ s := s +
+   '                if f.cancelled():'#10;
+ s := s +
+   '                    res = CancelledError()'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    res = f.exception()'#10;
+ s := s +
+   '                    if res is None:'#10;
+ s := s +
+   '                        res = f.result()'#10;
+ s := s +
+   '                results.append(res)'#10;
+ s := s +
+   '            if outer._cancel_requested:'#10;
+ s := s +
+   '                outer.set_exception(CancelledError())'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                outer.set_result(results)'#10;
+ s := s + #10;
+ s := s +
+   '    for fut in arg_to_fut.values():'#10;
+ s := s +
+   '        fut.add_done_callback(_done_callback)'#10;
+ s := s +
+   '    return outer'#10;
+ s := s + #10;
+ s := s +
+   'def shield(arg, *, loop=None):'#10;
+ s := s +
+   '    inner = ensure_future(arg, loop=loop)'#10;
+ s := s +
+   '    if inner.done():'#10;
+ s := s +
+   '        return inner'#10;
+ s := s +
+   '    loop = inner._loop'#10;
+ s := s +
+   '    outer = loop.create_future()'#10;
+ s := s + #10;
+ s := s +
+   '    def _inner_done_callback(inner):'#10;
+ s := s +
+   '        if outer.cancelled():'#10;
+ s := s +
+   '            if not inner.cancelled():'#10;
+ s := s +
+   '                inner.exception()'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if inner.cancelled():'#10;
+ s := s +
+   '            outer.cancel()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            exc = inner.exception()'#10;
+ s := s +
+   '            if exc is not None:'#10;
+ s := s +
+   '                outer.set_exception(exc)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                outer.set_result(inner.result())'#10;
+ s := s + #10;
+ s := s +
+   '    def _outer_done_callback(outer):'#10;
+ s := s +
+   '        if not inner.done():'#10;
+ s := s +
+   '            inner.remove_done_callback(_inner_done_callback)'#10;
+ s := s + #10;
+ s := s +
+   '    inner.add_done_callback(_inner_done_callback)'#10;
+ s := s +
+   '    outer.add_done_callback(_outer_done_callback)'#10;
+ s := s +
+   '    return outer'#10;
+ s := s + #10;
+ s := s +
+   'async def wait(fs, *, loop=None, timeout=None, return_when=A' +
+   'LL_COMPLETED):'#10;
+ s := s +
+   '    if isfuture(fs) or iscoroutine(fs):'#10;
+ s := s +
+   '        raise TypeError(''expect a list of futures, not %s'' %' +
+   ' type(fs).__name__)'#10;
+ s := s +
+   '    if not fs:'#10;
+ s := s +
+   '        raise ValueError(''Set of coroutines/Futures is empty' +
+   '.'')'#10;
+ s := s +
+   '    if return_when not in (FIRST_COMPLETED, FIRST_EXCEPTION,' +
+   ' ALL_COMPLETED):'#10;
+ s := s +
+   '        raise ValueError(''Invalid return_when value: {}''.for' +
+   'mat(return_when))'#10;
+ s := s +
+   '    loop = get_running_loop()'#10;
+ s := s +
+   '    fs = {ensure_future(f, loop=loop) for f in set(fs)}'#10;
+ s := s +
+   '    return await _wait(fs, timeout, return_when, loop)'#10;
+ s := s + #10;
+ s := s +
+   'async def _wait(fs, timeout, return_when, loop):'#10;
+ s := s +
+   '    assert fs, ''Set of Futures is empty.'''#10;
+ s := s +
+   '    waiter = loop.create_future()'#10;
+ s := s +
+   '    timeout_handle = None'#10;
+ s := s +
+   '    if timeout is not None:'#10;
+ s := s +
+   '        timeout_handle = loop.call_later(timeout, _release_w' +
+   'aiter, waiter)'#10;
+ s := s +
+   '    counter = len(fs)'#10;
+ s := s + #10;
+ s := s +
+   '    def _on_completion(f):'#10;
+ s := s +
+   '        nonlocal counter'#10;
+ s := s +
+   '        counter -= 1'#10;
+ s := s +
+   '        if (counter <= 0 or'#10;
+ s := s +
+   '                return_when == FIRST_COMPLETED or'#10;
+ s := s +
+   '                return_when == FIRST_EXCEPTION and (not f.ca' +
+   'ncelled() and'#10;
+ s := s +
+   '                                                    f.except' +
+   'ion() is not None)):'#10;
+ s := s +
+   '            if timeout_handle is not None:'#10;
+ s := s +
+   '                timeout_handle.cancel()'#10;
+ s := s +
+   '            if not waiter.done():'#10;
+ s := s +
+   '                waiter.set_result(None)'#10;
+ s := s + #10;
+ s := s +
+   '    for f in fs:'#10;
+ s := s +
+   '        f.add_done_callback(_on_completion)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        await waiter'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        if timeout_handle is not None:'#10;
+ s := s +
+   '            timeout_handle.cancel()'#10;
+ s := s +
+   '        for f in fs:'#10;
+ s := s +
+   '            f.remove_done_callback(_on_completion)'#10;
+ s := s +
+   '    done, pending = set(), set()'#10;
+ s := s +
+   '    for f in fs:'#10;
+ s := s +
+   '        if f.done():'#10;
+ s := s +
+   '            done.add(f)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            pending.add(f)'#10;
+ s := s +
+   '    return done, pending'#10;
+ s := s + #10;
+ s := s +
+   'def _release_waiter(waiter, *args):'#10;
+ s := s +
+   '    if not waiter.done():'#10;
+ s := s +
+   '        waiter.set_result(None)'#10;
+ s := s + #10;
+ s := s +
+   'async def wait_for(fut, timeout, *, loop=None):'#10;
+ s := s +
+   '    loop = get_running_loop()'#10;
+ s := s +
+   '    if timeout is None:'#10;
+ s := s +
+   '        return await fut'#10;
+ s := s +
+   '    if timeout <= 0:'#10;
+ s := s +
+   '        fut = ensure_future(fut, loop=loop)'#10;
+ s := s +
+   '        if fut.done():'#10;
+ s := s +
+   '            return fut.result()'#10;
+ s := s +
+   '        fut.cancel()'#10;
+ s := s +
+   '        raise TimeoutError()'#10;
+ s := s +
+   '    waiter = loop.create_future()'#10;
+ s := s +
+   '    timeout_handle = loop.call_later(timeout, _release_waite' +
+   'r, waiter)'#10;
+ s := s +
+   '    cb = functools.partial(_release_waiter, waiter)'#10;
+ s := s +
+   '    fut = ensure_future(fut, loop=loop)'#10;
+ s := s +
+   '    fut.add_done_callback(cb)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            await waiter'#10;
+ s := s +
+   '        except CancelledError:'#10;
+ s := s +
+   '            fut.remove_done_callback(cb)'#10;
+ s := s +
+   '            fut.cancel()'#10;
+ s := s +
+   '            raise'#10;
+ s := s +
+   '        if fut.done():'#10;
+ s := s +
+   '            return fut.result()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            fut.remove_done_callback(cb)'#10;
+ s := s +
+   '            fut.cancel()'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                await fut'#10;
+ s := s +
+   '            except CancelledError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '            raise TimeoutError()'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        timeout_handle.cancel()'#10;
+ s := s + #10;
+ s := s +
+   'def as_completed(fs, *, loop=None, timeout=None):'#10;
+ s := s +
+   '    if isfuture(fs) or iscoroutine(fs):'#10;
+ s := s +
+   '        raise TypeError(''expect a list of futures, not %s'' %' +
+   ' type(fs).__name__)'#10;
+ s := s +
+   '    loop = loop if loop is not None else get_event_loop()'#10;
+ s := s +
+   '    todo = {ensure_future(f, loop=loop) for f in set(fs)}'#10;
+ s := s +
+   '    done = collections.deque()'#10;
+ s := s +
+   '    waiters = collections.deque()'#10;
+ s := s +
+   '    timeout_handle = None'#10;
+ s := s + #10;
+ s := s +
+   '    def _on_timeout():'#10;
+ s := s +
+   '        for f in todo:'#10;
+ s := s +
+   '            f.remove_done_callback(_on_completion)'#10;
+ s := s +
+   '            done.put_nowait(None) if False else done.append(' +
+   'None)'#10;
+ s := s +
+   '        todo.clear()'#10;
+ s := s +
+   '        _wake()'#10;
+ s := s + #10;
+ s := s +
+   '    def _wake():'#10;
+ s := s +
+   '        while waiters and done:'#10;
+ s := s +
+   '            w = waiters.popleft()'#10;
+ s := s +
+   '            if not w.done():'#10;
+ s := s +
+   '                w.set_result(None)'#10;
+ s := s + #10;
+ s := s +
+   '    def _on_completion(f):'#10;
+ s := s +
+   '        if not todo:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        todo.remove(f)'#10;
+ s := s +
+   '        done.append(f)'#10;
+ s := s +
+   '        if not todo and timeout_handle is not None:'#10;
+ s := s +
+   '            timeout_handle.cancel()'#10;
+ s := s +
+   '        _wake()'#10;
+ s := s + #10;
+ s := s +
+   '    async def _wait_for_one():'#10;
+ s := s +
+   '        while not done:'#10;
+ s := s +
+   '            w = loop.create_future()'#10;
+ s := s +
+   '            waiters.append(w)'#10;
+ s := s +
+   '            await w'#10;
+ s := s +
+   '        f = done.popleft()'#10;
+ s := s +
+   '        if f is None:'#10;
+ s := s +
+   '            raise TimeoutError()'#10;
+ s := s +
+   '        return f.result()'#10;
+ s := s + #10;
+ s := s +
+   '    for f in todo:'#10;
+ s := s +
+   '        f.add_done_callback(_on_completion)'#10;
+ s := s +
+   '    if todo and timeout is not None:'#10;
+ s := s +
+   '        timeout_handle = loop.call_later(timeout, _on_timeou' +
+   't)'#10;
+ s := s +
+   '    for _ in range(len(todo)):'#10;
+ s := s +
+   '        yield _wait_for_one()'#10;
+ s := s + #10;
+ s := s +
+   'def run_coroutine_threadsafe(coro, loop):'#10;
+ s := s +
+   '    return ensure_future(coro, loop=loop)'#10;
+ s := s + #10;
+ s := s +
+   'def wrap_future(future, *, loop=None):'#10;
+ s := s +
+   '    return future'#10;
+ s := s + #10;
+ s := s +
+   'async def to_thread_unavailable():'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   '# ---- primitives de synchronisation ----'#10;
+ s := s +
+   'class _ContextManagerMixin:'#10;
+ s := s +
+   '    async def __aenter__(self):'#10;
+ s := s +
+   '        await self.acquire()'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    async def __aexit__(self, exc_type, exc, tb):'#10;
+ s := s +
+   '        self.release()'#10;
+ s := s + #10;
+ s := s +
+   'class Lock(_ContextManagerMixin):'#10;
+ s := s +
+   '    def __init__(self, *, loop=None):'#10;
+ s := s +
+   '        self._waiters = collections.deque()'#10;
+ s := s +
+   '        self._locked = False'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<%s [%s]>'' % (type(self).__name__, ''locked'' ' +
+   'if self._locked else ''unlocked'')'#10;
+ s := s + #10;
+ s := s +
+   '    def locked(self):'#10;
+ s := s +
+   '        return self._locked'#10;
+ s := s + #10;
+ s := s +
+   '    async def acquire(self):'#10;
+ s := s +
+   '        if not self._locked and all(w.cancelled() for w in s' +
+   'elf._waiters):'#10;
+ s := s +
+   '            self._locked = True'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        fut = get_event_loop().create_future()'#10;
+ s := s +
+   '        self._waiters.append(fut)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                await fut'#10;
+ s := s +
+   '            finally:'#10;
+ s := s +
+   '                self._waiters.remove(fut)'#10;
+ s := s +
+   '        except CancelledError:'#10;
+ s := s +
+   '            if not self._locked:'#10;
+ s := s +
+   '                self._wake_up_first()'#10;
+ s := s +
+   '            raise'#10;
+ s := s +
+   '        self._locked = True'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def release(self):'#10;
+ s := s +
+   '        if self._locked:'#10;
+ s := s +
+   '            self._locked = False'#10;
+ s := s +
+   '            self._wake_up_first()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            raise RuntimeError(''Lock is not acquired.'')'#10;
+ s := s + #10;
+ s := s +
+   '    def _wake_up_first(self):'#10;
+ s := s +
+   '        if not self._waiters:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            fut = next(iter(self._waiters))'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if not fut.done():'#10;
+ s := s +
+   '            fut.set_result(True)'#10;
+ s := s + #10;
+ s := s +
+   'class Event:'#10;
+ s := s +
+   '    def __init__(self, *, loop=None):'#10;
+ s := s +
+   '        self._waiters = collections.deque()'#10;
+ s := s +
+   '        self._value = False'#10;
+ s := s + #10;
+ s := s +
+   '    def is_set(self):'#10;
+ s := s +
+   '        return self._value'#10;
+ s := s + #10;
+ s := s +
+   '    def set(self):'#10;
+ s := s +
+   '        if not self._value:'#10;
+ s := s +
+   '            self._value = True'#10;
+ s := s +
+   '            for fut in self._waiters:'#10;
+ s := s +
+   '                if not fut.done():'#10;
+ s := s +
+   '                    fut.set_result(True)'#10;
+ s := s + #10;
+ s := s +
+   '    def clear(self):'#10;
+ s := s +
+   '        self._value = False'#10;
+ s := s + #10;
+ s := s +
+   '    async def wait(self):'#10;
+ s := s +
+   '        if self._value:'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        fut = get_event_loop().create_future()'#10;
+ s := s +
+   '        self._waiters.append(fut)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            await fut'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            self._waiters.remove(fut)'#10;
+ s := s + #10;
+ s := s +
+   'class Condition(_ContextManagerMixin):'#10;
+ s := s +
+   '    def __init__(self, lock=None, *, loop=None):'#10;
+ s := s +
+   '        if lock is None:'#10;
+ s := s +
+   '            lock = Lock()'#10;
+ s := s +
+   '        self._lock = lock'#10;
+ s := s +
+   '        self.locked = lock.locked'#10;
+ s := s +
+   '        self.acquire = lock.acquire'#10;
+ s := s +
+   '        self.release = lock.release'#10;
+ s := s +
+   '        self._waiters = collections.deque()'#10;
+ s := s + #10;
+ s := s +
+   '    async def wait(self):'#10;
+ s := s +
+   '        if not self.locked():'#10;
+ s := s +
+   '            raise RuntimeError(''cannot wait on un-acquired l' +
+   'ock'')'#10;
+ s := s +
+   '        self.release()'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            fut = get_event_loop().create_future()'#10;
+ s := s +
+   '            self._waiters.append(fut)'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                await fut'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '            finally:'#10;
+ s := s +
+   '                self._waiters.remove(fut)'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            cancelled = False'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    await self.acquire()'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                except CancelledError:'#10;
+ s := s +
+   '                    cancelled = True'#10;
+ s := s +
+   '            if cancelled:'#10;
+ s := s +
+   '                raise CancelledError'#10;
+ s := s + #10;
+ s := s +
+   '    async def wait_for(self, predicate):'#10;
+ s := s +
+   '        result = predicate()'#10;
+ s := s +
+   '        while not result:'#10;
+ s := s +
+   '            await self.wait()'#10;
+ s := s +
+   '            result = predicate()'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def notify(self, n=1):'#10;
+ s := s +
+   '        if not self.locked():'#10;
+ s := s +
+   '            raise RuntimeError(''cannot notify on un-acquired' +
+   ' lock'')'#10;
+ s := s +
+   '        idx = 0'#10;
+ s := s +
+   '        for fut in self._waiters:'#10;
+ s := s +
+   '            if idx >= n:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            if not fut.done():'#10;
+ s := s +
+   '                idx += 1'#10;
+ s := s +
+   '                fut.set_result(False)'#10;
+ s := s + #10;
+ s := s +
+   '    def notify_all(self):'#10;
+ s := s +
+   '        self.notify(len(self._waiters))'#10;
+ s := s + #10;
+ s := s +
+   'class Semaphore(_ContextManagerMixin):'#10;
+ s := s +
+   '    def __init__(self, value=1, *, loop=None):'#10;
+ s := s +
+   '        if value < 0:'#10;
+ s := s +
+   '            raise ValueError(''Semaphore initial value must b' +
+   'e >= 0'')'#10;
+ s := s +
+   '        self._value = value'#10;
+ s := s +
+   '        self._waiters = collections.deque()'#10;
+ s := s + #10;
+ s := s +
+   '    def locked(self):'#10;
+ s := s +
+   '        return self._value == 0'#10;
+ s := s + #10;
+ s := s +
+   '    async def acquire(self):'#10;
+ s := s +
+   '        while self._value <= 0:'#10;
+ s := s +
+   '            fut = get_event_loop().create_future()'#10;
+ s := s +
+   '            self._waiters.append(fut)'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                await fut'#10;
+ s := s +
+   '            except:'#10;
+ s := s +
+   '                fut.cancel()'#10;
+ s := s +
+   '                if self._value > 0 and not fut.cancelled():'#10;
+ s := s +
+   '                    self._wake_up_next()'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '        self._value -= 1'#10;
+ s := s +
+   '        return True'#10;
+ s := s + #10;
+ s := s +
+   '    def _wake_up_next(self):'#10;
+ s := s +
+   '        while self._waiters:'#10;
+ s := s +
+   '            waiter = self._waiters.popleft()'#10;
+ s := s +
+   '            if not waiter.done():'#10;
+ s := s +
+   '                waiter.set_result(None)'#10;
+ s := s +
+   '                return'#10;
+ s := s + #10;
+ s := s +
+   '    def release(self):'#10;
+ s := s +
+   '        self._value += 1'#10;
+ s := s +
+   '        self._wake_up_next()'#10;
+ s := s + #10;
+ s := s +
+   'class BoundedSemaphore(Semaphore):'#10;
+ s := s +
+   '    def __init__(self, value=1, *, loop=None):'#10;
+ s := s +
+   '        self._bound_value = value'#10;
+ s := s +
+   '        super().__init__(value)'#10;
+ s := s + #10;
+ s := s +
+   '    def release(self):'#10;
+ s := s +
+   '        if self._value >= self._bound_value:'#10;
+ s := s +
+   '            raise ValueError(''BoundedSemaphore released too ' +
+   'many times'')'#10;
+ s := s +
+   '        super().release()'#10;
+ s := s + #10;
+ s := s +
+   'class Queue:'#10;
+ s := s +
+   '    def __init__(self, maxsize=0, *, loop=None):'#10;
+ s := s +
+   '        self._maxsize = maxsize'#10;
+ s := s +
+   '        self._getters = collections.deque()'#10;
+ s := s +
+   '        self._putters = collections.deque()'#10;
+ s := s +
+   '        self._unfinished_tasks = 0'#10;
+ s := s +
+   '        self._finished = Event()'#10;
+ s := s +
+   '        self._finished.set()'#10;
+ s := s +
+   '        self._init(maxsize)'#10;
+ s := s + #10;
+ s := s +
+   '    def _init(self, maxsize):'#10;
+ s := s +
+   '        self._queue = collections.deque()'#10;
+ s := s + #10;
+ s := s +
+   '    def _get(self):'#10;
+ s := s +
+   '        return self._queue.popleft()'#10;
+ s := s + #10;
+ s := s +
+   '    def _put(self, item):'#10;
+ s := s +
+   '        self._queue.append(item)'#10;
+ s := s + #10;
+ s := s +
+   '    def _wakeup_next(self, waiters):'#10;
+ s := s +
+   '        while waiters:'#10;
+ s := s +
+   '            waiter = waiters.popleft()'#10;
+ s := s +
+   '            if not waiter.done():'#10;
+ s := s +
+   '                waiter.set_result(None)'#10;
+ s := s +
+   '                break'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<{} maxsize={!r}>''.format(type(self).__name_' +
+   '_, self._maxsize)'#10;
+ s := s + #10;
+ s := s +
+   '    def qsize(self):'#10;
+ s := s +
+   '        return len(self._queue)'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def maxsize(self):'#10;
+ s := s +
+   '        return self._maxsize'#10;
+ s := s + #10;
+ s := s +
+   '    def empty(self):'#10;
+ s := s +
+   '        return not self._queue'#10;
+ s := s + #10;
+ s := s +
+   '    def full(self):'#10;
+ s := s +
+   '        if self._maxsize <= 0:'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return self.qsize() >= self._maxsize'#10;
+ s := s + #10;
+ s := s +
+   '    async def put(self, item):'#10;
+ s := s +
+   '        while self.full():'#10;
+ s := s +
+   '            putter = get_event_loop().create_future()'#10;
+ s := s +
+   '            self._putters.append(putter)'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                await putter'#10;
+ s := s +
+   '            except:'#10;
+ s := s +
+   '                putter.cancel()'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    self._putters.remove(putter)'#10;
+ s := s +
+   '                except ValueError:'#10;
+ s := s +
+   '                    pass'#10;
+ s := s +
+   '                if not self.full() and not putter.cancelled(' +
+   '):'#10;
+ s := s +
+   '                    self._wakeup_next(self._putters)'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '        return self.put_nowait(item)'#10;
+ s := s + #10;
+ s := s +
+   '    def put_nowait(self, item):'#10;
+ s := s +
+   '        if self.full():'#10;
+ s := s +
+   '            raise QueueFull'#10;
+ s := s +
+   '        self._put(item)'#10;
+ s := s +
+   '        self._unfinished_tasks += 1'#10;
+ s := s +
+   '        self._finished.clear()'#10;
+ s := s +
+   '        self._wakeup_next(self._getters)'#10;
+ s := s + #10;
+ s := s +
+   '    async def get(self):'#10;
+ s := s +
+   '        while self.empty():'#10;
+ s := s +
+   '            getter = get_event_loop().create_future()'#10;
+ s := s +
+   '            self._getters.append(getter)'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                await getter'#10;
+ s := s +
+   '            except:'#10;
+ s := s +
+   '                getter.cancel()'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    self._getters.remove(getter)'#10;
+ s := s +
+   '                except ValueError:'#10;
+ s := s +
+   '                    pass'#10;
+ s := s +
+   '                if not self.empty() and not getter.cancelled' +
+   '():'#10;
+ s := s +
+   '                    self._wakeup_next(self._getters)'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '        return self.get_nowait()'#10;
+ s := s + #10;
+ s := s +
+   '    def get_nowait(self):'#10;
+ s := s +
+   '        if self.empty():'#10;
+ s := s +
+   '            raise QueueEmpty'#10;
+ s := s +
+   '        item = self._get()'#10;
+ s := s +
+   '        self._wakeup_next(self._putters)'#10;
+ s := s +
+   '        return item'#10;
+ s := s + #10;
+ s := s +
+   '    def task_done(self):'#10;
+ s := s +
+   '        if self._unfinished_tasks <= 0:'#10;
+ s := s +
+   '            raise ValueError(''task_done() called too many ti' +
+   'mes'')'#10;
+ s := s +
+   '        self._unfinished_tasks -= 1'#10;
+ s := s +
+   '        if self._unfinished_tasks == 0:'#10;
+ s := s +
+   '            self._finished.set()'#10;
+ s := s + #10;
+ s := s +
+   '    async def join(self):'#10;
+ s := s +
+   '        if self._unfinished_tasks > 0:'#10;
+ s := s +
+   '            await self._finished.wait()'#10;
+ s := s + #10;
+ s := s +
+   'class PriorityQueue(Queue):'#10;
+ s := s +
+   '    def _init(self, maxsize):'#10;
+ s := s +
+   '        self._queue = []'#10;
+ s := s + #10;
+ s := s +
+   '    def _put(self, item):'#10;
+ s := s +
+   '        heapq.heappush(self._queue, item)'#10;
+ s := s + #10;
+ s := s +
+   '    def _get(self):'#10;
+ s := s +
+   '        return heapq.heappop(self._queue)'#10;
+ s := s + #10;
+ s := s +
+   'class LifoQueue(Queue):'#10;
+ s := s +
+   '    def _init(self, maxsize):'#10;
+ s := s +
+   '        self._queue = []'#10;
+ s := s + #10;
+ s := s +
+   '    def _put(self, item):'#10;
+ s := s +
+   '        self._queue.append(item)'#10;
+ s := s + #10;
+ s := s +
+   '    def _get(self):'#10;
+ s := s +
+   '        return self._queue.pop()'#10;
+ s := s + #10;
+ s := s +
+   'class StreamReader:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'class StreamWriter:'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   'async def open_connection(*args, **kwargs):'#10;
+ s := s +
+   '    raise NotImplementedError(''les connexions reseau ne sont' +
+   ' pas supportees'')'#10;
+ s := s + #10;
+ s := s +
+   'async def start_server(*args, **kwargs):'#10;
+ s := s +
+   '    raise NotImplementedError(''les connexions reseau ne sont' +
+   ' pas supportees'')'#10;
  s := s + #10;
  Result := s;
 End;
@@ -32608,6 +35818,1451 @@ Begin
  Result := s;
 End;
 
+Function Src_dataclasses: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import copy'#10;
+ s := s +
+   'import types'#10;
+ s := s +
+   'import keyword'#10;
+ s := s +
+   'import builtins'#10;
+ s := s +
+   'import functools'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''dataclass'','#10;
+ s := s +
+   '           ''field'','#10;
+ s := s +
+   '           ''Field'','#10;
+ s := s +
+   '           ''FrozenInstanceError'','#10;
+ s := s +
+   '           ''InitVar'','#10;
+ s := s +
+   '           ''MISSING'','#10;
+ s := s + #10;
+ s := s +
+   '           # Helper functions.'#10;
+ s := s +
+   '           ''fields'','#10;
+ s := s +
+   '           ''asdict'','#10;
+ s := s +
+   '           ''astuple'','#10;
+ s := s +
+   '           ''make_dataclass'','#10;
+ s := s +
+   '           ''replace'','#10;
+ s := s +
+   '           ''is_dataclass'','#10;
+ s := s +
+   '           ]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class FrozenInstanceError(AttributeError): pass'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _HAS_DEFAULT_FACTORY_CLASS:'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''<factory>'''#10;
+ s := s +
+   '_HAS_DEFAULT_FACTORY = _HAS_DEFAULT_FACTORY_CLASS()'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _MISSING_TYPE:'#10;
+ s := s +
+   '    pass'#10;
+ s := s +
+   'MISSING = _MISSING_TYPE()'#10;
+ s := s + #10;
+ s := s +
+   '_EMPTY_METADATA = types.MappingProxyType({})'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _FIELD_BASE:'#10;
+ s := s +
+   '    def __init__(self, name):'#10;
+ s := s +
+   '        self.name = name'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return self.name'#10;
+ s := s +
+   '_FIELD = _FIELD_BASE(''_FIELD'')'#10;
+ s := s +
+   '_FIELD_CLASSVAR = _FIELD_BASE(''_FIELD_CLASSVAR'')'#10;
+ s := s +
+   '_FIELD_INITVAR = _FIELD_BASE(''_FIELD_INITVAR'')'#10;
+ s := s + #10;
+ s := s +
+   '_FIELDS = ''__dataclass_fields__'''#10;
+ s := s +
+   '_PARAMS = ''__dataclass_params__'''#10;
+ s := s +
+   '_POST_INIT_NAME = ''__post_init__'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class InitVar:'#10;
+ s := s +
+   '    __slots__ = (''type'', )'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, type):'#10;
+ s := s +
+   '        self.type = type'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        if isinstance(self.type, type):'#10;
+ s := s +
+   '            type_name = self.type.__name__'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            type_name = repr(self.type)'#10;
+ s := s +
+   '        return ''dataclasses.InitVar['' + type_name + '']'''#10;
+ s := s + #10;
+ s := s +
+   '    def __class_getitem__(cls, type):'#10;
+ s := s +
+   '        return InitVar(type)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class Field:'#10;
+ s := s +
+   '    __slots__ = (''name'','#10;
+ s := s +
+   '                 ''type'','#10;
+ s := s +
+   '                 ''default'','#10;
+ s := s +
+   '                 ''default_factory'','#10;
+ s := s +
+   '                 ''repr'','#10;
+ s := s +
+   '                 ''hash'','#10;
+ s := s +
+   '                 ''init'','#10;
+ s := s +
+   '                 ''compare'','#10;
+ s := s +
+   '                 ''metadata'','#10;
+ s := s +
+   '                 ''_field_type'','#10;
+ s := s +
+   '                 )'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, default, default_factory, init, repr,' +
+   ' hash, compare,'#10;
+ s := s +
+   '                 metadata):'#10;
+ s := s +
+   '        self.name = None'#10;
+ s := s +
+   '        self.type = None'#10;
+ s := s +
+   '        self.default = default'#10;
+ s := s +
+   '        self.default_factory = default_factory'#10;
+ s := s +
+   '        self.init = init'#10;
+ s := s +
+   '        self.repr = repr'#10;
+ s := s +
+   '        self.hash = hash'#10;
+ s := s +
+   '        self.compare = compare'#10;
+ s := s +
+   '        self.metadata = (_EMPTY_METADATA'#10;
+ s := s +
+   '                         if metadata is None or len(metadata' +
+   ') == 0 else'#10;
+ s := s +
+   '                         types.MappingProxyType(metadata))'#10;
+ s := s +
+   '        self._field_type = None'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return (''Field('''#10;
+ s := s +
+   '                ''name='' + repr(self.name) + '','''#10;
+ s := s +
+   '                ''type='' + repr(self.type) + '','''#10;
+ s := s +
+   '                ''default='' + repr(self.default) + '','''#10;
+ s := s +
+   '                ''default_factory='' + repr(self.default_facto' +
+   'ry) + '','''#10;
+ s := s +
+   '                ''init='' + repr(self.init) + '','''#10;
+ s := s +
+   '                ''repr='' + repr(self.repr) + '','''#10;
+ s := s +
+   '                ''hash='' + repr(self.hash) + '','''#10;
+ s := s +
+   '                ''compare='' + repr(self.compare) + '','''#10;
+ s := s +
+   '                ''metadata='' + repr(self.metadata) + '','''#10;
+ s := s +
+   '                ''_field_type='' + repr(self._field_type) +'#10;
+ s := s +
+   '                '')'')'#10;
+ s := s + #10;
+ s := s +
+   '    def __set_name__(self, owner, name):'#10;
+ s := s +
+   '        func = getattr(type(self.default), ''__set_name__'', N' +
+   'one)'#10;
+ s := s +
+   '        if func:'#10;
+ s := s +
+   '            func(self.default, owner, name)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _DataclassParams:'#10;
+ s := s +
+   '    __slots__ = (''init'','#10;
+ s := s +
+   '                 ''repr'','#10;
+ s := s +
+   '                 ''eq'','#10;
+ s := s +
+   '                 ''order'','#10;
+ s := s +
+   '                 ''unsafe_hash'','#10;
+ s := s +
+   '                 ''frozen'','#10;
+ s := s +
+   '                 )'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, init, repr, eq, order, unsafe_hash, f' +
+   'rozen):'#10;
+ s := s +
+   '        self.init = init'#10;
+ s := s +
+   '        self.repr = repr'#10;
+ s := s +
+   '        self.eq = eq'#10;
+ s := s +
+   '        self.order = order'#10;
+ s := s +
+   '        self.unsafe_hash = unsafe_hash'#10;
+ s := s +
+   '        self.frozen = frozen'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return (''_DataclassParams('''#10;
+ s := s +
+   '                ''init='' + repr(self.init) + '','''#10;
+ s := s +
+   '                ''repr='' + repr(self.repr) + '','''#10;
+ s := s +
+   '                ''eq='' + repr(self.eq) + '','''#10;
+ s := s +
+   '                ''order='' + repr(self.order) + '','''#10;
+ s := s +
+   '                ''unsafe_hash='' + repr(self.unsafe_hash) + '',' +
+   ''''#10;
+ s := s +
+   '                ''frozen='' + repr(self.frozen) +'#10;
+ s := s +
+   '                '')'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def field(*, default=MISSING, default_factory=MISSING, init=' +
+   'True, repr=True,'#10;
+ s := s +
+   '          hash=None, compare=True, metadata=None):'#10;
+ s := s +
+   '    if default is not MISSING and default_factory is not MIS' +
+   'SING:'#10;
+ s := s +
+   '        raise ValueError(''cannot specify both default and de' +
+   'fault_factory'')'#10;
+ s := s +
+   '    return Field(default, default_factory, init, repr, hash,' +
+   ' compare,'#10;
+ s := s +
+   '                 metadata)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _tuple_str(obj_name, fields):'#10;
+ s := s +
+   '    if not fields:'#10;
+ s := s +
+   '        return ''()'''#10;
+ s := s +
+   '    return ''('' + '',''.join([obj_name + ''.'' + f.name for f in ' +
+   'fields]) + '',)'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _create_fn(name, args, body, *, globals=None, locals=Non' +
+   'e,'#10;
+ s := s +
+   '               return_type=MISSING):'#10;
+ s := s +
+   '    if locals is None:'#10;
+ s := s +
+   '        locals = {}'#10;
+ s := s +
+   '    if ''BUILTINS'' not in locals:'#10;
+ s := s +
+   '        locals[''BUILTINS''] = builtins'#10;
+ s := s +
+   '    return_annotation = '''''#10;
+ s := s +
+   '    if return_type is not MISSING:'#10;
+ s := s +
+   '        locals[''_return_type''] = return_type'#10;
+ s := s +
+   '        return_annotation = ''->_return_type'''#10;
+ s := s +
+   '    args = '',''.join(args)'#10;
+ s := s +
+   '    body = ''\n''.join(''  '' + b for b in body)'#10;
+ s := s + #10;
+ s := s +
+   '    txt = '' def '' + name + ''('' + args + '')'' + return_annotat' +
+   'ion + '':\n'' + body + ''\n'''#10;
+ s := s +
+   '    local_vars = '', ''.join(locals.keys())'#10;
+ s := s +
+   '    txt = ''def __create_fn__('' + local_vars + ''):\n'' + txt +' +
+   ' ''\n return '' + name'#10;
+ s := s +
+   '    ns = {}'#10;
+ s := s +
+   '    exec(txt, globals, ns)'#10;
+ s := s +
+   '    return ns[''__create_fn__''](**locals)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _field_assign(frozen, name, value, self_name):'#10;
+ s := s +
+   '    if frozen:'#10;
+ s := s +
+   '        return ''BUILTINS.object.__setattr__('' + self_name + ' +
+   ''',"'' + name + ''",'' + value + '')'''#10;
+ s := s +
+   '    return self_name + ''.'' + name + ''='' + value'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _field_init(f, frozen, globals, self_name):'#10;
+ s := s +
+   '    default_name = ''_dflt_'' + f.name'#10;
+ s := s +
+   '    if f.default_factory is not MISSING:'#10;
+ s := s +
+   '        if f.init:'#10;
+ s := s +
+   '            globals[default_name] = f.default_factory'#10;
+ s := s +
+   '            value = ('''' + default_name + ''() '''#10;
+ s := s +
+   '                     ''if '' + f.name + '' is _HAS_DEFAULT_FACT' +
+   'ORY '''#10;
+ s := s +
+   '                     ''else '' + f.name)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            globals[default_name] = f.default_factory'#10;
+ s := s +
+   '            value = default_name + ''()'''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if f.init:'#10;
+ s := s +
+   '            if f.default is MISSING:'#10;
+ s := s +
+   '                value = f.name'#10;
+ s := s +
+   '            elif f.default is not MISSING:'#10;
+ s := s +
+   '                globals[default_name] = f.default'#10;
+ s := s +
+   '                value = f.name'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return None'#10;
+ s := s + #10;
+ s := s +
+   '    if f._field_type is _FIELD_INITVAR:'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    return _field_assign(frozen, f.name, value, self_name)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _init_param(f):'#10;
+ s := s +
+   '    if f.default is MISSING and f.default_factory is MISSING' +
+   ':'#10;
+ s := s +
+   '        default = '''''#10;
+ s := s +
+   '    elif f.default is not MISSING:'#10;
+ s := s +
+   '        default = ''=_dflt_'' + f.name'#10;
+ s := s +
+   '    elif f.default_factory is not MISSING:'#10;
+ s := s +
+   '        default = ''=_HAS_DEFAULT_FACTORY'''#10;
+ s := s +
+   '    return f.name + '':_type_'' + f.name + default'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _init_fn(fields, frozen, has_post_init, self_name, globa' +
+   'ls):'#10;
+ s := s +
+   '    seen_default = False'#10;
+ s := s +
+   '    for f in fields:'#10;
+ s := s +
+   '        if f.init:'#10;
+ s := s +
+   '            if not (f.default is MISSING and f.default_facto' +
+   'ry is MISSING):'#10;
+ s := s +
+   '                seen_default = True'#10;
+ s := s +
+   '            elif seen_default:'#10;
+ s := s +
+   '                raise TypeError(''non-default argument '' + re' +
+   'pr(f.name) + '' '''#10;
+ s := s +
+   '                                ''follows default argument'')'#10;
+ s := s + #10;
+ s := s +
+   '    locals = {}'#10;
+ s := s +
+   '    for f in fields:'#10;
+ s := s +
+   '        locals[''_type_'' + f.name] = f.type'#10;
+ s := s +
+   '    locals[''MISSING''] = MISSING'#10;
+ s := s +
+   '    locals[''_HAS_DEFAULT_FACTORY''] = _HAS_DEFAULT_FACTORY'#10;
+ s := s + #10;
+ s := s +
+   '    body_lines = []'#10;
+ s := s +
+   '    for f in fields:'#10;
+ s := s +
+   '        line = _field_init(f, frozen, locals, self_name)'#10;
+ s := s +
+   '        if line:'#10;
+ s := s +
+   '            body_lines.append(line)'#10;
+ s := s + #10;
+ s := s +
+   '    if has_post_init:'#10;
+ s := s +
+   '        params_str = '',''.join([f.name for f in fields'#10;
+ s := s +
+   '                               if f._field_type is _FIELD_IN' +
+   'ITVAR])'#10;
+ s := s +
+   '        body_lines.append(self_name + ''.'' + _POST_INIT_NAME ' +
+   '+ ''('' + params_str + '')'')'#10;
+ s := s + #10;
+ s := s +
+   '    if not body_lines:'#10;
+ s := s +
+   '        body_lines = [''pass'']'#10;
+ s := s + #10;
+ s := s +
+   '    # globals in locals (names _dflt_x go to locals dict via' +
+   ' _field_init)'#10;
+ s := s +
+   '    return _create_fn(''__init__'','#10;
+ s := s +
+   '                      [self_name] + [_init_param(f) for f in' +
+   ' fields if f.init],'#10;
+ s := s +
+   '                      body_lines,'#10;
+ s := s +
+   '                      locals=locals,'#10;
+ s := s +
+   '                      globals=globals,'#10;
+ s := s +
+   '                      return_type=None)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _repr_fn(fields):'#10;
+ s := s +
+   '    fn = _create_fn(''__repr__'','#10;
+ s := s +
+   '                    (''self'',),'#10;
+ s := s +
+   '                    [''return self.__class__.__qualname__ + f' +
+   '"('' +'#10;
+ s := s +
+   '                     '', ''.join([f.name + ''={self.'' + f.name ' +
+   '+ ''!r}'''#10;
+ s := s +
+   '                                for f in fields if f.repr]) ' +
+   '+'#10;
+ s := s +
+   '                     '')"''])'#10;
+ s := s +
+   '    return _recursive_repr(fn)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _recursive_repr(user_function):'#10;
+ s := s +
+   '    repr_running = set()'#10;
+ s := s + #10;
+ s := s +
+   '    @functools.wraps(user_function)'#10;
+ s := s +
+   '    def wrapper(self):'#10;
+ s := s +
+   '        key = id(self), _get_ident()'#10;
+ s := s +
+   '        if key in repr_running:'#10;
+ s := s +
+   '            return ''...'''#10;
+ s := s +
+   '        repr_running.add(key)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            result = user_function(self)'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            repr_running.discard(key)'#10;
+ s := s +
+   '        return result'#10;
+ s := s +
+   '    return wrapper'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _get_ident():'#10;
+ s := s +
+   '    return 0'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _frozen_get_del_attr(cls, fields):'#10;
+ s := s +
+   '    locals = {''cls'': cls,'#10;
+ s := s +
+   '              ''FrozenInstanceError'': FrozenInstanceError}'#10;
+ s := s +
+   '    if fields:'#10;
+ s := s +
+   '        fields_str = ''('' + '',''.join(repr(f.name) for f in fi' +
+   'elds) + '',)'''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        fields_str = ''()'''#10;
+ s := s +
+   '    return (_create_fn(''__setattr__'','#10;
+ s := s +
+   '                       (''self'', ''name'', ''value''),'#10;
+ s := s +
+   '                       (''if type(self) is cls or name in '' +' +
+   ' fields_str + '':'','#10;
+ s := s +
+   '                        '' raise FrozenInstanceError(f"cannot' +
+   ' assign to field {name!r}")'','#10;
+ s := s +
+   '                        ''super(cls, self).__setattr__(name, ' +
+   'value)''),'#10;
+ s := s +
+   '                       locals=locals),'#10;
+ s := s +
+   '            _create_fn(''__delattr__'','#10;
+ s := s +
+   '                       (''self'', ''name''),'#10;
+ s := s +
+   '                       (''if type(self) is cls or name in '' +' +
+   ' fields_str + '':'','#10;
+ s := s +
+   '                        '' raise FrozenInstanceError(f"cannot' +
+   ' delete field {name!r}")'','#10;
+ s := s +
+   '                        ''super(cls, self).__delattr__(name)''' +
+   '),'#10;
+ s := s +
+   '                       locals=locals),'#10;
+ s := s +
+   '            )'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _cmp_fn(name, op, self_tuple, other_tuple):'#10;
+ s := s +
+   '    return _create_fn(name,'#10;
+ s := s +
+   '                      (''self'', ''other''),'#10;
+ s := s +
+   '                      [''if other.__class__ is self.__class__' +
+   ':'','#10;
+ s := s +
+   '                       '' return '' + self_tuple + op + other_' +
+   'tuple,'#10;
+ s := s +
+   '                       ''return NotImplemented''])'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _hash_fn(fields):'#10;
+ s := s +
+   '    self_tuple = _tuple_str(''self'', fields)'#10;
+ s := s +
+   '    return _create_fn(''__hash__'','#10;
+ s := s +
+   '                      (''self'',),'#10;
+ s := s +
+   '                      [''return hash('' + self_tuple + '')''])'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_classvar(a_type, typing):'#10;
+ s := s +
+   '    return (a_type is typing.ClassVar'#10;
+ s := s +
+   '            or (type(a_type) is typing._GenericAlias'#10;
+ s := s +
+   '                and a_type.__origin__ is typing.ClassVar))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_initvar(a_type, dataclasses):'#10;
+ s := s +
+   '    return (a_type is dataclasses.InitVar'#10;
+ s := s +
+   '            or type(a_type) is dataclasses.InitVar)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_type(annotation, cls, a_module, a_type, is_type_pred' +
+   'icate):'#10;
+ s := s +
+   '    return False'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _get_field(cls, a_name, a_type):'#10;
+ s := s +
+   '    default = getattr(cls, a_name, MISSING)'#10;
+ s := s +
+   '    if isinstance(default, Field):'#10;
+ s := s +
+   '        f = default'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if isinstance(default, types.MemberDescriptorType):'#10;
+ s := s +
+   '            # This is a field in __slots__, so it has no def' +
+   'ault value.'#10;
+ s := s +
+   '            default = MISSING'#10;
+ s := s +
+   '        f = field(default=default)'#10;
+ s := s + #10;
+ s := s +
+   '    f.name = a_name'#10;
+ s := s +
+   '    f.type = a_type'#10;
+ s := s + #10;
+ s := s +
+   '    f._field_type = _FIELD'#10;
+ s := s + #10;
+ s := s +
+   '    typing = sys.modules.get(''typing'')'#10;
+ s := s +
+   '    if typing:'#10;
+ s := s +
+   '        if _is_classvar_any(a_type, typing):'#10;
+ s := s +
+   '            f._field_type = _FIELD_CLASSVAR'#10;
+ s := s +
+   '    if f._field_type is _FIELD:'#10;
+ s := s +
+   '        if _is_initvar(a_type, sys.modules[__name__]):'#10;
+ s := s +
+   '            f._field_type = _FIELD_INITVAR'#10;
+ s := s +
+   '        elif isinstance(a_type, str):'#10;
+ s := s +
+   '            # string annotations, as in CPython: crude detec' +
+   'tion'#10;
+ s := s +
+   '            if _is_string_classvar(a_type, cls):'#10;
+ s := s +
+   '                f._field_type = _FIELD_CLASSVAR'#10;
+ s := s +
+   '            elif _is_string_initvar(a_type, cls):'#10;
+ s := s +
+   '                f._field_type = _FIELD_INITVAR'#10;
+ s := s + #10;
+ s := s +
+   '    if f._field_type in (_FIELD_CLASSVAR, _FIELD_INITVAR):'#10;
+ s := s +
+   '        if f.default_factory is not MISSING:'#10;
+ s := s +
+   '            raise TypeError(''field '' + f.name + '' cannot hav' +
+   'e a '''#10;
+ s := s +
+   '                            ''default factory'')'#10;
+ s := s + #10;
+ s := s +
+   '    if f._field_type is _FIELD and isinstance(f.default, (li' +
+   'st, dict, set)):'#10;
+ s := s +
+   '        raise ValueError(''mutable default '' + str(type(f.def' +
+   'ault)) + '' for field '''#10;
+ s := s +
+   '                         + f.name + '' is not allowed: use de' +
+   'fault_factory'')'#10;
+ s := s + #10;
+ s := s +
+   '    return f'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_classvar_any(a_type, typing):'#10;
+ s := s +
+   '    if a_type is typing.ClassVar:'#10;
+ s := s +
+   '        return True'#10;
+ s := s +
+   '    origin = getattr(a_type, ''__origin__'', None)'#10;
+ s := s +
+   '    return origin is typing.ClassVar'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _string_head(s):'#10;
+ s := s +
+   '    # returns (module_prefix or None, name) of an annotation' +
+   ' string'#10;
+ s := s +
+   '    s = s.strip()'#10;
+ s := s +
+   '    i = s.find(''['')'#10;
+ s := s +
+   '    if i >= 0:'#10;
+ s := s +
+   '        s = s[:i]'#10;
+ s := s +
+   '    s = s.strip()'#10;
+ s := s +
+   '    if ''.'' in s:'#10;
+ s := s +
+   '        mod, _, name = s.rpartition(''.'')'#10;
+ s := s +
+   '        return mod, name'#10;
+ s := s +
+   '    return None, s'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_string_classvar(s, cls):'#10;
+ s := s +
+   '    mod, name = _string_head(s)'#10;
+ s := s +
+   '    if name != ''ClassVar'':'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    ns = sys.modules.get(cls.__module__)'#10;
+ s := s +
+   '    ns = ns.__dict__ if ns else {}'#10;
+ s := s +
+   '    if mod is None:'#10;
+ s := s +
+   '        return ns.get(''ClassVar'') is sys.modules[''typing''].C' +
+   'lassVar'#10;
+ s := s +
+   '    return ns.get(mod) is sys.modules.get(''typing'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_string_initvar(s, cls):'#10;
+ s := s +
+   '    mod, name = _string_head(s)'#10;
+ s := s +
+   '    if name != ''InitVar'':'#10;
+ s := s +
+   '        return False'#10;
+ s := s +
+   '    ns = sys.modules.get(cls.__module__)'#10;
+ s := s +
+   '    ns = ns.__dict__ if ns else {}'#10;
+ s := s +
+   '    me = sys.modules[__name__]'#10;
+ s := s +
+   '    if mod is None:'#10;
+ s := s +
+   '        return ns.get(''InitVar'') is InitVar'#10;
+ s := s +
+   '    return ns.get(mod) is me'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _set_new_attribute(cls, name, value):'#10;
+ s := s +
+   '    if name in cls.__dict__:'#10;
+ s := s +
+   '        return True'#10;
+ s := s +
+   '    setattr(cls, name, value)'#10;
+ s := s +
+   '    return False'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _hash_set_none(cls, fields):'#10;
+ s := s +
+   '    return None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _hash_add(cls, fields):'#10;
+ s := s +
+   '    flds = [f for f in fields if (f.compare if f.hash is Non' +
+   'e else f.hash)]'#10;
+ s := s +
+   '    return _hash_fn(flds)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _hash_exception(cls, fields):'#10;
+ s := s +
+   '    raise TypeError(''Cannot overwrite attribute __hash__ '' +'#10;
+ s := s +
+   '                    ''in class '' + cls.__name__)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_hash_action = {(False, False, False, False): None,'#10;
+ s := s +
+   '                (False, False, False, True): None,'#10;
+ s := s +
+   '                (False, False, True, False): None,'#10;
+ s := s +
+   '                (False, False, True, True): None,'#10;
+ s := s +
+   '                (False, True, False, False): _hash_set_none,'#10;
+ s := s +
+   '                (False, True, False, True): None,'#10;
+ s := s +
+   '                (False, True, True, False): _hash_add,'#10;
+ s := s +
+   '                (False, True, True, True): None,'#10;
+ s := s +
+   '                (True, False, False, False): _hash_add,'#10;
+ s := s +
+   '                (True, False, False, True): _hash_exception,'#10;
+ s := s +
+   '                (True, False, True, False): _hash_add,'#10;
+ s := s +
+   '                (True, False, True, True): _hash_exception,'#10;
+ s := s +
+   '                (True, True, False, False): _hash_add,'#10;
+ s := s +
+   '                (True, True, False, True): _hash_exception,'#10;
+ s := s +
+   '                (True, True, True, False): _hash_add,'#10;
+ s := s +
+   '                (True, True, True, True): _hash_exception,'#10;
+ s := s +
+   '                }'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _process_class(cls, init, repr, eq, order, unsafe_hash, ' +
+   'frozen):'#10;
+ s := s +
+   '    fields = {}'#10;
+ s := s + #10;
+ s := s +
+   '    setattr(cls, _PARAMS, _DataclassParams(init, repr, eq, o' +
+   'rder,'#10;
+ s := s +
+   '                                           unsafe_hash, froz' +
+   'en))'#10;
+ s := s + #10;
+ s := s +
+   '    any_frozen_base = False'#10;
+ s := s +
+   '    has_dataclass_bases = False'#10;
+ s := s +
+   '    for b in cls.__mro__[-1:0:-1]:'#10;
+ s := s +
+   '        base_fields = getattr(b, _FIELDS, None)'#10;
+ s := s +
+   '        if base_fields:'#10;
+ s := s +
+   '            has_dataclass_bases = True'#10;
+ s := s +
+   '            for f in base_fields.values():'#10;
+ s := s +
+   '                fields[f.name] = f'#10;
+ s := s +
+   '            if getattr(b, _PARAMS).frozen:'#10;
+ s := s +
+   '                any_frozen_base = True'#10;
+ s := s + #10;
+ s := s +
+   '    cls_annotations = cls.__dict__.get(''__annotations__'', {}' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   '    cls_fields = [_get_field(cls, name, type)'#10;
+ s := s +
+   '                  for name, type in cls_annotations.items()]'#10;
+ s := s +
+   '    for f in cls_fields:'#10;
+ s := s +
+   '        fields[f.name] = f'#10;
+ s := s + #10;
+ s := s +
+   '        if isinstance(getattr(cls, f.name, None), Field):'#10;
+ s := s +
+   '            if f.default is MISSING:'#10;
+ s := s +
+   '                delattr(cls, f.name)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                setattr(cls, f.name, f.default)'#10;
+ s := s + #10;
+ s := s +
+   '    for name, value in cls.__dict__.items():'#10;
+ s := s +
+   '        if isinstance(value, Field) and not name in cls_anno' +
+   'tations:'#10;
+ s := s +
+   '            raise TypeError(''field '' + name + '' is a Field b' +
+   'ut has no type annotation'')'#10;
+ s := s + #10;
+ s := s +
+   '    if has_dataclass_bases:'#10;
+ s := s +
+   '        if any_frozen_base and not frozen:'#10;
+ s := s +
+   '            raise TypeError(''cannot inherit non-frozen datac' +
+   'lass from a '''#10;
+ s := s +
+   '                            ''frozen one'')'#10;
+ s := s +
+   '        if not any_frozen_base and frozen:'#10;
+ s := s +
+   '            raise TypeError(''cannot inherit frozen dataclass' +
+   ' from a '''#10;
+ s := s +
+   '                            ''non-frozen one'')'#10;
+ s := s + #10;
+ s := s +
+   '    setattr(cls, _FIELDS, fields)'#10;
+ s := s + #10;
+ s := s +
+   '    class_hash = cls.__dict__.get(''__hash__'', MISSING)'#10;
+ s := s +
+   '    has_explicit_hash = not (class_hash is MISSING or'#10;
+ s := s +
+   '                             (class_hash is None and ''__eq__' +
+   ''' in cls.__dict__))'#10;
+ s := s + #10;
+ s := s +
+   '    if init:'#10;
+ s := s +
+   '        has_post_init = hasattr(cls, _POST_INIT_NAME)'#10;
+ s := s + #10;
+ s := s +
+   '        flds = [f for f in fields.values()'#10;
+ s := s +
+   '                if f._field_type in (_FIELD, _FIELD_INITVAR)' +
+   ']'#10;
+ s := s +
+   '        _set_new_attribute(cls, ''__init__'','#10;
+ s := s +
+   '                           _init_fn(flds,'#10;
+ s := s +
+   '                                    frozen,'#10;
+ s := s +
+   '                                    has_post_init,'#10;
+ s := s +
+   '                                    ''__dataclass_self__'' if ' +
+   '''self'' in fields'#10;
+ s := s +
+   '                                    else ''self'','#10;
+ s := s +
+   '                                    sys.modules[cls.__module' +
+   '__].__dict__'#10;
+ s := s +
+   '                                    if cls.__module__ in sys' +
+   '.modules else {},'#10;
+ s := s +
+   '                                    ))'#10;
+ s := s + #10;
+ s := s +
+   '    flds = [f for f in fields.values() if f._field_type is _' +
+   'FIELD]'#10;
+ s := s + #10;
+ s := s +
+   '    if repr:'#10;
+ s := s +
+   '        _set_new_attribute(cls, ''__repr__'', _repr_fn(flds))'#10;
+ s := s + #10;
+ s := s +
+   '    if eq:'#10;
+ s := s +
+   '        flds_eq = [f for f in flds if f.compare]'#10;
+ s := s +
+   '        self_tuple = _tuple_str(''self'', flds_eq)'#10;
+ s := s +
+   '        other_tuple = _tuple_str(''other'', flds_eq)'#10;
+ s := s +
+   '        _set_new_attribute(cls, ''__eq__'','#10;
+ s := s +
+   '                           _cmp_fn(''__eq__'', ''=='','#10;
+ s := s +
+   '                                   self_tuple, other_tuple))'#10;
+ s := s + #10;
+ s := s +
+   '    if order:'#10;
+ s := s +
+   '        flds_o = [f for f in flds if f.compare]'#10;
+ s := s +
+   '        self_tuple = _tuple_str(''self'', flds_o)'#10;
+ s := s +
+   '        other_tuple = _tuple_str(''other'', flds_o)'#10;
+ s := s +
+   '        for name, op in [(''__lt__'', ''<''),'#10;
+ s := s +
+   '                         (''__le__'', ''<=''),'#10;
+ s := s +
+   '                         (''__gt__'', ''>''),'#10;
+ s := s +
+   '                         (''__ge__'', ''>=''),'#10;
+ s := s +
+   '                         ]:'#10;
+ s := s +
+   '            if _set_new_attribute(cls, name,'#10;
+ s := s +
+   '                                  _cmp_fn(name, op, self_tup' +
+   'le, other_tuple)):'#10;
+ s := s +
+   '                raise TypeError(''Cannot overwrite attribute ' +
+   ''' + name + '' '''#10;
+ s := s +
+   '                                ''in class '' + cls.__name__ +' +
+   ' ''. Consider using '''#10;
+ s := s +
+   '                                ''functools.total_ordering'')'#10;
+ s := s + #10;
+ s := s +
+   '    if frozen:'#10;
+ s := s +
+   '        for fn in _frozen_get_del_attr(cls, flds):'#10;
+ s := s +
+   '            if _set_new_attribute(cls, fn.__name__, fn):'#10;
+ s := s +
+   '                raise TypeError(''Cannot overwrite attribute ' +
+   ''' + fn.__name__ + '' '''#10;
+ s := s +
+   '                                ''in class '' + cls.__name__)'#10;
+ s := s + #10;
+ s := s +
+   '    hash_action = _hash_action[bool(unsafe_hash),'#10;
+ s := s +
+   '                               bool(eq),'#10;
+ s := s +
+   '                               bool(frozen),'#10;
+ s := s +
+   '                               has_explicit_hash]'#10;
+ s := s +
+   '    if hash_action:'#10;
+ s := s +
+   '        cls.__hash__ = hash_action(cls, flds)'#10;
+ s := s + #10;
+ s := s +
+   '    if not getattr(cls, ''__doc__''):'#10;
+ s := s +
+   '        cls.__doc__ = (cls.__name__ + _doc_signature(fields)' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   '    return cls'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _doc_signature(fields):'#10;
+ s := s +
+   '    parts = []'#10;
+ s := s +
+   '    for f in fields.values():'#10;
+ s := s +
+   '        if f._field_type is _FIELD_CLASSVAR or not f.init:'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if isinstance(f.type, type):'#10;
+ s := s +
+   '            t = f.type.__name__'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            t = repr(f.type)'#10;
+ s := s +
+   '        s = f.name + '': '' + t'#10;
+ s := s +
+   '        if f.default is not MISSING:'#10;
+ s := s +
+   '            s += '' = '' + repr(f.default)'#10;
+ s := s +
+   '        elif f.default_factory is not MISSING:'#10;
+ s := s +
+   '            s += '' = <factory>'''#10;
+ s := s +
+   '        parts.append(s)'#10;
+ s := s +
+   '    return ''('' + '', ''.join(parts) + '')'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def dataclass(cls=None, /, *, init=True, repr=True, eq=True,' +
+   ' order=False,'#10;
+ s := s +
+   '              unsafe_hash=False, frozen=False):'#10;
+ s := s +
+   '    def wrap(cls):'#10;
+ s := s +
+   '        return _process_class(cls, init, repr, eq, order, un' +
+   'safe_hash, frozen)'#10;
+ s := s + #10;
+ s := s +
+   '    if cls is None:'#10;
+ s := s +
+   '        return wrap'#10;
+ s := s +
+   '    return wrap(cls)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def fields(class_or_instance):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        fields = getattr(class_or_instance, _FIELDS)'#10;
+ s := s +
+   '    except AttributeError:'#10;
+ s := s +
+   '        raise TypeError(''must be called with a dataclass typ' +
+   'e or instance'')'#10;
+ s := s +
+   '    return tuple(f for f in fields.values() if f._field_type' +
+   ' is _FIELD)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_dataclass_instance(obj):'#10;
+ s := s +
+   '    return hasattr(type(obj), _FIELDS)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def is_dataclass(obj):'#10;
+ s := s +
+   '    cls = obj if isinstance(obj, type) else type(obj)'#10;
+ s := s +
+   '    return hasattr(cls, _FIELDS)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def asdict(obj, *, dict_factory=dict):'#10;
+ s := s +
+   '    if not _is_dataclass_instance(obj):'#10;
+ s := s +
+   '        raise TypeError("asdict() should be called on datacl' +
+   'ass instances")'#10;
+ s := s +
+   '    return _asdict_inner(obj, dict_factory)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _asdict_inner(obj, dict_factory):'#10;
+ s := s +
+   '    if _is_dataclass_instance(obj):'#10;
+ s := s +
+   '        result = []'#10;
+ s := s +
+   '        for f in fields(obj):'#10;
+ s := s +
+   '            value = _asdict_inner(getattr(obj, f.name), dict' +
+   '_factory)'#10;
+ s := s +
+   '            result.append((f.name, value))'#10;
+ s := s +
+   '        return dict_factory(result)'#10;
+ s := s +
+   '    elif isinstance(obj, tuple) and hasattr(obj, ''_fields''):'#10;
+ s := s +
+   '        return type(obj)(*[_asdict_inner(v, dict_factory) fo' +
+   'r v in obj])'#10;
+ s := s +
+   '    elif isinstance(obj, (list, tuple)):'#10;
+ s := s +
+   '        return type(obj)(_asdict_inner(v, dict_factory) for ' +
+   'v in obj)'#10;
+ s := s +
+   '    elif isinstance(obj, dict):'#10;
+ s := s +
+   '        return type(obj)((_asdict_inner(k, dict_factory),'#10;
+ s := s +
+   '                          _asdict_inner(v, dict_factory))'#10;
+ s := s +
+   '                         for k, v in obj.items())'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        return copy.deepcopy(obj)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def astuple(obj, *, tuple_factory=tuple):'#10;
+ s := s +
+   '    if not _is_dataclass_instance(obj):'#10;
+ s := s +
+   '        raise TypeError("astuple() should be called on datac' +
+   'lass instances")'#10;
+ s := s +
+   '    return _astuple_inner(obj, tuple_factory)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _astuple_inner(obj, tuple_factory):'#10;
+ s := s +
+   '    if _is_dataclass_instance(obj):'#10;
+ s := s +
+   '        result = []'#10;
+ s := s +
+   '        for f in fields(obj):'#10;
+ s := s +
+   '            value = _astuple_inner(getattr(obj, f.name), tup' +
+   'le_factory)'#10;
+ s := s +
+   '            result.append(value)'#10;
+ s := s +
+   '        return tuple_factory(result)'#10;
+ s := s +
+   '    elif isinstance(obj, tuple) and hasattr(obj, ''_fields''):'#10;
+ s := s +
+   '        return type(obj)(*[_astuple_inner(v, tuple_factory) ' +
+   'for v in obj])'#10;
+ s := s +
+   '    elif isinstance(obj, (list, tuple)):'#10;
+ s := s +
+   '        return type(obj)(_astuple_inner(v, tuple_factory) fo' +
+   'r v in obj)'#10;
+ s := s +
+   '    elif isinstance(obj, dict):'#10;
+ s := s +
+   '        return type(obj)((_astuple_inner(k, tuple_factory),'#10;
+ s := s +
+   '                          _astuple_inner(v, tuple_factory))'#10;
+ s := s +
+   '                         for k, v in obj.items())'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        return copy.deepcopy(obj)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def make_dataclass(cls_name, fields, *, bases=(), namespace=' +
+   'None, init=True,'#10;
+ s := s +
+   '                   repr=True, eq=True, order=False, unsafe_h' +
+   'ash=False,'#10;
+ s := s +
+   '                   frozen=False):'#10;
+ s := s +
+   '    if namespace is None:'#10;
+ s := s +
+   '        namespace = {}'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        namespace = namespace.copy()'#10;
+ s := s + #10;
+ s := s +
+   '    seen = set()'#10;
+ s := s +
+   '    anns = {}'#10;
+ s := s +
+   '    for item in fields:'#10;
+ s := s +
+   '        if isinstance(item, str):'#10;
+ s := s +
+   '            name = item'#10;
+ s := s +
+   '            tp = ''typing.Any'''#10;
+ s := s +
+   '        elif len(item) == 2:'#10;
+ s := s +
+   '            name, tp, = item'#10;
+ s := s +
+   '        elif len(item) == 3:'#10;
+ s := s +
+   '            name, tp, spec = item'#10;
+ s := s +
+   '            namespace[name] = spec'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            raise TypeError(''Invalid field: '' + builtins.rep' +
+   'r(item))'#10;
+ s := s + #10;
+ s := s +
+   '        if not isinstance(name, str) or not name.isidentifie' +
+   'r():'#10;
+ s := s +
+   '            raise TypeError(''Field names must be valid ident' +
+   'ifiers: '' + builtins.repr(name))'#10;
+ s := s +
+   '        if keyword.iskeyword(name):'#10;
+ s := s +
+   '            raise TypeError(''Field names must not be keyword' +
+   's: '' + builtins.repr(name))'#10;
+ s := s +
+   '        if name in seen:'#10;
+ s := s +
+   '            raise TypeError(''Field name duplicated: '' + buil' +
+   'tins.repr(name))'#10;
+ s := s + #10;
+ s := s +
+   '        seen.add(name)'#10;
+ s := s +
+   '        anns[name] = tp'#10;
+ s := s + #10;
+ s := s +
+   '    namespace[''__annotations__''] = anns'#10;
+ s := s +
+   '    cls = types.new_class(cls_name, bases, {}, lambda ns: ns' +
+   '.update(namespace))'#10;
+ s := s +
+   '    return dataclass(cls, init=init, repr=repr, eq=eq, order' +
+   '=order,'#10;
+ s := s +
+   '                     unsafe_hash=unsafe_hash, frozen=frozen)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def replace(*args, **changes):'#10;
+ s := s +
+   '    if len(args) > 1:'#10;
+ s := s +
+   '        raise TypeError(''replace() takes 1 positional argume' +
+   'nt but '' + str(len(args)) + '' were given'')'#10;
+ s := s +
+   '    if args:'#10;
+ s := s +
+   '        obj, = args'#10;
+ s := s +
+   '    elif ''obj'' in changes:'#10;
+ s := s +
+   '        obj = changes.pop(''obj'')'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        raise TypeError("replace() missing 1 required positi' +
+   'onal argument: ''obj''")'#10;
+ s := s + #10;
+ s := s +
+   '    if not _is_dataclass_instance(obj):'#10;
+ s := s +
+   '        raise TypeError("replace() should be called on datac' +
+   'lass instances")'#10;
+ s := s + #10;
+ s := s +
+   '    for f in getattr(obj, _FIELDS).values():'#10;
+ s := s +
+   '        if f._field_type is _FIELD_CLASSVAR:'#10;
+ s := s +
+   '            continue'#10;
+ s := s + #10;
+ s := s +
+   '        if not f.init:'#10;
+ s := s +
+   '            if f.name in changes:'#10;
+ s := s +
+   '                raise ValueError(''field '' + f.name + '' is de' +
+   'clared with '''#10;
+ s := s +
+   '                                 ''init=False, it cannot be s' +
+   'pecified with '''#10;
+ s := s +
+   '                                 ''replace()'')'#10;
+ s := s +
+   '            continue'#10;
+ s := s + #10;
+ s := s +
+   '        if f.name not in changes:'#10;
+ s := s +
+   '            if f._field_type is _FIELD_INITVAR:'#10;
+ s := s +
+   '                raise ValueError("InitVar ''" + f.name + "'' "'#10;
+ s := s +
+   '                                 ''must be specified with rep' +
+   'lace()'')'#10;
+ s := s +
+   '            changes[f.name] = getattr(obj, f.name)'#10;
+ s := s + #10;
+ s := s +
+   '    return obj.__class__(**changes)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_dis: AnsiString;
 Var
  s: AnsiString;
@@ -34716,6 +39371,613 @@ Begin
  Result := s;
 End;
 
+Function Src_fnmatch: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Filename matching with shell patterns.'#10;
+ s := s + #10;
+ s := s +
+   'fnmatch(FILENAME, PATTERN) matches according to the local co' +
+   'nvention.'#10;
+ s := s +
+   'fnmatchcase(FILENAME, PATTERN) always takes case in account.'#10;
+ s := s + #10;
+ s := s +
+   'The functions operate by translating the pattern into a regu' +
+   'lar'#10;
+ s := s +
+   'expression (translate()), but matching is done by a small ha' +
+   'nd written'#10;
+ s := s +
+   'matcher so that the `re` module is not needed.'#10;
+ s := s + #10;
+ s := s +
+   'Patterns are Unix shell style:'#10;
+ s := s + #10;
+ s := s +
+   '*       matches everything'#10;
+ s := s +
+   '?       matches any single character'#10;
+ s := s +
+   '[seq]   matches any character in seq'#10;
+ s := s +
+   '[!seq]  matches any char not in seq'#10;
+ s := s +
+   '"""'#10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import posixpath'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["filter", "fnmatch", "fnmatchcase", "translate"]'#10;
+ s := s + #10;
+ s := s +
+   '_MAGIC = ''*?['''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def fnmatch(name, pat):'#10;
+ s := s +
+   '    """Test whether FILENAME matches PATTERN."""'#10;
+ s := s +
+   '    name = os.path.normcase(name)'#10;
+ s := s +
+   '    pat = os.path.normcase(pat)'#10;
+ s := s +
+   '    return fnmatchcase(name, pat)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_cache = {}'#10;
+ s := s +
+   '_cache_bytes = {}'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _compile_pattern(pat):'#10;
+ s := s +
+   '    is_bytes = isinstance(pat, bytes)'#10;
+ s := s +
+   '    cache = _cache_bytes if is_bytes else _cache'#10;
+ s := s +
+   '    m = cache.get(pat)'#10;
+ s := s +
+   '    if m is None:'#10;
+ s := s +
+   '        if is_bytes:'#10;
+ s := s +
+   '            pat_str = str(pat, ''ISO-8859-1'')'#10;
+ s := s +
+   '            m = _make_matcher(pat_str)'#10;
+ s := s +
+   '            m = _bytes_matcher(m)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            m = _make_matcher(pat)'#10;
+ s := s +
+   '        if len(cache) >= 256:'#10;
+ s := s +
+   '            cache.clear()'#10;
+ s := s +
+   '        cache[pat] = m'#10;
+ s := s +
+   '    return m'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _bytes_matcher(m):'#10;
+ s := s +
+   '    def match(name):'#10;
+ s := s +
+   '        return m(str(name, ''ISO-8859-1''))'#10;
+ s := s +
+   '    return match'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def filter(names, pat):'#10;
+ s := s +
+   '    """Return the subset of the list NAMES that match PAT.""' +
+   '"'#10;
+ s := s +
+   '    result = []'#10;
+ s := s +
+   '    pat = os.path.normcase(pat)'#10;
+ s := s +
+   '    match = _compile_pattern(pat)'#10;
+ s := s +
+   '    if os.path is posixpath:'#10;
+ s := s +
+   '        # normcase on posix is NOP. Optimize it away from th' +
+   'e loop.'#10;
+ s := s +
+   '        for name in names:'#10;
+ s := s +
+   '            if match(name):'#10;
+ s := s +
+   '                result.append(name)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        for name in names:'#10;
+ s := s +
+   '            if match(os.path.normcase(name)):'#10;
+ s := s +
+   '                result.append(name)'#10;
+ s := s +
+   '    return result'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def fnmatchcase(name, pat):'#10;
+ s := s +
+   '    """Test whether FILENAME matches PATTERN, including case' +
+   '."""'#10;
+ s := s +
+   '    match = _compile_pattern(pat)'#10;
+ s := s +
+   '    return match(name) is not None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s +
+   '# regex text generation (same output as CPython 3.8)'#10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s + #10;
+ s := s +
+   '_SPECIAL = ''()[]{}?*+-|^$\\.&~# \t\n\r\v\f'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _re_escape(c):'#10;
+ s := s +
+   '    if c in _SPECIAL:'#10;
+ s := s +
+   '        return ''\\'' + c'#10;
+ s := s +
+   '    return c'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _class_stuff(pat, i, j):'#10;
+ s := s +
+   '    """Body of the regex character class for pat[i:j] (as tr' +
+   'anslate() builds it)."""'#10;
+ s := s +
+   '    stuff = pat[i:j]'#10;
+ s := s +
+   '    if ''--'' not in stuff:'#10;
+ s := s +
+   '        stuff = stuff.replace(''\\'', ''\\\\'')'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        chunks = []'#10;
+ s := s +
+   '        k = i + 2 if pat[i] == ''!'' else i + 1'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            k = pat.find(''-'', k, j)'#10;
+ s := s +
+   '            if k < 0:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            chunks.append(pat[i:k])'#10;
+ s := s +
+   '            i = k + 1'#10;
+ s := s +
+   '            k = k + 3'#10;
+ s := s +
+   '        chunks.append(pat[i:j])'#10;
+ s := s +
+   '        # Escape backslashes and hyphens for set difference ' +
+   '(--).'#10;
+ s := s +
+   '        # Hyphens that create ranges shouldn''t be escaped.'#10;
+ s := s +
+   '        stuff = ''-''.join(s.replace(''\\'', ''\\\\'').replace(''-''' +
+   ', ''\\-'')'#10;
+ s := s +
+   '                         for s in chunks)'#10;
+ s := s +
+   '    # Escape set operations (&&, ~~ and ||).'#10;
+ s := s +
+   '    for ch in ''&~|'':'#10;
+ s := s +
+   '        stuff = stuff.replace(ch, ''\\'' + ch)'#10;
+ s := s +
+   '    return stuff'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def translate(pat):'#10;
+ s := s +
+   '    """Translate a shell PATTERN to a regular expression.'#10;
+ s := s + #10;
+ s := s +
+   '    There is no way to quote meta-characters.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    i, n = 0, len(pat)'#10;
+ s := s +
+   '    res = '''''#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = pat[i]'#10;
+ s := s +
+   '        i = i + 1'#10;
+ s := s +
+   '        if c == ''*'':'#10;
+ s := s +
+   '            res = res + ''.*'''#10;
+ s := s +
+   '        elif c == ''?'':'#10;
+ s := s +
+   '            res = res + ''.'''#10;
+ s := s +
+   '        elif c == ''['':'#10;
+ s := s +
+   '            j = i'#10;
+ s := s +
+   '            if j < n and pat[j] == ''!'':'#10;
+ s := s +
+   '                j = j + 1'#10;
+ s := s +
+   '            if j < n and pat[j] == '']'':'#10;
+ s := s +
+   '                j = j + 1'#10;
+ s := s +
+   '            while j < n and pat[j] != '']'':'#10;
+ s := s +
+   '                j = j + 1'#10;
+ s := s +
+   '            if j >= n:'#10;
+ s := s +
+   '                res = res + ''\\['''#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                stuff = _class_stuff(pat, i, j)'#10;
+ s := s +
+   '                i = j + 1'#10;
+ s := s +
+   '                if stuff[0] == ''!'':'#10;
+ s := s +
+   '                    stuff = ''^'' + stuff[1:]'#10;
+ s := s +
+   '                elif stuff[0] in (''^'', ''[''):'#10;
+ s := s +
+   '                    stuff = ''\\'' + stuff'#10;
+ s := s +
+   '                res = ''%s[%s]'' % (res, stuff)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            res = res + _re_escape(c)'#10;
+ s := s +
+   '    return r''(?s:%s)\Z'' % res'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s +
+   '# matcher (no `re`)'#10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s + #10;
+ s := s +
+   'def _parse_class(stuff):'#10;
+ s := s +
+   '    """Parse a regex class body (as built by _class_stuff) i' +
+   'nto'#10;
+ s := s +
+   '    (negate, singles, ranges)."""'#10;
+ s := s +
+   '    n = len(stuff)'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    negate = False'#10;
+ s := s +
+   '    if n and stuff[0] == ''^'':'#10;
+ s := s +
+   '        negate = True'#10;
+ s := s +
+   '        i = 1'#10;
+ s := s +
+   '    singles = set()'#10;
+ s := s +
+   '    ranges = []'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = stuff[i]'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s +
+   '        if c == ''\\'' and i < n:'#10;
+ s := s +
+   '            c = stuff[i]'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '        # range?'#10;
+ s := s +
+   '        if i + 1 < n and stuff[i] == ''-'':'#10;
+ s := s +
+   '            hi = stuff[i + 1]'#10;
+ s := s +
+   '            i += 2'#10;
+ s := s +
+   '            if hi == ''\\'' and i < n:'#10;
+ s := s +
+   '                hi = stuff[i]'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s +
+   '            if hi < c:'#10;
+ s := s +
+   '                raise ValueError(''bad character range %s-%s''' +
+   ' % (c, hi))'#10;
+ s := s +
+   '            ranges.append((c, hi))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            singles.add(c)'#10;
+ s := s +
+   '    return negate, singles, ranges'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _tokenize(pat):'#10;
+ s := s +
+   '    """Pattern -> list of tokens: str (literal char), 1 (any' +
+   '), 2 (star),'#10;
+ s := s +
+   '    tuple (negate, singles, ranges)."""'#10;
+ s := s +
+   '    toks = []'#10;
+ s := s +
+   '    i, n = 0, len(pat)'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = pat[i]'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s +
+   '        if c == ''*'':'#10;
+ s := s +
+   '            if not toks or toks[-1] != 2:'#10;
+ s := s +
+   '                toks.append(2)'#10;
+ s := s +
+   '        elif c == ''?'':'#10;
+ s := s +
+   '            toks.append(1)'#10;
+ s := s +
+   '        elif c == ''['':'#10;
+ s := s +
+   '            j = i'#10;
+ s := s +
+   '            if j < n and pat[j] == ''!'':'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '            if j < n and pat[j] == '']'':'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '            while j < n and pat[j] != '']'':'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '            if j >= n:'#10;
+ s := s +
+   '                toks.append(''['')'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                stuff = _class_stuff(pat, i, j)'#10;
+ s := s +
+   '                i = j + 1'#10;
+ s := s +
+   '                if stuff[0] == ''!'':'#10;
+ s := s +
+   '                    stuff = ''^'' + stuff[1:]'#10;
+ s := s +
+   '                elif stuff[0] in (''^'', ''[''):'#10;
+ s := s +
+   '                    stuff = ''\\'' + stuff'#10;
+ s := s +
+   '                toks.append(_parse_class(stuff))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            toks.append(c)'#10;
+ s := s +
+   '    return toks'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _class_match(cls, ch):'#10;
+ s := s +
+   '    negate, singles, ranges = cls'#10;
+ s := s +
+   '    ok = ch in singles'#10;
+ s := s +
+   '    if not ok:'#10;
+ s := s +
+   '        for lo, hi in ranges:'#10;
+ s := s +
+   '            if lo <= ch <= hi:'#10;
+ s := s +
+   '                ok = True'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '    return ok != negate'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _make_matcher(pat):'#10;
+ s := s +
+   '    """Return a function name -> True/None implementing tran' +
+   'slate(pat)."""'#10;
+ s := s +
+   '    has_magic = False'#10;
+ s := s +
+   '    for c in _MAGIC:'#10;
+ s := s +
+   '        if c in pat:'#10;
+ s := s +
+   '            has_magic = True'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '    if not has_magic:'#10;
+ s := s +
+   '        def match_lit(name):'#10;
+ s := s +
+   '            return True if name == pat else None'#10;
+ s := s +
+   '        return match_lit'#10;
+ s := s +
+   '    toks = _tokenize(pat)'#10;
+ s := s +
+   '    # simple shapes'#10;
+ s := s +
+   '    if toks == [2]:'#10;
+ s := s +
+   '        def match_all(name):'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        return match_all'#10;
+ s := s +
+   '    nt = len(toks)'#10;
+ s := s +
+   '    if nt >= 2 and toks[0] == 2 and all(type(t) is str for t' +
+   ' in toks[1:]):'#10;
+ s := s +
+   '        suffix = ''''.join(toks[1:])'#10;
+ s := s +
+   '        def match_suffix(name):'#10;
+ s := s +
+   '            return True if name.endswith(suffix) else None'#10;
+ s := s +
+   '        return match_suffix'#10;
+ s := s +
+   '    if nt >= 2 and toks[-1] == 2 and all(type(t) is str for ' +
+   't in toks[:-1]):'#10;
+ s := s +
+   '        prefix = ''''.join(toks[:-1])'#10;
+ s := s +
+   '        def match_prefix(name):'#10;
+ s := s +
+   '            return True if name.startswith(prefix) else None'#10;
+ s := s +
+   '        return match_prefix'#10;
+ s := s + #10;
+ s := s +
+   '    toks = tuple(toks)'#10;
+ s := s + #10;
+ s := s +
+   '    def match(name):'#10;
+ s := s +
+   '        n = len(name)'#10;
+ s := s +
+   '        i = 0           # index in name'#10;
+ s := s +
+   '        t = 0           # index in toks'#10;
+ s := s +
+   '        star_t = -1     # token index after the last star'#10;
+ s := s +
+   '        star_i = 0      # name index the last star currently' +
+   ' covers up to'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            if t < nt:'#10;
+ s := s +
+   '                tok = toks[t]'#10;
+ s := s +
+   '                if tok == 2 and type(tok) is int:'#10;
+ s := s +
+   '                    star_t = t + 1'#10;
+ s := s +
+   '                    star_i = i'#10;
+ s := s +
+   '                    t += 1'#10;
+ s := s +
+   '                    continue'#10;
+ s := s +
+   '                if i < n:'#10;
+ s := s +
+   '                    ch = name[i]'#10;
+ s := s +
+   '                    tt = type(tok)'#10;
+ s := s +
+   '                    if tt is str:'#10;
+ s := s +
+   '                        ok = tok == ch'#10;
+ s := s +
+   '                    elif tt is int:'#10;
+ s := s +
+   '                        ok = True'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        ok = _class_match(tok, ch)'#10;
+ s := s +
+   '                    if ok:'#10;
+ s := s +
+   '                        i += 1'#10;
+ s := s +
+   '                        t += 1'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '            elif i == n:'#10;
+ s := s +
+   '                return True'#10;
+ s := s +
+   '            # mismatch: backtrack to the last star'#10;
+ s := s +
+   '            if star_t >= 0 and star_i < n:'#10;
+ s := s +
+   '                star_i += 1'#10;
+ s := s +
+   '                i = star_i'#10;
+ s := s +
+   '                t = star_t'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            return None'#10;
+ s := s + #10;
+ s := s +
+   '    return match'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_functools: AnsiString;
 Var
  s: AnsiString;
@@ -35287,6 +40549,919 @@ Begin
    '    update_wrapper(wrapper, func)'#10;
  s := s +
    '    return wrapper'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_getopt: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Parser for command line options.'#10;
+ s := s + #10;
+ s := s +
+   'This module helps scripts to parse the command line argument' +
+   's in'#10;
+ s := s +
+   'sys.argv.  It supports the same conventions as the Unix geto' +
+   'pt()'#10;
+ s := s +
+   'function (including the special meanings of arguments of the' +
+   ' form `-'''#10;
+ s := s +
+   'and `--'').  Long options similar to those supported by GNU s' +
+   'oftware'#10;
+ s := s +
+   'may be used as well via an optional third argument.'#10;
+ s := s +
+   '"""'#10;
+ s := s + #10;
+ s := s +
+   '# Many thanks to Guido van Rossum and Fred Drake for the ori' +
+   'ginal module.'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["GetoptError", "error", "getopt", "gnu_getopt"]'#10;
+ s := s + #10;
+ s := s +
+   'import os'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _(s):'#10;
+ s := s +
+   '    # gettext is not available'#10;
+ s := s +
+   '    return s'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class GetoptError(Exception):'#10;
+ s := s +
+   '    opt = '''''#10;
+ s := s +
+   '    msg = '''''#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, msg, opt=''''):'#10;
+ s := s +
+   '        self.msg = msg'#10;
+ s := s +
+   '        self.opt = opt'#10;
+ s := s +
+   '        Exception.__init__(self, msg, opt)'#10;
+ s := s + #10;
+ s := s +
+   '    def __str__(self):'#10;
+ s := s +
+   '        return self.msg'#10;
+ s := s + #10;
+ s := s +
+   'error = GetoptError  # backward compatibility'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def getopt(args, shortopts, longopts=[]):'#10;
+ s := s +
+   '    """getopt(args, options[, long_options]) -> opts, args""' +
+   '"'#10;
+ s := s + #10;
+ s := s +
+   '    opts = []'#10;
+ s := s +
+   '    if type(longopts) == type(""):'#10;
+ s := s +
+   '        longopts = [longopts]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        longopts = list(longopts)'#10;
+ s := s +
+   '    while args and args[0].startswith(''-'') and args[0] != ''-' +
+   ''':'#10;
+ s := s +
+   '        if args[0] == ''--'':'#10;
+ s := s +
+   '            args = args[1:]'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        if args[0].startswith(''--''):'#10;
+ s := s +
+   '            opts, args = do_longs(opts, args[0][2:], longopt' +
+   's, args[1:])'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            opts, args = do_shorts(opts, args[0][1:], shorto' +
+   'pts, args[1:])'#10;
+ s := s + #10;
+ s := s +
+   '    return opts, args'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def gnu_getopt(args, shortopts, longopts=[]):'#10;
+ s := s +
+   '    """getopt(args, options[, long_options]) -> opts, args""' +
+   '"'#10;
+ s := s + #10;
+ s := s +
+   '    opts = []'#10;
+ s := s +
+   '    prog_args = []'#10;
+ s := s +
+   '    if isinstance(longopts, str):'#10;
+ s := s +
+   '        longopts = [longopts]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        longopts = list(longopts)'#10;
+ s := s + #10;
+ s := s +
+   '    # Allow options after non-option arguments?'#10;
+ s := s +
+   '    if shortopts.startswith(''+''):'#10;
+ s := s +
+   '        shortopts = shortopts[1:]'#10;
+ s := s +
+   '        all_options_first = True'#10;
+ s := s +
+   '    elif os.environ.get("POSIXLY_CORRECT"):'#10;
+ s := s +
+   '        all_options_first = True'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        all_options_first = False'#10;
+ s := s + #10;
+ s := s +
+   '    while args:'#10;
+ s := s +
+   '        if args[0] == ''--'':'#10;
+ s := s +
+   '            prog_args += args[1:]'#10;
+ s := s +
+   '            break'#10;
+ s := s + #10;
+ s := s +
+   '        if args[0][:2] == ''--'':'#10;
+ s := s +
+   '            opts, args = do_longs(opts, args[0][2:], longopt' +
+   's, args[1:])'#10;
+ s := s +
+   '        elif args[0][:1] == ''-'' and args[0] != ''-'':'#10;
+ s := s +
+   '            opts, args = do_shorts(opts, args[0][1:], shorto' +
+   'pts, args[1:])'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if all_options_first:'#10;
+ s := s +
+   '                prog_args += args'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                prog_args.append(args[0])'#10;
+ s := s +
+   '                args = args[1:]'#10;
+ s := s + #10;
+ s := s +
+   '    return opts, prog_args'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def do_longs(opts, opt, longopts, args):'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        i = opt.index(''='')'#10;
+ s := s +
+   '    except ValueError:'#10;
+ s := s +
+   '        optarg = None'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        opt, optarg = opt[:i], opt[i+1:]'#10;
+ s := s + #10;
+ s := s +
+   '    has_arg, opt = long_has_args(opt, longopts)'#10;
+ s := s +
+   '    if has_arg:'#10;
+ s := s +
+   '        if optarg is None:'#10;
+ s := s +
+   '            if not args:'#10;
+ s := s +
+   '                raise GetoptError(_(''option --%s requires ar' +
+   'gument'') % opt, opt)'#10;
+ s := s +
+   '            optarg, args = args[0], args[1:]'#10;
+ s := s +
+   '    elif optarg is not None:'#10;
+ s := s +
+   '        raise GetoptError(_(''option --%s must not have an ar' +
+   'gument'') % opt, opt)'#10;
+ s := s +
+   '    opts.append((''--'' + opt, optarg or ''''))'#10;
+ s := s +
+   '    return opts, args'#10;
+ s := s + #10;
+ s := s +
+   '# Return:'#10;
+ s := s +
+   '#   has_arg?'#10;
+ s := s +
+   '#   full option name'#10;
+ s := s +
+   'def long_has_args(opt, longopts):'#10;
+ s := s +
+   '    possibilities = [o for o in longopts if o.startswith(opt' +
+   ')]'#10;
+ s := s +
+   '    if not possibilities:'#10;
+ s := s +
+   '        raise GetoptError(_(''option --%s not recognized'') % ' +
+   'opt, opt)'#10;
+ s := s +
+   '    # Is there an exact match?'#10;
+ s := s +
+   '    if opt in possibilities:'#10;
+ s := s +
+   '        return False, opt'#10;
+ s := s +
+   '    elif opt + ''='' in possibilities:'#10;
+ s := s +
+   '        return True, opt'#10;
+ s := s +
+   '    # No exact match, so better be unique.'#10;
+ s := s +
+   '    if len(possibilities) > 1:'#10;
+ s := s +
+   '        # XXX since possibilities contains all valid continu' +
+   'ations, might be'#10;
+ s := s +
+   '        # nice to work them into the error msg'#10;
+ s := s +
+   '        raise GetoptError(_(''option --%s not a unique prefix' +
+   ''') % opt, opt)'#10;
+ s := s +
+   '    assert len(possibilities) == 1'#10;
+ s := s +
+   '    unique_match = possibilities[0]'#10;
+ s := s +
+   '    has_arg = unique_match.endswith(''='')'#10;
+ s := s +
+   '    if has_arg:'#10;
+ s := s +
+   '        unique_match = unique_match[:-1]'#10;
+ s := s +
+   '    return has_arg, unique_match'#10;
+ s := s + #10;
+ s := s +
+   'def do_shorts(opts, optstring, shortopts, args):'#10;
+ s := s +
+   '    while optstring != '''':'#10;
+ s := s +
+   '        opt, optstring = optstring[0], optstring[1:]'#10;
+ s := s +
+   '        if short_has_arg(opt, shortopts):'#10;
+ s := s +
+   '            if optstring == '''':'#10;
+ s := s +
+   '                if not args:'#10;
+ s := s +
+   '                    raise GetoptError(_(''option -%s requires' +
+   ' argument'') % opt,'#10;
+ s := s +
+   '                                      opt)'#10;
+ s := s +
+   '                optstring, args = args[0], args[1:]'#10;
+ s := s +
+   '            optarg, optstring = optstring, '''''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            optarg = '''''#10;
+ s := s +
+   '        opts.append((''-'' + opt, optarg))'#10;
+ s := s +
+   '    return opts, args'#10;
+ s := s + #10;
+ s := s +
+   'def short_has_arg(opt, shortopts):'#10;
+ s := s +
+   '    for i in range(len(shortopts)):'#10;
+ s := s +
+   '        if opt == shortopts[i] != '':'':'#10;
+ s := s +
+   '            return shortopts.startswith('':'', i+1)'#10;
+ s := s +
+   '    raise GetoptError(_(''option -%s not recognized'') % opt, ' +
+   'opt)'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == ''__main__'':'#10;
+ s := s +
+   '    import sys'#10;
+ s := s +
+   '    print(getopt(sys.argv[1:], "a:b", ["alpha=", "beta"]))'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_getpass: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Utilities to get a password and/or the current user name.'#10;
+ s := s + #10;
+ s := s +
+   'getpass(prompt[, stream]) - Prompt for a password, with echo' +
+   ' turned off.'#10;
+ s := s +
+   'getuser() - Get the user name from the environment or passwo' +
+   'rd database.'#10;
+ s := s + #10;
+ s := s +
+   'GetPassWarning - This UserWarning is issued when getpass() c' +
+   'annot prevent'#10;
+ s := s +
+   '                 echoing of the password contents while read' +
+   'ing.'#10;
+ s := s + #10;
+ s := s +
+   'On Windows, the msvcrt module will be used.'#10;
+ s := s +
+   '"""'#10;
+ s := s + #10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import warnings'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["getpass", "getuser", "GetPassWarning"]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class GetPassWarning(UserWarning):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def unix_getpass(prompt=''Password: '', stream=None):'#10;
+ s := s +
+   '    """Prompt for a password, with echo turned off.'#10;
+ s := s + #10;
+ s := s +
+   '    Args:'#10;
+ s := s +
+   '      prompt: Written on stream to ask for the input.  Defau' +
+   'lt: ''Password: '''#10;
+ s := s +
+   '      stream: A writable file object to display the prompt. ' +
+   ' Defaults to'#10;
+ s := s +
+   '              the tty.  If no tty is available defaults to s' +
+   'ys.stderr.'#10;
+ s := s +
+   '    Returns:'#10;
+ s := s +
+   '      The seKr3t input.'#10;
+ s := s +
+   '    Raises:'#10;
+ s := s +
+   '      EOFError: If our input tty or stdin was closed.'#10;
+ s := s +
+   '      GetPassWarning: When we were unable to turn echo off o' +
+   'n the input.'#10;
+ s := s + #10;
+ s := s +
+   '    Always restores terminal settings before returning.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Echo cannot be turned off without termios: always use ' +
+   'the fallback.'#10;
+ s := s +
+   '    return fallback_getpass(prompt, stream)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def win_getpass(prompt=''Password: '', stream=None):'#10;
+ s := s +
+   '    return fallback_getpass(prompt, stream)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def fallback_getpass(prompt=''Password: '', stream=None):'#10;
+ s := s +
+   '    warnings.warn("Can not control echo on the terminal.", G' +
+   'etPassWarning,'#10;
+ s := s +
+   '                  stacklevel=2)'#10;
+ s := s +
+   '    if not stream:'#10;
+ s := s +
+   '        stream = sys.stderr'#10;
+ s := s +
+   '    print("Warning: Password input may be echoed.", file=str' +
+   'eam)'#10;
+ s := s +
+   '    return _raw_input(prompt, stream)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _raw_input(prompt="", stream=None, input=None):'#10;
+ s := s +
+   '    # This doesn''t save the string in the GNU readline histo' +
+   'ry.'#10;
+ s := s +
+   '    if not stream:'#10;
+ s := s +
+   '        stream = sys.stderr'#10;
+ s := s +
+   '    if not input:'#10;
+ s := s +
+   '        input = sys.stdin'#10;
+ s := s +
+   '    prompt = str(prompt)'#10;
+ s := s +
+   '    if prompt:'#10;
+ s := s +
+   '        stream.write(prompt)'#10;
+ s := s +
+   '        stream.flush()'#10;
+ s := s +
+   '    line = input.readline()'#10;
+ s := s +
+   '    if not line:'#10;
+ s := s +
+   '        raise EOFError'#10;
+ s := s +
+   '    if line[-1] == ''\n'':'#10;
+ s := s +
+   '        line = line[:-1]'#10;
+ s := s +
+   '    return line'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def getuser():'#10;
+ s := s +
+   '    """Get the username from the environment or password dat' +
+   'abase.'#10;
+ s := s + #10;
+ s := s +
+   '    First try various environment variables, then the passwo' +
+   'rd'#10;
+ s := s +
+   '    database.  This works on Windows as long as USERNAME is ' +
+   'set.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    for name in (''LOGNAME'', ''USER'', ''LNAME'', ''USERNAME''):'#10;
+ s := s +
+   '        user = os.environ.get(name)'#10;
+ s := s +
+   '        if user:'#10;
+ s := s +
+   '            return user'#10;
+ s := s + #10;
+ s := s +
+   '    # If this fails, the exception will "explain" why'#10;
+ s := s +
+   '    return _getpwuid_name(os.getuid())'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _getpwuid_name(uid):'#10;
+ s := s +
+   '    # `pwd` is not available: read /etc/passwd'#10;
+ s := s +
+   '    f = None'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        f = open(''/etc/passwd'')'#10;
+ s := s +
+   '        for line in f:'#10;
+ s := s +
+   '            fields = line.rstrip(''\n'').split('':'')'#10;
+ s := s +
+   '            if len(fields) >= 3 and fields[2] == str(uid):'#10;
+ s := s +
+   '                return fields[0]'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        pass'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        if f is not None:'#10;
+ s := s +
+   '            f.close()'#10;
+ s := s +
+   '    raise KeyError(''getpwuid(): uid not found: %s'' % uid)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# Bind the name getpass to the appropriate function'#10;
+ s := s +
+   'getpass = unix_getpass'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_glob: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Filename globbing utility."""'#10;
+ s := s + #10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import fnmatch'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["glob", "iglob", "escape"]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def glob(pathname, *, recursive=False):'#10;
+ s := s +
+   '    """Return a list of paths matching a pathname pattern.'#10;
+ s := s + #10;
+ s := s +
+   '    The pattern may contain simple shell-style wildcards a l' +
+   'a'#10;
+ s := s +
+   '    fnmatch. However, unlike fnmatch, filenames starting wit' +
+   'h a'#10;
+ s := s +
+   '    dot are special cases that are not matched by ''*'' and ''?' +
+   ''''#10;
+ s := s +
+   '    patterns.'#10;
+ s := s + #10;
+ s := s +
+   '    If recursive is true, the pattern ''**'' will match any fi' +
+   'les and'#10;
+ s := s +
+   '    zero or more directories and subdirectories.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return list(iglob(pathname, recursive=recursive))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def iglob(pathname, *, recursive=False):'#10;
+ s := s +
+   '    """Return an iterator which yields the paths matching a ' +
+   'pathname pattern."""'#10;
+ s := s +
+   '    it = _iglob(pathname, recursive, False)'#10;
+ s := s +
+   '    if recursive and _isrecursive(pathname):'#10;
+ s := s +
+   '        s = next(it)  # skip empty string'#10;
+ s := s +
+   '        assert not s'#10;
+ s := s +
+   '    return it'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _iglob(pathname, recursive, dironly):'#10;
+ s := s +
+   '    dirname, basename = os.path.split(pathname)'#10;
+ s := s +
+   '    if not has_magic(pathname):'#10;
+ s := s +
+   '        assert not dironly'#10;
+ s := s +
+   '        if basename:'#10;
+ s := s +
+   '            if _lexists(pathname):'#10;
+ s := s +
+   '                yield pathname'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            # Patterns ending with a slash should match only' +
+   ' directories'#10;
+ s := s +
+   '            if os.path.isdir(dirname):'#10;
+ s := s +
+   '                yield pathname'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    if not dirname:'#10;
+ s := s +
+   '        if recursive and _isrecursive(basename):'#10;
+ s := s +
+   '            yield from _glob2(dirname, basename, dironly)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            yield from _glob1(dirname, basename, dironly)'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    # `os.path.split()` returns the argument itself as a dir' +
+   'name if it is a'#10;
+ s := s +
+   '    # drive or UNC path.  Prevent an infinite recursion if a' +
+   ' drive or UNC path'#10;
+ s := s +
+   '    # contains magic characters (i.e. r''\\?\C:'').'#10;
+ s := s +
+   '    if dirname != pathname and has_magic(dirname):'#10;
+ s := s +
+   '        dirs = _iglob(dirname, recursive, True)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        dirs = [dirname]'#10;
+ s := s +
+   '    if has_magic(basename):'#10;
+ s := s +
+   '        if recursive and _isrecursive(basename):'#10;
+ s := s +
+   '            glob_in_dir = _glob2'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            glob_in_dir = _glob1'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        glob_in_dir = _glob0'#10;
+ s := s +
+   '    for dirname in dirs:'#10;
+ s := s +
+   '        for name in glob_in_dir(dirname, basename, dironly):'#10;
+ s := s +
+   '            yield os.path.join(dirname, name)'#10;
+ s := s + #10;
+ s := s +
+   '# These 2 helper functions non-recursively glob inside a lit' +
+   'eral directory.'#10;
+ s := s +
+   '# They return a list of basenames.  _glob1 accepts a pattern' +
+   ' while _glob0'#10;
+ s := s +
+   '# takes a literal basename (so it only has to check for its ' +
+   'existence).'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _lexists(path):'#10;
+ s := s +
+   '    # os.path.lexists() written without `return` inside `exc' +
+   'ept`'#10;
+ s := s +
+   '    # (interpreter bug B1 makes the stock implementation unr' +
+   'eliable)'#10;
+ s := s +
+   '    ok = True'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        os.lstat(path)'#10;
+ s := s +
+   '    except (OSError, ValueError):'#10;
+ s := s +
+   '        ok = False'#10;
+ s := s +
+   '    return ok'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _glob1(dirname, pattern, dironly):'#10;
+ s := s +
+   '    names = list(_iterdir(dirname, dironly))'#10;
+ s := s +
+   '    if not _ishidden(pattern):'#10;
+ s := s +
+   '        names = [x for x in names if not _ishidden(x)]'#10;
+ s := s +
+   '    return fnmatch.filter(names, pattern)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _glob0(dirname, basename, dironly):'#10;
+ s := s +
+   '    if not basename:'#10;
+ s := s +
+   '        # `os.path.split()` returns an empty basename for pa' +
+   'ths ending with a'#10;
+ s := s +
+   '        # directory separator.  ''q*x/'' should match only dir' +
+   'ectories.'#10;
+ s := s +
+   '        if os.path.isdir(dirname):'#10;
+ s := s +
+   '            return [basename]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if _lexists(os.path.join(dirname, basename)):'#10;
+ s := s +
+   '            return [basename]'#10;
+ s := s +
+   '    return []'#10;
+ s := s + #10;
+ s := s +
+   '# Following functions are not public but can be used by thir' +
+   'd-party code.'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def glob0(dirname, pattern):'#10;
+ s := s +
+   '    return _glob0(dirname, pattern, False)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def glob1(dirname, pattern):'#10;
+ s := s +
+   '    return _glob1(dirname, pattern, False)'#10;
+ s := s + #10;
+ s := s +
+   '# This helper function recursively yields relative pathnames' +
+   ' inside a literal'#10;
+ s := s +
+   '# directory.'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _glob2(dirname, pattern, dironly):'#10;
+ s := s +
+   '    assert _isrecursive(pattern)'#10;
+ s := s +
+   '    yield pattern[:0]'#10;
+ s := s +
+   '    yield from _rlistdir(dirname, dironly)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# If dironly is false, yields all file names inside a direct' +
+   'ory.'#10;
+ s := s +
+   '# If dironly is true, yields only directory names.'#10;
+ s := s +
+   'def _iterdir(dirname, dironly):'#10;
+ s := s +
+   '    if not dirname:'#10;
+ s := s +
+   '        if isinstance(dirname, bytes):'#10;
+ s := s +
+   '            dirname = bytes(os.curdir, ''ASCII'')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            dirname = os.curdir'#10;
+ s := s +
+   '    names = []'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        with os.scandir(dirname) as it:'#10;
+ s := s +
+   '            for entry in it:'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    if not dironly or entry.is_dir():'#10;
+ s := s +
+   '                        names.append(entry.name)'#10;
+ s := s +
+   '                except OSError:'#10;
+ s := s +
+   '                    pass'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        pass'#10;
+ s := s +
+   '    return names'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# Recursively yields relative pathnames inside a literal dir' +
+   'ectory.'#10;
+ s := s +
+   'def _rlistdir(dirname, dironly):'#10;
+ s := s +
+   '    names = _iterdir(dirname, dironly)'#10;
+ s := s +
+   '    for x in names:'#10;
+ s := s +
+   '        if not _ishidden(x):'#10;
+ s := s +
+   '            yield x'#10;
+ s := s +
+   '            path = os.path.join(dirname, x) if dirname else ' +
+   'x'#10;
+ s := s +
+   '            for y in _rlistdir(path, dironly):'#10;
+ s := s +
+   '                yield os.path.join(x, y)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def has_magic(s):'#10;
+ s := s +
+   '    if isinstance(s, bytes):'#10;
+ s := s +
+   '        return b''*'' in s or b''?'' in s or b''['' in s'#10;
+ s := s +
+   '    return ''*'' in s or ''?'' in s or ''['' in s'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _ishidden(path):'#10;
+ s := s +
+   '    return path[0] == ''.'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _isrecursive(pattern):'#10;
+ s := s +
+   '    if isinstance(pattern, bytes):'#10;
+ s := s +
+   '        return pattern == b''**'''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        return pattern == ''**'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def escape(pathname):'#10;
+ s := s +
+   '    """Escape all special characters.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Escaping is done by wrapping any of "*?[" between squa' +
+   're brackets.'#10;
+ s := s +
+   '    # Metacharacters do not work in the drive part and shoul' +
+   'dn''t be escaped.'#10;
+ s := s +
+   '    drive, pathname = os.path.splitdrive(pathname)'#10;
+ s := s +
+   '    if isinstance(pathname, bytes):'#10;
+ s := s +
+   '        for ch in (b''*'', b''?'', b''[''):'#10;
+ s := s +
+   '            pathname = pathname.replace(ch, b''['' + ch + b'']''' +
+   ')'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        # order matters: do not re-escape the brackets we ad' +
+   'd'#10;
+ s := s +
+   '        out = []'#10;
+ s := s +
+   '        for ch in pathname:'#10;
+ s := s +
+   '            if ch == ''*'' or ch == ''?'' or ch == ''['':'#10;
+ s := s +
+   '                out.append(''['' + ch + '']'')'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                out.append(ch)'#10;
+ s := s +
+   '        pathname = ''''.join(out)'#10;
+ s := s +
+   '    return drive + pathname'#10;
  s := s + #10;
  Result := s;
 End;
@@ -36426,6 +42601,2441 @@ Begin
  Result := s;
 End;
 
+Function Src_json_decoder: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Implementation of JSONDecoder (hand written scanner, no r' +
+   'egex)."""'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''JSONDecoder'', ''JSONDecodeError'']'#10;
+ s := s + #10;
+ s := s +
+   'NaN = float(''nan'')'#10;
+ s := s +
+   'PosInf = float(''inf'')'#10;
+ s := s +
+   'NegInf = float(''-inf'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class JSONDecodeError(ValueError):'#10;
+ s := s +
+   '    """Subclass of ValueError with the following additional ' +
+   'properties:'#10;
+ s := s + #10;
+ s := s +
+   '    msg: The unformatted error message'#10;
+ s := s +
+   '    doc: The JSON document being parsed'#10;
+ s := s +
+   '    pos: The start index of doc where parsing failed'#10;
+ s := s +
+   '    lineno: The line corresponding to pos'#10;
+ s := s +
+   '    colno: The column corresponding to pos'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Note that this exception is used from _json'#10;
+ s := s +
+   '    def __init__(self, msg, doc, pos):'#10;
+ s := s +
+   '        lineno = doc.count(''\n'', 0, pos) + 1'#10;
+ s := s +
+   '        colno = pos - doc.rfind(''\n'', 0, pos)'#10;
+ s := s +
+   '        errmsg = ''%s: line %d column %d (char %d)'' % (msg, l' +
+   'ineno, colno, pos)'#10;
+ s := s +
+   '        ValueError.__init__(self, errmsg)'#10;
+ s := s +
+   '        self.msg = msg'#10;
+ s := s +
+   '        self.doc = doc'#10;
+ s := s +
+   '        self.pos = pos'#10;
+ s := s +
+   '        self.lineno = lineno'#10;
+ s := s +
+   '        self.colno = colno'#10;
+ s := s + #10;
+ s := s +
+   '    def __reduce__(self):'#10;
+ s := s +
+   '        return self.__class__, (self.msg, self.doc, self.pos' +
+   ')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_CONSTANTS = {'#10;
+ s := s +
+   '    ''-Infinity'': NegInf,'#10;
+ s := s +
+   '    ''Infinity'': PosInf,'#10;
+ s := s +
+   '    ''NaN'': NaN,'#10;
+ s := s +
+   '}'#10;
+ s := s + #10;
+ s := s +
+   'BACKSLASH = {'#10;
+ s := s +
+   '    ''"'': ''"'', ''\\'': ''\\'', ''/'': ''/'','#10;
+ s := s +
+   '    ''b'': ''\b'', ''f'': ''\f'', ''n'': ''\n'', ''r'': ''\r'', ''t'': ''\t'','#10;
+ s := s +
+   '}'#10;
+ s := s + #10;
+ s := s +
+   '_HEX = ''0123456789abcdefABCDEF'''#10;
+ s := s +
+   '_WS = '' \t\n\r'''#10;
+ s := s +
+   '_DIGITS = ''0123456789'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _skip_ws(s, i):'#10;
+ s := s +
+   '    n = len(s)'#10;
+ s := s +
+   '    while i < n and s[i] in _WS:'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s +
+   '    return i'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def scanstring(s, end, strict=True, _b=BACKSLASH):'#10;
+ s := s +
+   '    """Scan the string s for a JSON string. End is the index' +
+   ' of the'#10;
+ s := s +
+   '    character in s after the quote that started the JSON str' +
+   'ing.'#10;
+ s := s +
+   '    Unescapes all valid JSON string escape sequences and rai' +
+   'ses ValueError'#10;
+ s := s +
+   '    on attempt to decode an invalid string. If strict is Fal' +
+   'se then literal'#10;
+ s := s +
+   '    control characters are allowed in the string.'#10;
+ s := s + #10;
+ s := s +
+   '    Returns a tuple of the decoded string and the index of t' +
+   'he character in s'#10;
+ s := s +
+   '    after the end quote."""'#10;
+ s := s +
+   '    begin = end - 1'#10;
+ s := s +
+   '    n = len(s)'#10;
+ s := s +
+   '    q = s.find(''"'', end)'#10;
+ s := s +
+   '    if q >= 0 and s.find(''\\'', end, q) < 0:'#10;
+ s := s +
+   '        seg = s[end:q]'#10;
+ s := s +
+   '        if strict and not seg.isprintable():'#10;
+ s := s +
+   '            _check_ctrl(s, seg, end)'#10;
+ s := s +
+   '        return seg, q + 1'#10;
+ s := s +
+   '    chunks = []'#10;
+ s := s +
+   '    _append = chunks.append'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        q = s.find(''"'', end)'#10;
+ s := s +
+   '        bs = s.find(''\\'', end, q if q >= 0 else n)'#10;
+ s := s +
+   '        if bs < 0:'#10;
+ s := s +
+   '            if q < 0:'#10;
+ s := s +
+   '                if strict:'#10;
+ s := s +
+   '                    _check_ctrl(s, s[end:], end)'#10;
+ s := s +
+   '                raise JSONDecodeError("Unterminated string s' +
+   'tarting at", s, begin)'#10;
+ s := s +
+   '            seg = s[end:q]'#10;
+ s := s +
+   '            if seg:'#10;
+ s := s +
+   '                if strict and not seg.isprintable():'#10;
+ s := s +
+   '                    _check_ctrl(s, seg, end)'#10;
+ s := s +
+   '                _append(seg)'#10;
+ s := s +
+   '            end = q + 1'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        if bs > end:'#10;
+ s := s +
+   '            seg = s[end:bs]'#10;
+ s := s +
+   '            if strict and not seg.isprintable():'#10;
+ s := s +
+   '                _check_ctrl(s, seg, end)'#10;
+ s := s +
+   '            _append(seg)'#10;
+ s := s +
+   '        end = bs + 1'#10;
+ s := s +
+   '        if end >= n:'#10;
+ s := s +
+   '            raise JSONDecodeError("Unterminated string start' +
+   'ing at", s, begin)'#10;
+ s := s +
+   '        esc = s[end]'#10;
+ s := s +
+   '        if esc != ''u'':'#10;
+ s := s +
+   '            char = _b.get(esc)'#10;
+ s := s +
+   '            if char is None:'#10;
+ s := s +
+   '                raise JSONDecodeError("Invalid \\escape", s,' +
+   ' bs)'#10;
+ s := s +
+   '            end += 1'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            uni = _decode_uXXXX(s, end)'#10;
+ s := s +
+   '            end += 5'#10;
+ s := s +
+   '            if 0xd800 <= uni <= 0xdbff and s[end:end + 2] ==' +
+   ' ''\\u'':'#10;
+ s := s +
+   '                uni2 = _decode_uXXXX(s, end + 1)'#10;
+ s := s +
+   '                if 0xdc00 <= uni2 <= 0xdfff:'#10;
+ s := s +
+   '                    uni = 0x10000 + (((uni - 0xd800) << 10) ' +
+   '| (uni2 - 0xdc00))'#10;
+ s := s +
+   '                    end += 6'#10;
+ s := s +
+   '            char = chr(uni)'#10;
+ s := s +
+   '        _append(char)'#10;
+ s := s +
+   '    return ''''.join(chunks), end'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _check_ctrl(s, seg, start):'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    for ch in seg:'#10;
+ s := s +
+   '        if ch < '' '':'#10;
+ s := s +
+   '            raise JSONDecodeError("Invalid control character' +
+   ' at", s, start + i)'#10;
+ s := s +
+   '        i += 1'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _decode_uXXXX(s, pos):'#10;
+ s := s +
+   '    esc = s[pos + 1:pos + 5]'#10;
+ s := s +
+   '    if len(esc) == 4:'#10;
+ s := s +
+   '        ok = True'#10;
+ s := s +
+   '        for ch in esc:'#10;
+ s := s +
+   '            if ch not in _HEX:'#10;
+ s := s +
+   '                ok = False'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '        if ok:'#10;
+ s := s +
+   '            return int(esc, 16)'#10;
+ s := s +
+   '    raise JSONDecodeError("Invalid \\uXXXX escape", s, pos)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def py_make_scanner(context):'#10;
+ s := s +
+   '    parse_object_hook = context.object_hook'#10;
+ s := s +
+   '    object_pairs_hook = context.object_pairs_hook'#10;
+ s := s +
+   '    strict = context.strict'#10;
+ s := s +
+   '    parse_float = context.parse_float'#10;
+ s := s +
+   '    parse_int = context.parse_int'#10;
+ s := s +
+   '    parse_constant = context.parse_constant'#10;
+ s := s +
+   '    memo = context.memo'#10;
+ s := s +
+   '    float_fast = parse_float is float'#10;
+ s := s +
+   '    int_fast = parse_int is int'#10;
+ s := s +
+   '    memo_setdefault = memo.setdefault'#10;
+ s := s + #10;
+ s := s +
+   '    def parse_object(s, end):'#10;
+ s := s +
+   '        # end is the index after ''{'''#10;
+ s := s +
+   '        pairs = []'#10;
+ s := s +
+   '        pairs_append = pairs.append'#10;
+ s := s +
+   '        nextchar = s[end:end + 1]'#10;
+ s := s +
+   '        if nextchar != ''"'':'#10;
+ s := s +
+   '            if nextchar != '''' and nextchar in _WS:'#10;
+ s := s +
+   '                end = _skip_ws(s, end)'#10;
+ s := s +
+   '                nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            if nextchar == ''}'':'#10;
+ s := s +
+   '                if object_pairs_hook is not None:'#10;
+ s := s +
+   '                    return object_pairs_hook(pairs), end + 1'#10;
+ s := s +
+   '                pairs = {}'#10;
+ s := s +
+   '                if parse_object_hook is not None:'#10;
+ s := s +
+   '                    pairs = parse_object_hook(pairs)'#10;
+ s := s +
+   '                return pairs, end + 1'#10;
+ s := s +
+   '            elif nextchar != ''"'':'#10;
+ s := s +
+   '                raise JSONDecodeError('#10;
+ s := s +
+   '                    "Expecting property name enclosed in dou' +
+   'ble quotes", s, end)'#10;
+ s := s +
+   '        end += 1'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            key, end = scanstring(s, end, strict)'#10;
+ s := s +
+   '            key = memo_setdefault(key, key)'#10;
+ s := s +
+   '            # To skip some function call overhead we optimiz' +
+   'e the fast paths'#10;
+ s := s +
+   '            if s[end:end + 1] != '':'':'#10;
+ s := s +
+   '                end = _skip_ws(s, end)'#10;
+ s := s +
+   '                if s[end:end + 1] != '':'':'#10;
+ s := s +
+   '                    raise JSONDecodeError("Expecting '':'' del' +
+   'imiter", s, end)'#10;
+ s := s +
+   '            end += 1'#10;
+ s := s +
+   '            nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            if nextchar != '''' and nextchar in _WS:'#10;
+ s := s +
+   '                end = _skip_ws(s, end + 1)'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                value, end = scan_once(s, end)'#10;
+ s := s +
+   '            except StopIteration as err:'#10;
+ s := s +
+   '                raise JSONDecodeError("Expecting value", s, ' +
+   'err.value) from None'#10;
+ s := s +
+   '            pairs_append((key, value))'#10;
+ s := s +
+   '            nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            if nextchar != '''' and nextchar in _WS:'#10;
+ s := s +
+   '                end = _skip_ws(s, end + 1)'#10;
+ s := s +
+   '                nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            end += 1'#10;
+ s := s +
+   '            if nextchar == ''}'':'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            elif nextchar != '','':'#10;
+ s := s +
+   '                raise JSONDecodeError("Expecting '','' delimit' +
+   'er", s, end - 1)'#10;
+ s := s +
+   '            end = _skip_ws(s, end)'#10;
+ s := s +
+   '            nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            end += 1'#10;
+ s := s +
+   '            if nextchar != ''"'':'#10;
+ s := s +
+   '                raise JSONDecodeError('#10;
+ s := s +
+   '                    "Expecting property name enclosed in dou' +
+   'ble quotes", s, end - 1)'#10;
+ s := s +
+   '        if object_pairs_hook is not None:'#10;
+ s := s +
+   '            return object_pairs_hook(pairs), end'#10;
+ s := s +
+   '        pairs = dict(pairs)'#10;
+ s := s +
+   '        if parse_object_hook is not None:'#10;
+ s := s +
+   '            pairs = parse_object_hook(pairs)'#10;
+ s := s +
+   '        return pairs, end'#10;
+ s := s + #10;
+ s := s +
+   '    def parse_array(s, end):'#10;
+ s := s +
+   '        # end is the index after ''['''#10;
+ s := s +
+   '        values = []'#10;
+ s := s +
+   '        nextchar = s[end:end + 1]'#10;
+ s := s +
+   '        if nextchar != '''' and nextchar in _WS:'#10;
+ s := s +
+   '            end = _skip_ws(s, end + 1)'#10;
+ s := s +
+   '            nextchar = s[end:end + 1]'#10;
+ s := s +
+   '        # Look-ahead for trivial empty array'#10;
+ s := s +
+   '        if nextchar == '']'':'#10;
+ s := s +
+   '            return values, end + 1'#10;
+ s := s +
+   '        _append = values.append'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                value, end = scan_once(s, end)'#10;
+ s := s +
+   '            except StopIteration as err:'#10;
+ s := s +
+   '                raise JSONDecodeError("Expecting value", s, ' +
+   'err.value) from None'#10;
+ s := s +
+   '            _append(value)'#10;
+ s := s +
+   '            nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            if nextchar != '''' and nextchar in _WS:'#10;
+ s := s +
+   '                end = _skip_ws(s, end + 1)'#10;
+ s := s +
+   '                nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            end += 1'#10;
+ s := s +
+   '            if nextchar == '']'':'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            elif nextchar != '','':'#10;
+ s := s +
+   '                raise JSONDecodeError("Expecting '','' delimit' +
+   'er", s, end - 1)'#10;
+ s := s +
+   '            nextchar = s[end:end + 1]'#10;
+ s := s +
+   '            if nextchar != '''' and nextchar in _WS:'#10;
+ s := s +
+   '                end = _skip_ws(s, end + 1)'#10;
+ s := s +
+   '        return values, end'#10;
+ s := s + #10;
+ s := s +
+   '    def scan_once(string, idx):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            nextchar = string[idx]'#10;
+ s := s +
+   '        except IndexError:'#10;
+ s := s +
+   '            raise StopIteration(idx) from None'#10;
+ s := s + #10;
+ s := s +
+   '        if nextchar == ''"'':'#10;
+ s := s +
+   '            return scanstring(string, idx + 1, strict)'#10;
+ s := s +
+   '        elif nextchar == ''{'':'#10;
+ s := s +
+   '            return parse_object(string, idx + 1)'#10;
+ s := s +
+   '        elif nextchar == ''['':'#10;
+ s := s +
+   '            return parse_array(string, idx + 1)'#10;
+ s := s +
+   '        elif nextchar == ''n'':'#10;
+ s := s +
+   '            if string[idx:idx + 4] == ''null'':'#10;
+ s := s +
+   '                return None, idx + 4'#10;
+ s := s +
+   '        elif nextchar == ''t'':'#10;
+ s := s +
+   '            if string[idx:idx + 4] == ''true'':'#10;
+ s := s +
+   '                return True, idx + 4'#10;
+ s := s +
+   '        elif nextchar == ''f'':'#10;
+ s := s +
+   '            if string[idx:idx + 5] == ''false'':'#10;
+ s := s +
+   '                return False, idx + 5'#10;
+ s := s +
+   '        elif nextchar == ''N'':'#10;
+ s := s +
+   '            if string[idx:idx + 3] == ''NaN'':'#10;
+ s := s +
+   '                return parse_constant(''NaN''), idx + 3'#10;
+ s := s +
+   '            raise StopIteration(idx)'#10;
+ s := s +
+   '        elif nextchar == ''I'':'#10;
+ s := s +
+   '            if string[idx:idx + 8] == ''Infinity'':'#10;
+ s := s +
+   '                return parse_constant(''Infinity''), idx + 8'#10;
+ s := s +
+   '            raise StopIteration(idx)'#10;
+ s := s + #10;
+ s := s +
+   '        # number'#10;
+ s := s +
+   '        i = idx'#10;
+ s := s +
+   '        n = len(string)'#10;
+ s := s +
+   '        if nextchar == ''-'':'#10;
+ s := s +
+   '            if string[idx:idx + 9] == ''-Infinity'':'#10;
+ s := s +
+   '                return parse_constant(''-Infinity''), idx + 9'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '            if i >= n:'#10;
+ s := s +
+   '                raise StopIteration(idx)'#10;
+ s := s +
+   '            nextchar = string[i]'#10;
+ s := s +
+   '        if nextchar == ''0'':'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '        elif nextchar in _DIGITS:'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '            while i < n and string[i] in _DIGITS:'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            raise StopIteration(idx)'#10;
+ s := s +
+   '        isfloat = False'#10;
+ s := s +
+   '        if i + 1 < n and string[i] == ''.'' and string[i + 1] ' +
+   'in _DIGITS:'#10;
+ s := s +
+   '            i += 2'#10;
+ s := s +
+   '            while i < n and string[i] in _DIGITS:'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s +
+   '            isfloat = True'#10;
+ s := s +
+   '        if i < n and string[i] in ''eE'':'#10;
+ s := s +
+   '            j = i + 1'#10;
+ s := s +
+   '            if j < n and string[j] in ''+-'':'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '            if j < n and string[j] in _DIGITS:'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '                while j < n and string[j] in _DIGITS:'#10;
+ s := s +
+   '                    j += 1'#10;
+ s := s +
+   '                i = j'#10;
+ s := s +
+   '                isfloat = True'#10;
+ s := s +
+   '        if isfloat:'#10;
+ s := s +
+   '            if float_fast:'#10;
+ s := s +
+   '                return float(string[idx:i]), i'#10;
+ s := s +
+   '            return parse_float(string[idx:i]), i'#10;
+ s := s +
+   '        if int_fast:'#10;
+ s := s +
+   '            return int(string[idx:i]), i'#10;
+ s := s +
+   '        return parse_int(string[idx:i]), i'#10;
+ s := s + #10;
+ s := s +
+   '    def scan_once_memo(string, idx):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            return scan_once(string, idx)'#10;
+ s := s +
+   '        finally:'#10;
+ s := s +
+   '            memo.clear()'#10;
+ s := s + #10;
+ s := s +
+   '    return scan_once_memo'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'make_scanner = py_make_scanner'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s +
+   '# Fast path for big documents.'#10;
+ s := s +
+   '#'#10;
+ s := s +
+   '# Indexing / slicing / find on a very long str is O(len(s)) ' +
+   'per operation in'#10;
+ s := s +
+   '# some interpreters, which makes a char-by-char scanner quad' +
+   'ratic.  For long'#10;
+ s := s +
+   '# documents we therefore tokenize with a handful of bulk ope' +
+   'rations (split,'#10;
+ s := s +
+   '# replace) and parse the token list.  Any irregularity raise' +
+   's _Bail and the'#10;
+ s := s +
+   '# caller falls back to the exact (error-reporting) scanner a' +
+   'bove.'#10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s + #10;
+ s := s +
+   '_FAST_MIN = 2000'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _Bail(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _End(object):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s +
+   '_END = _End()'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _split_outside(out):'#10;
+ s := s +
+   '    for ch in ''{}[],:'':'#10;
+ s := s +
+   '        out = out.replace(ch, '' '' + ch + '' '')'#10;
+ s := s +
+   '    out = out.replace(''\t'', '' '').replace(''\n'', '' '').replace(' +
+   '''\r'', '' '')'#10;
+ s := s +
+   '    return [x for x in out.split('' '') if x]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _tokenize(s, strict):'#10;
+ s := s +
+   '    parts = s.split(''"'')'#10;
+ s := s +
+   '    n = len(parts)'#10;
+ s := s +
+   '    toks = []'#10;
+ s := s +
+   '    add = toks.append'#10;
+ s := s +
+   '    extend = toks.extend'#10;
+ s := s +
+   '    cache = {}'#10;
+ s := s +
+   '    cget = cache.get'#10;
+ s := s +
+   '    j = 0'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        out = parts[j]'#10;
+ s := s +
+   '        if out:'#10;
+ s := s +
+   '            r = cget(out)'#10;
+ s := s +
+   '            if r is None:'#10;
+ s := s +
+   '                r = _split_outside(out)'#10;
+ s := s +
+   '                if len(out) < 100:'#10;
+ s := s +
+   '                    cache[out] = r'#10;
+ s := s +
+   '            if len(r) == 1:'#10;
+ s := s +
+   '                add(r[0])'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                extend(r)'#10;
+ s := s +
+   '        j += 1'#10;
+ s := s +
+   '        if j == n:'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        seg = parts[j]'#10;
+ s := s +
+   '        while seg[-1:] == ''\\'':'#10;
+ s := s +
+   '            k = len(seg) - len(seg.rstrip(''\\''))'#10;
+ s := s +
+   '            if not (k & 1):'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            j += 1'#10;
+ s := s +
+   '            if j >= n:'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s +
+   '            seg = seg + ''"'' + parts[j]'#10;
+ s := s +
+   '        if j > n - 2:'#10;
+ s := s +
+   '            raise _Bail()'#10;
+ s := s +
+   '        if ''\\'' in seg:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                v, e = scanstring(seg + ''"'', 0, strict)'#10;
+ s := s +
+   '            except JSONDecodeError:'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s +
+   '            if e != len(seg) + 1:'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s +
+   '            add((v,))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if strict and not seg.isprintable():'#10;
+ s := s +
+   '                for ch in seg:'#10;
+ s := s +
+   '                    if ch < '' '':'#10;
+ s := s +
+   '                        raise _Bail()'#10;
+ s := s +
+   '            add((seg,))'#10;
+ s := s +
+   '        j += 1'#10;
+ s := s +
+   '    add(_END)'#10;
+ s := s +
+   '    add(_END)'#10;
+ s := s +
+   '    return toks'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _fast_decode(ctx, s):'#10;
+ s := s +
+   '    """Parse the whole document s; raise _Bail when anything' +
+   ' is irregular."""'#10;
+ s := s +
+   '    toks = _tokenize(s, ctx.strict)'#10;
+ s := s +
+   '    object_hook = ctx.object_hook'#10;
+ s := s +
+   '    object_pairs_hook = ctx.object_pairs_hook'#10;
+ s := s +
+   '    parse_float = ctx.parse_float'#10;
+ s := s +
+   '    parse_int = ctx.parse_int'#10;
+ s := s +
+   '    parse_constant = ctx.parse_constant'#10;
+ s := s +
+   '    memo_setdefault = ctx.memo.setdefault'#10;
+ s := s +
+   '    float_fast = parse_float is float'#10;
+ s := s +
+   '    int_fast = parse_int is int'#10;
+ s := s +
+   '    _tuple = tuple'#10;
+ s := s +
+   '    '#10;
+ s := s +
+   '    def pv(pos):'#10;
+ s := s +
+   '        t = toks[pos]'#10;
+ s := s +
+   '        if t.__class__ is _tuple:'#10;
+ s := s +
+   '            return t[0], pos + 1'#10;
+ s := s +
+   '        if t == ''{'':'#10;
+ s := s +
+   '            return pobj(pos + 1)'#10;
+ s := s +
+   '        if t == ''['':'#10;
+ s := s +
+   '            return parr(pos + 1)'#10;
+ s := s +
+   '        if t == ''true'':'#10;
+ s := s +
+   '            return True, pos + 1'#10;
+ s := s +
+   '        if t == ''false'':'#10;
+ s := s +
+   '            return False, pos + 1'#10;
+ s := s +
+   '        if t == ''null'':'#10;
+ s := s +
+   '            return None, pos + 1'#10;
+ s := s +
+   '        if t.__class__ is not str:'#10;
+ s := s +
+   '            raise _Bail()'#10;
+ s := s +
+   '        c = t[0]'#10;
+ s := s +
+   '        if c == ''-'':'#10;
+ s := s +
+   '            if t == ''-Infinity'':'#10;
+ s := s +
+   '                return parse_constant(''-Infinity''), pos + 1'#10;
+ s := s +
+   '            body = t[1:]'#10;
+ s := s +
+   '        elif c == ''N'' or c == ''I'':'#10;
+ s := s +
+   '            if t == ''NaN'' or t == ''Infinity'':'#10;
+ s := s +
+   '                return parse_constant(t), pos + 1'#10;
+ s := s +
+   '            raise _Bail()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            body = t'#10;
+ s := s +
+   '        if body.isdigit():'#10;
+ s := s +
+   '            # integer: ascii digits, no leading zero'#10;
+ s := s +
+   '            if not body.isascii() or (body[0] == ''0'' and len' +
+   '(body) > 1):'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s +
+   '            if int_fast:'#10;
+ s := s +
+   '                return int(t), pos + 1'#10;
+ s := s +
+   '            return parse_int(t), pos + 1'#10;
+ s := s +
+   '        # float: int part [. digits] [e[+-]digits]'#10;
+ s := s +
+   '        mant, sep, exp = body.replace(''E'', ''e'').partition(''e' +
+   ''')'#10;
+ s := s +
+   '        ip, dot, fp = mant.partition(''.'')'#10;
+ s := s +
+   '        if not ip.isdigit() or not ip.isascii() or (ip[0] ==' +
+   ' ''0'' and len(ip) > 1):'#10;
+ s := s +
+   '            raise _Bail()'#10;
+ s := s +
+   '        if dot:'#10;
+ s := s +
+   '            if not fp.isdigit() or not fp.isascii():'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s +
+   '        if sep:'#10;
+ s := s +
+   '            if exp[:1] == ''+'' or exp[:1] == ''-'':'#10;
+ s := s +
+   '                exp = exp[1:]'#10;
+ s := s +
+   '            if not exp.isdigit() or not exp.isascii():'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s +
+   '        elif not dot:'#10;
+ s := s +
+   '            raise _Bail()'#10;
+ s := s +
+   '        if float_fast:'#10;
+ s := s +
+   '            return float(t), pos + 1'#10;
+ s := s +
+   '        return parse_float(t), pos + 1'#10;
+ s := s + #10;
+ s := s +
+   '    def parr(pos):'#10;
+ s := s +
+   '        vals = []'#10;
+ s := s +
+   '        if toks[pos] == '']'':'#10;
+ s := s +
+   '            return vals, pos + 1'#10;
+ s := s +
+   '        append = vals.append'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            v, pos = pv(pos)'#10;
+ s := s +
+   '            append(v)'#10;
+ s := s +
+   '            t = toks[pos]'#10;
+ s := s +
+   '            pos += 1'#10;
+ s := s +
+   '            if t == '']'':'#10;
+ s := s +
+   '                return vals, pos'#10;
+ s := s +
+   '            if t != '','':'#10;
+ s := s +
+   '                raise _Bail()'#10;
+ s := s + #10;
+ s := s +
+   '    def pobj(pos):'#10;
+ s := s +
+   '        pairs = []'#10;
+ s := s +
+   '        append = pairs.append'#10;
+ s := s +
+   '        if toks[pos] == ''}'':'#10;
+ s := s +
+   '            pos += 1'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                k = toks[pos]'#10;
+ s := s +
+   '                if k.__class__ is not _tuple:'#10;
+ s := s +
+   '                    raise _Bail()'#10;
+ s := s +
+   '                if toks[pos + 1] != '':'':'#10;
+ s := s +
+   '                    raise _Bail()'#10;
+ s := s +
+   '                k = k[0]'#10;
+ s := s +
+   '                key = memo_setdefault(k, k)'#10;
+ s := s +
+   '                v, pos = pv(pos + 2)'#10;
+ s := s +
+   '                append((key, v))'#10;
+ s := s +
+   '                t = toks[pos]'#10;
+ s := s +
+   '                pos += 1'#10;
+ s := s +
+   '                if t == ''}'':'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                if t != '','':'#10;
+ s := s +
+   '                    raise _Bail()'#10;
+ s := s +
+   '        if object_pairs_hook is not None:'#10;
+ s := s +
+   '            return object_pairs_hook(pairs), pos'#10;
+ s := s +
+   '        d = dict(pairs)'#10;
+ s := s +
+   '        if object_hook is not None:'#10;
+ s := s +
+   '            d = object_hook(d)'#10;
+ s := s +
+   '        return d, pos'#10;
+ s := s + #10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        v, pos = pv(0)'#10;
+ s := s +
+   '        if toks[pos] is not _END:'#10;
+ s := s +
+   '            raise _Bail()'#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        ctx.memo.clear()'#10;
+ s := s +
+   '    return v'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_CONSTS = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class JSONDecoder(object):'#10;
+ s := s +
+   '    """Simple JSON <http://json.org> decoder"""'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, *, object_hook=None, parse_float=None' +
+   ','#10;
+ s := s +
+   '                 parse_int=None, parse_constant=None, strict' +
+   '=True,'#10;
+ s := s +
+   '                 object_pairs_hook=None):'#10;
+ s := s +
+   '        self.object_hook = object_hook'#10;
+ s := s +
+   '        self.parse_float = parse_float or float'#10;
+ s := s +
+   '        self.parse_int = parse_int or int'#10;
+ s := s +
+   '        self.parse_constant = parse_constant or _CONSTANTS._' +
+   '_getitem__'#10;
+ s := s +
+   '        self.strict = strict'#10;
+ s := s +
+   '        self.object_pairs_hook = object_pairs_hook'#10;
+ s := s +
+   '        self.parse_object = None'#10;
+ s := s +
+   '        self.parse_array = None'#10;
+ s := s +
+   '        self.parse_string = scanstring'#10;
+ s := s +
+   '        self.memo = {}'#10;
+ s := s +
+   '        self.scan_once = py_make_scanner(self)'#10;
+ s := s +
+   '        self._default_scan = self.scan_once'#10;
+ s := s + #10;
+ s := s +
+   '    def decode(self, s, _w=None):'#10;
+ s := s +
+   '        """Return the Python representation of ``s`` (a ``st' +
+   'r`` instance'#10;
+ s := s +
+   '        containing a JSON document).'#10;
+ s := s +
+   '        """'#10;
+ s := s +
+   '        if (len(s) > _FAST_MIN and self.scan_once is self._d' +
+   'efault_scan'#10;
+ s := s +
+   '                and type(self).raw_decode is JSONDecoder.raw' +
+   '_decode):'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                return _fast_decode(self, s)'#10;
+ s := s +
+   '            except _Bail:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '        obj, end = self.raw_decode(s, idx=_skip_ws(s, 0))'#10;
+ s := s +
+   '        end = _skip_ws(s, end)'#10;
+ s := s +
+   '        if end != len(s):'#10;
+ s := s +
+   '            raise JSONDecodeError("Extra data", s, end)'#10;
+ s := s +
+   '        return obj'#10;
+ s := s + #10;
+ s := s +
+   '    def raw_decode(self, s, idx=0):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            obj, end = self.scan_once(s, idx)'#10;
+ s := s +
+   '        except StopIteration as err:'#10;
+ s := s +
+   '            raise JSONDecodeError("Expecting value", s, err.' +
+   'value) from None'#10;
+ s := s +
+   '        return obj, end'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_json_encoder: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Implementation of JSONEncoder"""'#10;
+ s := s + #10;
+ s := s +
+   'ESCAPE_DCT = {'#10;
+ s := s +
+   '    ''\\'': ''\\\\'','#10;
+ s := s +
+   '    ''"'': ''\\"'','#10;
+ s := s +
+   '    ''\b'': ''\\b'','#10;
+ s := s +
+   '    ''\f'': ''\\f'','#10;
+ s := s +
+   '    ''\n'': ''\\n'','#10;
+ s := s +
+   '    ''\r'': ''\\r'','#10;
+ s := s +
+   '    ''\t'': ''\\t'','#10;
+ s := s +
+   '}'#10;
+ s := s +
+   'for i in range(0x20):'#10;
+ s := s +
+   '    ESCAPE_DCT.setdefault(chr(i), ''\\u{0:04x}''.format(i))'#10;
+ s := s +
+   'del i'#10;
+ s := s + #10;
+ s := s +
+   'INFINITY = float(''inf'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _escape_slow(s, ensure_ascii):'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    append = out.append'#10;
+ s := s +
+   '    get = ESCAPE_DCT.get'#10;
+ s := s +
+   '    for ch in s:'#10;
+ s := s +
+   '        r = get(ch)'#10;
+ s := s +
+   '        if r is not None:'#10;
+ s := s +
+   '            append(r)'#10;
+ s := s +
+   '        elif ensure_ascii and ch > ''~'':'#10;
+ s := s +
+   '            n = ord(ch)'#10;
+ s := s +
+   '            if n < 0x10000:'#10;
+ s := s +
+   '                append(''\\u{0:04x}''.format(n))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                n -= 0x10000'#10;
+ s := s +
+   '                s1 = 0xd800 | ((n >> 10) & 0x3ff)'#10;
+ s := s +
+   '                s2 = 0xdc00 | (n & 0x3ff)'#10;
+ s := s +
+   '                append(''\\u{0:04x}\\u{1:04x}''.format(s1, s2)' +
+   ')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            append(ch)'#10;
+ s := s +
+   '    return ''''.join(out)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def py_encode_basestring(s):'#10;
+ s := s +
+   '    """Return a JSON representation of a Python string"""'#10;
+ s := s +
+   '    if s.isprintable() and ''"'' not in s and ''\\'' not in s:'#10;
+ s := s +
+   '        return ''"'' + s + ''"'''#10;
+ s := s +
+   '    return ''"'' + _escape_slow(s, False) + ''"'''#10;
+ s := s + #10;
+ s := s +
+   'encode_basestring = py_encode_basestring'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def py_encode_basestring_ascii(s):'#10;
+ s := s +
+   '    """Return an ASCII-only JSON representation of a Python ' +
+   'string"""'#10;
+ s := s +
+   '    if s.isascii() and s.isprintable() and ''"'' not in s and ' +
+   '''\\'' not in s:'#10;
+ s := s +
+   '        return ''"'' + s + ''"'''#10;
+ s := s +
+   '    return ''"'' + _escape_slow(s, True) + ''"'''#10;
+ s := s + #10;
+ s := s +
+   'encode_basestring_ascii = py_encode_basestring_ascii'#10;
+ s := s + #10;
+ s := s +
+   'c_make_encoder = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _ProbeInt(int):'#10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return ''probe'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _fixed_int_repr(o):'#10;
+ s := s +
+   '    # interpreter workaround: int.__repr__ on int subclasses' +
+   ' must give plain digits'#10;
+ s := s +
+   '    return int.__repr__(int(o))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'if int.__repr__(_ProbeInt(5)) == ''5'':'#10;
+ s := s +
+   '    _INTREPR = int.__repr__'#10;
+ s := s +
+   'else:'#10;
+ s := s +
+   '    _INTREPR = _fixed_int_repr'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class JSONEncoder(object):'#10;
+ s := s +
+   '    item_separator = '', '''#10;
+ s := s +
+   '    key_separator = '': '''#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, *, skipkeys=False, ensure_ascii=True,'#10;
+ s := s +
+   '                 check_circular=True, allow_nan=True, sort_k' +
+   'eys=False,'#10;
+ s := s +
+   '                 indent=None, separators=None, default=None)' +
+   ':'#10;
+ s := s +
+   '        self.skipkeys = skipkeys'#10;
+ s := s +
+   '        self.ensure_ascii = ensure_ascii'#10;
+ s := s +
+   '        self.check_circular = check_circular'#10;
+ s := s +
+   '        self.allow_nan = allow_nan'#10;
+ s := s +
+   '        self.sort_keys = sort_keys'#10;
+ s := s +
+   '        self.indent = indent'#10;
+ s := s +
+   '        if separators is not None:'#10;
+ s := s +
+   '            self.item_separator, self.key_separator = separa' +
+   'tors'#10;
+ s := s +
+   '        elif indent is not None:'#10;
+ s := s +
+   '            self.item_separator = '','''#10;
+ s := s +
+   '        if default is not None:'#10;
+ s := s +
+   '            self.default = default'#10;
+ s := s + #10;
+ s := s +
+   '    def default(self, o):'#10;
+ s := s +
+   '        raise TypeError(''Object of type '' + o.__class__.__na' +
+   'me__ + '' '''#10;
+ s := s +
+   '                        ''is not JSON serializable'')'#10;
+ s := s + #10;
+ s := s +
+   '    def encode(self, o):'#10;
+ s := s +
+   '        # This is for extremely simple cases and benchmarks.'#10;
+ s := s +
+   '        if isinstance(o, str):'#10;
+ s := s +
+   '            if self.ensure_ascii:'#10;
+ s := s +
+   '                return encode_basestring_ascii(o)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                return encode_basestring(o)'#10;
+ s := s +
+   '        chunks = self.iterencode(o, _one_shot=True)'#10;
+ s := s +
+   '        if not isinstance(chunks, (list, tuple)):'#10;
+ s := s +
+   '            chunks = list(chunks)'#10;
+ s := s +
+   '        return ''''.join(chunks)'#10;
+ s := s + #10;
+ s := s +
+   '    def iterencode(self, o, _one_shot=False):'#10;
+ s := s +
+   '        if self.check_circular:'#10;
+ s := s +
+   '            markers = {}'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            markers = None'#10;
+ s := s +
+   '        if self.ensure_ascii:'#10;
+ s := s +
+   '            _encoder = encode_basestring_ascii'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            _encoder = encode_basestring'#10;
+ s := s + #10;
+ s := s +
+   '        def floatstr(o, allow_nan=self.allow_nan,'#10;
+ s := s +
+   '                     _repr=float.__repr__, _inf=INFINITY, _n' +
+   'eginf=-INFINITY):'#10;
+ s := s +
+   '            if o != o:'#10;
+ s := s +
+   '                text = ''NaN'''#10;
+ s := s +
+   '            elif o == _inf:'#10;
+ s := s +
+   '                text = ''Infinity'''#10;
+ s := s +
+   '            elif o == _neginf:'#10;
+ s := s +
+   '                text = ''-Infinity'''#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                return _repr(o)'#10;
+ s := s + #10;
+ s := s +
+   '            if not allow_nan:'#10;
+ s := s +
+   '                raise ValueError('#10;
+ s := s +
+   '                    "Out of range float values are not JSON ' +
+   'compliant")'#10;
+ s := s +
+   '            return text'#10;
+ s := s + #10;
+ s := s +
+   '        if _one_shot:'#10;
+ s := s +
+   '            return _one_shot_encode('#10;
+ s := s +
+   '                o, self.default, _encoder, self.indent, floa' +
+   'tstr,'#10;
+ s := s +
+   '                self.key_separator, self.item_separator, sel' +
+   'f.sort_keys,'#10;
+ s := s +
+   '                self.skipkeys, markers)'#10;
+ s := s +
+   '        _iterencode = _make_iterencode('#10;
+ s := s +
+   '            markers, self.default, _encoder, self.indent, fl' +
+   'oatstr,'#10;
+ s := s +
+   '            self.key_separator, self.item_separator, self.so' +
+   'rt_keys,'#10;
+ s := s +
+   '            self.skipkeys)'#10;
+ s := s +
+   '        return _iterencode(o, 0)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _key_str(key, floatstr, skipkeys):'#10;
+ s := s +
+   '    # returns None to skip'#10;
+ s := s +
+   '    if isinstance(key, str):'#10;
+ s := s +
+   '        return key'#10;
+ s := s +
+   '    elif isinstance(key, float):'#10;
+ s := s +
+   '        return floatstr(key)'#10;
+ s := s +
+   '    elif key is True:'#10;
+ s := s +
+   '        return ''true'''#10;
+ s := s +
+   '    elif key is False:'#10;
+ s := s +
+   '        return ''false'''#10;
+ s := s +
+   '    elif key is None:'#10;
+ s := s +
+   '        return ''null'''#10;
+ s := s +
+   '    elif isinstance(key, int):'#10;
+ s := s +
+   '        return _INTREPR(key)'#10;
+ s := s +
+   '    elif skipkeys:'#10;
+ s := s +
+   '        return None'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        raise TypeError(''keys must be str, int, float, bool ' +
+   'or None, '''#10;
+ s := s +
+   '                        ''not '' + key.__class__.__name__)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _one_shot_encode(o, _default, _encoder, _indent, _floats' +
+   'tr,'#10;
+ s := s +
+   '                     _key_separator, _item_separator, _sort_' +
+   'keys, _skipkeys,'#10;
+ s := s +
+   '                     markers):'#10;
+ s := s +
+   '    """Fast encoder building a list of chunks (equivalent of' +
+   ' c_make_encoder)."""'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    append = out.append'#10;
+ s := s +
+   '    if _indent is not None and not isinstance(_indent, str):'#10;
+ s := s +
+   '        _indent = '' '' * _indent'#10;
+ s := s +
+   '    _int_repr = _INTREPR'#10;
+ s := s +
+   '    _str = str'#10;
+ s := s +
+   '    _int = int'#10;
+ s := s +
+   '    _float = float'#10;
+ s := s +
+   '    _list = list'#10;
+ s := s +
+   '    _tuple = tuple'#10;
+ s := s +
+   '    _dict = dict'#10;
+ s := s +
+   '    kv_sep = _key_separator'#10;
+ s := s +
+   '    item_sep = _item_separator'#10;
+ s := s + #10;
+ s := s +
+   '    def enc(o, level):'#10;
+ s := s +
+   '        if isinstance(o, _str):'#10;
+ s := s +
+   '            append(_encoder(o))'#10;
+ s := s +
+   '        elif o is None:'#10;
+ s := s +
+   '            append(''null'')'#10;
+ s := s +
+   '        elif o is True:'#10;
+ s := s +
+   '            append(''true'')'#10;
+ s := s +
+   '        elif o is False:'#10;
+ s := s +
+   '            append(''false'')'#10;
+ s := s +
+   '        elif isinstance(o, _int):'#10;
+ s := s +
+   '            append(_int_repr(o))'#10;
+ s := s +
+   '        elif isinstance(o, _float):'#10;
+ s := s +
+   '            append(_floatstr(o))'#10;
+ s := s +
+   '        elif isinstance(o, (_list, _tuple)):'#10;
+ s := s +
+   '            enc_list(o, level)'#10;
+ s := s +
+   '        elif isinstance(o, _dict):'#10;
+ s := s +
+   '            enc_dict(o, level)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if markers is not None:'#10;
+ s := s +
+   '                markerid = id(o)'#10;
+ s := s +
+   '                if markerid in markers:'#10;
+ s := s +
+   '                    raise ValueError("Circular reference det' +
+   'ected")'#10;
+ s := s +
+   '                markers[markerid] = o'#10;
+ s := s +
+   '            o = _default(o)'#10;
+ s := s +
+   '            enc(o, level)'#10;
+ s := s +
+   '            if markers is not None:'#10;
+ s := s +
+   '                del markers[markerid]'#10;
+ s := s + #10;
+ s := s +
+   '    def enc_list(lst, level):'#10;
+ s := s +
+   '        if not lst:'#10;
+ s := s +
+   '            append(''[]'')'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            markerid = id(lst)'#10;
+ s := s +
+   '            if markerid in markers:'#10;
+ s := s +
+   '                raise ValueError("Circular reference detecte' +
+   'd")'#10;
+ s := s +
+   '            markers[markerid] = lst'#10;
+ s := s +
+   '        if _indent is not None:'#10;
+ s := s +
+   '            level += 1'#10;
+ s := s +
+   '            newline_indent = ''\n'' + _indent * level'#10;
+ s := s +
+   '            separator = item_sep + newline_indent'#10;
+ s := s +
+   '            append(''['' + newline_indent)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            newline_indent = None'#10;
+ s := s +
+   '            separator = item_sep'#10;
+ s := s +
+   '            append(''['')'#10;
+ s := s +
+   '        first = True'#10;
+ s := s +
+   '        for value in lst:'#10;
+ s := s +
+   '            if first:'#10;
+ s := s +
+   '                first = False'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                append(separator)'#10;
+ s := s +
+   '            if isinstance(value, _str):'#10;
+ s := s +
+   '                append(_encoder(value))'#10;
+ s := s +
+   '            elif value is None:'#10;
+ s := s +
+   '                append(''null'')'#10;
+ s := s +
+   '            elif value is True:'#10;
+ s := s +
+   '                append(''true'')'#10;
+ s := s +
+   '            elif value is False:'#10;
+ s := s +
+   '                append(''false'')'#10;
+ s := s +
+   '            elif isinstance(value, _int):'#10;
+ s := s +
+   '                append(_int_repr(value))'#10;
+ s := s +
+   '            elif isinstance(value, _float):'#10;
+ s := s +
+   '                append(_floatstr(value))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                enc(value, level)'#10;
+ s := s +
+   '        if newline_indent is not None:'#10;
+ s := s +
+   '            level -= 1'#10;
+ s := s +
+   '            append(''\n'' + _indent * level)'#10;
+ s := s +
+   '        append('']'')'#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            del markers[markerid]'#10;
+ s := s + #10;
+ s := s +
+   '    def enc_dict(dct, level):'#10;
+ s := s +
+   '        if not dct:'#10;
+ s := s +
+   '            append(''{}'')'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            markerid = id(dct)'#10;
+ s := s +
+   '            if markerid in markers:'#10;
+ s := s +
+   '                raise ValueError("Circular reference detecte' +
+   'd")'#10;
+ s := s +
+   '            markers[markerid] = dct'#10;
+ s := s +
+   '        append(''{'')'#10;
+ s := s +
+   '        if _indent is not None:'#10;
+ s := s +
+   '            level += 1'#10;
+ s := s +
+   '            newline_indent = ''\n'' + _indent * level'#10;
+ s := s +
+   '            append(newline_indent)'#10;
+ s := s +
+   '            item_separator = item_sep + newline_indent'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            newline_indent = None'#10;
+ s := s +
+   '            item_separator = item_sep'#10;
+ s := s +
+   '        first = True'#10;
+ s := s +
+   '        if _sort_keys:'#10;
+ s := s +
+   '            items = sorted(dct.items(), key=lambda kv: kv[0]' +
+   ')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            items = dct.items()'#10;
+ s := s +
+   '        for key, value in items:'#10;
+ s := s +
+   '            if not isinstance(key, _str):'#10;
+ s := s +
+   '                key = _key_str(key, _floatstr, _skipkeys)'#10;
+ s := s +
+   '                if key is None:'#10;
+ s := s +
+   '                    continue'#10;
+ s := s +
+   '            if first:'#10;
+ s := s +
+   '                first = False'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                append(item_separator)'#10;
+ s := s +
+   '            append(_encoder(key))'#10;
+ s := s +
+   '            append(kv_sep)'#10;
+ s := s +
+   '            if isinstance(value, _str):'#10;
+ s := s +
+   '                append(_encoder(value))'#10;
+ s := s +
+   '            elif value is None:'#10;
+ s := s +
+   '                append(''null'')'#10;
+ s := s +
+   '            elif value is True:'#10;
+ s := s +
+   '                append(''true'')'#10;
+ s := s +
+   '            elif value is False:'#10;
+ s := s +
+   '                append(''false'')'#10;
+ s := s +
+   '            elif isinstance(value, _int):'#10;
+ s := s +
+   '                append(_int_repr(value))'#10;
+ s := s +
+   '            elif isinstance(value, _float):'#10;
+ s := s +
+   '                append(_floatstr(value))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                enc(value, level)'#10;
+ s := s +
+   '        if newline_indent is not None:'#10;
+ s := s +
+   '            level -= 1'#10;
+ s := s +
+   '            append(''\n'' + _indent * level)'#10;
+ s := s +
+   '        append(''}'')'#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            del markers[markerid]'#10;
+ s := s + #10;
+ s := s +
+   '    enc(o, 0)'#10;
+ s := s +
+   '    return out'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _make_iterencode(markers, _default, _encoder, _indent, _' +
+   'floatstr,'#10;
+ s := s +
+   '                     _key_separator, _item_separator, _sort_' +
+   'keys, _skipkeys,'#10;
+ s := s +
+   '                     ## HACK: hand-optimized bytecode; turn ' +
+   'globals into locals'#10;
+ s := s +
+   '                     ValueError=ValueError,'#10;
+ s := s +
+   '                     dict=dict,'#10;
+ s := s +
+   '                     float=float,'#10;
+ s := s +
+   '                     id=id,'#10;
+ s := s +
+   '                     int=int,'#10;
+ s := s +
+   '                     isinstance=isinstance,'#10;
+ s := s +
+   '                     list=list,'#10;
+ s := s +
+   '                     str=str,'#10;
+ s := s +
+   '                     tuple=tuple,'#10;
+ s := s +
+   '                     _intstr=None,'#10;
+ s := s +
+   '                     ):'#10;
+ s := s + #10;
+ s := s +
+   '    if _intstr is None:'#10;
+ s := s +
+   '        _intstr = _INTREPR'#10;
+ s := s +
+   '    if _indent is not None and not isinstance(_indent, str):'#10;
+ s := s +
+   '        _indent = '' '' * _indent'#10;
+ s := s + #10;
+ s := s +
+   '    def _iterencode_list(lst, _current_indent_level):'#10;
+ s := s +
+   '        if not lst:'#10;
+ s := s +
+   '            yield ''[]'''#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            markerid = id(lst)'#10;
+ s := s +
+   '            if markerid in markers:'#10;
+ s := s +
+   '                raise ValueError("Circular reference detecte' +
+   'd")'#10;
+ s := s +
+   '            markers[markerid] = lst'#10;
+ s := s +
+   '        buf = ''['''#10;
+ s := s +
+   '        if _indent is not None:'#10;
+ s := s +
+   '            _current_indent_level += 1'#10;
+ s := s +
+   '            newline_indent = ''\n'' + _indent * _current_inden' +
+   't_level'#10;
+ s := s +
+   '            separator = _item_separator + newline_indent'#10;
+ s := s +
+   '            buf += newline_indent'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            newline_indent = None'#10;
+ s := s +
+   '            separator = _item_separator'#10;
+ s := s +
+   '        first = True'#10;
+ s := s +
+   '        for value in lst:'#10;
+ s := s +
+   '            if first:'#10;
+ s := s +
+   '                first = False'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                buf = separator'#10;
+ s := s +
+   '            if isinstance(value, str):'#10;
+ s := s +
+   '                yield buf + _encoder(value)'#10;
+ s := s +
+   '            elif value is None:'#10;
+ s := s +
+   '                yield buf + ''null'''#10;
+ s := s +
+   '            elif value is True:'#10;
+ s := s +
+   '                yield buf + ''true'''#10;
+ s := s +
+   '            elif value is False:'#10;
+ s := s +
+   '                yield buf + ''false'''#10;
+ s := s +
+   '            elif isinstance(value, int):'#10;
+ s := s +
+   '                yield buf + _intstr(value)'#10;
+ s := s +
+   '            elif isinstance(value, float):'#10;
+ s := s +
+   '                yield buf + _floatstr(value)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                yield buf'#10;
+ s := s +
+   '                if isinstance(value, (list, tuple)):'#10;
+ s := s +
+   '                    chunks = _iterencode_list(value, _curren' +
+   't_indent_level)'#10;
+ s := s +
+   '                elif isinstance(value, dict):'#10;
+ s := s +
+   '                    chunks = _iterencode_dict(value, _curren' +
+   't_indent_level)'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    chunks = _iterencode(value, _current_ind' +
+   'ent_level)'#10;
+ s := s +
+   '                yield from chunks'#10;
+ s := s +
+   '        if newline_indent is not None:'#10;
+ s := s +
+   '            _current_indent_level -= 1'#10;
+ s := s +
+   '            yield ''\n'' + _indent * _current_indent_level'#10;
+ s := s +
+   '        yield '']'''#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            del markers[markerid]'#10;
+ s := s + #10;
+ s := s +
+   '    def _iterencode_dict(dct, _current_indent_level):'#10;
+ s := s +
+   '        if not dct:'#10;
+ s := s +
+   '            yield ''{}'''#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            markerid = id(dct)'#10;
+ s := s +
+   '            if markerid in markers:'#10;
+ s := s +
+   '                raise ValueError("Circular reference detecte' +
+   'd")'#10;
+ s := s +
+   '            markers[markerid] = dct'#10;
+ s := s +
+   '        yield ''{'''#10;
+ s := s +
+   '        if _indent is not None:'#10;
+ s := s +
+   '            _current_indent_level += 1'#10;
+ s := s +
+   '            newline_indent = ''\n'' + _indent * _current_inden' +
+   't_level'#10;
+ s := s +
+   '            item_separator = _item_separator + newline_inden' +
+   't'#10;
+ s := s +
+   '            yield newline_indent'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            newline_indent = None'#10;
+ s := s +
+   '            item_separator = _item_separator'#10;
+ s := s +
+   '        first = True'#10;
+ s := s +
+   '        if _sort_keys:'#10;
+ s := s +
+   '            items = sorted(dct.items(), key=lambda kv: kv[0]' +
+   ')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            items = dct.items()'#10;
+ s := s +
+   '        for key, value in items:'#10;
+ s := s +
+   '            if isinstance(key, str):'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '            elif isinstance(key, float):'#10;
+ s := s +
+   '                key = _floatstr(key)'#10;
+ s := s +
+   '            elif key is True:'#10;
+ s := s +
+   '                key = ''true'''#10;
+ s := s +
+   '            elif key is False:'#10;
+ s := s +
+   '                key = ''false'''#10;
+ s := s +
+   '            elif key is None:'#10;
+ s := s +
+   '                key = ''null'''#10;
+ s := s +
+   '            elif isinstance(key, int):'#10;
+ s := s +
+   '                key = _intstr(key)'#10;
+ s := s +
+   '            elif _skipkeys:'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                raise TypeError(''keys must be str, int, floa' +
+   't, bool or None, '''#10;
+ s := s +
+   '                                ''not '' + key.__class__.__nam' +
+   'e__)'#10;
+ s := s +
+   '            if first:'#10;
+ s := s +
+   '                first = False'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                yield item_separator'#10;
+ s := s +
+   '            yield _encoder(key)'#10;
+ s := s +
+   '            yield _key_separator'#10;
+ s := s +
+   '            if isinstance(value, str):'#10;
+ s := s +
+   '                yield _encoder(value)'#10;
+ s := s +
+   '            elif value is None:'#10;
+ s := s +
+   '                yield ''null'''#10;
+ s := s +
+   '            elif value is True:'#10;
+ s := s +
+   '                yield ''true'''#10;
+ s := s +
+   '            elif value is False:'#10;
+ s := s +
+   '                yield ''false'''#10;
+ s := s +
+   '            elif isinstance(value, int):'#10;
+ s := s +
+   '                yield _intstr(value)'#10;
+ s := s +
+   '            elif isinstance(value, float):'#10;
+ s := s +
+   '                yield _floatstr(value)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                if isinstance(value, (list, tuple)):'#10;
+ s := s +
+   '                    chunks = _iterencode_list(value, _curren' +
+   't_indent_level)'#10;
+ s := s +
+   '                elif isinstance(value, dict):'#10;
+ s := s +
+   '                    chunks = _iterencode_dict(value, _curren' +
+   't_indent_level)'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    chunks = _iterencode(value, _current_ind' +
+   'ent_level)'#10;
+ s := s +
+   '                yield from chunks'#10;
+ s := s +
+   '        if newline_indent is not None:'#10;
+ s := s +
+   '            _current_indent_level -= 1'#10;
+ s := s +
+   '            yield ''\n'' + _indent * _current_indent_level'#10;
+ s := s +
+   '        yield ''}'''#10;
+ s := s +
+   '        if markers is not None:'#10;
+ s := s +
+   '            del markers[markerid]'#10;
+ s := s + #10;
+ s := s +
+   '    def _iterencode(o, _current_indent_level):'#10;
+ s := s +
+   '        if isinstance(o, str):'#10;
+ s := s +
+   '            yield _encoder(o)'#10;
+ s := s +
+   '        elif o is None:'#10;
+ s := s +
+   '            yield ''null'''#10;
+ s := s +
+   '        elif o is True:'#10;
+ s := s +
+   '            yield ''true'''#10;
+ s := s +
+   '        elif o is False:'#10;
+ s := s +
+   '            yield ''false'''#10;
+ s := s +
+   '        elif isinstance(o, int):'#10;
+ s := s +
+   '            yield _intstr(o)'#10;
+ s := s +
+   '        elif isinstance(o, float):'#10;
+ s := s +
+   '            yield _floatstr(o)'#10;
+ s := s +
+   '        elif isinstance(o, (list, tuple)):'#10;
+ s := s +
+   '            yield from _iterencode_list(o, _current_indent_l' +
+   'evel)'#10;
+ s := s +
+   '        elif isinstance(o, dict):'#10;
+ s := s +
+   '            yield from _iterencode_dict(o, _current_indent_l' +
+   'evel)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if markers is not None:'#10;
+ s := s +
+   '                markerid = id(o)'#10;
+ s := s +
+   '                if markerid in markers:'#10;
+ s := s +
+   '                    raise ValueError("Circular reference det' +
+   'ected")'#10;
+ s := s +
+   '                markers[markerid] = o'#10;
+ s := s +
+   '            o = _default(o)'#10;
+ s := s +
+   '            yield from _iterencode(o, _current_indent_level)'#10;
+ s := s +
+   '            if markers is not None:'#10;
+ s := s +
+   '                del markers[markerid]'#10;
+ s := s +
+   '    return _iterencode'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_json: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '#PACKAGE'#10;
+ s := s +
+   'r"""JSON (JavaScript Object Notation) <http://json.org> enco' +
+   'der and decoder."""'#10;
+ s := s +
+   '__version__ = ''2.0.9'''#10;
+ s := s +
+   '__all__ = ['#10;
+ s := s +
+   '    ''dump'', ''dumps'', ''load'', ''loads'','#10;
+ s := s +
+   '    ''JSONDecoder'', ''JSONDecodeError'', ''JSONEncoder'','#10;
+ s := s +
+   ']'#10;
+ s := s + #10;
+ s := s +
+   '__author__ = ''Bob Ippolito <bob@redivi.com>'''#10;
+ s := s + #10;
+ s := s +
+   'from json.decoder import JSONDecoder, JSONDecodeError'#10;
+ s := s +
+   'from json.encoder import JSONEncoder'#10;
+ s := s + #10;
+ s := s +
+   '_default_encoder = JSONEncoder('#10;
+ s := s +
+   '    skipkeys=False,'#10;
+ s := s +
+   '    ensure_ascii=True,'#10;
+ s := s +
+   '    check_circular=True,'#10;
+ s := s +
+   '    allow_nan=True,'#10;
+ s := s +
+   '    indent=None,'#10;
+ s := s +
+   '    separators=None,'#10;
+ s := s +
+   '    default=None,'#10;
+ s := s +
+   ')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def dump(obj, fp, *, skipkeys=False, ensure_ascii=True, chec' +
+   'k_circular=True,'#10;
+ s := s +
+   '         allow_nan=True, cls=None, indent=None, separators=N' +
+   'one,'#10;
+ s := s +
+   '         default=None, sort_keys=False, **kw):'#10;
+ s := s +
+   '    # cached encoder'#10;
+ s := s +
+   '    if (not skipkeys and ensure_ascii and'#10;
+ s := s +
+   '            check_circular and allow_nan and'#10;
+ s := s +
+   '            cls is None and indent is None and separators is' +
+   ' None and'#10;
+ s := s +
+   '            default is None and not sort_keys and not kw):'#10;
+ s := s +
+   '        iterable = _default_encoder.iterencode(obj)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if cls is None:'#10;
+ s := s +
+   '            cls = JSONEncoder'#10;
+ s := s +
+   '        iterable = cls(skipkeys=skipkeys, ensure_ascii=ensur' +
+   'e_ascii,'#10;
+ s := s +
+   '                       check_circular=check_circular, allow_' +
+   'nan=allow_nan, indent=indent,'#10;
+ s := s +
+   '                       separators=separators,'#10;
+ s := s +
+   '                       default=default, sort_keys=sort_keys,' +
+   ' **kw).iterencode(obj)'#10;
+ s := s +
+   '    for chunk in iterable:'#10;
+ s := s +
+   '        fp.write(chunk)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def dumps(obj, *, skipkeys=False, ensure_ascii=True, check_c' +
+   'ircular=True,'#10;
+ s := s +
+   '          allow_nan=True, cls=None, indent=None, separators=' +
+   'None,'#10;
+ s := s +
+   '          default=None, sort_keys=False, **kw):'#10;
+ s := s +
+   '    # cached encoder'#10;
+ s := s +
+   '    if (not skipkeys and ensure_ascii and'#10;
+ s := s +
+   '            check_circular and allow_nan and'#10;
+ s := s +
+   '            cls is None and indent is None and separators is' +
+   ' None and'#10;
+ s := s +
+   '            default is None and not sort_keys and not kw):'#10;
+ s := s +
+   '        return _default_encoder.encode(obj)'#10;
+ s := s +
+   '    if cls is None:'#10;
+ s := s +
+   '        cls = JSONEncoder'#10;
+ s := s +
+   '    return cls('#10;
+ s := s +
+   '        skipkeys=skipkeys, ensure_ascii=ensure_ascii,'#10;
+ s := s +
+   '        check_circular=check_circular, allow_nan=allow_nan, ' +
+   'indent=indent,'#10;
+ s := s +
+   '        separators=separators, default=default, sort_keys=so' +
+   'rt_keys,'#10;
+ s := s +
+   '        **kw).encode(obj)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_default_decoder = JSONDecoder(object_hook=None, object_pair' +
+   's_hook=None)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def detect_encoding(b):'#10;
+ s := s +
+   '    if b[:3] == b''\xef\xbb\xbf'':'#10;
+ s := s +
+   '        return ''utf-8-sig'''#10;
+ s := s +
+   '    if b[:2] == b''\xff\xfe'' or b[:2] == b''\xfe\xff'':'#10;
+ s := s +
+   '        return ''utf-16'''#10;
+ s := s +
+   '    if len(b) >= 4:'#10;
+ s := s +
+   '        if not b[0]:'#10;
+ s := s +
+   '            # 00 00 -- -- - utf-32-be'#10;
+ s := s +
+   '            # 00 XX -- -- - utf-16-be'#10;
+ s := s +
+   '            return ''utf-16-be'' if b[1] else ''utf-32-be'''#10;
+ s := s +
+   '        if not b[1]:'#10;
+ s := s +
+   '            # XX 00 00 00 - utf-32-le'#10;
+ s := s +
+   '            # XX 00 00 XX - utf-16-le'#10;
+ s := s +
+   '            # XX 00 XX -- - utf-16-le'#10;
+ s := s +
+   '            return ''utf-16-le'' if b[2] or b[3] else ''utf-32-' +
+   'le'''#10;
+ s := s +
+   '    elif len(b) == 2:'#10;
+ s := s +
+   '        if not b[0]:'#10;
+ s := s +
+   '            return ''utf-16-be'''#10;
+ s := s +
+   '        if not b[1]:'#10;
+ s := s +
+   '            return ''utf-16-le'''#10;
+ s := s +
+   '    return ''utf-8'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def load(fp, *, cls=None, object_hook=None, parse_float=None' +
+   ','#10;
+ s := s +
+   '         parse_int=None, parse_constant=None, object_pairs_h' +
+   'ook=None, **kw):'#10;
+ s := s +
+   '    return loads(fp.read(),'#10;
+ s := s +
+   '                 cls=cls, object_hook=object_hook,'#10;
+ s := s +
+   '                 parse_float=parse_float, parse_int=parse_in' +
+   't,'#10;
+ s := s +
+   '                 parse_constant=parse_constant, object_pairs' +
+   '_hook=object_pairs_hook, **kw)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def loads(s, *, cls=None, object_hook=None, parse_float=None' +
+   ','#10;
+ s := s +
+   '          parse_int=None, parse_constant=None, object_pairs_' +
+   'hook=None, **kw):'#10;
+ s := s +
+   '    if isinstance(s, str):'#10;
+ s := s +
+   '        if s.startswith(''﻿''):'#10;
+ s := s +
+   '            raise JSONDecodeError("Unexpected UTF-8 BOM (dec' +
+   'ode using utf-8-sig)",'#10;
+ s := s +
+   '                                  s, 0)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        if not isinstance(s, (bytes, bytearray)):'#10;
+ s := s +
+   '            raise TypeError(''the JSON object must be str, by' +
+   'tes or bytearray, '''#10;
+ s := s +
+   '                            ''not '' + s.__class__.__name__)'#10;
+ s := s +
+   '        s = s.decode(detect_encoding(s), ''surrogatepass'')'#10;
+ s := s + #10;
+ s := s +
+   '    if (cls is None and object_hook is None and'#10;
+ s := s +
+   '            parse_int is None and parse_float is None and'#10;
+ s := s +
+   '            parse_constant is None and object_pairs_hook is ' +
+   'None and not kw):'#10;
+ s := s +
+   '        return _default_decoder.decode(s)'#10;
+ s := s +
+   '    if cls is None:'#10;
+ s := s +
+   '        cls = JSONDecoder'#10;
+ s := s +
+   '    if object_hook is not None:'#10;
+ s := s +
+   '        kw[''object_hook''] = object_hook'#10;
+ s := s +
+   '    if object_pairs_hook is not None:'#10;
+ s := s +
+   '        kw[''object_pairs_hook''] = object_pairs_hook'#10;
+ s := s +
+   '    if parse_float is not None:'#10;
+ s := s +
+   '        kw[''parse_float''] = parse_float'#10;
+ s := s +
+   '    if parse_int is not None:'#10;
+ s := s +
+   '        kw[''parse_int''] = parse_int'#10;
+ s := s +
+   '    if parse_constant is not None:'#10;
+ s := s +
+   '        kw[''parse_constant''] = parse_constant'#10;
+ s := s +
+   '    return cls(**kw).decode(s)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_json_scanner: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""JSON token scanner (the scanner itself lives in json.deco' +
+   'der)."""'#10;
+ s := s +
+   'from json.decoder import py_make_scanner'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''make_scanner'']'#10;
+ s := s + #10;
+ s := s +
+   'c_make_scanner = None'#10;
+ s := s +
+   'make_scanner = py_make_scanner'#10;
+ s := s +
+   'NUMBER_RE = None'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_keyword: AnsiString;
 Var
  s: AnsiString;
@@ -36522,6 +45132,1440 @@ Begin
    'def lazycache(filename, module_globals):'#10;
  s := s +
    '    return False'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_locale: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Locale support module (minimal stub: the "C"/"POSIX"/"C.U' +
+   'TF-8" locales).'#10;
+ s := s + #10;
+ s := s +
+   'The module provides the same API as the standard `locale` mo' +
+   'dule, but'#10;
+ s := s +
+   'only the C locale family is actually available through setlo' +
+   'cale().'#10;
+ s := s +
+   '"""'#10;
+ s := s + #10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import os'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["getlocale", "getdefaultlocale", "getpreferredenc' +
+   'oding", "Error",'#10;
+ s := s +
+   '           "setlocale", "resetlocale", "localeconv", "strcol' +
+   'l", "strxfrm",'#10;
+ s := s +
+   '           "str", "atof", "atoi", "format", "format_string",' +
+   ' "currency",'#10;
+ s := s +
+   '           "normalize", "LC_CTYPE", "LC_COLLATE", "LC_TIME",' +
+   ' "LC_MONETARY",'#10;
+ s := s +
+   '           "LC_NUMERIC", "LC_ALL", "CHAR_MAX"]'#10;
+ s := s + #10;
+ s := s +
+   'LC_CTYPE = 0'#10;
+ s := s +
+   'LC_NUMERIC = 1'#10;
+ s := s +
+   'LC_TIME = 2'#10;
+ s := s +
+   'LC_COLLATE = 3'#10;
+ s := s +
+   'LC_MONETARY = 4'#10;
+ s := s +
+   'LC_MESSAGES = 5'#10;
+ s := s +
+   'LC_ALL = 6'#10;
+ s := s +
+   'CHAR_MAX = 127'#10;
+ s := s + #10;
+ s := s +
+   'CODESET = 14'#10;
+ s := s + #10;
+ s := s +
+   '_builtin_str = str'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class Error(Exception):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s +
+   '# state: current locale name of every category'#10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s + #10;
+ s := s +
+   '_CATEGORIES = (LC_CTYPE, LC_NUMERIC, LC_TIME, LC_COLLATE, LC' +
+   '_MONETARY,'#10;
+ s := s +
+   '               LC_MESSAGES)'#10;
+ s := s +
+   '_CATNAMES = {LC_CTYPE: ''LC_CTYPE'', LC_NUMERIC: ''LC_NUMERIC'','#10;
+ s := s +
+   '             LC_TIME: ''LC_TIME'', LC_COLLATE: ''LC_COLLATE'','#10;
+ s := s +
+   '             LC_MONETARY: ''LC_MONETARY'', LC_MESSAGES: ''LC_ME' +
+   'SSAGES''}'#10;
+ s := s + #10;
+ s := s +
+   '# Python >= 3.7 coerces the C locale of LC_CTYPE to C.UTF-8'#10;
+ s := s +
+   '_state = {LC_CTYPE: ''C.UTF-8'', LC_NUMERIC: ''C'', LC_TIME: ''C''' +
+   ','#10;
+ s := s +
+   '          LC_COLLATE: ''C'', LC_MONETARY: ''C'', LC_MESSAGES: ''C' +
+   '''}'#10;
+ s := s + #10;
+ s := s +
+   '_SUPPORTED = {''C'': ''C'', ''POSIX'': ''C'', ''C.UTF-8'': ''C.UTF-8'', ' +
+   '''C.utf8'': ''C.utf8''}'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _env_locale(category):'#10;
+ s := s +
+   '    for name in (''LC_ALL'', _CATNAMES.get(category, ''LC_CTYPE' +
+   '''), ''LANG''):'#10;
+ s := s +
+   '        v = os.environ.get(name)'#10;
+ s := s +
+   '        if v:'#10;
+ s := s +
+   '            return v'#10;
+ s := s +
+   '    return ''C'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def setlocale(category, locale=None):'#10;
+ s := s +
+   '    """ setlocale(integer,string=None) -> string.'#10;
+ s := s +
+   '        Activates/queries locale processing.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if category not in _state and category != LC_ALL:'#10;
+ s := s +
+   '        raise Error(''invalid locale category'')'#10;
+ s := s +
+   '    if locale is None:'#10;
+ s := s +
+   '        if category == LC_ALL:'#10;
+ s := s +
+   '            return _query_all()'#10;
+ s := s +
+   '        return _state[category]'#10;
+ s := s +
+   '    if not isinstance(locale, _builtin_str):'#10;
+ s := s +
+   '        # (iterable of strings is also accepted by the C mod' +
+   'ule)'#10;
+ s := s +
+   '        locale = _builtin_str(locale[0]) if locale[0] else ''' +
+   'C'''#10;
+ s := s +
+   '    cats = _CATEGORIES if category == LC_ALL else (category,' +
+   ')'#10;
+ s := s +
+   '    for cat in cats:'#10;
+ s := s +
+   '        name = locale'#10;
+ s := s +
+   '        if name == '''':'#10;
+ s := s +
+   '            name = _env_locale(cat)'#10;
+ s := s +
+   '        resolved = _SUPPORTED.get(name)'#10;
+ s := s +
+   '        if resolved is None and category == LC_ALL and '';'' i' +
+   'n name:'#10;
+ s := s +
+   '            resolved = None'#10;
+ s := s +
+   '        if resolved is None:'#10;
+ s := s +
+   '            raise Error(''unsupported locale setting'')'#10;
+ s := s +
+   '        _state[cat] = resolved'#10;
+ s := s +
+   '    if category == LC_ALL:'#10;
+ s := s +
+   '        return _query_all()'#10;
+ s := s +
+   '    return _state[category]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _query_all():'#10;
+ s := s +
+   '    names = [_state[c] for c in _CATEGORIES]'#10;
+ s := s +
+   '    if len(set(names)) == 1:'#10;
+ s := s +
+   '        return names[0]'#10;
+ s := s +
+   '    parts = [''%s=%s'' % (_CATNAMES[c], _state[c]) for c in _C' +
+   'ATEGORIES]'#10;
+ s := s +
+   '    return '';''.join(parts)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def localeconv():'#10;
+ s := s +
+   '    """ localeconv() -> dict.'#10;
+ s := s +
+   '        Returns numeric and monetary locale-specific paramet' +
+   'ers.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return {''int_curr_symbol'': '''', ''currency_symbol'': '''','#10;
+ s := s +
+   '            ''mon_decimal_point'': '''', ''mon_thousands_sep'': ''''' +
+   ','#10;
+ s := s +
+   '            ''mon_grouping'': [], ''positive_sign'': '''', ''negati' +
+   've_sign'': '''','#10;
+ s := s +
+   '            ''int_frac_digits'': 127, ''frac_digits'': 127,'#10;
+ s := s +
+   '            ''p_cs_precedes'': 127, ''p_sep_by_space'': 127,'#10;
+ s := s +
+   '            ''n_cs_precedes'': 127, ''n_sep_by_space'': 127,'#10;
+ s := s +
+   '            ''p_sign_posn'': 127, ''n_sign_posn'': 127,'#10;
+ s := s +
+   '            ''decimal_point'': ''.'', ''thousands_sep'': '''', ''grou' +
+   'ping'': []}'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def nl_langinfo(option):'#10;
+ s := s +
+   '    if option == CODESET:'#10;
+ s := s +
+   '        return _codeset(_state[LC_CTYPE])'#10;
+ s := s +
+   '    raise ValueError(''unsupported langinfo constant'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _codeset(name):'#10;
+ s := s +
+   '    if ''.'' in name:'#10;
+ s := s +
+   '        cs = name.split(''.'', 1)[1].split(''@'')[0]'#10;
+ s := s +
+   '        if cs.lower().replace(''-'', '''') == ''utf8'':'#10;
+ s := s +
+   '            return ''UTF-8'''#10;
+ s := s +
+   '        return cs'#10;
+ s := s +
+   '    return ''ANSI_X3.4-1968'''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def strcoll(a, b):'#10;
+ s := s +
+   '    """ strcoll(string,string) -> int.'#10;
+ s := s +
+   '        Compares two strings according to the locale.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return (a > b) - (a < b)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def strxfrm(s):'#10;
+ s := s +
+   '    """ strxfrm(string) -> string.'#10;
+ s := s +
+   '        Returns a string that behaves for cmp locale-aware.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return s'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s +
+   '# number formatting'#10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s + #10;
+ s := s +
+   '_percent_re = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _grouping_intervals(grouping):'#10;
+ s := s +
+   '    last_interval = None'#10;
+ s := s +
+   '    for interval in grouping:'#10;
+ s := s +
+   '        # if grouping is -1, we are done'#10;
+ s := s +
+   '        if interval == CHAR_MAX:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        # 0: re-use last group ad infinitum'#10;
+ s := s +
+   '        if interval == 0:'#10;
+ s := s +
+   '            if last_interval is None:'#10;
+ s := s +
+   '                raise ValueError("invalid grouping")'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                yield last_interval'#10;
+ s := s +
+   '        yield interval'#10;
+ s := s +
+   '        last_interval = interval'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _group(s, monetary=False):'#10;
+ s := s +
+   '    conv = localeconv()'#10;
+ s := s +
+   '    thousands_sep = conv[monetary and ''mon_thousands_sep'' or' +
+   ' ''thousands_sep'']'#10;
+ s := s +
+   '    grouping = conv[monetary and ''mon_grouping'' or ''grouping' +
+   ''']'#10;
+ s := s +
+   '    if not grouping:'#10;
+ s := s +
+   '        return (s, 0)'#10;
+ s := s +
+   '    if s[-1] == '' '':'#10;
+ s := s +
+   '        stripped = s.rstrip()'#10;
+ s := s +
+   '        right_spaces = s[len(stripped):]'#10;
+ s := s +
+   '        s = stripped'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        right_spaces = '''''#10;
+ s := s +
+   '    left_spaces = '''''#10;
+ s := s +
+   '    groups = []'#10;
+ s := s +
+   '    for interval in _grouping_intervals(grouping):'#10;
+ s := s +
+   '        if not s or s[-1] not in "0123456789":'#10;
+ s := s +
+   '            # only non-digit characters remain (sign, spaces' +
+   ')'#10;
+ s := s +
+   '            left_spaces = s'#10;
+ s := s +
+   '            s = '''''#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        groups.append(s[-interval:])'#10;
+ s := s +
+   '        s = s[:-interval]'#10;
+ s := s +
+   '    if s:'#10;
+ s := s +
+   '        groups.append(s)'#10;
+ s := s +
+   '    groups.reverse()'#10;
+ s := s +
+   '    return ('#10;
+ s := s +
+   '        left_spaces + thousands_sep.join(groups) + right_spa' +
+   'ces,'#10;
+ s := s +
+   '        len(thousands_sep) * (len(groups) - 1)'#10;
+ s := s +
+   '    )'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# Strip a given amount of excess padding from the given stri' +
+   'ng'#10;
+ s := s +
+   'def _strip_padding(s, amount):'#10;
+ s := s +
+   '    lpos = 0'#10;
+ s := s +
+   '    while amount and s[lpos] == '' '':'#10;
+ s := s +
+   '        lpos += 1'#10;
+ s := s +
+   '        amount -= 1'#10;
+ s := s +
+   '    rpos = len(s) - 1'#10;
+ s := s +
+   '    while amount and s[rpos] == '' '':'#10;
+ s := s +
+   '        rpos -= 1'#10;
+ s := s +
+   '        amount -= 1'#10;
+ s := s +
+   '    return s[lpos:rpos + 1]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _split_format(f):'#10;
+ s := s +
+   '    """Split a %-format string in a list of (''text'', None) /'#10;
+ s := s +
+   '    (spec_without_percent, conversion_char) pieces (no regex' +
+   ')."""'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    n = len(f)'#10;
+ s := s +
+   '    text = []'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        c = f[i]'#10;
+ s := s +
+   '        if c != ''%'':'#10;
+ s := s +
+   '            text.append(c)'#10;
+ s := s +
+   '            i += 1'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if i + 1 < n and f[i + 1] == ''%'':'#10;
+ s := s +
+   '            text.append(''%%'')'#10;
+ s := s +
+   '            i += 2'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        # parse %[(name)][flags][width][.prec][length]conv'#10;
+ s := s +
+   '        j = i + 1'#10;
+ s := s +
+   '        if j < n and f[j] == ''('':'#10;
+ s := s +
+   '            k = f.find('')'', j)'#10;
+ s := s +
+   '            if k < 0:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            j = k + 1'#10;
+ s := s +
+   '        while j < n and f[j] in ''#0- +'':'#10;
+ s := s +
+   '            j += 1'#10;
+ s := s +
+   '        while j < n and (f[j].isdigit() or f[j] == ''*''):'#10;
+ s := s +
+   '            j += 1'#10;
+ s := s +
+   '        if j < n and f[j] == ''.'':'#10;
+ s := s +
+   '            j += 1'#10;
+ s := s +
+   '            while j < n and (f[j].isdigit() or f[j] == ''*''):'#10;
+ s := s +
+   '                j += 1'#10;
+ s := s +
+   '        while j < n and f[j] in ''hlL'':'#10;
+ s := s +
+   '            j += 1'#10;
+ s := s +
+   '        if j >= n:'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        if text:'#10;
+ s := s +
+   '            out.append((''''.join(text), None))'#10;
+ s := s +
+   '            text = []'#10;
+ s := s +
+   '        out.append((f[i:j + 1], f[j]))'#10;
+ s := s +
+   '        i = j + 1'#10;
+ s := s +
+   '    if text:'#10;
+ s := s +
+   '        out.append((''''.join(text), None))'#10;
+ s := s +
+   '    if i < n and not out:'#10;
+ s := s +
+   '        out.append((f[i:], None))'#10;
+ s := s +
+   '    elif i < n:'#10;
+ s := s +
+   '        out.append((f[i:], None))'#10;
+ s := s +
+   '    return out'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _format(percent, value, grouping=False, monetary=False, ' +
+   '*additional):'#10;
+ s := s +
+   '    if additional:'#10;
+ s := s +
+   '        formatted = percent % ((value,) + additional)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        formatted = percent % value'#10;
+ s := s +
+   '    # floats and decimal ints need special action!'#10;
+ s := s +
+   '    conv = percent[-1]'#10;
+ s := s +
+   '    if conv in ''eEfFgG'':'#10;
+ s := s +
+   '        seps = 0'#10;
+ s := s +
+   '        parts = formatted.split(''.'')'#10;
+ s := s +
+   '        if grouping:'#10;
+ s := s +
+   '            parts[0], seps = _group(parts[0], monetary=monet' +
+   'ary)'#10;
+ s := s +
+   '        decimal_point = localeconv()[monetary and ''mon_decim' +
+   'al_point'''#10;
+ s := s +
+   '                                              or ''decimal_po' +
+   'int'']'#10;
+ s := s +
+   '        formatted = decimal_point.join(parts)'#10;
+ s := s +
+   '        if seps:'#10;
+ s := s +
+   '            formatted = _strip_padding(formatted, seps)'#10;
+ s := s +
+   '    elif conv in ''diu'':'#10;
+ s := s +
+   '        seps = 0'#10;
+ s := s +
+   '        if grouping:'#10;
+ s := s +
+   '            formatted, seps = _group(formatted, monetary=mon' +
+   'etary)'#10;
+ s := s +
+   '        if seps:'#10;
+ s := s +
+   '            formatted = _strip_padding(formatted, seps)'#10;
+ s := s +
+   '    return formatted'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def format_string(f, val, grouping=False, monetary=False):'#10;
+ s := s +
+   '    """Formats a string in the same way that the % formattin' +
+   'g would use,'#10;
+ s := s +
+   '    but takes the current locale into account.'#10;
+ s := s + #10;
+ s := s +
+   '    Grouping is applied if the third parameter is true.'#10;
+ s := s +
+   '    Conversion uses monetary thousands separator and groupin' +
+   'g strings if'#10;
+ s := s +
+   '    forth parameter monetary is true."""'#10;
+ s := s +
+   '    pieces = _split_format(f)'#10;
+ s := s +
+   '    if isinstance(val, tuple):'#10;
+ s := s +
+   '        values = list(val)'#10;
+ s := s +
+   '    elif isinstance(val, dict):'#10;
+ s := s +
+   '        values = None'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        values = [val]'#10;
+ s := s +
+   '    new_f = []'#10;
+ s := s +
+   '    out_values = []'#10;
+ s := s +
+   '    if values is None:'#10;
+ s := s +
+   '        # mapping format: format each spec with the whole ma' +
+   'pping'#10;
+ s := s +
+   '        res = []'#10;
+ s := s +
+   '        for text, conv in pieces:'#10;
+ s := s +
+   '            if conv is None:'#10;
+ s := s +
+   '                res.append(text.replace(''%%'', ''%''))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                res.append(_format(text, val, grouping, mone' +
+   'tary))'#10;
+ s := s +
+   '        return ''''.join(res)'#10;
+ s := s +
+   '    res = []'#10;
+ s := s +
+   '    vi = 0'#10;
+ s := s +
+   '    for text, conv in pieces:'#10;
+ s := s +
+   '        if conv is None:'#10;
+ s := s +
+   '            res.append(text.replace(''%%'', ''%''))'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if ''*'' in text:'#10;
+ s := s +
+   '            raise ValueError("''*'' not supported by this stub' +
+   '")'#10;
+ s := s +
+   '        res.append(_format(text, values[vi], grouping, monet' +
+   'ary))'#10;
+ s := s +
+   '        vi += 1'#10;
+ s := s +
+   '    if vi < len(values):'#10;
+ s := s +
+   '        raise TypeError(''not all arguments converted during ' +
+   'string formatting'')'#10;
+ s := s +
+   '    return ''''.join(res)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def format(percent, value, grouping=False, monetary=False, *' +
+   'additional):'#10;
+ s := s +
+   '    """Deprecated, use format_string instead."""'#10;
+ s := s +
+   '    import warnings'#10;
+ s := s +
+   '    warnings.warn('#10;
+ s := s +
+   '        "This method will be removed in a future version of ' +
+   'Python. "'#10;
+ s := s +
+   '        "Use ''locale.format_string()'' instead.",'#10;
+ s := s +
+   '        DeprecationWarning, stacklevel=2'#10;
+ s := s +
+   '    )'#10;
+ s := s + #10;
+ s := s +
+   '    match = percent'#10;
+ s := s +
+   '    if match[:1] != ''%'' or len(match) < 2 or match[-1] not i' +
+   'n ''diueEfFgG'' \'#10;
+ s := s +
+   '            and match[-1] not in ''xXocsr'' or ''%'' in match[1:' +
+   ']:'#10;
+ s := s +
+   '        raise ValueError(("format() must be given exactly on' +
+   'e %%char "'#10;
+ s := s +
+   '                          "format specifier, %s not valid") ' +
+   '% repr(percent))'#10;
+ s := s +
+   '    return _format(percent, value, grouping, monetary, *addi' +
+   'tional)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def currency(val, symbol=True, grouping=False, international' +
+   '=False):'#10;
+ s := s +
+   '    """Formats val according to the currency settings'#10;
+ s := s +
+   '    in the current locale."""'#10;
+ s := s +
+   '    conv = localeconv()'#10;
+ s := s + #10;
+ s := s +
+   '    # check for illegal values'#10;
+ s := s +
+   '    digits = conv[international and ''int_frac_digits'' or ''fr' +
+   'ac_digits'']'#10;
+ s := s +
+   '    if digits == 127:'#10;
+ s := s +
+   '        raise ValueError("Currency formatting is not possibl' +
+   'e using "'#10;
+ s := s +
+   '                         "the ''C'' locale.")'#10;
+ s := s + #10;
+ s := s +
+   '    s = _format(''%%.%if'' % digits, abs(val), grouping, monet' +
+   'ary=True)'#10;
+ s := s +
+   '    # ''<'' and ''>'' are markers if the sign must be inserted b' +
+   'etween symbol and value'#10;
+ s := s +
+   '    s = ''<'' + s + ''>'''#10;
+ s := s + #10;
+ s := s +
+   '    if symbol:'#10;
+ s := s +
+   '        smb = conv[international and ''int_curr_symbol'' or ''c' +
+   'urrency_symbol'']'#10;
+ s := s +
+   '        precedes = conv[val < 0 and ''n_cs_precedes'' or ''p_cs' +
+   '_precedes'']'#10;
+ s := s +
+   '        separated = conv[val < 0 and ''n_sep_by_space'' or ''p_' +
+   'sep_by_space'']'#10;
+ s := s + #10;
+ s := s +
+   '        if precedes:'#10;
+ s := s +
+   '            s = smb + (separated and '' '' or '''') + s'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            s = s + (separated and '' '' or '''') + smb'#10;
+ s := s + #10;
+ s := s +
+   '    sign_pos = conv[val < 0 and ''n_sign_posn'' or ''p_sign_pos' +
+   'n'']'#10;
+ s := s +
+   '    sign = conv[val < 0 and ''negative_sign'' or ''positive_sig' +
+   'n'']'#10;
+ s := s + #10;
+ s := s +
+   '    if sign_pos == 0:'#10;
+ s := s +
+   '        s = ''('' + s + '')'''#10;
+ s := s +
+   '    elif sign_pos == 1:'#10;
+ s := s +
+   '        s = sign + s'#10;
+ s := s +
+   '    elif sign_pos == 2:'#10;
+ s := s +
+   '        s = s + sign'#10;
+ s := s +
+   '    elif sign_pos == 3:'#10;
+ s := s +
+   '        s = s.replace(''<'', sign)'#10;
+ s := s +
+   '    elif sign_pos == 4:'#10;
+ s := s +
+   '        s = s.replace(''>'', sign)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        # the default if nothing specified;'#10;
+ s := s +
+   '        # this should be the most fitting sign position'#10;
+ s := s +
+   '        s = sign + s'#10;
+ s := s + #10;
+ s := s +
+   '    return s.replace(''<'', '''').replace(''>'', '''')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def str(val):'#10;
+ s := s +
+   '    """Convert float to string, taking the locale into accou' +
+   'nt."""'#10;
+ s := s +
+   '    return _format("%.12g", val)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def delocalize(string):'#10;
+ s := s +
+   '    "Parses a string as a normalized number according to the' +
+   ' locale settings."'#10;
+ s := s + #10;
+ s := s +
+   '    conv = localeconv()'#10;
+ s := s + #10;
+ s := s +
+   '    # First, get rid of the grouping'#10;
+ s := s +
+   '    ts = conv[''thousands_sep'']'#10;
+ s := s +
+   '    if ts:'#10;
+ s := s +
+   '        string = string.replace(ts, '''')'#10;
+ s := s + #10;
+ s := s +
+   '    # next, replace the decimal point with a dot'#10;
+ s := s +
+   '    dd = conv[''decimal_point'']'#10;
+ s := s +
+   '    if dd:'#10;
+ s := s +
+   '        string = string.replace(dd, ''.'')'#10;
+ s := s +
+   '    return string'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def atof(string, func=float):'#10;
+ s := s +
+   '    "Parses a string as a float according to the locale sett' +
+   'ings."'#10;
+ s := s +
+   '    return func(delocalize(string))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def atoi(string):'#10;
+ s := s +
+   '    "Converts a string to an integer according to the locale' +
+   ' settings."'#10;
+ s := s +
+   '    return int(delocalize(string))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s +
+   '# locale name handling'#10;
+ s := s +
+   '# ----------------------------------------------------------' +
+   '-----------------'#10;
+ s := s + #10;
+ s := s +
+   'def _replace_encoding(code, encoding):'#10;
+ s := s +
+   '    if ''.'' in code:'#10;
+ s := s +
+   '        langname = code[:code.index(''.'')]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        langname = code'#10;
+ s := s +
+   '    return langname + ''.'' + encoding'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# A small subset of the standard locale_alias table'#10;
+ s := s +
+   'locale_alias = {'#10;
+ s := s +
+   '    ''c'':                                    ''C'','#10;
+ s := s +
+   '    ''c.ascii'':                              ''C'','#10;
+ s := s +
+   '    ''c.en'':                                 ''C'','#10;
+ s := s +
+   '    ''c.iso88591'':                           ''en_US.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''c.utf8'':                               ''en_US.UTF-8'','#10;
+ s := s +
+   '    ''c_c'':                                  ''C'','#10;
+ s := s +
+   '    ''c_c.c'':                                ''C'','#10;
+ s := s +
+   '    ''posix'':                                ''C'','#10;
+ s := s +
+   '    ''posix-utf2'':                           ''C'','#10;
+ s := s +
+   '    ''ar'':                                   ''ar_AA.ISO8859-6' +
+   ''','#10;
+ s := s +
+   '    ''ar_sa'':                                ''ar_SA.ISO8859-6' +
+   ''','#10;
+ s := s +
+   '    ''cs'':                                   ''cs_CZ.ISO8859-2' +
+   ''','#10;
+ s := s +
+   '    ''cs_cz'':                                ''cs_CZ.ISO8859-2' +
+   ''','#10;
+ s := s +
+   '    ''da'':                                   ''da_DK.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''da_dk'':                                ''da_DK.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''de'':                                   ''de_DE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''de_at'':                                ''de_AT.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''de_ch'':                                ''de_CH.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''de_de'':                                ''de_DE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''el'':                                   ''el_GR.ISO8859-7' +
+   ''','#10;
+ s := s +
+   '    ''el_gr'':                                ''el_GR.ISO8859-7' +
+   ''','#10;
+ s := s +
+   '    ''en'':                                   ''en_US.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_au'':                                ''en_AU.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_ca'':                                ''en_CA.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_gb'':                                ''en_GB.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_ie'':                                ''en_IE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_nz'':                                ''en_NZ.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_us'':                                ''en_US.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''en_za'':                                ''en_ZA.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''es'':                                   ''es_ES.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''es_ar'':                                ''es_AR.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''es_es'':                                ''es_ES.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''es_mx'':                                ''es_MX.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fi'':                                   ''fi_FI.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fi_fi'':                                ''fi_FI.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fr'':                                   ''fr_FR.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fr_be'':                                ''fr_BE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fr_ca'':                                ''fr_CA.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fr_ch'':                                ''fr_CH.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''fr_fr'':                                ''fr_FR.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''he'':                                   ''he_IL.ISO8859-8' +
+   ''','#10;
+ s := s +
+   '    ''he_il'':                                ''he_IL.ISO8859-8' +
+   ''','#10;
+ s := s +
+   '    ''hu'':                                   ''hu_HU.ISO8859-2' +
+   ''','#10;
+ s := s +
+   '    ''hu_hu'':                                ''hu_HU.ISO8859-2' +
+   ''','#10;
+ s := s +
+   '    ''it'':                                   ''it_IT.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''it_ch'':                                ''it_CH.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''it_it'':                                ''it_IT.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''ja'':                                   ''ja_JP.eucJP'','#10;
+ s := s +
+   '    ''ja_jp'':                                ''ja_JP.eucJP'','#10;
+ s := s +
+   '    ''ko'':                                   ''ko_KR.eucKR'','#10;
+ s := s +
+   '    ''ko_kr'':                                ''ko_KR.eucKR'','#10;
+ s := s +
+   '    ''nl'':                                   ''nl_NL.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''nl_be'':                                ''nl_BE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''nl_nl'':                                ''nl_NL.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''no'':                                   ''no_NO.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''no_no'':                                ''no_NO.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''pl'':                                   ''pl_PL.ISO8859-2' +
+   ''','#10;
+ s := s +
+   '    ''pl_pl'':                                ''pl_PL.ISO8859-2' +
+   ''','#10;
+ s := s +
+   '    ''pt'':                                   ''pt_PT.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''pt_br'':                                ''pt_BR.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''pt_pt'':                                ''pt_PT.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''ru'':                                   ''ru_RU.ISO8859-5' +
+   ''','#10;
+ s := s +
+   '    ''ru_ru'':                                ''ru_RU.ISO8859-5' +
+   ''','#10;
+ s := s +
+   '    ''sv'':                                   ''sv_SE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''sv_se'':                                ''sv_SE.ISO8859-1' +
+   ''','#10;
+ s := s +
+   '    ''tr'':                                   ''tr_TR.ISO8859-9' +
+   ''','#10;
+ s := s +
+   '    ''tr_tr'':                                ''tr_TR.ISO8859-9' +
+   ''','#10;
+ s := s +
+   '    ''uk'':                                   ''uk_UA.KOI8-U'','#10;
+ s := s +
+   '    ''uk_ua'':                                ''uk_UA.KOI8-U'','#10;
+ s := s +
+   '    ''zh'':                                   ''zh_CN.eucCN'','#10;
+ s := s +
+   '    ''zh_cn'':                                ''zh_CN.eucCN'','#10;
+ s := s +
+   '    ''zh_tw'':                                ''zh_TW.big5'','#10;
+ s := s +
+   '}'#10;
+ s := s + #10;
+ s := s +
+   '_encoding_alias = {'#10;
+ s := s +
+   '    ''utf8'': ''UTF-8'', ''utf_8'': ''UTF-8'', ''utf-8'': ''UTF-8'','#10;
+ s := s +
+   '    ''latin1'': ''ISO8859-1'', ''iso88591'': ''ISO8859-1'', ''iso8859' +
+   '_1'': ''ISO8859-1'','#10;
+ s := s +
+   '    ''ascii'': ''ascii'','#10;
+ s := s +
+   '}'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def normalize(localename):'#10;
+ s := s +
+   '    """ Returns a normalized locale code for the given local' +
+   'e'#10;
+ s := s +
+   '        name.'#10;
+ s := s + #10;
+ s := s +
+   '        The returned locale code is formatted for use with'#10;
+ s := s +
+   '        setlocale().'#10;
+ s := s + #10;
+ s := s +
+   '        If normalization fails, the original name is returne' +
+   'd'#10;
+ s := s +
+   '        unchanged.'#10;
+ s := s + #10;
+ s := s +
+   '        If the given encoding is not known, the function def' +
+   'aults to'#10;
+ s := s +
+   '        the default encoding for the locale code just like s' +
+   'etlocale()'#10;
+ s := s +
+   '        does.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Normalize the locale name and extract the encoding and' +
+   ' modifier'#10;
+ s := s +
+   '    code = localename.lower()'#10;
+ s := s +
+   '    if '':'' in code:'#10;
+ s := s +
+   '        # '':'' is sometimes used as encoding delimiter.'#10;
+ s := s +
+   '        code = code.replace('':'', ''.'')'#10;
+ s := s +
+   '    if ''@'' in code:'#10;
+ s := s +
+   '        code, modifier = code.split(''@'', 1)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        modifier = '''''#10;
+ s := s +
+   '    if ''.'' in code:'#10;
+ s := s +
+   '        langname, encoding = code.split(''.'')[:2]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        langname = code'#10;
+ s := s +
+   '        encoding = '''''#10;
+ s := s + #10;
+ s := s +
+   '    # First lookup: fullname (possibly with encoding and mod' +
+   'ifier)'#10;
+ s := s +
+   '    lang_enc = langname'#10;
+ s := s +
+   '    if encoding:'#10;
+ s := s +
+   '        norm_encoding = encoding.replace(''-'', '''')'#10;
+ s := s +
+   '        norm_encoding = norm_encoding.replace(''_'', '''')'#10;
+ s := s +
+   '        lang_enc += ''.'' + norm_encoding'#10;
+ s := s +
+   '    lookup_name = lang_enc'#10;
+ s := s +
+   '    if modifier:'#10;
+ s := s +
+   '        lookup_name += ''@'' + modifier'#10;
+ s := s +
+   '    code = locale_alias.get(lookup_name, None)'#10;
+ s := s +
+   '    if code is not None:'#10;
+ s := s +
+   '        return code'#10;
+ s := s + #10;
+ s := s +
+   '    if modifier:'#10;
+ s := s +
+   '        # Second try: fullname without modifier (possibly wi' +
+   'th encoding)'#10;
+ s := s +
+   '        code = locale_alias.get(lang_enc, None)'#10;
+ s := s +
+   '        if code is not None:'#10;
+ s := s +
+   '            if ''@'' not in code:'#10;
+ s := s +
+   '                return _append_modifier(code, modifier)'#10;
+ s := s +
+   '            if code.split(''@'', 1)[1].lower() == modifier:'#10;
+ s := s +
+   '                return code'#10;
+ s := s + #10;
+ s := s +
+   '    if encoding:'#10;
+ s := s +
+   '        # Third try: langname (without encoding, possibly wi' +
+   'th modifier)'#10;
+ s := s +
+   '        lookup_name = langname'#10;
+ s := s +
+   '        if modifier:'#10;
+ s := s +
+   '            lookup_name += ''@'' + modifier'#10;
+ s := s +
+   '        code = locale_alias.get(lookup_name, None)'#10;
+ s := s +
+   '        if code is not None:'#10;
+ s := s +
+   '            if ''@'' in code:'#10;
+ s := s +
+   '                return _replace_encoding(code.split(''@'', 1)[' +
+   '0], encoding) + ''@'' + code.split(''@'', 1)[1]'#10;
+ s := s +
+   '            return _replace_encoding(code, _encoding_alias.g' +
+   'et(norm_encoding, encoding))'#10;
+ s := s + #10;
+ s := s +
+   '    return localename'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _append_modifier(code, modifier):'#10;
+ s := s +
+   '    if modifier == ''euro'':'#10;
+ s := s +
+   '        if ''.'' not in code:'#10;
+ s := s +
+   '            return code + ''@'' + modifier'#10;
+ s := s +
+   '        _, _, encoding = code.partition(''.'')'#10;
+ s := s +
+   '        if encoding in (''ISO8859-15'', ''UTF-8''):'#10;
+ s := s +
+   '            return code'#10;
+ s := s +
+   '        if encoding == ''ISO8859-1'':'#10;
+ s := s +
+   '            return _replace_encoding(code, ''ISO8859-15'')'#10;
+ s := s +
+   '    return code + ''@'' + modifier'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _parse_localename(localename):'#10;
+ s := s +
+   '    """ Parses the locale code for localename and returns th' +
+   'e'#10;
+ s := s +
+   '        result as tuple (language code, encoding).'#10;
+ s := s + #10;
+ s := s +
+   '        The localename is normalized and passed through the ' +
+   'locale'#10;
+ s := s +
+   '        alias engine. A ValueError is raised in case the loc' +
+   'ale name'#10;
+ s := s +
+   '        cannot be parsed.'#10;
+ s := s + #10;
+ s := s +
+   '        The language code corresponds to RFC 1766.  code and' +
+   ' encoding'#10;
+ s := s +
+   '        can be None in case the values cannot be determined ' +
+   'or are'#10;
+ s := s +
+   '        unknown to this implementation.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    code = normalize(localename)'#10;
+ s := s +
+   '    if ''@'' in code:'#10;
+ s := s +
+   '        # Deal with locale modifiers'#10;
+ s := s +
+   '        code, modifier = code.split(''@'', 1)'#10;
+ s := s +
+   '        if modifier == ''euro'' and ''.'' not in code:'#10;
+ s := s +
+   '            # Assume Latin-9 for @euro locales. This is bogu' +
+   's,'#10;
+ s := s +
+   '            # since some systems may use other encodings for' +
+   ' these'#10;
+ s := s +
+   '            # locales. Also, we ignore other modifiers.'#10;
+ s := s +
+   '            return code, ''iso-8859-15'''#10;
+ s := s + #10;
+ s := s +
+   '    if ''.'' in code:'#10;
+ s := s +
+   '        return tuple(code.split(''.'')[:2])'#10;
+ s := s +
+   '    elif code == ''C'':'#10;
+ s := s +
+   '        return None, None'#10;
+ s := s +
+   '    elif code == ''UTF-8'':'#10;
+ s := s +
+   '        # On macOS "LC_CTYPE=UTF-8" is a valid locale settin' +
+   'g'#10;
+ s := s +
+   '        # for getting UTF-8 handling for text.'#10;
+ s := s +
+   '        return None, ''UTF-8'''#10;
+ s := s +
+   '    raise ValueError(''unknown locale: %s'' % localename)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _build_localename(localetuple):'#10;
+ s := s +
+   '    """ Builds a locale code from the given tuple (language ' +
+   'code,'#10;
+ s := s +
+   '        encoding).'#10;
+ s := s + #10;
+ s := s +
+   '        No aliasing or normalizing takes place.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        language, encoding = localetuple'#10;
+ s := s + #10;
+ s := s +
+   '        if language is None:'#10;
+ s := s +
+   '            language = ''C'''#10;
+ s := s +
+   '        if encoding is None:'#10;
+ s := s +
+   '            return language'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return language + ''.'' + encoding'#10;
+ s := s +
+   '    except (TypeError, ValueError):'#10;
+ s := s +
+   '        raise TypeError(''Locale must be None, a string, or a' +
+   'n iterable of '''#10;
+ s := s +
+   '                        ''two strings -- language code, encod' +
+   'ing.'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def getdefaultlocale(envvars=(''LC_ALL'', ''LC_CTYPE'', ''LANG'', ' +
+   '''LANGUAGE'')):'#10;
+ s := s +
+   '    """ Tries to determine the default locale settings and r' +
+   'eturns'#10;
+ s := s +
+   '        them as tuple (language code, encoding).'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    localename = None'#10;
+ s := s +
+   '    for variable in envvars:'#10;
+ s := s +
+   '        localename = os.environ.get(variable, None)'#10;
+ s := s +
+   '        if localename:'#10;
+ s := s +
+   '            if variable == ''LANGUAGE'':'#10;
+ s := s +
+   '                localename = localename.split('':'')[0]'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        localename = ''C'''#10;
+ s := s +
+   '    return _parse_localename(localename)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def getlocale(category=LC_CTYPE):'#10;
+ s := s +
+   '    """ Returns the current setting for the given locale cat' +
+   'egory as'#10;
+ s := s +
+   '        tuple (language code, encoding).'#10;
+ s := s + #10;
+ s := s +
+   '        category may be one of the LC_* value except LC_ALL.' +
+   ' It'#10;
+ s := s +
+   '        defaults to LC_CTYPE.'#10;
+ s := s + #10;
+ s := s +
+   '        Except for the code ''C'', the language code correspon' +
+   'ds to RFC'#10;
+ s := s +
+   '        1766.  code and encoding can be None in case the val' +
+   'ues cannot'#10;
+ s := s +
+   '        be determined.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    localename = setlocale(category)'#10;
+ s := s +
+   '    if category == LC_ALL and '';'' in localename:'#10;
+ s := s +
+   '        raise TypeError(''category LC_ALL is not supported'')'#10;
+ s := s +
+   '    return _parse_localename(localename)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def resetlocale(category=LC_ALL):'#10;
+ s := s +
+   '    """ Sets the locale for category to the default setting.'#10;
+ s := s + #10;
+ s := s +
+   '        The default setting is determined by calling'#10;
+ s := s +
+   '        getdefaultlocale(). category defaults to LC_ALL.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    setlocale(category, _build_localename(getdefaultlocale()' +
+   '))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def getpreferredencoding(do_setlocale=True):'#10;
+ s := s +
+   '    """Return the charset that the user is likely using,'#10;
+ s := s +
+   '    according to the system configuration."""'#10;
+ s := s +
+   '    return _codeset(_state[LC_CTYPE]).replace(''ANSI_X3.4-196' +
+   '8'', ''UTF-8'') \'#10;
+ s := s +
+   '        if ''.'' in _state[LC_CTYPE] else ''UTF-8'''#10;
+ s := s + #10;
+ s := s + #10;
  s := s + #10;
  Result := s;
 End;
@@ -37692,9 +47736,17 @@ Begin
  s := s +
    '    def is_dir(self, *, follow_symlinks=True):'#10;
  s := s +
+   '        if not follow_symlinks and path.islink(self.path):'#10;
+ s := s +
+   '            return False'#10;
+ s := s +
    '        return path.isdir(self.path)'#10;
  s := s +
    '    def is_file(self, *, follow_symlinks=True):'#10;
+ s := s +
+   '        if not follow_symlinks and path.islink(self.path):'#10;
+ s := s +
+   '            return False'#10;
  s := s +
    '        return path.isfile(self.path)'#10;
  s := s +
@@ -37704,7 +47756,8 @@ Begin
  s := s +
    '    def stat(self, *, follow_symlinks=True):'#10;
  s := s +
-   '        return stat(self.path)'#10;
+   '        return stat(self.path, follow_symlinks=follow_symlin' +
+   'ks)'#10;
  s := s +
    '    def inode(self):'#10;
  s := s +
@@ -37883,6 +47936,1167 @@ Begin
    'def urandom(n):'#10;
  s := s +
    '    return posix.urandom(n)'#10;
+ s := s + #10;
+ s := s +
+   'def fstat(fd):'#10;
+ s := s +
+   '    return stat(''/proc/self/fd/%d'' % fd)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_platform: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '#!/usr/bin/env python3'#10;
+ s := s +
+   '""" This module tries to retrieve as much platform-identifyi' +
+   'ng data as'#10;
+ s := s +
+   '    possible. It makes this information available via functi' +
+   'on APIs.'#10;
+ s := s + #10;
+ s := s +
+   '    Pure Python implementation based on os.uname() and sys; ' +
+   'no subprocess.'#10;
+ s := s +
+   '"""'#10;
+ s := s + #10;
+ s := s +
+   '__version__ = ''1.0.8'''#10;
+ s := s + #10;
+ s := s +
+   'import collections'#10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s + #10;
+ s := s +
+   '### Globals & Constants'#10;
+ s := s + #10;
+ s := s +
+   '# Helper for comparing two version number strings.'#10;
+ s := s +
+   'def _comparable_version(version):'#10;
+ s := s +
+   '    parts = []'#10;
+ s := s +
+   '    for p in version.replace(''-'', ''.'').split(''.''):'#10;
+ s := s +
+   '        if p.isdigit():'#10;
+ s := s +
+   '            parts.append(int(p))'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            parts.append(p)'#10;
+ s := s +
+   '    return parts'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_libc_search_names = (''libc.so.6'', ''libc.so'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _scan_glibc_version(path, chunksize=65536):'#10;
+ s := s +
+   '    """Return the highest GLIBC_x.y[.z] version string found' +
+   ' in file `path`'#10;
+ s := s +
+   '    (or None)."""'#10;
+ s := s +
+   '    best = None'#10;
+ s := s +
+   '    bestkey = None'#10;
+ s := s +
+   '    f = None'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        f = open(path, ''rb'')'#10;
+ s := s +
+   '    except (OSError, ValueError):'#10;
+ s := s +
+   '        f = None'#10;
+ s := s +
+   '    if f is None:'#10;
+ s := s +
+   '        return None'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        tail = '''''#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            chunk = f.read(chunksize)'#10;
+ s := s +
+   '            if not chunk:'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            text = tail + chunk.decode(''latin-1'')'#10;
+ s := s +
+   '            pos = 0'#10;
+ s := s +
+   '            while True:'#10;
+ s := s +
+   '                i = text.find(''GLIBC_'', pos)'#10;
+ s := s +
+   '                if i < 0:'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                j = i + 6'#10;
+ s := s +
+   '                n = len(text)'#10;
+ s := s +
+   '                while j < n and (text[j].isdigit() or text[j' +
+   '] == ''.''):'#10;
+ s := s +
+   '                    j += 1'#10;
+ s := s +
+   '                if j >= n:'#10;
+ s := s +
+   '                    break   # may continue in next chunk'#10;
+ s := s +
+   '                ver = text[i + 6:j].rstrip(''.'')'#10;
+ s := s +
+   '                if ver and ver[0].isdigit():'#10;
+ s := s +
+   '                    key = _comparable_version(ver)'#10;
+ s := s +
+   '                    if bestkey is None or key > bestkey:'#10;
+ s := s +
+   '                        best, bestkey = ver, key'#10;
+ s := s +
+   '                pos = j'#10;
+ s := s +
+   '            tail = text[max(pos, len(text) - 40):] if pos < ' +
+   'len(text) else '''''#10;
+ s := s +
+   '    finally:'#10;
+ s := s +
+   '        f.close()'#10;
+ s := s +
+   '    return best'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def libc_ver(executable=None, lib='''', version='''', chunksize=' +
+   '16384):'#10;
+ s := s +
+   '    """ Tries to determine the libc version that the file ex' +
+   'ecutable'#10;
+ s := s +
+   '        (which defaults to the Python interpreter) is linked' +
+   ' against.'#10;
+ s := s + #10;
+ s := s +
+   '        Returns a tuple of strings (lib,version) which defau' +
+   'lt to the'#10;
+ s := s +
+   '        given parameters in case the lookup fails.'#10;
+ s := s + #10;
+ s := s +
+   '        This implementation looks for GLIBC_x.y version mark' +
+   'ers in the'#10;
+ s := s +
+   '        executable and, as a fallback, in the system C libra' +
+   'ry.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if executable is None:'#10;
+ s := s +
+   '        executable = sys.executable'#10;
+ s := s +
+   '    best = None'#10;
+ s := s +
+   '    bestkey = None'#10;
+ s := s +
+   '    candidates = []'#10;
+ s := s +
+   '    if executable:'#10;
+ s := s +
+   '        candidates.append(executable)'#10;
+ s := s +
+   '    for d in (''/lib/x86_64-linux-gnu'', ''/usr/lib/x86_64-linu' +
+   'x-gnu'', ''/lib64'','#10;
+ s := s +
+   '              ''/usr/lib64'', ''/lib'', ''/usr/lib'', ''/lib/aarch6' +
+   '4-linux-gnu'','#10;
+ s := s +
+   '              ''/usr/lib/aarch64-linux-gnu''):'#10;
+ s := s +
+   '        for nm in _libc_search_names:'#10;
+ s := s +
+   '            candidates.append(d + ''/'' + nm)'#10;
+ s := s +
+   '    for path in candidates:'#10;
+ s := s +
+   '        if not os.path.isfile(path):'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        v = _scan_glibc_version(path, chunksize * 4)'#10;
+ s := s +
+   '        if v:'#10;
+ s := s +
+   '            key = _comparable_version(v)'#10;
+ s := s +
+   '            if bestkey is None or key > bestkey:'#10;
+ s := s +
+   '                best, bestkey = v, key'#10;
+ s := s +
+   '            if path != executable:'#10;
+ s := s +
+   '                break   # system libc found: it is authorita' +
+   'tive'#10;
+ s := s +
+   '    if best:'#10;
+ s := s +
+   '        lib, version = ''glibc'', best'#10;
+ s := s +
+   '    return lib, version'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def win32_is_iot():'#10;
+ s := s +
+   '    return False'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def win32_edition():'#10;
+ s := s +
+   '    return '''''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def win32_ver(release='''', version='''', csd='''', ptype=''''):'#10;
+ s := s +
+   '    """ Get additional version information from the Windows ' +
+   'Registry'#10;
+ s := s +
+   '        and return a tuple (release, version, csd, ptype) --' +
+   ' not on this platform.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return release, version, csd, ptype'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def mac_ver(release='''', versioninfo=('''', '''', ''''), machine=''''' +
+   '):'#10;
+ s := s +
+   '    """ Get macOS version information and return it as tuple' +
+   ' (release,'#10;
+ s := s +
+   '        versioninfo, machine) with versioninfo being a tuple' +
+   ' (version,'#10;
+ s := s +
+   '        dev_stage, non_release_version).'#10;
+ s := s + #10;
+ s := s +
+   '        Entries which cannot be determined are set to the pa' +
+   'rameter values'#10;
+ s := s +
+   '        which default to ''''. All tuple entries are strings.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return release, versioninfo, machine'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def java_ver(release='''', vendor='''', vminfo=('''', '''', ''''), osi' +
+   'nfo=('''', '''', '''')):'#10;
+ s := s +
+   '    """ Version interface for Jython. (not applicable)'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return release, vendor, vminfo, osinfo'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def system_alias(system, release, version):'#10;
+ s := s +
+   '    """ Returns (system, release, version) aliased to common'#10;
+ s := s +
+   '        marketing names used for some systems.'#10;
+ s := s + #10;
+ s := s +
+   '        It also does some reordering of the information in s' +
+   'ome cases'#10;
+ s := s +
+   '        where it would otherwise cause confusion.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if system == ''Rhapsody'':'#10;
+ s := s +
+   '        # Apple''s BSD derivative'#10;
+ s := s +
+   '        # XXX How can we determine the marketing release num' +
+   'ber ?'#10;
+ s := s +
+   '        return ''MacOS X Server'', system + release, version'#10;
+ s := s + #10;
+ s := s +
+   '    elif system == ''SunOS'':'#10;
+ s := s +
+   '        # Sun''s OS'#10;
+ s := s +
+   '        if release < ''5'':'#10;
+ s := s +
+   '            # These releases use the old name SunOS'#10;
+ s := s +
+   '            return system, release, version'#10;
+ s := s +
+   '        # Modify release (marketing release = SunOS release ' +
+   '- 3)'#10;
+ s := s +
+   '        l = release.split(''.'')'#10;
+ s := s +
+   '        if l:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                major = int(l[0])'#10;
+ s := s +
+   '            except ValueError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                major = major - 3'#10;
+ s := s +
+   '                l[0] = str(major)'#10;
+ s := s +
+   '                release = ''.''.join(l)'#10;
+ s := s +
+   '        if release < ''6'':'#10;
+ s := s +
+   '            system = ''Solaris'''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            # XXX Whatever the new SunOS marketing name is..' +
+   '.'#10;
+ s := s +
+   '            system = ''Solaris'''#10;
+ s := s + #10;
+ s := s +
+   '    elif system == ''IRIX64'':'#10;
+ s := s +
+   '        # IRIX reports IRIX64 on platforms with 64-bit suppo' +
+   'rt; yet it'#10;
+ s := s +
+   '        # is really a version and not a different platform, ' +
+   'since 32-bit'#10;
+ s := s +
+   '        # apps are also supported..'#10;
+ s := s +
+   '        system = ''IRIX'''#10;
+ s := s +
+   '        if version:'#10;
+ s := s +
+   '            version = version + '' (64bit)'''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            version = ''64bit'''#10;
+ s := s + #10;
+ s := s +
+   '    elif system in (''win32'', ''win16''):'#10;
+ s := s +
+   '        # In case one of the other tricks'#10;
+ s := s +
+   '        system = ''Windows'''#10;
+ s := s + #10;
+ s := s +
+   '    return system, release, version'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _platform(*args):'#10;
+ s := s +
+   '    """ Helper to format the platform string in a filename'#10;
+ s := s +
+   '        compatible format e.g. "system-version-machine".'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Format the platform string'#10;
+ s := s +
+   '    platform = ''-''.join(x.strip() for x in filter(len, args)' +
+   ')'#10;
+ s := s + #10;
+ s := s +
+   '    # Cleanup some possible filename obstacles...'#10;
+ s := s +
+   '    platform = platform.replace('' '', ''_'')'#10;
+ s := s +
+   '    platform = platform.replace(''/'', ''-'')'#10;
+ s := s +
+   '    platform = platform.replace(''\\'', ''-'')'#10;
+ s := s +
+   '    platform = platform.replace('':'', ''-'')'#10;
+ s := s +
+   '    platform = platform.replace('';'', ''-'')'#10;
+ s := s +
+   '    platform = platform.replace(''"'', ''-'')'#10;
+ s := s +
+   '    platform = platform.replace(''('', ''-'')'#10;
+ s := s +
+   '    platform = platform.replace('')'', ''-'')'#10;
+ s := s + #10;
+ s := s +
+   '    # No need to report ''unknown'' information...'#10;
+ s := s +
+   '    platform = platform.replace(''unknown'', '''')'#10;
+ s := s + #10;
+ s := s +
+   '    # Fold ''--''s and remove trailing ''-'''#10;
+ s := s +
+   '    while 1:'#10;
+ s := s +
+   '        cleaned = platform.replace(''--'', ''-'')'#10;
+ s := s +
+   '        if cleaned == platform:'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        platform = cleaned'#10;
+ s := s +
+   '    while platform[-1] == ''-'':'#10;
+ s := s +
+   '        platform = platform[:-1]'#10;
+ s := s + #10;
+ s := s +
+   '    return platform'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def architecture(executable=None, bits='''', linkage=''''):'#10;
+ s := s +
+   '    """ Queries the given executable (defaults to the Python' +
+   ' interpreter'#10;
+ s := s +
+   '        binary) for various architecture information.'#10;
+ s := s + #10;
+ s := s +
+   '        Returns a tuple (bits, linkage) which contains infor' +
+   'mation about'#10;
+ s := s +
+   '        the bit architecture and the linkage format used for' +
+   ' the'#10;
+ s := s +
+   '        executable. Both values are returned as strings.'#10;
+ s := s + #10;
+ s := s +
+   '        Values that cannot be determined are returned as giv' +
+   'en by the'#10;
+ s := s +
+   '        parameter presets. If bits is given as '''', the sizeo' +
+   'f(pointer)'#10;
+ s := s +
+   '        (or sizeof(long) on Python version < 1.5.2) is used ' +
+   'as'#10;
+ s := s +
+   '        indicator for the supported pointer size.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if not bits:'#10;
+ s := s +
+   '        bits = ''64bit'' if sys.maxsize > 2**32 else ''32bit'''#10;
+ s := s +
+   '    if not linkage:'#10;
+ s := s +
+   '        if sys.platform.startswith(''linux'') or sys.platform.' +
+   'startswith((''freebsd'', ''netbsd'', ''openbsd'')) \'#10;
+ s := s +
+   '                or sys.platform == ''sunos5'':'#10;
+ s := s +
+   '            linkage = ''ELF'''#10;
+ s := s +
+   '        elif sys.platform == ''darwin'':'#10;
+ s := s +
+   '            linkage = '''''#10;
+ s := s +
+   '        elif sys.platform in (''win32'', ''cygwin''):'#10;
+ s := s +
+   '            linkage = ''WindowsPE'''#10;
+ s := s +
+   '    return bits, linkage'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '### Information about the used operating system'#10;
+ s := s + #10;
+ s := s +
+   'uname_result = collections.namedtuple("uname_result",'#10;
+ s := s +
+   '                    "system node release version machine pro' +
+   'cessor")'#10;
+ s := s + #10;
+ s := s +
+   '_uname_cache = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def uname():'#10;
+ s := s +
+   '    """ Fairly portable uname interface. Returns a tuple'#10;
+ s := s +
+   '        of strings (system, node, release, version, machine,' +
+   ' processor)'#10;
+ s := s +
+   '        identifying the underlying platform.'#10;
+ s := s + #10;
+ s := s +
+   '        Note that unlike the os.uname function this also ret' +
+   'urns'#10;
+ s := s +
+   '        possible processor information as an additional tupl' +
+   'e entry.'#10;
+ s := s + #10;
+ s := s +
+   '        Entries which cannot be determined are set to ''''.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    global _uname_cache'#10;
+ s := s +
+   '    if _uname_cache is not None:'#10;
+ s := s +
+   '        return _uname_cache'#10;
+ s := s + #10;
+ s := s +
+   '    # Get some infos from the builtin os.uname API...'#10;
+ s := s +
+   '    if hasattr(os, ''uname''):'#10;
+ s := s +
+   '        system, node, release, version, machine = os.uname()'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        system, node, release, version, machine = sys.platfo' +
+   'rm, '''', '''', '''', '''''#10;
+ s := s +
+   '    processor = '''''#10;
+ s := s + #10;
+ s := s +
+   '    # normalize'#10;
+ s := s +
+   '    if system == ''Microsoft'' and release == ''Windows'':'#10;
+ s := s +
+   '        system = ''Windows'''#10;
+ s := s +
+   '        release = ''Vista'''#10;
+ s := s + #10;
+ s := s +
+   '    # The processor is not reported by os.uname(); use machi' +
+   'ne, like'#10;
+ s := s +
+   '    # `uname -p` does on most Linux systems.'#10;
+ s := s +
+   '    if not processor:'#10;
+ s := s +
+   '        processor = machine'#10;
+ s := s +
+   '        if processor == ''unknown'':'#10;
+ s := s +
+   '            processor = '''''#10;
+ s := s + #10;
+ s := s +
+   '    _uname_cache = uname_result(system or '''', node or '''', re' +
+   'lease or '''','#10;
+ s := s +
+   '                                version or '''', machine or ''''' +
+   ', processor or '''')'#10;
+ s := s +
+   '    return _uname_cache'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '### Direct interfaces to some of the uname() return values'#10;
+ s := s + #10;
+ s := s +
+   'def system():'#10;
+ s := s +
+   '    """ Returns the system/OS name, e.g. ''Linux'', ''Windows'' ' +
+   'or ''Java''.'#10;
+ s := s + #10;
+ s := s +
+   '        An empty string is returned if the value cannot be d' +
+   'etermined.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return uname().system'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def node():'#10;
+ s := s +
+   '    """ Returns the computer''s network name (which may not b' +
+   'e fully'#10;
+ s := s +
+   '        qualified)'#10;
+ s := s + #10;
+ s := s +
+   '        An empty string is returned if the value cannot be d' +
+   'etermined.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return uname().node'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def release():'#10;
+ s := s +
+   '    """ Returns the system''s release, e.g. ''2.2.0'' or ''NT'''#10;
+ s := s + #10;
+ s := s +
+   '        An empty string is returned if the value cannot be d' +
+   'etermined.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return uname().release'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def version():'#10;
+ s := s +
+   '    """ Returns the system''s release version, e.g. ''#3 on de' +
+   'gas'''#10;
+ s := s + #10;
+ s := s +
+   '        An empty string is returned if the value cannot be d' +
+   'etermined.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return uname().version'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def machine():'#10;
+ s := s +
+   '    """ Returns the machine type, e.g. ''i386'''#10;
+ s := s + #10;
+ s := s +
+   '        An empty string is returned if the value cannot be d' +
+   'etermined.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return uname().machine'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def processor():'#10;
+ s := s +
+   '    """ Returns the (true) processor name, e.g. ''amdk6'''#10;
+ s := s + #10;
+ s := s +
+   '        An empty string is returned if the value cannot be'#10;
+ s := s +
+   '        determined. Note that many platforms do not provide ' +
+   'this'#10;
+ s := s +
+   '        information or simply return the same value as for m' +
+   'achine(),'#10;
+ s := s +
+   '        e.g.  NetBSD does this.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return uname().processor'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '### Various APIs for extracting information from sys.version'#10;
+ s := s + #10;
+ s := s +
+   '_sys_version_cache = {}'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _sys_version(sys_version=None):'#10;
+ s := s +
+   '    """ Returns a parsed version of Python''s sys.version as ' +
+   'tuple'#10;
+ s := s +
+   '        (name, version, branch, revision, buildno, builddate' +
+   ', compiler)'#10;
+ s := s +
+   '        referring to the Python implementation name, version' +
+   ', branch,'#10;
+ s := s +
+   '        revision, build number, build date/time as string an' +
+   'd the compiler'#10;
+ s := s +
+   '        identification string.'#10;
+ s := s + #10;
+ s := s +
+   '        Note that unlike the Python sys.version, the returne' +
+   'd value'#10;
+ s := s +
+   '        for the Python version will always include the patch' +
+   'level (it'#10;
+ s := s +
+   '        defaults to ''.0'').'#10;
+ s := s + #10;
+ s := s +
+   '        The function returns empty strings for tuple entries' +
+   ' that'#10;
+ s := s +
+   '        cannot be determined.'#10;
+ s := s + #10;
+ s := s +
+   '        sys_version may be given to parse an alternative ver' +
+   'sion'#10;
+ s := s +
+   '        string, e.g. if the version was read from a differen' +
+   't Python'#10;
+ s := s +
+   '        interpreter.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Get the Python version'#10;
+ s := s +
+   '    if sys_version is None:'#10;
+ s := s +
+   '        sys_version = sys.version'#10;
+ s := s + #10;
+ s := s +
+   '    # Try the cache first'#10;
+ s := s +
+   '    result = _sys_version_cache.get(sys_version, None)'#10;
+ s := s +
+   '    if result is not None:'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    # Parse it'#10;
+ s := s +
+   '    if ''IronPython'' in sys_version:'#10;
+ s := s +
+   '        name = ''IronPython'''#10;
+ s := s +
+   '    elif sys.platform.startswith(''java''):'#10;
+ s := s +
+   '        name = ''Jython'''#10;
+ s := s +
+   '    elif ''PyPy'' in sys_version:'#10;
+ s := s +
+   '        name = ''PyPy'''#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        name = ''CPython'''#10;
+ s := s + #10;
+ s := s +
+   '    # "3.8.10 (default, Oct 19 2026, 00:00:00) \n[compiler]"'#10;
+ s := s +
+   '    i = sys_version.find(''('')'#10;
+ s := s +
+   '    j = sys_version.find('')'', i + 1) if i >= 0 else -1'#10;
+ s := s +
+   '    if i < 0 or j < 0:'#10;
+ s := s +
+   '        raise ValueError(''failed to parse %s sys.version: %s' +
+   ''' %'#10;
+ s := s +
+   '                         (name, repr(sys_version)))'#10;
+ s := s +
+   '    version = sys_version[:i].strip()'#10;
+ s := s +
+   '    inner = sys_version[i + 1:j]'#10;
+ s := s +
+   '    if inner.startswith(''#''):'#10;
+ s := s +
+   '        inner = inner[1:]'#10;
+ s := s +
+   '    fields = [x.strip() for x in inner.split('','')]'#10;
+ s := s +
+   '    buildno = fields[0]'#10;
+ s := s +
+   '    builddate = fields[1] if len(fields) > 1 else '''''#10;
+ s := s +
+   '    buildtime = fields[2] if len(fields) > 2 else '''''#10;
+ s := s +
+   '    rest = sys_version[j + 1:]'#10;
+ s := s +
+   '    k = rest.find(''['')'#10;
+ s := s +
+   '    l = rest.find('']'', k + 1) if k >= 0 else -1'#10;
+ s := s +
+   '    if k >= 0:'#10;
+ s := s +
+   '        compiler = rest[k + 1:l] if l >= 0 else rest[k + 1:]'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        compiler = '''''#10;
+ s := s +
+   '    if buildtime:'#10;
+ s := s +
+   '        builddate = builddate + '' '' + buildtime'#10;
+ s := s + #10;
+ s := s +
+   '    branch = '''''#10;
+ s := s +
+   '    revision = '''''#10;
+ s := s + #10;
+ s := s +
+   '    # Add the patchlevel version if missing'#10;
+ s := s +
+   '    l = version.split(''.'')'#10;
+ s := s +
+   '    if len(l) == 2:'#10;
+ s := s +
+   '        l.append(''0'')'#10;
+ s := s +
+   '        version = ''.''.join(l)'#10;
+ s := s + #10;
+ s := s +
+   '    result = (name, version, branch, revision, buildno, buil' +
+   'ddate, compiler)'#10;
+ s := s +
+   '    _sys_version_cache[sys_version] = result'#10;
+ s := s +
+   '    return result'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_implementation():'#10;
+ s := s +
+   '    """ Returns a string identifying the Python implementati' +
+   'on.'#10;
+ s := s + #10;
+ s := s +
+   '        Currently, the following implementations are identif' +
+   'ied:'#10;
+ s := s +
+   '          ''CPython'' (C implementation of Python),'#10;
+ s := s +
+   '          ''IronPython'' (.NET implementation of Python),'#10;
+ s := s +
+   '          ''Jython'' (Java implementation of Python),'#10;
+ s := s +
+   '          ''PyPy'' (Python implementation of Python).'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return _sys_version()[0]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_version():'#10;
+ s := s +
+   '    """ Returns the Python version as string ''major.minor.pa' +
+   'tchlevel'''#10;
+ s := s + #10;
+ s := s +
+   '        Note that unlike the Python sys.version, the returne' +
+   'd value'#10;
+ s := s +
+   '        will always include the patchlevel (it defaults to 0' +
+   ').'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return _sys_version()[1]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_version_tuple():'#10;
+ s := s +
+   '    """ Returns the Python version as tuple (major, minor, p' +
+   'atchlevel)'#10;
+ s := s +
+   '        of strings.'#10;
+ s := s + #10;
+ s := s +
+   '        Note that unlike the Python sys.version, the returne' +
+   'd value'#10;
+ s := s +
+   '        will always include the patchlevel (it defaults to 0' +
+   ').'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return tuple(_sys_version()[1].split(''.''))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_branch():'#10;
+ s := s +
+   '    """ Returns a string identifying the Python implementati' +
+   'on'#10;
+ s := s +
+   '        branch.'#10;
+ s := s + #10;
+ s := s +
+   '        For CPython this is the SCM branch from which the'#10;
+ s := s +
+   '        Python binary was built.'#10;
+ s := s + #10;
+ s := s +
+   '        If not available, an empty string is returned.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return _sys_version()[2]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_revision():'#10;
+ s := s +
+   '    """ Returns a string identifying the Python implementati' +
+   'on'#10;
+ s := s +
+   '        revision.'#10;
+ s := s + #10;
+ s := s +
+   '        For CPython this is the SCM revision from which the'#10;
+ s := s +
+   '        Python binary was built.'#10;
+ s := s + #10;
+ s := s +
+   '        If not available, an empty string is returned.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return _sys_version()[3]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_build():'#10;
+ s := s +
+   '    """ Returns a tuple (buildno, builddate) stating the Pyt' +
+   'hon'#10;
+ s := s +
+   '        build number and date as strings.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return _sys_version()[4:6]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def python_compiler():'#10;
+ s := s +
+   '    """ Returns a string identifying the compiler used for c' +
+   'ompiling'#10;
+ s := s +
+   '        Python.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    return _sys_version()[6]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '### The Opus Magnum of platform strings :-)'#10;
+ s := s + #10;
+ s := s +
+   '_platform_cache = {}'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def platform(aliased=0, terse=0):'#10;
+ s := s +
+   '    """ Returns a single string identifying the underlying p' +
+   'latform'#10;
+ s := s +
+   '        with as much useful information as possible (but no ' +
+   'more :).'#10;
+ s := s + #10;
+ s := s +
+   '        The output is intended to be human readable rather t' +
+   'han'#10;
+ s := s +
+   '        machine parseable. It may look different on differen' +
+   't'#10;
+ s := s +
+   '        platforms and this is intended.'#10;
+ s := s + #10;
+ s := s +
+   '        If "aliased" is true, the function will use aliases ' +
+   'for'#10;
+ s := s +
+   '        various platforms that report system names which dif' +
+   'fer from'#10;
+ s := s +
+   '        their common names, e.g. SunOS will be reported as'#10;
+ s := s +
+   '        Solaris. The system_alias() function is used to impl' +
+   'ement'#10;
+ s := s +
+   '        this.'#10;
+ s := s + #10;
+ s := s +
+   '        Setting terse to true causes the function to return ' +
+   'only the'#10;
+ s := s +
+   '        absolute minimum information needed to identify the ' +
+   'platform.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    result = _platform_cache.get((aliased, terse), None)'#10;
+ s := s +
+   '    if result is not None:'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    # Get uname information and then apply platform specific' +
+   ' cosmetics'#10;
+ s := s +
+   '    # to it...'#10;
+ s := s +
+   '    system, node, release, version, machine, processor = una' +
+   'me()'#10;
+ s := s +
+   '    if machine == processor:'#10;
+ s := s +
+   '        processor = '''''#10;
+ s := s +
+   '    if aliased:'#10;
+ s := s +
+   '        system, release, version = system_alias(system, rele' +
+   'ase, version)'#10;
+ s := s + #10;
+ s := s +
+   '    if system == ''Darwin'':'#10;
+ s := s +
+   '        # macOS (darwin kernel)'#10;
+ s := s +
+   '        macos_release = mac_ver()[0]'#10;
+ s := s +
+   '        if macos_release:'#10;
+ s := s +
+   '            system = ''macOS'''#10;
+ s := s +
+   '            release = macos_release'#10;
+ s := s + #10;
+ s := s +
+   '    if system == ''Windows'':'#10;
+ s := s +
+   '        # MS platforms'#10;
+ s := s +
+   '        rel, vers, csd, ptype = win32_ver(version)'#10;
+ s := s +
+   '        if terse:'#10;
+ s := s +
+   '            platform = _platform(system, release)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            platform = _platform(system, release, version, c' +
+   'sd)'#10;
+ s := s + #10;
+ s := s +
+   '    elif system in (''Linux'',):'#10;
+ s := s +
+   '        # check for libc vs. glibc'#10;
+ s := s +
+   '        libcname, libcversion = libc_ver(sys.executable)'#10;
+ s := s +
+   '        platform = _platform(system, release, machine, proce' +
+   'ssor,'#10;
+ s := s +
+   '                             ''with'','#10;
+ s := s +
+   '                             libcname + libcversion)'#10;
+ s := s +
+   '    elif system == ''Java'':'#10;
+ s := s +
+   '        # Java platforms'#10;
+ s := s +
+   '        r, v, vminfo, (os_name, os_version, os_arch) = java_' +
+   'ver()'#10;
+ s := s +
+   '        if terse or not os_name:'#10;
+ s := s +
+   '            platform = _platform(system, release, version)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            platform = _platform(system, release, version,'#10;
+ s := s +
+   '                                 ''on'','#10;
+ s := s +
+   '                                 os_name, os_version, os_arc' +
+   'h)'#10;
+ s := s + #10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        # Generic handler'#10;
+ s := s +
+   '        if terse:'#10;
+ s := s +
+   '            platform = _platform(system, release)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            bits, linkage = architecture(sys.executable)'#10;
+ s := s +
+   '            platform = _platform(system, release, machine,'#10;
+ s := s +
+   '                                 processor, bits, linkage)'#10;
+ s := s + #10;
+ s := s +
+   '    _platform_cache[(aliased, terse)] = platform'#10;
+ s := s +
+   '    return platform'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '### Command line interface'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == ''__main__'':'#10;
+ s := s +
+   '    # Default is to print the aliased verbose platform strin' +
+   'g'#10;
+ s := s +
+   '    terse = (''terse'' in sys.argv or ''--terse'' in sys.argv)'#10;
+ s := s +
+   '    aliased = (not ''nonaliased'' in sys.argv and not ''--nonal' +
+   'iased'' in sys.argv)'#10;
+ s := s +
+   '    print(platform(aliased, terse))'#10;
+ s := s +
+   '    sys.exit(0)'#10;
  s := s + #10;
  Result := s;
 End;
@@ -38464,6 +49678,1201 @@ Begin
    '    prefix = ''/'' if isabs_.pop() else '''''#10;
  s := s +
    '    return prefix + ''/''.join(common)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_pprint: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Support to pretty-print lists, tuples, & dictionaries rec' +
+   'ursively."""'#10;
+ s := s + #10;
+ s := s +
+   'import collections as _collections'#10;
+ s := s +
+   'import sys as _sys'#10;
+ s := s +
+   'import types as _types'#10;
+ s := s +
+   'from io import StringIO as _StringIO'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["pprint", "pformat", "isreadable", "isrecursive",' +
+   ' "saferepr",'#10;
+ s := s +
+   '           "PrettyPrinter", "pp"]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def pprint(object, stream=None, indent=1, width=80, depth=No' +
+   'ne, *,'#10;
+ s := s +
+   '           compact=False, sort_dicts=True):'#10;
+ s := s +
+   '    """Pretty-print a Python object to a stream [default is ' +
+   'sys.stdout]."""'#10;
+ s := s +
+   '    printer = PrettyPrinter('#10;
+ s := s +
+   '        stream=stream, indent=indent, width=width, depth=dep' +
+   'th,'#10;
+ s := s +
+   '        compact=compact, sort_dicts=sort_dicts)'#10;
+ s := s +
+   '    printer.pprint(object)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def pformat(object, indent=1, width=80, depth=None, *,'#10;
+ s := s +
+   '            compact=False, sort_dicts=True):'#10;
+ s := s +
+   '    """Format a Python object into a pretty-printed represen' +
+   'tation."""'#10;
+ s := s +
+   '    return PrettyPrinter(indent=indent, width=width, depth=d' +
+   'epth,'#10;
+ s := s +
+   '                         compact=compact, sort_dicts=sort_di' +
+   'cts).pformat(object)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def pp(object, *args, sort_dicts=False, **kwargs):'#10;
+ s := s +
+   '    """Pretty-print a Python object"""'#10;
+ s := s +
+   '    pprint(object, *args, sort_dicts=sort_dicts, **kwargs)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def saferepr(object):'#10;
+ s := s +
+   '    """Version of repr() which can handle recursive data str' +
+   'uctures."""'#10;
+ s := s +
+   '    return _safe_repr(object, {}, None, 0, True)[0]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def isreadable(object):'#10;
+ s := s +
+   '    """Determine if saferepr(object) is readable by eval()."' +
+   '""'#10;
+ s := s +
+   '    return _safe_repr(object, {}, None, 0, True)[1]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def isrecursive(object):'#10;
+ s := s +
+   '    """Determine if object requires a recursive representati' +
+   'on."""'#10;
+ s := s +
+   '    return _safe_repr(object, {}, None, 0, True)[2]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _safe_key:'#10;
+ s := s +
+   '    """Helper function for key functions when sorting unorde' +
+   'rable objects."""'#10;
+ s := s + #10;
+ s := s +
+   '    __slots__ = [''obj'']'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, obj):'#10;
+ s := s +
+   '        self.obj = obj'#10;
+ s := s + #10;
+ s := s +
+   '    def __lt__(self, other):'#10;
+ s := s +
+   '        # NB: no `return` inside `except` (interpreter bug B' +
+   '1, see BUGS_A.md)'#10;
+ s := s +
+   '        failed = False'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            res = self.obj < other.obj'#10;
+ s := s +
+   '        except TypeError:'#10;
+ s := s +
+   '            failed = True'#10;
+ s := s +
+   '        if failed:'#10;
+ s := s +
+   '            res = ((str(type(self.obj)), id(self.obj)) <'#10;
+ s := s +
+   '                   (str(type(other.obj)), id(other.obj)))'#10;
+ s := s +
+   '        return res'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _safe_tuple(t):'#10;
+ s := s +
+   '    "Helper function for comparing 2-tuples"'#10;
+ s := s +
+   '    return _safe_key(t[0]), _safe_key(t[1])'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class PrettyPrinter:'#10;
+ s := s +
+   '    def __init__(self, indent=1, width=80, depth=None, strea' +
+   'm=None, *,'#10;
+ s := s +
+   '                 compact=False, sort_dicts=True):'#10;
+ s := s +
+   '        indent = int(indent)'#10;
+ s := s +
+   '        width = int(width)'#10;
+ s := s +
+   '        if indent < 0:'#10;
+ s := s +
+   '            raise ValueError(''indent must be >= 0'')'#10;
+ s := s +
+   '        if depth is not None and depth <= 0:'#10;
+ s := s +
+   '            raise ValueError(''depth must be > 0'')'#10;
+ s := s +
+   '        if not width:'#10;
+ s := s +
+   '            raise ValueError(''width must be != 0'')'#10;
+ s := s +
+   '        self._depth = depth'#10;
+ s := s +
+   '        self._indent_per_level = indent'#10;
+ s := s +
+   '        self._width = width'#10;
+ s := s +
+   '        if stream is not None:'#10;
+ s := s +
+   '            self._stream = stream'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._stream = _sys.stdout'#10;
+ s := s +
+   '        self._compact = bool(compact)'#10;
+ s := s +
+   '        self._sort_dicts = sort_dicts'#10;
+ s := s + #10;
+ s := s +
+   '    def pprint(self, object):'#10;
+ s := s +
+   '        self._format(object, self._stream, 0, 0, {}, 0)'#10;
+ s := s +
+   '        self._stream.write("\n")'#10;
+ s := s + #10;
+ s := s +
+   '    def pformat(self, object):'#10;
+ s := s +
+   '        sio = _StringIO()'#10;
+ s := s +
+   '        self._format(object, sio, 0, 0, {}, 0)'#10;
+ s := s +
+   '        return sio.getvalue()'#10;
+ s := s + #10;
+ s := s +
+   '    def isrecursive(self, object):'#10;
+ s := s +
+   '        return self.format(object, {}, 0, 0)[2]'#10;
+ s := s + #10;
+ s := s +
+   '    def isreadable(self, object):'#10;
+ s := s +
+   '        s, readable, recursive = self.format(object, {}, 0, ' +
+   '0)'#10;
+ s := s +
+   '        return readable and not recursive'#10;
+ s := s + #10;
+ s := s +
+   '    def _format(self, object, stream, indent, allowance, con' +
+   'text, level):'#10;
+ s := s +
+   '        objid = id(object)'#10;
+ s := s +
+   '        if objid in context:'#10;
+ s := s +
+   '            stream.write(_recursion(object))'#10;
+ s := s +
+   '            self._recursive = True'#10;
+ s := s +
+   '            self._readable = False'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        rep = self._repr(object, context, level)'#10;
+ s := s +
+   '        max_width = self._width - indent - allowance'#10;
+ s := s +
+   '        if len(rep) > max_width:'#10;
+ s := s +
+   '            p = _find_handler(object)'#10;
+ s := s +
+   '            if p is not None:'#10;
+ s := s +
+   '                context[objid] = 1'#10;
+ s := s +
+   '                p(self, object, stream, indent, allowance, c' +
+   'ontext, level + 1)'#10;
+ s := s +
+   '                del context[objid]'#10;
+ s := s +
+   '                return'#10;
+ s := s +
+   '            elif isinstance(object, dict):'#10;
+ s := s +
+   '                context[objid] = 1'#10;
+ s := s +
+   '                self._pprint_dict(object, stream, indent, al' +
+   'lowance,'#10;
+ s := s +
+   '                                  context, level + 1)'#10;
+ s := s +
+   '                del context[objid]'#10;
+ s := s +
+   '                return'#10;
+ s := s +
+   '        stream.write(rep)'#10;
+ s := s + #10;
+ s := s +
+   '    _dispatch = {}  # kept for API compatibility; see _find_' +
+   'handler()'#10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_dict(self, object, stream, indent, allowance' +
+   ', context, level):'#10;
+ s := s +
+   '        write = stream.write'#10;
+ s := s +
+   '        write(''{'')'#10;
+ s := s +
+   '        if self._indent_per_level > 1:'#10;
+ s := s +
+   '            write((self._indent_per_level - 1) * '' '')'#10;
+ s := s +
+   '        length = len(object)'#10;
+ s := s +
+   '        if length:'#10;
+ s := s +
+   '            if self._sort_dicts:'#10;
+ s := s +
+   '                items = sorted(object.items(), key=_safe_tup' +
+   'le)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                items = object.items()'#10;
+ s := s +
+   '            self._format_dict_items(items, stream, indent, a' +
+   'llowance + 1,'#10;
+ s := s +
+   '                                    context, level)'#10;
+ s := s +
+   '        write(''}'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_ordered_dict(self, object, stream, indent, a' +
+   'llowance, context, level):'#10;
+ s := s +
+   '        if not len(object):'#10;
+ s := s +
+   '            stream.write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        cls = object.__class__'#10;
+ s := s +
+   '        stream.write(cls.__name__ + ''('')'#10;
+ s := s +
+   '        self._format(list(object.items()), stream,'#10;
+ s := s +
+   '                     indent + len(cls.__name__) + 1, allowan' +
+   'ce + 1,'#10;
+ s := s +
+   '                     context, level)'#10;
+ s := s +
+   '        stream.write('')'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_list(self, object, stream, indent, allowance' +
+   ', context, level):'#10;
+ s := s +
+   '        stream.write(''['')'#10;
+ s := s +
+   '        self._format_items(object, stream, indent, allowance' +
+   ' + 1,'#10;
+ s := s +
+   '                           context, level)'#10;
+ s := s +
+   '        stream.write('']'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_tuple(self, object, stream, indent, allowanc' +
+   'e, context, level):'#10;
+ s := s +
+   '        stream.write(''('')'#10;
+ s := s +
+   '        endchar = '',)'' if len(object) == 1 else '')'''#10;
+ s := s +
+   '        self._format_items(object, stream, indent, allowance' +
+   ' + len(endchar),'#10;
+ s := s +
+   '                           context, level)'#10;
+ s := s +
+   '        stream.write(endchar)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_set(self, object, stream, indent, allowance,' +
+   ' context, level):'#10;
+ s := s +
+   '        if not len(object):'#10;
+ s := s +
+   '            stream.write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        typ = object.__class__'#10;
+ s := s +
+   '        if typ is set:'#10;
+ s := s +
+   '            stream.write(''{'')'#10;
+ s := s +
+   '            endchar = ''}'''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            stream.write(typ.__name__ + ''({'')'#10;
+ s := s +
+   '            endchar = ''})'''#10;
+ s := s +
+   '            indent += len(typ.__name__) + 1'#10;
+ s := s +
+   '        object = sorted(object, key=_safe_key)'#10;
+ s := s +
+   '        self._format_items(object, stream, indent, allowance' +
+   ' + len(endchar),'#10;
+ s := s +
+   '                           context, level)'#10;
+ s := s +
+   '        stream.write(endchar)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_str(self, object, stream, indent, allowance,' +
+   ' context, level):'#10;
+ s := s +
+   '        write = stream.write'#10;
+ s := s +
+   '        if not len(object):'#10;
+ s := s +
+   '            write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        chunks = []'#10;
+ s := s +
+   '        lines = object.splitlines(True)'#10;
+ s := s +
+   '        if level == 1:'#10;
+ s := s +
+   '            indent += 1'#10;
+ s := s +
+   '            allowance += 1'#10;
+ s := s +
+   '        max_width1 = max_width = self._width - indent'#10;
+ s := s +
+   '        for i, line in enumerate(lines):'#10;
+ s := s +
+   '            rep = repr(line)'#10;
+ s := s +
+   '            if i == len(lines) - 1:'#10;
+ s := s +
+   '                max_width1 -= allowance'#10;
+ s := s +
+   '            if len(rep) <= max_width1:'#10;
+ s := s +
+   '                chunks.append(rep)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                # A list of alternating (non-space, space) s' +
+   'trings'#10;
+ s := s +
+   '                parts = _split_words(line)'#10;
+ s := s +
+   '                max_width2 = max_width'#10;
+ s := s +
+   '                current = '''''#10;
+ s := s +
+   '                for j, part in enumerate(parts):'#10;
+ s := s +
+   '                    candidate = current + part'#10;
+ s := s +
+   '                    if j == len(parts) - 1 and i == len(line' +
+   's) - 1:'#10;
+ s := s +
+   '                        max_width2 -= allowance'#10;
+ s := s +
+   '                    if len(repr(candidate)) > max_width2:'#10;
+ s := s +
+   '                        if current:'#10;
+ s := s +
+   '                            chunks.append(repr(current))'#10;
+ s := s +
+   '                        current = part'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        current = candidate'#10;
+ s := s +
+   '                if current:'#10;
+ s := s +
+   '                    chunks.append(repr(current))'#10;
+ s := s +
+   '        if len(chunks) == 1:'#10;
+ s := s +
+   '            write(rep)'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        if level == 1:'#10;
+ s := s +
+   '            write(''('')'#10;
+ s := s +
+   '        for i, rep in enumerate(chunks):'#10;
+ s := s +
+   '            if i > 0:'#10;
+ s := s +
+   '                write(''\n'' + '' '' * indent)'#10;
+ s := s +
+   '            write(rep)'#10;
+ s := s +
+   '        if level == 1:'#10;
+ s := s +
+   '            write('')'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_bytes(self, object, stream, indent, allowanc' +
+   'e, context, level):'#10;
+ s := s +
+   '        write = stream.write'#10;
+ s := s +
+   '        if len(object) <= 4:'#10;
+ s := s +
+   '            write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        parens = level == 1'#10;
+ s := s +
+   '        if parens:'#10;
+ s := s +
+   '            indent += 1'#10;
+ s := s +
+   '            allowance += 1'#10;
+ s := s +
+   '            write(''('')'#10;
+ s := s +
+   '        delim = '''''#10;
+ s := s +
+   '        for rep in _wrap_bytes_repr(object, self._width - in' +
+   'dent, allowance):'#10;
+ s := s +
+   '            write(delim)'#10;
+ s := s +
+   '            write(rep)'#10;
+ s := s +
+   '            if not delim:'#10;
+ s := s +
+   '                delim = ''\n'' + '' '' * indent'#10;
+ s := s +
+   '        if parens:'#10;
+ s := s +
+   '            write('')'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_bytearray(self, object, stream, indent, allo' +
+   'wance, context, level):'#10;
+ s := s +
+   '        write = stream.write'#10;
+ s := s +
+   '        write(''bytearray('')'#10;
+ s := s +
+   '        self._pprint_bytes(bytes(object), stream, indent + 1' +
+   '0,'#10;
+ s := s +
+   '                           allowance + 1, context, level + 1' +
+   ')'#10;
+ s := s +
+   '        write('')'')'#10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_mappingproxy(self, object, stream, indent, a' +
+   'llowance, context, level):'#10;
+ s := s +
+   '        stream.write(''mappingproxy('')'#10;
+ s := s +
+   '        self._format(object.copy(), stream, indent + 13, all' +
+   'owance + 1,'#10;
+ s := s +
+   '                     context, level)'#10;
+ s := s +
+   '        stream.write('')'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _format_dict_items(self, items, stream, indent, allo' +
+   'wance, context,'#10;
+ s := s +
+   '                           level):'#10;
+ s := s +
+   '        write = stream.write'#10;
+ s := s +
+   '        indent += self._indent_per_level'#10;
+ s := s +
+   '        delimnl = '',\n'' + '' '' * indent'#10;
+ s := s +
+   '        last_index = len(items) - 1'#10;
+ s := s +
+   '        for i, (key, ent) in enumerate(items):'#10;
+ s := s +
+   '            last = i == last_index'#10;
+ s := s +
+   '            rep = self._repr(key, context, level)'#10;
+ s := s +
+   '            write(rep)'#10;
+ s := s +
+   '            write('': '')'#10;
+ s := s +
+   '            self._format(ent, stream, indent + len(rep) + 2,'#10;
+ s := s +
+   '                         allowance if last else 1,'#10;
+ s := s +
+   '                         context, level)'#10;
+ s := s +
+   '            if not last:'#10;
+ s := s +
+   '                write(delimnl)'#10;
+ s := s + #10;
+ s := s +
+   '    def _format_items(self, items, stream, indent, allowance' +
+   ', context, level):'#10;
+ s := s +
+   '        write = stream.write'#10;
+ s := s +
+   '        indent += self._indent_per_level'#10;
+ s := s +
+   '        if self._indent_per_level > 1:'#10;
+ s := s +
+   '            write((self._indent_per_level - 1) * '' '')'#10;
+ s := s +
+   '        delimnl = '',\n'' + '' '' * indent'#10;
+ s := s +
+   '        delim = '''''#10;
+ s := s +
+   '        width = max_width = self._width - indent + 1'#10;
+ s := s +
+   '        it = iter(items)'#10;
+ s := s +
+   '        empty = False'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            next_ent = next(it)'#10;
+ s := s +
+   '        except StopIteration:'#10;
+ s := s +
+   '            empty = True'#10;
+ s := s +
+   '        if empty:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        last = False'#10;
+ s := s +
+   '        while not last:'#10;
+ s := s +
+   '            ent = next_ent'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                next_ent = next(it)'#10;
+ s := s +
+   '            except StopIteration:'#10;
+ s := s +
+   '                last = True'#10;
+ s := s +
+   '                max_width -= allowance'#10;
+ s := s +
+   '                width -= allowance'#10;
+ s := s +
+   '            if self._compact:'#10;
+ s := s +
+   '                rep = self._repr(ent, context, level)'#10;
+ s := s +
+   '                w = len(rep) + 2'#10;
+ s := s +
+   '                if width < w:'#10;
+ s := s +
+   '                    width = max_width'#10;
+ s := s +
+   '                    if delim:'#10;
+ s := s +
+   '                        delim = delimnl'#10;
+ s := s +
+   '                if width >= w:'#10;
+ s := s +
+   '                    width -= w'#10;
+ s := s +
+   '                    write(delim)'#10;
+ s := s +
+   '                    delim = '', '''#10;
+ s := s +
+   '                    write(rep)'#10;
+ s := s +
+   '                    continue'#10;
+ s := s +
+   '            write(delim)'#10;
+ s := s +
+   '            delim = delimnl'#10;
+ s := s +
+   '            self._format(ent, stream, indent,'#10;
+ s := s +
+   '                         allowance if last else 1,'#10;
+ s := s +
+   '                         context, level)'#10;
+ s := s + #10;
+ s := s +
+   '    def _repr(self, object, context, level):'#10;
+ s := s +
+   '        repr, readable, recursive = self.format(object, cont' +
+   'ext.copy(),'#10;
+ s := s +
+   '                                                self._depth,' +
+   ' level)'#10;
+ s := s +
+   '        if not readable:'#10;
+ s := s +
+   '            self._readable = False'#10;
+ s := s +
+   '        if recursive:'#10;
+ s := s +
+   '            self._recursive = True'#10;
+ s := s +
+   '        return repr'#10;
+ s := s + #10;
+ s := s +
+   '    def format(self, object, context, maxlevels, level):'#10;
+ s := s +
+   '        """Format object for a specific context, returning a' +
+   ' string'#10;
+ s := s +
+   '        and flags indicating whether the representation is ''' +
+   'readable'''#10;
+ s := s +
+   '        and whether the object represents a recursive constr' +
+   'uct.'#10;
+ s := s +
+   '        """'#10;
+ s := s +
+   '        return _safe_repr(object, context, maxlevels, level,' +
+   ' self._sort_dicts)'#10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_default_dict(self, object, stream, indent, a' +
+   'llowance, context, level):'#10;
+ s := s +
+   '        if not len(object):'#10;
+ s := s +
+   '            stream.write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        rdf = self._repr(object.default_factory, context, le' +
+   'vel)'#10;
+ s := s +
+   '        cls = object.__class__'#10;
+ s := s +
+   '        indent += len(cls.__name__) + 1'#10;
+ s := s +
+   '        stream.write(''%s(%s,\n%s'' % (cls.__name__, rdf, '' '' ' +
+   '* indent))'#10;
+ s := s +
+   '        self._pprint_dict(object, stream, indent, allowance ' +
+   '+ 1, context, level)'#10;
+ s := s +
+   '        stream.write('')'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_counter(self, object, stream, indent, allowa' +
+   'nce, context, level):'#10;
+ s := s +
+   '        if not len(object):'#10;
+ s := s +
+   '            stream.write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        cls = object.__class__'#10;
+ s := s +
+   '        stream.write(cls.__name__ + ''({'')'#10;
+ s := s +
+   '        if self._indent_per_level > 1:'#10;
+ s := s +
+   '            stream.write((self._indent_per_level - 1) * '' '')'#10;
+ s := s +
+   '        items = object.most_common()'#10;
+ s := s +
+   '        self._format_dict_items(items, stream,'#10;
+ s := s +
+   '                                indent + len(cls.__name__) +' +
+   ' 1, allowance + 2,'#10;
+ s := s +
+   '                                context, level)'#10;
+ s := s +
+   '        stream.write(''})'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_chain_map(self, object, stream, indent, allo' +
+   'wance, context, level):'#10;
+ s := s +
+   '        if not len(object.maps):'#10;
+ s := s +
+   '            stream.write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        cls = object.__class__'#10;
+ s := s +
+   '        stream.write(cls.__name__ + ''('')'#10;
+ s := s +
+   '        indent += len(cls.__name__) + 1'#10;
+ s := s +
+   '        for i, m in enumerate(object.maps):'#10;
+ s := s +
+   '            if i == len(object.maps) - 1:'#10;
+ s := s +
+   '                self._format(m, stream, indent, allowance + ' +
+   '1, context, level)'#10;
+ s := s +
+   '                stream.write('')'')'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                self._format(m, stream, indent, 1, context, ' +
+   'level)'#10;
+ s := s +
+   '                stream.write('',\n'' + '' '' * indent)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_deque(self, object, stream, indent, allowanc' +
+   'e, context, level):'#10;
+ s := s +
+   '        if not len(object):'#10;
+ s := s +
+   '            stream.write(repr(object))'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        cls = object.__class__'#10;
+ s := s +
+   '        stream.write(cls.__name__ + ''('')'#10;
+ s := s +
+   '        indent += len(cls.__name__) + 1'#10;
+ s := s +
+   '        stream.write(''['')'#10;
+ s := s +
+   '        if object.maxlen is None:'#10;
+ s := s +
+   '            self._format_items(object, stream, indent, allow' +
+   'ance + 2,'#10;
+ s := s +
+   '                               context, level)'#10;
+ s := s +
+   '            stream.write(''])'')'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._format_items(object, stream, indent, 2,'#10;
+ s := s +
+   '                               context, level)'#10;
+ s := s +
+   '            rml = self._repr(object.maxlen, context, level)'#10;
+ s := s +
+   '            stream.write(''],\n%smaxlen=%s)'' % ('' '' * indent,' +
+   ' rml))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_user_dict(self, object, stream, indent, allo' +
+   'wance, context, level):'#10;
+ s := s +
+   '        self._format(object.data, stream, indent, allowance,' +
+   ' context, level - 1)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_user_list(self, object, stream, indent, allo' +
+   'wance, context, level):'#10;
+ s := s +
+   '        self._format(object.data, stream, indent, allowance,' +
+   ' context, level - 1)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '    def _pprint_user_string(self, object, stream, indent, al' +
+   'lowance, context, level):'#10;
+ s := s +
+   '        self._format(object.data, stream, indent, allowance,' +
+   ' context, level - 1)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_handlers = ['#10;
+ s := s +
+   '    (_collections.OrderedDict, PrettyPrinter._pprint_ordered' +
+   '_dict),'#10;
+ s := s +
+   '    (_collections.defaultdict, PrettyPrinter._pprint_default' +
+   '_dict),'#10;
+ s := s +
+   '    (_collections.Counter, PrettyPrinter._pprint_counter),'#10;
+ s := s +
+   '    (dict, PrettyPrinter._pprint_dict),'#10;
+ s := s +
+   '    (list, PrettyPrinter._pprint_list),'#10;
+ s := s +
+   '    (tuple, PrettyPrinter._pprint_tuple),'#10;
+ s := s +
+   '    (set, PrettyPrinter._pprint_set),'#10;
+ s := s +
+   '    (frozenset, PrettyPrinter._pprint_set),'#10;
+ s := s +
+   '    (str, PrettyPrinter._pprint_str),'#10;
+ s := s +
+   '    (bytes, PrettyPrinter._pprint_bytes),'#10;
+ s := s +
+   '    (bytearray, PrettyPrinter._pprint_bytearray),'#10;
+ s := s +
+   '    (_types.MappingProxyType, PrettyPrinter._pprint_mappingp' +
+   'roxy),'#10;
+ s := s +
+   '    (_collections.ChainMap, PrettyPrinter._pprint_chain_map)' +
+   ','#10;
+ s := s +
+   '    (_collections.deque, PrettyPrinter._pprint_deque),'#10;
+ s := s +
+   '    (_collections.UserDict, PrettyPrinter._pprint_user_dict)' +
+   ','#10;
+ s := s +
+   '    (_collections.UserList, PrettyPrinter._pprint_user_list)' +
+   ','#10;
+ s := s +
+   '    (_collections.UserString, PrettyPrinter._pprint_user_str' +
+   'ing),'#10;
+ s := s +
+   ']'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _find_handler(object):'#10;
+ s := s +
+   '    # NB: dispatch on type(object).__repr__ identity like CP' +
+   'ython, but some'#10;
+ s := s +
+   '    # builtin types share one generic __repr__ here, so also' +
+   ' check isinstance.'#10;
+ s := s +
+   '    r = type(object).__repr__'#10;
+ s := s +
+   '    for T, handler in _handlers:'#10;
+ s := s +
+   '        if r is T.__repr__ and isinstance(object, T):'#10;
+ s := s +
+   '            return handler'#10;
+ s := s +
+   '    return None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _split_words(line):'#10;
+ s := s +
+   '    """Equivalent of re.findall(r''\\S*\\s*'', line) without t' +
+   'he empty last item."""'#10;
+ s := s +
+   '    tokens = []'#10;
+ s := s +
+   '    if line.isprintable():'#10;
+ s := s +
+   '        # the only whitespace char possible is '' '''#10;
+ s := s +
+   '        pieces = line.split('' '')'#10;
+ s := s +
+   '        cur = pieces[0]'#10;
+ s := s +
+   '        first = True'#10;
+ s := s +
+   '        for p in pieces:'#10;
+ s := s +
+   '            if first:'#10;
+ s := s +
+   '                first = False'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '            if p:'#10;
+ s := s +
+   '                tokens.append(cur + '' '')'#10;
+ s := s +
+   '                cur = p'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                cur += '' '''#10;
+ s := s +
+   '        if cur:'#10;
+ s := s +
+   '            tokens.append(cur)'#10;
+ s := s +
+   '        return tokens'#10;
+ s := s +
+   '    cur = []'#10;
+ s := s +
+   '    in_space = False'#10;
+ s := s +
+   '    for ch in line:'#10;
+ s := s +
+   '        sp = ch.isspace()'#10;
+ s := s +
+   '        if in_space and not sp:'#10;
+ s := s +
+   '            tokens.append(''''.join(cur))'#10;
+ s := s +
+   '            cur = []'#10;
+ s := s +
+   '            in_space = False'#10;
+ s := s +
+   '        cur.append(ch)'#10;
+ s := s +
+   '        if sp:'#10;
+ s := s +
+   '            in_space = True'#10;
+ s := s +
+   '    if cur:'#10;
+ s := s +
+   '        tokens.append(''''.join(cur))'#10;
+ s := s +
+   '    return tokens'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_builtin_scalars = frozenset({str, bytes, bytearray, int, fl' +
+   'oat, bool, type(None)})'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _recursion(object):'#10;
+ s := s +
+   '    return ("<Recursion on %s with id=%s>"'#10;
+ s := s +
+   '            % (type(object).__name__, id(object)))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _safe_repr(object, context, maxlevels, level, sort_dicts' +
+   '):'#10;
+ s := s +
+   '    typ = type(object)'#10;
+ s := s +
+   '    if typ in _builtin_scalars:'#10;
+ s := s +
+   '        return repr(object), True, False'#10;
+ s := s + #10;
+ s := s +
+   '    r = getattr(typ, "__repr__", None)'#10;
+ s := s +
+   '    if issubclass(typ, dict) and r is dict.__repr__:'#10;
+ s := s +
+   '        if not object:'#10;
+ s := s +
+   '            return "{}", True, False'#10;
+ s := s +
+   '        objid = id(object)'#10;
+ s := s +
+   '        if maxlevels and level >= maxlevels:'#10;
+ s := s +
+   '            return "{...}", False, objid in context'#10;
+ s := s +
+   '        if objid in context:'#10;
+ s := s +
+   '            return _recursion(object), False, True'#10;
+ s := s +
+   '        context[objid] = 1'#10;
+ s := s +
+   '        readable = True'#10;
+ s := s +
+   '        recursive = False'#10;
+ s := s +
+   '        components = []'#10;
+ s := s +
+   '        append = components.append'#10;
+ s := s +
+   '        level += 1'#10;
+ s := s +
+   '        if sort_dicts:'#10;
+ s := s +
+   '            items = sorted(object.items(), key=_safe_tuple)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            items = object.items()'#10;
+ s := s +
+   '        for k, v in items:'#10;
+ s := s +
+   '            krepr, kreadable, krecur = _safe_repr(k, context' +
+   ', maxlevels, level, sort_dicts)'#10;
+ s := s +
+   '            vrepr, vreadable, vrecur = _safe_repr(v, context' +
+   ', maxlevels, level, sort_dicts)'#10;
+ s := s +
+   '            append("%s: %s" % (krepr, vrepr))'#10;
+ s := s +
+   '            readable = readable and kreadable and vreadable'#10;
+ s := s +
+   '            if krecur or vrecur:'#10;
+ s := s +
+   '                recursive = True'#10;
+ s := s +
+   '        del context[objid]'#10;
+ s := s +
+   '        return "{%s}" % ", ".join(components), readable, rec' +
+   'ursive'#10;
+ s := s + #10;
+ s := s +
+   '    if (issubclass(typ, list) and r is list.__repr__) or \'#10;
+ s := s +
+   '       (issubclass(typ, tuple) and r is tuple.__repr__):'#10;
+ s := s +
+   '        if issubclass(typ, list):'#10;
+ s := s +
+   '            if not object:'#10;
+ s := s +
+   '                return "[]", True, False'#10;
+ s := s +
+   '            format = "[%s]"'#10;
+ s := s +
+   '        elif len(object) == 1:'#10;
+ s := s +
+   '            format = "(%s,)"'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if not object:'#10;
+ s := s +
+   '                return "()", True, False'#10;
+ s := s +
+   '            format = "(%s)"'#10;
+ s := s +
+   '        objid = id(object)'#10;
+ s := s +
+   '        if maxlevels and level >= maxlevels:'#10;
+ s := s +
+   '            return format % "...", False, objid in context'#10;
+ s := s +
+   '        if objid in context:'#10;
+ s := s +
+   '            return _recursion(object), False, True'#10;
+ s := s +
+   '        context[objid] = 1'#10;
+ s := s +
+   '        readable = True'#10;
+ s := s +
+   '        recursive = False'#10;
+ s := s +
+   '        components = []'#10;
+ s := s +
+   '        append = components.append'#10;
+ s := s +
+   '        level += 1'#10;
+ s := s +
+   '        for o in object:'#10;
+ s := s +
+   '            orepr, oreadable, orecur = _safe_repr(o, context' +
+   ', maxlevels, level, sort_dicts)'#10;
+ s := s +
+   '            append(orepr)'#10;
+ s := s +
+   '            if not oreadable:'#10;
+ s := s +
+   '                readable = False'#10;
+ s := s +
+   '            if orecur:'#10;
+ s := s +
+   '                recursive = True'#10;
+ s := s +
+   '        del context[objid]'#10;
+ s := s +
+   '        return format % ", ".join(components), readable, rec' +
+   'ursive'#10;
+ s := s + #10;
+ s := s +
+   '    rep = repr(object)'#10;
+ s := s +
+   '    return rep, (rep and not rep.startswith(''<'')), False'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _wrap_bytes_repr(object, width, allowance):'#10;
+ s := s +
+   '    current = b'''''#10;
+ s := s +
+   '    last = len(object) // 4 * 4'#10;
+ s := s +
+   '    for i in range(0, len(object), 4):'#10;
+ s := s +
+   '        part = object[i: i + 4]'#10;
+ s := s +
+   '        candidate = current + part'#10;
+ s := s +
+   '        if i == last:'#10;
+ s := s +
+   '            width -= allowance'#10;
+ s := s +
+   '        if len(repr(candidate)) > width:'#10;
+ s := s +
+   '            if current:'#10;
+ s := s +
+   '                yield repr(current)'#10;
+ s := s +
+   '            current = part'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            current = candidate'#10;
+ s := s +
+   '    if current:'#10;
+ s := s +
+   '        yield repr(current)'#10;
  s := s + #10;
  Result := s;
 End;
@@ -39652,6 +52061,368 @@ Begin
  Result := s;
 End;
 
+Function Src_reprlib: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Redo the builtin repr() (representation) but with limits ' +
+   'on most sizes."""'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["Repr", "repr", "recursive_repr"]'#10;
+ s := s + #10;
+ s := s +
+   'import builtins'#10;
+ s := s +
+   'from itertools import islice'#10;
+ s := s +
+   'try:'#10;
+ s := s +
+   '    from _thread import get_ident'#10;
+ s := s +
+   'except ImportError:'#10;
+ s := s +
+   '    def get_ident():'#10;
+ s := s +
+   '        return 0'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def recursive_repr(fillvalue=''...''):'#10;
+ s := s +
+   '    ''Decorator to make a repr function return fillvalue for ' +
+   'a recursive call'''#10;
+ s := s + #10;
+ s := s +
+   '    def decorating_function(user_function):'#10;
+ s := s +
+   '        repr_running = set()'#10;
+ s := s + #10;
+ s := s +
+   '        def wrapper(self):'#10;
+ s := s +
+   '            key = id(self), get_ident()'#10;
+ s := s +
+   '            if key in repr_running:'#10;
+ s := s +
+   '                return fillvalue'#10;
+ s := s +
+   '            repr_running.add(key)'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                result = user_function(self)'#10;
+ s := s +
+   '            finally:'#10;
+ s := s +
+   '                repr_running.discard(key)'#10;
+ s := s +
+   '            return result'#10;
+ s := s + #10;
+ s := s +
+   '        # Can''t use functools.wraps() here because of bootst' +
+   'rap issues'#10;
+ s := s +
+   '        wrapper.__module__ = getattr(user_function, ''__modul' +
+   'e__'')'#10;
+ s := s +
+   '        wrapper.__doc__ = getattr(user_function, ''__doc__'')'#10;
+ s := s +
+   '        wrapper.__name__ = getattr(user_function, ''__name__''' +
+   ')'#10;
+ s := s +
+   '        wrapper.__qualname__ = getattr(user_function, ''__qua' +
+   'lname__'')'#10;
+ s := s +
+   '        wrapper.__annotations__ = getattr(user_function, ''__' +
+   'annotations__'', {})'#10;
+ s := s +
+   '        return wrapper'#10;
+ s := s + #10;
+ s := s +
+   '    return decorating_function'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class Repr:'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self):'#10;
+ s := s +
+   '        self.maxlevel = 6'#10;
+ s := s +
+   '        self.maxtuple = 6'#10;
+ s := s +
+   '        self.maxlist = 6'#10;
+ s := s +
+   '        self.maxarray = 5'#10;
+ s := s +
+   '        self.maxdict = 4'#10;
+ s := s +
+   '        self.maxset = 6'#10;
+ s := s +
+   '        self.maxfrozenset = 6'#10;
+ s := s +
+   '        self.maxdeque = 6'#10;
+ s := s +
+   '        self.maxstring = 30'#10;
+ s := s +
+   '        self.maxlong = 40'#10;
+ s := s +
+   '        self.maxother = 30'#10;
+ s := s + #10;
+ s := s +
+   '    def repr(self, x):'#10;
+ s := s +
+   '        return self.repr1(x, self.maxlevel)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr1(self, x, level):'#10;
+ s := s +
+   '        typename = type(x).__name__'#10;
+ s := s +
+   '        if '' '' in typename:'#10;
+ s := s +
+   '            parts = typename.split()'#10;
+ s := s +
+   '            typename = ''_''.join(parts)'#10;
+ s := s +
+   '        if hasattr(self, ''repr_'' + typename):'#10;
+ s := s +
+   '            return getattr(self, ''repr_'' + typename)(x, leve' +
+   'l)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            return self.repr_instance(x, level)'#10;
+ s := s + #10;
+ s := s +
+   '    def _repr_iterable(self, x, level, left, right, maxiter,' +
+   ' trail=''''):'#10;
+ s := s +
+   '        n = len(x)'#10;
+ s := s +
+   '        if level <= 0 and n:'#10;
+ s := s +
+   '            s = ''...'''#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            newlevel = level - 1'#10;
+ s := s +
+   '            repr1 = self.repr1'#10;
+ s := s +
+   '            pieces = [repr1(elem, newlevel) for elem in isli' +
+   'ce(x, maxiter)]'#10;
+ s := s +
+   '            if n > maxiter:'#10;
+ s := s +
+   '                pieces.append(''...'')'#10;
+ s := s +
+   '            s = '', ''.join(pieces)'#10;
+ s := s +
+   '            if n == 1 and trail:'#10;
+ s := s +
+   '                right = trail + right'#10;
+ s := s +
+   '        return ''%s%s%s'' % (left, s, right)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_tuple(self, x, level):'#10;
+ s := s +
+   '        return self._repr_iterable(x, level, ''('', '')'', self.' +
+   'maxtuple, '','')'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_list(self, x, level):'#10;
+ s := s +
+   '        return self._repr_iterable(x, level, ''['', '']'', self.' +
+   'maxlist)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_array(self, x, level):'#10;
+ s := s +
+   '        if not x:'#10;
+ s := s +
+   '            return "array(''%s'')" % x.typecode'#10;
+ s := s +
+   '        header = "array(''%s'', [" % x.typecode'#10;
+ s := s +
+   '        return self._repr_iterable(x, level, header, ''])'', s' +
+   'elf.maxarray)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_set(self, x, level):'#10;
+ s := s +
+   '        if not x:'#10;
+ s := s +
+   '            return ''set()'''#10;
+ s := s +
+   '        x = _possibly_sorted(x)'#10;
+ s := s +
+   '        return self._repr_iterable(x, level, ''{'', ''}'', self.' +
+   'maxset)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_frozenset(self, x, level):'#10;
+ s := s +
+   '        if not x:'#10;
+ s := s +
+   '            return ''frozenset()'''#10;
+ s := s +
+   '        x = _possibly_sorted(x)'#10;
+ s := s +
+   '        return self._repr_iterable(x, level, ''frozenset({'', ' +
+   '''})'','#10;
+ s := s +
+   '                                   self.maxfrozenset)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_deque(self, x, level):'#10;
+ s := s +
+   '        return self._repr_iterable(x, level, ''deque(['', ''])''' +
+   ', self.maxdeque)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_dict(self, x, level):'#10;
+ s := s +
+   '        n = len(x)'#10;
+ s := s +
+   '        if n == 0:'#10;
+ s := s +
+   '            return ''{}'''#10;
+ s := s +
+   '        if level <= 0:'#10;
+ s := s +
+   '            return ''{...}'''#10;
+ s := s +
+   '        newlevel = level - 1'#10;
+ s := s +
+   '        repr1 = self.repr1'#10;
+ s := s +
+   '        pieces = []'#10;
+ s := s +
+   '        for key in islice(_possibly_sorted(x), self.maxdict)' +
+   ':'#10;
+ s := s +
+   '            keyrepr = repr1(key, newlevel)'#10;
+ s := s +
+   '            valrepr = repr1(x[key], newlevel)'#10;
+ s := s +
+   '            pieces.append(''%s: %s'' % (keyrepr, valrepr))'#10;
+ s := s +
+   '        if n > self.maxdict:'#10;
+ s := s +
+   '            pieces.append(''...'')'#10;
+ s := s +
+   '        s = '', ''.join(pieces)'#10;
+ s := s +
+   '        return ''{%s}'' % (s,)'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_str(self, x, level):'#10;
+ s := s +
+   '        s = builtins.repr(x[:self.maxstring])'#10;
+ s := s +
+   '        if len(s) > self.maxstring:'#10;
+ s := s +
+   '            i = max(0, (self.maxstring - 3) // 2)'#10;
+ s := s +
+   '            j = max(0, self.maxstring - 3 - i)'#10;
+ s := s +
+   '            s = builtins.repr(x[:i] + x[len(x) - j:])'#10;
+ s := s +
+   '            s = s[:i] + ''...'' + s[len(s) - j:]'#10;
+ s := s +
+   '        return s'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_int(self, x, level):'#10;
+ s := s +
+   '        s = builtins.repr(x)  # XXX Hope this isn''t too slow' +
+   '...'#10;
+ s := s +
+   '        if len(s) > self.maxlong:'#10;
+ s := s +
+   '            i = max(0, (self.maxlong - 3) // 2)'#10;
+ s := s +
+   '            j = max(0, self.maxlong - 3 - i)'#10;
+ s := s +
+   '            s = s[:i] + ''...'' + s[len(s) - j:]'#10;
+ s := s +
+   '        return s'#10;
+ s := s + #10;
+ s := s +
+   '    def repr_instance(self, x, level):'#10;
+ s := s +
+   '        failed = False'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            s = builtins.repr(x)'#10;
+ s := s +
+   '            # Bugs in x.__repr__() can cause arbitrary'#10;
+ s := s +
+   '            # exceptions -- then make up something'#10;
+ s := s +
+   '        except Exception:'#10;
+ s := s +
+   '            failed = True'#10;
+ s := s +
+   '        if failed:'#10;
+ s := s +
+   '            # NB: no `return` inside `except` (interpreter b' +
+   'ug B1, see BUGS_A.md)'#10;
+ s := s +
+   '            return ''<%s instance at %#x>'' % (x.__class__.__n' +
+   'ame__, id(x))'#10;
+ s := s +
+   '        if len(s) > self.maxother:'#10;
+ s := s +
+   '            i = max(0, (self.maxother - 3) // 2)'#10;
+ s := s +
+   '            j = max(0, self.maxother - 3 - i)'#10;
+ s := s +
+   '            s = s[:i] + ''...'' + s[len(s) - j:]'#10;
+ s := s +
+   '        return s'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _possibly_sorted(x):'#10;
+ s := s +
+   '    # Since not all sequences of items can be sorted and com' +
+   'parison'#10;
+ s := s +
+   '    # functions may raise arbitrary exceptions, return an un' +
+   'sorted'#10;
+ s := s +
+   '    # sequence in that case.'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        res = sorted(x)'#10;
+ s := s +
+   '    except Exception:'#10;
+ s := s +
+   '        res = None'#10;
+ s := s +
+   '    if res is None:'#10;
+ s := s +
+   '        res = list(x)'#10;
+ s := s +
+   '    return res'#10;
+ s := s + #10;
+ s := s +
+   'aRepr = Repr()'#10;
+ s := s +
+   'repr = aRepr.repr'#10;
+ s := s + #10;
+ Result := s;
+End;
+
 Function Src_runpy: AnsiString;
 Var
  s: AnsiString;
@@ -39768,6 +52539,1907 @@ Begin
  s := s +
    '    return _run_code(code, {}, init_globals, run_name, None,' +
    ' '''', path_name)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_shlex: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""A lexical analyzer class for simple shell-like syntaxes."' +
+   '""'#10;
+ s := s + #10;
+ s := s +
+   '# Module and documentation by Eric S. Raymond, 21 Dec 1998'#10;
+ s := s +
+   '# Input stacking and error message cleanup added by ESR, Mar' +
+   'ch 2000'#10;
+ s := s +
+   '# push_source() and pop_source() made explicit by ESR, Janua' +
+   'ry 2001.'#10;
+ s := s +
+   '# Posix compliance, split(), string arguments, and'#10;
+ s := s +
+   '# iterator interface by Gustavo Niemeyer, April 2003.'#10;
+ s := s +
+   '# changes to tokenize more like Posix shells by Vinay Sajip,' +
+   ' July 2016.'#10;
+ s := s + #10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'from collections import deque'#10;
+ s := s + #10;
+ s := s +
+   'from io import StringIO'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["shlex", "split", "quote", "join"]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class shlex:'#10;
+ s := s +
+   '    "A lexical analyzer class for simple shell-like syntaxes' +
+   '."'#10;
+ s := s +
+   '    def __init__(self, instream=None, infile=None, posix=Fal' +
+   'se,'#10;
+ s := s +
+   '                 punctuation_chars=False):'#10;
+ s := s +
+   '        if isinstance(instream, str):'#10;
+ s := s +
+   '            instream = StringIO(instream)'#10;
+ s := s +
+   '        if instream is not None:'#10;
+ s := s +
+   '            self.instream = instream'#10;
+ s := s +
+   '            self.infile = infile'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self.instream = sys.stdin'#10;
+ s := s +
+   '            self.infile = None'#10;
+ s := s +
+   '        self.posix = posix'#10;
+ s := s +
+   '        if posix:'#10;
+ s := s +
+   '            self.eof = None'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self.eof = '''''#10;
+ s := s +
+   '        self.commenters = ''#'''#10;
+ s := s +
+   '        self.wordchars = (''abcdfeghijklmnopqrstuvwxyz'''#10;
+ s := s +
+   '                          ''ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456' +
+   '789_'')'#10;
+ s := s +
+   '        if self.posix:'#10;
+ s := s +
+   '            self.wordchars += (''ßàáâãäåæçèéêëìíîïðñòóôõöøùúû' +
+   'üýþÿ'''#10;
+ s := s +
+   '                               ''ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜ' +
+   'ÝÞ'')'#10;
+ s := s +
+   '        self.whitespace = '' \t\r\n'''#10;
+ s := s +
+   '        self.whitespace_split = False'#10;
+ s := s +
+   '        self.quotes = ''\''"'''#10;
+ s := s +
+   '        self.escape = ''\\'''#10;
+ s := s +
+   '        self.escapedquotes = ''"'''#10;
+ s := s +
+   '        self.state = '' '''#10;
+ s := s +
+   '        self.pushback = deque()'#10;
+ s := s +
+   '        self.lineno = 1'#10;
+ s := s +
+   '        self.debug = 0'#10;
+ s := s +
+   '        self.token = '''''#10;
+ s := s +
+   '        self.filestack = deque()'#10;
+ s := s +
+   '        self.source = None'#10;
+ s := s +
+   '        if not punctuation_chars:'#10;
+ s := s +
+   '            punctuation_chars = '''''#10;
+ s := s +
+   '        elif punctuation_chars is True:'#10;
+ s := s +
+   '            punctuation_chars = ''();<>|&'''#10;
+ s := s +
+   '        self._punctuation_chars = punctuation_chars'#10;
+ s := s +
+   '        if punctuation_chars:'#10;
+ s := s +
+   '            # _pushback_chars is a push back queue used by l' +
+   'ookahead logic'#10;
+ s := s +
+   '            self._pushback_chars = deque()'#10;
+ s := s +
+   '            # these chars added because allowed in file name' +
+   's, args, wildcards'#10;
+ s := s +
+   '            self.wordchars += ''~-./*?='''#10;
+ s := s +
+   '            # remove any punctuation chars from wordchars'#10;
+ s := s +
+   '            t = self.wordchars.maketrans(dict.fromkeys(punct' +
+   'uation_chars))'#10;
+ s := s +
+   '            self.wordchars = self.wordchars.translate(t)'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def punctuation_chars(self):'#10;
+ s := s +
+   '        return self._punctuation_chars'#10;
+ s := s + #10;
+ s := s +
+   '    def push_token(self, tok):'#10;
+ s := s +
+   '        "Push a token onto the stack popped by the get_token' +
+   ' method"'#10;
+ s := s +
+   '        if self.debug >= 1:'#10;
+ s := s +
+   '            print("shlex: pushing token " + repr(tok))'#10;
+ s := s +
+   '        self.pushback.appendleft(tok)'#10;
+ s := s + #10;
+ s := s +
+   '    def push_source(self, newstream, newfile=None):'#10;
+ s := s +
+   '        "Push an input source onto the lexer''s input source ' +
+   'stack."'#10;
+ s := s +
+   '        if isinstance(newstream, str):'#10;
+ s := s +
+   '            newstream = StringIO(newstream)'#10;
+ s := s +
+   '        self.filestack.appendleft((self.infile, self.instrea' +
+   'm, self.lineno))'#10;
+ s := s +
+   '        self.infile = newfile'#10;
+ s := s +
+   '        self.instream = newstream'#10;
+ s := s +
+   '        self.lineno = 1'#10;
+ s := s +
+   '        if self.debug:'#10;
+ s := s +
+   '            if newfile is not None:'#10;
+ s := s +
+   '                print(''shlex: pushing to file %s'' % (self.in' +
+   'file,))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                print(''shlex: pushing to stream %s'' % (self.' +
+   'instream,))'#10;
+ s := s + #10;
+ s := s +
+   '    def pop_source(self):'#10;
+ s := s +
+   '        "Pop the input source stack."'#10;
+ s := s +
+   '        self.instream.close()'#10;
+ s := s +
+   '        (self.infile, self.instream, self.lineno) = self.fil' +
+   'estack.popleft()'#10;
+ s := s +
+   '        if self.debug:'#10;
+ s := s +
+   '            print(''shlex: popping to %s, line %d'''#10;
+ s := s +
+   '                  % (self.instream, self.lineno))'#10;
+ s := s +
+   '        self.state = '' '''#10;
+ s := s + #10;
+ s := s +
+   '    def get_token(self):'#10;
+ s := s +
+   '        "Get a token from the input stream (or from stack if' +
+   ' it''s nonempty)"'#10;
+ s := s +
+   '        if self.pushback:'#10;
+ s := s +
+   '            tok = self.pushback.popleft()'#10;
+ s := s +
+   '            if self.debug >= 1:'#10;
+ s := s +
+   '                print("shlex: popping token " + repr(tok))'#10;
+ s := s +
+   '            return tok'#10;
+ s := s +
+   '        # No pushback.  Get a token.'#10;
+ s := s +
+   '        raw = self.read_token()'#10;
+ s := s +
+   '        # Handle inclusions'#10;
+ s := s +
+   '        if self.source is not None:'#10;
+ s := s +
+   '            while raw == self.source:'#10;
+ s := s +
+   '                spec = self.sourcehook(self.read_token())'#10;
+ s := s +
+   '                if spec:'#10;
+ s := s +
+   '                    (newfile, newstream) = spec'#10;
+ s := s +
+   '                    self.push_source(newstream, newfile)'#10;
+ s := s +
+   '                raw = self.get_token()'#10;
+ s := s +
+   '        # Maybe we got EOF instead?'#10;
+ s := s +
+   '        while raw == self.eof:'#10;
+ s := s +
+   '            if not self.filestack:'#10;
+ s := s +
+   '                return self.eof'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                self.pop_source()'#10;
+ s := s +
+   '                raw = self.get_token()'#10;
+ s := s +
+   '        # Neither inclusion nor EOF'#10;
+ s := s +
+   '        if self.debug >= 1:'#10;
+ s := s +
+   '            if raw != self.eof:'#10;
+ s := s +
+   '                print("shlex: token=" + repr(raw))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                print("shlex: token=EOF")'#10;
+ s := s +
+   '        return raw'#10;
+ s := s + #10;
+ s := s +
+   '    def read_token(self):'#10;
+ s := s +
+   '        quoted = False'#10;
+ s := s +
+   '        escapedstate = '' '''#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            if self.punctuation_chars and self._pushback_cha' +
+   'rs:'#10;
+ s := s +
+   '                nextchar = self._pushback_chars.pop()'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                nextchar = self.instream.read(1)'#10;
+ s := s +
+   '            if nextchar == ''\n'':'#10;
+ s := s +
+   '                self.lineno += 1'#10;
+ s := s +
+   '            if self.debug >= 3:'#10;
+ s := s +
+   '                print("shlex: in state %r I see character: %' +
+   'r" % (self.state,'#10;
+ s := s +
+   '                                                            ' +
+   '      nextchar))'#10;
+ s := s +
+   '            if self.state is None:'#10;
+ s := s +
+   '                self.token = ''''        # past end of file'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            elif self.state == '' '':'#10;
+ s := s +
+   '                if not nextchar:'#10;
+ s := s +
+   '                    self.state = None  # end of file'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                elif nextchar in self.whitespace:'#10;
+ s := s +
+   '                    if self.debug >= 2:'#10;
+ s := s +
+   '                        print("shlex: I see whitespace in wh' +
+   'itespace state")'#10;
+ s := s +
+   '                    if self.token or (self.posix and quoted)' +
+   ':'#10;
+ s := s +
+   '                        break   # emit current token'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '                elif nextchar in self.commenters:'#10;
+ s := s +
+   '                    self.instream.readline()'#10;
+ s := s +
+   '                    self.lineno += 1'#10;
+ s := s +
+   '                elif self.posix and nextchar in self.escape:'#10;
+ s := s +
+   '                    escapedstate = ''a'''#10;
+ s := s +
+   '                    self.state = nextchar'#10;
+ s := s +
+   '                elif nextchar in self.wordchars:'#10;
+ s := s +
+   '                    self.token = nextchar'#10;
+ s := s +
+   '                    self.state = ''a'''#10;
+ s := s +
+   '                elif nextchar in self.punctuation_chars:'#10;
+ s := s +
+   '                    self.token = nextchar'#10;
+ s := s +
+   '                    self.state = ''c'''#10;
+ s := s +
+   '                elif nextchar in self.quotes:'#10;
+ s := s +
+   '                    if not self.posix:'#10;
+ s := s +
+   '                        self.token = nextchar'#10;
+ s := s +
+   '                    self.state = nextchar'#10;
+ s := s +
+   '                elif self.whitespace_split:'#10;
+ s := s +
+   '                    self.token = nextchar'#10;
+ s := s +
+   '                    self.state = ''a'''#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    self.token = nextchar'#10;
+ s := s +
+   '                    if self.token or (self.posix and quoted)' +
+   ':'#10;
+ s := s +
+   '                        break   # emit current token'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '            elif self.state in self.quotes:'#10;
+ s := s +
+   '                quoted = True'#10;
+ s := s +
+   '                if not nextchar:      # end of file'#10;
+ s := s +
+   '                    if self.debug >= 2:'#10;
+ s := s +
+   '                        print("shlex: I see EOF in quotes st' +
+   'ate")'#10;
+ s := s +
+   '                    # XXX what error should be raised here?'#10;
+ s := s +
+   '                    raise ValueError("No closing quotation")'#10;
+ s := s +
+   '                if nextchar == self.state:'#10;
+ s := s +
+   '                    if not self.posix:'#10;
+ s := s +
+   '                        self.token += nextchar'#10;
+ s := s +
+   '                        self.state = '' '''#10;
+ s := s +
+   '                        break'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        self.state = ''a'''#10;
+ s := s +
+   '                elif (self.posix and nextchar in self.escape' +
+   ' and self.state'#10;
+ s := s +
+   '                      in self.escapedquotes):'#10;
+ s := s +
+   '                    escapedstate = self.state'#10;
+ s := s +
+   '                    self.state = nextchar'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    self.token += nextchar'#10;
+ s := s +
+   '            elif self.state in self.escape:'#10;
+ s := s +
+   '                if not nextchar:      # end of file'#10;
+ s := s +
+   '                    if self.debug >= 2:'#10;
+ s := s +
+   '                        print("shlex: I see EOF in escape st' +
+   'ate")'#10;
+ s := s +
+   '                    # XXX what error should be raised here?'#10;
+ s := s +
+   '                    raise ValueError("No escaped character")'#10;
+ s := s +
+   '                # In posix shells, only the quote itself or ' +
+   'the escape'#10;
+ s := s +
+   '                # character may be escaped within quotes.'#10;
+ s := s +
+   '                if (escapedstate in self.quotes and'#10;
+ s := s +
+   '                        nextchar != self.state and nextchar ' +
+   '!= escapedstate):'#10;
+ s := s +
+   '                    self.token += self.state'#10;
+ s := s +
+   '                self.token += nextchar'#10;
+ s := s +
+   '                self.state = escapedstate'#10;
+ s := s +
+   '            elif self.state in (''a'', ''c''):'#10;
+ s := s +
+   '                if not nextchar:'#10;
+ s := s +
+   '                    self.state = None   # end of file'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '                elif nextchar in self.whitespace:'#10;
+ s := s +
+   '                    if self.debug >= 2:'#10;
+ s := s +
+   '                        print("shlex: I see whitespace in wo' +
+   'rd state")'#10;
+ s := s +
+   '                    self.state = '' '''#10;
+ s := s +
+   '                    if self.token or (self.posix and quoted)' +
+   ':'#10;
+ s := s +
+   '                        break   # emit current token'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '                elif nextchar in self.commenters:'#10;
+ s := s +
+   '                    self.instream.readline()'#10;
+ s := s +
+   '                    self.lineno += 1'#10;
+ s := s +
+   '                    if self.posix:'#10;
+ s := s +
+   '                        self.state = '' '''#10;
+ s := s +
+   '                        if self.token or (self.posix and quo' +
+   'ted):'#10;
+ s := s +
+   '                            break   # emit current token'#10;
+ s := s +
+   '                        else:'#10;
+ s := s +
+   '                            continue'#10;
+ s := s +
+   '                elif self.state == ''c'':'#10;
+ s := s +
+   '                    if nextchar in self.punctuation_chars:'#10;
+ s := s +
+   '                        self.token += nextchar'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        if nextchar not in self.whitespace:'#10;
+ s := s +
+   '                            self._pushback_chars.append(next' +
+   'char)'#10;
+ s := s +
+   '                        self.state = '' '''#10;
+ s := s +
+   '                        break'#10;
+ s := s +
+   '                elif self.posix and nextchar in self.quotes:'#10;
+ s := s +
+   '                    self.state = nextchar'#10;
+ s := s +
+   '                elif self.posix and nextchar in self.escape:'#10;
+ s := s +
+   '                    escapedstate = ''a'''#10;
+ s := s +
+   '                    self.state = nextchar'#10;
+ s := s +
+   '                elif (nextchar in self.wordchars or nextchar' +
+   ' in self.quotes'#10;
+ s := s +
+   '                      or (self.whitespace_split and'#10;
+ s := s +
+   '                          nextchar not in self.punctuation_c' +
+   'hars)):'#10;
+ s := s +
+   '                    self.token += nextchar'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    if self.punctuation_chars:'#10;
+ s := s +
+   '                        self._pushback_chars.append(nextchar' +
+   ')'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        self.pushback.appendleft(nextchar)'#10;
+ s := s +
+   '                    if self.debug >= 2:'#10;
+ s := s +
+   '                        print("shlex: I see punctuation in w' +
+   'ord state")'#10;
+ s := s +
+   '                    self.state = '' '''#10;
+ s := s +
+   '                    if self.token or (self.posix and quoted)' +
+   ':'#10;
+ s := s +
+   '                        break   # emit current token'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '        result = self.token'#10;
+ s := s +
+   '        self.token = '''''#10;
+ s := s +
+   '        if self.posix and not quoted and result == '''':'#10;
+ s := s +
+   '            result = None'#10;
+ s := s +
+   '        if self.debug > 1:'#10;
+ s := s +
+   '            if result:'#10;
+ s := s +
+   '                print("shlex: raw token=" + repr(result))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                print("shlex: raw token=EOF")'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def sourcehook(self, newfile):'#10;
+ s := s +
+   '        "Hook called on a filename to be sourced."'#10;
+ s := s +
+   '        if newfile[0] == ''"'':'#10;
+ s := s +
+   '            newfile = newfile[1:-1]'#10;
+ s := s +
+   '        # This implements cpp-like semantics for relative-pa' +
+   'th inclusion.'#10;
+ s := s +
+   '        if isinstance(self.infile, str) and not os.path.isab' +
+   's(newfile):'#10;
+ s := s +
+   '            newfile = os.path.join(os.path.dirname(self.infi' +
+   'le), newfile)'#10;
+ s := s +
+   '        return (newfile, open(newfile, "r"))'#10;
+ s := s + #10;
+ s := s +
+   '    def error_leader(self, infile=None, lineno=None):'#10;
+ s := s +
+   '        "Emit a C-compiler-like, Emacs-friendly error-messag' +
+   'e leader."'#10;
+ s := s +
+   '        if infile is None:'#10;
+ s := s +
+   '            infile = self.infile'#10;
+ s := s +
+   '        if lineno is None:'#10;
+ s := s +
+   '            lineno = self.lineno'#10;
+ s := s +
+   '        return "\"%s\", line %d: " % (infile, lineno)'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        token = self.get_token()'#10;
+ s := s +
+   '        if token == self.eof:'#10;
+ s := s +
+   '            raise StopIteration'#10;
+ s := s +
+   '        return token'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def split(s, comments=False, posix=True):'#10;
+ s := s +
+   '    """Split the string *s* using shell-like syntax."""'#10;
+ s := s +
+   '    if s is None:'#10;
+ s := s +
+   '        import warnings'#10;
+ s := s +
+   '        warnings.warn("Passing None for ''s'' to shlex.split()' +
+   ' is deprecated.",'#10;
+ s := s +
+   '                      DeprecationWarning, stacklevel=2)'#10;
+ s := s +
+   '    lex = shlex(s, posix=posix)'#10;
+ s := s +
+   '    lex.whitespace_split = True'#10;
+ s := s +
+   '    if not comments:'#10;
+ s := s +
+   '        lex.commenters = '''''#10;
+ s := s +
+   '    return list(lex)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def join(split_command):'#10;
+ s := s +
+   '    """Return a shell-escaped string from *split_command*.""' +
+   '"'#10;
+ s := s +
+   '    return '' ''.join(quote(arg) for arg in split_command)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_SAFE = frozenset(''abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO' +
+   'PQRSTUVWXYZ0123456789_@%+=:,./-'')'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _find_unsafe(s):'#10;
+ s := s +
+   '    # equivalent of re.compile(r''[^\w@%+=:,./-]'', re.ASCII).' +
+   'search(s)'#10;
+ s := s +
+   '    for ch in s:'#10;
+ s := s +
+   '        if ch not in _SAFE:'#10;
+ s := s +
+   '            return ch'#10;
+ s := s +
+   '    return None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def quote(s):'#10;
+ s := s +
+   '    """Return a shell-escaped version of the string *s*."""'#10;
+ s := s +
+   '    if not s:'#10;
+ s := s +
+   '        return "''''"'#10;
+ s := s +
+   '    if _find_unsafe(s) is None:'#10;
+ s := s +
+   '        return s'#10;
+ s := s + #10;
+ s := s +
+   '    # use single quotes, and put single quotes into double q' +
+   'uotes'#10;
+ s := s +
+   '    # the string $''b is then quoted as ''$''"''"''b'''#10;
+ s := s +
+   '    return "''" + s.replace("''", "''\"''\"''") + "''"'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _print_tokens(lexer):'#10;
+ s := s +
+   '    while 1:'#10;
+ s := s +
+   '        tt = lexer.get_token()'#10;
+ s := s +
+   '        if not tt:'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        print("Token: " + repr(tt))'#10;
+ s := s + #10;
+ s := s +
+   'if __name__ == ''__main__'':'#10;
+ s := s +
+   '    if len(sys.argv) == 1:'#10;
+ s := s +
+   '        _print_tokens(shlex())'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        fn = sys.argv[1]'#10;
+ s := s +
+   '        with open(fn) as f:'#10;
+ s := s +
+   '            _print_tokens(shlex(f, fn))'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_shutil: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Utility functions for copying and archiving files and dir' +
+   'ectory trees.'#10;
+ s := s + #10;
+ s := s +
+   'XXX The functions here don''t copy the resource fork or other' +
+   ' metadata on Mac.'#10;
+ s := s +
+   '"""'#10;
+ s := s + #10;
+ s := s +
+   'import os'#10;
+ s := s +
+   'import sys'#10;
+ s := s +
+   'import stat'#10;
+ s := s +
+   'import fnmatch'#10;
+ s := s +
+   'import collections'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ["copyfileobj", "copyfile", "copymode", "copystat"' +
+   ', "copy", "copy2",'#10;
+ s := s +
+   '           "copytree", "move", "rmtree", "Error", "SpecialFi' +
+   'leError",'#10;
+ s := s +
+   '           "ExecError", "ignore_patterns", "get_terminal_siz' +
+   'e", "SameFileError",'#10;
+ s := s +
+   '           "which"]'#10;
+ s := s +
+   'if hasattr(os, ''statvfs''):'#10;
+ s := s +
+   '    __all__.append("disk_usage")'#10;
+ s := s + #10;
+ s := s +
+   'COPY_BUFSIZE = 64 * 1024'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class Error(OSError):'#10;
+ s := s +
+   '    pass'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class SameFileError(Error):'#10;
+ s := s +
+   '    """Raised when source and destination are the same file.' +
+   '"""'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class SpecialFileError(OSError):'#10;
+ s := s +
+   '    """Raised when trying to do a kind of operation (e.g. co' +
+   'pying) which is'#10;
+ s := s +
+   '    not supported on a special file (e.g. a named pipe)"""'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class ExecError(OSError):'#10;
+ s := s +
+   '    """Raised when a command could not be executed"""'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class ReadError(OSError):'#10;
+ s := s +
+   '    """Raised when an archive cannot be read"""'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class RegistryError(Exception):'#10;
+ s := s +
+   '    """Raised when a registry operation with the archiving'#10;
+ s := s +
+   '    and unpacking registeries fails"""'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# Helpers written without `return` inside `except` blocks (i' +
+   'nterpreter bug'#10;
+ s := s +
+   '# B1, see BUGS_A.md) and without DirEntry(follow_symlinks=Fa' +
+   'lse) (bug B10).'#10;
+ s := s + #10;
+ s := s +
+   'def _lstat_or_none(path):'#10;
+ s := s +
+   '    st = None'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        st = os.lstat(path)'#10;
+ s := s +
+   '    except (OSError, ValueError):'#10;
+ s := s +
+   '        st = None'#10;
+ s := s +
+   '    return st'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _stat_or_none(path):'#10;
+ s := s +
+   '    st = None'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        st = os.stat(path)'#10;
+ s := s +
+   '    except (OSError, ValueError):'#10;
+ s := s +
+   '        st = None'#10;
+ s := s +
+   '    return st'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _islink(path):'#10;
+ s := s +
+   '    st = _lstat_or_none(path)'#10;
+ s := s +
+   '    return st is not None and stat.S_ISLNK(st.st_mode)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _samefile(src, dst):'#10;
+ s := s +
+   '    # Macintosh, Unix.'#10;
+ s := s +
+   '    same = False'#10;
+ s := s +
+   '    if hasattr(os.path, ''samefile''):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            same = os.path.samefile(src, dst)'#10;
+ s := s +
+   '        except OSError:'#10;
+ s := s +
+   '            same = False'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        # All other platforms: check for same pathname.'#10;
+ s := s +
+   '        same = (os.path.normcase(os.path.abspath(src)) =='#10;
+ s := s +
+   '                os.path.normcase(os.path.abspath(dst)))'#10;
+ s := s +
+   '    return same'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _basename(path):'#10;
+ s := s +
+   '    # A basename() variant which first strips the trailing s' +
+   'lash, if present.'#10;
+ s := s +
+   '    # Thus we always get the last component of the path, eve' +
+   'n for directories.'#10;
+ s := s +
+   '    sep = os.path.sep + (os.path.altsep or '''')'#10;
+ s := s +
+   '    return os.path.basename(path.rstrip(sep))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copyfileobj(fsrc, fdst, length=0):'#10;
+ s := s +
+   '    """copy data from file-like object fsrc to file-like obj' +
+   'ect fdst"""'#10;
+ s := s +
+   '    if not length:'#10;
+ s := s +
+   '        length = COPY_BUFSIZE'#10;
+ s := s +
+   '    # Localize variable access to minimize overhead.'#10;
+ s := s +
+   '    fsrc_read = fsrc.read'#10;
+ s := s +
+   '    fdst_write = fdst.write'#10;
+ s := s +
+   '    while True:'#10;
+ s := s +
+   '        buf = fsrc_read(length)'#10;
+ s := s +
+   '        if not buf:'#10;
+ s := s +
+   '            break'#10;
+ s := s +
+   '        fdst_write(buf)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copyfile(src, dst, *, follow_symlinks=True):'#10;
+ s := s +
+   '    """Copy data from src to dst.'#10;
+ s := s + #10;
+ s := s +
+   '    If follow_symlinks is not set and src is a symbolic link' +
+   ', a new'#10;
+ s := s +
+   '    symlink will be created instead of copying the file it p' +
+   'oints to.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    src = os.fspath(src)'#10;
+ s := s +
+   '    dst = os.fspath(dst)'#10;
+ s := s +
+   '    if _samefile(src, dst):'#10;
+ s := s +
+   '        raise SameFileError("{!r} and {!r} are the same file' +
+   '".format(src, dst))'#10;
+ s := s + #10;
+ s := s +
+   '    for fn in [src, dst]:'#10;
+ s := s +
+   '        st = _stat_or_none(fn)'#10;
+ s := s +
+   '        if st is not None:'#10;
+ s := s +
+   '            # XXX What about other special files? (sockets, ' +
+   'devices...)'#10;
+ s := s +
+   '            if stat.S_ISFIFO(st.st_mode):'#10;
+ s := s +
+   '                raise SpecialFileError("`%s` is a named pipe' +
+   '" % fn)'#10;
+ s := s + #10;
+ s := s +
+   '    if not follow_symlinks and _islink(src):'#10;
+ s := s +
+   '        os.symlink(os.readlink(src), dst)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        with open(src, ''rb'') as fsrc, open(dst, ''wb'') as fds' +
+   't:'#10;
+ s := s +
+   '            copyfileobj(fsrc, fdst)'#10;
+ s := s +
+   '    return dst'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copymode(src, dst, *, follow_symlinks=True):'#10;
+ s := s +
+   '    """Copy mode bits from src to dst.'#10;
+ s := s + #10;
+ s := s +
+   '    If follow_symlinks is not set, symlinks aren''t followed ' +
+   'if and only'#10;
+ s := s +
+   '    if both `src` and `dst` are symlinks.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if not follow_symlinks and _islink(src) and _islink(dst)' +
+   ':'#10;
+ s := s +
+   '        if hasattr(os, ''lchmod''):'#10;
+ s := s +
+   '            st = os.lstat(src)'#10;
+ s := s +
+   '            os.lchmod(dst, stat.S_IMODE(st.st_mode))'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    st = os.stat(src)'#10;
+ s := s +
+   '    os.chmod(dst, stat.S_IMODE(st.st_mode))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copystat(src, dst, *, follow_symlinks=True):'#10;
+ s := s +
+   '    """Copy file metadata'#10;
+ s := s + #10;
+ s := s +
+   '    Copy the permission bits, last access time, last modific' +
+   'ation time, and'#10;
+ s := s +
+   '    flags from `src` to `dst`. On Linux, copystat() also cop' +
+   'ies the "extended'#10;
+ s := s +
+   '    attributes" where possible. The file contents, owner, an' +
+   'd group are'#10;
+ s := s +
+   '    unaffected. `src` and `dst` are path-like objects or pat' +
+   'h names given as'#10;
+ s := s +
+   '    strings.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if follow_symlinks:'#10;
+ s := s +
+   '        st = os.stat(src)'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        st = os.lstat(src)'#10;
+ s := s +
+   '    if not follow_symlinks and _islink(dst) and not hasattr(' +
+   'os, ''lchmod''):'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    mode = stat.S_IMODE(st.st_mode)'#10;
+ s := s +
+   '    if hasattr(os, ''utime''):'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            if follow_symlinks:'#10;
+ s := s +
+   '                os.utime(dst, ns=(st.st_atime_ns, st.st_mtim' +
+   'e_ns))'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                os.utime(dst, (st.st_atime, st.st_mtime), fo' +
+   'llow_symlinks=False)'#10;
+ s := s +
+   '        except (OSError, TypeError, AttributeError, NotImple' +
+   'mentedError):'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '    if follow_symlinks or not _islink(dst):'#10;
+ s := s +
+   '        os.chmod(dst, mode)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copy(src, dst, *, follow_symlinks=True):'#10;
+ s := s +
+   '    """Copy data and mode bits ("cp src dst"). Return the fi' +
+   'le''s destination.'#10;
+ s := s + #10;
+ s := s +
+   '    The destination may be a directory.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if os.path.isdir(dst):'#10;
+ s := s +
+   '        dst = os.path.join(dst, os.path.basename(src))'#10;
+ s := s +
+   '    copyfile(src, dst, follow_symlinks=follow_symlinks)'#10;
+ s := s +
+   '    copymode(src, dst, follow_symlinks=follow_symlinks)'#10;
+ s := s +
+   '    return dst'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copy2(src, dst, *, follow_symlinks=True):'#10;
+ s := s +
+   '    """Copy data and metadata. Return the file''s destination' +
+   '.'#10;
+ s := s + #10;
+ s := s +
+   '    Metadata is copied with copystat(). Please see the copys' +
+   'tat function'#10;
+ s := s +
+   '    for more information.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if os.path.isdir(dst):'#10;
+ s := s +
+   '        dst = os.path.join(dst, os.path.basename(src))'#10;
+ s := s +
+   '    copyfile(src, dst, follow_symlinks=follow_symlinks)'#10;
+ s := s +
+   '    copystat(src, dst, follow_symlinks=follow_symlinks)'#10;
+ s := s +
+   '    return dst'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def ignore_patterns(*patterns):'#10;
+ s := s +
+   '    """Function that can be used as copytree() ignore parame' +
+   'ter.'#10;
+ s := s + #10;
+ s := s +
+   '    Patterns is a sequence of glob-style patterns'#10;
+ s := s +
+   '    that are used to exclude files"""'#10;
+ s := s +
+   '    def _ignore_patterns(path, names):'#10;
+ s := s +
+   '        ignored_names = []'#10;
+ s := s +
+   '        for pattern in patterns:'#10;
+ s := s +
+   '            ignored_names.extend(fnmatch.filter(names, patte' +
+   'rn))'#10;
+ s := s +
+   '        return set(ignored_names)'#10;
+ s := s +
+   '    return _ignore_patterns'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def copytree(src, dst, symlinks=False, ignore=None, copy_fun' +
+   'ction=copy2,'#10;
+ s := s +
+   '             ignore_dangling_symlinks=False, dirs_exist_ok=F' +
+   'alse):'#10;
+ s := s +
+   '    """Recursively copy a directory tree and return the dest' +
+   'ination directory.'#10;
+ s := s + #10;
+ s := s +
+   '    dirs_exist_ok dictates whether to raise an exception in ' +
+   'case dst or any'#10;
+ s := s +
+   '    missing parent directory already exists.'#10;
+ s := s + #10;
+ s := s +
+   '    If exception(s) occur, an Error is raised with a list of' +
+   ' reasons.'#10;
+ s := s + #10;
+ s := s +
+   '    If the optional symlinks flag is true, symbolic links in' +
+   ' the'#10;
+ s := s +
+   '    source tree result in symbolic links in the destination ' +
+   'tree; if'#10;
+ s := s +
+   '    it is false, the contents of the files pointed to by sym' +
+   'bolic'#10;
+ s := s +
+   '    links are copied. If the file pointed by the symlink doe' +
+   'sn''t'#10;
+ s := s +
+   '    exist, an exception will be added in the list of errors ' +
+   'raised in'#10;
+ s := s +
+   '    an Error exception at the end of the copy process.'#10;
+ s := s + #10;
+ s := s +
+   '    You can set the optional ignore_dangling_symlinks flag t' +
+   'o true if you'#10;
+ s := s +
+   '    want to silence this exception. Notice that this has no ' +
+   'effect on'#10;
+ s := s +
+   '    platforms that don''t support os.symlink.'#10;
+ s := s + #10;
+ s := s +
+   '    The optional ignore argument is a callable. If given, it'#10;
+ s := s +
+   '    is called with the `src` parameter, which is the directo' +
+   'ry'#10;
+ s := s +
+   '    being visited by copytree(), and `names` which is the li' +
+   'st of'#10;
+ s := s +
+   '    `src` contents, as returned by os.listdir():'#10;
+ s := s + #10;
+ s := s +
+   '        callable(src, names) -> ignored_names'#10;
+ s := s + #10;
+ s := s +
+   '    Since copytree() is called recursively, the callable wil' +
+   'l be'#10;
+ s := s +
+   '    called once for each directory that is copied. It return' +
+   's a'#10;
+ s := s +
+   '    list of names relative to the `src` directory that shoul' +
+   'd'#10;
+ s := s +
+   '    not be copied.'#10;
+ s := s + #10;
+ s := s +
+   '    The optional copy_function argument is a callable that w' +
+   'ill be used'#10;
+ s := s +
+   '    to copy each file. It will be called with the source pat' +
+   'h and the'#10;
+ s := s +
+   '    destination path as arguments. By default, copy2() is us' +
+   'ed, but any'#10;
+ s := s +
+   '    function that supports the same signature (like copy()) ' +
+   'can be used.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    src = os.fspath(src)'#10;
+ s := s +
+   '    dst = os.fspath(dst)'#10;
+ s := s +
+   '    names = os.listdir(src)'#10;
+ s := s +
+   '    if ignore is not None:'#10;
+ s := s +
+   '        ignored_names = ignore(src, set(names))'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        ignored_names = set()'#10;
+ s := s + #10;
+ s := s +
+   '    os.makedirs(dst, exist_ok=dirs_exist_ok)'#10;
+ s := s +
+   '    errors = []'#10;
+ s := s + #10;
+ s := s +
+   '    for name in names:'#10;
+ s := s +
+   '        if name in ignored_names:'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        srcname = os.path.join(src, name)'#10;
+ s := s +
+   '        dstname = os.path.join(dst, name)'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            if _islink(srcname):'#10;
+ s := s +
+   '                linkto = os.readlink(srcname)'#10;
+ s := s +
+   '                if symlinks:'#10;
+ s := s +
+   '                    # We can''t just leave it to `copy_functi' +
+   'on` because legacy'#10;
+ s := s +
+   '                    # code with a custom `copy_function` may' +
+   ' rely on copytree'#10;
+ s := s +
+   '                    # doing the right thing.'#10;
+ s := s +
+   '                    os.symlink(linkto, dstname)'#10;
+ s := s +
+   '                    copystat(srcname, dstname, follow_symlin' +
+   'ks=not symlinks)'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    # ignore dangling symlink if the flag is' +
+   ' on'#10;
+ s := s +
+   '                    if not os.path.exists(linkto) and ignore' +
+   '_dangling_symlinks:'#10;
+ s := s +
+   '                        continue'#10;
+ s := s +
+   '                    # otherwise let the copy occurs. copy2 w' +
+   'ill raise an error'#10;
+ s := s +
+   '                    if os.path.isdir(srcname):'#10;
+ s := s +
+   '                        copytree(srcname, dstname, symlinks,' +
+   ' ignore,'#10;
+ s := s +
+   '                                 copy_function, dirs_exist_o' +
+   'k=dirs_exist_ok)'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        copy_function(srcname, dstname)'#10;
+ s := s +
+   '            elif os.path.isdir(srcname):'#10;
+ s := s +
+   '                copytree(srcname, dstname, symlinks, ignore,' +
+   ' copy_function,'#10;
+ s := s +
+   '                         dirs_exist_ok=dirs_exist_ok)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                # Will raise a SpecialFileError for unsuppor' +
+   'ted file types'#10;
+ s := s +
+   '                copy_function(srcname, dstname)'#10;
+ s := s +
+   '        # catch the Error from the recursive copytree so tha' +
+   't we can'#10;
+ s := s +
+   '        # continue with other files'#10;
+ s := s +
+   '        except Error as err:'#10;
+ s := s +
+   '            errors.extend(err.args[0])'#10;
+ s := s +
+   '        except OSError as why:'#10;
+ s := s +
+   '            errors.append((srcname, dstname, str(why)))'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        copystat(src, dst)'#10;
+ s := s +
+   '    except OSError as why:'#10;
+ s := s +
+   '        errors.append((src, dst, str(why)))'#10;
+ s := s +
+   '    if errors:'#10;
+ s := s +
+   '        raise Error(errors)'#10;
+ s := s +
+   '    return dst'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def rmtree(path, ignore_errors=False, onerror=None):'#10;
+ s := s +
+   '    """Recursively delete a directory tree.'#10;
+ s := s + #10;
+ s := s +
+   '    If ignore_errors is set, errors are ignored; otherwise, ' +
+   'if onerror'#10;
+ s := s +
+   '    is set, it is called to handle the error with arguments ' +
+   '(func,'#10;
+ s := s +
+   '    path, exc_info) where func is platform and implementatio' +
+   'n dependent;'#10;
+ s := s +
+   '    path is the argument to that function that caused it to ' +
+   'fail; and'#10;
+ s := s +
+   '    exc_info is a tuple returned by sys.exc_info().  If igno' +
+   're_errors'#10;
+ s := s +
+   '    is false and onerror is None, an exception is raised.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    if ignore_errors:'#10;
+ s := s +
+   '        def onerror(*args):'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '    elif onerror is None:'#10;
+ s := s +
+   '        def onerror(*args):'#10;
+ s := s +
+   '            raise'#10;
+ s := s +
+   '    failed = False'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        os.lstat(path)'#10;
+ s := s +
+   '    except Exception:'#10;
+ s := s +
+   '        failed = True'#10;
+ s := s +
+   '        onerror(os.lstat, path, sys.exc_info())'#10;
+ s := s +
+   '        # can''t continue even if onerror hook returns'#10;
+ s := s +
+   '    if failed:'#10;
+ s := s +
+   '        return'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        if _islink(path):'#10;
+ s := s +
+   '            # symlinks to directories are forbidden, see bug' +
+   ' #1669'#10;
+ s := s +
+   '            raise OSError("Cannot call rmtree on a symbolic ' +
+   'link")'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        failed = True'#10;
+ s := s +
+   '        onerror(os.path.islink, path, sys.exc_info())'#10;
+ s := s +
+   '        # can''t continue even if onerror hook returns'#10;
+ s := s +
+   '    if not failed:'#10;
+ s := s +
+   '        _rmtree_unsafe(path, onerror)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _rmtree_unsafe(path, onerror):'#10;
+ s := s +
+   '    entries = []'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        entries = os.listdir(path)'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        onerror(os.scandir, path, sys.exc_info())'#10;
+ s := s +
+   '        entries = []'#10;
+ s := s +
+   '    for name in entries:'#10;
+ s := s +
+   '        fullname = os.path.join(path, name)'#10;
+ s := s +
+   '        is_dir = False'#10;
+ s := s +
+   '        st = _lstat_or_none(fullname)'#10;
+ s := s +
+   '        if st is not None:'#10;
+ s := s +
+   '            # lstat: a symlink is never reported as a direct' +
+   'ory'#10;
+ s := s +
+   '            is_dir = stat.S_ISDIR(st.st_mode)'#10;
+ s := s +
+   '        if is_dir:'#10;
+ s := s +
+   '            _rmtree_unsafe(fullname, onerror)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                os.unlink(fullname)'#10;
+ s := s +
+   '            except OSError:'#10;
+ s := s +
+   '                onerror(os.unlink, fullname, sys.exc_info())'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        os.rmdir(path)'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        onerror(os.rmdir, path, sys.exc_info())'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# version vulnerable to race conditions exposed for tests/co' +
+   'mpat'#10;
+ s := s +
+   'rmtree.avoids_symlink_attacks = False'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _destinsrc(src, dst):'#10;
+ s := s +
+   '    src = os.path.abspath(src)'#10;
+ s := s +
+   '    dst = os.path.abspath(dst)'#10;
+ s := s +
+   '    if not src.endswith(os.path.sep):'#10;
+ s := s +
+   '        src += os.path.sep'#10;
+ s := s +
+   '    if not dst.endswith(os.path.sep):'#10;
+ s := s +
+   '        dst += os.path.sep'#10;
+ s := s +
+   '    return dst.startswith(src)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def move(src, dst, copy_function=copy2):'#10;
+ s := s +
+   '    """Recursively move a file or directory to another locat' +
+   'ion. This is'#10;
+ s := s +
+   '    similar to the Unix "mv" command. Return the file or dir' +
+   'ectory''s'#10;
+ s := s +
+   '    destination.'#10;
+ s := s + #10;
+ s := s +
+   '    If the destination is a directory or a symlink to a dire' +
+   'ctory, the source'#10;
+ s := s +
+   '    is moved inside the directory. The destination path must' +
+   ' not already'#10;
+ s := s +
+   '    exist.'#10;
+ s := s + #10;
+ s := s +
+   '    If the destination already exists but is not a directory' +
+   ', it may be'#10;
+ s := s +
+   '    overwritten depending on os.rename() semantics.'#10;
+ s := s + #10;
+ s := s +
+   '    If the destination is on our current filesystem, then re' +
+   'name() is used.'#10;
+ s := s +
+   '    Otherwise, src is copied to the destination and then rem' +
+   'oved. Symlinks are'#10;
+ s := s +
+   '    recreated under the new name if os.rename() fails becaus' +
+   'e of cross'#10;
+ s := s +
+   '    filesystem renames.'#10;
+ s := s + #10;
+ s := s +
+   '    The optional `copy_function` argument is a callable that' +
+   ' will be used'#10;
+ s := s +
+   '    to copy the source or it will be delegated to `copytree`' +
+   '.'#10;
+ s := s +
+   '    By default, copy2() is used, but any function that suppo' +
+   'rts the same'#10;
+ s := s +
+   '    signature (like copy()) can be used.'#10;
+ s := s + #10;
+ s := s +
+   '    A lot more could be done here...  A look at a mv.c shows' +
+   ' a lot of'#10;
+ s := s +
+   '    the issues this implementation glosses over.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    real_dst = dst'#10;
+ s := s +
+   '    if os.path.isdir(dst):'#10;
+ s := s +
+   '        if _samefile(src, dst):'#10;
+ s := s +
+   '            # We might be on a case insensitive filesystem,'#10;
+ s := s +
+   '            # perform the rename anyway.'#10;
+ s := s +
+   '            os.rename(src, dst)'#10;
+ s := s +
+   '            return dst'#10;
+ s := s + #10;
+ s := s +
+   '        real_dst = os.path.join(dst, _basename(src))'#10;
+ s := s +
+   '        if os.path.exists(real_dst):'#10;
+ s := s +
+   '            raise Error("Destination path ''%s'' already exist' +
+   's" % real_dst)'#10;
+ s := s +
+   '    renamed = True'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        os.rename(src, real_dst)'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        renamed = False'#10;
+ s := s +
+   '    if not renamed:'#10;
+ s := s +
+   '        if _islink(src):'#10;
+ s := s +
+   '            linkto = os.readlink(src)'#10;
+ s := s +
+   '            os.symlink(linkto, real_dst)'#10;
+ s := s +
+   '            os.unlink(src)'#10;
+ s := s +
+   '        elif os.path.isdir(src):'#10;
+ s := s +
+   '            if _destinsrc(src, dst):'#10;
+ s := s +
+   '                raise Error("Cannot move a directory ''%s'' in' +
+   'to itself"'#10;
+ s := s +
+   '                            " ''%s''." % (src, dst))'#10;
+ s := s +
+   '            copytree(src, real_dst, copy_function=copy_funct' +
+   'ion,'#10;
+ s := s +
+   '                     symlinks=True)'#10;
+ s := s +
+   '            rmtree(src)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            copy_function(src, real_dst)'#10;
+ s := s +
+   '            os.unlink(src)'#10;
+ s := s +
+   '    return real_dst'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'if hasattr(os, ''statvfs''):'#10;
+ s := s +
+   '    _ntuple_diskusage = collections.namedtuple(''usage'', ''tot' +
+   'al used free'')'#10;
+ s := s +
+   '    _ntuple_diskusage.__doc__ = ''Total, used and free space ' +
+   'in bytes.'''#10;
+ s := s + #10;
+ s := s +
+   '    def disk_usage(path):'#10;
+ s := s +
+   '        """Return disk usage statistics about the given path' +
+   '.'#10;
+ s := s + #10;
+ s := s +
+   '        Returned value is a named tuple with attributes ''tot' +
+   'al'', ''used'' and'#10;
+ s := s +
+   '        ''free'', which are the amount of total, used and free' +
+   ' space, in bytes.'#10;
+ s := s +
+   '        """'#10;
+ s := s +
+   '        st = os.statvfs(path)'#10;
+ s := s +
+   '        free = st.f_bavail * st.f_frsize'#10;
+ s := s +
+   '        total = st.f_blocks * st.f_frsize'#10;
+ s := s +
+   '        used = (st.f_blocks - st.f_bfree) * st.f_frsize'#10;
+ s := s +
+   '        return _ntuple_diskusage(total, used, free)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def which(cmd, mode=os.F_OK | os.X_OK, path=None):'#10;
+ s := s +
+   '    """Given a command, mode, and a PATH string, return the ' +
+   'path which'#10;
+ s := s +
+   '    conforms to the given mode on the PATH, or None if there' +
+   ' is no such'#10;
+ s := s +
+   '    file.'#10;
+ s := s + #10;
+ s := s +
+   '    `mode` defaults to os.F_OK | os.X_OK. `path` defaults to' +
+   ' the result'#10;
+ s := s +
+   '    of os.environ.get("PATH"), or can be overridden with a c' +
+   'ustom search'#10;
+ s := s +
+   '    path.'#10;
+ s := s + #10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # Check that a given file can be accessed with the corre' +
+   'ct mode.'#10;
+ s := s +
+   '    # Additionally check that `file` is not a directory, as ' +
+   'on Windows'#10;
+ s := s +
+   '    # directories pass the os.access check.'#10;
+ s := s +
+   '    def _access_check(fn, mode):'#10;
+ s := s +
+   '        return (os.path.exists(fn) and os.access(fn, mode)'#10;
+ s := s +
+   '                and not os.path.isdir(fn))'#10;
+ s := s + #10;
+ s := s +
+   '    # If we''re given a path with a directory part, look it u' +
+   'p directly rather'#10;
+ s := s +
+   '    # than referring to PATH directories. This includes chec' +
+   'king relative to the'#10;
+ s := s +
+   '    # current directory, e.g. ./script'#10;
+ s := s +
+   '    if os.path.dirname(cmd):'#10;
+ s := s +
+   '        if _access_check(cmd, mode):'#10;
+ s := s +
+   '            return cmd'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    if path is None:'#10;
+ s := s +
+   '        path = os.environ.get("PATH", None)'#10;
+ s := s +
+   '        if path is None:'#10;
+ s := s +
+   '            if hasattr(os, ''confstr''):'#10;
+ s := s +
+   '                try:'#10;
+ s := s +
+   '                    path = os.confstr("CS_PATH")'#10;
+ s := s +
+   '                except (AttributeError, ValueError):'#10;
+ s := s +
+   '                    path = None'#10;
+ s := s +
+   '            if path is None:'#10;
+ s := s +
+   '                path = os.defpath'#10;
+ s := s +
+   '    # bpo-35755: Don''t use os.defpath if the PATH environmen' +
+   't variable is'#10;
+ s := s +
+   '    # set to an empty string'#10;
+ s := s + #10;
+ s := s +
+   '    # PATH='''' doesn''t match, whereas PATH='':'' looks in the c' +
+   'urrent directory'#10;
+ s := s +
+   '    if not path:'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    path = path.split(os.pathsep)'#10;
+ s := s +
+   '    files = [cmd]'#10;
+ s := s + #10;
+ s := s +
+   '    seen = set()'#10;
+ s := s +
+   '    for dir in path:'#10;
+ s := s +
+   '        normdir = os.path.normcase(dir)'#10;
+ s := s +
+   '        if not normdir in seen:'#10;
+ s := s +
+   '            seen.add(normdir)'#10;
+ s := s +
+   '            for thefile in files:'#10;
+ s := s +
+   '                name = os.path.join(dir, thefile)'#10;
+ s := s +
+   '                if _access_check(name, mode):'#10;
+ s := s +
+   '                    return name'#10;
+ s := s +
+   '    return None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def get_terminal_size(fallback=(80, 24)):'#10;
+ s := s +
+   '    """Get the size of the terminal window.'#10;
+ s := s + #10;
+ s := s +
+   '    For each of the two dimensions, the environment variable' +
+   ', COLUMNS'#10;
+ s := s +
+   '    and LINES respectively, is checked. If the variable is d' +
+   'efined and'#10;
+ s := s +
+   '    the value is a positive integer, it is used.'#10;
+ s := s + #10;
+ s := s +
+   '    When COLUMNS or LINES is not defined, which is the commo' +
+   'n case,'#10;
+ s := s +
+   '    the terminal connected to sys.__stdout__ is queried'#10;
+ s := s +
+   '    by invoking os.get_terminal_size.'#10;
+ s := s + #10;
+ s := s +
+   '    If the terminal size cannot be successfully queried, eit' +
+   'her because'#10;
+ s := s +
+   '    the system doesn''t support querying, or because we are n' +
+   'ot'#10;
+ s := s +
+   '    connected to a terminal, the value given in fallback par' +
+   'ameter'#10;
+ s := s +
+   '    is used. Fallback defaults to (80, 24) which is the defa' +
+   'ult'#10;
+ s := s +
+   '    size used by many terminal emulators.'#10;
+ s := s + #10;
+ s := s +
+   '    The value returned is a named tuple of type os.terminal_' +
+   'size.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    # columns, lines are the working values'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        columns = int(os.environ[''COLUMNS''])'#10;
+ s := s +
+   '    except (KeyError, ValueError):'#10;
+ s := s +
+   '        columns = 0'#10;
+ s := s + #10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        lines = int(os.environ[''LINES''])'#10;
+ s := s +
+   '    except (KeyError, ValueError):'#10;
+ s := s +
+   '        lines = 0'#10;
+ s := s + #10;
+ s := s +
+   '    # only query if necessary'#10;
+ s := s +
+   '    if columns <= 0 or lines <= 0:'#10;
+ s := s +
+   '        size = None'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            size = os.get_terminal_size(sys.__stdout__.filen' +
+   'o())'#10;
+ s := s +
+   '        except (AttributeError, ValueError, OSError, TypeErr' +
+   'or):'#10;
+ s := s +
+   '            size = None'#10;
+ s := s +
+   '        if size is None:'#10;
+ s := s +
+   '            size = os.terminal_size(fallback)'#10;
+ s := s +
+   '        if columns <= 0:'#10;
+ s := s +
+   '            columns = size.columns'#10;
+ s := s +
+   '        if lines <= 0:'#10;
+ s := s +
+   '            lines = size.lines'#10;
+ s := s + #10;
+ s := s +
+   '    return os.terminal_size((columns, lines))'#10;
  s := s + #10;
  Result := s;
 End;
@@ -39914,6 +54586,123 @@ Begin
  s := s +
    'builtins.license = _Printer(''license'', ''Type license() to se' +
    'e the full license text'')'#10;
+ s := s + #10;
+ s := s +
+   'def _setup_time():'#10;
+ s := s +
+   '    import time as _t'#10;
+ s := s +
+   '    _S = _structseq(''time.struct_time'', [''tm_year'', ''tm_mon''' +
+   ', ''tm_mday'', ''tm_hour'', ''tm_min'', ''tm_sec'', ''tm_wday'', ''tm_y' +
+   'day'', ''tm_isdst''])'#10;
+ s := s + #10;
+ s := s +
+   '    class struct_time(_S):'#10;
+ s := s +
+   '        def __new__(cls, seq, zone=None, gmtoff=None):'#10;
+ s := s +
+   '            seq = tuple(seq)'#10;
+ s := s +
+   '            if len(seq) == 11:'#10;
+ s := s +
+   '                zone, gmtoff = seq[9], seq[10]'#10;
+ s := s +
+   '                seq = seq[:9]'#10;
+ s := s +
+   '            r = tuple.__new__(cls, seq) if len(seq) == 9 els' +
+   'e _S.__new__(cls, seq)'#10;
+ s := s +
+   '            r.tm_zone = zone'#10;
+ s := s +
+   '            r.tm_gmtoff = gmtoff'#10;
+ s := s +
+   '            return r'#10;
+ s := s +
+   '    struct_time.__name__ = ''struct_time'''#10;
+ s := s +
+   '    struct_time.__module__ = ''time'''#10;
+ s := s +
+   '    struct_time.__qualname__ = ''struct_time'''#10;
+ s := s +
+   '    _gm = _t.gmtime'#10;
+ s := s +
+   '    _lt = _t.localtime'#10;
+ s := s +
+   '    _mk = _t.mktime'#10;
+ s := s +
+   '    _sf = _t.strftime'#10;
+ s := s + #10;
+ s := s +
+   '    def gmtime(secs=None):'#10;
+ s := s +
+   '        r = _gm() if secs is None else _gm(secs)'#10;
+ s := s +
+   '        return struct_time(r, ''UTC'', 0)'#10;
+ s := s + #10;
+ s := s +
+   '    def localtime(secs=None):'#10;
+ s := s +
+   '        r = _lt() if secs is None else _lt(secs)'#10;
+ s := s +
+   '        isdst = r[8]'#10;
+ s := s +
+   '        return struct_time(r, _t.tzname[1 if isdst > 0 else ' +
+   '0], -(_t.altzone if isdst > 0 else _t.timezone))'#10;
+ s := s + #10;
+ s := s +
+   '    def mktime(t):'#10;
+ s := s +
+   '        return _mk(tuple(t)[:9])'#10;
+ s := s + #10;
+ s := s +
+   '    def strftime(fmt, t=None):'#10;
+ s := s +
+   '        if t is None:'#10;
+ s := s +
+   '            return _sf(fmt)'#10;
+ s := s +
+   '        return _sf(fmt, tuple(t)[:9])'#10;
+ s := s + #10;
+ s := s +
+   '    def asctime(t=None):'#10;
+ s := s +
+   '        if t is None:'#10;
+ s := s +
+   '            t = localtime()'#10;
+ s := s +
+   '        return ''%s %s %2d %02d:%02d:%02d %d'' % ('#10;
+ s := s +
+   '            (''Mon'', ''Tue'', ''Wed'', ''Thu'', ''Fri'', ''Sat'', ''Sun''' +
+   ')[t[6]],'#10;
+ s := s +
+   '            (''Jan'', ''Feb'', ''Mar'', ''Apr'', ''May'', ''Jun'', ''Jul''' +
+   ', ''Aug'', ''Sep'', ''Oct'', ''Nov'', ''Dec'')[t[1] - 1],'#10;
+ s := s +
+   '            t[2], t[3], t[4], t[5], t[0])'#10;
+ s := s + #10;
+ s := s +
+   '    _t.struct_time = struct_time'#10;
+ s := s +
+   '    _t.gmtime = gmtime'#10;
+ s := s +
+   '    _t.localtime = localtime'#10;
+ s := s +
+   '    _t.mktime = mktime'#10;
+ s := s +
+   '    _t.strftime = strftime'#10;
+ s := s +
+   '    _t.asctime = asctime'#10;
+ s := s +
+   '    def ctime(secs=None):'#10;
+ s := s +
+   '        return asctime(localtime(secs))'#10;
+ s := s +
+   '    _t.ctime = ctime'#10;
+ s := s + #10;
+ s := s +
+   '_setup_time()'#10;
+ s := s +
+   'del _setup_time'#10;
  s := s + #10;
  Result := s;
 End;
@@ -40132,6 +54921,2309 @@ Begin
    '        m.update(kws)'#10;
  s := s +
    '        return self._sub(m, True)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_tempfile: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Temporary files.'#10;
+ s := s + #10;
+ s := s +
+   'This module provides generic, low- and high-level interfaces' +
+   ' for'#10;
+ s := s +
+   'creating temporary files and directories.  All of the interf' +
+   'aces'#10;
+ s := s +
+   'provided by this module can be used without fear of race con' +
+   'ditions'#10;
+ s := s +
+   'except for ''mktemp''.  ''mktemp'' is subject to race conditions' +
+   ' and'#10;
+ s := s +
+   'should not be used; it is provided for backward compatibilit' +
+   'y only.'#10;
+ s := s + #10;
+ s := s +
+   'Pure Python version for an interpreter without os.open / fil' +
+   'e descriptors:'#10;
+ s := s +
+   'files are created exclusively with open(path, ''x'') and mkste' +
+   'mp() returns a'#10;
+ s := s +
+   'placeholder integer "descriptor" (a _TempFd, an int subclass' +
+   ' carrying .path)'#10;
+ s := s +
+   'when os.open is not available.'#10;
+ s := s +
+   '"""'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = ['#10;
+ s := s +
+   '    "NamedTemporaryFile", "TemporaryFile",  # high level saf' +
+   'e interfaces'#10;
+ s := s +
+   '    "SpooledTemporaryFile", "TemporaryDirectory",'#10;
+ s := s +
+   '    "mkstemp", "mkdtemp",                   # low level safe' +
+   ' interfaces'#10;
+ s := s +
+   '    "mktemp",                               # deprecated uns' +
+   'afe interface'#10;
+ s := s +
+   '    "TMP_MAX", "gettempprefix",             # constants'#10;
+ s := s +
+   '    "tempdir", "gettempdir",'#10;
+ s := s +
+   '    "gettempprefixb", "gettempdirb",'#10;
+ s := s +
+   '   ]'#10;
+ s := s + #10;
+ s := s +
+   '# Imports.'#10;
+ s := s + #10;
+ s := s +
+   'import os as _os'#10;
+ s := s +
+   'import sys as _sys'#10;
+ s := s +
+   'import errno as _errno'#10;
+ s := s +
+   'import io as _io'#10;
+ s := s +
+   'from random import Random as _Random'#10;
+ s := s + #10;
+ s := s +
+   '_has_fds = (hasattr(_os, ''open'') and hasattr(_os, ''close'')'#10;
+ s := s +
+   '            and hasattr(_os, ''fdopen'') and hasattr(_os, ''O_E' +
+   'XCL''))'#10;
+ s := s + #10;
+ s := s +
+   '# Internal constants'#10;
+ s := s + #10;
+ s := s +
+   'TMP_MAX = 10000'#10;
+ s := s + #10;
+ s := s +
+   '# This variable _was_ unused for legacy reasons, see issue 1' +
+   '0354.'#10;
+ s := s +
+   '# But as of 3.5 we actually use it at runtime so changing it' +
+   ' would'#10;
+ s := s +
+   '# have a possibly desirable side effect...  But we do not wa' +
+   'nt to support'#10;
+ s := s +
+   '# that as an API.  It is undocumented on purpose.  Do not re' +
+   'ly on this.'#10;
+ s := s +
+   'template = "tmp"'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _s(path):'#10;
+ s := s +
+   '    # this interpreter''s os functions only accept str paths'#10;
+ s := s +
+   '    if isinstance(path, bytes):'#10;
+ s := s +
+   '        return _os.fsdecode(path)'#10;
+ s := s +
+   '    return path'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _exists(fn):'#10;
+ s := s +
+   '    found = True'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        _os.lstat(fn)'#10;
+ s := s +
+   '    except OSError:'#10;
+ s := s +
+   '        found = False'#10;
+ s := s +
+   '    return found'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _infer_return_type(*args):'#10;
+ s := s +
+   '    """Look at the type of all args and divine their implied' +
+   ' return type."""'#10;
+ s := s +
+   '    return_type = None'#10;
+ s := s +
+   '    for arg in args:'#10;
+ s := s +
+   '        if arg is None:'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if isinstance(arg, bytes):'#10;
+ s := s +
+   '            if return_type is str:'#10;
+ s := s +
+   '                raise TypeError("Can''t mix bytes and non-byt' +
+   'es in "'#10;
+ s := s +
+   '                                "path components.")'#10;
+ s := s +
+   '            return_type = bytes'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if return_type is bytes:'#10;
+ s := s +
+   '                raise TypeError("Can''t mix bytes and non-byt' +
+   'es in "'#10;
+ s := s +
+   '                                "path components.")'#10;
+ s := s +
+   '            return_type = str'#10;
+ s := s +
+   '    if return_type is None:'#10;
+ s := s +
+   '        return str  # tempfile APIs return a str by default.'#10;
+ s := s +
+   '    return return_type'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _sanitize_params(prefix, suffix, dir):'#10;
+ s := s +
+   '    """Common parameter processing for most APIs in this mod' +
+   'ule."""'#10;
+ s := s +
+   '    output_type = _infer_return_type(prefix, suffix, dir)'#10;
+ s := s +
+   '    if suffix is None:'#10;
+ s := s +
+   '        suffix = output_type()'#10;
+ s := s +
+   '    if prefix is None:'#10;
+ s := s +
+   '        if output_type is str:'#10;
+ s := s +
+   '            prefix = template'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            prefix = _os.fsencode(template)'#10;
+ s := s +
+   '    if dir is None:'#10;
+ s := s +
+   '        if output_type is str:'#10;
+ s := s +
+   '            dir = gettempdir()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            dir = gettempdirb()'#10;
+ s := s +
+   '    return prefix, suffix, dir, output_type'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _RandomNameSequence:'#10;
+ s := s +
+   '    """An instance of _RandomNameSequence generates an endle' +
+   'ss'#10;
+ s := s +
+   '    sequence of unpredictable strings which can safely be in' +
+   'corporated'#10;
+ s := s +
+   '    into file names.  Each string is eight characters long. ' +
+   ' Multiple'#10;
+ s := s +
+   '    threads can safely use the same instance at the same tim' +
+   'e.'#10;
+ s := s + #10;
+ s := s +
+   '    _RandomNameSequence is an iterator."""'#10;
+ s := s + #10;
+ s := s +
+   '    characters = "abcdefghijklmnopqrstuvwxyz0123456789_"'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def rng(self):'#10;
+ s := s +
+   '        cur_pid = _os.getpid()'#10;
+ s := s +
+   '        if cur_pid != getattr(self, ''_rng_pid'', None):'#10;
+ s := s +
+   '            seed = int.from_bytes(_os.urandom(8), ''big'') ^ (' +
+   'cur_pid << 20)'#10;
+ s := s +
+   '            self._rng = _Random(seed)'#10;
+ s := s +
+   '            self._rng_pid = cur_pid'#10;
+ s := s +
+   '        return self._rng'#10;
+ s := s + #10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __next__(self):'#10;
+ s := s +
+   '        c = self.characters'#10;
+ s := s +
+   '        choose = self.rng.choice'#10;
+ s := s +
+   '        letters = [choose(c) for dummy in range(8)]'#10;
+ s := s +
+   '        return ''''.join(letters)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _candidate_tempdir_list():'#10;
+ s := s +
+   '    """Generate a list of candidate temporary directories wh' +
+   'ich'#10;
+ s := s +
+   '    _get_default_tempdir will try."""'#10;
+ s := s + #10;
+ s := s +
+   '    dirlist = []'#10;
+ s := s + #10;
+ s := s +
+   '    # First, try the environment.'#10;
+ s := s +
+   '    for envname in ''TMPDIR'', ''TEMP'', ''TMP'':'#10;
+ s := s +
+   '        dirname = _os.getenv(envname)'#10;
+ s := s +
+   '        if dirname:'#10;
+ s := s +
+   '            dirlist.append(dirname)'#10;
+ s := s + #10;
+ s := s +
+   '    # Failing that, try OS-specific locations.'#10;
+ s := s +
+   '    if _os.name == ''nt'':'#10;
+ s := s +
+   '        dirlist.extend([_os.path.expanduser(r''~\AppData\Loca' +
+   'l\Temp''),'#10;
+ s := s +
+   '                        _os.path.expandvars(r''%SYSTEMROOT%\T' +
+   'emp''),'#10;
+ s := s +
+   '                        r''c:\temp'', r''c:\tmp'', r''\temp'', r''\' +
+   'tmp''])'#10;
+ s := s +
+   '    else:'#10;
+ s := s +
+   '        dirlist.extend([''/tmp'', ''/var/tmp'', ''/usr/tmp''])'#10;
+ s := s + #10;
+ s := s +
+   '    # As a last resort, the current directory.'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        dirlist.append(_os.getcwd())'#10;
+ s := s +
+   '    except (AttributeError, OSError):'#10;
+ s := s +
+   '        dirlist.append(_os.curdir)'#10;
+ s := s + #10;
+ s := s +
+   '    return dirlist'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _get_default_tempdir():'#10;
+ s := s +
+   '    """Calculate the default directory to use for temporary ' +
+   'files.'#10;
+ s := s +
+   '    This routine should be called exactly once.'#10;
+ s := s + #10;
+ s := s +
+   '    We determine whether or not a candidate temp dir is usab' +
+   'le by'#10;
+ s := s +
+   '    trying to create and write to a file in that directory. ' +
+   ' If this'#10;
+ s := s +
+   '    is successful, the test file is deleted.  To prevent den' +
+   'ial of'#10;
+ s := s +
+   '    service, the name of the test file must be randomized.""' +
+   '"'#10;
+ s := s + #10;
+ s := s +
+   '    namer = _RandomNameSequence()'#10;
+ s := s +
+   '    dirlist = _candidate_tempdir_list()'#10;
+ s := s + #10;
+ s := s +
+   '    for dir in dirlist:'#10;
+ s := s +
+   '        if dir != _os.curdir:'#10;
+ s := s +
+   '            dir = _os.path.abspath(dir)'#10;
+ s := s +
+   '        # Try only a few names per directory.'#10;
+ s := s +
+   '        giveup = False'#10;
+ s := s +
+   '        for seq in range(100):'#10;
+ s := s +
+   '            if giveup:'#10;
+ s := s +
+   '                break   # no point trying more names in this' +
+   ' directory'#10;
+ s := s +
+   '            name = next(namer)'#10;
+ s := s +
+   '            filename = _os.path.join(dir, name)'#10;
+ s := s +
+   '            ok = False'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                with open(filename, ''xb'') as fp:'#10;
+ s := s +
+   '                    fp.write(b''blat'')'#10;
+ s := s +
+   '                ok = True'#10;
+ s := s +
+   '            except FileExistsError:'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '            except PermissionError:'#10;
+ s := s +
+   '                # This exception is thrown when a directory ' +
+   'with the chosen'#10;
+ s := s +
+   '                # name already exists on windows.'#10;
+ s := s +
+   '                if not (_os.name == ''nt'' and _os.path.isdir(' +
+   'dir) and'#10;
+ s := s +
+   '                        _os.access(dir, _os.W_OK)):'#10;
+ s := s +
+   '                    giveup = True'#10;
+ s := s +
+   '            except OSError:'#10;
+ s := s +
+   '                giveup = True'#10;
+ s := s +
+   '            if ok:'#10;
+ s := s +
+   '                _os.unlink(filename)'#10;
+ s := s +
+   '                return dir'#10;
+ s := s +
+   '    raise FileNotFoundError(_errno.ENOENT,'#10;
+ s := s +
+   '                            "No usable temporary directory f' +
+   'ound in %s" %'#10;
+ s := s +
+   '                            dirlist)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_name_sequence = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _get_candidate_names():'#10;
+ s := s +
+   '    """Common setup sequence for all user-callable interface' +
+   's."""'#10;
+ s := s + #10;
+ s := s +
+   '    global _name_sequence'#10;
+ s := s +
+   '    if _name_sequence is None:'#10;
+ s := s +
+   '        _name_sequence = _RandomNameSequence()'#10;
+ s := s +
+   '    return _name_sequence'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _TempFd(int):'#10;
+ s := s +
+   '    """Placeholder file descriptor returned by mkstemp() whe' +
+   'n os.open is'#10;
+ s := s +
+   '    unavailable.  The file itself is created (empty, mode 06' +
+   '00) and closed."""'#10;
+ s := s +
+   '    path = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '_fake_fd_next = [1000]'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _mkstemp_inner(dir, pre, suf, flags, output_type):'#10;
+ s := s +
+   '    """Code common to mkstemp, TemporaryFile, and NamedTempo' +
+   'raryFile."""'#10;
+ s := s + #10;
+ s := s +
+   '    names = _get_candidate_names()'#10;
+ s := s +
+   '    if output_type is bytes:'#10;
+ s := s +
+   '        names = map(_os.fsencode, names)'#10;
+ s := s + #10;
+ s := s +
+   '    for seq in range(TMP_MAX):'#10;
+ s := s +
+   '        name = next(names)'#10;
+ s := s +
+   '        file = _os.path.join(dir, pre + name + suf)'#10;
+ s := s +
+   '        created = False'#10;
+ s := s +
+   '        if _has_fds:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                fd = _os.open(_s(file), flags, 0o600)'#10;
+ s := s +
+   '                created = True'#10;
+ s := s +
+   '            except FileExistsError:'#10;
+ s := s +
+   '                pass    # try again'#10;
+ s := s +
+   '            except PermissionError:'#10;
+ s := s +
+   '                # This exception is thrown when a directory ' +
+   'with the chosen'#10;
+ s := s +
+   '                # name already exists on windows.'#10;
+ s := s +
+   '                if (_os.name == ''nt'' and _os.path.isdir(dir)' +
+   ' and'#10;
+ s := s +
+   '                        _os.access(dir, _os.W_OK)):'#10;
+ s := s +
+   '                    pass'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    raise'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                with open(_s(file), ''xb''):'#10;
+ s := s +
+   '                    pass'#10;
+ s := s +
+   '                _os.chmod(_s(file), 0o600)'#10;
+ s := s +
+   '                created = True'#10;
+ s := s +
+   '                fd = _TempFd(_fake_fd_next[0])'#10;
+ s := s +
+   '                _fake_fd_next[0] += 1'#10;
+ s := s +
+   '                fd.path = file'#10;
+ s := s +
+   '            except FileExistsError:'#10;
+ s := s +
+   '                pass    # try again'#10;
+ s := s +
+   '        if created:'#10;
+ s := s +
+   '            return (fd, _os.path.abspath(file))'#10;
+ s := s + #10;
+ s := s +
+   '    raise FileExistsError(_errno.EEXIST,'#10;
+ s := s +
+   '                          "No usable temporary file name fou' +
+   'nd")'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# User visible interfaces.'#10;
+ s := s + #10;
+ s := s +
+   'def gettempprefix():'#10;
+ s := s +
+   '    """The default prefix for temporary directories."""'#10;
+ s := s +
+   '    return template'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def gettempprefixb():'#10;
+ s := s +
+   '    """The default prefix for temporary directories as bytes' +
+   '."""'#10;
+ s := s +
+   '    return _os.fsencode(gettempprefix())'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'tempdir = None'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def gettempdir():'#10;
+ s := s +
+   '    """Accessor for tempfile.tempdir."""'#10;
+ s := s +
+   '    global tempdir'#10;
+ s := s +
+   '    if tempdir is None:'#10;
+ s := s +
+   '        tempdir = _get_default_tempdir()'#10;
+ s := s +
+   '    return tempdir'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def gettempdirb():'#10;
+ s := s +
+   '    """A bytes version of tempfile.gettempdir()."""'#10;
+ s := s +
+   '    return _os.fsencode(gettempdir())'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def mkstemp(suffix=None, prefix=None, dir=None, text=False):'#10;
+ s := s +
+   '    """User-callable function to create and return a unique ' +
+   'temporary'#10;
+ s := s +
+   '    file.  The return value is a pair (fd, name) where fd is' +
+   ' the'#10;
+ s := s +
+   '    file descriptor returned by os.open, and name is the fil' +
+   'ename.'#10;
+ s := s + #10;
+ s := s +
+   '    If ''suffix'' is not None, the file name will end with tha' +
+   't suffix,'#10;
+ s := s +
+   '    otherwise there will be no suffix.'#10;
+ s := s + #10;
+ s := s +
+   '    If ''prefix'' is not None, the file name will begin with t' +
+   'hat prefix,'#10;
+ s := s +
+   '    otherwise a default prefix is used.'#10;
+ s := s + #10;
+ s := s +
+   '    If ''dir'' is not None, the file will be created in that d' +
+   'irectory,'#10;
+ s := s +
+   '    otherwise a default directory is used.'#10;
+ s := s + #10;
+ s := s +
+   '    If ''text'' is specified and true, the file is opened in t' +
+   'ext'#10;
+ s := s +
+   '    mode.  Else (the default) the file is opened in binary m' +
+   'ode.  On'#10;
+ s := s +
+   '    some operating systems, this makes no difference.'#10;
+ s := s + #10;
+ s := s +
+   '    If any of ''suffix'', ''prefix'' and ''dir'' are not None, the' +
+   'y must be the'#10;
+ s := s +
+   '    same type.  If they are bytes, the returned name will be' +
+   ' bytes; str'#10;
+ s := s +
+   '    otherwise.'#10;
+ s := s + #10;
+ s := s +
+   '    The file is readable and writable only by the creating u' +
+   'ser ID.'#10;
+ s := s +
+   '    If the operating system uses permission bits to indicate' +
+   ' whether a'#10;
+ s := s +
+   '    file is executable, the file is executable by no one. Th' +
+   'e file'#10;
+ s := s +
+   '    descriptor is not inherited by children of this process.'#10;
+ s := s + #10;
+ s := s +
+   '    Caller is responsible for deleting the file when done wi' +
+   'th it.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    prefix, suffix, dir, output_type = _sanitize_params(pref' +
+   'ix, suffix, dir)'#10;
+ s := s + #10;
+ s := s +
+   '    flags = 0'#10;
+ s := s +
+   '    if _has_fds:'#10;
+ s := s +
+   '        flags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL'#10;
+ s := s +
+   '        if not text and hasattr(_os, ''O_BINARY''):'#10;
+ s := s +
+   '            flags |= _os.O_BINARY'#10;
+ s := s +
+   '    return _mkstemp_inner(dir, prefix, suffix, flags, output' +
+   '_type)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def mkdtemp(suffix=None, prefix=None, dir=None):'#10;
+ s := s +
+   '    """User-callable function to create and return a unique ' +
+   'temporary'#10;
+ s := s +
+   '    directory.  The return value is the pathname of the dire' +
+   'ctory.'#10;
+ s := s + #10;
+ s := s +
+   '    Arguments are as for mkstemp, except that the ''text'' arg' +
+   'ument is'#10;
+ s := s +
+   '    not accepted.'#10;
+ s := s + #10;
+ s := s +
+   '    The directory is readable, writable, and searchable only' +
+   ' by the'#10;
+ s := s +
+   '    creating user.'#10;
+ s := s + #10;
+ s := s +
+   '    Caller is responsible for deleting the directory when do' +
+   'ne with it.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    prefix, suffix, dir, output_type = _sanitize_params(pref' +
+   'ix, suffix, dir)'#10;
+ s := s + #10;
+ s := s +
+   '    names = _get_candidate_names()'#10;
+ s := s +
+   '    if output_type is bytes:'#10;
+ s := s +
+   '        names = map(_os.fsencode, names)'#10;
+ s := s + #10;
+ s := s +
+   '    for seq in range(TMP_MAX):'#10;
+ s := s +
+   '        name = next(names)'#10;
+ s := s +
+   '        file = _os.path.join(dir, prefix + name + suffix)'#10;
+ s := s +
+   '        created = False'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            _os.mkdir(_s(file), 0o700)'#10;
+ s := s +
+   '            _os.chmod(_s(file), 0o700)   # mkdir() mode is i' +
+   'gnored by this interpreter (B12)'#10;
+ s := s +
+   '            created = True'#10;
+ s := s +
+   '        except FileExistsError:'#10;
+ s := s +
+   '            pass    # try again'#10;
+ s := s +
+   '        except PermissionError:'#10;
+ s := s +
+   '            # This exception is thrown when a directory with' +
+   ' the chosen name'#10;
+ s := s +
+   '            # already exists on windows.'#10;
+ s := s +
+   '            if (_os.name == ''nt'' and _os.path.isdir(dir) and'#10;
+ s := s +
+   '                    _os.access(dir, _os.W_OK)):'#10;
+ s := s +
+   '                pass'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                raise'#10;
+ s := s +
+   '        if created:'#10;
+ s := s +
+   '            return _os.path.abspath(file)'#10;
+ s := s + #10;
+ s := s +
+   '    raise FileExistsError(_errno.EEXIST,'#10;
+ s := s +
+   '                          "No usable temporary directory nam' +
+   'e found")'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def mktemp(suffix="", prefix=template, dir=None):'#10;
+ s := s +
+   '    """User-callable function to return a unique temporary f' +
+   'ile name.  The'#10;
+ s := s +
+   '    file is not created.'#10;
+ s := s + #10;
+ s := s +
+   '    Arguments are similar to mkstemp, except that the ''text''' +
+   ' argument is'#10;
+ s := s +
+   '    not accepted, and suffix=None, prefix=None and bytes fil' +
+   'e names are not'#10;
+ s := s +
+   '    supported.'#10;
+ s := s + #10;
+ s := s +
+   '    THIS FUNCTION IS UNSAFE AND SHOULD NOT BE USED.  The fil' +
+   'e name may'#10;
+ s := s +
+   '    refer to a file that did not exist at some point, but by' +
+   ' the time'#10;
+ s := s +
+   '    you get around to creating it, someone else may have bea' +
+   'ten you to'#10;
+ s := s +
+   '    the punch.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    if dir is None:'#10;
+ s := s +
+   '        dir = gettempdir()'#10;
+ s := s + #10;
+ s := s +
+   '    names = _get_candidate_names()'#10;
+ s := s +
+   '    for seq in range(TMP_MAX):'#10;
+ s := s +
+   '        name = next(names)'#10;
+ s := s +
+   '        file = _os.path.join(dir, prefix + name + suffix)'#10;
+ s := s +
+   '        if not _exists(file):'#10;
+ s := s +
+   '            return file'#10;
+ s := s + #10;
+ s := s +
+   '    raise FileExistsError(_errno.EEXIST,'#10;
+ s := s +
+   '                          "No usable temporary filename foun' +
+   'd")'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _open_created(file, mode, buffering, encoding, newline, ' +
+   'errors):'#10;
+ s := s +
+   '    # Re-open a freshly created (empty) file with the reques' +
+   'ted mode.'#10;
+ s := s +
+   '    m = mode.replace(''x'', ''w'') if ''x'' in mode else mode'#10;
+ s := s +
+   '    kwargs = {}'#10;
+ s := s +
+   '    if ''b'' not in m:'#10;
+ s := s +
+   '        kwargs[''encoding''] = encoding'#10;
+ s := s +
+   '        kwargs[''newline''] = newline'#10;
+ s := s +
+   '        if errors is not None:'#10;
+ s := s +
+   '            kwargs[''errors''] = errors'#10;
+ s := s +
+   '    if buffering is not None and buffering != -1:'#10;
+ s := s +
+   '        kwargs[''buffering''] = buffering'#10;
+ s := s +
+   '    return open(file, m, **kwargs)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _TemporaryFileCloser:'#10;
+ s := s +
+   '    """A separate object allowing proper closing of a tempor' +
+   'ary file''s'#10;
+ s := s +
+   '    underlying file object, without adding a __del__ method ' +
+   'to the'#10;
+ s := s +
+   '    temporary file."""'#10;
+ s := s + #10;
+ s := s +
+   '    file = None  # Set here since __del__ checks it'#10;
+ s := s +
+   '    close_called = False'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, file, name, delete=True):'#10;
+ s := s +
+   '        self.file = file'#10;
+ s := s +
+   '        self.name = name'#10;
+ s := s +
+   '        self.delete = delete'#10;
+ s := s + #10;
+ s := s +
+   '    def close(self, unlink=_os.unlink):'#10;
+ s := s +
+   '        if not self.close_called and self.file is not None:'#10;
+ s := s +
+   '            self.close_called = True'#10;
+ s := s +
+   '            try:'#10;
+ s := s +
+   '                self.file.close()'#10;
+ s := s +
+   '            finally:'#10;
+ s := s +
+   '                if self.delete:'#10;
+ s := s +
+   '                    unlink(self.name)'#10;
+ s := s + #10;
+ s := s +
+   '    # Need to ensure the file is deleted on __del__'#10;
+ s := s +
+   '    def __del__(self):'#10;
+ s := s +
+   '        self.close()'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _TemporaryFileWrapper:'#10;
+ s := s +
+   '    """Temporary file wrapper'#10;
+ s := s + #10;
+ s := s +
+   '    This class provides a wrapper around files opened for'#10;
+ s := s +
+   '    temporary use.  In particular, it seeks to automatically'#10;
+ s := s +
+   '    remove the file when it is no longer needed.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, file, name, delete=True):'#10;
+ s := s +
+   '        self.file = file'#10;
+ s := s +
+   '        self.name = name'#10;
+ s := s +
+   '        self.delete = delete'#10;
+ s := s +
+   '        self._closer = _TemporaryFileCloser(file, name, dele' +
+   'te)'#10;
+ s := s + #10;
+ s := s +
+   '    def __getattr__(self, name):'#10;
+ s := s +
+   '        # Attribute lookups are delegated to the underlying ' +
+   'file'#10;
+ s := s +
+   '        # and cached for non-numeric results'#10;
+ s := s +
+   '        # (i.e. methods are cached, closed and friends are n' +
+   'ot)'#10;
+ s := s +
+   '        file = self.__dict__[''file'']'#10;
+ s := s +
+   '        a = getattr(file, name)'#10;
+ s := s +
+   '        if not isinstance(a, int):'#10;
+ s := s +
+   '            setattr(self, name, a)'#10;
+ s := s +
+   '        return a'#10;
+ s := s + #10;
+ s := s +
+   '    # The underlying __enter__ method returns the wrong obje' +
+   'ct'#10;
+ s := s +
+   '    # (self.file) so override it to return the wrapper'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        self.file.__enter__()'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    # Need to trap __exit__ as well to ensure the file gets'#10;
+ s := s +
+   '    # deleted when used in a with statement'#10;
+ s := s +
+   '    def __exit__(self, exc, value, tb):'#10;
+ s := s +
+   '        result = self.file.__exit__(exc, value, tb)'#10;
+ s := s +
+   '        self.close()'#10;
+ s := s +
+   '        return result'#10;
+ s := s + #10;
+ s := s +
+   '    def close(self):'#10;
+ s := s +
+   '        """'#10;
+ s := s +
+   '        Close the temporary file, possibly deleting it.'#10;
+ s := s +
+   '        """'#10;
+ s := s +
+   '        self._closer.close()'#10;
+ s := s + #10;
+ s := s +
+   '    # iter() doesn''t use __getattr__ to find the __iter__ me' +
+   'thod'#10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        # Don''t return iter(self.file), but yield from it to' +
+   ' avoid closing'#10;
+ s := s +
+   '        # file as long as it''s being used as iterator (see i' +
+   'ssue #23700).  We'#10;
+ s := s +
+   '        # can''t use ''yield from'' here because iter(file) ret' +
+   'urns the file'#10;
+ s := s +
+   '        # object itself, which has a close method, and thus ' +
+   'the file would get'#10;
+ s := s +
+   '        # closed when the generator is finalized, due to PEP' +
+   '380 semantics.'#10;
+ s := s +
+   '        for line in self.file:'#10;
+ s := s +
+   '            yield line'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def NamedTemporaryFile(mode=''w+b'', buffering=-1, encoding=No' +
+   'ne,'#10;
+ s := s +
+   '                       newline=None, suffix=None, prefix=Non' +
+   'e,'#10;
+ s := s +
+   '                       dir=None, delete=True, *, errors=None' +
+   '):'#10;
+ s := s +
+   '    """Create and return a temporary file.'#10;
+ s := s +
+   '    Arguments:'#10;
+ s := s +
+   '    ''prefix'', ''suffix'', ''dir'' -- as for mkstemp.'#10;
+ s := s +
+   '    ''mode'' -- the mode argument to io.open (default "w+b").'#10;
+ s := s +
+   '    ''buffering'' -- the buffer size argument to io.open (defa' +
+   'ult -1).'#10;
+ s := s +
+   '    ''encoding'' -- the encoding argument to io.open (default ' +
+   'None)'#10;
+ s := s +
+   '    ''newline'' -- the newline argument to io.open (default No' +
+   'ne)'#10;
+ s := s +
+   '    ''delete'' -- whether the file is deleted on close (defaul' +
+   't True).'#10;
+ s := s +
+   '    The file is created as mkstemp() would do it.'#10;
+ s := s + #10;
+ s := s +
+   '    Returns an object with a file-like interface; the name o' +
+   'f the file'#10;
+ s := s +
+   '    is accessible as its ''name'' attribute.  The file will be' +
+   ' automatically'#10;
+ s := s +
+   '    deleted when it is closed unless the ''delete'' argument i' +
+   's set to False.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    prefix, suffix, dir, output_type = _sanitize_params(pref' +
+   'ix, suffix, dir)'#10;
+ s := s + #10;
+ s := s +
+   '    flags = 0'#10;
+ s := s +
+   '    if _has_fds:'#10;
+ s := s +
+   '        flags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL'#10;
+ s := s +
+   '    (fd, name) = _mkstemp_inner(dir, prefix, suffix, flags, ' +
+   'output_type)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        if _has_fds:'#10;
+ s := s +
+   '            file = _os.fdopen(fd, mode, buffering, encoding,' +
+   ' errors, newline)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            file = _open_created(name, mode, buffering, enco' +
+   'ding, newline,'#10;
+ s := s +
+   '                                 errors)'#10;
+ s := s +
+   '        return _TemporaryFileWrapper(file, name, delete)'#10;
+ s := s +
+   '    except BaseException:'#10;
+ s := s +
+   '        _os.unlink(name)'#10;
+ s := s +
+   '        if _has_fds:'#10;
+ s := s +
+   '            _os.close(fd)'#10;
+ s := s +
+   '        raise'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def TemporaryFile(mode=''w+b'', buffering=-1, encoding=None,'#10;
+ s := s +
+   '                  newline=None, suffix=None, prefix=None,'#10;
+ s := s +
+   '                  dir=None, *, errors=None):'#10;
+ s := s +
+   '    """Create and return a temporary file.'#10;
+ s := s +
+   '    Arguments:'#10;
+ s := s +
+   '    ''prefix'', ''suffix'', ''dir'' -- as for mkstemp.'#10;
+ s := s +
+   '    ''mode'' -- the mode argument to io.open (default "w+b").'#10;
+ s := s +
+   '    ''buffering'' -- the buffer size argument to io.open (defa' +
+   'ult -1).'#10;
+ s := s +
+   '    ''encoding'' -- the encoding argument to io.open (default ' +
+   'None)'#10;
+ s := s +
+   '    ''newline'' -- the newline argument to io.open (default No' +
+   'ne)'#10;
+ s := s +
+   '    The file is created as mkstemp() would do it.'#10;
+ s := s + #10;
+ s := s +
+   '    Returns an object with a file-like interface.  The file ' +
+   'has no'#10;
+ s := s +
+   '    name, and will cease to exist when it is closed.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    prefix, suffix, dir, output_type = _sanitize_params(pref' +
+   'ix, suffix, dir)'#10;
+ s := s + #10;
+ s := s +
+   '    flags = 0'#10;
+ s := s +
+   '    if _has_fds:'#10;
+ s := s +
+   '        flags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL'#10;
+ s := s +
+   '    (fd, name) = _mkstemp_inner(dir, prefix, suffix, flags, ' +
+   'output_type)'#10;
+ s := s +
+   '    try:'#10;
+ s := s +
+   '        if _has_fds:'#10;
+ s := s +
+   '            file = _os.fdopen(fd, mode, buffering, encoding,' +
+   ' errors, newline)'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            file = _open_created(name, mode, buffering, enco' +
+   'ding, newline,'#10;
+ s := s +
+   '                                 errors)'#10;
+ s := s +
+   '        unlinked = True'#10;
+ s := s +
+   '        try:'#10;
+ s := s +
+   '            _os.unlink(name)'#10;
+ s := s +
+   '        except OSError:'#10;
+ s := s +
+   '            unlinked = False'#10;
+ s := s +
+   '        if not unlinked:'#10;
+ s := s +
+   '            # could not unlink an open file: fall back to de' +
+   'lete-on-close'#10;
+ s := s +
+   '            return _TemporaryFileWrapper(file, name, True)'#10;
+ s := s +
+   '        return file'#10;
+ s := s +
+   '    except BaseException:'#10;
+ s := s +
+   '        _os.unlink(name)'#10;
+ s := s +
+   '        if _has_fds:'#10;
+ s := s +
+   '            _os.close(fd)'#10;
+ s := s +
+   '        raise'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class SpooledTemporaryFile:'#10;
+ s := s +
+   '    """Temporary file wrapper, specialized to switch from By' +
+   'tesIO'#10;
+ s := s +
+   '    or StringIO to a real file when it exceeds a certain siz' +
+   'e or'#10;
+ s := s +
+   '    when a fileno is needed.'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    _rolled = False'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, max_size=0, mode=''w+b'', buffering=-1,'#10;
+ s := s +
+   '                 encoding=None, newline=None,'#10;
+ s := s +
+   '                 suffix=None, prefix=None, dir=None, *, erro' +
+   'rs=None):'#10;
+ s := s +
+   '        if ''b'' in mode:'#10;
+ s := s +
+   '            self._file = _io.BytesIO()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            self._file = _io.StringIO(newline=''\n'')'#10;
+ s := s +
+   '        self._max_size = max_size'#10;
+ s := s +
+   '        self._rolled = False'#10;
+ s := s +
+   '        self._TemporaryFileArgs = {''mode'': mode, ''buffering''' +
+   ': buffering,'#10;
+ s := s +
+   '                                   ''suffix'': suffix, ''prefix' +
+   ''': prefix,'#10;
+ s := s +
+   '                                   ''encoding'': encoding, ''ne' +
+   'wline'': newline,'#10;
+ s := s +
+   '                                   ''dir'': dir, ''errors'': err' +
+   'ors}'#10;
+ s := s + #10;
+ s := s +
+   '    def _check(self, file):'#10;
+ s := s +
+   '        if self._rolled:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        max_size = self._max_size'#10;
+ s := s +
+   '        if max_size and file.tell() > max_size:'#10;
+ s := s +
+   '            self.rollover()'#10;
+ s := s + #10;
+ s := s +
+   '    def rollover(self):'#10;
+ s := s +
+   '        if self._rolled:'#10;
+ s := s +
+   '            return'#10;
+ s := s +
+   '        file = self._file'#10;
+ s := s +
+   '        newfile = self._file = TemporaryFile(**self._Tempora' +
+   'ryFileArgs)'#10;
+ s := s +
+   '        del self._TemporaryFileArgs'#10;
+ s := s + #10;
+ s := s +
+   '        pos = file.tell()'#10;
+ s := s +
+   '        if hasattr(newfile, ''buffer''):'#10;
+ s := s +
+   '            newfile.buffer.write(file.getvalue())'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            newfile.write(file.getvalue())'#10;
+ s := s +
+   '        newfile.seek(pos, 0)'#10;
+ s := s + #10;
+ s := s +
+   '        self._rolled = True'#10;
+ s := s + #10;
+ s := s +
+   '    # The method caching trick from NamedTemporaryFile'#10;
+ s := s +
+   '    # won''t work here, because _file may change from a'#10;
+ s := s +
+   '    # BytesIO/StringIO instance to a real file. So we list'#10;
+ s := s +
+   '    # all the methods directly.'#10;
+ s := s + #10;
+ s := s +
+   '    # Context management protocol'#10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        if self._file.closed:'#10;
+ s := s +
+   '            raise ValueError("Cannot enter context with clos' +
+   'ed file")'#10;
+ s := s +
+   '        return self'#10;
+ s := s + #10;
+ s := s +
+   '    def __exit__(self, exc, value, tb):'#10;
+ s := s +
+   '        self._file.close()'#10;
+ s := s + #10;
+ s := s +
+   '    # file protocol'#10;
+ s := s +
+   '    def __iter__(self):'#10;
+ s := s +
+   '        return self._file.__iter__()'#10;
+ s := s + #10;
+ s := s +
+   '    def close(self):'#10;
+ s := s +
+   '        self._file.close()'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def closed(self):'#10;
+ s := s +
+   '        return self._file.closed'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def encoding(self):'#10;
+ s := s +
+   '        if self._rolled:'#10;
+ s := s +
+   '            return self._file.encoding'#10;
+ s := s +
+   '        if ''b'' in self._TemporaryFileArgs[''mode'']:'#10;
+ s := s +
+   '            raise AttributeError(''encoding'')'#10;
+ s := s +
+   '        return self._TemporaryFileArgs[''encoding'']'#10;
+ s := s + #10;
+ s := s +
+   '    def fileno(self):'#10;
+ s := s +
+   '        self.rollover()'#10;
+ s := s +
+   '        return self._file.fileno()'#10;
+ s := s + #10;
+ s := s +
+   '    def flush(self):'#10;
+ s := s +
+   '        self._file.flush()'#10;
+ s := s + #10;
+ s := s +
+   '    def isatty(self):'#10;
+ s := s +
+   '        return self._file.isatty()'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def mode(self):'#10;
+ s := s +
+   '        if self._rolled:'#10;
+ s := s +
+   '            return self._file.mode'#10;
+ s := s +
+   '        return self._TemporaryFileArgs[''mode'']'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def name(self):'#10;
+ s := s +
+   '        if self._rolled:'#10;
+ s := s +
+   '            return self._file.name'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def newlines(self):'#10;
+ s := s +
+   '        if self._rolled:'#10;
+ s := s +
+   '            return self._file.newlines'#10;
+ s := s +
+   '        if ''b'' in self._TemporaryFileArgs[''mode'']:'#10;
+ s := s +
+   '            raise AttributeError(''newlines'')'#10;
+ s := s +
+   '        return self._TemporaryFileArgs[''newline'']'#10;
+ s := s + #10;
+ s := s +
+   '    def read(self, *args):'#10;
+ s := s +
+   '        return self._file.read(*args)'#10;
+ s := s + #10;
+ s := s +
+   '    def readline(self, *args):'#10;
+ s := s +
+   '        return self._file.readline(*args)'#10;
+ s := s + #10;
+ s := s +
+   '    def readlines(self, *args):'#10;
+ s := s +
+   '        return self._file.readlines(*args)'#10;
+ s := s + #10;
+ s := s +
+   '    def seek(self, *args):'#10;
+ s := s +
+   '        self._file.seek(*args)'#10;
+ s := s + #10;
+ s := s +
+   '    @property'#10;
+ s := s +
+   '    def softspace(self):'#10;
+ s := s +
+   '        return self._file.softspace'#10;
+ s := s + #10;
+ s := s +
+   '    def tell(self):'#10;
+ s := s +
+   '        return self._file.tell()'#10;
+ s := s + #10;
+ s := s +
+   '    def truncate(self, size=None):'#10;
+ s := s +
+   '        if size is None:'#10;
+ s := s +
+   '            self._file.truncate()'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            if size > self._max_size:'#10;
+ s := s +
+   '                self.rollover()'#10;
+ s := s +
+   '            self._file.truncate(size)'#10;
+ s := s + #10;
+ s := s +
+   '    def write(self, s):'#10;
+ s := s +
+   '        file = self._file'#10;
+ s := s +
+   '        rv = file.write(s)'#10;
+ s := s +
+   '        self._check(file)'#10;
+ s := s +
+   '        return rv'#10;
+ s := s + #10;
+ s := s +
+   '    def writelines(self, iterable):'#10;
+ s := s +
+   '        file = self._file'#10;
+ s := s +
+   '        rv = file.writelines(iterable)'#10;
+ s := s +
+   '        self._check(file)'#10;
+ s := s +
+   '        return rv'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class TemporaryDirectory(object):'#10;
+ s := s +
+   '    """Create and return a temporary directory.  This has th' +
+   'e same'#10;
+ s := s +
+   '    behavior as mkdtemp but can be used as a context manager' +
+   '.  For'#10;
+ s := s +
+   '    example:'#10;
+ s := s + #10;
+ s := s +
+   '        with TemporaryDirectory() as tmpdir:'#10;
+ s := s +
+   '            ...'#10;
+ s := s + #10;
+ s := s +
+   '    Upon exiting the context, the directory and everything c' +
+   'ontained'#10;
+ s := s +
+   '    in it are removed.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self, suffix=None, prefix=None, dir=None):'#10;
+ s := s +
+   '        self.name = mkdtemp(suffix, prefix, dir)'#10;
+ s := s +
+   '        self._cleaned = False'#10;
+ s := s + #10;
+ s := s +
+   '    def __repr__(self):'#10;
+ s := s +
+   '        return "<{} {!r}>".format(self.__class__.__name__, s' +
+   'elf.name)'#10;
+ s := s + #10;
+ s := s +
+   '    def __enter__(self):'#10;
+ s := s +
+   '        return self.name'#10;
+ s := s + #10;
+ s := s +
+   '    def __exit__(self, exc, value, tb):'#10;
+ s := s +
+   '        self.cleanup()'#10;
+ s := s + #10;
+ s := s +
+   '    def cleanup(self):'#10;
+ s := s +
+   '        if not self._cleaned:'#10;
+ s := s +
+   '            self._cleaned = True'#10;
+ s := s +
+   '            import shutil as _shutil'#10;
+ s := s +
+   '            _shutil.rmtree(self.name)'#10;
+ s := s + #10;
+ Result := s;
+End;
+
+Function Src_textwrap: AnsiString;
+Var
+ s: AnsiString;
+Begin
+ s := '';
+ s := s +
+   '"""Text wrapping and filling (hand written splitter, no rege' +
+   'x)."""'#10;
+ s := s + #10;
+ s := s +
+   '__all__ = [''TextWrapper'', ''wrap'', ''fill'', ''dedent'', ''indent''' +
+   ', ''shorten'']'#10;
+ s := s + #10;
+ s := s +
+   '# Hardcode the recognized whitespace characters to the US-AS' +
+   'CII'#10;
+ s := s +
+   '# whitespace characters.  The main reason for doing this is ' +
+   'that'#10;
+ s := s +
+   '# some Unicode spaces (like  ) are non-breaking whitespaces.'#10;
+ s := s +
+   '_whitespace = ''\t\n\x0b\x0c\r '''#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_wordpunct(c):'#10;
+ s := s +
+   '    # [\w!"\''&.,?]'#10;
+ s := s +
+   '    return c in ''!"\''&.,?'' or c == ''_'' or c.isalnum()'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_letter(c):'#10;
+ s := s +
+   '    # [^\d\W]'#10;
+ s := s +
+   '    return (c == ''_'' or c.isalnum()) and not c.isdecimal()'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _is_word(c):'#10;
+ s := s +
+   '    return c == ''_'' or c.isalnum()'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class _SentenceEnd(object):'#10;
+ s := s +
+   '    """Stand-in for re.compile(r''[a-z][\\.\\!\\?][\\"\\'']?\\' +
+   'Z'')."""'#10;
+ s := s +
+   '    pattern = r''[a-z][\.\!\?][\"\'']?\Z'''#10;
+ s := s + #10;
+ s := s +
+   '    def search(self, chunk):'#10;
+ s := s +
+   '        if chunk[-1:] == ''"'' or chunk[-1:] == "''":'#10;
+ s := s +
+   '            chunk = chunk[:-1]'#10;
+ s := s +
+   '        if len(chunk) >= 2 and chunk[-1] in ''.!?'' and ''a'' <=' +
+   ' chunk[-2] <= ''z'':'#10;
+ s := s +
+   '            return True'#10;
+ s := s +
+   '        return None'#10;
+ s := s + #10;
+ s := s +
+   '    match = search'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def _split_hyphens(w):'#10;
+ s := s +
+   '    """Split a whitespace-free word the way textwrap''s words' +
+   'ep_re does."""'#10;
+ s := s +
+   '    n = len(w)'#10;
+ s := s +
+   '    out = []'#10;
+ s := s +
+   '    i = 0'#10;
+ s := s +
+   '    while i < n:'#10;
+ s := s +
+   '        # em-dash between words: (?<=wp) -{2,} (?=\w)'#10;
+ s := s +
+   '        if w[i] == ''-'' and i > 0 and _is_wordpunct(w[i - 1])' +
+   ':'#10;
+ s := s +
+   '            k = i'#10;
+ s := s +
+   '            while k < n and w[k] == ''-'':'#10;
+ s := s +
+   '                k += 1'#10;
+ s := s +
+   '            if k - i >= 2 and k < n and _is_word(w[k]):'#10;
+ s := s +
+   '                out.append(w[i:k])'#10;
+ s := s +
+   '                i = k'#10;
+ s := s +
+   '                continue'#10;
+ s := s +
+   '        j = i + 1'#10;
+ s := s +
+   '        while True:'#10;
+ s := s +
+   '            if j >= n:'#10;
+ s := s +
+   '                out.append(w[i:n])'#10;
+ s := s +
+   '                i = n'#10;
+ s := s +
+   '                break'#10;
+ s := s +
+   '            c = w[j]'#10;
+ s := s +
+   '            if c == ''-'':'#10;
+ s := s +
+   '                # hyphenated word'#10;
+ s := s +
+   '                if j >= 2 and _is_letter(w[j - 1]) and _is_l' +
+   'etter(w[j - 2]):'#10;
+ s := s +
+   '                    ok = True'#10;
+ s := s +
+   '                elif (j >= 3 and _is_letter(w[j - 1]) and w[' +
+   'j - 2] == ''-'''#10;
+ s := s +
+   '                      and _is_letter(w[j - 3])):'#10;
+ s := s +
+   '                    ok = True'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    ok = False'#10;
+ s := s +
+   '                if ok:'#10;
+ s := s +
+   '                    # lookahead: letter -? letter'#10;
+ s := s +
+   '                    p = j + 1'#10;
+ s := s +
+   '                    if p < n and _is_letter(w[p]):'#10;
+ s := s +
+   '                        p += 1'#10;
+ s := s +
+   '                        if p < n and w[p] == ''-'':'#10;
+ s := s +
+   '                            p += 1'#10;
+ s := s +
+   '                        if p < n and _is_letter(w[p]):'#10;
+ s := s +
+   '                            out.append(w[i:j + 1])'#10;
+ s := s +
+   '                            i = j + 1'#10;
+ s := s +
+   '                            break'#10;
+ s := s +
+   '            # em-dash: (?<=wp) (?=-{2,}\w)'#10;
+ s := s +
+   '            if c == ''-'' and _is_wordpunct(w[j - 1]):'#10;
+ s := s +
+   '                k = j'#10;
+ s := s +
+   '                while k < n and w[k] == ''-'':'#10;
+ s := s +
+   '                    k += 1'#10;
+ s := s +
+   '                if k - j >= 2 and k < n and _is_word(w[k]):'#10;
+ s := s +
+   '                    out.append(w[i:j])'#10;
+ s := s +
+   '                    i = j'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '            j += 1'#10;
+ s := s +
+   '    return out'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'class TextWrapper:'#10;
+ s := s +
+   '    """'#10;
+ s := s +
+   '    Object for wrapping/filling text.  The public interface ' +
+   'consists of'#10;
+ s := s +
+   '    the wrap() and fill() methods; the other methods are jus' +
+   't there for'#10;
+ s := s +
+   '    subclasses to override in order to tweak the default beh' +
+   'aviour.'#10;
+ s := s +
+   '    """'#10;
+ s := s + #10;
+ s := s +
+   '    unicode_whitespace_trans = {}'#10;
+ s := s +
+   '    uspace = ord('' '')'#10;
+ s := s +
+   '    for _whitespace_char in _whitespace:'#10;
+ s := s +
+   '        unicode_whitespace_trans[ord(_whitespace_char)] = us' +
+   'pace'#10;
+ s := s +
+   '    del _whitespace_char'#10;
+ s := s + #10;
+ s := s +
+   '    sentence_end_re = _SentenceEnd()'#10;
+ s := s + #10;
+ s := s +
+   '    def __init__(self,'#10;
+ s := s +
+   '                 width=70,'#10;
+ s := s +
+   '                 initial_indent="",'#10;
+ s := s +
+   '                 subsequent_indent="",'#10;
+ s := s +
+   '                 expand_tabs=True,'#10;
+ s := s +
+   '                 replace_whitespace=True,'#10;
+ s := s +
+   '                 fix_sentence_endings=False,'#10;
+ s := s +
+   '                 break_long_words=True,'#10;
+ s := s +
+   '                 drop_whitespace=True,'#10;
+ s := s +
+   '                 break_on_hyphens=True,'#10;
+ s := s +
+   '                 tabsize=8,'#10;
+ s := s +
+   '                 *,'#10;
+ s := s +
+   '                 max_lines=None,'#10;
+ s := s +
+   '                 placeholder='' [...]''):'#10;
+ s := s +
+   '        self.width = width'#10;
+ s := s +
+   '        self.initial_indent = initial_indent'#10;
+ s := s +
+   '        self.subsequent_indent = subsequent_indent'#10;
+ s := s +
+   '        self.expand_tabs = expand_tabs'#10;
+ s := s +
+   '        self.replace_whitespace = replace_whitespace'#10;
+ s := s +
+   '        self.fix_sentence_endings = fix_sentence_endings'#10;
+ s := s +
+   '        self.break_long_words = break_long_words'#10;
+ s := s +
+   '        self.drop_whitespace = drop_whitespace'#10;
+ s := s +
+   '        self.break_on_hyphens = break_on_hyphens'#10;
+ s := s +
+   '        self.tabsize = tabsize'#10;
+ s := s +
+   '        self.max_lines = max_lines'#10;
+ s := s +
+   '        self.placeholder = placeholder'#10;
+ s := s + #10;
+ s := s +
+   '    # -- Private methods -----------------------------------' +
+   '------------'#10;
+ s := s + #10;
+ s := s +
+   '    def _munge_whitespace(self, text):'#10;
+ s := s +
+   '        if self.expand_tabs:'#10;
+ s := s +
+   '            text = text.expandtabs(self.tabsize)'#10;
+ s := s +
+   '        if self.replace_whitespace:'#10;
+ s := s +
+   '            text = text.replace(''\t'', '' '').replace(''\n'', '' ''' +
+   ').replace(''\x0b'', '' '')'#10;
+ s := s +
+   '            text = text.replace(''\x0c'', '' '').replace(''\r'', ''' +
+   ' '')'#10;
+ s := s +
+   '        return text'#10;
+ s := s + #10;
+ s := s +
+   '    def _split(self, text):'#10;
+ s := s +
+   '        # Split on runs of ASCII whitespace; hyphenated word' +
+   's are further'#10;
+ s := s +
+   '        # split by _split_hyphens().'#10;
+ s := s +
+   '        hyph = self.break_on_hyphens'#10;
+ s := s +
+   '        plain = not (text.find(''\t'') >= 0 or text.find(''\n'')' +
+   ' >= 0'#10;
+ s := s +
+   '                     or text.find(''\r'') >= 0 or text.find(''\' +
+   'x0b'') >= 0'#10;
+ s := s +
+   '                     or text.find(''\x0c'') >= 0)'#10;
+ s := s +
+   '        if plain:'#10;
+ s := s +
+   '            masked = text'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            masked = (text.replace(''\t'', '' '').replace(''\n'', ' +
+   ''' '')'#10;
+ s := s +
+   '                      .replace(''\x0b'', '' '').replace(''\x0c'', ' +
+   ''' '').replace(''\r'', '' ''))'#10;
+ s := s +
+   '        chunks = []'#10;
+ s := s +
+   '        append = chunks.append'#10;
+ s := s +
+   '        run = 0'#10;
+ s := s +
+   '        spacepos = 0'#10;
+ s := s +
+   '        pos = 0'#10;
+ s := s +
+   '        first = True'#10;
+ s := s +
+   '        for w in masked.split('' ''):'#10;
+ s := s +
+   '            if first:'#10;
+ s := s +
+   '                first = False'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                if run == 0:'#10;
+ s := s +
+   '                    spacepos = pos'#10;
+ s := s +
+   '                run += 1'#10;
+ s := s +
+   '                pos += 1'#10;
+ s := s +
+   '            if w:'#10;
+ s := s +
+   '                if run:'#10;
+ s := s +
+   '                    if plain:'#10;
+ s := s +
+   '                        append('' '' * run)'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        append(text[spacepos:spacepos + run]' +
+   ')'#10;
+ s := s +
+   '                    run = 0'#10;
+ s := s +
+   '                if hyph and ''-'' in w:'#10;
+ s := s +
+   '                    chunks.extend(_split_hyphens(w))'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    append(w)'#10;
+ s := s +
+   '                pos += len(w)'#10;
+ s := s +
+   '        if run:'#10;
+ s := s +
+   '            if plain:'#10;
+ s := s +
+   '                append('' '' * run)'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                append(text[spacepos:spacepos + run])'#10;
+ s := s +
+   '        return chunks'#10;
+ s := s + #10;
+ s := s +
+   '    def _fix_sentence_endings(self, chunks):'#10;
+ s := s +
+   '        i = 0'#10;
+ s := s +
+   '        patsearch = self.sentence_end_re.search'#10;
+ s := s +
+   '        while i < len(chunks) - 1:'#10;
+ s := s +
+   '            if chunks[i + 1] == " " and patsearch(chunks[i])' +
+   ':'#10;
+ s := s +
+   '                chunks[i + 1] = "  "'#10;
+ s := s +
+   '                i += 2'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                i += 1'#10;
+ s := s + #10;
+ s := s +
+   '    def _handle_long_word(self, reversed_chunks, cur_line, c' +
+   'ur_len, width):'#10;
+ s := s +
+   '        # Figure out when indent is larger than the specifie' +
+   'd width, and make'#10;
+ s := s +
+   '        # sure at least one character is stripped off on eve' +
+   'ry pass'#10;
+ s := s +
+   '        if width < 1:'#10;
+ s := s +
+   '            space_left = 1'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            space_left = width - cur_len'#10;
+ s := s + #10;
+ s := s +
+   '        # If we''re allowed to break long words, then do so: ' +
+   'put as much'#10;
+ s := s +
+   '        # of the next chunk onto the current line as will fi' +
+   't.'#10;
+ s := s +
+   '        if self.break_long_words:'#10;
+ s := s +
+   '            cur_line.append(reversed_chunks[-1][:space_left]' +
+   ')'#10;
+ s := s +
+   '            reversed_chunks[-1] = reversed_chunks[-1][space_' +
+   'left:]'#10;
+ s := s + #10;
+ s := s +
+   '        # Otherwise, we have to preserve the long word intac' +
+   't.  Only add'#10;
+ s := s +
+   '        # it to the current line if there''s nothing already ' +
+   'there --'#10;
+ s := s +
+   '        # that minimizes how much we violate the width const' +
+   'raint.'#10;
+ s := s +
+   '        elif not cur_line:'#10;
+ s := s +
+   '            cur_line.append(reversed_chunks.pop())'#10;
+ s := s + #10;
+ s := s +
+   '    def _wrap_chunks(self, chunks):'#10;
+ s := s +
+   '        lines = []'#10;
+ s := s +
+   '        if self.width <= 0:'#10;
+ s := s +
+   '            raise ValueError("invalid width %r (must be > 0)' +
+   '" % self.width)'#10;
+ s := s +
+   '        if self.max_lines is not None:'#10;
+ s := s +
+   '            if self.max_lines > 1:'#10;
+ s := s +
+   '                indent = self.subsequent_indent'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                indent = self.initial_indent'#10;
+ s := s +
+   '            if len(indent) + len(self.placeholder.lstrip()) ' +
+   '> self.width:'#10;
+ s := s +
+   '                raise ValueError("placeholder too large for ' +
+   'max width")'#10;
+ s := s + #10;
+ s := s +
+   '        # Arrange in reverse order so items can be efficient' +
+   'ly popped'#10;
+ s := s +
+   '        # from a stack of chucks.'#10;
+ s := s +
+   '        chunks.reverse()'#10;
+ s := s + #10;
+ s := s +
+   '        while chunks:'#10;
+ s := s +
+   '            # Start the list of chunks that will make up the' +
+   ' current line.'#10;
+ s := s +
+   '            cur_line = []'#10;
+ s := s +
+   '            cur_len = 0'#10;
+ s := s + #10;
+ s := s +
+   '            # Figure out which static string will prefix thi' +
+   's line.'#10;
+ s := s +
+   '            if lines:'#10;
+ s := s +
+   '                indent = self.subsequent_indent'#10;
+ s := s +
+   '            else:'#10;
+ s := s +
+   '                indent = self.initial_indent'#10;
+ s := s + #10;
+ s := s +
+   '            # Maximum width for this line.'#10;
+ s := s +
+   '            width = self.width - len(indent)'#10;
+ s := s + #10;
+ s := s +
+   '            # First chunk on line is whitespace -- drop it, ' +
+   'unless this'#10;
+ s := s +
+   '            # is the very beginning of the text (ie. no line' +
+   's started yet).'#10;
+ s := s +
+   '            if self.drop_whitespace and chunks[-1].strip() =' +
+   '= '''' and lines:'#10;
+ s := s +
+   '                del chunks[-1]'#10;
+ s := s + #10;
+ s := s +
+   '            while chunks:'#10;
+ s := s +
+   '                l = len(chunks[-1])'#10;
+ s := s + #10;
+ s := s +
+   '                # Can at least squeeze this chunk onto the c' +
+   'urrent line.'#10;
+ s := s +
+   '                if cur_len + l <= width:'#10;
+ s := s +
+   '                    cur_line.append(chunks.pop())'#10;
+ s := s +
+   '                    cur_len += l'#10;
+ s := s + #10;
+ s := s +
+   '                # Nope, this line is full.'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    break'#10;
+ s := s + #10;
+ s := s +
+   '            # The current line is full, and the next chunk i' +
+   's too big to'#10;
+ s := s +
+   '            # fit on *any* line (not just this one).'#10;
+ s := s +
+   '            if chunks and len(chunks[-1]) > width:'#10;
+ s := s +
+   '                self._handle_long_word(chunks, cur_line, cur' +
+   '_len, width)'#10;
+ s := s +
+   '                cur_len = sum(map(len, cur_line))'#10;
+ s := s + #10;
+ s := s +
+   '            # If the last chunk on this line is all whitespa' +
+   'ce, drop it.'#10;
+ s := s +
+   '            if self.drop_whitespace and cur_line and cur_lin' +
+   'e[-1].strip() == '''':'#10;
+ s := s +
+   '                cur_len -= len(cur_line[-1])'#10;
+ s := s +
+   '                del cur_line[-1]'#10;
+ s := s + #10;
+ s := s +
+   '            if cur_line:'#10;
+ s := s +
+   '                if (self.max_lines is None or'#10;
+ s := s +
+   '                    len(lines) + 1 < self.max_lines or'#10;
+ s := s +
+   '                    (not chunks or'#10;
+ s := s +
+   '                     self.drop_whitespace and'#10;
+ s := s +
+   '                     len(chunks) == 1 and'#10;
+ s := s +
+   '                     not chunks[0].strip()) and cur_len <= w' +
+   'idth):'#10;
+ s := s +
+   '                    # Convert current line back to a string ' +
+   'and store it in'#10;
+ s := s +
+   '                    # list of all lines (return value).'#10;
+ s := s +
+   '                    lines.append(indent + ''''.join(cur_line))'#10;
+ s := s +
+   '                else:'#10;
+ s := s +
+   '                    while cur_line:'#10;
+ s := s +
+   '                        if (cur_line[-1].strip() and'#10;
+ s := s +
+   '                            cur_len + len(self.placeholder) ' +
+   '<= width):'#10;
+ s := s +
+   '                            cur_line.append(self.placeholder' +
+   ')'#10;
+ s := s +
+   '                            lines.append(indent + ''''.join(cu' +
+   'r_line))'#10;
+ s := s +
+   '                            break'#10;
+ s := s +
+   '                        cur_len -= len(cur_line[-1])'#10;
+ s := s +
+   '                        del cur_line[-1]'#10;
+ s := s +
+   '                    else:'#10;
+ s := s +
+   '                        if lines:'#10;
+ s := s +
+   '                            prev_line = lines[-1].rstrip()'#10;
+ s := s +
+   '                            if (len(prev_line) + len(self.pl' +
+   'aceholder) <='#10;
+ s := s +
+   '                                    self.width):'#10;
+ s := s +
+   '                                lines[-1] = prev_line + self' +
+   '.placeholder'#10;
+ s := s +
+   '                                break'#10;
+ s := s +
+   '                        lines.append(indent + self.placehold' +
+   'er.lstrip())'#10;
+ s := s +
+   '                    break'#10;
+ s := s + #10;
+ s := s +
+   '        return lines'#10;
+ s := s + #10;
+ s := s +
+   '    def _split_chunks(self, text):'#10;
+ s := s +
+   '        text = self._munge_whitespace(text)'#10;
+ s := s +
+   '        return self._split(text)'#10;
+ s := s + #10;
+ s := s +
+   '    # -- Public interface ----------------------------------' +
+   '------------'#10;
+ s := s + #10;
+ s := s +
+   '    def wrap(self, text):'#10;
+ s := s +
+   '        chunks = self._split_chunks(text)'#10;
+ s := s +
+   '        if self.fix_sentence_endings:'#10;
+ s := s +
+   '            self._fix_sentence_endings(chunks)'#10;
+ s := s +
+   '        return self._wrap_chunks(chunks)'#10;
+ s := s + #10;
+ s := s +
+   '    def fill(self, text):'#10;
+ s := s +
+   '        return "\n".join(self.wrap(text))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# -- Convenience interface ---------------------------------' +
+   '------------'#10;
+ s := s + #10;
+ s := s +
+   'def wrap(text, width=70, **kwargs):'#10;
+ s := s +
+   '    w = TextWrapper(width=width, **kwargs)'#10;
+ s := s +
+   '    return w.wrap(text)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def fill(text, width=70, **kwargs):'#10;
+ s := s +
+   '    w = TextWrapper(width=width, **kwargs)'#10;
+ s := s +
+   '    return w.fill(text)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def shorten(text, width, **kwargs):'#10;
+ s := s +
+   '    w = TextWrapper(width=width, max_lines=1, **kwargs)'#10;
+ s := s +
+   '    return w.fill('' ''.join(text.strip().split()))'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   '# -- Loosely related functionality -------------------------' +
+   '------------'#10;
+ s := s + #10;
+ s := s +
+   'def dedent(text):'#10;
+ s := s +
+   '    """Remove any common leading whitespace from every line ' +
+   'in `text`."""'#10;
+ s := s +
+   '    margin = None'#10;
+ s := s +
+   '    lines = text.split(''\n'')'#10;
+ s := s +
+   '    for k in range(len(lines)):'#10;
+ s := s +
+   '        line = lines[k]'#10;
+ s := s +
+   '        body = line.lstrip('' \t'')'#10;
+ s := s +
+   '        if not body:'#10;
+ s := s +
+   '            # whitespace-only line (or empty): normalized to' +
+   ' empty'#10;
+ s := s +
+   '            if line:'#10;
+ s := s +
+   '                lines[k] = '''''#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        if body[0] == ''\n'':   # cannot happen (split on \n),' +
+   ' kept for symmetry'#10;
+ s := s +
+   '            continue'#10;
+ s := s +
+   '        ind = line[:len(line) - len(body)]'#10;
+ s := s +
+   '        if margin is None:'#10;
+ s := s +
+   '            margin = ind'#10;
+ s := s +
+   '        elif ind.startswith(margin):'#10;
+ s := s +
+   '            pass'#10;
+ s := s +
+   '        elif margin.startswith(ind):'#10;
+ s := s +
+   '            margin = ind'#10;
+ s := s +
+   '        else:'#10;
+ s := s +
+   '            for i in range(min(len(margin), len(ind))):'#10;
+ s := s +
+   '                if margin[i] != ind[i]:'#10;
+ s := s +
+   '                    margin = margin[:i]'#10;
+ s := s +
+   '                    break'#10;
+ s := s +
+   '    if margin:'#10;
+ s := s +
+   '        m = len(margin)'#10;
+ s := s +
+   '        for k in range(len(lines)):'#10;
+ s := s +
+   '            if lines[k].startswith(margin):'#10;
+ s := s +
+   '                lines[k] = lines[k][m:]'#10;
+ s := s +
+   '    return ''\n''.join(lines)'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'def indent(text, prefix, predicate=None):'#10;
+ s := s +
+   '    if predicate is None:'#10;
+ s := s +
+   '        def predicate(line):'#10;
+ s := s +
+   '            return line.strip()'#10;
+ s := s + #10;
+ s := s +
+   '    def prefixed_lines():'#10;
+ s := s +
+   '        for line in text.splitlines(True):'#10;
+ s := s +
+   '            yield (prefix + line if predicate(line) else lin' +
+   'e)'#10;
+ s := s +
+   '    return ''''.join(prefixed_lines())'#10;
+ s := s + #10;
+ s := s + #10;
+ s := s +
+   'if __name__ == "__main__":'#10;
+ s := s +
+   '    print(dedent("Hello there.\n  This is indented."))'#10;
  s := s + #10;
  Result := s;
 End;
@@ -40871,9 +57963,21 @@ Begin
  s := s +
    'MemberDescriptorType = property'#10;
  s := s +
-   'CoroutineType = None'#10;
+   'async def _c(): pass'#10;
  s := s +
-   'AsyncGeneratorType = None'#10;
+   '_coro = _c()'#10;
+ s := s +
+   'CoroutineType = type(_coro)'#10;
+ s := s +
+   '_coro.close()'#10;
+ s := s +
+   'async def _ag():'#10;
+ s := s +
+   '    yield'#10;
+ s := s +
+   'AsyncGeneratorType = type(_ag())'#10;
+ s := s +
+   'del _c, _coro, _ag'#10;
  s := s + #10;
  s := s +
    'class SimpleNamespace:'#10;
@@ -41063,7 +58167,60 @@ Begin
  s := s +
    'def coroutine(func):'#10;
  s := s +
-   '    return func'#10;
+   '    if not callable(func):'#10;
+ s := s +
+   '        raise TypeError(''types.coroutine() expects a callabl' +
+   'e'')'#10;
+ s := s +
+   '    if isinstance(func, FunctionType) and (func.__code__.co_' +
+   'flags & 0x20):'#10;
+ s := s +
+   '        sys._make_iterable_coroutine(func)'#10;
+ s := s +
+   '        return func'#10;
+ s := s +
+   '    import functools'#10;
+ s := s +
+   '    @functools.wraps(func)'#10;
+ s := s +
+   '    def wrapped(*args, **kwargs):'#10;
+ s := s +
+   '        coro = func(*args, **kwargs)'#10;
+ s := s +
+   '        if (coro.__class__ is CoroutineType or'#10;
+ s := s +
+   '                coro.__class__ is GeneratorType and coro.gi_' +
+   'code.co_flags & 0x100):'#10;
+ s := s +
+   '            return coro'#10;
+ s := s +
+   '        if (hasattr(coro, ''__await__'') or hasattr(coro, ''sen' +
+   'd'')) and not isinstance(coro, (str, bytes)):'#10;
+ s := s +
+   '            class _Wrap:'#10;
+ s := s +
+   '                def __init__(self, c): self._c = c'#10;
+ s := s +
+   '                def __await__(self): return self'#10;
+ s := s +
+   '                def __iter__(self): return self'#10;
+ s := s +
+   '                def __next__(self): return self._c.send(None' +
+   ')'#10;
+ s := s +
+   '                def send(self, v): return self._c.send(v)'#10;
+ s := s +
+   '                def throw(self, *a): return self._c.throw(*a' +
+   ')'#10;
+ s := s +
+   '                def close(self): return self._c.close()'#10;
+ s := s +
+   '            return _Wrap(coro) if not hasattr(coro, ''__await' +
+   '__'') else coro'#10;
+ s := s +
+   '        return coro'#10;
+ s := s +
+   '    return wrapped'#10;
  s := s + #10;
  s := s +
    '__all__ = [n for n in globals() if n[:1] != ''_'']'#10;
@@ -43186,6 +60343,7 @@ Procedure RegisterPrelude;
 Begin
   RegSource('_bytesimpl', @Src__bytesimpl);
   RegSource('abc', @Src_abc);
+  RegSource('asyncio', @Src_asyncio);
   RegSource('bisect', @Src_bisect);
   RegSource('cmath', @Src_cmath);
   RegSource('code', @Src_code);
@@ -43195,29 +60353,46 @@ Begin
   RegSource('compileall', @Src_compileall);
   RegSource('contextlib', @Src_contextlib);
   RegSource('copy', @Src_copy);
+  RegSource('dataclasses', @Src_dataclasses);
   RegSource('dis', @Src_dis);
   RegSource('enum', @Src_enum);
   RegSource('errno', @Src_errno);
+  RegSource('fnmatch', @Src_fnmatch);
   RegSource('functools', @Src_functools);
+  RegSource('getopt', @Src_getopt);
+  RegSource('getpass', @Src_getpass);
+  RegSource('glob', @Src_glob);
   RegSource('heapq', @Src_heapq);
   RegSource('importlib.machinery', @Src_importlib_machinery);
   RegSource('importlib', @Src_importlib);
   RegSource('importlib.util', @Src_importlib_util);
   RegSource('io', @Src_io);
   RegSource('itertools', @Src_itertools);
+  RegSource('json.decoder', @Src_json_decoder);
+  RegSource('json.encoder', @Src_json_encoder);
+  RegSource('json', @Src_json);
+  RegSource('json.scanner', @Src_json_scanner);
   RegSource('keyword', @Src_keyword);
   RegSource('linecache', @Src_linecache);
+  RegSource('locale', @Src_locale);
   RegSource('opcode', @Src_opcode);
   RegSource('operator', @Src_operator);
   RegSource('os', @Src_os);
+  RegSource('platform', @Src_platform);
   RegSource('posixpath', @Src_posixpath);
+  RegSource('pprint', @Src_pprint);
   RegSource('py_compile', @Src_py_compile);
   RegSource('random', @Src_random);
   RegSource('re', @Src_re);
+  RegSource('reprlib', @Src_reprlib);
   RegSource('runpy', @Src_runpy);
+  RegSource('shlex', @Src_shlex);
+  RegSource('shutil', @Src_shutil);
   RegSource('site', @Src_site);
   RegSource('stat', @Src_stat);
   RegSource('string', @Src_string);
+  RegSource('tempfile', @Src_tempfile);
+  RegSource('textwrap', @Src_textwrap);
   RegSource('traceback', @Src_traceback);
   RegSource('types', @Src_types);
   RegSource('typing', @Src_typing);
