@@ -34,11 +34,11 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 10 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 11 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
-         clauses, declarations, coercitions, primaires) ;
-         TODO 11 a 25 a faire.
+         clauses, declarations, coercitions, primaires, formules) ;
+         TODO 12 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -522,7 +522,7 @@
               d'un mode qui ne convient pas, nombre d'indices, coercition
               impossible dans INT(r)
 
-  TODO 11 - FORMULES ET OPERATEURS STANDARD [A FAIRE]
+  TODO 11 - FORMULES ET OPERATEURS STANDARD [IMPLEMENTE]
             Priorites : monadiques (ABS SIGN ODD NOT BIN LWB UPB) au plus
               haut ; ** SHL SHR (8) ; * / OVER MOD (7) ; + - (6) ;
               < <= > >= (5) ; = /= (4) ; AND (3) ; OR (2)
@@ -539,6 +539,41 @@
             Mode de resultat de chaque operateur, erreur si les modes
               des operandes ne conviennent pas
             Verification : test_formula.a68, math.a68, ops.a68
+            Realise : section 10 ; ParseFormula (operateurs a priorites,
+              associatifs a gauche, priorites lues dans la table des
+              symboles : OR 2 a ** 8, monadiques au-dessus) et ParseOperand
+              (operateurs monadiques puis primaire) ; operateurs
+              reconnus seulement s'ils existent dans le prelude ou chez
+              l'utilisateur, sinon l'unite reste enveloppee (OP du TODO
+              17, affectations du TODO 14) ; CoercePossible et
+              SymFindOpFirm : l'operateur est identifie d'apres les modes
+              des operandes apres coercitions fermes (le plus interne et le
+              plus recent d'abord) ; MakeDyadic et MakeMonadic (operandes
+              coerces vers les modes de l'operateur, erreur operateur
+              impossible pour les modes X et Y) ; FoldBinary et FoldUnary :
+              repliement entier (Int64, debordement signale), reel,
+              booleen, comparaisons, ABS, SIGN, ODD, NOT, ENTIER, ROUND,
+              division par zero constante signalee une seule fois ; une
+              clause fermee suivie d'un operateur est une primaire ;
+              GenDyadic et GenMonadic : entiers (ADD, SUB, IMUL, IDIV
+              avec controle du diviseur puis appel de DIVZERO, MOD toujours
+              positif ou nul), reels sur la pile x87 (FADDP, FSUBP, FMULP,
+              FDIVP, comparaison par FCOMP, FNSTSW, SAHF et SETcc), / sur
+              deux INT donne un REAL, comparaisons, AND, OR, NOT, SHL, SHR,
+              ABS, SIGN, ODD, chaines par STRCAT et STRCMP (adresses des
+              descripteurs dans ESI et EDI) ; les routines _A68RT_ (POW,
+              RPOW, FLOOR, RTOI, RSIGN, DIVZERO, STRCAT, STRCMP) seront
+              fournies par le TODO 22
+            Verifie : les 27 exemples sont analyses sans erreur ; programme
+              d'essai de 28 formules assemble par ML et execute (valeurs lues
+              par le code de sortie) : + - * OVER MOD (reste positif, -7 MOD
+              3 = 2), OVER tronque (-7 OVER 2 = -3), ** avec un POW de
+              substitution, ABS, SIGN, - unaire, comparaisons, AND avec
+              priorite, NOT (clause fermee), ODD, reels (1.5 + 15 = 16.5, 15 /
+              5 = 3, 2 * 16.5 - 1 = 32), SHL, SHR, priorites (15 + 4 * 2 = 23,
+              (15 + 4) * 2 = 38, 2 + 3 * 4 = 14 replie) ; erreurs : division
+              par zero constante ou variable constante, BOOL + INT, REF
+              STRING * INT, debordement de constante
 
   TODO 12 - CLAUSES CONDITIONNELLES ET REPETITIVES [A FAIRE]
             IF ... THEN ... ELIF ... ELSE ... FI avec valeur (INT a :=
@@ -1028,6 +1063,8 @@ Type
     UK_CALL,       { A = procedure, B = arguments, IntVal = nombre     }
     UK_CONSTRUCT,  { constructeur de structure : A = valeurs           }
     UK_CAST,       { conversion mode(unite) : A = unite                }
+    UK_FORMULA,    { formule : Name, Sym = operateur, A, B (-1 si
+                     monadique), IntVal = 1 ou 2                       }
     UK_INTDEN,     { denotation entiere : IntVal                       }
     UK_REALDEN,    { denotation reelle : RealVal                       }
     UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
@@ -5589,6 +5626,7 @@ Begin
 End;
 
 Function ParsePrimary : LongInt; Forward;
+Function ClauseFollowOk(K : LongInt) : Boolean; Forward;
 
 { Liste d unites separees par des virgules jusqu a la parenthese
   fermante (consommee) ; retourne la tete de liste, Count = nombre }
@@ -5901,7 +5939,7 @@ Begin
       U := DenotationNode;
     TK_KEYWORD:
       Begin
-        If AtKw('BEGIN') And TokEndsExprAbs(TokAfterClose) Then
+        If AtKw('BEGIN') And ClauseFollowOk(TokAfterClose) Then
           U := ParseClosed
         Else If (AtKw('INT') Or AtKw('REAL') Or AtKw('BOOL') Or
                  AtKw('CHAR') Or AtKw('STRING') Or AtKw('BITS')) And
@@ -5913,7 +5951,7 @@ Begin
     TK_PUNCT:
       Begin
         If AtPunct('(') And ParenIsClosed And
-           TokEndsExprAbs(TokAfterClose) Then
+           ClauseFollowOk(TokAfterClose) Then
           U := ParseClosed
         Else
           Exit;
@@ -5972,9 +6010,515 @@ Begin
   ParsePrimary := U;
 End;
 
+{ ---- Formules (TODO 11) ---- }
+
+{ Les coercitions de force Str menent-elles du mode M au mode Want ?
+  (meme suite que CoerceUnit, sans modifier l arbre) }
+Function CoercePossible(M, Want : Integer; Str : TStrength) : Boolean;
+Var
+  W, Steps : Integer;
+  Done     : Boolean;
+Begin
+  CoercePossible := False;
+  If (M = MD_ERROR) Or (Want = MD_ERROR) Then Exit;
+  M := ModeResolve(M);
+  W := ModeResolve(Want);
+  Done := False;
+  Steps := 0;
+  While Not Done And (Steps < 16) Do
+  Begin
+    Inc(Steps);
+    If ModeSame(M, W) Or (CoerceFit(M, W, Str) <> FIT_NONE) Then
+    Begin
+      CoercePossible := True;
+      Done := True;
+    End
+    Else If (ModeTab[M].Kind = MK_REF) And (Str >= STR_MEEK) Then
+      M := ModeResolve(ModeTab[M].Sub)
+    Else If ModeIsProc0(M) Then
+      M := ModeResolve(ModeTab[M].Sub)
+    Else
+      Done := True;
+  End;
+End;
+
+{ Un operande de mode M convient-il a l operande I de l operateur S
+  apres des coercitions de force ferme ? }
+Function OpOperandFirm(S, I, M : Integer) : Boolean;
+Begin
+  If SymTab[S].Generic Then
+    OpOperandFirm := ModeKind(ModeDeref(M)) = MK_ROW
+  Else
+    OpOperandFirm := CoercePossible(M, OpOperand(S, I), STR_FIRM);
+End;
+
+{ Operateur de ce nom dont les operandes acceptent ces modes apres
+  coercitions fermes ; la portee la plus interne et la declaration la
+  plus recente l emportent. -1 si aucun. }
+Function SymFindOpFirm(Const Name : TName; Arity : Integer; A, B : Integer)
+         : Integer;
+Var
+  S, I : Integer;
+  Ok   : Boolean;
+Begin
+  SymFindOpFirm := -1;
+  S := ScopeCur;
+  While S >= 0 Do
+  Begin
+    I := ScopeTab[S].LastSym;
+    While I >= 0 Do
+    Begin
+      If (SymTab[I].Kind = SK_OP) And (SymTab[I].Name = Name) And
+         (OpArity(I) = Arity) Then
+      Begin
+        Ok := OpOperandFirm(I, 0, A);
+        If Ok And (Arity = 2) Then Ok := OpOperandFirm(I, 1, B);
+        If Ok Then
+        Begin
+          SymFindOpFirm := I;
+          Exit;
+        End;
+      End;
+      I := SymTab[I].Prev;
+    End;
+    S := ScopeTab[S].Parent;
+  End;
+End;
+
+{ ---- repliement des constantes ---- }
+Var
+  FoldFailed : Boolean;      { une erreur a deja ete signalee }
+
+Function IsNumDen(U : LongInt) : Boolean;
+Begin
+  IsNumDen := UnitTab[U].Kind In [UK_INTDEN, UK_REALDEN];
+End;
+
+Function NumReal(U : LongInt) : Double;
+Begin
+  If UnitTab[U].Kind = UK_INTDEN Then
+    NumReal := UnitTab[U].IntVal
+  Else
+    NumReal := UnitTab[U].RealVal;
+End;
+
+Procedure SetIntDen(U : LongInt; V : Int64; Line, Col : Integer);
+Begin
+  If (V > 2147483647) Or (V < -2147483647) Then
+  Begin
+    ErrorAt(Line, Col, 'debordement entier dans une constante');
+    V := 0;
+  End;
+  UnitTab[U].Kind := UK_INTDEN;
+  UnitTab[U].IntVal := V;
+  UnitTab[U].Mode := MD_INT;
+End;
+
+Procedure SetRealDen(U : LongInt; V : Double; Line, Col : Integer);
+Begin
+  If RealBad(V) Then
+  Begin
+    ErrorAt(Line, Col, 'debordement reel dans une constante');
+    V := 0;
+  End;
+  UnitTab[U].Kind := UK_REALDEN;
+  UnitTab[U].RealVal := V;
+  UnitTab[U].Mode := MD_REAL;
+End;
+
+Procedure SetBoolDen(U : LongInt; V : Boolean);
+Begin
+  UnitTab[U].Kind := UK_BOOLDEN;
+  If V Then UnitTab[U].IntVal := 1 Else UnitTab[U].IntVal := 0;
+  UnitTab[U].Mode := MD_BOOL;
+End;
+
+{ Replie la formule dyadique de deux denotations dans le noeud L ;
+  retourne False si elle ne peut pas l etre }
+Function FoldBinary(Const Op : TName; L, R : LongInt; ResMode : Integer;
+                    Line, Col : Integer) : Boolean;
+Var
+  A, B, P : Int64;
+  X, Y    : Double;
+  I       : Integer;
+  Cmp     : Integer;
+Begin
+  FoldBinary := False;
+  If Not (IsNumDen(L) And IsNumDen(R)) And
+     Not ((UnitTab[L].Kind = UK_BOOLDEN) And
+          (UnitTab[R].Kind = UK_BOOLDEN)) Then Exit;
+  If (UnitTab[L].Kind = UK_BOOLDEN) Then
+  Begin
+    A := UnitTab[L].IntVal;
+    B := UnitTab[R].IntVal;
+    If Op = 'AND' Then SetBoolDen(L, (A <> 0) And (B <> 0))
+    Else If Op = 'OR' Then SetBoolDen(L, (A <> 0) Or (B <> 0))
+    Else If Op = '=' Then SetBoolDen(L, A = B)
+    Else If Op = '/=' Then SetBoolDen(L, A <> B)
+    Else Exit;
+    FoldBinary := True;
+    Exit;
+  End;
+  X := NumReal(L);
+  Y := NumReal(R);
+  { comparaisons }
+  If ResMode = MD_BOOL Then
+  Begin
+    If X < Y Then Cmp := -1 Else If X > Y Then Cmp := 1 Else Cmp := 0;
+    If Op = '<' Then SetBoolDen(L, Cmp < 0)
+    Else If Op = '<=' Then SetBoolDen(L, Cmp <= 0)
+    Else If Op = '>' Then SetBoolDen(L, Cmp > 0)
+    Else If Op = '>=' Then SetBoolDen(L, Cmp >= 0)
+    Else If Op = '=' Then SetBoolDen(L, Cmp = 0)
+    Else If Op = '/=' Then SetBoolDen(L, Cmp <> 0)
+    Else Exit;
+    FoldBinary := True;
+    Exit;
+  End;
+  If ResMode = MD_REAL Then
+  Begin
+    If Op = '+' Then SetRealDen(L, X + Y, Line, Col)
+    Else If Op = '-' Then SetRealDen(L, X - Y, Line, Col)
+    Else If Op = '*' Then SetRealDen(L, X * Y, Line, Col)
+    Else If Op = '/' Then
+    Begin
+      If Y = 0 Then
+      Begin
+        ErrorAt(Line, Col, 'division par zero');
+        FoldFailed := True;
+        Exit;
+      End;
+      SetRealDen(L, X / Y, Line, Col);
+    End
+    Else If Op = '**' Then
+    Begin
+      If (UnitTab[R].Kind = UK_INTDEN) And (UnitTab[R].IntVal >= 0) And
+         (UnitTab[R].IntVal <= 64) Then
+      Begin
+        X := 1;
+        For I := 1 To UnitTab[R].IntVal Do
+          X := X * NumReal(L);
+        SetRealDen(L, X, Line, Col);
+      End
+      Else If NumReal(L) > 0 Then
+        SetRealDen(L, Exp(Y * Ln(NumReal(L))), Line, Col)
+      Else
+        Exit;
+    End
+    Else Exit;
+    FoldBinary := True;
+    Exit;
+  End;
+  { resultat entier }
+  If (UnitTab[L].Kind <> UK_INTDEN) Or (UnitTab[R].Kind <> UK_INTDEN) Then
+    Exit;
+  A := UnitTab[L].IntVal;
+  B := UnitTab[R].IntVal;
+  If Op = '+' Then SetIntDen(L, A + B, Line, Col)
+  Else If Op = '-' Then SetIntDen(L, A - B, Line, Col)
+  Else If Op = '*' Then SetIntDen(L, A * B, Line, Col)
+  Else If (Op = 'OVER') Or (Op = '%') Or (Op = 'MOD') Or (Op = '%*') Then
+  Begin
+    If B = 0 Then
+    Begin
+      ErrorAt(Line, Col, 'division par zero');
+      FoldFailed := True;
+      Exit;
+    End;
+    If (Op = 'OVER') Or (Op = '%') Then
+      SetIntDen(L, A Div B, Line, Col)
+    Else
+    Begin
+      P := A Mod B;
+      If P < 0 Then
+      Begin
+        If B < 0 Then P := P - B Else P := P + B;
+      End;
+      SetIntDen(L, P, Line, Col);
+    End;
+  End
+  Else If Op = '**' Then
+  Begin
+    If (B < 0) Or (B > 31) Then Exit;
+    P := 1;
+    For I := 1 To B Do
+    Begin
+      P := P * A;
+      If (P > 2147483647) Or (P < -2147483647) Then
+      Begin
+        ErrorAt(Line, Col, 'debordement entier dans une constante');
+        P := 0;
+      End;
+    End;
+    SetIntDen(L, P, Line, Col);
+  End
+  Else If (Op = 'SHL') And (B >= 0) And (B < 31) Then
+    SetIntDen(L, A * (Int64(1) Shl B), Line, Col)
+  Else If (Op = 'SHR') And (B >= 0) And (B < 31) Then
+    SetIntDen(L, A Div (Int64(1) Shl B), Line, Col)
+  Else
+    Exit;
+  FoldBinary := True;
+End;
+
+Function FoldUnary(Const Op : TName; A : LongInt; ResMode : Integer;
+                   Line, Col : Integer) : Boolean;
+Var
+  V : Int64;
+  X : Double;
+Begin
+  FoldUnary := False;
+  If UnitTab[A].Kind = UK_BOOLDEN Then
+  Begin
+    If Op = 'NOT' Then SetBoolDen(A, UnitTab[A].IntVal = 0)
+    Else Exit;
+    FoldUnary := True;
+    Exit;
+  End;
+  If UnitTab[A].Kind = UK_INTDEN Then
+  Begin
+    V := UnitTab[A].IntVal;
+    If Op = '-' Then SetIntDen(A, -V, Line, Col)
+    Else If Op = '+' Then
+      V := V
+    Else If Op = 'ABS' Then SetIntDen(A, Abs(V), Line, Col)
+    Else If Op = 'SIGN' Then
+    Begin
+      If V > 0 Then V := 1 Else If V < 0 Then V := -1 Else V := 0;
+      SetIntDen(A, V, Line, Col);
+    End
+    Else If Op = 'ODD' Then SetBoolDen(A, (V And 1) <> 0)
+    Else Exit;
+    FoldUnary := True;
+    Exit;
+  End;
+  If UnitTab[A].Kind = UK_REALDEN Then
+  Begin
+    X := UnitTab[A].RealVal;
+    If Op = '-' Then SetRealDen(A, -X, Line, Col)
+    Else If Op = '+' Then
+      X := X
+    Else If Op = 'ABS' Then SetRealDen(A, Abs(X), Line, Col)
+    Else If Op = 'SIGN' Then
+    Begin
+      If X > 0 Then V := 1 Else If X < 0 Then V := -1 Else V := 0;
+      SetIntDen(A, V, Line, Col);
+    End
+    Else If Op = 'ENTIER' Then
+    Begin
+      If Abs(X) >= 2147483647.0 Then Exit;
+      V := Trunc(X);
+      If V > X Then Dec(V);
+      SetIntDen(A, V, Line, Col);
+    End
+    Else If Op = 'ROUND' Then
+    Begin
+      If Abs(X) >= 2147483646.0 Then Exit;
+      V := Trunc(X + 0.5);
+      If V > X + 0.5 Then Dec(V);
+      SetIntDen(A, V, Line, Col);
+    End
+    Else Exit;
+    FoldUnary := True;
+  End;
+End;
+
+{ Formule dyadique : operateur identifie d apres les modes des deux
+  operandes, operandes coerces vers les modes de l operateur }
+Function MakeDyadic(Const Op : TName; L, R : LongInt; Line, Col : Integer)
+         : LongInt;
+Var
+  U         : LongInt;
+  ML, MR, S : Integer;
+Begin
+  ML := NatMode(L);
+  MR := NatMode(R);
+  U := UnitNew(UK_FORMULA, Line, Col);
+  UnitTab[U].Name := Op;
+  UnitTab[U].A := L;
+  UnitTab[U].B := R;
+  UnitTab[U].IntVal := 2;
+  MakeDyadic := U;
+  If (ML = MD_ERROR) Or (MR = MD_ERROR) Then Exit;     { mode inconnu }
+  S := SymFindOpFirm(Op, 2, ML, MR);
+  If S < 0 Then
+  Begin
+    ErrorAt(Line, Col, 'operateur ' + Op + ' impossible pour les modes ' +
+            ModeName(ML) + ' et ' + ModeName(MR));
+    Exit;
+  End;
+  UnitTab[U].Sym := S;
+  UnitTab[U].Mode := OpResult(S);
+  If SymTab[S].Generic Then
+  Begin
+    UnitTab[U].A := CoerceName(L);
+    Exit;
+  End;
+  L := CoerceUnit(L, OpOperand(S, 0), STR_FIRM);
+  R := CoerceUnit(R, OpOperand(S, 1), STR_FIRM);
+  UnitTab[U].A := L;
+  UnitTab[U].B := R;
+  FoldFailed := False;
+  If SymTab[S].Intrinsic And
+     FoldBinary(Op, L, R, ModeResolve(OpResult(S)), Line, Col) Then
+  Begin
+    MakeDyadic := L;                       { la formule devient constante }
+    UnitTab[L].Line := Line;
+    UnitTab[L].Col := Col;
+  End
+  Else If SymTab[S].Intrinsic And (Not FoldFailed) And
+          ((Op = 'OVER') Or (Op = '%') Or (Op = 'MOD') Or (Op = '%*') Or
+           (Op = '/')) And (UnitTab[R].Kind = UK_INTDEN) And
+          (UnitTab[R].IntVal = 0) Then
+    ErrorAt(Line, Col, 'division par zero');
+End;
+
+Function MakeMonadic(Const Op : TName; A : LongInt; Line, Col : Integer)
+         : LongInt;
+Var
+  U         : LongInt;
+  MA, S     : Integer;
+Begin
+  MA := NatMode(A);
+  U := UnitNew(UK_FORMULA, Line, Col);
+  UnitTab[U].Name := Op;
+  UnitTab[U].A := A;
+  UnitTab[U].IntVal := 1;
+  MakeMonadic := U;
+  If MA = MD_ERROR Then Exit;
+  S := SymFindOpFirm(Op, 1, MA, 0);
+  If S < 0 Then
+  Begin
+    ErrorAt(Line, Col, 'operateur monadique ' + Op +
+            ' impossible pour le mode ' + ModeName(MA));
+    Exit;
+  End;
+  UnitTab[U].Sym := S;
+  UnitTab[U].Mode := OpResult(S);
+  If SymTab[S].Generic Then
+  Begin
+    UnitTab[U].A := CoerceName(A);
+    Exit;
+  End;
+  A := CoerceUnit(A, OpOperand(S, 0), STR_FIRM);
+  UnitTab[U].A := A;
+  If SymTab[S].Intrinsic And
+     FoldUnary(Op, A, ModeResolve(OpResult(S)), Line, Col) Then
+  Begin
+    MakeMonadic := A;
+    UnitTab[A].Line := Line;
+    UnitTab[A].Col := Col;
+  End;
+End;
+
+{ Le jeton courant est-il un operateur dyadique connu ? Retourne son
+  nom et sa priorite (0 sinon) }
+Function AtDyadic(Var Name : TName) : Integer;
+Var
+  T : TToken;
+  P : Integer;
+Begin
+  AtDyadic := 0;
+  T := TokTab[TokPos];
+  If (T.Kind <> TK_OP) And (T.Kind <> TK_BOLD) Then Exit;
+  Name := T.Val;
+  If (Name = ':=') Or (Name = '=:') Or
+     ((Length(Name) >= 3) And (Copy(Name, Length(Name) - 1, 2) = ':=')) Then
+    Exit;
+  P := SymFindPrio(Name);
+  If (P > 0) And SymOpExists(Name, 2) Then AtDyadic := P;
+End;
+
+Function AtMonadic(Var Name : TName) : Boolean;
+Var
+  T : TToken;
+Begin
+  AtMonadic := False;
+  T := TokTab[TokPos];
+  If (T.Kind <> TK_OP) And (T.Kind <> TK_BOLD) Then Exit;
+  If (T.Kind = TK_BOLD) And (SymFindMode(T.Val) >= 0) Then Exit;
+  Name := T.Val;
+  AtMonadic := SymOpExists(Name, 1);
+End;
+
+Function ParseFormula(MinPrio : Integer) : LongInt; Forward;
+
+{ Operande : operateurs monadiques (prioritaires) puis primaire }
+Function ParseOperand : LongInt;
+Var
+  Name : TName;
+  L, C : Integer;
+  A    : LongInt;
+Begin
+  If AtMonadic(Name) Then
+  Begin
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    ParserAdvance;
+    A := ParseOperand;
+    If A < 0 Then
+    Begin
+      ParseOperand := -1;
+      Exit;
+    End;
+    ParseOperand := MakeMonadic(Name, A, L, C);
+  End
+  Else
+    ParseOperand := ParsePrimary;
+End;
+
+{ Formule : operandes separes par des operateurs dyadiques, selon leurs
+  priorites (association a gauche) ; -1 si l unite n est pas une
+  formule connue }
+Function ParseFormula(MinPrio : Integer) : LongInt;
+Var
+  Left, Right : LongInt;
+  Name        : TName;
+  P           : Integer;
+  L, C        : Integer;
+Begin
+  Left := ParseOperand;
+  If Left < 0 Then
+  Begin
+    ParseFormula := -1;
+    Exit;
+  End;
+  P := AtDyadic(Name);
+  While (P > 0) And (P >= MinPrio) Do
+  Begin
+    L := TokTab[TokPos].Line;
+    C := TokTab[TokPos].Col;
+    ParserAdvance;
+    Right := ParseFormula(P + 1);
+    If Right < 0 Then
+    Begin
+      ParseFormula := -1;
+      Exit;
+    End;
+    Left := MakeDyadic(Name, Left, Right, L, C);
+    P := AtDyadic(Name);
+  End;
+  ParseFormula := Left;
+End;
+
 { Unite jusqu a une virgule / un deux-points / une fermeture : primaire
   si elle forme toute l unite, enveloppe provisoire sinon (formules,
   conditionnelles, boucles...). Stops comme ParseOpaqueUntil. }
+{ Apres une clause fermee, la primaire est complete si l expression se
+  termine ou si un operateur dyadique connu suit }
+Function ClauseFollowOk(K : LongInt) : Boolean;
+Var
+  Save : LongInt;
+  Name : TName;
+Begin
+  ClauseFollowOk := True;
+  If TokEndsExprAbs(K) Then Exit;
+  Save := TokPos;
+  TokPos := K;
+  ClauseFollowOk := AtDyadic(Name) > 0;
+  TokPos := Save;
+End;
+
 Function ParseUnitX(Stops : Integer) : LongInt;
 Var
   U, SaveUnits : LongInt;
@@ -5990,7 +6534,7 @@ Begin
   SavePos := TokPos;
   SaveUnits := UnitCount;
   SaveGotos := GotoCount;
-  U := ParsePrimary;
+  U := ParseFormula(0);
   If (U >= 0) And TokEndsExpr(0) Then
   Begin
     ParseUnitX := U;
@@ -6160,6 +6704,7 @@ Begin
     UK_CALL     : UnitKindName := 'appel';
     UK_CONSTRUCT: UnitKindName := 'constructeur';
     UK_CAST     : UnitKindName := 'conversion';
+    UK_FORMULA  : UnitKindName := 'formule';
     UK_INTDEN   : UnitKindName := 'denotation INT';
     UK_REALDEN  : UnitKindName := 'denotation REAL';
     UK_BOOLDEN  : UnitKindName := 'denotation BOOL';
@@ -6211,6 +6756,8 @@ Begin
     UK_SLICE   : Write(' ', UnitTab[U].IntVal, ' indice(s), ',
                        UnitTab[U].C, ' tranche(s) : ',
                        ModeName(UnitTab[U].Mode));
+    UK_FORMULA : Write(' ', UnitTab[U].Name, ' : ',
+                       ModeName(UnitTab[U].Mode));
     UK_CALL    : Write(' ', UnitTab[U].IntVal, ' argument(s) : ',
                        ModeName(UnitTab[U].Mode));
     UK_CONSTRUCT, UK_CAST : Write(' : ', ModeName(UnitTab[U].Mode));
@@ -6254,6 +6801,11 @@ Begin
     UnitDump(UnitTab[U].A, Depth + 1)
   Else If UnitTab[U].Kind In [UK_COERCE, UK_SELECT, UK_CAST] Then
     UnitDumpOne(UnitTab[U].A, Depth + 1)
+  Else If UnitTab[U].Kind = UK_FORMULA Then
+  Begin
+    UnitDumpOne(UnitTab[U].A, Depth + 1);
+    If UnitTab[U].B >= 0 Then UnitDumpOne(UnitTab[U].B, Depth + 1);
+  End
   Else If UnitTab[U].Kind In [UK_SLICE, UK_CALL] Then
   Begin
     UnitDumpOne(UnitTab[U].A, Depth + 1);
@@ -6622,6 +7174,276 @@ Begin
   End;
 End;
 
+{ ---- Formules (TODO 11) ---- }
+
+{ Charge l unite U comme reel dans ST(0) (un INT est converti) }
+Procedure GenAsReal(U : LongInt);
+Begin
+  GenValue(U);
+  If ValClass(UnitTab[U].Mode) <> 2 Then
+  Begin
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+    Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+  End;
+End;
+
+{ EAX = caractere : construit dans des cellules temporaires la chaine
+  d un caractere ; EAX = adresse de son descripteur }
+Procedure GenCharToString;
+Var
+  Ch, D : Integer;
+Begin
+  Ch := NewTemp(4);
+  D := NewTemp(16);
+  Emit(OP_MOV, OpMemSym(Ch, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpReg(R_EAX), OpOffset(Ch));
+  Emit(OP_MOV, OpMemSym(D, 0, 4), OpReg(R_EAX));
+  Emit(OP_MOV, OpMemSym(D, 4, 4), OpImm(1));
+  Emit(OP_MOV, OpMemSym(D, 8, 4), OpImm(1));
+  Emit(OP_MOV, OpMemSym(D, 12, 4), OpImm(1));
+  Emit(OP_MOV, OpReg(R_EAX), OpOffset(D));
+End;
+
+{ Operande destine a une routine de chaines : adresse du descripteur }
+Procedure GenAsString(U : LongInt);
+Begin
+  GenValue(U);
+  If ModeKind(UnitTab[U].Mode) = MK_CHAR Then GenCharToString;
+End;
+
+Function SetOpFor(Const Op : TName; Real : Boolean) : TOp;
+Begin
+  SetOpFor := OP_SETE;
+  If Real Then
+  Begin
+    { comparaison L ? R avec R dans ST(0) et L dans ST(1) : FCOMP donne
+      les indicateurs de R par rapport a L }
+    If Op = '<' Then SetOpFor := OP_SETA
+    Else If Op = '<=' Then SetOpFor := OP_SETAE
+    Else If Op = '>' Then SetOpFor := OP_SETB
+    Else If Op = '>=' Then SetOpFor := OP_SETBE
+    Else If Op = '=' Then SetOpFor := OP_SETE
+    Else SetOpFor := OP_SETNE;
+  End
+  Else
+  Begin
+    If Op = '<' Then SetOpFor := OP_SETL
+    Else If Op = '<=' Then SetOpFor := OP_SETLE
+    Else If Op = '>' Then SetOpFor := OP_SETG
+    Else If Op = '>=' Then SetOpFor := OP_SETGE
+    Else If Op = '=' Then SetOpFor := OP_SETE
+    Else SetOpFor := OP_SETNE;
+  End;
+End;
+
+Procedure GenDivZeroCheck;
+Var
+  Ok : Integer;
+Begin
+  Ok := NewLabel;
+  Emit(OP_TEST, OpReg(R_ECX), OpReg(R_ECX));
+  Emit1(OP_JNE, OpLabel(Ok));
+  Emit1(OP_CALL, OpLabel(Intern(MangleRT('DIVZERO'))));
+  EmitLabel(Ok);
+End;
+
+Procedure GenDyadic(U : LongInt);
+Var
+  Op      : TName;
+  L, R    : LongInt;
+  ML, MR  : Integer;
+  KL, KR  : TModeKind;
+  Res     : Integer;
+  IsStr   : Boolean;
+  Skip, AddL : Integer;
+Begin
+  Op := UnitTab[U].Name;
+  L := UnitTab[U].A;
+  R := UnitTab[U].B;
+  ML := ModeResolve(OpOperand(UnitTab[U].Sym, 0));
+  MR := ModeResolve(OpOperand(UnitTab[U].Sym, 1));
+  KL := ModeTab[ML].Kind;
+  KR := ModeTab[MR].Kind;
+  Res := ModeResolve(OpResult(UnitTab[U].Sym));
+  IsStr := ModeIsString(ML) Or ModeIsString(MR) Or ModeIsString(Res);
+  { chaines : routines du runtime, operandes par adresse de descripteur }
+  If IsStr Then
+  Begin
+    GenAsString(L);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenAsString(R);
+    Emit(OP_MOV, OpReg(R_EDI), OpReg(R_EAX));
+    Emit1(OP_POP, OpReg(R_ESI));
+    If Op = '+' Then
+      Emit1(OP_CALL, OpLabel(Intern(MangleRT('STRCAT'))))
+    Else
+    Begin
+      Emit1(OP_CALL, OpLabel(Intern(MangleRT('STRCMP'))));
+      Emit(OP_CMP, OpReg(R_EAX), OpImm(0));
+      Emit1(SetOpFor(Op, False), OpReg(R_AL));
+      Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    End;
+    Exit;
+  End;
+  { operations sur des reels }
+  If (KL = MK_REAL) Or (KR = MK_REAL) Or (Res = MD_REAL) Then
+  Begin
+    If Op = '**' Then
+    Begin
+      { RPOW : ST(0) = base, ST(1) = exposant }
+      GenAsReal(R);
+      GenAsReal(L);
+      Emit1(OP_CALL, OpLabel(Intern(MangleRT('RPOW'))));
+      Exit;
+    End;
+    GenAsReal(L);
+    GenAsReal(R);
+    If Op = '+' Then
+      Emit(OP_FADDP, OpST(1), OpST(0))
+    Else If Op = '-' Then
+      Emit(OP_FSUBP, OpST(1), OpST(0))
+    Else If Op = '*' Then
+      Emit(OP_FMULP, OpST(1), OpST(0))
+    Else If Op = '/' Then
+      Emit(OP_FDIVP, OpST(1), OpST(0))
+    Else
+    Begin
+      Emit1(OP_FCOMP, OpST(1));
+      Emit1(OP_FNSTSW, OpReg(R_AX));
+      Emit1(OP_FSTP, OpST(0));
+      Emit0(OP_SAHF);
+      Emit1(SetOpFor(Op, True), OpReg(R_AL));
+      Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    End;
+    Exit;
+  End;
+  { operations sur des entiers, caracteres, booleens, bits }
+  GenValue(L);
+  Emit1(OP_PUSH, OpReg(R_EAX));
+  GenValue(R);
+  Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+  Emit1(OP_POP, OpReg(R_EAX));
+  If Op = '+' Then
+    Emit(OP_ADD, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '-' Then
+    Emit(OP_SUB, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = '*' Then
+    Emit(OP_IMUL, OpReg(R_EAX), OpReg(R_ECX))
+  Else If (Op = 'OVER') Or (Op = '%') Then
+  Begin
+    GenDivZeroCheck;
+    Emit0(OP_CDQ);
+    Emit1(OP_IDIV, OpReg(R_ECX));
+  End
+  Else If (Op = 'MOD') Or (Op = '%*') Then
+  Begin
+    { reste toujours positif ou nul : si le reste est negatif, on lui
+      ajoute la valeur absolue du diviseur }
+    GenDivZeroCheck;
+    Emit0(OP_CDQ);
+    Emit1(OP_IDIV, OpReg(R_ECX));
+    Emit(OP_MOV, OpReg(R_EAX), OpReg(R_EDX));
+    Skip := NewLabel;
+    AddL := NewLabel;
+    Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+    Emit1(OP_JNS, OpLabel(Skip));
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_ECX));
+    Emit(OP_TEST, OpReg(R_EDX), OpReg(R_EDX));
+    Emit1(OP_JNS, OpLabel(AddL));
+    Emit1(OP_NEG, OpReg(R_EDX));
+    EmitLabel(AddL);
+    Emit(OP_ADD, OpReg(R_EAX), OpReg(R_EDX));
+    EmitLabel(Skip);
+  End
+  Else If Op = '**' Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), OpReg(R_ECX));
+    Emit1(OP_CALL, OpLabel(Intern(MangleRT('POW'))));
+  End
+  Else If Op = 'AND' Then
+    Emit(OP_AND, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = 'OR' Then
+    Emit(OP_OR, OpReg(R_EAX), OpReg(R_ECX))
+  Else If Op = 'SHL' Then
+    Emit(OP_SHL, OpReg(R_EAX), OpReg(R_CL))
+  Else If Op = 'SHR' Then
+    Emit(OP_SHR, OpReg(R_EAX), OpReg(R_CL))
+  Else
+  Begin
+    Emit(OP_CMP, OpReg(R_EAX), OpReg(R_ECX));
+    Emit1(SetOpFor(Op, False), OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+  End;
+End;
+
+Procedure GenMonadic(U : LongInt);
+Var
+  Op  : TName;
+  A   : LongInt;
+  MA  : Integer;
+  Res : Integer;
+Begin
+  Op := UnitTab[U].Name;
+  A := UnitTab[U].A;
+  MA := ModeResolve(OpOperand(UnitTab[U].Sym, 0));
+  Res := ModeResolve(OpResult(UnitTab[U].Sym));
+  If SymTab[UnitTab[U].Sym].Generic Then
+  Begin
+    { LWB et UPB : TODO 15 }
+    GenValue(A);
+    EmitComment(Op + ' : pas encore genere (TODO 15)');
+    Exit;
+  End;
+  GenValue(A);
+  If ModeTab[MA].Kind = MK_REAL Then
+  Begin
+    If Op = '-' Then
+      Emit0(OP_FCHS)
+    Else If Op = 'ABS' Then
+      Emit0(OP_FABS)
+    Else If Op = 'ENTIER' Then
+      Emit1(OP_CALL, OpLabel(Intern(MangleRT('FLOOR'))))
+    Else If Op = 'ROUND' Then
+      Emit1(OP_CALL, OpLabel(Intern(MangleRT('RTOI'))))
+    Else If Op = 'SIGN' Then
+      Emit1(OP_CALL, OpLabel(Intern(MangleRT('RSIGN'))));
+    Exit;
+  End;
+  If Op = '-' Then
+    Emit1(OP_NEG, OpReg(R_EAX))
+  Else If Op = 'ABS' Then
+  Begin
+    If ModeTab[MA].Kind = MK_INT Then
+    Begin
+      Emit0(OP_CDQ);
+      Emit(OP_XOR, OpReg(R_EAX), OpReg(R_EDX));
+      Emit(OP_SUB, OpReg(R_EAX), OpReg(R_EDX));
+    End;
+  End
+  Else If Op = 'SIGN' Then
+  Begin
+    Emit(OP_CMP, OpReg(R_EAX), OpImm(0));
+    Emit1(OP_SETG, OpReg(R_CL));
+    Emit1(OP_SETL, OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_EAX), OpReg(R_AL));
+    Emit(OP_MOVZX, OpReg(R_ECX), OpReg(R_CL));
+    Emit(OP_SUB, OpReg(R_ECX), OpReg(R_EAX));
+    Emit(OP_MOV, OpReg(R_EAX), OpReg(R_ECX));
+  End
+  Else If Op = 'ODD' Then
+    Emit(OP_AND, OpReg(R_EAX), OpImm(1))
+  Else If Op = 'NOT' Then
+  Begin
+    If ModeTab[MA].Kind = MK_BITS Then
+      Emit1(OP_NOT, OpReg(R_EAX))
+    Else
+      Emit(OP_XOR, OpReg(R_EAX), OpImm(1));
+  End;
+  { +, BIN, REPR : aucun code }
+  If Res = MD_VOID Then ;
+End;
+
 { Valeur d une unite : mot dans EAX, reel dans ST(0), ou adresse dans
   EAX pour les objets en memoire ; une variable (mode REF m) a pour
   valeur son adresse }
@@ -6663,6 +7485,14 @@ Begin
           EmitComment(SymTab[S].Name + ' : pas encore genere');
       End;
     UK_COERCE    : GenCoerce(U);
+    UK_FORMULA:
+      If UnitTab[U].Sym < 0 Then
+        EmitComment('(formule ligne ' + ItoS(UnitTab[U].Line) +
+                    ' : operateur inconnu)')
+      Else If UnitTab[U].IntVal = 2 Then
+        GenDyadic(U)
+      Else
+        GenMonadic(U);
     UK_SELECT    : GenSelect(U);
     UK_CONSTRUCT : GenConstruct(U);
     UK_CLOSED:
@@ -6735,7 +7565,7 @@ Begin
     UK_SERIAL  : GenUnit(UnitTab[U].A);
     UK_CLOSED  : GenUnit(UnitTab[U].A);
     UK_COERCE, UK_IDENT, UK_SELECT, UK_SLICE, UK_CALL, UK_CONSTRUCT,
-    UK_CAST    : GenValue(U);
+    UK_CAST, UK_FORMULA : GenValue(U);
     UK_LABELDEF:
       If UnitTab[U].Sym >= 0 Then
         EmitLabel(Intern(SymTab[UnitTab[U].Sym].AsmName));
