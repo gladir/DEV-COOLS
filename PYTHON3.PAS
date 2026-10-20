@@ -56,9 +56,9 @@ Uses
 Const
  PY_MAJOR = 3;
  PY_MINOR = 8;
- PY_MICRO = 10;
- PY_VERSION = '3.8.10';
- PY_HEXVERSION = $03080AF0;
+ PY_MICRO = 20;
+ PY_VERSION = '3.8.20';
+ PY_HEXVERSION = $030814F0;
  PY_MAGIC = 3413;
  PY_BUILD = '(default, Oct 19 2026, 00:00:00)';
  PY_COMPILER = '[Free Pascal ' + {$I %FPCVERSION%} + ']';
@@ -118,6 +118,7 @@ Type
   idict: TPyDict;
   gcmark: Boolean;
   immortal: Boolean;
+  finalized: Boolean;
   Constructor Create(c: TPyType);
   Procedure MarkKids; Virtual;
   Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Virtual;
@@ -290,6 +291,7 @@ Type
   kwdefaults: TPyDict;
   closure: Array Of TPyCell;
   doc: TVal;
+  nobind: Boolean;
   Procedure MarkKids; Override;
  End;
 
@@ -356,7 +358,7 @@ Type
   mro: Array Of TPyType;
   native: Integer;       { genre natif alloue par __new__ }
   userdef: Boolean;
-  hasSlots, noDict, hasSetattr, hasGetattribute: Boolean;
+  hasSlots, noDict, hasSetattr, hasGetattribute, hasDel: Boolean;
   flagGen: Integer;
   slots: TStrArr;
   newFn: TNativeFn;
@@ -418,8 +420,8 @@ Var
  tyList, tyTuple, tyDict, tySet, tyFrozenset, tyNone, tyFunction,
  tyBuiltin, tyMethod, tyModule, tyCode, tyCell, tyGenerator, tyRange,
  tySlice, tyProperty, tyStaticMethod, tyClassMethod, tySuper,
- tyEllipsis, tyNotImpl, tyFile, tyIter, tyDictView, tyFrame, tyComplex,
-   tyCoroutine, tyAsyncGen,
+ tyEllipsis, tyNotImpl, tyFile, tyIter, tyDictView, tyDictKeys, tyDictValues,
+   tyDictItems, tyFrame, tyComplex, tyCoroutine, tyAsyncGen,
  tyAsyncGenASend,
  tyTraceback: TPyType;
 
@@ -9591,10 +9593,10 @@ Begin
   Result := r2 = (op = 2);
   Exit;
  End;
- If (a.k = vkObj) And (b.k = vkObj) And ((a.o.cls = tyDictView) Or
-  (b.o.cls = tyDictView)) Then Begin
-  If ((a.o.cls = tyDictView) Or (a.o Is TPySet)) And
-   ((b.o.cls = tyDictView) Or (b.o Is TPySet)) Then Begin
+ If (a.k = vkObj) And (b.k = vkObj) And (TypeIsSub(a.o.cls, tyDictView) Or
+  TypeIsSub(b.o.cls, tyDictView)) Then Begin
+  If (TypeIsSub(a.o.cls, tyDictView) Or (a.o Is TPySet)) And
+   (TypeIsSub(b.o.cls, tyDictView) Or (b.o Is TPySet)) Then Begin
    Result := ValCompare(ViewToSet(a), ViewToSet(b), op);
    Exit;
   End;
@@ -12346,6 +12348,10 @@ Begin
    res := VObj(ob.idict.Copy);
    Exit;
   End;
+  If ob.cls.noDict And Not (ob Is TPyType) Then Begin
+   Result := False;
+   Exit;
+  End;
   If ob.idict <> Nil Then Begin
    res := VObj(ob.idict);
    Exit;
@@ -12730,7 +12736,7 @@ Begin
  End;
  If found Then Begin
   If tv.k = vkObj Then Begin
-   If tv.o Is TPyFunc Then Begin
+   If (tv.o Is TPyFunc) And Not TPyFunc(tv.o).nobind Then Begin
     res := BindMethod(tv, o);
     Result := True;
     Exit;
@@ -12763,7 +12769,7 @@ Begin
  { metaclasse pour les classes }
  If (o.k = vkObj) And (o.o Is TPyType) Then Begin
   If LookupTypeO(o.o.cls, nm, tv) Then Begin
-   If (tv.k = vkObj) And ((tv.o Is TPyFunc) Or
+   If (tv.k = vkObj) And (((tv.o Is TPyFunc) And Not TPyFunc(tv.o).nobind) Or
     ((tv.o Is TPyBuiltin) And TPyBuiltin(tv.o).isMethod)) Then
     res := BindMethod(tv, o)
    Else res := tv;
@@ -12873,8 +12879,11 @@ Var
 Begin
  t.hasSetattr := False;
  t.hasGetattribute := False;
+ t.hasDel := False;
  For i := 0 To High(t.mro) Do
   If t.mro[i].userdef And (t.mro[i].idict <> Nil) Then Begin
+   If t.mro[i].idict.GetS('__del__', f) And (f.k = vkObj) And
+    (f.o Is TPyFunc) Then t.hasDel := True;
    If t.mro[i].idict.GetS('__setattr__', f) And (f.k = vkObj) And
     (f.o Is TPyFunc) Then t.hasSetattr := True;
    If t.mro[i].idict.GetS('__getattribute__', f) And (f.k = vkObj) And
@@ -13368,9 +13377,12 @@ Begin
  Result := CallValue(fn, @tmp[0], Length(args), kw);
 End;
 
+Function CallTypeBase(t: TPyType; a: PVal; n: Integer; kw: TPyDict): TVal;
+Forward;
+
 Function CallType(t: TPyType; a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- f, nf, obj, r: TVal;
+ f: TVal;
  tmp: Array Of TVal;
  i: Integer;
  meta: TPyType;
@@ -13385,6 +13397,15 @@ Begin
    Result := CallValue(f, @tmp[0], n + 1, kw);
    Exit;
   End;
+ Result := CallTypeBase(t, a, n, kw);
+End;
+
+Function CallTypeBase(t: TPyType; a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ f, nf, obj, r: TVal;
+ tmp: Array Of TVal;
+ i: Integer;
+Begin
  If (t = tyType) And (n = 1) And ((kw = Nil) Or (kw.used = 0)) Then Begin
   Result := VObj(TypeOf(a[0]));
   Exit;
@@ -14070,11 +14091,28 @@ Begin
  End;
 End;
 
+Var
+ FlushReg: Array Of TPyObj;
+ NFlushReg: Integer;
+ InFinalize: Boolean;
+
+Procedure CallDel(o: TPyObj);
+Var
+ f: TVal;
+Begin
+ Try
+  If LookupType(o.cls, '__del__', f) Then Call1(f, VObj(o));
+ Except
+  On E: EPyError Do ;
+ End;
+End;
+
 Procedure GcCollect;
 Var
- i, j, live: Integer;
+ i, j, live, nd: Integer;
  f: TFrame;
  o: TPyObj;
+ dl: Array Of TPyObj;
 Begin
  GcSP := 0;
  For i := 0 To GcNRoots - 1 Do MarkObj(GcRoots[i]);
@@ -14089,6 +14127,35 @@ Begin
   o := GcStack[GcSP];
   o.MarkKids;
  End;
+ { finaliseurs : les objets inatteignables avec __del__ sont ressuscites }
+ nd := 0;
+ If Not InFinalize Then
+  For i := 0 To GcCount - 1 Do Begin
+   o := GcObjs[i];
+   If (Not o.gcmark) And (Not o.finalized) And o.cls.userdef Then Begin
+    If o.cls.flagGen <> TypeFlagsGen Then RefreshHooks(o.cls);
+    If o.cls.hasDel Then Begin
+     o.finalized := True;
+     If nd >= Length(dl) Then SetLength(dl, nd * 2 + 8);
+     dl[nd] := o;
+     Inc(nd);
+    End;
+   End;
+  End;
+ For i := 0 To nd - 1 Do MarkObj(dl[i]);
+ While GcSP > 0 Do Begin
+  Dec(GcSP);
+  o := GcStack[GcSP];
+  o.MarkKids;
+ End;
+ { registre des fichiers a vider : retirer les entrees mortes }
+ j := 0;
+ For i := 0 To NFlushReg - 1 Do
+  If FlushReg[i].gcmark Then Begin
+   FlushReg[j] := FlushReg[i];
+   Inc(j);
+  End;
+ NFlushReg := j;
  j := 0;
  For i := 0 To GcCount - 1 Do Begin
   o := GcObjs[i];
@@ -14104,6 +14171,14 @@ Begin
  live := j;
  GcLastLive := live;
  For i := 0 To GcNRoots - 1 Do GcRoots[i].gcmark := False;
+ If nd > 0 Then Begin
+  InFinalize := True;
+  Try
+   For i := 0 To nd - 1 Do CallDel(dl[i]);
+  Finally
+   InFinalize := False;
+  End;
+ End;
 End;
 
 Function GetItemFast(Const o, k: TVal): TVal; Inline;
@@ -14939,13 +15014,15 @@ Begin
       If a.k = vkObj Then Begin
        If (Not (a.o Is TPyType)) And (Not (a.o Is TPySuper)) And
         (Not (a.o Is TPyModule)) And LookupTypeO(a.o.cls, nm, meth) And
-        (meth.k = vkObj) And ((meth.o Is TPyFunc) Or
+        (meth.k = vkObj) And (((meth.o Is TPyFunc) And
+        Not TPyFunc(meth.o).nobind) Or
         ((meth.o Is TPyBuiltin) And TPyBuiltin(meth.o).isMethod)) Then Begin
         If (a.o.idict = Nil) Or Not DictGetO(a.o.idict, nm, r) Then ok := True;
        End;
       End
       Else If LookupTypeO(TypeOf(a), nm, meth) And (meth.k = vkObj) And
-       ((meth.o Is TPyFunc) Or ((meth.o Is TPyBuiltin) And
+       (((meth.o Is TPyFunc) And Not TPyFunc(meth.o).nobind) Or
+       ((meth.o Is TPyBuiltin) And
        TPyBuiltin(meth.o).isMethod)) Then ok := True;
       If ok Then Begin
        sp[-1] := meth;
@@ -15528,6 +15605,13 @@ Begin
  Result := CallValue(a[0], @a[1], n - 1, kw);
 End;
 
+Function TypeCallSelf(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If (n >= 1) And (a[0].k = vkObj) And (a[0].o Is TPyType) Then
+  Result := CallTypeBase(TPyType(a[0].o), @a[1], n - 1, kw)
+ Else Result := ObjCallSelf(a, n, kw);
+End;
+
 Function ObjReduceEx(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  f, m: TVal;
@@ -15912,6 +15996,9 @@ Begin
  tyFile := NewType('TextIOWrapper', tyObject, nkFile);
  tyIter := NewType('iterator', tyObject, nkNoNew);
  tyDictView := NewType('dict_view', tyObject, nkNoNew);
+ tyDictKeys := NewType('dict_keys', tyDictView, nkNoNew);
+ tyDictValues := NewType('dict_values', tyDictView, nkNoNew);
+ tyDictItems := NewType('dict_items', tyDictView, nkNoNew);
  tyFrame := NewType('frame', tyObject, nkNoNew);
  tyTraceback := NewType('traceback', tyObject, nkNoNew);
  tyFile.idict.SetS('__module__', VStr('_io'));
@@ -16003,7 +16090,7 @@ Begin
  DefMethod(tyObject, '__getattribute__', @ObjGetAttribute);
  DefClassMethod(tyObject, '__init_subclass__', @ObjInitSubclass);
  DefMethod(tyObject, '__reduce_ex__', @ObjReduceEx);
- DefMethod(tyType, '__call__', @ObjCallSelf);
+ DefMethod(tyType, '__call__', @TypeCallSelf);
  DefMethod(tyFunction, '__call__', @ObjCallSelf);
  DefMethod(tyBuiltin, '__call__', @ObjCallSelf);
  DefMethod(tyMethod, '__call__', @ObjCallSelf);
@@ -20332,7 +20419,11 @@ Function MakeView(d: TPyDict; kind: Integer): TVal;
 Var
  v: TDictView;
 Begin
- v := TDictView.Create(tyDictView);
+ Case kind Of
+  0: v := TDictView.Create(tyDictKeys);
+  1: v := TDictView.Create(tyDictValues);
+ Else v := TDictView.Create(tyDictItems);
+ End;
  v.src := d;
  v.kind := kind;
  Result := VObj(v);
@@ -22490,27 +22581,21 @@ Begin
  Result := f;
 End;
 
+Procedure FlushTracked; Forward;
+
+Var
+ IoOpenFn: TVal;
+
 Function BiOpen(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- name, mode: AnsiString;
- v: TVal;
+ m: TVal;
 Begin
- NeedArgs(n, 1, 8, 'open()');
- If IsIntVal(a[0]) Then
-  TypeErr('open() with file descriptors is not supported');
- If (a[0].k = vkObj) And (a[0].o Is TPyBytes) Then name := TPyBytes(a[0].o).s
- Else If IsStrVal(a[0]) Then name := TPyStr(a[0].o).s
- Else If HasAttr(a[0], '__fspath__') Then
-  name := StrVal(Call0(GetAttr(a[0], '__fspath__')))
- Else Begin
-  TypeErr('expected str, bytes or os.PathLike object, not ' +
-   TypeName(a[0]));
-  name := '';
+ FlushTracked;
+ If IoOpenFn.k <> vkObj Then Begin
+  m := ImportByName('_io');
+  IoOpenFn := GetAttr(m, 'open');
  End;
- mode := 'r';
- If n > 1 Then mode := StrOf(a[1])
- Else If KwGet(kw, 'mode', v) Then mode := StrOf(v);
- Result := VObj(OpenFileObj(name, mode));
+ Result := CallValue(IoOpenFn, a, n, kw);
 End;
 
 Function SelfFile(a: PVal): TPyFile;
@@ -23349,6 +23434,13 @@ Begin
  Result := MakeFrameObj(f, 0);
 End;
 
+Function SysNoBind(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If (a[0].k = vkObj) And (a[0].o Is TPyFunc) Then
+  TPyFunc(a[0].o).nobind := True;
+ Result := a[0];
+End;
+
 Procedure InitSysModule(m: TPyModule);
 Var
  d: TPyDict;
@@ -23391,6 +23483,7 @@ Begin
  d.SetS('last_value', vNone);
  DefFunc(d, 'exit', @BiExit);
  DefFunc(d, 'getrecursionlimit', @SysGetRecLimit);
+ DefFunc(d, '_nobind', @SysNoBind);
  DefFunc(d, 'setrecursionlimit', @SysSetRecLimit);
  DefFunc(d, 'exc_info', @SysExcInfo);
  DefFunc(d, 'getsizeof', @SysGetSizeOf);
@@ -24661,267 +24754,187 @@ Begin
  d.SetS('daylight', VInt(0));
  d.SetS('tzname', Tup2(VStr('UTC'), VStr('UTC')));
 End;
-
 { ------------------------------------------------------------
-  Module posix (primitives du module os)
+  Module _posix : primitives POSIX (fichiers, processus, ...)
   ------------------------------------------------------------ }
-Function PosixGetcwd(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := VStr(GetCurrentDir);
-End;
-
-Function PosixChdir(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
-Begin
- p := StrOf(a[0]);
- If Not DirectoryExists(p) Then Begin
-  If FileExists(p) Then RaiseOSErr(exNotADirectory, 20, 'Not a directory', p)
-  Else RaiseNoEnt(p);
- End;
- SetCurrentDir(p);
- Result := vNone;
-End;
-
-Function PosixListdir(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
- l: TPyList;
 {$IFDEF UNIX}
- d: PDir;
- e: PDirent;
- nm: AnsiString;
-{$ELSE}
- sr: TSearchRec;
-{$ENDIF}
-Begin
- If n > 0 Then p := StrOf(a[0]) Else p := '.';
- If Not DirectoryExists(p) Then Begin
-  If FileExists(p) Then RaiseOSErr(exNotADirectory, 20, 'Not a directory', p)
-  Else RaiseNoEnt(p);
+Function c_strerror(e: LongInt): PChar; CDecl; External 'c' Name 'strerror';
+Function c_utimensat(dirfd: LongInt; path: PChar; ts: Pointer;
+ flags: LongInt): LongInt; CDecl; External 'c' Name 'utimensat';
+Function c_futimens(fd: LongInt; ts: Pointer): LongInt; CDecl;
+ External 'c' Name 'futimens';
+Function c_sysconf(name: LongInt): Int64; CDecl; External 'c' Name 'sysconf';
+Function c_statvfs(path: PChar; buf: Pointer): LongInt; CDecl;
+ External 'c' Name 'statvfs';
+Function c_setenv(nm, v: PChar; ow: LongInt): LongInt; CDecl;
+ External 'c' Name 'setenv';
+Function c_unsetenv(nm: PChar): LongInt; CDecl; External 'c' Name 'unsetenv';
+Function c_mkfifo(path: PChar; mode: LongInt): LongInt; CDecl;
+ External 'c' Name 'mkfifo';
+Function c_getloadavg(a: PDouble; n: LongInt): LongInt; CDecl;
+ External 'c' Name 'getloadavg';
+Function c_getlogin: PChar; CDecl; External 'c' Name 'getlogin';
+Function c_ttyname(fd: LongInt): PChar; CDecl; External 'c' Name 'ttyname';
+Function c_getpgid(pid: LongInt): LongInt; CDecl; External 'c' Name 'getpgid';
+Function c_setpgid(pid, pg: LongInt): LongInt; CDecl;
+ External 'c' Name 'setpgid';
+Function c_getsid(pid: LongInt): LongInt; CDecl; External 'c' Name 'getsid';
+Function c_nice(inc: LongInt): LongInt; CDecl; External 'c' Name 'nice';
+Function c_access(path: PChar; mode: LongInt): LongInt; CDecl;
+ External 'c' Name 'access';
+Function c_realpath(path, res: PChar): PChar; CDecl;
+ External 'c' Name 'realpath';
+Function c_killpg(pg, sig: LongInt): LongInt; CDecl; External 'c' Name 'killpg';
+Function c_abort: LongInt; CDecl; External 'c' Name 'abort';
+Function c_fchown(fd, u, g: LongInt): LongInt; CDecl;
+ External 'c' Name 'fchown';
+Function c_lchown(path: PChar; u, g: LongInt): LongInt; CDecl;
+ External 'c' Name 'lchown';
+Function c_getgroups(n: LongInt; g: Pointer): LongInt; CDecl;
+ External 'c' Name 'getgroups';
+Function c_setuid(u: LongInt): LongInt; CDecl; External 'c' Name 'setuid';
+Function c_setgid(u: LongInt): LongInt; CDecl; External 'c' Name 'setgid';
+Function c_pread(fd: LongInt; buf: Pointer; n: PtrUInt; off: Int64): PtrInt;
+ CDecl; External 'c' Name 'pread';
+Function c_pwrite(fd: LongInt; buf: Pointer; n: PtrUInt; off: Int64): PtrInt;
+ CDecl; External 'c' Name 'pwrite';
+Function c_ctermid(s: PChar): PChar; CDecl; External 'c' Name 'ctermid';
+Function c_fchdir(fd: LongInt): LongInt; CDecl; External 'c' Name 'fchdir';
+Function c_fchmod(fd, mode: LongInt): LongInt; CDecl;
+ External 'c' Name 'fchmod';
+Function c_sync: LongInt; CDecl; External 'c' Name 'sync';
+Function c_chroot(path: PChar): LongInt; CDecl; External 'c' Name 'chroot';
+Function c_fdatasync(fd: LongInt): LongInt; CDecl;
+ External 'c' Name 'fdatasync';
+Function c_dup3(a, b, f: LongInt): LongInt; CDecl; External 'c' Name 'dup3';
+Function c_pipe2(p: PLongInt; f: LongInt): LongInt; CDecl;
+ External 'c' Name 'pipe2';
+Function c_openat(fd: LongInt; path: PChar; fl, mode: LongInt): LongInt;
+ CDecl; External 'c' Name 'open';
+
+Type
+ TStatVfsRec = Record
+  f_bsize, f_frsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree,
+  f_favail, f_fsid, f_flag, f_namemax: QWord;
+  spare: Array[0..5] Of LongInt;
  End;
- l := NewList;
- {$IFDEF UNIX}
- d := FpOpenDir(p);
- If d <> Nil Then Begin
-  Repeat
-   e := FpReadDir(d^);
-   If e <> Nil Then Begin
-    nm := PChar(@e^.d_name[0]);
-    If (nm <> '.') And (nm <> '..') Then l.Add(VStr(nm));
-   End;
-  Until e = Nil;
-  FpCloseDir(d^);
- End;
- {$ELSE}
- If FindFirst(JoinPath(p, '*'), faAnyFile, sr) = 0 Then Begin
-  Repeat
-   If (sr.Name <> '.') And (sr.Name <> '..') Then l.Add(VStr(sr.Name));
-  Until FindNext(sr) <> 0;
-  FindClose(sr);
- End;
- {$ENDIF}
- Result := VObj(l);
-End;
-
-Function PosixMkdir(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
- mode: Integer;
-Begin
- p := StrOf(a[0]);
- mode := $1FF;
- If n > 1 Then mode := ToInt64(a[1]);
- If DirectoryExists(p) Or FileExists(p) Then
-  RaiseOSErr(exFileExists, 17, 'File exists', p);
- {$IFDEF UNIX}
- If FpMkdir(p, mode) <> 0 Then Begin
-  If fpgeterrno = 2 Then RaiseNoEnt(p)
-  Else If fpgeterrno = 17 Then RaiseOSErr(exFileExists, 17, 'File exists', p)
-  Else RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
- End;
- {$ELSE}
- If Not CreateDir(p) Then Begin
-  If Not DirectoryExists(ExtractFileDir(ExpandFileName(p))) Then RaiseNoEnt(p)
-  Else RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
- End;
- {$ENDIF}
- Result := vNone;
-End;
-
-Function PosixRemove(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
-Begin
- p := StrOf(a[0]);
- {$IFDEF UNIX}
- If FpUnlink(p) <> 0 Then Begin
-  Case fpgeterrno Of
-   2: RaiseNoEnt(p);
-   21: RaiseOSErr(exIsADirectory, 21, 'Is a directory', p);
-  Else RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
-  End;
- End;
- {$ELSE}
- If DirectoryExists(p) Then
-  RaiseOSErr(exIsADirectory, 21, 'Is a directory', p);
- If Not FileExists(p) Then RaiseNoEnt(p);
- If Not DeleteFile(p) Then
-  RaiseOSErr(exPermissionError, 13, 'Permission denied', p);
- {$ENDIF}
- Result := vNone;
-End;
-
-Function PosixRmdir(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
-Begin
- p := StrOf(a[0]);
- If Not DirectoryExists(p) Then RaiseNoEnt(p);
- If Not RemoveDir(p) Then
-  RaiseOSErr(exOSError, 39, 'Directory not empty', p);
- Result := vNone;
-End;
-
-Function PosixRename(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- s, d: AnsiString;
-Begin
- s := StrOf(a[0]);
- d := StrOf(a[1]);
- If Not (FileExists(s) Or DirectoryExists(s)) Then RaiseNoEnt(s);
- If Not RenameFile(s, d) Then
-  RaiseOSErr(exPermissionError, 13, 'Permission denied', s);
- Result := vNone;
-End;
-
-Function PosixExists(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
-Begin
- p := StrOf(a[0]);
- Result := VBool(FileExists(p) Or DirectoryExists(p));
-End;
-
-Function PosixIsFile(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
-Begin
- p := StrOf(a[0]);
- Result := VBool(FileExists(p) And Not DirectoryExists(p));
-End;
-
-Function PosixIsDir(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := VBool(DirectoryExists(StrOf(a[0])));
-End;
-
-Function PosixGetSize(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
- sr: TSearchRec;
-Begin
- p := StrOf(a[0]);
- If FindFirst(p, faAnyFile, sr) <> 0 Then RaiseNoEnt(p);
- Result := VInt(sr.Size);
- FindClose(sr);
-End;
-
-Function PosixGetMTime(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- p: AnsiString;
- age: LongInt;
-Begin
- p := StrOf(a[0]);
- age := FileAge(p);
- If age = -1 Then RaiseNoEnt(p);
- Result := VFloat((FileDateToDateTime(age) - EncodeDate(1970, 1, 1)) *
-  86400.0 - (-GetLocalTimeOffset * 60));
-End;
-
-Function PosixEnviron(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- d: TPyDict;
- i, p: Integer;
- s: AnsiString;
-Begin
- d := TPyDict.Make;
- For i := 1 To GetEnvironmentVariableCount Do Begin
-  s := GetEnvironmentString(i);
-  p := Pos('=', s);
-  If p > 1 Then d.SetItem(VStr(Copy(s, 1, p - 1)), VStr(Copy(s, p + 1,
-   Length(s))));
- End;
- Result := VObj(d);
-End;
-
-Function PosixGetpid(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := VInt(GetProcessID);
-End;
-
-Function PosixSystem(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- rc: Integer;
-Begin
- OutFlush;
- {$IFDEF UNIX}
- rc := fpSystem(StrOf(a[0]));
- If rc <> -1 Then rc := (rc And $FF00) Shr 8 * 256;
- Result := VInt(rc);
- {$ELSE}
- Result := VInt(0);
- {$ENDIF}
-End;
-
-Function PosixUrandom(a: PVal; n: Integer; kw: TPyDict): TVal;
-Var
- s: AnsiString;
- i, k: Integer;
-Begin
- k := IndexVal(a[0]);
- SetLength(s, k);
- For i := 1 To k Do s[i] := Chr(Random(256));
- Result := VBytes(s);
-End;
-
-{$IFDEF UNIX}
-Function c_setenv(nm, v: PChar; ow: LongInt): LongInt; CDecl; External 'c' Name
-  'setenv';
 {$ENDIF}
 
-Function PosixSetenv(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function ErrnoClass(e: Integer): TPyType;
+Begin
+ Case e Of
+  1, 13: Result := exPermissionError;
+  2: Result := exFileNotFound;
+  3: Result := exProcessLookup;
+  4: Result := exInterrupted;
+  10: Result := exChildProcess;
+  11, 114, 115: Result := exBlockingIOError;
+  17: Result := exFileExists;
+  20: Result := exNotADirectory;
+  21: Result := exIsADirectory;
+  32, 108: Result := exBrokenPipe;
+  110: Result := exTimeoutError;
+ Else Result := exOSError;
+ End;
+End;
+
+Function ErrnoMsg(e: Integer): AnsiString;
 Begin
  {$IFDEF UNIX}
- c_setenv(PChar(StrOf(a[0])), PChar(StrOf(a[1])), 1);
+ Result := PChar(c_strerror(e));
+ {$ELSE}
+ Result := 'error ' + IntToStr(e);
  {$ENDIF}
- Result := vNone;
 End;
 
-Function PosixCpuCount(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := VInt(1);
-End;
-
-Function PosixAbspath(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := VStr(ExpandFileName(StrOf(a[0])));
-End;
-
-Function PosixStatCommon(Const p: AnsiString; lnk: Boolean): TVal;
-{$IFDEF UNIX}
+Procedure RaiseErrno2(e: Integer; Const f1, f2: AnsiString; hasF1, hasF2:
+ Boolean);
 Var
- st: Stat;
- r: LongInt;
+ o: TPyObj;
+ args: Array Of TVal;
+ cls: TPyType;
+Begin
+ cls := ErrnoClass(e);
+ If hasF2 Then Begin
+  SetLength(args, 5);
+  args[0] := VInt(e);
+  args[1] := VStr(ErrnoMsg(e));
+  args[2] := VStr(f1);
+  args[3] := vNone;
+  args[4] := VStr(f2);
+ End
+ Else If hasF1 Then Begin
+  SetLength(args, 3);
+  args[0] := VInt(e);
+  args[1] := VStr(ErrnoMsg(e));
+  args[2] := VStr(f1);
+ End
+ Else Begin
+  SetLength(args, 2);
+  args[0] := VInt(e);
+  args[1] := VStr(ErrnoMsg(e));
+ End;
+ o := MakeExcArgs(cls, args);
+ o.idict.SetS('errno', VInt(e));
+ o.idict.SetS('strerror', VStr(ErrnoMsg(e)));
+ If hasF1 Then o.idict.SetS('filename', VStr(f1))
+ Else o.idict.SetS('filename', vNone);
+ If hasF2 Then o.idict.SetS('filename2', VStr(f2))
+ Else o.idict.SetS('filename2', vNone);
+ Raise EPyError.Make(o);
+End;
+
+Procedure RaiseErrnoF(e: Integer; Const fn: AnsiString);
+Begin
+ RaiseErrno2(e, fn, '', True, False);
+End;
+
+Procedure RaiseErrnoN(e: Integer);
+Begin
+ RaiseErrno2(e, '', '', False, False);
+End;
+
+{ chemin Python -> octets du systeme de fichiers (surrogateescape) }
+Function FsPath(Const v: TVal): AnsiString;
+Var
+ s: AnsiString;
+ i: Integer;
+ c: Cardinal;
+ o: AnsiString;
+Begin
+ s := StrOf(v);
+ If IsAsciiStr(s) Then Begin
+  Result := s;
+  Exit;
+ End;
+ o := '';
+ i := 1;
+ While i <= Length(s) Do Begin
+  c := Utf8Dec(s, i);
+  If (c >= $DC80) And (c <= $DCFF) Then o := o + Chr(c - $DC00)
+  Else o := o + Utf8Enc(c);
+ End;
+ Result := o;
+End;
+
+{ octets du systeme de fichiers -> chaine Python }
+Function FsStr(Const raw: AnsiString): AnsiString;
+Var
+ d: TVal;
+Begin
+ If IsAsciiStr(raw) Then Begin
+  Result := raw;
+  Exit;
+ End;
+ d := VBytes(raw);
+ Result := DecodeNative(raw, ckUtf8, 'utf-8', 'surrogateescape', d);
+End;
+
+Function StatTuple(Const st: Stat): TVal;
+Var
  t: TPyTuple;
 Begin
- If lnk Then r := FpLStat(p, st) Else r := FpStat(p, st);
- If r <> 0 Then Begin
-  If fpgeterrno = 13 Then RaiseOSErr(exPermissionError, 13,
-   'Permission denied', p)
-  Else RaiseNoEnt(p);
- End;
- t := NewTuple(10);
+ t := NewTuple(19);
  t.items[0] := VInt(st.st_mode);
  t.items[1] := VInt(st.st_ino);
  t.items[2] := VInt(st.st_dev);
@@ -24932,188 +24945,1005 @@ Begin
  t.items[7] := VInt(st.st_atime);
  t.items[8] := VInt(st.st_mtime);
  t.items[9] := VInt(st.st_ctime);
+ t.items[10] := VFloat(st.st_atime + st.st_atime_nsec / 1e9);
+ t.items[11] := VFloat(st.st_mtime + st.st_mtime_nsec / 1e9);
+ t.items[12] := VFloat(st.st_ctime + st.st_ctime_nsec / 1e9);
+ t.items[13] := VInt(Int64(st.st_atime) * 1000000000 + st.st_atime_nsec);
+ t.items[14] := VInt(Int64(st.st_mtime) * 1000000000 + st.st_mtime_nsec);
+ t.items[15] := VInt(Int64(st.st_ctime) * 1000000000 + st.st_ctime_nsec);
+ t.items[16] := VInt(st.st_blksize);
+ t.items[17] := VInt(st.st_blocks);
+ t.items[18] := VInt(st.st_rdev);
  Result := VObj(t);
 End;
-{$ELSE}
+
+Function PxStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ st: Stat;
+ r: LongInt;
+ p: AnsiString;
 Begin
+ FlushTracked;
+ p := FsPath(a[0]);
+ If (n > 1) And IsTrue(a[1]) Then r := FpStat(p, st)
+ Else r := FpLStat(p, st);
+ If r <> 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := StatTuple(st);
+End;
+
+Function PxFStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ st: Stat;
+Begin
+ If FpFStat(ToInt64(a[0]), st) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := StatTuple(st);
+End;
+
+Function PxOpen(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ fd: LongInt;
+ mode: Integer;
+Begin
+ FlushTracked;
+ mode := $1FF;
+ If n > 2 Then mode := ToInt64(a[2]);
+ fd := FpOpen(PChar(FsPath(a[0])), ToInt64(a[1]) Or 524288, mode);
+ If fd < 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := VInt(fd);
+End;
+
+Function PxClose(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpClose(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
  Result := vNone;
 End;
-{$ENDIF}
 
-Function PosixStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxCloseRange(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ i: Int64;
 Begin
- Result := PosixStatCommon(StrOf(a[0]), False);
-End;
-
-Function PosixLStat(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := PosixStatCommon(StrOf(a[0]), True);
-End;
-
-Function PosixChmod(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- {$IFDEF UNIX}
- If FpChmod(StrOf(a[0]), ToInt64(a[1])) <> 0 Then RaiseNoEnt(StrOf(a[0]));
- {$ENDIF}
+ For i := ToInt64(a[0]) To ToInt64(a[1]) - 1 Do FpClose(i);
  Result := vNone;
 End;
 
-Function PosixGetuid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxRead(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: AnsiString;
+ cnt: Int64;
+ r: PtrInt;
 Begin
- {$IFDEF UNIX}
- Result := VInt(FpGetuid);
- {$ELSE}
- Result := VInt(0);
- {$ENDIF}
+ cnt := ToInt64(a[1]);
+ If cnt < 0 Then ValueErr('negative argument not allowed');
+ SetLength(buf, cnt);
+ If cnt = 0 Then Begin
+  Result := VBytes('');
+  Exit;
+ End;
+ OutFlush;
+ Repeat
+  r := FpRead(ToInt64(a[0]), @buf[1], cnt);
+ Until (r >= 0) Or (fpgeterrno <> 4);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ SetLength(buf, r);
+ Result := VBytes(buf);
 End;
 
-Function PosixGetgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxPRead(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: AnsiString;
+ cnt: Int64;
+ r: PtrInt;
 Begin
- {$IFDEF UNIX}
- Result := VInt(FpGetgid);
- {$ELSE}
- Result := VInt(0);
- {$ENDIF}
+ cnt := ToInt64(a[1]);
+ SetLength(buf, cnt);
+ If cnt = 0 Then Begin
+  Result := VBytes('');
+  Exit;
+ End;
+ r := c_pread(ToInt64(a[0]), @buf[1], cnt, ToInt64(a[2]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ SetLength(buf, r);
+ Result := VBytes(buf);
 End;
 
-Function PosixGetppid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxWrite(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ s: AnsiString;
+ r: PtrInt;
+ fd: Int64;
 Begin
- {$IFDEF UNIX}
+ fd := ToInt64(a[0]);
+ If Not ((a[1].k = vkObj) And (a[1].o Is TPyBytes)) Then
+  TypeErr('a bytes-like object is required, not ''' + TypeName(a[1]) + '''');
+ s := TPyBytes(a[1].o).s;
+ If (fd = 1) Or (fd = 2) Then OutFlush;
+ If Length(s) = 0 Then Begin
+  Result := VInt(0);
+  Exit;
+ End;
+ Repeat
+  r := FpWrite(fd, @s[1], Length(s));
+ Until (r >= 0) Or (fpgeterrno <> 4);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Function PxPWrite(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ s: AnsiString;
+ r: PtrInt;
+Begin
+ s := BytesFromStr(a[1]);
+ r := c_pwrite(ToInt64(a[0]), PChar(s), Length(s), ToInt64(a[2]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Function PxLseek(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: Int64;
+Begin
+ r := FpLseek(ToInt64(a[0]), ToInt64(a[1]), ToInt64(a[2]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Function PxDup(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpDup(ToInt64(a[0]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Function PxDup2(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpDup2(ToInt64(a[0]), ToInt64(a[1]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Function PxPipe(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: Array[0..1] Of LongInt;
+ t: TPyTuple;
+Begin
+ If c_pipe2(@p[0], 524288) <> 0 Then RaiseErrnoN(fpgeterrno);
+ t := NewTuple(2);
+ t.items[0] := VInt(p[0]);
+ t.items[1] := VInt(p[1]);
+ Result := VObj(t);
+End;
+
+Function PxFsync(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpFsync(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxFTruncate(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpFtruncate(ToInt64(a[0]), ToInt64(a[1])) <> 0 Then
+  RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxTruncate(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ fd: LongInt;
+ r: LongInt;
+Begin
+ fd := FpOpen(PChar(FsPath(a[0])), 1, 0);
+ If fd < 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ r := FpFtruncate(fd, ToInt64(a[1]));
+ FpClose(fd);
+ If r <> 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxIsatty(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBool(IsATTY(ToInt64(a[0])) <> 0);
+End;
+
+Function PxGetInheritable(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpFcntl(ToInt64(a[0]), 1);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VBool((r And 1) = 0);
+End;
+
+Function PxSetInheritable(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpFcntl(ToInt64(a[0]), 1);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ If IsTrue(a[1]) Then r := r And Not 1 Else r := r Or 1;
+ If FpFcntl(ToInt64(a[0]), 2, r) < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxGetBlocking(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpFcntl(ToInt64(a[0]), 3);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VBool((r And 2048) = 0);
+End;
+
+Function PxSetBlocking(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpFcntl(ToInt64(a[0]), 3);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ If IsTrue(a[1]) Then r := r And Not 2048 Else r := r Or 2048;
+ If FpFcntl(ToInt64(a[0]), 4, r) < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxTerminalSize(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ ws: Array[0..3] Of Word;
+ t: TPyTuple;
+Begin
+ If FpIoctl(ToInt64(a[0]), $5413, @ws[0]) <> 0 Then RaiseErrnoN(fpgeterrno);
+ t := NewTuple(2);
+ t.items[0] := VInt(ws[1]);
+ t.items[1] := VInt(ws[0]);
+ Result := VObj(t);
+End;
+
+Function PxAccess(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ FlushTracked;
+ Result := VBool(c_access(PChar(FsPath(a[0])), ToInt64(a[1])) = 0);
+End;
+
+Function PxChdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpChdir(PChar(FsPath(a[0]))) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxFChdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_fchdir(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxGetcwd(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..4096] Of Char;
+Begin
+ If FpGetcwd(@buf[0], 4096) = Nil Then RaiseErrnoN(fpgeterrno);
+ Result := VStr(FsStr(PChar(@buf[0])));
+End;
+
+Function PxChmod(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpChmod(PChar(FsPath(a[0])), ToInt64(a[1])) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxFChmod(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_fchmod(ToInt64(a[0]), ToInt64(a[1])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxChown(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ If (n > 3) And Not IsTrue(a[3]) Then
+  r := c_lchown(PChar(FsPath(a[0])), ToInt64(a[1]), ToInt64(a[2]))
+ Else r := FpChown(PChar(FsPath(a[0])), ToInt64(a[1]), ToInt64(a[2]));
+ If r <> 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxFChown(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_fchown(ToInt64(a[0]), ToInt64(a[1]), ToInt64(a[2])) <> 0 Then
+  RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxLink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpLink(PChar(FsPath(a[0])), PChar(FsPath(a[1]))) <> 0 Then
+  RaiseErrno2(fpgeterrno, StrOf(a[0]), StrOf(a[1]), True, True);
+ Result := vNone;
+End;
+
+Function PxSymlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpSymlink(PChar(FsPath(a[0])), PChar(FsPath(a[1]))) <> 0 Then
+  RaiseErrno2(fpgeterrno, StrOf(a[0]), StrOf(a[1]), True, True);
+ Result := vNone;
+End;
+
+Function PxReadlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..4096] Of Char;
+ r: PtrInt;
+ s: AnsiString;
+Begin
+ r := FpReadLink(PChar(FsPath(a[0])), @buf[0], 4096);
+ If r < 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ SetLength(s, r);
+ If r > 0 Then Move(buf[0], s[1], r);
+ Result := VStr(FsStr(s));
+End;
+
+Function PxUnlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpUnlink(PChar(FsPath(a[0]))) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxRename(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ FlushTracked;
+ If FpRename(PChar(FsPath(a[0])), PChar(FsPath(a[1]))) <> 0 Then
+  RaiseErrno2(fpgeterrno, StrOf(a[0]), StrOf(a[1]), True, True);
+ Result := vNone;
+End;
+
+Function PxRmdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If FpRmdir(PChar(FsPath(a[0]))) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxMkdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ mode: Integer;
+Begin
+ mode := $1FF;
+ If n > 1 Then mode := ToInt64(a[1]);
+ If FpMkdir(PChar(FsPath(a[0])), mode) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxMkfifo(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ mode: Integer;
+Begin
+ mode := $1B6;
+ If n > 1 Then mode := ToInt64(a[1]);
+ If c_mkfifo(PChar(FsPath(a[0])), mode) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxListdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: AnsiString;
+ l: TPyList;
+ d: PDir;
+ e: PDirent;
+ nm: AnsiString;
+Begin
+ FlushTracked;
+ If (n > 0) And (a[0].k <> vkNone) Then p := FsPath(a[0]) Else p := '.';
+ d := FpOpenDir(p);
+ If d = Nil Then Begin
+  If (n > 0) And (a[0].k <> vkNone) Then RaiseErrnoF(fpgeterrno, StrOf(a[0]))
+  Else RaiseErrnoF(fpgeterrno, '.');
+ End;
+ l := NewList;
+ Repeat
+  e := FpReadDir(d^);
+  If e <> Nil Then Begin
+   nm := PChar(@e^.d_name[0]);
+   If (nm <> '.') And (nm <> '..') Then l.Add(VStr(FsStr(nm)));
+  End;
+ Until e = Nil;
+ FpCloseDir(d^);
+ Result := VObj(l);
+End;
+
+{ liste de (nom, d_type, inode) pour scandir }
+Function PxScanDir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: AnsiString;
+ l: TPyList;
+ d: PDir;
+ e: PDirent;
+ nm: AnsiString;
+ t: TPyTuple;
+Begin
+ FlushTracked;
+ If (n > 0) And (a[0].k <> vkNone) Then p := FsPath(a[0]) Else p := '.';
+ d := FpOpenDir(p);
+ If d = Nil Then Begin
+  If (n > 0) And (a[0].k <> vkNone) Then RaiseErrnoF(fpgeterrno, StrOf(a[0]))
+  Else RaiseErrnoF(fpgeterrno, '.');
+ End;
+ l := NewList;
+ Repeat
+  e := FpReadDir(d^);
+  If e <> Nil Then Begin
+   nm := PChar(@e^.d_name[0]);
+   If (nm <> '.') And (nm <> '..') Then Begin
+    t := NewTuple(3);
+    t.items[0] := VStr(FsStr(nm));
+    t.items[1] := VInt(e^.d_type);
+    t.items[2] := VInt(e^.d_fileno);
+    l.Add(VObj(t));
+   End;
+  End;
+ Until e = Nil;
+ FpCloseDir(d^);
+ Result := VObj(l);
+End;
+
+Function PxUmask(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(FpUmask(ToInt64(a[0])));
+End;
+
+{ utime(path, atime_ns, mtime_ns, follow_symlinks) ; ns < 0 => maintenant }
+Function PxUtime(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ ts: Array[0..3] Of Int64;
+ an, mn: Int64;
+ fl: LongInt;
+ r: LongInt;
+Begin
+ an := ToInt64(a[1]);
+ mn := ToInt64(a[2]);
+ If an = -1 Then Begin
+  ts[0] := 0;
+  ts[1] := (1 Shl 30) - 1;
+ End
+ Else Begin
+  ts[0] := an Div 1000000000;
+  ts[1] := an Mod 1000000000;
+ End;
+ If mn = -1 Then Begin
+  ts[2] := 0;
+  ts[3] := (1 Shl 30) - 1;
+ End
+ Else Begin
+  ts[2] := mn Div 1000000000;
+  ts[3] := mn Mod 1000000000;
+ End;
+ fl := 0;
+ If (n > 3) And Not IsTrue(a[3]) Then fl := $100;
+ If (a[0].k = vkInt) Then r := c_futimens(a[0].i, @ts[0])
+ Else r := c_utimensat(-100, PChar(FsPath(a[0])), @ts[0], fl);
+ If r <> 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxGetpid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(FpGetpid);
+End;
+
+Function PxGetppid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
  Result := VInt(FpGetppid);
- {$ELSE}
- Result := VInt(0);
- {$ENDIF}
 End;
 
-Function PosixAccess(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxGetuid(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- {$IFDEF UNIX}
- Result := VBool(FpAccess(StrOf(a[0]), ToInt64(a[1])) = 0);
- {$ELSE}
- Result := VBool(FileExists(StrOf(a[0])) Or DirectoryExists(StrOf(a[0])));
- {$ENDIF}
+ Result := VInt(FpGetuid);
 End;
 
-Function PosixSymlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxGeteuid(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- {$IFDEF UNIX}
- If FpSymlink(PChar(StrOf(a[0])), PChar(StrOf(a[1]))) <> 0 Then
-  RaiseOSErr(exFileExists, 17, 'File exists', StrOf(a[1]));
- {$ENDIF}
+ Result := VInt(FpGeteuid);
+End;
+
+Function PxGetgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(FpGetgid);
+End;
+
+Function PxGetegid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(FpGetegid);
+End;
+
+Function PxGetgroups(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ g: Array[0..255] Of LongWord;
+ r, i: LongInt;
+ l: TPyList;
+Begin
+ r := c_getgroups(256, @g[0]);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ l := NewList;
+ For i := 0 To r - 1 Do l.Add(VInt(g[i]));
+ Result := VObj(l);
+End;
+
+Function PxGetpgrp(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(FpGetpgrp);
+End;
+
+Function PxGetpgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := c_getpgid(ToInt64(a[0]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Function PxSetpgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_setpgid(ToInt64(a[0]), ToInt64(a[1])) <> 0 Then RaiseErrnoN(fpgeterrno);
  Result := vNone;
 End;
 
-Function PosixReadlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxGetsid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
 Begin
- {$IFDEF UNIX}
- Result := VStr(fpReadLink(StrOf(a[0])));
- If TPyStr(Result.o).s = '' Then
-  RaiseOSErr(exOSError, 22, 'Invalid argument', StrOf(a[0]));
- {$ELSE}
- Result := a[0];
- {$ENDIF}
+ r := c_getsid(ToInt64(a[0]));
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
 End;
 
-Function PosixUname(a: PVal; n: Integer; kw: TPyDict): TVal;
-{$IFDEF UNIX}
+Function PxSetsid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ r := FpSetsid;
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxSetuid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_setuid(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxSetgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_setgid(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxNice(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(c_nice(ToInt64(a[0])));
+End;
+
+Function PxGetlogin(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: PChar;
+Begin
+ p := c_getlogin;
+ If p = Nil Then RaiseErrnoN(25);
+ Result := VStr(p);
+End;
+
+Function PxTtyname(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: PChar;
+Begin
+ p := c_ttyname(ToInt64(a[0]));
+ If p = Nil Then RaiseErrnoN(fpgeterrno);
+ Result := VStr(p);
+End;
+
+Function PxCtermid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..255] Of Char;
+Begin
+ c_ctermid(@buf[0]);
+ Result := VStr(PChar(@buf[0]));
+End;
+
+Function PxKill(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ OutFlush;
+ If FpKill(ToInt64(a[0]), ToInt64(a[1])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxKillpg(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If c_killpg(ToInt64(a[0]), ToInt64(a[1])) <> 0 Then RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxAbort(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ OutFlush;
+ c_abort;
+ Result := vNone;
+End;
+
+Function PxExit(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ OutFlush;
+ FpExit(ToInt64(a[0]));
+ Result := vNone;
+End;
+
+Function PxFork(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: LongInt;
+Begin
+ FlushTracked;
+ FlushAllFiles;
+ OutFlush;
+ r := FpFork;
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ Result := VInt(r);
+End;
+
+Type
+ TCStrArr = Array Of PChar;
+
+Procedure BuildArgv(Const v: TVal; Var store: Array Of AnsiString;
+ Var ptrs: TCStrArr; cnt: Integer);
+Begin
+End;
+
+Function PxExecve(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ args, env: TValArr;
+ sa, se: Array Of AnsiString;
+ pa, pe: Array Of PChar;
+ i: Integer;
+ hasEnv: Boolean;
+ p: AnsiString;
+ kk: TValArr;
+Begin
+ FlushTracked;
+ OutFlush;
+ FlushAllFiles;
+ p := FsPath(a[0]);
+ args := IterToArr(a[1]);
+ If Length(args) = 0 Then ValueErr('execv() arg 2 must not be empty');
+ SetLength(sa, Length(args));
+ SetLength(pa, Length(args) + 1);
+ For i := 0 To High(args) Do Begin
+  sa[i] := FsPath(args[i]);
+  pa[i] := PChar(sa[i]);
+ End;
+ pa[Length(args)] := Nil;
+ hasEnv := (n > 2) And (a[2].k <> vkNone);
+ If hasEnv Then Begin
+  kk := IterToArr(a[2]);
+  SetLength(se, Length(kk));
+  SetLength(pe, Length(kk) + 1);
+  For i := 0 To High(kk) Do Begin
+   se[i] := FsPath(kk[i]) + '=' + FsPath(GetItem(a[2], kk[i]));
+   pe[i] := PChar(se[i]);
+  End;
+  pe[Length(kk)] := Nil;
+  FpExecve(p, PPChar(@pa[0]), PPChar(@pe[0]));
+ End
+ Else FpExecv(p, PPChar(@pa[0]));
+ env := Nil;
+ RaiseErrnoN(fpgeterrno);
+ Result := vNone;
+End;
+
+Function PxWaitpid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ st: cint;
+ r: LongInt;
+ t: TPyTuple;
+Begin
+ OutFlush;
+ st := 0;
+ Repeat
+  r := FpWaitPid(ToInt64(a[0]), @st, ToInt64(a[1]));
+ Until (r >= 0) Or (fpgeterrno <> 4);
+ If r < 0 Then RaiseErrnoN(fpgeterrno);
+ t := NewTuple(2);
+ t.items[0] := VInt(r);
+ t.items[1] := VInt(st);
+ Result := VObj(t);
+End;
+
+Function PxSystem(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ rc: Integer;
+Begin
+ FlushTracked;
+ OutFlush;
+ FlushAllFiles;
+ rc := fpSystem(FsPath(a[0]));
+ Result := VInt(rc);
+End;
+
+Function PxStrerror(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VStr(ErrnoMsg(ToInt64(a[0])));
+End;
+
+Function PxUrandom(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ s: AnsiString;
+ k, got: Int64;
+ fd: LongInt;
+ r: PtrInt;
+Begin
+ k := ToInt64(a[0]);
+ If k < 0 Then ValueErr('negative argument not allowed');
+ SetLength(s, k);
+ fd := FpOpen('/dev/urandom', 0);
+ If fd < 0 Then Begin
+  { repli : generateur Pascal }
+  For got := 1 To k Do s[got] := Chr(Random(256));
+  Result := VBytes(s);
+  Exit;
+ End;
+ got := 0;
+ While got < k Do Begin
+  r := FpRead(fd, @s[got + 1], k - got);
+  If r <= 0 Then Break;
+  Inc(got, r);
+ End;
+ FpClose(fd);
+ Result := VBytes(s);
+End;
+
+Function PxCpuCount(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ r: Int64;
+Begin
+ r := c_sysconf(84);
+ If r < 1 Then Result := vNone Else Result := VInt(r);
+End;
+
+Function PxUname(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  u: UtsName;
  t: TPyTuple;
 Begin
  FpUname(u);
  t := NewTuple(5);
- t.items[0] := VStr(u.sysname);
- t.items[1] := VStr(u.nodename);
- t.items[2] := VStr(u.release);
- t.items[3] := VStr(u.version);
- t.items[4] := VStr(u.machine);
+ t.items[0] := VStr(PChar(@u.sysname[0]));
+ t.items[1] := VStr(PChar(@u.nodename[0]));
+ t.items[2] := VStr(PChar(@u.release[0]));
+ t.items[3] := VStr(PChar(@u.version[0]));
+ t.items[4] := VStr(PChar(@u.machine[0]));
  Result := VObj(t);
 End;
-{$ELSE}
+
+Function PxTimes(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ tb: tms;
+ r: clock_t;
+ t: TPyTuple;
+ hz: Double;
+Begin
+ r := FpTimes(tb);
+ hz := c_sysconf(2);
+ If hz <= 0 Then hz := 100;
+ t := NewTuple(5);
+ t.items[0] := VFloat(tb.tms_utime / hz);
+ t.items[1] := VFloat(tb.tms_stime / hz);
+ t.items[2] := VFloat(tb.tms_cutime / hz);
+ t.items[3] := VFloat(tb.tms_cstime / hz);
+ t.items[4] := VFloat(r / hz);
+ Result := VObj(t);
+End;
+
+Function PxGetloadavg(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ d: Array[0..2] Of Double;
  t: TPyTuple;
 Begin
- t := NewTuple(5);
- t.items[0] := VStr('Windows');
- t.items[1] := VStr('localhost');
- t.items[2] := VStr('');
- t.items[3] := VStr('');
- t.items[4] := VStr('x86_64');
+ If c_getloadavg(@d[0], 3) <> 3 Then
+  RaiseExc(exOSError, 'Load averages are unobtainable');
+ t := NewTuple(3);
+ t.items[0] := VFloat(d[0]);
+ t.items[1] := VFloat(d[1]);
+ t.items[2] := VFloat(d[2]);
  Result := VObj(t);
 End;
-{$ENDIF}
 
-Function PosixIsatty(a: PVal; n: Integer; kw: TPyDict): TVal;
-Begin
- Result := VBool(IsATTY(ToInt64(a[0])) <> 0);
-End;
-
-Function PosixUtime(a: PVal; n: Integer; kw: TPyDict): TVal;
-{$IFDEF UNIX}
+Function PxStatvfs(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- ub: TUtimBuf;
- arr: TValArr;
-{$ENDIF}
+ st: TStatVfsRec;
+ t: TPyTuple;
 Begin
- {$IFDEF UNIX}
- If (n > 1) And (a[1].k = vkObj) Then Begin
-  arr := IterToArr(a[1]);
-  ub.actime := Trunc(NumToDouble(arr[0]));
-  ub.modtime := Trunc(NumToDouble(arr[1]));
- End
- Else Begin
-  ub.actime := Trunc(NowSeconds);
-  ub.modtime := ub.actime;
+ If c_statvfs(PChar(FsPath(a[0])), @st) <> 0 Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ t := NewTuple(11);
+ t.items[0] := VInt(st.f_bsize);
+ t.items[1] := VInt(st.f_frsize);
+ t.items[2] := VInt(st.f_blocks);
+ t.items[3] := VInt(st.f_bfree);
+ t.items[4] := VInt(st.f_bavail);
+ t.items[5] := VInt(st.f_files);
+ t.items[6] := VInt(st.f_ffree);
+ t.items[7] := VInt(st.f_favail);
+ t.items[8] := VInt(st.f_flag);
+ t.items[9] := VInt(st.f_namemax);
+ t.items[10] := VInt(st.f_fsid);
+ Result := VObj(t);
+End;
+
+Function PxEnviron(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ d: TPyDict;
+ i, p: Integer;
+ s: AnsiString;
+Begin
+ d := TPyDict.Make;
+ For i := 1 To GetEnvironmentVariableCount Do Begin
+  s := GetEnvironmentString(i);
+  p := Pos('=', s);
+  If p > 1 Then d.SetItem(VBytes(Copy(s, 1, p - 1)), VBytes(Copy(s, p + 1,
+   Length(s))));
  End;
- FpUtime(PChar(StrOf(a[0])), @ub);
- {$ENDIF}
- Result := vNone;
+ Result := VObj(d);
 End;
 
-Function PosixExit(a: PVal; n: Integer; kw: TPyDict): TVal;
+Function PxPutenv(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- OutFlush;
- Halt(ToInt64(a[0]));
+ If c_setenv(PChar(FsPath(a[0])), PChar(FsPath(a[1])), 1) <> 0 Then
+  RaiseErrnoN(fpgeterrno);
  Result := vNone;
 End;
 
-Procedure InitPosixModule(m: TPyModule);
+Function PxUnsetenv(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ c_unsetenv(PChar(FsPath(a[0])));
+ Result := vNone;
+End;
+
+Function PxRealpath(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..4096] Of Char;
+Begin
+ If c_realpath(PChar(FsPath(a[0])), @buf[0]) = Nil Then
+  RaiseErrnoF(fpgeterrno, StrOf(a[0]));
+ Result := VStr(FsStr(PChar(@buf[0])));
+End;
+
+Function PxSync(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ c_sync;
+ Result := vNone;
+End;
+
+Function PxDeviceEncoding(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If IsATTY(ToInt64(a[0])) <> 0 Then Result := VStr('UTF-8') Else Result :=
+   vNone;
+End;
+
+Function PxFspath(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ f, r: TVal;
+Begin
+ If IsStrVal(a[0]) Or ((a[0].k = vkObj) And (a[0].o Is TPyBytes) And
+  (a[0].o.cls = tyBytes)) Then Begin
+  Result := a[0];
+  Exit;
+ End;
+ If (a[0].k = vkObj) And LookupType(a[0].o.cls, '__fspath__', f) Then Begin
+  r := Call1(f, a[0]);
+  If IsStrVal(r) Or ((r.k = vkObj) And (r.o Is TPyBytes)) Then Begin
+   Result := r;
+   Exit;
+  End;
+  TypeErr('expected ' + TypeName(a[0]) + '.__fspath__() to return str or ' +
+   'bytes, not ' + TypeName(r));
+ End;
+ TypeErr('expected str, bytes or os.PathLike object, not ' + TypeName(a[0]));
+ Result := vNone;
+End;
+
+Procedure InitPosix2Module(m: TPyModule);
 Var
  d: TPyDict;
 Begin
  d := m.idict;
- DefFunc(d, 'getcwd', @PosixGetcwd);
- DefFunc(d, 'chdir', @PosixChdir);
- DefFunc(d, 'listdir', @PosixListdir);
- DefFunc(d, 'mkdir', @PosixMkdir);
- DefFunc(d, 'remove', @PosixRemove);
- DefFunc(d, 'rmdir', @PosixRmdir);
- DefFunc(d, 'rename', @PosixRename);
- DefFunc(d, 'exists', @PosixExists);
- DefFunc(d, 'isfile', @PosixIsFile);
- DefFunc(d, 'isdir', @PosixIsDir);
- DefFunc(d, 'getsize', @PosixGetSize);
- DefFunc(d, 'stat', @PosixStat);
- DefFunc(d, 'lstat', @PosixLStat);
- DefFunc(d, 'chmod', @PosixChmod);
- DefFunc(d, 'getuid', @PosixGetuid);
- DefFunc(d, 'getgid', @PosixGetgid);
- DefFunc(d, 'getppid', @PosixGetppid);
- DefFunc(d, 'access', @PosixAccess);
- DefFunc(d, 'symlink', @PosixSymlink);
- DefFunc(d, 'readlink', @PosixReadlink);
- DefFunc(d, 'uname', @PosixUname);
- DefFunc(d, 'isatty', @PosixIsatty);
- DefFunc(d, 'utime', @PosixUtime);
- DefFunc(d, '_exit', @PosixExit);
- DefFunc(d, 'getmtime', @PosixGetMTime);
- DefFunc(d, 'environ', @PosixEnviron);
- DefFunc(d, 'getpid', @PosixGetpid);
- DefFunc(d, 'system', @PosixSystem);
- DefFunc(d, 'urandom', @PosixUrandom);
- DefFunc(d, 'putenv', @PosixSetenv);
- DefFunc(d, 'cpu_count', @PosixCpuCount);
- DefFunc(d, 'abspath', @PosixAbspath);
+ DefFunc(d, '_stat', @PxStat);
+ DefFunc(d, '_fstat', @PxFStat);
+ DefFunc(d, 'open', @PxOpen);
+ DefFunc(d, 'close', @PxClose);
+ DefFunc(d, 'closerange', @PxCloseRange);
+ DefFunc(d, 'read', @PxRead);
+ DefFunc(d, 'pread', @PxPRead);
+ DefFunc(d, 'write', @PxWrite);
+ DefFunc(d, 'pwrite', @PxPWrite);
+ DefFunc(d, 'lseek', @PxLseek);
+ DefFunc(d, 'dup', @PxDup);
+ DefFunc(d, 'dup2', @PxDup2);
+ DefFunc(d, 'pipe', @PxPipe);
+ DefFunc(d, 'fsync', @PxFsync);
+ DefFunc(d, 'fdatasync', @PxFsync);
+ DefFunc(d, 'ftruncate', @PxFTruncate);
+ DefFunc(d, 'truncate', @PxTruncate);
+ DefFunc(d, 'isatty', @PxIsatty);
+ DefFunc(d, 'get_inheritable', @PxGetInheritable);
+ DefFunc(d, 'set_inheritable', @PxSetInheritable);
+ DefFunc(d, 'get_blocking', @PxGetBlocking);
+ DefFunc(d, 'set_blocking', @PxSetBlocking);
+ DefFunc(d, '_terminal_size', @PxTerminalSize);
+ DefFunc(d, 'access', @PxAccess);
+ DefFunc(d, 'chdir', @PxChdir);
+ DefFunc(d, 'fchdir', @PxFChdir);
+ DefFunc(d, 'getcwd', @PxGetcwd);
+ DefFunc(d, 'chmod', @PxChmod);
+ DefFunc(d, 'fchmod', @PxFChmod);
+ DefFunc(d, 'chown', @PxChown);
+ DefFunc(d, 'fchown', @PxFChown);
+ DefFunc(d, 'link', @PxLink);
+ DefFunc(d, 'symlink', @PxSymlink);
+ DefFunc(d, 'readlink', @PxReadlink);
+ DefFunc(d, 'unlink', @PxUnlink);
+ DefFunc(d, 'remove', @PxUnlink);
+ DefFunc(d, 'rename', @PxRename);
+ DefFunc(d, 'replace', @PxRename);
+ DefFunc(d, 'rmdir', @PxRmdir);
+ DefFunc(d, 'mkdir', @PxMkdir);
+ DefFunc(d, 'mkfifo', @PxMkfifo);
+ DefFunc(d, 'listdir', @PxListdir);
+ DefFunc(d, '_scandir', @PxScanDir);
+ DefFunc(d, 'umask', @PxUmask);
+ DefFunc(d, '_utime', @PxUtime);
+ DefFunc(d, 'getpid', @PxGetpid);
+ DefFunc(d, 'getppid', @PxGetppid);
+ DefFunc(d, 'getuid', @PxGetuid);
+ DefFunc(d, 'geteuid', @PxGeteuid);
+ DefFunc(d, 'getgid', @PxGetgid);
+ DefFunc(d, 'getegid', @PxGetegid);
+ DefFunc(d, 'getgroups', @PxGetgroups);
+ DefFunc(d, 'getpgrp', @PxGetpgrp);
+ DefFunc(d, 'getpgid', @PxGetpgid);
+ DefFunc(d, 'setpgid', @PxSetpgid);
+ DefFunc(d, 'getsid', @PxGetsid);
+ DefFunc(d, 'setsid', @PxSetsid);
+ DefFunc(d, 'setuid', @PxSetuid);
+ DefFunc(d, 'setgid', @PxSetgid);
+ DefFunc(d, 'nice', @PxNice);
+ DefFunc(d, 'getlogin', @PxGetlogin);
+ DefFunc(d, 'ttyname', @PxTtyname);
+ DefFunc(d, 'ctermid', @PxCtermid);
+ DefFunc(d, 'kill', @PxKill);
+ DefFunc(d, 'killpg', @PxKillpg);
+ DefFunc(d, 'abort', @PxAbort);
+ DefFunc(d, '_exit', @PxExit);
+ DefFunc(d, 'fork', @PxFork);
+ DefFunc(d, '_execve', @PxExecve);
+ DefFunc(d, 'waitpid', @PxWaitpid);
+ DefFunc(d, 'system', @PxSystem);
+ DefFunc(d, 'strerror', @PxStrerror);
+ DefFunc(d, 'urandom', @PxUrandom);
+ DefFunc(d, 'cpu_count', @PxCpuCount);
+ DefFunc(d, '_uname', @PxUname);
+ DefFunc(d, '_times', @PxTimes);
+ DefFunc(d, 'getloadavg', @PxGetloadavg);
+ DefFunc(d, '_statvfs', @PxStatvfs);
+ DefFunc(d, '_environ', @PxEnviron);
+ DefFunc(d, 'putenv', @PxPutenv);
+ DefFunc(d, 'unsetenv', @PxUnsetenv);
+ DefFunc(d, '_realpath', @PxRealpath);
+ DefFunc(d, 'sync', @PxSync);
+ DefFunc(d, 'device_encoding', @PxDeviceEncoding);
+ DefFunc(d, 'fspath', @PxFspath);
 End;
 
 { ------------------------------------------------------------
@@ -25474,8 +26304,64 @@ Begin
  Result := FileOut(TPyFile(a[0].o), TPyFile(a[0].o).data);
 End;
 
+Function IoTrack(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ i: Integer;
+Begin
+ If (a[0].k = vkObj) Then Begin
+  For i := 0 To NFlushReg - 1 Do
+   If FlushReg[i] = a[0].o Then Begin
+    Result := vNone;
+    Exit;
+   End;
+  If NFlushReg >= Length(FlushReg) Then SetLength(FlushReg, NFlushReg * 2 + 16);
+  FlushReg[NFlushReg] := a[0].o;
+  Inc(NFlushReg);
+ End;
+ Result := vNone;
+End;
+
+Function IoUntrack(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ i: Integer;
+Begin
+ If a[0].k = vkObj Then
+  For i := NFlushReg - 1 DownTo 0 Do
+   If FlushReg[i] = a[0].o Then Begin
+    FlushReg[i] := FlushReg[NFlushReg - 1];
+    Dec(NFlushReg);
+    Break;
+   End;
+ Result := vNone;
+End;
+
+Procedure FlushTracked;
+Var
+ i: Integer;
+ snap: Array Of TPyObj;
+Begin
+ If NFlushReg = 0 Then Exit;
+ SetLength(snap, NFlushReg);
+ For i := 0 To NFlushReg - 1 Do snap[i] := FlushReg[i];
+ For i := 0 To High(snap) Do
+  Try
+   Call0(GetAttr(VObj(snap[i]), 'flush'));
+  Except
+   On E: EPyError Do ;
+  End;
+End;
+
+Function IoFlushTracked(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ FlushTracked;
+ Result := vNone;
+End;
+
 Procedure InitIoModule(m: TPyModule);
 Begin
+ DefFunc(m.idict, 'track', @IoTrack);
+ DefFunc(m.idict, 'untrack', @IoUntrack);
+ DefFunc(m.idict, 'flush_tracked', @IoFlushTracked);
  DefFunc(m.idict, '_stringio', @SioNew);
  DefFunc(m.idict, '_bytesio', @BioNew);
  DefFunc(m.idict, '_getvalue', @SioGetValue);
@@ -29262,7 +30148,7 @@ Begin
  RegNative('sys', @InitSysModule);
  RegNative('math', @InitMathModule);
  RegNative('time', @InitTimeModule);
- RegNative('posix', @InitPosixModule);
+ RegNative('_posix', @InitPosix2Module);
  RegNative('_mt', @InitRandomModule);
  RegNative('_re', @InitReModule);
  RegNative('marshal', @InitMarshalModule);
@@ -29270,7 +30156,7 @@ Begin
  RegNative('gc', @InitGcModule);
  RegNative('atexit', @InitAtexitModule);
  RegNative('builtins', @InitBuiltinsModule);
- RegNative('_io', @InitIoModule);
+ RegNative('_io_native', @InitIoModule);
  RegisterPrelude;
  m := NewModule('__main__');
  MainDict := m.idict;
@@ -32862,14 +33748,616 @@ End;
 
 Const
  Src__collections_abc_0: AnsiString =
-  'from collections.abc import *' + #10 + 'import collections.abc as _abc' +
-  #10 + '__all__ = list(_abc.__all__) if ha' +
-  'sattr(_abc, ''__all__'') else []' + #10 + 'for _n in __all__:' + #10 +
-  '    globals()[_n] = getattr(_abc, ' + '_n)' + #10 + #10;
+  '# Copyright 2007 Google, Inc. All ' + 'Rights Reserved.' + #10 +
+  '# Licensed to PSF under a Contribu' + 'tor Agreement.' + #10 + #10 +
+  '"""Abstract Base Classes (ABCs) fo' +
+  'r collections, according to PEP 31' + '19.' + #10 + #10 +
+  'Unit tests are in test_collections' + '.' + #10 + '"""' + #10 + #10 +
+  'from abc import ABCMeta, abstractm' + 'ethod' + #10 + 'import sys' + #10 +
+  #10 + '__all__ = ["Awaitable", "Coroutine' + '",' + #10 +
+  '           "AsyncIterable", "Async' + 'Iterator", "AsyncGenerator",' +
+  #10 + '           "Hashable", "Iterable",' +
+  ' "Iterator", "Generator", "Reversi' + 'ble",' + #10 +
+  '           "Sized", "Container", "' + 'Callable", "Collection",' + #10 +
+  '           "Set", "MutableSet",' + #10 +
+  '           "Mapping", "MutableMapp' + 'ing",' + #10 +
+  '           "MappingView", "KeysVie' + 'w", "ItemsView", "ValuesView",' +
+  #10 + '           "Sequence", "MutableSeq' + 'uence",' + #10 +
+  '           "ByteString",' + #10 + '           ]' + #10 + #10 +
+  '# This module has been renamed fro' +
+  'm collections.abc to _collections_' + 'abc to' + #10 +
+  '# speed up interpreter startup. So' +
+  'me of the types such as MutableMap' + 'ping are' + #10 +
+  '# required early but collections m' +
+  'odule imports a lot of other modul' + 'es.' + #10 + '# See issue #19218' +
+  #10 + '__name__ = "collections.abc"' + #10 + #10 +
+  '# Private list of types that we wa' +
+  'nt to register with the various AB' + 'Cs' + #10 +
+  '# so that they will pass tests lik' + 'e:' + #10 +
+  '#       it = iter(somebytearray)' + #10 +
+  '#       assert isinstance(it, Iter' + 'able)' + #10 +
+  '# Note:  in other implementations,' +
+  ' these types might not be distinct' + #10 +
+  '# and they may have their own impl' + 'ementation specific types that' +
+  #10 + '# are not included on this list.' + #10 +
+  'bytes_iterator = type(iter(b''''))' + #10 +
+  'bytearray_iterator = type(iter(byt' + 'earray()))' + #10 +
+  '#callable_iterator = ???' + #10 + 'dict_keyiterator = type(iter({}.ke' +
+  'ys()))' + #10 + 'dict_valueiterator = type(iter({}.' + 'values()))' + #10 +
+  'dict_itemiterator = type(iter({}.i' + 'tems()))' + #10 +
+  'list_iterator = type(iter([]))' + #10 +
+  'list_reverseiterator = type(iter(r' + 'eversed([])))' + #10 +
+  'range_iterator = type(iter(range(0' + ')))' + #10 +
+  'longrange_iterator = type(iter(ran' + 'ge(1 << 62)))' + #10 +
+  'set_iterator = type(iter(set()))' + #10 + 'str_iterator = type(iter(""))' +
+  #10 + 'tuple_iterator = type(iter(()))' + #10 +
+  'zip_iterator = type(iter(zip()))' + #10 + '## views ##' + #10 +
+  'dict_keys = type({}.keys())' + #10 + 'dict_values = type({}.values())' +
+  #10 + 'dict_items = type({}.items())' + #10 + '## misc ##' + #10 +
+  'mappingproxy = type(type.__dict__)' + #10 +
+  'generator = type((lambda: (yield))' + '())' + #10 + '## coroutine ##' +
+  #10 + 'async def _coro(): pass' + #10 + '_coro = _coro()' + #10 +
+  'coroutine = type(_coro)' + #10 + '_coro.close()  # Prevent ResourceW' +
+  'arning' + #10 + 'del _coro' + #10 + '## asynchronous generator ##' + #10 +
+  'async def _ag(): yield' + #10 + '_ag = _ag()' + #10 +
+  'async_generator = type(_ag)' + #10 + 'del _ag' + #10 + #10 + #10 +
+  '### ONE-TRICK PONIES ###' + #10 + #10 +
+  'def _check_methods(C, *methods):' + #10 + '    mro = C.__mro__' + #10 +
+  '    for method in methods:' + #10 + '        for B in mro:' + #10 +
+  '            if method in B.__dict_' + '_:' + #10 +
+  '                if B.__dict__[meth' + 'od] is None:' + #10 +
+  '                    return NotImpl' + 'emented' + #10 +
+  '                break' + #10 + '        else:' + #10 +
+  '            return NotImplemented' + #10 + '    return True' + #10 + #10 +
+  'class Hashable(metaclass=ABCMeta):' + #10 + #10 + '    __slots__ = ()' +
+  #10 + #10 + '    @abstractmethod' + #10 + '    def __hash__(self):' + #10 +
+  '        return 0' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Hashable:' +
+  #10 + '            return _check_methods(' + 'C, "__hash__")' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 +
+  'class Awaitable(metaclass=ABCMeta)' + ':' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __await__(self):' + #10 + '        yield' + #10 + #10 +
+  '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is Awaitable:' + #10 +
+  '            return _check_methods(' + 'C, "__await__")' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 +
+  'class Coroutine(Awaitable):' + #10 + #10 + '    __slots__ = ()' + #10 +
+  #10 + '    @abstractmethod' + #10 + '    def send(self, value):' + #10 +
+  '        """Send a value into the c' + 'oroutine.' + #10 +
+  '        Return next yielded value ' + 'or raise StopIteration.' + #10 +
+  '        """' + #10 + '        raise StopIteration' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def throw(self, typ, val=None,' +
+  ' tb=None):' + #10 + '        """Raise an exception in t' +
+  'he coroutine.' + #10 + '        Return next yielded value ' +
+  'or raise StopIteration.' + #10 + '        """' + #10 +
+  '        if val is None:' + #10 + '            if tb is None:' + #10 +
+  '                raise typ' + #10 + '            val = typ()' + #10 +
+  '        if tb is not None:' + #10 + '            val = val.with_traceba' +
+  'ck(tb)' + #10 + '        raise val' + #10 + #10 + '    def close(self):' +
+  #10 + '        """Raise GeneratorExit ins' + 'ide coroutine.' + #10 +
+  '        """' + #10 + '        try:' + #10 +
+  '            self.throw(GeneratorEx' + 'it)' + #10 +
+  '        except (GeneratorExit, Sto' + 'pIteration):' + #10 +
+  '            pass' + #10 + '        else:' + #10 +
+  '            raise RuntimeError("co' + 'routine ignored GeneratorExit")' +
+  #10 + #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' +
+  #10 + '        if cls is Coroutine:' + #10 +
+  '            return _check_methods(' +
+  'C, ''__await__'', ''send'', ''throw'', ''' + 'close'')' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 +
+  'Coroutine.register(coroutine)' + #10 + #10 + #10 +
+  'class AsyncIterable(metaclass=ABCM' + 'eta):' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __aiter__(self):' + #10 + '        return AsyncIterator()' + #10 +
+  #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is AsyncIterable:' + #10 +
+  '            return _check_methods(' + 'C, "__aiter__")' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 +
+  'class AsyncIterator(AsyncIterable)' + ':' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    async def __anext__(self):' + #10 +
+  '        """Return the next item or' +
+  ' raise StopAsyncIteration when exh' + 'austed."""' + #10 +
+  '        raise StopAsyncIteration' + #10 + #10 +
+  '    def __aiter__(self):' + #10 + '        return self' + #10 + #10 +
+  '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is AsyncIterator:' + #10 +
+  '            return _check_methods(' + 'C, "__anext__", "__aiter__")' +
+  #10 + '        return NotImplemented' + #10 + #10 + #10 +
+  'class AsyncGenerator(AsyncIterator' + '):' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    async def __anext__(self):' + #10 +
+  '        """Return the next item fr' + 'om the asynchronous generator.' +
+  #10 + '        When exhausted, raise Stop' + 'AsyncIteration.' + #10 +
+  '        """' + #10 + '        return await self.asend(No' + 'ne)' + #10 +
+  #10 + '    @abstractmethod' + #10 + '    async def asend(self, value):' +
+  #10 + '        """Send a value into the a' + 'synchronous generator.' +
+  #10 + '        Return next yielded value ' +
+  'or raise StopAsyncIteration.' + #10 + '        """' + #10 +
+  '        raise StopAsyncIteration' + #10 + #10 + '    @abstractmethod' +
+  #10 + '    async def athrow(self, typ, va' + 'l=None, tb=None):' + #10 +
+  '        """Raise an exception in t' + 'he asynchronous generator.' + #10 +
+  '        Return next yielded value ' + 'or raise StopAsyncIteration.' +
+  #10 + '        """' + #10 + '        if val is None:' + #10 +
+  '            if tb is None:' + #10 + '                raise typ' + #10 +
+  '            val = typ()' + #10 + '        if tb is not None:' + #10 +
+  '            val = val.with_traceba' + 'ck(tb)' + #10 +
+  '        raise val' + #10 + #10 + '    async def aclose(self):' + #10 +
+  '        """Raise GeneratorExit ins' + 'ide coroutine.' + #10 +
+  '        """' + #10 + '        try:' + #10 +
+  '            await self.athrow(Gene' + 'ratorExit)' + #10 +
+  '        except (GeneratorExit, Sto' + 'pAsyncIteration):' + #10 +
+  '            pass' + #10 + '        else:' + #10 +
+  '            raise RuntimeError("as' +
+  'ynchronous generator ignored Gener' + 'atorExit")' + #10 + #10 +
+  '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is AsyncGenerator:' + #10 +
+  '            return _check_methods(' + 'C, ''__aiter__'', ''__anext__'',' +
+  #10 + '                                  ' +
+  '''asend'', ''athrow'', ''aclose'')' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 +
+  'AsyncGenerator.register(async_gene' + 'rator)' + #10 + #10 + #10 +
+  'class Iterable(metaclass=ABCMeta):' + #10 + #10 + '    __slots__ = ()' +
+  #10 + #10 + '    @abstractmethod' + #10 + '    def __iter__(self):' + #10 +
+  '        while False:' + #10 + '            yield None' + #10;
+
+Const
+ Src__collections_abc_1: AnsiString =
+  #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is Iterable:' + #10 + '            return _check_methods(' +
+  'C, "__iter__")' + #10 + '        return NotImplemented' + #10 + #10 + #10 +
+  'class Iterator(Iterable):' + #10 + #10 + '    __slots__ = ()' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __next__(self):' + #10 +
+  '        ''Return the next item from' +
+  ' the iterator. When exhausted, rai' + 'se StopIteration''' + #10 +
+  '        raise StopIteration' + #10 + #10 + '    def __iter__(self):' +
+  #10 + '        return self' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Iterator:' +
+  #10 + '            return _check_methods(' +
+  'C, ''__iter__'', ''__next__'')' + #10 + '        return NotImplemented' +
+  #10 + #10 + 'Iterator.register(bytes_iterator)' + #10 +
+  'Iterator.register(bytearray_iterat' + 'or)' + #10 +
+  '#Iterator.register(callable_iterat' + 'or)' + #10 +
+  'Iterator.register(dict_keyiterator' + ')' + #10 +
+  'Iterator.register(dict_valueiterat' + 'or)' + #10 +
+  'Iterator.register(dict_itemiterato' + 'r)' + #10 +
+  'Iterator.register(list_iterator)' + #10 +
+  'Iterator.register(list_reverseiter' + 'ator)' + #10 +
+  'Iterator.register(range_iterator)' + #10 +
+  'Iterator.register(longrange_iterat' + 'or)' + #10 +
+  'Iterator.register(set_iterator)' + #10 +
+  'Iterator.register(str_iterator)' + #10 +
+  'Iterator.register(tuple_iterator)' + #10 +
+  'Iterator.register(zip_iterator)' + #10 + #10 + #10 +
+  'class Reversible(Iterable):' + #10 + #10 + '    __slots__ = ()' + #10 +
+  #10 + '    @abstractmethod' + #10 + '    def __reversed__(self):' + #10 +
+  '        while False:' + #10 + '            yield None' + #10 + #10 +
+  '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is Reversible:' + #10 +
+  '            return _check_methods(' + 'C, "__reversed__", "__iter__")' +
+  #10 + '        return NotImplemented' + #10 + #10 + #10 +
+  'class Generator(Iterator):' + #10 + #10 + '    __slots__ = ()' + #10 +
+  #10 + '    def __next__(self):' + #10 +
+  '        """Return the next item fr' + 'om the generator.' + #10 +
+  '        When exhausted, raise Stop' + 'Iteration.' + #10 + '        """' +
+  #10 + '        return self.send(None)' + #10 + #10 + '    @abstractmethod' +
+  #10 + '    def send(self, value):' + #10 +
+  '        """Send a value into the g' + 'enerator.' + #10 +
+  '        Return next yielded value ' + 'or raise StopIteration.' + #10 +
+  '        """' + #10 + '        raise StopIteration' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def throw(self, typ, val=None,' +
+  ' tb=None):' + #10 + '        """Raise an exception in t' +
+  'he generator.' + #10 + '        Return next yielded value ' +
+  'or raise StopIteration.' + #10 + '        """' + #10 +
+  '        if val is None:' + #10 + '            if tb is None:' + #10 +
+  '                raise typ' + #10 + '            val = typ()' + #10 +
+  '        if tb is not None:' + #10 + '            val = val.with_traceba' +
+  'ck(tb)' + #10 + '        raise val' + #10 + #10 + '    def close(self):' +
+  #10 + '        """Raise GeneratorExit ins' + 'ide generator.' + #10 +
+  '        """' + #10 + '        try:' + #10 +
+  '            self.throw(GeneratorEx' + 'it)' + #10 +
+  '        except (GeneratorExit, Sto' + 'pIteration):' + #10 +
+  '            pass' + #10 + '        else:' + #10 +
+  '            raise RuntimeError("ge' + 'nerator ignored GeneratorExit")' +
+  #10 + #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' +
+  #10 + '        if cls is Generator:' + #10 +
+  '            return _check_methods(' + 'C, ''__iter__'', ''__next__'',' +
+  #10 + '                                  ' +
+  '''send'', ''throw'', ''close'')' + #10 + '        return NotImplemented' +
+  #10 + #10 + 'Generator.register(generator)' + #10 + #10 + #10 +
+  'class Sized(metaclass=ABCMeta):' + #10 + #10 + '    __slots__ = ()' + #10 +
+  #10 + '    @abstractmethod' + #10 + '    def __len__(self):' + #10 +
+  '        return 0' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Sized:' +
+  #10 + '            return _check_methods(' + 'C, "__len__")' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 +
+  'class Container(metaclass=ABCMeta)' + ':' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __contains__(self, x):' + #10 + '        return False' + #10 +
+  #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is Container:' + #10 +
+  '            return _check_methods(' + 'C, "__contains__")' + #10 +
+  '        return NotImplemented' + #10 + #10 +
+  'class Collection(Sized, Iterable, ' + 'Container):' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __subclasshook__(cls, C):' + #10 +
+  '        if cls is Collection:' + #10 +
+  '            return _check_methods(' +
+  'C,  "__len__", "__iter__", "__cont' + 'ains__")' + #10 +
+  '        return NotImplemented' + #10 + #10 +
+  'class Callable(metaclass=ABCMeta):' + #10 + #10 + '    __slots__ = ()' +
+  #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __call__(self, *args, **kw' + 'ds):' + #10 +
+  '        return False' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Callable:' +
+  #10 + '            return _check_methods(' + 'C, "__call__")' + #10 +
+  '        return NotImplemented' + #10 + #10 + #10 + '### SETS ###' + #10 +
+  #10 + #10 + 'class Set(Collection):' + #10 + #10 +
+  '    """A set is a finite, iterable' + ' container.' + #10 + #10 +
+  '    This class provides concrete g' + 'eneric implementations of all' +
+  #10 + '    methods except for __contains_' + '_, __iter__ and __len__.' +
+  #10 + #10 + '    To override the comparisons (p' +
+  'resumably for speed, as the' + #10 + '    semantics are fixed), redefine' +
+  ' __le__ and __ge__,' + #10 + '    then the other operations will' +
+  ' automatically follow suit.' + #10 + '    """' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    def __le__(self, other):' + #10 +
+  '        if not isinstance(other, S' + 'et):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        if len(self) > len(other):' + #10 + '            return False' +
+  #10 + '        for elem in self:' + #10 +
+  '            if elem not in other:' + #10 + '                return False' +
+  #10 + '        return True' + #10 + #10 + '    def __lt__(self, other):' +
+  #10 + '        if not isinstance(other, S' + 'et):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        return len(self) < len(oth' + 'er) and self.__le__(other)' + #10 +
+  #10 + '    def __gt__(self, other):' + #10 +
+  '        if not isinstance(other, S' + 'et):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        return len(self) > len(oth' + 'er) and self.__ge__(other)' + #10 +
+  #10 + '    def __ge__(self, other):' + #10 +
+  '        if not isinstance(other, S' + 'et):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        if len(self) < len(other):' + #10 + '            return False' +
+  #10 + '        for elem in other:' + #10 +
+  '            if elem not in self:' + #10 + '                return False' +
+  #10 + '        return True' + #10 + #10 + '    def __eq__(self, other):' +
+  #10 + '        if not isinstance(other, S' + 'et):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        return len(self) == len(ot' + 'her) and self.__le__(other)' + #10 +
+  #10 + '    @classmethod' + #10 + '    def _from_iterable(cls, it):' + #10 +
+  '        ''''''Construct an instance o' +
+  'f the class from any iterable inpu' + 't.' + #10 + #10 +
+  '        Must override this method ' +
+  'if the class constructor signature' + #10 +
+  '        does not accept an iterabl' + 'e for an input.' + #10 +
+  '        ''''''' + #10 + '        return cls(it)' + #10 + #10 +
+  '    def __and__(self, other):' + #10 +
+  '        if not isinstance(other, I' + 'terable):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        return self._from_iterable' +
+  '(value for value in other if value' + ' in self)' + #10 + #10 +
+  '    __rand__ = __and__' + #10 + #10 + '    def isdisjoint(self, other):' +
+  #10 + '        ''Return True if two sets h' + 'ave a null intersection.''' +
+  #10 + '        for value in other:' + #10 +
+  '            if value in self:' + #10 + '                return False' +
+  #10 + '        return True' + #10 + #10 + '    def __or__(self, other):' +
+  #10 + '        if not isinstance(other, I' + 'terable):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        chain = (e for s in (self,' + ' other) for e in s)' + #10 +
+  '        return self._from_iterable' + '(chain)' + #10 + #10 +
+  '    __ror__ = __or__' + #10 + #10 + '    def __sub__(self, other):' + #10 +
+  '        if not isinstance(other, S' + 'et):' + #10 +
+  '            if not isinstance(othe' + 'r, Iterable):' + #10 +
+  '                return NotImplemen' + 'ted' + #10 +
+  '            other = self._from_ite' + 'rable(other)' + #10;
+
+Const
+ Src__collections_abc_2: AnsiString =
+  '        return self._from_iterable' + '(value for value in self' + #10 +
+  '                                  ' + ' if value not in other)' + #10 +
+  #10 + '    def __rsub__(self, other):' + #10 +
+  '        if not isinstance(other, S' + 'et):' + #10 +
+  '            if not isinstance(othe' + 'r, Iterable):' + #10 +
+  '                return NotImplemen' + 'ted' + #10 +
+  '            other = self._from_ite' + 'rable(other)' + #10 +
+  '        return self._from_iterable' + '(value for value in other' + #10 +
+  '                                  ' + ' if value not in self)' + #10 +
+  #10 + '    def __xor__(self, other):' + #10 +
+  '        if not isinstance(other, S' + 'et):' + #10 +
+  '            if not isinstance(othe' + 'r, Iterable):' + #10 +
+  '                return NotImplemen' + 'ted' + #10 +
+  '            other = self._from_ite' + 'rable(other)' + #10 +
+  '        return (self - other) | (o' + 'ther - self)' + #10 + #10 +
+  '    __rxor__ = __xor__' + #10 + #10 + '    def _hash(self):' + #10 +
+  '        """Compute the hash value ' + 'of a set.' + #10 + #10 +
+  '        Note that we don''t define ' +
+  '__hash__: not all sets are hashabl' + 'e.' + #10 +
+  '        But if you define a hashab' + 'le set type, its __hash__ should' +
+  #10 + '        call this function.' + #10 + #10 +
+  '        This must be compatible __' + 'eq__.' + #10 + #10 +
+  '        All sets ought to compare ' + 'equal if they contain the same' +
+  #10 + '        elements, regardless of ho' + 'w they are implemented, and' +
+  #10 + '        regardless of the order of' +
+  ' the elements; so there''s not much' + #10 +
+  '        freedom for __eq__ or __ha' +
+  'sh__.  We match the algorithm used' + #10 +
+  '        by the built-in frozenset ' + 'type.' + #10 + '        """' + #10 +
+  '        MAX = sys.maxsize' + #10 + '        MASK = 2 * MAX + 1' + #10 +
+  '        n = len(self)' + #10 + '        h = 1927868237 * (n + 1)' + #10 +
+  '        h &= MASK' + #10 + '        for x in self:' + #10 +
+  '            hx = hash(x)' + #10 + '            h ^= (hx ^ (hx << 16) ' +
+  '^ 89869747)  * 3644798167' + #10 + '            h &= MASK' + #10 +
+  '        h = h * 69069 + 907133923' + #10 + '        h &= MASK' + #10 +
+  '        if h > MAX:' + #10 + '            h -= MASK + 1' + #10 +
+  '        if h == -1:' + #10 + '            h = 590923713' + #10 +
+  '        return h' + #10 + #10 + 'Set.register(frozenset)' + #10 + #10 +
+  #10 + 'class MutableSet(Set):' + #10 +
+  '    """A mutable set is a finite, ' + 'iterable container.' + #10 + #10 +
+  '    This class provides concrete g' + 'eneric implementations of all' +
+  #10 + '    methods except for __contains_' + '_, __iter__, __len__,' + #10 +
+  '    add(), and discard().' + #10 + #10 +
+  '    To override the comparisons (p' + 'resumably for speed, as the' + #10 +
+  '    semantics are fixed), all you ' + 'have to do is redefine __le__ and' +
+  #10 + '    then the other operations will' + ' automatically follow suit.' +
+  #10 + '    """' + #10 + #10 + '    __slots__ = ()' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def add(self, value):' + #10 +
+  '        """Add an element."""' + #10 +
+  '        raise NotImplementedError' + #10 + #10 + '    @abstractmethod' +
+  #10 + '    def discard(self, value):' + #10 +
+  '        """Remove an element.  Do ' +
+  'not raise an exception if absent."' + '""' + #10 +
+  '        raise NotImplementedError' + #10 + #10 +
+  '    def remove(self, value):' + #10 +
+  '        """Remove an element. If n' + 'ot a member, raise a KeyError."""' +
+  #10 + '        if value not in self:' + #10 +
+  '            raise KeyError(value)' + #10 + '        self.discard(value)' +
+  #10 + #10 + '    def pop(self):' + #10 +
+  '        """Return the popped value' + '.  Raise KeyError if empty."""' +
+  #10 + '        it = iter(self)' + #10 + '        try:' + #10 +
+  '            value = next(it)' + #10 + '        except StopIteration:' +
+  #10 + '            raise KeyError from No' + 'ne' + #10 +
+  '        self.discard(value)' + #10 + '        return value' + #10 + #10 +
+  '    def clear(self):' + #10 + '        """This is slow (creates N' +
+  ' new iterators!) but effective."""' + #10 + '        try:' + #10 +
+  '            while True:' + #10 + '                self.pop()' + #10 +
+  '        except KeyError:' + #10 + '            pass' + #10 + #10 +
+  '    def __ior__(self, it):' + #10 + '        for value in it:' + #10 +
+  '            self.add(value)' + #10 + '        return self' + #10 + #10 +
+  '    def __iand__(self, it):' + #10 + '        for value in (self - it):' +
+  #10 + '            self.discard(value)' + #10 + '        return self' +
+  #10 + #10 + '    def __ixor__(self, it):' + #10 + '        if it is self:' +
+  #10 + '            self.clear()' + #10 + '        else:' + #10 +
+  '            if not isinstance(it, ' + 'Set):' + #10 +
+  '                it = self._from_it' + 'erable(it)' + #10 +
+  '            for value in it:' + #10 + '                if value in self:' +
+  #10 + '                    self.discard(v' + 'alue)' + #10 +
+  '                else:' + #10 + '                    self.add(value' + ')' +
+  #10 + '        return self' + #10 + #10 + '    def __isub__(self, it):' +
+  #10 + '        if it is self:' + #10 + '            self.clear()' + #10 +
+  '        else:' + #10 + '            for value in it:' + #10 +
+  '                self.discard(value' + ')' + #10 + '        return self' +
+  #10 + #10 + 'MutableSet.register(set)' + #10 + #10 + #10 +
+  '### MAPPINGS ###' + #10 + #10 + #10 + 'class Mapping(Collection):' + #10 +
+  #10 + '    __slots__ = ()' + #10 + #10 +
+  '    """A Mapping is a generic cont' + 'ainer for associating key/value' +
+  #10 + '    pairs.' + #10 + #10 + '    This class provides concrete g' +
+  'eneric implementations of all' + #10 +
+  '    methods except for __getitem__' + ', __iter__, and __len__.' + #10 +
+  #10 + '    """' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __getitem__(self, key):' + #10 + '        raise KeyError' + #10 +
+  #10 + '    def get(self, key, default=Non' + 'e):' + #10 +
+  '        ''D.get(k[,d]) -> D[k] if k' +
+  ' in D, else d.  d defaults to None' + '.''' + #10 + '        try:' + #10 +
+  '            return self[key]' + #10 + '        except KeyError:' + #10 +
+  '            return default' + #10 + #10 +
+  '    def __contains__(self, key):' + #10 + '        try:' + #10 +
+  '            self[key]' + #10 + '        except KeyError:' + #10 +
+  '            return False' + #10 + '        else:' + #10 +
+  '            return True' + #10 + #10 + '    def keys(self):' + #10 +
+  '        "D.keys() -> a set-like ob' +
+  'ject providing a view on D''s keys"' + #10 +
+  '        return KeysView(self)' + #10 + #10 + '    def items(self):' + #10 +
+  '        "D.items() -> a set-like o' +
+  'bject providing a view on D''s item' + 's"' + #10 +
+  '        return ItemsView(self)' + #10 + #10 + '    def values(self):' +
+  #10 + '        "D.values() -> an object p' +
+  'roviding a view on D''s values"' + #10 +
+  '        return ValuesView(self)' + #10 + #10 +
+  '    def __eq__(self, other):' + #10 +
+  '        if not isinstance(other, M' + 'apping):' + #10 +
+  '            return NotImplemented' + #10 +
+  '        return dict(self.items()) ' + '== dict(other.items())' + #10 +
+  #10 + '    __reversed__ = None' + #10 + #10 +
+  'Mapping.register(mappingproxy)' + #10 + #10 + #10 +
+  'class MappingView(Sized):' + #10 + #10 + '    __slots__ = ''_mapping'',' +
+  #10 + #10 + '    def __init__(self, mapping):' + #10 +
+  '        self._mapping = mapping' + #10 + #10 + '    def __len__(self):' +
+  #10 + '        return len(self._mapping)' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        return ''{0.__class__.__nam' +
+  'e__}({0._mapping!r})''.format(self)' + #10 + #10 + #10 +
+  'class KeysView(MappingView, Set):' + #10 + #10 + '    __slots__ = ()' +
+  #10 + #10 + '    @classmethod' + #10 + '    def _from_iterable(self, it):' +
+  #10 + '        return set(it)' + #10 + #10 +
+  '    def __contains__(self, key):' + #10 +
+  '        return key in self._mappin' + 'g' + #10 + #10 +
+  '    def __iter__(self):' + #10 + '        yield from self._mapping' + #10 +
+  #10 + 'KeysView.register(dict_keys)' + #10 + #10 + #10 +
+  'class ItemsView(MappingView, Set):' + #10 + #10 + '    __slots__ = ()' +
+  #10 + #10 + '    @classmethod' + #10 + '    def _from_iterable(self, it):' +
+  #10 + '        return set(it)' + #10 + #10 +
+  '    def __contains__(self, item):' + #10 + '        key, value = item' +
+  #10 + '        try:' + #10 + '            v = self._mapping[key]' + #10 +
+  '        except KeyError:' + #10 + '            return False' + #10 +
+  '        else:' + #10 + '            return v is value or v' + ' == value' +
+  #10 + #10 + '    def __iter__(self):' + #10 +
+  '        for key in self._mapping:' + #10 +
+  '            yield (key, self._mapp' + 'ing[key])' + #10 + #10 +
+  'ItemsView.register(dict_items)' + #10 + #10 + #10 +
+  'class ValuesView(MappingView, Coll' + 'ection):' + #10 + #10;
+
+Const
+ Src__collections_abc_3: AnsiString =
+  '    __slots__ = ()' + #10 + #10 + '    def __contains__(self, value):' +
+  #10 + '        for key in self._mapping:' + #10 +
+  '            v = self._mapping[key]' + #10 +
+  '            if v is value or v == ' + 'value:' + #10 +
+  '                return True' + #10 + '        return False' + #10 + #10 +
+  '    def __iter__(self):' + #10 + '        for key in self._mapping:' +
+  #10 + '            yield self._mapping[ke' + 'y]' + #10 + #10 +
+  'ValuesView.register(dict_values)' + #10 + #10 + #10 +
+  'class MutableMapping(Mapping):' + #10 + #10 + '    __slots__ = ()' + #10 +
+  #10 + '    """A MutableMapping is a gener' +
+  'ic container for associating' + #10 + '    key/value pairs.' + #10 + #10 +
+  '    This class provides concrete g' + 'eneric implementations of all' +
+  #10 + '    methods except for __getitem__' + ', __setitem__, __delitem__,' +
+  #10 + '    __iter__, and __len__.' + #10 + #10 + '    """' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __setitem__(self, key, val' +
+  'ue):' + #10 + '        raise KeyError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __delitem__(self, key):' + #10 +
+  '        raise KeyError' + #10 + #10 + '    __marker = object()' + #10 +
+  #10 + '    def pop(self, key, default=__m' + 'arker):' + #10 +
+  '        ''''''D.pop(k[,d]) -> v, remo' +
+  've specified key and return the co' + 'rresponding value.' + #10 +
+  '          If key is not found, d i' +
+  's returned if given, otherwise Key' + 'Error is raised.' + #10 +
+  '        ''''''' + #10 + '        try:' + #10 +
+  '            value = self[key]' + #10 + '        except KeyError:' + #10 +
+  '            if default is self.__m' + 'arker:' + #10 +
+  '                raise' + #10 + '            return default' + #10 +
+  '        else:' + #10 + '            del self[key]' + #10 +
+  '            return value' + #10 + #10 + '    def popitem(self):' + #10 +
+  '        ''''''D.popitem() -> (k, v), ' +
+  'remove and return some (key, value' + ') pair' + #10 +
+  '           as a 2-tuple; but raise' + ' KeyError if D is empty.' + #10 +
+  '        ''''''' + #10 + '        try:' + #10 +
+  '            key = next(iter(self))' + #10 +
+  '        except StopIteration:' + #10 +
+  '            raise KeyError from No' + 'ne' + #10 +
+  '        value = self[key]' + #10 + '        del self[key]' + #10 +
+  '        return key, value' + #10 + #10 + '    def clear(self):' + #10 +
+  '        ''D.clear() -> None.  Remov' + 'e all items from D.''' + #10 +
+  '        try:' + #10 + '            while True:' + #10 +
+  '                self.popitem()' + #10 + '        except KeyError:' + #10 +
+  '            pass' + #10 + #10 + '    def update(self, other=(), /, ' +
+  '**kwds):' + #10 + '        '''''' D.update([E, ]**F) -> ' +
+  'None.  Update D from mapping/itera' + 'ble E and F.' + #10 +
+  '            If E present and has a' +
+  ' .keys() method, does:     for k i' + 'n E: D[k] = E[k]' + #10 +
+  '            If E present and lacks' +
+  ' .keys() method, does:     for (k,' + ' v) in E: D[k] = v' + #10 +
+  '            In either case, this i' +
+  's followed by: for k, v in F.items' + '(): D[k] = v' + #10 +
+  '        ''''''' + #10 + '        if isinstance(other, Mappi' + 'ng):' +
+  #10 + '            for key in other:' + #10 +
+  '                self[key] = other[' + 'key]' + #10 +
+  '        elif hasattr(other, "keys"' + '):' + #10 +
+  '            for key in other.keys(' + '):' + #10 +
+  '                self[key] = other[' + 'key]' + #10 + '        else:' +
+  #10 + '            for key, value in othe' + 'r:' + #10 +
+  '                self[key] = value' + #10 +
+  '        for key, value in kwds.ite' + 'ms():' + #10 +
+  '            self[key] = value' + #10 + #10 +
+  '    def setdefault(self, key, defa' + 'ult=None):' + #10 +
+  '        ''D.setdefault(k[,d]) -> D.' +
+  'get(k,d), also set D[k]=d if k not' + ' in D''' + #10 + '        try:' +
+  #10 + '            return self[key]' + #10 + '        except KeyError:' +
+  #10 + '            self[key] = default' + #10 + '        return default' +
+  #10 + #10 + 'MutableMapping.register(dict)' + #10 + #10 + #10 +
+  '### SEQUENCES ###' + #10 + #10 + #10 +
+  'class Sequence(Reversible, Collect' + 'ion):' + #10 + #10 +
+  '    """All the operations on a rea' + 'd-only sequence.' + #10 + #10 +
+  '    Concrete subclasses must overr' + 'ide __new__ or __init__,' + #10 +
+  '    __getitem__, and __len__.' + #10 + '    """' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def __getitem__(self, index):' + #10 + '        raise IndexError' +
+  #10 + #10 + '    def __iter__(self):' + #10 + '        i = 0' + #10 +
+  '        try:' + #10 + '            while True:' + #10 +
+  '                v = self[i]' + #10 + '                yield v' + #10 +
+  '                i += 1' + #10 + '        except IndexError:' + #10 +
+  '            return' + #10 + #10 + '    def __contains__(self, value):' +
+  #10 + '        for v in self:' + #10 +
+  '            if v is value or v == ' + 'value:' + #10 +
+  '                return True' + #10 + '        return False' + #10 + #10 +
+  '    def __reversed__(self):' + #10 + '        for i in reversed(range(le' +
+  'n(self))):' + #10 + '            yield self[i]' + #10 + #10 +
+  '    def index(self, value, start=0' + ', stop=None):' + #10 +
+  '        ''''''S.index(value, [start, ' +
+  '[stop]]) -> integer -- return firs' + 't index of value.' + #10 +
+  '           Raises ValueError if th' + 'e value is not present.' + #10 +
+  #10 + '           Supporting start and st' +
+  'op arguments is optional, but' + #10 + '           recommended.' + #10 +
+  '        ''''''' + #10 + '        if start is not None and s' +
+  'tart < 0:' + #10 + '            start = max(len(self) ' + '+ start, 0)' +
+  #10 + '        if stop is not None and st' + 'op < 0:' + #10 +
+  '            stop += len(self)' + #10 + #10 + '        i = start' + #10 +
+  '        while stop is None or i < ' + 'stop:' + #10 + '            try:' +
+  #10 + '                v = self[i]' + #10 +
+  '                if v is value or v' + ' == value:' + #10 +
+  '                    return i' + #10 + '            except IndexError:' +
+  #10 + '                break' + #10 + '            i += 1' + #10 +
+  '        raise ValueError' + #10 + #10 + '    def count(self, value):' +
+  #10 + '        ''S.count(value) -> integer' +
+  ' -- return number of occurrences o' + 'f value''' + #10 +
+  '        return sum(1 for v in self' + ' if v is value or v == value)' +
+  #10 + #10 + 'Sequence.register(tuple)' + #10 + 'Sequence.register(str)' +
+  #10 + 'Sequence.register(range)' + #10 + 'Sequence.register(memoryview)' +
+  #10 + #10 + #10 + 'class ByteString(Sequence):' + #10 + #10 +
+  '    """This unifies bytes and byte' + 'array.' + #10 + #10 +
+  '    XXX Should add all their metho' + 'ds.' + #10 + '    """' + #10 + #10 +
+  '    __slots__ = ()' + #10 + #10 + 'ByteString.register(bytes)' + #10 +
+  'ByteString.register(bytearray)' + #10 + #10 + #10 +
+  'class MutableSequence(Sequence):' + #10 + #10 + '    __slots__ = ()' +
+  #10 + #10 + '    """All the operations on a rea' + 'd-write sequence.' +
+  #10 + #10 + '    Concrete subclasses must provi' +
+  'de __new__ or __init__,' + #10 + '    __getitem__, __setitem__, __de' +
+  'litem__, __len__, and insert().' + #10 + #10 + '    """' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __setitem__(self, index, v' +
+  'alue):' + #10 + '        raise IndexError' + #10 + #10 +
+  '    @abstractmethod' + #10 + '    def __delitem__(self, index):' + #10 +
+  '        raise IndexError' + #10 + #10 + '    @abstractmethod' + #10 +
+  '    def insert(self, index, value)' + ':' + #10 +
+  '        ''S.insert(index, value) --' + ' insert value before index''' +
+  #10 + '        raise IndexError' + #10 + #10 +
+  '    def append(self, value):' + #10 +
+  '        ''S.append(value) -- append' +
+  ' value to the end of the sequence''' + #10 +
+  '        self.insert(len(self), val' + 'ue)' + #10 + #10 +
+  '    def clear(self):' + #10 + '        ''S.clear() -> None -- remo' +
+  've all items from S''' + #10 + '        try:' + #10 +
+  '            while True:' + #10 + '                self.pop()' + #10 +
+  '        except IndexError:' + #10 + '            pass' + #10 + #10 +
+  '    def reverse(self):' + #10 + '        ''S.reverse() -- reverse *I' +
+  'N PLACE*''' + #10 + '        n = len(self)' + #10 +
+  '        for i in range(n//2):' + #10 +
+  '            self[i], self[n-i-1] =' + ' self[n-i-1], self[i]' + #10 + #10 +
+  '    def extend(self, values):' + #10 +
+  '        ''S.extend(iterable) -- ext' +
+  'end sequence by appending elements' + ' from the iterable''' + #10 +
+  '        if values is self:' + #10 + '            values = list(values)' +
+  #10 + '        for v in values:' + #10 + '            self.append(v)' +
+  #10 + #10 + '    def pop(self, index=-1):' + #10 +
+  '        ''''''S.pop([index]) -> item ' +
+  '-- remove and return item at index' + ' (default last).' + #10 +
+  '           Raise IndexError if lis' +
+  't is empty or index is out of rang' + 'e.' + #10 + '        ''''''' + #10 +
+  '        v = self[index]' + #10 + '        del self[index]' + #10 +
+  '        return v' + #10 + #10 + '    def remove(self, value):' + #10 +
+  '        ''''''S.remove(value) -- remo' + 've first occurrence of value.' +
+  #10 + '           Raise ValueError if the' + ' value is not present.' +
+  #10 + '        ''''''' + #10 + '        del self[self.index(value)' + ']' +
+  #10 + #10 + '    def __iadd__(self, values):' + #10 +
+  '        self.extend(values)' + #10;
+
+Const
+ Src__collections_abc_4: AnsiString =
+  '        return self' + #10 + #10 + 'MutableSequence.register(list)' + #10 +
+  'MutableSequence.register(bytearray' +
+  ')  # Multiply inheriting, see Byte' + 'String' + #10 + #10;
 
 Function Src__collections_abc: AnsiString;
 Begin
- Result := Src__collections_abc_0;
+ Result := Src__collections_abc_0 + Src__collections_abc_1 +
+  Src__collections_abc_2 + Src__collections_abc_3 + Src__collections_abc_4;
 End;
 
 Const
@@ -33648,6 +35136,231 @@ Begin
 End;
 
 Const
+ Src__fileio_0: AnsiString =
+  '"""FileIO : flux brut sur un descr' +
+  'ipteur de fichier (equivalent de _' + 'io.FileIO)."""' + #10 +
+  'import os' + #10 + 'import errno' + #10 + 'import stat' + #10 +
+  'import sys' + #10 + 'from _pyio import RawIOBase, Unsup' +
+  'portedOperation, DEFAULT_BUFFER_SI' + 'ZE, SEEK_END' + #10 + #10 + #10 +
+  'class FileIO(RawIOBase):' + #10 + '    _fd = -1' + #10 +
+  '    _created = False' + #10 + '    _readable = False' + #10 +
+  '    _writable = False' + #10 + '    _appending = False' + #10 +
+  '    _seekable = None' + #10 + '    _closefd = True' + #10 + #10 +
+  '    def __init__(self, file, mode=' +
+  '''r'', closefd=True, opener=None):' + #10 + '        if self._fd >= 0:' +
+  #10 + '            try:' + #10 + '                if self._closefd:' + #10 +
+  '                    os.close(self.' + '_fd)' + #10 +
+  '            finally:' + #10 + '                self._fd = -1' + #10 +
+  '        if isinstance(file, float)' + ':' + #10 +
+  '            raise TypeError(''integ' +
+  'er argument expected, got float'')' + #10 +
+  '        if isinstance(file, int):' + #10 + '            fd = file' + #10 +
+  '            if fd < 0:' + #10 + '                raise ValueError(''' +
+  'negative file descriptor'')' + #10 + '        else:' + #10 +
+  '            fd = -1' + #10 + '        if not isinstance(mode, st' + 'r):' +
+  #10 + '            raise TypeError(''inval' + 'id mode: %s'' % (mode,))' +
+  #10 + '        if not set(mode) <= set(''x' + 'rwab+''):' + #10 +
+  '            raise ValueError(''inva' + 'lid mode: %s'' % (mode,))' + #10 +
+  '        if sum(c in ''rwax'' for c i' +
+  'n mode) != 1 or mode.count(''+'') > ' + '1:' + #10 +
+  '            raise ValueError(''Must' +
+  ' have exactly one of create/read/w' + 'rite/append ''' + #10 +
+  '                             ''mode' + ' and at most one plus'')' + #10 +
+  '        flags = 0' + #10 + '        if ''x'' in mode:' + #10 +
+  '            self._created = True' + #10 +
+  '            self._writable = True' + #10 +
+  '            flags = os.O_EXCL | os' + '.O_CREAT' + #10 +
+  '        elif ''r'' in mode:' + #10 + '            self._readable = True' +
+  #10 + '            flags = 0' + #10 + '        elif ''w'' in mode:' + #10 +
+  '            self._writable = True' + #10 +
+  '            flags = os.O_CREAT | o' + 's.O_TRUNC' + #10 +
+  '        elif ''a'' in mode:' + #10 + '            self._writable = True' +
+  #10 + '            self._appending = True' + #10 +
+  '            flags = os.O_APPEND | ' + 'os.O_CREAT' + #10 +
+  '        if ''+'' in mode:' + #10 + '            self._readable = True' +
+  #10 + '            self._writable = True' + #10 +
+  '        if self._readable and self' + '._writable:' + #10 +
+  '            flags |= os.O_RDWR' + #10 + '        elif self._readable:' +
+  #10 + '            flags |= os.O_RDONLY' + #10 + '        else:' + #10 +
+  '            flags |= os.O_WRONLY' + #10 + '        flags |= os.O_CLOEXEC' +
+  #10 + '        try:' + #10 + '            if fd < 0:' + #10 +
+  '                if not closefd:' + #10 +
+  '                    raise ValueErr' +
+  'or(''Cannot use closefd=False with ' + 'file name'')' + #10 +
+  '                if opener is None:' + #10 +
+  '                    fd = os.open(f' + 'ile, flags, 0o666)' + #10 +
+  '                else:' + #10 + '                    fd = opener(fi' +
+  'le, flags)' + #10 + '                    if not isinsta' +
+  'nce(fd, int):' + #10 + '                        raise Type' +
+  'Error(''expected integer from opene' + 'r'')' + #10 +
+  '                    if fd < 0:' + #10 +
+  '                        raise Valu' +
+  'eError(''opener returned %d'' % fd)' + #10 + '            self._fd = fd' +
+  #10 + '            self._closefd = bool(c' + 'losefd)' + #10 +
+  '            try:' + #10 + '                st = os.fstat(fd)' + #10 +
+  '            except OSError:' + #10 + '                if fd >= 0 and fd ' +
+  '!= file:' + #10 + '                    pass' + #10 +
+  '                raise' + #10 + '            if stat.S_ISDIR(st.st_' +
+  'mode):' + #10 + '                raise IsADirectory' +
+  'Error(errno.EISDIR, os.strerror(er' + 'rno.EISDIR), file)' + #10 +
+  '            self._blksize = DEFAUL' + 'T_BUFFER_SIZE' + #10 +
+  '            if st.st_blksize is no' + 't None and st.st_blksize > 1:' +
+  #10 + '                self._blksize = st' + '.st_blksize' + #10 +
+  '            if isinstance(file, fl' + 'oat):' + #10 +
+  '                pass' + #10 + '            self.name = file' + #10 +
+  '            if self._appending:' + #10 +
+  '                os.lseek(fd, 0, SE' + 'EK_END)' + #10 +
+  '        except BaseException:' + #10 +
+  '            if fd >= 0 and self._f' + 'd < 0:' + #10 +
+  '                try:' + #10 + '                    os.close(fd)' + #10 +
+  '                except OSError:' + #10 + '                    pass' + #10 +
+  '            elif fd >= 0 and not i' + 'sinstance(file, int):' + #10 +
+  '                try:' + #10 + '                    os.close(fd)' + #10 +
+  '                except OSError:' + #10 + '                    pass' + #10 +
+  '                self._fd = -1' + #10 + '            raise' + #10 + #10 +
+  '    def __del__(self):' + #10 + '        if self._fd >= 0 and self.' +
+  '_closefd and not self.closed:' + #10 + '            import warnings' +
+  #10 + '            warnings.warn(''unclose' +
+  'd file %r'' % (self,), ResourceWarn' + 'ing, stacklevel=2, source=self)' +
+  #10 + '            self.close()' + #10 + #10 +
+  '    def __getstate__(self):' + #10 + '        raise TypeError("cannot se' +
+  'rialize ''%s'' object" % self.__clas' + 's__.__name__)' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        class_name = ''%s.%s'' % (se' +
+  'lf.__class__.__module__, self.__cl' + 'ass__.__qualname__)' + #10 +
+  '        if self.closed:' + #10 + '            return ''<%s [closed]>''' +
+  ' % class_name' + #10 + '        try:' + #10 +
+  '            name = self.name' + #10 + '        except AttributeError:' +
+  #10 + '            return (''<%s fd=%d mod' + 'e=%r closefd=%r>'' %' + #10 +
+  '                    (class_name, s' +
+  'elf._fd, self.mode, self._closefd)' + ')' + #10 + '        else:' + #10 +
+  '            return (''<%s name=%r m' + 'ode=%r closefd=%r>'' %' + #10 +
+  '                    (class_name, n' + 'ame, self.mode, self._closefd))' +
+  #10 + #10 + '    def _checkReadable(self):' + #10 +
+  '        if not self._readable:' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion(''File not open for reading'')' + #10 + #10 +
+  '    def _checkWritable(self, msg=N' + 'one):' + #10 +
+  '        if not self._writable:' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion(''File not open for writing'')' + #10 + #10 +
+  '    def read(self, size=None):' + #10 + '        self._checkClosed()' +
+  #10 + '        self._checkReadable()' + #10 +
+  '        if size is None or size < ' + '0:' + #10 +
+  '            return self.readall()' + #10 + '        try:' + #10 +
+  '            return os.read(self._f' + 'd, size)' + #10 +
+  '        except BlockingIOError:' + #10 + '            return None' + #10 +
+  #10 + '    def readall(self):' + #10 + '        self._checkClosed()' + #10 +
+  '        self._checkReadable()' + #10 +
+  '        bufsize = DEFAULT_BUFFER_S' + 'IZE' + #10 + '        try:' + #10 +
+  '            pos = os.lseek(self._f' + 'd, 0, 1)' + #10 +
+  '            end = os.fstat(self._f' + 'd).st_size' + #10 +
+  '            if end >= pos and pos ' + '>= 0:' + #10 +
+  '                bufsize = end - po' + 's + 1' + #10 +
+  '        except OSError:' + #10 + '            pass' + #10 +
+  '        result = bytearray()' + #10 + '        while True:' + #10 +
+  '            if len(result) >= bufs' + 'ize:' + #10 +
+  '                bufsize = len(resu' + 'lt)' + #10 +
+  '                bufsize += max(buf' + 'size, DEFAULT_BUFFER_SIZE)' + #10 +
+  '            n = bufsize - len(resu' + 'lt)' + #10 + '            try:' +
+  #10 + '                chunk = os.read(se' + 'lf._fd, n)' + #10 +
+  '            except BlockingIOError' + ':' + #10 +
+  '                if result:' + #10 + '                    break' + #10 +
+  '                return None' + #10 + '            if not chunk:' + #10 +
+  '                break' + #10 + '            result += chunk' + #10 +
+  '        return bytes(result)' + #10 + #10 + '    def readinto(self, b):' +
+  #10 + '        self._checkClosed()' + #10 +
+  '        self._checkReadable()' + #10 +
+  '        m = memoryview(b).cast(''B''' + ')' + #10 +
+  '        data = self.read(len(m))' + #10 + '        if data is None:' +
+  #10 + '            return None' + #10 + '        n = len(data)' + #10 +
+  '        m[:n] = data' + #10 + '        return n' + #10 + #10 +
+  '    def write(self, b):' + #10 + '        self._checkClosed()' + #10 +
+  '        self._checkWritable()' + #10 + '        try:' + #10 +
+  '            return os.write(self._' + 'fd, b)' + #10 +
+  '        except BlockingIOError:' + #10 + '            return None' + #10 +
+  #10 + '    def seek(self, pos, whence=0):' + #10 +
+  '        if isinstance(pos, float):' + #10 +
+  '            raise TypeError(''an in' + 'teger is required'')' + #10 +
+  '        self._checkClosed()' + #10 + '        return os.lseek(self._fd, ' +
+  'pos, whence)' + #10 + #10 + '    def tell(self):' + #10 +
+  '        self._checkClosed()' + #10 + '        return os.lseek(self._fd, ' +
+  '0, 1)' + #10 + #10 + '    def truncate(self, size=None):' + #10 +
+  '        self._checkClosed()' + #10 + '        self._checkWritable()' +
+  #10 + '        if size is None:' + #10 + '            size = self.tell()' +
+  #10 + '        os.ftruncate(self._fd, siz' + 'e)' + #10 +
+  '        return size' + #10 + #10 + '    def close(self):' + #10 +
+  '        if not self.closed:' + #10 + '            try:' + #10 +
+  '                super().close()' + #10 + '            finally:' + #10 +
+  '                if self._closefd:' + #10 +
+  '                    os.close(self.' + '_fd)' + #10 +
+  '                self._fd = -1' + #10 + #10 + '    def seekable(self):' +
+  #10 + '        self._checkClosed()' + #10 +
+  '        if self._seekable is None:' + #10 + '            try:' + #10 +
+  '                self.tell()' + #10 + '            except OSError:' + #10 +
+  '                self._seekable = F' + 'alse' + #10 + '            else:' +
+  #10 + '                self._seekable = T' + 'rue' + #10 +
+  '        return self._seekable' + #10 + #10 + '    def readable(self):' +
+  #10 + '        self._checkClosed()' + #10 +
+  '        return self._readable' + #10 + #10 + '    def writable(self):' +
+  #10 + '        self._checkClosed()' + #10 +
+  '        return self._writable' + #10 + #10 + '    def fileno(self):' +
+  #10 + '        self._checkClosed()' + #10 + '        return self._fd' +
+  #10 + #10 + '    def isatty(self):' + #10 + '        self._checkClosed()' +
+  #10 + '        return os.isatty(self._fd)' + #10 + #10 + '    @property' +
+  #10;
+
+Const
+ Src__fileio_1: AnsiString =
+  '    def closefd(self):' + #10 + '        return self._closefd' + #10 +
+  #10 + '    @property' + #10 + '    def mode(self):' + #10 +
+  '        if self._created:' + #10 + '            if self._readable:' + #10 +
+  '                return ''xb+''' + #10 + '            else:' + #10 +
+  '                return ''xb''' + #10 + '        elif self._appending:' +
+  #10 + '            if self._readable:' + #10 +
+  '                return ''ab+''' + #10 + '            else:' + #10 +
+  '                return ''ab''' + #10 + '        elif self._readable:' +
+  #10 + '            if self._writable:' + #10 +
+  '                return ''rb+''' + #10 + '            else:' + #10 +
+  '                return ''rb''' + #10 + '        else:' + #10 +
+  '            return ''wb''' + #10 + #10 + '    @property' + #10 +
+  '    def closed(self):' + #10 + '        return self._fd < 0' + #10 + #10 +
+  #10 + 'FileIO.__module__ = ''_io''' + #10 + #10;
+
+Function Src__fileio: AnsiString;
+Begin
+ Result := Src__fileio_0 + Src__fileio_1;
+End;
+
+Const
+ Src__io_0: AnsiString =
+  '"""_io : classes d''entrees/sorties' +
+  ' (implementees en Python via _pyio' + ')."""' + #10 +
+  'from _pyio import (DEFAULT_BUFFER_' +
+  'SIZE, BlockingIOError, Unsupported' + 'Operation, open,' + #10 +
+  '                   open_code, File' +
+  'IO, BytesIO, StringIO, BufferedRea' + 'der, BufferedWriter,' + #10 +
+  '                   BufferedRWPair,' +
+  ' BufferedRandom, IncrementalNewlin' + 'eDecoder,' + #10 +
+  '                   TextIOWrapper)' + #10 +
+  'from _pyio import IOBase as _IOBas' + 'e' + #10 +
+  'from _pyio import RawIOBase as _Ra' + 'wIOBase' + #10 +
+  'from _pyio import BufferedIOBase a' + 's _BufferedIOBase' + #10 +
+  'from _pyio import TextIOBase as _T' + 'extIOBase' + #10 + #10 +
+  'for _c in (FileIO, BytesIO, String' +
+  'IO, BufferedReader, BufferedWriter' + ', BufferedRWPair,' + #10 +
+  '           BufferedRandom, Increme' +
+  'ntalNewlineDecoder, TextIOWrapper,' + ' _IOBase,' + #10 +
+  '           _RawIOBase, _BufferedIO' + 'Base, _TextIOBase):' + #10 +
+  '    try:' + #10 + '        _c.__module__ = ''_io''' + #10 +
+  '    except (AttributeError, TypeEr' + 'ror):' + #10 + '        pass' +
+  #10 + 'del _c' + #10 + #10;
+
+Function Src__io: AnsiString;
+Begin
+ Result := Src__io_0;
+End;
+
+Const
  Src__markupbase_0: AnsiString =
   '"""Shared support for scanning doc' +
   'ument type declarations in HTML an' + 'd XHTML.' + #10 + #10 +
@@ -33939,6 +35652,2182 @@ Const
 Function Src__markupbase: AnsiString;
 Begin
  Result := Src__markupbase_0 + Src__markupbase_1;
+End;
+
+Const
+ Src__pyio_0: AnsiString =
+  '"""' + #10 + 'Python implementation of the io mo' + 'dule.' + #10 + '"""' +
+  #10 + #10 + 'import os' + #10 + 'import abc' + #10 + 'import codecs' + #10 +
+  'import errno' + #10 + 'import stat' + #10 + 'import sys' + #10 + 'try:' +
+  #10 + '    from _io_native import track a' +
+  's _track, untrack as _untrack' + #10 + 'except ImportError:' + #10 +
+  '    def _track(o): pass' + #10 + '    def _untrack(o): pass' + #10 +
+  '# Import _thread instead of thread' + 'ing to reduce startup cost' + #10 +
+  'from _thread import allocate_lock ' + 'as Lock' + #10 +
+  'if sys.platform in {''win32'', ''cygw' + 'in''}:' + #10 +
+  '    from msvcrt import setmode as ' + '_setmode' + #10 + 'else:' + #10 +
+  '    _setmode = None' + #10 + #10 + '__all__ = ["BlockingIOError", "ope' +
+  'n", "open_code", "IOBase", "RawIOB' + 'ase",' + #10 +
+  '           "FileIO", "BytesIO", "S' + 'tringIO", "BufferedIOBase",' + #10 +
+  '           "BufferedReader", "Buff' + 'eredWriter", "BufferedRWPair",' +
+  #10 + '           "BufferedRandom", "Text' + 'IOBase", "TextIOWrapper",' +
+  #10 + '           "UnsupportedOperation",' +
+  ' "SEEK_SET", "SEEK_CUR", "SEEK_END' + '"]' + #10 + 'SEEK_SET = 0' + #10 +
+  'SEEK_CUR = 1' + #10 + 'SEEK_END = 2' + #10 + #10 +
+  'valid_seek_flags = {0, 1, 2}  # Ha' + 'rdwired values' + #10 +
+  'if hasattr(os, ''SEEK_HOLE'') :' + #10 +
+  '    valid_seek_flags.add(os.SEEK_H' + 'OLE)' + #10 +
+  '    valid_seek_flags.add(os.SEEK_D' + 'ATA)' + #10 + #10 +
+  '# open() uses st_blksize whenever ' + 'we can' + #10 +
+  'DEFAULT_BUFFER_SIZE = 8 * 1024  # ' + 'bytes' + #10 + #10 +
+  '# NOTE: Base classes defined here ' +
+  'are registered with the "official"' + ' ABCs' + #10 +
+  '# defined in io.py. We don''t use r' +
+  'eal inheritance though, because we' + ' don''t want' + #10 +
+  '# to inherit the C implementations' + '.' + #10 + #10 +
+  '# Rebind for compatibility' + #10 + 'BlockingIOError = BlockingIOError' +
+  #10 + #10 + '# Does io.IOBase finalizer log the' +
+  ' exception if the close() method f' + 'ails?' + #10 +
+  '# The exception is ignored silentl' + 'y by default in release build.' +
+  #10 + '_IOBASE_EMITS_UNRAISABLE = (hasatt' +
+  'r(sys, "gettotalrefcount") or sys.' + 'flags.dev_mode)' + #10 + #10 + #10 +
+  'def open(file, mode="r", buffering' + '=-1, encoding=None, errors=None,' +
+  #10 + '         newline=None, closefd=Tru' + 'e, opener=None):' + #10 +
+  '    r = _open(file, mode, bufferin' +
+  'g, encoding, errors, newline, clos' + 'efd, opener)' + #10 +
+  '    if not isinstance(r, FileIO) a' + 'nd r.writable():' + #10 +
+  '        _track(r)' + #10 + '    return r' + #10 + #10 + #10 +
+  'def _open(file, mode="r", bufferin' + 'g=-1, encoding=None, errors=None,' +
+  #10 + '          newline=None, closefd=Tr' + 'ue, opener=None):' + #10 +
+  #10 + '    r"""Open file and return a str' +
+  'eam.  Raise OSError upon failure.' + #10 + #10 +
+  '    file is either a text or byte ' +
+  'string giving the name (and the pa' + 'th' + #10 +
+  '    if the file isn''t in the curre' +
+  'nt working directory) of the file ' + 'to' + #10 +
+  '    be opened or an integer file d' + 'escriptor of the file to be' + #10 +
+  '    wrapped. (If a file descriptor' + ' is given, it is closed when the' +
+  #10 + '    returned I/O object is closed,' +
+  ' unless closefd is set to False.)' + #10 + #10 +
+  '    mode is an optional string tha' +
+  't specifies the mode in which the ' + 'file is' + #10 +
+  '    opened. It defaults to ''r'' whi' +
+  'ch means open for reading in text ' + 'mode. Other' + #10 +
+  '    common values are ''w'' for writ' +
+  'ing (truncating the file if it alr' + 'eady' + #10 +
+  '    exists), ''x'' for exclusive cre' +
+  'ation of a new file, and ''a'' for a' + 'ppending' + #10 +
+  '    (which on some Unix systems, m' +
+  'eans that all writes append to the' + ' end of the' + #10 +
+  '    file regardless of the current' +
+  ' seek position). In text mode, if ' + 'encoding is' + #10 +
+  '    not specified the encoding use' +
+  'd is platform dependent. (For read' + 'ing and' + #10 +
+  '    writing raw bytes use binary m' +
+  'ode and leave encoding unspecified' + '.) The' + #10 +
+  '    available modes are:' + #10 + #10 +
+  '    ========= ====================' +
+  '==================================' + '=========' + #10 +
+  '    Character Meaning' + #10 + '    --------- --------------------' +
+  '----------------------------------' + '---------' + #10 +
+  '    ''r''       open for reading (de' + 'fault)' + #10 +
+  '    ''w''       open for writing, tr' + 'uncating the file first' + #10 +
+  '    ''x''       create a new file an' + 'd open it for writing' + #10 +
+  '    ''a''       open for writing, ap' +
+  'pending to the end of the file if ' + 'it exists' + #10 +
+  '    ''b''       binary mode' + #10 +
+  '    ''t''       text mode (default)' + #10 +
+  '    ''+''       open a disk file for' + ' updating (reading and writing)' +
+  #10 + '    ''U''       universal newline mo' + 'de (deprecated)' + #10 +
+  '    ========= ====================' +
+  '==================================' + '=========' + #10 + #10 +
+  '    The default mode is ''rt'' (open' +
+  ' for reading text). For binary ran' + 'dom' + #10 +
+  '    access, the mode ''w+b'' opens a' +
+  'nd truncates the file to 0 bytes, ' + 'while' + #10 +
+  '    ''r+b'' opens the file without t' +
+  'runcation. The ''x'' mode implies ''w' + ''' and' + #10 +
+  '    raises an `FileExistsError` if' + ' the file already exists.' + #10 +
+  #10 + '    Python distinguishes between f' +
+  'iles opened in binary and text mod' + 'es,' + #10 +
+  '    even when the underlying opera' +
+  'ting system doesn''t. Files opened ' + 'in' + #10 +
+  '    binary mode (appending ''b'' to ' +
+  'the mode argument) return contents' + ' as' + #10 +
+  '    bytes objects without any deco' +
+  'ding. In text mode (the default, o' + 'r when' + #10 +
+  '    ''t'' is appended to the mode ar' +
+  'gument), the contents of the file ' + 'are' + #10 +
+  '    returned as strings, the bytes' +
+  ' having been first decoded using a' + #10 +
+  '    platform-dependent encoding or' +
+  ' using the specified encoding if g' + 'iven.' + #10 + #10 +
+  '    ''U'' mode is deprecated and wil' +
+  'l raise an exception in future ver' + 'sions' + #10 +
+  '    of Python.  It has no effect i' +
+  'n Python 3.  Use newline to contro' + 'l' + #10 +
+  '    universal newlines mode.' + #10 + #10 +
+  '    buffering is an optional integ' +
+  'er used to set the buffering polic' + 'y.' + #10 +
+  '    Pass 0 to switch buffering off' +
+  ' (only allowed in binary mode), 1 ' + 'to select' + #10 +
+  '    line buffering (only usable in' +
+  ' text mode), and an integer > 1 to' + ' indicate' + #10 +
+  '    the size of a fixed-size chunk' +
+  ' buffer.  When no buffering argume' + 'nt is' + #10 +
+  '    given, the default buffering p' + 'olicy works as follows:' + #10 +
+  #10 + '    * Binary files are buffered in' +
+  ' fixed-size chunks; the size of th' + 'e buffer' + #10 +
+  '      is chosen using a heuristic ' +
+  'trying to determine the underlying' + ' device''s' + #10 +
+  '      "block size" and falling bac' + 'k on `io.DEFAULT_BUFFER_SIZE`.' +
+  #10 + '      On many systems, the buffer ' +
+  'will typically be 4096 or 8192 byt' + 'es long.' + #10 + #10 +
+  '    * "Interactive" text files (fi' +
+  'les for which isatty() returns Tru' + 'e)' + #10 +
+  '      use line buffering.  Other t' +
+  'ext files use the policy described' + ' above' + #10 +
+  '      for binary files.' + #10 + #10 +
+  '    encoding is the str name of th' +
+  'e encoding used to decode or encod' + 'e the' + #10 +
+  '    file. This should only be used' +
+  ' in text mode. The default encodin' + 'g is' + #10 +
+  '    platform dependent, but any en' + 'coding supported by Python can be' +
+  #10 + '    passed.  See the codecs module' +
+  ' for the list of supported encodin' + 'gs.' + #10 + #10 +
+  '    errors is an optional string t' +
+  'hat specifies how encoding errors ' + 'are to' + #10 +
+  '    be handled---this argument sho' +
+  'uld not be used in binary mode. Pa' + 'ss' + #10 +
+  '    ''strict'' to raise a ValueError' +
+  ' exception if there is an encoding' + ' error' + #10 +
+  '    (the default of None has the s' +
+  'ame effect), or pass ''ignore'' to i' + 'gnore' + #10 +
+  '    errors. (Note that ignoring en' +
+  'coding errors can lead to data los' + 's.)' + #10 +
+  '    See the documentation for code' +
+  'cs.register for a list of the perm' + 'itted' + #10 +
+  '    encoding error strings.' + #10 + #10 +
+  '    newline is a string controllin' +
+  'g how universal newlines works (it' + ' only' + #10 +
+  '    applies to text mode). It can ' +
+  'be None, '''', ''\n'', ''\r'', and ''\r\n' + '''.  It works' + #10 +
+  '    as follows:' + #10 + #10 + '    * On input, if newline is None' +
+  ', universal newlines mode is' + #10 +
+  '      enabled. Lines in the input ' +
+  'can end in ''\n'', ''\r'', or ''\r\n'', ' + 'and' + #10 +
+  '      these are translated into ''\' + 'n'' before being returned to the' +
+  #10 + '      caller. If it is '''', univers' +
+  'al newline mode is enabled, but li' + 'ne' + #10 +
+  '      endings are returned to the ' +
+  'caller untranslated. If it has any' + ' of' + #10 +
+  '      the other legal values, inpu' +
+  't lines are only terminated by the' + ' given' + #10 +
+  '      string, and the line ending ' +
+  'is returned to the caller untransl' + 'ated.' + #10 + #10 +
+  '    * On output, if newline is Non' +
+  'e, any ''\n'' characters written are' + #10 +
+  '      translated to the system def' +
+  'ault line separator, os.linesep. I' + 'f' + #10 +
+  '      newline is '''', no translatio' +
+  'n takes place. If newline is any o' + 'f the' + #10 +
+  '      other legal values, any ''\n''' +
+  ' characters written are translated' + ' to' + #10 +
+  '      the given string.' + #10 + #10 +
+  '    closedfd is a bool. If closefd' +
+  ' is False, the underlying file des' + 'criptor will' + #10 +
+  '    be kept open when the file is ' +
+  'closed. This does not work when a ' + 'file name is' + #10 +
+  '    given and must be True in that' + ' case.' + #10 + #10 +
+  '    The newly created file is non-' + 'inheritable.' + #10 + #10 +
+  '    A custom opener can be used by' +
+  ' passing a callable as *opener*. T' + 'he' + #10 +
+  '    underlying file descriptor for' +
+  ' the file object is then obtained ' + 'by calling' + #10 +
+  '    *opener* with (*file*, *flags*' +
+  '). *opener* must return an open fi' + 'le' + #10 +
+  '    descriptor (passing os.open as' +
+  ' *opener* results in functionality' + ' similar to' + #10 +
+  '    passing None).' + #10 + #10 + '    open() returns a file object w' +
+  'hose type depends on the mode, and' + #10 +
+  '    through which the standard fil' +
+  'e operations such as reading and w' + 'riting' + #10 +
+  '    are performed. When open() is ' +
+  'used to open a file in a text mode' + ' (''w'',' + #10 +
+  '    ''r'', ''wt'', ''rt'', etc.), it ret' +
+  'urns a TextIOWrapper. When used to' + ' open' + #10 +
+  '    a file in a binary mode, the r' +
+  'eturned class varies: in read bina' + 'ry' + #10 +
+  '    mode, it returns a BufferedRea' +
+  'der; in write binary and append bi' + 'nary' + #10 +
+  '    modes, it returns a BufferedWr' +
+  'iter, and in read/write mode, it r' + 'eturns' + #10 +
+  '    a BufferedRandom.' + #10 + #10 + '    It is also possible to use a s' +
+  'tring or bytearray as a file for b' + 'oth' + #10 +
+  '    reading and writing. For strin' +
+  'gs StringIO can be used like a fil' + 'e' + #10 +
+  '    opened in a text mode, and for' +
+  ' bytes a BytesIO can be used like ' + 'a file' + #10 +
+  '    opened in a binary mode.' + #10 + '    """' + #10 +
+  '    if not isinstance(file, int):' + #10 +
+  '        file = os.fspath(file)' + #10 +
+  '    if not isinstance(file, (str, ' + 'bytes, int)):' + #10 +
+  '        raise TypeError("invalid f' + 'ile: %r" % file)' + #10 +
+  '    if not isinstance(mode, str):' + #10 +
+  '        raise TypeError("invalid m' + 'ode: %r" % mode)' + #10 +
+  '    if not isinstance(buffering, i' + 'nt):' + #10 +
+  '        raise TypeError("invalid b' + 'uffering: %r" % buffering)' + #10 +
+  '    if encoding is not None and no' + 't isinstance(encoding, str):' +
+  #10 + '        raise TypeError("invalid e' + 'ncoding: %r" % encoding)' +
+  #10 + '    if errors is not None and not ' + 'isinstance(errors, str):' +
+  #10 + '        raise TypeError("invalid e' + 'rrors: %r" % errors)' + #10 +
+  '    modes = set(mode)' + #10 + '    if modes - set("axrwb+tU") or ' +
+  'len(mode) > len(modes):' + #10 + '        raise ValueError("invalid ' +
+  'mode: %r" % mode)' + #10 + '    creating = "x" in modes' + #10 +
+  '    reading = "r" in modes' + #10 + '    writing = "w" in modes' + #10 +
+  '    appending = "a" in modes' + #10 + '    updating = "+" in modes' + #10 +
+  '    text = "t" in modes' + #10 + '    binary = "b" in modes' + #10 +
+  '    if "U" in modes:' + #10 + '        if creating or writing or ' +
+  'appending or updating:' + #10 + '            raise ValueError("mode' +
+  ' U cannot be combined with ''x'', ''w' + ''', ''a'', or ''+''")' + #10 +
+  '        import warnings' + #10 + '        warnings.warn("''U'' mode is' +
+  ' deprecated",' + #10 + '                      DeprecationW' +
+  'arning, 2)' + #10 + '        reading = True' + #10 +
+  '    if text and binary:' + #10 + '        raise ValueError("can''t ha' +
+  've text and binary mode at once")' + #10 +
+  '    if creating + reading + writin' + 'g + appending > 1:' + #10 +
+  '        raise ValueError("can''t ha' +
+  've read/write/append mode at once"' + ')' + #10 +
+  '    if not (creating or reading or' + ' writing or appending):' + #10 +
+  '        raise ValueError("must hav' +
+  'e exactly one of read/write/append' + ' mode")' + #10 +
+  '    if binary and encoding is not ' + 'None:' + #10 +
+  '        raise ValueError("binary m' +
+  'ode doesn''t take an encoding argum' + 'ent")' + #10 +
+  '    if binary and errors is not No' + 'ne:' + #10 +
+  '        raise ValueError("binary m' +
+  'ode doesn''t take an errors argumen' + 't")' + #10 +
+  '    if binary and newline is not N' + 'one:' + #10 +
+  '        raise ValueError("binary m' +
+  'ode doesn''t take a newline argumen' + 't")' + #10 +
+  '    if binary and buffering == 1:' + #10 + '        import warnings' +
+  #10 + '        warnings.warn("line buffer' +
+  'ing (buffering=1) isn''t supported ' + 'in binary "' + #10 +
+  '                      "mode, the d' + 'efault buffer size will be used",' +
+  #10 + '                      RuntimeWarni' + 'ng, 2)' + #10 +
+  '    raw = FileIO(file,' + #10 + '                 (creating and "x"' +
+  ' or "") +' + #10 + '                 (reading and "r" ' + 'or "") +' +
+  #10 + '                 (writing and "w" ' + 'or "") +' + #10 +
+  '                 (appending and "a' + '" or "") +' + #10 +
+  '                 (updating and "+"' + ' or ""),' + #10 +
+  '                 closefd, opener=o' + 'pener)' + #10 + '    result = raw' +
+  #10 + '    try:' + #10 + '        line_buffering = False' + #10 +
+  '        if buffering == 1 or buffe' + 'ring < 0 and raw.isatty():' + #10 +
+  '            buffering = -1' + #10 + '            line_buffering = True' +
+  #10 + '        if buffering < 0:' + #10 +
+  '            buffering = DEFAULT_BU' + 'FFER_SIZE' + #10 +
+  '            try:' + #10 + '                bs = os.fstat(raw.' +
+  'fileno()).st_blksize' + #10 + '            except (OSError, Attri' +
+  'buteError):' + #10 + '                pass' + #10 + '            else:' +
+  #10 + '                if bs > 1:' + #10 +
+  '                    buffering = bs' + #10;
+
+Const
+ Src__pyio_1: AnsiString =
+  '        if buffering < 0:' + #10 + '            raise ValueError("inva' +
+  'lid buffering size")' + #10 + '        if buffering == 0:' + #10 +
+  '            if binary:' + #10 + '                return result' + #10 +
+  '            raise ValueError("can''' + 't have unbuffered text I/O")' +
+  #10 + '        if updating:' + #10 + '            buffer = BufferedRando' +
+  'm(raw, buffering)' + #10 + '        elif creating or writing o' +
+  'r appending:' + #10 + '            buffer = BufferedWrite' +
+  'r(raw, buffering)' + #10 + '        elif reading:' + #10 +
+  '            buffer = BufferedReade' + 'r(raw, buffering)' + #10 +
+  '        else:' + #10 + '            raise ValueError("unkn' +
+  'own mode: %r" % mode)' + #10 + '        result = buffer' + #10 +
+  '        if binary:' + #10 + '            return result' + #10 +
+  '        text = TextIOWrapper(buffe' +
+  'r, encoding, errors, newline, line' + '_buffering)' + #10 +
+  '        result = text' + #10 + '        text.mode = mode' + #10 +
+  '        return result' + #10 + '    except:' + #10 +
+  '        result.close()' + #10 + '        raise' + #10 + #10 +
+  '# Define a default pure-Python imp' + 'lementation for open_code()' + #10 +
+  '# that does not allow hooks. Warn ' + 'on first use. Defined for tests.' +
+  #10 + 'def _open_code_with_warning(path):' + #10 +
+  '    """Opens the provided file wit' + 'h mode ``''rb''``. This function' +
+  #10 + '    should be used when the intent' +
+  ' is to treat the contents as' + #10 + '    executable code.' + #10 + #10 +
+  '    ``path`` should be an absolute' + ' path.' + #10 + #10 +
+  '    When supported by the runtime,' + ' this function can be hooked' +
+  #10 + '    in order to allow embedders mo' + 're control over code files.' +
+  #10 + '    This functionality is not supp' +
+  'orted on the current runtime.' + #10 + '    """' + #10 +
+  '    import warnings' + #10 + '    warnings.warn("_pyio.open_code' +
+  '() may not be using hooks",' + #10 + '                  RuntimeWarning, ' +
+  '2)' + #10 + '    return open(path, "rb")' + #10 + #10 +
+  'def open_code(path):' + #10 + '    return open(path, "rb")' + #10 + #10 +
+  #10 + 'class DocDescriptor:' + #10 + '    """Helper for builtins.open.__' +
+  'doc__' + #10 + '    """' + #10 + '    def __get__(self, obj, typ=Non' +
+  'e):' + #10 + '        return (' + #10 +
+  '            "open(file, mode=''r'', ' + 'buffering=-1, encoding=None, "' +
+  #10 + '                 "errors=None, new' +
+  'line=None, closefd=True)\n\n" +' + #10 + '            open.__doc__)' +
+  #10 + #10 + 'class OpenWrapper:' + #10 +
+  '    """Wrapper for builtins.open' + #10 + #10 +
+  '    Trick so that open won''t becom' + 'e a bound method when stored' +
+  #10 + '    as a class variable (as dbm.du' + 'mb does).' + #10 + #10 +
+  '    See initstdio() in Python/pyli' + 'fecycle.c.' + #10 + '    """' +
+  #10 + '    __doc__ = DocDescriptor()' + #10 + #10 +
+  '    def __new__(cls, *args, **kwar' + 'gs):' + #10 +
+  '        return open(*args, **kwarg' + 's)' + #10 + #10 + #10 +
+  '# In normal operation, both `Unsup' +
+  'portedOperation`s should be bound ' + 'to the' + #10 + '# same object.' +
+  #10 + 'class UnsupportedOperation(OSError' + ', ValueError):' + #10 +
+  '    pass' + #10 + #10 + #10 + 'class IOBase(metaclass=abc.ABCMeta' + '):' +
+  #10 + #10 + '    """The abstract base class for' +
+  ' all I/O classes, acting on stream' + 's of' + #10 +
+  '    bytes. There is no public cons' + 'tructor.' + #10 + #10 +
+  '    This class provides dummy impl' + 'ementations for many methods that' +
+  #10 + '    derived classes can override s' +
+  'electively; the default implementa' + 'tions' + #10 +
+  '    represent a file that cannot b' + 'e read, written or seeked.' + #10 +
+  #10 + '    Even though IOBase does not de' + 'clare read or write because' +
+  #10 + '    their signatures will vary, im' +
+  'plementations and clients should' + #10 +
+  '    consider those methods part of' +
+  ' the interface. Also, implementati' + 'ons' + #10 +
+  '    may raise UnsupportedOperation' +
+  ' when operations they do not suppo' + 'rt are' + #10 + '    called.' +
+  #10 + #10 + '    The basic type used for binary' +
+  ' data read from or written to a fi' + 'le is' + #10 +
+  '    bytes. Other bytes-like object' +
+  's are accepted as method arguments' + ' too.' + #10 +
+  '    Text I/O classes work with str' + ' data.' + #10 + #10 +
+  '    Note that calling any method (' +
+  'even inquiries) on a closed stream' + ' is' + #10 +
+  '    undefined. Implementations may' + ' raise OSError in this case.' +
+  #10 + #10 + '    IOBase (and its subclasses) su' +
+  'pport the iterator protocol, meani' + 'ng' + #10 +
+  '    that an IOBase object can be i' +
+  'terated over yielding the lines in' + ' a' + #10 + '    stream.' + #10 +
+  #10 + '    IOBase also supports the :keyw' +
+  'ord:`with` statement. In this exam' + 'ple,' + #10 +
+  '    fp is closed after the suite o' + 'f the with statement is complete:' +
+  #10 + #10 + '    with open(''spam.txt'', ''r'') as ' + 'fp:' + #10 +
+  '        fp.write(''Spam and eggs!'')' + #10 + '    """' + #10 + #10 +
+  '    ### Internal ###' + #10 + #10 + '    def _unsupported(self, name):' +
+  #10 + '        """Internal: raise an OSEr' +
+  'ror exception for unsupported oper' + 'ations."""' + #10 +
+  '        raise UnsupportedOperation' + '("%s.%s() not supported" %' + #10 +
+  '                                  ' + ' (self.__class__.__name__, name))' +
+  #10 + #10 + '    ### Positioning ###' + #10 + #10 +
+  '    def seek(self, pos, whence=0):' + #10 +
+  '        """Change stream position.' + #10 + #10 +
+  '        Change the stream position' +
+  ' to byte offset pos. Argument pos ' + 'is' + #10 +
+  '        interpreted relative to th' +
+  'e position indicated by whence.  V' + 'alues' + #10 +
+  '        for whence are ints:' + #10 + #10 +
+  '        * 0 -- start of stream (th' +
+  'e default); offset should be zero ' + 'or positive' + #10 +
+  '        * 1 -- current stream posi' + 'tion; offset may be negative' +
+  #10 + '        * 2 -- end of stream; offs' + 'et is usually negative' +
+  #10 + '        Some operating systems / f' +
+  'ile systems could provide addition' + 'al values.' + #10 + #10 +
+  '        Return an int indicating t' + 'he new absolute position.' + #10 +
+  '        """' + #10 + '        self._unsupported("seek")' + #10 + #10 +
+  '    def tell(self):' + #10 + '        """Return an int indicatin' +
+  'g the current stream position."""' + #10 +
+  '        return self.seek(0, 1)' + #10 + #10 +
+  '    def truncate(self, pos=None):' + #10 +
+  '        """Truncate file to size b' + 'ytes.' + #10 + #10 +
+  '        Size defaults to the curre' +
+  'nt IO position as reported by tell' + '().  Return' + #10 +
+  '        the new size.' + #10 + '        """' + #10 +
+  '        self._unsupported("truncat' + 'e")' + #10 + #10 +
+  '    ### Flush and close ###' + #10 + #10 + '    def flush(self):' + #10 +
+  '        """Flush write buffers, if' + ' applicable.' + #10 + #10 +
+  '        This is not implemented fo' +
+  'r read-only and non-blocking strea' + 'ms.' + #10 + '        """' + #10 +
+  '        self._checkClosed()' + #10 + '        # XXX Should this return t' +
+  'he number of bytes written???' + #10 + #10 + '    __closed = False' + #10 +
+  #10 + '    def close(self):' + #10 + '        """Flush and close the IO ' +
+  'object.' + #10 + #10 + '        This method has no effect ' +
+  'if the file is already closed.' + #10 + '        """' + #10 +
+  '        if not self.__closed:' + #10 + '            try:' + #10 +
+  '                self.flush()' + #10 + '            finally:' + #10 +
+  '                self.__closed = Tr' + 'ue' + #10 +
+  '                _untrack(self)' + #10 + #10 + '    def __del__(self):' +
+  #10 + '        """Destructor.  Calls clos' + 'e()."""' + #10 +
+  '        try:' + #10 + '            closed = self.closed' + #10 +
+  '        except AttributeError:' + #10 +
+  '            # If getting closed fa' + 'ils, then the object is probably' +
+  #10 + '            # in an unusable state' + ', so ignore.' + #10 +
+  '            return' + #10 + #10 + '        if closed:' + #10 +
+  '            return' + #10 + #10 + '        if _IOBASE_EMITS_UNRAISABL' +
+  'E:' + #10 + '            self.close()' + #10 + '        else:' + #10 +
+  '            # The try/except block' +
+  ' is in case this is called at prog' + 'ram' + #10 +
+  '            # exit time, when it''s' +
+  ' possible that globals have alread' + 'y been' + #10 +
+  '            # deleted, and then th' + 'e close() call might fail.  Since' +
+  #10 + '            # there''s nothing we c' +
+  'an do about such failures and they' + ' annoy' + #10 +
+  '            # the end users, we su' + 'ppress the traceback.' + #10 +
+  '            try:' + #10 + '                self.close()' + #10 +
+  '            except:' + #10 + '                pass' + #10 + #10 +
+  '    ### Inquiries ###' + #10 + #10 + '    def seekable(self):' + #10 +
+  '        """Return a bool indicatin' +
+  'g whether object supports random a' + 'ccess.' + #10 + #10 +
+  '        If False, seek(), tell() a' + 'nd truncate() will raise OSError.' +
+  #10 + '        This method may need to do' + ' a test seek().' + #10 +
+  '        """' + #10 + '        return False' + #10 + #10 +
+  '    def _checkSeekable(self, msg=N' + 'one):' + #10 +
+  '        """Internal: raise Unsuppo' +
+  'rtedOperation if file is not seeka' + 'ble' + #10 + '        """' + #10 +
+  '        if not self.seekable():' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion("File or stream is not seekab' + 'le."' + #10 +
+  '                                  ' + '     if msg is None else msg)' +
+  #10 + #10 + '    def readable(self):' + #10 +
+  '        """Return a bool indicatin' +
+  'g whether object was opened for re' + 'ading.' + #10 + #10 +
+  '        If False, read() will rais' + 'e OSError.' + #10 + '        """' +
+  #10 + '        return False' + #10 + #10 +
+  '    def _checkReadable(self, msg=N' + 'one):' + #10 +
+  '        """Internal: raise Unsuppo' +
+  'rtedOperation if file is not reada' + 'ble' + #10 + '        """' + #10 +
+  '        if not self.readable():' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion("File or stream is not readab' + 'le."' + #10 +
+  '                                  ' + '     if msg is None else msg)' +
+  #10 + #10 + '    def writable(self):' + #10 +
+  '        """Return a bool indicatin' +
+  'g whether object was opened for wr' + 'iting.' + #10 + #10 +
+  '        If False, write() and trun' + 'cate() will raise OSError.' + #10 +
+  '        """' + #10 + '        return False' + #10 + #10 +
+  '    def _checkWritable(self, msg=N' + 'one):' + #10 +
+  '        """Internal: raise Unsuppo' +
+  'rtedOperation if file is not writa' + 'ble' + #10 + '        """' + #10 +
+  '        if not self.writable():' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion("File or stream is not writab' + 'le."' + #10 +
+  '                                  ' + '     if msg is None else msg)' +
+  #10 + #10 + '    @property' + #10 + '    def closed(self):' + #10 +
+  '        """closed: bool.  True iff' + ' the file has been closed.' + #10 +
+  #10 + '        For backwards compatibilit' +
+  'y, this is a property, not a predi' + 'cate.' + #10 + '        """' + #10 +
+  '        return self.__closed' + #10 + #10 +
+  '    def _checkClosed(self, msg=Non' + 'e):' + #10 +
+  '        """Internal: raise a Value' + 'Error if file is closed' + #10;
+
+Const
+ Src__pyio_2: AnsiString =
+  '        """' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("I/O ' + 'operation on closed file."' + #10 +
+  '                             if ms' + 'g is None else msg)' + #10 + #10 +
+  '    ### Context manager ###' + #10 + #10 +
+  '    def __enter__(self):  # That''s' + ' a forward reference' + #10 +
+  '        """Context management prot' +
+  'ocol.  Returns self (an instance o' + 'f IOBase)."""' + #10 +
+  '        self._checkClosed()' + #10 + '        return self' + #10 + #10 +
+  '    def __exit__(self, *args):' + #10 +
+  '        """Context management prot' + 'ocol.  Calls close()"""' + #10 +
+  '        self.close()' + #10 + #10 + '    ### Lower-level APIs ###' + #10 +
+  #10 + '    # XXX Should these be present ' + 'even if unimplemented?' +
+  #10 + #10 + '    def fileno(self):' + #10 +
+  '        """Returns underlying file' +
+  ' descriptor (an int) if one exists' + '.' + #10 + #10 +
+  '        An OSError is raised if th' +
+  'e IO object does not use a file de' + 'scriptor.' + #10 + '        """' +
+  #10 + '        self._unsupported("fileno"' + ')' + #10 + #10 +
+  '    def isatty(self):' + #10 + '        """Return a bool indicatin' +
+  'g whether this is an ''interactive''' + ' stream.' + #10 + #10 +
+  '        Return False if it can''t b' + 'e determined.' + #10 +
+  '        """' + #10 + '        self._checkClosed()' + #10 +
+  '        return False' + #10 + #10 + '    ### Readline[s] and writelines' +
+  ' ###' + #10 + #10 + '    def readline(self, size=-1):' + #10 +
+  '        r"""Read and return a line' + ' of bytes from the stream.' + #10 +
+  #10 + '        If size is specified, at m' +
+  'ost size bytes will be read.' + #10 + '        Size should be an int.' +
+  #10 + #10 + '        The line terminator is alw' +
+  'ays b''\n'' for binary files; for te' + 'xt' + #10 +
+  '        files, the newlines argume' +
+  'nt to open can be used to select t' + 'he line' + #10 +
+  '        terminator(s) recognized.' + #10 + '        """' + #10 +
+  '        # For backwards compatibil' + 'ity, a (slowish) readline().' +
+  #10 + '        if hasattr(self, "peek"):' + #10 +
+  '            def nreadahead():' + #10 +
+  '                readahead = self.p' + 'eek(1)' + #10 +
+  '                if not readahead:' + #10 + '                    return 1' +
+  #10 + '                n = (readahead.fin' +
+  'd(b"\n") + 1) or len(readahead)' + #10 + '                if size >= 0:' +
+  #10 + '                    n = min(n, siz' + 'e)' + #10 +
+  '                return n' + #10 + '        else:' + #10 +
+  '            def nreadahead():' + #10 + '                return 1' + #10 +
+  '        if size is None:' + #10 + '            size = -1' + #10 +
+  '        else:' + #10 + '            try:' + #10 +
+  '                size_index = size.' + '__index__' + #10 +
+  '            except AttributeError:' + #10 +
+  '                raise TypeError(f"' + '{size!r} is not an integer")' +
+  #10 + '            else:' + #10 + '                size = size_index(' +
+  ')' + #10 + '        res = bytearray()' + #10 +
+  '        while size < 0 or len(res)' + ' < size:' + #10 +
+  '            b = self.read(nreadahe' + 'ad())' + #10 +
+  '            if not b:' + #10 + '                break' + #10 +
+  '            res += b' + #10 + '            if res.endswith(b"\n")' + ':' +
+  #10 + '                break' + #10 + '        return bytes(res)' + #10 +
+  #10 + '    def __iter__(self):' + #10 + '        self._checkClosed()' +
+  #10 + '        return self' + #10 + #10 + '    def __next__(self):' + #10 +
+  '        line = self.readline()' + #10 + '        if not line:' + #10 +
+  '            raise StopIteration' + #10 + '        return line' + #10 +
+  #10 + '    def readlines(self, hint=None)' + ':' + #10 +
+  '        """Return a list of lines ' + 'from the stream.' + #10 + #10 +
+  '        hint can be specified to c' +
+  'ontrol the number of lines read: n' + 'o more' + #10 +
+  '        lines will be read if the ' +
+  'total size (in bytes/characters) o' + 'f all' + #10 +
+  '        lines so far exceeds hint.' + #10 + '        """' + #10 +
+  '        if hint is None or hint <=' + ' 0:' + #10 +
+  '            return list(self)' + #10 + '        n = 0' + #10 +
+  '        lines = []' + #10 + '        for line in self:' + #10 +
+  '            lines.append(line)' + #10 + '            n += len(line)' +
+  #10 + '            if n >= hint:' + #10 + '                break' + #10 +
+  '        return lines' + #10 + #10 + '    def writelines(self, lines):' +
+  #10 + '        """Write a list of lines t' + 'o the stream.' + #10 + #10 +
+  '        Line separators are not ad' +
+  'ded, so it is usual for each of th' + 'e lines' + #10 +
+  '        provided to have a line se' + 'parator at the end.' + #10 +
+  '        """' + #10 + '        self._checkClosed()' + #10 +
+  '        for line in lines:' + #10 + '            self.write(line)' + #10 +
+  #10 + #10 + #10 + 'class RawIOBase(IOBase):' + #10 + #10 +
+  '    """Base class for raw binary I' + '/O."""' + #10 + #10 +
+  '    # The read() method is impleme' +
+  'nted by calling readinto(); derive' + 'd' + #10 +
+  '    # classes that want to support' + ' read() only need to implement' +
+  #10 + '    # readinto() as a primitive op' +
+  'eration.  In general, readinto() c' + 'an be' + #10 +
+  '    # more efficient than read().' + #10 + #10 +
+  '    # (It would be tempting to als' + 'o provide an implementation of' +
+  #10 + '    # readinto() in terms of read(' +
+  '), in case the latter is a more su' + 'itable' + #10 +
+  '    # primitive operation, but tha' +
+  't would lead to nasty recursion in' + ' case' + #10 +
+  '    # a subclass doesn''t implement' + ' either.)' + #10 + #10 +
+  '    def read(self, size=-1):' + #10 +
+  '        """Read and return up to s' + 'ize bytes, where size is an int.' +
+  #10 + #10 + '        Returns an empty bytes obj' +
+  'ect on EOF, or None if the object ' + 'is' + #10 +
+  '        set not to block and has n' + 'o data to read.' + #10 +
+  '        """' + #10 + '        if size is None:' + #10 +
+  '            size = -1' + #10 + '        if size < 0:' + #10 +
+  '            return self.readall()' + #10 +
+  '        b = bytearray(size.__index' + '__())' + #10 +
+  '        n = self.readinto(b)' + #10 + '        if n is None:' + #10 +
+  '            return None' + #10 + '        del b[n:]' + #10 +
+  '        return bytes(b)' + #10 + #10 + '    def readall(self):' + #10 +
+  '        """Read until EOF, using m' + 'ultiple read() call."""' + #10 +
+  '        res = bytearray()' + #10 + '        while True:' + #10 +
+  '            data = self.read(DEFAU' + 'LT_BUFFER_SIZE)' + #10 +
+  '            if not data:' + #10 + '                break' + #10 +
+  '            res += data' + #10 + '        if res:' + #10 +
+  '            return bytes(res)' + #10 + '        else:' + #10 +
+  '            # b'''' or None' + #10 + '            return data' + #10 +
+  #10 + '    def readinto(self, b):' + #10 +
+  '        """Read bytes into a pre-a' + 'llocated bytes-like object b.' +
+  #10 + #10 + '        Returns an int representin' +
+  'g the number of bytes read (0 for ' + 'EOF), or' + #10 +
+  '        None if the object is set ' +
+  'not to block and has no data to re' + 'ad.' + #10 + '        """' + #10 +
+  '        self._unsupported("readint' + 'o")' + #10 + #10 +
+  '    def write(self, b):' + #10 + '        """Write the given buffer ' +
+  'to the IO stream.' + #10 + #10 + '        Returns the number of byte' +
+  's written, which may be less than ' + 'the' + #10 +
+  '        length of b in bytes.' + #10 + '        """' + #10 +
+  '        self._unsupported("write")' + #10 + #10 +
+  'from _fileio import FileIO' + #10 + 'RawIOBase.register(FileIO)' + #10 +
+  #10 + #10 + 'class BufferedIOBase(IOBase):' + #10 + #10 +
+  '    """Base class for buffered IO ' + 'objects.' + #10 + #10 +
+  '    The main difference with RawIO' + 'Base is that the read() method' +
+  #10 + '    supports omitting the size arg' +
+  'ument, and does not have a default' + #10 +
+  '    implementation that defers to ' + 'readinto().' + #10 + #10 +
+  '    In addition, read(), readinto(' + ') and write() may raise' + #10 +
+  '    BlockingIOError if the underly' + 'ing raw stream is in non-blocking' +
+  #10 + '    mode and not ready; unlike the' +
+  'ir raw counterparts, they will nev' + 'er' + #10 + '    return None.' +
+  #10 + #10 + '    A typical implementation shoul' +
+  'd not inherit from a RawIOBase' + #10 +
+  '    implementation, but wrap one.' + #10 + '    """' + #10 + #10 +
+  '    def read(self, size=-1):' + #10 +
+  '        """Read and return up to s' + 'ize bytes, where size is an int.' +
+  #10 + #10 + '        If the argument is omitted' +
+  ', None, or negative, reads and' + #10 +
+  '        returns all data until EOF' + '.' + #10 + #10 +
+  '        If the argument is positiv' +
+  'e, and the underlying raw stream i' + 's' + #10 +
+  '        not ''interactive'', multipl' +
+  'e raw reads may be issued to satis' + 'fy' + #10 +
+  '        the byte count (unless EOF' + ' is reached first).  But for' +
+  #10 + '        interactive raw streams (X' +
+  'XX and for pipes?), at most one ra' + 'w' + #10 +
+  '        read will be issued, and a' + ' short result does not imply that' +
+  #10 + '        EOF is imminent.' + #10 + #10 +
+  '        Returns an empty bytes arr' + 'ay on EOF.' + #10 + #10 +
+  '        Raises BlockingIOError if ' + 'the underlying raw stream has no' +
+  #10 + '        data at the moment.' + #10 + '        """' + #10 +
+  '        self._unsupported("read")' + #10 + #10 +
+  '    def read1(self, size=-1):' + #10 +
+  '        """Read up to size bytes w' +
+  'ith at most one read() system call' + ',' + #10 +
+  '        where size is an int.' + #10 + '        """' + #10 +
+  '        self._unsupported("read1")' + #10 + #10 +
+  '    def readinto(self, b):' + #10 + '        """Read bytes into a pre-a' +
+  'llocated bytes-like object b.' + #10 + #10 +
+  '        Like read(), this may issu' +
+  'e multiple reads to the underlying' + ' raw' + #10 +
+  '        stream, unless the latter ' + 'is ''interactive''.' + #10 + #10 +
+  '        Returns an int representin' +
+  'g the number of bytes read (0 for ' + 'EOF).' + #10 + #10 +
+  '        Raises BlockingIOError if ' + 'the underlying raw stream has no' +
+  #10 + '        data at the moment.' + #10 + '        """' + #10 + #10 +
+  '        return self._readinto(b, r' + 'ead1=False)' + #10 + #10 +
+  '    def readinto1(self, b):' + #10 + '        """Read bytes into buffer ' +
+  '*b*, using at most one system call' + #10 + #10 +
+  '        Returns an int representin' +
+  'g the number of bytes read (0 for ' + 'EOF).' + #10 + #10 +
+  '        Raises BlockingIOError if ' + 'the underlying raw stream has no' +
+  #10 + '        data at the moment.' + #10 + '        """' + #10 + #10;
+
+Const
+ Src__pyio_3: AnsiString =
+  '        return self._readinto(b, r' + 'ead1=True)' + #10 + #10 +
+  '    def _readinto(self, b, read1):' + #10 +
+  '        if not isinstance(b, memor' + 'yview):' + #10 +
+  '            b = memoryview(b)' + #10 + '        b = b.cast(''B'')' + #10 +
+  #10 + '        if read1:' + #10 + '            data = self.read1(len(' +
+  'b))' + #10 + '        else:' + #10 + '            data = self.read(len(b' +
+  '))' + #10 + '        n = len(data)' + #10 + #10 + '        b[:n] = data' +
+  #10 + #10 + '        return n' + #10 + #10 + '    def write(self, b):' +
+  #10 + '        """Write the given bytes b' + 'uffer to the IO stream.' +
+  #10 + #10 + '        Return the number of bytes' +
+  ' written, which is always the leng' + 'th of b' + #10 +
+  '        in bytes.' + #10 + #10 + '        Raises BlockingIOError if ' +
+  'the buffer is full and the' + #10 + '        underlying raw stream cann' +
+  'ot accept more data at the moment.' + #10 + '        """' + #10 +
+  '        self._unsupported("write")' + #10 + #10 + '    def detach(self):' +
+  #10 + '        """' + #10 + '        Separate the underlying ra' +
+  'w stream from the buffer and retur' + 'n it.' + #10 + #10 +
+  '        After the raw stream has b' +
+  'een detached, the buffer is in an ' + 'unusable' + #10 + '        state.' +
+  #10 + '        """' + #10 + '        self._unsupported("detach"' + ')' +
+  #10 + #10 + #10 + #10 + 'class _BufferedIOMixin(BufferedIOB' + 'ase):' +
+  #10 + #10 + '    """A mixin implementation of B' +
+  'ufferedIOBase with an underlying r' + 'aw stream.' + #10 + #10 +
+  '    This passes most requests on t' + 'o the underlying raw stream.  It' +
+  #10 + '    does *not* provide implementat' +
+  'ions of read(), readinto() or' + #10 + '    write().' + #10 + '    """' +
+  #10 + #10 + '    def __init__(self, raw):' + #10 +
+  '        self._raw = raw' + #10 + #10 + '    ### Positioning ###' + #10 +
+  #10 + '    def seek(self, pos, whence=0):' + #10 +
+  '        new_position = self.raw.se' + 'ek(pos, whence)' + #10 +
+  '        if new_position < 0:' + #10 +
+  '            raise OSError("seek() ' + 'returned an invalid position")' +
+  #10 + '        return new_position' + #10 + #10 + '    def tell(self):' +
+  #10 + '        pos = self.raw.tell()' + #10 + '        if pos < 0:' + #10 +
+  '            raise OSError("tell() ' + 'returned an invalid position")' +
+  #10 + '        return pos' + #10 + #10 +
+  '    def truncate(self, pos=None):' + #10 +
+  '        # Flush the stream.  We''re' +
+  ' mixing buffered I/O with lower-le' + 'vel I/O,' + #10 +
+  '        # and a flush may be neces' +
+  'sary to synch both views of the cu' + 'rrent' + #10 +
+  '        # file state.' + #10 + '        self.flush()' + #10 + #10 +
+  '        if pos is None:' + #10 + '            pos = self.tell()' + #10 +
+  '        # XXX: Should seek() be us' +
+  'ed, instead of passing the positio' + 'n' + #10 +
+  '        # XXX  directly to truncat' + 'e?' + #10 +
+  '        return self.raw.truncate(p' + 'os)' + #10 + #10 +
+  '    ### Flush and close ###' + #10 + #10 + '    def flush(self):' + #10 +
+  '        if self.closed:' + #10 + '            raise ValueError("flus' +
+  'h on closed file")' + #10 + '        self.raw.flush()' + #10 + #10 +
+  '    def close(self):' + #10 + '        if self.raw is not None an' +
+  'd not self.closed:' + #10 + '            try:' + #10 +
+  '                # may raise Blocki' + 'ngIOError or BrokenPipeError etc' +
+  #10 + '                self.flush()' + #10 + '            finally:' + #10 +
+  '                self.raw.close()' + #10 + #10 + '    def detach(self):' +
+  #10 + '        if self.raw is None:' + #10 +
+  '            raise ValueError("raw ' + 'stream already detached")' + #10 +
+  '        self.flush()' + #10 + '        raw = self._raw' + #10 +
+  '        self._raw = None' + #10 + '        return raw' + #10 + #10 +
+  '    ### Inquiries ###' + #10 + #10 + '    def seekable(self):' + #10 +
+  '        return self.raw.seekable()' + #10 + #10 + '    @property' + #10 +
+  '    def raw(self):' + #10 + '        return self._raw' + #10 + #10 +
+  '    @property' + #10 + '    def closed(self):' + #10 +
+  '        return self.raw.closed' + #10 + #10 + '    @property' + #10 +
+  '    def name(self):' + #10 + '        return self.raw.name' + #10 + #10 +
+  '    @property' + #10 + '    def mode(self):' + #10 +
+  '        return self.raw.mode' + #10 + #10 + '    def __getstate__(self):' +
+  #10 + '        raise TypeError(f"cannot p' +
+  'ickle {self.__class__.__name__!r} ' + 'object")' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        modname = self.__class__._' +
+  '_module__' + #10 + '        clsname = self.__class__._' + '_qualname__' +
+  #10 + '        try:' + #10 + '            name = self.name' + #10 +
+  '        except AttributeError:' + #10 +
+  '            return "<{}.{}>".forma' + 't(modname, clsname)' + #10 +
+  '        else:' + #10 + '            return "<{}.{} name={!' +
+  'r}>".format(modname, clsname, name' + ')' + #10 + #10 +
+  '    ### Lower-level APIs ###' + #10 + #10 + '    def fileno(self):' + #10 +
+  '        return self.raw.fileno()' + #10 + #10 + '    def isatty(self):' +
+  #10 + '        return self.raw.isatty()' + #10 + #10 + #10 +
+  'class BytesIO(BufferedIOBase):' + #10 + #10 +
+  '    """Buffered I/O implementation' +
+  ' using an in-memory bytes buffer."' + '""' + #10 + #10 +
+  '    # Initialize _buffer as soon a' +
+  's possible since it''s used by __de' + 'l__()' + #10 +
+  '    # which calls close()' + #10 + '    _buffer = None' + #10 + #10 +
+  '    def __init__(self, initial_byt' + 'es=None):' + #10 +
+  '        buf = bytearray()' + #10 + '        if initial_bytes is not No' +
+  'ne:' + #10 + '            buf += initial_bytes' + #10 +
+  '        self._buffer = buf' + #10 + '        self._pos = 0' + #10 + #10 +
+  '    def __getstate__(self):' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("__ge' + 'tstate__ on closed file")' + #10 +
+  '        return self.__dict__.copy(' + ')' + #10 + #10 +
+  '    def getvalue(self):' + #10 + '        """Return the bytes value ' +
+  '(contents) of the buffer' + #10 + '        """' + #10 +
+  '        if self.closed:' + #10 + '            raise ValueError("getv' +
+  'alue on closed file")' + #10 + '        return bytes(self._buffer)' + #10 +
+  #10 + '    def getbuffer(self):' + #10 +
+  '        """Return a readable and w' + 'ritable view of the buffer.' + #10 +
+  '        """' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("getb' + 'uffer on closed file")' + #10 +
+  '        return memoryview(self._bu' + 'ffer)' + #10 + #10 +
+  '    def close(self):' + #10 + '        if self._buffer is not Non' + 'e:' +
+  #10 + '            self._buffer.clear()' + #10 + '        super().close()' +
+  #10 + #10 + '    def read(self, size=-1):' + #10 +
+  '        if self.closed:' + #10 + '            raise ValueError("read' +
+  ' from closed file")' + #10 + '        if size is None:' + #10 +
+  '            size = -1' + #10 + '        else:' + #10 + '            try:' +
+  #10 + '                size_index = size.' + '__index__' + #10 +
+  '            except AttributeError:' + #10 +
+  '                raise TypeError(f"' + '{size!r} is not an integer")' +
+  #10 + '            else:' + #10 + '                size = size_index(' +
+  ')' + #10 + '        if size < 0:' + #10 +
+  '            size = len(self._buffe' + 'r)' + #10 +
+  '        if len(self._buffer) <= se' + 'lf._pos:' + #10 +
+  '            return b""' + #10 + '        newpos = min(len(self._buf' +
+  'fer), self._pos + size)' + #10 + '        b = self._buffer[self._pos' +
+  ' : newpos]' + #10 + '        self._pos = newpos' + #10 +
+  '        return bytes(b)' + #10 + #10 + '    def read1(self, size=-1):' +
+  #10 + '        """This is the same as rea' + 'd.' + #10 + '        """' +
+  #10 + '        return self.read(size)' + #10 + #10 +
+  '    def write(self, b):' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("writ' + 'e to closed file")' + #10 +
+  '        if isinstance(b, str):' + #10 +
+  '            raise TypeError("can''t' + ' write str to binary stream")' +
+  #10 + '        with memoryview(b) as view' + ':' + #10 +
+  '            n = view.nbytes  # Siz' + 'e of any bytes-like object' + #10 +
+  '        if n == 0:' + #10 + '            return 0' + #10 +
+  '        pos = self._pos' + #10 + '        if pos > len(self._buffer)' +
+  ':' + #10 + '            # Inserts null bytes b' +
+  'etween the current end of the file' + #10 +
+  '            # and the new write po' + 'sition.' + #10 +
+  '            padding = b''\x00'' * (p' + 'os - len(self._buffer))' + #10 +
+  '            self._buffer += paddin' + 'g' + #10 +
+  '        self._buffer[pos:pos + n] ' + '= b' + #10 +
+  '        self._pos += n' + #10 + '        return n' + #10 + #10 +
+  '    def seek(self, pos, whence=0):' + #10 + '        if self.closed:' +
+  #10 + '            raise ValueError("seek' + ' on closed file")' + #10 +
+  '        try:' + #10 + '            pos_index = pos.__inde' + 'x__' + #10 +
+  '        except AttributeError:' + #10 +
+  '            raise TypeError(f"{pos' + '!r} is not an integer")' + #10 +
+  '        else:' + #10 + '            pos = pos_index()' + #10 +
+  '        if whence == 0:' + #10 + '            if pos < 0:' + #10 +
+  '                raise ValueError("' +
+  'negative seek position %r" % (pos,' + '))' + #10 +
+  '            self._pos = pos' + #10 + '        elif whence == 1:' + #10 +
+  '            self._pos = max(0, sel' + 'f._pos + pos)' + #10 +
+  '        elif whence == 2:' + #10 + '            self._pos = max(0, len' +
+  '(self._buffer) + pos)' + #10 + '        else:' + #10 +
+  '            raise ValueError("unsu' + 'pported whence value")' + #10 +
+  '        return self._pos' + #10 + #10 + '    def tell(self):' + #10 +
+  '        if self.closed:' + #10;
+
+Const
+ Src__pyio_4: AnsiString =
+  '            raise ValueError("tell' + ' on closed file")' + #10 +
+  '        return self._pos' + #10 + #10 +
+  '    def truncate(self, pos=None):' + #10 + '        if self.closed:' +
+  #10 + '            raise ValueError("trun' + 'cate on closed file")' + #10 +
+  '        if pos is None:' + #10 + '            pos = self._pos' + #10 +
+  '        else:' + #10 + '            try:' + #10 +
+  '                pos_index = pos.__' + 'index__' + #10 +
+  '            except AttributeError:' + #10 +
+  '                raise TypeError(f"' + '{pos!r} is not an integer")' + #10 +
+  '            else:' + #10 + '                pos = pos_index()' + #10 +
+  '            if pos < 0:' + #10 + '                raise ValueError("' +
+  'negative truncate position %r" % (' + 'pos,))' + #10 +
+  '        del self._buffer[pos:]' + #10 + '        return pos' + #10 + #10 +
+  '    def readable(self):' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("I/O ' + 'operation on closed file.")' + #10 +
+  '        return True' + #10 + #10 + '    def writable(self):' + #10 +
+  '        if self.closed:' + #10 + '            raise ValueError("I/O ' +
+  'operation on closed file.")' + #10 + '        return True' + #10 + #10 +
+  '    def seekable(self):' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("I/O ' + 'operation on closed file.")' + #10 +
+  '        return True' + #10 + #10 + #10 +
+  'class BufferedReader(_BufferedIOMi' + 'xin):' + #10 + #10 +
+  '    """BufferedReader(raw[, buffer' + '_size])' + #10 + #10 +
+  '    A buffer for a readable, seque' + 'ntial BaseRawIO object.' + #10 +
+  #10 + '    The constructor creates a Buff' +
+  'eredReader for the given readable ' + 'raw' + #10 +
+  '    stream and buffer_size. If buf' +
+  'fer_size is omitted, DEFAULT_BUFFE' + 'R_SIZE' + #10 + '    is used.' +
+  #10 + '    """' + #10 + #10 + '    def __init__(self, raw, buffer' +
+  '_size=DEFAULT_BUFFER_SIZE):' + #10 + '        """Create a new buffered r' +
+  'eader using the given readable raw' + ' IO object.' + #10 + '        """' +
+  #10 + '        if not raw.readable():' + #10 +
+  '            raise OSError(''"raw" a' + 'rgument must be readable.'')' +
+  #10 + #10 + '        _BufferedIOMixin.__init__(' + 'self, raw)' + #10 +
+  '        if buffer_size <= 0:' + #10 +
+  '            raise ValueError("inva' + 'lid buffer size")' + #10 +
+  '        self.buffer_size = buffer_' + 'size' + #10 +
+  '        self._reset_read_buf()' + #10 +
+  '        self._read_lock = Lock()' + #10 + #10 + '    def readable(self):' +
+  #10 + '        return self.raw.readable()' + #10 + #10 +
+  '    def _reset_read_buf(self):' + #10 + '        self._read_buf = b""' +
+  #10 + '        self._read_pos = 0' + #10 + #10 +
+  '    def read(self, size=None):' + #10 + '        """Read size bytes.' +
+  #10 + #10 + '        Returns exactly size bytes' +
+  ' of data unless the underlying raw' + ' IO' + #10 +
+  '        stream reaches EOF or if t' +
+  'he call would block in non-blockin' + 'g' + #10 +
+  '        mode. If size is negative,' +
+  ' read until EOF or until read() wo' + 'uld' + #10 + '        block.' +
+  #10 + '        """' + #10 + '        if size is not None and si' +
+  'ze < -1:' + #10 + '            raise ValueError("inva' +
+  'lid number of bytes to read")' + #10 + '        with self._read_lock:' +
+  #10 + '            return self._read_unlo' + 'cked(size)' + #10 + #10 +
+  '    def _read_unlocked(self, n=Non' + 'e):' + #10 +
+  '        nodata_val = b""' + #10 + '        empty_values = (b"", None)' +
+  #10 + '        buf = self._read_buf' + #10 +
+  '        pos = self._read_pos' + #10 + #10 +
+  '        # Special case for when th' +
+  'e number of bytes to read is unspe' + 'cified.' + #10 +
+  '        if n is None or n == -1:' + #10 +
+  '            self._reset_read_buf()' + #10 +
+  '            if hasattr(self.raw, ''' + 'readall''):' + #10 +
+  '                chunk = self.raw.r' + 'eadall()' + #10 +
+  '                if chunk is None:' + #10 +
+  '                    return buf[pos' + ':] or None' + #10 +
+  '                else:' + #10 + '                    return buf[pos' +
+  ':] + chunk' + #10 + '            chunks = [buf[pos:]]  ' +
+  '# Strip the consumed bytes.' + #10 + '            current_size = 0' + #10 +
+  '            while True:' + #10 + '                # Read until EOF o' +
+  'r until read() would block.' + #10 + '                chunk = self.raw.r' +
+  'ead()' + #10 + '                if chunk in empty_' + 'values:' + #10 +
+  '                    nodata_val = c' + 'hunk' + #10 +
+  '                    break' + #10 + '                current_size += le' +
+  'n(chunk)' + #10 + '                chunks.append(chun' + 'k)' + #10 +
+  '            return b"".join(chunks' + ') or nodata_val' + #10 + #10 +
+  '        # The number of bytes to r' +
+  'ead is specified, return at most n' + ' bytes.' + #10 +
+  '        avail = len(buf) - pos  # ' +
+  'Length of the available buffered d' + 'ata.' + #10 +
+  '        if n <= avail:' + #10 + '            # Fast path: the data ' +
+  'to read is fully buffered.' + #10 + '            self._read_pos += n' +
+  #10 + '            return buf[pos:pos+n]' + #10 +
+  '        # Slow path: read from the' +
+  ' stream until enough bytes are rea' + 'd,' + #10 +
+  '        # or until an EOF occurs o' + 'r until read() would block.' + #10 +
+  '        chunks = [buf[pos:]]' + #10 +
+  '        wanted = max(self.buffer_s' + 'ize, n)' + #10 +
+  '        while avail < n:' + #10 + '            chunk = self.raw.read(' +
+  'wanted)' + #10 + '            if chunk in empty_valu' + 'es:' + #10 +
+  '                nodata_val = chunk' + #10 + '                break' + #10 +
+  '            avail += len(chunk)' + #10 +
+  '            chunks.append(chunk)' + #10 +
+  '        # n is more than avail onl' + 'y when an EOF occurred or when' +
+  #10 + '        # read() would have blocke' + 'd.' + #10 +
+  '        n = min(n, avail)' + #10 + '        out = b"".join(chunks)' + #10 +
+  '        self._read_buf = out[n:]  ' +
+  '# Save the extra data in the buffe' + 'r.' + #10 +
+  '        self._read_pos = 0' + #10 + '        return out[:n] if out else' +
+  ' nodata_val' + #10 + #10 + '    def peek(self, size=0):' + #10 +
+  '        """Returns buffered bytes ' + 'without advancing the position.' +
+  #10 + #10 + '        The argument indicates a d' +
+  'esired minimal number of bytes; we' + #10 +
+  '        do at most one raw read to' +
+  ' satisfy it.  We never return more' + #10 +
+  '        than self.buffer_size.' + #10 + '        """' + #10 +
+  '        with self._read_lock:' + #10 +
+  '            return self._peek_unlo' + 'cked(size)' + #10 + #10 +
+  '    def _peek_unlocked(self, n=0):' + #10 +
+  '        want = min(n, self.buffer_' + 'size)' + #10 +
+  '        have = len(self._read_buf)' + ' - self._read_pos' + #10 +
+  '        if have < want or have <= ' + '0:' + #10 +
+  '            to_read = self.buffer_' + 'size - have' + #10 +
+  '            current = self.raw.rea' + 'd(to_read)' + #10 +
+  '            if current:' + #10 + '                self._read_buf = s' +
+  'elf._read_buf[self._read_pos:] + c' + 'urrent' + #10 +
+  '                self._read_pos = 0' + #10 +
+  '        return self._read_buf[self' + '._read_pos:]' + #10 + #10 +
+  '    def read1(self, size=-1):' + #10 +
+  '        """Reads up to size bytes,' +
+  ' with at most one read() system ca' + 'll."""' + #10 +
+  '        # Returns up to size bytes' +
+  '.  If at least one byte is buffere' + 'd, we' + #10 +
+  '        # only return buffered byt' +
+  'es.  Otherwise, we do one raw read' + '.' + #10 + '        if size < 0:' +
+  #10 + '            size = self.buffer_siz' + 'e' + #10 +
+  '        if size == 0:' + #10 + '            return b""' + #10 +
+  '        with self._read_lock:' + #10 +
+  '            self._peek_unlocked(1)' + #10 +
+  '            return self._read_unlo' + 'cked(' + #10 +
+  '                min(size, len(self' + '._read_buf) - self._read_pos))' +
+  #10 + #10 + '    # Implementing readinto() and ' +
+  'readinto1() is not strictly necess' + 'ary (we' + #10 +
+  '    # could rely on the base class' +
+  ' that provides an implementation i' + 'n terms of' + #10 +
+  '    # read() and read1()). We do i' +
+  't anyway to keep the _pyio impleme' + 'ntation' + #10 +
+  '    # similar to the io implementa' +
+  'tion (which implements the methods' + ' for' + #10 +
+  '    # performance reasons).' + #10 + '    def _readinto(self, buf, read1' +
+  '):' + #10 + '        """Read data into *buf* wi' +
+  'th at most one system call."""' + #10 + #10 +
+  '        # Need to create a memoryv' +
+  'iew object of type ''b'', otherwise' + #10 +
+  '        # we may not be able to as' + 'sign bytes to it, and slicing it' +
+  #10 + '        # would create a new objec' + 't.' + #10 +
+  '        if not isinstance(buf, mem' + 'oryview):' + #10 +
+  '            buf = memoryview(buf)' + #10 + '        if buf.nbytes == 0:' +
+  #10 + '            return 0' + #10 + '        buf = buf.cast(''B'')' + #10 +
+  #10 + '        written = 0' + #10 + '        with self._read_lock:' + #10 +
+  '            while written < len(bu' + 'f):' + #10 + #10 +
+  '                # First try to rea' + 'd from internal buffer' + #10 +
+  '                avail = min(len(se' +
+  'lf._read_buf) - self._read_pos, le' + 'n(buf))' + #10 +
+  '                if avail:' + #10 + '                    buf[written:wr' +
+  'itten+avail] = \' + #10 + '                        self._read' +
+  '_buf[self._read_pos:self._read_pos' + '+avail]' + #10 +
+  '                    self._read_pos' + ' += avail' + #10 +
+  '                    written += ava' + 'il' + #10 +
+  '                    if written == ' + 'len(buf):' + #10 +
+  '                        break' + #10 + #10 +
+  '                # If remaining spa' +
+  'ce in callers buffer is larger tha' + 'n' + #10 +
+  '                # internal buffer,' +
+  ' read directly into callers buffer' + #10 +
+  '                if len(buf) - writ' + 'ten > self.buffer_size:' + #10 +
+  '                    n = self.raw.r' + 'eadinto(buf[written:])' + #10 +
+  '                    if not n:' + #10 +
+  '                        break # eo' + 'f' + #10 +
+  '                    written += n' + #10 + #10 +
+  '                # Otherwise refill' + ' internal buffer - unless we''re' +
+  #10 + '                # in read1 mode an' + 'd already got some data' +
+  #10 + '                elif not (read1 an' + 'd written):' + #10 +
+  '                    if not self._p' + 'eek_unlocked(1):' + #10 +
+  '                        break # eo' + 'f' + #10 + #10 +
+  '                # In readinto1 mod' +
+  'e, return as soon as we have some ' + 'data' + #10 +
+  '                if read1 and writt' + 'en:' + #10 +
+  '                    break' + #10 + #10 + '        return written' + #10 +
+  #10 + '    def tell(self):' + #10 + '        return _BufferedIOMixin.te' +
+  'll(self) - len(self._read_buf) + s' + 'elf._read_pos' + #10 + #10 +
+  '    def seek(self, pos, whence=0):' + #10 +
+  '        if whence not in valid_see' + 'k_flags:' + #10 +
+  '            raise ValueError("inva' + 'lid whence value")' + #10 +
+  '        with self._read_lock:' + #10 + '            if whence == 1:' +
+  #10 + '                pos -= len(self._r' + 'ead_buf) - self._read_pos' +
+  #10 + '            pos = _BufferedIOMixin' + '.seek(self, pos, whence)' +
+  #10 + '            self._reset_read_buf()' + #10 +
+  '            return pos' + #10 + #10 +
+  'class BufferedWriter(_BufferedIOMi' + 'xin):' + #10 + #10 +
+  '    """A buffer for a writeable se' + 'quential RawIO object.' + #10 +
+  #10 + '    The constructor creates a Buff' +
+  'eredWriter for the given writeable' + ' raw' + #10 +
+  '    stream. If the buffer_size is ' + 'not given, it defaults to' + #10 +
+  '    DEFAULT_BUFFER_SIZE.' + #10 + '    """' + #10 + #10 +
+  '    def __init__(self, raw, buffer' + '_size=DEFAULT_BUFFER_SIZE):' + #10 +
+  '        if not raw.writable():' + #10 +
+  '            raise OSError(''"raw" a' + 'rgument must be writable.'')' +
+  #10 + #10 + '        _BufferedIOMixin.__init__(' + 'self, raw)' + #10 +
+  '        if buffer_size <= 0:' + #10 +
+  '            raise ValueError("inva' + 'lid buffer size")' + #10 +
+  '        self.buffer_size = buffer_' + 'size' + #10 +
+  '        self._write_buf = bytearra' + 'y()' + #10 +
+  '        self._write_lock = Lock()' + #10 + #10;
+
+Const
+ Src__pyio_5: AnsiString =
+  '    def writable(self):' + #10 + '        return self.raw.writable()' +
+  #10 + #10 + '    def write(self, b):' + #10 +
+  '        if isinstance(b, str):' + #10 +
+  '            raise TypeError("can''t' + ' write str to binary stream")' +
+  #10 + '        with self._write_lock:' + #10 +
+  '            if self.closed:' + #10 + '                raise ValueError("' +
+  'write to closed file")' + #10 + '            # XXX we can implement' +
+  ' some more tricks to try and avoid' + #10 +
+  '            # partial writes' + #10 +
+  '            if len(self._write_buf' + ') > self.buffer_size:' + #10 +
+  '                # We''re full, so l' +
+  'et''s pre-flush the buffer.  (This ' + 'may' + #10 +
+  '                # raise BlockingIO' +
+  'Error with characters_written == 0' + '.)' + #10 +
+  '                self._flush_unlock' + 'ed()' + #10 +
+  '            before = len(self._wri' + 'te_buf)' + #10 +
+  '            self._write_buf.extend' + '(b)' + #10 +
+  '            written = len(self._wr' + 'ite_buf) - before' + #10 +
+  '            if len(self._write_buf' + ') > self.buffer_size:' + #10 +
+  '                try:' + #10 + '                    self._flush_un' +
+  'locked()' + #10 + '                except BlockingIOE' + 'rror as e:' +
+  #10 + '                    if len(self._w' +
+  'rite_buf) > self.buffer_size:' + #10 +
+  '                        # We''ve hi' +
+  't the buffer_size. We have to acce' + 'pt a partial' + #10 +
+  '                        # write an' + 'd cut back our buffer.' + #10 +
+  '                        overage = ' +
+  'len(self._write_buf) - self.buffer' + '_size' + #10 +
+  '                        written -=' + ' overage' + #10 +
+  '                        self._writ' +
+  'e_buf = self._write_buf[:self.buff' + 'er_size]' + #10 +
+  '                        raise Bloc' +
+  'kingIOError(e.errno, e.strerror, w' + 'ritten)' + #10 +
+  '            return written' + #10 + #10 +
+  '    def truncate(self, pos=None):' + #10 +
+  '        with self._write_lock:' + #10 +
+  '            self._flush_unlocked()' + #10 + '            if pos is None:' +
+  #10 + '                pos = self.raw.tel' + 'l()' + #10 +
+  '            return self.raw.trunca' + 'te(pos)' + #10 + #10 +
+  '    def flush(self):' + #10 + '        with self._write_lock:' + #10 +
+  '            self._flush_unlocked()' + #10 + #10 +
+  '    def _flush_unlocked(self):' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("flus' + 'h on closed file")' + #10 +
+  '        while self._write_buf:' + #10 + '            try:' + #10 +
+  '                n = self.raw.write' + '(self._write_buf)' + #10 +
+  '            except BlockingIOError' + ':' + #10 +
+  '                raise RuntimeError' +
+  '("self.raw should implement RawIOB' + 'ase: it "' + #10 +
+  '                                  ' +
+  ' "should not raise BlockingIOError' + '")' + #10 +
+  '            if n is None:' + #10 + '                raise BlockingIOEr' +
+  'ror(' + #10 + '                    errno.EAGAIN,' + #10 +
+  '                    "write could n' + 'ot complete without blocking", 0)' +
+  #10 + '            if n > len(self._write' + '_buf) or n < 0:' + #10 +
+  '                raise OSError("wri' +
+  'te() returned incorrect number of ' + 'bytes")' + #10 +
+  '            del self._write_buf[:n' + ']' + #10 + #10 +
+  '    def tell(self):' + #10 + '        return _BufferedIOMixin.te' +
+  'll(self) + len(self._write_buf)' + #10 + #10 +
+  '    def seek(self, pos, whence=0):' + #10 +
+  '        if whence not in valid_see' + 'k_flags:' + #10 +
+  '            raise ValueError("inva' + 'lid whence value")' + #10 +
+  '        with self._write_lock:' + #10 +
+  '            self._flush_unlocked()' + #10 +
+  '            return _BufferedIOMixi' + 'n.seek(self, pos, whence)' + #10 +
+  #10 + '    def close(self):' + #10 + '        with self._write_lock:' +
+  #10 + '            if self.raw is None or' + ' self.closed:' + #10 +
+  '                return' + #10 + '        # We have to release the l' +
+  'ock and call self.flush() (which w' + 'ill' + #10 +
+  '        # probably just re-take th' +
+  'e lock) in case flush has been ove' + 'rridden in' + #10 +
+  '        # a subclass or the user s' +
+  'et self.flush to something. This i' + 's the same' + #10 +
+  '        # behavior as the C implem' + 'entation.' + #10 + '        try:' +
+  #10 + '            # may raise BlockingIO' +
+  'Error or BrokenPipeError etc' + #10 + '            self.flush()' + #10 +
+  '        finally:' + #10 + '            with self._write_lock:' + #10 +
+  '                self.raw.close()' + #10 + #10 + #10 +
+  'class BufferedRWPair(BufferedIOBas' + 'e):' + #10 + #10 +
+  '    """A buffered reader and write' + 'r object together.' + #10 + #10 +
+  '    A buffered reader object and b' +
+  'uffered writer object put together' + ' to' + #10 +
+  '    form a sequential IO object th' +
+  'at can read and write. This is typ' + 'ically' + #10 +
+  '    used with a socket or two-way ' + 'pipe.' + #10 + #10 +
+  '    reader and writer are RawIOBas' + 'e objects that are readable and' +
+  #10 + '    writeable respectively. If the' +
+  ' buffer_size is omitted it default' + 's to' + #10 +
+  '    DEFAULT_BUFFER_SIZE.' + #10 + '    """' + #10 + #10 +
+  '    # XXX The usefulness of this (' +
+  'compared to having two separate IO' + #10 +
+  '    # objects) is questionable.' + #10 + #10 +
+  '    def __init__(self, reader, wri' +
+  'ter, buffer_size=DEFAULT_BUFFER_SI' + 'ZE):' + #10 +
+  '        """Constructor.' + #10 + #10 +
+  '        The arguments are two RawI' + 'O instances.' + #10 +
+  '        """' + #10 + '        if not reader.readable():' + #10 +
+  '            raise OSError(''"reader' + '" argument must be readable.'')' +
+  #10 + #10 + '        if not writer.writable():' + #10 +
+  '            raise OSError(''"writer' + '" argument must be writable.'')' +
+  #10 + #10 + '        self.reader = BufferedRead' +
+  'er(reader, buffer_size)' + #10 + '        self.writer = BufferedWrit' +
+  'er(writer, buffer_size)' + #10 + #10 + '    def read(self, size=-1):' +
+  #10 + '        if size is None:' + #10 + '            size = -1' + #10 +
+  '        return self.reader.read(si' + 'ze)' + #10 + #10 +
+  '    def readinto(self, b):' + #10 + '        return self.reader.readint' +
+  'o(b)' + #10 + #10 + '    def write(self, b):' + #10 +
+  '        return self.writer.write(b' + ')' + #10 + #10 +
+  '    def peek(self, size=0):' + #10 + '        return self.reader.peek(si' +
+  'ze)' + #10 + #10 + '    def read1(self, size=-1):' + #10 +
+  '        return self.reader.read1(s' + 'ize)' + #10 + #10 +
+  '    def readinto1(self, b):' + #10 + '        return self.reader.readint' +
+  'o1(b)' + #10 + #10 + '    def readable(self):' + #10 +
+  '        return self.reader.readabl' + 'e()' + #10 + #10 +
+  '    def writable(self):' + #10 + '        return self.writer.writabl' +
+  'e()' + #10 + #10 + '    def flush(self):' + #10 +
+  '        return self.writer.flush()' + #10 + #10 + '    def close(self):' +
+  #10 + '        try:' + #10 + '            self.writer.close()' + #10 +
+  '        finally:' + #10 + '            self.reader.close()' + #10 + #10 +
+  '    def isatty(self):' + #10 + '        return self.reader.isatty(' +
+  ') or self.writer.isatty()' + #10 + #10 + '    @property' + #10 +
+  '    def closed(self):' + #10 + '        return self.writer.closed' + #10 +
+  #10 + #10 + 'class BufferedRandom(BufferedWrite' + 'r, BufferedReader):' +
+  #10 + #10 + '    """A buffered interface to ran' + 'dom access streams.' +
+  #10 + #10 + '    The constructor creates a read' +
+  'er and writer for a seekable strea' + 'm,' + #10 +
+  '    raw, given in the first argume' +
+  'nt. If the buffer_size is omitted ' + 'it' + #10 +
+  '    defaults to DEFAULT_BUFFER_SIZ' + 'E.' + #10 + '    """' + #10 + #10 +
+  '    def __init__(self, raw, buffer' + '_size=DEFAULT_BUFFER_SIZE):' + #10 +
+  '        raw._checkSeekable()' + #10 +
+  '        BufferedReader.__init__(se' + 'lf, raw, buffer_size)' + #10 +
+  '        BufferedWriter.__init__(se' + 'lf, raw, buffer_size)' + #10 + #10 +
+  '    def seek(self, pos, whence=0):' + #10 +
+  '        if whence not in valid_see' + 'k_flags:' + #10 +
+  '            raise ValueError("inva' + 'lid whence value")' + #10 +
+  '        self.flush()' + #10 + '        if self._read_buf:' + #10 +
+  '            # Undo read ahead.' + #10 +
+  '            with self._read_lock:' + #10 +
+  '                self.raw.seek(self' +
+  '._read_pos - len(self._read_buf), ' + '1)' + #10 +
+  '        # First do the raw seek, t' +
+  'hen empty the read buffer, so that' + #10 +
+  '        # if the raw seek fails, w' +
+  'e don''t lose buffered data forever' + '.' + #10 +
+  '        pos = self.raw.seek(pos, w' + 'hence)' + #10 +
+  '        with self._read_lock:' + #10 +
+  '            self._reset_read_buf()' + #10 + '        if pos < 0:' + #10 +
+  '            raise OSError("seek() ' + 'returned invalid position")' + #10 +
+  '        return pos' + #10 + #10 + '    def tell(self):' + #10 +
+  '        if self._write_buf:' + #10 + '            return BufferedWriter.' +
+  'tell(self)' + #10 + '        else:' + #10 +
+  '            return BufferedReader.' + 'tell(self)' + #10 + #10 +
+  '    def truncate(self, pos=None):' + #10 + '        if pos is None:' +
+  #10 + '            pos = self.tell()' + #10 +
+  '        # Use seek to flush the re' + 'ad buffer.' + #10 +
+  '        return BufferedWriter.trun' + 'cate(self, pos)' + #10 + #10 +
+  '    def read(self, size=None):' + #10 + '        if size is None:' + #10 +
+  '            size = -1' + #10 + '        self.flush()' + #10 +
+  '        return BufferedReader.read' + '(self, size)' + #10 + #10 +
+  '    def readinto(self, b):' + #10 + '        self.flush()' + #10 +
+  '        return BufferedReader.read' + 'into(self, b)' + #10 + #10 +
+  '    def peek(self, size=0):' + #10 + '        self.flush()' + #10 +
+  '        return BufferedReader.peek' + '(self, size)' + #10 + #10 +
+  '    def read1(self, size=-1):' + #10 + '        self.flush()' + #10 +
+  '        return BufferedReader.read' + '1(self, size)' + #10 + #10 +
+  '    def readinto1(self, b):' + #10 + '        self.flush()' + #10 +
+  '        return BufferedReader.read' + 'into1(self, b)' + #10 + #10 +
+  '    def write(self, b):' + #10 + '        if self._read_buf:' + #10 +
+  '            # Undo readahead' + #10 + '            with self._read_lock:' +
+  #10 + '                self.raw.seek(self' +
+  '._read_pos - len(self._read_buf), ' + '1)' + #10 +
+  '                self._reset_read_b' + 'uf()' + #10 +
+  '        return BufferedWriter.writ' + 'e(self, b)' + #10 + #10 + #10 +
+  'class FileIO(RawIOBase):' + #10 + '    _fd = -1' + #10 +
+  '    _created = False' + #10 + '    _readable = False' + #10 +
+  '    _writable = False' + #10 + '    _appending = False' + #10 +
+  '    _seekable = None' + #10 + '    _closefd = True' + #10 + #10 +
+  '    def __init__(self, file, mode=' +
+  '''r'', closefd=True, opener=None):' + #10 +
+  '        """Open a file.  The mode ' +
+  'can be ''r'' (default), ''w'', ''x'' or ' + '''a'' for reading,' + #10 +
+  '        writing, exclusive creatio' +
+  'n or appending.  The file will be ' + 'created if it' + #10 +
+  '        doesn''t exist when opened ' +
+  'for writing or appending; it will ' + 'be truncated' + #10 +
+  '        when opened for writing.  ' +
+  'A FileExistsError will be raised i' + 'f it already' + #10 +
+  '        exists when opened for cre' +
+  'ating. Opening a file for creating' + ' implies' + #10 +
+  '        writing so this mode behav' +
+  'es in a similar way to ''w''. Add a ' + '''+'' to the mode' + #10 +
+  '        to allow simultaneous read' +
+  'ing and writing. A custom opener c' + 'an be used by' + #10 +
+  '        passing a callable as *ope' +
+  'ner*. The underlying file descript' + 'or for the file' + #10;
+
+Const
+ Src__pyio_6: AnsiString =
+  '        object is then obtained by' +
+  ' calling opener with (*name*, *fla' + 'gs*).' + #10 +
+  '        *opener* must return an op' +
+  'en file descriptor (passing os.ope' + 'n as *opener*' + #10 +
+  '        results in functionality s' + 'imilar to passing None).' + #10 +
+  '        """' + #10 + '        if self._fd >= 0:' + #10 +
+  '            # Have to close the ex' + 'isting file first.' + #10 +
+  '            try:' + #10 + '                if self._closefd:' + #10 +
+  '                    os.close(self.' + '_fd)' + #10 +
+  '            finally:' + #10 + '                self._fd = -1' + #10 + #10 +
+  '        if isinstance(file, float)' + ':' + #10 +
+  '            raise TypeError(''integ' +
+  'er argument expected, got float'')' + #10 +
+  '        if isinstance(file, int):' + #10 + '            fd = file' + #10 +
+  '            if fd < 0:' + #10 + '                raise ValueError(''' +
+  'negative file descriptor'')' + #10 + '        else:' + #10 +
+  '            fd = -1' + #10 + #10 + '        if not isinstance(mode, st' +
+  'r):' + #10 + '            raise TypeError(''inval' +
+  'id mode: %s'' % (mode,))' + #10 + '        if not set(mode) <= set(''x' +
+  'rwab+''):' + #10 + '            raise ValueError(''inva' +
+  'lid mode: %s'' % (mode,))' + #10 + '        if sum(c in ''rwax'' for c i' +
+  'n mode) != 1 or mode.count(''+'') > ' + '1:' + #10 +
+  '            raise ValueError(''Must' +
+  ' have exactly one of create/read/w' + 'rite/append ''' + #10 +
+  '                             ''mode' + ' and at most one plus'')' + #10 +
+  #10 + '        if ''x'' in mode:' + #10 +
+  '            self._created = True' + #10 +
+  '            self._writable = True' + #10 +
+  '            flags = os.O_EXCL | os' + '.O_CREAT' + #10 +
+  '        elif ''r'' in mode:' + #10 + '            self._readable = True' +
+  #10 + '            flags = 0' + #10 + '        elif ''w'' in mode:' + #10 +
+  '            self._writable = True' + #10 +
+  '            flags = os.O_CREAT | o' + 's.O_TRUNC' + #10 +
+  '        elif ''a'' in mode:' + #10 + '            self._writable = True' +
+  #10 + '            self._appending = True' + #10 +
+  '            flags = os.O_APPEND | ' + 'os.O_CREAT' + #10 + #10 +
+  '        if ''+'' in mode:' + #10 + '            self._readable = True' +
+  #10 + '            self._writable = True' + #10 + #10 +
+  '        if self._readable and self' + '._writable:' + #10 +
+  '            flags |= os.O_RDWR' + #10 + '        elif self._readable:' +
+  #10 + '            flags |= os.O_RDONLY' + #10 + '        else:' + #10 +
+  '            flags |= os.O_WRONLY' + #10 + #10 +
+  '        flags |= getattr(os, ''O_BI' + 'NARY'', 0)' + #10 + #10 +
+  '        noinherit_flag = (getattr(' + 'os, ''O_NOINHERIT'', 0) or' + #10 +
+  '                          getattr(' + 'os, ''O_CLOEXEC'', 0))' + #10 +
+  '        flags |= noinherit_flag' + #10 + #10 + '        owned_fd = None' +
+  #10 + '        try:' + #10 + '            if fd < 0:' + #10 +
+  '                if not closefd:' + #10 +
+  '                    raise ValueErr' +
+  'or(''Cannot use closefd=False with ' + 'file name'')' + #10 +
+  '                if opener is None:' + #10 +
+  '                    fd = os.open(f' + 'ile, flags, 0o666)' + #10 +
+  '                else:' + #10 + '                    fd = opener(fi' +
+  'le, flags)' + #10 + '                    if not isinsta' +
+  'nce(fd, int):' + #10 + '                        raise Type' +
+  'Error(''expected integer from opene' + 'r'')' + #10 +
+  '                    if fd < 0:' + #10 +
+  '                        raise OSEr' + 'ror(''Negative file descriptor'')' +
+  #10 + '                owned_fd = fd' + #10 +
+  '                if not noinherit_f' + 'lag:' + #10 +
+  '                    os.set_inherit' + 'able(fd, False)' + #10 + #10 +
+  '            self._closefd = closef' + 'd' + #10 +
+  '            fdfstat = os.fstat(fd)' + #10 + '            try:' + #10 +
+  '                if stat.S_ISDIR(fd' + 'fstat.st_mode):' + #10 +
+  '                    raise IsADirec' + 'toryError(errno.EISDIR,' + #10 +
+  '                                  ' +
+  '          os.strerror(errno.EISDIR' + '), file)' + #10 +
+  '            except AttributeError:' + #10 +
+  '                # Ignore the Attri' +
+  'bueError if stat.S_ISDIR or errno.' + 'EISDIR' + #10 +
+  '                # don''t exist.' + #10 + '                pass' + #10 +
+  '            self._blksize = getatt' + 'r(fdfstat, ''st_blksize'', 0)' +
+  #10 + '            if self._blksize <= 1:' + #10 +
+  '                self._blksize = DE' + 'FAULT_BUFFER_SIZE' + #10 + #10 +
+  '            if _setmode:' + #10 + '                # don''t translate ' +
+  'newlines (\r\n <=> \n)' + #10 + '                _setmode(fd, os.O_' +
+  'BINARY)' + #10 + #10 + '            self.name = file' + #10 +
+  '            if self._appending:' + #10 +
+  '                # For consistent b' +
+  'ehaviour, we explicitly seek to th' + 'e' + #10 +
+  '                # end of file (oth' +
+  'erwise, it might be done only on t' + 'he' + #10 +
+  '                # first write()).' + #10 + '                try:' + #10 +
+  '                    os.lseek(fd, 0' + ', SEEK_END)' + #10 +
+  '                except OSError as ' + 'e:' + #10 +
+  '                    if e.errno != ' + 'errno.ESPIPE:' + #10 +
+  '                        raise' + #10 + '        except:' + #10 +
+  '            if owned_fd is not Non' + 'e:' + #10 +
+  '                os.close(owned_fd)' + #10 + '            raise' + #10 +
+  '        self._fd = fd' + #10 + #10 + '    def __del__(self):' + #10 +
+  '        if self._fd >= 0 and self.' + '_closefd and not self.closed:' +
+  #10 + '            import warnings' + #10 +
+  '            warnings.warn(''unclose' +
+  'd file %r'' % (self,), ResourceWarn' + 'ing,' + #10 +
+  '                          stacklev' + 'el=2, source=self)' + #10 +
+  '            self.close()' + #10 + #10 + '    def __getstate__(self):' +
+  #10 + '        raise TypeError(f"cannot p' +
+  'ickle {self.__class__.__name__!r} ' + 'object")' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        class_name = ''%s.%s'' % (se' +
+  'lf.__class__.__module__,' + #10 + '                                se' +
+  'lf.__class__.__qualname__)' + #10 + '        if self.closed:' + #10 +
+  '            return ''<%s [closed]>''' + ' % class_name' + #10 +
+  '        try:' + #10 + '            name = self.name' + #10 +
+  '        except AttributeError:' + #10 +
+  '            return (''<%s fd=%d mod' + 'e=%r closefd=%r>'' %' + #10 +
+  '                    (class_name, s' +
+  'elf._fd, self.mode, self._closefd)' + ')' + #10 + '        else:' + #10 +
+  '            return (''<%s name=%r m' + 'ode=%r closefd=%r>'' %' + #10 +
+  '                    (class_name, n' + 'ame, self.mode, self._closefd))' +
+  #10 + #10 + '    def _checkReadable(self):' + #10 +
+  '        if not self._readable:' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion(''File not open for reading'')' + #10 + #10 +
+  '    def _checkWritable(self, msg=N' + 'one):' + #10 +
+  '        if not self._writable:' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion(''File not open for writing'')' + #10 + #10 +
+  '    def read(self, size=None):' + #10 +
+  '        """Read at most size bytes' + ', returned as bytes.' + #10 + #10 +
+  '        Only makes one system call' +
+  ', so less data may be returned tha' + 'n requested' + #10 +
+  '        In non-blocking mode, retu' + 'rns None if no data is available.' +
+  #10 + '        Return an empty bytes obje' + 'ct at EOF.' + #10 +
+  '        """' + #10 + '        self._checkClosed()' + #10 +
+  '        self._checkReadable()' + #10 +
+  '        if size is None or size < ' + '0:' + #10 +
+  '            return self.readall()' + #10 + '        try:' + #10 +
+  '            return os.read(self._f' + 'd, size)' + #10 +
+  '        except BlockingIOError:' + #10 + '            return None' + #10 +
+  #10 + '    def readall(self):' + #10 +
+  '        """Read all data from the ' + 'file, returned as bytes.' + #10 +
+  #10 + '        In non-blocking mode, retu' +
+  'rns as much as is immediately avai' + 'lable,' + #10 +
+  '        or None if no data is avai' +
+  'lable.  Return an empty bytes obje' + 'ct at EOF.' + #10 + '        """' +
+  #10 + '        self._checkClosed()' + #10 +
+  '        self._checkReadable()' + #10 +
+  '        bufsize = DEFAULT_BUFFER_S' + 'IZE' + #10 + '        try:' + #10 +
+  '            pos = os.lseek(self._f' + 'd, 0, SEEK_CUR)' + #10 +
+  '            end = os.fstat(self._f' + 'd).st_size' + #10 +
+  '            if end >= pos:' + #10 + '                bufsize = end - po' +
+  's + 1' + #10 + '        except OSError:' + #10 + '            pass' + #10 +
+  #10 + '        result = bytearray()' + #10 + '        while True:' + #10 +
+  '            if len(result) >= bufs' + 'ize:' + #10 +
+  '                bufsize = len(resu' + 'lt)' + #10 +
+  '                bufsize += max(buf' + 'size, DEFAULT_BUFFER_SIZE)' + #10 +
+  '            n = bufsize - len(resu' + 'lt)' + #10 + '            try:' +
+  #10 + '                chunk = os.read(se' + 'lf._fd, n)' + #10 +
+  '            except BlockingIOError' + ':' + #10 +
+  '                if result:' + #10 + '                    break' + #10 +
+  '                return None' + #10 + '            if not chunk: # reache' +
+  'd the end of the file' + #10 + '                break' + #10 +
+  '            result += chunk' + #10 + #10 + '        return bytes(result)' +
+  #10 + #10 + '    def readinto(self, b):' + #10 +
+  '        """Same as RawIOBase.readi' + 'nto()."""' + #10 +
+  '        m = memoryview(b).cast(''B''' + ')' + #10 +
+  '        data = self.read(len(m))' + #10 + '        n = len(data)' + #10 +
+  '        m[:n] = data' + #10 + '        return n' + #10 + #10 +
+  '    def write(self, b):' + #10 + '        """Write bytes b to file, ' +
+  'return number written.' + #10 + #10 +
+  '        Only makes one system call' +
+  ', so not all of the data may be wr' + 'itten.' + #10 +
+  '        The number of bytes actual' +
+  'ly written is returned.  In non-bl' + 'ocking mode,' + #10 +
+  '        returns None if the write ' + 'would block.' + #10 +
+  '        """' + #10 + '        self._checkClosed()' + #10 +
+  '        self._checkWritable()' + #10 + '        try:' + #10 +
+  '            return os.write(self._' + 'fd, b)' + #10 +
+  '        except BlockingIOError:' + #10 + '            return None' + #10 +
+  #10 + '    def seek(self, pos, whence=SEE' + 'K_SET):' + #10 +
+  '        """Move to new file positi' + 'on.' + #10 + #10 +
+  '        Argument offset is a byte ' +
+  'count.  Optional argument whence d' + 'efaults to' + #10 +
+  '        SEEK_SET or 0 (offset from' +
+  ' start of file, offset should be >' + '= 0); other values' + #10 +
+  '        are SEEK_CUR or 1 (move re' +
+  'lative to current position, positi' + 've or negative),' + #10 +
+  '        and SEEK_END or 2 (move re' +
+  'lative to end of file, usually neg' + 'ative, although' + #10 +
+  '        many platforms allow seeki' + 'ng beyond the end of a file).' +
+  #10 + #10 + '        Note that not all file obj' + 'ects are seekable.' +
+  #10 + '        """' + #10 + '        if isinstance(pos, float):' + #10 +
+  '            raise TypeError(''an in' + 'teger is required'')' + #10 +
+  '        self._checkClosed()' + #10 + '        return os.lseek(self._fd, ' +
+  'pos, whence)' + #10 + #10 + '    def tell(self):' + #10 +
+  '        """tell() -> int.  Current' + ' file position.' + #10 + #10 +
+  '        Can raise OSError for non ' + 'seekable files."""' + #10 +
+  '        self._checkClosed()' + #10 + '        return os.lseek(self._fd, ' +
+  '0, SEEK_CUR)' + #10 + #10 + '    def truncate(self, size=None):' + #10 +
+  '        """Truncate the file to at' + ' most size bytes.' + #10 + #10 +
+  '        Size defaults to the curre' +
+  'nt file position, as returned by t' + 'ell().' + #10 +
+  '        The current file position ' + 'is changed to the value of size.' +
+  #10 + '        """' + #10 + '        self._checkClosed()' + #10 +
+  '        self._checkWritable()' + #10 + '        if size is None:' + #10 +
+  '            size = self.tell()' + #10;
+
+Const
+ Src__pyio_7: AnsiString =
+  '        os.ftruncate(self._fd, siz' + 'e)' + #10 + '        return size' +
+  #10 + #10 + '    def close(self):' + #10 + '        """Close the file.' +
+  #10 + #10 + '        A closed file cannot be us' +
+  'ed for further I/O operations.  cl' + 'ose() may be' + #10 +
+  '        called more than once with' + 'out error.' + #10 + '        """' +
+  #10 + '        if not self.closed:' + #10 + '            try:' + #10 +
+  '                if self._closefd:' + #10 +
+  '                    os.close(self.' + '_fd)' + #10 +
+  '            finally:' + #10 + '                super().close()' + #10 +
+  #10 + '    def seekable(self):' + #10 +
+  '        """True if file supports r' + 'andom-access."""' + #10 +
+  '        self._checkClosed()' + #10 + '        if self._seekable is None:' +
+  #10 + '            try:' + #10 + '                self.tell()' + #10 +
+  '            except OSError:' + #10 + '                self._seekable = F' +
+  'alse' + #10 + '            else:' + #10 +
+  '                self._seekable = T' + 'rue' + #10 +
+  '        return self._seekable' + #10 + #10 + '    def readable(self):' +
+  #10 + '        """True if file was opened' + ' in a read mode."""' + #10 +
+  '        self._checkClosed()' + #10 + '        return self._readable' +
+  #10 + #10 + '    def writable(self):' + #10 +
+  '        """True if file was opened' + ' in a write mode."""' + #10 +
+  '        self._checkClosed()' + #10 + '        return self._writable' +
+  #10 + #10 + '    def fileno(self):' + #10 +
+  '        """Return the underlying f' + 'ile descriptor (an integer)."""' +
+  #10 + '        self._checkClosed()' + #10 + '        return self._fd' +
+  #10 + #10 + '    def isatty(self):' + #10 +
+  '        """True if the file is con' + 'nected to a TTY device."""' + #10 +
+  '        self._checkClosed()' + #10 + '        return os.isatty(self._fd)' +
+  #10 + #10 + '    @property' + #10 + '    def closefd(self):' + #10 +
+  '        """True if the file descri' +
+  'ptor will be closed by close()."""' + #10 +
+  '        return self._closefd' + #10 + #10 + '    @property' + #10 +
+  '    def mode(self):' + #10 + '        """String giving the file ' +
+  'mode"""' + #10 + '        if self._created:' + #10 +
+  '            if self._readable:' + #10 + '                return ''xb+''' +
+  #10 + '            else:' + #10 + '                return ''xb''' + #10 +
+  '        elif self._appending:' + #10 + '            if self._readable:' +
+  #10 + '                return ''ab+''' + #10 + '            else:' + #10 +
+  '                return ''ab''' + #10 + '        elif self._readable:' +
+  #10 + '            if self._writable:' + #10 +
+  '                return ''rb+''' + #10 + '            else:' + #10 +
+  '                return ''rb''' + #10 + '        else:' + #10 +
+  '            return ''wb''' + #10 + #10 + #10 +
+  'class TextIOBase(IOBase):' + #10 + #10 +
+  '    """Base class for text I/O.' + #10 + #10 +
+  '    This class provides a characte' +
+  'r and line based interface to stre' + 'am' + #10 +
+  '    I/O. There is no public constr' + 'uctor.' + #10 + '    """' + #10 +
+  #10 + '    def read(self, size=-1):' + #10 +
+  '        """Read at most size chara' +
+  'cters from stream, where size is a' + 'n int.' + #10 + #10 +
+  '        Read from underlying buffe' +
+  'r until we have size characters or' + ' we hit EOF.' + #10 +
+  '        If size is negative or omi' + 'tted, read until EOF.' + #10 + #10 +
+  '        Returns a string.' + #10 + '        """' + #10 +
+  '        self._unsupported("read")' + #10 + #10 +
+  '    def write(self, s):' + #10 + '        """Write string s to strea' +
+  'm and returning an int."""' + #10 + '        self._unsupported("write")' +
+  #10 + #10 + '    def truncate(self, pos=None):' + #10 +
+  '        """Truncate size to pos, w' + 'here pos is an int."""' + #10 +
+  '        self._unsupported("truncat' + 'e")' + #10 + #10 +
+  '    def readline(self):' + #10 + '        """Read until newline or E' +
+  'OF.' + #10 + #10 + '        Returns an empty string if' +
+  ' EOF is hit immediately.' + #10 + '        """' + #10 +
+  '        self._unsupported("readlin' + 'e")' + #10 + #10 +
+  '    def detach(self):' + #10 + '        """' + #10 +
+  '        Separate the underlying bu' +
+  'ffer from the TextIOBase and retur' + 'n it.' + #10 + #10 +
+  '        After the underlying buffe' +
+  'r has been detached, the TextIO is' + ' in an' + #10 +
+  '        unusable state.' + #10 + '        """' + #10 +
+  '        self._unsupported("detach"' + ')' + #10 + #10 + '    @property' +
+  #10 + '    def encoding(self):' + #10 +
+  '        """Subclasses should overr' + 'ide."""' + #10 +
+  '        return None' + #10 + #10 + '    @property' + #10 +
+  '    def newlines(self):' + #10 + '        """Line endings translated' +
+  ' so far.' + #10 + #10 + '        Only line endings translat' +
+  'ed during reading are considered.' + #10 + #10 +
+  '        Subclasses should override' + '.' + #10 + '        """' + #10 +
+  '        return None' + #10 + #10 + '    @property' + #10 +
+  '    def errors(self):' + #10 + '        """Error setting of the de' +
+  'coder or encoder.' + #10 + #10 + '        Subclasses should override' +
+  '."""' + #10 + '        return None' + #10 + #10 + #10 + #10 +
+  'class IncrementalNewlineDecoder(co' + 'decs.IncrementalDecoder):' + #10 +
+  '    r"""Codec used when reading a ' +
+  'file in universal newlines mode.  ' + 'It wraps' + #10 +
+  '    another incremental decoder, t' +
+  'ranslating \r\n and \r into \n.  I' + 't also' + #10 +
+  '    records the types of newlines ' + 'encountered.  When used with' +
+  #10 + '    translate=False, it ensures th' +
+  'at the newline sequence is returne' + 'd in' + #10 + '    one piece.' +
+  #10 + '    """' + #10 + '    def __init__(self, decoder, tr' +
+  'anslate, errors=''strict''):' + #10 +
+  '        codecs.IncrementalDecoder.' + '__init__(self, errors=errors)' +
+  #10 + '        self.translate = translate' + #10 +
+  '        self.decoder = decoder' + #10 + '        self.seennl = 0' + #10 +
+  '        self.pendingcr = False' + #10 + #10 +
+  '    def decode(self, input, final=' + 'False):' + #10 +
+  '        # decode input (with the e' + 'ventual \r from a previous pass)' +
+  #10 + '        if self.decoder is None:' + #10 +
+  '            output = input' + #10 + '        else:' + #10 +
+  '            output = self.decoder.' + 'decode(input, final=final)' + #10 +
+  '        if self.pendingcr and (out' + 'put or final):' + #10 +
+  '            output = "\r" + output' + #10 +
+  '            self.pendingcr = False' + #10 + #10 +
+  '        # retain last \r even when' + ' not translating data:' + #10 +
+  '        # then readline() is sure ' + 'to get \r\n in one pass' + #10 +
+  '        if output.endswith("\r") a' + 'nd not final:' + #10 +
+  '            output = output[:-1]' + #10 +
+  '            self.pendingcr = True' + #10 + #10 +
+  '        # Record which newlines ar' + 'e read' + #10 +
+  '        crlf = output.count(''\r\n''' + ')' + #10 +
+  '        cr = output.count(''\r'') - ' + 'crlf' + #10 +
+  '        lf = output.count(''\n'') - ' + 'crlf' + #10 +
+  '        self.seennl |= (lf and sel' + 'f._LF) | (cr and self._CR) \' +
+  #10 + '                    | (crlf and se' + 'lf._CRLF)' + #10 + #10 +
+  '        if self.translate:' + #10 + '            if crlf:' + #10 +
+  '                output = output.re' + 'place("\r\n", "\n")' + #10 +
+  '            if cr:' + #10 + '                output = output.re' +
+  'place("\r", "\n")' + #10 + #10 + '        return output' + #10 + #10 +
+  '    def getstate(self):' + #10 + '        if self.decoder is None:' + #10 +
+  '            buf = b""' + #10 + '            flag = 0' + #10 +
+  '        else:' + #10 + '            buf, flag = self.decod' +
+  'er.getstate()' + #10 + '        flag <<= 1' + #10 +
+  '        if self.pendingcr:' + #10 + '            flag |= 1' + #10 +
+  '        return buf, flag' + #10 + #10 + '    def setstate(self, state):' +
+  #10 + '        buf, flag = state' + #10 +
+  '        self.pendingcr = bool(flag' + ' & 1)' + #10 +
+  '        if self.decoder is not Non' + 'e:' + #10 +
+  '            self.decoder.setstate(' + '(buf, flag >> 1))' + #10 + #10 +
+  '    def reset(self):' + #10 + '        self.seennl = 0' + #10 +
+  '        self.pendingcr = False' + #10 +
+  '        if self.decoder is not Non' + 'e:' + #10 +
+  '            self.decoder.reset()' + #10 + #10 + '    _LF = 1' + #10 +
+  '    _CR = 2' + #10 + '    _CRLF = 4' + #10 + #10 + '    @property' + #10 +
+  '    def newlines(self):' + #10 + '        return (None,' + #10 +
+  '                "\n",' + #10 + '                "\r",' + #10 +
+  '                ("\r", "\n"),' + #10 + '                "\r\n",' + #10 +
+  '                ("\n", "\r\n"),' + #10 +
+  '                ("\r", "\r\n"),' + #10 +
+  '                ("\r", "\n", "\r\n' + '")' + #10 +
+  '               )[self.seennl]' + #10 + #10 + #10 +
+  'class TextIOWrapper(TextIOBase):' + #10 + #10 +
+  '    r"""Character and line based l' +
+  'ayer over a BufferedIOBase object,' + ' buffer.' + #10 + #10 +
+  '    encoding gives the name of the' + ' encoding that the stream will be' +
+  #10 + '    decoded or encoded with. It de' +
+  'faults to locale.getpreferredencod' + 'ing(False).' + #10 + #10 +
+  '    errors determines the strictne' +
+  'ss of encoding and decoding (see t' + 'he' + #10 +
+  '    codecs.register) and defaults ' + 'to "strict".' + #10 + #10 +
+  '    newline can be None, '''', ''\n'',' +
+  ' ''\r'', or ''\r\n''.  It controls the' + #10 +
+  '    handling of line endings. If i' + 't is None, universal newlines is' +
+  #10 + '    enabled.  With this enabled, o' +
+  'n input, the lines endings ''\n'', ''' + '\r'',' + #10 +
+  '    or ''\r\n'' are translated to ''\' +
+  'n'' before being returned to the' + #10 +
+  '    caller. Conversely, on output,' +
+  ' ''\n'' is translated to the system' + #10 +
+  '    default line separator, os.lin' +
+  'esep. If newline is any other of i' + 'ts' + #10 +
+  '    legal values, that newline bec' +
+  'omes the newline when the file is ' + 'read' + #10 +
+  '    and it is returned untranslate' +
+  'd. On output, ''\n'' is converted to' + ' the' + #10 + '    newline.' +
+  #10 + #10 + '    If line_buffering is True, a c' +
+  'all to flush is implied when a cal' + 'l to' + #10 +
+  '    write contains a newline chara' + 'cter.' + #10 + '    """' + #10 +
+  #10;
+
+Const
+ Src__pyio_8: AnsiString =
+  '    _CHUNK_SIZE = 2048' + #10 + #10 +
+  '    # Initialize _buffer as soon a' +
+  's possible since it''s used by __de' + 'l__()' + #10 +
+  '    # which calls close()' + #10 + '    _buffer = None' + #10 + #10 +
+  '    # The write_through argument h' + 'as no effect here since this' +
+  #10 + '    # implementation always writes' +
+  ' through.  The argument is present' + ' only' + #10 +
+  '    # so that the signature can ma' +
+  'tch the signature of the C version' + '.' + #10 +
+  '    def __init__(self, buffer, enc' +
+  'oding=None, errors=None, newline=N' + 'one,' + #10 +
+  '                 line_buffering=Fa' + 'lse, write_through=False):' + #10 +
+  '        self._check_newline(newlin' + 'e)' + #10 +
+  '        if encoding is None:' + #10 + '            try:' + #10 +
+  '                encoding = os.devi' + 'ce_encoding(buffer.fileno())' +
+  #10 + '            except (AttributeError' + ', UnsupportedOperation):' +
+  #10 + '                pass' + #10 + '            if encoding is None:' +
+  #10 + '                try:' + #10 + '                    import locale' +
+  #10 + '                except ImportError' + ':' + #10 +
+  '                    # Importing lo' +
+  'cale may fail if Python is being b' + 'uilt' + #10 +
+  '                    encoding = "as' + 'cii"' + #10 +
+  '                else:' + #10 + '                    encoding = loc' +
+  'ale.getpreferredencoding(False)' + #10 + #10 +
+  '        if not isinstance(encoding' + ', str):' + #10 +
+  '            raise ValueError("inva' + 'lid encoding: %r" % encoding)' +
+  #10 + #10 + '        if not codecs.lookup(encod' +
+  'ing)._is_text_encoding:' + #10 + '            msg = ("%r is not a te' +
+  'xt encoding; "' + #10 + '                   "use codecs.ope' +
+  'n() to handle arbitrary codecs")' + #10 +
+  '            raise LookupError(msg ' + '% encoding)' + #10 + #10 +
+  '        if errors is None:' + #10 + '            errors = "strict"' + #10 +
+  '        else:' + #10 + '            if not isinstance(erro' + 'rs, str):' +
+  #10 + '                raise ValueError("' +
+  'invalid errors: %r" % errors)' + #10 + #10 +
+  '        self._buffer = buffer' + #10 +
+  '        self._decoded_chars = ''''  ' +
+  '# buffer for text returned from de' + 'coder' + #10 +
+  '        self._decoded_chars_used =' +
+  ' 0  # offset into _decoded_chars f' + 'or read()' + #10 +
+  '        self._snapshot = None  # i' +
+  'nfo for reconstructing decoder sta' + 'te' + #10 +
+  '        self._seekable = self._tel' + 'ling = self.buffer.seekable()' +
+  #10 + '        self._has_read1 = hasattr(' + 'self.buffer, ''read1'')' +
+  #10 + '        self._configure(encoding, ' + 'errors, newline,' + #10 +
+  '                        line_buffe' + 'ring, write_through)' + #10 + #10 +
+  '    def _check_newline(self, newli' + 'ne):' + #10 +
+  '        if newline is not None and' + ' not isinstance(newline, str):' +
+  #10 + '            raise TypeError("illeg' +
+  'al newline type: %r" % (type(newli' + 'ne),))' + #10 +
+  '        if newline not in (None, "' + '", "\n", "\r", "\r\n"):' + #10 +
+  '            raise ValueError("ille' +
+  'gal newline value: %r" % (newline,' + '))' + #10 + #10 +
+  '    def _configure(self, encoding=' + 'None, errors=None, newline=None,' +
+  #10 + '                   line_buffering=' +
+  'False, write_through=False):' + #10 + '        self._encoding = encoding' +
+  #10 + '        self._errors = errors' + #10 +
+  '        self._encoder = None' + #10 + '        self._decoder = None' +
+  #10 + '        self._b2cratio = 0.0' + #10 + #10 +
+  '        self._readuniversal = not ' + 'newline' + #10 +
+  '        self._readtranslate = newl' + 'ine is None' + #10 +
+  '        self._readnl = newline' + #10 +
+  '        self._writetranslate = new' + 'line != ''''' + #10 +
+  '        self._writenl = newline or' + ' os.linesep' + #10 + #10 +
+  '        self._line_buffering = lin' + 'e_buffering' + #10 +
+  '        self._write_through = writ' + 'e_through' + #10 + #10 +
+  '        # don''t write a BOM in the' + ' middle of a file' + #10 +
+  '        if self._seekable and self' + '.writable():' + #10 +
+  '            position = self.buffer' + '.tell()' + #10 +
+  '            if position != 0:' + #10 + '                try:' + #10 +
+  '                    self._get_enco' + 'der().setstate(0)' + #10 +
+  '                except LookupError' + ':' + #10 +
+  '                    # Sometimes th' + 'e encoder doesn''t exist' + #10 +
+  '                    pass' + #10 + #10 +
+  '    # self._snapshot is either Non' +
+  'e, or a tuple (dec_flags, next_inp' + 'ut)' + #10 +
+  '    # where dec_flags is the secon' +
+  'd (integer) item of the decoder st' + 'ate' + #10 +
+  '    # and next_input is the chunk ' +
+  'of input bytes that comes next aft' + 'er the' + #10 +
+  '    # snapshot point.  We use this' +
+  ' to reconstruct decoder states in ' + 'tell().' + #10 + #10 +
+  '    # Naming convention:' + #10 + '    #   - "bytes_..." for integer ' +
+  'variables that count input bytes' + #10 +
+  '    #   - "chars_..." for integer ' +
+  'variables that count decoded chara' + 'cters' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        result = "<{}.{}".format(s' +
+  'elf.__class__.__module__,' + #10 + '                                 s' +
+  'elf.__class__.__qualname__)' + #10 + '        try:' + #10 +
+  '            name = self.name' + #10 + '        except AttributeError:' +
+  #10 + '            pass' + #10 + '        else:' + #10 +
+  '            result += " name={0!r}' + '".format(name)' + #10 +
+  '        try:' + #10 + '            mode = self.mode' + #10 +
+  '        except AttributeError:' + #10 + '            pass' + #10 +
+  '        else:' + #10 + '            result += " mode={0!r}' +
+  '".format(mode)' + #10 + '        return result + " encoding' +
+  '={0!r}>".format(self.encoding)' + #10 + #10 + '    @property' + #10 +
+  '    def encoding(self):' + #10 + '        return self._encoding' + #10 +
+  #10 + '    @property' + #10 + '    def errors(self):' + #10 +
+  '        return self._errors' + #10 + #10 + '    @property' + #10 +
+  '    def line_buffering(self):' + #10 +
+  '        return self._line_bufferin' + 'g' + #10 + #10 + '    @property' +
+  #10 + '    def write_through(self):' + #10 +
+  '        return self._write_through' + #10 + #10 + '    @property' + #10 +
+  '    def buffer(self):' + #10 + '        return self._buffer' + #10 + #10 +
+  '    def reconfigure(self, *,' + #10 +
+  '                    encoding=None,' + ' errors=None, newline=Ellipsis,' +
+  #10 + '                    line_buffering' + '=None, write_through=None):' +
+  #10 + '        """Reconfigure the text st' + 'ream with new parameters.' +
+  #10 + #10 + '        This also flushes the stre' + 'am.' + #10 +
+  '        """' + #10 + '        if (self._decoder is not N' + 'one' + #10 +
+  '                and (encoding is n' + 'ot None or errors is not None' +
+  #10 + '                     or newline is' + ' not Ellipsis)):' + #10 +
+  '            raise UnsupportedOpera' + 'tion(' + #10 +
+  '                "It is not possibl' +
+  'e to set the encoding or newline o' + 'f stream "' + #10 +
+  '                "after the first r' + 'ead")' + #10 + #10 +
+  '        if errors is None:' + #10 + '            if encoding is None:' +
+  #10 + '                errors = self._err' + 'ors' + #10 +
+  '            else:' + #10 + '                errors = ''strict''' + #10 +
+  '        elif not isinstance(errors' + ', str):' + #10 +
+  '            raise TypeError("inval' + 'id errors: %r" % errors)' + #10 +
+  #10 + '        if encoding is None:' + #10 +
+  '            encoding = self._encod' + 'ing' + #10 + '        else:' + #10 +
+  '            if not isinstance(enco' + 'ding, str):' + #10 +
+  '                raise TypeError("i' + 'nvalid encoding: %r" % encoding)' +
+  #10 + #10 + '        if newline is Ellipsis:' + #10 +
+  '            newline = self._readnl' + #10 +
+  '        self._check_newline(newlin' + 'e)' + #10 + #10 +
+  '        if line_buffering is None:' + #10 +
+  '            line_buffering = self.' + 'line_buffering' + #10 +
+  '        if write_through is None:' + #10 +
+  '            write_through = self.w' + 'rite_through' + #10 + #10 +
+  '        self.flush()' + #10 + '        self._configure(encoding, ' +
+  'errors, newline,' + #10 + '                        line_buffe' +
+  'ring, write_through)' + #10 + #10 + '    def seekable(self):' + #10 +
+  '        if self.closed:' + #10 + '            raise ValueError("I/O ' +
+  'operation on closed file.")' + #10 + '        return self._seekable' +
+  #10 + #10 + '    def readable(self):' + #10 +
+  '        return self.buffer.readabl' + 'e()' + #10 + #10 +
+  '    def writable(self):' + #10 + '        return self.buffer.writabl' +
+  'e()' + #10 + #10 + '    def flush(self):' + #10 +
+  '        self.buffer.flush()' + #10 + '        self._telling = self._seek' +
+  'able' + #10 + #10 + '    def close(self):' + #10 +
+  '        if self.buffer is not None' + ' and not self.closed:' + #10 +
+  '            try:' + #10 + '                self.flush()' + #10 +
+  '            finally:' + #10 + '                self.buffer.close(' + ')' +
+  #10 + #10 + '    @property' + #10 + '    def closed(self):' + #10 +
+  '        return self.buffer.closed' + #10 + #10 + '    @property' + #10 +
+  '    def name(self):' + #10 + '        return self.buffer.name' + #10 +
+  #10 + '    def fileno(self):' + #10 + '        return self.buffer.fileno(' +
+  ')' + #10 + #10 + '    def isatty(self):' + #10 +
+  '        return self.buffer.isatty(' + ')' + #10 + #10 +
+  '    def write(self, s):' + #10 + '        ''Write data, where s is a ' +
+  'str''' + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("writ' + 'e to closed file")' + #10 +
+  '        if not isinstance(s, str):' + #10 +
+  '            raise TypeError("can''t' + ' write %s to text stream" %' +
+  #10 + '                            s.__cl' + 'ass__.__name__)' + #10 +
+  '        length = len(s)' + #10 + '        haslf = (self._writetransl' +
+  'ate or self._line_buffering) and "' + '\n" in s' + #10 +
+  '        if haslf and self._writetr' +
+  'anslate and self._writenl != "\n":' + #10 +
+  '            s = s.replace("\n", se' + 'lf._writenl)' + #10 +
+  '        encoder = self._encoder or' + ' self._get_encoder()' + #10 +
+  '        # XXX What if we were just' + ' reading?' + #10 +
+  '        b = encoder.encode(s)' + #10 + '        self.buffer.write(b)' +
+  #10 + '        if self._line_buffering an' + 'd (haslf or "\r" in s):' +
+  #10 + '            self.flush()' + #10 +
+  '        self._set_decoded_chars(''''' + ')' + #10 +
+  '        self._snapshot = None' + #10 + '        if self._decoder:' + #10 +
+  '            self._decoder.reset()' + #10 + '        return length' + #10 +
+  #10 + '    def _get_encoder(self):' + #10 +
+  '        make_encoder = codecs.geti' + 'ncrementalencoder(self._encoding)' +
+  #10 + '        self._encoder = make_encod' + 'er(self._errors)' + #10 +
+  '        return self._encoder' + #10 + #10 + '    def _get_decoder(self):' +
+  #10 + '        make_decoder = codecs.geti' +
+  'ncrementaldecoder(self._encoding)' + #10 +
+  '        decoder = make_decoder(sel' + 'f._errors)' + #10 +
+  '        if self._readuniversal:' + #10 +
+  '            decoder = IncrementalN' +
+  'ewlineDecoder(decoder, self._readt' + 'ranslate)' + #10 +
+  '        self._decoder = decoder' + #10 + '        return decoder' + #10 +
+  #10 + '    # The following three methods ' +
+  'implement an ADT for _decoded_char' + 's.' + #10 +
+  '    # Text returned from the decod' +
+  'er is buffered here until the clie' + 'nt' + #10 +
+  '    # requests it by calling our r' + 'ead() or readline() method.' + #10 +
+  '    def _set_decoded_chars(self, c' + 'hars):' + #10 +
+  '        """Set the _decoded_chars ' + 'buffer."""' + #10 +
+  '        self._decoded_chars = char' + 's' + #10 +
+  '        self._decoded_chars_used =' + ' 0' + #10 + #10 +
+  '    def _get_decoded_chars(self, n' + '=None):' + #10;
+
+Const
+ Src__pyio_9: AnsiString =
+  '        """Advance into the _decod' + 'ed_chars buffer."""' + #10 +
+  '        offset = self._decoded_cha' + 'rs_used' + #10 +
+  '        if n is None:' + #10 + '            chars = self._decoded_' +
+  'chars[offset:]' + #10 + '        else:' + #10 +
+  '            chars = self._decoded_' + 'chars[offset:offset + n]' + #10 +
+  '        self._decoded_chars_used +' + '= len(chars)' + #10 +
+  '        return chars' + #10 + #10 + '    def _rewind_decoded_chars(self' +
+  ', n):' + #10 + '        """Rewind the _decoded_cha' + 'rs buffer."""' +
+  #10 + '        if self._decoded_chars_use' + 'd < n:' + #10 +
+  '            raise AssertionError("' +
+  'rewind decoded_chars out of bounds' + '")' + #10 +
+  '        self._decoded_chars_used -' + '= n' + #10 + #10 +
+  '    def _read_chunk(self):' + #10 + '        """' + #10 +
+  '        Read and decode the next c' +
+  'hunk of data from the BufferedRead' + 'er.' + #10 + '        """' + #10 +
+  #10 + '        # The return value is True' +
+  ' unless EOF was reached.  The deco' + 'ded' + #10 +
+  '        # string is placed in self' +
+  '._decoded_chars (replacing its pre' + 'vious' + #10 +
+  '        # value).  The entire inpu' +
+  't chunk is sent to the decoder, th' + 'ough' + #10 +
+  '        # some of it may remain bu' + 'ffered in the decoder, yet to be' +
+  #10 + '        # converted.' + #10 + #10 +
+  '        if self._decoder is None:' + #10 +
+  '            raise ValueError("no d' + 'ecoder")' + #10 + #10 +
+  '        if self._telling:' + #10 + '            # To prepare for tell(' +
+  '), we need to snapshot a point in ' + 'the' + #10 +
+  '            # file where the decod' + 'er''s input buffer is empty.' +
+  #10 + #10 + '            dec_buffer, dec_flags ' +
+  '= self._decoder.getstate()' + #10 + '            # Given this, we know ' +
+  'there was a valid snapshot point' + #10 +
+  '            # len(dec_buffer) byte' +
+  's ago with decoder state (b'''', dec' + '_flags).' + #10 + #10 +
+  '        # Read a chunk, decode it,' +
+  ' and put the result in self._decod' + 'ed_chars.' + #10 +
+  '        if self._has_read1:' + #10 + '            input_chunk = self.buf' +
+  'fer.read1(self._CHUNK_SIZE)' + #10 + '        else:' + #10 +
+  '            input_chunk = self.buf' + 'fer.read(self._CHUNK_SIZE)' + #10 +
+  '        eof = not input_chunk' + #10 +
+  '        decoded_chars = self._deco' + 'der.decode(input_chunk, eof)' +
+  #10 + '        self._set_decoded_chars(de' + 'coded_chars)' + #10 +
+  '        if decoded_chars:' + #10 + '            self._b2cratio = len(i' +
+  'nput_chunk) / len(self._decoded_ch' + 'ars)' + #10 + '        else:' +
+  #10 + '            self._b2cratio = 0.0' + #10 + #10 +
+  '        if self._telling:' + #10 + '            # At the snapshot poin' +
+  't, len(dec_buffer) bytes before th' + 'e read,' + #10 +
+  '            # the next input to be' +
+  ' decoded is dec_buffer + input_chu' + 'nk.' + #10 +
+  '            self._snapshot = (dec_' + 'flags, dec_buffer + input_chunk)' +
+  #10 + #10 + '        return not eof' + #10 + #10 +
+  '    def _pack_cookie(self, positio' + 'n, dec_flags=0,' + #10 +
+  '                           bytes_t' +
+  'o_feed=0, need_eof=0, chars_to_ski' + 'p=0):' + #10 +
+  '        # The meaning of a tell() ' +
+  'cookie is: seek to position, set t' + 'he' + #10 +
+  '        # decoder flags to dec_fla' +
+  'gs, read bytes_to_feed bytes, feed' + ' them' + #10 +
+  '        # into the decoder with ne' + 'ed_eof as the EOF flag, then skip' +
+  #10 + '        # chars_to_skip characters' +
+  ' of the decoded result.  For most ' + 'simple' + #10 +
+  '        # decoders, tell() will of' +
+  'ten just give a byte offset in the' + ' file.' + #10 +
+  '        return (position | (dec_fl' + 'ags<<64) | (bytes_to_feed<<128) |' +
+  #10 + '               (chars_to_skip<<192' + ') | bool(need_eof)<<256)' +
+  #10 + #10 + '    def _unpack_cookie(self, bigin' + 't):' + #10 +
+  '        rest, position = divmod(bi' + 'gint, 1<<64)' + #10 +
+  '        rest, dec_flags = divmod(r' + 'est, 1<<64)' + #10 +
+  '        rest, bytes_to_feed = divm' + 'od(rest, 1<<64)' + #10 +
+  '        need_eof, chars_to_skip = ' + 'divmod(rest, 1<<64)' + #10 +
+  '        return position, dec_flags' +
+  ', bytes_to_feed, need_eof, chars_t' + 'o_skip' + #10 + #10 +
+  '    def tell(self):' + #10 + '        if not self._seekable:' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion("underlying stream is not see' + 'kable")' + #10 +
+  '        if not self._telling:' + #10 +
+  '            raise OSError("telling' +
+  ' position disabled by next() call"' + ')' + #10 + '        self.flush()' +
+  #10 + '        position = self.buffer.tel' + 'l()' + #10 +
+  '        decoder = self._decoder' + #10 +
+  '        if decoder is None or self' + '._snapshot is None:' + #10 +
+  '            if self._decoded_chars' + ':' + #10 +
+  '                # This should neve' + 'r happen.' + #10 +
+  '                raise AssertionErr' + 'or("pending decoded text")' + #10 +
+  '            return position' + #10 + #10 +
+  '        # Skip backward to the sna' + 'pshot point (see _read_chunk).' +
+  #10 + '        dec_flags, next_input = se' + 'lf._snapshot' + #10 +
+  '        position -= len(next_input' + ')' + #10 + #10 +
+  '        # How many decoded charact' +
+  'ers have been used up since the sn' + 'apshot?' + #10 +
+  '        chars_to_skip = self._deco' + 'ded_chars_used' + #10 +
+  '        if chars_to_skip == 0:' + #10 +
+  '            # We haven''t moved fro' + 'm the snapshot point.' + #10 +
+  '            return self._pack_cook' + 'ie(position, dec_flags)' + #10 +
+  #10 + '        # Starting from the snapsh' +
+  'ot position, we will walk the deco' + 'der' + #10 +
+  '        # forward until it gives u' + 's enough decoded characters.' +
+  #10 + '        saved_state = decoder.gets' + 'tate()' + #10 +
+  '        try:' + #10 + '            # Fast search for an a' +
+  'cceptable start point, close to ou' + 'r' + #10 +
+  '            # current pos.' + #10 + '            # Rationale: calling d' +
+  'ecoder.decode() has a large overhe' + 'ad' + #10 +
+  '            # regardless of chunk ' +
+  'size; we want the number of such c' + 'alls to' + #10 +
+  '            # be O(1) in most situ' +
+  'ations (common decoders, sensible ' + 'input).' + #10 +
+  '            # Actually, it will be' +
+  ' exactly 1 for fixed-size codecs (' + 'all' + #10 +
+  '            # 8-bit codecs, also U' + 'TF-16 and UTF-32).' + #10 +
+  '            skip_bytes = int(self.' + '_b2cratio * chars_to_skip)' + #10 +
+  '            skip_back = 1' + #10 + '            assert skip_bytes <= l' +
+  'en(next_input)' + #10 + '            while skip_bytes > 0:' + #10 +
+  '                decoder.setstate((' + 'b'''', dec_flags))' + #10 +
+  '                # Decode up to tem' + 'ptative start point' + #10 +
+  '                n = len(decoder.de' + 'code(next_input[:skip_bytes]))' +
+  #10 + '                if n <= chars_to_s' + 'kip:' + #10 +
+  '                    b, d = decoder' + '.getstate()' + #10 +
+  '                    if not b:' + #10 +
+  '                        # Before p' +
+  'os and no bytes buffered in decode' + 'r => OK' + #10 +
+  '                        dec_flags ' + '= d' + #10 +
+  '                        chars_to_s' + 'kip -= n' + #10 +
+  '                        break' + #10 +
+  '                    # Skip back by' +
+  ' buffered amount and reset heurist' + 'ic' + #10 +
+  '                    skip_bytes -= ' + 'len(b)' + #10 +
+  '                    skip_back = 1' + #10 + '                else:' + #10 +
+  '                    # We''re too fa' + 'r ahead, skip back a bit' + #10 +
+  '                    skip_bytes -= ' + 'skip_back' + #10 +
+  '                    skip_back = sk' + 'ip_back * 2' + #10 +
+  '            else:' + #10 + '                skip_bytes = 0' + #10 +
+  '                decoder.setstate((' + 'b'''', dec_flags))' + #10 + #10 +
+  '            # Note our initial sta' + 'rt point.' + #10 +
+  '            start_pos = position +' + ' skip_bytes' + #10 +
+  '            start_flags = dec_flag' + 's' + #10 +
+  '            if chars_to_skip == 0:' + #10 +
+  '                # We haven''t moved' + ' from the start point.' + #10 +
+  '                return self._pack_' + 'cookie(start_pos, start_flags)' +
+  #10 + #10 + '            # Feed the decoder one' +
+  ' byte at a time.  As we go, note t' + 'he' + #10 +
+  '            # nearest "safe start ' +
+  'point" before the current location' + #10 +
+  '            # (a point where the d' +
+  'ecoder has nothing buffered, so se' + 'ek()' + #10 +
+  '            # can safely start fro' +
+  'm there and advance to this locati' + 'on).' + #10 +
+  '            bytes_fed = 0' + #10 + '            need_eof = 0' + #10 +
+  '            # Chars decoded since ' + '`start_pos`' + #10 +
+  '            chars_decoded = 0' + #10 +
+  '            for i in range(skip_by' + 'tes, len(next_input)):' + #10 +
+  '                bytes_fed += 1' + #10 +
+  '                chars_decoded += l' +
+  'en(decoder.decode(next_input[i:i+1' + ']))' + #10 +
+  '                dec_buffer, dec_fl' + 'ags = decoder.getstate()' + #10 +
+  '                if not dec_buffer ' +
+  'and chars_decoded <= chars_to_skip' + ':' + #10 +
+  '                    # Decoder buff' +
+  'er is empty, so this is a safe sta' + 'rt point.' + #10 +
+  '                    start_pos += b' + 'ytes_fed' + #10 +
+  '                    chars_to_skip ' + '-= chars_decoded' + #10 +
+  '                    start_flags, b' +
+  'ytes_fed, chars_decoded = dec_flag' + 's, 0, 0' + #10 +
+  '                if chars_decoded >' + '= chars_to_skip:' + #10 +
+  '                    break' + #10 + '            else:' + #10 +
+  '                # We didn''t get en' +
+  'ough decoded data; signal EOF to g' + 'et more.' + #10 +
+  '                chars_decoded += l' +
+  'en(decoder.decode(b'''', final=True)' + ')' + #10 +
+  '                need_eof = 1' + #10 +
+  '                if chars_decoded <' + ' chars_to_skip:' + #10 +
+  '                    raise OSError(' +
+  '"can''t reconstruct logical file po' + 'sition")' + #10 + #10 +
+  '            # The returned cookie ' +
+  'corresponds to the last safe start' + ' point.' + #10 +
+  '            return self._pack_cook' + 'ie(' + #10 +
+  '                start_pos, start_f' +
+  'lags, bytes_fed, need_eof, chars_t' + 'o_skip)' + #10 +
+  '        finally:' + #10 + '            decoder.setstate(saved' +
+  '_state)' + #10 + #10 + '    def truncate(self, pos=None):' + #10 +
+  '        self.flush()' + #10 + '        if pos is None:' + #10 +
+  '            pos = self.tell()' + #10 +
+  '        return self.buffer.truncat' + 'e(pos)' + #10 + #10 +
+  '    def detach(self):' + #10 + '        if self.buffer is None:' + #10 +
+  '            raise ValueError("buff' + 'er is already detached")' + #10 +
+  '        self.flush()' + #10 + '        buffer = self._buffer' + #10 +
+  '        self._buffer = None' + #10 + '        return buffer' + #10 + #10 +
+  '    def seek(self, cookie, whence=' + '0):' + #10 +
+  '        def _reset_encoder(positio' + 'n):' + #10 +
+  '            """Reset the encoder (' +
+  'merely useful for proper BOM handl' + 'ing)"""' + #10 +
+  '            try:' + #10 + '                encoder = self._en' +
+  'coder or self._get_encoder()' + #10 + '            except LookupError:' +
+  #10 + '                # Sometimes the en' + 'coder doesn''t exist' + #10 +
+  '                pass' + #10 + '            else:' + #10 +
+  '                if position != 0:' + #10 +
+  '                    encoder.setsta' + 'te(0)' + #10 +
+  '                else:' + #10 + '                    encoder.reset(' + ')' +
+  #10 + #10 + '        if self.closed:' + #10 +
+  '            raise ValueError("tell' + ' on closed file")' + #10 +
+  '        if not self._seekable:' + #10 +
+  '            raise UnsupportedOpera' +
+  'tion("underlying stream is not see' + 'kable")' + #10 +
+  '        if whence == SEEK_CUR:' + #10 + '            if cookie != 0:' +
+  #10 + '                raise UnsupportedO' +
+  'peration("can''t do nonzero cur-rel' + 'ative seeks")' + #10 +
+  '            # Seeking to the curre' + 'nt position should attempt to' +
+  #10 + '            # sync the underlying ' +
+  'buffer with the current position.' + #10 + '            whence = 0' + #10 +
+  '            cookie = self.tell()' + #10 +
+  '        elif whence == SEEK_END:' + #10 + '            if cookie != 0:' +
+  #10 + '                raise UnsupportedO' +
+  'peration("can''t do nonzero end-rel' + 'ative seeks")' + #10 +
+  '            self.flush()' + #10 + '            position = self.buffer' +
+  '.seek(0, whence)' + #10 + '            self._set_decoded_char' +
+  's('''')' + #10 + '            self._snapshot = None' + #10 +
+  '            if self._decoder:' + #10 +
+  '                self._decoder.rese' + 't()' + #10 +
+  '            _reset_encoder(positio' + 'n)' + #10 +
+  '            return position' + #10 + '        if whence != 0:' + #10 +
+  '            raise ValueError("unsu' + 'pported whence (%r)" % (whence,))' +
+  #10 + '        if cookie < 0:' + #10 +
+  '            raise ValueError("nega' +
+  'tive seek position %r" % (cookie,)' + ')' + #10 + '        self.flush()' +
+  #10 + #10 + '        # The strategy of seek() i' +
+  's to go back to the safe start poi' + 'nt' + #10 +
+  '        # and replay the effect of' + ' read(chars_to_skip) from there.' +
+  #10 + '        start_pos, dec_flags, byte' +
+  's_to_feed, need_eof, chars_to_skip' + ' = \' + #10 +
+  '            self._unpack_cookie(co' + 'okie)' + #10 + #10 +
+  '        # Seek back to the safe st' + 'art point.' + #10 +
+  '        self.buffer.seek(start_pos' + ')' + #10 +
+  '        self._set_decoded_chars(''''' + ')' + #10 +
+  '        self._snapshot = None' + #10 + #10 +
+  '        # Restore the decoder to i' +
+  'ts state from the safe start point' + '.' + #10 +
+  '        if cookie == 0 and self._d' + 'ecoder:' + #10 +
+  '            self._decoder.reset()' + #10 +
+  '        elif self._decoder or dec_' + 'flags or chars_to_skip:' + #10 +
+  '            self._decoder = self._' + 'decoder or self._get_decoder()' +
+  #10 + '            self._decoder.setstate' + '((b'''', dec_flags))' + #10 +
+  '            self._snapshot = (dec_' + 'flags, b'''')' + #10 + #10 +
+  '        if chars_to_skip:' + #10 + '            # Just like _read_chun' +
+  'k, feed the decoder and save a sna' + 'pshot.' + #10 +
+  '            input_chunk = self.buf' + 'fer.read(bytes_to_feed)' + #10;
+
+Const
+ Src__pyio_10: AnsiString =
+  '            self._set_decoded_char' + 's(' + #10 +
+  '                self._decoder.deco' + 'de(input_chunk, need_eof))' + #10 +
+  '            self._snapshot = (dec_' + 'flags, input_chunk)' + #10 + #10 +
+  '            # Skip chars_to_skip o' + 'f the decoded characters.' + #10 +
+  '            if len(self._decoded_c' + 'hars) < chars_to_skip:' + #10 +
+  '                raise OSError("can' +
+  '''t restore logical file position")' + #10 +
+  '            self._decoded_chars_us' + 'ed = chars_to_skip' + #10 + #10 +
+  '        _reset_encoder(cookie)' + #10 + '        return cookie' + #10 +
+  #10 + '    def read(self, size=None):' + #10 +
+  '        self._checkReadable()' + #10 + '        if size is None:' + #10 +
+  '            size = -1' + #10 + '        else:' + #10 + '            try:' +
+  #10 + '                size_index = size.' + '__index__' + #10 +
+  '            except AttributeError:' + #10 +
+  '                raise TypeError(f"' + '{size!r} is not an integer")' +
+  #10 + '            else:' + #10 + '                size = size_index(' +
+  ')' + #10 + '        decoder = self._decoder or' + ' self._get_decoder()' +
+  #10 + '        if size < 0:' + #10 + '            # Read everything.' +
+  #10 + '            result = (self._get_de' + 'coded_chars() +' + #10 +
+  '                      decoder.deco' +
+  'de(self.buffer.read(), final=True)' + ')' + #10 +
+  '            self._set_decoded_char' + 's('''')' + #10 +
+  '            self._snapshot = None' + #10 + '            return result' +
+  #10 + '        else:' + #10 + '            # Keep reading chunks ' +
+  'until we have size characters to r' + 'eturn.' + #10 +
+  '            eof = False' + #10 + '            result = self._get_dec' +
+  'oded_chars(size)' + #10 + '            while len(result) < si' +
+  'ze and not eof:' + #10 + '                eof = not self._re' +
+  'ad_chunk()' + #10 + '                result += self._ge' +
+  't_decoded_chars(size - len(result)' + ')' + #10 +
+  '            return result' + #10 + #10 + '    def __next__(self):' + #10 +
+  '        self._telling = False' + #10 + '        line = self.readline()' +
+  #10 + '        if not line:' + #10 + '            self._snapshot = None' +
+  #10 + '            self._telling = self._' + 'seekable' + #10 +
+  '            raise StopIteration' + #10 + '        return line' + #10 +
+  #10 + '    def readline(self, size=None):' + #10 +
+  '        if self.closed:' + #10 + '            raise ValueError("read' +
+  ' from closed file")' + #10 + '        if size is None:' + #10 +
+  '            size = -1' + #10 + '        else:' + #10 + '            try:' +
+  #10 + '                size_index = size.' + '__index__' + #10 +
+  '            except AttributeError:' + #10 +
+  '                raise TypeError(f"' + '{size!r} is not an integer")' +
+  #10 + '            else:' + #10 + '                size = size_index(' +
+  ')' + #10 + #10 + '        # Grab all the decoded tex' +
+  't (we will rewind any extra bits l' + 'ater).' + #10 +
+  '        line = self._get_decoded_c' + 'hars()' + #10 + #10 +
+  '        start = 0' + #10 + '        # Make the decoder if it d' +
+  'oesn''t already exist.' + #10 + '        if not self._decoder:' + #10 +
+  '            self._get_decoder()' + #10 + #10 +
+  '        pos = endpos = None' + #10 + '        while True:' + #10 +
+  '            if self._readtranslate' + ':' + #10 +
+  '                # Newlines are alr' +
+  'eady translated, only search for \' + 'n' + #10 +
+  '                pos = line.find(''\' + 'n'', start)' + #10 +
+  '                if pos >= 0:' + #10 +
+  '                    endpos = pos +' + ' 1' + #10 +
+  '                    break' + #10 + '                else:' + #10 +
+  '                    start = len(li' + 'ne)' + #10 + #10 +
+  '            elif self._readunivers' + 'al:' + #10 +
+  '                # Universal newlin' +
+  'e search. Find any of \r, \r\n, \n' + #10 +
+  '                # The decoder ensu' +
+  'res that \r\n are not split in two' + ' pieces' + #10 + #10 +
+  '                # In C we''d look f' + 'or these in parallel of course.' +
+  #10 + '                nlpos = line.find(' + '"\n", start)' + #10 +
+  '                crpos = line.find(' + '"\r", start)' + #10 +
+  '                if crpos == -1:' + #10 +
+  '                    if nlpos == -1' + ':' + #10 +
+  '                        # Nothing ' + 'found' + #10 +
+  '                        start = le' + 'n(line)' + #10 +
+  '                    else:' + #10 + '                        # Found \n' +
+  #10 + '                        endpos = n' + 'lpos + 1' + #10 +
+  '                        break' + #10 +
+  '                elif nlpos == -1:' + #10 +
+  '                    # Found lone \' + 'r' + #10 +
+  '                    endpos = crpos' + ' + 1' + #10 +
+  '                    break' + #10 + '                elif nlpos < crpos' +
+  ':' + #10 + '                    # Found \n' + #10 +
+  '                    endpos = nlpos' + ' + 1' + #10 +
+  '                    break' + #10 + '                elif nlpos == crpo' +
+  's + 1:' + #10 + '                    # Found \r\n' + #10 +
+  '                    endpos = crpos' + ' + 2' + #10 +
+  '                    break' + #10 + '                else:' + #10 +
+  '                    # Found \r' + #10 +
+  '                    endpos = crpos' + ' + 1' + #10 +
+  '                    break' + #10 + '            else:' + #10 +
+  '                # non-universal' + #10 +
+  '                pos = line.find(se' + 'lf._readnl)' + #10 +
+  '                if pos >= 0:' + #10 +
+  '                    endpos = pos +' + ' len(self._readnl)' + #10 +
+  '                    break' + #10 + #10 +
+  '            if size >= 0 and len(l' + 'ine) >= size:' + #10 +
+  '                endpos = size  # r' + 'eached length size' + #10 +
+  '                break' + #10 + #10 + '            # No line ending seen ' +
+  'yet - get more data''' + #10 + '            while self._read_chunk' +
+  '():' + #10 + '                if self._decoded_c' + 'hars:' + #10 +
+  '                    break' + #10 + '            if self._decoded_chars' +
+  ':' + #10 + '                line += self._get_' + 'decoded_chars()' + #10 +
+  '            else:' + #10 + '                # end of file' + #10 +
+  '                self._set_decoded_' + 'chars('''')' + #10 +
+  '                self._snapshot = N' + 'one' + #10 +
+  '                return line' + #10 + #10 +
+  '        if size >= 0 and endpos > ' + 'size:' + #10 +
+  '            endpos = size  # don''t' + ' exceed size' + #10 + #10 +
+  '        # Rewind _decoded_chars to' +
+  ' just after the line ending we fou' + 'nd.' + #10 +
+  '        self._rewind_decoded_chars' + '(len(line) - endpos)' + #10 +
+  '        return line[:endpos]' + #10 + #10 + '    @property' + #10 +
+  '    def newlines(self):' + #10 + '        return self._decoder.newli' +
+  'nes if self._decoder else None' + #10 + #10 + #10 +
+  'class StringIO(TextIOWrapper):' + #10 +
+  '    """Text I/O implementation usi' + 'ng an in-memory buffer.' + #10 +
+  #10 + '    The initial_value argument set' +
+  's the value of object.  The newlin' + 'e' + #10 +
+  '    argument is like the one of Te' + 'xtIOWrapper''s constructor.' + #10 +
+  '    """' + #10 + #10 + '    def __init__(self, initial_val' +
+  'ue="", newline="\n"):' + #10 + '        super(StringIO, self).__in' +
+  'it__(BytesIO(),' + #10 + '                                  ' +
+  '     encoding="utf-8",' + #10 + '                                  ' +
+  '     errors="surrogatepass",' + #10 +
+  '                                  ' + '     newline=newline)' + #10 +
+  '        # Issue #5645: make univer' +
+  'sal newlines semantics the same as' + ' in the' + #10 +
+  '        # C version, even under Wi' + 'ndows.' + #10 +
+  '        if newline is None:' + #10 + '            self._writetranslate =' +
+  ' False' + #10 + '        if initial_value is not No' + 'ne:' + #10 +
+  '            if not isinstance(init' + 'ial_value, str):' + #10 +
+  '                raise TypeError("i' +
+  'nitial_value must be str or None, ' + 'not {0}"' + #10 +
+  '                                .f' +
+  'ormat(type(initial_value).__name__' + '))' + #10 +
+  '            self.write(initial_val' + 'ue)' + #10 +
+  '            self.seek(0)' + #10 + #10 + '    def getvalue(self):' + #10 +
+  '        self.flush()' + #10 + '        decoder = self._decoder or' +
+  ' self._get_decoder()' + #10 + '        old_state = decoder.getsta' +
+  'te()' + #10 + '        decoder.reset()' + #10 + '        try:' + #10 +
+  '            return decoder.decode(' +
+  'self.buffer.getvalue(), final=True' + ')' + #10 + '        finally:' +
+  #10 + '            decoder.setstate(old_s' + 'tate)' + #10 + #10 +
+  '    def __repr__(self):' + #10 + '        # TextIOWrapper tells the ' +
+  'encoding in its repr. In StringIO,' + #10 +
+  '        # that''s an implementation' + ' detail.' + #10 +
+  '        return object.__repr__(sel' + 'f)' + #10 + #10 + '    @property' +
+  #10 + '    def errors(self):' + #10 + '        return None' + #10 + #10 +
+  '    @property' + #10 + '    def encoding(self):' + #10 +
+  '        return None' + #10 + #10 + '    def detach(self):' + #10 +
+  '        # This doesn''t make sense ' + 'on StringIO.' + #10 +
+  '        self._unsupported("detach"' + ')' + #10 + #10;
+
+Function Src__pyio: AnsiString;
+Begin
+ Result := Src__pyio_0 + Src__pyio_1 + Src__pyio_2 + Src__pyio_3 +
+  Src__pyio_4 + Src__pyio_5 + Src__pyio_6 + Src__pyio_7 + Src__pyio_8 +
+  Src__pyio_9 + Src__pyio_10;
 End;
 
 Const
@@ -43620,300 +47509,12 @@ End;
 
 Const
  Src_collections_abc_0: AnsiString =
-  'from abc import ABCMeta, abstractm' + 'ethod' + #10 + #10 +
-  '__all__ = ["Awaitable", "Coroutine' +
-  '", "AsyncIterable", "AsyncIterator' +
-  '", "AsyncGenerator", "Hashable", "' +
-  'Iterable", "Iterator", "Generator"' +
-  ', "Reversible", "Sized", "Containe' +
-  'r", "Callable", "Collection", "Set' +
-  '", "MutableSet", "Mapping", "Mutab' +
-  'leMapping", "MappingView", "KeysVi' +
-  'ew", "ItemsView", "ValuesView", "S' +
-  'equence", "MutableSequence", "Byte' + 'String"]' + #10 + #10 +
-  'def _check_methods(C, *methods):' + #10 + '    mro = C.__mro__' + #10 +
-  '    for method in methods:' + #10 + '        for B in mro:' + #10 +
-  '            if method in B.__dict_' + '_:' + #10 +
-  '                if B.__dict__[meth' + 'od] is None:' + #10 +
-  '                    return NotImpl' + 'emented' + #10 +
-  '                break' + #10 + '        else:' + #10 +
-  '            return NotImplemented' + #10 + '    return True' + #10 + #10 +
-  'class Hashable(metaclass=ABCMeta):' + #10 + '    __slots__ = ()' + #10 +
-  #10 + '    @abstractmethod' + #10 + '    def __hash__(self):' + #10 +
-  '        return 0' + #10 + #10 + '    @classmethod' + #10 +
-  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Hashable:' +
-  #10 + '            return _check_methods(' + 'C, "__hash__")' + #10 +
-  '        return NotImplemented' + #10 + #10 +
-  'class Awaitable(metaclass=ABCMeta)' + ':' + #10 + '    __slots__ = ()' +
-  #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
-  '        if cls is Awaitable:' + #10 +
-  '            return _check_methods(' + 'C, "__await__")' + #10 +
-  '        return NotImplemented' + #10 + #10 +
-  'class Coroutine(Awaitable):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  'class AsyncIterable(metaclass=ABCM' + 'eta):' + #10 +
-  '    __slots__ = ()' + #10 + #10 + 'class AsyncIterator(AsyncIterable)' +
-  ':' + #10 + '    __slots__ = ()' + #10 + #10 +
-  'class AsyncGenerator(AsyncIterator' + '):' + #10 + '    __slots__ = ()' +
-  #10 + #10 + 'class Iterable(metaclass=ABCMeta):' + #10 +
-  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __iter__(self):' + #10 + '        while False:' + #10 +
-  '            yield None' + #10 + #10 + '    @classmethod' + #10 +
-  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Iterable:' +
-  #10 + '            return _check_methods(' + 'C, "__iter__")' + #10 +
-  '        return NotImplemented' + #10 + #10 + 'class Iterator(Iterable):' +
-  #10 + '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __next__(self):' + #10 + '        raise StopIteration' + #10 +
-  #10 + '    def __iter__(self):' + #10 + '        return self' + #10 + #10 +
-  '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
-  '        if cls is Iterator:' + #10 + '            return _check_methods(' +
-  'C, ''__iter__'', ''__next__'')' + #10 + '        return NotImplemented' +
-  #10 + #10 + 'class Reversible(Iterable):' + #10 + '    __slots__ = ()' +
-  #10 + #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' +
-  #10 + '        if cls is Reversible:' + #10 +
-  '            return _check_methods(' + 'C, "__reversed__", "__iter__")' +
-  #10 + '        return NotImplemented' + #10 + #10 +
-  'class Generator(Iterator):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  '    def __next__(self):' + #10 + '        return self.send(None)' + #10 +
-  #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, C):' + #10 +
-  '        if cls is Generator:' + #10 +
-  '            return _check_methods(' +
-  'C, ''__iter__'', ''__next__'', ''send'',' + ' ''throw'', ''close'')' +
-  #10 + '        return NotImplemented' + #10 + #10 +
-  'class Sized(metaclass=ABCMeta):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  '    @abstractmethod' + #10 + '    def __len__(self):' + #10 +
-  '        return 0' + #10 + #10 + '    @classmethod' + #10 +
-  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Sized:' +
-  #10 + '            return _check_methods(' + 'C, "__len__")' + #10 +
-  '        return NotImplemented' + #10 + #10 +
-  'class Container(metaclass=ABCMeta)' + ':' + #10 + '    __slots__ = ()' +
-  #10 + #10 + '    @abstractmethod' + #10 + '    def __contains__(self, x):' +
-  #10 + '        return False' + #10 + #10 + '    @classmethod' + #10 +
-  '    def __subclasshook__(cls, C):' + #10 + '        if cls is Container:' +
-  #10 + '            return _check_methods(' + 'C, "__contains__")' + #10 +
-  '        return NotImplemented' + #10 + #10 +
-  'class Collection(Sized, Iterable, ' + 'Container):' + #10 +
-  '    __slots__ = ()' + #10 + #10 + '    @classmethod' + #10 +
-  '    def __subclasshook__(cls, C):' + #10 +
-  '        if cls is Collection:' + #10 +
-  '            return _check_methods(' +
-  'C, "__len__", "__iter__", "__conta' + 'ins__")' + #10 +
-  '        return NotImplemented' + #10 + #10 +
-  'class Callable(metaclass=ABCMeta):' + #10 + '    __slots__ = ()' + #10 +
-  #10 + '    @abstractmethod' + #10 + '    def __call__(self, *args, **kw' +
-  'ds):' + #10 + '        return False' + #10 + #10 + '    @classmethod' +
-  #10 + '    def __subclasshook__(cls, C):' + #10 +
-  '        if cls is Callable:' + #10 + '            return _check_methods(' +
-  'C, "__call__")' + #10 + '        return NotImplemented' + #10 + #10 +
-  'class Set(Collection):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  '    def __le__(self, other):' + #10 +
-  '        if not isinstance(other, S' + 'et):' + #10 +
-  '            return NotImplemented' + #10 +
-  '        if len(self) > len(other):' + #10 + '            return False' +
-  #10 + '        for elem in self:' + #10 +
-  '            if elem not in other:' + #10 + '                return False' +
-  #10 + '        return True' + #10 + #10 + '    def __lt__(self, other):' +
-  #10 + '        if not isinstance(other, S' + 'et):' + #10 +
-  '            return NotImplemented' + #10 +
-  '        return len(self) < len(oth' + 'er) and self.__le__(other)' + #10 +
-  #10 + '    def __eq__(self, other):' + #10 +
-  '        if not isinstance(other, S' + 'et):' + #10 +
-  '            return NotImplemented' + #10 +
-  '        return len(self) == len(ot' + 'her) and self.__le__(other)' + #10 +
-  #10 + '    @classmethod' + #10 + '    def _from_iterable(cls, it):' + #10 +
-  '        return cls(it)' + #10 + #10 + '    def __and__(self, other):' +
-  #10 + '        if not isinstance(other, I' + 'terable):' + #10 +
-  '            return NotImplemented' + #10 +
-  '        return self._from_iterable' +
-  '(value for value in other if value' + ' in self)' + #10 + #10 +
-  '    __rand__ = __and__' + #10 + #10 + '    def isdisjoint(self, other):' +
-  #10 + '        for value in other:' + #10 +
-  '            if value in self:' + #10 + '                return False' +
-  #10 + '        return True' + #10 + #10 + '    def __or__(self, other):' +
-  #10 + '        if not isinstance(other, I' + 'terable):' + #10 +
-  '            return NotImplemented' + #10 +
-  '        chain = (e for s in (self,' + ' other) for e in s)' + #10 +
-  '        return self._from_iterable' + '(chain)' + #10 + #10 +
-  '    __ror__ = __or__' + #10 + #10 + '    def __sub__(self, other):' + #10 +
-  '        if not isinstance(other, S' + 'et):' + #10 +
-  '            if not isinstance(othe' + 'r, Iterable):' + #10 +
-  '                return NotImplemen' + 'ted' + #10 +
-  '            other = self._from_ite' + 'rable(other)' + #10 +
-  '        return self._from_iterable' +
-  '(value for value in self if value ' + 'not in other)' + #10 + #10 +
-  '    def __xor__(self, other):' + #10 +
-  '        if not isinstance(other, S' + 'et):' + #10 +
-  '            if not isinstance(othe' + 'r, Iterable):' + #10 +
-  '                return NotImplemen' + 'ted' + #10 +
-  '            other = self._from_ite' + 'rable(other)' + #10 +
-  '        return (self - other) | (o' + 'ther - self)' + #10 + #10 +
-  'class MutableSet(Set):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  '    def clear(self):' + #10 + '        try:' + #10 +
-  '            while True:' + #10 + '                self.pop()' + #10 +
-  '        except KeyError:' + #10 + '            pass' + #10 + #10 +
-  '    def pop(self):' + #10 + '        it = iter(self)' + #10 +
-  '        try:' + #10 + '            value = next(it)' + #10 +
-  '        except StopIteration:' + #10 +
-  '            raise KeyError from No' + 'ne' + #10 +
-  '        self.discard(value)' + #10 + '        return value' + #10 + #10 +
-  '    def remove(self, value):' + #10 + '        if value not in self:' +
-  #10 + '            raise KeyError(value)' + #10 +
-  '        self.discard(value)' + #10 + #10 + 'class Mapping(Collection):' +
-  #10 + '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __getitem__(self, key):' + #10 + '        raise KeyError' + #10 +
-  #10 + '    def get(self, key, default=Non' + 'e):' + #10 + '        try:' +
-  #10 + '            return self[key]' + #10 + '        except KeyError:' +
-  #10 + '            return default' + #10 + #10 +
-  '    def __contains__(self, key):' + #10 + '        try:' + #10 +
-  '            self[key]' + #10;
-
-Const
- Src_collections_abc_1: AnsiString =
-  '        except KeyError:' + #10 + '            return False' + #10 +
-  '        else:' + #10 + '            return True' + #10 + #10 +
-  '    def keys(self):' + #10 + '        return KeysView(self)' + #10 + #10 +
-  '    def items(self):' + #10 + '        return ItemsView(self)' + #10 +
-  #10 + '    def values(self):' + #10 + '        return ValuesView(self)' +
-  #10 + #10 + '    def __eq__(self, other):' + #10 +
-  '        if not isinstance(other, M' + 'apping):' + #10 +
-  '            return NotImplemented' + #10 +
-  '        return dict(self.items()) ' + '== dict(other.items())' + #10 +
-  #10 + 'class MappingView(Sized):' + #10 +
-  '    __slots__ = (''_mapping'',)' + #10 + #10 +
-  '    def __init__(self, mapping):' + #10 +
-  '        self._mapping = mapping' + #10 + #10 + '    def __len__(self):' +
-  #10 + '        return len(self._mapping)' + #10 + #10 +
-  '    def __repr__(self):' + #10 + '        return ''{0.__class__.__nam' +
-  'e__}({0._mapping!r})''.format(self)' + #10 + #10 +
-  'class KeysView(MappingView, Set):' + #10 + '    __slots__ = ()' + #10 +
-  #10 + '    @classmethod' + #10 + '    def _from_iterable(self, it):' + #10 +
-  '        return set(it)' + #10 + #10 + '    def __contains__(self, key):' +
-  #10 + '        return key in self._mappin' + 'g' + #10 + #10 +
-  '    def __iter__(self):' + #10 + '        yield from self._mapping' + #10 +
-  #10 + 'class ItemsView(MappingView, Set):' + #10 + '    __slots__ = ()' +
-  #10 + #10 + '    @classmethod' + #10 + '    def _from_iterable(self, it):' +
-  #10 + '        return set(it)' + #10 + #10 +
-  '    def __contains__(self, item):' + #10 + '        key, value = item' +
-  #10 + '        try:' + #10 + '            v = self._mapping[key]' + #10 +
-  '        except KeyError:' + #10 + '            return False' + #10 +
-  '        else:' + #10 + '            return v is value or v' + ' == value' +
-  #10 + #10 + '    def __iter__(self):' + #10 +
-  '        for key in self._mapping:' + #10 +
-  '            yield (key, self._mapp' + 'ing[key])' + #10 + #10 +
-  'class ValuesView(MappingView, Coll' + 'ection):' + #10 +
-  '    __slots__ = ()' + #10 + #10 + '    def __contains__(self, value):' +
-  #10 + '        for key in self._mapping:' + #10 +
-  '            v = self._mapping[key]' + #10 +
-  '            if v is value or v == ' + 'value:' + #10 +
-  '                return True' + #10 + '        return False' + #10 + #10 +
-  '    def __iter__(self):' + #10 + '        for key in self._mapping:' +
-  #10 + '            yield self._mapping[ke' + 'y]' + #10 + #10 +
-  'class MutableMapping(Mapping):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  '    @abstractmethod' + #10 + '    def __setitem__(self, key, val' +
-  'ue):' + #10 + '        raise KeyError' + #10 + #10 +
-  '    @abstractmethod' + #10 + '    def __delitem__(self, key):' + #10 +
-  '        raise KeyError' + #10 + #10 + '    __marker = object()' + #10 +
-  #10 + '    def pop(self, key, default=__m' + 'arker):' + #10 +
-  '        try:' + #10 + '            value = self[key]' + #10 +
-  '        except KeyError:' + #10 + '            if default is self.__m' +
-  'arker:' + #10 + '                raise' + #10 +
-  '            return default' + #10 + '        else:' + #10 +
-  '            del self[key]' + #10 + '            return value' + #10 + #10 +
-  '    def popitem(self):' + #10 + '        try:' + #10 +
-  '            key = next(iter(self))' + #10 +
-  '        except StopIteration:' + #10 +
-  '            raise KeyError from No' + 'ne' + #10 +
-  '        value = self[key]' + #10 + '        del self[key]' + #10 +
-  '        return key, value' + #10 + #10 + '    def clear(self):' + #10 +
-  '        try:' + #10 + '            while True:' + #10 +
-  '                self.popitem()' + #10 + '        except KeyError:' + #10 +
-  '            pass' + #10 + #10 + '    def update(self, other=(), **k' +
-  'wds):' + #10 + '        if isinstance(other, Mappi' + 'ng):' + #10 +
-  '            for key in other:' + #10 +
-  '                self[key] = other[' + 'key]' + #10 +
-  '        elif hasattr(other, "keys"' + '):' + #10 +
-  '            for key in other.keys(' + '):' + #10 +
-  '                self[key] = other[' + 'key]' + #10 + '        else:' +
-  #10 + '            for key, value in othe' + 'r:' + #10 +
-  '                self[key] = value' + #10 +
-  '        for key, value in kwds.ite' + 'ms():' + #10 +
-  '            self[key] = value' + #10 + #10 +
-  '    def setdefault(self, key, defa' + 'ult=None):' + #10 + '        try:' +
-  #10 + '            return self[key]' + #10 + '        except KeyError:' +
-  #10 + '            self[key] = default' + #10 + '        return default' +
-  #10 + #10 + 'class Sequence(Reversible, Collect' + 'ion):' + #10 +
-  '    __slots__ = ()' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def __getitem__(self, index):' + #10 + '        raise IndexError' +
-  #10 + #10 + '    def __iter__(self):' + #10 + '        i = 0' + #10 +
-  '        try:' + #10 + '            while True:' + #10 +
-  '                v = self[i]' + #10 + '                yield v' + #10 +
-  '                i += 1' + #10 + '        except IndexError:' + #10 +
-  '            return' + #10 + #10 + '    def __contains__(self, value):' +
-  #10 + '        for v in self:' + #10 +
-  '            if v is value or v == ' + 'value:' + #10 +
-  '                return True' + #10 + '        return False' + #10 + #10 +
-  '    def __reversed__(self):' + #10 + '        for i in reversed(range(le' +
-  'n(self))):' + #10 + '            yield self[i]' + #10 + #10 +
-  '    def index(self, value, start=0' + ', stop=None):' + #10 +
-  '        if start is not None and s' + 'tart < 0:' + #10 +
-  '            start = max(len(self) ' + '+ start, 0)' + #10 +
-  '        if stop is not None and st' + 'op < 0:' + #10 +
-  '            stop += len(self)' + #10 + '        i = start' + #10 +
-  '        while stop is None or i < ' + 'stop:' + #10 + '            try:' +
-  #10 + '                v = self[i]' + #10 +
-  '                if v is value or v' + ' == value:' + #10 +
-  '                    return i' + #10 + '            except IndexError:' +
-  #10 + '                break' + #10 + '            i += 1' + #10 +
-  '        raise ValueError' + #10 + #10 + '    def count(self, value):' +
-  #10 + '        return sum(1 for v in self' +
-  ' if v is value or v == value)' + #10 + #10 +
-  'class ByteString(Sequence):' + #10 + '    __slots__ = ()' + #10 + #10 +
-  'class MutableSequence(Sequence):' + #10 + '    __slots__ = ()' + #10 +
-  #10 + '    @abstractmethod' + #10 + '    def __setitem__(self, index, v' +
-  'alue):' + #10 + '        raise IndexError' + #10 + #10 +
-  '    @abstractmethod' + #10 + '    def __delitem__(self, index):' + #10 +
-  '        raise IndexError' + #10 + #10 + '    @abstractmethod' + #10 +
-  '    def insert(self, index, value)' + ':' + #10 +
-  '        raise IndexError' + #10 + #10 + '    def append(self, value):' +
-  #10 + '        self.insert(len(self), val' + 'ue)' + #10 + #10 +
-  '    def clear(self):' + #10 + '        try:' + #10 +
-  '            while True:' + #10 + '                self.pop()' + #10 +
-  '        except IndexError:' + #10 + '            pass' + #10 + #10 +
-  '    def reverse(self):' + #10 + '        n = len(self)' + #10 +
-  '        for i in range(n // 2):' + #10 +
-  '            self[i], self[n - i - ' + '1] = self[n - i - 1], self[i]' +
-  #10 + #10 + '    def extend(self, values):' + #10 +
-  '        for v in values:' + #10 + '            self.append(v)' + #10 +
-  #10 + '    def pop(self, index=-1):' + #10 + '        v = self[index]' +
-  #10 + '        del self[index]' + #10 + '        return v' + #10 + #10 +
-  '    def remove(self, value):' + #10 +
-  '        del self[self.index(value)' + ']' + #10 + #10 +
-  '    def __iadd__(self, values):' + #10 + '        self.extend(values)' +
-  #10 + '        return self' + #10 + #10 + 'Hashable.register(int)' + #10 +
-  'Hashable.register(float)' + #10 + 'Hashable.register(str)' + #10 +
-  'Hashable.register(bytes)' + #10 + 'Hashable.register(tuple)' + #10 +
-  'Hashable.register(frozenset)' + #10 + 'Sequence.register(tuple)' + #10 +
-  'Sequence.register(str)' + #10 + 'Sequence.register(range)' + #10 +
-  'Sequence.register(bytes)' + #10 + 'MutableSequence.register(list)' + #10 +
-  'Set.register(frozenset)' + #10 + 'MutableSet.register(set)' + #10 +
-  'Mapping.register(dict)' + #10 + 'MutableMapping.register(dict)' + #10 +
-  'Collection.register(dict)' + #10 + 'Collection.register(set)' + #10;
-
-Const
- Src_collections_abc_2: AnsiString =
-  'Collection.register(frozenset)' + #10 + 'Collection.register(tuple)' +
-  #10 + 'Collection.register(list)' + #10 + 'Collection.register(str)' + #10 +
-  'Iterator.register(type(iter([])))' + #10 +
-  'Iterator.register(type(iter(())))' + #10 +
-  'Iterator.register(type(iter('''')))' + #10 +
-  'Iterator.register(type(iter(range(' + '0))))' + #10 +
-  'Iterator.register(type((lambda: (y' + 'ield))()))' + #10 +
-  'Callable.register(type(len))' + #10 +
-  'Callable.register(type(lambda: 0))' + #10 + #10;
+  'from _collections_abc import *' + #10 +
+  'from _collections_abc import __all' + '__' + #10 + #10;
 
 Function Src_collections_abc: AnsiString;
 Begin
- Result := Src_collections_abc_0 + Src_collections_abc_1 +
-  Src_collections_abc_2;
+ Result := Src_collections_abc_0;
 End;
 
 Const
@@ -58943,6 +62544,122 @@ Begin
 End;
 
 Const
+ Src_genericpath_0: AnsiString =
+  '"""' + #10 + 'Path operations common to more tha' + 'n one OS' + #10 +
+  'Do not use directly.  The OS speci' +
+  'fic modules import the appropriate' + #10 +
+  'functions from this module themsel' + 'ves.' + #10 + '"""' + #10 +
+  'import os' + #10 + 'import stat' + #10 + #10 +
+  '__all__ = [''commonprefix'', ''exists' +
+  ''', ''getatime'', ''getctime'', ''getmti' + 'me'',' + #10 +
+  '           ''getsize'', ''isdir'', ''is' +
+  'file'', ''samefile'', ''sameopenfile'',' + #10 +
+  '           ''samestat'']' + #10 + #10 + #10 + '# Does a path exist?' +
+  #10 + '# This is false for dangling symbo' +
+  'lic links on systems that support ' + 'them.' + #10 + 'def exists(path):' +
+  #10 + '    """Test whether a path exists.' +
+  '  Returns False for broken symboli' + 'c links"""' + #10 + '    try:' +
+  #10 + '        os.stat(path)' + #10 + '    except (OSError, ValueError):' +
+  #10 + '        return False' + #10 + '    return True' + #10 + #10 + #10 +
+  '# This follows symbolic links, so ' +
+  'both islink() and isdir() can be t' + 'rue' + #10 +
+  '# for the same path on systems tha' + 't support symlinks' + #10 +
+  'def isfile(path):' + #10 + '    """Test whether a path is a re' +
+  'gular file"""' + #10 + '    try:' + #10 + '        st = os.stat(path)' +
+  #10 + '    except (OSError, ValueError):' + #10 + '        return False' +
+  #10 + '    return stat.S_ISREG(st.st_mode' + ')' + #10 + #10 + #10 +
+  '# Is a path a directory?' + #10 + '# This follows symbolic links, so ' +
+  'both islink() and isdir()' + #10 + '# can be true for the same path on' +
+  ' systems that support symlinks' + #10 + 'def isdir(s):' + #10 +
+  '    """Return true if the pathname' +
+  ' refers to an existing directory."' + '""' + #10 + '    try:' + #10 +
+  '        st = os.stat(s)' + #10 + '    except (OSError, ValueError):' +
+  #10 + '        return False' + #10 + '    return stat.S_ISDIR(st.st_mode' +
+  ')' + #10 + #10 + #10 + 'def getsize(filename):' + #10 +
+  '    """Return the size of a file, ' + 'reported by os.stat()."""' + #10 +
+  '    return os.stat(filename).st_si' + 'ze' + #10 + #10 + #10 +
+  'def getmtime(filename):' + #10 + '    """Return the last modificatio' +
+  'n time of a file, reported by os.s' + 'tat()."""' + #10 +
+  '    return os.stat(filename).st_mt' + 'ime' + #10 + #10 + #10 +
+  'def getatime(filename):' + #10 + '    """Return the last access time' +
+  ' of a file, reported by os.stat().' + '"""' + #10 +
+  '    return os.stat(filename).st_at' + 'ime' + #10 + #10 + #10 +
+  'def getctime(filename):' + #10 + '    """Return the metadata change ' +
+  'time of a file, reported by os.sta' + 't()."""' + #10 +
+  '    return os.stat(filename).st_ct' + 'ime' + #10 + #10 + #10 +
+  '# Return the longest prefix of all' + ' list elements.' + #10 +
+  'def commonprefix(m):' + #10 + '    "Given a list of pathnames, re' +
+  'turns the longest common leading c' + 'omponent"' + #10 +
+  '    if not m: return ''''' + #10 + '    # Some people pass in a list o' +
+  'f pathname parts to operate in an ' + 'OS-agnostic' + #10 +
+  '    # fashion; don''t try to transl' +
+  'ate in that case as that''s an abus' + 'e of the' + #10 +
+  '    # API and they are already doi' +
+  'ng what they need to be OS-agnosti' + 'c and so' + #10 +
+  '    # they most likely won''t be us' +
+  'ing an os.PathLike object in the s' + 'ublists.' + #10 +
+  '    if not isinstance(m[0], (list,' + ' tuple)):' + #10 +
+  '        m = tuple(map(os.fspath, m' + '))' + #10 + '    s1 = min(m)' +
+  #10 + '    s2 = max(m)' + #10 + '    for i, c in enumerate(s1):' + #10 +
+  '        if c != s2[i]:' + #10 + '            return s1[:i]' + #10 +
+  '    return s1' + #10 + #10 + '# Are two stat buffers (obtained f' +
+  'rom stat, fstat or lstat)' + #10 + '# describing the same file?' + #10 +
+  'def samestat(s1, s2):' + #10 + '    """Test whether two stat buffe' +
+  'rs reference the same file"""' + #10 +
+  '    return (s1.st_ino == s2.st_ino' + ' and' + #10 +
+  '            s1.st_dev == s2.st_dev' + ')' + #10 + #10 + #10 +
+  '# Are two filenames really pointin' + 'g to the same file?' + #10 +
+  'def samefile(f1, f2):' + #10 + '    """Test whether two pathnames ' +
+  'reference the same actual file or ' + 'directory' + #10 + #10 +
+  '    This is determined by the devi' + 'ce number and i-node number and' +
+  #10 + '    raises an exception if an os.s' +
+  'tat() call on either pathname fail' + 's.' + #10 + '    """' + #10 +
+  '    s1 = os.stat(f1)' + #10 + '    s2 = os.stat(f2)' + #10 +
+  '    return samestat(s1, s2)' + #10 + #10 + #10 +
+  '# Are two open files really refere' + 'ncing the same file?' + #10 +
+  '# (Not necessarily the same file d' + 'escriptor!)' + #10 +
+  'def sameopenfile(fp1, fp2):' + #10 + '    """Test whether two open file ' +
+  'objects reference the same file"""' + #10 + '    s1 = os.fstat(fp1)' +
+  #10 + '    s2 = os.fstat(fp2)' + #10 + '    return samestat(s1, s2)' + #10 +
+  #10 + #10 + '# Split a path in root and extensi' + 'on.' + #10 +
+  '# The extension is everything star' + 'ting at the last dot in the last' +
+  #10 + '# pathname component; the root is ' + 'everything before that.' +
+  #10 + '# It is always true that root + ex' + 't == p.' + #10 + #10 +
+  '# Generic implementation of splite' + 'xt, to be parametrized with' + #10 +
+  '# the separators' + #10 + 'def _splitext(p, sep, altsep, exts' + 'ep):' +
+  #10 + '    """Split the extension from a ' + 'pathname.' + #10 + #10 +
+  '    Extension is everything from t' + 'he last dot to the end, ignoring' +
+  #10 + '    leading dots.  Returns "(root,' +
+  ' ext)"; ext may be empty."""' + #10 +
+  '    # NOTE: This code must work fo' + 'r text and bytes strings.' + #10 +
+  #10 + '    sepIndex = p.rfind(sep)' + #10 + '    if altsep:' + #10 +
+  '        altsepIndex = p.rfind(alts' + 'ep)' + #10 +
+  '        sepIndex = max(sepIndex, a' + 'ltsepIndex)' + #10 + #10 +
+  '    dotIndex = p.rfind(extsep)' + #10 + '    if dotIndex > sepIndex:' +
+  #10 + '        # skip all leading dots' + #10 +
+  '        filenameIndex = sepIndex +' + ' 1' + #10 +
+  '        while filenameIndex < dotI' + 'ndex:' + #10 +
+  '            if p[filenameIndex:fil' + 'enameIndex+1] != extsep:' + #10 +
+  '                return p[:dotIndex' + '], p[dotIndex:]' + #10 +
+  '            filenameIndex += 1' + #10 + #10 + '    return p, p[:0]' + #10 +
+  #10 + 'def _check_arg_types(funcname, *ar' + 'gs):' + #10 +
+  '    hasstr = hasbytes = False' + #10 + '    for s in args:' + #10 +
+  '        if isinstance(s, str):' + #10 + '            hasstr = True' + #10 +
+  '        elif isinstance(s, bytes):' + #10 + '            hasbytes = True' +
+  #10 + '        else:' + #10 + '            raise TypeError(f''{fun' +
+  'cname}() argument must be str, byt' + 'es, or ''' + #10 +
+  '                            f''os.P' +
+  'athLike object, not {s.__class__._' + '_name__!r}'') from None' + #10 +
+  '    if hasstr and hasbytes:' + #10 +
+  '        raise TypeError("Can''t mix' +
+  ' strings and bytes in path compone' + 'nts") from None' + #10 + #10;
+
+Function Src_genericpath: AnsiString;
+Begin
+ Result := Src_genericpath_0;
+End;
+
+Const
  Src_getopt_0: AnsiString =
   '"""Parser for command line options' + '.' + #10 + #10 +
   'This module helps scripts to parse' + ' the command line arguments in' +
@@ -59962,6 +63679,43 @@ Const
 Function Src_glob: AnsiString;
 Begin
  Result := Src_glob_0;
+End;
+
+Const
+ Src_grp_0: AnsiString =
+  '"""grp : base de donnees des group' + 'es (lecture de /etc/group)."""' +
+  #10 + 'import sys as _sys' + #10 + #10 +
+  'struct_group = _sys._structseq(''gr' +
+  'p.struct_group'', [''gr_name'', ''gr_p' +
+  'asswd'', ''gr_gid'', ''gr_mem''])' + #10 + #10 + #10 + 'def _entries():' +
+  #10 + '    res = []' + #10 + '    try:' + #10 +
+  '        with open(''/etc/group'', en' +
+  'coding=''utf-8'', errors=''surrogatee' + 'scape'') as f:' + #10 +
+  '            for line in f:' + #10 + '                line = line.rstrip' +
+  '(''\n'')' + #10 + '                if not line or lin' +
+  'e.startswith(''#''):' + #10 + '                    continue' + #10 +
+  '                p = line.split('':''' + ')' + #10 +
+  '                if len(p) < 4:' + #10 + '                    continue' +
+  #10 + '                try:' + #10 + '                    res.append(str' +
+  'uct_group((p[0], p[1], int(p[2]), ' +
+  '[m for m in p[3].split('','') if m])' + '))' + #10 +
+  '                except ValueError:' + #10 + '                    pass' +
+  #10 + '    except OSError:' + #10 + '        pass' + #10 +
+  '    return res' + #10 + #10 + #10 + 'def getgrall():' + #10 +
+  '    return _entries()' + #10 + #10 + #10 + 'def getgrgid(gid):' + #10 +
+  '    if not isinstance(gid, int):' + #10 +
+  '        raise TypeError("an intege' +
+  'r is required (got type %s)" % typ' + 'e(gid).__name__)' + #10 +
+  '    for e in _entries():' + #10 + '        if e.gr_gid == gid:' + #10 +
+  '            return e' + #10 + '    raise KeyError(''getgrgid(): gi' +
+  'd not found: %d'' % gid)' + #10 + #10 + #10 + 'def getgrnam(name):' + #10 +
+  '    for e in _entries():' + #10 + '        if e.gr_name == name:' + #10 +
+  '            return e' + #10 + '    raise KeyError(''getgrnam(): na' +
+  'me not found: %r'' % name)' + #10 + #10;
+
+Function Src_grp: AnsiString;
+Begin
+ Result := Src_grp_0;
 End;
 
 Const
@@ -65683,19 +69437,94 @@ End;
 
 Const
  Src_io_0: AnsiString =
-  'import _io' + #10 + 'from _io import TextIOWrapper, ope' + 'n' + #10 +
+  '"""The io module provides the Pyth' +
+  'on interfaces to stream handling. ' + 'The' + #10 +
+  'builtin open function is defined i' + 'n this module.' + #10 + #10 +
+  'At the top of the I/O hierarchy is' +
+  ' the abstract base class IOBase. I' + 't' + #10 +
+  'defines the basic interface to a s' +
+  'tream. Note, however, that there i' + 's no' + #10 +
+  'separation between reading and wri' +
+  'ting to streams; implementations a' + 're' + #10 +
+  'allowed to raise an OSError if the' +
+  'y do not support a given operation' + '.' + #10 + #10 +
+  'Extending IOBase is RawIOBase whic' +
+  'h deals simply with the reading an' + 'd' + #10 +
+  'writing of raw bytes to a stream. ' +
+  'FileIO subclasses RawIOBase to pro' + 'vide' + #10 +
+  'an interface to OS files.' + #10 + #10 +
+  'BufferedIOBase deals with bufferin' +
+  'g on a raw byte stream (RawIOBase)' + '. Its' + #10 +
+  'subclasses, BufferedWriter, Buffer' +
+  'edReader, and BufferedRWPair buffe' + 'r' + #10 +
+  'streams that are readable, writabl' + 'e, and both respectively.' + #10 +
+  'BufferedRandom provides a buffered' + ' interface to random access' + #10 +
+  'streams. BytesIO is a simple strea' + 'm of in-memory bytes.' + #10 + #10 +
+  'Another IOBase subclass, TextIOBas' +
+  'e, deals with the encoding and dec' + 'oding' + #10 +
+  'of streams into text. TextIOWrappe' +
+  'r, which extends it, is a buffered' + ' text' + #10 +
+  'interface to a buffered raw stream' +
+  ' (`BufferedIOBase`). Finally, Stri' + 'ngIO' + #10 +
+  'is an in-memory stream for text.' + #10 + #10 +
+  'Argument names are not part of the' +
+  ' specification, and only the argum' + 'ents' + #10 +
+  'of open() are intended to be used ' + 'as keyword arguments.' + #10 + #10 +
+  'data:' + #10 + #10 + 'DEFAULT_BUFFER_SIZE' + #10 + #10 +
+  '   An int containing the default b' +
+  'uffer size used by the module''s bu' + 'ffered' + #10 +
+  '   I/O classes. open() uses the fi' +
+  'le''s blksize (as obtained by os.st' + 'at) if' + #10 + '   possible.' +
+  #10 + '"""' + #10 + '# New I/O library conforming to PE' + 'P 3116.' + #10 +
+  #10 + '__author__ = ("Guido van Rossum <g' + 'uido@python.org>, "' + #10 +
+  '              "Mike Verdone <mike.' + 'verdone@gmail.com>, "' + #10 +
+  '              "Mark Russell <mark.' + 'russell@zen.co.uk>, "' + #10 +
+  '              "Antoine Pitrou <sol' + 'ipsis@pitrou.net>, "' + #10 +
+  '              "Amaury Forgeot d''Ar' + 'c <amauryfa@gmail.com>, "' + #10 +
+  '              "Benjamin Peterson <' + 'benjamin@python.org>")' + #10 +
+  #10 + '__all__ = ["BlockingIOError", "ope' +
+  'n", "open_code", "IOBase", "RawIOB' + 'ase",' + #10 +
+  '           "FileIO", "BytesIO", "S' + 'tringIO", "BufferedIOBase",' + #10 +
+  '           "BufferedReader", "Buff' + 'eredWriter", "BufferedRWPair",' +
+  #10 + '           "BufferedRandom", "Text' + 'IOBase", "TextIOWrapper",' +
+  #10 + '           "UnsupportedOperation",' +
+  ' "SEEK_SET", "SEEK_CUR", "SEEK_END' + '"]' + #10 + #10 + #10 +
+  'import _io' + #10 + 'import abc' + #10 + #10 +
+  'from _io import (DEFAULT_BUFFER_SI' +
+  'ZE, BlockingIOError, UnsupportedOp' + 'eration,' + #10 +
+  '                 open, open_code, ' +
+  'FileIO, BytesIO, StringIO, Buffere' + 'dReader,' + #10 +
+  '                 BufferedWriter, B' + 'ufferedRWPair, BufferedRandom,' +
+  #10 + '                 IncrementalNewlin' + 'eDecoder, TextIOWrapper)' +
+  #10 + #10 + 'OpenWrapper = _io.open # for compa' + 'tibility with _pyio' +
+  #10 + #10 + '# Pretend this exception was creat' + 'ed here.' + #10 +
+  'UnsupportedOperation.__module__ = ' + '"io"' + #10 + #10 + '# for seek()' +
   #10 + 'SEEK_SET = 0' + #10 + 'SEEK_CUR = 1' + #10 + 'SEEK_END = 2' + #10 +
-  'DEFAULT_BUFFER_SIZE = 8192' + #10 + #10 +
-  'class UnsupportedOperation(OSError' + ', ValueError):' + #10 + '    pass' +
-  #10 + #10 + 'class StringIO:' + #10 + '    def __new__(cls, initial_value' +
-  '='''', newline=''\n''):' + #10 + '        f = _io._stringio(initial_' +
-  'value)' + #10 + '        return f' + #10 + #10 + 'class BytesIO:' + #10 +
-  '    def __new__(cls, initial_value' + '=b''''):' + #10 +
-  '        f = _io._bytesio(initial_v' + 'alue)' + #10 + '        return f' +
-  #10 + #10 + 'class IOBase:' + #10 + '    pass' + #10 +
-  'class RawIOBase(IOBase):' + #10 + '    pass' + #10 +
-  'class BufferedIOBase(IOBase):' + #10 + '    pass' + #10 +
-  'class TextIOBase(IOBase):' + #10 + '    pass' + #10 + #10;
+  #10 + '# Declaring ABCs in C is tricky so' + ' we do it here.' + #10 +
+  '# Method descriptions and default ' +
+  'implementations are inherited from' + ' the C' + #10 +
+  '# version however.' + #10 + 'class IOBase(_io._IOBase, metaclas' +
+  's=abc.ABCMeta):' + #10 + '    __doc__ = _io._IOBase.__doc__' + #10 + #10 +
+  'class RawIOBase(_io._RawIOBase, IO' + 'Base):' + #10 +
+  '    __doc__ = _io._RawIOBase.__doc' + '__' + #10 + #10 +
+  'class BufferedIOBase(_io._Buffered' + 'IOBase, IOBase):' + #10 +
+  '    __doc__ = _io._BufferedIOBase.' + '__doc__' + #10 + #10 +
+  'class TextIOBase(_io._TextIOBase, ' + 'IOBase):' + #10 +
+  '    __doc__ = _io._TextIOBase.__do' + 'c__' + #10 + #10 +
+  'RawIOBase.register(FileIO)' + #10 + #10 +
+  'for klass in (BytesIO, BufferedRea' +
+  'der, BufferedWriter, BufferedRando' + 'm,' + #10 +
+  '              BufferedRWPair):' + #10 +
+  '    BufferedIOBase.register(klass)' + #10 + #10 +
+  'for klass in (StringIO, TextIOWrap' + 'per):' + #10 +
+  '    TextIOBase.register(klass)' + #10 + 'del klass' + #10 + #10 + 'try:' +
+  #10 + '    from _io import _WindowsConsol' + 'eIO' + #10 +
+  'except ImportError:' + #10 + '    pass' + #10 + 'else:' + #10 +
+  '    RawIOBase.register(_WindowsCon' + 'soleIO)' + #10 + #10 + 'try:' +
+  #10 + '    import sys as _sys' + #10 +
+  '    TextIOBase.register(type(_sys.' + 'stdout))' + #10 +
+  '    BufferedIOBase.register(type(_' + 'sys.stdout.buffer))' + #10 +
+  'except Exception:' + #10 + '    pass' + #10 + #10;
 
 Function Src_io: AnsiString;
 Begin
@@ -70156,6 +73985,658 @@ Begin
 End;
 
 Const
+ Src_ntpath_0: AnsiString =
+  '# Module ''ntpath'' -- common operat' + 'ions on WinNT/Win95 pathnames' +
+  #10 + '"""Common pathname manipulations, ' + 'WindowsNT/95 version.' + #10 +
+  #10 + 'Instead of importing this module d' +
+  'irectly, import os and refer to th' + 'is' + #10 + 'module as os.path.' +
+  #10 + '"""' + #10 + #10 + '# strings representing various pat' +
+  'h-related bits and pieces' + #10 + '# These are primarily for export; ' +
+  'internally, they are hardcoded.' + #10 +
+  '# Should be set before imports for' + ' resolving cyclic dependency.' +
+  #10 + 'curdir = ''.''' + #10 + 'pardir = ''..''' + #10 + 'extsep = ''.''' +
+  #10 + 'sep = ''\\''' + #10 + 'pathsep = '';''' + #10 + 'altsep = ''/''' +
+  #10 + 'defpath = ''.;C:\\bin''' + #10 + 'devnull = ''nul''' + #10 + #10 +
+  'import os' + #10 + 'import sys' + #10 + 'import stat' + #10 +
+  'import genericpath' + #10 + 'from genericpath import *' + #10 + #10 +
+  '__all__ = ["normcase","isabs","joi' +
+  'n","splitdrive","split","splitext"' + ',' + #10 +
+  '           "basename","dirname","c' +
+  'ommonprefix","getsize","getmtime",' + #10 +
+  '           "getatime","getctime", ' +
+  '"islink","exists","lexists","isdir' + '","isfile",' + #10 +
+  '           "ismount", "expanduser"' +
+  ',"expandvars","normpath","abspath"' + ',' + #10 +
+  '           "curdir","pardir","sep"' + ',"pathsep","defpath","altsep",' +
+  #10 + '           "extsep","devnull","rea' +
+  'lpath","supports_unicode_filenames' + '","relpath",' + #10 +
+  '           "samefile", "sameopenfi' + 'le", "samestat", "commonpath"]' +
+  #10 + #10 + 'def _get_bothseps(path):' + #10 +
+  '    if isinstance(path, bytes):' + #10 + '        return b''\\/''' + #10 +
+  '    else:' + #10 + '        return ''\\/''' + #10 + #10 +
+  '# Normalize the case of a pathname' + ' and map slashes to backslashes.' +
+  #10 + '# Other normalizations (such as op' +
+  'timizing ''../'' away) are not done' + #10 +
+  '# (this is done by normpath).' + #10 + #10 + 'def normcase(s):' + #10 +
+  '    """Normalize case of pathname.' + #10 + #10 +
+  '    Makes all characters lowercase' +
+  ' and all slashes into backslashes.' + '"""' + #10 +
+  '    s = os.fspath(s)' + #10 + '    if isinstance(s, bytes):' + #10 +
+  '        return s.replace(b''/'', b''\' + '\'').lower()' + #10 +
+  '    else:' + #10 + '        return s.replace(''/'', ''\\''' + ').lower()' +
+  #10 + #10 + #10 + '# Return whether a path is absolut' + 'e.' + #10 +
+  '# Trivial in Posix, harder on Wind' + 'ows.' + #10 +
+  '# For Windows it is absolute if it' +
+  ' starts with a slash or backslash ' + '(current' + #10 +
+  '# volume), or if a pathname after ' +
+  'the volume-letter-and-colon or UNC' + '-resource' + #10 +
+  '# starts with a slash or backslash' + '.' + #10 + #10 + 'def isabs(s):' +
+  #10 + '    """Test whether a path is abso' + 'lute"""' + #10 +
+  '    s = os.fspath(s)' + #10 + '    # Paths beginning with \\?\ ar' +
+  'e always absolute, but do not' + #10 +
+  '    # necessarily contain a drive.' + #10 +
+  '    if isinstance(s, bytes):' + #10 +
+  '        if s.replace(b''/'', b''\\'').' + 'startswith(b''\\\\?\\''):' +
+  #10 + '            return True' + #10 + '    else:' + #10 +
+  '        if s.replace(''/'', ''\\'').st' + 'artswith(''\\\\?\\''):' + #10 +
+  '            return True' + #10 + '    s = splitdrive(s)[1]' + #10 +
+  '    return len(s) > 0 and s[0] in ' + '_get_bothseps(s)' + #10 + #10 +
+  #10 + '# Join two (or more) paths.' + #10 + 'def join(path, *paths):' +
+  #10 + '    path = os.fspath(path)' + #10 +
+  '    if isinstance(path, bytes):' + #10 + '        sep = b''\\''' + #10 +
+  '        seps = b''\\/''' + #10 + '        colon = b'':''' + #10 +
+  '    else:' + #10 + '        sep = ''\\''' + #10 +
+  '        seps = ''\\/''' + #10 + '        colon = '':''' + #10 +
+  '    try:' + #10 + '        if not paths:' + #10 +
+  '            path[:0] + sep  #23780' +
+  ': Ensure compatible data type even' + ' if p is null.' + #10 +
+  '        result_drive, result_path ' + '= splitdrive(path)' + #10 +
+  '        for p in map(os.fspath, pa' + 'ths):' + #10 +
+  '            p_drive, p_path = spli' + 'tdrive(p)' + #10 +
+  '            if p_path and p_path[0' + '] in seps:' + #10 +
+  '                # Second path is a' + 'bsolute' + #10 +
+  '                if p_drive or not ' + 'result_drive:' + #10 +
+  '                    result_drive =' + ' p_drive' + #10 +
+  '                result_path = p_pa' + 'th' + #10 +
+  '                continue' + #10 + '            elif p_drive and p_dri' +
+  've != result_drive:' + #10 + '                if p_drive.lower()' +
+  ' != result_drive.lower():' + #10 + '                    # Different dr' +
+  'ives => ignore the first path enti' + 'rely' + #10 +
+  '                    result_drive =' + ' p_drive' + #10 +
+  '                    result_path = ' + 'p_path' + #10 +
+  '                    continue' + #10 +
+  '                # Same drive in di' + 'fferent case' + #10 +
+  '                result_drive = p_d' + 'rive' + #10 +
+  '            # Second path is relat' + 'ive to the first' + #10 +
+  '            if result_path and res' + 'ult_path[-1] not in seps:' + #10 +
+  '                result_path = resu' + 'lt_path + sep' + #10 +
+  '            result_path = result_p' + 'ath + p_path' + #10 +
+  '        ## add separator between U' + 'NC and non-absolute path' + #10 +
+  '        if (result_path and result' + '_path[0] not in seps and' + #10 +
+  '            result_drive and resul' + 't_drive[-1:] != colon):' + #10 +
+  '            return result_drive + ' + 'sep + result_path' + #10 +
+  '        return result_drive + resu' + 'lt_path' + #10 +
+  '    except (TypeError, AttributeEr' + 'ror, BytesWarning):' + #10 +
+  '        genericpath._check_arg_typ' + 'es(''join'', path, *paths)' + #10 +
+  '        raise' + #10 + #10 + #10 + '# Split a path in a drive specific' +
+  'ation (a drive letter followed by ' + 'a' + #10 +
+  '# colon) and the path specificatio' + 'n.' + #10 +
+  '# It is always true that drivespec' + ' + pathspec == p' + #10 +
+  'def splitdrive(p):' + #10 + '    """Split a pathname into drive' +
+  '/UNC sharepoint and relative path ' + 'specifiers.' + #10 +
+  '    Returns a 2-tuple (drive_or_un' +
+  'c, path); either part may be empty' + '.' + #10 + #10 +
+  '    If you assign' + #10 + '        result = splitdrive(p)' + #10 +
+  '    It is always true that:' + #10 + '        result[0] + result[1] == p' +
+  #10 + #10 + '    If the path contained a drive ' +
+  'letter, drive_or_unc will contain ' + 'everything' + #10 +
+  '    up to and including the colon.' +
+  '  e.g. splitdrive("c:/dir") return' + 's ("c:", "/dir")' + #10 + #10 +
+  '    If the path contained a UNC pa' +
+  'th, the drive_or_unc will contain ' + 'the host name' + #10 +
+  '    and share up to but not includ' +
+  'ing the fourth directory separator' + ' character.' + #10 +
+  '    e.g. splitdrive("//host/comput' +
+  'er/dir") returns ("//host/computer' + '", "/dir")' + #10 + #10 +
+  '    Paths cannot contain both a dr' + 'ive letter and a UNC path.' + #10 +
+  #10 + '    """' + #10 + '    p = os.fspath(p)' + #10 +
+  '    if len(p) >= 2:' + #10 + '        if isinstance(p, bytes):' + #10 +
+  '            sep = b''\\''' + #10 + '            altsep = b''/''' + #10 +
+  '            colon = b'':''' + #10 + '        else:' + #10 +
+  '            sep = ''\\''' + #10 + '            altsep = ''/''' + #10 +
+  '            colon = '':''' + #10 + '        normp = p.replace(altsep, ' +
+  'sep)' + #10 + '        if (normp[0:2] == sep*2) a' +
+  'nd (normp[2:3] != sep):' + #10 + '            # is a UNC path:' + #10 +
+  '            # vvvvvvvvvvvvvvvvvvvv' + ' drive letter or UNC path' + #10 +
+  '            # \\machine\mountpoint' + '\directory\etc\...' + #10 +
+  '            #           directory ' + '^^^^^^^^^^^^^^^' + #10 +
+  '            index = normp.find(sep' + ', 2)' + #10 +
+  '            if index == -1:' + #10 + '                return p[:0], p' +
+  #10 + '            index2 = normp.find(se' + 'p, index + 1)' + #10 +
+  '            # a UNC path can''t hav' + 'e two slashes in a row' + #10 +
+  '            # (after the initial t' + 'wo)' + #10 +
+  '            if index2 == index + 1' + ':' + #10 +
+  '                return p[:0], p' + #10 + '            if index2 == -1:' +
+  #10 + '                index2 = len(p)' + #10 +
+  '            return p[:index2], p[i' + 'ndex2:]' + #10 +
+  '        if normp[1:2] == colon:' + #10 +
+  '            return p[:2], p[2:]' + #10 + '    return p[:0], p' + #10 +
+  #10 + #10 + '# Split a path in head (everything' +
+  ' up to the last ''/'') and tail (the' + #10 +
+  '# rest).  After the trailing ''/'' i' + 's stripped, the invariant' + #10 +
+  '# join(head, tail) == p holds.' + #10 +
+  '# The resulting head won''t end in ' + '''/'' unless it is the root.' +
+  #10 + #10 + 'def split(p):' + #10 + '    """Split a pathname.' + #10 + #10 +
+  '    Return tuple (head, tail) wher' +
+  'e tail is everything after the fin' + 'al slash.' + #10 +
+  '    Either part may be empty."""' + #10 + '    p = os.fspath(p)' + #10 +
+  '    seps = _get_bothseps(p)' + #10 + '    d, p = splitdrive(p)' + #10 +
+  '    # set i to index beyond p''s la' + 'st slash' + #10 +
+  '    i = len(p)' + #10 + '    while i and p[i-1] not in seps' + ':' + #10 +
+  '        i -= 1' + #10 + '    head, tail = p[:i], p[i:]  # n' +
+  'ow tail has no slashes' + #10 + '    # remove trailing slashes from' +
+  ' head, unless it''s all slashes' + #10 +
+  '    head = head.rstrip(seps) or he' + 'ad' + #10 +
+  '    return d + head, tail' + #10 + #10 + #10 +
+  '# Split a path in root and extensi' + 'on.' + #10 +
+  '# The extension is everything star' + 'ting at the last dot in the last' +
+  #10 + '# pathname component; the root is ' + 'everything before that.' +
+  #10 + '# It is always true that root + ex' + 't == p.' + #10 + #10 +
+  'def splitext(p):' + #10 + '    p = os.fspath(p)' + #10 +
+  '    if isinstance(p, bytes):' + #10 +
+  '        return genericpath._splite' + 'xt(p, b''\\'', b''/'', b''.'')' +
+  #10 + '    else:' + #10 + '        return genericpath._splite' +
+  'xt(p, ''\\'', ''/'', ''.'')' + #10 + 'splitext.__doc__ = genericpath._sp' +
+  'litext.__doc__' + #10 + #10 + #10 + '# Return the tail (basename) part ' +
+  'of a path.' + #10 + #10 + 'def basename(p):' + #10 +
+  '    """Returns the final component' + ' of a pathname"""' + #10 +
+  '    return split(p)[1]' + #10 + #10 + #10 +
+  '# Return the head (dirname) part o' + 'f a path.' + #10 + #10 +
+  'def dirname(p):' + #10 + '    """Returns the directory compo' +
+  'nent of a pathname"""' + #10 + '    return split(p)[0]' + #10 + #10 +
+  '# Is a path a symbolic link?' + #10 +
+  '# This will always return false on' +
+  ' systems where os.lstat doesn''t ex' + 'ist.' + #10 + #10 +
+  'def islink(path):' + #10 + '    """Test whether a path is a sy' +
+  'mbolic link.' + #10 + '    This will always return false ' +
+  'for Windows prior to 6.0.' + #10 + '    """' + #10 + '    try:' + #10 +
+  '        st = os.lstat(path)' + #10 + '    except (OSError, ValueError, A' +
+  'ttributeError):' + #10 + '        return False' + #10 +
+  '    return stat.S_ISLNK(st.st_mode' + ')' + #10 + #10 +
+  '# Being true for dangling symbolic' + ' links is also useful.' + #10 +
+  #10 + 'def lexists(path):' + #10 + '    """Test whether a path exists.' +
+  '  Returns True for broken symbolic' + ' links"""' + #10 + '    try:' +
+  #10 + '        st = os.lstat(path)' + #10 +
+  '    except (OSError, ValueError):' + #10 + '        return False' + #10 +
+  '    return True' + #10 + #10 + '# Is a path a mount point?' + #10 +
+  '# Any drive letter root (eg c:\)' + #10 +
+  '# Any share UNC (eg \\server\share' + ')' + #10;
+
+Const
+ Src_ntpath_1: AnsiString =
+  '# Any volume mounted on a filesyst' + 'em folder' + #10 + '#' + #10 +
+  '# No one method detects all three ' +
+  'situations. Historically we''ve lex' + 'ically' + #10 +
+  '# detected drive letter roots and ' +
+  'share UNCs. The canonical approach' + ' to' + #10 +
+  '# detecting mounted volumes (query' +
+  'ing the reparse tag) fails for the' + ' most' + #10 +
+  '# common case: drive letter roots.' +
+  ' The alternative which uses GetVol' + 'umePathName' + #10 +
+  '# fails if the drive letter is the' + ' result of a SUBST.' + #10 +
+  'try:' + #10 + '    from nt import _getvolumepathn' + 'ame' + #10 +
+  'except ImportError:' + #10 + '    _getvolumepathname = None' + #10 +
+  'def ismount(path):' + #10 + '    """Test whether a path is a mo' +
+  'unt point (a drive root, the root ' + 'of a' + #10 +
+  '    share, or a mounted volume)"""' + #10 + '    path = os.fspath(path)' +
+  #10 + '    seps = _get_bothseps(path)' + #10 + '    path = abspath(path)' +
+  #10 + '    root, rest = splitdrive(path)' + #10 +
+  '    if root and root[0] in seps:' + #10 +
+  '        return (not rest) or (rest' + ' in seps)' + #10 +
+  '    if rest in seps:' + #10 + '        return True' + #10 + #10 +
+  '    if _getvolumepathname:' + #10 + '        return path.rstrip(seps) =' +
+  '= _getvolumepathname(path).rstrip(' + 'seps)' + #10 + '    else:' + #10 +
+  '        return False' + #10 + #10 + #10 +
+  '# Expand paths beginning with ''~'' ' + 'or ''~user''.' + #10 +
+  '# ''~'' means $HOME; ''~user'' means t' + 'hat user''s home directory.' +
+  #10 + '# If the path doesn''t begin with ''' +
+  '~'', or if the user or $HOME is unk' + 'nown,' + #10 +
+  '# the path is returned unchanged (' +
+  'leaving error reporting to whateve' + 'r' + #10 +
+  '# function is called with the expa' + 'nded path as argument).' + #10 +
+  '# See also module ''glob'' for expan' +
+  'sion of *, ? and [...] in pathname' + 's.' + #10 +
+  '# (A function should also be defin' +
+  'ed to do full *sh-style environmen' + 't' + #10 +
+  '# variable expansion.)' + #10 + #10 + 'def expanduser(path):' + #10 +
+  '    """Expand ~ and ~user construc' + 'ts.' + #10 + #10 +
+  '    If user or $HOME is unknown, d' + 'o nothing."""' + #10 +
+  '    path = os.fspath(path)' + #10 + '    if isinstance(path, bytes):' +
+  #10 + '        tilde = b''~''' + #10 + '    else:' + #10 +
+  '        tilde = ''~''' + #10 + '    if not path.startswith(tilde):' + #10 +
+  '        return path' + #10 + '    i, n = 1, len(path)' + #10 +
+  '    while i < n and path[i] not in' + ' _get_bothseps(path):' + #10 +
+  '        i += 1' + #10 + #10 + '    if ''USERPROFILE'' in os.environ' +
+  ':' + #10 + '        userhome = os.environ[''USE' + 'RPROFILE'']' + #10 +
+  '    elif not ''HOMEPATH'' in os.envi' + 'ron:' + #10 +
+  '        return path' + #10 + '    else:' + #10 + '        try:' + #10 +
+  '            drive = os.environ[''HO' + 'MEDRIVE'']' + #10 +
+  '        except KeyError:' + #10 + '            drive = ''''' + #10 +
+  '        userhome = join(drive, os.' + 'environ[''HOMEPATH''])' + #10 +
+  #10 + '    if isinstance(path, bytes):' + #10 +
+  '        userhome = os.fsencode(use' + 'rhome)' + #10 + #10 +
+  '    if i != 1: #~user' + #10 + '        userhome = join(dirname(us' +
+  'erhome), path[1:i])' + #10 + #10 + '    return userhome + path[i:]' + #10 +
+  #10 + #10 + '# Expand paths containing shell va' + 'riable substitutions.' +
+  #10 + '# The following rules apply:' + #10 +
+  '#       - no expansion within sing' + 'le quotes' + #10 +
+  '#       - ''$$'' is translated into ' + '''$''' + #10 +
+  '#       - ''%%'' is translated into ' +
+  '''%'' if ''%%'' are not seen in %var1%' + '%var2%' + #10 +
+  '#       - ${varname} is accepted.' + #10 +
+  '#       - $varname is accepted.' + #10 +
+  '#       - %varname% is accepted.' + #10 +
+  '#       - varnames can be made out' +
+  ' of letters, digits and the charac' + 'ters ''_-''' + #10 +
+  '#         (though is not verified ' +
+  'in the ${varname} and %varname% ca' + 'ses)' + #10 +
+  '# XXX With COMMAND.COM you can use' +
+  ' any characters in a variable name' + ',' + #10 +
+  '# XXX except ''^|<>=''.' + #10 + #10 + 'def expandvars(path):' + #10 +
+  '    """Expand shell variables of t' + 'he forms $var, ${var} and %var%.' +
+  #10 + #10 + '    Unknown variables are left unc' + 'hanged."""' + #10 +
+  '    path = os.fspath(path)' + #10 + '    if isinstance(path, bytes):' +
+  #10 + '        if b''$'' not in path and b''' + '%'' not in path:' + #10 +
+  '            return path' + #10 + '        import string' + #10 +
+  '        varchars = bytes(string.as' +
+  'cii_letters + string.digits + ''_-''' + ', ''ascii'')' + #10 +
+  '        quote = b''\''''' + #10 + '        percent = b''%''' + #10 +
+  '        brace = b''{''' + #10 + '        rbrace = b''}''' + #10 +
+  '        dollar = b''$''' + #10 + '        environ = getattr(os, ''env' +
+  'ironb'', None)' + #10 + '    else:' + #10 +
+  '        if ''$'' not in path and ''%''' + ' not in path:' + #10 +
+  '            return path' + #10 + '        import string' + #10 +
+  '        varchars = string.ascii_le' + 'tters + string.digits + ''_-''' +
+  #10 + '        quote = ''\''''' + #10 + '        percent = ''%''' + #10 +
+  '        brace = ''{''' + #10 + '        rbrace = ''}''' + #10 +
+  '        dollar = ''$''' + #10 + '        environ = os.environ' + #10 +
+  '    res = path[:0]' + #10 + '    index = 0' + #10 +
+  '    pathlen = len(path)' + #10 + '    while index < pathlen:' + #10 +
+  '        c = path[index:index+1]' + #10 +
+  '        if c == quote:   # no expa' + 'nsion within single quotes' + #10 +
+  '            path = path[index + 1:' + ']' + #10 +
+  '            pathlen = len(path)' + #10 + '            try:' + #10 +
+  '                index = path.index' + '(c)' + #10 +
+  '                res += c + path[:i' + 'ndex + 1]' + #10 +
+  '            except ValueError:' + #10 + '                res += c + path' +
+  #10 + '                index = pathlen - ' + '1' + #10 +
+  '        elif c == percent:  # vari' + 'able or ''%''' + #10 +
+  '            if path[index + 1:inde' + 'x + 2] == percent:' + #10 +
+  '                res += c' + #10 + '                index += 1' + #10 +
+  '            else:' + #10 + '                path = path[index+' + '1:]' +
+  #10 + '                pathlen = len(path' + ')' + #10 +
+  '                try:' + #10 + '                    index = path.i' +
+  'ndex(percent)' + #10 + '                except ValueError:' + #10 +
+  '                    res += percent' + ' + path' + #10 +
+  '                    index = pathle' + 'n - 1' + #10 +
+  '                else:' + #10 + '                    var = path[:in' +
+  'dex]' + #10 + '                    try:' + #10 +
+  '                        if environ' + ' is None:' + #10 +
+  '                            value ' +
+  '= os.fsencode(os.environ[os.fsdeco' + 'de(var)])' + #10 +
+  '                        else:' + #10 +
+  '                            value ' + '= environ[var]' + #10 +
+  '                    except KeyErro' + 'r:' + #10 +
+  '                        value = pe' + 'rcent + var + percent' + #10 +
+  '                    res += value' + #10 +
+  '        elif c == dollar:  # varia' + 'ble or ''$$''' + #10 +
+  '            if path[index + 1:inde' + 'x + 2] == dollar:' + #10 +
+  '                res += c' + #10 + '                index += 1' + #10 +
+  '            elif path[index + 1:in' + 'dex + 2] == brace:' + #10 +
+  '                path = path[index+' + '2:]' + #10 +
+  '                pathlen = len(path' + ')' + #10 + '                try:' +
+  #10 + '                    index = path.i' + 'ndex(rbrace)' + #10 +
+  '                except ValueError:' + #10 +
+  '                    res += dollar ' + '+ brace + path' + #10 +
+  '                    index = pathle' + 'n - 1' + #10 +
+  '                else:' + #10 + '                    var = path[:in' +
+  'dex]' + #10 + '                    try:' + #10 +
+  '                        if environ' + ' is None:' + #10 +
+  '                            value ' +
+  '= os.fsencode(os.environ[os.fsdeco' + 'de(var)])' + #10 +
+  '                        else:' + #10 +
+  '                            value ' + '= environ[var]' + #10 +
+  '                    except KeyErro' + 'r:' + #10 +
+  '                        value = do' + 'llar + brace + var + rbrace' + #10 +
+  '                    res += value' + #10 + '            else:' + #10 +
+  '                var = path[:0]' + #10 + '                index += 1' +
+  #10 + '                c = path[index:ind' + 'ex + 1]' + #10 +
+  '                while c and c in v' + 'archars:' + #10 +
+  '                    var += c' + #10 + '                    index += 1' +
+  #10 + '                    c = path[index' + ':index + 1]' + #10 +
+  '                try:' + #10 + '                    if environ is ' +
+  'None:' + #10 + '                        value = os' +
+  '.fsencode(os.environ[os.fsdecode(v' + 'ar)])' + #10 +
+  '                    else:' + #10 + '                        value = en' +
+  'viron[var]' + #10 + '                except KeyError:' + #10 +
+  '                    value = dollar' + ' + var' + #10 +
+  '                res += value' + #10 + '                if c:' + #10 +
+  '                    index -= 1' + #10 + '        else:' + #10 +
+  '            res += c' + #10 + '        index += 1' + #10 +
+  '    return res' + #10 + #10 + #10 + '# Normalize a path, e.g. A//B, A/.' +
+  '/B and A/foo/../B all become A\B.' + #10 +
+  '# Previously, this function also t' + 'runcated pathnames to 8+3 format,' +
+  #10 + '# but as this module is called "nt' +
+  'path", that''s obviously wrong!' + #10 + #10 + 'def normpath(path):' +
+  #10 + '    """Normalize path, eliminating' + ' double slashes, etc."""' +
+  #10 + '    path = os.fspath(path)' + #10 +
+  '    if isinstance(path, bytes):' + #10 + '        sep = b''\\''' + #10 +
+  '        altsep = b''/''' + #10 + '        curdir = b''.''' + #10 +
+  '        pardir = b''..''' + #10 + '        special_prefixes = (b''\\\\' +
+  '.\\'', b''\\\\?\\'')' + #10 + '    else:' + #10 + '        sep = ''\\''' +
+  #10 + '        altsep = ''/''' + #10 + '        curdir = ''.''' + #10 +
+  '        pardir = ''..''' + #10 + '        special_prefixes = (''\\\\.' +
+  '\\'', ''\\\\?\\'')' + #10 + '    if path.startswith(special_pre' +
+  'fixes):' + #10 + '        # in the case of paths wit' +
+  'h these prefixes:' + #10 + '        # \\.\ -> device names' + #10 +
+  '        # \\?\ -> literal paths' + #10 +
+  '        # do not do any normalizat' + 'ion, but return the path' + #10 +
+  '        # unchanged apart from the' + ' call to os.fspath()' + #10 +
+  '        return path' + #10 + '    path = path.replace(altsep, se' + 'p)' +
+  #10 + '    prefix, path = splitdrive(path' + ')' + #10 + #10 +
+  '    # collapse initial backslashes' + #10 +
+  '    if path.startswith(sep):' + #10 + '        prefix += sep' + #10 +
+  '        path = path.lstrip(sep)' + #10 + #10 +
+  '    comps = path.split(sep)' + #10 + '    i = 0' + #10 +
+  '    while i < len(comps):' + #10 + '        if not comps[i] or comps[i' +
+  '] == curdir:' + #10 + '            del comps[i]' + #10 +
+  '        elif comps[i] == pardir:' + #10 +
+  '            if i > 0 and comps[i-1' + '] != pardir:' + #10 +
+  '                del comps[i-1:i+1]' + #10 + '                i -= 1' +
+  #10 + '            elif i == 0 and prefix' + '.endswith(sep):' + #10 +
+  '                del comps[i]' + #10 + '            else:' + #10 +
+  '                i += 1' + #10 + '        else:' + #10 +
+  '            i += 1' + #10 + '    # If the path is now empty, su' +
+  'bstitute ''.''' + #10 + '    if not prefix and not comps:' + #10 +
+  '        comps.append(curdir)' + #10 +
+  '    return prefix + sep.join(comps' + ')' + #10 + #10 +
+  'def _abspath_fallback(path):' + #10;
+
+Const
+ Src_ntpath_2: AnsiString =
+  '    """Return the absolute version' +
+  ' of a path as a fallback function ' + 'in case' + #10 +
+  '    `nt._getfullpathname` is not a' +
+  'vailable or raises OSError. See bp' + 'o-31047 for' + #10 + '    more.' +
+  #10 + #10 + '    """' + #10 + #10 + '    path = os.fspath(path)' + #10 +
+  '    if not isabs(path):' + #10 + '        if isinstance(path, bytes)' +
+  ':' + #10 + '            cwd = os.getcwdb()' + #10 + '        else:' + #10 +
+  '            cwd = os.getcwd()' + #10 + '        path = join(cwd, path)' +
+  #10 + '    return normpath(path)' + #10 + #10 +
+  '# Return an absolute path.' + #10 + 'try:' + #10 +
+  '    from nt import _getfullpathnam' + 'e' + #10 + #10 +
+  'except ImportError: # not running ' +
+  'on Windows - mock up something sen' + 'sible' + #10 +
+  '    abspath = _abspath_fallback' + #10 + #10 +
+  'else:  # use native Windows method' + ' on Windows' + #10 +
+  '    def abspath(path):' + #10 + '        """Return the absolute ver' +
+  'sion of a path."""' + #10 + '        try:' + #10 +
+  '            return normpath(_getfu' + 'llpathname(path))' + #10 +
+  '        except (OSError, ValueErro' + 'r):' + #10 +
+  '            return _abspath_fallba' + 'ck(path)' + #10 + #10 + 'try:' +
+  #10 + '    from nt import _getfinalpathna' +
+  'me, readlink as _nt_readlink' + #10 + 'except ImportError:' + #10 +
+  '    # realpath is a no-op on syste' +
+  'ms without _getfinalpathname suppo' + 'rt.' + #10 +
+  '    realpath = abspath' + #10 + 'else:' + #10 +
+  '    def _readlink_deep(path):' + #10 +
+  '        # These error codes indica' +
+  'te that we should stop reading lin' + 'ks and' + #10 +
+  '        # return the path we curre' + 'ntly have.' + #10 +
+  '        # 1: ERROR_INVALID_FUNCTIO' + 'N' + #10 +
+  '        # 2: ERROR_FILE_NOT_FOUND' + #10 +
+  '        # 3: ERROR_DIRECTORY_NOT_F' + 'OUND' + #10 +
+  '        # 5: ERROR_ACCESS_DENIED' + #10 +
+  '        # 21: ERROR_NOT_READY (imp' + 'lies drive with no media)' + #10 +
+  '        # 32: ERROR_SHARING_VIOLAT' +
+  'ION (probably an NTFS paging file)' + #10 +
+  '        # 50: ERROR_NOT_SUPPORTED ' +
+  '(implies no support for reparse po' + 'ints)' + #10 +
+  '        # 67: ERROR_BAD_NET_NAME (' +
+  'implies remote server unavailable)' + #10 +
+  '        # 87: ERROR_INVALID_PARAME' + 'TER' + #10 +
+  '        # 4390: ERROR_NOT_A_REPARS' + 'E_POINT' + #10 +
+  '        # 4392: ERROR_INVALID_REPA' + 'RSE_DATA' + #10 +
+  '        # 4393: ERROR_REPARSE_TAG_' + 'INVALID' + #10 +
+  '        allowed_winerror = 1, 2, 3' +
+  ', 5, 21, 32, 50, 67, 87, 4390, 439' + '2, 4393' + #10 + #10 +
+  '        seen = set()' + #10 + '        while normcase(path) not i' +
+  'n seen:' + #10 + '            seen.add(normcase(path' + '))' + #10 +
+  '            try:' + #10 + '                old_path = path' + #10 +
+  '                path = _nt_readlin' + 'k(path)' + #10 +
+  '                # Links may be rel' +
+  'ative, so resolve them against the' + 'ir' + #10 +
+  '                # own location' + #10 +
+  '                if not isabs(path)' + ':' + #10 +
+  '                    # If it''s some' +
+  'thing other than a symlink, we don' + '''t know' + #10 +
+  '                    # what it''s ac' +
+  'tually going to be resolved agains' + 't, so' + #10 +
+  '                    # just return ' + 'the old path.' + #10 +
+  '                    if not islink(' + 'old_path):' + #10 +
+  '                        path = old' + '_path' + #10 +
+  '                        break' + #10 +
+  '                    path = normpat' + 'h(join(dirname(old_path), path))' +
+  #10 + '            except OSError as ex:' + #10 +
+  '                if ex.winerror in ' + 'allowed_winerror:' + #10 +
+  '                    break' + #10 + '                raise' + #10 +
+  '            except ValueError:' + #10 +
+  '                # Stop on reparse ' + 'points that are not symlinks' +
+  #10 + '                break' + #10 + '        return path' + #10 + #10 +
+  '    def _getfinalpathname_nonstric' + 't(path):' + #10 +
+  '        # These error codes indica' +
+  'te that we should stop resolving t' + 'he path' + #10 +
+  '        # and return the value we ' + 'currently have.' + #10 +
+  '        # 1: ERROR_INVALID_FUNCTIO' + 'N' + #10 +
+  '        # 2: ERROR_FILE_NOT_FOUND' + #10 +
+  '        # 3: ERROR_DIRECTORY_NOT_F' + 'OUND' + #10 +
+  '        # 5: ERROR_ACCESS_DENIED' + #10 +
+  '        # 21: ERROR_NOT_READY (imp' + 'lies drive with no media)' + #10 +
+  '        # 32: ERROR_SHARING_VIOLAT' +
+  'ION (probably an NTFS paging file)' + #10 +
+  '        # 50: ERROR_NOT_SUPPORTED' + #10 +
+  '        # 67: ERROR_BAD_NET_NAME (' +
+  'implies remote server unavailable)' + #10 +
+  '        # 87: ERROR_INVALID_PARAME' + 'TER' + #10 +
+  '        # 123: ERROR_INVALID_NAME' + #10 +
+  '        # 1920: ERROR_CANT_ACCESS_' + 'FILE' + #10 +
+  '        # 1921: ERROR_CANT_RESOLVE' +
+  '_FILENAME (implies unfollowable sy' + 'mlink)' + #10 +
+  '        allowed_winerror = 1, 2, 3' +
+  ', 5, 21, 32, 50, 67, 87, 123, 1920' + ', 1921' + #10 + #10 +
+  '        # Non-strict algorithm is ' +
+  'to find as much of the target dire' + 'ctory' + #10 +
+  '        # as we can and join the r' + 'est.' + #10 +
+  '        tail = ''''' + #10 + '        while path:' + #10 +
+  '            try:' + #10 + '                path = _getfinalpa' +
+  'thname(path)' + #10 + '                return join(path, ' +
+  'tail) if tail else path' + #10 + '            except OSError as ex:' +
+  #10 + '                if ex.winerror not' + ' in allowed_winerror:' + #10 +
+  '                    raise' + #10 + '                try:' + #10 +
+  '                    # The OS could' +
+  ' not resolve this path fully, so w' + 'e attempt' + #10 +
+  '                    # to follow th' +
+  'e link ourselves. If we succeed, j' + 'oin the tail' + #10 +
+  '                    # and return.' + #10 +
+  '                    new_path = _re' + 'adlink_deep(path)' + #10 +
+  '                    if new_path !=' + ' path:' + #10 +
+  '                        return joi' +
+  'n(new_path, tail) if tail else new' + '_path' + #10 +
+  '                except OSError:' + #10 +
+  '                    # If we fail t' +
+  'o readlink(), let''s keep traversin' + 'g' + #10 +
+  '                    pass' + #10 + '                path, name = split' +
+  '(path)' + #10 + '                # TODO (bpo-38186)' +
+  ': Request the real file name from ' + 'the directory' + #10 +
+  '                # entry using Find' +
+  'FirstFileW. For now, we will retur' + 'n the path' + #10 +
+  '                # as best we have ' + 'it' + #10 +
+  '                if path and not na' + 'me:' + #10 +
+  '                    return path + ' + 'tail' + #10 +
+  '                tail = join(name, ' + 'tail) if tail else name' + #10 +
+  '        return tail' + #10 + #10 + '    def realpath(path):' + #10 +
+  '        path = normpath(path)' + #10 +
+  '        if isinstance(path, bytes)' + ':' + #10 +
+  '            prefix = b''\\\\?\\''' + #10 +
+  '            unc_prefix = b''\\\\?\\' + 'UNC\\''' + #10 +
+  '            new_unc_prefix = b''\\\' + '\''' + #10 +
+  '            cwd = os.getcwdb()' + #10 +
+  '            # bpo-38081: Special c' + 'ase for realpath(b''nul'')' + #10 +
+  '            if normcase(path) == n' + 'ormcase(os.fsencode(devnull)):' +
+  #10 + '                return b''\\\\.\\NU' + 'L''' + #10 +
+  '        else:' + #10 + '            prefix = ''\\\\?\\''' + #10 +
+  '            unc_prefix = ''\\\\?\\U' + 'NC\\''' + #10 +
+  '            new_unc_prefix = ''\\\\' + '''' + #10 +
+  '            cwd = os.getcwd()' + #10 +
+  '            # bpo-38081: Special c' + 'ase for realpath(''nul'')' + #10 +
+  '            if normcase(path) == n' + 'ormcase(devnull):' + #10 +
+  '                return ''\\\\.\\NUL' + '''' + #10 +
+  '        had_prefix = path.startswi' + 'th(prefix)' + #10 +
+  '        if not had_prefix and not ' + 'isabs(path):' + #10 +
+  '            path = join(cwd, path)' + #10 + '        try:' + #10 +
+  '            path = _getfinalpathna' + 'me(path)' + #10 +
+  '            initial_winerror = 0' + #10 + '        except OSError as ex:' +
+  #10 + '            initial_winerror = ex.' + 'winerror' + #10 +
+  '            path = _getfinalpathna' + 'me_nonstrict(path)' + #10 +
+  '        # The path returned by _ge' +
+  'tfinalpathname will always start w' + 'ith \\?\ -' + #10 +
+  '        # strip off that prefix un' +
+  'less it was already provided on th' + 'e original' + #10 +
+  '        # path.' + #10 + '        if not had_prefix and path' +
+  '.startswith(prefix):' + #10 + '            # For UNC paths, the p' +
+  'refix will actually be \\?\UNC\' + #10 +
+  '            # Handle that case as ' + 'well.' + #10 +
+  '            if path.startswith(unc' + '_prefix):' + #10 +
+  '                spath = new_unc_pr' + 'efix + path[len(unc_prefix):]' +
+  #10 + '            else:' + #10 + '                spath = path[len(p' +
+  'refix):]' + #10 + '            # Ensure that the non-' +
+  'prefixed path resolves to the same' + ' path' + #10 + '            try:' +
+  #10 + '                if _getfinalpathna' + 'me(spath) == path:' + #10 +
+  '                    path = spath' + #10 +
+  '            except OSError as ex:' + #10 +
+  '                # If the path does' +
+  ' not exist and originally did not ' + 'exist, then' + #10 +
+  '                # strip the prefix' + ' anyway.' + #10 +
+  '                if ex.winerror == ' + 'initial_winerror:' + #10 +
+  '                    path = spath' + #10 + '        return path' + #10 +
+  #10 + #10 + '# Win9x family and earlier have no' +
+  ' Unicode filename support.' + #10 + 'supports_unicode_filenames = (hasa' +
+  'ttr(sys, "getwindowsversion") and' + #10 +
+  '                              sys.' + 'getwindowsversion()[3] >= 2)' +
+  #10 + #10 + 'def relpath(path, start=None):' + #10 +
+  '    """Return a relative version o' + 'f a path"""' + #10 +
+  '    path = os.fspath(path)' + #10 + '    if isinstance(path, bytes):' +
+  #10 + '        sep = b''\\''' + #10 + '        curdir = b''.''' + #10 +
+  '        pardir = b''..''' + #10 + '    else:' + #10 +
+  '        sep = ''\\''' + #10 + '        curdir = ''.''' + #10 +
+  '        pardir = ''..''' + #10 + #10 + '    if start is None:' + #10 +
+  '        start = curdir' + #10 + #10 + '    if not path:' + #10 +
+  '        raise ValueError("no path ' + 'specified")' + #10 + #10 +
+  '    start = os.fspath(start)' + #10 + '    try:' + #10 +
+  '        start_abs = abspath(normpa' + 'th(start))' + #10 +
+  '        path_abs = abspath(normpat' + 'h(path))' + #10 +
+  '        start_drive, start_rest = ' + 'splitdrive(start_abs)' + #10 +
+  '        path_drive, path_rest = sp' + 'litdrive(path_abs)' + #10 +
+  '        if normcase(start_drive) !' + '= normcase(path_drive):' + #10 +
+  '            raise ValueError("path' +
+  ' is on mount %r, start on mount %r' + '" % (' + #10 +
+  '                path_drive, start_' + 'drive))' + #10 + #10 +
+  '        start_list = [x for x in s' + 'tart_rest.split(sep) if x]' + #10 +
+  '        path_list = [x for x in pa' + 'th_rest.split(sep) if x]' + #10 +
+  '        # Work out how much of the' +
+  ' filepath is shared by start and p' + 'ath.' + #10 + '        i = 0' +
+  #10 + '        for e1, e2 in zip(start_li' + 'st, path_list):' + #10 +
+  '            if normcase(e1) != nor' + 'mcase(e2):' + #10 +
+  '                break' + #10 + '            i += 1' + #10 + #10 +
+  '        rel_list = [pardir] * (len' + '(start_list)-i) + path_list[i:]' +
+  #10 + '        if not rel_list:' + #10 + '            return curdir' + #10 +
+  '        return join(*rel_list)' + #10 +
+  '    except (TypeError, ValueError,' +
+  ' AttributeError, BytesWarning, Dep' + 'recationWarning):' + #10 +
+  '        genericpath._check_arg_typ' + 'es(''relpath'', path, start)' +
+  #10 + '        raise' + #10 + #10 + #10 +
+  '# Return the longest common sub-pa' +
+  'th of the sequence of paths given ' + 'as input.' + #10 +
+  '# The function is case-insensitive' +
+  ' and ''separator-insensitive'', i.e.' + ' if the' + #10 +
+  '# only difference between two path' +
+  's is the use of ''\'' versus ''/'' as ' + 'separator,' + #10 +
+  '# they are deemed to be equal.' + #10 + '#' + #10 +
+  '# However, the returned path will ' +
+  'have the standard ''\'' separator (e' + 'ven if the' + #10 +
+  '# given paths had the alternative ' +
+  '''/'' separator) and will have the c' + 'ase of the' + #10 +
+  '# first path given in the sequence' +
+  '. Additionally, any trailing separ' + 'ator is' + #10 +
+  '# stripped from the returned path.' + #10 + #10 +
+  'def commonpath(paths):' + #10 + '    """Given a sequence of path na' +
+  'mes, returns the longest common su' + 'b-path."""' + #10 + #10 +
+  '    if not paths:' + #10 + '        raise ValueError(''commonpa' +
+  'th() arg is an empty sequence'')' + #10 + #10 +
+  '    paths = tuple(map(os.fspath, p' + 'aths))' + #10 +
+  '    if isinstance(paths[0], bytes)' + ':' + #10 + '        sep = b''\\''' +
+  #10 + '        altsep = b''/''' + #10 + '        curdir = b''.''' + #10 +
+  '    else:' + #10 + '        sep = ''\\''' + #10 +
+  '        altsep = ''/''' + #10 + '        curdir = ''.''' + #10 + #10 +
+  '    try:' + #10;
+
+Const
+ Src_ntpath_3: AnsiString =
+  '        drivesplits = [splitdrive(' +
+  'p.replace(altsep, sep).lower()) fo' + 'r p in paths]' + #10 +
+  '        split_paths = [p.split(sep' + ') for d, p in drivesplits]' + #10 +
+  #10 + '        try:' + #10 + '            isabs, = set(p[:1] == ' +
+  'sep for d, p in drivesplits)' + #10 + '        except ValueError:' + #10 +
+  '            raise ValueError("Can''' +
+  't mix absolute and relative paths"' + ') from None' + #10 + #10 +
+  '        # Check that all drive let' +
+  'ters or UNC paths match. The check' + ' is made only' + #10 +
+  '        # now otherwise type error' +
+  's for mixing strings and bytes wou' + 'ld not be' + #10 +
+  '        # caught.' + #10 + '        if len(set(d for d, p in d' +
+  'rivesplits)) != 1:' + #10 + '            raise ValueError("Path' +
+  's don''t have the same drive")' + #10 + #10 +
+  '        drive, path = splitdrive(p' + 'aths[0].replace(altsep, sep))' +
+  #10 + '        common = path.split(sep)' + #10 +
+  '        common = [c for c in commo' + 'n if c and c != curdir]' + #10 +
+  #10 + '        split_paths = [[c for c in' +
+  ' s if c and c != curdir] for s in ' + 'split_paths]' + #10 +
+  '        s1 = min(split_paths)' + #10 + '        s2 = max(split_paths)' +
+  #10 + '        for i, c in enumerate(s1):' + #10 +
+  '            if c != s2[i]:' + #10 + '                common = common[:i' +
+  ']' + #10 + '                break' + #10 + '        else:' + #10 +
+  '            common = common[:len(s' + '1)]' + #10 + #10 +
+  '        prefix = drive + sep if is' + 'abs else drive' + #10 +
+  '        return prefix + sep.join(c' + 'ommon)' + #10 +
+  '    except (TypeError, AttributeEr' + 'ror):' + #10 +
+  '        genericpath._check_arg_typ' + 'es(''commonpath'', *paths)' + #10 +
+  '        raise' + #10 + #10 + #10 + 'try:' + #10 +
+  '    # The genericpath.isdir implem' +
+  'entation uses os.stat and checks t' + 'he mode' + #10 +
+  '    # attribute to tell whether or' + ' not the path is a directory.' +
+  #10 + '    # This is overkill on Windows ' +
+  '- just pass the path to GetFileAtt' + 'ributes' + #10 +
+  '    # and check the attribute from' + ' there.' + #10 +
+  '    from nt import _isdir as isdir' + #10 + 'except ImportError:' + #10 +
+  '    # Use genericpath.isdir as imp' + 'orted above.' + #10 + '    pass' +
+  #10 + #10;
+
+Function Src_ntpath: AnsiString;
+Begin
+ Result := Src_ntpath_0 + Src_ntpath_1 + Src_ntpath_2 + Src_ntpath_3;
+End;
+
+Const
  Src_numbers_0: AnsiString =
   '# Copyright 2007 Google, Inc. All ' + 'Rights Reserved.' + #10 +
   '# Licensed to PSF under a Contribu' + 'tor Agreement.' + #10 + #10 +
@@ -70699,227 +75180,950 @@ End;
 
 Const
  Src_os_0: AnsiString =
-  'import sys' + #10 + 'import posix' + #10 + 'import posixpath as path' +
-  #10 + 'import stat as st' + #10 + 'from posix import *' + #10 + #10 +
-  'name = ''posix''' + #10 + 'sys.modules[''os.path''] = path' + #10 +
-  'curdir = ''.''' + #10 + 'pardir = ''..''' + #10 + 'sep = ''/''' + #10 +
-  'altsep = None' + #10 + 'extsep = ''.''' + #10 + 'pathsep = '':''' + #10 +
-  'defpath = ''/bin:/usr/bin''' + #10 + 'linesep = ''\n''' + #10 +
-  'devnull = ''/dev/null''' + #10 + 'error = OSError' + #10 + #10 +
-  'SEEK_SET = 0' + #10 + 'SEEK_CUR = 1' + #10 + 'SEEK_END = 2' + #10 +
-  'F_OK = 0' + #10 + 'X_OK = 1' + #10 + 'W_OK = 2' + #10 + 'R_OK = 4' + #10 +
-  'O_RDONLY = 0' + #10 + 'O_WRONLY = 1' + #10 + 'O_RDWR = 2' + #10 +
-  'O_CREAT = 64' + #10 + 'O_EXCL = 128' + #10 + 'O_TRUNC = 512' + #10 +
-  'O_APPEND = 1024' + #10 + #10 + 'class PathLike:' + #10 +
-  '    def __fspath__(self):' + #10 + '        raise NotImplementedError' +
-  #10 + '    @classmethod' + #10 + '    def __subclasshook__(cls, subc' +
-  'lass):' + #10 + '        if cls is PathLike:' + #10 +
-  '            return hasattr(subclas' + 's, ''__fspath__'')' + #10 +
-  '        return NotImplemented' + #10 + #10 + 'def fspath(p):' + #10 +
-  '    if isinstance(p, (str, bytes))' + ':' + #10 + '        return p' +
-  #10 + '    f = getattr(type(p), ''__fspath' + '__'', None)' + #10 +
-  '    if f is None:' + #10 + '        raise TypeError("expected ' +
-  'str, bytes or os.PathLike object, ' + 'not "' + #10 +
-  '                        + type(p).' + '__name__)' + #10 + '    r = f(p)' +
-  #10 + '    if isinstance(r, (str, bytes))' + ':' + #10 +
-  '        return r' + #10 + '    raise TypeError("expected %s._' +
-  '_fspath__() to return str or bytes' + ', not %s"' + #10 +
-  '                    % (type(p).__n' + 'ame__, type(r).__name__))' + #10 +
-  #10 + 'def fsencode(filename):' + #10 + '    filename = fspath(filename)' +
-  #10 + '    if isinstance(filename, str):' + #10 +
-  '        return filename.encode(''ut' + 'f-8'')' + #10 +
-  '    return filename' + #10 + #10 + 'def fsdecode(filename):' + #10 +
-  '    filename = fspath(filename)' + #10 +
-  '    if isinstance(filename, bytes)' + ':' + #10 +
-  '        return filename.decode(''ut' + 'f-8'')' + #10 +
-  '    return filename' + #10 + #10 + 'def getcwdb():' + #10 +
-  '    return getcwd().encode(''utf-8''' + ')' + #10 + #10 +
-  'class _Environ(dict):' + #10 + '    def __setitem__(self, key, val' +
-  'ue):' + #10 + '        if not isinstance(key, str' +
-  ') or not isinstance(value, str):' + #10 +
-  '            raise TypeError("str e' +
-  'xpected, not %s" % type(value).__n' + 'ame__)' + #10 +
-  '        dict.__setitem__(self, key' + ', value)' + #10 +
-  '        posix.putenv(key, value)' + #10 +
-  '    def __delitem__(self, key):' + #10 +
-  '        dict.__delitem__(self, key' + ')' + #10 +
-  '        posix.putenv(key, '''')' + #10 + '    def copy(self):' + #10 +
-  '        return dict(self)' + #10 + '    def setdefault(self, key, valu' +
-  'e):' + #10 + '        if key not in self:' + #10 +
-  '            self[key] = value' + #10 + '        return self[key]' + #10 +
-  '    def update(self, *args, **kw):' + #10 +
-  '        for k, v in dict(*args, **' + 'kw).items():' + #10 +
-  '            self[k] = v' + #10 + '    def __repr__(self):' + #10 +
-  '        return ''environ(%s)'' % dic' + 't.__repr__(self)' + #10 + #10 +
-  'environ = _Environ(posix.environ()' + ')' + #10 + #10 +
-  'def getenv(key, default=None):' + #10 +
-  '    return environ.get(key, defaul' + 't)' + #10 + #10 +
-  'def putenv(key, value):' + #10 + '    environ[key] = value' + #10 + #10 +
-  'def unsetenv(key):' + #10 + '    if key in environ:' + #10 +
-  '        del environ[key]' + #10 + #10 + 'unlink = remove' + #10 + #10 +
-  'class stat_result(tuple):' + #10 + '    def __new__(cls, t):' + #10 +
-  '        return tuple.__new__(cls, ' + 't)' + #10 +
-  '    st_mode = property(lambda s: s' + '[0])' + #10 +
-  '    st_ino = property(lambda s: s[' + '1])' + #10 +
-  '    st_dev = property(lambda s: s[' + '2])' + #10 +
-  '    st_nlink = property(lambda s: ' + 's[3])' + #10 +
-  '    st_uid = property(lambda s: s[' + '4])' + #10 +
-  '    st_gid = property(lambda s: s[' + '5])' + #10 +
-  '    st_size = property(lambda s: s' + '[6])' + #10 +
-  '    st_atime = property(lambda s: ' + 'float(s[7]))' + #10 +
-  '    st_mtime = property(lambda s: ' + 'float(s[8]))' + #10 +
-  '    st_ctime = property(lambda s: ' + 'float(s[9]))' + #10 +
-  '    def __repr__(self):' + #10 + '        return (''os.stat_result(st' +
-  '_mode=%d, st_ino=%d, st_dev=%d, st' + '_nlink=%d,''' + #10 +
-  '                '' st_uid=%d, st_gi' +
-  'd=%d, st_size=%d, st_atime=%d, st_' + 'mtime=%d,''' + #10 +
-  '                '' st_ctime=%d)'' % ' + 'tuple(self))' + #10 + #10 +
-  '_stat = posix.stat' + #10 + '_lstat = posix.lstat' + #10 + #10 +
-  'def stat(path, *, dir_fd=None, fol' + 'low_symlinks=True):' + #10 +
-  '    if follow_symlinks:' + #10 + '        return stat_result(_stat(f' +
-  'spath(path)))' + #10 + '    return stat_result(_lstat(fspa' +
-  'th(path)))' + #10 + #10 + 'def lstat(path, *, dir_fd=None):' + #10 +
-  '    return stat_result(_lstat(fspa' + 'th(path)))' + #10 + #10 +
-  'def makedirs(name, mode=0o777, exi' + 'st_ok=False):' + #10 +
+  'r"""OS routines for NT or Posix de' + 'pending on what system we''re on.' +
+  #10 + #10 + 'This exports:' + #10 + '  - all functions from posix or nt' +
+  ', e.g. unlink, stat, etc.' + #10 + '  - os.path is either posixpath or' +
+  ' ntpath' + #10 + '  - os.name is either ''posix'' or ''' + 'nt''' + #10 +
+  '  - os.curdir is a string represen' +
+  'ting the current directory (always' + ' ''.'')' + #10 +
+  '  - os.pardir is a string represen' +
+  'ting the parent directory (always ' + '''..'')' + #10 +
+  '  - os.sep is the (or a most commo' +
+  'n) pathname separator (''/'' or ''\\''' + ')' + #10 +
+  '  - os.extsep is the extension sep' + 'arator (always ''.'')' + #10 +
+  '  - os.altsep is the alternate pat' + 'hname separator (None or ''/'')' +
+  #10 + '  - os.pathsep is the component se' + 'parator used in $PATH etc' +
+  #10 + '  - os.linesep is the line separat' +
+  'or in text files (''\r'' or ''\n'' or ' + '''\r\n'')' + #10 +
+  '  - os.defpath is the default sear' + 'ch path for executables' + #10 +
+  '  - os.devnull is the file path of' +
+  ' the null device (''/dev/null'', etc' + '.)' + #10 + #10 +
+  'Programs that import and use ''os'' ' + 'stand a better chance of being' +
+  #10 + 'portable between different platfor' +
+  'ms.  Of course, they must then' + #10 +
+  'only use functions that are define' + 'd by all platforms (e.g., unlink' +
+  #10 + 'and opendir), and leave all pathna' + 'me manipulation to os.path' +
+  #10 + '(e.g., split and join).' + #10 + '"""' + #10 + #10 + '#''' + #10 +
+  'import abc' + #10 + 'import sys' + #10 + 'import stat as st' + #10 + #10 +
+  'from _collections_abc import _chec' + 'k_methods' + #10 + #10 +
+  '_names = sys.builtin_module_names' + #10 + #10 +
+  '# Note:  more names are added to _' + '_all__ later.' + #10 +
+  '__all__ = ["altsep", "curdir", "pa' +
+  'rdir", "sep", "pathsep", "linesep"' + ',' + #10 +
+  '           "defpath", "name", "pat' +
+  'h", "devnull", "SEEK_SET", "SEEK_C' + 'UR",' + #10 +
+  '           "SEEK_END", "fsencode",' +
+  ' "fsdecode", "get_exec_path", "fdo' + 'pen",' + #10 +
+  '           "popen", "extsep"]' + #10 + #10 + 'def _exists(name):' + #10 +
+  '    return name in globals()' + #10 + #10 +
+  'def _get_exports_list(module):' + #10 + '    try:' + #10 +
+  '        return list(module.__all__' + ')' + #10 +
+  '    except AttributeError:' + #10 + '        return [n for n in dir(mod' +
+  'ule) if n[0] != ''_'']' + #10 + #10 +
+  '# Any new dependencies of the os m' +
+  'odule and/or changes in path separ' + 'ator' + #10 +
+  '# requires updating importlib as w' + 'ell.' + #10 +
+  'if ''posix'' in _names:' + #10 + '    name = ''posix''' + #10 +
+  '    linesep = ''\n''' + #10 + '    from posix import *' + #10 +
+  '    try:' + #10 + '        from posix import _exit' + #10 +
+  '        __all__.append(''_exit'')' + #10 + '    except ImportError:' +
+  #10 + '        pass' + #10 + '    import posixpath as path' + #10 + #10 +
+  '    try:' + #10 + '        from posix import _have_fu' + 'nctions' + #10 +
+  '    except ImportError:' + #10 + '        pass' + #10 + #10 +
+  '    import posix' + #10 + '    __all__.extend(_get_exports_li' +
+  'st(posix))' + #10 + '    del posix' + #10 + #10 +
+  'elif ''nt'' in _names:' + #10 + '    name = ''nt''' + #10 +
+  '    linesep = ''\r\n''' + #10 + '    from nt import *' + #10 + '    try:' +
+  #10 + '        from nt import _exit' + #10 +
+  '        __all__.append(''_exit'')' + #10 + '    except ImportError:' +
+  #10 + '        pass' + #10 + '    import ntpath as path' + #10 + #10 +
+  '    import nt' + #10 + '    __all__.extend(_get_exports_li' + 'st(nt))' +
+  #10 + '    del nt' + #10 + #10 + '    try:' + #10 +
+  '        from nt import _have_funct' + 'ions' + #10 +
+  '    except ImportError:' + #10 + '        pass' + #10 + #10 + 'else:' +
+  #10 + '    raise ImportError(''no os speci' + 'fic module found'')' + #10 +
+  #10 + 'sys.modules[''os.path''] = path' + #10 +
+  'from os.path import (curdir, pardi' +
+  'r, sep, pathsep, defpath, extsep, ' + 'altsep,' + #10 + '    devnull)' +
+  #10 + #10 + 'del _names' + #10 + #10 + #10 +
+  'if _exists("_have_functions"):' + #10 + '    _globals = globals()' + #10 +
+  '    def _add(str, fn):' + #10 + '        if (fn in _globals) and (s' +
+  'tr in _have_functions):' + #10 + '            _set.add(_globals[fn])' +
+  #10 + #10 + '    _set = set()' + #10 +
+  '    _add("HAVE_FACCESSAT",  "acces' + 's")' + #10 +
+  '    _add("HAVE_FCHMODAT",   "chmod' + '")' + #10 +
+  '    _add("HAVE_FCHOWNAT",   "chown' + '")' + #10 +
+  '    _add("HAVE_FSTATAT",    "stat"' + ')' + #10 +
+  '    _add("HAVE_FUTIMESAT",  "utime' + '")' + #10 +
+  '    _add("HAVE_LINKAT",     "link"' + ')' + #10 +
+  '    _add("HAVE_MKDIRAT",    "mkdir' + '")' + #10 +
+  '    _add("HAVE_MKFIFOAT",   "mkfif' + 'o")' + #10 +
+  '    _add("HAVE_MKNODAT",    "mknod' + '")' + #10 +
+  '    _add("HAVE_OPENAT",     "open"' + ')' + #10 +
+  '    _add("HAVE_READLINKAT", "readl' + 'ink")' + #10 +
+  '    _add("HAVE_RENAMEAT",   "renam' + 'e")' + #10 +
+  '    _add("HAVE_SYMLINKAT",  "symli' + 'nk")' + #10 +
+  '    _add("HAVE_UNLINKAT",   "unlin' + 'k")' + #10 +
+  '    _add("HAVE_UNLINKAT",   "rmdir' + '")' + #10 +
+  '    _add("HAVE_UTIMENSAT",  "utime' + '")' + #10 +
+  '    supports_dir_fd = _set' + #10 + #10 + '    _set = set()' + #10 +
+  '    _add("HAVE_FACCESSAT",  "acces' + 's")' + #10 +
+  '    supports_effective_ids = _set' + #10 + #10 + '    _set = set()' + #10 +
+  '    _add("HAVE_FCHDIR",     "chdir' + '")' + #10 +
+  '    _add("HAVE_FCHMOD",     "chmod' + '")' + #10 +
+  '    _add("HAVE_FCHOWN",     "chown' + '")' + #10 +
+  '    _add("HAVE_FDOPENDIR",  "listd' + 'ir")' + #10 +
+  '    _add("HAVE_FDOPENDIR",  "scand' + 'ir")' + #10 +
+  '    _add("HAVE_FEXECVE",    "execv' + 'e")' + #10 +
+  '    _set.add(stat) # fstat always ' + 'works' + #10 +
+  '    _add("HAVE_FTRUNCATE",  "trunc' + 'ate")' + #10 +
+  '    _add("HAVE_FUTIMENS",   "utime' + '")' + #10 +
+  '    _add("HAVE_FUTIMES",    "utime' + '")' + #10 +
+  '    _add("HAVE_FPATHCONF",  "pathc' + 'onf")' + #10 +
+  '    if _exists("statvfs") and _exi' + 'sts("fstatvfs"): # mac os x10.3' +
+  #10 + '        _add("HAVE_FSTATVFS", "sta' + 'tvfs")' + #10 +
+  '    supports_fd = _set' + #10 + #10 + '    _set = set()' + #10 +
+  '    _add("HAVE_FACCESSAT",  "acces' + 's")' + #10 +
+  '    # Some platforms don''t support' +
+  ' lchmod().  Often the function exi' + 'sts' + #10 +
+  '    # anyway, as a stub that alway' +
+  's returns ENOSUP or perhaps EOPNOT' + 'SUPP.' + #10 +
+  '    # (No, I don''t know why that''s' +
+  ' a good design.)  ./configure will' + ' detect' + #10 +
+  '    # this and reject it--so HAVE_' +
+  'LCHMOD still won''t be defined on s' + 'uch' + #10 +
+  '    # platforms.  This is Very Hel' + 'pful.' + #10 + '    #' + #10 +
+  '    # However, sometimes platforms' +
+  ' without a working lchmod() *do* h' + 'ave' + #10 +
+  '    # fchmodat().  (Examples: Linu' + 'x kernel 3.2 with glibc 2.15,' +
+  #10 + '    # OpenIndiana 3.x.)  And fchmo' +
+  'dat() has a flag that theoreticall' + 'y makes' + #10 +
+  '    # it behave like lchmod().  So' + ' in theory it would be a suitable' +
+  #10 + '    # replacement for lchmod().  B' +
+  'ut when lchmod() doesn''t work, fch' + 'modat()''s' + #10 +
+  '    # flag doesn''t work *either*. ' +
+  ' Sadly ./configure isn''t sophistic' + 'ated' + #10 +
+  '    # enough to detect this condit' +
+  'ion--it only determines whether or' + ' not' + #10 +
+  '    # fchmodat() minimally works.' + #10 + '    #' + #10 +
+  '    # Therefore we simply ignore f' +
+  'chmodat() when deciding whether or' + ' not' + #10 +
+  '    # os.chmod supports follow_sym' + 'links.  Just checking lchmod() is' +
+  #10 + '    # sufficient.  After all--if y' +
+  'ou have a working fchmodat(), your' + #10 +
+  '    # lchmod() almost certainly wo' + 'rks too.' + #10 + '    #' + #10 +
+  '    # _add("HAVE_FCHMODAT",   "chm' + 'od")' + #10 +
+  '    _add("HAVE_FCHOWNAT",   "chown' + '")' + #10 +
+  '    _add("HAVE_FSTATAT",    "stat"' + ')' + #10 +
+  '    _add("HAVE_LCHFLAGS",   "chfla' + 'gs")' + #10 +
+  '    _add("HAVE_LCHMOD",     "chmod' + '")' + #10 +
+  '    if _exists("lchown"): # mac os' + ' x10.3' + #10 +
+  '        _add("HAVE_LCHOWN", "chown' + '")' + #10 +
+  '    _add("HAVE_LINKAT",     "link"' + ')' + #10 +
+  '    _add("HAVE_LUTIMES",    "utime' + '")' + #10 +
+  '    _add("HAVE_LSTAT",      "stat"' + ')' + #10 +
+  '    _add("HAVE_FSTATAT",    "stat"' + ')' + #10 +
+  '    _add("HAVE_UTIMENSAT",  "utime' + '")' + #10 +
+  '    _add("MS_WINDOWS",      "stat"' + ')' + #10 +
+  '    supports_follow_symlinks = _se' + 't' + #10 + #10 + '    del _set' +
+  #10 + '    del _have_functions' + #10 + '    del _globals' + #10 +
+  '    del _add' + #10 + #10 + #10 + '# Python uses fixed values for the' +
+  ' SEEK_ constants; they are mapped' + #10 +
+  '# to native constants if necessary' + ' in posixmodule.c' + #10 +
+  '# Other possible SEEK values are d' +
+  'irectly imported from posixmodule.' + 'c' + #10 + 'SEEK_SET = 0' + #10 +
+  'SEEK_CUR = 1' + #10 + 'SEEK_END = 2' + #10 + #10 +
+  '# Super directory utilities.' + #10 +
+  '# (Inspired by Eric Raymond; the d' + 'oc strings are mostly his)' + #10 +
+  #10 + 'def makedirs(name, mode=0o777, exi' + 'st_ok=False):' + #10 +
+  '    """makedirs(name [, mode=0o777' + '][, exist_ok=False])' + #10 + #10 +
+  '    Super-mkdir; create a leaf dir' +
+  'ectory and all intermediate ones. ' + ' Works like' + #10 +
+  '    mkdir, except that any interme' +
+  'diate path segment (not just the r' + 'ightmost)' + #10 +
+  '    will be created if it does not' +
+  ' exist. If the target directory al' + 'ready' + #10 +
+  '    exists, raise an OSError if ex' +
+  'ist_ok is False. Otherwise no exce' + 'ption is' + #10 +
+  '    raised.  This is recursive.' + #10 + #10 + '    """' + #10 +
   '    head, tail = path.split(name)' + #10 + '    if not tail:' + #10 +
   '        head, tail = path.split(he' + 'ad)' + #10 +
   '    if head and tail and not path.' + 'exists(head):' + #10 +
   '        try:' + #10 + '            makedirs(head, exist_o' +
   'k=exist_ok)' + #10 + '        except FileExistsError:' + #10 +
-  '            pass' + #10 + '        cdir = curdir' + #10 +
-  '        if isinstance(tail, bytes)' + ':' + #10 +
-  '            cdir = bytes(curdir, ''' + 'ASCII'')' + #10 +
-  '        if tail == cdir:' + #10 + '            return' + #10 + '    try:' +
-  #10 + '        mkdir(name, mode)' + #10 + '    except OSError:' + #10 +
-  '        if not exist_ok or not pat' + 'h.isdir(name):' + #10 +
+  '            # Defeats race conditi' +
+  'on when another thread created the' + ' path' + #10 + '            pass' +
+  #10 + '        cdir = curdir' + #10 + '        if isinstance(tail, bytes)' +
+  ':' + #10 + '            cdir = bytes(curdir, ''' + 'ASCII'')' + #10 +
+  '        if tail == cdir:          ' +
+  ' # xxx/newdir/. exists if xxx/newd' + 'ir exists' + #10 +
+  '            return' + #10 + '    try:' + #10 +
+  '        mkdir(name, mode)' + #10 + '    except OSError:' + #10 +
+  '        # Cannot rely on checking ' +
+  'for EEXIST, since the operating sy' + 'stem' + #10 +
+  '        # could give priority to o' + 'ther errors like EACCES or EROFS' +
+  #10 + '        if not exist_ok or not pat' + 'h.isdir(name):' + #10 +
   '            raise' + #10 + #10 + 'def removedirs(name):' + #10 +
-  '    rmdir(name)' + #10 + '    head, tail = path.split(name)' + #10 +
-  '    if not tail:' + #10 + '        head, tail = path.split(he' + 'ad)' +
-  #10 + '    while head and tail:' + #10 + '        try:' + #10 +
+  '    """removedirs(name)' + #10 + #10 +
+  '    Super-rmdir; remove a leaf dir' + 'ectory and all empty intermediate' +
+  #10 + '    ones.  Works like rmdir except' +
+  ' that, if the leaf directory is' + #10 +
+  '    successfully removed, director' +
+  'ies corresponding to rightmost pat' + 'h' + #10 +
+  '    segments will be pruned away u' + 'ntil either the whole path is' +
+  #10 + '    consumed or an error occurs.  ' +
+  'Errors during this latter phase ar' + 'e' + #10 +
+  '    ignored -- they generally mean' + ' that a directory was not empty.' +
+  #10 + #10 + '    """' + #10 + '    rmdir(name)' + #10 +
+  '    head, tail = path.split(name)' + #10 + '    if not tail:' + #10 +
+  '        head, tail = path.split(he' + 'ad)' + #10 +
+  '    while head and tail:' + #10 + '        try:' + #10 +
   '            rmdir(head)' + #10 + '        except OSError:' + #10 +
   '            break' + #10 + '        head, tail = path.split(he' + 'ad)' +
-  #10 + #10 + 'def renames(old, new):' + #10 +
+  #10;
+
+Const
+ Src_os_1: AnsiString =
+  #10 + 'def renames(old, new):' + #10 + '    """renames(old, new)' + #10 +
+  #10 + '    Super-rename; create directori' +
+  'es as necessary and delete any lef' + 't' + #10 +
+  '    empty.  Works like rename, exc' + 'ept creation of any intermediate' +
+  #10 + '    directories needed to make the' +
+  ' new pathname good is attempted' + #10 +
+  '    first.  After the rename, dire' +
+  'ctories corresponding to rightmost' + #10 +
+  '    path segments of the old name ' + 'will be pruned until either the' +
+  #10 + '    whole path is consumed or a no' + 'nempty directory is found.' +
+  #10 + #10 + '    Note: this function can fail w' +
+  'ith the new directory structure ma' + 'de' + #10 +
+  '    if you lack permissions needed' + ' to unlink the leaf directory or' +
+  #10 + '    file.' + #10 + #10 + '    """' + #10 +
   '    head, tail = path.split(new)' + #10 +
   '    if head and tail and not path.' + 'exists(head):' + #10 +
   '        makedirs(head)' + #10 + '    rename(old, new)' + #10 +
   '    head, tail = path.split(old)' + #10 + '    if head and tail:' + #10 +
   '        try:' + #10 + '            removedirs(head)' + #10 +
   '        except OSError:' + #10 + '            pass' + #10 + #10 +
-  'def replace(src, dst):' + #10 + '    rename(src, dst)' + #10 + #10 +
+  '__all__.extend(["makedirs", "remov' + 'edirs", "renames"])' + #10 + #10 +
   'def walk(top, topdown=True, onerro' + 'r=None, followlinks=False):' + #10 +
-  '    top = fspath(top)' + #10 + '    try:' + #10 +
-  '        names = listdir(top)' + #10 + '    except OSError as err:' + #10 +
-  '        if onerror is not None:' + #10 + '            onerror(err)' + #10 +
-  '        return' + #10 + '    dirs = []' + #10 + '    nondirs = []' + #10 +
-  '    for name in names:' + #10 + '        if path.isdir(path.join(to' +
-  'p, name)):' + #10 + '            dirs.append(name)' + #10 +
-  '        else:' + #10 + '            nondirs.append(name)' + #10 +
-  '    if topdown:' + #10 + '        yield top, dirs, nondirs' + #10 +
-  '    for name in dirs:' + #10 + '        new_path = path.join(top, ' +
-  'name)' + #10 + '        if followlinks or not path' +
-  '.islink(new_path):' + #10 + '            yield from walk(new_pa' +
-  'th, topdown, onerror, followlinks)' + #10 + '    if not topdown:' + #10 +
-  '        yield top, dirs, nondirs' + #10 + #10 + 'class DirEntry:' + #10 +
-  '    def __init__(self, dirpath, na' + 'me):' + #10 +
-  '        self.name = name' + #10 + '        self.path = path.join(dirp' +
-  'ath, name)' + #10 + '    def is_dir(self, *, follow_sym' + 'links=True):' +
-  #10 + '        if not follow_symlinks and' + ' path.islink(self.path):' +
-  #10 + '            return False' + #10 +
-  '        return path.isdir(self.pat' + 'h)' + #10 +
-  '    def is_file(self, *, follow_sy' + 'mlinks=True):' + #10 +
-  '        if not follow_symlinks and' + ' path.islink(self.path):' + #10 +
-  '            return False' + #10 + '        return path.isfile(self.pa' +
-  'th)' + #10 + '    def is_symlink(self):' + #10 +
-  '        return path.islink(self.pa' + 'th)' + #10 +
-  '    def stat(self, *, follow_symli' + 'nks=True):' + #10 +
-  '        return stat(self.path, fol' + 'low_symlinks=follow_symlinks)' +
-  #10 + '    def inode(self):' + #10 + '        return stat(self.path).st_' +
-  'ino' + #10 + '    def __fspath__(self):' + #10 +
-  '        return self.path' + #10 + '    def __repr__(self):' + #10 +
-  '        return ''<DirEntry %r>'' % s' + 'elf.name' + #10 + #10 +
-  'class _ScandirIterator:' + #10 + '    def __init__(self, entries):' + #10 +
-  '        self._it = iter(entries)' + #10 + '    def __iter__(self):' + #10 +
-  '        return self' + #10 + '    def __next__(self):' + #10 +
-  '        return next(self._it)' + #10 + '    def __enter__(self):' + #10 +
-  '        return self' + #10 + '    def __exit__(self, *a):' + #10 +
-  '        return None' + #10 + '    def close(self):' + #10 +
-  '        pass' + #10 + #10 + 'def scandir(p=''.''):' + #10 +
-  '    p = fspath(p)' + #10 + '    return _ScandirIterator([DirEn' +
-  'try(p, n) for n in listdir(p)])' + #10 + #10 +
-  'def get_terminal_size(fd=1):' + #10 +
-  '    cols = int(environ.get(''COLUMN' + 'S'', 80) or 80)' + #10 +
-  '    lines = int(environ.get(''LINES' + ''', 24) or 24)' + #10;
+  '    """Directory tree generator.' + #10 + #10 +
+  '    For each directory in the dire' +
+  'ctory tree rooted at top (includin' + 'g top' + #10 +
+  '    itself, but excluding ''.'' and ' + '''..''), yields a 3-tuple' + #10 +
+  #10 + '        dirpath, dirnames, filenam' + 'es' + #10 + #10 +
+  '    dirpath is a string, the path ' +
+  'to the directory.  dirnames is a l' + 'ist of' + #10 +
+  '    the names of the subdirectorie' +
+  's in dirpath (excluding ''.'' and ''.' + '.'').' + #10 +
+  '    filenames is a list of the nam' +
+  'es of the non-directory files in d' + 'irpath.' + #10 +
+  '    Note that the names in the lis' +
+  'ts are just names, with no path co' + 'mponents.' + #10 +
+  '    To get a full path (which begi' +
+  'ns with top) to a file or director' + 'y in' + #10 +
+  '    dirpath, do os.path.join(dirpa' + 'th, name).' + #10 + #10 +
+  '    If optional arg ''topdown'' is t' +
+  'rue or not specified, the triple f' + 'or a' + #10 +
+  '    directory is generated before ' +
+  'the triples for any of its subdire' + 'ctories' + #10 +
+  '    (directories are generated top' +
+  ' down).  If topdown is false, the ' + 'triple' + #10 +
+  '    for a directory is generated a' + 'fter the triples for all of its' +
+  #10 + '    subdirectories (directories ar' + 'e generated bottom up).' +
+  #10 + #10 + '    When topdown is true, the call' +
+  'er can modify the dirnames list in' + '-place' + #10 +
+  '    (e.g., via del or slice assign' +
+  'ment), and walk will only recurse ' + 'into the' + #10 +
+  '    subdirectories whose names rem' +
+  'ain in dirnames; this can be used ' + 'to prune the' + #10 +
+  '    search, or to impose a specifi' +
+  'c order of visiting.  Modifying di' + 'rnames when' + #10 +
+  '    topdown is false has no effect' +
+  ' on the behavior of os.walk(), sin' + 'ce the' + #10 +
+  '    directories in dirnames have a' +
+  'lready been generated by the time ' + 'dirnames' + #10 +
+  '    itself is generated. No matter' +
+  ' the value of topdown, the list of' + #10 +
+  '    subdirectories is retrieved be' +
+  'fore the tuples for the directory ' + 'and its' + #10 +
+  '    subdirectories are generated.' + #10 + #10 +
+  '    By default errors from the os.' + 'scandir() call are ignored.  If' +
+  #10 + '    optional arg ''onerror'' is spec' +
+  'ified, it should be a function; it' + #10 +
+  '    will be called with one argume' + 'nt, an OSError instance.  It can' +
+  #10 + '    report the error to continue w' +
+  'ith the walk, or raise the excepti' + 'on' + #10 +
+  '    to abort the walk.  Note that ' + 'the filename is available as the' +
+  #10 + '    filename attribute of the exce' + 'ption object.' + #10 + #10 +
+  '    By default, os.walk does not f' +
+  'ollow symbolic links to subdirecto' + 'ries on' + #10 +
+  '    systems that support them.  In' +
+  ' order to get this functionality, ' + 'set the' + #10 +
+  '    optional argument ''followlinks' + ''' to true.' + #10 + #10 +
+  '    Caution:  if you pass a relati' +
+  've pathname for top, don''t change ' + 'the' + #10 +
+  '    current working directory betw' +
+  'een resumptions of walk.  walk nev' + 'er' + #10 +
+  '    changes the current directory,' +
+  ' and assumes that the client doesn' + '''t' + #10 + '    either.' + #10 +
+  #10 + '    Example:' + #10 + #10 + '    import os' + #10 +
+  '    from os.path import join, gets' + 'ize' + #10 +
+  '    for root, dirs, files in os.wa' + 'lk(''python/Lib/email''):' + #10 +
+  '        print(root, "consumes", en' + 'd="")' + #10 +
+  '        print(sum(getsize(join(roo' +
+  't, name)) for name in files), end=' + '"")' + #10 +
+  '        print("bytes in", len(file' + 's), "non-directory files")' + #10 +
+  '        if ''CVS'' in dirs:' + #10 +
+  '            dirs.remove(''CVS'')  # ' + 'don''t visit CVS directories' +
+  #10 + #10 + '    """' + #10 + '    top = fspath(top)' + #10 +
+  '    dirs = []' + #10 + '    nondirs = []' + #10 + '    walk_dirs = []' +
+  #10 + #10 + '    # We may not have read permiss' +
+  'ion for top, in which case we can''' + 't' + #10 +
+  '    # get a list of the files the ' + 'directory contains.  os.walk' +
+  #10 + '    # always suppressed the except' +
+  'ion then, rather than blow up for ' + 'a' + #10 +
+  '    # minor reason when (say) a th' +
+  'ousand readable directories are st' + 'ill' + #10 +
+  '    # left to visit.  That logic i' + 's copied here.' + #10 + '    try:' +
+  #10 + '        # Note that scandir is glo' + 'bal in this module due' +
+  #10 + '        # to earlier import-*.' + #10 +
+  '        scandir_it = scandir(top)' + #10 + '    except OSError as error:' +
+  #10 + '        if onerror is not None:' + #10 +
+  '            onerror(error)' + #10 + '        return' + #10 + #10 +
+  '    with scandir_it:' + #10 + '        while True:' + #10 +
+  '            try:' + #10 + '                try:' + #10 +
+  '                    entry = next(s' + 'candir_it)' + #10 +
+  '                except StopIterati' + 'on:' + #10 +
+  '                    break' + #10 + '            except OSError as erro' +
+  'r:' + #10 + '                if onerror is not ' + 'None:' + #10 +
+  '                    onerror(error)' + #10 + '                return' +
+  #10 + #10 + '            try:' + #10 +
+  '                is_dir = entry.is_' + 'dir()' + #10 +
+  '            except OSError:' + #10 + '                # If is_dir() rais' +
+  'es an OSError, consider that the e' + 'ntry is not' + #10 +
+  '                # a directory, sam' + 'e behaviour than os.path.isdir().' +
+  #10 + '                is_dir = False' + #10 + #10 +
+  '            if is_dir:' + #10 + '                dirs.append(entry.' +
+  'name)' + #10 + '            else:' + #10 +
+  '                nondirs.append(ent' + 'ry.name)' + #10 + #10 +
+  '            if not topdown and is_' + 'dir:' + #10 +
+  '                # Bottom-up: recur' +
+  'se into sub-directory, but exclude' + ' symlinks to' + #10 +
+  '                # directories if f' + 'ollowlinks is False' + #10 +
+  '                if followlinks:' + #10 +
+  '                    walk_into = Tr' + 'ue' + #10 +
+  '                else:' + #10 + '                    try:' + #10 +
+  '                        is_symlink' + ' = entry.is_symlink()' + #10 +
+  '                    except OSError' + ':' + #10 +
+  '                        # If is_sy' +
+  'mlink() raises an OSError, conside' + 'r that the' + #10 +
+  '                        # entry is' +
+  ' not a symbolic link, same behavio' + 'ur than' + #10 +
+  '                        # os.path.' + 'islink().' + #10 +
+  '                        is_symlink' + ' = False' + #10 +
+  '                    walk_into = no' + 't is_symlink' + #10 + #10 +
+  '                if walk_into:' + #10 +
+  '                    walk_dirs.appe' + 'nd(entry.path)' + #10 + #10 +
+  '    # Yield before recursion if go' + 'ing top down' + #10 +
+  '    if topdown:' + #10 + '        yield top, dirs, nondirs' + #10 + #10 +
+  '        # Recurse into sub-directo' + 'ries' + #10 +
+  '        islink, join = path.islink' + ', path.join' + #10 +
+  '        for dirname in dirs:' + #10 +
+  '            new_path = join(top, d' + 'irname)' + #10 +
+  '            # Issue #23605: os.pat' +
+  'h.islink() is used instead of cach' + 'ing' + #10 +
+  '            # entry.is_symlink() r' +
+  'esult during the loop on os.scandi' + 'r() because' + #10 +
+  '            # the caller can repla' +
+  'ce the directory entry during the ' + '"yield"' + #10 +
+  '            # above.' + #10 + '            if followlinks or not ' +
+  'islink(new_path):' + #10 + '                yield from walk(ne' +
+  'w_path, topdown, onerror, followli' + 'nks)' + #10 + '    else:' + #10 +
+  '        # Recurse into sub-directo' + 'ries' + #10 +
+  '        for new_path in walk_dirs:' + #10 +
+  '            yield from walk(new_pa' +
+  'th, topdown, onerror, followlinks)' + #10 +
+  '        # Yield after recursion if' + ' going bottom up' + #10 +
+  '        yield top, dirs, nondirs' + #10 + #10 + '__all__.append("walk")' +
+  #10 + #10 + 'if {open, stat} <= supports_dir_fd' +
+  ' and {scandir, stat} <= supports_f' + 'd:' + #10 + #10 +
+  '    def fwalk(top=".", topdown=Tru' +
+  'e, onerror=None, *, follow_symlink' + 's=False, dir_fd=None):' + #10 +
+  '        """Directory tree generato' + 'r.' + #10 + #10 +
+  '        This behaves exactly like ' +
+  'walk(), except that it yields a 4-' + 'tuple' + #10 + #10 +
+  '            dirpath, dirnames, fil' + 'enames, dirfd' + #10 + #10 +
+  '        `dirpath`, `dirnames` and ' +
+  '`filenames` are identical to walk(' + ') output,' + #10 +
+  '        and `dirfd` is a file desc' +
+  'riptor referring to the directory ' + '`dirpath`.' + #10 + #10 +
+  '        The advantage of fwalk() o' +
+  'ver walk() is that it''s safe again' + 'st symlink' + #10 +
+  '        races (when follow_symlink' + 's is False).' + #10 + #10 +
+  '        If dir_fd is not None, it ' +
+  'should be a file descriptor open t' + 'o a directory,' + #10 +
+  '          and top should be relati' +
+  've; top will then be relative to t' + 'hat directory.' + #10 +
+  '          (dir_fd is always suppor' + 'ted for fwalk.)' + #10 + #10 +
+  '        Caution:' + #10 + '        Since fwalk() yields file ' +
+  'descriptors, those are only valid ' + 'until the' + #10 +
+  '        next iteration step, so yo' +
+  'u should dup() them if you want to' + ' keep them' + #10 +
+  '        for a longer period.' + #10 + #10 + '        Example:' + #10 +
+  #10 + '        import os' + #10 + '        for root, dirs, files, roo' +
+  'tfd in os.fwalk(''python/Lib/email''' + '):' + #10 +
+  '            print(root, "consumes"' + ', end="")' + #10 +
+  '            print(sum(os.stat(name' +
+  ', dir_fd=rootfd).st_size for name ' + 'in files),' + #10 +
+  '                  end="")' + #10 + '            print("bytes in", len(' +
+  'files), "non-directory files")' + #10 + '            if ''CVS'' in dirs:' +
+  #10 + '                dirs.remove(''CVS'')' +
+  '  # don''t visit CVS directories' + #10 + '        """' + #10 +
+  '        if not isinstance(top, int' +
+  ') or not hasattr(top, ''__index__'')' + ':' + #10 +
+  '            top = fspath(top)' + #10 +
+  '        # Note: To guard against s' + 'ymlink races, we use the standard' +
+  #10 + '        # lstat()/open()/fstat() t' + 'rick.' + #10 +
+  '        if not follow_symlinks:' + #10 +
+  '            orig_st = stat(top, fo' +
+  'llow_symlinks=False, dir_fd=dir_fd' + ')' + #10 +
+  '        topfd = open(top, O_RDONLY' + ', dir_fd=dir_fd)' + #10 +
+  '        try:' + #10 + '            if (follow_symlinks or' +
+  ' (st.S_ISDIR(orig_st.st_mode) and' + #10 +
+  '                                  ' +
+  '  path.samestat(orig_st, stat(topf' + 'd)))):' + #10 +
+  '                yield from _fwalk(' +
+  'topfd, top, isinstance(top, bytes)' + ',' + #10 +
+  '                                  ' +
+  'topdown, onerror, follow_symlinks)' + #10 + '        finally:' + #10 +
+  '            close(topfd)' + #10 + #10 +
+  '    def _fwalk(topfd, toppath, isb' +
+  'ytes, topdown, onerror, follow_sym' + 'links):' + #10 +
+  '        # Note: This uses O(depth ' +
+  'of the directory tree) file descri' + 'ptors: if' + #10 +
+  '        # necessary, it can be ada' +
+  'pted to only require O(1) FDs, see' + ' issue' + #10 +
+  '        # #13734.' + #10 + #10 + '        scandir_it = scandir(topfd' +
+  ')' + #10 + '        dirs = []' + #10 + '        nondirs = []' + #10 +
+  '        entries = None if topdown ' + 'or follow_symlinks else []' + #10 +
+  '        for entry in scandir_it:' + #10 + '            name = entry.name' +
+  #10 + '            if isbytes:' + #10 +
+  '                name = fsencode(na' + 'me)' + #10 + '            try:' +
+  #10 + '                if entry.is_dir():' + #10 +
+  '                    dirs.append(na' + 'me)' + #10 +
+  '                    if entries is ' + 'not None:' + #10 +
+  '                        entries.ap' + 'pend(entry)' + #10 +
+  '                else:' + #10 + '                    nondirs.append' +
+  '(name)' + #10 + '            except OSError:' + #10 +
+  '                try:' + #10 + '                    # Add dangling' +
+  ' symlinks, ignore disappeared file' + 's' + #10 +
+  '                    if entry.is_sy' + 'mlink():' + #10 +
+  '                        nondirs.ap' + 'pend(name)' + #10 +
+  '                except OSError:' + #10 + '                    pass' + #10 +
+  #10;
 
 Const
- Src_os_1: AnsiString =
-  '    return terminal_size((cols, li' + 'nes))' + #10 + #10 +
-  'class terminal_size(tuple):' + #10 + '    columns = property(lambda s: s' +
-  '[0])' + #10 + '    lines = property(lambda s: s[1' + '])' + #10 + #10 +
-  'def getlogin():' + #10 + '    return environ.get(''USER'', env' +
-  'iron.get(''LOGNAME'', ''root''))' + #10 + #10 +
-  'def get_exec_path(env=None):' + #10 + '    if env is None:' + #10 +
-  '        env = environ' + #10 + '    return env.get(''PATH'', defpath' +
-  ').split(pathsep)' + #10 + #10 + 'def strerror(code):' + #10 +
-  '    import errno' + #10 + '    msgs = {1: ''Operation not perm' +
-  'itted'', 2: ''No such file or direct' + 'ory'',' + #10 +
-  '            13: ''Permission denied' +
-  ''', 17: ''File exists'', 20: ''Not a d' + 'irectory'',' + #10 +
-  '            21: ''Is a directory'', ' + '22: ''Invalid argument'',' + #10 +
-  '            39: ''Directory not emp' + 'ty''}' + #10 +
-  '    return msgs.get(code, ''Unknown' + ' error %d'' % code)' + #10 + #10 +
-  'def abort():' + #10 + '    _exit(134)' + #10 + #10 +
-  'def popen(cmd, mode=''r'', buffering' + '=-1):' + #10 +
-  '    raise NotImplementedError(''os.' + 'popen is not supported'')' + #10 +
-  #10 + 'def kill(pid, sig):' + #10 + '    raise NotImplementedError(''os.' +
-  'kill is not supported'')' + #10 + #10 + 'def umask(mask):' + #10 +
-  '    return 0o022' + #10 + #10 + 'def getpgid(pid):' + #10 +
-  '    return pid' + #10 + #10 + 'def times():' + #10 + '    import time' +
-  #10 + '    t = time.process_time()' + #10 +
-  '    return (t, 0.0, 0.0, 0.0, time' + '.monotonic())' + #10 + #10 +
-  'def cpu_count():' + #10 + '    return posix.cpu_count()' + #10 + #10 +
-  'def link(src, dst):' + #10 + '    raise NotImplementedError(''os.' +
-  'link is not supported'')' + #10 + #10 + 'def chown(*a, **k):' + #10 +
-  '    pass' + #10 + #10 + 'def fsync(fd):' + #10 + '    pass' + #10 + #10 +
-  'def listdir_bytes(p):' + #10 + '    return [n.encode() for n in li' +
-  'stdir(p)]' + #10 + #10 + 'from posix import uname as _uname' + #10 +
-  'class uname_result(tuple):' + #10 + '    sysname = property(lambda s: s' +
-  '[0])' + #10 + '    nodename = property(lambda s: ' + 's[1])' + #10 +
-  '    release = property(lambda s: s' + '[2])' + #10 +
-  '    version = property(lambda s: s' + '[3])' + #10 +
-  '    machine = property(lambda s: s' + '[4])' + #10 + 'def uname():' + #10 +
-  '    return uname_result(_uname())' + #10 + #10 + 'def urandom(n):' + #10 +
-  '    return posix.urandom(n)' + #10 + #10 + 'def fstat(fd):' + #10 +
-  '    return stat(''/proc/self/fd/%d''' + ' % fd)' + #10 + #10;
+ Src_os_2: AnsiString =
+  '        if topdown:' + #10 + '            yield toppath, dirs, n' +
+  'ondirs, topfd' + #10 + #10 + '        for name in dirs if entrie' +
+  's is None else zip(dirs, entries):' + #10 + '            try:' + #10 +
+  '                if not follow_syml' + 'inks:' + #10 +
+  '                    if topdown:' + #10 +
+  '                        orig_st = ' +
+  'stat(name, dir_fd=topfd, follow_sy' + 'mlinks=False)' + #10 +
+  '                    else:' + #10 + '                        assert ent' +
+  'ries is not None' + #10 + '                        name, entr' +
+  'y = name' + #10 + '                        orig_st = ' +
+  'entry.stat(follow_symlinks=False)' + #10 +
+  '                dirfd = open(name,' + ' O_RDONLY, dir_fd=topfd)' + #10 +
+  '            except OSError as err:' + #10 +
+  '                if onerror is not ' + 'None:' + #10 +
+  '                    onerror(err)' + #10 + '                continue' +
+  #10 + '            try:' + #10 + '                if follow_symlinks' +
+  ' or path.samestat(orig_st, stat(di' + 'rfd)):' + #10 +
+  '                    dirpath = path' + '.join(toppath, name)' + #10 +
+  '                    yield from _fw' + 'alk(dirfd, dirpath, isbytes,' +
+  #10 + '                                  ' +
+  '    topdown, onerror, follow_symli' + 'nks)' + #10 +
+  '            finally:' + #10 + '                close(dirfd)' + #10 + #10 +
+  '        if not topdown:' + #10 + '            yield toppath, dirs, n' +
+  'ondirs, topfd' + #10 + #10 + '    __all__.append("fwalk")' + #10 + #10 +
+  'def execl(file, *args):' + #10 + '    """execl(file, *args)' + #10 + #10 +
+  '    Execute the executable file wi' +
+  'th argument list args, replacing t' + 'he' + #10 +
+  '    current process. """' + #10 + '    execv(file, args)' + #10 + #10 +
+  'def execle(file, *args):' + #10 + '    """execle(file, *args, env)' + #10 +
+  #10 + '    Execute the executable file wi' + 'th argument list args and' +
+  #10 + '    environment env, replacing the' + ' current process. """' + #10 +
+  '    env = args[-1]' + #10 + '    execve(file, args[:-1], env)' + #10 +
+  #10 + 'def execlp(file, *args):' + #10 + '    """execlp(file, *args)' +
+  #10 + #10 + '    Execute the executable file (w' +
+  'hich is searched for along $PATH)' + #10 +
+  '    with argument list args, repla' + 'cing the current process. """' +
+  #10 + '    execvp(file, args)' + #10 + #10 + 'def execlpe(file, *args):' +
+  #10 + '    """execlpe(file, *args, env)' + #10 + #10 +
+  '    Execute the executable file (w' + 'hich is searched for along $PATH)' +
+  #10 + '    with argument list args and en' +
+  'vironment env, replacing the curre' + 'nt' + #10 + '    process. """' +
+  #10 + '    env = args[-1]' + #10 + '    execvpe(file, args[:-1], env)' +
+  #10 + #10 + 'def execvp(file, args):' + #10 + '    """execvp(file, args)' +
+  #10 + #10 + '    Execute the executable file (w' +
+  'hich is searched for along $PATH)' + #10 +
+  '    with argument list args, repla' + 'cing the current process.' + #10 +
+  '    args may be a list or tuple of' + ' strings. """' + #10 +
+  '    _execvpe(file, args)' + #10 + #10 + 'def execvpe(file, args, env):' +
+  #10 + '    """execvpe(file, args, env)' + #10 + #10 +
+  '    Execute the executable file (w' + 'hich is searched for along $PATH)' +
+  #10 + '    with argument list args and en' +
+  'vironment env, replacing the' + #10 + '    current process.' + #10 +
+  '    args may be a list or tuple of' + ' strings. """' + #10 +
+  '    _execvpe(file, args, env)' + #10 + #10 +
+  '__all__.extend(["execl","execle","' +
+  'execlp","execlpe","execvp","execvp' + 'e"])' + #10 + #10 +
+  'def _execvpe(file, args, env=None)' + ':' + #10 +
+  '    if env is not None:' + #10 + '        exec_func = execve' + #10 +
+  '        argrest = (args, env)' + #10 + '    else:' + #10 +
+  '        exec_func = execv' + #10 + '        argrest = (args,)' + #10 +
+  '        env = environ' + #10 + #10 + '    if path.dirname(file):' + #10 +
+  '        exec_func(file, *argrest)' + #10 + '        return' + #10 +
+  '    saved_exc = None' + #10 + '    path_list = get_exec_path(env)' + #10 +
+  '    if name != ''nt'':' + #10 + '        file = fsencode(file)' + #10 +
+  '        path_list = map(fsencode, ' + 'path_list)' + #10 +
+  '    for dir in path_list:' + #10 + '        fullname = path.join(dir, ' +
+  'file)' + #10 + '        try:' + #10 +
+  '            exec_func(fullname, *a' + 'rgrest)' + #10 +
+  '        except (FileNotFoundError,' + ' NotADirectoryError) as e:' + #10 +
+  '            last_exc = e' + #10 + '        except OSError as e:' + #10 +
+  '            last_exc = e' + #10 + '            if saved_exc is None:' +
+  #10 + '                saved_exc = e' + #10 +
+  '    if saved_exc is not None:' + #10 + '        raise saved_exc' + #10 +
+  '    raise last_exc' + #10 + #10 + #10 + 'def get_exec_path(env=None):' +
+  #10 + '    """Returns the sequence of dir' +
+  'ectories that will be searched for' + ' the' + #10 +
+  '    named executable (similar to a' + ' shell) when launching a process.' +
+  #10 + #10 + '    *env* must be an environment v' +
+  'ariable dict or None.  If *env* is' + ' None,' + #10 +
+  '    os.environ will be used.' + #10 + '    """' + #10 +
+  '    # Use a local import instead o' +
+  'f a global import to limit the num' + 'ber of' + #10 +
+  '    # modules loaded at startup: t' +
+  'he os module is always loaded at s' + 'tartup by' + #10 +
+  '    # Python. It may also avoid a ' + 'bootstrap issue.' + #10 +
+  '    import warnings' + #10 + #10 + '    if env is None:' + #10 +
+  '        env = environ' + #10 + #10 +
+  '    # {b''PATH'': ...}.get(''PATH'') a' +
+  'nd {''PATH'': ...}.get(b''PATH'') emit' + ' a' + #10 +
+  '    # BytesWarning when using pyth' +
+  'on -b or python -bb: ignore the wa' + 'rning' + #10 +
+  '    with warnings.catch_warnings()' + ':' + #10 +
+  '        warnings.simplefilter("ign' + 'ore", BytesWarning)' + #10 + #10 +
+  '        try:' + #10 + '            path_list = env.get(''P' + 'ATH'')' +
+  #10 + '        except TypeError:' + #10 + '            path_list = None' +
+  #10 + #10 + '        if supports_bytes_environ:' + #10 +
+  '            try:' + #10 + '                path_listb = env[b' +
+  '''PATH'']' + #10 + '            except (KeyError, Type' + 'Error):' + #10 +
+  '                pass' + #10 + '            else:' + #10 +
+  '                if path_list is no' + 't None:' + #10 +
+  '                    raise ValueErr' + 'or(' + #10 +
+  '                        "env canno' +
+  't contain ''PATH'' and b''PATH'' keys"' + ')' + #10 +
+  '                path_list = path_l' + 'istb' + #10 + #10 +
+  '            if path_list is not No' +
+  'ne and isinstance(path_list, bytes' + '):' + #10 +
+  '                path_list = fsdeco' + 'de(path_list)' + #10 + #10 +
+  '    if path_list is None:' + #10 + '        path_list = defpath' + #10 +
+  '    return path_list.split(pathsep' + ')' + #10 + #10 + #10 +
+  '# Change environ to automatically ' +
+  'call putenv(), unsetenv if they ex' + 'ist.' + #10 +
+  'from _collections_abc import Mutab' + 'leMapping' + #10 + #10 +
+  'class _Environ(MutableMapping):' + #10 +
+  '    def __init__(self, data, encod' +
+  'ekey, decodekey, encodevalue, deco' + 'devalue, putenv, unsetenv):' + #10 +
+  '        self.encodekey = encodekey' + #10 +
+  '        self.decodekey = decodekey' + #10 +
+  '        self.encodevalue = encodev' + 'alue' + #10 +
+  '        self.decodevalue = decodev' + 'alue' + #10 +
+  '        self.putenv = putenv' + #10 + '        self.unsetenv = unsetenv' +
+  #10 + '        self._data = data' + #10 + #10 +
+  '    def __getitem__(self, key):' + #10 + '        try:' + #10 +
+  '            value = self._data[sel' + 'f.encodekey(key)]' + #10 +
+  '        except KeyError:' + #10 + '            # raise KeyError with ' +
+  'the original key value' + #10 + '            raise KeyError(key) fr' +
+  'om None' + #10 + '        return self.decodevalue(va' + 'lue)' + #10 +
+  #10 + '    def __setitem__(self, key, val' + 'ue):' + #10 +
+  '        key = self.encodekey(key)' + #10 +
+  '        value = self.encodevalue(v' + 'alue)' + #10 +
+  '        self.putenv(key, value)' + #10 +
+  '        self._data[key] = value' + #10 + #10 +
+  '    def __delitem__(self, key):' + #10 +
+  '        encodedkey = self.encodeke' + 'y(key)' + #10 +
+  '        self.unsetenv(encodedkey)' + #10 + '        try:' + #10 +
+  '            del self._data[encoded' + 'key]' + #10 +
+  '        except KeyError:' + #10 + '            # raise KeyError with ' +
+  'the original key value' + #10 + '            raise KeyError(key) fr' +
+  'om None' + #10 + #10 + '    def __iter__(self):' + #10 +
+  '        # list() from dict object ' + 'is an atomic operation' + #10 +
+  '        keys = list(self._data)' + #10 + '        for key in keys:' + #10 +
+  '            yield self.decodekey(k' + 'ey)' + #10 + #10 +
+  '    def __len__(self):' + #10 + '        return len(self._data)' + #10 +
+  #10 + '    def __repr__(self):' + #10 +
+  '        return ''environ({{{}}})''.f' + 'ormat('', ''.join(' + #10 +
+  '            (''{!r}: {!r}''.format(s' +
+  'elf.decodekey(key), self.decodeval' + 'ue(value))' + #10 +
+  '            for key, value in self' + '._data.items())))' + #10 + #10 +
+  '    def copy(self):' + #10 + '        return dict(self)' + #10 + #10 +
+  '    def setdefault(self, key, valu' + 'e):' + #10 +
+  '        if key not in self:' + #10 + '            self[key] = value' +
+  #10 + '        return self[key]' + #10 + #10 + 'try:' + #10 +
+  '    _putenv = putenv' + #10 + 'except NameError:' + #10 +
+  '    _putenv = lambda key, value: N' + 'one' + #10 + 'else:' + #10 +
+  '    if "putenv" not in __all__:' + #10 +
+  '        __all__.append("putenv")' + #10 + #10 + 'try:' + #10 +
+  '    _unsetenv = unsetenv' + #10 + 'except NameError:' + #10 +
+  '    _unsetenv = lambda key: _puten' + 'v(key, "")' + #10 + 'else:' + #10 +
+  '    if "unsetenv" not in __all__:' + #10 +
+  '        __all__.append("unsetenv")' + #10 + #10 + 'def _createenviron():' +
+  #10 + '    if name == ''nt'':' + #10 +
+  '        # Where Env Var Names Must' + ' Be UPPERCASE' + #10 +
+  '        def check_str(value):' + #10 +
+  '            if not isinstance(valu' + 'e, str):' + #10 +
+  '                raise TypeError("s' +
+  'tr expected, not %s" % type(value)' + '.__name__)' + #10 +
+  '            return value' + #10 + '        encode = check_str' + #10 +
+  '        decode = str' + #10 + '        def encodekey(key):' + #10 +
+  '            return encode(key).upp' + 'er()' + #10 + '        data = {}' +
+  #10 + '        for key, value in environ.' + 'items():' + #10 +
+  '            data[encodekey(key)] =' + ' value' + #10 + '    else:' + #10 +
+  '        # Where Env Var Names Can ' + 'Be Mixed Case' + #10 +
+  '        encoding = sys.getfilesyst' + 'emencoding()' + #10 +
+  '        def encode(value):' + #10 + '            if not isinstance(valu' +
+  'e, str):' + #10 + '                raise TypeError("s' +
+  'tr expected, not %s" % type(value)' + '.__name__)' + #10;
+
+Const
+ Src_os_3: AnsiString =
+  '            return value.encode(en' + 'coding, ''surrogateescape'')' +
+  #10 + '        def decode(value):' + #10 +
+  '            return value.decode(en' + 'coding, ''surrogateescape'')' +
+  #10 + '        encodekey = encode' + #10 + '        data = environ' + #10 +
+  '    return _Environ(data,' + #10 + '        encodekey, decode,' + #10 +
+  '        encode, decode,' + #10 + '        _putenv, _unsetenv)' + #10 +
+  #10 + '# unicode environ' + #10 + 'environ = _createenviron()' + #10 +
+  'del _createenviron' + #10 + #10 + #10 + 'def getenv(key, default=None):' +
+  #10 + '    """Get an environment variable' +
+  ', return None if it doesn''t exist.' + #10 +
+  '    The optional second argument c' + 'an specify an alternate default.' +
+  #10 + '    key, default and the result ar' + 'e str."""' + #10 +
+  '    return environ.get(key, defaul' + 't)' + #10 + #10 +
+  'supports_bytes_environ = (name != ' + '''nt'')' + #10 +
+  '__all__.extend(("getenv", "support' + 's_bytes_environ"))' + #10 + #10 +
+  'if supports_bytes_environ:' + #10 + '    def _check_bytes(value):' + #10 +
+  '        if not isinstance(value, b' + 'ytes):' + #10 +
+  '            raise TypeError("bytes' +
+  ' expected, not %s" % type(value)._' + '_name__)' + #10 +
+  '        return value' + #10 + #10 + '    # bytes environ' + #10 +
+  '    environb = _Environ(environ._d' + 'ata,' + #10 +
+  '        _check_bytes, bytes,' + #10 + '        _check_bytes, bytes,' +
+  #10 + '        _putenv, _unsetenv)' + #10 + '    del _check_bytes' + #10 +
+  #10 + '    def getenvb(key, default=None)' + ':' + #10 +
+  '        """Get an environment vari' +
+  'able, return None if it doesn''t ex' + 'ist.' + #10 +
+  '        The optional second argume' +
+  'nt can specify an alternate defaul' + 't.' + #10 +
+  '        key, default and the resul' + 't are bytes."""' + #10 +
+  '        return environb.get(key, d' + 'efault)' + #10 + #10 +
+  '    __all__.extend(("environb", "g' + 'etenvb"))' + #10 + #10 +
+  'def _fscodec():' + #10 + '    encoding = sys.getfilesystemen' +
+  'coding()' + #10 + '    errors = sys.getfilesystemenco' + 'deerrors()' +
+  #10 + #10 + '    def fsencode(filename):' + #10 +
+  '        """Encode filename (an os.' +
+  'PathLike, bytes, or str) to the fi' + 'lesystem' + #10 +
+  '        encoding with ''surrogatees' +
+  'cape'' error handler, return bytes ' + 'unchanged.' + #10 +
+  '        On Windows, use ''strict'' e' +
+  'rror handler if the file system en' + 'coding is' + #10 +
+  '        ''mbcs'' (which is the defau' + 'lt encoding).' + #10 +
+  '        """' + #10 + '        filename = fspath(filename' +
+  ')  # Does type-checking of `filena' + 'me`.' + #10 +
+  '        if isinstance(filename, st' + 'r):' + #10 +
+  '            return filename.encode' + '(encoding, errors)' + #10 +
+  '        else:' + #10 + '            return filename' + #10 + #10 +
+  '    def fsdecode(filename):' + #10 + '        """Decode filename (an os.' +
+  'PathLike, bytes, or str) from the ' + 'filesystem' + #10 +
+  '        encoding with ''surrogatees' +
+  'cape'' error handler, return str un' + 'changed. On' + #10 +
+  '        Windows, use ''strict'' erro' +
+  'r handler if the file system encod' + 'ing is' + #10 +
+  '        ''mbcs'' (which is the defau' + 'lt encoding).' + #10 +
+  '        """' + #10 + '        filename = fspath(filename' +
+  ')  # Does type-checking of `filena' + 'me`.' + #10 +
+  '        if isinstance(filename, by' + 'tes):' + #10 +
+  '            return filename.decode' + '(encoding, errors)' + #10 +
+  '        else:' + #10 + '            return filename' + #10 + #10 +
+  '    return fsencode, fsdecode' + #10 + #10 +
+  'fsencode, fsdecode = _fscodec()' + #10 + 'del _fscodec' + #10 + #10 +
+  '# Supply spawn*() (probably only f' + 'or Unix)' + #10 +
+  'if _exists("fork") and not _exists' + '("spawnv") and _exists("execv"):' +
+  #10 + #10 + '    P_WAIT = 0' + #10 + '    P_NOWAIT = P_NOWAITO = 1' + #10 +
+  #10 + '    __all__.extend(["P_WAIT", "P_N' + 'OWAIT", "P_NOWAITO"])' + #10 +
+  #10 + '    # XXX Should we support P_DETA' +
+  'CH?  I suppose it could fork()**2' + #10 +
+  '    # and close the std I/O stream' + 's.  Also, P_OVERLAY is the same' +
+  #10 + '    # as execv*()?' + #10 + #10 +
+  '    def _spawnvef(mode, file, args' + ', env, func):' + #10 +
+  '        # Internal helper; func is' + ' the exec*() function to use' +
+  #10 + '        if not isinstance(args, (t' + 'uple, list)):' + #10 +
+  '            raise TypeError(''argv ' + 'must be a tuple or a list'')' +
+  #10 + '        if not args or not args[0]' + ':' + #10 +
+  '            raise ValueError(''argv' +
+  ' first element cannot be empty'')' + #10 + '        pid = fork()' + #10 +
+  '        if not pid:' + #10 + '            # Child' + #10 +
+  '            try:' + #10 + '                if env is None:' + #10 +
+  '                    func(file, arg' + 's)' + #10 +
+  '                else:' + #10 + '                    func(file, arg' +
+  's, env)' + #10 + '            except:' + #10 +
+  '                _exit(127)' + #10 + '        else:' + #10 +
+  '            # Parent' + #10 + '            if mode == P_NOWAIT:' + #10 +
+  '                return pid # Calle' + 'r is responsible for waiting!' +
+  #10 + '            while 1:' + #10 + '                wpid, sts = waitpi' +
+  'd(pid, 0)' + #10 + '                if WIFSTOPPED(sts)' + ':' + #10 +
+  '                    continue' + #10 +
+  '                elif WIFSIGNALED(s' + 'ts):' + #10 +
+  '                    return -WTERMS' + 'IG(sts)' + #10 +
+  '                elif WIFEXITED(sts' + '):' + #10 +
+  '                    return WEXITST' + 'ATUS(sts)' + #10 +
+  '                else:' + #10 + '                    raise OSError(' +
+  '"Not stopped, signaled or exited??' + '?")' + #10 + #10 +
+  '    def spawnv(mode, file, args):' + #10 +
+  '        """spawnv(mode, file, args' + ') -> integer' + #10 + #10 +
+  'Execute file with arguments from a' + 'rgs in a subprocess.' + #10 +
+  'If mode == P_NOWAIT return the pid' + ' of the process.' + #10 +
+  'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        return _spawnvef(mode, fil' + 'e, args, None, execv)' + #10 +
+  #10 + '    def spawnve(mode, file, args, ' + 'env):' + #10 +
+  '        """spawnve(mode, file, arg' + 's, env) -> integer' + #10 + #10 +
+  'Execute file with arguments from a' + 'rgs in a subprocess with the' +
+  #10 + 'specified environment.' + #10 +
+  'If mode == P_NOWAIT return the pid' + ' of the process.' + #10 +
+  'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        return _spawnvef(mode, fil' + 'e, args, env, execve)' + #10 +
+  #10 + '    # Note: spawnvp[e] isn''t curre' + 'ntly supported on Windows' +
+  #10 + #10 + '    def spawnvp(mode, file, args):' + #10 +
+  '        """spawnvp(mode, file, arg' + 's) -> integer' + #10 + #10 +
+  'Execute file (which is looked for ' + 'along $PATH) with arguments from' +
+  #10 + 'args in a subprocess.' + #10 + 'If mode == P_NOWAIT return the pid' +
+  ' of the process.' + #10 + 'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        return _spawnvef(mode, fil' + 'e, args, None, execvp)' +
+  #10 + #10 + '    def spawnvpe(mode, file, args,' + ' env):' + #10 +
+  '        """spawnvpe(mode, file, ar' + 'gs, env) -> integer' + #10 + #10 +
+  'Execute file (which is looked for ' + 'along $PATH) with arguments from' +
+  #10 + 'args in a subprocess with the supp' + 'lied environment.' + #10 +
+  'If mode == P_NOWAIT return the pid' + ' of the process.' + #10 +
+  'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        return _spawnvef(mode, fil' + 'e, args, env, execvpe)' +
+  #10 + #10 + #10 + '    __all__.extend(["spawnv", "spa' +
+  'wnve", "spawnvp", "spawnvpe"])' + #10 + #10 + #10 +
+  'if _exists("spawnv"):' + #10 + '    # These aren''t supplied by the' +
+  ' basic Windows code' + #10 + '    # but can be easily implemente' +
+  'd in Python' + #10 + #10 + '    def spawnl(mode, file, *args):' + #10 +
+  '        """spawnl(mode, file, *arg' + 's) -> integer' + #10 + #10 +
+  'Execute file with arguments from a' + 'rgs in a subprocess.' + #10 +
+  'If mode == P_NOWAIT return the pid' + ' of the process.' + #10 +
+  'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        return spawnv(mode, file, ' + 'args)' + #10 + #10 +
+  '    def spawnle(mode, file, *args)' + ':' + #10 +
+  '        """spawnle(mode, file, *ar' + 'gs, env) -> integer' + #10 + #10 +
+  'Execute file with arguments from a' + 'rgs in a subprocess with the' +
+  #10 + 'supplied environment.' + #10 + 'If mode == P_NOWAIT return the pid' +
+  ' of the process.' + #10 + 'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        env = args[-1]' + #10 +
+  '        return spawnve(mode, file,' + ' args[:-1], env)' + #10 + #10 +
+  #10 + '    __all__.extend(["spawnl", "spa' + 'wnle"])' + #10 + #10 + #10 +
+  'if _exists("spawnvp"):' + #10 + '    # At the moment, Windows doesn' +
+  '''t implement spawnvp[e],' + #10 + '    # so it won''t have spawnlp[e] ' +
+  'either.' + #10 + '    def spawnlp(mode, file, *args)' + ':' + #10 +
+  '        """spawnlp(mode, file, *ar' + 'gs) -> integer' + #10 + #10 +
+  'Execute file (which is looked for ' + 'along $PATH) with arguments from' +
+  #10 + 'args in a subprocess with the supp' + 'lied environment.' + #10 +
+  'If mode == P_NOWAIT return the pid' + ' of the process.' + #10 +
+  'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        return spawnvp(mode, file,' + ' args)' + #10 + #10 +
+  '    def spawnlpe(mode, file, *args' + '):' + #10 +
+  '        """spawnlpe(mode, file, *a' + 'rgs, env) -> integer' + #10 + #10 +
+  'Execute file (which is looked for ' + 'along $PATH) with arguments from' +
+  #10 + 'args in a subprocess with the supp' + 'lied environment.' + #10 +
+  'If mode == P_NOWAIT return the pid' + ' of the process.' + #10 +
+  'If mode == P_WAIT return the proce' +
+  'ss''s exit code if it exits normall' + 'y;' + #10 +
+  'otherwise return -SIG, where SIG i' + 's the signal that killed it. """' +
+  #10 + '        env = args[-1]' + #10 +
+  '        return spawnvpe(mode, file' + ', args[:-1], env)' + #10 + #10 +
+  #10 + '    __all__.extend(["spawnlp", "sp' + 'awnlpe"])' + #10 + #10 + #10 +
+  '# Supply os.popen()' + #10 + 'def popen(cmd, mode="r", buffering' +
+  '=-1):' + #10 + '    if not isinstance(cmd, str):' + #10 +
+  '        raise TypeError("invalid c' +
+  'md type (%s, expected string)" % t' + 'ype(cmd))' + #10 +
+  '    if mode not in ("r", "w"):' + #10 +
+  '        raise ValueError("invalid ' + 'mode %r" % mode)' + #10 +
+  '    if buffering == 0 or buffering' + ' is None:' + #10 +
+  '        raise ValueError("popen() ' +
+  'does not support unbuffered stream' + 's")' + #10 +
+  '    import subprocess, io' + #10 + '    if mode == "r":' + #10 +
+  '        proc = subprocess.Popen(cm' + 'd,' + #10 +
+  '                                sh' + 'ell=True,' + #10 +
+  '                                st' + 'dout=subprocess.PIPE,' + #10 +
+  '                                bu' + 'fsize=buffering)' + #10 +
+  '        return _wrap_close(io.Text' + 'IOWrapper(proc.stdout), proc)' +
+  #10 + '    else:' + #10 + '        proc = subprocess.Popen(cm' + 'd,' +
+  #10 + '                                sh' + 'ell=True,' + #10 +
+  '                                st' + 'din=subprocess.PIPE,' + #10 +
+  '                                bu' + 'fsize=buffering)' + #10 +
+  '        return _wrap_close(io.Text' + 'IOWrapper(proc.stdin), proc)' +
+  #10 + #10 + '# Helper for popen() -- a proxy fo' +
+  'r a file whose close waits for the' + ' process' + #10 +
+  'class _wrap_close:' + #10 + '    def __init__(self, stream, pro' + 'c):' +
+  #10 + '        self._stream = stream' + #10 + '        self._proc = proc' +
+  #10 + '    def close(self):' + #10;
+
+Const
+ Src_os_4: AnsiString =
+  '        self._stream.close()' + #10 +
+  '        returncode = self._proc.wa' + 'it()' + #10 +
+  '        if returncode == 0:' + #10 + '            return None' + #10 +
+  '        if name == ''nt'':' + #10 + '            return returncode' + #10 +
+  '        else:' + #10 + '            return returncode << 8' +
+  '  # Shift left to match old behavi' + 'or' + #10 +
+  '    def __enter__(self):' + #10 + '        return self' + #10 +
+  '    def __exit__(self, *args):' + #10 + '        self.close()' + #10 +
+  '    def __getattr__(self, name):' + #10 +
+  '        return getattr(self._strea' + 'm, name)' + #10 +
+  '    def __iter__(self):' + #10 + '        return iter(self._stream)' +
+  #10 + #10 + '# Supply os.fdopen()' + #10 +
+  'def fdopen(fd, *args, **kwargs):' + #10 +
+  '    if not isinstance(fd, int):' + #10 +
+  '        raise TypeError("invalid f' +
+  'd type (%s, expected integer)" % t' + 'ype(fd))' + #10 + '    import io' +
+  #10 + '    return io.open(fd, *args, **kw' + 'args)' + #10 + #10 + #10 +
+  '# For testing purposes, make sure ' +
+  'the function is available when the' + ' C' + #10 +
+  '# implementation exists.' + #10 + 'def _fspath(path):' + #10 +
+  '    """Return the path representat' + 'ion of a path-like object.' + #10 +
+  #10 + '    If str or bytes is passed in, ' +
+  'it is returned unchanged. Otherwis' + 'e the' + #10 +
+  '    os.PathLike interface is used ' +
+  'to get the path representation. If' + ' the' + #10 +
+  '    path representation is not str' +
+  ' or bytes, TypeError is raised. If' + ' the' + #10 +
+  '    provided path is not str, byte' +
+  's, or os.PathLike, TypeError is ra' + 'ised.' + #10 + '    """' + #10 +
+  '    if isinstance(path, (str, byte' + 's)):' + #10 +
+  '        return path' + #10 + #10 + '    # Work from the object''s type ' +
+  'to match method resolution of othe' + 'r magic' + #10 + '    # methods.' +
+  #10 + '    path_type = type(path)' + #10 + '    try:' + #10 +
+  '        path_repr = path_type.__fs' + 'path__(path)' + #10 +
+  '    except AttributeError:' + #10 + '        if hasattr(path_type, ''__f' +
+  'spath__''):' + #10 + '            raise' + #10 + '        else:' + #10 +
+  '            raise TypeError("expec' +
+  'ted str, bytes or os.PathLike obje' + 'ct, "' + #10 +
+  '                            "not "' + ' + path_type.__name__)' + #10 +
+  '    if isinstance(path_repr, (str,' + ' bytes)):' + #10 +
+  '        return path_repr' + #10 + '    else:' + #10 +
+  '        raise TypeError("expected ' +
+  '{}.__fspath__() to return str or b' + 'ytes, "' + #10 +
+  '                        "not {}".f' + 'ormat(path_type.__name__,' + #10 +
+  '                                  ' + '      type(path_repr).__name__))' +
+  #10 + #10 + '# If there is no C implementation,' +
+  ' make the pure Python version the' + #10 +
+  '# implementation as transparently ' + 'as possible.' + #10 +
+  'if not _exists(''fspath''):' + #10 + '    fspath = _fspath' + #10 +
+  '    fspath.__name__ = "fspath"' + #10 + #10 + #10 +
+  'class PathLike(abc.ABC):' + #10 + #10 +
+  '    """Abstract base class for imp' +
+  'lementing the file system path pro' + 'tocol."""' + #10 + #10 +
+  '    @abc.abstractmethod' + #10 + '    def __fspath__(self):' + #10 +
+  '        """Return the file system ' +
+  'path representation of the object.' + '"""' + #10 +
+  '        raise NotImplementedError' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __subclasshook__(cls, subc' + 'lass):' + #10 +
+  '        if cls is PathLike:' + #10 + '            return _check_methods(' +
+  'subclass, ''__fspath__'')' + #10 + '        return NotImplemented' + #10 +
+  #10 + #10 + 'if name == ''nt'':' + #10 + '    class _AddedDllDirectory:' +
+  #10 + '        def __init__(self, path, c' +
+  'ookie, remove_dll_directory):' + #10 + '            self.path = path' +
+  #10 + '            self._cookie = cookie' + #10 +
+  '            self._remove_dll_direc' + 'tory = remove_dll_directory' + #10 +
+  '        def close(self):' + #10 + '            self._remove_dll_direc' +
+  'tory(self._cookie)' + #10 + '            self.path = None' + #10 +
+  '        def __enter__(self):' + #10 + '            return self' + #10 +
+  '        def __exit__(self, *args):' + #10 + '            self.close()' +
+  #10 + '        def __repr__(self):' + #10 + '            if self.path:' +
+  #10 + '                return "<AddedDllD' +
+  'irectory({!r})>".format(self.path)' + #10 +
+  '            return "<AddedDllDirec' + 'tory()>"' + #10 + #10 +
+  '    def add_dll_directory(path):' + #10 +
+  '        """Add a path to the DLL s' + 'earch path.' + #10 + #10 +
+  '        This search path is used w' +
+  'hen resolving dependencies for imp' + 'orted' + #10 +
+  '        extension modules (the mod' +
+  'ule itself is resolved through sys' + '.path),' + #10 +
+  '        and also by ctypes.' + #10 + #10 +
+  '        Remove the directory by ca' +
+  'lling close() on the returned obje' + 'ct or' + #10 +
+  '        using it in a with stateme' + 'nt.' + #10 + '        """' + #10 +
+  '        import nt' + #10 + '        cookie = nt._add_dll_direc' +
+  'tory(path)' + #10 + '        return _AddedDllDirectory(' + #10 +
+  '            path,' + #10 + '            cookie,' + #10 +
+  '            nt._remove_dll_directo' + 'ry' + #10 + '        )' + #10 +
+  #10;
 
 Function Src_os: AnsiString;
 Begin
- Result := Src_os_0 + Src_os_1;
+ Result := Src_os_0 + Src_os_1 + Src_os_2 + Src_os_3 + Src_os_4;
 End;
 
 Const
  Src_pathlib_0: AnsiString =
-  '"""Object-oriented filesystem path' +
-  's (port of CPython 3.8 pathlib for' + ' this interpreter).' + #10 + #10 +
-  'Differences from CPython 3.8: no a' +
-  'ccessor objects, os.PathLike regis' + 'tration is done' + #10 +
-  'with PathLike.register, Path.touch' +
-  '() ignores the *mode* argument, th' + 'e context manager' + #10 +
-  'protocol is a no-op, owner()/group' +
-  '() read /etc/passwd and /etc/group' + ' directly.' + #10 + '"""' + #10 +
-  'import os' + #10 + 'import re' + #10 + 'import sys' + #10 +
+  'import fnmatch' + #10 + 'import functools' + #10 + 'import io' + #10 +
+  'import ntpath' + #10 + 'import os' + #10 + 'import posixpath' + #10 +
+  'import re' + #10 + 'import sys' + #10 +
+  'from _collections_abc import Seque' + 'nce' + #10 +
   'from errno import EINVAL, ENOENT, ' + 'ENOTDIR, EBADF, ELOOP' + #10 +
-  'from collections.abc import Sequen' + 'ce' + #10 +
   'from operator import attrgetter' + #10 +
   'from stat import S_ISDIR, S_ISLNK,' +
-  ' S_ISREG, S_ISSOCK, S_ISBLK, S_ISC' + 'HR, S_ISFIFO' + #10 + #10 +
-  '__all__ = [' + #10 + '    "PurePath", "PurePosixPath", "' +
-  'PureWindowsPath",' + #10 + '    "Path", "PosixPath", "WindowsP' + 'ath",' +
-  #10 + '    ]' + #10 + #10 + '#' + #10 + '# Internals' + #10 + '#' + #10 +
-  #10 + '_IGNORED_ERROS = (ENOENT, ENOTDIR,' + ' EBADF, ELOOP)' + #10 + #10 +
-  '_IGNORED_WINERRORS = (' + #10 + '    21,    # ERROR_NOT_READY' + #10 +
-  '    123,   # ERROR_INVALID_NAME' + #10 +
-  '    1921,  # ERROR_CANT_RESOLVE_FI' + 'LENAME' + #10 + ')' + #10 + #10 +
-  #10 + 'def _ignore_error(exception):' + #10 +
+  ' S_ISREG, S_ISSOCK, S_ISBLK, S_ISC' + 'HR, S_ISFIFO' + #10 +
+  'from urllib.parse import quote_fro' + 'm_bytes as urlquote_from_bytes' +
+  #10 + #10 + #10 + 'supports_symlinks = True' + #10 +
+  'if os.name == ''nt'':' + #10 + '    import nt' + #10 +
+  '    if sys.getwindowsversion()[:2]' + ' >= (6, 0):' + #10 +
+  '        from nt import _getfinalpa' + 'thname' + #10 + '    else:' + #10 +
+  '        supports_symlinks = False' + #10 +
+  '        _getfinalpathname = None' + #10 + 'else:' + #10 + '    nt = None' +
+  #10 + #10 + #10 + '__all__ = [' + #10 +
+  '    "PurePath", "PurePosixPath", "' + 'PureWindowsPath",' + #10 +
+  '    "Path", "PosixPath", "WindowsP' + 'ath",' + #10 + '    ]' + #10 + #10 +
+  '#' + #10 + '# Internals' + #10 + '#' + #10 + #10 +
+  '# EBADF - guard against macOS `sta' + 't` throwing EBADF' + #10 +
+  '_IGNORED_ERROS = (ENOENT, ENOTDIR,' + ' EBADF, ELOOP)' + #10 + #10 +
+  '_IGNORED_WINERRORS = (' + #10 + '    21,  # ERROR_NOT_READY - drive' +
+  ' exists but is not accessible' + #10 +
+  '    123, # ERROR_INVALID_NAME - fi' + 'x for bpo-35306' + #10 +
+  '    1921,  # ERROR_CANT_RESOLVE_FI' +
+  'LENAME - fix for broken symlink po' + 'inting to itself' + #10 + ')' +
+  #10 + #10 + 'def _ignore_error(exception):' + #10 +
   '    return (getattr(exception, ''er' +
   'rno'', None) in _IGNORED_ERROS or' + #10 +
   '            getattr(exception, ''wi' +
@@ -70929,67 +76133,7 @@ Const
   'ctual matching using fnmatch, or c' + 'an' + #10 +
   '    # be looked up directly as a f' + 'ile.' + #10 +
   '    return "*" in pat or "?" in pa' + 't or "[" in pat' + #10 + #10 + #10 +
-  '_URI_SAFE = frozenset(''ABCDEFGHIJK' +
-  'LMNOPQRSTUVWXYZabcdefghijklmnopqrs' + 'tuvwxyz0123456789_.-~/'')' + #10 +
-  #10 + #10 + 'def _quote_bytes(b):' + #10 + '    out = []' + #10 +
-  '    for c in b:' + #10 + '        ch = chr(c)' + #10 +
-  '        if ch in _URI_SAFE:' + #10 + '            out.append(ch)' + #10 +
-  '        else:' + #10 + '            out.append(''%%%02X'' % ' + 'c)' +
-  #10 + '    return ''''.join(out)' + #10 + #10 + #10 +
-  'def _translate(pat):' + #10 + '    """Translate a shell pattern t' +
-  'o a regular expression (as fnmatch' + '.translate)."""' + #10 +
-  '    i, n = 0, len(pat)' + #10 + '    res = ''''' + #10 +
-  '    while i < n:' + #10 + '        c = pat[i]' + #10 +
-  '        i = i + 1' + #10 + '        if c == ''*'':' + #10 +
-  '            # compress consecutive' + ' ''*'' into one' + #10 +
-  '            if not res.endswith(''.' + '*''):' + #10 +
-  '                res = res + ''.*''' + #10 + '        elif c == ''?'':' +
-  #10 + '            res = res + ''.''' + #10 + '        elif c == ''['':' +
-  #10 + '            j = i' + #10 + '            if j < n and pat[j] ==' +
-  ' ''!'':' + #10 + '                j = j + 1' + #10 +
-  '            if j < n and pat[j] ==' + ' '']'':' + #10 +
-  '                j = j + 1' + #10 + '            while j < n and pat[j]' +
-  ' != '']'':' + #10 + '                j = j + 1' + #10 +
-  '            if j >= n:' + #10 + '                res = res + ''\\[''' +
-  #10 + '            else:' + #10 + '                stuff = pat[i:j]' + #10 +
-  '                if ''--'' not in stu' + 'ff:' + #10 +
-  '                    stuff = stuff.' + 'replace(''\\'', r''\\'')' + #10 +
-  '                else:' + #10 + '                    chunks = []' + #10 +
-  '                    k = i + 2 if p' + 'at[i] == ''!'' else i + 1' + #10 +
-  '                    while True:' + #10 +
-  '                        k = pat.fi' + 'nd(''-'', k, j)' + #10 +
-  '                        if k < 0:' + #10 +
-  '                            break' + #10 +
-  '                        chunks.app' + 'end(pat[i:k])' + #10 +
-  '                        i = k + 1' + #10 +
-  '                        k = k + 3' + #10 +
-  '                    chunks.append(' + 'pat[i:j])' + #10 +
-  '                    stuff = ''-''.jo' +
-  'in(s.replace(''\\'', r''\\'').replace(' + '''-'', r''\-'')' + #10 +
-  '                                  ' + '   for s in chunks)' + #10 +
-  '                # Escape set opera' + 'tions (&&, ~~ and ||).' + #10 +
-  '                stuff = re.sub(r''(' + '[&~|])'', r''\\\1'', stuff)' +
-  #10 + '                i = j + 1' + #10 +
-  '                if stuff[0] == ''!''' + ':' + #10 +
-  '                    stuff = ''^'' + ' + 'stuff[1:]' + #10 +
-  '                elif stuff[0] in (' + '''^'', ''[''):' + #10 +
-  '                    stuff = ''\\'' +' + ' stuff' + #10 +
-  '                res = ''%s[%s]'' % (' + 'res, stuff)' + #10 +
-  '        else:' + #10 + '            res = res + re.escape(' + 'c)' + #10 +
-  '    return ''(?s:%s)\\Z'' % res' + #10 + #10 + #10 + '_pat_cache = {}' +
-  #10 + #10 + #10 + 'def _fnmatchcase(name, pat):' + #10 + '    try:' + #10 +
-  '        m = _pat_cache[pat]' + #10 + '    except KeyError:' + #10 +
-  '        m = _pat_cache[pat] = re.c' + 'ompile(_translate(pat)).match' +
-  #10 + '    return m(name) is not None' + #10 + #10 + #10 +
-  'def _read_colon_db(fname, key_inde' + 'x, key, ret_index):' + #10 +
-  '    try:' + #10 + '        with open(fname) as f:' + #10 +
-  '            for line in f:' + #10 + '                fields = line.rstr' +
-  'ip(''\n'').split('':'')' + #10 + '                if len(fields) > r' +
-  'et_index and fields[key_index] == ' + 'key:' + #10 +
-  '                    return fields[' + 'ret_index]' + #10 +
-  '    except OSError:' + #10 + '        pass' + #10 + '    return None' +
-  #10 + #10 + #10 + 'class _Flavour(object):' + #10 +
-  '    """A flavour implements a part' +
+  'class _Flavour(object):' + #10 + '    """A flavour implements a part' +
   'icular (platform-specific) set of ' + 'path' + #10 + '    semantics."""' +
   #10 + #10 + '    def __init__(self):' + #10 +
   '        self.join = self.sep.join' + #10 + #10 +
@@ -71036,8 +76180,12 @@ Const
   '        else:' + #10 + '            # Second path is non-a' +
   'nchored (common case)' + #10 + '            return drv, root, part' +
   's + parts2' + #10 + '        return drv2, root2, parts2' + #10 + #10 +
-  #10 + 'class _WindowsFlavour(_Flavour):' + #10 + '    sep = ''\\''' + #10 +
-  '    altsep = ''/''' + #10 + '    has_drv = True' + #10 +
+  #10 + 'class _WindowsFlavour(_Flavour):' + #10 +
+  '    # Reference for Windows paths ' + 'can be found at' + #10 +
+  '    # http://msdn.microsoft.com/en' +
+  '-us/library/aa365247%28v=vs.85%29.' + 'aspx' + #10 + #10 +
+  '    sep = ''\\''' + #10 + '    altsep = ''/''' + #10 +
+  '    has_drv = True' + #10 + '    pathmod = ntpath' + #10 + #10 +
   '    is_supported = (os.name == ''nt' + ''')' + #10 + #10 +
   '    drive_letters = set(''abcdefghi' +
   'jklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ' + 'RSTUVWXYZ'')' + #10 +
@@ -71046,14 +76194,26 @@ Const
   '        {''CON'', ''PRN'', ''AUX'', ''NUL' + '''} |' + #10 +
   '        {''COM%d'' % i for i in rang' + 'e(1, 10)} |' + #10 +
   '        {''LPT%d'' % i for i in rang' + 'e(1, 10)}' + #10 + '        )' +
+  #10 + #10 + '    # Interesting findings about e' + 'xtended paths:' + #10 +
+  '    # - ''\\?\c:\a'', ''//?/c:\a'' and' +
+  ' ''//?/c:/a'' are all supported' + #10 +
+  '    #   but ''\\?\c:/a'' is not' + #10 +
+  '    # - extended paths are always ' +
+  'absolute; "relative" extended path' + 's will' + #10 + '    #   fail.' +
   #10 + #10 + '    def splitroot(self, part, sep=' + 'sep):' + #10 +
   '        first = part[0:1]' + #10 + '        second = part[1:2]' + #10 +
   '        if (second == sep and firs' + 't == sep):' + #10 +
+  '            # XXX extended paths s' +
+  'hould also disable the collapsing ' + 'of "."' + #10 +
+  '            # components (accordin' + 'g to MSDN docs).' + #10 +
   '            prefix, part = self._s' + 'plit_extended_path(part)' + #10 +
   '            first = part[0:1]' + #10 + '            second = part[1:2]' +
   #10 + '        else:' + #10 + '            prefix = ''''' + #10 +
   '        third = part[2:3]' + #10 + '        if (second == sep and firs' +
-  't == sep and third != sep):' + #10 + '            # is a UNC path' + #10 +
+  't == sep and third != sep):' + #10 + '            # is a UNC path:' + #10 +
+  '            # vvvvvvvvvvvvvvvvvvvv' + 'v root' + #10 +
+  '            # \\machine\mountpoint' + '\directory\etc\...' + #10 +
+  '            #            directory' + ' ^^^^^^^^^^^^^^' + #10 +
   '            index = part.find(sep,' + ' 2)' + #10 +
   '            if index != -1:' + #10 + '                index2 = part.find' +
   '(sep, index + 1)' + #10 + '                # a UNC path can''t' +
@@ -71073,21 +76233,47 @@ Const
   ')' + #10 + '        return prefix + drv, root,' + ' part' + #10 + #10 +
   '    def casefold(self, s):' + #10 + '        return s.lower()' + #10 +
   #10 + '    def casefold_parts(self, parts' + '):' + #10 +
-  '        return [p.lower() for p in' + ' parts]' + #10;
-
-Const
- Src_pathlib_1: AnsiString =
-  #10 + '    def compile_pattern(self, patt' + 'ern):' + #10 +
-  '        return re.compile(_transla' +
-  'te(pattern), re.IGNORECASE).fullma' + 'tch' + #10 + #10 +
-  '    def _split_extended_path(self,' +
+  '        return [p.lower() for p in' + ' parts]' + #10 + #10 +
+  '    def compile_pattern(self, patt' + 'ern):' + #10 +
+  '        return re.compile(fnmatch.' +
+  'translate(pattern), re.IGNORECASE)' + '.fullmatch' + #10 + #10 +
+  '    def resolve(self, path, strict' + '=False):' + #10 +
+  '        s = str(path)' + #10 + '        if not s:' + #10 +
+  '            return os.getcwd()' + #10 + '        previous_s = None' + #10 +
+  '        if _getfinalpathname is no' + 't None:' + #10 +
+  '            if strict:' + #10 + '                return self._ext_t' +
+  'o_normal(_getfinalpathname(s))' + #10 + '            else:' + #10 +
+  '                tail_parts = []  #' +
+  ' End of the path after the first o' + 'ne not found' + #10 +
+  '                while True:' + #10 + '                    try:' + #10 +
+  '                        s = self._' +
+  'ext_to_normal(_getfinalpathname(s)' + ')' + #10 +
+  '                    except FileNot' + 'FoundError:' + #10 +
+  '                        previous_s' + ' = s' + #10 +
+  '                        s, tail = ' + 'os.path.split(s)' + #10 +
+  '                        tail_parts' + '.append(tail)' + #10 +
+  '                        if previou' + 's_s == s:' + #10 +
+  '                            return' + ' path' + #10 +
+  '                    else:' + #10 + '                        return os.' +
+  'path.join(s, *reversed(tail_parts)' + ')' + #10 +
+  '        # Means fallback on absolu' + 'te' + #10 + '        return None' +
+  #10 + #10 + '    def _split_extended_path(self,' +
   ' s, ext_prefix=ext_namespace_prefi' + 'x):' + #10 +
   '        prefix = ''''' + #10 + '        if s.startswith(ext_prefix' +
   '):' + #10 + '            prefix = s[:4]' + #10 + '            s = s[4:]' +
   #10 + '            if s.startswith(''UNC\\' + '''):' + #10 +
   '                prefix += s[:3]' + #10 +
   '                s = ''\\'' + s[3:]' + #10 + '        return prefix, s' +
-  #10 + #10 + '    def is_reserved(self, parts):' + #10 +
+  #10 + #10 + '    def _ext_to_normal(self, s):' + #10 +
+  '        # Turn back an extended pa' + 'th into a normal DOS-like path' +
+  #10 + '        return self._split_extende' + 'd_path(s)[1]' + #10 + #10 +
+  '    def is_reserved(self, parts):' + #10 +
+  '        # NOTE: the rules for rese' +
+  'rved names seem somewhat complicat' + 'ed' + #10 +
+  '        # (e.g. r"..\NUL" is reser' + 'ved but not r"foo\NUL").' + #10 +
+  '        # We err on the side of ca' +
+  'ution and return True for paths wh' + 'ich are' + #10 +
+  '        # not considered reserved ' + 'by Windows.' + #10 +
   '        if not parts:' + #10 + '            return False' + #10 +
   '        if parts[0].startswith(''\\' + '\\''):' + #10 +
   '            # UNC paths are never ' + 'reserved' + #10 +
@@ -71099,23 +76285,58 @@ Const
   've[1] == '':'':' + #10 + '            # It''s a path on a loc' +
   'al drive => ''file:///c:/a/b''' + #10 +
   '            rest = path.as_posix()' + '[2:].lstrip(''/'')' + #10 +
-  '            return ''file:///%s/%s''' + ' % (' + #10 +
-  '                drive, _quote_byte' + 's(rest.encode(''utf-8'')))' + #10 +
-  '        else:' + #10 + '            # It''s a path on a net' +
+  '            return ''file:///%s/%s''' + ' % (' + #10;
+
+Const
+ Src_pathlib_1: AnsiString =
+  '                drive, urlquote_fr' + 'om_bytes(rest.encode(''utf-8'')))' +
+  #10 + '        else:' + #10 + '            # It''s a path on a net' +
   'work drive => ''file://host/share/a' + '/b''' + #10 +
-  '            return ''file:'' + _quot' +
-  'e_bytes(path.as_posix().encode(''ut' + 'f-8''))' + #10 + #10 +
+  '            return ''file:'' + urlqu' +
+  'ote_from_bytes(path.as_posix().enc' + 'ode(''utf-8''))' + #10 + #10 +
   '    def gethomedir(self, username)' + ':' + #10 +
-  '        raise RuntimeError("Can''t ' + 'determine home directory")' + #10 +
-  #10 + #10 + 'class _PosixFlavour(_Flavour):' + #10 + '    sep = ''/''' +
-  #10 + '    altsep = ''''' + #10 + '    has_drv = False' + #10 +
+  '        if ''USERPROFILE'' in os.env' + 'iron:' + #10 +
+  '            userhome = os.environ[' + '''USERPROFILE'']' + #10 +
+  '        elif ''HOMEPATH'' in os.envi' + 'ron:' + #10 + '            try:' +
+  #10 + '                drv = os.environ[''' + 'HOMEDRIVE'']' + #10 +
+  '            except KeyError:' + #10 + '                drv = ''''' + #10 +
+  '            userhome = drv + os.en' + 'viron[''HOMEPATH'']' + #10 +
+  '        else:' + #10 + '            raise RuntimeError("Ca' +
+  'n''t determine home directory")' + #10 + #10 + '        if username:' +
+  #10 + '            # Try to guess user ho' +
+  'me directory.  By default all user' + 's' + #10 +
+  '            # directories are loca' +
+  'ted in the same place and are name' + 'd by' + #10 +
+  '            # corresponding userna' +
+  'mes.  If current user home directo' + 'ry points' + #10 +
+  '            # to nonstandard place' + ', this guess is likely wrong.' +
+  #10 + '            if os.environ[''USERNAM' + 'E''] != username:' + #10 +
+  '                drv, root, parts =' + ' self.parse_parts((userhome,))' +
+  #10 + '                if parts[-1] != os' + '.environ[''USERNAME'']:' +
+  #10 + '                    raise RuntimeE' +
+  'rror("Can''t determine home directo' + 'ry "' + #10 +
+  '                                  ' + '     "for %r" % username)' + #10 +
+  '                parts[-1] = userna' + 'me' + #10 +
+  '                if drv or root:' + #10 +
+  '                    userhome = drv' + ' + root + self.join(parts[1:])' +
+  #10 + '                else:' + #10 + '                    userhome = sel' +
+  'f.join(parts)' + #10 + '        return userhome' + #10 + #10 +
+  'class _PosixFlavour(_Flavour):' + #10 + '    sep = ''/''' + #10 +
+  '    altsep = ''''' + #10 + '    has_drv = False' + #10 +
+  '    pathmod = posixpath' + #10 + #10 +
   '    is_supported = (os.name != ''nt' + ''')' + #10 + #10 +
   '    def splitroot(self, part, sep=' + 'sep):' + #10 +
   '        if part and part[0] == sep' + ':' + #10 +
   '            stripped_part = part.l' + 'strip(sep)' + #10 +
-  '            # POSIX: exactly two l' +
-  'eading slashes are implementation-' + 'defined,' + #10 +
-  '            # three or more are a ' + 'single slash.' + #10 +
+  '            # According to POSIX p' + 'ath resolution:' + #10 +
+  '            # http://pubs.opengrou' +
+  'p.org/onlinepubs/009695399/basedef' + 's/xbd_chap04.html#tag_04_11' + #10 +
+  '            # "A pathname that beg' +
+  'ins with two successive slashes ma' + 'y be' + #10 +
+  '            # interpreted in an im' +
+  'plementation-defined manner, altho' + 'ugh more' + #10 +
+  '            # than two leading sla' +
+  'shes shall be treated as a single ' + 'slash".' + #10 +
   '            if len(part) - len(str' + 'ipped_part) == 2:' + #10 +
   '                return '''', sep * 2' + ', stripped_part' + #10 +
   '            else:' + #10 + '                return '''', sep, st' +
@@ -71124,32 +76345,10 @@ Const
   '    def casefold(self, s):' + #10 + '        return s' + #10 + #10 +
   '    def casefold_parts(self, parts' + '):' + #10 + '        return parts' +
   #10 + #10 + '    def compile_pattern(self, patt' + 'ern):' + #10 +
-  '        return re.compile(_transla' + 'te(pattern)).fullmatch' + #10 +
-  #10 + '    def is_reserved(self, parts):' + #10 + '        return False' +
-  #10 + #10 + '    def make_uri(self, path):' + #10 +
-  '        # We represent the path us' +
-  'ing the local filesystem encoding,' + #10 +
-  '        # for portability to other' + ' applications.' + #10 +
-  '        bpath = os.fsencode(path)' + #10 +
-  '        return ''file://'' + _quote_' + 'bytes(bpath)' + #10 + #10 +
-  '    def gethomedir(self, username)' + ':' + #10 +
-  '        if not username:' + #10 + '            _rf20 = 0' + #10 +
-  '            try:' + #10 + '                return os.environ[' +
-  '''HOME'']' + #10 + '            except KeyError:' + #10 +
-  '                home = _read_colon' +
-  '_db(''/etc/passwd'', 2, str(os.getui' + 'd()), 5)' + #10 +
-  '                if home is None:' + #10 +
-  '                    raise RuntimeE' +
-  'rror("Can''t determine home directo' + 'ry")' + #10 +
-  '                _rv20 = home' + #10 + '                _rf20 = 1' + #10 +
-  '            if _rf20:' + #10 + '                return _rv20' + #10 +
-  '        else:' + #10 + '            home = _read_colon_db(' +
-  '''/etc/passwd'', 0, username, 5)' + #10 + '            if home is None:' +
-  #10 + '                raise RuntimeError' +
-  '("Can''t determine home directory")' + #10 + '            return home' +
+  '        return re.compile(fnmatch.' + 'translate(pattern)).fullmatch' +
   #10 + #10 + '    def resolve(self, path, strict' + '=False):' + #10 +
-  '        sep = self.sep' + #10 + '        seen = {}' + #10 + #10 +
-  '        def _resolve(path, rest):' + #10 +
+  '        sep = self.sep' + #10 + '        accessor = path._accessor' + #10 +
+  '        seen = {}' + #10 + '        def _resolve(path, rest):' + #10 +
   '            if rest.startswith(sep' + '):' + #10 +
   '                path = ''''' + #10 + #10 +
   '            for name in rest.split' + '(sep):' + #10 +
@@ -71159,8 +76358,10 @@ Const
   '                    # parent dir' + #10 +
   '                    path, _, _ = p' + 'ath.rpartition(sep)' + #10 +
   '                    continue' + #10 +
-  '                newpath = path + s' + 'ep + name' + #10 +
-  '                if newpath in seen' + ':' + #10 +
+  '                if path.endswith(s' + 'ep):' + #10 +
+  '                    newpath = path' + ' + name' + #10 +
+  '                else:' + #10 + '                    newpath = path' +
+  ' + sep + name' + #10 + '                if newpath in seen' + ':' + #10 +
   '                    # Already seen' + ' this path' + #10 +
   '                    path = seen[ne' + 'wpath]' + #10 +
   '                    if path is not' + ' None:' + #10 +
@@ -71171,28 +76372,74 @@ Const
   '                    raise RuntimeE' +
   'rror("Symlink loop from %r" % newp' + 'ath)' + #10 +
   '                # Resolve the symb' + 'olic link' + #10 +
-  '                try:' + #10 + '                    target = os.re' +
-  'adlink(newpath)' + #10 + '                except OSError as ' + 'e:' +
-  #10 + '                    if e.errno != ' + 'EINVAL and strict:' + #10 +
-  '                        raise' + #10 + '                    if strict:' +
-  #10 + '                        os.lstat(n' +
-  'ewpath)   # raises ENOENT etc. whe' + 'n missing' + #10 +
+  '                try:' + #10 + '                    target = acces' +
+  'sor.readlink(newpath)' + #10 + '                except OSError as ' +
+  'e:' + #10 + '                    if e.errno != ' + 'EINVAL and strict:' +
+  #10 + '                        raise' + #10 +
   '                    # Not a symlin' +
   'k, or non-strict mode. We just lea' + 've the path' + #10 +
   '                    # untouched.' + #10 +
   '                    path = newpath' + #10 + '                else:' + #10 +
-  '                    seen[newpath] ' + '= None  # not resolved symlink' +
+  '                    seen[newpath] ' + '= None # not resolved symlink' +
   #10 + '                    path = _resolv' + 'e(path, target)' + #10 +
-  '                    seen[newpath] ' + '= path  # resolved symlink' + #10 +
+  '                    seen[newpath] ' + '= path # resolved symlink' + #10 +
   #10 + '            return path' + #10 +
   '        # NOTE: according to POSIX' +
   ', getcwd() cannot contain path com' + 'ponents' + #10 +
   '        # which are symlinks.' + #10 +
   '        base = '''' if path.is_absol' + 'ute() else os.getcwd()' + #10 +
-  '        return _resolve(base, str(' + 'path)) or sep' + #10 + #10 + #10 +
-  '_windows_flavour = _WindowsFlavour' + '()' + #10 +
-  '_posix_flavour = _PosixFlavour()' + #10 + #10 + #10 + '#' + #10 +
-  '# Globbing helpers' + #10 + '#' + #10 + #10 +
+  '        return _resolve(base, str(' + 'path)) or sep' + #10 + #10 +
+  '    def is_reserved(self, parts):' + #10 + '        return False' + #10 +
+  #10 + '    def make_uri(self, path):' + #10 +
+  '        # We represent the path us' +
+  'ing the local filesystem encoding,' + #10 +
+  '        # for portability to other' + ' applications.' + #10 +
+  '        bpath = bytes(path)' + #10 +
+  '        return ''file://'' + urlquot' + 'e_from_bytes(bpath)' + #10 + #10 +
+  '    def gethomedir(self, username)' + ':' + #10 +
+  '        if not username:' + #10 + '            try:' + #10 +
+  '                return os.environ[' + '''HOME'']' + #10 +
+  '            except KeyError:' + #10 + '                import pwd' + #10 +
+  '                return pwd.getpwui' + 'd(os.getuid()).pw_dir' + #10 +
+  '        else:' + #10 + '            import pwd' + #10 +
+  '            try:' + #10 + '                return pwd.getpwna' +
+  'm(username).pw_dir' + #10 + '            except KeyError:' + #10 +
+  '                raise RuntimeError' +
+  '("Can''t determine home directory "' + #10 +
+  '                                  ' + ' "for %r" % username)' + #10 + #10 +
+  #10 + '_windows_flavour = _WindowsFlavour' + '()' + #10 +
+  '_posix_flavour = _PosixFlavour()' + #10 + #10 + #10 + 'class _Accessor:' +
+  #10 + '    """An accessor implements a pa' +
+  'rticular (system-specific or not) ' + 'way of' + #10 +
+  '    accessing paths on the filesys' + 'tem."""' + #10 + #10 + #10 +
+  'class _NormalAccessor(_Accessor):' + #10 + #10 + '    stat = os.stat' +
+  #10 + #10 + '    lstat = os.lstat' + #10 + #10 + '    open = os.open' +
+  #10 + #10 + '    listdir = os.listdir' + #10 + #10 +
+  '    scandir = os.scandir' + #10 + #10 + '    chmod = os.chmod' + #10 +
+  #10 + '    if hasattr(os, "lchmod"):' + #10 + '        lchmod = os.lchmod' +
+  #10 + '    else:' + #10 + '        def lchmod(self, pathobj, ' + 'mode):' +
+  #10 + '            raise NotImplementedEr' +
+  'ror("lchmod() not available on thi' + 's system")' + #10 + #10 +
+  '    mkdir = os.mkdir' + #10 + #10 + '    unlink = os.unlink' + #10 + #10 +
+  '    if hasattr(os, "link"):' + #10 + '        link_to = os.link' + #10 +
+  '    else:' + #10 + '        @staticmethod' + #10 +
+  '        def link_to(self, target):' + #10 +
+  '            raise NotImplementedEr' +
+  'ror("os.link() not available on th' + 'is system")' + #10 + #10 +
+  '    rmdir = os.rmdir' + #10 + #10 + '    rename = os.rename' + #10 + #10 +
+  '    replace = os.replace' + #10 + #10 + '    if nt:' + #10 +
+  '        if supports_symlinks:' + #10 + '            symlink = os.symlink' +
+  #10 + '        else:' + #10 + '            def symlink(a, b, targ' +
+  'et_is_directory):' + #10 + '                raise NotImplement' +
+  'edError("symlink() not available o' + 'n this system")' + #10 +
+  '    else:' + #10 + '        # Under POSIX, os.symlink(' +
+  ') takes two args' + #10 + '        @staticmethod' + #10 +
+  '        def symlink(a, b, target_i' + 's_directory):' + #10 +
+  '            return os.symlink(a, b' + ')' + #10 + #10 +
+  '    utime = os.utime' + #10 + #10 + '    # Helper for resolve()' + #10 +
+  '    def readlink(self, path):' + #10 + '        return os.readlink(path)' +
+  #10 + #10 + #10 + '_normal_accessor = _NormalAccessor' + '()' + #10 + #10 +
+  #10 + '#' + #10 + '# Globbing helpers' + #10 + '#' + #10 + #10 +
   'def _make_selector(pattern_parts, ' + 'flavour):' + #10 +
   '    pat = pattern_parts[0]' + #10 + '    child_parts = pattern_parts[1:' +
   ']' + #10 + '    if pat == ''**'':' + #10 +
@@ -71202,8 +76449,11 @@ Const
   '    elif _is_wildcard_pattern(pat)' + ':' + #10 +
   '        cls = _WildcardSelector' + #10 + '    else:' + #10 +
   '        cls = _PreciseSelector' + #10 +
-  '    return cls(pat, child_parts, f' + 'lavour)' + #10 + #10 + #10 +
-  'class _Selector:' + #10 + '    """A selector matches a specif' +
+  '    return cls(pat, child_parts, f' + 'lavour)' + #10 + #10 +
+  'if hasattr(functools, "lru_cache")' + ':' + #10 +
+  '    _make_selector = functools.lru' + '_cache()(_make_selector)' + #10 +
+  #10 + #10 + 'class _Selector:' + #10 +
+  '    """A selector matches a specif' +
   'ic glob pattern part against the c' + 'hildren' + #10 +
   '    of a given path."""' + #10 + #10 +
   '    def __init__(self, child_parts' + ', flavour):' + #10 +
@@ -71219,9 +76469,14 @@ Const
   '        selector.  This can contai' + 'n parent_path itself."""' + #10 +
   '        path_cls = type(parent_pat' + 'h)' + #10 +
   '        is_dir = path_cls.is_dir' + #10 +
-  '        exists = path_cls.exists' + #10 + '        scandir = os.scandir' +
-  #10 + '        if not is_dir(parent_path)' + ':' + #10 +
-  '            return iter([])' + #10 + '        return self._select_from(p' +
+  '        exists = path_cls.exists' + #10 +
+  '        scandir = parent_path._acc' + 'essor.scandir' + #10 +
+  '        if not is_dir(parent_path)' + ':' + #10 +
+  '            return iter([])' + #10;
+
+Const
+ Src_pathlib_2: AnsiString =
+  '        return self._select_from(p' +
   'arent_path, is_dir, exists, scandi' + 'r)' + #10 + #10 + #10 +
   'class _TerminatingSelector:' + #10 + #10 +
   '    def _select_from(self, parent_' + 'path, is_dir, exists, scandir):' +
@@ -71230,49 +76485,48 @@ Const
   '    def __init__(self, name, child' + '_parts, flavour):' + #10 +
   '        self.name = name' + #10 + '        _Selector.__init__(self, c' +
   'hild_parts, flavour)' + #10 + #10 + '    def _select_from(self, parent_' +
-  'path, is_dir, exists, scandir):' + #10 + '        _rf19 = 0' + #10 +
-  '        try:' + #10 + '            path = parent_path._ma' +
-  'ke_child_relpath(self.name)' + #10 + '            if (is_dir if self.dir' +
-  'only else exists)(path):' + #10 + '                for p in self.succ' +
+  'path, is_dir, exists, scandir):' + #10 + '        try:' + #10 +
+  '            path = parent_path._ma' + 'ke_child_relpath(self.name)' + #10 +
+  '            if (is_dir if self.dir' + 'only else exists)(path):' + #10 +
+  '                for p in self.succ' +
   'essor._select_from(path, is_dir, e' + 'xists, scandir):' + #10 +
   '                    yield p' + #10 + '        except PermissionError:' +
-  #10 + '            _rv19 = None' + #10 + '            _rf19 = 1' + #10 +
-  '        if _rf19:' + #10 + '            return _rv19' + #10 + #10 + #10 +
+  #10 + '            return' + #10 + #10 + #10 +
   'class _WildcardSelector(_Selector)' + ':' + #10 + #10 +
   '    def __init__(self, pat, child_' + 'parts, flavour):' + #10 +
-  '        self.pat = flavour.compile' + '_pattern(pat)' + #10 +
+  '        self.match = flavour.compi' + 'le_pattern(pat)' + #10 +
   '        _Selector.__init__(self, c' + 'hild_parts, flavour)' + #10 + #10 +
   '    def _select_from(self, parent_' + 'path, is_dir, exists, scandir):' +
-  #10 + '        _rf18 = 0' + #10 + '        try:' + #10 +
-  '            cf = parent_path._flav' + 'our.casefold' + #10 +
-  '            entries = list(scandir' + '(str(parent_path)))' + #10 +
-  '            for entry in entries:' + #10 +
+  #10 + '        try:' + #10 + '            with scandir(parent_pa' +
+  'th) as scandir_it:' + #10 + '                entries = list(sca' +
+  'ndir_it)' + #10 + '            for entry in entries:' + #10 +
   '                if self.dironly:' + #10 + '                    try:' +
-  #10 + '                        if not ent' + 'ry.is_dir():' + #10 +
+  #10 + '                        # "entry.i' +
+  's_dir()" can raise PermissionError' + #10 +
+  '                        # in some ' +
+  'cases (see bpo-38894), which is no' + 't' + #10 +
+  '                        # among th' +
+  'e errors ignored by _ignore_error(' + ')' + #10 +
+  '                        if not ent' + 'ry.is_dir():' + #10 +
   '                            contin' + 'ue' + #10 +
   '                    except OSError' + ' as e:' + #10 +
   '                        if not _ig' + 'nore_error(e):' + #10 +
   '                            raise' + #10 +
   '                        continue' + #10 +
   '                name = entry.name' + #10 +
-  '                if self.pat(name):' + #10 +
+  '                if self.match(name' + '):' + #10 +
   '                    path = parent_' + 'path._make_child_relpath(name)' +
   #10 + '                    for p in self.' +
   'successor._select_from(path, is_di' + 'r, exists, scandir):' + #10 +
   '                        yield p' + #10 +
-  '        except PermissionError:' + #10 + '            _rv18 = None' + #10 +
-  '            _rf18 = 1' + #10 + '        if _rf18:' + #10 +
-  '            return _rv18' + #10 + #10 + #10 +
-  'class _RecursiveWildcardSelector(_' + 'Selector):' + #10 + #10 +
+  '        except PermissionError:' + #10 + '            return' + #10 + #10 +
+  #10 + 'class _RecursiveWildcardSelector(_' + 'Selector):' + #10 + #10 +
   '    def __init__(self, pat, child_' + 'parts, flavour):' + #10 +
-  '        _Selector.__init__(self, c' + 'hild_parts, flavour)' + #10;
-
-Const
- Src_pathlib_2: AnsiString =
-  #10 + '    def _iterate_directories(self,' +
-  ' parent_path, is_dir, scandir):' + #10 + '        yield parent_path' +
-  #10 + '        _rf17 = 0' + #10 + '        try:' + #10 +
-  '            entries = list(scandir' + '(str(parent_path)))' + #10 +
+  '        _Selector.__init__(self, c' + 'hild_parts, flavour)' + #10 + #10 +
+  '    def _iterate_directories(self,' + ' parent_path, is_dir, scandir):' +
+  #10 + '        yield parent_path' + #10 + '        try:' + #10 +
+  '            with scandir(parent_pa' + 'th) as scandir_it:' + #10 +
+  '                entries = list(sca' + 'ndir_it)' + #10 +
   '            for entry in entries:' + #10 +
   '                entry_is_dir = Fal' + 'se' + #10 + '                try:' +
   #10 + '                    entry_is_dir =' + ' entry.is_dir()' + #10 +
@@ -71285,14 +76539,12 @@ Const
   '                    for p in self.' +
   '_iterate_directories(path, is_dir,' + ' scandir):' + #10 +
   '                        yield p' + #10 +
-  '        except PermissionError:' + #10 + '            _rv17 = None' + #10 +
-  '            _rf17 = 1' + #10 + '        if _rf17:' + #10 +
-  '            return _rv17' + #10 + #10 +
+  '        except PermissionError:' + #10 + '            return' + #10 + #10 +
   '    def _select_from(self, parent_' + 'path, is_dir, exists, scandir):' +
-  #10 + '        _rf16 = 0' + #10 + '        try:' + #10 +
-  '            yielded = set()' + #10 + '            try:' + #10 +
-  '                successor_select =' + ' self.successor._select_from' +
-  #10 + '                for starting_point' +
+  #10 + '        try:' + #10 + '            yielded = set()' + #10 +
+  '            try:' + #10 + '                successor_select =' +
+  ' self.successor._select_from' + #10 +
+  '                for starting_point' +
   ' in self._iterate_directories(pare' + 'nt_path, is_dir, scandir):' + #10 +
   '                    for p in succe' +
   'ssor_select(starting_point, is_dir' + ', exists, scandir):' + #10 +
@@ -71300,10 +76552,9 @@ Const
   '                            yield ' + 'p' + #10 +
   '                            yielde' + 'd.add(p)' + #10 +
   '            finally:' + #10 + '                yielded.clear()' + #10 +
-  '        except PermissionError:' + #10 + '            _rv16 = None' + #10 +
-  '            _rf16 = 1' + #10 + '        if _rf16:' + #10 +
-  '            return _rv16' + #10 + #10 + #10 + '#' + #10 + '# Public API' +
-  #10 + '#' + #10 + #10 + 'class _PathParents(Sequence):' + #10 +
+  '        except PermissionError:' + #10 + '            return' + #10 + #10 +
+  #10 + '#' + #10 + '# Public API' + #10 + '#' + #10 + #10 +
+  'class _PathParents(Sequence):' + #10 +
   '    """This object provides sequen' +
   'ce-like access to the logical ance' + 'stors' + #10 +
   '    of a path.  Don''t try to const' + 'ruct it yourself."""' + #10 +
@@ -71324,14 +76575,9 @@ Const
   '                                  ' +
   '              self._parts[:-idx - ' + '1])' + #10 + #10 +
   '    def __repr__(self):' + #10 + '        return "<{}.parents>".form' +
-  'at(self._pathcls.__name__)' + #10 + #10 + #10 +
-  '# os.PathLike is not an ABC in thi' +
-  's interpreter (no register()): inh' + 'erit from it instead.' + #10 +
-  '_PathLikeBase = object if hasattr(' +
-  'os.PathLike, ''register'') else os.P' + 'athLike' + #10 + #10 + #10 +
-  'class PurePath(_PathLikeBase):' + #10 +
-  '    """Base class for manipulating' + ' paths without I/O.' + #10 + #10 +
-  '    PurePath represents a filesyst' +
+  'at(self._pathcls.__name__)' + #10 + #10 + #10 + 'class PurePath(object):' +
+  #10 + '    """Base class for manipulating' + ' paths without I/O.' + #10 +
+  #10 + '    PurePath represents a filesyst' +
   'em path and offers operations whic' + 'h' + #10 +
   '    don''t imply any actual filesys' +
   'tem I/O.  Depending on your system' + ',' + #10 +
@@ -71375,22 +76621,26 @@ Const
   '                        "object re' + 'turning str, not %r"' + #10 +
   '                        % type(a))' + #10 +
   '        return cls._flavour.parse_' + 'parts(parts)' + #10 + #10 +
-  '    @classmethod' + #10 + '    def _from_parts(cls, args):' + #10 +
-  '        # We need to call _parse_a' +
+  '    @classmethod' + #10 + '    def _from_parts(cls, args, ini' +
+  't=True):' + #10 + '        # We need to call _parse_a' +
   'rgs on the instance, so as to get ' + 'the' + #10 +
   '        # right flavour.' + #10 + '        self = object.__new__(cls)' +
   #10 + '        drv, root, parts = self._p' + 'arse_args(args)' + #10 +
   '        self._drv = drv' + #10 + '        self._root = root' + #10 +
-  '        self._parts = parts' + #10 + '        return self' + #10 + #10 +
+  '        self._parts = parts' + #10 + '        if init:' + #10 +
+  '            self._init()' + #10 + '        return self' + #10 + #10 +
   '    @classmethod' + #10 + '    def _from_parsed_parts(cls, dr' +
-  'v, root, parts):' + #10 + '        self = object.__new__(cls)' + #10 +
-  '        self._drv = drv' + #10 + '        self._root = root' + #10 +
-  '        self._parts = parts' + #10 + '        return self' + #10 + #10 +
+  'v, root, parts, init=True):' + #10 + '        self = object.__new__(cls)' +
+  #10 + '        self._drv = drv' + #10 + '        self._root = root' + #10 +
+  '        self._parts = parts' + #10 + '        if init:' + #10 +
+  '            self._init()' + #10 + '        return self' + #10 + #10 +
   '    @classmethod' + #10 + '    def _format_parsed_parts(cls, ' +
   'drv, root, parts):' + #10 + '        if drv or root:' + #10 +
   '            return drv + root + cl' + 's._flavour.join(parts[1:])' + #10 +
   '        else:' + #10 + '            return cls._flavour.jo' + 'in(parts)' +
-  #10 + #10 + '    def _make_child(self, args):' + #10 +
+  #10 + #10 + '    def _init(self):' + #10 +
+  '        # Overridden in concrete P' + 'ath' + #10 + '        pass' + #10 +
+  #10 + '    def _make_child(self, args):' + #10 +
   '        drv, root, parts = self._p' + 'arse_args(args)' + #10 +
   '        drv, root, parts = self._f' + 'lavour.join_parsed_parts(' + #10 +
   '            self._drv, self._root,' + ' self._parts, drv, root, parts)' +
@@ -71398,17 +76648,15 @@ Const
   #10 + #10 + '    def __str__(self):' + #10 +
   '        """Return the string repre' +
   'sentation of the path, suitable fo' + 'r' + #10 +
-  '        passing to system calls.""' + '"' + #10 + '        _rf15 = 0' +
-  #10 + '        try:' + #10 + '            return self._str' + #10 +
-  '        except AttributeError:' + #10 +
-  '            self._str = self._form' +
+  '        passing to system calls.""' + '"' + #10 + '        try:' + #10 +
+  '            return self._str' + #10 + '        except AttributeError:' +
+  #10 + '            self._str = self._form' +
   'at_parsed_parts(self._drv, self._r' + 'oot,' + #10 +
   '                                  ' +
   '                self._parts) or ''.' + '''' + #10 +
-  '            _rv15 = self._str' + #10 + '            _rf15 = 1' + #10 +
-  '        if _rf15:' + #10 + '            return _rv15' + #10 + #10 +
-  '    def __fspath__(self):' + #10 + '        return str(self)' + #10 + #10 +
-  '    def as_posix(self):' + #10 + '        """Return the string repre' +
+  '            return self._str' + #10 + #10 + '    def __fspath__(self):' +
+  #10 + '        return str(self)' + #10 + #10 + '    def as_posix(self):' +
+  #10 + '        """Return the string repre' +
   'sentation of the path with forward' + ' (/)' + #10 +
   '        slashes."""' + #10 + '        f = self._flavour' + #10 +
   '        return str(self).replace(f' + '.sep, ''/'')' + #10 + #10 +
@@ -71422,27 +76670,26 @@ Const
   'ile'' URI."""' + #10 + '        if not self.is_absolute():' + #10 +
   '            raise ValueError("rela' +
   'tive path can''t be expressed as a ' + 'file URI")' + #10 +
-  '        return self._flavour.make_' + 'uri(self)' + #10 + #10 +
+  '        return self._flavour.make_' + 'uri(self)' + #10 + #10;
+
+Const
+ Src_pathlib_3: AnsiString =
   '    @property' + #10 + '    def _cparts(self):' + #10 +
   '        # Cached casefolded parts,' + ' for hashing and comparison' + #10 +
-  '        _rf14 = 0' + #10 + '        try:' + #10 +
-  '            return self._cached_cp' + 'arts' + #10 +
+  '        try:' + #10 + '            return self._cached_cp' + 'arts' + #10 +
   '        except AttributeError:' + #10 +
   '            self._cached_cparts = ' +
   'self._flavour.casefold_parts(self.' + '_parts)' + #10 +
-  '            _rv14 = self._cached_c' + 'parts' + #10 +
-  '            _rf14 = 1' + #10 + '        if _rf14:' + #10 +
-  '            return _rv14' + #10 + #10 + '    def __eq__(self, other):' +
-  #10 + '        if not isinstance(other, P' + 'urePath):' + #10 +
+  '            return self._cached_cp' + 'arts' + #10 + #10 +
+  '    def __eq__(self, other):' + #10 +
+  '        if not isinstance(other, P' + 'urePath):' + #10 +
   '            return NotImplemented' + #10 +
   '        return self._cparts == oth' +
   'er._cparts and self._flavour is ot' + 'her._flavour' + #10 + #10 +
-  '    def __hash__(self):' + #10 + '        _rf13 = 0' + #10 +
-  '        try:' + #10 + '            return self._hash' + #10 +
-  '        except AttributeError:' + #10 +
-  '            self._hash = hash(tupl' + 'e(self._cparts))' + #10 +
-  '            _rv13 = self._hash' + #10 + '            _rf13 = 1' + #10 +
-  '        if _rf13:' + #10 + '            return _rv13' + #10 + #10 +
+  '    def __hash__(self):' + #10 + '        try:' + #10 +
+  '            return self._hash' + #10 + '        except AttributeError:' +
+  #10 + '            self._hash = hash(tupl' + 'e(self._cparts))' + #10 +
+  '            return self._hash' + #10 + #10 +
   '    def __lt__(self, other):' + #10 +
   '        if not isinstance(other, P' +
   'urePath) or self._flavour is not o' + 'ther._flavour:' + #10 +
@@ -71466,10 +76713,7 @@ Const
   '    drive = property(attrgetter(''_' + 'drv''),' + #10 +
   '                     doc="""The dr' +
   'ive prefix (letter or UNC path), i' + 'f any.""")' + #10 + #10 +
-  '    root = property(attrgetter(''_r' + 'oot''),' + #10;
-
-Const
- Src_pathlib_3: AnsiString =
+  '    root = property(attrgetter(''_r' + 'oot''),' + #10 +
   '                    doc="""The roo' + 't of the path, if any.""")' + #10 +
   #10 + '    @property' + #10 + '    def anchor(self):' + #10 +
   '        """The concatenation of th' + 'e drive and root, or ''''."""' +
@@ -71506,7 +76750,7 @@ Const
   #10 + '        drv, root, parts = self._f' + 'lavour.parse_parts((name,))' +
   #10 + '        if (not name or name[-1] i' +
   'n [self._flavour.sep, self._flavou' + 'r.altsep]' + #10 +
-  '                or drv or root or ' + 'len(parts) != 1):' + #10 +
+  '            or drv or root or len(' + 'parts) != 1):' + #10 +
   '            raise ValueError("Inva' + 'lid name %r" % (name))' + #10 +
   '        return self._from_parsed_p' + 'arts(self._drv, self._root,' + #10 +
   '                                  ' + '     self._parts[:-1] + [name])' +
@@ -71567,12 +76811,11 @@ Const
   '        components in the filesyst' + 'em path."""' + #10 +
   '        # We cache the tuple to av' +
   'oid building a new one each time .' + 'parts' + #10 +
-  '        # is accessed.' + #10 + '        _rf12 = 0' + #10 +
+  '        # is accessed.  XXX is thi' + 's necessary?' + #10 +
   '        try:' + #10 + '            return self._pparts' + #10 +
   '        except AttributeError:' + #10 +
   '            self._pparts = tuple(s' + 'elf._parts)' + #10 +
-  '            _rv12 = self._pparts' + #10 + '            _rf12 = 1' + #10 +
-  '        if _rf12:' + #10 + '            return _rv12' + #10 + #10 +
+  '            return self._pparts' + #10 + #10 +
   '    def joinpath(self, *args):' + #10 +
   '        """Combine this path with ' +
   'one or several arguments, and retu' + 'rn a' + #10 +
@@ -71581,26 +76824,23 @@ Const
   '        paths) or a totally differ' +
   'ent path (if one of the arguments ' + 'is' + #10 + '        anchored).' +
   #10 + '        """' + #10 + '        return self._make_child(ar' + 'gs)' +
-  #10 + #10 + '    def __truediv__(self, key):' + #10 + '        _rf11 = 0' +
-  #10 + '        try:' + #10 + '            return self._make_chil' +
-  'd((key,))' + #10 + '        except TypeError:' + #10 +
-  '            _rv11 = NotImplemented' + #10 + '            _rf11 = 1' + #10 +
-  '        if _rf11:' + #10 + '            return _rv11' + #10 + #10 +
-  '    def __rtruediv__(self, key):' + #10 + '        _rf10 = 0' + #10 +
-  '        try:' + #10 + '            return self._from_part' +
-  's([key] + self._parts)' + #10 + '        except TypeError:' + #10 +
-  '            _rv10 = NotImplemented' + #10 + '            _rf10 = 1' + #10 +
-  '        if _rf10:' + #10 + '            return _rv10' + #10 + #10 +
-  '    @property' + #10 + '    def parent(self):' + #10 +
-  '        """The logical parent of t' + 'he path."""' + #10 +
-  '        drv = self._drv' + #10 + '        root = self._root' + #10 +
-  '        parts = self._parts' + #10 + '        if len(parts) == 1 and (dr' +
-  'v or root):' + #10 + '            return self' + #10 +
-  '        return self._from_parsed_p' + 'arts(drv, root, parts[:-1])' + #10 +
-  #10 + '    @property' + #10 + '    def parents(self):' + #10 +
-  '        """A sequence of this path' + '''s logical parents."""' + #10 +
-  '        return _PathParents(self)' + #10 + #10 +
-  '    def is_absolute(self):' + #10 + '        """True if the path is abs' +
+  #10 + #10 + '    def __truediv__(self, key):' + #10 + '        try:' + #10 +
+  '            return self._make_chil' + 'd((key,))' + #10 +
+  '        except TypeError:' + #10 + '            return NotImplemented' +
+  #10 + #10 + '    def __rtruediv__(self, key):' + #10 + '        try:' +
+  #10 + '            return self._from_part' + 's([key] + self._parts)' +
+  #10 + '        except TypeError:' + #10 +
+  '            return NotImplemented' + #10 + #10 + '    @property' + #10 +
+  '    def parent(self):' + #10 + '        """The logical parent of t' +
+  'he path."""' + #10 + '        drv = self._drv' + #10 +
+  '        root = self._root' + #10 + '        parts = self._parts' + #10 +
+  '        if len(parts) == 1 and (dr' + 'v or root):' + #10 +
+  '            return self' + #10 + '        return self._from_parsed_p' +
+  'arts(drv, root, parts[:-1])' + #10 + #10 + '    @property' + #10 +
+  '    def parents(self):' + #10 + '        """A sequence of this path' +
+  '''s logical parents."""' + #10 + '        return _PathParents(self)' +
+  #10 + #10 + '    def is_absolute(self):' + #10 +
+  '        """True if the path is abs' +
   'olute (has both a root and, if app' + 'licable,' + #10 +
   '        a drive)."""' + #10 + '        if not self._root:' + #10 +
   '            return False' + #10 + '        return not self._flavour.h' +
@@ -71626,14 +76866,16 @@ Const
   '        elif len(pat_parts) > len(' + 'parts):' + #10 +
   '            return False' + #10 + '        for part, pat in zip(rever' +
   'sed(parts), reversed(pat_parts)):' + #10 +
-  '            if not _fnmatchcase(pa' + 'rt, pat):' + #10 +
+  '            if not fnmatch.fnmatch' + 'case(part, pat):' + #10 +
   '                return False' + #10 + '        return True' + #10 + #10 +
-  #10 + '# Can''t subclass os.PathLike from ' +
+  '# Can''t subclass os.PathLike from ' +
   'PurePath and keep the constructor' + #10 +
   '# optimizations in PurePath._parse' + '_args().' + #10 +
-  'if hasattr(os.PathLike, ''register''' + '):' + #10 +
-  '    os.PathLike.register(PurePath)' + #10 + #10 + #10 +
-  'class PurePosixPath(PurePath):' + #10 +
+  'os.PathLike.register(PurePath)' + #10 + #10;
+
+Const
+ Src_pathlib_4: AnsiString =
+  #10 + 'class PurePosixPath(PurePath):' + #10 +
   '    """PurePath subclass for non-W' + 'indows systems.' + #10 + #10 +
   '    On a POSIX system, instantiati' +
   'ng a PurePath should return this o' + 'bject.' + #10 +
@@ -71656,31 +76898,48 @@ Const
   '    instantiating a Path will retu' +
   'rn either a PosixPath or a Windows' + 'Path' + #10 +
   '    object. You can also instantia' +
-  'te a PosixPath or WindowsPath dire' + 'ctly,' + #10;
-
-Const
- Src_pathlib_4: AnsiString =
+  'te a PosixPath or WindowsPath dire' + 'ctly,' + #10 +
   '    but cannot instantiate a Windo' +
   'wsPath on a POSIX system or vice v' + 'ersa.' + #10 + '    """' + #10 +
-  '    __slots__ = (''_closed'',)' + #10 + #10 +
+  '    __slots__ = (' + #10 + '        ''_accessor'',' + #10 +
+  '        ''_closed'',' + #10 + '    )' + #10 + #10 +
   '    def __new__(cls, *args, **kwar' + 'gs):' + #10 +
   '        if cls is Path:' + #10 + '            cls = WindowsPath if o' +
   's.name == ''nt'' else PosixPath' + #10 +
-  '        self = cls._from_parts(arg' + 's)' + #10 +
+  '        self = cls._from_parts(arg' + 's, init=False)' + #10 +
   '        if not self._flavour.is_su' + 'pported:' + #10 +
   '            raise NotImplementedEr' +
   'ror("cannot instantiate %r on your' + ' system"' + #10 +
   '                                  ' + '    % (cls.__name__,))' + #10 +
-  '        return self' + #10 + #10 + '    def _make_child_relpath(self, ' +
+  '        self._init()' + #10 + '        return self' + #10 + #10 +
+  '    def _init(self,' + #10 + '              # Private non-constr' +
+  'uctor arguments' + #10 + '              template=None,' + #10 +
+  '              ):' + #10 + '        self._closed = False' + #10 +
+  '        if template is not None:' + #10 +
+  '            self._accessor = templ' + 'ate._accessor' + #10 +
+  '        else:' + #10 + '            self._accessor = _norm' +
+  'al_accessor' + #10 + #10 + '    def _make_child_relpath(self, ' +
   'part):' + #10 + '        # This is an optimization ' +
   'used for dir walking.  `part` must' + ' be' + #10 +
   '        # a single part relative t' + 'o this path.' + #10 +
   '        parts = self._parts + [par' + 't]' + #10 +
   '        return self._from_parsed_p' +
   'arts(self._drv, self._root, parts)' + #10 + #10 +
-  '    def __enter__(self):' + #10 + '        return self' + #10 + #10 +
-  '    def __exit__(self, t, v, tb):' + #10 + '        pass' + #10 + #10 +
-  '    # Public API' + #10 + #10 + '    @classmethod' + #10 +
+  '    def __enter__(self):' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 + '        return self' + #10 +
+  #10 + '    def __exit__(self, t, v, tb):' + #10 +
+  '        self._closed = True' + #10 + #10 + '    def _raise_closed(self):' +
+  #10 + '        raise ValueError("I/O oper' + 'ation on closed path")' +
+  #10 + #10 + '    def _opener(self, name, flags,' + ' mode=0o666):' + #10 +
+  '        # A stub for the opener ar' + 'gument to built-in open()' + #10 +
+  '        return self._accessor.open' + '(self, flags, mode)' + #10 + #10 +
+  '    def _raw_open(self, flags, mod' + 'e=0o777):' + #10 + '        """' +
+  #10 + '        Open the file pointed by t' +
+  'his path and return a file descrip' + 'tor,' + #10 +
+  '        as os.open() does.' + #10 + '        """' + #10 +
+  '        if self._closed:' + #10 + '            self._raise_closed()' +
+  #10 + '        return self._accessor.open' + '(self, flags, mode)' + #10 +
+  #10 + '    # Public API' + #10 + #10 + '    @classmethod' + #10 +
   '    def cwd(cls):' + #10 + '        """Return a new path point' +
   'ing to the current working directo' + 'ry' + #10 +
   '        (as returned by os.getcwd(' + ')).' + #10 + '        """' + #10 +
@@ -71696,14 +76955,20 @@ Const
   #10 + '        st = self.stat()' + #10 + '        try:' + #10 +
   '            other_st = other_path.' + 'stat()' + #10 +
   '        except AttributeError:' + #10 +
-  '            other_st = os.stat(os.' + 'fspath(other_path))' + #10 +
-  '        return st.st_ino == other_' +
-  'st.st_ino and st.st_dev == other_s' + 't.st_dev' + #10 + #10 +
+  '            other_st = os.stat(oth' + 'er_path)' + #10 +
+  '        return os.path.samestat(st' + ', other_st)' + #10 + #10 +
   '    def iterdir(self):' + #10 + '        """Iterate over the files ' +
   'in this directory.  Does not yield' + ' any' + #10 +
   '        result for the special pat' + 'hs ''.'' and ''..''.' + #10 +
-  '        """' + #10 + '        for name in os.listdir(str' + '(self)):' +
-  #10 + '            yield self._make_child' + '_relpath(name)' + #10 + #10 +
+  '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        for name in self._accessor' + '.listdir(self):' + #10 +
+  '            if name in {''.'', ''..''}' + ':' + #10 +
+  '                # Yielding a path ' +
+  'object for these makes little sens' + 'e' + #10 +
+  '                continue' + #10 + '            yield self._make_child' +
+  '_relpath(name)' + #10 + '            if self._closed:' + #10 +
+  '                self._raise_closed' + '()' + #10 + #10 +
   '    def glob(self, pattern):' + #10 +
   '        """Iterate over this subtr' +
   'ee and yield all existing files (o' + 'f any' + #10 +
@@ -71737,51 +77002,55 @@ Const
   '        No normalization is done, ' +
   'i.e. all ''.'' and ''..'' will be kept' + ' along.' + #10 +
   '        Use resolve() to get the c' + 'anonical path to a file.' + #10 +
-  '        """' + #10 + '        if self.is_absolute():' + #10 +
-  '            return self' + #10 + '        # FIXME this must defer to' +
+  '        """' + #10 + '        # XXX untested yet!' + #10 +
+  '        if self._closed:' + #10 + '            self._raise_closed()' +
+  #10 + '        if self.is_absolute():' + #10 + '            return self' +
+  #10 + '        # FIXME this must defer to' +
   ' the specific flavour (and, under ' + 'Windows,' + #10 +
   '        # use nt._getfullpathname(' + '))' + #10 +
-  '        obj = self._from_parts([os' + '.getcwd()] + self._parts)' + #10 +
-  '        return obj' + #10 + #10 + '    def resolve(self, strict=False' +
-  '):' + #10 + '        """' + #10 + '        Make the path absolute, re' +
+  '        obj = self._from_parts([os' +
+  '.getcwd()] + self._parts, init=Fal' + 'se)' + #10 +
+  '        obj._init(template=self)' + #10 + '        return obj' + #10 +
+  #10 + '    def resolve(self, strict=False' + '):' + #10 + '        """' +
+  #10 + '        Make the path absolute, re' +
   'solving all symlinks on the way an' + 'd also' + #10 +
   '        normalizing it (for exampl' +
   'e turning slashes into backslashes' + ' under' + #10 +
   '        Windows).' + #10 + '        """' + #10 +
-  '        s = self._flavour.resolve(' + 'self, strict=strict)' + #10 +
+  '        if self._closed:' + #10 + '            self._raise_closed()' +
+  #10 + '        s = self._flavour.resolve(' + 'self, strict=strict)' + #10 +
   '        if s is None:' + #10 + '            # No symlink resolutio' +
   'n => for consistency, raise an err' + 'or if' + #10 +
   '            # the path doesn''t exi' + 'st or is forbidden' + #10 +
   '            self.stat()' + #10 + '            s = str(self.absolute(' +
   '))' + #10 + '        # Now we have no symlinks ' +
   'in the path, it''s safe to normaliz' + 'e it.' + #10 +
-  '        normed = os.path.normpath(' + 's)' + #10 +
-  '        return self._from_parts((n' + 'ormed,))' + #10 + #10 +
-  '    def stat(self):' + #10 + '        """' + #10 +
+  '        normed = self._flavour.pat' + 'hmod.normpath(s)' + #10 +
+  '        obj = self._from_parts((no' + 'rmed,), init=False)' + #10 +
+  '        obj._init(template=self)' + #10 + '        return obj' + #10 +
+  #10 + '    def stat(self):' + #10 + '        """' + #10 +
   '        Return the result of the s' +
   'tat() system call on this path, li' + 'ke' + #10 +
   '        os.stat() does.' + #10 + '        """' + #10 +
-  '        return os.stat(str(self))' + #10 + #10 + '    def owner(self):' +
-  #10 + '        """' + #10 + '        Return the login name of t' +
-  'he file owner.' + #10 + '        """' + #10 +
-  '        uid = self.stat().st_uid' + #10 +
-  '        name = _read_colon_db(''/et' + 'c/passwd'', 2, str(uid), 0)' +
-  #10 + '        if name is None:' + #10 +
-  '            raise KeyError("getpwu' + 'id(): uid not found: %d" % uid)' +
-  #10 + '        return name' + #10 + #10 + '    def group(self):' + #10 +
-  '        """' + #10 + '        Return the group name of t' +
-  'he file gid.' + #10 + '        """' + #10 +
-  '        gid = self.stat().st_gid' + #10 +
-  '        name = _read_colon_db(''/et' + 'c/group'', 2, str(gid), 0)' + #10 +
-  '        if name is None:' + #10 + '            raise KeyError("getgrg' +
-  'id(): gid not found: %d" % gid)' + #10 + '        return name' + #10 +
-  #10 + '    def open(self, mode=''r'', buffe' + 'ring=-1, encoding=None,' +
-  #10 + '             errors=None, newline=' + 'None):' + #10 +
-  '        """' + #10 + '        Open the file pointed by t' +
+  '        return self._accessor.stat' + '(self)' + #10 + #10 +
+  '    def owner(self):' + #10 + '        """' + #10 +
+  '        Return the login name of t' + 'he file owner.' + #10 +
+  '        """' + #10 + '        import pwd' + #10 +
+  '        return pwd.getpwuid(self.s' + 'tat().st_uid).pw_name' + #10 + #10 +
+  '    def group(self):' + #10 + '        """' + #10 +
+  '        Return the group name of t' + 'he file gid.' + #10 +
+  '        """' + #10 + '        import grp' + #10 +
+  '        return grp.getgrgid(self.s' + 'tat().st_gid).gr_name' + #10 + #10 +
+  '    def open(self, mode=''r'', buffe' + 'ring=-1, encoding=None,' + #10 +
+  '             errors=None, newline=' + 'None):' + #10 + '        """' +
+  #10 + '        Open the file pointed by t' +
   'his path and return a file object,' + ' as' + #10 +
   '        the built-in open() functi' + 'on does.' + #10 + '        """' +
-  #10 + '        return open(self, mode, bu' +
-  'ffering, encoding, errors, newline' + ')' + #10 + #10 +
+  #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        return io.open(self, mode,' +
+  ' buffering, encoding, errors, newl' + 'ine,' + #10 +
+  '                       opener=self' + '._opener)' + #10 + #10 +
   '    def read_bytes(self):' + #10 + '        """' + #10 +
   '        Open the file in bytes mod' + 'e, read it, and close the file.' +
   #10 + '        """' + #10 + '        with self.open(mode=''rb'') ' +
@@ -71799,11 +77068,14 @@ Const
   'r interface before truncating the ' + 'file' + #10 +
   '        view = memoryview(data)' + #10 +
   '        with self.open(mode=''wb'') ' + 'as f:' + #10 +
-  '            return f.write(view.to' + 'bytes())' + #10 + #10 +
+  '            return f.write(view)' + #10 + #10 +
   '    def write_text(self, data, enc' + 'oding=None, errors=None):' + #10 +
   '        """' + #10 + '        Open the file in text mode' +
-  ', write to it, and close the file.' + #10 + '        """' + #10 +
-  '        if not isinstance(data, st' + 'r):' + #10 +
+  ', write to it, and close the file.' + #10;
+
+Const
+ Src_pathlib_5: AnsiString =
+  '        """' + #10 + '        if not isinstance(data, st' + 'r):' + #10 +
   '            raise TypeError(''data ' + 'must be str, not %s'' %' + #10 +
   '                            data._' + '_class__.__name__)' + #10 +
   '        with self.open(mode=''w'', e' +
@@ -71811,22 +77083,27 @@ Const
   '            return f.write(data)' + #10 + #10 +
   '    def touch(self, mode=0o666, ex' + 'ist_ok=True):' + #10 +
   '        """' + #10 + '        Create this file with the ' +
-  'given access mode, if it doesn''t e' + 'xist.' + #10 +
-  '        (The mode argument is acce' +
-  'pted but the umask default is used' + '.)' + #10 + '        """' + #10 +
-  '        if exist_ok:' + #10 + '            # First try to bump mo' +
-  'dification time' + #10 + '            try:' + #10 +
-  '                os.stat(str(self))' + #10 +
-  '                os.utime(str(self)' + ', None)' + #10 +
-  '            except OSError:' + #10 + '                # Avoid exception ' +
-  'chaining' + #10 + '                pass' + #10 + '            else:' +
-  #10 + '                return' + #10 +
-  '        f = open(self, ''a'' if exis' + 't_ok else ''x'')' + #10 +
-  '        f.close()' + #10 + #10 + '    def mkdir(self, mode=0o777, pa' +
+  'given access mode, if it doesn''t e' + 'xist.' + #10 + '        """' +
+  #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 + '        if exist_ok:' + #10 +
+  '            # First try to bump mo' + 'dification time' + #10 +
+  '            # Implementation note:' +
+  ' GNU touch uses the UTIME_NOW opti' + 'on of' + #10 +
+  '            # the utimensat() / fu' + 'timens() functions.' + #10 +
+  '            try:' + #10 + '                self._accessor.uti' +
+  'me(self, None)' + #10 + '            except OSError:' + #10 +
+  '                # Avoid exception ' + 'chaining' + #10 +
+  '                pass' + #10 + '            else:' + #10 +
+  '                return' + #10 + '        flags = os.O_CREAT | os.O_' +
+  'WRONLY' + #10 + '        if not exist_ok:' + #10 +
+  '            flags |= os.O_EXCL' + #10 +
+  '        fd = self._raw_open(flags,' + ' mode)' + #10 +
+  '        os.close(fd)' + #10 + #10 + '    def mkdir(self, mode=0o777, pa' +
   'rents=False, exist_ok=False):' + #10 + '        """' + #10 +
   '        Create a new directory at ' + 'this given path.' + #10 +
-  '        """' + #10 + '        try:' + #10 +
-  '            os.mkdir(str(self), mo' + 'de)' + #10 +
+  '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 + '        try:' + #10 +
+  '            self._accessor.mkdir(s' + 'elf, mode)' + #10 +
   '        except FileNotFoundError:' + #10 +
   '            if not parents or self' + '.parent == self:' + #10 +
   '                raise' + #10 + '            self.parent.mkdir(pare' +
@@ -71840,34 +77117,35 @@ Const
   '                raise' + #10 + #10 + '    def chmod(self, mode):' + #10 +
   '        """' + #10 + '        Change the permissions of ' +
   'the path, like os.chmod().' + #10 + '        """' + #10 +
-  '        os.chmod(str(self), mode)' + #10 + #10 +
+  '        if self._closed:' + #10 + '            self._raise_closed()' +
+  #10 + '        self._accessor.chmod(self,' + ' mode)' + #10 + #10 +
   '    def lchmod(self, mode):' + #10 + '        """' + #10 +
   '        Like chmod(), except if th' +
   'e path points to a symlink, the sy' + 'mlink''s' + #10 +
   '        permissions are changed, r' + 'ather than its target''s.' + #10 +
-  '        """' + #10 + '        if not hasattr(os, ''lchmod' + '''):' + #10 +
-  '            raise NotImplementedEr' +
-  'ror("lchmod() not available on thi' + 's system")' + #10 +
-  '        os.lchmod(str(self), mode)' + #10 + #10 +
+  '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        self._accessor.lchmod(self' + ', mode)' + #10 + #10 +
   '    def unlink(self, missing_ok=Fa' + 'lse):' + #10 + '        """' + #10 +
   '        Remove this file or link.' + #10 +
   '        If the path is a directory' + ', use rmdir() instead.' + #10 +
-  '        """' + #10 + '        try:' + #10 +
-  '            os.unlink(str(self))' + #10 +
+  '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 + '        try:' + #10 +
+  '            self._accessor.unlink(' + 'self)' + #10 +
   '        except FileNotFoundError:' + #10 +
   '            if not missing_ok:' + #10 + '                raise' + #10 +
   #10 + '    def rmdir(self):' + #10 + '        """' + #10 +
   '        Remove this directory.  Th' + 'e directory must be empty.' + #10 +
-  '        """' + #10 + '        os.rmdir(str(self))' + #10 + #10 +
-  '    def lstat(self):' + #10;
-
-Const
- Src_pathlib_5: AnsiString =
-  '        """' + #10 + '        Like stat(), except if the' +
+  '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        self._accessor.rmdir(self)' + #10 + #10 + '    def lstat(self):' +
+  #10 + '        """' + #10 + '        Like stat(), except if the' +
   ' path points to a symlink, the sym' + 'link''s' + #10 +
   '        status information is retu' + 'rned, rather than its target''s.' +
-  #10 + '        """' + #10 + '        return os.lstat(str(self))' + #10 +
-  #10 + '    def rename(self, target):' + #10 + '        """' + #10 +
+  #10 + '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        return self._accessor.lsta' + 't(self)' + #10 + #10 +
+  '    def rename(self, target):' + #10 + '        """' + #10 +
   '        Rename this path to the ta' + 'rget path.' + #10 + #10 +
   '        The target path may be abs' +
   'olute or relative. Relative paths ' + 'are' + #10 +
@@ -71875,9 +77153,11 @@ Const
   'e current working directory, *not*' + ' the' + #10 +
   '        directory of the Path obje' + 'ct.' + #10 + #10 +
   '        Returns the new Path insta' + 'nce pointing to the target path.' +
-  #10 + '        """' + #10 + '        os.rename(str(self), os.fs' +
-  'path(target))' + #10 + '        return self.__class__(targ' + 'et)' + #10 +
-  #10 + '    def replace(self, target):' + #10 + '        """' + #10 +
+  #10 + '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        self._accessor.rename(self' + ', target)' + #10 +
+  '        return self.__class__(targ' + 'et)' + #10 + #10 +
+  '    def replace(self, target):' + #10 + '        """' + #10 +
   '        Rename this path to the ta' +
   'rget path, overwriting if that pat' + 'h exists.' + #10 + #10 +
   '        The target path may be abs' +
@@ -71886,16 +77166,18 @@ Const
   'e current working directory, *not*' + ' the' + #10 +
   '        directory of the Path obje' + 'ct.' + #10 + #10 +
   '        Returns the new Path insta' + 'nce pointing to the target path.' +
-  #10 + '        """' + #10 + '        os.replace(str(self), os.f' +
-  'spath(target))' + #10 + '        return self.__class__(targ' + 'et)' +
-  #10 + #10 + '    def symlink_to(self, target, t' +
-  'arget_is_directory=False):' + #10 + '        """' + #10 +
-  '        Make this path a symlink p' + 'ointing to the given path.' + #10 +
-  '        Note the order of argument' +
-  's (self, target) is the reverse of' + ' os.symlink''s.' + #10 +
-  '        """' + #10 + '        os.symlink(os.fspath(targe' +
-  't), str(self), target_is_directory' + ')' + #10 + #10 +
-  '    def link_to(self, target):' + #10 + '        """' + #10 +
+  #10 + '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        self._accessor.replace(sel' + 'f, target)' + #10 +
+  '        return self.__class__(targ' + 'et)' + #10 + #10 +
+  '    def symlink_to(self, target, t' + 'arget_is_directory=False):' + #10 +
+  '        """' + #10 + '        Make this path a symlink p' +
+  'ointing to the target path.' + #10 + '        Note the order of argument' +
+  's (link, target) is the reverse of' + ' os.symlink.' + #10 +
+  '        """' + #10 + '        if self._closed:' + #10 +
+  '            self._raise_closed()' + #10 +
+  '        self._accessor.symlink(tar' + 'get, self, target_is_directory)' +
+  #10 + #10 + '    def link_to(self, target):' + #10 + '        """' + #10 +
   '        Make the target path a har' + 'd link pointing to this path.' +
   #10 + #10 + '        Note this function does no' +
   't make this path a hard link to *t' + 'arget*,' + #10 +
@@ -71903,127 +77185,129 @@ Const
   ' the function and argument names. ' + 'The order' + #10 +
   '        of arguments (target, link' +
   ') is the reverse of Path.symlink_t' + 'o, but' + #10 +
-  '        matches that of os.link.' + #10 + '        """' + #10 +
-  '        os.link(str(self), os.fspa' + 'th(target))' + #10 + #10 +
+  '        matches that of os.link.' + #10 + #10 + '        """' + #10 +
+  '        if self._closed:' + #10 + '            self._raise_closed()' +
+  #10 + '        self._accessor.link_to(sel' + 'f, target)' + #10 + #10 +
   '    # Convenience functions for qu' + 'erying the stat results' + #10 +
   #10 + '    def exists(self):' + #10 + '        """' + #10 +
   '        Whether this path exists.' + #10 + '        """' + #10 +
-  '        _rf9 = 0' + #10 + '        try:' + #10 +
-  '            self.stat()' + #10 + '        except OSError as e:' + #10 +
+  '        try:' + #10 + '            self.stat()' + #10 +
+  '        except OSError as e:' + #10 +
   '            if not _ignore_error(e' + '):' + #10 +
-  '                raise' + #10 + '            _rv9 = False' + #10 +
-  '            _rf9 = 1' + #10 + '        except ValueError:' + #10 +
-  '            # Non-encodable path' + #10 + '            _rv9 = False' +
-  #10 + '            _rf9 = 1' + #10 + '        if _rf9:' + #10 +
-  '            return _rv9' + #10 + '        return True' + #10 + #10 +
+  '                raise' + #10 + '            return False' + #10 +
+  '        except ValueError:' + #10 + '            # Non-encodable path' +
+  #10 + '            return False' + #10 + '        return True' + #10 + #10 +
   '    def is_dir(self):' + #10 + '        """' + #10 +
   '        Whether this path is a dir' + 'ectory.' + #10 + '        """' +
-  #10 + '        _rf8 = 0' + #10 + '        try:' + #10 +
-  '            return S_ISDIR(self.st' + 'at().st_mode)' + #10 +
+  #10 + '        try:' + #10 + '            return S_ISDIR(self.st' +
+  'at().st_mode)' + #10 + '        except OSError as e:' + #10 +
+  '            if not _ignore_error(e' + '):' + #10 +
+  '                raise' + #10 + '            # Path doesn''t exist o' +
+  'r is a broken symlink' + #10 + '            # (see https://bitbuck' +
+  'et.org/pitrou/pathlib/issue/12/)' + #10 + '            return False' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10 + #10 + '    def is_file(self):' + #10 + '        """' + #10 +
+  '        Whether this path is a reg' +
+  'ular file (also True for symlinks ' + 'pointing' + #10 +
+  '        to regular files).' + #10 + '        """' + #10 + '        try:' +
+  #10 + '            return S_ISREG(self.st' + 'at().st_mode)' + #10 +
   '        except OSError as e:' + #10 +
   '            if not _ignore_error(e' + '):' + #10 +
   '                raise' + #10 + '            # Path doesn''t exist o' +
-  'r is a broken symlink' + #10 + '            _rv8 = False' + #10 +
-  '            _rf8 = 1' + #10 + '        except ValueError:' + #10 +
-  '            _rv8 = False' + #10 + '            _rf8 = 1' + #10 +
-  '        if _rf8:' + #10 + '            return _rv8' + #10 + #10 +
-  '    def is_file(self):' + #10 + '        """' + #10 +
-  '        Whether this path is a reg' +
-  'ular file (also True for symlinks ' + 'pointing' + #10 +
-  '        to regular files).' + #10 + '        """' + #10 +
-  '        _rf7 = 0' + #10 + '        try:' + #10 +
-  '            return S_ISREG(self.st' + 'at().st_mode)' + #10 +
-  '        except OSError as e:' + #10 +
-  '            if not _ignore_error(e' + '):' + #10 +
-  '                raise' + #10 + '            _rv7 = False' + #10 +
-  '            _rf7 = 1' + #10 + '        except ValueError:' + #10 +
-  '            _rv7 = False' + #10 + '            _rf7 = 1' + #10 +
-  '        if _rf7:' + #10 + '            return _rv7' + #10 + #10 +
-  '    def is_mount(self):' + #10 + '        """' + #10 +
+  'r is a broken symlink' + #10 + '            # (see https://bitbuck' +
+  'et.org/pitrou/pathlib/issue/12/)' + #10 + '            return False' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10 + #10 + '    def is_mount(self):' + #10 + '        """' + #10 +
   '        Check if this path is a PO' + 'SIX mount point' + #10 +
   '        """' + #10 + '        # Need to exist and be a d' + 'ir' + #10 +
   '        if not self.exists() or no' + 't self.is_dir():' + #10 +
   '            return False' + #10 + #10 +
-  '        parent = Path(self.parent)' + #10 + '        _rf6 = 0' + #10 +
-  '        try:' + #10 + '            parent_dev = parent.st' +
-  'at().st_dev' + #10 + '        except OSError:' + #10 +
-  '            _rv6 = False' + #10 + '            _rf6 = 1' + #10 +
-  '        if _rf6:' + #10 + '            return _rv6' + #10 + #10 +
+  '        parent = Path(self.parent)' + #10 + '        try:' + #10 +
+  '            parent_dev = parent.st' + 'at().st_dev' + #10 +
+  '        except OSError:' + #10 + '            return False' + #10 + #10 +
   '        dev = self.stat().st_dev' + #10 + '        if dev != parent_dev:' +
   #10 + '            return True' + #10 + '        ino = self.stat().st_ino' +
   #10 + '        parent_ino = parent.stat()' + '.st_ino' + #10 +
   '        return ino == parent_ino' + #10 + #10 +
   '    def is_symlink(self):' + #10 + '        """' + #10 +
   '        Whether this path is a sym' + 'bolic link.' + #10 + '        """' +
-  #10 + '        _rf5 = 0' + #10 + '        try:' + #10 +
-  '            return S_ISLNK(self.ls' + 'tat().st_mode)' + #10 +
-  '        except OSError as e:' + #10 +
+  #10 + '        try:' + #10 + '            return S_ISLNK(self.ls' +
+  'tat().st_mode)' + #10 + '        except OSError as e:' + #10 +
   '            if not _ignore_error(e' + '):' + #10 +
   '                raise' + #10 + '            # Path doesn''t exist' + #10 +
-  '            _rv5 = False' + #10 + '            _rf5 = 1' + #10 +
-  '        except ValueError:' + #10 + '            _rv5 = False' + #10 +
-  '            _rf5 = 1' + #10 + '        if _rf5:' + #10 +
-  '            return _rv5' + #10 + #10 + '    def is_block_device(self):' +
-  #10 + '        """' + #10 + '        Whether this path is a blo' +
-  'ck device.' + #10 + '        """' + #10 + '        _rf4 = 0' + #10 +
-  '        try:' + #10 + '            return S_ISBLK(self.st' +
+  '            return False' + #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10 + #10 + '    def is_block_device(self):' + #10 + '        """' + #10 +
+  '        Whether this path is a blo' + 'ck device.' + #10 + '        """' +
+  #10 + '        try:' + #10 + '            return S_ISBLK(self.st' +
   'at().st_mode)' + #10 + '        except OSError as e:' + #10 +
   '            if not _ignore_error(e' + '):' + #10 +
-  '                raise' + #10 + '            _rv4 = False' + #10 +
-  '            _rf4 = 1' + #10 + '        except ValueError:' + #10 +
-  '            _rv4 = False' + #10 + '            _rf4 = 1' + #10 +
-  '        if _rf4:' + #10 + '            return _rv4' + #10 + #10 +
-  '    def is_char_device(self):' + #10 + '        """' + #10 +
-  '        Whether this path is a cha' + 'racter device.' + #10 +
-  '        """' + #10 + '        _rf3 = 0' + #10 + '        try:' + #10 +
-  '            return S_ISCHR(self.st' + 'at().st_mode)' + #10 +
-  '        except OSError as e:' + #10 +
-  '            if not _ignore_error(e' + '):' + #10 +
-  '                raise' + #10 + '            _rv3 = False' + #10 +
-  '            _rf3 = 1' + #10 + '        except ValueError:' + #10 +
-  '            _rv3 = False' + #10 + '            _rf3 = 1' + #10 +
-  '        if _rf3:' + #10 + '            return _rv3' + #10 + #10 +
-  '    def is_fifo(self):' + #10 + '        """' + #10 +
-  '        Whether this path is a FIF' + 'O.' + #10 + '        """' + #10 +
-  '        _rf2 = 0' + #10 + '        try:' + #10 +
-  '            return S_ISFIFO(self.s' + 'tat().st_mode)' + #10 +
-  '        except OSError as e:' + #10 +
-  '            if not _ignore_error(e' + '):' + #10 +
-  '                raise' + #10 + '            _rv2 = False' + #10 +
-  '            _rf2 = 1' + #10 + '        except ValueError:' + #10 +
-  '            _rv2 = False' + #10 + '            _rf2 = 1' + #10 +
-  '        if _rf2:' + #10 + '            return _rv2' + #10 + #10 +
-  '    def is_socket(self):' + #10 + '        """' + #10 +
-  '        Whether this path is a soc' + 'ket.' + #10 + '        """' + #10 +
-  '        _rf1 = 0' + #10 + '        try:' + #10 +
-  '            return S_ISSOCK(self.s' + 'tat().st_mode)' + #10 +
-  '        except OSError as e:' + #10 +
-  '            if not _ignore_error(e' + '):' + #10 +
-  '                raise' + #10 + '            _rv1 = False' + #10 +
-  '            _rf1 = 1' + #10 + '        except ValueError:' + #10 +
-  '            _rv1 = False' + #10 + '            _rf1 = 1' + #10 +
-  '        if _rf1:' + #10 + '            return _rv1' + #10 + #10 +
-  '    def expanduser(self):' + #10 + '        """ Return a new path with' +
-  ' expanded ~ and ~user constructs' + #10 +
-  '        (as returned by os.path.ex' + 'panduser)' + #10 + '        """' +
-  #10 + '        if (not (self._drv or self' + '._root) and' + #10 +
-  '                self._parts and se' + 'lf._parts[0][:1] == ''~''):' + #10 +
-  '            homedir = self._flavou' + 'r.gethomedir(self._parts[0][1:])' +
-  #10 + '            return self._from_part' +
-  's([homedir] + self._parts[1:])' + #10 + #10 + '        return self' + #10 +
-  #10 + #10 + 'class PosixPath(Path, PurePosixPat' + 'h):' + #10 +
-  '    """Path subclass for non-Windo' + 'ws systems.' + #10 + #10 +
-  '    On a POSIX system, instantiati' +
-  'ng a Path should return this objec' + 't.' + #10 + '    """' + #10 +
-  '    __slots__ = ()' + #10 + #10 + #10 +
-  'class WindowsPath(Path, PureWindow' + 'sPath):' + #10 +
-  '    """Path subclass for Windows s' + 'ystems.' + #10 + #10 +
-  '    On a Windows system, instantia' +
-  'ting a Path should return this obj' + 'ect.' + #10;
+  '                raise' + #10 + '            # Path doesn''t exist o' +
+  'r is a broken symlink' + #10 + '            # (see https://bitbuck' +
+  'et.org/pitrou/pathlib/issue/12/)' + #10 + '            return False' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10;
 
 Const
  Src_pathlib_6: AnsiString =
-  '    """' + #10 + '    __slots__ = ()' + #10 + #10;
+  #10 + '    def is_char_device(self):' + #10 + '        """' + #10 +
+  '        Whether this path is a cha' + 'racter device.' + #10 +
+  '        """' + #10 + '        try:' + #10 +
+  '            return S_ISCHR(self.st' + 'at().st_mode)' + #10 +
+  '        except OSError as e:' + #10 +
+  '            if not _ignore_error(e' + '):' + #10 +
+  '                raise' + #10 + '            # Path doesn''t exist o' +
+  'r is a broken symlink' + #10 + '            # (see https://bitbuck' +
+  'et.org/pitrou/pathlib/issue/12/)' + #10 + '            return False' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10 + #10 + '    def is_fifo(self):' + #10 + '        """' + #10 +
+  '        Whether this path is a FIF' + 'O.' + #10 + '        """' + #10 +
+  '        try:' + #10 + '            return S_ISFIFO(self.s' +
+  'tat().st_mode)' + #10 + '        except OSError as e:' + #10 +
+  '            if not _ignore_error(e' + '):' + #10 +
+  '                raise' + #10 + '            # Path doesn''t exist o' +
+  'r is a broken symlink' + #10 + '            # (see https://bitbuck' +
+  'et.org/pitrou/pathlib/issue/12/)' + #10 + '            return False' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10 + #10 + '    def is_socket(self):' + #10 + '        """' + #10 +
+  '        Whether this path is a soc' + 'ket.' + #10 + '        """' + #10 +
+  '        try:' + #10 + '            return S_ISSOCK(self.s' +
+  'tat().st_mode)' + #10 + '        except OSError as e:' + #10 +
+  '            if not _ignore_error(e' + '):' + #10 +
+  '                raise' + #10 + '            # Path doesn''t exist o' +
+  'r is a broken symlink' + #10 + '            # (see https://bitbuck' +
+  'et.org/pitrou/pathlib/issue/12/)' + #10 + '            return False' +
+  #10 + '        except ValueError:' + #10 +
+  '            # Non-encodable path' + #10 + '            return False' +
+  #10 + #10 + '    def expanduser(self):' + #10 +
+  '        """ Return a new path with' + ' expanded ~ and ~user constructs' +
+  #10 + '        (as returned by os.path.ex' + 'panduser)' + #10 +
+  '        """' + #10 + '        if (not (self._drv or self' + '._root) and' +
+  #10 + '            self._parts and self._' + 'parts[0][:1] == ''~''):' +
+  #10 + '            homedir = self._flavou' +
+  'r.gethomedir(self._parts[0][1:])' + #10 +
+  '            return self._from_part' + 's([homedir] + self._parts[1:])' +
+  #10 + #10 + '        return self' + #10 + #10 + #10 +
+  'class PosixPath(Path, PurePosixPat' + 'h):' + #10 +
+  '    """Path subclass for non-Windo' + 'ws systems.' + #10 + #10 +
+  '    On a POSIX system, instantiati' +
+  'ng a Path should return this objec' + 't.' + #10 + '    """' + #10 +
+  '    __slots__ = ()' + #10 + #10 + 'class WindowsPath(Path, PureWindow' +
+  'sPath):' + #10 + '    """Path subclass for Windows s' + 'ystems.' + #10 +
+  #10 + '    On a Windows system, instantia' +
+  'ting a Path should return this obj' + 'ect.' + #10 + '    """' + #10 +
+  '    __slots__ = ()' + #10 + #10 + '    def owner(self):' + #10 +
+  '        raise NotImplementedError(' +
+  '"Path.owner() is unsupported on th' + 'is system")' + #10 + #10 +
+  '    def group(self):' + #10 + '        raise NotImplementedError(' +
+  '"Path.group() is unsupported on th' + 'is system")' + #10 + #10 +
+  '    def is_mount(self):' + #10 + '        raise NotImplementedError(' +
+  '"Path.is_mount() is unsupported on' + ' this system")' + #10 + #10;
 
 Function Src_pathlib: AnsiString;
 Begin
@@ -74119,99 +79403,580 @@ Begin
 End;
 
 Const
+ Src_posix_0: AnsiString =
+  '"""posix : primitives du systeme (' +
+  'couche Python au-dessus de _posix)' + '."""' + #10 + 'import sys as _sys' +
+  #10 + 'import _posix' + #10 + 'from _posix import (close, closera' +
+  'nge, read, pread, write, pwrite, l' + 'seek, dup, dup2,' + #10 +
+  '                    pipe, fsync, f' +
+  'datasync, ftruncate, isatty, get_i' + 'nheritable,' + #10 +
+  '                    set_inheritabl' +
+  'e, get_blocking, set_blocking, fch' + 'dir, getcwd,' + #10 +
+  '                    fchmod, fchown' +
+  ', mkfifo, umask, getpid, getppid, ' + 'getuid, geteuid,' + #10 +
+  '                    getgid, getegi' +
+  'd, getgroups, getpgrp, getpgid, se' + 'tpgid, getsid,' + #10 +
+  '                    setsid, setuid' +
+  ', setgid, nice, getlogin, ttyname,' + ' ctermid, kill,' + #10 +
+  '                    killpg, abort,' +
+  ' _exit, fork, waitpid, system, str' + 'error, urandom,' + #10 +
+  '                    cpu_count, get' + 'loadavg, sync, device_encoding,' +
+  #10 + '                    fspath)' + #10 + '_structseq = _sys._structseq' +
+  #10 + #10 + 'F_OK = 0' + #10 + 'R_OK = 4' + #10 + 'W_OK = 2' + #10 +
+  'X_OK = 1' + #10 + 'O_RDONLY = 0' + #10 + 'O_WRONLY = 1' + #10 +
+  'O_RDWR = 2' + #10 + 'O_CREAT = 64' + #10 + 'O_EXCL = 128' + #10 +
+  'O_NOCTTY = 256' + #10 + 'O_TRUNC = 512' + #10 + 'O_APPEND = 1024' + #10 +
+  'O_NONBLOCK = 2048' + #10 + 'O_NDELAY = 2048' + #10 + 'O_DSYNC = 4096' +
+  #10 + 'O_SYNC = 1052672' + #10 + 'O_RSYNC = 1052672' + #10 +
+  'O_ASYNC = 8192' + #10 + 'O_DIRECT = 16384' + #10 + 'O_LARGEFILE = 0' +
+  #10 + 'O_DIRECTORY = 65536' + #10 + 'O_NOFOLLOW = 131072' + #10 +
+  'O_NOATIME = 262144' + #10 + 'O_CLOEXEC = 524288' + #10 +
+  'O_PATH = 2097152' + #10 + 'O_TMPFILE = 4259840' + #10 + 'EX_OK = 0' + #10 +
+  'EX_USAGE = 64' + #10 + 'EX_DATAERR = 65' + #10 + 'EX_NOINPUT = 66' + #10 +
+  'EX_NOUSER = 67' + #10 + 'EX_NOHOST = 68' + #10 + 'EX_UNAVAILABLE = 69' +
+  #10 + 'EX_SOFTWARE = 70' + #10 + 'EX_OSERR = 71' + #10 + 'EX_OSFILE = 72' +
+  #10 + 'EX_CANTCREAT = 73' + #10 + 'EX_IOERR = 74' + #10 +
+  'EX_TEMPFAIL = 75' + #10 + 'EX_PROTOCOL = 76' + #10 + 'EX_NOPERM = 77' +
+  #10 + 'EX_CONFIG = 78' + #10 + 'EX_NOTFOUND = 79' + #10 + 'WNOHANG = 1' +
+  #10 + 'WUNTRACED = 2' + #10 + 'WCONTINUED = 8' + #10 + 'P_PID = 1' + #10 +
+  'P_PGID = 2' + #10 + 'P_ALL = 0' + #10 + 'NGROUPS_MAX = 65536' + #10 +
+  'TMP_MAX = 238328' + #10 + 'ST_RDONLY = 1' + #10 + 'ST_NOSUID = 2' + #10 +
+  'PRIO_PROCESS = 0' + #10 + 'PRIO_PGRP = 1' + #10 + 'PRIO_USER = 2' + #10 +
+  'RTLD_LAZY = 1' + #10 + 'RTLD_NOW = 2' + #10 + 'RTLD_GLOBAL = 256' + #10 +
+  'RTLD_LOCAL = 0' + #10 + 'SCHED_OTHER = 0' + #10 + 'SCHED_FIFO = 1' + #10 +
+  'SCHED_RR = 2' + #10 + 'F_LOCK = 1' + #10 + 'F_TLOCK = 2' + #10 +
+  'F_ULOCK = 0' + #10 + 'F_TEST = 3' + #10 + 'SEEK_DATA = 3' + #10 +
+  'SEEK_HOLE = 4' + #10 + #10 + 'error = OSError' + #10 + #10 + #10 +
+  'def _mk_stat_result():' + #10 + '    names = [''st_mode'', ''st_ino'', ' +
+  '''st_dev'', ''st_nlink'', ''st_uid'', ''s' + 't_gid'', ''st_size'',' +
+  #10 + '             ''st_atime'', ''st_mtime' + ''', ''st_ctime'']' + #10 +
+  #10 + '    class stat_result(tuple):' + #10 +
+  '        n_sequence_fields = 10' + #10 + '        n_fields = 19' + #10 +
+  '        n_unnamed_fields = 3' + #10 + #10 +
+  '        def __new__(cls, seq, dict' + '=None):' + #10 +
+  '            seq = tuple(seq)' + #10 + '            if len(seq) < 10:' +
+  #10 + '                raise TypeError(''o' +
+  's.stat_result() takes an at least ' +
+  '10-sequence (%d-sequence given)'' %' + ' len(seq))' + #10 +
+  '            r = tuple.__new__(cls,' + ' seq[:10])' + #10 +
+  '            d = r.__dict__' + #10 + '            ex = seq[10:]' + #10 +
+  '            d[''st_atime''] = ex[0] ' +
+  'if len(ex) > 0 else float(seq[7])' + #10 +
+  '            d[''st_mtime''] = ex[1] ' +
+  'if len(ex) > 1 else float(seq[8])' + #10 +
+  '            d[''st_ctime''] = ex[2] ' +
+  'if len(ex) > 2 else float(seq[9])' + #10 +
+  '            d[''st_atime_ns''] = ex[' +
+  '3] if len(ex) > 3 else int(seq[7])' + ' * 1000000000' + #10 +
+  '            d[''st_mtime_ns''] = ex[' +
+  '4] if len(ex) > 4 else int(seq[8])' + ' * 1000000000' + #10 +
+  '            d[''st_ctime_ns''] = ex[' +
+  '5] if len(ex) > 5 else int(seq[9])' + ' * 1000000000' + #10 +
+  '            d[''st_blksize''] = ex[6' + '] if len(ex) > 6 else None' +
+  #10 + '            d[''st_blocks''] = ex[7]' + ' if len(ex) > 7 else None' +
+  #10 + '            d[''st_rdev''] = ex[8] i' + 'f len(ex) > 8 else None' +
+  #10 + '            return r' + #10 + #10 + '        def __repr__(self):' +
+  #10 + '            return (''os.stat_resul' +
+  't(st_mode=%r, st_ino=%r, st_dev=%r' + ', st_nlink=%r, st_uid=%r, ''' +
+  #10 + '                    ''st_gid=%r, st' +
+  '_size=%r, st_atime=%r, st_mtime=%r' + ', st_ctime=%r)'' % tuple(self))' +
+  #10 + #10 + '        def __reduce__(self):' + #10 +
+  '            return (type(self), (t' + 'uple(self),))' + #10 +
+  '    for i, nm in enumerate([''st_mo' +
+  'de'', ''st_ino'', ''st_dev'', ''st_nlink' +
+  ''', ''st_uid'', ''st_gid'', ''st_size''])' + ':' + #10 +
+  '        setattr(stat_result, nm, p' +
+  'roperty(lambda self, i=i: self[i])' + ')' + #10 +
+  '    stat_result.__module__ = ''os''' + #10 +
+  '    stat_result.__name__ = ''stat_r' + 'esult''' + #10 +
+  '    stat_result.__qualname__ = ''st' + 'at_result''' + #10 +
+  '    return stat_result' + #10 + #10 + #10 +
+  'stat_result = _mk_stat_result()' + #10 + 'del _mk_stat_result' + #10 +
+  #10 + 'statvfs_result = _structseq(''os.st' + 'atvfs_result'',' + #10 +
+  '    [''f_bsize'', ''f_frsize'', ''f_blo' +
+  'cks'', ''f_bfree'', ''f_bavail'', ''f_fi' + 'les'', ''f_ffree'',' + #10 +
+  '     ''f_favail'', ''f_flag'', ''f_name' + 'max''], [''f_fsid''])' + #10 +
+  'uname_result = _structseq(''posix.u' +
+  'name_result'', [''sysname'', ''nodenam' +
+  'e'', ''release'', ''version'', ''machine' + '''])' + #10 +
+  'times_result = _structseq(''posix.t' +
+  'imes_result'', [''user'', ''system'', ''' + 'children_user'',' + #10 +
+  '                                  ' +
+  '                ''children_system'',' + ' ''elapsed''])' + #10 +
+  'terminal_size = _structseq(''os.ter' +
+  'minal_size'', [''columns'', ''lines''])' + #10 +
+  'sched_param = _structseq(''posix.sc' +
+  'hed_param'', [''sched_priority''])' + #10 + #10 + '_have_functions = []' +
+  #10 + #10 + #10 + 'def _fsd(p):' + #10 +
+  '    """chemin -> str (surrogateesc' + 'ape), et indicateur bytes"""' +
+  #10 + '    if isinstance(p, str):' + #10 + '        return p, False' + #10 +
+  '    if isinstance(p, (bytes, bytea' + 'rray)):' + #10 +
+  '        return bytes(p).decode(''ut' +
+  'f-8'', ''surrogateescape''), True' + #10 +
+  '    f = getattr(type(p), ''__fspath' + '__'', None)' + #10 +
+  '    if f is not None:' + #10 + '        r = f(p)' + #10 +
+  '        if isinstance(r, str):' + #10 + '            return r, False' +
+  #10 + '        if isinstance(r, bytes):' + #10 +
+  '            return r.decode(''utf-8' + ''', ''surrogateescape''), True' +
+  #10 + '        raise TypeError("expected ' +
+  '%s.__fspath__() to return str or b' +
+  'ytes, not %s" % (type(p).__name__,' + ' type(r).__name__))' + #10 +
+  '    raise TypeError("expected str,' +
+  ' bytes or os.PathLike object, not ' + '%s" % type(p).__name__)' + #10 +
+  #10 + #10 + 'def _path(p, dir_fd=None, allow_fd' + '=False):' + #10 +
+  '    if allow_fd and isinstance(p, ' + 'int) and not isinstance(p, bool):' +
+  #10 + '        return p' + #10 + '    s, _b = _fsd(p)' + #10 +
+  '    if dir_fd is not None and not ' + 's.startswith(''/''):' + #10 +
+  '        s = ''/proc/self/fd/%d/%s'' ' + '% (dir_fd, s)' + #10 +
+  '    return s' + #10 + #10 + #10 + 'def _enc(isb, s):' + #10 +
+  '    return s.encode(''utf-8'', ''surr' + 'ogateescape'') if isb else s' +
+  #10 + #10 + #10 + 'def stat(path, *, dir_fd=None, fol' +
+  'low_symlinks=True):' + #10 + '    if isinstance(path, int) and n' +
+  'ot isinstance(path, bool):' + #10 + '        return stat_result(_posix.' +
+  '_fstat(path))' + #10 + '    return stat_result(_posix._sta' +
+  't(_path(path, dir_fd), follow_syml' + 'inks))' + #10 + #10 + #10 +
+  'def lstat(path, *, dir_fd=None):' + #10 +
+  '    return stat_result(_posix._sta' + 't(_path(path, dir_fd), False))' +
+  #10 + #10 + #10 + 'def fstat(fd):' + #10 +
+  '    return stat_result(_posix._fst' + 'at(fd))' + #10 + #10 + #10 +
+  'def open(path, flags, mode=0o777, ' + '*, dir_fd=None):' + #10 +
+  '    return _posix.open(_path(path,' + ' dir_fd), flags, mode)' + #10 +
+  #10 + #10 + 'def access(path, mode, *, dir_fd=N' +
+  'one, effective_ids=False, follow_s' + 'ymlinks=True):' + #10 +
+  '    return _posix.access(_path(pat' + 'h, dir_fd), mode)' + #10 + #10 +
+  #10 + 'def chdir(path):' + #10 + '    if isinstance(path, int) and n' +
+  'ot isinstance(path, bool):' + #10 + '        return fchdir(path)' + #10 +
+  '    return _posix.chdir(_path(path' + '))' + #10 + #10 + #10 +
+  'def getcwdb():' + #10 + '    return getcwd().encode(''utf-8''' +
+  ', ''surrogateescape'')' + #10 + #10 + #10 +
+  'def chmod(path, mode, *, dir_fd=No' + 'ne, follow_symlinks=True):' + #10 +
+  '    if isinstance(path, int) and n' + 'ot isinstance(path, bool):' + #10 +
+  '        return fchmod(path, mode)' + #10 +
+  '    return _posix.chmod(_path(path' + ', dir_fd), mode)' + #10 + #10 +
+  #10 + 'def chown(path, uid, gid, *, dir_f' +
+  'd=None, follow_symlinks=True):' + #10 +
+  '    if isinstance(path, int) and n' + 'ot isinstance(path, bool):' + #10 +
+  '        return fchown(path, uid, g' + 'id)' + #10 +
+  '    return _posix.chown(_path(path' +
+  ', dir_fd), uid, gid, follow_symlin' + 'ks)' + #10 + #10 + #10 +
+  'def lchown(path, uid, gid):' + #10 + '    return _posix.chown(_path(path' +
+  '), uid, gid, False)' + #10 + #10 + #10 +
+  'def link(src, dst, *, src_dir_fd=N' +
+  'one, dst_dir_fd=None, follow_symli' + 'nks=True):' + #10 +
+  '    return _posix.link(_path(src, ' +
+  'src_dir_fd), _path(dst, dst_dir_fd' + '))' + #10 + #10 + #10 +
+  'def symlink(src, dst, target_is_di' + 'rectory=False, *, dir_fd=None):' +
+  #10 + '    return _posix.symlink(_fsd(src' + ')[0], _path(dst, dir_fd))' +
+  #10 + #10 + #10 + 'def readlink(path, *, dir_fd=None)' + ':' + #10 +
+  '    s, isb = _fsd(path)' + #10 + '    return _enc(isb, _posix.readli' +
+  'nk(_path(path, dir_fd)))' + #10 + #10 + #10 +
+  'def unlink(path, *, dir_fd=None):' + #10 +
+  '    return _posix.unlink(_path(pat' + 'h, dir_fd))' + #10 + #10 + #10 +
+  'remove = unlink' + #10 + #10 + #10 + 'def rename(src, dst, *, src_dir_fd' +
+  '=None, dst_dir_fd=None):' + #10 + '    return _posix.rename(_path(src' +
+  ', src_dir_fd), _path(dst, dst_dir_' + 'fd))' + #10 + #10 + #10 +
+  'replace = rename' + #10 + #10 + #10 + 'def rmdir(path, *, dir_fd=None):' +
+  #10 + '    return _posix.rmdir(_path(path' + ', dir_fd))' + #10;
+
+Const
+ Src_posix_1: AnsiString =
+  #10 + #10 + 'def mkdir(path, mode=0o777, *, dir' + '_fd=None):' + #10 +
+  '    return _posix.mkdir(_path(path' + ', dir_fd), mode)' + #10 + #10 +
+  #10 + 'def truncate(path, length):' + #10 +
+  '    if isinstance(path, int) and n' + 'ot isinstance(path, bool):' + #10 +
+  '        return ftruncate(path, len' + 'gth)' + #10 +
+  '    return _posix.truncate(_path(p' + 'ath), length)' + #10 + #10 + #10 +
+  'def listdir(path=None):' + #10 + '    if path is None:' + #10 +
+  '        return _posix.listdir(None' + ')' + #10 +
+  '    if isinstance(path, int) and n' + 'ot isinstance(path, bool):' + #10 +
+  '        return _posix.listdir(''/pr' + 'oc/self/fd/%d'' % path)' + #10 +
+  '    s, isb = _fsd(path)' + #10 + '    r = _posix.listdir(s)' + #10 +
+  '    if isb:' + #10 + '        return [x.encode(''utf-8'', ' +
+  '''surrogateescape'') for x in r]' + #10 + '    return r' + #10 + #10 +
+  #10 + 'def utime(path, times=None, *, ns=' +
+  'None, dir_fd=None, follow_symlinks' + '=True):' + #10 +
+  '    if times is not None and ns is' + ' not None:' + #10 +
+  '        raise ValueError("utime: y' +
+  'ou may specify either ''times'' or ''' + 'ns'' but not both")' + #10 +
+  '    if times is None and ns is Non' + 'e:' + #10 + '        a = m = -1' +
+  #10 + '    elif ns is not None:' + #10 + '        a, m = ns' + #10 +
+  '    else:' + #10 + '        if not isinstance(times, t' +
+  'uple) or len(times) != 2:' + #10 + '            raise TypeError("utime' +
+  ': ''times'' must be either a tuple o' + 'f two ints or None")' + #10 +
+  '        a = int(times[0] * 1000000' + '000)' + #10 +
+  '        m = int(times[1] * 1000000' + '000)' + #10 +
+  '    p = path if isinstance(path, i' +
+  'nt) and not isinstance(path, bool)' + ' else _path(path, dir_fd)' + #10 +
+  '    return _posix._utime(p, a, m, ' + 'follow_symlinks)' + #10 + #10 +
+  #10 + 'def uname():' + #10 + '    return uname_result(_posix._un' +
+  'ame())' + #10 + #10 + #10 + 'def times():' + #10 +
+  '    return times_result(_posix._ti' + 'mes())' + #10 + #10 + #10 +
+  'def statvfs(path):' + #10 + '    if isinstance(path, int) and n' +
+  'ot isinstance(path, bool):' + #10 +
+  '        path = ''/proc/self/fd/%d'' ' + '% path' + #10 +
+  '    return statvfs_result(_posix._' + 'statvfs(_path(path)))' + #10 + #10 +
+  #10 + 'def get_terminal_size(fd=1):' + #10 +
+  '    return terminal_size(_posix._t' + 'erminal_size(fd))' + #10 + #10 +
+  #10 + 'def realpath(path):' + #10 + '    s, isb = _fsd(path)' + #10 +
+  '    return _enc(isb, _posix._realp' + 'ath(s))' + #10 + #10 + #10 +
+  'def putenv(name, value):' + #10 + '    return _posix.putenv(_fsd(name' +
+  ')[0], _fsd(value)[0])' + #10 + #10 + #10 + 'def unsetenv(name):' + #10 +
+  '    return _posix.unsetenv(_fsd(na' + 'me)[0])' + #10 + #10 + #10 +
+  'def _environ():' + #10 + '    return _posix._environ()' + #10 + #10 + #10 +
+  'environ = _environ()' + #10 + #10 + #10 + 'def execv(path, argv):' + #10 +
+  '    if not isinstance(argv, (list,' + ' tuple)):' + #10 +
+  '        raise TypeError("execv() a' + 'rg 2 must be a tuple or list")' +
+  #10 + '    _posix._execve(_path(path), [_' +
+  'fsd(a)[0] for a in argv], None)' + #10 + #10 + #10 +
+  'def execve(path, argv, env):' + #10 +
+  '    if not isinstance(argv, (list,' + ' tuple)):' + #10 +
+  '        raise TypeError("execve: a' + 'rgv must be a tuple or list")' +
+  #10 + '    ne = {}' + #10 + '    for k, v in env.items():' + #10 +
+  '        ne[_fsd(k)[0]] = _fsd(v)[0' + ']' + #10 +
+  '    _posix._execve(_path(path), [_' + 'fsd(a)[0] for a in argv], ne)' +
+  #10 + #10 + #10 + 'def wait():' + #10 + '    return waitpid(-1, 0)' + #10 +
+  #10 + #10 + 'def wait4(pid, options):' + #10 +
+  '    p, st = waitpid(pid, options)' + #10 + '    return p, st, None' + #10 +
+  #10 + #10 + 'def WIFEXITED(status):' + #10 +
+  '    return (status & 0x7f) == 0' + #10 + #10 + #10 +
+  'def WEXITSTATUS(status):' + #10 + '    return (status >> 8) & 0xff' + #10 +
+  #10 + #10 + 'def WIFSIGNALED(status):' + #10 +
+  '    return ((status & 0x7f) + 1) >' +
+  '> 1 > 0 and (status & 0x7f) != 0 a' + 'nd (status & 0x7f) != 0x7f' + #10 +
+  #10 + #10 + 'def WTERMSIG(status):' + #10 + '    return status & 0x7f' +
+  #10 + #10 + #10 + 'def WIFSTOPPED(status):' + #10 +
+  '    return (status & 0xff) == 0x7f' + #10 + #10 + #10 +
+  'def WSTOPSIG(status):' + #10 + '    return (status >> 8) & 0xff' + #10 +
+  #10 + #10 + 'def WCOREDUMP(status):' + #10 +
+  '    return bool(status & 0x80)' + #10 + #10 + #10 +
+  'def WIFCONTINUED(status):' + #10 + '    return status == 0xffff' + #10 +
+  #10 + #10 + 'class DirEntry:' + #10 +
+  '    __slots__ = (''name'', ''path'', ''' +
+  '_dtype'', ''_ino'', ''_stat'', ''_lstat''' + ', ''_isb'')' + #10 + #10 +
+  '    def __init__(self, name, path,' + ' dtype, ino, isb):' + #10 +
+  '        self.name = name' + #10 + '        self.path = path' + #10 +
+  '        self._dtype = dtype' + #10 + '        self._ino = ino' + #10 +
+  '        self._stat = None' + #10 + '        self._lstat = None' + #10 +
+  '        self._isb = isb' + #10 + #10 + '    def __fspath__(self):' + #10 +
+  '        return self.path' + #10 + #10 + '    def __repr__(self):' + #10 +
+  '        return ''<DirEntry %r>'' % (' + 'self.name,)' + #10 + #10 +
+  '    def inode(self):' + #10 + '        return self._ino' + #10 + #10 +
+  '    def _fs(self):' + #10 + '        return self.path.decode(''u' +
+  'tf-8'', ''surrogateescape'') if self.' + '_isb else self.path' + #10 +
+  #10 + '    def stat(self, *, follow_symli' + 'nks=True):' + #10 +
+  '        if follow_symlinks:' + #10 + '            if self._stat is None:' +
+  #10 + '                if self.is_symlink' + '():' + #10 +
+  '                    self._stat = s' + 'tat(self._fs())' + #10 +
+  '                else:' + #10 + '                    self._stat = s' +
+  'elf.stat(follow_symlinks=False)' + #10 + '            return self._stat' +
+  #10 + '        if self._lstat is None:' + #10 +
+  '            self._lstat = lstat(se' + 'lf._fs())' + #10 +
+  '        return self._lstat' + #10 + #10 +
+  '    def _test(self, mask, follow_s' + 'ymlinks):' + #10 +
+  '        dt = self._dtype' + #10 + '        if dt != 0 and not (follow' +
+  '_symlinks and dt == 10):' + #10 + '            return dt == {0o040000' +
+  ': 4, 0o100000: 8}[mask]' + #10 + '        try:' + #10 +
+  '            st = self.stat(follow_' + 'symlinks=follow_symlinks)' + #10 +
+  '        except OSError as e:' + #10 + '            if e.errno == 2:' +
+  #10 + '                return False' + #10 + '            raise' + #10 +
+  '        return (st.st_mode & 0o170' + '000) == mask' + #10 + #10 +
+  '    def is_dir(self, *, follow_sym' + 'links=True):' + #10 +
+  '        return self._test(0o040000' + ', follow_symlinks)' + #10 + #10 +
+  '    def is_file(self, *, follow_sy' + 'mlinks=True):' + #10 +
+  '        return self._test(0o100000' + ', follow_symlinks)' + #10 + #10 +
+  '    def is_symlink(self):' + #10 + '        if self._dtype != 0:' + #10 +
+  '            return self._dtype == ' + '10' + #10 + '        try:' + #10 +
+  '            st = self.stat(follow_' + 'symlinks=False)' + #10 +
+  '        except OSError as e:' + #10 + '            if e.errno == 2:' +
+  #10 + '                return False' + #10 + '            raise' + #10 +
+  '        return (st.st_mode & 0o170' + '000) == 0o120000' + #10 + #10 +
+  #10 + 'DirEntry.__module__ = ''posix''' + #10 + #10 + #10 +
+  'class _ScandirIterator:' + #10 + '    def __init__(self, entries):' + #10 +
+  '        self._it = iter(entries)' + #10 + #10 + '    def __iter__(self):' +
+  #10 + '        return self' + #10 + #10 + '    def __next__(self):' + #10 +
+  '        return next(self._it)' + #10 + #10 + '    def close(self):' + #10 +
+  '        self._it = iter(())' + #10 + #10 + '    def __enter__(self):' +
+  #10 + '        return self' + #10 + #10 + '    def __exit__(self, *a):' +
+  #10 + '        self.close()' + #10 + #10 + #10 + 'def scandir(path=None):' +
+  #10 + '    if path is None:' + #10 + '        p, isb = ''.'', False' + #10 +
+  '        base = ''.''' + #10 + '    elif isinstance(path, int) and' +
+  ' not isinstance(path, bool):' + #10 +
+  '        p, isb = ''/proc/self/fd/%d' + ''' % path, False' + #10 +
+  '        base = None' + #10 + '    else:' + #10 +
+  '        p, isb = _fsd(path)' + #10 + '        base = p' + #10 +
+  '    res = []' + #10 + '    for name, dt, ino in _posix._s' + 'candir(p):' +
+  #10 + '        if base is None:' + #10 + '            full = name' + #10 +
+  '        elif base.endswith(''/''):' + #10 +
+  '            full = base + name' + #10 + '        else:' + #10 +
+  '            full = base + ''/'' + na' + 'me' + #10 +
+  '        if path is None:' + #10 + '            full = name' + #10 +
+  '        if isb:' + #10 + '            res.append(DirEntry(na' +
+  'me.encode(''utf-8'', ''surrogateescap' + 'e''),' + #10 +
+  '                                fu' +
+  'll.encode(''utf-8'', ''surrogateescap' + 'e''), dt, ino, True))' + #10 +
+  '        else:' + #10 + '            res.append(DirEntry(na' +
+  'me, full, dt, ino, False))' + #10 + '    return _ScandirIterator(res)' +
+  #10 + #10;
+
+Const
+ Src_posix_2: AnsiString =
+  #10 + 'def sched_getaffinity(pid):' + #10 +
+  '    return set(range(cpu_count() o' + 'r 1))' + #10 + #10 + #10 +
+  'def getpriority(which, who):' + #10 + '    return 0' + #10 + #10 + #10 +
+  'def posix_fadvise(fd, offset, leng' + 'th, advice):' + #10 +
+  '    return None' + #10 + #10 + #10 + 'def sendfile(out_fd, in_fd, offset' +
+  ', count):' + #10 + '    data = pread(in_fd, count, off' +
+  'set) if offset is not None else re' + 'ad(in_fd, count)' + #10 +
+  '    return write(out_fd, data)' + #10 + #10 + #10 +
+  'def lockf(fd, cmd, length):' + #10 + '    return None' + #10 + #10 + #10 +
+  'def pipe2(flags):' + #10 + '    return pipe()' + #10 + #10 + #10 +
+  'def openpty():' + #10 + '    raise NotImplementedError("ope' + 'npty")' +
+  #10 + #10 + #10 + 'def register_at_fork(*, before=Non' +
+  'e, after_in_parent=None, after_in_' + 'child=None):' + #10 +
+  '    return None' + #10 + #10 + #10 + 'def get_exec_path_default():' + #10 +
+  '    return [''/usr/local/sbin'', ''/u' +
+  'sr/local/bin'', ''/usr/sbin'', ''/usr/' + 'bin'', ''/sbin'', ''/bin'']' +
+  #10 + #10 + #10 + 'def _fix_nobind():' + #10 + '    g = globals()' + #10 +
+  '    nb = _sys._nobind' + #10 + '    for _n, _v in list(g.items()):' + #10 +
+  '        if type(_v) is type(_fix_n' + 'obind) and _n != ''_fix_nobind'':' +
+  #10 + '            nb(_v)' + #10 + #10 + #10 + '_fix_nobind()' + #10 +
+  'del _fix_nobind' + #10 + #10;
+
+Function Src_posix: AnsiString;
+Begin
+ Result := Src_posix_0 + Src_posix_1 + Src_posix_2;
+End;
+
+Const
  Src_posixpath_0: AnsiString =
-  'import os' + #10 + 'import sys' + #10 + 'import stat' + #10 +
-  'import posix' + #10 + #10 + 'curdir = ''.''' + #10 + 'pardir = ''..''' +
-  #10 + 'extsep = ''.''' + #10 + 'sep = ''/''' + #10 + 'pathsep = '':''' +
-  #10 + 'defpath = ''/bin:/usr/bin''' + #10 + 'altsep = None' + #10 +
-  'devnull = ''/dev/null''' + #10 + #10 + 'def _get_sep(path):' + #10 +
+  '"""Common operations on Posix path' + 'names.' + #10 + #10 +
+  'Instead of importing this module d' + 'irectly, import os and refer to' +
+  #10 + 'this module as os.path.  The "os.p' +
+  'ath" name is an alias for this' + #10 +
+  'module on Posix systems; on other ' + 'systems (e.g. Windows),' + #10 +
+  'os.path provides the same operatio' + 'ns in a manner specific to that' +
+  #10 + 'platform, and is an alias to anoth' + 'er module (e.g. ntpath).' +
+  #10 + #10 + 'Some of this can actually be usefu' +
+  'l on non-Posix systems too, e.g.' + #10 +
+  'for manipulation of the pathname c' + 'omponent of URLs.' + #10 + '"""' +
+  #10 + #10 + '# Strings representing various pat' +
+  'h-related bits and pieces.' + #10 + '# These are primarily for export; ' +
+  'internally, they are hardcoded.' + #10 +
+  '# Should be set before imports for' + ' resolving cyclic dependency.' +
+  #10 + 'curdir = ''.''' + #10 + 'pardir = ''..''' + #10 + 'extsep = ''.''' +
+  #10 + 'sep = ''/''' + #10 + 'pathsep = '':''' + #10 +
+  'defpath = ''/bin:/usr/bin''' + #10 + 'altsep = None' + #10 +
+  'devnull = ''/dev/null''' + #10 + #10 + 'import os' + #10 + 'import sys' +
+  #10 + 'import stat' + #10 + 'import genericpath' + #10 +
+  'from genericpath import *' + #10 + #10 +
+  '__all__ = ["normcase","isabs","joi' +
+  'n","splitdrive","split","splitext"' + ',' + #10 +
+  '           "basename","dirname","c' +
+  'ommonprefix","getsize","getmtime",' + #10 +
+  '           "getatime","getctime","' +
+  'islink","exists","lexists","isdir"' + ',"isfile",' + #10 +
+  '           "ismount", "expanduser"' +
+  ',"expandvars","normpath","abspath"' + ',' + #10 +
+  '           "samefile","sameopenfil' + 'e","samestat",' + #10 +
+  '           "curdir","pardir","sep"' +
+  ',"pathsep","defpath","altsep","ext' + 'sep",' + #10 +
+  '           "devnull","realpath","s' +
+  'upports_unicode_filenames","relpat' + 'h",' + #10 +
+  '           "commonpath"]' + #10 + #10 + #10 + 'def _get_sep(path):' + #10 +
   '    if isinstance(path, bytes):' + #10 + '        return b''/''' + #10 +
-  '    return ''/''' + #10 + #10 + 'def normcase(s):' + #10 +
-  '    return os.fspath(s)' + #10 + #10 + 'def isabs(s):' + #10 +
-  '    s = os.fspath(s)' + #10 + '    sep = _get_sep(s)' + #10 +
-  '    return s.startswith(sep)' + #10 + #10 + 'def join(a, *p):' + #10 +
-  '    a = os.fspath(a)' + #10 + '    sep = _get_sep(a)' + #10 +
-  '    path = a' + #10 + '    for b in map(os.fspath, p):' + #10 +
-  '        if b.startswith(sep):' + #10 + '            path = b' + #10 +
-  '        elif not path or path.ends' + 'with(sep):' + #10 +
-  '            path += b' + #10 + '        else:' + #10 +
-  '            path += sep + b' + #10 + '    return path' + #10 + #10 +
-  'def split(p):' + #10 + '    p = os.fspath(p)' + #10 +
-  '    sep = _get_sep(p)' + #10 + '    i = p.rfind(sep) + 1' + #10 +
-  '    head, tail = p[:i], p[i:]' + #10 +
-  '    if head and head != sep * len(' + 'head):' + #10 +
+  '    else:' + #10 + '        return ''/''' + #10 + #10 +
+  '# Normalize the case of a pathname' +
+  '.  Trivial in Posix, string.lower ' + 'on Mac.' + #10 +
+  '# On MS-DOS this may also turn sla' +
+  'shes into backslashes; however, ot' + 'her' + #10 +
+  '# normalizations (such as optimizi' + 'ng ''../'' away) are not allowed' +
+  #10 + '# (another function should be defi' + 'ned to do that).' + #10 +
+  #10 + 'def normcase(s):' + #10 + '    """Normalize case of pathname.' +
+  '  Has no effect under Posix"""' + #10 + '    return os.fspath(s)' + #10 +
+  #10 + #10 + '# Return whether a path is absolut' + 'e.' + #10 +
+  '# Trivial in Posix, harder on the ' + 'Mac or MS-DOS.' + #10 + #10 +
+  'def isabs(s):' + #10 + '    """Test whether a path is abso' + 'lute"""' +
+  #10 + '    s = os.fspath(s)' + #10 + '    sep = _get_sep(s)' + #10 +
+  '    return s.startswith(sep)' + #10 + #10 + #10 + '# Join pathnames.' +
+  #10 + '# Ignore the previous parts if a p' + 'art is absolute.' + #10 +
+  '# Insert a ''/'' unless the first pa' +
+  'rt is empty or already ends in ''/''' + '.' + #10 + #10 +
+  'def join(a, *p):' + #10 + '    """Join two or more pathname c' +
+  'omponents, inserting ''/'' as needed' + '.' + #10 +
+  '    If any component is an absolut' +
+  'e path, all previous path componen' + 'ts' + #10 +
+  '    will be discarded.  An empty l' +
+  'ast part will result in a path tha' + 't' + #10 +
+  '    ends with a separator."""' + #10 + '    a = os.fspath(a)' + #10 +
+  '    sep = _get_sep(a)' + #10 + '    path = a' + #10 + '    try:' + #10 +
+  '        if not p:' + #10 + '            path[:0] + sep  #23780' +
+  ': Ensure compatible data type even' + ' if p is null.' + #10 +
+  '        for b in map(os.fspath, p)' + ':' + #10 +
+  '            if b.startswith(sep):' + #10 + '                path = b' +
+  #10 + '            elif not path or path.' + 'endswith(sep):' + #10 +
+  '                path += b' + #10 + '            else:' + #10 +
+  '                path += sep + b' + #10 +
+  '    except (TypeError, AttributeEr' + 'ror, BytesWarning):' + #10 +
+  '        genericpath._check_arg_typ' + 'es(''join'', a, *p)' + #10 +
+  '        raise' + #10 + '    return path' + #10 + #10 + #10 +
+  '# Split a path in head (everything' +
+  ' up to the last ''/'') and tail (the' + #10 +
+  '# rest).  If the path ends in ''/'',' +
+  ' tail will be empty.  If there is ' + 'no' + #10 +
+  '# ''/'' in the path, head  will be e' + 'mpty.' + #10 +
+  '# Trailing ''/''es are stripped from' + ' head unless it is the root.' +
+  #10 + #10 + 'def split(p):' + #10 + '    """Split a pathname.  Returns ' +
+  'tuple "(head, tail)" where "tail" ' + 'is' + #10 +
+  '    everything after the final sla' + 'sh.  Either part may be empty."""' +
+  #10 + '    p = os.fspath(p)' + #10 + '    sep = _get_sep(p)' + #10 +
+  '    i = p.rfind(sep) + 1' + #10 + '    head, tail = p[:i], p[i:]' + #10 +
+  '    if head and head != sep*len(he' + 'ad):' + #10 +
   '        head = head.rstrip(sep)' + #10 + '    return head, tail' + #10 +
-  #10 + 'def splitext(p):' + #10 + '    p = os.fspath(p)' + #10 +
-  '    sep = _get_sep(p)' + #10 + '    extsep = ''.''' + #10 +
-  '    sepIndex = p.rfind(sep)' + #10 + '    dotIndex = p.rfind(extsep)' +
-  #10 + '    if dotIndex > sepIndex:' + #10 +
-  '        filenameIndex = sepIndex +' + ' 1' + #10 +
-  '        while filenameIndex < dotI' + 'ndex:' + #10 +
-  '            if p[filenameIndex:fil' + 'enameIndex + 1] != extsep:' + #10 +
-  '                return p[:dotIndex' + '], p[dotIndex:]' + #10 +
-  '            filenameIndex += 1' + #10 + '    return p, p[:0]' + #10 + #10 +
-  'def splitdrive(p):' + #10 + '    p = os.fspath(p)' + #10 +
-  '    return p[:0], p' + #10 + #10 + 'def basename(p):' + #10 +
+  #10 + #10 + '# Split a path in root and extensi' + 'on.' + #10 +
+  '# The extension is everything star' + 'ting at the last dot in the last' +
+  #10 + '# pathname component; the root is ' + 'everything before that.' +
+  #10 + '# It is always true that root + ex' + 't == p.' + #10 + #10 +
+  'def splitext(p):' + #10 + '    p = os.fspath(p)' + #10 +
+  '    if isinstance(p, bytes):' + #10 + '        sep = b''/''' + #10 +
+  '        extsep = b''.''' + #10 + '    else:' + #10 +
+  '        sep = ''/''' + #10 + '        extsep = ''.''' + #10 +
+  '    return genericpath._splitext(p' + ', sep, None, extsep)' + #10 +
+  'splitext.__doc__ = genericpath._sp' + 'litext.__doc__' + #10 + #10 +
+  '# Split a pathname into a drive sp' + 'ecification and the rest of the' +
+  #10 + '# path.  Useful on DOS/Windows/NT;' +
+  ' on Unix, the drive is always empt' + 'y.' + #10 + #10 +
+  'def splitdrive(p):' + #10 + '    """Split a pathname into drive' +
+  ' and path. On Posix, drive is alwa' + 'ys' + #10 + '    empty."""' + #10 +
+  '    p = os.fspath(p)' + #10 + '    return p[:0], p' + #10 + #10 + #10 +
+  '# Return the tail (basename) part ' +
+  'of a path, same as split(path)[1].' + #10 + #10 + 'def basename(p):' +
+  #10 + '    """Returns the final component' + ' of a pathname"""' + #10 +
   '    p = os.fspath(p)' + #10 + '    sep = _get_sep(p)' + #10 +
-  '    i = p.rfind(sep) + 1' + #10 + '    return p[i:]' + #10 + #10 +
-  'def dirname(p):' + #10 + '    p = os.fspath(p)' + #10 +
+  '    i = p.rfind(sep) + 1' + #10 + '    return p[i:]' + #10 + #10 + #10 +
+  '# Return the head (dirname) part o' + 'f a path, same as split(path)[0].' +
+  #10 + #10 + 'def dirname(p):' + #10 + '    """Returns the directory compo' +
+  'nent of a pathname"""' + #10 + '    p = os.fspath(p)' + #10 +
   '    sep = _get_sep(p)' + #10 + '    i = p.rfind(sep) + 1' + #10 +
-  '    head = p[:i]' + #10 + '    if head and head != sep * len(' + 'head):' +
+  '    head = p[:i]' + #10 + '    if head and head != sep*len(he' + 'ad):' +
   #10 + '        head = head.rstrip(sep)' + #10 + '    return head' + #10 +
-  #10 + 'def islink(path):' + #10 + '    try:' + #10 +
-  '        st = posix.lstat(path)' + #10 +
-  '    except (OSError, ValueError, A' + 'ttributeError):' + #10 +
-  '        return False' + #10 + '    return stat.S_ISLNK(st[0])' + #10 +
-  #10 + 'def lexists(path):' + #10 + '    try:' + #10 +
-  '        posix.lstat(path)' + #10 + '    except (OSError, ValueError):' +
-  #10 + '        return False' + #10 + '    return True' + #10 + #10 +
-  'def exists(path):' + #10 + '    return posix.exists(os.fspath(' +
-  'path))' + #10 + #10 + 'def isfile(path):' + #10 +
-  '    return posix.isfile(os.fspath(' + 'path))' + #10 + #10 +
-  'def isdir(s):' + #10 + '    return posix.isdir(os.fspath(s' + '))' + #10 +
-  #10 + 'def ismount(path):' + #10 + '    return False' + #10 + #10 +
-  'def getsize(filename):' + #10 + '    return posix.getsize(filename)' +
-  #10 + #10 + 'def getmtime(filename):' + #10 +
-  '    return posix.getmtime(filename' + ')' + #10 + #10 +
-  'def getatime(filename):' + #10 + '    return posix.stat(filename)[7]' +
-  #10 + #10 + 'def getctime(filename):' + #10 +
-  '    return posix.stat(filename)[9]' + #10 + #10 + 'def samefile(f1, f2):' +
-  #10 + '    s1 = posix.stat(f1)' + #10 + '    s2 = posix.stat(f2)' + #10 +
-  '    return s1[1] == s2[1] and s1[2' + '] == s2[2]' + #10 + #10 +
-  'def expanduser(path):' + #10 + '    path = os.fspath(path)' + #10 +
-  '    if not path.startswith(''~''):' + #10 + '        return path' + #10 +
-  '    i = path.find(''/'', 1)' + #10 + '    if i < 0:' + #10 +
-  '        i = len(path)' + #10 + '    if i == 1:' + #10 +
-  '        userhome = os.environ.get(' + '''HOME'')' + #10 +
-  '        if userhome is None:' + #10 + '            userhome = ''/root''' +
-  #10 + '    else:' + #10 + '        userhome = ''/home/'' + path' + '[1:i]' +
-  #10 + '    userhome = userhome.rstrip(''/''' + ')' + #10 +
-  '    return (userhome + path[i:]) o' + 'r ''/''' + #10 + #10 +
-  'def expandvars(path):' + #10 + '    path = os.fspath(path)' + #10 +
-  '    if ''$'' not in path:' + #10 + '        return path' + #10 +
-  '    res = ''''' + #10 + '    i = 0' + #10 + '    n = len(path)' + #10 +
-  '    while i < n:' + #10 + '        c = path[i]' + #10 +
-  '        if c == ''$'' and i + 1 < n:' + #10 +
-  '            if path[i + 1] == ''{'':' + #10 +
-  '                j = path.find(''}'',' + ' i + 2)' + #10 +
-  '                if j < 0:' + #10 + '                    res += path[i:' +
-  ']' + #10 + '                    break' + #10 +
-  '                name = path[i + 2:' + 'j]' + #10 +
-  '                if name in os.envi' + 'ron:' + #10 +
-  '                    res += os.envi' + 'ron[name]' + #10 +
-  '                else:' + #10 + '                    res += path[i:' +
-  'j + 1]' + #10 + '                i = j + 1' + #10 +
-  '                continue' + #10 + '            j = i + 1' + #10 +
-  '            while j < n and (path[' +
-  'j].isalnum() or path[j] == ''_''):' + #10 + '                j += 1' +
-  #10 + '            name = path[i + 1:j]' + #10 +
-  '            if name and name in os' + '.environ:' + #10 +
-  '                res += os.environ[' + 'name]' + #10 +
-  '                i = j' + #10 + '                continue' + #10 +
-  '            if name:' + #10 + '                res += path[i:j]' + #10 +
-  '                i = j' + #10 + '                continue' + #10 +
-  '        res += c' + #10 + '        i += 1' + #10 + '    return res' + #10 +
-  #10 + 'def normpath(path):' + #10 + '    path = os.fspath(path)' + #10 +
+  #10 + #10 + '# Is a path a symbolic link?' + #10 +
+  '# This will always return false on' +
+  ' systems where os.lstat doesn''t ex' + 'ist.' + #10 + #10 +
+  'def islink(path):' + #10 + '    """Test whether a path is a sy' +
+  'mbolic link"""' + #10 + '    try:' + #10 + '        st = os.lstat(path)' +
+  #10 + '    except (OSError, ValueError, A' + 'ttributeError):' + #10 +
+  '        return False' + #10 + '    return stat.S_ISLNK(st.st_mode' + ')' +
+  #10 + #10 + '# Being true for dangling symbolic' +
+  ' links is also useful.' + #10 + #10 + 'def lexists(path):' + #10 +
+  '    """Test whether a path exists.' +
+  '  Returns True for broken symbolic' + ' links"""' + #10 + '    try:' +
+  #10 + '        os.lstat(path)' + #10 + '    except (OSError, ValueError):' +
+  #10 + '        return False' + #10 + '    return True' + #10 + #10 + #10 +
+  '# Is a path a mount point?' + #10 + '# (Does this work for all UNIXes? ' +
+  ' Is it even guaranteed to work by ' + 'Posix?)' + #10 + #10 +
+  'def ismount(path):' + #10 + '    """Test whether a path is a mo' +
+  'unt point"""' + #10 + '    try:' + #10 + '        s1 = os.lstat(path)' +
+  #10 + '    except (OSError, ValueError):' + #10 +
+  '        # It doesn''t exist -- so n' + 'ot a mount point. :-)' + #10 +
+  '        return False' + #10 + '    else:' + #10 +
+  '        # A symlink can never be a' + ' mount point' + #10 +
+  '        if stat.S_ISLNK(s1.st_mode' + '):' + #10 +
+  '            return False' + #10 + #10 + '    if isinstance(path, bytes):' +
+  #10 + '        parent = join(path, b''..'')' + #10 + '    else:' + #10 +
+  '        parent = join(path, ''..'')' + #10 +
+  '    parent = realpath(parent)' + #10 + '    try:' + #10 +
+  '        s2 = os.lstat(parent)' + #10 +
+  '    except (OSError, ValueError):' + #10 + '        return False' + #10 +
+  #10 + '    dev1 = s1.st_dev' + #10 + '    dev2 = s2.st_dev' + #10 +
+  '    if dev1 != dev2:' + #10 + '        return True     # path/.. ' +
+  'on a different device as path' + #10 + '    ino1 = s1.st_ino' + #10 +
+  '    ino2 = s2.st_ino' + #10 + '    if ino1 == ino2:' + #10 +
+  '        return True     # path/.. ' + 'is the same i-node as path' + #10 +
+  '    return False' + #10 + #10 + #10 +
+  '# Expand paths beginning with ''~'' ' + 'or ''~user''.' + #10 +
+  '# ''~'' means $HOME; ''~user'' means t' + 'hat user''s home directory.' +
+  #10 + '# If the path doesn''t begin with ''' +
+  '~'', or if the user or $HOME is unk' + 'nown,' + #10 +
+  '# the path is returned unchanged (' +
+  'leaving error reporting to whateve' + 'r' + #10 +
+  '# function is called with the expa' + 'nded path as argument).' + #10 +
+  '# See also module ''glob'' for expan' +
+  'sion of *, ? and [...] in pathname' + 's.' + #10 +
+  '# (A function should also be defin' +
+  'ed to do full *sh-style environmen' + 't' + #10 +
+  '# variable expansion.)' + #10 + #10 + 'def expanduser(path):' + #10 +
+  '    """Expand ~ and ~user construc' +
+  'tions.  If user or $HOME is unknow' + 'n,' + #10 + '    do nothing."""' +
+  #10 + '    path = os.fspath(path)' + #10 +
+  '    if isinstance(path, bytes):' + #10 + '        tilde = b''~''' + #10 +
+  '    else:' + #10 + '        tilde = ''~''' + #10 +
+  '    if not path.startswith(tilde):' + #10 + '        return path' + #10 +
+  '    sep = _get_sep(path)' + #10 + '    i = path.find(sep, 1)' + #10 +
+  '    if i < 0:' + #10 + '        i = len(path)' + #10 + '    if i == 1:' +
+  #10 + '        if ''HOME'' not in os.enviro' + 'n:' + #10 +
+  '            import pwd' + #10 + '            try:' + #10 +
+  '                userhome = pwd.get' + 'pwuid(os.getuid()).pw_dir' + #10 +
+  '            except KeyError:' + #10 +
+  '                # bpo-10496: if th' +
+  'e current user identifier doesn''t ' + 'exist in the' + #10 +
+  '                # password databas' + 'e, return the path unchanged' +
+  #10 + '                return path' + #10;
+
+Const
+ Src_posixpath_1: AnsiString =
+  '        else:' + #10 + '            userhome = os.environ[' + '''HOME'']' +
+  #10 + '    else:' + #10 + '        import pwd' + #10 +
+  '        name = path[1:i]' + #10 + '        if isinstance(name, bytes)' +
+  ':' + #10 + '            name = str(name, ''ASCI' + 'I'')' + #10 +
+  '        try:' + #10 + '            pwent = pwd.getpwnam(n' + 'ame)' + #10 +
+  '        except KeyError:' + #10 + '            # bpo-10496: if the us' +
+  'er name from the path doesn''t exis' + 't in the' + #10 +
+  '            # password database, r' + 'eturn the path unchanged' + #10 +
+  '            return path' + #10 + '        userhome = pwent.pw_dir' + #10 +
+  '    if isinstance(path, bytes):' + #10 +
+  '        userhome = os.fsencode(use' + 'rhome)' + #10 +
+  '        root = b''/''' + #10 + '    else:' + #10 + '        root = ''/''' +
+  #10 + '    userhome = userhome.rstrip(roo' + 't)' + #10 +
+  '    return (userhome + path[i:]) o' + 'r root' + #10 + #10 + #10 +
+  '# Expand paths containing shell va' + 'riable substitutions.' + #10 +
+  '# This expands the forms $variable' + ' and ${variable} only.' + #10 +
+  '# Non-existent variables are left ' + 'unchanged.' + #10 + #10 +
+  '_varprog = None' + #10 + '_varprogb = None' + #10 + #10 +
+  'def expandvars(path):' + #10 + '    """Expand shell variables of f' +
+  'orm $var and ${var}.  Unknown vari' + 'ables' + #10 +
+  '    are left unchanged."""' + #10 + '    path = os.fspath(path)' + #10 +
+  '    global _varprog, _varprogb' + #10 + '    if isinstance(path, bytes):' +
+  #10 + '        if b''$'' not in path:' + #10 + '            return path' +
+  #10 + '        if not _varprogb:' + #10 + '            import re' + #10 +
+  '            _varprogb = re.compile' +
+  '(br''\$(\w+|\{[^}]*\})'', re.ASCII)' + #10 +
+  '        search = _varprogb.search' + #10 + '        start = b''{''' + #10 +
+  '        end = b''}''' + #10 + '        environ = getattr(os, ''env' +
+  'ironb'', None)' + #10 + '    else:' + #10 +
+  '        if ''$'' not in path:' + #10 + '            return path' + #10 +
+  '        if not _varprog:' + #10 + '            import re' + #10 +
+  '            _varprog = re.compile(' + 'r''\$(\w+|\{[^}]*\})'', re.ASCII)' +
+  #10 + '        search = _varprog.search' + #10 + '        start = ''{''' +
+  #10 + '        end = ''}''' + #10 + '        environ = os.environ' + #10 +
+  '    i = 0' + #10 + '    while True:' + #10 +
+  '        m = search(path, i)' + #10 + '        if not m:' + #10 +
+  '            break' + #10 + '        i, j = m.span(0)' + #10 +
+  '        name = m.group(1)' + #10 + '        if name.startswith(start) ' +
+  'and name.endswith(end):' + #10 + '            name = name[1:-1]' + #10 +
+  '        try:' + #10 + '            if environ is None:' + #10 +
+  '                value = os.fsencod' + 'e(os.environ[os.fsdecode(name)])' +
+  #10 + '            else:' + #10 + '                value = environ[na' +
+  'me]' + #10 + '        except KeyError:' + #10 + '            i = j' + #10 +
+  '        else:' + #10 + '            tail = path[j:]' + #10 +
+  '            path = path[:i] + valu' + 'e' + #10 +
+  '            i = len(path)' + #10 + '            path += tail' + #10 +
+  '    return path' + #10 + #10 + #10 + '# Normalize a path, e.g. A//B, A/.' +
+  '/B and A/foo/../B all become A/B.' + #10 +
+  '# It should be understood that thi' +
+  's may change the meaning of the pa' + 'th' + #10 +
+  '# if it contains symbolic links!' + #10 + #10 + 'def normpath(path):' +
+  #10 + '    """Normalize path, eliminating' + ' double slashes, etc."""' +
+  #10 + '    path = os.fspath(path)' + #10 +
   '    if isinstance(path, bytes):' + #10 + '        sep = b''/''' + #10 +
   '        empty = b''''' + #10 + '        dot = b''.''' + #10 +
   '        dotdot = b''..''' + #10 + '    else:' + #10 +
@@ -74219,10 +79984,12 @@ Const
   '        dot = ''.''' + #10 + '        dotdot = ''..''' + #10 +
   '    if path == empty:' + #10 + '        return dot' + #10 +
   '    initial_slashes = path.startsw' + 'ith(sep)' + #10 +
-  '    if (initial_slashes and path.s' +
-  'tartswith(sep * 2) and not path.st' + 'artswith(sep * 3)):' + #10 +
-  '        initial_slashes = 2' + #10 + '    comps = path.split(sep)' + #10 +
-  '    new_comps = []' + #10 + '    for comp in comps:' + #10 +
+  '    # POSIX allows one or two init' +
+  'ial slashes, but treats three or m' + 'ore' + #10 +
+  '    # as single slash.' + #10 + '    if (initial_slashes and' + #10 +
+  '        path.startswith(sep*2) and' + ' not path.startswith(sep*3)):' +
+  #10 + '        initial_slashes = 2' + #10 + '    comps = path.split(sep)' +
+  #10 + '    new_comps = []' + #10 + '    for comp in comps:' + #10 +
   '        if comp in (empty, dot):' + #10 + '            continue' + #10 +
   '        if (comp != dotdot or (not' +
   ' initial_slashes and not new_comps' + ') or' + #10 +
@@ -74230,68 +79997,118 @@ Const
   '            new_comps.append(comp)' + #10 + '        elif new_comps:' +
   #10 + '            new_comps.pop()' + #10 + '    comps = new_comps' + #10 +
   '    path = sep.join(comps)' + #10 + '    if initial_slashes:' + #10 +
-  '        path = sep * initial_slash' + 'es + path' + #10 +
-  '    return path or dot' + #10 + #10 + 'def abspath(path):' + #10 +
-  '    path = os.fspath(path)' + #10 + '    if not isabs(path):' + #10 +
+  '        path = sep*initial_slashes' + ' + path' + #10 +
+  '    return path or dot' + #10 + #10 + #10 + 'def abspath(path):' + #10 +
+  '    """Return an absolute path."""' + #10 + '    path = os.fspath(path)' +
+  #10 + '    if not isabs(path):' + #10 +
   '        if isinstance(path, bytes)' + ':' + #10 +
   '            cwd = os.getcwdb()' + #10 + '        else:' + #10 +
   '            cwd = os.getcwd()' + #10 + '        path = join(cwd, path)' +
-  #10 + '    return normpath(path)' + #10 + #10 + 'def realpath(filename):' +
-  #10 + '    filename = os.fspath(filename)' + #10 +
-  '    path = abspath(filename)' + #10 + '    parts = path.split(''/'')' +
-  #10 + '    cur = ''''' + #10 + '    seen = 0' + #10 + '    i = 1' + #10 +
-  '    parts = [p for p in parts if p' + ']' + #10 + '    result = ''''' +
-  #10 + '    while parts:' + #10 + '        p = parts.pop(0)' + #10 +
-  '        if p == ''.'':' + #10 + '            continue' + #10 +
-  '        if p == ''..'':' + #10 + '            result = dirname(resul' +
-  't)' + #10 + '            continue' + #10 +
-  '        nxt = result + ''/'' + p' + #10 + '        if islink(nxt):' + #10 +
-  '            seen += 1' + #10 + '            if seen > 40:' + #10 +
-  '                return nxt' + #10 + '            target = posix.readlin' +
-  'k(nxt)' + #10 + '            if target.startswith(''' + '/''):' + #10 +
-  '                result = ''''' + #10 +
-  '            tp = [q for q in targe' + 't.split(''/'') if q]' + #10 +
-  '            parts = tp + parts' + #10 + '        else:' + #10 +
-  '            result = nxt' + #10;
+  #10 + '    return normpath(path)' + #10 + #10 + #10 +
+  '# Return a canonical path (i.e. th' +
+  'e absolute location of a file on t' + 'he' + #10 + '# filesystem).' + #10 +
+  #10 + 'def realpath(filename):' + #10 +
+  '    """Return the canonical path o' +
+  'f the specified filename, eliminat' + 'ing any' + #10 +
+  'symbolic links encountered in the ' + 'path."""' + #10 +
+  '    filename = os.fspath(filename)' + #10 +
+  '    path, ok = _joinrealpath(filen' + 'ame[:0], filename, {})' + #10 +
+  '    return abspath(path)' + #10 + #10 +
+  '# Join two paths, normalizing and ' + 'eliminating any symbolic links' +
+  #10 + '# encountered in the second path.' + #10 +
+  'def _joinrealpath(path, rest, seen' + '):' + #10 +
+  '    if isinstance(path, bytes):' + #10 + '        sep = b''/''' + #10 +
+  '        curdir = b''.''' + #10 + '        pardir = b''..''' + #10 +
+  '    else:' + #10 + '        sep = ''/''' + #10 + '        curdir = ''.''' +
+  #10 + '        pardir = ''..''' + #10 + #10 + '    if isabs(rest):' + #10 +
+  '        rest = rest[1:]' + #10 + '        path = sep' + #10 + #10 +
+  '    while rest:' + #10 + '        name, _, rest = rest.parti' +
+  'tion(sep)' + #10 + '        if not name or name == cur' + 'dir:' + #10 +
+  '            # current dir' + #10 + '            continue' + #10 +
+  '        if name == pardir:' + #10 + '            # parent dir' + #10 +
+  '            if path:' + #10 + '                path, name = split' +
+  '(path)' + #10 + '                if name == pardir:' + #10 +
+  '                    path = join(pa' + 'th, pardir, pardir)' + #10 +
+  '            else:' + #10 + '                path = pardir' + #10 +
+  '            continue' + #10 + '        newpath = join(path, name)' + #10 +
+  '        if not islink(newpath):' + #10 + '            path = newpath' +
+  #10 + '            continue' + #10 + '        # Resolve the symbolic lin' +
+  'k' + #10 + '        if newpath in seen:' + #10 +
+  '            # Already seen this pa' + 'th' + #10 +
+  '            path = seen[newpath]' + #10 +
+  '            if path is not None:' + #10 +
+  '                # use cached value' + #10 + '                continue' +
+  #10 + '            # The symlink is not r' +
+  'esolved, so we must have a symlink' + ' loop.' + #10 +
+  '            # Return already resol' +
+  'ved part + rest of the path unchan' + 'ged.' + #10 +
+  '            return join(newpath, r' + 'est), False' + #10 +
+  '        seen[newpath] = None # not' + ' resolved symlink' + #10 +
+  '        path, ok = _joinrealpath(p' + 'ath, os.readlink(newpath), seen)' +
+  #10 + '        if not ok:' + #10 + '            return join(path, rest' +
+  '), False' + #10 + '        seen[newpath] = path # res' + 'olved symlink' +
+  #10 + #10 + '    return path, True' + #10 + #10 + #10 +
+  'supports_unicode_filenames = (sys.' + 'platform == ''darwin'')' + #10 +
+  #10 + 'def relpath(path, start=None):' + #10 +
+  '    """Return a relative version o' + 'f a path"""' + #10 + #10 +
+  '    if not path:' + #10 + '        raise ValueError("no path ' +
+  'specified")' + #10 + #10 + '    path = os.fspath(path)' + #10 +
+  '    if isinstance(path, bytes):' + #10 + '        curdir = b''.''' + #10 +
+  '        sep = b''/''' + #10 + '        pardir = b''..''' + #10 +
+  '    else:' + #10 + '        curdir = ''.''' + #10 + '        sep = ''/''' +
+  #10 + '        pardir = ''..''' + #10 + #10 + '    if start is None:' +
+  #10 + '        start = curdir' + #10 + '    else:' + #10 +
+  '        start = os.fspath(start)' + #10 + #10 + '    try:' + #10 +
+  '        start_list = [x for x in a' + 'bspath(start).split(sep) if x]' +
+  #10 + '        path_list = [x for x in ab' +
+  'spath(path).split(sep) if x]' + #10 +
+  '        # Work out how much of the' +
+  ' filepath is shared by start and p' + 'ath.' + #10 +
+  '        i = len(commonprefix([star' + 't_list, path_list]))' + #10 + #10 +
+  '        rel_list = [pardir] * (len' + '(start_list)-i) + path_list[i:]' +
+  #10 + '        if not rel_list:' + #10 + '            return curdir' + #10 +
+  '        return join(*rel_list)' + #10 +
+  '    except (TypeError, AttributeEr' +
+  'ror, BytesWarning, DeprecationWarn' + 'ing):' + #10 +
+  '        genericpath._check_arg_typ' + 'es(''relpath'', path, start)' +
+  #10 + '        raise' + #10 + #10 + #10 +
+  '# Return the longest common sub-pa' +
+  'th of the sequence of paths given ' + 'as input.' + #10 +
+  '# The paths are not normalized bef' + 'ore comparing them (this is the' +
+  #10 + '# responsibility of the caller). A' +
+  'ny trailing separator is stripped ' + 'from the' + #10 +
+  '# returned path.' + #10 + #10 + 'def commonpath(paths):' + #10 +
+  '    """Given a sequence of path na' +
+  'mes, returns the longest common su' + 'b-path."""' + #10 + #10 +
+  '    if not paths:' + #10 + '        raise ValueError(''commonpa' +
+  'th() arg is an empty sequence'')' + #10 + #10 +
+  '    paths = tuple(map(os.fspath, p' + 'aths))' + #10 +
+  '    if isinstance(paths[0], bytes)' + ':' + #10 + '        sep = b''/''' +
+  #10 + '        curdir = b''.''' + #10 + '    else:' + #10;
 
 Const
- Src_posixpath_1: AnsiString =
-  '    return result or ''/''' + #10 + #10 +
-  'def relpath(path, start=None):' + #10 + '    if not path:' + #10 +
-  '        raise ValueError("no path ' + 'specified")' + #10 +
-  '    path = os.fspath(path)' + #10 + '    if start is None:' + #10 +
-  '        start = ''.''' + #10 + '    start = os.fspath(start)' + #10 +
-  '    start_list = [x for x in abspa' + 'th(start).split(''/'') if x]' +
-  #10 + '    path_list = [x for x in abspat' + 'h(path).split(''/'') if x]' +
-  #10 + '    i = len(commonprefix([start_li' + 'st, path_list]))' + #10 +
-  '    rel_list = [''..''] * (len(start' + '_list) - i) + path_list[i:]' +
-  #10 + '    if not rel_list:' + #10 + '        return ''.''' + #10 +
-  '    return join(*rel_list)' + #10 + #10 + 'def commonprefix(m):' + #10 +
-  '    if not m:' + #10 + '        return ''''' + #10 +
-  '    if not isinstance(m[0], (list,' + ' tuple)):' + #10 +
-  '        m = tuple(map(os.fspath, m' + '))' + #10 + '    s1 = min(m)' +
-  #10 + '    s2 = max(m)' + #10 + '    for i, c in enumerate(s1):' + #10 +
-  '        if c != s2[i]:' + #10 + '            return s1[:i]' + #10 +
-  '    return s1' + #10 + #10 + 'def commonpath(paths):' + #10 +
-  '    if not paths:' + #10 + '        raise ValueError(''commonpa' +
-  'th() arg is an empty sequence'')' + #10 +
-  '    paths = tuple(map(os.fspath, p' + 'aths))' + #10 +
-  '    split_paths = [path.split(''/'')' + ' for path in paths]' + #10 +
-  '    isabs_ = set(p[:1] == '''' for p' + ' in split_paths)' + #10 +
-  '    if len(isabs_) > 1:' + #10 + '        raise ValueError("Can''t mi' +
-  'x absolute and relative paths")' + #10 +
-  '    split_paths = [[c for c in s i' +
-  'f c and c != ''.''] for s in split_p' + 'aths]' + #10 +
-  '    s1 = min(split_paths)' + #10 + '    s2 = max(split_paths)' + #10 +
-  '    common = s1' + #10 + '    for i, c in enumerate(s1):' + #10 +
-  '        if c != s2[i]:' + #10 + '            common = s1[:i]' + #10 +
-  '            break' + #10 + '    prefix = ''/'' if isabs_.pop() e' +
-  'lse ''''' + #10 + '    return prefix + ''/''.join(commo' + 'n)' + #10 +
-  #10;
+ Src_posixpath_2: AnsiString =
+  '        sep = ''/''' + #10 + '        curdir = ''.''' + #10 + #10 +
+  '    try:' + #10 + '        split_paths = [path.split(' +
+  'sep) for path in paths]' + #10 + #10 + '        try:' + #10 +
+  '            isabs, = set(p[:1] == ' + 'sep for p in paths)' + #10 +
+  '        except ValueError:' + #10 + '            raise ValueError("Can''' +
+  't mix absolute and relative paths"' + ') from None' + #10 + #10 +
+  '        split_paths = [[c for c in' +
+  ' s if c and c != curdir] for s in ' + 'split_paths]' + #10 +
+  '        s1 = min(split_paths)' + #10 + '        s2 = max(split_paths)' +
+  #10 + '        common = s1' + #10 + '        for i, c in enumerate(s1):' +
+  #10 + '            if c != s2[i]:' + #10 +
+  '                common = s1[:i]' + #10 + '                break' + #10 +
+  #10 + '        prefix = sep if isabs else' + ' sep[:0]' + #10 +
+  '        return prefix + sep.join(c' + 'ommon)' + #10 +
+  '    except (TypeError, AttributeEr' + 'ror):' + #10 +
+  '        genericpath._check_arg_typ' + 'es(''commonpath'', *paths)' + #10 +
+  '        raise' + #10 + #10;
 
 Function Src_posixpath: AnsiString;
 Begin
- Result := Src_posixpath_0 + Src_posixpath_1;
+ Result := Src_posixpath_0 + Src_posixpath_1 + Src_posixpath_2;
 End;
 
 Const
@@ -74791,6 +80608,45 @@ Const
 Function Src_pprint: AnsiString;
 Begin
  Result := Src_pprint_0 + Src_pprint_1 + Src_pprint_2;
+End;
+
+Const
+ Src_pwd_0: AnsiString =
+  '"""pwd : base de donnees des mots ' +
+  'de passe (lecture de /etc/passwd).' + '"""' + #10 + 'import sys as _sys' +
+  #10 + #10 + 'struct_passwd = _sys._structseq(''p' + 'wd.struct_passwd'',' +
+  #10 + '    [''pw_name'', ''pw_passwd'', ''pw_u' +
+  'id'', ''pw_gid'', ''pw_gecos'', ''pw_dir' + ''', ''pw_shell''])' + #10 +
+  #10 + #10 + 'def _entries():' + #10 + '    res = []' + #10 + '    try:' +
+  #10 + '        with open(''/etc/passwd'', e' +
+  'ncoding=''utf-8'', errors=''surrogate' + 'escape'') as f:' + #10 +
+  '            for line in f:' + #10 + '                line = line.rstrip' +
+  '(''\n'')' + #10 + '                if not line or lin' +
+  'e.startswith(''#''):' + #10 + '                    continue' + #10 +
+  '                p = line.split('':''' + ')' + #10 +
+  '                if len(p) < 7:' + #10 + '                    continue' +
+  #10 + '                try:' + #10 + '                    res.append(str' +
+  'uct_passwd((p[0], p[1], int(p[2]),' + ' int(p[3]), p[4], p[5], p[6])))' +
+  #10 + '                except ValueError:' + #10 +
+  '                    pass' + #10 + '    except OSError:' + #10 +
+  '        pass' + #10 + '    return res' + #10 + #10 + #10 +
+  'def getpwall():' + #10 + '    return _entries()' + #10 + #10 + #10 +
+  'def getpwuid(uid):' + #10 + '    if not isinstance(uid, int):' + #10 +
+  '        raise TypeError("an intege' +
+  'r is required (got type %s)" % typ' + 'e(uid).__name__)' + #10 +
+  '    for e in _entries():' + #10 + '        if e.pw_uid == uid:' + #10 +
+  '            return e' + #10 + '    raise KeyError(''getpwuid(): ui' +
+  'd not found: %d'' % uid)' + #10 + #10 + #10 + 'def getpwnam(name):' + #10 +
+  '    if not isinstance(name, str):' + #10 +
+  '        raise TypeError("getpwnam(' +
+  ') argument must be str, not %s" % ' + 'type(name).__name__)' + #10 +
+  '    for e in _entries():' + #10 + '        if e.pw_name == name:' + #10 +
+  '            return e' + #10 + '    raise KeyError(''getpwnam(): na' +
+  'me not found: %r'' % name)' + #10 + #10;
+
+Function Src_pwd: AnsiString;
+Begin
+ Result := Src_pwd_0;
 End;
 
 Const
@@ -76678,97 +82534,249 @@ Const
   '"""Utility functions for copying a' +
   'nd archiving files and directory t' + 'rees.' + #10 + #10 +
   'XXX The functions here don''t copy ' +
-  'the resource fork or other metadat' + 'a on Mac.' + #10 + '"""' + #10 +
-  #10 + 'import os' + #10 + 'import sys' + #10 + 'import stat' + #10 +
-  'import fnmatch' + #10 + 'import collections' + #10 + #10 +
-  '__all__ = ["copyfileobj", "copyfil' +
+  'the resource fork or other metadat' + 'a on Mac.' + #10 + #10 + '"""' +
+  #10 + #10 + 'import os' + #10 + 'import sys' + #10 + 'import stat' + #10 +
+  'import fnmatch' + #10 + 'import collections' + #10 + 'import errno' + #10 +
+  #10 + 'try:' + #10 + '    import zlib' + #10 + '    del zlib' + #10 +
+  '    _ZLIB_SUPPORTED = True' + #10 + 'except ImportError:' + #10 +
+  '    _ZLIB_SUPPORTED = False' + #10 + #10 + 'try:' + #10 +
+  '    import bz2' + #10 + '    del bz2' + #10 + '    _BZ2_SUPPORTED = True' +
+  #10 + 'except ImportError:' + #10 + '    _BZ2_SUPPORTED = False' + #10 +
+  #10 + 'try:' + #10 + '    import lzma' + #10 + '    del lzma' + #10 +
+  '    _LZMA_SUPPORTED = True' + #10 + 'except ImportError:' + #10 +
+  '    _LZMA_SUPPORTED = False' + #10 + #10 + 'try:' + #10 +
+  '    from pwd import getpwnam' + #10 + 'except ImportError:' + #10 +
+  '    getpwnam = None' + #10 + #10 + 'try:' + #10 +
+  '    from grp import getgrnam' + #10 + 'except ImportError:' + #10 +
+  '    getgrnam = None' + #10 + #10 + '_WINDOWS = os.name == ''nt''' + #10 +
+  'posix = nt = None' + #10 + 'if os.name == ''posix'':' + #10 +
+  '    import posix' + #10 + 'elif _WINDOWS:' + #10 + '    import nt' + #10 +
+  #10 + 'COPY_BUFSIZE = 1024 * 1024 if _WIN' + 'DOWS else 64 * 1024' + #10 +
+  '_USE_CP_SENDFILE = hasattr(os, "se' +
+  'ndfile") and sys.platform.startswi' + 'th("linux")' + #10 +
+  '_HAS_FCOPYFILE = posix and hasattr' + '(posix, "_fcopyfile")  # macOS' +
+  #10 + #10 + '# CMD defaults in Windows 10' + #10 +
+  '_WIN_DEFAULT_PATHEXT = ".COM;.EXE;' + '.BAT;.CMD;.VBS;.JS;.WS;.MSC"' +
+  #10 + #10 + '__all__ = ["copyfileobj", "copyfil' +
   'e", "copymode", "copystat", "copy"' + ', "copy2",' + #10 +
   '           "copytree", "move", "rm' +
   'tree", "Error", "SpecialFileError"' + ',' + #10 +
-  '           "ExecError", "ignore_pa' +
-  'tterns", "get_terminal_size", "Sam' + 'eFileError",' + #10 +
-  '           "which"]' + #10 + 'if hasattr(os, ''statvfs''):' + #10 +
-  '    __all__.append("disk_usage")' + #10 + #10 +
-  'COPY_BUFSIZE = 64 * 1024' + #10 + #10 + #10 + 'class Error(OSError):' +
-  #10 + '    pass' + #10 + #10 + #10 + 'class SameFileError(Error):' + #10 +
+  '           "ExecError", "make_arch' + 'ive", "get_archive_formats",' +
+  #10 + '           "register_archive_forma' +
+  't", "unregister_archive_format",' + #10 +
+  '           "get_unpack_formats", "' + 'register_unpack_format",' + #10 +
+  '           "unregister_unpack_form' + 'at", "unpack_archive",' + #10 +
+  '           "ignore_patterns", "cho' +
+  'wn", "which", "get_terminal_size",' + #10 + '           "SameFileError"]' +
+  #10 + '           # disk_usage is added l' +
+  'ater, if available on the platform' + #10 + #10 + 'class Error(OSError):' +
+  #10 + '    pass' + #10 + #10 + 'class SameFileError(Error):' + #10 +
   '    """Raised when source and dest' + 'ination are the same file."""' +
-  #10 + #10 + #10 + 'class SpecialFileError(OSError):' + #10 +
+  #10 + #10 + 'class SpecialFileError(OSError):' + #10 +
   '    """Raised when trying to do a ' +
   'kind of operation (e.g. copying) w' + 'hich is' + #10 +
   '    not supported on a special fil' + 'e (e.g. a named pipe)"""' + #10 +
-  #10 + #10 + 'class ExecError(OSError):' + #10 +
+  #10 + 'class ExecError(OSError):' + #10 +
   '    """Raised when a command could' + ' not be executed"""' + #10 + #10 +
-  #10 + 'class ReadError(OSError):' + #10 +
-  '    """Raised when an archive cann' + 'ot be read"""' + #10 + #10 + #10 +
-  'class RegistryError(Exception):' + #10 +
+  'class ReadError(OSError):' + #10 + '    """Raised when an archive cann' +
+  'ot be read"""' + #10 + #10 + 'class RegistryError(Exception):' + #10 +
   '    """Raised when a registry oper' + 'ation with the archiving' + #10 +
-  '    and unpacking registeries fail' + 's"""' + #10 + #10 + #10 +
-  '# Helpers written without `return`' +
-  ' inside `except` blocks (interpret' + 'er bug' + #10 +
-  '# B1, see BUGS_A.md) and without D' +
-  'irEntry(follow_symlinks=False) (bu' + 'g B10).' + #10 + #10 +
-  'def _lstat_or_none(path):' + #10 + '    st = None' + #10 + '    try:' +
-  #10 + '        st = os.lstat(path)' + #10 +
-  '    except (OSError, ValueError):' + #10 + '        st = None' + #10 +
-  '    return st' + #10 + #10 + #10 + 'def _stat_or_none(path):' + #10 +
-  '    st = None' + #10 + '    try:' + #10 + '        st = os.stat(path)' +
-  #10 + '    except (OSError, ValueError):' + #10 + '        st = None' +
-  #10 + '    return st' + #10 + #10 + #10 + 'def _islink(path):' + #10 +
-  '    st = _lstat_or_none(path)' + #10 +
-  '    return st is not None and stat' + '.S_ISLNK(st.st_mode)' + #10 + #10 +
-  #10 + 'def _samefile(src, dst):' + #10 + '    # Macintosh, Unix.' + #10 +
-  '    same = False' + #10 + '    if hasattr(os.path, ''samefile''' + '):' +
-  #10 + '        try:' + #10 + '            same = os.path.samefil' +
-  'e(src, dst)' + #10 + '        except OSError:' + #10 +
-  '            same = False' + #10 + '    else:' + #10 +
-  '        # All other platforms: che' + 'ck for same pathname.' + #10 +
-  '        same = (os.path.normcase(o' + 's.path.abspath(src)) ==' + #10 +
-  '                os.path.normcase(o' + 's.path.abspath(dst)))' + #10 +
-  '    return same' + #10 + #10 + #10 + 'def _basename(path):' + #10 +
-  '    # A basename() variant which f' +
-  'irst strips the trailing slash, if' + ' present.' + #10 +
-  '    # Thus we always get the last ' +
-  'component of the path, even for di' + 'rectories.' + #10 +
-  '    sep = os.path.sep + (os.path.a' + 'ltsep or '''')' + #10 +
-  '    return os.path.basename(path.r' + 'strip(sep))' + #10 + #10 + #10 +
+  '    and unpacking registries fails' + '"""' + #10 + #10 +
+  'class _GiveupOnFastCopy(Exception)' + ':' + #10 +
+  '    """Raised as a signal to fallb' + 'ack on using raw read()/write()' +
+  #10 + '    file copy when fast-copy funct' + 'ions fail to do so.' + #10 +
+  '    """' + #10 + #10 + 'def _fastcopy_fcopyfile(fsrc, fdst' + ', flags):' +
+  #10 + '    """Copy a regular file content' +
+  ' or metadata by using high-perform' + 'ance' + #10 +
+  '    fcopyfile(3) syscall (macOS).' + #10 + '    """' + #10 + '    try:' +
+  #10 + '        infd = fsrc.fileno()' + #10 +
+  '        outfd = fdst.fileno()' + #10 + '    except Exception as err:' +
+  #10 + '        raise _GiveupOnFastCopy(er' + 'r)  # not a regular file' +
+  #10 + #10 + '    try:' + #10 + '        posix._fcopyfile(infd, out' +
+  'fd, flags)' + #10 + '    except OSError as err:' + #10 +
+  '        err.filename = fsrc.name' + #10 +
+  '        err.filename2 = fdst.name' + #10 +
+  '        if err.errno in {errno.EIN' + 'VAL, errno.ENOTSUP}:' + #10 +
+  '            raise _GiveupOnFastCop' + 'y(err)' + #10 + '        else:' +
+  #10 + '            raise err from None' + #10 + #10 +
+  'def _fastcopy_sendfile(fsrc, fdst)' + ':' + #10 +
+  '    """Copy data from one regular ' + 'mmap-like fd to another by using' +
+  #10 + '    high-performance sendfile(2) s' + 'yscall.' + #10 +
+  '    This should work on Linux >= 2' + '.6.33 only.' + #10 + '    """' +
+  #10 + '    # Note: copyfileobj() is left ' +
+  'alone in order to not introduce an' + 'y' + #10 +
+  '    # unexpected breakage. Possibl' + 'e risks by using zero-copy calls' +
+  #10 + '    # in copyfileobj() are:' + #10 +
+  '    # - fdst cannot be open in "a"' + '(ppend) mode' + #10 +
+  '    # - fsrc and fdst may be open ' + 'in "t"(ext) mode' + #10 +
+  '    # - fsrc may be a BufferedRead' +
+  'er (which hides unread data in a b' + 'uffer),' + #10 +
+  '    #   GzipFile (which decompress' +
+  'es data), HTTPResponse (which deco' + 'des' + #10 + '    #   chunks).' +
+  #10 + '    # - possibly others (e.g. encr' + 'ypted fs/partition?)' + #10 +
+  '    global _USE_CP_SENDFILE' + #10 + '    try:' + #10 +
+  '        infd = fsrc.fileno()' + #10 + '        outfd = fdst.fileno()' +
+  #10 + '    except Exception as err:' + #10 +
+  '        raise _GiveupOnFastCopy(er' + 'r)  # not a regular file' + #10 +
+  #10 + '    # Hopefully the whole file wil' +
+  'l be copied in a single call.' + #10 +
+  '    # sendfile() is called in a lo' +
+  'op ''till EOF is reached (0 return)' + #10 +
+  '    # so a bufsize smaller or bigg' + 'er than the actual file size' +
+  #10 + '    # should not make any differen' +
+  'ce, also in case the file content' + #10 +
+  '    # changes while being copied.' + #10 + '    try:' + #10 +
+  '        blocksize = max(os.fstat(i' +
+  'nfd).st_size, 2 ** 23)  # min 8MiB' + #10 + '    except OSError:' + #10 +
+  '        blocksize = 2 ** 27  # 128' + 'MiB' + #10 +
+  '    # On 32-bit architectures trun' +
+  'cate to 1GiB to avoid OverflowErro' + 'r,' + #10 + '    # see bpo-38319.' +
+  #10 + '    if sys.maxsize < 2 ** 32:' + #10 +
+  '        blocksize = min(blocksize,' + ' 2 ** 30)' + #10 + #10 +
+  '    offset = 0' + #10 + '    while True:' + #10 + '        try:' + #10 +
+  '            sent = os.sendfile(out' + 'fd, infd, offset, blocksize)' +
+  #10 + '        except OSError as err:' + #10 +
+  '            # ...in oder to have a' + ' more informative exception.' +
+  #10 + '            err.filename = fsrc.na' + 'me' + #10 +
+  '            err.filename2 = fdst.n' + 'ame' + #10 + #10 +
+  '            if err.errno == errno.' + 'ENOTSOCK:' + #10 +
+  '                # sendfile() on th' +
+  'is platform (probably Linux < 2.6.' + '33)' + #10 +
+  '                # does not support' +
+  ' copies between regular files (onl' + 'y' + #10 +
+  '                # sockets).' + #10 + '                _USE_CP_SENDFILE =' +
+  ' False' + #10 + '                raise _GiveupOnFas' + 'tCopy(err)' + #10 +
+  #10 + '            if err.errno == errno.' +
+  'ENOSPC:  # filesystem is full' + #10 +
+  '                raise err from Non' + 'e' + #10 + #10 +
+  '            # Give up on first cal' + 'l and if no data was copied.' +
+  #10 + '            if offset == 0 and os.' +
+  'lseek(outfd, 0, os.SEEK_CUR) == 0:' + #10 +
+  '                raise _GiveupOnFas' + 'tCopy(err)' + #10 + #10 +
+  '            raise err' + #10 + '        else:' + #10 +
+  '            if sent == 0:' + #10 + '                break  # EOF' + #10 +
+  '            offset += sent' + #10 + #10 +
+  'def _copyfileobj_readinto(fsrc, fd' + 'st, length=COPY_BUFSIZE):' + #10 +
+  '    """readinto()/memoryview() bas' + 'ed variant of copyfileobj().' +
+  #10 + '    *fsrc* must support readinto()' +
+  ' method and both files must be' + #10 + '    open in binary mode.' + #10 +
+  '    """' + #10 + '    # Localize variable access to ' +
+  'minimize overhead.' + #10 + '    fsrc_readinto = fsrc.readinto' + #10 +
+  '    fdst_write = fdst.write' + #10 + '    with memoryview(bytearray(leng' +
+  'th)) as mv:' + #10 + '        while True:' + #10 +
+  '            n = fsrc_readinto(mv)' + #10 + '            if not n:' + #10 +
+  '                break' + #10 + '            elif n < length:' + #10 +
+  '                with mv[:n] as smv' + ':' + #10 +
+  '                    fdst.write(smv' + ')' + #10 + '            else:' +
+  #10 + '                fdst_write(mv)' + #10 + #10 +
   'def copyfileobj(fsrc, fdst, length' + '=0):' + #10 +
   '    """copy data from file-like ob' +
-  'ject fsrc to file-like object fdst' + '"""' + #10 + '    if not length:' +
-  #10 + '        length = COPY_BUFSIZE' + #10 +
+  'ject fsrc to file-like object fdst' + '"""' + #10 +
   '    # Localize variable access to ' + 'minimize overhead.' + #10 +
+  '    if not length:' + #10 + '        length = COPY_BUFSIZE' + #10 +
   '    fsrc_read = fsrc.read' + #10 + '    fdst_write = fdst.write' + #10 +
   '    while True:' + #10 + '        buf = fsrc_read(length)' + #10 +
   '        if not buf:' + #10 + '            break' + #10 +
-  '        fdst_write(buf)' + #10 + #10 + #10 +
+  '        fdst_write(buf)' + #10 + #10 + 'def _samefile(src, dst):' + #10 +
+  '    # Macintosh, Unix.' + #10 + '    if isinstance(src, os.DirEntry' +
+  ') and hasattr(os.path, ''samestat'')' + ':' + #10 + '        try:' + #10 +
+  '            return os.path.samesta' + 't(src.stat(), os.stat(dst))' + #10 +
+  '        except OSError:' + #10 + '            return False' + #10 + #10 +
+  '    if hasattr(os.path, ''samefile''' + '):' + #10 + '        try:' + #10 +
+  '            return os.path.samefil' + 'e(src, dst)' + #10 +
+  '        except OSError:' + #10 + '            return False' + #10 + #10 +
+  '    # All other platforms: check f' + 'or same pathname.' + #10 +
+  '    return (os.path.normcase(os.pa' + 'th.abspath(src)) ==' + #10 +
+  '            os.path.normcase(os.pa' + 'th.abspath(dst)))' + #10 + #10 +
+  'def _stat(fn):' + #10 + '    return fn.stat() if isinstance' +
+  '(fn, os.DirEntry) else os.stat(fn)' + #10 + #10 + 'def _islink(fn):' +
+  #10 + '    return fn.is_symlink() if isin' +
+  'stance(fn, os.DirEntry) else os.pa' + 'th.islink(fn)' + #10 + #10 +
   'def copyfile(src, dst, *, follow_s' + 'ymlinks=True):' + #10 +
-  '    """Copy data from src to dst.' + #10 + #10 +
+  '    """Copy data from src to dst i' +
+  'n the most efficient way possible.' + #10 + #10 +
   '    If follow_symlinks is not set ' + 'and src is a symbolic link, a new' +
   #10 + '    symlink will be created instea' +
-  'd of copying the file it points to' + '.' + #10 + '    """' + #10 +
-  '    src = os.fspath(src)' + #10 + '    dst = os.fspath(dst)' + #10 +
+  'd of copying the file it points to' + '.' + #10 + #10 + '    """' + #10 +
+  '    sys.audit("shutil.copyfile", s' + 'rc, dst)' + #10 + #10 +
   '    if _samefile(src, dst):' + #10 + '        raise SameFileError("{!r} ' +
   'and {!r} are the same file".format' + '(src, dst))' + #10 + #10 +
-  '    for fn in [src, dst]:' + #10 + '        st = _stat_or_none(fn)' + #10 +
-  '        if st is not None:' + #10 + '            # XXX What about other' +
+  '    file_size = 0' + #10 + '    for i, fn in enumerate([src, d' + 'st]):' +
+  #10 + '        try:' + #10 + '            st = _stat(fn)' + #10 +
+  '        except OSError:' + #10;
+
+Const
+ Src_shutil_1: AnsiString =
+  '            # File most likely doe' + 's not exist' + #10 +
+  '            pass' + #10 + '        else:' + #10 +
+  '            # XXX What about other' +
   ' special files? (sockets, devices.' + '..)' + #10 +
   '            if stat.S_ISFIFO(st.st' + '_mode):' + #10 +
-  '                raise SpecialFileE' + 'rror("`%s` is a named pipe" % fn)' +
-  #10 + #10 + '    if not follow_symlinks and _is' + 'link(src):' + #10 +
+  '                fn = fn.path if is' + 'instance(fn, os.DirEntry) else fn' +
+  #10 + '                raise SpecialFileE' +
+  'rror("`%s` is a named pipe" % fn)' + #10 +
+  '            if _WINDOWS and i == 0' + ':' + #10 +
+  '                file_size = st.st_' + 'size' + #10 + #10 +
+  '    if not follow_symlinks and _is' + 'link(src):' + #10 +
   '        os.symlink(os.readlink(src' + '), dst)' + #10 + '    else:' + #10 +
   '        with open(src, ''rb'') as fs' + 'rc, open(dst, ''wb'') as fdst:' +
-  #10 + '            copyfileobj(fsrc, fdst' + ')' + #10 + '    return dst' +
-  #10 + #10 + #10 + 'def copymode(src, dst, *, follow_s' + 'ymlinks=True):' +
-  #10 + '    """Copy mode bits from src to ' + 'dst.' + #10 + #10 +
+  #10 + '            # macOS' + #10 + '            if _HAS_FCOPYFILE:' + #10 +
+  '                try:' + #10 + '                    _fastcopy_fcop' +
+  'yfile(fsrc, fdst, posix._COPYFILE_' + 'DATA)' + #10 +
+  '                    return dst' + #10 +
+  '                except _GiveupOnFa' + 'stCopy:' + #10 +
+  '                    pass' + #10 + '            # Linux' + #10 +
+  '            elif _USE_CP_SENDFILE:' + #10 + '                try:' + #10 +
+  '                    _fastcopy_send' + 'file(fsrc, fdst)' + #10 +
+  '                    return dst' + #10 +
+  '                except _GiveupOnFa' + 'stCopy:' + #10 +
+  '                    pass' + #10 + '            # Windows, see:' + #10 +
+  '            # https://github.com/p' +
+  'ython/cpython/pull/7160#discussion' + '_r195405230' + #10 +
+  '            elif _WINDOWS and file' + '_size > 0:' + #10 +
+  '                _copyfileobj_readi' +
+  'nto(fsrc, fdst, min(file_size, COP' + 'Y_BUFSIZE))' + #10 +
+  '                return dst' + #10 + #10 +
+  '            copyfileobj(fsrc, fdst' + ')' + #10 + #10 + '    return dst' +
+  #10 + #10 + 'def copymode(src, dst, *, follow_s' + 'ymlinks=True):' + #10 +
+  '    """Copy mode bits from src to ' + 'dst.' + #10 + #10 +
   '    If follow_symlinks is not set,' +
   ' symlinks aren''t followed if and o' + 'nly' + #10 +
-  '    if both `src` and `dst` are sy' + 'mlinks.' + #10 + '    """' + #10 +
-  '    if not follow_symlinks and _is' + 'link(src) and _islink(dst):' + #10 +
+  '    if both `src` and `dst` are sy' +
+  'mlinks.  If `lchmod` isn''t availab' + 'le' + #10 +
+  '    (e.g. Linux) this method does ' + 'nothing.' + #10 + #10 + '    """' +
+  #10 + '    sys.audit("shutil.copymode", s' + 'rc, dst)' + #10 + #10 +
+  '    if not follow_symlinks and _is' +
+  'link(src) and os.path.islink(dst):' + #10 +
   '        if hasattr(os, ''lchmod''):' + #10 +
-  '            st = os.lstat(src)' + #10 +
-  '            os.lchmod(dst, stat.S_' + 'IMODE(st.st_mode))' + #10 +
-  '        return' + #10 + '    st = os.stat(src)' + #10 +
-  '    os.chmod(dst, stat.S_IMODE(st.' + 'st_mode))' + #10 + #10 + #10 +
-  'def copystat(src, dst, *, follow_s' + 'ymlinks=True):' + #10 +
+  '            stat_func, chmod_func ' + '= os.lstat, os.lchmod' + #10 +
+  '        else:' + #10 + '            return' + #10 + '    else:' + #10 +
+  '        stat_func, chmod_func = _s' + 'tat, os.chmod' + #10 + #10 +
+  '    st = stat_func(src)' + #10 + '    chmod_func(dst, stat.S_IMODE(s' +
+  't.st_mode))' + #10 + #10 + 'if hasattr(os, ''listxattr''):' + #10 +
+  '    def _copyxattr(src, dst, *, fo' + 'llow_symlinks=True):' + #10 +
+  '        """Copy extended filesyste' + 'm attributes from `src` to `dst`.' +
+  #10 + #10 + '        Overwrite existing attribu' + 'tes.' + #10 + #10 +
+  '        If `follow_symlinks` is fa' + 'lse, symlinks won''t be followed.' +
+  #10 + #10 + '        """' + #10 + #10 + '        try:' + #10 +
+  '            names = os.listxattr(s' +
+  'rc, follow_symlinks=follow_symlink' + 's)' + #10 +
+  '        except OSError as e:' + #10 +
+  '            if e.errno not in (err' +
+  'no.ENOTSUP, errno.ENODATA, errno.E' + 'INVAL):' + #10 +
+  '                raise' + #10 + '            return' + #10 +
+  '        for name in names:' + #10 + '            try:' + #10 +
+  '                value = os.getxatt' +
+  'r(src, name, follow_symlinks=follo' + 'w_symlinks)' + #10 +
+  '                os.setxattr(dst, n' +
+  'ame, value, follow_symlinks=follow' + '_symlinks)' + #10 +
+  '            except OSError as e:' + #10 +
+  '                if e.errno not in ' +
+  '(errno.EPERM, errno.ENOTSUP, errno' + '.ENODATA,' + #10 +
+  '                                  ' + ' errno.EINVAL):' + #10 +
+  '                    raise' + #10 + 'else:' + #10 +
+  '    def _copyxattr(*args, **kwargs' + '):' + #10 + '        pass' + #10 +
+  #10 + 'def copystat(src, dst, *, follow_s' + 'ymlinks=True):' + #10 +
   '    """Copy file metadata' + #10 + #10 +
   '    Copy the permission bits, last' +
   ' access time, last modification ti' + 'me, and' + #10 +
@@ -76778,37 +82786,79 @@ Const
   'e file contents, owner, and group ' + 'are' + #10 +
   '    unaffected. `src` and `dst` ar' +
   'e path-like objects or path names ' + 'given as' + #10 + '    strings.' +
-  #10 + '    """' + #10 + '    if follow_symlinks:' + #10 +
-  '        st = os.stat(src)' + #10 + '    else:' + #10 +
-  '        st = os.lstat(src)' + #10 + '    if not follow_symlinks and _is' +
-  'link(dst) and not hasattr(os, ''lch' + 'mod''):' + #10 + '        return' +
+  #10 + #10 + '    If the optional flag `follow_s' +
+  'ymlinks` is not set, symlinks aren' + '''t' + #10 +
+  '    followed if and only if both `' + 'src` and `dst` are symlinks.' +
+  #10 + '    """' + #10 + '    sys.audit("shutil.copystat", s' + 'rc, dst)' +
+  #10 + #10 + '    def _nop(*args, ns=None, follo' + 'w_symlinks=None):' +
+  #10 + '        pass' + #10 + #10 + '    # follow symlinks (aka don''t n' +
+  'ot follow symlinks)' + #10 + '    follow = follow_symlinks or no' +
+  't (_islink(src) and os.path.islink' + '(dst))' + #10 + '    if follow:' +
+  #10 + '        # use the real function if' + ' it exists' + #10 +
+  '        def lookup(name):' + #10 + '            return getattr(os, nam' +
+  'e, _nop)' + #10 + '    else:' + #10 +
+  '        # use the real function on' + 'ly if it exists' + #10 +
+  '        # *and* it supports follow' + '_symlinks' + #10 +
+  '        def lookup(name):' + #10 + '            fn = getattr(os, name,' +
+  ' _nop)' + #10 + '            if fn in os.supports_f' + 'ollow_symlinks:' +
+  #10 + '                return fn' + #10 + '            return _nop' + #10 +
+  #10 + '    if isinstance(src, os.DirEntry' + '):' + #10 +
+  '        st = src.stat(follow_symli' + 'nks=follow)' + #10 + '    else:' +
+  #10 + '        st = lookup("stat")(src, f' + 'ollow_symlinks=follow)' +
   #10 + '    mode = stat.S_IMODE(st.st_mode' + ')' + #10 +
-  '    if hasattr(os, ''utime''):' + #10 + '        try:' + #10 +
-  '            if follow_symlinks:' + #10 +
-  '                os.utime(dst, ns=(' + 'st.st_atime_ns, st.st_mtime_ns))' +
-  #10 + '            else:' + #10 + '                os.utime(dst, (st.' +
-  'st_atime, st.st_mtime), follow_sym' + 'links=False)' + #10 +
-  '        except (OSError, TypeError' +
-  ', AttributeError, NotImplementedEr' + 'ror):' + #10 + '            pass' +
-  #10 + '    if follow_symlinks or not _isl' + 'ink(dst):' + #10 +
-  '        os.chmod(dst, mode)' + #10 + #10 + #10 +
-  'def copy(src, dst, *, follow_symli' + 'nks=True):' + #10 +
-  '    """Copy data and mode bits ("c' +
+  '    lookup("utime")(dst, ns=(st.st' + '_atime_ns, st.st_mtime_ns),' + #10 +
+  '        follow_symlinks=follow)' + #10 +
+  '    # We must copy extended attrib' +
+  'utes before the file is (potential' + 'ly)' + #10 +
+  '    # chmod()''ed read-only, otherw' +
+  'ise setxattr() will error with -EA' + 'CCES.' + #10 +
+  '    _copyxattr(src, dst, follow_sy' + 'mlinks=follow)' + #10 + '    try:' +
+  #10 + '        lookup("chmod")(dst, mode,' + ' follow_symlinks=follow)' +
+  #10 + '    except NotImplementedError:' + #10 +
+  '        # if we got a NotImplement' + 'edError, it''s because' + #10 +
+  '        #   * follow_symlinks=Fals' + 'e,' + #10 +
+  '        #   * lchown() is unavaila' + 'ble, and' + #10 +
+  '        #   * either' + #10 + '        #       * fchownat() is un' +
+  'available or' + #10 + '        #       * fchownat() doesn' +
+  '''t implement AT_SYMLINK_NOFOLLOW.' + #10 +
+  '        #         (it returned ENO' + 'SUP.)' + #10 +
+  '        # therefore we''re out of o' +
+  'ptions--we simply cannot chown the' + #10 +
+  '        # symlink.  give up, suppr' + 'ess the error.' + #10 +
+  '        # (which is what shutil al' + 'ways did in this circumstance.)' +
+  #10 + '        pass' + #10 + '    if hasattr(st, ''st_flags''):' + #10 +
+  '        try:' + #10 + '            lookup("chflags")(dst,' +
+  ' st.st_flags, follow_symlinks=foll' + 'ow)' + #10 +
+  '        except OSError as why:' + #10 +
+  '            for err in ''EOPNOTSUPP' + ''', ''ENOTSUP'':' + #10 +
+  '                if hasattr(errno, ' +
+  'err) and why.errno == getattr(errn' + 'o, err):' + #10 +
+  '                    break' + #10 + '            else:' + #10 +
+  '                raise' + #10 + #10 + 'def copy(src, dst, *, follow_symli' +
+  'nks=True):' + #10 + '    """Copy data and mode bits ("c' +
   'p src dst"). Return the file''s des' + 'tination.' + #10 + #10 +
-  '    The destination may be a direc' + 'tory.' + #10 + '    """' + #10 +
-  '    if os.path.isdir(dst):' + #10 + '        dst = os.path.join(dst, os' +
-  '.path.basename(src))' + #10 + '    copyfile(src, dst, follow_syml' +
-  'inks=follow_symlinks)' + #10 + '    copymode(src, dst, follow_syml' +
-  'inks=follow_symlinks)' + #10 + '    return dst' + #10 + #10 + #10 +
-  'def copy2(src, dst, *, follow_syml' + 'inks=True):' + #10 +
-  '    """Copy data and metadata. Ret' + 'urn the file''s destination.' +
-  #10 + #10 + '    Metadata is copied with copyst' +
+  '    The destination may be a direc' + 'tory.' + #10 + #10 +
+  '    If follow_symlinks is false, s' + 'ymlinks won''t be followed. This' +
+  #10 + '    resembles GNU''s "cp -P src dst' + '".' + #10 + #10 +
+  '    If source and destination are ' +
+  'the same file, a SameFileError wil' + 'l be' + #10 + '    raised.' + #10 +
+  #10 + '    """' + #10 + '    if os.path.isdir(dst):' + #10 +
+  '        dst = os.path.join(dst, os' + '.path.basename(src))' + #10 +
+  '    copyfile(src, dst, follow_syml' + 'inks=follow_symlinks)' + #10 +
+  '    copymode(src, dst, follow_syml' + 'inks=follow_symlinks)' + #10 +
+  '    return dst' + #10 + #10 + 'def copy2(src, dst, *, follow_syml' +
+  'inks=True):' + #10 + '    """Copy data and metadata. Ret' +
+  'urn the file''s destination.' + #10 + #10 +
+  '    Metadata is copied with copyst' +
   'at(). Please see the copystat func' + 'tion' + #10 +
-  '    for more information.' + #10 + '    """' + #10 +
+  '    for more information.' + #10 + #10 +
+  '    The destination may be a direc' + 'tory.' + #10 + #10 +
+  '    If follow_symlinks is false, s' + 'ymlinks won''t be followed. This' +
+  #10 + '    resembles GNU''s "cp -P src dst' + '".' + #10 + '    """' + #10 +
   '    if os.path.isdir(dst):' + #10 + '        dst = os.path.join(dst, os' +
   '.path.basename(src))' + #10 + '    copyfile(src, dst, follow_syml' +
   'inks=follow_symlinks)' + #10 + '    copystat(src, dst, follow_syml' +
-  'inks=follow_symlinks)' + #10 + '    return dst' + #10 + #10 + #10 +
+  'inks=follow_symlinks)' + #10 + '    return dst' + #10 + #10 +
   'def ignore_patterns(*patterns):' + #10 +
   '    """Function that can be used a' + 's copytree() ignore parameter.' +
   #10 + #10 + '    Patterns is a sequence of glob' + '-style patterns' + #10 +
@@ -76818,7 +82868,76 @@ Const
   #10 + '            ignored_names.extend(f' +
   'nmatch.filter(names, pattern))' + #10 +
   '        return set(ignored_names)' + #10 + '    return _ignore_patterns' +
-  #10 + #10 + #10 + 'def copytree(src, dst, symlinks=Fa' +
+  #10 + #10 + 'def _copytree(entries, src, dst, s' +
+  'ymlinks, ignore, copy_function,' + #10 +
+  '              ignore_dangling_syml' + 'inks, dirs_exist_ok=False):' + #10 +
+  '    if ignore is not None:' + #10 + '        ignored_names = ignore(os.' +
+  'fspath(src), [x.name for x in entr' + 'ies])' + #10 + '    else:' + #10 +
+  '        ignored_names = set()' + #10 + #10 +
+  '    os.makedirs(dst, exist_ok=dirs' + '_exist_ok)' + #10 +
+  '    errors = []' + #10 + '    use_srcentry = copy_function i' +
+  's copy2 or copy_function is copy' + #10 + #10 +
+  '    for srcentry in entries:' + #10 +
+  '        if srcentry.name in ignore' + 'd_names:' + #10 +
+  '            continue' + #10 + '        srcname = os.path.join(src' +
+  ', srcentry.name)' + #10 + '        dstname = os.path.join(dst' +
+  ', srcentry.name)' + #10 + '        srcobj = srcentry if use_s' +
+  'rcentry else srcname' + #10 + '        try:' + #10 +
+  '            is_symlink = srcentry.' + 'is_symlink()' + #10 +
+  '            if is_symlink and os.n' + 'ame == ''nt'':' + #10 +
+  '                # Special check fo' +
+  'r directory junctions, which appea' + 'r as' + #10 +
+  '                # symlinks but we ' + 'want to recurse.' + #10 +
+  '                lstat = srcentry.s' + 'tat(follow_symlinks=False)' + #10 +
+  '                if lstat.st_repars' +
+  'e_tag == stat.IO_REPARSE_TAG_MOUNT' + '_POINT:' + #10 +
+  '                    is_symlink = F' + 'alse' + #10 +
+  '            if is_symlink:' + #10 + '                linkto = os.readli' +
+  'nk(srcname)' + #10 + '                if symlinks:' + #10 +
+  '                    # We can''t jus' +
+  't leave it to `copy_function` beca' + 'use legacy' + #10 +
+  '                    # code with a ' +
+  'custom `copy_function` may rely on' + ' copytree' + #10 +
+  '                    # doing the ri' + 'ght thing.' + #10 +
+  '                    os.symlink(lin' + 'kto, dstname)' + #10 +
+  '                    copystat(srcob' +
+  'j, dstname, follow_symlinks=not sy' + 'mlinks)' + #10 +
+  '                else:' + #10 + '                    # ignore dangl' +
+  'ing symlink if the flag is on' + #10 +
+  '                    if not os.path' +
+  '.exists(linkto) and ignore_danglin' + 'g_symlinks:' + #10 +
+  '                        continue' + #10 +
+  '                    # otherwise le' +
+  't the copy occur. copy2 will raise' + ' an error' + #10 +
+  '                    if srcentry.is' + '_dir():' + #10 +
+  '                        copytree(s' + 'rcobj, dstname, symlinks, ignore,' +
+  #10 + '                                 c' +
+  'opy_function, dirs_exist_ok=dirs_e' + 'xist_ok)' + #10 +
+  '                    else:' + #10 + '                        copy_funct' +
+  'ion(srcobj, dstname)' + #10 + '            elif srcentry.is_dir()' + ':' +
+  #10 + '                copytree(srcobj, d' +
+  'stname, symlinks, ignore, copy_fun' + 'ction,' + #10 +
+  '                         dirs_exis' + 't_ok=dirs_exist_ok)' + #10 +
+  '            else:' + #10 + '                # Will raise a Spe' +
+  'cialFileError for unsupported file' + ' types' + #10 +
+  '                copy_function(srco' + 'bj, dstname)' + #10 +
+  '        # catch the Error from the' +
+  ' recursive copytree so that we can' + #10;
+
+Const
+ Src_shutil_2: AnsiString =
+  '        # continue with other file' + 's' + #10 +
+  '        except Error as err:' + #10 +
+  '            errors.extend(err.args' + '[0])' + #10 +
+  '        except OSError as why:' + #10 +
+  '            errors.append((srcname' + ', dstname, str(why)))' + #10 +
+  '    try:' + #10 + '        copystat(src, dst)' + #10 +
+  '    except OSError as why:' + #10 + '        # Copying file access time' +
+  's may fail on Windows' + #10 + '        if getattr(why, ''winerror''' +
+  ', None) is None:' + #10 + '            errors.append((src, ds' +
+  't, str(why)))' + #10 + '    if errors:' + #10 +
+  '        raise Error(errors)' + #10 + '    return dst' + #10 + #10 +
+  'def copytree(src, dst, symlinks=Fa' +
   'lse, ignore=None, copy_function=co' + 'py2,' + #10 +
   '             ignore_dangling_symli' + 'nks=False, dirs_exist_ok=False):' +
   #10 + '    """Recursively copy a director' +
@@ -76855,66 +82974,120 @@ Const
   '    not be copied.' + #10 + #10 + '    The optional copy_function arg' +
   'ument is a callable that will be u' + 'sed' + #10 +
   '    to copy each file. It will be ' +
-  'called with the source path and th' + 'e' + #10;
-
-Const
- Src_shutil_1: AnsiString =
+  'called with the source path and th' + 'e' + #10 +
   '    destination path as arguments.' +
   ' By default, copy2() is used, but ' + 'any' + #10 +
   '    function that supports the sam' +
-  'e signature (like copy()) can be u' + 'sed.' + #10 + '    """' + #10 +
-  '    src = os.fspath(src)' + #10 + '    dst = os.fspath(dst)' + #10 +
-  '    names = os.listdir(src)' + #10 + '    if ignore is not None:' + #10 +
-  '        ignored_names = ignore(src' + ', set(names))' + #10 + '    else:' +
-  #10 + '        ignored_names = set()' + #10 + #10 +
-  '    os.makedirs(dst, exist_ok=dirs' + '_exist_ok)' + #10 +
-  '    errors = []' + #10 + #10 + '    for name in names:' + #10 +
-  '        if name in ignored_names:' + #10 + '            continue' + #10 +
-  '        srcname = os.path.join(src' + ', name)' + #10 +
-  '        dstname = os.path.join(dst' + ', name)' + #10 + '        try:' +
-  #10 + '            if _islink(srcname):' + #10 +
-  '                linkto = os.readli' + 'nk(srcname)' + #10 +
-  '                if symlinks:' + #10 +
-  '                    # We can''t jus' +
-  't leave it to `copy_function` beca' + 'use legacy' + #10 +
-  '                    # code with a ' +
-  'custom `copy_function` may rely on' + ' copytree' + #10 +
-  '                    # doing the ri' + 'ght thing.' + #10 +
-  '                    os.symlink(lin' + 'kto, dstname)' + #10 +
-  '                    copystat(srcna' +
-  'me, dstname, follow_symlinks=not s' + 'ymlinks)' + #10 +
-  '                else:' + #10 + '                    # ignore dangl' +
-  'ing symlink if the flag is on' + #10 +
-  '                    if not os.path' +
-  '.exists(linkto) and ignore_danglin' + 'g_symlinks:' + #10 +
-  '                        continue' + #10 +
-  '                    # otherwise le' +
-  't the copy occurs. copy2 will rais' + 'e an error' + #10 +
-  '                    if os.path.isd' + 'ir(srcname):' + #10 +
-  '                        copytree(s' +
-  'rcname, dstname, symlinks, ignore,' + #10 +
-  '                                 c' +
-  'opy_function, dirs_exist_ok=dirs_e' + 'xist_ok)' + #10 +
-  '                    else:' + #10 + '                        copy_funct' +
-  'ion(srcname, dstname)' + #10 + '            elif os.path.isdir(src' +
-  'name):' + #10 + '                copytree(srcname, ' +
-  'dstname, symlinks, ignore, copy_fu' + 'nction,' + #10 +
-  '                         dirs_exis' + 't_ok=dirs_exist_ok)' + #10 +
-  '            else:' + #10 + '                # Will raise a Spe' +
-  'cialFileError for unsupported file' + ' types' + #10 +
-  '                copy_function(srcn' + 'ame, dstname)' + #10 +
-  '        # catch the Error from the' +
-  ' recursive copytree so that we can' + #10 +
-  '        # continue with other file' + 's' + #10 +
-  '        except Error as err:' + #10 +
-  '            errors.extend(err.args' + '[0])' + #10 +
-  '        except OSError as why:' + #10 +
-  '            errors.append((srcname' + ', dstname, str(why)))' + #10 +
-  '    try:' + #10 + '        copystat(src, dst)' + #10 +
-  '    except OSError as why:' + #10 + '        errors.append((src, dst, s' +
-  'tr(why)))' + #10 + '    if errors:' + #10 + '        raise Error(errors)' +
-  #10 + '    return dst' + #10 + #10 + #10 +
-  'def rmtree(path, ignore_errors=Fal' + 'se, onerror=None):' + #10 +
+  'e signature (like copy()) can be u' + 'sed.' + #10 + #10 + '    """' +
+  #10 + '    sys.audit("shutil.copytree", s' + 'rc, dst)' + #10 +
+  '    with os.scandir(src) as itr:' + #10 + '        entries = list(itr)' +
+  #10 + '    return _copytree(entries=entri' +
+  'es, src=src, dst=dst, symlinks=sym' + 'links,' + #10 +
+  '                     ignore=ignore' + ', copy_function=copy_function,' +
+  #10 + '                     ignore_dangli' +
+  'ng_symlinks=ignore_dangling_symlin' + 'ks,' + #10 +
+  '                     dirs_exist_ok' + '=dirs_exist_ok)' + #10 + #10 +
+  'if hasattr(os.stat_result, ''st_fil' + 'e_attributes''):' + #10 +
+  '    # Special handling for directo' +
+  'ry junctions to make them behave l' + 'ike' + #10 +
+  '    # symlinks for shutil.rmtree, ' +
+  'since in general they do not appea' + 'r as' + #10 +
+  '    # regular links.' + #10 + '    def _rmtree_isdir(entry):' + #10 +
+  '        try:' + #10 + '            st = entry.stat(follow' +
+  '_symlinks=False)' + #10 + '            return (stat.S_ISDIR(s' +
+  't.st_mode) and not' + #10 + '                (st.st_file_attrib' +
+  'utes & stat.FILE_ATTRIBUTE_REPARSE' + '_POINT' + #10 +
+  '                 and st.st_reparse' +
+  '_tag == stat.IO_REPARSE_TAG_MOUNT_' + 'POINT))' + #10 +
+  '        except OSError:' + #10 + '            return False' + #10 + #10 +
+  '    def _rmtree_islink(path):' + #10 + '        try:' + #10 +
+  '            st = os.lstat(path)' + #10 +
+  '            return (stat.S_ISLNK(s' + 't.st_mode) or' + #10 +
+  '                (st.st_file_attrib' +
+  'utes & stat.FILE_ATTRIBUTE_REPARSE' + '_POINT' + #10 +
+  '                 and st.st_reparse' +
+  '_tag == stat.IO_REPARSE_TAG_MOUNT_' + 'POINT))' + #10 +
+  '        except OSError:' + #10 + '            return False' + #10 +
+  'else:' + #10 + '    def _rmtree_isdir(entry):' + #10 + '        try:' +
+  #10 + '            return entry.is_dir(fo' + 'llow_symlinks=False)' + #10 +
+  '        except OSError:' + #10 + '            return False' + #10 + #10 +
+  '    def _rmtree_islink(path):' + #10 +
+  '        return os.path.islink(path' + ')' + #10 + #10 +
+  '# version vulnerable to race condi' + 'tions' + #10 +
+  'def _rmtree_unsafe(path, onerror):' + #10 + '    try:' + #10 +
+  '        with os.scandir(path) as s' + 'candir_it:' + #10 +
+  '            entries = list(scandir' + '_it)' + #10 +
+  '    except OSError:' + #10 + '        onerror(os.scandir, path, ' +
+  'sys.exc_info())' + #10 + '        entries = []' + #10 +
+  '    for entry in entries:' + #10 + '        fullname = entry.path' + #10 +
+  '        if _rmtree_isdir(entry):' + #10 + '            try:' + #10 +
+  '                if entry.is_symlin' + 'k():' + #10 +
+  '                    # This can onl' + 'y happen if someone replaces' +
+  #10 + '                    # a directory ' +
+  'with a symlink after the call to' + #10 +
+  '                    # os.scandir o' + 'r entry.is_dir above.' + #10 +
+  '                    raise OSError(' +
+  '"Cannot call rmtree on a symbolic ' + 'link")' + #10 +
+  '            except OSError:' + #10 + '                onerror(os.path.is' +
+  'link, fullname, sys.exc_info())' + #10 + '                continue' + #10 +
+  '            _rmtree_unsafe(fullnam' + 'e, onerror)' + #10 +
+  '        else:' + #10 + '            try:' + #10 +
+  '                os.unlink(fullname' + ')' + #10 +
+  '            except OSError:' + #10 + '                onerror(os.unlink,' +
+  ' fullname, sys.exc_info())' + #10 + '    try:' + #10 +
+  '        os.rmdir(path)' + #10 + '    except OSError:' + #10 +
+  '        onerror(os.rmdir, path, sy' + 's.exc_info())' + #10 + #10 +
+  '# Version using fd-based APIs to p' + 'rotect against races' + #10 +
+  'def _rmtree_safe_fd(topfd, path, o' + 'nerror):' + #10 + '    try:' + #10 +
+  '        with os.scandir(topfd) as ' + 'scandir_it:' + #10 +
+  '            entries = list(scandir' + '_it)' + #10 +
+  '    except OSError as err:' + #10 + '        err.filename = path' + #10 +
+  '        onerror(os.scandir, path, ' + 'sys.exc_info())' + #10 +
+  '        return' + #10 + '    for entry in entries:' + #10 +
+  '        fullname = os.path.join(pa' + 'th, entry.name)' + #10 +
+  '        try:' + #10 + '            is_dir = entry.is_dir(' +
+  'follow_symlinks=False)' + #10 + '        except OSError:' + #10 +
+  '            is_dir = False' + #10 + '        else:' + #10 +
+  '            if is_dir:' + #10 + '                try:' + #10 +
+  '                    orig_st = entr' + 'y.stat(follow_symlinks=False)' +
+  #10 + '                    is_dir = stat.' + 'S_ISDIR(orig_st.st_mode)' +
+  #10 + '                except OSError:' + #10 +
+  '                    onerror(os.lst' + 'at, fullname, sys.exc_info())' +
+  #10 + '                    continue' + #10 + '        if is_dir:' + #10 +
+  '            try:' + #10 + '                dirfd = os.open(en' +
+  'try.name, os.O_RDONLY, dir_fd=topf' + 'd)' + #10 +
+  '            except OSError:' + #10 + '                onerror(os.open, f' +
+  'ullname, sys.exc_info())' + #10 + '            else:' + #10 +
+  '                try:' + #10 + '                    if os.path.sam' +
+  'estat(orig_st, os.fstat(dirfd)):' + #10 +
+  '                        _rmtree_sa' + 'fe_fd(dirfd, fullname, onerror)' +
+  #10 + '                        try:' + #10 +
+  '                            os.rmd' + 'ir(entry.name, dir_fd=topfd)' +
+  #10 + '                        except OSE' + 'rror:' + #10 +
+  '                            onerro' +
+  'r(os.rmdir, fullname, sys.exc_info' + '())' + #10 +
+  '                    else:' + #10 + '                        try:' + #10 +
+  '                            # This' +
+  ' can only happen if someone replac' + 'es' + #10 +
+  '                            # a di' +
+  'rectory with a symlink after the c' + 'all to' + #10 +
+  '                            # os.s' + 'candir or stat.S_ISDIR above.' +
+  #10 + '                            raise ' +
+  'OSError("Cannot call rmtree on a s' + 'ymbolic "' + #10 +
+  '                                  ' + '        "link")' + #10 +
+  '                        except OSE' + 'rror:' + #10 +
+  '                            onerro' +
+  'r(os.path.islink, fullname, sys.ex' + 'c_info())' + #10 +
+  '                finally:' + #10 + '                    os.close(dirfd' +
+  ')' + #10 + '        else:' + #10 + '            try:' + #10 +
+  '                os.unlink(entry.na' + 'me, dir_fd=topfd)' + #10 +
+  '            except OSError:' + #10 + '                onerror(os.unlink,' +
+  ' fullname, sys.exc_info())' + #10 + #10 +
+  '_use_fd_functions = ({os.open, os.' + 'stat, os.unlink, os.rmdir} <=' +
+  #10 + '                     os.supports_d' + 'ir_fd and' + #10 +
+  '                     os.scandir in' + ' os.supports_fd and' + #10 +
+  '                     os.stat in os' + '.supports_follow_symlinks)' + #10 +
+  #10 + 'def rmtree(path, ignore_errors=Fal' + 'se, onerror=None):' + #10 +
   '    """Recursively delete a direct' + 'ory tree.' + #10 + #10 +
   '    If ignore_errors is set, error' +
   's are ignored; otherwise, if onerr' + 'or' + #10 +
@@ -76926,48 +83099,59 @@ Const
   '    exc_info is a tuple returned b' +
   'y sys.exc_info().  If ignore_error' + 's' + #10 +
   '    is false and onerror is None, ' + 'an exception is raised.' + #10 +
-  '    """' + #10 + '    if ignore_errors:' + #10 +
-  '        def onerror(*args):' + #10 + '            pass' + #10 +
-  '    elif onerror is None:' + #10 + '        def onerror(*args):' + #10 +
-  '            raise' + #10 + '    failed = False' + #10 + '    try:' + #10 +
-  '        os.lstat(path)' + #10 + '    except Exception:' + #10 +
-  '        failed = True' + #10 + '        onerror(os.lstat, path, sy' +
-  's.exc_info())' + #10 + '        # can''t continue even if o' +
-  'nerror hook returns' + #10 + '    if failed:' + #10 + '        return' +
-  #10 + '    try:' + #10 + '        if _islink(path):' + #10 +
-  '            # symlinks to director' + 'ies are forbidden, see bug #1669' +
-  #10 + '            raise OSError("Cannot ' +
-  'call rmtree on a symbolic link")' + #10 + '    except OSError:' + #10 +
-  '        failed = True' + #10 + '        onerror(os.path.islink, pa' +
-  'th, sys.exc_info())' + #10 + '        # can''t continue even if o' +
-  'nerror hook returns' + #10 + '    if not failed:' + #10 +
-  '        _rmtree_unsafe(path, onerr' + 'or)' + #10 + #10 + #10 +
-  'def _rmtree_unsafe(path, onerror):' + #10 + '    entries = []' + #10 +
-  '    try:' + #10 + '        entries = os.listdir(path)' + #10 +
-  '    except OSError:' + #10 + '        onerror(os.scandir, path, ' +
-  'sys.exc_info())' + #10 + '        entries = []' + #10 +
-  '    for name in entries:' + #10 + '        fullname = os.path.join(pa' +
-  'th, name)' + #10 + '        is_dir = False' + #10 +
-  '        st = _lstat_or_none(fullna' + 'me)' + #10 +
-  '        if st is not None:' + #10 + '            # lstat: a symlink is ' +
-  'never reported as a directory' + #10 +
-  '            is_dir = stat.S_ISDIR(' + 'st.st_mode)' + #10 +
-  '        if is_dir:' + #10 + '            _rmtree_unsafe(fullnam' +
-  'e, onerror)' + #10 + '        else:' + #10 + '            try:' + #10 +
-  '                os.unlink(fullname' + ')' + #10 +
-  '            except OSError:' + #10 + '                onerror(os.unlink,' +
-  ' fullname, sys.exc_info())' + #10 + '    try:' + #10 +
-  '        os.rmdir(path)' + #10 + '    except OSError:' + #10 +
-  '        onerror(os.rmdir, path, sy' + 's.exc_info())' + #10 + #10 + #10 +
-  '# version vulnerable to race condi' + 'tions exposed for tests/compat' +
-  #10 + 'rmtree.avoids_symlink_attacks = Fa' + 'lse' + #10 + #10 + #10 +
-  'def _destinsrc(src, dst):' + #10 + '    src = os.path.abspath(src)' + #10 +
-  '    dst = os.path.abspath(dst)' + #10 +
-  '    if not src.endswith(os.path.se' + 'p):' + #10 +
-  '        src += os.path.sep' + #10 + '    if not dst.endswith(os.path.se' +
-  'p):' + #10 + '        dst += os.path.sep' + #10 +
-  '    return dst.startswith(src)' + #10 + #10 + #10 +
-  'def move(src, dst, copy_function=c' + 'opy2):' + #10 +
+  #10 + '    """' + #10 + '    sys.audit("shutil.rmtree", pat' + 'h)' + #10 +
+  '    if ignore_errors:' + #10 + '        def onerror(*args):' + #10 +
+  '            pass' + #10 + '    elif onerror is None:' + #10 +
+  '        def onerror(*args):' + #10 + '            raise' + #10 +
+  '    if _use_fd_functions:' + #10 + '        # While the unsafe rmtree ' +
+  'works fine on bytes, the fd based ' + 'does not.' + #10 +
+  '        if isinstance(path, bytes)' + ':' + #10 +
+  '            path = os.fsdecode(pat' + 'h)' + #10 +
+  '        # Note: To guard against s' + 'ymlink races, we use the standard' +
+  #10 + '        # lstat()/open()/fstat() t' + 'rick.' + #10 +
+  '        try:' + #10 + '            orig_st = os.lstat(pat' + 'h)' + #10 +
+  '        except Exception:' + #10 + '            onerror(os.lstat, path' +
+  ', sys.exc_info())' + #10 + '            return' + #10 + '        try:' +
+  #10 + '            fd = os.open(path, os.' + 'O_RDONLY)' + #10 +
+  '        except Exception:' + #10 + '            onerror(os.open, path,' +
+  ' sys.exc_info())' + #10 + '            return' + #10 + '        try:' +
+  #10 + '            if os.path.samestat(or' + 'ig_st, os.fstat(fd)):' + #10 +
+  '                _rmtree_safe_fd(fd' + ', path, onerror)' + #10 +
+  '                try:' + #10 + '                    os.rmdir(path)' + #10 +
+  '                except OSError:' + #10 +
+  '                    onerror(os.rmd' + 'ir, path, sys.exc_info())' + #10 +
+  '            else:' + #10 + '                try:' + #10 +
+  '                    # symlinks to ' +
+  'directories are forbidden, see bug' + ' #1669' + #10 +
+  '                    raise OSError(' +
+  '"Cannot call rmtree on a symbolic ' + 'link")' + #10 +
+  '                except OSError:' + #10 +
+  '                    onerror(os.pat' + 'h.islink, path, sys.exc_info())' +
+  #10 + '        finally:' + #10 + '            os.close(fd)' + #10 +
+  '    else:' + #10 + '        try:' + #10 +
+  '            if _rmtree_islink(path' + '):' + #10 +
+  '                # symlinks to dire' +
+  'ctories are forbidden, see bug #16' + '69' + #10 +
+  '                raise OSError("Can' +
+  'not call rmtree on a symbolic link' + '")' + #10 +
+  '        except OSError:' + #10 + '            onerror(os.path.islink' +
+  ', path, sys.exc_info())' + #10 + '            # can''t continue even ' +
+  'if onerror hook returns' + #10 + '            return' + #10 +
+  '        return _rmtree_unsafe(path' + ', onerror)' + #10 + #10 +
+  '# Allow introspection of whether o' +
+  'r not the hardening against symlin' + 'k' + #10 +
+  '# attacks is supported on the curr' + 'ent platform' + #10 +
+  'rmtree.avoids_symlink_attacks = _u' + 'se_fd_functions' + #10 + #10 +
+  'def _basename(path):' + #10 + '    # A basename() variant which f' +
+  'irst strips the trailing slash, if' + ' present.' + #10 +
+  '    # Thus we always get the last ' +
+  'component of the path, even for di' + 'rectories.' + #10 +
+  '    sep = os.path.sep + (os.path.a' + 'ltsep or '''')' + #10 +
+  '    return os.path.basename(path.r' + 'strip(sep))' + #10;
+
+Const
+ Src_shutil_3: AnsiString =
+  #10 + 'def move(src, dst, copy_function=c' + 'opy2):' + #10 +
   '    """Recursively move a file or ' +
   'directory to another location. Thi' + 's is' + #10 +
   '    similar to the Unix "mv" comma' +
@@ -76995,38 +83179,398 @@ Const
   '    A lot more could be done here.' +
   '..  A look at a mv.c shows a lot o' + 'f' + #10 +
   '    the issues this implementation' + ' glosses over.' + #10 + #10 +
-  '    """' + #10 + '    real_dst = dst' + #10 +
-  '    if os.path.isdir(dst):' + #10 + '        if _samefile(src, dst):' +
-  #10 + '            # We might be on a cas' + 'e insensitive filesystem,' +
-  #10 + '            # perform the rename a' + 'nyway.' + #10 +
-  '            os.rename(src, dst)' + #10 + '            return dst' + #10 +
-  #10 + '        real_dst = os.path.join(ds' + 't, _basename(src))' + #10 +
+  '    """' + #10 + '    sys.audit("shutil.move", src, ' + 'dst)' + #10 +
+  '    real_dst = dst' + #10 + '    if os.path.isdir(dst):' + #10 +
+  '        if _samefile(src, dst):' + #10 +
+  '            # We might be on a cas' + 'e insensitive filesystem,' + #10 +
+  '            # perform the rename a' + 'nyway.' + #10 +
+  '            os.rename(src, dst)' + #10 + '            return' + #10 + #10 +
+  '        real_dst = os.path.join(ds' + 't, _basename(src))' + #10 +
   '        if os.path.exists(real_dst' + '):' + #10 +
   '            raise Error("Destinati' +
-  'on path ''%s'' already exists" % rea' + 'l_dst)' + #10 +
-  '    renamed = True' + #10 + '    try:' + #10 +
+  'on path ''%s'' already exists" % rea' + 'l_dst)' + #10 + '    try:' + #10 +
   '        os.rename(src, real_dst)' + #10 + '    except OSError:' + #10 +
-  '        renamed = False' + #10 + '    if not renamed:' + #10 +
-  '        if _islink(src):' + #10 + '            linkto = os.readlink(s' +
-  'rc)' + #10 + '            os.symlink(linkto, rea' + 'l_dst)' + #10 +
+  '        if os.path.islink(src):' + #10 +
+  '            linkto = os.readlink(s' + 'rc)' + #10 +
+  '            os.symlink(linkto, rea' + 'l_dst)' + #10 +
   '            os.unlink(src)' + #10 + '        elif os.path.isdir(src):' +
   #10 + '            if _destinsrc(src, dst' + '):' + #10 +
   '                raise Error("Canno' +
   't move a directory ''%s'' into itsel' + 'f"' + #10 +
   '                            " ''%s''' + '." % (src, dst))' + #10 +
+  '            if (_is_immutable(src)' + #10 +
+  '                    or (not os.acc' +
+  'ess(src, os.W_OK) and os.listdir(s' + 'rc)' + #10 +
+  '                        and sys.pl' + 'atform == ''darwin'')):' + #10 +
+  '                raise PermissionEr' +
+  'ror("Cannot move the non-empty dir' + 'ectory "' + #10 +
+  '                                  ' +
+  '    "''%s'': Lacking write permissio' + 'n to ''%s''."' + #10 +
+  '                                  ' + '    % (src, src))' + #10 +
   '            copytree(src, real_dst' + ', copy_function=copy_function,' +
   #10 + '                     symlinks=True' + ')' + #10 +
   '            rmtree(src)' + #10 + '        else:' + #10 +
   '            copy_function(src, rea' + 'l_dst)' + #10 +
   '            os.unlink(src)' + #10 + '    return real_dst' + #10 + #10 +
-  #10 + 'if hasattr(os, ''statvfs''):' + #10 +
+  'def _destinsrc(src, dst):' + #10 + '    src = os.path.abspath(src)' + #10 +
+  '    dst = os.path.abspath(dst)' + #10 +
+  '    if not src.endswith(os.path.se' + 'p):' + #10 +
+  '        src += os.path.sep' + #10 + '    if not dst.endswith(os.path.se' +
+  'p):' + #10 + '        dst += os.path.sep' + #10 +
+  '    return dst.startswith(src)' + #10 + #10 + 'def _is_immutable(src):' +
+  #10 + '    st = _stat(src)' + #10 + '    immutable_states = [stat.UF_IM' +
+  'MUTABLE, stat.SF_IMMUTABLE]' + #10 +
+  '    return hasattr(st, ''st_flags'')' +
+  ' and st.st_flags in immutable_stat' + 'es' + #10 + #10 +
+  'def _get_gid(name):' + #10 + '    """Returns a gid, given a grou' +
+  'p name."""' + #10 + '    if getgrnam is None or name is' + ' None:' + #10 +
+  '        return None' + #10 + '    try:' + #10 +
+  '        result = getgrnam(name)' + #10 + '    except KeyError:' + #10 +
+  '        result = None' + #10 + '    if result is not None:' + #10 +
+  '        return result[2]' + #10 + '    return None' + #10 + #10 +
+  'def _get_uid(name):' + #10 + '    """Returns an uid, given a use' +
+  'r name."""' + #10 + '    if getpwnam is None or name is' + ' None:' + #10 +
+  '        return None' + #10 + '    try:' + #10 +
+  '        result = getpwnam(name)' + #10 + '    except KeyError:' + #10 +
+  '        result = None' + #10 + '    if result is not None:' + #10 +
+  '        return result[2]' + #10 + '    return None' + #10 + #10 +
+  'def _make_tarball(base_name, base_' +
+  'dir, compress="gzip", verbose=0, d' + 'ry_run=0,' + #10 +
+  '                  owner=None, grou' + 'p=None, logger=None):' + #10 +
+  '    """Create a (possibly compress' +
+  'ed) tar file from all the files un' + 'der' + #10 + '    ''base_dir''.' +
+  #10 + #10 + '    ''compress'' must be "gzip" (the' +
+  ' default), "bzip2", "xz", or None.' + #10 + #10 +
+  '    ''owner'' and ''group'' can be use' +
+  'd to define an owner and a group f' + 'or the' + #10 +
+  '    archive that is being built. I' +
+  'f not provided, the current owner ' + 'and group' + #10 +
+  '    will be used.' + #10 + #10 + '    The output tar file will be na' +
+  'med ''base_name'' +  ".tar", possibl' + 'y plus' + #10 +
+  '    the appropriate compression ex' +
+  'tension (".gz", ".bz2", or ".xz").' + #10 + #10 +
+  '    Returns the output filename.' + #10 + '    """' + #10 +
+  '    if compress is None:' + #10 + '        tar_compression = ''''' + #10 +
+  '    elif _ZLIB_SUPPORTED and compr' + 'ess == ''gzip'':' + #10 +
+  '        tar_compression = ''gz''' + #10 +
+  '    elif _BZ2_SUPPORTED and compre' + 'ss == ''bzip2'':' + #10 +
+  '        tar_compression = ''bz2''' + #10 +
+  '    elif _LZMA_SUPPORTED and compr' + 'ess == ''xz'':' + #10 +
+  '        tar_compression = ''xz''' + #10 + '    else:' + #10 +
+  '        raise ValueError("bad valu' +
+  'e for ''compress'', or compression f' + 'ormat not "' + #10 +
+  '                         "supporte' + 'd : {0}".format(compress))' + #10 +
+  #10 + '    import tarfile  # late import ' +
+  'for breaking circular dependency' + #10 + #10 +
+  '    compress_ext = ''.'' + tar_compr' + 'ession if compress else ''''' +
+  #10 + '    archive_name = base_name + ''.t' + 'ar'' + compress_ext' + #10 +
+  '    archive_dir = os.path.dirname(' + 'archive_name)' + #10 + #10 +
+  '    if archive_dir and not os.path' + '.exists(archive_dir):' + #10 +
+  '        if logger is not None:' + #10 +
+  '            logger.info("creating ' + '%s", archive_dir)' + #10 +
+  '        if not dry_run:' + #10 + '            os.makedirs(archive_di' +
+  'r)' + #10 + #10 + '    # creating the tarball' + #10 +
+  '    if logger is not None:' + #10 + '        logger.info(''Creating tar ' +
+  'archive'')' + #10 + #10 + '    uid = _get_uid(owner)' + #10 +
+  '    gid = _get_gid(group)' + #10 + #10 + '    def _set_uid_gid(tarinfo):' +
+  #10 + '        if gid is not None:' + #10 +
+  '            tarinfo.gid = gid' + #10 +
+  '            tarinfo.gname = group' + #10 + '        if uid is not None:' +
+  #10 + '            tarinfo.uid = uid' + #10 +
+  '            tarinfo.uname = owner' + #10 + '        return tarinfo' + #10 +
+  #10 + '    if not dry_run:' + #10 + '        tar = tarfile.open(archive' +
+  '_name, ''w|%s'' % tar_compression)' + #10 + '        try:' + #10 +
+  '            tar.add(base_dir, filt' + 'er=_set_uid_gid)' + #10 +
+  '        finally:' + #10 + '            tar.close()' + #10 + #10 +
+  '    return archive_name' + #10 + #10 +
+  'def _make_zipfile(base_name, base_' +
+  'dir, verbose=0, dry_run=0, logger=' + 'None):' + #10 +
+  '    """Create a zip file from all ' + 'the files under ''base_dir''.' +
+  #10 + #10 + '    The output zip file will be na' +
+  'med ''base_name'' + ".zip".  Returns' + ' the' + #10 +
+  '    name of the output zip file.' + #10 + '    """' + #10 +
+  '    import zipfile  # late import ' + 'for breaking circular dependency' +
+  #10 + #10 + '    zip_filename = base_name + ".z' + 'ip"' + #10 +
+  '    archive_dir = os.path.dirname(' + 'base_name)' + #10 + #10 +
+  '    if archive_dir and not os.path' + '.exists(archive_dir):' + #10 +
+  '        if logger is not None:' + #10 +
+  '            logger.info("creating ' + '%s", archive_dir)' + #10 +
+  '        if not dry_run:' + #10 + '            os.makedirs(archive_di' +
+  'r)' + #10 + #10 + '    if logger is not None:' + #10 +
+  '        logger.info("creating ''%s''' + ' and adding ''%s'' to it",' +
+  #10 + '                    zip_filename, ' + 'base_dir)' + #10 + #10 +
+  '    if not dry_run:' + #10 + '        with zipfile.ZipFile(zip_f' +
+  'ilename, "w",' + #10 + '                             compr' +
+  'ession=zipfile.ZIP_DEFLATED) as zf' + ':' + #10 +
+  '            path = os.path.normpat' + 'h(base_dir)' + #10 +
+  '            if path != os.curdir:' + #10 +
+  '                zf.write(path, pat' + 'h)' + #10 +
+  '                if logger is not N' + 'one:' + #10 +
+  '                    logger.info("a' + 'dding ''%s''", path)' + #10 +
+  '            for dirpath, dirnames,' + ' filenames in os.walk(base_dir):' +
+  #10 + '                for name in sorted' + '(dirnames):' + #10 +
+  '                    path = os.path' +
+  '.normpath(os.path.join(dirpath, na' + 'me))' + #10 +
+  '                    zf.write(path,' + ' path)' + #10 +
+  '                    if logger is n' + 'ot None:' + #10 +
+  '                        logger.inf' + 'o("adding ''%s''", path)' + #10 +
+  '                for name in filena' + 'mes:' + #10 +
+  '                    path = os.path' +
+  '.normpath(os.path.join(dirpath, na' + 'me))' + #10 +
+  '                    if os.path.isf' + 'ile(path):' + #10 +
+  '                        zf.write(p' + 'ath, path)' + #10 +
+  '                        if logger ' + 'is not None:' + #10 +
+  '                            logger' + '.info("adding ''%s''", path)' +
+  #10 + #10 + '    return zip_filename' + #10 + #10 + '_ARCHIVE_FORMATS = {' +
+  #10 + '    ''tar'':   (_make_tarball, [(''co' +
+  'mpress'', None)], "uncompressed tar' + ' file"),' + #10 + '}' + #10 + #10 +
+  'if _ZLIB_SUPPORTED:' + #10 + '    _ARCHIVE_FORMATS[''gztar''] = (_' +
+  'make_tarball, [(''compress'', ''gzip''' + ')],' + #10 +
+  '                                "g' + 'zip''ed tar-file")' + #10 +
+  '    _ARCHIVE_FORMATS[''zip''] = (_ma' + 'ke_zipfile, [], "ZIP file")' +
+  #10 + #10 + 'if _BZ2_SUPPORTED:' + #10 +
+  '    _ARCHIVE_FORMATS[''bztar''] = (_' +
+  'make_tarball, [(''compress'', ''bzip2' + ''')],' + #10 +
+  '                                "b' + 'zip2''ed tar-file")' + #10 + #10 +
+  'if _LZMA_SUPPORTED:' + #10 + '    _ARCHIVE_FORMATS[''xztar''] = (_' +
+  'make_tarball, [(''compress'', ''xz'')]' + ',' + #10 +
+  '                                "x' + 'z''ed tar-file")' + #10 + #10 +
+  'def get_archive_formats():' + #10 + '    """Returns a list of supported' +
+  ' formats for archiving and unarchi' + 'ving.' + #10 + #10 +
+  '    Each element of the returned s' +
+  'equence is a tuple (name, descript' + 'ion)' + #10 + '    """' + #10 +
+  '    formats = [(name, registry[2])' + ' for name, registry in' + #10 +
+  '               _ARCHIVE_FORMATS.it' + 'ems()]' + #10 +
+  '    formats.sort()' + #10 + '    return formats' + #10 + #10 +
+  'def register_archive_format(name, ' +
+  'function, extra_args=None, descrip' + 'tion=''''):' + #10 +
+  '    """Registers an archive format' + '.' + #10 + #10 +
+  '    name is the name of the format' +
+  '. function is the callable that wi' + 'll be' + #10 +
+  '    used to create archives. If pr' +
+  'ovided, extra_args is a sequence o' + 'f' + #10 +
+  '    (name, value) tuples that will' +
+  ' be passed as arguments to the cal' + 'lable.' + #10 +
+  '    description can be provided to' +
+  ' describe the format, and will be ' + 'returned' + #10 +
+  '    by the get_archive_formats() f' + 'unction.' + #10 + '    """' + #10 +
+  '    if extra_args is None:' + #10 + '        extra_args = []' + #10 +
+  '    if not callable(function):' + #10;
+
+Const
+ Src_shutil_4: AnsiString =
+  '        raise TypeError(''The %s ob' +
+  'ject is not callable'' % function)' + #10 +
+  '    if not isinstance(extra_args, ' + '(tuple, list)):' + #10 +
+  '        raise TypeError(''extra_arg' + 's needs to be a sequence'')' +
+  #10 + '    for element in extra_args:' + #10 +
+  '        if not isinstance(element,' +
+  ' (tuple, list)) or len(element) !=' + '2:' + #10 +
+  '            raise TypeError(''extra' +
+  '_args elements are : (arg_name, va' + 'lue)'')' + #10 + #10 +
+  '    _ARCHIVE_FORMATS[name] = (func' + 'tion, extra_args, description)' +
+  #10 + #10 + 'def unregister_archive_format(name' + '):' + #10 +
+  '    del _ARCHIVE_FORMATS[name]' + #10 + #10 +
+  'def make_archive(base_name, format' +
+  ', root_dir=None, base_dir=None, ve' + 'rbose=0,' + #10 +
+  '                 dry_run=0, owner=' + 'None, group=None, logger=None):' +
+  #10 + '    """Create an archive file (eg.' + ' zip or tar).' + #10 + #10 +
+  '    ''base_name'' is the name of the' +
+  ' file to create, minus any format-' + 'specific' + #10 +
+  '    extension; ''format'' is the arc' +
+  'hive format: one of "zip", "tar", ' + '"gztar",' + #10 +
+  '    "bztar", or "xztar".  Or any o' + 'ther registered format.' + #10 +
+  #10 + '    ''root_dir'' is a directory that' +
+  ' will be the root directory of the' + #10 +
+  '    archive; ie. we typically chdi' +
+  'r into ''root_dir'' before creating ' + 'the' + #10 +
+  '    archive.  ''base_dir'' is the di' +
+  'rectory where we start archiving f' + 'rom;' + #10 +
+  '    ie. ''base_dir'' will be the com' + 'mon prefix of all files and' +
+  #10 + '    directories in the archive.  ''' +
+  'root_dir'' and ''base_dir'' both defa' + 'ult' + #10 +
+  '    to the current directory.  Ret' +
+  'urns the name of the archive file.' + #10 + #10 +
+  '    ''owner'' and ''group'' are used w' +
+  'hen creating a tar archive. By def' + 'ault,' + #10 +
+  '    uses the current owner and gro' + 'up.' + #10 + '    """' + #10 +
+  '    sys.audit("shutil.make_archive' +
+  '", base_name, format, root_dir, ba' + 'se_dir)' + #10 +
+  '    save_cwd = os.getcwd()' + #10 + '    if root_dir is not None:' + #10 +
+  '        if logger is not None:' + #10 +
+  '            logger.debug("changing' + ' into ''%s''", root_dir)' + #10 +
+  '        base_name = os.path.abspat' + 'h(base_name)' + #10 +
+  '        if not dry_run:' + #10 + '            os.chdir(root_dir)' + #10 +
+  #10 + '    if base_dir is None:' + #10 + '        base_dir = os.curdir' +
+  #10 + #10 + '    kwargs = {''dry_run'': dry_run, ' + '''logger'': logger}' +
+  #10 + #10 + '    try:' + #10 + '        format_info = _ARCHIVE_FOR' +
+  'MATS[format]' + #10 + '    except KeyError:' + #10 +
+  '        raise ValueError("unknown ' +
+  'archive format ''%s''" % format) fro' + 'm None' + #10 + #10 +
+  '    func = format_info[0]' + #10 + '    for arg, val in format_info[1]' +
+  ':' + #10 + '        kwargs[arg] = val' + #10 + #10 +
+  '    if format != ''zip'':' + #10 + '        kwargs[''owner''] = owner' +
+  #10 + '        kwargs[''group''] = group' + #10 + #10 + '    try:' + #10 +
+  '        filename = func(base_name,' + ' base_dir, **kwargs)' + #10 +
+  '    finally:' + #10 + '        if root_dir is not None:' + #10 +
+  '            if logger is not None:' + #10 +
+  '                logger.debug("chan' + 'ging back to ''%s''", save_cwd)' +
+  #10 + '            os.chdir(save_cwd)' + #10 + #10 + '    return filename' +
+  #10 + #10 + #10 + 'def get_unpack_formats():' + #10 +
+  '    """Returns a list of supported' + ' formats for unpacking.' + #10 +
+  #10 + '    Each element of the returned s' + 'equence is a tuple' + #10 +
+  '    (name, extensions, description' + ')' + #10 + '    """' + #10 +
+  '    formats = [(name, info[0], inf' + 'o[3]) for name, info in' + #10 +
+  '               _UNPACK_FORMATS.ite' + 'ms()]' + #10 +
+  '    formats.sort()' + #10 + '    return formats' + #10 + #10 +
+  'def _check_unpack_options(extensio' + 'ns, function, extra_args):' + #10 +
+  '    """Checks what gets registered' + ' as an unpacker."""' + #10 +
+  '    # first make sure no other unp' +
+  'acker is registered for this exten' + 'sion' + #10 +
+  '    existing_extensions = {}' + #10 +
+  '    for name, info in _UNPACK_FORM' + 'ATS.items():' + #10 +
+  '        for ext in info[0]:' + #10 + '            existing_extensions[ex' +
+  't] = name' + #10 + #10 + '    for extension in extensions:' + #10 +
+  '        if extension in existing_e' + 'xtensions:' + #10 +
+  '            msg = ''%s is already r' + 'egistered for "%s"''' + #10 +
+  '            raise RegistryError(ms' + 'g % (extension,' + #10 +
+  '                                  ' +
+  '     existing_extensions[extension' + ']))' + #10 + #10 +
+  '    if not callable(function):' + #10 +
+  '        raise TypeError(''The regis' +
+  'tered function must be a callable''' + ')' + #10 + #10 + #10 +
+  'def register_unpack_format(name, e' +
+  'xtensions, function, extra_args=No' + 'ne,' + #10 +
+  '                           descrip' + 'tion=''''):' + #10 +
+  '    """Registers an unpack format.' + #10 + #10 +
+  '    `name` is the name of the form' +
+  'at. `extensions` is a list of exte' + 'nsions' + #10 +
+  '    corresponding to the format.' + #10 + #10 +
+  '    `function` is the callable tha' + 't will be' + #10 +
+  '    used to unpack archives. The c' +
+  'allable will receive archives to u' + 'npack.' + #10 +
+  '    If it''s unable to handle an ar' +
+  'chive, it needs to raise a ReadErr' + 'or' + #10 + '    exception.' + #10 +
+  #10 + '    If provided, `extra_args` is a' + ' sequence of' + #10 +
+  '    (name, value) tuples that will' +
+  ' be passed as arguments to the cal' + 'lable.' + #10 +
+  '    description can be provided to' +
+  ' describe the format, and will be ' + 'returned' + #10 +
+  '    by the get_unpack_formats() fu' + 'nction.' + #10 + '    """' + #10 +
+  '    if extra_args is None:' + #10 + '        extra_args = []' + #10 +
+  '    _check_unpack_options(extensio' + 'ns, function, extra_args)' + #10 +
+  '    _UNPACK_FORMATS[name] = extens' +
+  'ions, function, extra_args, descri' + 'ption' + #10 + #10 +
+  'def unregister_unpack_format(name)' + ':' + #10 +
+  '    """Removes the pack format fro' + 'm the registry."""' + #10 +
+  '    del _UNPACK_FORMATS[name]' + #10 + #10 +
+  'def _ensure_directory(path):' + #10 +
+  '    """Ensure that the parent dire' + 'ctory of `path` exists"""' + #10 +
+  '    dirname = os.path.dirname(path' + ')' + #10 +
+  '    if not os.path.isdir(dirname):' + #10 +
+  '        os.makedirs(dirname)' + #10 + #10 +
+  'def _unpack_zipfile(filename, extr' + 'act_dir):' + #10 +
+  '    """Unpack zip `filename` to `e' + 'xtract_dir`' + #10 + '    """' +
+  #10 + '    import zipfile  # late import ' +
+  'for breaking circular dependency' + #10 + #10 +
+  '    if not zipfile.is_zipfile(file' + 'name):' + #10 +
+  '        raise ReadError("%s is not' + ' a zip file" % filename)' + #10 +
+  #10 + '    zip = zipfile.ZipFile(filename' + ')' + #10 + '    try:' + #10 +
+  '        for info in zip.infolist()' + ':' + #10 +
+  '            name = info.filename' + #10 + #10 +
+  '            # don''t extract absolu' + 'te paths or ones with .. in them' +
+  #10 + '            if name.startswith(''/''' + ') or ''..'' in name:' +
+  #10 + '                continue' + #10 + #10 +
+  '            target = os.path.join(' + 'extract_dir, *name.split(''/''))' +
+  #10 + '            if not target:' + #10 + '                continue' +
+  #10 + #10 + '            _ensure_directory(targ' + 'et)' + #10 +
+  '            if not name.endswith(''' + '/''):' + #10 +
+  '                # file' + #10 + '                data = zip.read(in' +
+  'fo.filename)' + #10 + '                f = open(target, ''' + 'wb'')' +
+  #10 + '                try:' + #10 + '                    f.write(data)' +
+  #10 + '                finally:' + #10 + '                    f.close()' +
+  #10 + '                    del data' + #10 + '    finally:' + #10 +
+  '        zip.close()' + #10 + #10 + 'def _unpack_tarfile(filename, extr' +
+  'act_dir, *, filter=None):' + #10 + '    """Unpack tar/tar.gz/tar.bz2/t' +
+  'ar.xz `filename` to `extract_dir`' + #10 + '    """' + #10 +
+  '    import tarfile  # late import ' + 'for breaking circular dependency' +
+  #10 + '    try:' + #10 + '        tarobj = tarfile.open(file' + 'name)' +
+  #10 + '    except tarfile.TarError:' + #10 + '        raise ReadError(' +
+  #10 + '            "%s is not a compresse' +
+  'd or uncompressed tar file" % file' + 'name)' + #10 + '    try:' + #10 +
+  '        tarobj.extractall(extract_' + 'dir, filter=filter)' + #10 +
+  '    finally:' + #10 + '        tarobj.close()' + #10 + #10 +
+  '_UNPACK_FORMATS = {' + #10 + '    ''tar'':   ([''.tar''], _unpack_ta' +
+  'rfile, [], "uncompressed tar file"' + '),' + #10 +
+  '    ''zip'':   ([''.zip''], _unpack_zi' + 'pfile, [], "ZIP file"),' + #10 +
+  '}' + #10 + #10 + 'if _ZLIB_SUPPORTED:' + #10 +
+  '    _UNPACK_FORMATS[''gztar''] = ([''' +
+  '.tar.gz'', ''.tgz''], _unpack_tarfile' + ', [],' + #10 +
+  '                                "g' + 'zip''ed tar-file")' + #10 + #10 +
+  'if _BZ2_SUPPORTED:' + #10 + '    _UNPACK_FORMATS[''bztar''] = ([''' +
+  '.tar.bz2'', ''.tbz2''], _unpack_tarfi' + 'le, [],' + #10 +
+  '                                "b' + 'zip2''ed tar-file")' + #10 + #10 +
+  'if _LZMA_SUPPORTED:' + #10 + '    _UNPACK_FORMATS[''xztar''] = ([''' +
+  '.tar.xz'', ''.txz''], _unpack_tarfile' + ', [],' + #10 +
+  '                                "x' + 'z''ed tar-file")' + #10 + #10 +
+  'def _find_unpack_format(filename):' + #10 +
+  '    for name, info in _UNPACK_FORM' + 'ATS.items():' + #10 +
+  '        for extension in info[0]:' + #10 +
+  '            if filename.endswith(e' + 'xtension):' + #10 +
+  '                return name' + #10 + '    return None' + #10 + #10 +
+  'def unpack_archive(filename, extra' +
+  'ct_dir=None, format=None, *, filte' + 'r=None):' + #10 +
+  '    """Unpack an archive.' + #10 + #10 +
+  '    `filename` is the name of the ' + 'archive.' + #10 + #10 +
+  '    `extract_dir` is the name of t' +
+  'he target directory, where the arc' + 'hive' + #10 +
+  '    is unpacked. If not provided, ' +
+  'the current working directory is u' + 'sed.' + #10 + #10 +
+  '    `format` is the archive format' +
+  ': one of "zip", "tar", "gztar", "b' + 'ztar",' + #10 +
+  '    or "xztar".  Or any other regi' + 'stered format.  If not provided,' +
+  #10 + '    unpack_archive will use the fi' +
+  'lename extension and see if an unp' + 'acker' + #10 +
+  '    was registered for that extens' + 'ion.' + #10 + #10 +
+  '    In case none is found, a Value' + 'Error is raised.' + #10 + #10 +
+  '    If `filter` is given, it is pa' + 'ssed to the underlying' + #10 +
+  '    extraction function.' + #10 + '    """' + #10 +
+  '    sys.audit("shutil.unpack_archi' +
+  've", filename, extract_dir, format' + ')' + #10 + #10 +
+  '    if extract_dir is None:' + #10 + '        extract_dir = os.getcwd()' +
+  #10 + #10 + '    extract_dir = os.fspath(extrac' + 't_dir)' + #10 +
+  '    filename = os.fspath(filename)' + #10 + #10 +
+  '    if filter is None:' + #10 + '        filter_kwargs = {}' + #10 +
+  '    else:' + #10 + '        filter_kwargs = {''filter'':' + ' filter}' +
+  #10 + '    if format is not None:' + #10 + '        try:' + #10 +
+  '            format_info = _UNPACK_' + 'FORMATS[format]' + #10 +
+  '        except KeyError:' + #10 + '            raise ValueError("Unkn' +
+  'own unpack format ''{0}''".format(fo' + 'rmat)) from None' + #10 + #10 +
+  '        func = format_info[1]' + #10 +
+  '        func(filename, extract_dir' +
+  ', **dict(format_info[2]), **filter' + '_kwargs)' + #10 + '    else:' +
+  #10 + '        # we need to look at the r' +
+  'egistered unpackers supported exte' + 'nsions' + #10 +
+  '        format = _find_unpack_form' + 'at(filename)' + #10 +
+  '        if format is None:' + #10 + '            raise ReadError("Unkno' +
+  'wn archive format ''{0}''".format(fi' + 'lename))' + #10 + #10 +
+  '        func = _UNPACK_FORMATS[for' + 'mat][1]' + #10 +
+  '        kwargs = dict(_UNPACK_FORM' + 'ATS[format][2])' + #10 +
+  '        kwargs.update(filter_kwarg' + 's)' + #10 +
+  '        func(filename, extract_dir' + ', **kwargs)' + #10 + #10;
+
+Const
+ Src_shutil_5: AnsiString =
+  #10 + 'if hasattr(os, ''statvfs''):' + #10 + #10 +
+  '    __all__.append(''disk_usage'')' + #10 +
   '    _ntuple_diskusage = collection' +
   's.namedtuple(''usage'', ''total used ' + 'free'')' + #10 +
-  '    _ntuple_diskusage.__doc__ = ''T' +
-  'otal, used and free space in bytes' + '.''' + #10 + #10 +
-  '    def disk_usage(path):' + #10 + '        """Return disk usage stati' +
-  'stics about the given path.' + #10 + #10 +
-  '        Returned value is a named ' +
+  '    _ntuple_diskusage.total.__doc_' + '_ = ''Total space in bytes''' +
+  #10 + '    _ntuple_diskusage.used.__doc__' + ' = ''Used space in bytes''' +
+  #10 + '    _ntuple_diskusage.free.__doc__' + ' = ''Free space in bytes''' +
+  #10 + #10 + '    def disk_usage(path):' + #10 +
+  '        """Return disk usage stati' + 'stics about the given path.' + #10 +
+  #10 + '        Returned value is a named ' +
   'tuple with attributes ''total'', ''us' + 'ed'' and' + #10 +
   '        ''free'', which are the amou' +
   'nt of total, used and free space, ' + 'in bytes.' + #10 + '        """' +
@@ -77035,56 +83579,41 @@ Const
   '        total = st.f_blocks * st.f' + '_frsize' + #10 +
   '        used = (st.f_blocks - st.f' + '_bfree) * st.f_frsize' + #10 +
   '        return _ntuple_diskusage(t' + 'otal, used, free)' + #10 + #10 +
-  #10 + 'def which(cmd, mode=os.F_OK | os.X' + '_OK, path=None):' + #10 +
-  '    """Given a command, mode, and ' +
-  'a PATH string, return the path whi' + 'ch' + #10 +
-  '    conforms to the given mode on ' +
-  'the PATH, or None if there is no s' + 'uch' + #10 + '    file.' + #10 +
-  #10 + '    `mode` defaults to os.F_OK | o' +
-  's.X_OK. `path` defaults to the res' + 'ult' + #10 +
-  '    of os.environ.get("PATH"), or ' +
-  'can be overridden with a custom se' + 'arch' + #10 + '    path.' + #10 +
-  #10 + '    """' + #10 + '    # Check that a given file can ' +
-  'be accessed with the correct mode.' + #10 +
-  '    # Additionally check that `fil' +
-  'e` is not a directory, as on Windo' + 'ws' + #10 +
-  '    # directories pass the os.acce' + 'ss check.' + #10 +
-  '    def _access_check(fn, mode):' + #10 +
-  '        return (os.path.exists(fn)' + ' and os.access(fn, mode)' + #10 +
-  '                and not os.path.is' + 'dir(fn))' + #10 + #10 +
-  '    # If we''re given a path with a' +
-  ' directory part, look it up direct' + 'ly rather' + #10 +
-  '    # than referring to PATH direc' +
-  'tories. This includes checking rel' + 'ative to the' + #10 +
-  '    # current directory, e.g. ./sc' + 'ript' + #10 +
-  '    if os.path.dirname(cmd):' + #10 +
-  '        if _access_check(cmd, mode' + '):' + #10 +
-  '            return cmd' + #10 + '        return None' + #10 + #10 +
-  '    if path is None:' + #10 + '        path = os.environ.get("PAT' +
-  'H", None)' + #10 + '        if path is None:' + #10 +
-  '            if hasattr(os, ''confst' + 'r''):' + #10 +
-  '                try:' + #10 + '                    path = os.conf' +
-  'str("CS_PATH")' + #10 + '                except (AttributeE' +
-  'rror, ValueError):' + #10 + '                    path = None' + #10 +
-  '            if path is None:' + #10 + '                path = os.defpath' +
-  #10 + '    # bpo-35755: Don''t use os.defp' +
-  'ath if the PATH environment variab' + 'le is' + #10;
-
-Const
- Src_shutil_2: AnsiString =
-  '    # set to an empty string' + #10 + #10 +
-  '    # PATH='''' doesn''t match, where' +
-  'as PATH='':'' looks in the current d' + 'irectory' + #10 +
-  '    if not path:' + #10 + '        return None' + #10 + #10 +
-  '    path = path.split(os.pathsep)' + #10 + '    files = [cmd]' + #10 +
-  #10 + '    seen = set()' + #10 + '    for dir in path:' + #10 +
-  '        normdir = os.path.normcase' + '(dir)' + #10 +
-  '        if not normdir in seen:' + #10 + '            seen.add(normdir)' +
-  #10 + '            for thefile in files:' + #10 +
-  '                name = os.path.joi' + 'n(dir, thefile)' + #10 +
-  '                if _access_check(n' + 'ame, mode):' + #10 +
-  '                    return name' + #10 + '    return None' + #10 + #10 +
-  #10 + 'def get_terminal_size(fallback=(80' + ', 24)):' + #10 +
+  'elif _WINDOWS:' + #10 + #10 + '    __all__.append(''disk_usage'')' + #10 +
+  '    _ntuple_diskusage = collection' +
+  's.namedtuple(''usage'', ''total used ' + 'free'')' + #10 + #10 +
+  '    def disk_usage(path):' + #10 + '        """Return disk usage stati' +
+  'stics about the given path.' + #10 + #10 +
+  '        Returned values is a named' +
+  ' tuple with attributes ''total'', ''u' + 'sed'' and' + #10 +
+  '        ''free'', which are the amou' +
+  'nt of total, used and free space, ' + 'in bytes.' + #10 + '        """' +
+  #10 + '        total, free = nt._getdisku' + 'sage(path)' + #10 +
+  '        used = total - free' + #10 + '        return _ntuple_diskusage(t' +
+  'otal, used, free)' + #10 + #10 + #10 +
+  'def chown(path, user=None, group=N' + 'one):' + #10 +
+  '    """Change owner user and group' + ' of the given path.' + #10 + #10 +
+  '    user and group can be the uid/' +
+  'gid or the user/group names, and i' + 'n that case,' + #10 +
+  '    they are converted to their re' + 'spective uid/gid.' + #10 +
+  '    """' + #10 + '    sys.audit(''shutil.chown'', path' +
+  ', user, group)' + #10 + #10 + '    if user is None and group is N' +
+  'one:' + #10 + '        raise ValueError("user and' +
+  '/or group must be set")' + #10 + #10 + '    _user = user' + #10 +
+  '    _group = group' + #10 + #10 + '    # -1 means don''t change it' + #10 +
+  '    if user is None:' + #10 + '        _user = -1' + #10 +
+  '    # user can either be an int (t' +
+  'he uid) or a string (the system us' + 'ername)' + #10 +
+  '    elif isinstance(user, str):' + #10 + '        _user = _get_uid(user)' +
+  #10 + '        if _user is None:' + #10 +
+  '            raise LookupError("no ' + 'such user: {!r}".format(user))' +
+  #10 + #10 + '    if group is None:' + #10 + '        _group = -1' + #10 +
+  '    elif not isinstance(group, int' + '):' + #10 +
+  '        _group = _get_gid(group)' + #10 + '        if _group is None:' +
+  #10 + '            raise LookupError("no ' +
+  'such group: {!r}".format(group))' + #10 + #10 +
+  '    os.chown(path, _user, _group)' + #10 + #10 +
+  'def get_terminal_size(fallback=(80' + ', 24)):' + #10 +
   '    """Get the size of the termina' + 'l window.' + #10 + #10 +
   '    For each of the two dimensions' +
   ', the environment variable, COLUMN' + 'S' + #10 +
@@ -77109,20 +83638,96 @@ Const
   '        lines = int(os.environ[''LI' + 'NES''])' + #10 +
   '    except (KeyError, ValueError):' + #10 + '        lines = 0' + #10 +
   #10 + '    # only query if necessary' + #10 +
-  '    if columns <= 0 or lines <= 0:' + #10 + '        size = None' + #10 +
-  '        try:' + #10 + '            size = os.get_terminal' +
-  '_size(sys.__stdout__.fileno())' + #10 +
-  '        except (AttributeError, Va' + 'lueError, OSError, TypeError):' +
-  #10 + '            size = None' + #10 + '        if size is None:' + #10 +
+  '    if columns <= 0 or lines <= 0:' + #10 + '        try:' + #10 +
+  '            size = os.get_terminal' + '_size(sys.__stdout__.fileno())' +
+  #10 + '        except (AttributeError, Va' + 'lueError, OSError):' + #10 +
+  '            # stdout is None, clos' +
+  'ed, detached, or not a terminal, o' + 'r' + #10 +
+  '            # os.get_terminal_size' + '() is unsupported' + #10 +
   '            size = os.terminal_siz' + 'e(fallback)' + #10 +
   '        if columns <= 0:' + #10 + '            columns = size.columns' +
   #10 + '        if lines <= 0:' + #10 + '            lines = size.lines' +
   #10 + #10 + '    return os.terminal_size((colum' + 'ns, lines))' + #10 +
-  #10;
+  #10 + #10 + '# Check that a given file can be a' +
+  'ccessed with the correct mode.' + #10 +
+  '# Additionally check that `file` i' + 's not a directory, as on Windows' +
+  #10 + '# directories pass the os.access c' + 'heck.' + #10 +
+  'def _access_check(fn, mode):' + #10 +
+  '    return (os.path.exists(fn) and' + ' os.access(fn, mode)' + #10 +
+  '            and not os.path.isdir(' + 'fn))' + #10 + #10 + #10 +
+  'def which(cmd, mode=os.F_OK | os.X' + '_OK, path=None):' + #10 +
+  '    """Given a command, mode, and ' +
+  'a PATH string, return the path whi' + 'ch' + #10 +
+  '    conforms to the given mode on ' +
+  'the PATH, or None if there is no s' + 'uch' + #10 + '    file.' + #10 +
+  #10 + '    `mode` defaults to os.F_OK | o' +
+  's.X_OK. `path` defaults to the res' + 'ult' + #10 +
+  '    of os.environ.get("PATH"), or ' +
+  'can be overridden with a custom se' + 'arch' + #10 + '    path.' + #10 +
+  #10 + '    """' + #10 + '    # If we''re given a path with a' +
+  ' directory part, look it up direct' + 'ly rather' + #10 +
+  '    # than referring to PATH direc' +
+  'tories. This includes checking rel' + 'ative to the' + #10 +
+  '    # current directory, e.g. ./sc' + 'ript' + #10 +
+  '    if os.path.dirname(cmd):' + #10 +
+  '        if _access_check(cmd, mode' + '):' + #10 +
+  '            return cmd' + #10 + '        return None' + #10 + #10 +
+  '    use_bytes = isinstance(cmd, by' + 'tes)' + #10 + #10 +
+  '    if path is None:' + #10 + '        path = os.environ.get("PAT' +
+  'H", None)' + #10 + '        if path is None:' + #10 + '            try:' +
+  #10 + '                path = os.confstr(' + '"CS_PATH")' + #10 +
+  '            except (AttributeError' + ', ValueError):' + #10 +
+  '                # os.confstr() or ' + 'CS_PATH is not available' + #10 +
+  '                path = os.defpath' + #10 +
+  '        # bpo-35755: Don''t use os.' +
+  'defpath if the PATH environment va' + 'riable is' + #10 +
+  '        # set to an empty string' + #10 + #10 +
+  '    # PATH='''' doesn''t match, where' +
+  'as PATH='':'' looks in the current d' + 'irectory' + #10 +
+  '    if not path:' + #10 + '        return None' + #10 + #10 +
+  '    if use_bytes:' + #10 + '        path = os.fsencode(path)' + #10 +
+  '        path = path.split(os.fsenc' + 'ode(os.pathsep))' + #10 +
+  '    else:' + #10 + '        path = os.fsdecode(path)' + #10 +
+  '        path = path.split(os.paths' + 'ep)' + #10 + #10 +
+  '    if sys.platform == "win32":' + #10 +
+  '        # The current directory ta' + 'kes precedence on Windows.' + #10 +
+  '        curdir = os.curdir' + #10 + '        if use_bytes:' + #10 +
+  '            curdir = os.fsencode(c' + 'urdir)' + #10 +
+  '        if curdir not in path:' + #10 +
+  '            path.insert(0, curdir)' + #10 + #10 +
+  '        # PATHEXT is necessary to ' + 'check on Windows.' + #10 +
+  '        pathext_source = os.getenv' +
+  '("PATHEXT") or _WIN_DEFAULT_PATHEX' + 'T' + #10 +
+  '        pathext = [ext for ext in ' +
+  'pathext_source.split(os.pathsep) i' + 'f ext]' + #10 + #10 +
+  '        if use_bytes:' + #10 + '            pathext = [os.fsencode' +
+  '(ext) for ext in pathext]' + #10 + '        # See if the given file ma' +
+  'tches any of the expected path ext' + 'ensions.' + #10 +
+  '        # This will allow us to sh' +
+  'ort circuit when given "python.exe' + '".' + #10 +
+  '        # If it does match, only t' +
+  'est that one, otherwise we have to' + ' try' + #10 + '        # others.' +
+  #10 + '        if any(cmd.lower().endswit' +
+  'h(ext.lower()) for ext in pathext)' + ':' + #10 +
+  '            files = [cmd]' + #10 + '        else:' + #10 +
+  '            files = [cmd + ext for' + ' ext in pathext]' + #10 +
+  '    else:' + #10 + '        # On other platforms you d' +
+  'on''t have things like PATHEXT to t' + 'ell you' + #10 +
+  '        # what file suffixes are e' +
+  'xecutable, so just pass on cmd as-' + 'is.' + #10 +
+  '        files = [cmd]' + #10 + #10 + '    seen = set()' + #10 +
+  '    for dir in path:' + #10 + '        normdir = os.path.normcase' +
+  '(dir)' + #10 + '        if not normdir in seen:' + #10 +
+  '            seen.add(normdir)' + #10 +
+  '            for thefile in files:' + #10 +
+  '                name = os.path.joi' + 'n(dir, thefile)' + #10 +
+  '                if _access_check(n' + 'ame, mode):' + #10 +
+  '                    return name' + #10 + '    return None' + #10 + #10;
 
 Function Src_shutil: AnsiString;
 Begin
- Result := Src_shutil_0 + Src_shutil_1 + Src_shutil_2;
+ Result := Src_shutil_0 + Src_shutil_1 + Src_shutil_2 + Src_shutil_3 +
+  Src_shutil_4 + Src_shutil_5;
 End;
 
 Const
@@ -77421,30 +84026,55 @@ End;
 Const
  Src_site_0: AnsiString =
   'import sys' + #10 + 'import builtins' + #10 + #10 +
-  'def _structseq(name, fields):' + #10 + '    n = len(fields)' + #10 + #10 +
-  '    class _S(tuple):' + #10 + '        _fields = tuple(fields)' + #10 +
-  #10 + '        def __new__(cls, seq):' + #10 +
-  '            seq = tuple(seq)' + #10 + '            if len(seq) != n:' +
+  'def _structseq(name, fields, extra' + 's=()):' + #10 +
+  '    n = len(fields)' + #10 + '    allf = tuple(fields) + tuple(e' +
+  'xtras)' + #10 + #10 + '    class _S(tuple):' + #10 +
+  '        _fields = tuple(fields)' + #10 + '        n_sequence_fields = n' +
+  #10 + '        n_fields = len(allf)' + #10 +
+  '        n_unnamed_fields = 0' + #10 + #10 +
+  '        def __new__(cls, seq, dict' + '=None):' + #10 +
+  '            seq = tuple(seq)' + #10 + '            if len(seq) < n:' +
   #10 + '                raise TypeError(''%' +
-  's() takes a %d-sequence (%d-sequen' +
-  'ce given)'' % (name, n, len(seq)))' + #10 +
-  '            return tuple.__new__(c' + 'ls, seq)' + #10 + #10 +
+  's() takes an at least %d-sequence ' +
+  '(%d-sequence given)'' % (name, n, l' + 'en(seq)))' + #10 +
+  '            if len(seq) > len(allf' + '):' + #10 +
+  '                raise TypeError(''%' +
+  's() takes an at most %d-sequence (' +
+  '%d-sequence given)'' % (name, len(a' + 'llf), len(seq)))' + #10 +
+  '            r = tuple.__new__(cls,' + ' seq[:n])' + #10 +
+  '            if extras:' + #10 + '                d = r.__dict__' + #10 +
+  '                for i, f in enumer' + 'ate(extras):' + #10 +
+  '                    if n + i < len' + '(seq):' + #10 +
+  '                        d[f] = seq' + '[n + i]' + #10 +
+  '                    elif dict is n' + 'ot None and f in dict:' + #10 +
+  '                        d[f] = dic' + 't[f]' + #10 +
+  '                    else:' + #10 + '                        d[f] = Non' +
+  'e' + #10 + '            return r' + #10 + #10 +
   '        def __repr__(self):' + #10 +
   '            return name + ''('' + '',' +
   ' ''.join([''%s=%r'' % (f, v) for f, v' +
-  ' in zip(self._fields, self)]) + '')' + '''' + #10 +
-  '    for i, f in enumerate(fields):' + #10 +
-  '        setattr(_S, f, property(la' + 'mbda self, i=i: self[i]))' + #10 +
-  '    _S.__name__ = name.split(''.'')[' + '-1]' + #10 + '    return _S' +
-  #10 + #10 + 'class _Namespace:' + #10 + '    def __init__(self, **kw):' +
-  #10 + '        self.__dict__.update(kw)' + #10 + #10 +
-  '    def __repr__(self):' + #10 + '        return ''namespace('' + '', ''' +
+  ' in zip(self._fields, self)]) + '')' + '''' + #10 + #10 +
+  '        def __reduce__(self):' + #10 +
+  '            return (type(self), (t' +
+  'uple(self), dict((f, self.__dict__' + '[f]) for f in extras)))' + #10 +
+  #10 + '        def __copy__(self):' + #10 + '            return self' +
+  #10 + #10 + '        def __deepcopy__(self, mem' + 'o):' + #10 +
+  '            return self' + #10 + '    for i, f in enumerate(fields):' +
+  #10 + '        setattr(_S, f, property(la' + 'mbda self, i=i: self[i]))' +
+  #10 + '    _S.__name__ = name.split(''.'')[' + '-1]' + #10 +
+  '    _S.__qualname__ = _S.__name__' + #10 +
+  '    _S.__module__ = name.rsplit(''.' +
+  ''', 1)[0] if ''.'' in name else ''buil' + 'tins''' + #10 +
+  '    return _S' + #10 + #10 + 'class _Namespace:' + #10 +
+  '    def __init__(self, **kw):' + #10 + '        self.__dict__.update(kw)' +
+  #10 + #10 + '    def __repr__(self):' + #10 +
+  '        return ''namespace('' + '', ''' +
   '.join([''%s=%r'' % (k, v) for k, v i' +
   'n self.__dict__.items()]) + '')''' + #10 + #10 +
   'sys.version_info = _structseq(''sys' +
   '.version_info'', [''major'', ''minor'',' +
   ' ''micro'', ''releaselevel'', ''serial''' +
-  '])((3, 8, 10, ''final'', 0))' + #10 +
+  '])((3, 8, 20, ''final'', 0))' + #10 +
   'sys.flags = _structseq(''sys.flags''' +
   ', [''debug'', ''inspect'', ''interactiv' +
   'e'', ''optimize'', ''dont_write_byteco' +
@@ -77541,7 +84171,73 @@ Const
   #10 + #10 + #10 + 'def _audit(event, *args):' + #10 +
   '    for _h in list(_audit_hooks):' + #10 + '        _h(event, *args)' +
   #10 + #10 + #10 + 'sys.addaudithook = _addaudithook' + #10 +
-  'sys.audit = _audit' + #10 + #10;
+  'sys.audit = _audit' + #10 + #10 + #10 +
+  'sys.builtin_module_names = tuple(s' + 'orted([' + #10 +
+  '    ''_ast'', ''_codecs'', ''_collectio' +
+  'ns'', ''_functools'', ''_imp'', ''_io'', ' +
+  '''_locale'', ''_operator'',' + #10 +
+  '    ''_signal'', ''_sre'', ''_stat'', ''_' +
+  'string'', ''_symtable'', ''_thread'', ''' +
+  '_tracemalloc'', ''_warnings'',' + #10 +
+  '    ''_weakref'', ''atexit'', ''builtin' +
+  's'', ''errno'', ''faulthandler'', ''gc'',' +
+  ' ''itertools'', ''marshal'',' + #10 +
+  '    ''posix'', ''pwd'', ''sys'', ''time'',' +
+  ' ''xxsubtype'', ''zipimport'']))' + #10 +
+  'sys.getfilesystemencodeerrors = la' + 'mbda: ''surrogateescape''' + #10 +
+  #10 + #10 + 'def _breakpointhook(*args, **kws):' + #10 + '    import os' +
+  #10 + '    hookname = os.environ.get(''PYT' + 'HONBREAKPOINT'')' + #10 +
+  '    if hookname is None or len(hoo' + 'kname) == 0:' + #10 +
+  '        hookname = ''pdb.set_trace''' + #10 +
+  '    elif hookname == ''0'':' + #10 + '        return None' + #10 +
+  '    modname, dot, funcname = hookn' + 'ame.rpartition(''.'')' + #10 +
+  '    if dot == '''':' + #10 + '        modname = ''builtins''' + #10 +
+  '    try:' + #10 + '        import importlib' + #10 +
+  '        module = importlib.import_' + 'module(modname)' + #10 +
+  '        hook = getattr(module, fun' + 'cname)' + #10 +
+  '    except Exception:' + #10 + '        import warnings' + #10 +
+  '        warnings.warn(''Ignoring un' +
+  'importable $PYTHONBREAKPOINT: "%s"' + ''' % hookname, RuntimeWarning)' +
+  #10 + '        return None' + #10 + '    return hook(*args, **kws)' + #10 +
+  #10 + #10 + 'sys.breakpointhook = _breakpointho' + 'ok' + #10 +
+  'sys.__breakpointhook__ = _breakpoi' + 'nthook' + #10 +
+  'sys.__excepthook__ = sys.excepthoo' + 'k' + #10 + 'sys.abiflags = ''''' +
+  #10 + 'sys.float_repr_style = ''short''' + #10 +
+  'sys.pycache_prefix = None' + #10 + 'sys._framework = ''''' + #10 +
+  'sys._git = (''CPython'', '''', '''')' + #10 + 'sys._home = None' + #10 +
+  'sys.thread_info = _structseq(''sys.' +
+  'thread_info'', [''name'', ''lock'', ''ve' +
+  'rsion''])((''pthread'', ''semaphore'', ' + 'None))' + #10 +
+  'sys.call_tracing = lambda func, ar' + 'gs: func(*args)' + #10 +
+  'sys.is_finalizing = lambda: False' + #10 +
+  'sys.getallocatedblocks = lambda: 0' + #10 +
+  'sys._clear_type_cache = lambda: No' + 'ne' + #10 +
+  'sys._debugmallocstats = lambda: No' + 'ne' + #10 +
+  'sys._current_frames = lambda: {}' + #10 +
+  'sys.getcheckinterval = lambda: 100' + #10 +
+  'sys.setcheckinterval = lambda n: N' + 'one' + #10 +
+  'sys.getswitchinterval = lambda: 0.' + '005' + #10 +
+  'if not hasattr(sys, ''setswitchinte' + 'rval''):' + #10 +
+  '    sys.setswitchinterval = lambda' + ' n: None' + #10 + '_dl = [2]' +
+  #10 + 'sys.getdlopenflags = lambda: _dl[0' + ']' + #10 +
+  'sys.setdlopenflags = lambda n: _dl' + '.__setitem__(0, n)' + #10 +
+  '_asg = [(None, None)]' + #10 + 'sys.get_asyncgen_hooks = lambda: _' +
+  'structseq(''asyncgen_hooks'', [''firs' +
+  'titer'', ''finalizer''])(_asg[0])' + #10 +
+  'sys.set_asyncgen_hooks = lambda fi' +
+  'rstiter=None, finalizer=None: _asg' +
+  '.__setitem__(0, (firstiter, finali' + 'zer))' + #10 + '_cotd = [0]' + #10 +
+  'sys.get_coroutine_origin_tracking_' + 'depth = lambda: _cotd[0]' + #10 +
+  'sys.set_coroutine_origin_tracking_' +
+  'depth = lambda depth: _cotd.__seti' + 'tem__(0, depth)' + #10 + #10 + #10 +
+  'def _unraisablehook(unraisable):' + #10 + '    import traceback' + #10 +
+  '    print(''Exception ignored in: %' +
+  'r'' % (unraisable.object,), file=sy' + 's.stderr)' + #10 +
+  '    traceback.print_exception(unra' +
+  'isable.exc_type, unraisable.exc_va' +
+  'lue, unraisable.exc_traceback, fil' + 'e=sys.stderr)' + #10 + #10 + #10 +
+  'sys.unraisablehook = _unraisableho' + 'ok' + #10 +
+  'sys.__unraisablehook__ = _unraisab' + 'lehook' + #10 + #10;
 
 Function Src_site: AnsiString;
 Begin
@@ -77550,26 +84246,131 @@ End;
 
 Const
  Src_stat_0: AnsiString =
-  'ST_MODE = 0; ST_INO = 1; ST_DEV = ' +
-  '2; ST_NLINK = 3; ST_UID = 4; ST_GI' + 'D = 5' + #10 +
-  'ST_SIZE = 6; ST_ATIME = 7; ST_MTIM' + 'E = 8; ST_CTIME = 9' + #10 +
-  'S_IFDIR = 0o040000; S_IFCHR = 0o02' + '0000; S_IFBLK = 0o060000' + #10 +
-  'S_IFREG = 0o100000; S_IFIFO = 0o01' +
-  '0000; S_IFLNK = 0o120000; S_IFSOCK' + ' = 0o140000' + #10 +
-  'def S_IMODE(mode): return mode & 0' + 'o7777' + #10 +
-  'def S_IFMT(mode): return mode & 0o' + '170000' + #10 +
-  'def S_ISDIR(mode): return S_IFMT(m' + 'ode) == S_IFDIR' + #10 +
-  'def S_ISCHR(mode): return S_IFMT(m' + 'ode) == S_IFCHR' + #10 +
-  'def S_ISBLK(mode): return S_IFMT(m' + 'ode) == S_IFBLK' + #10 +
-  'def S_ISREG(mode): return S_IFMT(m' + 'ode) == S_IFREG' + #10 +
-  'def S_ISFIFO(mode): return S_IFMT(' + 'mode) == S_IFIFO' + #10 +
-  'def S_ISLNK(mode): return S_IFMT(m' + 'ode) == S_IFLNK' + #10 +
-  'def S_ISSOCK(mode): return S_IFMT(' + 'mode) == S_IFSOCK' + #10 +
-  'S_ISUID = 0o4000; S_ISGID = 0o2000' + '; S_ISVTX = 0o1000' + #10 +
-  'S_IRWXU = 0o700; S_IRUSR = 0o400; ' + 'S_IWUSR = 0o200; S_IXUSR = 0o100' +
-  #10 + 'S_IRWXG = 0o070; S_IRGRP = 0o040; ' +
-  'S_IWGRP = 0o020; S_IXGRP = 0o010' + #10 +
-  'S_IRWXO = 0o007; S_IROTH = 0o004; ' + 'S_IWOTH = 0o002; S_IXOTH = 0o001' +
+  '"""Constants/functions for interpr' +
+  'eting results of os.stat() and os.' + 'lstat().' + #10 + #10 +
+  'Suggested usage: from stat import ' + '*' + #10 + '"""' + #10 + #10 +
+  '# Indices for stat struct members ' +
+  'in the tuple returned by os.stat()' + #10 + #10 + 'ST_MODE  = 0' + #10 +
+  'ST_INO   = 1' + #10 + 'ST_DEV   = 2' + #10 + 'ST_NLINK = 3' + #10 +
+  'ST_UID   = 4' + #10 + 'ST_GID   = 5' + #10 + 'ST_SIZE  = 6' + #10 +
+  'ST_ATIME = 7' + #10 + 'ST_MTIME = 8' + #10 + 'ST_CTIME = 9' + #10 + #10 +
+  '# Extract bits from the mode' + #10 + #10 + 'def S_IMODE(mode):' + #10 +
+  '    """Return the portion of the f' + 'ile''s mode that can be set by' +
+  #10 + '    os.chmod().' + #10 + '    """' + #10 +
+  '    return mode & 0o7777' + #10 + #10 + 'def S_IFMT(mode):' + #10 +
+  '    """Return the portion of the f' + 'ile''s mode that describes the' +
+  #10 + '    file type.' + #10 + '    """' + #10 +
+  '    return mode & 0o170000' + #10 + #10 +
+  '# Constants used as S_IFMT() for v' + 'arious file types' + #10 +
+  '# (not all are implemented on all ' + 'systems)' + #10 + #10 +
+  'S_IFDIR  = 0o040000  # directory' + #10 +
+  'S_IFCHR  = 0o020000  # character d' + 'evice' + #10 +
+  'S_IFBLK  = 0o060000  # block devic' + 'e' + #10 +
+  'S_IFREG  = 0o100000  # regular fil' + 'e' + #10 +
+  'S_IFIFO  = 0o010000  # fifo (named' + ' pipe)' + #10 +
+  'S_IFLNK  = 0o120000  # symbolic li' + 'nk' + #10 +
+  'S_IFSOCK = 0o140000  # socket file' + #10 +
+  '# Fallbacks for uncommon platform-' + 'specific constants' + #10 +
+  'S_IFDOOR = 0' + #10 + 'S_IFPORT = 0' + #10 + 'S_IFWHT = 0' + #10 + #10 +
+  '# Functions to test for each file ' + 'type' + #10 + #10 +
+  'def S_ISDIR(mode):' + #10 + '    """Return True if mode is from' +
+  ' a directory."""' + #10 + '    return S_IFMT(mode) == S_IFDIR' + #10 +
+  #10 + 'def S_ISCHR(mode):' + #10 + '    """Return True if mode is from' +
+  ' a character special device file."' + '""' + #10 +
+  '    return S_IFMT(mode) == S_IFCHR' + #10 + #10 + 'def S_ISBLK(mode):' +
+  #10 + '    """Return True if mode is from' +
+  ' a block special device file."""' + #10 +
+  '    return S_IFMT(mode) == S_IFBLK' + #10 + #10 + 'def S_ISREG(mode):' +
+  #10 + '    """Return True if mode is from' + ' a regular file."""' + #10 +
+  '    return S_IFMT(mode) == S_IFREG' + #10 + #10 + 'def S_ISFIFO(mode):' +
+  #10 + '    """Return True if mode is from' + ' a FIFO (named pipe)."""' +
+  #10 + '    return S_IFMT(mode) == S_IFIFO' + #10 + #10 +
+  'def S_ISLNK(mode):' + #10 + '    """Return True if mode is from' +
+  ' a symbolic link."""' + #10 + '    return S_IFMT(mode) == S_IFLNK' + #10 +
+  #10 + 'def S_ISSOCK(mode):' + #10 + '    """Return True if mode is from' +
+  ' a socket."""' + #10 + '    return S_IFMT(mode) == S_IFSOC' + 'K' + #10 +
+  #10 + 'def S_ISDOOR(mode):' + #10 + '    """Return True if mode is from' +
+  ' a door."""' + #10 + '    return False' + #10 + #10 +
+  'def S_ISPORT(mode):' + #10 + '    """Return True if mode is from' +
+  ' an event port."""' + #10 + '    return False' + #10 + #10 +
+  'def S_ISWHT(mode):' + #10 + '    """Return True if mode is from' +
+  ' a whiteout."""' + #10 + '    return False' + #10 + #10 +
+  '# Names for permission bits' + #10 + #10 +
+  'S_ISUID = 0o4000  # set UID bit' + #10 +
+  'S_ISGID = 0o2000  # set GID bit' + #10 +
+  'S_ENFMT = S_ISGID # file locking e' + 'nforcement' + #10 +
+  'S_ISVTX = 0o1000  # sticky bit' + #10 +
+  'S_IREAD = 0o0400  # Unix V7 synony' + 'm for S_IRUSR' + #10 +
+  'S_IWRITE = 0o0200 # Unix V7 synony' + 'm for S_IWUSR' + #10 +
+  'S_IEXEC = 0o0100  # Unix V7 synony' + 'm for S_IXUSR' + #10 +
+  'S_IRWXU = 0o0700  # mask for owner' + ' permissions' + #10 +
+  'S_IRUSR = 0o0400  # read by owner' + #10 +
+  'S_IWUSR = 0o0200  # write by owner' + #10 +
+  'S_IXUSR = 0o0100  # execute by own' + 'er' + #10 +
+  'S_IRWXG = 0o0070  # mask for group' + ' permissions' + #10 +
+  'S_IRGRP = 0o0040  # read by group' + #10 +
+  'S_IWGRP = 0o0020  # write by group' + #10 +
+  'S_IXGRP = 0o0010  # execute by gro' + 'up' + #10 +
+  'S_IRWXO = 0o0007  # mask for other' + 's (not in group) permissions' +
+  #10 + 'S_IROTH = 0o0004  # read by others' + #10 +
+  'S_IWOTH = 0o0002  # write by other' + 's' + #10 +
+  'S_IXOTH = 0o0001  # execute by oth' + 'ers' + #10 + #10 +
+  '# Names for file flags' + #10 + #10 +
+  'UF_NODUMP    = 0x00000001  # do no' + 't dump file' + #10 +
+  'UF_IMMUTABLE = 0x00000002  # file ' + 'may not be changed' + #10 +
+  'UF_APPEND    = 0x00000004  # file ' + 'may only be appended to' + #10 +
+  'UF_OPAQUE    = 0x00000008  # direc' +
+  'tory is opaque when viewed through' + ' a union stack' + #10 +
+  'UF_NOUNLINK  = 0x00000010  # file ' + 'may not be renamed or deleted' +
+  #10 + 'UF_COMPRESSED = 0x00000020 # OS X:' + ' file is hfs-compressed' +
+  #10 + 'UF_HIDDEN    = 0x00008000  # OS X:' +
+  ' file should not be displayed' + #10 +
+  'SF_ARCHIVED  = 0x00010000  # file ' + 'may be archived' + #10 +
+  'SF_IMMUTABLE = 0x00020000  # file ' + 'may not be changed' + #10 +
+  'SF_APPEND    = 0x00040000  # file ' + 'may only be appended to' + #10 +
+  'SF_NOUNLINK  = 0x00100000  # file ' + 'may not be renamed or deleted' +
+  #10 + 'SF_SNAPSHOT  = 0x00200000  # file ' + 'is a snapshot file' + #10 +
+  #10 + #10 + '_filemode_table = (' + #10 + '    ((S_IFLNK,         "l"),' +
+  #10 + '     (S_IFSOCK,        "s"),  # Mu' +
+  'st appear before IFREG and IFDIR a' + 's IFSOCK == IFREG | IFDIR' + #10 +
+  '     (S_IFREG,         "-"),' + #10 + '     (S_IFBLK,         "b"),' +
+  #10 + '     (S_IFDIR,         "d"),' + #10 +
+  '     (S_IFCHR,         "c"),' + #10 + '     (S_IFIFO,         "p")),' +
+  #10 + #10 + '    ((S_IRUSR,         "r"),),' + #10 +
+  '    ((S_IWUSR,         "w"),),' + #10 + '    ((S_IXUSR|S_ISUID, "s"),' +
+  #10 + '     (S_ISUID,         "S"),' + #10 +
+  '     (S_IXUSR,         "x")),' + #10 + #10 +
+  '    ((S_IRGRP,         "r"),),' + #10 + '    ((S_IWGRP,         "w"),),' +
+  #10 + '    ((S_IXGRP|S_ISGID, "s"),' + #10 +
+  '     (S_ISGID,         "S"),' + #10 + '     (S_IXGRP,         "x")),' +
+  #10 + #10 + '    ((S_IROTH,         "r"),),' + #10 +
+  '    ((S_IWOTH,         "w"),),' + #10 + '    ((S_IXOTH|S_ISVTX, "t"),' +
+  #10 + '     (S_ISVTX,         "T"),' + #10 +
+  '     (S_IXOTH,         "x"))' + #10 + ')' + #10 + #10 +
+  'def filemode(mode):' + #10 + '    """Convert a file''s mode to a ' +
+  'string of the form ''-rwxrwxrwx''.""' + '"' + #10 + '    perm = []' + #10 +
+  '    for table in _filemode_table:' + #10 +
+  '        for bit, char in table:' + #10 +
+  '            if mode & bit == bit:' + #10 +
+  '                perm.append(char)' + #10 + '                break' + #10 +
+  '        else:' + #10 + '            perm.append("-")' + #10 +
+  '    return "".join(perm)' + #10 + #10 + #10 +
+  '# Windows FILE_ATTRIBUTE constants' + ' for interpreting os.stat()''s' +
+  #10 + '# "st_file_attributes" member' + #10 + #10 +
+  'FILE_ATTRIBUTE_ARCHIVE = 32' + #10 + 'FILE_ATTRIBUTE_COMPRESSED = 2048' +
+  #10 + 'FILE_ATTRIBUTE_DEVICE = 64' + #10 + 'FILE_ATTRIBUTE_DIRECTORY = 16' +
+  #10 + 'FILE_ATTRIBUTE_ENCRYPTED = 16384' + #10 +
+  'FILE_ATTRIBUTE_HIDDEN = 2' + #10 + 'FILE_ATTRIBUTE_INTEGRITY_STREAM = ' +
+  '32768' + #10 + 'FILE_ATTRIBUTE_NORMAL = 128' + #10 +
+  'FILE_ATTRIBUTE_NOT_CONTENT_INDEXED' + ' = 8192' + #10 +
+  'FILE_ATTRIBUTE_NO_SCRUB_DATA = 131' + '072' + #10 +
+  'FILE_ATTRIBUTE_OFFLINE = 4096' + #10 + 'FILE_ATTRIBUTE_READONLY = 1' +
+  #10 + 'FILE_ATTRIBUTE_REPARSE_POINT = 102' + '4' + #10 +
+  'FILE_ATTRIBUTE_SPARSE_FILE = 512' + #10 + 'FILE_ATTRIBUTE_SYSTEM = 4' +
+  #10 + 'FILE_ATTRIBUTE_TEMPORARY = 256' + #10 +
+  'FILE_ATTRIBUTE_VIRTUAL = 65536' + #10 + #10 + #10 +
+  '# If available, use C implementati' + 'on' + #10 + 'try:' + #10 +
+  '    from _stat import *' + #10 + 'except ImportError:' + #10 + '    pass' +
   #10 + #10;
 
 Function Src_stat: AnsiString;
@@ -79916,44 +86717,56 @@ Const
   'except for ''mktemp''.  ''mktemp'' is ' +
   'subject to race conditions and' + #10 +
   'should not be used; it is provided' + ' for backward compatibility only.' +
-  #10 + #10 + 'Pure Python version for an interpr' +
-  'eter without os.open / file descri' + 'ptors:' + #10 +
-  'files are created exclusively with' +
-  ' open(path, ''x'') and mkstemp() ret' + 'urns a' + #10 +
-  'placeholder integer "descriptor" (' +
-  'a _TempFd, an int subclass carryin' + 'g .path)' + #10 +
-  'when os.open is not available.' + #10 + '"""' + #10 + #10 + '__all__ = [' +
-  #10 + '    "NamedTemporaryFile", "Tempora' +
-  'ryFile",  # high level safe interf' + 'aces' + #10 +
+  #10 + #10 + 'The default path names are returne' +
+  'd as str.  If you supply bytes as' + #10 +
+  'input, all return values will be i' + 'n bytes.  Ex:' + #10 + #10 +
+  '    >>> tempfile.mkstemp()' + #10 + '    (4, ''/tmp/tmptpu9nin8'')' + #10 +
+  '    >>> tempfile.mkdtemp(suffix=b''' + ''')' + #10 +
+  '    b''/tmp/tmppbi8f0hy''' + #10 + #10 +
+  'This module also provides some dat' + 'a items to the user:' + #10 + #10 +
+  '  TMP_MAX  - maximum number of nam' + 'es that will be tried before' +
+  #10 + '             giving up.' + #10 +
+  '  tempdir  - If this is set to a s' + 'tring before the first use of' +
+  #10 + '             any routine from this' +
+  ' module, it will be considered as' + #10 +
+  '             another candidate loc' + 'ation to store temporary files.' +
+  #10 + '"""' + #10 + #10 + '__all__ = [' + #10 +
+  '    "NamedTemporaryFile", "Tempora' +
+  'ryFile", # high level safe interfa' + 'ces' + #10 +
   '    "SpooledTemporaryFile", "Tempo' + 'raryDirectory",' + #10 +
   '    "mkstemp", "mkdtemp",         ' +
-  '          # low level safe interfa' + 'ces' + #10 +
+  '         # low level safe interfac' + 'es' + #10 +
   '    "mktemp",                     ' +
-  '          # deprecated unsafe inte' + 'rface' + #10 +
-  '    "TMP_MAX", "gettempprefix",   ' + '          # constants' + #10 +
+  '         # deprecated unsafe inter' + 'face' + #10 +
+  '    "TMP_MAX", "gettempprefix",   ' + '         # constants' + #10 +
   '    "tempdir", "gettempdir",' + #10 +
   '    "gettempprefixb", "gettempdirb' + '",' + #10 + '   ]' + #10 + #10 +
-  '# Imports.' + #10 + #10 + 'import os as _os' + #10 + 'import sys as _sys' +
-  #10 + 'import errno as _errno' + #10 + 'import io as _io' + #10 +
-  'from random import Random as _Rand' + 'om' + #10 + #10 +
-  '_has_fds = (hasattr(_os, ''open'') a' + 'nd hasattr(_os, ''close'')' +
-  #10 + '            and hasattr(_os, ''fdop' +
-  'en'') and hasattr(_os, ''O_EXCL''))' + #10 + #10 + '# Internal constants' +
-  #10 + #10 + 'TMP_MAX = 10000' + #10 + #10 +
+  #10 + '# Imports.' + #10 + #10 + 'import functools as _functools' + #10 +
+  'import warnings as _warnings' + #10 + 'import io as _io' + #10 +
+  'import os as _os' + #10 + 'import shutil as _shutil' + #10 +
+  'import errno as _errno' + #10 + 'from random import Random as _Rand' +
+  'om' + #10 + 'import sys as _sys' + #10 + 'import weakref as _weakref' +
+  #10 + 'import _thread' + #10 + '_allocate_lock = _thread.allocate_' +
+  'lock' + #10 + #10 + '_text_openflags = _os.O_RDWR | _os' +
+  '.O_CREAT | _os.O_EXCL' + #10 + 'if hasattr(_os, ''O_NOFOLLOW''):' + #10 +
+  '    _text_openflags |= _os.O_NOFOL' + 'LOW' + #10 + #10 +
+  '_bin_openflags = _text_openflags' + #10 +
+  'if hasattr(_os, ''O_BINARY''):' + #10 +
+  '    _bin_openflags |= _os.O_BINARY' + #10 + #10 +
+  'if hasattr(_os, ''TMP_MAX''):' + #10 + '    TMP_MAX = _os.TMP_MAX' + #10 +
+  'else:' + #10 + '    TMP_MAX = 10000' + #10 + #10 +
   '# This variable _was_ unused for l' + 'egacy reasons, see issue 10354.' +
   #10 + '# But as of 3.5 we actually use it' +
   ' at runtime so changing it would' + #10 +
   '# have a possibly desirable side e' +
   'ffect...  But we do not want to su' + 'pport' + #10 +
   '# that as an API.  It is undocumen' +
-  'ted on purpose.  Do not rely on th' + 'is.' + #10 + 'template = "tmp"' +
-  #10 + #10 + #10 + 'def _s(path):' + #10 +
-  '    # this interpreter''s os functi' + 'ons only accept str paths' + #10 +
-  '    if isinstance(path, bytes):' + #10 +
-  '        return _os.fsdecode(path)' + #10 + '    return path' + #10 + #10 +
-  #10 + 'def _exists(fn):' + #10 + '    found = True' + #10 + '    try:' +
-  #10 + '        _os.lstat(fn)' + #10 + '    except OSError:' + #10 +
-  '        found = False' + #10 + '    return found' + #10 + #10 + #10 +
+  'ted on purpose.  Do not depend on ' + 'this.' + #10 + 'template = "tmp"' +
+  #10 + #10 + '# Internal routines.' + #10 + #10 +
+  '_once_lock = _allocate_lock()' + #10 + #10 + #10 + 'def _exists(fn):' +
+  #10 + '    try:' + #10 + '        _os.lstat(fn)' + #10 +
+  '    except OSError:' + #10 + '        return False' + #10 + '    else:' +
+  #10 + '        return True' + #10 + #10 + #10 +
   'def _infer_return_type(*args):' + #10 +
   '    """Look at the type of all arg' +
   's and divine their implied return ' + 'type."""' + #10 +
@@ -79995,35 +86808,33 @@ Const
   #10 + '    @property' + #10 + '    def rng(self):' + #10 +
   '        cur_pid = _os.getpid()' + #10 +
   '        if cur_pid != getattr(self' + ', ''_rng_pid'', None):' + #10 +
-  '            seed = int.from_bytes(' +
-  '_os.urandom(8), ''big'') ^ (cur_pid ' + '<< 20)' + #10 +
-  '            self._rng = _Random(se' + 'ed)' + #10 +
+  '            self._rng = _Random()' + #10 +
   '            self._rng_pid = cur_pi' + 'd' + #10 +
   '        return self._rng' + #10 + #10 + '    def __iter__(self):' + #10 +
   '        return self' + #10 + #10 + '    def __next__(self):' + #10 +
   '        c = self.characters' + #10 + '        choose = self.rng.choice' +
   #10 + '        letters = [choose(c) for d' + 'ummy in range(8)]' + #10 +
-  '        return ''''.join(letters)' + #10 + #10 + #10 +
+  '        return ''''.join(letters)' + #10 + #10 +
   'def _candidate_tempdir_list():' + #10 +
   '    """Generate a list of candidat' + 'e temporary directories which' +
   #10 + '    _get_default_tempdir will try.' + '"""' + #10 + #10 +
   '    dirlist = []' + #10 + #10 + '    # First, try the environment.' + #10 +
   '    for envname in ''TMPDIR'', ''TEMP' + ''', ''TMP'':' + #10 +
-  '        dirname = _os.getenv(envna' + 'me)' + #10 + '        if dirname:' +
-  #10 + '            dirlist.append(dirname' + ')' + #10 + #10 +
+  '        dirname = _os.getenv(envna' + 'me)' + #10 +
+  '        if dirname: dirlist.append' + '(dirname)' + #10 + #10 +
   '    # Failing that, try OS-specifi' + 'c locations.' + #10 +
-  '    if _os.name == ''nt'':' + #10 + '        dirlist.extend([_os.path.e' +
-  'xpanduser(r''~\AppData\Local\Temp'')' + ',' + #10 +
-  '                        _os.path.e' +
-  'xpandvars(r''%SYSTEMROOT%\Temp''),' + #10 +
-  '                        r''c:\temp''' +
-  ', r''c:\tmp'', r''\temp'', r''\tmp''])' + #10 + '    else:' + #10 +
-  '        dirlist.extend([''/tmp'', ''/' + 'var/tmp'', ''/usr/tmp''])' +
+  '    if _os.name == ''nt'':' + #10 + '        dirlist.extend([ _os.path.' +
+  'expanduser(r''~\AppData\Local\Temp''' + '),' + #10 +
+  '                         _os.path.' +
+  'expandvars(r''%SYSTEMROOT%\Temp''),' + #10 +
+  '                         r''c:\temp' +
+  ''', r''c:\tmp'', r''\temp'', r''\tmp'' ])' + #10 + '    else:' + #10 +
+  '        dirlist.extend([ ''/tmp'', ''' + '/var/tmp'', ''/usr/tmp'' ])' +
   #10 + #10 + '    # As a last resort, the curren' + 't directory.' + #10 +
   '    try:' + #10 + '        dirlist.append(_os.getcwd(' + '))' + #10 +
   '    except (AttributeError, OSErro' + 'r):' + #10 +
   '        dirlist.append(_os.curdir)' + #10 + #10 + '    return dirlist' +
-  #10 + #10 + #10 + 'def _get_default_tempdir():' + #10 +
+  #10 + #10 + 'def _get_default_tempdir():' + #10 +
   '    """Calculate the default direc' + 'tory to use for temporary files.' +
   #10 + '    This routine should be called ' + 'exactly once.' + #10 + #10 +
   '    We determine whether or not a ' + 'candidate temp dir is usable by' +
@@ -80036,42 +86847,42 @@ Const
   '    for dir in dirlist:' + #10 + '        if dir != _os.curdir:' + #10 +
   '            dir = _os.path.abspath' + '(dir)' + #10 +
   '        # Try only a few names per' + ' directory.' + #10 +
-  '        giveup = False' + #10 + '        for seq in range(100):' + #10 +
-  '            if giveup:' + #10 + '                break   # no point' +
-  ' trying more names in this directo' + 'ry' + #10 +
-  '            name = next(namer)' + #10 +
-  '            filename = _os.path.jo' + 'in(dir, name)' + #10 +
-  '            ok = False' + #10 + '            try:' + #10 +
-  '                with open(filename' + ', ''xb'') as fp:' + #10 +
-  '                    fp.write(b''bla' + 't'')' + #10 +
-  '                ok = True' + #10 + '            except FileExistsError' +
-  ':' + #10 + '                pass' + #10 +
-  '            except PermissionError' + ':' + #10 +
+  '        for seq in range(100):' + #10 + '            name = next(namer)' +
+  #10 + '            filename = _os.path.jo' + 'in(dir, name)' + #10 +
+  '            try:' + #10 + '                fd = _os.open(file' +
+  'name, _bin_openflags, 0o600)' + #10 + '                try:' + #10 +
+  '                    try:' + #10 + '                        with _io.o' +
+  'pen(fd, ''wb'', closefd=False) as fp' + ':' + #10 +
+  '                            fp.wri' + 'te(b''blat'')' + #10 +
+  '                    finally:' + #10 +
+  '                        _os.close(' + 'fd)' + #10 +
+  '                finally:' + #10 + '                    _os.unlink(fil' +
+  'ename)' + #10 + '                return dir' + #10 +
+  '            except FileExistsError' + ':' + #10 + '                pass' +
+  #10 + '            except PermissionError' + ':' + #10 +
   '                # This exception i' +
-  's thrown when a directory with the' + ' chosen' + #10 +
-  '                # name already exi' + 'sts on windows.' + #10 +
-  '                if not (_os.name =' +
-  '= ''nt'' and _os.path.isdir(dir) and' + #10 +
-  '                        _os.access' + '(dir, _os.W_OK)):' + #10 +
-  '                    giveup = True' + #10 + '            except OSError:' +
-  #10 + '                giveup = True' + #10 + '            if ok:' + #10 +
-  '                _os.unlink(filenam' + 'e)' + #10 +
-  '                return dir' + #10 + '    raise FileNotFoundError(_errno' +
-  '.ENOENT,' + #10 + '                            "No us' +
+  's thrown when a directory with the' + ' chosen name' + #10 +
+  '                # already exists o' + 'n windows.' + #10 +
+  '                if (_os.name == ''n' + 't'' and _os.path.isdir(dir) and' +
+  #10 + '                    _os.access(dir' + ', _os.W_OK)):' + #10 +
+  '                    continue' + #10 +
+  '                break   # no point' +
+  ' trying more names in this directo' + 'ry' + #10 +
+  '            except OSError:' + #10 + '                break   # no point' +
+  ' trying more names in this directo' + 'ry' + #10 +
+  '    raise FileNotFoundError(_errno' + '.ENOENT,' + #10 +
+  '                            "No us' +
   'able temporary directory found in ' + '%s" %' + #10 +
-  '                            dirlis' + 't)' + #10 + #10 + #10 +
-  '_name_sequence = None' + #10 + #10 + #10 + 'def _get_candidate_names():' +
-  #10 + '    """Common setup sequence for a' +
-  'll user-callable interfaces."""' + #10 + #10 +
-  '    global _name_sequence' + #10 + '    if _name_sequence is None:' + #10 +
-  '        _name_sequence = _RandomNa' + 'meSequence()' + #10 +
-  '    return _name_sequence' + #10 + #10 + #10 + 'class _TempFd(int):' +
-  #10 + '    """Placeholder file descriptor' +
-  ' returned by mkstemp() when os.ope' + 'n is' + #10 +
-  '    unavailable.  The file itself ' +
-  'is created (empty, mode 0600) and ' + 'closed."""' + #10 +
-  '    path = None' + #10 + #10 + #10 + '_fake_fd_next = [1000]' + #10 + #10 +
-  #10 + 'def _mkstemp_inner(dir, pre, suf, ' + 'flags, output_type):' + #10 +
+  '                            dirlis' + 't)' + #10 + #10 +
+  '_name_sequence = None' + #10 + #10 + 'def _get_candidate_names():' + #10 +
+  '    """Common setup sequence for a' + 'll user-callable interfaces."""' +
+  #10 + #10 + '    global _name_sequence' + #10 +
+  '    if _name_sequence is None:' + #10 + '        _once_lock.acquire()' +
+  #10 + '        try:' + #10 + '            if _name_sequence is N' + 'one:' +
+  #10 + '                _name_sequence = _' + 'RandomNameSequence()' + #10 +
+  '        finally:' + #10 + '            _once_lock.release()' + #10 +
+  '    return _name_sequence' + #10 + #10 + #10 +
+  'def _mkstemp_inner(dir, pre, suf, ' + 'flags, output_type):' + #10 +
   '    """Code common to mkstemp, Tem' +
   'poraryFile, and NamedTemporaryFile' + '."""' + #10 + #10 +
   '    names = _get_candidate_names()' + #10 +
@@ -80079,47 +86890,50 @@ Const
   '        names = map(_os.fsencode, ' + 'names)' + #10 + #10 +
   '    for seq in range(TMP_MAX):' + #10 + '        name = next(names)' +
   #10 + '        file = _os.path.join(dir, ' + 'pre + name + suf)' + #10 +
-  '        created = False' + #10 + '        if _has_fds:' + #10 +
-  '            try:' + #10 + '                fd = _os.open(_s(f' +
-  'ile), flags, 0o600)' + #10 + '                created = True' + #10 +
-  '            except FileExistsError' + ':' + #10 +
-  '                pass    # try agai' + 'n' + #10 +
-  '            except PermissionError' + ':' + #10 +
-  '                # This exception i' +
-  's thrown when a directory with the' + ' chosen' + #10 +
-  '                # name already exi' + 'sts on windows.' + #10 +
-  '                if (_os.name == ''n' + 't'' and _os.path.isdir(dir) and' +
-  #10 + '                        _os.access' + '(dir, _os.W_OK)):' + #10 +
-  '                    pass' + #10 + '                else:' + #10 +
-  '                    raise' + #10;
+  '        _sys.audit("tempfile.mkste' + 'mp", file)' + #10 + '        try:' +
+  #10 + '            fd = _os.open(file, fl' + 'ags, 0o600)' + #10;
 
 Const
  Src_tempfile_1: AnsiString =
-  '        else:' + #10 + '            try:' + #10 +
-  '                with open(_s(file)' + ', ''xb''):' + #10 +
-  '                    pass' + #10 + '                _os.chmod(_s(file)' +
-  ', 0o600)' + #10 + '                created = True' + #10 +
-  '                fd = _TempFd(_fake' + '_fd_next[0])' + #10 +
-  '                _fake_fd_next[0] +' + '= 1' + #10 +
-  '                fd.path = file' + #10 +
-  '            except FileExistsError' + ':' + #10 +
-  '                pass    # try agai' + 'n' + #10 + '        if created:' +
-  #10 + '            return (fd, _os.path.a' + 'bspath(file))' + #10 + #10 +
-  '    raise FileExistsError(_errno.E' + 'EXIST,' + #10 +
-  '                          "No usab' + 'le temporary file name found")' +
-  #10 + #10 + #10 + '# User visible interfaces.' + #10 + #10 +
-  'def gettempprefix():' + #10 + '    """The default prefix for temp' +
-  'orary directories."""' + #10 + '    return template' + #10 + #10 + #10 +
-  'def gettempprefixb():' + #10 + '    """The default prefix for temp' +
-  'orary directories as bytes."""' + #10 +
-  '    return _os.fsencode(gettemppre' + 'fix())' + #10 + #10 + #10 +
-  'tempdir = None' + #10 + #10 + #10 + 'def gettempdir():' + #10 +
+  '        except FileExistsError:' + #10 +
+  '            continue    # try agai' + 'n' + #10 +
+  '        except PermissionError:' + #10 +
+  '            # This exception is th' +
+  'rown when a directory with the cho' + 'sen name' + #10 +
+  '            # already exists on wi' + 'ndows.' + #10 +
+  '            if (_os.name == ''nt'' a' + 'nd _os.path.isdir(dir) and' +
+  #10 + '                _os.access(dir, _o' + 's.W_OK)):' + #10 +
+  '                continue' + #10 + '            else:' + #10 +
+  '                raise' + #10 + '        return (fd, _os.path.abspa' +
+  'th(file))' + #10 + #10 + '    raise FileExistsError(_errno.E' + 'EXIST,' +
+  #10 + '                          "No usab' +
+  'le temporary file name found")' + #10 + #10 +
+  'def _dont_follow_symlinks(func, pa' + 'th, *args):' + #10 +
+  '    # Pass follow_symlinks=False, ' +
+  'unless not supported on this platf' + 'orm.' + #10 +
+  '    if func in _os.supports_follow' + '_symlinks:' + #10 +
+  '        func(path, *args, follow_s' + 'ymlinks=False)' + #10 +
+  '    elif _os.name == ''nt'' or not _' + 'os.path.islink(path):' + #10 +
+  '        func(path, *args)' + #10 + #10 + 'def _resetperms(path):' + #10 +
+  '    try:' + #10 + '        chflags = _os.chflags' + #10 +
+  '    except AttributeError:' + #10 + '        pass' + #10 + '    else:' +
+  #10 + '        _dont_follow_symlinks(chfl' + 'ags, path, 0)' + #10 +
+  '    _dont_follow_symlinks(_os.chmo' + 'd, path, 0o700)' + #10 + #10 + #10 +
+  '# User visible interfaces.' + #10 + #10 + 'def gettempprefix():' + #10 +
+  '    """The default prefix for temp' + 'orary directories."""' + #10 +
+  '    return template' + #10 + #10 + 'def gettempprefixb():' + #10 +
+  '    """The default prefix for temp' + 'orary directories as bytes."""' +
+  #10 + '    return _os.fsencode(gettemppre' + 'fix())' + #10 + #10 +
+  'tempdir = None' + #10 + #10 + 'def gettempdir():' + #10 +
   '    """Accessor for tempfile.tempd' + 'ir."""' + #10 +
   '    global tempdir' + #10 + '    if tempdir is None:' + #10 +
-  '        tempdir = _get_default_tem' + 'pdir()' + #10 +
-  '    return tempdir' + #10 + #10 + #10 + 'def gettempdirb():' + #10 +
+  '        _once_lock.acquire()' + #10 + '        try:' + #10 +
+  '            if tempdir is None:' + #10 +
+  '                tempdir = _get_def' + 'ault_tempdir()' + #10 +
+  '        finally:' + #10 + '            _once_lock.release()' + #10 +
+  '    return tempdir' + #10 + #10 + 'def gettempdirb():' + #10 +
   '    """A bytes version of tempfile' + '.gettempdir()."""' + #10 +
-  '    return _os.fsencode(gettempdir' + '())' + #10 + #10 + #10 +
+  '    return _os.fsencode(gettempdir' + '())' + #10 + #10 +
   'def mkstemp(suffix=None, prefix=No' + 'ne, dir=None, text=False):' + #10 +
   '    """User-callable function to c' +
   'reate and return a unique temporar' + 'y' + #10 +
@@ -80137,8 +86951,7 @@ Const
   '    otherwise a default directory ' + 'is used.' + #10 + #10 +
   '    If ''text'' is specified and tru' + 'e, the file is opened in text' +
   #10 + '    mode.  Else (the default) the ' +
-  'file is opened in binary mode.  On' + #10 +
-  '    some operating systems, this m' + 'akes no difference.' + #10 + #10 +
+  'file is opened in binary mode.' + #10 + #10 +
   '    If any of ''suffix'', ''prefix'' a' +
   'nd ''dir'' are not None, they must b' + 'e the' + #10 +
   '    same type.  If they are bytes,' +
@@ -80153,10 +86966,8 @@ Const
   'ting the file when done with it.' + #10 + '    """' + #10 + #10 +
   '    prefix, suffix, dir, output_ty' +
   'pe = _sanitize_params(prefix, suff' + 'ix, dir)' + #10 + #10 +
-  '    flags = 0' + #10 + '    if _has_fds:' + #10 +
-  '        flags = _os.O_RDWR | _os.O' + '_CREAT | _os.O_EXCL' + #10 +
-  '        if not text and hasattr(_o' + 's, ''O_BINARY''):' + #10 +
-  '            flags |= _os.O_BINARY' + #10 +
+  '    if text:' + #10 + '        flags = _text_openflags' + #10 +
+  '    else:' + #10 + '        flags = _bin_openflags' + #10 + #10 +
   '    return _mkstemp_inner(dir, pre' + 'fix, suffix, flags, output_type)' +
   #10 + #10 + #10 + 'def mkdtemp(suffix=None, prefix=No' + 'ne, dir=None):' +
   #10 + '    """User-callable function to c' +
@@ -80175,24 +86986,21 @@ Const
   '        names = map(_os.fsencode, ' + 'names)' + #10 + #10 +
   '    for seq in range(TMP_MAX):' + #10 + '        name = next(names)' +
   #10 + '        file = _os.path.join(dir, ' + 'prefix + name + suffix)' +
-  #10 + '        created = False' + #10 + '        try:' + #10 +
-  '            _os.mkdir(_s(file), 0o' + '700)' + #10 +
-  '            _os.chmod(_s(file), 0o' +
-  '700)   # mkdir() mode is ignored b' + 'y this interpreter (B12)' + #10 +
-  '            created = True' + #10 + '        except FileExistsError:' +
-  #10 + '            pass    # try again' + #10 +
+  #10 + '        _sys.audit("tempfile.mkdte' + 'mp", file)' + #10 +
+  '        try:' + #10 + '            _os.mkdir(file, 0o700)' + #10 +
+  '        except FileExistsError:' + #10 +
+  '            continue    # try agai' + 'n' + #10 +
   '        except PermissionError:' + #10 +
   '            # This exception is th' +
   'rown when a directory with the cho' + 'sen name' + #10 +
   '            # already exists on wi' + 'ndows.' + #10 +
   '            if (_os.name == ''nt'' a' + 'nd _os.path.isdir(dir) and' +
-  #10 + '                    _os.access(dir' + ', _os.W_OK)):' + #10 +
-  '                pass' + #10 + '            else:' + #10 +
-  '                raise' + #10 + '        if created:' + #10 +
-  '            return _os.path.abspat' + 'h(file)' + #10 + #10 +
+  #10 + '                _os.access(dir, _o' + 's.W_OK)):' + #10 +
+  '                continue' + #10 + '            else:' + #10 +
+  '                raise' + #10 + '        return file' + #10 + #10 +
   '    raise FileExistsError(_errno.E' + 'EXIST,' + #10 +
   '                          "No usab' +
-  'le temporary directory name found"' + ')' + #10 + #10 + #10 +
+  'le temporary directory name found"' + ')' + #10 + #10 +
   'def mktemp(suffix="", prefix=templ' + 'ate, dir=None):' + #10 +
   '    """User-callable function to r' +
   'eturn a unique temporary file name' + '.  The' + #10 +
@@ -80207,28 +87015,19 @@ Const
   'xist at some point, but by the tim' + 'e' + #10 +
   '    you get around to creating it,' +
   ' someone else may have beaten you ' + 'to' + #10 + '    the punch.' + #10 +
-  '    """' + #10 + #10 + '    if dir is None:' + #10 +
-  '        dir = gettempdir()' + #10 + #10 +
+  '    """' + #10 + #10 + '##    from warnings import warn as' + ' _warn' +
+  #10 + '##    _warn("mktemp is a potential' +
+  ' security risk to your program",' + #10 +
+  '##          RuntimeWarning, stackl' + 'evel=2)' + #10 + #10 +
+  '    if dir is None:' + #10 + '        dir = gettempdir()' + #10 + #10 +
   '    names = _get_candidate_names()' + #10 +
   '    for seq in range(TMP_MAX):' + #10 + '        name = next(names)' +
   #10 + '        file = _os.path.join(dir, ' + 'prefix + name + suffix)' +
   #10 + '        if not _exists(file):' + #10 + '            return file' +
   #10 + #10 + '    raise FileExistsError(_errno.E' + 'EXIST,' + #10 +
   '                          "No usab' + 'le temporary filename found")' +
-  #10 + #10 + #10 + 'def _open_created(file, mode, buff' +
-  'ering, encoding, newline, errors):' + #10 +
-  '    # Re-open a freshly created (e' +
-  'mpty) file with the requested mode' + '.' + #10 +
-  '    m = mode.replace(''x'', ''w'') if ' + '''x'' in mode else mode' + #10 +
-  '    kwargs = {}' + #10 + '    if ''b'' not in m:' + #10 +
-  '        kwargs[''encoding''] = encod' + 'ing' + #10 +
-  '        kwargs[''newline''] = newlin' + 'e' + #10 +
-  '        if errors is not None:' + #10 +
-  '            kwargs[''errors''] = err' + 'ors' + #10 +
-  '    if buffering is not None and b' + 'uffering != -1:' + #10 +
-  '        kwargs[''buffering''] = buff' + 'ering' + #10 +
-  '    return open(file, m, **kwargs)' + #10 + #10 + #10 +
-  'class _TemporaryFileCloser:' + #10 + '    """A separate object allowing ' +
+  #10 + #10 + #10 + 'class _TemporaryFileCloser:' + #10 +
+  '    """A separate object allowing ' +
   'proper closing of a temporary file' + '''s' + #10 +
   '    underlying file object, withou' + 't adding a __del__ method to the' +
   #10 + '    temporary file."""' + #10 + #10 +
@@ -80237,14 +87036,31 @@ Const
   '    def __init__(self, file, name,' + ' delete=True):' + #10 +
   '        self.file = file' + #10 + '        self.name = name' + #10 +
   '        self.delete = delete' + #10 + #10 +
-  '    def close(self, unlink=_os.unl' + 'ink):' + #10 +
-  '        if not self.close_called a' + 'nd self.file is not None:' + #10 +
-  '            self.close_called = Tr' + 'ue' + #10 + '            try:' +
-  #10 + '                self.file.close()' + #10 + '            finally:' +
-  #10 + '                if self.delete:' + #10 +
-  '                    unlink(self.na' + 'me)' + #10 + #10 +
-  '    # Need to ensure the file is d' + 'eleted on __del__' + #10 +
-  '    def __del__(self):' + #10 + '        self.close()' + #10 + #10 + #10 +
+  '    # NT provides delete-on-close ' + 'as a primitive, so we don''t need' +
+  #10 + '    # the wrapper to do anything s' +
+  'pecial.  We still use it so that' + #10 +
+  '    # file.name is useful (i.e. no' +
+  't "(fdopen)") with NamedTemporaryF' + 'ile.' + #10 +
+  '    if _os.name != ''nt'':' + #10 + '        # Cache the unlinker so we' +
+  ' don''t get spurious errors at' + #10 +
+  '        # shutdown when the module' + '-level "os" is None''d out.  Note' +
+  #10 + '        # that this must be refere' +
+  'nced as self.unlink, because the' + #10 +
+  '        # name TemporaryFileWrappe' + 'r may also get None''d out before' +
+  #10 + '        # __del__ is called.' + #10 + #10 +
+  '        def close(self, unlink=_os' + '.unlink):' + #10 +
+  '            if not self.close_call' + 'ed and self.file is not None:' +
+  #10 + '                self.close_called ' + '= True' + #10 +
+  '                try:' + #10 + '                    self.file.clos' +
+  'e()' + #10 + '                finally:' + #10 +
+  '                    if self.delete' + ':' + #10 +
+  '                        unlink(sel' + 'f.name)' + #10 + #10 +
+  '        # Need to ensure the file ' + 'is deleted on __del__' + #10 +
+  '        def __del__(self):' + #10 + '            self.close()' + #10 +
+  #10 + '    else:' + #10 + '        def close(self):' + #10 +
+  '            if not self.close_call' + 'ed:' + #10 +
+  '                self.close_called ' + '= True' + #10 +
+  '                self.file.close()' + #10 + #10 + #10 +
   'class _TemporaryFileWrapper:' + #10 + '    """Temporary file wrapper' +
   #10 + #10 + '    This class provides a wrapper ' +
   'around files opened for' + #10 + '    temporary use.  In particular,' +
@@ -80260,15 +87076,28 @@ Const
   '        # (i.e. methods are cached' + ', closed and friends are not)' +
   #10 + '        file = self.__dict__[''file' + ''']' + #10 +
   '        a = getattr(file, name)' + #10 +
+  '        if hasattr(a, ''__call__''):' + #10 + '            func = a' +
+  #10 + '            @_functools.wraps(func' + ')' + #10 +
+  '            def func_wrapper(*args' + ', **kwargs):' + #10 +
+  '                return func(*args,' + ' **kwargs)' + #10 +
+  '            # Avoid closing the fi' +
+  'le as long as the wrapper is alive' + ',' + #10 +
+  '            # see issue #18879.' + #10 +
+  '            func_wrapper._closer =' + ' self._closer' + #10 +
+  '            a = func_wrapper' + #10 +
   '        if not isinstance(a, int):' + #10 +
   '            setattr(self, name, a)' + #10 + '        return a' + #10 +
   #10 + '    # The underlying __enter__ met' +
   'hod returns the wrong object' + #10 +
   '    # (self.file) so override it t' + 'o return the wrapper' + #10 +
-  '    def __enter__(self):' + #10 + '        self.file.__enter__()' + #10 +
-  '        return self' + #10 + #10 + '    # Need to trap __exit__ as wel' +
-  'l to ensure the file gets' + #10 + '    # deleted when used in a with ' +
-  'statement' + #10 + '    def __exit__(self, exc, value,' + ' tb):' + #10 +
+  '    def __enter__(self):' + #10;
+
+Const
+ Src_tempfile_2: AnsiString =
+  '        self.file.__enter__()' + #10 + '        return self' + #10 + #10 +
+  '    # Need to trap __exit__ as wel' + 'l to ensure the file gets' + #10 +
+  '    # deleted when used in a with ' + 'statement' + #10 +
+  '    def __exit__(self, exc, value,' + ' tb):' + #10 +
   '        result = self.file.__exit_' + '_(exc, value, tb)' + #10 +
   '        self.close()' + #10 + '        return result' + #10 + #10 +
   '    def close(self):' + #10 + '        """' + #10 +
@@ -80286,26 +87115,24 @@ Const
   ' a close method, and thus the file' + ' would get' + #10 +
   '        # closed when the generato' +
   'r is finalized, due to PEP380 sema' + 'ntics.' + #10 +
-  '        for line in self.file:' + #10;
-
-Const
- Src_tempfile_2: AnsiString =
-  '            yield line' + #10 + #10 + #10 +
-  'def NamedTemporaryFile(mode=''w+b'',' + ' buffering=-1, encoding=None,' +
-  #10 + '                       newline=Non' +
-  'e, suffix=None, prefix=None,' + #10 +
-  '                       dir=None, d' + 'elete=True, *, errors=None):' +
-  #10 + '    """Create and return a tempora' + 'ry file.' + #10 +
-  '    Arguments:' + #10 + '    ''prefix'', ''suffix'', ''dir'' -- a' +
-  's for mkstemp.' + #10 + '    ''mode'' -- the mode argument to' +
-  ' io.open (default "w+b").' + #10 + '    ''buffering'' -- the buffer size' +
+  '        for line in self.file:' + #10 + '            yield line' + #10 +
+  #10 + #10 + 'def NamedTemporaryFile(mode=''w+b'',' +
+  ' buffering=-1, encoding=None,' + #10 +
+  '                       newline=Non' + 'e, suffix=None, prefix=None,' +
+  #10 + '                       dir=None, d' +
+  'elete=True, *, errors=None):' + #10 +
+  '    """Create and return a tempora' + 'ry file.' + #10 + '    Arguments:' +
+  #10 + '    ''prefix'', ''suffix'', ''dir'' -- a' + 's for mkstemp.' + #10 +
+  '    ''mode'' -- the mode argument to' + ' io.open (default "w+b").' + #10 +
+  '    ''buffering'' -- the buffer size' +
   ' argument to io.open (default -1).' + #10 +
   '    ''encoding'' -- the encoding arg' + 'ument to io.open (default None)' +
   #10 + '    ''newline'' -- the newline argum' +
   'ent to io.open (default None)' + #10 +
   '    ''delete'' -- whether the file i' +
   's deleted on close (default True).' + #10 +
-  '    The file is created as mkstemp' + '() would do it.' + #10 + #10 +
+  '    ''errors'' -- the errors argumen' + 't to io.open (default None)' +
+  #10 + '    The file is created as mkstemp' + '() would do it.' + #10 + #10 +
   '    Returns an object with a file-' +
   'like interface; the name of the fi' + 'le' + #10 +
   '    is accessible as its ''name'' at' +
@@ -80314,64 +87141,105 @@ Const
   'ss the ''delete'' argument is set to' + ' False.' + #10 + '    """' + #10 +
   #10 + '    prefix, suffix, dir, output_ty' +
   'pe = _sanitize_params(prefix, suff' + 'ix, dir)' + #10 + #10 +
-  '    flags = 0' + #10 + '    if _has_fds:' + #10 +
-  '        flags = _os.O_RDWR | _os.O' + '_CREAT | _os.O_EXCL' + #10 +
+  '    flags = _bin_openflags' + #10 + #10 +
+  '    # Setting O_TEMPORARY in the f' + 'lags causes the OS to delete' +
+  #10 + '    # the file when it is closed. ' +
+  ' This is only supported by Windows' + '.' + #10 +
+  '    if _os.name == ''nt'' and delete' + ':' + #10 +
+  '        flags |= _os.O_TEMPORARY' + #10 + #10 +
   '    (fd, name) = _mkstemp_inner(di' +
   'r, prefix, suffix, flags, output_t' + 'ype)' + #10 + '    try:' + #10 +
-  '        if _has_fds:' + #10 + '            file = _os.fdopen(fd, ' +
-  'mode, buffering, encoding, errors,' + ' newline)' + #10 + '        else:' +
-  #10 + '            file = _open_created(n' +
-  'ame, mode, buffering, encoding, ne' + 'wline,' + #10 +
-  '                                 e' + 'rrors)' + #10 +
+  '        file = _io.open(fd, mode, ' + 'buffering=buffering,' + #10 +
+  '                        newline=ne' +
+  'wline, encoding=encoding, errors=e' + 'rrors)' + #10 + #10 +
   '        return _TemporaryFileWrapp' + 'er(file, name, delete)' + #10 +
   '    except BaseException:' + #10 + '        _os.unlink(name)' + #10 +
-  '        if _has_fds:' + #10 + '            _os.close(fd)' + #10 +
-  '        raise' + #10 + #10 + #10 + 'def TemporaryFile(mode=''w+b'', buff' +
-  'ering=-1, encoding=None,' + #10 + '                  newline=None, su' +
-  'ffix=None, prefix=None,' + #10 + '                  dir=None, *, err' +
-  'ors=None):' + #10 + '    """Create and return a tempora' + 'ry file.' +
-  #10 + '    Arguments:' + #10 + '    ''prefix'', ''suffix'', ''dir'' -- a' +
-  's for mkstemp.' + #10 + '    ''mode'' -- the mode argument to' +
-  ' io.open (default "w+b").' + #10 + '    ''buffering'' -- the buffer size' +
-  ' argument to io.open (default -1).' + #10 +
-  '    ''encoding'' -- the encoding arg' + 'ument to io.open (default None)' +
-  #10 + '    ''newline'' -- the newline argum' +
-  'ent to io.open (default None)' + #10 +
-  '    The file is created as mkstemp' + '() would do it.' + #10 + #10 +
-  '    Returns an object with a file-' + 'like interface.  The file has no' +
-  #10 + '    name, and will cease to exist ' + 'when it is closed.' + #10 +
-  '    """' + #10 + '    prefix, suffix, dir, output_ty' +
-  'pe = _sanitize_params(prefix, suff' + 'ix, dir)' + #10 + #10 +
-  '    flags = 0' + #10 + '    if _has_fds:' + #10 +
-  '        flags = _os.O_RDWR | _os.O' + '_CREAT | _os.O_EXCL' + #10 +
-  '    (fd, name) = _mkstemp_inner(di' +
-  'r, prefix, suffix, flags, output_t' + 'ype)' + #10 + '    try:' + #10 +
-  '        if _has_fds:' + #10 + '            file = _os.fdopen(fd, ' +
-  'mode, buffering, encoding, errors,' + ' newline)' + #10 + '        else:' +
-  #10 + '            file = _open_created(n' +
-  'ame, mode, buffering, encoding, ne' + 'wline,' + #10 +
-  '                                 e' + 'rrors)' + #10 +
-  '        unlinked = True' + #10 + '        try:' + #10 +
-  '            _os.unlink(name)' + #10 + '        except OSError:' + #10 +
-  '            unlinked = False' + #10 + '        if not unlinked:' + #10 +
-  '            # could not unlink an ' +
-  'open file: fall back to delete-on-' + 'close' + #10 +
-  '            return _TemporaryFileW' + 'rapper(file, name, True)' + #10 +
-  '        return file' + #10 + '    except BaseException:' + #10 +
-  '        _os.unlink(name)' + #10 + '        if _has_fds:' + #10 +
-  '            _os.close(fd)' + #10 + '        raise' + #10 + #10 + #10 +
-  'class SpooledTemporaryFile:' + #10 + '    """Temporary file wrapper, spe' +
-  'cialized to switch from BytesIO' + #10 +
-  '    or StringIO to a real file whe' + 'n it exceeds a certain size or' +
-  #10 + '    when a fileno is needed.' + #10 + '    """' + #10 +
-  '    _rolled = False' + #10 + #10 + '    def __init__(self, max_size=0,' +
-  ' mode=''w+b'', buffering=-1,' + #10 +
-  '                 encoding=None, ne' + 'wline=None,' + #10 +
+  '        _os.close(fd)' + #10 + '        raise' + #10 + #10 +
+  'if _os.name != ''posix'' or _sys.pla' + 'tform == ''cygwin'':' + #10 +
+  '    # On non-POSIX and Cygwin syst' +
+  'ems, assume that we cannot unlink ' + 'a file' + #10 +
+  '    # while it is open.' + #10 + '    TemporaryFile = NamedTemporary' +
+  'File' + #10 + #10 + 'else:' + #10 + '    # Is the O_TMPFILE flag availa' +
+  'ble and does it work?' + #10 + '    # The flag is set to False if ' +
+  'os.open(dir, os.O_TMPFILE) raises ' + 'an' + #10 +
+  '    # IsADirectoryError exception' + #10 +
+  '    _O_TMPFILE_WORKS = hasattr(_os' + ', ''O_TMPFILE'')' + #10 + #10 +
+  '    def TemporaryFile(mode=''w+b'', ' + 'buffering=-1, encoding=None,' +
+  #10 + '                      newline=None' + ', suffix=None, prefix=None,' +
+  #10 + '                      dir=None, *,' + ' errors=None):' + #10 +
+  '        """Create and return a tem' + 'porary file.' + #10 +
+  '        Arguments:' + #10 + '        ''prefix'', ''suffix'', ''dir'' ' +
+  '-- as for mkstemp.' + #10 + '        ''mode'' -- the mode argumen' +
+  't to io.open (default "w+b").' + #10 +
+  '        ''buffering'' -- the buffer ' +
+  'size argument to io.open (default ' + '-1).' + #10 +
+  '        ''encoding'' -- the encoding' +
+  ' argument to io.open (default None' + ')' + #10 +
+  '        ''newline'' -- the newline a' +
+  'rgument to io.open (default None)' + #10 +
+  '        ''errors'' -- the errors arg' + 'ument to io.open (default None)' +
+  #10 + '        The file is created as mks' + 'temp() would do it.' + #10 +
+  #10 + '        Returns an object with a f' +
+  'ile-like interface.  The file has ' + 'no' + #10 +
+  '        name, and will cease to ex' + 'ist when it is closed.' + #10 +
+  '        """' + #10 + '        global _O_TMPFILE_WORKS' + #10 + #10 +
+  '        prefix, suffix, dir, outpu' +
+  't_type = _sanitize_params(prefix, ' + 'suffix, dir)' + #10 + #10 +
+  '        flags = _bin_openflags' + #10 + '        if _O_TMPFILE_WORKS:' +
+  #10 + '            try:' + #10 + '                flags2 = (flags | ' +
+  '_os.O_TMPFILE) & ~_os.O_CREAT' + #10 +
+  '                fd = _os.open(dir,' + ' flags2, 0o600)' + #10 +
+  '            except IsADirectoryErr' + 'or:' + #10 +
+  '                # Linux kernel old' +
+  'er than 3.11 ignores the O_TMPFILE' + ' flag:' + #10 +
+  '                # O_TMPFILE is rea' +
+  'd as O_DIRECTORY. Trying to open a' + ' directory' + #10 +
+  '                # with O_RDWR|O_DI' +
+  'RECTORY fails with IsADirectoryErr' + 'or, a' + #10 +
+  '                # directory cannot' +
+  ' be open to write. Set flag to Fal' + 'se to not' + #10 +
+  '                # try again.' + #10 +
+  '                _O_TMPFILE_WORKS =' + ' False' + #10 +
+  '            except OSError:' + #10 + '                # The filesystem o' +
+  'f the directory does not support O' + '_TMPFILE.' + #10 +
+  '                # For example, OSE' +
+  'rror(95, ''Operation not supported''' + ').' + #10 + '                #' +
+  #10 + '                # On Linux kernel ' +
+  'older than 3.11, trying to open a ' + 'regular' + #10 +
+  '                # file (or a symbo' +
+  'lic link to a regular file) with O' + '_TMPFILE' + #10 +
+  '                # fails with NotAD' +
+  'irectoryError, because O_TMPFILE i' + 's read as' + #10 +
+  '                # O_DIRECTORY.' + #10 + '                pass' + #10 +
+  '            else:' + #10 + '                try:' + #10 +
+  '                    return _io.ope' + 'n(fd, mode, buffering=buffering,' +
+  #10 + '                                  ' +
+  '  newline=newline, encoding=encodi' + 'ng,' + #10 +
+  '                                  ' + '  errors=errors)' + #10 +
+  '                except:' + #10 + '                    _os.close(fd)' +
+  #10 + '                    raise' + #10 +
+  '            # Fallback to _mkstemp' + '_inner().' + #10 + #10 +
+  '        (fd, name) = _mkstemp_inne' +
+  'r(dir, prefix, suffix, flags, outp' + 'ut_type)' + #10 + '        try:' +
+  #10 + '            _os.unlink(name)' + #10 +
+  '            return _io.open(fd, mo' + 'de, buffering=buffering,' + #10 +
+  '                            newlin' +
+  'e=newline, encoding=encoding, erro' + 'rs=errors)' + #10 +
+  '        except:' + #10 + '            _os.close(fd)' + #10 +
+  '            raise' + #10 + #10 + 'class SpooledTemporaryFile:' + #10 +
+  '    """Temporary file wrapper, spe' + 'cialized to switch from BytesIO' +
+  #10 + '    or StringIO to a real file whe' +
+  'n it exceeds a certain size or' + #10 + '    when a fileno is needed.' +
+  #10 + '    """' + #10 + '    _rolled = False' + #10 + #10 +
+  '    def __init__(self, max_size=0,' + ' mode=''w+b'', buffering=-1,' +
+  #10 + '                 encoding=None, ne' + 'wline=None,' + #10 +
   '                 suffix=None, pref' +
   'ix=None, dir=None, *, errors=None)' + ':' + #10 +
   '        if ''b'' in mode:' + #10 + '            self._file = _io.Bytes' +
   'IO()' + #10 + '        else:' + #10 +
-  '            self._file = _io.Strin' + 'gIO(newline=''\n'')' + #10 +
+  '            self._file = _io.TextI' + 'OWrapper(_io.BytesIO(),' + #10 +
+  '                            encodi' + 'ng=encoding, errors=errors,' + #10 +
+  '                            newlin' + 'e=newline)' + #10 +
   '        self._max_size = max_size' + #10 + '        self._rolled = False' +
   #10 + '        self._TemporaryFileArgs = ' +
   '{''mode'': mode, ''buffering'': buffer' + 'ing,' + #10 +
@@ -80381,21 +87249,21 @@ Const
   ' ''encoding'': encoding, ''newline'': ' + 'newline,' + #10 +
   '                                  ' +
   ' ''dir'': dir, ''errors'': errors}' + #10 + #10 +
-  '    def _check(self, file):' + #10 + '        if self._rolled:' + #10 +
-  '            return' + #10 + '        max_size = self._max_size' + #10 +
+  '    def _check(self, file):' + #10 + '        if self._rolled: return' +
+  #10 + '        max_size = self._max_size' + #10 +
   '        if max_size and file.tell(' + ') > max_size:' + #10 +
   '            self.rollover()' + #10 + #10 + '    def rollover(self):' +
-  #10 + '        if self._rolled:' + #10 + '            return' + #10 +
+  #10 + '        if self._rolled: return' + #10 +
   '        file = self._file' + #10 + '        newfile = self._file = Tem' +
   'poraryFile(**self._TemporaryFileAr' + 'gs)' + #10 +
   '        del self._TemporaryFileArg' + 's' + #10 + #10 +
   '        pos = file.tell()' + #10 + '        if hasattr(newfile, ''buffe' +
-  'r''):' + #10 + '            newfile.buffer.write(f' + 'ile.getvalue())' +
-  #10 + '        else:' + #10 + '            newfile.write(file.get' +
-  'value())' + #10 + '        newfile.seek(pos, 0)' + #10 + #10 +
-  '        self._rolled = True' + #10 + #10 +
-  '    # The method caching trick fro' + 'm NamedTemporaryFile' + #10 +
-  '    # won''t work here, because _fi' + 'le may change from a' + #10 +
+  'r''):' + #10 + '            newfile.buffer.write(f' +
+  'ile.detach().getvalue())' + #10 + '        else:' + #10 +
+  '            newfile.write(file.get' + 'value())' + #10 +
+  '        newfile.seek(pos, 0)' + #10 + #10 + '        self._rolled = True' +
+  #10 + #10 + '    # The method caching trick fro' + 'm NamedTemporaryFile' +
+  #10 + '    # won''t work here, because _fi' + 'le may change from a' + #10 +
   '    # BytesIO/StringIO instance to' + ' a real file. So we list' + #10 +
   '    # all the methods directly.' + #10 + #10 +
   '    # Context management protocol' + #10 + '    def __enter__(self):' +
@@ -80409,33 +87277,32 @@ Const
   '        self._file.close()' + #10 + #10 + '    @property' + #10 +
   '    def closed(self):' + #10 + '        return self._file.closed' + #10 +
   #10 + '    @property' + #10 + '    def encoding(self):' + #10 +
-  '        if self._rolled:' + #10 + '            return self._file.enco' +
-  'ding' + #10 + '        if ''b'' in self._TemporaryF' +
-  'ileArgs[''mode'']:' + #10 + '            raise AttributeError(''' +
-  'encoding'')' + #10 + '        return self._TemporaryFile' +
-  'Args[''encoding'']' + #10 + #10 + '    def fileno(self):' + #10 +
-  '        self.rollover()' + #10 + '        return self._file.fileno()' +
-  #10 + #10 + '    def flush(self):' + #10 + '        self._file.flush()' +
-  #10 + #10 + '    def isatty(self):' + #10 +
-  '        return self._file.isatty()' + #10 + #10 + '    @property' + #10 +
-  '    def mode(self):' + #10 + '        if self._rolled:' + #10 +
+  '        return self._file.encoding' + #10 + #10 + '    @property' + #10 +
+  '    def errors(self):' + #10 + '        return self._file.errors' + #10 +
+  #10 + '    def fileno(self):' + #10 + '        self.rollover()' + #10 +
+  '        return self._file.fileno()' + #10 + #10 + '    def flush(self):' +
+  #10 + '        self._file.flush()' + #10 + #10 + '    def isatty(self):' +
+  #10 + '        return self._file.isatty()' + #10 + #10 + '    @property' +
+  #10 + '    def mode(self):' + #10 + '        try:' + #10 +
   '            return self._file.mode' + #10 +
-  '        return self._TemporaryFile' + 'Args[''mode'']' + #10 + #10 +
-  '    @property' + #10 + '    def name(self):' + #10 +
-  '        if self._rolled:' + #10 + '            return self._file.name' +
-  #10 + '        return None' + #10 + #10 + '    @property' + #10 +
-  '    def newlines(self):' + #10 + '        if self._rolled:' + #10 +
-  '            return self._file.newl' + 'ines' + #10 +
-  '        if ''b'' in self._TemporaryF' + 'ileArgs[''mode'']:' + #10 +
-  '            raise AttributeError(''' + 'newlines'')' + #10 +
-  '        return self._TemporaryFile' + 'Args[''newline'']' + #10 + #10 +
+  '        except AttributeError:' + #10 +
+  '            return self._Temporary' + 'FileArgs[''mode'']' + #10 + #10 +
+  '    @property' + #10 + '    def name(self):' + #10 + '        try:' + #10 +
+  '            return self._file.name' + #10 +
+  '        except AttributeError:' + #10 + '            return None' + #10 +
+  #10 + '    @property' + #10 + '    def newlines(self):' + #10 +
+  '        return self._file.newlines' + #10 + #10 +
   '    def read(self, *args):' + #10 + '        return self._file.read(*ar' +
   'gs)' + #10 + #10 + '    def readline(self, *args):' + #10 +
   '        return self._file.readline' + '(*args)' + #10 + #10 +
   '    def readlines(self, *args):' + #10 +
-  '        return self._file.readline' + 's(*args)' + #10 + #10 +
-  '    def seek(self, *args):' + #10 + '        self._file.seek(*args)' +
-  #10 + #10 + '    @property' + #10 + '    def softspace(self):' + #10 +
+  '        return self._file.readline' + 's(*args)' + #10;
+
+Const
+ Src_tempfile_3: AnsiString =
+  #10 + '    def seek(self, *args):' + #10 +
+  '        return self._file.seek(*ar' + 'gs)' + #10 + #10 + '    @property' +
+  #10 + '    def softspace(self):' + #10 +
   '        return self._file.softspac' + 'e' + #10 + #10 +
   '    def tell(self):' + #10 + '        return self._file.tell()' + #10 +
   #10 + '    def truncate(self, size=None):' + #10 +
@@ -80458,18 +87325,36 @@ Const
   'directory and everything contained' + #10 + '    in it are removed.' +
   #10 + '    """' + #10 + #10 + '    def __init__(self, suffix=None' +
   ', prefix=None, dir=None):' + #10 + '        self.name = mkdtemp(suffix' +
-  ', prefix, dir)' + #10 + '        self._cleaned = False' + #10 + #10 +
+  ', prefix, dir)' + #10 + '        self._finalizer = _weakref' +
+  '.finalize(' + #10 + '            self, self._cleanup, s' + 'elf.name,' +
+  #10 + '            warn_message="Implicit' +
+  'ly cleaning up {!r}".format(self))' + #10 + #10 + '    @classmethod' +
+  #10 + '    def _rmtree(cls, name):' + #10 +
+  '        def onerror(func, path, ex' + 'c_info):' + #10 +
+  '            if issubclass(exc_info' + '[0], PermissionError):' + #10 +
+  '                try:' + #10 + '                    if path != nam' + 'e:' +
+  #10 + '                        _resetperm' + 's(_os.path.dirname(path))' +
+  #10 + '                    _resetperms(pa' + 'th)' + #10 + #10 +
+  '                    try:' + #10 + '                        _os.unlink' +
+  '(path)' + #10 + '                    # PermissionEr' +
+  'ror is raised on FreeBSD for direc' + 'tories' + #10 +
+  '                    except (IsADir' + 'ectoryError, PermissionError):' +
+  #10 + '                        cls._rmtre' + 'e(path)' + #10 +
+  '                except FileNotFoun' + 'dError:' + #10 +
+  '                    pass' + #10 + '            elif issubclass(exc_in' +
+  'fo[0], FileNotFoundError):' + #10 + '                pass' + #10 +
+  '            else:' + #10 + '                raise' + #10 + #10 +
+  '        _shutil.rmtree(name, onerr' + 'or=onerror)' + #10 + #10 +
+  '    @classmethod' + #10 + '    def _cleanup(cls, name, warn_m' +
+  'essage):' + #10 + '        cls._rmtree(name)' + #10 +
+  '        _warnings.warn(warn_messag' + 'e, ResourceWarning)' + #10 + #10 +
   '    def __repr__(self):' + #10 + '        return "<{} {!r}>".format(' +
-  'self.__class__.__name__, self.name' + ')' + #10 + #10;
-
-Const
- Src_tempfile_3: AnsiString =
+  'self.__class__.__name__, self.name' + ')' + #10 + #10 +
   '    def __enter__(self):' + #10 + '        return self.name' + #10 + #10 +
   '    def __exit__(self, exc, value,' + ' tb):' + #10 +
   '        self.cleanup()' + #10 + #10 + '    def cleanup(self):' + #10 +
-  '        if not self._cleaned:' + #10 + '            self._cleaned = True' +
-  #10 + '            import shutil as _shut' + 'il' + #10 +
-  '            _shutil.rmtree(self.na' + 'me)' + #10 + #10;
+  '        if self._finalizer.detach(' + '):' + #10 +
+  '            self._rmtree(self.name' + ')' + #10 + #10;
 
 Function Src_tempfile: AnsiString;
 Begin
@@ -92913,7 +99798,10 @@ Begin
   RegSource('_compat_pickle', @Src__compat_pickle);
   RegSource('_contextvars', @Src__contextvars);
   RegSource('_csv', @Src__csv);
+  RegSource('_fileio', @Src__fileio);
+  RegSource('_io', @Src__io);
   RegSource('_markupbase', @Src__markupbase);
+  RegSource('_pyio', @Src__pyio);
   RegSource('_random', @Src__random);
   RegSource('_string', @Src__string);
   RegSource('_thread', @Src__thread);
@@ -92961,10 +99849,12 @@ Begin
   RegSource('fnmatch', @Src_fnmatch);
   RegSource('fractions', @Src_fractions);
   RegSource('functools', @Src_functools);
+  RegSource('genericpath', @Src_genericpath);
   RegSource('getopt', @Src_getopt);
   RegSource('getpass', @Src_getpass);
   RegSource('gettext', @Src_gettext);
   RegSource('glob', @Src_glob);
+  RegSource('grp', @Src_grp);
   RegSource('gzip', @Src_gzip);
   RegSource('hashlib', @Src_hashlib);
   RegSource('heapq', @Src_heapq);
@@ -92988,6 +99878,7 @@ Begin
   RegSource('locale', @Src_locale);
   RegSource('logging.handlers', @Src_logging_handlers);
   RegSource('logging', @Src_logging);
+  RegSource('ntpath', @Src_ntpath);
   RegSource('numbers', @Src_numbers);
   RegSource('opcode', @Src_opcode);
   RegSource('operator', @Src_operator);
@@ -92995,8 +99886,10 @@ Begin
   RegSource('pathlib', @Src_pathlib);
   RegSource('pickle', @Src_pickle);
   RegSource('platform', @Src_platform);
+  RegSource('posix', @Src_posix);
   RegSource('posixpath', @Src_posixpath);
   RegSource('pprint', @Src_pprint);
+  RegSource('pwd', @Src_pwd);
   RegSource('py_compile', @Src_py_compile);
   RegSource('queue', @Src_queue);
   RegSource('random', @Src_random);
