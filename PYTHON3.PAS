@@ -2963,6 +2963,7 @@ Type
 
 Var
  PFutureAnnotations: Boolean;
+ PFutureFlags: Integer;
  SrcLines: TStrArr;
  SrcFile: AnsiString;
 
@@ -3783,6 +3784,10 @@ Function ParseExpr: TNode; Forward;
 Function ParseOr: TNode; Forward;
 Function ParseStarExpr: TNode; Forward;
 Function ParseYieldExpr: TNode; Forward;
+Var
+ FStrFirst: AnsiString;
+ FStrLine: Integer;
+
 Function ParseFStringParts(Const raw: AnsiString; flags, line,
  col: Integer): TNode; Forward;
 Function ParseNamedTestNoCond: TNode; Forward;
@@ -4031,7 +4036,14 @@ Var
  t: TToken;
  dupi: Integer;
  seenKw, seenStarStar: Boolean;
+ pline, pcol: Integer;
 Begin
+ pline := line;
+ pcol := col;
+ If PPos > 0 Then Begin
+  pline := PTok[PPos - 1].line;
+  pcol := PTok[PPos - 1].col;
+ End;
  call := NewNode(nCall, line, col);
  call.a := fn;
  seenKw := False;
@@ -4075,7 +4087,8 @@ Begin
   Else Begin
    e := ParseNamedTest;
    If (IsKw('for') Or IsKw('async')) Then Begin
-    kw := NewNode(nGenExp, t.line, t.col);
+    kw := NewNode(nGenExp, pline, pcol);
+    kw.n := t.col;
     kw.a := e;
     kw.l1 := ParseCompFor;
     kw.flag := True;
@@ -4095,7 +4108,7 @@ Begin
   For dupi := 0 To High(call.l1) Do
    If (call.l1[dupi].k = nGenExp) And call.l1[dupi].flag Then
     SynErr('Generator expression must be parenthesized', call.l1[dupi].line,
-     call.l1[dupi].col);
+     call.l1[dupi].n);
  Result := call;
 End;
 
@@ -4126,7 +4139,7 @@ Begin
  Result := sl;
 End;
 
-Function ParseTrailers(base: TNode): TNode;
+Function ParseTrailers(base: TNode; sline, scol: Integer): TNode;
 Var
  nd, idx, tup: TNode;
  t: TToken;
@@ -4136,13 +4149,13 @@ Begin
   t := Cur;
   If IsOp('(') Then Begin
    Advance;
-   nd := ParseCallArgs(nd, t.line, t.col);
+   nd := ParseCallArgs(nd, sline, scol);
   End
   Else If IsOp('[') Then Begin
    Advance;
    idx := ParseSubscriptItem;
    If IsOp(',') Then Begin
-    tup := NewNode(nTuple, t.line, t.col);
+    tup := NewNode(nTuple, idx.line, idx.col);
     AddNode(tup.l1, idx);
     While AcceptOp(',') Do Begin
      If IsOp(']') Then Break;
@@ -4151,14 +4164,14 @@ Begin
     idx := tup;
    End;
    ExpectOp(']');
-   tup := NewNode(nSub, t.line, t.col);
+   tup := NewNode(nSub, sline, scol);
    tup.a := nd;
    tup.b := idx;
    nd := tup;
   End
   Else If IsOp('.') Then Begin
    Advance;
-   tup := NewNode(nAttr, t.line, t.col);
+   tup := NewNode(nAttr, sline, scol);
    tup.a := nd;
    If (Cur.kind <> tkName) Or IsKeyword(Cur.s) Then ErrAt(Cur);
    tup.s := Cur.s;
@@ -4168,6 +4181,13 @@ Begin
   Else Break;
  End;
  Result := nd;
+End;
+
+Procedure AddStrPart(Var parts: TNodes; e: TNode);
+Begin
+ If (e.k = nStr) And (Length(parts) > 0) And (parts[High(parts)].k = nStr)
+  Then parts[High(parts)].s := parts[High(parts)].s + e.s
+ Else AddNode(parts, e);
 End;
 
 Function ParseAtom: TNode;
@@ -4199,6 +4219,8 @@ Begin
     s := '';
     SetLength(parts, 0);
     anyStr := False;
+    FStrFirst := Cur.s;
+    FStrLine := t.line;
     While Cur.kind = tkString Do Begin
      If ((Cur.flags And tfBytes) <> 0) <> isB Then
       SynErr('cannot mix bytes and nonbytes literals', Cur.line, Cur.col);
@@ -4208,11 +4230,11 @@ Begin
       If s <> '' Then Begin
        e := NewNode(nStr, t.line, t.col);
        e.s := s;
-       AddNode(parts, e);
+       AddStrPart(parts, e);
        s := '';
       End;
-      e := ParseFStringParts(Cur.s, fl, Cur.line, Cur.col);
-      For fl := 0 To High(e.l1) Do AddNode(parts, e.l1[fl]);
+      e := ParseFStringParts(Cur.s, fl, t.line, t.col);
+      For fl := 0 To High(e.l1) Do AddStrPart(parts, e.l1[fl]);
      End
      Else s := s + DecodeStrLit(Cur.s, fl, Cur.line, Cur.col);
      Advance;
@@ -4221,10 +4243,19 @@ Begin
      If s <> '' Then Begin
       e := NewNode(nStr, t.line, t.col);
       e.s := s;
-      AddNode(parts, e);
+      AddStrPart(parts, e);
      End;
-     nd := NewNode(nJoined, t.line, t.col);
-     nd.l1 := parts;
+     anyStr := False;
+     For fl := 0 To High(parts) Do
+      If parts[fl].k <> nStr Then anyStr := True;
+     If anyStr Then Begin
+      nd := NewNode(nJoined, t.line, t.col);
+      nd.l1 := parts;
+     End
+     Else Begin
+      nd := NewNode(nStr, t.line, t.col);
+      If Length(parts) > 0 Then nd.s := parts[0].s;
+     End;
     End
     Else Begin
      nd := NewNode(nStr, t.line, t.col);
@@ -4408,16 +4439,17 @@ End;
 
 Function ParsePower: TNode;
 Var
- t: TToken;
+ t, t2: TToken;
  nd, r, b: TNode;
 Begin
  t := Cur;
  If IsKw('await') Then Begin
   Advance;
   nd := NewNode(nAwait, t.line, t.col);
-  nd.a := ParseTrailers(ParseAtom);
+  t2 := Cur;
+  nd.a := ParseTrailers(ParseAtom, t2.line, t2.col);
  End
- Else nd := ParseTrailers(ParseAtom);
+ Else nd := ParseTrailers(ParseAtom, t.line, t.col);
  If IsOp('**') Then Begin
   Advance;
   r := ParseFactorExpr;
@@ -4450,13 +4482,14 @@ End;
 Function ParseBinLevel(level: Integer): TNode;
 Var
  nd, r, b: TNode;
- t: TToken;
+ t, t0: TToken;
  found: Boolean;
 Begin
  If level = 6 Then Begin
   Result := ParseFactorExpr;
   Exit;
  End;
+ t0 := Cur;
  nd := ParseBinLevel(level + 1);
  While True Do Begin
   t := Cur;
@@ -4474,7 +4507,7 @@ Begin
   If Not found Then Break;
   Advance;
   r := ParseBinLevel(level + 1);
-  b := NewNode(nBin, t.line, t.col);
+  b := NewNode(nBin, t0.line, t0.col);
   b.s := t.s;
   b.a := nd;
   b.b := r;
@@ -4728,12 +4761,16 @@ Function ParseExprFromText(Const txt: AnsiString; line, col: Integer): TNode;
 Var
  saveTok: TTokArr;
  savePos: Integer;
+ saveFirst: AnsiString;
+ saveLine: Integer;
  toks: TTokArr;
  nd: TNode;
  i: Integer;
 Begin
  saveTok := PTok;
  savePos := PPos;
+ saveFirst := FStrFirst;
+ saveLine := FStrLine;
  Try
   If Trim(txt) = '' Then
    SynErr('f-string: empty expression not allowed', line, col);
@@ -4753,6 +4790,8 @@ Begin
  Finally
   PTok := saveTok;
   PPos := savePos;
+  FStrFirst := saveFirst;
+  FStrLine := saveLine;
  End;
 End;
 
@@ -4782,6 +4821,7 @@ Var
  conv: Integer;
  debug: Boolean;
  dbgText: AnsiString;
+ exLine, k, q2: Integer;
 
  Procedure FlushLit;
  Var
@@ -4911,7 +4951,15 @@ Begin
     If (conv = 0) And (spec = '') Then conv := 2;
    End;
    e := ParseExprFromText(ex, line, col);
-   SetLines(e, line, col);
+   exLine := FStrLine;
+   If FStrFirst <> '' Then Begin
+    k := Pos('{' + ex + '}', FStrFirst);
+    If k > 0 Then
+     For q2 := 1 To k - 1 Do
+      If FStrFirst[q2] = #10 Then Inc(exLine);
+   End
+   Else exLine := line;
+   SetLines(e, exLine, col);
    fm := NewNode(nFmt, line, col);
    fm.a := e;
    fm.n := conv;
@@ -5068,6 +5116,7 @@ Begin
   nd := NewNode(nAnnAssign, t.line, t.col);
   nd.a := e;
   nd.b := ann;
+  nd.flag := (e.k = nName) And Not ((t.kind = tkOp) And (t.s = '('));
   If AcceptOp('=') Then Begin
    If IsKw('yield') Then nd.c := ParseYieldExpr
    Else nd.c := ParseTestListStar(True);
@@ -5157,7 +5206,14 @@ Begin
     If nd.l1[lvl].s = 'braces' Then SynErr('not a chance', t.line, t.col)
     Else SynErr('future feature ' + nd.l1[lvl].s + ' is not defined', t.line,
      t.col);
-   If nd.l1[lvl].s = 'annotations' Then PFutureAnnotations := True;
+   If nd.l1[lvl].s = 'annotations' Then Begin
+    PFutureAnnotations := True;
+    PFutureFlags := PFutureFlags Or $1000000;
+   End
+   Else If nd.l1[lvl].s = 'generator_stop' Then
+    PFutureFlags := PFutureFlags Or $800000
+   Else If nd.l1[lvl].s = 'barry_as_FLUFL' Then
+    PFutureFlags := PFutureFlags Or $400000;
   End;
  Result := nd;
 End;
@@ -5451,6 +5507,7 @@ Var
  body: TNodes;
 Begin
  PFutureAnnotations := False;
+ PFutureFlags := 0;
  src := NormalizeSource(src0);
  SetSourceLines(src);
  Tokenize(src, PTok);
@@ -5756,14 +5813,16 @@ Begin
   g := nd.l1[j];
   If g.isAsync Then Begin
    cs.coro := True;
-   tt := sc;
-   While tt.kind = scComp Do Begin
-    tt.coro := True;
-    tt := tt.parent;
+   If nd.k <> nGenExp Then Begin
+    tt := sc;
+    While tt.kind = scComp Do Begin
+     tt.coro := True;
+     tt := tt.parent;
+    End;
+    If Not (tt.IsFunc And tt.isAsync) Then
+     SynErr('asynchronous comprehension outside of an asynchronous ' +
+      'function', 0, 0);
    End;
-   If Not (tt.IsFunc And tt.isAsync) Then
-    SynErr('asynchronous comprehension outside of an asynchronous function',
-     nd.line, nd.col);
   End;
   SymStore(cs, g.a);
   If j > 0 Then SymExpr(cs, g.b);
@@ -5853,6 +5912,17 @@ Begin
  sym := Nil;
 End;
 
+Function HasAnnotations(Const l: TNodes): Boolean; Forward;
+
+Function HandlersHaveAnn(nd: TNode): Boolean;
+Var
+ k: Integer;
+Begin
+ Result := False;
+ For k := 0 To High(nd.l2) Do
+  If HasAnnotations(nd.l2[k].l1) Then Result := True;
+End;
+
 Function HasAnnotations(Const l: TNodes): Boolean;
 Var
  j: Integer;
@@ -5864,7 +5934,7 @@ Begin
    nIf, nWhile, nFor: Result := HasAnnotations(l[j].l1) Or
      HasAnnotations(l[j].l2);
    nTry: Result := HasAnnotations(l[j].l1) Or HasAnnotations(l[j].l3) Or
-     HasAnnotations(l[j].l4);
+     HasAnnotations(l[j].l4) Or HandlersHaveAnn(l[j]);
    nWith: Result := HasAnnotations(l[j].l2);
   End;
   If Result Then Exit;
@@ -5875,7 +5945,7 @@ Procedure SymStmts(sc: TScope; Const l: TNodes);
 Var
  j, i: Integer;
  nd: TNode;
- cs: TScope;
+ cs, top: TScope;
  nm: AnsiString;
 Begin
  For j := 0 To High(l) Do Begin
@@ -5923,6 +5993,10 @@ Begin
         'declaration', nd.line, nd.col);
      End;
      sc.Add(nd.sl[i], symGlobal);
+     { st_global : le module voit aussi le nom comme global explicite }
+     top := sc;
+     While top.parent <> Nil Do top := top.parent;
+     If top <> sc Then top.Add(nd.sl[i], symGlobal);
     End;
    nNonlocal: For i := 0 To High(nd.sl) Do Begin
      If sc.kind = scModule Then
@@ -6156,51 +6230,89 @@ Begin
    Exit;
   End;
 End;
-
 { ------------------------------------------------------------
-  Generateur de bytecode
+  Generateur de bytecode : port de compile.c (CPython 3.8)
   ------------------------------------------------------------ }
 Const
- fbLoopWhile = 1;
- fbLoopFor = 2;
- fbExcept = 3;
- fbFinallyTry = 4;
+ { types de blocs de trame (enum fblocktype) }
+ fbWhile = 0;
+ fbFor = 1;
+ fbExcept = 2;
+ fbFinallyTry = 3;
+ fbFinallyTry2 = 4;
  fbFinallyEnd = 5;
  fbWith = 6;
- fbHandler = 7;
+ fbAsyncWith = 7;
+ fbHandler = 8;
+ { genres d'unite de compilation }
+ suModule = 0;
+ suClass = 1;
+ suFunction = 2;
+ suAsyncFunction = 3;
+ suLambda = 4;
+ suComp = 5;
+ { contextes d'expression }
+ cxLoad = 0;
+ cxStore = 1;
+ cxDel = 2;
+ cxAugLoad = 3;
+ cxAugStore = 4;
 
 Type
+ TCgBlock = Class;
+
  TInstr = Record
-  op: Byte;
+  op: Integer;
   arg: Integer;
+  tgt: TCgBlock;
   line: Integer;
-  lbl: Integer;
+ End;
+
+ TCgBlock = Class
+  ins: Array Of TInstr;
+  n: Integer;
+  next: TCgBlock;
+  ret, seen: Boolean;
+  startDepth, offset: Integer;
  End;
 
  TFBlock = Record
   kind: Integer;
-  lbl1, lbl2: Integer;
+  block, exit: TCgBlock;
  End;
 
  TGen = Class
   sc: TScope;
-  ins: Array Of TInstr;
-  nins: Integer;
-  labels: Array Of Integer;
-  nlabels: Integer;
-  consts: TValArr;
-  nconsts: Integer;
-  names: TStrArr;
+  skind: Integer;
+  blocks: Array Of TCgBlock;
+  nblocks: Integer;
+  cur: TCgBlock;
   fb: Array Of TFBlock;
   nfb: Integer;
-  curLine: Integer;
-  fname, name, qual: AnsiString;
+  consts: TValArr;
+  nconsts: Integer;
+  ckeys: TStringList;
+  names: TStrArr;
+  nnames: Integer;
+  nameIdx: TStringList;
+  varnames: TStrArr;
+  nvar: Integer;
+  varIdx: TStringList;
+  cellvars, freevars: TStrArr;
+  lineno: Integer;
+  lineSet: Boolean;
+  noEmit: Integer;
+  fname, name, qual, priv: AnsiString;
   firstline: Integer;
   interactive: Boolean;
-  clsName: AnsiString;
   parent: TGen;
-  posonly: Integer;
+  nest: Integer;
+  argcount, posonly, kwonly: Integer;
  End;
+
+Var
+ CgAnnotFuture: Boolean;
+ CgFutureFlags: Integer;
 
 Function IsRelJump(op: Integer): Boolean;
 Begin
@@ -6214,98 +6326,210 @@ Begin
   POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE];
 End;
 
-Function NewLabel(g: TGen): Integer;
+Function NewBlock(g: TGen): TCgBlock;
 Begin
- If g.nlabels >= Length(g.labels) Then
-  SetLength(g.labels, (g.nlabels + 8) * 2);
- g.labels[g.nlabels] := -1;
- Result := g.nlabels;
- Inc(g.nlabels);
+ Result := TCgBlock.Create;
+ Result.startDepth := -MaxInt;
+ If g.nblocks >= Length(g.blocks) Then
+  SetLength(g.blocks, (g.nblocks + 8) * 2);
+ g.blocks[g.nblocks] := Result;
+ Inc(g.nblocks);
 End;
 
-Procedure SetLabel(g: TGen; l: Integer);
+Procedure UseNextBlock(g: TGen; b: TCgBlock);
 Begin
- g.labels[l] := g.nins;
+ g.cur.next := b;
+ g.cur := b;
+End;
+
+Procedure NextBlock(g: TGen);
+Begin
+ UseNextBlock(g, NewBlock(g));
+End;
+
+{ ---- ligne courante (u_lineno / u_lineno_set) ---- }
+Procedure SetStmtLine(g: TGen; line: Integer);
+Begin
+ g.lineno := line;
+ g.lineSet := False;
+End;
+
+Procedure AddInstr(g: TGen; op, arg: Integer; tgt: TCgBlock);
+Var
+ b: TCgBlock;
+ i: Integer;
+Begin
+ If g.noEmit > 0 Then Exit;
+ b := g.cur;
+ If b.n >= Length(b.ins) Then SetLength(b.ins, (b.n + 4) * 2);
+ i := b.n;
+ Inc(b.n);
+ b.ins[i].op := op;
+ b.ins[i].arg := arg;
+ b.ins[i].tgt := tgt;
+ If op = RETURN_VALUE Then b.ret := True;
+ If g.lineSet Then b.ins[i].line := 0
+ Else Begin
+  b.ins[i].line := g.lineno;
+  g.lineSet := True;
+ End;
 End;
 
 Procedure Emit(g: TGen; op: Integer; arg: Integer = 0);
 Begin
- If g.nins >= Length(g.ins) Then SetLength(g.ins, (g.nins + 16) * 2);
- g.ins[g.nins].op := op;
- g.ins[g.nins].arg := arg;
- g.ins[g.nins].line := g.curLine;
- g.ins[g.nins].lbl := -1;
- Inc(g.nins);
+ AddInstr(g, op, arg, Nil);
 End;
 
-Procedure EmitJ(g: TGen; op: Integer; l: Integer);
+Procedure EmitJ(g: TGen; op: Integer; b: TCgBlock);
 Begin
- Emit(g, op, 0);
- g.ins[g.nins - 1].lbl := l;
+ AddInstr(g, op, 0, b);
 End;
 
-Procedure SetLine(g: TGen; nd: TNode);
+{ ---- constantes ---- }
+Function FloatBits(d: Double): AnsiString;
+Var
+ q: QWord;
 Begin
- If (nd <> Nil) And (nd.line > 0) Then g.curLine := nd.line;
+ q := PQWord(@d)^;
+ Result := IntToHex(q, 16);
+End;
+
+Function ConstKey(Const v: TVal): AnsiString;
+Var
+ t: TPyTuple;
+ j: Integer;
+ sl: TStringList;
+ cd: TPyCode;
+ tmp: AnsiString;
+Begin
+ Case v.k Of
+  vkNone: Result := 'N';
+  vkBool: Result := 'B' + IntToStr(v.i);
+  vkInt: Result := 'I' + IntToStr(v.i);
+  vkFloat: Result := 'F' + FloatBits(v.d);
+ Else
+  If v.k <> vkObj Then Begin
+   Result := 'U' + IntToStr(PtrInt(v.o));
+   Exit;
+  End;
+  If v.o Is TPyStr Then Result := 'S' + TPyStr(v.o).s
+  Else If v.o Is TPyBytes Then Result := 'Y' + TPyBytes(v.o).s
+  Else If v.o Is TPyBigInt Then Result := 'I' + ReprVal(v)
+  Else If v.o Is TPyComplex Then
+   Result := 'C' + FloatBits(TPyComplex(v.o).re) + ',' +
+    FloatBits(TPyComplex(v.o).im)
+  Else If v.o Is TPyTuple Then Begin
+   t := TPyTuple(v.o);
+   Result := 'T' + IntToStr(Length(t.items)) + '(';
+   For j := 0 To High(t.items) Do Result := Result + ConstKey(t.items[j]) + ';';
+   Result := Result + ')';
+  End
+  Else If v.o Is TPyCode Then Begin
+   cd := TPyCode(v.o);
+   Result := 'O' + cd.name + '|' + IntToStr(cd.argcount) + ',' +
+    IntToStr(cd.posonly) + ',' + IntToStr(cd.kwonly) + ',' +
+    IntToStr(cd.nlocals) + ',' + IntToStr(cd.flags) + ',' +
+    IntToStr(cd.firstline) + '|';
+   SetLength(tmp, Length(cd.co));
+   If Length(cd.co) > 0 Then Move(cd.co[0], tmp[1], Length(cd.co));
+   Result := Result + tmp + '|';
+   For j := 0 To High(cd.consts) Do Result := Result + ConstKey(cd.consts[j]) +
+     ';';
+   Result := Result + '|';
+   For j := 0 To High(cd.names) Do Result := Result + cd.names[j] + ';';
+   Result := Result + '|';
+   For j := 0 To High(cd.varnames) Do Result := Result + cd.varnames[j] + ';';
+   Result := Result + '|';
+   For j := 0 To High(cd.freevars) Do Result := Result + cd.freevars[j] + ';';
+   Result := Result + '|';
+   For j := 0 To High(cd.cellvars) Do Result := Result + cd.cellvars[j] + ';';
+  End
+  Else If v.o Is TPySet Then Begin
+   sl := TStringList.Create;
+   sl.Sorted := True;
+   sl.CaseSensitive := True;
+   For j := 0 To High(TPySet(v.o).tab) Do
+    If (TPySet(v.o).tab[j].key.k <> vkNull) And
+     (TPySet(v.o).tab[j].key.k <> vkDummy) Then
+     sl.Add(ConstKey(TPySet(v.o).tab[j].key));
+   Result := 'Z' + IntToStr(sl.Count) + '{';
+   For j := 0 To sl.Count - 1 Do Result := Result + sl[j] + ';';
+   Result := Result + '}';
+   sl.Free;
+  End
+  Else If v.o = vEllipsis.o Then Result := 'E'
+  Else Result := 'U' + IntToStr(PtrInt(v.o));
+ End;
 End;
 
 Function AddConst(g: TGen; Const v: TVal): Integer;
 Var
+ key: AnsiString;
  i: Integer;
- c: TVal;
 Begin
- For i := 0 To g.nconsts - 1 Do Begin
-  c := g.consts[i];
-  If c.k <> v.k Then Continue;
-  Case v.k Of
-   vkNone: Begin Result := i; Exit; End;
-   vkBool, vkInt: If c.i = v.i Then Begin Result := i; Exit; End;
-   vkFloat: If PQWord(@c.d)^ = PQWord(@v.d)^ Then Begin
-      Result := i;
-      Exit;
-     End;
-   vkObj: Begin
-     If c.o = v.o Then Begin
-      Result := i;
-      Exit;
-     End;
-     If (c.o Is TPyStr) And (v.o Is TPyStr) And
-      (TPyStr(c.o).s = TPyStr(v.o).s) Then Begin
-      Result := i;
-      Exit;
-     End;
-     If (c.o Is TPyBytes) And (v.o Is TPyBytes) And
-      (TPyBytes(c.o).s = TPyBytes(v.o).s) Then Begin
-      Result := i;
-      Exit;
-     End;
-    End;
-  End;
+ If g.noEmit > 0 Then Begin
+  Result := 0;
+  Exit;
+ End;
+ key := ConstKey(v);
+ i := g.ckeys.IndexOf(key);
+ If i >= 0 Then Begin
+  Result := PtrInt(g.ckeys.Objects[i]);
+  Exit;
  End;
  If g.nconsts >= Length(g.consts) Then
   SetLength(g.consts, (g.nconsts + 8) * 2);
  g.consts[g.nconsts] := v;
+ g.ckeys.AddObject(key, TObject(PtrInt(g.nconsts)));
  Result := g.nconsts;
  Inc(g.nconsts);
 End;
 
 Procedure EmitConst(g: TGen; Const v: TVal);
 Begin
+ If g.noEmit > 0 Then Exit;
  Emit(g, LOAD_CONST, AddConst(g, v));
 End;
 
+{ ---- noms ---- }
 Function AddName(g: TGen; Const s: AnsiString): Integer;
 Var
  i: Integer;
 Begin
- For i := 0 To High(g.names) Do
-  If g.names[i] = s Then Begin
-   Result := i;
-   Exit;
-  End;
- SetLength(g.names, Length(g.names) + 1);
- g.names[High(g.names)] := s;
- Result := High(g.names);
+ If g.noEmit > 0 Then Begin
+  Result := 0;
+  Exit;
+ End;
+ i := g.nameIdx.IndexOf(s);
+ If i >= 0 Then Begin
+  Result := PtrInt(g.nameIdx.Objects[i]);
+  Exit;
+ End;
+ If g.nnames >= Length(g.names) Then SetLength(g.names, (g.nnames + 8) * 2);
+ g.names[g.nnames] := s;
+ g.nameIdx.AddObject(s, TObject(PtrInt(g.nnames)));
+ Result := g.nnames;
+ Inc(g.nnames);
+End;
+
+Function AddVar(g: TGen; Const s: AnsiString): Integer;
+Var
+ i: Integer;
+Begin
+ If g.noEmit > 0 Then Begin
+  Result := 0;
+  Exit;
+ End;
+ i := g.varIdx.IndexOf(s);
+ If i >= 0 Then Begin
+  Result := PtrInt(g.varIdx.Objects[i]);
+  Exit;
+ End;
+ If g.nvar >= Length(g.varnames) Then SetLength(g.varnames, (g.nvar + 8) * 2);
+ g.varnames[g.nvar] := s;
+ g.varIdx.AddObject(s, TObject(PtrInt(g.nvar)));
+ Result := g.nvar;
+ Inc(g.nvar);
 End;
 
 Function Mangle(g: TGen; Const nm: AnsiString): AnsiString;
@@ -6314,10 +6538,11 @@ Var
  k: Integer;
 Begin
  Result := nm;
- If (g.clsName = '') Or (Length(nm) < 3) Then Exit;
- If (Copy(nm, 1, 2) <> '__') Or (Copy(nm, Length(nm) - 1, 2) = '__') Or
-  (Pos('.', nm) > 0) Then Exit;
- cn := g.clsName;
+ If (g.priv = '') Or (Length(nm) < 2) Then Exit;
+ If (Copy(nm, 1, 2) <> '__') Then Exit;
+ If (Length(nm) >= 2) And (Copy(nm, Length(nm) - 1, 2) = '__') Then Exit;
+ If Pos('.', nm) > 0 Then Exit;
+ cn := g.priv;
  k := 1;
  While (k <= Length(cn)) And (cn[k] = '_') Do Inc(k);
  cn := Copy(cn, k, Length(cn));
@@ -6325,12 +6550,13 @@ Begin
  Result := '_' + cn + nm;
 End;
 
-Procedure PushFB(g: TGen; kind, l1, l2: Integer);
+{ ---- blocs de trame ---- }
+Procedure PushFB(g: TGen; kind: Integer; b, ex: TCgBlock);
 Begin
  If g.nfb >= Length(g.fb) Then SetLength(g.fb, (g.nfb + 4) * 2);
  g.fb[g.nfb].kind := kind;
- g.fb[g.nfb].lbl1 := l1;
- g.fb[g.nfb].lbl2 := l2;
+ g.fb[g.nfb].block := b;
+ g.fb[g.nfb].exit := ex;
  Inc(g.nfb);
 End;
 
@@ -6339,24 +6565,97 @@ Begin
  Dec(g.nfb);
 End;
 
+Procedure AstFold(root: TNode; opt: Integer); Forward;
 Procedure CgExpr(g: TGen; nd: TNode); Forward;
+Procedure CgExprCtx(g: TGen; nd: TNode; ctx: Integer); Forward;
+Procedure CgStmt(g: TGen; nd: TNode); Forward;
 Procedure CgStmts(g: TGen; Const l: TNodes); Forward;
-Procedure CgStore(g: TGen; nd: TNode); Forward;
-Procedure CgJumpIf(g: TGen; nd: TNode; lbl: Integer; sense: Boolean);
- Forward;
-Function CgFunction(g: TGen; nd: TNode; sc: TScope; Const nm: AnsiString;
- Const qual: AnsiString): TPyCode; Forward;
-Procedure CgComprehension(g: TGen; nd: TNode); Forward;
+Procedure CgJumpIf(g: TGen; nd: TNode; next: TCgBlock; cond: Boolean); Forward;
 
-{ ---- noms ---- }
-Procedure CgName(g: TGen; Const nm0: AnsiString; mode: Integer);
+{ ---- unite de compilation ---- }
+Function NewUnit(parent: TGen; sc: TScope; skind: Integer;
+ Const nm: AnsiString; firstline: Integer): TGen;
+Var
+ i, j: Integer;
+ sym: TSym;
+ force: Boolean;
+ base: AnsiString;
+ t: AnsiString;
+Begin
+ Result := TGen.Create;
+ Result.sc := sc;
+ Result.skind := skind;
+ Result.name := nm;
+ Result.parent := parent;
+ Result.firstline := firstline;
+ Result.ckeys := TStringList.Create;
+ Result.ckeys.CaseSensitive := True;
+ Result.ckeys.Sorted := True;
+ Result.ckeys.Duplicates := dupIgnore;
+ Result.nameIdx := TStringList.Create;
+ Result.nameIdx.CaseSensitive := True;
+ Result.nameIdx.Sorted := True;
+ Result.nameIdx.Duplicates := dupIgnore;
+ Result.varIdx := TStringList.Create;
+ Result.varIdx.CaseSensitive := True;
+ Result.varIdx.Sorted := True;
+ Result.varIdx.Duplicates := dupIgnore;
+ Result.lineno := 0;
+ Result.lineSet := False;
+ If parent <> Nil Then Begin
+  Result.fname := parent.fname;
+  Result.priv := parent.priv;
+  Result.nest := parent.nest + 1;
+  Result.interactive := parent.interactive;
+ End
+ Else Result.nest := 1;
+ If skind = suClass Then Result.priv := nm;
+ { arguments : ste_varnames }
+ If sc.IsFunc Then Begin
+  j := 0;
+  If sc.kind = scComp Then j := 1
+  Else Begin
+   j := sc.nparams + sc.nkwonly;
+   If sc.hasVarArgs Then Inc(j);
+   If sc.hasKwArgs Then Inc(j);
+  End;
+  For i := 0 To j - 1 Do AddVar(Result, Mangle(Result, sc.varnames[i]));
+ End;
+ { cellvars / freevars tries (dictbytype) }
+ SetLength(Result.cellvars, Length(sc.cellvars));
+ For i := 0 To High(sc.cellvars) Do
+  Result.cellvars[i] := Mangle(Result, sc.cellvars[i]);
+ SetLength(Result.freevars, Length(sc.freevars));
+ For i := 0 To High(sc.freevars) Do
+  Result.freevars[i] := Mangle(Result, sc.freevars[i]);
+ { nom qualifie }
+ If (parent = Nil) Or (parent.skind = suModule) Then Result.qual := nm
+ Else Begin
+  force := False;
+  If skind In [suFunction, suAsyncFunction, suClass] Then Begin
+   sym := parent.sc.Lookup(nm);
+   If (sym <> Nil) And (sym.kind = skGlobalExp) Then force := True;
+  End;
+  If force Then Result.qual := nm
+  Else Begin
+   If parent.skind In [suFunction, suAsyncFunction, suLambda] Then
+    base := parent.qual + '.<locals>'
+   Else base := parent.qual;
+   Result.qual := base + '.' + nm;
+  End;
+ End;
+ t := '';
+ Result.cur := NewBlock(Result);
+End;
+
+{ ---- operations sur les noms (compiler_nameop) ---- }
+Procedure CgNameOp(g: TGen; Const nm0: AnsiString; ctx: Integer);
 Var
  sym: TSym;
  kind, idx, op: Integer;
  nm: AnsiString;
 Begin
- nm := nm0;
- If g.sc.kind = scClass Then nm := Mangle(g, nm0);
+ nm := Mangle(g, nm0);
  sym := g.sc.Lookup(nm0);
  If sym = Nil Then kind := skGlobalImp Else kind := sym.kind;
  If (g.sc.kind = scModule) And (kind <> skGlobalExp) Then kind := skNone;
@@ -6364,329 +6663,47 @@ Begin
   kind := skNone;
  Case kind Of
   skLocal: Begin
-    idx := IndexOfStr(g.sc.varnames, nm0);
-    Case mode Of
-     0: op := LOAD_FAST;
-     1: op := STORE_FAST;
+    Case ctx Of
+     cxLoad: op := LOAD_FAST;
+     cxStore: op := STORE_FAST;
     Else op := DELETE_FAST;
     End;
-    Emit(g, op, idx);
+    Emit(g, op, AddVar(g, nm));
    End;
   skCell, skFree: Begin
-    idx := IndexOfStr(g.sc.cellvars, nm0);
-    If idx < 0 Then
-     idx := Length(g.sc.cellvars) + IndexOfStr(g.sc.freevars, nm0);
-    Case mode Of
-     0: If g.sc.kind = scClass Then op := LOAD_CLASSDEREF
+    idx := IndexOfStr(g.cellvars, nm);
+    If (idx < 0) Or (kind = skFree) Then Begin
+     idx := IndexOfStr(g.freevars, nm);
+     If idx >= 0 Then Inc(idx, Length(g.cellvars))
+     Else idx := IndexOfStr(g.cellvars, nm);
+    End;
+    Case ctx Of
+     cxLoad: If g.sc.kind = scClass Then op := LOAD_CLASSDEREF
         Else op := LOAD_DEREF;
-     1: op := STORE_DEREF;
+     cxStore: op := STORE_DEREF;
     Else op := DELETE_DEREF;
     End;
     Emit(g, op, idx);
    End;
   skGlobalExp, skGlobalImp: Begin
-    Case mode Of
-     0: op := LOAD_GLOBAL;
-     1: op := STORE_GLOBAL;
+    Case ctx Of
+     cxLoad: op := LOAD_GLOBAL;
+     cxStore: op := STORE_GLOBAL;
     Else op := DELETE_GLOBAL;
     End;
     Emit(g, op, AddName(g, nm));
    End;
  Else
-  Case mode Of
-   0: op := LOAD_NAME;
-   1: op := STORE_NAME;
+  Case ctx Of
+   cxLoad: op := LOAD_NAME;
+   cxStore: op := STORE_NAME;
   Else op := DELETE_NAME;
   End;
   Emit(g, op, AddName(g, nm));
  End;
 End;
 
-{ ---- appels ---- }
-Function IsStarArg(a: TNode): Boolean;
-Begin
- Result := (a.k = nStarred) Or ((a.k = nKw) And (a.s = ''));
-End;
-
-Procedure CgCallTail(g: TGen; args: TNodes; pre: Integer);
-{ pre : nombre de valeurs deja empilees apres la fonction }
-Var
- j, npos, nkwn, nrun, nparts: Integer;
- hasStar, hasKw: Boolean;
- names: TPyTuple;
- kwNodes: TNodes;
- inRun: Boolean;
-Begin
- hasStar := False;
- hasKw := False;
- For j := 0 To High(args) Do Begin
-  If args[j].k = nStarred Then hasStar := True;
-  If args[j].k = nKw Then Begin
-   hasKw := True;
-   If args[j].s = '' Then hasStar := True;
-  End;
- End;
- If Not hasStar Then Begin
-  npos := 0;
-  nkwn := 0;
-  For j := 0 To High(args) Do
-   If args[j].k <> nKw Then Begin
-    CgExpr(g, args[j]);
-    Inc(npos);
-   End;
-  For j := 0 To High(args) Do
-   If args[j].k = nKw Then Begin
-    CgExpr(g, args[j].a);
-    Inc(nkwn);
-   End;
-  If nkwn = 0 Then Emit(g, CALL_FUNCTION, npos + pre)
-  Else Begin
-   names := NewTuple(nkwn);
-   nkwn := 0;
-   For j := 0 To High(args) Do
-    If args[j].k = nKw Then Begin
-     names.items[nkwn] := VStr(args[j].s);
-     Inc(nkwn);
-    End;
-   EmitConst(g, VObj(names));
-   Emit(g, CALL_FUNCTION_KW, npos + nkwn + pre);
-  End;
-  Exit;
- End;
- { chemin etendu : tuple d'arguments positionnels }
- nparts := 0;
- nrun := pre;
- inRun := pre > 0;
- For j := 0 To High(args) Do Begin
-  If args[j].k = nKw Then Continue;
-  If args[j].k = nStarred Then Begin
-   If inRun Then Begin
-    Emit(g, BUILD_TUPLE, nrun);
-    Inc(nparts);
-    nrun := 0;
-    inRun := False;
-   End;
-   CgExpr(g, args[j].a);
-   Inc(nparts);
-  End
-  Else Begin
-   CgExpr(g, args[j]);
-   Inc(nrun);
-   inRun := True;
-  End;
- End;
- If inRun Then Begin
-  Emit(g, BUILD_TUPLE, nrun);
-  Inc(nparts);
- End;
- If (nparts = 1) And (pre = 0) And (Length(args) > 0) And
-  (args[0].k = nStarred) Then
-  { un seul *args : utilise directement }
- Else If nparts = 0 Then Emit(g, BUILD_TUPLE, 0)
- Else Emit(g, BUILD_TUPLE_UNPACK_WITH_CALL, nparts);
- If hasKw Then Begin
-  { dictionnaire des mots-cles }
-  nparts := 0;
-  SetLength(kwNodes, 0);
-  For j := 0 To High(args) Do Begin
-   If args[j].k <> nKw Then Continue;
-   If args[j].s = '' Then Begin
-    If Length(kwNodes) > 0 Then Begin
-     For npos := 0 To High(kwNodes) Do CgExpr(g, kwNodes[npos].a);
-     names := NewTuple(Length(kwNodes));
-     For npos := 0 To High(kwNodes) Do
-      names.items[npos] := VStr(kwNodes[npos].s);
-     EmitConst(g, VObj(names));
-     Emit(g, BUILD_CONST_KEY_MAP, Length(kwNodes));
-     Inc(nparts);
-     SetLength(kwNodes, 0);
-    End;
-    CgExpr(g, args[j].a);
-    Inc(nparts);
-   End
-   Else AddNode(kwNodes, args[j]);
-  End;
-  If Length(kwNodes) > 0 Then Begin
-   For npos := 0 To High(kwNodes) Do CgExpr(g, kwNodes[npos].a);
-   names := NewTuple(Length(kwNodes));
-   For npos := 0 To High(kwNodes) Do
-    names.items[npos] := VStr(kwNodes[npos].s);
-   EmitConst(g, VObj(names));
-   Emit(g, BUILD_CONST_KEY_MAP, Length(kwNodes));
-   Inc(nparts);
-  End;
-  If nparts > 1 Then Emit(g, BUILD_MAP_UNPACK_WITH_CALL, nparts)
-  Else If (nparts = 1) And (Length(args) > 0) Then Begin
-   { un seul **kw : doit etre copie en dict par la VM }
-  End;
-  Emit(g, CALL_FUNCTION_EX, 1);
- End
- Else Emit(g, CALL_FUNCTION_EX, 0);
-End;
-
-Procedure CgCall(g: TGen; nd: TNode);
-Var
- j: Integer;
- plain: Boolean;
-Begin
- plain := True;
- For j := 0 To High(nd.l1) Do
-  If nd.l1[j].k = nKw Then plain := False
-  Else If nd.l1[j].k = nStarred Then plain := False;
- If plain And (nd.a.k = nAttr) And (Length(nd.l1) < 200) Then Begin
-  CgExpr(g, nd.a.a);
-  SetLine(g, nd.a);
-  Emit(g, LOAD_METHOD, AddName(g, Mangle(g, nd.a.s)));
-  For j := 0 To High(nd.l1) Do CgExpr(g, nd.l1[j]);
-  g.curLine := nd.line;
-  Emit(g, CALL_METHOD, Length(nd.l1));
-  Exit;
- End;
- CgExpr(g, nd.a);
- CgCallTail(g, nd.l1, 0);
- g.curLine := nd.line;
-End;
-
-Procedure CgSequence(g: TGen; nd: TNode; build, buildUnpack: Integer);
-Var
- j, nrun, nparts: Integer;
- hasStar: Boolean;
- inRun: Boolean;
-Begin
- hasStar := False;
- For j := 0 To High(nd.l1) Do
-  If nd.l1[j].k = nStarred Then hasStar := True;
- If Not hasStar Then Begin
-  For j := 0 To High(nd.l1) Do CgExpr(g, nd.l1[j]);
-  Emit(g, build, Length(nd.l1));
-  Exit;
- End;
- nparts := 0;
- nrun := 0;
- inRun := False;
- For j := 0 To High(nd.l1) Do Begin
-  If nd.l1[j].k = nStarred Then Begin
-   If inRun Then Begin
-    Emit(g, build, nrun);
-    Inc(nparts);
-    nrun := 0;
-    inRun := False;
-   End;
-   CgExpr(g, nd.l1[j].a);
-   Inc(nparts);
-  End
-  Else Begin
-   CgExpr(g, nd.l1[j]);
-   Inc(nrun);
-   inRun := True;
-  End;
- End;
- If inRun Then Begin
-  Emit(g, build, nrun);
-  Inc(nparts);
- End;
- Emit(g, buildUnpack, nparts);
-End;
-
-Function Unparse(nd: TNode): AnsiString;
-
- Function Wrap(x: TNode): AnsiString;
- Begin
-  Result := Unparse(x);
-  If x.k In [nBin, nBool, nCmp, nIfExp, nLambda, nUnary] Then
-   Result := '(' + Result + ')';
- End;
-
- Function Join(Const l: TNodes; Const sep: AnsiString): AnsiString;
- Var
-  j: Integer;
- Begin
-  Result := '';
-  For j := 0 To High(l) Do Begin
-   If j > 0 Then Result := Result + sep;
-   Result := Result + Unparse(l[j]);
-  End;
- End;
-
-Var
- j: Integer;
-Begin
- If nd = Nil Then Begin
-  Result := '';
-  Exit;
- End;
- Case nd.k Of
-  nName: Result := nd.s;
-  nNum, nConst: Result := ReprVal(nd.v);
-  nStr: If nd.flag Then Result := ReprVal(VBytes(nd.s))
-   Else Result := ReprVal(VStr(nd.s));
-  nAttr: Result := Unparse(nd.a) + '.' + nd.s;
-  nSub: Begin
-    If nd.b.k = nTuple Then Result := Unparse(nd.a) + '[' +
-     Join(nd.b.l1, ', ') + ']'
-    Else Result := Unparse(nd.a) + '[' + Unparse(nd.b) + ']';
-   End;
-  nSlice: Begin
-    Result := Unparse(nd.a) + ':' + Unparse(nd.b);
-    If nd.c <> Nil Then Result := Result + ':' + Unparse(nd.c);
-   End;
-  nTuple: Begin
-    If Length(nd.l1) = 1 Then Result := '(' + Unparse(nd.l1[0]) + ',)'
-    Else Result := '(' + Join(nd.l1, ', ') + ')';
-   End;
-  nList: Result := '[' + Join(nd.l1, ', ') + ']';
-  nSet: Result := '{' + Join(nd.l1, ', ') + '}';
-  nDict: Begin
-    Result := '{';
-    For j := 0 To High(nd.l1) Do Begin
-     If j > 0 Then Result := Result + ', ';
-     If nd.l1[j] = Nil Then Result := Result + '**' + Unparse(nd.l2[j])
-     Else Result := Result + Unparse(nd.l1[j]) + ': ' + Unparse(nd.l2[j]);
-    End;
-    Result := Result + '}';
-   End;
-  nCall: Begin
-    Result := Unparse(nd.a) + '(';
-    For j := 0 To High(nd.l1) Do Begin
-     If j > 0 Then Result := Result + ', ';
-     If nd.l1[j].k = nKw Then Begin
-      If nd.l1[j].s = '' Then Result := Result + '**' + Unparse(nd.l1[j].a)
-      Else Result := Result + nd.l1[j].s + '=' + Unparse(nd.l1[j].a);
-     End
-     Else Result := Result + Unparse(nd.l1[j]);
-    End;
-    Result := Result + ')';
-   End;
-  nStarred: Result := '*' + Unparse(nd.a);
-  nBin: Result := Wrap(nd.a) + ' ' + nd.s + ' ' + Wrap(nd.b);
-  nUnary: Begin
-    If nd.s = 'not' Then Result := 'not ' + Wrap(nd.a)
-    Else Result := nd.s + Wrap(nd.a);
-   End;
-  nBool: Begin
-    Result := '';
-    For j := 0 To High(nd.l1) Do Begin
-     If j > 0 Then Result := Result + ' ' + nd.s + ' ';
-     Result := Result + Wrap(nd.l1[j]);
-    End;
-   End;
-  nCmp: Begin
-    Result := Wrap(nd.a);
-    For j := 0 To High(nd.l1) Do
-     Result := Result + ' ' + nd.sl[j] + ' ' + Wrap(nd.l1[j]);
-   End;
-  nIfExp: Result := Wrap(nd.b) + ' if ' + Wrap(nd.a) + ' else ' + Wrap(nd.c);
-  nLambda: Result := 'lambda: ' + Unparse(nd.a);
- Else
-  Result := '...';
- End;
-End;
-
 Function IsConstNode(nd: TNode; Var v: TVal): Boolean;
-Var
- t: TPyTuple;
- j: Integer;
- x: TVal;
 Begin
  Result := False;
  Case nd.k Of
@@ -6698,41 +6715,346 @@ Begin
     If nd.flag Then v := VBytes(nd.s) Else v := VStr(nd.s);
     Result := True;
    End;
-  nUnary: If (nd.s = '-') And (nd.a.k = nNum) Then Begin
-    If nd.a.v.k = vkFloat Then v := VFloat(-nd.a.v.d)
-    Else If (nd.a.v.k = vkObj) And (nd.a.v.o Is TPyComplex) Then
-     v := VComplex(-TPyComplex(nd.a.v.o).re, -TPyComplex(nd.a.v.o).im)
-    Else v := IntNeg(nd.a.v);
-    Result := True;
-   End;
-  nTuple: Begin
-    If Length(nd.l1) = 0 Then Begin
-     v := VObj(EmptyTuple);
-     Result := True;
-     Exit;
-    End;
-    For j := 0 To High(nd.l1) Do
-     If Not IsConstNode(nd.l1[j], x) Then Exit;
-    t := NewTuple(Length(nd.l1));
-    For j := 0 To High(nd.l1) Do Begin
-     IsConstNode(nd.l1[j], x);
-     t.items[j] := x;
-    End;
-    v := VObj(t);
-    Result := True;
-   End;
  End;
 End;
 
-Procedure CgSlice(g: TGen; nd: TNode);
+Function HasSliceDim(nd: TNode): Boolean;
+Var
+ j: Integer;
 Begin
- If nd.a <> Nil Then CgExpr(g, nd.a) Else EmitConst(g, vNone);
- If nd.b <> Nil Then CgExpr(g, nd.b) Else EmitConst(g, vNone);
- If nd.c <> Nil Then Begin
-  CgExpr(g, nd.c);
-  Emit(g, BUILD_SLICE, 3);
- End
- Else Emit(g, BUILD_SLICE, 2);
+ Result := False;
+ If nd.k <> nTuple Then Exit;
+ For j := 0 To High(nd.l1) Do
+  If nd.l1[j].k = nSlice Then Result := True;
+End;
+
+{ ---- ast_unparse.c : annotations 'from __future__ import annotations' ---- }
+Const
+ prTuple = 0;
+ prTest = 1;
+ prOr = 2;
+ prAnd = 3;
+ prNot = 4;
+ prCmp = 5;
+ prExpr = 6;
+ prBor = 6;
+ prBxor = 7;
+ prBand = 8;
+ prShift = 9;
+ prArith = 10;
+ prTerm = 11;
+ prFactor = 12;
+ prPower = 13;
+ prAwait = 14;
+ prAtom = 15;
+
+Function UnparseL(nd: TNode; level: Integer): AnsiString; Forward;
+
+Function UnparseArg(p: TNode): AnsiString;
+Begin
+ Result := p.s;
+ If p.b <> Nil Then Result := Result + ': ' + UnparseL(p.b, prTest);
+End;
+
+Function UnparseArgs(a: TNode): AnsiString;
+Var
+ first: Boolean;
+ i, nd, n, npos, di: Integer;
+
+ Procedure Sep;
+ Begin
+  If Not first Then Result := Result + ', ';
+  first := False;
+ End;
+
+Begin
+ Result := '';
+ first := True;
+ npos := Length(a.l1);
+ nd := 0;
+ For i := 0 To npos - 1 Do
+  If a.l1[i].a <> Nil Then Inc(nd);
+ For i := 0 To npos - 1 Do Begin
+  Sep;
+  Result := Result + UnparseArg(a.l1[i]);
+  di := i - npos + nd;
+  If (di >= 0) And (a.l1[i].a <> Nil) Then
+   Result := Result + '=' + UnparseL(a.l1[i].a, prTest);
+  If (a.n > 0) And (i + 1 = a.n) Then Result := Result + ', /';
+ End;
+ If (a.c <> Nil) Or (Length(a.l2) > 0) Then Begin
+  Sep;
+  Result := Result + '*';
+  If a.c <> Nil Then Result := Result + UnparseArg(a.c);
+ End;
+ n := Length(a.l2);
+ For i := 0 To n - 1 Do Begin
+  Sep;
+  Result := Result + UnparseArg(a.l2[i]);
+  If a.l2[i].a <> Nil Then
+   Result := Result + '=' + UnparseL(a.l2[i].a, prTest);
+ End;
+ If a.d <> Nil Then Begin
+  Sep;
+  Result := Result + '**' + UnparseArg(a.d);
+ End;
+End;
+
+Function UnparseComps(nd: TNode): AnsiString;
+Var
+ i, j: Integer;
+ g: TNode;
+Begin
+ Result := '';
+ For i := 0 To High(nd.l1) Do Begin
+  g := nd.l1[i];
+  If g.isAsync Then Result := Result + ' async for ' Else Result := Result +
+    ' for ';
+  Result := Result + UnparseL(g.a, prTuple) + ' in ' +
+   UnparseL(g.b, prTest + 1);
+  For j := 0 To High(g.l1) Do
+   Result := Result + ' if ' + UnparseL(g.l1[j], prTest + 1);
+ End;
+End;
+
+Function EscapeBraces(Const s: AnsiString): AnsiString;
+Var
+ i: Integer;
+Begin
+ Result := '';
+ For i := 1 To Length(s) Do
+  If s[i] = '{' Then Result := Result + '{{'
+  Else If s[i] = '}' Then Result := Result + '}}'
+  Else Result := Result + s[i];
+End;
+
+Function FStringBody(nd: TNode): AnsiString;
+Var
+ j: Integer;
+ p: TNode;
+ inner: AnsiString;
+Begin
+ Result := '';
+ For j := 0 To High(nd.l1) Do Begin
+  p := nd.l1[j];
+  If p.k = nStr Then Result := Result + EscapeBraces(p.s)
+  Else If p.k = nJoined Then Result := Result + FStringBody(p)
+  Else Begin
+   inner := UnparseL(p.a, prTest + 1);
+   If Copy(inner, 1, 1) = '{' Then Result := Result + '{ ' Else
+    Result := Result + '{';
+   Result := Result + inner;
+   If p.n = 1 Then Result := Result + '!s'
+   Else If p.n = 2 Then Result := Result + '!r'
+   Else If p.n = 3 Then Result := Result + '!a';
+   If p.b <> Nil Then Result := Result + ':' + FStringBody(p.b);
+   Result := Result + '}';
+  End;
+ End;
+End;
+
+Function UnparseL(nd: TNode; level: Integer): AnsiString;
+Var
+ j, pr: Integer;
+ op, s: AnsiString;
+ rassoc: Boolean;
+ v: TVal;
+ idx: TNode;
+ hasStar: Boolean;
+
+ Function Wrap(Const x: AnsiString; need: Boolean): AnsiString;
+ Begin
+  If need Then Result := '(' + x + ')' Else Result := x;
+ End;
+
+ Function SubText(idx: TNode): AnsiString;
+ Var
+  k: Integer;
+  st: Boolean;
+ Begin
+  Result := '';
+  If idx.k = nSlice Then Begin
+   If idx.a <> Nil Then Result := UnparseL(idx.a, prTest);
+   Result := Result + ':';
+   If idx.b <> Nil Then Result := Result + UnparseL(idx.b, prTest);
+   If idx.c <> Nil Then Result := Result + ':' + UnparseL(idx.c, prTest);
+  End
+  Else If HasSliceDim(idx) Then Begin
+   For k := 0 To High(idx.l1) Do Begin
+    If k > 0 Then Result := Result + ', ';
+    Result := Result + SubText(idx.l1[k]);
+   End;
+   If Length(idx.l1) = 1 Then Result := Result + ',';
+  End
+  Else Begin
+   pr := prTuple;
+   st := False;
+   If idx.k = nTuple Then
+    For k := 0 To High(idx.l1) Do
+     If idx.l1[k].k = nStarred Then st := True;
+   If st Then Inc(pr);
+   Result := UnparseL(idx, pr);
+  End;
+ End;
+
+Begin
+ Result := '';
+ If nd = Nil Then Exit;
+ Case nd.k Of
+  nName: Result := nd.s;
+  nNum, nConst, nStr: Begin
+    IsConstNode(nd, v);
+    If (v.k = vkObj) And (v.o = vEllipsis.o) Then Result := '...'
+    Else Result := ReprVal(v);
+   End;
+  nBool: Begin
+    If nd.s = 'and' Then Begin
+     op := ' and ';
+     pr := prAnd;
+    End
+    Else Begin
+     op := ' or ';
+     pr := prOr;
+    End;
+    s := '';
+    For j := 0 To High(nd.l1) Do Begin
+     If j > 0 Then s := s + op;
+     s := s + UnparseL(nd.l1[j], pr + 1);
+    End;
+    Result := Wrap(s, level > pr);
+   End;
+  nBin: Begin
+    rassoc := False;
+    If nd.s = '+' Then pr := prArith
+    Else If nd.s = '-' Then pr := prArith
+    Else If (nd.s = '*') Or (nd.s = '@') Or (nd.s = '/') Or (nd.s = '%') Or
+     (nd.s = '//') Then pr := prTerm
+    Else If (nd.s = '<<') Or (nd.s = '>>') Then pr := prShift
+    Else If nd.s = '|' Then pr := prBor
+    Else If nd.s = '^' Then pr := prBxor
+    Else If nd.s = '&' Then pr := prBand
+    Else Begin
+     pr := prPower;
+     rassoc := True;
+    End;
+    s := UnparseL(nd.a, pr + Ord(rassoc)) + ' ' + nd.s + ' ' +
+     UnparseL(nd.b, pr + Ord(Not rassoc));
+    Result := Wrap(s, level > pr);
+   End;
+  nUnary: Begin
+    If nd.s = 'not' Then Begin
+     op := 'not ';
+     pr := prNot;
+    End
+    Else Begin
+     op := nd.s;
+     pr := prFactor;
+    End;
+    Result := Wrap(op + UnparseL(nd.a, pr), level > pr);
+   End;
+  nLambda: Begin
+    s := '';
+    If (Length(nd.b.l1) > 0) Then s := 'lambda ' Else s := 'lambda';
+    s := s + UnparseArgs(nd.b) + ': ' + UnparseL(nd.a, prTest);
+    Result := Wrap(s, level > prTest);
+   End;
+  nIfExp: Begin
+    s := UnparseL(nd.b, prTest + 1) + ' if ' + UnparseL(nd.a, prTest + 1) +
+     ' else ' + UnparseL(nd.c, prTest);
+    Result := Wrap(s, level > prTest);
+   End;
+  nDict: Begin
+    s := '{';
+    For j := 0 To High(nd.l2) Do Begin
+     If j > 0 Then s := s + ', ';
+     If nd.l1[j] <> Nil Then
+      s := s + UnparseL(nd.l1[j], prTest) + ': ' + UnparseL(nd.l2[j], prTest)
+     Else s := s + '**' + UnparseL(nd.l2[j], prExpr);
+    End;
+    Result := s + '}';
+   End;
+  nSet, nList: Begin
+    If nd.k = nSet Then s := '{' Else s := '[';
+    For j := 0 To High(nd.l1) Do Begin
+     If j > 0 Then s := s + ', ';
+     s := s + UnparseL(nd.l1[j], prTest);
+    End;
+    If nd.k = nSet Then Result := s + '}' Else Result := s + ']';
+   End;
+  nTuple: Begin
+    If Length(nd.l1) = 0 Then Result := '()'
+    Else Begin
+     s := '';
+     For j := 0 To High(nd.l1) Do Begin
+      If j > 0 Then s := s + ', ';
+      s := s + UnparseL(nd.l1[j], prTest);
+     End;
+     If Length(nd.l1) = 1 Then s := s + ',';
+     Result := Wrap(s, level > prTuple);
+    End;
+   End;
+  nGenExp: Result := '(' + UnparseL(nd.a, prTest) + UnparseComps(nd) + ')';
+  nListComp: Result := '[' + UnparseL(nd.a, prTest) + UnparseComps(nd) + ']';
+  nSetComp: Result := '{' + UnparseL(nd.a, prTest) + UnparseComps(nd) + '}';
+  nDictComp: Result := '{' + UnparseL(nd.a, prTest) + ': ' +
+    UnparseL(nd.b, prTest) + UnparseComps(nd) + '}';
+  nCmp: Begin
+    s := UnparseL(nd.a, prCmp + 1);
+    For j := 0 To High(nd.l1) Do
+     s := s + ' ' + nd.sl[j] + ' ' + UnparseL(nd.l1[j], prCmp + 1);
+    Result := Wrap(s, level > prCmp);
+   End;
+  nCall: Begin
+    s := UnparseL(nd.a, prAtom);
+    If (Length(nd.l1) = 1) And (nd.l1[0].k = nGenExp) Then Begin
+     Result := s + UnparseL(nd.l1[0], prTest);
+     Exit;
+    End;
+    s := s + '(';
+    hasStar := True;
+    For j := 0 To High(nd.l1) Do
+     If nd.l1[j].k <> nKw Then Begin
+      If Not hasStar Then s := s + ', ';
+      hasStar := False;
+      s := s + UnparseL(nd.l1[j], prTest);
+     End;
+    For j := 0 To High(nd.l1) Do
+     If nd.l1[j].k = nKw Then Begin
+      If Not hasStar Then s := s + ', ';
+      hasStar := False;
+      If nd.l1[j].s = '' Then s := s + '**'
+      Else s := s + nd.l1[j].s + '=';
+      s := s + UnparseL(nd.l1[j].a, prTest);
+     End;
+    Result := s + ')';
+   End;
+  nJoined: Result := 'f' + ReprVal(VStr(FStringBody(nd)));
+  nFmt: Result := FStringBody(nd);
+  nAttr: Begin
+    s := UnparseL(nd.a, prAtom);
+    If IsConstNode(nd.a, v) And ((v.k = vkInt) Or
+     ((v.k = vkObj) And (v.o Is TPyBigInt))) Then s := s + ' .'
+    Else s := s + '.';
+    Result := s + nd.s;
+   End;
+  nSub: Result := UnparseL(nd.a, prAtom) + '[' + SubText(nd.b) + ']';
+  nStarred: Result := '*' + UnparseL(nd.a, prExpr);
+  nYield: Begin
+    If nd.a = Nil Then Result := '(yield)'
+    Else Result := '(yield ' + UnparseL(nd.a, prTest) + ')';
+   End;
+  nYieldFrom: Result := '(yield from ' + UnparseL(nd.a, prTest) + ')';
+  nAwait: Result := Wrap('await ' + UnparseL(nd.a, prAtom), level > prAwait);
+  nNamed: Result := Wrap(UnparseL(nd.a, prAtom) + ':=' +
+    UnparseL(nd.b, prAtom), level > prTuple);
+ Else
+  Result := '...';
+ End;
+End;
+
+Function Unparse(nd: TNode): AnsiString;
+Begin
+ Result := UnparseL(nd, prTest);
 End;
 
 Function CmpOpCode(Const s: AnsiString): Integer;
@@ -6784,29 +7106,10 @@ Begin
  End;
 End;
 
-Procedure CgClosureTuple(g: TGen; child: TScope; Var flags: Integer);
-Var
- j, idx: Integer;
+Function ChildQualDummy: Integer;
 Begin
- If Length(child.freevars) = 0 Then Exit;
- For j := 0 To High(child.freevars) Do Begin
-  idx := IndexOfStr(g.sc.cellvars, child.freevars[j]);
-  If idx < 0 Then
-   idx := Length(g.sc.cellvars) + IndexOfStr(g.sc.freevars,
-    child.freevars[j]);
-  Emit(g, LOAD_CLOSURE, idx);
- End;
- Emit(g, BUILD_TUPLE, Length(child.freevars));
- flags := flags Or 8;
+ Result := 0;
 End;
-
-Function ChildQual(g: TGen; Const nm: AnsiString): AnsiString;
-Begin
- If g.qual = '' Then Result := nm
- Else If g.sc.IsFunc Then Result := g.qual + '.<locals>.' + nm
- Else Result := g.qual + '.' + nm;
-End;
-
 
 { ------------------------------------------------------------
   Assemblage : pile, adresses, lnotab
@@ -6820,51 +7123,56 @@ Begin
  End;
 End;
 
+Const
+ InvalidStackEffect = -1000000;
+
 Function StackEffect(op, arg: Integer; jump: Boolean): Integer;
 Begin
  Case op Of
+  NOP, EXTENDED_ARG: Result := 0;
   POP_TOP: Result := -1;
-  ROT_TWO, ROT_THREE, ROT_FOUR, NOP: Result := 0;
+  ROT_TWO, ROT_THREE, ROT_FOUR: Result := 0;
   DUP_TOP: Result := 1;
   DUP_TOP_TWO: Result := 2;
   UNARY_POSITIVE, UNARY_NEGATIVE, UNARY_NOT, UNARY_INVERT: Result := 0;
-  BINARY_MATRIX_MULTIPLY, INPLACE_MATRIX_MULTIPLY, BINARY_POWER,
-  BINARY_MULTIPLY, BINARY_MODULO, BINARY_ADD, BINARY_SUBTRACT,
-  BINARY_SUBSCR, BINARY_FLOOR_DIVIDE, BINARY_TRUE_DIVIDE,
-  INPLACE_FLOOR_DIVIDE, INPLACE_TRUE_DIVIDE, INPLACE_ADD,
-  INPLACE_SUBTRACT, INPLACE_MULTIPLY, INPLACE_MODULO, BINARY_LSHIFT,
-  BINARY_RSHIFT, BINARY_AND, BINARY_XOR, BINARY_OR, INPLACE_POWER,
-  INPLACE_LSHIFT, INPLACE_RSHIFT, INPLACE_AND, INPLACE_XOR,
-  INPLACE_OR: Result := -1;
-  GET_ITER, GET_YIELD_FROM_ITER: Result := 0;
+  SET_ADD, LIST_APPEND: Result := -1;
+  MAP_ADD: Result := -2;
+  BINARY_POWER, BINARY_MULTIPLY, BINARY_MATRIX_MULTIPLY, BINARY_MODULO,
+  BINARY_ADD, BINARY_SUBTRACT, BINARY_SUBSCR, BINARY_FLOOR_DIVIDE,
+  BINARY_TRUE_DIVIDE, INPLACE_FLOOR_DIVIDE, INPLACE_TRUE_DIVIDE,
+  INPLACE_ADD, INPLACE_SUBTRACT, INPLACE_MULTIPLY, INPLACE_MATRIX_MULTIPLY,
+  INPLACE_MODULO, BINARY_LSHIFT, BINARY_RSHIFT, BINARY_AND, BINARY_XOR,
+  BINARY_OR, INPLACE_POWER, INPLACE_LSHIFT, INPLACE_RSHIFT, INPLACE_AND,
+  INPLACE_XOR, INPLACE_OR: Result := -1;
+  STORE_SUBSCR: Result := -3;
+  DELETE_SUBSCR: Result := -2;
+  GET_ITER: Result := 0;
   PRINT_EXPR: Result := -1;
   LOAD_BUILD_CLASS: Result := 1;
-  YIELD_FROM: Result := -1;
-  YIELD_VALUE: Result := 0;
+  SETUP_WITH: If jump Then Result := 6 Else Result := 1;
+  WITH_CLEANUP_START: Result := 2;
+  WITH_CLEANUP_FINISH: Result := -3;
   RETURN_VALUE: Result := -1;
   IMPORT_STAR: Result := -1;
   SETUP_ANNOTATIONS: Result := 0;
-  STORE_SUBSCR: Result := -3;
-  DELETE_SUBSCR: Result := -2;
-  WITH_CLEANUP_START: Result := 1;
-  WITH_CLEANUP_FINISH: Result := -2;
+  YIELD_VALUE: Result := 0;
+  YIELD_FROM: Result := -1;
   POP_BLOCK: Result := 0;
-  END_FINALLY: Result := -6;
   POP_EXCEPT: Result := -3;
-  BEGIN_FINALLY: Result := 6;
-  POP_FINALLY: Result := -6;
-  STORE_NAME, STORE_GLOBAL, STORE_FAST, STORE_DEREF: Result := -1;
-  DELETE_NAME, DELETE_GLOBAL, DELETE_FAST, DELETE_DEREF: Result := 0;
+  END_FINALLY, POP_FINALLY: Result := -6;
+  STORE_NAME: Result := -1;
+  DELETE_NAME: Result := 0;
   UNPACK_SEQUENCE: Result := arg - 1;
   UNPACK_EX: Result := (arg And 255) + (arg Shr 8);
   FOR_ITER: If jump Then Result := -1 Else Result := 1;
   STORE_ATTR: Result := -2;
   DELETE_ATTR: Result := -1;
-  LOAD_CONST, LOAD_NAME, LOAD_GLOBAL, LOAD_FAST, LOAD_CLOSURE,
-  LOAD_DEREF, LOAD_CLASSDEREF: Result := 1;
-  BUILD_TUPLE, BUILD_LIST, BUILD_SET, BUILD_STRING, BUILD_SLICE,
-  BUILD_LIST_UNPACK, BUILD_MAP_UNPACK, BUILD_MAP_UNPACK_WITH_CALL,
-  BUILD_TUPLE_UNPACK, BUILD_SET_UNPACK, BUILD_TUPLE_UNPACK_WITH_CALL:
+  STORE_GLOBAL: Result := -1;
+  DELETE_GLOBAL: Result := 0;
+  LOAD_CONST, LOAD_NAME: Result := 1;
+  BUILD_TUPLE, BUILD_LIST, BUILD_SET, BUILD_STRING: Result := 1 - arg;
+  BUILD_LIST_UNPACK, BUILD_TUPLE_UNPACK, BUILD_TUPLE_UNPACK_WITH_CALL,
+  BUILD_SET_UNPACK, BUILD_MAP_UNPACK, BUILD_MAP_UNPACK_WITH_CALL:
    Result := 1 - arg;
   BUILD_MAP: Result := 1 - 2 * arg;
   BUILD_CONST_KEY_MAP: Result := -arg;
@@ -6873,29 +7181,39 @@ Begin
   IMPORT_NAME: Result := -1;
   IMPORT_FROM: Result := 1;
   JUMP_FORWARD, JUMP_ABSOLUTE: Result := 0;
-  JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP:
+  JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP:
    If jump Then Result := 0 Else Result := -1;
   POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE: Result := -1;
+  LOAD_GLOBAL: Result := 1;
   SETUP_FINALLY: If jump Then Result := 6 Else Result := 0;
-  SETUP_WITH: If jump Then Result := 6 Else Result := 1;
+  BEGIN_FINALLY: Result := 6;
+  CALL_FINALLY: If jump Then Result := 1 Else Result := 0;
+  LOAD_FAST: Result := 1;
+  STORE_FAST: Result := -1;
+  DELETE_FAST: Result := 0;
   RAISE_VARARGS: Result := -arg;
   CALL_FUNCTION: Result := -arg;
+  CALL_METHOD: Result := -arg - 1;
   CALL_FUNCTION_KW: Result := -arg - 1;
   CALL_FUNCTION_EX: Result := -1 - (arg And 1);
-  MAKE_FUNCTION: Result := -1 - PopCnt(arg And 15);
-  LIST_APPEND, SET_ADD: Result := -1;
-  MAP_ADD: Result := -2;
-  FORMAT_VALUE: If (arg And 4) <> 0 Then Result := -1 Else Result := 0;
-  LOAD_METHOD: Result := 1;
-  CALL_METHOD: Result := -arg - 1;
-  CALL_FINALLY: If jump Then Result := 6 Else Result := 0;
-  EXTENDED_ARG: Result := 0;
-  GET_AWAITABLE, GET_AITER: Result := 0;
-  GET_ANEXT, BEFORE_ASYNC_WITH: Result := 1;
-  END_ASYNC_FOR: Result := -7;
+  MAKE_FUNCTION: Result := -1 - (arg And 1) - ((arg Shr 1) And 1) -
+   ((arg Shr 2) And 1) - ((arg Shr 3) And 1);
+  BUILD_SLICE: If arg = 3 Then Result := -2 Else Result := -1;
+  LOAD_CLOSURE: Result := 1;
+  LOAD_DEREF, LOAD_CLASSDEREF: Result := 1;
+  STORE_DEREF: Result := -1;
+  DELETE_DEREF: Result := 0;
+  GET_AWAITABLE: Result := 0;
   SETUP_ASYNC_WITH: If jump Then Result := 5 Else Result := 0;
+  BEFORE_ASYNC_WITH: Result := 1;
+  GET_AITER: Result := 0;
+  GET_ANEXT: Result := 1;
+  GET_YIELD_FROM_ITER: Result := 0;
+  END_ASYNC_FOR: Result := -7;
+  FORMAT_VALUE: If (arg And 4) = 4 Then Result := -1 Else Result := 0;
+  LOAD_METHOD: Result := 1;
  Else
-  Result := 0;
+  Result := InvalidStackEffect;
  End;
 End;
 
@@ -6907,131 +7225,550 @@ Begin
  Else Result := 8;
 End;
 
-Function Assemble(g: TGen): TPyCode;
+{ ---- optimiseur peephole (port de peephole.c, CPython 3.8) ---- }
+Type
+ TByteArr = Array Of Byte;
+ TIntArr = Array Of Int64;
+
+Function PhInstrSize(a: Int64): Integer;
+Begin
+ If a <= $FF Then Result := 1
+ Else If a <= $FFFF Then Result := 2
+ Else If a <= $FFFFFF Then Result := 3
+ Else Result := 4;
+End;
+
+Function PhOp(Const c: TByteArr; i: Int64): Integer;
+Begin
+ Result := c[2 * i];
+End;
+
+Function PhGetArg(Const c: TByteArr; i: Int64): Int64;
+Begin
+ Result := c[2 * i + 1];
+ If (i >= 1) And (c[2 * (i - 1)] = EXTENDED_ARG) Then Begin
+  Result := Result Or (Int64(c[2 * (i - 1) + 1]) Shl 8);
+  If (i >= 2) And (c[2 * (i - 2)] = EXTENDED_ARG) Then Begin
+   Result := Result Or (Int64(c[2 * (i - 2) + 1]) Shl 16);
+   If (i >= 3) And (c[2 * (i - 3)] = EXTENDED_ARG) Then
+    Result := Result Or (Int64(c[2 * (i - 3) + 1]) Shl 24);
+  End;
+ End;
+End;
+
+Procedure PhFillNops(Var c: TByteArr; s, e: Int64);
 Var
- n, i, off, a, sz, nb, k, j: Integer;
- offs, sizes: Array Of Integer;
- changed: Boolean;
- co: Array Of Byte;
+ k: Int64;
+Begin
+ For k := s To e - 1 Do Begin
+  c[2 * k] := NOP;
+  c[2 * k + 1] := NOP;
+ End;
+End;
+
+Procedure PhWriteOp(Var c: TByteArr; pos: Int64; op: Integer; a: Int64;
+ ilen: Integer);
+Var
+ k: Integer;
+Begin
+ For k := ilen DownTo 2 Do Begin
+  c[2 * pos] := EXTENDED_ARG;
+  c[2 * pos + 1] := (a Shr (8 * (k - 1))) And 255;
+  Inc(pos);
+ End;
+ c[2 * pos] := op;
+ c[2 * pos + 1] := a And 255;
+End;
+
+Function PhFindOp(Const c: TByteArr; len, i: Int64): Int64;
+Begin
+ While (i < len) And (c[2 * i] = EXTENDED_ARG) Do Inc(i);
+ Result := i;
+End;
+
+Function PhSetArg(Var c: TByteArr; i: Int64; a: Int64): Int64;
+Var
+ cur: Int64;
+ curl, newl: Integer;
+Begin
+ cur := PhGetArg(c, i);
+ If cur = a Then Begin
+  Result := i;
+  Exit;
+ End;
+ curl := PhInstrSize(cur);
+ newl := PhInstrSize(a);
+ If curl < newl Then Begin
+  Result := -1;
+  Exit;
+ End;
+ PhWriteOp(c, i + 1 - curl, c[2 * i], a, newl);
+ PhFillNops(c, i + 1 - curl + newl, i + 1);
+ Result := i - curl + newl;
+End;
+
+Function PhCopyOp(Var c: TByteArr; i: Int64; op: Integer; a: Int64;
+ maxi: Int64): Int64;
+Var
+ ilen: Integer;
+Begin
+ ilen := PhInstrSize(a);
+ If i + ilen > maxi Then Begin
+  Result := -1;
+  Exit;
+ End;
+ PhWriteOp(c, maxi - ilen, op, a, ilen);
+ PhFillNops(c, i, maxi - ilen);
+ Result := maxi - 1;
+End;
+
+Function PhLastNConst(Const c: TByteArr; i: Int64; n: Integer): Int64;
+Begin
+ While True Do Begin
+  Dec(i);
+  If c[2 * i] = LOAD_CONST Then Begin
+   Dec(n);
+   If n = 0 Then Begin
+    While (i > 0) And (c[2 * (i - 1)] = EXTENDED_ARG) Do Dec(i);
+    Result := i;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+Function PhFoldTuple(Var c: TByteArr; len, cstart, opend: Int64; g: TGen;
+ n: Integer): Int64;
+Var
+ t: TPyTuple;
+ i: Integer;
+ pos: Int64;
+Begin
+ t := NewTuple(n);
+ pos := cstart;
+ For i := 0 To n - 1 Do Begin
+  pos := PhFindOp(c, len, pos);
+  t.items[i] := g.consts[PhGetArg(c, pos)];
+  Inc(pos);
+ End;
+ If g.nconsts >= Length(g.consts) Then
+  SetLength(g.consts, (g.nconsts + 8) * 2);
+ g.consts[g.nconsts] := VObj(t);
+ Inc(g.nconsts);
+ Result := PhCopyOp(c, cstart, LOAD_CONST, g.nconsts - 1, opend);
+End;
+
+Function PhIsAbs(op: Integer): Boolean;
+Begin
+ Result := op In [JUMP_ABSOLUTE, POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE,
+  JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP];
+End;
+
+Function PhIsUncond(op: Integer): Boolean;
+Begin
+ Result := (op = JUMP_ABSOLUTE) Or (op = JUMP_FORWARD);
+End;
+
+Function PhIsCond(op: Integer): Boolean;
+Begin
+ Result := op In [POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE, JUMP_IF_FALSE_OR_POP,
+  JUMP_IF_TRUE_OR_POP];
+End;
+
+Function PhOnTrue(op: Integer): Boolean;
+Begin
+ Result := (op = POP_JUMP_IF_TRUE) Or (op = JUMP_IF_TRUE_OR_POP);
+End;
+
+Function PhJumpTgt(Const c: TByteArr; i: Int64): Int64;
+Begin
+ Result := PhGetArg(c, i) Div 2;
+ If Not PhIsAbs(c[2 * i]) Then Inc(Result, i + 1);
+End;
+
+{ renvoie False si le code doit rester inchange }
+Function Peephole(Var code: TByteArr; Var lnotab: AnsiString;
+ g: TGen): Boolean;
+Var
+ c: TByteArr;
+ blocks: TIntArr;
+ len, i, h, nexti, opstart, tgt, k, nops, j, ilen: Int64;
+ opcode, nextop, op2: Integer;
+ lastlc, cumlc: Int64;
+ cumOrig, lastOff, newOff: Int64;
+ cnt: TVal;
+ arg: Int64;
+ outp: TByteArr;
+ blkcnt: Int64;
+Begin
+ Result := False;
+ k := 1;
+ While k <= Length(lnotab) Do Begin
+  If lnotab[k] = #255 Then Exit;
+  Inc(k, 2);
+ End;
+ len := Length(code) Div 2;
+ c := Copy(code, 0, Length(code));
+ { markblocks }
+ SetLength(blocks, len + 1);
+ For i := 0 To len Do blocks[i] := 0;
+ For i := 0 To len - 1 Do Begin
+  opcode := c[2 * i];
+  If opcode In [FOR_ITER, JUMP_FORWARD, JUMP_IF_FALSE_OR_POP,
+   JUMP_IF_TRUE_OR_POP, POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE, JUMP_ABSOLUTE,
+   SETUP_FINALLY, SETUP_WITH, SETUP_ASYNC_WITH, CALL_FINALLY] Then Begin
+   j := PhJumpTgt(c, i);
+   If j < len Then blocks[j] := 1;
+  End;
+ End;
+ blkcnt := 0;
+ For i := 0 To len - 1 Do Begin
+  Inc(blkcnt, blocks[i]);
+  blocks[i] := blkcnt;
+ End;
+ cumlc := 0;
+ lastlc := 0;
+ i := PhFindOp(c, len, 0);
+ While i < len Do Begin
+  opcode := c[2 * i];
+  opstart := i;
+  While (opstart >= 1) And (c[2 * (opstart - 1)] = EXTENDED_ARG) Do
+   Dec(opstart);
+  nexti := i + 1;
+  While (nexti < len) And (c[2 * nexti] = EXTENDED_ARG) Do Inc(nexti);
+  If nexti < len Then nextop := c[2 * nexti] Else nextop := 0;
+  lastlc := cumlc;
+  cumlc := 0;
+  Case opcode Of
+   LOAD_CONST: Begin
+     cumlc := lastlc + 1;
+     If (nextop = POP_JUMP_IF_FALSE) And
+      (blocks[opstart] = blocks[i + 1]) Then Begin
+      cnt := g.consts[PhGetArg(c, i)];
+      If IsTrue(cnt) Then Begin
+       PhFillNops(c, opstart, nexti + 1);
+       cumlc := 0;
+      End;
+     End;
+    End;
+   BUILD_TUPLE: Begin
+     j := PhGetArg(c, i);
+     If (j > 0) And (lastlc >= j) Then Begin
+      h := PhLastNConst(c, opstart, j);
+      If blocks[h] = blocks[opstart] Then Begin
+       h := PhFoldTuple(c, len, h, i + 1, g, j);
+       i := nexti;
+       Continue;
+      End;
+     End;
+     If (nextop = UNPACK_SEQUENCE) And (blocks[opstart] = blocks[i + 1]) And
+      (j = PhGetArg(c, nexti)) Then Begin
+      If j < 2 Then PhFillNops(c, opstart, nexti + 1)
+      Else If j = 2 Then Begin
+       c[2 * opstart] := ROT_TWO;
+       c[2 * opstart + 1] := 0;
+       PhFillNops(c, opstart + 1, nexti + 1);
+      End
+      Else If j = 3 Then Begin
+       c[2 * opstart] := ROT_THREE;
+       c[2 * opstart + 1] := 0;
+       c[2 * opstart + 2] := ROT_TWO;
+       c[2 * opstart + 3] := 0;
+       PhFillNops(c, opstart + 2, nexti + 1);
+      End;
+     End;
+    End;
+   JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP, POP_JUMP_IF_FALSE,
+   POP_JUMP_IF_TRUE, JUMP_FORWARD, JUMP_ABSOLUTE: Begin
+     op2 := opcode;
+     If (opcode = JUMP_IF_FALSE_OR_POP) Or (opcode = JUMP_IF_TRUE_OR_POP) Then
+      Begin
+      h := PhGetArg(c, i) Div 2;
+      tgt := PhFindOp(c, len, h);
+      j := c[2 * tgt];
+      If PhIsCond(j) Then Begin
+       If PhOnTrue(j) = PhOnTrue(opcode) Then
+        h := PhSetArg(c, i, PhGetArg(c, tgt))
+       Else Begin
+        arg := (tgt + 1) * 2;
+        h := PhSetArg(c, i, arg);
+        If opcode = JUMP_IF_TRUE_OR_POP Then j := POP_JUMP_IF_TRUE
+        Else j := POP_JUMP_IF_FALSE;
+       End;
+       If h >= 0 Then Begin
+        nexti := h;
+        c[2 * nexti] := j;
+        { l'indice suivant est h comme dans le C: i = nexti }
+        i := nexti;
+        Continue;
+       End;
+      End;
+     End;
+     { remplacement des sauts vers sauts inconditionnels }
+     h := PhJumpTgt(c, i);
+     tgt := PhFindOp(c, len, h);
+     If PhIsUncond(opcode) And (c[2 * tgt] = RETURN_VALUE) Then Begin
+      c[2 * opstart] := RETURN_VALUE;
+      c[2 * opstart + 1] := 0;
+      PhFillNops(c, opstart + 1, i + 1);
+     End
+     Else If PhIsUncond(c[2 * tgt]) Then Begin
+      arg := PhJumpTgt(c, tgt);
+      If opcode = JUMP_FORWARD Then op2 := JUMP_ABSOLUTE
+      Else If Not PhIsAbs(opcode) Then Begin
+       If arg < i + 1 Then op2 := -1
+       Else arg := arg - (i + 1);
+      End;
+      If op2 >= 0 Then Begin
+       arg := arg * 2;
+       PhCopyOp(c, opstart, op2, arg, i + 1);
+      End;
+     End;
+    End;
+   RETURN_VALUE: Begin
+     h := i + 1;
+     while (h < len) And (blocks[i] = blocks[h]) And
+      (c[2 * h] <> END_FINALLY) Do Begin
+      If c[2 * h] = SETUP_FINALLY Then Begin
+       While (h > i + 1) And (c[2 * (h - 1)] = EXTENDED_ARG) Do Dec(h);
+       Break;
+      End;
+      Inc(h);
+     End;
+     If h > i + 1 Then Begin
+      PhFillNops(c, i + 1, h);
+      nexti := PhFindOp(c, len, h);
+     End;
+    End;
+  End;
+  i := nexti;
+ End;
+ { fixup lnotab }
+ nops := 0;
+ blocks[len] := len;
+ For i := 0 To len - 1 Do Begin
+  blocks[i] := i - nops;
+  If c[2 * i] = NOP Then Inc(nops);
+ End;
+ cumOrig := 0;
+ lastOff := 0;
+ k := 1;
+ While k <= Length(lnotab) Do Begin
+  Inc(cumOrig, Ord(lnotab[k]));
+  newOff := blocks[cumOrig Div 2] * 2;
+  lnotab[k] := Chr((newOff - lastOff) And 255);
+  lastOff := newOff;
+  Inc(k, 2);
+ End;
+ { suppression des NOP et recalage des sauts }
+ SetLength(outp, Length(c));
+ h := 0;
+ i := 0;
+ While i < len Do Begin
+  opstart := i;
+  j := c[2 * i + 1];
+  While c[2 * i] = EXTENDED_ARG Do Begin
+   Inc(i);
+   j := (j Shl 8) Or c[2 * i + 1];
+  End;
+  opcode := c[2 * i];
+  If opcode <> NOP Then Begin
+   Case opcode Of
+    JUMP_ABSOLUTE, POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE,
+    JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP:
+     j := blocks[j Div 2] * 2;
+    FOR_ITER, JUMP_FORWARD, SETUP_FINALLY, SETUP_WITH, SETUP_ASYNC_WITH,
+    CALL_FINALLY: Begin
+      j := blocks[j Div 2 + i + 1] - blocks[i] - 1;
+      j := j * 2;
+     End;
+   End;
+   ilen := i - opstart + 1;
+   If PhInstrSize(j) > ilen Then Exit;
+   PhWriteOp(outp, h, opcode, j, ilen);
+   Inc(h, ilen);
+  End;
+  Inc(i);
+ End;
+ SetLength(outp, h * 2);
+ code := outp;
+ Result := True;
+End;
+
+Function BlockSize(b: TCgBlock): Integer;
+Var
+ i: Integer;
+Begin
+ Result := 0;
+ For i := 0 To b.n - 1 Do Inc(Result, PhInstrSize(b.ins[i].arg));
+End;
+
+Function Assemble(g: TGen; addNone: Boolean): TPyCode;
+Var
+ post: Array Of TCgBlock;
+ npost: Integer;
+ i, j, k, nb, off, bsize, isz, aLineno, aLinenoOff, tot, dB, dL, aOff: Integer;
+ b: TCgBlock;
+ recompile: Boolean;
+ co: TByteArr;
  lnotab: AnsiString;
- lastOff, lastLine, dOff, dLine: Integer;
  code: TPyCode;
- depth: Array Of Integer;
- work: Array Of Integer;
- wdepth: Array Of Integer;
- nw, cur, d, d1, dj, maxd, t, op, steps: Integer;
- sc: TScope;
+ sc, pp: TScope;
  fl: Integer;
+ stack: Array Of TCgBlock;
+ sp, maxd, depth, newDepth, eff: Integer;
+ nxt: TCgBlock;
+ op: Integer;
+
+ Procedure Dfs(bl: TCgBlock; fin: Integer);
+ Var
+  ii, jj: Integer;
+  bb: TCgBlock;
+ Begin
+  jj := fin;
+  While (bl <> Nil) And Not bl.seen Do Begin
+   bl.seen := True;
+   Dec(jj);
+   post[jj] := bl;
+   bl := bl.next;
+  End;
+  While jj < fin Do Begin
+   bb := post[jj];
+   Inc(jj);
+   For ii := 0 To bb.n - 1 Do
+    If (bb.ins[ii].tgt <> Nil) Then Dfs(bb.ins[ii].tgt, jj);
+   post[npost] := bb;
+   Inc(npost);
+  End;
+ End;
+
+ Procedure Push(bl: TCgBlock; d: Integer);
+ Begin
+  If bl.startDepth < d Then Begin
+   bl.startDepth := d;
+   stack[sp] := bl;
+   Inc(sp);
+  End;
+ End;
+
 Begin
  sc := g.sc;
- n := g.nins;
- SetLength(offs, n + 1);
- SetLength(sizes, n);
- For i := 0 To n - 1 Do sizes[i] := 2;
+ If Not g.cur.ret Then Begin
+  NextBlock(g);
+  If addNone Then EmitConst(g, vNone);
+  Emit(g, RETURN_VALUE);
+ End;
+ If g.firstline = 0 Then Begin
+  b := g.blocks[0];
+  If (b.n > 0) And (b.ins[0].line <> 0) Then g.firstline := b.ins[0].line
+  Else g.firstline := 1;
+ End;
+ SetLength(post, g.nblocks + 1);
+ npost := 0;
+ Dfs(g.blocks[0], g.nblocks);
+ { decalages des sauts }
  Repeat
-  changed := False;
-  off := 0;
-  For i := 0 To n - 1 Do Begin
-   offs[i] := off;
-   Inc(off, sizes[i]);
+  tot := 0;
+  For i := npost - 1 DownTo 0 Do Begin
+   b := post[i];
+   b.offset := tot;
+   Inc(tot, BlockSize(b));
   End;
-  offs[n] := off;
-  For i := 0 To n - 1 Do Begin
-   If g.ins[i].lbl >= 0 Then Begin
-    t := g.labels[g.ins[i].lbl];
-    If t < 0 Then t := n;
-    If IsRelJump(g.ins[i].op) Then
-     g.ins[i].arg := offs[t] - (offs[i] + sizes[i])
-    Else g.ins[i].arg := offs[t];
-   End;
-   sz := ArgSize(g.ins[i].arg);
-   If sz > sizes[i] Then Begin
-    sizes[i] := sz;
-    changed := True;
-   End;
-  End;
- Until Not changed;
- SetLength(co, offs[n]);
- For i := 0 To n - 1 Do Begin
-  a := g.ins[i].arg;
-  k := offs[i];
-  nb := sizes[i] Div 2 - 1;
-  For j := nb DownTo 1 Do Begin
-   co[k] := EXTENDED_ARG;
-   co[k + 1] := (a Shr (8 * j)) And 255;
-   Inc(k, 2);
-  End;
-  co[k] := g.ins[i].op;
-  co[k + 1] := a And 255;
- End;
- { co_lnotab }
- lnotab := '';
- lastOff := 0;
- lastLine := g.firstline;
- For i := 0 To n - 1 Do Begin
-  If (g.ins[i].line > 0) And (g.ins[i].line <> lastLine) Then Begin
-   dOff := offs[i] - lastOff;
-   dLine := g.ins[i].line - lastLine;
-   While dOff > 255 Do Begin
-    lnotab := lnotab + #255 + #0;
-    Dec(dOff, 255);
-   End;
-   While dLine > 127 Do Begin
-    lnotab := lnotab + Chr(dOff) + #127;
-    dOff := 0;
-    Dec(dLine, 127);
-   End;
-   While dLine < -128 Do Begin
-    lnotab := lnotab + Chr(dOff) + #128;
-    dOff := 0;
-    Inc(dLine, 128);
-   End;
-   lnotab := lnotab + Chr(dOff) + Chr(dLine And 255);
-   lastOff := offs[i];
-   lastLine := g.ins[i].line;
-  End;
- End;
- { taille de pile }
- SetLength(depth, n + 1);
- For i := 0 To n Do depth[i] := -1;
- SetLength(work, 64);
- SetLength(wdepth, 64);
- nw := 0;
- maxd := 0;
- work[0] := 0;
- wdepth[0] := 0;
- nw := 1;
- steps := 0;
- While nw > 0 Do Begin
-  Inc(steps);
-  If steps > 100 * n + 5000 Then Break;
-  Dec(nw);
-  cur := work[nw];
-  d := wdepth[nw];
-  While cur < n Do Begin
-   If depth[cur] >= d Then Break;
-   depth[cur] := d;
-   op := g.ins[cur].op;
-   d1 := d + StackEffect(op, g.ins[cur].arg, False);
-   If d > maxd Then maxd := d;
-   If d1 > maxd Then maxd := d1;
-   If g.ins[cur].lbl >= 0 Then Begin
-    dj := d + StackEffect(op, g.ins[cur].arg, True);
-    If dj > maxd Then maxd := dj;
-    t := g.labels[g.ins[cur].lbl];
-    If t < 0 Then t := n;
-    If nw >= Length(work) Then Begin
-     SetLength(work, nw * 2);
-     SetLength(wdepth, nw * 2);
+  recompile := False;
+  For k := 0 To g.nblocks - 1 Do Begin
+   b := g.blocks[k];
+   bsize := b.offset;
+   For i := 0 To b.n - 1 Do Begin
+    isz := PhInstrSize(b.ins[i].arg);
+    Inc(bsize, isz);
+    If b.ins[i].tgt <> Nil Then Begin
+     b.ins[i].arg := b.ins[i].tgt.offset;
+     If IsRelJump(b.ins[i].op) Then Dec(b.ins[i].arg, bsize);
+     b.ins[i].arg := b.ins[i].arg * 2;
+     If PhInstrSize(b.ins[i].arg) <> isz Then recompile := True;
     End;
-    work[nw] := t;
-    wdepth[nw] := dj;
-    Inc(nw);
    End;
-   If op In [JUMP_ABSOLUTE, JUMP_FORWARD, RETURN_VALUE, RAISE_VARARGS]
-    Then Break;
-   d := d1;
-   Inc(cur);
+  End;
+ Until Not recompile;
+ { emission }
+ SetLength(co, tot * 2);
+ lnotab := '';
+ aLineno := g.firstline;
+ aLinenoOff := 0;
+ aOff := 0;
+ For k := npost - 1 DownTo 0 Do Begin
+  b := post[k];
+  For i := 0 To b.n - 1 Do Begin
+   isz := PhInstrSize(b.ins[i].arg);
+   If b.ins[i].line <> 0 Then Begin
+    dB := (aOff - aLinenoOff) * 2;
+    dL := b.ins[i].line - aLineno;
+    If Not ((dB = 0) And (dL = 0)) Then Begin
+     If dB > 255 Then Begin
+      nb := dB Div 255;
+      For j := 1 To nb Do lnotab := lnotab + #255 + #0;
+      Dec(dB, nb * 255);
+     End;
+     If (dL < -128) Or (dL > 127) Then Begin
+      If dL < 0 Then Begin
+       j := -128;
+       nb := (-dL) Div 128;
+      End
+      Else Begin
+       j := 127;
+       nb := dL Div 127;
+      End;
+      Dec(dL, nb * j);
+      lnotab := lnotab + Chr(dB) + Chr(j And 255);
+      dB := 0;
+      For off := 2 To nb Do lnotab := lnotab + #0 + Chr(j And 255);
+     End;
+     lnotab := lnotab + Chr(dB) + Chr(dL And 255);
+     aLineno := b.ins[i].line;
+     aLinenoOff := aOff;
+    End;
+   End;
+   PhWriteOp(co, aOff, b.ins[i].op, b.ins[i].arg, isz);
+   Inc(aOff, isz);
+  End;
+ End;
+ Peephole(co, lnotab, g);
+ { taille de pile (stackdepth) }
+ For k := 0 To g.nblocks - 1 Do g.blocks[k].startDepth := -MaxInt;
+ SetLength(stack, g.nblocks * 4 + 8);
+ sp := 0;
+ maxd := 0;
+ Push(g.blocks[0], 0);
+ While sp > 0 Do Begin
+  Dec(sp);
+  b := stack[sp];
+  depth := b.startDepth;
+  nxt := b.next;
+  For i := 0 To b.n - 1 Do Begin
+   op := b.ins[i].op;
+   eff := StackEffect(op, b.ins[i].arg, False);
+   newDepth := depth + eff;
+   If newDepth > maxd Then maxd := newDepth;
+   If b.ins[i].tgt <> Nil Then Begin
+    eff := StackEffect(op, b.ins[i].arg, True);
+    If depth + eff > maxd Then maxd := depth + eff;
+    If op = CALL_FINALLY Then Begin
+     depth := newDepth;
+     Continue;
+    End;
+    If sp + 2 >= Length(stack) Then SetLength(stack, Length(stack) * 2);
+    Push(b.ins[i].tgt, depth + eff);
+   End;
+   depth := newDepth;
+   If op In [JUMP_ABSOLUTE, JUMP_FORWARD, RETURN_VALUE, RAISE_VARARGS] Then
+    Begin
+     nxt := Nil;
+     Break;
+    End;
+  End;
+  If nxt <> Nil Then Begin
+   If sp + 2 >= Length(stack) Then SetLength(stack, Length(stack) * 2);
+   Push(nxt, depth);
   End;
  End;
  code := TPyCode.Create(tyCode);
@@ -7039,51 +7776,108 @@ Begin
  code.stacksize := maxd;
  SetLength(code.consts, g.nconsts);
  For i := 0 To g.nconsts - 1 Do code.consts[i] := g.consts[i];
- SetLength(code.names, Length(g.names));
- SetLength(code.nameObjs, Length(g.names));
- For i := 0 To High(g.names) Do Begin
+ SetLength(code.names, g.nnames);
+ SetLength(code.nameObjs, g.nnames);
+ For i := 0 To g.nnames - 1 Do Begin
   code.names[i] := g.names[i];
   code.nameObjs[i] := InternStr(g.names[i]);
  End;
- code.varnames := sc.varnames;
- code.cellvars := sc.cellvars;
- code.freevars := sc.freevars;
- code.nlocals := Length(sc.varnames);
+ SetLength(code.varnames, g.nvar);
+ For i := 0 To g.nvar - 1 Do code.varnames[i] := g.varnames[i];
+ code.cellvars := g.cellvars;
+ code.freevars := g.freevars;
+ code.nlocals := g.nvar;
  code.filename := g.fname;
  code.name := g.name;
  code.firstline := g.firstline;
  code.lnotab := lnotab;
  code.source := SrcLines;
  code.posonly := g.posonly;
+ code.argcount := g.posonly + g.argcount;
+ code.kwonly := g.kwonly;
  fl := 0;
  If sc.IsFunc Then Begin
   fl := CO_OPTIMIZED Or CO_NEWLOCALS;
-  code.argcount := sc.nparams;
-  code.kwonly := sc.nkwonly;
-  If sc.hasVarArgs Then fl := fl Or CO_VARARGS;
-  If sc.hasKwArgs Then fl := fl Or CO_VARKEYWORDS;
+  If sc.kind <> scComp Then Begin
+   If sc.hasVarArgs Then fl := fl Or CO_VARARGS;
+   If sc.hasKwArgs Then fl := fl Or CO_VARKEYWORDS;
+  End;
   If sc.isAsync Or sc.coro Then Begin
    If sc.isGen Then fl := fl Or CO_ASYNC_GENERATOR
    Else fl := fl Or CO_COROUTINE;
   End
   Else If sc.isGen Then fl := fl Or CO_GENERATOR;
-  If (sc.parent <> Nil) And (sc.parent.kind <> scModule) Then
-   fl := fl Or CO_NESTED;
+  pp := sc.parent;
+  While pp <> Nil Do Begin
+   If pp.IsFunc Then Begin
+    fl := fl Or CO_NESTED;
+    Break;
+   End;
+   pp := pp.parent;
+  End;
  End;
- If (Length(sc.freevars) = 0) And (Length(sc.cellvars) = 0) Then
+ fl := fl Or CgFutureFlags;
+ If (Length(g.freevars) = 0) And (Length(g.cellvars) = 0) Then
   fl := fl Or CO_NOFREE;
  code.flags := fl;
  Result := code;
 End;
 
 { ------------------------------------------------------------
-  Expressions
+  Generation : expressions
   ------------------------------------------------------------ }
-Procedure CgFuncDefaults(g: TGen; args: TNode; Var flags: Integer);
+Function IsDocStmt(nd: TNode): Boolean;
+Begin
+ Result := (nd.k = nExprStmt) And (nd.a.k = nStr) And Not nd.a.flag;
+End;
+
+Function ExprConstant(nd: TNode): Integer;
+Var
+ v: TVal;
+Begin
+ If IsConstNode(nd, v) Then Begin
+  If IsTrue(v) Then Result := 1 Else Result := 0;
+ End
+ Else Result := -1;
+End;
+
+Procedure CgErr(g: TGen; Const msg: AnsiString);
+Begin
+ SynErr(msg, g.lineno, 0);
+End;
+
+Procedure CgMakeClosure(g: TGen; code: TPyCode; flags: Integer;
+ Const qual: AnsiString);
+Var
+ i, idx: Integer;
+ nm: AnsiString;
+Begin
+ If g.noEmit > 0 Then Exit;
+ If Length(code.freevars) > 0 Then Begin
+  For i := 0 To High(code.freevars) Do Begin
+   nm := code.freevars[i];
+   idx := IndexOfStr(g.cellvars, nm);
+   If idx < 0 Then Begin
+    idx := IndexOfStr(g.freevars, nm);
+    If idx >= 0 Then Inc(idx, Length(g.cellvars));
+   End;
+   Emit(g, LOAD_CLOSURE, idx);
+  End;
+  flags := flags Or 8;
+  Emit(g, BUILD_TUPLE, Length(code.freevars));
+ End;
+ EmitConst(g, VObj(code));
+ EmitConst(g, VStr(qual));
+ Emit(g, MAKE_FUNCTION, flags);
+End;
+
+{ defauts des arguments : compiler_default_arguments }
+Function CgDefaults(g: TGen; args: TNode): Integer;
 Var
  j, cnt: Integer;
- names: TPyTuple;
+ keys: TPyTuple;
 Begin
+ Result := 0;
  cnt := 0;
  For j := 0 To High(args.l1) Do
   If args.l1[j].a <> Nil Then Inc(cnt);
@@ -7091,121 +7885,139 @@ Begin
   For j := 0 To High(args.l1) Do
    If args.l1[j].a <> Nil Then CgExpr(g, args.l1[j].a);
   Emit(g, BUILD_TUPLE, cnt);
-  flags := flags Or 1;
+  Result := Result Or 1;
  End;
  cnt := 0;
  For j := 0 To High(args.l2) Do
   If args.l2[j].a <> Nil Then Inc(cnt);
  If cnt > 0 Then Begin
-  names := NewTuple(cnt);
+  keys := NewTuple(cnt);
   cnt := 0;
   For j := 0 To High(args.l2) Do
    If args.l2[j].a <> Nil Then Begin
-    CgExpr(g, args.l2[j].a);
-    names.items[cnt] := VStr(args.l2[j].s);
+    keys.items[cnt] := VStr(Mangle(g, args.l2[j].s));
     Inc(cnt);
+    CgExpr(g, args.l2[j].a);
    End;
-  EmitConst(g, VObj(names));
+  EmitConst(g, VObj(keys));
   Emit(g, BUILD_CONST_KEY_MAP, cnt);
-  flags := flags Or 2;
+  Result := Result Or 2;
  End;
 End;
 
 Procedure CgAnnotExpr(g: TGen; e: TNode);
 Begin
- If PFutureAnnotations Then EmitConst(g, VStr(Unparse(e)))
+ If CgAnnotFuture Then EmitConst(g, VStr(Unparse(e)))
  Else CgExpr(g, e);
 End;
 
-Procedure CgAnnotations(g: TGen; nd, args: TNode; Var flags: Integer);
+{ annotations : compiler_visit_annotations ; renvoie True si dict empile }
+Function CgAnnotations(g: TGen; args: TNode; returns: TNode): Boolean;
 Var
  names: TStrArr;
  cnt, j: Integer;
- names2: TPyTuple;
+ keys: TPyTuple;
 
  Procedure AddP(p: TNode);
  Begin
   If (p <> Nil) And (p.b <> Nil) Then Begin
    CgAnnotExpr(g, p.b);
    SetLength(names, Length(names) + 1);
-   names[High(names)] := p.s;
+   names[High(names)] := Mangle(g, p.s);
   End;
  End;
 
 Begin
- If nd.k <> nFuncDef Then Exit;
  SetLength(names, 0);
- For j := 0 To High(args.l1) Do AddP(args.l1[j]);
+ For j := args.n To High(args.l1) Do AddP(args.l1[j]);
+ For j := 0 To args.n - 1 Do AddP(args.l1[j]);
  AddP(args.c);
  For j := 0 To High(args.l2) Do AddP(args.l2[j]);
  AddP(args.d);
- If nd.b <> Nil Then Begin
-  CgAnnotExpr(g, nd.b);
+ If returns <> Nil Then Begin
+  CgAnnotExpr(g, returns);
   SetLength(names, Length(names) + 1);
   names[High(names)] := 'return';
  End;
  cnt := Length(names);
+ Result := cnt > 0;
  If cnt = 0 Then Exit;
- names2 := NewTuple(cnt);
- For j := 0 To cnt - 1 Do names2.items[j] := VStr(names[j]);
- EmitConst(g, VObj(names2));
+ keys := NewTuple(cnt);
+ For j := 0 To cnt - 1 Do keys.items[j] := VStr(names[j]);
+ EmitConst(g, VObj(keys));
  Emit(g, BUILD_CONST_KEY_MAP, cnt);
- flags := flags Or 4;
 End;
 
-Procedure CgMakeFunction(g: TGen; nd: TNode; args: TNode; Const nm: AnsiString);
-Var
- flags: Integer;
- cs: TScope;
- code: TPyCode;
- qual: AnsiString;
+Function UnitKind(sc: TScope): Integer;
 Begin
- flags := 0;
- cs := ScopeOf(nd);
- CgFuncDefaults(g, args, flags);
- CgAnnotations(g, nd, args, flags);
- qual := ChildQual(g, nm);
- code := CgFunction(g, nd, cs, nm, qual);
- CgClosureTuple(g, cs, flags);
- EmitConst(g, VObj(code));
- EmitConst(g, VStr(qual));
- Emit(g, MAKE_FUNCTION, flags);
+ Case sc.kind Of
+  scModule: Result := suModule;
+  scClass: Result := suClass;
+  scLambda: Result := suLambda;
+  scComp: Result := suComp;
+ Else
+  If sc.isAsync Then Result := suAsyncFunction Else Result := suFunction;
+ End;
 End;
 
-Procedure CgComprehension(g: TGen; nd: TNode);
+Procedure CgLambda(g: TGen; nd: TNode);
 Var
- cs: TScope;
+ args: TNode;
+ flags: Integer;
  c: TGen;
  code: TPyCode;
- flags: Integer;
- nm: AnsiString;
+Begin
+ args := nd.b;
+ flags := CgDefaults(g, args);
+ If g.noEmit > 0 Then Exit;
+ c := NewUnit(g, ScopeOf(nd), suLambda, '<lambda>', nd.line);
+ AddConst(c, vNone);
+ c.argcount := Length(args.l1) - args.n;
+ c.posonly := args.n;
+ c.kwonly := Length(args.l2);
+ CgExpr(c, nd.a);
+ If c.sc.isGen Then code := Assemble(c, False)
+ Else Begin
+  Emit(c, RETURN_VALUE);
+  code := Assemble(c, True);
+ End;
+ CgMakeClosure(g, code, flags, c.qual);
+End;
 
- Procedure Loops(idx: Integer);
- Var
-  gen: TNode;
-  ltop, lend, j: Integer;
- Begin
-  gen := nd.l1[idx];
-  ltop := NewLabel(c);
-  lend := NewLabel(c);
-  If idx = 0 Then Emit(c, LOAD_FAST, 0)
-  Else Begin
-   c.curLine := gen.line;
-   CgExpr(c, gen.b);
-   If gen.isAsync Then Emit(c, GET_AITER) Else Emit(c, GET_ITER);
-  End;
-  SetLabel(c, ltop);
-  If gen.isAsync Then Begin
-   EmitJ(c, SETUP_FINALLY, lend);
-   Emit(c, GET_ANEXT);
-   EmitConst(c, vNone);
-   Emit(c, YIELD_FROM);
-   Emit(c, POP_BLOCK);
+Procedure CgCompGen(c: TGen; nd: TNode; idx: Integer; start: TCgBlock);
+Var
+ gen: TNode;
+ skip, ifCleanup, anchor, exceptB, st: TCgBlock;
+ j: Integer;
+Begin
+ gen := nd.l1[idx];
+ st := NewBlock(c);
+ skip := NewBlock(c);
+ ifCleanup := NewBlock(c);
+ anchor := NewBlock(c);
+ exceptB := anchor;
+ If gen.isAsync Then Begin
+  { variante asynchrone : pas de bloc skip/anchor }
+  If idx = 0 Then Begin
+   c.argcount := 1;
+   Emit(c, LOAD_FAST, 0);
   End
-  Else EmitJ(c, FOR_ITER, lend);
-  CgStore(c, gen.a);
-  For j := 0 To High(gen.l1) Do CgJumpIf(c, gen.l1[j], ltop, False);
-  If idx + 1 < Length(nd.l1) Then Loops(idx + 1)
+  Else Begin
+   CgExpr(c, gen.b);
+   Emit(c, GET_AITER);
+  End;
+  UseNextBlock(c, st);
+  EmitJ(c, SETUP_FINALLY, exceptB);
+  Emit(c, GET_ANEXT);
+  EmitConst(c, vNone);
+  Emit(c, YIELD_FROM);
+  Emit(c, POP_BLOCK);
+  CgExprCtx(c, gen.a, cxStore);
+  For j := 0 To High(gen.l1) Do Begin
+   CgJumpIf(c, gen.l1[j], ifCleanup, False);
+   NextBlock(c);
+  End;
+  If idx + 1 < Length(nd.l1) Then CgCompGen(c, nd, idx + 1, Nil)
   Else Begin
    Case nd.k Of
     nListComp: Begin
@@ -7227,11 +8039,62 @@ Var
     Emit(c, POP_TOP);
    End;
   End;
-  EmitJ(c, JUMP_ABSOLUTE, ltop);
-  SetLabel(c, lend);
-  If gen.isAsync Then Emit(c, END_ASYNC_FOR);
+  UseNextBlock(c, ifCleanup);
+  EmitJ(c, JUMP_ABSOLUTE, st);
+  UseNextBlock(c, exceptB);
+  Emit(c, END_ASYNC_FOR);
+  Exit;
  End;
+ If idx = 0 Then Begin
+  c.argcount := 1;
+  Emit(c, LOAD_FAST, 0);
+ End
+ Else Begin
+  CgExpr(c, gen.b);
+  Emit(c, GET_ITER);
+ End;
+ UseNextBlock(c, st);
+ EmitJ(c, FOR_ITER, anchor);
+ NextBlock(c);
+ CgExprCtx(c, gen.a, cxStore);
+ For j := 0 To High(gen.l1) Do Begin
+  CgJumpIf(c, gen.l1[j], ifCleanup, False);
+  NextBlock(c);
+ End;
+ If idx + 1 < Length(nd.l1) Then CgCompGen(c, nd, idx + 1, Nil);
+ If idx + 1 >= Length(nd.l1) Then Begin
+  Case nd.k Of
+   nListComp: Begin
+     CgExpr(c, nd.a);
+     Emit(c, LIST_APPEND, idx + 2);
+    End;
+   nSetComp: Begin
+     CgExpr(c, nd.a);
+     Emit(c, SET_ADD, idx + 2);
+    End;
+   nDictComp: Begin
+     CgExpr(c, nd.a);
+     CgExpr(c, nd.b);
+     Emit(c, MAP_ADD, idx + 2);
+    End;
+  Else
+   CgExpr(c, nd.a);
+   Emit(c, YIELD_VALUE);
+   Emit(c, POP_TOP);
+  End;
+  UseNextBlock(c, skip);
+ End;
+ UseNextBlock(c, ifCleanup);
+ EmitJ(c, JUMP_ABSOLUTE, st);
+ UseNextBlock(c, anchor);
+End;
 
+Procedure CgComprehension(g: TGen; nd: TNode);
+Var
+ cs: TScope;
+ c: TGen;
+ code: TPyCode;
+ nm: AnsiString;
 Begin
  cs := ScopeOf(nd);
  Case nd.k Of
@@ -7240,31 +8103,20 @@ Begin
   nDictComp: nm := '<dictcomp>';
  Else nm := '<genexpr>';
  End;
- c := TGen.Create;
- c.sc := cs;
- c.fname := g.fname;
- c.name := nm;
- c.qual := ChildQual(g, nm);
- c.firstline := nd.line;
- c.curLine := nd.line;
- c.clsName := g.clsName;
- c.parent := g;
- AddConst(c, vNone);
+ If g.noEmit > 0 Then Begin
+  CgExpr(g, nd.l1[0].b);
+  Exit;
+ End;
+ c := NewUnit(g, cs, suComp, nm, nd.line);
  Case nd.k Of
   nListComp: Emit(c, BUILD_LIST, 0);
   nSetComp: Emit(c, BUILD_SET, 0);
   nDictComp: Emit(c, BUILD_MAP, 0);
  End;
- Loops(0);
- If nd.k = nGenExp Then EmitConst(c, vNone);
- Emit(c, RETURN_VALUE);
- code := Assemble(c);
- flags := 0;
- CgClosureTuple(g, cs, flags);
- EmitConst(g, VObj(code));
- EmitConst(g, VStr(c.qual));
- Emit(g, MAKE_FUNCTION, flags);
- g.curLine := nd.line;
+ CgCompGen(c, nd, 0, Nil);
+ If nd.k <> nGenExp Then Emit(c, RETURN_VALUE);
+ code := Assemble(c, True);
+ CgMakeClosure(g, code, 0, c.qual);
  CgExpr(g, nd.l1[0].b);
  If nd.l1[0].isAsync Then Emit(g, GET_AITER) Else Emit(g, GET_ITER);
  Emit(g, CALL_FUNCTION, 1);
@@ -7275,208 +8127,488 @@ Begin
  End;
 End;
 
-Procedure CgDict(g: TGen; nd: TNode);
+{ ---- appels ---- }
+Procedure CgSubKwargs(g: TGen; kws: TNodes; b, e: Integer);
 Var
- j, nrun, nparts, n: Integer;
- hasStar, allConst: Boolean;
- v: TVal;
+ j, n: Integer;
  keys: TPyTuple;
-
- Procedure FlushRun;
- Begin
-  If nrun > 0 Then Begin
-   Emit(g, BUILD_MAP, nrun);
-   Inc(nparts);
-   nrun := 0;
-  End;
- End;
-
 Begin
- n := Length(nd.l1);
- hasStar := False;
- allConst := n > 0;
- For j := 0 To n - 1 Do Begin
-  If nd.l1[j] = Nil Then hasStar := True
-  Else If Not IsConstNode(nd.l1[j], v) Then allConst := False;
- End;
- If Not hasStar Then Begin
-  If allConst And (n > 1) And (n < 200) Then Begin
-   keys := NewTuple(n);
-   For j := 0 To n - 1 Do Begin
-    CgExpr(g, nd.l2[j]);
-    IsConstNode(nd.l1[j], v);
-    keys.items[j] := v;
-   End;
-   EmitConst(g, VObj(keys));
-   Emit(g, BUILD_CONST_KEY_MAP, n);
-   Exit;
-  End;
-  For j := 0 To n - 1 Do Begin
-   CgExpr(g, nd.l1[j]);
-   CgExpr(g, nd.l2[j]);
+ n := e - b;
+ If n > 1 Then Begin
+  For j := b To e - 1 Do CgExpr(g, kws[j].a);
+  keys := NewTuple(n);
+  For j := b To e - 1 Do keys.items[j - b] := VStr(kws[j].s);
+  EmitConst(g, VObj(keys));
+  Emit(g, BUILD_CONST_KEY_MAP, n);
+ End
+ Else Begin
+  For j := b To e - 1 Do Begin
+   EmitConst(g, VStr(kws[j].s));
+   CgExpr(g, kws[j].a);
   End;
   Emit(g, BUILD_MAP, n);
-  Exit;
  End;
- nparts := 0;
- nrun := 0;
- For j := 0 To n - 1 Do Begin
-  If nd.l1[j] = Nil Then Begin
-   FlushRun;
-   CgExpr(g, nd.l2[j]);
-   Inc(nparts);
+End;
+
+Procedure CgCallHelper(g: TGen; n: Integer; args, kws: TNodes);
+Var
+ i, nseen, nsubargs, nsubkw: Integer;
+ mustDict: Boolean;
+ names: TPyTuple;
+Begin
+ nsubargs := 0;
+ nsubkw := 0;
+ mustDict := False;
+ For i := 0 To High(kws) Do
+  If kws[i].s = '' Then Begin
+   mustDict := True;
+   Break;
+  End;
+ nseen := n;
+ For i := 0 To High(args) Do Begin
+  If args[i].k = nStarred Then Begin
+   If nseen > 0 Then Begin
+    Emit(g, BUILD_TUPLE, nseen);
+    nseen := 0;
+    Inc(nsubargs);
+   End;
+   CgExpr(g, args[i].a);
+   Inc(nsubargs);
   End
   Else Begin
-   CgExpr(g, nd.l1[j]);
-   CgExpr(g, nd.l2[j]);
-   Inc(nrun);
+   CgExpr(g, args[i]);
+   Inc(nseen);
   End;
  End;
- FlushRun;
- Emit(g, BUILD_MAP_UNPACK, nparts);
+ If (nsubargs > 0) Or mustDict Then Begin
+  If nseen > 0 Then Begin
+   Emit(g, BUILD_TUPLE, nseen);
+   Inc(nsubargs);
+  End;
+  If nsubargs > 1 Then Emit(g, BUILD_TUPLE_UNPACK_WITH_CALL, nsubargs)
+  Else If nsubargs = 0 Then Emit(g, BUILD_TUPLE, 0);
+  nseen := 0;
+  For i := 0 To High(kws) Do Begin
+   If kws[i].s = '' Then Begin
+    If nseen > 0 Then Begin
+     CgSubKwargs(g, kws, i - nseen, i);
+     Inc(nsubkw);
+     nseen := 0;
+    End;
+    CgExpr(g, kws[i].a);
+    Inc(nsubkw);
+   End
+   Else Inc(nseen);
+  End;
+  If nseen > 0 Then Begin
+   CgSubKwargs(g, kws, Length(kws) - nseen, Length(kws));
+   Inc(nsubkw);
+  End;
+  If nsubkw > 1 Then Emit(g, BUILD_MAP_UNPACK_WITH_CALL, nsubkw);
+  If nsubkw > 0 Then Emit(g, CALL_FUNCTION_EX, 1)
+  Else Emit(g, CALL_FUNCTION_EX, 0);
+ End
+ Else If Length(kws) > 0 Then Begin
+  names := NewTuple(Length(kws));
+  For i := 0 To High(kws) Do Begin
+   CgExpr(g, kws[i].a);
+   names.items[i] := VStr(kws[i].s);
+  End;
+  EmitConst(g, VObj(names));
+  Emit(g, CALL_FUNCTION_KW, n + Length(args) + Length(kws));
+ End
+ Else Emit(g, CALL_FUNCTION, n + Length(args));
+End;
+
+Procedure SplitCallArgs(nd: TNode; Var args, kws: TNodes);
+Var
+ j: Integer;
+Begin
+ SetLength(args, 0);
+ SetLength(kws, 0);
+ For j := 0 To High(nd.l1) Do
+  If nd.l1[j].k = nKw Then AddNode(kws, nd.l1[j])
+  Else AddNode(args, nd.l1[j]);
+End;
+
+Procedure CgCall(g: TGen; nd: TNode);
+Var
+ args, kws: TNodes;
+ j: Integer;
+ plain: Boolean;
+Begin
+ SplitCallArgs(nd, args, kws);
+ plain := (nd.a.k = nAttr) And (Length(kws) = 0);
+ If plain Then
+  For j := 0 To High(args) Do
+   If args[j].k = nStarred Then plain := False;
+ If plain Then Begin
+  CgExpr(g, nd.a.a);
+  Emit(g, LOAD_METHOD, AddName(g, Mangle(g, nd.a.s)));
+  For j := 0 To High(args) Do CgExpr(g, args[j]);
+  Emit(g, CALL_METHOD, Length(args));
+  Exit;
+ End;
+ CgExpr(g, nd.a);
+ CgCallHelper(g, 0, args, kws);
+End;
+
+{ ---- sequences ---- }
+Procedure CgStarUnpack(g: TGen; Const elts: TNodes; single, inner, outer:
+  Integer);
+Var
+ i, nsub, nseen: Integer;
+Begin
+ nsub := 0;
+ nseen := 0;
+ For i := 0 To High(elts) Do Begin
+  If elts[i].k = nStarred Then Begin
+   If nseen > 0 Then Begin
+    Emit(g, inner, nseen);
+    nseen := 0;
+    Inc(nsub);
+   End;
+   CgExpr(g, elts[i].a);
+   Inc(nsub);
+  End
+  Else Begin
+   CgExpr(g, elts[i]);
+   Inc(nseen);
+  End;
+ End;
+ If nsub > 0 Then Begin
+  If nseen > 0 Then Begin
+   Emit(g, inner, nseen);
+   Inc(nsub);
+  End;
+  Emit(g, outer, nsub);
+ End
+ Else Emit(g, single, nseen);
+End;
+
+Procedure CgAssignElts(g: TGen; nd: TNode);
+Var
+ i, n: Integer;
+ seen: Boolean;
+Begin
+ n := Length(nd.l1);
+ seen := False;
+ For i := 0 To n - 1 Do Begin
+  If (nd.l1[i].k = nStarred) And Not seen Then Begin
+   If (i >= 256) Or (n - i - 1 >= (MaxInt Shr 8)) Then
+    CgErr(g, 'too many expressions in star-unpacking assignment');
+   Emit(g, UNPACK_EX, i + ((n - i - 1) Shl 8));
+   seen := True;
+   nd.l1[i] := nd.l1[i].a;
+  End
+  Else If nd.l1[i].k = nStarred Then
+   CgErr(g, 'two starred expressions in assignment');
+ End;
+ If Not seen Then Emit(g, UNPACK_SEQUENCE, n);
+ For i := 0 To n - 1 Do CgExprCtx(g, nd.l1[i], cxStore);
+End;
+
+Procedure CgSubDict(g: TGen; nd: TNode; b, e: Integer);
+Var
+ i, n: Integer;
+ allConst: Boolean;
+ v: TVal;
+ keys: TPyTuple;
+Begin
+ n := e - b;
+ allConst := n > 1;
+ If allConst Then
+  For i := b To e - 1 Do
+   If (nd.l1[i] = Nil) Or Not IsConstNode(nd.l1[i], v) Then allConst := False;
+ If allConst Then Begin
+  For i := b To e - 1 Do CgExpr(g, nd.l2[i]);
+  keys := NewTuple(n);
+  For i := b To e - 1 Do Begin
+   IsConstNode(nd.l1[i], v);
+   keys.items[i - b] := v;
+  End;
+  EmitConst(g, VObj(keys));
+  Emit(g, BUILD_CONST_KEY_MAP, n);
+ End
+ Else Begin
+  For i := b To e - 1 Do Begin
+   CgExpr(g, nd.l1[i]);
+   CgExpr(g, nd.l2[i]);
+  End;
+  Emit(g, BUILD_MAP, n);
+ End;
+End;
+
+Procedure CgDict(g: TGen; nd: TNode);
+Var
+ i, n, elements, containers: Integer;
+ isUnpack: Boolean;
+Begin
+ n := Length(nd.l2);
+ containers := 0;
+ elements := 0;
+ isUnpack := False;
+ For i := 0 To n - 1 Do Begin
+  isUnpack := nd.l1[i] = Nil;
+  If (elements = $FFFF) Or ((elements > 0) And isUnpack) Then Begin
+   CgSubDict(g, nd, i - elements, i);
+   Inc(containers);
+   elements := 0;
+  End;
+  If isUnpack Then Begin
+   CgExpr(g, nd.l2[i]);
+   Inc(containers);
+  End
+  Else Inc(elements);
+ End;
+ If (elements > 0) Or (containers = 0) Then Begin
+  CgSubDict(g, nd, n - elements, n);
+  Inc(containers);
+ End;
+ If (containers > 1) Or isUnpack Then Emit(g, BUILD_MAP_UNPACK, containers);
 End;
 
 Procedure CgFString(g: TGen; nd: TNode);
 Var
  j, n: Integer;
- p: TNode;
- fl: Integer;
 Begin
  n := Length(nd.l1);
  If n = 0 Then Begin
   EmitConst(g, VStr(''));
   Exit;
  End;
- For j := 0 To n - 1 Do Begin
-  p := nd.l1[j];
-  If p.k = nStr Then EmitConst(g, VStr(p.s))
-  Else Begin
-   CgExpr(g, p.a);
-   fl := p.n;
-   If p.b <> Nil Then Begin
-    CgFString(g, p.b);
-    fl := fl Or 4;
-   End;
-   g.curLine := p.line;
-   Emit(g, FORMAT_VALUE, fl);
-  End;
- End;
- If n > 1 Then Emit(g, BUILD_STRING, n);
+ For j := 0 To n - 1 Do CgExpr(g, nd.l1[j]);
+ If n <> 1 Then Emit(g, BUILD_STRING, n);
 End;
 
-Procedure CgExpr(g: TGen; nd: TNode);
+Procedure CgCompare(g: TGen; nd: TNode);
+Var
+ n, i: Integer;
+ cleanup, endB: TCgBlock;
+Begin
+ CgExpr(g, nd.a);
+ n := Length(nd.l1) - 1;
+ If n = 0 Then Begin
+  CgExpr(g, nd.l1[0]);
+  Emit(g, COMPARE_OP, CmpOpCode(nd.sl[0]));
+ End
+ Else Begin
+  cleanup := NewBlock(g);
+  For i := 0 To n - 1 Do Begin
+   CgExpr(g, nd.l1[i]);
+   Emit(g, DUP_TOP);
+   Emit(g, ROT_THREE);
+   Emit(g, COMPARE_OP, CmpOpCode(nd.sl[i]));
+   EmitJ(g, JUMP_IF_FALSE_OR_POP, cleanup);
+   NextBlock(g);
+  End;
+  CgExpr(g, nd.l1[n]);
+  Emit(g, COMPARE_OP, CmpOpCode(nd.sl[n]));
+  endB := NewBlock(g);
+  EmitJ(g, JUMP_FORWARD, endB);
+  UseNextBlock(g, cleanup);
+  Emit(g, ROT_TWO);
+  Emit(g, POP_TOP);
+  UseNextBlock(g, endB);
+ End;
+End;
+
+Procedure CgJumpIf(g: TGen; nd: TNode; next: TCgBlock; cond: Boolean);
+Var
+ i, n: Integer;
+ cond2: Boolean;
+ next2, endB, cleanup, e2: TCgBlock;
+Begin
+ Case nd.k Of
+  nUnary: If nd.s = 'not' Then Begin
+     CgJumpIf(g, nd.a, next, Not cond);
+     Exit;
+    End;
+  nBool: Begin
+    n := Length(nd.l1) - 1;
+    cond2 := nd.s = 'or';
+    next2 := next;
+    If cond2 <> cond Then next2 := NewBlock(g);
+    For i := 0 To n - 1 Do CgJumpIf(g, nd.l1[i], next2, cond2);
+    CgJumpIf(g, nd.l1[n], next, cond);
+    If next2 <> next Then UseNextBlock(g, next2);
+    Exit;
+   End;
+  nIfExp: Begin
+    endB := NewBlock(g);
+    next2 := NewBlock(g);
+    CgJumpIf(g, nd.a, next2, False);
+    CgJumpIf(g, nd.b, next, cond);
+    EmitJ(g, JUMP_FORWARD, endB);
+    UseNextBlock(g, next2);
+    CgJumpIf(g, nd.c, next, cond);
+    UseNextBlock(g, endB);
+    Exit;
+   End;
+  nCmp: If Length(nd.l1) > 1 Then Begin
+    n := Length(nd.l1) - 1;
+    cleanup := NewBlock(g);
+    CgExpr(g, nd.a);
+    For i := 0 To n - 1 Do Begin
+     CgExpr(g, nd.l1[i]);
+     Emit(g, DUP_TOP);
+     Emit(g, ROT_THREE);
+     Emit(g, COMPARE_OP, CmpOpCode(nd.sl[i]));
+     EmitJ(g, POP_JUMP_IF_FALSE, cleanup);
+     NextBlock(g);
+    End;
+    CgExpr(g, nd.l1[n]);
+    Emit(g, COMPARE_OP, CmpOpCode(nd.sl[n]));
+    If cond Then EmitJ(g, POP_JUMP_IF_TRUE, next)
+    Else EmitJ(g, POP_JUMP_IF_FALSE, next);
+    e2 := NewBlock(g);
+    EmitJ(g, JUMP_FORWARD, e2);
+    UseNextBlock(g, cleanup);
+    Emit(g, POP_TOP);
+    If Not cond Then EmitJ(g, JUMP_FORWARD, next);
+    UseNextBlock(g, e2);
+    Exit;
+   End;
+ End;
+ CgExpr(g, nd);
+ If cond Then EmitJ(g, POP_JUMP_IF_TRUE, next)
+ Else EmitJ(g, POP_JUMP_IF_FALSE, next);
+End;
+
+Procedure CgSliceNode(g: TGen; nd: TNode);
+Var
+ n: Integer;
+Begin
+ n := 2;
+ If nd.a <> Nil Then CgExpr(g, nd.a) Else EmitConst(g, vNone);
+ If nd.b <> Nil Then CgExpr(g, nd.b) Else EmitConst(g, vNone);
+ If nd.c <> Nil Then Begin
+  Inc(n);
+  CgExpr(g, nd.c);
+ End;
+ Emit(g, BUILD_SLICE, n);
+End;
+
+Procedure CgSubscript(g: TGen; nd: TNode; ctx: Integer);
+Var
+ idx: TNode;
+ j: Integer;
+Begin
+ idx := nd.b;
+ Case ctx Of
+  cxLoad, cxStore, cxDel, cxAugLoad: CgExpr(g, nd.a);
+ End;
+ If ctx <> cxAugStore Then Begin
+  If idx.k = nSlice Then CgSliceNode(g, idx)
+  Else If HasSliceDim(idx) Then Begin
+   For j := 0 To High(idx.l1) Do Begin
+    If idx.l1[j].k = nSlice Then CgSliceNode(g, idx.l1[j])
+    Else CgExpr(g, idx.l1[j]);
+   End;
+   Emit(g, BUILD_TUPLE, Length(idx.l1));
+  End
+  Else CgExpr(g, idx);
+ End;
+ Case ctx Of
+  cxAugLoad: Emit(g, DUP_TOP_TWO);
+  cxAugStore: Emit(g, ROT_THREE);
+ End;
+ Case ctx Of
+  cxLoad, cxAugLoad: Emit(g, BINARY_SUBSCR);
+  cxStore, cxAugStore: Emit(g, STORE_SUBSCR);
+  cxDel: Emit(g, DELETE_SUBSCR);
+ End;
+End;
+
+Procedure CgExpr1(g: TGen; nd: TNode; ctx: Integer);
 Var
  v: TVal;
- j, lend, lcl, lelse: Integer;
+ j: Integer;
  op: Integer;
+ endB, nextB: TCgBlock;
 Begin
- If nd.line > 0 Then g.curLine := nd.line;
  Case nd.k Of
   nNum, nConst, nStr: Begin
     IsConstNode(nd, v);
     EmitConst(g, v);
    End;
-  nName: Begin
-    If nd.s = '__debug__' Then EmitConst(g, VBool(OptLevel = 0))
-    Else CgName(g, nd.s, 0);
-   End;
+  nName: CgNameOp(g, nd.s, ctx);
   nBin: Begin
     CgExpr(g, nd.a);
     CgExpr(g, nd.b);
-    g.curLine := nd.line;
     Emit(g, BinOpCode(nd.s, False));
    End;
   nUnary: Begin
-    If (nd.s = '-') And IsConstNode(nd, v) Then EmitConst(g, v)
-    Else Begin
-     CgExpr(g, nd.a);
-     g.curLine := nd.line;
-     If nd.s = '-' Then Emit(g, UNARY_NEGATIVE)
-     Else If nd.s = '+' Then Emit(g, UNARY_POSITIVE)
-     Else If nd.s = '~' Then Emit(g, UNARY_INVERT)
-     Else Emit(g, UNARY_NOT);
-    End;
+    CgExpr(g, nd.a);
+    If nd.s = '-' Then Emit(g, UNARY_NEGATIVE)
+    Else If nd.s = '+' Then Emit(g, UNARY_POSITIVE)
+    Else If nd.s = '~' Then Emit(g, UNARY_INVERT)
+    Else Emit(g, UNARY_NOT);
    End;
   nBool: Begin
-    lend := NewLabel(g);
+    endB := NewBlock(g);
     If nd.s = 'and' Then op := JUMP_IF_FALSE_OR_POP
     Else op := JUMP_IF_TRUE_OR_POP;
-    For j := 0 To High(nd.l1) Do Begin
+    For j := 0 To High(nd.l1) - 1 Do Begin
      CgExpr(g, nd.l1[j]);
-     If j < High(nd.l1) Then EmitJ(g, op, lend);
+     EmitJ(g, op, endB);
     End;
-    SetLabel(g, lend);
+    CgExpr(g, nd.l1[High(nd.l1)]);
+    UseNextBlock(g, endB);
    End;
-  nCmp: Begin
-    CgExpr(g, nd.a);
-    If Length(nd.l1) = 1 Then Begin
-     CgExpr(g, nd.l1[0]);
-     g.curLine := nd.line;
-     Emit(g, COMPARE_OP, CmpOpCode(nd.sl[0]));
-    End
-    Else Begin
-     lcl := NewLabel(g);
-     lend := NewLabel(g);
-     For j := 0 To High(nd.l1) Do Begin
-      CgExpr(g, nd.l1[j]);
-      g.curLine := nd.line;
-      If j < High(nd.l1) Then Begin
-       Emit(g, DUP_TOP);
-       Emit(g, ROT_THREE);
-       Emit(g, COMPARE_OP, CmpOpCode(nd.sl[j]));
-       EmitJ(g, JUMP_IF_FALSE_OR_POP, lcl);
-      End
-      Else Emit(g, COMPARE_OP, CmpOpCode(nd.sl[j]));
-     End;
-     EmitJ(g, JUMP_FORWARD, lend);
-     SetLabel(g, lcl);
-     Emit(g, ROT_TWO);
-     Emit(g, POP_TOP);
-     SetLabel(g, lend);
-    End;
-   End;
+  nCmp: CgCompare(g, nd);
   nCall: CgCall(g, nd);
   nAttr: Begin
-    CgExpr(g, nd.a);
-    g.curLine := nd.line;
-    Emit(g, LOAD_ATTR, AddName(g, Mangle(g, nd.s)));
+    If ctx <> cxAugStore Then CgExpr(g, nd.a);
+    Case ctx Of
+     cxLoad: Emit(g, LOAD_ATTR, AddName(g, Mangle(g, nd.s)));
+     cxAugLoad: Begin
+       Emit(g, DUP_TOP);
+       Emit(g, LOAD_ATTR, AddName(g, Mangle(g, nd.s)));
+      End;
+     cxAugStore: Begin
+       Emit(g, ROT_TWO);
+       Emit(g, STORE_ATTR, AddName(g, Mangle(g, nd.s)));
+      End;
+     cxStore: Emit(g, STORE_ATTR, AddName(g, Mangle(g, nd.s)));
+     cxDel: Emit(g, DELETE_ATTR, AddName(g, Mangle(g, nd.s)));
+    End;
    End;
-  nSub: Begin
-    CgExpr(g, nd.a);
-    CgExpr(g, nd.b);
-    g.curLine := nd.line;
-    Emit(g, BINARY_SUBSCR);
-   End;
-  nSlice: CgSlice(g, nd);
+  nSub: CgSubscript(g, nd, ctx);
   nTuple: Begin
-    If IsConstNode(nd, v) Then EmitConst(g, v)
-    Else CgSequence(g, nd, BUILD_TUPLE, BUILD_TUPLE_UNPACK);
+    If ctx = cxStore Then CgAssignElts(g, nd)
+    Else If ctx = cxLoad Then
+     CgStarUnpack(g, nd.l1, BUILD_TUPLE, BUILD_TUPLE, BUILD_TUPLE_UNPACK)
+    Else For j := 0 To High(nd.l1) Do CgExprCtx(g, nd.l1[j], ctx);
    End;
-  nList: CgSequence(g, nd, BUILD_LIST, BUILD_LIST_UNPACK);
-  nSet: CgSequence(g, nd, BUILD_SET, BUILD_SET_UNPACK);
+  nList: Begin
+    If ctx = cxStore Then CgAssignElts(g, nd)
+    Else If ctx = cxLoad Then
+     CgStarUnpack(g, nd.l1, BUILD_LIST, BUILD_TUPLE, BUILD_LIST_UNPACK)
+    Else For j := 0 To High(nd.l1) Do CgExprCtx(g, nd.l1[j], ctx);
+   End;
+  nSet: CgStarUnpack(g, nd.l1, BUILD_SET, BUILD_SET, BUILD_SET_UNPACK);
   nDict: CgDict(g, nd);
   nListComp, nSetComp, nDictComp, nGenExp: CgComprehension(g, nd);
-  nLambda: CgMakeFunction(g, nd, nd.b, '<lambda>');
+  nLambda: CgLambda(g, nd);
   nIfExp: Begin
-    lelse := NewLabel(g);
-    lend := NewLabel(g);
-    CgJumpIf(g, nd.a, lelse, False);
+    endB := NewBlock(g);
+    nextB := NewBlock(g);
+    CgJumpIf(g, nd.a, nextB, False);
     CgExpr(g, nd.b);
-    EmitJ(g, JUMP_FORWARD, lend);
-    SetLabel(g, lelse);
+    EmitJ(g, JUMP_FORWARD, endB);
+    UseNextBlock(g, nextB);
     CgExpr(g, nd.c);
-    SetLabel(g, lend);
+    UseNextBlock(g, endB);
    End;
   nAwait: Begin
     CgExpr(g, nd.a);
-    g.curLine := nd.line;
     Emit(g, GET_AWAITABLE);
     EmitConst(g, vNone);
     Emit(g, YIELD_FROM);
    End;
   nYield: Begin
     If nd.a <> Nil Then CgExpr(g, nd.a) Else EmitConst(g, vNone);
-    g.curLine := nd.line;
     Emit(g, YIELD_VALUE);
    End;
   nYieldFrom: Begin
@@ -7488,12 +8620,17 @@ Begin
   nNamed: Begin
     CgExpr(g, nd.b);
     Emit(g, DUP_TOP);
-    CgName(g, nd.a.s, 1);
+    CgExprCtx(g, nd.a, cxStore);
    End;
   nJoined: CgFString(g, nd);
   nFmt: Begin
     CgExpr(g, nd.a);
-    Emit(g, FORMAT_VALUE, nd.n);
+    j := nd.n;
+    If nd.b <> Nil Then Begin
+     CgExpr(g, nd.b);
+     j := j Or 4;
+    End;
+    Emit(g, FORMAT_VALUE, j);
    End;
   nStarred: SynErr('can''t use starred expression here', nd.line, nd.col);
  Else
@@ -7501,579 +8638,84 @@ Begin
  End;
 End;
 
-Procedure CgJumpIf(g: TGen; nd: TNode; lbl: Integer; sense: Boolean);
+Procedure CgExprCtx(g: TGen; nd: TNode; ctx: Integer);
 Var
- j, skip: Integer;
+ old: Integer;
 Begin
- If (nd.k = nUnary) And (nd.s = 'not') Then Begin
-  CgJumpIf(g, nd.a, lbl, Not sense);
-  Exit;
+ old := g.lineno;
+ If (nd.line > 0) And (nd.line <> old) Then Begin
+  g.lineno := nd.line;
+  g.lineSet := False;
  End;
- If (nd.k = nBool) And ((nd.s = 'and') = Not sense) Then Begin
-  { and avec jump-si-faux, ou or avec jump-si-vrai : chaque operande saute }
-  For j := 0 To High(nd.l1) Do CgJumpIf(g, nd.l1[j], lbl, sense);
-  Exit;
- End;
- If nd.k = nBool Then Begin
-  skip := NewLabel(g);
-  For j := 0 To High(nd.l1) - 1 Do CgJumpIf(g, nd.l1[j], skip, Not sense);
-  CgJumpIf(g, nd.l1[High(nd.l1)], lbl, sense);
-  SetLabel(g, skip);
-  Exit;
- End;
- CgExpr(g, nd);
- If sense Then EmitJ(g, POP_JUMP_IF_TRUE, lbl)
- Else EmitJ(g, POP_JUMP_IF_FALSE, lbl);
-End;
-
-Procedure CgStore(g: TGen; nd: TNode);
-Var
- j, nstar, before, after: Integer;
-Begin
- Case nd.k Of
-  nName: CgName(g, nd.s, 1);
-  nAttr: Begin
-    CgExpr(g, nd.a);
-    g.curLine := nd.line;
-    Emit(g, STORE_ATTR, AddName(g, Mangle(g, nd.s)));
-   End;
-  nSub: Begin
-    CgExpr(g, nd.a);
-    CgExpr(g, nd.b);
-    g.curLine := nd.line;
-    Emit(g, STORE_SUBSCR);
-   End;
-  nTuple, nList: Begin
-    nstar := -1;
-    For j := 0 To High(nd.l1) Do
-     If nd.l1[j].k = nStarred Then Begin
-      If nstar >= 0 Then
-       SynErr('two starred expressions in assignment', nd.line, nd.col);
-      nstar := j;
-     End;
-    If nstar < 0 Then Emit(g, UNPACK_SEQUENCE, Length(nd.l1))
-    Else Begin
-     before := nstar;
-     after := Length(nd.l1) - nstar - 1;
-     Emit(g, UNPACK_EX, before Or (after Shl 8));
-    End;
-    For j := 0 To High(nd.l1) Do Begin
-     If nd.l1[j].k = nStarred Then CgStore(g, nd.l1[j].a)
-     Else CgStore(g, nd.l1[j]);
-    End;
-   End;
- Else
-  SynErr('can''t assign to expression', nd.line, nd.col);
+ CgExpr1(g, nd, ctx);
+ If old <> g.lineno Then Begin
+  g.lineno := old;
+  g.lineSet := False;
  End;
 End;
 
-Procedure CgDelete(g: TGen; nd: TNode);
-Var
- j: Integer;
+Procedure CgExpr(g: TGen; nd: TNode);
 Begin
- Case nd.k Of
-  nName: CgName(g, nd.s, 2);
-  nAttr: Begin
-    CgExpr(g, nd.a);
-    Emit(g, DELETE_ATTR, AddName(g, Mangle(g, nd.s)));
-   End;
-  nSub: Begin
-    CgExpr(g, nd.a);
-    CgExpr(g, nd.b);
-    Emit(g, DELETE_SUBSCR);
-   End;
-  nTuple, nList: For j := 0 To High(nd.l1) Do CgDelete(g, nd.l1[j]);
- End;
+ CgExprCtx(g, nd, cxLoad);
 End;
 
 { ------------------------------------------------------------
-  Instructions
+  Generation : instructions
   ------------------------------------------------------------ }
-Procedure UnwindFB(g: TGen; target: Integer; preserve: Boolean);
-Var
- i: Integer;
+Procedure CgUnwindFB(g: TGen; idx: Integer; preserve: Boolean);
 Begin
- For i := g.nfb - 1 DownTo target Do
-  Case g.fb[i].kind Of
-   fbLoopFor: Begin
-     If preserve Then Emit(g, ROT_TWO);
+ Case g.fb[idx].kind Of
+  fbWhile: ;
+  fbFinallyEnd: Begin
+    g.fb[idx].exit := Nil;
+    If preserve Then Emit(g, POP_FINALLY, 1) Else Emit(g, POP_FINALLY, 0);
+    If preserve Then Emit(g, ROT_TWO);
+    Emit(g, POP_TOP);
+   End;
+  fbFor: Begin
+    If preserve Then Emit(g, ROT_TWO);
+    Emit(g, POP_TOP);
+   End;
+  fbExcept: Emit(g, POP_BLOCK);
+  fbFinallyTry: Begin
+    Emit(g, POP_BLOCK);
+    EmitJ(g, CALL_FINALLY, g.fb[idx].exit);
+   End;
+  fbFinallyTry2: Begin
+    Emit(g, POP_BLOCK);
+    If preserve Then Begin
+     Emit(g, ROT_TWO);
+     Emit(g, POP_TOP);
+     EmitJ(g, CALL_FINALLY, g.fb[idx].exit);
+    End
+    Else Begin
+     EmitJ(g, CALL_FINALLY, g.fb[idx].exit);
      Emit(g, POP_TOP);
     End;
-   fbExcept: Emit(g, POP_BLOCK);
-   fbFinallyTry: Begin
-     Emit(g, POP_BLOCK);
-     EmitJ(g, CALL_FINALLY, g.fb[i].lbl1);
-    End;
-   fbFinallyEnd: Begin
-     If preserve Then Emit(g, POP_FINALLY, 1)
-     Else Emit(g, POP_FINALLY, 0);
-    End;
-   fbWith: Begin
-     Emit(g, POP_BLOCK);
-     If preserve Then Emit(g, ROT_TWO);
-     Emit(g, BEGIN_FINALLY);
-     Emit(g, WITH_CLEANUP_START);
-     If g.fb[i].lbl1 <> 0 Then Begin
-      Emit(g, GET_AWAITABLE);
-      EmitConst(g, vNone);
-      Emit(g, YIELD_FROM);
-     End;
-     Emit(g, WITH_CLEANUP_FINISH);
-     Emit(g, POP_FINALLY, 0);
-    End;
-   fbHandler: Begin
-     If preserve Then Emit(g, ROT_FOUR);
-     Emit(g, POP_EXCEPT);
-    End;
-  End;
-End;
-
-Procedure CgStmt(g: TGen; nd: TNode); Forward;
-
-Procedure CgBody(g: TGen; Const l: TNodes; skipDoc: Boolean);
-Var
- j: Integer;
-Begin
- For j := 0 To High(l) Do Begin
-  If skipDoc And (j = 0) Then Continue;
-  CgStmt(g, l[j]);
- End;
-End;
-
-Procedure CgTry(g: TGen; nd: TNode);
-Var
- lfin, lhand, lelse, lend, lnext, lclean, j: Integer;
- h: TNode;
-
- Procedure ExceptPart;
- Var
-  k: Integer;
- Begin
-  lhand := NewLabel(g);
-  lelse := NewLabel(g);
-  lend := NewLabel(g);
-  EmitJ(g, SETUP_FINALLY, lhand);
-  PushFB(g, fbExcept, 0, 0);
-  CgStmts(g, nd.l1);
-  PopFB(g);
-  Emit(g, POP_BLOCK);
-  EmitJ(g, JUMP_FORWARD, lelse);
-  SetLabel(g, lhand);
-  For k := 0 To High(nd.l2) Do Begin
-   h := nd.l2[k];
-   g.curLine := h.line;
-   lnext := NewLabel(g);
-   If h.a <> Nil Then Begin
-    Emit(g, DUP_TOP);
-    CgExpr(g, h.a);
-    Emit(g, COMPARE_OP, 10);
-    EmitJ(g, POP_JUMP_IF_FALSE, lnext);
    End;
-   Emit(g, POP_TOP);
-   If h.s <> '' Then Begin
-    CgName(g, h.s, 1);
-    Emit(g, POP_TOP);
-    lclean := NewLabel(g);
-    EmitJ(g, SETUP_FINALLY, lclean);
-    PushFB(g, fbHandler, 0, 0);
-    PushFB(g, fbFinallyTry, lclean, 0);
-    CgStmts(g, h.l1);
-    PopFB(g);
-    PopFB(g);
+  fbWith, fbAsyncWith: Begin
     Emit(g, POP_BLOCK);
+    If preserve Then Emit(g, ROT_TWO);
     Emit(g, BEGIN_FINALLY);
-    SetLabel(g, lclean);
-    EmitConst(g, vNone);
-    CgName(g, h.s, 1);
-    CgName(g, h.s, 2);
-    Emit(g, END_FINALLY);
-   End
-   Else Begin
-    Emit(g, POP_TOP);
-    Emit(g, POP_TOP);
-    PushFB(g, fbHandler, 0, 0);
-    CgStmts(g, h.l1);
-    PopFB(g);
-   End;
-   Emit(g, POP_EXCEPT);
-   EmitJ(g, JUMP_FORWARD, lend);
-   SetLabel(g, lnext);
-  End;
-  Emit(g, END_FINALLY);
-  SetLabel(g, lelse);
-  CgStmts(g, nd.l3);
-  SetLabel(g, lend);
- End;
-
-Begin
- If nd.n = 1 Then Begin
-  lfin := NewLabel(g);
-  EmitJ(g, SETUP_FINALLY, lfin);
-  PushFB(g, fbFinallyTry, lfin, 0);
-  If Length(nd.l2) > 0 Then ExceptPart
-  Else CgStmts(g, nd.l1);
-  PopFB(g);
-  Emit(g, POP_BLOCK);
-  Emit(g, BEGIN_FINALLY);
-  SetLabel(g, lfin);
-  PushFB(g, fbFinallyEnd, 0, 0);
-  CgStmts(g, nd.l4);
-  PopFB(g);
-  Emit(g, END_FINALLY);
- End
- Else ExceptPart;
- j := 0;
-End;
-
-Procedure CgWith(g: TGen; nd: TNode; idx: Integer);
-Var
- it: TNode;
- lclean: Integer;
-Begin
- it := nd.l1[idx];
- CgExpr(g, it.a);
- lclean := NewLabel(g);
- g.curLine := it.line;
- If nd.isAsync Then Begin
-  Emit(g, BEFORE_ASYNC_WITH);
-  Emit(g, GET_AWAITABLE);
-  EmitConst(g, vNone);
-  Emit(g, YIELD_FROM);
-  EmitJ(g, SETUP_ASYNC_WITH, lclean);
- End
- Else EmitJ(g, SETUP_WITH, lclean);
- If it.b <> Nil Then CgStore(g, it.b) Else Emit(g, POP_TOP);
- PushFB(g, fbWith, Ord(nd.isAsync), 0);
- If idx + 1 < Length(nd.l1) Then CgWith(g, nd, idx + 1)
- Else CgStmts(g, nd.l2);
- PopFB(g);
- Emit(g, POP_BLOCK);
- Emit(g, BEGIN_FINALLY);
- SetLabel(g, lclean);
- Emit(g, WITH_CLEANUP_START);
- If nd.isAsync Then Begin
-  Emit(g, GET_AWAITABLE);
-  EmitConst(g, vNone);
-  Emit(g, YIELD_FROM);
- End;
- Emit(g, WITH_CLEANUP_FINISH);
- Emit(g, END_FINALLY);
-End;
-
-Function IsDocStmt(nd: TNode): Boolean;
-Begin
- Result := (nd.k = nExprStmt) And (nd.a.k = nStr) And Not nd.a.flag;
-End;
-
-Procedure CgClassDef(g: TGen; nd: TNode);
-Var
- cs: TScope;
- c: TGen;
- code: TPyCode;
- flags, j: Integer;
- qual: AnsiString;
- doc: Boolean;
-Begin
- g.curLine := nd.line;
- cs := ScopeOf(nd);
- For j := 0 To High(nd.l3) Do CgExpr(g, nd.l3[j]);
- Emit(g, LOAD_BUILD_CLASS);
- qual := ChildQual(g, nd.s);
- c := TGen.Create;
- c.sc := cs;
- c.fname := g.fname;
- c.name := nd.s;
- c.qual := qual;
- c.firstline := nd.line;
- c.curLine := nd.line;
- c.clsName := nd.s;
- c.parent := g;
- AddConst(c, vNone);
- Emit(c, LOAD_NAME, AddName(c, '__name__'));
- Emit(c, STORE_NAME, AddName(c, '__module__'));
- EmitConst(c, VStr(qual));
- Emit(c, STORE_NAME, AddName(c, '__qualname__'));
- doc := (Length(nd.l2) > 0) And IsDocStmt(nd.l2[0]);
- If doc Then Begin
-  EmitConst(c, VStr(nd.l2[0].a.s));
-  Emit(c, STORE_NAME, AddName(c, '__doc__'));
- End;
- If cs.hasAnnot Then Emit(c, SETUP_ANNOTATIONS);
- CgBody(c, nd.l2, doc);
- If cs.needsClassCell Then Begin
-  Emit(c, LOAD_CLOSURE, IndexOfStr(cs.cellvars, '__class__'));
-  Emit(c, DUP_TOP);
-  Emit(c, STORE_NAME, AddName(c, '__classcell__'));
- End
- Else EmitConst(c, vNone);
- Emit(c, RETURN_VALUE);
- code := Assemble(c);
- flags := 0;
- CgClosureTuple(g, cs, flags);
- EmitConst(g, VObj(code));
- EmitConst(g, VStr(nd.s));
- Emit(g, MAKE_FUNCTION, flags);
- EmitConst(g, VStr(nd.s));
- g.curLine := nd.line;
- CgCallTail(g, nd.l1, 2);
- For j := 0 To High(nd.l3) Do Emit(g, CALL_FUNCTION, 1);
- CgName(g, nd.s, 1);
-End;
-
-Procedure CgImport(g: TGen; nd: TNode);
-Var
- j, p: Integer;
- al: TNode;
- nm, rest, part: AnsiString;
- names: TPyTuple;
-Begin
- g.curLine := nd.line;
- If nd.k = nImport Then Begin
-  For j := 0 To High(nd.l1) Do Begin
-   al := nd.l1[j];
-   EmitConst(g, VInt(0));
-   EmitConst(g, vNone);
-   Emit(g, IMPORT_NAME, AddName(g, al.s));
-   If al.s2 <> '' Then Begin
-    rest := al.s;
-    p := Pos('.', rest);
-    While p > 0 Do Begin
-     rest := Copy(rest, p + 1, Length(rest));
-     p := Pos('.', rest);
-     If p > 0 Then part := Copy(rest, 1, p - 1) Else part := rest;
-     Emit(g, LOAD_ATTR, AddName(g, part));
-    End;
-    CgName(g, al.s2, 1);
-   End
-   Else Begin
-    p := Pos('.', al.s);
-    If p > 0 Then nm := Copy(al.s, 1, p - 1) Else nm := al.s;
-    CgName(g, nm, 1);
-   End;
-  End;
-  Exit;
- End;
- EmitConst(g, VInt(nd.n));
- If nd.l1[0].s = '*' Then Begin
-  EmitConst(g, vNone);
-  Emit(g, IMPORT_NAME, AddName(g, nd.s));
-  Emit(g, IMPORT_STAR);
-  Exit;
- End;
- names := NewTuple(Length(nd.l1));
- For j := 0 To High(nd.l1) Do names.items[j] := VStr(nd.l1[j].s);
- EmitConst(g, VObj(names));
- Emit(g, IMPORT_NAME, AddName(g, nd.s));
- For j := 0 To High(nd.l1) Do Begin
-  Emit(g, IMPORT_FROM, AddName(g, nd.l1[j].s));
-  If nd.l1[j].s2 <> '' Then CgName(g, nd.l1[j].s2, 1)
-  Else CgName(g, nd.l1[j].s, 1);
- End;
- Emit(g, POP_TOP);
-End;
-
-Procedure CgStmt(g: TGen; nd: TNode);
-Var
- j, lelse, lend, ltop, i, op: Integer;
- decos: Integer;
- lp, found: Integer;
-Begin
- If nd.line > 0 Then g.curLine := nd.line;
- Case nd.k Of
-  nExprStmt: Begin
-    CgExpr(g, nd.a);
-    If g.interactive And (g.sc.kind = scModule) Then Emit(g, PRINT_EXPR)
-    Else Emit(g, POP_TOP);
-   End;
-  nAssign: Begin
-    CgExpr(g, nd.a);
-    For j := 0 To High(nd.l1) Do Begin
-     If j < High(nd.l1) Then Emit(g, DUP_TOP);
-     CgStore(g, nd.l1[j]);
-    End;
-   End;
-  nAugAssign: Begin
-    op := BinOpCode(nd.s, True);
-    Case nd.a.k Of
-     nName: Begin
-       CgName(g, nd.a.s, 0);
-       CgExpr(g, nd.b);
-       g.curLine := nd.line;
-       Emit(g, op);
-       CgName(g, nd.a.s, 1);
-      End;
-     nAttr: Begin
-       CgExpr(g, nd.a.a);
-       Emit(g, DUP_TOP);
-       Emit(g, LOAD_ATTR, AddName(g, Mangle(g, nd.a.s)));
-       CgExpr(g, nd.b);
-       g.curLine := nd.line;
-       Emit(g, op);
-       Emit(g, ROT_TWO);
-       Emit(g, STORE_ATTR, AddName(g, Mangle(g, nd.a.s)));
-      End;
-     nSub: Begin
-       CgExpr(g, nd.a.a);
-       CgExpr(g, nd.a.b);
-       Emit(g, DUP_TOP_TWO);
-       Emit(g, BINARY_SUBSCR);
-       CgExpr(g, nd.b);
-       g.curLine := nd.line;
-       Emit(g, op);
-       Emit(g, ROT_THREE);
-       Emit(g, STORE_SUBSCR);
-      End;
-    End;
-   End;
-  nAnnAssign: Begin
-    If nd.c <> Nil Then Begin
-     CgExpr(g, nd.c);
-     CgStore(g, nd.a);
-    End;
-    If g.sc.kind <> scFunction Then Begin
-     CgAnnotExpr(g, nd.b);
-     If nd.a.k = nName Then Begin
-      CgName(g, '__annotations__', 0);
-      EmitConst(g, VStr(Mangle(g, nd.a.s)));
-      Emit(g, STORE_SUBSCR);
-     End
-     Else Emit(g, POP_TOP);
-    End;
-   End;
-  nReturn: Begin
-    If nd.a <> Nil Then CgExpr(g, nd.a) Else EmitConst(g, vNone);
-    If g.nfb > 0 Then UnwindFB(g, 0, True);
-    g.curLine := nd.line;
-    Emit(g, RETURN_VALUE);
-   End;
-  nDelete: For j := 0 To High(nd.l1) Do CgDelete(g, nd.l1[j]);
-  nPass: ;
-  nBreak, nContinue: Begin
-    found := -1;
-    For i := g.nfb - 1 DownTo 0 Do
-     If g.fb[i].kind In [fbLoopWhile, fbLoopFor] Then Begin
-      found := i;
-      Break;
-     End;
-    If found < 0 Then Begin
-     If nd.k = nBreak Then
-      SynErr('''break'' outside loop', nd.line, nd.col)
-     Else SynErr('''continue'' not properly in loop', nd.line, nd.col);
-    End;
-    If nd.k = nBreak Then Begin
-     UnwindFB(g, found, False);
-     EmitJ(g, JUMP_ABSOLUTE, g.fb[found].lbl2);
-    End
-    Else Begin
-     UnwindFB(g, found + 1, False);
-     EmitJ(g, JUMP_ABSOLUTE, g.fb[found].lbl1);
-    End;
-   End;
-  nRaise: Begin
-    If nd.a = Nil Then Emit(g, RAISE_VARARGS, 0)
-    Else Begin
-     CgExpr(g, nd.a);
-     If nd.b <> Nil Then Begin
-      CgExpr(g, nd.b);
-      g.curLine := nd.line;
-      Emit(g, RAISE_VARARGS, 2);
-     End
-     Else Begin
-      g.curLine := nd.line;
-      Emit(g, RAISE_VARARGS, 1);
-     End;
-    End;
-   End;
-  nGlobal, nNonlocal: ;
-  nImport, nImportFrom: CgImport(g, nd);
-  nAssert: Begin
-    If OptLevel = 0 Then Begin
-     lend := NewLabel(g);
-     CgJumpIf(g, nd.a, lend, True);
-     CgName(g, 'AssertionError', 0);
-     If nd.b <> Nil Then Begin
-      CgExpr(g, nd.b);
-      g.curLine := nd.line;
-      Emit(g, CALL_FUNCTION, 1);
-     End;
-     g.curLine := nd.line;
-     Emit(g, RAISE_VARARGS, 1);
-     SetLabel(g, lend);
-    End;
-   End;
-  nIf: Begin
-    lelse := NewLabel(g);
-    CgJumpIf(g, nd.a, lelse, False);
-    CgStmts(g, nd.l1);
-    If Length(nd.l2) > 0 Then Begin
-     lend := NewLabel(g);
-     EmitJ(g, JUMP_FORWARD, lend);
-     SetLabel(g, lelse);
-     CgStmts(g, nd.l2);
-     SetLabel(g, lend);
-    End
-    Else SetLabel(g, lelse);
-   End;
-  nWhile: Begin
-    ltop := NewLabel(g);
-    lelse := NewLabel(g);
-    lend := NewLabel(g);
-    SetLabel(g, ltop);
-    CgJumpIf(g, nd.a, lelse, False);
-    PushFB(g, fbLoopWhile, ltop, lend);
-    CgStmts(g, nd.l1);
-    PopFB(g);
-    g.curLine := nd.line;
-    EmitJ(g, JUMP_ABSOLUTE, ltop);
-    SetLabel(g, lelse);
-    CgStmts(g, nd.l2);
-    SetLabel(g, lend);
-   End;
-  nFor: Begin
-    ltop := NewLabel(g);
-    lelse := NewLabel(g);
-    lend := NewLabel(g);
-    CgExpr(g, nd.b);
-    If nd.isAsync Then Begin
-     Emit(g, GET_AITER);
-     SetLabel(g, ltop);
-     g.curLine := nd.line;
-     EmitJ(g, SETUP_FINALLY, lelse);
-     Emit(g, GET_ANEXT);
+    Emit(g, WITH_CLEANUP_START);
+    If g.fb[idx].kind = fbAsyncWith Then Begin
+     Emit(g, GET_AWAITABLE);
      EmitConst(g, vNone);
      Emit(g, YIELD_FROM);
-     Emit(g, POP_BLOCK);
-    End
-    Else Begin
-     Emit(g, GET_ITER);
-     SetLabel(g, ltop);
-     g.curLine := nd.line;
-     EmitJ(g, FOR_ITER, lelse);
     End;
-    CgStore(g, nd.a);
-    PushFB(g, fbLoopFor, ltop, lend);
-    CgStmts(g, nd.l1);
-    PopFB(g);
-    EmitJ(g, JUMP_ABSOLUTE, ltop);
-    SetLabel(g, lelse);
-    If nd.isAsync Then Emit(g, END_ASYNC_FOR);
-    CgStmts(g, nd.l2);
-    SetLabel(g, lend);
+    Emit(g, WITH_CLEANUP_FINISH);
+    Emit(g, POP_FINALLY, 0);
    End;
-  nTry: CgTry(g, nd);
-  nWith: CgWith(g, nd, 0);
-  nFuncDef: Begin
-    For j := 0 To High(nd.l2) Do CgExpr(g, nd.l2[j]);
-    CgMakeFunction(g, nd, nd.a, nd.s);
-    g.curLine := nd.line;
-    For j := 0 To High(nd.l2) Do Emit(g, CALL_FUNCTION, 1);
-    CgName(g, nd.s, 1);
+  fbHandler: Begin
+    If preserve Then Emit(g, ROT_FOUR);
+    If g.fb[idx].exit <> Nil Then Begin
+     Emit(g, POP_BLOCK);
+     Emit(g, POP_EXCEPT);
+     EmitJ(g, CALL_FINALLY, g.fb[idx].exit);
+    End
+    Else Emit(g, POP_EXCEPT);
    End;
-  nClassDef: CgClassDef(g, nd);
  End;
- decos := 0;
- lp := 0;
- If decos + lp = 99 Then Exit;
 End;
 
 Procedure CgStmts(g: TGen; Const l: TNodes);
@@ -8083,38 +8725,593 @@ Begin
  For j := 0 To High(l) Do CgStmt(g, l[j]);
 End;
 
-Function CgFunction(g: TGen; nd: TNode; sc: TScope; Const nm: AnsiString;
- Const qual: AnsiString): TPyCode;
+Procedure CgBody(g: TGen; Const l: TNodes);
 Var
- c: TGen;
- args: TNode;
+ i: Integer;
  doc: Boolean;
 Begin
- c := TGen.Create;
- c.sc := sc;
- c.fname := g.fname;
- c.name := nm;
- c.qual := qual;
- c.firstline := nd.line;
- c.curLine := nd.line;
- c.clsName := g.clsName;
- c.parent := g;
- If nd.k = nLambda Then args := nd.b Else args := nd.a;
- c.posonly := args.n;
- doc := (nd.k = nFuncDef) And (Length(nd.l1) > 0) And IsDocStmt(nd.l1[0]) And
-  (OptLevel < 2);
- If doc Then AddConst(c, VStr(nd.l1[0].a.s))
- Else AddConst(c, vNone);
- If nd.k = nLambda Then Begin
-  CgExpr(c, nd.a);
+ If (g.skind = suModule) And (g.lineno = 0) And (Length(l) > 0) Then
+  g.lineno := l[0].line;
+ If HasAnnotations(l) Then Emit(g, SETUP_ANNOTATIONS);
+ If Length(l) = 0 Then Exit;
+ i := 0;
+ doc := (OptLevel < 2) And IsDocStmt(l[0]);
+ If doc Then Begin
+  i := 1;
+  CgExpr(g, l[0].a);
+  CgNameOp(g, '__doc__', cxStore);
+ End;
+ While i < Length(l) Do Begin
+  CgStmt(g, l[i]);
+  Inc(i);
+ End;
+End;
+
+Procedure CgFunctionDef(g: TGen; nd: TNode);
+Var
+ j, firstline, flags: Integer;
+ isAsync, hasAnn: Boolean;
+ c: TGen;
+ code: TPyCode;
+ args: TNode;
+Begin
+ args := nd.a;
+ isAsync := nd.isAsync;
+ For j := 0 To High(nd.l2) Do CgExpr(g, nd.l2[j]);
+ firstline := nd.line;
+ If Length(nd.l2) > 0 Then firstline := nd.l2[0].line;
+ flags := CgDefaults(g, args);
+ hasAnn := CgAnnotations(g, args, nd.b);
+ If hasAnn Then flags := flags Or 4;
+ If g.noEmit = 0 Then Begin
+  If isAsync Then
+   c := NewUnit(g, ScopeOf(nd), suAsyncFunction, nd.s, firstline)
+  Else c := NewUnit(g, ScopeOf(nd), suFunction, nd.s, firstline);
+  If (Length(nd.l1) > 0) And IsDocStmt(nd.l1[0]) And (OptLevel < 2) Then
+   AddConst(c, VStr(nd.l1[0].a.s))
+  Else AddConst(c, vNone);
+  c.argcount := Length(args.l1) - args.n;
+  c.posonly := args.n;
+  c.kwonly := Length(args.l2);
+  CgStmts(c, nd.l1);
+  code := Assemble(c, True);
+  CgMakeClosure(g, code, flags, c.qual);
+ End;
+ For j := 0 To High(nd.l2) Do Emit(g, CALL_FUNCTION, 1);
+ CgNameOp(g, nd.s, cxStore);
+End;
+
+Procedure CgClassDef(g: TGen; nd: TNode);
+Var
+ j, firstline: Integer;
+ c: TGen;
+ code: TPyCode;
+ args, kws: TNodes;
+ cs: TScope;
+Begin
+ For j := 0 To High(nd.l3) Do CgExpr(g, nd.l3[j]);
+ firstline := nd.line;
+ If Length(nd.l3) > 0 Then firstline := nd.l3[0].line;
+ cs := ScopeOf(nd);
+ If g.noEmit = 0 Then Begin
+  c := NewUnit(g, cs, suClass, nd.s, firstline);
+  CgNameOp(c, '__name__', cxLoad);
+  CgNameOp(c, '__module__', cxStore);
+  EmitConst(c, VStr(c.qual));
+  CgNameOp(c, '__qualname__', cxStore);
+  CgBody(c, nd.l2);
+  If cs.needsClassCell Then Begin
+   Emit(c, LOAD_CLOSURE, IndexOfStr(c.cellvars, '__class__'));
+   Emit(c, DUP_TOP);
+   CgNameOp(c, '__classcell__', cxStore);
+  End
+  Else EmitConst(c, vNone);
   Emit(c, RETURN_VALUE);
+  code := Assemble(c, True);
+  Emit(g, LOAD_BUILD_CLASS);
+  CgMakeClosure(g, code, 0, nd.s);
+  EmitConst(g, VStr(nd.s));
+ End;
+ SplitCallArgs(nd, args, kws);
+ CgCallHelper(g, 2, args, kws);
+ For j := 0 To High(nd.l3) Do Emit(g, CALL_FUNCTION, 1);
+ CgNameOp(g, nd.s, cxStore);
+End;
+
+Procedure CgIf(g: TGen; nd: TNode);
+Var
+ endB, nextB: TCgBlock;
+ constant: Integer;
+Begin
+ endB := NewBlock(g);
+ constant := ExprConstant(nd.a);
+ If constant = 0 Then Begin
+  Inc(g.noEmit);
+  CgStmts(g, nd.l1);
+  Dec(g.noEmit);
+  CgStmts(g, nd.l2);
+ End
+ Else If constant = 1 Then Begin
+  CgStmts(g, nd.l1);
+  Inc(g.noEmit);
+  CgStmts(g, nd.l2);
+  Dec(g.noEmit);
  End
  Else Begin
-  CgBody(c, nd.l1, IsDocStmt(nd.l1[0]) And (Length(nd.l1) > 0));
-  EmitConst(c, vNone);
-  Emit(c, RETURN_VALUE);
+  If Length(nd.l2) > 0 Then nextB := NewBlock(g) Else nextB := endB;
+  CgJumpIf(g, nd.a, nextB, False);
+  CgStmts(g, nd.l1);
+  If Length(nd.l2) > 0 Then Begin
+   EmitJ(g, JUMP_FORWARD, endB);
+   UseNextBlock(g, nextB);
+   CgStmts(g, nd.l2);
+  End;
  End;
- Result := Assemble(c);
+ UseNextBlock(g, endB);
+End;
+
+Procedure CgFor(g: TGen; nd: TNode);
+Var
+ start, cleanup, endB, exceptB: TCgBlock;
+Begin
+ start := NewBlock(g);
+ cleanup := NewBlock(g);
+ endB := NewBlock(g);
+ If nd.isAsync Then Begin
+  exceptB := NewBlock(g);
+  CgExpr(g, nd.b);
+  Emit(g, GET_AITER);
+  UseNextBlock(g, start);
+  PushFB(g, fbFor, start, endB);
+  EmitJ(g, SETUP_FINALLY, exceptB);
+  Emit(g, GET_ANEXT);
+  EmitConst(g, vNone);
+  Emit(g, YIELD_FROM);
+  Emit(g, POP_BLOCK);
+  CgExprCtx(g, nd.a, cxStore);
+  CgStmts(g, nd.l1);
+  EmitJ(g, JUMP_ABSOLUTE, start);
+  PopFB(g);
+  UseNextBlock(g, exceptB);
+  Emit(g, END_ASYNC_FOR);
+  CgStmts(g, nd.l2);
+  UseNextBlock(g, endB);
+  Exit;
+ End;
+ PushFB(g, fbFor, start, endB);
+ CgExpr(g, nd.b);
+ Emit(g, GET_ITER);
+ UseNextBlock(g, start);
+ EmitJ(g, FOR_ITER, cleanup);
+ CgExprCtx(g, nd.a, cxStore);
+ CgStmts(g, nd.l1);
+ EmitJ(g, JUMP_ABSOLUTE, start);
+ UseNextBlock(g, cleanup);
+ PopFB(g);
+ CgStmts(g, nd.l2);
+ UseNextBlock(g, endB);
+End;
+
+Procedure CgWhile(g: TGen; nd: TNode);
+Var
+ loop, orelse, endB, anchor: TCgBlock;
+ constant: Integer;
+Begin
+ constant := ExprConstant(nd.a);
+ If constant = 0 Then Begin
+  Inc(g.noEmit);
+  PushFB(g, fbWhile, Nil, Nil);
+  CgStmts(g, nd.l1);
+  PopFB(g);
+  Dec(g.noEmit);
+  CgStmts(g, nd.l2);
+  Exit;
+ End;
+ loop := NewBlock(g);
+ endB := NewBlock(g);
+ anchor := Nil;
+ If constant = -1 Then anchor := NewBlock(g);
+ If Length(nd.l2) > 0 Then orelse := NewBlock(g) Else orelse := Nil;
+ UseNextBlock(g, loop);
+ PushFB(g, fbWhile, loop, endB);
+ If constant = -1 Then CgJumpIf(g, nd.a, anchor, False);
+ CgStmts(g, nd.l1);
+ EmitJ(g, JUMP_ABSOLUTE, loop);
+ If constant = -1 Then UseNextBlock(g, anchor);
+ PopFB(g);
+ If orelse <> Nil Then CgStmts(g, nd.l2);
+ UseNextBlock(g, endB);
+End;
+
+Procedure CgReturn(g: TGen; nd: TNode);
+Var
+ preserve: Boolean;
+ v: TVal;
+ depth: Integer;
+Begin
+ preserve := (nd.a <> Nil) And Not IsConstNode(nd.a, v);
+ If g.sc.kind In [scModule, scClass] Then CgErr(g,
+   '''return'' outside function');
+ If (nd.a <> Nil) And g.sc.isGen And (g.sc.isAsync Or g.sc.coro) Then
+  CgErr(g, '''return'' with value in async generator');
+ If preserve Then CgExpr(g, nd.a);
+ For depth := g.nfb - 1 DownTo 0 Do CgUnwindFB(g, depth, preserve);
+ If nd.a = Nil Then EmitConst(g, vNone)
+ Else If Not preserve Then CgExpr(g, nd.a);
+ Emit(g, RETURN_VALUE);
+End;
+
+Procedure CgBreak(g: TGen);
+Var
+ depth: Integer;
+Begin
+ For depth := g.nfb - 1 DownTo 0 Do Begin
+  CgUnwindFB(g, depth, False);
+  If g.fb[depth].kind In [fbWhile, fbFor] Then Begin
+   EmitJ(g, JUMP_ABSOLUTE, g.fb[depth].exit);
+   Exit;
+  End;
+ End;
+ CgErr(g, '''break'' outside loop');
+End;
+
+Procedure CgContinue(g: TGen);
+Var
+ depth: Integer;
+Begin
+ For depth := g.nfb - 1 DownTo 0 Do Begin
+  If g.fb[depth].kind In [fbWhile, fbFor] Then Begin
+   EmitJ(g, JUMP_ABSOLUTE, g.fb[depth].block);
+   Exit;
+  End;
+  CgUnwindFB(g, depth, False);
+ End;
+ CgErr(g, '''continue'' not properly in loop');
+End;
+
+Procedure CgTryExcept(g: TGen; nd: TNode);
+Var
+ body, orelse, exceptB, endB, cleanupEnd, cleanupBody: TCgBlock;
+ i, n: Integer;
+ h: TNode;
+Begin
+ body := NewBlock(g);
+ exceptB := NewBlock(g);
+ orelse := NewBlock(g);
+ endB := NewBlock(g);
+ EmitJ(g, SETUP_FINALLY, exceptB);
+ UseNextBlock(g, body);
+ PushFB(g, fbExcept, body, Nil);
+ CgStmts(g, nd.l1);
+ Emit(g, POP_BLOCK);
+ PopFB(g);
+ EmitJ(g, JUMP_FORWARD, orelse);
+ n := Length(nd.l2);
+ UseNextBlock(g, exceptB);
+ For i := 0 To n - 1 Do Begin
+  h := nd.l2[i];
+  SetStmtLine(g, h.line);
+  exceptB := NewBlock(g);
+  If h.a <> Nil Then Begin
+   Emit(g, DUP_TOP);
+   CgExpr(g, h.a);
+   Emit(g, COMPARE_OP, 10);
+   EmitJ(g, POP_JUMP_IF_FALSE, exceptB);
+  End;
+  Emit(g, POP_TOP);
+  If h.s <> '' Then Begin
+   cleanupEnd := NewBlock(g);
+   cleanupBody := NewBlock(g);
+   CgNameOp(g, h.s, cxStore);
+   Emit(g, POP_TOP);
+   EmitJ(g, SETUP_FINALLY, cleanupEnd);
+   UseNextBlock(g, cleanupBody);
+   PushFB(g, fbHandler, cleanupBody, cleanupEnd);
+   CgStmts(g, h.l1);
+   Emit(g, POP_BLOCK);
+   Emit(g, BEGIN_FINALLY);
+   PopFB(g);
+   UseNextBlock(g, cleanupEnd);
+   PushFB(g, fbFinallyEnd, cleanupEnd, Nil);
+   EmitConst(g, vNone);
+   CgNameOp(g, h.s, cxStore);
+   CgNameOp(g, h.s, cxDel);
+   Emit(g, END_FINALLY);
+   Emit(g, POP_EXCEPT);
+   PopFB(g);
+  End
+  Else Begin
+   cleanupBody := NewBlock(g);
+   Emit(g, POP_TOP);
+   Emit(g, POP_TOP);
+   UseNextBlock(g, cleanupBody);
+   PushFB(g, fbHandler, cleanupBody, Nil);
+   CgStmts(g, h.l1);
+   Emit(g, POP_EXCEPT);
+   PopFB(g);
+  End;
+  EmitJ(g, JUMP_FORWARD, endB);
+  UseNextBlock(g, exceptB);
+ End;
+ Emit(g, END_FINALLY);
+ UseNextBlock(g, orelse);
+ CgStmts(g, nd.l3);
+ UseNextBlock(g, endB);
+End;
+
+Procedure CgTryFinally(g: TGen; nd: TNode);
+Var
+ start, newcur, body, endB: TCgBlock;
+ breakFinally: Boolean;
+Begin
+ body := NewBlock(g);
+ endB := NewBlock(g);
+ start := g.cur;
+ UseNextBlock(g, endB);
+ PushFB(g, fbFinallyEnd, endB, endB);
+ CgStmts(g, nd.l4);
+ Emit(g, END_FINALLY);
+ breakFinally := g.fb[g.nfb - 1].exit = Nil;
+ If breakFinally Then Emit(g, POP_TOP);
+ PopFB(g);
+ newcur := g.cur;
+ g.cur := start;
+ start.next := Nil;
+ SetStmtLine(g, nd.line);
+ If breakFinally Then EmitConst(g, vNone);
+ EmitJ(g, SETUP_FINALLY, endB);
+ UseNextBlock(g, body);
+ If breakFinally Then PushFB(g, fbFinallyTry2, body, endB)
+ Else PushFB(g, fbFinallyTry, body, endB);
+ If Length(nd.l2) > 0 Then CgTryExcept(g, nd)
+ Else CgStmts(g, nd.l1);
+ Emit(g, POP_BLOCK);
+ Emit(g, BEGIN_FINALLY);
+ PopFB(g);
+ g.cur.next := endB;
+ g.cur := newcur;
+End;
+
+Procedure CgWith(g: TGen; nd: TNode; pos: Integer);
+Var
+ block, finalB: TCgBlock;
+ it: TNode;
+ isA: Boolean;
+Begin
+ it := nd.l1[pos];
+ isA := nd.isAsync;
+ block := NewBlock(g);
+ finalB := NewBlock(g);
+ CgExpr(g, it.a);
+ If isA Then Begin
+  Emit(g, BEFORE_ASYNC_WITH);
+  Emit(g, GET_AWAITABLE);
+  EmitConst(g, vNone);
+  Emit(g, YIELD_FROM);
+  EmitJ(g, SETUP_ASYNC_WITH, finalB);
+ End
+ Else EmitJ(g, SETUP_WITH, finalB);
+ UseNextBlock(g, block);
+ If isA Then PushFB(g, fbAsyncWith, block, finalB)
+ Else PushFB(g, fbWith, block, finalB);
+ If it.b <> Nil Then CgExprCtx(g, it.b, cxStore)
+ Else Emit(g, POP_TOP);
+ If pos + 1 = Length(nd.l1) Then CgStmts(g, nd.l2)
+ Else CgWith(g, nd, pos + 1);
+ Emit(g, POP_BLOCK);
+ Emit(g, BEGIN_FINALLY);
+ PopFB(g);
+ UseNextBlock(g, finalB);
+ PushFB(g, fbFinallyEnd, finalB, Nil);
+ Emit(g, WITH_CLEANUP_START);
+ If isA Then Begin
+  Emit(g, GET_AWAITABLE);
+  EmitConst(g, vNone);
+  Emit(g, YIELD_FROM);
+ End;
+ Emit(g, WITH_CLEANUP_FINISH);
+ Emit(g, END_FINALLY);
+ PopFB(g);
+End;
+
+Procedure CgImport(g: TGen; nd: TNode);
+Var
+ j, p, i: Integer;
+ al: TNode;
+ nm, tmp, attr: AnsiString;
+ names: TPyTuple;
+Begin
+ If nd.k = nImport Then Begin
+  For i := 0 To High(nd.l1) Do Begin
+   al := nd.l1[i];
+   EmitConst(g, VInt(0));
+   EmitConst(g, vNone);
+   Emit(g, IMPORT_NAME, AddName(g, al.s));
+   If al.s2 <> '' Then Begin
+    nm := al.s;
+    p := Pos('.', nm);
+    If p > 0 Then Begin
+     Delete(nm, 1, p);
+     While True Do Begin
+      p := Pos('.', nm);
+      If p > 0 Then attr := Copy(nm, 1, p - 1) Else attr := nm;
+      Emit(g, IMPORT_FROM, AddName(g, attr));
+      If p = 0 Then Break;
+      Emit(g, ROT_TWO);
+      Emit(g, POP_TOP);
+      Delete(nm, 1, p);
+     End;
+     CgNameOp(g, al.s2, cxStore);
+     Emit(g, POP_TOP);
+    End
+    Else CgNameOp(g, al.s2, cxStore);
+   End
+   Else Begin
+    tmp := al.s;
+    p := Pos('.', tmp);
+    If p > 0 Then tmp := Copy(tmp, 1, p - 1);
+    CgNameOp(g, tmp, cxStore);
+   End;
+  End;
+  Exit;
+ End;
+ { from ... import ... }
+ EmitConst(g, VInt(nd.n));
+ names := NewTuple(Length(nd.l1));
+ For j := 0 To High(nd.l1) Do names.items[j] := VStr(nd.l1[j].s);
+ EmitConst(g, VObj(names));
+ Emit(g, IMPORT_NAME, AddName(g, nd.s));
+ For j := 0 To High(nd.l1) Do Begin
+  al := nd.l1[j];
+  If (j = 0) And (Copy(al.s, 1, 1) = '*') Then Begin
+   Emit(g, IMPORT_STAR);
+   Exit;
+  End;
+  Emit(g, IMPORT_FROM, AddName(g, al.s));
+  If al.s2 <> '' Then CgNameOp(g, al.s2, cxStore)
+  Else CgNameOp(g, al.s, cxStore);
+ End;
+ Emit(g, POP_TOP);
+End;
+
+Procedure CgAssert(g: TGen; nd: TNode);
+Var
+ endB: TCgBlock;
+Begin
+ If OptLevel > 0 Then Exit;
+ endB := NewBlock(g);
+ CgJumpIf(g, nd.a, endB, True);
+ Emit(g, LOAD_GLOBAL, AddName(g, 'AssertionError'));
+ If nd.b <> Nil Then Begin
+  CgExpr(g, nd.b);
+  Emit(g, CALL_FUNCTION, 1);
+ End;
+ Emit(g, RAISE_VARARGS, 1);
+ UseNextBlock(g, endB);
+End;
+
+Procedure CgAugAssign(g: TGen; nd: TNode);
+Var
+ e: TNode;
+ op: Integer;
+Begin
+ e := nd.a;
+ op := BinOpCode(nd.s, True);
+ Case e.k Of
+  nAttr, nSub: Begin
+    CgExprCtx(g, e, cxAugLoad);
+    CgExpr(g, nd.b);
+    Emit(g, op);
+    CgExprCtx(g, e, cxAugStore);
+   End;
+  nName: Begin
+    CgNameOp(g, e.s, cxLoad);
+    CgExpr(g, nd.b);
+    Emit(g, op);
+    CgNameOp(g, e.s, cxStore);
+   End;
+ Else
+  SynErr('illegal expression for augmented assignment', nd.line, nd.col);
+ End;
+End;
+
+Procedure CgAnnAssign(g: TGen; nd: TNode);
+Var
+ targ: TNode;
+ simpleScope: Boolean;
+
+ Procedure CheckAnnExpr(e: TNode);
+ Begin
+  CgExpr(g, e);
+  Emit(g, POP_TOP);
+ End;
+
+Begin
+ targ := nd.a;
+ simpleScope := g.skind In [suModule, suClass];
+ If nd.c <> Nil Then Begin
+  CgExpr(g, nd.c);
+  CgExprCtx(g, targ, cxStore);
+ End;
+ Case targ.k Of
+  nName: Begin
+    If nd.flag And simpleScope Then Begin
+     CgAnnotExpr(g, nd.b);
+     Emit(g, LOAD_NAME, AddName(g, '__annotations__'));
+     EmitConst(g, VStr(Mangle(g, targ.s)));
+     Emit(g, STORE_SUBSCR);
+    End;
+   End;
+  nAttr: If nd.c = Nil Then CheckAnnExpr(targ.a);
+  nSub: If nd.c = Nil Then Begin
+    CheckAnnExpr(targ.a);
+    If targ.b.k = nSlice Then Begin
+     If targ.b.a <> Nil Then CheckAnnExpr(targ.b.a);
+     If targ.b.b <> Nil Then CheckAnnExpr(targ.b.b);
+     If targ.b.c <> Nil Then CheckAnnExpr(targ.b.c);
+    End
+    Else CheckAnnExpr(targ.b);
+   End;
+ End;
+ If Not nd.flag And simpleScope Then CheckAnnExpr(nd.b);
+End;
+
+Procedure CgStmt(g: TGen; nd: TNode);
+Var
+ j, n: Integer;
+ v: TVal;
+Begin
+ SetStmtLine(g, nd.line);
+ Case nd.k Of
+  nFuncDef: CgFunctionDef(g, nd);
+  nClassDef: CgClassDef(g, nd);
+  nReturn: CgReturn(g, nd);
+  nDelete: For j := 0 To High(nd.l1) Do CgExprCtx(g, nd.l1[j], cxDel);
+  nAssign: Begin
+    n := Length(nd.l1);
+    CgExpr(g, nd.a);
+    For j := 0 To n - 1 Do Begin
+     If j < n - 1 Then Emit(g, DUP_TOP);
+     CgExprCtx(g, nd.l1[j], cxStore);
+    End;
+   End;
+  nAugAssign: CgAugAssign(g, nd);
+  nAnnAssign: CgAnnAssign(g, nd);
+  nFor: CgFor(g, nd);
+  nWhile: CgWhile(g, nd);
+  nIf: CgIf(g, nd);
+  nRaise: Begin
+    n := 0;
+    If nd.a <> Nil Then Begin
+     CgExpr(g, nd.a);
+     Inc(n);
+     If nd.b <> Nil Then Begin
+      CgExpr(g, nd.b);
+      Inc(n);
+     End;
+    End;
+    Emit(g, RAISE_VARARGS, n);
+   End;
+  nTry: If Length(nd.l4) > 0 Then CgTryFinally(g, nd) Else CgTryExcept(g, nd);
+  nAssert: CgAssert(g, nd);
+  nImport, nImportFrom: CgImport(g, nd);
+  nGlobal, nNonlocal, nPass: ;
+  nExprStmt: Begin
+    If g.interactive And (g.nest <= 1) Then Begin
+     CgExpr(g, nd.a);
+     Emit(g, PRINT_EXPR);
+    End
+    Else If Not IsConstNode(nd.a, v) Then Begin
+     CgExpr(g, nd.a);
+     Emit(g, POP_TOP);
+    End;
+   End;
+  nBreak: CgBreak(g);
+  nContinue: CgContinue(g);
+  nWith: CgWith(g, nd, 0);
+ Else
+  SynErr('invalid syntax', nd.line, nd.col);
+ End;
 End;
 
 { mode : 0 exec, 1 eval, 2 single }
@@ -8125,43 +9322,33 @@ Var
  sc: TScope;
  bound: TNameSet;
  g: TGen;
- doc: Boolean;
+ addNone: Boolean;
 Begin
  SrcFile := fname;
  root := ParseSource(src, mode);
+ CgAnnotFuture := PFutureAnnotations;
+ CgFutureFlags := PFutureFlags;
+ AstFold(root, OptLevel);
  sc := NewScope(scModule, '<module>', root, Nil);
  If mode = 1 Then SymExpr(sc, root.a) Else SymStmts(sc, root.l1);
  sc.hasAnnot := HasAnnotations(root.l1);
  bound := NewNameSet;
  AnalyzeScope(sc, bound);
- g := TGen.Create;
- g.sc := sc;
+ g := NewUnit(Nil, sc, suModule, '<module>', 0);
  g.fname := fname;
- g.name := '<module>';
  g.qual := '';
- g.firstline := 1;
- g.curLine := 1;
  g.interactive := mode = 2;
- g.clsName := '';
- AddConst(g, vNone);
+ addNone := True;
  If mode = 1 Then Begin
   CgExpr(g, root.a);
-  Emit(g, RETURN_VALUE);
+  addNone := False;
  End
- Else Begin
-  doc := (Length(root.l1) > 0) And IsDocStmt(root.l1[0]) And
-   (mode = 0) And (OptLevel < 2);
-  If sc.hasAnnot Then Emit(g, SETUP_ANNOTATIONS);
-  If doc Then Begin
-   g.curLine := root.l1[0].line;
-   EmitConst(g, VStr(root.l1[0].a.s));
-   Emit(g, STORE_NAME, AddName(g, '__doc__'));
-  End;
-  CgBody(g, root.l1, doc);
-  EmitConst(g, vNone);
-  Emit(g, RETURN_VALUE);
- End;
- Result := Assemble(g);
+ Else If mode = 2 Then Begin
+  If HasAnnotations(root.l1) Then Emit(g, SETUP_ANNOTATIONS);
+  CgStmts(g, root.l1);
+ End
+ Else CgBody(g, root.l1);
+ Result := Assemble(g, addNone);
 End;
 
 { ------------------------------------------------------------
@@ -12088,6 +13275,401 @@ Begin
  args[0] := a1;
  args[1] := a2;
  Result := CallValue(fn, @args[0], 2, Nil);
+End;
+{ ------------------------------------------------------------
+  Optimisation de l'AST (port de ast_opt.c, CPython 3.8)
+  ------------------------------------------------------------ }
+Procedure AstFoldNode(nd: TNode; opt: Integer); Forward;
+
+Procedure CopyNodeFrom(dst, src: TNode);
+Begin
+ dst.k := src.k;
+ dst.line := src.line;
+ dst.col := src.col;
+ dst.s := src.s;
+ dst.s2 := src.s2;
+ dst.n := src.n;
+ dst.v := src.v;
+ dst.a := src.a;
+ dst.b := src.b;
+ dst.c := src.c;
+ dst.d := src.d;
+ dst.l1 := src.l1;
+ dst.l2 := src.l2;
+ dst.l3 := src.l3;
+ dst.l4 := src.l4;
+ dst.sl := src.sl;
+ dst.flag := src.flag;
+ dst.isAsync := src.isAsync;
+End;
+
+Procedure MakeConstNode(nd: TNode; Const v: TVal);
+Begin
+ nd.k := nConst;
+ nd.v := v;
+ nd.a := Nil;
+ nd.b := Nil;
+ nd.c := Nil;
+ nd.d := Nil;
+ SetLength(nd.l1, 0);
+ SetLength(nd.l2, 0);
+ nd.s := '';
+ nd.flag := False;
+End;
+
+Function ConstVal(nd: TNode; Var v: TVal): Boolean;
+Begin
+ Result := IsConstNode(nd, v);
+End;
+
+Function FoldNumBits(Const v: TVal): Integer;
+Begin
+ If v.k = vkBool Then Result := 0
+ Else Result := IntBitLength(v);
+End;
+
+Function IsIntLike(Const v: TVal): Boolean;
+Begin
+ Result := (v.k = vkInt) Or (v.k = vkBool) Or
+  ((v.k = vkObj) And (v.o Is TPyBigInt));
+End;
+
+Function IsZeroVal(Const v: TVal): Boolean;
+Begin
+ Result := ((v.k = vkInt) Or (v.k = vkBool)) And (v.i = 0);
+End;
+
+Function SeqLen(Const v: TVal): Integer;
+Begin
+ Result := -1;
+ If (v.k = vkObj) Then Begin
+  If v.o Is TPyTuple Then Result := Length(TPyTuple(v.o).items)
+  Else If v.o Is TPySet Then Result := TPySet(v.o).used
+  Else If v.o Is TPyStr Then Result := PyStrLen(TPyStr(v.o))
+  Else If v.o Is TPyBytes Then Result := Length(TPyBytes(v.o).s);
+ End;
+End;
+
+Function IsSeqVal(Const v: TVal): Boolean;
+Begin
+ Result := (v.k = vkObj) And ((v.o Is TPyTuple) Or (v.o Is TPyStr) Or
+  (v.o Is TPyBytes) Or ((v.o Is TPySet) And TPySet(v.o).frozen));
+End;
+
+Function TupleComplexity(Const v: TVal; limit: Integer): Integer;
+Var
+ j: Integer;
+Begin
+ Result := limit;
+ If (v.k = vkObj) And (v.o Is TPyTuple) Then Begin
+  Dec(Result, Length(TPyTuple(v.o).items));
+  j := 0;
+  While (Result >= 0) And (j < Length(TPyTuple(v.o).items)) Do Begin
+   Result := TupleComplexity(TPyTuple(v.o).items[j], Result);
+   Inc(j);
+  End;
+ End;
+End;
+
+{ renvoie True si le repli est permis (limites safe_*) }
+Function SafeToFold(Const op: AnsiString; Const l, r: TVal): Boolean;
+Var
+ n, size, vb, wb: Integer;
+ lv, rv: TVal;
+Begin
+ Result := True;
+ If op = '*' Then Begin
+  lv := l;
+  rv := r;
+  If IsIntLike(lv) And IsIntLike(rv) And Not IsZeroVal(lv) And
+   Not IsZeroVal(rv) Then Begin
+   vb := FoldNumBits(lv);
+   wb := FoldNumBits(rv);
+   If vb + wb > 128 Then Result := False;
+   Exit;
+  End;
+  If IsSeqVal(rv) And IsIntLike(lv) Then Begin
+  End
+  Else If IsSeqVal(lv) And IsIntLike(rv) Then Begin
+   lv := r;
+   rv := l;
+  End
+  Else Exit;
+  size := SeqLen(rv);
+  If size <= 0 Then Exit;
+  If Not ((lv.k = vkInt) Or (lv.k = vkBool)) Then Begin
+   Result := False;
+   Exit;
+  End;
+  n := lv.i;
+  If (rv.o Is TPyTuple) Or (rv.o Is TPySet) Then Begin
+   If (n < 0) Or (n > 256 Div size) Then Begin
+    Result := False;
+    Exit;
+   End;
+   If (n > 0) And (TupleComplexity(rv, 1024 Div n) < 0) Then
+    Result := False;
+  End
+  Else If (n < 0) Or (n > 4096 Div size) Then Result := False;
+ End
+ Else If op = '**' Then Begin
+  If IsIntLike(l) And IsIntLike(r) And Not IsZeroVal(l) And
+   (r.k = vkInt) And (r.i > 0) Then Begin
+   vb := FoldNumBits(l);
+   If vb > 128 Div r.i Then Result := False;
+  End
+  Else If IsIntLike(l) And IsIntLike(r) And Not IsZeroVal(l) And
+   (r.k = vkObj) Then Result := False;
+ End
+ Else If op = '<<' Then Begin
+  If IsIntLike(l) And IsIntLike(r) And Not IsZeroVal(l) And
+   Not IsZeroVal(r) Then Begin
+   If r.k <> vkInt Then Begin
+    Result := False;
+    Exit;
+   End;
+   vb := FoldNumBits(l);
+   If (r.i < 0) Or (r.i > 128) Or (vb > 128 - r.i) Then Result := False;
+  End;
+ End
+ Else If op = '%' Then Begin
+  If (l.k = vkObj) And ((l.o Is TPyStr) Or (l.o Is TPyBytes)) Then
+   Result := False;
+ End;
+End;
+
+Function BinOpIndex(Const op: AnsiString): Integer;
+Begin
+ Result := -1;
+ If op = '+' Then Result := bopAdd
+ Else If op = '-' Then Result := bopSub
+ Else If op = '*' Then Result := bopMul
+ Else If op = '/' Then Result := bopTrueDiv
+ Else If op = '//' Then Result := bopFloorDiv
+ Else If op = '%' Then Result := bopMod
+ Else If op = '**' Then Result := bopPow
+ Else If op = '<<' Then Result := bopLShift
+ Else If op = '>>' Then Result := bopRShift
+ Else If op = '|' Then Result := bopOr
+ Else If op = '^' Then Result := bopXor
+ Else If op = '&' Then Result := bopAnd;
+End;
+
+Function TryBinary(Const op: AnsiString; Const l, r: TVal; Var res: TVal):
+ Boolean;
+Var
+ code: Integer;
+Begin
+ Result := False;
+ code := BinOpIndex(op);
+ If code < 0 Then Exit;
+ If Not SafeToFold(op, l, r) Then Exit;
+ Try
+  res := BinaryOp(code, l, r);
+  Result := True;
+ Except
+  On E: EPyError Do Result := False;
+ End;
+End;
+
+Function MakeConstTuple(Const elts: TNodes; Var v: TVal): Boolean;
+Var
+ j: Integer;
+ t: TPyTuple;
+ x: TVal;
+Begin
+ Result := False;
+ For j := 0 To High(elts) Do
+  If Not IsConstNode(elts[j], x) Then Exit;
+ t := NewTuple(Length(elts));
+ For j := 0 To High(elts) Do Begin
+  IsConstNode(elts[j], x);
+  t.items[j] := x;
+ End;
+ v := VObj(t);
+ Result := True;
+End;
+
+Procedure FoldIter(nd: TNode);
+Var
+ j: Integer;
+ v: TVal;
+ s: TPySet;
+ t: TPyTuple;
+Begin
+ If nd.k = nList Then Begin
+  For j := 0 To High(nd.l1) Do
+   If nd.l1[j].k = nStarred Then Exit;
+  nd.k := nTuple;
+  If MakeConstTuple(nd.l1, v) Then MakeConstNode(nd, v);
+ End
+ Else If nd.k = nSet Then Begin
+  If MakeConstTuple(nd.l1, v) Then Begin
+   t := TPyTuple(v.o);
+   s := TPySet.Make(True);
+   Try
+    For j := 0 To High(t.items) Do s.Add(t.items[j]);
+   Except
+    On E: EPyError Do Exit;
+   End;
+   MakeConstNode(nd, VObj(s));
+  End;
+ End;
+End;
+
+Procedure FoldTarget(nd: TNode; opt: Integer);
+Var
+ j: Integer;
+Begin
+ If nd = Nil Then Exit;
+ Case nd.k Of
+  nTuple, nList: For j := 0 To High(nd.l1) Do FoldTarget(nd.l1[j], opt);
+  nStarred: FoldTarget(nd.a, opt);
+  nAttr: AstFoldNode(nd.a, opt);
+  nSub: Begin
+    AstFoldNode(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+   End;
+ End;
+End;
+
+Procedure FoldCommon(nd: TNode; opt: Integer);
+Var
+ j: Integer;
+Begin
+ AstFoldNode(nd.a, opt);
+ AstFoldNode(nd.b, opt);
+ AstFoldNode(nd.c, opt);
+ AstFoldNode(nd.d, opt);
+ For j := 0 To High(nd.l1) Do AstFoldNode(nd.l1[j], opt);
+ For j := 0 To High(nd.l2) Do AstFoldNode(nd.l2[j], opt);
+ For j := 0 To High(nd.l3) Do AstFoldNode(nd.l3[j], opt);
+ For j := 0 To High(nd.l4) Do AstFoldNode(nd.l4[j], opt);
+End;
+
+Procedure AstFoldNode(nd: TNode; opt: Integer);
+Var
+ j, k: Integer;
+ lv, rv, res: TVal;
+ arg: TNode;
+ op: AnsiString;
+ ok: Boolean;
+Begin
+ If nd = Nil Then Exit;
+ Case nd.k Of
+  nName: If nd.s = '__debug__' Then MakeConstNode(nd, VBool(opt = 0));
+  nBin: Begin
+    AstFoldNode(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+    If IsConstNode(nd.a, lv) And IsConstNode(nd.b, rv) Then
+     If TryBinary(nd.s, lv, rv, res) Then MakeConstNode(nd, res);
+   End;
+  nUnary: Begin
+    AstFoldNode(nd.a, opt);
+    arg := nd.a;
+    If IsConstNode(arg, lv) Then Begin
+     ok := True;
+     Try
+      If nd.s = '-' Then res := UnaryNeg(lv)
+      Else If nd.s = '+' Then res := UnaryPos(lv)
+      Else If nd.s = '~' Then res := UnaryInvert(lv)
+      Else res := VBool(Not IsTrue(lv));
+     Except
+      On E: EPyError Do ok := False;
+     End;
+     If ok Then MakeConstNode(nd, res);
+    End
+    Else If (nd.s = 'not') And (arg.k = nCmp) And (Length(arg.l1) = 1) Then
+     Begin
+      op := arg.sl[0];
+      If op = 'is' Then op := 'is not'
+      Else If op = 'is not' Then op := 'is'
+      Else If op = 'in' Then op := 'not in'
+      Else If op = 'not in' Then op := 'in'
+      Else op := '';
+      If op <> '' Then Begin
+       arg.sl[0] := op;
+       CopyNodeFrom(nd, arg);
+      End;
+     End;
+   End;
+  nTuple: Begin
+    FoldCommon(nd, opt);
+    If MakeConstTuple(nd.l1, res) Then MakeConstNode(nd, res);
+   End;
+  nSub: Begin
+    AstFoldNode(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+    If IsConstNode(nd.a, lv) And IsConstNode(nd.b, rv) Then Begin
+     ok := True;
+     Try
+      res := GetItem(lv, rv);
+     Except
+      On E: EPyError Do ok := False;
+     End;
+     If ok Then MakeConstNode(nd, res);
+    End;
+   End;
+  nCmp: Begin
+    AstFoldNode(nd.a, opt);
+    For j := 0 To High(nd.l1) Do AstFoldNode(nd.l1[j], opt);
+    j := High(nd.l1);
+    If (nd.sl[j] = 'in') Or (nd.sl[j] = 'not in') Then FoldIter(nd.l1[j]);
+   End;
+  nListComp, nSetComp, nGenExp, nDictComp: Begin
+    AstFoldNode(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+    For j := 0 To High(nd.l1) Do Begin
+     FoldTarget(nd.l1[j].a, opt);
+     AstFoldNode(nd.l1[j].b, opt);
+     For k := 0 To High(nd.l1[j].l1) Do
+      AstFoldNode(nd.l1[j].l1[k], opt);
+     FoldIter(nd.l1[j].b);
+    End;
+   End;
+  nFor: Begin
+    FoldTarget(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+    For j := 0 To High(nd.l1) Do AstFoldNode(nd.l1[j], opt);
+    For j := 0 To High(nd.l2) Do AstFoldNode(nd.l2[j], opt);
+    If Not nd.isAsync Then FoldIter(nd.b);
+   End;
+  nAssign: Begin
+    For j := 0 To High(nd.l1) Do FoldTarget(nd.l1[j], opt);
+    AstFoldNode(nd.a, opt);
+   End;
+  nAugAssign: Begin
+    FoldTarget(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+   End;
+  nAnnAssign: Begin
+    FoldTarget(nd.a, opt);
+    AstFoldNode(nd.b, opt);
+    AstFoldNode(nd.c, opt);
+   End;
+  nDelete: For j := 0 To High(nd.l1) Do FoldTarget(nd.l1[j], opt);
+  nWithItem: Begin
+    AstFoldNode(nd.a, opt);
+    FoldTarget(nd.b, opt);
+   End;
+  nNamed: Begin
+    AstFoldNode(nd.b, opt);
+   End;
+  nNum, nConst, nStr: ;
+ Else
+  FoldCommon(nd, opt);
+ End;
+End;
+
+Procedure AstFold(root: TNode; opt: Integer);
+Var
+ j: Integer;
+Begin
+ If root.k = nModule Then Begin
+  For j := 0 To High(root.l1) Do AstFoldNode(root.l1[j], opt);
+  AstFoldNode(root.a, opt);
+ End
+ Else AstFoldNode(root, opt);
 End;
 
 { ------------------------------------------------------------
@@ -26835,6 +28417,49 @@ Begin
 End;
 
 { ------------------------------------------------------------
+  Module _opcode
+  ------------------------------------------------------------ }
+Function OpcStackEffect(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ op, arg, eff: Integer;
+ hasArg, hasJump, jumpv: Boolean;
+ v: TVal;
+Begin
+ If (n < 1) Or (n > 2) Then
+  TypeErr('stack_effect() takes from 1 to 2 positional arguments but ' +
+   IntToStr(n) + ' were given');
+ op := ToInt64(a[0]);
+ hasArg := (n = 2) And (a[1].k <> vkNone);
+ hasJump := False;
+ jumpv := False;
+ If kw <> Nil Then
+  If kw.GetS('jump', v) Then
+   If v.k <> vkNone Then Begin
+    hasJump := True;
+    jumpv := IsTrue(v);
+   End;
+ arg := 0;
+ If hasArg Then arg := ToInt64(a[1]);
+ If op >= 90 Then Begin
+  If Not hasArg Then
+   ValueErr('stack_effect: opcode requires oparg but oparg was not specified');
+ End
+ Else If hasArg Then
+  ValueErr('stack_effect: opcode does not permit oparg but oparg was ' +
+   'specified');
+ If hasJump Then eff := StackEffect(op, arg, jumpv)
+ Else If op = FOR_ITER Then eff := StackEffect(op, arg, False)
+ Else eff := StackEffect(op, arg, True);
+ If eff = InvalidStackEffect Then ValueErr('invalid opcode or oparg');
+ Result := VInt(eff);
+End;
+
+Procedure InitOpcodeModule(m: TPyModule);
+Begin
+ DefFunc(m.idict, 'stack_effect', @OpcStackEffect);
+End;
+
+{ ------------------------------------------------------------
   Modules gc, atexit, builtins
   ------------------------------------------------------------ }
 Var
@@ -30826,6 +32451,7 @@ Begin
  RegNative('time', @InitTimeModule);
  RegNative('_posix', @InitPosix2Module);
  RegNative('_mt', @InitRandomModule);
+ RegNative('_opcode', @InitOpcodeModule);
  RegNative('_posixsubprocess', @InitPosixSubprocessModule);
  RegNative('select', @InitSelectModule);
  RegNative('_sock', @InitSockModule);
@@ -59380,17 +61006,39 @@ Const
   '    (ascii, ''ascii''),' + #10 + ')' + #10 +
   'MAKE_FUNCTION = opmap[''MAKE_FUNCTI' + 'ON'']' + #10 +
   'MAKE_FUNCTION_FLAGS = (''defaults'',' +
-  ' ''kwdefaults'', ''annotations'', ''clo' + 'sure'')' + #10 + #10 +
-  'def _try_compile(source, name):' + #10 + '    try:' + #10 +
+  ' ''kwdefaults'', ''annotations'', ''clo' + 'sure'')' + #10 + #10 + #10 +
+  'def _try_compile(source, name):' + #10 +
+  '    """Attempts to compile the giv' +
+  'en source, first as an expression ' + 'and' + #10 +
+  '       then as a statement if the ' + 'first approach fails.' + #10 + #10 +
+  '       Utility function to accept ' +
+  'strings in functions that otherwis' + 'e' + #10 +
+  '       expect code objects' + #10 + '    """' + #10 + '    try:' + #10 +
   '        c = compile(source, name, ' + '''eval'')' + #10 +
   '    except SyntaxError:' + #10 + '        c = compile(source, name, ' +
   '''exec'')' + #10 + '    return c' + #10 + #10 +
   'def dis(x=None, *, file=None, dept' + 'h=None):' + #10 +
+  '    """Disassemble classes, method' +
+  's, functions, and other compiled o' + 'bjects.' + #10 + #10 +
+  '    With no argument, disassemble ' + 'the last traceback.' + #10 + #10 +
+  '    Compiled objects currently inc' +
+  'lude generator objects, async gene' + 'rator' + #10 +
+  '    objects, and coroutine objects' +
+  ', all of which store their code ob' + 'ject' + #10 +
+  '    in a special attribute.' + #10 + '    """' + #10 +
   '    if x is None:' + #10 + '        distb(file=file)' + #10 +
-  '        return' + #10 + '    if hasattr(x, ''__func__''):' + #10 +
-  '        x = x.__func__' + #10 + '    if hasattr(x, ''__code__''):' + #10 +
-  '        x = x.__code__' + #10 + '    if hasattr(x, ''gi_code''):' + #10 +
-  '        x = x.gi_code' + #10 + '    if hasattr(x, ''__dict__''):' + #10 +
+  '        return' + #10 + '    # Extract functions from metho' + 'ds.' +
+  #10 + '    if hasattr(x, ''__func__''):' + #10 + '        x = x.__func__' +
+  #10 + '    # Extract compiled code object' + 's from...' + #10 +
+  '    if hasattr(x, ''__code__''):  # ' + '...a function, or' + #10 +
+  '        x = x.__code__' + #10 + '    elif hasattr(x, ''gi_code''):  #' +
+  '...a generator object, or' + #10 + '        x = x.gi_code' + #10 +
+  '    elif hasattr(x, ''ag_code''):  #' +
+  '...an asynchronous generator objec' + 't, or' + #10 +
+  '        x = x.ag_code' + #10 + '    elif hasattr(x, ''cr_code''):  #' +
+  '...a coroutine.' + #10 + '        x = x.cr_code' + #10 +
+  '    # Perform the disassembly.' + #10 +
+  '    if hasattr(x, ''__dict__''):  # ' + 'Class or module' + #10 +
   '        items = sorted(x.__dict__.' + 'items())' + #10 +
   '        for name, x1 in items:' + #10 +
   '            if isinstance(x1, _hav' + 'e_code):' + #10 +
@@ -59399,44 +61047,63 @@ Const
   'ile, depth=depth)' + #10 + '                except TypeError a' +
   's msg:' + #10 + '                    print("Sorry:"' +
   ', msg, file=file)' + #10 + '                print(file=file)' + #10 +
-  '    elif hasattr(x, ''co_code''):' + #10 +
+  '    elif hasattr(x, ''co_code''): # ' + 'Code object' + #10 +
   '        _disassemble_recursive(x, ' + 'file=file, depth=depth)' + #10 +
-  '    elif isinstance(x, (bytes, byt' + 'earray)):' + #10 +
+  '    elif isinstance(x, (bytes, byt' + 'earray)): # Raw bytecode' + #10 +
   '        _disassemble_bytes(x, file' + '=file)' + #10 +
-  '    elif isinstance(x, str):' + #10 +
+  '    elif isinstance(x, str):    # ' + 'Source code' + #10 +
   '        _disassemble_str(x, file=f' + 'ile, depth=depth)' + #10 +
   '    else:' + #10 + '        raise TypeError("don''t kno' +
   'w how to disassemble %s objects" %' + #10 +
   '                        type(x).__' + 'name__)' + #10 + #10 +
-  'def distb(tb=None, *, file=None):' + #10 + '    if tb is None:' + #10 +
-  '        try:' + #10 + '            tb = sys.last_tracebac' + 'k' + #10 +
+  'def distb(tb=None, *, file=None):' + #10 +
+  '    """Disassemble a traceback (de' + 'fault: last traceback)."""' + #10 +
+  '    if tb is None:' + #10 + '        try:' + #10 +
+  '            tb = sys.last_tracebac' + 'k' + #10 +
   '        except AttributeError:' + #10 +
   '            raise RuntimeError("no' +
   ' last traceback to disassemble") f' + 'rom None' + #10 +
-  '        while tb.tb_next:' + #10 + '            tb = tb.tb_next' + #10 +
+  '        while tb.tb_next: tb = tb.' + 'tb_next' + #10 +
   '    disassemble(tb.tb_frame.f_code' + ', tb.tb_lasti, file=file)' + #10 +
-  #10 + 'COMPILER_FLAG_NAMES = {' + #10 + '     1: "OPTIMIZED",' + #10 +
+  #10 + '# The inspect module interrogates ' +
+  'this dictionary to build its' + #10 +
+  '# list of CO_* constants. It is al' + 'so used by pretty_flags to' + #10 +
+  '# turn the co_flags field into a h' + 'uman readable list.' + #10 +
+  'COMPILER_FLAG_NAMES = {' + #10 + '     1: "OPTIMIZED",' + #10 +
   '     2: "NEWLOCALS",' + #10 + '     4: "VARARGS",' + #10 +
   '     8: "VARKEYWORDS",' + #10 + '    16: "NESTED",' + #10 +
   '    32: "GENERATOR",' + #10 + '    64: "NOFREE",' + #10 +
   '   128: "COROUTINE",' + #10 + '   256: "ITERABLE_COROUTINE",' + #10 +
   '   512: "ASYNC_GENERATOR",' + #10 + '}' + #10 + #10 +
-  'def pretty_flags(flags):' + #10 + '    names = []' + #10 +
-  '    for i in range(32):' + #10 + '        flag = 1 << i' + #10 +
+  'def pretty_flags(flags):' + #10 + '    """Return pretty representatio' +
+  'n of code flags."""' + #10 + '    names = []' + #10 +
+  '    for i in range(32):' + #10 + '        flag = 1<<i' + #10 +
   '        if flags & flag:' + #10 + '            names.append(COMPILER_' +
   'FLAG_NAMES.get(flag, hex(flag)))' + #10 + '            flags ^= flag' +
   #10 + '            if not flags:' + #10 + '                break' + #10 +
   '    else:' + #10 + '        names.append(hex(flags))' + #10 +
   '    return ", ".join(names)' + #10 + #10 + 'def _get_code_object(x):' +
-  #10 + '    if hasattr(x, ''__func__''):' + #10 + '        x = x.__func__' +
-  #10 + '    if hasattr(x, ''__code__''):' + #10 + '        x = x.__code__' +
-  #10 + '    if hasattr(x, ''gi_code''):' + #10 + '        x = x.gi_code' +
-  #10 + '    if isinstance(x, str):' + #10 +
+  #10 + '    """Helper to handle methods, c' +
+  'ompiled or raw code objects, and s' + 'trings."""' + #10 +
+  '    # Extract functions from metho' + 'ds.' + #10 +
+  '    if hasattr(x, ''__func__''):' + #10 + '        x = x.__func__' + #10 +
+  '    # Extract compiled code object' + 's from...' + #10 +
+  '    if hasattr(x, ''__code__''):  # ' + '...a function, or' + #10 +
+  '        x = x.__code__' + #10 + '    elif hasattr(x, ''gi_code''):  #' +
+  '...a generator object, or' + #10 + '        x = x.gi_code' + #10 +
+  '    elif hasattr(x, ''ag_code''):  #' +
+  '...an asynchronous generator objec' + 't, or' + #10 +
+  '        x = x.ag_code' + #10 + '    elif hasattr(x, ''cr_code''):  #' +
+  '...a coroutine.' + #10 + '        x = x.cr_code' + #10 +
+  '    # Handle source code.' + #10 + '    if isinstance(x, str):' + #10 +
   '        x = _try_compile(x, "<disa' + 'ssembly>")' + #10 +
+  '    # By now, if we don''t have a c' +
+  'ode object, we can''t disassemble x' + '.' + #10 +
   '    if hasattr(x, ''co_code''):' + #10 + '        return x' + #10 +
   '    raise TypeError("don''t know ho' + 'w to disassemble %s objects" %' +
   #10 + '                    type(x).__name' + '__)' + #10 + #10 +
-  'def code_info(x):' + #10 + '    return _format_code_info(_get_' +
+  'def code_info(x):' + #10 + '    """Formatted details of method' +
+  's, functions, or code."""' + #10 + '    return _format_code_info(_get_' +
   'code_object(x))' + #10 + #10 + 'def _format_code_info(co):' + #10 +
   '    lines = []' + #10 + '    lines.append("Name:           ' +
   '   %s" % co.co_name)' + #10 + '    lines.append("Filename:       ' +
@@ -59465,6 +61132,9 @@ Const
   '            lines.append("%4d: %s"' + ' % i_n)' + #10 +
   '    return "\n".join(lines)' + #10 + #10 +
   'def show_code(co, *, file=None):' + #10 +
+  '    """Print details of methods, f' + 'unctions, or code to *file*.' +
+  #10 + #10 + '    If *file* is not provided, the' +
+  ' output is printed on stdout.' + #10 + '    """' + #10 +
   '    print(code_info(co), file=file' + ')' + #10 + #10 +
   '_Instruction = collections.namedtu' + 'ple("_Instruction",' + #10 +
   '     "opname opcode arg argval arg' +
@@ -59483,27 +61153,71 @@ Const
   ' "Line started by this opcode (if ' + 'any), otherwise None"' + #10 +
   '_Instruction.is_jump_target.__doc_' +
   '_ = "True if other code jumps to h' + 'ere, otherwise False"' + #10 + #10 +
+  '_OPNAME_WIDTH = 20' + #10 + '_OPARG_WIDTH = 5' + #10 + #10 +
   'class Instruction(_Instruction):' + #10 +
-  '    def _disassemble(self, lineno_' + 'width=3, mark_as_current=False):' +
-  #10 + '        fields = []' + #10 + '        if lineno_width:' + #10 +
+  '    """Details for a bytecode oper' + 'ation' + #10 + #10 +
+  '       Defined fields:' + #10 + '         opname - human readable n' +
+  'ame for operation' + #10 + '         opcode - numeric code for' +
+  ' operation' + #10 + '         arg - numeric argument to' +
+  ' operation (if any), otherwise Non' + 'e' + #10 +
+  '         argval - resolved arg val' +
+  'ue (if known), otherwise same as a' + 'rg' + #10 +
+  '         argrepr - human readable ' + 'description of operation argument' +
+  #10 + '         offset - start index of o' +
+  'peration within bytecode sequence' + #10 +
+  '         starts_line - line starte' +
+  'd by this opcode (if any), otherwi' + 'se None' + #10 +
+  '         is_jump_target - True if ' +
+  'other code jumps to here, otherwis' + 'e False' + #10 + '    """' + #10 +
+  #10 + '    def _disassemble(self, lineno_' +
+  'width=3, mark_as_current=False, of' + 'fset_width=4):' + #10 +
+  '        """Format instruction deta' +
+  'ils for inclusion in disassembly o' + 'utput' + #10 + #10 +
+  '        *lineno_width* sets the wi' +
+  'dth of the line number field (0 om' + 'its it)' + #10 +
+  '        *mark_as_current* inserts ' +
+  'a ''-->'' marker arrow as part of th' + 'e line' + #10 +
+  '        *offset_width* sets the wi' +
+  'dth of the instruction offset fiel' + 'd' + #10 + '        """' + #10 +
+  '        fields = []' + #10 + '        # Column: Source code line' +
+  ' number' + #10 + '        if lineno_width:' + #10 +
   '            if self.starts_line is' + ' not None:' + #10 +
   '                lineno_fmt = "%%%d' + 'd" % lineno_width' + #10 +
   '                fields.append(line' + 'no_fmt % self.starts_line)' + #10 +
   '            else:' + #10 + '                fields.append('' '' ' +
-  '* lineno_width)' + #10 + '        if mark_as_current:' + #10 +
+  '* lineno_width)' + #10 + '        # Column: Current instruct' +
+  'ion indicator' + #10 + '        if mark_as_current:' + #10 +
   '            fields.append(''-->'')' + #10 + '        else:' + #10 +
   '            fields.append(''   '')' + #10 +
+  '        # Column: Jump target mark' + 'er' + #10 +
   '        if self.is_jump_target:' + #10 +
   '            fields.append(''>>'')' + #10 + '        else:' + #10 +
   '            fields.append(''  '')' + #10 +
-  '        fields.append(repr(self.of' + 'fset).rjust(4))' + #10 +
-  '        fields.append(self.opname.' + 'ljust(20))' + #10 +
+  '        # Column: Instruction offs' + 'et from start of code sequence' +
+  #10 + '        fields.append(repr(self.of' + 'fset).rjust(offset_width))' +
+  #10 + '        # Column: Opcode name' + #10;
+
+Const
+ Src_dis_1: AnsiString =
+  '        fields.append(self.opname.' + 'ljust(_OPNAME_WIDTH))' + #10 +
+  '        # Column: Opcode argument' + #10 +
   '        if self.arg is not None:' + #10 +
-  '            fields.append(repr(sel' + 'f.arg).rjust(5))' + #10 +
+  '            fields.append(repr(sel' + 'f.arg).rjust(_OPARG_WIDTH))' + #10 +
+  '            # Column: Opcode argum' + 'ent details' + #10 +
   '            if self.argrepr:' + #10 +
   '                fields.append(''('' ' + '+ self.argrepr + '')'')' + #10 +
-  '        return '' ''.join(fields).rs' + 'trip()' + #10 + #10 +
+  '        return '' ''.join(fields).rs' + 'trip()' + #10 + #10 + #10 +
   'def get_instructions(x, *, first_l' + 'ine=None):' + #10 +
+  '    """Iterator for the opcodes in' + ' methods, functions or code' + #10 +
+  #10 + '    Generates a series of Instruct' +
+  'ion named tuples giving the detail' + 's of' + #10 +
+  '    each operations in the supplie' + 'd code.' + #10 + #10 +
+  '    If *first_line* is not None, i' +
+  't indicates the line number that s' + 'hould' + #10 +
+  '    be reported for the first sour' + 'ce line in the disassembled code.' +
+  #10 + '    Otherwise, the source line inf' +
+  'ormation (if any) is taken directl' + 'y from' + #10 +
+  '    the disassembled code object.' + #10 + '    """' + #10 +
   '    co = _get_code_object(x)' + #10 +
   '    cell_names = co.co_cellvars + ' + 'co.co_freevars' + #10 +
   '    linestarts = dict(findlinestar' + 'ts(co))' + #10 +
@@ -59516,26 +61230,49 @@ Const
   ' co.co_consts, cell_names, linesta' + 'rts,' + #10 +
   '                                  ' + ' line_offset)' + #10 + #10 +
   'def _get_const_info(const_index, c' + 'onst_list):' + #10 +
+  '    """Helper to get optional deta' + 'ils about const references' + #10 +
+  #10 + '       Returns the dereferenced co' +
+  'nstant and its repr if the constan' + 't' + #10 +
+  '       list is defined.' + #10 + '       Otherwise returns the const' +
+  'ant index and its repr().' + #10 + '    """' + #10 +
   '    argval = const_index' + #10 + '    if const_list is not None:' + #10 +
   '        argval = const_list[const_' + 'index]' + #10 +
   '    return argval, repr(argval)' + #10 + #10 +
   'def _get_name_info(name_index, nam' + 'e_list):' + #10 +
+  '    """Helper to get optional deta' + 'ils about named references' + #10 +
+  #10 + '       Returns the dereferenced na' +
+  'me as both value and repr if the n' + 'ame' + #10 +
+  '       list is defined.' + #10 + '       Otherwise returns the name ' +
+  'index and its repr().' + #10 + '    """' + #10 +
   '    argval = name_index' + #10 + '    if name_list is not None:' + #10 +
   '        argval = name_list[name_in' + 'dex]' + #10 +
   '        argrepr = argval' + #10 + '    else:' + #10 +
   '        argrepr = repr(argval)' + #10 + '    return argval, argrepr' +
-  #10 + #10 + 'def _get_instructions_bytes(code, ' +
+  #10 + #10 + #10 + 'def _get_instructions_bytes(code, ' +
   'varnames=None, names=None, constan' + 'ts=None,' + #10 +
   '                      cells=None, ' + 'linestarts=None, line_offset=0):' +
-  #10 + '    labels = findlabels(code)' + #10 + '    starts_line = None' +
-  #10 + '    for offset, op, arg in _unpack' + '_opargs(code):' + #10 +
-  '        if linestarts is not None:' + #10 +
+  #10 + '    """Iterate over the instructio' + 'ns in a bytecode string.' +
+  #10 + #10 + '    Generates a sequence of Instru' +
+  'ction namedtuples giving the detai' + 'ls of each' + #10 +
+  '    opcode.  Additional informatio' +
+  'n about the code''s runtime environ' + 'ment' + #10 +
+  '    (e.g. variable names, constant' +
+  's) can be specified using optional' + #10 + '    arguments.' + #10 + #10 +
+  '    """' + #10 + '    labels = findlabels(code)' + #10 +
+  '    starts_line = None' + #10 + '    for offset, op, arg in _unpack' +
+  '_opargs(code):' + #10 + '        if linestarts is not None:' + #10 +
   '            starts_line = linestar' + 'ts.get(offset, None)' + #10 +
   '            if starts_line is not ' + 'None:' + #10 +
   '                starts_line += lin' + 'e_offset' + #10 +
   '        is_jump_target = offset in' + ' labels' + #10 +
   '        argval = None' + #10 + '        argrepr = ''''' + #10 +
-  '        if arg is not None:' + #10 + '            argval = arg' + #10 +
+  '        if arg is not None:' + #10 + '            #  Set argval to the d' +
+  'ereferenced value of the argument ' + 'when' + #10 +
+  '            #  available, and argr' +
+  'epr to the string representation o' + 'f argval.' + #10 +
+  '            #    _disassemble_byte' + 's needs the string repr of the' +
+  #10 + '            #    raw name index fo' +
+  'r LOAD_GLOBAL, LOAD_CONST, etc.' + #10 + '            argval = arg' + #10 +
   '            if op in hasconst:' + #10 +
   '                argval, argrepr = ' + '_get_const_info(arg, constants)' +
   #10 + '            elif op in hasname:' + #10 +
@@ -59555,22 +61292,17 @@ Const
   'FORMAT_VALUE_CONVERTERS[arg & 0x3]' + #10 +
   '                argval = (argval, ' + 'bool(arg & 0x4))' + #10 +
   '                if argval[1]:' + #10 + '                    if argrepr:' +
-  #10;
-
-Const
- Src_dis_1: AnsiString =
-  '                        argrepr +=' + ' '', ''' + #10 +
+  #10 + '                        argrepr +=' + ' '', ''' + #10 +
   '                    argrepr += ''wi' + 'th format''' + #10 +
   '            elif op == MAKE_FUNCTI' + 'ON:' + #10 +
   '                argrepr = '', ''.joi' +
   'n(s for i, s in enumerate(MAKE_FUN' + 'CTION_FLAGS)' + #10 +
   '                                  ' + '  if arg & (1<<i))' + #10 +
-  '            elif op in hasjabs:' + #10 + '                argval = arg' +
-  #10 + '                argrepr = "to " + ' + 'repr(argval)' + #10 +
   '        yield Instruction(opname[o' + 'p], op,' + #10 +
   '                          arg, arg' + 'val, argrepr,' + #10 +
   '                          offset, ' + 'starts_line, is_jump_target)' +
   #10 + #10 + 'def disassemble(co, lasti=-1, *, f' + 'ile=None):' + #10 +
+  '    """Disassemble a code object."' + '""' + #10 +
   '    cell_names = co.co_cellvars + ' + 'co.co_freevars' + #10 +
   '    linestarts = dict(findlinestar' + 'ts(co))' + #10 +
   '    _disassemble_bytes(co.co_code,' +
@@ -59590,6 +61322,8 @@ Const
   '=-1, varnames=None, names=None,' + #10 +
   '                       constants=N' + 'one, cells=None, linestarts=None,' +
   #10 + '                       *, file=Non' + 'e, line_offset=0):' + #10 +
+  '    # Omit the line number column ' +
+  'entirely if we have no line number' + ' info' + #10 +
   '    show_lineno = linestarts is no' + 't None' + #10 +
   '    if show_lineno:' + #10 + '        maxlineno = max(linestarts' +
   '.values()) + line_offset' + #10 + '        if maxlineno >= 1000:' + #10 +
@@ -59609,18 +61343,25 @@ Const
   '        if new_source_line:' + #10 + '            print(file=file)' + #10 +
   '        is_current_instr = instr.o' + 'ffset == lasti' + #10 +
   '        print(instr._disassemble(l' +
-  'ineno_width, is_current_instr), fi' + 'le=file)' + #10 + #10 +
+  'ineno_width, is_current_instr, off' + 'set_width),' + #10 +
+  '              file=file)' + #10 + #10 +
   'def _disassemble_str(source, **kwa' + 'rgs):' + #10 +
+  '    """Compile the source string, ' +
+  'then disassemble the code object."' + '""' + #10 +
   '    _disassemble_recursive(_try_co' +
-  'mpile(source, ''<dis>''), **kwargs)' + #10 + #10 + 'disco = disassemble' +
-  #10 + #10 + 'def _unpack_opargs(code):' + #10 + '    extended_arg = 0' +
-  #10 + '    for i in range(0, len(code), 2' + '):' + #10 +
-  '        op = code[i]' + #10 + '        if op >= HAVE_ARGUMENT:' + #10 +
+  'mpile(source, ''<dis>''), **kwargs)' + #10 + #10 +
+  'disco = disassemble               ' +
+  '      # XXX For backwards compatib' + 'ility' + #10 + #10 +
+  'def _unpack_opargs(code):' + #10 + '    extended_arg = 0' + #10 +
+  '    for i in range(0, len(code), 2' + '):' + #10 + '        op = code[i]' +
+  #10 + '        if op >= HAVE_ARGUMENT:' + #10 +
   '            arg = code[i+1] | exte' + 'nded_arg' + #10 +
   '            extended_arg = (arg <<' + ' 8) if op == EXTENDED_ARG else 0' +
   #10 + '        else:' + #10 + '            arg = None' + #10 +
   '        yield (i, op, arg)' + #10 + #10 + 'def findlabels(code):' + #10 +
-  '    labels = []' + #10 + '    for offset, op, arg in _unpack' +
+  '    """Detect all offsets in a byt' + 'e code which are jump targets.' +
+  #10 + #10 + '    Return the list of offsets.' + #10 + #10 + '    """' +
+  #10 + '    labels = []' + #10 + '    for offset, op, arg in _unpack' +
   '_opargs(code):' + #10 + '        if arg is not None:' + #10 +
   '            if op in hasjrel:' + #10 +
   '                label = offset + 2' + ' + arg' + #10 +
@@ -59629,20 +61370,39 @@ Const
   '            if label not in labels' + ':' + #10 +
   '                labels.append(labe' + 'l)' + #10 + '    return labels' +
   #10 + #10 + 'def findlinestarts(code):' + #10 +
+  '    """Find the offsets in a byte ' +
+  'code which are start of lines in t' + 'he source.' + #10 + #10 +
+  '    Generate pairs (offset, lineno' +
+  ') as described in Python/compile.c' + '.' + #10 + #10 + '    """' + #10 +
   '    byte_increments = code.co_lnot' + 'ab[0::2]' + #10 +
   '    line_increments = code.co_lnot' + 'ab[1::2]' + #10 +
+  '    bytecode_len = len(code.co_cod' + 'e)' + #10 + #10 +
   '    lastlineno = None' + #10 + '    lineno = code.co_firstlineno' + #10 +
   '    addr = 0' + #10 + '    for byte_incr, line_incr in zi' +
   'p(byte_increments, line_increments' + '):' + #10 +
   '        if byte_incr:' + #10 + '            if lineno != lastlinen' +
   'o:' + #10 + '                yield (addr, linen' + 'o)' + #10 +
   '                lastlineno = linen' + 'o' + #10 +
-  '            addr += byte_incr' + #10 + '        if line_incr >= 0x80:' +
-  #10 + '            line_incr -= 0x100' + #10 +
-  '        lineno += line_incr' + #10 + '    if lineno != lastlineno:' + #10 +
+  '            addr += byte_incr' + #10 +
+  '            if addr >= bytecode_le' + 'n:' + #10 +
+  '                # The rest of the ' +
+  'lnotab byte offsets are past the e' + 'nd of' + #10 +
+  '                # the bytecode, so' + ' the lines were optimized away.' +
+  #10 + '                return' + #10 + '        if line_incr >= 0x80:' +
+  #10 + '            # line_increments is a' +
+  'n array of 8-bit signed integers' + #10 +
+  '            line_incr -= 0x100' + #10 + '        lineno += line_incr' +
+  #10 + '    if lineno != lastlineno:' + #10 +
   '        yield (addr, lineno)' + #10 + #10 + 'class Bytecode:' + #10 +
-  '    def __init__(self, x, *, first' + '_line=None, current_offset=None):' +
-  #10 + '        self.codeobj = co = _get_c' + 'ode_object(x)' + #10 +
+  '    """The bytecode operations of ' + 'a piece of code' + #10 + #10 +
+  '    Instantiate this with a functi' +
+  'on, method, other compiled object,' + ' string of' + #10 +
+  '    code, or a code object (as ret' + 'urned by compile()).' + #10 + #10 +
+  '    Iterating over this yields the' +
+  ' bytecode operations as Instructio' + 'n instances.' + #10 + '    """' +
+  #10 + '    def __init__(self, x, *, first' +
+  '_line=None, current_offset=None):' + #10 +
+  '        self.codeobj = co = _get_c' + 'ode_object(x)' + #10 +
   '        if first_line is None:' + #10 +
   '            self.first_line = co.c' + 'o_firstlineno' + #10 +
   '            self._line_offset = 0' + #10 + '        else:' + #10 +
@@ -59652,8 +61412,11 @@ Const
   #10 + '        self._linestarts = dict(fi' + 'ndlinestarts(co))' + #10 +
   '        self._original_object = x' + #10 +
   '        self.current_offset = curr' + 'ent_offset' + #10 + #10 +
-  '    def __iter__(self):' + #10 + '        co = self.codeobj' + #10 +
-  '        return _get_instructions_b' +
+  '    def __iter__(self):' + #10;
+
+Const
+ Src_dis_2: AnsiString =
+  '        co = self.codeobj' + #10 + '        return _get_instructions_b' +
   'ytes(co.co_code, co.co_varnames, c' + 'o.co_names,' + #10 +
   '                                  ' +
   '     co.co_consts, self._cell_name' + 's,' + #10 +
@@ -59661,41 +61424,44 @@ Const
   '                                  ' +
   '     line_offset=self._line_offset' + ')' + #10 + #10 +
   '    def __repr__(self):' + #10 + '        return "{}({!r})".format(s' +
-  'elf.__class__.__name__, self._orig' + 'inal_object)' + #10 + #10 +
-  '    @classmethod' + #10 + '    def from_traceback(cls, tb):' + #10 +
+  'elf.__class__.__name__,' + #10 + '                                 s' +
+  'elf._original_object)' + #10 + #10 + '    @classmethod' + #10 +
+  '    def from_traceback(cls, tb):' + #10 +
+  '        """ Construct a Bytecode f' + 'rom the given traceback """' + #10 +
   '        while tb.tb_next:' + #10 + '            tb = tb.tb_next' + #10 +
   '        return cls(tb.tb_frame.f_c' + 'ode, current_offset=tb.tb_lasti)' +
   #10 + #10 + '    def info(self):' + #10 +
-  '        return _format_code_info(s' + 'elf.codeobj)' + #10 + #10 +
-  '    def dis(self):' + #10 + '        co = self.codeobj' + #10 +
-  '        if self.current_offset is ' + 'not None:' + #10 +
+  '        """Return formatted inform' + 'ation about the code object."""' +
+  #10 + '        return _format_code_info(s' + 'elf.codeobj)' + #10 + #10 +
+  '    def dis(self):' + #10 + '        """Return a formatted view' +
+  ' of the bytecode operations."""' + #10 + '        co = self.codeobj' +
+  #10 + '        if self.current_offset is ' + 'not None:' + #10 +
   '            offset = self.current_' + 'offset' + #10 + '        else:' +
-  #10 + '            offset = -1' + #10 + '        output = io.StringIO()' +
-  #10 + '        _disassemble_bytes(co.co_c' +
-  'ode, varnames=co.co_varnames,' + #10 +
-  '                           names=c' +
-  'o.co_names, constants=co.co_consts' + ',' + #10 +
-  '                           cells=s' + 'elf._cell_names,' + #10 +
-  '                           linesta' + 'rts=self._linestarts,' + #10 +
-  '                           line_of' + 'fset=self._line_offset,' + #10 +
-  '                           file=ou' + 'tput,' + #10 +
-  '                           lasti=o' + 'ffset)' + #10 +
-  '        return output.getvalue()' + #10 + #10 + 'def _test():' + #10 +
-  '    import sys' + #10 + '    if len(sys.argv) > 1:' + #10 +
-  '        fn = sys.argv[1]' + #10 + '        if not fn or fn == "-":' + #10 +
-  '            fn = None' + #10 + '    else:' + #10 + '        fn = None' +
-  #10 + '    if fn is None:' + #10 + '        f = sys.stdin' + #10 +
-  '    else:' + #10 + '        f = open(fn, ''rb'')' + #10 + '    with f:' +
-  #10 + '        source = f.read()' + #10 +
-  '    if isinstance(source, bytes):' + #10 +
-  '        source = source.decode()' + #10 + '    if fn is None:' + #10 +
-  '        fn = "<stdin>"' + #10 + '    code = compile(source, fn, "ex' +
-  'ec")' + #10 + '    dis(code)' + #10 + #10 + 'if __name__ == "__main__":' +
-  #10 + '    _test()' + #10 + #10;
+  #10 + '            offset = -1' + #10 +
+  '        with io.StringIO() as outp' + 'ut:' + #10 +
+  '            _disassemble_bytes(co.' + 'co_code, varnames=co.co_varnames,' +
+  #10 + '                               nam' +
+  'es=co.co_names, constants=co.co_co' + 'nsts,' + #10 +
+  '                               cel' + 'ls=self._cell_names,' + #10 +
+  '                               lin' + 'estarts=self._linestarts,' + #10 +
+  '                               lin' + 'e_offset=self._line_offset,' + #10 +
+  '                               fil' + 'e=output,' + #10 +
+  '                               las' + 'ti=offset)' + #10 +
+  '            return output.getvalue' + '()' + #10 + #10 + #10 +
+  'def _test():' + #10 + '    """Simple test program to disa' +
+  'ssemble a file."""' + #10 + '    import argparse' + #10 + #10 +
+  '    parser = argparse.ArgumentPars' + 'er()' + #10 +
+  '    parser.add_argument(''infile'', ' +
+  'type=argparse.FileType(''rb''), narg' + 's=''?'', default=''-'')' + #10 +
+  '    args = parser.parse_args()' + #10 + '    with args.infile as infile:' +
+  #10 + '        source = infile.read()' + #10 +
+  '    code = compile(source, args.in' + 'file.name, "exec")' + #10 +
+  '    dis(code)' + #10 + #10 + 'if __name__ == "__main__":' + #10 +
+  '    _test()' + #10 + #10;
 
 Function Src_dis: AnsiString;
 Begin
- Result := Src_dis_0 + Src_dis_1;
+ Result := Src_dis_0 + Src_dis_1 + Src_dis_2;
 End;
 
 Const
@@ -92498,209 +94264,140 @@ End;
 
 Const
  Src_opcode_0: AnsiString =
-  '# genere depuis la table d''instruc' +
-  'tions de PYTHON3.PAS (CPython 3.8)' + #10 +
-  '"""opcode module - potentially sha' +
-  'red between dis and other modules ' + 'which' + #10 +
+  #10 + '"""' + #10 + 'opcode module - potentially shared' +
+  ' between dis and other modules whi' + 'ch' + #10 +
   'operate on bytecodes (e.g. peephol' + 'e optimizers).' + #10 + '"""' +
-  #10 + '__all__ = ["cmp_op", "hasconst", "' +
+  #10 + #10 + '__all__ = ["cmp_op", "hasconst", "' +
   'hasname", "hasjrel", "hasjabs",' + #10 +
   '           "haslocal", "hascompare' + '", "hasfree", "opname", "opmap",' +
   #10 + '           "HAVE_ARGUMENT", "EXTEN' + 'DED_ARG", "hasnargs"]' + #10 +
-  'cmp_op = (''<'', ''<='', ''=='', ''!='', ''' +
+  #10 + '# It''s a chicken-and-egg I''m afrai' + 'd:' + #10 +
+  '# We''re imported before _opcode''s ' + 'made.' + #10 +
+  '# With exception unheeded' + #10 + '# (stack_effect is not needed)' + #10 +
+  '# Both our chickens and eggs are a' + 'llayed.' + #10 +
+  '#     --Larry Hastings, 2013/11/23' + #10 + #10 + 'try:' + #10 +
+  '    from _opcode import stack_effe' + 'ct' + #10 +
+  '    __all__.append(''stack_effect'')' + #10 + 'except ImportError:' + #10 +
+  '    pass' + #10 + #10 + 'cmp_op = (''<'', ''<='', ''=='', ''!='', ''' +
   '>'', ''>='', ''in'', ''not in'', ''is'',' + #10 +
-  '        ''is not'', ''exception match' + ''', ''BAD'')' + #10 +
+  '        ''is not'', ''exception match' + ''', ''BAD'')' + #10 + #10 +
   'hasconst = []' + #10 + 'hasname = []' + #10 + 'hasjrel = []' + #10 +
   'hasjabs = []' + #10 + 'haslocal = []' + #10 + 'hascompare = []' + #10 +
-  'hasfree = []' + #10 + 'hasnargs = []' + #10 + 'opmap = {}' + #10 +
-  'opname = [''<%r>'' % (op,) for op in' + ' range(256)]' + #10 +
+  'hasfree = []' + #10 + 'hasnargs = [] # unused' + #10 + #10 + 'opmap = {}' +
+  #10 + 'opname = [''<%r>'' % (op,) for op in' + ' range(256)]' + #10 + #10 +
   'def def_op(name, op):' + #10 + '    opname[op] = name' + #10 +
   '    opmap[name] = op' + #10 + #10 + 'def name_op(name, op):' + #10 +
   '    def_op(name, op)' + #10 + '    hasname.append(op)' + #10 + #10 +
   'def jrel_op(name, op):' + #10 + '    def_op(name, op)' + #10 +
   '    hasjrel.append(op)' + #10 + #10 + 'def jabs_op(name, op):' + #10 +
-  '    def_op(name, op)' + #10 + '    hasjabs.append(op)' + #10 +
+  '    def_op(name, op)' + #10 + '    hasjabs.append(op)' + #10 + #10 +
+  '# Instruction opcodes for compiled' + ' code' + #10 +
+  '# Blank lines correspond to availa' + 'ble opcodes' + #10 + #10 +
   'def_op(''POP_TOP'', 1)' + #10 + 'def_op(''ROT_TWO'', 2)' + #10 +
   'def_op(''ROT_THREE'', 3)' + #10 + 'def_op(''DUP_TOP'', 4)' + #10 +
-  'def_op(''DUP_TOP_TWO'', 5)' + #10 + 'def_op(''ROT_FOUR'', 6)' + #10 +
+  'def_op(''DUP_TOP_TWO'', 5)' + #10 + 'def_op(''ROT_FOUR'', 6)' + #10 + #10 +
   'def_op(''NOP'', 9)' + #10 + 'def_op(''UNARY_POSITIVE'', 10)' + #10 +
   'def_op(''UNARY_NEGATIVE'', 11)' + #10 + 'def_op(''UNARY_NOT'', 12)' + #10 +
-  'def_op(''UNARY_INVERT'', 15)' + #10 +
+  #10 + 'def_op(''UNARY_INVERT'', 15)' + #10 + #10 +
   'def_op(''BINARY_MATRIX_MULTIPLY'', 1' + '6)' + #10 +
-  'def_op(''INPLACE_MATRIX_MULTIPLY'', ' + '17)' + #10 +
+  'def_op(''INPLACE_MATRIX_MULTIPLY'', ' + '17)' + #10 + #10 +
   'def_op(''BINARY_POWER'', 19)' + #10 + 'def_op(''BINARY_MULTIPLY'', 20)' +
-  #10 + 'def_op(''BINARY_MODULO'', 22)' + #10 + 'def_op(''BINARY_ADD'', 23)' +
-  #10 + 'def_op(''BINARY_SUBTRACT'', 24)' + #10 +
-  'def_op(''BINARY_SUBSCR'', 25)' + #10 +
+  #10 + #10 + 'def_op(''BINARY_MODULO'', 22)' + #10 +
+  'def_op(''BINARY_ADD'', 23)' + #10 + 'def_op(''BINARY_SUBTRACT'', 24)' +
+  #10 + 'def_op(''BINARY_SUBSCR'', 25)' + #10 +
   'def_op(''BINARY_FLOOR_DIVIDE'', 26)' + #10 +
   'def_op(''BINARY_TRUE_DIVIDE'', 27)' + #10 +
   'def_op(''INPLACE_FLOOR_DIVIDE'', 28)' + #10 +
-  'def_op(''INPLACE_TRUE_DIVIDE'', 29)' + #10 + 'def_op(''GET_AITER'', 50)' +
-  #10 + 'def_op(''GET_ANEXT'', 51)' + #10 +
+  'def_op(''INPLACE_TRUE_DIVIDE'', 29)' + #10 + #10 +
+  'def_op(''GET_AITER'', 50)' + #10 + 'def_op(''GET_ANEXT'', 51)' + #10 +
   'def_op(''BEFORE_ASYNC_WITH'', 52)' + #10 +
   'def_op(''BEGIN_FINALLY'', 53)' + #10 + 'def_op(''END_ASYNC_FOR'', 54)' +
   #10 + 'def_op(''INPLACE_ADD'', 55)' + #10 +
   'def_op(''INPLACE_SUBTRACT'', 56)' + #10 +
-  'def_op(''INPLACE_MULTIPLY'', 57)' + #10 +
+  'def_op(''INPLACE_MULTIPLY'', 57)' + #10 + #10 +
   'def_op(''INPLACE_MODULO'', 59)' + #10 + 'def_op(''STORE_SUBSCR'', 60)' +
   #10 + 'def_op(''DELETE_SUBSCR'', 61)' + #10 +
   'def_op(''BINARY_LSHIFT'', 62)' + #10 + 'def_op(''BINARY_RSHIFT'', 63)' +
   #10 + 'def_op(''BINARY_AND'', 64)' + #10 + 'def_op(''BINARY_XOR'', 65)' +
   #10 + 'def_op(''BINARY_OR'', 66)' + #10 + 'def_op(''INPLACE_POWER'', 67)' +
   #10 + 'def_op(''GET_ITER'', 68)' + #10 +
-  'def_op(''GET_YIELD_FROM_ITER'', 69)' + #10 + 'def_op(''PRINT_EXPR'', 70)' +
-  #10 + 'def_op(''LOAD_BUILD_CLASS'', 71)' + #10 +
-  'def_op(''YIELD_FROM'', 72)' + #10 + 'def_op(''GET_AWAITABLE'', 73)' + #10 +
-  'def_op(''INPLACE_LSHIFT'', 75)' + #10 + 'def_op(''INPLACE_RSHIFT'', 76)' +
-  #10 + 'def_op(''INPLACE_AND'', 77)' + #10 + 'def_op(''INPLACE_XOR'', 78)' +
-  #10 + 'def_op(''INPLACE_OR'', 79)' + #10 +
-  'def_op(''WITH_CLEANUP_START'', 81)' + #10 +
+  'def_op(''GET_YIELD_FROM_ITER'', 69)' + #10 + #10 +
+  'def_op(''PRINT_EXPR'', 70)' + #10 + 'def_op(''LOAD_BUILD_CLASS'', 71)' +
+  #10 + 'def_op(''YIELD_FROM'', 72)' + #10 + 'def_op(''GET_AWAITABLE'', 73)' +
+  #10 + #10 + 'def_op(''INPLACE_LSHIFT'', 75)' + #10 +
+  'def_op(''INPLACE_RSHIFT'', 76)' + #10 + 'def_op(''INPLACE_AND'', 77)' +
+  #10 + 'def_op(''INPLACE_XOR'', 78)' + #10 + 'def_op(''INPLACE_OR'', 79)' +
+  #10 + 'def_op(''WITH_CLEANUP_START'', 81)' + #10 +
   'def_op(''WITH_CLEANUP_FINISH'', 82)' + #10 +
   'def_op(''RETURN_VALUE'', 83)' + #10 + 'def_op(''IMPORT_STAR'', 84)' + #10 +
   'def_op(''SETUP_ANNOTATIONS'', 85)' + #10 + 'def_op(''YIELD_VALUE'', 86)' +
   #10 + 'def_op(''POP_BLOCK'', 87)' + #10 + 'def_op(''END_FINALLY'', 88)' +
-  #10 + 'def_op(''POP_EXCEPT'', 89)' + #10 + 'name_op(''STORE_NAME'', 90)' +
-  #10 + 'name_op(''DELETE_NAME'', 91)' + #10 +
-  'def_op(''UNPACK_SEQUENCE'', 92)' + #10 + 'jrel_op(''FOR_ITER'', 93)' +
-  #10 + 'def_op(''UNPACK_EX'', 94)' + #10 + 'name_op(''STORE_ATTR'', 95)' +
-  #10 + 'name_op(''DELETE_ATTR'', 96)' + #10 +
-  'name_op(''STORE_GLOBAL'', 97)' + #10 + 'name_op(''DELETE_GLOBAL'', 98)' +
-  #10 + 'def_op(''LOAD_CONST'', 100)' + #10 + 'name_op(''LOAD_NAME'', 101)' +
-  #10 + 'def_op(''BUILD_TUPLE'', 102)' + #10 + 'def_op(''BUILD_LIST'', 103)' +
-  #10 + 'def_op(''BUILD_SET'', 104)' + #10 + 'def_op(''BUILD_MAP'', 105)' +
-  #10 + 'name_op(''LOAD_ATTR'', 106)' + #10 + 'def_op(''COMPARE_OP'', 107)' +
-  #10 + 'name_op(''IMPORT_NAME'', 108)' + #10 +
-  'name_op(''IMPORT_FROM'', 109)' + #10 + 'jrel_op(''JUMP_FORWARD'', 110)' +
-  #10 + 'jabs_op(''JUMP_IF_FALSE_OR_POP'', 11' + '1)' + #10 +
-  'jabs_op(''JUMP_IF_TRUE_OR_POP'', 112' + ')' + #10 +
-  'jabs_op(''JUMP_ABSOLUTE'', 113)' + #10 +
-  'jabs_op(''POP_JUMP_IF_FALSE'', 114)' + #10 +
-  'jabs_op(''POP_JUMP_IF_TRUE'', 115)' + #10 +
-  'name_op(''LOAD_GLOBAL'', 116)' + #10 + 'jrel_op(''SETUP_FINALLY'', 122)' +
-  #10 + 'def_op(''LOAD_FAST'', 124)' + #10 + 'def_op(''STORE_FAST'', 125)' +
-  #10 + 'def_op(''DELETE_FAST'', 126)' + #10 +
-  'def_op(''RAISE_VARARGS'', 130)' + #10 + 'def_op(''CALL_FUNCTION'', 131)' +
-  #10 + 'def_op(''MAKE_FUNCTION'', 132)' + #10 +
-  'def_op(''BUILD_SLICE'', 133)' + #10 + 'def_op(''LOAD_CLOSURE'', 135)' +
-  #10 + 'def_op(''LOAD_DEREF'', 136)' + #10 + 'def_op(''STORE_DEREF'', 137)' +
-  #10 + 'def_op(''DELETE_DEREF'', 138)' + #10 +
-  'def_op(''CALL_FUNCTION_KW'', 141)' + #10 +
-  'def_op(''CALL_FUNCTION_EX'', 142)' + #10 + 'jrel_op(''SETUP_WITH'', 143)' +
-  #10 + 'def_op(''EXTENDED_ARG'', 144)' + #10 +
+  #10 + 'def_op(''POP_EXCEPT'', 89)' + #10 + #10 +
+  'HAVE_ARGUMENT = 90              # ' +
+  'Opcodes from here have an argument' + ':' + #10 + #10 +
+  'name_op(''STORE_NAME'', 90)       # ' + 'Index in name list' + #10 +
+  'name_op(''DELETE_NAME'', 91)      # ' + '""' + #10 +
+  'def_op(''UNPACK_SEQUENCE'', 92)   # ' + 'Number of tuple items' + #10 +
+  'jrel_op(''FOR_ITER'', 93)' + #10 + 'def_op(''UNPACK_EX'', 94)' + #10 +
+  'name_op(''STORE_ATTR'', 95)       # ' + 'Index in name list' + #10 +
+  'name_op(''DELETE_ATTR'', 96)      # ' + '""' + #10 +
+  'name_op(''STORE_GLOBAL'', 97)     # ' + '""' + #10 +
+  'name_op(''DELETE_GLOBAL'', 98)    # ' + '""' + #10 +
+  'def_op(''LOAD_CONST'', 100)       # ' + 'Index in const list' + #10 +
+  'hasconst.append(100)' + #10 + 'name_op(''LOAD_NAME'', 101)       # ' +
+  'Index in name list' + #10 + 'def_op(''BUILD_TUPLE'', 102)      # ' +
+  'Number of tuple items' + #10 + 'def_op(''BUILD_LIST'', 103)       # ' +
+  'Number of list items' + #10 + 'def_op(''BUILD_SET'', 104)        # ' +
+  'Number of set items' + #10 + 'def_op(''BUILD_MAP'', 105)        # ' +
+  'Number of dict entries' + #10 + 'name_op(''LOAD_ATTR'', 106)       # ' +
+  'Index in name list' + #10 + 'def_op(''COMPARE_OP'', 107)       # ' +
+  'Comparison operator' + #10 + 'hascompare.append(107)' + #10 +
+  'name_op(''IMPORT_NAME'', 108)     # ' + 'Index in name list' + #10 +
+  'name_op(''IMPORT_FROM'', 109)     # ' + 'Index in name list' + #10 + #10 +
+  'jrel_op(''JUMP_FORWARD'', 110)    # ' + 'Number of bytes to skip' + #10 +
+  'jabs_op(''JUMP_IF_FALSE_OR_POP'', 11' +
+  '1) # Target byte offset from begin' + 'ning of code' + #10 +
+  'jabs_op(''JUMP_IF_TRUE_OR_POP'', 112' + ')  # ""' + #10 +
+  'jabs_op(''JUMP_ABSOLUTE'', 113)     ' + '   # ""' + #10 +
+  'jabs_op(''POP_JUMP_IF_FALSE'', 114) ' + '   # ""' + #10 +
+  'jabs_op(''POP_JUMP_IF_TRUE'', 115)  ' + '   # ""' + #10 + #10 +
+  'name_op(''LOAD_GLOBAL'', 116)     # ' + 'Index in name list' + #10 + #10 +
+  'jrel_op(''SETUP_FINALLY'', 122)   # ' + 'Distance to target address' +
+  #10 + #10 + 'def_op(''LOAD_FAST'', 124)        # ' +
+  'Local variable number' + #10 + 'haslocal.append(124)' + #10 +
+  'def_op(''STORE_FAST'', 125)       # ' + 'Local variable number' + #10 +
+  'haslocal.append(125)' + #10 + 'def_op(''DELETE_FAST'', 126)      # ' +
+  'Local variable number' + #10 + 'haslocal.append(126)' + #10 + #10 +
+  'def_op(''RAISE_VARARGS'', 130)    # ' +
+  'Number of raise arguments (1, 2, o' + 'r 3)' + #10 +
+  'def_op(''CALL_FUNCTION'', 131)    # ' + '#args' + #10 +
+  'def_op(''MAKE_FUNCTION'', 132)    # ' + 'Flags' + #10 +
+  'def_op(''BUILD_SLICE'', 133)      # ' + 'Number of items' + #10 +
+  'def_op(''LOAD_CLOSURE'', 135)' + #10 + 'hasfree.append(135)' + #10 +
+  'def_op(''LOAD_DEREF'', 136)' + #10 + 'hasfree.append(136)' + #10 +
+  'def_op(''STORE_DEREF'', 137)' + #10 + 'hasfree.append(137)' + #10 +
+  'def_op(''DELETE_DEREF'', 138)' + #10 + 'hasfree.append(138)' + #10 + #10 +
+  'def_op(''CALL_FUNCTION_KW'', 141)  #' + ' #args + #kwargs' + #10 +
+  'def_op(''CALL_FUNCTION_EX'', 142)  #' + ' Flags' + #10 + #10 +
+  'jrel_op(''SETUP_WITH'', 143)' + #10 + #10 +
   'def_op(''LIST_APPEND'', 145)' + #10 + 'def_op(''SET_ADD'', 146)' + #10 +
-  'def_op(''MAP_ADD'', 147)' + #10 + 'def_op(''LOAD_CLASSDEREF'', 148)' +
+  'def_op(''MAP_ADD'', 147)' + #10 + #10 +
+  'def_op(''LOAD_CLASSDEREF'', 148)' + #10 + 'hasfree.append(148)' + #10 +
+  #10 + 'def_op(''EXTENDED_ARG'', 144)' + #10 + 'EXTENDED_ARG = 144' + #10 +
   #10 + 'def_op(''BUILD_LIST_UNPACK'', 149)' + #10 +
   'def_op(''BUILD_MAP_UNPACK'', 150)' + #10 +
   'def_op(''BUILD_MAP_UNPACK_WITH_CALL' + ''', 151)' + #10 +
   'def_op(''BUILD_TUPLE_UNPACK'', 152)' + #10 +
-  'def_op(''BUILD_SET_UNPACK'', 153)' + #10 +
-  'jrel_op(''SETUP_ASYNC_WITH'', 154)' + #10 +
+  'def_op(''BUILD_SET_UNPACK'', 153)' + #10 + #10 +
+  'jrel_op(''SETUP_ASYNC_WITH'', 154)' + #10 + #10 +
   'def_op(''FORMAT_VALUE'', 155)' + #10 +
   'def_op(''BUILD_CONST_KEY_MAP'', 156)' + #10 +
   'def_op(''BUILD_STRING'', 157)' + #10 +
-  'def_op(''BUILD_TUPLE_UNPACK_WITH_CA' + 'LL'', 158)' + #10 +
+  'def_op(''BUILD_TUPLE_UNPACK_WITH_CA' + 'LL'', 158)' + #10 + #10 +
   'name_op(''LOAD_METHOD'', 160)' + #10 + 'def_op(''CALL_METHOD'', 161)' +
   #10 + 'jrel_op(''CALL_FINALLY'', 162)' + #10 +
   'def_op(''POP_FINALLY'', 163)' + #10 + #10 +
-  'hasconst.append(opmap[''LOAD_CONST''' + '])' + #10 +
-  'haslocal.extend([opmap[''LOAD_FAST''' +
-  '], opmap[''STORE_FAST''], opmap[''DEL' + 'ETE_FAST'']])' + #10 +
-  'hascompare.append(opmap[''COMPARE_O' + 'P''])' + #10 +
-  'hasfree.extend([opmap[''LOAD_CLOSUR' +
-  'E''], opmap[''LOAD_DEREF''], opmap[''S' +
-  'TORE_DEREF''], opmap[''DELETE_DEREF''' +
-  '], opmap[''LOAD_CLASSDEREF'']])' + #10 +
-  'hasnargs.extend([opmap[''CALL_FUNCT' +
-  'ION''], opmap[''CALL_FUNCTION_KW''], ' +
-  'opmap[''CALL_FUNCTION_EX''], opmap[''' + 'CALL_METHOD'']])' + #10 + #10 +
-  'EXTENDED_ARG = opmap[''EXTENDED_ARG' + ''']' + #10 + 'HAVE_ARGUMENT = 90' +
-  #10 + #10 + 'def stack_effect(opcode, oparg=Non' + 'e, *, jump=None):' +
-  #10 + '    if opcode < 0 or opcode > 255 ' +
-  'or opname[opcode][:1] == ''<'':' + #10 +
-  '        raise ValueError(''invalid ' + 'opcode or oparg'')' + #10 +
-  '    has_arg = opcode >= HAVE_ARGUM' + 'ENT' + #10 +
-  '    if has_arg and oparg is None:' + #10 +
-  '        raise ValueError(''stack_ef' +
-  'fect: opcode requires oparg but op' + 'arg was not specified'')' + #10 +
-  '    if not has_arg and oparg is no' + 't None:' + #10 +
-  '        raise ValueError(''stack_ef' +
-  'fect: opcode does not permit oparg' + ' but oparg was specified'')' + #10 +
-  '    return _EFFECTS.get(opname[opc' +
-  'ode], 0) if not callable(_EFFECTS.' +
-  'get(opname[opcode])) else _EFFECTS' + '[opname[opcode]](oparg)' + #10 +
-  #10 + '_EFFECTS = {' + #10 + ' ''POP_TOP'': -1, ''ROT_TWO'': 0, ''ROT' +
-  '_THREE'': 0, ''ROT_FOUR'': 0, ''DUP_TO' +
-  'P'': 1, ''DUP_TOP_TWO'': 2, ''NOP'': 0,' + #10 +
-  ' ''UNARY_POSITIVE'': 0, ''UNARY_NEGAT' +
-  'IVE'': 0, ''UNARY_NOT'': 0, ''UNARY_IN' + 'VERT'': 0,' + #10 +
-  ' ''BINARY_MATRIX_MULTIPLY'': -1, ''IN' +
-  'PLACE_MATRIX_MULTIPLY'': -1, ''BINAR' +
-  'Y_POWER'': -1, ''BINARY_MULTIPLY'': -' + '1,' + #10 +
-  ' ''BINARY_MODULO'': -1, ''BINARY_ADD''' +
-  ': -1, ''BINARY_SUBTRACT'': -1, ''BINA' + 'RY_SUBSCR'': -1,' + #10 +
-  ' ''BINARY_FLOOR_DIVIDE'': -1, ''BINAR' +
-  'Y_TRUE_DIVIDE'': -1, ''INPLACE_FLOOR' +
-  '_DIVIDE'': -1, ''INPLACE_TRUE_DIVIDE' + ''': -1,' + #10 +
-  ' ''INPLACE_ADD'': -1, ''INPLACE_SUBTR' +
-  'ACT'': -1, ''INPLACE_MULTIPLY'': -1, ' + '''INPLACE_MODULO'': -1,' + #10 +
-  ' ''STORE_SUBSCR'': -3, ''DELETE_SUBSC' +
-  'R'': -2, ''BINARY_LSHIFT'': -1, ''BINA' +
-  'RY_RSHIFT'': -1, ''BINARY_AND'': -1,' + #10 +
-  ' ''BINARY_XOR'': -1, ''BINARY_OR'': -1' +
-  ', ''INPLACE_POWER'': -1, ''GET_ITER'':' + ' 0, ''PRINT_EXPR'': -1,' + #10 +
-  ' ''LOAD_BUILD_CLASS'': 1, ''INPLACE_L' +
-  'SHIFT'': -1, ''INPLACE_RSHIFT'': -1, ' + '''INPLACE_AND'': -1,' + #10 +
-  ' ''INPLACE_XOR'': -1, ''INPLACE_OR'': ' +
-  '-1, ''RETURN_VALUE'': -1, ''IMPORT_ST' + 'AR'': -1,' + #10 +
-  ' ''SETUP_ANNOTATIONS'': 0, ''YIELD_VA' +
-  'LUE'': 0, ''POP_BLOCK'': 0, ''POP_EXCE' + 'PT'': -3,' + #10 +
-  ' ''STORE_NAME'': -1, ''DELETE_NAME'': ' +
-  '0, ''UNPACK_SEQUENCE'': lambda a: a ' + '- 1,' + #10 +
-  ' ''UNPACK_EX'': lambda a: (a & 0xFF)' +
-  ' + (a >> 8), ''FOR_ITER'': 1, ''STORE' +
-  '_ATTR'': -2, ''DELETE_ATTR'': -1,' + #10 +
-  ' ''STORE_GLOBAL'': -1, ''DELETE_GLOBA' +
-  'L'': 0, ''LOAD_CONST'': 1, ''LOAD_NAME' + ''': 1,' + #10 +
-  ' ''BUILD_TUPLE'': lambda a: 1 - a, ''' +
-  'BUILD_LIST'': lambda a: 1 - a, ''BUI' + 'LD_SET'': lambda a: 1 - a,' +
-  #10 + ' ''BUILD_STRING'': lambda a: 1 - a, ' +
-  '''BUILD_MAP'': lambda a: 1 - 2 * a, ' +
-  '''BUILD_CONST_KEY_MAP'': lambda a: -' + 'a,' + #10 +
-  ' ''LOAD_ATTR'': 0, ''COMPARE_OP'': -1,' +
-  ' ''IMPORT_NAME'': -1, ''IMPORT_FROM'':' + ' 1,' + #10 +
-  ' ''JUMP_FORWARD'': 0, ''JUMP_ABSOLUTE' +
-  ''': 0, ''POP_JUMP_IF_FALSE'': -1, ''PO' + 'P_JUMP_IF_TRUE'': -1,' + #10 +
-  ' ''JUMP_IF_TRUE_OR_POP'': 0, ''JUMP_I' +
-  'F_FALSE_OR_POP'': 0, ''LOAD_GLOBAL'':' + ' 1, ''SETUP_FINALLY'': 0,' +
-  #10 + ' ''LOAD_FAST'': 1, ''STORE_FAST'': -1,' +
-  ' ''DELETE_FAST'': 0, ''RAISE_VARARGS''' + ': lambda a: -a,' + #10 +
-  ' ''CALL_FUNCTION'': lambda a: -a, ''C' +
-  'ALL_FUNCTION_KW'': lambda a: -a - 1' + ',' + #10 +
-  ' ''CALL_FUNCTION_EX'': lambda a: -1 ' +
-  '- ((a & 1) == 1), ''MAKE_FUNCTION'':' +
-  ' lambda a: -1 - ((a & 1) != 0) - (' +
-  '(a & 2) != 0) - ((a & 4) != 0) - (' + '(a & 8) != 0),' + #10 +
-  ' ''BUILD_SLICE'': lambda a: -2 if a ' +
-  '== 3 else -1, ''LOAD_CLOSURE'': 1, ''' +
-  'LOAD_DEREF'': 1, ''STORE_DEREF'': -1,' + #10 +
-  ' ''DELETE_DEREF'': 0, ''LOAD_CLASSDER' +
-  'EF'': 1, ''SETUP_WITH'': 6, ''EXTENDED' + '_ARG'': 0,' + #10 +
-  ' ''LIST_APPEND'': -1, ''SET_ADD'': -1,' +
-  ' ''MAP_ADD'': -2, ''FORMAT_VALUE'': la' +
-  'mbda a: -1 if (a & 4) == 4 else 0,' + #10 +
-  ' ''LOAD_METHOD'': 1, ''CALL_METHOD'': ' +
-  'lambda a: -a - 1, ''BEGIN_FINALLY'':' + ' 6, ''END_FINALLY'': -6,' + #10 +
-  ' ''CALL_FINALLY'': 1, ''POP_FINALLY'':' +
-  ' lambda a: -6 if a else -5, ''WITH_' + 'CLEANUP_START'': 1,' + #10 +
-  ' ''WITH_CLEANUP_FINISH'': -2, ''YIELD' +
-  '_FROM'': -1, ''GET_YIELD_FROM_ITER'':' + ' 0,' + #10 +
-  ' ''BUILD_LIST_UNPACK'': lambda a: 1 ' +
-  '- a, ''BUILD_TUPLE_UNPACK'': lambda ' +
-  'a: 1 - a, ''BUILD_SET_UNPACK'': lamb' + 'da a: 1 - a,' + #10 +
-  ' ''BUILD_MAP_UNPACK'': lambda a: 1 -' +
-  ' a, ''BUILD_MAP_UNPACK_WITH_CALL'': ' + 'lambda a: 1 - a,' + #10 +
-  ' ''BUILD_TUPLE_UNPACK_WITH_CALL'': l' + 'ambda a: 1 - a,' + #10 + '}' +
-  #10 + #10;
+  'del def_op, name_op, jrel_op, jabs' + '_op' + #10 + #10;
 
 Function Src_opcode: AnsiString;
 Begin

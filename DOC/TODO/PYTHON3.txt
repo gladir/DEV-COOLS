@@ -29,6 +29,13 @@
             co_lnotab, blocs SETUP_*), objets code compatibles,
             module marshal et fichiers .pyc (magic 3413) en lecture
             et en ecriture, py_compile / compileall.
+            Le generateur est un portage de compile.c, ast_opt.c et
+            peephole.c de CPython 3.8.20 : co_code, co_consts,
+            co_names, co_varnames, co_lnotab, co_stacksize et
+            co_flags sont identiques octet pour octet a ceux de
+            python3.8 sur toute la bibliotheque standard (20 034
+            objets code verifies) ; les modules dis et opcode sont
+            ceux de CPython (module natif _opcode).
 
   TODO 04 - MACHINE VIRTUELLE [IMPLEMENTE]
             Boucle d'interpretation, generateurs, coroutines,
