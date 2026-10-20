@@ -50,7 +50,7 @@ Program PYTHON3;
 {$WARN 3123 OFF}
 
 Uses
- SysUtils, Classes, DateUtils {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF};
+ Classes, Dos {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF};
 
 { ------------------------------------------------------------
   Fonctions mathematiques internes (remplacent l'unite Math)
@@ -324,6 +324,438 @@ Begin
    End;
   End;
 End;
+
+{ ------------------------------------------------------------
+  Equivalents internes de SysUtils (l'unite n'est pas utilisee)
+  ------------------------------------------------------------ }
+Type
+ Exception = Class(TObject)
+  Message: AnsiString;
+  Constructor Create(Const msg: AnsiString);
+ End;
+ EConvertError = Class(Exception);
+ TReplaceFlag = (rfReplaceAll, rfIgnoreCase);
+ TReplaceFlags = Set Of TReplaceFlag;
+
+Constructor Exception.Create(Const msg: AnsiString);
+Begin
+ Message := msg;
+End;
+
+Function IntToStr(v: Int64): AnsiString; Overload;
+Begin
+ Str(v, Result);
+End;
+
+Function IntToStr(v: QWord): AnsiString; Overload;
+Begin
+ Str(v, Result);
+End;
+
+Function IntToHex(v: Int64; digits: Integer): AnsiString;
+Const
+ HexChars: Array[0..15] Of Char = '0123456789ABCDEF';
+Var
+ q: QWord;
+ n: Integer;
+ t: AnsiString;
+Begin
+ q := QWord(v);
+ t := '';
+ Repeat
+  t := HexChars[q And 15] + t;
+  q := q Shr 4;
+ Until q = 0;
+ n := digits - Length(t);
+ If n > 0 Then t := StringOfChar('0', n) + t;
+ Result := t;
+End;
+
+Function StrToInt64(Const s: AnsiString): Int64;
+Var
+ code: Integer;
+Begin
+ Val(s, Result, code);
+ If code <> 0 Then
+  Raise EConvertError.Create('"' + s + '" is an invalid integer');
+End;
+
+Function StrToInt(Const s: AnsiString): LongInt;
+Var
+ code: Integer;
+Begin
+ Val(s, Result, code);
+ If code <> 0 Then
+  Raise EConvertError.Create('"' + s + '" is an invalid integer');
+End;
+
+Function StrToIntDef(Const s: AnsiString; deflt: LongInt): LongInt;
+Var
+ code: Integer;
+ r: LongInt;
+Begin
+ Val(s, r, code);
+ If code <> 0 Then Result := deflt Else Result := r;
+End;
+
+Function StrToFloat(Const s: AnsiString): Double;
+Var
+ code: Integer;
+ t: AnsiString;
+Begin
+ t := s;
+ If (t = 'inf') Or (t = '+inf') Then Result := Infinity
+ Else If t = '-inf' Then Result := -Infinity
+ Else If (t = 'nan') Or (t = '+nan') Or (t = '-nan') Then
+  Result := BitsDbl($7FF8000000000000)
+ Else Begin
+  Val(t, Result, code);
+  If code <> 0 Then
+   Raise EConvertError.Create('"' + s + '" is an invalid float');
+ End;
+End;
+
+Function Trim(Const s: AnsiString): AnsiString;
+Var
+ i, j: Integer;
+Begin
+ i := 1;
+ j := Length(s);
+ While (i <= j) And (s[i] <= ' ') Do Inc(i);
+ While (j >= i) And (s[j] <= ' ') Do Dec(j);
+ Result := Copy(s, i, j - i + 1);
+End;
+
+Function UpperCase(Const s: AnsiString): AnsiString; Overload;
+Var
+ i: Integer;
+Begin
+ Result := s;
+ For i := 1 To Length(Result) Do
+  If Result[i] In ['a'..'z'] Then Dec(Byte(Result[i]), 32);
+End;
+
+Function LowerCase(Const s: AnsiString): AnsiString; Overload;
+Var
+ i: Integer;
+Begin
+ Result := s;
+ For i := 1 To Length(Result) Do
+  If Result[i] In ['A'..'Z'] Then Inc(Byte(Result[i]), 32);
+End;
+
+Function LowerCase(c: Char): Char; Overload;
+Begin
+ If c In ['A'..'Z'] Then Result := Chr(Ord(c) + 32) Else Result := c;
+End;
+
+Function UpperCase(c: Char): Char; Overload;
+Begin
+ If c In ['a'..'z'] Then Result := Chr(Ord(c) - 32) Else Result := c;
+End;
+
+{ dernier rang d'un caractere de delims dans s (0 si absent) }
+Function LastDelimiter(Const delims, s: AnsiString): Integer;
+Var
+ i: Integer;
+Begin
+ Result := 0;
+ For i := Length(s) DownTo 1 Do
+  If Pos(s[i], delims) > 0 Then Begin
+   Result := i;
+   Exit;
+  End;
+End;
+
+Function StringReplace(Const s, oldp, newp: AnsiString;
+ flags: TReplaceFlags): AnsiString;
+Var
+ src, pat: AnsiString;
+ i, j, n, m: Integer;
+Begin
+ Result := '';
+ n := Length(s);
+ m := Length(oldp);
+ If m = 0 Then Begin
+  Result := s;
+  Exit;
+ End;
+ If rfIgnoreCase In flags Then Begin
+  src := UpperCase(s);
+  pat := UpperCase(oldp);
+ End
+ Else Begin
+  src := s;
+  pat := oldp;
+ End;
+ i := 1;
+ While i <= n Do Begin
+  j := PosEx(pat, src, i);
+  If j = 0 Then Break;
+  Result := Result + Copy(s, i, j - i) + newp;
+  i := j + m;
+  If Not (rfReplaceAll In flags) Then Break;
+ End;
+ Result := Result + Copy(s, i, n - i + 1);
+End;
+
+{ Format restreint : %d %s %x avec largeur et precision }
+Function Format(Const fmt: AnsiString; Const args: Array Of Const): AnsiString;
+Var
+ i, ai, width, prec: Integer;
+ left: Boolean;
+ t: AnsiString;
+ v: Int64;
+Begin
+ Result := '';
+ ai := 0;
+ i := 1;
+ While i <= Length(fmt) Do Begin
+  If fmt[i] <> '%' Then Begin
+   Result := Result + fmt[i];
+   Inc(i);
+   Continue;
+  End;
+  Inc(i);
+  left := False;
+  width := 0;
+  prec := -1;
+  If (i <= Length(fmt)) And (fmt[i] = '-') Then Begin
+   left := True;
+   Inc(i);
+  End;
+  While (i <= Length(fmt)) And (fmt[i] In ['0'..'9']) Do Begin
+   width := width * 10 + Ord(fmt[i]) - 48;
+   Inc(i);
+  End;
+  If (i <= Length(fmt)) And (fmt[i] = '.') Then Begin
+   Inc(i);
+   prec := 0;
+   While (i <= Length(fmt)) And (fmt[i] In ['0'..'9']) Do Begin
+    prec := prec * 10 + Ord(fmt[i]) - 48;
+    Inc(i);
+   End;
+  End;
+  If i > Length(fmt) Then Break;
+  If fmt[i] = '%' Then t := '%'
+  Else If ai <= High(args) Then Begin
+   Case args[ai].VType Of
+    vtInteger: v := args[ai].VInteger;
+    vtInt64: v := args[ai].VInt64^;
+    vtQWord: v := Int64(args[ai].VQWord^);
+    vtBoolean: v := Ord(args[ai].VBoolean);
+   Else v := 0;
+   End;
+   If fmt[i] = 's' Then Begin
+    If args[ai].VType = vtAnsiString Then t := AnsiString(args[ai].VAnsiString)
+    Else If args[ai].VType = vtChar Then t := args[ai].VChar
+    Else t := '';
+    If (prec >= 0) And (Length(t) > prec) Then t := Copy(t, 1, prec);
+   End
+   Else Begin
+    If fmt[i] In ['x', 'X'] Then Begin
+     t := IntToHex(v, 0);
+     If fmt[i] = 'x' Then t := LowerCase(t);
+    End
+    Else t := IntToStr(v);
+    If prec >= 0 Then Begin
+        While Length(t) < prec Do t := '0' + t;
+    End;
+   End;
+   Inc(ai);
+  End
+  Else t := '';
+  While Length(t) < width Do
+   If left Then t := t + ' ' Else t := ' ' + t;
+  Result := Result + t;
+  Inc(i);
+ End;
+End;
+
+{ ---- fichiers et repertoires ---- }
+Function FileExists(Const name: AnsiString): Boolean;
+Var
+ st: Stat;
+Begin
+ Result := (fpStat(name, st) = 0) And not fpS_ISDIR(st.st_mode);
+End;
+
+Function DirectoryExists(Const name: AnsiString): Boolean;
+Var
+ st: Stat;
+Begin
+ Result := (fpStat(name, st) = 0) And fpS_ISDIR(st.st_mode);
+End;
+
+Function ExtractFileName(Const name: AnsiString): AnsiString;
+Var
+ i: Integer;
+Begin
+ i := LastDelimiter('/', name);
+ Result := Copy(name, i + 1, Length(name));
+End;
+
+Function ExtractFileDir(Const name: AnsiString): AnsiString;
+Var
+ i: Integer;
+Begin
+ i := LastDelimiter('/', name);
+ Result := Copy(name, 1, i);
+ If (i > 1) And (Result[i] = '/') And (Result[i - 1] <> '/') Then
+  SetLength(Result, i - 1);
+End;
+
+Function GetCurrentDir: AnsiString;
+Begin
+ GetDir(0, Result);
+End;
+
+Function ExpandFileName(Const name: AnsiString): AnsiString;
+Var
+ full, seg, outp: AnsiString;
+ parts: Array Of AnsiString;
+ i, j, n: Integer;
+Begin
+ If (name <> '') And (name[1] = '/') Then full := name
+ Else full := GetCurrentDir + '/' + name;
+ SetLength(parts, 0);
+ n := 0;
+ i := 1;
+ While i <= Length(full) + 1 Do Begin
+  j := i;
+  While (j <= Length(full)) And (full[j] <> '/') Do Inc(j);
+  seg := Copy(full, i, j - i);
+  If (seg = '') Or (seg = '.') Then
+  Else If seg = '..' Then Begin
+   If n > 0 Then Dec(n);
+  End
+  Else Begin
+   If n >= Length(parts) Then SetLength(parts, n + 16);
+   parts[n] := seg;
+   Inc(n);
+  End;
+  i := j + 1;
+ End;
+ outp := '';
+ For i := 0 To n - 1 Do outp := outp + '/' + parts[i];
+ If outp = '' Then outp := '/';
+ Result := outp;
+End;
+
+Function GetEnvironmentVariableCount: Integer;
+Begin
+ Result := EnvCount;
+End;
+
+Function GetEnvironmentString(i: Integer): AnsiString;
+Begin
+ Result := EnvStr(i);
+End;
+
+Function GetEnvironmentVariable(Const nm: AnsiString): AnsiString;
+Var
+ i: Integer;
+ e: AnsiString;
+Begin
+ Result := '';
+ For i := 1 To EnvCount Do Begin
+  e := EnvStr(i);
+  If (Length(e) > Length(nm)) And (e[Length(nm) + 1] = '=') And
+   (Copy(e, 1, Length(nm)) = nm) Then Begin
+   Result := Copy(e, Length(nm) + 2, Length(e));
+   Exit;
+  End;
+ End;
+End;
+
+Const
+ fmOpenRead = 0;
+ fmShareDenyNone = $40;
+
+Function FileOpen(Const name: AnsiString; mode: LongInt): THandle;
+Begin
+ Result := THandle(fpOpen(name, O_RDONLY));
+End;
+
+Function FileCreate(Const name: AnsiString): THandle;
+Begin
+ Result := THandle(fpOpen(name, O_RDWR Or O_CREAT Or O_TRUNC, &666));
+End;
+
+Function FileRead(h: THandle; Var buf; n: LongInt): LongInt;
+Begin
+ Result := fpRead(h, @buf, n);
+End;
+
+Function FileWrite(h: THandle; Const buf; n: LongInt): LongInt;
+Begin
+ Result := fpWrite(h, @buf, n);
+End;
+
+Procedure FileClose(h: THandle);
+Begin
+ fpClose(h);
+End;
+
+Function GetProcessID: LongInt;
+Begin
+ Result := fpGetPid;
+End;
+
+Procedure Sleep(ms: LongInt);
+Var
+ req, rem: TTimeSpec;
+Begin
+ req.tv_sec := ms Div 1000;
+ req.tv_nsec := (ms Mod 1000) * 1000000;
+ While (fpNanoSleep(@req, @rem) <> 0) And (fpGetErrno = ESysEINTR) Do
+  req := rem;
+End;
+
+Function DaysFromCivil(y, mo, d: Int64): Int64;
+Var
+ era, yoe, doy, doe, mp: Int64;
+Begin
+ If mo <= 2 Then Dec(y);
+ If y >= 0 Then era := y Div 400 Else era := (y - 399) Div 400;
+ yoe := y - era * 400;
+ If mo > 2 Then mp := mo - 3 Else mp := mo + 9;
+ doy := (153 * mp + 2) Div 5 + d - 1;
+ doe := yoe * 365 + yoe Div 4 - yoe Div 100 + doy;
+ Result := era * 146097 + doe - 719468;
+End;
+
+{ heure locale (lue via Dos) en secondes depuis 1970, sans fuseau }
+Function DosLocalSeconds(Out hs: Word): Int64;
+Var
+ y, mo, d, dow, h, mi, s: Word;
+Begin
+ Dos.GetDate(y, mo, d, dow);
+ Dos.GetTime(h, mi, s, hs);
+ Result := DaysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s;
+End;
+
+{$IFDEF UNIX}
+{ decalage du fuseau local par rapport a UTC, en secondes }
+Function LocalOffsetSeconds: LongInt;
+Var
+ tv: TTimeVal;
+ hs: Word;
+ diff: Int64;
+Begin
+ fpGetTimeOfDay(@tv, Nil);
+ diff := DosLocalSeconds(hs) - tv.tv_sec;
+ { arrondi a la minute : les deux lectures ne sont pas simultanees }
+ If diff >= 0 Then Result := ((diff + 30) Div 60) * 60
+ Else Result := -(((-diff + 30) Div 60) * 60);
+End;
+
+{ minutes a l'ouest de UTC (comme SysUtils.GetLocalTimeOffset) }
+Function GetLocalTimeOffset: LongInt;
+Begin
+ Result := -(LocalOffsetSeconds Div 60);
+End;
+{$ENDIF}
 
 Const
  PY_MAJOR = 3;
@@ -23026,19 +23458,23 @@ Begin
      On E: EPyError Do Begin
       If Not UnwindException(entry, E.exc) Then Raise;
      End;
-     On E: EAccessViolation Do Begin
-      If Not UnwindException(entry, MakeExc(exSystemError,
-       'internal error (access violation)')) Then
-       RaiseExc(exSystemError, 'internal error (access violation)');
-     End;
-     On E: EOutOfMemory Do Begin
-      If Not UnwindException(entry, MakeExc(exMemoryError, '')) Then
-       RaiseExc(exMemoryError, '');
-     End;
-     On E: EStackOverflow Do Begin
-      If Not UnwindException(entry, MakeExc(exRecursionError,
-       'maximum recursion depth exceeded')) Then
-       RaiseExc(exRecursionError, 'maximum recursion depth exceeded');
+     On E: TObject Do Begin
+      { classes d'erreurs d'execution (SysUtils) reconnues par leur nom }
+      If E.ClassName = 'EAccessViolation' Then Begin
+       If Not UnwindException(entry, MakeExc(exSystemError,
+        'internal error (access violation)')) Then
+        RaiseExc(exSystemError, 'internal error (access violation)');
+      End
+      Else If E.ClassName = 'EOutOfMemory' Then Begin
+       If Not UnwindException(entry, MakeExc(exMemoryError, '')) Then
+        RaiseExc(exMemoryError, '');
+      End
+      Else If E.ClassName = 'EStackOverflow' Then Begin
+       If Not UnwindException(entry, MakeExc(exRecursionError,
+        'maximum recursion depth exceeded')) Then
+        RaiseExc(exRecursionError, 'maximum recursion depth exceeded');
+      End
+      Else Raise;
      End;
     End;
    End;
@@ -33705,8 +34141,10 @@ Begin
 End;
 {$ELSE}
 Function ClockNs(clk: LongInt): Int64;
+Var
+ hs: Word;
 Begin
- Result := Round((Now - EncodeDate(1970, 1, 1)) * 86400.0 * 1.0e9);
+ Result := DosLocalSeconds(hs) * 1000000000 + hs * 10000000;
 End;
 {$ENDIF}
 
@@ -33836,19 +34274,6 @@ Begin
  If (n > 0) And (a[0].k <> vkNone) Then t := NumToDouble(a[0])
  Else t := NowSeconds;
  Result := TimeStructArr(t, True);
-End;
-
-Function DaysFromCivil(y, m, d: Int64): Int64;
-Var
- era, yoe, doy, doe: Int64;
-Begin
- If m <= 2 Then y := y - 1;
- If y >= 0 Then era := y Div 400 Else era := (y - 399) Div 400;
- yoe := y - era * 400;
- If m > 2 Then doy := (153 * (m - 3) + 2) Div 5 + d - 1
- Else doy := (153 * (m + 9) + 2) Div 5 + d - 1;
- doe := yoe * 365 + yoe Div 4 - yoe Div 100 + doy;
- Result := era * 146097 + doe - 719468;
 End;
 
 Function TimeMktime(a: PVal; n: Integer; kw: TPyDict): TVal;
