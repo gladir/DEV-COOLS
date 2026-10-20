@@ -34,14 +34,14 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 21 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 22 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
          affectations, tableaux, procedures, operateurs, unions,
-         transput, encodeur x86-32, ecrivains PE et COFF) ; TODO 22
-         a 25 a faire.
+         transput, encodeur x86-32, ecrivains PE et COFF, runtime) ;
+         TODO 23 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -708,7 +708,7 @@
               coercition impossible a droite, -:= sur un STRING avec un
               CHAR ; refs.a68 est analyse entierement ; les boucles du
               TODO 12 s'executent sans remplacer leurs corps
-            Reste : les routines ALLOC, NILREF, DIVZERO, STRCAT du TODO 22
+            Reste : fait au TODO 22
 
   TODO 15 - TABLEAUX, TRANCHES ET CHAINES [IMPLEMENTE]
             Declaration [l:u] mode, [1:5] INT a := (10, 20, 30, 40, 50) ;
@@ -752,7 +752,7 @@
               (pas de FREE) ; tranches et affichages a plusieurs
               dimensions pas encore supportes ; les temporaires sont
               statiques (revu au TODO 16)
-            Reste : CHKIDX, BOUNDS, ALLOC du TODO 22 ; REP MOVSB, MOV
+            Reste : (CHKIDX, BOUNDS, ALLOC : TODO 22) ; REP MOVSB, MOV
               d'octet, ADD memoire,registre au codeur du TODO 20
 
   TODO 16 - PROCEDURES (PROC) [IMPLEMENTE]
@@ -966,7 +966,7 @@
             Limites : print n'affiche ni tableaux ni structures ni unions ;
               pas de formats (printf style), pas de fichiers ; read((x,
               newline)) ignore newline ; PAR n'a pas de parallelisme ;
-              WRITEREAL du runtime d'essai est limite a 4 millions
+              WRITEREAL est limite a 9.2E12 (voir TODO 22)
 
   TODO 20 - ENCODEUR BINAIRE x86-32 [IMPLEMENTE]
             Reprendre et adapter l'encodeur d'AL60CW32 : chaque
@@ -1014,9 +1014,8 @@
               d'essai des TODOs 8 a 19) donnent 0 ecart ;
               TESTS/AL68CW32/chkall.sh refait la verification des 27
               exemples
-            Reste : emission du runtime (TODO 22) et ecrivains PE et COFF
-              (TODO 21) ; les instructions du runtime d'essai ne sont pas
-              encore passees par chkenc
+            Reste : faits aux TODOs 21 et 22 (les instructions du runtime
+              sont passees par chkenc avec les exemples)
 
   TODO 21 - ECRIVAINS PE (.EXE) ET COFF (.OBJ) [IMPLEMENTE]
             PE : en-tete MZ + souche DOS, signature PE, COFF File Header
@@ -1068,11 +1067,9 @@
               llvm-dlltool) ; avec un resultat faux le programme boucle
               (arrete par timeout) ; les 27 exemples donnent un .OBJ
               valide (chkall.sh, qui utilise maintenant -obj)
-            Reste : les routines _A68RT_ (TODO 22) ; tant qu'elles
-              manquent, seuls les programmes sans transput, tableaux ni
-              tas donnent un .EXE
+            Reste : les routines _A68RT_ : faites au TODO 22
 
-  TODO 22 - RUNTIME ALGOL 68 POUR WIN32 [A FAIRE]
+  TODO 22 - RUNTIME ALGOL 68 POUR WIN32 [IMPLEMENTE]
             Runtime ecrit en assembleur 80386, integre au compilateur
               sous forme de texte et assemble par un mini-assembleur,
               sans bibliotheque C ; seules les fonctions de kernel32.dll
@@ -1092,6 +1089,56 @@
               fin de ligne CR LF
             Verification : exemples executes (chargeur PE de test),
               programmes fautifs a l'execution
+            Realise : section 14 : RtText, 30 routines en assembleur
+              (lignes de 70 caracteres au plus) ; mini-assembleur
+              (RtAssembleLine : mnemoniques de OpName, operandes
+              registre, immediat, OFFSET, ST(i), [base + index * echelle
+              + depl], BYTE / WORD / DWORD / QWORD PTR, REP + instruction)
+              qui produit des instructions internes ; RtLink, appele par
+              PhaseCodegen apres le programme : marque les routines
+              appelees (CALL ou JMP vers _A68RT_...) puis, de proche en
+              proche, celles qu'elles appellent, et n'ajoute que celles-la
+              dans DeferTab avec leurs cellules de donnees _A68D_...
+              (RtData, creees a la demande) ; le listing .ASM est donc
+              autonome et l'encodeur, les ecrivains PE et COFF traitent le
+              runtime comme le reste ; seules GetStdHandle, WriteFile,
+              ReadFile, ExitProcess, GetProcessHeap et HeapAlloc sont
+              importees ; routines : PUT, FAIL, DIVZERO, NILREF, BOUNDS,
+              CHKIDX, ALLOC (HeapAlloc avec HEAP_ZERO_MEMORY), NEWLINE,
+              SPACE, WRITECHAR, WRITESTR, WRITEBOOL, DIGITS, WRITEINT,
+              WRITEREAL, WHOLE, GETC, SKIPWS, READCHAR, READINT, READREAL,
+              READSTR, STRCAT, STRCMP, POW, EXP2, RPOW, FLOOR, RTOI, RSIGN
+              (le contrat registre par registre est dans le commentaire de
+              la section) ; les erreurs d'execution (indice hors bornes,
+              tableaux de dimensions differentes, reference NIL, division
+              par zero, memoire insuffisante) ecrivent un message sur
+              l'erreur standard et terminent par le code de sortie 1 ;
+              pas de FREE : le tas n'est jamais libere
+            Formats : entier en decimal sans remplissage, signe - ; reel en
+              notation fixe, 6 decimales au plus, zeros finaux supprimes
+              mais une decimale au moins (4.5, 100.0, 0.000001), valeur
+              absolue inferieure a 9.2E12 ; BOOL TRUE / FALSE ; CHAR et
+              STRING tels quels ; fin de ligne CR LF ; read ignore les
+              blancs avant un nombre, lit un caractere pour CHAR et la
+              ligne (256 caracteres au plus) pour STRING
+            Corrige au passage : une clause fermee dont la valeur est une
+              denotation ( (-1) ) ne produisait aucun code quand elle servait
+              de valeur
+            Verifie : les 26 exemples terminant (test_closed boucle par
+              construction avec GOTO done) donnent des .EXE qui s'executent
+              sous le chargeur PE de test avec les sorties attendues (les
+              textes de procs.a68, math.a68, ops.a68, union.a68,
+              control.a68... sont ceux que les exemples decrivent) ; le
+              listing .ASM autonome assemble avec ML donne la meme sortie
+              que l'.EXE direct pour les 26 ; TESTS/AL68CW32/chkrt.sh :
+              work/rt1.a68 (reels, **, ENTIER, ROUND, SIGN, comparaisons
+              de chaines, whole avec largeur), work/pr2.a68 (lecture de
+              -42, 3.25, X et d'une ligne) et les quatre erreurs
+              d'execution (message, pas de sortie apres l'erreur, code 1) ;
+              chkall.sh (encodage) inclut maintenant le runtime
+            Reste : les messages d'erreur du compilateur (TODO 23), le
+              programme principal et les options (TODO 24), la validation
+              complete (TODO 25)
 
   TODO 23 - GESTION DES ERREURS ET AVERTISSEMENTS [A FAIRE]
             Erreurs lexicales : caractere invalide, chaine ou
