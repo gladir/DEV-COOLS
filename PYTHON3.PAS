@@ -120,8 +120,12 @@ Begin
 End;
 
 Function Log10(x: Double): Double;
+Var
+ xe, l10: Extended;
 Begin
- Result := Ln(x) * (1 / Ln(10));
+ xe := x;
+ l10 := 10;
+ Result := Ln(xe) / Ln(l10);
 End;
 
 Function IntPower(base: Extended; ex: Integer): Extended;
@@ -203,6 +207,12 @@ Begin
  mant := BitsDbl(q);
 End;
 
+Function CopySignD(a, b: Double): Double;
+Begin
+ Result := BitsDbl((DblBits(a) and $7FFFFFFFFFFFFFFF) or
+  (DblBits(b) and $8000000000000000));
+End;
+
 { reste exact de x / y (signe de x), comme fmod de la libm }
 Function FMod(x, y: Double): Double;
 Var
@@ -271,6 +281,29 @@ Begin
   mx := (mx - (QWord(1) shl 52)) or (QWord(ex) shl 52)
  Else mx := mx shr (1 - ex);
  Result := BitsDbl(mx or sx);
+End;
+
+{ divmod flottant de CPython (float_divmod) }
+Procedure FloatDivMod(vx, wx: Double; Out fdiv, fmod_: Double);
+Var
+ m, d, fl: Double;
+Begin
+ m := FMod(vx, wx);
+ d := (vx - m) / wx;
+ If m <> 0 Then Begin
+  If (wx < 0) <> (m < 0) Then Begin
+   m := m + wx;
+   d := d - 1;
+  End;
+ End
+ Else m := CopySignD(0, wx);
+ If d <> 0 Then Begin
+  fl := Floor(d);
+  If d - fl > 0.5 Then fl := fl + 1;
+ End
+ Else fl := CopySignD(0, vx / wx);
+ fdiv := fl;
+ fmod_ := m;
 End;
 
 Const
@@ -9671,7 +9704,7 @@ End;
 { p+1 chiffres significatifs et exposant decimal E }
 Function SciDigits(d: Double; p: Integer; Var E: Integer): AnsiString;
 Var
- t: AnsiString;
+ t, t2: AnsiString;
  guard: Integer;
 Begin
  If d = 0 Then Begin
@@ -9688,6 +9721,15 @@ Begin
   Else Break;
   Inc(guard);
  Until guard > 6;
+ { E surestime d'une unite quand l'arrondi donne 1000... }
+ If (Length(t) = p + 1) And (t[1] = '1') And
+  (Copy(t, 2, p) = StringOfChar('0', p)) Then Begin
+  t2 := DblDigits(d, p - E + 1);
+  If Length(t2) = p + 1 Then Begin
+   t := t2;
+   Dec(E);
+  End;
+ End;
  If Length(t) > p + 1 Then t := Copy(t, 1, p + 1);
  While Length(t) < p + 1 Do t := t + '0';
  Result := t;
@@ -19744,7 +19786,7 @@ End;
 
 Function NumBinary(op: Integer; Const a, b: TVal; Var res: TVal): Boolean;
 Var
- x, y, r, cr, ci: Double;
+ x, y, r, cr, ci, fm: Double;
  q, m: TVal;
  shift: Int64;
 Begin
@@ -19805,32 +19847,13 @@ Begin
    End;
   bopFloorDiv: Begin
     If y = 0 Then RaiseExc(exZeroDivision, 'float divmod()');
-    If IsInfinite(y) And Not IsInfinite(x) And Not IsNan(x) Then Begin
-     If (x = 0) Or ((x < 0) = (y < 0)) Then res := VFloat(0)
-     Else res := VFloat(-1);
-    End
-    Else Begin
-     r := Floor(x / y);
-     m := VFloat(x - Floor(x / y) * y);
-     res := VFloat(r);
-    End;
+    FloatDivMod(x, y, r, fm);
+    res := VFloat(r);
    End;
   bopMod: Begin
     If y = 0 Then RaiseExc(exZeroDivision, 'float modulo');
-    If IsInfinite(y) And Not IsInfinite(x) And Not IsNan(x) Then Begin
-     If (x = 0) Or ((x < 0) = (y < 0)) Then res := VFloat(x)
-     Else res := VFloat(y);
-    End
-    Else Begin
-     r := x - y * Floor(x / y);
-     If (r <> 0) And ((r < 0) <> (y < 0)) Then r := r + y;
-     r := FMod(x, y);
-     If (r <> 0) And ((r < 0) <> (y < 0)) Then r := r + y;
-     If r = 0 Then Begin
-      If y < 0 Then r := -0.0 Else r := 0.0;
-     End;
-     res := VFloat(r);
-    End;
+    FloatDivMod(x, y, r, fm);
+    res := VFloat(fm);
    End;
   bopPow: Begin
     If (x = 0) And (y < 0) Then
@@ -26217,11 +26240,7 @@ Begin
   x := NumToDouble(a[0]);
   y := NumToDouble(a[1]);
   If y = 0 Then RaiseExc(exZeroDivision, 'float divmod()');
-  fr2 := x - y * Floor(x / y);
-  fr2 := FMod(x, y);
-  If (fr2 <> 0) And ((fr2 < 0) <> (y < 0)) Then fr2 := fr2 + y;
-  fq := Floor((x - fr2) / y + 0.5);
-  If fq = 0 Then fq := 0;
+  FloatDivMod(x, y, fq, fr2);
   Result := Tup2(VFloat(fq), VFloat(fr2));
   Exit;
  End;
