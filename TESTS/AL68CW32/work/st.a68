@@ -1,0 +1,29 @@
+BEGIN
+  MODE POINT = STRUCT(INT x, INT y);
+  MODE RECT = STRUCT(POINT tl, POINT br);
+  MODE MIX = STRUCT(INT n, REAL r, STRING s, BOOL b, CHAR c);
+  MODE NODE = STRUCT(INT v, REF NODE next);
+  MODE NUM = UNION(INT, REAL);
+  MODE WITHU = STRUCT(INT k, NUM u);
+  RECT r := RECT(POINT(1, 2), POINT(30, 40));
+  INT a := x OF tl OF r;
+  INT b := y OF br OF r;
+  POINT q := br OF r;
+  INT c := x OF q;
+  POINT p2 = POINT(5, 6);
+  INT d := y OF p2;
+  MIX m := MIX(7, 2.5, "ab", TRUE, "Z");
+  INT e := n OF m;
+  REAL f := r OF m;
+  BOOL h := b OF m;
+  CHAR ch := c OF m;
+  STRING s2 := s OF m;
+  NODE nd := NODE(9, NIL);
+  INT k9 := v OF nd;
+  REF NODE pn := NIL;
+  WITHU w := WITHU(3, 4);
+  INT wk := k OF w;
+  RECT r2 := r;
+  INT a2 := x OF tl OF r2;
+  INT sz := 0
+END

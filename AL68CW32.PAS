@@ -34,11 +34,11 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 12 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 13 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
-         conditionnelles et boucles) ; TODO 13 a 25 a faire.
+         conditionnelles et boucles, structures) ; TODO 14 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -621,7 +621,7 @@
               erreurs : IF sans ELSE comme valeur, THEN, FI, OD manquants,
               condition non booleenne, borne reelle, selecteur booleen
 
-  TODO 13 - STRUCTURES (STRUCT) [A FAIRE]
+  TODO 13 - STRUCTURES (STRUCT) [IMPLEMENTE]
             MODE POINT = STRUCT(INT x, INT y) ; champs de modes
               differents, alias de mode, structures emboitees
             Disposition des champs (decalage de chaque champ, taille
@@ -631,6 +631,34 @@
             Affectation d'une structure entiere (copie des octets)
             Passage et retour de structures par les procedures
             Verification : structs.a68, test_struct.a68
+            Realise : l'essentiel vient des TODOs 04, 08, 09 et 10 et est
+              verifie ici : modes STRUCT a champs groupes (INT a, b),
+              equivalence structurelle (deux structures de meme forme sont
+              le meme mode), decalages calcules par ModeFieldOffset (REAL
+              sur 8 octets, STRING sur 16, UNION sur 4 + la plus large,
+              structure emboitee en ligne), constructeur POINT(3, 7) dont
+              chaque valeur est coercee vers son champ (INT vers REAL, un
+              identificateur, une structure, une chaine, une union),
+              constructeurs imbriques, selection a plusieurs niveaux
+              (x OF tl OF r) et sur un constructeur (x OF POINT(40, 2)),
+              selection qui rend un nom (REF champ) quand l'operande en est
+              un, ce qui prepare x OF p := 5 du TODO 14, copie d'une
+              structure entiere par REP MOVSD pour une initialisation ou un
+              champ, mode recursif par REF (NODE avec NIL), message STRUCT
+              sans champ ; l'affectation de structures et x OF p := v
+              viennent avec le TODO 14, le passage et le retour par
+              procedure avec le TODO 16
+            Verifie : structs.a68 en entier (3, 7, 10, 20, 30, 99, l'aire
+              40 * 25 = 1000 soit 232 modulo 256, 100) ; programme d'essai
+              de 25 valeurs : rectangle de deux points (1, 40, 30), copie
+              d'un champ structure (30), identite (6), structure mixte
+              INT REAL STRING BOOL CHAR (7, 5 pour 2.5 doublé, longueur 2,
+              1, 90), liste chainee (9, NIL), structure contenant une
+              union (etiquette 2 puis 4), copie d'un rectangle (1, 40) ;
+              erreurs : champ inconnu, selection sur un INT, constructeur
+              avec un mauvais nombre ou un mauvais mode de valeur, STRUCT
+              vide, mode inconnu dans un champ, mode redeclare ; les
+              programmes d'essai sont conserves dans TESTS\AL68CW32\work
 
   TODO 14 - REFERENCES ET AFFECTATIONS [A FAIRE]
             Mode REF m : adresse ; variable locale = identite d'un
@@ -5136,6 +5164,13 @@ Begin
           ParserAdvance;
           N := 0;
           Ok := True;
+          If AtPunct(')') Then
+          Begin
+            ErrorAt(L, C, 'STRUCT sans champ');
+            ParserAdvance;
+            M := MD_ERROR;
+            Exit;
+          End;
           Repeat
             Ok := ParseDeclarer(Elem, InnerBounds, InnerDims, True) And Ok;
             If InnerDims > 0 Then

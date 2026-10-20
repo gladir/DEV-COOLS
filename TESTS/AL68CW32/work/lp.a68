@@ -1,0 +1,41 @@
+BEGIN
+  INT t1 := 0; INT t2 := 0; INT t3 := 0; INT t4 := 0; INT t5 := 0;
+  INT t6 := 0; INT t7 := 0; INT t8 := 0; INT t9 := 0; INT t10 := 0;
+  INT cnt := 0; INT tt := 0; INT st := -2; INT reached := 0;
+  FOR i FROM 1 TO 10 DO
+    t1 +:= i
+  OD;
+  FOR j TO 5 DO
+    t2 +:= j
+  OD;
+  FOR k FROM 1 TO 10 BY 2 DO
+    t3 +:= k
+  OD;
+  FOR m FROM 10 DOWNTO 1 DO
+    t4 +:= m
+  OD;
+  WHILE cnt < 5 DO
+    cnt +:= 1
+  OD;
+  FOR n FROM 1 TO 100 WHILE tt < 20 DO
+    tt +:= n
+  OD;
+  FOR a1 FROM 1 TO 3 DO
+    FOR b1 FROM 1 TO 3 DO
+      t7 +:= 1
+    OD
+  OD;
+  FOR p FROM 5 TO 1 BY -1 DO
+    t8 +:= p
+  OD;
+  FOR q FROM 1 TO 0 DO
+    t9 +:= 100
+  OD;
+  FOR r FROM 9 TO 1 BY st DO
+    t10 +:= r
+  OD;
+  FOR s0 DO
+    IF s0 = 4 THEN GOTO out FI
+  OD;
+  out: reached := 1
+END

@@ -1,0 +1,31 @@
+BEGIN
+  INT a := 15; INT b := 4; INT m := -7; INT d5 := 5;
+  INT sum := a + b;
+  INT diff := a - b;
+  INT prod := a * b;
+  INT quo := a OVER b;
+  INT rest := a MOD b;
+  INT neg := m MOD 3;
+  INT negq := m OVER 2;
+  INT pw := a ** 2;
+  INT abs1 := ABS m;
+  INT sg := SIGN m;
+  INT sg2 := SIGN a;
+  INT mn := - a;
+  BOOL c1 := a > b;
+  BOOL c2 := a = b;
+  BOOL c3 := a >= 15 AND b < 5;
+  BOOL c4 := NOT (a < b);
+  BOOL c5 := ODD a;
+  REAL x := 1.5 + a;
+  REAL y := a / d5;
+  BOOL c6 := 2.5 < x;
+  REAL z := x * 2 - 1;
+  INT sh := a SHL 2;
+  INT sr := a SHR 1;
+  INT p2 := a + b * 2;
+  INT p3 := (a + b) * 2;
+  INT p4 := 2 + 3 * 4;
+  REAL w := 7 / 2;
+  BOOL c7 := x /= x
+END
