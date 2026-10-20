@@ -3,8 +3,7 @@
 # rend avec le code de sortie egal a la valeur de la cellule (entier, reel
 # double, ou mot a un decalage), execute avec le chargeur PE de test.
 # Les programmes .a68 de ce dossier sont des essais manuels (TODOs 8 a 13) ;
-# les corps de boucle y sont remplaces dans le listing (voir DOC).
-# chk2.sh fichier.asm cellule [real]  -> code de sortie = valeur de la cellule
+# les corps de boucle y sont remplaces dans le listing.
 f=$1; cell=$2; kind=${3:-int}
 python3 - "$f" "$cell" "$kind" <<'PY'
 import sys,re

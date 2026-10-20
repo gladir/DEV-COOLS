@@ -652,7 +652,7 @@
               40 * 25 = 1000 soit 232 modulo 256, 100) ; programme d'essai
               de 25 valeurs : rectangle de deux points (1, 40, 30), copie
               d'un champ structure (30), identite (6), structure mixte
-              INT REAL STRING BOOL CHAR (7, 5 pour 2.5 doublé, longueur 2,
+              INT REAL STRING BOOL CHAR (7, 5 pour 2.5 double, longueur 2,
               1, 90), liste chainee (9, NIL), structure contenant une
               union (etiquette 2 puis 4), copie d'un rectangle (1, 40) ;
               erreurs : champ inconnu, selection sur un INT, constructeur
