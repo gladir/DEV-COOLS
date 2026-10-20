@@ -1051,7 +1051,7 @@
               non definis, table des chaines) ; PhaseWrite : .EXE seul par
               defaut, .OBJ seul avec -obj, .ASM en plus avec -asm ; un
               symbole _A68... non defini est une erreur fatale pour l'.EXE
-              (« routine du runtime absente », elle disparaitra avec le
+              ("routine du runtime absente", elle disparaitra avec le
               runtime du TODO 22), mais reste un externe du .OBJ ; sur
               erreur fatale les fichiers deja crees sont supprimes
             Corrige au passage : une unite qui commence par une
