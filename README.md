@@ -910,6 +910,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur de Python pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>PYTHON3.PAS</b></td>
+			<td>Cette commande est un clone de la commande python3 (Python 3.8) : elle compile le code Python en bytecode compatible CPython 3.8, l'exécute dans une machine virtuelle Python et offre le mode interactif ainsi que toutes les options de la ligne de commande (-c, -m, -i, -O, -W, -X, -x, -E, -I, -s, -S, -u, -v, -b, -B, -d, -q, -V, -h, ...). La bibliothèque standard (os, re, io, json, datetime, subprocess, asyncio, unittest, ...) est incluse dans l'exécutable.</td>
+		</tr>
+		<tr>
 			<td><b>QPUDEP.PAS</b></td>
 			<td>Cette commande permet d'afficher les dépendances d'un unité QPU de QuickPascal.</td>
 		</tr>

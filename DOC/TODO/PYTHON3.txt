@@ -1,0 +1,92 @@
+============================================================
+  PYTHON3.PAS - Clone de la commande python3 (Python 3.8)
+  Free Pascal (mode ObjFPC) - cible : Linux x86-64
+  Executable : BINLINUX/PYTHON3
+============================================================
+
+  Compilation :
+    fpc -Mobjfpc -Sew- -O2 -Xs PYTHON3.PAS -oBINLINUX/PYTHON3
+
+  Remarque : le programme exploite les classes et les unites Free
+  Pascal (SysUtils, BaseUnix, ...) ; il ne peut donc pas etre compile
+  avec Turbo Pascal 7 lui-meme (mode -Mtp impossible).
+
+  ARCHITECTURE - 12 TODOS TOUS IMPLEMENTES
+  ============================================================
+
+  TODO 01 - LEXEUR ET ANALYSEUR SYNTAXIQUE [IMPLEMENTE]
+            Jetons Python 3.8 (indentation, f-strings, bytes, nombres,
+            complexes, litteraux avec _), messages et positions des
+            SyntaxError identiques a CPython 3.8, mode single/eval/exec.
+
+  TODO 02 - ANALYSE DES PORTEES [IMPLEMENTE]
+            Variables locales, globales, cellules et variables libres,
+            nonlocal/global, comprehensions, classes (__class__),
+            async/await.
+
+  TODO 03 - GENERATION DU BYTECODE [IMPLEMENTE]
+            Bytecode CPython 3.8 (mots de 16 bits, EXTENDED_ARG,
+            co_lnotab, blocs SETUP_*), objets code compatibles,
+            module marshal et fichiers .pyc (magic 3413) en lecture
+            et en ecriture, py_compile / compileall.
+
+  TODO 04 - MACHINE VIRTUELLE [IMPLEMENTE]
+            Boucle d'interpretation, generateurs, coroutines,
+            exceptions avec chainage, tracebacks, finaliseurs __del__,
+            ramasse-miettes marque-et-balaye, limite de recursion.
+
+  TODO 05 - TYPES DE BASE [IMPLEMENTE]
+            int en precision arbitraire, float (repr la plus courte),
+            complex, str (UTF-8), bytes/bytearray/memoryview, list,
+            tuple, dict ordonne, set/frozenset, range, slice,
+            property, classmethod, staticmethod, __slots__,
+            metaclasses, descripteurs.
+
+  TODO 06 - FONCTIONS INTEGREES ET MODULES NATIFS [IMPLEMENTE]
+            builtins, sys, math (libm), time, posix (fichiers,
+            processus, fork/exec), select, _re (moteur d'expressions
+            regulieres a retour arriere), _random (Mersenne Twister
+            identique a CPython), gc, atexit, marshal, codecs
+            natifs (utf-8, ascii, latin-1, utf-16/32).
+
+  TODO 07 - BIBLIOTHEQUE STANDARD EMBARQUEE [IMPLEMENTE]
+            ~145 modules Python embarques dans l'executable
+            (os, io, re, json, datetime, decimal, fractions,
+            collections, itertools, functools, argparse, logging,
+            unittest, asyncio, subprocess, pathlib, shutil,
+            tempfile, pickle, csv, struct, hashlib, zlib, ...).
+
+  TODO 08 - ENTREES/SORTIES [IMPLEMENTE]
+            open() via io/_pyio sur descripteurs POSIX reels,
+            encodages et newline, sys.stdin/stdout/stderr
+            (+ .buffer), print, input.
+
+  TODO 09 - LIGNE DE COMMANDE [IMPLEMENTE]
+            Toutes les options de python3.8 : -b -B -c -d -E -h -i
+            -I -m -O -OO -q -s -S -u -v -V -W -x -X --check-hash-
+            based-pycs, "-" et fichier script, repertoires et
+            archives avec __main__, variables d'environnement
+            PYTHONPATH PYTHONSTARTUP PYTHONINSPECT PYTHONOPTIMIZE
+            PYTHONWARNINGS PYTHONDONTWRITEBYTECODE PYTHONUNBUFFERED
+            PYTHONHASHSEED PYTHONIOENCODING PYTHONDEVMODE ...
+
+  TODO 10 - MODE INTERACTIF [IMPLEMENTE]
+            REPL avec invites >>> et ..., instructions composees,
+            erreurs immediates, variable _, sys.ps1/ps2,
+            PYTHONSTARTUP, KeyboardInterrupt, help(), exit().
+
+  TODO 11 - ASYNC / AWAIT [IMPLEMENTE]
+            Coroutines natives, async for/with, generateurs
+            asynchrones, module asyncio.
+
+  TODO 12 - TESTS [IMPLEMENTE]
+            SAMPLES/PYTHON3/*.py : scripts de verification dont la
+            sortie est identique a celle de python3.8.
+
+  LIMITES CONNUES
+  ============================================================
+  - Pas d'extensions C (_ctypes, sockets, ssl, sqlite3, ...).
+  - Pas de multithreading preemptif (threading cooperatif).
+  - Les signaux asynchrones ne sont pas delivres aux gestionnaires.
+  - Les noms Unicode \N{...} et les tables de caracteres
+    multi-octets (CJK) ne sont pas fournis.
