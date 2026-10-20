@@ -34,14 +34,15 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 23 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 24 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
          affectations, tableaux, procedures, operateurs, unions,
          transput, encodeur x86-32, ecrivains PE et COFF, runtime,
-         erreurs et avertissements) ; TODO 24 et 25 a faire.
+         erreurs et avertissements, programme principal et modes -v et -d)
+         ; TODO 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -1194,7 +1195,7 @@
               detection des variables non initialisees suit l'ordre du
               texte, pas le flot d'execution
 
-  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [A FAIRE]
+  TODO 24 - PROGRAMME PRINCIPAL, MODES VERBEUX ET DEBOGAGE [IMPLEMENTE]
             Run : lexeur -> parseur -> modes et coercitions ->
               generation -> runtime -> encodeur -> ecrivain (PE ou
               COFF) -> .ASM optionnel -> rapport
@@ -1207,6 +1208,29 @@
             Verifier que l'absence de -asm ne cree jamais de .ASM, que
               -obj ne cree jamais de .EXE, et que sans option on obtient
               uniquement le .EXE
+            Realise : la ligne de commande (ParseArgs : source .a68 ou
+              .alg, extension ajoutee si absente, -o, -obj, -asm, -v, -d,
+              -w, -w+, -w-, -h, codes 0 / 1 / 2) et le pipeline (Run,
+              RunPhase) existaient depuis les TODOs 1 et 2 ; ce TODO les
+              verifie et les complete : -v affiche la banniere, chaque
+              phase, les nombres de lignes et de jetons, d'unites,
+              d'instructions et de donnees, les routines du runtime
+              emises, la taille de .text et de .data, les relocations, les
+              imports de kernel32.dll, les fichiers produits et le rapport
+              (la mention d'unites non analysees ne reste que s'il y en a) ;
+              -d affiche les modes, les jetons (avec un titre), les portees
+              de la table des symboles (avec un titre), l'arbre d'unites
+              avant et apres les coercitions, les donnees, le code interne
+              (runtime compris) et ecrit <sortie>.lst : listing
+              hexadecimal du code puis carte des donnees (decalage, nom)
+            Verifie : TESTS/AL68CW32/chkopt.sh : 17 combinaisons de
+              fichiers produits (defaut : .exe seul ; -asm ; -obj : jamais
+              de .exe ; -obj -asm ; -o avec et sans extension ; -d ; source
+              sans extension ou en .alg ; -v), -o vers le source ou vers un
+              .asm refuses, option inconnue (code 2), source introuvable
+              (code 1), sans argument (code 2), -h (code 0), -w, -w+ et -w-
+              et aucun fichier apres une erreur ; chkenc.py accepte
+              toujours les .lst (carte des donnees en commentaire)
 
   TODO 25 - VALIDATION SUR TOUS LES EXEMPLES SAMPLES\ALGOL68\* [A FAIRE]
             Compiler les 27 fichiers : arrays, coerce, control, hello,
@@ -2660,6 +2684,7 @@ Begin
   LexLoad;
   TokCount := 0;
   LitCount := 0;
+  If Opts.DebugMode Then WriteLn('Jetons (ligne : colonne, genre, texte) :');
   Repeat
     LexScanToken(T);
     If Opts.DebugMode Then PrintToken(T);
@@ -8862,6 +8887,9 @@ Begin
   LabelCount := 0;
   OpaqueCount := 0;
   DeclCount := 0;
+  If Opts.DebugMode Then
+    WriteLn('Table des symboles (portees refermees, de la plus interne ',
+            'a la plus externe) :');
   ScopeEnter(SCK_PROGRAM);
   UnitRoot := UnitNew(UK_SERIAL, 1, 1);
   UnitTab[UnitRoot].A := ParseSerial(True);
@@ -8878,11 +8906,14 @@ Begin
   End;
   ScopeLeave;
   If Opts.Verbose Then
-    WriteLn('  ', UnitCount, ' unite(s), ', ClauseCount,
-            ' clause(s) fermee(s), ', LabelCount, ' etiquette(s), ',
-            GotoCount, ' goto, ', DeclCount, ' declaration(s), ',
-            OpaqueCount,
-            ' unite(s) ou declaration(s) pas encore analysee(s)');
+  Begin
+    Write('  ', UnitCount, ' unite(s), ', ClauseCount,
+          ' clause(s) fermee(s), ', LabelCount, ' etiquette(s), ',
+          GotoCount, ' goto, ', DeclCount, ' declaration(s)');
+    If OpaqueCount > 0 Then
+      Write(', ', OpaqueCount, ' unite(s) non analysee(s)');
+    WriteLn;
+  End;
   If Opts.DebugMode Then
   Begin
     WriteLn('Arbre d''unites (', UnitCount, ' noeuds) :');
@@ -12022,16 +12053,31 @@ Begin
       End;
     End;
   End;
+  { carte des donnees : decalage dans .data, taille, nom }
+  WriteLn(F);
+  WriteLn(F, '; .data (', BinDataLen, ' octets)');
+  For I := 0 To DataCount - 1 Do
+    WriteLn(F, '; ', Hex8(BinLbl[DataTab[I].Name].Off), '  ',
+            NameTab[DataTab[I].Name]);
   Close(F);
 End;
 
 Procedure PhaseEncode;
+Var
+  K : Integer;
 Begin
   EncodeProgram;
   If Opts.Verbose Then
     WriteLn('  .text : ', BinCodeLen, ' octets, .data : ', BinDataLen,
             ' octets, ', BinFixCount, ' relocation(s), ', BinImportCount,
             ' import(s)');
+  If Opts.Verbose And (BinImportCount > 0) Then
+  Begin
+    Write('  imports (kernel32.dll) :');
+    For K := 0 To BinImportCount - 1 Do
+      Write(' ', NameTab[BinImport[K]]);
+    WriteLn;
+  End;
   If Opts.DebugMode Then
     WriteBinListing(ReplaceExt(Opts.OutFile, '.lst'));
 End;
@@ -13552,7 +13598,19 @@ Begin
   Any := False;
   For R := 0 To RtCount - 1 Do
     If RtUsed[R] Then Any := True;
-  If Not Any Then Exit;
+  If Not Any Then
+  Begin
+    If Opts.Verbose Then WriteLn('  runtime : aucune routine');
+    Exit;
+  End;
+  If Opts.Verbose Then
+  Begin
+    Write('  runtime :');
+    For R := 0 To RtCount - 1 Do
+      If RtUsed[R] Then
+        Write(' ', Copy(RtName[R], Length(A68_RT_PFX) + 1, 40));
+    WriteLn;
+  End;
   Start := CodeCount;
   EmitBlank;
   EmitComment('---- runtime AL68CW32 (routines utilisees) ----');
