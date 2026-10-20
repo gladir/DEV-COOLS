@@ -37,8 +37,8 @@
   ETAT : TODO 01 a 12 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
-         clauses, declarations, coercitions, primaires, formules, conditionnelles et boucles) ;
-         TODO 13 a 25 a faire.
+         clauses, declarations, coercitions, primaires, formules,
+         conditionnelles et boucles) ; TODO 13 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
