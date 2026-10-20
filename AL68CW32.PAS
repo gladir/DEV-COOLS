@@ -34,13 +34,13 @@
     directive de compilation I- ne fait qu'arreter la verification des
     erreurs d'entree/sortie.
 
-  ETAT : TODO 01 a 19 implementes (squelette en sections, pipeline en 7
+  ETAT : TODO 01 a 20 implementes (squelette en sections, pipeline en 7
          phases, options, constantes, limites et nommage, lexeur, modes,
          symboles et prelude, code interne et listing, parseur de
          clauses, declarations, coercitions, primaires, formules,
          conditionnelles et boucles, structures,
          affectations, tableaux, procedures, operateurs, unions,
-         transput) ; TODO 20 a 25 a faire.
+         transput, encodeur x86-32) ; TODO 21 a 25 a faire.
 
   PARTICULARITES D'ALGOL 68 A PRENDRE EN COMPTE (vues dans les exemples)
     - Langage fortement type par les modes : le type d'une unite depend
@@ -967,7 +967,7 @@
               newline)) ignore newline ; PAR n'a pas de parallelisme ;
               WRITEREAL du runtime d'essai est limite a 4 millions
 
-  TODO 20 - ENCODEUR BINAIRE x86-32 [A FAIRE]
+  TODO 20 - ENCODEUR BINAIRE x86-32 [IMPLEMENTE]
             Reprendre et adapter l'encodeur d'AL60CW32 : chaque
               instruction du code interne en octets (MOV, MOVZX, LEA,
               PUSH, POP, ADD, SUB, IMUL, IDIV, CDQ, NEG, NOT, AND, OR,
@@ -984,6 +984,38 @@
             Mode -d : <sortie>.lst, listing hexadecimal
             Verification : decoder chaque instruction avec objdump
               (TESTS\AL60CW32\chkenc.py) sur tous les exemples
+            Realise : section 12, reprise de l'encodeur d'AL60CW32 :
+              EncodeInstr (ModRM, SIB, deplacement 8 ou 32 bits, cas
+              [EBP], [ESP], [sym], [sym + index * echelle]), registres de
+              8, 16 et 32 bits, MOV (dont MOV d'octet et MOV memoire,
+              OFFSET), MOVZX, LEA, PUSH, POP, ALU (ADD OR AND SUB XOR CMP,
+              forme memoire,registre comprise), IMUL, IDIV, DIV, CDQ, NEG,
+              NOT, INC, DEC, TEST, SHL SHR SAR (par constante ou par CL),
+              SETcc, Jcc et JMP, CALL et JMP indirects par memoire, RET et
+              RET n, REP STOSD, REP MOVSD et REP MOVSB (nouveaux), x87
+              (formes memoire de 4 et 8 octets, FILD et FISTP de 2, 4 et
+              8 octets, formes ST(i), ST(0) et ST(0), ST(i) -- nouvelle --
+              et instructions sans operande) ; EncodeData (zeros,
+              chaines avec 0 final, entiers, reels, tables d'adresses avec
+              relocations ABS32) ; EncodeCode : sauts courts d'abord puis
+              agrandis tant qu'un deplacement deborde (relaxation),
+              etiquettes code et donnees, relocations REL32 vers les
+              cibles non definies, qui sont les imports (kernel32 et, tant
+              que le runtime n'est pas emis, les routines _A68RT_) ;
+              CheckFixups ; PhaseEncode affiche en -v la taille de .text et
+              de .data, les relocations et les imports et ecrit en -d le
+              listing hexadecimal <sortie>.lst ; BinCode, BinData, BinFix,
+              BinLbl et BinImport sont destines aux ecrivains du TODO 21
+            Verifie : TESTS/AL68CW32/chkenc.py decode avec objdump chaque
+              instruction du listing hexadecimal (octets, mnemonique,
+              operandes, cible des sauts et appels vers des etiquettes
+              locales) ; 91 programmes (les 27 exemples et les programmes
+              d'essai des TODOs 8 a 19) donnent 0 ecart ;
+              TESTS/AL68CW32/chkall.sh refait la verification des 27
+              exemples
+            Reste : emission du runtime (TODO 22) et ecrivains PE et COFF
+              (TODO 21) ; les instructions du runtime d'essai ne sont pas
+              encore passees par chkenc
 
   TODO 21 - ECRIVAINS PE (.EXE) ET COFF (.OBJ) [A FAIRE]
             PE : en-tete MZ + souche DOS, signature PE, COFF File Header
@@ -10839,10 +10871,975 @@ End;
 { ============================================================
   SECTION 12 - ENCODEUR BINAIRE x86-32 (TODO 20)
   ============================================================ }
+Type
+  TBinFixKind = (
+    BF_REL32,      { deplacement relatif (cible externe) }
+    BF_ABS32       { adresse absolue de Sym (+ valeur en place) }
+  );
+
+  TBinFix = Record
+    Sect : Byte;           { 0 = code, 1 = donnees : ou se trouve le champ }
+    Off  : LongInt;
+    Kind : TBinFixKind;
+    Sym  : Integer;        { nom (NameTab) de la cible }
+  End;
+
+  TBinLabel = Record
+    Sect : Byte;           { 0 = non defini (externe), 1 = code, 2 = donnees }
+    Off  : LongInt;
+  End;
+
+  { Resultat du codage d'une instruction }
+  TEnc = Record
+    Len     : Integer;
+    B       : Array[0..15] Of Byte;
+    NFix    : Integer;
+    FixPos  : Array[1..2] Of Integer;
+    FixSym  : Array[1..2] Of Integer;
+    RelPos  : Integer;     { position du deplacement relatif (-1 : aucun) }
+    RelSize : Integer;     { 1 ou 4 octets }
+    RelSym  : Integer;     { etiquette cible }
+  End;
+
+Var
+  BinCode     : Array[0..MAX_BIN_CODE - 1] Of Byte;
+  BinCodeLen  : LongInt;
+  BinData     : Array[0..MAX_BIN_DATA - 1] Of Byte;
+  BinDataLen  : LongInt;
+  BinLbl      : Array[0..MAX_NAMES - 1] Of TBinLabel;
+  BinFix      : Array[0..MAX_BIN_FIX - 1] Of TBinFix;
+  BinFixCount : LongInt;
+  BinImport   : Array[0..255] Of Integer;     { noms importes (externes) }
+  BinImportCount : Integer;
+  InstrOff    : Array[0..2 * MAX_CODE] Of LongInt;
+  InstrNear   : Array[0..2 * MAX_CODE - 1] Of Boolean;
+  Enc         : TEnc;
+
+Function InstrAt(I : LongInt) : TInstr;
+Begin
+  If I < CodeCount Then
+    InstrAt := CodeTab[I]
+  Else
+    InstrAt := DeferTab[I - CodeCount];
+End;
+
+{ ---- Primitives de codage ---- }
+
+Procedure PutB(V : LongInt);
+Begin
+  Enc.B[Enc.Len] := V And $FF;
+  Inc(Enc.Len);
+End;
+
+Procedure PutD(V : LongInt);
+Begin
+  PutB(V);
+  PutB(V Shr 8);
+  PutB(V Shr 16);
+  PutB(V Shr 24);
+End;
+
+Procedure PutW(V : LongInt);
+Begin
+  PutB(V);
+  PutB(V Shr 8);
+End;
+
+{ Champ de 32 bits qui sera corrige par l'ecrivain (adresse de Sym) }
+Procedure PutAbs(Sym : Integer; Addend : LongInt);
+Begin
+  Inc(Enc.NFix);
+  Enc.FixPos[Enc.NFix] := Enc.Len;
+  Enc.FixSym[Enc.NFix] := Sym;
+  PutD(Addend);
+End;
+
+Function RegCode(R : TReg) : Integer;
+Begin
+  If R >= R_EAX Then
+  Begin
+    If R <= R_EDI Then
+      RegCode := Ord(R) - Ord(R_EAX)
+    Else If R = R_AX Then
+      RegCode := 0
+    Else
+      RegCode := Ord(R) - Ord(R_AL);
+  End
+  Else
+    RegCode := 0;
+End;
+
+Function RegSize(R : TReg) : Integer;
+Begin
+  If (R >= R_EAX) And (R <= R_EDI) Then
+    RegSize := 4
+  Else If R = R_AX Then
+    RegSize := 2
+  Else
+    RegSize := 1;
+End;
+
+Function Fits8(V : LongInt) : Boolean;
+Begin
+  Fits8 := (V >= -128) And (V <= 127);
+End;
+
+Function ScaleBits(S : Byte) : Integer;
+Begin
+  Case S Of
+    2 : ScaleBits := 1;
+    4 : ScaleBits := 2;
+    8 : ScaleBits := 3;
+  Else
+    ScaleBits := 0;
+  End;
+End;
+
+{ ModRM (+ SIB + deplacement) pour un operande memoire }
+Procedure EncMem(RegField : Integer; Const M : TOperand);
+Var
+  HasBase, HasIdx, HasSym : Boolean;
+  Md, Bc                  : Integer;
+Begin
+  HasBase := M.Base <> R_NONE;
+  HasIdx  := M.Index <> R_NONE;
+  HasSym  := M.Sym >= 0;
+  If (Not HasBase) And (Not HasIdx) Then
+  Begin
+    PutB((RegField Shl 3) Or 5);
+    If HasSym Then PutAbs(M.Sym, M.Imm) Else PutD(M.Imm);
+    Exit;
+  End;
+  { choix du mode de deplacement }
+  If HasSym Then
+    Md := 2
+  Else If (M.Imm = 0) And HasBase And (M.Base <> R_EBP) Then
+    Md := 0
+  Else If Fits8(M.Imm) Then
+    Md := 1
+  Else
+    Md := 2;
+  If Not HasBase Then
+  Begin
+    { [sym + index*scale + disp32] }
+    PutB((RegField Shl 3) Or 4);
+    PutB((ScaleBits(M.Scale) Shl 6) Or (RegCode(M.Index) Shl 3) Or 5);
+    If HasSym Then PutAbs(M.Sym, M.Imm) Else PutD(M.Imm);
+    Exit;
+  End;
+  Bc := RegCode(M.Base);
+  If HasIdx Then
+  Begin
+    PutB((Md Shl 6) Or (RegField Shl 3) Or 4);
+    PutB((ScaleBits(M.Scale) Shl 6) Or (RegCode(M.Index) Shl 3) Or Bc);
+  End
+  Else If M.Base = R_ESP Then
+  Begin
+    PutB((Md Shl 6) Or (RegField Shl 3) Or 4);
+    PutB($24);
+  End
+  Else
+    PutB((Md Shl 6) Or (RegField Shl 3) Or Bc);
+  If Md = 1 Then
+    PutB(M.Imm)
+  Else If Md = 2 Then
+  Begin
+    If HasSym Then PutAbs(M.Sym, M.Imm) Else PutD(M.Imm);
+  End;
+End;
+
+{ ModRM pour un operande registre ou memoire (champ r/m) }
+Procedure EncRM(RegField : Integer; Const O : TOperand);
+Begin
+  If O.Kind = OK_REG Then
+    PutB($C0 Or (RegField Shl 3) Or RegCode(O.Reg))
+  Else If O.Kind = OK_MEM Then
+    EncMem(RegField, O)
+  Else
+    FatalError('encodeur: operande r/m invalide');
+End;
+
+{ Taille de l'operation : registre en priorite, sinon la memoire }
+Function OpSize(Const A, B : TOperand) : Integer;
+Begin
+  If A.Kind = OK_REG Then
+    OpSize := RegSize(A.Reg)
+  Else If B.Kind = OK_REG Then
+    OpSize := RegSize(B.Reg)
+  Else If (A.Kind = OK_MEM) And (A.Size > 0) Then
+    OpSize := A.Size
+  Else If (B.Kind = OK_MEM) And (B.Size > 0) Then
+    OpSize := B.Size
+  Else
+    OpSize := 4;
+End;
+
+Function CcOf(Op : TOp) : Integer;
+Begin
+  Case Op Of
+    OP_SETE,  OP_JE  : CcOf := 4;
+    OP_SETNE, OP_JNE : CcOf := 5;
+    OP_SETL,  OP_JL  : CcOf := 12;
+    OP_SETLE, OP_JLE : CcOf := 14;
+    OP_SETG,  OP_JG  : CcOf := 15;
+    OP_SETGE, OP_JGE : CcOf := 13;
+    OP_SETA,  OP_JA  : CcOf := 7;
+    OP_SETAE, OP_JAE : CcOf := 3;
+    OP_SETB,  OP_JB  : CcOf := 2;
+    OP_SETBE, OP_JBE : CcOf := 6;
+    OP_JS            : CcOf := 8;
+    OP_JNS           : CcOf := 9;
+  Else
+    CcOf := 0;
+  End;
+End;
+
+Function AluNum(Op : TOp) : Integer;
+Begin
+  Case Op Of
+    OP_ADD : AluNum := 0;
+    OP_OR  : AluNum := 1;
+    OP_AND : AluNum := 4;
+    OP_SUB : AluNum := 5;
+    OP_XOR : AluNum := 6;
+    OP_CMP : AluNum := 7;
+  Else
+    AluNum := 0;
+  End;
+End;
+
+Procedure EncBad(Const I : TInstr);
+Begin
+  FatalError('encodeur: forme d''instruction non supportee: ' +
+             InstrText(I));
+End;
+
+{ ADD OR AND SUB XOR CMP }
+Procedure EncAlu(Const I : TInstr);
+Var
+  N, Sz : Integer;
+Begin
+  N  := AluNum(I.Op);
+  Sz := OpSize(I.A, I.B);
+  If Sz = 2 Then PutB($66);
+  If I.B.Kind = OK_IMM Then
+  Begin
+    If Sz = 1 Then
+    Begin
+      PutB($80);
+      EncRM(N, I.A);
+      PutB(I.B.Imm);
+    End
+    Else If Fits8(I.B.Imm) Then
+    Begin
+      PutB($83);
+      EncRM(N, I.A);
+      PutB(I.B.Imm);
+    End
+    Else
+    Begin
+      PutB($81);
+      EncRM(N, I.A);
+      If Sz = 2 Then PutW(I.B.Imm) Else PutD(I.B.Imm);
+    End;
+  End
+  Else If (I.A.Kind = OK_REG) And (I.B.Kind In [OK_REG, OK_MEM]) Then
+  Begin
+    { reg, r/m : opcode base + 2 (8 bits) ou + 3 }
+    If Sz = 1 Then PutB(N * 8 + 2) Else PutB(N * 8 + 3);
+    EncRM(RegCode(I.A.Reg), I.B);
+  End
+  Else If (I.A.Kind = OK_MEM) And (I.B.Kind = OK_REG) Then
+  Begin
+    If Sz = 1 Then PutB(N * 8) Else PutB(N * 8 + 1);
+    EncMem(RegCode(I.B.Reg), I.A);
+  End
+  Else
+    EncBad(I);
+End;
+
+Procedure EncMov(Const I : TInstr);
+Var
+  Sz : Integer;
+Begin
+  Sz := OpSize(I.A, I.B);
+  If Sz = 2 Then PutB($66);
+  If (I.A.Kind = OK_REG) And (I.B.Kind = OK_IMM) Then
+  Begin
+    If Sz = 1 Then
+    Begin
+      PutB($B0 + RegCode(I.A.Reg));
+      PutB(I.B.Imm);
+    End
+    Else
+    Begin
+      PutB($B8 + RegCode(I.A.Reg));
+      If Sz = 2 Then PutW(I.B.Imm) Else PutD(I.B.Imm);
+    End;
+  End
+  Else If (I.A.Kind = OK_REG) And (I.B.Kind = OK_OFFSET) Then
+  Begin
+    PutB($B8 + RegCode(I.A.Reg));
+    PutAbs(I.B.Sym, I.B.Imm);
+  End
+  Else If (I.A.Kind = OK_REG) And (I.B.Kind = OK_REG) Then
+  Begin
+    If Sz = 1 Then PutB($88) Else PutB($89);
+    PutB($C0 Or (RegCode(I.B.Reg) Shl 3) Or RegCode(I.A.Reg));
+  End
+  Else If (I.A.Kind = OK_REG) And (I.B.Kind = OK_MEM) Then
+  Begin
+    If Sz = 1 Then PutB($8A) Else PutB($8B);
+    EncMem(RegCode(I.A.Reg), I.B);
+  End
+  Else If (I.A.Kind = OK_MEM) And (I.B.Kind = OK_REG) Then
+  Begin
+    If Sz = 1 Then PutB($88) Else PutB($89);
+    EncMem(RegCode(I.B.Reg), I.A);
+  End
+  Else If (I.A.Kind = OK_MEM) And (I.B.Kind = OK_IMM) Then
+  Begin
+    If Sz = 1 Then
+    Begin
+      PutB($C6);
+      EncMem(0, I.A);
+      PutB(I.B.Imm);
+    End
+    Else
+    Begin
+      PutB($C7);
+      EncMem(0, I.A);
+      If Sz = 2 Then PutW(I.B.Imm) Else PutD(I.B.Imm);
+    End;
+  End
+  Else If (I.A.Kind = OK_MEM) And (I.B.Kind = OK_OFFSET) Then
+  Begin
+    PutB($C7);
+    EncMem(0, I.A);
+    PutAbs(I.B.Sym, I.B.Imm);
+  End
+  Else
+    EncBad(I);
+End;
+
+{ Instructions a un seul operande r/m : IDIV DIV NEG NOT (F7 /n),
+  INC DEC (FF /n ou 40+r / 48+r) }
+Procedure EncUnary(Const I : TInstr; Digit : Integer);
+Begin
+  PutB($F7);
+  EncRM(Digit, I.A);
+End;
+
+Procedure EncIncDec(Const I : TInstr; Digit : Integer);
+Begin
+  If (I.A.Kind = OK_REG) And (RegSize(I.A.Reg) = 4) Then
+    PutB($40 + Digit * 8 + RegCode(I.A.Reg))
+  Else
+  Begin
+    PutB($FF);
+    EncRM(Digit, I.A);
+  End;
+End;
+
+Procedure EncShift(Const I : TInstr; Digit : Integer);
+Begin
+  If (I.B.Kind = OK_REG) And (I.B.Reg = R_CL) Then
+  Begin
+    PutB($D3);
+    EncRM(Digit, I.A);
+    Exit;
+  End;
+  If I.B.Kind <> OK_IMM Then EncBad(I);
+  If I.B.Imm = 1 Then
+  Begin
+    PutB($D1);
+    EncRM(Digit, I.A);
+  End
+  Else
+  Begin
+    PutB($C1);
+    EncRM(Digit, I.A);
+    PutB(I.B.Imm);
+  End;
+End;
+
+{ Instructions x87 a operande memoire ou ST(i) }
+Procedure EncFpu(Const I : TInstr);
+Var
+  Sz, Digit, Op32, Op64, StOp : Integer;
+  HasSt                      : Boolean;
+Begin
+  { Digit : champ /n ; Op32 / Op64 : opcodes memoire ; StOp : second
+    octet (forme ST) = base + i }
+  Digit := 0; Op32 := 0; Op64 := 0; StOp := -1;
+  HasSt := (I.A.Kind = OK_ST);
+  Case I.Op Of
+    OP_FLD   :
+      Begin
+        If HasSt Then Begin PutB($D9); PutB($C0 + I.A.Imm); Exit; End;
+        Digit := 0; Op32 := $D9; Op64 := $DD;
+      End;
+    OP_FST   :
+      Begin
+        If HasSt Then Begin PutB($DD); PutB($D0 + I.A.Imm); Exit; End;
+        Digit := 2; Op32 := $D9; Op64 := $DD;
+      End;
+    OP_FSTP  :
+      Begin
+        If HasSt Then Begin PutB($DD); PutB($D8 + I.A.Imm); Exit; End;
+        Digit := 3; Op32 := $D9; Op64 := $DD;
+      End;
+    OP_FILD  :
+      Begin
+        Sz := I.A.Size;
+        If Sz = 2 Then PutB($DF) Else If Sz = 8 Then PutB($DF)
+        Else PutB($DB);
+        If Sz = 8 Then EncMem(5, I.A) Else EncMem(0, I.A);
+        Exit;
+      End;
+    OP_FISTP :
+      Begin
+        Sz := I.A.Size;
+        If Sz = 2 Then PutB($DF) Else If Sz = 8 Then PutB($DF)
+        Else PutB($DB);
+        If Sz = 8 Then EncMem(7, I.A) Else EncMem(3, I.A);
+        Exit;
+      End;
+    OP_FADD, OP_FMUL, OP_FSUB, OP_FSUBR, OP_FDIV, OP_FDIVR,
+    OP_FCOM, OP_FCOMP:
+      Begin
+        Case I.Op Of
+          OP_FADD  : Digit := 0;
+          OP_FMUL  : Digit := 1;
+          OP_FCOM  : Digit := 2;
+          OP_FCOMP : Digit := 3;
+          OP_FSUB  : Digit := 4;
+          OP_FSUBR : Digit := 5;
+          OP_FDIV  : Digit := 6;
+          OP_FDIVR : Digit := 7;
+        End;
+        If HasSt Then
+        Begin
+          If I.Op = OP_FCOM Then
+          Begin
+            PutB($D8); PutB($D0 + I.A.Imm); Exit;
+          End;
+          If I.Op = OP_FCOMP Then
+          Begin
+            PutB($D8); PutB($D8 + I.A.Imm); Exit;
+          End;
+          If (I.B.Kind = OK_ST) And (I.A.Imm = 0) Then
+          Begin
+            { forme ST(0), ST(i) : D8 + base }
+            PutB($D8);
+            Case I.Op Of
+              OP_FADD  : PutB($C0 + I.B.Imm);
+              OP_FMUL  : PutB($C8 + I.B.Imm);
+              OP_FSUB  : PutB($E0 + I.B.Imm);
+              OP_FSUBR : PutB($E8 + I.B.Imm);
+              OP_FDIV  : PutB($F0 + I.B.Imm);
+              OP_FDIVR : PutB($F8 + I.B.Imm);
+            End;
+            Exit;
+          End;
+          { forme ST(i), ST(0) : DC + base }
+          PutB($DC);
+          Case I.Op Of
+            OP_FADD  : PutB($C0 + I.A.Imm);
+            OP_FMUL  : PutB($C8 + I.A.Imm);
+            OP_FSUBR : PutB($E0 + I.A.Imm);
+            OP_FSUB  : PutB($E8 + I.A.Imm);
+            OP_FDIVR : PutB($F0 + I.A.Imm);
+            OP_FDIV  : PutB($F8 + I.A.Imm);
+          End;
+          Exit;
+        End;
+        Op32 := $D8; Op64 := $DC;
+      End;
+    OP_FNSTCW: Begin PutB($D9); EncMem(7, I.A); Exit; End;
+    OP_FLDCW : Begin PutB($D9); EncMem(5, I.A); Exit; End;
+    OP_FXCH  : Begin PutB($D9); PutB($C8 + I.A.Imm); Exit; End;
+    OP_FADDP : Begin PutB($DE); PutB($C0 + I.A.Imm); Exit; End;
+    OP_FMULP : Begin PutB($DE); PutB($C8 + I.A.Imm); Exit; End;
+    OP_FSUBP : Begin PutB($DE); PutB($E8 + I.A.Imm); Exit; End;
+    OP_FDIVP : Begin PutB($DE); PutB($F8 + I.A.Imm); Exit; End;
+    OP_FNSTSW: Begin PutB($DF); PutB($E0); Exit; End;
+  End;
+  If I.A.Kind <> OK_MEM Then EncBad(I);
+  If I.A.Size = 4 Then
+  Begin
+    PutB(Op32);
+    EncMem(Digit, I.A);
+  End
+  Else If I.A.Size = 8 Then
+  Begin
+    PutB(Op64);
+    EncMem(Digit, I.A);
+  End
+  Else
+    EncBad(I);
+  StOp := StOp + 0;
+End;
+
+Procedure EncodeInstr(Const I : TInstr; Near : Boolean);
+Var
+  Sz, Cc : Integer;
+Begin
+  Enc.Len := 0;
+  Enc.NFix := 0;
+  Enc.RelPos := -1;
+  Enc.RelSize := 0;
+  Enc.RelSym := -1;
+  Case I.Op Of
+    OP_NOP, OP_LABEL, OP_COMMENT, OP_BLANK: ;
+    OP_MOV : EncMov(I);
+    OP_MOVZX:
+      Begin
+        If (I.B.Kind = OK_REG) And (RegSize(I.B.Reg) = 1) Or
+           ((I.B.Kind = OK_MEM) And (I.B.Size = 1)) Then
+        Begin
+          PutB($0F); PutB($B6);
+        End
+        Else
+        Begin
+          PutB($0F); PutB($B7);
+        End;
+        EncRM(RegCode(I.A.Reg), I.B);
+      End;
+    OP_LEA :
+      Begin
+        PutB($8D);
+        EncMem(RegCode(I.A.Reg), I.B);
+      End;
+    OP_PUSH:
+      Case I.A.Kind Of
+        OK_REG    : PutB($50 + RegCode(I.A.Reg));
+        OK_IMM    :
+          If Fits8(I.A.Imm) Then
+          Begin
+            PutB($6A); PutB(I.A.Imm);
+          End
+          Else
+          Begin
+            PutB($68); PutD(I.A.Imm);
+          End;
+        OK_OFFSET : Begin PutB($68); PutAbs(I.A.Sym, I.A.Imm); End;
+        OK_MEM    : Begin PutB($FF); EncMem(6, I.A); End;
+      Else
+        EncBad(I);
+      End;
+    OP_POP :
+      If I.A.Kind = OK_REG Then
+        PutB($58 + RegCode(I.A.Reg))
+      Else
+      Begin
+        PutB($8F);
+        EncRM(0, I.A);
+      End;
+    OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_CMP: EncAlu(I);
+    OP_IMUL:
+      If I.B.Kind = OK_IMM Then
+      Begin
+        If Fits8(I.B.Imm) Then
+        Begin
+          PutB($6B); PutB($C0 Or (RegCode(I.A.Reg) Shl 3) Or
+                          RegCode(I.A.Reg)); PutB(I.B.Imm);
+        End
+        Else
+        Begin
+          PutB($69); PutB($C0 Or (RegCode(I.A.Reg) Shl 3) Or
+                          RegCode(I.A.Reg)); PutD(I.B.Imm);
+        End;
+      End
+      Else
+      Begin
+        PutB($0F); PutB($AF);
+        EncRM(RegCode(I.A.Reg), I.B);
+      End;
+    OP_IDIV: EncUnary(I, 7);
+    OP_DIV : EncUnary(I, 6);
+    OP_NEG : EncUnary(I, 3);
+    OP_NOT : EncUnary(I, 2);
+    OP_CDQ : PutB($99);
+    OP_INC : EncIncDec(I, 0);
+    OP_DEC : EncIncDec(I, 1);
+    OP_TEST:
+      Begin
+        Sz := OpSize(I.A, I.B);
+        If I.B.Kind = OK_IMM Then
+        Begin
+          If Sz = 1 Then PutB($F6) Else PutB($F7);
+          EncRM(0, I.A);
+          If Sz = 1 Then PutB(I.B.Imm) Else PutD(I.B.Imm);
+        End
+        Else
+        Begin
+          If Sz = 1 Then PutB($84) Else PutB($85);
+          EncRM(RegCode(I.B.Reg), I.A);
+        End;
+      End;
+    OP_SHL : EncShift(I, 4);
+    OP_SHR : EncShift(I, 5);
+    OP_SAR : EncShift(I, 7);
+    OP_SETE, OP_SETNE, OP_SETL, OP_SETLE, OP_SETG, OP_SETGE, OP_SETA,
+    OP_SETAE, OP_SETB, OP_SETBE:
+      Begin
+        PutB($0F); PutB($90 + CcOf(I.Op));
+        EncRM(0, I.A);
+      End;
+    OP_JMP, OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JA, OP_JAE,
+    OP_JB, OP_JBE, OP_JS, OP_JNS:
+      Begin
+        If I.A.Kind = OK_LABEL Then
+        Begin
+          Enc.RelSym := I.A.Sym;
+          If I.Op = OP_JMP Then
+          Begin
+            If Near Then
+            Begin
+              PutB($E9); Enc.RelPos := Enc.Len; Enc.RelSize := 4; PutD(0);
+            End
+            Else
+            Begin
+              PutB($EB); Enc.RelPos := Enc.Len; Enc.RelSize := 1; PutB(0);
+            End;
+          End
+          Else
+          Begin
+            Cc := CcOf(I.Op);
+            If Near Then
+            Begin
+              PutB($0F); PutB($80 + Cc);
+              Enc.RelPos := Enc.Len; Enc.RelSize := 4; PutD(0);
+            End
+            Else
+            Begin
+              PutB($70 + Cc);
+              Enc.RelPos := Enc.Len; Enc.RelSize := 1; PutB(0);
+            End;
+          End;
+        End
+        Else If I.Op = OP_JMP Then
+        Begin
+          PutB($FF);
+          EncRM(4, I.A);
+        End
+        Else
+          EncBad(I);
+      End;
+    OP_CALL:
+      If I.A.Kind = OK_LABEL Then
+      Begin
+        PutB($E8);
+        Enc.RelSym := I.A.Sym;
+        Enc.RelPos := Enc.Len;
+        Enc.RelSize := 4;
+        PutD(0);
+      End
+      Else
+      Begin
+        PutB($FF);
+        EncRM(2, I.A);
+      End;
+    OP_RET :
+      If I.A.Kind = OK_IMM Then
+      Begin
+        PutB($C2); PutW(I.A.Imm);
+      End
+      Else
+        PutB($C3);
+    OP_REP_STOSD: Begin PutB($F3); PutB($AB); End;
+    OP_REP_MOVSD: Begin PutB($F3); PutB($A5); End;
+    OP_REP_MOVSB: Begin PutB($F3); PutB($A4); End;
+    OP_FLD, OP_FST, OP_FSTP, OP_FILD, OP_FISTP, OP_FADD, OP_FSUB,
+    OP_FSUBR, OP_FMUL, OP_FDIV, OP_FDIVR, OP_FCOM, OP_FCOMP, OP_FNSTCW,
+    OP_FLDCW, OP_FXCH, OP_FADDP, OP_FSUBP, OP_FMULP, OP_FDIVP,
+    OP_FNSTSW: EncFpu(I);
+    OP_FCHS   : Begin PutB($D9); PutB($E0); End;
+    OP_FABS   : Begin PutB($D9); PutB($E1); End;
+    OP_FTST   : Begin PutB($D9); PutB($E4); End;
+    OP_FLD1   : Begin PutB($D9); PutB($E8); End;
+    OP_FLDL2E : Begin PutB($D9); PutB($EA); End;
+    OP_FLDLN2 : Begin PutB($D9); PutB($ED); End;
+    OP_FLDZ   : Begin PutB($D9); PutB($EE); End;
+    OP_F2XM1  : Begin PutB($D9); PutB($F0); End;
+    OP_FYL2X  : Begin PutB($D9); PutB($F1); End;
+    OP_FPATAN : Begin PutB($D9); PutB($F3); End;
+    OP_FRNDINT: Begin PutB($D9); PutB($FC); End;
+    OP_FSCALE : Begin PutB($D9); PutB($FD); End;
+    OP_FSQRT  : Begin PutB($D9); PutB($FA); End;
+    OP_FSIN   : Begin PutB($D9); PutB($FE); End;
+    OP_FCOS   : Begin PutB($D9); PutB($FF); End;
+    OP_SAHF   : PutB($9E);
+  Else
+    EncBad(I);
+  End;
+End;
+
+{ ---- Donnees ---- }
+
+Procedure DataByte(V : LongInt);
+Begin
+  If BinDataLen >= MAX_BIN_DATA Then
+    FatalError('segment de donnees trop grand');
+  BinData[BinDataLen] := V And $FF;
+  Inc(BinDataLen);
+End;
+
+Procedure DataDword(V : LongInt);
+Begin
+  DataByte(V);
+  DataByte(V Shr 8);
+  DataByte(V Shr 16);
+  DataByte(V Shr 24);
+End;
+
+Procedure AddFix(Sect : Byte; Off : LongInt; Kind : TBinFixKind;
+                 Sym : Integer);
+Begin
+  If BinFixCount >= MAX_BIN_FIX Then
+    FatalError('trop de relocations (max ' + ItoS(MAX_BIN_FIX) + ')');
+  BinFix[BinFixCount].Sect := Sect;
+  BinFix[BinFixCount].Off  := Off;
+  BinFix[BinFixCount].Kind := Kind;
+  BinFix[BinFixCount].Sym  := Sym;
+  Inc(BinFixCount);
+End;
+
+Procedure EncodeData;
+Var
+  I, J, N : Integer;
+  S       : TString;
+Begin
+  For I := 0 To DataCount - 1 Do
+  Begin
+    While (BinDataLen And 3) <> 0 Do DataByte(0);
+    BinLbl[DataTab[I].Name].Sect := 2;
+    BinLbl[DataTab[I].Name].Off  := BinDataLen;
+    Case DataTab[I].Kind Of
+      DK_ZERO :
+        For J := 1 To (DataTab[I].Size + 3) Div 4 Do DataDword(0);
+      DK_STR  :
+        Begin
+          S := AsmStrs[DataTab[I].Str];
+          For J := 1 To Length(S) Do DataByte(Ord(S[J]));
+          DataByte(0);
+        End;
+      DK_INT  : DataDword(DataTab[I].Lo);
+      DK_REAL :
+        Begin
+          DataDword(DataTab[I].Lo);
+          DataDword(DataTab[I].Hi);
+        End;
+      DK_TABLE:
+        For J := 0 To DataTab[I].Count - 1 Do
+        Begin
+          N := TabEnt[DataTab[I].First + J];
+          AddFix(1, BinDataLen, BF_ABS32, N);
+          DataDword(0);
+        End;
+    End;
+  End;
+  While (BinDataLen And 3) <> 0 Do DataByte(0);
+End;
+
+{ ---- Code : mise en page et emission ---- }
+
+Function IsRelJump(Const I : TInstr) : Boolean;
+Begin
+  IsRelJump := (I.Op In [OP_JMP, OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG,
+                         OP_JGE, OP_JA, OP_JAE, OP_JB, OP_JBE, OP_JS,
+                         OP_JNS]) And (I.A.Kind = OK_LABEL);
+End;
+
+Procedure AddImport(Sym : Integer);
+Var
+  K : Integer;
+Begin
+  For K := 0 To BinImportCount - 1 Do
+    If BinImport[K] = Sym Then Exit;
+  If BinImportCount > 255 Then FatalError('trop d''imports');
+  BinImport[BinImportCount] := Sym;
+  Inc(BinImportCount);
+End;
+
+Procedure EncodeCode;
+Var
+  N, I, K       : LongInt;
+  Off           : LongInt;
+  Changed       : Boolean;
+  Ins           : TInstr;
+  Disp, Target  : LongInt;
+  Sym           : Integer;
+Begin
+  N := CodeCount + DeferCount;
+  For I := 0 To N - 1 Do InstrNear[I] := False;
+  { sauts courts d'abord ; agrandis tant qu'un deplacement deborde }
+  Repeat
+    Changed := False;
+    Off := 0;
+    For I := 0 To N - 1 Do
+    Begin
+      InstrOff[I] := Off;
+      Ins := InstrAt(I);
+      If Ins.Op = OP_LABEL Then
+      Begin
+        BinLbl[Ins.A.Sym].Sect := 1;
+        BinLbl[Ins.A.Sym].Off  := Off;
+      End
+      Else
+      Begin
+        EncodeInstr(Ins, InstrNear[I]);
+        Off := Off + Enc.Len;
+      End;
+    End;
+    InstrOff[N] := Off;
+    For I := 0 To N - 1 Do
+    Begin
+      Ins := InstrAt(I);
+      If IsRelJump(Ins) And (Not InstrNear[I]) Then
+      Begin
+        Sym := Ins.A.Sym;
+        If BinLbl[Sym].Sect <> 1 Then
+        Begin
+          InstrNear[I] := True;            { cible externe : rel32 }
+          Changed := True;
+        End
+        Else
+        Begin
+          Disp := BinLbl[Sym].Off - (InstrOff[I] + 2);
+          If Not Fits8(Disp) Then
+          Begin
+            InstrNear[I] := True;
+            Changed := True;
+          End;
+        End;
+      End;
+    End;
+  Until Not Changed;
+
+  { emission }
+  BinCodeLen := 0;
+  For I := 0 To N - 1 Do
+  Begin
+    Ins := InstrAt(I);
+    EncodeInstr(Ins, InstrNear[I]);
+    If BinCodeLen + Enc.Len > MAX_BIN_CODE Then
+      FatalError('code binaire trop grand');
+    For K := 0 To Enc.Len - 1 Do
+      BinCode[BinCodeLen + K] := Enc.B[K];
+    For K := 1 To Enc.NFix Do
+      AddFix(0, BinCodeLen + Enc.FixPos[K], BF_ABS32, Enc.FixSym[K]);
+    If Enc.RelPos >= 0 Then
+    Begin
+      Sym := Enc.RelSym;
+      If BinLbl[Sym].Sect = 1 Then
+      Begin
+        Target := BinLbl[Sym].Off;
+        Disp := Target - (BinCodeLen + Enc.Len);
+        For K := 0 To Enc.RelSize - 1 Do
+          BinCode[BinCodeLen + Enc.RelPos + K] := (Disp Shr (8 * K)) And $FF;
+      End
+      Else If BinLbl[Sym].Sect = 0 Then
+      Begin
+        If Enc.RelSize <> 4 Then
+          FatalError('encodeur: saut court vers une cible externe');
+        AddFix(0, BinCodeLen + Enc.RelPos, BF_REL32, Sym);
+        AddImport(Sym);
+      End
+      Else
+        FatalError('encodeur: saut vers une donnee: ' + NameTab[Sym]);
+    End;
+    BinCodeLen := BinCodeLen + Enc.Len;
+  End;
+End;
+
+{ Verifie que chaque symbole reference par une adresse absolue est
+  defini (code ou donnees) }
+Procedure CheckFixups;
+Var
+  I : LongInt;
+Begin
+  For I := 0 To BinFixCount - 1 Do
+    If (BinFix[I].Kind = BF_ABS32) And (BinLbl[BinFix[I].Sym].Sect = 0) Then
+      FatalError('symbole non defini: ' + NameTab[BinFix[I].Sym]);
+End;
+
+Procedure EncodeProgram;
+Var
+  I : LongInt;
+Begin
+  For I := 0 To NameCount - 1 Do
+  Begin
+    BinLbl[I].Sect := 0;
+    BinLbl[I].Off  := 0;
+  End;
+  BinDataLen := 0;
+  BinFixCount := 0;
+  BinImportCount := 0;
+  EncodeData;
+  EncodeCode;
+  CheckFixups;
+End;
+
+Function Hex8(V : LongInt) : TString;
+Var
+  R : TString;
+  I : Integer;
+Begin
+  R := '';
+  For I := 1 To 8 Do
+  Begin
+    R := Copy('0123456789ABCDEF', (V And 15) + 1, 1) + R;
+    V := (V Shr 4) And $0FFFFFFF;
+  End;
+  Hex8 := R;
+End;
+
+{ Listing hexadecimal du code (mode -d) : decalage, octets, texte }
+Procedure WriteBinListing(Const FileName : TString);
+Var
+  F        : Text;
+  I, K     : LongInt;
+  Ins      : TInstr;
+  S        : TString;
+Begin
+  Assign(F, FileName);
+  Rewrite(F);
+  If IOResult <> 0 Then Exit;
+  NoteOutput(FileName);
+  For I := 0 To CodeCount + DeferCount - 1 Do
+  Begin
+    Ins := InstrAt(I);
+    Case Ins.Op Of
+      OP_LABEL   : WriteLn(F, '        ', NameTab[Ins.A.Sym], ':');
+      OP_COMMENT, OP_BLANK, OP_NOP : ;
+    Else
+      Begin
+        { octets definitifs (deplacements resolus, adresses a zero) }
+        S := '';
+        For K := InstrOff[I] To InstrOff[I + 1] - 1 Do
+          S := S + Copy('0123456789ABCDEF', (BinCode[K] Shr 4) + 1, 1) +
+               Copy('0123456789ABCDEF', (BinCode[K] And 15) + 1, 1) + ' ';
+        While Length(S) < 30 Do S := S + ' ';
+        WriteLn(F, Hex8(InstrOff[I]), '  ', S, InstrText(Ins));
+      End;
+    End;
+  End;
+  Close(F);
+End;
+
 Procedure PhaseEncode;
 Begin
-  { A faire : TODO 20 }
+  EncodeProgram;
+  If Opts.Verbose Then
+    WriteLn('  .text : ', BinCodeLen, ' octets, .data : ', BinDataLen,
+            ' octets, ', BinFixCount, ' relocation(s), ', BinImportCount,
+            ' import(s)');
+  If Opts.DebugMode Then
+    WriteBinListing(ReplaceExt(Opts.OutFile, '.lst'));
 End;
+
 
 { ============================================================
   SECTION 13 - ECRIVAINS PE (.EXE) ET COFF (.OBJ) (TODO 21)
