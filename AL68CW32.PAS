@@ -65,10 +65,12 @@
       collaterale de valeurs de modes differents (INT, BOOL, CHAR,
       STRING, newline, space), print(chaine) accepte une seule valeur.
     - Extensions tolerees par les exemples : DOWNTO, SHL et SHR sur
-      INT, /:= sur INT (division entiere), PAR execute sequentiellement
-      (avertissement), declarations apres des instructions.
-    - Pas de ramasse-miettes : HEAP alloue sur le tas Win32 sans
-      liberation ; LOC (par defaut) vit dans le cadre de la clause.
+      INT, /:= sur INT (division entiere), declarations apres des
+      instructions. PAR cree de vrais processus (coroutines, voir
+      LANGAGE COMPLEMENTAIRE).
+    - Ramasse-miettes conservateur (voir CORRECTIONS) : HEAP, tableaux
+      dynamiques, chaines sont recuperes ; LOC (par defaut) vit dans le
+      cadre de la clause.
 
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
@@ -813,11 +815,11 @@
               en double, procedure en double, ':' manquant, routine
               attendue apres '=' ; les 27 exemples restent analyses ; les
               essais des TODOs 8 a 15 donnent les memes valeurs
-            Limites : une routine qui renvoie une procedure liee a son
-              propre cadre n'est pas sure (le cadre disparait) ; pas de
-              GOTO hors d'une procedure ; pas de procedures mutuellement
-              recursives (declaration avant usage) ; tableaux passes par
-              descripteur (les elements ne sont pas recopies)
+            Limites : (levees ensuite, voir LANGAGE COMPLEMENTAIRE) une
+              routine qui renvoie une procedure liee a son propre cadre,
+              GOTO hors d'une procedure, procedures mutuellement
+              recursives ; tableaux passes par descripteur sans copie
+              (corrige dans CORRECTIONS)
             Reste : le codeur du TODO 20 doit prendre en charge CALL
               indirect par memoire, RET n, MOV ESP,EBP et SUB ESP
 
@@ -903,9 +905,10 @@
               alternative, selecteur qui n'est pas une union, branche de
               mode incorrect ; les 27 exemples restent analyses ; les
               essais des TODOs 8 a 17 donnent les memes valeurs
-            Limites : pas de OUSE ni de forme abregee ( x | (INT i) : ... )
-              pour la conformite ; les alternatives sont comparees par
-              leur mode exact (pas de REF dans une alternative)
+            Limites : les alternatives sont comparees par leur mode exact
+              (pas de REF dans une alternative) ; OUSE et la forme abregee
+              ( x | (INT i) : ... ) ont ete ajoutes ensuite (LANGAGE
+              COMPLEMENTAIRE)
 
   TODO 19 - TRANSPUT, CLAUSES COLLATERALES ET PARALLELES [IMPLEMENTE]
             print((a, b, c)) : liste collaterale de valeurs de modes
@@ -920,8 +923,9 @@
               utile (a documenter, entree standard)
             Clause collaterale (u1, u2, u3) : evaluation de gauche a
               droite, utilisee aussi pour les initialiseurs de rangees
-            PAR (u1, u2) et PAR BEGIN ... END : execution sequentielle
-              avec avertissement (pas de vrais processus)
+            PAR (u1, u2) et PAR BEGIN ... END : au TODO 19 execution
+              sequentielle ; processus reels ensuite (LANGAGE
+              COMPLEMENTAIRE)
             Formats d'affichage a documenter : entier decimal, reel en
               notation fixe, BOOL TRUE / FALSE ou true / false (a
               trancher d'apres les exemples), fin de ligne CR LF
@@ -942,8 +946,8 @@
               sqrt, sin, cos, tan, arctan, ln, exp generees en ligne en
               x87 ; clause collaterale (u1, u2) en contexte vide :
               unites elaborees de gauche a droite ; PAR ( ... ) et PAR
-              BEGIN ... END : clause fermee ou collaterale elaboree
-              sequentiellement, avec avertissement (-w)
+              BEGIN ... END : clause fermee ou collaterale (TODO 19 ;
+              processus reels ensuite, voir LANGAGE COMPLEMENTAIRE)
             Formats retenus (a realiser au TODO 22) : entier en decimal
               sans remplissage, signe - ; REAL en notation fixe, 6
               decimales au plus, zeros finaux supprimes mais une decimale
@@ -964,10 +968,10 @@
               clause, element manquant ; les 27 exemples sont analyses
               sans aucune unite non analysee ; les essais des TODOs 8 a 18
               donnent les memes valeurs
-            Limites : print n'affiche ni tableaux ni structures ni unions ;
-              pas de formats (printf style), pas de fichiers ; read((x,
-              newline)) ignore newline ; PAR n'a pas de parallelisme ;
-              WRITEREAL est limite a 9.2E12 (voir TODO 22)
+            Limites : read((x, newline)) ignore newline ; (print de
+              tableaux, structures et unions, formats, fichiers, PAR et
+              l'ecriture des grands reels ont ete ajoutes ensuite, voir
+              LANGAGE COMPLEMENTAIRE)
 
   TODO 20 - ENCODEUR BINAIRE x86-32 [IMPLEMENTE]
             Reprendre et adapter l'encodeur d'AL60CW32 : chaque
@@ -1155,9 +1159,8 @@
               n'est pas une structure, indice sur un non-tableau,
               clause de conformite incorrecte, division par zero
               constante
-            Avertissements : PAR execute sequentiellement, PRIO absente,
-              etiquette inutilisee, conversions implicites, variable non
-              initialisee
+            Avertissements : PRIO absente, etiquette inutilisee,
+              conversions implicites, variable non initialisee
             Format "fichier(ligne,col) : erreur/avertissement : message"
             Recuperation pour reporter plusieurs erreurs
             Compteurs finaux, code de retour 1 si erreurs, aucun fichier
@@ -1287,10 +1290,7 @@
               (binaire Linux x86-64 statique) ajoutes ; WIN32\al68cw32.exe
               reste a produire sous Windows
             Limites connues du compilateur (voir les TODOs concernes) :
-              PAR sequentiel ; une routine ne doit pas renvoyer une
-              procedure liee a son propre cadre ; tableaux a plusieurs
-              dimensions : tranches et affichages supportes si les
-              sous-affichages ont tous la meme forme (sinon erreur)
+              voir les limites de la section LANGAGE COMPLEMENTAIRE
 
   CORRECTIONS APRES LE TODO 25 [IMPLEMENTE]
             Realise : (1) plus de code manquant sans erreur : chaque
@@ -1323,6 +1323,82 @@
               ressemble a une adresse retient un bloc) ; un pointeur
               present seulement dans un registre x87 ou non sauvegarde
               n'est pas une racine ; pas de FREE explicite en Algol 68
+
+  LANGAGE COMPLEMENTAIRE (apres les corrections) [IMPLEMENTE]
+            Realise :
+            (1) print : tableaux (ligne par ligne, toutes dimensions),
+              structures (champ par champ) et unions (selon l'etiquette)
+              de modes affichables (GenPrintMem, PrintableMode) ; reels
+              hors de [5E-7, 1E13[ en notation d.dddddde+n ; BITS non
+              signes ; COMPL ecrit re+imi.
+            (2) tableaux : un affichage dont un element est un tableau est
+              une concatenation (f := (f, 3) agrandit un FLEX ; (a, 3, a))
+              GenDisplaySpread : allocation sur le tas et copie des
+              elements.
+            (3) procedures : PROC p = PROC (INT) INT : g (le second PROC
+              est une conversion ; PROC p = g est aussi accepte, identite
+              de mode PROC) ; OP (modes) mode nom = routine ; procedures
+              mutuellement recursives et usage avant declaration pour
+              PROC nom = (routine) d'une meme clause (PreDeclProcs annonce
+              les en-tetes avant d'analyser les corps) ; GOTO hors d'une
+              procedure (le cadre cible est retrouve par la chaine
+              statique, ESP est rendu par un emplacement du cadre :
+              NeedSP/SPSlot) ; une routine dont le resultat contient une
+              PROC garde son cadre sur le tas (fermetures : GenRoutineBody,
+              ModeHasProc), les rendus sont donc valables apres le retour ;
+              le ramasse-miettes prend EBX et EBP comme racines.
+            (4) conformite : OUSE, forme abregee ( x | (INT i) : u, ... |
+              u ) et |: pour la conformite (ParseConfTail).
+            (5) modes : LONG INT sur 64 bits (MK_LINT, objet de 8 octets
+              en memoire, operateurs realises par le runtime : + - * OVER
+              MOD / ** comparaisons, +:= etc., ABS SIGN ODD, LENG SHORTEN,
+              denotations de plus de 31 bits, print et read) ; SHORT INT
+              = INT, LONG REAL et SHORT REAL = REAL, LONG BITS = BITS
+              (memes representations) ; BITS : denotations 2r1010 8r777
+              16rFF jusqu'a 32 bits ; COMPL = STRUCT (REAL re, im) avec +*
+              RE IM ABS ARG CONJ + - * / = /= et affectations composees,
+              elargissement INT/REAL vers COMPL ; BYTES = STRUCT (STRING
+              s) avec bytes pack, ELEMS, LWB, UPB, ELEM, + et comparaisons ;
+              constantes max int, max real, small real, int width, real
+              width, bits width, max abs char, null character, blank,
+              flip, flop, error char, long max int, long pi...
+              Les operateurs de COMPL et BYTES sont ecrits en Algol 68
+              (PreludeCompl, PreludeBytes) et ajoutes au programme, avec
+              des jetons de ligne 0, seulement si le source contient COMPL
+              ou BYTES (LexPreludeText).
+            (6) transput : FILE (poignee, sens, caractere lu d'avance, fin,
+              gestionnaire), stand in / stand out / stand error, open
+              (canaux stand in channel, stand out channel, stand back
+              channel), close, eof, on logical file end, put, get, putf,
+              getf, printf, readf, write, newline(f), space(f),
+              newpage(f) ; formats $ ... $ constants (denotation ou FORMAT
+              f = $...$) deroules a la compilation : [n]d [n]z . + - (entiers
+              et reels en virgule fixe, etoiles en cas de debordement),
+              a b g, x l p / "texte" et groupes n( ... ), liste reprise
+              tant que des valeurs restent (GenFormatted) ; get lit sans
+              tenir compte des largeurs du format.
+            (7) PAR (u1, ..., un) et PAR BEGIN u1, u2 END : chaque unite
+              est un processus (coroutine : pile de 128 Ko sur le tas,
+              cadre du parent partage) ; SEMA = STRUCT (REF INT), LEVEL n,
+              UP, DOWN ; les processus alternent aux DOWN bloques ; la
+              clause finit quand tous ont fini ; interblocage detecte
+              (message sur l'erreur standard, code 1) ; le ramasse-miettes
+              parcourt les piles des processus.
+            Verifie : work/print2, ouse, procs, closure, long (+ .in),
+              compl, file, fmt, real2, par1, par2 (chkrt.sh) ; 6 erreurs de
+              plus dans errors.txt ; encodage ADC SBB MUL verifie par
+              objdump (chkenc) ; le chargeur de test (TESTS/AL60CW32/
+              runpe.c) fournit CreateFileA et CloseHandle
+            Limites : LONG REAL n'a pas plus de precision que REAL ;
+              LONG LONG INT = LONG INT ; formats : pas de motifs e, c, k,
+              q, s ni de replicateur calcule ; un format doit etre
+              constant ; reels de format en virgule fixe seulement ; pas
+              de whole/fixed/float pour LONG INT ni de string en sortie ;
+              on logical file end seulement (pas d'autres evenements) ;
+              les processus d'un PAR ne doivent pas sortir de la clause
+              par GOTO ; pile de 128 Ko par processus ; ordonnancement
+              cooperatif (changement de processus seulement dans DOWN) ;
+              un mode COMPL ou BYTES ne doit pas etre redefini
   ============================================================ *)
 
 Program AL68CW32;
@@ -3162,6 +3238,7 @@ Var
   ModeBadRec: Boolean;   { une taille a rencontre un mode recursif }
   PreludeModes : Integer; { modes crees avant le programme (prelude)  }
   ModeCompl, ModeBytes : Integer;   { COMPL et BYTES                   }
+  ModeSema : Integer;                { SEMA = STRUCT (REF INT)            }
   ModeFile : Integer;                { FILE                              }
 
 Function ModeNewRaw(K : TModeKind) : Integer;
@@ -4321,6 +4398,10 @@ Begin
   SymDeclare('FILE', SK_MODE, ModeFile, 0, 0);
   SymDeclare('CHANNEL', SK_MODE, MD_INT, 0, 0);
   SymDeclare('FORMAT', SK_MODE, MD_FORMAT, 0, 0);
+  ModeTmpReset;
+  ModeTmpAdd('cell', ModeRef(MD_INT), 0, 0);
+  ModeSema := ModeStructTmp(0, 0);
+  SymDeclare('SEMA', SK_MODE, ModeSema, 0, 0);
 
   { priorites standard (Revised Report) }
   PrePrio('OR', 2);
@@ -4406,6 +4487,9 @@ Begin
   PreOpGeneric('LWB', 2, MD_INT);
   PreOpGeneric('UPB', 2, MD_INT);
   PreLongOps;
+  PreRtOp('LEVEL', MD_INT, -1, ModeSema, 'SEMLEVEL');
+  PreRtOp('UP', ModeSema, -1, MD_VOID, 'SEMUP');
+  PreRtOp('DOWN', ModeSema, -1, MD_VOID, 'SEMDOWN');
 
   { identificateurs standard }
   PreStd('pi', MD_REAL);
@@ -8127,18 +8211,33 @@ End;
   elaborees l'une apres l'autre (avertissement) }
 Function ParsePar : LongInt;
 Var
-  U : LongInt;
-  L, C : Integer;
+  U, K  : LongInt;
+  Depth : Integer;
+  Comma : Boolean;
 Begin
-  L := TokTab[TokPos].Line;
-  C := TokTab[TokPos].Col;
-  WarnAt(L, C, 'PAR : unites elaborees sequentiellement, sans processus ' +
-         'paralleles');
   ParserAdvance;                             { PAR }
-  If AtKw('BEGIN') Or (AtPunct('(') And ParenIsClosed) Then
+  Comma := False;
+  If AtKw('BEGIN') Then
+  Begin
+    K := TokPos + 1;
+    Depth := 1;
+    While (K < TokCount - 1) And (Depth > 0) Do
+    Begin
+      If TokDepth(TokTab[K]) > 0 Then Inc(Depth)
+      Else If TokDepth(TokTab[K]) < 0 Then Dec(Depth);
+      If (Depth = 1) And (TokTab[K].Kind = TK_PUNCT) And
+         (TokTab[K].Val = ',') Then Comma := True;
+      Inc(K);
+    End;
+  End;
+  If (AtKw('BEGIN') And Not Comma) Or
+     (AtPunct('(') And ParenIsClosed) Then
     U := ParseClosed
-  Else If AtPunct('(') Then
-    U := ParseDisplay
+  Else If AtKw('BEGIN') Or AtPunct('(') Then
+  Begin
+    U := ParseDisplay;
+    UnitTab[U].E := 1;                       { processus paralleles }
+  End
   Else
   Begin
     ParseError('clause collaterale attendue apres PAR');
@@ -8874,9 +8973,11 @@ Var
   U, First, Last, A : LongInt;
   Count             : Integer;
   More              : Boolean;
+  IsBegin           : Boolean;
 Begin
   U := UnitNew(UK_DISPLAY, TokTab[TokPos].Line, TokTab[TokPos].Col);
-  ParserAdvance;                             { ( }
+  IsBegin := AtKw('BEGIN');
+  ParserAdvance;                             { ( ou BEGIN }
   First := -1;
   Last := -1;
   Count := 0;
@@ -8893,7 +8994,14 @@ Begin
       More := True;
     End;
   Until (Not More) Or AtEOF;
-  If AtPunct(')') Then
+  If IsBegin Then
+  Begin
+    If AtKw('END') Then
+      ParserAdvance
+    Else
+      ParseError('END attendu pour fermer la clause collaterale');
+  End
+  Else If AtPunct(')') Then
     ParserAdvance
   Else
     ParseError(''')'' attendu pour fermer l''affichage');
@@ -12640,6 +12748,49 @@ Begin
   End;
 End;
 
+{ PAR (u1, ..., un) : chaque unite devient un processus (pile de 128 Ko
+  sur le tas, cadre du parent partage) ; les processus alternent aux
+  points d'attente DOWN ; la clause se termine quand tous ont fini }
+Procedure GenPar(U : LongInt);
+Var
+  Lbl  : Array[1..32] Of Integer;
+  A    : LongInt;
+  I, N : Integer;
+  LEnd : Integer;
+Begin
+  N := 0;
+  A := UnitTab[U].A;
+  While A >= 0 Do
+  Begin
+    Inc(N);
+    If N > 32 Then
+    Begin
+      GenUnsupported(UnitTab[U].Line, UnitTab[U].Col,
+                     'PAR de plus de 32 unites');
+      Exit;
+    End;
+    Lbl[N] := NewLabel;
+    A := UnitTab[A].Next;
+  End;
+  LEnd := NewLabel;
+  For I := 1 To N Do
+  Begin
+    Emit(OP_MOV, OpReg(R_EAX), OpOffset(Lbl[I]));
+    CallRT('COSPAWN');
+  End;
+  CallRT('COWAIT');
+  Emit1(OP_JMP, OpLabel(LEnd));
+  A := UnitTab[U].A;
+  For I := 1 To N Do
+  Begin
+    EmitLabel(Lbl[I]);
+    GenValue(A);
+    CallRT('COEXIT');
+    A := UnitTab[A].Next;
+  End;
+  EmitLabel(LEnd);
+End;
+
 Procedure GenDisplaySpread(U : LongInt);
 Var
   M, Elem, ES : Integer;
@@ -12761,6 +12912,11 @@ Var
   Cnt       : Array[0..MAX_ARRAY_DIM - 1] Of LongInt;
 Begin
   M := ModeResolve(UnitTab[U].Mode);
+  If (M = MD_VOID) And (UnitTab[U].E = 1) Then
+  Begin
+    GenPar(U);
+    Exit;
+  End;
   If M = MD_VOID Then
   Begin
     { clause collaterale en contexte vide }
@@ -14897,7 +15053,7 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 2464;
+  RT_LINES = 2642;
   RT_MAX_ROUT = 200;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_FAIL',
@@ -15211,6 +15367,14 @@ Const
   'PUSH EBX',
   'PUSH EBP',
   'MOV ESI, ESP',
+  'MOV EAX, DWORD PTR [_A68D_COCUR]',
+  'TEST EAX, EAX',
+  'JE _A68R_gcz',
+  'MOV ECX, DWORD PTR [_A68D_CORING]',
+  'CMP EAX, ECX',
+  'JE _A68R_gcz',
+  'MOV ESI, DWORD PTR [ECX+4]',
+  '_A68R_gcz:',
   'MOV EDI, DWORD PTR [_A68_MAINBP]',
   'ADD EDI, 8',
   '_A68R_gc5:',
@@ -17363,7 +17527,177 @@ Const
   'ADD ESP, 16',
   'JMP _A68RT_WRITEINT',
   '_A68R_wsf:',
-  'JMP _A68RT_WRITERF'
+  'JMP _A68RT_WRITERF',
+  '@_A68RT_COINIT',
+  '; cree le contexte principal au premier PAR -> EAX',
+  '_A68RT_COINIT:',
+  'MOV EAX, DWORD PTR [_A68D_COCUR]',
+  'TEST EAX, EAX',
+  'JNE _A68R_ci1',
+  'MOV EAX, 32',
+  'CALL _A68RT_ALLOC',
+  'MOV DWORD PTR [EAX], EAX',
+  'MOV DWORD PTR [_A68D_COCUR], EAX',
+  'MOV DWORD PTR [_A68D_CORING], EAX',
+  '_A68R_ci1:',
+  'RET',
+  '@_A68RT_COSPAWN',
+  '; EAX = entree d''une unite de PAR : nouveau processus (cadre = EBP)',
+  '_A68RT_COSPAWN:',
+  'PUSH EAX',
+  'CALL _A68RT_COINIT',
+  'MOV EAX, 32',
+  'CALL _A68RT_ALLOC',
+  'MOV ECX, DWORD PTR [_A68D_COCUR]',
+  'MOV EDX, DWORD PTR [ECX]',
+  'MOV DWORD PTR [EAX], EDX',
+  'MOV DWORD PTR [ECX], EAX',
+  'MOV DWORD PTR [EAX+28], ECX',
+  'INC DWORD PTR [ECX+24]',
+  'PUSH EAX',
+  'MOV EAX, 131072',
+  'CALL _A68RT_ALLOC',
+  'POP ECX',
+  'MOV DWORD PTR [ECX+12], EAX',
+  'ADD EAX, 131008',
+  'MOV DWORD PTR [ECX+4], EAX',
+  'MOV DWORD PTR [EAX], EBP',
+  'POP EDX',
+  'MOV DWORD PTR [EAX+16], EDX',
+  'MOV EDX, OFFSET _A68RT_COEXIT',
+  'MOV DWORD PTR [EAX+20], EDX',
+  'RET',
+  '@_A68RT_COYIELD',
+  '; passe la main au processus suivant qui peut avancer',
+  '_A68RT_COYIELD:',
+  'PUSH EBX',
+  'PUSH ESI',
+  'PUSH EDI',
+  'PUSH EBP',
+  'MOV EAX, DWORD PTR [_A68D_COCUR]',
+  'MOV DWORD PTR [EAX+4], ESP',
+  'MOV ESI, EAX',
+  '_A68R_cy1:',
+  'MOV ESI, DWORD PTR [ESI]',
+  'MOV ECX, DWORD PTR [ESI+8]',
+  'TEST ECX, ECX',
+  'JE _A68R_cy3',
+  'CMP ECX, 1',
+  'JNE _A68R_cy2',
+  'MOV EDX, DWORD PTR [ESI+16]',
+  'CMP DWORD PTR [EDX], 0',
+  'JG _A68R_cy3',
+  'JMP _A68R_cy4',
+  '_A68R_cy2:',
+  'CMP ECX, 3',
+  'JNE _A68R_cy4',
+  'CMP DWORD PTR [ESI+24], 0',
+  'JE _A68R_cy3',
+  '_A68R_cy4:',
+  'CMP ESI, EAX',
+  'JNE _A68R_cy1',
+  'MOV EAX, OFFSET _A68D_M_DLK',
+  'JMP _A68RT_FAIL',
+  '_A68R_cy3:',
+  'MOV DWORD PTR [_A68D_COCUR], ESI',
+  'MOV ESP, DWORD PTR [ESI+4]',
+  'POP EBP',
+  'POP EDI',
+  'POP ESI',
+  'POP EBX',
+  'RET',
+  '@_A68RT_COWAIT',
+  '; attend la fin de tous les processus crees par le contexte courant',
+  '_A68RT_COWAIT:',
+  'MOV EAX, DWORD PTR [_A68D_COCUR]',
+  'CMP DWORD PTR [EAX+24], 0',
+  'JE _A68R_cw1',
+  'MOV DWORD PTR [EAX+8], 3',
+  'CALL _A68RT_COYIELD',
+  'JMP _A68RT_COWAIT',
+  '_A68R_cw1:',
+  'MOV DWORD PTR [EAX+8], 0',
+  'RET',
+  '@_A68RT_COEXIT',
+  '; fin d''un processus : retire du cercle, passe la main',
+  '_A68RT_COEXIT:',
+  'MOV EAX, DWORD PTR [_A68D_COCUR]',
+  'MOV DWORD PTR [EAX+8], 2',
+  'MOV EDX, DWORD PTR [EAX+28]',
+  'DEC DWORD PTR [EDX+24]',
+  'MOV ESI, EAX',
+  '_A68R_ce1:',
+  'MOV ECX, DWORD PTR [ESI]',
+  'CMP ECX, EAX',
+  'JE _A68R_ce2',
+  'MOV ESI, ECX',
+  'JMP _A68R_ce1',
+  '_A68R_ce2:',
+  'MOV ECX, DWORD PTR [EAX]',
+  'MOV DWORD PTR [ESI], ECX',
+  'MOV ESI, ECX',
+  'MOV EDI, ESI',
+  '_A68R_ce3:',
+  'MOV ECX, DWORD PTR [ESI+8]',
+  'TEST ECX, ECX',
+  'JE _A68R_ce5',
+  'CMP ECX, 1',
+  'JNE _A68R_ce4',
+  'MOV EDX, DWORD PTR [ESI+16]',
+  'CMP DWORD PTR [EDX], 0',
+  'JG _A68R_ce5',
+  'JMP _A68R_ce6',
+  '_A68R_ce4:',
+  'CMP ECX, 3',
+  'JNE _A68R_ce6',
+  'CMP DWORD PTR [ESI+24], 0',
+  'JE _A68R_ce5',
+  '_A68R_ce6:',
+  'MOV ESI, DWORD PTR [ESI]',
+  'CMP ESI, EDI',
+  'JNE _A68R_ce3',
+  'MOV EAX, OFFSET _A68D_M_DLK',
+  'JMP _A68RT_FAIL',
+  '_A68R_ce5:',
+  'MOV DWORD PTR [_A68D_COCUR], ESI',
+  'MOV ESP, DWORD PTR [ESI+4]',
+  'POP EBP',
+  'POP EDI',
+  'POP ESI',
+  'POP EBX',
+  'RET',
+  '@_A68RT_SEMLEVEL',
+  '; LEVEL n -> SEMA (une cellule INT)',
+  '_A68RT_SEMLEVEL:',
+  'MOV EAX, 4',
+  'CALL _A68RT_ALLOC',
+  'MOV ECX, DWORD PTR [ESP+12]',
+  'MOV DWORD PTR [EAX], ECX',
+  'MOV EDX, DWORD PTR [ESP+8]',
+  'MOV DWORD PTR [EDX], EAX',
+  'MOV EAX, EDX',
+  'RET 12',
+  '@_A68RT_SEMUP',
+  '_A68RT_SEMUP:',
+  'MOV ECX, DWORD PTR [ESP+8]',
+  'INC DWORD PTR [ECX]',
+  'RET 8',
+  '@_A68RT_SEMDOWN',
+  '_A68RT_SEMDOWN:',
+  'MOV ECX, DWORD PTR [ESP+8]',
+  '_A68R_sdn1:',
+  'CMP DWORD PTR [ECX], 0',
+  'JG _A68R_sdn2',
+  'CALL _A68RT_COINIT',
+  'MOV DWORD PTR [EAX+8], 1',
+  'MOV DWORD PTR [EAX+16], ECX',
+  'PUSH ECX',
+  'CALL _A68RT_COYIELD',
+  'POP ECX',
+  'JMP _A68R_sdn1',
+  '_A68R_sdn2:',
+  'DEC DWORD PTR [ECX]',
+  'RET 8'
   );
 
 Var
@@ -17492,7 +17826,8 @@ Begin
           (N = '_A68D_GE') Or (N = '_A68D_GV') Or (N = '_A68D_GA') Or
           (N = '_A68D_GR') Or (N = '_A68D_GQ') Or
           (N = '_A68D_GN') Or (N = '_A68D_GP') Or (N = '_A68D_GK') Or
-          (N = '_A68D_INF') Or (N = '_A68D_OUTF') Then
+          (N = '_A68D_INF') Or (N = '_A68D_OUTF') Or
+          (N = '_A68D_COCUR') Or (N = '_A68D_CORING') Then
     DataAddZero(Sym, 4)
   Else If N = '_A68D_PATH' Then DataAddZero(Sym, 264)
   Else If N = '_A68D_SIN' Then RtDataStr(Sym, FileRecStr(-10, 1))
@@ -17514,6 +17849,8 @@ Begin
     RtDataStr(Sym, 'Erreur: reference NIL'#13#10)
   Else If N = '_A68D_M_DIV' Then
     RtDataStr(Sym, 'Erreur: division par zero'#13#10)
+  Else If N = '_A68D_M_DLK' Then
+    RtDataStr(Sym, 'Erreur: interblocage des processus PAR'#13#10)
   Else If N = '_A68D_M_MEM' Then
     RtDataStr(Sym, 'Erreur: memoire insuffisante'#13#10)
   Else If N = '_A68D_MILR' Then RtDataReal(Sym, 0, $412E8480)

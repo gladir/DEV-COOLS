@@ -42,7 +42,6 @@ warn1|BEGIN lab: SKIP END|W|1,7|etiquette non utilisee: lab
 warn2|BEGIN OP ADDX = (INT a, INT b) INT : a + b; INT r := 1 ADDX 2 END|W|1,10|operateur ADDX sans PRIO : priorite 1 par defaut
 warn3|BEGIN INT u; INT v := u + 1 END|W|1,23|variable u lue avant toute affectation
 warn4|BEGIN REAL r := 3; INT i := 2; REAL q := i END|W|1,42|conversion implicite de INT en REAL
-warn5|BEGIN PAR (SKIP, SKIP) END|W|1,7|PAR : unites elaborees sequentiellement, sans processus paralleles
 disp1|BEGIN [1:2,1:2] INT m := ((1, 2), (3)) END|E|1,35|un affichage de [,]INT attend des sous-affichages
 disp2|BEGIN [1:2,1:3] INT m := ((1, 2), (3, 4, 5)) END|E|1,26|affichage de [,]INT dont les lignes n'ont pas toutes la meme longueur
 disp3|BEGIN [1:2,1:2] INT m := (1, 2) END|E|1,27|un affichage de [,]INT attend des sous-affichages

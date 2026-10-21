@@ -1,0 +1,24 @@
+BEGIN
+  SEMA mutex = LEVEL 1;
+  SEMA full = LEVEL 0, empty = LEVEL 1;
+  INT buf := 0;
+  INT sum := 0;
+  PAR (
+    FOR i TO 5 DO
+      DOWN empty;
+      buf := i * 10;
+      print(("put", buf, newline));
+      UP full
+    OD,
+    FOR j TO 5 DO
+      DOWN full;
+      sum +:= buf;
+      print(("got", buf, newline));
+      UP empty
+    OD
+  );
+  print(("sum", sum, newline));
+  INT x := 0;
+  PAR BEGIN x := x + 1, x := x + 10, x := x + 100 END;
+  print(("x", x, newline))
+END

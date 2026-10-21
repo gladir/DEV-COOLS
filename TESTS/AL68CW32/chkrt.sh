@@ -5,11 +5,17 @@
 #     (tranches a plusieurs dimensions), copy.a68 (chaines recopiees,
 #     tableaux passes par valeur), display.a68 (affichages a plusieurs
 #     dimensions), gc.a68 et gc2.a68 (plus de 6 millions d'allocations :
-#     le ramasse-miettes doit rendre la memoire) donnent la sortie des
-#     fichiers .exp (fins de ligne CR LF converties) ;
-#   - indice hors bornes, division par zero, reference NIL et tableaux de
-#     dimensions differentes ecrivent un message sur l'erreur standard et
-#     terminent par le code 1 ;
+#     le ramasse-miettes doit rendre la memoire), print2 (print de
+#     tableaux, structures, unions ; concatenation), ouse (conformite),
+#     procs (formes de PROC et OP, recursion mutuelle, GOTO hors
+#     procedure), closure (fermetures), long (LONG INT, BITS, avec
+#     long.in), compl (COMPL, BYTES), file (fichiers), fmt (formats),
+#     real2 (reels en notation scientifique), par1 et par2 (PAR et
+#     SEMA) donnent la sortie des fichiers .exp (fins de ligne CR LF
+#     converties) ;
+#   - indice hors bornes, division par zero, reference NIL, tableaux de
+#     dimensions differentes et interblocage de PAR ecrivent un message
+#     sur l'erreur standard et terminent par le code 1 ;
 #   - si ML (RUNNER_ML, clone de ML.EXE) est present, le listing .ASM
 #     autonome assemble donne la meme sortie que l'.EXE direct.
 here=$(cd "$(dirname "$0")" && pwd)
@@ -20,7 +26,7 @@ cd "$tmp" || exit 1
 bad=0
 ko() { echo "ECHEC: $1"; bad=1; }
 for n in rt1 pr2 slice copy display gc gc2 print2 ouse procs closure long \
-         compl file fmt real2; do
+         compl file fmt real2 par1 par2; do
   cp "$here/work/$n.a68" .
   "$comp" $n.a68 >log 2>&1 || { ko "compilation $n"; continue; }
   in=/dev/null; [ -f "$here/work/$n.in" ] && in="$here/work/$n.in"
@@ -42,6 +48,7 @@ done <<'LST'
 INT z := 0; INT r := 10 OVER z|division par zero
 REF INT p := NIL; INT v := p|reference NIL
 [1:3] INT a; [1:4] INT b; a := b|dimensions differentes
+SEMA d = LEVEL 0; DOWN d|interblocage
 LST
 if [ -n "$RUNNER_ML" ]; then
   cp "$here/work/rt1.a68" m.a68
