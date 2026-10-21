@@ -1,0 +1,16 @@
+import subprocess, sys, os
+r = subprocess.run(['echo', 'hi there'], capture_output=True, text=True); print(r.returncode, repr(r.stdout), repr(r.stderr))
+print(subprocess.check_output('echo $((1+2)); echo err >&2', shell=True, stderr=subprocess.STDOUT))
+p = subprocess.Popen(['cat'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+out, _ = p.communicate(b'data in'); print(out, p.returncode)
+print(subprocess.call(['sh', '-c', 'exit 3']))
+try: subprocess.check_call(['false'])
+except subprocess.CalledProcessError as e: print('CPE', e.returncode, e)
+try: subprocess.run(['/nonexistent/cmd'])
+except FileNotFoundError as e: print('FNF', e)
+print(subprocess.getoutput('echo xyz'), subprocess.getstatusoutput('exit 2'))
+p = subprocess.Popen([sys.executable, '-c', 'import sys; print(sys.stdin.read().upper())'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+print(p.communicate('abc')[0], end='')
+r = subprocess.run('sleep 5', shell=True, timeout=0.3) if False else None
+print(subprocess.run(['pwd'], cwd='/tmp', stdout=subprocess.PIPE).stdout)
+print(subprocess.run(['sh', '-c', 'echo $FOO'], env={'FOO': 'bar', 'PATH': os.environ['PATH']}, stdout=subprocess.PIPE).stdout)

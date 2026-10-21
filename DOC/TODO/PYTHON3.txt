@@ -1,0 +1,127 @@
+============================================================
+  PYTHON3.PAS - Clone de la commande python3 (Python 3.8)
+  Free Pascal (mode ObjFPC) - cible : Linux x86-64
+  Executable : BINLINUX/PYTHON3
+============================================================
+
+  Compilation :
+    fpc -Mobjfpc -Sew- -O2 -Xs PYTHON3.PAS -oBINLINUX/PYTHON3
+
+  Remarque : le programme n'utilise ni classes, ni objets, ni methodes :
+  uniquement des enregistrements (Record), des pointeurs et des
+  procedures/fonctions. Unites employees : Dos, BaseUnix, Unix, Termio
+  (ni SysUtils, ni Classes, ni Math, ni StrUtils, ni DateUtils). Il ne
+  peut cependant pas etre compile avec Turbo Pascal 7 lui-meme (mode -Mtp
+  impossible : Int64, AnsiString, tableaux dynamiques, plus de 64 Ko).
+
+  ARCHITECTURE - 14 TODOS TOUS IMPLEMENTES
+  ============================================================
+
+  TODO 01 - LEXEUR ET ANALYSEUR SYNTAXIQUE [IMPLEMENTE]
+            Jetons Python 3.8 (indentation, f-strings, bytes, nombres,
+            complexes, litteraux avec _), messages et positions des
+            SyntaxError identiques a CPython 3.8, mode single/eval/exec.
+
+  TODO 02 - ANALYSE DES PORTEES [IMPLEMENTE]
+            Variables locales, globales, cellules et variables libres,
+            nonlocal/global, comprehensions, classes (__class__),
+            async/await.
+
+  TODO 03 - GENERATION DU BYTECODE [IMPLEMENTE]
+            Bytecode CPython 3.8 (mots de 16 bits, EXTENDED_ARG,
+            co_lnotab, blocs SETUP_*), objets code compatibles,
+            module marshal et fichiers .pyc (magic 3413) en lecture
+            et en ecriture, py_compile / compileall.
+            Le generateur est un portage de compile.c, ast_opt.c et
+            peephole.c de CPython 3.8.20 : co_code, co_consts,
+            co_names, co_varnames, co_lnotab, co_stacksize et
+            co_flags sont identiques octet pour octet a ceux de
+            python3.8 sur toute la bibliotheque standard (20 034
+            objets code verifies) ; les modules dis et opcode sont
+            ceux de CPython (module natif _opcode).
+
+  TODO 04 - MACHINE VIRTUELLE [IMPLEMENTE]
+            Boucle d'interpretation, generateurs, coroutines,
+            exceptions avec chainage, tracebacks, finaliseurs __del__,
+            ramasse-miettes marque-et-balaye, limite de recursion.
+
+  TODO 05 - TYPES DE BASE [IMPLEMENTE]
+            int en precision arbitraire, float (repr la plus courte),
+            complex, str (UTF-8), bytes/bytearray/memoryview, list,
+            tuple, dict ordonne, set/frozenset, range, slice,
+            property, classmethod, staticmethod, __slots__,
+            metaclasses, descripteurs.
+
+  TODO 06 - FONCTIONS INTEGREES ET MODULES NATIFS [IMPLEMENTE]
+            builtins, sys, math (libm), time, posix (fichiers,
+            processus, fork/exec), select, _re (moteur d'expressions
+            regulieres a retour arriere), _random (Mersenne Twister
+            identique a CPython), gc, atexit, marshal, codecs
+            natifs (utf-8, ascii, latin-1, utf-16/32).
+
+  TODO 07 - BIBLIOTHEQUE STANDARD EMBARQUEE [IMPLEMENTE]
+            ~145 modules Python embarques dans l'executable
+            (os, io, re, json, datetime, decimal, fractions,
+            collections, itertools, functools, argparse, logging,
+            unittest, asyncio, subprocess, pathlib, shutil,
+            tempfile, pickle, csv, struct, hashlib, zlib, ...).
+
+  TODO 08 - ENTREES/SORTIES [IMPLEMENTE]
+            open() via io/_pyio sur descripteurs POSIX reels,
+            encodages et newline, sys.stdin/stdout/stderr
+            (+ .buffer), print, input.
+
+  TODO 09 - LIGNE DE COMMANDE [IMPLEMENTE]
+            Toutes les options de python3.8 : -b -B -c -d -E -h -i
+            -I -m -O -OO -q -s -S -u -v -V -W -x -X --check-hash-
+            based-pycs, "-" et fichier script, repertoires et
+            archives avec __main__, variables d'environnement
+            PYTHONPATH PYTHONSTARTUP PYTHONINSPECT PYTHONOPTIMIZE
+            PYTHONWARNINGS PYTHONDONTWRITEBYTECODE PYTHONUNBUFFERED
+            PYTHONHASHSEED PYTHONIOENCODING PYTHONDEVMODE ...
+
+  TODO 10 - MODE INTERACTIF [IMPLEMENTE]
+            REPL avec invites >>> et ..., instructions composees,
+            erreurs immediates, variable _, sys.ps1/ps2,
+            PYTHONSTARTUP, KeyboardInterrupt, help(), exit().
+
+  TODO 11 - ASYNC / AWAIT [IMPLEMENTE]
+            Coroutines natives, async for/with, generateurs
+            asynchrones, module asyncio.
+
+  TODO 12 - TESTS [IMPLEMENTE]
+            SAMPLES/PYTHON3/*.py : scripts de verification dont la
+            sortie est identique a celle de python3.8.
+
+  LIMITES CONNUES
+  ============================================================
+  - Pas d'extensions C (_ctypes, sockets, ssl, sqlite3, ...).
+  - Pas de multithreading preemptif (threading cooperatif).
+  - Les signaux asynchrones ne sont pas delivres aux gestionnaires.
+  - Les codecs multi-octets CJK (gbk, big5, shift_jis, ...) ne sont
+    pas fournis.
+  - Les SyntaxWarning emis a la compilation ne sont pas affiches.
+
+  TODO 13 - UNICODE 12.1 [IMPLEMENTE]
+            Base de donnees Unicode 12.1 integree (comme python3.8) :
+            categories, casse (complete et simple), valeurs numeriques,
+            decompositions, classes de combinaison, bidi, largeur EAW,
+            noms (\N{...}, unicodedata.name/lookup), normalisation
+            NFC/NFD/NFKC/NFKD, identifiants XID, str.isalpha & co,
+            re avec IGNORECASE Unicode. Module unicodedata.
+
+  TODO 14 - ARCHITECTURE SANS CLASSE [IMPLEMENTE]
+            Les objets Python (str, list, dict, fonctions, iterateurs,
+            ...) sont des enregistrements dont les premiers champs sont
+            communs (otag = genre, cls, idict, marques du ramasse-
+            miettes) ; chaque genre a sa fonction de creation (AllocXxx).
+            Les anciennes methodes sont des fonctions dont le premier
+            parametre est l'enregistrement (ListInsert(l, i, v)). Les
+            methodes virtuelles (MarkKids, IterNext, ObjNativeAttr,
+            ObjNativeRepr, FreeObjMem) sont des distributeurs selon otag.
+            Les exceptions utilisent try/except de Pascal ; Raise exige un
+            objet : on leve l'adresse d'un enregistrement TXc dont le
+            premier champ est le pointeur de classe de base du runtime
+            (voir RaiseXc), les gestionnaires testent XcTag. Les erreurs
+            d'execution du runtime (violation d'acces, memoire) sont
+            converties par ErrorProc (RuntimeErrorToExc).
