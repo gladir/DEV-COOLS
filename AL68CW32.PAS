@@ -4757,8 +4757,18 @@ Var
   H, I : LongInt;
 Begin
   H := 5381;
+  { BOGUE REEL CORRIGE (hachage djb2 : "Runtime error 215" a l'execution,
+    chaines assez longues/nombreuses - ex. arrays.a68) : H*33 depasse
+    l'intervalle signe 32 bits AVANT que le masque And $7FFFFFF ne le
+    ramene dans les bornes - un debordement cyclique est le comportement
+    VOULU de ce hachage (comme le hash non signe classique en C), donc on
+    desactive explicitement la verification de depassement le temps de ce
+    calcul au lieu de changer de type (le masque final garantit de toute
+    facon un resultat positif et borne). }
+  {$Q-}
   For I := 1 To Length(S) Do
     H := ((H * 33) + Ord(S[I])) And $7FFFFFF;
+  {$Q+}
   H := H Mod NAME_HASH;
   While NameHash[H] >= 0 Do
   Begin

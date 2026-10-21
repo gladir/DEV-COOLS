@@ -234,8 +234,16 @@ Var
   h : LongInt;
 Begin
   h := 5381;
+  { BOGUE REEL CORRIGE (hachage djb2 : "Runtime error 215" a l'execution,
+    noms assez longs/nombreux) : (h Shl 5) + h depasse l'intervalle signe
+    32 bits - un debordement cyclique est le comportement VOULU de ce
+    hachage (le "If h < 0 Then h := -h" juste apres suppose deja ce
+    retournement en negatif), donc on desactive explicitement la
+    verification de depassement le temps de ce calcul. }
+  {$Q-}
   For i := 1 To Length(s) Do
     h := ((h Shl 5) + h) Xor LongInt(Ord(s[i]));
+  {$Q+}
   If h < 0 Then h := -h;
   HashName := Integer(h Mod HASH_SIZE);
 End;
