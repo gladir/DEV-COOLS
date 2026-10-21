@@ -1,7 +1,7 @@
 comment Test SWITCH (aiguillages) (TODO 21) ;
 BEGIN
   INTEGER x;
-  LABEL L1, L2, L3, done;
+  LABEL L1, L2, L3, done, done2;
 
   comment Declaration SWITCH simple ;
   SWITCH sw := L1, L2, L3;
@@ -16,7 +16,7 @@ BEGIN
 
   L2: outstring(1, `L2`);
   newline(1);
-  GOTO done;
+  GOTO done2;
 
   L3: outstring(1, `L3`);
   newline(1);
@@ -28,6 +28,7 @@ BEGIN
   x := 2;
   GOTO sw[x];
 
+  done2:
   outstring(1, `Fin test SWITCH.`);
   newline(1)
 END.
