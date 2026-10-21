@@ -7,11 +7,14 @@
   Compilation :
     fpc -Mobjfpc -Sew- -O2 -Xs PYTHON3.PAS -oBINLINUX/PYTHON3
 
-  Remarque : le programme exploite les classes et les unites Free
-  Pascal (SysUtils, BaseUnix, ...) ; il ne peut donc pas etre compile
-  avec Turbo Pascal 7 lui-meme (mode -Mtp impossible).
+  Remarque : le programme n'utilise ni classes, ni objets, ni methodes :
+  uniquement des enregistrements (Record), des pointeurs et des
+  procedures/fonctions. Unites employees : Dos, BaseUnix, Unix, Termio
+  (ni SysUtils, ni Classes, ni Math, ni StrUtils, ni DateUtils). Il ne
+  peut cependant pas etre compile avec Turbo Pascal 7 lui-meme (mode -Mtp
+  impossible : Int64, AnsiString, tableaux dynamiques, plus de 64 Ko).
 
-  ARCHITECTURE - 12 TODOS TOUS IMPLEMENTES
+  ARCHITECTURE - 14 TODOS TOUS IMPLEMENTES
   ============================================================
 
   TODO 01 - LEXEUR ET ANALYSEUR SYNTAXIQUE [IMPLEMENTE]
@@ -106,3 +109,19 @@
             noms (\N{...}, unicodedata.name/lookup), normalisation
             NFC/NFD/NFKC/NFKD, identifiants XID, str.isalpha & co,
             re avec IGNORECASE Unicode. Module unicodedata.
+
+  TODO 14 - ARCHITECTURE SANS CLASSE [IMPLEMENTE]
+            Les objets Python (str, list, dict, fonctions, iterateurs,
+            ...) sont des enregistrements dont les premiers champs sont
+            communs (otag = genre, cls, idict, marques du ramasse-
+            miettes) ; chaque genre a sa fonction de creation (AllocXxx).
+            Les anciennes methodes sont des fonctions dont le premier
+            parametre est l'enregistrement (ListInsert(l, i, v)). Les
+            methodes virtuelles (MarkKids, IterNext, ObjNativeAttr,
+            ObjNativeRepr, FreeObjMem) sont des distributeurs selon otag.
+            Les exceptions utilisent try/except de Pascal ; Raise exige un
+            objet : on leve l'adresse d'un enregistrement TXc dont le
+            premier champ est le pointeur de classe de base du runtime
+            (voir RaiseXc), les gestionnaires testent XcTag. Les erreurs
+            d'execution du runtime (violation d'acces, memoire) sont
+            converties par ErrorProc (RuntimeErrorToExc).

@@ -14,6 +14,8 @@
   Free Pascal 3.2 (le source fixe lui-meme {$MODE OBJFPC} et les
   chaines longues : Turbo Pascal 7 ne peut pas contenir une machine
   virtuelle Python complete : segments de 64 Ko, pas d'Int64)
+  Programmation procedurale : enregistrements (Record) et pointeurs,
+  aucune classe ni methode ; unites : Dos, BaseUnix, Unix, Termio.
 
   Pipeline : source .py -> lexer (INDENT/DEDENT) -> parser (AST)
     -> table des symboles -> generateur de bytecode (opcodes de
@@ -30,6 +32,7 @@
 Program PYTHON3;
 
 {$MODE OBJFPC}
+{$MODESWITCH AUTODEREF}
 {$H+}
 {$INLINE ON}
 {$POINTERMATH ON}
@@ -50,7 +53,7 @@ Program PYTHON3;
 {$WARN 3123 OFF}
 
 Uses
- Classes, Dos {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF};
+ Dos {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF};
 
 { ------------------------------------------------------------
   Fonctions mathematiques internes (remplacent l'unite Math)
@@ -328,19 +331,59 @@ End;
 { ------------------------------------------------------------
   Equivalents internes de SysUtils (l'unite n'est pas utilisee)
   ------------------------------------------------------------ }
+{ ---- exceptions Pascal sans classe ----
+  Un Raise doit porter un objet : on leve l'adresse d'un enregistrement
+  dont le premier champ est le pointeur de classe de base du runtime
+  (TObject). Le runtime ne voit qu'un objet vide ; la charge utile reste
+  dans l'enregistrement TXc. }
+Const
+ xtPy = 1;        { exception Python (py) }
+ xtSyntax = 2;    { erreur de syntaxe : details dans SynInfo }
+ xtRe = 3;        { erreur d'expression reguliere : details dans ReSynInfo }
+ xtConv = 4;      { conversion numerique invalide }
+ xtRun = 5;       { erreur d'execution du runtime Pascal (code) }
+
 Type
- Exception = Class(TObject)
-  Message: AnsiString;
-  Constructor Create(Const msg: AnsiString);
+ PXc = ^TXc;
+ TXc = Record
+  vmt: Pointer;
+  tag: Integer;
+  exc: Pointer;
+  code: Integer;
  End;
- EConvertError = Class(Exception);
+
+Procedure RaiseXc(tag: Integer; py: Pointer; code: Integer);
+Var
+ x: PXc;
+Begin
+ New(x);
+ x^.vmt := Pointer(TObject);
+ x^.tag := tag;
+ x^.exc := py;
+ x^.code := code;
+ Raise TObject(x);
+End;
+
+{ charge de l'exception en cours de traitement (dans un bloc Except) }
+Function XcTag: Integer;
+Begin
+ Result := PXc(RaiseList^.FObject)^.tag;
+End;
+
+Function XcPy: Pointer;
+Begin
+ Result := PXc(RaiseList^.FObject)^.exc;
+End;
+
+Function XcCode: Integer;
+Begin
+ Result := PXc(RaiseList^.FObject)^.code;
+End;
+
+Type
  TReplaceFlag = (rfReplaceAll, rfIgnoreCase);
  TReplaceFlags = Set Of TReplaceFlag;
 
-Constructor Exception.Create(Const msg: AnsiString);
-Begin
- Message := msg;
-End;
 
 Function IntToStr(v: Int64): AnsiString; Overload;
 Begin
@@ -377,7 +420,7 @@ Var
 Begin
  Val(s, Result, code);
  If code <> 0 Then
-  Raise EConvertError.Create('"' + s + '" is an invalid integer');
+  RaiseXc(xtConv, Nil, 0);
 End;
 
 Function StrToInt(Const s: AnsiString): LongInt;
@@ -386,7 +429,7 @@ Var
 Begin
  Val(s, Result, code);
  If code <> 0 Then
-  Raise EConvertError.Create('"' + s + '" is an invalid integer');
+  RaiseXc(xtConv, Nil, 0);
 End;
 
 Function StrToIntDef(Const s: AnsiString; deflt: LongInt): LongInt;
@@ -411,7 +454,7 @@ Begin
  Else Begin
   Val(t, Result, code);
   If code <> 0 Then
-   Raise EConvertError.Create('"' + s + '" is an invalid float');
+   RaiseXc(xtConv, Nil, 0);
  End;
 End;
 
@@ -757,6 +800,160 @@ Begin
 End;
 {$ENDIF}
 
+{ ---- liste de chaines (remplace TStringList) ---- }
+Type
+ TSList = Record
+  n: Integer;
+  keys: Array Of AnsiString;
+  vals: Array Of PtrInt;
+  sorted: Boolean;
+ End;
+ PSList = ^TSList;
+
+Function SLNew(sorted: Boolean): PSList;
+Begin
+ New(Result);
+ Result^.n := 0;
+ Result^.sorted := sorted;
+End;
+
+Procedure SLFree(l: PSList);
+Begin
+ If l <> Nil Then Dispose(l);
+End;
+
+{ position de s (liste triee : recherche dichotomique) ou -1 }
+Function SLFind(l: PSList; Const s: AnsiString; Var pos: Integer): Boolean;
+Var
+ lo, hi, mid, c: Integer;
+Begin
+ Result := False;
+ If l^.sorted Then Begin
+  lo := 0;
+  hi := l^.n - 1;
+  While lo <= hi Do Begin
+   mid := (lo + hi) Shr 1;
+   If l^.keys[mid] < s Then lo := mid + 1
+   Else If l^.keys[mid] > s Then hi := mid - 1
+   Else Begin
+    pos := mid;
+    Result := True;
+    Exit;
+   End;
+  End;
+  pos := lo;
+ End
+ Else Begin
+  c := 0;
+  While c < l^.n Do Begin
+   If l^.keys[c] = s Then Begin
+    pos := c;
+    Result := True;
+    Exit;
+   End;
+   Inc(c);
+  End;
+  pos := l^.n;
+ End;
+End;
+
+Function SLIndexOf(l: PSList; Const s: AnsiString): Integer;
+Var
+ p: Integer;
+Begin
+ If SLFind(l, s, p) Then Result := p Else Result := -1;
+End;
+
+{ liste triee : un doublon est ignore ; non triee : ajout en fin }
+Procedure SLAddObject(l: PSList; Const s: AnsiString; v: PtrInt);
+Var
+ p, i: Integer;
+Begin
+ If l^.sorted Then Begin
+  If SLFind(l, s, p) Then Exit;
+ End
+ Else p := l^.n;
+ If l^.n >= Length(l^.keys) Then Begin
+  SetLength(l^.keys, l^.n * 2 + 8);
+  SetLength(l^.vals, l^.n * 2 + 8);
+ End;
+ For i := l^.n DownTo p + 1 Do Begin
+  l^.keys[i] := l^.keys[i - 1];
+  l^.vals[i] := l^.vals[i - 1];
+ End;
+ l^.keys[p] := s;
+ l^.vals[p] := v;
+ Inc(l^.n);
+End;
+
+Procedure SLAdd(l: PSList; Const s: AnsiString);
+Begin
+ SLAddObject(l, s, 0);
+End;
+
+Procedure SLAddStrings(l, src: PSList);
+Var
+ i: Integer;
+Begin
+ For i := 0 To src^.n - 1 Do SLAddObject(l, src^.keys[i], src^.vals[i]);
+End;
+
+{ tri par ordre des octets (fusion stable) }
+Procedure SLSort(l: PSList);
+Var
+ tk: Array Of AnsiString;
+ tv: Array Of PtrInt;
+ w, lo, mid, hi, i, j, k: Integer;
+Begin
+ If l^.n < 2 Then Exit;
+ SetLength(tk, l^.n);
+ SetLength(tv, l^.n);
+ w := 1;
+ While w < l^.n Do Begin
+  lo := 0;
+  While lo < l^.n Do Begin
+   mid := lo + w;
+   If mid > l^.n Then mid := l^.n;
+   hi := lo + 2 * w;
+   If hi > l^.n Then hi := l^.n;
+   i := lo;
+   j := mid;
+   k := lo;
+   While (i < mid) And (j < hi) Do Begin
+    If l^.keys[j] < l^.keys[i] Then Begin
+     tk[k] := l^.keys[j];
+     tv[k] := l^.vals[j];
+     Inc(j);
+    End
+    Else Begin
+     tk[k] := l^.keys[i];
+     tv[k] := l^.vals[i];
+     Inc(i);
+    End;
+    Inc(k);
+   End;
+   While i < mid Do Begin
+    tk[k] := l^.keys[i];
+    tv[k] := l^.vals[i];
+    Inc(i);
+    Inc(k);
+   End;
+   While j < hi Do Begin
+    tk[k] := l^.keys[j];
+    tv[k] := l^.vals[j];
+    Inc(j);
+    Inc(k);
+   End;
+   lo := hi;
+  End;
+  For i := 0 To l^.n - 1 Do Begin
+   l^.keys[i] := tk[i];
+   l^.vals[i] := tv[i];
+  End;
+  w := w * 2;
+ End;
+End;
+
 Const
  PY_MAJOR = 3;
  PY_MINOR = 8;
@@ -790,18 +987,68 @@ Const
 
  MAX_BLOCKS = 24;
 
+ { genres d'objets (champ otag) }
+ okObj = 1;
+ okStr = 2;
+ okBytes = 3;
+ okBigInt = 4;
+ okComplex = 5;
+ okAsyncGenWrapped = 6;
+ okList = 7;
+ okTuple = 8;
+ okDict = 9;
+ okSet = 10;
+ okSlice = 11;
+ okRange = 12;
+ okCell = 13;
+ okBuiltin = 14;
+ okMethod = 15;
+ okModule = 16;
+ okProperty = 17;
+ okWrapper = 18;
+ okSuper = 19;
+ okCode = 20;
+ okFunc = 21;
+ okType = 22;
+ okFile = 23;
+ okDictView = 24;
+ okMT = 25;
+ okPattern = 26;
+ okMatch = 27;
+ okGen = 28;
+ okDoneIter = 29;
+ okAsyncGenASend = 30;
+ okListIter = 31;
+ okTupleIter = 32;
+ okStrIter = 33;
+ okBytesIter = 34;
+ okRangeIter = 35;
+ okDictIter = 36;
+ okSetIter = 37;
+ okSeqIter = 38;
+ okCallIter = 39;
+ okEnumIter = 40;
+ okZipIter = 41;
+ okMapIter = 42;
+ okFilterIter = 43;
+ okUserIter = 44;
+ okFileIter = 45;
+ okReIter = 46;
+ okIterFirst = 28;
+ okIterLast = 46;
+
 Type
  PVal = ^TVal;
- TPyObj = Class;
- TPyType = Class;
- TPyDict = Class;
- TPyStr = Class;
- TPyTuple = Class;
- TPyList = Class;
- TPyCode = Class;
- TPyFunc = Class;
- TPyGen = Class;
- TFrame = Class;
+ TPyObj = ^TPyObjRec;
+ TPyType = ^TPyTypeRec;
+ TPyDict = ^TPyDictRec;
+ TPyStr = ^TPyStrRec;
+ TPyTuple = ^TPyTupleRec;
+ TPyList = ^TPyListRec;
+ TPyCode = ^TPyCodeRec;
+ TPyFunc = ^TPyFuncRec;
+ TPyGen = ^TPyGenRec;
+ TFrame = ^TFrameRec;
 
  TVal = Record
   k: Byte;
@@ -817,64 +1064,76 @@ Type
  TCpArr = Array Of Cardinal;
 
  { Objet de base du ramasse-miettes }
- TPyObj = Class
+ TPyObjRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
   cls: TPyType;
   idict: TPyDict;
-  gcmark: Boolean;
-  immortal: Boolean;
-  finalized: Boolean;
-  Constructor Create(c: TPyType);
-  Procedure MarkKids; Virtual;
-  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Virtual;
-  Function NativeRepr(Var s: AnsiString): Boolean; Virtual;
  End;
 
- TPyStr = Class(TPyObj)
+ TPyStrRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   s: AnsiString;
   h: Int64;
   hashed: Boolean;
   n: Integer;
-  Constructor Make(Const t: AnsiString);
  End;
 
- TPyBytes = Class(TPyObj)
+ TPyBytes = ^TPyBytesRec;
+ TPyBytesRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   s: AnsiString;
-  Constructor Make(Const t: AnsiString);
  End;
 
- TPyBigInt = Class(TPyObj)
+ TPyBigInt = ^TPyBigIntRec;
+ TPyBigIntRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   neg: Boolean;
   mag: TMag;
-  Constructor Make(ng: Boolean; Const m: TMag);
  End;
 
- TPyComplex = Class(TPyObj)
+ TPyComplex = ^TPyComplexRec;
+ TPyComplexRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   re, im: Double;
-  Constructor Make(r, i: Double);
-  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
-  Function NativeRepr(Var s: AnsiString): Boolean; Override;
  End;
 
- TPyAsyncGenWrapped = Class(TPyObj)
+ TPyAsyncGenWrapped = ^TPyAsyncGenWrappedRec;
+ TPyAsyncGenWrappedRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   val: TVal;
-  Procedure MarkKids; Override;
  End;
 
- TPyList = Class(TPyObj)
+ TPyListRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   items: Array Of TVal;
   cnt: Integer;
-  Constructor Make;
-  Procedure Add(Const v: TVal);
-  Procedure Insert(ix: Integer; Const v: TVal);
-  Procedure Delete(ix: Integer);
-  Procedure Clear;
-  Procedure MarkKids; Override;
  End;
 
- TPyTuple = Class(TPyObj)
+ TPyTupleRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   items: Array Of TVal;
-  Constructor Make(n: Integer);
-  Procedure MarkKids; Override;
  End;
 
  TDEntry = Record
@@ -882,26 +1141,16 @@ Type
   h: Int64;
  End;
 
- TPyDict = Class(TPyObj)
+ TPyDictRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   ent: Array Of TDEntry;
   nent: Integer;
   used: Integer;
   idx: Array Of LongInt;
   mask: Integer;
-  Constructor Make;
-  Function FindIdx(Const key: TVal; h: Int64): Integer;
-  Function FindS(Const s: AnsiString; h: Int64): Integer;
-  Function GetItem(Const key: TVal; Var v: TVal): Boolean;
-  Procedure SetItem(Const key, v: TVal);
-  Function DelItem(Const key: TVal): Boolean;
-  Function GetS(Const name: AnsiString; Var v: TVal): Boolean;
-  Procedure SetS(Const name: AnsiString; Const v: TVal);
-  Function HasS(Const name: AnsiString): Boolean;
-  Function DelS(Const name: AnsiString): Boolean;
-  Procedure Clear;
-  Procedure Rebuild(newcap: Integer);
-  Function Copy: TPyDict;
-  Procedure MarkKids; Override;
  End;
 
  TSetEntry = Record
@@ -909,71 +1158,109 @@ Type
   h: Int64;
  End;
 
- TPySet = Class(TPyObj)
+ TPySet = ^TPySetRec;
+ TPySetRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   tab: Array Of TSetEntry;
   fill, used, mask: Integer;
   frozen: Boolean;
-  Constructor Make(fz: Boolean);
-  Function Contains(Const key: TVal): Boolean;
-  Function FindEntry(Const key: TVal; h: Int64): Integer;
-  Procedure InsertClean(Const key: TVal; h: Int64);
-  Function Add(Const key: TVal): Boolean;
-  Function Discard(Const key: TVal): Boolean;
-  Procedure Clear;
-  Procedure Resize(minused: Integer);
-  Procedure MarkKids; Override;
  End;
 
- TPySlice = Class(TPyObj)
+ TPySlice = ^TPySliceRec;
+ TPySliceRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   start, stop, step: TVal;
-  Procedure MarkKids; Override;
  End;
 
- TPyRange = Class(TPyObj)
+ TPyRange = ^TPyRangeRec;
+ TPyRangeRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   start, stop, step: Int64;
   len: Int64;
  End;
 
- TPyCell = Class(TPyObj)
+ TPyCell = ^TPyCellRec;
+ TPyCellRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   v: TVal;
-  Procedure MarkKids; Override;
  End;
 
- TPyBuiltin = Class(TPyObj)
+ TPyBuiltin = ^TPyBuiltinRec;
+ TPyBuiltinRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   name: AnsiString;
   fn: TNativeFn;
   isMethod: Boolean;
-  Procedure MarkKids; Override;
  End;
 
- TPyMethod = Class(TPyObj)
+ TPyMethod = ^TPyMethodRec;
+ TPyMethodRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fn: TVal;
   slf: TVal;
-  Procedure MarkKids; Override;
  End;
 
- TPyModule = Class(TPyObj)
+ TPyModule = ^TPyModuleRec;
+ TPyModuleRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   name: AnsiString;
  End;
 
- TPyProperty = Class(TPyObj)
+ TPyProperty = ^TPyPropertyRec;
+ TPyPropertyRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fget, fset, fdel, doc: TVal;
-  Procedure MarkKids; Override;
  End;
 
- TPyWrapper = Class(TPyObj)  { staticmethod / classmethod }
+ TPyWrapper = ^TPyWrapperRec;
+ TPyWrapperRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fn: TVal;
-  Procedure MarkKids; Override;
  End;
 
- TPySuper = Class(TPyObj)
+ TPySuper = ^TPySuperRec;
+ TPySuperRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   thisCls: TPyType;
   obj: TVal;
   objType: TPyType;
-  Procedure MarkKids; Override;
  End;
 
- TPyCode = Class(TPyObj)
+ TPyCodeRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   argcount, posonly, kwonly, nlocals, stacksize, flags: Integer;
   co: Array Of Byte;
   consts: TValArr;
@@ -985,10 +1272,13 @@ Type
   firstline: Integer;
   lnotab: AnsiString;
   source: TStrArr;
-  Procedure MarkKids; Override;
  End;
 
- TPyFunc = Class(TPyObj)
+ TPyFuncRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   code: TPyCode;
   globals: TPyDict;
   name, qualname: AnsiString;
@@ -997,7 +1287,6 @@ Type
   closure: Array Of TPyCell;
   doc: TVal;
   nobind: Boolean;
-  Procedure MarkKids; Override;
  End;
 
  TBlock = Record
@@ -1006,7 +1295,7 @@ Type
   level: Integer;
  End;
 
- TFrame = Class
+ TFrameRec = Record
   code: TPyCode;
   func: TPyFunc;
   globals, locals, builtins: TPyDict;
@@ -1024,40 +1313,53 @@ Type
   depth: Integer;
   lasti: Integer;
   throwExc: TPyObj;
-  Procedure MarkAll;
  End;
 
- TPyIter = Class(TPyObj)
-  Function Next(Var r: TVal): Boolean; Virtual; Abstract;
+ TPyIter = ^TPyIterRec;
+ TPyIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
  End;
 
- TPyGen = Class(TPyIter)
+ TPyGenRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   frame: TFrame;
   state: Integer;       { 0 initial, 1 suspendu, 2 en cours, 3 termine }
   retval: TVal;
   name: AnsiString;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
-  Destructor Destroy; Override;
  End;
 
- TPyDoneIter = Class(TPyIter)
+ TPyDoneIter = ^TPyDoneIterRec;
+ TPyDoneIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   retval: TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TPyAsyncGenASend = Class(TPyIter)
+ TPyAsyncGenASend = ^TPyAsyncGenASendRec;
+ TPyAsyncGenASendRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   gen: TPyGen;
   mode: Integer;        { 0 asend, 1 athrow, 2 aclose }
   val, exc, retval: TVal;
   started: Boolean;
-  Function Next(Var r: TVal): Boolean; Override;
-  Function Step(Const sendv: TVal; Var r: TVal): Boolean;
-  Procedure MarkKids; Override;
  End;
 
- TPyType = Class(TPyObj)
+ TPyTypeRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   name, qualname: AnsiString;
   bases: Array Of TPyType;
   mro: Array Of TPyType;
@@ -1068,10 +1370,14 @@ Type
   slots: TStrArr;
   newFn: TNativeFn;
   ctor: TNativeFn;
-  Procedure MarkKids; Override;
  End;
 
- TPyFile = Class(TPyObj)
+ TPyFile = ^TPyFileRec;
+ TPyFileRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fname, mode: AnsiString;
   data: AnsiString;
   pos: Integer;
@@ -1079,14 +1385,126 @@ Type
   mem: Boolean;
   std: Integer;          { 0 fichier, 1 stdin, 2 stdout, 3 stderr }
   bufObj: TPyFile;
-  Procedure MarkKids; Override;
  End;
 
- { Exception Pascal portant une exception Python }
- EPyError = Class(Exception)
+
+Function AllocStr(Const t: AnsiString): TPyStr; Forward;
+Function AllocBytes(Const t: AnsiString): TPyBytes; Forward;
+Function AllocBigInt(ng: Boolean; Const m: TMag): TPyBigInt; Forward;
+Function AllocComplex(r, i: Double): TPyComplex; Forward;
+Function ComplexNativeAttr(Self: TPyComplex; Const nm: AnsiString; Var res:
+  TVal): Boolean; Forward;
+Function ComplexNativeRepr(Self: TPyComplex; Var s: AnsiString): Boolean;
+  Forward;
+Procedure AsyncGenWrappedMarkKids(Self: TPyAsyncGenWrapped); Forward;
+Function AllocAsyncGenWrapped(c: TPyType): TPyAsyncGenWrapped; Forward;
+Function AllocList(): TPyList; Forward;
+Procedure ObjAdd(Self: TPyList; Const v: TVal); Overload; Forward;
+Procedure ListInsert(Self: TPyList; ix: Integer; Const v: TVal); Forward;
+Procedure ListDelete(Self: TPyList; ix: Integer); Forward;
+Procedure ObjClear(Self: TPyList); Overload; Forward;
+Procedure ListMarkKids(Self: TPyList); Forward;
+Function AllocTuple(n: Integer): TPyTuple; Forward;
+Procedure TupleMarkKids(Self: TPyTuple); Forward;
+Function AllocDict(): TPyDict; Forward;
+Function DictFindIdx(Self: TPyDict; Const key: TVal; h: Int64): Integer;
+  Forward;
+Function DictFindS(Self: TPyDict; Const s: AnsiString; h: Int64): Integer;
+  Forward;
+Function DictGetItem(Self: TPyDict; Const key: TVal; Var v: TVal): Boolean;
+  Forward;
+Procedure DictSetItem(Self: TPyDict; Const key, v: TVal); Forward;
+Function DictDelItem(Self: TPyDict; Const key: TVal): Boolean; Forward;
+Function DictGetS(Self: TPyDict; Const name: AnsiString; Var v: TVal): Boolean;
+  Forward;
+Procedure DictSetS(Self: TPyDict; Const name: AnsiString; Const v: TVal);
+  Forward;
+Function DictHasS(Self: TPyDict; Const name: AnsiString): Boolean; Forward;
+Function DictDelS(Self: TPyDict; Const name: AnsiString): Boolean; Forward;
+Procedure ObjClear(Self: TPyDict); Overload; Forward;
+Procedure DictRebuild(Self: TPyDict; newcap: Integer); Forward;
+Function DictCopy(Self: TPyDict): TPyDict; Forward;
+Procedure DictMarkKids(Self: TPyDict); Forward;
+Function AllocSet(fz: Boolean): TPySet; Forward;
+Function SetContains(Self: TPySet; Const key: TVal): Boolean; Forward;
+Function SetFindEntry(Self: TPySet; Const key: TVal; h: Int64): Integer;
+  Forward;
+Procedure SetInsertClean(Self: TPySet; Const key: TVal; h: Int64); Forward;
+Function ObjAdd(Self: TPySet; Const key: TVal): Boolean; Overload; Forward;
+Function SetDiscard(Self: TPySet; Const key: TVal): Boolean; Forward;
+Procedure ObjClear(Self: TPySet); Overload; Forward;
+Procedure SetResize(Self: TPySet; minused: Integer); Forward;
+Procedure SetMarkKids(Self: TPySet); Forward;
+Procedure SliceMarkKids(Self: TPySlice); Forward;
+Function AllocSlice(c: TPyType): TPySlice; Forward;
+Function AllocRange(c: TPyType): TPyRange; Forward;
+Procedure CellMarkKids(Self: TPyCell); Forward;
+Function AllocCell(c: TPyType): TPyCell; Forward;
+Procedure BuiltinMarkKids(Self: TPyBuiltin); Forward;
+Function AllocBuiltin(c: TPyType): TPyBuiltin; Forward;
+Procedure MethodMarkKids(Self: TPyMethod); Forward;
+Function AllocMethod(c: TPyType): TPyMethod; Forward;
+Function AllocModule(c: TPyType): TPyModule; Forward;
+Procedure PropertyMarkKids(Self: TPyProperty); Forward;
+Function AllocProperty(c: TPyType): TPyProperty; Forward;
+Procedure WrapperMarkKids(Self: TPyWrapper); Forward;
+Function AllocWrapper(c: TPyType): TPyWrapper; Forward;
+Procedure SuperMarkKids(Self: TPySuper); Forward;
+Function AllocSuper(c: TPyType): TPySuper; Forward;
+Procedure CodeMarkKids(Self: TPyCode); Forward;
+Function AllocCode(c: TPyType): TPyCode; Forward;
+Procedure FuncMarkKids(Self: TPyFunc); Forward;
+Function AllocFunc(c: TPyType): TPyFunc; Forward;
+Procedure FrameMarkAll(Self: TFrame); Forward;
+Function AllocFrame: TFrame; Forward;
+Function GenNext(Self: TPyGen; Var r: TVal): Boolean; Forward;
+Procedure GenMarkKids(Self: TPyGen); Forward;
+Procedure GenDestroy(Self: TPyGen); Forward;
+Function AllocGen(c: TPyType): TPyGen; Forward;
+Function DoneIterNext(Self: TPyDoneIter; Var r: TVal): Boolean; Forward;
+Procedure DoneIterMarkKids(Self: TPyDoneIter); Forward;
+Function AllocDoneIter(c: TPyType): TPyDoneIter; Forward;
+Function AsyncGenASendNext(Self: TPyAsyncGenASend; Var r: TVal): Boolean;
+  Forward;
+Function AsyncGenASendStep(Self: TPyAsyncGenASend; Const sendv: TVal; Var r:
+  TVal): Boolean; Forward;
+Procedure AsyncGenASendMarkKids(Self: TPyAsyncGenASend); Forward;
+Function AllocAsyncGenASend(c: TPyType): TPyAsyncGenASend; Forward;
+Procedure TypeMarkKids(Self: TPyType); Forward;
+Function AllocType(c: TPyType): TPyType; Forward;
+Procedure FileMarkKids(Self: TPyFile); Forward;
+Function AllocFile(c: TPyType): TPyFile; Forward;
+
+Type
+ PXcPy = ^TXcPy;
+ TXcPy = Record          { meme disposition que TXc, exception typee }
+  vmt: Pointer;
+  tag: Integer;
   exc: TPyObj;
-  Constructor Make(e: TPyObj);
+  code: Integer;
  End;
+
+{ erreur d'execution du runtime Pascal convertie en exception }
+Procedure RuntimeErrorToExc(ErrNo: LongInt; Addr: CodePointer;
+ Frame: Pointer);
+Var
+ x: PXc;
+Begin
+ New(x);
+ x^.vmt := Pointer(TObject);
+ x^.tag := xtRun;
+ x^.exc := Nil;
+ x^.code := ErrNo;
+ Raise TObject(x) At Addr, Frame;
+End;
+
+Procedure MarkHdr(o: Pointer); Forward;
+Procedure MarkKids(o: Pointer); Forward;
+Function IterNext(o: Pointer; Var r: TVal): Boolean; Forward;
+Function ObjNativeAttr(o: Pointer; Const nm: AnsiString;
+ Var res: TVal): Boolean; Forward;
+Function ObjNativeRepr(o: Pointer; Var s: AnsiString): Boolean; Forward;
+Procedure FreeObjMem(o: Pointer); Forward;
 
 Const
  { genres natifs de type }
@@ -1177,7 +1595,7 @@ Var
  CmpRawSet: Boolean;
 Function CallValue(Const fn: TVal; a: PVal; n: Integer;
  kw: TPyDict): TVal; Forward;
-Var ReprSkipObj: TObject = Nil;
+Var ReprSkipObj: Pointer = Nil;
 Var BytesImplLoaded: Boolean = False;
 Function ImportByName(Const name: AnsiString): TVal; Forward;
 Procedure LoadBytesImpl; Forward;
@@ -1204,7 +1622,7 @@ Function ExcToStr(o: TPyObj): AnsiString; Forward;
 Function IterOf(Const v: TVal): TVal; Forward;
 Function IterNextVal(Const it: TVal; Var r: TVal): Boolean; Forward;
 Procedure MarkVal(Const v: TVal); Forward;
-Procedure MarkObj(o: TPyObj); Forward;
+Procedure MarkObj(o: Pointer); Forward;
 Function CmpLess(Const a, b: TVal): Boolean; Forward;
 Function ValCompare(Const a, b: TVal; op: Integer): Boolean; Forward;
 Function Call1(Const fn, a1: TVal): TVal; Forward;
@@ -1235,7 +1653,7 @@ Begin
  If b Then Result.i := 1 Else Result.i := 0;
 End;
 
-Function VObj(o: TPyObj): TVal; Inline;
+Function VObj(o: Pointer): TVal; Inline;
 Begin
  If o = Nil Then Begin
   Result.k := vkNull;
@@ -1243,7 +1661,7 @@ Begin
  End
  Else Begin
   Result.k := vkObj;
-  Result.o := o;
+  Result.o := TPyObj(o);
  End;
 End;
 
@@ -1255,250 +1673,390 @@ End;
 { ------------------------------------------------------------
   Ramasse-miettes : enregistrement des objets
   ------------------------------------------------------------ }
-Procedure GcAddRoot(o: TPyObj);
+Procedure GcAddRoot(o: Pointer);
 Begin
  If GcNRoots >= Length(GcRoots) Then
   SetLength(GcRoots, GcNRoots * 2 + 64);
- GcRoots[GcNRoots] := o;
+ GcRoots[GcNRoots] := TPyObj(o);
  Inc(GcNRoots);
 End;
 
-Constructor TPyObj.Create(c: TPyType);
+{ allocation zero-initialisee d'un enregistrement objet }
+Function AllocObjMem(size: SizeInt): Pointer;
 Begin
- Inherited Create;
- cls := c;
- idict := Nil;
- gcmark := False;
- immortal := GcInit;
- If immortal Then GcAddRoot(Self)
+ Result := AllocMem(size);
+End;
+
+{ initialise l'en-tete et enregistre l'objet aupres du ramasse-miettes }
+Procedure InitObj(o: Pointer; k: Byte; c: TPyType);
+Var
+ p: TPyObj;
+Begin
+ p := TPyObj(o);
+ p.otag := k;
+ p.cls := c;
+ p.idict := Nil;
+ p.gcmark := False;
+ p.immortal := GcInit;
+ If p.immortal Then GcAddRoot(p)
  Else Begin
   If GcCount >= Length(GcObjs) Then
    SetLength(GcObjs, (GcCount + 1024) * 2);
-  GcObjs[GcCount] := Self;
+  GcObjs[GcCount] := p;
   Inc(GcCount);
  End;
 End;
 
-Procedure TPyObj.MarkKids;
+Function IsK(o: Pointer; k: Byte): Boolean; Inline;
 Begin
- If cls <> Nil Then MarkObj(cls);
- If idict <> Nil Then MarkObj(idict);
+ Result := (o <> Nil) And (TPyObj(o).otag = k);
 End;
 
-Constructor TPyStr.Make(Const t: AnsiString);
+Function IsIterObj(o: Pointer): Boolean; Inline;
 Begin
- Inherited Create(tyStr);
- s := t;
- hashed := False;
- n := -1;
+ Result := (o <> Nil) And (TPyObj(o).otag >= okIterFirst) And
+  (TPyObj(o).otag <= okIterLast);
 End;
 
-Constructor TPyBytes.Make(Const t: AnsiString);
+
+Function AllocAsyncGenWrapped(c: TPyType): TPyAsyncGenWrapped;
 Begin
- Inherited Create(tyBytes);
- s := t;
+ Result := TPyAsyncGenWrapped(AllocObjMem(SizeOf(TPyAsyncGenWrappedRec)));
+ InitObj(Result, okAsyncGenWrapped, c);
 End;
 
-Function TPyObj.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Function AllocSlice(c: TPyType): TPySlice;
 Begin
- Result := False;
+ Result := TPySlice(AllocObjMem(SizeOf(TPySliceRec)));
+ InitObj(Result, okSlice, c);
 End;
 
-Function TPyObj.NativeRepr(Var s: AnsiString): Boolean;
+Function AllocRange(c: TPyType): TPyRange;
 Begin
- Result := False;
+ Result := TPyRange(AllocObjMem(SizeOf(TPyRangeRec)));
+ InitObj(Result, okRange, c);
 End;
 
-Constructor TPyBigInt.Make(ng: Boolean; Const m: TMag);
+Function AllocCell(c: TPyType): TPyCell;
 Begin
- Inherited Create(tyInt);
- neg := ng;
- mag := m;
+ Result := TPyCell(AllocObjMem(SizeOf(TPyCellRec)));
+ InitObj(Result, okCell, c);
 End;
 
-Constructor TPyComplex.Make(r, i: Double);
+Function AllocBuiltin(c: TPyType): TPyBuiltin;
 Begin
- Inherited Create(tyComplex);
- re := r;
- im := i;
+ Result := TPyBuiltin(AllocObjMem(SizeOf(TPyBuiltinRec)));
+ InitObj(Result, okBuiltin, c);
 End;
 
-Procedure TPyAsyncGenWrapped.MarkKids;
+Function AllocMethod(c: TPyType): TPyMethod;
 Begin
- Inherited MarkKids;
- MarkVal(val);
+ Result := TPyMethod(AllocObjMem(SizeOf(TPyMethodRec)));
+ InitObj(Result, okMethod, c);
+End;
+
+Function AllocModule(c: TPyType): TPyModule;
+Begin
+ Result := TPyModule(AllocObjMem(SizeOf(TPyModuleRec)));
+ InitObj(Result, okModule, c);
+End;
+
+Function AllocProperty(c: TPyType): TPyProperty;
+Begin
+ Result := TPyProperty(AllocObjMem(SizeOf(TPyPropertyRec)));
+ InitObj(Result, okProperty, c);
+End;
+
+Function AllocWrapper(c: TPyType): TPyWrapper;
+Begin
+ Result := TPyWrapper(AllocObjMem(SizeOf(TPyWrapperRec)));
+ InitObj(Result, okWrapper, c);
+End;
+
+Function AllocSuper(c: TPyType): TPySuper;
+Begin
+ Result := TPySuper(AllocObjMem(SizeOf(TPySuperRec)));
+ InitObj(Result, okSuper, c);
+End;
+
+Function AllocCode(c: TPyType): TPyCode;
+Begin
+ Result := TPyCode(AllocObjMem(SizeOf(TPyCodeRec)));
+ InitObj(Result, okCode, c);
+End;
+
+Function AllocFunc(c: TPyType): TPyFunc;
+Begin
+ Result := TPyFunc(AllocObjMem(SizeOf(TPyFuncRec)));
+ InitObj(Result, okFunc, c);
+End;
+
+Function AllocFrame: TFrame;
+Begin
+ Result := TFrame(AllocMem(SizeOf(TFrameRec)));
+End;
+
+Function AllocGen(c: TPyType): TPyGen;
+Begin
+ Result := TPyGen(AllocObjMem(SizeOf(TPyGenRec)));
+ InitObj(Result, okGen, c);
+End;
+
+Function AllocDoneIter(c: TPyType): TPyDoneIter;
+Begin
+ Result := TPyDoneIter(AllocObjMem(SizeOf(TPyDoneIterRec)));
+ InitObj(Result, okDoneIter, c);
+End;
+
+Function AllocAsyncGenASend(c: TPyType): TPyAsyncGenASend;
+Begin
+ Result := TPyAsyncGenASend(AllocObjMem(SizeOf(TPyAsyncGenASendRec)));
+ InitObj(Result, okAsyncGenASend, c);
+End;
+
+Function AllocType(c: TPyType): TPyType;
+Begin
+ Result := TPyType(AllocObjMem(SizeOf(TPyTypeRec)));
+ InitObj(Result, okType, c);
+End;
+
+Function AllocFile(c: TPyType): TPyFile;
+Begin
+ Result := TPyFile(AllocObjMem(SizeOf(TPyFileRec)));
+ InitObj(Result, okFile, c);
+End;
+
+
+
+
+
+Function AllocStr(Const t: AnsiString): TPyStr;
+Var
+ Self: TPyStr;
+Begin
+ Self := TPyStr(AllocObjMem(SizeOf(TPyStrRec)));
+ Result := Self;
+ InitObj(Self, okStr, tyStr);
+ Self.s := t;
+ Self.hashed := False;
+ Self.n := -1;
+End;
+
+Function AllocBytes(Const t: AnsiString): TPyBytes;
+Var
+ Self: TPyBytes;
+Begin
+ Self := TPyBytes(AllocObjMem(SizeOf(TPyBytesRec)));
+ Result := Self;
+ InitObj(Self, okBytes, tyBytes);
+ Self.s := t;
+End;
+
+
+
+
+
+Function AllocBigInt(ng: Boolean; Const m: TMag): TPyBigInt;
+Var
+ Self: TPyBigInt;
+Begin
+ Self := TPyBigInt(AllocObjMem(SizeOf(TPyBigIntRec)));
+ Result := Self;
+ InitObj(Self, okBigInt, tyInt);
+ Self.neg := ng;
+ Self.mag := m;
+End;
+
+Function AllocComplex(r, i: Double): TPyComplex;
+Var
+ Self: TPyComplex;
+Begin
+ Self := TPyComplex(AllocObjMem(SizeOf(TPyComplexRec)));
+ Result := Self;
+ InitObj(Self, okComplex, tyComplex);
+ Self.re := r;
+ Self.im := i;
+End;
+
+Procedure AsyncGenWrappedMarkKids(Self: TPyAsyncGenWrapped);
+Begin
+ MarkHdr(Self);
+ MarkVal(Self.val);
 End;
 
 Function VComplex(r, i: Double): TVal;
 Begin
  Result.k := vkObj;
- Result.o := TPyComplex.Make(r, i);
+ Result.o := TPyObj(AllocComplex(r, i));
 End;
 
-Constructor TPyList.Make;
+Function AllocList(): TPyList;
+Var
+ Self: TPyList;
 Begin
- Inherited Create(tyList);
- cnt := 0;
+ Self := TPyList(AllocObjMem(SizeOf(TPyListRec)));
+ Result := Self;
+ InitObj(Self, okList, tyList);
+ Self.cnt := 0;
 End;
 
-Procedure TPyList.Add(Const v: TVal);
+Procedure ObjAdd(Self: TPyList; Const v: TVal); Overload;
 Begin
- If cnt >= Length(items) Then
-  SetLength(items, cnt + (cnt Shr 1) + 4);
- items[cnt] := v;
- Inc(cnt);
+ If Self.cnt >= Length(Self.items) Then
+  SetLength(Self.items, Self.cnt + (Self.cnt Shr 1) + 4);
+ Self.items[Self.cnt] := v;
+ Inc(Self.cnt);
 End;
 
-Procedure TPyList.Insert(ix: Integer; Const v: TVal);
+Procedure ListInsert(Self: TPyList; ix: Integer; Const v: TVal);
 Var
  j: Integer;
 Begin
- If cnt >= Length(items) Then
-  SetLength(items, cnt + (cnt Shr 1) + 4);
+ If Self.cnt >= Length(Self.items) Then
+  SetLength(Self.items, Self.cnt + (Self.cnt Shr 1) + 4);
  If ix < 0 Then ix := 0;
- If ix > cnt Then ix := cnt;
- For j := cnt DownTo ix + 1 Do items[j] := items[j - 1];
- items[ix] := v;
- Inc(cnt);
+ If ix > Self.cnt Then ix := Self.cnt;
+ For j := Self.cnt DownTo ix + 1 Do Self.items[j] := Self.items[j - 1];
+ Self.items[ix] := v;
+ Inc(Self.cnt);
 End;
 
-Procedure TPyList.Delete(ix: Integer);
+Procedure ListDelete(Self: TPyList; ix: Integer);
 Var
  j: Integer;
 Begin
- For j := ix To cnt - 2 Do items[j] := items[j + 1];
- Dec(cnt);
- items[cnt].k := vkNull;
+ For j := ix To Self.cnt - 2 Do Self.items[j] := Self.items[j + 1];
+ Dec(Self.cnt);
+ Self.items[Self.cnt].k := vkNull;
 End;
 
-Procedure TPyList.Clear;
+Procedure ObjClear(Self: TPyList); Overload;
 Begin
- SetLength(items, 0);
- cnt := 0;
+ SetLength(Self.items, 0);
+ Self.cnt := 0;
 End;
 
-Procedure TPyList.MarkKids;
+Procedure ListMarkKids(Self: TPyList);
 Var
  j: Integer;
 Begin
- Inherited MarkKids;
- For j := 0 To cnt - 1 Do MarkVal(items[j]);
+ MarkHdr(Self);
+ For j := 0 To Self.cnt - 1 Do MarkVal(Self.items[j]);
 End;
 
-Constructor TPyTuple.Make(n: Integer);
+Function AllocTuple(n: Integer): TPyTuple;
+Var
+ Self: TPyTuple;
 Begin
- Inherited Create(tyTuple);
- SetLength(items, n);
- If n > 0 Then FillChar(items[0], n * SizeOf(TVal), 0);
+ Self := TPyTuple(AllocObjMem(SizeOf(TPyTupleRec)));
+ Result := Self;
+ InitObj(Self, okTuple, tyTuple);
+ SetLength(Self.items, n);
+ If n > 0 Then FillChar(Self.items[0], n * SizeOf(TVal), 0);
 End;
 
-Procedure TPyTuple.MarkKids;
+Procedure TupleMarkKids(Self: TPyTuple);
 Var
  j: Integer;
 Begin
- Inherited MarkKids;
- For j := 0 To High(items) Do MarkVal(items[j]);
+ MarkHdr(Self);
+ For j := 0 To High(Self.items) Do MarkVal(Self.items[j]);
 End;
 
-Procedure TPySlice.MarkKids;
+Procedure SliceMarkKids(Self: TPySlice);
 Begin
- MarkVal(start);
- MarkVal(stop);
- MarkVal(step);
+ MarkVal(Self.start);
+ MarkVal(Self.stop);
+ MarkVal(Self.step);
 End;
 
-Procedure TPyCell.MarkKids;
+Procedure CellMarkKids(Self: TPyCell);
 Begin
- MarkVal(v);
+ MarkVal(Self.v);
 End;
 
-Procedure TPyBuiltin.MarkKids;
+Procedure BuiltinMarkKids(Self: TPyBuiltin);
 Begin
- Inherited MarkKids;
+ MarkHdr(Self);
 End;
 
-Procedure TPyMethod.MarkKids;
+Procedure MethodMarkKids(Self: TPyMethod);
 Begin
- MarkVal(fn);
- MarkVal(slf);
+ MarkVal(Self.fn);
+ MarkVal(Self.slf);
 End;
 
-Procedure TPyProperty.MarkKids;
+Procedure PropertyMarkKids(Self: TPyProperty);
 Begin
- Inherited MarkKids;
- MarkVal(fget);
- MarkVal(fset);
- MarkVal(fdel);
- MarkVal(doc);
+ MarkHdr(Self);
+ MarkVal(Self.fget);
+ MarkVal(Self.fset);
+ MarkVal(Self.fdel);
+ MarkVal(Self.doc);
 End;
 
-Procedure TPyWrapper.MarkKids;
+Procedure WrapperMarkKids(Self: TPyWrapper);
 Begin
- Inherited MarkKids;
- MarkVal(fn);
+ MarkHdr(Self);
+ MarkVal(Self.fn);
 End;
 
-Procedure TPySuper.MarkKids;
+Procedure SuperMarkKids(Self: TPySuper);
 Begin
- If thisCls <> Nil Then MarkObj(thisCls);
- MarkVal(obj);
- If objType <> Nil Then MarkObj(objType);
+ If Self.thisCls <> Nil Then MarkObj(Self.thisCls);
+ MarkVal(Self.obj);
+ If Self.objType <> Nil Then MarkObj(Self.objType);
 End;
 
-Procedure TPyCode.MarkKids;
+Procedure CodeMarkKids(Self: TPyCode);
 Var
  j: Integer;
 Begin
- For j := 0 To High(consts) Do MarkVal(consts[j]);
- For j := 0 To High(nameObjs) Do
-  If nameObjs[j] <> Nil Then MarkObj(nameObjs[j]);
+ For j := 0 To High(Self.consts) Do MarkVal(Self.consts[j]);
+ For j := 0 To High(Self.nameObjs) Do
+  If Self.nameObjs[j] <> Nil Then MarkObj(Self.nameObjs[j]);
 End;
 
-Procedure TPyFunc.MarkKids;
+Procedure FuncMarkKids(Self: TPyFunc);
 Var
  j: Integer;
 Begin
- Inherited MarkKids;
- If code <> Nil Then MarkObj(code);
- If globals <> Nil Then MarkObj(globals);
- If defaults <> Nil Then MarkObj(defaults);
- If kwdefaults <> Nil Then MarkObj(kwdefaults);
- For j := 0 To High(closure) Do
-  If closure[j] <> Nil Then MarkObj(closure[j]);
- MarkVal(doc);
+ MarkHdr(Self);
+ If Self.code <> Nil Then MarkObj(Self.code);
+ If Self.globals <> Nil Then MarkObj(Self.globals);
+ If Self.defaults <> Nil Then MarkObj(Self.defaults);
+ If Self.kwdefaults <> Nil Then MarkObj(Self.kwdefaults);
+ For j := 0 To High(Self.closure) Do
+  If Self.closure[j] <> Nil Then MarkObj(Self.closure[j]);
+ MarkVal(Self.doc);
 End;
 
-Procedure TPyType.MarkKids;
+Procedure TypeMarkKids(Self: TPyType);
 Var
  j: Integer;
 Begin
- Inherited MarkKids;
- For j := 0 To High(bases) Do MarkObj(bases[j]);
- For j := 0 To High(mro) Do MarkObj(mro[j]);
+ MarkHdr(Self);
+ For j := 0 To High(Self.bases) Do MarkObj(Self.bases[j]);
+ For j := 0 To High(Self.mro) Do MarkObj(Self.mro[j]);
 End;
 
-Procedure TPyFile.MarkKids;
+Procedure FileMarkKids(Self: TPyFile);
 Begin
- Inherited MarkKids;
- If bufObj <> Nil Then MarkObj(bufObj);
+ MarkHdr(Self);
+ If Self.bufObj <> Nil Then MarkObj(Self.bufObj);
 End;
 
-Constructor EPyError.Make(e: TPyObj);
-Begin
- Inherited Create('PyError');
- exc := e;
-End;
 
 { ------------------------------------------------------------
   Marquage (iteratif : pas de recursion Pascal profonde)
   ------------------------------------------------------------ }
-Procedure MarkObj(o: TPyObj);
+Procedure MarkObj(o: Pointer);
 Begin
- If (o = Nil) Or o.gcmark Then Exit;
- o.gcmark := True;
+ If (o = Nil) Or TPyObj(o).gcmark Then Exit;
+ TPyObj(o).gcmark := True;
  If GcSP >= Length(GcStack) Then
   SetLength(GcStack, (GcSP + 1024) * 2);
- GcStack[GcSP] := o;
+ GcStack[GcSP] := TPyObj(o);
  Inc(GcSP);
 End;
 
@@ -1507,62 +2065,80 @@ Begin
  If v.k = vkObj Then MarkObj(v.o);
 End;
 
-Procedure TFrame.MarkAll;
+Procedure FrameMarkAll(Self: TFrame);
 Var
  p: PVal;
 Begin
- If code <> Nil Then MarkObj(code);
- If func <> Nil Then MarkObj(func);
- If globals <> Nil Then MarkObj(globals);
- If locals <> Nil Then MarkObj(locals);
- If builtins <> Nil Then MarkObj(builtins);
- MarkVal(initInst);
- If gen <> Nil Then MarkObj(gen);
- If base <> Nil Then Begin
-  p := base;
-  While p < sp Do Begin
+ If Self.code <> Nil Then MarkObj(Self.code);
+ If Self.func <> Nil Then MarkObj(Self.func);
+ If Self.globals <> Nil Then MarkObj(Self.globals);
+ If Self.locals <> Nil Then MarkObj(Self.locals);
+ If Self.builtins <> Nil Then MarkObj(Self.builtins);
+ MarkVal(Self.initInst);
+ If Self.gen <> Nil Then MarkObj(Self.gen);
+ If Self.base <> Nil Then Begin
+  p := Self.base;
+  While p < Self.sp Do Begin
    MarkVal(p^);
    Inc(p);
   End;
  End;
 End;
 
-Procedure TPyGen.MarkKids;
+Procedure GenMarkKids(Self: TPyGen);
 Begin
- Inherited MarkKids;
- MarkVal(retval);
- If frame <> Nil Then frame.MarkAll;
+ MarkHdr(Self);
+ MarkVal(Self.retval);
+ If Self.frame <> Nil Then FrameMarkAll(Self.frame);
 End;
 
-Function TPyDoneIter.Next(Var r: TVal): Boolean;
+Function DoneIterNext(Self: TPyDoneIter; Var r: TVal): Boolean;
 Begin
  Result := False;
 End;
 
-Procedure TPyDoneIter.MarkKids;
+Procedure DoneIterMarkKids(Self: TPyDoneIter);
 Begin
- Inherited MarkKids;
- MarkVal(retval);
+ MarkHdr(Self);
+ MarkVal(Self.retval);
 End;
 
-Procedure TPyAsyncGenASend.MarkKids;
+Procedure AsyncGenASendMarkKids(Self: TPyAsyncGenASend);
 Begin
- Inherited MarkKids;
- If gen <> Nil Then MarkObj(gen);
- MarkVal(val);
- MarkVal(exc);
- MarkVal(retval);
+ MarkHdr(Self);
+ If Self.gen <> Nil Then MarkObj(Self.gen);
+ MarkVal(Self.val);
+ MarkVal(Self.exc);
+ MarkVal(Self.retval);
 End;
 
-Destructor TPyGen.Destroy;
+Procedure GenDestroy(Self: TPyGen);
 Begin
- If frame <> Nil Then Begin
-  If frame.mem <> Nil Then FreeMem(frame.mem);
-  frame.Free;
+ If Self.frame <> Nil Then Begin
+  If Self.frame.mem <> Nil Then FreeMem(Self.frame.mem);
+  Dispose(Self.frame);
  End;
- Inherited Destroy;
+ ;
 End;
 
+
+Function AllocObj(c: TPyType): TPyObj;
+Begin
+ Result := TPyObj(AllocObjMem(SizeOf(TPyObjRec)));
+ InitObj(Result, okObj, c);
+End;
+
+Procedure RaisePy(e: Pointer);
+Begin
+ RaiseXc(xtPy, e, 0);
+End;
+
+{ marquage de l'en-tete d'objet (classe et dictionnaire d'attributs) }
+Procedure MarkHdr(o: Pointer);
+Begin
+ If TPyObj(o).cls <> Nil Then MarkObj(TPyObj(o).cls);
+ If TPyObj(o).idict <> Nil Then MarkObj(TPyObj(o).idict);
+End;
 {$LINKLIB m}
 Function c_sin(x: Double): Double; CDecl; External 'm' Name 'sin';
 Function c_cos(x: Double): Double; CDecl; External 'm' Name 'cos';
@@ -2206,13 +2782,13 @@ Begin
    Exit;
   End;
  End;
- Result := VObj(TPyBigInt.Make(neg, m));
+ Result := VObj(AllocBigInt(neg, m));
 End;
 
 Function IsIntVal(Const v: TVal): Boolean; Inline;
 Begin
  Result := (v.k = vkInt) Or (v.k = vkBool) Or
-  ((v.k = vkObj) And (v.o Is TPyBigInt));
+  ((v.k = vkObj) And (IsK(v.o, okBigInt)));
 End;
 
 Procedure IntToMag(Const v: TVal; Var neg: Boolean; Var m: TMag);
@@ -9898,7 +10474,7 @@ Var
  USeqs: Array Of TCpList;
  UPhrShort, UPhrShift: Integer;
  UNamesLoaded: Boolean;
- UNameList: TStringList;
+ UNameList: PSList;
 
 Procedure UniLoadNames;
 Var
@@ -10015,15 +10591,14 @@ Var
 Begin
  If UNameList <> Nil Then Exit;
  UniLoadNames;
- UNameList := TStringList.Create;
- UNameList.CaseSensitive := True;
- UNameList.Sorted := False;
+ UNameList := SLNew(False);
  For code := 0 To $F03FF Do Begin
   If (code >= $E0000) And (code < $F0000) And (code > $E01EF) Then Continue;
   nm := UniNameRaw(code);
-  If nm <> '' Then UNameList.AddObject(nm, TObject(PtrInt(code)));
+  If nm <> '' Then SLAddObject(UNameList, nm, PtrInt(code));
  End;
- UNameList.Sorted := True;
+ SLSort(UNameList);
+ UNameList^.sorted := True;
 End;
 
 { recherche par nom (insensible a la casse ASCII) ; renvoie True si trouve.
@@ -10068,9 +10643,9 @@ Begin
   Exit;
  End;
  UniBuildNameList;
- i := UNameList.IndexOf(nm);
+ i := SLIndexOf(UNameList, nm);
  If i < 0 Then Exit;
- code := Cardinal(PtrInt(UNameList.Objects[i]));
+ code := Cardinal(UNameList^.vals[i]);
  If (code >= $F0000) And (code < $F0200) Then Begin
   If code - $F0000 >= Cardinal(Length(UAliases)) Then Exit;
   res := Utf8Enc(UAliases[code - $F0000]);
@@ -10841,15 +11416,23 @@ Type
  End;
  TTokArr = Array Of TToken;
 
- ESyntax = Class(Exception)
+ TSynInfo = Record
   kind: TPyType;
   msg: AnsiString;
   line, col: Integer;
   text: AnsiString;
   incomplete: Boolean;
  End;
+ PSynInfo = ^TSynInfo;
+ TReSynInfo = Record
+  msg: AnsiString;
+  pos: Integer;
+ End;
+ PReSynInfo = ^TReSynInfo;
 
 Var
+ SynInfo: TSynInfo;   { derniere erreur de syntaxe levee }
+ ReSynInfo: TReSynInfo;  { derniere erreur d'expression reguliere }
  PFutureAnnotations: Boolean;
  PFutureFlags: Integer;
  SrcLines: TStrArr;
@@ -10876,10 +11459,10 @@ End;
 Procedure SynErr(Const msg: AnsiString; line, col: Integer;
  incomplete: Boolean = False; k: TPyType = Nil);
 Var
- e: ESyntax;
+ e: PSynInfo;
  tx: AnsiString;
 Begin
- e := ESyntax.Create(msg);
+ e := @SynInfo;
  If k = Nil Then e.kind := exSyntaxError Else e.kind := k;
  e.msg := msg;
  e.line := line;
@@ -10898,7 +11481,7 @@ Begin
    Then e.msg := 'Missing parentheses in call to ''exec''. Did you mean ' +
     'exec(' + Trim(Copy(tx, 6, 999)) + ')?';
  End;
- Raise e;
+ RaiseXc(xtSyntax, Nil, 0);
 End;
 
 Function IsIdStart(c: Char): Boolean; Inline;
@@ -11466,9 +12049,9 @@ Const
  nExprInter = 68;
 
 Type
- TNode = Class;
+ TNode = ^TNodeRec;
  TNodes = Array Of TNode;
- TNode = Class
+ TNodeRec = Record
   k: Integer;
   line, col: Integer;
   pline, pcol: Integer;
@@ -11480,12 +12063,19 @@ Type
   sl: TStrArr;
   flag: Boolean;
   isAsync: Boolean;
-  scope: TObject;
+  scope: Pointer;
  End;
+
+Function AllocNode: TNode; Forward;
+
+Function AllocNode: TNode;
+Begin
+ Result := TNode(AllocMem(SizeOf(TNodeRec)));
+End;
 
 Function NewNode(k: Integer; line, col: Integer): TNode;
 Begin
- Result := TNode.Create;
+ Result := AllocNode;
  Result.k := k;
  Result.line := line;
  Result.col := col;
@@ -12705,6 +13295,7 @@ End;
 { ---- f-strings ---- }
 Function ParseExprFromText(Const txt: AnsiString; line, col: Integer): TNode;
 Var
+ eSyn: PSynInfo;
  saveTok: TTokArr;
  savePos: Integer;
  saveFirst: AnsiString;
@@ -12734,11 +13325,14 @@ Begin
     If Not IsOp(')') Then ErrAt(Cur);
    End;
   Except
-   On e: ESyntax Do Begin
-    If (e.msg = 'invalid syntax') And (e.line = 1) And
-     (e.col = Length(txt) + 1) Then e.msg := 'unexpected EOF while parsing';
+   If XcTag = xtSyntax Then Begin
+    eSyn := @SynInfo;
+    If (eSyn.msg = 'invalid syntax') And (eSyn.line = 1) And
+     (eSyn.col = Length(txt) + 1) Then eSyn.msg :=
+       'unexpected EOF while parsing';
     Raise;
-   End;
+   End
+   Else Raise;
   End;
   Result := nd;
  Finally
@@ -13455,7 +14049,7 @@ Begin
 End;
 
 { eval/single : pas de NEWLINE ajoute, une erreur en fin de texte est un EOF }
-Procedure FixEofError(e: ESyntax; Const src: AnsiString);
+Procedure FixEofError(e: PSynInfo; Const src: AnsiString);
 Var
  n: Integer;
 Begin
@@ -13477,6 +14071,7 @@ End;
 { mode : 0 exec, 1 eval, 2 single (interactif) }
 Function ParseSource(Const src0: AnsiString; mode: Integer): TNode;
 Var
+ eSyn: PSynInfo;
  src: AnsiString;
  root: TNode;
  body: TNodes;
@@ -13497,10 +14092,12 @@ Begin
    While Cur.kind = tkNewline Do Advance;
    If Cur.kind <> tkEOF Then ErrAt(Cur);
   Except
-   On e: ESyntax Do Begin
-    FixEofError(e, src0);
+   If XcTag = xtSyntax Then Begin
+    eSyn := @SynInfo;
+    FixEofError(eSyn, src0);
     Raise;
-   End;
+   End
+   Else Raise;
   End;
  End
  Else If mode = 2 Then Begin
@@ -13510,10 +14107,12 @@ Begin
    While (Cur.kind = tkNewline) Or (Cur.kind = tkDedent) Do Advance;
    If Cur.kind <> tkEOF Then ErrAt(Cur);
   Except
-   On e: ESyntax Do Begin
-    FixEofError(e, src0);
+   If XcTag = xtSyntax Then Begin
+    eSyn := @SynInfo;
+    FixEofError(eSyn, src0);
     Raise;
-   End;
+   End
+   Else Raise;
   End;
  End
  Else Begin
@@ -13654,17 +14253,19 @@ Const
  scComp = 4;
 
 Type
- TSym = Class
+ TSym = ^TSymRec;
+ TSymRec = Record
   flags: Integer;
   kind: Integer;
  End;
 
- TScope = Class
+ TScope = ^TScopeRec;
+ TScopeRec = Record
   kind: Integer;
   name: AnsiString;
   node: TNode;
   parent: TScope;
-  syms: TStringList;
+  syms: PSList;
   order: TStrArr;
   children: Array Of TScope;
   isGen: Boolean;
@@ -13674,34 +14275,49 @@ Type
   varnames, cellvars, freevars: TStrArr;
   nparams, nkwonly: Integer;
   hasVarArgs, hasKwArgs: Boolean;
-  Function IsFunc: Boolean;
-  Function Lookup(Const nm: AnsiString): TSym;
-  Function Add(Const nm: AnsiString; fl: Integer): TSym;
  End;
 
-Function TScope.IsFunc: Boolean;
+Function AllocSym: TSym; Forward;
+Function ScopeIsFunc(Self: TScope): Boolean; Forward;
+Function ScopeLookup(Self: TScope; Const nm: AnsiString): TSym; Forward;
+Function ObjAdd(Self: TScope; Const nm: AnsiString; fl: Integer): TSym;
+  Overload; Forward;
+Function AllocScope: TScope; Forward;
+
+Function AllocSym: TSym;
 Begin
- Result := kind In [scFunction, scLambda, scComp];
+ Result := TSym(AllocMem(SizeOf(TSymRec)));
 End;
 
-Function TScope.Lookup(Const nm: AnsiString): TSym;
+Function AllocScope: TScope;
+Begin
+ Result := TScope(AllocMem(SizeOf(TScopeRec)));
+End;
+
+Function ScopeIsFunc(Self: TScope): Boolean;
+Begin
+ Result := Self.kind In [scFunction, scLambda, scComp];
+End;
+
+Function ScopeLookup(Self: TScope; Const nm: AnsiString): TSym;
 Var
  i: Integer;
 Begin
- i := syms.IndexOf(nm);
- If i < 0 Then Result := Nil Else Result := TSym(syms.Objects[i]);
+ i := SLIndexOf(Self.syms, nm);
+ If i < 0 Then Result := Nil Else Result := TSym(Self.syms^.vals[i]);
 End;
 
-Function TScope.Add(Const nm: AnsiString; fl: Integer): TSym;
+Function ObjAdd(Self: TScope; Const nm: AnsiString; fl: Integer): TSym;
+  Overload;
 Begin
- Result := Lookup(nm);
+ Result := ScopeLookup(Self, nm);
  If Result = Nil Then Begin
-  Result := TSym.Create;
+  Result := AllocSym;
   Result.flags := 0;
   Result.kind := skNone;
-  syms.AddObject(nm, Result);
-  SetLength(order, Length(order) + 1);
-  order[High(order)] := nm;
+  SLAddObject(Self.syms, nm, PtrInt(Result));
+  SetLength(Self.order, Length(Self.order) + 1);
+  Self.order[High(Self.order)] := nm;
  End;
  Result.flags := Result.flags Or fl;
 End;
@@ -13709,16 +14325,12 @@ End;
 Function NewScope(k: Integer; Const nm: AnsiString; nd: TNode;
  par: TScope): TScope;
 Begin
- Result := TScope.Create;
+ Result := AllocScope;
  Result.kind := k;
  Result.name := nm;
  Result.node := nd;
  Result.parent := par;
- Result.syms := TStringList.Create;
- Result.syms.CaseSensitive := True;
- Result.syms.Sorted := True;
- Result.syms.Duplicates := dupIgnore;
- Result.syms.CaseSensitive := True;
+ Result.syms := SLNew(True);
  If par <> Nil Then Begin
   SetLength(par.children, Length(par.children) + 1);
   par.children[High(par.children)] := Result;
@@ -13737,7 +14349,7 @@ Begin
   nName: Begin
     If (nd.s = '__debug__') Then
      SynErr('cannot assign to __debug__', nd.line, nd.col);
-    sc.Add(nd.s, symLocal);
+    ObjAdd(sc, nd.s, symLocal);
    End;
   nTuple, nList: For j := 0 To High(nd.l1) Do SymStore(sc, nd.l1[j]);
   nStarred: SymStore(sc, nd.a);
@@ -13751,25 +14363,25 @@ Var
  j: Integer;
 Begin
  For j := 0 To High(args.l1) Do Begin
-  sc.Add(args.l1[j].s, symParam Or symLocal);
+  ObjAdd(sc, args.l1[j].s, symParam Or symLocal);
   SetLength(sc.varnames, Length(sc.varnames) + 1);
   sc.varnames[High(sc.varnames)] := args.l1[j].s;
  End;
  sc.nparams := Length(args.l1);
  For j := 0 To High(args.l2) Do Begin
-  sc.Add(args.l2[j].s, symParam Or symLocal);
+  ObjAdd(sc, args.l2[j].s, symParam Or symLocal);
   SetLength(sc.varnames, Length(sc.varnames) + 1);
   sc.varnames[High(sc.varnames)] := args.l2[j].s;
  End;
  sc.nkwonly := Length(args.l2);
  If args.c <> Nil Then Begin
-  sc.Add(args.c.s, symParam Or symLocal);
+  ObjAdd(sc, args.c.s, symParam Or symLocal);
   SetLength(sc.varnames, Length(sc.varnames) + 1);
   sc.varnames[High(sc.varnames)] := args.c.s;
   sc.hasVarArgs := True;
  End;
  If args.d <> Nil Then Begin
-  sc.Add(args.d.s, symParam Or symLocal);
+  ObjAdd(sc, args.d.s, symParam Or symLocal);
   SetLength(sc.varnames, Length(sc.varnames) + 1);
   sc.varnames[High(sc.varnames)] := args.d.s;
   sc.hasKwArgs := True;
@@ -13795,7 +14407,7 @@ Begin
  nd.s2 := '';
  { le premier iterable est evalue dans la portee englobante }
  SymExpr(sc, nd.l1[0].b);
- cs.Add('.0', symParam Or symLocal);
+ ObjAdd(cs, '.0', symParam Or symLocal);
  SetLength(cs.varnames, 1);
  cs.varnames[0] := '.0';
  cs.nparams := 1;
@@ -13809,7 +14421,7 @@ Begin
      tt.coro := True;
      tt := tt.parent;
     End;
-    If Not (tt.IsFunc And tt.isAsync) Then
+    If Not (ScopeIsFunc(tt) And tt.isAsync) Then
      SynErr('asynchronous comprehension outside of an asynchronous ' +
       'function', 0, 0);
    End;
@@ -13841,8 +14453,9 @@ Begin
  If nd = Nil Then Exit;
  Case nd.k Of
   nName: Begin
-    sc.Add(nd.s, symUsed);
-    If (nd.s = 'super') And sc.IsFunc Then sc.Add('__class__', symUsed);
+    ObjAdd(sc, nd.s, symUsed);
+    If (nd.s = 'super') And ScopeIsFunc(sc) Then ObjAdd(sc, '__class__',
+      symUsed);
    End;
   nConst, nNum, nStr: ;
   nLambda: Begin
@@ -13861,13 +14474,13 @@ Begin
      { la cible est liee dans la portee englobante }
      cs := sc;
      While cs.kind = scComp Do Begin
-      If t.IsFunc Then cs.Add(nd.a.s, symNonlocal)
-      Else cs.Add(nd.a.s, symGlobal);
+      If ScopeIsFunc(t) Then ObjAdd(cs, nd.a.s, symNonlocal)
+      Else ObjAdd(cs, nd.a.s, symGlobal);
       cs := cs.parent;
      End;
-     t.Add(nd.a.s, symLocal);
+     ObjAdd(t, nd.a.s, symLocal);
     End
-    Else sc.Add(nd.a.s, symLocal);
+    Else ObjAdd(sc, nd.a.s, symLocal);
    End;
   nAwait: Begin
     t := sc;
@@ -13875,14 +14488,14 @@ Begin
      t.coro := True;
      t := t.parent;
     End;
-    If Not t.IsFunc Then
+    If Not ScopeIsFunc(t) Then
      SynErr('''await'' outside function', nd.line, nd.col);
     If Not t.isAsync Then
      SynErr('''await'' outside async function', nd.line, nd.col);
     SymExpr(sc, nd.a);
    End;
   nYield, nYieldFrom: Begin
-    If Not sc.IsFunc Then
+    If Not ScopeIsFunc(sc) Then
      SynErr('''yield'' outside function', nd.line, nd.col);
     If sc.kind = scComp Then
      SynErr('''yield'' inside list comprehension', nd.line, nd.col);
@@ -13949,18 +14562,18 @@ Begin
    nAugAssign: Begin
      SymExpr(sc, nd.b);
      If nd.a.k = nName Then Begin
-      sc.Add(nd.a.s, symLocal Or symUsed);
+      ObjAdd(sc, nd.a.s, symLocal Or symUsed);
      End
      Else SymExpr(sc, nd.a);
     End;
    nAnnAssign: Begin
      If nd.c <> Nil Then SymExpr(sc, nd.c);
      SymStore(sc, nd.a);
-     If (nd.a.k = nName) And nd.flag Then sc.Add(nd.a.s, symAnnot);
+     If (nd.a.k = nName) And nd.flag Then ObjAdd(sc, nd.a.s, symAnnot);
      If sc.kind <> scFunction Then SymExpr(sc, nd.b);
     End;
    nReturn: Begin
-     If Not sc.IsFunc Then
+     If Not ScopeIsFunc(sc) Then
       SynErr('''return'' outside function', nd.line, nd.col);
      SymExpr(sc, nd.a);
     End;
@@ -13971,56 +14584,58 @@ Begin
      SymExpr(sc, nd.b);
     End;
    nGlobal: For i := 0 To High(nd.sl) Do Begin
-     If Assigned(sc.Lookup(nd.sl[i])) And
-      ((sc.Lookup(nd.sl[i]).flags And (symLocal Or symUsed Or symAnnot)) <> 0)
+     If Assigned(ScopeLookup(sc, nd.sl[i])) And
+      ((ScopeLookup(sc, nd.sl[i]).flags And (symLocal Or symUsed Or symAnnot))
+        <> 0)
       Then Begin
-      If (sc.Lookup(nd.sl[i]).flags And symParam) <> 0 Then
+      If (ScopeLookup(sc, nd.sl[i]).flags And symParam) <> 0 Then
        SynErr('name ''' + nd.sl[i] + ''' is parameter and global', nd.line,
         nd.col)
-      Else If (sc.Lookup(nd.sl[i]).flags And symUsed) <> 0 Then
+      Else If (ScopeLookup(sc, nd.sl[i]).flags And symUsed) <> 0 Then
        SynErr('name ''' + nd.sl[i] + ''' is used prior to global ' +
         'declaration', nd.line, nd.col)
-      Else If (sc.Lookup(nd.sl[i]).flags And symAnnot) <> 0 Then
+      Else If (ScopeLookup(sc, nd.sl[i]).flags And symAnnot) <> 0 Then
        SynErr('annotated name ''' + nd.sl[i] + ''' can''t be global',
         nd.line, nd.col)
       Else
        SynErr('name ''' + nd.sl[i] + ''' is assigned to before global ' +
         'declaration', nd.line, nd.col);
      End;
-     sc.Add(nd.sl[i], symGlobal);
+     ObjAdd(sc, nd.sl[i], symGlobal);
      { st_global : le module voit aussi le nom comme global explicite }
      top := sc;
      While top.parent <> Nil Do top := top.parent;
-     If top <> sc Then top.Add(nd.sl[i], symGlobal);
+     If top <> sc Then ObjAdd(top, nd.sl[i], symGlobal);
     End;
    nNonlocal: For i := 0 To High(nd.sl) Do Begin
      If sc.kind = scModule Then
       SynErr('nonlocal declaration not allowed at module level', nd.line,
        nd.col);
-     If Assigned(sc.Lookup(nd.sl[i])) And
-      ((sc.Lookup(nd.sl[i]).flags And (symLocal Or symUsed Or symAnnot)) <> 0)
+     If Assigned(ScopeLookup(sc, nd.sl[i])) And
+      ((ScopeLookup(sc, nd.sl[i]).flags And (symLocal Or symUsed Or symAnnot))
+        <> 0)
       Then Begin
-      If (sc.Lookup(nd.sl[i]).flags And symParam) <> 0 Then
+      If (ScopeLookup(sc, nd.sl[i]).flags And symParam) <> 0 Then
        SynErr('name ''' + nd.sl[i] + ''' is parameter and nonlocal', nd.line,
         nd.col)
-      Else If (sc.Lookup(nd.sl[i]).flags And symUsed) <> 0 Then
+      Else If (ScopeLookup(sc, nd.sl[i]).flags And symUsed) <> 0 Then
        SynErr('name ''' + nd.sl[i] + ''' is used prior to nonlocal ' +
         'declaration', nd.line, nd.col)
-      Else If (sc.Lookup(nd.sl[i]).flags And symAnnot) <> 0 Then
+      Else If (ScopeLookup(sc, nd.sl[i]).flags And symAnnot) <> 0 Then
        SynErr('annotated name ''' + nd.sl[i] + ''' can''t be nonlocal',
         nd.line, nd.col)
       Else
        SynErr('name ''' + nd.sl[i] + ''' is assigned to before nonlocal ' +
         'declaration', nd.line, nd.col);
      End;
-     sc.Add(nd.sl[i], symNonlocal);
+     ObjAdd(sc, nd.sl[i], symNonlocal);
     End;
    nImport: For i := 0 To High(nd.l1) Do Begin
      If nd.l1[i].s2 <> '' Then nm := nd.l1[i].s2
      Else If Pos('.', nd.l1[i].s) > 0 Then
       nm := Copy(nd.l1[i].s, 1, Pos('.', nd.l1[i].s) - 1)
      Else nm := nd.l1[i].s;
-     sc.Add(nm, symLocal Or symImport);
+     ObjAdd(sc, nm, symLocal Or symImport);
     End;
    nImportFrom: For i := 0 To High(nd.l1) Do Begin
      If nd.l1[i].s = '*' Then Begin
@@ -14029,7 +14644,7 @@ Begin
      End
      Else Begin
       If nd.l1[i].s2 <> '' Then nm := nd.l1[i].s2 Else nm := nd.l1[i].s;
-      sc.Add(nm, symLocal Or symImport);
+      ObjAdd(sc, nm, symLocal Or symImport);
      End;
     End;
    nAssert: Begin
@@ -14059,7 +14674,7 @@ Begin
      SymStmts(sc, nd.l1);
      For i := 0 To High(nd.l2) Do Begin
       SymExpr(sc, nd.l2[i].a);
-      If nd.l2[i].s <> '' Then sc.Add(nd.l2[i].s, symLocal);
+      If nd.l2[i].s <> '' Then ObjAdd(sc, nd.l2[i].s, symLocal);
       SymStmts(sc, nd.l2[i].l1);
      End;
      SymStmts(sc, nd.l3);
@@ -14078,7 +14693,7 @@ Begin
    nFuncDef: Begin
      For i := 0 To High(nd.l2) Do SymExpr(sc, nd.l2[i]);
      SymDefaults(sc, nd.a);
-     sc.Add(nd.s, symLocal);
+     ObjAdd(sc, nd.s, symLocal);
      cs := NewScope(scFunction, nd.s, nd, sc);
      cs.isAsync := nd.isAsync;
      SymParams(cs, nd.a);
@@ -14091,7 +14706,7 @@ Begin
       If nd.l1[i].k = nKw Then SymExpr(sc, nd.l1[i].a)
       Else SymExpr(sc, nd.l1[i]);
      End;
-     sc.Add(nd.s, symLocal);
+     ObjAdd(sc, nd.s, symLocal);
      cs := NewScope(scClass, nd.s, nd, sc);
      cs.hasAnnot := HasAnnotations(nd.l2);
      SymStmts(cs, nd.l2);
@@ -14103,14 +14718,11 @@ End;
 
 { ---- resolution ---- }
 Type
- TNameSet = TStringList;
+ TNameSet = PSList;
 
 Function NewNameSet: TNameSet;
 Begin
- Result := TStringList.Create;
- Result.CaseSensitive := True;
- Result.Sorted := True;
- Result.Duplicates := dupIgnore;
+ Result := SLNew(True);
 End;
 
 Procedure AnalyzeScope(sc: TScope; bound: TNameSet);
@@ -14124,35 +14736,35 @@ Var
 Begin
  freeSet := NewNameSet;
  localSet := NewNameSet;
- For i := 0 To sc.syms.Count - 1 Do Begin
-  nm := sc.syms[i];
-  sym := TSym(sc.syms.Objects[i]);
+ For i := 0 To sc.syms^.n - 1 Do Begin
+  nm := sc.syms^.keys[i];
+  sym := TSym(sc.syms^.vals[i]);
   If (sym.flags And symGlobal) <> 0 Then sym.kind := skGlobalExp
   Else If (sym.flags And symNonlocal) <> 0 Then Begin
-   If bound.IndexOf(nm) < 0 Then
+   If SLIndexOf(bound, nm) < 0 Then
     SynErr('no binding for nonlocal ''' + nm + ''' found', sc.node.line,
      sc.node.col);
    sym.kind := skFree;
-   freeSet.Add(nm);
+   SLAdd(freeSet, nm);
   End
   Else If (sym.flags And symLocal) <> 0 Then Begin
    sym.kind := skLocal;
-   If sc.IsFunc Then localSet.Add(nm);
+   If ScopeIsFunc(sc) Then SLAdd(localSet, nm);
   End
   Else Begin
    If sc.kind = scModule Then sym.kind := skGlobalImp
-   Else If bound.IndexOf(nm) >= 0 Then Begin
+   Else If SLIndexOf(bound, nm) >= 0 Then Begin
     sym.kind := skFree;
-    freeSet.Add(nm);
+    SLAdd(freeSet, nm);
    End
    Else sym.kind := skGlobalImp;
   End;
  End;
  { portee vue par les enfants }
  newBound := NewNameSet;
- newBound.AddStrings(bound);
- If sc.IsFunc Then newBound.AddStrings(localSet);
- If sc.kind = scClass Then newBound.Add('__class__');
+ SLAddStrings(newBound, bound);
+ If ScopeIsFunc(sc) Then SLAddStrings(newBound, localSet);
+ If sc.kind = scClass Then SLAdd(newBound, '__class__');
  For i := 0 To High(sc.children) Do Begin
   child := sc.children[i];
   If child.kind = scClass Then Begin
@@ -14162,33 +14774,33 @@ Begin
   { variables libres des enfants }
   For j := 0 To High(child.freevars) Do Begin
    nm := child.freevars[j];
-   ch := sc.Lookup(nm);
-   If sc.IsFunc And (localSet.IndexOf(nm) >= 0) Then Begin
-    ch := sc.Lookup(nm);
+   ch := ScopeLookup(sc, nm);
+   If ScopeIsFunc(sc) And (SLIndexOf(localSet, nm) >= 0) Then Begin
+    ch := ScopeLookup(sc, nm);
     If ch <> Nil Then ch.kind := skCell;
    End
    Else If (sc.kind = scClass) And (nm = '__class__') Then
     sc.needsClassCell := True
-   Else If bound.IndexOf(nm) >= 0 Then Begin
+   Else If SLIndexOf(bound, nm) >= 0 Then Begin
     { passer a travers }
-    ch := sc.Add(nm, 0);
+    ch := ObjAdd(sc, nm, 0);
     If (ch.kind = skNone) Or (ch.kind = skGlobalImp) Then ch.kind := skFree;
-    freeSet.Add(nm);
+    SLAdd(freeSet, nm);
    End;
   End;
  End;
  { listes finales }
  SetLength(sc.freevars, 0);
- For i := 0 To freeSet.Count - 1 Do Begin
+ For i := 0 To freeSet^.n - 1 Do Begin
   SetLength(sc.freevars, Length(sc.freevars) + 1);
-  sc.freevars[High(sc.freevars)] := freeSet[i];
+  sc.freevars[High(sc.freevars)] := freeSet^.keys[i];
  End;
  SetLength(sc.cellvars, 0);
- For i := 0 To sc.syms.Count - 1 Do Begin
-  sym := TSym(sc.syms.Objects[i]);
+ For i := 0 To sc.syms^.n - 1 Do Begin
+  sym := TSym(sc.syms^.vals[i]);
   If sym.kind = skCell Then Begin
    SetLength(sc.cellvars, Length(sc.cellvars) + 1);
-   sc.cellvars[High(sc.cellvars)] := sc.syms[i];
+   sc.cellvars[High(sc.cellvars)] := sc.syms^.keys[i];
   End;
  End;
  If sc.needsClassCell Then Begin
@@ -14196,25 +14808,25 @@ Begin
   sc.cellvars[High(sc.cellvars)] := '__class__';
  End;
  { variables locales supplementaires dans l'ordre d'apparition }
- If sc.IsFunc Then
+ If ScopeIsFunc(sc) Then
   For i := 0 To High(sc.order) Do Begin
-   sym := sc.Lookup(sc.order[i]);
+   sym := ScopeLookup(sc, sc.order[i]);
    If (sym.kind In [skLocal, skCell]) And ((sym.flags And symParam) = 0)
     And (sym.kind = skLocal) Then Begin
     SetLength(sc.varnames, Length(sc.varnames) + 1);
     sc.varnames[High(sc.varnames)] := sc.order[i];
    End;
   End;
- newBound.Free;
- freeSet.Free;
- localSet.Free;
+ SLFree(newBound);
+ SLFree(freeSet);
+ SLFree(localSet);
 End;
 
 Function ScopeKindOf(sc: TScope; Const nm: AnsiString): Integer;
 Var
  s: TSym;
 Begin
- s := sc.Lookup(nm);
+ s := ScopeLookup(sc, nm);
  If s = Nil Then Result := skGlobalImp Else Result := s.kind;
 End;
 
@@ -14258,7 +14870,7 @@ Const
  cxAugStore = 4;
 
 Type
- TCgBlock = Class;
+ TCgBlock = ^TCgBlockRec;
 
  TInstr = Record
   op: Integer;
@@ -14267,7 +14879,7 @@ Type
   line: Integer;
  End;
 
- TCgBlock = Class
+ TCgBlockRec = Record
   ins: Array Of TInstr;
   n: Integer;
   next: TCgBlock;
@@ -14280,7 +14892,8 @@ Type
   block, exit: TCgBlock;
  End;
 
- TGen = Class
+ TGen = ^TGenRec;
+ TGenRec = Record
   sc: TScope;
   skind: Integer;
   blocks: Array Of TCgBlock;
@@ -14290,13 +14903,13 @@ Type
   nfb: Integer;
   consts: TValArr;
   nconsts: Integer;
-  ckeys: TStringList;
+  ckeys: PSList;
   names: TStrArr;
   nnames: Integer;
-  nameIdx: TStringList;
+  nameIdx: PSList;
   varnames: TStrArr;
   nvar: Integer;
-  varIdx: TStringList;
+  varIdx: PSList;
   cellvars, freevars: TStrArr;
   lineno: Integer;
   lineSet: Boolean;
@@ -14308,6 +14921,19 @@ Type
   nest: Integer;
   argcount, posonly, kwonly: Integer;
  End;
+
+Function AllocCgBlock: TCgBlock; Forward;
+Function AllocGen: TGen; Forward;
+
+Function AllocCgBlock: TCgBlock;
+Begin
+ Result := TCgBlock(AllocMem(SizeOf(TCgBlockRec)));
+End;
+
+Function AllocGen: TGen;
+Begin
+ Result := TGen(AllocMem(SizeOf(TGenRec)));
+End;
 
 Var
  CgAnnotFuture: Boolean;
@@ -14327,7 +14953,7 @@ End;
 
 Function NewBlock(g: TGen): TCgBlock;
 Begin
- Result := TCgBlock.Create;
+ Result := AllocCgBlock;
  Result.startDepth := -MaxInt;
  If g.nblocks >= Length(g.blocks) Then
   SetLength(g.blocks, (g.nblocks + 8) * 2);
@@ -14397,7 +15023,7 @@ Function ConstKey(Const v: TVal): AnsiString;
 Var
  t: TPyTuple;
  j: Integer;
- sl: TStringList;
+ sl: PSList;
  cd: TPyCode;
  tmp: AnsiString;
 Begin
@@ -14411,19 +15037,19 @@ Begin
    Result := 'U' + IntToStr(PtrInt(v.o));
    Exit;
   End;
-  If v.o Is TPyStr Then Result := 'S' + TPyStr(v.o).s
-  Else If v.o Is TPyBytes Then Result := 'Y' + TPyBytes(v.o).s
-  Else If v.o Is TPyBigInt Then Result := 'I' + ReprVal(v)
-  Else If v.o Is TPyComplex Then
+  If IsK(v.o, okStr) Then Result := 'S' + TPyStr(v.o).s
+  Else If IsK(v.o, okBytes) Then Result := 'Y' + TPyBytes(v.o).s
+  Else If IsK(v.o, okBigInt) Then Result := 'I' + ReprVal(v)
+  Else If IsK(v.o, okComplex) Then
    Result := 'C' + FloatBits(TPyComplex(v.o).re) + ',' +
     FloatBits(TPyComplex(v.o).im)
-  Else If v.o Is TPyTuple Then Begin
+  Else If IsK(v.o, okTuple) Then Begin
    t := TPyTuple(v.o);
    Result := 'T' + IntToStr(Length(t.items)) + '(';
    For j := 0 To High(t.items) Do Result := Result + ConstKey(t.items[j]) + ';';
    Result := Result + ')';
   End
-  Else If v.o Is TPyCode Then Begin
+  Else If IsK(v.o, okCode) Then Begin
    cd := TPyCode(v.o);
    Result := 'O' + cd.name + '|' + IntToStr(cd.argcount) + ',' +
     IntToStr(cd.posonly) + ',' + IntToStr(cd.kwonly) + ',' +
@@ -14443,18 +15069,16 @@ Begin
    Result := Result + '|';
    For j := 0 To High(cd.cellvars) Do Result := Result + cd.cellvars[j] + ';';
   End
-  Else If v.o Is TPySet Then Begin
-   sl := TStringList.Create;
-   sl.Sorted := True;
-   sl.CaseSensitive := True;
+  Else If IsK(v.o, okSet) Then Begin
+   sl := SLNew(True);
    For j := 0 To High(TPySet(v.o).tab) Do
     If (TPySet(v.o).tab[j].key.k <> vkNull) And
      (TPySet(v.o).tab[j].key.k <> vkDummy) Then
-     sl.Add(ConstKey(TPySet(v.o).tab[j].key));
-   Result := 'Z' + IntToStr(sl.Count) + '{';
-   For j := 0 To sl.Count - 1 Do Result := Result + sl[j] + ';';
+     SLAdd(sl, ConstKey(TPySet(v.o).tab[j].key));
+   Result := 'Z' + IntToStr(sl^.n) + '{';
+   For j := 0 To sl^.n - 1 Do Result := Result + sl^.keys[j] + ';';
    Result := Result + '}';
-   sl.Free;
+   SLFree(sl);
   End
   Else If v.o = vEllipsis.o Then Result := 'E'
   Else Result := 'U' + IntToStr(PtrInt(v.o));
@@ -14471,15 +15095,15 @@ Begin
   Exit;
  End;
  key := ConstKey(v);
- i := g.ckeys.IndexOf(key);
+ i := SLIndexOf(g.ckeys, key);
  If i >= 0 Then Begin
-  Result := PtrInt(g.ckeys.Objects[i]);
+  Result := g.ckeys^.vals[i];
   Exit;
  End;
  If g.nconsts >= Length(g.consts) Then
   SetLength(g.consts, (g.nconsts + 8) * 2);
  g.consts[g.nconsts] := v;
- g.ckeys.AddObject(key, TObject(PtrInt(g.nconsts)));
+ SLAddObject(g.ckeys, key, g.nconsts);
  Result := g.nconsts;
  Inc(g.nconsts);
 End;
@@ -14499,14 +15123,14 @@ Begin
   Result := 0;
   Exit;
  End;
- i := g.nameIdx.IndexOf(s);
+ i := SLIndexOf(g.nameIdx, s);
  If i >= 0 Then Begin
-  Result := PtrInt(g.nameIdx.Objects[i]);
+  Result := g.nameIdx^.vals[i];
   Exit;
  End;
  If g.nnames >= Length(g.names) Then SetLength(g.names, (g.nnames + 8) * 2);
  g.names[g.nnames] := s;
- g.nameIdx.AddObject(s, TObject(PtrInt(g.nnames)));
+ SLAddObject(g.nameIdx, s, g.nnames);
  Result := g.nnames;
  Inc(g.nnames);
 End;
@@ -14519,14 +15143,14 @@ Begin
   Result := 0;
   Exit;
  End;
- i := g.varIdx.IndexOf(s);
+ i := SLIndexOf(g.varIdx, s);
  If i >= 0 Then Begin
-  Result := PtrInt(g.varIdx.Objects[i]);
+  Result := g.varIdx^.vals[i];
   Exit;
  End;
  If g.nvar >= Length(g.varnames) Then SetLength(g.varnames, (g.nvar + 8) * 2);
  g.varnames[g.nvar] := s;
- g.varIdx.AddObject(s, TObject(PtrInt(g.nvar)));
+ SLAddObject(g.varIdx, s, g.nvar);
  Result := g.nvar;
  Inc(g.nvar);
 End;
@@ -14581,24 +15205,15 @@ Var
  base: AnsiString;
  t: AnsiString;
 Begin
- Result := TGen.Create;
+ Result := AllocGen;
  Result.sc := sc;
  Result.skind := skind;
  Result.name := nm;
  Result.parent := parent;
  Result.firstline := firstline;
- Result.ckeys := TStringList.Create;
- Result.ckeys.CaseSensitive := True;
- Result.ckeys.Sorted := True;
- Result.ckeys.Duplicates := dupIgnore;
- Result.nameIdx := TStringList.Create;
- Result.nameIdx.CaseSensitive := True;
- Result.nameIdx.Sorted := True;
- Result.nameIdx.Duplicates := dupIgnore;
- Result.varIdx := TStringList.Create;
- Result.varIdx.CaseSensitive := True;
- Result.varIdx.Sorted := True;
- Result.varIdx.Duplicates := dupIgnore;
+ Result.ckeys := SLNew(True);
+ Result.nameIdx := SLNew(True);
+ Result.varIdx := SLNew(True);
  Result.lineno := 0;
  Result.lineSet := False;
  If parent <> Nil Then Begin
@@ -14610,7 +15225,7 @@ Begin
  Else Result.nest := 1;
  If skind = suClass Then Result.priv := nm;
  { arguments : ste_varnames }
- If sc.IsFunc Then Begin
+ If ScopeIsFunc(sc) Then Begin
   j := 0;
   If sc.kind = scComp Then j := 1
   Else Begin
@@ -14632,7 +15247,7 @@ Begin
  Else Begin
   force := False;
   If skind In [suFunction, suAsyncFunction, suClass] Then Begin
-   sym := parent.sc.Lookup(nm);
+   sym := ScopeLookup(parent.sc, nm);
    If (sym <> Nil) And (sym.kind = skGlobalExp) Then force := True;
   End;
   If force Then Result.qual := nm
@@ -14655,7 +15270,7 @@ Var
  nm: AnsiString;
 Begin
  nm := Mangle(g, nm0);
- sym := g.sc.Lookup(nm0);
+ sym := ScopeLookup(g.sc, nm0);
  If sym = Nil Then kind := skGlobalImp Else kind := sym.kind;
  If (g.sc.kind = scModule) And (kind <> skGlobalExp) Then kind := skNone;
  If (g.sc.kind = scClass) And (kind In [skLocal, skGlobalImp]) Then
@@ -15032,7 +15647,7 @@ Begin
   nAttr: Begin
     s := UnparseL(nd.a, prAtom);
     If IsConstNode(nd.a, v) And ((v.k = vkInt) Or
-     ((v.k = vkObj) And (v.o Is TPyBigInt))) Then s := s + ' .'
+     ((v.k = vkObj) And (IsK(v.o, okBigInt)))) Then s := s + ' .'
     Else s := s + '.';
     Result := s + nd.s;
    End;
@@ -15770,7 +16385,7 @@ Begin
    Push(nxt, depth);
   End;
  End;
- code := TPyCode.Create(tyCode);
+ code := AllocCode(tyCode);
  code.co := co;
  code.stacksize := maxd;
  SetLength(code.consts, g.nconsts);
@@ -15795,7 +16410,7 @@ Begin
  code.argcount := g.posonly + g.argcount;
  code.kwonly := g.kwonly;
  fl := 0;
- If sc.IsFunc Then Begin
+ If ScopeIsFunc(sc) Then Begin
   fl := CO_OPTIMIZED Or CO_NEWLOCALS;
   If sc.kind <> scComp Then Begin
    If sc.hasVarArgs Then fl := fl Or CO_VARARGS;
@@ -15808,7 +16423,7 @@ Begin
   Else If sc.isGen Then fl := fl Or CO_GENERATOR;
   pp := sc.parent;
   While pp <> Nil Do Begin
-   If pp.IsFunc Then Begin
+   If ScopeIsFunc(pp) Then Begin
     fl := fl Or CO_NESTED;
     Break;
    End;
@@ -17379,23 +17994,23 @@ End;
 Function VStr(Const s: AnsiString): TVal;
 Begin
  Result.k := vkObj;
- Result.o := TPyStr.Make(s);
+ Result.o := TPyObj(AllocStr(s));
 End;
 
 Function VBytes(Const s: AnsiString): TVal;
 Begin
  Result.k := vkObj;
- Result.o := TPyBytes.Make(s);
+ Result.o := TPyObj(AllocBytes(s));
 End;
 
 Function VByteArray(Const s: AnsiString): TVal;
 Var
  b: TPyBytes;
 Begin
- b := TPyBytes.Make(s);
+ b := AllocBytes(s);
  b.cls := tyBytearray;
  Result.k := vkObj;
- Result.o := b;
+ Result.o := TPyObj(b);
 End;
 
 Function VBytesLike(src: TPyObj; Const s: AnsiString): TVal;
@@ -17406,12 +18021,12 @@ End;
 
 Function NewList: TPyList;
 Begin
- Result := TPyList.Make;
+ Result := AllocList;
 End;
 
 Function NewTuple(n: Integer): TPyTuple;
 Begin
- Result := TPyTuple.Make(n);
+ Result := AllocTuple(n);
 End;
 
 Function SameKey(Const a, b: TVal): Boolean; Inline;
@@ -17422,7 +18037,7 @@ Begin
     Result := True;
     Exit;
    End;
-   If (a.o Is TPyStr) And (b.o Is TPyStr) Then Begin
+   If (IsK(a.o, okStr)) And (IsK(b.o, okStr)) Then Begin
     Result := TPyStr(a.o).s = TPyStr(b.o).s;
     Exit;
    End;
@@ -17446,67 +18061,71 @@ Var
  v: TVal;
 Begin
  h := HashBytes(s);
- ix := InternTab.FindS(s, h);
+ ix := DictFindS(InternTab, s, h);
  If ix >= 0 Then Begin
   Result := TPyStr(InternTab.ent[ix].key.o);
   Exit;
  End;
- Result := TPyStr.Make(s);
+ Result := AllocStr(s);
  Result.h := h;
  Result.hashed := True;
  v := VObj(Result);
- InternTab.SetItem(v, vNone);
+ DictSetItem(InternTab, v, vNone);
 End;
 
 { ------------------------------------------------------------
   Dictionnaire ordonne
   ------------------------------------------------------------ }
-Constructor TPyDict.Make;
+Function AllocDict(): TPyDict;
+Var
+ Self: TPyDict;
 Begin
- Inherited Create(tyDict);
- nent := 0;
- used := 0;
- mask := -1;
+ Self := TPyDict(AllocObjMem(SizeOf(TPyDictRec)));
+ Result := Self;
+ InitObj(Self, okDict, tyDict);
+ Self.nent := 0;
+ Self.used := 0;
+ Self.mask := -1;
 End;
 
-Function TPyDict.FindIdx(Const key: TVal; h: Int64): Integer;
+Function DictFindIdx(Self: TPyDict; Const key: TVal; h: Int64): Integer;
 Var
  i: Integer;
  perturb: QWord;
  ix: LongInt;
 Begin
  Result := -1;
- If mask < 0 Then Exit;
- i := Integer(QWord(h) And QWord(mask));
+ If Self.mask < 0 Then Exit;
+ i := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
  Repeat
-  ix := idx[i];
+  ix := Self.idx[i];
   If ix = -1 Then Exit;
   If ix >= 0 Then
-   If ent[ix].h = h Then
-    If SameKey(ent[ix].key, key) Then Begin
+   If Self.ent[ix].h = h Then
+    If SameKey(Self.ent[ix].key, key) Then Begin
      Result := ix;
      Exit;
     End;
   perturb := perturb Shr 5;
-  i := Integer((QWord(i) * 5 + perturb + 1) And QWord(mask));
+  i := Integer((QWord(i) * 5 + perturb + 1) And QWord(Self.mask));
  Until False;
 End;
 
-Function TPyDict.GetItem(Const key: TVal; Var v: TVal): Boolean;
+Function DictGetItem(Self: TPyDict; Const key: TVal; Var v: TVal): Boolean;
 Var
  ix: Integer;
 Begin
- If mask < 0 Then Begin
+ If Self.mask < 0 Then Begin
   Result := False;
   Exit;
  End;
- ix := FindIdx(key, HashVal(key));
+ ix := DictFindIdx(Self, key, HashVal(key));
  Result := ix >= 0;
- If Result Then v := ent[ix].val;
+ If Result Then v := Self.ent[ix].val;
 End;
 
-Procedure TPyDict.Rebuild(newcap: Integer);
+Procedure DictRebuild(Self: TPyDict; newcap: Integer);
 Var
  ne: Array Of TDEntry;
  i, j, isz: Integer;
@@ -17516,280 +18135,285 @@ Begin
  If newcap < 4 Then newcap := 4;
  SetLength(ne, newcap);
  j := 0;
- For i := 0 To nent - 1 Do
-  If ent[i].key.k <> vkNull Then Begin
-   ne[j] := ent[i];
+ For i := 0 To Self.nent - 1 Do
+  If Self.ent[i].key.k <> vkNull Then Begin
+   ne[j] := Self.ent[i];
    Inc(j);
   End;
- ent := ne;
- nent := j;
+ Self.ent := ne;
+ Self.nent := j;
  isz := 8;
  While isz < newcap * 2 Do isz := isz * 2;
- SetLength(idx, isz);
- For i := 0 To isz - 1 Do idx[i] := -1;
- mask := isz - 1;
- For i := 0 To nent - 1 Do Begin
-  p := Integer(QWord(ent[i].h) And QWord(mask));
-  perturb := QWord(ent[i].h);
-  While idx[p] <> -1 Do Begin
+ SetLength(Self.idx, isz);
+ For i := 0 To isz - 1 Do Self.idx[i] := -1;
+ Self.mask := isz - 1;
+ For i := 0 To Self.nent - 1 Do Begin
+  p := Integer(QWord(Self.ent[i].h) And QWord(Self.mask));
+  perturb := QWord(Self.ent[i].h);
+  While Self.idx[p] <> -1 Do Begin
    perturb := perturb Shr 5;
-   p := Integer((QWord(p) * 5 + perturb + 1) And QWord(mask));
+   p := Integer((QWord(p) * 5 + perturb + 1) And QWord(Self.mask));
   End;
-  idx[p] := i;
+  Self.idx[p] := i;
  End;
 End;
 
-Procedure TPyDict.SetItem(Const key, v: TVal);
+Procedure DictSetItem(Self: TPyDict; Const key, v: TVal);
 Var
  h: Int64;
  ix, p: Integer;
  perturb: QWord;
 Begin
  h := HashVal(key);
- If mask >= 0 Then Begin
-  ix := FindIdx(key, h);
+ If Self.mask >= 0 Then Begin
+  ix := DictFindIdx(Self, key, h);
   If ix >= 0 Then Begin
-   ent[ix].val := v;
+   Self.ent[ix].val := v;
    Exit;
   End;
  End;
- If (mask < 0) Or (nent >= Length(ent)) Then Begin
-  If used * 2 > Length(ent) Then Rebuild(used * 2 + 8)
-  Else Rebuild(Length(ent));
+ If (Self.mask < 0) Or (Self.nent >= Length(Self.ent)) Then Begin
+  If Self.used * 2 > Length(Self.ent) Then DictRebuild(Self, Self.used * 2 + 8)
+  Else DictRebuild(Self, Length(Self.ent));
  End;
- p := Integer(QWord(h) And QWord(mask));
+ p := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
- While idx[p] >= 0 Do Begin
+ While Self.idx[p] >= 0 Do Begin
   perturb := perturb Shr 5;
-  p := Integer((QWord(p) * 5 + perturb + 1) And QWord(mask));
+  p := Integer((QWord(p) * 5 + perturb + 1) And QWord(Self.mask));
  End;
- idx[p] := nent;
- ent[nent].key := key;
- ent[nent].val := v;
- ent[nent].h := h;
- Inc(nent);
- Inc(used);
+ Self.idx[p] := Self.nent;
+ Self.ent[Self.nent].key := key;
+ Self.ent[Self.nent].val := v;
+ Self.ent[Self.nent].h := h;
+ Inc(Self.nent);
+ Inc(Self.used);
 End;
 
-Function TPyDict.DelItem(Const key: TVal): Boolean;
+Function DictDelItem(Self: TPyDict; Const key: TVal): Boolean;
 Var
  h: Int64;
  ix, p: Integer;
  perturb: QWord;
 Begin
  Result := False;
- If mask < 0 Then Exit;
+ If Self.mask < 0 Then Exit;
  h := HashVal(key);
- ix := FindIdx(key, h);
+ ix := DictFindIdx(Self, key, h);
  If ix < 0 Then Exit;
- p := Integer(QWord(h) And QWord(mask));
+ p := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
- While idx[p] <> ix Do Begin
+ While Self.idx[p] <> ix Do Begin
   perturb := perturb Shr 5;
-  p := Integer((QWord(p) * 5 + perturb + 1) And QWord(mask));
+  p := Integer((QWord(p) * 5 + perturb + 1) And QWord(Self.mask));
  End;
- idx[p] := -2;
- ent[ix].key.k := vkNull;
- ent[ix].val.k := vkNull;
- Dec(used);
+ Self.idx[p] := -2;
+ Self.ent[ix].key.k := vkNull;
+ Self.ent[ix].val.k := vkNull;
+ Dec(Self.used);
  Result := True;
 End;
 
-Function TPyDict.GetS(Const name: AnsiString; Var v: TVal): Boolean;
+Function DictGetS(Self: TPyDict; Const name: AnsiString; Var v: TVal): Boolean;
 Var
  ix: Integer;
 Begin
- If mask < 0 Then Begin
+ If Self.mask < 0 Then Begin
   Result := False;
   Exit;
  End;
- ix := FindS(name, HashBytes(name));
+ ix := DictFindS(Self, name, HashBytes(name));
  Result := ix >= 0;
- If Result Then v := ent[ix].val;
+ If Result Then v := Self.ent[ix].val;
 End;
 
-Function TPyDict.FindS(Const s: AnsiString; h: Int64): Integer;
+Function DictFindS(Self: TPyDict; Const s: AnsiString; h: Int64): Integer;
 Var
  i: Integer;
  perturb: QWord;
  ix: LongInt;
 Begin
  Result := -1;
- If mask < 0 Then Exit;
- i := Integer(QWord(h) And QWord(mask));
+ If Self.mask < 0 Then Exit;
+ i := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
  Repeat
-  ix := idx[i];
+  ix := Self.idx[i];
   If ix = -1 Then Exit;
   If ix >= 0 Then
-   If ent[ix].h = h Then
-    If (ent[ix].key.k = vkObj) And (ent[ix].key.o Is TPyStr) Then
-     If TPyStr(ent[ix].key.o).s = s Then Begin
+   If Self.ent[ix].h = h Then
+    If (Self.ent[ix].key.k = vkObj) And (IsK(Self.ent[ix].key.o, okStr)) Then
+     If TPyStr(Self.ent[ix].key.o).s = s Then Begin
       Result := ix;
       Exit;
      End;
   perturb := perturb Shr 5;
-  i := Integer((QWord(i) * 5 + perturb + 1) And QWord(mask));
+  i := Integer((QWord(i) * 5 + perturb + 1) And QWord(Self.mask));
  Until False;
 End;
 
-Procedure TPyDict.SetS(Const name: AnsiString; Const v: TVal);
+Procedure DictSetS(Self: TPyDict; Const name: AnsiString; Const v: TVal);
 Var
  ix: Integer;
  k: TVal;
 Begin
- ix := FindS(name, HashBytes(name));
+ ix := DictFindS(Self, name, HashBytes(name));
  If ix >= 0 Then Begin
-  ent[ix].val := v;
+  Self.ent[ix].val := v;
   Exit;
  End;
  k := VObj(InternStr(name));
- SetItem(k, v);
+ DictSetItem(Self, k, v);
 End;
 
-Function TPyDict.HasS(Const name: AnsiString): Boolean;
+Function DictHasS(Self: TPyDict; Const name: AnsiString): Boolean;
 Begin
- Result := FindS(name, HashBytes(name)) >= 0;
+ Result := DictFindS(Self, name, HashBytes(name)) >= 0;
 End;
 
-Function TPyDict.DelS(Const name: AnsiString): Boolean;
+Function DictDelS(Self: TPyDict; Const name: AnsiString): Boolean;
 Var
  k: TVal;
 Begin
- If FindS(name, HashBytes(name)) < 0 Then Begin
+ If DictFindS(Self, name, HashBytes(name)) < 0 Then Begin
   Result := False;
   Exit;
  End;
  k := VObj(InternStr(name));
- Result := DelItem(k);
+ Result := DictDelItem(Self, k);
 End;
 
-Procedure TPyDict.Clear;
+Procedure ObjClear(Self: TPyDict); Overload;
 Begin
- SetLength(ent, 0);
- SetLength(idx, 0);
- nent := 0;
- used := 0;
- mask := -1;
+ SetLength(Self.ent, 0);
+ SetLength(Self.idx, 0);
+ Self.nent := 0;
+ Self.used := 0;
+ Self.mask := -1;
 End;
 
-Function TPyDict.Copy: TPyDict;
+Function DictCopy(Self: TPyDict): TPyDict;
 Var
  i: Integer;
 Begin
- Result := TPyDict.Make;
- For i := 0 To nent - 1 Do
-  If ent[i].key.k <> vkNull Then Result.SetItem(ent[i].key, ent[i].val);
+ Result := AllocDict;
+ For i := 0 To Self.nent - 1 Do
+  If Self.ent[i].key.k <> vkNull Then DictSetItem(Result, Self.ent[i].key,
+    Self.ent[i].val);
 End;
 
-Procedure TPyDict.MarkKids;
+Procedure DictMarkKids(Self: TPyDict);
 Var
  i: Integer;
 Begin
- Inherited MarkKids;
- For i := 0 To nent - 1 Do
-  If ent[i].key.k <> vkNull Then Begin
-   MarkVal(ent[i].key);
-   MarkVal(ent[i].val);
+ MarkHdr(Self);
+ For i := 0 To Self.nent - 1 Do
+  If Self.ent[i].key.k <> vkNull Then Begin
+   MarkVal(Self.ent[i].key);
+   MarkVal(Self.ent[i].val);
   End;
 End;
 
 { ------------------------------------------------------------
   Ensemble (meme algorithme de sondage que CPython)
   ------------------------------------------------------------ }
-Constructor TPySet.Make(fz: Boolean);
+Function AllocSet(fz: Boolean): TPySet;
+Var
+ Self: TPySet;
 Begin
- If fz Then Inherited Create(tyFrozenset) Else Inherited Create(tySet);
- frozen := fz;
- fill := 0;
- used := 0;
- mask := 7;
- SetLength(tab, 8);
- FillChar(tab[0], 8 * SizeOf(TSetEntry), 0);
+ Self := TPySet(AllocObjMem(SizeOf(TPySetRec)));
+ Result := Self;
+ If fz Then InitObj(Self, okSet, tyFrozenset) Else InitObj(Self, okSet, tySet);
+ Self.frozen := fz;
+ Self.fill := 0;
+ Self.used := 0;
+ Self.mask := 7;
+ SetLength(Self.tab, 8);
+ FillChar(Self.tab[0], 8 * SizeOf(TSetEntry), 0);
 End;
 
-Function TPySet.FindEntry(Const key: TVal; h: Int64): Integer;
+Function SetFindEntry(Self: TPySet; Const key: TVal; h: Int64): Integer;
 Var
  i, j: Integer;
  perturb: QWord;
 Begin
- i := Integer(QWord(h) And QWord(mask));
+ i := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
  Repeat
-  If tab[i].key.k = vkNull Then Begin
+  If Self.tab[i].key.k = vkNull Then Begin
    Result := -1;
    Exit;
   End;
-  If (tab[i].h = h) And (tab[i].key.k <> vkDummy) Then
-   If SameKey(tab[i].key, key) Then Begin
+  If (Self.tab[i].h = h) And (Self.tab[i].key.k <> vkDummy) Then
+   If SameKey(Self.tab[i].key, key) Then Begin
     Result := i;
     Exit;
    End;
-  If i + 9 <= mask Then
+  If i + 9 <= Self.mask Then
    For j := 1 To 9 Do Begin
-    If tab[i + j].key.k = vkNull Then Begin
+    If Self.tab[i + j].key.k = vkNull Then Begin
      Result := -1;
      Exit;
     End;
-    If (tab[i + j].h = h) And (tab[i + j].key.k <> vkDummy) Then
-     If SameKey(tab[i + j].key, key) Then Begin
+    If (Self.tab[i + j].h = h) And (Self.tab[i + j].key.k <> vkDummy) Then
+     If SameKey(Self.tab[i + j].key, key) Then Begin
       Result := i + j;
       Exit;
      End;
    End;
   perturb := perturb Shr 5;
-  i := Integer((QWord(i) * 5 + 1 + perturb) And QWord(mask));
+  i := Integer((QWord(i) * 5 + 1 + perturb) And QWord(Self.mask));
  Until False;
 End;
 
-Function TPySet.Contains(Const key: TVal): Boolean;
+Function SetContains(Self: TPySet; Const key: TVal): Boolean;
 Begin
- Result := FindEntry(key, HashVal(key)) >= 0;
+ Result := SetFindEntry(Self, key, HashVal(key)) >= 0;
 End;
 
-Procedure TPySet.InsertClean(Const key: TVal; h: Int64);
+Procedure SetInsertClean(Self: TPySet; Const key: TVal; h: Int64);
 Var
  i, j: Integer;
  perturb: QWord;
 Begin
- i := Integer(QWord(h) And QWord(mask));
+ i := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
  Repeat
-  If tab[i].key.k = vkNull Then Begin
-   tab[i].key := key;
-   tab[i].h := h;
+  If Self.tab[i].key.k = vkNull Then Begin
+   Self.tab[i].key := key;
+   Self.tab[i].h := h;
    Exit;
   End;
-  If i + 9 <= mask Then
+  If i + 9 <= Self.mask Then
    For j := 1 To 9 Do
-    If tab[i + j].key.k = vkNull Then Begin
-     tab[i + j].key := key;
-     tab[i + j].h := h;
+    If Self.tab[i + j].key.k = vkNull Then Begin
+     Self.tab[i + j].key := key;
+     Self.tab[i + j].h := h;
      Exit;
     End;
   perturb := perturb Shr 5;
-  i := Integer((QWord(i) * 5 + 1 + perturb) And QWord(mask));
+  i := Integer((QWord(i) * 5 + 1 + perturb) And QWord(Self.mask));
  Until False;
 End;
 
-Procedure TPySet.Resize(minused: Integer);
+Procedure SetResize(Self: TPySet; minused: Integer);
 Var
  old: Array Of TSetEntry;
  newsize, i: Integer;
 Begin
  newsize := 8;
  While newsize <= minused Do newsize := newsize Shl 1;
- old := tab;
- SetLength(tab, newsize);
- FillChar(tab[0], newsize * SizeOf(TSetEntry), 0);
- mask := newsize - 1;
+ old := Self.tab;
+ SetLength(Self.tab, newsize);
+ FillChar(Self.tab[0], newsize * SizeOf(TSetEntry), 0);
+ Self.mask := newsize - 1;
  For i := 0 To High(old) Do
   If (old[i].key.k <> vkNull) And (old[i].key.k <> vkDummy) Then
-   InsertClean(old[i].key, old[i].h);
- fill := used;
+   SetInsertClean(Self, old[i].key, old[i].h);
+ Self.fill := Self.used;
 End;
 
-Function TPySet.Add(Const key: TVal): Boolean;
+Function ObjAdd(Self: TPySet; Const key: TVal): Boolean; Overload;
 Var
  h: Int64;
  i, j, freeslot: Integer;
@@ -17797,98 +18421,100 @@ Var
 
  Function Place(slot: Integer): Boolean;
  Begin
-  tab[slot].key := key;
-  tab[slot].h := h;
-  Inc(used);
+  Self.tab[slot].key := key;
+  Self.tab[slot].h := h;
+  Inc(Self.used);
   Result := True;
  End;
 
 Begin
  h := HashVal(key);
- i := Integer(QWord(h) And QWord(mask));
+ i := Integer(QWord(h) And QWord(Self.mask));
  perturb := QWord(h);
  freeslot := -1;
  Repeat
-  If tab[i].key.k = vkNull Then Begin
+  If Self.tab[i].key.k = vkNull Then Begin
    If freeslot >= 0 Then Begin
     Result := Place(freeslot);
     Exit;
    End;
-   Inc(fill);
+   Inc(Self.fill);
    Result := Place(i);
-   If fill * 5 >= mask * 3 Then Begin
-    If used > 50000 Then Resize(used * 2) Else Resize(used * 4);
+   If Self.fill * 5 >= Self.mask * 3 Then Begin
+    If Self.used > 50000 Then SetResize(Self, Self.used * 2) Else
+      SetResize(Self, Self.used * 4);
    End;
    Exit;
   End;
-  If tab[i].key.k = vkDummy Then Begin
+  If Self.tab[i].key.k = vkDummy Then Begin
    If freeslot < 0 Then freeslot := i;
   End
-  Else If tab[i].h = h Then
-   If SameKey(tab[i].key, key) Then Begin
+  Else If Self.tab[i].h = h Then
+   If SameKey(Self.tab[i].key, key) Then Begin
     Result := False;
     Exit;
    End;
-  If i + 9 <= mask Then
+  If i + 9 <= Self.mask Then
    For j := 1 To 9 Do Begin
-    If tab[i + j].key.k = vkNull Then Begin
+    If Self.tab[i + j].key.k = vkNull Then Begin
      If freeslot >= 0 Then Begin
       Result := Place(freeslot);
       Exit;
      End;
-     Inc(fill);
+     Inc(Self.fill);
      Result := Place(i + j);
-     If fill * 5 >= mask * 3 Then Begin
-      If used > 50000 Then Resize(used * 2) Else Resize(used * 4);
+     If Self.fill * 5 >= Self.mask * 3 Then Begin
+      If Self.used > 50000 Then SetResize(Self, Self.used * 2) Else
+        SetResize(Self, Self.used * 4);
      End;
      Exit;
     End;
-    If tab[i + j].key.k = vkDummy Then Begin
+    If Self.tab[i + j].key.k = vkDummy Then Begin
      If freeslot < 0 Then freeslot := i + j;
     End
-    Else If tab[i + j].h = h Then
-     If SameKey(tab[i + j].key, key) Then Begin
+    Else If Self.tab[i + j].h = h Then
+     If SameKey(Self.tab[i + j].key, key) Then Begin
       Result := False;
       Exit;
      End;
    End;
   perturb := perturb Shr 5;
-  i := Integer((QWord(i) * 5 + 1 + perturb) And QWord(mask));
+  i := Integer((QWord(i) * 5 + 1 + perturb) And QWord(Self.mask));
  Until False;
 End;
 
-Function TPySet.Discard(Const key: TVal): Boolean;
+Function SetDiscard(Self: TPySet; Const key: TVal): Boolean;
 Var
  ix: Integer;
 Begin
- ix := FindEntry(key, HashVal(key));
+ ix := SetFindEntry(Self, key, HashVal(key));
  If ix < 0 Then Begin
   Result := False;
   Exit;
  End;
- tab[ix].key.k := vkDummy;
- tab[ix].h := -1;
- Dec(used);
+ Self.tab[ix].key.k := vkDummy;
+ Self.tab[ix].h := -1;
+ Dec(Self.used);
  Result := True;
 End;
 
-Procedure TPySet.Clear;
+Procedure ObjClear(Self: TPySet); Overload;
 Begin
- SetLength(tab, 8);
- FillChar(tab[0], 8 * SizeOf(TSetEntry), 0);
- mask := 7;
- fill := 0;
- used := 0;
+ SetLength(Self.tab, 8);
+ FillChar(Self.tab[0], 8 * SizeOf(TSetEntry), 0);
+ Self.mask := 7;
+ Self.fill := 0;
+ Self.used := 0;
 End;
 
-Procedure TPySet.MarkKids;
+Procedure SetMarkKids(Self: TPySet);
 Var
  i: Integer;
 Begin
- Inherited MarkKids;
- For i := 0 To High(tab) Do
-  If (tab[i].key.k <> vkNull) And (tab[i].key.k <> vkDummy) Then
-   MarkVal(tab[i].key);
+ MarkHdr(Self);
+ For i := 0 To High(Self.tab) Do
+  If (Self.tab[i].key.k <> vkNull) And (Self.tab[i].key.k <> vkDummy) Then
+   MarkVal(Self.tab[i].key);
 End;
 
 Function SetItems(s: TPySet): TValArr;
@@ -17909,10 +18535,10 @@ End;
   ------------------------------------------------------------ }
 Function NewTypeRaw(Const nm: AnsiString): TPyType;
 Begin
- Result := TPyType.Create(Nil);
+ Result := AllocType(Nil);
  Result.name := nm;
  Result.qualname := nm;
- Result.idict := TPyDict.Make;
+ Result.idict := AllocDict;
  Result.native := nkObject;
  Result.userdef := False;
 End;
@@ -18020,7 +18646,7 @@ Begin
  h := HashBytes(name);
  For i := 0 To High(t.mro) Do
   If t.mro[i].idict <> Nil Then Begin
-   ix := t.mro[i].idict.FindS(name, h);
+   ix := DictFindS(t.mro[i].idict, name, h);
    If ix >= 0 Then Begin
     v := t.mro[i].idict.ent[ix].val;
     Result := True;
@@ -18041,7 +18667,7 @@ Begin
  For i := 0 To High(t.mro) Do Begin
   d := t.mro[i].idict;
   If (d <> Nil) And (d.mask >= 0) Then Begin
-   ix := d.FindIdx(key, StrHash(nm));
+   ix := DictFindIdx(d, key, StrHash(nm));
    If ix >= 0 Then Begin
     v := d.ent[ix].val;
     Result := True;
@@ -18070,14 +18696,14 @@ Begin
  Result := TypeIsSub(TypeOf(v), t);
 End;
 
-Function IsObjOf(Const v: TVal; c: TClass): Boolean; Inline;
+Function IsObjOf(Const v: TVal; k: Byte): Boolean; Inline;
 Begin
- Result := (v.k = vkObj) And (v.o Is c);
+ Result := (v.k = vkObj) And IsK(v.o, k);
 End;
 
 Function IsStrVal(Const v: TVal): Boolean; Inline;
 Begin
- Result := (v.k = vkObj) And (v.o Is TPyStr);
+ Result := (v.k = vkObj) And (IsK(v.o, okStr));
 End;
 
 Function IsExcClass(t: TPyType): Boolean;
@@ -18094,15 +18720,15 @@ Var
  t: TPyTuple;
  i: Integer;
 Begin
- o := TPyObj.Create(c);
- o.idict := TPyDict.Make;
+ o := AllocObj(c);
+ o.idict := AllocDict;
  t := NewTuple(Length(args));
  For i := 0 To High(args) Do t.items[i] := args[i];
- o.idict.SetS('args', VObj(t));
+ DictSetS(o.idict, 'args', VObj(t));
  If (exSystemExit <> Nil) And TypeIsSub(c, exSystemExit) Then Begin
-  If Length(args) = 0 Then o.idict.SetS('code', vNone)
-  Else If Length(args) = 1 Then o.idict.SetS('code', args[0])
-  Else o.idict.SetS('code', VObj(t));
+  If Length(args) = 0 Then DictSetS(o.idict, 'code', vNone)
+  Else If Length(args) = 1 Then DictSetS(o.idict, 'code', args[0])
+  Else DictSetS(o.idict, 'code', VObj(t));
  End;
  Result := o;
 End;
@@ -18114,17 +18740,17 @@ End;
 
 Procedure RaiseExc(c: TPyType; Const msg: AnsiString);
 Begin
- Raise EPyError.Make(MakeExc(c, msg));
+ RaisePy(MakeExc(c, msg));
 End;
 
 Procedure RaiseObj(o: TPyObj);
 Begin
- Raise EPyError.Make(o);
+ RaisePy(o);
 End;
 
 Procedure RaiseKeyError(Const key: TVal);
 Begin
- Raise EPyError.Make(MakeExcArgs(exKeyError, [key]));
+ RaisePy(MakeExcArgs(exKeyError, [key]));
 End;
 
 Procedure RaiseStopIteration(Const v: TVal);
@@ -18133,8 +18759,8 @@ Var
 Begin
  If v.k = vkNone Then o := MakeExcArgs(exStopIteration, [])
  Else o := MakeExcArgs(exStopIteration, [v]);
- o.idict.SetS('value', v);
- Raise EPyError.Make(o);
+ DictSetS(o.idict, 'value', v);
+ RaisePy(o);
 End;
 
 Function TypeName(Const v: TVal): AnsiString;
@@ -18157,7 +18783,7 @@ End;
   ------------------------------------------------------------ }
 Function NewBuiltin(Const nm: AnsiString; f: TNativeFn): TPyBuiltin;
 Begin
- Result := TPyBuiltin.Create(tyBuiltin);
+ Result := AllocBuiltin(tyBuiltin);
  Result.name := nm;
  Result.fn := f;
 End;
@@ -18168,28 +18794,30 @@ Var
 Begin
  b := NewBuiltin(nm, f);
  b.isMethod := True;
- t.idict.SetS(nm, VObj(b));
+ DictSetS(t.idict, nm, VObj(b));
 End;
 
 Procedure DefFunc(d: TPyDict; Const nm: AnsiString; f: TNativeFn);
 Begin
- d.SetS(nm, VObj(NewBuiltin(nm, f)));
+ DictSetS(d, nm, VObj(NewBuiltin(nm, f)));
 End;
 
 Function NewWrapper(t: TPyType; Const fn: TVal): TPyWrapper;
 Begin
- Result := TPyWrapper.Create(t);
+ Result := AllocWrapper(t);
  Result.fn := fn;
 End;
 
 Procedure DefClassMethod(t: TPyType; Const nm: AnsiString; f: TNativeFn);
 Begin
- t.idict.SetS(nm, VObj(NewWrapper(tyClassMethod, VObj(NewBuiltin(nm, f)))));
+ DictSetS(t.idict, nm, VObj(NewWrapper(tyClassMethod, VObj(NewBuiltin(nm,
+   f)))));
 End;
 
 Procedure DefStaticMethod(t: TPyType; Const nm: AnsiString; f: TNativeFn);
 Begin
- t.idict.SetS(nm, VObj(NewWrapper(tyStaticMethod, VObj(NewBuiltin(nm, f)))));
+ DictSetS(t.idict, nm, VObj(NewWrapper(tyStaticMethod, VObj(NewBuiltin(nm,
+   f)))));
 End;
 
 { ------------------------------------------------------------
@@ -18197,7 +18825,7 @@ End;
   ------------------------------------------------------------ }
 Function KwGet(kw: TPyDict; Const nm: AnsiString; Var v: TVal): Boolean;
 Begin
- If kw = Nil Then Result := False Else Result := kw.GetS(nm, v);
+ If kw = Nil Then Result := False Else Result := DictGetS(kw, nm, v);
 End;
 
 Procedure NoKw(kw: TPyDict; Const fname: AnsiString);
@@ -18292,7 +18920,7 @@ Begin
  Case v.k Of
   vkInt, vkBool: Result := v.i;
   vkObj: Begin
-    If v.o Is TPyBigInt Then Begin
+    If IsK(v.o, okBigInt) Then Begin
      If BigFitsInt64(v, Result) Then Exit;
      RaiseExc(exOverflow, 'Python int too large to convert to C long');
     End;
@@ -18312,12 +18940,12 @@ Function StrOf(Const v: TVal): AnsiString;
 Var
  f, r: TVal;
 Begin
- If (v.k = vkObj) And (v.o Is TPyStr) Then Result := TPyStr(v.o).s
+ If (v.k = vkObj) And (IsK(v.o, okStr)) Then Result := TPyStr(v.o).s
  Else If (v.k = vkObj) And v.o.cls.userdef And
   LookupType(v.o.cls, '__fspath__', f) And (f.k = vkObj) And
-  (f.o Is TPyFunc) Then Begin
+  (IsK(f.o, okFunc)) Then Begin
   r := Call1(f, v);
-  If (r.k = vkObj) And (r.o Is TPyStr) Then Result := TPyStr(r.o).s
+  If (r.k = vkObj) And (IsK(r.o, okStr)) Then Result := TPyStr(r.o).s
   Else Begin
    TypeErr('expected __fspath__() to return str, not ' + TypeName(r));
    Result := '';
@@ -18335,8 +18963,8 @@ Var
 Begin
  Result := False;
  If v.k <> vkObj Then Exit;
- If (v.o Is TPyFunc) Or (v.o Is TPyBuiltin) Or (v.o Is TPyMethod) Or
-  (v.o Is TPyType) Then Begin
+ If (IsK(v.o, okFunc)) Or (IsK(v.o, okBuiltin)) Or (IsK(v.o, okMethod)) Or
+  (IsK(v.o, okType)) Then Begin
   Result := True;
   Exit;
  End;
@@ -18431,7 +19059,8 @@ Begin
   If hv.k = vkNone Then Begin
    TypeErr('unhashable type: ''' + t.name + '''');
   End;
-  If (hv.k = vkObj) And ((hv.o Is TPyFunc) Or (hv.o Is TPyMethod)) Then Begin
+  If (hv.k = vkObj) And ((IsK(hv.o, okFunc)) Or (IsK(hv.o, okMethod))) Then
+    Begin
    r := Call1(hv, v);
    If Not IsIntVal(r) Then
     TypeErr('__hash__ method should return an integer');
@@ -18462,8 +19091,8 @@ Begin
    End;
   vkFloat: Result := FloatHash(v.d);
   vkObj: Begin
-    If v.o Is TPyStr Then Result := StrHash(TPyStr(v.o))
-    Else If v.o Is TPyTuple Then Begin
+    If IsK(v.o, okStr) Then Result := StrHash(TPyStr(v.o))
+    Else If IsK(v.o, okTuple) Then Begin
      t := TPyTuple(v.o);
      acc := QWord(2870177450012600261);
      For i := 0 To High(t.items) Do Begin
@@ -18477,17 +19106,17 @@ Begin
      If acc = QWord(-1) Then acc := 1546275796;
      Result := Int64(acc);
     End
-    Else If v.o Is TPyBigInt Then Result := IntHash(v)
-    Else If v.o Is TPyComplex Then Begin
+    Else If IsK(v.o, okBigInt) Then Result := IntHash(v)
+    Else If IsK(v.o, okComplex) Then Begin
      Result := HashVal(VFloat(TPyComplex(v.o).re)) +
       HashVal(VFloat(TPyComplex(v.o).im)) * 1000003;
      If Result = -1 Then Result := -2;
     End
-    Else If v.o Is TPyBytes Then Begin
+    Else If IsK(v.o, okBytes) Then Begin
      If v.o.cls = tyBytearray Then TypeErr('unhashable type: ''bytearray''');
      Result := HashBytes(TPyBytes(v.o).s) Xor 7;
     End
-    Else If (v.o Is TPySet) And TPySet(v.o).frozen Then Begin
+    Else If (IsK(v.o, okSet)) And TPySet(v.o).frozen Then Begin
      s := TPySet(v.o);
      acc := 0;
      items := SetItems(s);
@@ -18503,8 +19132,8 @@ Begin
      If acc = QWord(-1) Then acc := 590923713;
      Result := Int64(acc);
     End
-    Else If v.o Is TPyCode Then Result := HashBytes(ConstKey(v))
-    Else If v.o Is TPyRange Then
+    Else If IsK(v.o, okCode) Then Result := HashBytes(ConstKey(v))
+    Else If IsK(v.o, okRange) Then
      Result := TPyRange(v.o).start * 31 + TPyRange(v.o).stop * 7 +
       TPyRange(v.o).step
     Else Result := CallDunderHash(v);
@@ -18527,18 +19156,18 @@ Begin
   vkBool, vkInt: Result := v.i <> 0;
   vkFloat: Result := v.d <> 0;
   vkObj: Begin
-    If v.o Is TPyStr Then Result := Length(TPyStr(v.o).s) > 0
-    Else If v.o Is TPyList Then Result := TPyList(v.o).cnt > 0
-    Else If v.o Is TPyTuple Then Result := Length(TPyTuple(v.o).items) > 0
-    Else If v.o Is TPyDict Then Result := TPyDict(v.o).used > 0
-    Else If v.o Is TPySet Then Result := TPySet(v.o).used > 0
-    Else If v.o Is TPyBigInt Then Result := True
-    Else If v.o Is TPyBytes Then Result := Length(TPyBytes(v.o).s) > 0
-    Else If v.o Is TPyRange Then Result := TPyRange(v.o).len > 0
+    If IsK(v.o, okStr) Then Result := Length(TPyStr(v.o).s) > 0
+    Else If IsK(v.o, okList) Then Result := TPyList(v.o).cnt > 0
+    Else If IsK(v.o, okTuple) Then Result := Length(TPyTuple(v.o).items) > 0
+    Else If IsK(v.o, okDict) Then Result := TPyDict(v.o).used > 0
+    Else If IsK(v.o, okSet) Then Result := TPySet(v.o).used > 0
+    Else If IsK(v.o, okBigInt) Then Result := True
+    Else If IsK(v.o, okBytes) Then Result := Length(TPyBytes(v.o).s) > 0
+    Else If IsK(v.o, okRange) Then Result := TPyRange(v.o).len > 0
     Else Begin
-     If v.o.cls.userdef Or (v.o Is TPyObj) Then Begin
+     If v.o.cls.userdef Or ((v.o <> Nil)) Then Begin
       If LookupType(v.o.cls, '__bool__', t) And (t.k = vkObj) And
-       ((t.o Is TPyFunc) Or (t.o Is TPyBuiltin)) Then Begin
+       ((IsK(t.o, okFunc)) Or (IsK(t.o, okBuiltin))) Then Begin
        r := Call1(t, v);
        If r.k <> vkBool Then
         TypeErr('__bool__ should return bool, returned ' + TypeName(r));
@@ -18546,7 +19175,7 @@ Begin
        Exit;
       End;
       If LookupType(v.o.cls, '__len__', t) And (t.k = vkObj) And
-       ((t.o Is TPyFunc) Or (t.o Is TPyBuiltin)) Then Begin
+       ((IsK(t.o, okFunc)) Or (IsK(t.o, okBuiltin))) Then Begin
        r := Call1(t, v);
        Result := ToInt64(r) <> 0;
        Exit;
@@ -18566,13 +19195,17 @@ End;
 Function IsNumVal(Const v: TVal): Boolean; Inline;
 Begin
  Result := (v.k = vkInt) Or (v.k = vkFloat) Or (v.k = vkBool) Or
-  ((v.k = vkObj) And (v.o Is TPyBigInt));
+  ((v.k = vkObj) And (IsK(v.o, okBigInt)));
 End;
+
+Function ObjToDouble(Const v: TVal): Double; Forward;
 
 Function NumToDouble(Const v: TVal): Double;
 Begin
  If v.k = vkFloat Then Result := v.d
  Else If (v.k = vkInt) Or (v.k = vkBool) Then Result := v.i
+ Else If (v.k = vkObj) And Not (IsK(v.o, okBigInt)) Then Result :=
+   ObjToDouble(v)
  Else Result := IntToDouble(v);
 End;
 
@@ -18708,7 +19341,7 @@ End;
 Function CxParts(Const v: TVal; Var r, i: Double): Boolean;
 Begin
  Result := True;
- If (v.k = vkObj) And (v.o Is TPyComplex) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okComplex)) Then Begin
   r := TPyComplex(v.o).re;
   i := TPyComplex(v.o).im;
  End
@@ -18734,9 +19367,9 @@ Begin
  Result := False;
  If (v.k = vkObj) And v.o.cls.userdef Then Begin
   If LookupType(v.o.cls, DunderCmpName(op), f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Result := True
+   (IsK(f.o, okFunc)) Then Result := True
   Else If (op = 3) And LookupType(v.o.cls, '__eq__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Result := True;
+   (IsK(f.o, okFunc)) Then Result := True;
  End;
 End;
 
@@ -18796,16 +19429,16 @@ Begin
   Result := CmpResult(CmpNum(a, b), op);
   Exit;
  End;
- If (((a.k = vkObj) And (a.o Is TPyComplex)) Or ((b.k = vkObj) And
-  (b.o Is TPyComplex))) And (op >= 2) And (op <= 3) And CxEqualParts(a, b, r2)
-    Then Begin
+ If (((a.k = vkObj) And (IsK(a.o, okComplex))) Or ((b.k = vkObj) And
+  (IsK(b.o, okComplex)))) And (op >= 2) And (op <= 3) And CxEqualParts(a, b,
+    r2) Then Begin
   Result := r2 = (op = 2);
   Exit;
  End;
  If (a.k = vkObj) And (b.k = vkObj) And (TypeIsSub(a.o.cls, tyDictView) Or
   TypeIsSub(b.o.cls, tyDictView)) Then Begin
-  If (TypeIsSub(a.o.cls, tyDictView) Or (a.o Is TPySet)) And
-   (TypeIsSub(b.o.cls, tyDictView) Or (b.o Is TPySet)) Then Begin
+  If (TypeIsSub(a.o.cls, tyDictView) Or (IsK(a.o, okSet))) And
+   (TypeIsSub(b.o.cls, tyDictView) Or (IsK(b.o, okSet))) Then Begin
    Result := ValCompare(ViewToSet(a), ViewToSet(b), op);
    Exit;
   End;
@@ -18822,7 +19455,7 @@ Begin
   End;
  End;
  If (a.k = vkObj) And (b.k = vkObj) Then Begin
-  If (a.o Is TPyStr) And (b.o Is TPyStr) Then Begin
+  If (IsK(a.o, okStr)) And (IsK(b.o, okStr)) Then Begin
    Case op Of
     2: Result := TPyStr(a.o).s = TPyStr(b.o).s;
     3: Result := TPyStr(a.o).s <> TPyStr(b.o).s;
@@ -18831,12 +19464,12 @@ Begin
    End;
    Exit;
   End;
-  If (a.o Is TPyBytes) And (b.o Is TPyBytes) Then Begin
+  If (IsK(a.o, okBytes)) And (IsK(b.o, okBytes)) Then Begin
    Result := CmpResult(CompareStrBytes(TPyBytes(a.o).s, TPyBytes(b.o).s),
     op);
    Exit;
   End;
-  If (a.o Is TPyList) And (b.o Is TPyList) And Not PyCmpOverride(a, op) Then
+  If (IsK(a.o, okList)) And (IsK(b.o, okList)) And Not PyCmpOverride(a, op) Then
   Begin
    la := TPyList(a.o);
    lb := TPyList(b.o);
@@ -18855,12 +19488,12 @@ Begin
    Result := SeqCmp(av, bv);
    Exit;
   End;
-  If (a.o Is TPyCode) And (b.o Is TPyCode) And (op >= 2) And (op <= 3) Then
+  If (IsK(a.o, okCode)) And (IsK(b.o, okCode)) And (op >= 2) And (op <= 3) Then
    Begin
    Result := (ConstKey(a) = ConstKey(b)) = (op = 2);
    Exit;
   End;
-  If (a.o Is TPyTuple) And (b.o Is TPyTuple) And
+  If (IsK(a.o, okTuple)) And (IsK(b.o, okTuple)) And
    Not PyCmpOverride(a, op) Then Begin
    ta := TPyTuple(a.o);
    tb := TPyTuple(b.o);
@@ -18875,7 +19508,7 @@ Begin
    Result := SeqCmp(ta.items, tb.items);
    Exit;
   End;
-  If (a.o Is TPyDict) And (b.o Is TPyDict) And (op >= 2) And (op <= 3) And
+  If (IsK(a.o, okDict)) And (IsK(b.o, okDict)) And (op >= 2) And (op <= 3) And
    Not PyCmpOverride(a, op) Then Begin
    da := TPyDict(a.o);
    db := TPyDict(b.o);
@@ -18883,7 +19516,7 @@ Begin
    If Result Then
     For i := 0 To da.nent - 1 Do
      If da.ent[i].key.k <> vkNull Then Begin
-      ix := db.FindIdx(da.ent[i].key, da.ent[i].h);
+      ix := DictFindIdx(db, da.ent[i].key, da.ent[i].h);
       If (ix < 0) Or Not ValCompare(da.ent[i].val, db.ent[ix].val, 2) Then
        Begin
        Result := False;
@@ -18893,7 +19526,7 @@ Begin
    If op = 3 Then Result := Not Result;
    Exit;
   End;
-  If (a.o Is TPySet) And (b.o Is TPySet) Then Begin
+  If (IsK(a.o, okSet)) And (IsK(b.o, okSet)) Then Begin
    sa := TPySet(a.o);
    sb := TPySet(b.o);
    items := SetItems(sa);
@@ -18902,7 +19535,7 @@ Begin
       Result := sa.used = sb.used;
       If Result Then
        For i := 0 To High(items) Do
-        If Not sb.Contains(items[i]) Then Begin
+        If Not SetContains(sb, items[i]) Then Begin
          Result := False;
          Break;
         End;
@@ -18913,7 +19546,7 @@ Begin
       If (op = 0) Then Result := sa.used < sb.used;
       If Result Then
        For i := 0 To High(items) Do
-        If Not sb.Contains(items[i]) Then Begin
+        If Not SetContains(sb, items[i]) Then Begin
          Result := False;
          Break;
         End;
@@ -18924,14 +19557,14 @@ Begin
     If op = 4 Then Result := sb.used < sa.used;
     If Result Then
      For i := 0 To High(items) Do
-      If Not sa.Contains(items[i]) Then Begin
+      If Not SetContains(sa, items[i]) Then Begin
        Result := False;
        Break;
       End;
    End;
    Exit;
   End;
-  If (a.o Is TPyMethod) And (b.o Is TPyMethod) And (op >= 2) And
+  If (IsK(a.o, okMethod)) And (IsK(b.o, okMethod)) And (op >= 2) And
    (op <= 3) Then Begin
    Result := ValEq(TPyMethod(a.o).fn, TPyMethod(b.o).fn) And
     (TPyMethod(a.o).slf.k = TPyMethod(b.o).slf.k) And
@@ -18942,7 +19575,7 @@ Begin
    If op = 3 Then Result := Not Result;
    Exit;
   End;
-  If (a.o Is TPySlice) And (b.o Is TPySlice) And (op >= 2) And
+  If (IsK(a.o, okSlice)) And (IsK(b.o, okSlice)) And (op >= 2) And
    (op <= 3) Then Begin
    Result := ValEq(TPySlice(a.o).start, TPySlice(b.o).start) And
     ValEq(TPySlice(a.o).stop, TPySlice(b.o).stop) And
@@ -18950,7 +19583,7 @@ Begin
    If op = 3 Then Result := Not Result;
    Exit;
   End;
-  If (a.o Is TPyRange) And (b.o Is TPyRange) And (op = 2) Then Begin
+  If (IsK(a.o, okRange)) And (IsK(b.o, okRange)) And (op = 2) Then Begin
    Result := (TPyRange(a.o).len = TPyRange(b.o).len) And
     ((TPyRange(a.o).len = 0) Or ((TPyRange(a.o).start = TPyRange(b.o).start)
     And ((TPyRange(a.o).len = 1) Or (TPyRange(a.o).step =
@@ -18958,7 +19591,7 @@ Begin
    Exit;
   End;
   If (a.o = b.o) And (op = 2) And Not a.o.cls.userdef And
-   Not (a.o Is TPyObj) Then Begin
+   Not ((a.o <> Nil)) Then Begin
    Result := True;
    Exit;
   End;
@@ -18969,7 +19602,7 @@ Begin
   ty := a.o.cls;
   If (b.k = vkObj) And (b.o.cls <> ty) And TypeIsSub(b.o.cls, ty) And
    LookupType(b.o.cls, DunderCmpName(SwapOp(op)), f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    r := Call2(f, b, a);
    tried := True;
    CmpRawSet := False;
@@ -18983,7 +19616,7 @@ Begin
  End;
  If a.k = vkObj Then Begin
   If LookupType(a.o.cls, DunderCmpName(op), f) And (f.k = vkObj) And
-   ((f.o Is TPyFunc) Or (f.o Is TPyMethod)) Then Begin
+   ((IsK(f.o, okFunc)) Or (IsK(f.o, okMethod))) Then Begin
    r := Call2(f, a, b);
    CmpRawSet := False;
    If Not IsNotImpl(r) Then Begin
@@ -18994,7 +19627,7 @@ Begin
    End;
   End
   Else If (op = 3) And LookupType(a.o.cls, '__eq__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    r := Call2(f, a, b);
    If Not IsNotImpl(r) Then Begin
     Result := Not IsTrue(r);
@@ -19004,7 +19637,7 @@ Begin
  End;
  If (b.k = vkObj) And Not tried Then Begin
   If LookupType(b.o.cls, DunderCmpName(SwapOp(op)), f) And (f.k = vkObj) And
-   ((f.o Is TPyFunc) Or (f.o Is TPyMethod)) Then Begin
+   ((IsK(f.o, okFunc)) Or (IsK(f.o, okMethod))) Then Begin
    r := Call2(f, b, a);
    CmpRawSet := False;
    If Not IsNotImpl(r) Then Begin
@@ -19015,7 +19648,7 @@ Begin
    End;
   End
   Else If (op = 3) And LookupType(b.o.cls, '__eq__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    r := Call2(f, b, a);
    If Not IsNotImpl(r) Then Begin
     Result := Not IsTrue(r);
@@ -19090,7 +19723,7 @@ Var
  v: TVal;
 Begin
  Result := '';
- If (t.idict <> Nil) And t.idict.GetS('__module__', v) And IsStrVal(v) Then
+ If (t.idict <> Nil) And DictGetS(t.idict, '__module__', v) And IsStrVal(v) Then
   Result := TPyStr(v.o).s;
 End;
 
@@ -19111,7 +19744,7 @@ Var
 Begin
  Result := False;
  If LookupType(v.o.cls, nm, f) And (f.k = vkObj) And
-  ((f.o Is TPyFunc) Or (f.o Is TPyMethod)) Then Begin
+  ((IsK(f.o, okFunc)) Or (IsK(f.o, okMethod))) Then Begin
   r := Call1(f, v);
   If Not IsStrVal(r) Then
    TypeErr(nm + ' returned non-string (type ' + TypeName(r) + ')');
@@ -19126,7 +19759,8 @@ Var
  t: TPyTuple;
 Begin
  Result := '';
- If (o.idict <> Nil) And o.idict.GetS('args', a) And IsObjOf(a, TPyTuple) Then
+ If (o.idict <> Nil) And DictGetS(o.idict, 'args', a) And IsObjOf(a, okTuple)
+   Then
   Begin
   t := TPyTuple(a.o);
   If Length(t.items) = 0 Then Result := ''
@@ -19174,7 +19808,7 @@ Begin
  End;
  o := v.o;
  If Not o.cls.userdef Then
-  If o.NativeRepr(s) Then Begin
+  If ObjNativeRepr(o, s) Then Begin
    Result := s;
    Exit;
   End;
@@ -19185,13 +19819,13 @@ Begin
    Result := s;
    Exit;
   End;
- If o Is TPyStr Then Result := StrReprEsc(TPyStr(o).s, False)
- Else If o Is TPyBigInt Then Result := IntToStrVal(v)
- Else If o Is TPyBytes Then Begin
+ If IsK(o, okStr) Then Result := StrReprEsc(TPyStr(o).s, False)
+ Else If IsK(o, okBigInt) Then Result := IntToStrVal(v)
+ Else If IsK(o, okBytes) Then Begin
   Result := BytesReprEsc(TPyBytes(o).s);
   If o.cls = tyBytearray Then Result := 'bytearray(' + Result + ')';
  End
- Else If o Is TPyList Then Begin
+ Else If IsK(o, okList) Then Begin
   If ReprBusy(o) Then Result := '[...]'
   Else Begin
    ReprPush(o);
@@ -19204,7 +19838,7 @@ Begin
    End;
   End;
  End
- Else If o Is TPyTuple Then Begin
+ Else If IsK(o, okTuple) Then Begin
   If ReprBusy(o) Then Result := '(...)'
   Else Begin
    ReprPush(o);
@@ -19215,7 +19849,7 @@ Begin
    End;
   End;
  End
- Else If o Is TPyDict Then Begin
+ Else If IsK(o, okDict) Then Begin
   If ReprBusy(o) Then Result := '{...}'
   Else Begin
    ReprPush(o);
@@ -19235,7 +19869,7 @@ Begin
    End;
   End;
  End
- Else If o Is TPySet Then Begin
+ Else If IsK(o, okSet) Then Begin
   items := SetItems(TPySet(o));
   If ReprBusy(o) Then Result := '...'
   Else If Length(items) = 0 Then Begin
@@ -19254,31 +19888,31 @@ Begin
   If o.cls.userdef And (o.cls <> tySet) Then
    Result := o.cls.name + '(' + Result + ')';
  End
- Else If o Is TPyRange Then Begin
+ Else If IsK(o, okRange) Then Begin
   r := TPyRange(o);
   If r.step = 1 Then
    Result := 'range(' + IntToStr(r.start) + ', ' + IntToStr(r.stop) + ')'
   Else Result := 'range(' + IntToStr(r.start) + ', ' + IntToStr(r.stop) +
     ', ' + IntToStr(r.step) + ')';
  End
- Else If o Is TPySlice Then Begin
+ Else If IsK(o, okSlice) Then Begin
   sl := TPySlice(o);
   Result := 'slice(' + ReprVal(sl.start) + ', ' + ReprVal(sl.stop) + ', ' +
    ReprVal(sl.step) + ')';
  End
- Else If o Is TPyFunc Then
+ Else If IsK(o, okFunc) Then
   Result := '<function ' + TPyFunc(o).qualname + ' at ' + HexAddr(o) + '>'
- Else If o Is TPyBuiltin Then
+ Else If IsK(o, okBuiltin) Then
   Result := '<built-in function ' + TPyBuiltin(o).name + '>'
- Else If o Is TPyMethod Then Begin
-  If IsObjOf(TPyMethod(o).fn, TPyFunc) Then
+ Else If IsK(o, okMethod) Then Begin
+  If IsObjOf(TPyMethod(o).fn, okFunc) Then
    s := TPyFunc(TPyMethod(o).fn.o).qualname
-  Else If IsObjOf(TPyMethod(o).fn, TPyBuiltin) Then
+  Else If IsObjOf(TPyMethod(o).fn, okBuiltin) Then
    s := TypeName(TPyMethod(o).slf) + '.' + TPyBuiltin(TPyMethod(o).fn.o).name
   Else s := '?';
   Result := '<bound method ' + s + ' of ' + ReprVal(TPyMethod(o).slf) + '>';
  End
- Else If o Is TPyType Then Begin
+ Else If IsK(o, okType) Then Begin
   If TPyType(o).userdef And (TypeModule(TPyType(o)) <> '') Then
    Result := '<class ''' + TypeFullName(TPyType(o)) + '''>'
   Else If (TypeModule(TPyType(o)) <> '') And
@@ -19286,18 +19920,18 @@ Begin
    Result := '<class ''' + TypeFullName(TPyType(o)) + '''>'
   Else Result := '<class ''' + TPyType(o).qualname + '''>';
  End
- Else If o Is TPyModule Then
+ Else If IsK(o, okModule) Then
   Result := '<module ''' + TPyModule(o).name + '''>'
- Else If o Is TPyCode Then
+ Else If IsK(o, okCode) Then
   Result := '<code object ' + TPyCode(o).name + ' at ' + HexAddr(o) +
    ', file "' + TPyCode(o).filename + '", line ' +
    IntToStr(TPyCode(o).firstline) + '>'
- Else If o Is TPyGen Then
+ Else If IsK(o, okGen) Then
   Result := '<' + o.cls.name + ' object ' + TPyGen(o).name + ' at ' +
     HexAddr(o) + '>'
- Else If o Is TPyCell Then
+ Else If IsK(o, okCell) Then
   Result := '<cell at ' + HexAddr(o) + '>'
- Else If (o Is TPyFile) And TPyFile(o).binary And (TPyFile(o).std <> 0) Then
+ Else If (IsK(o, okFile)) And TPyFile(o).binary And (TPyFile(o).std <> 0) Then
    Begin
   Case TPyFile(o).std Of
    1: Result := '<_io.BufferedReader name=''<stdin>''>';
@@ -19305,7 +19939,7 @@ Begin
   Else Result := '<_io.BufferedWriter name=''<stderr>''>';
   End;
  End
- Else If o Is TPyFile Then Begin
+ Else If IsK(o, okFile) Then Begin
   If TPyFile(o).std = 1 Then Result :=
     '<_io.TextIOWrapper name=''<stdin>'' mode=''r'' encoding=''utf-8''>'
   Else If TPyFile(o).std = 2 Then Result :=
@@ -19321,8 +19955,8 @@ Begin
  Else If TypeIsSub(o.cls, exBaseException) Then Begin
   args := vNone;
   s := '';
-  If (o.idict <> Nil) And o.idict.GetS('args', args) And
-   IsObjOf(args, TPyTuple) Then Begin
+  If (o.idict <> Nil) And DictGetS(o.idict, 'args', args) And
+   IsObjOf(args, okTuple) Then Begin
    If Length(TPyTuple(args.o).items) = 1 Then
     s := ReprVal(TPyTuple(args.o).items[0])
    Else
@@ -19333,11 +19967,11 @@ Begin
   End;
   Result := o.cls.name + '(' + s + ')';
  End
- Else If o Is TPyProperty Then
+ Else If IsK(o, okProperty) Then
   Result := '<property object at ' + HexAddr(o) + '>'
- Else If o Is TPyWrapper Then
+ Else If IsK(o, okWrapper) Then
   Result := '<' + o.cls.name + ' object at ' + HexAddr(o) + '>'
- Else If o Is TPyIter Then
+ Else If IsIterObj(o) Then
   Result := '<' + o.cls.name + ' object at ' + HexAddr(o) + '>'
  Else Begin
   Result := '<' + TypeFullName(o.cls) + ' object at ' + HexAddr(o) + '>';
@@ -19354,7 +19988,7 @@ Begin
   vkInt: Result := IntToStr(v.i);
   vkFloat: Result := FloatRepr(v.d);
   vkObj: Begin
-    If v.o Is TPyStr Then Begin
+    If IsK(v.o, okStr) Then Begin
      If Not v.o.cls.userdef Then Begin
       Result := TPyStr(v.o).s;
       Exit;
@@ -19366,8 +20000,8 @@ Begin
       Exit;
      End;
     End;
-    If v.o Is TPyStr Then Result := TPyStr(v.o).s
-    Else If TypeIsSub(v.o.cls, exBaseException) And (v.o Is TPyObj) Then
+    If IsK(v.o, okStr) Then Result := TPyStr(v.o).s
+    Else If TypeIsSub(v.o.cls, exBaseException) And ((v.o <> Nil)) Then
      Result := ExcToStr(v.o)
     Else Result := ReprVal(v);
    End;
@@ -19402,7 +20036,7 @@ Var
 Begin
  If (v.k = vkObj) And v.o.cls.userdef Then Begin
   If LookupType(v.o.cls, '__format__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    r := Call2(f, v, VStr(spec));
    If Not IsStrVal(r) Then TypeErr('__format__ must return a str');
    Result := TPyStr(r.o).s;
@@ -19413,7 +20047,7 @@ Begin
   Result := StrVal(v);
   Exit;
  End;
- If (v.k = vkObj) And (v.o Is TPyComplex) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okComplex)) Then Begin
   ParseFmtSpec(spec, fs);
   Result := FormatValue(VFloat(TPyComplex(v.o).re), spec);
   If FloatSignBit(TPyComplex(v.o).im) Then Result := Result + '-'
@@ -19454,297 +20088,483 @@ End;
   Itérateurs natifs
   ------------------------------------------------------------ }
 Type
- TListIter = Class(TPyIter)
+ TListIter = ^TListIterRec;
+ TListIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPyList;
   i: Integer;
   rev: Boolean;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TTupleIter = Class(TPyIter)
+ TTupleIter = ^TTupleIterRec;
+ TTupleIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPyTuple;
   i: Integer;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TStrIter = Class(TPyIter)
+ TStrIter = ^TStrIterRec;
+ TStrIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPyStr;
   pos: Integer;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TBytesIter = Class(TPyIter)
+ TBytesIter = ^TBytesIterRec;
+ TBytesIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPyBytes;
   pos: Integer;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TRangeIter = Class(TPyIter)
+ TRangeIter = ^TRangeIterRec;
+ TRangeIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   cur, stop, step: Int64;
-  Function Next(Var r: TVal): Boolean; Override;
  End;
 
- TDictIter = Class(TPyIter)
+ TDictIter = ^TDictIterRec;
+ TDictIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPyDict;
   pos: Integer;
   kind: Integer;       { 0 cles, 1 valeurs, 2 items }
   expect: Integer;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TSetIter = Class(TPyIter)
+ TSetIter = ^TSetIterRec;
+ TSetIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPySet;
   pos: Integer;
   expect: Integer;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TSeqIter = Class(TPyIter)
+ TSeqIter = ^TSeqIterRec;
+ TSeqIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TVal;
   i: Int64;
   getter: TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TCallIter = Class(TPyIter)
+ TCallIter = ^TCallIterRec;
+ TCallIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fn, sentinel: TVal;
   done: Boolean;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TEnumIter = Class(TPyIter)
+ TEnumIter = ^TEnumIterRec;
+ TEnumIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   it: TVal;
   n: TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TZipIter = Class(TPyIter)
+ TZipIter = ^TZipIterRec;
+ TZipIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   its: Array Of TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TMapIter = Class(TPyIter)
+ TMapIter = ^TMapIterRec;
+ TMapIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fn: TVal;
   its: Array Of TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TFilterIter = Class(TPyIter)
+ TFilterIter = ^TFilterIterRec;
+ TFilterIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   fn, it: TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TUserIter = Class(TPyIter)
+ TUserIter = ^TUserIterRec;
+ TUserIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   obj: TVal;
   nextFn: TVal;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
- TDictView = Class(TPyObj)
+ TDictView = ^TDictViewRec;
+ TDictViewRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   src: TPyDict;
   kind: Integer;
-  Procedure MarkKids; Override;
  End;
+
+Function ListIterNext(Self: TListIter; Var r: TVal): Boolean; Forward;
+Procedure ListIterMarkKids(Self: TListIter); Forward;
+Function AllocListIter(c: TPyType): TListIter; Forward;
+Function TupleIterNext(Self: TTupleIter; Var r: TVal): Boolean; Forward;
+Procedure TupleIterMarkKids(Self: TTupleIter); Forward;
+Function AllocTupleIter(c: TPyType): TTupleIter; Forward;
+Function StrIterNext(Self: TStrIter; Var r: TVal): Boolean; Forward;
+Procedure StrIterMarkKids(Self: TStrIter); Forward;
+Function AllocStrIter(c: TPyType): TStrIter; Forward;
+Function BytesIterNext(Self: TBytesIter; Var r: TVal): Boolean; Forward;
+Procedure BytesIterMarkKids(Self: TBytesIter); Forward;
+Function AllocBytesIter(c: TPyType): TBytesIter; Forward;
+Function RangeIterNext(Self: TRangeIter; Var r: TVal): Boolean; Forward;
+Function AllocRangeIter(c: TPyType): TRangeIter; Forward;
+Function DictIterNext(Self: TDictIter; Var r: TVal): Boolean; Forward;
+Procedure DictIterMarkKids(Self: TDictIter); Forward;
+Function AllocDictIter(c: TPyType): TDictIter; Forward;
+Function SetIterNext(Self: TSetIter; Var r: TVal): Boolean; Forward;
+Procedure SetIterMarkKids(Self: TSetIter); Forward;
+Function AllocSetIter(c: TPyType): TSetIter; Forward;
+Function SeqIterNext(Self: TSeqIter; Var r: TVal): Boolean; Forward;
+Procedure SeqIterMarkKids(Self: TSeqIter); Forward;
+Function AllocSeqIter(c: TPyType): TSeqIter; Forward;
+Function CallIterNext(Self: TCallIter; Var r: TVal): Boolean; Forward;
+Procedure CallIterMarkKids(Self: TCallIter); Forward;
+Function AllocCallIter(c: TPyType): TCallIter; Forward;
+Function EnumIterNext(Self: TEnumIter; Var r: TVal): Boolean; Forward;
+Procedure EnumIterMarkKids(Self: TEnumIter); Forward;
+Function AllocEnumIter(c: TPyType): TEnumIter; Forward;
+Function ZipIterNext(Self: TZipIter; Var r: TVal): Boolean; Forward;
+Procedure ZipIterMarkKids(Self: TZipIter); Forward;
+Function AllocZipIter(c: TPyType): TZipIter; Forward;
+Function MapIterNext(Self: TMapIter; Var r: TVal): Boolean; Forward;
+Procedure MapIterMarkKids(Self: TMapIter); Forward;
+Function AllocMapIter(c: TPyType): TMapIter; Forward;
+Function FilterIterNext(Self: TFilterIter; Var r: TVal): Boolean; Forward;
+Procedure FilterIterMarkKids(Self: TFilterIter); Forward;
+Function AllocFilterIter(c: TPyType): TFilterIter; Forward;
+Function UserIterNext(Self: TUserIter; Var r: TVal): Boolean; Forward;
+Procedure UserIterMarkKids(Self: TUserIter); Forward;
+Function AllocUserIter(c: TPyType): TUserIter; Forward;
+Procedure DictViewMarkKids(Self: TDictView); Forward;
+Function AllocDictView(c: TPyType): TDictView; Forward;
+
+Function AllocListIter(c: TPyType): TListIter;
+Begin
+ Result := TListIter(AllocObjMem(SizeOf(TListIterRec)));
+ InitObj(Result, okListIter, c);
+End;
+
+Function AllocTupleIter(c: TPyType): TTupleIter;
+Begin
+ Result := TTupleIter(AllocObjMem(SizeOf(TTupleIterRec)));
+ InitObj(Result, okTupleIter, c);
+End;
+
+Function AllocStrIter(c: TPyType): TStrIter;
+Begin
+ Result := TStrIter(AllocObjMem(SizeOf(TStrIterRec)));
+ InitObj(Result, okStrIter, c);
+End;
+
+Function AllocBytesIter(c: TPyType): TBytesIter;
+Begin
+ Result := TBytesIter(AllocObjMem(SizeOf(TBytesIterRec)));
+ InitObj(Result, okBytesIter, c);
+End;
+
+Function AllocRangeIter(c: TPyType): TRangeIter;
+Begin
+ Result := TRangeIter(AllocObjMem(SizeOf(TRangeIterRec)));
+ InitObj(Result, okRangeIter, c);
+End;
+
+Function AllocDictIter(c: TPyType): TDictIter;
+Begin
+ Result := TDictIter(AllocObjMem(SizeOf(TDictIterRec)));
+ InitObj(Result, okDictIter, c);
+End;
+
+Function AllocSetIter(c: TPyType): TSetIter;
+Begin
+ Result := TSetIter(AllocObjMem(SizeOf(TSetIterRec)));
+ InitObj(Result, okSetIter, c);
+End;
+
+Function AllocSeqIter(c: TPyType): TSeqIter;
+Begin
+ Result := TSeqIter(AllocObjMem(SizeOf(TSeqIterRec)));
+ InitObj(Result, okSeqIter, c);
+End;
+
+Function AllocCallIter(c: TPyType): TCallIter;
+Begin
+ Result := TCallIter(AllocObjMem(SizeOf(TCallIterRec)));
+ InitObj(Result, okCallIter, c);
+End;
+
+Function AllocEnumIter(c: TPyType): TEnumIter;
+Begin
+ Result := TEnumIter(AllocObjMem(SizeOf(TEnumIterRec)));
+ InitObj(Result, okEnumIter, c);
+End;
+
+Function AllocZipIter(c: TPyType): TZipIter;
+Begin
+ Result := TZipIter(AllocObjMem(SizeOf(TZipIterRec)));
+ InitObj(Result, okZipIter, c);
+End;
+
+Function AllocMapIter(c: TPyType): TMapIter;
+Begin
+ Result := TMapIter(AllocObjMem(SizeOf(TMapIterRec)));
+ InitObj(Result, okMapIter, c);
+End;
+
+Function AllocFilterIter(c: TPyType): TFilterIter;
+Begin
+ Result := TFilterIter(AllocObjMem(SizeOf(TFilterIterRec)));
+ InitObj(Result, okFilterIter, c);
+End;
+
+Function AllocUserIter(c: TPyType): TUserIter;
+Begin
+ Result := TUserIter(AllocObjMem(SizeOf(TUserIterRec)));
+ InitObj(Result, okUserIter, c);
+End;
+
+Function AllocDictView(c: TPyType): TDictView;
+Begin
+ Result := TDictView(AllocObjMem(SizeOf(TDictViewRec)));
+ InitObj(Result, okDictView, c);
+End;
 
 Function ValIter(Const v: TVal): TVal; Forward;
 
-Function TListIter.Next(Var r: TVal): Boolean;
+Function ListIterNext(Self: TListIter; Var r: TVal): Boolean;
 Begin
- If rev Then Begin
-  If i < 0 Then Begin
+ If Self.rev Then Begin
+  If Self.i < 0 Then Begin
    Result := False;
    Exit;
   End;
-  If i >= src.cnt Then i := src.cnt - 1;
-  If i < 0 Then Begin
+  If Self.i >= Self.src.cnt Then Self.i := Self.src.cnt - 1;
+  If Self.i < 0 Then Begin
    Result := False;
    Exit;
   End;
-  r := src.items[i];
-  Dec(i);
+  r := Self.src.items[Self.i];
+  Dec(Self.i);
   Result := True;
   Exit;
  End;
- If i < src.cnt Then Begin
-  r := src.items[i];
-  Inc(i);
+ If Self.i < Self.src.cnt Then Begin
+  r := Self.src.items[Self.i];
+  Inc(Self.i);
   Result := True;
  End
  Else Result := False;
 End;
 
-Procedure TListIter.MarkKids;
+Procedure ListIterMarkKids(Self: TListIter);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
-Function TTupleIter.Next(Var r: TVal): Boolean;
+Function TupleIterNext(Self: TTupleIter; Var r: TVal): Boolean;
 Begin
- If i < Length(src.items) Then Begin
-  r := src.items[i];
-  Inc(i);
+ If Self.i < Length(Self.src.items) Then Begin
+  r := Self.src.items[Self.i];
+  Inc(Self.i);
   Result := True;
  End
  Else Result := False;
 End;
 
-Procedure TTupleIter.MarkKids;
+Procedure TupleIterMarkKids(Self: TTupleIter);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
-Function TStrIter.Next(Var r: TVal): Boolean;
+Function StrIterNext(Self: TStrIter; Var r: TVal): Boolean;
 Var
  j: Integer;
  st: Integer;
 Begin
- If pos > Length(src.s) Then Begin
+ If Self.pos > Length(Self.src.s) Then Begin
   Result := False;
   Exit;
  End;
- st := pos;
- j := pos;
- Utf8Dec(src.s, j);
- r := VStr(Copy(src.s, st, j - st));
- pos := j;
+ st := Self.pos;
+ j := Self.pos;
+ Utf8Dec(Self.src.s, j);
+ r := VStr(Copy(Self.src.s, st, j - st));
+ Self.pos := j;
  Result := True;
 End;
 
-Procedure TStrIter.MarkKids;
+Procedure StrIterMarkKids(Self: TStrIter);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
-Function TBytesIter.Next(Var r: TVal): Boolean;
+Function BytesIterNext(Self: TBytesIter; Var r: TVal): Boolean;
 Begin
- If pos <= Length(src.s) Then Begin
-  r := VInt(Ord(src.s[pos]));
-  Inc(pos);
+ If Self.pos <= Length(Self.src.s) Then Begin
+  r := VInt(Ord(Self.src.s[Self.pos]));
+  Inc(Self.pos);
   Result := True;
  End
  Else Result := False;
 End;
 
-Procedure TBytesIter.MarkKids;
+Procedure BytesIterMarkKids(Self: TBytesIter);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
-Function TRangeIter.Next(Var r: TVal): Boolean;
+Function RangeIterNext(Self: TRangeIter; Var r: TVal): Boolean;
 Begin
- If ((step > 0) And (cur < stop)) Or ((step < 0) And (cur > stop)) Then Begin
-  r := VInt(cur);
-  cur := cur + step;
+ If ((Self.step > 0) And (Self.cur < Self.stop)) Or ((Self.step < 0) And
+   (Self.cur > Self.stop)) Then Begin
+  r := VInt(Self.cur);
+  Self.cur := Self.cur + Self.step;
   Result := True;
  End
  Else Result := False;
 End;
 
-Function TDictIter.Next(Var r: TVal): Boolean;
+Function DictIterNext(Self: TDictIter; Var r: TVal): Boolean;
 Begin
- If src.used <> expect Then
+ If Self.src.used <> Self.expect Then
   RaiseExc(exRuntimeError, 'dictionary changed size during iteration');
- While pos < src.nent Do Begin
-  If src.ent[pos].key.k <> vkNull Then Begin
-   Case kind Of
-    0: r := src.ent[pos].key;
-    1: r := src.ent[pos].val;
-   Else r := Tup2(src.ent[pos].key, src.ent[pos].val);
+ While Self.pos < Self.src.nent Do Begin
+  If Self.src.ent[Self.pos].key.k <> vkNull Then Begin
+   Case Self.kind Of
+    0: r := Self.src.ent[Self.pos].key;
+    1: r := Self.src.ent[Self.pos].val;
+   Else r := Tup2(Self.src.ent[Self.pos].key, Self.src.ent[Self.pos].val);
    End;
-   Inc(pos);
+   Inc(Self.pos);
    Result := True;
    Exit;
   End;
-  Inc(pos);
+  Inc(Self.pos);
  End;
  Result := False;
 End;
 
-Procedure TDictIter.MarkKids;
+Procedure DictIterMarkKids(Self: TDictIter);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
-Function TSetIter.Next(Var r: TVal): Boolean;
+Function SetIterNext(Self: TSetIter; Var r: TVal): Boolean;
 Begin
- If src.used <> expect Then
+ If Self.src.used <> Self.expect Then
   RaiseExc(exRuntimeError, 'Set changed size during iteration');
- While pos <= src.mask Do Begin
-  If (src.tab[pos].key.k <> vkNull) And (src.tab[pos].key.k <> vkDummy) Then
+ While Self.pos <= Self.src.mask Do Begin
+  If (Self.src.tab[Self.pos].key.k <> vkNull) And (Self.src.tab[Self.pos].key.k
+    <> vkDummy) Then
    Begin
-   r := src.tab[pos].key;
-   Inc(pos);
+   r := Self.src.tab[Self.pos].key;
+   Inc(Self.pos);
    Result := True;
    Exit;
   End;
-  Inc(pos);
+  Inc(Self.pos);
  End;
  Result := False;
 End;
 
-Procedure TSetIter.MarkKids;
+Procedure SetIterMarkKids(Self: TSetIter);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
-Function TSeqIter.Next(Var r: TVal): Boolean;
+Function SeqIterNext(Self: TSeqIter; Var r: TVal): Boolean;
 Var
+ ePy: PXcPy;
  a: TVal;
 Begin
- a := VInt(i);
+ a := VInt(Self.i);
  Try
-  r := Call2(getter, src, a);
+  r := Call2(Self.getter, Self.src, a);
  Except
-  On E: EPyError Do Begin
-   If IsInstance(VObj(E.exc), exIndexError) Or
-    IsInstance(VObj(E.exc), exStopIteration) Then Begin
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exIndexError) Or
+    IsInstance(VObj(ePy.exc), exStopIteration) Then Begin
     Result := False;
     Exit;
    End;
    Raise;
-  End;
+  End
+  Else Raise;
  End;
- Inc(i);
+ Inc(Self.i);
  Result := True;
 End;
 
-Procedure TSeqIter.MarkKids;
+Procedure SeqIterMarkKids(Self: TSeqIter);
 Begin
- Inherited MarkKids;
- MarkVal(src);
- MarkVal(getter);
+ MarkHdr(Self);
+ MarkVal(Self.src);
+ MarkVal(Self.getter);
 End;
 
-Function TCallIter.Next(Var r: TVal): Boolean;
+Function CallIterNext(Self: TCallIter; Var r: TVal): Boolean;
 Var
  v: TVal;
 Begin
- If done Then Begin
+ If Self.done Then Begin
   Result := False;
   Exit;
  End;
- v := Call0(fn);
- If ValEq(v, sentinel) Then Begin
-  done := True;
+ v := Call0(Self.fn);
+ If ValEq(v, Self.sentinel) Then Begin
+  Self.done := True;
   Result := False;
   Exit;
  End;
@@ -19752,46 +20572,46 @@ Begin
  Result := True;
 End;
 
-Procedure TCallIter.MarkKids;
+Procedure CallIterMarkKids(Self: TCallIter);
 Begin
- Inherited MarkKids;
- MarkVal(fn);
- MarkVal(sentinel);
+ MarkHdr(Self);
+ MarkVal(Self.fn);
+ MarkVal(Self.sentinel);
 End;
 
-Function TEnumIter.Next(Var r: TVal): Boolean;
+Function EnumIterNext(Self: TEnumIter; Var r: TVal): Boolean;
 Var
  v: TVal;
 Begin
- If Not IterNextVal(it, v) Then Begin
+ If Not IterNextVal(Self.it, v) Then Begin
   Result := False;
   Exit;
  End;
- r := Tup2(n, v);
- n := IntAdd(n, VInt(1));
+ r := Tup2(Self.n, v);
+ Self.n := IntAdd(Self.n, VInt(1));
  Result := True;
 End;
 
-Procedure TEnumIter.MarkKids;
+Procedure EnumIterMarkKids(Self: TEnumIter);
 Begin
- Inherited MarkKids;
- MarkVal(it);
- MarkVal(n);
+ MarkHdr(Self);
+ MarkVal(Self.it);
+ MarkVal(Self.n);
 End;
 
-Function TZipIter.Next(Var r: TVal): Boolean;
+Function ZipIterNext(Self: TZipIter; Var r: TVal): Boolean;
 Var
  t: TPyTuple;
  i: Integer;
  v: TVal;
 Begin
- If Length(its) = 0 Then Begin
+ If Length(Self.its) = 0 Then Begin
   Result := False;
   Exit;
  End;
- t := NewTuple(Length(its));
- For i := 0 To High(its) Do Begin
-  If Not IterNextVal(its[i], v) Then Begin
+ t := NewTuple(Length(Self.its));
+ For i := 0 To High(Self.its) Do Begin
+  If Not IterNextVal(Self.its[i], v) Then Begin
    Result := False;
    Exit;
   End;
@@ -19801,50 +20621,50 @@ Begin
  Result := True;
 End;
 
-Procedure TZipIter.MarkKids;
+Procedure ZipIterMarkKids(Self: TZipIter);
 Var
  i: Integer;
 Begin
- Inherited MarkKids;
- For i := 0 To High(its) Do MarkVal(its[i]);
+ MarkHdr(Self);
+ For i := 0 To High(Self.its) Do MarkVal(Self.its[i]);
 End;
 
-Function TMapIter.Next(Var r: TVal): Boolean;
+Function MapIterNext(Self: TMapIter; Var r: TVal): Boolean;
 Var
  args: Array Of TVal;
  i: Integer;
  v: TVal;
 Begin
- SetLength(args, Length(its));
- For i := 0 To High(its) Do Begin
-  If Not IterNextVal(its[i], v) Then Begin
+ SetLength(args, Length(Self.its));
+ For i := 0 To High(Self.its) Do Begin
+  If Not IterNextVal(Self.its[i], v) Then Begin
    Result := False;
    Exit;
   End;
   args[i] := v;
  End;
- r := CallValue(fn, @args[0], Length(args), Nil);
+ r := CallValue(Self.fn, @args[0], Length(args), Nil);
  Result := True;
 End;
 
-Procedure TMapIter.MarkKids;
+Procedure MapIterMarkKids(Self: TMapIter);
 Var
  i: Integer;
 Begin
- Inherited MarkKids;
- MarkVal(fn);
- For i := 0 To High(its) Do MarkVal(its[i]);
+ MarkHdr(Self);
+ MarkVal(Self.fn);
+ For i := 0 To High(Self.its) Do MarkVal(Self.its[i]);
 End;
 
-Function TFilterIter.Next(Var r: TVal): Boolean;
+Function FilterIterNext(Self: TFilterIter; Var r: TVal): Boolean;
 Var
  v, t: TVal;
  ok: Boolean;
 Begin
- While IterNextVal(it, v) Do Begin
-  If fn.k = vkNone Then ok := IsTrue(v)
+ While IterNextVal(Self.it, v) Do Begin
+  If Self.fn.k = vkNone Then ok := IsTrue(v)
   Else Begin
-   t := Call1(fn, v);
+   t := Call1(Self.fn, v);
    ok := IsTrue(t);
   End;
   If ok Then Begin
@@ -19856,42 +20676,46 @@ Begin
  Result := False;
 End;
 
-Procedure TFilterIter.MarkKids;
+Procedure FilterIterMarkKids(Self: TFilterIter);
 Begin
- Inherited MarkKids;
- MarkVal(fn);
- MarkVal(it);
+ MarkHdr(Self);
+ MarkVal(Self.fn);
+ MarkVal(Self.it);
 End;
 
-Function TUserIter.Next(Var r: TVal): Boolean;
+Function UserIterNext(Self: TUserIter; Var r: TVal): Boolean;
+Var
+ ePy: PXcPy;
 Begin
  Try
-  r := Call1(nextFn, obj);
+  r := Call1(Self.nextFn, Self.obj);
   Result := True;
  Except
-  On E: EPyError Do Begin
-   If IsInstance(VObj(E.exc), exStopIteration) Then Result := False
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exStopIteration) Then Result := False
    Else Raise;
-  End;
+  End
+  Else Raise;
  End;
 End;
 
-Procedure TUserIter.MarkKids;
+Procedure UserIterMarkKids(Self: TUserIter);
 Begin
- Inherited MarkKids;
- MarkVal(obj);
- MarkVal(nextFn);
+ MarkHdr(Self);
+ MarkVal(Self.obj);
+ MarkVal(Self.nextFn);
 End;
 
-Procedure TDictView.MarkKids;
+Procedure DictViewMarkKids(Self: TDictView);
 Begin
- Inherited MarkKids;
- MarkObj(src);
+ MarkHdr(Self);
+ MarkObj(Self.src);
 End;
 
 Function NewListIter(l: TPyList; rev: Boolean): TListIter;
 Begin
- Result := TListIter.Create(tyIter);
+ Result := AllocListIter(tyIter);
  Result.src := l;
  Result.rev := rev;
  If rev Then Result.i := l.cnt - 1 Else Result.i := 0;
@@ -19914,20 +20738,20 @@ Begin
   TypeErr('''' + TypeName(v) + ''' object is not iterable');
  End;
  o := v.o;
- If o Is TPyIter Then Begin
+ If IsIterObj(o) Then Begin
   Result := v;
   Exit;
  End;
  If o.cls.userdef Then Begin
   If LookupType(o.cls, '__iter__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    r := Call1(f, v);
    If (r.k <> vkObj) Then
     TypeErr('iter() returned non-iterator of type ''' + TypeName(r) + '''');
-   If Not (r.o Is TPyIter) Then Begin
+   If Not (IsIterObj(r.o)) Then Begin
     If Not LookupType(r.o.cls, '__next__', f) Then
      TypeErr('iter() returned non-iterator of type ''' + TypeName(r) + '''');
-    ui := TUserIter.Create(tyIter);
+    ui := AllocUserIter(tyIter);
     ui.obj := r;
     ui.nextFn := f;
     Result := VObj(ui);
@@ -19937,66 +20761,67 @@ Begin
    Exit;
   End;
  End;
- If o Is TPyList Then Result := VObj(NewListIter(TPyList(o), False))
- Else If o Is TPyTuple Then Begin
-  it := TTupleIter.Create(tyIter);
+ If IsK(o, okList) Then Result := VObj(NewListIter(TPyList(o), False))
+ Else If IsK(o, okTuple) Then Begin
+  it := TPyIter(AllocTupleIter(tyIter));
   TTupleIter(it).src := TPyTuple(o);
   Result := VObj(it);
  End
- Else If o Is TPyStr Then Begin
-  it := TStrIter.Create(tyIter);
+ Else If IsK(o, okStr) Then Begin
+  it := TPyIter(AllocStrIter(tyIter));
   TStrIter(it).src := TPyStr(o);
   TStrIter(it).pos := 1;
   Result := VObj(it);
  End
- Else If o Is TPyDict Then Begin
-  di := TDictIter.Create(tyIter);
+ Else If IsK(o, okDict) Then Begin
+  di := AllocDictIter(tyIter);
   di.src := TPyDict(o);
   di.expect := di.src.used;
   Result := VObj(di);
  End
- Else If o Is TPySet Then Begin
-  it := TSetIter.Create(tyIter);
+ Else If IsK(o, okSet) Then Begin
+  it := TPyIter(AllocSetIter(tyIter));
   TSetIter(it).src := TPySet(o);
   TSetIter(it).expect := TPySet(o).used;
   Result := VObj(it);
  End
- Else If o Is TPyRange Then Begin
-  ri := TRangeIter.Create(tyIter);
+ Else If IsK(o, okRange) Then Begin
+  ri := AllocRangeIter(tyIter);
   ri.cur := TPyRange(o).start;
   ri.stop := TPyRange(o).stop;
   ri.step := TPyRange(o).step;
   Result := VObj(ri);
  End
- Else If o Is TPyBytes Then Begin
-  it := TBytesIter.Create(tyIter);
+ Else If IsK(o, okBytes) Then Begin
+  it := TPyIter(AllocBytesIter(tyIter));
   TBytesIter(it).src := TPyBytes(o);
   TBytesIter(it).pos := 1;
   Result := VObj(it);
  End
- Else If o Is TDictView Then Begin
-  di := TDictIter.Create(tyIter);
+ Else If IsK(o, okDictView) Then Begin
+  di := AllocDictIter(tyIter);
   di.src := TDictView(o).src;
   di.kind := TDictView(o).kind;
   di.expect := di.src.used;
   Result := VObj(di);
  End
  Else If LookupType(o.cls, '__getitem__', f) Then Begin
-  si := TSeqIter.Create(tyIter);
+  si := AllocSeqIter(tyIter);
   si.src := v;
   si.getter := f;
   Result := VObj(si);
  End
- Else If o Is TPyFile Then Result := ValIter(v)
+ Else If IsK(o, okFile) Then Result := ValIter(v)
  Else TypeErr('''' + TypeName(v) + ''' object is not iterable');
 End;
 
 Function IterNextVal(Const it: TVal; Var r: TVal): Boolean;
 Var
+ ePy: PXcPy;
  f: TVal;
 Begin
- If (it.k = vkObj) And (it.o Is TPyIter) Then Begin
-  Result := TPyIter(it.o).Next(r);
+ If (it.k = vkObj) And (IsIterObj(it.o)) Then Begin
+  Result := IterNext(TPyIter(it.o), r);
   Exit;
  End;
  If (it.k = vkObj) And LookupType(it.o.cls, '__next__', f) Then Begin
@@ -20004,10 +20829,12 @@ Begin
    r := Call1(f, it);
    Result := True;
   Except
-   On E: EPyError Do Begin
-    If IsInstance(VObj(E.exc), exStopIteration) Then Result := False
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    If IsInstance(VObj(ePy.exc), exStopIteration) Then Result := False
     Else Raise;
-   End;
+   End
+   Else Raise;
   End;
   Exit;
  End;
@@ -20023,13 +20850,13 @@ Var
  l: TPyList;
  i: Integer;
 Begin
- If (v.k = vkObj) And (v.o Is TPyList) And Not v.o.cls.userdef Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okList)) And Not v.o.cls.userdef Then Begin
   l := TPyList(v.o);
   SetLength(Result, l.cnt);
   For i := 0 To l.cnt - 1 Do Result[i] := l.items[i];
   Exit;
  End;
- If (v.k = vkObj) And (v.o Is TPyTuple) And Not v.o.cls.userdef Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okTuple)) And Not v.o.cls.userdef Then Begin
   Result := Copy(TPyTuple(v.o).items);
   Exit;
  End;
@@ -20064,7 +20891,7 @@ Begin
   Exit;
  End;
  If (v.k = vkObj) Then Begin
-  If v.o Is TPyBigInt Then Begin
+  If IsK(v.o, okBigInt) Then Begin
    If BigFitsInt64(v, Result) Then Exit;
    RaiseExc(exIndexError, 'cannot fit ''int'' into an index-sized integer');
   End;
@@ -20085,7 +20912,7 @@ Var
  f: TVal;
 Begin
  Result := (v.k = vkInt) Or (v.k = vkBool) Or
-  ((v.k = vkObj) And ((v.o Is TPyBigInt) Or LookupType(v.o.cls,
+  ((v.k = vkObj) And ((IsK(v.o, okBigInt)) Or LookupType(v.o.cls,
   '__index__', f)));
 End;
 
@@ -20102,7 +20929,7 @@ Var
    Result := deflt;
    Exit;
   End;
-  If (v.k = vkObj) And (v.o Is TPyBigInt) Then Begin
+  If (v.k = vkObj) And (IsK(v.o, okBigInt)) Then Begin
    If TPyBigInt(v.o).neg Then x := Low(Int64) Div 2
    Else x := High(Int64) Div 2;
   End
@@ -20143,7 +20970,7 @@ Function NewSlice(Const a, b, c: TVal): TVal;
 Var
  s: TPySlice;
 Begin
- s := TPySlice.Create(tySlice);
+ s := AllocSlice(tySlice);
  s.start := a;
  s.stop := b;
  s.step := c;
@@ -20340,7 +21167,7 @@ Begin
  If inplace And (a.k = vkObj) Then Begin
   nm := '__i' + BinNames[op] + '__';
   If LookupType(a.o.cls, nm, f) And (f.k = vkObj) And
-   ((f.o Is TPyFunc) Or (f.o Is TPyMethod)) Then Begin
+   ((IsK(f.o, okFunc)) Or (IsK(f.o, okMethod))) Then Begin
    r := Call2(f, a, b);
    If Not IsNotImpl(r) Then Begin
     res := r;
@@ -20352,7 +21179,7 @@ Begin
  nm := '__r' + BinNames[op] + '__';
  If (b.k = vkObj) And (a.k = vkObj) And (b.o.cls <> a.o.cls) And
   TypeIsSub(b.o.cls, a.o.cls) And LookupType(b.o.cls, nm, f) And
-  (f.k = vkObj) And (f.o Is TPyFunc) Then Begin
+  (f.k = vkObj) And (IsK(f.o, okFunc)) Then Begin
   r := Call2(f, b, a);
   triedR := True;
   If Not IsNotImpl(r) Then Begin
@@ -20364,7 +21191,8 @@ Begin
  If a.k = vkObj Then Begin
   nm := '__' + BinNames[op] + '__';
   If LookupType(a.o.cls, nm, f) And (f.k = vkObj) And
-   ((f.o Is TPyFunc) Or (f.o Is TPyMethod) Or (f.o Is TPyBuiltin)) Then Begin
+   ((IsK(f.o, okFunc)) Or (IsK(f.o, okMethod)) Or (IsK(f.o, okBuiltin))) Then
+     Begin
    r := Call2(f, a, b);
    If Not IsNotImpl(r) Then Begin
     res := r;
@@ -20377,7 +21205,8 @@ Begin
   nm := '__r' + BinNames[op] + '__';
   tb := b.o.cls;
   If LookupType(tb, nm, f) And (f.k = vkObj) And
-   ((f.o Is TPyFunc) Or (f.o Is TPyMethod) Or (f.o Is TPyBuiltin)) Then Begin
+   ((IsK(f.o, okFunc)) Or (IsK(f.o, okMethod)) Or (IsK(f.o, okBuiltin))) Then
+     Begin
    r := Call2(f, b, a);
    If Not IsNotImpl(r) Then Begin
     res := r;
@@ -20395,9 +21224,9 @@ Var
  t: TPyTuple;
 Begin
  Result := True;
- If (a.o Is TPyStr) And (b.o Is TPyStr) Then
+ If (IsK(a.o, okStr)) And (IsK(b.o, okStr)) Then
   res := VStr(TPyStr(a.o).s + TPyStr(b.o).s)
- Else If (a.o Is TPyList) And (b.o Is TPyList) Then Begin
+ Else If (IsK(a.o, okList)) And (IsK(b.o, okList)) Then Begin
   l := NewList;
   n := TPyList(a.o).cnt + TPyList(b.o).cnt;
   SetLength(l.items, n);
@@ -20407,7 +21236,7 @@ Begin
   l.cnt := n;
   res := VObj(l);
  End
- Else If (a.o Is TPyTuple) And (b.o Is TPyTuple) Then Begin
+ Else If (IsK(a.o, okTuple)) And (IsK(b.o, okTuple)) Then Begin
   n := Length(TPyTuple(a.o).items);
   t := NewTuple(n + Length(TPyTuple(b.o).items));
   For i := 0 To n - 1 Do t.items[i] := TPyTuple(a.o).items[i];
@@ -20415,7 +21244,7 @@ Begin
    t.items[n + i] := TPyTuple(b.o).items[i];
   res := VObj(t);
  End
- Else If (a.o Is TPyBytes) And (b.o Is TPyBytes) Then
+ Else If (IsK(a.o, okBytes)) And (IsK(b.o, okBytes)) Then
   res := VBytesLike(a.o, TPyBytes(a.o).s + TPyBytes(b.o).s)
  Else Result := False;
 End;
@@ -20453,10 +21282,10 @@ Var
 Begin
  Result := True;
  If n < 0 Then n := 0;
- If a.o Is TPyStr Then res := VStr(StrMulRepeat(TPyStr(a.o).s, n))
- Else If a.o Is TPyBytes Then
+ If IsK(a.o, okStr) Then res := VStr(StrMulRepeat(TPyStr(a.o).s, n))
+ Else If IsK(a.o, okBytes) Then
   res := VBytesLike(a.o, StrMulRepeat(TPyBytes(a.o).s, n))
- Else If a.o Is TPyList Then Begin
+ Else If IsK(a.o, okList) Then Begin
   l := NewList;
   k := TPyList(a.o).cnt * n;
   If k > 500000000 Then RaiseExc(exMemoryError, '');
@@ -20467,7 +21296,7 @@ Begin
   l.cnt := k;
   res := VObj(l);
  End
- Else If a.o Is TPyTuple Then Begin
+ Else If IsK(a.o, okTuple) Then Begin
   k := Length(TPyTuple(a.o).items) * n;
   If k > 500000000 Then RaiseExc(exMemoryError, '');
   t := NewTuple(k);
@@ -20485,23 +21314,23 @@ Var
  ia, ib: TValArr;
  i: Integer;
 Begin
- r := TPySet.Make(sa.frozen);
+ r := AllocSet(sa.frozen);
  ia := SetItems(sa);
  ib := SetItems(sb);
  Case op Of
   bopOr: Begin
-    For i := 0 To High(ia) Do r.Add(ia[i]);
-    For i := 0 To High(ib) Do r.Add(ib[i]);
+    For i := 0 To High(ia) Do ObjAdd(r, ia[i]);
+    For i := 0 To High(ib) Do ObjAdd(r, ib[i]);
    End;
   bopAnd: For i := 0 To High(ia) Do
-    If sb.Contains(ia[i]) Then r.Add(ia[i]);
+    If SetContains(sb, ia[i]) Then ObjAdd(r, ia[i]);
   bopSub: For i := 0 To High(ia) Do
-    If Not sb.Contains(ia[i]) Then r.Add(ia[i]);
+    If Not SetContains(sb, ia[i]) Then ObjAdd(r, ia[i]);
   bopXor: Begin
     For i := 0 To High(ia) Do
-     If Not sb.Contains(ia[i]) Then r.Add(ia[i]);
+     If Not SetContains(sb, ia[i]) Then ObjAdd(r, ia[i]);
     For i := 0 To High(ib) Do
-     If Not sa.Contains(ib[i]) Then r.Add(ib[i]);
+     If Not SetContains(sa, ib[i]) Then ObjAdd(r, ib[i]);
    End;
  End;
  Result := VObj(r);
@@ -20514,10 +21343,10 @@ Begin
  Result := False;
  If (a.k = vkObj) And a.o.cls.userdef And
   LookupType(a.o.cls, '__' + BinNames[op] + '__', f) And (f.k = vkObj) And
-  (f.o Is TPyFunc) Then Result := True
+  (IsK(f.o, okFunc)) Then Result := True
  Else If (b.k = vkObj) And b.o.cls.userdef And
   LookupType(b.o.cls, '__r' + BinNames[op] + '__', f) And (f.k = vkObj) And
-  (f.o Is TPyFunc) Then Result := True;
+  (IsK(f.o, okFunc)) Then Result := True;
 End;
 
 Function BinaryOp(op: Integer; Const a, b: TVal): TVal;
@@ -20546,21 +21375,21 @@ Begin
      Result := r;
      Exit;
     End;
-   bopMod: If a.o Is TPyStr Then Begin
+   bopMod: If IsK(a.o, okStr) Then Begin
      Result := VStr(PercentFormat(TPyStr(a.o).s, b));
      Exit;
     End;
    bopOr, bopAnd, bopSub, bopXor:
-    If (a.o Is TPySet) And (b.k = vkObj) And (b.o Is TPySet) Then Begin
+    If (IsK(a.o, okSet)) And (b.k = vkObj) And (IsK(b.o, okSet)) Then Begin
      Result := SetBinary(op, TPySet(a.o), TPySet(b.o));
      Exit;
     End
-    Else If (op = bopOr) And (a.o Is TPyDict) And (b.k = vkObj) And
-     (b.o Is TPyDict) Then Begin
-     d := TPyDict(a.o).Copy;
+    Else If (op = bopOr) And (IsK(a.o, okDict)) And (b.k = vkObj) And
+     (IsK(b.o, okDict)) Then Begin
+     d := DictCopy(TPyDict(a.o));
      For i := 0 To TPyDict(b.o).nent - 1 Do
       If TPyDict(b.o).ent[i].key.k <> vkNull Then
-       d.SetItem(TPyDict(b.o).ent[i].key, TPyDict(b.o).ent[i].val);
+       DictSetItem(d, TPyDict(b.o).ent[i].key, TPyDict(b.o).ent[i].val);
      Result := VObj(d);
      Exit;
     End;
@@ -20576,38 +21405,38 @@ Begin
   Result := r;
   Exit;
  End;
- If (a.k = vkObj) And (b.k = vkObj) And (a.o Is TPySet) And (b.o Is TPySet)
+ If (a.k = vkObj) And (b.k = vkObj) And (IsK(a.o, okSet)) And (IsK(b.o, okSet))
   And (op In [bopOr, bopAnd, bopSub, bopXor]) Then Begin
   Result := SetBinary(op, TPySet(a.o), TPySet(b.o));
   Exit;
  End;
- If (a.k = vkObj) And (a.o Is TDictView) And (b.k = vkObj) Then Begin
+ If (a.k = vkObj) And (IsK(a.o, okDictView)) And (b.k = vkObj) Then Begin
   { vues de dict comme ensembles }
   Result := VNone;
  End;
- If Not BytesImplLoaded And (((a.k = vkObj) And (a.o Is TPyBytes)) Or
-  ((b.k = vkObj) And (b.o Is TPyBytes))) Then Begin
+ If Not BytesImplLoaded And (((a.k = vkObj) And (IsK(a.o, okBytes))) Or
+  ((b.k = vkObj) And (IsK(b.o, okBytes)))) Then Begin
   LoadBytesImpl;
   Result := BinaryOp(op, a, b);
   Exit;
  End;
  If (op = bopAdd) And (a.k = vkObj) Then Begin
-  If a.o Is TPyStr Then
+  If IsK(a.o, okStr) Then
    TypeErr('can only concatenate str (not "' + TypeName(b) + '") to str');
-  If a.o Is TPyList Then
+  If IsK(a.o, okList) Then
    TypeErr('can only concatenate list (not "' + TypeName(b) + '") to list');
-  If a.o Is TPyTuple Then
+  If IsK(a.o, okTuple) Then
    TypeErr('can only concatenate tuple (not "' + TypeName(b) + '") to tuple');
-  If a.o Is TPyBytes Then
+  If IsK(a.o, okBytes) Then
    TypeErr('can''t concat ' + TypeName(b) + ' to bytes');
  End;
  If op = bopMul Then Begin
-  If (a.k = vkObj) And ((a.o Is TPyStr) Or (a.o Is TPyList) Or
-   (a.o Is TPyTuple) Or (a.o Is TPyBytes)) Then
+  If (a.k = vkObj) And ((IsK(a.o, okStr)) Or (IsK(a.o, okList)) Or
+   (IsK(a.o, okTuple)) Or (IsK(a.o, okBytes))) Then
    TypeErr('can''t multiply sequence by non-int of type ''' + TypeName(b) +
      '''');
-  If (b.k = vkObj) And ((b.o Is TPyStr) Or (b.o Is TPyList) Or
-   (b.o Is TPyTuple) Or (b.o Is TPyBytes)) Then
+  If (b.k = vkObj) And ((IsK(b.o, okStr)) Or (IsK(b.o, okList)) Or
+   (IsK(b.o, okTuple)) Or (IsK(b.o, okBytes))) Then
    TypeErr('can''t multiply sequence by non-int of type ''' + TypeName(a) +
      '''');
  End;
@@ -20627,50 +21456,50 @@ Var
 Begin
  If a.k = vkObj Then Begin
   If Not a.o.cls.userdef Then Begin
-   If (a.o Is TPyList) And (op = bopAdd) Then Begin
-    If (b.k = vkObj) And (b.o Is TPyList) Then Begin
+   If (IsK(a.o, okList)) And (op = bopAdd) Then Begin
+    If (b.k = vkObj) And (IsK(b.o, okList)) Then Begin
      For i := 0 To TPyList(b.o).cnt - 1 Do
-      TPyList(a.o).Add(TPyList(b.o).items[i]);
+      ObjAdd(TPyList(a.o), TPyList(b.o).items[i]);
     End
     Else Begin
      r := VObj(ListFromIter(b));
      For i := 0 To TPyList(r.o).cnt - 1 Do
-      TPyList(a.o).Add(TPyList(r.o).items[i]);
+      ObjAdd(TPyList(a.o), TPyList(r.o).items[i]);
     End;
     Result := a;
     Exit;
    End;
-   If (a.o Is TPyBytes) And (a.o.cls = tyBytearray) And
-    (op = bopAdd) And (b.k = vkObj) And (b.o Is TPyBytes) Then Begin
+   If (IsK(a.o, okBytes)) And (a.o.cls = tyBytearray) And
+    (op = bopAdd) And (b.k = vkObj) And (IsK(b.o, okBytes)) Then Begin
     TPyBytes(a.o).s := TPyBytes(a.o).s + TPyBytes(b.o).s;
     Result := a;
     Exit;
    End;
-   If (a.o Is TPyList) And (op = bopMul) And IsIntVal(b) Then Begin
+   If (IsK(a.o, okList)) And (op = bopMul) And IsIntVal(b) Then Begin
     r := BinaryOp(op, a, b);
-    TPyList(a.o).Clear;
-    For i := 0 To TPyList(r.o).cnt - 1 Do
-      TPyList(a.o).Add(TPyList(r.o).items[i]);
+    ObjClear(TPyList(a.o));
+    For i := 0 To TPyList(r.o).cnt - 1 Do ObjAdd(TPyList(a.o),
+      TPyList(r.o).items[i]);
     Result := a;
     Exit;
    End;
-   If (a.o Is TPySet) And Not TPySet(a.o).frozen And (b.k = vkObj) And
-    (b.o Is TPySet) And (op In [bopOr, bopAnd, bopSub, bopXor]) Then Begin
+   If (IsK(a.o, okSet)) And Not TPySet(a.o).frozen And (b.k = vkObj) And
+    (IsK(b.o, okSet)) And (op In [bopOr, bopAnd, bopSub, bopXor]) Then Begin
     r := SetBinary(op, TPySet(a.o), TPySet(b.o));
-    TPySet(a.o).Clear;
+    ObjClear(TPySet(a.o));
     For i := 0 To High(TPySet(r.o).tab) Do
      If (TPySet(r.o).tab[i].key.k <> vkNull) And
       (TPySet(r.o).tab[i].key.k <> vkDummy) Then
-      TPySet(a.o).Add(TPySet(r.o).tab[i].key);
+      ObjAdd(TPySet(a.o), TPySet(r.o).tab[i].key);
     Result := a;
     Exit;
    End;
-   If (a.o Is TPyDict) And (op = bopOr) Then Begin
+   If (IsK(a.o, okDict)) And (op = bopOr) Then Begin
     d := TPyDict(a.o);
-    If (b.k = vkObj) And (b.o Is TPyDict) Then Begin
+    If (b.k = vkObj) And (IsK(b.o, okDict)) Then Begin
      For i := 0 To TPyDict(b.o).nent - 1 Do
       If TPyDict(b.o).ent[i].key.k <> vkNull Then
-       d.SetItem(TPyDict(b.o).ent[i].key, TPyDict(b.o).ent[i].val);
+       DictSetItem(d, TPyDict(b.o).ent[i].key, TPyDict(b.o).ent[i].val);
      Result := a;
      Exit;
     End;
@@ -20692,7 +21521,7 @@ Begin
   vkInt, vkBool: Result := IntNeg(VInt(a.i));
   vkFloat: Result := VFloat(-a.d);
  Else
-  If (a.k = vkObj) And (a.o Is TPyBigInt) Then Result := IntNeg(a)
+  If (a.k = vkObj) And (IsK(a.o, okBigInt)) Then Result := IntNeg(a)
   Else If (a.k = vkObj) And LookupType(a.o.cls, '__neg__', f) Then
    Result := Call1(f, a)
   Else Begin
@@ -20712,7 +21541,7 @@ Begin
   vkBool: Result := VInt(a.i);
   vkFloat: Result := a;
  Else
-  If (a.k = vkObj) And (a.o Is TPyBigInt) Then Result := a
+  If (a.k = vkObj) And (IsK(a.o, okBigInt)) Then Result := a
   Else If (a.k = vkObj) And LookupType(a.o.cls, '__pos__', f) Then
    Result := Call1(f, a)
   Else Begin
@@ -20750,13 +21579,13 @@ Begin
  End;
  If c.o.cls.userdef Then Begin
   If LookupType(c.o.cls, '__contains__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    r := Call2(f, c, item);
    Result := IsTrue(r);
    Exit;
   End;
  End;
- If c.o Is TPyStr Then Begin
+ If IsK(c.o, okStr) Then Begin
   If Not IsStrVal(item) Then
    TypeErr('''in <string>'' requires string as left operand, not ' +
     TypeName(item));
@@ -20764,15 +21593,15 @@ Begin
   If TPyStr(item.o).s = '' Then Result := True;
   Exit;
  End;
- If c.o Is TPyDict Then Begin
-  Result := TPyDict(c.o).GetItem(item, x);
+ If IsK(c.o, okDict) Then Begin
+  Result := DictGetItem(TPyDict(c.o), item, x);
   Exit;
  End;
- If c.o Is TPySet Then Begin
-  Result := TPySet(c.o).Contains(item);
+ If IsK(c.o, okSet) Then Begin
+  Result := SetContains(TPySet(c.o), item);
   Exit;
  End;
- If c.o Is TPyList Then Begin
+ If IsK(c.o, okList) Then Begin
   For i := 0 To TPyList(c.o).cnt - 1 Do Begin
    x := TPyList(c.o).items[i];
    If (x.k = item.k) And (x.k = vkObj) And (x.o = item.o) Then Begin
@@ -20787,7 +21616,7 @@ Begin
   Result := False;
   Exit;
  End;
- If c.o Is TPyTuple Then Begin
+ If IsK(c.o, okTuple) Then Begin
   For i := 0 To High(TPyTuple(c.o).items) Do Begin
    x := TPyTuple(c.o).items[i];
    If (x.k = item.k) And (x.k = vkObj) And (x.o = item.o) Then Begin
@@ -20802,7 +21631,7 @@ Begin
   Result := False;
   Exit;
  End;
- If c.o Is TPyRange Then Begin
+ If IsK(c.o, okRange) Then Begin
   rg := TPyRange(c.o);
   If Not IsIntVal(item) Or (item.k = vkObj) Then Begin
    If item.k = vkFloat Then Begin
@@ -20821,10 +21650,10 @@ Begin
   End;
   Exit;
  End;
- If c.o Is TPyBytes Then Begin
+ If IsK(c.o, okBytes) Then Begin
   If IsIntVal(item) Then Result := Pos(Chr(item.i And 255),
     TPyBytes(c.o).s) > 0
-  Else If (item.k = vkObj) And (item.o Is TPyBytes) Then
+  Else If (item.k = vkObj) And (IsK(item.o, okBytes)) Then
    Result := Pos(TPyBytes(item.o).s, TPyBytes(c.o).s) > 0
   Else Begin
    TypeErr('a bytes-like object is required, not ''' + TypeName(item) + '''');
@@ -20832,9 +21661,9 @@ Begin
   End;
   Exit;
  End;
- If c.o Is TDictView Then Begin
+ If IsK(c.o, okDictView) Then Begin
   Case TDictView(c.o).kind Of
-   0: Result := TDictView(c.o).src.GetItem(item, x);
+   0: Result := DictGetItem(TDictView(c.o).src, item, x);
   Else
    it := IterOf(c);
    Result := False;
@@ -20888,14 +21717,14 @@ Begin
  End;
  If o.o.cls.userdef Then Begin
   If LookupType(o.o.cls, '__getitem__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    Result := Call2(f, o, k);
    Exit;
   End;
  End;
- If o.o Is TPyDict Then Begin
+ If IsK(o.o, okDict) Then Begin
   d := TPyDict(o.o);
-  If d.GetItem(k, r) Then Begin
+  If DictGetItem(d, k, r) Then Begin
    Result := r;
    Exit;
   End;
@@ -20905,7 +21734,7 @@ Begin
   End;
   RaiseKeyError(k);
  End;
- If o.o Is TPyList Then Begin
+ If IsK(o.o, okList) Then Begin
   l := TPyList(o.o);
   If (k.k = vkInt) Or (k.k = vkBool) Then Begin
    i := k.i;
@@ -20915,7 +21744,7 @@ Begin
    Result := l.items[i];
    Exit;
   End;
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    SliceIndices(TPySlice(k.o), l.cnt, start, stop, step, count);
    nl := NewList;
    SetLength(nl.items, count);
@@ -20931,9 +21760,9 @@ Begin
   Result := l.items[i];
   Exit;
  End;
- If o.o Is TPyTuple Then Begin
+ If IsK(o.o, okTuple) Then Begin
   t := TPyTuple(o.o);
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    SliceIndices(TPySlice(k.o), Length(t.items), start, stop, step, count);
    nt := NewTuple(count);
    For j := 0 To count - 1 Do nt.items[j] := t.items[start + j * step];
@@ -20947,9 +21776,9 @@ Begin
   Result := t.items[i];
   Exit;
  End;
- If o.o Is TPyStr Then Begin
+ If IsK(o.o, okStr) Then Begin
   s := TPyStr(o.o).s;
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    Result := VStr(StrSliceVal(s, TPySlice(k.o)));
    Exit;
   End;
@@ -20971,9 +21800,9 @@ Begin
   Result := VStr(Copy(s, ix, jx - ix));
   Exit;
  End;
- If o.o Is TPyBytes Then Begin
+ If IsK(o.o, okBytes) Then Begin
   s := TPyBytes(o.o).s;
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    SliceIndices(TPySlice(k.o), Length(s), start, stop, step, count);
    bs := '';
    SetLength(bs, count);
@@ -20988,11 +21817,11 @@ Begin
   Result := VInt(Ord(s[i + 1]));
   Exit;
  End;
- If o.o Is TPyRange Then Begin
+ If IsK(o.o, okRange) Then Begin
   rg := TPyRange(o.o);
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    SliceIndices(TPySlice(k.o), rg.len, start, stop, step, count);
-   r := VObj(TPyRange.Create(tyRange));
+   r := VObj(AllocRange(tyRange));
    TPyRange(r.o).start := rg.start + start * rg.step;
    TPyRange(r.o).step := rg.step * step;
    TPyRange(r.o).len := count;
@@ -21007,9 +21836,9 @@ Begin
   Result := VInt(rg.start + i * rg.step);
   Exit;
  End;
- If o.o Is TPyType Then Begin
+ If IsK(o.o, okType) Then Begin
   If LookupType(TPyType(o.o), '__class_getitem__', f) Then Begin
-   If (f.k = vkObj) And (f.o Is TPyWrapper) Then
+   If (f.k = vkObj) And (IsK(f.o, okWrapper)) Then
     Result := Call2(TPyWrapper(f.o).fn, o, k)
    Else Result := Call2(f, o, k);
    Exit;
@@ -21032,7 +21861,7 @@ Var
  i: Integer;
  x: Int64;
 Begin
- If (v.k = vkObj) And (v.o Is TPyBytes) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okBytes)) Then Begin
   Result := TPyBytes(v.o).s;
   Exit;
  End;
@@ -21054,7 +21883,7 @@ Var
  vs, s, ns: AnsiString;
 Begin
  s := b.s;
- If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+ If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
   SliceIndices(TPySlice(k.o), Length(s), start, stop, step, count);
   vs := BytesFromAny(v);
   If step = 1 Then Begin
@@ -21088,7 +21917,7 @@ Var
  keep: Array Of Boolean;
 Begin
  s := b.s;
- If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+ If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
   SliceIndices(TPySlice(k.o), Length(s), start, stop, step, count);
   SetLength(keep, Length(s));
   For j := 0 To High(keep) Do keep[j] := True;
@@ -21120,21 +21949,21 @@ Begin
   TypeErr('''' + TypeName(o) + ''' object does not support item assignment');
  If o.o.cls.userdef Then
   If LookupType(o.o.cls, '__setitem__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    Call3Args(f, o, k, v);
    Exit;
   End;
- If o.o Is TPyDict Then Begin
-  TPyDict(o.o).SetItem(k, v);
+ If IsK(o.o, okDict) Then Begin
+  DictSetItem(TPyDict(o.o), k, v);
   Exit;
  End;
- If (o.o Is TPyBytes) And (o.o.cls = tyBytearray) Then Begin
+ If (IsK(o.o, okBytes)) And (o.o.cls = tyBytearray) Then Begin
   ByteArraySetItem(TPyBytes(o.o), k, v);
   Exit;
  End;
- If o.o Is TPyList Then Begin
+ If IsK(o.o, okList) Then Begin
   l := TPyList(o.o);
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    SliceIndices(TPySlice(k.o), l.cnt, start, stop, step, count);
    vals := IterToArr(v);
    If step = 1 Then Begin
@@ -21184,21 +22013,21 @@ Begin
   TypeErr('''' + TypeName(o) + ''' object doesn''t support item deletion');
  If o.o.cls.userdef Then
   If LookupType(o.o.cls, '__delitem__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    Call2(f, o, k);
    Exit;
   End;
- If o.o Is TPyDict Then Begin
-  If Not TPyDict(o.o).DelItem(k) Then RaiseKeyError(k);
+ If IsK(o.o, okDict) Then Begin
+  If Not DictDelItem(TPyDict(o.o), k) Then RaiseKeyError(k);
   Exit;
  End;
- If (o.o Is TPyBytes) And (o.o.cls = tyBytearray) Then Begin
+ If (IsK(o.o, okBytes)) And (o.o.cls = tyBytearray) Then Begin
   ByteArrayDelItem(TPyBytes(o.o), k);
   Exit;
  End;
- If o.o Is TPyList Then Begin
+ If IsK(o.o, okList) Then Begin
   l := TPyList(o.o);
-  If (k.k = vkObj) And (k.o Is TPySlice) Then Begin
+  If (k.k = vkObj) And (IsK(k.o, okSlice)) Then Begin
    SliceIndices(TPySlice(k.o), l.cnt, start, stop, step, count);
    SetLength(keep, l.cnt);
    For j := 0 To l.cnt - 1 Do keep[j] := True;
@@ -21218,7 +22047,7 @@ Begin
   If i < 0 Then i := i + l.cnt;
   If (i < 0) Or (i >= l.cnt) Then
    RaiseExc(exIndexError, 'list assignment index out of range');
-  l.Delete(i);
+  ListDelete(l, i);
   Exit;
  End;
  If LookupType(o.o.cls, '__delitem__', f) Then Begin
@@ -21317,7 +22146,7 @@ End;
 Function IsIntLike(Const v: TVal): Boolean;
 Begin
  Result := (v.k = vkInt) Or (v.k = vkBool) Or
-  ((v.k = vkObj) And (v.o Is TPyBigInt));
+  ((v.k = vkObj) And (IsK(v.o, okBigInt)));
 End;
 
 Function IsZeroVal(Const v: TVal): Boolean;
@@ -21329,17 +22158,17 @@ Function SeqLen(Const v: TVal): Integer;
 Begin
  Result := -1;
  If (v.k = vkObj) Then Begin
-  If v.o Is TPyTuple Then Result := Length(TPyTuple(v.o).items)
-  Else If v.o Is TPySet Then Result := TPySet(v.o).used
-  Else If v.o Is TPyStr Then Result := PyStrLen(TPyStr(v.o))
-  Else If v.o Is TPyBytes Then Result := Length(TPyBytes(v.o).s);
+  If IsK(v.o, okTuple) Then Result := Length(TPyTuple(v.o).items)
+  Else If IsK(v.o, okSet) Then Result := TPySet(v.o).used
+  Else If IsK(v.o, okStr) Then Result := PyStrLen(TPyStr(v.o))
+  Else If IsK(v.o, okBytes) Then Result := Length(TPyBytes(v.o).s);
  End;
 End;
 
 Function IsSeqVal(Const v: TVal): Boolean;
 Begin
- Result := (v.k = vkObj) And ((v.o Is TPyTuple) Or (v.o Is TPyStr) Or
-  (v.o Is TPyBytes) Or ((v.o Is TPySet) And TPySet(v.o).frozen));
+ Result := (v.k = vkObj) And ((IsK(v.o, okTuple)) Or (IsK(v.o, okStr)) Or
+  (IsK(v.o, okBytes)) Or ((IsK(v.o, okSet)) And TPySet(v.o).frozen));
 End;
 
 Function TupleComplexity(Const v: TVal; limit: Integer): Integer;
@@ -21347,7 +22176,7 @@ Var
  j: Integer;
 Begin
  Result := limit;
- If (v.k = vkObj) And (v.o Is TPyTuple) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okTuple)) Then Begin
   Dec(Result, Length(TPyTuple(v.o).items));
   j := 0;
   While (Result >= 0) And (j < Length(TPyTuple(v.o).items)) Do Begin
@@ -21388,7 +22217,7 @@ Begin
    Exit;
   End;
   n := lv.i;
-  If (rv.o Is TPyTuple) Or (rv.o Is TPySet) Then Begin
+  If (IsK(rv.o, okTuple)) Or (IsK(rv.o, okSet)) Then Begin
    If (n < 0) Or (n > 256 Div size) Then Begin
     Result := False;
     Exit;
@@ -21419,7 +22248,7 @@ Begin
   End;
  End
  Else If op = '%' Then Begin
-  If (l.k = vkObj) And ((l.o Is TPyStr) Or (l.o Is TPyBytes)) Then
+  If (l.k = vkObj) And ((IsK(l.o, okStr)) Or (IsK(l.o, okBytes))) Then
    Result := False;
  End;
 End;
@@ -21444,6 +22273,7 @@ End;
 Function TryBinary(Const op: AnsiString; Const l, r: TVal; Var res: TVal):
  Boolean;
 Var
+ ePy: PXcPy;
  code: Integer;
 Begin
  Result := False;
@@ -21454,7 +22284,11 @@ Begin
   res := BinaryOp(code, l, r);
   Result := True;
  Except
-  On E: EPyError Do Result := False;
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   Result := False;
+  End
+  Else Raise;
  End;
 End;
 
@@ -21478,6 +22312,7 @@ End;
 
 Procedure FoldIter(nd: TNode);
 Var
+ ePy: PXcPy;
  j: Integer;
  v: TVal;
  s: TPySet;
@@ -21492,11 +22327,15 @@ Begin
  Else If nd.k = nSet Then Begin
   If MakeConstTuple(nd.l1, v) Then Begin
    t := TPyTuple(v.o);
-   s := TPySet.Make(True);
+   s := AllocSet(True);
    Try
-    For j := 0 To High(t.items) Do s.Add(t.items[j]);
+    For j := 0 To High(t.items) Do ObjAdd(s, t.items[j]);
    Except
-    On E: EPyError Do Exit;
+    If XcTag = xtPy Then Begin
+     ePy := PXcPy(RaiseList^.FObject);
+     Exit;
+    End
+    Else Raise;
    End;
    MakeConstNode(nd, VObj(s));
   End;
@@ -21535,6 +22374,7 @@ End;
 
 Procedure AstFoldNode(nd: TNode; opt: Integer);
 Var
+ ePy: PXcPy;
  j, k: Integer;
  lv, rv, res: TVal;
  arg: TNode;
@@ -21561,7 +22401,11 @@ Begin
       Else If nd.s = '~' Then res := UnaryInvert(lv)
       Else res := VBool(Not IsTrue(lv));
      Except
-      On E: EPyError Do ok := False;
+      If XcTag = xtPy Then Begin
+       ePy := PXcPy(RaiseList^.FObject);
+       ok := False;
+      End
+      Else Raise;
      End;
      If ok Then MakeConstNode(nd, res);
     End
@@ -21591,7 +22435,11 @@ Begin
      Try
       res := GetItem(lv, rv);
      Except
-      On E: EPyError Do ok := False;
+      If XcTag = xtPy Then Begin
+       ePy := PXcPy(RaiseList^.FObject);
+       ok := False;
+      End
+      Else Raise;
      End;
      If ok Then MakeConstNode(nd, res);
     End;
@@ -21681,8 +22529,8 @@ Begin
   Exit;
  End;
  key.k := vkObj;
- key.o := nm;
- ix := d.FindIdx(key, StrHash(nm));
+ key.o := TPyObj(nm);
+ ix := DictFindIdx(d, key, StrHash(nm));
  If ix >= 0 Then Begin
   v := d.ent[ix].val;
   Result := True;
@@ -21695,8 +22543,8 @@ Var
  key: TVal;
 Begin
  key.k := vkObj;
- key.o := nm;
- d.SetItem(key, v);
+ key.o := TPyObj(nm);
+ DictSetItem(d, key, v);
 End;
 
 Function NewFrame(code: TPyCode; fn: TPyFunc; g, l: TPyDict; heap: Boolean):
@@ -21709,7 +22557,7 @@ Begin
   f := FramePool;
   FramePool := f.back;
  End
- Else f := TFrame.Create;
+ Else f := AllocFrame;
  nfast := Length(code.varnames) + Length(code.cellvars) +
   Length(code.freevars);
  total := nfast + code.stacksize + 16;
@@ -21785,7 +22633,7 @@ Function BindMethod(Const fn, slf: TVal): TVal;
 Var
  m: TPyMethod;
 Begin
- m := TPyMethod.Create(tyMethod);
+ m := AllocMethod(tyMethod);
  m.fn := fn;
  m.slf := slf;
  Result := VObj(m);
@@ -21832,12 +22680,12 @@ Begin
   Result := f.locals;
   Exit;
  End;
- Result := TPyDict.Make;
+ Result := AllocDict;
  If f.base = Nil Then Exit;
  For i := 0 To Length(f.code.varnames) - 1 Do
   If (i < f.nfast) And (f.base[i].k <> vkNull) And
-   Not ((f.base[i].k = vkObj) And (f.base[i].o Is TPyCell)) Then
-   Result.SetS(f.code.varnames[i], f.base[i]);
+   Not ((f.base[i].k = vkObj) And (IsK(f.base[i].o, okCell))) Then
+   DictSetS(Result, f.code.varnames[i], f.base[i]);
 End;
 
 Function MakeFrameObj(f: TFrame; depth: Integer): TVal;
@@ -21848,17 +22696,17 @@ Begin
   Result := vNone;
   Exit;
  End;
- o := TPyObj.Create(tyFrame);
- o.idict := TPyDict.Make;
+ o := AllocObj(tyFrame);
+ o.idict := AllocDict;
  Result := VObj(o);
- o.idict.SetS('f_code', VObj(f.code));
- o.idict.SetS('f_lineno', VInt(LineForFrame(f)));
- o.idict.SetS('f_globals', VObj(f.globals));
- o.idict.SetS('f_locals', VObj(SnapLocals(f)));
- o.idict.SetS('f_builtins', VObj(f.builtins));
- o.idict.SetS('f_lasti', VInt(f.lasti));
- o.idict.SetS('f_trace', vNone);
- o.idict.SetS('f_back', MakeFrameObj(f.back, depth + 1));
+ DictSetS(o.idict, 'f_code', VObj(f.code));
+ DictSetS(o.idict, 'f_lineno', VInt(LineForFrame(f)));
+ DictSetS(o.idict, 'f_globals', VObj(f.globals));
+ DictSetS(o.idict, 'f_locals', VObj(SnapLocals(f)));
+ DictSetS(o.idict, 'f_builtins', VObj(f.builtins));
+ DictSetS(o.idict, 'f_lasti', VInt(f.lasti));
+ DictSetS(o.idict, 'f_trace', vNone);
+ DictSetS(o.idict, 'f_back', MakeFrameObj(f.back, depth + 1));
 End;
 
 Function MakeTbChain(exc: TPyObj): TVal;
@@ -21870,33 +22718,33 @@ Var
  fo, cobj: TPyObj;
 Begin
  Result := vNone;
- If (exc.idict = Nil) Or Not exc.idict.GetS('__tb__', tb) Then Exit;
+ If (exc.idict = Nil) Or Not DictGetS(exc.idict, '__tb__', tb) Then Exit;
  l := TPyList(tb.o);
  nxt := vNone;
  For i := 0 To l.cnt - 1 Do Begin
   e := l.items[i];
-  cobj := TPyObj.Create(tyObject);
-  cobj.idict := TPyDict.Make;
+  cobj := AllocObj(tyObject);
+  cobj.idict := AllocDict;
   co := VObj(cobj);
-  cobj.idict.SetS('co_filename', TPyTuple(e.o).items[0]);
-  cobj.idict.SetS('co_name', TPyTuple(e.o).items[2]);
-  fo := TPyObj.Create(tyFrame);
-  fo.idict := TPyDict.Make;
+  DictSetS(cobj.idict, 'co_filename', TPyTuple(e.o).items[0]);
+  DictSetS(cobj.idict, 'co_name', TPyTuple(e.o).items[2]);
+  fo := AllocObj(tyFrame);
+  fo.idict := AllocDict;
   fr := VObj(fo);
-  fo.idict.SetS('f_code', co);
-  fo.idict.SetS('f_lineno', TPyTuple(e.o).items[1]);
-  fo.idict.SetS('f_back', vNone);
+  DictSetS(fo.idict, 'f_code', co);
+  DictSetS(fo.idict, 'f_lineno', TPyTuple(e.o).items[1]);
+  DictSetS(fo.idict, 'f_back', vNone);
   If Length(TPyTuple(e.o).items) > 4 Then
-   fo.idict.SetS('f_globals', TPyTuple(e.o).items[4])
-  Else fo.idict.SetS('f_globals', VObj(TPyDict.Make));
-  fo.idict.SetS('f_locals', VObj(TPyDict.Make));
-  t := TPyObj.Create(tyTraceback);
-  t.idict := TPyDict.Make;
-  t.idict.SetS('tb_frame', fr);
-  t.idict.SetS('tb_lineno', TPyTuple(e.o).items[1]);
-  t.idict.SetS('tb_lasti', VInt(0));
-  t.idict.SetS('tb_next', nxt);
-  t.idict.SetS('_line', VStr(TbSrcLine(TPyTuple(e.o).items[3],
+   DictSetS(fo.idict, 'f_globals', TPyTuple(e.o).items[4])
+  Else DictSetS(fo.idict, 'f_globals', VObj(AllocDict));
+  DictSetS(fo.idict, 'f_locals', VObj(AllocDict));
+  t := AllocObj(tyTraceback);
+  t.idict := AllocDict;
+  DictSetS(t.idict, 'tb_frame', fr);
+  DictSetS(t.idict, 'tb_lineno', TPyTuple(e.o).items[1]);
+  DictSetS(t.idict, 'tb_lasti', VInt(0));
+  DictSetS(t.idict, 'tb_next', nxt);
+  DictSetS(t.idict, '_line', VStr(TbSrcLine(TPyTuple(e.o).items[3],
    TPyTuple(e.o).items[1].i)));
   nxt := VObj(t);
  End;
@@ -21941,13 +22789,13 @@ Begin
   Exit;
  End;
  ob := o.o;
- If ob.NativeAttr(attr, res) Then Exit;
+ If ObjNativeAttr(ob, attr, res) Then Exit;
  If (attr = '__dict__') Then Begin
-  If ob Is TPyType Then Begin
-   res := VObj(ob.idict.Copy);
+  If IsK(ob, okType) Then Begin
+   res := VObj(DictCopy(ob.idict));
    Exit;
   End;
-  If ob.cls.noDict And Not (ob Is TPyType) Then Begin
+  If ob.cls.noDict And Not (IsK(ob, okType)) Then Begin
    Result := False;
    Exit;
   End;
@@ -21955,22 +22803,22 @@ Begin
    res := VObj(ob.idict);
    Exit;
   End;
-  If (ob Is TPyObj) And (ob.cls.userdef) Then Begin
-   ob.idict := TPyDict.Make;
+  If ((ob <> Nil)) And (ob.cls.userdef) Then Begin
+   ob.idict := AllocDict;
    res := VObj(ob.idict);
    Exit;
   End;
   Result := False;
   Exit;
  End;
- If ob Is TPyBigInt Then Begin
+ If IsK(ob, okBigInt) Then Begin
   If attr = 'real' Then Begin res := o; Exit; End;
   If attr = 'imag' Then Begin res := VInt(0); Exit; End;
   If attr = 'numerator' Then Begin res := o; Exit; End;
   If attr = 'denominator' Then Begin res := VInt(1); Exit; End;
  End;
- If ob Is TPyFunc Then Begin
-  With TPyFunc(ob) Do Begin
+ If IsK(ob, okFunc) Then Begin
+  With TPyFunc(ob)^ Do Begin
    If attr = '__name__' Then Begin res := VStr(TPyFunc(ob).name); Exit; End;
    If attr = '__qualname__' Then Begin res := VStr(qualname); Exit; End;
    If attr = '__doc__' Then Begin res := NoneIfNull(doc); Exit; End;
@@ -21985,10 +22833,10 @@ Begin
     Exit;
    End;
    If attr = '__annotations__' Then Begin
-    If idict = Nil Then idict := TPyDict.Make;
-    If Not idict.GetS('__annotations__', res) Then Begin
-     res := VObj(TPyDict.Make);
-     idict.SetS('__annotations__', res);
+    If idict = Nil Then idict := AllocDict;
+    If Not DictGetS(idict, '__annotations__', res) Then Begin
+     res := VObj(AllocDict);
+     DictSetS(idict, '__annotations__', res);
     End;
     Exit;
    End;
@@ -22002,14 +22850,14 @@ Begin
     Exit;
    End;
    If attr = '__module__' Then Begin
-    If globals.GetS('__name__', v) Then res := v Else res := vNone;
+    If DictGetS(globals, '__name__', v) Then res := v Else res := vNone;
     Exit;
    End;
    If attr = '__annotations__' Then Begin
-    If idict = Nil Then idict := TPyDict.Make;
-    If Not idict.GetS('__annotations__', v) Then Begin
-     v := VObj(TPyDict.Make);
-     idict.SetS('__annotations__', v);
+    If idict = Nil Then idict := AllocDict;
+    If Not DictGetS(idict, '__annotations__', v) Then Begin
+     v := VObj(AllocDict);
+     DictSetS(idict, '__annotations__', v);
     End;
     res := v;
     Exit;
@@ -22018,8 +22866,8 @@ Begin
   Result := False;
   Exit;
  End;
- If ob Is TPyCode Then Begin
-  With TPyCode(ob) Do Begin
+ If IsK(ob, okCode) Then Begin
+  With TPyCode(ob)^ Do Begin
    If attr = 'co_name' Then res := VStr(TPyCode(ob).name)
    Else If attr = 'co_filename' Then res := VStr(filename)
    Else If attr = 'co_firstlineno' Then res := VInt(firstline)
@@ -22044,7 +22892,7 @@ Begin
   End;
   Exit;
  End;
- If ob Is TPyMethod Then Begin
+ If IsK(ob, okMethod) Then Begin
   If attr = '__self__' Then Begin res := TPyMethod(ob).slf; Exit; End;
   If attr = '__func__' Then Begin res := TPyMethod(ob).fn; Exit; End;
   If (attr = '__name__') Or (attr = '__doc__') Or (attr = '__qualname__') Or
@@ -22055,7 +22903,7 @@ Begin
   Result := False;
   Exit;
  End;
- If ob Is TPyBuiltin Then Begin
+ If IsK(ob, okBuiltin) Then Begin
   If (attr = '__name__') Or (attr = '__qualname__') Then Begin
    res := VStr(TPyBuiltin(ob).name);
    Exit;
@@ -22066,8 +22914,8 @@ Begin
   Result := False;
   Exit;
  End;
- If ob Is TPyType Then Begin
-  With TPyType(ob) Do Begin
+ If IsK(ob, okType) Then Begin
+  With TPyType(ob)^ Do Begin
    If attr = '__name__' Then Begin res := VStr(TPyType(ob).name); Exit; End;
    If attr = '__qualname__' Then Begin res := VStr(qualname); Exit; End;
    If attr = '__bases__' Then Begin res := TupleOfTypes(bases); Exit; End;
@@ -22077,28 +22925,28 @@ Begin
     Exit;
    End;
    If attr = '__module__' Then Begin
-    If idict.GetS('__module__', v) Then res := v
+    If DictGetS(idict, '__module__', v) Then res := v
     Else res := VStr('builtins');
     Exit;
    End;
    If attr = '__doc__' Then Begin
-    If idict.GetS('__doc__', v) Then res := v Else res := vNone;
+    If DictGetS(idict, '__doc__', v) Then res := v Else res := vNone;
     Exit;
    End;
   End;
   Result := False;
   Exit;
  End;
- If ob Is TPyModule Then Begin
+ If IsK(ob, okModule) Then Begin
   If attr = '__name__' Then Begin
-   If ob.idict.GetS('__name__', v) Then res := v
+   If DictGetS(ob.idict, '__name__', v) Then res := v
    Else res := VStr(TPyModule(ob).name);
    Exit;
   End;
   Result := False;
   Exit;
  End;
- If ob Is TPyGen Then Begin
+ If IsK(ob, okGen) Then Begin
   If attr = '__name__' Then Begin res := VStr(TPyGen(ob).name); Exit; End;
   If attr = 'gi_running' Then Begin
    res := VBool(TPyGen(ob).state = 2);
@@ -22127,37 +22975,37 @@ Begin
   Result := False;
   Exit;
  End;
- If ob Is TPyCell Then Begin
+ If IsK(ob, okCell) Then Begin
   If attr = 'cell_contents' Then Begin
    If TPyCell(ob).v.k = vkNull Then RaiseExc(exValueError, 'Cell is empty');
    res := TPyCell(ob).v;
    Exit;
   End;
  End;
- If ob Is TPySlice Then Begin
+ If IsK(ob, okSlice) Then Begin
   If attr = 'start' Then Begin res := TPySlice(ob).start; Exit; End;
   If attr = 'stop' Then Begin res := TPySlice(ob).stop; Exit; End;
   If attr = 'step' Then Begin res := TPySlice(ob).step; Exit; End;
  End;
- If ob Is TPyRange Then Begin
+ If IsK(ob, okRange) Then Begin
   If attr = 'start' Then Begin res := VInt(TPyRange(ob).start); Exit; End;
   If attr = 'stop' Then Begin res := VInt(TPyRange(ob).stop); Exit; End;
   If attr = 'step' Then Begin res := VInt(TPyRange(ob).step); Exit; End;
  End;
- If ob Is TPyProperty Then Begin
+ If IsK(ob, okProperty) Then Begin
   If attr = 'fget' Then Begin res := TPyProperty(ob).fget; Exit; End;
   If attr = 'fset' Then Begin res := TPyProperty(ob).fset; Exit; End;
   If attr = 'fdel' Then Begin res := TPyProperty(ob).fdel; Exit; End;
   If attr = '__doc__' Then Begin res := TPyProperty(ob).doc; Exit; End;
  End;
- If ob Is TPyWrapper Then Begin
+ If IsK(ob, okWrapper) Then Begin
   If (attr = '__func__') Or (attr = '__wrapped__') Then Begin
    res := TPyWrapper(ob).fn;
    Exit;
   End;
  End;
- If ob Is TPyFile Then Begin
-  With TPyFile(ob) Do Begin
+ If IsK(ob, okFile) Then Begin
+  With TPyFile(ob)^ Do Begin
    If attr = 'closed' Then Begin res := VBool(closed); Exit; End;
    If attr = 'name' Then Begin
     If std = 1 Then res := VStr('<stdin>')
@@ -22176,7 +23024,7 @@ Begin
    End;
    If (attr = 'buffer') And (std <> 0) And Not binary Then Begin
     If bufObj = Nil Then Begin
-     bufObj := TPyFile.Create(cls);
+     bufObj := AllocFile(cls);
      bufObj.std := std;
      bufObj.binary := True;
      bufObj.mode := mode + 'b';
@@ -22195,12 +23043,12 @@ Begin
    Exit;
   End;
   If (attr = '__cause__') Or (attr = '__context__') Then Begin
-   If (ob.idict <> Nil) And ob.idict.GetS(attr, v) Then res := v
+   If (ob.idict <> Nil) And DictGetS(ob.idict, attr, v) Then res := v
    Else res := vNone;
    Exit;
   End;
   If attr = '__suppress_context__' Then Begin
-   If (ob.idict <> Nil) And ob.idict.GetS(attr, v) Then res := v
+   If (ob.idict <> Nil) And DictGetS(ob.idict, attr, v) Then res := v
    Else res := vFalse;
    Exit;
   End;
@@ -22226,25 +23074,25 @@ Begin
    start := i + 1;
    Break;
   End;
- isType := (sp.obj.k = vkObj) And (sp.obj.o Is TPyType) And
-  (sp.obj.o = ot);
+ isType := (sp.obj.k = vkObj) And (IsK(sp.obj.o, okType)) And
+  (TPyType(sp.obj.o) = ot);
  For i := start To High(ot.mro) Do Begin
-  If (ot.mro[i].idict <> Nil) And ot.mro[i].idict.GetS(name, v) Then Begin
+  If (ot.mro[i].idict <> Nil) And DictGetS(ot.mro[i].idict, name, v) Then Begin
    If (v.k = vkObj) Then Begin
-    If v.o Is TPyFunc Then Begin
+    If IsK(v.o, okFunc) Then Begin
      If isType Then res := v Else res := BindMethod(v, sp.obj);
     End
-    Else If (v.o Is TPyBuiltin) And TPyBuiltin(v.o).isMethod Then Begin
+    Else If (IsK(v.o, okBuiltin)) And TPyBuiltin(v.o).isMethod Then Begin
      If isType Then res := v Else res := BindMethod(v, sp.obj);
     End
-    Else If v.o Is TPyWrapper Then Begin
+    Else If IsK(v.o, okWrapper) Then Begin
      If v.o.cls = tyClassMethod Then Begin
       If isType Then res := BindMethod(TPyWrapper(v.o).fn, sp.obj)
       Else res := BindMethod(TPyWrapper(v.o).fn, VObj(ot));
      End
      Else res := TPyWrapper(v.o).fn;
     End
-    Else If v.o Is TPyProperty Then Begin
+    Else If IsK(v.o, okProperty) Then Begin
      res := Call1(TPyProperty(v.o).fget, sp.obj);
     End
     Else res := v;
@@ -22272,7 +23120,7 @@ Var
  ct: TPyType;
 Begin
  name := nm.s;
- If (o.k = vkObj) And (o.o Is TPySuper) Then Begin
+ If (o.k = vkObj) And (IsK(o.o, okSuper)) Then Begin
   If name = '__class__' Then Begin
    res := VObj(tySuper);
    Result := True;
@@ -22284,13 +23132,13 @@ Begin
  End;
  If (name = '__class__') And (o.k = vkObj) And o.o.cls.userdef And
   LookupTypeO(o.o.cls, nm, tv) And (tv.k = vkObj) And
-  (tv.o Is TPyProperty) Then Begin
+  (IsK(tv.o, okProperty)) Then Begin
   res := Call1(TPyProperty(tv.o).fget, o);
   Result := True;
   Exit;
  End;
  If ((Length(name) > 2) And (name[1] = '_') And (name[2] = '_')) Or
-  (o.k <> vkObj) Or (o.o.ClassType <> TPyObj) Then
+  (o.k <> vkObj) Or ((o.o.otag <> okObj)) Then
   If SpecialGetAttr(o, name, res) Then Begin
    Result := True;
    Exit;
@@ -22298,9 +23146,9 @@ Begin
  t := TypeOf(o);
  found := LookupTypeO(t, nm, tv);
  If found And (tv.k = vkObj) Then Begin
-  If tv.o Is TPyProperty Then Begin
+  If IsK(tv.o, okProperty) Then Begin
    If o.k = vkObj Then Begin
-    If o.o Is TPyType Then Begin
+    If IsK(o.o, okType) Then Begin
      { acces a la classe via la metaclasse }
     End;
    End;
@@ -22319,18 +23167,18 @@ Begin
   End;
  End;
  If o.k = vkObj Then Begin
-  If o.o Is TPyType Then Begin
+  If IsK(o.o, okType) Then Begin
    ct := TPyType(o.o);
    If LookupTypeO(ct, nm, tv) Then Begin
     If tv.k = vkObj Then Begin
-     If tv.o Is TPyWrapper Then Begin
+     If IsK(tv.o, okWrapper) Then Begin
       If tv.o.cls = tyClassMethod Then
        res := BindMethod(TPyWrapper(tv.o).fn, o)
       Else res := TPyWrapper(tv.o).fn;
       Result := True;
       Exit;
      End;
-     If HasDescr(tv, '__get__', f) And Not (tv.o Is TPyType) Then Begin
+     If HasDescr(tv, '__get__', f) And Not (IsK(tv.o, okType)) Then Begin
       res := CallValue3(f, tv, vNone, o);
       Result := True;
       Exit;
@@ -22352,19 +23200,19 @@ Begin
  End;
  If found Then Begin
   If tv.k = vkObj Then Begin
-   If (tv.o Is TPyFunc) And Not TPyFunc(tv.o).nobind Then Begin
+   If (IsK(tv.o, okFunc)) And Not TPyFunc(tv.o).nobind Then Begin
     res := BindMethod(tv, o);
     Result := True;
     Exit;
    End;
-   If (tv.o Is TPyBuiltin) And TPyBuiltin(tv.o).isMethod Then Begin
+   If (IsK(tv.o, okBuiltin)) And TPyBuiltin(tv.o).isMethod Then Begin
     res := BindMethod(tv, o);
     Result := True;
     Exit;
    End;
-   If tv.o Is TPyWrapper Then Begin
+   If IsK(tv.o, okWrapper) Then Begin
     If tv.o.cls = tyClassMethod Then Begin
-     If (o.k = vkObj) And (o.o Is TPyType) Then
+     If (o.k = vkObj) And (IsK(o.o, okType)) Then
       res := BindMethod(TPyWrapper(tv.o).fn, o)
      Else res := BindMethod(TPyWrapper(tv.o).fn, VObj(t));
     End
@@ -22372,7 +23220,7 @@ Begin
     Result := True;
     Exit;
    End;
-   If HasDescr(tv, '__get__', f) And Not (tv.o Is TPyType) Then Begin
+   If HasDescr(tv, '__get__', f) And Not (IsK(tv.o, okType)) Then Begin
     res := CallValue3(f, tv, o, VObj(t));
     Result := True;
     Exit;
@@ -22383,18 +23231,18 @@ Begin
   Exit;
  End;
  { metaclasse pour les classes }
- If (o.k = vkObj) And (o.o Is TPyType) Then Begin
+ If (o.k = vkObj) And (IsK(o.o, okType)) Then Begin
   If LookupTypeO(o.o.cls, nm, tv) Then Begin
-   If (tv.k = vkObj) And (((tv.o Is TPyFunc) And Not TPyFunc(tv.o).nobind) Or
-    ((tv.o Is TPyBuiltin) And TPyBuiltin(tv.o).isMethod)) Then
+   If (tv.k = vkObj) And (((IsK(tv.o, okFunc)) And Not TPyFunc(tv.o).nobind) Or
+    ((IsK(tv.o, okBuiltin)) And TPyBuiltin(tv.o).isMethod)) Then
     res := BindMethod(tv, o)
    Else res := tv;
    Result := True;
    Exit;
   End;
  End;
- If (o.k = vkObj) And (o.o Is TPyMethod) And (TPyMethod(o.o).fn.k = vkObj) And
-  (TPyMethod(o.o).fn.o Is TPyFunc) Then
+ If (o.k = vkObj) And (IsK(o.o, okMethod)) And (TPyMethod(o.o).fn.k = vkObj) And
+  (IsK(TPyMethod(o.o).fn.o, okFunc)) Then
   If GetAttrCore(TPyMethod(o.o).fn, nm, res) Then Begin
    Result := True;
    Exit;
@@ -22406,13 +23254,13 @@ Begin
    Result := True;
    Exit;
   End;
- If Not BytesImplLoaded And (o.k = vkObj) And ((o.o Is TPyBytes) Or
-  (o.o = tyBytes) Or (o.o = tyBytearray)) Then Begin
+ If Not BytesImplLoaded And (o.k = vkObj) And ((IsK(o.o, okBytes)) Or
+  (TPyType(o.o) = tyBytes) Or (TPyType(o.o) = tyBytearray)) Then Begin
   LoadBytesImpl;
   Result := GetAttrCore(o, nm, res);
   Exit;
  End;
- If (name = '__doc__') And Not ((o.k = vkObj) And (o.o Is TPyType)) Then Begin
+ If (name = '__doc__') And Not ((o.k = vkObj) And (IsK(o.o, okType))) Then Begin
   Result := GetAttrCore(VObj(TypeOf(o)), nm, res);
   Exit;
  End;
@@ -22423,6 +23271,7 @@ Procedure RefreshHooks(t: TPyType); Forward;
 
 Function GetAttrOpt(Const o: TVal; nm: TPyStr; Var res: TVal): Boolean;
 Var
+ ePy: PXcPy;
  f: TVal;
 Begin
  If (o.k = vkObj) And o.o.cls.userdef And
@@ -22433,13 +23282,15 @@ Begin
     res := Call2(f, o, VObj(nm));
     Result := True;
    Except
-    On E: EPyError Do Begin
-     If Not IsInstance(VObj(E.exc), exAttributeError) Then Raise;
+    If XcTag = xtPy Then Begin
+     ePy := PXcPy(RaiseList^.FObject);
+     If Not IsInstance(VObj(ePy.exc), exAttributeError) Then Raise;
      If LookupType(o.o.cls, '__getattr__', f) Then Begin
       res := Call2(f, o, VObj(nm));
       Result := True;
      End Else Raise;
-    End;
+    End
+    Else Raise;
    End;
    Exit;
   End;
@@ -22451,18 +23302,18 @@ Procedure RaiseAttrError(Const o: TVal; Const name: AnsiString);
 Var
  e: TPyObj;
 Begin
- If (o.k = vkObj) And (o.o Is TPyModule) Then
+ If (o.k = vkObj) And (IsK(o.o, okModule)) Then
   e := MakeExc(exAttributeError, 'module ''' + TPyModule(o.o).name +
    ''' has no attribute ''' + name + '''')
- Else If (o.k = vkObj) And (o.o Is TPyType) Then
+ Else If (o.k = vkObj) And (IsK(o.o, okType)) Then
   e := MakeExc(exAttributeError, 'type object ''' + TPyType(o.o).name +
    ''' has no attribute ''' + name + '''')
  Else
   e := MakeExc(exAttributeError, '''' + TypeName(o) +
    ''' object has no attribute ''' + name + '''');
- e.idict.SetS('name', VStr(name));
- e.idict.SetS('obj', o);
- Raise EPyError.Make(e);
+ DictSetS(e.idict, 'name', VStr(name));
+ DictSetS(e.idict, 'obj', o);
+ RaisePy(e);
 End;
 
 Function GetAttr(Const o: TVal; Const name: AnsiString): TVal;
@@ -22480,15 +23331,18 @@ End;
 
 Function HasAttr(Const o: TVal; Const name: AnsiString): Boolean;
 Var
+ ePy: PXcPy;
  r: TVal;
 Begin
  Try
   Result := GetAttrOpt(o, InternStr(name), r);
  Except
-  On E: EPyError Do Begin
-   If IsInstance(VObj(E.exc), exAttributeError) Then Result := False
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exAttributeError) Then Result := False
    Else Raise;
-  End;
+  End
+  Else Raise;
  End;
 End;
 
@@ -22502,12 +23356,12 @@ Begin
  t.hasDel := False;
  For i := 0 To High(t.mro) Do
   If t.mro[i].userdef And (t.mro[i].idict <> Nil) Then Begin
-   If t.mro[i].idict.GetS('__del__', f) And (f.k = vkObj) And
-    (f.o Is TPyFunc) Then t.hasDel := True;
-   If t.mro[i].idict.GetS('__setattr__', f) And (f.k = vkObj) And
-    (f.o Is TPyFunc) Then t.hasSetattr := True;
-   If t.mro[i].idict.GetS('__getattribute__', f) And (f.k = vkObj) And
-    (f.o Is TPyFunc) Then t.hasGetattribute := True;
+   If DictGetS(t.mro[i].idict, '__del__', f) And (f.k = vkObj) And
+    (IsK(f.o, okFunc)) Then t.hasDel := True;
+   If DictGetS(t.mro[i].idict, '__setattr__', f) And (f.k = vkObj) And
+    (IsK(f.o, okFunc)) Then t.hasSetattr := True;
+   If DictGetS(t.mro[i].idict, '__getattribute__', f) And (f.k = vkObj) And
+    (IsK(f.o, okFunc)) Then t.hasGetattribute := True;
   End;
  t.flagGen := TypeFlagsGen;
 End;
@@ -22536,7 +23390,7 @@ Var
 Begin
  t.hasSlots := False;
  SetLength(t.slots, 0);
- If d.GetS('__slots__', sl) Then Begin
+ If DictGetS(d, '__slots__', sl) Then Begin
   t.hasSlots := True;
   If IsStrVal(sl) Then Begin
    SetLength(items, 1);
@@ -22549,7 +23403,7 @@ Begin
     Continue;
    End;
    If s = '__weakref__' Then Continue;
-   If d.GetS(s, x) Then
+   If DictGetS(d, s, x) Then
     RaiseExc(exValueError, '''' + s +
      ''' in __slots__ conflicts with class variable');
    k := Length(t.slots);
@@ -22580,7 +23434,7 @@ Begin
  End;
  t := o.o.cls;
  If LookupTypeO(t, nm, tv) And (tv.k = vkObj) Then Begin
-  If tv.o Is TPyProperty Then Begin
+  If IsK(tv.o, okProperty) Then Begin
    If TPyProperty(tv.o).fset.k = vkNone Then
     RaiseExc(exAttributeError, 'can''t set attribute');
    Call2(TPyProperty(tv.o).fset, o, v);
@@ -22591,7 +23445,7 @@ Begin
    Exit;
   End;
  End;
- If o.o Is TPyFunc Then Begin
+ If IsK(o.o, okFunc) Then Begin
   If name = '__doc__' Then Begin TPyFunc(o.o).doc := v; Exit; End;
   If name = '__name__' Then Begin
    TPyFunc(o.o).name := StrOf(v);
@@ -22611,10 +23465,10 @@ Begin
    Else TPyFunc(o.o).kwdefaults := TPyDict(v.o);
    Exit;
   End;
-  If TPyFunc(o.o).idict = Nil Then TPyFunc(o.o).idict := TPyDict.Make;
+  If TPyFunc(o.o).idict = Nil Then TPyFunc(o.o).idict := AllocDict;
  End;
  If TypeIsSub(t, exBaseException) And (name = '__traceback__') Then Exit;
- If o.o Is TPyType Then Begin
+ If IsK(o.o, okType) Then Begin
   If name = '__name__' Then Begin
    TPyType(o.o).name := StrOf(v);
    Exit;
@@ -22627,16 +23481,16 @@ Begin
    TypeErr('can''t set attributes of built-in/extension type ''' +
     TPyType(o.o).name + '''');
  End;
- If o.o Is TPyProperty Then Begin
+ If IsK(o.o, okProperty) Then Begin
   If name = '__doc__' Then Begin TPyProperty(o.o).doc := v; Exit; End;
  End;
  If (t.noDict Or (t = tyObject)) And Not SlotAllowed(t, name) Then
   RaiseAttrError(o, name);
- If (o.o Is TPyType) And ((name = '__setattr__') Or
+ If (IsK(o.o, okType)) And ((name = '__setattr__') Or
   (name = '__getattribute__')) Then Inc(TypeFlagsGen);
  If o.o.idict = Nil Then Begin
-  If o.o.cls.userdef Or (o.o Is TPyObj) And (o.o.ClassType = TPyObj) Then
-   o.o.idict := TPyDict.Make
+  If o.o.cls.userdef Or ((o.o <> Nil)) And ((o.o.otag = okObj)) Then
+   o.o.idict := AllocDict
   Else RaiseAttrError(o, name);
  End;
  DictSetO(o.o.idict, nm, v);
@@ -22650,7 +23504,7 @@ Begin
   (o.o.cls.flagGen <> TypeFlagsGen) Then RefreshHooks(o.o.cls);
  If (o.k = vkObj) And o.o.cls.hasSetattr Then
   If LookupType(o.o.cls, '__setattr__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    Call3Args(f, o, VObj(nm), v);
    Exit;
   End;
@@ -22672,12 +23526,12 @@ Begin
  t := o.o.cls;
  If t.userdef Then
   If LookupType(t, '__delattr__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    Call2(f, o, VObj(nm));
    Exit;
   End;
  If LookupTypeO(t, nm, tv) And (tv.k = vkObj) Then Begin
-  If tv.o Is TPyProperty Then Begin
+  If IsK(tv.o, okProperty) Then Begin
    If TPyProperty(tv.o).fdel.k = vkNone Then
     RaiseExc(exAttributeError, 'can''t delete attribute');
    Call1(TPyProperty(tv.o).fdel, o);
@@ -22689,7 +23543,7 @@ Begin
   End;
  End;
  key := VObj(nm);
- If (o.o.idict = Nil) Or Not o.o.idict.DelItem(key) Then
+ If (o.o.idict = Nil) Or Not DictDelItem(o.o.idict, key) Then
   RaiseAttrError(o, nm.s);
 End;
 
@@ -22730,7 +23584,7 @@ Begin
  nc := Length(co.cellvars);
  fast := fr.base;
  For i := 0 To nc - 1 Do Begin
-  c := TPyCell.Create(tyCell);
+  c := AllocCell(tyCell);
   c.v := vNull;
   { le parametre correspondant est copie dans la cellule }
   For j := 0 To nl - 1 Do
@@ -22792,7 +23646,7 @@ Var
     TypeErr(fn.name + '() got an unexpected keyword argument ''' + kn +
      '''');
    End;
-   kwArgsDict.SetItem(k, val);
+   DictSetItem(kwArgsDict, k, val);
   End;
  End;
 
@@ -22806,7 +23660,7 @@ Begin
  If (co.flags And CO_VARARGS) <> 0 Then slotKW := slotVA + 1
  Else slotKW := slotVA;
  If (co.flags And CO_VARKEYWORDS) <> 0 Then Begin
-  kwArgsDict := TPyDict.Make;
+  kwArgsDict := AllocDict;
   fast[slotKW] := VObj(kwArgsDict);
  End;
  m := npos;
@@ -22863,7 +23717,7 @@ Begin
   If fast[i].k = vkNull Then Begin
    found := False;
    If fn.kwdefaults <> Nil Then
-    If fn.kwdefaults.GetS(co.varnames[i], v) Then Begin
+    If DictGetS(fn.kwdefaults, co.varnames[i], v) Then Begin
      fast[i] := v;
      found := True;
     End;
@@ -22898,10 +23752,10 @@ Var
  g: TPyGen;
 Begin
  If (fn.code.flags And CO_ASYNC_GENERATOR) <> 0 Then
-  g := TPyGen.Create(tyAsyncGen)
+  g := AllocGen(tyAsyncGen)
  Else If (fn.code.flags And CO_COROUTINE) <> 0 Then
-  g := TPyGen.Create(tyCoroutine)
- Else g := TPyGen.Create(tyGenerator);
+  g := AllocGen(tyCoroutine)
+ Else g := AllocGen(tyGenerator);
  g.frame := fr;
  g.state := 0;
  g.retval := vNull;
@@ -22931,7 +23785,7 @@ Begin
   If gen Then Begin
    FreeMem(fr.mem);
    fr.mem := Nil;
-   fr.Free;
+   Dispose(fr);
   End
   Else ReleaseFrame(fr);
   Raise;
@@ -22956,22 +23810,22 @@ Begin
   TypeErr('''' + TypeName(fn) + ''' object is not callable');
  End;
  o := fn.o;
- If o Is TPyFunc Then Begin
+ If IsK(o, okFunc) Then Begin
   Result := CallPyFunc(TPyFunc(o), a, n, kw);
   Exit;
  End;
- If o Is TPyBuiltin Then Begin
+ If IsK(o, okBuiltin) Then Begin
   Result := TPyBuiltin(o).fn(a, n, kw);
   Exit;
  End;
- If o Is TPyMethod Then Begin
+ If IsK(o, okMethod) Then Begin
   SetLength(tmp, n + 1);
   tmp[0] := TPyMethod(o).slf;
   For i := 0 To n - 1 Do tmp[i + 1] := a[i];
   Result := CallValue(TPyMethod(o).fn, @tmp[0], n + 1, kw);
   Exit;
  End;
- If o Is TPyType Then Begin
+ If IsK(o, okType) Then Begin
   Result := CallType(TPyType(o), a, n, kw);
   Exit;
  End;
@@ -23010,7 +23864,7 @@ Begin
  meta := t.cls;
  If (meta <> tyType) And (meta <> Nil) Then
   If LookupType(meta, '__call__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    SetLength(tmp, n + 1);
    tmp[0] := VObj(t);
    For i := 0 To n - 1 Do tmp[i + 1] := a[i];
@@ -23039,7 +23893,7 @@ Begin
  SetLength(tmp, n + 1);
  tmp[0] := VObj(t);
  For i := 0 To n - 1 Do tmp[i + 1] := a[i];
- If (nf.k = vkObj) And (nf.o Is TPyWrapper) Then nf := TPyWrapper(nf.o).fn;
+ If (nf.k = vkObj) And (IsK(nf.o, okWrapper)) Then nf := TPyWrapper(nf.o).fn;
  obj := CallValue(nf, @tmp[0], n + 1, kw);
  If IsInstance(obj, t) Then Begin
   If LookupType(t, '__init__', f) Then Begin
@@ -23081,20 +23935,20 @@ Var
  d: TPyDict;
  key: TVal;
 Begin
- t := TPyType.Create(meta);
+ t := AllocType(meta);
  t.name := nm;
  t.qualname := nm;
  t.userdef := True;
- d := ns.Copy;
+ d := DictCopy(ns);
  t.idict := d;
- If d.GetS('__qualname__', v) And IsStrVal(v) Then Begin
+ If DictGetS(d, '__qualname__', v) And IsStrVal(v) Then Begin
   t.qualname := TPyStr(v.o).s;
-  d.DelS('__qualname__');
+  DictDelS(d, '__qualname__');
  End;
- If d.GetS('__init_subclass__', v) And (v.k = vkObj) And (v.o Is TPyFunc)
-  Then d.SetS('__init_subclass__', VObj(NewWrapper(tyClassMethod, v)));
- If d.GetS('__class_getitem__', v) And (v.k = vkObj) And (v.o Is TPyFunc)
-  Then d.SetS('__class_getitem__', VObj(NewWrapper(tyClassMethod, v)));
+ If DictGetS(d, '__init_subclass__', v) And (v.k = vkObj) And (IsK(v.o, okFunc))
+  Then DictSetS(d, '__init_subclass__', VObj(NewWrapper(tyClassMethod, v)));
+ If DictGetS(d, '__class_getitem__', v) And (v.k = vkObj) And (IsK(v.o, okFunc))
+  Then DictSetS(d, '__class_getitem__', VObj(NewWrapper(tyClassMethod, v)));
  If Length(bases) = 0 Then Begin
   SetLength(t.bases, 1);
   t.bases[0] := tyObject;
@@ -23105,17 +23959,17 @@ Begin
  End;
  t.native := NativeKindOf(t.bases);
  ComputeMro(t);
- If Not d.HasS('__module__') Then Begin
-  If (CurFrame <> Nil) And CurFrame.globals.GetS('__name__', v) Then
-   d.SetS('__module__', v)
-  Else d.SetS('__module__', VStr('__main__'));
+ If Not DictHasS(d, '__module__') Then Begin
+  If (CurFrame <> Nil) And DictGetS(CurFrame.globals, '__name__', v) Then
+   DictSetS(d, '__module__', v)
+  Else DictSetS(d, '__module__', VStr('__main__'));
  End;
- If d.HasS('__eq__') And Not d.HasS('__hash__') Then
-  d.SetS('__hash__', vNone);
- If d.GetS('__classcell__', cell) Then Begin
-  If (cell.k = vkObj) And (cell.o Is TPyCell) Then
+ If DictHasS(d, '__eq__') And Not DictHasS(d, '__hash__') Then
+  DictSetS(d, '__hash__', vNone);
+ If DictGetS(d, '__classcell__', cell) Then Begin
+  If (cell.k = vkObj) And (IsK(cell.o, okCell)) Then
    TPyCell(cell.o).v := VObj(t);
-  d.DelS('__classcell__');
+  DictDelS(d, '__classcell__');
  End;
  ComputeTypeFlags(t, d);
  { __set_name__ }
@@ -23127,13 +23981,14 @@ Begin
  { __init_subclass__ }
  If Length(t.mro) > 1 Then Begin
   For i := 1 To High(t.mro) Do
-   If (t.mro[i].idict <> Nil) And t.mro[i].idict.GetS('__init_subclass__', f)
+   If (t.mro[i].idict <> Nil) And DictGetS(t.mro[i].idict, '__init_subclass__',
+     f)
     Then Begin
-    If (f.k = vkObj) And (f.o Is TPyWrapper) Then
+    If (f.k = vkObj) And (IsK(f.o, okWrapper)) Then
      f := BindMethod(TPyWrapper(f.o).fn, VObj(t))
-    Else If (f.k = vkObj) And (f.o Is TPyFunc) Then
+    Else If (f.k = vkObj) And (IsK(f.o, okFunc)) Then
      f := BindMethod(f, VObj(t));
-    If (f.k = vkObj) And (f.o Is TPyMethod) Then
+    If (f.k = vkObj) And (IsK(f.o, okMethod)) Then
      CallValue(f, @key, 0, kw);
     Break;
    End;
@@ -23159,7 +24014,7 @@ Var
  j: Integer;
  exp: TValArr;
 Begin
- If (n < 2) Or Not ((a[0].k = vkObj) And (a[0].o Is TPyFunc)) Then
+ If (n < 2) Or Not ((a[0].k = vkObj) And (IsK(a[0].o, okFunc))) Then
   TypeErr('__build_class__: func must be a function');
  func := TPyFunc(a[0].o);
  nm := StrOf(a[1]);
@@ -23167,14 +24022,14 @@ Begin
  origBases := Nil;
  SetLength(exp, 0);
  For i := 0 To nb - 1 Do Begin
-  If (a[i + 2].k = vkObj) And Not (a[i + 2].o Is TPyType) And
+  If (a[i + 2].k = vkObj) And Not (IsK(a[i + 2].o, okType)) And
    GetAttrOpt(a[i + 2], InternStr('__mro_entries__'), mv) Then Begin
    If origBases = Nil Then Begin
     origBases := NewTuple(nb);
     For j := 0 To nb - 1 Do origBases.items[j] := a[j + 2];
    End;
    r := Call1(mv, VObj(origBases));
-   If Not ((r.k = vkObj) And (r.o Is TPyTuple)) Then
+   If Not ((r.k = vkObj) And (IsK(r.o, okTuple))) Then
     TypeErr('__mro_entries__ must return a tuple');
    For j := 0 To High(TPyTuple(r.o).items) Do Begin
     SetLength(exp, Length(exp) + 1);
@@ -23190,7 +24045,7 @@ Begin
  SetLength(bases, nb);
  btuple := NewTuple(nb);
  For i := 0 To nb - 1 Do Begin
-  If Not ((exp[i].k = vkObj) And (exp[i].o Is TPyType)) Then
+  If Not ((exp[i].k = vkObj) And (IsK(exp[i].o, okType))) Then
    TypeErr('bases must be types');
   bases[i] := TPyType(exp[i].o);
   btuple.items[i] := exp[i];
@@ -23198,10 +24053,10 @@ Begin
  meta := Nil;
  kw2 := Nil;
  If kw <> Nil Then Begin
-  kw2 := kw.Copy;
-  If kw2.GetS('metaclass', mv) Then Begin
-   If (mv.k = vkObj) And (mv.o Is TPyType) Then meta := TPyType(mv.o);
-   kw2.DelS('metaclass');
+  kw2 := DictCopy(kw);
+  If DictGetS(kw2, 'metaclass', mv) Then Begin
+   If (mv.k = vkObj) And (IsK(mv.o, okType)) Then meta := TPyType(mv.o);
+   DictDelS(kw2, 'metaclass');
    If meta = Nil Then meta := tyType;
   End;
  End;
@@ -23218,15 +24073,15 @@ Begin
  End;
  ns := Nil;
  If LookupType(winner, '__prepare__', prep) Then Begin
-  If (prep.k = vkObj) And (prep.o Is TPyWrapper) Then
+  If (prep.k = vkObj) And (IsK(prep.o, okWrapper)) Then
    prep := BindMethod(TPyWrapper(prep.o).fn, VObj(winner));
   args[0] := a[1];
   args[1] := VObj(btuple);
   r := CallValue(prep, @args[0], 2, kw2);
-  If (r.k = vkObj) And (r.o Is TPyDict) Then ns := TPyDict(r.o);
+  If (r.k = vkObj) And (IsK(r.o, okDict)) Then ns := TPyDict(r.o);
  End;
- If ns = Nil Then ns := TPyDict.Make;
- If origBases <> Nil Then ns.SetS('__orig_bases__', VObj(origBases));
+ If ns = Nil Then ns := AllocDict;
+ If origBases <> Nil Then DictSetS(ns, '__orig_bases__', VObj(origBases));
  { execution du corps de la classe }
  fr := NewFrame(func.code, func, func.globals, ns, False);
  Try
@@ -23242,7 +24097,7 @@ Begin
  If winner = tyType Then
   clsv := VObj(TypeNew(tyType, nm, bases, ns, kw2))
  Else clsv := CallValue(VObj(winner), @args[0], 3, kw2);
- If (r.k = vkObj) And (r.o Is TPyCell) And (clsv.k = vkObj) Then
+ If (r.k = vkObj) And (IsK(r.o, okCell)) And (clsv.k = vkObj) Then
   TPyCell(r.o).v := clsv;
  j := 0;
  Result := clsv;
@@ -23297,7 +24152,7 @@ Begin
  End;
 End;
 
-Function TPyGen.Next(Var r: TVal): Boolean;
+Function GenNext(Self: TPyGen; Var r: TVal): Boolean;
 Begin
  Result := GenResume(Self, vNone, r);
 End;
@@ -23310,7 +24165,7 @@ Var
  code: TPyCode;
 Begin
  Result := '';
- If (codeV.k <> vkObj) Or Not (codeV.o Is TPyCode) Then Exit;
+ If (codeV.k <> vkObj) Or Not (IsK(codeV.o, okCode)) Then Exit;
  code := TPyCode(codeV.o);
  EnsureCodeSource(code);
  If (ln >= 1) And (ln <= Length(code.source)) Then
@@ -23324,10 +24179,10 @@ Var
  e: TPyTuple;
 Begin
  If f.code.filename = '<frozen warnings>' Then Exit;
- If exc.idict = Nil Then exc.idict := TPyDict.Make;
- If Not exc.idict.GetS('__tb__', tb) Then Begin
+ If exc.idict = Nil Then exc.idict := AllocDict;
+ If Not DictGetS(exc.idict, '__tb__', tb) Then Begin
   tb := VObj(NewList);
-  exc.idict.SetS('__tb__', tb);
+  DictSetS(exc.idict, '__tb__', tb);
  End;
  l := TPyList(tb.o);
  If f.code.fnameObj = Nil Then Begin
@@ -23340,7 +24195,7 @@ Begin
  e.items[2] := VObj(f.code.cnameObj);
  e.items[3] := VObj(f.code);
  e.items[4] := VObj(f.globals);
- l.Add(VObj(e));
+ ObjAdd(l, VObj(e));
 End;
 
 Procedure PushVal(f: TFrame; Const v: TVal); Inline;
@@ -23367,11 +24222,11 @@ Var
  cur: TVal;
  first: Boolean;
 Begin
- first := (exc.idict = Nil) Or Not exc.idict.HasS('__tb__');
+ first := (exc.idict = Nil) Or Not DictHasS(exc.idict, '__tb__');
  If first And (exc.idict <> Nil) Then Begin
   If (ExcInfo.k = vkObj) And (ExcInfo.o <> exc) And
-   Not exc.idict.HasS('__context__') Then
-   exc.idict.SetS('__context__', ExcInfo);
+   Not DictHasS(exc.idict, '__context__') Then
+   DictSetS(exc.idict, '__context__', ExcInfo);
  End;
  While True Do Begin
   f := CurFrame;
@@ -23448,34 +24303,36 @@ Begin
     thrown := entry.throwExc;
     entry.throwExc := Nil;
     If Not UnwindException(entry, thrown) Then
-     Raise EPyError.Make(thrown);
+     RaisePy(thrown);
    End;
    While True Do Begin
     Try
      Result := ExecLoop;
      Break;
     Except
-     On E: EPyError Do Begin
-      If Not UnwindException(entry, E.exc) Then Raise;
-     End;
-     On E: TObject Do Begin
-      { classes d'erreurs d'execution (SysUtils) reconnues par leur nom }
-      If E.ClassName = 'EAccessViolation' Then Begin
-       If Not UnwindException(entry, MakeExc(exSystemError,
-        'internal error (access violation)')) Then
-        RaiseExc(exSystemError, 'internal error (access violation)');
-      End
-      Else If E.ClassName = 'EOutOfMemory' Then Begin
-       If Not UnwindException(entry, MakeExc(exMemoryError, '')) Then
-        RaiseExc(exMemoryError, '');
-      End
-      Else If E.ClassName = 'EStackOverflow' Then Begin
-       If Not UnwindException(entry, MakeExc(exRecursionError,
-        'maximum recursion depth exceeded')) Then
-        RaiseExc(exRecursionError, 'maximum recursion depth exceeded');
-      End
-      Else Raise;
-     End;
+     If XcTag = xtPy Then Begin
+      If Not UnwindException(entry, PXcPy(RaiseList^.FObject).exc) Then Raise;
+     End
+     Else If XcTag = xtRun Then Begin
+      { erreurs d'execution du runtime : violation d'acces, memoire, pile }
+      Case XcCode Of
+       203: Begin
+         If Not UnwindException(entry, MakeExc(exMemoryError, '')) Then
+          RaiseExc(exMemoryError, '');
+        End;
+       202: Begin
+         If Not UnwindException(entry, MakeExc(exRecursionError,
+          'maximum recursion depth exceeded')) Then
+          RaiseExc(exRecursionError, 'maximum recursion depth exceeded');
+        End;
+      Else Begin
+        If Not UnwindException(entry, MakeExc(exSystemError,
+         'internal error (access violation)')) Then
+         RaiseExc(exSystemError, 'internal error (access violation)');
+       End;
+      End;
+     End
+     Else Raise;
     End;
    End;
   Except
@@ -23507,7 +24364,7 @@ Function ExcMatch(Const exctype, check: TVal): Boolean;
 Var
  i: Integer;
 Begin
- If (check.k = vkObj) And (check.o Is TPyTuple) Then Begin
+ If (check.k = vkObj) And (IsK(check.o, okTuple)) Then Begin
   For i := 0 To High(TPyTuple(check.o).items) Do
    If ExcMatch(exctype, TPyTuple(check.o).items[i]) Then Begin
     Result := True;
@@ -23516,7 +24373,7 @@ Begin
   Result := False;
   Exit;
  End;
- If Not ((check.k = vkObj) And (check.o Is TPyType) And
+ If Not ((check.k = vkObj) And (IsK(check.o, okType)) And
   IsExcClass(TPyType(check.o))) Then
   TypeErr('catching classes that do not inherit from BaseException is ' +
    'not allowed');
@@ -23525,7 +24382,7 @@ End;
 
 Function NormalizeExc(Const v: TVal; isCause: Boolean): TVal;
 Begin
- If (v.k = vkObj) And (v.o Is TPyType) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okType)) Then Begin
   If Not IsExcClass(TPyType(v.o)) Then
    TypeErr('exceptions must derive from BaseException');
   Result := CallValue(v, Nil, 0, Nil);
@@ -23548,25 +24405,26 @@ Begin
   If ExcInfo.k <> vkObj Then
    RaiseExc(exRuntimeError, 'No active exception to reraise');
   NoTbOnce := True;
-  Raise EPyError.Make(ExcInfo.o);
+  RaisePy(ExcInfo.o);
  End;
  e := NormalizeExc(excv, False);
  If nargs = 2 Then Begin
   If causev.k = vkNone Then c := vNone Else c := NormalizeExc(causev, True);
-  If e.o.idict = Nil Then e.o.idict := TPyDict.Make;
-  e.o.idict.SetS('__cause__', c);
-  e.o.idict.SetS('__suppress_context__', vTrue);
+  If e.o.idict = Nil Then e.o.idict := AllocDict;
+  DictSetS(e.o.idict, '__cause__', c);
+  DictSetS(e.o.idict, '__suppress_context__', vTrue);
  End;
- Raise EPyError.Make(e.o);
+ RaisePy(e.o);
 End;
 
 Procedure UnpackSeq(Const seq: TVal; sp: PVal; cnt: Integer);
 { ecrit cnt valeurs a partir de sp en ordre inverse (premier element en haut) }
 Var
+ ePy: PXcPy;
  items: TValArr;
  i: Integer;
 Begin
- If (seq.k = vkObj) And (seq.o Is TPyTuple) Then Begin
+ If (seq.k = vkObj) And (IsK(seq.o, okTuple)) Then Begin
   If Length(TPyTuple(seq.o).items) <> cnt Then Begin
    If Length(TPyTuple(seq.o).items) < cnt Then
     ValueErr('not enough values to unpack (expected ' + IntToStr(cnt) +
@@ -23577,7 +24435,8 @@ Begin
   For i := 0 To cnt - 1 Do sp[cnt - 1 - i] := TPyTuple(seq.o).items[i];
   Exit;
  End;
- If (seq.k = vkObj) And (seq.o Is TPyList) And Not seq.o.cls.userdef Then Begin
+ If (seq.k = vkObj) And (IsK(seq.o, okList)) And Not seq.o.cls.userdef Then
+   Begin
   If TPyList(seq.o).cnt <> cnt Then Begin
    If TPyList(seq.o).cnt < cnt Then
     ValueErr('not enough values to unpack (expected ' + IntToStr(cnt) +
@@ -23591,12 +24450,14 @@ Begin
  Try
   items := IterToArr(seq);
  Except
-  On E: EPyError Do Begin
-   If IsInstance(VObj(E.exc), exTypeError) And (Pos('is not iterable',
-    StrVal(VObj(E.exc))) > 0) Then
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exTypeError) And (Pos('is not iterable',
+    StrVal(VObj(ePy.exc))) > 0) Then
     TypeErr('cannot unpack non-iterable ' + TypeName(seq) + ' object');
    Raise;
-  End;
+  End
+  Else Raise;
  End;
  If Length(items) <> cnt Then Begin
   If Length(items) < cnt Then
@@ -23613,13 +24474,13 @@ Var
  keys, it, k: TVal;
  mo: TPyDict;
 Begin
- If (m.k = vkObj) And (m.o Is TPyDict) Then Begin
+ If (m.k = vkObj) And (IsK(m.o, okDict)) Then Begin
   mo := TPyDict(m.o);
   For i := 0 To mo.nent - 1 Do
    If mo.ent[i].key.k <> vkNull Then Begin
     If strict And Not IsStrVal(mo.ent[i].key) Then
      TypeErr('keywords must be strings');
-    d.SetItem(mo.ent[i].key, mo.ent[i].val);
+    DictSetItem(d, mo.ent[i].key, mo.ent[i].val);
    End;
   Exit;
  End;
@@ -23627,7 +24488,7 @@ Begin
   TypeErr('argument after ** must be a mapping, not ' + TypeName(m));
  keys := Call0(GetAttr(m, 'keys'));
  it := IterOf(keys);
- While IterNextVal(it, k) Do d.SetItem(k, GetItem(m, k));
+ While IterNextVal(it, k) Do DictSetItem(d, k, GetItem(m, k));
 End;
 
 Function PushPyCall(fn: TPyFunc; a: PVal; npos: Integer; kwv: PVal;
@@ -23656,7 +24517,7 @@ Begin
    If gen Then Begin
     FreeMem(fr.mem);
     fr.mem := Nil;
-    fr.Free;
+    Dispose(fr);
    End
    Else ReleaseFrame(fr);
    Raise;
@@ -23684,7 +24545,7 @@ Var
  i: Integer;
 Begin
  code := TPyCode(codeV.o);
- fn := TPyFunc.Create(tyFunction);
+ fn := AllocFunc(tyFunction);
  fn.code := code;
  fn.globals := CurFrame.globals;
  fn.name := code.name;
@@ -23702,8 +24563,8 @@ Begin
   Inc(k);
  End;
  If (flags And 4) <> 0 Then Begin
-  If fn.idict = Nil Then fn.idict := TPyDict.Make;
-  fn.idict.SetS('__annotations__', sp[k]);
+  If fn.idict = Nil Then fn.idict := AllocDict;
+  DictSetS(fn.idict, '__annotations__', sp[k]);
   Inc(k);
  End;
  If (flags And 8) <> 0 Then Begin
@@ -23732,12 +24593,17 @@ Var
 
 Procedure CallDel(o: TPyObj);
 Var
+ ePy: PXcPy;
  f: TVal;
 Begin
  Try
   If LookupType(o.cls, '__del__', f) Then Call1(f, VObj(o));
  Except
-  On E: EPyError Do ;
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   ;
+  End
+  Else Raise;
  End;
 End;
 
@@ -23753,13 +24619,13 @@ Begin
  MarkVal(ExcInfo);
  f := CurFrame;
  While f <> Nil Do Begin
-  f.MarkAll;
+  FrameMarkAll(f);
   f := f.back;
  End;
  While GcSP > 0 Do Begin
   Dec(GcSP);
   o := GcStack[GcSP];
-  o.MarkKids;
+  MarkKids(o);
  End;
  { finaliseurs : les objets inatteignables avec __del__ sont ressuscites }
  nd := 0;
@@ -23780,7 +24646,7 @@ Begin
  While GcSP > 0 Do Begin
   Dec(GcSP);
   o := GcStack[GcSP];
-  o.MarkKids;
+  MarkKids(o);
  End;
  { registre des fichiers a vider : retirer les entrees mortes }
  j := 0;
@@ -23798,7 +24664,7 @@ Begin
    GcObjs[j] := o;
    Inc(j);
   End
-  Else o.Free;
+  Else FreeObjMem(o);
  End;
  For i := j To GcCount - 1 Do GcObjs[i] := Nil;
  GcCount := j;
@@ -23818,13 +24684,13 @@ End;
 Function GetItemFast(Const o, k: TVal): TVal; Inline;
 Begin
  If (o.k = vkObj) And (k.k = vkInt) Then Begin
-  If (o.o.ClassType = TPyList) And (Not o.o.cls.userdef) Then Begin
+  If ((o.o.otag = okList)) And (Not o.o.cls.userdef) Then Begin
    If (k.i >= 0) And (k.i < TPyList(o.o).cnt) Then Begin
     Result := TPyList(o.o).items[k.i];
     Exit;
    End;
   End
-  Else If (o.o.ClassType = TPyTuple) And (Not o.o.cls.userdef) Then Begin
+  Else If ((o.o.otag = okTuple)) And (Not o.o.cls.userdef) Then Begin
    If (k.i >= 0) And (k.i < Length(TPyTuple(o.o).items)) Then Begin
     Result := TPyTuple(o.o).items[k.i];
     Exit;
@@ -23876,7 +24742,7 @@ Function AwaitableOf(Const v: TVal; Const what: AnsiString): TVal;
 Var
  f, r: TVal;
 Begin
- If (v.k = vkObj) And (v.o Is TPyGen) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okGen)) Then Begin
   If (v.o.cls = tyCoroutine) Or
    ((TPyGen(v.o).frame <> Nil) And
    ((TPyGen(v.o).frame.code.flags And CO_ITERABLE_COROUTINE) <> 0)) Then Begin
@@ -23884,15 +24750,15 @@ Begin
    Exit;
   End;
  End;
- If (v.k = vkObj) And (v.o Is TPyAsyncGenASend) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okAsyncGenASend)) Then Begin
   Result := v;
   Exit;
  End;
  If LookupType(TypeOf(v), '__await__', f) Then Begin
   r := Call1(f, v);
-  If (r.k = vkObj) And (r.o Is TPyGen) And (r.o.cls = tyCoroutine) Then
+  If (r.k = vkObj) And (IsK(r.o, okGen)) And (r.o.cls = tyCoroutine) Then
    TypeErr('__await__() returned a coroutine');
-  If Not ((r.k = vkObj) And ((r.o Is TPyIter) Or LookupType(TypeOf(r),
+  If Not ((r.k = vkObj) And ((IsIterObj(r.o)) Or LookupType(TypeOf(r),
    '__next__', f))) Then
    TypeErr('__await__() returned non-iterator of type ''' + TypeName(r) + '''');
   Result := r;
@@ -24013,8 +24879,8 @@ Begin
       End
       Else If (a.k = vkFloat) And (b.k = vkFloat) Then
        sp[-1] := VFloat(a.d + b.d)
-      Else If (a.k = vkObj) And (b.k = vkObj) And (a.o.ClassType = TPyStr)
-       And (b.o.ClassType = TPyStr) And Not a.o.cls.userdef Then
+      Else If (a.k = vkObj) And (b.k = vkObj) And ((a.o.otag = okStr))
+       And ((b.o.otag = okStr)) And Not a.o.cls.userdef Then
        sp[-1] := VStr(TPyStr(a.o).s + TPyStr(b.o).s)
       Else If op = INPLACE_ADD Then sp[-1] := InplaceOp(bopAdd, a, b)
       Else sp[-1] := BinaryOp(bopAdd, a, b);
@@ -24074,7 +24940,7 @@ Begin
       a := sp[-2];
       c := sp[-3];
       Dec(sp, 3);
-      If (a.k = vkObj) And (b.k = vkInt) And (a.o.ClassType = TPyList) And
+      If (a.k = vkObj) And (b.k = vkInt) And ((a.o.otag = okList)) And
        Not a.o.cls.userdef And (b.i >= 0) And (b.i < TPyList(a.o).cnt) Then
        TPyList(a.o).items[b.i] := c
       Else SetItem(a, b, c);
@@ -24087,7 +24953,7 @@ Begin
      End;
     GET_ITER: sp[-1] := IterOf(sp[-1]);
     GET_YIELD_FROM_ITER: Begin
-      If Not ((sp[-1].k = vkObj) And (sp[-1].o Is TPyGen)) Then
+      If Not ((sp[-1].k = vkObj) And (IsK(sp[-1].o, okGen))) Then
        sp[-1] := IterOf(sp[-1]);
      End;
     GET_AWAITABLE: Begin
@@ -24156,7 +25022,7 @@ Begin
        f.sp := sp;
        If b.k = vkObj Then Begin
         NoTbOnce := True;
-        Raise EPyError.Make(b.o);
+        RaisePy(b.o);
        End;
        RaiseExc(exSystemError, 'bad END_ASYNC_FOR state');
       End;
@@ -24168,7 +25034,7 @@ Begin
       DisplayHook(a);
      End;
     LOAD_BUILD_CLASS: Begin
-      If Not BuiltinsDict.GetS('__build_class__', a) Then
+      If Not DictGetS(BuiltinsDict, '__build_class__', a) Then
        RaiseExc(exNameError, '__build_class__ not found');
       sp^ := a;
       Inc(sp);
@@ -24177,7 +25043,7 @@ Begin
       a := sp[-1];
       Dec(sp);
       If (code.flags And CO_ASYNC_GENERATOR) <> 0 Then Begin
-       b := VObj(TPyAsyncGenWrapped.Create(tyObject));
+       b := VObj(AllocAsyncGenWrapped(tyObject));
        TPyAsyncGenWrapped(b.o).val := a;
        a := b;
       End;
@@ -24192,7 +25058,7 @@ Begin
       Dec(sp);
       b := sp[-1];
       f.sp := sp;
-      If (b.k = vkObj) And (b.o Is TPyGen) Then
+      If (b.k = vkObj) And (IsK(b.o, okGen)) Then
        pushed := GenResume(TPyGen(b.o), a, r)
       Else If a.k = vkNone Then pushed := IterNextVal(b, r)
       Else Begin
@@ -24206,10 +25072,10 @@ Begin
        Result := r;
        Exit;
       End;
-      If (b.k = vkObj) And (b.o Is TPyGen) Then r := TPyGen(b.o).retval
-      Else If (b.k = vkObj) And (b.o Is TPyAsyncGenASend) Then
+      If (b.k = vkObj) And (IsK(b.o, okGen)) Then r := TPyGen(b.o).retval
+      Else If (b.k = vkObj) And (IsK(b.o, okAsyncGenASend)) Then
        r := TPyAsyncGenASend(b.o).retval
-      Else If (b.k = vkObj) And (b.o Is TPyDoneIter) Then
+      Else If (b.k = vkObj) And (IsK(b.o, okDoneIter)) Then
        r := TPyDoneIter(b.o).retval
       Else r := vNone;
       If r.k = vkNull Then r := vNone;
@@ -24245,8 +25111,8 @@ Begin
      End;
     SETUP_ANNOTATIONS: Begin
       If f.locals <> Nil Then d := f.locals Else d := f.globals;
-      If Not d.HasS('__annotations__') Then
-       d.SetS('__annotations__', VObj(TPyDict.Make));
+      If Not DictHasS(d, '__annotations__') Then
+       DictSetS(d, '__annotations__', VObj(AllocDict));
      End;
     POP_BLOCK: Dec(f.nb);
     BEGIN_FINALLY: Begin
@@ -24269,7 +25135,7 @@ Begin
        f.sp := sp;
        If (b.k = vkObj) Then Begin
         NoTbOnce := True;
-        Raise EPyError.Make(b.o);
+        RaisePy(b.o);
        End;
        RaiseExc(exSystemError, 'bad END_FINALLY state');
       End;
@@ -24387,7 +25253,7 @@ Begin
     DELETE_NAME: Begin
       nm := nameObjs[arg];
       key := VObj(nm);
-      If Not f.locals.DelItem(key) Then
+      If Not DictDelItem(f.locals, key) Then
        RaiseExc(exNameError, 'name ''' + nm.s + ''' is not defined');
      End;
     UNPACK_SEQUENCE: Begin
@@ -24409,14 +25275,14 @@ Begin
       For bi := 0 To i - 1 Do
        sp[bi] := items[Length(items) - 1 - bi];
       lst := NewList;
-      For bi := n To Length(items) - i - 1 Do lst.Add(items[bi]);
+      For bi := n To Length(items) - i - 1 Do ObjAdd(lst, items[bi]);
       sp[i] := VObj(lst);
       For bi := 0 To n - 1 Do sp[i + 1 + (n - 1 - bi)] := items[bi];
       Inc(sp, n + i + 1);
      End;
     FOR_ITER: Begin
       a := sp[-1];
-      If a.o.ClassType = TRangeIter Then Begin
+      If (a.o.otag = okRangeIter) Then Begin
        If ((TRangeIter(a.o).step > 0) And (TRangeIter(a.o).cur <
         TRangeIter(a.o).stop)) Or ((TRangeIter(a.o).step < 0) And
         (TRangeIter(a.o).cur > TRangeIter(a.o).stop)) Then Begin
@@ -24445,7 +25311,7 @@ Begin
       a := sp[-1];
       b := sp[-2];
       Dec(sp, 2);
-      If (a.k = vkObj) And (a.o.ClassType = TPyObj) And (a.o.idict <> Nil)
+      If (a.k = vkObj) And ((a.o.otag = okObj)) And (a.o.idict <> Nil)
        And Not a.o.cls.userdef Then SetAttrO(a, nameObjs[arg], b)
       Else SetAttrO(a, nameObjs[arg], b);
      End;
@@ -24460,7 +25326,7 @@ Begin
      End;
     DELETE_GLOBAL: Begin
       key := VObj(nameObjs[arg]);
-      If Not f.globals.DelItem(key) Then
+      If Not DictDelItem(f.globals, key) Then
        RaiseExc(exNameError, 'name ''' + nameObjs[arg].s +
         ''' is not defined');
      End;
@@ -24564,15 +25430,15 @@ Begin
       Inc(sp);
      End;
     BUILD_SET: Begin
-      st := TPySet.Make(False);
-      For i := 0 To arg - 1 Do st.Add(sp[i - arg]);
+      st := AllocSet(False);
+      For i := 0 To arg - 1 Do ObjAdd(st, sp[i - arg]);
       Dec(sp, arg);
       sp^ := VObj(st);
       Inc(sp);
      End;
     BUILD_MAP: Begin
-      d := TPyDict.Make;
-      For i := 0 To arg - 1 Do d.SetItem(sp[2 * i - 2 * arg],
+      d := AllocDict;
+      For i := 0 To arg - 1 Do DictSetItem(d, sp[2 * i - 2 * arg],
        sp[2 * i - 2 * arg + 1]);
       Dec(sp, 2 * arg);
       sp^ := VObj(d);
@@ -24580,8 +25446,8 @@ Begin
      End;
     BUILD_CONST_KEY_MAP: Begin
       tup := TPyTuple(sp[-1].o);
-      d := TPyDict.Make;
-      For i := 0 To arg - 1 Do d.SetItem(tup.items[i], sp[i - 1 - arg]);
+      d := AllocDict;
+      For i := 0 To arg - 1 Do DictSetItem(d, tup.items[i], sp[i - 1 - arg]);
       Dec(sp, arg + 1);
       sp^ := VObj(d);
       Inc(sp);
@@ -24610,13 +25476,13 @@ Begin
       lst := NewList;
       For i := 0 To arg - 1 Do Begin
        items := IterToArr(sp[i - arg]);
-       For bi := 0 To High(items) Do lst.Add(items[bi]);
+       For bi := 0 To High(items) Do ObjAdd(lst, items[bi]);
       End;
       Dec(sp, arg);
       If op = BUILD_LIST_UNPACK Then r := VObj(lst)
       Else If op = BUILD_SET_UNPACK Then Begin
-       st := TPySet.Make(False);
-       For i := 0 To lst.cnt - 1 Do st.Add(lst.items[i]);
+       st := AllocSet(False);
+       For i := 0 To lst.cnt - 1 Do ObjAdd(st, lst.items[i]);
        r := VObj(st);
       End
       Else Begin
@@ -24628,7 +25494,7 @@ Begin
       Inc(sp);
      End;
     BUILD_MAP_UNPACK, BUILD_MAP_UNPACK_WITH_CALL: Begin
-      d := TPyDict.Make;
+      d := AllocDict;
       For i := 0 To arg - 1 Do
        MergeMapping(d, sp[i - arg], op = BUILD_MAP_UNPACK_WITH_CALL);
       Dec(sp, arg);
@@ -24646,17 +25512,17 @@ Begin
       nm := nameObjs[arg];
       ok := False;
       If a.k = vkObj Then Begin
-       If (Not (a.o Is TPyType)) And (Not (a.o Is TPySuper)) And
-        (Not (a.o Is TPyModule)) And LookupTypeO(a.o.cls, nm, meth) And
-        (meth.k = vkObj) And (((meth.o Is TPyFunc) And
+       If (Not (IsK(a.o, okType))) And (Not (IsK(a.o, okSuper))) And
+        (Not (IsK(a.o, okModule))) And LookupTypeO(a.o.cls, nm, meth) And
+        (meth.k = vkObj) And (((IsK(meth.o, okFunc)) And
         Not TPyFunc(meth.o).nobind) Or
-        ((meth.o Is TPyBuiltin) And TPyBuiltin(meth.o).isMethod)) Then Begin
+        ((IsK(meth.o, okBuiltin)) And TPyBuiltin(meth.o).isMethod)) Then Begin
         If (a.o.idict = Nil) Or Not DictGetO(a.o.idict, nm, r) Then ok := True;
        End;
       End
       Else If LookupTypeO(TypeOf(a), nm, meth) And (meth.k = vkObj) And
-       (((meth.o Is TPyFunc) And Not TPyFunc(meth.o).nobind) Or
-       ((meth.o Is TPyBuiltin) And
+       (((IsK(meth.o, okFunc)) And Not TPyFunc(meth.o).nobind) Or
+       ((IsK(meth.o, okBuiltin)) And
        TPyBuiltin(meth.o).isMethod)) Then ok := True;
       If ok Then Begin
        sp[-1] := meth;
@@ -24801,7 +25667,7 @@ Begin
        GcCollect;
       End;
       a := sp[-arg - 1];
-      If (a.k = vkObj) And (a.o.ClassType = TPyFunc) Then Begin
+      If (a.k = vkObj) And ((a.o.otag = okFunc)) Then Begin
        f.ip := ip;
        fnobj := TPyFunc(a.o);
        f.sp := sp - arg - 1;
@@ -24840,7 +25706,7 @@ Begin
        n := arg + 1;
        i := 0;
       End;
-      If (b.k = vkObj) And (b.o.ClassType = TPyFunc) Then Begin
+      If (b.k = vkObj) And ((b.o.otag = okFunc)) Then Begin
        f.ip := ip;
        f.sp := sp - arg - 2;
        If PushPyCall(TPyFunc(b.o), sp - npos, npos, Nil, Nil, Nil, r) Then
@@ -24863,7 +25729,7 @@ Begin
       nkw := Length(tup.items);
       npos := arg - nkw;
       a := sp[-arg - 2];
-      If (a.k = vkObj) And (a.o.ClassType = TPyFunc) Then Begin
+      If (a.k = vkObj) And ((a.o.otag = okFunc)) Then Begin
        f.ip := ip;
        f.sp := sp - arg - 2;
        If PushPyCall(TPyFunc(a.o), sp - 1 - arg, npos, sp - 1 - nkw, tup,
@@ -24873,8 +25739,9 @@ Begin
        Inc(sp);
       End
       Else Begin
-       kwd := TPyDict.Make;
-       For i := 0 To nkw - 1 Do kwd.SetItem(tup.items[i], sp[-1 - nkw + i]);
+       kwd := AllocDict;
+       For i := 0 To nkw - 1 Do DictSetItem(kwd, tup.items[i], sp[-1 - nkw +
+         i]);
        f.sp := sp;
        r := CallValue(a, sp - 1 - arg, npos, kwd);
        Dec(sp, arg + 2);
@@ -24887,20 +25754,20 @@ Begin
       If (arg And 1) <> 0 Then Begin
        c := sp[-1];
        Dec(sp);
-       kwd := TPyDict.Make;
+       kwd := AllocDict;
        MergeMapping(kwd, c, True);
       End;
       b := sp[-1];
       a := sp[-2];
       Dec(sp, 2);
-      If Not ((b.k = vkObj) And (b.o Is TPyTuple)) Then Begin
+      If Not ((b.k = vkObj) And (IsK(b.o, okTuple))) Then Begin
        items := IterToArr(b);
        tup := TupleFromVals(items);
       End
       Else tup := TPyTuple(b.o);
       f.sp := sp;
       f.ip := ip;
-      If (a.k = vkObj) And (a.o.ClassType = TPyFunc) Then Begin
+      If (a.k = vkObj) And ((a.o.otag = okFunc)) Then Begin
        If Length(tup.items) > 0 Then n := Length(tup.items) Else n := 1;
        If PushPyCall(TPyFunc(a.o), @tup.items[0], Length(tup.items), Nil,
         Nil, kwd, r) Then Break;
@@ -24926,18 +25793,18 @@ Begin
     LIST_APPEND: Begin
       a := sp[-1];
       Dec(sp);
-      TPyList(sp[-arg].o).Add(a);
+      ObjAdd(TPyList(sp[-arg].o), a);
      End;
     SET_ADD: Begin
       a := sp[-1];
       Dec(sp);
-      TPySet(sp[-arg].o).Add(a);
+      ObjAdd(TPySet(sp[-arg].o), a);
      End;
     MAP_ADD: Begin
       b := sp[-1];
       a := sp[-2];
       Dec(sp, 2);
-      TPyDict(sp[-arg].o).SetItem(a, b);
+      DictSetItem(TPyDict(sp[-arg].o), a, b);
      End;
     FORMAT_VALUE: Begin
       s := '';
@@ -24948,7 +25815,7 @@ Begin
       End;
       a := sp[-1];
       a := ConvertForFormat(a, arg And 3);
-      If (a.k = vkObj) And (a.o.ClassType = TPyStr) And (s = '') Then
+      If (a.k = vkObj) And ((a.o.otag = okStr)) And (s = '') Then
        sp[-1] := a
       Else sp[-1] := VStr(FormatValue(a, s));
      End;
@@ -25085,14 +25952,14 @@ End;
 Function MkType(Const nm: AnsiString; base: TPyType; nat: Integer): TPyType;
 Begin
  Result := NewType(nm, base, nat);
- BuiltinsDict.SetS(nm, VObj(Result));
+ DictSetS(BuiltinsDict, nm, VObj(Result));
 End;
 
 Function MkExc(Const nm: AnsiString; base: TPyType): TPyType;
 Begin
  Result := NewType(nm, base, nkException);
- Result.idict.SetS('__module__', VStr('builtins'));
- BuiltinsDict.SetS(nm, VObj(Result));
+ DictSetS(Result.idict, '__module__', VStr('builtins'));
+ DictSetS(BuiltinsDict, nm, VObj(Result));
 End;
 
 Function ObjInit(a: PVal; n: Integer; kw: TPyDict): TVal; Forward;
@@ -25104,44 +25971,41 @@ Var
  f: TVal;
  items: TValArr;
  snames: Array Of AnsiString;
- sl: TStringList;
+ sl: PSList;
  js: AnsiString;
  ii: Integer;
 Begin
- If (n < 1) Or Not ((a[0].k = vkObj) And (a[0].o Is TPyType)) Then
+ If (n < 1) Or Not ((a[0].k = vkObj) And (IsK(a[0].o, okType))) Then
   TypeErr('object.__new__(X): X is not a type object');
  t := TPyType(a[0].o);
  If (n > 1) Or ((kw <> Nil) And (kw.used > 0)) Then Begin
   If LookupType(t, '__init__', f) And (f.k = vkObj) And
-   (f.o Is TPyBuiltin) And (TPyBuiltin(f.o).name = '__init__') And
+   (IsK(f.o, okBuiltin)) And (TPyBuiltin(f.o).name = '__init__') And
    (Pointer(TPyBuiltin(f.o).fn) = Pointer(@ObjInit)) Then
    TypeErr(t.name + '() takes no arguments');
  End;
  If t.userdef And LookupType(t, '__abstractmethods__', f) And
-  (f.k = vkObj) And (f.o Is TPySet) And (TPySet(f.o).used > 0) Then Begin
+  (f.k = vkObj) And (IsK(f.o, okSet)) And (TPySet(f.o).used > 0) Then Begin
   items := IterToArr(f);
   SetLength(snames, Length(items));
   For ii := 0 To High(items) Do snames[ii] := StrOf(items[ii]);
-  sl := TStringList.Create;
-  Try
-   For ii := 0 To High(snames) Do sl.Add(snames[ii]);
-   sl.Sort;
-   js := '';
-   For ii := 0 To sl.Count - 1 Do Begin
-    If ii > 0 Then js := js + ', ';
-    js := js + sl[ii];
-   End;
-  Finally
-   sl.Free;
+  sl := SLNew(False);
+  For ii := 0 To High(snames) Do SLAdd(sl, snames[ii]);
+  SLSort(sl);
+  js := '';
+  For ii := 0 To sl^.n - 1 Do Begin
+   If ii > 0 Then js := js + ', ';
+   js := js + sl^.keys[ii];
   End;
+  SLFree(sl);
   TypeErr('Can''t instantiate abstract class ' + t.name +
    ' with abstract methods ' + js);
  End;
  If t.native <> nkObject Then
   TypeErr('object.__new__(' + t.name + ') is not safe, use ' +
    t.name + '.__new__()');
- o := TPyObj.Create(t);
- o.idict := TPyDict.Make;
+ o := AllocObj(t);
+ o.idict := AllocDict;
  Result := VObj(o);
 End;
 
@@ -25153,7 +26017,7 @@ Begin
  Result := vNone;
  If (n > 1) Or ((kw <> Nil) And (kw.used > 0)) Then Begin
   t := TypeOf(a[0]);
-  If LookupType(t, '__new__', f) And (f.k = vkObj) And (f.o Is TPyBuiltin)
+  If LookupType(t, '__new__', f) And (f.k = vkObj) And (IsK(f.o, okBuiltin))
    And (Pointer(TPyBuiltin(f.o).fn) = Pointer(@ObjNew)) Then
    TypeErr(t.name + '() takes no arguments');
  End;
@@ -25222,7 +26086,7 @@ Var
 Begin
  key := VObj(InternStr(StrOf(a[1])));
  If (a[0].k <> vkObj) Or (a[0].o.idict = Nil) Or
-  Not a[0].o.idict.DelItem(key) Then RaiseAttrError(a[0], StrOf(a[1]));
+  Not DictDelItem(a[0].o.idict, key) Then RaiseAttrError(a[0], StrOf(a[1]));
  Result := vNone;
 End;
 
@@ -25241,7 +26105,7 @@ End;
 
 Function TypeCallSelf(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If (n >= 1) And (a[0].k = vkObj) And (a[0].o Is TPyType) Then
+ If (n >= 1) And (a[0].k = vkObj) And (IsK(a[0].o, okType)) Then
   Result := CallTypeBase(TPyType(a[0].o), @a[1], n - 1, kw)
  Else Result := ObjCallSelf(a, n, kw);
 End;
@@ -25255,7 +26119,7 @@ Begin
  If n > 1 Then proto := IndexVal(a[1]);
  If (a[0].k = vkObj) And a[0].o.cls.userdef And
   LookupType(a[0].o.cls, '__reduce__', f) And (f.k = vkObj) And
-  (f.o Is TPyFunc) Then Begin
+  (IsK(f.o, okFunc)) Then Begin
   Result := Call1(f, a[0]);
   Exit;
  End;
@@ -25291,14 +26155,14 @@ Begin
  If n <> 4 Then TypeErr('type() takes 1 or 3 arguments');
  If Not IsStrVal(a[1]) Then
   TypeErr('type.__new__() argument 1 must be str, not ' + TypeName(a[1]));
- If Not ((a[2].k = vkObj) And (a[2].o Is TPyTuple)) Then
+ If Not ((a[2].k = vkObj) And (IsK(a[2].o, okTuple))) Then
   TypeErr('type.__new__() argument 2 must be tuple, not ' + TypeName(a[2]));
- If Not ((a[3].k = vkObj) And (a[3].o Is TPyDict)) Then
+ If Not ((a[3].k = vkObj) And (IsK(a[3].o, okDict))) Then
   TypeErr('type.__new__() argument 3 must be dict, not ' + TypeName(a[3]));
  bt := TPyTuple(a[2].o);
  SetLength(bases, Length(bt.items));
  For i := 0 To High(bt.items) Do Begin
-  If Not ((bt.items[i].k = vkObj) And (bt.items[i].o Is TPyType)) Then
+  If Not ((bt.items[i].k = vkObj) And (IsK(bt.items[i].o, okType))) Then
    TypeErr('bases must be types');
   bases[i] := TPyType(bt.items[i].o);
  End;
@@ -25317,7 +26181,7 @@ Var
 Begin
  l := NewList;
  For i := 0 To High(TPyType(a[0].o).mro) Do
-  l.Add(VObj(TPyType(a[0].o).mro[i]));
+  ObjAdd(l, VObj(TPyType(a[0].o).mro[i]));
  Result := VObj(l);
 End;
 
@@ -25330,9 +26194,9 @@ Begin
  l := NewList;
  For i := 0 To GcCount - 1 Do Begin
   o := GcObjs[i];
-  If o Is TPyType Then
+  If IsK(o, okType) Then
    For j := 0 To High(TPyType(o).bases) Do
-    If TPyType(o).bases[j] = TPyType(a[0].o) Then l.Add(VObj(o));
+    If TPyType(o).bases[j] = TPyType(a[0].o) Then ObjAdd(l, VObj(o));
  End;
  Result := VObj(l);
 End;
@@ -25344,7 +26208,7 @@ End;
 
 Function TypeSubclassCheck(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyType)) Then
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okType))) Then
   TypeErr('issubclass() arg 1 must be a class');
  Result := VBool(TypeIsSub(TPyType(a[1].o), TPyType(a[0].o)));
 End;
@@ -25386,11 +26250,11 @@ Begin
  t := TPyType(a[0].o);
  If (t = exOSError) And (n >= 3) And (n <= 6) And (a[1].k = vkInt) Then
   t := ErrnoClass(a[1].i);
- o := TPyObj.Create(t);
- o.idict := TPyDict.Make;
+ o := AllocObj(t);
+ o.idict := AllocDict;
  tup := NewTuple(n - 1);
  For i := 1 To n - 1 Do tup.items[i - 1] := a[i];
- o.idict.SetS('args', VObj(tup));
+ DictSetS(o.idict, 'args', VObj(tup));
  Result := VObj(o);
 End;
 
@@ -25401,12 +26265,12 @@ Var
 Begin
  tup := NewTuple(n - 1);
  For i := 1 To n - 1 Do tup.items[i - 1] := a[i];
- If a[0].o.idict = Nil Then a[0].o.idict := TPyDict.Make;
- a[0].o.idict.SetS('args', VObj(tup));
+ If a[0].o.idict = Nil Then a[0].o.idict := AllocDict;
+ DictSetS(a[0].o.idict, 'args', VObj(tup));
  If kw <> Nil Then
   For i := 0 To kw.nent - 1 Do
    If kw.ent[i].key.k <> vkNull Then
-    a[0].o.idict.SetItem(kw.ent[i].key, kw.ent[i].val);
+    DictSetItem(a[0].o.idict, kw.ent[i].key, kw.ent[i].val);
  Result := vNone;
 End;
 
@@ -25428,8 +26292,8 @@ End;
 Function StopIterInit(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  ExcInit(a, n, kw);
- If n > 1 Then a[0].o.idict.SetS('value', a[1])
- Else a[0].o.idict.SetS('value', vNone);
+ If n > 1 Then DictSetS(a[0].o.idict, 'value', a[1])
+ Else DictSetS(a[0].o.idict, 'value', vNone);
  Result := vNone;
 End;
 
@@ -25438,10 +26302,10 @@ Var
  av: TVal;
 Begin
  ExcInit(a, n, kw);
- If n = 2 Then a[0].o.idict.SetS('code', a[1])
- Else If (n > 2) And a[0].o.idict.GetS('args', av) Then
-  a[0].o.idict.SetS('code', av)
- Else a[0].o.idict.SetS('code', vNone);
+ If n = 2 Then DictSetS(a[0].o.idict, 'code', a[1])
+ Else If (n > 2) And DictGetS(a[0].o.idict, 'args', av) Then
+  DictSetS(a[0].o.idict, 'code', av)
+ Else DictSetS(a[0].o.idict, 'code', vNone);
  Result := vNone;
 End;
 
@@ -25450,20 +26314,20 @@ Var
  tup: TPyTuple;
 Begin
  ExcInit(a, n, kw);
- a[0].o.idict.SetS('errno', vNone);
- a[0].o.idict.SetS('strerror', vNone);
- a[0].o.idict.SetS('filename', vNone);
- a[0].o.idict.SetS('filename2', vNone);
+ DictSetS(a[0].o.idict, 'errno', vNone);
+ DictSetS(a[0].o.idict, 'strerror', vNone);
+ DictSetS(a[0].o.idict, 'filename', vNone);
+ DictSetS(a[0].o.idict, 'filename2', vNone);
  If (n >= 3) And (n <= 6) Then Begin
-  a[0].o.idict.SetS('errno', a[1]);
-  a[0].o.idict.SetS('strerror', a[2]);
-  If n > 3 Then a[0].o.idict.SetS('filename', a[3]);
-  If n > 5 Then a[0].o.idict.SetS('filename2', a[5]);
+  DictSetS(a[0].o.idict, 'errno', a[1]);
+  DictSetS(a[0].o.idict, 'strerror', a[2]);
+  If n > 3 Then DictSetS(a[0].o.idict, 'filename', a[3]);
+  If n > 5 Then DictSetS(a[0].o.idict, 'filename2', a[5]);
   If n > 3 Then Begin
    tup := NewTuple(2);
    tup.items[0] := a[1];
    tup.items[1] := a[2];
-   a[0].o.idict.SetS('args', VObj(tup));
+   DictSetS(a[0].o.idict, 'args', VObj(tup));
   End;
  End;
  Result := vNone;
@@ -25473,10 +26337,10 @@ Function OSErrStr(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  e, s, fn, fn2: TVal;
 Begin
- If a[0].o.idict.GetS('errno', e) And (e.k <> vkNone) Then Begin
-  a[0].o.idict.GetS('strerror', s);
-  If a[0].o.idict.GetS('filename', fn) And (fn.k <> vkNone) Then Begin
-   If a[0].o.idict.GetS('filename2', fn2) And (fn2.k <> vkNone) Then
+ If DictGetS(a[0].o.idict, 'errno', e) And (e.k <> vkNone) Then Begin
+  DictGetS(a[0].o.idict, 'strerror', s);
+  If DictGetS(a[0].o.idict, 'filename', fn) And (fn.k <> vkNone) Then Begin
+   If DictGetS(a[0].o.idict, 'filename2', fn2) And (fn2.k <> vkNone) Then
     Result := VStr('[Errno ' + StrVal(e) + '] ' + StrVal(s) + ': ' +
      ReprVal(fn) + ' -> ' + ReprVal(fn2))
    Else
@@ -25492,7 +26356,7 @@ Function KeyErrStr(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  t: TVal;
 Begin
- If a[0].o.idict.GetS('args', t) And (Length(TPyTuple(t.o).items) = 1) Then
+ If DictGetS(a[0].o.idict, 'args', t) And (Length(TPyTuple(t.o).items) = 1) Then
   Result := VStr(ReprVal(TPyTuple(t.o).items[0]))
  Else Result := VStr(ExcArgsStr(a[0].o));
 End;
@@ -25502,12 +26366,12 @@ Var
  v: TVal;
 Begin
  ExcInit(a, n, kw);
- a[0].o.idict.SetS('name', vNone);
- a[0].o.idict.SetS('path', vNone);
- If KwGet(kw, 'name', v) Then a[0].o.idict.SetS('name', v);
- If KwGet(kw, 'path', v) Then a[0].o.idict.SetS('path', v);
- a[0].o.idict.SetS('msg', vNone);
- If n > 1 Then a[0].o.idict.SetS('msg', a[1]);
+ DictSetS(a[0].o.idict, 'name', vNone);
+ DictSetS(a[0].o.idict, 'path', vNone);
+ If KwGet(kw, 'name', v) Then DictSetS(a[0].o.idict, 'name', v);
+ If KwGet(kw, 'path', v) Then DictSetS(a[0].o.idict, 'path', v);
+ DictSetS(a[0].o.idict, 'msg', vNone);
+ If n > 1 Then DictSetS(a[0].o.idict, 'msg', a[1]);
  Result := vNone;
 End;
 
@@ -25516,19 +26380,19 @@ Var
  info: TPyTuple;
 Begin
  ExcInit(a, n, kw);
- a[0].o.idict.SetS('msg', vNone);
- a[0].o.idict.SetS('filename', vNone);
- a[0].o.idict.SetS('lineno', vNone);
- a[0].o.idict.SetS('offset', vNone);
- a[0].o.idict.SetS('text', vNone);
- If n > 1 Then a[0].o.idict.SetS('msg', a[1]);
- If (n > 2) And (a[2].k = vkObj) And (a[2].o Is TPyTuple) Then Begin
+ DictSetS(a[0].o.idict, 'msg', vNone);
+ DictSetS(a[0].o.idict, 'filename', vNone);
+ DictSetS(a[0].o.idict, 'lineno', vNone);
+ DictSetS(a[0].o.idict, 'offset', vNone);
+ DictSetS(a[0].o.idict, 'text', vNone);
+ If n > 1 Then DictSetS(a[0].o.idict, 'msg', a[1]);
+ If (n > 2) And (a[2].k = vkObj) And (IsK(a[2].o, okTuple)) Then Begin
   info := TPyTuple(a[2].o);
   If Length(info.items) >= 4 Then Begin
-   a[0].o.idict.SetS('filename', info.items[0]);
-   a[0].o.idict.SetS('lineno', info.items[1]);
-   a[0].o.idict.SetS('offset', info.items[2]);
-   a[0].o.idict.SetS('text', info.items[3]);
+   DictSetS(a[0].o.idict, 'filename', info.items[0]);
+   DictSetS(a[0].o.idict, 'lineno', info.items[1]);
+   DictSetS(a[0].o.idict, 'offset', info.items[2]);
+   DictSetS(a[0].o.idict, 'text', info.items[3]);
   End;
  End;
  Result := vNone;
@@ -25539,10 +26403,10 @@ Var
  m, ln, fn: TVal;
  s: AnsiString;
 Begin
- If a[0].o.idict.GetS('msg', m) And (m.k <> vkNone) Then s := StrVal(m)
+ If DictGetS(a[0].o.idict, 'msg', m) And (m.k <> vkNone) Then s := StrVal(m)
  Else s := ExcArgsStr(a[0].o);
- If a[0].o.idict.GetS('lineno', ln) And (ln.k <> vkNone) Then Begin
-  a[0].o.idict.GetS('filename', fn);
+ If DictGetS(a[0].o.idict, 'lineno', ln) And (ln.k <> vkNone) Then Begin
+  DictGetS(a[0].o.idict, 'filename', fn);
   If fn.k = vkNone Then s := s + ' (line ' + StrVal(ln) + ')'
   Else s := s + ' (' + StrVal(fn) + ', line ' + StrVal(ln) + ')';
  End;
@@ -25560,7 +26424,7 @@ Var
  c: Cardinal;
  i: Integer;
 Begin
- If Not (a[0].o.idict.GetS('args', v) And (v.o Is TPyTuple)) Then Begin
+ If Not (DictGetS(a[0].o.idict, 'args', v) And (IsK(v.o, okTuple))) Then Begin
   Result := VStr('');
   Exit;
  End;
@@ -25576,7 +26440,7 @@ Begin
  reason := StrOf(args.items[4]);
  If dec Then Begin
   ob := '';
-  If (args.items[1].k = vkObj) And (args.items[1].o Is TPyBytes) Then
+  If (args.items[1].k = vkObj) And (IsK(args.items[1].o, okBytes)) Then
    ob := TPyBytes(args.items[1].o).s;
   If (en = st + 1) And (st < Length(ob)) Then Begin
    b := Ord(ob[st + 1]);
@@ -25607,7 +26471,7 @@ Var
  f, v: TVal;
 Begin
  If LookupType(o.cls, '__str__', f) And (f.k = vkObj) And
-  (f.o Is TPyBuiltin) And (Pointer(TPyBuiltin(f.o).fn) <> Pointer(@ObjStr))
+  (IsK(f.o, okBuiltin)) And (Pointer(TPyBuiltin(f.o).fn) <> Pointer(@ObjStr))
   And (Pointer(TPyBuiltin(f.o).fn) <> Pointer(@ExcStr)) Then Begin
   v := VObj(o);
   Result := StrOf(TPyBuiltin(f.o).fn(@v, 1, Nil));
@@ -25622,6 +26486,8 @@ Begin
 End;
 
 Procedure InitTypes;
+Var
+ ii: Integer;
 Begin
  tyObject := NewTypeRaw('object');
  tyType := NewTypeRaw('type');
@@ -25633,8 +26499,8 @@ Begin
  tyType.bases[0] := tyObject;
  ComputeMro(tyType);
  tyType.native := nkType;
- BuiltinsDict.SetS('object', VObj(tyObject));
- BuiltinsDict.SetS('type', VObj(tyType));
+ DictSetS(BuiltinsDict, 'object', VObj(tyObject));
+ DictSetS(BuiltinsDict, 'type', VObj(tyType));
  tyInt := MkType('int', tyObject, nkInt);
  tyBool := MkType('bool', tyInt, nkBool);
  tyFloat := MkType('float', tyObject, nkFloat);
@@ -25673,7 +26539,7 @@ Begin
  tyDictItems := NewType('dict_items', tyDictView, nkNoNew);
  tyFrame := NewType('frame', tyObject, nkNoNew);
  tyTraceback := NewType('traceback', tyObject, nkNoNew);
- tyFile.idict.SetS('__module__', VStr('_io'));
+ DictSetS(tyFile.idict, '__module__', VStr('_io'));
  { exceptions }
  exBaseException := MkExc('BaseException', tyObject);
  exBaseException.native := nkException;
@@ -25700,8 +26566,8 @@ Begin
  exNameError := MkExc('NameError', exException);
  exUnboundLocal := MkExc('UnboundLocalError', exNameError);
  exOSError := MkExc('OSError', exException);
- BuiltinsDict.SetS('IOError', VObj(exOSError));
- BuiltinsDict.SetS('EnvironmentError', VObj(exOSError));
+ DictSetS(BuiltinsDict, 'IOError', VObj(exOSError));
+ DictSetS(BuiltinsDict, 'EnvironmentError', VObj(exOSError));
  exBlockingIOError := MkExc('BlockingIOError', exOSError);
  exChildProcess := MkExc('ChildProcessError', exOSError);
  exConnectionError := MkExc('ConnectionError', exOSError);
@@ -25745,7 +26611,7 @@ Begin
  exBytesWarning := MkExc('BytesWarning', exWarning);
  exResourceWarning := MkExc('ResourceWarning', exWarning);
  { methodes de object }
- tyObject.idict.SetS('__new__', VObj(NewBuiltin('__new__', @ObjNew)));
+ DictSetS(tyObject.idict, '__new__', VObj(NewBuiltin('__new__', @ObjNew)));
  DefMethod(tyObject, '__init__', @ObjInit);
  DefMethod(tyObject, '__repr__', @ObjRepr);
  DefMethod(tyObject, '__str__', @ObjStr);
@@ -25767,9 +26633,9 @@ Begin
  DefMethod(tyBuiltin, '__call__', @ObjCallSelf);
  DefMethod(tyMethod, '__call__', @ObjCallSelf);
  DefMethod(tyObject, '__reduce__', @ObjReduce);
- tyObject.idict.SetS('__module__', VStr('builtins'));
+ DictSetS(tyObject.idict, '__module__', VStr('builtins'));
  { type }
- tyType.idict.SetS('__new__', VObj(NewBuiltin('__new__', @TypeNewNative)));
+ DictSetS(tyType.idict, '__new__', VObj(NewBuiltin('__new__', @TypeNewNative)));
  DefMethod(tyType, '__init__', @TypeInitNative);
  DefMethod(tyType, 'mro', @TypeMro);
  DefMethod(tyType, '__subclasses__', @TypeSubclasses);
@@ -25777,7 +26643,8 @@ Begin
  DefMethod(tyType, '__subclasscheck__', @TypeSubclassCheck);
  DefMethod(tyType, '__repr__', @TypeRepr);
  { exceptions }
- exBaseException.idict.SetS('__new__', VObj(NewBuiltin('__new__', @ExcNew)));
+ DictSetS(exBaseException.idict, '__new__', VObj(NewBuiltin('__new__',
+   @ExcNew)));
  DefMethod(exBaseException, '__init__', @ExcInit);
  DefMethod(exBaseException, '__str__', @ExcStr);
  DefMethod(exBaseException, '__repr__', @ExcRepr);
@@ -25797,18 +26664,27 @@ Begin
  vFalse := VBool(False);
  vNull.k := vkNull;
  vNull.i := 0;
- vEllipsis := VObj(TPyObj.Create(tyEllipsis));
- vNotImpl := VObj(TPyObj.Create(tyNotImpl));
- BuiltinsDict.SetS('Ellipsis', vEllipsis);
- BuiltinsDict.SetS('NotImplemented', vNotImpl);
- BuiltinsDict.SetS('None', vNone);
- BuiltinsDict.SetS('True', vTrue);
- BuiltinsDict.SetS('False', vFalse);
- BuiltinsDict.SetS('__debug__', VBool(OptLevel = 0));
+ vEllipsis := VObj(AllocObj(tyEllipsis));
+ vNotImpl := VObj(AllocObj(tyNotImpl));
+ DictSetS(BuiltinsDict, 'Ellipsis', vEllipsis);
+ DictSetS(BuiltinsDict, 'NotImplemented', vNotImpl);
+ DictSetS(BuiltinsDict, 'None', vNone);
+ DictSetS(BuiltinsDict, 'True', vTrue);
+ DictSetS(BuiltinsDict, 'False', vFalse);
+ DictSetS(BuiltinsDict, '__debug__', VBool(OptLevel = 0));
  EmptyTuple := NewTuple(0);
- tyList.idict.SetS('__hash__', vNone);
- tyDict.idict.SetS('__hash__', vNone);
- tySet.idict.SetS('__hash__', vNone);
+ DictSetS(tyList.idict, '__hash__', vNone);
+ DictSetS(tyDict.idict, '__hash__', vNone);
+ DictSetS(tySet.idict, '__hash__', vNone);
+ { objets crees avant que leur type n'existe : completer cls }
+ For ii := 0 To GcNRoots - 1 Do
+  If GcRoots[ii].cls = Nil Then Begin
+   If IsK(GcRoots[ii], okStr) Then GcRoots[ii].cls := tyStr
+   Else If IsK(GcRoots[ii], okDict) Then GcRoots[ii].cls := tyDict
+   Else If IsK(GcRoots[ii], okTuple) Then GcRoots[ii].cls := tyTuple
+   Else If IsK(GcRoots[ii], okList) Then GcRoots[ii].cls := tyList;
+  End;
+
 End;
 
 { ------------------------------------------------------------
@@ -25840,11 +26716,11 @@ Var
  col, i: Integer;
 Begin
  s := '';
- e.idict.GetS('filename', fn);
- e.idict.GetS('lineno', ln);
- e.idict.GetS('offset', off);
- e.idict.GetS('text', txt);
- e.idict.GetS('msg', msg);
+ DictGetS(e.idict, 'filename', fn);
+ DictGetS(e.idict, 'lineno', ln);
+ DictGetS(e.idict, 'offset', off);
+ DictGetS(e.idict, 'text', txt);
+ DictGetS(e.idict, 'msg', msg);
  If ln.k <> vkNone Then Begin
   If IsStrVal(fn) Then
    s := '  File "' + TPyStr(fn.o).s + '", line ' + StrVal(ln) + #10
@@ -25882,19 +26758,19 @@ Begin
  s := '';
  If depth < 12 Then Begin
   If e.idict <> Nil Then Begin
-   If e.idict.GetS('__cause__', c) And (c.k = vkObj) Then
+   If DictGetS(e.idict, '__cause__', c) And (c.k = vkObj) Then
     s := FormatException(c.o, depth + 1) + #10 +
      'The above exception was the direct cause of the following ' +
      'exception:' + #10#10
-   Else If e.idict.GetS('__context__', ctx) And (ctx.k = vkObj) And
-    Not (e.idict.GetS('__suppress_context__', sup) And IsTrue(sup)) Then
+   Else If DictGetS(e.idict, '__context__', ctx) And (ctx.k = vkObj) And
+    Not (DictGetS(e.idict, '__suppress_context__', sup) And IsTrue(sup)) Then
     s := FormatException(ctx.o, depth + 1) + #10 +
      'During handling of the above exception, another exception occurred:'
      + #10#10;
   End;
  End;
- If (e.idict <> Nil) And e.idict.GetS('__tb__', tb) And (tb.k = vkObj) Then
-   Begin
+ If (e.idict <> Nil) And DictGetS(e.idict, '__tb__', tb) And (tb.k = vkObj)
+   Then Begin
   l := TPyList(tb.o);
   If l.cnt > 0 Then s := s + 'Traceback (most recent call last):' + #10;
   For i := l.cnt - 1 DownTo 0 Do Begin
@@ -26090,7 +26966,7 @@ Begin
   j := p;
   While (j < n) And CpUnencodable(k, cps[j], r2) Do Inc(j);
   If errs = 'strict' Then
-   Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
+   RaisePy(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
     strv, VInt(runStart), VInt(j), VStr(reason)]));
   If errs = 'ignore' Then Begin
    p := j;
@@ -26131,7 +27007,7 @@ Begin
    (k = ckLatin1) Or (k = ckUtf8Sig)) Then Begin
    For cnt := runStart To j - 1 Do
     If (cps[cnt] < $DC80) Or (cps[cnt] > $DCFF) Then
-     Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
+     RaisePy(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
       strv, VInt(runStart), VInt(j), VStr(reason)]));
    For cnt := runStart To j - 1 Do o := o + Chr(cps[cnt] - $DC00);
    p := j;
@@ -26144,7 +27020,7 @@ Begin
   End;
   If (errs <> 'surrogateescape') And (errs <> 'surrogatepass') Then
    UnknownHandler(errs);
-  Raise EPyError.Make(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
+  RaisePy(MakeExcArgs(exUnicodeEncodeError, [VStr(ename),
    strv, VInt(runStart), VInt(j), VStr(reason)]));
  End;
  Result := o;
@@ -26153,7 +27029,7 @@ End;
 Procedure RaiseDecErr(Const ename: AnsiString; Const bv: TVal; st, en: Integer;
  Const reason: AnsiString);
 Begin
- Raise EPyError.Make(MakeExcArgs(exUnicodeDecodeError, [VStr(ename), bv,
+ RaisePy(MakeExcArgs(exUnicodeDecodeError, [VStr(ename), bv,
   VInt(st), VInt(en), VStr(reason)]));
 End;
 
@@ -26435,14 +27311,14 @@ Var
 Begin
  v := target;
  If v.k = vkNone Then Begin
-  If Not SysDict.GetS('stdout', v) Then Begin
+  If Not DictGetS(SysDict, 'stdout', v) Then Begin
    OutWrite(s);
    Exit;
   End;
  End;
  If v.k = vkNone Then
   RaiseExc(exRuntimeError, 'lost sys.stdout');
- If (v.k = vkObj) And (v.o Is TPyFile) And Not v.o.cls.userdef Then
+ If (v.k = vkObj) And (IsK(v.o, okFile)) And Not v.o.cls.userdef Then
   FileWriteStr(TPyFile(v.o), s)
  Else Call1(GetAttr(v, 'write'), VStr(s));
 End;
@@ -26492,7 +27368,7 @@ Begin
  If v.k = vkObj Then Begin
   If v.o.cls.userdef Then
    If LookupType(v.o.cls, '__len__', f) And (f.k = vkObj) And
-    (f.o Is TPyFunc) Then Begin
+    (IsK(f.o, okFunc)) Then Begin
     r := Call1(f, v);
     If Not IsIntVal(r) Then TypeErr('''' + TypeName(r) +
      ''' object cannot be interpreted as an integer');
@@ -26500,14 +27376,14 @@ Begin
     Result := ToInt64(r);
     Exit;
    End;
-  If v.o Is TPyStr Then Result := PyStrLen(TPyStr(v.o))
-  Else If v.o Is TPyList Then Result := TPyList(v.o).cnt
-  Else If v.o Is TPyTuple Then Result := Length(TPyTuple(v.o).items)
-  Else If v.o Is TPyDict Then Result := TPyDict(v.o).used
-  Else If v.o Is TPySet Then Result := TPySet(v.o).used
-  Else If v.o Is TPyBytes Then Result := Length(TPyBytes(v.o).s)
-  Else If v.o Is TPyRange Then Result := TPyRange(v.o).len
-  Else If v.o Is TDictView Then Result := TDictView(v.o).src.used
+  If IsK(v.o, okStr) Then Result := PyStrLen(TPyStr(v.o))
+  Else If IsK(v.o, okList) Then Result := TPyList(v.o).cnt
+  Else If IsK(v.o, okTuple) Then Result := Length(TPyTuple(v.o).items)
+  Else If IsK(v.o, okDict) Then Result := TPyDict(v.o).used
+  Else If IsK(v.o, okSet) Then Result := TPySet(v.o).used
+  Else If IsK(v.o, okBytes) Then Result := Length(TPyBytes(v.o).s)
+  Else If IsK(v.o, okRange) Then Result := TPyRange(v.o).len
+  Else If IsK(v.o, okDictView) Then Result := TDictView(v.o).src.used
   Else If LookupType(v.o.cls, '__len__', f) Then Begin
    r := Call1(f, v);
    Result := ToInt64(r);
@@ -26540,7 +27416,7 @@ Begin
    End;
   vkFloat: Result := VFloat(Abs(a[0].d));
  Else
-  If (a[0].k = vkObj) And (a[0].o Is TPyBigInt) Then Begin
+  If (a[0].k = vkObj) And (IsK(a[0].o, okBigInt)) Then Begin
    If TPyBigInt(a[0].o).neg Then Result := IntNeg(a[0]) Else Result := a[0];
   End
   Else If (a[0].k = vkObj) And LookupType(a[0].o.cls, '__abs__', f) Then
@@ -26602,7 +27478,7 @@ Begin
   i := 1;
   Result := VInt(Utf8Dec(TPyStr(a[0].o).s, i));
  End
- Else If (a[0].k = vkObj) And (a[0].o Is TPyBytes) Then Begin
+ Else If (a[0].k = vkObj) And (IsK(a[0].o, okBytes)) Then Begin
   If Length(TPyBytes(a[0].o).s) <> 1 Then
    TypeErr('ord() expected a character, but string of length ' +
     IntToStr(Length(TPyBytes(a[0].o).s)) + ' found');
@@ -26818,7 +27694,7 @@ Begin
   Exit;
  End;
  If v.k = vkObj Then Begin
-  If v.o Is TPyStr Then Begin
+  If IsK(v.o, okStr) Then Begin
    Result := vNone;
    Exit;
   End;
@@ -26863,10 +27739,10 @@ Begin
   base := IndexVal(v);
   If (base <> 0) And ((base < 2) Or (base > 36)) Then
    ValueErr('int() base must be >= 2 and <= 36, or 0');
-  If Not (IsStrVal(a[0]) Or ((a[0].k = vkObj) And (a[0].o Is TPyBytes))) Then
+  If Not (IsStrVal(a[0]) Or ((a[0].k = vkObj) And (IsK(a[0].o, okBytes)))) Then
    TypeErr('int() can''t convert non-string with explicit base');
  End;
- If IsStrVal(a[0]) Or ((a[0].k = vkObj) And (a[0].o Is TPyBytes)) Then Begin
+ If IsStrVal(a[0]) Or ((a[0].k = vkObj) And (IsK(a[0].o, okBytes))) Then Begin
   If IsStrVal(a[0]) Then s := TPyStr(a[0].o).s Else s := TPyBytes(a[0].o).s;
   Result := ParseIntStr(s, base, ok);
   If Not ok Then
@@ -26875,7 +27751,7 @@ Begin
   Exit;
  End;
  Result := ToIntVal(a[0]);
- If (Result.k = vkObj) And (Result.o Is TPyBigInt) And
+ If (Result.k = vkObj) And (IsK(Result.o, okBigInt)) And
   (Result.o.cls <> tyInt) Then Begin
   IntToMag(Result, neg, m);
   Result := MakeInt(neg, m);
@@ -26920,7 +27796,7 @@ Begin
   If Not ok Then ValueErr('could not convert string to float: ' + ReprVal(v));
   Exit;
  End;
- If (v.k = vkObj) And (v.o Is TPyBytes) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okBytes)) Then Begin
   Result := FloatFromStr(TPyBytes(v.o).s, ok);
   If Not ok Then ValueErr('could not convert string to float: ' + ReprVal(v));
   Exit;
@@ -26959,7 +27835,7 @@ Begin
   Exit;
  End;
  If (n > 1) Or (kw <> Nil) Then Begin
-  If (a[0].k = vkObj) And (a[0].o Is TPyBytes) Then Begin
+  If (a[0].k = vkObj) And (IsK(a[0].o, okBytes)) Then Begin
    Result := CallValue(GetAttr(a[0], 'decode'), @a[1], n - 1, kw);
    Exit;
   End;
@@ -26999,7 +27875,7 @@ Var
 Begin
  NeedArgs(n, 2, 2, 'isinstance()');
  c := a[1];
- If (c.k = vkObj) And (c.o Is TPyTuple) Then Begin
+ If (c.k = vkObj) And (IsK(c.o, okTuple)) Then Begin
   For i := 0 To High(TPyTuple(c.o).items) Do Begin
    args[0] := a[0];
    args[1] := TPyTuple(c.o).items[i];
@@ -27011,11 +27887,11 @@ Begin
   Result := vFalse;
   Exit;
  End;
- If Not ((c.k = vkObj) And (c.o Is TPyType)) Then
+ If Not ((c.k = vkObj) And (IsK(c.o, okType))) Then
   TypeErr('isinstance() arg 2 must be a type or tuple of types');
  If (c.o.cls <> tyType) And c.o.cls.userdef And
   LookupType(c.o.cls, '__instancecheck__', f) And (f.k = vkObj) And
-  (f.o Is TPyFunc) Then Begin
+  (IsK(f.o, okFunc)) Then Begin
   r := Call2(f, c, a[0]);
   Result := VBool(IsTrue(r));
   Exit;
@@ -27023,9 +27899,9 @@ Begin
  Result := VBool(IsInstance(a[0], TPyType(c.o)));
  If (Result.i = 0) And (a[0].k = vkObj) And a[0].o.cls.userdef And
   LookupType(a[0].o.cls, '__class__', f) And (f.k = vkObj) And
-  (f.o Is TPyProperty) Then Begin
+  (IsK(f.o, okProperty)) Then Begin
   r := Call1(TPyProperty(f.o).fget, a[0]);
-  If (r.k = vkObj) And (r.o Is TPyType) Then
+  If (r.k = vkObj) And (IsK(r.o, okType)) Then
    Result := VBool(TypeIsSub(TPyType(r.o), TPyType(c.o)));
  End;
 End;
@@ -27039,9 +27915,9 @@ Var
 Begin
  NeedArgs(n, 2, 2, 'issubclass()');
  c := a[1];
- If Not ((a[0].k = vkObj) And (a[0].o Is TPyType)) Then
+ If Not ((a[0].k = vkObj) And (IsK(a[0].o, okType))) Then
   TypeErr('issubclass() arg 1 must be a class');
- If (c.k = vkObj) And (c.o Is TPyTuple) Then Begin
+ If (c.k = vkObj) And (IsK(c.o, okTuple)) Then Begin
   For i := 0 To High(TPyTuple(c.o).items) Do Begin
    args[0] := a[0];
    args[1] := TPyTuple(c.o).items[i];
@@ -27053,11 +27929,11 @@ Begin
   Result := vFalse;
   Exit;
  End;
- If Not ((c.k = vkObj) And (c.o Is TPyType)) Then
+ If Not ((c.k = vkObj) And (IsK(c.o, okType))) Then
   TypeErr('issubclass() arg 2 must be a class or tuple of classes');
  If (c.o.cls <> tyType) And c.o.cls.userdef And
   LookupType(c.o.cls, '__subclasscheck__', f) And (f.k = vkObj) And
-  (f.o Is TPyFunc) Then Begin
+  (IsK(f.o, okFunc)) Then Begin
   r := Call2(f, c, a[0]);
   Result := VBool(IsTrue(r));
   Exit;
@@ -27072,7 +27948,7 @@ Begin
  NeedArgs(n, 1, 2, 'iter()');
  If n = 2 Then Begin
   If Not IsCallable(a[0]) Then TypeErr('iter(v, w): v must be callable');
-  ci := TCallIter.Create(tyIter);
+  ci := AllocCallIter(tyIter);
   ci.fn := a[0];
   ci.sentinel := a[1];
   Result := VObj(ci);
@@ -27088,7 +27964,7 @@ Begin
  If IterNextVal(a[0], r) Then Result := r
  Else Begin
   If n > 1 Then Result := a[1]
-  Else If (a[0].k = vkObj) And (a[0].o Is TPyGen) Then
+  Else If (a[0].k = vkObj) And (IsK(a[0].o, okGen)) Then
    RaiseStopIteration(NoneIfNull(TPyGen(a[0].o).retval))
   Else RaiseStopIteration(vNone);
  End;
@@ -27096,6 +27972,7 @@ End;
 
 Function BiGetattr(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ ePy: PXcPy;
  r: TVal;
  nm: TPyStr;
 Begin
@@ -27107,10 +27984,12 @@ Begin
   Try
    If GetAttrOpt(a[0], nm, r) Then Result := r Else Result := a[2];
   Except
-   On E: EPyError Do Begin
-    If IsInstance(VObj(E.exc), exAttributeError) Then Result := a[2]
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    If IsInstance(VObj(ePy.exc), exAttributeError) Then Result := a[2]
     Else Raise;
-   End;
+   End
+   Else Raise;
   End;
  End
  Else Result := GetAttrO(a[0], nm);
@@ -27157,17 +28036,17 @@ Begin
   Result := f.locals;
   Exit;
  End;
- d := TPyDict.Make;
+ d := AllocDict;
  nl := Length(f.code.varnames);
  For i := 0 To nl - 1 Do
-  If f.base[i].k <> vkNull Then d.SetS(f.code.varnames[i], f.base[i]);
+  If f.base[i].k <> vkNull Then DictSetS(d, f.code.varnames[i], f.base[i]);
  For i := 0 To High(f.code.cellvars) Do
   If (f.base[nl + i].k = vkObj) And (TPyCell(f.base[nl + i].o).v.k <> vkNull)
-   Then d.SetS(f.code.cellvars[i], TPyCell(f.base[nl + i].o).v);
+   Then DictSetS(d, f.code.cellvars[i], TPyCell(f.base[nl + i].o).v);
  For i := 0 To High(f.code.freevars) Do
   If (f.base[nl + Length(f.code.cellvars) + i].k = vkObj) And
    (TPyCell(f.base[nl + Length(f.code.cellvars) + i].o).v.k <> vkNull) Then
-   d.SetS(f.code.freevars[i], TPyCell(f.base[nl + Length(f.code.cellvars) +
+   DictSetS(d, f.code.freevars[i], TPyCell(f.base[nl + Length(f.code.cellvars) +
     i].o).v);
  Result := d;
 End;
@@ -27185,34 +28064,34 @@ Var
  res: TPyList;
  arr: TValArr;
 Begin
- names := TPyDict.Make;
- If (o.k = vkObj) And (o.o Is TPyType) Then Begin
+ names := AllocDict;
+ If (o.k = vkObj) And (IsK(o.o, okType)) Then Begin
   t := TPyType(o.o);
   For i := 0 To High(t.mro) Do
    For j := 0 To t.mro[i].idict.nent - 1 Do
     If t.mro[i].idict.ent[j].key.k <> vkNull Then
-     names.SetItem(t.mro[i].idict.ent[j].key, vNone);
+     DictSetItem(names, t.mro[i].idict.ent[j].key, vNone);
  End
- Else If (o.k = vkObj) And (o.o Is TPyModule) Then Begin
+ Else If (o.k = vkObj) And (IsK(o.o, okModule)) Then Begin
   For j := 0 To o.o.idict.nent - 1 Do
    If o.o.idict.ent[j].key.k <> vkNull Then
-    names.SetItem(o.o.idict.ent[j].key, vNone);
+    DictSetItem(names, o.o.idict.ent[j].key, vNone);
  End
  Else Begin
   If (o.k = vkObj) And (o.o.idict <> Nil) Then
    For j := 0 To o.o.idict.nent - 1 Do
     If o.o.idict.ent[j].key.k <> vkNull Then
-     names.SetItem(o.o.idict.ent[j].key, vNone);
+     DictSetItem(names, o.o.idict.ent[j].key, vNone);
   t := TypeOf(o);
   For i := 0 To High(t.mro) Do
    For j := 0 To t.mro[i].idict.nent - 1 Do
     If t.mro[i].idict.ent[j].key.k <> vkNull Then
-     names.SetItem(t.mro[i].idict.ent[j].key, vNone);
+     DictSetItem(names, t.mro[i].idict.ent[j].key, vNone);
  End;
  res := NewList;
  SetLength(arr, 0);
  For j := 0 To names.nent - 1 Do
-  If names.ent[j].key.k <> vkNull Then res.Add(names.ent[j].key);
+  If names.ent[j].key.k <> vkNull Then ObjAdd(res, names.ent[j].key);
  Result := res;
 End;
 
@@ -27229,14 +28108,14 @@ Begin
  NeedArgs(n, 0, 1, 'dir');
  If n = 0 Then Begin
   l := NewList;
-  With FrameLocalsDict(CurFrame) Do
+  With FrameLocalsDict(CurFrame)^ Do
    For i := 0 To nent - 1 Do
-    If ent[i].key.k <> vkNull Then l.Add(ent[i].key);
+    If ent[i].key.k <> vkNull Then ObjAdd(l, ent[i].key);
  End
  Else Begin
   If (a[0].k = vkObj) And a[0].o.cls.userdef And
    LookupType(a[0].o.cls, '__dir__', f) And (f.k = vkObj) And
-   (f.o Is TPyFunc) Then Begin
+   (IsK(f.o, okFunc)) Then Begin
    l := ListFromIter(Call1(f, a[0]));
   End
   Else l := CollectNames(a[0]);
@@ -27254,10 +28133,11 @@ Begin
   Result := VObj(FrameLocalsDict(CurFrame));
   Exit;
  End;
- If (a[0].k = vkObj) And (a[0].o.idict <> Nil) And Not (a[0].o Is TPyType) Then
+ If (a[0].k = vkObj) And (a[0].o.idict <> Nil) And Not (IsK(a[0].o, okType))
+   Then
   Result := VObj(a[0].o.idict)
- Else If (a[0].k = vkObj) And (a[0].o Is TPyType) Then
-  Result := VObj(a[0].o.idict.Copy)
+ Else If (a[0].k = vkObj) And (IsK(a[0].o, okType)) Then
+  Result := VObj(DictCopy(a[0].o.idict))
  Else TypeErr('vars() argument must have __dict__ attribute');
 End;
 
@@ -27449,7 +28329,7 @@ Var
  i: Integer;
 Begin
  NeedArgs(n, 1, 1, 'reversed()');
- If (a[0].k = vkObj) And (a[0].o Is TPyList) And Not a[0].o.cls.userdef Then
+ If (a[0].k = vkObj) And (IsK(a[0].o, okList)) And Not a[0].o.cls.userdef Then
    Begin
   Result := VObj(NewListIter(TPyList(a[0].o), True));
   Exit;
@@ -27459,12 +28339,12 @@ Begin
   Result := Call1(f, a[0]);
   Exit;
  End;
- If (a[0].k = vkObj) And ((a[0].o Is TPyTuple) Or (a[0].o Is TPyStr) Or
-  (a[0].o Is TPyRange) Or (a[0].o Is TPyBytes) Or (a[0].o.cls.userdef)) Then
+ If (a[0].k = vkObj) And ((IsK(a[0].o, okTuple)) Or (IsK(a[0].o, okStr)) Or
+  (IsK(a[0].o, okRange)) Or (IsK(a[0].o, okBytes)) Or (a[0].o.cls.userdef)) Then
   Begin
   arr := IterToArr(a[0]);
   l := NewList;
-  For i := High(arr) DownTo 0 Do l.Add(arr[i]);
+  For i := High(arr) DownTo 0 Do ObjAdd(l, arr[i]);
   Result := VObj(NewListIter(l, False));
   Exit;
  End;
@@ -27479,7 +28359,7 @@ Var
 Begin
  If n = 0 Then Begin
   If (kw <> Nil) And KwGet(kw, 'iterable', st) Then Begin
-   e := TEnumIter.Create(tyIter);
+   e := AllocEnumIter(tyIter);
    e.it := IterOf(st);
    e.n := VInt(0);
    If KwGet(kw, 'start', st) Then e.n := st;
@@ -27489,7 +28369,7 @@ Begin
   TypeErr('enumerate() missing required argument ''iterable'' (pos 1)');
  End;
  NeedArgs(n, 1, 2, 'enumerate()');
- e := TEnumIter.Create(tyIter);
+ e := AllocEnumIter(tyIter);
  e.it := IterOf(a[0]);
  e.n := VInt(0);
  If n > 1 Then e.n := a[1]
@@ -27502,7 +28382,7 @@ Var
  z: TZipIter;
  i: Integer;
 Begin
- z := TZipIter.Create(tyIter);
+ z := AllocZipIter(tyIter);
  SetLength(z.its, n);
  For i := 0 To n - 1 Do z.its[i] := IterOf(a[i]);
  Result := VObj(z);
@@ -27514,7 +28394,7 @@ Var
  i: Integer;
 Begin
  If n < 2 Then TypeErr('map() must have at least two arguments.');
- m := TMapIter.Create(tyIter);
+ m := AllocMapIter(tyIter);
  m.fn := a[0];
  SetLength(m.its, n - 1);
  For i := 1 To n - 1 Do m.its[i - 1] := IterOf(a[i]);
@@ -27526,7 +28406,7 @@ Var
  m: TFilterIter;
 Begin
  NeedArgs(n, 2, 2, 'filter()');
- m := TFilterIter.Create(tyIter);
+ m := AllocFilterIter(tyIter);
  m.fn := a[0];
  m.it := IterOf(a[1]);
  Result := VObj(m);
@@ -27675,7 +28555,7 @@ Begin
   If n = 3 Then stp := IndexVal(a[2]) Else stp := 1;
  End;
  If stp = 0 Then ValueErr('range() arg 3 must not be zero');
- r := TPyRange.Create(tyRange);
+ r := AllocRange(tyRange);
  r.start := st;
  r.stop := sp;
  r.step := stp;
@@ -27695,8 +28575,8 @@ Var
 Begin
  If (n > 0) Or ((kw <> Nil) And (kw.used > 0)) Then
   TypeErr('object() takes no arguments');
- o := TPyObj.Create(tyObject);
- o.idict := TPyDict.Make;
+ o := AllocObj(tyObject);
+ o.idict := AllocDict;
  Result := VObj(o);
 End;
 
@@ -27710,7 +28590,7 @@ Var
  obj: TVal;
  cls: TPyType;
 Begin
- sp := TPySuper.Create(tySuper);
+ sp := AllocSuper(tySuper);
  If n = 0 Then Begin
   f := CurFrame;
   If f = Nil Then RaiseExc(exRuntimeError, 'super(): no current frame');
@@ -27737,13 +28617,13 @@ Begin
  End
  Else Begin
   NeedArgs(n, 1, 2, 'super()');
-  If Not ((a[0].k = vkObj) And (a[0].o Is TPyType)) Then
+  If Not ((a[0].k = vkObj) And (IsK(a[0].o, okType))) Then
    TypeErr('super() argument 1 must be type, not ' + TypeName(a[0]));
   sp.thisCls := TPyType(a[0].o);
   If n = 2 Then sp.obj := a[1] Else sp.obj := vNone;
  End;
  If sp.obj.k = vkNone Then sp.objType := Nil
- Else If (sp.obj.k = vkObj) And (sp.obj.o Is TPyType) And
+ Else If (sp.obj.k = vkObj) And (IsK(sp.obj.o, okType)) And
   TypeIsSub(TPyType(sp.obj.o), sp.thisCls) Then
   sp.objType := TPyType(sp.obj.o)
  Else If IsInstance(sp.obj, sp.thisCls) Then sp.objType := TypeOf(sp.obj)
@@ -27756,7 +28636,7 @@ Var
  p: TPyProperty;
  v: TVal;
 Begin
- p := TPyProperty.Create(tyProperty);
+ p := AllocProperty(tyProperty);
  p.fget := vNone;
  p.fset := vNone;
  p.fdel := vNone;
@@ -27765,7 +28645,7 @@ Begin
  If n > 1 Then p.fset := a[1] Else If KwGet(kw, 'fset', v) Then p.fset := v;
  If n > 2 Then p.fdel := a[2] Else If KwGet(kw, 'fdel', v) Then p.fdel := v;
  If n > 3 Then p.doc := a[3] Else If KwGet(kw, 'doc', v) Then p.doc := v;
- If (p.doc.k = vkNone) And (p.fget.k = vkObj) And (p.fget.o Is TPyFunc) Then
+ If (p.doc.k = vkNone) And (p.fget.k = vkObj) And (IsK(p.fget.o, okFunc)) Then
   p.doc := NoneIfNull(TPyFunc(p.fget.o).doc);
  Result := VObj(p);
 End;
@@ -27775,7 +28655,7 @@ Var
  p, np: TPyProperty;
 Begin
  p := TPyProperty(a[0].o);
- np := TPyProperty.Create(tyProperty);
+ np := AllocProperty(tyProperty);
  np.fget := p.fget;
  np.fset := p.fset;
  np.fdel := p.fdel;
@@ -27866,8 +28746,8 @@ End;
 Function BiExit(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If n > 0 Then
-  Raise EPyError.Make(MakeExcArgs(exSystemExit, [a[0]]))
- Else Raise EPyError.Make(MakeExcArgs(exSystemExit, []));
+  RaisePy(MakeExcArgs(exSystemExit, [a[0]]))
+ Else RaisePy(MakeExcArgs(exSystemExit, []));
  Result := vNone;
 End;
 
@@ -27886,7 +28766,7 @@ Begin
  Result := BuildClass(a, n, kw);
 End;
 
-Function ExcFromSyntax(e: ESyntax; Const fname: AnsiString): TPyObj;
+Function ExcFromSyntax(e: PSynInfo; Const fname: AnsiString): TPyObj;
 Var
  o: TPyObj;
  info: TPyTuple;
@@ -27901,22 +28781,28 @@ Begin
  info.items[2] := VInt(col);
  If e.text <> '' Then info.items[3] := VStr(e.text + #10) Else info.items[3] :=
    vNone;
- o.idict.SetS('args', Tup2(VStr(e.msg), VObj(info)));
- o.idict.SetS('msg', VStr(e.msg));
- o.idict.SetS('filename', VStr(fname));
- o.idict.SetS('lineno', VInt(e.line));
- o.idict.SetS('offset', VInt(col));
- o.idict.SetS('text', info.items[3]);
+ DictSetS(o.idict, 'args', Tup2(VStr(e.msg), VObj(info)));
+ DictSetS(o.idict, 'msg', VStr(e.msg));
+ DictSetS(o.idict, 'filename', VStr(fname));
+ DictSetS(o.idict, 'lineno', VInt(e.line));
+ DictSetS(o.idict, 'offset', VInt(col));
+ DictSetS(o.idict, 'text', info.items[3]);
  Result := o;
 End;
 
 Function CompileSafe(Const src, fname: AnsiString; mode: Integer): TPyCode;
+Var
+ eSyn: PSynInfo;
 Begin
  Try
   Result := CompileSource(src, fname, mode);
   If (Length(fname) > 0) And (fname[1] = '<') Then Result.source := Nil;
  Except
-  On E: ESyntax Do Raise EPyError.Make(ExcFromSyntax(E, fname));
+  If XcTag = xtSyntax Then Begin
+   eSyn := @SynInfo;
+   RaisePy(ExcFromSyntax(eSyn, fname));
+  End
+  Else Raise;
  End;
 End;
 
@@ -27937,7 +28823,7 @@ End;
 Function SourceOf(Const v: TVal): AnsiString;
 Begin
  If IsStrVal(v) Then Result := TPyStr(v.o).s
- Else If (v.k = vkObj) And (v.o Is TPyBytes) Then Result := TPyBytes(v.o).s
+ Else If (v.k = vkObj) And (IsK(v.o, okBytes)) Then Result := TPyBytes(v.o).s
  Else Begin
   TypeErr('exec() arg 1 must be a string, bytes or code object');
   Result := '';
@@ -27958,14 +28844,15 @@ Begin
   If lv.k = vkNone Then l := FrameLocalsDict(CurFrame) Else l := TPyDict(lv.o);
  End
  Else Begin
-  If Not ((gv.k = vkObj) And (gv.o Is TPyDict)) Then
+  If Not ((gv.k = vkObj) And (IsK(gv.o, okDict))) Then
    TypeErr('exec() globals must be a dict, not ' + TypeName(gv));
   g := TPyDict(gv.o);
   If lv.k = vkNone Then l := g Else l := TPyDict(lv.o);
  End;
- If (a[0].k = vkObj) And (a[0].o Is TPyCode) Then code := TPyCode(a[0].o)
+ If (a[0].k = vkObj) And (IsK(a[0].o, okCode)) Then code := TPyCode(a[0].o)
  Else code := CompileSafe(SourceOf(a[0]), '<string>', 0);
- If Not g.HasS('__builtins__') Then g.SetS('__builtins__', VObj(BuiltinsDict));
+ If Not DictHasS(g, '__builtins__') Then DictSetS(g, '__builtins__',
+   VObj(BuiltinsDict));
  RunCodeObject(code, g, l);
  Result := vNone;
 End;
@@ -27985,17 +28872,18 @@ Begin
   If lv.k = vkNone Then l := FrameLocalsDict(CurFrame) Else l := TPyDict(lv.o);
  End
  Else Begin
-  If Not ((gv.k = vkObj) And (gv.o Is TPyDict)) Then
+  If Not ((gv.k = vkObj) And (IsK(gv.o, okDict))) Then
    TypeErr('globals must be a dict');
   g := TPyDict(gv.o);
   If lv.k = vkNone Then l := g Else l := TPyDict(lv.o);
  End;
- If (a[0].k = vkObj) And (a[0].o Is TPyCode) Then code := TPyCode(a[0].o)
+ If (a[0].k = vkObj) And (IsK(a[0].o, okCode)) Then code := TPyCode(a[0].o)
  Else Begin
   s := Trim(SourceOf(a[0]));
   code := CompileSafe(s, '<string>', 1);
  End;
- If Not g.HasS('__builtins__') Then g.SetS('__builtins__', VObj(BuiltinsDict));
+ If Not DictHasS(g, '__builtins__') Then DictSetS(g, '__builtins__',
+   VObj(BuiltinsDict));
  Result := RunCodeObject(code, g, l);
 End;
 
@@ -28013,7 +28901,7 @@ Begin
   ValueErr('compile() mode must be ''exec'', ''eval'' or ''single''');
   m := 0;
  End;
- If (a[0].k = vkObj) And (a[0].o Is TPyCode) Then Begin
+ If (a[0].k = vkObj) And (IsK(a[0].o, okCode)) Then Begin
   Result := a[0];
   Exit;
  End;
@@ -28055,14 +28943,14 @@ Begin
   Result := VBytes(StringOfChar(#0, a[0].i));
   Exit;
  End;
- If (a[0].k = vkObj) And (a[0].o Is TPyBytes) Then Begin
+ If (a[0].k = vkObj) And (IsK(a[0].o, okBytes)) Then Begin
   Result := VBytes(TPyBytes(a[0].o).s);
   Exit;
  End;
  If (a[0].k = vkObj) And a[0].o.cls.userdef And
   LookupType(a[0].o.cls, '__bytes__', f) Then Begin
   r := Call1(f, a[0]);
-  If Not ((r.k = vkObj) And (r.o Is TPyBytes)) Then
+  If Not ((r.k = vkObj) And (IsK(r.o, okBytes))) Then
    TypeErr('__bytes__ returned non-bytes (type ' + TypeName(r) + ')');
   Result := r;
   Exit;
@@ -28213,16 +29101,16 @@ Var
  End;
 
 Begin
- If (arg.k = vkObj) And (arg.o Is TPyTuple) Then Begin
+ If (arg.k = vkObj) And (IsK(arg.o, okTuple)) Then Begin
   items := Copy(TPyTuple(arg.o).items);
   isMap := False;
  End
  Else Begin
   SetLength(items, 1);
   items[0] := arg;
-  isMap := (arg.k = vkObj) And ((arg.o Is TPyDict) Or
+  isMap := (arg.k = vkObj) And ((IsK(arg.o, okDict)) Or
    (arg.o.cls.userdef And LookupType(arg.o.cls, '__getitem__', v))) And
-   Not (arg.o Is TPyStr);
+   Not (IsK(arg.o, okStr));
  End;
  mapObj := arg;
  argi := 0;
@@ -28478,7 +29366,7 @@ Begin
    Else Begin
     If useMap Then v := GetItem(mapObj, VStr(nm))
     Else Begin
-     If (kw = Nil) Or Not kw.GetS(nm, v) Then RaiseKeyError(VStr(nm));
+     If (kw = Nil) Or Not DictGetS(kw, nm, v) Then RaiseKeyError(VStr(nm));
     End;
    End;
    { attributs et indices }
@@ -28564,9 +29452,9 @@ Begin
   Result := VStr(s);
   Exit;
  End;
- o := TPyStr.Make(s);
+ o := AllocStr(s);
  o.cls := t;
- o.idict := TPyDict.Make;
+ o.idict := AllocDict;
  Result := VObj(o);
 End;
 
@@ -28713,7 +29601,7 @@ Begin
   Result := vFalse;
   Exit;
  End;
- If (a[1].k = vkObj) And (a[1].o Is TPyTuple) Then Begin
+ If (a[1].k = vkObj) And (IsK(a[1].o, okTuple)) Then Begin
   t := TPyTuple(a[1].o);
   For i := 0 To High(t.items) Do
    If Chk(StrOf(t.items[i])) Then Begin
@@ -28857,12 +29745,12 @@ Begin
    If (maxsplit >= 0) And (cnt >= maxsplit) Then Begin
     hi := n;
     While (hi > i) And CpIsSpace(cps[hi - 1]) Do Dec(hi);
-    l.Add(VStr(CpsToStr(cps, i, hi)));
+    ObjAdd(l, VStr(CpsToStr(cps, i, hi)));
     Break;
    End;
    st := i;
    While (i < n) And Not CpIsSpace(cps[i]) Do Inc(i);
-   l.Add(VStr(CpsToStr(cps, st, i)));
+   ObjAdd(l, VStr(CpsToStr(cps, st, i)));
    Inc(cnt);
   End;
  End
@@ -28887,7 +29775,7 @@ Begin
    Inc(cnt);
   End;
   np := Length(parts);
-  For i := np - 1 DownTo 0 Do l.Add(VStr(parts[i]));
+  For i := np - 1 DownTo 0 Do ObjAdd(l, VStr(parts[i]));
  End;
  Result := l;
 End;
@@ -28917,12 +29805,12 @@ Begin
    cnt := 0;
    p := PosEx(sep, s, st);
    While (p > 0) And ((maxsplit < 0) Or (cnt < maxsplit)) Do Begin
-    l.Add(VStr(Copy(s, st, p - st)));
+    ObjAdd(l, VStr(Copy(s, st, p - st)));
     st := p + Length(sep);
     Inc(cnt);
     p := PosEx(sep, s, st);
    End;
-   l.Add(VStr(Copy(s, st, Length(s) - st + 1)));
+   ObjAdd(l, VStr(Copy(s, st, Length(s) - st + 1)));
   End
   Else Begin
    SetLength(parts, 0);
@@ -28936,8 +29824,8 @@ Begin
     st := p - 1;
     Inc(cnt);
    End;
-   l.Add(VStr(Copy(s, 1, st)));
-   For i := High(parts) DownTo 0 Do l.Add(VStr(parts[i]));
+   ObjAdd(l, VStr(Copy(s, 1, st)));
+   For i := High(parts) DownTo 0 Do ObjAdd(l, VStr(parts[i]));
   End;
   Result := VObj(l);
   Exit;
@@ -28957,6 +29845,7 @@ End;
 
 Function StrJoinM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ ePy: PXcPy;
  sep, r: AnsiString;
  arr: TValArr;
  i, total: Integer;
@@ -28966,11 +29855,13 @@ Begin
  Try
   arr := IterToArr(a[1]);
  Except
-  On E: EPyError Do Begin
-   If IsInstance(VObj(E.exc), exTypeError) And (Pos('is not iterable',
-    StrVal(VObj(E.exc))) > 0) Then TypeErr('can only join an iterable');
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exTypeError) And (Pos('is not iterable',
+    StrVal(VObj(ePy.exc))) > 0) Then TypeErr('can only join an iterable');
    Raise;
-  End;
+  End
+  Else Raise;
  End;
  total := 0;
  For i := 0 To High(arr) Do Begin
@@ -29181,14 +30072,14 @@ Begin
       ((s[i + 2] = #$A8) Or (s[i + 2] = #$A9)) Then bl := 3;
   End;
   If bl > 0 Then Begin
-   If keep Then l.Add(VStr(Copy(s, st, i + bl - st)))
-   Else l.Add(VStr(Copy(s, st, i - st)));
+   If keep Then ObjAdd(l, VStr(Copy(s, st, i + bl - st)))
+   Else ObjAdd(l, VStr(Copy(s, st, i - st)));
    Inc(i, bl);
    st := i;
   End
   Else Inc(i);
  End;
- If st <= Length(s) Then l.Add(VStr(Copy(s, st, Length(s) - st + 1)));
+ If st <= Length(s) Then ObjAdd(l, VStr(Copy(s, st, Length(s) - st + 1)));
  Result := VObj(l);
 End;
 
@@ -29337,6 +30228,7 @@ End;
 
 Function StrTranslateM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ ePy: PXcPy;
  s, r: AnsiString;
  i: Integer;
  c: Cardinal;
@@ -29355,10 +30247,12 @@ Begin
    Else If IsIntVal(v) Then r := r + Utf8Enc(v.i)
    Else TypeErr('character mapping must return integer, None or str');
   Except
-   On E: EPyError Do Begin
-    If IsInstance(VObj(E.exc), exLookupError) Then r := r + Utf8Enc(c)
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    If IsInstance(VObj(ePy.exc), exLookupError) Then r := r + Utf8Enc(c)
     Else Raise;
-   End;
+   End
+   Else Raise;
   End;
  End;
  Result := VStr(r);
@@ -29372,16 +30266,16 @@ Var
  i: Integer;
 Begin
  NeedArgs(n, 1, 3, 'maketrans');
- d := TPyDict.Make;
+ d := AllocDict;
  If n = 1 Then Begin
-  If Not ((a[0].k = vkObj) And (a[0].o Is TPyDict)) Then
+  If Not ((a[0].k = vkObj) And (IsK(a[0].o, okDict))) Then
    TypeErr('if you give only one argument to maketrans it must be a dict');
   For i := 0 To TPyDict(a[0].o).nent - 1 Do
    If TPyDict(a[0].o).ent[i].key.k <> vkNull Then Begin
     If IsStrVal(TPyDict(a[0].o).ent[i].key) Then
-     d.SetItem(VInt(StrToCps(TPyStr(TPyDict(a[0].o).ent[i].key.o).s)[0]),
+     DictSetItem(d, VInt(StrToCps(TPyStr(TPyDict(a[0].o).ent[i].key.o).s)[0]),
       TPyDict(a[0].o).ent[i].val)
-    Else d.SetItem(TPyDict(a[0].o).ent[i].key, TPyDict(a[0].o).ent[i].val);
+    Else DictSetItem(d, TPyDict(a[0].o).ent[i].key, TPyDict(a[0].o).ent[i].val);
    End;
  End
  Else Begin
@@ -29391,11 +30285,11 @@ Begin
   cy := StrToCps(y);
   If Length(cx) <> Length(cy) Then
    ValueErr('the first two maketrans arguments must have equal length');
-  For i := 0 To High(cx) Do d.SetItem(VInt(cx[i]), VInt(cy[i]));
+  For i := 0 To High(cx) Do DictSetItem(d, VInt(cx[i]), VInt(cy[i]));
   If n > 2 Then Begin
    z := StrOf(a[2]);
    cx := StrToCps(z);
-   For i := 0 To High(cx) Do d.SetItem(VInt(cx[i]), vNone);
+   For i := 0 To High(cx) Do DictSetItem(d, VInt(cx[i]), vNone);
   End;
  End;
  Result := VObj(d);
@@ -29511,7 +30405,7 @@ End;
 
 Procedure InitStrMethods;
 Begin
- tyStr.idict.SetS('__new__', VObj(NewBuiltin('__new__', @StrNewObj)));
+ DictSetS(tyStr.idict, '__new__', VObj(NewBuiltin('__new__', @StrNewObj)));
  DefMethod(tyStr, 'find', @StrFindM);
  DefMethod(tyStr, 'rfind', @StrRFindM);
  DefMethod(tyStr, 'index', @StrIndexM);
@@ -29598,7 +30492,7 @@ End;
 Procedure InitObjOf(o: TPyObj; t: TPyType);
 Begin
  o.cls := t;
- If t.userdef Then o.idict := TPyDict.Make;
+ If t.userdef Then o.idict := AllocDict;
 End;
 
 Procedure ListFill(l: TPyList; a: PVal; n: Integer);
@@ -29606,7 +30500,7 @@ Var
  arr: TValArr;
  i: Integer;
 Begin
- l.Clear;
+ ObjClear(l);
  If n > 0 Then Begin
   arr := IterToArr(a[0]);
   SetLength(l.items, Length(arr));
@@ -29630,7 +30524,7 @@ Var
  l: TPyList;
 Begin
  l := NewList;
- InitObjOf(l, TPyType(a[0].o));
+ InitObjOf(TPyObj(l), TPyType(a[0].o));
  Result := VObj(l);
 End;
 
@@ -29643,7 +30537,7 @@ End;
 Function ListAppendM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  NeedArgs(n, 2, 2, 'append');
- SelfList(a).Add(a[1]);
+ ObjAdd(SelfList(a), a[1]);
  Result := vNone;
 End;
 
@@ -29656,7 +30550,7 @@ Begin
  NeedArgs(n, 2, 2, 'extend');
  l := SelfList(a);
  arr := IterToArr(a[1]);
- For i := 0 To High(arr) Do l.Add(arr[i]);
+ For i := 0 To High(arr) Do ObjAdd(l, arr[i]);
  Result := vNone;
 End;
 
@@ -29673,7 +30567,7 @@ Begin
   If i < 0 Then i := 0;
  End;
  If i > l.cnt Then i := l.cnt;
- l.Insert(i, a[2]);
+ ListInsert(l, i, a[2]);
  Result := vNone;
 End;
 
@@ -29686,7 +30580,7 @@ Begin
  l := SelfList(a);
  For i := 0 To l.cnt - 1 Do
   If ValEq(l.items[i], a[1]) Then Begin
-   l.Delete(i);
+   ListDelete(l, i);
    Result := vNone;
    Exit;
   End;
@@ -29707,12 +30601,12 @@ Begin
  If (i < 0) Or (i >= l.cnt) Then RaiseExc(exIndexError,
    'pop index out of range');
  Result := l.items[i];
- l.Delete(i);
+ ListDelete(l, i);
 End;
 
 Function ListClearM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- SelfList(a).Clear;
+ ObjClear(SelfList(a));
  Result := vNone;
 End;
 
@@ -29794,7 +30688,7 @@ Var
 Begin
  l := SelfList(a);
  r := NewList;
- For i := 0 To l.cnt - 1 Do r.Add(l.items[i]);
+ For i := 0 To l.cnt - 1 Do ObjAdd(r, l.items[i]);
  Result := VObj(r);
 End;
 
@@ -29854,7 +30748,7 @@ Function ListAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyList)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okList))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -29880,7 +30774,7 @@ End;
 
 Function ListEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyList)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okList))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -29889,7 +30783,7 @@ End;
 
 Function ListLtM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyList)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okList))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -29915,7 +30809,7 @@ Begin
   Result := VObj(EmptyTuple);
   Exit;
  End;
- If (a[0].k = vkObj) And (a[0].o.ClassType = TPyTuple) And
+ If (a[0].k = vkObj) And ((a[0].o.otag = okTuple)) And
   Not a[0].o.cls.userdef Then Begin
   Result := a[0];
   Exit;
@@ -29931,7 +30825,7 @@ Var
 Begin
  If n > 1 Then arr := IterToArr(a[1]) Else SetLength(arr, 0);
  t := TupleFromVals(arr);
- InitObjOf(t, TPyType(a[0].o));
+ InitObjOf(TPyObj(t), TPyType(a[0].o));
  Result := VObj(t);
 End;
 
@@ -29976,7 +30870,7 @@ End;
 
 Function TupleEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyTuple)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okTuple))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -29987,7 +30881,7 @@ Function TupleAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyTuple)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okTuple))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -30010,15 +30904,16 @@ Var
  idx, i: Integer;
  so: TPyDict;
 Begin
- If (src.k = vkObj) And (src.o Is TPyDict) Then Begin
+ If (src.k = vkObj) And (IsK(src.o, okDict)) Then Begin
   so := TPyDict(src.o);
   For i := 0 To so.nent - 1 Do
-   If so.ent[i].key.k <> vkNull Then d.SetItem(so.ent[i].key, so.ent[i].val);
+   If so.ent[i].key.k <> vkNull Then DictSetItem(d, so.ent[i].key,
+     so.ent[i].val);
   Exit;
  End;
  If (src.k = vkObj) And HasAttr(src, 'keys') Then Begin
   it := IterOf(Call0(GetAttr(src, 'keys')));
-  While IterNextVal(it, k) Do d.SetItem(k, GetItem(src, k));
+  While IterNextVal(it, k) Do DictSetItem(d, k, GetItem(src, k));
   Exit;
  End;
  it := IterOf(src);
@@ -30028,7 +30923,7 @@ Begin
   If Length(arr) <> 2 Then
    ValueErr('dictionary update sequence element #' + IntToStr(idx) +
     ' has length ' + IntToStr(Length(arr)) + '; 2 is required');
-  d.SetItem(arr[0], arr[1]);
+  DictSetItem(d, arr[0], arr[1]);
   Inc(idx);
  End;
  x := vNone;
@@ -30042,14 +30937,15 @@ Begin
  If n = 1 Then DictUpdateFrom(d, a[0]);
  If kw <> Nil Then
   For i := 0 To kw.nent - 1 Do
-   If kw.ent[i].key.k <> vkNull Then d.SetItem(kw.ent[i].key, kw.ent[i].val);
+   If kw.ent[i].key.k <> vkNull Then DictSetItem(d, kw.ent[i].key,
+     kw.ent[i].val);
 End;
 
 Function DictCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  d: TPyDict;
 Begin
- d := TPyDict.Make;
+ d := AllocDict;
  DictFill(d, a, n, kw);
  Result := VObj(d);
 End;
@@ -30058,8 +30954,8 @@ Function DictNewM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  d: TPyDict;
 Begin
- d := TPyDict.Make;
- InitObjOf(d, TPyType(a[0].o));
+ d := AllocDict;
+ InitObjOf(TPyObj(d), TPyType(a[0].o));
  Result := VObj(d);
 End;
 
@@ -30074,9 +30970,9 @@ Var
  v: TDictView;
 Begin
  Case kind Of
-  0: v := TDictView.Create(tyDictKeys);
-  1: v := TDictView.Create(tyDictValues);
- Else v := TDictView.Create(tyDictItems);
+  0: v := AllocDictView(tyDictKeys);
+  1: v := AllocDictView(tyDictValues);
+ Else v := AllocDictView(tyDictItems);
  End;
  v.src := d;
  v.kind := kind;
@@ -30103,7 +30999,7 @@ Var
  v: TVal;
 Begin
  NeedArgs(n, 2, 3, 'get');
- If SelfDict(a).GetItem(a[1], v) Then Result := v
+ If DictGetItem(SelfDict(a), a[1], v) Then Result := v
  Else If n > 2 Then Result := a[2]
  Else Result := vNone;
 End;
@@ -30113,10 +31009,10 @@ Var
  v: TVal;
 Begin
  NeedArgs(n, 2, 3, 'setdefault');
- If SelfDict(a).GetItem(a[1], v) Then Result := v
+ If DictGetItem(SelfDict(a), a[1], v) Then Result := v
  Else Begin
   If n > 2 Then v := a[2] Else v := vNone;
-  SelfDict(a).SetItem(a[1], v);
+  DictSetItem(SelfDict(a), a[1], v);
   Result := v;
  End;
 End;
@@ -30126,8 +31022,8 @@ Var
  v: TVal;
 Begin
  NeedArgs(n, 2, 3, 'pop');
- If SelfDict(a).GetItem(a[1], v) Then Begin
-  SelfDict(a).DelItem(a[1]);
+ If DictGetItem(SelfDict(a), a[1], v) Then Begin
+  DictDelItem(SelfDict(a), a[1]);
   Result := v;
  End
  Else If n > 2 Then Result := a[2]
@@ -30145,7 +31041,7 @@ Begin
   If d.ent[i].key.k <> vkNull Then Begin
    k := d.ent[i].key;
    v := d.ent[i].val;
-   d.DelItem(k);
+   DictDelItem(d, k);
    Result := Tup2(k, v);
    Exit;
   End;
@@ -30163,13 +31059,13 @@ Begin
  If kw <> Nil Then
   For i := 0 To kw.nent - 1 Do
    If kw.ent[i].key.k <> vkNull Then
-    SelfDict(a).SetItem(kw.ent[i].key, kw.ent[i].val);
+    DictSetItem(SelfDict(a), kw.ent[i].key, kw.ent[i].val);
  Result := vNone;
 End;
 
 Function DictClearM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- SelfDict(a).Clear;
+ ObjClear(SelfDict(a));
  Result := vNone;
 End;
 
@@ -30177,8 +31073,8 @@ Function DictCopyM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  d: TPyDict;
 Begin
- d := SelfDict(a).Copy;
- If a[0].o.cls.userdef Then InitObjOf(d, a[0].o.cls);
+ d := DictCopy(SelfDict(a));
+ If a[0].o.cls.userdef Then InitObjOf(TPyObj(d), a[0].o.cls);
  Result := VObj(d);
 End;
 
@@ -30190,12 +31086,13 @@ Var
  v: TVal;
 Begin
  NeedArgs(n, 2, 3, 'fromkeys');
- d := TPyDict.Make;
+ d := AllocDict;
  If n > 2 Then v := a[2] Else v := vNone;
  arr := IterToArr(a[1]);
- For i := 0 To High(arr) Do d.SetItem(arr[i], v);
- If (a[0].k = vkObj) And (a[0].o Is TPyType) And (a[0].o <> tyDict) Then
-  InitObjOf(d, TPyType(a[0].o));
+ For i := 0 To High(arr) Do DictSetItem(d, arr[i], v);
+ If (a[0].k = vkObj) And (IsK(a[0].o, okType)) And (TPyType(a[0].o) <> tyDict)
+   Then
+  InitObjOf(TPyObj(d), TPyType(a[0].o));
  Result := VObj(d);
 End;
 
@@ -30208,7 +31105,7 @@ Function DictGetItemM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  v: TVal;
 Begin
- If SelfDict(a).GetItem(a[1], v) Then Result := v
+ If DictGetItem(SelfDict(a), a[1], v) Then Result := v
  Else Begin
   If a[0].o.cls.userdef And LookupType(a[0].o.cls, '__missing__', v) Then
    Result := Call2(v, a[0], a[1])
@@ -30218,13 +31115,13 @@ End;
 
 Function DictSetItemM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- SelfDict(a).SetItem(a[1], a[2]);
+ DictSetItem(SelfDict(a), a[1], a[2]);
  Result := vNone;
 End;
 
 Function DictDelItemM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not SelfDict(a).DelItem(a[1]) Then RaiseKeyError(a[1]);
+ If Not DictDelItem(SelfDict(a), a[1]) Then RaiseKeyError(a[1]);
  Result := vNone;
 End;
 
@@ -30232,7 +31129,7 @@ Function DictContainsM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  v: TVal;
 Begin
- Result := VBool(SelfDict(a).GetItem(a[1], v));
+ Result := VBool(DictGetItem(SelfDict(a), a[1], v));
 End;
 
 Function DictIterM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -30242,7 +31139,7 @@ End;
 
 Function DictEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyDict)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okDict))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -30251,7 +31148,7 @@ End;
 
 Function DictOrM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyDict)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okDict))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -30286,9 +31183,9 @@ Var
  arr: TValArr;
  i: Integer;
 Begin
- s := TPySet.Make(False);
+ s := AllocSet(False);
  arr := IterToArr(v);
- For i := 0 To High(arr) Do s.Add(arr[i]);
+ For i := 0 To High(arr) Do ObjAdd(s, arr[i]);
  Result := VObj(s);
 End;
 
@@ -30344,7 +31241,7 @@ Var
 Begin
  If n > 0 Then Begin
   arr := IterToArr(a[0]);
-  For i := 0 To High(arr) Do s.Add(arr[i]);
+  For i := 0 To High(arr) Do ObjAdd(s, arr[i]);
  End;
 End;
 
@@ -30353,7 +31250,7 @@ Var
  s: TPySet;
 Begin
  NeedArgs(n, 0, 1, 'set');
- s := TPySet.Make(False);
+ s := AllocSet(False);
  SetFill(s, a, n);
  Result := VObj(s);
 End;
@@ -30363,7 +31260,7 @@ Var
  s: TPySet;
 Begin
  NeedArgs(n, 0, 1, 'frozenset');
- s := TPySet.Make(True);
+ s := AllocSet(True);
  SetFill(s, a, n);
  Result := VObj(s);
 End;
@@ -30374,8 +31271,8 @@ Var
  t: TPyType;
 Begin
  t := TPyType(a[0].o);
- s := TPySet.Make(t.native = nkFrozen);
- InitObjOf(s, t);
+ s := AllocSet(t.native = nkFrozen);
+ InitObjOf(TPyObj(s), t);
  If t.native = nkFrozen Then SetFill(s, a + 1, n - 1);
  Result := VObj(s);
 End;
@@ -30383,7 +31280,7 @@ End;
 Function SetInitM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If Not SelfSet(a).frozen Then Begin
-  SelfSet(a).Clear;
+  ObjClear(SelfSet(a));
   SetFill(SelfSet(a), a + 1, n - 1);
  End;
  Result := vNone;
@@ -30392,21 +31289,21 @@ End;
 Function SetAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  NeedArgs(n, 2, 2, 'add');
- SelfSet(a).Add(a[1]);
+ ObjAdd(SelfSet(a), a[1]);
  Result := vNone;
 End;
 
 Function SetRemoveM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  NeedArgs(n, 2, 2, 'remove');
- If Not SelfSet(a).Discard(a[1]) Then RaiseKeyError(a[1]);
+ If Not SetDiscard(SelfSet(a), a[1]) Then RaiseKeyError(a[1]);
  Result := vNone;
 End;
 
 Function SetDiscardM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  NeedArgs(n, 2, 2, 'discard');
- SelfSet(a).Discard(a[1]);
+ SetDiscard(SelfSet(a), a[1]);
  Result := vNone;
 End;
 
@@ -30419,7 +31316,7 @@ Begin
  For i := 0 To High(s.tab) Do
   If (s.tab[i].key.k <> vkNull) And (s.tab[i].key.k <> vkDummy) Then Begin
    Result := s.tab[i].key;
-   s.Discard(Result);
+   SetDiscard(s, Result);
    Exit;
   End;
  RaiseExc(exKeyError, 'pop from an empty set');
@@ -30428,7 +31325,7 @@ End;
 
 Function SetClearM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- SelfSet(a).Clear;
+ ObjClear(SelfSet(a));
  Result := vNone;
 End;
 
@@ -30439,9 +31336,9 @@ Var
  i: Integer;
 Begin
  s := SelfSet(a);
- r := TPySet.Make(s.frozen);
+ r := AllocSet(s.frozen);
  arr := SetItems(s);
- For i := 0 To High(arr) Do r.Add(arr[i]);
+ For i := 0 To High(arr) Do ObjAdd(r, arr[i]);
  Result := VObj(r);
 End;
 
@@ -30450,13 +31347,13 @@ Var
  arr: TValArr;
  i: Integer;
 Begin
- If (v.k = vkObj) And (v.o Is TPySet) Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okSet)) Then Begin
   Result := TPySet(v.o);
   Exit;
  End;
- Result := TPySet.Make(frozen);
+ Result := AllocSet(frozen);
  arr := IterToArr(v);
- For i := 0 To High(arr) Do Result.Add(arr[i]);
+ For i := 0 To High(arr) Do ObjAdd(Result, arr[i]);
 End;
 
 Function SetOpM(a: PVal; n: Integer; op: Integer): TVal;
@@ -30497,8 +31394,8 @@ Var
  i: Integer;
 Begin
  arr := SetItems(TPySet(r.o));
- dst.Clear;
- For i := 0 To High(arr) Do dst.Add(arr[i]);
+ ObjClear(dst);
+ For i := 0 To High(arr) Do ObjAdd(dst, arr[i]);
 End;
 
 Function SetUpdateM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -30508,7 +31405,7 @@ Var
 Begin
  For i := 1 To n - 1 Do Begin
   arr := IterToArr(a[i]);
-  For j := 0 To High(arr) Do SelfSet(a).Add(arr[j]);
+  For j := 0 To High(arr) Do ObjAdd(SelfSet(a), arr[j]);
  End;
  Result := vNone;
 End;
@@ -30540,7 +31437,7 @@ Begin
  o := ToSetArg(a[1], False);
  arr := SetItems(SelfSet(a));
  For i := 0 To High(arr) Do
-  If Not o.Contains(arr[i]) Then Begin
+  If Not SetContains(o, arr[i]) Then Begin
    Result := vFalse;
    Exit;
   End;
@@ -30556,7 +31453,7 @@ Begin
  o := ToSetArg(a[1], False);
  arr := SetItems(o);
  For i := 0 To High(arr) Do
-  If Not SelfSet(a).Contains(arr[i]) Then Begin
+  If Not SetContains(SelfSet(a), arr[i]) Then Begin
    Result := vFalse;
    Exit;
   End;
@@ -30572,7 +31469,7 @@ Begin
  o := ToSetArg(a[1], False);
  arr := SetItems(o);
  For i := 0 To High(arr) Do
-  If SelfSet(a).Contains(arr[i]) Then Begin
+  If SetContains(SelfSet(a), arr[i]) Then Begin
    Result := vFalse;
    Exit;
   End;
@@ -30586,7 +31483,7 @@ End;
 
 Function SetContainsM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VBool(SelfSet(a).Contains(a[1]));
+ Result := VBool(SetContains(SelfSet(a), a[1]));
 End;
 
 Function SetIterM(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -30601,7 +31498,7 @@ End;
 
 Function SetBinM(a: PVal; op: Integer): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPySet)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okSet))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -30619,7 +31516,7 @@ Begin Result := SetBinM(a, bopXor); End;
 
 Function SetEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPySet)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okSet))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -30705,7 +31602,7 @@ Var
 Begin
  order := 'big';
  signed := False;
- If (a[1].k = vkObj) And (a[1].o Is TPyBytes) Then s := TPyBytes(a[1].o).s
+ If (a[1].k = vkObj) And (IsK(a[1].o, okBytes)) Then s := TPyBytes(a[1].o).s
  Else s := TPyBytes(BiBytesCtor(@a[1], 1, Nil).o).s;
  If ArgKw(a, n, kw, 2, 'byteorder', v) Then order := StrOf(v);
  If KwGet(kw, 'signed', v) Then signed := IsTrue(v);
@@ -30834,9 +31731,9 @@ Begin
  Result := IntCtor(a + 1, n - 1, kw);
  If t <> tyInt Then Begin
   IntToMag(Result, neg, m);
-  o := TPyBigInt.Make(neg, m);
+  o := AllocBigInt(neg, m);
   o.cls := t;
-  o.idict := TPyDict.Make;
+  o.idict := AllocDict;
   Result := VObj(o);
  End;
 End;
@@ -31099,7 +31996,7 @@ Begin
  r := '';
  For i := 0 To High(arr) Do Begin
   If i > 0 Then r := r + TPyBytes(a[0].o).s;
-  If Not ((arr[i].k = vkObj) And (arr[i].o Is TPyBytes)) Then
+  If Not ((arr[i].k = vkObj) And (IsK(arr[i].o, okBytes))) Then
    TypeErr('sequence item ' + IntToStr(i) + ': expected a bytes-like object, '
     + TypeName(arr[i]) + ' found');
   r := r + TPyBytes(arr[i].o).s;
@@ -31109,7 +32006,7 @@ End;
 
 Function BytesFromStr(Const v: TVal): AnsiString;
 Begin
- If (v.k = vkObj) And (v.o Is TPyBytes) Then Result := TPyBytes(v.o).s
+ If (v.k = vkObj) And (IsK(v.o, okBytes)) Then Result := TPyBytes(v.o).s
  Else If (v.k = vkObj) And v.o.cls.userdef And HasAttr(v, 'tobytes') And
   HasAttr(v, 'nbytes') Then
   Result := TPyBytes(Call0(GetAttr(v, 'tobytes')).o).s
@@ -31145,7 +32042,8 @@ Var
 Begin
  BytesSliceArgs(a, n, s);
  ok := False;
- If (a[1].k = vkObj) And (a[1].o Is TPyTuple) Then arr := TPyTuple(a[1].o).items
+ If (a[1].k = vkObj) And (IsK(a[1].o, okTuple)) Then arr :=
+   TPyTuple(a[1].o).items
  Else Begin
   SetLength(arr, 1);
   arr[0] := a[1];
@@ -31240,7 +32138,7 @@ Begin
    st := p;
    While (p <= Length(s)) And Not (s[p] In [' ', #9, #10, #13, #11, #12]) Do
     Inc(p);
-   l.Add(VBytes(Copy(s, st, p - st)));
+   ObjAdd(l, VBytes(Copy(s, st, p - st)));
   End;
  End
  Else Begin
@@ -31248,25 +32146,25 @@ Begin
   st := 1;
   p := PosEx(sep, s, st);
   While p > 0 Do Begin
-   l.Add(VBytes(Copy(s, st, p - st)));
+   ObjAdd(l, VBytes(Copy(s, st, p - st)));
    st := p + Length(sep);
    p := PosEx(sep, s, st);
   End;
-  l.Add(VBytes(Copy(s, st, Length(s))));
+  ObjAdd(l, VBytes(Copy(s, st, Length(s))));
  End;
  Result := VObj(l);
 End;
 
 Function BytesAddM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyBytes)) Then
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okBytes))) Then
   TypeErr('can''t concat ' + TypeName(a[1]) + ' to bytes');
  Result := VBytes(TPyBytes(a[0].o).s + BytesFromStr(a[1]));
 End;
 
 Function BytesEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyBytes)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okBytes))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -31416,6 +32314,7 @@ End;
 
 Function GenThrowDeleg(g: TPyGen; Const e: TVal; Var r: TVal): Boolean;
 Var
+ ePy: PXcPy;
  dlg, v, m: TVal;
  fr: TFrame;
  yielded: Boolean;
@@ -31425,7 +32324,7 @@ Begin
  If Not GenSuspendedDelegate(g, dlg) Then Begin
   If (g.state = 0) Or (g.state = 3) Then Begin
    g.state := 3;
-   Raise EPyError.Make(e.o);
+   RaisePy(e.o);
   End;
   fr.throwExc := e.o;
   Result := GenResume(g, vNone, r);
@@ -31433,7 +32332,7 @@ Begin
  End;
  yielded := False;
  Try
-  If (dlg.o Is TPyGen) Then
+  If (IsK(dlg.o, okGen)) Then
    yielded := GenThrowDeleg(TPyGen(dlg.o), e, r)
   Else If LookupType(TypeOf(dlg), 'throw', m) Then Begin
    r := Call1(GetAttr(dlg, 'throw'), e);
@@ -31445,26 +32344,28 @@ Begin
    Exit;
   End;
  Except
-  On E2: EPyError Do Begin
-   If IsInstance(VObj(E2.exc), exStopIteration) Then Begin
-    If Not GetAttrOpt(VObj(E2.exc), InternStr('value'), v) Then v := vNone;
-    d := TPyDoneIter.Create(tyIter);
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exStopIteration) Then Begin
+    If Not GetAttrOpt(VObj(ePy.exc), InternStr('value'), v) Then v := vNone;
+    d := AllocDoneIter(tyIter);
     d.retval := v;
     fr.sp[-1] := VObj(d);
     Result := GenResume(g, vNone, r);
     Exit;
    End;
-   fr.throwExc := E2.exc;
+   fr.throwExc := ePy.exc;
    Result := GenResume(g, vNone, r);
    Exit;
-  End;
+  End
+  Else Raise;
  End;
  If yielded Then Begin
   Result := True;
   Exit;
  End;
  { le delegue est termine : sa valeur de retour devient celle du yield from }
- d := TPyDoneIter.Create(tyIter);
+ d := AllocDoneIter(tyIter);
  d.retval := NoneIfNull(TPyGen(dlg.o).retval);
  fr.sp[-1] := VObj(d);
  Result := GenResume(g, vNone, r);
@@ -31486,6 +32387,7 @@ End;
 
 Function GenCloseM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ ePy: PXcPy;
  g: TPyGen;
  r, c: TVal;
 Begin
@@ -31497,7 +32399,7 @@ Begin
  End;
  If g.state = 3 Then Exit;
  If GenSuspendedDelegate(g, r) Then Begin
-  If (r.o Is TPyGen) Then GenCloseM(@r, 1, Nil)
+  If (IsK(r.o, okGen)) Then GenCloseM(@r, 1, Nil)
   Else If LookupType(TypeOf(r), 'close', c) Then Call0(GetAttr(r, 'close'));
  End;
  g.frame.throwExc := MakeExc(exGeneratorExit, '');
@@ -31505,11 +32407,13 @@ Begin
   If GenResume(g, vNone, r) Then
    RaiseExc(exRuntimeError, 'generator ignored GeneratorExit');
  Except
-  On E: EPyError Do Begin
-   If IsInstance(VObj(E.exc), exGeneratorExit) Or
-    IsInstance(VObj(E.exc), exStopIteration) Then Exit;
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If IsInstance(VObj(ePy.exc), exGeneratorExit) Or
+    IsInstance(VObj(ePy.exc), exStopIteration) Then Exit;
    Raise;
-  End;
+  End
+  Else Raise;
  End;
 End;
 
@@ -31529,74 +32433,78 @@ End;
 { ------------------------------------------------------------
   Coroutines et generateurs asynchrones
   ------------------------------------------------------------ }
-Function TPyAsyncGenASend.Step(Const sendv: TVal; Var r: TVal): Boolean;
+Function AsyncGenASendStep(Self: TPyAsyncGenASend; Const sendv: TVal; Var r:
+  TVal): Boolean;
 Var
+ ePy: PXcPy;
  v, sv: TVal;
  e: TVal;
 Begin
  sv := sendv;
- If Not started Then Begin
-  started := True;
-  If mode = 0 Then sv := val
+ If Not Self.started Then Begin
+  Self.started := True;
+  If Self.mode = 0 Then sv := Self.val
   Else Begin
-   If mode = 2 Then Begin
-    If (gen.state = 0) Or (gen.state = 3) Then Begin
-     gen.state := 3;
-     retval := vNone;
+   If Self.mode = 2 Then Begin
+    If (Self.gen.state = 0) Or (Self.gen.state = 3) Then Begin
+     Self.gen.state := 3;
+     Self.retval := vNone;
      Result := False;
      Exit;
     End;
     e := VObj(MakeExc(exGeneratorExit, ''));
    End
-   Else e := exc;
-   If (gen.state = 0) Or (gen.state = 3) Then Begin
-    gen.state := 3;
-    Raise EPyError.Make(e.o);
+   Else e := Self.exc;
+   If (Self.gen.state = 0) Or (Self.gen.state = 3) Then Begin
+    Self.gen.state := 3;
+    RaisePy(e.o);
    End;
-   gen.frame.throwExc := e.o;
+   Self.gen.frame.throwExc := e.o;
   End;
  End;
  Try
-  Result := GenResume(gen, sv, v);
+  Result := GenResume(Self.gen, sv, v);
  Except
-  On E2: EPyError Do Begin
-   If (mode = 2) And (IsInstance(VObj(E2.exc), exGeneratorExit) Or
-    IsInstance(VObj(E2.exc), exStopAsyncIteration)) Then Begin
-    retval := vNone;
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   If (Self.mode = 2) And (IsInstance(VObj(ePy.exc), exGeneratorExit) Or
+    IsInstance(VObj(ePy.exc), exStopAsyncIteration)) Then Begin
+    Self.retval := vNone;
     Result := False;
     Exit;
    End;
    Raise;
-  End;
+  End
+  Else Raise;
  End;
  If Result Then Begin
-  If (v.k = vkObj) And (v.o Is TPyAsyncGenWrapped) Then Begin
-   If mode = 2 Then
+  If (v.k = vkObj) And (IsK(v.o, okAsyncGenWrapped)) Then Begin
+   If Self.mode = 2 Then
     RaiseExc(exRuntimeError, 'async generator ignored GeneratorExit');
-   retval := TPyAsyncGenWrapped(v.o).val;
+   Self.retval := TPyAsyncGenWrapped(v.o).val;
    Result := False;
   End
   Else r := v;
  End
  Else Begin
-  If mode = 2 Then Begin
-   retval := vNone;
+  If Self.mode = 2 Then Begin
+   Self.retval := vNone;
    Exit;
   End;
   RaiseExc(exStopAsyncIteration, '');
  End;
 End;
 
-Function TPyAsyncGenASend.Next(Var r: TVal): Boolean;
+Function AsyncGenASendNext(Self: TPyAsyncGenASend; Var r: TVal): Boolean;
 Begin
- Result := Step(vNone, r);
+ Result := AsyncGenASendStep(Self, vNone, r);
 End;
 
 Function NewASend(g: TPyGen; mode: Integer; Const v, e: TVal): TVal;
 Var
  s: TPyAsyncGenASend;
 Begin
- s := TPyAsyncGenASend.Create(tyAsyncGenASend);
+ s := AllocAsyncGenASend(tyAsyncGenASend);
  s.gen := g;
  s.mode := mode;
  s.val := v;
@@ -31642,7 +32550,7 @@ Var
  s: TPyAsyncGenASend;
 Begin
  s := TPyAsyncGenASend(a[0].o);
- If s.Step(vNone, r) Then Result := r
+ If AsyncGenASendStep(s, vNone, r) Then Result := r
  Else RaiseStopIteration(s.retval);
 End;
 
@@ -31653,7 +32561,7 @@ Var
 Begin
  NeedArgs(n, 2, 2, 'send');
  s := TPyAsyncGenASend(a[0].o);
- If s.Step(a[1], r) Then Result := r
+ If AsyncGenASendStep(s, a[1], r) Then Result := r
  Else RaiseStopIteration(s.retval);
 End;
 
@@ -31669,10 +32577,10 @@ Begin
  s.started := True;
  If (s.gen.state = 0) Or (s.gen.state = 3) Then Begin
   s.gen.state := 3;
-  Raise EPyError.Make(e.o);
+  RaisePy(e.o);
  End;
  s.gen.frame.throwExc := e.o;
- If s.Step(vNone, r) Then Result := r
+ If AsyncGenASendStep(s, vNone, r) Then Result := r
  Else RaiseStopIteration(s.retval);
 End;
 
@@ -31761,7 +32669,7 @@ Var
  it: TRangeIter;
 Begin
  r := TPyRange(a[0].o);
- it := TRangeIter.Create(tyIter);
+ it := AllocRangeIter(tyIter);
  it.cur := r.start + (r.len - 1) * r.step;
  it.step := -r.step;
  it.stop := r.start - r.step;
@@ -31777,7 +32685,7 @@ Procedure InitContainerMethods;
 Begin
  { list }
  tyList.ctor := @ListCtor;
- tyList.idict.SetS('__new__', VObj(NewBuiltin('__new__', @ListNewM)));
+ DictSetS(tyList.idict, '__new__', VObj(NewBuiltin('__new__', @ListNewM)));
  DefMethod(tyList, '__init__', @ListInitM);
  DefMethod(tyList, 'append', @ListAppendM);
  DefMethod(tyList, 'extend', @ListExtendM);
@@ -31806,7 +32714,7 @@ Begin
  DefMethod(tyList, '__repr__', @ListReprM);
  { tuple }
  tyTuple.ctor := @TupleCtor;
- tyTuple.idict.SetS('__new__', VObj(NewBuiltin('__new__', @TupleNewM)));
+ DictSetS(tyTuple.idict, '__new__', VObj(NewBuiltin('__new__', @TupleNewM)));
  DefMethod(tyTuple, 'count', @TupleCountM);
  DefMethod(tyTuple, 'index', @TupleIndexM);
  DefMethod(tyTuple, '__len__', @TupleLenM);
@@ -31819,7 +32727,7 @@ Begin
  DefMethod(tyTuple, '__repr__', @ListReprM);
  { dict }
  tyDict.ctor := @DictCtor;
- tyDict.idict.SetS('__new__', VObj(NewBuiltin('__new__', @DictNewM)));
+ DictSetS(tyDict.idict, '__new__', VObj(NewBuiltin('__new__', @DictNewM)));
  DefMethod(tyDict, '__init__', @DictInitM);
  DefMethod(tyDict, 'keys', @DictKeysM);
  DefMethod(tyDict, 'values', @DictValuesM);
@@ -31861,8 +32769,8 @@ Begin
  { set / frozenset }
  tySet.ctor := @SetCtor;
  tyFrozenset.ctor := @FrozensetCtor;
- tySet.idict.SetS('__new__', VObj(NewBuiltin('__new__', @SetNewM)));
- tyFrozenset.idict.SetS('__new__', VObj(NewBuiltin('__new__', @SetNewM)));
+ DictSetS(tySet.idict, '__new__', VObj(NewBuiltin('__new__', @SetNewM)));
+ DictSetS(tyFrozenset.idict, '__new__', VObj(NewBuiltin('__new__', @SetNewM)));
  DefMethod(tySet, '__init__', @SetInitM);
  DefMethod(tySet, 'add', @SetAddM);
  DefMethod(tySet, 'remove', @SetRemoveM);
@@ -31875,8 +32783,9 @@ Begin
  DefMethod(tySet, 'symmetric_difference_update', @SetSymDiffUpdateM);
  DefMethod(tySet, '__ior__', @SetUpdateM);
  DefMethod(tySet, '__hash__', @SetHashM);
- tySet.idict.SetS('__hash__', vNone);
- tyFrozenset.idict.SetS('__hash__', VObj(NewBuiltin('__hash__', @SetHashM)));
+ DictSetS(tySet.idict, '__hash__', vNone);
+ DictSetS(tyFrozenset.idict, '__hash__', VObj(NewBuiltin('__hash__',
+   @SetHashM)));
  DefMethod(tySet, 'copy', @SetCopyM);
  DefMethod(tyFrozenset, 'copy', @SetCopyM);
  DefMethod(tySet, 'union', @SetUnionM);
@@ -31910,9 +32819,9 @@ Begin
  DefMethod(tySet, '__eq__', @SetEqM);
  DefMethod(tyFrozenset, '__eq__', @SetEqM);
  { int / float / bool }
- tyInt.idict.SetS('__new__', VObj(NewBuiltin('__new__', @IntNewM)));
- tyFloat.idict.SetS('__new__', VObj(NewBuiltin('__new__', @FloatNewM)));
- tyBool.idict.SetS('__new__', VObj(NewBuiltin('__new__', @BoolNewM)));
+ DictSetS(tyInt.idict, '__new__', VObj(NewBuiltin('__new__', @IntNewM)));
+ DictSetS(tyFloat.idict, '__new__', VObj(NewBuiltin('__new__', @FloatNewM)));
+ DictSetS(tyBool.idict, '__new__', VObj(NewBuiltin('__new__', @BoolNewM)));
  DefMethod(tyInt, 'bit_length', @IntBitLengthM);
  DefMethod(tyInt, 'bit_count', @IntBitCountM);
  DefMethod(tyInt, 'to_bytes', @IntToBytesM);
@@ -32054,11 +32963,11 @@ Begin
   args[1] := VStr(strerror);
  End;
  o := MakeExcArgs(cls, args);
- o.idict.SetS('errno', VInt(errno));
- o.idict.SetS('strerror', VStr(strerror));
- If fname <> '' Then o.idict.SetS('filename', VStr(fname))
- Else o.idict.SetS('filename', vNone);
- Raise EPyError.Make(o);
+ DictSetS(o.idict, 'errno', VInt(errno));
+ DictSetS(o.idict, 'strerror', VStr(strerror));
+ If fname <> '' Then DictSetS(o.idict, 'filename', VStr(fname))
+ Else DictSetS(o.idict, 'filename', vNone);
+ RaisePy(o);
 End;
 
 Procedure RaiseNoEnt(Const fname: AnsiString);
@@ -32178,7 +33087,7 @@ Begin
    ValueErr('invalid mode: ''' + mode + '''');
  If m = #0 Then ValueErr('Must have exactly one of create/read/write/append ' +
   'mode and at most one plus');
- f := TPyFile.Create(tyFile);
+ f := AllocFile(tyFile);
  f.fname := name;
  f.mode := mode;
  f.binary := Pos('b', mode) > 0;
@@ -32257,7 +33166,7 @@ End;
 
 Function SelfFile(a: PVal): TPyFile;
 Begin
- If Not ((a[0].k = vkObj) And (a[0].o Is TPyFile)) Then
+ If Not ((a[0].k = vkObj) And (IsK(a[0].o, okFile))) Then
   TypeErr('descriptor requires a file object');
  Result := TPyFile(a[0].o);
  If Result.closed Then ValueErr('I/O operation on closed file.');
@@ -32366,7 +33275,7 @@ Var
 Begin
  f := SelfFile(a);
  l := NewList;
- While FileReadLineImpl(f, line, -1) Do l.Add(FileOut(f, line));
+ While FileReadLineImpl(f, line, -1) Do ObjAdd(l, FileOut(f, line));
  Result := VObj(l);
 End;
 
@@ -32377,7 +33286,7 @@ Begin
  NeedArgs(n, 2, 2, 'write');
  f := SelfFile(a);
  If f.binary Then Begin
-  If Not ((a[1].k = vkObj) And (a[1].o Is TPyBytes)) Then
+  If Not ((a[1].k = vkObj) And (IsK(a[1].o, okBytes))) Then
    TypeErr('a bytes-like object is required, not ''' + TypeName(a[1]) + '''');
   FileWriteStr(f, TPyBytes(a[1].o).s);
   Result := VInt(Length(TPyBytes(a[1].o).s));
@@ -32509,35 +33418,48 @@ Begin
 End;
 
 Type
- TFileIter = Class(TPyIter)
+ TFileIter = ^TFileIterRec;
+ TFileIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   f: TPyFile;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
  End;
 
-Function TFileIter.Next(Var r: TVal): Boolean;
+Function FileIterNext(Self: TFileIter; Var r: TVal): Boolean; Forward;
+Procedure FileIterMarkKids(Self: TFileIter); Forward;
+Function AllocFileIter(c: TPyType): TFileIter; Forward;
+
+Function AllocFileIter(c: TPyType): TFileIter;
+Begin
+ Result := TFileIter(AllocObjMem(SizeOf(TFileIterRec)));
+ InitObj(Result, okFileIter, c);
+End;
+
+Function FileIterNext(Self: TFileIter; Var r: TVal): Boolean;
 Var
  line: AnsiString;
 Begin
- If f.closed Then ValueErr('I/O operation on closed file.');
- If FileReadLineImpl(f, line, -1) Then Begin
-  r := FileOut(f, line);
+ If Self.f.closed Then ValueErr('I/O operation on closed file.');
+ If FileReadLineImpl(Self.f, line, -1) Then Begin
+  r := FileOut(Self.f, line);
   Result := True;
  End
  Else Result := False;
 End;
 
-Procedure TFileIter.MarkKids;
+Procedure FileIterMarkKids(Self: TFileIter);
 Begin
- Inherited MarkKids;
- MarkObj(f);
+ MarkHdr(Self);
+ MarkObj(Self.f);
 End;
 
 Function ValIter(Const v: TVal): TVal;
 Var
  it: TFileIter;
 Begin
- it := TFileIter.Create(tyIter);
+ it := AllocFileIter(tyIter);
  it.f := TPyFile(v.o);
  Result := VObj(it);
 End;
@@ -32583,7 +33505,7 @@ End;
 
 Function NewStdFile(std: Integer; Const mode: AnsiString): TPyFile;
 Begin
- Result := TPyFile.Create(tyFile);
+ Result := AllocFile(tyFile);
  Result.std := std;
  Result.mode := mode;
  Result.readable := std = 1;
@@ -32599,8 +33521,8 @@ Type
  TModSrc = Function: AnsiString;
 
 Var
- NativeMods: TStringList;
- SrcMods: TStringList;
+ NativeMods: PSList;
+ SrcMods: PSList;
  VerboseImport: Boolean;
  NoSite: Boolean;
  NoUserSite: Boolean;
@@ -32610,14 +33532,14 @@ Var
 
 Function NewModule(Const name: AnsiString): TPyModule;
 Begin
- Result := TPyModule.Create(tyModule);
+ Result := AllocModule(tyModule);
  Result.name := name;
- Result.idict := TPyDict.Make;
- Result.idict.SetS('__name__', VStr(name));
- Result.idict.SetS('__doc__', vNone);
- Result.idict.SetS('__package__', VStr(''));
- Result.idict.SetS('__loader__', vNone);
- Result.idict.SetS('__spec__', vNone);
+ Result.idict := AllocDict;
+ DictSetS(Result.idict, '__name__', VStr(name));
+ DictSetS(Result.idict, '__doc__', vNone);
+ DictSetS(Result.idict, '__package__', VStr(''));
+ DictSetS(Result.idict, '__loader__', vNone);
+ DictSetS(Result.idict, '__spec__', vNone);
 End;
 
 Function ModuleCtor(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -32626,23 +33548,23 @@ Var
 Begin
  If n < 1 Then TypeErr('module() missing required argument ''name'' (pos 1)');
  m := NewModule(StrOf(a[0]));
- If n > 1 Then m.idict.SetS('__doc__', a[1]);
+ If n > 1 Then DictSetS(m.idict, '__doc__', a[1]);
  Result := VObj(m);
 End;
 
 Procedure RegNative(Const name: AnsiString; p: TModInit);
 Begin
- NativeMods.AddObject(name, TObject(Pointer(p)));
+ SLAddObject(NativeMods, name, PtrInt(Pointer(p)));
 End;
 
 Procedure RegSource(Const name: AnsiString; p: TModSrc);
 Begin
- SrcMods.AddObject(name, TObject(Pointer(p)));
+ SLAddObject(SrcMods, name, PtrInt(Pointer(p)));
 End;
 
 Function FindModuleIn(Const name: AnsiString; Var m: TVal): Boolean;
 Begin
- Result := ModulesDict.GetS(name, m);
+ Result := DictGetS(ModulesDict, name, m);
 End;
 
 Procedure ExecModuleSource(m: TPyModule; Const src, fname: AnsiString);
@@ -32671,21 +33593,21 @@ Begin
  If Not ReadWholeFile(path, src) Then
   RaiseExc(exImportError, 'cannot read ' + path);
  m := NewModule(fullname);
- m.idict.SetS('__file__', VStr(path));
+ DictSetS(m.idict, '__file__', VStr(path));
  If isPkg Then Begin
-  m.idict.SetS('__path__', VObj(ListFromVals([VStr(pkgdir)])));
-  m.idict.SetS('__package__', VStr(fullname));
+  DictSetS(m.idict, '__path__', VObj(ListFromVals([VStr(pkgdir)])));
+  DictSetS(m.idict, '__package__', VStr(fullname));
  End
  Else If Pos('.', fullname) > 0 Then
-  m.idict.SetS('__package__', VStr(Copy(fullname, 1, LastDelimiter('.',
+  DictSetS(m.idict, '__package__', VStr(Copy(fullname, 1, LastDelimiter('.',
    fullname) - 1)))
- Else m.idict.SetS('__package__', VStr(''));
+ Else DictSetS(m.idict, '__package__', VStr(''));
  mv := VObj(m);
- ModulesDict.SetS(fullname, mv);
+ DictSetS(ModulesDict, fullname, mv);
  Try
   ExecModuleSource(m, src, path);
  Except
-  ModulesDict.DelS(fullname);
+  DictDelS(ModulesDict, fullname);
   Raise;
  End;
  Result := mv;
@@ -32748,8 +33670,8 @@ Begin
   If Not GetAttrOpt(parent, InternStr('__path__'), pathv) Then Begin
    e := MakeExc(exModuleNotFound, 'No module named ''' + name + '''; ''' +
     pname + ''' is not a package');
-   e.idict.SetS('name', VStr(name));
-   Raise EPyError.Make(e);
+   DictSetS(e.idict, 'name', VStr(name));
+   RaisePy(e);
   End;
   dirs := IterToArr(pathv);
  End
@@ -32758,16 +33680,16 @@ Begin
   dirs := IterToArr(VObj(SysPathList));
  End;
  { modules natifs }
- idx := NativeMods.IndexOf(name);
+ idx := SLIndexOf(NativeMods, name);
  If idx >= 0 Then Begin
   nm := NewModule(name);
-  nm.idict.SetS('__loader__', VStr('builtin'));
+  DictSetS(nm.idict, '__loader__', VStr('builtin'));
   m := VObj(nm);
-  ModulesDict.SetS(name, m);
+  DictSetS(ModulesDict, name, m);
   Try
-   TModInit(Pointer(NativeMods.Objects[idx]))(nm);
+   TModInit(Pointer(NativeMods^.vals[idx]))(nm);
   Except
-   ModulesDict.DelS(name);
+   DictDelS(ModulesDict, name);
    Raise;
   End;
   If parent.k = vkObj Then SetAttr(parent, leaf, m);
@@ -32775,24 +33697,24 @@ Begin
   Exit;
  End;
  { modules en Python integres }
- idx := SrcMods.IndexOf(name);
+ idx := SLIndexOf(SrcMods, name);
  If idx >= 0 Then Begin
-  src := TModSrc(Pointer(SrcMods.Objects[idx]))();
+  src := TModSrc(Pointer(SrcMods^.vals[idx]))();
   nm := NewModule(name);
-  nm.idict.SetS('__file__', VStr('<frozen ' + name + '>'));
-  If (Pos('.', name) = 0) Then nm.idict.SetS('__package__', VStr(''))
-  Else nm.idict.SetS('__package__', VStr(Copy(name, 1, LastDelimiter('.',
+  DictSetS(nm.idict, '__file__', VStr('<frozen ' + name + '>'));
+  If (Pos('.', name) = 0) Then DictSetS(nm.idict, '__package__', VStr(''))
+  Else DictSetS(nm.idict, '__package__', VStr(Copy(name, 1, LastDelimiter('.',
    name) - 1)));
   If Pos('#PACKAGE', Copy(src, 1, 12)) = 1 Then Begin
-   nm.idict.SetS('__path__', VObj(ListFromVals([])));
-   nm.idict.SetS('__package__', VStr(name));
+   DictSetS(nm.idict, '__path__', VObj(ListFromVals([])));
+   DictSetS(nm.idict, '__package__', VStr(name));
   End;
   m := VObj(nm);
-  ModulesDict.SetS(name, m);
+  DictSetS(ModulesDict, name, m);
   Try
    ExecModuleSource(nm, src, '<frozen ' + name + '>');
   Except
-   ModulesDict.DelS(name);
+   DictDelS(ModulesDict, name);
    Raise;
   End;
   If parent.k = vkObj Then SetAttr(parent, leaf, m);
@@ -32805,8 +33727,8 @@ Begin
   Exit;
  End;
  e := MakeExc(exModuleNotFound, 'No module named ''' + name + '''');
- e.idict.SetS('name', VStr(name));
- Raise EPyError.Make(e);
+ DictSetS(e.idict, 'name', VStr(name));
+ RaisePy(e);
 End;
 
 Function ResolveRelative(Const name: AnsiString; globals: TPyDict;
@@ -32820,10 +33742,10 @@ Begin
   RaiseExc(exImportError, 'attempted relative import with no known parent ' +
    'package');
  base := '';
- If globals.GetS('__package__', pkg) And IsStrVal(pkg) And
+ If DictGetS(globals, '__package__', pkg) And IsStrVal(pkg) And
   (TPyStr(pkg.o).s <> '') Then base := TPyStr(pkg.o).s
- Else If globals.GetS('__name__', mn) And IsStrVal(mn) Then Begin
-  If globals.HasS('__path__') Then base := TPyStr(mn.o).s
+ Else If DictGetS(globals, '__name__', mn) And IsStrVal(mn) Then Begin
+  If DictHasS(globals, '__path__') Then base := TPyStr(mn.o).s
   Else Begin
    p := LastDelimiter('.', TPyStr(mn.o).s);
    If p > 0 Then base := Copy(TPyStr(mn.o).s, 1, p - 1);
@@ -32854,13 +33776,14 @@ Begin
  If BytesImplLoaded Then Exit;
  BytesImplLoaded := True;
  m := TPyModule(ImportByName('_bytesimpl').o);
- If Not m.idict.GetS('_METHODS', names) Then Exit;
+ If Not DictGetS(m.idict, '_METHODS', names) Then Exit;
  arr := IterToArr(names);
  For i := 0 To High(arr) Do Begin
   nm := StrOf(arr[i]);
-  If Not m.idict.GetS(nm, v) Then Continue;
-  If Not tyBytes.idict.HasS(nm) Then tyBytes.idict.SetS(nm, v);
-  If Not tyBytearray.idict.HasS(nm) Then tyBytearray.idict.SetS(nm, v);
+  If Not DictGetS(m.idict, nm, v) Then Continue;
+  If Not DictHasS(tyBytes.idict, nm) Then DictSetS(tyBytes.idict, nm, v);
+  If Not DictHasS(tyBytearray.idict, nm) Then DictSetS(tyBytearray.idict, nm,
+    v);
  End;
 End;
 
@@ -32870,7 +33793,7 @@ Var
  c: TVal;
 Begin
  m := TPyModule(ImportByName('_bytesimpl').o);
- m.idict.GetS('memoryview', c);
+ DictGetS(m.idict, 'memoryview', c);
  Result := CallValue(c, a, n, kw);
 End;
 
@@ -32902,6 +33825,7 @@ End;
 
 Function ImportFromName(Const m: TVal; Const name: AnsiString): TVal;
 Var
+ ePy: PXcPy;
  r, pn: TVal;
  e: TPyObj;
  mname: AnsiString;
@@ -32918,17 +33842,19 @@ Begin
    Result := ImportByName(mname + '.' + name);
    Exit;
   Except
-   On E1: EPyError Do Begin
-    If Not IsInstance(VObj(E1.exc), exModuleNotFound) Then Raise;
-    If E1.exc.idict.GetS('name', pn) And IsStrVal(pn) And
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    If Not IsInstance(VObj(ePy.exc), exModuleNotFound) Then Raise;
+    If DictGetS(ePy.exc.idict, 'name', pn) And IsStrVal(pn) And
      (TPyStr(pn.o).s <> mname + '.' + name) Then Raise;
-   End;
+   End
+   Else Raise;
   End;
  End;
  e := MakeExc(exImportError, 'cannot import name ''' + name + ''' from ''' +
   mname + ''' (unknown location)');
- e.idict.SetS('name', VStr(mname));
- Raise EPyError.Make(e);
+ DictSetS(e.idict, 'name', VStr(mname));
+ RaisePy(e);
 End;
 
 Procedure ImportStar(Const m: TVal; target: TPyDict);
@@ -32941,7 +33867,7 @@ Begin
  If GetAttrOpt(m, InternStr('__all__'), allv) Then Begin
   arr := IterToArr(allv);
   For i := 0 To High(arr) Do
-   target.SetItem(arr[i], GetAttr(m, StrOf(arr[i])));
+   DictSetItem(target, arr[i], GetAttr(m, StrOf(arr[i])));
   Exit;
  End;
  d := m.o.idict;
@@ -32950,7 +33876,7 @@ Begin
    k := d.ent[i].key;
    v := d.ent[i].val;
    If IsStrVal(k) And (Length(TPyStr(k.o).s) > 0) And
-    (TPyStr(k.o).s[1] <> '_') Then target.SetItem(k, v);
+    (TPyStr(k.o).s[1] <> '_') Then DictSetItem(target, k, v);
   End;
 End;
 
@@ -32964,7 +33890,7 @@ Begin
  lvl := 0;
  g := Nil;
  fl := vNone;
- If (n > 1) And (a[1].k = vkObj) And (a[1].o Is TPyDict) Then
+ If (n > 1) And (a[1].k = vkObj) And (IsK(a[1].o, okDict)) Then
   g := TPyDict(a[1].o);
  If n > 3 Then fl := a[3];
  If n > 4 Then lvl := IndexVal(a[4]);
@@ -32975,15 +33901,15 @@ Procedure DisplayHook(Const v: TVal);
 Var
  hook: TVal;
 Begin
- If SysDict.GetS('displayhook', hook) And (hook.k = vkObj) And
-  Not (hook.o Is TPyBuiltin) Then Begin
+ If DictGetS(SysDict, 'displayhook', hook) And (hook.k = vkObj) And
+  Not (IsK(hook.o, okBuiltin)) Then Begin
   Call1(hook, v);
   Exit;
  End;
  If v.k = vkNone Then Exit;
- BuiltinsDict.SetS('_', vNone);
+ DictSetS(BuiltinsDict, '_', vNone);
  PyWriteTo(vNone, ReprVal(v) + #10);
- BuiltinsDict.SetS('_', v);
+ DictSetS(BuiltinsDict, '_', v);
 End;
 
 Function SysDisplayHook(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -33031,7 +33957,7 @@ End;
 
 Function SysMakeIterCoro(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If (a[0].k = vkObj) And (a[0].o Is TPyFunc) Then
+ If (a[0].k = vkObj) And (IsK(a[0].o, okFunc)) Then
   TPyFunc(a[0].o).code.flags := TPyFunc(a[0].o).code.flags Or
    CO_ITERABLE_COROUTINE;
  Result := a[0];
@@ -33040,11 +33966,12 @@ End;
 Function SysGetSizeOf(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If a[0].k = vkObj Then Begin
-  If a[0].o Is TPyStr Then Result := VInt(49 + Length(TPyStr(a[0].o).s))
-  Else If a[0].o Is TPyList Then Result := VInt(64 + 8 * TPyList(a[0].o).cnt)
-  Else If a[0].o Is TPyTuple Then
+  If IsK(a[0].o, okStr) Then Result := VInt(49 + Length(TPyStr(a[0].o).s))
+  Else If IsK(a[0].o, okList) Then Result := VInt(64 + 8 * TPyList(a[0].o).cnt)
+  Else If IsK(a[0].o, okTuple) Then
    Result := VInt(48 + 8 * Length(TPyTuple(a[0].o).items))
-  Else If a[0].o Is TPyDict Then Result := VInt(232 + 24 * TPyDict(a[0].o).used)
+  Else If IsK(a[0].o, okDict) Then Result := VInt(232 + 24 *
+    TPyDict(a[0].o).used)
   Else Result := VInt(56);
  End
  Else If a[0].k = vkFloat Then Result := VInt(24)
@@ -33095,7 +34022,7 @@ End;
 
 Function SysNoBind(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- If (a[0].k = vkObj) And (a[0].o Is TPyFunc) Then
+ If (a[0].k = vkObj) And (IsK(a[0].o, okFunc)) Then
   TPyFunc(a[0].o).nobind := True;
  Result := a[0];
 End;
@@ -33107,39 +34034,40 @@ Var
 Begin
  tyModule.ctor := @ModuleCtor;
  d := m.idict;
- d.SetS('modules', VObj(ModulesDict));
- d.SetS('path', VObj(SysPathList));
- d.SetS('stdin', VObj(StdinObj));
- d.SetS('stdout', VObj(StdoutObj));
- d.SetS('stderr', VObj(StderrObj));
- d.SetS('__stdin__', VObj(StdinObj));
- d.SetS('__stdout__', VObj(StdoutObj));
- d.SetS('__stderr__', VObj(StderrObj));
- d.SetS('version', VStr(PY_VERSION + ' ' + PY_BUILD + ' ' + PY_COMPILER));
- d.SetS('hexversion', VInt(PY_HEXVERSION));
- d.SetS('api_version', VInt(1013));
- d.SetS('maxsize', VInt(High(Int64)));
- d.SetS('maxunicode', VInt($10FFFF));
- d.SetS('byteorder', VStr('little'));
- d.SetS('copyright', VStr('Copyright (c) 2026 Sylvain Maltais. Compatible ' +
+ DictSetS(d, 'modules', VObj(ModulesDict));
+ DictSetS(d, 'path', VObj(SysPathList));
+ DictSetS(d, 'stdin', VObj(StdinObj));
+ DictSetS(d, 'stdout', VObj(StdoutObj));
+ DictSetS(d, 'stderr', VObj(StderrObj));
+ DictSetS(d, '__stdin__', VObj(StdinObj));
+ DictSetS(d, '__stdout__', VObj(StdoutObj));
+ DictSetS(d, '__stderr__', VObj(StderrObj));
+ DictSetS(d, 'version', VStr(PY_VERSION + ' ' + PY_BUILD + ' ' + PY_COMPILER));
+ DictSetS(d, 'hexversion', VInt(PY_HEXVERSION));
+ DictSetS(d, 'api_version', VInt(1013));
+ DictSetS(d, 'maxsize', VInt(High(Int64)));
+ DictSetS(d, 'maxunicode', VInt($10FFFF));
+ DictSetS(d, 'byteorder', VStr('little'));
+ DictSetS(d, 'copyright',
+   VStr('Copyright (c) 2026 Sylvain Maltais. Compatible ' +
   'avec Python ' + PY_VERSION));
  {$IFDEF UNIX}
- d.SetS('platform', VStr('linux'));
+ DictSetS(d, 'platform', VStr('linux'));
  {$ELSE}
- d.SetS('platform', VStr('win32'));
+ DictSetS(d, 'platform', VStr('win32'));
  {$ENDIF}
- d.SetS('prefix', VStr('/usr'));
- d.SetS('exec_prefix', VStr('/usr'));
- d.SetS('base_prefix', VStr('/usr'));
- d.SetS('base_exec_prefix', VStr('/usr'));
- d.SetS('dont_write_bytecode', vTrue);
- d.SetS('builtin_module_names', VObj(NewTuple(0)));
- d.SetS('warnoptions', VObj(NewList));
- d.SetS('_xoptions', VObj(TPyDict.Make));
- d.SetS('meta_path', VObj(NewList));
- d.SetS('path_hooks', VObj(NewList));
- d.SetS('path_importer_cache', VObj(TPyDict.Make));
- d.SetS('last_value', vNone);
+ DictSetS(d, 'prefix', VStr('/usr'));
+ DictSetS(d, 'exec_prefix', VStr('/usr'));
+ DictSetS(d, 'base_prefix', VStr('/usr'));
+ DictSetS(d, 'base_exec_prefix', VStr('/usr'));
+ DictSetS(d, 'dont_write_bytecode', vTrue);
+ DictSetS(d, 'builtin_module_names', VObj(NewTuple(0)));
+ DictSetS(d, 'warnoptions', VObj(NewList));
+ DictSetS(d, '_xoptions', VObj(AllocDict));
+ DictSetS(d, 'meta_path', VObj(NewList));
+ DictSetS(d, 'path_hooks', VObj(NewList));
+ DictSetS(d, 'path_importer_cache', VObj(AllocDict));
+ DictSetS(d, 'last_value', vNone);
  DefFunc(d, 'exit', @BiExit);
  DefFunc(d, 'getrecursionlimit', @SysGetRecLimit);
  DefFunc(d, '_nobind', @SysNoBind);
@@ -33159,7 +34087,7 @@ Begin
  DefFunc(d, '_getframe', @SysGetFrame);
  DefFunc(d, '_make_iterable_coroutine', @SysMakeIterCoro);
  DefFunc(d, 'setswitchinterval', @SysNoop);
- If d.GetS('displayhook', mv) Then d.SetS('__displayhook__', mv);
+ If DictGetS(d, 'displayhook', mv) Then DictSetS(d, '__displayhook__', mv);
 End;
 
 { ------------------------------------------------------------
@@ -33168,6 +34096,17 @@ End;
 Const
  RadToDegC: Double = 57.295779513082322865;
  DegToRadC: Double = 0.017453292519943295769;
+
+{ objet non numerique (Fraction, ...) : __float__ ou __index__ }
+Function ObjToDouble(Const v: TVal): Double;
+Begin
+ If (v.k = vkObj) And (HasAttr(v, '__float__') Or HasAttr(v, '__index__')) Then
+  Result := ToFloatVal(v)
+ Else Begin
+  TypeErr('must be real number, not ' + TypeName(v));
+  Result := 0;
+ End;
+End;
 
 Function MathArg(a: PVal; i, n: Integer; Const fname: AnsiString): Double;
 Begin
@@ -33328,7 +34267,7 @@ Var
  sh: TVal;
  x: Double;
 Begin
- If (v.k = vkObj) And (v.o Is TPyBigInt) And Not TPyBigInt(v.o).neg Then Begin
+ If (v.k = vkObj) And (IsK(v.o, okBigInt)) And Not TPyBigInt(v.o).neg Then Begin
   bl := IntBitLength(v);
   If bl > 1000 Then Begin
    sh := IntShr(v, bl - 60);
@@ -33346,8 +34285,7 @@ Var
  r, b: Double;
 Begin
  NeedArgs(n, 1, 2, 'log');
- If Not IsNumVal(a[0]) Then
-  TypeErr('must be real number, not ' + TypeName(a[0]));
+ If Not IsNumVal(a[0]) Then a[0] := VFloat(ObjToDouble(a[0]));
  r := LogOf(a[0], 'log');
  If n = 2 Then Begin
   b := LogOf(a[1], 'log');
@@ -33363,9 +34301,8 @@ Var
  sh: TVal;
  x: Double;
 Begin
- If Not IsNumVal(a[0]) Then
-  TypeErr('must be real number, not ' + TypeName(a[0]));
- If (a[0].k = vkObj) And (a[0].o Is TPyBigInt) And
+ If Not IsNumVal(a[0]) Then a[0] := VFloat(ObjToDouble(a[0]));
+ If (a[0].k = vkObj) And (IsK(a[0].o, okBigInt)) And
   Not TPyBigInt(a[0].o).neg Then Begin
   bl := IntBitLength(a[0]);
   If bl > 1000 Then Begin
@@ -33385,9 +34322,8 @@ Var
  sh: TVal;
  x: Double;
 Begin
- If Not IsNumVal(a[0]) Then
-  TypeErr('must be real number, not ' + TypeName(a[0]));
- If (a[0].k = vkObj) And (a[0].o Is TPyBigInt) And
+ If Not IsNumVal(a[0]) Then a[0] := VFloat(ObjToDouble(a[0]));
+ If (a[0].k = vkObj) And (IsK(a[0].o, okBigInt)) And
   Not TPyBigInt(a[0].o).neg Then Begin
   bl := IntBitLength(a[0]);
   If bl > 1000 Then Begin
@@ -34024,11 +34960,11 @@ Var
  v: Array Of Double;
  nan: Boolean;
 Begin
- If Not ((a[0].k = vkObj) And ((a[0].o Is TPyTuple) Or (a[0].o Is TPyList)))
-   Then
+ If Not ((a[0].k = vkObj) And ((IsK(a[0].o, okTuple)) Or (IsK(a[0].o,
+   okList)))) Then
   TypeErr('dist() argument 1 must be tuple, not ' + TypeName(a[0]));
- If Not ((a[1].k = vkObj) And ((a[1].o Is TPyTuple) Or (a[1].o Is TPyList)))
-   Then
+ If Not ((a[1].k = vkObj) And ((IsK(a[1].o, okTuple)) Or (IsK(a[1].o,
+   okList)))) Then
   TypeErr('dist() argument 2 must be tuple, not ' + TypeName(a[1]));
  p := IterToArr(a[0]);
  q := IterToArr(a[1]);
@@ -34062,11 +34998,11 @@ Var
  d: TPyDict;
 Begin
  d := m.idict;
- d.SetS('pi', VFloat(Pi));
- d.SetS('e', VFloat(Exp(1)));
- d.SetS('tau', VFloat(2 * Pi));
- d.SetS('inf', VFloat(Infinity));
- d.SetS('nan', VFloat(PyNaN));
+ DictSetS(d, 'pi', VFloat(Pi));
+ DictSetS(d, 'e', VFloat(Exp(1)));
+ DictSetS(d, 'tau', VFloat(2 * Pi));
+ DictSetS(d, 'inf', VFloat(Infinity));
+ DictSetS(d, 'nan', VFloat(PyNaN));
  DefFunc(d, 'sqrt', @MSqrt);
  DefFunc(d, 'sin', @MSin);
  DefFunc(d, 'cos', @MCos);
@@ -34397,10 +35333,10 @@ Begin
  DefFunc(d, 'mktime', @TimeMktime);
  DefFunc(d, 'strftime', @TimeStrftime);
  DefFunc(d, 'ctime', @TimeCtime);
- d.SetS('timezone', VInt(0));
- d.SetS('altzone', VInt(0));
- d.SetS('daylight', VInt(0));
- d.SetS('tzname', Tup2(VStr('UTC'), VStr('UTC')));
+ DictSetS(d, 'timezone', VInt(0));
+ DictSetS(d, 'altzone', VInt(0));
+ DictSetS(d, 'daylight', VInt(0));
+ DictSetS(d, 'tzname', Tup2(VStr('UTC'), VStr('UTC')));
 End;
 { ------------------------------------------------------------
   Module _posix : primitives POSIX (fichiers, processus, ...)
@@ -34505,13 +35441,13 @@ Begin
   args[1] := VStr(ErrnoMsg(e));
  End;
  o := MakeExcArgs(cls, args);
- o.idict.SetS('errno', VInt(e));
- o.idict.SetS('strerror', VStr(ErrnoMsg(e)));
- If hasF1 Then o.idict.SetS('filename', VStr(f1))
- Else o.idict.SetS('filename', vNone);
- If hasF2 Then o.idict.SetS('filename2', VStr(f2))
- Else o.idict.SetS('filename2', vNone);
- Raise EPyError.Make(o);
+ DictSetS(o.idict, 'errno', VInt(e));
+ DictSetS(o.idict, 'strerror', VStr(ErrnoMsg(e)));
+ If hasF1 Then DictSetS(o.idict, 'filename', VStr(f1))
+ Else DictSetS(o.idict, 'filename', vNone);
+ If hasF2 Then DictSetS(o.idict, 'filename2', VStr(f2))
+ Else DictSetS(o.idict, 'filename2', vNone);
+ RaisePy(o);
 End;
 
 Procedure RaiseErrnoF(e: Integer; Const fn: AnsiString);
@@ -34978,7 +35914,7 @@ Begin
   e := FpReadDir(d^);
   If e <> Nil Then Begin
    nm := PChar(@e^.d_name[0]);
-   If (nm <> '.') And (nm <> '..') Then l.Add(VStr(FsStr(nm)));
+   If (nm <> '.') And (nm <> '..') Then ObjAdd(l, VStr(FsStr(nm)));
   End;
  Until e = Nil;
  FpCloseDir(d^);
@@ -35012,7 +35948,7 @@ Begin
     t.items[0] := VStr(FsStr(nm));
     t.items[1] := VInt(e^.d_type);
     t.items[2] := VInt(e^.d_fileno);
-    l.Add(VObj(t));
+    ObjAdd(l, VObj(t));
    End;
   End;
  Until e = Nil;
@@ -35098,7 +36034,7 @@ Begin
  r := c_getgroups(256, @g[0]);
  If r < 0 Then RaiseErrnoN(fpgeterrno);
  l := NewList;
- For i := 0 To r - 1 Do l.Add(VInt(g[i]));
+ For i := 0 To r - 1 Do ObjAdd(l, VInt(g[i]));
  Result := VObj(l);
 End;
 
@@ -35416,11 +36352,11 @@ Var
  i, p: Integer;
  s: AnsiString;
 Begin
- d := TPyDict.Make;
+ d := AllocDict;
  For i := 1 To GetEnvironmentVariableCount Do Begin
   s := GetEnvironmentString(i);
   p := Pos('=', s);
-  If p > 1 Then d.SetItem(VBytes(Copy(s, 1, p - 1)), VBytes(Copy(s, p + 1,
+  If p > 1 Then DictSetItem(d, VBytes(Copy(s, 1, p - 1)), VBytes(Copy(s, p + 1,
    Length(s))));
  End;
  Result := VObj(d);
@@ -35464,14 +36400,14 @@ Function PxFspath(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  f, r: TVal;
 Begin
- If IsStrVal(a[0]) Or ((a[0].k = vkObj) And (a[0].o Is TPyBytes) And
+ If IsStrVal(a[0]) Or ((a[0].k = vkObj) And (IsK(a[0].o, okBytes)) And
   (a[0].o.cls = tyBytes)) Then Begin
   Result := a[0];
   Exit;
  End;
  If (a[0].k = vkObj) And LookupType(a[0].o.cls, '__fspath__', f) Then Begin
   r := Call1(f, a[0]);
-  If IsStrVal(r) Or ((r.k = vkObj) And (r.o Is TPyBytes)) Then Begin
+  If IsStrVal(r) Or ((r.k = vkObj) And (IsK(r.o, okBytes))) Then Begin
    Result := r;
    Exit;
   End;
@@ -35578,7 +36514,7 @@ End;
   ------------------------------------------------------------ }
 Function BytesOrStrArg(Const v: TVal): AnsiString;
 Begin
- If (v.k = vkObj) And (v.o Is TPyBytes) Then Result := TPyBytes(v.o).s
+ If (v.k = vkObj) And (IsK(v.o, okBytes)) Then Result := TPyBytes(v.o).s
  Else Result := FsPath(v);
 End;
 
@@ -35753,8 +36689,8 @@ Begin
  For k := 0 To 2 Do Begin
   res[k] := NewList;
   For i := 0 To High(lists[k]) Do
-   If fpFD_ISSET(SelFdOf(lists[k][i]), sets[k]) = 1 Then
-     res[k].Add(lists[k][i]);
+   If fpFD_ISSET(SelFdOf(lists[k][i]), sets[k]) = 1 Then ObjAdd(res[k],
+     lists[k][i]);
  End;
  t := NewTuple(3);
  For k := 0 To 2 Do t.items[k] := VObj(res[k]);
@@ -35764,7 +36700,7 @@ End;
 Procedure InitSelectModule(m: TPyModule);
 Begin
  DefFunc(m.idict, 'select', @SelSelect);
- m.idict.SetS('error', VObj(exOSError));
+ DictSetS(m.idict, 'error', VObj(exOSError));
 End;
 { ------------------------------------------------------------
   Module _sock : primitives de sockets (couche basse de _socket)
@@ -35985,7 +36921,7 @@ Var
  s: AnsiString;
  r: LongInt;
 Begin
- If (a[3].k = vkObj) And (a[3].o Is TPyBytes) Then Begin
+ If (a[3].k = vkObj) And (IsK(a[3].o, okBytes)) Then Begin
   s := TPyBytes(a[3].o).s;
   r := c_setsockopt(ToInt64(a[0]), ToInt64(a[1]), ToInt64(a[2]), PChar(s),
    Length(s));
@@ -36105,7 +37041,7 @@ Begin
   SetLength(s, p^.ai_addrlen);
   If p^.ai_addrlen > 0 Then Move(p^.ai_addr^, s[1], p^.ai_addrlen);
   t.items[4] := VBytes(s);
-  l.Add(VObj(t));
+  ObjAdd(l, VObj(t));
   p := p^.ai_next;
  End;
  c_freeaddrinfo(res);
@@ -36332,10 +37268,23 @@ End;
   Module _random : Mersenne Twister MT19937 (comme CPython)
   ------------------------------------------------------------ }
 Type
- TPyMT = Class(TPyObj)
+ TPyMT = ^TPyMTRec;
+ TPyMTRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   mt: Array[0..623] Of Cardinal;
   mti: Integer;
  End;
+
+Function AllocMT(c: TPyType): TPyMT; Forward;
+
+Function AllocMT(c: TPyType): TPyMT;
+Begin
+ Result := TPyMT(AllocObjMem(SizeOf(TPyMTRec)));
+ InitObj(Result, okMT, c);
+End;
 
 Procedure MTInitGen(r: TPyMT; s: Cardinal);
 Var
@@ -36416,7 +37365,7 @@ Function RndNew(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: TPyMT;
 Begin
- r := TPyMT.Create(tyObject);
+ r := AllocMT(tyObject);
  MTInitGen(r, Cardinal(Trunc(NowSeconds * 1000)) Xor Cardinal(GetProcessID));
  Result := VObj(r);
 End;
@@ -36438,7 +37387,7 @@ Begin
   Result := vNone;
   Exit;
  End;
- If IsStrVal(v) Or ((v.k = vkObj) And (v.o Is TPyBytes)) Then Begin
+ If IsStrVal(v) Or ((v.k = vkObj) And (IsK(v.o, okBytes))) Then Begin
   If IsStrVal(v) Then s := TPyStr(v.o).s Else s := TPyBytes(v.o).s;
   v := VInt(Abs(HashBytes(s)));
  End
@@ -36557,7 +37506,7 @@ Begin
  hasJump := False;
  jumpv := False;
  If kw <> Nil Then
-  If kw.GetS('jump', v) Then
+  If DictGetS(kw, 'jump', v) Then
    If v.k <> vkNone Then Begin
     hasJump := True;
     jumpv := IsTrue(v);
@@ -36635,7 +37584,7 @@ Begin
  DefFunc(d, 'get_objects', @GcGetObjectsM);
  DefFunc(d, 'set_threshold', @SysNoop);
  DefFunc(d, 'get_threshold', @GcGetCountM);
- d.SetS('garbage', VObj(NewList));
+ DictSetS(d, 'garbage', VObj(NewList));
 End;
 
 Function AtExitRegister(a: PVal; n: Integer; kw: TPyDict): TVal;
@@ -36646,7 +37595,7 @@ Begin
  If n < 1 Then TypeErr('register() takes at least 1 argument (0 given)');
  t := NewTuple(n);
  For i := 0 To n - 1 Do t.items[i] := a[i];
- AtExitList.Add(VObj(t));
+ ObjAdd(AtExitList, VObj(t));
  Result := a[0];
 End;
 
@@ -36656,25 +37605,28 @@ Var
 Begin
  For i := AtExitList.cnt - 1 DownTo 0 Do
   If ValEq(TPyTuple(AtExitList.items[i].o).items[0], a[0]) Then
-   AtExitList.Delete(i);
+   ListDelete(AtExitList, i);
  Result := vNone;
 End;
 
 Function AtExitRunM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ ePy: PXcPy;
  t: TPyTuple;
 Begin
  While AtExitList.cnt > 0 Do Begin
   t := TPyTuple(AtExitList.items[AtExitList.cnt - 1].o);
-  AtExitList.Delete(AtExitList.cnt - 1);
+  ListDelete(AtExitList, AtExitList.cnt - 1);
   Try
    CallValue(t.items[0], @t.items[1], Length(t.items) - 1, Nil);
   Except
-   On E: EPyError Do Begin
-    If IsInstance(VObj(E.exc), exSystemExit) Then Raise;
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    If IsInstance(VObj(ePy.exc), exSystemExit) Then Raise;
     ErrWrite('Error in atexit._run_exitfuncs:' + #10);
-    PyRunTraceback(E.exc);
-   End;
+    PyRunTraceback(ePy.exc);
+   End
+   Else Raise;
   End;
  End;
  Result := vNone;
@@ -36690,7 +37642,7 @@ End;
 Procedure InitBuiltinsModule(m: TPyModule);
 Begin
  m.idict := BuiltinsDict;
- BuiltinsDict.SetS('__name__', VStr('builtins'));
+ DictSetS(BuiltinsDict, '__name__', VStr('builtins'));
 End;
 
 { module _io / io minimal : StringIO natif pour la rapidite }
@@ -36698,7 +37650,7 @@ Function SioNew(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  f: TPyFile;
 Begin
- f := TPyFile.Create(tyFile);
+ f := AllocFile(tyFile);
  f.fname := '<StringIO>';
  f.mem := True;
  f.mode := 'w+';
@@ -36719,7 +37671,7 @@ Begin
  f := TPyFile(SioNew(a, 0, kw).o);
  f.binary := True;
  f.fname := '<BytesIO>';
- If (n > 0) And (a[0].k = vkObj) And (a[0].o Is TPyBytes) Then
+ If (n > 0) And (a[0].k = vkObj) And (IsK(a[0].o, okBytes)) Then
   f.data := TPyBytes(a[0].o).s;
  Result := VObj(f);
 End;
@@ -36762,6 +37714,7 @@ End;
 
 Procedure FlushTracked;
 Var
+ ePy: PXcPy;
  i: Integer;
  snap: Array Of TPyObj;
 Begin
@@ -36772,7 +37725,11 @@ Begin
   Try
    Call0(GetAttr(VObj(snap[i]), 'flush'));
   Except
-   On E: EPyError Do ;
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    ;
+   End
+   Else Raise;
   End;
 End;
 
@@ -36791,8 +37748,9 @@ Begin
  DefFunc(m.idict, '_bytesio', @BioNew);
  DefFunc(m.idict, '_getvalue', @SioGetValue);
  DefMethod(tyFile, 'getvalue', @SioGetValue);
- m.idict.SetS('TextIOWrapper', VObj(tyFile));
- m.idict.SetS('open', BuiltinsDict.ent[BuiltinsDict.FindS('open', HashBytes(
+ DictSetS(m.idict, 'TextIOWrapper', VObj(tyFile));
+ DictSetS(m.idict, 'open', BuiltinsDict.ent[DictFindS(BuiltinsDict, 'open',
+   HashBytes(
   'open'))].val);
 End;
 
@@ -36845,20 +37803,19 @@ Type
   lo, hi: Cardinal;
  End;
 
- TReSet = Class
+ TReSet = ^TReSetRec;
+ TReSetRec = Record
   neg: Boolean;
   ranges: Array Of TReRange;
   cats: Integer;
-  Procedure AddRange(lo, hi: Cardinal);
-  Function Has(c: Cardinal; ascii: Boolean): Boolean;
-  Function Test(c: Cardinal; icase, ascii: Boolean): Boolean;
  End;
 
  TReInstr = Record
   op, x, y, z, w: Integer;
  End;
 
- TReProg = Class
+ TReProg = ^TReProgRec;
+ TReProgRec = Record
   code: Array Of TReInstr;
   n: Integer;
   sets: Array Of TReSet;
@@ -36871,22 +37828,44 @@ Type
   flags: Integer;
   isBytes: Boolean;
   firstCh: Integer;
-  Destructor Destroy; Override;
  End;
 
- TReNode = Class
+ TReNode = ^TReNodeRec;
+ TReNodeRec = Record
   kind: Integer;
   c: Cardinal;
   idx, mn, mx: Integer;
   lazy, neg: Boolean;
   flags: Integer;
   kids: Array Of TReNode;
-  Procedure Add(k: TReNode);
  End;
 
- EReSyntax = Class(Exception)
-  pos: Integer;
- End;
+
+
+Procedure ReSetAddRange(Self: TReSet; lo, hi: Cardinal); Forward;
+Function ReSetHas(Self: TReSet; c: Cardinal; ascii: Boolean): Boolean; Forward;
+Function ReSetTest(Self: TReSet; c: Cardinal; icase, ascii: Boolean): Boolean;
+  Forward;
+Function AllocReSet: TReSet; Forward;
+Procedure ReProgDestroy(Self: TReProg); Forward;
+Function AllocReProg: TReProg; Forward;
+Procedure ObjAdd(Self: TReNode; k: TReNode); Overload; Forward;
+Function AllocReNode: TReNode; Forward;
+
+Function AllocReSet: TReSet;
+Begin
+ Result := TReSet(AllocMem(SizeOf(TReSetRec)));
+End;
+
+Function AllocReProg: TReProg;
+Begin
+ Result := TReProg(AllocMem(SizeOf(TReProgRec)));
+End;
+
+Function AllocReNode: TReNode;
+Begin
+ Result := TReNode(AllocMem(SizeOf(TReNodeRec)));
+End;
 
 Const
  nkEmpty = 0;
@@ -36903,25 +37882,25 @@ Const
  nkCondN = 11;
  nkAnchor = 12;
 
-Procedure TReNode.Add(k: TReNode);
+Procedure ObjAdd(Self: TReNode; k: TReNode); Overload;
 Begin
- SetLength(kids, Length(kids) + 1);
- kids[High(kids)] := k;
+ SetLength(Self.kids, Length(Self.kids) + 1);
+ Self.kids[High(Self.kids)] := k;
 End;
 
-Destructor TReProg.Destroy;
+Procedure ReProgDestroy(Self: TReProg);
 Var
  i: Integer;
 Begin
- For i := 0 To nsets - 1 Do sets[i].Free;
- Inherited Destroy;
+ For i := 0 To Self.nsets - 1 Do Dispose(Self.sets[i]);
+ ;
 End;
 
-Procedure TReSet.AddRange(lo, hi: Cardinal);
+Procedure ReSetAddRange(Self: TReSet; lo, hi: Cardinal);
 Begin
- SetLength(ranges, Length(ranges) + 1);
- ranges[High(ranges)].lo := lo;
- ranges[High(ranges)].hi := hi;
+ SetLength(Self.ranges, Length(Self.ranges) + 1);
+ Self.ranges[High(Self.ranges)].lo := lo;
+ Self.ranges[High(Self.ranges)].hi := hi;
 End;
 
 { cle de comparaison insensible a la casse (sre : tolower + equivalences) }
@@ -36969,46 +37948,47 @@ Begin
  Else Result := CpIsSpace(c);
 End;
 
-Function TReSet.Has(c: Cardinal; ascii: Boolean): Boolean;
+Function ReSetHas(Self: TReSet; c: Cardinal; ascii: Boolean): Boolean;
 Var
  i: Integer;
 Begin
  Result := True;
- For i := 0 To High(ranges) Do
-  If (c >= ranges[i].lo) And (c <= ranges[i].hi) Then Exit;
- If (cats And RC_DIGIT) <> 0 Then If ReIsDigit(c, ascii) Then Exit;
- If (cats And RC_NDIGIT) <> 0 Then If Not ReIsDigit(c, ascii) Then Exit;
- If (cats And RC_WORD) <> 0 Then If ReIsWord(c, ascii) Then Exit;
- If (cats And RC_NWORD) <> 0 Then If Not ReIsWord(c, ascii) Then Exit;
- If (cats And RC_SPACE) <> 0 Then If ReIsSpace(c, ascii) Then Exit;
- If (cats And RC_NSPACE) <> 0 Then If Not ReIsSpace(c, ascii) Then Exit;
+ For i := 0 To High(Self.ranges) Do
+  If (c >= Self.ranges[i].lo) And (c <= Self.ranges[i].hi) Then Exit;
+ If (Self.cats And RC_DIGIT) <> 0 Then If ReIsDigit(c, ascii) Then Exit;
+ If (Self.cats And RC_NDIGIT) <> 0 Then If Not ReIsDigit(c, ascii) Then Exit;
+ If (Self.cats And RC_WORD) <> 0 Then If ReIsWord(c, ascii) Then Exit;
+ If (Self.cats And RC_NWORD) <> 0 Then If Not ReIsWord(c, ascii) Then Exit;
+ If (Self.cats And RC_SPACE) <> 0 Then If ReIsSpace(c, ascii) Then Exit;
+ If (Self.cats And RC_NSPACE) <> 0 Then If Not ReIsSpace(c, ascii) Then Exit;
  Result := False;
 End;
 
-Function TReSet.Test(c: Cardinal; icase, ascii: Boolean): Boolean;
+Function ReSetTest(Self: TReSet; c: Cardinal; icase, ascii: Boolean): Boolean;
 Var
  r: Boolean;
  l, u: Cardinal;
 Begin
- r := Has(c, ascii);
+ r := ReSetHas(Self, c, ascii);
  If (Not r) And icase Then Begin
   l := CpLower(c);
   u := CpUpper(c);
-  If l <> c Then r := Has(l, ascii);
-  If (Not r) And (u <> c) Then r := Has(u, ascii);
+  If l <> c Then r := ReSetHas(Self, l, ascii);
+  If (Not r) And (u <> c) Then r := ReSetHas(Self, u, ascii);
   If (Not r) And (c >= 128) Then Begin
    l := ReIKey(c);
-   r := Has(l, ascii);
-   If (Not r) And (CpUpper(l) <> l) Then r := Has(CpUpper(l), ascii);
-   If (Not r) And (l = $3C2) Then r := Has($3C3, ascii);
+   r := ReSetHas(Self, l, ascii);
+   If (Not r) And (CpUpper(l) <> l) Then r := ReSetHas(Self, CpUpper(l), ascii);
+   If (Not r) And (l = $3C2) Then r := ReSetHas(Self, $3C3, ascii);
   End;
  End;
- Result := r <> neg;
+ Result := r <> Self.neg;
 End;
 
 { ---------------- analyse de l'expression ---------------- }
 Type
- TReParser = Class
+ TReParser = ^TReParserRec;
+ TReParserRec = Record
   p: TCpArr;
   n, i: Integer;
   flags: Integer;
@@ -37017,114 +37997,131 @@ Type
   nameIdx: Array Of Integer;
   sets: Array Of TReSet;
   nsets: Integer;
-  nodes: TList;
+  nodes: Array Of TReNode;
+  nnodes: Integer;
   isBytes: Boolean;
   openGroups: Array Of Integer;
-  Constructor Create(Const pat: TCpArr; fl: Integer; bytesMode: Boolean);
-  Destructor Destroy; Override;
-  Function NewNode(k: Integer): TReNode;
-  Procedure Err(Const msg: AnsiString; at: Integer);
-  Function ParseAlt(depth: Integer): TReNode;
-  Function ParseSeq(depth: Integer): TReNode;
-  Function ParseAtom(depth: Integer; Var okAtom: Boolean): TReNode;
-  Function ParseClass: TReNode;
-  Function ParseEscape(inClass: Boolean; Var cat: Integer; Var isCat: Boolean):
-    Cardinal;
-  Function ParseQuant(atom: TReNode): TReNode;
-  Function AddSet(s: TReSet): Integer;
-  Function GroupByName(Const nm: AnsiString): Integer;
-  Procedure SkipVerbose;
-  Function ReadName(term: Cardinal; allowDigit: Boolean = False): AnsiString;
-  Function ParseFlagsGroup(depth: Integer; Var res: TReNode; start: Integer):
-    Boolean;
  End;
 
-Constructor TReParser.Create(Const pat: TCpArr; fl: Integer; bytesMode:
-  Boolean);
+Function AllocReParser(Const pat: TCpArr; fl: Integer; bytesMode: Boolean):
+  TReParser; Forward;
+Procedure ReParserDestroy(Self: TReParser); Forward;
+Function ReParserNewNode(Self: TReParser; k: Integer): TReNode; Forward;
+Procedure FreeReProg(p: TReProg); Forward;
+Procedure FreeReParser(p: TReParser); Forward;
+Procedure ReParserErr(Self: TReParser; Const msg: AnsiString; at: Integer);
+  Forward;
+Function ReParserParseAlt(Self: TReParser; depth: Integer): TReNode; Forward;
+Function ReParserParseSeq(Self: TReParser; depth: Integer): TReNode; Forward;
+Function ReParserParseAtom(Self: TReParser; depth: Integer; Var okAtom:
+  Boolean): TReNode; Forward;
+Function ReParserParseClass(Self: TReParser): TReNode; Forward;
+Function ReParserParseEscape(Self: TReParser; inClass: Boolean; Var cat:
+  Integer; Var isCat: Boolean): Cardinal; Forward;
+Function ReParserParseQuant(Self: TReParser; atom: TReNode): TReNode; Forward;
+Function ReParserAddSet(Self: TReParser; s: TReSet): Integer; Forward;
+Function ReParserGroupByName(Self: TReParser; Const nm: AnsiString): Integer;
+  Forward;
+Procedure ReParserSkipVerbose(Self: TReParser); Forward;
+Function ReParserReadName(Self: TReParser; term: Cardinal; allowDigit: Boolean
+  = False): AnsiString; Forward;
+Function ReParserParseFlagsGroup(Self: TReParser; depth: Integer; Var res:
+  TReNode; start: Integer): Boolean; Forward;
+
+Function AllocReParser(Const pat: TCpArr; fl: Integer; bytesMode: Boolean):
+  TReParser;
+Var
+ Self: TReParser;
 Begin
- p := pat;
- n := Length(pat);
- i := 0;
- flags := fl;
- ngroups := 0;
- nodes := TList.Create;
- isBytes := bytesMode;
+ Self := TReParser(AllocMem(SizeOf(TReParserRec)));
+ Result := Self;
+ Self.p := pat;
+ Self.n := Length(pat);
+ Self.i := 0;
+ Self.flags := fl;
+ Self.ngroups := 0;
+ Self.nnodes := 0;
+ Self.isBytes := bytesMode;
 End;
 
-Destructor TReParser.Destroy;
+Procedure ReParserDestroy(Self: TReParser);
 Var
  k: Integer;
 Begin
- For k := 0 To nodes.Count - 1 Do TReNode(nodes[k]).Free;
- nodes.Free;
- Inherited Destroy;
+ For k := 0 To Self.nnodes - 1 Do Dispose(Self.nodes[k]);
+ ;
 End;
 
-Function TReParser.NewNode(k: Integer): TReNode;
+Function ReParserNewNode(Self: TReParser; k: Integer): TReNode;
 Begin
- Result := TReNode.Create;
+ Result := AllocReNode;
  Result.kind := k;
- Result.flags := flags;
+ Result.flags := Self.flags;
  Result.mn := 0;
  Result.mx := 0;
- nodes.Add(Result);
+ If Self.nnodes >= Length(Self.nodes) Then SetLength(Self.nodes, Self.nnodes *
+   2 + 16);
+ Self.nodes[Self.nnodes] := Result;
+ Inc(Self.nnodes);
 End;
 
-Procedure TReParser.Err(Const msg: AnsiString; at: Integer);
-Var
- e: EReSyntax;
+Procedure ReParserErr(Self: TReParser; Const msg: AnsiString; at: Integer);
 Begin
- e := EReSyntax.Create(msg);
- e.pos := at;
- Raise e;
+ ReSynInfo.msg := msg;
+ ReSynInfo.pos := at;
+ RaiseXc(xtRe, Nil, 0);
 End;
 
-Function TReParser.AddSet(s: TReSet): Integer;
+Function ReParserAddSet(Self: TReParser; s: TReSet): Integer;
 Begin
- If nsets >= Length(sets) Then SetLength(sets, nsets * 2 + 4);
- sets[nsets] := s;
- Result := nsets;
- Inc(nsets);
+ If Self.nsets >= Length(Self.sets) Then SetLength(Self.sets, Self.nsets * 2 +
+   4);
+ Self.sets[Self.nsets] := s;
+ Result := Self.nsets;
+ Inc(Self.nsets);
 End;
 
-Function TReParser.GroupByName(Const nm: AnsiString): Integer;
+Function ReParserGroupByName(Self: TReParser; Const nm: AnsiString): Integer;
 Var
  k: Integer;
 Begin
  Result := -1;
- For k := 0 To High(names) Do
-  If names[k] = nm Then Begin
-   Result := nameIdx[k];
+ For k := 0 To High(Self.names) Do
+  If Self.names[k] = nm Then Begin
+   Result := Self.nameIdx[k];
    Exit;
   End;
 End;
 
-Procedure TReParser.SkipVerbose;
+Procedure ReParserSkipVerbose(Self: TReParser);
 Begin
- If (flags And REF_X) = 0 Then Exit;
- While i < n Do Begin
-  If (p[i] = 32) Or ((p[i] >= 9) And (p[i] <= 13)) Then Inc(i)
-  Else If p[i] = Ord('#') Then Begin
-   While (i < n) And (p[i] <> 10) Do Inc(i);
+ If (Self.flags And REF_X) = 0 Then Exit;
+ While Self.i < Self.n Do Begin
+  If (Self.p[Self.i] = 32) Or ((Self.p[Self.i] >= 9) And (Self.p[Self.i] <=
+    13)) Then Inc(Self.i)
+  Else If Self.p[Self.i] = Ord('#') Then Begin
+   While (Self.i < Self.n) And (Self.p[Self.i] <> 10) Do Inc(Self.i);
   End
   Else Break;
  End;
 End;
 
-Function TReParser.ReadName(term: Cardinal; allowDigit: Boolean): AnsiString;
+Function ReParserReadName(Self: TReParser; term: Cardinal; allowDigit:
+  Boolean): AnsiString;
 Var
  st: Integer;
 Begin
- st := i;
- While (i < n) And (p[i] <> term) Do Inc(i);
- If i >= n Then
-  Err('missing ' + Chr(term) + ', unterminated name', st);
- Result := CpsToStr(p, st, i);
- Inc(i);
- If Result = '' Then Err('missing group name', st);
- If Not (((UniFlags(p[st]) And ufXidStart) <> 0) Or (p[st] = 95) Or
-  (allowDigit And (p[st] >= 48) And (p[st] <= 57))) Then
-  Err('bad character in group name ' + StrReprEsc(Result, False), st);
+ st := Self.i;
+ While (Self.i < Self.n) And (Self.p[Self.i] <> term) Do Inc(Self.i);
+ If Self.i >= Self.n Then
+  ReParserErr(Self, 'missing ' + Chr(term) + ', unterminated name', st);
+ Result := CpsToStr(Self.p, st, Self.i);
+ Inc(Self.i);
+ If Result = '' Then ReParserErr(Self, 'missing group name', st);
+ If Not (((UniFlags(Self.p[st]) And ufXidStart) <> 0) Or (Self.p[st] = 95) Or
+  (allowDigit And (Self.p[st] >= 48) And (Self.p[st] <= 57))) Then
+  ReParserErr(Self, 'bad character in group name ' + StrReprEsc(Result, False),
+    st);
 End;
 
 Function HexVal(c: Cardinal): Integer;
@@ -37137,17 +38134,18 @@ End;
 
 { Lit un echappement apres '\' (i pointe sur le caractere suivant le \).
   Retourne un point de code, ou isCat=True avec cat renseigne. }
-Function TReParser.ParseEscape(inClass: Boolean; Var cat: Integer;
+Function ReParserParseEscape(Self: TReParser; inClass: Boolean; Var cat:
+  Integer;
  Var isCat: Boolean): Cardinal;
 Var
  c: Cardinal;
  st, v, k, cnt: Integer;
 Begin
  isCat := False;
- st := i - 1;
- If i >= n Then Err('bad escape (end of pattern)', st);
- c := p[i];
- Inc(i);
+ st := Self.i - 1;
+ If Self.i >= Self.n Then ReParserErr(Self, 'bad escape (end of pattern)', st);
+ c := Self.p[Self.i];
+ Inc(Self.i);
  Case Chr(c And 255) Of
   'd': If c < 128 Then Begin isCat := True; cat := RC_DIGIT; Result := 0; Exit;
     End;
@@ -37174,40 +38172,45 @@ Begin
   'v': Result := 11;
   'a': Result := 7;
   'b': If inClass Then Result := 8
-   Else Err('bad escape \b', st);
+   Else ReParserErr(Self, 'bad escape \b', st);
   '\': Result := 92;
   'x': Begin
     v := 0;
     cnt := 0;
-    While (cnt < 2) And (i < n) And (HexVal(p[i]) >= 0) Do Begin
-     v := v * 16 + HexVal(p[i]);
-     Inc(i);
+    While (cnt < 2) And (Self.i < Self.n) And (HexVal(Self.p[Self.i]) >= 0) Do
+      Begin
+     v := v * 16 + HexVal(Self.p[Self.i]);
+     Inc(Self.i);
      Inc(cnt);
     End;
     If cnt < 2 Then
-     Err('incomplete escape \x' + CpsToStr(p, st + 2, i), st);
+     ReParserErr(Self, 'incomplete escape \x' + CpsToStr(Self.p, st + 2,
+       Self.i), st);
     Result := v;
    End;
   'u', 'U': Begin
-    If isBytes Then Err('bad escape \' + Chr(c), st);
+    If Self.isBytes Then ReParserErr(Self, 'bad escape \' + Chr(c), st);
     If c = Ord('u') Then k := 4 Else k := 8;
     v := 0;
     cnt := 0;
-    While (cnt < k) And (i < n) And (HexVal(p[i]) >= 0) Do Begin
-     v := v * 16 + HexVal(p[i]);
-     Inc(i);
+    While (cnt < k) And (Self.i < Self.n) And (HexVal(Self.p[Self.i]) >= 0) Do
+      Begin
+     v := v * 16 + HexVal(Self.p[Self.i]);
+     Inc(Self.i);
      Inc(cnt);
     End;
     If cnt < k Then
-     Err('incomplete escape \' + CpsToStr(p, st + 1, i), st);
+     ReParserErr(Self, 'incomplete escape \' + CpsToStr(Self.p, st + 1,
+       Self.i), st);
     Result := v;
    End;
   '0': Begin
     v := 0;
     cnt := 0;
-    While (cnt < 2) And (i < n) And (p[i] >= 48) And (p[i] <= 55) Do Begin
-     v := v * 8 + (p[i] - 48);
-     Inc(i);
+    While (cnt < 2) And (Self.i < Self.n) And (Self.p[Self.i] >= 48) And
+      (Self.p[Self.i] <= 55) Do Begin
+     v := v * 8 + (Self.p[Self.i] - 48);
+     Inc(Self.i);
      Inc(cnt);
     End;
     Result := v;
@@ -37215,27 +38218,30 @@ Begin
   '1'..'9': Begin
     { en classe : octal si 3 chiffres ; hors classe traite par l'appelant }
     If inClass Then Begin
-     If (c <= 55) And (i + 1 < n) And (p[i] >= 48) And (p[i] <= 55) And
-      (p[i + 1] >= 48) And (p[i + 1] <= 55) Then Begin
-      v := (c - 48) * 64 + (p[i] - 48) * 8 + (p[i + 1] - 48);
-      Inc(i, 2);
+     If (c <= 55) And (Self.i + 1 < Self.n) And (Self.p[Self.i] >= 48) And
+       (Self.p[Self.i] <= 55) And
+      (Self.p[Self.i + 1] >= 48) And (Self.p[Self.i + 1] <= 55) Then Begin
+      v := (c - 48) * 64 + (Self.p[Self.i] - 48) * 8 + (Self.p[Self.i + 1] -
+        48);
+      Inc(Self.i, 2);
       If v > 255 Then
-       Err('octal escape value \' + CpsToStr(p, st + 1, i) +
+       ReParserErr(Self, 'octal escape value \' + CpsToStr(Self.p, st + 1,
+         Self.i) +
         ' outside of range 0-0o377', st);
       Result := v;
      End
-     Else Err('bad escape \' + Chr(c), st);
+     Else ReParserErr(Self, 'bad escape \' + Chr(c), st);
     End
-    Else Err('bad escape \' + Chr(c), st);
+    Else ReParserErr(Self, 'bad escape \' + Chr(c), st);
    End;
  Else
   If ((c >= 65) And (c <= 90)) Or ((c >= 97) And (c <= 122)) Then
-   Err('bad escape \' + Chr(c), st);
+   ReParserErr(Self, 'bad escape \' + Chr(c), st);
   Result := c;
  End;
 End;
 
-Function TReParser.ParseClass: TReNode;
+Function ReParserParseClass(Self: TReParser): TReNode;
 Var
  s: TReSet;
  st, lo, hi: Integer;
@@ -37246,36 +38252,37 @@ Var
  nd: TReNode;
  si: Integer;
 Begin
- st := i - 1;
- s := TReSet.Create;
- If (i < n) And (p[i] = Ord('^')) Then Begin
+ st := Self.i - 1;
+ s := AllocReSet;
+ If (Self.i < Self.n) And (Self.p[Self.i] = Ord('^')) Then Begin
   s.neg := True;
-  Inc(i);
+  Inc(Self.i);
  End;
  first := True;
  While True Do Begin
-  If i >= n Then Begin
-   s.Free;
-   Err('unterminated character set', st);
+  If Self.i >= Self.n Then Begin
+   Dispose(s);
+   ReParserErr(Self, 'unterminated character set', st);
   End;
-  c := p[i];
+  c := Self.p[Self.i];
   If (c = Ord(']')) And Not first Then Begin
-   Inc(i);
+   Inc(Self.i);
    Break;
   End;
   first := False;
-  Inc(i);
+  Inc(Self.i);
   isCat := False;
   If c = Ord('\') Then Begin
    Try
-    c := ParseEscape(True, cat, isCat);
+    c := ReParserParseEscape(Self, True, cat, isCat);
    Except
-    s.Free;
+    Dispose(s);
     Raise;
    End;
   End
-  Else If (c = Ord('[')) And (i < n) And ((p[i] = Ord(':')) Or
-   (p[i] = Ord('.')) Or (p[i] = Ord('='))) Then Begin
+  Else If (c = Ord('[')) And (Self.i < Self.n) And ((Self.p[Self.i] = Ord(':'))
+    Or
+   (Self.p[Self.i] = Ord('.')) Or (Self.p[Self.i] = Ord('='))) Then Begin
    { avertissement ignore }
   End;
   If isCat Then Begin
@@ -37284,40 +38291,43 @@ Begin
    Continue;
   End;
   { intervalle ? }
-  If (i + 1 < n) And (p[i] = Ord('-')) And (p[i + 1] <> Ord(']')) Then Begin
-   Inc(i);
-   c2 := p[i];
-   Inc(i);
+  If (Self.i + 1 < Self.n) And (Self.p[Self.i] = Ord('-')) And (Self.p[Self.i +
+    1] <> Ord(']')) Then Begin
+   Inc(Self.i);
+   c2 := Self.p[Self.i];
+   Inc(Self.i);
    isCat2 := False;
    If c2 = Ord('\') Then Begin
     Try
-     c2 := ParseEscape(True, cat2, isCat2);
+     c2 := ReParserParseEscape(Self, True, cat2, isCat2);
     Except
-     s.Free;
+     Dispose(s);
      Raise;
     End;
    End;
    If isCat2 Then Begin
-    s.Free;
-    Err('bad character range ' + CpsToStr(p, i - 3, i), i - 3);
+    Dispose(s);
+    ReParserErr(Self, 'bad character range ' + CpsToStr(Self.p, Self.i - 3,
+      Self.i), Self.i - 3);
    End;
    If c2 < c Then Begin
-    s.Free;
-    Err('bad character range ' + CpsToStr(p, i - 3, i), i - 3);
+    Dispose(s);
+    ReParserErr(Self, 'bad character range ' + CpsToStr(Self.p, Self.i - 3,
+      Self.i), Self.i - 3);
    End;
-   s.AddRange(c, c2);
+   ReSetAddRange(s, c, c2);
   End
-  Else s.AddRange(c, c);
+  Else ReSetAddRange(s, c, c);
  End;
  lo := 0;
  hi := 0;
- si := AddSet(s);
- nd := NewNode(nkSetN);
+ si := ReParserAddSet(Self, s);
+ nd := ReParserNewNode(Self, nkSetN);
  nd.idx := si;
  Result := nd;
 End;
 
-Function TReParser.ParseQuant(atom: TReNode): TReNode;
+Function ReParserParseQuant(Self: TReParser; atom: TReNode): TReNode;
 Var
  mn, mx, st, v: Integer;
  q: TReNode;
@@ -37327,76 +38337,81 @@ Var
 Begin
  Result := atom;
  While True Do Begin
-  SkipVerbose;
-  If i >= n Then Exit;
+  ReParserSkipVerbose(Self);
+  If Self.i >= Self.n Then Exit;
   mn := 0;
   mx := -1;
-  st := i;
-  If p[i] = Ord('*') Then Begin
-   mn := 0; mx := -1; Inc(i);
+  st := Self.i;
+  If Self.p[Self.i] = Ord('*') Then Begin
+   mn := 0; mx := -1; Inc(Self.i);
   End
-  Else If p[i] = Ord('+') Then Begin
-   mn := 1; mx := -1; Inc(i);
+  Else If Self.p[Self.i] = Ord('+') Then Begin
+   mn := 1; mx := -1; Inc(Self.i);
   End
-  Else If p[i] = Ord('?') Then Begin
-   mn := 0; mx := 1; Inc(i);
+  Else If Self.p[Self.i] = Ord('?') Then Begin
+   mn := 0; mx := 1; Inc(Self.i);
   End
-  Else If p[i] = Ord('{') Then Begin
-   save := i;
-   Inc(i);
+  Else If Self.p[Self.i] = Ord('{') Then Begin
+   save := Self.i;
+   Inc(Self.i);
    hasMin := False;
    hasMax := False;
    comma := False;
    v := 0;
-   While (i < n) And (p[i] >= 48) And (p[i] <= 57) Do Begin
-    v := v * 10 + (p[i] - 48);
-    If v > 4294967 Then Err('the repetition number is too large', st);
+   While (Self.i < Self.n) And (Self.p[Self.i] >= 48) And (Self.p[Self.i] <=
+     57) Do Begin
+    v := v * 10 + (Self.p[Self.i] - 48);
+    If v > 4294967 Then ReParserErr(Self, 'the repetition number is too large',
+      st);
     hasMin := True;
-    Inc(i);
+    Inc(Self.i);
    End;
    mn := v;
-   If (i < n) And (p[i] = Ord(',')) Then Begin
+   If (Self.i < Self.n) And (Self.p[Self.i] = Ord(',')) Then Begin
     comma := True;
-    Inc(i);
+    Inc(Self.i);
     v := 0;
-    While (i < n) And (p[i] >= 48) And (p[i] <= 57) Do Begin
-     v := v * 10 + (p[i] - 48);
-     If v > 4294967 Then Err('the repetition number is too large', st);
+    While (Self.i < Self.n) And (Self.p[Self.i] >= 48) And (Self.p[Self.i] <=
+      57) Do Begin
+     v := v * 10 + (Self.p[Self.i] - 48);
+     If v > 4294967 Then ReParserErr(Self,
+       'the repetition number is too large', st);
      hasMax := True;
-     Inc(i);
+     Inc(Self.i);
     End;
     If hasMax Then mx := v Else mx := -1;
    End
    Else mx := mn;
-   If (i >= n) Or (p[i] <> Ord('}')) Or (Not hasMin And Not hasMax And
+   If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord('}')) Or (Not hasMin And Not
+     hasMax And
     Not comma) Or (Not comma And Not hasMin) Then Begin
-    i := save;
+    Self.i := save;
     Exit;  { litteral }
    End;
-   Inc(i);
+   Inc(Self.i);
    If (mx >= 0) And (mx < mn) Then
-    Err('min repeat greater than max repeat', st + 1);
+    ReParserErr(Self, 'min repeat greater than max repeat', st + 1);
   End
   Else Exit;
   { atome repetable ? }
   If (atom.kind = nkAnchor) Or ((atom.kind = nkAssert) And False) Then
-   Err('nothing to repeat', st);
+   ReParserErr(Self, 'nothing to repeat', st);
   If (atom.kind = nkRepeat) And Not atom.neg Then
-   Err('multiple repeat', st);
+   ReParserErr(Self, 'multiple repeat', st);
   lazy := False;
-  If (i < n) And (p[i] = Ord('?')) Then Begin
+  If (Self.i < Self.n) And (Self.p[Self.i] = Ord('?')) Then Begin
    lazy := True;
-   Inc(i);
+   Inc(Self.i);
   End
-  Else If (i < n) And (p[i] = Ord('+')) Then Begin
+  Else If (Self.i < Self.n) And (Self.p[Self.i] = Ord('+')) Then Begin
    { possessif : non supporte avant 3.11 }
-   Err('multiple repeat', i);
+   ReParserErr(Self, 'multiple repeat', Self.i);
   End;
-  q := NewNode(nkRepeat);
+  q := ReParserNewNode(Self, nkRepeat);
   q.mn := mn;
   q.mx := mx;
   q.lazy := lazy;
-  q.Add(atom);
+  ObjAdd(q, atom);
   q.neg := False;
   atom := q;
   Result := q;
@@ -37404,23 +38419,23 @@ Begin
   q.neg := False;
   { interdit \"a**\" : verifie au tour suivant }
   k := 0;
-  SkipVerbose;
-  If (i < n) And ((p[i] = Ord('*')) Or (p[i] = Ord('+')) Or (p[i] = Ord('?')))
-    Then
-   Err('multiple repeat', i);
-  If (i < n) And (p[i] = Ord('{')) Then Begin
+  ReParserSkipVerbose(Self);
+  If (Self.i < Self.n) And ((Self.p[Self.i] = Ord('*')) Or (Self.p[Self.i] =
+    Ord('+')) Or (Self.p[Self.i] = Ord('?'))) Then
+   ReParserErr(Self, 'multiple repeat', Self.i);
+  If (Self.i < Self.n) And (Self.p[Self.i] = Ord('{')) Then Begin
    { verifie si quantificateur valide }
-   save := i;
-   Inc(i);
+   save := Self.i;
+   Inc(Self.i);
    hasMin := False;
-   While (i < n) And (((p[i] >= 48) And (p[i] <= 57)) Or (p[i] = Ord(','))) Do
-     Begin
+   While (Self.i < Self.n) And (((Self.p[Self.i] >= 48) And (Self.p[Self.i] <=
+     57)) Or (Self.p[Self.i] = Ord(','))) Do Begin
     hasMin := True;
-    Inc(i);
+    Inc(Self.i);
    End;
-   If hasMin And (i < n) And (p[i] = Ord('}')) Then
-    Err('multiple repeat', save);
-   i := save;
+   If hasMin And (Self.i < Self.n) And (Self.p[Self.i] = Ord('}')) Then
+    ReParserErr(Self, 'multiple repeat', save);
+   Self.i := save;
   End;
   Exit;
  End;
@@ -37481,7 +38496,8 @@ Begin
  g := 0;
 End;
 
-Function TReParser.ParseFlagsGroup(depth: Integer; Var res: TReNode;
+Function ReParserParseFlagsGroup(Self: TReParser; depth: Integer; Var res:
+  TReNode;
  start: Integer): Boolean;
 Var
  add, del, f, old: Integer;
@@ -37493,53 +38509,58 @@ Begin
  add := 0;
  del := 0;
  neg := False;
- While (i < n) And (ReFlagOf(p[i]) <> 0) Do Begin
-  add := add Or ReFlagOf(p[i]);
-  Inc(i);
+ While (Self.i < Self.n) And (ReFlagOf(Self.p[Self.i]) <> 0) Do Begin
+  add := add Or ReFlagOf(Self.p[Self.i]);
+  Inc(Self.i);
  End;
- If (i < n) And (p[i] = Ord('-')) Then Begin
-  Inc(i);
+ If (Self.i < Self.n) And (Self.p[Self.i] = Ord('-')) Then Begin
+  Inc(Self.i);
   neg := True;
-  If (i >= n) Or (ReFlagOf(p[i]) = 0) Then Err('missing flag', i);
-  While (i < n) And (ReFlagOf(p[i]) <> 0) Do Begin
-   del := del Or ReFlagOf(p[i]);
-   Inc(i);
+  If (Self.i >= Self.n) Or (ReFlagOf(Self.p[Self.i]) = 0) Then
+    ReParserErr(Self, 'missing flag', Self.i);
+  While (Self.i < Self.n) And (ReFlagOf(Self.p[Self.i]) <> 0) Do Begin
+   del := del Or ReFlagOf(Self.p[Self.i]);
+   Inc(Self.i);
   End;
  End;
- If i >= n Then Err('missing -, : or )', i);
- If p[i] = Ord(')') Then Begin
-  If neg Then Err('missing :', i);
-  Inc(i);
-  res := NewNode(nkEmpty);
+ If Self.i >= Self.n Then ReParserErr(Self, 'missing -, : or )', Self.i);
+ If Self.p[Self.i] = Ord(')') Then Begin
+  If neg Then ReParserErr(Self, 'missing :', Self.i);
+  Inc(Self.i);
+  res := ReParserNewNode(Self, nkEmpty);
   Result := True;
   Exit;
  End;
- If p[i] <> Ord(':') Then Begin
+ If Self.p[Self.i] <> Ord(':') Then Begin
   If (add = 0) And Not neg Then Exit;
-  Err('missing -, : or )', i);
+  ReParserErr(Self, 'missing -, : or )', Self.i);
  End;
- If ((add And REF_L) <> 0) And Not isBytes Then
-  Err('bad inline flags: cannot use ''L'' flag with a str pattern', start);
- If ((add And REF_A) <> 0) And isBytes Then
-  Err('bad inline flags: cannot use ''a'' flag with a bytes pattern', start);
+ If ((add And REF_L) <> 0) And Not Self.isBytes Then
+  ReParserErr(Self,
+    'bad inline flags: cannot use ''L'' flag with a str pattern', start);
+ If ((add And REF_A) <> 0) And Self.isBytes Then
+  ReParserErr(Self,
+    'bad inline flags: cannot use ''a'' flag with a bytes pattern', start);
  If (del And (REF_A Or REF_U Or REF_L)) <> 0 Then
-  Err('bad inline flags: cannot turn off flags ''a'', ''u'' and ''L''', start);
- Inc(i);
- old := flags;
- flags := (flags Or add) And Not del;
- body := ParseAlt(depth + 1);
- flags := old;
- If (i >= n) Or (p[i] <> Ord(')')) Then
-  Err('missing ), unterminated subpattern', start);
- Inc(i);
+  ReParserErr(Self,
+    'bad inline flags: cannot turn off flags ''a'', ''u'' and ''L''', start);
+ Inc(Self.i);
+ old := Self.flags;
+ Self.flags := (Self.flags Or add) And Not del;
+ body := ReParserParseAlt(Self, depth + 1);
+ Self.flags := old;
+ If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+  ReParserErr(Self, 'missing ), unterminated subpattern', start);
+ Inc(Self.i);
  f := 0;
- res := NewNode(nkGroup);
+ res := ReParserNewNode(Self, nkGroup);
  res.idx := -1;
- res.Add(body);
+ ObjAdd(res, body);
  Result := True;
 End;
 
-Function TReParser.ParseAtom(depth: Integer; Var okAtom: Boolean): TReNode;
+Function ReParserParseAtom(Self: TReParser; depth: Integer; Var okAtom:
+  Boolean): TReNode;
 Var
  c: Cardinal;
  nd, body, yes, no: TReNode;
@@ -37554,245 +38575,261 @@ Var
 Begin
  okAtom := True;
  Result := Nil;
- If i >= n Then Begin
+ If Self.i >= Self.n Then Begin
   okAtom := False;
   Exit;
  End;
- c := p[i];
- st := i;
+ c := Self.p[Self.i];
+ st := Self.i;
  Case Chr(c And 255) Of
   '|', ')': If c < 128 Then Begin
     okAtom := False;
     Exit;
    End;
  End;
- Inc(i);
+ Inc(Self.i);
  If c = Ord('(') Then Begin
-  If (i < n) And (p[i] = Ord('?')) Then Begin
-   Inc(i);
-   If i >= n Then Err('unexpected end of pattern', i);
-   c := p[i];
-   Inc(i);
+  If (Self.i < Self.n) And (Self.p[Self.i] = Ord('?')) Then Begin
+   Inc(Self.i);
+   If Self.i >= Self.n Then ReParserErr(Self, 'unexpected end of pattern',
+     Self.i);
+   c := Self.p[Self.i];
+   Inc(Self.i);
    If c = Ord(':') Then Begin
-    body := ParseAlt(depth + 1);
-    If (i >= n) Or (p[i] <> Ord(')')) Then
-     Err('missing ), unterminated subpattern', st);
-    Inc(i);
-    nd := NewNode(nkGroup);
+    body := ReParserParseAlt(Self, depth + 1);
+    If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+     ReParserErr(Self, 'missing ), unterminated subpattern', st);
+    Inc(Self.i);
+    nd := ReParserNewNode(Self, nkGroup);
     nd.idx := -1;
-    nd.Add(body);
+    ObjAdd(nd, body);
     Result := nd;
     Exit;
    End;
    If c = Ord('P') Then Begin
-    If i >= n Then Err('unexpected end of pattern', i);
-    c := p[i];
-    Inc(i);
+    If Self.i >= Self.n Then ReParserErr(Self, 'unexpected end of pattern',
+      Self.i);
+    c := Self.p[Self.i];
+    Inc(Self.i);
     If c = Ord('<') Then Begin
-     nm := ReadName(Ord('>'));
-     If GroupByName(nm) >= 0 Then
-      Err('redefinition of group name ' + StrReprEsc(nm, False) +
-       ' as group ' + IntToStr(ngroups + 1) + '; was group ' +
-       IntToStr(GroupByName(nm)), st + 4);
-     Inc(ngroups);
-     gi := ngroups;
-     SetLength(names, Length(names) + 1);
-     SetLength(nameIdx, Length(nameIdx) + 1);
-     names[High(names)] := nm;
-     nameIdx[High(nameIdx)] := gi;
-     SetLength(openGroups, Length(openGroups) + 1);
-     openGroups[High(openGroups)] := gi;
-     body := ParseAlt(depth + 1);
-     SetLength(openGroups, Length(openGroups) - 1);
-     If (i >= n) Or (p[i] <> Ord(')')) Then
-      Err('missing ), unterminated subpattern', st);
-     Inc(i);
-     nd := NewNode(nkGroup);
+     nm := ReParserReadName(Self, Ord('>'));
+     If ReParserGroupByName(Self, nm) >= 0 Then
+      ReParserErr(Self, 'redefinition of group name ' + StrReprEsc(nm, False) +
+       ' as group ' + IntToStr(Self.ngroups + 1) + '; was group ' +
+       IntToStr(ReParserGroupByName(Self, nm)), st + 4);
+     Inc(Self.ngroups);
+     gi := Self.ngroups;
+     SetLength(Self.names, Length(Self.names) + 1);
+     SetLength(Self.nameIdx, Length(Self.nameIdx) + 1);
+     Self.names[High(Self.names)] := nm;
+     Self.nameIdx[High(Self.nameIdx)] := gi;
+     SetLength(Self.openGroups, Length(Self.openGroups) + 1);
+     Self.openGroups[High(Self.openGroups)] := gi;
+     body := ReParserParseAlt(Self, depth + 1);
+     SetLength(Self.openGroups, Length(Self.openGroups) - 1);
+     If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+      ReParserErr(Self, 'missing ), unterminated subpattern', st);
+     Inc(Self.i);
+     nd := ReParserNewNode(Self, nkGroup);
      nd.idx := gi;
-     nd.Add(body);
+     ObjAdd(nd, body);
      Result := nd;
      Exit;
     End;
     If c = Ord('=') Then Begin
-     nm := ReadName(Ord(')'));
-     gi := GroupByName(nm);
-     If gi < 0 Then Err('unknown group name ' + StrReprEsc(nm, False), st + 4);
-     For k := 0 To High(openGroups) Do
-      If openGroups[k] = gi Then Err('cannot refer to an open group', st);
-     nd := NewNode(nkBackref);
+     nm := ReParserReadName(Self, Ord(')'));
+     gi := ReParserGroupByName(Self, nm);
+     If gi < 0 Then ReParserErr(Self, 'unknown group name ' + StrReprEsc(nm,
+       False), st + 4);
+     For k := 0 To High(Self.openGroups) Do
+      If Self.openGroups[k] = gi Then ReParserErr(Self,
+        'cannot refer to an open group', st);
+     nd := ReParserNewNode(Self, nkBackref);
      nd.idx := gi;
      Result := nd;
      Exit;
     End;
-    Err('unknown extension ?P' + CpsToStr(p, i - 1, i), st + 1);
+    ReParserErr(Self, 'unknown extension ?P' + CpsToStr(Self.p, Self.i - 1,
+      Self.i), st + 1);
    End;
    If c = Ord('#') Then Begin
-    While (i < n) And (p[i] <> Ord(')')) Do Inc(i);
-    If i >= n Then Err('missing ), unterminated comment', st);
-    Inc(i);
-    Result := NewNode(nkEmpty);
+    While (Self.i < Self.n) And (Self.p[Self.i] <> Ord(')')) Do Inc(Self.i);
+    If Self.i >= Self.n Then ReParserErr(Self,
+      'missing ), unterminated comment', st);
+    Inc(Self.i);
+    Result := ReParserNewNode(Self, nkEmpty);
     Exit;
    End;
    If (c = Ord('=')) Or (c = Ord('!')) Then Begin
-    body := ParseAlt(depth + 1);
-    If (i >= n) Or (p[i] <> Ord(')')) Then
-     Err('missing ), unterminated subpattern', st);
-    Inc(i);
-    nd := NewNode(nkLookN);
+    body := ReParserParseAlt(Self, depth + 1);
+    If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+     ReParserErr(Self, 'missing ), unterminated subpattern', st);
+    Inc(Self.i);
+    nd := ReParserNewNode(Self, nkLookN);
     nd.idx := 0;
     nd.neg := c = Ord('!');
-    nd.Add(body);
+    ObjAdd(nd, body);
     Result := nd;
     Exit;
    End;
    If c = Ord('<') Then Begin
-    If i >= n Then Err('unexpected end of pattern', i);
-    c := p[i];
-    Inc(i);
+    If Self.i >= Self.n Then ReParserErr(Self, 'unexpected end of pattern',
+      Self.i);
+    c := Self.p[Self.i];
+    Inc(Self.i);
     If (c <> Ord('=')) And (c <> Ord('!')) Then
-     Err('unknown extension ?<' + CpsToStr(p, i - 1, i), st + 1);
-    body := ParseAlt(depth + 1);
-    If (i >= n) Or (p[i] <> Ord(')')) Then
-     Err('missing ), unterminated subpattern', st);
-    Inc(i);
-    nd := NewNode(nkLookN);
+     ReParserErr(Self, 'unknown extension ?<' + CpsToStr(Self.p, Self.i - 1,
+       Self.i), st + 1);
+    body := ReParserParseAlt(Self, depth + 1);
+    If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+     ReParserErr(Self, 'missing ), unterminated subpattern', st);
+    Inc(Self.i);
+    nd := ReParserNewNode(Self, nkLookN);
     nd.idx := 1;
     nd.neg := c = Ord('!');
-    nd.Add(body);
+    ObjAdd(nd, body);
     Result := nd;
     Exit;
    End;
    If c = Ord('(') Then Begin
     { conditionnel }
-    nm := ReadName(Ord(')'), True);
+    nm := ReParserReadName(Self, Ord(')'), True);
     If (nm <> '') And (nm[1] >= '0') And (nm[1] <= '9') Then Begin
      gi := StrToIntDef(nm, -1);
-     If gi <= 0 Then Err('bad group number', st + 3);
+     If gi <= 0 Then ReParserErr(Self, 'bad group number', st + 3);
     End
     Else Begin
-     gi := GroupByName(nm);
-     If gi < 0 Then Err('unknown group name ' + StrReprEsc(nm, False), st + 3);
+     gi := ReParserGroupByName(Self, nm);
+     If gi < 0 Then ReParserErr(Self, 'unknown group name ' + StrReprEsc(nm,
+       False), st + 3);
     End;
-    nd := NewNode(nkCondN);
+    nd := ReParserNewNode(Self, nkCondN);
     nd.idx := gi;
-    yes := ParseSeq(depth + 1);
+    yes := ReParserParseSeq(Self, depth + 1);
     no := Nil;
-    If (i < n) And (p[i] = Ord('|')) Then Begin
-     Inc(i);
-     no := ParseSeq(depth + 1);
-     If (i < n) And (p[i] = Ord('|')) Then
-      Err('conditional backref with more than two branches', i);
+    If (Self.i < Self.n) And (Self.p[Self.i] = Ord('|')) Then Begin
+     Inc(Self.i);
+     no := ReParserParseSeq(Self, depth + 1);
+     If (Self.i < Self.n) And (Self.p[Self.i] = Ord('|')) Then
+      ReParserErr(Self, 'conditional backref with more than two branches',
+        Self.i);
     End;
-    If (i >= n) Or (p[i] <> Ord(')')) Then
-     Err('missing ), unterminated subpattern', st);
-    Inc(i);
-    If no = Nil Then no := NewNode(nkEmpty);
-    nd.Add(yes);
-    nd.Add(no);
+    If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+     ReParserErr(Self, 'missing ), unterminated subpattern', st);
+    Inc(Self.i);
+    If no = Nil Then no := ReParserNewNode(Self, nkEmpty);
+    ObjAdd(nd, yes);
+    ObjAdd(nd, no);
     Result := nd;
     Exit;
    End;
    { flags }
-   Dec(i);
-   If ParseFlagsGroup(depth, nd, st) Then Begin
+   Dec(Self.i);
+   If ReParserParseFlagsGroup(Self, depth, nd, st) Then Begin
     Result := nd;
     Exit;
    End;
-   Err('unknown extension ?' + CpsToStr(p, i, i + 1), st + 1);
+   ReParserErr(Self, 'unknown extension ?' + CpsToStr(Self.p, Self.i, Self.i +
+     1), st + 1);
   End;
   { groupe capturant }
-  Inc(ngroups);
-  gi := ngroups;
-  SetLength(openGroups, Length(openGroups) + 1);
-  openGroups[High(openGroups)] := gi;
-  body := ParseAlt(depth + 1);
-  SetLength(openGroups, Length(openGroups) - 1);
-  If (i >= n) Or (p[i] <> Ord(')')) Then
-   Err('missing ), unterminated subpattern', st);
-  Inc(i);
-  nd := NewNode(nkGroup);
+  Inc(Self.ngroups);
+  gi := Self.ngroups;
+  SetLength(Self.openGroups, Length(Self.openGroups) + 1);
+  Self.openGroups[High(Self.openGroups)] := gi;
+  body := ReParserParseAlt(Self, depth + 1);
+  SetLength(Self.openGroups, Length(Self.openGroups) - 1);
+  If (Self.i >= Self.n) Or (Self.p[Self.i] <> Ord(')')) Then
+   ReParserErr(Self, 'missing ), unterminated subpattern', st);
+  Inc(Self.i);
+  nd := ReParserNewNode(Self, nkGroup);
   nd.idx := gi;
-  nd.Add(body);
+  ObjAdd(nd, body);
   Result := nd;
   Exit;
  End;
  If c = Ord('[') Then Begin
-  Result := ParseClass;
+  Result := ReParserParseClass(Self);
   Exit;
  End;
  If c = Ord('.') Then Begin
-  Result := NewNode(nkAnyN);
+  Result := ReParserNewNode(Self, nkAnyN);
   Exit;
  End;
  If c = Ord('^') Then Begin
-  nd := NewNode(nkAnchor);
+  nd := ReParserNewNode(Self, nkAnchor);
   nd.idx := 0;
   Result := nd;
   Exit;
  End;
  If c = Ord('$') Then Begin
-  nd := NewNode(nkAnchor);
+  nd := ReParserNewNode(Self, nkAnchor);
   nd.idx := 1;
   Result := nd;
   Exit;
  End;
  If (c = Ord('*')) Or (c = Ord('+')) Or (c = Ord('?')) Then
-  Err('nothing to repeat', st);
+  ReParserErr(Self, 'nothing to repeat', st);
  If c = Ord('{') Then Begin
   { quantificateur sans atome ? }
-  k := i;
+  k := Self.i;
   v := 0;
   cnt := 0;
-  While (k < n) And (((p[k] >= 48) And (p[k] <= 57)) Or (p[k] = Ord(','))) Do
-    Begin
+  While (k < Self.n) And (((Self.p[k] >= 48) And (Self.p[k] <= 57)) Or
+    (Self.p[k] = Ord(','))) Do Begin
    Inc(k);
    Inc(cnt);
   End;
-  If (cnt > 0) And (k < n) And (p[k] = Ord('}')) Then
-   Err('nothing to repeat', st);
+  If (cnt > 0) And (k < Self.n) And (Self.p[k] = Ord('}')) Then
+   ReParserErr(Self, 'nothing to repeat', st);
  End;
  If c = Ord('\') Then Begin
-  If i >= n Then Err('bad escape (end of pattern)', st);
-  c := p[i];
+  If Self.i >= Self.n Then ReParserErr(Self, 'bad escape (end of pattern)', st);
+  c := Self.p[Self.i];
   If c < 128 Then Begin
    Case Chr(c) Of
-    'A': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 2; Result := nd;
-      Exit; End;
-    'Z': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 3; Result := nd;
-      Exit; End;
-    'b': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 4; Result := nd;
-      Exit; End;
-    'B': Begin Inc(i); nd := NewNode(nkAnchor); nd.idx := 5; Result := nd;
-      Exit; End;
+    'A': Begin Inc(Self.i); nd := ReParserNewNode(Self, nkAnchor); nd.idx := 2;
+      Result := nd; Exit; End;
+    'Z': Begin Inc(Self.i); nd := ReParserNewNode(Self, nkAnchor); nd.idx := 3;
+      Result := nd; Exit; End;
+    'b': Begin Inc(Self.i); nd := ReParserNewNode(Self, nkAnchor); nd.idx := 4;
+      Result := nd; Exit; End;
+    'B': Begin Inc(Self.i); nd := ReParserNewNode(Self, nkAnchor); nd.idx := 5;
+      Result := nd; Exit; End;
     '1'..'9': Begin
       { reference arriere }
-      k := i;
+      k := Self.i;
       v := 0;
       cnt := 0;
-      While (k < n) And (cnt < 2) And (p[k] >= 48) And (p[k] <= 57) Do Begin
-       v := v * 10 + (p[k] - 48);
+      While (k < Self.n) And (cnt < 2) And (Self.p[k] >= 48) And (Self.p[k] <=
+        57) Do Begin
+       v := v * 10 + (Self.p[k] - 48);
        Inc(k);
        Inc(cnt);
       End;
       { 3 chiffres octaux -> caractere }
-      If (c <= 55) And (i + 2 < n) And (p[i + 1] >= 48) And (p[i + 1] <= 55)
-       And (p[i + 2] >= 48) And (p[i + 2] <= 55) Then Begin
-       v := (c - 48) * 64 + (p[i + 1] - 48) * 8 + (p[i + 2] - 48);
+      If (c <= 55) And (Self.i + 2 < Self.n) And (Self.p[Self.i + 1] >= 48) And
+        (Self.p[Self.i + 1] <= 55)
+       And (Self.p[Self.i + 2] >= 48) And (Self.p[Self.i + 2] <= 55) Then Begin
+       v := (c - 48) * 64 + (Self.p[Self.i + 1] - 48) * 8 + (Self.p[Self.i + 2]
+         - 48);
        If v > 255 Then
-        Err('octal escape value \' + CpsToStr(p, i, i + 3) +
+        ReParserErr(Self, 'octal escape value \' + CpsToStr(Self.p, Self.i,
+          Self.i + 3) +
          ' outside of range 0-0o377', st);
-       Inc(i, 3);
-       nd := NewNode(nkChr);
+       Inc(Self.i, 3);
+       nd := ReParserNewNode(Self, nkChr);
        nd.c := v;
        Result := nd;
        Exit;
       End;
-      If v > ngroups Then
-       Err('invalid group reference ' + IntToStr(v), st + 1);
-      For cnt := 0 To High(openGroups) Do
-       If openGroups[cnt] = v Then Err('cannot refer to an open group', st);
-      i := k;
-      nd := NewNode(nkBackref);
+      If v > Self.ngroups Then
+       ReParserErr(Self, 'invalid group reference ' + IntToStr(v), st + 1);
+      For cnt := 0 To High(Self.openGroups) Do
+       If Self.openGroups[cnt] = v Then ReParserErr(Self,
+         'cannot refer to an open group', st);
+      Self.i := k;
+      nd := ReParserNewNode(Self, nkBackref);
       nd.idx := v;
       Result := nd;
       Exit;
@@ -37800,24 +38837,24 @@ Begin
    End;
   End;
   { echappement ordinaire }
-  Dec(i);
-  Inc(i);
+  Dec(Self.i);
+  Inc(Self.i);
   v := 0;
-  c := ParseEscape(False, cat, isCat);
+  c := ReParserParseEscape(Self, False, cat, isCat);
   If isCat Then Begin
-   s := TReSet.Create;
+   s := AllocReSet;
    s.cats := cat;
-   nd := NewNode(nkSetN);
-   nd.idx := AddSet(s);
+   nd := ReParserNewNode(Self, nkSetN);
+   nd.idx := ReParserAddSet(Self, s);
    Result := nd;
    Exit;
   End;
-  nd := NewNode(nkChr);
+  nd := ReParserNewNode(Self, nkChr);
   nd.c := c;
   Result := nd;
   Exit;
  End;
- nd := NewNode(nkChr);
+ nd := ReParserNewNode(Self, nkChr);
  nd.c := c;
  Result := nd;
  old := 0;
@@ -37825,42 +38862,43 @@ Begin
  dummy := Nil;
 End;
 
-Function TReParser.ParseSeq(depth: Integer): TReNode;
+Function ReParserParseSeq(Self: TReParser; depth: Integer): TReNode;
 Var
  seq, atom: TReNode;
  okAtom: Boolean;
  st: Integer;
 Begin
- seq := NewNode(nkCat);
+ seq := ReParserNewNode(Self, nkCat);
  While True Do Begin
-  SkipVerbose;
-  st := i;
-  atom := ParseAtom(depth, okAtom);
+  ReParserSkipVerbose(Self);
+  st := Self.i;
+  atom := ReParserParseAtom(Self, depth, okAtom);
   If Not okAtom Then Break;
-  If (atom.kind = nkEmpty) And (atom.flags = flags) Then Begin
+  If (atom.kind = nkEmpty) And (atom.flags = Self.flags) Then Begin
    { groupe de flags ou commentaire : pas de quantificateur }
-   If (i < n) And ((p[i] = Ord('*')) Or (p[i] = Ord('+')) Or (p[i] = Ord('?')))
-   Then Err('nothing to repeat', i);
+   If (Self.i < Self.n) And ((Self.p[Self.i] = Ord('*')) Or (Self.p[Self.i] =
+     Ord('+')) Or (Self.p[Self.i] = Ord('?')))
+   Then ReParserErr(Self, 'nothing to repeat', Self.i);
    Continue;
   End;
-  atom := ParseQuant(atom);
-  seq.Add(atom);
+  atom := ReParserParseQuant(Self, atom);
+  ObjAdd(seq, atom);
  End;
  Result := seq;
 End;
 
-Function TReParser.ParseAlt(depth: Integer): TReNode;
+Function ReParserParseAlt(Self: TReParser; depth: Integer): TReNode;
 Var
  alt, first: TReNode;
 Begin
- If depth > 200 Then Err('pattern nested too deeply', i);
- first := ParseSeq(depth);
- If (i < n) And (p[i] = Ord('|')) Then Begin
-  alt := NewNode(nkAlt);
-  alt.Add(first);
-  While (i < n) And (p[i] = Ord('|')) Do Begin
-   Inc(i);
-   alt.Add(ParseSeq(depth));
+ If depth > 200 Then ReParserErr(Self, 'pattern nested too deeply', Self.i);
+ first := ReParserParseSeq(Self, depth);
+ If (Self.i < Self.n) And (Self.p[Self.i] = Ord('|')) Then Begin
+  alt := ReParserNewNode(Self, nkAlt);
+  ObjAdd(alt, first);
+  While (Self.i < Self.n) And (Self.p[Self.i] = Ord('|')) Do Begin
+   Inc(Self.i);
+   ObjAdd(alt, ReParserParseSeq(Self, depth));
   End;
   Result := alt;
  End
@@ -37869,40 +38907,49 @@ End;
 
 { ---------------- generation de code ---------------- }
 Type
- TReGen = Class
+ TReGen = ^TReGenRec;
+ TReGenRec = Record
   prog: TReProg;
   ps: TReParser;
   nslot: Integer;
-  Function Emit(op, x, y, z, w: Integer): Integer;
-  Function Width(nd: TReNode): Integer;
-  Function MinWidth(nd: TReNode): Integer;
-  Function IsSingle(nd: TReNode): Boolean;
-  Procedure Gen(nd: TReNode);
-  Procedure GenRepeat(nd: TReNode);
  End;
 
-Function TReGen.Emit(op, x, y, z, w: Integer): Integer;
+Function ReGenEmit(Self: TReGen; op, x, y, z, w: Integer): Integer; Forward;
+Function ReGenWidth(Self: TReGen; nd: TReNode): Integer; Forward;
+Function ReGenMinWidth(Self: TReGen; nd: TReNode): Integer; Forward;
+Function ReGenIsSingle(Self: TReGen; nd: TReNode): Boolean; Forward;
+Procedure ReGenGen(Self: TReGen; nd: TReNode); Forward;
+Procedure ReGenGenRepeat(Self: TReGen; nd: TReNode); Forward;
+Function AllocReGen: TReGen; Forward;
+
+Function AllocReGen: TReGen;
 Begin
- If prog.n >= Length(prog.code) Then SetLength(prog.code, prog.n * 2 + 16);
- If prog.n > 4000000 Then
-  ps.Err('regular expression code size limit exceeded', 0);
- prog.code[prog.n].op := op;
- prog.code[prog.n].x := x;
- prog.code[prog.n].y := y;
- prog.code[prog.n].z := z;
- prog.code[prog.n].w := w;
- Result := prog.n;
- Inc(prog.n);
+ Result := TReGen(AllocMem(SizeOf(TReGenRec)));
 End;
 
-Function TReGen.IsSingle(nd: TReNode): Boolean;
+Function ReGenEmit(Self: TReGen; op, x, y, z, w: Integer): Integer;
+Begin
+ If Self.prog.n >= Length(Self.prog.code) Then SetLength(Self.prog.code,
+   Self.prog.n * 2 + 16);
+ If Self.prog.n > 4000000 Then
+  ReParserErr(Self.ps, 'regular expression code size limit exceeded', 0);
+ Self.prog.code[Self.prog.n].op := op;
+ Self.prog.code[Self.prog.n].x := x;
+ Self.prog.code[Self.prog.n].y := y;
+ Self.prog.code[Self.prog.n].z := z;
+ Self.prog.code[Self.prog.n].w := w;
+ Result := Self.prog.n;
+ Inc(Self.prog.n);
+End;
+
+Function ReGenIsSingle(Self: TReGen; nd: TReNode): Boolean;
 Begin
  Result := nd.kind In [nkChr, nkAnyN, nkSetN];
  If Not Result And (nd.kind = nkCat) And (Length(nd.kids) = 1) Then
-  Result := IsSingle(nd.kids[0]);
+  Result := ReGenIsSingle(Self, nd.kids[0]);
 End;
 
-Function TReGen.Width(nd: TReNode): Integer;
+Function ReGenWidth(Self: TReGen; nd: TReNode): Integer;
 Var
  k, w, t: Integer;
 Begin
@@ -37912,28 +38959,28 @@ Begin
   nkCat: Begin
     Result := 0;
     For k := 0 To High(nd.kids) Do Begin
-     w := Width(nd.kids[k]);
+     w := ReGenWidth(Self, nd.kids[k]);
      If w < 0 Then Begin Result := -1; Exit; End;
      Result := Result + w;
     End;
    End;
   nkAlt: Begin
-    Result := Width(nd.kids[0]);
+    Result := ReGenWidth(Self, nd.kids[0]);
     For k := 1 To High(nd.kids) Do Begin
-     w := Width(nd.kids[k]);
+     w := ReGenWidth(Self, nd.kids[k]);
      If w <> Result Then Result := -1;
     End;
    End;
   nkRepeat: Begin
-    w := Width(nd.kids[0]);
+    w := ReGenWidth(Self, nd.kids[0]);
     If (w >= 0) And (nd.mn = nd.mx) Then Result := w * nd.mn
     Else If (w = 0) Then Result := 0
     Else Result := -1;
    End;
-  nkGroup: Result := Width(nd.kids[0]);
+  nkGroup: Result := ReGenWidth(Self, nd.kids[0]);
   nkCondN: Begin
-    w := Width(nd.kids[0]);
-    t := Width(nd.kids[1]);
+    w := ReGenWidth(Self, nd.kids[0]);
+    t := ReGenWidth(Self, nd.kids[1]);
     If w = t Then Result := w Else Result := -1;
    End;
  Else
@@ -37941,7 +38988,7 @@ Begin
  End;
 End;
 
-Function TReGen.MinWidth(nd: TReNode): Integer;
+Function ReGenMinWidth(Self: TReGen; nd: TReNode): Integer;
 Var
  k, w: Integer;
 Begin
@@ -37949,20 +38996,21 @@ Begin
   nkChr, nkAnyN, nkSetN: Result := 1;
   nkCat: Begin
     Result := 0;
-    For k := 0 To High(nd.kids) Do Result := Result + MinWidth(nd.kids[k]);
+    For k := 0 To High(nd.kids) Do Result := Result + ReGenMinWidth(Self,
+      nd.kids[k]);
    End;
   nkAlt: Begin
-    Result := MinWidth(nd.kids[0]);
+    Result := ReGenMinWidth(Self, nd.kids[0]);
     For k := 1 To High(nd.kids) Do Begin
-     w := MinWidth(nd.kids[k]);
+     w := ReGenMinWidth(Self, nd.kids[k]);
      If w < Result Then Result := w;
     End;
    End;
-  nkRepeat: Result := MinWidth(nd.kids[0]) * nd.mn;
-  nkGroup: Result := MinWidth(nd.kids[0]);
+  nkRepeat: Result := ReGenMinWidth(Self, nd.kids[0]) * nd.mn;
+  nkGroup: Result := ReGenMinWidth(Self, nd.kids[0]);
   nkCondN: Begin
-    Result := MinWidth(nd.kids[0]);
-    w := MinWidth(nd.kids[1]);
+    Result := ReGenMinWidth(Self, nd.kids[0]);
+    w := ReGenMinWidth(Self, nd.kids[1]);
     If w < Result Then Result := w;
    End;
  Else
@@ -37970,7 +39018,7 @@ Begin
  End;
 End;
 
-Procedure TReGen.GenRepeat(nd: TReNode);
+Procedure ReGenGenRepeat(Self: TReGen; nd: TReNode);
 Var
  body: TReNode;
  k, cnt, l1, sp, slot, pcSave, chk: Integer;
@@ -37979,57 +39027,57 @@ Var
  szBefore: Integer;
 Begin
  body := nd.kids[0];
- If IsSingle(body) Then Begin
-  Emit(opRep, nd.mn, nd.mx, Ord(nd.lazy), 0);
-  Gen(body);
+ If ReGenIsSingle(Self, body) Then Begin
+  ReGenEmit(Self, opRep, nd.mn, nd.mx, Ord(nd.lazy), 0);
+  ReGenGen(Self, body);
   Exit;
  End;
- nullable := MinWidth(body) = 0;
- szBefore := prog.n;
+ nullable := ReGenMinWidth(Self, body) = 0;
+ szBefore := Self.prog.n;
  For k := 1 To nd.mn Do Begin
-  Gen(body);
-  If prog.n - szBefore > 2000000 Then
-   ps.Err('regular expression code size limit exceeded', 0);
+  ReGenGen(Self, body);
+  If Self.prog.n - szBefore > 2000000 Then
+   ReParserErr(Self.ps, 'regular expression code size limit exceeded', 0);
  End;
  If nd.mx = -1 Then Begin
-  l1 := Emit(opSplit, 0, 0, 0, 0);
+  l1 := ReGenEmit(Self, opSplit, 0, 0, 0, 0);
   slot := -1;
   chk := -1;
   If nullable Then Begin
-   slot := prog.nslots;
-   Inc(prog.nslots);
-   Emit(opSave, -1 - slot, 0, 0, 0);
+   slot := Self.prog.nslots;
+   Inc(Self.prog.nslots);
+   ReGenEmit(Self, opSave, -1 - slot, 0, 0, 0);
   End;
-  Gen(body);
-  If nullable Then chk := Emit(opEmptyChk, -1 - slot, 0, 0, 0);
-  Emit(opJmp, l1, 0, 0, 0);
-  If chk >= 0 Then prog.code[chk].y := prog.n;
+  ReGenGen(Self, body);
+  If nullable Then chk := ReGenEmit(Self, opEmptyChk, -1 - slot, 0, 0, 0);
+  ReGenEmit(Self, opJmp, l1, 0, 0, 0);
+  If chk >= 0 Then Self.prog.code[chk].y := Self.prog.n;
   If nd.lazy Then Begin
-   prog.code[l1].x := prog.n;
-   prog.code[l1].y := l1 + 1;
+   Self.prog.code[l1].x := Self.prog.n;
+   Self.prog.code[l1].y := l1 + 1;
   End
   Else Begin
-   prog.code[l1].x := l1 + 1;
-   prog.code[l1].y := prog.n;
+   Self.prog.code[l1].x := l1 + 1;
+   Self.prog.code[l1].y := Self.prog.n;
   End;
  End
  Else Begin
   cnt := nd.mx - nd.mn;
   SetLength(splits, cnt);
   For k := 0 To cnt - 1 Do Begin
-   splits[k] := Emit(opSplit, 0, 0, 0, 0);
-   Gen(body);
-   If prog.n - szBefore > 2000000 Then
-    ps.Err('regular expression code size limit exceeded', 0);
+   splits[k] := ReGenEmit(Self, opSplit, 0, 0, 0, 0);
+   ReGenGen(Self, body);
+   If Self.prog.n - szBefore > 2000000 Then
+    ReParserErr(Self.ps, 'regular expression code size limit exceeded', 0);
   End;
   For k := 0 To cnt - 1 Do Begin
    If nd.lazy Then Begin
-    prog.code[splits[k]].x := prog.n;
-    prog.code[splits[k]].y := splits[k] + 1;
+    Self.prog.code[splits[k]].x := Self.prog.n;
+    Self.prog.code[splits[k]].y := splits[k] + 1;
    End
    Else Begin
-    prog.code[splits[k]].x := splits[k] + 1;
-    prog.code[splits[k]].y := prog.n;
+    Self.prog.code[splits[k]].x := splits[k] + 1;
+    Self.prog.code[splits[k]].y := Self.prog.n;
    End;
   End;
  End;
@@ -38037,92 +39085,93 @@ Begin
  pcSave := 0;
 End;
 
-Procedure TReGen.Gen(nd: TReNode);
+Procedure ReGenGen(Self: TReGen; nd: TReNode);
 Var
  k, j, w, fl, l1, lend, endJmp, lk, lf: Integer;
  jmps: Array Of Integer;
  icase, asc: Boolean;
 Begin
  icase := (nd.flags And REF_I) <> 0;
- asc := ((nd.flags And REF_A) <> 0) Or prog.isBytes;
+ asc := ((nd.flags And REF_A) <> 0) Or Self.prog.isBytes;
  Case nd.kind Of
   nkEmpty: ;
   nkChr: Begin
     If icase And ((CpLower(nd.c) <> nd.c) Or (CpUpper(nd.c) <> nd.c) Or
      (ReIKey(nd.c) <> nd.c)) Then
-     Emit(opCharI, ReIKey(nd.c), 0, 0, 0)
-    Else Emit(opChar, nd.c, 0, 0, 0);
+     ReGenEmit(Self, opCharI, ReIKey(nd.c), 0, 0, 0)
+    Else ReGenEmit(Self, opChar, nd.c, 0, 0, 0);
    End;
   nkAnyN: Begin
-    If (nd.flags And REF_S) <> 0 Then Emit(opAnyAll, 0, 0, 0, 0)
-    Else Emit(opAny, 0, 0, 0, 0);
+    If (nd.flags And REF_S) <> 0 Then ReGenEmit(Self, opAnyAll, 0, 0, 0, 0)
+    Else ReGenEmit(Self, opAny, 0, 0, 0, 0);
    End;
   nkSetN: Begin
     fl := 0;
     If icase Then fl := fl Or 1;
     If asc Then fl := fl Or 2;
-    Emit(opSet, nd.idx, fl, 0, 0);
+    ReGenEmit(Self, opSet, nd.idx, fl, 0, 0);
    End;
   nkCat: Begin
-    For k := 0 To High(nd.kids) Do Gen(nd.kids[k]);
+    For k := 0 To High(nd.kids) Do ReGenGen(Self, nd.kids[k]);
    End;
   nkAlt: Begin
     SetLength(jmps, 0);
     For k := 0 To High(nd.kids) Do Begin
      If k < High(nd.kids) Then Begin
-      l1 := Emit(opSplit, 0, 0, 0, 0);
-      prog.code[l1].x := l1 + 1;
-      Gen(nd.kids[k]);
+      l1 := ReGenEmit(Self, opSplit, 0, 0, 0, 0);
+      Self.prog.code[l1].x := l1 + 1;
+      ReGenGen(Self, nd.kids[k]);
       SetLength(jmps, Length(jmps) + 1);
-      jmps[High(jmps)] := Emit(opJmp, 0, 0, 0, 0);
-      prog.code[l1].y := prog.n;
+      jmps[High(jmps)] := ReGenEmit(Self, opJmp, 0, 0, 0, 0);
+      Self.prog.code[l1].y := Self.prog.n;
      End
-     Else Gen(nd.kids[k]);
+     Else ReGenGen(Self, nd.kids[k]);
     End;
-    For k := 0 To High(jmps) Do prog.code[jmps[k]].x := prog.n;
+    For k := 0 To High(jmps) Do Self.prog.code[jmps[k]].x := Self.prog.n;
    End;
   nkGroup: Begin
-    If nd.idx >= 0 Then Emit(opSave, 2 * nd.idx, 0, 0, 0);
-    Gen(nd.kids[0]);
-    If nd.idx >= 0 Then Emit(opSave, 2 * nd.idx + 1, 0, 0, 0);
+    If nd.idx >= 0 Then ReGenEmit(Self, opSave, 2 * nd.idx, 0, 0, 0);
+    ReGenGen(Self, nd.kids[0]);
+    If nd.idx >= 0 Then ReGenEmit(Self, opSave, 2 * nd.idx + 1, 0, 0, 0);
    End;
   nkBackref: Begin
     fl := 0;
     If icase Then fl := 1;
-    Emit(opBackref, nd.idx, fl, 0, 0);
+    ReGenEmit(Self, opBackref, nd.idx, fl, 0, 0);
    End;
   nkAnchor: Begin
     Case nd.idx Of
-     0: If (nd.flags And REF_M) <> 0 Then Emit(opBolM, 0, 0, 0, 0)
-        Else Emit(opBol, 0, 0, 0, 0);
-     1: If (nd.flags And REF_M) <> 0 Then Emit(opEolM, 0, 0, 0, 0)
-        Else Emit(opEol, 0, 0, 0, 0);
-     2: Emit(opBos, 0, 0, 0, 0);
-     3: Emit(opEos, 0, 0, 0, 0);
-     4: Emit(opWordB, 0, Ord(asc), 0, 0);
-     5: Emit(opNWordB, 0, Ord(asc), 0, 0);
+     0: If (nd.flags And REF_M) <> 0 Then ReGenEmit(Self, opBolM, 0, 0, 0, 0)
+        Else ReGenEmit(Self, opBol, 0, 0, 0, 0);
+     1: If (nd.flags And REF_M) <> 0 Then ReGenEmit(Self, opEolM, 0, 0, 0, 0)
+        Else ReGenEmit(Self, opEol, 0, 0, 0, 0);
+     2: ReGenEmit(Self, opBos, 0, 0, 0, 0);
+     3: ReGenEmit(Self, opEos, 0, 0, 0, 0);
+     4: ReGenEmit(Self, opWordB, 0, Ord(asc), 0, 0);
+     5: ReGenEmit(Self, opNWordB, 0, Ord(asc), 0, 0);
     End;
    End;
   nkLookN: Begin
     w := 0;
     If nd.idx = 1 Then Begin
-     w := Width(nd.kids[0]);
-     If w < 0 Then ps.Err('look-behind requires fixed-width pattern', 0);
+     w := ReGenWidth(Self, nd.kids[0]);
+     If w < 0 Then ReParserErr(Self.ps,
+       'look-behind requires fixed-width pattern', 0);
     End;
-    lk := Emit(opLook, nd.idx, w, 0, Ord(nd.neg));
-    Gen(nd.kids[0]);
-    Emit(opLookEnd, 0, 0, 0, 0);
-    prog.code[lk].z := prog.n;
+    lk := ReGenEmit(Self, opLook, nd.idx, w, 0, Ord(nd.neg));
+    ReGenGen(Self, nd.kids[0]);
+    ReGenEmit(Self, opLookEnd, 0, 0, 0, 0);
+    Self.prog.code[lk].z := Self.prog.n;
    End;
   nkCondN: Begin
-    lk := Emit(opCond, nd.idx, 0, 0, 0);
-    Gen(nd.kids[0]);
-    endJmp := Emit(opJmp, 0, 0, 0, 0);
-    prog.code[lk].y := prog.n;
-    Gen(nd.kids[1]);
-    prog.code[endJmp].x := prog.n;
+    lk := ReGenEmit(Self, opCond, nd.idx, 0, 0, 0);
+    ReGenGen(Self, nd.kids[0]);
+    endJmp := ReGenEmit(Self, opJmp, 0, 0, 0, 0);
+    Self.prog.code[lk].y := Self.prog.n;
+    ReGenGen(Self, nd.kids[1]);
+    Self.prog.code[endJmp].x := Self.prog.n;
    End;
-  nkRepeat: GenRepeat(nd);
+  nkRepeat: ReGenGenRepeat(Self, nd);
  End;
  lend := 0;
  lf := 0;
@@ -38135,7 +39184,8 @@ Type
   kind, a, b, c: Integer;
  End;
 
- TReState = Class
+ TReState = ^TReStateRec;
+ TReStateRec = Record
   prog: TReProg;
   subj: TCpArr;
   n: Integer;
@@ -38147,58 +39197,68 @@ Type
   mustAdvance, needEnd: Boolean;
   startPos, matchEnd: Integer;
   steps: Int64;
-  Constructor Create(p: TReProg; Const s: TCpArr; len: Integer);
-  Procedure Push(k, a, b, c: Integer); Inline;
-  Function MatchOne(Const ins: TReInstr; pos: Integer): Boolean;
-  Function Run(pc0, pos0: Integer; top: Boolean): Boolean;
-  Function Attempt(s: Integer): Boolean;
-  Function Search(start: Integer; mode: Integer): Boolean;
  End;
 
-Constructor TReState.Create(p: TReProg; Const s: TCpArr; len: Integer);
+Function AllocReState(p: TReProg; Const s: TCpArr; len: Integer): TReState;
+  Forward;
+Procedure ReStatePush(Self: TReState; k, a, b, c: Integer); Forward;
+Function ReStateMatchOne(Self: TReState; Const ins: TReInstr; pos: Integer):
+  Boolean; Forward;
+Function ReStateRun(Self: TReState; pc0, pos0: Integer; top: Boolean): Boolean;
+  Forward;
+Function ReStateAttempt(Self: TReState; s: Integer): Boolean; Forward;
+Function ReStateSearch(Self: TReState; start: Integer; mode: Integer): Boolean;
+  Forward;
+
+Function AllocReState(p: TReProg; Const s: TCpArr; len: Integer): TReState;
+Var
+ Self: TReState;
 Begin
- prog := p;
- subj := s;
- n := len;
- ncap := 2 * (p.ngroups + 1);
- liIdx := ncap + p.nslots;
- SetLength(caps, liIdx + 1);
- SetLength(bt, 256);
- sp := 0;
- ascii := ((p.flags And REF_A) <> 0) Or p.isBytes;
+ Self := TReState(AllocMem(SizeOf(TReStateRec)));
+ Result := Self;
+ Self.prog := p;
+ Self.subj := s;
+ Self.n := len;
+ Self.ncap := 2 * (p.ngroups + 1);
+ Self.liIdx := Self.ncap + p.nslots;
+ SetLength(Self.caps, Self.liIdx + 1);
+ SetLength(Self.bt, 256);
+ Self.sp := 0;
+ Self.ascii := ((p.flags And REF_A) <> 0) Or p.isBytes;
 End;
 
-Procedure TReState.Push(k, a, b, c: Integer);
+Procedure ReStatePush(Self: TReState; k, a, b, c: Integer);
 Begin
- If sp >= Length(bt) Then SetLength(bt, Length(bt) * 2);
- bt[sp].kind := k;
- bt[sp].a := a;
- bt[sp].b := b;
- bt[sp].c := c;
- Inc(sp);
+ If Self.sp >= Length(Self.bt) Then SetLength(Self.bt, Length(Self.bt) * 2);
+ Self.bt[Self.sp].kind := k;
+ Self.bt[Self.sp].a := a;
+ Self.bt[Self.sp].b := b;
+ Self.bt[Self.sp].c := c;
+ Inc(Self.sp);
 End;
 
-Function TReState.MatchOne(Const ins: TReInstr; pos: Integer): Boolean;
+Function ReStateMatchOne(Self: TReState; Const ins: TReInstr; pos: Integer):
+  Boolean;
 Var
  c: Cardinal;
 Begin
- If pos >= n Then Begin
+ If pos >= Self.n Then Begin
   Result := False;
   Exit;
  End;
- c := subj[pos];
+ c := Self.subj[pos];
  Case ins.op Of
   opChar: Result := c = Cardinal(ins.x);
   opCharI: Result := ReIKey(c) = Cardinal(ins.x);
   opAny: Result := c <> 10;
   opAnyAll: Result := True;
-  opSet: Result := prog.sets[ins.x].Test(c, (ins.y And 1) <> 0,
+  opSet: Result := ReSetTest(Self.prog.sets[ins.x], c, (ins.y And 1) <> 0,
     (ins.y And 2) <> 0);
  Else Result := False;
  End;
 End;
 
-Function TReState.Run(pc0, pos0: Integer; top: Boolean): Boolean;
+Function ReStateRun(Self: TReState; pc0, pos0: Integer; top: Boolean): Boolean;
 Var
  base, pc, pos, i, cnt, maxc, newpos, g, s, e, len, k, saveSp, kept: Integer;
  ok, r, before, after: Boolean;
@@ -38208,40 +39268,44 @@ Var
  nextIsChar: Boolean;
  nextCh: Cardinal;
 Begin
- base := sp;
+ base := Self.sp;
  pc := pc0;
  pos := pos0;
  While True Do Begin
-  ins := @prog.code[pc];
+  ins := @Self.prog.code[pc];
   ok := True;
   Case ins^.op Of
-   opChar: If (pos < n) And (subj[pos] = Cardinal(ins^.x)) Then Begin
+   opChar: If (pos < Self.n) And (Self.subj[pos] = Cardinal(ins^.x)) Then Begin
       Inc(pos); Inc(pc);
      End Else ok := False;
-   opCharI: If (pos < n) And (ReIKey(subj[pos]) = Cardinal(ins^.x)) Then Begin
+   opCharI: If (pos < Self.n) And (ReIKey(Self.subj[pos]) = Cardinal(ins^.x))
+     Then Begin
       Inc(pos); Inc(pc);
      End Else ok := False;
-   opAny: If (pos < n) And (subj[pos] <> 10) Then Begin
+   opAny: If (pos < Self.n) And (Self.subj[pos] <> 10) Then Begin
       Inc(pos); Inc(pc);
      End Else ok := False;
-   opAnyAll: If pos < n Then Begin
+   opAnyAll: If pos < Self.n Then Begin
       Inc(pos); Inc(pc);
      End Else ok := False;
-   opSet: If MatchOne(ins^, pos) Then Begin
+   opSet: If ReStateMatchOne(Self, ins^, pos) Then Begin
       Inc(pos); Inc(pc);
      End Else ok := False;
    opBol: If pos = 0 Then Inc(pc) Else ok := False;
-   opBolM: If (pos = 0) Or (subj[pos - 1] = 10) Then Inc(pc) Else ok := False;
-   opEol: If (pos = n) Or ((pos = n - 1) And (subj[pos] = 10)) Then Inc(pc)
+   opBolM: If (pos = 0) Or (Self.subj[pos - 1] = 10) Then Inc(pc) Else ok :=
+     False;
+   opEol: If (pos = Self.n) Or ((pos = Self.n - 1) And (Self.subj[pos] = 10))
+     Then Inc(pc)
      Else ok := False;
-   opEolM: If (pos = n) Or (subj[pos] = 10) Then Inc(pc) Else ok := False;
+   opEolM: If (pos = Self.n) Or (Self.subj[pos] = 10) Then Inc(pc) Else ok :=
+     False;
    opBos: If pos = 0 Then Inc(pc) Else ok := False;
-   opEos: If pos = n Then Inc(pc) Else ok := False;
+   opEos: If pos = Self.n Then Inc(pc) Else ok := False;
    opWordB, opNWordB: Begin
-      If n = 0 Then ok := False
+      If Self.n = 0 Then ok := False
       Else Begin
-       before := (pos > 0) And ReIsWord(subj[pos - 1], ins^.y <> 0);
-       after := (pos < n) And ReIsWord(subj[pos], ins^.y <> 0);
+       before := (pos > 0) And ReIsWord(Self.subj[pos - 1], ins^.y <> 0);
+       after := (pos < Self.n) And ReIsWord(Self.subj[pos], ins^.y <> 0);
        If ins^.op = opWordB Then ok := before <> after
        Else ok := before = after;
       End;
@@ -38249,48 +39313,49 @@ Begin
      End;
    opSave: Begin
       k := ins^.x;
-      If k < 0 Then k := ncap + (-1 - k);
-      Push(1, k, caps[k], 0);
-      caps[k] := pos;
-      If (k >= 2) And (k < ncap) And ((k And 1) = 1) Then Begin
-       Push(1, liIdx, caps[liIdx], 0);
-       caps[liIdx] := k Div 2;
+      If k < 0 Then k := Self.ncap + (-1 - k);
+      ReStatePush(Self, 1, k, Self.caps[k], 0);
+      Self.caps[k] := pos;
+      If (k >= 2) And (k < Self.ncap) And ((k And 1) = 1) Then Begin
+       ReStatePush(Self, 1, Self.liIdx, Self.caps[Self.liIdx], 0);
+       Self.caps[Self.liIdx] := k Div 2;
       End;
       Inc(pc);
      End;
    opSplit: Begin
-      Push(0, ins^.y, pos, 0);
+      ReStatePush(Self, 0, ins^.y, pos, 0);
       pc := ins^.x;
      End;
    opJmp: pc := ins^.x;
    opMatch, opLookEnd: Begin
       If ins^.op = opMatch Then Begin
-       If (needEnd And (pos <> n)) Or (mustAdvance And (pos = startPos)) Then
+       If (Self.needEnd And (pos <> Self.n)) Or (Self.mustAdvance And (pos =
+         Self.startPos)) Then
         ok := False
        Else Begin
-        matchEnd := pos;
+        Self.matchEnd := pos;
         Result := True;
         Exit;
        End;
       End
       Else Begin
-       matchEnd := pos;
+       Self.matchEnd := pos;
        Result := True;
        Exit;
       End;
      End;
    opBackref: Begin
       g := ins^.x;
-      s := caps[2 * g];
-      e := caps[2 * g + 1];
+      s := Self.caps[2 * g];
+      e := Self.caps[2 * g + 1];
       If (s < 0) Or (e < 0) Then ok := False
       Else Begin
        len := e - s;
-       If pos + len > n Then ok := False
+       If pos + len > Self.n Then ok := False
        Else Begin
         For k := 0 To len - 1 Do Begin
-         c1 := subj[s + k];
-         c2 := subj[pos + k];
+         c1 := Self.subj[s + k];
+         c2 := Self.subj[pos + k];
          If ins^.y <> 0 Then Begin
           c1 := ReIKey(c1);
           c2 := ReIKey(c2);
@@ -38312,12 +39377,13 @@ Begin
       If ins^.z = 0 Then Begin
        { glouton }
        cnt := 0;
-       While ((maxc < 0) Or (cnt < maxc)) And MatchOne(prog.code[pc + 1], pos +
-         cnt) Do
+       While ((maxc < 0) Or (cnt < maxc)) And ReStateMatchOne(Self,
+         Self.prog.code[pc + 1], pos + cnt) Do
         Inc(cnt);
        If cnt < ins^.x Then ok := False
        Else Begin
-        If cnt > ins^.x Then Push(2, pc + 2, pos + cnt, pos + ins^.x);
+        If cnt > ins^.x Then ReStatePush(Self, 2, pc + 2, pos + cnt, pos +
+          ins^.x);
         pos := pos + cnt;
         pc := pc + 2;
        End;
@@ -38325,7 +39391,7 @@ Begin
       Else Begin
        cnt := 0;
        While cnt < ins^.x Do Begin
-        If Not MatchOne(prog.code[pc + 1], pos) Then Begin
+        If Not ReStateMatchOne(Self, Self.prog.code[pc + 1], pos) Then Begin
          ok := False;
          Break;
         End;
@@ -38333,37 +39399,37 @@ Begin
         Inc(cnt);
        End;
        If ok Then Begin
-        If (maxc < 0) Or (maxc > cnt) Then Push(3, pc, pos, cnt);
+        If (maxc < 0) Or (maxc > cnt) Then ReStatePush(Self, 3, pc, pos, cnt);
         pc := pc + 2;
        End;
       End;
      End;
    opEmptyChk: Begin
       k := ins^.x;
-      If k < 0 Then k := ncap + (-1 - k);
-      If caps[k] = pos Then pc := ins^.y Else Inc(pc);
+      If k < 0 Then k := Self.ncap + (-1 - k);
+      If Self.caps[k] = pos Then pc := ins^.y Else Inc(pc);
      End;
    opCond: Begin
-      If caps[2 * ins^.x + 1] >= 0 Then Inc(pc) Else pc := ins^.y;
+      If Self.caps[2 * ins^.x + 1] >= 0 Then Inc(pc) Else pc := ins^.y;
      End;
    opFail: ok := False;
    opLook: Begin
-      saveSp := sp;
-      If ins^.x = 0 Then r := Run(pc + 1, pos, False)
+      saveSp := Self.sp;
+      If ins^.x = 0 Then r := ReStateRun(Self, pc + 1, pos, False)
       Else Begin
        If pos - ins^.y < 0 Then r := False
-       Else r := Run(pc + 1, pos - ins^.y, False);
+       Else r := ReStateRun(Self, pc + 1, pos - ins^.y, False);
       End;
       If ins^.w = 0 Then Begin
        If r Then Begin
         { garde les entrees de restauration de captures }
         kept := saveSp;
-        For i := saveSp To sp - 1 Do
-         If bt[i].kind = 1 Then Begin
-          bt[kept] := bt[i];
+        For i := saveSp To Self.sp - 1 Do
+         If Self.bt[i].kind = 1 Then Begin
+          Self.bt[kept] := Self.bt[i];
           Inc(kept);
          End;
-        sp := kept;
+        Self.sp := kept;
         pc := ins^.z;
        End
        Else ok := False;
@@ -38371,9 +39437,10 @@ Begin
       Else Begin
        If r Then Begin
         { desfait toutes les captures }
-        While sp > saveSp Do Begin
-         Dec(sp);
-         If bt[sp].kind = 1 Then caps[bt[sp].a] := bt[sp].b;
+        While Self.sp > saveSp Do Begin
+         Dec(Self.sp);
+         If Self.bt[Self.sp].kind = 1 Then Self.caps[Self.bt[Self.sp].a] :=
+           Self.bt[Self.sp].b;
         End;
         ok := False;
        End
@@ -38386,13 +39453,13 @@ Begin
   If Not ok Then Begin
    { retour arriere }
    While True Do Begin
-    If sp <= base Then Begin
+    If Self.sp <= base Then Begin
      Result := False;
      Exit;
     End;
-    Dec(sp);
-    en := bt[sp];
-    If en.kind = 1 Then caps[en.a] := en.b
+    Dec(Self.sp);
+    en := Self.bt[Self.sp];
+    If en.kind = 1 Then Self.caps[en.a] := en.b
     Else If en.kind = 0 Then Begin
      pc := en.a;
      pos := en.b;
@@ -38400,24 +39467,25 @@ Begin
     End
     Else If en.kind = 2 Then Begin
      newpos := en.b - 1;
-     nextIsChar := prog.code[en.a].op = opChar;
+     nextIsChar := Self.prog.code[en.a].op = opChar;
      If nextIsChar Then Begin
-      nextCh := Cardinal(prog.code[en.a].x);
-      While (newpos > en.c) And ((newpos >= n) Or (subj[newpos] <> nextCh)) Do
+      nextCh := Cardinal(Self.prog.code[en.a].x);
+      While (newpos > en.c) And ((newpos >= Self.n) Or (Self.subj[newpos] <>
+        nextCh)) Do
        Dec(newpos);
      End;
-     If newpos > en.c Then Push(2, en.a, newpos, en.c);
+     If newpos > en.c Then ReStatePush(Self, 2, en.a, newpos, en.c);
      pos := newpos;
      pc := en.a;
      Break;
     End
     Else Begin
      { repetition paresseuse : tente une de plus }
-     ins := @prog.code[en.a];
+     ins := @Self.prog.code[en.a];
      If ((ins^.y < 0) Or (en.c < ins^.y)) And
-      MatchOne(prog.code[en.a + 1], en.b) Then Begin
+      ReStateMatchOne(Self, Self.prog.code[en.a + 1], en.b) Then Begin
       pos := en.b + 1;
-      Push(3, en.a, pos, en.c + 1);
+      ReStatePush(Self, 3, en.a, pos, en.c + 1);
       pc := en.a + 2;
       Break;
      End;
@@ -38431,45 +39499,46 @@ Begin
  nextCh := 0;
 End;
 
-Function TReState.Attempt(s: Integer): Boolean;
+Function ReStateAttempt(Self: TReState; s: Integer): Boolean;
 Var
  i: Integer;
 Begin
- For i := 0 To High(caps) Do caps[i] := -1;
- caps[0] := s;
- startPos := s;
- sp := 0;
- Result := Run(0, s, True);
+ For i := 0 To High(Self.caps) Do Self.caps[i] := -1;
+ Self.caps[0] := s;
+ Self.startPos := s;
+ Self.sp := 0;
+ Result := ReStateRun(Self, 0, s, True);
  If Result Then Begin
-  caps[1] := matchEnd;
-  sp := 0;
+  Self.caps[1] := Self.matchEnd;
+  Self.sp := 0;
  End;
 End;
 
 { mode : 0 match, 1 search, 2 fullmatch }
-Function TReState.Search(start: Integer; mode: Integer): Boolean;
+Function ReStateSearch(Self: TReState; start: Integer; mode: Integer): Boolean;
 Var
  s: Integer;
 Begin
  Result := False;
- needEnd := mode = 2;
- If start > n Then Exit;
+ Self.needEnd := mode = 2;
+ If start > Self.n Then Exit;
  If mode <> 1 Then Begin
-  Result := Attempt(start);
-  mustAdvance := False;
+  Result := ReStateAttempt(Self, start);
+  Self.mustAdvance := False;
   Exit;
  End;
  s := start;
- While s <= n Do Begin
-  If prog.firstCh >= 0 Then Begin
-   While (s < n) And (subj[s] <> Cardinal(prog.firstCh)) Do Inc(s);
-   If s >= n Then Exit;
+ While s <= Self.n Do Begin
+  If Self.prog.firstCh >= 0 Then Begin
+   While (s < Self.n) And (Self.subj[s] <> Cardinal(Self.prog.firstCh)) Do
+     Inc(s);
+   If s >= Self.n Then Exit;
   End;
-  If Attempt(s) Then Begin
+  If ReStateAttempt(Self, s) Then Begin
    Result := True;
    Exit;
   End;
-  mustAdvance := False;
+  Self.mustAdvance := False;
   Inc(s);
  End;
 End;
@@ -38479,31 +39548,39 @@ Var
  tyRePattern, tyReMatch, tyReIter, tyReScanner, exReError: TPyType;
 
 Type
- TPyPattern = Class(TPyObj)
+ TPyPattern = ^TPyPatternRec;
+ TPyPatternRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   pat: TVal;
   flags: Integer;
   prog: TReProg;
   groupindex: TPyDict;
   isBytes: Boolean;
-  Procedure MarkKids; Override;
-  Destructor Destroy; Override;
-  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
-  Function NativeRepr(Var s: AnsiString): Boolean; Override;
  End;
 
- TPyMatch = Class(TPyObj)
+ TPyMatch = ^TPyMatchRec;
+ TPyMatchRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   pattern: TPyPattern;
   str: TVal;
   caps: Array Of Integer;
   pos, endpos, lastindex: Integer;
   cps: TCpArr;
   ascii: Boolean;
-  Procedure MarkKids; Override;
-  Function NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean; Override;
-  Function NativeRepr(Var s: AnsiString): Boolean; Override;
  End;
 
- TReIter = Class(TPyIter)
+ TReIter = ^TReIterRec;
+ TReIterRec = Record
+  otag: Byte;
+  gcmark, immortal, finalized: Boolean;
+  cls: TPyType;
+  idict: TPyDict;
   pattern: TPyPattern;
   str: TVal;
   st: TReState;
@@ -38512,42 +39589,74 @@ Type
   pos, endpos: Integer;
   must: Boolean;
   done: Boolean;
-  Function Next(Var r: TVal): Boolean; Override;
-  Procedure MarkKids; Override;
-  Destructor Destroy; Override;
  End;
 
-Procedure TPyPattern.MarkKids;
+Procedure PatternMarkKids(Self: TPyPattern); Forward;
+Procedure PatternDestroy(Self: TPyPattern); Forward;
+Function PatternNativeAttr(Self: TPyPattern; Const nm: AnsiString; Var res:
+  TVal): Boolean; Forward;
+Function PatternNativeRepr(Self: TPyPattern; Var s: AnsiString): Boolean;
+  Forward;
+Function AllocPattern(c: TPyType): TPyPattern; Forward;
+Procedure MatchMarkKids(Self: TPyMatch); Forward;
+Function MatchNativeAttr(Self: TPyMatch; Const nm: AnsiString; Var res: TVal):
+  Boolean; Forward;
+Function MatchNativeRepr(Self: TPyMatch; Var s: AnsiString): Boolean; Forward;
+Function AllocMatch(c: TPyType): TPyMatch; Forward;
+Function ReIterNext(Self: TReIter; Var r: TVal): Boolean; Forward;
+Procedure ReIterMarkKids(Self: TReIter); Forward;
+Procedure ReIterDestroy(Self: TReIter); Forward;
+Function AllocReIter(c: TPyType): TReIter; Forward;
+
+Function AllocPattern(c: TPyType): TPyPattern;
 Begin
- Inherited MarkKids;
- MarkVal(pat);
- If groupindex <> Nil Then MarkObj(groupindex);
+ Result := TPyPattern(AllocObjMem(SizeOf(TPyPatternRec)));
+ InitObj(Result, okPattern, c);
 End;
 
-Destructor TPyPattern.Destroy;
+Function AllocMatch(c: TPyType): TPyMatch;
 Begin
- prog.Free;
- Inherited Destroy;
+ Result := TPyMatch(AllocObjMem(SizeOf(TPyMatchRec)));
+ InitObj(Result, okMatch, c);
 End;
 
-Procedure TPyMatch.MarkKids;
+Function AllocReIter(c: TPyType): TReIter;
 Begin
- Inherited MarkKids;
- If pattern <> Nil Then MarkObj(pattern);
- MarkVal(str);
+ Result := TReIter(AllocObjMem(SizeOf(TReIterRec)));
+ InitObj(Result, okReIter, c);
 End;
 
-Procedure TReIter.MarkKids;
+Procedure PatternMarkKids(Self: TPyPattern);
 Begin
- Inherited MarkKids;
- If pattern <> Nil Then MarkObj(pattern);
- MarkVal(str);
+ MarkHdr(Self);
+ MarkVal(Self.pat);
+ If Self.groupindex <> Nil Then MarkObj(Self.groupindex);
 End;
 
-Destructor TReIter.Destroy;
+Procedure PatternDestroy(Self: TPyPattern);
 Begin
- st.Free;
- Inherited Destroy;
+ FreeReProg(Self.prog);
+ ;
+End;
+
+Procedure MatchMarkKids(Self: TPyMatch);
+Begin
+ MarkHdr(Self);
+ If Self.pattern <> Nil Then MarkObj(Self.pattern);
+ MarkVal(Self.str);
+End;
+
+Procedure ReIterMarkKids(Self: TReIter);
+Begin
+ MarkHdr(Self);
+ If Self.pattern <> Nil Then MarkObj(Self.pattern);
+ MarkVal(Self.str);
+End;
+
+Procedure ReIterDestroy(Self: TReIter);
+Begin
+ Dispose(Self.st);
+ ;
 End;
 
 Function ReFlagNames(fl: Integer; isBytes: Boolean): AnsiString;
@@ -38571,19 +39680,21 @@ Begin
  End;
 End;
 
-Function TPyPattern.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Function PatternNativeAttr(Self: TPyPattern; Const nm: AnsiString; Var res:
+  TVal): Boolean;
 Var
  fl: Integer;
 Begin
  Result := True;
- If nm = 'pattern' Then res := pat
+ If nm = 'pattern' Then res := Self.pat
  Else If nm = 'flags' Then Begin
-  fl := flags;
-  If Not isBytes And ((fl And (REF_A Or REF_L)) = 0) Then fl := fl Or REF_U;
+  fl := Self.flags;
+  If Not Self.isBytes And ((fl And (REF_A Or REF_L)) = 0) Then fl := fl Or
+    REF_U;
   res := VInt(fl);
  End
- Else If nm = 'groups' Then res := VInt(prog.ngroups)
- Else If nm = 'groupindex' Then res := VObj(groupindex.Copy)
+ Else If nm = 'groups' Then res := VInt(Self.prog.ngroups)
+ Else If nm = 'groupindex' Then res := VObj(DictCopy(Self.groupindex))
  Else Result := False;
 End;
 
@@ -38597,20 +39708,21 @@ Begin
    Result := m.pattern.prog.gnames[k];
 End;
 
-Function TPyMatch.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Function MatchNativeAttr(Self: TPyMatch; Const nm: AnsiString; Var res: TVal):
+  Boolean;
 Var
  g: AnsiString;
 Begin
  Result := True;
- If nm = 'string' Then res := str
- Else If nm = 're' Then res := VObj(pattern)
- Else If nm = 'pos' Then res := VInt(pos)
- Else If nm = 'endpos' Then res := VInt(endpos)
+ If nm = 'string' Then res := Self.str
+ Else If nm = 're' Then res := VObj(Self.pattern)
+ Else If nm = 'pos' Then res := VInt(Self.pos)
+ Else If nm = 'endpos' Then res := VInt(Self.endpos)
  Else If nm = 'lastindex' Then Begin
-  If lastindex < 0 Then res := vNone Else res := VInt(lastindex);
+  If Self.lastindex < 0 Then res := vNone Else res := VInt(Self.lastindex);
  End
  Else If nm = 'lastgroup' Then Begin
-  If lastindex < 0 Then res := vNone
+  If Self.lastindex < 0 Then res := vNone
   Else Begin
    g := ReLastGroupName(Self);
    If g = '' Then res := vNone Else res := VStr(g);
@@ -38651,20 +39763,21 @@ Begin
   End;
  End;
  e := MakeExcArgs(exReError, [VStr(full)]);
- If e.idict = Nil Then e.idict := TPyDict.Make;
- e.idict.SetS('msg', VStr(msg));
- e.idict.SetS('pattern', pattern);
- If pos >= 0 Then e.idict.SetS('pos', VInt(pos)) Else e.idict.SetS('pos',
-   vNone);
- e.idict.SetS('lineno', vNone);
- e.idict.SetS('colno', vNone);
+ If e.idict = Nil Then e.idict := AllocDict;
+ DictSetS(e.idict, 'msg', VStr(msg));
+ DictSetS(e.idict, 'pattern', pattern);
+ If pos >= 0 Then DictSetS(e.idict, 'pos', VInt(pos)) Else DictSetS(e.idict,
+   'pos', vNone);
+ DictSetS(e.idict, 'lineno', vNone);
+ DictSetS(e.idict, 'colno', vNone);
  ps := '';
- Raise EPyError.Make(e);
+ RaisePy(e);
 End;
 
 Function ReCompileProg(Const pattern: TVal; flags: Integer;
  Var outFlags: Integer): TReProg;
 Var
+ eRe: PReSynInfo;
  cps: TCpArr;
  isB: Boolean;
  ps: TReParser;
@@ -38674,7 +39787,7 @@ Var
  s: AnsiString;
  k, f: Integer;
 Begin
- isB := (pattern.k = vkObj) And (pattern.o Is TPyBytes);
+ isB := (pattern.k = vkObj) And (IsK(pattern.o, okBytes));
  If isB Then Begin
   s := TPyBytes(pattern.o).s;
   SetLength(cps, Length(s));
@@ -38694,22 +39807,22 @@ Begin
  f := flags Or ReScanGlobalFlags(cps);
  If ((f And REF_A) <> 0) And ((f And REF_U) <> 0) Then
   ValueErr('ASCII and UNICODE flags are incompatible');
- prog := TReProg.Create;
+ prog := AllocReProg;
  prog.isBytes := isB;
  prog.flags := f;
- ps := TReParser.Create(cps, f, isB);
- gen := TReGen.Create;
+ ps := AllocReParser(cps, f, isB);
+ gen := AllocReGen;
  Try
   Try
-   root := ps.ParseAlt(0);
+   root := ReParserParseAlt(ps, 0);
    If ps.i < ps.n Then Begin
-    If cps[ps.i] = Ord(')') Then ps.Err('unbalanced parenthesis', ps.i)
-    Else ps.Err('unexpected character', ps.i);
+    If cps[ps.i] = Ord(')') Then ReParserErr(ps, 'unbalanced parenthesis', ps.i)
+    Else ReParserErr(ps, 'unexpected character', ps.i);
    End;
    gen.prog := prog;
    gen.ps := ps;
-   gen.Gen(root);
-   gen.Emit(opMatch, 0, 0, 0, 0);
+   ReGenGen(gen, root);
+   ReGenEmit(gen, opMatch, 0, 0, 0, 0);
    SetLength(prog.sets, ps.nsets);
    For k := 0 To ps.nsets - 1 Do prog.sets[k] := ps.sets[k];
    prog.nsets := ps.nsets;
@@ -38726,15 +39839,17 @@ Begin
    If (prog.n > 0) And (prog.code[0].op = opChar) Then
     prog.firstCh := prog.code[0].x;
   Except
-   On E: EReSyntax Do Begin
-    For k := 0 To ps.nsets - 1 Do ps.sets[k].Free;
-    prog.Free;
-    ReRaise(E.Message, pattern, E.pos);
-   End;
+   If XcTag = xtRe Then Begin
+    eRe := @ReSynInfo;
+    For k := 0 To ps.nsets - 1 Do Dispose(ps.sets[k]);
+    FreeReProg(prog);
+    ReRaise(eRe.msg, pattern, eRe.pos);
+   End
+   Else Raise;
   End;
  Finally
-  gen.Free;
-  ps.Free;
+  Dispose(gen);
+  FreeReParser(ps);
  End;
  outFlags := f;
  Result := prog;
@@ -38747,14 +39862,14 @@ Var
  p: TPyPattern;
 Begin
  prog := ReCompileProg(pattern, flags, f);
- p := TPyPattern.Create(tyRePattern);
+ p := AllocPattern(tyRePattern);
  p.pat := pattern;
  p.flags := f;
  p.prog := prog;
  p.isBytes := prog.isBytes;
- p.groupindex := TPyDict.Make;
+ p.groupindex := AllocDict;
  For k := 0 To prog.ngn - 1 Do
-  p.groupindex.SetS(prog.gnames[k], VInt(prog.gidx[k]));
+  DictSetS(p.groupindex, prog.gnames[k], VInt(prog.gidx[k]));
  Result := p;
 End;
 
@@ -38776,7 +39891,7 @@ Begin
   End
   Else cps := StrToCps(s);
  End
- Else If (v.k = vkObj) And (v.o Is TPyBytes) Then Begin
+ Else If (v.k = vkObj) And (IsK(v.o, okBytes)) Then Begin
   If Not p.isBytes Then
    TypeErr('cannot use a string pattern on a bytes-like object');
   s := TPyBytes(v.o).s;
@@ -38795,7 +39910,7 @@ Function ReSlice(p: TPyPattern; Const strv: TVal; Const cps: TCpArr;
 Var
  s: AnsiString;
 Begin
- If strv.o Is TPyBytes Then Begin
+ If IsK(strv.o, okBytes) Then Begin
   s := TPyBytes(strv.o).s;
   Result := VBytesLike(strv.o, Copy(s, lo + 1, hi - lo));
   If strv.o.cls = tyBytearray Then Result := VBytes(Copy(s, lo + 1, hi - lo));
@@ -38815,7 +39930,7 @@ Var
  m: TPyMatch;
  k: Integer;
 Begin
- m := TPyMatch.Create(tyReMatch);
+ m := AllocMatch(tyReMatch);
  m.pattern := p;
  m.str := strv;
  SetLength(m.caps, 2 * (p.prog.ngroups + 1));
@@ -38859,13 +39974,13 @@ Begin
   TypeErr('missing required argument ''string'' (pos 1)');
  ReSubject(p, strv, cps, ascii);
  ReArgs(a, n, kw, strv, pos, endpos, Length(cps));
- st := TReState.Create(p.prog, cps, endpos);
+ st := AllocReState(p.prog, cps, endpos);
  Try
-  If st.Search(pos, mode) Then
+  If ReStateSearch(st, pos, mode) Then
    Result := ReMakeMatch(p, strv, st, cps, ascii, pos, endpos)
   Else Result := vNone;
  Finally
-  st.Free;
+  Dispose(st);
  End;
 End;
 
@@ -38892,18 +40007,19 @@ Begin
  Else Result := ReSlice(p, strv, cps, ascii, caps[2 * g], caps[2 * g + 1]);
 End;
 
-Function TReIter.Next(Var r: TVal): Boolean;
+Function ReIterNext(Self: TReIter; Var r: TVal): Boolean;
 Begin
  Result := False;
- If done Then Exit;
- st.mustAdvance := must;
- If Not st.Search(pos, 1) Then Begin
-  done := True;
+ If Self.done Then Exit;
+ Self.st.mustAdvance := Self.must;
+ If Not ReStateSearch(Self.st, Self.pos, 1) Then Begin
+  Self.done := True;
   Exit;
  End;
- r := ReMakeMatch(pattern, str, st, cps, ascii, 0, endpos);
- must := st.caps[1] = st.caps[0];
- pos := st.caps[1];
+ r := ReMakeMatch(Self.pattern, Self.str, Self.st, Self.cps, Self.ascii, 0,
+   Self.endpos);
+ Self.must := Self.st.caps[1] = Self.st.caps[0];
+ Self.pos := Self.st.caps[1];
  Result := True;
 End;
 
@@ -38917,12 +40033,12 @@ Begin
  p := TPyPattern(a[0].o);
  If Not ArgKw(a, n, kw, 1, 'string', strv) Then
   TypeErr('missing required argument ''string'' (pos 1)');
- it := TReIter.Create(tyIter);
+ it := AllocReIter(tyIter);
  ReSubject(p, strv, it.cps, it.ascii);
  ReArgs(a, n, kw, strv, pos, endpos, Length(it.cps));
  it.pattern := p;
  it.str := strv;
- it.st := TReState.Create(p.prog, it.cps, endpos);
+ it.st := AllocReState(p.prog, it.cps, endpos);
  it.pos := pos;
  it.endpos := endpos;
  Result := VObj(it);
@@ -38947,7 +40063,7 @@ Begin
   TypeErr('missing required argument ''string'' (pos 1)');
  ReSubject(p, strv, cps, ascii);
  ReArgs(a, n, kw, strv, pos, endpos, Length(cps));
- st := TReState.Create(p.prog, cps, endpos);
+ st := AllocReState(p.prog, cps, endpos);
  l := NewList;
  Result := VObj(l);
  e := ReEmptyOf(p);
@@ -38955,22 +40071,22 @@ Begin
  Try
   While True Do Begin
    st.mustAdvance := must;
-   If Not st.Search(pos, 1) Then Break;
+   If Not ReStateSearch(st, pos, 1) Then Break;
    If p.prog.ngroups = 0 Then
-    l.Add(ReSlice(p, strv, cps, ascii, st.caps[0], st.caps[1]))
+    ObjAdd(l, ReSlice(p, strv, cps, ascii, st.caps[0], st.caps[1]))
    Else If p.prog.ngroups = 1 Then
-    l.Add(ReGroupVal(p, strv, st.caps, cps, ascii, 1, e))
+    ObjAdd(l, ReGroupVal(p, strv, st.caps, cps, ascii, 1, e))
    Else Begin
     t := NewTuple(p.prog.ngroups);
     For g := 1 To p.prog.ngroups Do
      t.items[g - 1] := ReGroupVal(p, strv, st.caps, cps, ascii, g, e);
-    l.Add(VObj(t));
+    ObjAdd(l, VObj(t));
    End;
    must := st.caps[1] = st.caps[0];
    pos := st.caps[1];
   End;
  Finally
-  st.Free;
+  Dispose(st);
  End;
 End;
 
@@ -38992,7 +40108,7 @@ Begin
  maxsplit := 0;
  If ArgKw(a, n, kw, 2, 'maxsplit', v) Then maxsplit := IndexVal(v);
  ReSubject(p, strv, cps, ascii);
- st := TReState.Create(p.prog, cps, Length(cps));
+ st := AllocReState(p.prog, cps, Length(cps));
  l := NewList;
  Result := VObj(l);
  pos := 0;
@@ -39002,18 +40118,18 @@ Begin
  Try
   While (maxsplit <= 0) Or (cnt < maxsplit) Do Begin
    st.mustAdvance := must;
-   If Not st.Search(pos, 1) Then Break;
-   l.Add(ReSlice(p, strv, cps, ascii, last, st.caps[0]));
+   If Not ReStateSearch(st, pos, 1) Then Break;
+   ObjAdd(l, ReSlice(p, strv, cps, ascii, last, st.caps[0]));
    For g := 1 To p.prog.ngroups Do
-    l.Add(ReGroupVal(p, strv, st.caps, cps, ascii, g, vNone));
+    ObjAdd(l, ReGroupVal(p, strv, st.caps, cps, ascii, g, vNone));
    Inc(cnt);
    last := st.caps[1];
    must := st.caps[1] = st.caps[0];
    pos := st.caps[1];
   End;
-  l.Add(ReSlice(p, strv, cps, ascii, last, Length(cps)));
+  ObjAdd(l, ReSlice(p, strv, cps, ascii, last, Length(cps)));
  Finally
-  st.Free;
+  Dispose(st);
  End;
 End;
 
@@ -39064,7 +40180,7 @@ Var
 Begin
  cnt := 0;
  lit := '';
- isB := (tv.k = vkObj) And (tv.o Is TPyBytes);
+ isB := (tv.k = vkObj) And (IsK(tv.o, okBytes));
  If isB Then Begin
   s := TPyBytes(tv.o).s;
   SetLength(cps, Length(s));
@@ -39187,10 +40303,11 @@ Begin
  isFn := False;
  simple := False;
  icnt := 0;
- If (repl.k = vkObj) And ((repl.o Is TPyStr) Or (repl.o Is TPyBytes)) Then Begin
-  If (repl.o Is TPyBytes) <> p.isBytes Then
+ If (repl.k = vkObj) And ((IsK(repl.o, okStr)) Or (IsK(repl.o, okBytes))) Then
+   Begin
+  If (IsK(repl.o, okBytes)) <> p.isBytes Then
    TypeErr('expected str instance, bytes found');
-  If repl.o Is TPyStr Then
+  If IsK(repl.o, okStr) Then
    simple := System.Pos('\', TPyStr(repl.o).s) = 0
   Else simple := System.Pos('\', TPyBytes(repl.o).s) = 0;
   If Not simple Then ReParseTemplate(p, repl, items, icnt);
@@ -39200,7 +40317,7 @@ Begin
    TypeErr('expected str, bytes or callable, not ' + TypeName(repl));
   isFn := True;
  End;
- st := TReState.Create(p.prog, cps, Length(cps));
+ st := AllocReState(p.prog, cps, Length(cps));
  outS := '';
  pos := 0;
  last := 0;
@@ -39210,7 +40327,7 @@ Begin
  Try
   While (count <= 0) Or (nsubs < count) Do Begin
    st.mustAdvance := must;
-   If Not st.Search(pos, 1) Then Break;
+   If Not ReStateSearch(st, pos, 1) Then Break;
    If st.caps[0] > last Then Begin
     v := ReSlice(p, strv, cps, ascii, last, st.caps[0]);
     If p.isBytes Then outS := outS + TPyBytes(v.o).s
@@ -39221,7 +40338,7 @@ Begin
     rv := Call1(repl, mobj);
     If rv.k <> vkNone Then Begin
      If p.isBytes Then Begin
-      If Not ((rv.k = vkObj) And (rv.o Is TPyBytes)) Then
+      If Not ((rv.k = vkObj) And (IsK(rv.o, okBytes))) Then
        TypeErr('expected bytes-like object');
       outS := outS + TPyBytes(rv.o).s;
      End
@@ -39252,7 +40369,7 @@ Begin
    Else outS := outS + TPyStr(v.o).s;
   End;
  Finally
-  st.Free;
+  Dispose(st);
  End;
  If p.isBytes Then Result := VBytes(outS) Else Result := VStr(outS);
  piece := '';
@@ -39288,7 +40405,7 @@ Begin
  Result := VStr('re.compile(' + s + ')');
 End;
 
-Function TPyPattern.NativeRepr(Var s: AnsiString): Boolean;
+Function PatternNativeRepr(Self: TPyPattern; Var s: AnsiString): Boolean;
 Var
  a: TVal;
 Begin
@@ -39301,7 +40418,7 @@ Function PatEqM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  p, q: TPyPattern;
 Begin
- If Not ((a[1].k = vkObj) And (a[1].o Is TPyPattern)) Then Begin
+ If Not ((a[1].k = vkObj) And (IsK(a[1].o, okPattern))) Then Begin
   Result := vNotImpl;
   Exit;
  End;
@@ -39330,14 +40447,14 @@ Var
 Begin
  If IsStrVal(g) Then Begin
   nm := TPyStr(g.o).s;
-  If m.pattern.groupindex.GetS(nm, v) Then Begin
+  If DictGetS(m.pattern.groupindex, nm, v) Then Begin
    Result := v.i;
    Exit;
   End;
   RaiseExc(exIndexError, 'no such group');
  End;
  If Not (IsIntVal(g) And (g.k <> vkObj)) Then Begin
-  If (g.k = vkObj) And (g.o Is TPyBigInt) Then
+  If (g.k = vkObj) And (IsK(g.o, okBigInt)) Then
    RaiseExc(exIndexError, 'no such group');
   k := IndexVal(g);
   Result := k;
@@ -39403,9 +40520,10 @@ Begin
  m := TPyMatch(a[0].o);
  d := vNone;
  If n > 1 Then d := a[1] Else KwGet(kw, 'default', d);
- r := TPyDict.Make;
+ r := AllocDict;
  For k := 0 To m.pattern.prog.ngn - 1 Do
-  r.SetS(m.pattern.prog.gnames[k], ReMatchGroup(m, m.pattern.prog.gidx[k], d));
+  DictSetS(r, m.pattern.prog.gnames[k], ReMatchGroup(m, m.pattern.prog.gidx[k],
+    d));
  Result := VObj(r);
 End;
 
@@ -39470,7 +40588,7 @@ Begin
   IntToStr(m.caps[1]) + '), match=' + ReprVal(ReMatchGroup(m, 0, vNone)) + '>');
 End;
 
-Function TPyMatch.NativeRepr(Var s: AnsiString): Boolean;
+Function MatchNativeRepr(Self: TPyMatch; Var s: AnsiString): Boolean;
 Var
  a: TVal;
 Begin
@@ -39505,7 +40623,7 @@ Var
 Begin
  If n < 1 Then
    TypeErr('compile() missing required argument ''pattern'' (pos 1)');
- If (a[0].k = vkObj) And (a[0].o Is TPyPattern) Then Begin
+ If (a[0].k = vkObj) And (IsK(a[0].o, okPattern)) Then Begin
   If (n > 1) And (IndexVal(a[1]) <> 0) Then
    ValueErr('cannot process flags argument with a compiled pattern');
   Result := a[0];
@@ -39519,7 +40637,7 @@ End;
 
 Function ReIsPatternFn(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
- Result := VBool((a[0].k = vkObj) And (a[0].o Is TPyPattern));
+ Result := VBool((a[0].k = vkObj) And (IsK(a[0].o, okPattern)));
 End;
 
 Procedure InitReModule(m: TPyModule);
@@ -39527,23 +40645,23 @@ Var
  d: TPyDict;
 Begin
  d := m.idict;
- d.SetS('Pattern', VObj(tyRePattern));
- d.SetS('Match', VObj(tyReMatch));
- d.SetS('error', VObj(exReError));
+ DictSetS(d, 'Pattern', VObj(tyRePattern));
+ DictSetS(d, 'Match', VObj(tyReMatch));
+ DictSetS(d, 'error', VObj(exReError));
  DefFunc(d, 'compile', @ReCompileFn);
  DefFunc(d, '_is_pattern', @ReIsPatternFn);
- d.SetS('MAGIC', VInt(20171005));
- d.SetS('CODESIZE', VInt(4));
+ DictSetS(d, 'MAGIC', VInt(20171005));
+ DictSetS(d, 'CODESIZE', VInt(4));
 End;
 
 Procedure InitReTypes;
 Begin
  tyRePattern := NewType('Pattern', tyObject, nkNoNew);
- tyRePattern.idict.SetS('__module__', VStr('re'));
+ DictSetS(tyRePattern.idict, '__module__', VStr('re'));
  tyReMatch := NewType('Match', tyObject, nkNoNew);
- tyReMatch.idict.SetS('__module__', VStr('re'));
+ DictSetS(tyReMatch.idict, '__module__', VStr('re'));
  exReError := NewType('error', exException, nkException);
- exReError.idict.SetS('__module__', VStr('re'));
+ DictSetS(exReError.idict, '__module__', VStr('re'));
  DefMethod(tyRePattern, 'match', @PatMatchM);
  DefMethod(tyRePattern, 'search', @PatSearchM);
  DefMethod(tyRePattern, 'fullmatch', @PatFullMatchM);
@@ -39569,6 +40687,167 @@ Begin
  DefMethod(tyReMatch, '__bool__', @MatchBoolM);
  DefMethod(tyReMatch, '__copy__', @PatCopyM);
  DefMethod(tyReMatch, '__deepcopy__', @PatCopyM);
+End;
+
+{ ------------------------------------------------------------
+  Distribution selon le genre de l'objet (otag) : remplace les
+  methodes virtuelles
+  ------------------------------------------------------------ }
+Procedure MarkKids(o: Pointer);
+Begin
+ Case TPyObj(o).otag Of
+  okAsyncGenWrapped: AsyncGenWrappedMarkKids(TPyAsyncGenWrapped(o));
+  okList: ListMarkKids(TPyList(o));
+  okTuple: TupleMarkKids(TPyTuple(o));
+  okDict: DictMarkKids(TPyDict(o));
+  okSet: SetMarkKids(TPySet(o));
+  okSlice: SliceMarkKids(TPySlice(o));
+  okCell: CellMarkKids(TPyCell(o));
+  okBuiltin: BuiltinMarkKids(TPyBuiltin(o));
+  okMethod: MethodMarkKids(TPyMethod(o));
+  okProperty: PropertyMarkKids(TPyProperty(o));
+  okWrapper: WrapperMarkKids(TPyWrapper(o));
+  okSuper: SuperMarkKids(TPySuper(o));
+  okCode: CodeMarkKids(TPyCode(o));
+  okFunc: FuncMarkKids(TPyFunc(o));
+  okGen: GenMarkKids(TPyGen(o));
+  okDoneIter: DoneIterMarkKids(TPyDoneIter(o));
+  okAsyncGenASend: AsyncGenASendMarkKids(TPyAsyncGenASend(o));
+  okType: TypeMarkKids(TPyType(o));
+  okFile: FileMarkKids(TPyFile(o));
+  okListIter: ListIterMarkKids(TListIter(o));
+  okTupleIter: TupleIterMarkKids(TTupleIter(o));
+  okStrIter: StrIterMarkKids(TStrIter(o));
+  okBytesIter: BytesIterMarkKids(TBytesIter(o));
+  okDictIter: DictIterMarkKids(TDictIter(o));
+  okSetIter: SetIterMarkKids(TSetIter(o));
+  okSeqIter: SeqIterMarkKids(TSeqIter(o));
+  okCallIter: CallIterMarkKids(TCallIter(o));
+  okEnumIter: EnumIterMarkKids(TEnumIter(o));
+  okZipIter: ZipIterMarkKids(TZipIter(o));
+  okMapIter: MapIterMarkKids(TMapIter(o));
+  okFilterIter: FilterIterMarkKids(TFilterIter(o));
+  okUserIter: UserIterMarkKids(TUserIter(o));
+  okDictView: DictViewMarkKids(TDictView(o));
+  okFileIter: FileIterMarkKids(TFileIter(o));
+  okPattern: PatternMarkKids(TPyPattern(o));
+  okMatch: MatchMarkKids(TPyMatch(o));
+  okReIter: ReIterMarkKids(TReIter(o));
+ Else MarkHdr(o);
+ End;
+End;
+
+Function IterNext(o: Pointer; Var r: TVal): Boolean;
+Begin
+ Case TPyObj(o).otag Of
+  okGen: Result := GenNext(TPyGen(o), r);
+  okDoneIter: Result := DoneIterNext(TPyDoneIter(o), r);
+  okAsyncGenASend: Result := AsyncGenASendNext(TPyAsyncGenASend(o), r);
+  okListIter: Result := ListIterNext(TListIter(o), r);
+  okTupleIter: Result := TupleIterNext(TTupleIter(o), r);
+  okStrIter: Result := StrIterNext(TStrIter(o), r);
+  okBytesIter: Result := BytesIterNext(TBytesIter(o), r);
+  okRangeIter: Result := RangeIterNext(TRangeIter(o), r);
+  okDictIter: Result := DictIterNext(TDictIter(o), r);
+  okSetIter: Result := SetIterNext(TSetIter(o), r);
+  okSeqIter: Result := SeqIterNext(TSeqIter(o), r);
+  okCallIter: Result := CallIterNext(TCallIter(o), r);
+  okEnumIter: Result := EnumIterNext(TEnumIter(o), r);
+  okZipIter: Result := ZipIterNext(TZipIter(o), r);
+  okMapIter: Result := MapIterNext(TMapIter(o), r);
+  okFilterIter: Result := FilterIterNext(TFilterIter(o), r);
+  okUserIter: Result := UserIterNext(TUserIter(o), r);
+  okFileIter: Result := FileIterNext(TFileIter(o), r);
+  okReIter: Result := ReIterNext(TReIter(o), r);
+ Else Result := False;
+ End;
+End;
+
+Function ObjNativeAttr(o: Pointer; Const nm: AnsiString; Var res: TVal):
+  Boolean;
+Begin
+ Case TPyObj(o).otag Of
+  okComplex: Result := ComplexNativeAttr(TPyComplex(o), nm, res);
+  okPattern: Result := PatternNativeAttr(TPyPattern(o), nm, res);
+  okMatch: Result := MatchNativeAttr(TPyMatch(o), nm, res);
+ Else Result := False;
+ End;
+End;
+
+Function ObjNativeRepr(o: Pointer; Var s: AnsiString): Boolean;
+Begin
+ Case TPyObj(o).otag Of
+  okComplex: Result := ComplexNativeRepr(TPyComplex(o), s);
+  okPattern: Result := PatternNativeRepr(TPyPattern(o), s);
+  okMatch: Result := MatchNativeRepr(TPyMatch(o), s);
+ Else Result := False;
+ End;
+End;
+
+Procedure FreeObjMem(o: Pointer);
+Begin
+ Case TPyObj(o).otag Of
+  okObj: Begin Dispose(TPyObj(o)); End;
+  okStr: Begin Dispose(TPyStr(o)); End;
+  okBytes: Begin Dispose(TPyBytes(o)); End;
+  okBigInt: Begin Dispose(TPyBigInt(o)); End;
+  okComplex: Begin Dispose(TPyComplex(o)); End;
+  okAsyncGenWrapped: Begin Dispose(TPyAsyncGenWrapped(o)); End;
+  okList: Begin Dispose(TPyList(o)); End;
+  okTuple: Begin Dispose(TPyTuple(o)); End;
+  okDict: Begin Dispose(TPyDict(o)); End;
+  okSet: Begin Dispose(TPySet(o)); End;
+  okSlice: Begin Dispose(TPySlice(o)); End;
+  okRange: Begin Dispose(TPyRange(o)); End;
+  okCell: Begin Dispose(TPyCell(o)); End;
+  okBuiltin: Begin Dispose(TPyBuiltin(o)); End;
+  okMethod: Begin Dispose(TPyMethod(o)); End;
+  okModule: Begin Dispose(TPyModule(o)); End;
+  okProperty: Begin Dispose(TPyProperty(o)); End;
+  okWrapper: Begin Dispose(TPyWrapper(o)); End;
+  okSuper: Begin Dispose(TPySuper(o)); End;
+  okCode: Begin Dispose(TPyCode(o)); End;
+  okFunc: Begin Dispose(TPyFunc(o)); End;
+  okGen: Begin GenDestroy(TPyGen(o)); Dispose(TPyGen(o)); End;
+  okDoneIter: Begin Dispose(TPyDoneIter(o)); End;
+  okAsyncGenASend: Begin Dispose(TPyAsyncGenASend(o)); End;
+  okType: Begin Dispose(TPyType(o)); End;
+  okFile: Begin Dispose(TPyFile(o)); End;
+  okListIter: Begin Dispose(TListIter(o)); End;
+  okTupleIter: Begin Dispose(TTupleIter(o)); End;
+  okStrIter: Begin Dispose(TStrIter(o)); End;
+  okBytesIter: Begin Dispose(TBytesIter(o)); End;
+  okRangeIter: Begin Dispose(TRangeIter(o)); End;
+  okDictIter: Begin Dispose(TDictIter(o)); End;
+  okSetIter: Begin Dispose(TSetIter(o)); End;
+  okSeqIter: Begin Dispose(TSeqIter(o)); End;
+  okCallIter: Begin Dispose(TCallIter(o)); End;
+  okEnumIter: Begin Dispose(TEnumIter(o)); End;
+  okZipIter: Begin Dispose(TZipIter(o)); End;
+  okMapIter: Begin Dispose(TMapIter(o)); End;
+  okFilterIter: Begin Dispose(TFilterIter(o)); End;
+  okUserIter: Begin Dispose(TUserIter(o)); End;
+  okDictView: Begin Dispose(TDictView(o)); End;
+  okFileIter: Begin Dispose(TFileIter(o)); End;
+  okMT: Begin Dispose(TPyMT(o)); End;
+  okPattern: Begin PatternDestroy(TPyPattern(o)); Dispose(TPyPattern(o)); End;
+  okMatch: Begin Dispose(TPyMatch(o)); End;
+  okReIter: Begin ReIterDestroy(TReIter(o)); Dispose(TReIter(o)); End;
+ End;
+End;
+
+
+{ liberation (remplace les destructeurs) }
+Procedure FreeReProg(p: TReProg);
+Begin
+ ReProgDestroy(p);
+ Dispose(p);
+End;
+
+Procedure FreeReParser(p: TReParser);
+Begin
+ ReParserDestroy(p);
+ Dispose(p);
 End;
 
 { ------------------------------------------------------------
@@ -39725,7 +41004,7 @@ Begin
   MPutByte(Ord('.'));
   Exit;
  End;
- If o Is TPyComplex Then Begin
+ If IsK(o, okComplex) Then Begin
   MPutByte(Ord('y'));
   d := TPyComplex(o).re;
   q := @d;
@@ -39741,7 +41020,7 @@ Begin
    acc := acc Shr 8;
   End;
  End
- Else If o Is TPyStr Then Begin
+ Else If IsK(o, okStr) Then Begin
   s := TPyStr(o).s;
   If IsAsciiStr(s) Then Begin
    If MInterned Or (MConsts And AllNameChars(s)) Then Begin
@@ -39769,12 +41048,12 @@ Begin
   End;
   MPutStr(s);
  End
- Else If (o Is TPyBytes) Then Begin
+ Else If (IsK(o, okBytes)) Then Begin
   MPutByte(Ord('s'));
   MPutInt32(Length(TPyBytes(o).s));
   MPutStr(TPyBytes(o).s);
  End
- Else If o Is TPyTuple Then Begin
+ Else If IsK(o, okTuple) Then Begin
   If Length(TPyTuple(o).items) < 256 Then Begin
    MPutByte(Ord(')'));
    MPutByte(Length(TPyTuple(o).items));
@@ -39786,12 +41065,12 @@ Begin
   For i := 0 To High(TPyTuple(o).items) Do
    MWriteObj(TPyTuple(o).items[i], depth + 1);
  End
- Else If o Is TPyList Then Begin
+ Else If IsK(o, okList) Then Begin
   MPutByte(Ord('['));
   MPutInt32(TPyList(o).cnt);
   For i := 0 To TPyList(o).cnt - 1 Do MWriteObj(TPyList(o).items[i], depth + 1);
  End
- Else If o Is TPyDict Then Begin
+ Else If IsK(o, okDict) Then Begin
   MPutByte(Ord('{'));
   For i := 0 To TPyDict(o).nent - 1 Do
    If TPyDict(o).ent[i].key.k <> vkNull Then Begin
@@ -39800,13 +41079,13 @@ Begin
    End;
   MPutByte(Ord('0'));
  End
- Else If o Is TPySet Then Begin
+ Else If IsK(o, okSet) Then Begin
   items := SetItems(TPySet(o));
   If TPySet(o).frozen Then MPutByte(Ord('>')) Else MPutByte(Ord('<'));
   MPutInt32(Length(items));
   For i := 0 To High(items) Do MWriteObj(items[i], depth + 1);
  End
- Else If o Is TPyCode Then Begin
+ Else If IsK(o, okCode) Then Begin
   code := TPyCode(o);
   saveC := MConsts;
   saveI := MInterned;
@@ -39900,7 +41179,7 @@ Var
  i: Integer;
 Begin
  v := MReadObj(s, p, depth + 1);
- Result := (v.k = vkObj) And (v.o Is TPyTuple);
+ Result := (v.k = vkObj) And (IsK(v.o, okTuple));
  If Not Result Then ValueErr('bad marshal data (tuple expected)');
  SetLength(arr, Length(TPyTuple(v.o).items));
  For i := 0 To High(arr) Do arr[i] := StrOf(TPyTuple(v.o).items[i]);
@@ -40025,27 +41304,27 @@ Begin
     l := NewList;
     Result := VObj(l);
     If refIdx >= 0 Then MRefs[refIdx] := Result;
-    For i := 0 To n - 1 Do l.Add(MReadObj(s, p, depth + 1));
+    For i := 0 To n - 1 Do ObjAdd(l, MReadObj(s, p, depth + 1));
    End;
   '{': Begin
     If flag Then refIdx := Reserve;
-    dd := TPyDict.Make;
+    dd := AllocDict;
     Result := VObj(dd);
     If refIdx >= 0 Then MRefs[refIdx] := Result;
     While True Do Begin
      key := MReadObj(s, p, depth + 1);
      If key.k = vkNull Then Break;
      val := MReadObj(s, p, depth + 1);
-     dd.SetItem(key, val);
+     DictSetItem(dd, key, val);
     End;
    End;
   '<', '>': Begin
     n := MGetInt32(s, p);
     If flag Then refIdx := Reserve;
-    st := TPySet.Make(t = Ord('>'));
+    st := AllocSet(t = Ord('>'));
     Result := VObj(st);
     If refIdx >= 0 Then MRefs[refIdx] := Result;
-    For i := 0 To n - 1 Do st.Add(MReadObj(s, p, depth + 1));
+    For i := 0 To n - 1 Do ObjAdd(st, MReadObj(s, p, depth + 1));
    End;
   'r': Begin
     n := MGetInt32(s, p);
@@ -40055,7 +41334,7 @@ Begin
    End;
   'c': Begin
     If flag Then refIdx := Reserve;
-    code := TPyCode.Create(tyCode);
+    code := AllocCode(tyCode);
     Result := VObj(code);
     If refIdx >= 0 Then MRefs[refIdx] := Result;
     code.argcount := MGetInt32(s, p);
@@ -40065,13 +41344,13 @@ Begin
     code.stacksize := MGetInt32(s, p);
     code.flags := MGetInt32(s, p);
     v := MReadObj(s, p, depth + 1);
-    If Not ((v.k = vkObj) And (v.o Is TPyBytes)) Then
+    If Not ((v.k = vkObj) And (IsK(v.o, okBytes))) Then
      ValueErr('bad marshal data (code bytes)');
     str := TPyBytes(v.o).s;
     SetLength(code.co, Length(str));
     For i := 1 To Length(str) Do code.co[i - 1] := Ord(str[i]);
     v := MReadObj(s, p, depth + 1);
-    If Not ((v.k = vkObj) And (v.o Is TPyTuple)) Then
+    If Not ((v.k = vkObj) And (IsK(v.o, okTuple))) Then
      ValueErr('bad marshal data (consts)');
     SetLength(code.consts, Length(TPyTuple(v.o).items));
     For i := 0 To High(code.consts) Do code.consts[i] := TPyTuple(v.o).items[i];
@@ -40086,7 +41365,7 @@ Begin
     code.name := StrOf(MReadObj(s, p, depth + 1));
     code.firstline := MGetInt32(s, p);
     v := MReadObj(s, p, depth + 1);
-    If Not ((v.k = vkObj) And (v.o Is TPyBytes)) Then
+    If Not ((v.k = vkObj) And (IsK(v.o, okBytes))) Then
      ValueErr('bad marshal data (lnotab)');
     code.lnotab := TPyBytes(v.o).s;
     SetLength(code.source, 0);
@@ -40120,7 +41399,7 @@ Var
  p: Integer;
 Begin
  If n < 1 Then TypeErr('loads() missing required argument ''bytes'' (pos 1)');
- If Not ((a[0].k = vkObj) And (a[0].o Is TPyBytes)) Then
+ If Not ((a[0].k = vkObj) And (IsK(a[0].o, okBytes))) Then
   TypeErr('a bytes-like object is required, not ''' + TypeName(a[0]) + '''');
  p := 1;
  Result := MarshalLoad(TPyBytes(a[0].o).s, p);
@@ -40140,7 +41419,7 @@ Var
 Begin
  If n < 1 Then TypeErr('load() missing required argument ''file'' (pos 1)');
  data := Call0(GetAttr(a[0], 'read'));
- If Not ((data.k = vkObj) And (data.o Is TPyBytes)) Then
+ If Not ((data.k = vkObj) And (IsK(data.o, okBytes))) Then
   TypeErr('file must be opened in binary mode');
  p := 1;
  Result := MarshalLoad(TPyBytes(data.o).s, p);
@@ -40155,7 +41434,7 @@ Begin
  DefFunc(d, 'loads', @MarshalLoadsFn);
  DefFunc(d, 'dump', @MarshalDumpFn);
  DefFunc(d, 'load', @MarshalLoadFn);
- d.SetS('version', VInt(4));
+ DictSetS(d, 'version', VInt(4));
 End;
 
 { source d'un objet code charge depuis un .pyc }
@@ -40195,26 +41474,27 @@ Begin
   Result := Copy(Result, 1, Length(Result) - 2);
 End;
 
-Function TPyComplex.NativeRepr(Var s: AnsiString): Boolean;
+Function ComplexNativeRepr(Self: TPyComplex; Var s: AnsiString): Boolean;
 Var
  sign: AnsiString;
 Begin
  Result := True;
- If (re = 0) And Not FloatSignBit(re) Then Begin
-  s := CxPartRepr(im) + 'j';
+ If (Self.re = 0) And Not FloatSignBit(Self.re) Then Begin
+  s := CxPartRepr(Self.im) + 'j';
   Exit;
  End;
- If FloatSignBit(im) Or (Not (im = im) And False) Then sign := '-' Else sign :=
-   '+';
- s := '(' + CxPartRepr(re) + sign + CxPartRepr(Abs(im)) + 'j)';
- If IsNan(im) Then s := '(' + CxPartRepr(re) + '+nanj)';
+ If FloatSignBit(Self.im) Or (Not (Self.im = Self.im) And False) Then sign :=
+   '-' Else sign := '+';
+ s := '(' + CxPartRepr(Self.re) + sign + CxPartRepr(Abs(Self.im)) + 'j)';
+ If IsNan(Self.im) Then s := '(' + CxPartRepr(Self.re) + '+nanj)';
 End;
 
-Function TPyComplex.NativeAttr(Const nm: AnsiString; Var res: TVal): Boolean;
+Function ComplexNativeAttr(Self: TPyComplex; Const nm: AnsiString; Var res:
+  TVal): Boolean;
 Begin
  Result := True;
- If nm = 'real' Then res := VFloat(re)
- Else If nm = 'imag' Then res := VFloat(im)
+ If nm = 'real' Then res := VFloat(Self.re)
+ Else If nm = 'imag' Then res := VFloat(Self.im)
  Else Result := False;
 End;
 
@@ -40428,7 +41708,7 @@ Function CxReprM(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  s: AnsiString;
 Begin
- TPyComplex(a[0].o).NativeRepr(s);
+ ObjNativeRepr(TPyComplex(a[0].o), s);
  Result := VStr(s);
 End;
 
@@ -40540,7 +41820,7 @@ Begin
    TypeErr('complex() second argument must be a number, not ''' +
     TypeName(iv) + '''');
   { real + imag*1j }
-  If (rv.k = vkObj) And (rv.o Is TPyComplex) Then
+  If (rv.k = vkObj) And (IsK(rv.o, okComplex)) Then
    Result := VComplex(r1 - i2, i1 + r2)
   Else Result := VComplex(r1 - i2, r2);
  End
@@ -40673,18 +41953,16 @@ Begin
  End;
  VTop := VStackBase;
  VLimit := VStackBase + stackSize;
+ ErrorProc := @RuntimeErrorToExc;
  InitOpNames;
  InitBinIdx;
  vNone.k := vkNone;
  vNone.i := 0;
- NativeMods := TStringList.Create;
- NativeMods.CaseSensitive := True;
- NativeMods.Sorted := False;
- SrcMods := TStringList.Create;
- SrcMods.CaseSensitive := True;
- InternTab := TPyDict.Make;
- BuiltinsDict := TPyDict.Make;
- ModulesDict := TPyDict.Make;
+ NativeMods := SLNew(False);
+ SrcMods := SLNew(False);
+ InternTab := AllocDict;
+ BuiltinsDict := AllocDict;
+ ModulesDict := AllocDict;
  InitTypes;
  BuiltinsDict.cls := tyDict;
  ModulesDict.cls := tyDict;
@@ -40721,9 +41999,9 @@ Begin
  RegisterPrelude;
  m := NewModule('__main__');
  MainDict := m.idict;
- MainDict.SetS('__builtins__', VObj(BuiltinsDict));
- MainDict.SetS('__package__', vNone);
- ModulesDict.SetS('__main__', VObj(m));
+ DictSetS(MainDict, '__builtins__', VObj(BuiltinsDict));
+ DictSetS(MainDict, '__package__', vNone);
+ DictSetS(ModulesDict, '__main__', VObj(m));
  SysDict := TPyModule(ImportByName('sys').o).idict;
 End;
 
@@ -40732,7 +42010,7 @@ Var
  c: TVal;
 Begin
  Result := 0;
- If (exc.idict <> Nil) And exc.idict.GetS('code', c) Then Begin
+ If (exc.idict <> Nil) And DictGetS(exc.idict, 'code', c) Then Begin
   If c.k = vkNone Then Result := 0
   Else If IsIntVal(c) And (c.k <> vkObj) Then Result := c.i And 255
   Else Begin
@@ -40746,6 +42024,7 @@ End;
 { traite une exception non interceptee ; renvoie le code de sortie }
 Function HandleUncaught(exc: TPyObj): Integer;
 Var
+ ePy: PXcPy;
  hook: TVal;
  args: Array[0..2] Of TVal;
 Begin
@@ -40753,15 +42032,19 @@ Begin
   Result := ExitCodeOf(exc);
   Exit;
  End;
- If SysDict.GetS('excepthook', hook) And (hook.k = vkObj) And
-  Not (hook.o Is TPyBuiltin) Then Begin
+ If DictGetS(SysDict, 'excepthook', hook) And (hook.k = vkObj) And
+  Not (IsK(hook.o, okBuiltin)) Then Begin
   Try
    args[0] := VObj(exc.cls);
    args[1] := VObj(exc);
    args[2] := vNone;
    CallValue(hook, @args[0], 3, Nil);
   Except
-   On E: EPyError Do PyRunTraceback(E.exc);
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    PyRunTraceback(ePy.exc);
+   End
+   Else Raise;
   End;
  End
  Else PyRunTraceback(exc);
@@ -40771,15 +42054,19 @@ End;
 
 Procedure RunAtExit;
 Var
+ ePy: PXcPy;
  m: TVal;
 Begin
- If ModulesDict.GetS('atexit', m) Then Begin
+ If DictGetS(ModulesDict, 'atexit', m) Then Begin
   Try
    AtExitRunM(Nil, 0, Nil);
   Except
-   On E: EPyError Do Begin
-    If IsInstance(VObj(E.exc), exSystemExit) Then ExitCode := ExitCodeOf(E.exc);
-   End;
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    If IsInstance(VObj(ePy.exc), exSystemExit) Then ExitCode :=
+      ExitCodeOf(ePy.exc);
+   End
+   Else Raise;
   End;
  End;
 End;
@@ -40801,6 +42088,7 @@ End;
 { Execute une source dans __main__ ; renvoie le code de sortie }
 Function RunSource(Const src, fname: AnsiString): Integer;
 Var
+ ePy: PXcPy;
  code: TPyCode;
  p: Integer;
  v: TVal;
@@ -40811,14 +42099,18 @@ Begin
    (src[3] = #$0D) And (src[4] = #$0A) Then Begin
    p := 17;
    v := MarshalLoad(src, p);
-   If Not ((v.k = vkObj) And (v.o Is TPyCode)) Then
+   If Not ((v.k = vkObj) And (IsK(v.o, okCode))) Then
     RaiseExc(exRuntimeError, 'Bad code object in .pyc file');
    code := TPyCode(v.o);
   End
   Else code := CompileSafe(src, fname, 0);
   RunCodeObject(code, MainDict, MainDict);
  Except
-  On E: EPyError Do Result := HandleUncaught(E.exc);
+  If XcTag = xtPy Then Begin
+   ePy := PXcPy(RaiseList^.FObject);
+   Result := HandleUncaught(ePy.exc);
+  End
+  Else Raise;
  End;
 End;
 
@@ -40828,10 +42120,10 @@ Var
  i: Integer;
 Begin
  l := NewList;
- l.Add(VStr(first));
- For i := 0 To High(Opts.args) Do l.Add(VStr(Opts.args[i]));
- SysDict.SetS('argv', VObj(l));
- SysDict.SetS('orig_argv', VObj(l));
+ ObjAdd(l, VStr(first));
+ For i := 0 To High(Opts.args) Do ObjAdd(l, VStr(Opts.args[i]));
+ DictSetS(SysDict, 'argv', VObj(l));
+ DictSetS(SysDict, 'orig_argv', VObj(l));
 End;
 
 { ------------------------------------------------------------
@@ -40869,6 +42161,7 @@ End;
 
 Function CodeopCompile(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
+ eSyn: PSynInfo;
  src, fname, sym, buf: AnsiString;
  mode: Integer;
  more: Boolean;
@@ -40889,10 +42182,12 @@ Begin
   Try
    Result := VObj(CompileSource(buf, fname, mode));
   Except
-   On E: ESyntax Do Begin
-    If E.incomplete Then Result := vNone
-    Else Raise EPyError.Make(ExcFromSyntax(E, fname));
-   End;
+   If XcTag = xtSyntax Then Begin
+    eSyn := @SynInfo;
+    If eSyn.incomplete Then Result := vNone
+    Else RaisePy(ExcFromSyntax(eSyn, fname));
+   End
+   Else Raise;
   End;
  End
  Else Result := vNone;
@@ -40921,11 +42216,13 @@ Function GetPrompt(Const nm, deflt: AnsiString): AnsiString;
 Var
  v: TVal;
 Begin
- If SysDict.GetS(nm, v) Then Result := StrVal(v) Else Result := deflt;
+ If DictGetS(SysDict, nm, v) Then Result := StrVal(v) Else Result := deflt;
 End;
 
 Procedure RunInteractive(pure: Boolean);
 Var
+ ePy: PXcPy;
+ eSyn: PSynInfo;
  buf, line, p: AnsiString;
  code: TPyCode;
  more, ok: Boolean;
@@ -40936,8 +42233,8 @@ Begin
   ExitCode := RunSource(StdinReadAll, '<stdin>');
   Exit;
  End;
- SysDict.SetS('ps1', VStr('>>> '));
- SysDict.SetS('ps2', VStr('... '));
+ DictSetS(SysDict, 'ps1', VStr('>>> '));
+ DictSetS(SysDict, 'ps2', VStr('... '));
  If pure And (StdinIsTTY Or Opts.optI) And Not Opts.optQ Then Begin
   ErrWrite('Python ' + PY_VERSION + ' ' + PY_BUILD + ' ' + #10 +
    PY_COMPILER + ' on ' + Copy('linux', 1, 5 * Ord(True)) + #10 +
@@ -40978,13 +42275,15 @@ Begin
     code := CompileSource(buf, '<stdin>', 2);
     code.source := Nil;
    Except
-    On E: ESyntax Do Begin
-     If Not E.incomplete Then Begin
-      PyRunTraceback(ExcFromSyntax(E, '<stdin>'));
+    If XcTag = xtSyntax Then Begin
+     eSyn := @SynInfo;
+     If Not eSyn.incomplete Then Begin
+      PyRunTraceback(ExcFromSyntax(eSyn, '<stdin>'));
       buf := '';
       Continue;
      End;
-    End;
+    End
+    Else Raise;
    End;
   End;
   If Not more Then Begin
@@ -40993,29 +42292,33 @@ Begin
     code := CompileSource(buf, '<stdin>', 2);
     code.source := Nil;
    Except
-    On E: ESyntax Do Begin
-     If E.incomplete Then Begin
+    If XcTag = xtSyntax Then Begin
+     eSyn := @SynInfo;
+     If eSyn.incomplete Then Begin
       ok := False;
       more := True;
      End
      Else Begin
-      PyRunTraceback(ExcFromSyntax(E, '<stdin>'));
+      PyRunTraceback(ExcFromSyntax(eSyn, '<stdin>'));
       buf := '';
       ok := False;
      End;
-    End;
+    End
+    Else Raise;
    End;
    If ok Then Begin
     Try
      RunCodeObject(code, MainDict, MainDict);
     Except
-     On E: EPyError Do Begin
-      If IsInstance(VObj(E.exc), exSystemExit) Then Begin
-       ExitCode := ExitCodeOf(E.exc);
+     If XcTag = xtPy Then Begin
+      ePy := PXcPy(RaiseList^.FObject);
+      If IsInstance(VObj(ePy.exc), exSystemExit) Then Begin
+       ExitCode := ExitCodeOf(ePy.exc);
        eof := True;
       End
-      Else HandleUncaught(E.exc);
-     End;
+      Else HandleUncaught(ePy.exc);
+     End
+     Else Raise;
     End;
     buf := '';
    End;
@@ -41369,7 +42672,7 @@ Var
  i, k: Integer;
 Begin
  l := SysPathList;
- l.Clear;
+ ObjClear(l);
  { PYTHONPATH }
  If Not Opts.optE Then Begin
   s := GetEnv('PYTHONPATH');
@@ -41383,17 +42686,17 @@ Begin
     p := Copy(s, 1, k - 1);
     s := Copy(s, k + 1, Length(s));
    End;
-   If p <> '' Then l.Add(VStr(p));
+   If p <> '' Then ObjAdd(l, VStr(p));
   End;
  End;
- l.Add(VStr('/usr/lib/python3.8'));
- l.Add(VStr('/usr/lib/python3.8/lib-dynload'));
+ ObjAdd(l, VStr('/usr/lib/python3.8'));
+ ObjAdd(l, VStr('/usr/lib/python3.8/lib-dynload'));
  If Not Opts.optIso Then
   If Not Opts.optP Then Begin
    If Opts.hasScript And (Opts.script <> '-') Then
-    l.Insert(0, VStr(ScriptDir))
-   Else If Opts.hasMod Then l.Insert(0, VStr(GetCurrentDir))
-   Else l.Insert(0, VStr(''));
+    ListInsert(l, 0, VStr(ScriptDir))
+   Else If Opts.hasMod Then ListInsert(l, 0, VStr(GetCurrentDir))
+   Else ListInsert(l, 0, VStr(''));
   End;
  i := 0;
 End;
@@ -41407,17 +42710,18 @@ Var
  fl: TPyTuple;
 Begin
  d := SysDict;
- d.SetS('executable', VStr(ParamStr(0)));
- d.SetS('_base_executable', VStr(ParamStr(0)));
- d.SetS('dont_write_bytecode', VBool(True));
- w := TPyList(d.ent[d.FindS('warnoptions', HashBytes('warnoptions'))].val.o);
- For i := 0 To High(Opts.warn) Do w.Add(VStr(Opts.warn[i]));
- xd := TPyDict(d.ent[d.FindS('_xoptions', HashBytes('_xoptions'))].val.o);
+ DictSetS(d, 'executable', VStr(ParamStr(0)));
+ DictSetS(d, '_base_executable', VStr(ParamStr(0)));
+ DictSetS(d, 'dont_write_bytecode', VBool(True));
+ w := TPyList(d.ent[DictFindS(d, 'warnoptions',
+   HashBytes('warnoptions'))].val.o);
+ For i := 0 To High(Opts.warn) Do ObjAdd(w, VStr(Opts.warn[i]));
+ xd := TPyDict(d.ent[DictFindS(d, '_xoptions', HashBytes('_xoptions'))].val.o);
  For i := 0 To High(Opts.xopts) Do Begin
   p := Pos('=', Opts.xopts[i]);
-  If p > 0 Then xd.SetItem(VStr(Copy(Opts.xopts[i], 1, p - 1)),
+  If p > 0 Then DictSetItem(xd, VStr(Copy(Opts.xopts[i], 1, p - 1)),
    VStr(Copy(Opts.xopts[i], p + 1, Length(Opts.xopts[i]))))
-  Else xd.SetItem(VStr(Opts.xopts[i]), vTrue);
+  Else DictSetItem(xd, VStr(Opts.xopts[i]), vTrue);
  End;
  fl := NewTuple(16);
  fl.items[0] := VInt(Ord(Opts.optD));
@@ -41438,7 +42742,7 @@ Begin
   If Opts.xopts[i] = 'dev' Then fl.items[13] := vTrue;
  fl.items[14] := VInt(0);
  fl.items[15] := VInt(-1);
- d.SetS('_flags_tuple', VObj(fl));
+ DictSetS(d, '_flags_tuple', VObj(fl));
  x := NewList;
  l := x;
 End;
@@ -41471,6 +42775,7 @@ End;
 
 Function RunModuleAsMain(Const name: AnsiString): Integer;
 Var
+ ePy: PXcPy;
  m: TPyModule;
  src, fname: AnsiString;
  idx, i: Integer;
@@ -41485,17 +42790,17 @@ Begin
  src := '';
  found := False;
  leaf := name;
- idx := SrcMods.IndexOf(name + '.__main__');
+ idx := SLIndexOf(SrcMods, name + '.__main__');
  If idx >= 0 Then Begin
-  src := TModSrc(Pointer(SrcMods.Objects[idx]))();
+  src := TModSrc(Pointer(SrcMods^.vals[idx]))();
   fname := '<frozen ' + name + '.__main__>';
   found := True;
   pkgMain := True;
  End
  Else Begin
-  idx := SrcMods.IndexOf(name);
+  idx := SLIndexOf(SrcMods, name);
   If idx >= 0 Then Begin
-   src := TModSrc(Pointer(SrcMods.Objects[idx]))();
+   src := TModSrc(Pointer(SrcMods^.vals[idx]))();
    fname := '<frozen ' + name + '>';
    found := True;
   End;
@@ -41529,20 +42834,23 @@ Begin
   Try
    ImportByName(Copy(name, 1, LastDelimiter('.', name) - 1));
   Except
-   On E: EPyError Do Begin
-    Result := HandleUncaught(E.exc);
+   If XcTag = xtPy Then Begin
+    ePy := PXcPy(RaiseList^.FObject);
+    Result := HandleUncaught(ePy.exc);
     Exit;
-   End;
+   End
+   Else Raise;
   End;
  End;
  SetSysArgv(fname);
  d := MainDict;
- d.SetS('__file__', VStr(fname));
- d.SetS('__name__', VStr('__main__'));
+ DictSetS(d, '__file__', VStr(fname));
+ DictSetS(d, '__name__', VStr('__main__'));
  If pkgMain Or (ExtractFileName(fname) = '__main__.py') Then
-  d.SetS('__package__', VStr(name))
+  DictSetS(d, '__package__', VStr(name))
  Else
-  d.SetS('__package__', VStr(Copy(name, 1, Max(0, LastDelimiter('.', name) -
+  DictSetS(d, '__package__', VStr(Copy(name, 1, Max(0, LastDelimiter('.', name)
+    -
    1))));
  m := nil;
  Result := RunSource(src, fname);
@@ -41607,7 +42915,7 @@ Begin
  ImportByName('site');
  If Opts.hasCmd Then Begin
   SetSysArgv('-c');
-  MainDict.SetS('__name__', VStr('__main__'));
+  DictSetS(MainDict, '__name__', VStr('__main__'));
   ExitCode := RunSource(Opts.cmd, '<string>');
   If Opts.optI Then RunInteractive(False);
  End
@@ -41622,7 +42930,7 @@ Begin
     Length(src))
    Else src := '';
   End;
-  MainDict.SetS('__file__', VStr(Opts.script));
+  DictSetS(MainDict, '__file__', VStr(Opts.script));
   fname := Opts.script;
   If DirectoryExists(Opts.script) Then fname := Opts.script + '/__main__.py';
   ExitCode := RunSource(src, fname);
