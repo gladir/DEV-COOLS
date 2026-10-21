@@ -324,7 +324,7 @@
               types des operandes
             Verification : math.a60, test_arithbool.a60, test_operators.a60
             Realise : ParseArith (signe en tete applique au premier terme
-              entier : -a div b vaut -(a div b)), ParseTerm (* / div),
+              entier : -a div b vaut -(a div b)), ParseTerm ( * / div ),
               ParseFactor (^ ou **, associatif a gauche comme dans le
               rapport, exposant eventuellement signe) ; ExprMakeUnary et
               ExprMakeBinary : types par TypeArith, TypeDivide,
