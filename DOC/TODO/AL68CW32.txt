@@ -1365,8 +1365,9 @@
               f = $...$) deroules a la compilation : [n]d [n]z . + - (entiers
               et reels en virgule fixe, etoiles en cas de debordement),
               a b g, x l p / "texte" et groupes n( ... ), liste reprise
-              tant que des valeurs restent (GenFormatted) ; get lit sans
-              tenir compte des largeurs du format.
+              tant que des valeurs restent (GenFormattedAny) ; getf et
+              readf suivent les largeurs (voir FORMATS, EVENEMENTS ET
+              NOMBRES).
             (7) PAR (u1, ..., un) et PAR BEGIN u1, u2 END : chaque unite
               est un processus (coroutine : pile de 128 Ko sur le tas,
               cadre du parent partage) ; SEMA = STRUCT (REF INT), LEVEL n,
@@ -1380,12 +1381,52 @@
               objdump (chkenc) ; le chargeur de test (TESTS/AL60CW32/
               runpe.c) fournit CreateFileA et CloseHandle
             Limites : LONG REAL n'a pas plus de precision que REAL ;
-              LONG LONG INT = LONG INT ; formats : pas de motifs e, c, k,
-              q, s ni de replicateur calcule ; un format doit etre
-              constant ; reels de format en virgule fixe seulement ; pas
-              de whole/fixed/float pour LONG INT ni de string en sortie ;
-              on logical file end seulement (pas d'autres evenements) ;
+              LONG LONG INT = LONG INT ; un format doit etre constant ;
               les processus d'un PAR ne doivent pas sortir de la clause
               par GOTO ; pile de 128 Ko par processus ; ordonnancement
               cooperatif (changement de processus seulement dans DOWN) ;
-              un mode COMPL ou BYTES ne doit pas etre redefini
+              un mode COMPL ou BYTES ne doit pas etre redefini (les
+              limites des formats et des evenements sont dans la section
+              suivante)
+
+  FORMATS, EVENEMENTS ET NOMBRES [IMPLEMENTE]
+            Realise :
+            (1) formats : motifs e (reels a exposant : -d.2de-2d,
+              +d.3de+3d), c("a", "b", ...) (choix selon un INT), b("oui",
+              "non"), k (colonne : 12k), q (espace comme x), s (valeur
+              consommee mais non ecrite ni rangee), a b g ; replicateurs
+              calcules ( expression ) devant x q l p k d z a... (analyses a
+              la lecture du format : FmtPrepare, FmtParseExpr) ; groupes a
+              replicateur calcule limites aux insertions ; le contenu
+              d'une parenthese est une expression s'il contient une lettre
+              qui n'est pas une lettre de motif (a b c d e f g k l p q s x
+              y z) ou * / %. Le runtime suit la colonne de sortie (FILE).
+            (2) getf et readf lisent selon le format : largeurs des motifs
+              entiers (RDINTW), reels (RDREALW), a exposant (RDFLOATW),
+              a b (un caractere), a sur STRING (autant de caracteres que
+              sa longueur), x l p et textes ("(" doit se retrouver dans
+              l'entree : sinon evenement d'erreur de caractere), s
+              (valeur lue et jetee), g (lecture libre).
+            (3) evenements : on logical file end, on physical file end, on
+              value error (texte non numerique : READINT, READREAL,
+              READLINT, getf), on line end et on page end (fin de ligne ou
+              de page rencontree en lecture), on format end (le format est
+              repris), on char error (texte de format non retrouve), on
+              open error ; le gestionnaire est un PROC (REF FILE) BOOL
+              range dans le FILE (24 mots) ; sans gestionnaire la lecture
+              continue (valeur 0). read lit aussi un BOOL (T ou t).
+            (4) nombres : NUMBER = UNION (INT, REAL, LONG INT) ; whole,
+              fixed (nombre, largeur, decimales) et float (nombre,
+              largeur, decimales, chiffres de l'exposant) rendent une
+              STRING pour INT, REAL et LONG INT (largeur 0 : sans blancs ;
+              debordement : etoiles) ; FMT64B, FIXED, FLOATC et MKSTRP
+              partagent le formatage avec printf.
+            Verifie : work/events, numfmt, fmt2, getf ; 3 erreurs de plus
+              dans errors.txt
+            Limites : motifs de format y, f, i, r non supportes ; un
+              motif c ne se lit pas ; un replicateur calcule ne s'applique
+              pas a a b c g ; les gestionnaires on line end et on page end
+              ne sont appeles qu'a la lecture ; la largeur d'un motif
+              numerique est limitee a 27 chiffres ; fixed et float
+              passent par un REAL (LONG INT au-dela de 2**53 arrondi
+              quand il y a des decimales)

@@ -11,7 +11,9 @@
 #     procedure), closure (fermetures), long (LONG INT, BITS, avec
 #     long.in), compl (COMPL, BYTES), file (fichiers), fmt (formats),
 #     real2 (reels en notation scientifique), par1 et par2 (PAR et
-#     SEMA) donnent la sortie des fichiers .exp (fins de ligne CR LF
+#     SEMA), events (gestionnaires d'evenements), numfmt (whole, fixed,
+#     float), fmt2 (formats e c k q s replicateurs calcules) et getf
+#     (lecture formatee) donnent la sortie des fichiers .exp (fins de ligne CR LF
 #     converties) ;
 #   - indice hors bornes, division par zero, reference NIL, tableaux de
 #     dimensions differentes et interblocage de PAR ecrivent un message
@@ -26,7 +28,7 @@ cd "$tmp" || exit 1
 bad=0
 ko() { echo "ECHEC: $1"; bad=1; }
 for n in rt1 pr2 slice copy display gc gc2 print2 ouse procs closure long \
-         compl file fmt real2 par1 par2; do
+         compl file fmt real2 par1 par2 events numfmt fmt2 getf; do
   cp "$here/work/$n.a68" .
   "$comp" $n.a68 >log 2>&1 || { ko "compilation $n"; continue; }
   in=/dev/null; [ -f "$here/work/$n.in" ] && in="$here/work/$n.in"

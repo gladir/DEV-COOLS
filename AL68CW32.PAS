@@ -1375,8 +1375,9 @@
               f = $...$) deroules a la compilation : [n]d [n]z . + - (entiers
               et reels en virgule fixe, etoiles en cas de debordement),
               a b g, x l p / "texte" et groupes n( ... ), liste reprise
-              tant que des valeurs restent (GenFormatted) ; get lit sans
-              tenir compte des largeurs du format.
+              tant que des valeurs restent (GenFormattedAny) ; getf et
+              readf suivent les largeurs (voir FORMATS, EVENEMENTS ET
+              NOMBRES).
             (7) PAR (u1, ..., un) et PAR BEGIN u1, u2 END : chaque unite
               est un processus (coroutine : pile de 128 Ko sur le tas,
               cadre du parent partage) ; SEMA = STRUCT (REF INT), LEVEL n,
@@ -1390,15 +1391,55 @@
               objdump (chkenc) ; le chargeur de test (TESTS/AL60CW32/
               runpe.c) fournit CreateFileA et CloseHandle
             Limites : LONG REAL n'a pas plus de precision que REAL ;
-              LONG LONG INT = LONG INT ; formats : pas de motifs e, c, k,
-              q, s ni de replicateur calcule ; un format doit etre
-              constant ; reels de format en virgule fixe seulement ; pas
-              de whole/fixed/float pour LONG INT ni de string en sortie ;
-              on logical file end seulement (pas d'autres evenements) ;
+              LONG LONG INT = LONG INT ; un format doit etre constant ;
               les processus d'un PAR ne doivent pas sortir de la clause
               par GOTO ; pile de 128 Ko par processus ; ordonnancement
               cooperatif (changement de processus seulement dans DOWN) ;
-              un mode COMPL ou BYTES ne doit pas etre redefini
+              un mode COMPL ou BYTES ne doit pas etre redefini (les
+              limites des formats et des evenements sont dans la section
+              suivante)
+
+  FORMATS, EVENEMENTS ET NOMBRES [IMPLEMENTE]
+            Realise :
+            (1) formats : motifs e (reels a exposant : -d.2de-2d,
+              +d.3de+3d), c("a", "b", ...) (choix selon un INT), b("oui",
+              "non"), k (colonne : 12k), q (espace comme x), s (valeur
+              consommee mais non ecrite ni rangee), a b g ; replicateurs
+              calcules ( expression ) devant x q l p k d z a... (analyses a
+              la lecture du format : FmtPrepare, FmtParseExpr) ; groupes a
+              replicateur calcule limites aux insertions ; le contenu
+              d'une parenthese est une expression s'il contient une lettre
+              qui n'est pas une lettre de motif (a b c d e f g k l p q s x
+              y z) ou * / %. Le runtime suit la colonne de sortie (FILE).
+            (2) getf et readf lisent selon le format : largeurs des motifs
+              entiers (RDINTW), reels (RDREALW), a exposant (RDFLOATW),
+              a b (un caractere), a sur STRING (autant de caracteres que
+              sa longueur), x l p et textes ("(" doit se retrouver dans
+              l'entree : sinon evenement d'erreur de caractere), s
+              (valeur lue et jetee), g (lecture libre).
+            (3) evenements : on logical file end, on physical file end, on
+              value error (texte non numerique : READINT, READREAL,
+              READLINT, getf), on line end et on page end (fin de ligne ou
+              de page rencontree en lecture), on format end (le format est
+              repris), on char error (texte de format non retrouve), on
+              open error ; le gestionnaire est un PROC (REF FILE) BOOL
+              range dans le FILE (24 mots) ; sans gestionnaire la lecture
+              continue (valeur 0). read lit aussi un BOOL (T ou t).
+            (4) nombres : NUMBER = UNION (INT, REAL, LONG INT) ; whole,
+              fixed (nombre, largeur, decimales) et float (nombre,
+              largeur, decimales, chiffres de l'exposant) rendent une
+              STRING pour INT, REAL et LONG INT (largeur 0 : sans blancs ;
+              debordement : etoiles) ; FMT64B, FIXED, FLOATC et MKSTRP
+              partagent le formatage avec printf.
+            Verifie : work/events, numfmt, fmt2, getf ; 3 erreurs de plus
+              dans errors.txt
+            Limites : motifs de format y, f, i, r non supportes ; un
+              motif c ne se lit pas ; un replicateur calcule ne s'applique
+              pas a a b c g ; les gestionnaires on line end et on page end
+              ne sont appeles qu'a la lecture ; la largeur d'un motif
+              numerique est limitee a 27 chiffres ; fixed et float
+              passent par un REAL (LONG INT au-dela de 2**53 arrondi
+              quand il y a des decimales)
   ============================================================ *)
 
 Program AL68CW32;
@@ -3035,7 +3076,7 @@ Const
 { Noms du prelude standard ecrits avec des espaces (max int, long pi...) :
   les mots consecutifs sont fusionnes en un seul identificateur }
 Const
-  STDWORD_COUNT = 31;
+  STDWORD_COUNT = 38;
   STDCONST_COUNT = 23;      { les 23 premiers sont des constantes }
   StdWords : Array[1..STDWORD_COUNT] Of String[20] = (
     'max int', 'max real', 'small real', 'int width', 'real width',
@@ -3045,7 +3086,10 @@ Const
     'long real width', 'long exp width', 'stand in channel',
     'stand out channel', 'stand back channel',
     'bytes pack', 'bytes string', 'bytes width', 'stand in',
-    'stand out', 'stand error', 'stand back', 'on logical file end'
+    'stand out', 'stand error', 'stand back', 'on logical file end',
+    'on physical file end', 'on line end', 'on page end',
+    'on format end', 'on value error', 'on char error',
+    'on open error'
   );
 
 Function StdWordIndex(Const S : TString) : Integer;
@@ -3239,6 +3283,7 @@ Var
   PreludeModes : Integer; { modes crees avant le programme (prelude)  }
   ModeCompl, ModeBytes : Integer;   { COMPL et BYTES                   }
   ModeSema : Integer;                { SEMA = STRUCT (REF INT)            }
+  ModeNumber : Integer;              { NUMBER = UNION (INT, REAL, LONG INT) }
   ModeFile : Integer;                { FILE                              }
 
 Function ModeNewRaw(K : TModeKind) : Integer;
@@ -4392,8 +4437,24 @@ Begin
   ModeTmpAdd('eof', MD_INT, 0, 0);
   ModeTmpAdd('hook', MD_INT, 0, 0);
   ModeTmpAdd('hlink', MD_INT, 0, 0);
+  ModeTmpAdd('col', MD_INT, 0, 0);
+  ModeTmpAdd('line', MD_INT, 0, 0);
+  ModeTmpAdd('page', MD_INT, 0, 0);
+  ModeTmpAdd('hval', MD_INT, 0, 0);
+  ModeTmpAdd('lval', MD_INT, 0, 0);
+  ModeTmpAdd('hline', MD_INT, 0, 0);
+  ModeTmpAdd('lline', MD_INT, 0, 0);
+  ModeTmpAdd('hpage', MD_INT, 0, 0);
+  ModeTmpAdd('lpage', MD_INT, 0, 0);
+  ModeTmpAdd('hfmt', MD_INT, 0, 0);
+  ModeTmpAdd('lfmt', MD_INT, 0, 0);
+  ModeTmpAdd('hchr', MD_INT, 0, 0);
+  ModeTmpAdd('lchr', MD_INT, 0, 0);
+  ModeTmpAdd('hopen', MD_INT, 0, 0);
+  ModeTmpAdd('lopen', MD_INT, 0, 0);
   ModeTmpAdd('r1', MD_INT, 0, 0);
   ModeTmpAdd('r2', MD_INT, 0, 0);
+  ModeTmpAdd('r3', MD_INT, 0, 0);
   ModeFile := ModeStructTmp(0, 0);
   SymDeclare('FILE', SK_MODE, ModeFile, 0, 0);
   SymDeclare('CHANNEL', SK_MODE, MD_INT, 0, 0);
@@ -4402,6 +4463,12 @@ Begin
   ModeTmpAdd('cell', ModeRef(MD_INT), 0, 0);
   ModeSema := ModeStructTmp(0, 0);
   SymDeclare('SEMA', SK_MODE, ModeSema, 0, 0);
+  ModeTmpReset;
+  ModeTmpAdd('', MD_INT, 0, 0);
+  ModeTmpAdd('', MD_REAL, 0, 0);
+  ModeTmpAdd('', MD_LINT, 0, 0);
+  ModeNumber := ModeUnionTmp(0, 0);
+  SymDeclare('NUMBER', SK_MODE, ModeNumber, 0, 0);
 
   { priorites standard (Revised Report) }
   PrePrio('OR', 2);
@@ -4519,9 +4586,20 @@ Begin
   PreStd('newline', MD_VOID);     { marqueur de print (TODO 19) }
   PreStd('space', MD_VOID);       { marqueur de print (TODO 19) }
   ModeTmpReset;
-  ModeTmpAdd('', MD_INT, 0, 0);
+  ModeTmpAdd('', ModeNumber, 0, 0);
   ModeTmpAdd('', MD_INT, 0, 0);
   PreStd('whole', ModeProcTmp(MD_STRING));
+  ModeTmpReset;
+  ModeTmpAdd('', ModeNumber, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  PreStd('fixed', ModeProcTmp(MD_STRING));
+  ModeTmpReset;
+  ModeTmpAdd('', ModeNumber, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  PreStd('float', ModeProcTmp(MD_STRING));
   { fichiers }
   ModeTmpReset;
   ModeTmpAdd('', ModeRef(ModeFile), 0, 0);
@@ -4536,7 +4614,15 @@ Begin
   ModeTmpReset;
   ModeTmpAdd('', ModeRef(ModeFile), 0, 0);
   ModeTmpAdd('', PreOpHook, 0, 0);
-  PreStd('on logical file end', ModeProcTmp(MD_VOID));
+  PreOpHook := ModeProcTmp(MD_VOID);
+  PreStd('on logical file end', PreOpHook);
+  PreStd('on physical file end', PreOpHook);
+  PreStd('on line end', PreOpHook);
+  PreStd('on page end', PreOpHook);
+  PreStd('on format end', PreOpHook);
+  PreStd('on value error', PreOpHook);
+  PreStd('on char error', PreOpHook);
+  PreStd('on open error', PreOpHook);
   PreProc1('sqrt', MD_REAL, MD_REAL);
   PreProc1('sin', MD_REAL, MD_REAL);
   PreProc1('cos', MD_REAL, MD_REAL);
@@ -8153,7 +8239,7 @@ Begin
         M := NatMode(Cur);
         If (ModeKind(M) <> MK_REF) Or
            Not (ModeKind(ModeDeref(M)) In [MK_INT, MK_REAL, MK_CHAR,
-                                           MK_LINT]) And
+                                           MK_LINT, MK_BOOL]) And
            Not ModeIsString(ModeDeref(M)) Then
           ErrorAt(UnitTab[A].Line, UnitTab[A].Col,
                   'read demande un nom de mode INT, REAL, CHAR ou ' +
@@ -9010,6 +9096,128 @@ Begin
   ParseDisplay := U;
 End;
 
+{ ---- Replicateurs calcules d'un format ----
+  Un replicateur ( expression ) d'un format $...$ est analyse des la
+  lecture de la denotation : le texte est decoupe en jetons ajoutes en
+  fin de la table, l'expression est analysee dans la portee courante puis
+  les jetons sont retires. FmtExprAt (generateur) retrouve l'unite. }
+Var
+  FmtExprLit  : Array[0..63] Of LongInt;
+  FmtExprPos  : Array[0..63] Of LongInt;
+  FmtExprUnit : Array[0..63] Of LongInt;
+  FmtExprN    : Integer;
+
+{ Le contenu d'une parenthese de format est-il une expression (un mot
+  qui n'est pas une lettre de motif, ou * / %) plutot qu'un groupe ? }
+Function FmtIsExpr(Const C : TString) : Boolean;
+Var
+  I  : Integer;
+  Ex : Boolean;
+Begin
+  Ex := False;
+  For I := 1 To Length(C) Do
+  Begin
+    If C[I] In ['"', ','] Then
+    Begin
+      FmtIsExpr := False;
+      Exit;
+    End;
+    If C[I] In ['*', '/', '%'] Then Ex := True
+    Else If (C[I] In ['a'..'z', 'A'..'Z', '_']) And
+            Not (C[I] In ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'k', 'l', 'p',
+                          'q', 's', 'x', 'y', 'z']) Then
+      Ex := True;
+  End;
+  FmtIsExpr := Ex;
+End;
+
+Function FmtParseExpr(Const S : TString; Line, Col : Integer) : LongInt;
+Var
+  T                : TToken;
+  SaveCount, SavePos : LongInt;
+  I                : Integer;
+  U                : LongInt;
+Begin
+  For I := 1 To Length(S) Do SrcBuf[I - 1] := S[I];
+  SrcBuf[Length(S)] := #0;
+  SrcLen := Length(S);
+  LexPos := 0;
+  LexLine := Line;
+  LexCol := 1;
+  SaveCount := TokCount;
+  SavePos := TokPos;
+  Repeat
+    LexScanToken(T);
+    T.Line := Line;
+    T.Col := Col;
+    LexStore(T);
+  Until T.Kind = TK_EOF;
+  LexMergeStdWords;
+  TokPos := SaveCount;
+  U := ParseUnitX(1);
+  U := CoerceUnit(U, MD_INT, STR_MEEK);
+  If Not AtEOF Then
+    ParseError('expression de replicateur de format incorrecte');
+  TokCount := SaveCount;
+  TokPos := SavePos;
+  FmtParseExpr := U;
+End;
+
+Procedure FmtPrepare(U : LongInt);
+Var
+  T            : TString;
+  P, E, Depth  : Integer;
+  InStr        : Boolean;
+  Ch, Nx       : Char;
+  K            : Integer;
+Begin
+  T := LitTab[UnitTab[U].IntVal];
+  P := 1;
+  InStr := False;
+  While P <= Length(T) Do
+  Begin
+    Ch := T[P];
+    If Ch = '"' Then
+      InStr := Not InStr
+    Else If (Not InStr) And (Ch = '(') Then
+    Begin
+      { parenthese fermante correspondante }
+      E := P + 1;
+      Depth := 1;
+      While (E <= Length(T)) And (Depth > 0) Do
+      Begin
+        If T[E] = '(' Then Inc(Depth)
+        Else If T[E] = ')' Then Dec(Depth);
+        Inc(E);
+      End;
+      { E : apres la parenthese fermante }
+      K := E;
+      While (K <= Length(T)) And (T[K] = ' ') Do Inc(K);
+      If K <= Length(T) Then Nx := T[K] Else Nx := ',';
+      If (Depth = 0) And (E - P > 2) And
+         FmtIsExpr(Copy(T, P + 1, E - P - 2)) And
+         (Nx In ['d', 'z', 'x', 'q', 'l', 'p', '/', 'k', '(', '"', '.', 'a',
+                'b', 'c', 'g', 's']) Then
+      Begin
+        If FmtExprN < 64 Then
+        Begin
+          FmtExprLit[FmtExprN] := UnitTab[U].IntVal;
+          FmtExprPos[FmtExprN] := P;
+          FmtExprUnit[FmtExprN] :=
+            FmtParseExpr(Copy(T, P + 1, E - P - 2), UnitTab[U].Line,
+                         UnitTab[U].Col);
+          Inc(FmtExprN);
+        End
+        Else
+          ErrorAt(UnitTab[U].Line, UnitTab[U].Col,
+                  'format : trop de replicateurs calcules (max 64)');
+        P := E - 1;
+      End;
+    End;
+    Inc(P);
+  End;
+End;
+
 { Constante du prelude standard (max int, blank...) : denotation }
 Function StdConstUnit(Const T : TToken) : LongInt;
 Var
@@ -9102,6 +9310,7 @@ Begin
         UnitTab[U].IntVal := T.IntVal;
         UnitTab[U].Mode := MD_FORMAT;
         ParserAdvance;
+        FmtPrepare(U);
       End;
     TK_KEYWORD:
       Begin
@@ -11057,6 +11266,12 @@ Begin
         Emit1(OP_POP, OpReg(R_EDX));
         Emit(OP_MOV, OpMem(R_EDX, 0, 1), OpReg(R_AL));
       End;
+    MK_BOOL :
+      Begin
+        CallRT('READBOOL');
+        Emit1(OP_POP, OpReg(R_EDX));
+        Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
+      End;
     MK_LINT :
       Begin
         CallRT('READLINT');
@@ -11078,18 +11293,23 @@ End;
 { ---- Formats ($ ... $) : interpretes a la compilation ----
   Le format doit etre une denotation ou un identificateur defini par
   FORMAT f = $...$ ; chaque motif qui consomme une valeur est deroule
-  en appels du runtime. Motifs : [n]d [n]z . (entiers et reels en
-  virgule fixe, signes + et -), a b g, x l p / "texte", groupes n(...).
-  La liste de motifs est reprise depuis le debut tant que des valeurs
-  restent. }
+  en appels du runtime. Motifs : [n]d [n]z . e (entiers et reels en
+  virgule fixe ou flottante, signes + et -), a b c g s, x q l p / k,
+  "texte" et groupes n( ... ). Un replicateur peut etre une expression
+  entiere entre parentheses (analysee a la lecture du format, voir
+  FmtPrepare). La liste de motifs est reprise depuis le debut tant que
+  des valeurs restent. }
 Var
   FmtT      : TString;
   FmtU      : LongInt;
+  FmtLit    : LongInt;
   FmtArgs   : Array[0..63] Of LongInt;
   FmtN      : Integer;
   FmtNext   : Integer;
   FmtStop   : Boolean;
   FmtBudget : Integer;
+  FmtIn     : Boolean;
+  FmtSupp   : Boolean;
 
 Procedure FmtErr(Const Msg : TString);
 Begin
@@ -11098,17 +11318,20 @@ Begin
   FmtStop := True;
 End;
 
+Procedure FmtCount;
+Begin
+  Dec(FmtBudget);
+  If FmtBudget < 0 Then
+    FmtErr('format trop long (deroulement de plus de 4000 motifs)');
+End;
+
 Procedure GenLiteral(Const S : TString);
 Var
   L : Integer;
 Begin
   If (S = '') Or FmtStop Then Exit;
-  Dec(FmtBudget);
-  If FmtBudget < 0 Then
-  Begin
-    FmtErr('format trop long (deroulement de plus de 4000 motifs)');
-    Exit;
-  End;
+  FmtCount;
+  If FmtStop Then Exit;
   L := DataStr(S);
   Emit(OP_MOV, OpReg(R_ESI), OpOffset(L));
   Emit(OP_MOV, OpReg(R_ECX), OpImm(Length(S)));
@@ -11123,7 +11346,7 @@ Begin
   FmtTake := -1;
   While (FmtNext < FmtN) And IsPrintMarker(FmtArgs[FmtNext]) Do
   Begin
-    GenPrintItem(FmtArgs[FmtNext]);
+    If Not FmtIn Then GenPrintItem(FmtArgs[FmtNext]);
     Inc(FmtNext);
   End;
   If FmtNext >= FmtN Then
@@ -11158,46 +11381,429 @@ Begin
   FmtSkipGroup := P;
 End;
 
-Procedure GenFmtNumber(Z, D, F, Sg : Integer; Point : Boolean);
+{ Unite entiere du replicateur calcule qui commence en P, ou -1 }
+Function FmtExprAt(P : Integer) : LongInt;
 Var
-  A, A2 : LongInt;
-  M     : Integer;
+  I : Integer;
+Begin
+  FmtExprAt := -1;
+  For I := 0 To FmtExprN - 1 Do
+    If (FmtExprLit[I] = FmtLit) And (FmtExprPos[I] = P) Then
+      FmtExprAt := FmtExprUnit[I];
+End;
+
+Function FmtDigit(Ch : Char) : Boolean;
+Begin
+  FmtDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+{ Replicateur en P : chiffres, ou (expression) ; Dyn >= 0 : unite }
+Procedure FmtReadRep(Var P : Integer; Var Rep : Integer; Var Dyn : LongInt;
+                     Var Has : Boolean);
+Begin
+  Rep := 1;
+  Dyn := -1;
+  Has := False;
+  If P > Length(FmtT) Then Exit;
+  If FmtDigit(FmtT[P]) Then
+  Begin
+    Rep := 0;
+    Has := True;
+    While (P <= Length(FmtT)) And FmtDigit(FmtT[P]) Do
+    Begin
+      If Rep < 10000 Then Rep := Rep * 10 + Ord(FmtT[P]) - 48;
+      Inc(P);
+    End;
+  End
+  Else If FmtT[P] = '(' Then
+  Begin
+    Dyn := FmtExprAt(P);
+    If Dyn >= 0 Then
+    Begin
+      Has := True;
+      P := FmtSkipGroup(P + 1);
+    End;
+  End;
+End;
+
+{ Evalue l'unite Dyn dans un temporaire }
+Function GenDynTemp(Dyn : LongInt) : Integer;
+Var
+  T : Integer;
+Begin
+  GenDynTemp := -1;
+  If Dyn < 0 Then Exit;
+  T := NewTemp(4);
+  GenValue(Dyn);
+  Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+  GenDynTemp := T;
+End;
+
+{ ECX := Static + somme des temporaires decales }
+Procedure GenPack(Static : LongInt; T1 : Integer; S1 : Integer;
+                  T2 : Integer; S2 : Integer; T3 : Integer; S3 : Integer);
+Begin
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(Static));
+  If T1 <> -1 Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), TMem(T1, 0, 4));
+    If S1 > 0 Then Emit(OP_SHL, OpReg(R_EDX), OpImm(S1));
+    Emit(OP_ADD, OpReg(R_ECX), OpReg(R_EDX));
+  End;
+  If T2 <> -1 Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), TMem(T2, 0, 4));
+    If S2 > 0 Then Emit(OP_SHL, OpReg(R_EDX), OpImm(S2));
+    Emit(OP_ADD, OpReg(R_ECX), OpReg(R_EDX));
+  End;
+  If T3 <> -1 Then
+  Begin
+    Emit(OP_MOV, OpReg(R_EDX), TMem(T3, 0, 4));
+    If S3 > 0 Then Emit(OP_SHL, OpReg(R_EDX), OpImm(S3));
+    Emit(OP_ADD, OpReg(R_ECX), OpReg(R_EDX));
+  End;
+End;
+
+{ Une insertion (une fois) : K = x, l, p, ou " (texte Lit) }
+Procedure GenInsOnce(K : Char; Const Lit : TString);
+Var
+  I : Integer;
 Begin
   If FmtStop Then Exit;
-  If (Z + D > 20) Or (F > 18) Or (Z + D + F > 27) Then
+  If FmtIn Then
   Begin
-    FmtErr('motif numerique trop large');
+    Case K Of
+      'x' : CallRT('GETC');
+      'l' : CallRT('SKIPLINE');
+      'p' : CallRT('SKIPPAGE');
+      '"' :
+        For I := 1 To Length(Lit) Do
+        Begin
+          Emit(OP_MOV, OpReg(R_EAX), OpImm(Ord(Lit[I])));
+          CallRT('EXPECTC');
+        End;
+    End;
+  End
+  Else
+  Begin
+    Case K Of
+      'x' : GenLiteral(' ');
+      'l' : Begin FmtCount; CallRT('NEWLINE'); End;
+      'p' : GenLiteral(#12);
+      '"' : GenLiteral(Lit);
+    End;
+  End;
+End;
+
+{ Insertion repetee Rep fois ou Dyn fois }
+Procedure GenIns(K : Char; Const Lit : TString; Rep : Integer; Dyn : LongInt);
+Var
+  R, T, Ltop, Lend : Integer;
+Begin
+  If FmtStop Then Exit;
+  If Dyn >= 0 Then
+  Begin
+    T := NewTemp(4);
+    Ltop := NewLabel;
+    Lend := NewLabel;
+    GenValue(Dyn);
+    Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+    EmitLabel(Ltop);
+    Emit(OP_CMP, TMem(T, 0, 4), OpImm(0));
+    Emit1(OP_JLE, OpLabel(Lend));
+    GenInsOnce(K, Lit);
+    Emit1(OP_DEC, TMem(T, 0, 4));
+    Emit1(OP_JMP, OpLabel(Ltop));
+    EmitLabel(Lend);
+  End
+  Else If (K = 'x') And (Not FmtIn) Then
+  Begin
+    { espaces en un seul ecrit }
+    If Rep > 250 Then Rep := 250;
+    GenLiteral(Copy('                                                  ' +
+      '                                                                  ' +
+      '                                                                  ' +
+      '                                                                  ' +
+      '                    ', 1, Rep));
+  End
+  Else
+    For R := 1 To Rep Do GenInsOnce(K, Lit);
+End;
+
+{ Un motif numerique deja analyse ; sortie ou lecture }
+Procedure GenFmtNum(Z, D, F, E, Sg, Se : Integer; DZ, DD, DF, DE : LongInt;
+                    Point, IsFlt : Boolean);
+Var
+  A, A2     : LongInt;
+  M, VM     : Integer;
+  TZ, TD, TF, TE, T8 : Integer;
+Begin
+  If FmtStop Then Exit;
+  If (DZ < 0) And (DD < 0) And (DF < 0) And (DE < 0) Then
+    If (Z + D > 20) Or (F > 18) Or (Z + D + F > 27) Or (E > 4) Then
+    Begin
+      FmtErr('motif numerique trop large');
+      Exit;
+    End;
+  If (Z + D + F + E = 0) And (DZ < 0) And (DD < 0) And (DF < 0) Then
+  Begin
+    FmtErr('motif numerique vide');
     Exit;
   End;
   A := FmtTake;
   If A < 0 Then Exit;
-  M := ModeResolve(UnitTab[A].Mode);
-  If Not Point Then
+  TZ := GenDynTemp(DZ);
+  TD := GenDynTemp(DD);
+  TF := GenDynTemp(DF);
+  TE := GenDynTemp(DE);
+  If Not FmtIn Then
   Begin
-    If ModeKind(M) <> MK_INT Then
+    If FmtSupp Then
     Begin
-      FmtErr('motif entier pour une valeur de mode ' + ModeName(M));
+      FmtSupp := False;
       Exit;
     End;
-    GenValue(A);
-    Emit(OP_MOV, OpReg(R_ECX), OpImm(D + 256 * Z + 65536 * Sg));
-    CallRT('FMTINT');
+    M := ModeResolve(UnitTab[A].Mode);
+    If Not (IsFlt Or Point) Then
+    Begin
+      If ModeKind(M) <> MK_INT Then
+      Begin
+        FmtErr('motif entier pour une valeur de mode ' + ModeName(M));
+        Exit;
+      End;
+      GenValue(A);
+      GenPack(D + 256 * Z + 65536 * Sg, TD, 0, TZ, 8, -1, 0);
+      CallRT('FMTINT');
+    End
+    Else
+    Begin
+      If ModeKind(M) = MK_INT Then
+        A2 := CoerceUnit(A, MD_REAL, STR_STRONG)
+      Else If ModeKind(M) = MK_REAL Then
+        A2 := A
+      Else
+      Begin
+        FmtErr('motif reel pour une valeur de mode ' + ModeName(M));
+        Exit;
+      End;
+      GenValue(A2);
+      If IsFlt Then
+      Begin
+        GenPack(F + 256 * D + 65536 * E + 16777216 * Sg +
+                67108864 * Se, TF, 0, TD, 8, TE, 16);
+        CallRT('FLOATF');
+      End
+      Else
+      Begin
+        GenPack(F + 256 * D + 65536 * Z + 16777216 * Sg, TF, 0, TD, 8,
+                TZ, 16);
+        CallRT('FMTREAL');
+      End;
+    End;
   End
   Else
   Begin
-    If ModeKind(M) = MK_INT Then
-      A2 := CoerceUnit(A, MD_REAL, STR_STRONG)
-    Else If ModeKind(M) = MK_REAL Then
-      A2 := A
-    Else
+    VM := ModeDeref(UnitTab[A].Mode);
+    GenValue(A);
+    If FmtSupp Then
     Begin
-      FmtErr('motif reel pour une valeur de mode ' + ModeName(M));
+      FmtSupp := False;
+      T8 := NewTemp(8);
+      TAddr(R_EAX, T8);
+      VM := MD_REAL;
+    End;
+    If ModeKind(VM) = MK_INT Then
+    Begin
+      If IsFlt Or Point Then
+      Begin
+        FmtErr('motif reel pour une variable INT');
+        Exit;
+      End;
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      GenPack(D + 256 * Z + 65536 * Sg, TD, 0, TZ, 8, -1, 0);
+      CallRT('RDINTW');
+      Emit1(OP_POP, OpReg(R_EDX));
+      Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
+    End
+    Else If ModeKind(VM) = MK_REAL Then
+    Begin
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      If IsFlt Then
+      Begin
+        GenPack(F + 256 * D + 65536 * E + 16777216 * Sg +
+                67108864 * Se, TF, 0, TD, 8, TE, 16);
+        CallRT('RDFLOATW');
+      End
+      Else If Point Then
+      Begin
+        GenPack(F + 256 * D + 65536 * Z + 16777216 * Sg, TF, 0, TD, 8,
+                TZ, 16);
+        CallRT('RDREALW');
+      End
+      Else
+      Begin
+        GenPack(D + 256 * Z + 65536 * Sg, TD, 0, TZ, 8, -1, 0);
+        CallRT('RDINTW');
+        Emit1(OP_PUSH, OpReg(R_EAX));
+        Emit1(OP_FILD, OpMem(R_ESP, 0, 4));
+        Emit(OP_ADD, OpReg(R_ESP), OpImm(4));
+      End;
+      Emit1(OP_POP, OpReg(R_EDX));
+      Emit1(OP_FSTP, OpMem(R_EDX, 0, 8));
+    End
+    Else
+      FmtErr('motif numerique pour une variable de mode ' +
+             ModeName(VM));
+  End;
+End;
+
+{ Valeur isolee pour a, b, g (et c) }
+Procedure GenFmtSimple(C : Char; P : Integer; Var NewP : Integer);
+Var
+  A, A2        : LongInt;
+  M, VM        : Integer;
+  Lits         : Array[1..16] Of TString;
+  NL, I, Lend, Lnext, T8 : Integer;
+  Lit          : TString;
+  Done         : Boolean;
+Begin
+  NewP := P;
+  { liste de textes apres b ou c : ("a", "b", ...) }
+  NL := 0;
+  If (C In ['b', 'c']) And (P <= Length(FmtT)) And (FmtT[P] = '(') Then
+  Begin
+    Inc(P);
+    Done := False;
+    While (P <= Length(FmtT)) And Not Done Do
+    Begin
+      If FmtT[P] = '"' Then
+      Begin
+        Lit := '';
+        Inc(P);
+        While (P <= Length(FmtT)) And (FmtT[P] <> '"') Do
+        Begin
+          Lit := Lit + FmtT[P];
+          Inc(P);
+        End;
+        Inc(P);
+        If NL < 16 Then
+        Begin
+          Inc(NL);
+          Lits[NL] := Lit;
+        End;
+      End
+      Else If FmtT[P] = ')' Then
+      Begin
+        Inc(P);
+        Done := True;
+      End
+      Else
+        Inc(P);
+    End;
+    NewP := P;
+  End;
+  If FmtStop Then Exit;
+  A := FmtTake;
+  If A < 0 Then Exit;
+  If Not FmtIn Then
+  Begin
+    If FmtSupp Then
+    Begin
+      FmtSupp := False;
       Exit;
     End;
-    GenValue(A2);
-    Emit(OP_MOV, OpReg(R_ECX),
-         OpImm(F + 256 * D + 65536 * Z + 16777216 * Sg));
-    CallRT('FMTREAL');
+    M := ModeResolve(UnitTab[A].Mode);
+    If C = 'c' Then
+    Begin
+      If (NL = 0) Or (ModeKind(M) <> MK_INT) Then
+      Begin
+        FmtErr('motif c : INT et liste de textes attendus');
+        Exit;
+      End;
+      GenValue(A);
+      Lend := NewLabel;
+      For I := 1 To NL Do
+      Begin
+        Lnext := NewLabel;
+        Emit(OP_CMP, OpReg(R_EAX), OpImm(I));
+        Emit1(OP_JNE, OpLabel(Lnext));
+        GenLiteral(Lits[I]);
+        Emit1(OP_JMP, OpLabel(Lend));
+        EmitLabel(Lnext);
+      End;
+      EmitLabel(Lend);
+    End
+    Else If C = 'b' Then
+    Begin
+      If ModeKind(M) <> MK_BOOL Then
+        FmtErr('motif b pour une valeur de mode ' + ModeName(M))
+      Else
+      Begin
+        GenValue(A);
+        If NL >= 2 Then
+        Begin
+          Lend := NewLabel;
+          Lnext := NewLabel;
+          Emit(OP_TEST, OpReg(R_EAX), OpReg(R_EAX));
+          Emit1(OP_JE, OpLabel(Lnext));
+          GenLiteral(Lits[1]);
+          Emit1(OP_JMP, OpLabel(Lend));
+          EmitLabel(Lnext);
+          GenLiteral(Lits[2]);
+          EmitLabel(Lend);
+        End
+        Else
+          CallRT('WRITEFLIP');
+      End;
+    End
+    Else If (C = 'a') And Not (ModeKind(M) = MK_CHAR) And
+            Not ModeIsString(M) Then
+      FmtErr('motif a pour une valeur de mode ' + ModeName(M))
+    Else
+      GenPrintItem(A);
+  End
+  Else
+  Begin
+    VM := ModeDeref(UnitTab[A].Mode);
+    If C = 'c' Then
+    Begin
+      FmtErr('motif c non supporte en lecture');
+      Exit;
+    End;
+    If C = 'g' Then
+    Begin
+      If FmtSupp Then FmtSupp := False;
+      GenReadItem(A);
+      Exit;
+    End;
+    GenValue(A);
+    If FmtSupp Then
+    Begin
+      FmtSupp := False;
+      T8 := NewTemp(16);
+      TAddr(R_EAX, T8);
+      Emit(OP_MOV, TMem(T8, 4, 4), OpImm(1));
+      Emit(OP_MOV, TMem(T8, 8, 4), OpImm(0));
+      VM := MD_CHAR;
+    End;
+    If C = 'b' Then
+    Begin
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      CallRT('RDBOOL1');
+      Emit1(OP_POP, OpReg(R_EDX));
+      Emit(OP_MOV, OpMem(R_EDX, 0, 4), OpReg(R_EAX));
+    End
+    Else If ModeKind(VM) = MK_CHAR Then
+    Begin
+      Emit1(OP_PUSH, OpReg(R_EAX));
+      CallRT('RDCHAR1');
+      Emit1(OP_POP, OpReg(R_EDX));
+      Emit(OP_MOV, OpMem(R_EDX, 0, 1), OpReg(R_AL));
+    End
+    Else If ModeIsString(VM) Then
+      CallRT('RDSTRA')
+    Else
+      FmtErr('motif a pour une variable de mode ' + ModeName(VM));
   End;
 End;
 
@@ -11206,17 +11812,14 @@ Var
   C                : Char;
   Rep, R, N, SaveP : Integer;
   HasRep, Point    : Boolean;
-  Z, D, F, Sg      : Integer;
+  IsFlt, InExp, Has2 : Boolean;
+  Z, D, F, E, Sg, Se : Integer;
+  DZ, DD, DF, DE   : LongInt;
   Lit              : TString;
   G, E2            : Integer;
-  A                : LongInt;
-  M                : Integer;
-
-  Function Digit(Ch : Char) : Boolean;
-  Begin
-    Digit := (Ch >= '0') And (Ch <= '9');
-  End;
-
+  Dyn, Dyn2        : LongInt;
+  T, Ltop, Lend    : Integer;
+  Bad              : Boolean;
 Begin
   EndP := P;
   While True Do
@@ -11235,32 +11838,54 @@ Begin
       EndP := P + 1;
       Exit;
     End;
-    Rep := 1;
-    HasRep := False;
-    If Digit(C) Then
+    FmtReadRep(P, Rep, Dyn, HasRep);
+    If P > Length(FmtT) Then
     Begin
-      Rep := 0;
-      HasRep := True;
-      While (P <= Length(FmtT)) And Digit(FmtT[P]) Do
-      Begin
-        If Rep < 10000 Then Rep := Rep * 10 + Ord(FmtT[P]) - 48;
-        Inc(P);
-      End;
-      If P > Length(FmtT) Then
-      Begin
-        FmtErr('replicateur sans motif');
-        EndP := P;
-        Exit;
-      End;
-      C := FmtT[P];
+      FmtErr('replicateur sans motif');
+      EndP := P;
+      Exit;
     End;
+    C := FmtT[P];
     Case C Of
       '(' :
         Begin
           G := P + 1;
           E2 := FmtSkipGroup(G);
-          For R := 1 To Rep Do
-            If Not FmtStop Then FmtRun(G, N);
+          If Dyn >= 0 Then
+          Begin
+            { groupe repete un nombre calcule de fois : insertions seules }
+            Bad := False;
+            Has2 := False;
+            For R := G To E2 - 2 Do
+            Begin
+              If FmtT[R] = '"' Then Has2 := Not Has2
+              Else If Not Has2 Then
+                If Not (FmtT[R] In [' ', ',', 'x', 'q', 'l', 'p', '/',
+                                    '0'..'9', '(', ')']) Then
+                  Bad := True;
+            End;
+            If Bad Then
+              FmtErr('un groupe a replicateur calcule ne peut contenir ' +
+                     'que des insertions')
+            Else
+            Begin
+              T := NewTemp(4);
+              Ltop := NewLabel;
+              Lend := NewLabel;
+              GenValue(Dyn);
+              Emit(OP_MOV, TMem(T, 0, 4), OpReg(R_EAX));
+              EmitLabel(Ltop);
+              Emit(OP_CMP, TMem(T, 0, 4), OpImm(0));
+              Emit1(OP_JLE, OpLabel(Lend));
+              FmtRun(G, N);
+              Emit1(OP_DEC, TMem(T, 0, 4));
+              Emit1(OP_JMP, OpLabel(Ltop));
+              EmitLabel(Lend);
+            End;
+          End
+          Else
+            For R := 1 To Rep Do
+              If Not FmtStop Then FmtRun(G, N);
           P := E2;
         End;
       '"' :
@@ -11286,85 +11911,87 @@ Begin
             End;
           End;
           Inc(P);
-          For R := 1 To Rep Do GenLiteral(Lit);
+          GenIns('"', Lit, Rep, Dyn);
         End;
-      'x' :
+      'x', 'q' :
         Begin
-          Lit := '';
-          For R := 1 To Rep Do
-            If Length(Lit) < 250 Then Lit := Lit + ' ';
-          GenLiteral(Lit);
+          GenIns('x', '', Rep, Dyn);
           Inc(P);
         End;
       'l', '/' :
         Begin
-          For R := 1 To Rep Do
-            If Not FmtStop Then CallRT('NEWLINE');
+          GenIns('l', '', Rep, Dyn);
           Inc(P);
         End;
       'p' :
         Begin
-          For R := 1 To Rep Do GenLiteral(#12);
+          GenIns('p', '', Rep, Dyn);
           Inc(P);
         End;
-      'a', 'b', 'g' :
+      'k' :
         Begin
           Inc(P);
-          For R := 1 To Rep Do
-            If Not FmtStop Then
+          If FmtIn Then
+            FmtErr('motif k non supporte en lecture')
+          Else If Not HasRep Then
+            FmtErr('motif k sans numero de colonne')
+          Else
+          Begin
+            FmtCount;
+            If Dyn >= 0 Then
             Begin
-              A := FmtTake;
-              If A >= 0 Then
-              Begin
-                M := ModeResolve(UnitTab[A].Mode);
-                If C = 'b' Then
-                Begin
-                  If ModeKind(M) <> MK_BOOL Then
-                    FmtErr('motif b pour une valeur de mode ' + ModeName(M))
-                  Else
-                  Begin
-                    GenValue(A);
-                    CallRT('WRITEFLIP');
-                  End;
-                End
-                Else If (C = 'a') And Not (ModeKind(M) = MK_CHAR) And
-                        Not ModeIsString(M) Then
-                  FmtErr('motif a pour une valeur de mode ' + ModeName(M))
-                Else
-                  GenPrintItem(A);
-              End;
-            End;
+              GenValue(Dyn);
+              Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+            End
+            Else
+              Emit(OP_MOV, OpReg(R_ECX), OpImm(Rep));
+            CallRT('POSK');
+          End;
         End;
-      '+', '-', 'd', 'z', '.' :
+      's' :
+        Begin
+          Inc(P);
+          FmtSupp := True;
+        End;
+      'a', 'b', 'c', 'g' :
+        Begin
+          Inc(P);
+          SaveP := P;
+          If (Dyn >= 0) Or (HasRep And (Rep <> 1) And (C = 'c')) Then
+            FmtErr('replicateur calcule non supporte pour le motif ' + C)
+          Else
+            For R := 1 To Rep Do
+              If Not FmtStop Then GenFmtSimple(C, SaveP, P);
+        End;
+      '+', '-', 'd', 'z', '.', 'e' :
         Begin
           Sg := 0;
+          Se := 1;
           If C = '+' Then Sg := 1 Else If C = '-' Then Sg := 2;
           If Sg > 0 Then
           Begin
             Inc(P);
             HasRep := False;
+            Dyn := -1;
           End;
-          Z := 0;
-          D := 0;
-          F := 0;
+          Z := 0; D := 0; F := 0; E := 0;
+          DZ := -1; DD := -1; DF := -1; DE := -1;
           Point := False;
+          IsFlt := False;
+          InExp := False;
+          Has2 := HasRep;
           While P <= Length(FmtT) Do
           Begin
             SaveP := P;
-            N := 1;
-            If HasRep Then
+            If Has2 Then
             Begin
+              Has2 := False;      { replicateur deja lu }
+              Dyn2 := Dyn;
               N := Rep;
-              HasRep := False;
             End
-            Else If Digit(FmtT[P]) Then
+            Else
             Begin
-              N := 0;
-              While (P <= Length(FmtT)) And Digit(FmtT[P]) Do
-              Begin
-                If N < 1000 Then N := N * 10 + Ord(FmtT[P]) - 48;
-                Inc(P);
-              End;
+              FmtReadRep(P, N, Dyn2, HasRep);
             End;
             If P > Length(FmtT) Then
             Begin
@@ -11372,20 +11999,49 @@ Begin
               Break;
             End;
             C := FmtT[P];
-            If (C = 'z') And Not Point And (D = 0) Then
+            If (C = 'z') And Not Point And Not InExp And (D = 0) And
+               (DD < 0) Then
             Begin
-              Z := Z + N;
+              If Dyn2 >= 0 Then DZ := Dyn2 Else Z := Z + N;
               Inc(P);
             End
             Else If C = 'd' Then
             Begin
-              If Point Then F := F + N Else D := D + N;
+              If InExp Then
+              Begin
+                If Dyn2 >= 0 Then DE := Dyn2 Else E := E + N;
+              End
+              Else If Point Then
+              Begin
+                If Dyn2 >= 0 Then DF := Dyn2 Else F := F + N;
+              End
+              Else
+              Begin
+                If Dyn2 >= 0 Then DD := Dyn2 Else D := D + N;
+              End;
               Inc(P);
             End
-            Else If (C = '.') And Not Point And (P = SaveP) Then
+            Else If (C = '.') And Not Point And Not InExp And
+                    (P = SaveP) Then
             Begin
               Point := True;
               Inc(P);
+            End
+            Else If (C = 'e') And Not InExp And (P = SaveP) Then
+            Begin
+              IsFlt := True;
+              InExp := True;
+              Inc(P);
+              If (P <= Length(FmtT)) And (FmtT[P] = '+') Then
+              Begin
+                Se := 1;
+                Inc(P);
+              End
+              Else If (P <= Length(FmtT)) And (FmtT[P] = '-') Then
+              Begin
+                Se := 2;
+                Inc(P);
+              End;
             End
             Else
             Begin
@@ -11393,9 +12049,9 @@ Begin
               Break;
             End;
           End;
-          If (Z + D + F = 0) Then
-            FmtErr('motif numerique vide');
-          GenFmtNumber(Z, D, F, Sg, Point);
+          If IsFlt And (E = 0) And (DE < 0) Then E := 1;
+          If IsFlt And (D = 0) And (DD < 0) Then D := 1;
+          GenFmtNum(Z, D, F, E, Sg, Se, DZ, DD, DF, DE, Point, IsFlt);
         End;
     Else
       Begin
@@ -11407,7 +12063,7 @@ Begin
   End;
 End;
 
-Procedure GenFormatted(U : LongInt);
+Procedure GenFormattedAny(U : LongInt; IsInput : Boolean);
 Var
   F, A, Fu  : LongInt;
   E, Before : Integer;
@@ -11415,6 +12071,8 @@ Var
   S         : Integer;
 Begin
   FmtU := U;
+  FmtIn := IsInput;
+  FmtSupp := False;
   FmtStop := False;
   FmtBudget := 4000;
   Fu := UnitTab[U].C;
@@ -11434,6 +12092,7 @@ Begin
             'attendu');
     Exit;
   End;
+  FmtLit := Idx;
   FmtT := LitTab[Idx];
   FmtN := 0;
   A := UnitTab[U].A;
@@ -11445,24 +12104,36 @@ Begin
       Inc(FmtN);
     End
     Else
-      FmtErr('plus de 64 valeurs dans un printf');
+      FmtErr('plus de 64 valeurs dans un format');
     A := UnitTab[A].Next;
   End;
   FmtNext := 0;
   F := 0;
   Repeat
     Before := FmtNext;
+    If F > 0 Then
+    Begin
+      If IsInput Then
+      Begin
+        Emit(OP_MOV, OpReg(R_EDX), OpImm(60));
+        CallRT('EVIN');
+      End
+      Else
+        CallRT('FMTEND');
+    End;
     FmtRun(1, E);
     If (FmtNext = Before) And Not FmtStop And (FmtNext < FmtN) Then
       FmtErr('le format ne contient aucun motif pour les valeurs');
     Inc(F);
   Until FmtStop Or (FmtNext >= FmtN) Or (F > 200);
   { marqueurs restants }
-  While (FmtNext < FmtN) And IsPrintMarker(FmtArgs[FmtNext]) Do
+  While (Not IsInput) And (FmtNext < FmtN) And
+        IsPrintMarker(FmtArgs[FmtNext]) Do
   Begin
     GenPrintItem(FmtArgs[FmtNext]);
     Inc(FmtNext);
   End;
+  FmtIn := False;
 End;
 
 Procedure GenPrint(U : LongInt);
@@ -11479,8 +12150,8 @@ Begin
     GenValue(UnitTab[U].B);
     If IsRead Then CallRT('SETIN') Else CallRT('SETOUT');
   End;
-  If (UnitTab[U].C >= 0) And Not IsRead Then
-    GenFormatted(U)
+  If UnitTab[U].C >= 0 Then
+    GenFormattedAny(U, IsRead)
   Else
   Begin
     A := UnitTab[U].A;
@@ -11533,6 +12204,8 @@ End;
 { Appel d'une procedure standard : whole par le runtime, les fonctions
   mathematiques en ligne (x87) }
 Procedure GenStdCall(Const Name : TName; Args : LongInt);
+Var
+  Off : LongInt;
 Begin
   If Name = 'whole' Then
   Begin
@@ -11540,7 +12213,34 @@ Begin
     Emit1(OP_PUSH, OpReg(R_EAX));
     GenValue(Args);
     Emit1(OP_POP, OpReg(R_ECX));
-    CallRT('WHOLE');
+    CallRT('WHOLEN');
+    Exit;
+  End;
+  If Name = 'fixed' Then
+  Begin
+    GenValue(UnitTab[UnitTab[Args].Next].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(UnitTab[Args].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(Args);
+    Emit1(OP_POP, OpReg(R_ECX));
+    Emit1(OP_POP, OpReg(R_EDX));
+    CallRT('FIXED');
+    Exit;
+  End;
+  If Name = 'float' Then
+  Begin
+    GenValue(UnitTab[UnitTab[UnitTab[Args].Next].Next].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(UnitTab[UnitTab[Args].Next].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(UnitTab[Args].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(Args);
+    Emit1(OP_POP, OpReg(R_ECX));
+    Emit1(OP_POP, OpReg(R_EDX));
+    Emit1(OP_POP, OpReg(R_ESI));
+    CallRT('FLOAT');
     Exit;
   End;
   If Name = 'open' Then
@@ -11562,16 +12262,25 @@ Begin
     If Name = 'close' Then CallRT('FCLOSE') Else CallRT('FEOF');
     Exit;
   End;
-  If Name = 'on logical file end' Then
+  If Copy(Name, 1, 3) = 'on ' Then
   Begin
+    { gestionnaire d'evenement : entree et lien ranges dans le FILE }
+    If (Name = 'on logical file end') Or
+       (Name = 'on physical file end') Then Off := 16
+    Else If Name = 'on value error' Then Off := 36
+    Else If Name = 'on line end' Then Off := 44
+    Else If Name = 'on page end' Then Off := 52
+    Else If Name = 'on format end' Then Off := 60
+    Else If Name = 'on char error' Then Off := 68
+    Else Off := 76;
     GenValue(Args);
     Emit1(OP_PUSH, OpReg(R_EAX));
     GenValue(UnitTab[Args].Next);
     Emit1(OP_POP, OpReg(R_ECX));
     Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EAX, 0, 4));
-    Emit(OP_MOV, OpMem(R_ECX, 16, 4), OpReg(R_EDX));
+    Emit(OP_MOV, OpMem(R_ECX, Off, 4), OpReg(R_EDX));
     Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EAX, 4, 4));
-    Emit(OP_MOV, OpMem(R_ECX, 20, 4), OpReg(R_EDX));
+    Emit(OP_MOV, OpMem(R_ECX, Off + 4, 4), OpReg(R_EDX));
     Exit;
   End;
   GenValue(Args);                            { argument REAL dans ST(0) }
@@ -15053,7 +15762,7 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 2642;
+  RT_LINES = 3445;
   RT_MAX_ROUT = 200;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_FAIL',
@@ -15474,11 +16183,6 @@ Const
   'REP MOVSB',
   'MOV EAX, EDX',
   'RET',
-  '@_A68RT_NEWLINE',
-  '_A68RT_NEWLINE:',
-  'MOV ESI, OFFSET _A68D_CR',
-  'MOV ECX, 2',
-  'JMP _A68RT_PUT',
   '@_A68RT_SPACE',
   '_A68RT_SPACE:',
   'MOV ESI, OFFSET _A68D_SP',
@@ -15653,26 +16357,6 @@ Const
   'REP MOVSB',
   'POP EAX',
   'RET',
-  '@_A68RT_SKIPWS',
-  '_A68RT_SKIPWS:',
-  'CALL _A68RT_GETC',
-  'CMP EAX, 32',
-  'JE _A68RT_SKIPWS',
-  'CMP EAX, 9',
-  'JE _A68RT_SKIPWS',
-  'CMP EAX, 10',
-  'JE _A68RT_SKIPWS',
-  'CMP EAX, 13',
-  'JE _A68RT_SKIPWS',
-  'RET',
-  '@_A68RT_READCHAR',
-  '_A68RT_READCHAR:',
-  'CALL _A68RT_GETC',
-  'CMP EAX, -1',
-  'JNE _A68R_rc1',
-  'XOR EAX, EAX',
-  '_A68R_rc1:',
-  'RET',
   '@_A68RT_READINT',
   '_A68RT_READINT:',
   'CALL _A68RT_SKIPWS',
@@ -15699,8 +16383,12 @@ Const
   '_A68R_ri2:',
   'ADD EAX, 48',
   'CMP DWORD PTR [_A68D_BLK], 0',
-  'JE _A68R_ri4',
+  'JE _A68R_riv',
   'CALL _A68RT_UNGETC',
+  'JMP _A68R_ri4',
+  '_A68R_riv:',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
   '_A68R_ri4:',
   'MOV EAX, DWORD PTR [_A68D_ACC]',
   'MOV ECX, DWORD PTR [_A68D_SG]',
@@ -15748,7 +16436,10 @@ Const
   '_A68R_rr4:',
   'ADD EAX, 48',
   'CMP DWORD PTR [_A68D_BLK], 0',
-  'JE _A68R_rr6',
+  'JNE _A68R_rr5',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
+  'JMP _A68R_rr6',
   '_A68R_rr5:',
   'CALL _A68RT_UNGETC',
   '_A68R_rr6:',
@@ -16908,8 +17599,12 @@ Const
   '_A68R_l29:',
   'ADD EAX, 48',
   'CMP DWORD PTR [_A68D_DOT], 0',
-  'JE _A68R_l31',
+  'JE _A68R_lv',
   'CALL _A68RT_UNGETC',
+  'JMP _A68R_l31',
+  '_A68R_lv:',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
   '_A68R_l31:',
   'MOV EAX, DWORD PTR [_A68D_ACC]',
   'MOV EDX, DWORD PTR [_A68D_CNT]',
@@ -16947,35 +17642,6 @@ Const
   'CALL _A68RT_WRITEREAL',
   'MOV EAX, 105',
   'JMP _A68RT_WRITECHAR',
-  '@_A68RT_PUT',
-  '; ESI = octets, ECX = longueur : ecrit sur la sortie courante',
-  '_A68RT_PUT:',
-  'TEST ECX, ECX',
-  'JLE _A68R_io1',
-  'MOV EAX, DWORD PTR [_A68D_OUTF]',
-  'TEST EAX, EAX',
-  'JNE _A68R_io2',
-  'MOV EAX, OFFSET _A68D_SOUT',
-  '_A68R_io2:',
-  'MOV EAX, DWORD PTR [EAX]',
-  'TEST EAX, EAX',
-  'JE _A68R_io1',
-  'JG _A68R_io3',
-  'PUSH ESI',
-  'PUSH ECX',
-  'PUSH EAX',
-  'CALL GetStdHandle',
-  'POP ECX',
-  'POP ESI',
-  '_A68R_io3:',
-  'PUSH 0',
-  'PUSH OFFSET _A68D_WR',
-  'PUSH ECX',
-  'PUSH ESI',
-  'PUSH EAX',
-  'CALL WriteFile',
-  '_A68R_io1:',
-  'RET',
   '@_A68RT_GETCQ',
   '; EAX = caractere suivant du fichier d''entree courant, -1 a la fin',
   '_A68RT_GETCQ:',
@@ -17149,14 +17815,23 @@ Const
   'MOV DWORD PTR [ECX+4], EBX',
   'MOV DWORD PTR [ECX+8], -2',
   'MOV DWORD PTR [ECX+12], 0',
-  'MOV DWORD PTR [ECX+16], 0',
-  'MOV DWORD PTR [ECX+20], 0',
+  'PUSH ECX',
+  'ADD ECX, 16',
+  'MOV EDX, 20',
+  '_A68R_evz:',
+  'MOV DWORD PTR [ECX], 0',
+  'ADD ECX, 4',
+  'DEC EDX',
+  'JNE _A68R_evz',
+  'POP ECX',
   'XOR EAX, EAX',
   'POP EBX',
   'RET',
   '_A68R_io19:',
   'MOV DWORD PTR [ECX], 0',
   'MOV DWORD PTR [ECX+4], 0',
+  'MOV EDX, 76',
+  'CALL _A68RT_EVCALL',
   'MOV EAX, 1',
   'POP EBX',
   'RET',
@@ -17210,9 +17885,9 @@ Const
   '_A68R_io27:',
   'MOV EAX, 70',
   'JMP _A68RT_WRITECHAR',
-  '@_A68RT_FMT64',
-  '; EDX:EAX = |N|, ESI = signe, ECX = F|D<<8|Z<<16|Sg<<24',
-  '_A68RT_FMT64:',
+  '@_A68RT_FMT64B',
+  '; EDX:EAX = |N|, ESI = signe, ECX = F|D<<8|Z<<16|Sg<<24 -> ESI, ECX',
+  '_A68RT_FMT64B:',
   'PUSH EBX',
   'SUB ESP, 32',
   'MOV DWORD PTR [ESP+16], ESI',
@@ -17373,6 +18048,10 @@ Const
   'ADD ESP, 32',
   'POP EBX',
   'MOV ESI, OFFSET _A68D_BUF',
+  'RET',
+  '@_A68RT_FMT64',
+  '_A68RT_FMT64:',
+  'CALL _A68RT_FMT64B',
   'JMP _A68RT_PUT',
   '@_A68RT_FMTINT',
   '; EAX = entier, ECX = D | Z<<8 | Sg<<16',
@@ -17697,7 +18376,840 @@ Const
   'JMP _A68R_sdn1',
   '_A68R_sdn2:',
   'DEC DWORD PTR [ECX]',
-  'RET 8'
+  'RET 8',
+  '@_A68RT_EVCALL',
+  '; ECX = FILE, EDX = decalage du gestionnaire -> EAX (0 : aucun)',
+  '_A68RT_EVCALL:',
+  'MOV EAX, ECX',
+  'ADD EAX, EDX',
+  'MOV EDX, DWORD PTR [EAX]',
+  'TEST EDX, EDX',
+  'JE _A68R_ev1',
+  'PUSH ESI',
+  'PUSH EDI',
+  'PUSH ECX',
+  'PUSH ECX',
+  'PUSH DWORD PTR [EAX+4]',
+  'CALL DWORD PTR [EAX]',
+  'POP ECX',
+  'POP EDI',
+  'POP ESI',
+  'RET',
+  '_A68R_ev1:',
+  'XOR EAX, EAX',
+  'RET',
+  '@_A68RT_CURIN',
+  '; ECX = FILE d''entree courant',
+  '_A68RT_CURIN:',
+  'MOV ECX, DWORD PTR [_A68D_INF]',
+  'TEST ECX, ECX',
+  'JNE _A68R_ev2',
+  'MOV ECX, OFFSET _A68D_SIN',
+  '_A68R_ev2:',
+  'RET',
+  '@_A68RT_CUROUT',
+  '; ECX = FILE de sortie courant',
+  '_A68RT_CUROUT:',
+  'MOV ECX, DWORD PTR [_A68D_OUTF]',
+  'TEST ECX, ECX',
+  'JNE _A68R_ev3',
+  'MOV ECX, OFFSET _A68D_SOUT',
+  '_A68R_ev3:',
+  'RET',
+  '@_A68RT_EVIN',
+  '; EDX = decalage -> EDX = resultat du gestionnaire (EAX conserve)',
+  '_A68RT_EVIN:',
+  'PUSH EAX',
+  'PUSH ECX',
+  'CALL _A68RT_CURIN',
+  'CALL _A68RT_EVCALL',
+  'MOV EDX, EAX',
+  'POP ECX',
+  'POP EAX',
+  'RET',
+  '@_A68RT_FMTEND',
+  '; fin de format avec des valeurs restantes',
+  '_A68RT_FMTEND:',
+  'CALL _A68RT_CUROUT',
+  'MOV EDX, 60',
+  'JMP _A68RT_EVCALL',
+  '@_A68RT_PUT',
+  '; ESI = octets, ECX = longueur : ecrit sur la sortie courante',
+  '_A68RT_PUT:',
+  'TEST ECX, ECX',
+  'JLE _A68R_ev4',
+  'PUSH EBX',
+  'MOV EBX, DWORD PTR [_A68D_OUTF]',
+  'TEST EBX, EBX',
+  'JNE _A68R_ev5',
+  'MOV EBX, OFFSET _A68D_SOUT',
+  '_A68R_ev5:',
+  'ADD DWORD PTR [EBX+24], ECX',
+  'MOV EAX, DWORD PTR [EBX]',
+  'TEST EAX, EAX',
+  'JE _A68R_ev7',
+  'JG _A68R_ev6',
+  'PUSH ESI',
+  'PUSH ECX',
+  'PUSH EAX',
+  'CALL GetStdHandle',
+  'POP ECX',
+  'POP ESI',
+  '_A68R_ev6:',
+  'PUSH 0',
+  'PUSH OFFSET _A68D_WR',
+  'PUSH ECX',
+  'PUSH ESI',
+  'PUSH EAX',
+  'CALL WriteFile',
+  '_A68R_ev7:',
+  'POP EBX',
+  '_A68R_ev4:',
+  'RET',
+  '@_A68RT_NEWLINE',
+  '_A68RT_NEWLINE:',
+  'MOV ESI, OFFSET _A68D_CR',
+  'MOV ECX, 2',
+  'CALL _A68RT_PUT',
+  'CALL _A68RT_CUROUT',
+  'MOV DWORD PTR [ECX+24], 0',
+  'INC DWORD PTR [ECX+28]',
+  'RET',
+  '@_A68RT_POSK',
+  '; ECX = colonne n (1 = debut de ligne) : espaces ou ligne suivante',
+  '_A68RT_POSK:',
+  'PUSH ECX',
+  'CALL _A68RT_CUROUT',
+  'MOV EDX, DWORD PTR [ECX+24]',
+  'POP ECX',
+  'DEC ECX',
+  'CMP EDX, ECX',
+  'JLE _A68R_ev8',
+  'PUSH ECX',
+  'CALL _A68RT_NEWLINE',
+  'POP ECX',
+  'XOR EDX, EDX',
+  '_A68R_ev8:',
+  'SUB ECX, EDX',
+  'JLE _A68R_ev10',
+  '_A68R_ev9:',
+  'PUSH ECX',
+  'CALL _A68RT_SPACE',
+  'POP ECX',
+  'DEC ECX',
+  'JNE _A68R_ev9',
+  '_A68R_ev10:',
+  'RET',
+  '@_A68RT_SKIPWS',
+  '; saute les blancs ; fin de ligne et de page : gestionnaires',
+  '_A68RT_SKIPWS:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 32',
+  'JE _A68RT_SKIPWS',
+  'CMP EAX, 9',
+  'JE _A68RT_SKIPWS',
+  'CMP EAX, 13',
+  'JE _A68RT_SKIPWS',
+  'CMP EAX, 10',
+  'JE _A68R_ev11',
+  'CMP EAX, 12',
+  'JE _A68R_ev12',
+  'RET',
+  '_A68R_ev11:',
+  'MOV EDX, 44',
+  'CALL _A68RT_EVIN',
+  'JMP _A68RT_SKIPWS',
+  '_A68R_ev12:',
+  'MOV EDX, 52',
+  'CALL _A68RT_EVIN',
+  'JMP _A68RT_SKIPWS',
+  '@_A68RT_READCHAR',
+  '_A68RT_READCHAR:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 10',
+  'JNE _A68R_ev14',
+  'MOV EDX, 44',
+  'CALL _A68RT_EVIN',
+  'TEST EDX, EDX',
+  'JNE _A68RT_READCHAR',
+  '_A68R_ev14:',
+  'CMP EAX, 12',
+  'JNE _A68R_ev15',
+  'MOV EDX, 52',
+  'CALL _A68RT_EVIN',
+  'TEST EDX, EDX',
+  'JNE _A68RT_READCHAR',
+  '_A68R_ev15:',
+  'CMP EAX, -1',
+  'JNE _A68R_ev16',
+  'XOR EAX, EAX',
+  '_A68R_ev16:',
+  'RET',
+  '@_A68RT_READBOOL',
+  '; lecture d''un BOOL',
+  '_A68RT_READBOOL:',
+  'CALL _A68RT_SKIPWS',
+  'CMP EAX, 84',
+  'JE _A68R_ev17',
+  'CMP EAX, 116',
+  'JE _A68R_ev17',
+  'CMP EAX, 49',
+  'JE _A68R_ev17',
+  'CMP EAX, 70',
+  'JE _A68R_ev18',
+  'CMP EAX, 102',
+  'JE _A68R_ev18',
+  'CMP EAX, 48',
+  'JE _A68R_ev18',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
+  '_A68R_ev18:',
+  'XOR EAX, EAX',
+  'RET',
+  '_A68R_ev17:',
+  'MOV EAX, 1',
+  'RET',
+  '@_A68RT_MKSTRP',
+  '; ESI = octets, ECX = longueur, EDX = blancs a gauche -> STRING',
+  '_A68RT_MKSTRP:',
+  'PUSH ESI',
+  'PUSH ECX',
+  'PUSH EDX',
+  'MOV EAX, ECX',
+  'ADD EAX, EDX',
+  'ADD EAX, 16',
+  'CALL _A68RT_ALLOC',
+  'POP EDX',
+  'POP ECX',
+  'POP ESI',
+  'MOV EDI, EAX',
+  'ADD EDI, 16',
+  'MOV DWORD PTR [EAX], EDI',
+  'MOV DWORD PTR [EAX+4], 1',
+  'MOV DWORD PTR [EAX+12], 1',
+  'MOV DWORD PTR [EAX+8], ECX',
+  'ADD DWORD PTR [EAX+8], EDX',
+  'PUSH EAX',
+  'TEST EDX, EDX',
+  'JE _A68R_nm2',
+  '_A68R_nm1:',
+  'MOV BYTE PTR [EDI], 32',
+  'INC EDI',
+  'DEC EDX',
+  'JNE _A68R_nm1',
+  '_A68R_nm2:',
+  'REP MOVSB',
+  'POP EAX',
+  'RET',
+  '@_A68RT_STARS',
+  '; ECX = n (1 a 60) : n etoiles dans _A68D_BUF -> ESI, ECX',
+  '_A68RT_STARS:',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'MOV ESI, EDI',
+  'PUSH ECX',
+  '_A68R_nm3:',
+  'MOV BYTE PTR [EDI], 42',
+  'INC EDI',
+  'DEC ECX',
+  'JNE _A68R_nm3',
+  'POP ECX',
+  'RET',
+  '@_A68RT_WHOLEN',
+  '; EAX = NUMBER, ECX = largeur -> STRING',
+  '_A68RT_WHOLEN:',
+  'CMP DWORD PTR [EAX], 2',
+  'JNE _A68R_nm4',
+  'MOV EAX, DWORD PTR [EAX+4]',
+  'JMP _A68RT_WHOLE',
+  '_A68R_nm4:',
+  'XOR EDX, EDX',
+  'JMP _A68RT_FIXED',
+  '@_A68RT_FIXED',
+  '; EAX = NUMBER, ECX = largeur, EDX = decimales -> STRING',
+  '_A68RT_FIXED:',
+  'PUSH EBX',
+  'SUB ESP, 48',
+  'MOV DWORD PTR [ESP], ECX',
+  'MOV DWORD PTR [ESP+4], EDX',
+  'MOV DWORD PTR [ESP+8], 0',
+  'MOV DWORD PTR [ESP+12], 0',
+  'MOV DWORD PTR [ESP+16], 0',
+  'MOV ECX, DWORD PTR [EAX]',
+  'CMP ECX, 2',
+  'JE _A68R_nm6',
+  'CMP ECX, 9',
+  'JE _A68R_nm7',
+  'FLD QWORD PTR [EAX+4]',
+  'JMP _A68R_nm9',
+  '_A68R_nm6:',
+  'FILD DWORD PTR [EAX+4]',
+  'JMP _A68R_nm9',
+  '_A68R_nm7:',
+  'CMP DWORD PTR [ESP+4], 0',
+  'JNE _A68R_nm8',
+  'MOV EDX, DWORD PTR [EAX+8]',
+  'MOV EAX, DWORD PTR [EAX+4]',
+  'TEST EDX, EDX',
+  'JNS _A68R_nm21',
+  'MOV DWORD PTR [ESP+8], 1',
+  'NEG EDX',
+  'NEG EAX',
+  'SBB EDX, 0',
+  '_A68R_nm21:',
+  'JMP _A68R_nm12',
+  '_A68R_nm8:',
+  'FILD QWORD PTR [EAX+4]',
+  '_A68R_nm9:',
+  'FST QWORD PTR [ESP+32]',
+  'MOV EAX, DWORD PTR [ESP+36]',
+  'SHR EAX, 31',
+  'MOV DWORD PTR [ESP+8], EAX',
+  'FABS',
+  'MOV ECX, DWORD PTR [ESP+4]',
+  '_A68R_nm10:',
+  'TEST ECX, ECX',
+  'JE _A68R_nm11',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC ECX',
+  'JMP _A68R_nm10',
+  '_A68R_nm11:',
+  'FISTP QWORD PTR [ESP+32]',
+  'MOV EAX, DWORD PTR [ESP+32]',
+  'MOV EDX, DWORD PTR [ESP+36]',
+  '_A68R_nm12:',
+  'MOV ECX, DWORD PTR [ESP+4]',
+  'XOR EBX, EBX',
+  'TEST ECX, ECX',
+  'JE _A68R_nm13',
+  'MOV EBX, ECX',
+  'INC EBX',
+  '_A68R_nm13:',
+  'MOV ECX, DWORD PTR [ESP]',
+  'TEST ECX, ECX',
+  'JNE _A68R_nm14',
+  'MOV DWORD PTR [ESP+16], 1',
+  'MOV ECX, 28',
+  '_A68R_nm14:',
+  'CMP ECX, 28',
+  'JLE _A68R_nm15',
+  'SUB ECX, 28',
+  'MOV DWORD PTR [ESP+12], ECX',
+  'MOV ECX, 28',
+  '_A68R_nm15:',
+  'SUB ECX, EBX',
+  'SUB ECX, DWORD PTR [ESP+8]',
+  'CMP ECX, 1',
+  'JL _A68R_nm16',
+  'DEC ECX',
+  'SHL ECX, 16',
+  'OR ECX, DWORD PTR [ESP+4]',
+  'OR ECX, 256',
+  'CMP DWORD PTR [ESP+8], 0',
+  'JE _A68R_nm18',
+  'OR ECX, 33554432',
+  '_A68R_nm18:',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'CALL _A68RT_FMT64B',
+  'JMP _A68R_nm19',
+  '_A68R_nm16:',
+  'MOV ECX, DWORD PTR [ESP]',
+  'TEST ECX, ECX',
+  'JNE _A68R_nm17',
+  'MOV ECX, 28',
+  '_A68R_nm17:',
+  'CMP ECX, 28',
+  'JLE _A68R_nm20',
+  'MOV ECX, 28',
+  '_A68R_nm20:',
+  'CALL _A68RT_STARS',
+  'MOV DWORD PTR [ESP+12], 0',
+  '_A68R_nm19:',
+  'CMP DWORD PTR [ESP+16], 0',
+  'JE _A68R_nmt3',
+  '_A68R_nmt1:',
+  'CMP ECX, 1',
+  'JLE _A68R_nmt3',
+  'CMP BYTE PTR [ESI], 32',
+  'JNE _A68R_nmt3',
+  'INC ESI',
+  'DEC ECX',
+  'JMP _A68R_nmt1',
+  '_A68R_nmt3:',
+  'MOV EDX, DWORD PTR [ESP+12]',
+  'ADD ESP, 48',
+  'POP EBX',
+  'JMP _A68RT_MKSTRP',
+  '@_A68RT_FLOATC',
+  '; ST(0) = reel (depile), ECX = F|D<<8|E<<16|Sg<<24|Se<<26 -> ESI, ECX',
+  '_A68RT_FLOATC:',
+  'PUSH EBX',
+  'SUB ESP, 48',
+  'MOV DWORD PTR [ESP], ECX',
+  'MOV DWORD PTR [ESP+24], 0',
+  'FST QWORD PTR [ESP+32]',
+  'MOV EAX, DWORD PTR [ESP+36]',
+  'SHR EAX, 31',
+  'MOV DWORD PTR [ESP+8], EAX',
+  'FABS',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'JE _A68R_fq1',
+  '_A68R_fq2:',
+  'FCOM QWORD PTR [_A68D_B16]',
+  'FNSTSW AX',
+  'SAHF',
+  'JB _A68R_fq3',
+  'FDIV QWORD PTR [_A68D_B16]',
+  'ADD DWORD PTR [ESP+24], 16',
+  'JMP _A68R_fq2',
+  '_A68R_fq3:',
+  'FCOM QWORD PTR [_A68D_TEN8]',
+  'FNSTSW AX',
+  'SAHF',
+  'JB _A68R_fq4',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'INC DWORD PTR [ESP+24]',
+  'JMP _A68R_fq3',
+  '_A68R_fq4:',
+  'FCOM QWORD PTR [_A68D_S16]',
+  'FNSTSW AX',
+  'SAHF',
+  'JAE _A68R_fq5',
+  'FMUL QWORD PTR [_A68D_B16]',
+  'SUB DWORD PTR [ESP+24], 16',
+  'JMP _A68R_fq4',
+  '_A68R_fq5:',
+  'FLD1',
+  'FCOMP ST(1)',
+  'FNSTSW AX',
+  'SAHF',
+  'JBE _A68R_fq1',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC DWORD PTR [ESP+24]',
+  'JMP _A68R_fq5',
+  '_A68R_fq1:',
+  'MOV ECX, DWORD PTR [ESP]',
+  'SHR ECX, 8',
+  'AND ECX, 255',
+  '_A68R_fq6:',
+  'CMP ECX, 1',
+  'JLE _A68R_fq7',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC DWORD PTR [ESP+24]',
+  'DEC ECX',
+  'JMP _A68R_fq6',
+  '_A68R_fq7:',
+  'MOV ECX, DWORD PTR [ESP]',
+  'AND ECX, 255',
+  '_A68R_fq8:',
+  'TEST ECX, ECX',
+  'JE _A68R_fq9',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC ECX',
+  'JMP _A68R_fq8',
+  '_A68R_fq9:',
+  'FRNDINT',
+  'FLD1',
+  'MOV ECX, DWORD PTR [ESP]',
+  'MOV EAX, ECX',
+  'AND ECX, 255',
+  'SHR EAX, 8',
+  'AND EAX, 255',
+  'ADD ECX, EAX',
+  '_A68R_fq10:',
+  'TEST ECX, ECX',
+  'JE _A68R_fq11',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC ECX',
+  'JMP _A68R_fq10',
+  '_A68R_fq11:',
+  'FCOMP ST(1)',
+  'FNSTSW AX',
+  'SAHF',
+  'JA _A68R_fq12',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'INC DWORD PTR [ESP+24]',
+  '_A68R_fq12:',
+  'FISTP QWORD PTR [ESP+32]',
+  'MOV EAX, DWORD PTR [ESP+32]',
+  'MOV EDX, DWORD PTR [ESP+36]',
+  'MOV ECX, DWORD PTR [ESP]',
+  'MOV EBX, ECX',
+  'AND ECX, 65535',
+  'SHR EBX, 24',
+  'AND EBX, 3',
+  'CMP EBX, 3',
+  'JNE _A68R_fq17',
+  'MOV EBX, 0',
+  'CMP DWORD PTR [ESP+8], 0',
+  'JE _A68R_fq17',
+  'MOV EBX, 2',
+  '_A68R_fq17:',
+  'SHL EBX, 24',
+  'OR ECX, EBX',
+  'MOV ESI, DWORD PTR [ESP+8]',
+  'CALL _A68RT_FMT64B',
+  'MOV EDI, ESI',
+  'ADD EDI, ECX',
+  'MOV BYTE PTR [EDI], 101',
+  'INC EDI',
+  'INC ECX',
+  'MOV EAX, DWORD PTR [ESP+24]',
+  'MOV EDX, 43',
+  'TEST EAX, EAX',
+  'JNS _A68R_fq13',
+  'NEG EAX',
+  'MOV EDX, 45',
+  'JMP _A68R_fq14',
+  '_A68R_fq13:',
+  'MOV EBX, DWORD PTR [ESP]',
+  'SHR EBX, 26',
+  'AND EBX, 3',
+  'CMP EBX, 2',
+  'JNE _A68R_fq14',
+  'MOV EDX, 32',
+  '_A68R_fq14:',
+  'MOV BYTE PTR [EDI], DL',
+  'INC EDI',
+  'INC ECX',
+  'MOV EBX, DWORD PTR [ESP]',
+  'SHR EBX, 16',
+  'AND EBX, 255',
+  'ADD ECX, EBX',
+  'MOV DWORD PTR [ESP+16], ECX',
+  'ADD EDI, EBX',
+  'PUSH ESI',
+  'TEST EBX, EBX',
+  'JE _A68R_fq15',
+  '_A68R_fq16:',
+  'XOR EDX, EDX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'ADD EDX, 48',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], DL',
+  'DEC EBX',
+  'JNE _A68R_fq16',
+  '_A68R_fq15:',
+  'POP ESI',
+  'MOV ECX, DWORD PTR [ESP+16]',
+  'TEST EAX, EAX',
+  'JE _A68R_fqx',
+  'CALL _A68RT_STARS',
+  '_A68R_fqx:',
+  'ADD ESP, 48',
+  'POP EBX',
+  'RET',
+  '@_A68RT_FLOATF',
+  '; comme FLOATC, ecrit sur la sortie courante',
+  '_A68RT_FLOATF:',
+  'CALL _A68RT_FLOATC',
+  'JMP _A68RT_PUT',
+  '@_A68RT_FLOAT',
+  '; EAX = NUMBER, ECX = largeur, EDX = decimales, ESI = chiffres de e',
+  '_A68RT_FLOAT:',
+  'PUSH ECX',
+  'MOV ECX, DWORD PTR [EAX]',
+  'CMP ECX, 2',
+  'JE _A68R_fq18',
+  'CMP ECX, 9',
+  'JE _A68R_fq19',
+  'FLD QWORD PTR [EAX+4]',
+  'JMP _A68R_fq20',
+  '_A68R_fq18:',
+  'FILD DWORD PTR [EAX+4]',
+  'JMP _A68R_fq20',
+  '_A68R_fq19:',
+  'FILD QWORD PTR [EAX+4]',
+  '_A68R_fq20:',
+  'MOV ECX, EDX',
+  'AND ECX, 255',
+  'OR ECX, 256',
+  'SHL ESI, 16',
+  'OR ECX, ESI',
+  'MOV EDX, 50331648',
+  'OR ECX, EDX',
+  'MOV EDX, 67108864',
+  'OR ECX, EDX',
+  'CALL _A68RT_FLOATC',
+  'POP EDX',
+  'TEST EDX, EDX',
+  'JE _A68R_fq21',
+  'SUB EDX, ECX',
+  'JGE _A68R_fq23',
+  'ADD EDX, ECX',
+  'MOV ECX, EDX',
+  'CMP ECX, 60',
+  'JLE _A68R_fq24',
+  'MOV ECX, 60',
+  '_A68R_fq24:',
+  'CALL _A68RT_STARS',
+  'XOR EDX, EDX',
+  'JMP _A68RT_MKSTRP',
+  '_A68R_fq21:',
+  'XOR EDX, EDX',
+  '_A68R_fq23:',
+  'JMP _A68RT_MKSTRP',
+  '@_A68RT_RDFIELD',
+  '; ECX = largeur -> EAX = valeur, ECX = 1 si negatif, EDX = chiffres',
+  '_A68RT_RDFIELD:',
+  'PUSH EBX',
+  'PUSH ESI',
+  'XOR ESI, ESI',
+  'XOR EBX, EBX',
+  'PUSH ECX',
+  'PUSH 0',
+  '_A68R_rd1:',
+  'CMP DWORD PTR [ESP+4], 0',
+  'JLE _A68R_rd4',
+  'DEC DWORD PTR [ESP+4]',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 32',
+  'JE _A68R_rd1',
+  'SUB EAX, 48',
+  'CMP EAX, 9',
+  'JA _A68R_rd2',
+  'IMUL ESI, DWORD PTR [_A68D_TEN]',
+  'ADD ESI, EAX',
+  'INC DWORD PTR [ESP]',
+  'JMP _A68R_rd1',
+  '_A68R_rd2:',
+  'ADD EAX, 48',
+  'CMP EAX, 45',
+  'JNE _A68R_rd3',
+  'MOV EBX, 1',
+  'JMP _A68R_rd1',
+  '_A68R_rd3:',
+  'CMP EAX, 43',
+  'JE _A68R_rd1',
+  'CMP EAX, -1',
+  'JE _A68R_rd4',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
+  'JMP _A68R_rd1',
+  '_A68R_rd4:',
+  'MOV EAX, ESI',
+  'MOV ECX, EBX',
+  'TEST EBX, EBX',
+  'JE _A68R_rd5',
+  'NEG EAX',
+  '_A68R_rd5:',
+  'MOV EDX, DWORD PTR [ESP]',
+  'ADD ESP, 8',
+  'POP ESI',
+  'POP EBX',
+  'RET',
+  '@_A68RT_RDINTW',
+  '; ECX = D | Z<<8 | Sg<<16 -> EAX',
+  '_A68RT_RDINTW:',
+  'MOV EAX, ECX',
+  'AND EAX, 255',
+  'MOV EDX, ECX',
+  'SHR EDX, 8',
+  'AND EDX, 255',
+  'ADD EAX, EDX',
+  'SHR ECX, 16',
+  'AND ECX, 3',
+  'JE _A68R_rd7',
+  'INC EAX',
+  '_A68R_rd7:',
+  'MOV ECX, EAX',
+  'CALL _A68RT_RDFIELD',
+  'TEST EDX, EDX',
+  'JNE _A68R_rd8',
+  'PUSH EAX',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
+  'POP EAX',
+  '_A68R_rd8:',
+  'RET',
+  '@_A68RT_RDMANT',
+  '; ECX = largeur entiere, EDX = decimales -> ST(0)',
+  '_A68RT_RDMANT:',
+  'PUSH EDX',
+  'CALL _A68RT_RDFIELD',
+  'PUSH ECX',
+  'TEST ECX, ECX',
+  'JE _A68R_rd9',
+  'NEG EAX',
+  '_A68R_rd9:',
+  'PUSH EAX',
+  'FILD DWORD PTR [ESP]',
+  'ADD ESP, 4',
+  'MOV EDX, DWORD PTR [ESP+4]',
+  'TEST EDX, EDX',
+  'JE _A68R_rd12',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 46',
+  'JE _A68R_rd10',
+  'MOV EDX, 36',
+  'CALL _A68RT_EVIN',
+  '_A68R_rd10:',
+  'MOV ECX, DWORD PTR [ESP+4]',
+  'CALL _A68RT_RDFIELD',
+  'PUSH EAX',
+  'FILD DWORD PTR [ESP]',
+  'ADD ESP, 4',
+  'MOV ECX, DWORD PTR [ESP+4]',
+  '_A68R_rd11:',
+  'TEST ECX, ECX',
+  'JE _A68R_rd13',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'DEC ECX',
+  'JMP _A68R_rd11',
+  '_A68R_rd13:',
+  'FADDP ST(1), ST(0)',
+  '_A68R_rd12:',
+  'POP ECX',
+  'ADD ESP, 4',
+  'TEST ECX, ECX',
+  'JE _A68R_rd12x',
+  'FCHS',
+  '_A68R_rd12x:',
+  'RET',
+  '@_A68RT_RDREALW',
+  '; ECX = F | D<<8 | Z<<16 | Sg<<24 -> ST(0)',
+  '_A68RT_RDREALW:',
+  'MOV EAX, ECX',
+  'SHR EAX, 8',
+  'AND EAX, 255',
+  'MOV EDX, ECX',
+  'SHR EDX, 16',
+  'AND EDX, 255',
+  'ADD EAX, EDX',
+  'MOV EDX, ECX',
+  'SHR EDX, 24',
+  'AND EDX, 3',
+  'JE _A68R_rd14',
+  'INC EAX',
+  '_A68R_rd14:',
+  'AND ECX, 255',
+  'MOV EDX, ECX',
+  'MOV ECX, EAX',
+  'JMP _A68RT_RDMANT',
+  '@_A68RT_RDFLOATW',
+  '; ECX = F|D<<8|E<<16|Sg<<24|Se<<26 -> ST(0)',
+  '_A68RT_RDFLOATW:',
+  'PUSH ECX',
+  'MOV EAX, ECX',
+  'SHR EAX, 8',
+  'AND EAX, 255',
+  'MOV EDX, ECX',
+  'SHR EDX, 24',
+  'AND EDX, 3',
+  'JE _A68R_rd15',
+  'INC EAX',
+  '_A68R_rd15:',
+  'AND ECX, 255',
+  'MOV EDX, ECX',
+  'MOV ECX, EAX',
+  'CALL _A68RT_RDMANT',
+  'CALL _A68RT_GETC',
+  'MOV ECX, DWORD PTR [ESP]',
+  'SHR ECX, 16',
+  'AND ECX, 255',
+  'INC ECX',
+  'CALL _A68RT_RDFIELD',
+  'TEST EAX, EAX',
+  'JE _A68R_rd20',
+  'JS _A68R_rd18',
+  '_A68R_rd17:',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC EAX',
+  'JNE _A68R_rd17',
+  'JMP _A68R_rd20',
+  '_A68R_rd18:',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'INC EAX',
+  'JNE _A68R_rd18',
+  '_A68R_rd20:',
+  'ADD ESP, 4',
+  'RET',
+  '@_A68RT_RDCHAR1',
+  '; un caractere exactement',
+  '_A68RT_RDCHAR1:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, -1',
+  'JNE _A68R_rd21',
+  'XOR EAX, EAX',
+  '_A68R_rd21:',
+  'RET',
+  '@_A68RT_RDBOOL1',
+  '; un caractere : T vrai, le reste faux',
+  '_A68RT_RDBOOL1:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 84',
+  'JE _A68R_rd22',
+  'CMP EAX, 116',
+  'JE _A68R_rd22',
+  'XOR EAX, EAX',
+  'RET',
+  '_A68R_rd22:',
+  'MOV EAX, 1',
+  'RET',
+  '@_A68RT_RDSTRA',
+  '; EAX = STRING : lit autant de caracteres que sa longueur',
+  '_A68RT_RDSTRA:',
+  'PUSH EBX',
+  'MOV EBX, EAX',
+  'MOV ECX, DWORD PTR [EBX+8]',
+  'SUB ECX, DWORD PTR [EBX+4]',
+  'INC ECX',
+  'JLE _A68R_rd25',
+  'PUSH 0',
+  '_A68R_rd24:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, -1',
+  'JNE _A68R_rd24a',
+  'MOV EAX, 32',
+  '_A68R_rd24a:',
+  'MOV EDX, DWORD PTR [EBX]',
+  'ADD EDX, DWORD PTR [ESP]',
+  'MOV BYTE PTR [EDX], AL',
+  'INC DWORD PTR [ESP]',
+  'MOV ECX, DWORD PTR [EBX+8]',
+  'SUB ECX, DWORD PTR [EBX+4]',
+  'INC ECX',
+  'CMP DWORD PTR [ESP], ECX',
+  'JL _A68R_rd24',
+  'ADD ESP, 4',
+  '_A68R_rd25:',
+  'POP EBX',
+  'RET',
+  '@_A68RT_SKIPLINE',
+  '; saute jusqu''a la fin de la ligne',
+  '_A68RT_SKIPLINE:',
+  '_A68R_rd26:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 10',
+  'JE _A68R_rd27',
+  'CMP EAX, -1',
+  'JNE _A68R_rd26',
+  '_A68R_rd27:',
+  'RET',
+  '@_A68RT_SKIPPAGE',
+  '; saute jusqu''au saut de page',
+  '_A68RT_SKIPPAGE:',
+  '_A68R_rd28:',
+  'CALL _A68RT_GETC',
+  'CMP EAX, 12',
+  'JE _A68R_rd28a',
+  'CMP EAX, -1',
+  'JNE _A68R_rd28',
+  '_A68R_rd28a:',
+  'RET',
+  '@_A68RT_EXPECTC',
+  '; EAX = caractere attendu : evenement d''erreur de caractere sinon',
+  '_A68RT_EXPECTC:',
+  'PUSH EAX',
+  'CALL _A68RT_GETC',
+  'POP ECX',
+  'CMP EAX, ECX',
+  'JE _A68R_rd29',
+  'MOV EDX, 68',
+  'CALL _A68RT_EVIN',
+  '_A68R_rd29:',
+  'RET'
   );
 
 Var
@@ -17786,7 +19298,7 @@ Begin
 End;
 
 { Enregistrement d'un fichier standard : poignee, sens, -2 (pas de
-  caractere lu d'avance), le reste a zero (32 octets) }
+  caractere lu d'avance), le reste a zero (96 octets) }
 Function FileRecStr(Handle, Dir : LongInt) : TString;
 Var
   S : TString;
@@ -17802,7 +19314,7 @@ Begin
   PutW(Handle);
   PutW(Dir);
   PutW(-2);
-  For I := 1 To 5 Do PutW(0);
+  For I := 1 To 21 Do PutW(0);
   FileRecStr := S;
 End;
 
