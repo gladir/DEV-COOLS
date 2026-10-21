@@ -47,7 +47,10 @@ int main(int argc, char **argv) {
                        MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE, -1, 0);
   if (heap == MAP_FAILED) { perror("mmap heap"); return 2; }
   *(uint32_t *)heap = 0x28000010;
-  const char *names[] = {"GetStdHandle","WriteFile","ReadFile","ExitProcess","GetProcessHeap","HeapAlloc","HeapFree"};
+  /* emplacement (multiple de 64 octets) du stub de chaque fonction ;
+     CreateFileA occupe deux emplacements */
+  const char *names[] = {"GetStdHandle","WriteFile","ReadFile","ExitProcess","GetProcessHeap","HeapAlloc","HeapFree","CreateFileA","CloseHandle"};
+  const int slots[] = {0, 1, 2, 3, 4, 5, 6, 7, 9};
   /* imports */
   if (impRva) {
     for (uint8_t *d = img + impRva; rd32(d + 12); d += 20) {
@@ -56,9 +59,9 @@ int main(int argc, char **argv) {
       uint32_t *iat = (uint32_t *)(img + ft);
       for (int k = 0; thunk[k]; k++) {
         const char *nm = (const char *)(img + thunk[k] + 2);
-        int slot = 7;
-        for (int j = 0; j < 7; j++) if (!strncmp(nm, names[j], strlen(names[j])) && (nm[strlen(names[j])]==0 || nm[strlen(names[j])]==0x40)) slot = j;
-        if (slot == 7) fprintf(stderr, "import inconnu: %s\n", nm);
+        int slot = 10;
+        for (int j = 0; j < 9; j++) if (!strncmp(nm, names[j], strlen(names[j])) && (nm[strlen(names[j])]==0 || nm[strlen(names[j])]==0x40)) slot = slots[j];
+        if (slot == 10) fprintf(stderr, "import inconnu: %s\n", nm);
         iat[k] = 0x20000000u + 64u * slot;
       }
     }

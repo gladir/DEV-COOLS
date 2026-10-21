@@ -65,6 +65,46 @@ HeapFree:
   mov eax, 1
   ret 12
 SLOT
+CreateFileA:
+  push ebx
+  mov ebx, [esp+8]
+  mov edx, [esp+12]
+  xor ecx, ecx
+  test edx, 0x40000000
+  jz .rd
+  mov ecx, 1
+  test edx, 0x80000000
+  jz .wr
+  mov ecx, 2
+.wr:
+  cmp dword [esp+24], 2
+  jne .oa
+  or ecx, 0x240
+  jmp .rd
+.oa:
+  cmp dword [esp+24], 4
+  jne .rd
+  or ecx, 0x40
+.rd:
+  mov edx, 0x1a4
+  mov eax, 5
+  int 0x80
+  test eax, eax
+  jns .ok
+  mov eax, -1
+.ok:
+  pop ebx
+  ret 28
+SLOT
+CloseHandle:
+  push ebx
+  mov ebx, [esp+8]
+  mov eax, 6
+  int 0x80
+  pop ebx
+  mov eax, 1
+  ret 4
+SLOT
 Unknown:
   mov ebx, 99
   mov eax, 252

@@ -1453,7 +1453,8 @@ Type
     TK_KEYWORD,    { mot reserve de la syntaxe                        }
     TK_BOLD,       { autre mot en majuscules                          }
     TK_OP,         { symbole d operateur ou d affectation             }
-    TK_PUNCT       { ; , ( ) [ ] : | et |:                            }
+    TK_PUNCT,      { ; , ( ) [ ] : | et |:                            }
+    TK_FORMAT      { denotation de format $ ... $ (IntVal = LitTab)   }
   );
 
   TToken = Record
@@ -1483,7 +1484,8 @@ Type
     MK_UNION,      { Count alternatives triees, dans le pool         }
     MK_PROC,       { Sub = resultat, Count parametres dans le pool   }
     MK_FWD,        { mode nomme en cours de definition (recursion)   }
-    MK_LINT        { LONG INT : entier sur 64 bits (en memoire)      }
+    MK_LINT,       { LONG INT : entier sur 64 bits (en memoire)      }
+    MK_FORMAT      { FORMAT : denotation $ ... $ (constante)         }
   );
 
   TMode = Record
@@ -1609,6 +1611,7 @@ Type
     UK_BOOLDEN,    { TRUE ou FALSE : IntVal                            }
     UK_CHARDEN,    { denotation de caractere : IntVal = code           }
     UK_STRDEN,     { denotation de chaine : IntVal = indice LitTab     }
+    UK_FMTDEN,     { denotation de format : IntVal = indice LitTab     }
     UK_LINTDEN,    { denotation de LONG INT : IntVal = mot de poids
                      faible, D = mot de poids fort                     }
     UK_VARDECL,    { variable : Sym, Mode = mode de l objet, A =
@@ -2212,6 +2215,7 @@ Begin
     TK_BOLD    : TokenKindName := 'BOLD';
     TK_OP      : TokenKindName := 'OP';
     TK_PUNCT   : TokenKindName := 'PUNCT';
+    TK_FORMAT  : TokenKindName := 'FORMAT';
   End;
 End;
 
@@ -2565,6 +2569,8 @@ Begin
 End;
 
 { Un token brut ; les commentaires et pragmats sont ignores }
+Procedure LexScanFormat(Var T : TToken); Forward;
+
 Procedure LexScanToken(Var T : TToken);
 Var
   Done : Boolean;
@@ -2746,6 +2752,8 @@ Begin
             T.Kind := TK_PUNCT;
             LexNextChar;
           End;
+        '$':
+          LexScanFormat(T);
       Else
         Begin
           If (C < ' ') Or (C > '~') Then
@@ -2759,6 +2767,42 @@ Begin
       End;
     End;
   Until Done;
+End;
+
+{ $ ... $ : denotation de format (les $ dans une chaine entre guillemets
+  ne ferment pas) ; le texte est range dans LitTab }
+Procedure LexScanFormat(Var T : TToken);
+Var
+  S      : TString;
+  Closed : Boolean;
+  InStr  : Boolean;
+Begin
+  S := '';
+  Closed := False;
+  InStr := False;
+  LexNextChar;                           { $ ouvrant }
+  While Not LexAtEnd And Not Closed Do
+  Begin
+    If LexCur = '"' Then InStr := Not InStr;
+    If (LexCur = '$') And Not InStr Then
+      Closed := True
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + LexCur;
+      LexNextChar;
+    End;
+  End;
+  If Closed Then
+    LexNextChar
+  Else
+    ErrorAt(T.Line, T.Col, 'format non ferme (manque $)');
+  T.Kind := TK_FORMAT;
+  If LitCount >= MAX_STRLIT Then
+    FatalError('trop de denotations (max ' + ItoS(MAX_STRLIT) + ')');
+  LitTab[LitCount] := S;
+  T.IntVal := LitCount;
+  Inc(LitCount);
+  T.Val := Copy(S, 1, MAX_NAME);
 End;
 
 { Mode debug -d : une ligne par token }
@@ -2915,14 +2959,17 @@ Const
 { Noms du prelude standard ecrits avec des espaces (max int, long pi...) :
   les mots consecutifs sont fusionnes en un seul identificateur }
 Const
-  STDWORD_COUNT = 23;
-  StdWords : Array[1..STDWORD_COUNT] Of String[17] = (
+  STDWORD_COUNT = 31;
+  STDCONST_COUNT = 23;      { les 23 premiers sont des constantes }
+  StdWords : Array[1..STDWORD_COUNT] Of String[20] = (
     'max int', 'max real', 'small real', 'int width', 'real width',
     'exp width', 'bits width', 'max abs char', 'null character',
     'blank', 'flip', 'flop', 'error char', 'long max int',
     'long int width', 'long pi', 'long max real', 'long small real',
-    'long real width', 'long exp width', 'bytes pack', 'bytes string',
-    'bytes width'
+    'long real width', 'long exp width', 'stand in channel',
+    'stand out channel', 'stand back channel',
+    'bytes pack', 'bytes string', 'bytes width', 'stand in',
+    'stand out', 'stand error', 'stand back', 'on logical file end'
   );
 
 Function StdWordIndex(Const S : TString) : Integer;
@@ -2946,7 +2993,7 @@ Begin
   Begin
     Done := False;
     If TokTab[I].Kind = TK_TAG Then
-      For K := 3 Downto 2 Do
+      For K := 4 Downto 2 Do
         If (Not Done) And (I + K <= TokCount) Then
         Begin
           Cat := TokTab[I].Val;
@@ -3095,6 +3142,7 @@ Const
   MD_NIL    = 7;
   MD_STRING = 8;     { FLEX [] CHAR }
   MD_LINT   = 9;     { LONG INT }
+  MD_FORMAT = 10;    { FORMAT }
 
   { dimensions d un descripteur de tableau : pointeur + (borne
     inferieure, borne superieure, pas) par dimension }
@@ -3114,6 +3162,7 @@ Var
   ModeBadRec: Boolean;   { une taille a rencontre un mode recursif }
   PreludeModes : Integer; { modes crees avant le programme (prelude)  }
   ModeCompl, ModeBytes : Integer;   { COMPL et BYTES                   }
+  ModeFile : Integer;                { FILE                              }
 
 Function ModeNewRaw(K : TModeKind) : Integer;
 Begin
@@ -3166,6 +3215,7 @@ Begin
   ModeTab[I].Dims := 1;
   ModeTab[I].Flex := True;
   ModeNewRaw(MK_LINT);               { MD_LINT }
+  ModeNewRaw(MK_FORMAT);             { MD_FORMAT }
 End;
 
 Function ModeRef(M : Integer) : Integer;
@@ -3556,7 +3606,7 @@ Begin
   Case ModeTab[M].Kind Of
     MK_ERROR, MK_FWD : Total := 4;
     MK_VOID          : Total := 0;
-    MK_INT, MK_BOOL, MK_BITS, MK_NIL, MK_REF : Total := 4;
+    MK_INT, MK_BOOL, MK_BITS, MK_NIL, MK_REF, MK_FORMAT : Total := 4;
     MK_CHAR          : Total := 1;
     MK_REAL, MK_LINT : Total := 8;
     MK_PROC          : Total := 8;       { entree + lien statique }
@@ -3635,6 +3685,7 @@ Begin
     MK_CHAR  : S := 'CHAR';
     MK_BITS  : S := 'BITS';
     MK_LINT  : S := 'LONG INT';
+    MK_FORMAT : S := 'FORMAT';
     MK_NIL   : S := 'NIL';
     MK_FWD   : S := ModeTab[M].Name;
     MK_REF   : S := 'REF ' + ModeName(ModeTab[M].Sub);
@@ -4236,6 +4287,8 @@ Begin
 End;
 
 Procedure PreludeInit;
+Var
+  PreOpHook : Integer;
 Begin
   SymCount   := 0;
   ScopeCount := 0;
@@ -4253,6 +4306,21 @@ Begin
   ModeTmpAdd('s', MD_STRING, 0, 0);
   ModeBytes := ModeStructTmp(0, 0);
   SymDeclare('BYTES', SK_MODE, ModeBytes, 0, 0);
+  { FILE : poignee, sens, caractere lu d'avance, fin de fichier,
+    gestionnaire de fin (entree, lien) ; CHANNEL = INT ; FORMAT }
+  ModeTmpReset;
+  ModeTmpAdd('handle', MD_INT, 0, 0);
+  ModeTmpAdd('dir', MD_INT, 0, 0);
+  ModeTmpAdd('peek', MD_INT, 0, 0);
+  ModeTmpAdd('eof', MD_INT, 0, 0);
+  ModeTmpAdd('hook', MD_INT, 0, 0);
+  ModeTmpAdd('hlink', MD_INT, 0, 0);
+  ModeTmpAdd('r1', MD_INT, 0, 0);
+  ModeTmpAdd('r2', MD_INT, 0, 0);
+  ModeFile := ModeStructTmp(0, 0);
+  SymDeclare('FILE', SK_MODE, ModeFile, 0, 0);
+  SymDeclare('CHANNEL', SK_MODE, MD_INT, 0, 0);
+  SymDeclare('FORMAT', SK_MODE, MD_FORMAT, 0, 0);
 
   { priorites standard (Revised Report) }
   PrePrio('OR', 2);
@@ -4351,6 +4419,17 @@ Begin
   PreStd('long int width', MD_INT); PreStd('long pi', MD_REAL);
   PreStd('long max real', MD_REAL); PreStd('long small real', MD_REAL);
   PreStd('long real width', MD_INT); PreStd('long exp width', MD_INT);
+  PreStd('stand in channel', MD_INT);
+  PreStd('stand out channel', MD_INT);
+  PreStd('stand back channel', MD_INT);
+  PreStd('stand in', ModeRef(ModeFile));
+  PreStd('stand out', ModeRef(ModeFile));
+  PreStd('stand error', ModeRef(ModeFile));
+  PreStd('put', MD_VOID);       PreStd('get', MD_VOID);
+  PreStd('printf', MD_VOID);    PreStd('readf', MD_VOID);
+  PreStd('putf', MD_VOID);      PreStd('getf', MD_VOID);
+  PreStd('write', MD_VOID);
+  PreStd('newpage', MD_VOID);
   PreStd('print', MD_VOID);       { forme speciale (TODO 19) }
   PreStd('read', MD_VOID);        { forme speciale (TODO 19) }
   PreStd('newline', MD_VOID);     { marqueur de print (TODO 19) }
@@ -4359,6 +4438,21 @@ Begin
   ModeTmpAdd('', MD_INT, 0, 0);
   ModeTmpAdd('', MD_INT, 0, 0);
   PreStd('whole', ModeProcTmp(MD_STRING));
+  { fichiers }
+  ModeTmpReset;
+  ModeTmpAdd('', ModeRef(ModeFile), 0, 0);
+  ModeTmpAdd('', MD_STRING, 0, 0);
+  ModeTmpAdd('', MD_INT, 0, 0);
+  PreStd('open', ModeProcTmp(MD_INT));
+  PreProc1('close', ModeRef(ModeFile), MD_VOID);
+  PreProc1('eof', ModeRef(ModeFile), MD_BOOL);
+  ModeTmpReset;
+  ModeTmpAdd('', ModeRef(ModeFile), 0, 0);
+  PreOpHook := ModeProcTmp(MD_BOOL);
+  ModeTmpReset;
+  ModeTmpAdd('', ModeRef(ModeFile), 0, 0);
+  ModeTmpAdd('', PreOpHook, 0, 0);
+  PreStd('on logical file end', ModeProcTmp(MD_VOID));
   PreProc1('sqrt', MD_REAL, MD_REAL);
   PreProc1('sin', MD_REAL, MD_REAL);
   PreProc1('cos', MD_REAL, MD_REAL);
@@ -4951,6 +5045,8 @@ Begin
   WriteLn(F, 'EXTERN GetProcessHeap:PROC');
   WriteLn(F, 'EXTERN HeapAlloc:PROC');
   WriteLn(F, 'EXTERN HeapFree:PROC');
+  WriteLn(F, 'EXTERN CreateFileA:PROC');
+  WriteLn(F, 'EXTERN CloseHandle:PROC');
   WriteLn(F);
   WriteLn(F, '.DATA');
   For I := 0 To DataCount - 1 Do
@@ -6860,6 +6956,9 @@ Begin
       UnitTab[U].Sym := S;
       UnitTab[U].Mode := M;
       UnitTab[U].A := Init;
+      If (M = MD_FORMAT) And (Init >= 0) And Not IsVar And
+         (UnitTab[Init].Kind = UK_FMTDEN) Then
+        SymTab[S].Offset := UnitTab[Init].IntVal + 1;
       UnitTab[U].B := Bounds;
       UnitTab[U].C := Dims;
       If Heap Then UnitTab[U].IntVal := 1;
@@ -7838,7 +7937,8 @@ Begin
   IsPrintMarker := (UnitTab[U].Kind = UK_IDENT) And
                    (UnitTab[U].Mode = MD_VOID) And
                    ((UnitTab[U].Name = 'newline') Or
-                    (UnitTab[U].Name = 'space'));
+                    (UnitTab[U].Name = 'space') Or
+                    (UnitTab[U].Name = 'newpage'));
 End;
 
 { Un mode que print sait afficher : scalaire, STRING, tableau, structure
@@ -7883,28 +7983,49 @@ End;
 Function ParsePrintCall : LongInt;
 Var
   U, Args, A, Cur, Prev, Nxt : LongInt;
-  After                      : LongInt;
-  Count, Save                : Integer;
+  After, FileU, FmtU         : LongInt;
+  Count                      : Integer;
   SaveTok                    : LongInt;
   IsRead, ListForm           : Boolean;
+  HasFile, IsFmt             : Boolean;
   M, Want                    : Integer;
+  Nm                         : TName;
 Begin
   U := UnitNew(UK_PRINT, TokTab[TokPos].Line, TokTab[TokPos].Col);
-  UnitTab[U].Name := TokTab[TokPos].Val;
+  Nm := TokTab[TokPos].Val;
+  If Nm = 'write' Then Nm := 'print';
+  UnitTab[U].Name := Nm;
   UnitTab[U].Mode := MD_VOID;
-  IsRead := UnitTab[U].Name = 'read';
-  ParserAdvance;                             { print ou read }
+  IsRead := (Nm = 'read') Or (Nm = 'get') Or (Nm = 'readf') Or
+            (Nm = 'getf');
+  HasFile := (Nm = 'put') Or (Nm = 'get') Or (Nm = 'putf') Or
+             (Nm = 'getf');
+  IsFmt := (Nm = 'printf') Or (Nm = 'readf') Or (Nm = 'putf') Or
+           (Nm = 'getf');
+  FileU := -1;
+  FmtU := -1;
+  ParserAdvance;                             { print, read, put... }
+  ParserAdvance;                             { ( }
+  If HasFile Then
+  Begin
+    FileU := ParseUnitX(1);
+    UnitTab[FileU].Next := -1;
+    FileU := CoerceUnit(FileU, ModeRef(ModeFile), STR_WEAK);
+    If AtPunct(',') Then
+      ParserAdvance
+    Else
+      ParseError(''',''  attendu apres le fichier de ' + Nm);
+  End;
+  { liste d'elements : ( a, b, ... ) ou un seul element }
   ListForm := False;
-  If (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
+  If AtPunct('(') Then
   Begin
     SaveTok := TokPos;
-    TokPos := TokPos + 1;
     After := TokAfterClose;
     TokPos := SaveTok;
     ListForm := (TokTab[After].Kind = TK_PUNCT) And
                 (TokTab[After].Val = ')');
   End;
-  ParserAdvance;                             { ( }
   Count := 0;
   If ListForm Then
     Args := ParseArgList(Count)
@@ -7917,7 +8038,19 @@ Begin
   If AtPunct(')') Then
     ParserAdvance
   Else
-    ParseError(''')'' attendu apres les elements de ' + UnitTab[U].Name);
+    ParseError(''')'' attendu apres les elements de ' + Nm);
+  UnitTab[U].B := FileU;
+  { printf, putf... : le premier element est le format }
+  If IsFmt And (Args >= 0) Then
+  Begin
+    FmtU := CoerceUnit(Args, MD_FORMAT, STR_MEEK);
+    Args := UnitTab[Args].Next;
+    UnitTab[FmtU].Next := -1;
+    UnitTab[U].C := FmtU;
+    Dec(Count);
+  End
+  Else If IsFmt Then
+    ErrorAt(UnitTab[U].Line, UnitTab[U].Col, Nm + ' sans format');
   { chaque element : valeur (print) ou nom (read) du bon mode }
   Prev := -1;
   A := Args;
@@ -7961,6 +8094,33 @@ Begin
   End;
   UnitTab[U].IntVal := Count;
   ParsePrintCall := U;
+End;
+
+{ newline(f), space(f), newpage(f) : equivalent a put(f, newline)... }
+Function ParseMarkerCall : LongInt;
+Var
+  U, M, F : LongInt;
+Begin
+  U := UnitNew(UK_PRINT, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  UnitTab[U].Name := 'put';
+  UnitTab[U].Mode := MD_VOID;
+  M := UnitNew(UK_IDENT, TokTab[TokPos].Line, TokTab[TokPos].Col);
+  UnitTab[M].Sym := SymFindIdent(TokTab[TokPos].Val);
+  UnitTab[M].Name := TokTab[TokPos].Val;
+  UnitTab[M].Mode := MD_VOID;
+  ParserAdvance;                             { newline }
+  ParserAdvance;                             { ( }
+  F := ParseUnitX(1);
+  UnitTab[F].Next := -1;
+  UnitTab[U].B := CoerceUnit(F, ModeRef(ModeFile), STR_WEAK);
+  If AtPunct(')') Then
+    ParserAdvance
+  Else
+    ParseError(''')'' attendu');
+  UnitTab[M].Next := -1;
+  UnitTab[U].A := M;
+  UnitTab[U].IntVal := 1;
+  ParseMarkerCall := U;
 End;
 
 { PAR ( ... ) ou PAR BEGIN ... END : pas de processus, les unites sont
@@ -8776,6 +8936,18 @@ Begin
     StdConstUnit := U;
     Exit;
   End;
+  If (N = 'stand in channel') Or (N = 'stand out channel') Or
+     (N = 'stand back channel') Then
+  Begin
+    U := UnitNew(UK_INTDEN, T.Line, T.Col);
+    UnitTab[U].Mode := MD_INT;
+    If N = 'stand in channel' Then UnitTab[U].IntVal := 1
+    Else If N = 'stand out channel' Then UnitTab[U].IntVal := 2
+    Else UnitTab[U].IntVal := 3;
+    UnitTab[U].RealVal := UnitTab[U].IntVal;
+    StdConstUnit := U;
+    Exit;
+  End;
   If N = 'long max int' Then
   Begin
     U := UnitNew(UK_LINTDEN, T.Line, T.Col);
@@ -8816,6 +8988,13 @@ Begin
   Case T.Kind Of
     TK_INT, TK_REAL, TK_BOOL, TK_CHAR, TK_STRING:
       U := DenotationNode;
+    TK_FORMAT:
+      Begin
+        U := UnitNew(UK_FMTDEN, T.Line, T.Col);
+        UnitTab[U].IntVal := T.IntVal;
+        UnitTab[U].Mode := MD_FORMAT;
+        ParserAdvance;
+      End;
     TK_KEYWORD:
       Begin
         If AtKw('NIL') Then
@@ -8878,16 +9057,28 @@ Begin
           If S >= 0 Then
           Begin
             If (SymTab[S].Kind = SK_STD) And (SymTab[S].Mode = MD_VOID) And
-               (T.Val <> 'newline') And (T.Val <> 'space') Then
+               (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') And
+               ((T.Val = 'newline') Or (T.Val = 'space') Or
+                (T.Val = 'newpage')) Then
+              U := ParseMarkerCall
+            Else If (SymTab[S].Kind = SK_STD) And
+                    (SymTab[S].Mode = MD_VOID) And
+               (T.Val <> 'newline') And (T.Val <> 'space') And
+               (T.Val <> 'newpage') Then
             Begin
-              If ((T.Val = 'print') Or (T.Val = 'read')) And
+              If ((T.Val = 'print') Or (T.Val = 'read') Or
+                  (T.Val = 'put') Or (T.Val = 'get') Or
+                  (T.Val = 'printf') Or (T.Val = 'readf') Or
+                  (T.Val = 'putf') Or (T.Val = 'getf') Or
+                  (T.Val = 'write')) And
                  (TokAt(1).Kind = TK_PUNCT) And (TokAt(1).Val = '(') Then
                 U := ParsePrintCall
               Else
                 Exit;
             End
             Else If (SymTab[S].Kind = SK_STD) And
-                    (StdWordIndex(T.Val) > 0) Then
+                    (StdWordIndex(T.Val) > 0) And
+                    (StdWordIndex(T.Val) <= STDCONST_COUNT) Then
             Begin
               U := StdConstUnit(T);
               ParserAdvance;
@@ -9777,6 +9968,7 @@ Begin
     UK_CHARDEN  : UnitKindName := 'denotation CHAR';
     UK_STRDEN   : UnitKindName := 'denotation STRING';
     UK_LINTDEN  : UnitKindName := 'denotation LONG INT';
+    UK_FMTDEN   : UnitKindName := 'denotation FORMAT';
     UK_VARDECL  : UnitKindName := 'variable';
     UK_IDDECL   : UnitKindName := 'identite';
     UK_MODEDECL : UnitKindName := 'MODE';
@@ -10232,7 +10424,7 @@ Var
   L   : Integer;
 Begin
   Case UnitTab[Init].Kind Of
-    UK_INTDEN:
+    UK_INTDEN, UK_FMTDEN:
       If M = MD_REAL Then
       Begin
         Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[Init].IntVal), 0, 8));
@@ -10698,7 +10890,9 @@ Begin
   M := ModeResolve(UnitTab[A].Mode);
   If IsPrintMarker(A) Then
   Begin
-    If UnitTab[A].Name = 'newline' Then CallRT('NEWLINE') Else CallRT('SPACE');
+    If UnitTab[A].Name = 'newline' Then CallRT('NEWLINE')
+    Else If UnitTab[A].Name = 'newpage' Then CallRT('NEWPAGE')
+    Else CallRT('SPACE');
     Exit;
   End;
   If UnitTab[A].Mode = MD_ERROR Then
@@ -10771,15 +10965,424 @@ Begin
   End;
 End;
 
-Procedure GenPrint(U : LongInt);
+{ ---- Formats ($ ... $) : interpretes a la compilation ----
+  Le format doit etre une denotation ou un identificateur defini par
+  FORMAT f = $...$ ; chaque motif qui consomme une valeur est deroule
+  en appels du runtime. Motifs : [n]d [n]z . (entiers et reels en
+  virgule fixe, signes + et -), a b g, x l p / "texte", groupes n(...).
+  La liste de motifs est reprise depuis le debut tant que des valeurs
+  restent. }
+Var
+  FmtT      : TString;
+  FmtU      : LongInt;
+  FmtArgs   : Array[0..63] Of LongInt;
+  FmtN      : Integer;
+  FmtNext   : Integer;
+  FmtStop   : Boolean;
+  FmtBudget : Integer;
+
+Procedure FmtErr(Const Msg : TString);
+Begin
+  If Not FmtStop Then
+    ErrorAt(UnitTab[FmtU].Line, UnitTab[FmtU].Col, 'format: ' + Msg);
+  FmtStop := True;
+End;
+
+Procedure GenLiteral(Const S : TString);
+Var
+  L : Integer;
+Begin
+  If (S = '') Or FmtStop Then Exit;
+  Dec(FmtBudget);
+  If FmtBudget < 0 Then
+  Begin
+    FmtErr('format trop long (deroulement de plus de 4000 motifs)');
+    Exit;
+  End;
+  L := DataStr(S);
+  Emit(OP_MOV, OpReg(R_ESI), OpOffset(L));
+  Emit(OP_MOV, OpReg(R_ECX), OpImm(Length(S)));
+  CallRT('PUT');
+End;
+
+{ Valeur suivante ; les marqueurs newline/space sont ecrits aussitot }
+Function FmtTake : LongInt;
 Var
   A : LongInt;
 Begin
+  FmtTake := -1;
+  While (FmtNext < FmtN) And IsPrintMarker(FmtArgs[FmtNext]) Do
+  Begin
+    GenPrintItem(FmtArgs[FmtNext]);
+    Inc(FmtNext);
+  End;
+  If FmtNext >= FmtN Then
+  Begin
+    FmtStop := True;
+    Exit;
+  End;
+  A := FmtArgs[FmtNext];
+  Inc(FmtNext);
+  FmtTake := A;
+End;
+
+{ Position apres la parenthese fermante qui correspond a celle qui
+  precede P }
+Function FmtSkipGroup(P : Integer) : Integer;
+Var
+  Depth : Integer;
+  InStr : Boolean;
+Begin
+  Depth := 1;
+  InStr := False;
+  While (P <= Length(FmtT)) And (Depth > 0) Do
+  Begin
+    If FmtT[P] = '"' Then InStr := Not InStr
+    Else If Not InStr Then
+    Begin
+      If FmtT[P] = '(' Then Inc(Depth)
+      Else If FmtT[P] = ')' Then Dec(Depth);
+    End;
+    Inc(P);
+  End;
+  FmtSkipGroup := P;
+End;
+
+Procedure GenFmtNumber(Z, D, F, Sg : Integer; Point : Boolean);
+Var
+  A, A2 : LongInt;
+  M     : Integer;
+Begin
+  If FmtStop Then Exit;
+  If (Z + D > 20) Or (F > 18) Or (Z + D + F > 27) Then
+  Begin
+    FmtErr('motif numerique trop large');
+    Exit;
+  End;
+  A := FmtTake;
+  If A < 0 Then Exit;
+  M := ModeResolve(UnitTab[A].Mode);
+  If Not Point Then
+  Begin
+    If ModeKind(M) <> MK_INT Then
+    Begin
+      FmtErr('motif entier pour une valeur de mode ' + ModeName(M));
+      Exit;
+    End;
+    GenValue(A);
+    Emit(OP_MOV, OpReg(R_ECX), OpImm(D + 256 * Z + 65536 * Sg));
+    CallRT('FMTINT');
+  End
+  Else
+  Begin
+    If ModeKind(M) = MK_INT Then
+      A2 := CoerceUnit(A, MD_REAL, STR_STRONG)
+    Else If ModeKind(M) = MK_REAL Then
+      A2 := A
+    Else
+    Begin
+      FmtErr('motif reel pour une valeur de mode ' + ModeName(M));
+      Exit;
+    End;
+    GenValue(A2);
+    Emit(OP_MOV, OpReg(R_ECX),
+         OpImm(F + 256 * D + 65536 * Z + 16777216 * Sg));
+    CallRT('FMTREAL');
+  End;
+End;
+
+Procedure FmtRun(P : Integer; Var EndP : Integer);
+Var
+  C                : Char;
+  Rep, R, N, SaveP : Integer;
+  HasRep, Point    : Boolean;
+  Z, D, F, Sg      : Integer;
+  Lit              : TString;
+  G, E2            : Integer;
+  A                : LongInt;
+  M                : Integer;
+
+  Function Digit(Ch : Char) : Boolean;
+  Begin
+    Digit := (Ch >= '0') And (Ch <= '9');
+  End;
+
+Begin
+  EndP := P;
+  While True Do
+  Begin
+    While (P <= Length(FmtT)) And
+          (FmtT[P] In [' ', ',', #9, #10, #13]) Do
+      Inc(P);
+    If FmtStop Or (P > Length(FmtT)) Then
+    Begin
+      EndP := P;
+      Exit;
+    End;
+    C := FmtT[P];
+    If C = ')' Then
+    Begin
+      EndP := P + 1;
+      Exit;
+    End;
+    Rep := 1;
+    HasRep := False;
+    If Digit(C) Then
+    Begin
+      Rep := 0;
+      HasRep := True;
+      While (P <= Length(FmtT)) And Digit(FmtT[P]) Do
+      Begin
+        If Rep < 10000 Then Rep := Rep * 10 + Ord(FmtT[P]) - 48;
+        Inc(P);
+      End;
+      If P > Length(FmtT) Then
+      Begin
+        FmtErr('replicateur sans motif');
+        EndP := P;
+        Exit;
+      End;
+      C := FmtT[P];
+    End;
+    Case C Of
+      '(' :
+        Begin
+          G := P + 1;
+          E2 := FmtSkipGroup(G);
+          For R := 1 To Rep Do
+            If Not FmtStop Then FmtRun(G, N);
+          P := E2;
+        End;
+      '"' :
+        Begin
+          Lit := '';
+          Inc(P);
+          While P <= Length(FmtT) Do
+          Begin
+            If FmtT[P] = '"' Then
+            Begin
+              If (P < Length(FmtT)) And (FmtT[P + 1] = '"') Then
+              Begin
+                Lit := Lit + '"';
+                Inc(P, 2);
+              End
+              Else
+                Break;
+            End
+            Else
+            Begin
+              Lit := Lit + FmtT[P];
+              Inc(P);
+            End;
+          End;
+          Inc(P);
+          For R := 1 To Rep Do GenLiteral(Lit);
+        End;
+      'x' :
+        Begin
+          Lit := '';
+          For R := 1 To Rep Do
+            If Length(Lit) < 250 Then Lit := Lit + ' ';
+          GenLiteral(Lit);
+          Inc(P);
+        End;
+      'l', '/' :
+        Begin
+          For R := 1 To Rep Do
+            If Not FmtStop Then CallRT('NEWLINE');
+          Inc(P);
+        End;
+      'p' :
+        Begin
+          For R := 1 To Rep Do GenLiteral(#12);
+          Inc(P);
+        End;
+      'a', 'b', 'g' :
+        Begin
+          Inc(P);
+          For R := 1 To Rep Do
+            If Not FmtStop Then
+            Begin
+              A := FmtTake;
+              If A >= 0 Then
+              Begin
+                M := ModeResolve(UnitTab[A].Mode);
+                If C = 'b' Then
+                Begin
+                  If ModeKind(M) <> MK_BOOL Then
+                    FmtErr('motif b pour une valeur de mode ' + ModeName(M))
+                  Else
+                  Begin
+                    GenValue(A);
+                    CallRT('WRITEFLIP');
+                  End;
+                End
+                Else If (C = 'a') And Not (ModeKind(M) = MK_CHAR) And
+                        Not ModeIsString(M) Then
+                  FmtErr('motif a pour une valeur de mode ' + ModeName(M))
+                Else
+                  GenPrintItem(A);
+              End;
+            End;
+        End;
+      '+', '-', 'd', 'z', '.' :
+        Begin
+          Sg := 0;
+          If C = '+' Then Sg := 1 Else If C = '-' Then Sg := 2;
+          If Sg > 0 Then
+          Begin
+            Inc(P);
+            HasRep := False;
+          End;
+          Z := 0;
+          D := 0;
+          F := 0;
+          Point := False;
+          While P <= Length(FmtT) Do
+          Begin
+            SaveP := P;
+            N := 1;
+            If HasRep Then
+            Begin
+              N := Rep;
+              HasRep := False;
+            End
+            Else If Digit(FmtT[P]) Then
+            Begin
+              N := 0;
+              While (P <= Length(FmtT)) And Digit(FmtT[P]) Do
+              Begin
+                If N < 1000 Then N := N * 10 + Ord(FmtT[P]) - 48;
+                Inc(P);
+              End;
+            End;
+            If P > Length(FmtT) Then
+            Begin
+              P := SaveP;
+              Break;
+            End;
+            C := FmtT[P];
+            If (C = 'z') And Not Point And (D = 0) Then
+            Begin
+              Z := Z + N;
+              Inc(P);
+            End
+            Else If C = 'd' Then
+            Begin
+              If Point Then F := F + N Else D := D + N;
+              Inc(P);
+            End
+            Else If (C = '.') And Not Point And (P = SaveP) Then
+            Begin
+              Point := True;
+              Inc(P);
+            End
+            Else
+            Begin
+              P := SaveP;
+              Break;
+            End;
+          End;
+          If (Z + D + F = 0) Then
+            FmtErr('motif numerique vide');
+          GenFmtNumber(Z, D, F, Sg, Point);
+        End;
+    Else
+      Begin
+        FmtErr('motif non supporte: ' + C);
+        EndP := P;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+Procedure GenFormatted(U : LongInt);
+Var
+  F, A, Fu  : LongInt;
+  E, Before : Integer;
+  Idx       : LongInt;
+  S         : Integer;
+Begin
+  FmtU := U;
+  FmtStop := False;
+  FmtBudget := 4000;
+  Fu := UnitTab[U].C;
+  Idx := -1;
+  If UnitTab[Fu].Kind = UK_FMTDEN Then
+    Idx := UnitTab[Fu].IntVal
+  Else If UnitTab[Fu].Kind = UK_IDENT Then
+  Begin
+    S := UnitTab[Fu].Sym;
+    If (S >= 0) And (SymTab[S].Offset > 0) Then
+      Idx := SymTab[S].Offset - 1;
+  End;
+  If Idx < 0 Then
+  Begin
+    ErrorAt(UnitTab[Fu].Line, UnitTab[Fu].Col,
+            'format: un format constant ($...$ ou FORMAT f = $...$) est ' +
+            'attendu');
+    Exit;
+  End;
+  FmtT := LitTab[Idx];
+  FmtN := 0;
   A := UnitTab[U].A;
   While A >= 0 Do
   Begin
-    If UnitTab[U].Name = 'read' Then GenReadItem(A) Else GenPrintItem(A);
+    If FmtN < 64 Then
+    Begin
+      FmtArgs[FmtN] := A;
+      Inc(FmtN);
+    End
+    Else
+      FmtErr('plus de 64 valeurs dans un printf');
     A := UnitTab[A].Next;
+  End;
+  FmtNext := 0;
+  F := 0;
+  Repeat
+    Before := FmtNext;
+    FmtRun(1, E);
+    If (FmtNext = Before) And Not FmtStop And (FmtNext < FmtN) Then
+      FmtErr('le format ne contient aucun motif pour les valeurs');
+    Inc(F);
+  Until FmtStop Or (FmtNext >= FmtN) Or (F > 200);
+  { marqueurs restants }
+  While (FmtNext < FmtN) And IsPrintMarker(FmtArgs[FmtNext]) Do
+  Begin
+    GenPrintItem(FmtArgs[FmtNext]);
+    Inc(FmtNext);
+  End;
+End;
+
+Procedure GenPrint(U : LongInt);
+Var
+  A      : LongInt;
+  IsRead : Boolean;
+  Nm     : TName;
+Begin
+  Nm := UnitTab[U].Name;
+  IsRead := (Nm = 'read') Or (Nm = 'get') Or (Nm = 'readf') Or
+            (Nm = 'getf');
+  If UnitTab[U].B >= 0 Then
+  Begin
+    GenValue(UnitTab[U].B);
+    If IsRead Then CallRT('SETIN') Else CallRT('SETOUT');
+  End;
+  If (UnitTab[U].C >= 0) And Not IsRead Then
+    GenFormatted(U)
+  Else
+  Begin
+    A := UnitTab[U].A;
+    While A >= 0 Do
+    Begin
+      If IsRead Then GenReadItem(A) Else GenPrintItem(A);
+      A := UnitTab[A].Next;
+    End;
+  End;
+  If UnitTab[U].B >= 0 Then
+  Begin
+    If IsRead Then CallRT('CLRIN') Else CallRT('CLROUT');
   End;
 End;
 
@@ -10828,6 +11431,37 @@ Begin
     GenValue(Args);
     Emit1(OP_POP, OpReg(R_ECX));
     CallRT('WHOLE');
+    Exit;
+  End;
+  If Name = 'open' Then
+  Begin
+    GenValue(Args);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(UnitTab[Args].Next);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(UnitTab[UnitTab[Args].Next].Next);
+    Emit(OP_MOV, OpReg(R_ECX), OpReg(R_EAX));
+    Emit1(OP_POP, OpReg(R_ESI));
+    Emit1(OP_POP, OpReg(R_EAX));
+    CallRT('FOPEN');
+    Exit;
+  End;
+  If (Name = 'close') Or (Name = 'eof') Then
+  Begin
+    GenValue(Args);
+    If Name = 'close' Then CallRT('FCLOSE') Else CallRT('FEOF');
+    Exit;
+  End;
+  If Name = 'on logical file end' Then
+  Begin
+    GenValue(Args);
+    Emit1(OP_PUSH, OpReg(R_EAX));
+    GenValue(UnitTab[Args].Next);
+    Emit1(OP_POP, OpReg(R_ECX));
+    Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EAX, 0, 4));
+    Emit(OP_MOV, OpMem(R_ECX, 16, 4), OpReg(R_EDX));
+    Emit(OP_MOV, OpReg(R_EDX), OpMem(R_EAX, 4, 4));
+    Emit(OP_MOV, OpMem(R_ECX, 20, 4), OpReg(R_EDX));
     Exit;
   End;
   GenValue(Args);                            { argument REAL dans ST(0) }
@@ -12526,6 +13160,8 @@ Begin
       Emit(OP_MOV, OpReg(R_EAX), OpImm(UnitTab[U].IntVal));
     UK_REALDEN:
       Emit1(OP_FLD, OpMemSym(DataReal(UnitTab[U].RealVal), 0, 8));
+    UK_FMTDEN:
+      Emit(OP_MOV, OpReg(R_EAX), OpImm(UnitTab[U].IntVal));
     UK_LINTDEN:
       Begin
         T := NewTemp(8);
@@ -12576,6 +13212,18 @@ Begin
         End
         Else If SymTab[S].Kind = SK_PROC Then
           GenProcValue(S)
+        Else If (SymTab[S].Kind = SK_STD) And
+                (SymTab[S].Name = 'stand in') Then
+          CallRT('FSIN')
+        Else If (SymTab[S].Kind = SK_STD) And
+                (SymTab[S].Name = 'stand out') Then
+          CallRT('FSOUT')
+        Else If (SymTab[S].Kind = SK_STD) And
+                (SymTab[S].Name = 'stand error') Then
+          CallRT('FSERR')
+        Else If (SymTab[S].Kind = SK_STD) And
+                (SymTab[S].Name = 'newpage') Then
+          CallRT('NEWPAGE')
         Else If (SymTab[S].Kind = SK_STD) And
                 (SymTab[S].Name = 'newline') Then
           CallRT('NEWLINE')
@@ -12648,7 +13296,8 @@ Begin
     Exit;
   End;
   Case UnitTab[Init].Kind Of
-    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN, UK_LINTDEN:
+    UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN, UK_LINTDEN,
+    UK_FMTDEN:
       GenStoreDenotation(S, -1, Disp, ModeResolve(UnitTab[Init].Mode),
                          Init);
     UK_NIL, UK_EMPTY:
@@ -12744,7 +13393,7 @@ Begin
     UK_SKIP, UK_NIL, UK_EMPTY, UK_MODEDECL, UK_PRIODECL, UK_TRIM : ;
     UK_VARDECL, UK_IDDECL : GenDecl(U);
     UK_INTDEN, UK_REALDEN, UK_BOOLDEN, UK_CHARDEN, UK_STRDEN,
-    UK_LINTDEN : ;
+    UK_LINTDEN, UK_FMTDEN : ;
     UK_DECL, UK_OPAQUE:
       GenUnsupported(UnitTab[U].Line, UnitTab[U].Col, 'unite inconnue');
   End;
@@ -14246,28 +14895,9 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 1913;
+  RT_LINES = 2351;
   RT_MAX_ROUT = 200;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
-  '@_A68RT_PUT',
-  '; ESI = octets, ECX = longueur : ecrit sur la sortie standard',
-  '_A68RT_PUT:',
-  'TEST ECX, ECX',
-  'JLE _A68R_pt1',
-  'PUSH ESI',
-  'PUSH ECX',
-  'PUSH -11',
-  'CALL GetStdHandle',
-  'POP ECX',
-  'POP ESI',
-  'PUSH 0',
-  'PUSH OFFSET _A68D_WR',
-  'PUSH ECX',
-  'PUSH ESI',
-  'PUSH EAX',
-  'CALL WriteFile',
-  '_A68R_pt1:',
-  'RET',
   '@_A68RT_FAIL',
   '; EAX = message termine par zero : erreur standard, code de sortie 1',
   '_A68RT_FAIL:',
@@ -14857,31 +15487,6 @@ Const
   'REP MOVSB',
   'POP EAX',
   'RET',
-  '@_A68RT_GETC',
-  '; EAX = caractere suivant de l''entree standard, -1 en fin de fichier',
-  '_A68RT_GETC:',
-  'MOV EAX, DWORD PTR [_A68D_PEEK]',
-  'CMP EAX, -2',
-  'JE _A68R_gc1',
-  'MOV DWORD PTR [_A68D_PEEK], -2',
-  'RET',
-  '_A68R_gc1:',
-  'PUSH -10',
-  'CALL GetStdHandle',
-  'PUSH 0',
-  'PUSH OFFSET _A68D_WR',
-  'PUSH 1',
-  'PUSH OFFSET _A68D_IN',
-  'PUSH EAX',
-  'CALL ReadFile',
-  'MOV EAX, DWORD PTR [_A68D_WR]',
-  'TEST EAX, EAX',
-  'JE _A68R_gc2',
-  'MOVZX EAX, BYTE PTR [_A68D_IN]',
-  'RET',
-  '_A68R_gc2:',
-  'MOV EAX, -1',
-  'RET',
   '@_A68RT_SKIPWS',
   '_A68RT_SKIPWS:',
   'CALL _A68RT_GETC',
@@ -14907,6 +15512,7 @@ Const
   'CALL _A68RT_SKIPWS',
   'MOV DWORD PTR [_A68D_SG], 0',
   'MOV DWORD PTR [_A68D_ACC], 0',
+  'MOV DWORD PTR [_A68D_BLK], 0',
   'CMP EAX, 45',
   'JNE _A68R_ri1',
   'MOV DWORD PTR [_A68D_SG], 1',
@@ -14921,11 +15527,15 @@ Const
   'POP ECX',
   'ADD EAX, ECX',
   'MOV DWORD PTR [_A68D_ACC], EAX',
+  'INC DWORD PTR [_A68D_BLK]',
   'CALL _A68RT_GETC',
   'JMP _A68R_ri1',
   '_A68R_ri2:',
   'ADD EAX, 48',
-  'MOV DWORD PTR [_A68D_PEEK], EAX',
+  'CMP DWORD PTR [_A68D_BLK], 0',
+  'JE _A68R_ri4',
+  'CALL _A68RT_UNGETC',
+  '_A68R_ri4:',
   'MOV EAX, DWORD PTR [_A68D_ACC]',
   'MOV ECX, DWORD PTR [_A68D_SG]',
   'TEST ECX, ECX',
@@ -14939,6 +15549,7 @@ Const
   'MOV DWORD PTR [_A68D_SG], 0',
   'MOV DWORD PTR [_A68D_CNT], 0',
   'MOV DWORD PTR [_A68D_DOT], 0',
+  'MOV DWORD PTR [_A68D_BLK], 0',
   'CMP EAX, 45',
   'JNE _A68R_rr1',
   'MOV DWORD PTR [_A68D_SG], 1',
@@ -14965,12 +15576,15 @@ Const
   'POP EAX',
   'MOV ECX, DWORD PTR [_A68D_DOT]',
   'ADD DWORD PTR [_A68D_CNT], ECX',
+  'INC DWORD PTR [_A68D_BLK]',
   'CALL _A68RT_GETC',
   'JMP _A68R_rr2',
   '_A68R_rr4:',
   'ADD EAX, 48',
+  'CMP DWORD PTR [_A68D_BLK], 0',
+  'JE _A68R_rr6',
   '_A68R_rr5:',
-  'MOV DWORD PTR [_A68D_PEEK], EAX',
+  'CALL _A68RT_UNGETC',
   '_A68R_rr6:',
   'MOV ECX, DWORD PTR [_A68D_CNT]',
   'TEST ECX, ECX',
@@ -16100,6 +16714,7 @@ Const
   'MOV DWORD PTR [_A68D_SG], 0',
   'MOV DWORD PTR [_A68D_ACC], 0',
   'MOV DWORD PTR [_A68D_CNT], 0',
+  'MOV DWORD PTR [_A68D_DOT], 0',
   'CMP EAX, 45',
   'JNE _A68R_l28',
   'MOV DWORD PTR [_A68D_SG], 1',
@@ -16121,11 +16736,15 @@ Const
   'ADC ESI, 0',
   'MOV DWORD PTR [_A68D_ACC], ECX',
   'MOV DWORD PTR [_A68D_CNT], ESI',
+  'INC DWORD PTR [_A68D_DOT]',
   'CALL _A68RT_GETC',
   'JMP _A68R_l28',
   '_A68R_l29:',
   'ADD EAX, 48',
-  'MOV DWORD PTR [_A68D_PEEK], EAX',
+  'CMP DWORD PTR [_A68D_DOT], 0',
+  'JE _A68R_l31',
+  'CALL _A68RT_UNGETC',
+  '_A68R_l31:',
   'MOV EAX, DWORD PTR [_A68D_ACC]',
   'MOV EDX, DWORD PTR [_A68D_CNT]',
   'CMP DWORD PTR [_A68D_SG], 0',
@@ -16161,7 +16780,475 @@ Const
   '_A68R_wc2:',
   'CALL _A68RT_WRITEREAL',
   'MOV EAX, 105',
-  'JMP _A68RT_WRITECHAR'
+  'JMP _A68RT_WRITECHAR',
+  '@_A68RT_PUT',
+  '; ESI = octets, ECX = longueur : ecrit sur la sortie courante',
+  '_A68RT_PUT:',
+  'TEST ECX, ECX',
+  'JLE _A68R_io1',
+  'MOV EAX, DWORD PTR [_A68D_OUTF]',
+  'TEST EAX, EAX',
+  'JNE _A68R_io2',
+  'MOV EAX, OFFSET _A68D_SOUT',
+  '_A68R_io2:',
+  'MOV EAX, DWORD PTR [EAX]',
+  'TEST EAX, EAX',
+  'JE _A68R_io1',
+  'JG _A68R_io3',
+  'PUSH ESI',
+  'PUSH ECX',
+  'PUSH EAX',
+  'CALL GetStdHandle',
+  'POP ECX',
+  'POP ESI',
+  '_A68R_io3:',
+  'PUSH 0',
+  'PUSH OFFSET _A68D_WR',
+  'PUSH ECX',
+  'PUSH ESI',
+  'PUSH EAX',
+  'CALL WriteFile',
+  '_A68R_io1:',
+  'RET',
+  '@_A68RT_GETCQ',
+  '; EAX = caractere suivant du fichier d''entree courant, -1 a la fin',
+  '_A68RT_GETCQ:',
+  'PUSH ECX',
+  'MOV ECX, DWORD PTR [_A68D_INF]',
+  'TEST ECX, ECX',
+  'JNE _A68R_io4',
+  'MOV ECX, OFFSET _A68D_SIN',
+  '_A68R_io4:',
+  'MOV EAX, DWORD PTR [ECX+8]',
+  'CMP EAX, -2',
+  'JE _A68R_io5',
+  'MOV DWORD PTR [ECX+8], -2',
+  'POP ECX',
+  'RET',
+  '_A68R_io5:',
+  'MOV EAX, DWORD PTR [ECX]',
+  'TEST EAX, EAX',
+  'JE _A68R_io7',
+  'JG _A68R_io6',
+  'PUSH ECX',
+  'PUSH EAX',
+  'CALL GetStdHandle',
+  'POP ECX',
+  '_A68R_io6:',
+  'PUSH ECX',
+  'PUSH 0',
+  'PUSH OFFSET _A68D_WR',
+  'PUSH 1',
+  'PUSH OFFSET _A68D_IN',
+  'PUSH EAX',
+  'CALL ReadFile',
+  'POP ECX',
+  'MOV EAX, DWORD PTR [_A68D_WR]',
+  'TEST EAX, EAX',
+  'JE _A68R_io7',
+  'MOVZX EAX, BYTE PTR [_A68D_IN]',
+  'POP ECX',
+  'RET',
+  '_A68R_io7:',
+  'MOV DWORD PTR [ECX+12], 1',
+  'MOV EAX, -1',
+  'POP ECX',
+  'RET',
+  '@_A68RT_GETC',
+  '; GETCQ puis le gestionnaire de fin de fichier du fichier',
+  '_A68RT_GETC:',
+  'CALL _A68RT_GETCQ',
+  'CMP EAX, -1',
+  'JNE _A68R_io8',
+  'MOV ECX, DWORD PTR [_A68D_INF]',
+  'TEST ECX, ECX',
+  'JNE _A68R_io9',
+  'MOV ECX, OFFSET _A68D_SIN',
+  '_A68R_io9:',
+  'MOV EDX, DWORD PTR [ECX+16]',
+  'TEST EDX, EDX',
+  'JE _A68R_io8',
+  'PUSH ESI',
+  'PUSH EDI',
+  'PUSH ECX',
+  'PUSH ECX',
+  'PUSH DWORD PTR [ECX+20]',
+  'CALL DWORD PTR [ECX+16]',
+  'POP ECX',
+  'POP EDI',
+  'POP ESI',
+  'MOV EAX, -1',
+  '_A68R_io8:',
+  'RET',
+  '@_A68RT_UNGETC',
+  '; EAX = caractere rendu a l''entree courante',
+  '_A68RT_UNGETC:',
+  'PUSH ECX',
+  'MOV ECX, DWORD PTR [_A68D_INF]',
+  'TEST ECX, ECX',
+  'JNE _A68R_io12',
+  'MOV ECX, OFFSET _A68D_SIN',
+  '_A68R_io12:',
+  'MOV DWORD PTR [ECX+8], EAX',
+  'POP ECX',
+  'RET',
+  '@_A68RT_FSIN',
+  '_A68RT_FSIN:',
+  'MOV EAX, OFFSET _A68D_SIN',
+  'RET',
+  '@_A68RT_FSOUT',
+  '_A68RT_FSOUT:',
+  'MOV EAX, OFFSET _A68D_SOUT',
+  'RET',
+  '@_A68RT_FSERR',
+  '_A68RT_FSERR:',
+  'MOV EAX, OFFSET _A68D_SERR',
+  'RET',
+  '@_A68RT_SETOUT',
+  '_A68RT_SETOUT:',
+  'MOV DWORD PTR [_A68D_OUTF], EAX',
+  'RET',
+  '@_A68RT_CLROUT',
+  '_A68RT_CLROUT:',
+  'MOV DWORD PTR [_A68D_OUTF], 0',
+  'RET',
+  '@_A68RT_SETIN',
+  '_A68RT_SETIN:',
+  'MOV DWORD PTR [_A68D_INF], EAX',
+  'RET',
+  '@_A68RT_CLRIN',
+  '_A68RT_CLRIN:',
+  'MOV DWORD PTR [_A68D_INF], 0',
+  'RET',
+  '@_A68RT_NEWPAGE',
+  '_A68RT_NEWPAGE:',
+  'MOV EAX, 12',
+  'JMP _A68RT_WRITECHAR',
+  '@_A68RT_FOPEN',
+  '; EAX = FILE, ESI = nom, ECX = canal -> EAX = 0 si ouvert',
+  '_A68RT_FOPEN:',
+  'PUSH EBX',
+  'PUSH EAX',
+  'MOV EBX, ECX',
+  'MOV EAX, DWORD PTR [EAX]',
+  'CMP EAX, 0',
+  'JLE _A68R_io13',
+  'PUSH EAX',
+  'CALL CloseHandle',
+  '_A68R_io13:',
+  'MOV EDX, DWORD PTR [ESI+8]',
+  'SUB EDX, DWORD PTR [ESI+4]',
+  'INC EDX',
+  'CMP EDX, 259',
+  'JLE _A68R_io14',
+  'MOV EDX, 259',
+  '_A68R_io14:',
+  'TEST EDX, EDX',
+  'JGE _A68R_io15',
+  'XOR EDX, EDX',
+  '_A68R_io15:',
+  'MOV ECX, EDX',
+  'MOV EDI, OFFSET _A68D_PATH',
+  'MOV ESI, DWORD PTR [ESI]',
+  'REP MOVSB',
+  'MOV BYTE PTR [EDI], 0',
+  'MOV EAX, 1073741824',
+  'MOV EDX, 3',
+  'CMP EBX, 1',
+  'JNE _A68R_io16',
+  'ADD EAX, EAX',
+  'JMP _A68R_io18',
+  '_A68R_io16:',
+  'CMP EBX, 2',
+  'JNE _A68R_io17',
+  'MOV EDX, 2',
+  'JMP _A68R_io18',
+  '_A68R_io17:',
+  'ADD EAX, EAX',
+  'ADD EAX, 1073741824',
+  'MOV EDX, 4',
+  '_A68R_io18:',
+  'PUSH 0',
+  'PUSH 128',
+  'PUSH EDX',
+  'PUSH 0',
+  'PUSH 3',
+  'PUSH EAX',
+  'PUSH OFFSET _A68D_PATH',
+  'CALL CreateFileA',
+  'POP ECX',
+  'CMP EAX, -1',
+  'JE _A68R_io19',
+  'MOV DWORD PTR [ECX], EAX',
+  'MOV DWORD PTR [ECX+4], EBX',
+  'MOV DWORD PTR [ECX+8], -2',
+  'MOV DWORD PTR [ECX+12], 0',
+  'MOV DWORD PTR [ECX+16], 0',
+  'MOV DWORD PTR [ECX+20], 0',
+  'XOR EAX, EAX',
+  'POP EBX',
+  'RET',
+  '_A68R_io19:',
+  'MOV DWORD PTR [ECX], 0',
+  'MOV DWORD PTR [ECX+4], 0',
+  'MOV EAX, 1',
+  'POP EBX',
+  'RET',
+  '@_A68RT_FCLOSE',
+  '; EAX = FILE',
+  '_A68RT_FCLOSE:',
+  'MOV ECX, EAX',
+  'MOV EAX, DWORD PTR [ECX]',
+  'CMP EAX, 0',
+  'JLE _A68R_io23',
+  'PUSH ECX',
+  'PUSH EAX',
+  'CALL CloseHandle',
+  'POP ECX',
+  'MOV DWORD PTR [ECX], 0',
+  'MOV DWORD PTR [ECX+4], 0',
+  '_A68R_io23:',
+  'RET',
+  '@_A68RT_FEOF',
+  '; EAX = FILE -> EAX = vrai si plus rien a lire',
+  '_A68RT_FEOF:',
+  'PUSH DWORD PTR [_A68D_INF]',
+  'MOV DWORD PTR [_A68D_INF], EAX',
+  '_A68R_io24:',
+  'CALL _A68RT_GETCQ',
+  'CMP EAX, 32',
+  'JE _A68R_io24',
+  'CMP EAX, 9',
+  'JE _A68R_io24',
+  'CMP EAX, 10',
+  'JE _A68R_io24',
+  'CMP EAX, 13',
+  'JE _A68R_io24',
+  'CMP EAX, -1',
+  'JE _A68R_io25',
+  'CALL _A68RT_UNGETC',
+  'XOR EAX, EAX',
+  'JMP _A68R_io26',
+  '_A68R_io25:',
+  'MOV EAX, 1',
+  '_A68R_io26:',
+  'POP DWORD PTR [_A68D_INF]',
+  'RET',
+  '@_A68RT_WRITEFLIP',
+  '; BOOL ecrit T ou F',
+  '_A68RT_WRITEFLIP:',
+  'TEST EAX, EAX',
+  'JE _A68R_io27',
+  'MOV EAX, 84',
+  'JMP _A68RT_WRITECHAR',
+  '_A68R_io27:',
+  'MOV EAX, 70',
+  'JMP _A68RT_WRITECHAR',
+  '@_A68RT_FMT64',
+  '; EDX:EAX = |N|, ESI = signe, ECX = F|D<<8|Z<<16|Sg<<24',
+  '_A68RT_FMT64:',
+  'PUSH EBX',
+  'SUB ESP, 32',
+  'MOV DWORD PTR [ESP+16], ESI',
+  'MOV EBX, ECX',
+  'MOV ECX, EBX',
+  'AND ECX, 255',
+  'MOV DWORD PTR [ESP], ECX',
+  'MOV ECX, EBX',
+  'SHR ECX, 8',
+  'AND ECX, 255',
+  'MOV DWORD PTR [ESP+4], ECX',
+  'MOV ECX, EBX',
+  'SHR ECX, 16',
+  'AND ECX, 255',
+  'MOV DWORD PTR [ESP+8], ECX',
+  'MOV ECX, EBX',
+  'SHR ECX, 24',
+  'AND ECX, 3',
+  'MOV DWORD PTR [ESP+12], ECX',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'ADD EDI, 64',
+  'MOV ESI, EDI',
+  '_A68R_io28:',
+  'MOV EBX, EAX',
+  'MOV EAX, EDX',
+  'XOR EDX, EDX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'MOV ECX, EAX',
+  'MOV EAX, EBX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'ADD EDX, 48',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], DL',
+  'MOV EDX, ECX',
+  'MOV EBX, EAX',
+  'OR EBX, EDX',
+  'JNE _A68R_io28',
+  '_A68R_io29:',
+  'MOV EAX, ESI',
+  'SUB EAX, EDI',
+  'MOV ECX, DWORD PTR [ESP]',
+  'INC ECX',
+  'CMP EAX, ECX',
+  'JGE _A68R_io30',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], 48',
+  'JMP _A68R_io29',
+  '_A68R_io30:',
+  'MOV ECX, DWORD PTR [ESP]',
+  'SUB EAX, ECX',
+  'CMP EAX, 1',
+  'JNE _A68R_io31',
+  'CMP DWORD PTR [ESP+4], 0',
+  'JNE _A68R_io31',
+  'CMP BYTE PTR [EDI], 48',
+  'JNE _A68R_io31',
+  'XOR EAX, EAX',
+  '_A68R_io31:',
+  'MOV DWORD PTR [ESP+24], EAX',
+  'MOV EAX, DWORD PTR [ESP+4]',
+  'ADD EAX, DWORD PTR [ESP+8]',
+  'MOV EDX, EAX',
+  'CMP DWORD PTR [ESP+12], 0',
+  'JE _A68R_io32',
+  'INC EAX',
+  '_A68R_io32:',
+  'MOV ECX, DWORD PTR [ESP]',
+  'TEST ECX, ECX',
+  'JE _A68R_io33',
+  'ADD EAX, ECX',
+  'INC EAX',
+  '_A68R_io33:',
+  'MOV DWORD PTR [ESP+20], EAX',
+  'MOV ECX, DWORD PTR [ESP+24]',
+  'CMP ECX, EDX',
+  'JG _A68R_io34',
+  'CMP DWORD PTR [ESP+16], 0',
+  'JE _A68R_io35',
+  'CMP DWORD PTR [ESP+12], 0',
+  'JNE _A68R_io35',
+  '_A68R_io34:',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'MOV ECX, DWORD PTR [ESP+20]',
+  '_A68R_io36:',
+  'MOV BYTE PTR [EDI], 42',
+  'INC EDI',
+  'DEC ECX',
+  'JNE _A68R_io36',
+  'JMP _A68R_io47',
+  '_A68R_io35:',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'MOV ECX, DWORD PTR [ESP+20]',
+  '_A68R_io37:',
+  'MOV BYTE PTR [EDI], 32',
+  'INC EDI',
+  'DEC ECX',
+  'JNE _A68R_io37',
+  'MOV ECX, DWORD PTR [ESP]',
+  'TEST ECX, ECX',
+  'JE _A68R_io38',
+  'MOV EBX, ESI',
+  'SUB EBX, ECX',
+  'SUB EDI, ECX',
+  'PUSH EDI',
+  '_A68R_io42:',
+  'MOVZX EAX, BYTE PTR [EBX]',
+  'MOV BYTE PTR [EDI], AL',
+  'INC EBX',
+  'INC EDI',
+  'DEC ECX',
+  'JNE _A68R_io42',
+  'POP EDI',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], 46',
+  '_A68R_io38:',
+  'MOV ECX, DWORD PTR [ESP+24]',
+  'TEST ECX, ECX',
+  'JE _A68R_io39',
+  'MOV EBX, ESI',
+  'SUB EBX, DWORD PTR [ESP]',
+  'SUB EBX, ECX',
+  'SUB EDI, ECX',
+  'PUSH EDI',
+  '_A68R_io43:',
+  'MOVZX EAX, BYTE PTR [EBX]',
+  'MOV BYTE PTR [EDI], AL',
+  'INC EBX',
+  'INC EDI',
+  'DEC ECX',
+  'JNE _A68R_io43',
+  'POP EDI',
+  '_A68R_io39:',
+  'MOV ECX, DWORD PTR [ESP+4]',
+  'SUB ECX, DWORD PTR [ESP+24]',
+  'JLE _A68R_io40',
+  '_A68R_io48:',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], 48',
+  'DEC ECX',
+  'JNE _A68R_io48',
+  '_A68R_io40:',
+  'CMP DWORD PTR [ESP+12], 0',
+  'JE _A68R_io47',
+  'DEC EDI',
+  'MOV EAX, 32',
+  'CMP DWORD PTR [ESP+16], 0',
+  'JE _A68R_io45',
+  'MOV EAX, 45',
+  'JMP _A68R_io46',
+  '_A68R_io45:',
+  'CMP DWORD PTR [ESP+12], 1',
+  'JNE _A68R_io46',
+  'MOV EAX, 43',
+  '_A68R_io46:',
+  'MOV BYTE PTR [EDI], AL',
+  '_A68R_io47:',
+  'MOV ECX, DWORD PTR [ESP+20]',
+  'ADD ESP, 32',
+  'POP EBX',
+  'MOV ESI, OFFSET _A68D_BUF',
+  'JMP _A68RT_PUT',
+  '@_A68RT_FMTINT',
+  '; EAX = entier, ECX = D | Z<<8 | Sg<<16',
+  '_A68RT_FMTINT:',
+  'XOR ESI, ESI',
+  'XOR EDX, EDX',
+  'TEST EAX, EAX',
+  'JNS _A68R_io68',
+  'NEG EAX',
+  'MOV ESI, 1',
+  '_A68R_io68:',
+  'SHL ECX, 8',
+  'JMP _A68RT_FMT64',
+  '@_A68RT_FMTREAL',
+  '; ST(0) = reel (depile), ECX = F | D<<8 | Z<<16 | Sg<<24',
+  '_A68RT_FMTREAL:',
+  'PUSH ECX',
+  'SUB ESP, 8',
+  'FST QWORD PTR [ESP]',
+  'MOV ESI, DWORD PTR [ESP+4]',
+  'SHR ESI, 31',
+  'FABS',
+  'MOV ECX, DWORD PTR [ESP+8]',
+  'AND ECX, 255',
+  '_A68R_io69:',
+  'TEST ECX, ECX',
+  'JE _A68R_io70',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC ECX',
+  'JMP _A68R_io69',
+  '_A68R_io70:',
+  'FISTP QWORD PTR [ESP]',
+  'MOV EAX, DWORD PTR [ESP]',
+  'MOV EDX, DWORD PTR [ESP+4]',
+  'ADD ESP, 8',
+  'POP ECX',
+  'MOV EDI, EAX',
+  'OR EDI, EDX',
+  'JNE _A68R_io71',
+  'XOR ESI, ESI',
+  '_A68R_io71:',
+  'JMP _A68RT_FMT64'
   );
 
 Var
@@ -16249,6 +17336,27 @@ Begin
   DataTab[K].Size := 8;
 End;
 
+{ Enregistrement d'un fichier standard : poignee, sens, -2 (pas de
+  caractere lu d'avance), le reste a zero (32 octets) }
+Function FileRecStr(Handle, Dir : LongInt) : TString;
+Var
+  S : TString;
+  I : Integer;
+  Procedure PutW(V : LongInt);
+  Var K : Integer;
+  Begin
+    For K := 0 To 3 Do
+      S := S + Chr((V Shr (8 * K)) And 255);
+  End;
+Begin
+  S := '';
+  PutW(Handle);
+  PutW(Dir);
+  PutW(-2);
+  For I := 1 To 5 Do PutW(0);
+  FileRecStr := S;
+End;
+
 Procedure RtData(Sym : Integer);
 Var
   I : Integer;
@@ -16268,8 +17376,13 @@ Begin
           (N = '_A68D_GG') Or (N = '_A68D_GL') Or (N = '_A68D_GU') Or
           (N = '_A68D_GE') Or (N = '_A68D_GV') Or (N = '_A68D_GA') Or
           (N = '_A68D_GR') Or (N = '_A68D_GQ') Or
-          (N = '_A68D_GN') Or (N = '_A68D_GP') Or (N = '_A68D_GK') Then
+          (N = '_A68D_GN') Or (N = '_A68D_GP') Or (N = '_A68D_GK') Or
+          (N = '_A68D_INF') Or (N = '_A68D_OUTF') Then
     DataAddZero(Sym, 4)
+  Else If N = '_A68D_PATH' Then DataAddZero(Sym, 264)
+  Else If N = '_A68D_SIN' Then RtDataStr(Sym, FileRecStr(-10, 1))
+  Else If N = '_A68D_SOUT' Then RtDataStr(Sym, FileRecStr(-11, 2))
+  Else If N = '_A68D_SERR' Then RtDataStr(Sym, FileRecStr(-12, 2))
   Else If N = '_A68D_GT' Then RtDataInt(Sym, 1048576)
   Else If N = '_A68D_GF' Then DataAddZero(Sym, 264)
   Else If N = '_A68D_PEEK' Then RtDataInt(Sym, -2)
