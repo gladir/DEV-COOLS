@@ -8987,8 +8987,16 @@ End;
 
 Function PeGetD(Pos : LongInt) : LongInt;
 Begin
-  PeGetD := PeOut[Pos] Or (PeOut[Pos + 1] Shl 8) Or
-            (PeOut[Pos + 2] Shl 16) Or (PeOut[Pos + 3] Shl 24);
+  { BOGUE REEL CORRIGE ("Runtime error 201" a l'execution, ex. switch.a58) :
+    PeOut[x] est un Byte - "PeOut[Pos+3] Shl 24" calcule le decalage SANS
+    jamais elargir l'operande a 32 bits au prealable (verifie isolement :
+    "LongInt(B) Shl 24" passe, "B Shl 24" leve 201 en mode TP des que
+    l'octet depasse 127, le resultat intermediaire ne tenant pas dans le
+    type infere pour l'operande non elargi) - caster chaque octet en
+    LongInt AVANT le Shl, comme le fait deja PeD symetriquement via V
+    (deja LongInt/TWide) pour l'ecriture. }
+  PeGetD := LongInt(PeOut[Pos]) Or (LongInt(PeOut[Pos + 1]) Shl 8) Or
+            (LongInt(PeOut[Pos + 2]) Shl 16) Or (LongInt(PeOut[Pos + 3]) Shl 24);
 End;
 
 Procedure PeStr(Pos : LongInt; Const S : TString);
