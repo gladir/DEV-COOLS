@@ -1,0 +1,27 @@
+BEGIN
+  PROC inc = (REF INT x) VOID : x +:= 1;
+  INT n := 5;
+  inc(n);
+  inc(n);
+  INT n1 := n;
+  MODE PT = STRUCT(INT x, INT y);
+  PROC mk = (INT a) PT : PT(a, a * 2);
+  PROC addp = (PT a, PT b) PT : PT(x OF a + x OF b, y OF a + y OF b);
+  PT r := addp(mk(1), mk(10));
+  INT rx := x OF r;
+  INT ry := y OF r;
+  PROC mkchain = (INT k) PT : IF k = 0 THEN mk(0) ELSE addp(mkchain(k - 1), mk(k)) FI;
+  PT c4 := mkchain(4);
+  INT c4y := y OF c4;
+  PROC arr = (INT k) INT :
+    BEGIN [1:k] INT loc; FOR i TO k DO loc[i] := i * i OD; loc[k] END;
+  INT a5 := arr(5);
+  PROC cat = (STRING a, STRING b) STRING : b;
+  STRING s := cat("ab", "cde");
+  INT sl := UPB s;
+  PROC twice = (PROC (INT) INT f, INT x) INT : f(f(x));
+  PROC inc1 = (INT x) INT : x + 1;
+  INT tw := twice(inc1, 5);
+  PROC mkadder = (INT k) PROC (INT) INT : (INT x) INT : x + k;
+  SKIP
+END

@@ -1,0 +1,15 @@
+BEGIN
+  COMPL z = 3 +* 4, w = 1.5 +* (-2);
+  print((z, space, w, newline));
+  print((z + w, space, z - w, space, z * w, newline));
+  print((z / w, space, ABS z, space, RE z, space, IM w, newline));
+  print((CONJ z, space, ARG (0 +* 1), space, -z, newline));
+  COMPL acc := 0;
+  FOR i TO 4 DO acc +:= z OD;
+  print((acc, space, z + 1, space, 2 * z, space, z = z, newline));
+  COMPL c2 := 5;
+  print((c2, newline));
+  BYTES b = bytes pack("hello");
+  BYTES b2 = bytes pack(" world");
+  print((b + b2, space, ELEMS b, space, b < b2, space, 2 ELEM b, newline))
+END

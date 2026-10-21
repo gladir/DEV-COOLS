@@ -1,0 +1,23 @@
+BEGIN
+  SEMA s1 = LEVEL 0, s2 = LEVEL 0;
+  INT n := 0;
+  PROC worker = (INT id, SEMA mine, SEMA other) VOID :
+    FOR k TO 3 DO
+      DOWN mine;
+      n +:= 1;
+      print(("w", id, k, newline));
+      STRING g := "";
+      FOR z TO 2000 DO g := g + whole(z, 0) OD;
+      UP other
+    OD;
+  PAR (
+    BEGIN UP s1; worker(1, s1, s2) END,
+    worker(2, s2, s1)
+  );
+  print(("n", n, newline));
+  PAR (
+    PAR (print(("a", newline)), print(("b", newline))),
+    print(("c", newline))
+  );
+  print(("fin", newline))
+END

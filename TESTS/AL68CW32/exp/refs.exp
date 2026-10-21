@@ -1,0 +1,10 @@
+x = 42
+z = 99
+a IS b = FALSE
+a ISNT b = TRUE
+p IS NIL = TRUE
+p ISNT NIL = FALSE
+10 + 5 = 15
+15 - 2 = 13
+13 * 3 = 39
+m = 100 n = 100

@@ -1,0 +1,23 @@
+BEGIN
+  REAL x := 3.14159;
+  REAL y := -0.5;
+  REAL z := 100.0;
+  REAL w := 2.0 / 3.0;
+  print((x, space, y, space, z, space, w, newline));
+  print((sqrt(16.0), space, sin(0.0), space, cos(0.0), space, arctan(1.0) * 4.0, newline));
+  print((exp(1.0), space, ln(2.718281828), space, tan(0.5), space, exp(0.0), newline));
+  print((whole(42, 6), "|", whole(-5, 3), "|", whole(123456, 2), "|", whole(0, 0), newline));
+  CHAR c := "Z";
+  STRING s := "str";
+  INT n := -2147483647;
+  print((c, s, n, TRUE, FALSE, newline));
+  print(n);
+  print(newline);
+  (n := 1, x := 9.5);
+  print((n, space, x, newline));
+  INT i; REAL r; CHAR ch; STRING str;
+  read((i, r));
+  read((ch));
+  read(str);
+  print((i, space, r, space, ch, space, str, newline))
+END

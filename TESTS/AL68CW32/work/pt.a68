@@ -1,0 +1,70 @@
+BEGIN
+  INT gl := 7;
+  PROC fib = (INT n) INT : IF n <= 1 THEN n ELSE fib(n - 1) + fib(n - 2) FI;
+  INT f10 := fib(10);
+  PROC sumto = (INT n) INT :
+    BEGIN INT s := 0; FOR i FROM 1 TO n DO s +:= i OD; s END;
+  INT s10 := sumto(10);
+  PROC fact = (INT n) INT : IF n = 0 THEN 1 ELSE n * fact(n - 1) FI;
+  INT f5 := fact(5);
+  PROC half = (REAL x) REAL : x / 2.0;
+  REAL h := half(9.0);
+  PROC mixed = (INT a, REAL b) REAL : a + b;
+  REAL m := mixed(2, 0.5);
+  MODE PT = STRUCT(INT x, INT y);
+  PROC swap = (PT p) PT : PT(y OF p, x OF p);
+  PT q := swap(PT(3, 4));
+  INT qx := x OF q;
+  INT qy := y OF q;
+  PROC outer = (INT a) INT :
+    BEGIN
+      INT base := a * 10;
+      PROC inner = (INT b) INT : base + b + a;
+      inner(5)
+    END;
+  INT o := outer(2);
+  PROC l1 = (INT a) INT :
+    BEGIN
+      PROC l2 = (INT b) INT :
+        BEGIN
+          PROC l3 = (INT c) INT : a + b + c;
+          l3(100)
+        END;
+      l2(10)
+    END;
+  INT deep := l1(1);
+  PROC (INT) INT g = fib;
+  INT gv := g(7);
+  PROC (INT) INT h2 := fact;
+  INT hv := h2(4);
+  h2 := fib;
+  INT hv2 := h2(8);
+  PROC apply = (PROC (INT) INT f, INT x) INT : f(x) + 1;
+  INT ap := apply(fact, 3);
+  INT ap2 := apply((INT z) INT : z * z, 9);
+  PROC (INT) INT sq = (INT z) INT : z * z;
+  INT sqv := sq(11);
+  PROC sum = ([] INT t) INT :
+    BEGIN INT s := 0; FOR i FROM LWB t TO UPB t DO s +:= t[i] OD; s END;
+  [1:4] INT data := (1, 2, 3, 4);
+  INT sd := sum(data);
+  PROC tri = (INT n) INT :
+    IF n = 0 THEN 0
+    ELSE BEGIN INT t := 0; FOR k FROM 1 TO 2 DO t +:= tri(n - 1) + 1 OD; t END
+    FI;
+  INT t3 := tri(3);
+  PROC five = INT : 5;
+  INT fv := five;
+  INT fv2 := five();
+  PROC even = (INT n) BOOL : n MOD 2 = 0;
+  BOOL ev := even(10);
+  PROC idc = (CHAR c) CHAR : c;
+  CHAR cc := idc("A");
+  PROC getg = INT : gl;
+  INT g1 := getg;
+  PROC slen = (STRING s) INT : UPB s - LWB s + 1;
+  INT sl := slen("hello");
+  PROC setg = (INT v) VOID : gl := v;
+  setg(9);
+  INT g2 := gl
+END

@@ -1,0 +1,9 @@
+a[1] = 10
+a[3] = 30
+a[5] = 50
+LWB a = 1
+UPB a = 5
+somme tableau = 30
+message: Algol 68
+hello[1:5] = Hello
+concat = Bonjour monde

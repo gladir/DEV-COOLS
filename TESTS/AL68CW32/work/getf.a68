@@ -1,0 +1,17 @@
+BEGIN
+  FILE o;
+  open(o, "tst_g1.txt", stand out channel);
+  put(o, (" 42-007  3.14X12ab(5)", newline, "line2 +1.5e+02 T", newline));
+  close(o);
+  FILE f;
+  open(f, "tst_g1.txt", stand in channel);
+  INT i, j; REAL r; CHAR c; BOOL b;
+  STRING s := "abcd";
+  getf(f, ($ 3d, -4d, x, d.2d, a, 2d, a $, i, j, r, c, i, c));
+  print((i, " ", j, " ", r, " ", c, newline));
+  getf(f, ($ a, "(", d, ")", l $, c, i));
+  print((c, " ", i, newline));
+  getf(f, ($ a, "2", x, +d.1de+2d, x, b $, s, r, b));
+  print((s, " ", r, " ", b, newline));
+  close(f)
+END

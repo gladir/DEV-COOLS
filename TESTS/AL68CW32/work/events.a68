@@ -1,0 +1,31 @@
+BEGIN
+  FILE h;
+  open(h, "tst_ev.txt", stand out channel);
+  put(h, ("12 x 7", newline, "T 5", newline));
+  close(h);
+  FILE f;
+  open(f, "tst_ev.txt", stand in channel);
+  INT verr := 0, lines := 0;
+  on value error(f, (REF FILE ff) BOOL: (verr +:= 1; TRUE));
+  on line end(f, (REF FILE ff) BOOL: (lines +:= 1; TRUE));
+  INT a, b, c;
+  BOOL t;
+  get(f, (a, b, c));
+  print(("a=", a, " b=", b, " c=", c, " verr=", verr, " lines=", lines, newline));
+  get(f, (t, c));
+  print((t, c, " lines=", lines, newline));
+  FILE g;
+  INT oe := 0;
+  on open error(g, (REF FILE gg) BOOL: (oe +:= 1; TRUE));
+  print((open(g, "/nonexistent/zz", stand in channel), oe, newline));
+  INT fe := 0;
+  on format end(stand out, (REF FILE ff) BOOL: (fe +:= 1; TRUE));
+  printf(($ 2d, x $, 1, 2, 3, 4));
+  print((newline, fe, newline));
+  FILE k;
+  open(k, "tst_ev.txt", stand in channel);
+  INT ce := 0;
+  on char error(k, (REF FILE kk) BOOL: (ce +:= 1; TRUE));
+  getf(k, ($ "ab", 2d $, a));
+  print((ce, newline))
+END

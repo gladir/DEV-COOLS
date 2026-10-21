@@ -1,0 +1,15 @@
+BEGIN
+  REAL a := 12345678.125;
+  REAL b := 0.000001;
+  REAL c := -3.0;
+  REAL d := 9000000000000.5;
+  REAL e := 0.1;
+  print((a, space, b, space, c, space, d, space, e, newline));
+  print((2.0 ** 10, space, 2.0 ** 0.5, space, (-2.0) ** 3, space, 9.0 ** (-1), newline));
+  print((ENTIER 3.7, space, ENTIER (-3.2), space, ROUND 2.5, space, ROUND (-2.5), space, ROUND 2.4, newline));
+  print((SIGN 3.5, space, SIGN (-0.5), space, SIGN 0.0, newline));
+  print((2 ** 0, space, (-2) ** 3, space, 3 ** 4, space, 2 ** (-1), newline));
+  STRING s1 := "abc"; STRING s2 := "abd"; STRING s3 := "ab";
+  print((s1 < s2, s1 > s2, s3 < s1, s1 = s1, s1 /= s2, s3 >= s1, newline));
+  print((whole(1234567, 0), "|", whole(-12, 6), "|", whole(0, 3), newline))
+END

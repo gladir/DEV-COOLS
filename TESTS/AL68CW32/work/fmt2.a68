@@ -1,0 +1,12 @@
+BEGIN
+  INT n := 3, w := 6;
+  printf(($ "[", (n)x, "]", l $));
+  printf(($ (w)d, x, (n)(x, "ab"), l $, 42));
+  printf(($ -d.2de-2d, x, +d.3de+3d, x, d.2de+d, l $, 12345.678, 0.000123, 7.0));
+  printf(($ c("zero","one","two"), x, c("a","b"), x, b("yes","no"), x, b("T","F"), l $, 2, 1, TRUE, FALSE));
+  printf(($ 5k, "ab", 12k, "cd", l $));
+  printf(($ s 3d, 3d, l $, 111, 222));
+  printf(($ 3z.2d, x, d.dd, l $, 1.5, 2.25));
+  printf(($ "x"(n)l $));
+  printf(($ 8d(n)x"|" l $, 12345))
+END

@@ -1,0 +1,35 @@
+BEGIN
+  OP ADDX = (INT a, INT b) INT : a + b + 1;
+  PRIO MYMUL = 5;
+  OP MYMUL = (INT a, INT b) INT : a * b;
+  INT p1 := 1 ADDX 2 MYMUL 3;
+  INT p2 := (1 ADDX 2) MYMUL 3;
+  OP DBL = (INT x) INT : x + x;
+  OP DBL = (REAL x) REAL : x + x;
+  INT d1 := DBL 21;
+  REAL d2 := DBL 1.25;
+  MODE PT = STRUCT(INT x, INT y);
+  OP + = (PT a, PT b) PT : PT(x OF a + x OF b, y OF a + y OF b);
+  PT s := PT(1, 2) + PT(10, 20);
+  INT sx := x OF s;
+  INT sy := y OF s;
+  INT plain := 3 + 4;
+  OP NORM = (PT a) INT : x OF a * x OF a + y OF a * y OF a;
+  INT n1 := NORM PT(3, 4);
+  PRIO LATE = 6;
+  OP LATE = (INT a, INT b) INT : a * 10 + b;
+  INT l1 := 2 LATE 3 ADDX 1;
+  PROC sq = (INT x) INT : x * x;
+  OP SQR = (INT x) INT : sq(x) + 1;
+  INT q1 := SQR 5;
+  PROC useop = (INT n) INT : BEGIN OP TRI = (INT a) INT : a * 3 + n; TRI 4 END;
+  INT u1 := useop(10);
+  OP MAX2 = (INT a, INT b) INT : IF a > b THEN a ELSE b FI;
+  INT m1 := 3 MAX2 9 MAX2 5;
+  OP FACT = (INT n) INT : IF n <= 1 THEN 1 ELSE n * (FACT (n - 1)) FI;
+  INT f5 := FACT 5;
+  OP ISBIG = (INT n) BOOL : n > 100;
+  BOOL b1 := ISBIG 200;
+  BOOL b2 := ISBIG 5;
+  SKIP
+END

@@ -1,0 +1,34 @@
+BEGIN
+  [1:3] INT a := (1, 2, 3);
+  print((a, newline));
+  STRUCT (INT x, REAL y) s := (3, 4.5);
+  print((s, newline));
+  UNION (INT, REAL) u := 5;
+  print((u, newline));
+  u := 2.5;
+  print((u, newline));
+  [,] INT m = ((1, 2), (3, 4));
+  print((m, newline));
+  [1:2] STRUCT (STRING n, [] BOOL b) q;
+  q := (("ab", (TRUE, FALSE)), ("cd", (FALSE, TRUE)));
+  print((q, newline));
+  [1:0] INT e;
+  print((e, "end", newline));
+  [1:2, 1:2] REAL r := ((1.5, 2), (3, 4));
+  print((r[2, :], newline));
+  FLEX [1:2] INT f := (1, 2);
+  f := (f, 3);
+  print((UPB f, f[3], newline));
+  f := (0, f);
+  print((UPB f, f[1], f[4], newline));
+  [1:2] INT g := (8, 9);
+  f := (f, g, 5);
+  print((UPB f, f[5], f[6], newline));
+  [] INT k = (g, 3, g);
+  print((k, newline));
+  [] CHAR c = ("ab", "cd");
+  print((UPB c, c[3], newline));
+  FLEX [1:0] INT acc;
+  FOR i TO 5 DO acc := (acc, i * i) OD;
+  print((acc, newline))
+END

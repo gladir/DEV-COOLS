@@ -1,0 +1,23 @@
+BEGIN
+  PROC fact = (INT n) INT : IF n = 0 THEN 1 ELSE n * fact(n - 1) FI;
+  PROC fib = (INT n) INT : IF n <= 1 THEN n ELSE fib(n - 1) + fib(n - 2) FI;
+  MODE PT = STRUCT(INT x, INT y);
+  PROC swap = (PT p) PT : PT(y OF p, x OF p);
+  OP ADDX = (INT a, INT b) INT : a + b + 1;
+  REAL h := 9.0 / 2.0;
+  INT s := 0;
+  FOR i FROM 1 TO 10 DO s +:= i OD;
+  PT q := swap(PT(3, 4));
+  MODE NUM = UNION(INT, REAL);
+  NUM u := 7;
+  INT ru := CASE u IN (INT i) : i * 2, (REAL r) : 0 OUT -1 ESAC;
+  WHILE fact(5) /= 120 DO SKIP OD;
+  WHILE fib(10) /= 55 DO SKIP OD;
+  WHILE s /= 55 DO SKIP OD;
+  WHILE x OF q /= 4 DO SKIP OD;
+  WHILE y OF q /= 3 DO SKIP OD;
+  WHILE (10 ADDX 20) /= 31 DO SKIP OD;
+  WHILE h /= 4.5 DO SKIP OD;
+  WHILE ru /= 14 DO SKIP OD;
+  WHILE 17 MOD 5 /= 2 DO SKIP OD
+END

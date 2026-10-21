@@ -1,0 +1,10 @@
+BEGIN
+  print((whole(42, 6), "|", whole(-5, 3), "|", whole(123456, 2), "|", whole(7, 0), newline));
+  LONG INT big = 12345678901234;
+  print((whole(big, 20), "|", whole(-big, 0), "|", whole(3.7, 5), newline));
+  print((fixed(3.14159, 8, 2), "|", fixed(-3.14159, 8, 2), "|", fixed(0.5, 6, 2), "|", newline));
+  print((fixed(2, 6, 1), "|", fixed(big, 0, 0), "|", fixed(1234.5678, 0, 2), "|", fixed(-0.004, 8, 2), "|", newline));
+  print((fixed(99999.9, 5, 1), "|", fixed(1.5, 3, 1), "|", fixed(big, 40, 2), "|", newline));
+  print((float(1234.5678, 12, 3, 2), "|", float(-0.000123, 0, 2, 2), "|", float(7, 10, 1, 1), "|", newline));
+  print((float(0.0, 0, 2, 2), "|", float(9.9996, 0, 3, 2), "|", float(1.0e100, 0, 4, 3), "|", float(big, 0, 5, 2), "|", float(1.5e10, 6, 2, 1), newline))
+END

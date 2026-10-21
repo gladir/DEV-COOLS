@@ -1,0 +1,4 @@
+Test collateral
+PAR: x=1 y=2
+PAR BEGIN: p=100 q=200
+elaboration: m=42

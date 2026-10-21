@@ -1,0 +1,21 @@
+BEGIN
+  MODE POINT = STRUCT(INT x, INT y);
+  MODE NOMBRE = UNION(INT, REAL);
+  POINT p := POINT(3, 7);
+  INT px := x OF p;
+  INT py := y OF p;
+  INT y2 := py;
+  INT k = 5;
+  INT z := k;
+  REAL r := 2.5;
+  REAL r2 := 7;
+  REAL r3 := k;
+  REAL pi2 := pi;
+  NOMBRE un := k;
+  POINT q := p;
+  INT qy := y OF q;
+  REF INT rp := NIL;
+  STRING s := "hi";
+  STRING s2 := s;
+  INT fin := x OF POINT(40, 2)
+END
