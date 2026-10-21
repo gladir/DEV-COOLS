@@ -46,3 +46,9 @@ warn5|BEGIN PAR (SKIP, SKIP) END|W|1,7|PAR : unites elaborees sequentiellement, 
 disp1|BEGIN [1:2,1:2] INT m := ((1, 2), (3)) END|E|1,35|un affichage de [,]INT attend des sous-affichages
 disp2|BEGIN [1:2,1:3] INT m := ((1, 2), (3, 4, 5)) END|E|1,26|affichage de [,]INT dont les lignes n'ont pas toutes la meme longueur
 disp3|BEGIN [1:2,1:2] INT m := (1, 2) END|E|1,27|un affichage de [,]INT attend des sous-affichages
+fmt1|BEGIN printf(($ 3d $, 1.5)) END|E|1,7|format: motif entier pour une valeur de mode REAL
+fmt2|BEGIN printf(($ 3q $, 1)) END|E|1,7|format: motif non supporte: q
+fmt3|BEGIN INT i = 1; printf((i, 2)) END|E|1,26|coercition impossible: INT vers FORMAT
+op1|BEGIN OP (INT) INT X = (REAL a) INT : 1 END|E|1,20|OP X annonce PROC(INT) INT mais la routine est de mode PROC(REAL) INT
+pc1|BEGIN PROC p = PROC (INT) INT : 5; SKIP END|E|1,33|coercition impossible: INT vers PROC(INT) INT
+lng1|BEGIN LONG INT x := 1; INT y := x END|E|1,33|coercition impossible: REF LONG INT vers INT

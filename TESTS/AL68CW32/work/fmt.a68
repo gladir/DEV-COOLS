@@ -1,0 +1,13 @@
+BEGIN
+  printf(($ "x=", 5d, x, 3z.2d, l $, 42, 3.14159));
+  printf(($ +4d, x, -4d, x, 4z, l $, 7, -7, 12));
+  printf(($ 6d.3d, l $, 1234.5678));
+  printf(($ "n=" 3d "," "s=" a, b, g, l $, 5, "abc", TRUE, 2.5));
+  FORMAT fm = $ 2d, "-", 2d, l $;
+  printf((fm, 5, 6, 7, 8));
+  printf(($ "ab" 2(x, "c"), 2l $));
+  printf(($ -d.3d, x, +d.2d, l $, -0.0015, 2.5));
+  printf(($ 3d, l $, 12345));
+  printf(($ z.2d, l $, 0.5));
+  putf(stand out, ($ 3d, l $, 7))
+END

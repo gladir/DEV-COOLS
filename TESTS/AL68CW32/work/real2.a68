@@ -1,0 +1,7 @@
+BEGIN
+  print((max real, newline));
+  print((small real, newline));
+  print((1.0e20, space, -2.5e-9, space, 123456789012345.0, newline));
+  print((1.5, space, 0.000001, space, 0.0, space, -0.0000004, space, 9.9999999e30, newline));
+  print((1.0e300 * 1.0e5, newline))
+END

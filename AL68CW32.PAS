@@ -8014,7 +8014,7 @@ Begin
     If AtPunct(',') Then
       ParserAdvance
     Else
-      ParseError(''',''  attendu apres le fichier de ' + Nm);
+      ParseError(''','' attendu apres le fichier de ' + Nm);
   End;
   { liste d'elements : ( a, b, ... ) ou un seul element }
   ListForm := False;
@@ -10838,7 +10838,8 @@ Begin
     Exit;
   End;
   Case ModeKind(M) Of
-    MK_INT, MK_BITS : Begin LoadThrough(M); CallRT('WRITEINT'); End;
+    MK_INT          : Begin LoadThrough(M); CallRT('WRITEINT'); End;
+    MK_BITS         : Begin LoadThrough(M); CallRT('WRITEBITS'); End;
     MK_REAL         : Begin LoadThrough(M); CallRT('WRITEREAL'); End;
     MK_BOOL         : Begin LoadThrough(M); CallRT('WRITEBOOL'); End;
     MK_CHAR         : Begin LoadThrough(M); CallRT('WRITECHAR'); End;
@@ -10903,7 +10904,8 @@ Begin
   End;
   GenValue(A);
   Case ModeKind(M) Of
-    MK_INT, MK_BITS : CallRT('WRITEINT');
+    MK_INT          : CallRT('WRITEINT');
+    MK_BITS         : CallRT('WRITEBITS');
     MK_REAL         : CallRT('WRITEREAL');
     MK_BOOL         : CallRT('WRITEBOOL');
     MK_CHAR         : CallRT('WRITECHAR');
@@ -14895,7 +14897,7 @@ Type
   TRtLine = String[70];
 
 Const
-  RT_LINES = 2351;
+  RT_LINES = 2464;
   RT_MAX_ROUT = 200;
   RtText : Array[0..RT_LINES - 1] Of TRtLine = (
   '@_A68RT_FAIL',
@@ -15379,9 +15381,9 @@ Const
   'SUB ECX, EDI',
   'MOV ESI, EDI',
   'JMP _A68RT_PUT',
-  '@_A68RT_WRITEREAL',
-  '; ST(0) = reel (depile) : notation fixe, 6 decimales au plus',
-  '_A68RT_WRITEREAL:',
+  '@_A68RT_WRITERF',
+  '; ST(0) = reel positif (depile) : notation fixe, 6 decimales au plus',
+  '_A68RT_WRITERF:',
   'FSTP QWORD PTR [_A68D_Q]',
   'MOV EAX, DWORD PTR [_A68D_Q+4]',
   'MOV DWORD PTR [_A68D_SG], EAX',
@@ -17248,7 +17250,120 @@ Const
   'JNE _A68R_io71',
   'XOR ESI, ESI',
   '_A68R_io71:',
-  'JMP _A68RT_FMT64'
+  'JMP _A68RT_FMT64',
+  '@_A68RT_WRITEBITS',
+  '; EAX = BITS : ecrit la valeur non signee en decimal',
+  '_A68RT_WRITEBITS:',
+  'MOV EDI, OFFSET _A68D_BUF',
+  'ADD EDI, 60',
+  'MOV ESI, EDI',
+  '_A68R_wbt1:',
+  'XOR EDX, EDX',
+  'DIV DWORD PTR [_A68D_TEN]',
+  'ADD EDX, 48',
+  'DEC EDI',
+  'MOV BYTE PTR [EDI], DL',
+  'TEST EAX, EAX',
+  'JNE _A68R_wbt1',
+  'MOV ECX, ESI',
+  'SUB ECX, EDI',
+  'MOV ESI, EDI',
+  'JMP _A68RT_PUT',
+  '@_A68RT_WRITEREAL',
+  '; ST(0) = reel (depile) : fixe, ou d.dddddde+n hors de [5E-7, 1E13[',
+  '_A68RT_WRITEREAL:',
+  'FLD ST(0)',
+  'FABS',
+  'FCOMP QWORD PTR [_A68D_BIGR]',
+  'FNSTSW AX',
+  'SAHF',
+  'JAE _A68R_ws0',
+  'FLD ST(0)',
+  'FABS',
+  'FCOMP QWORD PTR [_A68D_SMLR]',
+  'FNSTSW AX',
+  'SAHF',
+  'JAE _A68R_wsf',
+  'FTST',
+  'FNSTSW AX',
+  'SAHF',
+  'JE _A68R_wsf',
+  '_A68R_ws0:',
+  'SUB ESP, 16',
+  'FST QWORD PTR [ESP]',
+  'MOV EAX, DWORD PTR [ESP+4]',
+  'SHR EAX, 31',
+  'MOV DWORD PTR [ESP+12], EAX',
+  'MOV DWORD PTR [ESP+8], 0',
+  'FABS',
+  '_A68R_ws1:',
+  'FCOM QWORD PTR [_A68D_B16]',
+  'FNSTSW AX',
+  'SAHF',
+  'JB _A68R_ws2',
+  'FDIV QWORD PTR [_A68D_B16]',
+  'ADD DWORD PTR [ESP+8], 16',
+  'JMP _A68R_ws1',
+  '_A68R_ws2:',
+  'FCOM QWORD PTR [_A68D_TEN8]',
+  'FNSTSW AX',
+  'SAHF',
+  'JB _A68R_ws3',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'INC DWORD PTR [ESP+8]',
+  'JMP _A68R_ws2',
+  '_A68R_ws3:',
+  'FCOM QWORD PTR [_A68D_S16]',
+  'FNSTSW AX',
+  'SAHF',
+  'JAE _A68R_ws4',
+  'FMUL QWORD PTR [_A68D_B16]',
+  'SUB DWORD PTR [ESP+8], 16',
+  'JMP _A68R_ws3',
+  '_A68R_ws4:',
+  'FLD1',
+  'FCOMP ST(1)',
+  'FNSTSW AX',
+  'SAHF',
+  'JBE _A68R_ws5',
+  'FMUL QWORD PTR [_A68D_TEN8]',
+  'DEC DWORD PTR [ESP+8]',
+  'JMP _A68R_ws4',
+  '_A68R_ws5:',
+  'FCOM QWORD PTR [_A68D_R995]',
+  'FNSTSW AX',
+  'SAHF',
+  'JB _A68R_ws6',
+  'FDIV QWORD PTR [_A68D_TEN8]',
+  'INC DWORD PTR [ESP+8]',
+  '_A68R_ws6:',
+  'CMP DWORD PTR [ESP+12], 0',
+  'JE _A68R_ws7',
+  'MOV EAX, 45',
+  'CALL _A68RT_WRITECHAR',
+  '_A68R_ws7:',
+  'CALL _A68RT_WRITERF',
+  'MOV EAX, 101',
+  'CALL _A68RT_WRITECHAR',
+  'MOV EAX, DWORD PTR [ESP+8]',
+  'TEST EAX, EAX',
+  'JS _A68R_ws8',
+  'PUSH EAX',
+  'MOV EAX, 43',
+  'CALL _A68RT_WRITECHAR',
+  'POP EAX',
+  'JMP _A68R_ws9',
+  '_A68R_ws8:',
+  'NEG EAX',
+  'PUSH EAX',
+  'MOV EAX, 45',
+  'CALL _A68RT_WRITECHAR',
+  'POP EAX',
+  '_A68R_ws9:',
+  'ADD ESP, 16',
+  'JMP _A68RT_WRITEINT',
+  '_A68R_wsf:',
+  'JMP _A68RT_WRITERF'
   );
 
 Var
@@ -17404,6 +17519,11 @@ Begin
   Else If N = '_A68D_MILR' Then RtDataReal(Sym, 0, $412E8480)
   Else If N = '_A68D_TEN8' Then RtDataReal(Sym, 0, $40240000)
   Else If N = '_A68D_HALF' Then RtDataReal(Sym, 0, $3FE00000)
+  Else If N = '_A68D_BIGR' Then RtDataReal(Sym, -448790528, $42A2309C)
+  Else If N = '_A68D_SMLR' Then RtDataReal(Sym, -1598689907, $3EA0C6F7)
+  Else If N = '_A68D_B16' Then RtDataReal(Sym, 937459712, $4341C379)
+  Else If N = '_A68D_S16' Then RtDataReal(Sym, -1747416644, $3C9CD2B2)
+  Else If N = '_A68D_R995' Then RtDataReal(Sym, -281474977, $4023FFFF)
   Else
     FatalError('erreur interne: donnee runtime inconnue: ' + N);
 End;

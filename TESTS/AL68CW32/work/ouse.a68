@@ -1,0 +1,16 @@
+BEGIN
+  UNION (INT, REAL, BOOL, CHAR) u := 3;
+  PROC show = (UNION (INT, REAL, BOOL, CHAR) x) VOID :
+    CASE x IN (INT i): print(("int", i, newline)),
+              (REAL r): print(("real", r, newline))
+    OUSE x IN (BOOL b): print(("bool", b, newline))
+    OUT print(("other", newline))
+    ESAC;
+  show(u); show(2.5); show(TRUE); show("c");
+  PROC sb = (UNION (INT, REAL) x) INT :
+    (x | (INT i): i * 2, (REAL r): ENTIER r | -1);
+  print((sb(21), space, sb(3.7), newline));
+  PROC sc = (UNION (INT, REAL, BOOL) x) STRING :
+    (x | (INT i): "i", (REAL r): "r" |: x | (BOOL b): "b" | "?");
+  print((sc(1), sc(1.5), sc(TRUE), newline))
+END

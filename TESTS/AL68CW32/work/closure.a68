@@ -1,0 +1,39 @@
+BEGIN
+  PROC adder = (INT n) PROC (INT) INT :
+    BEGIN
+      PROC add = (INT x) INT : x + n;
+      add
+    END;
+  PROC (INT) INT a5 = adder(5);
+  PROC (INT) INT a7 = adder(7);
+  print((a5(1), space, a7(1), space, a5(10), newline));
+  PROC counter = PROC INT :
+    BEGIN
+      INT c := 0;
+      PROC inc = INT : (c +:= 1; c);
+      inc
+    END;
+  PROC INT c1 = counter, c2 = counter;
+  print((c1, c1, c2, c1, newline));
+  PROC adder2 = (INT n) PROC (INT) INT :
+    BEGIN
+      [1:50] INT pad;
+      PROC add = (INT x) INT : x + n + pad[1];
+      pad[1] := 0;
+      add
+    END;
+  INT total := 0;
+  PROC (INT) INT keep = adder2(1000);
+  FOR i TO 300000 DO
+    PROC (INT) INT f = adder2(i);
+    total +:= f(1) MOD 1000
+  OD;
+  print((total, space, keep(5), newline));
+  MODE FN = PROC (INT) INT;
+  PROC compose = (FN f, g) FN : BEGIN PROC h = (INT x) INT : f(g(x)); h END;
+  PROC double = (INT x) INT : 2 * x;
+  PROC inc = (INT x) INT : x + 1;
+  FN di = compose(double, inc);
+  FN id2 = compose(di, di);
+  print((di(5), space, id2(5), newline))
+END

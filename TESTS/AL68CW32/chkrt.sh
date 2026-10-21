@@ -19,7 +19,8 @@ tmp=$(mktemp -d)
 cd "$tmp" || exit 1
 bad=0
 ko() { echo "ECHEC: $1"; bad=1; }
-for n in rt1 pr2 slice copy display gc gc2; do
+for n in rt1 pr2 slice copy display gc gc2 print2 ouse procs closure long \
+         compl file fmt real2; do
   cp "$here/work/$n.a68" .
   "$comp" $n.a68 >log 2>&1 || { ko "compilation $n"; continue; }
   in=/dev/null; [ -f "$here/work/$n.in" ] && in="$here/work/$n.in"

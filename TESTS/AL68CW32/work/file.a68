@@ -1,0 +1,44 @@
+BEGIN
+  FILE f;
+  IF open(f, "tst_out.txt", stand out channel) /= 0 THEN
+    print(("cannot open", newline))
+  ELSE
+    put(f, ("hello", 42, newline));
+    put(f, (3.5, space, TRUE, newline));
+    newline(f);
+    close(f)
+  FI;
+  FILE g;
+  IF open(g, "tst_out.txt", stand in channel) = 0 THEN
+    STRING s;
+    get(g, s);
+    print(("got:", s, newline));
+    close(g)
+  FI;
+  put(stand out, ("to stdout", newline));
+  FILE h;
+  open(h, "tst_in.txt", stand out channel);
+  put(h, ("10 20", newline, "30", newline));
+  close(h);
+  FILE k;
+  BOOL done := FALSE;
+  INT total := 0, x;
+  IF open(k, "tst_in.txt", stand in channel) /= 0 THEN
+    print(("no file", newline))
+  ELSE
+    on logical file end(k, (REF FILE ff) BOOL: (done := TRUE; TRUE));
+    WHILE NOT done DO
+      get(k, x);
+      IF NOT done THEN total +:= x; print(("x=", x, newline)) FI
+    OD;
+    print(("total", total, newline));
+    close(k)
+  FI;
+  FILE m;
+  open(m, "tst_in.txt", stand in channel);
+  INT cnt := 0;
+  WHILE NOT eof(m) DO
+    get(m, x); cnt +:= 1
+  OD;
+  print(("cnt", cnt, newline))
+END

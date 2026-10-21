@@ -1,0 +1,43 @@
+BEGIN
+  PROC g = (INT x) INT : x + 1;
+  PROC p = PROC (INT) INT : g;
+  PROC q = g;
+  print((p(7), q(1), newline));
+  OP (INT, INT) INT PLUS1 = (INT a, INT b) INT : a + b + 1;
+  PRIO PLUS1 = 6;
+  print((3 PLUS1 4, newline));
+  OP (INT) INT NEG2 = (INT a) INT : -2 * a;
+  OP (REAL) REAL NEG2 = (REAL a) REAL : -2 * a;
+  print((NEG2 5, space, NEG2 1.5, newline));
+  INT n = 6;
+  PROC fact = (INT k) INT : IF k <= 1 THEN 1 ELSE k * fact(k - 1) FI;
+  print((fact(n), newline));
+  PROC isodd = (INT k) BOOL : IF k = 0 THEN FALSE ELSE iseven(k - 1) FI;
+  PROC iseven = (INT k) BOOL : IF k = 0 THEN TRUE ELSE isodd(k - 1) FI;
+  print((iseven(10), isodd(7), iseven(7), newline));
+  PROC early = INT : later(2);
+  PROC later = (INT x) INT : x * 100;
+  print((early, newline));
+  BEGIN
+    PROC inner = INT : outer2;
+    PROC outer2 = INT : 77;
+    print((inner, newline))
+  END;
+  INT cnt := 0;
+  PROC rec = (INT n) VOID : BEGIN
+    IF n = 3 THEN GOTO out FI;
+    cnt +:= 1;
+    rec(n + 1)
+  END;
+  PROC qq = VOID : BEGIN
+    INT local := 5;
+    PROC r = VOID : GOTO fin;
+    r;
+    print(("no", newline));
+    fin: print(("fin", local, newline))
+  END;
+  qq;
+  rec(0);
+  print(("no", newline));
+  out: print(("out", cnt, newline))
+END
