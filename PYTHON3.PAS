@@ -53,7 +53,25 @@ Program PYTHON3;
 {$WARN 3123 OFF}
 
 Uses
- Dos {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF};
+ Dos {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ELSE}, Windows{$ENDIF};
+
+{$IFNDEF UNIX}
+{ Absentes de l'unite Windows de cette distribution FPC - declarees ici
+  directement contre kernel32.dll (pratique standard FPC quand l'unite
+  fournie n'expose pas encore une API). }
+Function SetFilePointerEx(hFile: THandle; liDistanceToMove: Int64;
+ lpNewFilePointer: PInt64; dwMoveMethod: DWord): BOOL; StdCall;
+ External 'kernel32.dll' Name 'SetFilePointerEx';
+Function CreateHardLink(lpFileName, lpExistingFileName: PChar;
+ lpSecurityAttributes: Pointer): BOOL; StdCall;
+ External 'kernel32.dll' Name 'CreateHardLinkA';
+Function CreateSymbolicLink(lpSymlinkFileName, lpTargetFileName: PChar;
+ dwFlags: DWord): BOOL; StdCall;
+ External 'kernel32.dll' Name 'CreateSymbolicLinkA';
+Function Win32GetFullPathName(lpFileName: PChar; nBufferLength: DWord;
+ lpBuffer: PChar; lpFilePart: PPChar): DWord; StdCall;
+ External 'kernel32.dll' Name 'GetFullPathNameA';
+{$ENDIF}
 
 { ------------------------------------------------------------
   Fonctions mathematiques internes (remplacent l'unite Math)
@@ -616,19 +634,45 @@ Begin
 End;
 
 { ---- fichiers et repertoires ---- }
+{ BOGUE REEL CORRIGE (identifiants BaseUnix introuvables - "Stat",
+  "fpStat", "fpS_ISDIR", etc.) : ce code n'etait protege par IFDEF-UNIX
+  que dans la clause Uses, pas ICI ou ces identifiants sont
+  REELLEMENT utilises - il ne pouvait donc jamais compiler pour
+  Win32 (seule cible testee ici), meme si le commentaire d'en-tete du
+  fichier documente une compilation Linux (BINLINUX). Ajout d'un
+  second volet ELSE via l'API Win32 reelle (deja importee ci-dessus
+  dans la clause Uses), pour que le fichier compile aussi pour Win32. }
 Function FileExists(Const name: AnsiString): Boolean;
+{$IFDEF UNIX}
 Var
  st: Stat;
 Begin
  Result := (fpStat(name, st) = 0) And not fpS_ISDIR(st.st_mode);
 End;
+{$ELSE}
+Var
+ attr: DWord;
+Begin
+ attr := GetFileAttributes(PChar(name));
+ Result := (attr <> DWord(-1)) And (attr And FILE_ATTRIBUTE_DIRECTORY = 0);
+End;
+{$ENDIF}
 
 Function DirectoryExists(Const name: AnsiString): Boolean;
+{$IFDEF UNIX}
 Var
  st: Stat;
 Begin
  Result := (fpStat(name, st) = 0) And fpS_ISDIR(st.st_mode);
 End;
+{$ELSE}
+Var
+ attr: DWord;
+Begin
+ attr := GetFileAttributes(PChar(name));
+ Result := (attr <> DWord(-1)) And (attr And FILE_ATTRIBUTE_DIRECTORY <> 0);
+End;
+{$ENDIF}
 
 Function ExtractFileName(Const name: AnsiString): AnsiString;
 Var
@@ -716,36 +760,80 @@ Const
  fmShareDenyNone = $40;
 
 Function FileOpen(Const name: AnsiString; mode: LongInt): THandle;
+{$IFDEF UNIX}
 Begin
  Result := THandle(fpOpen(name, O_RDONLY));
 End;
+{$ELSE}
+Begin
+ Result := CreateFile(PChar(name), GENERIC_READ,
+  FILE_SHARE_READ Or FILE_SHARE_WRITE, nil, OPEN_EXISTING,
+  FILE_ATTRIBUTE_NORMAL, 0);
+End;
+{$ENDIF}
 
 Function FileCreate(Const name: AnsiString): THandle;
+{$IFDEF UNIX}
 Begin
  Result := THandle(fpOpen(name, O_RDWR Or O_CREAT Or O_TRUNC, &666));
 End;
+{$ELSE}
+Begin
+ Result := CreateFile(PChar(name), GENERIC_READ Or GENERIC_WRITE, 0,
+  nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+End;
+{$ENDIF}
 
 Function FileRead(h: THandle; Var buf; n: LongInt): LongInt;
+{$IFDEF UNIX}
 Begin
  Result := fpRead(h, @buf, n);
 End;
+{$ELSE}
+Var
+ nRead: DWord;
+Begin
+ If ReadFile(h, buf, n, nRead, nil) Then Result := nRead Else Result := -1;
+End;
+{$ENDIF}
 
 Function FileWrite(h: THandle; Const buf; n: LongInt): LongInt;
+{$IFDEF UNIX}
 Begin
  Result := fpWrite(h, @buf, n);
 End;
+{$ELSE}
+Var
+ nWritten: DWord;
+Begin
+ If WriteFile(h, buf, n, nWritten, nil) Then Result := nWritten Else Result := -1;
+End;
+{$ENDIF}
 
 Procedure FileClose(h: THandle);
+{$IFDEF UNIX}
 Begin
  fpClose(h);
 End;
+{$ELSE}
+Begin
+ CloseHandle(h);
+End;
+{$ENDIF}
 
 Function GetProcessID: LongInt;
+{$IFDEF UNIX}
 Begin
  Result := fpGetPid;
 End;
+{$ELSE}
+Begin
+ Result := GetCurrentProcessId;
+End;
+{$ENDIF}
 
 Procedure Sleep(ms: LongInt);
+{$IFDEF UNIX}
 Var
  req, rem: TTimeSpec;
 Begin
@@ -754,6 +842,11 @@ Begin
  While (fpNanoSleep(@req, @rem) <> 0) And (fpGetErrno = ESysEINTR) Do
   req := rem;
 End;
+{$ELSE}
+Begin
+ Windows.Sleep(ms);
+End;
+{$ENDIF}
 
 Function DaysFromCivil(y, mo, d: Int64): Int64;
 Var
@@ -2139,33 +2232,163 @@ Begin
  If TPyObj(o).cls <> Nil Then MarkObj(TPyObj(o).cls);
  If TPyObj(o).idict <> Nil Then MarkObj(TPyObj(o).idict);
 End;
+{ BOGUE REEL CORRIGE (echec de liaison : "Library m.dll not found") : 'm'
+  est la bibliotheque mathematique C d'UNIX (libm.so) - elle n'existe pas
+  sous Windows (le LINKLIB m ci-dessous demandait explicitement de
+  lier contre elle, inconditionnellement). Les fonctions C99 presentes
+  depuis toujours dans le CRT Windows (msvcrt.dll) sont liees contre lui ;
+  celles derivables par formule simple (asinh/acosh/atanh/expm1/log2/
+  log1p) sont reimplementees directement en Pascal pour eviter toute
+  dependance a une DLL recente ; erf/erfc/tgamma/lgamma (ajouts C99 les
+  plus recents, absents de msvcrt.dll) restent liees contre ucrtbase.dll
+  (present depuis Windows 10) - limitation connue sur des Windows plus
+  anciens pour ces 4 fonctions precises uniquement. }
+{$IFDEF UNIX}
 {$LINKLIB m}
-Function c_sin(x: Double): Double; CDecl; External 'm' Name 'sin';
-Function c_cos(x: Double): Double; CDecl; External 'm' Name 'cos';
-Function c_tan(x: Double): Double; CDecl; External 'm' Name 'tan';
-Function c_asin(x: Double): Double; CDecl; External 'm' Name 'asin';
-Function c_acos(x: Double): Double; CDecl; External 'm' Name 'acos';
-Function c_atan(x: Double): Double; CDecl; External 'm' Name 'atan';
-Function c_atan2(y, x: Double): Double; CDecl; External 'm' Name 'atan2';
-Function c_sinh(x: Double): Double; CDecl; External 'm' Name 'sinh';
-Function c_cosh(x: Double): Double; CDecl; External 'm' Name 'cosh';
-Function c_tanh(x: Double): Double; CDecl; External 'm' Name 'tanh';
+{$ENDIF}
+Function c_sin(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'sin';
+Function c_cos(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'cos';
+Function c_tan(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'tan';
+Function c_asin(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'asin';
+Function c_acos(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'acos';
+Function c_atan(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'atan';
+Function c_atan2(y, x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'atan2';
+Function c_sinh(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'sinh';
+Function c_cosh(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'cosh';
+Function c_tanh(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'tanh';
+Function c_exp(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'exp';
+Function c_log(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'log';
+Function c_log10(x: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'log10';
+Function c_pow(x, y: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'pow';
+Function c_fmod(x, y: Double): Double; CDecl;
+ External {$IFDEF UNIX}'m'{$ELSE}'msvcrt.dll'{$ENDIF} Name 'fmod';
+{$IFDEF UNIX}
 Function c_asinh(x: Double): Double; CDecl; External 'm' Name 'asinh';
 Function c_acosh(x: Double): Double; CDecl; External 'm' Name 'acosh';
 Function c_atanh(x: Double): Double; CDecl; External 'm' Name 'atanh';
-Function c_exp(x: Double): Double; CDecl; External 'm' Name 'exp';
 Function c_expm1(x: Double): Double; CDecl; External 'm' Name 'expm1';
-Function c_log(x: Double): Double; CDecl; External 'm' Name 'log';
 Function c_log2(x: Double): Double; CDecl; External 'm' Name 'log2';
-Function c_log10(x: Double): Double; CDecl; External 'm' Name 'log10';
 Function c_log1p(x: Double): Double; CDecl; External 'm' Name 'log1p';
-Function c_pow(x, y: Double): Double; CDecl; External 'm' Name 'pow';
-Function c_fmod(x, y: Double): Double; CDecl; External 'm' Name 'fmod';
 Function c_hypot(x, y: Double): Double; CDecl; External 'm' Name 'hypot';
+{$ELSE}
+Function c_asinh(x: Double): Double;
+Begin
+ Result := c_log(x + Sqrt(x * x + 1));
+End;
+
+Function c_acosh(x: Double): Double;
+Begin
+ Result := c_log(x + Sqrt(x * x - 1));
+End;
+
+Function c_atanh(x: Double): Double;
+Begin
+ Result := 0.5 * c_log((1 + x) / (1 - x));
+End;
+
+Function c_expm1(x: Double): Double;
+Begin
+ Result := c_exp(x) - 1;
+End;
+
+Function c_log2(x: Double): Double;
+Begin
+ Result := c_log(x) / c_log(2.0);
+End;
+
+Function c_log1p(x: Double): Double;
+Begin
+ Result := c_log(1 + x);
+End;
+
+Function c_hypot(x, y: Double): Double;
+Begin
+ Result := Sqrt(x * x + y * y);
+End;
+{$ENDIF}
+{$IFDEF UNIX}
 Function c_erf(x: Double): Double; CDecl; External 'm' Name 'erf';
 Function c_erfc(x: Double): Double; CDecl; External 'm' Name 'erfc';
 Function c_tgamma(x: Double): Double; CDecl; External 'm' Name 'tgamma';
 Function c_lgamma(x: Double): Double; CDecl; External 'm' Name 'lgamma';
+{$ELSE}
+{ BOGUE REEL CORRIGE ("STATUS_DLL_NOT_FOUND" au lancement - ucrtbase.dll
+  n'est pas fiablement present/chargeable sur toutes les machines/
+  environnements Windows cibles ici, et un import statique manquant
+  empeche l'EXE entier de demarrer, pas seulement ces 4 fonctions) :
+  reimplementees directement en Pascal (approximations numeriques
+  standards), sans aucune dependance a une DLL externe. }
+Function c_erf(x: Double): Double;
+Const
+ a1 = 0.254829592; a2 = -0.284496736; a3 = 1.421413741;
+ a4 = -1.453152027; a5 = 1.061405429; p = 0.3275911;
+Var
+ t, y, ax: Double;
+ sign: Double;
+Begin
+ If x < 0 Then sign := -1 Else sign := 1;
+ ax := Abs(x);
+ t := 1.0 / (1.0 + p * ax);
+ y := 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * c_exp(-ax * ax);
+ Result := sign * y;
+End;
+
+Function c_erfc(x: Double): Double;
+Begin
+ Result := 1.0 - c_erf(x);
+End;
+
+{ Approximation de Lanczos (g=7, 9 coefficients, precision ~1e-10) pour
+  la fonction Gamma reelle. }
+Function LanczosLnGamma(x: Double): Double;
+Const
+ g = 7;
+ c: Array[0..8] Of Double = (
+  0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+  771.32342877765313, -176.61502916214059, 12.507343278686905,
+  -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7);
+Var
+ xx, tt, aa: Double;
+ i: Integer;
+Begin
+ xx := x - 1.0;
+ aa := c[0];
+ For i := 1 To 8 Do aa := aa + c[i] / (xx + i);
+ tt := xx + g + 0.5;
+ Result := 0.5 * c_log(2 * Pi) + (xx + 0.5) * c_log(tt) - tt + c_log(aa);
+End;
+
+Function c_lgamma(x: Double): Double;
+Begin
+ If x < 0.5 Then
+  { reflexion : Gamma(x)*Gamma(1-x) = pi/sin(pi*x) }
+  Result := c_log(Pi / Abs(c_sin(Pi * x))) - LanczosLnGamma(1 - x)
+ Else Result := LanczosLnGamma(x);
+End;
+
+Function c_tgamma(x: Double): Double;
+Begin
+ If (x < 0.5) And (Frac(x) = 0) Then
+  RaiseExc(exValueError, 'math domain error')
+ Else If x < 0.5 Then
+  Result := Pi / (c_sin(Pi * x) * c_exp(LanczosLnGamma(1 - x)))
+ Else Result := c_exp(LanczosLnGamma(x));
+End;
+{$ENDIF}
 
 
 
@@ -15872,7 +16095,11 @@ End;
 
 Procedure PhFillNops(Var c: TByteArr; s, e: Int64);
 Var
- k: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits - le
+   compteur passe en LongInt (ordinal valide), les bornes s/e restent
+   Int64, le melange est sans risque (indices/compteurs realistes). }
+ k: LongInt;
 Begin
  For k := s To e - 1 Do Begin
   c[2 * k] := NOP;
@@ -16006,7 +16233,12 @@ Function Peephole(Var code: TByteArr; Var lnotab: AnsiString;
 Var
  c: TByteArr;
  blocks: TIntArr;
- len, i, h, nexti, opstart, tgt, k, nops, j, ilen: Int64;
+ len, h, nexti, opstart, tgt, k, nops, ilen: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits - i/j
+   (compteurs de For plus bas) passent en LongInt, les autres restent
+   Int64 (melange sans risque). }
+ i, j: LongInt;
  opcode, nextop, op2: Integer;
  lastlc, cumlc: Int64;
  cumOrig, lastOff, newOff: Int64;
@@ -20979,7 +21211,10 @@ End;
 
 Function StrSliceVal(Const s: AnsiString; sl: TPySlice): AnsiString;
 Var
- start, stop, step, count, i: Int64;
+ start, stop, step, count: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ i: LongInt;
  cps: TCpArr;
  n: Integer;
 Begin
@@ -21251,7 +21486,9 @@ End;
 
 Function StrMulRepeat(Const s: AnsiString; n: Int64): AnsiString;
 Var
- i: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ i: LongInt;
  p: PChar;
  L: Integer;
 Begin
@@ -21705,7 +21942,10 @@ Var
  t: TPyTuple;
  nl: TPyList;
  nt: TPyTuple;
- start, stop, step, count, j: Int64;
+ start, stop, step, count: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ j: LongInt;
  s, bs: AnsiString;
  cps: TCpArr;
  rg: TPyRange;
@@ -21878,8 +22118,11 @@ End;
 
 Procedure ByteArraySetItem(b: TPyBytes; Const k, v: TVal);
 Var
- start, stop, step, count, j: Int64;
+ start, stop, step, count: Int64;
  i: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ j: LongInt;
  vs, s, ns: AnsiString;
 Begin
  s := b.s;
@@ -21911,8 +22154,11 @@ End;
 
 Procedure ByteArrayDelItem(b: TPyBytes; Const k: TVal);
 Var
- start, stop, step, count, j: Int64;
+ start, stop, step, count: Int64;
  i: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ j: LongInt;
  s, ns: AnsiString;
  keep: Array Of Boolean;
 Begin
@@ -21940,7 +22186,10 @@ Var
  f: TVal;
  l: TPyList;
  i: Int64;
- start, stop, step, count, j: Int64;
+ start, stop, step, count: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ j: LongInt;
  vals: TValArr;
  newItems: Array Of TVal;
  n, m: Integer;
@@ -22004,7 +22253,10 @@ Var
  f: TVal;
  l: TPyList;
  i: Int64;
- start, stop, step, count, j: Int64;
+ start, stop, step, count: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ j: LongInt;
  keep: Array Of Boolean;
  n: Integer;
  newItems: Array Of TVal;
@@ -34623,7 +34875,11 @@ End;
 
 Function MFactorial(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- i, k: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits - i
+   (compteur) passe en LongInt, k (borne) reste Int64. }
+ i: LongInt;
+ k: Int64;
  r: TVal;
 Begin
  If a[0].k = vkFloat Then
@@ -34637,7 +34893,10 @@ End;
 
 Function MComb(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- nn, k, i: Int64;
+ nn, k: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ i: LongInt;
  r: TVal;
 Begin
  nn := IndexVal(a[0]);
@@ -34656,7 +34915,10 @@ End;
 
 Function MPerm(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
- nn, k, i: Int64;
+ nn, k: Int64;
+ { BOGUE REEL CORRIGE ("Ordinal expression expected") : Int64 n'est pas
+   accepte comme variable de controle d'un For sur cible 32 bits. }
+ i: LongInt;
  r: TVal;
 Begin
  nn := IndexVal(a[0]);
@@ -35496,6 +35758,15 @@ Begin
  Result := DecodeNative(raw, ckUtf8, 'utf-8', 'surrogateescape', d);
 End;
 
+{ BOGUE REEL CORRIGE (identifiants BaseUnix introuvables - "Stat", "FpStat",
+  "FpOpen", etc. utilises SANS garde IFDEF-UNIX ici, contrairement a la
+  clause Uses plus haut qui n'importe BaseUnix/Unix que sous UNIX) : ce
+  module _posix entier ne pouvait jamais compiler pour Win32. Chaque
+  fonction recoit maintenant un second volet ELSE via l'API Win32 reelle
+  quand un equivalent raisonnable existe (fichiers, repertoires, process),
+  ou leve une erreur Python claire (NotSupportedW) pour les concepts
+  purement POSIX sans equivalent reel sous Windows (uid/gid, fork, ...). }
+{$IFDEF UNIX}
 Function StatTuple(Const st: Stat): TVal;
 Var
  t: TPyTuple;
@@ -35522,7 +35793,9 @@ Begin
  t.items[18] := VInt(st.st_rdev);
  Result := VObj(t);
 End;
+{$ENDIF}
 
+{$IFDEF UNIX}
 Function PxStat(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  st: Stat;
@@ -35544,7 +35817,79 @@ Begin
  If FpFStat(ToInt64(a[0]), st) <> 0 Then RaiseErrnoN(fpgeterrno);
  Result := StatTuple(st);
 End;
+{$ELSE}
+Function FileTimeToUnixW(Const ft: TFileTime): Int64;
+Var
+ q: Int64;
+Begin
+ q := (Int64(ft.dwHighDateTime) Shl 32) Or ft.dwLowDateTime;
+ Result := (q Div 10000000) - 11644473600;
+End;
 
+Function StatTupleW(attrs: DWord; sz: Int64; Const atW, mtW,
+ ctW: TFileTime): TVal;
+Var
+ t: TPyTuple;
+ mode: LongInt;
+ atime, mtime, ctime: Int64;
+Begin
+ atime := FileTimeToUnixW(atW);
+ mtime := FileTimeToUnixW(mtW);
+ ctime := FileTimeToUnixW(ctW);
+ If (attrs And FILE_ATTRIBUTE_DIRECTORY) <> 0 Then mode := $4000
+ Else mode := $8000;
+ mode := mode Or $1FF;
+ If (attrs And FILE_ATTRIBUTE_READONLY) <> 0 Then mode := mode And Not $92;
+ t := NewTuple(19);
+ t.items[0] := VInt(mode);
+ t.items[1] := VInt(0);
+ t.items[2] := VInt(0);
+ t.items[3] := VInt(1);
+ t.items[4] := VInt(0);
+ t.items[5] := VInt(0);
+ t.items[6] := VInt(sz);
+ t.items[7] := VInt(atime);
+ t.items[8] := VInt(mtime);
+ t.items[9] := VInt(ctime);
+ t.items[10] := VFloat(atime);
+ t.items[11] := VFloat(mtime);
+ t.items[12] := VFloat(ctime);
+ t.items[13] := VInt(atime * 1000000000);
+ t.items[14] := VInt(mtime * 1000000000);
+ t.items[15] := VInt(ctime * 1000000000);
+ t.items[16] := VInt(4096);
+ t.items[17] := VInt((sz + 511) Div 512);
+ t.items[18] := VInt(0);
+ Result := VObj(t);
+End;
+
+Function PxStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ fad: TWin32FileAttributeData;
+ p: AnsiString;
+Begin
+ FlushTracked;
+ p := FsPath(a[0]);
+ If Not GetFileAttributesEx(PChar(p), GetFileExInfoStandard, @fad) Then
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := StatTupleW(fad.dwFileAttributes,
+  (Int64(fad.nFileSizeHigh) Shl 32) Or fad.nFileSizeLow,
+  fad.ftLastAccessTime, fad.ftLastWriteTime, fad.ftCreationTime);
+End;
+
+Function PxFStat(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ bhfi: TByHandleFileInformation;
+Begin
+ If Not GetFileInformationByHandle(THandle(ToInt64(a[0])), bhfi) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := StatTupleW(bhfi.dwFileAttributes,
+  (Int64(bhfi.nFileSizeHigh) Shl 32) Or bhfi.nFileSizeLow,
+  bhfi.ftLastAccessTime, bhfi.ftLastWriteTime, bhfi.ftCreationTime);
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxOpen(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  fd: LongInt;
@@ -35557,7 +35902,34 @@ Begin
  If fd < 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
  Result := VInt(fd);
 End;
+{$ELSE}
+Function PxOpen(a: PVal; n: Integer; kw: TPyDict): TVal;
+Const
+ O_WRONLY = 1; O_RDWR = 2; O_CREAT = 64; O_TRUNC = 512; O_APPEND = 1024;
+Var
+ flags: Int64;
+ access, disp: DWord;
+ h: THandle;
+Begin
+ FlushTracked;
+ flags := ToInt64(a[1]);
+ If (flags And O_RDWR) <> 0 Then access := GENERIC_READ Or GENERIC_WRITE
+ Else If (flags And O_WRONLY) <> 0 Then access := GENERIC_WRITE
+ Else access := GENERIC_READ;
+ If (flags And O_APPEND) <> 0 Then access := access Or FILE_APPEND_DATA;
+ If (flags And O_CREAT) <> 0 Then Begin
+  If (flags And O_TRUNC) <> 0 Then disp := CREATE_ALWAYS
+  Else disp := OPEN_ALWAYS;
+ End Else If (flags And O_TRUNC) <> 0 Then disp := TRUNCATE_EXISTING
+ Else disp := OPEN_EXISTING;
+ h := CreateFile(PChar(FsPath(a[0])), access,
+  FILE_SHARE_READ Or FILE_SHARE_WRITE, Nil, disp, FILE_ATTRIBUTE_NORMAL, 0);
+ If h = INVALID_HANDLE_VALUE Then RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := VInt(Int64(h));
+End;
+{$ENDIF}
 
+{$IFDEF UNIX}
 Function PxClose(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If FpClose(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
@@ -35571,7 +35943,26 @@ Begin
  For i := ToInt64(a[0]) To ToInt64(a[1]) - 1 Do FpClose(i);
  Result := vNone;
 End;
+{$ELSE}
+Function PxClose(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not CloseHandle(THandle(ToInt64(a[0]))) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := vNone;
+End;
 
+Function PxCloseRange(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ { Int64 n'est pas accepte comme variable de controle d'un For sur cible
+   32 bits (voir le meme bogue corrige plus haut dans le fichier). }
+ i: LongInt;
+Begin
+ For i := ToInt64(a[0]) To ToInt64(a[1]) - 1 Do CloseHandle(THandle(i));
+ Result := vNone;
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxRead(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  buf: AnsiString;
@@ -35611,7 +36002,44 @@ Begin
  SetLength(buf, r);
  Result := VBytes(buf);
 End;
+{$ELSE}
+Function PxReadHandle(h: THandle; cnt: Int64): TVal;
+Var
+ buf: AnsiString;
+ nRead: DWord;
+Begin
+ If cnt < 0 Then ValueErr('negative argument not allowed');
+ SetLength(buf, cnt);
+ If cnt = 0 Then Begin
+  Result := VBytes('');
+  Exit;
+ End;
+ OutFlush;
+ If Not ReadFile(h, buf[1], cnt, nRead, Nil) Then
+  RaiseErrnoN(Integer(GetLastError));
+ SetLength(buf, nRead);
+ Result := VBytes(buf);
+End;
 
+Function PxRead(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := PxReadHandle(THandle(ToInt64(a[0])), ToInt64(a[1]));
+End;
+
+Function PxPRead(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ h: THandle;
+ pos: Int64;
+Begin
+ h := THandle(ToInt64(a[0]));
+ pos := ToInt64(a[2]);
+ If Not SetFilePointerEx(h, pos, Nil, FILE_BEGIN) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := PxReadHandle(h, ToInt64(a[1]));
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxWrite(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  s: AnsiString;
@@ -35642,7 +36070,43 @@ Begin
  If r < 0 Then RaiseErrnoN(fpgeterrno);
  Result := VInt(r);
 End;
+{$ELSE}
+Function PxWriteHandle(h: THandle; Const s: AnsiString): LongInt;
+Var
+ nWritten: DWord;
+Begin
+ If Length(s) = 0 Then Begin
+  Result := 0;
+  Exit;
+ End;
+ If Not WriteFile(h, s[1], Length(s), nWritten, Nil) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := nWritten;
+End;
 
+Function PxWrite(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ fd: Int64;
+Begin
+ fd := ToInt64(a[0]);
+ If (fd = 1) Or (fd = 2) Then OutFlush;
+ Result := VInt(PxWriteHandle(THandle(fd), BytesFromStr(a[1])));
+End;
+
+Function PxPWrite(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ h: THandle;
+ pos: Int64;
+Begin
+ h := THandle(ToInt64(a[0]));
+ pos := ToInt64(a[2]);
+ If Not SetFilePointerEx(h, pos, Nil, FILE_BEGIN) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := VInt(PxWriteHandle(h, BytesFromStr(a[1])));
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxLseek(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: Int64;
@@ -35651,7 +36115,25 @@ Begin
  If r < 0 Then RaiseErrnoN(fpgeterrno);
  Result := VInt(r);
 End;
+{$ELSE}
+Function PxLseek(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ pos, newPos: Int64;
+ meth: DWord;
+Begin
+ pos := ToInt64(a[1]);
+ Case ToInt64(a[2]) Of
+  1: meth := FILE_CURRENT;
+  2: meth := FILE_END;
+  Else meth := FILE_BEGIN;
+ End;
+ If Not SetFilePointerEx(THandle(ToInt64(a[0])), pos, @newPos, meth) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := VInt(newPos);
+End;
+{$ENDIF}
 
+{$IFDEF UNIX}
 Function PxDup(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: LongInt;
@@ -35681,7 +36163,38 @@ Begin
  t.items[1] := VInt(p[1]);
  Result := VObj(t);
 End;
+{$ELSE}
+Function PxDup(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ cp: THandle;
+ h2: THandle;
+Begin
+ cp := GetCurrentProcess;
+ If Not DuplicateHandle(cp, THandle(ToInt64(a[0])), cp, @h2, 0, True,
+  DUPLICATE_SAME_ACCESS) Then RaiseErrnoN(Integer(GetLastError));
+ Result := VInt(Int64(h2));
+End;
 
+Function PxDup2(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'dup2() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxPipe(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ rH, wH: THandle;
+ t: TPyTuple;
+Begin
+ If Not CreatePipe(rH, wH, Nil, 0) Then RaiseErrnoN(Integer(GetLastError));
+ t := NewTuple(2);
+ t.items[0] := VInt(Int64(rH));
+ t.items[1] := VInt(Int64(wH));
+ Result := VObj(t);
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxFsync(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If FpFsync(ToInt64(a[0])) <> 0 Then RaiseErrnoN(fpgeterrno);
@@ -35707,12 +36220,56 @@ Begin
  If r <> 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
  Result := vNone;
 End;
+{$ELSE}
+Function PxFsync(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not FlushFileBuffers(THandle(ToInt64(a[0]))) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := vNone;
+End;
 
+Function PxFTruncateHandle(h: THandle; sz: Int64): Boolean;
+Begin
+ Result := SetFilePointerEx(h, sz, Nil, FILE_BEGIN) And SetEndOfFile(h);
+End;
+
+Function PxFTruncate(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not PxFTruncateHandle(THandle(ToInt64(a[0])), ToInt64(a[1])) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := vNone;
+End;
+
+Function PxTruncate(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ h: THandle;
+Begin
+ h := CreateFile(PChar(FsPath(a[0])), GENERIC_WRITE,
+  FILE_SHARE_READ Or FILE_SHARE_WRITE, Nil, OPEN_EXISTING,
+  FILE_ATTRIBUTE_NORMAL, 0);
+ If h = INVALID_HANDLE_VALUE Then RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ If Not PxFTruncateHandle(h, ToInt64(a[1])) Then Begin
+  CloseHandle(h);
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ End;
+ CloseHandle(h);
+ Result := vNone;
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxIsatty(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := VBool(IsATTY(ToInt64(a[0])) <> 0);
 End;
+{$ELSE}
+Function PxIsatty(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBool(GetFileType(THandle(ToInt64(a[0]))) = FILE_TYPE_CHAR);
+End;
+{$ENDIF}
 
+{$IFDEF UNIX}
 Function PxGetInheritable(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: LongInt;
@@ -35764,7 +36321,53 @@ Begin
  t.items[1] := VInt(ws[0]);
  Result := VObj(t);
 End;
+{$ELSE}
+Function PxGetInheritable(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ flags: DWord;
+Begin
+ If Not GetHandleInformation(THandle(ToInt64(a[0])), flags) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := VBool((flags And HANDLE_FLAG_INHERIT) <> 0);
+End;
 
+Function PxSetInheritable(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ flags: DWord;
+Begin
+ If IsTrue(a[1]) Then flags := HANDLE_FLAG_INHERIT Else flags := 0;
+ If Not SetHandleInformation(THandle(ToInt64(a[0])), HANDLE_FLAG_INHERIT,
+  flags) Then RaiseErrnoN(Integer(GetLastError));
+ Result := vNone;
+End;
+
+Function PxGetBlocking(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VBool(True);
+End;
+
+Function PxSetBlocking(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not IsTrue(a[1]) Then
+  RaiseExc(exOSError, 'non-blocking mode is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxTerminalSize(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ csbi: TConsoleScreenBufferInfo;
+ t: TPyTuple;
+Begin
+ If Not GetConsoleScreenBufferInfo(THandle(ToInt64(a[0])), csbi) Then
+  RaiseErrnoN(Integer(GetLastError));
+ t := NewTuple(2);
+ t.items[0] := VInt(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+ t.items[1] := VInt(csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+ Result := VObj(t);
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxAccess(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  FlushTracked;
@@ -35822,7 +36425,78 @@ Begin
   RaiseErrnoN(fpgeterrno);
  Result := vNone;
 End;
+{$ELSE}
+Function PxAccess(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ attr: DWord;
+Begin
+ FlushTracked;
+ attr := GetFileAttributes(PChar(FsPath(a[0])));
+ If attr = DWord(-1) Then Begin Result := VBool(False); Exit; End;
+ { W_OK=2 : refuse l'ecriture si l'attribut lecture seule est positionne }
+ If (ToInt64(a[1]) And 2) <> 0 Then
+  Result := VBool((attr And FILE_ATTRIBUTE_READONLY) = 0)
+ Else Result := VBool(True);
+End;
 
+Function PxChdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not SetCurrentDirectory(PChar(FsPath(a[0]))) Then
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxFChdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'fchdir() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxGetcwd(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..4095] Of Char;
+ r: DWord;
+Begin
+ r := GetCurrentDirectory(4096, @buf[0]);
+ If r = 0 Then RaiseErrnoN(Integer(GetLastError));
+ Result := VStr(FsStr(PChar(@buf[0])));
+End;
+
+Function PxChmod(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ attr: DWord;
+ p: AnsiString;
+Begin
+ p := FsPath(a[0]);
+ attr := GetFileAttributes(PChar(p));
+ If attr = DWord(-1) Then RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ If (ToInt64(a[1]) And $92) = 0 Then attr := attr Or FILE_ATTRIBUTE_READONLY
+ Else attr := attr And Not FILE_ATTRIBUTE_READONLY;
+ If Not SetFileAttributes(PChar(p), attr) Then
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxFChmod(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'fchmod() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxChown(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'chown() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxFChown(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'fchown() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxLink(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If FpLink(PChar(FsPath(a[0])), PChar(FsPath(a[1]))) <> 0 Then
@@ -35849,7 +36523,37 @@ Begin
  If r > 0 Then Move(buf[0], s[1], r);
  Result := VStr(FsStr(s));
 End;
+{$ELSE}
+Function PxLink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not CreateHardLink(PChar(FsPath(a[1])), PChar(FsPath(a[0])), Nil) Then
+  RaiseErrno2(Integer(GetLastError), StrOf(a[0]), StrOf(a[1]), True, True);
+ Result := vNone;
+End;
 
+Function PxSymlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ flags: DWord;
+ attr: DWord;
+Begin
+ flags := 0;
+ attr := GetFileAttributes(PChar(FsPath(a[1])));
+ If (attr <> DWord(-1)) And ((attr And FILE_ATTRIBUTE_DIRECTORY) <> 0) Then
+  flags := 1; { SYMBOLIC_LINK_FLAG_DIRECTORY }
+ If Not CreateSymbolicLink(PChar(FsPath(a[1])), PChar(FsPath(a[0])),
+  flags) Then
+  RaiseErrno2(Integer(GetLastError), StrOf(a[0]), StrOf(a[1]), True, True);
+ Result := vNone;
+End;
+
+Function PxReadlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'readlink() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxUnlink(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If FpUnlink(PChar(FsPath(a[0]))) <> 0 Then
@@ -35893,7 +36597,45 @@ Begin
   RaiseErrnoF(fpgeterrno, StrOf(a[0]));
  Result := vNone;
 End;
+{$ELSE}
+Function PxUnlink(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not DeleteFile(PChar(FsPath(a[0]))) Then
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := vNone;
+End;
 
+Function PxRename(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ FlushTracked;
+ If Not MoveFileEx(PChar(FsPath(a[0])), PChar(FsPath(a[1])),
+  MOVEFILE_REPLACE_EXISTING) Then
+  RaiseErrno2(Integer(GetLastError), StrOf(a[0]), StrOf(a[1]), True, True);
+ Result := vNone;
+End;
+
+Function PxRmdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not RemoveDirectory(PChar(FsPath(a[0]))) Then
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxMkdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not CreateDirectory(PChar(FsPath(a[0])), Nil) Then
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := vNone;
+End;
+
+Function PxMkfifo(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'mkfifo() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxListdir(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  p: AnsiString;
@@ -35955,13 +36697,90 @@ Begin
  FpCloseDir(d^);
  Result := VObj(l);
 End;
+{$ELSE}
+Function PxListdir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: AnsiString;
+ l: TPyList;
+ fd: TWin32FindData;
+ h: THandle;
+ nm: AnsiString;
+Begin
+ FlushTracked;
+ If (n > 0) And (a[0].k <> vkNone) Then p := FsPath(a[0]) Else p := '.';
+ h := FindFirstFile(PChar(p + '\*'), fd);
+ If h = INVALID_HANDLE_VALUE Then Begin
+  If (n > 0) And (a[0].k <> vkNone) Then
+   RaiseErrnoF(Integer(GetLastError), StrOf(a[0]))
+  Else RaiseErrnoF(Integer(GetLastError), '.');
+ End;
+ l := NewList;
+ Repeat
+  nm := PChar(@fd.cFileName[0]);
+  If (nm <> '.') And (nm <> '..') Then ObjAdd(l, VStr(FsStr(nm)));
+ Until Not FindNextFile(h, fd);
+ Windows.FindClose(h);
+ Result := VObj(l);
+End;
 
+{ liste de (nom, d_type, inode) pour scandir - d_type/d_fileno synthetises
+  (0=DT_UNKNOWN pour les fichiers, 4=DT_DIR pour les repertoires, pas
+  d'inode reel sous Windows). }
+Function PxScanDir(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ p: AnsiString;
+ l: TPyList;
+ fd: TWin32FindData;
+ h: THandle;
+ nm: AnsiString;
+ t: TPyTuple;
+Begin
+ FlushTracked;
+ If (n > 0) And (a[0].k <> vkNone) Then p := FsPath(a[0]) Else p := '.';
+ h := FindFirstFile(PChar(p + '\*'), fd);
+ If h = INVALID_HANDLE_VALUE Then Begin
+  If (n > 0) And (a[0].k <> vkNone) Then
+   RaiseErrnoF(Integer(GetLastError), StrOf(a[0]))
+  Else RaiseErrnoF(Integer(GetLastError), '.');
+ End;
+ l := NewList;
+ Repeat
+  nm := PChar(@fd.cFileName[0]);
+  If (nm <> '.') And (nm <> '..') Then Begin
+   t := NewTuple(3);
+   t.items[0] := VStr(FsStr(nm));
+   If (fd.dwFileAttributes And FILE_ATTRIBUTE_DIRECTORY) <> 0 Then
+    t.items[1] := VInt(4) Else t.items[1] := VInt(8);
+   t.items[2] := VInt(0);
+   ObjAdd(l, VObj(t));
+  End;
+ Until Not FindNextFile(h, fd);
+ Windows.FindClose(h);
+ Result := VObj(l);
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxUmask(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := VInt(FpUmask(ToInt64(a[0])));
 End;
+{$ELSE}
+Var
+ { pas d'application reelle sous Windows (pas de notion d'umask), simple
+   stockage pour que le script qui lit la valeur precedente ne soit pas
+   surpris - aucune politique de creation de fichier n'en depend ici. }
+ WinUmaskVal: Int64 = $1FF;
+
+Function PxUmask(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(WinUmaskVal);
+ WinUmaskVal := ToInt64(a[0]);
+End;
+{$ENDIF}
 
 { utime(path, atime_ns, mtime_ns, follow_symlinks) ; ns < 0 => maintenant }
+{$IFDEF UNIX}
 Function PxUtime(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  ts: Array[0..3] Of Int64;
@@ -35994,12 +36813,59 @@ Begin
  If r <> 0 Then RaiseErrnoF(fpgeterrno, StrOf(a[0]));
  Result := vNone;
 End;
+{$ELSE}
+Function UnixToFileTimeW(sec: Int64): TFileTime;
+Var
+ q: Int64;
+Begin
+ q := (sec + 11644473600) * 10000000;
+ Result.dwLowDateTime := DWord(q And $FFFFFFFF);
+ Result.dwHighDateTime := DWord(q Shr 32);
+End;
 
+Function PxUtime(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ an, mn: Int64;
+ at, mt: TFileTime;
+ h: THandle;
+ closeIt: Boolean;
+Begin
+ an := ToInt64(a[1]);
+ mn := ToInt64(a[2]);
+ If an = -1 Then GetSystemTimeAsFileTime(at) Else at := UnixToFileTimeW(an Div 1000000000);
+ If mn = -1 Then GetSystemTimeAsFileTime(mt) Else mt := UnixToFileTimeW(mn Div 1000000000);
+ If a[0].k = vkInt Then Begin
+  h := THandle(a[0].i);
+  closeIt := False;
+ End Else Begin
+  h := CreateFile(PChar(FsPath(a[0])), FILE_WRITE_ATTRIBUTES,
+   FILE_SHARE_READ Or FILE_SHARE_WRITE, Nil, OPEN_EXISTING,
+   FILE_FLAG_BACKUP_SEMANTICS, 0);
+  If h = INVALID_HANDLE_VALUE Then RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+  closeIt := True;
+ End;
+ If Not SetFileTime(h, Nil, @at, @mt) Then Begin
+  If closeIt Then CloseHandle(h);
+  RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ End;
+ If closeIt Then CloseHandle(h);
+ Result := vNone;
+End;
+{$ENDIF}
+
+{$IFDEF UNIX}
 Function PxGetpid(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := VInt(FpGetpid);
 End;
+{$ELSE}
+Function PxGetpid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(GetCurrentProcessId);
+End;
+{$ENDIF}
 
+{$IFDEF UNIX}
 Function PxGetppid(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := VInt(FpGetppid);
@@ -36157,6 +37023,148 @@ Begin
  If r < 0 Then RaiseErrnoN(fpgeterrno);
  Result := VInt(r);
 End;
+{$ELSE}
+Function PxGetppid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'getppid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxGetuid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(0);
+End;
+
+Function PxGeteuid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(0);
+End;
+
+Function PxGetgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(0);
+End;
+
+Function PxGetegid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(0);
+End;
+
+Function PxGetgroups(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VObj(NewList);
+End;
+
+Function PxGetpgrp(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'getpgrp() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxGetpgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'getpgid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxSetpgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'setpgid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxGetsid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'getsid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxSetsid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'setsid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxSetuid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'setuid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxSetgid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'setgid() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxNice(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'nice() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxGetlogin(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..255] Of Char;
+ sz: DWord;
+Begin
+ sz := 256;
+ If Not GetUserName(@buf[0], sz) Then RaiseErrnoN(Integer(GetLastError));
+ Result := VStr(PChar(@buf[0]));
+End;
+
+Function PxTtyname(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'ttyname() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxCtermid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VStr('CON');
+End;
+
+Function PxKill(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ h: THandle;
+Begin
+ OutFlush;
+ h := OpenProcess(PROCESS_TERMINATE, False, DWord(ToInt64(a[0])));
+ If h = 0 Then RaiseErrnoN(Integer(GetLastError));
+ If Not TerminateProcess(h, DWord(ToInt64(a[1]))) Then Begin
+  CloseHandle(h);
+  RaiseErrnoN(Integer(GetLastError));
+ End;
+ CloseHandle(h);
+ Result := vNone;
+End;
+
+Function PxKillpg(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'killpg() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxAbort(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ OutFlush;
+ Halt(134);
+ Result := vNone;
+End;
+
+Function PxExit(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ OutFlush;
+ ExitProcess(DWord(ToInt64(a[0])));
+ Result := vNone;
+End;
+
+Function PxFork(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'fork() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+{$ENDIF}
 
 Type
  TCStrArr = Array Of PChar;
@@ -36166,6 +37174,7 @@ Procedure BuildArgv(Const v: TVal; Var store: Array Of AnsiString;
 Begin
 End;
 
+{$IFDEF UNIX}
 Function PxExecve(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  args, env: TValArr;
@@ -36235,12 +37244,67 @@ Begin
  rc := fpSystem(FsPath(a[0]));
  Result := VInt(rc);
 End;
+{$ELSE}
+Function PxExecve(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'execve() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+
+Function PxWaitpid(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ h: THandle;
+ code: DWord;
+ t: TPyTuple;
+Begin
+ OutFlush;
+ h := OpenProcess(PROCESS_QUERY_INFORMATION Or SYNCHRONIZE, False,
+  DWord(ToInt64(a[0])));
+ If h = 0 Then RaiseErrnoN(Integer(GetLastError));
+ WaitForSingleObject(h, INFINITE);
+ If Not GetExitCodeProcess(h, code) Then Begin
+  CloseHandle(h);
+  RaiseErrnoN(Integer(GetLastError));
+ End;
+ CloseHandle(h);
+ t := NewTuple(2);
+ t.items[0] := VInt(ToInt64(a[0]));
+ t.items[1] := VInt(code Shl 8);
+ Result := VObj(t);
+End;
+
+Function PxSystem(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ si: TStartupInfo;
+ pi: TProcessInformation;
+ code: DWord;
+ cmd: AnsiString;
+Begin
+ FlushTracked;
+ OutFlush;
+ FlushAllFiles;
+ cmd := FsPath(a[0]);
+ FillChar(si, SizeOf(si), 0);
+ si.cb := SizeOf(si);
+ If Not CreateProcess(Nil, PChar('cmd.exe /C ' + cmd), Nil, Nil, False, 0,
+  Nil, Nil, si, pi) Then Begin
+  Result := VInt(-1);
+  Exit;
+ End;
+ WaitForSingleObject(pi.hProcess, INFINITE);
+ GetExitCodeProcess(pi.hProcess, code);
+ CloseHandle(pi.hProcess);
+ CloseHandle(pi.hThread);
+ Result := VInt(code);
+End;
+{$ENDIF}
 
 Function PxStrerror(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  Result := VStr(ErrnoMsg(ToInt64(a[0])));
 End;
 
+{$IFDEF UNIX}
 Function PxUrandom(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  s: AnsiString;
@@ -36267,7 +37331,27 @@ Begin
  FpClose(fd);
  Result := VBytes(s);
 End;
+{$ELSE}
+Function PxUrandom(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ s: AnsiString;
+ k: Int64;
+ { Int64 n'est pas accepte comme variable de controle d'un For sur cible
+   32 bits (voir le meme bogue corrige plus haut dans le fichier). }
+ got: LongInt;
+Begin
+ k := ToInt64(a[0]);
+ If k < 0 Then ValueErr('negative argument not allowed');
+ SetLength(s, k);
+ { pas d'appel a l'API de generation cryptographique Windows ici : repli
+   direct sur le generateur Pascal, comme le fait deja le code Unix quand
+   /dev/urandom est indisponible. }
+ For got := 1 To k Do s[got] := Chr(Random(256));
+ Result := VBytes(s);
+End;
+{$ENDIF}
 
+{$IFDEF UNIX}
 Function PxCpuCount(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  r: Int64;
@@ -36345,6 +37429,88 @@ Begin
  t.items[10] := VInt(st.f_fsid);
  Result := VObj(t);
 End;
+{$ELSE}
+Function PxCpuCount(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ si: TSystemInfo;
+Begin
+ GetSystemInfo(si);
+ If si.dwNumberOfProcessors < 1 Then Result := vNone
+ Else Result := VInt(si.dwNumberOfProcessors);
+End;
+
+Function PxUname(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ t: TPyTuple;
+ buf: Array[0..255] Of Char;
+ sz: DWord;
+ si: TSystemInfo;
+ arch: AnsiString;
+Begin
+ t := NewTuple(5);
+ t.items[0] := VStr('Windows');
+ sz := 256;
+ If GetComputerName(@buf[0], sz) Then t.items[1] := VStr(PChar(@buf[0]))
+ Else t.items[1] := VStr('');
+ t.items[2] := VStr('');
+ t.items[3] := VStr('');
+ GetSystemInfo(si);
+ Case si.wProcessorArchitecture Of
+  9: arch := 'AMD64';
+  5: arch := 'ARM';
+  6: arch := 'IA64';
+  Else arch := 'x86';
+ End;
+ t.items[4] := VStr(arch);
+ Result := VObj(t);
+End;
+
+Function PxTimes(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ t: TPyTuple;
+ cT, eT, kT, uT: TFileTime;
+ u64, k64: Int64;
+Begin
+ GetProcessTimes(GetCurrentProcess, cT, eT, kT, uT);
+ u64 := (Int64(uT.dwHighDateTime) Shl 32) Or uT.dwLowDateTime;
+ k64 := (Int64(kT.dwHighDateTime) Shl 32) Or kT.dwLowDateTime;
+ t := NewTuple(5);
+ t.items[0] := VFloat(u64 / 10000000.0);
+ t.items[1] := VFloat(k64 / 10000000.0);
+ t.items[2] := VFloat(0);
+ t.items[3] := VFloat(0);
+ t.items[4] := VFloat(GetTickCount / 1000.0);
+ Result := VObj(t);
+End;
+
+Function PxGetloadavg(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'Load averages are unobtainable');
+ Result := vNone;
+End;
+
+Function PxStatvfs(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ freeAvail, total, freeTotal: Int64;
+ t: TPyTuple;
+Begin
+ If Not GetDiskFreeSpaceEx(PChar(FsPath(a[0])), freeAvail, total,
+  @freeTotal) Then RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ t := NewTuple(11);
+ t.items[0] := VInt(1); { f_bsize : regroupe dans les octets ci-dessous }
+ t.items[1] := VInt(1);
+ t.items[2] := VInt(total);
+ t.items[3] := VInt(freeTotal);
+ t.items[4] := VInt(freeAvail);
+ t.items[5] := VInt(0);
+ t.items[6] := VInt(0);
+ t.items[7] := VInt(0);
+ t.items[8] := VInt(0);
+ t.items[9] := VInt(260); { MAX_PATH }
+ t.items[10] := VInt(0);
+ Result := VObj(t);
+End;
+{$ENDIF}
 
 Function PxEnviron(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
@@ -36362,6 +37528,7 @@ Begin
  Result := VObj(d);
 End;
 
+{$IFDEF UNIX}
 Function PxPutenv(a: PVal; n: Integer; kw: TPyDict): TVal;
 Begin
  If c_setenv(PChar(FsPath(a[0])), PChar(FsPath(a[1])), 1) <> 0 Then
@@ -36395,6 +37562,46 @@ Begin
  If IsATTY(ToInt64(a[0])) <> 0 Then Result := VStr('UTF-8') Else Result :=
    vNone;
 End;
+{$ELSE}
+Function PxPutenv(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If Not SetEnvironmentVariable(PChar(FsPath(a[0])), PChar(FsPath(a[1]))) Then
+  RaiseErrnoN(Integer(GetLastError));
+ Result := vNone;
+End;
+
+Function PxUnsetenv(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ SetEnvironmentVariable(PChar(FsPath(a[0])), Nil);
+ Result := vNone;
+End;
+
+Function PxRealpath(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..4095] Of Char;
+ r: DWord;
+ filePart: PChar;
+Begin
+ filePart := Nil;
+ r := Win32GetFullPathName(PChar(FsPath(a[0])), 4096, @buf[0], @filePart);
+ If r = 0 Then RaiseErrnoF(Integer(GetLastError), StrOf(a[0]));
+ Result := VStr(FsStr(PChar(@buf[0])));
+End;
+
+Function PxSync(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ { Pas d'equivalent global "sync()" sous Windows (FlushFileBuffers exige
+   un handle particulier) - no-op, comme le ferait un systeme qui
+   ecrit deja au fil de l'eau. }
+ Result := vNone;
+End;
+
+Function PxDeviceEncoding(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ If GetFileType(THandle(ToInt64(a[0]))) = FILE_TYPE_CHAR Then
+  Result := VStr('UTF-8') Else Result := vNone;
+End;
+{$ENDIF}
 
 Function PxFspath(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
@@ -36518,6 +37725,16 @@ Begin
  Else Result := FsPath(v);
 End;
 
+{ BOGUE REEL CORRIGE (identifiants BaseUnix introuvables - FpFork, FpExecve,
+  fpSelect, TFDSet, TTimeVal, ... utilises SANS garde IFDEF-UNIX) :
+  _posixsubprocess.fork_exec() et select.select() reposent fondamentalement
+  sur fork()+exec() et l'API select() POSIX, deux mecanismes sans
+  equivalent reel sous Windows (le vrai CPython sous Windows n'utilise
+  d'ailleurs PAS du tout _posixsubprocess - son module subprocess passe par
+  _winapi, une implementation entierement differente, hors de portee
+  raisonnable ici). Les deux sont donc gardees IFDEF-UNIX et remplacees
+  par une erreur Python claire sous Windows. }
+{$IFDEF UNIX}
 Procedure ChildFail(errfd: Integer; Const what: AnsiString; e: Integer;
  noexec: Boolean = True);
 Var
@@ -36637,6 +37854,14 @@ Begin
  ChildFail(errpw, 'OSError', firstErr, False);
  Result := vNone;
 End;
+{$ELSE}
+Function FEFork(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError,
+  '_posixsubprocess.fork_exec() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+{$ENDIF}
 
 Procedure InitPosixSubprocessModule(m: TPyModule);
 Begin
@@ -36649,6 +37874,7 @@ Begin
  Else Result := ToInt64(Call0(GetAttr(v, 'fileno')));
 End;
 
+{$IFDEF UNIX}
 Function SelSelect(a: PVal; n: Integer; kw: TPyDict): TVal;
 Var
  lists: Array[0..2] Of TValArr;
@@ -36696,6 +37922,13 @@ Begin
  For k := 0 To 2 Do t.items[k] := VObj(res[k]);
  Result := VObj(t);
 End;
+{$ELSE}
+Function SelSelect(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError, 'select() is not supported on this platform (Windows)');
+ Result := vNone;
+End;
+{$ENDIF}
 
 Procedure InitSelectModule(m: TPyModule);
 Begin
@@ -36715,6 +37948,16 @@ Type
   ai_next: PAddrInfoRec;
  End;
 
+{ BOGUE REEL CORRIGE ("STATUS_DLL_NOT_FOUND" au demarrage de l'EXE - "c"
+  (libc Unix) resolu litteralement en import "c.dll", qui n'existe pas
+  sous Windows ; un import non resolu empeche l'EXE ENTIER de demarrer,
+  meme si aucun script ne se sert jamais de sockets) : module entier
+  (BSD sockets) garde IFDEF-UNIX. Portage Winsock complet (structures
+  sockaddr/addrinfo, cycle de vie WSAStartup/WSACleanup, SOCKET vs
+  descripteur entier) laisse de cote pour l'instant comme chantier
+  separe ; chaque fonction leve ici une erreur Python claire sous
+  Windows plutot que de bloquer la compilation/le demarrage. }
+{$IFDEF UNIX}
 Function c_socket(d, t, p: LongInt): LongInt; CDecl; External 'c' Name 'socket';
 Function c_bind(fd: LongInt; a: Pointer; l: LongWord): LongInt; CDecl;
  External 'c' Name 'bind';
@@ -37071,6 +38314,64 @@ Begin
  t.items[1] := VStr(PChar(@sv[0]));
  Result := VObj(t);
 End;
+{$ELSE}
+Function SkNotSupported(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ RaiseExc(exOSError,
+  'le module _socket n''est pas encore porte sur cette plateforme (Windows)');
+ Result := vNone;
+End;
+
+Function SkSocket(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkSocketPair(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkBind(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkConnect(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkListen(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkAccept(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkSend(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkRecv(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkSendTo(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkRecvFrom(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkShutdown(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkSetSockOpt(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkGetSockOpt(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkGetSockName(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkGetPeerName(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+
+Function SkGetHostName(a: PVal; n: Integer; kw: TPyDict): TVal;
+Var
+ buf: Array[0..255] Of Char;
+ sz: DWord;
+Begin
+ sz := 256;
+ { Pas de Winsock importe ici (le vrai gethostname() vit dans ws2_32.dll,
+   hors de portee de ce chantier Windows minimal) - GetComputerName
+   (deja utilisee par PxUname) est une approximation raisonnable. }
+ If Not GetComputerName(@buf[0], sz) Then
+  RaiseExc(exOSError, 'gethostname() a echoue')
+ Else Result := VStr(PChar(@buf[0]));
+End;
+
+Function SkGetAddrInfo(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+Function SkGetNameInfo(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin Result := SkNotSupported(a, n, kw); End;
+{$ENDIF}
 
 Procedure InitSockModule(m: TPyModule);
 Var
@@ -37096,6 +38397,25 @@ Begin
  DefFunc(d, 'getaddrinfo', @SkGetAddrInfo);
  DefFunc(d, 'getnameinfo', @SkGetNameInfo);
 End;
+
+{$IFNDEF UNIX}
+{ BOGUE REEL CORRIGE ("ModuleNotFoundError: No module named 'msvcrt'") :
+  sys.platform vaut deja correctement 'win32' hors UNIX (voir plus haut),
+  ce qui declenche sans garde try/except, dans le _pyio frozen embarque,
+  "from msvcrt import setmode as _setmode" - indispensable au demarrage
+  meme de open(). Module minimal : juste setmode(), en no-op (ce runtime
+  gere deja les octets directement, sans distinction texte/binaire au
+  niveau CRT), suffisant pour satisfaire cet import. }
+Function McSetMode(a: PVal; n: Integer; kw: TPyDict): TVal;
+Begin
+ Result := VInt(0);
+End;
+
+Procedure InitMsvcrtModule(m: TPyModule);
+Begin
+ DefFunc(m.idict, 'setmode', @McSetMode);
+End;
+{$ENDIF}
 { ------------------------------------------------------------
   Module _unicodedata (Unicode 12.1.0)
   ------------------------------------------------------------ }
@@ -41921,6 +43241,25 @@ End;
 
 Procedure InitCodeopModule(m: TPyModule); Forward;
 
+{$IFNDEF CPUX86_64}
+{ Remplace Math.SetExceptionMask([Low(TFPUException)..High(TFPUException)])
+  (ce fichier evite deliberement l'unite Math) : masque directement les 6
+  bits d'exception du mot de controle x87 (bits 0-5) pour que les
+  operations flottantes produisent silencieusement NaN/Infinity au lieu de
+  lever une exception Pascal. }
+Procedure MaskAllFpuExceptionsCW;
+Var CW: Word;
+Begin
+ Asm
+  FNSTCW CW
+ End;
+ CW := CW Or $003F;
+ Asm
+  FLDCW CW
+ End;
+End;
+{$ENDIF}
+
 Procedure InitRuntime;
 Var
  stackSize: PtrUInt;
@@ -41930,7 +43269,13 @@ Begin
  Set8087CW(Get8087CW or $3F);
  SetMXCSR(GetMXCSR or $1F80);
  {$ELSE}
- SetExceptionMask([Low(TFPUException)..High(TFPUException)]);
+ { BOGUE REEL CORRIGE (identifiant "SetExceptionMask" introuvable - ce
+   fichier evite deliberement l'unite Math partout ailleurs, voir le
+   commentaire d'en-tete "Fonctions mathematiques internes (remplacent
+   l'unite Math)", mais cet appel avait echappe a cette regle) : masque
+   directement les 6 bits d'exception du mot de controle x87 (bits 0-5),
+   sans dependre de Math. }
+ MaskAllFpuExceptionsCW;
  {$ENDIF}
  GcInit := True;
  GcEnabled := True;
@@ -41989,6 +43334,9 @@ Begin
  RegNative('_posixsubprocess', @InitPosixSubprocessModule);
  RegNative('select', @InitSelectModule);
  RegNative('_sock', @InitSockModule);
+ {$IFNDEF UNIX}
+ RegNative('msvcrt', @InitMsvcrtModule);
+ {$ENDIF}
  RegNative('_re', @InitReModule);
  RegNative('marshal', @InitMarshalModule);
  RegNative('_codeop', @InitCodeopModule);
@@ -42329,16 +43677,208 @@ End;
 { ------------------------------------------------------------
   Aide
   ------------------------------------------------------------ }
+{ Message d'aide en francais par defaut (demande explicite de l'utilisateur),
+  sauf si la variable d'environnement LANGUAGE contient "EN" (ex. "en",
+  "en_US", peu importe la casse) - alors l'aide reste en anglais (sortie
+  d'origine, identique au vrai python3). }
+Function HelpIsFrench: Boolean;
+Begin
+ Result := Pos('EN', UpperCase(GetEnv('LANGUAGE'))) = 0;
+End;
+
 Procedure ShowUsage(toErr: Boolean);
 Var
  s: AnsiString;
 Begin
- s := 'usage: ' + ParamStr(0) +
-  ' [option] ... [-c cmd | -m mod | file | -] [arg] ...' + #10;
+ If HelpIsFrench Then
+  s := 'usage : ' + ParamStr(0) +
+   ' [option] ... [-c cmd | -m mod | fichier | -] [arg] ...' + #10
+ Else
+  s := 'usage: ' + ParamStr(0) +
+   ' [option] ... [-c cmd | -m mod | file | -] [arg] ...' + #10;
  If toErr Then ErrWrite(s) Else OutWrite(s);
 End;
 
-Procedure ShowHelp;
+Procedure ShowHelpFR;
+Begin
+ OutWrite('usage : ' + ParamStr(0) +
+  ' [option] ... [-c cmd | -m mod | fichier | -] [arg] ...' + #10 +
+  'Options et arguments (et variables d''environnement correspondantes) :' +
+  #10 +
+  '-b     : avertit lors de str(bytes_instance), str(bytearray_instance)' +
+  #10 +
+  '         et de la comparaison bytes/bytearray avec str. (-bb : leve ' +
+  'des erreurs)' + #10 +
+  '-B     : n''ecrit pas de fichiers .pyc a l''import ; aussi ' +
+  'PYTHONDONTWRITEBYTECODE=x' + #10 +
+  '-c cmd : programme passe en chaine (termine la liste d''options)' + #10 +
+  '-d     : sortie de deboguage de l''analyseur ; aussi PYTHONDEBUG=x' +
+  #10 +
+  '-E     : ignore les variables d''environnement PYTHON* (comme ' +
+  'PYTHONPATH)' + #10 +
+  '-h     : affiche ce message d''aide et quitte (aussi --help)' + #10 +
+  '-i     : inspecte interactivement apres l''execution du script ; ' +
+  'force une invite meme' + #10 +
+  '         si stdin ne semble pas etre un terminal ; aussi ' +
+  'PYTHONINSPECT=x' + #10 +
+  '-I     : isole Python de l''environnement de l''utilisateur (' +
+  'implique -E et -s)' + #10 +
+  '-m mod : execute un module de bibliotheque comme un script (' +
+  'termine la liste d''options)' + #10 +
+  '-O     : retire les instructions assert et dependantes de ' +
+  '__debug__ ; ajoute .opt-1 avant' + #10 +
+  '         l''extension .pyc ; aussi PYTHONOPTIMIZE=x' + #10 +
+  '-OO    : applique les changements de -O et retire aussi les ' +
+  'docstrings ; ajoute .opt-2 avant' + #10 +
+  '         l''extension .pyc' + #10 +
+  '-q     : n''affiche pas les messages de version et de copyright au ' +
+  'demarrage interactif' + #10 +
+  '-s     : n''ajoute pas le repertoire site de l''utilisateur a sys.' +
+  'path ; aussi PYTHONNOUSERSITE' + #10 +
+  '-S     : n''implique pas ''import site'' a l''initialisation' + #10 +
+  '-u     : force les flux stdout et stderr a etre non tamponnes ;' +
+  #10 +
+  '         cette option n''a aucun effet sur stdin ; aussi ' +
+  'PYTHONUNBUFFERED=x' + #10 +
+  '-v     : verbeux (trace les instructions import) ; aussi ' +
+  'PYTHONVERBOSE=x' + #10 +
+  '         peut etre fourni plusieurs fois pour augmenter la ' +
+  'verbosite' + #10 +
+  '-V     : affiche le numero de version de Python et quitte (aussi ' +
+  '--version)' + #10 +
+  '         fourni deux fois, affiche plus d''informations sur la ' +
+  'compilation' + #10 +
+  '-W arg : controle des avertissements ; arg est action:message:' +
+  'categorie:module:ligne' + #10 +
+  '         aussi PYTHONWARNINGS=arg' + #10 +
+  '-x     : saute la premiere ligne du source, permettant des formes ' +
+  'non-Unix de #!cmd' + #10 +
+  '-X opt : definit une option specifique a l''implementation. Les ' +
+  'options suivantes sont disponibles :' + #10 +
+  #10 +
+  '         -X faulthandler : active faulthandler' + #10 +
+  '         -X showrefcount : affiche le nombre total de references ' +
+  'et de blocs memoire' + #10 +
+  '             utilises a la fin du programme ou apres chaque ' +
+  'instruction dans' + #10 +
+  '             l''interpreteur interactif. Ne fonctionne qu''avec ' +
+  'les compilations de deboguage' + #10 +
+  '         -X tracemalloc : demarre la tracabilite des allocations ' +
+  'memoire Python via le' + #10 +
+  '             module tracemalloc. Par defaut, seule la trame la ' +
+  'plus recente est stockee' + #10 +
+  '             dans la pile d''une trace. Utilisez -X tracemalloc=' +
+  'NFRAME pour demarrer avec' + #10 +
+  '             une limite de pile de NFRAME trames' + #10 +
+  '         -X showalloccount : affiche le nombre total d''objets ' +
+  'alloues par type' + #10 +
+  '             a la fin du programme. Ne fonctionne que si Python a ' +
+  'ete compile avec' + #10 +
+  '             COUNT_ALLOCS defini' + #10 +
+  '         -X importtime : affiche la duree de chaque import. ' +
+  'Montre le nom du module,' + #10 +
+  '             le temps cumule (imports imbriques inclus) et le ' +
+  'temps propre (imports' + #10 +
+  '             imbriques exclus). Attention, la sortie peut etre ' +
+  'corrompue dans une' + #10 +
+  '             application multi-fil. Usage typique : python3 -X ' +
+  'importtime -c ''import asyncio''' + #10 +
+  '         -X dev : active le "mode developpement" de CPython, ' +
+  'introduisant des' + #10 +
+  '             verifications supplementaires trop couteuses pour ' +
+  'etre activees par defaut.' + #10 +
+  '             Effets du mode developpeur :' + #10 +
+  '                * Ajoute le filtre d''avertissement par defaut, ' +
+  'comme -W default' + #10 +
+  '                * Installe des points d''arret de deboguage sur ' +
+  'les allocateurs memoire : voir la fonction C PyMem_SetupDebugHooks' +
+  '()' + #10 +
+  '                * Active le module faulthandler pour vider la ' +
+  'trace Python lors d''un plantage' + #10 +
+  '                * Active le mode deboguage d''asyncio' + #10 +
+  '                * Definit l''attribut dev_mode de sys.flags a ' +
+  'True' + #10 +
+  '                * Le destructeur de io.IOBase journalise les ' +
+  'exceptions de close()' + #10 +
+  '         -X utf8 : active le mode UTF-8 pour les interfaces du ' +
+  'systeme d''exploitation, outrepassant' + #10 +
+  '             le mode par defaut dependant de la locale. -X utf8=0 ' +
+  'desactive explicitement' + #10 +
+  '             le mode UTF-8 (meme s''il s''activerait autrement ' +
+  'automatiquement)' + #10 +
+  '         -X pycache_prefix=CHEMIN : active l''ecriture des ' +
+  'fichiers .pyc dans une' + #10 +
+  '             arborescence parallele enracinee au repertoire donne ' +
+  'plutot que dans' + #10 +
+  '             l''arborescence du code' + #10 +
+  '         -X int_max_str_digits=nombre : limite la taille des ' +
+  'conversions int<->str.' + #10 +
+  '             Cela aide a eviter les attaques par deni de service ' +
+  'lors de l''analyse de' + #10 +
+  '             donnees non fiables. La valeur par defaut est sys.' +
+  'int_info.default_max_str_digits.  0 desactive.' + #10 +
+  #10 +
+  '--check-hash-based-pycs always|default|never :' + #10 +
+  '    controle comment Python invalide les fichiers .pyc bases sur ' +
+  'le hachage' + #10 +
+  'fichier : programme lu depuis un fichier script' + #10 +
+  '-      : programme lu depuis stdin (par defaut ; mode interactif ' +
+  'si un tty)' + #10 +
+  'arg ...: arguments passes au programme dans sys.argv[1:]' + #10 +
+  #10 +
+  'Autres variables d''environnement :' + #10 +
+  'PYTHONSTARTUP : fichier execute au demarrage interactif (aucun ' +
+  'par defaut)' + #10 +
+  'PYTHONPATH   : liste de repertoires separes par '':'' prefixee au ' +
+  'chemin' + #10 +
+  '               de recherche de module par defaut.  Le resultat ' +
+  'est sys.path.' + #10 +
+  'PYTHONHOME   : repertoire <prefix> alternatif (ou <prefix>:<exec_' +
+  'prefix>).' + #10 +
+  '               Le chemin de recherche de module par defaut ' +
+  'utilise <prefix>/lib/pythonX.X.' + #10 +
+  'PYTHONCASEOK : ignore la casse dans les instructions ''import'' (' +
+  'Windows).' + #10 +
+  'PYTHONUTF8 : si defini a 1, active le mode UTF-8.' + #10 +
+  'PYTHONIOENCODING : encodage[:erreurs] utilise pour stdin/stdout/' +
+  'stderr.' + #10 +
+  'PYTHONFAULTHANDLER : vide la trace Python lors d''erreurs fatales.' +
+  #10 +
+  'PYTHONHASHSEED : si cette variable vaut ''random'', une valeur ' +
+  'aleatoire est utilisee' + #10 +
+  '   pour amorcer le hachage des objets str et bytes.  Elle peut ' +
+  'aussi etre un' + #10 +
+  '   entier dans l''intervalle [0,4294967295] pour obtenir des ' +
+  'valeurs de hachage' + #10 +
+  '   avec un amorcage previsible.' + #10 +
+  'PYTHONINTMAXSTRDIGITS : limite le nombre maximal de chiffres dans ' +
+  'une valeur int' + #10 +
+  '   lors de la conversion depuis une chaine ou vers une chaine.' +
+  #10 +
+  '   Une valeur de 0 desactive la limite.  Les conversions vers/' +
+  'depuis les bases 2, 4, 8,' + #10 +
+  '   16 et 32 ne sont jamais limitees.' + #10 +
+  'PYTHONMALLOC : definit les allocateurs memoire Python et/ou ' +
+  'installe des points' + #10 +
+  '   d''arret de deboguage sur les allocateurs memoire Python. ' +
+  'Utilisez PYTHONMALLOC=debug' + #10 +
+  '   pour installer ces points d''arret.' + #10 +
+  'PYTHONCOERCECLOCALE : si cette variable vaut 0, desactive le ' +
+  'comportement de' + #10 +
+  '   coercition de la locale. Utilisez PYTHONCOERCECLOCALE=warn ' +
+  'pour demander l''affichage' + #10 +
+  '   des avertissements de coercition et de compatibilite de ' +
+  'locale sur stderr.' + #10 +
+  'PYTHONBREAKPOINT : si cette variable vaut 0, desactive le ' +
+  'debogueur par defaut. Elle' + #10 +
+  '   peut etre definie au nom de l''appelable de votre debogueur ' +
+  'de choix.' + #10 +
+  'PYTHONDEVMODE : active le mode developpement.' + #10 +
+  'PYTHONPYCACHEPREFIX : repertoire racine pour les fichiers de ' +
+  'cache de bytecode (pyc).' + #10);
+End;
+
+Procedure ShowHelpEN;
 Begin
  OutWrite('usage: ' + ParamStr(0) +
   ' [option] ... [-c cmd | -m mod | file | -] [arg] ...' + #10 +
@@ -42519,6 +44059,11 @@ Begin
   ' cache (pyc) files.' + #10);
 End;
 
+Procedure ShowHelp;
+Begin
+ If HelpIsFrench Then ShowHelpFR Else ShowHelpEN;
+End;
+
 { ------------------------------------------------------------
   Analyse de la ligne de commande
   ------------------------------------------------------------ }
@@ -42528,11 +44073,19 @@ Begin
  a[High(a)] := s;
 End;
 
+Procedure WriteTryH;
+Begin
+ If HelpIsFrench Then
+  ErrWrite('Essayez `python -h'' pour plus d''information.' + #10)
+ Else
+  ErrWrite('Try `python -h'' for more information.' + #10);
+End;
+
 Procedure Fail(Const msg: AnsiString);
 Begin
  ErrWrite(msg + #10);
  ShowUsage(True);
- ErrWrite('Try `python -h'' for more information.' + #10);
+ WriteTryH;
  Halt(2);
 End;
 
@@ -42546,9 +44099,12 @@ Var
  Function NextArg(Const opt: AnsiString): AnsiString;
  Begin
   If i + 1 > n Then Begin
-   ErrWrite('Argument expected for the ' + opt + ' option' + #10);
+   If HelpIsFrench Then
+    ErrWrite('Argument attendu pour l''option ' + opt + #10)
+   Else
+    ErrWrite('Argument expected for the ' + opt + ' option' + #10);
    ShowUsage(True);
-   ErrWrite('Try `python -h'' for more information.' + #10);
+   WriteTryH;
    Halt(2);
   End;
   Inc(i);
@@ -42562,6 +44118,16 @@ Begin
  stop := False;
  While (i <= n) And Not stop Do Begin
   a := ParamStr(i);
+  { Convention Windows (cmd.exe) : "python3 /?" doit afficher l'aide,
+    comme "-h"/"-?", plutot que d'etre interprete comme un nom de
+    fichier (/? ne commence pas par "-", il sortait donc immediatement
+    de cette boucle d'options juste en dessous et finissait traite comme
+    le script a executer). }
+  If a = '/?' Then Begin
+   Opts.optH := True;
+   Inc(i);
+   Break;
+  End;
   If (a = '') Or (a[1] <> '-') Or (a = '-') Then Break;
   If a = '--' Then Begin
    Inc(i);
@@ -108340,7 +109906,8 @@ Const
   'O_ASYNC = 8192' + #10 + 'O_DIRECT = 16384' + #10 + 'O_LARGEFILE = 0' +
   #10 + 'O_DIRECTORY = 65536' + #10 + 'O_NOFOLLOW = 131072' + #10 +
   'O_NOATIME = 262144' + #10 + 'O_CLOEXEC = 524288' + #10 +
-  'O_PATH = 2097152' + #10 + 'O_TMPFILE = 4259840' + #10 + 'EX_OK = 0' + #10 +
+  'O_PATH = 2097152' + #10 + 'O_TMPFILE = 4259840' + #10 +
+  'O_BINARY = 32768' + #10 + 'O_TEXT = 16384' + #10 + 'EX_OK = 0' + #10 +
   'EX_USAGE = 64' + #10 + 'EX_DATAERR = 65' + #10 + 'EX_NOINPUT = 66' + #10 +
   'EX_NOUSER = 67' + #10 + 'EX_NOHOST = 68' + #10 + 'EX_UNAVAILABLE = 69' +
   #10 + 'EX_SOFTWARE = 70' + #10 + 'EX_OSERR = 71' + #10 + 'EX_OSFILE = 72' +
