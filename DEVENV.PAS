@@ -3152,7 +3152,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER, WK_IIS, WK_STORYBOOK);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER, WK_IIS, WK_STORYBOOK, WK_HELP);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -3400,6 +3400,93 @@ Type
   ToolSel      : Integer;        { outil actif (0 = Pointeur)       }
  End;
  PFormEditor = ^TFormEditor;
+
+ { --- Visionneuse d aide WinHelp (.HLP) - types deplaces ICI (et non pres  }
+ { du reste du sous-systeme Hlpv*, bien plus bas) car TWindowNode (plus     }
+ { bas mais toujours avant le sous-systeme Hlpv* complet) a besoin de       }
+ { PHlpvState pour son champ HelpTab (Aide > Documentation en ligne en      }
+ { onglet MDI, 2026-10-24, demande explicite - "Raccourcis clavier" et les  }
+ { autres entrees du menu Aide restent sur le principe historique de boite  }
+ { de dialogue modale, voir HlpvShow/HlpvModalChrome plus bas). Format      }
+ { WinHelp document pres de la definition des fonctions Hlpv*. --- }
+Const
+ HLPV_MAX_TOPICS = 1024;
+ HLPV_MAX_CTX    = 2048;
+ HLPV_MAX_RUNS   = 4096;
+ HLPV_MAGIC      : LongInt = $00035F3F;
+
+Type
+ PHlpByteArr = ^THlpByteArr;
+ THlpByteArr = Array[0..0] Of Byte;
+
+ THlpvTopic = Record
+  Offset    : LongInt;   { offset dans le buffer TOPIC decompresse }
+  RtfStart  : LongInt;   { offset des octets RTF utiles }
+  RtfLen    : LongInt;   { taille RTF }
+ End;
+
+ THlpvCtx = Record
+  Hash      : LongInt;
+  TopicOfs  : LongInt;
+ End;
+
+ THlpvRunKind = (HRK_Text, HRK_Newline);
+
+ THlpvRun = Record
+  Kind     : THlpvRunKind;
+  Txt      : String[80];
+  X, Y     : Integer;
+  W        : Integer;
+  Bold     : Boolean;
+  Italic   : Boolean;
+  Under    : Boolean;
+  Color    : Byte;
+  Hot      : Boolean;
+  Target   : String[60];
+ End;
+
+ { Types tableau NOMMES (et non anonymes "Array[...] Of ..." repetes) -     }
+ { FPC traite deux declarations "Array[...] Of X" ecrites separement comme  }
+ { des types DIFFERENTS et incompatibles, meme identiques octet pres :      }
+ { necessaire pour que THlpvState.Topics/CtxTbl/Runs/BackHistory ci-dessous }
+ { et les globales HlpvTopics/HlpvCtxTbl/HlpvRuns/HlpvBackHistory (plus     }
+ { bas, voir leur disclosure) restent assignables l un a l autre dans       }
+ { HlpvSaveState/HlpvLoadState. }
+ THlpvTopicArr = Array[1..HLPV_MAX_TOPICS] Of THlpvTopic;
+ THlpvCtxArr   = Array[1..HLPV_MAX_CTX] Of THlpvCtx;
+ THlpvRunArr   = Array[1..HLPV_MAX_RUNS] Of THlpvRun;
+ THlpvHistArr  = Array[1..32] Of Integer;
+
+ { Etat COMPLET d un onglet Aide (un onglet = une copie independante -      }
+ { contrairement a HexEditor/GridEditor/FormEditor dont le type porte deja  }
+ { directement toutes ses donnees, l etat Hlpv* "vivant" reste expose       }
+ { comme des globales plates (HlpvFileBuf/HlpvTopics/...), exactement       }
+ { comme ActiveEditor/ActiveGridEditor ailleurs dans ce fichier - ce record }
+ { n est qu un BAGAGE pour sauvegarder/restaurer cette copie vivante au     }
+ { changement d onglet, voir HlpvSaveState/HlpvLoadState. FileBuf/          }
+ { TopicData DOIVENT survivre tant que l onglet reste ouvert (pas liberes a }
+ { la fin du chargement comme le fait HlpvShow en mode modal) : naviguer    }
+ { vers un autre topic (HlpvNavigateTo/HlpvLayoutTopic) relit le RTF brut   }
+ { depuis TopicData, meme apres un changement d onglet aller-retour. }
+ THlpvState = Record
+  FileBuf     : PHlpByteArr;
+  FileLen     : LongInt;
+  TopicData   : PHlpByteArr;
+  TopicLen    : LongInt;
+  Topics      : THlpvTopicArr;
+  NumTopics   : Integer;
+  CtxTbl      : THlpvCtxArr;
+  NumCtx      : Integer;
+  Runs        : THlpvRunArr;
+  NumRuns     : Integer;
+  DocHeight   : Integer;
+  ScrollY     : Integer;
+  CurTopic    : Integer;
+  BackHistory : THlpvHistArr;
+  HistCount   : Integer;
+  Title       : String;
+ End;
+ PHlpvState = ^THlpvState;
 
  { Menu contextuel du Terminal (2026-09-01, demande explicite de           }
  { l utilisateur) - "Copier en image"/"Sauvegarder en image" : formats     }
@@ -6724,6 +6811,11 @@ Type
   HexEditor      : PHexEditor;
   GridEditor     : PGridEditor;
   FormEditor     : PFormEditor;
+  HelpTab        : PHlpvState;   { Aide > Documentation en ligne (onglet    }
+                                  { MDI, 2026-10-24, demande explicite -     }
+                                  { voir THlpvState pres des autres types     }
+                                  { Hlpv*). Nil pour toute fenetre qui n en   }
+                                  { est pas une. }
   EmuTab         : TEmulatorPanel;
   C64Snap        : TC64Snapshot;
   NesSnap        : TNesSnapshot;
@@ -17613,6 +17705,7 @@ Begin
  Node^.HexEditor := Nil;
  Node^.GridEditor := Nil;
  Node^.FormEditor := Nil;
+ Node^.HelpTab := Nil;
  Node^.Next := Nil;
  If WinMgr.Tail = Nil Then WinMgr.Head := Node Else WinMgr.Tail^.Next := Node;
  WinMgr.Tail := Node;
@@ -20849,59 +20942,38 @@ Procedure SyncActiveWindowIn(Idx: Integer); Forward;
   ignores.
 }
 
-Const
- HLPV_MAX_TOPICS = 1024;
- HLPV_MAX_CTX    = 2048;
- HLPV_MAX_RUNS   = 4096;
- HLPV_MAGIC      : LongInt = $00035F3F;
-
-Type
- PHlpByteArr = ^THlpByteArr;
- THlpByteArr = Array[0..0] Of Byte;
-
- THlpvTopic = Record
-  Offset    : LongInt;   { offset dans le buffer TOPIC decompresse }
-  RtfStart  : LongInt;   { offset des octets RTF utiles }
-  RtfLen    : LongInt;   { taille RTF }
- End;
-
- THlpvCtx = Record
-  Hash      : LongInt;
-  TopicOfs  : LongInt;
- End;
-
- THlpvRunKind = (HRK_Text, HRK_Newline);
-
- THlpvRun = Record
-  Kind     : THlpvRunKind;
-  Txt      : String[80];
-  X, Y     : Integer;
-  W        : Integer;
-  Bold     : Boolean;
-  Italic   : Boolean;
-  Under    : Boolean;
-  Color    : Byte;
-  Hot      : Boolean;
-  Target   : String[60];
- End;
-
+{ HLPV_MAX_*/PHlpByteArr/THlpByteArr/THlpvTopic/THlpvCtx/THlpvRunKind/       }
+{ THlpvRun/THlpvState/PHlpvState sont declares BIEN PLUS HAUT (pres de      }
+{ PFormEditor, ~ligne 3402) : TWindowNode (~ligne 6721, lui-meme bien       }
+{ avant ce point-ci) a besoin de PHlpvState pour son champ HelpTab (Aide >  }
+{ Documentation en ligne en onglet MDI, 2026-10-24, demande explicite) -    }
+{ Pascal exige qu un type soit declare avant sa premiere utilisation, donc  }
+{ ces types ne pouvaient pas rester ici ou ils vivaient a l origine. Les    }
+{ globales ci-dessous restent la "copie active" live, exactement comme      }
+{ ActiveEditor/ActiveGridEditor/ActiveFormEditor ailleurs dans ce fichier - }
+{ voir HlpvSaveState/HlpvLoadState (bascule d onglet) et CreateHelpWindow.  }
 Var
  HlpvFileBuf     : PHlpByteArr;     { fichier .HLP entier en memoire }
  HlpvFileLen     : LongInt;
  HlpvTopicData   : PHlpByteArr;     { donnees |TOPIC decompressees }
  HlpvTopicLen    : LongInt;
- HlpvTopics      : Array[1..HLPV_MAX_TOPICS] Of THlpvTopic;
+ HlpvTopics      : THlpvTopicArr;
  HlpvNumTopics   : Integer;
- HlpvCtxTbl      : Array[1..HLPV_MAX_CTX] Of THlpvCtx;
+ HlpvCtxTbl      : THlpvCtxArr;
  HlpvNumCtx      : Integer;
- HlpvRuns        : Array[1..HLPV_MAX_RUNS] Of THlpvRun;
+ HlpvRuns        : THlpvRunArr;
  HlpvNumRuns     : Integer;
  HlpvDocHeight   : Integer;
  HlpvScrollY     : Integer;
  HlpvCurTopic    : Integer;        { index dans HlpvTopics }
- HlpvBackHistory : Array[1..32] Of Integer;
+ HlpvBackHistory : THlpvHistArr;
  HlpvHistCount   : Integer;
  HlpvTitle       : String;
+ { Vrai = visionneuse modale historique (chrome complet : bouton [X],       }
+ { "Esc=Fermer" dans l indicateur du bas) ; Faux = onglet MDI (ferme comme  }
+ { n importe quel autre onglet, pas de bouton redondant) - voir HlpvDraw/    }
+ { HlpvHandleClick, positionne par HlpvShow (True) et DrawHelpTab (False). }
+ HlpvModalChrome : Boolean;
 
 { Lecture little-endian dans un buffer brut }
 Function HlpvLE16(Buf: PHlpByteArr; Ofs: LongInt): Word;
@@ -21557,9 +21629,12 @@ Begin
  S := 'Aide';
  If HlpvTitle <> '' Then S := 'Aide - ' + HlpvTitle;
  OutTextXY(HlpvViewX1 + 6, HlpvViewY1 + 6, S);
- { Bouton fermer [X] a droite }
- SetColor(15);
- OutTextXY(HlpvViewX2 - 16, HlpvViewY1 + 6, '[X]');
+ { Bouton fermer [X] a droite - mode modal seulement : un onglet MDI a deja }
+ { son propre mecanisme de fermeture (voir HlpvModalChrome). }
+ If HlpvModalChrome Then Begin
+  SetColor(15);
+  OutTextXY(HlpvViewX2 - 16, HlpvViewY1 + 6, '[X]');
+ End;
  { Bordure }
  SetColor(CLR_BORDER);
  Rectangle(HlpvViewX1, HlpvViewY1, HlpvViewX2, HlpvViewY2);
@@ -21577,8 +21652,12 @@ Begin
  Bar(HlpvViewX1 + 1, HlpvViewY2 - 14,
      HlpvViewX2 - 1, HlpvViewY2 - 1);
  SetColor(15);
- OutTextXY(HlpvViewX1 + 6, HlpvViewY2 - 12,
-  'Esc=Fermer  Fleches/PgUp/PgDn=Defilement  Clic=Lien  Backspace=Retour');
+ If HlpvModalChrome Then
+  OutTextXY(HlpvViewX1 + 6, HlpvViewY2 - 12,
+   'Esc=Fermer  Fleches/PgUp/PgDn=Defilement  Clic=Lien  Backspace=Retour')
+ Else
+  OutTextXY(HlpvViewX1 + 6, HlpvViewY2 - 12,
+   'Fleches/PgUp/PgDn=Defilement  Clic=Lien  Backspace=Retour');
 End;
 
 Procedure HlpvScrollBy(Delta: Integer);
@@ -21617,8 +21696,9 @@ Var
  I, SY: Integer;
  NewIdx: Integer;
 Begin
- { Clic sur [X] ? }
- If (MY >= HlpvViewY1) And (MY < HlpvViewY1 + HLPV_TITLEBAR_H) And
+ { Clic sur [X] ? (mode modal seulement, voir HlpvModalChrome/HlpvDraw) }
+ If HlpvModalChrome And
+    (MY >= HlpvViewY1) And (MY < HlpvViewY1 + HLPV_TITLEBAR_H) And
     (MX >= HlpvViewX2 - 18) And (MX <= HlpvViewX2 - 2) Then Begin
   HlpvDone := True;
   Exit;
@@ -21679,6 +21759,7 @@ End;
 Procedure HlpvShow(FileName, Context: String);
 Var Idx: Integer;
 Begin
+ HlpvModalChrome := True;
  If Not HlpvLoadFile(FileName) Then Begin
   ShowMessageBox('Aide',
    'Impossible de charger le fichier d aide :' + #10 + FileName + #10 +
@@ -21732,6 +21813,170 @@ Begin
  If HlpvFileBuf <> Nil Then Begin
   FreeMem(HlpvFileBuf, HlpvFileLen); HlpvFileBuf := Nil;
  End;
+ FullRepaintNeeded := True;
+End;
+
+{ ----------------------------------------------------------------------
+  Aide en onglet MDI (2026-10-24, demande explicite de l'utilisateur :
+  "Documentation en ligne" ouvre desormais un onglet MDI normal - "plusieurs
+  disponibles par un simple clic d'onglet" - plutot que la boite modale
+  historique ci-dessus, qui reste utilisee telle quelle par les AUTRES
+  entrees du menu Aide (ex. "Raccourcis clavier", voir HlpvShow/
+  HlpvModalChrome). Un NOUVEL onglet est cree a CHAQUE appel de
+  CreateHelpWindow (comme CreateEditorWindow), jamais reactive comme les
+  fenetres singletons (IIS/Storybook) - plusieurs onglets d'aide peuvent
+  donc rester ouverts simultanement, chacun sur son propre topic/historique.
+  ---------------------------------------------------------------------- }
+
+{ --- Copie les globales Hlpv* "vivantes" (voir leur disclosure pres de    }
+{ leur declaration) dans/depuis la sauvegarde d'un onglet - meme principe   }
+{ exact que ActiveEditor/ActiveGridEditor, juste fait a la main car l etat  }
+{ vivant n est pas deja un seul record ici. --- }
+Procedure HlpvSaveState(Var H: THlpvState);
+Begin
+ H.FileBuf := HlpvFileBuf;         H.FileLen := HlpvFileLen;
+ H.TopicData := HlpvTopicData;     H.TopicLen := HlpvTopicLen;
+ H.Topics := HlpvTopics;           H.NumTopics := HlpvNumTopics;
+ H.CtxTbl := HlpvCtxTbl;           H.NumCtx := HlpvNumCtx;
+ H.Runs := HlpvRuns;               H.NumRuns := HlpvNumRuns;
+ H.DocHeight := HlpvDocHeight;     H.ScrollY := HlpvScrollY;
+ H.CurTopic := HlpvCurTopic;
+ H.BackHistory := HlpvBackHistory; H.HistCount := HlpvHistCount;
+ H.Title := HlpvTitle;
+End;
+
+Procedure HlpvLoadState(Var H: THlpvState);
+Begin
+ HlpvFileBuf := H.FileBuf;         HlpvFileLen := H.FileLen;
+ HlpvTopicData := H.TopicData;     HlpvTopicLen := H.TopicLen;
+ HlpvTopics := H.Topics;           HlpvNumTopics := H.NumTopics;
+ HlpvCtxTbl := H.CtxTbl;           HlpvNumCtx := H.NumCtx;
+ HlpvRuns := H.Runs;               HlpvNumRuns := H.NumRuns;
+ HlpvDocHeight := H.DocHeight;     HlpvScrollY := H.ScrollY;
+ HlpvCurTopic := H.CurTopic;
+ HlpvBackHistory := H.BackHistory; HlpvHistCount := H.HistCount;
+ HlpvTitle := H.Title;
+End;
+
+{ --- Dessine l onglet Aide actif - meme contenu que HlpvDraw (reutilisee   }
+{ telle quelle), juste la geometrie d abord recalculee depuis le rectangle  }
+{ REEL de l onglet (redimensionnable/repositionnable comme tout autre       }
+{ onglet, contrairement a la geometrie fixe centree de la boite modale). --- }
+Procedure DrawHelpTab(Var Node: TWindowNode);
+Begin
+ HlpvViewX1 := Node.Win.X;
+ HlpvViewY1 := Node.Win.Y;
+ HlpvViewX2 := Node.Win.X + Node.Win.Width - 1;
+ HlpvViewY2 := Node.Win.Y + Node.Win.Height - 1;
+ HlpvModalChrome := False;
+ HlpvDraw;
+End;
+
+Procedure HandleHelpMouse(Var Node: TWindowNode; Ev: TEvent);
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ HlpvViewX1 := Node.Win.X;
+ HlpvViewY1 := Node.Win.Y;
+ HlpvViewX2 := Node.Win.X + Node.Win.Width - 1;
+ HlpvViewY2 := Node.Win.Y + Node.Win.Height - 1;
+ If Ev.MouseBtn = MB_LEFT Then HlpvHandleClick(Ev.MouseX, Ev.MouseY);
+End;
+
+{ --- Memes touches que la boucle modale HlpvRun, SAUF Esc (ne ferme pas un }
+{ onglet MDI - la fermeture passe par le mecanisme d onglet habituel). --- }
+Procedure HandleHelpKey(Var Node: TWindowNode; Ev: TEvent);
+Begin
+ HlpvViewX1 := Node.Win.X;
+ HlpvViewY1 := Node.Win.Y;
+ HlpvViewX2 := Node.Win.X + Node.Win.Width - 1;
+ HlpvViewY2 := Node.Win.Y + Node.Win.Height - 1;
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  Case Ev.KeyCode Of
+   72: HlpvScrollBy(-HLPV_LINE_HEIGHT);                        { Fleche haut }
+   80: HlpvScrollBy(HLPV_LINE_HEIGHT);                         { Fleche bas  }
+   73: HlpvScrollBy(-(HlpvViewY2 - HlpvViewY1) Div 2);          { PgUp       }
+   81: HlpvScrollBy((HlpvViewY2 - HlpvViewY1) Div 2);           { PgDn       }
+   71: HlpvScrollY := 0;                                       { Home       }
+   79: HlpvScrollBy(HlpvDocHeight);                             { End       }
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #8 Then HlpvNavigateBack;
+ End;
+End;
+
+{ --- Ouvre TOUJOURS un NOUVEL onglet (jamais de reactivation - voir la     }
+{ disclosure de tete) : memes etapes de chargement que HlpvShow, MAIS       }
+{ FileBuf/TopicData ne sont PAS liberes a la fin (l onglet reste ouvert,    }
+{ naviguer vers un autre topic en a besoin - voir la disclosure de          }
+{ THlpvState). Memes 2 bogues a eviter que CreateIISWindow/CreateExt-       }
+{ ManagerWindow : SyncActiveWindowOut AVANT d ajouter le noeud, geometrie   }
+{ posee AVANT HlpvLayoutTopic (qui a besoin de la largeur reelle). --- }
+Procedure CreateHelpWindow(FileName, Context: String);
+Var
+ TopicIdx, WinIdx: Integer;
+ Node: PWindowNode;
+Begin
+ HlpvModalChrome := False;
+ If Not HlpvLoadFile(FileName) Then Begin
+  ShowMessageBox('Aide',
+   'Impossible de charger le fichier d aide :' + #10 + FileName + #10 +
+   'Le fichier est absent, illisible ou n est pas au format WinHelp.',
+   MB_OK, MI_WARNING);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ If Not HlpvLoadTopicFile Then Begin
+  ShowMessageBox('Aide',
+   'Le fichier |TOPIC interne est introuvable ou corrompu :' + #10 + FileName,
+   MB_OK, MI_WARNING);
+  If HlpvFileBuf <> Nil Then Begin
+   FreeMem(HlpvFileBuf, HlpvFileLen); HlpvFileBuf := Nil;
+  End;
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ HlpvScanTopics;
+ HlpvLoadContext;
+ HlpvLoadSystemTitle;
+ If HlpvNumTopics = 0 Then Begin
+  ShowMessageBox('Aide', 'Le fichier d aide ne contient aucun topic.',
+   MB_OK, MI_WARNING);
+  If HlpvTopicData <> Nil Then Begin
+   FreeMem(HlpvTopicData, HlpvTopicLen); HlpvTopicData := Nil;
+  End;
+  FreeMem(HlpvFileBuf, HlpvFileLen); HlpvFileBuf := Nil;
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ TopicIdx := 0;
+ If Context <> '' Then TopicIdx := HlpvFindTopicByContext(Context);
+ If TopicIdx = 0 Then TopicIdx := 1;
+ HlpvCurTopic := TopicIdx;
+ HlpvScrollY := 0;
+ HlpvHistCount := 0;
+
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ WinIdx := WinMgr.WinCount;
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_HELP;
+ Node^.Win.FileName := FileName;
+ Node^.Win.Title := 'Aide';
+ Node^.Win.TabIndex := WinIdx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ HlpvLayoutTopic(HlpvCurTopic, Node^.Win.Width - 16);
+ New(Node^.HelpTab);
+ HlpvSaveState(Node^.HelpTab^);
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := WinIdx;
+ WinMgr.ActiveNode := Node;
+ EditorReady := True;
  FullRepaintNeeded := True;
 End;
 
@@ -21791,7 +22036,11 @@ Begin
  { Pour les fichiers .HLP : visionneuse WinHelp dediee (rendu RTF
    formate, hyperliens cliquables, navigation par contexte). }
  If HlpvEndsWith(FN, '.HLP') Then Begin
-  HlpvShow(FN, Context);
+  { "Documentation en ligne" (Context='', 2026-10-24, demande explicite) :  }
+  { onglet MDI reutilisable. Les autres entrees (ex. "Raccourcis clavier",  }
+  { Context<>'') restent sur la boite modale historique. }
+  If Context = '' Then CreateHelpWindow(FN, Context)
+  Else HlpvShow(FN, Context);
   Exit;
  End;
  If EditorReady Then SyncActiveWindowOut;
@@ -21847,6 +22096,14 @@ Begin
   { DrawStorybookDetailPanel), donc aucune sauvegarde n est necessaire ici   }
   { malgre le fait que ce panneau touche les memes globales que le          }
   { Navigateur Web (HTMLDocument, CurrentURL...). }
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_HELP Then Begin
+  { Onglet Aide (2026-10-24, demande explicite) : CONTRAIREMENT aux        }
+  { fenetres singletons ci-dessus, chaque onglet a son propre etat (topic,  }
+  { defilement, historique...) - sauvegarder la copie "vivante" des         }
+  { globales Hlpv* dans CE noeud avant de basculer ailleurs, voir           }
+  { HlpvSaveState et la disclosure de THlpvState. }
+  If WinMgr.ActiveNode^.HelpTab <> Nil Then
+   HlpvSaveState(WinMgr.ActiveNode^.HelpTab^);
  End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
   If WinMgr.ActiveNode^.GridEditor <> Nil Then
    WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor;
@@ -21924,6 +22181,10 @@ Begin
  End Else If Node^.Win.Kind = WK_STORYBOOK Then Begin
   { Rien a restaurer : Storyboard est aussi un singleton global (voir le    }
   { meme commentaire dans SyncActiveWindowOut). }
+ End Else If Node^.Win.Kind = WK_HELP Then Begin
+  { Onglet Aide : restaurer la copie de CE noeud dans les globales Hlpv*    }
+  { "vivantes" - voir le commentaire symetrique dans SyncActiveWindowOut. }
+  If Node^.HelpTab <> Nil Then HlpvLoadState(Node^.HelpTab^);
  End Else If Node^.Win.Kind = WK_GRID Then Begin
   If Node^.GridEditor <> Nil Then
    ActiveGridEditor := Node^.GridEditor^;
@@ -22038,6 +22299,26 @@ Begin
   FreeGridEditor(Node^.GridEditor^);
   Dispose(Node^.GridEditor);
   Node^.GridEditor := Nil;
+ End;
+ { Onglet Aide (2026-10-24) : FileBuf/TopicData de Node^.HelpTab^ et des    }
+ { globales Hlpv* "vivantes" partagent les MEMES pointeurs (copies par       }
+ { valeur a chaque bascule d onglet, voir HlpvSaveState/HlpvLoadState) -     }
+ { fermer l onglet ACTIF doit donc liberer via les globales live (et les     }
+ { remettre a Nil, pour ne jamais laisser un pointeur pendouillant si un      }
+ { AUTRE onglet Aide redevenait actif ensuite) plutot que de les liberer      }
+ { une seconde fois via Node^.HelpTab^ (meme adresse - double liberation).   }
+ If Node^.HelpTab <> Nil Then Begin
+  If Index = WinMgr.ActiveIdx Then Begin
+   If HlpvFileBuf <> Nil Then Begin FreeMem(HlpvFileBuf, HlpvFileLen); HlpvFileBuf := Nil; End;
+   If HlpvTopicData <> Nil Then Begin FreeMem(HlpvTopicData, HlpvTopicLen); HlpvTopicData := Nil; End;
+  End Else Begin
+   If Node^.HelpTab^.FileBuf <> Nil Then
+    FreeMem(Node^.HelpTab^.FileBuf, Node^.HelpTab^.FileLen);
+   If Node^.HelpTab^.TopicData <> Nil Then
+    FreeMem(Node^.HelpTab^.TopicData, Node^.HelpTab^.TopicLen);
+  End;
+  Dispose(Node^.HelpTab);
+  Node^.HelpTab := Nil;
  End;
  { Onglet navigateur Web (phase F) - FreeBrowserTab libere aussi l'arbre
    DOM (FreeHTMLNode), chemin reellement NOUVEAU introduit par cette
@@ -245358,6 +245639,8 @@ Begin
    SB.Language := 'IIS'
   Else If Node^.Win.Kind = WK_STORYBOOK Then
    SB.Language := 'Storybook'
+  Else If Node^.Win.Kind = WK_HELP Then
+   SB.Language := 'Aide'
   Else If Node^.Win.Kind = WK_BROWSER Then
    SB.Language := 'Navigateur'
   Else
@@ -249879,6 +250162,8 @@ Begin
    DrawIIS(IISMgr)
   Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then
    DrawStorybook(Storyboard)
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_HELP Then
+   DrawHelpTab(WinMgr.ActiveNode^)
   Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
    { BOGUE REEL DE PERFORMANCE (2026-09-28, "5 minutes a chaque touche...
      il y a encore d'autres mecanismes") : DrawAllWidgets est appelee
@@ -254836,6 +255121,8 @@ Begin
    End Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then Begin
     { Storybook : pilote a la souris (comme IIS/Gestionnaire d extensions), }
     { aucune frappe traitee ici. }
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_HELP Then Begin
+    HandleHelpKey(WinMgr.ActiveNode^, Ev);
    End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
     HandleGridEditorKey(ActiveGridEditor, Ev);
     If WinMgr.ActiveNode^.GridEditor <> Nil Then
@@ -254899,6 +255186,8 @@ Begin
      HandleIISMouse(IISMgr, Ev);
     End Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then Begin
      HandleStorybookMouse(Storyboard, Ev);
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_HELP Then Begin
+     HandleHelpMouse(WinMgr.ActiveNode^, Ev);
     End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
      HandleGridEditorMouse(ActiveGridEditor, Ev);
      If WinMgr.ActiveNode^.GridEditor <> Nil Then
