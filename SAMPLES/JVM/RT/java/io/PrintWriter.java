@@ -6,6 +6,8 @@ public class PrintWriter extends Writer {
     public PrintWriter(Writer out, boolean autoFlush) { this.out = out; this.autoFlush = autoFlush; }
     public PrintWriter(OutputStream os) { this(new OutputStreamWriter(os), false); }
     public PrintWriter(OutputStream os, boolean autoFlush) { this(new OutputStreamWriter(os), autoFlush); }
+    public PrintWriter(String fileName) throws FileNotFoundException { this(new OutputStreamWriter(new FileOutputStream(fileName)), false); }
+    public PrintWriter(File f) throws FileNotFoundException { this(new OutputStreamWriter(new FileOutputStream(f)), false); }
     public void write(int c) { try { out.write(c); } catch (IOException e) { } }
     public void write(char[] c, int off, int len) { try { out.write(c, off, len); } catch (IOException e) { } }
     public void write(String s) { try { out.write(s); } catch (IOException e) { } }
