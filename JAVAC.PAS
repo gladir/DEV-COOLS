@@ -18,6 +18,7 @@
   Options :
     -d repertoire      repertoire de sortie des fichiers .class
     -cp chemin         classpath : repertoires et archives .jar / .zip
+    -p chemin          chemin des modules (--module-path), ajoute au classpath
     -target N          version de classe visee (8 a 25, defaut 11)
     --release N        synonyme de -target
     -verbose           affiche chaque fichier .class ecrit
@@ -50,8 +51,22 @@
                              LineNumberTable                    [Emit... Gen...]
     6. Ecriture des fichiers .class : pool de constantes, champs, methodes,
                              attributs (SourceFile, InnerClasses, NestHost,
-                             NestMembers, EnclosingMethod, BootstrapMethods)
+                             NestMembers, EnclosingMethod, BootstrapMethods,
+                             Signature, Exceptions, Record, Deprecated,
+                             Runtime[In]VisibleAnnotations, annotations de
+                             parametres et de type (TYPE_USE), AnnotationDefault)
                                                                 [CP... Write...]
+
+  ANNOTATIONS, MODULES ET GRANDES METHODES
+  ----------------------------------------
+  - Annotations : elles sont analysees (type, elements, constantes, enums,
+    classes, tableaux, annotations imbriquees, @Repeatable, @Target,
+    @Retention, @Override) puis ecrites dans les .class selon leur retention.
+  - module-info.java produit module-info.class (attribut Module : requires,
+    exports, opens, uses, provides, open module).
+  - Super-constructeur qualifie : outer.super(...) pour une super-classe interne.
+  - Methodes dont un saut depasse 32 Ko : regeneration automatique avec
+    goto_w et conditions inversees (limite JVM de 64 Ko de code).
 
   BIBLIOTHEQUE STANDARD
   ---------------------
@@ -2855,7 +2870,7 @@ Begin
       Nodes[M].B := ParseDeclarators(T, Mods);
       Nodes[M].Ann := MAnn;
       V := Nodes[M].B;
-      While V <> 0 Do Begin Nodes[V].Ann := MAnn; V := Nodes[V].Next; End;
+      While V <> 0 Do Begin Nodes[V].Ann := MAnn; Nodes[V].E := T; V := Nodes[V].Next; End;
       Expect(';');
       AppendNode(Head, Tail, M);
     End;
@@ -11341,6 +11356,7 @@ Begin
   End;
   For I := 1 To Nodes[N].N Do
     If T <> TY_NONE Then T := ArrayT(T);
+  If Nodes[N].Kind = N_TYPE Then Nodes[N].Typ := T;      { memorise pour l'attribut Signature }
   ResolveType := T;
 End;
 
@@ -20700,30 +20716,6 @@ Begin
   B2(Attr, CPUtf8('AnnotationDefault')); B4(Attr, Tmp.N); BAppend(Attr, Tmp); Inc(NA);
 End;
 
-{ Attribut Record : un composant par parametre de l'en-tete du record }
-Procedure EmitRecordAttr(Var Attr : TBuf; Var NA : LongInt; C : LongInt);
-Var P, F, Cnt, NA2 : LongInt; Buf, Comp : TBuf;
-Begin
-  BInit(Buf);
-  Cnt := 0;
-  P := Nodes[Classes[C].Decl].E;
-  While P <> 0 Do Begin
-    F := FindFieldIn(C, Nodes[P].S);
-    If F >= 0 Then Begin
-      B2(Buf, CPUtf8(Nodes[P].S));
-      B2(Buf, CPUtf8(FieldDescOf(F)));
-      BInit(Comp);
-      NA2 := 0;
-      EmitAnnotAttrs(Comp, NA2, Nodes[P].Ann, TGT_RECCOMP);
-      B2(Buf, NA2);
-      BAppend(Buf, Comp);
-      Inc(Cnt);
-    End;
-    P := Nodes[P].Next;
-  End;
-  B2(Attr, CPUtf8('Record')); B4(Attr, 2 + Buf.N); B2(Attr, Cnt); BAppend(Attr, Buf); Inc(NA);
-End;
-
 { ----- annotations de type (TYPE_USE) placees en position de declaration ----------------------- }
 
 { chemin de type d'une annotation placee devant le type declare T : une etape par dimension de tableau,
@@ -20790,6 +20782,275 @@ Begin
     B2(Attr, TaCnt[RET_RUNTIME]); BAppend(Attr, TaBuf[RET_RUNTIME]); Inc(NA);
   End;
 End;
+
+{ ============================================================================
+  Attributs Signature (generiques) et Exceptions
+  ============================================================================ }
+
+Function SigOfType(T : LongInt) : String;
+Var I : LongInt; S : String;
+Begin
+  If T < TY_FIRSTDYN Then Begin
+    If (T = TY_NONE) Or (T = TY_NULL) Then SigOfType := 'Ljava/lang/Object;' Else SigOfType := TypeDesc(T);
+    Exit;
+  End;
+  Case Types[T].Kind Of
+    TYK_ARRAY : SigOfType := '[' + SigOfType(Types[T].Elem);
+    TYK_TVAR  : SigOfType := 'T' + TVars[Types[T].TV].Name + ';';
+    TYK_CLASS : Begin
+      S := 'L' + Classes[Types[T].Cls].Name;
+      If Types[T].NArgs > 0 Then Begin
+        S := S + '<';
+        For I := 0 To Types[T].NArgs - 1 Do S := S + SigOfType(Types[T].Args[I]);
+        S := S + '>';
+      End;
+      SigOfType := S + ';';
+    End;
+  Else
+    SigOfType := 'Ljava/lang/Object;';
+  End;
+End;
+
+Function TypeGenericT(T : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  TypeGenericT := False;
+  If T <= 0 Then Exit;
+  I := T;
+  While IsArrayT(I) Do I := ElemOf(I);
+  If I >= TY_FIRSTDYN Then
+    TypeGenericT := (Types[I].Kind = TYK_TVAR) Or ((Types[I].Kind = TYK_CLASS) And (Types[I].NArgs > 0));
+End;
+
+{ Le type decrit par le noeud N est-il generique (variable de type ou type parametre) ? }
+Function NodeGeneric(N : LongInt) : Boolean;
+Var T, I : LongInt;
+Begin
+  NodeGeneric := False;
+  If (N = 0) Or (Nodes[N].Kind <> N_TYPE) Then Exit;
+  T := Nodes[N].Typ;
+  If T <= 0 Then Exit;
+  If Nodes[N].Aux = 2 Then Begin NodeGeneric := TypeGenericT(T); Exit; End;
+  I := T;
+  While IsArrayT(I) Do I := ElemOf(I);
+  If I >= TY_FIRSTDYN Then
+    If Types[I].Kind = TYK_TVAR Then NodeGeneric := True
+    Else If (Types[I].Kind = TYK_CLASS) And (Nodes[N].A <> 0) Then NodeGeneric := True;
+End;
+
+Function SigOfNode(N : LongInt) : String;
+Var T, I, A : LongInt; S, Args : String;
+Begin
+  If N = 0 Then Begin SigOfNode := ''; Exit; End;
+  T := Nodes[N].Typ;
+  If (Nodes[N].Aux = 2) Or (T <= 0) Then Begin SigOfNode := SigOfType(T); Exit; End;
+  S := '';
+  If Nodes[N].Aux = 1 Then Begin
+    For I := 1 To Nodes[N].N Do S := S + '[';
+    SigOfNode := S + TypeDesc(T);
+    Exit;
+  End;
+  For I := 1 To Nodes[N].N Do Begin
+    If IsArrayT(T) Then T := ElemOf(T);
+    S := S + '[';
+  End;
+  If (T >= TY_FIRSTDYN) And (Types[T].Kind = TYK_CLASS) Then Begin
+    S := S + 'L' + Classes[Types[T].Cls].Name;
+    If Nodes[N].A <> 0 Then Begin
+      Args := '<';
+      A := Nodes[N].A;
+      While A <> 0 Do Begin
+        If Nodes[A].Kind = N_WILD Then Begin
+          If (Nodes[A].Aux = 0) Or (Nodes[A].A = 0) Then Args := Args + '*'
+          Else If Nodes[A].Aux = 1 Then Args := Args + '+' + SigOfNode(Nodes[A].A)
+          Else Args := Args + '-' + SigOfNode(Nodes[A].A);
+        End
+        Else Args := Args + SigOfNode(A);
+        A := Nodes[A].Next;
+      End;
+      S := S + Args + '>';
+    End;
+    SigOfNode := S + ';';
+  End
+  Else SigOfNode := S + SigOfType(T);
+End;
+
+{ <T:Ljava/lang/Object;U::Ljava/lang/Comparable<TU;>;> : Head = chaine de N_TPARAM }
+Function SigOfTParams(Head : LongInt) : String;
+Var Tp, B, T : LongInt; S : String; First : Boolean;
+Begin
+  S := '<';
+  Tp := Head;
+  While Tp <> 0 Do Begin
+    S := S + Nodes[Tp].S;
+    B := Nodes[Tp].A;
+    If B = 0 Then S := S + ':Ljava/lang/Object;'
+    Else Begin
+      First := True;
+      While B <> 0 Do Begin
+        T := Nodes[B].Typ;
+        If First Then Begin
+          If (T >= TY_FIRSTDYN) And (Types[T].Kind = TYK_CLASS) And ((Classes[Types[T].Cls].Flags And ACC_INTERFACE) <> 0) Then
+            S := S + '::'
+          Else S := S + ':';
+        End
+        Else S := S + ':';
+        S := S + SigOfNode(B);
+        First := False;
+        B := Nodes[B].Next;
+      End;
+    End;
+    Tp := Nodes[Tp].Next;
+  End;
+  SigOfTParams := S + '>';
+End;
+
+Procedure EmitSignatureAttr(Var Attr : TBuf; Var NA : LongInt; Const Sig : String);
+Begin
+  If Sig = '' Then Exit;
+  B2(Attr, CPUtf8('Signature')); B4(Attr, 2); B2(Attr, CPUtf8(Sig)); Inc(NA);
+End;
+
+Function FieldSignature(F : LongInt) : String;
+Var D, T, I : LongInt; S : String;
+Begin
+  FieldSignature := '';
+  D := Fields[F].Decl;
+  If D <= 0 Then Exit;
+  If Nodes[D].Kind = N_PARAM Then T := Nodes[D].A
+  Else If Nodes[D].Kind = N_VARDECL Then T := Nodes[D].E
+  Else Exit;
+  If (T = 0) Or (Nodes[T].Kind <> N_TYPE) Or Not NodeGeneric(T) Then Exit;
+  S := SigOfNode(T);
+  If Nodes[D].Kind = N_VARDECL Then For I := 1 To Nodes[D].N Do S := '[' + S;
+  FieldSignature := S;
+End;
+
+Function MethodSignature(M : LongInt) : String;
+Var D, P, T : LongInt; S, Thr : String; Need : Boolean;
+Begin
+  MethodSignature := '';
+  D := Meths[M].Decl;
+  If D <= 0 Then Exit;
+  Need := Nodes[D].E <> 0;
+  If Nodes[D].Aux <> 1 Then If NodeGeneric(Nodes[D].A) Then Need := True;
+  P := Nodes[D].B;
+  While P <> 0 Do Begin If NodeGeneric(Nodes[P].A) Then Need := True; P := Nodes[P].Next; End;
+  Thr := '';
+  P := Nodes[D].D;
+  While P <> 0 Do Begin
+    T := Nodes[P].Typ;
+    If NodeGeneric(P) Then Begin Need := True; End;
+    P := Nodes[P].Next;
+  End;
+  If Not Need Then Exit;
+  S := '';
+  If Nodes[D].E <> 0 Then S := SigOfTParams(Nodes[D].E);
+  S := S + '(';
+  P := Nodes[D].B;
+  While P <> 0 Do Begin S := S + SigOfNode(Nodes[P].A); P := Nodes[P].Next; End;
+  S := S + ')';
+  If Nodes[D].Aux = 1 Then S := S + 'V' Else S := S + SigOfNode(Nodes[D].A);
+  { clause throws : seulement si une variable de type ou un type parametre y figure }
+  P := Nodes[D].D;
+  Need := False;
+  While P <> 0 Do Begin If NodeGeneric(P) Then Need := True; P := Nodes[P].Next; End;
+  If Need Then Begin
+    P := Nodes[D].D;
+    While P <> 0 Do Begin S := S + '^' + SigOfNode(P); P := Nodes[P].Next; End;
+  End;
+  MethodSignature := S;
+End;
+
+Function ClassSignature(C : LongInt) : String;
+Var D, P, I : LongInt; S : String; Need : Boolean;
+Begin
+  ClassSignature := '';
+  D := Classes[C].Decl;
+  If D <= 0 Then Exit;
+  S := '';
+  If (Classes[C].Flags And MOD_ANON) <> 0 Then Begin
+    { classe anonyme : types deja resolus }
+    Need := False;
+    If TypeGenericT(Classes[C].Super) Then Need := True;
+    For I := 0 To Length(Classes[C].Ifaces) - 1 Do
+      If TypeGenericT(Classes[C].Ifaces[I]) Then Need := True;
+    If Not Need Then Exit;
+    S := SigOfType(Classes[C].Super);
+    For I := 0 To Length(Classes[C].Ifaces) - 1 Do S := S + SigOfType(Classes[C].Ifaces[I]);
+    ClassSignature := S;
+    Exit;
+  End;
+  Need := Nodes[D].A <> 0;
+  If Nodes[D].Aux = CLS_ENUM Then Need := True;
+  If (Nodes[D].Aux <> CLS_INTERFACE) And NodeGeneric(Nodes[D].B) Then Need := True;
+  P := Nodes[D].C;
+  While P <> 0 Do Begin If NodeGeneric(P) Then Need := True; P := Nodes[P].Next; End;
+  If Not Need Then Exit;
+  If Nodes[D].A <> 0 Then S := SigOfTParams(Nodes[D].A);
+  Case Nodes[D].Aux Of
+    CLS_ENUM : S := S + 'Ljava/lang/Enum<L' + Classes[C].Name + ';>;';
+    CLS_RECORD : S := S + 'Ljava/lang/Record;';
+    CLS_INTERFACE, CLS_ANNOTATION : S := S + 'Ljava/lang/Object;';
+  Else
+    If Nodes[D].B <> 0 Then S := S + SigOfNode(Nodes[D].B) Else S := S + 'Ljava/lang/Object;';
+  End;
+  If Nodes[D].Aux = CLS_ANNOTATION Then S := S + 'Ljava/lang/annotation/Annotation;';
+  P := Nodes[D].C;
+  While P <> 0 Do Begin S := S + SigOfNode(P); P := Nodes[P].Next; End;
+  ClassSignature := S;
+End;
+
+Procedure EmitExceptionsAttr(Var Attr : TBuf; Var NA : LongInt; M : LongInt);
+Var I, N, D, P, T : LongInt; Cls : Array Of LongInt;
+Begin
+  N := 0;
+  D := Meths[M].Decl;
+  If D > 0 Then Begin
+    { d'apres les types declares : une variable de type est remplacee par son effacement }
+    P := Nodes[D].D;
+    While P <> 0 Do Begin
+      T := Erasure(Nodes[P].Typ);
+      If IsClassT(T) Then Begin SetLength(Cls, N + 1); Cls[N] := Types[T].Cls; Inc(N); End;
+      P := Nodes[P].Next;
+    End;
+  End
+  Else Begin
+    N := Length(Meths[M].Thr);
+    SetLength(Cls, N);
+    For I := 0 To N - 1 Do Cls[I] := Meths[M].Thr[I];
+  End;
+  If N = 0 Then Exit;
+  B2(Attr, CPUtf8('Exceptions')); B4(Attr, 2 + 2 * N); B2(Attr, N);
+  For I := 0 To N - 1 Do B2(Attr, CPClass(Classes[Cls[I]].Name));
+  Inc(NA);
+End;
+
+{ Attribut Record : un composant par parametre de l'en-tete du record }
+Procedure EmitRecordAttr(Var Attr : TBuf; Var NA : LongInt; C : LongInt);
+Var P, F, Cnt, NA2 : LongInt; Buf, Comp : TBuf;
+Begin
+  BInit(Buf);
+  Cnt := 0;
+  P := Nodes[Classes[C].Decl].E;
+  While P <> 0 Do Begin
+    F := FindFieldIn(C, Nodes[P].S);
+    If F >= 0 Then Begin
+      B2(Buf, CPUtf8(Nodes[P].S));
+      B2(Buf, CPUtf8(FieldDescOf(F)));
+      BInit(Comp);
+      NA2 := 0;
+      If NodeGeneric(Nodes[P].A) Then EmitSignatureAttr(Comp, NA2, SigOfNode(Nodes[P].A));
+      EmitAnnotAttrs(Comp, NA2, Nodes[P].Ann, TGT_RECCOMP);
+      B2(Buf, NA2);
+      BAppend(Buf, Comp);
+      Inc(Cnt);
+    End;
+    P := Nodes[P].Next;
+  End;
+  B2(Attr, CPUtf8('Record')); B4(Attr, 2 + Buf.N); B2(Attr, Cnt); BAppend(Attr, Buf); Inc(NA);
+End;
+
 { ============================================================================
   4b. DESUCRAGE : preparation des classes (champs synthetiques, descripteurs,
       enum, ponts) puis generation des methodes et des fichiers .class
@@ -21524,6 +21785,7 @@ Begin
     B4(Attr, 2);
     B2(Attr, Idx);
   End;
+  EmitSignatureAttr(Attr, NA, FieldSignature(F));
   If Fields[F].Decl > 0 Then Begin
     EmitAnnotAttrs(Attr, NA, Nodes[Fields[F].Decl].Ann, TGT_FIELD);
     TypeAnnotsReset;
@@ -21550,6 +21812,14 @@ Begin
   BInit(Extra);
   NX := 0;
   D := Meths[M].Decl;
+  If (Meths[M].Synth = 0) And (Meths[M].Lambda < 0) Then Begin
+    EmitExceptionsAttr(Extra, NX, M);
+    EmitSignatureAttr(Extra, NX, MethodSignature(M));
+  End
+  Else If (Meths[M].Synth = 4) And (Meths[M].Bridge >= 0) Then Begin
+    Fd := Fields[Meths[M].Bridge].Decl;
+    If (Fd > 0) And NodeGeneric(Nodes[Fd].A) Then EmitSignatureAttr(Extra, NX, '()' + SigOfNode(Nodes[Fd].A));
+  End;
   If (D > 0) And (Meths[M].Synth = 0) And (Meths[M].Lambda < 0) Then Begin
     If Nodes[D].Aux = 1 Then EmitAnnotAttrs(Extra, NX, Nodes[D].Ann, TGT_CONSTRUCTOR)
     Else EmitAnnotAttrs(Extra, NX, Nodes[D].Ann, TGT_METHOD);
@@ -21638,7 +21908,8 @@ Begin
   BInit(Attr);
   NA := 0;
   B2(Attr, CPUtf8('SourceFile')); B4(Attr, 2); B2(Attr, CPUtf8(SourceFileName(C))); Inc(NA);
-  { annotations de la classe et attribut Record }
+  { signature generique, annotations de la classe et attribut Record }
+  If Classes[C].IsSrc Then EmitSignatureAttr(Attr, NA, ClassSignature(C));
   If Classes[C].IsSrc And (Classes[C].Decl > 0) Then Begin
     If Nodes[Classes[C].Decl].Aux = CLS_ANNOTATION Then EmitAnnotAttrs(Attr, NA, Nodes[Classes[C].Decl].Ann, TGT_TYPE Or TGT_ANNOT)
     Else EmitAnnotAttrs(Attr, NA, Nodes[Classes[C].Decl].Ann, TGT_TYPE);
