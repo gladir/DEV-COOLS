@@ -9,6 +9,9 @@ public class Thread implements Runnable {
     private long id;
     private UncaughtExceptionHandler handler;
     public static final int MIN_PRIORITY = 1, NORM_PRIORITY = 5, MAX_PRIORITY = 10;
+    private ClassLoader contextClassLoader;
+    public ClassLoader getContextClassLoader() { return contextClassLoader != null ? contextClassLoader : ClassLoader.getSystemClassLoader(); }
+    public void setContextClassLoader(ClassLoader cl) { contextClassLoader = cl; }
     public Thread() { this((Runnable) null, (String) null); }
     public Thread(Runnable target) { this(target, (String) null); }
     public Thread(String name) { this((Runnable) null, name); }

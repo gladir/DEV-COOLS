@@ -32,6 +32,11 @@ public final class VM {
     public static native Object construct0(Class<?> c, int mi, Object[] args);
     public static native Object allocate(Class<?> c);
     public static native void initClass(Class<?> c);
+    public static native byte[] resource0(String name);
+    public static native String resourceUrl(String name);
+    public static native String[] classpath();
+    public static native void addClasspath(String path);
+    public static native Class<?> defineClass0(String name, byte[] b, int off, int len);
     public static native Class<?> defineProxy(Class<?>[] ifaces, String name);
     public static Class<?> classOfDesc(String d) {
         switch (d.charAt(0)) {

@@ -57,7 +57,17 @@ public final class Class<T> implements java.io.Serializable, GenericDeclaration,
     public native T[] getEnumConstants();
     public native boolean desiredAssertionStatus();
     public static native Class<?> forName(String name) throws ClassNotFoundException;
-    public static Class<?> forName(String name, boolean initialize, ClassLoader loader) throws ClassNotFoundException { return forName(name); }
+    public static Class<?> forName(String name, boolean initialize, ClassLoader loader) throws ClassNotFoundException {
+        if (loader == null || loader.getClass() == AppClassLoader.class) {
+            Class<?> c = VM.classOfName(name);
+            if (c == null) throw new ClassNotFoundException(name);
+            if (initialize) VM.initClass(c);
+            return c;
+        }
+        Class<?> c = loader.loadClass(name);
+        if (initialize) VM.initClass(c);
+        return c;
+    }
     static native Class<?> getPrimitiveClass(String name);
     public T cast(Object obj) {
         if (obj != null && !isInstance(obj)) throw new ClassCastException("Cannot cast " + obj.getClass().getName() + " to " + getName());
@@ -123,7 +133,22 @@ public final class Class<T> implements java.io.Serializable, GenericDeclaration,
     public boolean isAnnotation() { return (getModifiers() & 0x2000) != 0; }
     public native boolean isSynthetic();
     public boolean isHidden() { return false; }
-    public ClassLoader getClassLoader() { return null; }
+    public ClassLoader getClassLoader() {
+        if (isPrimitive()) return null;
+        String n = getName();
+        if (n.startsWith("java.") || n.startsWith("javax.") || n.startsWith("jdk.") || (isArray() && getComponentType().getClassLoader() == null)) return null;
+        return ClassLoader.getSystemClassLoader();
+    }
+    private String resolveName(String name) {
+        if (name.startsWith("/")) return name.substring(1);
+        Class<?> c = this;
+        while (c.isArray()) c = c.getComponentType();
+        String baseName = c.getPackageName();
+        if (baseName != null && !baseName.isEmpty()) return baseName.replace('.', '/') + "/" + name;
+        return name;
+    }
+    public java.io.InputStream getResourceAsStream(String name) { return ClassLoader.getSystemClassLoader().getResourceAsStream(resolveName(name)); }
+    public java.net.URL getResource(String name) { return ClassLoader.getSystemClassLoader().getResource(resolveName(name)); }
 
     // ----- classes imbriquees ------------------------------------------------
     private int[] innerEntry() {

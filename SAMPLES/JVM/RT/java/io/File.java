@@ -6,6 +6,12 @@ public class File implements Comparable<File>, java.io.Serializable {
     public static final String pathSeparator = ":";
     public static final char pathSeparatorChar = ':';
     private String path;
+    public java.net.URI toURI() {
+        String p = getAbsolutePath();
+        if (isDirectory() && !p.endsWith("/")) p = p + "/";
+        try { return new java.net.URI("file", null, p, null); } catch (java.net.URISyntaxException x) { throw new Error(x); }
+    }
+    @Deprecated public java.net.URL toURL() throws java.net.MalformedURLException { return toURI().toURL(); }
     private synchronized void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException { s.defaultWriteObject(); s.writeChar(separatorChar); }
     private synchronized void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException { s.defaultReadObject(); char sep = s.readChar(); if (sep != separatorChar) path = path.replace(sep, separatorChar); }
     public File(String path) { if (path == null) throw new NullPointerException(); this.path = path.replace('\\', '/'); }
