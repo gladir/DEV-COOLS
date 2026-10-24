@@ -329,6 +329,7 @@ Var
   OptSource   : LongInt;    { niveau du langage (-source), 99 = pas de restriction }
   OptEncoding : String;     { encodage des sources (-encoding) }
   OptHeaderDir : String;    { repertoire des en-tetes JNI (-h) }
+  HasModuleInfo : Boolean;   { un module-info.java fait partie de la compilation : les paquetages d'un meme module sont permis dans permits }
   OptNoBuiltin : Boolean;    { -no-builtin-jfc : table des classes standard integree non chargee (classes lues dans l'image du JDK) }
   OptImplicitNone : Boolean; { -implicit:none : pas de .class pour les sources chargees implicitement }
   OptWerror   : Boolean;    { -Werror }
@@ -54800,13 +54801,15 @@ Begin
       If (K = Orig) Or MemberClassInherited(Classes[K].Nested[I], Orig) Then Begin
         FindMemberClassO := Classes[K].Nested[I]; Exit;
       End;
+      Exit;       { une classe membre non heritee masque tout de meme celles des super-types }
     End;
   { classes imbriquees de la bibliotheque non encore chargees }
   If Not Classes[K].IsSrc Then Begin
     R := LookupClass(Classes[K].Name + '$' + Name);
     If R >= 0 Then Begin
       EnsureHeader(R);
-      If (K = Orig) Or MemberClassInherited(R, Orig) Then Begin FindMemberClassO := R; Exit; End;
+      If (K = Orig) Or MemberClassInherited(R, Orig) Then FindMemberClassO := R;
+      Exit;
     End;
   End;
   S := SuperClsOf(K);
@@ -55448,7 +55451,7 @@ End;
 Procedure EnterMembers(C : LongInt);
 Var
   S : TSavedCtx; D, M, Mt, I, N, F, Kind, Np, P, Fl, Dflt : LongInt;
-  Ne : LongInt; HasCtor : Boolean; Blk : LongInt; Prm : LongInt;
+  Ne : LongInt; HasCtor : Boolean; Blk : LongInt; Prm : LongInt; Canon : Boolean; Cp, Ci2 : LongInt;
   OwnT : LongInt; Tl : LongInt;
 Begin
   If Classes[C].MemState <> 0 Then Exit;
@@ -55501,7 +55504,20 @@ Begin
           Nodes[M].Mods := Nodes[M].Mods Or MOD_RECORD;   { compact }
         End;
         Mt := EnterMethod(C, M);
-        If Nodes[M].Aux = 1 Then HasCtor := True;
+        If Nodes[M].Aux = 1 Then Begin
+          If Kind <> CLS_RECORD Then HasCtor := True
+          Else If (Nodes[M].Mods And MOD_RECORD) <> 0 Then HasCtor := True
+          Else Begin
+            { record : seul un constructeur canonique (memes types que les composants) remplace l'implicite }
+            Canon := True; Cp := Nodes[D].E; Ci2 := 0;
+            While (Cp <> 0) And Canon Do Begin
+              F := FindFieldIn(C, Nodes[Cp].S);
+              If (Ci2 >= Meths[Mt].NPar) Or (F < 0) Or (Erasure(Meths[Mt].Par[Ci2]) <> Erasure(Fields[F].Typ)) Then Canon := False;
+              Inc(Ci2); Cp := Nodes[Cp].Next;
+            End;
+            If Canon And (Ci2 = Meths[Mt].NPar) Then HasCtor := True;
+          End;
+        End;
         If (Kind = CLS_ENUM) And ((Meths[Mt].Flags And ACC_ABSTRACT) <> 0) Then
           Classes[C].Flags := Classes[C].Flags Or ACC_ABSTRACT;
       End;
@@ -56073,8 +56089,13 @@ Begin
 End;
 
 { Parametrisation commune de la classe D vue depuis A et B (arguments differents : inconnu) }
+Var
+  LubDepth : LongInt;
+
+Function LubType(A, B : LongInt) : LongInt; Forward;
+
 Function CommonParam(A, B, D : LongInt) : LongInt;
-Var PA, PB, I : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt;
+Var PA, PB, I, Lb : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt;
 Begin
   PA := AsSuper(A, D);
   PB := AsSuper(B, D);
@@ -56082,8 +56103,37 @@ Begin
   If PA = PB Then Begin CommonParam := PA; Exit; End;
   If (Types[PA].NArgs = 0) Or (Types[PA].NArgs <> Types[PB].NArgs) Then Begin CommonParam := ClassT(D); Exit; End;
   For I := 0 To Types[PA].NArgs - 1 Do
-    If Types[PA].Args[I] = Types[PB].Args[I] Then Args[I] := Types[PA].Args[I] Else Args[I] := T_ANY;
+    If Types[PA].Args[I] = Types[PB].Args[I] Then Args[I] := Types[PA].Args[I]
+    Else If (Types[PA].Args[I] = T_ANY) Or (Types[PB].Args[I] = T_ANY) Then Args[I] := T_ANY
+    Else Begin
+      { arguments differents : ? extends lub (profondeur limitee) }
+      Args[I] := WildT(0, 0);
+      If (LubDepth < 2) And IsClassT(UnwrapW(Types[PA].Args[I])) And IsClassT(UnwrapW(Types[PB].Args[I])) And
+         Not IsWildT(Types[PA].Args[I]) And Not IsWildT(Types[PB].Args[I]) Then Begin
+        Inc(LubDepth);
+        Lb := LubType(Types[PA].Args[I], Types[PB].Args[I]);
+        Dec(LubDepth);
+        If IsClassT(Lb) And (Lb <> T_OBJECT) Then Args[I] := WildT(1, Lb);
+      End;
+    End;
   CommonParam := ClassTA(D, Types[PA].NArgs, Args);
+End;
+
+{ Le type est-il parametre avec au moins un argument inconnu ? }
+Function HasWildArg(T : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  HasWildArg := False;
+  If Not IsClassT(T) Then Exit;
+  For I := 0 To Types[T].NArgs - 1 Do If IsWildT(Types[T].Args[I]) Then HasWildArg := True;
+End;
+
+Function HasAnyArg(T : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  HasAnyArg := False;
+  If Not IsClassT(T) Then Exit;
+  For I := 0 To Types[T].NArgs - 1 Do If Types[T].Args[I] = T_ANY Then HasAnyArg := True;
 End;
 
 { Type "le plus petit commun super-type" : la classe ou les interfaces minimales communes ;
@@ -56097,6 +56147,10 @@ Begin
   If A = TY_NULL Then Begin LubType := B; Exit; End;
   If B = TY_NULL Then Begin LubType := A; Exit; End;
   If (A = TY_NONE) Or (B = TY_NONE) Then Begin LubType := TY_NONE; Exit; End;
+  { un type dont un argument est inconnu (resultat d'un lub precedent) est le plus general }
+  { un type a arguments joker (resultat d'un lub precedent) est le plus general }
+  If HasWildArg(A) And Not HasWildArg(B) And IsSubtypeErased(B, A) And IsSubtypeRef(B, A) Then Begin LubType := A; Exit; End;
+  If HasWildArg(B) And Not HasWildArg(A) And IsSubtypeErased(A, B) And IsSubtypeRef(A, B) Then Begin LubType := B; Exit; End;
   If IsSubtypeRef(A, B) Then Begin LubType := B; Exit; End;
   If IsSubtypeRef(B, A) Then Begin LubType := A; Exit; End;
   If IsTVarT(A) Then A := Erasure(A);
@@ -56361,7 +56415,14 @@ Begin
       Dup := False;
       For K := 0 To NCand - 1 Do
         If SameErasedParams(CandM[K], M) And ((Meths[CandM[K]].Flags And ACC_STATIC) = (Meths[M].Flags And ACC_STATIC)) Then Begin
-          Dup := True; Break;
+          Dup := True;
+          { la declaration d'une interface plus specifique redefinit celle d'une super-interface atteinte avant elle }
+          If (Meths[M].Owner <> Meths[CandM[K]].Owner) And IsSubClass(Meths[M].Owner, Meths[CandM[K]].Owner) And
+             (((Meths[M].Flags And ACC_ABSTRACT) = 0) = ((Meths[CandM[K]].Flags And ACC_ABSTRACT) = 0)) Then Begin
+            CandM[K] := M;
+            If Site > 0 Then CandSite[K] := AsSuper(Site, C);
+          End;
+          Break;
         End;
       If (Not Dup) And (NCand < MAXCAND) Then Begin
         CandM[NCand] := M;
@@ -56803,10 +56864,14 @@ Begin
 End;
 
 { Substitue seulement les variables deja liees, laisse les autres }
+Function IVIndex(T : LongInt) : LongInt; Forward;
+
 Function SubstBound(T : LongInt) : LongInt;
 Var Fr, Tt : Array[0..MAXIV - 1] Of LongInt; I, N : LongInt;
 Begin
   N := 0;
+  I := IVIndex(T);
+  If (I >= 0) And (ITo[I] <> 0) Then Begin SubstBound := ITo[I]; Exit; End;      { cible reduite a une variable liee }
   For I := 0 To NIV - 1 Do
     If (ITo[I] <> 0) And (ISoft[I] <> 3) Then Begin Fr[N] := IFr[I]; Tt[N] := ITo[I]; Inc(N); End;
   SubstBound := SubstType(T, Fr, Tt, N);
@@ -56851,7 +56916,8 @@ Begin
     If A = T_ANY Then Exit;
     If ITo[K] = 0 Then ITo[K] := A
     Else If ITo[K] <> A Then ITo[K] := LubType(ITo[K], A);
-    If UnifySoft Then ISoft[K] := 1;
+    If UnifySoft Then ISoft[K] := 1
+    Else If ISoft[K] = 0 Then ISoft[K] := 3;      { borne inferieure issue d'un argument }
     Exit;
   End;
   If P < TY_FIRSTDYN Then Exit;
@@ -57502,7 +57568,7 @@ End;
 
 { Une reference de methode est-elle potentiellement compatible avec une interface fonctionnelle de Np parametres ?
   (il doit exister une methode de la bonne arite) }
-Function MethodRefFits(N, Np : LongInt) : Boolean;
+Function MethodRefFits(N, Np : LongInt; SamVoid : Boolean) : Boolean;
 Var Qual, QT, I, M : LongInt; IsType : Boolean;
 Begin
   MethodRefFits := True;
@@ -57523,6 +57589,8 @@ Begin
   MethodRefFits := False;
   For I := 0 To NCand - 1 Do Begin
     M := CandM[I];
+    { la methode doit produire une valeur si l'interface en attend une }
+    If (Not SamVoid) And (Meths[M].Ret = TY_VOID) Then Continue;
     If Meths[M].Varargs Then Begin MethodRefFits := True; Exit; End;
     If IsType Then Begin
       If ((Meths[M].Flags And ACC_STATIC) <> 0) And (Meths[M].NPar = Np) Then Begin MethodRefFits := True; Exit; End;
@@ -57544,7 +57612,7 @@ Begin
     If Np <> Meths[Sam].NPar Then Exit;
     FnArgFits := LambdaShapeOk(N, Meths[Sam].Ret = TY_VOID);
   End
-  Else If (Nodes[N].Kind = N_METHODREF) And (Nodes[N].S <> 'new') Then FnArgFits := MethodRefFits(N, Meths[Sam].NPar)
+  Else If (Nodes[N].Kind = N_METHODREF) And (Nodes[N].S <> 'new') Then FnArgFits := MethodRefFits(N, Meths[Sam].NPar, Meths[Sam].Ret = TY_VOID)
   Else FnArgFits := True;
 End;
 
@@ -57588,6 +57656,44 @@ Begin
     If Nodes[N].Aux = 1 Then Coerce(Nodes[N].B, R, CV_ASSIGN)
     Else For K := 0 To Length(Lambdas[I].RetNodes) - 1 Do
       If Nodes[Lambdas[I].RetNodes[K]].A <> 0 Then Coerce(Nodes[Lambdas[I].RetNodes[K]].A, R, CV_ASSIGN);
+  End;
+End;
+
+{ V est un type de classe brut ou a arguments inconnus (TreeMap::new) pour une variable dont la borne est B
+  (Map<K, D>) : les parametres de la classe sont deduits de la borne }
+Function RefineWithBound(V, B : LongInt) : LongInt;
+Var C, I, J, N : LongInt; S : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt;
+Begin
+  RefineWithBound := V;
+  If Not (IsClassT(V) And IsClassT(B)) Then Exit;
+  C := Types[V].Cls;
+  EnsureHeader(C);
+  N := Length(Classes[C].TPars);
+  If (N = 0) Or (N > MAXTARGS) Then Exit;
+  If Not ((Types[V].NArgs = 0) Or HasAnyArg(V)) Then Exit;
+  S := AsSuper(ThisTypeOf(C), Types[B].Cls);
+  If (S = 0) Or (Types[S].NArgs <> Types[B].NArgs) Then Exit;
+  For I := 0 To N - 1 Do Begin
+    If (Types[V].NArgs = N) And (Types[V].Args[I] <> T_ANY) Then Args[I] := Types[V].Args[I]
+    Else Begin
+      Args[I] := T_ANY;
+      For J := 0 To Types[S].NArgs - 1 Do
+        If Types[S].Args[J] = Classes[C].TPars[I] Then Args[I] := Types[B].Args[J];
+    End;
+  End;
+  RefineWithBound := ClassTA(C, N, Args);
+End;
+
+{ Le type mentionne-t-il la variable de type V ? }
+Function MentionsTVar2(T, V : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  MentionsTVar2 := False;
+  If T < TY_FIRSTDYN Then Exit;
+  Case Types[T].Kind Of
+    TYK_TVAR : MentionsTVar2 := T = V;
+    TYK_ARRAY, TYK_WILD : MentionsTVar2 := MentionsTVar2(Types[T].Elem, V);
+    TYK_CLASS : For I := 0 To Types[T].NArgs - 1 Do If MentionsTVar2(Types[T].Args[I], V) Then MentionsTVar2 := True;
   End;
 End;
 
@@ -57790,6 +57896,12 @@ Begin
     For I := 0 To Length(Meths[LM[0]].TPar) - 1 Do IVAdd(Meths[LM[0]].TPar[I]);
     If DiamondCls >= 0 Then
       For I := 0 To Length(Classes[DiamondCls].TPars) - 1 Do IVAdd(Classes[DiamondCls].TPars[I]);
+    { le type attendu de l'appel precise d'emblee les variables, utilisees pour typer les arguments imbriques }
+    If (Expected > 0) And (NIV > 0) Then Begin
+      If Ctor And (DiamondCls >= 0) Then PT := SiteT
+      Else PT := MemberTypeRet(SiteT, Meths[LM[0]].Owner, Meths[LM[0]].Ret);
+      UnifyExpected(PT, Expected);
+    End;
   End;
   For I := 0 To NA - 1 Do Begin
     If IsFn[I] Then ArgT[I] := TY_NONE
@@ -57930,6 +58042,22 @@ Begin
     If IsFn[I] Then FinishLambda(Args[I], PT)
     Else Coerce(Args[I], PT, CV_ARG);
   End;
+  { variable dont la borne depend d'autres variables (M extends Map<K, D>) : la borne instanciee precise la valeur }
+  For K := 0 To NIV - 1 Do
+    If (ITo[K] <> 0) And (TVars[Types[IFr[K]].TV].Bound <> 0) Then Begin
+      Best := TVars[Types[IFr[K]].TV].Bound;
+      If IsClassT(Best) And (Types[Best].NArgs > 0) And HasIVar(Best) And Not MentionsTVar2(Best, IFr[K]) Then Begin
+        Best := ResolveIVarsAny(Best);
+        If (Best > 0) And Not HasAnyArg(Best) Then ITo[K] := RefineWithBound(ITo[K], Best);
+      End;
+    End
+    Else If (ITo[K] = 0) And (TVars[Types[IFr[K]].TV].Bound <> 0) Then Begin
+      Best := TVars[Types[IFr[K]].TV].Bound;
+      If IsClassT(Best) And (Types[Best].NArgs > 0) And HasIVar(Best) And Not MentionsTVar2(Best, IFr[K]) Then Begin
+        Best := ResolveIVarsAny(Best);
+        If (Best > 0) And Not HasAnyArg(Best) Then ITo[K] := Best;
+      End;
+    End;
   R.Ret := ResolveIVarsAny(Ret);
   If R.Ret = TY_NONE Then R.Ret := Ret;
   { exceptions declarees : une variable de type de throws est remplacee par sa valeur inferee
@@ -57977,6 +58105,7 @@ Var
   LabelLoop   : Array Of Boolean;
   NLabelStk   : LongInt;
   AnonSuperCtor : LongInt;
+  AnonQualOuter : LongInt;     { x.new Interne() avec corps : type de l instance englobante de la super-classe, passee au constructeur anonyme (0 sinon) }
 
 Function AttribCall(N, Expected : LongInt) : LongInt; Forward;
 Function AttribNew(N, Expected : LongInt) : LongInt; Forward;
@@ -58090,25 +58219,28 @@ Begin
 End;
 
 Function StaticImportField(Const Name : String; Var Owner : LongInt) : LongInt;
-Var Imp, K, F : LongInt; S : String;
+Var Imp, K, F, Pass : LongInt; S : String;
 Begin
   StaticImportField := -1;
   If CurCU < 0 Then Exit;
-  Imp := CUs[CurCU].Imports;
-  While Imp <> 0 Do Begin
-    If (Nodes[Imp].Mods And ACC_STATIC) <> 0 Then Begin
-      If Nodes[Imp].Aux = 1 Then K := LookupClassQualified(Nodes[Imp].S)
-      Else Begin
-        S := Nodes[Imp].S;
-        If Copy(S, LastPos('.', S) + 1, Length(S)) = Name Then K := LookupClassQualified(Copy(S, 1, LastPos('.', S) - 1))
-        Else K := -1;
+  { les imports statiques simples l'emportent sur les imports a la demande }
+  For Pass := 0 To 1 Do Begin
+    Imp := CUs[CurCU].Imports;
+    While Imp <> 0 Do Begin
+      If ((Nodes[Imp].Mods And ACC_STATIC) <> 0) And (Nodes[Imp].Aux = Pass) Then Begin
+        If Nodes[Imp].Aux = 1 Then K := LookupClassQualified(Nodes[Imp].S)
+        Else Begin
+          S := Nodes[Imp].S;
+          If Copy(S, LastPos('.', S) + 1, Length(S)) = Name Then K := LookupClassQualified(Copy(S, 1, LastPos('.', S) - 1))
+          Else K := -1;
+        End;
+        If K >= 0 Then Begin
+          F := FieldInHierarchy(K, Name, Owner);
+          If (F >= 0) And ((Fields[F].Flags And ACC_STATIC) <> 0) Then Begin StaticImportField := F; Exit; End;
+        End;
       End;
-      If K >= 0 Then Begin
-        F := FieldInHierarchy(K, Name, Owner);
-        If (F >= 0) And ((Fields[F].Flags And ACC_STATIC) <> 0) Then Begin StaticImportField := F; Exit; End;
-      End;
+      Imp := Nodes[Imp].Next;
     End;
-    Imp := Nodes[Imp].Next;
   End;
 End;
 
@@ -58341,6 +58473,11 @@ Begin
     End;
   Else
     T := AttribExpr(N, 0);
+    { appel generique dont la variable de retour n'est contrainte par rien : sa borne declaree }
+    If (T = T_ANY) And (Nodes[N].Kind = N_CALL) And (Nodes[N].Sym >= 0) And IsTVarT(Meths[Nodes[N].Sym].Ret) Then Begin
+      T := Erasure(Meths[Nodes[N].Sym].Ret);
+      Nodes[N].Typ := T;
+    End;
     LastEK := EK_VALUE;
     AttribQual := T;
   End;
@@ -59343,8 +59480,9 @@ End;
 Function AttribNew(N, Expected : LongInt) : LongInt;
 Var
   TNode, Body, OuterE, T, C, OT, SiteT, DiamondCls, Anon, K, Recv, ObjCtor : LongInt;
-  R : TResolved; Ok, Diamond : Boolean; Args : LongInt; RT : LongInt; OArgs : Array[0..MAXTARGS - 1] Of LongInt;
+  R : TResolved; Ok, Diamond, QualAnon : Boolean; Args : LongInt; RT : LongInt; OArgs : Array[0..MAXTARGS - 1] Of LongInt;
 Begin
+  QualAnon := False;
   TNode := Nodes[N].A; Args := Nodes[N].B; Body := Nodes[N].C; OuterE := Nodes[N].D;
   Nodes[N].Typ := TY_NONE;
   AttribNew := TY_NONE;
@@ -59438,7 +59576,16 @@ Begin
   Nodes[N].E := 0;
   If Body <> 0 Then Begin
     AnonSuperCtor := Nodes[N].Sym;
+    QualAnon := (OuterE <> 0) And IsClassT(T) And Classes[Types[T].Cls].IsInner;
+    If QualAnon Then AnonQualOuter := Erasure(OT) Else AnonQualOuter := 0;
     Anon := EnterLocalClass(Body, T);
+    AnonQualOuter := 0;
+    If QualAnon Then Begin
+      { l'expression englobante devient le premier argument du constructeur anonyme }
+      Nodes[OuterE].Next := Nodes[N].B;
+      Nodes[N].B := OuterE;
+      If (Nodes[N].Mods And CALL_VARARGS) <> 0 Then Inc(Nodes[N].N);
+    End;
     Nodes[N].E := Anon + 1;      { classe anonyme + 1 }
     Nodes[N].Typ := ClassT(Anon);
     C := Anon;
@@ -59446,7 +59593,7 @@ Begin
   Else Nodes[N].Typ := T;
   { instance englobante }
   If Classes[C].IsInner Then Begin
-    If OuterE <> 0 Then Nodes[N].D := OuterE
+    If (OuterE <> 0) And Not QualAnon Then Nodes[N].D := OuterE
     Else Begin
       K := CurClass;
       While (K >= 0) And Not IsSubClass(K, Classes[C].Outer) Do K := Classes[K].Outer;
@@ -59536,7 +59683,7 @@ Begin
       AttribLambda := TY_VOID;
     End
     Else If Infer Or HasIVar(RetP) Then Begin
-      B := AttribExpr(Body, 0);
+      If IsFnNode(Body) Then B := AttribExpr(Body, RetP) Else B := AttribExpr(Body, 0);      { lambda imbriquee : cible = type de retour }
       If B = TY_VOID Then Begin
         Err(Nodes[Body].Line, 'types incompatibles : le corps de la lambda est void'); B := TY_NONE;
       End;
@@ -59578,7 +59725,7 @@ Var
   Sam, Np, I, QT, Line, Lam, Prm, Body, Args, ArgT, Recv, Cn, M, Cls, Elem, Let, Vd, Li : LongInt;
   Tl : LongInt; IsType : Boolean; Name : String; HasStatic, HasInst : Boolean;
   Qual : LongInt; Tmp : String; Mark : LongInt; P0 : LongInt; Cast : LongInt;
-  Q : LongInt;
+  Q, Ki : LongInt; StOk : Boolean;
 Begin
   Line := Nodes[N].Line;
   AttribMethodRef := TY_NONE;
@@ -59648,7 +59795,16 @@ Begin
     For I := 0 To NCand - 1 Do Begin
       M := CandM[I];
       If (Meths[M].Flags And ACC_STATIC) <> 0 Then Begin
-        If (Meths[M].NPar = Np) Or (Meths[M].Varargs And (Np >= Meths[M].NPar - 1)) Then HasStatic := True;
+        If (Meths[M].NPar = Np) Or (Meths[M].Varargs And (Np >= Meths[M].NPar - 1)) Then Begin
+          { les types des parametres de l'interface doivent etre acceptes par la methode statique }
+          StOk := True;
+          If Meths[M].NPar = Np Then
+            For Ki := 0 To Np - 1 Do Begin
+              P0 := ResolveIVars(MemberType(Target, Meths[Sam].Owner, Meths[Sam].Par[Ki]));
+              If (P0 <> T_ANY) And (P0 <> TY_NONE) And Not IsLooseConv(Erasure(P0), Erasure(Meths[M].Par[Ki])) Then StOk := False;
+            End;
+          If StOk Then HasStatic := True;
+        End;
       End
       Else If (Np >= 1) And ((Meths[M].NPar = Np - 1) Or (Meths[M].Varargs And (Np - 1 >= Meths[M].NPar - 1))) Then HasInst := True;
     End;
@@ -59825,7 +59981,7 @@ Begin
         If K < 0 Then Continue;
         If Not DirectlyExtends(K, C) Then
           Err(Line, 'clause permits invalide : ' + Classes[K].Simple + ' doit heriter directement de la classe scellee ' + Classes[C].Simple)
-        Else If PkgOfClass(K) <> PkgOfClass(C) Then
+        Else If (PkgOfClass(K) <> PkgOfClass(C)) And Not HasModuleInfo And Not OptNoBuiltin Then
           Err(Line, 'clause permits invalide : la sous-classe ' + Classes[K].Simple + ' doit etre dans le meme paquetage que ' + Classes[C].Simple);
       End;
   End;
@@ -59911,7 +60067,7 @@ Begin
       End
       Else Begin
         AttribLambda(N, Expected, HasIVar(Expected));
-        FinishLambda(N, ResolveIVars(Expected));
+        FinishLambda(N, ResolveIVarsAny(Expected));
         T := Nodes[N].Typ;
       End;
     End;
@@ -61484,6 +61640,15 @@ Begin
   Nodes[Call].S := 'super';
   Nodes[Call].Aux := 1;
   Tl := 0; Hd := 0; ArgH := 0; ArgT := 0;
+  If AnonQualOuter <> 0 Then Begin
+    { x.new Interne() avec corps : l instance englobante x est un parametre, utilisee par $o.super(...) }
+    Prm := NewNode(N_PARAM, Line);
+    Nodes[Prm].S := '$o';
+    Nodes[Prm].A := MkResolvedType(AnonQualOuter, Line);
+    AppendNode(Hd, Tl, Prm);
+    Nodes[Call].D := MkNameNode2('$o', Line);
+    AnonQualOuter := 0;
+  End;
   If SuperM >= 0 Then
     For I := 0 To Meths[SuperM].NPar - 1 Do Begin
       Prm := NewNode(N_PARAM, Line);
@@ -61554,7 +61719,7 @@ End;
 { Verifie qu'une classe concrete implemente toutes les methodes abstraites (controle
   tolerant : nom et nombre de parametres) }
 Procedure CheckAbstractImpl(C : LongInt);
-Var Visited : Array[0..255] Of LongInt; NV : LongInt;
+Var Visited : Array[0..255] Of LongInt; NV, Mq : LongInt;
 
   Function HasImpl(K : LongInt; Const Name : String; Np : LongInt) : Boolean;
   Var M, S, I : LongInt;
@@ -61606,6 +61771,11 @@ Begin
   If (Classes[C].Flags And ACC_ENUM) <> 0 Then Begin
     { une enum avec des constantes a corps peut laisser des methodes abstraites }
     If Classes[C].EnumCount = 0 Then Exit;
+    Mq := Nodes[Classes[C].Decl].D;
+    While Mq <> 0 Do Begin
+      If (Nodes[Mq].Kind = N_ENUMCONST) And (Nodes[Mq].B <> 0) Then Exit;
+      Mq := Nodes[Mq].Next;
+    End;
   End;
   NV := 0;
   Walk(C);
@@ -61780,12 +61950,13 @@ End;
 
 Procedure AttribClassBody(C : LongInt);
 Var
-  SvCls, SvMeth, SvRet, SvCtx, SvCU, SvPCtx, Mark : LongInt; SvStatic : Boolean;
+  SvCls, SvMeth, SvRet, SvCtx, SvCU, SvPCtx, Mark, SvLoopB, SvSwB, SvLabB : LongInt; SvStatic : Boolean;
   D, M, V, F, Ft, Ctx, A, B, Anon : LongInt; R : TResolved; Ok : Boolean; Sc : LongInt;
 Begin
   If Classes[C].Lowered Then Exit;
   Classes[C].Lowered := True;      { drapeau "analyse faite" avant le desucrage }
   EnsureMembers(C);
+  SvLoopB := LoopDepth; SvSwB := SwitchDepth; SvLabB := NLabelStk;
   SvCls := CurClass; SvMeth := CurMeth; SvRet := CurRet; SvCtx := CurCtx; SvCU := CurCU;
   SvStatic := CurStatic; SvPCtx := ClsParentCtx;
   Mark := NScope;
@@ -61866,6 +62037,7 @@ Begin
   NScope := Mark;
   CurClass := SvCls; CurMeth := SvMeth; CurRet := SvRet; CurCtx := SvCtx; CurCU := SvCU;
   CurStatic := SvStatic; ClsParentCtx := SvPCtx;
+  LoopDepth := SvLoopB; SwitchDepth := SvSwB; NLabelStk := SvLabB;
   If CurCU >= 0 Then CurFile := CUs[CurCU].FileName;
   Sc := 0; A := 0; B := 0; Ctx := 0;
 End;
@@ -66343,6 +66515,18 @@ Begin
   Else EmitJump(OP_GOTO, GCtx[T].BreakL);
 End;
 
+{ L''expression contient-elle un instanceof avec variable de motif ? }
+Function CondHasPattern(E : LongInt) : Boolean;
+Begin
+  CondHasPattern := False;
+  If E = 0 Then Exit;
+  Case Nodes[E].Kind Of
+    N_INSTANCEOF : CondHasPattern := (Nodes[E].C <> 0) Or (Nodes[E].B <> 0);
+    N_UNARY : CondHasPattern := CondHasPattern(Nodes[E].A);
+    N_BINARY : CondHasPattern := CondHasPattern(Nodes[E].A) Or CondHasPattern(Nodes[E].B);
+  End;
+End;
+
 Procedure GenLoopHeadStmt(N : LongInt);
 Var Lcond, Lend, Lcont, Mark, S, Ltop : LongInt; Lab : LongInt;
 Begin
@@ -66391,7 +66575,8 @@ Begin
       PlaceLabel(Lend);
     End;
   End;
-  FreeLocals(Mark);
+  { while (!(x instanceof T t)) : t reste visible apres la boucle }
+  If Not ((Nodes[N].Kind = N_WHILE) And CondHasPattern(Nodes[N].A)) Then FreeLocals(Mark);
   Lcond := 0;
 End;
 
@@ -68567,6 +68752,7 @@ Begin
   SetLength(Files, NFiles + 1);
   SetLength(FileMods, NFiles + 1);
   Files[NFiles] := Fn;
+  If Copy(Fn, Length(Fn) - 14, 15) = 'module-info.java' Then HasModuleInfo := True;
   FileMods[NFiles] := Md;
   Inc(NFiles);
 End;
