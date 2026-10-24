@@ -276,6 +276,10 @@ Var
   OptTarget  : LongInt;    { version de classe (major) }
   OptDumpAst : Boolean;
   OptParseOnly : Boolean;
+  OptGLines   : Boolean;    { LineNumberTable (defaut oui) }
+  OptGSource  : Boolean;    { SourceFile (defaut oui) }
+  OptGVars    : Boolean;    { LocalVariableTable / LocalVariableTypeTable (-g) }
+  OptParameters : Boolean;  { MethodParameters (-parameters) }
   OptMaxErrs  : LongInt;    { nombre maximal d'erreurs affichees (-Xmaxerrs) }
   OptMaxWarns : LongInt;
   OptModulePath : Boolean;  { --module-path donne : les modules inconnus ne sont pas des erreurs }
@@ -17409,12 +17413,15 @@ Var
   Pool    : TBuf;
   PoolN   : LongInt;
   PoolMap : TStrMap;
+  PoolClasses : Array Of String;     { noms des classes referencees (pour InnerClasses) }
+  NPoolClasses : LongInt;
 
 Procedure PoolInit;
 Begin
   BInit(Pool);
   PoolN := 1;
   MapInit(PoolMap, 2039);
+  NPoolClasses := 0;
 End;
 
 Function PoolFind(Const K : String) : LongInt;
@@ -17447,6 +17454,11 @@ Begin
   B1(Pool, 7);
   B2(Pool, U);
   MapPut(PoolMap, K, PoolN);
+  If (Name <> '') And (Name[1] <> '[') And (Pos('$', Name) > 0) Then Begin
+    If NPoolClasses >= Length(PoolClasses) Then SetLength(PoolClasses, NPoolClasses * 2 + 16);
+    PoolClasses[NPoolClasses] := Name;
+    Inc(NPoolClasses);
+  End;
   CPClass := PoolN;
   Inc(PoolN);
 End;
@@ -18162,6 +18174,54 @@ Begin
   PushVT(V);
 End;
 
+Type
+  TLVRec = Record
+    Name, Desc, Sig : String;
+    Slot, StartPc, EndPc : LongInt;      { StartPc < 0 : pas encore initialisee ; EndPc < 0 : portee ouverte }
+  End;
+
+Var
+  LVs : Array Of TLVRec;
+  NLV : LongInt;
+
+Procedure LVDecl(Const Nm, Desc, Sig : String; Slot, StartPc : LongInt);
+Begin
+  If Not OptGVars Then Exit;
+  If NLV >= Length(LVs) Then SetLength(LVs, NLV * 2 + 16);
+  LVs[NLV].Name := Nm; LVs[NLV].Desc := Desc; LVs[NLV].Sig := Sig;
+  LVs[NLV].Slot := Slot; LVs[NLV].StartPc := StartPc; LVs[NLV].EndPc := -1;
+  Inc(NLV);
+End;
+
+{ Premiere affectation du dernier emplacement declare : debut de la portee de la variable }
+Procedure LVNoteStore(Slot : LongInt);
+Var I : LongInt;
+Begin
+  If Not OptGVars Then Exit;
+  For I := NLV - 1 Downto 0 Do
+    If (LVs[I].Slot = Slot) And (LVs[I].EndPc < 0) Then Begin
+      If LVs[I].StartPc < 0 Then LVs[I].StartPc := Code.N;
+      Exit;
+    End;
+End;
+
+{ Parametre : portee ouverte des l'entree de la methode }
+Procedure LVStartZero(Slot : LongInt);
+Var I : LongInt;
+Begin
+  If Not OptGVars Then Exit;
+  For I := NLV - 1 Downto 0 Do
+    If (LVs[I].Slot = Slot) And (LVs[I].EndPc < 0) And (LVs[I].StartPc < 0) Then Begin LVs[I].StartPc := 0; Exit; End;
+End;
+
+{ Ferme les portees des variables d'emplacement >= Mark }
+Procedure LVClose(Mark : LongInt);
+Var I : LongInt;
+Begin
+  For I := 0 To NLV - 1 Do
+    If (LVs[I].EndPc < 0) And (LVs[I].Slot >= Mark) Then LVs[I].EndPc := Code.N;
+End;
+
 Procedure EmitStore(K : Char; Slot : LongInt; Const V : TVT);
 Var Ki : LongInt; Top : TVT;
 Begin
@@ -18172,6 +18232,7 @@ Begin
   Top := PopVT;
   EnsureLocal(Slot + 2);
   CurL[Slot] := V;
+  LVNoteStore(Slot);
   If VTCat2(V) Then CurL[Slot + 1] := VTSimple(VT_SECOND);
   { un ancien deuxieme mot de long/double devient invalide }
   If (Slot > 0) And VTCat2(CurL[Slot - 1]) Then CurL[Slot - 1] := VTSimple(VT_TOP);
@@ -18708,17 +18769,71 @@ Begin
   NLabels := 0; NFix := 0; NFrames := 0; NLn := 0; NEx := 0;
   LastLine := 0;
   CurFin := 0;
+  NLV := 0;
   Inc(GenId);
 End;
 
-{ Ecrit la StackMapTable des cadres enregistres (cadres complets) }
+Var
+  InitFrameL : Array Of TVT;     { locales du cadre implicite d'entree de la methode }
+  InitFrameN : LongInt;
+
+{ Cadre implicite d'entree d'une methode, d'apres son descripteur }
+Procedure SaveInitFrame(Const Desc : String; IsStatic, IsCtor : Boolean; Const ThisName : String);
+Var I, N : LongInt; V : TVT; Start : LongInt;
+  Procedure Add(Const X : TVT);
+  Begin
+    SetLength(InitFrameL, N + 1);
+    InitFrameL[N] := X;
+    Inc(N);
+  End;
+Begin
+  N := 0;
+  SetLength(InitFrameL, 0);
+  If Not IsStatic Then Begin
+    If IsCtor Then Add(VTSimple(VT_UNINITTHIS)) Else Add(VTObj(ThisName));
+  End;
+  I := 2;
+  While (I <= Length(Desc)) And (Desc[I] <> ')') Do Begin
+    Case Desc[I] Of
+      'I', 'Z', 'B', 'C', 'S' : Begin Add(VTSimple(VT_INT)); Inc(I); End;
+      'F' : Begin Add(VTSimple(VT_FLOAT)); Inc(I); End;
+      'J' : Begin Add(VTSimple(VT_LONG)); Inc(I); End;
+      'D' : Begin Add(VTSimple(VT_DOUBLE)); Inc(I); End;
+    Else
+      Start := I;
+      While Desc[I] = '[' Do Inc(I);
+      If Desc[I] = 'L' Then Begin
+        While Desc[I] <> ';' Do Inc(I);
+        If Start = I - 0 Then ;
+        If Desc[Start] = 'L' Then V := VTObj(Copy(Desc, Start + 1, I - Start - 1))
+        Else V := VTObj(Copy(Desc, Start, I - Start + 1));
+      End
+      Else V := VTObj(Copy(Desc, Start, I - Start + 1));
+      Inc(I);
+      Add(V);
+    End;
+  End;
+  InitFrameN := N;
+End;
+
+{ Ecrit la StackMapTable : cadres compacts (same, same_locals_1_stack_item, chop, append) ou complets }
 Procedure WriteStackMap(Var B : TBuf);
-Var I, J, K, Prev : LongInt; Body : TBuf; Order : Array Of LongInt; Tmp, Cnt : LongInt;
+Var
+  I, J, K, Prev, Tmp, Cnt, Delta, NP, NC, Common, Diff : LongInt; Body : TBuf; Order : Array Of LongInt;
+  PL, CL : Array Of TVT; Same : Boolean;
   Procedure WVT(Const V : TVT);
   Begin
     B1(Body, V.Tag);
     If V.Tag = VT_OBJECT Then B2(Body, CPClass(VTName(V)))
     Else If V.Tag = VT_UNINIT Then B2(Body, V.Off);
+  End;
+  { liste de types de verification des locales (le second mot des long / double est omis) }
+  Procedure ListOf(Const Src : Array Of TVT; N : LongInt; Var Dst : Array Of TVT; Var Cnt2 : LongInt);
+  Var X : LongInt;
+  Begin
+    Cnt2 := 0;
+    For X := 0 To N - 1 Do
+      If Src[X].Tag <> VT_SECOND Then Begin Dst[Cnt2] := Src[X]; Inc(Cnt2); End;
   End;
 Begin
   If NFrames = 0 Then Exit;
@@ -18734,19 +18849,46 @@ Begin
   BInit(Body);
   Prev := -1;
   Cnt := 0;
+  SetLength(PL, InitFrameN + 4);
+  ListOf(InitFrameL, InitFrameN, PL, NP);
   For I := 0 To NFrames - 1 Do Begin
     K := Order[I];
     If Frames[K].PC >= Code.N Then Continue;      { cadre au-dela de la fin du code }
-    B1(Body, 255);
-    If Prev < 0 Then B2(Body, Frames[K].PC) Else B2(Body, Frames[K].PC - Prev - 1);
+    If Prev < 0 Then Delta := Frames[K].PC Else Delta := Frames[K].PC - Prev - 1;
     Prev := Frames[K].PC;
-    { locales (le second mot des long / double est omis) }
-    Tmp := 0;
-    For J := 0 To Frames[K].NL - 1 Do If Frames[K].L[J].Tag <> VT_SECOND Then Inc(Tmp);
-    B2(Body, Tmp);
-    For J := 0 To Frames[K].NL - 1 Do If Frames[K].L[J].Tag <> VT_SECOND Then WVT(Frames[K].L[J]);
-    B2(Body, Frames[K].NS);
-    For J := 0 To Frames[K].NS - 1 Do WVT(Frames[K].S[J]);
+    SetLength(CL, Frames[K].NL + 4);
+    ListOf(Frames[K].L, Frames[K].NL, CL, NC);
+    { prefixe commun aux locales precedentes et courantes }
+    Common := 0;
+    While (Common < NP) And (Common < NC) And VTEq(PL[Common], CL[Common]) Do Inc(Common);
+    Same := (Common = NP) And (NP = NC);
+    Diff := NC - NP;
+    If Same And (Frames[K].NS = 0) Then Begin
+      If Delta <= 63 Then B1(Body, Delta) Else Begin B1(Body, 251); B2(Body, Delta); End;
+    End
+    Else If Same And (Frames[K].NS = 1) Then Begin
+      If Delta <= 63 Then B1(Body, 64 + Delta) Else Begin B1(Body, 247); B2(Body, Delta); End;
+      WVT(Frames[K].S[0]);
+    End
+    Else If (Frames[K].NS = 0) And (Common = NC) And (NP - NC >= 1) And (NP - NC <= 3) Then Begin
+      B1(Body, 251 - (NP - NC)); B2(Body, Delta);
+    End
+    Else If (Frames[K].NS = 0) And (Common = NP) And (Diff >= 1) And (Diff <= 3) Then Begin
+      B1(Body, 251 + Diff); B2(Body, Delta);
+      For J := NP To NC - 1 Do WVT(CL[J]);
+    End
+    Else Begin
+      B1(Body, 255);
+      B2(Body, Delta);
+      B2(Body, NC);
+      For J := 0 To NC - 1 Do WVT(CL[J]);
+      B2(Body, Frames[K].NS);
+      For J := 0 To Frames[K].NS - 1 Do WVT(Frames[K].S[J]);
+    End;
+    { le cadre courant devient la reference }
+    SetLength(PL, NC + 4);
+    For J := 0 To NC - 1 Do PL[J] := CL[J];
+    NP := NC;
     Inc(Cnt);
   End;
   If Cnt = 0 Then Exit;
@@ -18819,18 +18961,28 @@ Begin
   Inc(NextLoc, Sz);
 End;
 
+Function SigOfType(T : LongInt) : String; Forward;
+Function TypeGenericT(T : LongInt) : Boolean; Forward;
+
 Function DeclSlot(L : LongInt) : LongInt;
-Var S : LongInt;
+Var S : LongInt; Nm, Sg : String;
 Begin
   S := AllocSlot(Locals[L].Typ);
   Locals[L].Slot := S;
   Locals[L].SlotOwner := GenId;
+  Nm := Locals[L].Name;
+  If OptGVars And (Nm <> '') And (Nm[1] <> '$') And (Copy(Nm, 1, 5) <> 'this$') And (Copy(Nm, 1, 4) <> 'val$') Then Begin
+    Sg := '';
+    If TypeGenericT(Locals[L].Typ) Then Sg := SigOfType(Locals[L].Typ);
+    LVDecl(Nm, TypeDesc(Erasure(Locals[L].Typ)), Sg, S, -1);
+  End;
   DeclSlot := S;
 End;
 
 Procedure FreeLocals(Mark : LongInt);
 Var I : LongInt;
 Begin
+  If OptGVars Then LVClose(Mark);
   For I := Mark To Length(CurL) - 1 Do CurL[I] := VTSimple(VT_TOP);
   NextLoc := Mark;
 End;
@@ -21629,7 +21781,10 @@ Begin
   If (Nodes[N].Aux = 2) Or (T <= 0) Then Begin SigOfNode := SigOfType(T); Exit; End;
   S := '';
   If Nodes[N].Aux = 1 Then Begin
-    For I := 1 To Nodes[N].N Do S := S + '[';
+    For I := 1 To Nodes[N].N Do Begin
+      If IsArrayT(T) Then T := ElemOf(T);
+      S := S + '[';
+    End;
     SigOfNode := S + TypeDesc(T);
     Exit;
   End;
@@ -22434,12 +22589,17 @@ Begin
     If IsCtor Then CurL[0] := VTSimple(VT_UNINITTHIS) Else CurL[0] := VTObj(ThisClsName);
     NextLoc := 1;
     MaxLoc := 1;
+    If OptGVars Then Begin
+      If TypeGenericT(ThisTypeOf(C)) Then LVDecl('this', 'L' + ThisClsName + ';', SigOfType(ThisTypeOf(C)), 0, 0)
+      Else LVDecl('this', 'L' + ThisClsName + ';', '', 0, 0);
+    End;
   End;
   D := Meths[M].Decl;
   { parametres }
   For I := 0 To Length(Meths[M].PreLoc) - 1 Do Begin
     L := Meths[M].PreLoc[I];
     Slot := DeclSlot(L);
+    LVStartZero(Slot);
     CurL[Slot] := VTOfType(Locals[L].Typ);
     If VTCat2(CurL[Slot]) Then CurL[Slot + 1] := VTSimple(VT_SECOND);
   End;
@@ -22448,6 +22608,7 @@ Begin
     While P <> 0 Do Begin
       L := Nodes[P].Sym;
       Slot := DeclSlot(L);
+      LVStartZero(Slot);
       CurL[Slot] := VTOfType(Locals[L].Typ);
       If VTCat2(CurL[Slot]) Then CurL[Slot + 1] := VTSimple(VT_SECOND);
       P := Nodes[P].Next;
@@ -22468,6 +22629,7 @@ Begin
     CurL[Slot] := VTOfType(Locals[L].Typ);
     If VTCat2(CurL[Slot]) Then CurL[Slot + 1] := VTSimple(VT_SECOND);
   End;
+  SaveInitFrame(Meths[M].Desc, Static, IsCtor, Classes[C].Name);
   If Meths[M].Synth = 1 Then Begin
     { pont : parametres selon le descripteur du pont }
     GenBridgeBody(C, M);
@@ -22528,6 +22690,33 @@ Var
   FieldBuf, MethBuf : TBuf;
   NFieldOut, NMethOut : LongInt;
 
+{ LocalVariableTable et LocalVariableTypeTable (option -g) }
+Procedure WriteLocalVarTables(Var Attrs : TBuf; Var NA : LongInt);
+Var I, N, NT : LongInt; T1, T2 : TBuf;
+Begin
+  If (Not OptGVars) Or (NLV = 0) Then Exit;
+  BInit(T1); BInit(T2);
+  N := 0; NT := 0;
+  For I := 0 To NLV - 1 Do Begin
+    If LVs[I].EndPc < 0 Then LVs[I].EndPc := Code.N;
+    If (LVs[I].StartPc < 0) Or (LVs[I].EndPc <= LVs[I].StartPc) Then Continue;
+    B2(T1, LVs[I].StartPc); B2(T1, LVs[I].EndPc - LVs[I].StartPc);
+    B2(T1, CPUtf8(LVs[I].Name)); B2(T1, CPUtf8(LVs[I].Desc)); B2(T1, LVs[I].Slot);
+    Inc(N);
+    If LVs[I].Sig <> '' Then Begin
+      B2(T2, LVs[I].StartPc); B2(T2, LVs[I].EndPc - LVs[I].StartPc);
+      B2(T2, CPUtf8(LVs[I].Name)); B2(T2, CPUtf8(LVs[I].Sig)); B2(T2, LVs[I].Slot);
+      Inc(NT);
+    End;
+  End;
+  If N > 0 Then Begin
+    B2(Attrs, CPUtf8('LocalVariableTable')); B4(Attrs, 2 + T1.N); B2(Attrs, N); BAppend(Attrs, T1); Inc(NA);
+  End;
+  If NT > 0 Then Begin
+    B2(Attrs, CPUtf8('LocalVariableTypeTable')); B4(Attrs, 2 + T2.N); B2(Attrs, NT); BAppend(Attrs, T2); Inc(NA);
+  End;
+End;
+
 Procedure WriteCodeAttr(Var Out : TBuf);
 Var Body, Attrs, Sm : TBuf; I, NA : LongInt;
 Begin
@@ -22547,7 +22736,7 @@ Begin
     B2(Body, ExType[I]);
   End;
   NA := 0;
-  If NLn > 0 Then Begin
+  If (NLn > 0) And OptGLines Then Begin
     B2(Attrs, CPUtf8('LineNumberTable'));
     B4(Attrs, 2 + NLn * 4);
     B2(Attrs, NLn);
@@ -22556,6 +22745,7 @@ Begin
   End;
   WriteStackMap(Sm);
   If Sm.N > 0 Then Begin BAppend(Attrs, Sm); Inc(NA); End;
+  WriteLocalVarTables(Attrs, NA);
   B2(Body, NA);
   BAppend(Body, Attrs);
   B2(Out, CPUtf8('Code'));
@@ -22616,6 +22806,31 @@ Begin
   Inc(NFieldOut);
 End;
 
+{ Attribut MethodParameters (option -parameters) }
+Procedure EmitMethodParameters(Var Attr : TBuf; Var NA : LongInt; M : LongInt);
+Var Buf : TBuf; N, I, P, Fl : LongInt; Nm : String;
+Begin
+  BInit(Buf);
+  N := 0;
+  For I := 0 To Length(Meths[M].PreLoc) - 1 Do Begin
+    Nm := Locals[Meths[M].PreLoc[I]].Name;
+    If Nm = 'this$0' Then Fl := $8000 Else Fl := $1000;
+    B2(Buf, CPUtf8(Nm)); B2(Buf, Fl); Inc(N);
+  End;
+  P := Nodes[Meths[M].Decl].B;
+  While P <> 0 Do Begin
+    Fl := 0;
+    If (Nodes[P].Mods And ACC_FINAL) <> 0 Then Fl := ACC_FINAL;
+    B2(Buf, CPUtf8(Nodes[P].S)); B2(Buf, Fl); Inc(N);
+    P := Nodes[P].Next;
+  End;
+  For I := 0 To Length(Meths[M].PostLoc) - 1 Do Begin
+    B2(Buf, CPUtf8(Locals[Meths[M].PostLoc[I]].Name)); B2(Buf, $1000); Inc(N);
+  End;
+  If N = 0 Then Exit;
+  B2(Attr, CPUtf8('MethodParameters')); B4(Attr, 1 + Buf.N); B1(Attr, N); BAppend(Attr, Buf); Inc(NA);
+End;
+
 Procedure GenMethodInfo(C, M : LongInt);
 Var Fl : LongInt; HasCode : Boolean; Extra : TBuf; NX, D, Fd, Pr, Ix : LongInt;
 Begin
@@ -22639,6 +22854,8 @@ Begin
     Fd := Fields[Meths[M].Bridge].Decl;
     If (Fd > 0) And NodeGeneric(Nodes[Fd].A) Then EmitSignatureAttr(Extra, NX, '()' + SigOfNode(Nodes[Fd].A));
   End;
+  If OptParameters And (Meths[M].Synth = 0) And (Meths[M].Lambda < 0) And (D > 0) Then
+    EmitMethodParameters(Extra, NX, M);
   If (D > 0) And (Meths[M].Synth = 0) And (Meths[M].Lambda < 0) Then Begin
     If Nodes[D].Aux = 1 Then EmitAnnotAttrs(Extra, NX, Nodes[D].Ann, TGT_CONSTRUCTOR)
     Else EmitAnnotAttrs(Extra, NX, Nodes[D].Ann, TGT_METHOD);
@@ -22728,7 +22945,7 @@ Begin
   { attributs de classe }
   BInit(Attr);
   NA := 0;
-  B2(Attr, CPUtf8('SourceFile')); B4(Attr, 2); B2(Attr, CPUtf8(SourceFileName(C))); Inc(NA);
+  If OptGSource Then Begin B2(Attr, CPUtf8('SourceFile')); B4(Attr, 2); B2(Attr, CPUtf8(SourceFileName(C))); Inc(NA); End;
   { signature generique, annotations de la classe et attribut Record }
   If Classes[C].IsSrc Then EmitSignatureAttr(Attr, NA, ClassSignature(C));
   If Classes[C].IsSrc And (Classes[C].Decl > 0) Then Begin
@@ -22748,6 +22965,31 @@ Begin
       B2(InnerBuf, InnerFlags(X));
       Inc(NInner);
     End;
+  { classes imbriquees externes referencees dans le pool de constantes (Map$Entry, ...) }
+  I := 0;
+  While I < NPoolClasses Do Begin
+    X := LookupClass(PoolClasses[I]);
+    If (X >= 0) And Not Classes[X].IsSrc And (Classes[X].Outer >= 0) And (Pos('$', Classes[X].Name) > 0) Then Begin
+      EnsureHeader(X);
+      B2(InnerBuf, CPClass(Classes[X].Name));
+      B2(InnerBuf, CPClass(Classes[Classes[X].Outer].Name));
+      B2(InnerBuf, CPUtf8(Classes[X].Simple));
+      B2(InnerBuf, InnerFlags(X) Or ACC_STATIC);
+      Inc(NInner);
+    End;
+    Inc(I);
+  End;
+  { MethodHandles.Lookup : parametre de l'amorceur des lambdas (invokedynamic) }
+  If BsmCount > 0 Then Begin
+    X := LookupClass('java/lang/invoke/MethodHandles$Lookup');
+    If (X >= 0) And Not Classes[X].IsSrc Then Begin
+      B2(InnerBuf, CPClass('java/lang/invoke/MethodHandles$Lookup'));
+      B2(InnerBuf, CPClass('java/lang/invoke/MethodHandles'));
+      B2(InnerBuf, CPUtf8('Lookup'));
+      B2(InnerBuf, ACC_PUBLIC Or ACC_STATIC Or ACC_FINAL);
+      Inc(NInner);
+    End;
+  End;
   If NInner > 0 Then Begin
     B2(Attr, CPUtf8('InnerClasses'));
     B4(Attr, 2 + InnerBuf.N);
@@ -22969,7 +23211,9 @@ Begin
   WriteLn('  -Xmaxerrs N        nombre maximal d''erreurs affichees (defaut 100, 0 = illimite)');
   WriteLn('  -Xmaxwarns N       nombre maximal d''avertissements affiches');
   WriteLn('  -verbose           affiche les fichiers ecrits');
-  WriteLn('  -g, -nowarn, -Xlint  (acceptes et ignores)');
+  WriteLn('  -g, -g:none|lines,vars,source   informations de debogage (defaut : lines,source)');
+  WriteLn('  -parameters        attribut MethodParameters (noms des parametres)');
+  WriteLn('  -nowarn, -Xlint    (acceptes et ignores)');
   WriteLn('  -help              affiche cette aide');
 End;
 
@@ -22985,6 +23229,7 @@ Begin
   {$IFDEF CPUX86_64}SetMXCSR($1F80);{$ENDIF}
   {$IFDEF CPUI386}Set8087CW($133F);{$ENDIF}
   ErrCount := 0; WarnCount := 0; OptMaxErrs := 100; OptMaxWarns := 100;
+  OptGLines := True; OptGSource := True; OptGVars := False;
   OptVerbose := False; OptOutDir := ''; OptTarget := 55;
   NNodes := 1;
   CurFile := 'javac';
@@ -23018,6 +23263,12 @@ Begin
     Else If Copy(Arg, 1, 10) = '-Xmaxerrs=' Then OptMaxErrs := ToInt(Copy(Arg, 11, 10))
     Else If (Arg = '-Xmaxerrs') And (I < ParamCount) Then Begin Inc(I); OptMaxErrs := ToInt(ParamStr(I)); End
     Else If (Arg = '-Xmaxwarns') And (I < ParamCount) Then Begin Inc(I); OptMaxWarns := ToInt(ParamStr(I)); End
+    Else If Arg = '-g' Then Begin OptGLines := True; OptGSource := True; OptGVars := True; End
+    Else If Copy(Arg, 1, 3) = '-g:' Then Begin
+      OptGLines := Pos('lines', Arg) > 0; OptGSource := Pos('source', Arg) > 0; OptGVars := Pos('vars', Arg) > 0;
+      If Arg = '-g:none' Then Begin OptGLines := False; OptGSource := False; OptGVars := False; End;
+    End
+    Else If Arg = '-parameters' Then OptParameters := True
     Else If Arg = '-verbose' Then OptVerbose := True
     Else If Arg = '-Xparse' Then OptParseOnly := True
     Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '-h') Or (Arg = '/?') Then Begin Usage; Halt(0); End
