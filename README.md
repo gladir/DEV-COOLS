@@ -685,6 +685,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le transpilateur Java vers C#.</td>
 		</tr>
 		<tr>
+			<td><b>JAVAC.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Java complet qui produit des fichiers .class (bytecode de la machine virtuelle Java) a partir de fichiers source .java.</td>
+		</tr>
+		<tr>
 			<td><b>JAVAC86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Java (Java-Lite) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>

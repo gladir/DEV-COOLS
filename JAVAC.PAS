@@ -339,11 +339,37 @@ Begin
   End;
 End;
 
+{ Affiche la ligne de source fautive (relue depuis le fichier) }
+Procedure ShowSrcLine(Const Fn : String; Line : LongInt);
+Var F : Text; S : String; K : LongInt;
+Begin
+  If (Line <= 0) Or (Fn = '') Then Exit;
+  Assign(F, Fn);
+  Reset(F);
+  If IOResult <> 0 Then Exit;
+  K := 0;
+  S := '';
+  While (K < Line) And Not Eof(F) Do Begin
+    ReadLn(F, S);
+    Inc(K);
+  End;
+  Close(F);
+  If K = Line Then WriteLn('    ', S);
+  If IOResult <> 0 Then ;
+End;
+
+Procedure ErrSummary;
+Begin
+  If ErrCount = 1 Then WriteLn('1 erreur') Else WriteLn(ErrCount, ' erreurs');
+End;
+
 { Erreurs et avertissements }
 Procedure Err(Line : LongInt; Const Msg : String);
 Begin
-  If Line > 0 Then
-    WriteLn(CurFile, ':', Line, ': erreur: ', Msg)
+  If Line > 0 Then Begin
+    WriteLn(CurFile, ':', Line, ': erreur: ', Msg);
+    ShowSrcLine(CurFile, Line);
+  End
   Else
     WriteLn(CurFile, ': erreur: ', Msg);
   Inc(ErrCount);
@@ -358,7 +384,7 @@ End;
 Procedure Fatal(Line : LongInt; Const Msg : String);
 Begin
   Err(Line, Msg);
-  WriteLn(ErrCount, ' erreur(s)');
+  ErrSummary;
   Halt(1);
 End;
 
@@ -10262,7 +10288,7 @@ Begin
     Nm := Nodes[N].S;
     T := LookupTypeName(Nm);
     If T <= 0 Then Begin
-      Err(Nodes[N].Line, 'cannot find symbol: classe ' + Nm);
+      Err(Nodes[N].Line, 'symbole introuvable : classe ' + Nm);
       T := TY_NONE;
     End
     Else If IsClassT(T) And (Nodes[N].A <> 0) Then Begin
@@ -10454,7 +10480,7 @@ Begin
     Tp := ResolveType(Nodes[D].B);
     If IsClassT(Tp) Then Begin
       If (Classes[Types[Tp].Cls].Flags And ACC_INTERFACE) <> 0 Then
-        Err(Nodes[D].Line, 'no se puede heredar de una interface (use implements)');
+        Err(Nodes[D].Line, 'une classe ne peut pas heriter d''une interface (utiliser implements)');
       Classes[C].Super := Tp;
     End
     Else Classes[C].Super := T_OBJECT;
@@ -13453,6 +13479,9 @@ Begin
     { corps-expression }
     If RetP = TY_VOID Then Begin
       AttribExpr(Body, 0);
+      If (Nodes[Body].Typ <> TY_NONE) And Not (Nodes[Body].Kind In [N_CALL, N_ASSIGN, N_ASSIGNOP, N_NEW, N_CONV, N_LET]) And
+         Not ((Nodes[Body].Kind = N_UNARY) And (Nodes[Body].Aux In [OP_PREINC, OP_PREDEC, OP_POSTINC, OP_POSTDEC])) Then
+        Err(Nodes[Body].Line, 'types incompatibles : type de retour incorrect dans l''expression lambda (void attendu)');
       AttribLambda := TY_VOID;
     End
     Else If Infer Or HasIVar(RetP) Then Begin
@@ -19085,6 +19114,8 @@ Procedure GenFieldInfo(C, F : LongInt);
 Var Fl, Idx : LongInt; Attr : TBuf; NA : LongInt; Bits : TDblBits;
 Begin
   Fl := Fields[F].Flags And $FFFF;
+  { avant la version 11 il n'y a pas de nids : les membres prives deviennent visibles du paquetage }
+  If OptTarget < 55 Then Fl := Fl And Not ACC_PRIVATE;
   B2(FieldBuf, Fl);
   B2(FieldBuf, CPUtf8(Fields[F].Name));
   B2(FieldBuf, CPUtf8(FieldDescOf(F)));
@@ -19114,6 +19145,7 @@ Procedure GenMethodInfo(C, M : LongInt);
 Var Fl : LongInt; HasCode : Boolean; Out : TBuf; NA : LongInt;
 Begin
   Fl := Meths[M].Flags And $FFFF;
+  If (OptTarget < 55) And (Meths[M].Lambda < 0) And ((Classes[C].Flags And ACC_INTERFACE) = 0) Then Fl := Fl And Not ACC_PRIVATE;
   If Meths[M].Synth = 0 Then Fl := Fl And Not (ACC_BRIDGE);
   If (Meths[M].Flags And ACC_VARARGS) <> 0 Then Fl := Fl Or ACC_VARARGS;
   { les methodes "default" ne sont pas abstraites }
@@ -19208,8 +19240,10 @@ Begin
     B2(Attr, CPClass(Classes[Classes[C].Outer].Name)); B2(Attr, 0);
     Inc(NA);
   End;
-  { nids }
-  If Classes[C].Outer >= 0 Then Begin
+  { nids (version 11 et suivantes) }
+  If OptTarget < 55 Then Begin
+  End
+  Else If Classes[C].Outer >= 0 Then Begin
     B2(Attr, CPUtf8('NestHost')); B4(Attr, 2); B2(Attr, CPClass(Classes[Classes[C].TopClass].Name)); Inc(NA);
   End
   Else Begin
@@ -19290,7 +19324,7 @@ Begin
   WriteLn;
   WriteLn('Options :');
   WriteLn('  -d repertoire      repertoire de sortie des fichiers .class');
-  WriteLn('  -target N          version de classe visee (11 a 21, defaut 11)');
+  WriteLn('  -target N          version de classe visee (8 a 25, defaut 11)');
   WriteLn('  --release N        synonyme de -target');
   WriteLn('  -verbose           affiche les fichiers ecrits');
   WriteLn('  -g, -nowarn, -Xlint  (acceptes et ignores)');
@@ -19323,9 +19357,10 @@ Begin
       Inc(I);
       V := ToInt(ParamStr(I));
       If (Arg <> '-source') Then Begin
-        If (V >= 11) And (V <= 25) Then OptTarget := 44 + V
-        Else If (V >= 1) And (V < 11) Then Begin
-          WriteLn('javac: la version cible ', V, ' n''est pas prise en charge (minimum : 11)');
+        If V = 1 Then V := ToInt(Copy(ParamStr(I), 3, 3));     { 1.8 -> 8 }
+        If (V >= 8) And (V <= 25) Then OptTarget := 44 + V
+        Else Begin
+          WriteLn('javac: la version cible ', ParamStr(I), ' n''est pas prise en charge (8 a 25)');
           Halt(2);
         End;
       End;
@@ -19365,7 +19400,7 @@ Begin
       If Classes[I].IsSrc And (Classes[I].CU >= 0) Then WriteClassFile(I);
   End;
   If ErrCount > 0 Then Begin
-    If ErrCount = 1 Then WriteLn('1 erreur') Else WriteLn(ErrCount, ' erreurs');
+    ErrSummary;
     Halt(1);
   End;
   If WarnCount > 0 Then WriteLn(WarnCount, ' avertissement(s)');
