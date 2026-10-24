@@ -289,6 +289,16 @@ Begin
   Else HexVal := -1;
 End;
 
+Function FileExists(Const Fn : String) : Boolean;
+Var F : File;
+Begin
+  Assign(F, Fn);
+  Reset(F, 1);
+  If IOResult = 0 Then Begin Close(F); FileExists := True; End
+  Else FileExists := False;
+  If IOResult <> 0 Then ;
+End;
+
 { Remplace toutes les occurrences de Old par New dans S }
 Function ReplaceAll(Const S, Old, New : String) : String;
 Var R : String; I, L : LongInt;
@@ -460,6 +470,88 @@ Begin
   M.Nexts[M.Count] := M.Heads[H];
   M.Heads[H] := M.Count;
   Inc(M.Count);
+End;
+
+{ ----- tampons d'octets ---------------------------------------------------- }
+
+Type
+  TBuf = Record
+    D : Array Of Byte;
+    N : LongInt;
+  End;
+
+Procedure BInit(Var B : TBuf);
+Begin
+  B.N := 0;
+  If Length(B.D) = 0 Then SetLength(B.D, 256);
+End;
+
+Procedure BEnsure(Var B : TBuf; Extra : LongInt);
+Begin
+  If B.N + Extra > Length(B.D) Then SetLength(B.D, (B.N + Extra) * 2 + 64);
+End;
+
+Procedure B1(Var B : TBuf; V : LongInt);
+Begin
+  BEnsure(B, 1);
+  B.D[B.N] := V And $FF;
+  Inc(B.N);
+End;
+
+Procedure B2(Var B : TBuf; V : LongInt);
+Begin
+  BEnsure(B, 2);
+  B.D[B.N] := (V Shr 8) And $FF;
+  B.D[B.N + 1] := V And $FF;
+  Inc(B.N, 2);
+End;
+
+Procedure B4(Var B : TBuf; V : Int64);
+Begin
+  BEnsure(B, 4);
+  B.D[B.N] := (V Shr 24) And $FF;
+  B.D[B.N + 1] := (V Shr 16) And $FF;
+  B.D[B.N + 2] := (V Shr 8) And $FF;
+  B.D[B.N + 3] := V And $FF;
+  Inc(B.N, 4);
+End;
+
+Procedure B8(Var B : TBuf; V : Int64);
+Begin
+  B4(B, (V Shr 32) And $FFFFFFFF);
+  B4(B, V And $FFFFFFFF);
+End;
+
+Procedure BStr(Var B : TBuf; Const S : String);
+Var I : LongInt;
+Begin
+  BEnsure(B, Length(S));
+  For I := 1 To Length(S) Do Begin
+    B.D[B.N] := Ord(S[I]);
+    Inc(B.N);
+  End;
+End;
+
+Procedure BAppend(Var B : TBuf; Var Src : TBuf);
+Var I : LongInt;
+Begin
+  BEnsure(B, Src.N);
+  For I := 0 To Src.N - 1 Do B.D[B.N + I] := Src.D[I];
+  Inc(B.N, Src.N);
+End;
+
+Procedure BPatch2(Var B : TBuf; Pos, V : LongInt);
+Begin
+  B.D[Pos] := (V Shr 8) And $FF;
+  B.D[Pos + 1] := V And $FF;
+End;
+
+Procedure BPatch4(Var B : TBuf; Pos : LongInt; V : Int64);
+Begin
+  B.D[Pos] := (V Shr 24) And $FF;
+  B.D[Pos + 1] := (V Shr 16) And $FF;
+  B.D[Pos + 2] := (V Shr 8) And $FF;
+  B.D[Pos + 3] := V And $FF;
 End;
 
 { ============================================================================
@@ -9168,6 +9260,8 @@ Type
   End;
 
 Var
+  NCPath   : LongInt;
+  ExtMemo  : TStrMap;
   Types    : Array Of TTypeRec;
   NTypes   : LongInt;
   TypeMap  : TStrMap;
@@ -9335,6 +9429,9 @@ Begin
   Inc(NClasses);
 End;
 
+Function ExtFind(Const Name : String; UseJdk : Boolean) : Boolean; Forward;
+Procedure LoadExtClass(C : LongInt); Forward;
+
 { Cherche une classe par nom interne ; cree une entree si elle figure dans la
   table de la bibliotheque. Retourne -1 si inconnue. }
 Function LookupClass(Const Name : String) : LongInt;
@@ -9342,8 +9439,24 @@ Var I, L : LongInt;
 Begin
   I := MapFind(ClassMap, Name);
   If I >= 0 Then Begin LookupClass := I; Exit; End;
+  If (NCPath > 0) And ExtFind(Name, False) Then Begin
+    I := NewClass(Name);
+    Classes[I].LibLine := -2;
+    Classes[I].Loaded := 0;
+    LookupClass := I;
+    Exit;
+  End;
   L := MapFind(LibIndex, Name);
-  If L < 0 Then Begin LookupClass := -1; Exit; End;
+  If L < 0 Then Begin
+    If ExtFind(Name, True) Then Begin
+      I := NewClass(Name);
+      Classes[I].LibLine := -2;
+      Classes[I].Loaded := 0;
+      LookupClass := I;
+    End
+    Else LookupClass := -1;
+    Exit;
+  End;
   I := NewClass(Name);
   Classes[I].LibLine := L;
   Classes[I].Loaded := 0;
@@ -9671,6 +9784,7 @@ Procedure LoadLibHeader(C : LongInt);
 Var Line, Sig : String; I, N, Base, K : LongInt; Tp : Array[0..15] Of LongInt; T : LongInt;
     Ifs : Array Of LongInt; NI : LongInt;
 Begin
+  If Classes[C].LibLine = -2 Then Begin LoadExtClass(C); Exit; End;
   Classes[C].Loaded := 1;
   Line := ExpandAbbr(LibTab[Classes[C].LibLine]);
   Classes[C].Flags := ToInt(BarField(Line, 1));
@@ -9913,6 +10027,7 @@ Begin
   NTVars := 0;
   MapInit(ClassMap, 8191);
   MapInit(SubMap, 8191);
+  MapInit(ExtMemo, 4099);
   NClasses := 0; NFields := 0; NMeths := 0; NSig := 0;
   InitLibrary;
   C_OBJECT := GetClass('java/lang/Object');
@@ -9947,6 +10062,709 @@ Begin
     R.Kind := TYK_ANY;
     T_ANY := InternType(R);
   End;
+End;
+
+{ ============================================================================
+  3b. CLASSES EXTERNES : lecture de fichiers .class (repertoires et archives
+      jar/zip du classpath, image des modules du JDK : lib/modules)
+  ============================================================================ }
+
+Type
+  TZipEnt = Record
+    Name   : String;
+    Off    : LongInt;
+    CSize  : LongInt;
+    USize  : LongInt;
+    Method : LongInt;
+  End;
+
+  TCPEnt = Record
+    Kind : Byte;                { 1 = repertoire, 2 = archive }
+    Path : String;
+    Ents : Array Of TZipEnt;
+    NEnts: LongInt;
+    Map  : TStrMap;
+  End;
+
+Var
+  CPath     : Array Of TCPEnt;
+  JdkImage  : String;            { chemin de lib/modules }
+  JdkReady  : Boolean;
+  JdkTried  : Boolean;
+  JdkTabLen, JdkLocSize, JdkStrSize, JdkIndexSize : LongInt;
+  JdkRedirect, JdkOffsets, JdkLocs, JdkStrs : TBuf;
+  JdkModuleOf : TStrMap;
+
+Const
+  NJMODS = 22;
+  JdkMods : Array[1..NJMODS] Of String = (
+    'java.base', 'java.desktop', 'java.sql', 'java.xml', 'java.logging', 'java.management',
+    'java.naming', 'java.net.http', 'java.prefs', 'java.rmi', 'java.scripting',
+    'java.security.jgss', 'java.sql.rowset', 'java.compiler', 'java.datatransfer',
+    'java.instrument', 'java.xml.crypto', 'jdk.httpserver', 'jdk.unsupported',
+    'java.management.rmi', 'jdk.compiler', 'jdk.jfr');
+
+{ ----- lecture de fichiers ----------------------------------------------------- }
+
+Function ReadFileRange(Const Fn : String; Off, Cnt : LongInt; Var B : TBuf) : Boolean;
+Var F : File; Got : LongInt;
+Begin
+  ReadFileRange := False;
+  Assign(F, Fn);
+  Reset(F, 1);
+  If IOResult <> 0 Then Exit;
+  If Off + Cnt > FileSize(F) Then Cnt := FileSize(F) - Off;
+  If Cnt < 0 Then Begin Close(F); Exit; End;
+  BInit(B);
+  BEnsure(B, Cnt + 1);
+  Seek(F, Off);
+  If Cnt > 0 Then BlockRead(F, B.D[0], Cnt, Got) Else Got := 0;
+  B.N := Got;
+  Close(F);
+  If IOResult <> 0 Then Exit;
+  ReadFileRange := Got = Cnt;
+End;
+
+Function RdU1(Var B : TBuf; P : LongInt) : LongInt;
+Begin
+  If (P < 0) Or (P >= B.N) Then RdU1 := 0 Else RdU1 := B.D[P];
+End;
+
+Function RdU2(Var B : TBuf; P : LongInt) : LongInt;
+Begin RdU2 := (RdU1(B, P) Shl 8) Or RdU1(B, P + 1); End;
+
+Function RdU4(Var B : TBuf; P : LongInt) : LongInt;
+Begin RdU4 := LongInt(((RdU1(B, P) Shl 24) Or (RdU1(B, P + 1) Shl 16) Or (RdU1(B, P + 2) Shl 8) Or RdU1(B, P + 3)) And $FFFFFFFF); End;
+
+{ little-endian (archives zip, image jimage) }
+Function RdL2(Var B : TBuf; P : LongInt) : LongInt;
+Begin RdL2 := RdU1(B, P) Or (RdU1(B, P + 1) Shl 8); End;
+
+Function RdL4(Var B : TBuf; P : LongInt) : LongInt;
+Begin RdL4 := LongInt((Int64(RdU1(B, P)) Or (Int64(RdU1(B, P + 1)) Shl 8) Or (Int64(RdU1(B, P + 2)) Shl 16) Or
+                       (Int64(RdU1(B, P + 3)) Shl 24)) And $FFFFFFFF); End;
+
+Function BytesToStr(Var B : TBuf; P, N : LongInt) : String;
+Var I : LongInt; S : String;
+Begin
+  SetLength(S, N);
+  For I := 1 To N Do S[I] := Chr(RdU1(B, P + I - 1));
+  BytesToStr := S;
+End;
+
+{ ----- decompression (inflate, RFC 1951) --------------------------------------------- }
+
+Type
+  TInfl = Record
+    Src    : ^TBuf;
+    Pos    : LongInt;
+    BitBuf : LongInt;
+    BitCnt : LongInt;
+    Err    : Boolean;
+  End;
+  THuff = Record
+    Count : Array[0..15] Of LongInt;
+    Sym   : Array[0..287] Of LongInt;
+  End;
+
+Const
+  LBase : Array[0..28] Of LongInt = (3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258);
+  LExt  : Array[0..28] Of LongInt = (0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0);
+  DBase : Array[0..29] Of LongInt = (1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577);
+  DExt  : Array[0..29] Of LongInt = (0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13);
+  CLOrder : Array[0..18] Of LongInt = (16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15);
+
+Function InflBits(Var S : TInfl; Need : LongInt) : LongInt;
+Var V : LongInt;
+Begin
+  V := S.BitBuf;
+  While S.BitCnt < Need Do Begin
+    If S.Pos >= S.Src^.N Then Begin S.Err := True; InflBits := 0; Exit; End;
+    V := V Or (S.Src^.D[S.Pos] Shl S.BitCnt);
+    Inc(S.Pos);
+    Inc(S.BitCnt, 8);
+  End;
+  S.BitBuf := V Shr Need;
+  Dec(S.BitCnt, Need);
+  InflBits := V And ((1 Shl Need) - 1);
+End;
+
+Procedure HuffBuild(Var H : THuff; Const Len : Array Of LongInt; N : LongInt);
+Var I, Sy : LongInt; Offs : Array[0..15] Of LongInt;
+Begin
+  For I := 0 To 15 Do H.Count[I] := 0;
+  For Sy := 0 To N - 1 Do Inc(H.Count[Len[Sy]]);
+  Offs[1] := 0;
+  For I := 1 To 14 Do Offs[I + 1] := Offs[I] + H.Count[I];
+  For Sy := 0 To N - 1 Do
+    If Len[Sy] <> 0 Then Begin
+      H.Sym[Offs[Len[Sy]]] := Sy;
+      Inc(Offs[Len[Sy]]);
+    End;
+End;
+
+Function InflDecode(Var S : TInfl; Var H : THuff) : LongInt;
+Var Code, First, Index, Len, Cnt : LongInt;
+Begin
+  Code := 0; First := 0; Index := 0;
+  For Len := 1 To 15 Do Begin
+    Code := Code Or InflBits(S, 1);
+    Cnt := H.Count[Len];
+    If Code - Cnt < First Then Begin InflDecode := H.Sym[Index + (Code - First)]; Exit; End;
+    Inc(Index, Cnt);
+    First := (First + Cnt) Shl 1;
+    Code := Code Shl 1;
+    If S.Err Then Break;
+  End;
+  S.Err := True;
+  InflDecode := -1;
+End;
+
+Function Inflate(Var Src : TBuf; Var Dst : TBuf) : Boolean;
+Var
+  S : TInfl; Last, Typ, Len, NLen, I, Sy, Sz, Dist, NL, ND, NC, Idx : LongInt;
+  Lit, Dis : THuff; Lens : Array[0..319] Of LongInt; Lc : Array[0..18] Of LongInt; Clh : THuff;
+  LL : Array[0..287] Of LongInt; DL : Array[0..29] Of LongInt;
+Begin
+  S.Src := @Src; S.Pos := 0; S.BitBuf := 0; S.BitCnt := 0; S.Err := False;
+  BInit(Dst);
+  Repeat
+    Last := InflBits(S, 1);
+    Typ := InflBits(S, 2);
+    If Typ = 0 Then Begin
+      S.BitBuf := 0; S.BitCnt := 0;
+      If S.Pos + 4 > Src.N Then Begin Inflate := False; Exit; End;
+      Len := Src.D[S.Pos] Or (Src.D[S.Pos + 1] Shl 8);
+      Inc(S.Pos, 4);
+      If S.Pos + Len > Src.N Then Begin Inflate := False; Exit; End;
+      BEnsure(Dst, Len);
+      For I := 0 To Len - 1 Do Begin Dst.D[Dst.N] := Src.D[S.Pos + I]; Inc(Dst.N); End;
+      Inc(S.Pos, Len);
+    End
+    Else If Typ = 3 Then Begin Inflate := False; Exit; End
+    Else Begin
+      If Typ = 1 Then Begin
+        For I := 0 To 143 Do LL[I] := 8;
+        For I := 144 To 255 Do LL[I] := 9;
+        For I := 256 To 279 Do LL[I] := 7;
+        For I := 280 To 287 Do LL[I] := 8;
+        HuffBuild(Lit, LL, 288);
+        For I := 0 To 29 Do DL[I] := 5;
+        HuffBuild(Dis, DL, 30);
+      End
+      Else Begin
+        NL := InflBits(S, 5) + 257;
+        ND := InflBits(S, 5) + 1;
+        NC := InflBits(S, 4) + 4;
+        For I := 0 To 18 Do Lc[I] := 0;
+        For I := 0 To NC - 1 Do Lc[CLOrder[I]] := InflBits(S, 3);
+        HuffBuild(Clh, Lc, 19);
+        Idx := 0;
+        While Idx < NL + ND Do Begin
+          Sy := InflDecode(S, Clh);
+          If S.Err Then Begin Inflate := False; Exit; End;
+          If Sy < 16 Then Begin Lens[Idx] := Sy; Inc(Idx); End
+          Else Begin
+            Len := 0;
+            If Sy = 16 Then Begin
+              If Idx = 0 Then Begin Inflate := False; Exit; End;
+              Len := Lens[Idx - 1];
+              Sz := 3 + InflBits(S, 2);
+            End
+            Else If Sy = 17 Then Sz := 3 + InflBits(S, 3)
+            Else Sz := 11 + InflBits(S, 7);
+            If Idx + Sz > NL + ND Then Begin Inflate := False; Exit; End;
+            While Sz > 0 Do Begin Lens[Idx] := Len; Inc(Idx); Dec(Sz); End;
+          End;
+        End;
+        For I := 0 To NL - 1 Do LL[I] := Lens[I];
+        HuffBuild(Lit, LL, NL);
+        For I := 0 To ND - 1 Do DL[I] := Lens[NL + I];
+        HuffBuild(Dis, DL, ND);
+      End;
+      While True Do Begin
+        Sy := InflDecode(S, Lit);
+        If S.Err Then Begin Inflate := False; Exit; End;
+        If Sy < 256 Then Begin B1(Dst, Sy); End
+        Else If Sy = 256 Then Break
+        Else Begin
+          Dec(Sy, 257);
+          If Sy > 28 Then Begin Inflate := False; Exit; End;
+          Len := LBase[Sy] + InflBits(S, LExt[Sy]);
+          Sy := InflDecode(S, Dis);
+          If S.Err Or (Sy < 0) Or (Sy > 29) Then Begin Inflate := False; Exit; End;
+          Dist := DBase[Sy] + InflBits(S, DExt[Sy]);
+          If Dist > Dst.N Then Begin Inflate := False; Exit; End;
+          BEnsure(Dst, Len);
+          For I := 1 To Len Do Begin Dst.D[Dst.N] := Dst.D[Dst.N - Dist]; Inc(Dst.N); End;
+        End;
+      End;
+    End;
+    If S.Err Then Begin Inflate := False; Exit; End;
+  Until Last = 1;
+  Inflate := True;
+  NLen := 0;
+End;
+
+{ ----- archives zip / jar -------------------------------------------------------------- }
+
+Procedure OpenZip(Var E : TCPEnt);
+Var F : File; Sz, Pos, Cnt, I, P, NL, XL, CL : LongInt; Tail, Cd : TBuf; Base : LongInt;
+Begin
+  E.NEnts := 0;
+  MapInit(E.Map, 2039);
+  Assign(F, E.Path);
+  Reset(F, 1);
+  If IOResult <> 0 Then Exit;
+  Sz := FileSize(F);
+  Close(F);
+  Base := Sz - 70000;
+  If Base < 0 Then Base := 0;
+  If Not ReadFileRange(E.Path, Base, Sz - Base, Tail) Then Exit;
+  Pos := -1;
+  For I := Tail.N - 22 Downto 0 Do
+    If RdL4(Tail, I) = $06054B50 Then Begin Pos := I; Break; End;
+  If Pos < 0 Then Exit;
+  Cnt := RdL2(Tail, Pos + 10);
+  P := RdL4(Tail, Pos + 16);
+  Sz := RdL4(Tail, Pos + 12);
+  If Not ReadFileRange(E.Path, P, Sz, Cd) Then Exit;
+  SetLength(E.Ents, Cnt);
+  P := 0;
+  For I := 0 To Cnt - 1 Do Begin
+    If RdL4(Cd, P) <> $02014B50 Then Break;
+    E.Ents[E.NEnts].Method := RdL2(Cd, P + 10);
+    E.Ents[E.NEnts].CSize := RdL4(Cd, P + 20);
+    E.Ents[E.NEnts].USize := RdL4(Cd, P + 24);
+    NL := RdL2(Cd, P + 28); XL := RdL2(Cd, P + 30); CL := RdL2(Cd, P + 32);
+    E.Ents[E.NEnts].Off := RdL4(Cd, P + 42);
+    E.Ents[E.NEnts].Name := BytesToStr(Cd, P + 46, NL);
+    MapPut(E.Map, E.Ents[E.NEnts].Name, E.NEnts);
+    Inc(E.NEnts);
+    Inc(P, 46 + NL + XL + CL);
+  End;
+End;
+
+Function ZipExtract(Var E : TCPEnt; K : LongInt; Var Out : TBuf) : Boolean;
+Var Hd, Raw : TBuf; Start : LongInt;
+Begin
+  ZipExtract := False;
+  If Not ReadFileRange(E.Path, E.Ents[K].Off, 30, Hd) Then Exit;
+  Start := E.Ents[K].Off + 30 + RdL2(Hd, 26) + RdL2(Hd, 28);
+  If Not ReadFileRange(E.Path, Start, E.Ents[K].CSize, Raw) Then Exit;
+  If E.Ents[K].Method = 0 Then Begin
+    Out := Raw;
+    ZipExtract := True;
+  End
+  Else If E.Ents[K].Method = 8 Then ZipExtract := Inflate(Raw, Out);
+End;
+
+{ ----- image des modules du JDK (jimage) ---------------------------------------------------- }
+
+Function JHash(Const S : String; Seed : Int64) : Int64;
+Var I : LongInt; H : Int64;
+Begin
+  H := Seed And $FFFFFFFF;
+  For I := 1 To Length(S) Do
+    H := ((H * $01000193) And $FFFFFFFF) Xor Ord(S[I]);
+  JHash := H And $7FFFFFFF;
+End;
+
+Procedure JdkOpen;
+Var Hd : TBuf; Tmp : TBuf; Dta : TBuf;
+  Procedure TryPath(Const P : String);
+  Begin
+    If JdkReady Then Exit;
+    If ReadFileRange(P, 0, 28, Hd) Then
+      If RdL4(Hd, 0) = LongInt($CAFEDADA) Then Begin
+        JdkImage := P;
+        JdkReady := True;
+      End;
+  End;
+  Procedure TryHome(Const H : String);
+  Begin
+    If H <> '' Then TryPath(H + '/lib/modules');
+  End;
+  Procedure TryDir(Const Parent : String);
+  Var Sr : SearchRec;
+  Begin
+    FindFirst(Parent + '*', Directory, Sr);
+    While (DosError = 0) And Not JdkReady Do Begin
+      If (Sr.Name <> '.') And (Sr.Name <> '..') And ((Sr.Attr And Directory) <> 0) Then TryHome(Parent + Sr.Name);
+      FindNext(Sr);
+    End;
+  End;
+Begin
+  If JdkTried Then Exit;
+  JdkTried := True;
+  TryHome(GetEnv('JAVA_HOME'));
+  TryDir('/usr/lib/jvm/');
+  TryDir('/usr/java/');
+  TryDir('/Library/Java/JavaVirtualMachines/');
+  TryDir('C:\Program Files\Java\');
+  TryDir('C:\Program Files\Eclipse Adoptium\');
+  If Not JdkReady Then Exit;
+  JdkTabLen := RdL4(Hd, 16);
+  JdkLocSize := RdL4(Hd, 20);
+  JdkStrSize := RdL4(Hd, 24);
+  JdkIndexSize := 28 + JdkTabLen * 8 + JdkLocSize + JdkStrSize;
+  JdkReady := ReadFileRange(JdkImage, 28, JdkTabLen * 4, JdkRedirect) And
+              ReadFileRange(JdkImage, 28 + JdkTabLen * 4, JdkTabLen * 4, JdkOffsets) And
+              ReadFileRange(JdkImage, 28 + JdkTabLen * 8, JdkLocSize, JdkLocs) And
+              ReadFileRange(JdkImage, 28 + JdkTabLen * 8 + JdkLocSize, JdkStrSize, JdkStrs);
+  MapInit(JdkModuleOf, 521);
+  Tmp.N := 0; Dta.N := 0;
+End;
+
+Function JdkStr(Off : LongInt) : String;
+Var S : String; P : LongInt;
+Begin
+  S := '';
+  P := Off;
+  While (P < JdkStrs.N) And (JdkStrs.D[P] <> 0) Do Begin S := S + Chr(JdkStrs.D[P]); Inc(P); End;
+  JdkStr := S;
+End;
+
+{ Retrouve (offset, taille) d'une ressource /module/chemin ; faux si absente }
+Function JdkLocate(Const Path : String; Var ROff, RSize, RComp : LongInt) : Boolean;
+Var Idx, V, Loc, P, Kind, Len, I, Vv : LongInt; Attr : Array[0..8] Of LongInt; Full, Nm : String; B : LongInt;
+Begin
+  JdkLocate := False;
+  If (Not JdkReady) Or (JdkTabLen = 0) Then Exit;
+  Idx := JHash(Path, $01000193) Mod JdkTabLen;
+  V := RdL4(JdkRedirect, Idx * 4);
+  If V < 0 Then Loc := -1 - V
+  Else If V > 0 Then Loc := JHash(Path, V) Mod JdkTabLen
+  Else Exit;
+  P := RdL4(JdkOffsets, Loc * 4);
+  For I := 0 To 8 Do Attr[I] := 0;
+  While P < JdkLocs.N Do Begin
+    B := JdkLocs.D[P];
+    Kind := B Shr 3;
+    If Kind = 0 Then Break;
+    Len := (B And 7) + 1;
+    Vv := 0;
+    For I := 1 To Len Do Vv := (Vv Shl 8) Or JdkLocs.D[P + I];
+    If Kind <= 7 Then Attr[Kind] := Vv;
+    Inc(P, Len + 1);
+  End;
+  { verification du nom complet }
+  Full := '';
+  Nm := JdkStr(Attr[1]);
+  If Nm <> '' Then Full := '/' + Nm + '/';
+  Nm := JdkStr(Attr[2]);
+  If Nm <> '' Then Full := Full + Nm + '/';
+  Full := Full + JdkStr(Attr[3]);
+  Nm := JdkStr(Attr[4]);
+  If Nm <> '' Then Full := Full + '.' + Nm;
+  If Full <> Path Then Exit;
+  ROff := JdkIndexSize + Attr[5];
+  RComp := Attr[6];
+  If RComp <> 0 Then RSize := Attr[6] Else RSize := Attr[7];
+  JdkLocate := True;
+End;
+
+Function JdkModuleFor(Const Name : String; Var ROff, RSize, RComp : LongInt) : Boolean;
+Var I, Slash : LongInt; Pkg : String; M : LongInt;
+Begin
+  JdkModuleFor := False;
+  JdkOpen;
+  If Not JdkReady Then Exit;
+  Slash := LastPos('/', Name);
+  Pkg := Copy(Name, 1, Slash);
+  M := MapFind(JdkModuleOf, Pkg);
+  If M >= 0 Then Begin
+    JdkModuleFor := JdkLocate('/' + JdkMods[M] + '/' + Name + '.class', ROff, RSize, RComp);
+    Exit;
+  End;
+  For I := 1 To NJMODS Do
+    If JdkLocate('/' + JdkMods[I] + '/' + Name + '.class', ROff, RSize, RComp) Then Begin
+      MapPut(JdkModuleOf, Pkg, I);
+      JdkModuleFor := True;
+      Exit;
+    End;
+End;
+
+{ ----- recherche d'une classe externe ----------------------------------------------------- }
+
+Function ExtFind(Const Name : String; UseJdk : Boolean) : Boolean;
+Var I, K, A, B, C : LongInt; Key : String; Fn : String;
+Begin
+  ExtFind := False;
+  If Pos('.', Name) > 0 Then Exit;
+  If Length(Name) = 0 Then Exit;
+  Key := Name;
+  If UseJdk Then Key := '#' + Key;
+  K := MapFind(ExtMemo, Key);
+  If K >= 0 Then Begin ExtFind := K = 1; Exit; End;
+  If Not UseJdk Then Begin
+    For I := 0 To NCPath - 1 Do Begin
+      If CPath[I].Kind = 1 Then Begin
+        If FileExists(CPath[I].Path + Name + '.class') Then Begin MapPut(ExtMemo, Key, 1); ExtFind := True; Exit; End;
+      End
+      Else If MapFind(CPath[I].Map, Name + '.class') >= 0 Then Begin MapPut(ExtMemo, Key, 1); ExtFind := True; Exit; End;
+    End;
+  End
+  Else If JdkModuleFor(Name, A, B, C) Then Begin
+    If C = 0 Then Begin MapPut(ExtMemo, Key, 1); ExtFind := True; Exit; End;
+  End;
+  MapPut(ExtMemo, Key, 0);
+End;
+
+Function ExtGetBytes(Const Name : String; Var Out : TBuf) : Boolean;
+Var I, K, A, B, C : LongInt;
+Begin
+  ExtGetBytes := False;
+  For I := 0 To NCPath - 1 Do Begin
+    If CPath[I].Kind = 1 Then Begin
+      If ReadFileRange(CPath[I].Path + Name + '.class', 0, 100000000, Out) Then Begin ExtGetBytes := True; Exit; End;
+    End
+    Else Begin
+      K := MapFind(CPath[I].Map, Name + '.class');
+      If (K >= 0) And ZipExtract(CPath[I], K, Out) Then Begin ExtGetBytes := True; Exit; End;
+    End;
+  End;
+  If JdkModuleFor(Name, A, B, C) And (C = 0) Then
+    ExtGetBytes := ReadFileRange(JdkImage, A, B, Out);
+End;
+
+{ ----- analyse d'un fichier .class ------------------------------------------------------------- }
+
+Function CountDescParams(Const D : String) : LongInt;
+Var I, N : LongInt;
+Begin
+  N := 0; I := 2;
+  While (I <= Length(D)) And (D[I] <> ')') Do Begin
+    Inc(N);
+    While D[I] = '[' Do Inc(I);
+    If D[I] = 'L' Then While D[I] <> ';' Do Inc(I);
+    Inc(I);
+  End;
+  CountDescParams := N;
+End;
+
+Procedure LoadExtClass(C : LongInt);
+Var
+  B : TBuf; Cnt, I, P, Tag, Acc, This_, Sup, NIf, NA, K, AL, AP, Fl, M, F : LongInt;
+  CpTag : Array Of Byte; CpA : Array Of LongInt; CpPos : Array Of LongInt; CpStr : Array Of String;
+  Sig, Desc, Nm, ClsSig, AName : String; BaseTop, BaseM, N, T, MemStart, ExcPos, ExcN, Cvi, Q, J, Np : LongInt;
+  Tp : Array[0..15] Of LongInt; Ifs : Array Of LongInt; NI : LongInt; ClassFl : LongInt;
+  Bits : TDblBits;
+  Function CName(Idx : LongInt) : String;
+  Begin
+    If (Idx <= 0) Or (Idx >= Cnt) Then CName := '' Else CName := CpStr[CpA[Idx]];
+  End;
+  Function UName(Idx : LongInt) : String;
+  Begin
+    If (Idx <= 0) Or (Idx >= Cnt) Then UName := '' Else UName := CpStr[Idx];
+  End;
+Begin
+  Classes[C].Loaded := 2;
+  Classes[C].LibLine := -1;
+  If Not ExtGetBytes(Classes[C].Name, B) Then Begin
+    Classes[C].Super := T_OBJECT;
+    Exit;
+  End;
+  Cnt := RdU2(B, 8);
+  SetLength(CpTag, Cnt); SetLength(CpA, Cnt); SetLength(CpPos, Cnt); SetLength(CpStr, Cnt);
+  P := 10;
+  I := 1;
+  While I < Cnt Do Begin
+    Tag := RdU1(B, P);
+    CpTag[I] := Tag;
+    CpPos[I] := P + 1;
+    Case Tag Of
+      1 : Begin K := RdU2(B, P + 1); CpStr[I] := BytesToStr(B, P + 3, K); Inc(P, 3 + K); End;
+      3, 4 : Inc(P, 5);
+      5, 6 : Begin Inc(P, 9); Inc(I); End;
+      7, 8, 16, 19, 20 : Begin CpA[I] := RdU2(B, P + 1); Inc(P, 3); End;
+      15 : Inc(P, 4);
+    Else
+      Inc(P, 5);
+    End;
+    Inc(I);
+  End;
+  Acc := RdU2(B, P); This_ := RdU2(B, P + 2); Sup := RdU2(B, P + 4); NIf := RdU2(B, P + 6);
+  Inc(P, 8);
+  BaseTop := NSig;
+  ClassFl := Acc And (ACC_PUBLIC Or ACC_FINAL Or ACC_INTERFACE Or ACC_ABSTRACT Or ACC_ANNOTATION Or ACC_ENUM Or ACC_SYNTHETIC);
+  If Sup > 0 Then ClsSig := 'L' + CName(Sup) + ';' Else ClsSig := 'Ljava/lang/Object;';
+  For I := 0 To NIf - 1 Do Begin
+    ClsSig := ClsSig + 'L' + CName(RdU2(B, P)) + ';';
+    Inc(P, 2);
+  End;
+  { saute champs et methodes pour atteindre les attributs de classe }
+  MemStart := P;
+  Q := P;
+  For I := 1 To 2 Do Begin
+    K := RdU2(B, Q);
+    Inc(Q, 2);
+    For J := 1 To K Do Begin
+      NA := RdU2(B, Q + 6);
+      Inc(Q, 8);
+      While NA > 0 Do Begin Inc(Q, 6 + RdU4(B, Q + 2)); Dec(NA); End;
+    End;
+  End;
+  NA := RdU2(B, Q);
+  Inc(Q, 2);
+  While NA > 0 Do Begin
+    AName := UName(RdU2(B, Q));
+    AL := RdU4(B, Q + 2);
+    AP := Q + 6;
+    If AName = 'Signature' Then ClsSig := UName(RdU2(B, AP))
+    Else If AName = 'InnerClasses' Then Begin
+      K := RdU2(B, AP);
+      For J := 0 To K - 1 Do
+        If CName(RdU2(B, AP + 2 + J * 8)) = Classes[C].Name Then Begin
+          Fl := RdU2(B, AP + 2 + J * 8 + 6);
+          ClassFl := ClassFl Or (Fl And (ACC_PRIVATE Or ACC_PROTECTED Or ACC_STATIC Or ACC_PUBLIC));
+        End;
+    End;
+    Inc(Q, 6 + AL);
+    Dec(NA);
+  End;
+  { en-tete : parametres de type, super-classe, interfaces }
+  Classes[C].Flags := ClassFl;
+  I := 1;
+  ParseTParams(ClsSig, I, Tp, N);
+  SetLength(Classes[C].TPars, N);
+  For K := 0 To N - 1 Do Classes[C].TPars[K] := Tp[K];
+  T := ParseSigType(ClsSig, I);
+  If (Acc And ACC_INTERFACE) <> 0 Then Classes[C].Super := T_OBJECT
+  Else If Sup = 0 Then Classes[C].Super := 0
+  Else Classes[C].Super := T;
+  NI := 0;
+  SetLength(Ifs, 0);
+  While I <= Length(ClsSig) Do Begin
+    T := ParseSigType(ClsSig, I);
+    If T <> TY_NONE Then Begin
+      SetLength(Ifs, NI + 1); Ifs[NI] := T; Inc(NI);
+    End;
+  End;
+  Classes[C].Ifaces := Ifs;
+  { classe imbriquee }
+  K := LastPos('$', Classes[C].Name);
+  If K > 0 Then Begin
+    Classes[C].Outer := LookupClass(Copy(Classes[C].Name, 1, K - 1));
+    Classes[C].Simple := Copy(Classes[C].Name, K + 1, Length(Classes[C].Name));
+    If Classes[C].Outer >= 0 Then Begin
+      N := Length(Classes[Classes[C].Outer].Nested);
+      SetLength(Classes[Classes[C].Outer].Nested, N + 1);
+      Classes[Classes[C].Outer].Nested[N] := C;
+    End;
+  End;
+  { champs (I = 1) puis methodes (I = 2) ; les variables de type de la classe sont dans l'echelle }
+  Q := MemStart;
+  For I := 1 To 2 Do Begin
+    K := RdU2(B, Q);
+    Inc(Q, 2);
+    For J := 1 To K Do Begin
+      Fl := RdU2(B, Q);
+      Nm := UName(RdU2(B, Q + 2));
+      Desc := UName(RdU2(B, Q + 4));
+      NA := RdU2(B, Q + 6);
+      Inc(Q, 8);
+      Sig := Desc;
+      Cvi := 0; ExcN := 0; ExcPos := 0;
+      While NA > 0 Do Begin
+        AName := UName(RdU2(B, Q));
+        AL := RdU4(B, Q + 2);
+        If AName = 'Signature' Then Sig := UName(RdU2(B, Q + 6))
+        Else If AName = 'ConstantValue' Then Cvi := RdU2(B, Q + 6)
+        Else If AName = 'Exceptions' Then Begin ExcN := RdU2(B, Q + 6); ExcPos := Q + 8; End;
+        Inc(Q, 6 + AL);
+        Dec(NA);
+      End;
+      If ((Fl And ACC_PRIVATE) <> 0) Or ((Fl And ACC_SYNTHETIC) <> 0) Then Continue;
+      If I = 1 Then Begin
+        T := 1;
+        F := NewField(C, Nm, Fl And $FFFF, ParseSigType(Sig, T));
+        If (Cvi > 0) And ((Fl And (ACC_STATIC Or ACC_FINAL)) = (ACC_STATIC Or ACC_FINAL)) Then
+          Case CpTag[Cvi] Of
+            3 : Begin Fields[F].CK := CK_INT; Fields[F].CI := LongInt(RdU4(B, CpPos[Cvi])); End;
+            4 : Begin Bits.I := 0; Bits.L := RdU4(B, CpPos[Cvi]); Fields[F].CK := CK_FLOAT; Fields[F].CD := Bits.S; End;
+            5 : Begin Fields[F].CK := CK_LONG; Fields[F].CI := (Int64(RdU4(B, CpPos[Cvi])) Shl 32) Or (Int64(RdU4(B, CpPos[Cvi] + 4)) And $FFFFFFFF); End;
+            6 : Begin
+              Bits.I := (Int64(RdU4(B, CpPos[Cvi])) Shl 32) Or (Int64(RdU4(B, CpPos[Cvi] + 4)) And $FFFFFFFF);
+              Fields[F].CK := CK_DOUBLE; Fields[F].CD := Bits.D;
+            End;
+            8 : Begin Fields[F].CK := CK_STR; Fields[F].CS := UName(CpA[Cvi]); End;
+          End;
+      End
+      Else Begin
+        If Nm = '<clinit>' Then Continue;
+        M := NewMeth(C, Nm, (Fl And $FFFF) And Not ACC_BRIDGE);
+        If ((Acc And ACC_INTERFACE) <> 0) And ((Fl And (ACC_ABSTRACT Or ACC_STATIC Or ACC_PRIVATE)) = 0) Then
+          Meths[M].Flags := Meths[M].Flags Or MOD_DEFAULT;
+        Meths[M].Desc := Desc;
+        Meths[M].Varargs := (Fl And ACC_VARARGS) <> 0;
+        T := 1;
+        BaseM := NSig;
+        ParseTParams(Sig, T, Tp, N);
+        SetLength(Meths[M].TPar, N);
+        For Np := 0 To N - 1 Do Meths[M].TPar[Np] := Tp[Np];
+        Inc(T);
+        Np := 0;
+        While (T <= Length(Sig)) And (Sig[T] <> ')') Do Begin
+          SetLength(Meths[M].Par, Np + 1);
+          Meths[M].Par[Np] := ParseSigType(Sig, T);
+          Inc(Np);
+        End;
+        Inc(T);
+        Meths[M].NPar := Np;
+        Meths[M].Ret := ParseSigType(Sig, T);
+        NSig := BaseM;
+        { signature generique incomplete (constructeurs internes, enums) : retombe sur le descripteur }
+        If Np <> CountDescParams(Desc) Then Begin
+          T := 2; Np := 0; SetLength(Meths[M].Par, 0);
+          While (T <= Length(Desc)) And (Desc[T] <> ')') Do Begin
+            SetLength(Meths[M].Par, Np + 1);
+            Meths[M].Par[Np] := ParseSigType(Desc, T);
+            Inc(Np);
+          End;
+          Meths[M].NPar := Np;
+        End;
+        For Np := 0 To ExcN - 1 Do Begin
+          SetLength(Meths[M].Thr, Length(Meths[M].Thr) + 1);
+          Meths[M].Thr[Length(Meths[M].Thr) - 1] := GetClass(CName(RdU2(B, ExcPos + Np * 2)));
+        End;
+      End;
+    End;
+  End;
+  NSig := BaseTop;
+  This_ := This_;
+End;
+
+{ Ajoute un element du classpath : repertoire ou archive }
+Procedure AddClassPath(Const Path : String);
+Var P : String;
+Begin
+  P := Path;
+  If P = '' Then Exit;
+  If NCPath >= Length(CPath) Then SetLength(CPath, NCPath + 8);
+  If (Length(P) > 4) And ((UpCase(Copy(P, Length(P) - 3, 4)) = '.JAR') Or (UpCase(Copy(P, Length(P) - 3, 4)) = '.ZIP')) Then Begin
+    CPath[NCPath].Kind := 2;
+    CPath[NCPath].Path := P;
+    OpenZip(CPath[NCPath]);
+  End
+  Else Begin
+    If (P[Length(P)] <> '/') And (P[Length(P)] <> '\') Then P := P + '/';
+    CPath[NCPath].Kind := 1;
+    CPath[NCPath].Path := P;
+  End;
+  Inc(NCPath);
+End;
+
+Procedure SetClassPath(Const S : String);
+Var I : LongInt; Cur : String; Sep : Char;
+Begin
+  Sep := ':';
+  If (Pos(';', S) > 0) Or ((Length(S) > 1) And (S[2] = ':') And (Pos('\', S) > 0)) Then Sep := ';';
+  Cur := '';
+  For I := 1 To Length(S) Do
+    If S[I] = Sep Then Begin AddClassPath(Cur); Cur := ''; End
+    Else Cur := Cur + S[I];
+  AddClassPath(Cur);
 End;
 
 { ============================================================================
@@ -10016,6 +10834,7 @@ Type
   End;
 
 Var
+  AmbigType  : Boolean;
   Scope      : Array Of TScopeEnt;
   NScope     : LongInt;
   ScopeBase  : LongInt;
@@ -10144,21 +10963,11 @@ Begin
   End;
 End;
 
-Function FileExists(Const Fn : String) : Boolean;
-Var F : File;
-Begin
-  Assign(F, Fn);
-  Reset(F, 1);
-  If IOResult = 0 Then Begin Close(F); FileExists := True; End
-  Else FileExists := False;
-  If IOResult <> 0 Then ;
-End;
-
 Procedure LoadSourceFile(Const Fn : String); Forward;
 
 { Cherche une classe d'apres un nom simple, en dehors des portees locales }
 Function LookupTypeInCU(Const Name : String) : LongInt;
-Var Imp, R, K : LongInt; S, Last : String; Dir : String; Pk : String;
+Var Imp, R, K, Found1 : LongInt; S, Last : String; Dir : String; Pk : String;
 Begin
   LookupTypeInCU := -1;
   If CurCU < 0 Then Exit;
@@ -10179,8 +10988,9 @@ Begin
   { meme paquetage (classes sources ou bibliotheque) }
   R := LookupClass(PkgPath(CUs[CurCU].Pkg) + Name);
   If R >= 0 Then Begin LookupTypeInCU := R; Exit; End;
-  { imports a la demande }
+  { imports a la demande (une ambiguite est signalee) }
   Imp := CUs[CurCU].Imports;
+  Found1 := -1;
   While Imp <> 0 Do Begin
     If (Nodes[Imp].Aux = 1) And ((Nodes[Imp].Mods And ACC_STATIC) = 0) Then Begin
       R := LookupClass(PkgPath(Nodes[Imp].S) + Name);
@@ -10188,7 +10998,10 @@ Begin
         K := LookupClassQualified(Nodes[Imp].S);
         If K >= 0 Then R := FindMemberClass(K, Name);
       End;
-      If R >= 0 Then Begin LookupTypeInCU := R; Exit; End;
+      If R >= 0 Then Begin
+        If (Found1 >= 0) And (Found1 <> R) Then AmbigType := True;
+        If Found1 < 0 Then Found1 := R;
+      End;
     End
     Else If (Nodes[Imp].Aux = 1) Then Begin
       K := LookupClassQualified(Nodes[Imp].S);
@@ -10199,6 +11012,7 @@ Begin
     End;
     Imp := Nodes[Imp].Next;
   End;
+  If Found1 >= 0 Then Begin LookupTypeInCU := Found1; Exit; End;
   R := LookupClass('java/lang/' + Name);
   If R >= 0 Then Begin LookupTypeInCU := R; Exit; End;
   { fichier source voisin }
@@ -10301,7 +11115,9 @@ Begin
   If Nodes[N].Aux = 1 Then T := PrimByName(Nodes[N].S)
   Else Begin
     Nm := Nodes[N].S;
+    AmbigType := False;
     T := LookupTypeName(Nm);
+    If AmbigType Then Err(Nodes[N].Line, 'la reference a ' + Nm + ' est ambigue');
     If T <= 0 Then Begin
       Err(Nodes[N].Line, 'symbole introuvable : classe ' + Nm);
       T := TY_NONE;
@@ -13725,7 +14541,10 @@ Begin
       Tl := 0;
       For I := 1 To Np - 1 Do AppendNode(Args, Tl, MkNameNode2('$m' + IStr(I), Line));
       Recv := MkNameNode2('$m0', Line);
-      P0 := ResolveIVars(MemberType(Target, Meths[Sam].Owner, Meths[Sam].Par[0]));
+      { le type du qualifiant lie le premier parametre libre : Type::methode }
+      P0 := MemberType(Target, Meths[Sam].Owner, Meths[Sam].Par[0]);
+      If (IVIndex(P0) >= 0) And (ITo[IVIndex(P0)] = 0) And IsRef(QT) Then ITo[IVIndex(P0)] := QT;
+      P0 := ResolveIVars(P0);
       If (P0 = T_ANY) Or Not IsSubtypeRef(P0, Erasure(QT)) Then Begin
         Cast := NewNode(N_CAST, Line);
         Nodes[Cast].A := MkResolvedType(QT, Line);
@@ -14738,6 +15557,62 @@ Begin
   Pt := 0;
 End;
 
+{ Controles de declaration : doublons, heritage de classe finale, redefinition de methode finale }
+Procedure CheckClassDecl(C : LongInt);
+Var F, F2, M, M2, S, Sup : LongInt; Line : LongInt; D : LongInt;
+Begin
+  D := Classes[C].Decl;
+  Line := Nodes[D].Line;
+  F := Classes[C].FirstField;
+  While F >= 0 Do Begin
+    F2 := Fields[F].Next;
+    While F2 >= 0 Do Begin
+      If Fields[F2].Name = Fields[F].Name Then
+        Err(Line, 'la variable ' + Fields[F].Name + ' est deja definie dans la classe ' + Classes[C].Simple);
+      F2 := Fields[F2].Next;
+    End;
+    F := Fields[F].Next;
+  End;
+  M := Classes[C].FirstMeth;
+  While M >= 0 Do Begin
+    If Meths[M].Synth = 0 Then Begin
+      M2 := Meths[M].Next;
+      While M2 >= 0 Do Begin
+        If (Meths[M2].Synth = 0) And (Meths[M2].Name = Meths[M].Name) And SameErasedParams(M, M2) Then Begin
+          If Meths[M].Decl <> 0 Then Line := Nodes[Meths[M2].Decl].Line;
+          If Meths[M].Name = '<init>' Then Err(Line, 'le constructeur ' + Classes[C].Simple + ' est deja defini')
+          Else Err(Line, 'la methode ' + Meths[M].Name + ' est deja definie dans la classe ' + Classes[C].Simple);
+        End;
+        M2 := Meths[M2].Next;
+      End;
+    End;
+    M := Meths[M].Next;
+  End;
+  { super-classe finale }
+  Sup := SuperClsOf(C);
+  If (Sup >= 0) And ((Classes[Sup].Flags And ACC_FINAL) <> 0) And ((Classes[C].Flags And MOD_ANON) = 0) And ((Classes[Sup].Flags And ACC_ENUM) = 0) Then
+    Err(Nodes[D].Line, 'impossible d''heriter de la classe finale ' + Classes[Sup].Simple);
+  { redefinition d'une methode finale }
+  M := Classes[C].FirstMeth;
+  While M >= 0 Do Begin
+    If (Meths[M].Synth = 0) And (Meths[M].Name <> '<init>') And ((Meths[M].Flags And (ACC_STATIC Or ACC_PRIVATE)) = 0) And (Meths[M].Decl <> 0) Then Begin
+      S := Sup;
+      While S >= 0 Do Begin
+        EnsureMembers(S);
+        M2 := Classes[S].FirstMeth;
+        While M2 >= 0 Do Begin
+          If (Meths[M2].Name = Meths[M].Name) And (Meths[M2].NPar = Meths[M].NPar) And ((Meths[M2].Flags And ACC_FINAL) <> 0) And
+             ((Meths[M2].Flags And (ACC_STATIC Or ACC_PRIVATE)) = 0) And SameErasedParams(M, M2) Then
+            Err(Nodes[Meths[M].Decl].Line, 'la methode ' + Meths[M].Name + ' ne peut pas redefinir la methode finale de ' + Classes[S].Simple);
+          M2 := Meths[M2].Next;
+        End;
+        S := SuperClsOf(S);
+      End;
+    End;
+    M := Meths[M].Next;
+  End;
+End;
+
 Procedure AttribClassBody(C : LongInt);
 Var
   SvCls, SvMeth, SvRet, SvCtx, SvCU, SvPCtx, Mark : LongInt; SvStatic : Boolean;
@@ -14756,6 +15631,7 @@ Begin
   Else ClsParentCtx := -1;
   PushScope(SC_CLASSMARK, '', C);
   D := Classes[C].Decl;
+  CheckClassDecl(C);
   M := Nodes[D].D;
   While M <> 0 Do Begin
     Case Nodes[M].Kind Of
@@ -14909,86 +15785,6 @@ End;
 { ============================================================================
   6. FICHIERS .CLASS : tampons d'octets, pool de constantes, ecriture
   ============================================================================ }
-
-Type
-  TBuf = Record
-    D : Array Of Byte;
-    N : LongInt;
-  End;
-
-Procedure BInit(Var B : TBuf);
-Begin
-  B.N := 0;
-  If Length(B.D) = 0 Then SetLength(B.D, 256);
-End;
-
-Procedure BEnsure(Var B : TBuf; Extra : LongInt);
-Begin
-  If B.N + Extra > Length(B.D) Then SetLength(B.D, (B.N + Extra) * 2 + 64);
-End;
-
-Procedure B1(Var B : TBuf; V : LongInt);
-Begin
-  BEnsure(B, 1);
-  B.D[B.N] := V And $FF;
-  Inc(B.N);
-End;
-
-Procedure B2(Var B : TBuf; V : LongInt);
-Begin
-  BEnsure(B, 2);
-  B.D[B.N] := (V Shr 8) And $FF;
-  B.D[B.N + 1] := V And $FF;
-  Inc(B.N, 2);
-End;
-
-Procedure B4(Var B : TBuf; V : Int64);
-Begin
-  BEnsure(B, 4);
-  B.D[B.N] := (V Shr 24) And $FF;
-  B.D[B.N + 1] := (V Shr 16) And $FF;
-  B.D[B.N + 2] := (V Shr 8) And $FF;
-  B.D[B.N + 3] := V And $FF;
-  Inc(B.N, 4);
-End;
-
-Procedure B8(Var B : TBuf; V : Int64);
-Begin
-  B4(B, (V Shr 32) And $FFFFFFFF);
-  B4(B, V And $FFFFFFFF);
-End;
-
-Procedure BStr(Var B : TBuf; Const S : String);
-Var I : LongInt;
-Begin
-  BEnsure(B, Length(S));
-  For I := 1 To Length(S) Do Begin
-    B.D[B.N] := Ord(S[I]);
-    Inc(B.N);
-  End;
-End;
-
-Procedure BAppend(Var B : TBuf; Var Src : TBuf);
-Var I : LongInt;
-Begin
-  BEnsure(B, Src.N);
-  For I := 0 To Src.N - 1 Do B.D[B.N + I] := Src.D[I];
-  Inc(B.N, Src.N);
-End;
-
-Procedure BPatch2(Var B : TBuf; Pos, V : LongInt);
-Begin
-  B.D[Pos] := (V Shr 8) And $FF;
-  B.D[Pos + 1] := V And $FF;
-End;
-
-Procedure BPatch4(Var B : TBuf; Pos : LongInt; V : Int64);
-Begin
-  B.D[Pos] := (V Shr 24) And $FF;
-  B.D[Pos + 1] := (V Shr 16) And $FF;
-  B.D[Pos + 2] := (V Shr 8) And $FF;
-  B.D[Pos + 3] := V And $FF;
-End;
 
 { ----- pool de constantes ------------------------------------------------- }
 
@@ -19656,6 +20452,7 @@ Begin
   WriteLn;
   WriteLn('Options :');
   WriteLn('  -d repertoire      repertoire de sortie des fichiers .class');
+  WriteLn('  -cp chemin         classpath (repertoires et archives .jar)');
   WriteLn('  -target N          version de classe visee (8 a 25, defaut 11)');
   WriteLn('  --release N        synonyme de -target');
   WriteLn('  -verbose           affiche les fichiers ecrits');
@@ -19668,6 +20465,7 @@ Var
   NFiles   : LongInt;
   I, K, V  : LongInt;
   Arg      : String;
+  CpArg    : String;
 
 Begin
   { exceptions flottantes masquees : le repli de constantes suit IEEE 754 comme Java }
@@ -19697,6 +20495,9 @@ Begin
         End;
       End;
     End
+    Else If ((Arg = '-cp') Or (Arg = '-classpath') Or (Arg = '--class-path')) And (I < ParamCount) Then Begin
+      Inc(I); CpArg := ParamStr(I);
+    End
     Else If Arg = '-verbose' Then OptVerbose := True
     Else If Arg = '-Xparse' Then OptParseOnly := True
     Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '-h') Or (Arg = '/?') Then Begin Usage; Halt(0); End
@@ -19713,6 +20514,8 @@ Begin
   End;
   If NFiles = 0 Then Begin WriteLn('javac: aucun fichier source'); Halt(2); End;
   InitTypes;
+  If CpArg = '' Then CpArg := GetEnv('CLASSPATH');
+  If CpArg <> '' Then SetClassPath(CpArg);
   CurCtx := -1; CurCU := -1; CurClass := -1; CurMeth := -1; ClsParentCtx := -1; CurLambda := -1;
   AnonSuperCtor := -1; PendingLabelCtx := -1;
   MapInit(VTMap, 1021);
