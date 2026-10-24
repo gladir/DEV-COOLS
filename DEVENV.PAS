@@ -3152,7 +3152,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER, WK_IIS);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER, WK_IIS, WK_STORYBOOK);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -8064,6 +8064,58 @@ Type
                              { "Outils > IIS" ait jamais ete ouvert). }
  End;
 
+ { --- Outils > Storybook (2026-10-24, demande explicite de l'utilisateur - }
+ { s'inspire de https://storybook.js.org/ : un arbre de "composants" HTML   }
+ { (chaque fichier .htm/.html trouve sous le repertoire courant, le CSS      }
+ { etant simplement celui que CHAQUE page importe/declare elle-meme - voir   }
+ { DrawStorybookDetailPanel) avec un apercu visuel EN DIRECT a droite, via    }
+ { le MEME moteur de rendu HTML/CSS reel que le Navigateur Web (voir          }
+ { LoadHTMLFile/TestHTMLRender/BrowserComputeLayout - aucun nouveau moteur    }
+ { de rendu n'est invente). Meme patron EXACT (tableau PLAT avec ParentIdx/   }
+ { Level/Expanded/HasChildren) que TIISNode/TSqlExplorerNode/TExplorerNode -  }
+ { type INDEPENDANT, meme discipline (voir le commentaire de tete de         }
+ { TIISNode). Contrairement a l'arbre IIS, celui-ci N'A PAS de persistance -  }
+ { entierement RECONSTRUIT par un parcours recursif du disque               }
+ { (StorybookScanDir) a chaque ouverture de la fenetre (fermer/rouvrir       }
+ { l'onglet = actualiser la liste des composants). }
+Const
+ STORYBOOK_MAX_COMPONENTS = 300;
+ STORYBOOK_MAX_NODES      = 600;
+ STORYBOOK_MAX_DEPTH      = 8;    { garde-fou contre une arborescence de     }
+                                   { disque anormalement profonde/cyclique   }
+                                   { (jonctions NTFS, etc.). }
+ STORYBOOK_ROW_H          = 20;
+Type
+ TStorybookNodeKind = (SBNK_ROOT, SBNK_FOLDER, SBNK_COMPONENT);
+ TStorybookIconKind = (SBIK_ROOT, SBIK_FOLDER, SBIK_COMPONENT);
+ TStorybookComponent = Record
+  FilePath: String[255]; { chemin complet du fichier .htm/.html }
+ End;
+ TStorybookNode = Record
+  Caption    : String[100];
+  Kind       : TStorybookNodeKind;
+  ParentIdx  : Integer;
+  Level      : Integer;
+  Expanded   : Boolean;
+  HasChildren: Boolean;
+  DataIdx    : Integer;  { index dans Components[] pour un noeud COMPONENT, }
+                          { -1 pour la racine et les dossiers.              }
+ End;
+ TStorybookState = Record
+  Visible      : Boolean;
+  NeedRepaint  : Boolean;
+  X, Y         : Integer;
+  Width, Height: Integer;
+  Nodes        : Array[0..STORYBOOK_MAX_NODES - 1] Of TStorybookNode;
+  NodeCount    : Integer;
+  SelectedIdx  : Integer;
+  ScrollTop    : Integer;
+  Components   : Array[0..STORYBOOK_MAX_COMPONENTS - 1] Of TStorybookComponent;
+  ComponentCount: Integer;
+  RootDir      : String[255]; { repertoire de depart du parcours (voir      }
+                               { InitStorybookState - GetDir(0, ...)).      }
+ End;
+
  { Boite de dialogue generique "Ajouter..." a N champs texte fixes (meme    }
  { patron exact que TCreateTableDialog/InitCreateTableDialog - Insert/      }
  { Delete-au-curseur, Base: TDialog deja prouve - mais SANS la complexite    }
@@ -8599,6 +8651,8 @@ Var
  IISMgr         : TIISState;     { Outils > IIS (singleton) }
  IISFieldDlg    : TIISFieldDialog; { boite "Ajouter..." de IISMgr }
  IISIcons       : Array[TIISIconKind] Of TIcon16; { voir InitIISIcons }
+ Storyboard     : TStorybookState; { Outils > Storybook (singleton) }
+ StorybookIcons : Array[TStorybookIconKind] Of TIcon16; { voir InitStorybookIcons }
  { Dialogue nouveau projet / nouvelle solution }
  NewProjDlg     : TNewProjectDialog;
  { Dialogue nouveau fichier }
@@ -14693,6 +14747,7 @@ Begin
  AddMenuSeparator(CurMenu^);
  AddMenuItem(CurMenu^, 'Gestionnaire d''extensions...', '', 710);
  AddMenuItem(CurMenu^, 'IIS...', '', 711);
+ AddMenuItem(CurMenu^, 'Storybook...', '', 712);
  AddMenuSeparator(CurMenu^);
  AddMenuItem(CurMenu^, 'Ligne de commande externe', '', 720);
  AddMenuItem(CurMenu^, 'COMMENT', '', 721);
@@ -15052,6 +15107,15 @@ Procedure HandleRunRePascalTool; Forward;
 Procedure CreateExtManagerWindow; Forward;
 Procedure CreateSqlObjectExplorerWindow; Forward;
 Procedure CreateIISWindow; Forward;
+Procedure CreateStorybookWindow; Forward;
+{ DrawStorybook/HandleStorybookMouse : implementation reelle placee bien    }
+{ plus bas dans ce fichier, juste a cote de DisplayCurrentTarget (region    }
+{ AnsiString du Navigateur Web) - le panneau d'apercu appelle directement   }
+{ LoadHTMLFile/TestHTMLRender/BrowserComputeLayout, qui n'existent que      }
+{ dans cette region (meme contrainte exacte que IISResolveTarget/           }
+{ IISRunHandlerIfMapped, voir leur disclosure juste apres HandleIISMouse). }
+Procedure DrawStorybook(Var SB: TStorybookState); Forward;
+Procedure HandleStorybookMouse(Var SB: TStorybookState; Ev: TEvent); Forward;
 { Etape 3 (Explorateur d objets SQL Server) : SqlCmdEnsureMasterMdf a       }
 { besoin de signaler un echec dans le panneau de sortie, dont la vraie      }
 { implementation (~ligne 37000+) est definie plus bas que ce bloc. }
@@ -15801,6 +15865,10 @@ Begin
        End;
   711: Begin { IIS... }
         CreateIISWindow;
+        FullRepaintNeeded := True;
+       End;
+  712: Begin { Storybook... }
+        CreateStorybookWindow;
         FullRepaintNeeded := True;
        End;
   701: Begin { Personnaliser... }
@@ -16906,6 +16974,42 @@ Begin
  MakeIconFolderNode(IISIcons[IISIK_FOLDER]);
  MakeIconIISSite(IISIcons[IISIK_SITE]);
  MakeIconIISHandler(IISIcons[IISIK_HANDLER]);
+End;
+
+{ --- Icones de l'arbre "Outils > Storybook" (2026-10-24) - meme famille    }
+{ ExplorerIcons/IISIcons, le dossier reutilise MakeIconFolderNode comme     }
+{ IISIcons le fait deja. --- }
+
+Procedure MakeIconStorybookRoot(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Livre ouvert stylise (racine "Storybook"). }
+ IconVLine(Icon, 8, 2, 13, 1);
+ IconHLine(Icon, 2, 8, 3, 1);
+ IconHLine(Icon, 2, 8, 12, 1);
+ IconVLine(Icon, 2, 3, 12, 1);
+ IconHLine(Icon, 8, 14, 3, 1);
+ IconHLine(Icon, 8, 14, 12, 1);
+ IconVLine(Icon, 14, 3, 12, 1);
+End;
+
+Procedure MakeIconStorybookComponent(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Petite page avec balise "<>" (composant HTML/CSS). }
+ IconFillRect(Icon, 3, 2, 12, 13, 15);
+ IconRect(Icon, 3, 2, 12, 13, 1);
+ IconHLine(Icon, 5, 7, 5, 9);
+ IconHLine(Icon, 5, 7, 10, 9);
+ IconVLine(Icon, 4, 6, 9, 9); { "<" }
+ IconVLine(Icon, 8, 6, 9, 9); { ">" }
+End;
+
+Procedure InitStorybookIcons;
+Begin
+ MakeIconStorybookRoot(StorybookIcons[SBIK_ROOT]);
+ MakeIconFolderNode(StorybookIcons[SBIK_FOLDER]);
+ MakeIconStorybookComponent(StorybookIcons[SBIK_COMPONENT]);
 End;
 
 { --- Icones de la mini barre d outils de l onglet "Modification Git" -   }
@@ -18694,6 +18798,243 @@ End;
 { EXACTEMENT au mode chaine actif a son PROPRE point de declaration,         }
 { jamais a celui de l'appelant, d'ou ce placement physique juste a cote       }
 { de leur unique appelant plutot qu'ici a cote de CreateIISWindow. }
+
+{ ============================================================================
+  OUTILS > STORYBOOK (2026-10-24, demande explicite de l'utilisateur)
+  ============================================================================
+  Arbre de composants HTML (DrawStorybook/DrawStorybookNode/
+  DrawStorybookDetailPanel sont definis plus bas, juste a cote de
+  DisplayCurrentTarget - voir la note juste au-dessus pour la raison exacte).
+  Tout ce qui suit ICI (recherche sur disque, gestion du tableau plat de
+  noeuds) ne depend d'aucun type de la region AnsiString et reste donc a
+  cote de CreateIISWindow, meme discipline de placement. ---------------- }
+
+Function FindStorybookWindow: Integer;
+Var I: Integer;
+Begin
+ FindStorybookWindow := -1;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WindowNodeAt(I)^.Win.Kind = WK_STORYBOOK Then Begin
+   FindStorybookWindow := I;
+   Exit;
+  End;
+End;
+
+{ --- Ajoute un noeud en FIN de tableau - meme discipline exacte que        }
+{ IISAddNode (voir sa disclosure) : StorybookScanDir ajoute toujours dans   }
+{ l'ordre d'un parcours en profondeur, jamais d'insertion au milieu. --- }
+Function StorybookAddNode(Var SB: TStorybookState; Const ACaption: String;
+ AKind: TStorybookNodeKind; AParentIdx, ADataIdx: Integer): Integer;
+Var
+ NIdx: Integer;
+Begin
+ StorybookAddNode := -1;
+ If SB.NodeCount >= STORYBOOK_MAX_NODES Then Exit;
+ NIdx := SB.NodeCount;
+ SB.Nodes[NIdx].Caption := ACaption;
+ SB.Nodes[NIdx].Kind := AKind;
+ SB.Nodes[NIdx].ParentIdx := AParentIdx;
+ If AParentIdx >= 0 Then
+  SB.Nodes[NIdx].Level := SB.Nodes[AParentIdx].Level + 1
+ Else
+  SB.Nodes[NIdx].Level := 0;
+ SB.Nodes[NIdx].Expanded := False;
+ SB.Nodes[NIdx].HasChildren := False;
+ SB.Nodes[NIdx].DataIdx := ADataIdx;
+ If AParentIdx >= 0 Then SB.Nodes[AParentIdx].HasChildren := True;
+ Inc(SB.NodeCount);
+ StorybookAddNode := NIdx;
+End;
+
+{ --- Vrai si Dir (ou l'un de ses sous-dossiers, jusqu'a                    }
+{ STORYBOOK_MAX_DEPTH) contient au moins un fichier .htm/.html - appelee    }
+{ AVANT d'ajouter le noeud d'un sous-dossier, pour que l'arbre n'affiche     }
+{ jamais un dossier vide de composants (ex: BIN16, DOC...). Parcours        }
+{ "en aveugle" (pas de memoire des resultats) : les arborescences visees     }
+{ par cet outil restent petites, un second passage FindFirst/FindNext        }
+{ est largement moins cher qu'une table de cache a entretenir. --- }
+Function StorybookDirHasHtml(Const Dir: String; Depth: Integer): Boolean;
+Var
+ SR: SearchRec;
+ Ext: String;
+Begin
+ StorybookDirHasHtml := False;
+ If Depth > STORYBOOK_MAX_DEPTH Then Exit;
+ FindFirst(Dir + '*.*', AnyFile, SR);
+ While DosError = 0 Do Begin
+  If (SR.Attr And Directory) = Directory Then Begin
+   If (SR.Name <> '.') And (SR.Name <> '..') And
+      (Length(SR.Name) > 0) And (SR.Name[1] <> '.') Then
+    If StorybookDirHasHtml(Dir + SR.Name + '\', Depth + 1) Then Begin
+     StorybookDirHasHtml := True;
+     FindClose(SR);
+     Exit;
+    End;
+  End Else Begin
+   Ext := UpCaseStr(ExtractFileExt(SR.Name));
+   If (Ext = '.HTM') Or (Ext = '.HTML') Then Begin
+    StorybookDirHasHtml := True;
+    FindClose(SR);
+    Exit;
+   End;
+  End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+End;
+
+{ --- Parcours recursif reel du disque, peuplant Nodes[]/Components[] - un  }
+{ dossier n'est ajoute que s'il contient (directement ou via un sous-        }
+{ dossier) au moins un composant .htm/.html (voir StorybookDirHasHtml),      }
+{ pour ne jamais encombrer l'arbre de dossiers sans rapport (BIN16, DOC,     }
+{ .git...). --- }
+Procedure StorybookScanDir(Var SB: TStorybookState; Const Dir: String;
+ ParentIdx, Depth: Integer);
+Var
+ SR: SearchRec;
+ Ext, SubDir, Caption: String;
+ ThisIdx, CIdx: Integer;
+Begin
+ If Depth > STORYBOOK_MAX_DEPTH Then Exit;
+ { 1re passe : sous-dossiers (ordre alphabetique non garanti par FindFirst/  }
+ { FindNext - sans importance, un arbre de composants n'a pas besoin d'un    }
+ { tri strict, meme choix que BuildIISTree). }
+ FindFirst(Dir + '*.*', AnyFile, SR);
+ While DosError = 0 Do Begin
+  If (SR.Attr And Directory) = Directory Then Begin
+   If (SR.Name <> '.') And (SR.Name <> '..') And
+      (Length(SR.Name) > 0) And (SR.Name[1] <> '.') Then Begin
+    SubDir := Dir + SR.Name + '\';
+    If StorybookDirHasHtml(SubDir, Depth + 1) Then Begin
+     ThisIdx := StorybookAddNode(SB, SR.Name, SBNK_FOLDER, ParentIdx, -1);
+     If ThisIdx >= 0 Then
+      StorybookScanDir(SB, SubDir, ThisIdx, Depth + 1);
+    End;
+   End;
+  End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+ { 2e passe : fichiers .htm/.html de CE dossier. }
+ FindFirst(Dir + '*.*', AnyFile, SR);
+ While DosError = 0 Do Begin
+  If (SR.Attr And Directory) <> Directory Then Begin
+   Ext := UpCaseStr(ExtractFileExt(SR.Name));
+   If (Ext = '.HTM') Or (Ext = '.HTML') Then
+    If SB.ComponentCount < STORYBOOK_MAX_COMPONENTS Then Begin
+     CIdx := SB.ComponentCount;
+     SB.Components[CIdx].FilePath := Dir + SR.Name;
+     Inc(SB.ComponentCount);
+     Caption := SR.Name;
+     StorybookAddNode(SB, Caption, SBNK_COMPONENT, ParentIdx, CIdx);
+    End;
+  End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+End;
+
+{ --- Reconstruit tout l'arbre depuis RootDir - appelee uniquement a         }
+{ l'ouverture (voir CreateStorybookWindow) : pas de rechargement a chaud,    }
+{ fermer/rouvrir l'onglet actualise la liste (meme limitation assumee        }
+{ que beaucoup d'autres outils de ce projet - pas de surveillance de         }
+{ systeme de fichiers reelle). --- }
+Procedure BuildStorybookTree(Var SB: TStorybookState);
+Var
+ RootIdx: Integer;
+Begin
+ SB.NodeCount := 0;
+ SB.ComponentCount := 0;
+ RootIdx := StorybookAddNode(SB, 'Storybook (' + SB.RootDir + ')', SBNK_ROOT, -1, -1);
+ SB.Nodes[RootIdx].Expanded := True;
+ StorybookScanDir(SB, SB.RootDir + '\', RootIdx, 0);
+ If (SB.SelectedIdx < 0) Or (SB.SelectedIdx >= SB.NodeCount) Then
+  SB.SelectedIdx := RootIdx;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Un noeud est visible si TOUS ses ancetres sont Expanded - meme         }
+{ discipline que IISNodeVisible/SqlNodeVisible. --- }
+Function StorybookNodeVisible(Var SB: TStorybookState; NodeIdx: Integer): Boolean;
+Var P: Integer;
+Begin
+ StorybookNodeVisible := True;
+ P := SB.Nodes[NodeIdx].ParentIdx;
+ While P >= 0 Do Begin
+  If Not SB.Nodes[P].Expanded Then Begin
+   StorybookNodeVisible := False;
+   Exit;
+  End;
+  P := SB.Nodes[P].ParentIdx;
+ End;
+End;
+
+Function StorybookCountVisibleNodes(Var SB: TStorybookState): Integer;
+Var I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To SB.NodeCount - 1 Do
+  If StorybookNodeVisible(SB, I) Then Inc(Cnt);
+ StorybookCountVisibleNodes := Cnt;
+End;
+
+Procedure StorybookToggleNode(Var SB: TStorybookState; NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= SB.NodeCount) Then Exit;
+ If Not SB.Nodes[NodeIdx].HasChildren Then Exit;
+ SB.Nodes[NodeIdx].Expanded := Not SB.Nodes[NodeIdx].Expanded;
+ SB.NeedRepaint := True;
+End;
+
+Procedure InitStorybookState(Var SB: TStorybookState);
+Begin
+ SB.Visible := True;
+ SB.NodeCount := 0;
+ SB.ComponentCount := 0;
+ SB.SelectedIdx := -1;
+ SB.ScrollTop := 0;
+ SB.NeedRepaint := True;
+ GetDir(0, SB.RootDir);
+ If (Length(SB.RootDir) > 0) And (SB.RootDir[Length(SB.RootDir)] = '\') Then
+  SB.RootDir := Copy(SB.RootDir, 1, Length(SB.RootDir) - 1);
+ BuildStorybookTree(SB);
+End;
+
+Procedure CreateStorybookWindow;
+Var
+ Idx: Integer;
+ Node: PWindowNode;
+Begin
+ Idx := FindStorybookWindow;
+ If Idx >= 0 Then Begin
+  ActivateWindow(Idx);
+  Exit;
+ End;
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ Idx := WinMgr.WinCount;
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_STORYBOOK;
+ Node^.Win.FileName := '';
+ Node^.Win.Title := 'Storybook';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ InitStorybookState(Storyboard);
+ Storyboard.X := Node^.Win.X;
+ Storyboard.Y := Node^.Win.Y;
+ Storyboard.Width := Node^.Win.Width;
+ Storyboard.Height := Node^.Win.Height;
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
+ EditorReady := True;
+End;
 
 { ============================================================================
   EXPLORATEUR D OBJETS SQL SERVER (menu Affichage)
@@ -21499,6 +21840,13 @@ Begin
   { Rien a synchroniser : SqlExplorer est aussi un singleton global. }
  End Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then Begin
   { Rien a synchroniser : IISMgr est aussi un singleton global. }
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then Begin
+  { Rien a synchroniser : Storyboard est aussi un singleton global - le     }
+  { panneau d apercu recharge/rerend sa page a chaque DrawStorybook plutot  }
+  { que de compter sur l etat persistant du moteur HTML partage (voir       }
+  { DrawStorybookDetailPanel), donc aucune sauvegarde n est necessaire ici   }
+  { malgre le fait que ce panneau touche les memes globales que le          }
+  { Navigateur Web (HTMLDocument, CurrentURL...). }
  End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
   If WinMgr.ActiveNode^.GridEditor <> Nil Then
    WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor;
@@ -21573,6 +21921,9 @@ Begin
   { Rien a restaurer : SqlExplorer est aussi un singleton global. }
  End Else If Node^.Win.Kind = WK_IIS Then Begin
   { Rien a restaurer : IISMgr est aussi un singleton global. }
+ End Else If Node^.Win.Kind = WK_STORYBOOK Then Begin
+  { Rien a restaurer : Storyboard est aussi un singleton global (voir le    }
+  { meme commentaire dans SyncActiveWindowOut). }
  End Else If Node^.Win.Kind = WK_GRID Then Begin
   If Node^.GridEditor <> Nil Then
    ActiveGridEditor := Node^.GridEditor^;
@@ -245005,6 +245356,8 @@ Begin
    SB.Language := 'SQL Server'
   Else If Node^.Win.Kind = WK_IIS Then
    SB.Language := 'IIS'
+  Else If Node^.Win.Kind = WK_STORYBOOK Then
+   SB.Language := 'Storybook'
   Else If Node^.Win.Kind = WK_BROWSER Then
    SB.Language := 'Navigateur'
   Else
@@ -249524,6 +249877,8 @@ Begin
    DrawSqlExplorer(SqlExplorer)
   Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then
    DrawIIS(IISMgr)
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then
+   DrawStorybook(Storyboard)
   Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
    { BOGUE REEL DE PERFORMANCE (2026-09-28, "5 minutes a chaque touche...
      il y a encore d'autres mecanismes") : DrawAllWidgets est appelee
@@ -254478,6 +254833,9 @@ Begin
    End Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then Begin
     { IIS : pilote a la souris (comme le Gestionnaire d extensions), aucune  }
     { frappe traitee ici - voir IISFieldDlg plus haut pour la saisie texte.  }
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then Begin
+    { Storybook : pilote a la souris (comme IIS/Gestionnaire d extensions), }
+    { aucune frappe traitee ici. }
    End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
     HandleGridEditorKey(ActiveGridEditor, Ev);
     If WinMgr.ActiveNode^.GridEditor <> Nil Then
@@ -254539,6 +254897,8 @@ Begin
      HandleSqlExplorerEvent(SqlExplorer, Ev);
     End Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then Begin
      HandleIISMouse(IISMgr, Ev);
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_STORYBOOK Then Begin
+     HandleStorybookMouse(Storyboard, Ev);
     End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
      HandleGridEditorMouse(ActiveGridEditor, Ev);
      If WinMgr.ActiveNode^.GridEditor <> Nil Then
@@ -280825,6 +281185,196 @@ Begin
  End;
 End;
 
+{ ----------------------------------------------------------------------
+  Rendu et interaction de l'onglet "Storybook" (voir sa declaration de
+  type/CreateStorybookWindow pres de CreateIISWindow, et la note qui y
+  explique pourquoi l'implementation reelle est ICI, juste apres
+  BrowserComputeLayout plutot qu'a cote de CreateIISWindow : le panneau
+  d'apercu appelle directement LoadHTMLFile/TestHTMLRender/
+  BrowserComputeLayout, qui n'existent (corps reel, pas juste Forward)
+  qu'a partir d'ici dans cette region AnsiString du fichier) - arbre a
+  gauche (meme patron exact que DrawIIS/DrawIISNode) + apercu HTML/CSS EN
+  DIRECT a droite, via le MEME moteur de rendu que le Navigateur Web.
+  ---------------------------------------------------------------------- }
+
+Function StorybookTreeWidth(Var SB: TStorybookState): Integer;
+Var W: Integer;
+Begin
+ W := (SB.Width * 35) Div 100;
+ If W < 180 Then W := 180;
+ If W > SB.Width - 150 Then W := SB.Width - 150;
+ If W > SB.Width Then W := SB.Width;
+ If W < 0 Then W := 0;
+ StorybookTreeWidth := W;
+End;
+
+Procedure DrawStorybookNode(Var SB: TStorybookState; NodeIdx, DrawY, TreeW: Integer);
+Var
+ DrawX, TriX, TriY: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= SB.NodeCount) Then Exit;
+ DrawX := SB.X + 4 + SB.Nodes[NodeIdx].Level * EXPLORER_INDENT;
+ If NodeIdx = SB.SelectedIdx Then Begin
+  SetFillStyle(SolidFill, CLR_SELECTION);
+  Bar(SB.X, DrawY, SB.X + TreeW - 1, DrawY + EXPLORER_NODE_HEIGHT - 1);
+ End;
+ If SB.Nodes[NodeIdx].HasChildren Then Begin
+  TriX := DrawX;
+  TriY := DrawY + EXPLORER_NODE_HEIGHT Div 2;
+  SetColor(CLR_MENU_TEXT);
+  If SB.Nodes[NodeIdx].Expanded Then Begin
+   Line(TriX, TriY - 3, TriX + 6, TriY - 3);
+   Line(TriX, TriY - 3, TriX + 3, TriY + 3);
+   Line(TriX + 6, TriY - 3, TriX + 3, TriY + 3);
+  End Else Begin
+   Line(TriX, TriY - 4, TriX, TriY + 4);
+   Line(TriX, TriY - 4, TriX + 6, TriY);
+   Line(TriX, TriY + 4, TriX + 6, TriY);
+  End;
+ End;
+ DrawX := DrawX + 10;
+ Case SB.Nodes[NodeIdx].Kind Of
+  SBNK_ROOT: DrawIcon16x16(DrawX, DrawY + 1, StorybookIcons[SBIK_ROOT]);
+  SBNK_FOLDER: DrawIcon16x16(DrawX, DrawY + 1, StorybookIcons[SBIK_FOLDER]);
+  SBNK_COMPONENT: DrawIcon16x16(DrawX, DrawY + 1, StorybookIcons[SBIK_COMPONENT]);
+ End;
+ DrawX := DrawX + EXPLORER_ICON_SIZE;
+ If NodeIdx = SB.SelectedIdx Then
+  SetColor(CLR_HIGHLIGHTTEXT)
+ Else
+  SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(DrawX, DrawY + 3,
+  TruncateTitleToWidth(SB.Nodes[NodeIdx].Caption, SB.X + TreeW - DrawX - 4));
+End;
+
+{ --- Panneau de droite : texte pour la racine/un dossier, VRAI apercu       }
+{ HTML/CSS en direct pour un composant - CurrentURL DOIT pointer sur le      }
+{ fichier du composant AVANT TestHTMLRender (CSSBuildStylesheetPath et la    }
+{ resolution des liens/images relatifs du composant en dependent tous les    }
+{ deux - voir sa disclosure), et le document est entierement RECHARGE/      }
+{ REPARSE a chaque appel plutot que mis en cache : le moteur de rendu est   }
+{ un singleton GLOBAL partage avec le Navigateur Web (HTMLDocument,         }
+{ CurrentURL...), jamais garanti intact si l'utilisateur a bascule vers un   }
+{ autre onglet entre deux redessins (voir le commentaire de                 }
+{ SyncActiveWindowOut pour WK_STORYBOOK). --- }
+Procedure DrawStorybookDetailPanel(Var SB: TStorybookState; DX, DY, DW, DH: Integer);
+Var
+ RowY, DataIdx, PrevX, PrevY, PrevW, PrevH: Integer;
+ HTML: HTMLSourceBuffer;
+Begin
+ SetColor(CLR_BORDER);
+ Line(DX, SB.Y, DX, SB.Y + SB.Height - 1);
+ If (SB.SelectedIdx < 0) Or (SB.SelectedIdx >= SB.NodeCount) Then Exit;
+ DataIdx := SB.Nodes[SB.SelectedIdx].DataIdx;
+ Case SB.Nodes[SB.SelectedIdx].Kind Of
+  SBNK_ROOT: Begin
+   RowY := DY + 8;
+   SetColor(CLR_MENU_TEXT);
+   OutTextXY(DX + 10, RowY, IntToStr(SB.ComponentCount) + ' composant(s) HTML trouve(s) sous :');
+   RowY := RowY + STORYBOOK_ROW_H;
+   OutTextXY(DX + 10, RowY, TruncateTitleToWidth(SB.RootDir, DW - 20));
+   RowY := RowY + STORYBOOK_ROW_H * 2;
+   OutTextXY(DX + 10, RowY, 'Cliquez un composant a gauche pour en voir l''apercu.');
+   RowY := RowY + STORYBOOK_ROW_H;
+   OutTextXY(DX + 10, RowY, '(Fermer puis rouvrir cet onglet actualise la liste.)');
+  End;
+  SBNK_FOLDER: Begin
+   RowY := DY + 8;
+   SetColor(CLR_MENU_TEXT);
+   OutTextXY(DX + 10, RowY, 'Dossier : ' + SB.Nodes[SB.SelectedIdx].Caption);
+  End;
+  SBNK_COMPONENT: Begin
+   If (DataIdx < 0) Or (DataIdx >= SB.ComponentCount) Then Exit;
+   PrevX := DX + 4; PrevY := DY + 4;
+   PrevW := DW - 8; PrevH := DH - 8;
+   If (PrevW < 20) Or (PrevH < 20) Then Exit;
+   SetFillStyle(SolidFill, White);
+   Bar(PrevX, PrevY, PrevX + PrevW - 1, PrevY + PrevH - 1);
+   CurrentURL := SB.Components[DataIdx].FilePath;
+   BrowserComputeLayout(PrevX, PrevY, PrevW, PrevH);
+   InitHTMLSource(HTML);
+   If LoadHTMLFile(SB.Components[DataIdx].FilePath, HTML) Then Begin
+    TestHTMLRender(HTML);
+    FreeHTMLSource(HTML);
+   End Else Begin
+    SetColor(CLR_MENU_TEXT);
+    OutTextXY(PrevX + 4, PrevY + 4,
+     'Impossible de lire : ' + SB.Components[DataIdx].FilePath);
+   End;
+  End;
+ End;
+End;
+
+Procedure DrawStorybook(Var SB: TStorybookState);
+Var
+ DrawY, I, TreeW, VisLines, TotalVis, MaxScroll, VisCount: Integer;
+Begin
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(SB.X, SB.Y, SB.X + SB.Width - 1, SB.Y + SB.Height - 1);
+ TreeW := StorybookTreeWidth(SB);
+ VisLines := SB.Height Div EXPLORER_NODE_HEIGHT;
+ If VisLines < 1 Then VisLines := 1;
+ TotalVis := StorybookCountVisibleNodes(SB);
+ MaxScroll := TotalVis - VisLines;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If SB.ScrollTop > MaxScroll Then SB.ScrollTop := MaxScroll;
+ If SB.ScrollTop < 0 Then SB.ScrollTop := 0;
+ DrawY := SB.Y;
+ VisCount := 0;
+ For I := 0 To SB.NodeCount - 1 Do
+  If StorybookNodeVisible(SB, I) Then Begin
+   If VisCount < SB.ScrollTop Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
+   DrawStorybookNode(SB, I, DrawY, TreeW);
+   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+   If DrawY >= SB.Y + SB.Height Then Break;
+  End;
+ DrawStorybookDetailPanel(SB, SB.X + TreeW, SB.Y, SB.Width - TreeW, SB.Height);
+End;
+
+Function StorybookNodeHitTest(Var SB: TStorybookState; MY: Integer): Integer;
+Var
+ DrawY, I, VisCount: Integer;
+Begin
+ StorybookNodeHitTest := -1;
+ DrawY := SB.Y;
+ VisCount := 0;
+ For I := 0 To SB.NodeCount - 1 Do
+  If StorybookNodeVisible(SB, I) Then Begin
+   If VisCount < SB.ScrollTop Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
+   If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
+    StorybookNodeHitTest := I;
+    Exit;
+   End;
+   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+   If DrawY >= SB.Y + SB.Height Then Break;
+   Inc(VisCount);
+  End;
+End;
+
+Procedure HandleStorybookMouse(Var SB: TStorybookState; Ev: TEvent);
+Var
+ TreeW, HitIdx, TriLeft: Integer;
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ TreeW := StorybookTreeWidth(SB);
+ If Ev.MouseX >= SB.X + TreeW Then Exit; { panneau d apercu : lecture seule }
+ HitIdx := StorybookNodeHitTest(SB, Ev.MouseY);
+ If HitIdx < 0 Then Exit;
+ SB.SelectedIdx := HitIdx;
+ If SB.Nodes[HitIdx].HasChildren Then Begin
+  TriLeft := SB.X + 4 + SB.Nodes[HitIdx].Level * EXPLORER_INDENT;
+  If (Ev.MouseX >= TriLeft) And (Ev.MouseX < TriLeft + 10) Then
+   StorybookToggleNode(SB, HitIdx);
+ End;
+ SB.NeedRepaint := True;
+End;
 
 { Fonction pour verifier si une position est dans la zone de rendu }
 Function IsInRenderArea(X, Y: Integer): Boolean;
@@ -282140,6 +282690,7 @@ BEGIN
  InitExplorerIcons;
  InitSqlExplorerIcons;
  InitIISIcons;
+ InitStorybookIcons;
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
