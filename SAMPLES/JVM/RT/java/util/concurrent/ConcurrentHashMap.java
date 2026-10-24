@@ -1,7 +1,8 @@
 package java.util.concurrent;
 import java.util.*;
 import java.util.function.*;
-public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> {
+public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V>, java.io.Serializable {
+    private static final long serialVersionUID = 7249069246763182397L;
     private final HashMap<K, V> m = new HashMap<>();
     public ConcurrentHashMap() { }
     public ConcurrentHashMap(int cap) { }

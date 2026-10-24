@@ -1,6 +1,8 @@
 package java.io;
 public abstract class Writer implements Appendable, Closeable, Flushable {
-    protected Writer() {}
+    protected Object lock;
+    protected Writer() { this.lock = this; }
+    protected Writer(Object lock) { this.lock = lock; }
     public void write(int c) throws IOException { write(new char[] { (char) c }, 0, 1); }
     public void write(char[] c) throws IOException { write(c, 0, c.length); }
     public abstract void write(char[] c, int off, int len) throws IOException;

@@ -2,17 +2,47 @@ package java.lang;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 public class Throwable implements java.io.Serializable {
-    private Object backtrace;
+    private static final long serialVersionUID = -3042686055658047285L;
+    private transient Object backtrace;
     private String detailMessage;
     private Throwable cause = this;
-    private StackTraceElement[] stackTrace;
-    private java.util.List<Throwable> suppressed;
+    private static final StackTraceElement[] UNASSIGNED_STACK = new StackTraceElement[0];
+    private static final java.util.List<Throwable> SUPPRESSED_SENTINEL = java.util.Collections.emptyList();
+    private StackTraceElement[] stackTrace = UNASSIGNED_STACK;
+    private java.util.List<Throwable> suppressedExceptions = SUPPRESSED_SENTINEL;
+    private synchronized void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        getOurStackTrace();
+        StackTraceElement[] oldStackTrace = stackTrace;
+        try {
+            if (stackTrace == null) stackTrace = UNASSIGNED_STACK;
+            s.defaultWriteObject();
+        } finally { stackTrace = oldStackTrace; }
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        if (suppressedExceptions != null) {
+            java.util.List<Throwable> suppressed;
+            if (suppressedExceptions.isEmpty()) suppressed = SUPPRESSED_SENTINEL;
+            else {
+                suppressed = new java.util.ArrayList<>(Math.min(suppressedExceptions.size(), 1));
+                for (Throwable t : suppressedExceptions) {
+                    if (t == null) throw new NullPointerException("Cannot suppress a null exception.");
+                    if (t == this) throw new IllegalArgumentException("Self-suppression not permitted", t);
+                    suppressed.add(t);
+                }
+            }
+            suppressedExceptions = suppressed;
+        }
+        if (stackTrace == null) stackTrace = UNASSIGNED_STACK;
+    }
     public Throwable() { fillInStackTrace(); }
     public Throwable(String message) { fillInStackTrace(); detailMessage = message; }
     public Throwable(String message, Throwable cause) { fillInStackTrace(); detailMessage = message; this.cause = cause; }
     public Throwable(Throwable cause) { fillInStackTrace(); detailMessage = (cause == null ? null : cause.toString()); this.cause = cause; }
     protected Throwable(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
-        fillInStackTrace(); detailMessage = message; this.cause = cause;
+        if (writableStackTrace) fillInStackTrace(); else stackTrace = null;
+        detailMessage = message; this.cause = cause;
+        if (!enableSuppression) suppressedExceptions = null;
     }
     public String getMessage() { return detailMessage; }
     public String getLocalizedMessage() { return getMessage(); }
@@ -48,7 +78,10 @@ public class Throwable implements java.io.Serializable {
         return sb.toString();
     }
     private StackTraceElement[] getOurStackTrace() {
-        if (stackTrace == null) stackTrace = elements(backtrace);
+        if (stackTrace == UNASSIGNED_STACK || (stackTrace == null && backtrace != null)) {
+            if (backtrace != null) stackTrace = elements(backtrace);
+            else if (stackTrace == null) stackTrace = UNASSIGNED_STACK;
+        }
         return stackTrace;
     }
     private void printEnclosed(StringBuilder sb, StackTraceElement[] enclosingTrace, String caption, String prefix, java.util.ArrayList<Throwable> dejaVu) {
@@ -68,11 +101,12 @@ public class Throwable implements java.io.Serializable {
     public final synchronized void addSuppressed(Throwable exception) {
         if (exception == this) throw new IllegalArgumentException("Self-suppression not permitted", exception);
         if (exception == null) throw new NullPointerException("Cannot suppress a null exception.");
-        if (suppressed == null) suppressed = new java.util.ArrayList<>();
-        suppressed.add(exception);
+        if (suppressedExceptions == null) return;
+        if (suppressedExceptions == SUPPRESSED_SENTINEL) suppressedExceptions = new java.util.ArrayList<>(1);
+        suppressedExceptions.add(exception);
     }
     public final synchronized Throwable[] getSuppressed() {
-        if (suppressed == null) return new Throwable[0];
-        return suppressed.toArray(new Throwable[0]);
+        if (suppressedExceptions == SUPPRESSED_SENTINEL || suppressedExceptions == null) return new Throwable[0];
+        return suppressedExceptions.toArray(new Throwable[0]);
     }
 }

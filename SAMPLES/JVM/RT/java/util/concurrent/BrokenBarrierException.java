@@ -1,2 +1,3 @@
 package java.util.concurrent;
-public class BrokenBarrierException extends Exception { public BrokenBarrierException() { } public BrokenBarrierException(String s) { super(s); } }
+public class BrokenBarrierException extends Exception {
+    private static final long serialVersionUID = 7117394618823254244L; public BrokenBarrierException() { } public BrokenBarrierException(String s) { super(s); } }

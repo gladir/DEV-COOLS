@@ -1,7 +1,33 @@
 package java.time;
 import java.time.temporal.*;
 import java.time.format.*;
-public final class LocalTime implements Temporal, Comparable<LocalTime> {
+public final class LocalTime implements Temporal, Comparable<LocalTime>, java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.LOCAL_TIME_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException {
+        if (nano == 0) {
+            if (second == 0) {
+                if (minute == 0) out.writeByte(~hour);
+                else { out.writeByte(hour); out.writeByte(~minute); }
+            } else { out.writeByte(hour); out.writeByte(minute); out.writeByte(~second); }
+        } else { out.writeByte(hour); out.writeByte(minute); out.writeByte(second); out.writeInt(nano); }
+    }
+    static LocalTime readExternal(java.io.DataInput in) throws java.io.IOException {
+        int hour = in.readByte();
+        int minute = 0, second = 0, nano = 0;
+        if (hour < 0) hour = ~hour;
+        else {
+            minute = in.readByte();
+            if (minute < 0) minute = ~minute;
+            else {
+                second = in.readByte();
+                if (second < 0) second = ~second;
+                else nano = in.readInt();
+            }
+        }
+        return LocalTime.of(hour, minute, second, nano);
+    }
+    private static final long serialVersionUID = 6414437269572265201L;
     public static final LocalTime MIDNIGHT = new LocalTime(0, 0, 0, 0), MIN = MIDNIGHT, NOON = new LocalTime(12, 0, 0, 0), MAX = new LocalTime(23, 59, 59, 999999999);
     private final int hour, minute, second, nano;
     private LocalTime(int h, int m, int s, int n) { hour = h; minute = m; second = s; nano = n; }

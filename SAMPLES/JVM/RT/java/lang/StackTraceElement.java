@@ -1,7 +1,10 @@
 package java.lang;
 public final class StackTraceElement implements java.io.Serializable {
+    private static final long serialVersionUID = 6992337162326171013L;
+    private String classLoaderName, moduleName, moduleVersion;
     private String declaringClass, methodName, fileName;
     private int lineNumber;
+    private byte format = 0;
     public StackTraceElement(String declaringClass, String methodName, String fileName, int lineNumber) {
         this.declaringClass = declaringClass; this.methodName = methodName; this.fileName = fileName; this.lineNumber = lineNumber;
     }

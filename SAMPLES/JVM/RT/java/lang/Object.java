@@ -10,5 +10,6 @@ public class Object {
     public final native void notifyAll();
     public final native void wait() throws InterruptedException;
     public final native void wait(long timeout) throws InterruptedException;
+    public final void wait(long timeout, int nanos) throws InterruptedException { wait(nanos > 0 && timeout < Long.MAX_VALUE ? timeout + 1 : timeout); }
     protected void finalize() throws Throwable { }
 }

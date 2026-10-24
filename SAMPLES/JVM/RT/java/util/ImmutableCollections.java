@@ -1,9 +1,10 @@
 package java.util;
 class ImmutableCollections {
     static UnsupportedOperationException uoe() { return new UnsupportedOperationException(); }
-    static abstract class ImmList<E> extends AbstractList<E> implements RandomAccess {
+    static abstract class ImmList<E> extends AbstractList<E> implements RandomAccess, java.io.Serializable {
         final Object[] a;
         ImmList(Object[] a) { this.a = a; }
+        Object writeReplace() { return new CollSer(CollSer.IMM_LIST, a.clone()); }
         public int size() { return a.length; }
         public E get(int i) { if (i < 0 || i >= a.length) throw new IndexOutOfBoundsException("Index " + i + " out of bounds for length " + a.length); return (E) a[i]; }
         public boolean add(E e) { throw uoe(); }
@@ -25,13 +26,16 @@ class ImmutableCollections {
             return new ListN<E>(Arrays.copyOfRange(a, from, to));
         }
     }
-    static final class ListN<E> extends ImmList<E> { ListN(Object[] a) { super(a); } }
+    static final class ListN<E> extends ImmList<E> {
+    private static final long serialVersionUID = 3109894000706418650L; ListN(Object[] a) { super(a); } }
     static <E> List<E> listOf(Object... es) {
         for (Object e : es) Objects.requireNonNull(e);
         return new ListN<E>(es.clone());
     }
-    static final class SetN<E> extends AbstractSet<E> {
+    static final class SetN<E> extends AbstractSet<E> implements java.io.Serializable {
+    private static final long serialVersionUID = 7658445931194884555L;
         final LinkedHashSet<E> s = new LinkedHashSet<>();
+        Object writeReplace() { return new CollSer(CollSer.IMM_SET, s.toArray()); }
         public int size() { return s.size(); }
         public Iterator<E> iterator() {
             final Iterator<E> it = s.iterator();
@@ -54,8 +58,15 @@ class ImmutableCollections {
         }
         return r;
     }
-    static final class MapN<K, V> extends AbstractMap<K, V> {
+    static final class MapN<K, V> extends AbstractMap<K, V> implements java.io.Serializable {
+    private static final long serialVersionUID = 7621843055432902789L;
         final LinkedHashMap<K, V> m = new LinkedHashMap<>();
+        Object writeReplace() {
+            Object[] kv = new Object[m.size() * 2];
+            int i = 0;
+            for (Map.Entry<K, V> e : m.entrySet()) { kv[i++] = e.getKey(); kv[i++] = e.getValue(); }
+            return new CollSer(CollSer.IMM_MAP, kv);
+        }
         public int size() { return m.size(); }
         public V get(Object k) { Objects.requireNonNull(k); return m.get(k); }
         public boolean containsKey(Object k) { Objects.requireNonNull(k); return m.containsKey(k); }

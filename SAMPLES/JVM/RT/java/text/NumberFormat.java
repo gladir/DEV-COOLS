@@ -1,6 +1,7 @@
 package java.text;
 import java.util.Locale;
 public abstract class NumberFormat extends Format {
+    private static final long serialVersionUID = -2308460125733713944L;
     protected boolean grouping = true;
     protected int maxFrac = 3, minFrac = 0, minInt = 1, maxInt = Integer.MAX_VALUE;
     protected java.math.RoundingMode rounding = java.math.RoundingMode.HALF_EVEN;

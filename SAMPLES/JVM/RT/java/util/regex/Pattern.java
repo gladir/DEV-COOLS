@@ -3,12 +3,20 @@ import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 public final class Pattern implements java.io.Serializable {
+    private static final long serialVersionUID = 5073258162644648461L;
     public static final int UNIX_LINES = 1, CASE_INSENSITIVE = 2, COMMENTS = 4, MULTILINE = 8, LITERAL = 16, DOTALL = 32, UNICODE_CASE = 64;
-    private final String pattern;
-    private final int flags;
-    Node root;
-    int groupCount;
-    Map<String, Integer> names = new HashMap<>();
+    private String pattern;
+    private int flags;
+    transient Node root;
+    transient int groupCount;
+    transient Map<String, Integer> names = new HashMap<>();
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        names = new HashMap<>();
+        Parser ps = new Parser(pattern, flags, this);
+        root = ps.parseAll();
+        groupCount = ps.groups;
+    }
     private Pattern(String p, int f) {
         pattern = p; flags = f;
         Parser ps = new Parser(p, f, this);

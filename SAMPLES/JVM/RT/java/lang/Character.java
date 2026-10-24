@@ -1,5 +1,6 @@
 package java.lang;
 public final class Character implements java.io.Serializable, Comparable<Character> {
+    private static final long serialVersionUID = 3786198910865385080L;
     public static final char MIN_VALUE = '\u0000';
     public static final char MAX_VALUE = '￿';
     public static final int MIN_RADIX = 2;

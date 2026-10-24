@@ -1,5 +1,6 @@
 package java.util;
-public class TimeZone {
+public class TimeZone implements java.io.Serializable {
+    private static final long serialVersionUID = 3581463369166924961L;
     private final String id;
     private TimeZone(String id) { this.id = id; }
     public static TimeZone getDefault() { return new TimeZone("UTC"); }

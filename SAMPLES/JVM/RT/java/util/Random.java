@@ -1,10 +1,13 @@
 package java.util;
 import java.util.stream.*;
 public class Random implements java.io.Serializable {
+    private static final long serialVersionUID = 3905348978240129619L;
     private long seed;
     private static long seedUniquifier = 8682522807148012L;
     private double nextNextGaussian;
     private boolean haveNextNextGaussian = false;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException { s.defaultWriteObject(); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException { s.defaultReadObject(); }
     public Random() { this((seedUniquifier *= 1181783497276652981L) ^ System.nanoTime()); }
     public Random(long seed) { this.seed = (seed ^ 0x5DEECE66DL) & ((1L << 48) - 1); }
     public synchronized void setSeed(long seed) { this.seed = (seed ^ 0x5DEECE66DL) & ((1L << 48) - 1); haveNextNextGaussian = false; }

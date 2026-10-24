@@ -57,7 +57,7 @@ public final class Files {
     public static Path createDirectory(Path p) throws IOException { p.toFile().mkdir(); return p; }
     public static Path createDirectories(Path p) throws IOException { p.toFile().mkdirs(); return p; }
     public static Path createFile(Path p) throws IOException { p.toFile().createNewFile(); return p; }
-    public static Path createTempFile(String prefix, String suffix, java.nio.file.attribute.FileAttribute<?>... attrs) throws IOException { return File.createTempFile(prefix, suffix).toPath(); }
+    public static Path createTempFile(String prefix, String suffix, java.nio.file.attribute.FileAttribute<?>... attrs) throws IOException { return File.tempFile0(prefix, suffix, null).toPath(); }
     public static Path copy(Path a, Path b, Object... o) throws IOException { write(b, readAllBytes(a)); return b; }
     public static Path move(Path a, Path b, Object... o) throws IOException { a.toFile().renameTo(b.toFile()); return b; }
     public static java.util.stream.Stream<Path> list(Path d) throws IOException {

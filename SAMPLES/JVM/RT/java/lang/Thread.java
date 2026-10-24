@@ -75,7 +75,7 @@ public class Thread implements Runnable {
     public void interrupt() { interrupt0(); }
     public boolean isInterrupted() { return isInterrupted0(false); }
     public static boolean interrupted() { return currentThread().isInterrupted0(true); }
-    public final boolean isAlive() { return started && isAlive0(); }
+    public final boolean isAlive() { return started && (id == 1 || isAlive0()); }
     public final boolean isDaemon() { return daemon; }
     public final void setDaemon(boolean on) { if (started) throw new IllegalThreadStateException(); daemon = on; }
     public final String getName() { return name; }
@@ -99,7 +99,7 @@ public class Thread implements Runnable {
         public Thread unstarted(Runnable r) { return nm == null ? new Thread(r) : new Thread(r, nm); }
     }
     public enum State { NEW, RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, TERMINATED }
-    public State getState() { return !started ? State.NEW : (isAlive0() ? State.RUNNABLE : State.TERMINATED); }
+    public State getState() { return !started ? State.NEW : ((id == 1 || isAlive0()) ? State.RUNNABLE : State.TERMINATED); }
     public interface UncaughtExceptionHandler { void uncaughtException(Thread t, Throwable e); }
     public void setUncaughtExceptionHandler(UncaughtExceptionHandler h) { handler = h; }
     public UncaughtExceptionHandler getUncaughtExceptionHandler() { return handler; }

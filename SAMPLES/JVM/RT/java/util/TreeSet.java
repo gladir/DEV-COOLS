@@ -1,6 +1,20 @@
 package java.util;
 public class TreeSet<E> extends AbstractSet<E> implements NavigableSet<E>, Cloneable, java.io.Serializable {
-    private final TreeMap<E, Object> m;
+    private static final long serialVersionUID = -2479143000061671589L;
+    private transient TreeMap<E, Object> m;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        s.defaultWriteObject();
+        s.writeObject(m.comparator());
+        s.writeInt(m.size());
+        for (E e : m.keySet()) s.writeObject(e);
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        Comparator<? super E> c = (Comparator<? super E>) s.readObject();
+        m = new TreeMap<E, Object>(c);
+        int size = s.readInt();
+        for (int i = 0; i < size; i++) m.put((E) s.readObject(), PRESENT);
+    }
     private static final Object PRESENT = new Object();
     public TreeSet() { m = new TreeMap<>(); }
     public TreeSet(Comparator<? super E> comparator) { m = new TreeMap<>(comparator); }

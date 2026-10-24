@@ -8,10 +8,11 @@ public final class Arrays {
         if (from < 0) throw new ArrayIndexOutOfBoundsException("Array index out of range: " + from);
         if (to > length) throw new ArrayIndexOutOfBoundsException("Array index out of range: " + to);
     }
-    public static <T> List<T> asList(T... a) { return new ArrayAsList<>(a); }
-    private static class ArrayAsList<E> extends AbstractList<E> implements RandomAccess, java.io.Serializable {
+    public static <T> List<T> asList(T... a) { return new ArrayList<>(a); }
+    private static class ArrayList<E> extends AbstractList<E> implements RandomAccess, java.io.Serializable {
+        private static final long serialVersionUID = -2764017481108945198L;
         private final E[] a;
-        ArrayAsList(E[] array) { a = Objects.requireNonNull(array); }
+        ArrayList(E[] array) { a = Objects.requireNonNull(array); }
         public int size() { return a.length; }
         public Object[] toArray() { return Arrays.copyOf(a, a.length, Object[].class); }
         public E get(int index) { return a[index]; }
@@ -161,7 +162,7 @@ public final class Arrays {
     public static String deepToString(Object[] a) {
         if (a == null) return "null";
         StringBuilder buf = new StringBuilder();
-        deepToString(a, buf, new ArrayList<Object[]>());
+        deepToString(a, buf, new java.util.ArrayList<Object[]>());
         return buf.toString();
     }
     private static void deepToString(Object[] a, StringBuilder buf, List<Object[]> dejaVu) {

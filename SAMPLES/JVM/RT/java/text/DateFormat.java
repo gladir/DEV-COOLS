@@ -1,6 +1,7 @@
 package java.text;
 import java.util.*;
 public abstract class DateFormat extends Format {
+    private static final long serialVersionUID = 7218322306649953788L;
     public static final int FULL = 0, LONG = 1, MEDIUM = 2, SHORT = 3, DEFAULT = 2;
     public abstract String format(Date d);
     public abstract Date parse(String s) throws ParseException;

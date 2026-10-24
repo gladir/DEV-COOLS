@@ -1,5 +1,6 @@
 package java.lang;
 public final class Float extends Number implements Comparable<Float> {
+    private static final long serialVersionUID = -2671257302660747028L;
     public static final float POSITIVE_INFINITY = 1.0f / 0.0f;
     public static final float NEGATIVE_INFINITY = -1.0f / 0.0f;
     public static final float NaN = 0.0f / 0.0f;

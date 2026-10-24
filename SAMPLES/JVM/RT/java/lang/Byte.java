@@ -1,5 +1,6 @@
 package java.lang;
 public final class Byte extends Number implements Comparable<Byte> {
+    private static final long serialVersionUID = -7183698231559129828L;
     public static final byte MIN_VALUE = -128;
     public static final byte MAX_VALUE = 127;
     public static final int SIZE = 8;

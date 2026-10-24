@@ -1,7 +1,12 @@
 package java.time;
 import java.time.temporal.*;
 import java.time.format.*;
-public final class LocalDateTime implements Temporal, Comparable<LocalDateTime> {
+public final class LocalDateTime implements Temporal, Comparable<LocalDateTime>, java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.LOCAL_DATE_TIME_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException { date.writeExternal(out); time.writeExternal(out); }
+    static LocalDateTime readExternal(java.io.DataInput in) throws java.io.IOException { LocalDate date = LocalDate.readExternal(in); LocalTime time = LocalTime.readExternal(in); return LocalDateTime.of(date, time); }
+    private static final long serialVersionUID = 6207766400415563566L;
     private final LocalDate date;
     private final LocalTime time;
     private LocalDateTime(LocalDate d, LocalTime t) { date = d; time = t; }

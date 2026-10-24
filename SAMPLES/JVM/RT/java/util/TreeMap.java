@@ -1,11 +1,23 @@
 package java.util;
 import java.util.function.*;
 public class TreeMap<K, V> extends AbstractMap<K, V> implements NavigableMap<K, V>, Cloneable, java.io.Serializable {
+    private static final long serialVersionUID = 919286545866124006L;
     private final Comparator<? super K> comparator;
-    private Object[] keys = new Object[16];
-    private Object[] vals = new Object[16];
-    private int size;
-    private int modCount;
+    private transient Object[] keys = new Object[16];
+    private transient Object[] vals = new Object[16];
+    private transient int size;
+    private transient int modCount;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        s.defaultWriteObject();
+        s.writeInt(size);
+        for (int i = 0; i < size; i++) { s.writeObject(keys[i]); s.writeObject(vals[i]); }
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        keys = new Object[16]; vals = new Object[16]; size = 0; modCount = 0;
+        int n = s.readInt();
+        for (int i = 0; i < n; i++) { K k = (K) s.readObject(); V v = (V) s.readObject(); put(k, v); }
+    }
     public TreeMap() { comparator = null; }
     public TreeMap(Comparator<? super K> comparator) { this.comparator = comparator; }
     public TreeMap(Map<? extends K, ? extends V> m) { comparator = null; putAll(m); }

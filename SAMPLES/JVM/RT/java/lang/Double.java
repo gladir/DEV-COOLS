@@ -1,5 +1,6 @@
 package java.lang;
 public final class Double extends Number implements Comparable<Double> {
+    private static final long serialVersionUID = -9172774392245257468L;
     public static final double POSITIVE_INFINITY = 1.0 / 0.0;
     public static final double NEGATIVE_INFINITY = -1.0 / 0.0;
     public static final double NaN = 0.0d / 0.0;

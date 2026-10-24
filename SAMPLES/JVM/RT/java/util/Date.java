@@ -1,6 +1,9 @@
 package java.util;
 public class Date implements java.io.Serializable, Cloneable, Comparable<Date> {
-    private long time;
+    private static final long serialVersionUID = 7523967970034938905L;
+    private transient long time;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException { s.defaultWriteObject(); s.writeLong(time); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException { s.defaultReadObject(); time = s.readLong(); }
     public Date() { this(System.currentTimeMillis()); }
     public Date(long date) { time = date; }
     @SuppressWarnings("deprecation")

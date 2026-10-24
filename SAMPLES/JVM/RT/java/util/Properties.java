@@ -1,8 +1,33 @@
 package java.util;
 import java.io.*;
 public class Properties extends Hashtable<Object, Object> {
+    private static final long serialVersionUID = 4112578634029874840L;
     protected Properties defaults;
-    private final HashMap<Object, Object> map = new HashMap<>();
+    private transient HashMap<Object, Object> map = new HashMap<>();
+    void writeHashtable(ObjectOutputStream s) throws IOException {
+        List<Object> entryStack = new ArrayList<>(map.size() * 2);
+        for (Map.Entry<Object, Object> entry : map.entrySet()) { entryStack.add(entry.getValue()); entryStack.add(entry.getKey()); }
+        float loadFactor = 0.75f;
+        int count = entryStack.size() / 2;
+        int length = (int) (count / loadFactor) + (count / 20) + 3;
+        if (length > count && (length & 1) == 0) length--;
+        synchronized (map) { defaultWriteHashtable(s, length, loadFactor); }
+        s.writeInt(length);
+        s.writeInt(count);
+        for (int i = entryStack.size() - 1; i >= 0; i--) s.writeObject(entryStack.get(i));
+    }
+    void readHashtable(ObjectInputStream s) throws IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        s.readInt();
+        int elements = s.readInt();
+        if (elements < 0) throw new StreamCorruptedException("Illegal # of Elements: " + elements);
+        map = new HashMap<>();
+        for (; elements > 0; elements--) {
+            Object key = s.readObject();
+            Object value = s.readObject();
+            map.put(key, value);
+        }
+    }
     public Properties() { }
     public Properties(Properties defaults) { this.defaults = defaults; }
     public synchronized Object setProperty(String key, String value) { return put(key, value); }

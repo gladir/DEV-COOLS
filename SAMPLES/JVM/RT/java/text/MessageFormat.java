@@ -1,5 +1,6 @@
 package java.text;
 public class MessageFormat extends Format {
+    private static final long serialVersionUID = 6479157306784022952L;
     private final String pattern;
     public MessageFormat(String pattern) { this.pattern = pattern; }
     public static String format(String pattern, Object... args) {

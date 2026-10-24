@@ -1,5 +1,20 @@
 package java.lang;
 public final class StringBuilder implements java.io.Serializable, Comparable<StringBuilder>, CharSequence, Appendable {
+    private static final long serialVersionUID = 4383685877147921099L;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        s.defaultWriteObject();
+        s.writeInt(length());
+        char[] val = new char[Math.max(length(), 16)];
+        toString().getChars(0, length(), val, 0);
+        s.writeObject(val);
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        int count = s.readInt();
+        char[] val = (char[]) s.readObject();
+        setLength(0);
+        append(val, 0, count);
+    }
     public StringBuilder() {}
     public StringBuilder(String s) { append(s); }
     public StringBuilder(int capacity) { this(); }

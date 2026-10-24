@@ -2,6 +2,7 @@ package java.text;
 import java.math.*;
 import java.util.Locale;
 public class DecimalFormat extends NumberFormat {
+    private static final long serialVersionUID = 864413376551465018L;
     private String prefix = "", suffix = "";
     private int groupSize = 0;
     private boolean percent;

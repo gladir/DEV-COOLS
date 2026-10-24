@@ -1,6 +1,11 @@
 package java.time;
 import java.time.temporal.*;
-public final class Instant implements Temporal, Comparable<Instant> {
+public final class Instant implements Temporal, Comparable<Instant>, java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.INSTANT_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException { out.writeLong(seconds); out.writeInt(nanos); }
+    static Instant readExternal(java.io.DataInput in) throws java.io.IOException { long seconds = in.readLong(); int nanos = in.readInt(); return Instant.ofEpochSecond(seconds, nanos); }
+    private static final long serialVersionUID = -665713676816604388L;
     public static final Instant EPOCH = new Instant(0, 0);
     private final long seconds;
     private final int nanos;

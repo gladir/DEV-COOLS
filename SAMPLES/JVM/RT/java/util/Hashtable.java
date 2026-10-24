@@ -1,6 +1,7 @@
 package java.util;
 import java.util.function.*;
 public class Hashtable<K, V> extends Dictionary<K, V> implements Map<K, V>, Cloneable, java.io.Serializable {
+    private static final long serialVersionUID = 1421746759512286392L;
     private static class Entry<K, V> implements Map.Entry<K, V> {
         final int hash; final K key; V value; Entry<K, V> next;
         Entry(int hash, K key, V value, Entry<K, V> next) { this.hash = hash; this.key = key; this.value = value; this.next = next; }
@@ -11,11 +12,73 @@ public class Hashtable<K, V> extends Dictionary<K, V> implements Map<K, V>, Clon
         public int hashCode() { return hash ^ Objects.hashCode(value); }
         public String toString() { return key.toString() + "=" + value.toString(); }
     }
-    private Entry<?, ?>[] table;
-    private int count;
+    private transient Entry<?, ?>[] table;
+    private transient int count;
     private int threshold;
     private float loadFactor;
-    private int modCount;
+    private transient int modCount;
+    void defaultWriteHashtable(java.io.ObjectOutputStream s, int length, float loadFactor) throws java.io.IOException {
+        int origThreshold = this.threshold;
+        float origLoadFactor = this.loadFactor;
+        this.threshold = (int) Math.min(length * loadFactor, Integer.MAX_VALUE - 8 + 1);
+        this.loadFactor = loadFactor;
+        s.defaultWriteObject();
+        this.threshold = origThreshold;
+        this.loadFactor = origLoadFactor;
+    }
+    void writeHashtable(java.io.ObjectOutputStream s) throws java.io.IOException {
+        Entry<Object, Object> entryStack = null;
+        synchronized (this) {
+            s.defaultWriteObject();
+            s.writeInt(table.length);
+            s.writeInt(count);
+            for (int index = 0; index < table.length; index++) {
+                Entry<?, ?> entry = table[index];
+                while (entry != null) {
+                    entryStack = new Entry<Object, Object>(0, entry.key, entry.value, entryStack);
+                    entry = entry.next;
+                }
+            }
+        }
+        while (entryStack != null) {
+            s.writeObject(entryStack.key);
+            s.writeObject(entryStack.value);
+            entryStack = entryStack.next;
+        }
+    }
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException { writeHashtable(s); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException { readHashtable(s); }
+    void readHashtable(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        if (loadFactor <= 0 || Float.isNaN(loadFactor)) throw new java.io.StreamCorruptedException("Illegal Load: " + loadFactor);
+        int origlength = s.readInt();
+        int elements = s.readInt();
+        if (elements < 0) throw new java.io.StreamCorruptedException("Illegal # of Elements: " + elements);
+        origlength = Math.max(origlength, (int) (elements / loadFactor) + 1);
+        int length = (int) ((elements + elements / 20) / loadFactor) + 3;
+        if (length > elements && (length & 1) == 0) length--;
+        length = Math.min(length, origlength);
+        if (length < 0) length = origlength;
+        table = new Entry<?, ?>[length];
+        threshold = (int) Math.min(length * loadFactor, Integer.MAX_VALUE - 8 + 1);
+        count = 0;
+        for (; elements > 0; elements--) {
+            K key = (K) s.readObject();
+            V value = (V) s.readObject();
+            reconstitutionPut(table, key, value);
+        }
+    }
+    private void reconstitutionPut(Entry<?, ?>[] tab, K key, V value) throws java.io.StreamCorruptedException {
+        if (value == null) throw new java.io.StreamCorruptedException();
+        int hash = key.hashCode();
+        int index = (hash & 0x7FFFFFFF) % tab.length;
+        for (Entry<?, ?> e = tab[index]; e != null; e = e.next) {
+            if ((e.hash == hash) && e.key.equals(key)) throw new java.io.StreamCorruptedException();
+        }
+        Entry<K, V> e = (Entry<K, V>) tab[index];
+        tab[index] = new Entry<>(hash, key, value, e);
+        count++;
+    }
     public Hashtable(int initialCapacity, float loadFactor) {
         if (initialCapacity < 0) throw new IllegalArgumentException("Illegal Capacity: " + initialCapacity);
         if (initialCapacity == 0) initialCapacity = 1;

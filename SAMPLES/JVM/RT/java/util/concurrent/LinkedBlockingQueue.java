@@ -1,6 +1,7 @@
 package java.util.concurrent;
 import java.util.*;
-public class LinkedBlockingQueue<E> extends AbstractQueue<E> implements BlockingQueue<E> {
+public class LinkedBlockingQueue<E> extends AbstractQueue<E> implements BlockingQueue<E>, java.io.Serializable {
+    private static final long serialVersionUID = -6903933977591709194L;
     private final LinkedList<E> q = new LinkedList<>();
     private final int cap;
     public LinkedBlockingQueue() { this(Integer.MAX_VALUE); }

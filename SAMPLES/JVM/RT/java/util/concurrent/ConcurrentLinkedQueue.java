@@ -1,6 +1,7 @@
 package java.util.concurrent;
 import java.util.*;
-public class ConcurrentLinkedQueue<E> extends AbstractQueue<E> {
+public class ConcurrentLinkedQueue<E> extends AbstractQueue<E> implements java.io.Serializable {
+    private static final long serialVersionUID = 196745693267521676L;
     private final LinkedList<E> q = new LinkedList<>();
     public ConcurrentLinkedQueue() { }
     public ConcurrentLinkedQueue(Collection<? extends E> c) { q.addAll(c); }

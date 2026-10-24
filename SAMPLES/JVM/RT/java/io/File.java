@@ -1,10 +1,13 @@
 package java.io;
 public class File implements Comparable<File>, java.io.Serializable {
+    private static final long serialVersionUID = 301077366599181567L;
     public static final String separator = "/";
     public static final char separatorChar = '/';
     public static final String pathSeparator = ":";
     public static final char pathSeparatorChar = ':';
-    private final String path;
+    private String path;
+    private synchronized void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException { s.defaultWriteObject(); s.writeChar(separatorChar); }
+    private synchronized void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException { s.defaultReadObject(); char sep = s.readChar(); if (sep != separatorChar) path = path.replace(sep, separatorChar); }
     public File(String path) { if (path == null) throw new NullPointerException(); this.path = path.replace('\\', '/'); }
     public File(String parent, String child) { this(parent == null ? child : (parent.endsWith("/") ? parent + child : parent + "/" + child)); }
     public File(File parent, String child) { this(parent == null ? child : parent.path + "/" + child); }
@@ -52,7 +55,21 @@ public class File implements Comparable<File>, java.io.Serializable {
     }
     public File[] listFiles(FileFilter f) { File[] a = listFiles(); if (a == null) return null; java.util.ArrayList<File> l = new java.util.ArrayList<>(); for (File x : a) if (f.accept(x)) l.add(x); return l.toArray(new File[0]); }
     public java.nio.file.Path toPath() { return new java.nio.file.Path(path); }
-    public static File createTempFile(String prefix, String suffix) throws IOException { File f = new File("/tmp/" + prefix + System.nanoTime() + (suffix == null ? ".tmp" : suffix)); f.createNewFile(); return f; }
+    public static File createTempFile(String prefix, String suffix) throws IOException { return createTempFile(prefix, suffix, null); }
+    public static File createTempFile(String prefix, String suffix, File directory) throws IOException {
+        if (prefix.length() < 3) throw new IllegalArgumentException("Prefix string \"" + prefix + "\" too short: length must be at least 3");
+        return tempFile0(prefix, suffix, directory);
+    }
+    public static File tempFile0(String prefix, String suffix, File directory) throws IOException {
+        String dir = directory != null ? directory.getPath() : System.getProperty("java.io.tmpdir", "/tmp");
+        java.util.Random r = new java.util.Random(System.nanoTime());
+        File f;
+        do {
+            f = new File(dir + (dir.endsWith("/") ? "" : "/") + (prefix == null ? "" : prefix) + Long.toUnsignedString(r.nextLong()) + (suffix == null ? ".tmp" : suffix));
+        } while (f.exists());
+        if (!f.createNewFile()) throw new IOException("Unable to create temporary file");
+        return f;
+    }
     public int compareTo(File o) { return path.compareTo(o.path); }
     public boolean equals(Object o) { return o instanceof File f && f.path.equals(path); }
     public int hashCode() { return path.hashCode() ^ 1234321; }

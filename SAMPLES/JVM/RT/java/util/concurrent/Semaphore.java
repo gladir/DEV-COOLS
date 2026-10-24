@@ -1,5 +1,6 @@
 package java.util.concurrent;
-public class Semaphore {
+public class Semaphore implements java.io.Serializable {
+    private static final long serialVersionUID = -3222578661600680210L;
     private int permits;
     public Semaphore(int permits) { this.permits = permits; }
     public Semaphore(int permits, boolean fair) { this.permits = permits; }

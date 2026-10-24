@@ -1,7 +1,26 @@
 package java.util;
 public abstract class EnumSet<E extends Enum<E>> extends AbstractSet<E> implements Cloneable, java.io.Serializable {
-    final Class<E> elementType;
-    final E[] universe;
+    private static final long serialVersionUID = 1009687484059888093L;
+    final transient Class<E> elementType;
+    final transient E[] universe;
+    private static class SerializationProxy<E extends Enum<E>> implements java.io.Serializable {
+        private static final long serialVersionUID = 362491234563181265L;
+        private final Class<E> elementType;
+        private final Enum<?>[] elements;
+        SerializationProxy(EnumSet<E> set) {
+            elementType = set.elementType;
+            elements = set.toArray(new Enum<?>[0]);
+        }
+        private Object readResolve() {
+            EnumSet<E> result = EnumSet.noneOf(elementType);
+            for (Enum<?> e : elements) result.add((E) e);
+            return result;
+        }
+    }
+    Object writeReplace() { return new SerializationProxy<E>(this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException {
+        throw new java.io.InvalidObjectException("Proxy required");
+    }
     EnumSet(Class<E> elementType, E[] universe) { this.elementType = elementType; this.universe = universe; }
     private static class Impl<E extends Enum<E>> extends EnumSet<E> {
         boolean[] has;

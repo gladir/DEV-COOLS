@@ -1,6 +1,7 @@
 package java.util;
 import java.util.function.*;
 public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Cloneable, java.io.Serializable {
+    private static final long serialVersionUID = 362498820763181265L;
     static class Node<K, V> implements Map.Entry<K, V> {
         final int hash;
         final K key;
@@ -27,6 +28,49 @@ public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Clone
     transient int modCount;
     int threshold;
     final float loadFactor;
+    final int capacity() { return table != null ? table.length : (threshold > 0 ? threshold : 16); }
+    final float loadFactor() { return loadFactor; }
+    void internalWriteEntries(java.io.ObjectOutputStream s) throws java.io.IOException {
+        Node<K, V>[] tab;
+        if (size > 0 && (tab = table) != null) {
+            for (int i = 0; i < tab.length; ++i) {
+                for (Node<K, V> e = tab[i]; e != null; e = e.next) {
+                    s.writeObject(e.key);
+                    s.writeObject(e.value);
+                }
+            }
+        }
+    }
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        int buckets = capacity();
+        s.defaultWriteObject();
+        s.writeInt(buckets);
+        s.writeInt(size);
+        internalWriteEntries(s);
+    }
+    void reinitialize() { table = null; size = 0; threshold = 0; modCount = 0; }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        reinitialize();
+        if (loadFactor <= 0 || Float.isNaN(loadFactor)) throw new java.io.InvalidObjectException("Illegal load factor: " + loadFactor);
+        s.readInt();
+        int mappings = s.readInt();
+        if (mappings < 0) throw new java.io.InvalidObjectException("Illegal mappings count: " + mappings);
+        else if (mappings > 0) {
+            float lf = Math.min(Math.max(0.25f, loadFactor), 4.0f);
+            float fc = (float) mappings / lf + 1.0f;
+            int cap = ((fc < 16) ? 16 : (fc >= 1073741824) ? 1073741824 : tableSizeFor((int) fc));
+            float ft = (float) cap * lf;
+            threshold = ((cap < 1073741824 && ft < 1073741824) ? (int) ft : Integer.MAX_VALUE);
+            Node<K, V>[] tab = (Node<K, V>[]) new Node[cap];
+            table = tab;
+            for (int i = 0; i < mappings; i++) {
+                K key = (K) s.readObject();
+                V value = (V) s.readObject();
+                putVal(hash(key), key, value, false);
+            }
+        }
+    }
     public HashMap(int initialCapacity, float loadFactor) {
         if (initialCapacity < 0) throw new IllegalArgumentException("Illegal initial capacity: " + initialCapacity);
         if (loadFactor <= 0 || Float.isNaN(loadFactor)) throw new IllegalArgumentException("Illegal load factor: " + loadFactor);

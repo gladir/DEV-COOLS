@@ -1,6 +1,11 @@
 package java.time;
 import java.time.temporal.*;
-public final class Duration implements Comparable<Duration> {
+public final class Duration implements Comparable<Duration>, java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.DURATION_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException { out.writeLong(seconds); out.writeInt(nanos); }
+    static Duration readExternal(java.io.DataInput in) throws java.io.IOException { long seconds = in.readLong(); int nanos = in.readInt(); return Duration.ofSeconds(seconds, nanos); }
+    private static final long serialVersionUID = 3078945930695997490L;
     public static final Duration ZERO = new Duration(0, 0);
     private final long seconds;
     private final int nanos;

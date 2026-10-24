@@ -1,5 +1,6 @@
 package java.util.concurrent;
 public abstract class ForkJoinTask<V> implements Future<V> {
+    private static final long serialVersionUID = -7721805057305804111L;
     private boolean done;
     private V result;
     protected abstract boolean exec0();

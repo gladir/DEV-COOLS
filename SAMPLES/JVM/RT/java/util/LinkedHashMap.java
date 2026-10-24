@@ -1,6 +1,7 @@
 package java.util;
 import java.util.function.*;
 public class LinkedHashMap<K, V> extends HashMap<K, V> implements Map<K, V> {
+    private static final long serialVersionUID = 3801124242820219131L;
     static class Entry<K, V> extends HashMap.Node<K, V> {
         Entry<K, V> before, after;
         Entry(int hash, K key, V value, Node<K, V> next) { super(hash, key, value, next); }
@@ -13,6 +14,13 @@ public class LinkedHashMap<K, V> extends HashMap<K, V> implements Map<K, V> {
     public LinkedHashMap() { super(); accessOrder = false; }
     public LinkedHashMap(Map<? extends K, ? extends V> m) { super(); accessOrder = false; putMapEntries(m); }
     public LinkedHashMap(int initialCapacity, float loadFactor, boolean accessOrder) { super(initialCapacity, loadFactor); this.accessOrder = accessOrder; }
+    void reinitialize() { super.reinitialize(); head = tail = null; }
+    void internalWriteEntries(java.io.ObjectOutputStream s) throws java.io.IOException {
+        for (LinkedHashMap.Entry<K, V> e = head; e != null; e = e.after) {
+            s.writeObject(e.key);
+            s.writeObject(e.value);
+        }
+    }
     private void linkNodeLast(LinkedHashMap.Entry<K, V> p) {
         LinkedHashMap.Entry<K, V> last = tail;
         tail = p;

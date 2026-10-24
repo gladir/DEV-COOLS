@@ -1,12 +1,18 @@
 package java.math;
 public class BigDecimal extends Number implements Comparable<BigDecimal> {
-    private final BigInteger intVal;
-    private final int scale;
+    private static final long serialVersionUID = 6108874887143696463L;
+    private BigInteger intVal;
+    private int scale;
     public static final BigDecimal ZERO = new BigDecimal(BigInteger.ZERO, 0);
     public static final BigDecimal ONE = new BigDecimal(BigInteger.ONE, 0);
     public static final BigDecimal TWO = new BigDecimal(BigInteger.TWO, 0);
     public static final BigDecimal TEN = new BigDecimal(BigInteger.TEN, 0);
     public static final int ROUND_UP = 0, ROUND_DOWN = 1, ROUND_CEILING = 2, ROUND_FLOOR = 3, ROUND_HALF_UP = 4, ROUND_HALF_DOWN = 5, ROUND_HALF_EVEN = 6, ROUND_UNNECESSARY = 7;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException { s.defaultWriteObject(); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        if (intVal == null) throw new java.io.StreamCorruptedException("BigDecimal: null intVal in stream");
+    }
     public BigDecimal(BigInteger unscaledVal, int scale) { this.intVal = unscaledVal; this.scale = scale; }
     public BigDecimal(BigInteger val) { this(val, 0); }
     public BigDecimal(int val) { this(BigInteger.valueOf(val), 0); }

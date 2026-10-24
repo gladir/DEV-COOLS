@@ -1,6 +1,7 @@
 package java.util;
 import java.util.function.*;
 public class ArrayList<E> extends AbstractList<E> implements List<E>, RandomAccess, Cloneable, java.io.Serializable {
+    private static final long serialVersionUID = 8683452581122892189L;
     transient Object[] elementData;
     private int size;
     public ArrayList(int initialCapacity) {
@@ -35,6 +36,24 @@ public class ArrayList<E> extends AbstractList<E> implements List<E>, RandomAcce
         if (o == null) { for (int i = size - 1; i >= 0; i--) if (elementData[i] == null) return i; }
         else { for (int i = size - 1; i >= 0; i--) if (o.equals(elementData[i])) return i; }
         return -1;
+    }
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        int expectedModCount = modCount;
+        s.defaultWriteObject();
+        s.writeInt(size);
+        for (int i = 0; i < size; i++) s.writeObject(elementData[i]);
+        if (modCount != expectedModCount) throw new ConcurrentModificationException();
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        s.readInt();
+        if (size > 0) {
+            Object[] elements = new Object[size];
+            for (int i = 0; i < size; i++) elements[i] = s.readObject();
+            elementData = elements;
+        } else if (size == 0) {
+            elementData = new Object[10];
+        } else throw new java.io.InvalidObjectException("Invalid size: " + size);
     }
     public Object clone() { ArrayList<E> v = new ArrayList<>(this); return v; }
     public Object[] toArray() { return Arrays.copyOf(elementData, size); }

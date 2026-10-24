@@ -6,6 +6,10 @@ final class FS {
     static native int readBytes(int h, byte[] b, int off, int len);
     static native void write(int h, byte[] b, int off, int len);
     static native void close(int h);
+    static native void seek(int h, long pos);
+    static native long pos(int h);
+    static native long size(int h);
+    static native void setLength(int h, long len);
     static native boolean exists(String p);
     static native boolean isDir(String p);
     static native long length(String p);

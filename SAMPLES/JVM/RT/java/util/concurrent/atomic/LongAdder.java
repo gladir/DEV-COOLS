@@ -1,5 +1,6 @@
 package java.util.concurrent.atomic;
 public class LongAdder extends Number {
+    private static final long serialVersionUID = 7249069246863182397L;
     private long v;
     public void add(long x) { v += x; }
     public void increment() { v++; }

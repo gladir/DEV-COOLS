@@ -1,5 +1,6 @@
 package java.util;
 public class PriorityQueue<E> extends AbstractQueue<E> implements java.io.Serializable {
+    private static final long serialVersionUID = -7720805057305804111L;
     transient Object[] queue;
     int size;
     private final Comparator<? super E> comparator;
@@ -15,6 +16,18 @@ public class PriorityQueue<E> extends AbstractQueue<E> implements java.io.Serial
     public PriorityQueue(Collection<? extends E> c) {
         this(Math.max(11, c.size() + 1), (c instanceof PriorityQueue) ? ((PriorityQueue<? extends E>) c).comparator : (c instanceof SortedSet) ? ((SortedSet<? extends E>) c).comparator() : null);
         for (E e : c) offer(e);
+    }
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        s.defaultWriteObject();
+        s.writeInt(Math.max(2, size + 1));
+        for (int i = 0; i < size; i++) s.writeObject(queue[i]);
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        s.readInt();
+        queue = new Object[Math.max(1, size)];
+        for (int i = 0; i < size; i++) queue[i] = s.readObject();
+        for (int i = (size >>> 1) - 1; i >= 0; i--) siftDown(i, (E) queue[i]);
     }
     public boolean add(E e) { return offer(e); }
     public boolean offer(E e) {

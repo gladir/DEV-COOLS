@@ -1,5 +1,6 @@
 package java.lang;
 public final class Short extends Number implements Comparable<Short> {
+    private static final long serialVersionUID = 7515723908773894738L;
     public static final short MIN_VALUE = -32768;
     public static final short MAX_VALUE = 32767;
     public static final int SIZE = 16;

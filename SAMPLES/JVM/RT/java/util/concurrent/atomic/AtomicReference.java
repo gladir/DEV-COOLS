@@ -1,6 +1,7 @@
 package java.util.concurrent.atomic;
 import java.util.function.*;
-public class AtomicReference<V> {
+public class AtomicReference<V> implements java.io.Serializable {
+    private static final long serialVersionUID = -1848883965231344442L;
     private volatile V value;
     public AtomicReference() { }
     public AtomicReference(V v) { value = v; }

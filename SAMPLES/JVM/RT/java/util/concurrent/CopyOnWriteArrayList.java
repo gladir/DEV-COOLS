@@ -1,6 +1,7 @@
 package java.util.concurrent;
 import java.util.*;
-public class CopyOnWriteArrayList<E> extends AbstractList<E> implements RandomAccess {
+public class CopyOnWriteArrayList<E> extends AbstractList<E> implements RandomAccess, java.io.Serializable {
+    private static final long serialVersionUID = 8673264195747942595L;
     private volatile Object[] a = new Object[0];
     public CopyOnWriteArrayList() { }
     public CopyOnWriteArrayList(Collection<? extends E> c) { a = c.toArray(); }

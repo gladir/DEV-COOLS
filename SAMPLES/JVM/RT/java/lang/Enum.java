@@ -2,6 +2,8 @@ package java.lang;
 public abstract class Enum<E extends Enum<E>> implements Comparable<E>, java.io.Serializable {
     private final String name;
     private final int ordinal;
+    private void readObject(java.io.ObjectInputStream in) throws java.io.IOException, ClassNotFoundException { throw new java.io.InvalidObjectException("can't deserialize enum"); }
+    private void readObjectNoData() throws java.io.ObjectStreamException { throw new java.io.InvalidObjectException("can't deserialize enum"); }
     protected Enum(String name, int ordinal) { this.name = name; this.ordinal = ordinal; }
     public final String name() { return name; }
     public final int ordinal() { return ordinal; }

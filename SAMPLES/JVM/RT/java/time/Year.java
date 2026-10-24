@@ -1,5 +1,10 @@
 package java.time;
-public final class Year {
+public final class Year implements java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.YEAR_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException { out.writeInt(year); }
+    static Year readExternal(java.io.DataInput in) throws java.io.IOException { return Year.of(in.readInt()); }
+    private static final long serialVersionUID = -23038383694477807L;
     private final int year;
     private Year(int y) { year = y; }
     public static Year of(int y) { return new Year(y); }

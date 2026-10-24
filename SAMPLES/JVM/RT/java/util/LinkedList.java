@@ -1,11 +1,22 @@
 package java.util;
 public class LinkedList<E> extends AbstractList<E> implements List<E>, Deque<E>, Cloneable, java.io.Serializable {
-    int size = 0;
-    Node<E> first;
-    Node<E> last;
+    private static final long serialVersionUID = 876323262645176354L;
+    transient int size = 0;
+    transient Node<E> first;
+    transient Node<E> last;
     private static class Node<E> {
         E item; Node<E> next; Node<E> prev;
         Node(Node<E> prev, E element, Node<E> next) { this.item = element; this.next = next; this.prev = prev; }
+    }
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        s.defaultWriteObject();
+        s.writeInt(size);
+        for (Node<E> x = first; x != null; x = x.next) s.writeObject(x.item);
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        int size = s.readInt();
+        for (int i = 0; i < size; i++) linkLast((E) s.readObject());
     }
     public LinkedList() {}
     public LinkedList(Collection<? extends E> c) { this(); addAll(c); }

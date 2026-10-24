@@ -1,7 +1,12 @@
 package java.time;
 import java.time.temporal.*;
 import java.time.format.*;
-public final class LocalDate implements Temporal, Comparable<LocalDate> {
+public final class LocalDate implements Temporal, Comparable<LocalDate>, java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.LOCAL_DATE_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException { out.writeInt(year); out.writeByte(month); out.writeByte(day); }
+    static LocalDate readExternal(java.io.DataInput in) throws java.io.IOException { int year = in.readInt(); int month = in.readByte(); int dayOfMonth = in.readByte(); return LocalDate.of(year, month, dayOfMonth); }
+    private static final long serialVersionUID = 2942565459149668126L;
     public static final LocalDate MIN = new LocalDate(-999999999, 1, 1), MAX = new LocalDate(999999999, 12, 31), EPOCH = new LocalDate(1970, 1, 1);
     private final int year, month, day;
     private LocalDate(int y, int m, int d) { year = y; month = m; day = d; }

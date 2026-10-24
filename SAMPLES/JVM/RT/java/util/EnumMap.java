@@ -1,10 +1,25 @@
 package java.util;
 public class EnumMap<K extends Enum<K>, V> extends AbstractMap<K, V> implements java.io.Serializable, Cloneable {
+    private static final long serialVersionUID = 458661240069192865L;
     private final Class<K> keyType;
-    private final K[] keyUniverse;
-    private final Object[] vals;
-    private final boolean[] has;
-    private int size;
+    private transient K[] keyUniverse;
+    private transient Object[] vals;
+    private transient boolean[] has;
+    private transient int size;
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        s.defaultWriteObject();
+        s.writeInt(size);
+        for (int i = 0; i < vals.length; i++) if (has[i]) { s.writeObject(keyUniverse[i]); s.writeObject(vals[i]); }
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        s.defaultReadObject();
+        keyUniverse = keyType.getEnumConstants();
+        vals = new Object[keyUniverse.length];
+        has = new boolean[keyUniverse.length];
+        size = 0;
+        int n = s.readInt();
+        for (int i = 0; i < n; i++) { K key = (K) s.readObject(); V value = (V) s.readObject(); put(key, value); }
+    }
     public EnumMap(Class<K> keyType) {
         this.keyType = keyType;
         keyUniverse = keyType.getEnumConstants();

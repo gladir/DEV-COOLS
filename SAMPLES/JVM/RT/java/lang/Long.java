@@ -1,5 +1,6 @@
 package java.lang;
 public final class Long extends Number implements Comparable<Long> {
+    private static final long serialVersionUID = 4290774380558885855L;
     public static final long MIN_VALUE = 0x8000000000000000L;
     public static final long MAX_VALUE = 0x7fffffffffffffffL;
     public static final int SIZE = 64;

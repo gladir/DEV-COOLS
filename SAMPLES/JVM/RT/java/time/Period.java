@@ -1,5 +1,10 @@
 package java.time;
-public final class Period {
+public final class Period implements java.io.Serializable {
+    private Object writeReplace() { return new Ser(Ser.PERIOD_TYPE, this); }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.InvalidObjectException { throw new java.io.InvalidObjectException("Deserialization via serialization delegate"); }
+    void writeExternal(java.io.DataOutput out) throws java.io.IOException { out.writeInt(years); out.writeInt(months); out.writeInt(days); }
+    static Period readExternal(java.io.DataInput in) throws java.io.IOException { int years = in.readInt(); int months = in.readInt(); int days = in.readInt(); return Period.of(years, months, days); }
+    private static final long serialVersionUID = -3587258372562876L;
     public static final Period ZERO = new Period(0, 0, 0);
     private final int years, months, days;
     private Period(int y, int m, int d) { years = y; months = m; days = d; }

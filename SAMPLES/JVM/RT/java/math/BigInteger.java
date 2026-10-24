@@ -1,9 +1,75 @@
 package java.math;
 import java.util.Random;
 public class BigInteger extends Number implements Comparable<BigInteger> {
+    private static final long serialVersionUID = -8287574255936472291L;
     static final int BASE = 1000000000;
-    final int signum;
-    final int[] mag; // little-endian, base 1e9, sans zeros de tete
+    int signum;
+    int[] mag; // little-endian, base 1e9, sans zeros de tete
+    private static final java.io.ObjectStreamField[] serialPersistentFields = {
+        new java.io.ObjectStreamField("signum", Integer.TYPE),
+        new java.io.ObjectStreamField("magnitude", byte[].class),
+        new java.io.ObjectStreamField("bitCount", Integer.TYPE),
+        new java.io.ObjectStreamField("bitLength", Integer.TYPE),
+        new java.io.ObjectStreamField("firstNonzeroByteNum", Integer.TYPE),
+        new java.io.ObjectStreamField("lowestSetBit", Integer.TYPE)
+    };
+    private static int[] limbsOf(byte[] magnitude) {
+        int[] limbs = new int[magnitude.length * 8 / 29 + 2];
+        int n = 0;
+        for (byte bb : magnitude) {
+            long carry = bb & 255;
+            for (int j = 0; j < n; j++) {
+                long v = (long) limbs[j] * 256 + carry;
+                limbs[j] = (int) (v % BASE);
+                carry = v / BASE;
+            }
+            while (carry != 0) { limbs[n++] = (int) (carry % BASE); carry /= BASE; }
+        }
+        return java.util.Arrays.copyOf(limbs, n);
+    }
+    public BigInteger(int signum, byte[] magnitude) {
+        if (signum < -1 || signum > 1) throw new NumberFormatException("Invalid signum value");
+        int[] m = limbsOf(magnitude);
+        if (m.length == 0) { this.mag = m; this.signum = 0; }
+        else {
+            if (signum == 0) throw new NumberFormatException("signum-magnitude mismatch");
+            this.mag = m; this.signum = signum;
+        }
+    }
+    private static BigInteger fromTwos(byte[] val) {
+        if (val.length == 0) throw new NumberFormatException("Zero length BigInteger");
+        BigInteger u = new BigInteger(1, val);
+        if (val[0] < 0) u = u.subtract(ONE.shiftLeft(8 * val.length));
+        return u;
+    }
+    public BigInteger(byte[] val) { this(fromTwos(val)); }
+    private BigInteger(BigInteger o) { this.mag = o.mag; this.signum = o.signum; }
+    private byte[] magSerializedForm() {
+        if (signum == 0) return new byte[0];
+        byte[] b = abs().toByteArray();
+        if (b.length > 1 && b[0] == 0) b = java.util.Arrays.copyOfRange(b, 1, b.length);
+        return b;
+    }
+    private void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        java.io.ObjectOutputStream.PutField fields = s.putFields();
+        fields.put("signum", signum);
+        fields.put("magnitude", magSerializedForm());
+        fields.put("bitCount", -1);
+        fields.put("bitLength", -1);
+        fields.put("lowestSetBit", -2);
+        fields.put("firstNonzeroByteNum", -2);
+        s.writeFields();
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        java.io.ObjectInputStream.GetField fields = s.readFields();
+        int sign = fields.get("signum", -2);
+        byte[] magnitude = (byte[]) fields.get("magnitude", null);
+        if (sign < -1 || sign > 1) throw new java.io.StreamCorruptedException("BigInteger: Invalid signum value");
+        int[] m = limbsOf(magnitude);
+        if ((m.length == 0) != (sign == 0)) throw new java.io.StreamCorruptedException("BigInteger: signum-magnitude mismatch");
+        this.mag = m;
+        this.signum = sign;
+    }
     public static final BigInteger ZERO = new BigInteger(0, new int[0]);
     public static final BigInteger ONE = valueOf(1);
     public static final BigInteger TWO = valueOf(2);

@@ -4,6 +4,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.nio.charset.Charset;
 public final class String implements java.io.Serializable, Comparable<String>, CharSequence {
+    private static final long serialVersionUID = -6849794470754667710L;
     public static final Comparator<String> CASE_INSENSITIVE_ORDER = (a, b) -> a.compareToIgnoreCase(b);
     public String() { }
     public String(String original) { init1(original); }
@@ -177,6 +178,7 @@ public final class String implements java.io.Serializable, Comparable<String>, C
     public static String valueOf(char[] c) { return new String(c); }
     public static String valueOf(char[] c, int off, int n) { return new String(c, off, n); }
     public static String copyValueOf(char[] c) { return new String(c); }
+    public static String copyValueOf(char[] c, int off, int n) { return new String(c, off, n); }
     public static native String valueOf(char c);
     public static native String valueOf(int i);
     public static String valueOf(long l) { return Long.toString(l); }

@@ -52820,6 +52820,7 @@ Type
     PermitsState : Byte;               { 0 non calcule, 2 calcule }
     TPars        : Array Of LongInt;
     Outer        : LongInt;
+    EnclMeth1    : LongInt;            { methode englobante d'une classe locale + 1, 0 sinon }
     IsSrc        : Boolean;
     Loaded       : Byte;
     LibLine      : LongInt;
@@ -61686,6 +61687,7 @@ Var
 Begin
   IsAnon := (Nodes[Decl].Mods And MOD_ANON) <> 0;
   C := EnterClass(Decl, CurClass, CurCU, True, '', CurStatic);
+  If CurMeth >= 0 Then Classes[C].EnclMeth1 := CurMeth + 1;
   Classes[C].Ctx := CurCtx;
   Ctx := NewCtx(CTX_CLASS, CurCtx);
   Ctxs[Ctx].Cls := C;
@@ -68343,7 +68345,10 @@ Begin
   { classe locale : EnclosingMethod }
   If (Classes[C].Outer >= 0) And ((Classes[C].Flags And MOD_LOCAL) <> 0) Then Begin
     B2(Attr, CPUtf8('EnclosingMethod')); B4(Attr, 4);
-    B2(Attr, CPClass(Classes[Classes[C].Outer].Name)); B2(Attr, 0);
+    B2(Attr, CPClass(Classes[Classes[C].Outer].Name));
+    If Classes[C].EnclMeth1 > 0 Then
+      B2(Attr, CPNameType(Meths[Classes[C].EnclMeth1 - 1].Name, MethodDescOf(Classes[C].EnclMeth1 - 1)))
+    Else B2(Attr, 0);
     Inc(NA);
   End;
   { nids (version 11 et suivantes) }

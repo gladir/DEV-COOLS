@@ -1,5 +1,27 @@
 package java.lang;
 public final class StringBuffer implements java.io.Serializable, Comparable<StringBuffer>, CharSequence, Appendable {
+    private static final long serialVersionUID = 3388685877147921107L;
+    private static final java.io.ObjectStreamField[] serialPersistentFields = {
+        new java.io.ObjectStreamField("value", char[].class),
+        new java.io.ObjectStreamField("count", Integer.TYPE),
+        new java.io.ObjectStreamField("shared", Boolean.TYPE),
+    };
+    private synchronized void writeObject(java.io.ObjectOutputStream s) throws java.io.IOException {
+        java.io.ObjectOutputStream.PutField fields = s.putFields();
+        char[] val = new char[Math.max(length(), 16)];
+        toString().getChars(0, length(), val, 0);
+        fields.put("value", val);
+        fields.put("count", length());
+        fields.put("shared", false);
+        s.writeFields();
+    }
+    private void readObject(java.io.ObjectInputStream s) throws java.io.IOException, ClassNotFoundException {
+        java.io.ObjectInputStream.GetField fields = s.readFields();
+        char[] val = (char[]) fields.get("value", null);
+        int c = fields.get("count", 0);
+        setLength(0);
+        append(val, 0, c);
+    }
     public StringBuffer() {}
     public StringBuffer(String s) { append(s); }
     public StringBuffer(int capacity) { this(); }

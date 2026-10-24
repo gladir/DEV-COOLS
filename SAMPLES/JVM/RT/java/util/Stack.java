@@ -1,5 +1,6 @@
 package java.util;
 public class Stack<E> extends Vector<E> {
+    private static final long serialVersionUID = 1224463164541339165L;
     public Stack() {}
     public E push(E item) { add(item); return item; }
     public E pop() { E obj = peek(); remove(size() - 1); return obj; }

@@ -1,7 +1,8 @@
 package java.util;
 public final class UUID implements java.io.Serializable, Comparable<UUID> {
-    private final long msb, lsb;
-    public UUID(long msb, long lsb) { this.msb = msb; this.lsb = lsb; }
+    private static final long serialVersionUID = -4856846361193249489L;
+    private final long mostSigBits, leastSigBits;
+    public UUID(long mostSigBits, long leastSigBits) { this.mostSigBits = mostSigBits; this.leastSigBits = leastSigBits; }
     private static Random rnd;
     public static UUID randomUUID() {
         if (rnd == null) rnd = new Random();
@@ -17,11 +18,11 @@ public final class UUID implements java.io.Serializable, Comparable<UUID> {
         long l = Long.parseLong(p[3], 16) << 48 | Long.parseLong(p[4], 16);
         return new UUID(m, l);
     }
-    public long getMostSignificantBits() { return msb; }
-    public long getLeastSignificantBits() { return lsb; }
+    public long getMostSignificantBits() { return mostSigBits; }
+    public long getLeastSignificantBits() { return leastSigBits; }
     private static String digits(long val, int digits) { long hi = 1L << (digits * 4); return Long.toHexString(hi | (val & (hi - 1))).substring(1); }
-    public String toString() { return digits(msb >> 32, 8) + "-" + digits(msb >> 16, 4) + "-" + digits(msb, 4) + "-" + digits(lsb >> 48, 4) + "-" + digits(lsb, 12); }
-    public int hashCode() { long h = msb ^ lsb; return ((int) (h >> 32)) ^ (int) h; }
-    public boolean equals(Object o) { return o instanceof UUID u && u.msb == msb && u.lsb == lsb; }
-    public int compareTo(UUID o) { return msb < o.msb ? -1 : (msb > o.msb ? 1 : (lsb < o.lsb ? -1 : (lsb > o.lsb ? 1 : 0))); }
+    public String toString() { return digits(mostSigBits >> 32, 8) + "-" + digits(mostSigBits >> 16, 4) + "-" + digits(mostSigBits, 4) + "-" + digits(leastSigBits >> 48, 4) + "-" + digits(leastSigBits, 12); }
+    public int hashCode() { long h = mostSigBits ^ leastSigBits; return ((int) (h >> 32)) ^ (int) h; }
+    public boolean equals(Object o) { return o instanceof UUID u && u.mostSigBits == mostSigBits && u.leastSigBits == leastSigBits; }
+    public int compareTo(UUID o) { return mostSigBits < o.mostSigBits ? -1 : (mostSigBits > o.mostSigBits ? 1 : (leastSigBits < o.leastSigBits ? -1 : (leastSigBits > o.leastSigBits ? 1 : 0))); }
 }
