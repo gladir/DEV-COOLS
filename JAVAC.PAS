@@ -14,16 +14,24 @@
   anonymes), que l'on peut executer avec la machine virtuelle Java
   ("java Classe").
 
-  Usage :  JAVAC [options] fichier.java [fichier2.java ...]
+  Usage :  JAVAC [options] fichier.java [fichier2.java ...]   (@fichier : arguments lus dans un fichier)
   Options :
-    -d repertoire      repertoire de sortie des fichiers .class
-    -cp chemin         classpath : repertoires et archives .jar / .zip
-    -p chemin          chemin des modules (--module-path), ajoute au classpath
-    -target N          version de classe visee (8 a 25, defaut 11)
-    --release N        synonyme de -target
-    -verbose           affiche chaque fichier .class ecrit
-    -g -nowarn -Xlint  (acceptes, ignores : LineNumberTable toujours generee)
-    -help              affiche cette aide
+    -d repertoire          repertoire de sortie des fichiers .class
+    -cp, -classpath chemin classpath : repertoires et archives .jar / .zip
+    -sourcepath chemin     repertoires de recherche des sources
+    --module-source-path D -m a,b   compile les modules a et b
+    -p, --module-path chemin   modules (ajoutes au classpath)
+    -encoding nom          encodage des sources (UTF-8, ISO-8859-1, Cp1252, US-ASCII)
+    -source N              niveau du langage (fonctionnalites plus recentes refusees)
+    -target N, --release N version de classe visee (8 a 25, defaut 11)
+    -g, -g:none|lines,vars,source   informations de debogage
+    --enable-preview       fonctionnalites en apercu (variables _, fichiers compacts)
+    -parameters            attribut MethodParameters
+    -h repertoire          en-tetes JNI des methodes natives
+    -implicit:none|class   .class des fichiers charges implicitement
+    -nowarn, -deprecation, -Xlint[:cle,...], -Werror   avertissements
+    -Xmaxerrs N, -Xmaxwarns N   nombre maximal de diagnostics
+    -verbose, -version, -help
 
   PHASES DU COMPILATEUR
   ---------------------
@@ -56,6 +64,22 @@
                              Runtime[In]VisibleAnnotations, annotations de
                              parametres et de type (TYPE_USE), AnnotationDefault)
                                                                 [CP... Write...]
+
+  SYSTEME DE TYPES
+  ----------------
+  - Generiques : variables de type a bornes multiples (T extends A & B),
+    jokers (?, ? extends T, ? super T) representes comme arguments de type,
+    verification de la contenance des arguments (List<String> n'est pas un
+    List<Object>, List<? extends Number> accepte List<Integer>), approximation
+    de la capture par les bornes (lecture : borne superieure, ecriture :
+    seulement null ou borne inferieure), types bruts (conversion non controlee),
+    types intersection (cast (A & B), plus petit commun super-type), classes
+    internes de types parametres (Outer<T>.Inner).
+  - Inference : arguments, type attendu (contexte d'affectation, de retour,
+    d'argument), appels generiques imbriques (Collectors.groupingBy(...)),
+    diamant (y compris classes anonymes), lambdas et references de methode,
+    arguments de type explicites (Classe.<T>methode()), exceptions generiques
+    (throws X : orElseThrow(() -> new E()), X deduit des corps de lambda).
 
   ANNOTATIONS, MODULES ET GRANDES METHODES
   ----------------------------------------
@@ -1085,7 +1109,7 @@ Begin
       End;
     End
     Else If (I <= SrcLen) And (Src[I] = '.') And (S <> '') And
-            ((I = SrcLen) Or Not (IsIdStart(Src[I + 1]) Or (Src[I + 1] = '.'))) Then Begin
+            ((I = SrcLen) Or Not ((IsIdStart(Src[I + 1]) And Not (Src[I + 1] In ['e', 'E', 'f', 'F', 'd', 'D'])) Or (Src[I + 1] = '.'))) Then Begin
       IsFloat := True;
       S := S + '.0';
       Inc(I);
@@ -2095,15 +2119,16 @@ Begin
 End;
 
 Function ParsePostfix(N : LongInt) : LongInt;
-Var M, Line : LongInt;
+Var M, Line, A : LongInt;
 Begin
   While True Do Begin
     Line := CurLine;
     If IsOp('.') Then Begin
       Inc(P);
       If IsOp('<') Then Begin
-        SkipExplicitTypeArgs;
+        A := ParseTypeArgs;
         M := NewNode(N_CALL, Line);
+        If A > 0 Then Nodes[M].C := A;       { arguments de type explicites }
         Nodes[M].A := N;
         Nodes[M].S := ExpectIdent;
         Nodes[M].B := ParseArgs;
@@ -6501,7 +6526,7 @@ Const
 'M|1|flatMap|(~3Function;)~2Optional;|<U:~O>(~3Function<-TT;+~2Optional<+TU;>;>;)~2Optional<TU;>;|',
 'M|1|isPresent|()Z||',
 'M|1|orElse|(~O)~O|(TT;)TT;|',
-'M|1|orElseThrow|(~3Supplier;)~O|<X:~1Throwable;>(~3Supplier<+TX;>;)TT;|java/lang/Throwable',
+'M|1|orElseThrow|(~3Supplier;)~O|<X:~1Throwable;>(~3Supplier<+TX;>;)TT;|^X',
 'M|1|orElseThrow|()~O|()TT;|',
 'M|9|ofNullable|(~O)~2Optional;|<T:~O>(TT;)~2Optional<TT;>;|',
 'M|1|ifPresent|(~3Consumer;)V|(~3Consumer<-TT;>;)V|',
@@ -6518,7 +6543,7 @@ Const
 'M|9|empty|()~2OptionalInt;||',
 'M|1|isPresent|()Z||',
 'M|1|orElse|(I)I||',
-'M|1|orElseThrow|(~3Supplier;)I|<X:~1Throwable;>(~3Supplier<+TX;>;)I|java/lang/Throwable',
+'M|1|orElseThrow|(~3Supplier;)I|<X:~1Throwable;>(~3Supplier<+TX;>;)I|^X',
 'M|1|orElseThrow|()I||',
 'M|1|ifPresent|(~3IntConsumer;)V||',
 'M|1|ifPresentOrElse|(~3IntConsumer;~1Runnable;)V||',
@@ -6534,7 +6559,7 @@ Const
 'M|9|empty|()~2OptionalDouble;||',
 'M|1|isPresent|()Z||',
 'M|1|orElse|(D)D||',
-'M|1|orElseThrow|(~3Supplier;)D|<X:~1Throwable;>(~3Supplier<+TX;>;)D|java/lang/Throwable',
+'M|1|orElseThrow|(~3Supplier;)D|<X:~1Throwable;>(~3Supplier<+TX;>;)D|^X',
 'M|1|orElseThrow|()D||',
 'M|1|ifPresent|(~3DoubleConsumer;)V||',
 'M|1|ifPresentOrElse|(~3DoubleConsumer;~1Runnable;)V||',
@@ -6550,7 +6575,7 @@ Const
 'M|9|empty|()~2OptionalLong;||',
 'M|1|isPresent|()Z||',
 'M|1|orElse|(J)J||',
-'M|1|orElseThrow|(~3Supplier;)J|<X:~1Throwable;>(~3Supplier<+TX;>;)J|java/lang/Throwable',
+'M|1|orElseThrow|(~3Supplier;)J|<X:~1Throwable;>(~3Supplier<+TX;>;)J|^X',
 'M|1|orElseThrow|()J||',
 'M|1|ifPresent|(~3LongConsumer;)V||',
 'M|1|ifPresentOrElse|(~3LongConsumer;~1Runnable;)V||',
@@ -9792,6 +9817,7 @@ Const
   TYK_ARRAY = 3;
   TYK_TVAR  = 4;
   TYK_ANY   = 5;      { reference inconnue (inference incomplete) }
+  TYK_WILD  = 6;      { joker ? / ? extends T / ? super T : uniquement comme argument de type (Cls = 0, 1, 2) }
 
   MAXTARGS = 4;
 
@@ -9848,6 +9874,7 @@ Type
     PostLoc : Array Of LongInt;   { parametres synthetiques en queue }
     BodyN   : LongInt;     { noeud du corps pour les methodes synthetiques }
     Thr     : Array Of LongInt;   { classes des exceptions declarees (throws) }
+    ThrVar  : Array Of LongInt;   { en parallele : variable de type declaree dans throws (throws X), sinon 0 }
   End;
 
   TClassRec = Record
@@ -9991,6 +10018,16 @@ Begin
   ArrayT := InternType(R);
 End;
 
+{ Joker : Var = 0 (?), 1 (? extends B), 2 (? super B) }
+Function WildT(Var_, Bound : LongInt) : LongInt;
+Var R : TTypeRec;
+Begin
+  FillChar(R, SizeOf(R), 0);
+  R.Kind := TYK_WILD; R.Cls := Var_;
+  If Var_ = 0 Then R.Elem := T_OBJECT Else R.Elem := Bound;
+  WildT := InternType(R);
+End;
+
 Function NewTVar(Const Name : String; Bound : LongInt) : LongInt;
 Var R : TTypeRec;
 Begin
@@ -10037,6 +10074,15 @@ Begin IsArrayT := (T >= TY_FIRSTDYN) And (Types[T].Kind = TYK_ARRAY); End;
 
 Function IsTVarT(T : LongInt) : Boolean;
 Begin IsTVarT := (T >= TY_FIRSTDYN) And (Types[T].Kind = TYK_TVAR); End;
+
+Function IsWildT(T : LongInt) : Boolean;
+Begin IsWildT := (T >= TY_FIRSTDYN) And (Types[T].Kind = TYK_WILD); End;
+
+{ Argument de type sans son joker : la borne (utilisee comme approximation de la capture) }
+Function UnwrapW(T : LongInt) : LongInt;
+Begin
+  If IsWildT(T) Then UnwrapW := Types[T].Elem Else UnwrapW := T;
+End;
 
 Function ClsOf(T : LongInt) : LongInt;
 Begin
@@ -10208,6 +10254,12 @@ Begin
   R := MapFind(SubMap, K);
   If R >= 0 Then Begin IsSubClass := R = 1; Exit; End;
   EnsureHeader(C);
+  If Classes[C].IsSrc And (Classes[C].HdrState = 1) Then Begin
+    { en-tete en cours de resolution : reponse provisoire, non memorisee }
+    S := SuperClsOf(C);
+    IsSubClass := (S >= 0) And IsSubClass(S, D);
+    Exit;
+  End;
   MapPut(SubMap, K, 0);      { garde anti-cycle }
   R := 0;
   S := SuperClsOf(C);
@@ -10232,6 +10284,7 @@ Begin
       Else Erasure := Erasure(TVars[Types[T].TV].Bound);
     End;
     TYK_ANY   : Erasure := T_OBJECT;
+    TYK_WILD  : Erasure := Erasure(Types[T].Elem);
   Else
     Erasure := T;
   End;
@@ -10319,6 +10372,14 @@ Begin
     TYK_ARRAY : TypeStr := TypeStr(Types[T].Elem) + '[]';
     TYK_TVAR : TypeStr := TVars[Types[T].TV].Name;
     TYK_ANY : TypeStr := 'Object';
+    TYK_WILD : Begin
+      Case Types[T].Cls Of
+        1 : TypeStr := '? extends ' + TypeStr(Types[T].Elem);
+        2 : TypeStr := '? super ' + TypeStr(Types[T].Elem);
+      Else
+        TypeStr := '?';
+      End;
+    End;
   Else
     TypeStr := '?';
   End;
@@ -10393,7 +10454,7 @@ Begin
 End;
 
 Function ParseSigType(Const S : String; Var I : LongInt) : LongInt;
-Var Name : String; C : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; N, A, J : LongInt;
+Var Name : String; C : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; N, A, J, OuterT : LongInt;
 Begin
   ParseSigType := TY_NONE;
   If I > Length(S) Then Exit;
@@ -10407,8 +10468,9 @@ Begin
     'S' : Begin ParseSigType := TY_SHORT; Inc(I); End;
     'Z' : Begin ParseSigType := TY_BOOLEAN; Inc(I); End;
     'V' : Begin ParseSigType := TY_VOID; Inc(I); End;
-    '*' : Begin ParseSigType := T_OBJECT; Inc(I); End;
-    '+', '-' : Begin Inc(I); ParseSigType := ParseSigType(S, I); End;
+    '*' : Begin ParseSigType := WildT(0, 0); Inc(I); End;
+    '+' : Begin Inc(I); A := ParseSigType(S, I); ParseSigType := WildT(1, A); End;
+    '-' : Begin Inc(I); A := ParseSigType(S, I); ParseSigType := WildT(2, A); End;
     '[' : Begin Inc(I); ParseSigType := ArrayT(ParseSigType(S, I)); End;
     'T' : Begin
       Inc(I);
@@ -10433,9 +10495,28 @@ Begin
         End;
         Inc(I);
       End;
+      If N = 0 Then OuterT := ClassT(C) Else OuterT := ClassTA(C, N, Args);
+      { type interne d'un type parametre : Lp/Outer<TT;>.Inner<TU;>; }
+      While (I <= Length(S)) And (S[I] = '.') Do Begin
+        Inc(I);
+        Name := Name + '$';
+        While (I <= Length(S)) And (S[I] <> ';') And (S[I] <> '<') And (S[I] <> '.') Do Begin Name := Name + S[I]; Inc(I); End;
+        C := GetClass(Name);
+        N := 0;
+        If (I <= Length(S)) And (S[I] = '<') Then Begin
+          Inc(I);
+          While (I <= Length(S)) And (S[I] <> '>') Do Begin
+            A := ParseSigType(S, I);
+            If N < MAXTARGS Then Begin Args[N] := A; Inc(N); End;
+          End;
+          Inc(I);
+        End;
+        If (Types[OuterT].NArgs > 0) Or (Types[OuterT].Outer <> 0) Then OuterT := ClassTO(C, N, Args, OuterT)
+        Else If N = 0 Then OuterT := ClassT(C)
+        Else OuterT := ClassTA(C, N, Args);
+      End;
       If (I <= Length(S)) And (S[I] = ';') Then Inc(I);
-      If N = 0 Then ParseSigType := ClassT(C)
-      Else ParseSigType := ClassTA(C, N, Args);
+      ParseSigType := OuterT;
     End;
   Else
     Inc(I);
@@ -10461,7 +10542,8 @@ Begin
       Inc(I);
       If (I <= Length(S)) And (S[I] <> ':') Then Begin
         B := ParseSigType(S, I);
-        If First = 1 Then TVars[Types[Ty].TV].Bound := B
+        { borne de classe vide (T::Linterface;) : la premiere borne d'interface devient la borne principale }
+        If (First = 1) Or ((TVars[Types[Ty].TV].Bound = 0) And (B <> TY_NONE)) Then TVars[Types[Ty].TV].Bound := B
         Else If B <> TY_NONE Then Begin
           SetLength(TVars[Types[Ty].TV].Extra, Length(TVars[Types[Ty].TV].Extra) + 1);
           TVars[Types[Ty].TV].Extra[Length(TVars[Types[Ty].TV].Extra) - 1] := B;
@@ -10557,12 +10639,32 @@ Begin
   SetLength(Meths[NMeths].PostLoc, 0);
   Meths[NMeths].BodyN := 0;
   SetLength(Meths[NMeths].Thr, 0);
+  SetLength(Meths[NMeths].ThrVar, 0);
   If Classes[C].LastMeth >= 0 Then Meths[Classes[C].LastMeth].Next := NMeths
   Else Classes[C].FirstMeth := NMeths;
   Classes[C].LastMeth := NMeths;
   NewMeth := NMeths;
   Inc(NMeths);
 End;
+
+{ Ajoute une exception declaree (classe Cls ; TV : variable de type de throws, ou 0) }
+Procedure AddThrown(M, Cls, TV : LongInt);
+Begin
+  SetLength(Meths[M].Thr, Length(Meths[M].Thr) + 1);
+  Meths[M].Thr[Length(Meths[M].Thr) - 1] := Cls;
+  SetLength(Meths[M].ThrVar, Length(Meths[M].ThrVar) + 1);
+  Meths[M].ThrVar[Length(Meths[M].ThrVar) - 1] := TV;
+End;
+
+{ Ajoute l'exception correspondant a un type (classe ou variable de type) }
+Procedure AddThrownType(M, T : LongInt);
+Begin
+  If IsClassT(T) Then AddThrown(M, Types[T].Cls, 0)
+  Else If IsTVarT(T) Then Begin
+    If IsClassT(Erasure(T)) Then AddThrown(M, Types[Erasure(T)].Cls, T);
+  End;
+End;
+
 
 Function NewSynMethod(C : LongInt; Const Name : String; Flags, Synth : LongInt; Const Desc : String; Ret : LongInt) : LongInt;
 Var M : LongInt;
@@ -10576,7 +10678,7 @@ End;
 
 Procedure LoadLibMembers(C : LongInt);
 Var
-  K, I, N, Base, F, M, Fl, Np, T : LongInt;
+  K, I, N, Base, F, M, Fl, Np, T, Tv, Cn2 : LongInt;
   Line, Sig, Desc, Cv : String;
   Tp : Array[0..15] Of LongInt;
   Cn, K2 : LongInt;
@@ -10653,8 +10755,14 @@ Begin
         While K2 <= Length(Cv) Do Begin
           T := Pos(',', Copy(Cv, K2, Length(Cv)));
           If T = 0 Then T := Length(Cv) - K2 + 2;
-          SetLength(Meths[M].Thr, Length(Meths[M].Thr) + 1);
-          Meths[M].Thr[Length(Meths[M].Thr) - 1] := GetClass(Copy(Cv, K2, T - 1));
+          If Cv[K2] = '^' Then Begin
+            { throws X : variable de type de la methode }
+            Tv := 0;
+            For Cn2 := 0 To Length(Meths[M].TPar) - 1 Do
+              If TVars[Types[Meths[M].TPar[Cn2]].TV].Name = Copy(Cv, K2 + 1, T - 2) Then Tv := Meths[M].TPar[Cn2];
+            If Tv <> 0 Then AddThrownType(M, Tv) Else AddThrown(M, ClsOf(T_THROWABLE), 0);
+          End
+          Else AddThrown(M, GetClass(Copy(Cv, K2, T - 1)), 0);
           Inc(K2, T);
         End;
       End;
@@ -11246,6 +11354,20 @@ Begin
   CountDescParams := N;
 End;
 
+{ Ajoute a l'echelle des signatures les variables de type des classes englobantes de la classe interne C }
+Procedure PushOuterVars(C : LongInt);
+Var K, O, I : LongInt;
+Begin
+  K := LastPos('$', Classes[C].Name);
+  If K <= 0 Then Exit;
+  O := GetClass(Copy(Classes[C].Name, 1, K - 1));
+  If O < 0 Then Exit;
+  EnsureHeader(O);
+  If (Classes[O].Flags And (ACC_STATIC Or ACC_INTERFACE Or ACC_ENUM)) = 0 Then PushOuterVars(O);
+  For I := 0 To Length(Classes[O].TPars) - 1 Do
+    PushSig(TVars[Types[Classes[O].TPars[I]].TV].Name, Classes[O].TPars[I]);
+End;
+
 Procedure LoadExtClass(C : LongInt);
 Var
   B : TBuf; Cnt, I, P, Tag, Acc, This_, Sup, NIf, NA, K, AL, AP, Fl, M, F : LongInt;
@@ -11253,6 +11375,7 @@ Var
   Sig, Desc, Nm, ClsSig, AName : String; BaseTop, BaseM, N, T, MemStart, ExcPos, ExcN, Cvi, Q, J, Np : LongInt;
   Tp : Array[0..15] Of LongInt; Ifs : Array Of LongInt; NI : LongInt; ClassFl : LongInt;
   Bits : TDblBits; DepF : LongInt;
+  ThrT : Array[0..7] Of LongInt; NThrT : LongInt;
   Function CName(Idx : LongInt) : String;
   Begin
     If (Idx <= 0) Or (Idx >= Cnt) Then CName := '' Else CName := CpStr[CpA[Idx]];
@@ -11379,6 +11502,7 @@ Begin
   End;
   { en-tete : parametres de type, super-classe, interfaces }
   Classes[C].Flags := ClassFl;
+  If (ClassFl And (ACC_STATIC Or ACC_INTERFACE Or ACC_ENUM)) = 0 Then PushOuterVars(C);
   I := 1;
   ParseTParams(ClsSig, I, Tp, N);
   SetLength(Classes[C].TPars, N);
@@ -11468,6 +11592,12 @@ Begin
         Inc(T);
         Meths[M].NPar := Np;
         Meths[M].Ret := ParseSigType(Sig, T);
+        NThrT := 0;
+        While (T <= Length(Sig)) And (Sig[T] = '^') And (NThrT < 8) Do Begin
+          Inc(T);
+          ThrT[NThrT] := ParseSigType(Sig, T);
+          Inc(NThrT);
+        End;
         NSig := BaseM;
         { signature generique incomplete (constructeurs internes, enums) : retombe sur le descripteur }
         If Np <> CountDescParams(Desc) Then Begin
@@ -11479,10 +11609,12 @@ Begin
           End;
           Meths[M].NPar := Np;
         End;
-        For Np := 0 To ExcN - 1 Do Begin
-          SetLength(Meths[M].Thr, Length(Meths[M].Thr) + 1);
-          Meths[M].Thr[Length(Meths[M].Thr) - 1] := GetClass(CName(RdU2(B, ExcPos + Np * 2)));
-        End;
+        { exceptions : la signature generique (^Type) l'emporte sur l'attribut Exceptions }
+        If NThrT > 0 Then Begin
+          For Np := 0 To NThrT - 1 Do AddThrownType(M, ThrT[Np]);
+        End
+        Else
+          For Np := 0 To ExcN - 1 Do AddThrown(M, GetClass(CName(RdU2(B, ExcPos + Np * 2))), 0);
       End;
     End;
   End;
@@ -11935,8 +12067,8 @@ Begin
   If N = 0 Then Exit;
   If (Nodes[N].Kind = N_TYPE) And (Nodes[N].Aux = 2) Then Begin ResolveType := Nodes[N].Typ; Exit; End;
   If Nodes[N].Kind = N_WILD Then Begin
-    If (Nodes[N].Aux <> 0) And (Nodes[N].A <> 0) Then ResolveType := ResolveType(Nodes[N].A)
-    Else ResolveType := T_OBJECT;
+    If (Nodes[N].Aux <> 0) And (Nodes[N].A <> 0) Then ResolveType := WildT(Nodes[N].Aux, ResolveType(Nodes[N].A))
+    Else ResolveType := WildT(0, 0);
     Exit;
   End;
   If Nodes[N].Aux = 1 Then T := PrimByName(Nodes[N].S)
@@ -12269,10 +12401,7 @@ Begin
   P := Nodes[Decl].D;
   While P <> 0 Do Begin
     PT := ResolveType(P);
-    If IsClassT(PT) Then Begin
-      SetLength(Meths[M].Thr, Length(Meths[M].Thr) + 1);
-      Meths[M].Thr[Length(Meths[M].Thr) - 1] := Types[PT].Cls;
-    End;
+    AddThrownType(M, PT);
     P := Nodes[P].Next;
   End;
   NScope := Base;
@@ -12479,6 +12608,14 @@ Begin
       R := SubstType(Types[T].Elem, Fr, Tt, N);
       If R <> Types[T].Elem Then SubstType := ArrayT(R);
     End;
+    TYK_WILD : Begin
+      R := SubstType(Types[T].Elem, Fr, Tt, N);
+      If R <> Types[T].Elem Then Begin
+        { un joker substitue par un joker : on garde la borne interne }
+        If IsWildT(R) Then R := Types[R].Elem;
+        SubstType := WildT(Types[T].Cls, R);
+      End;
+    End;
     TYK_CLASS : Begin
       If (Types[T].NArgs = 0) And (Types[T].Outer = 0) Then Exit;
       Ch := False;
@@ -12505,6 +12642,7 @@ Begin
   Case Types[T].Kind Of
     TYK_TVAR : HasTVar := True;
     TYK_ARRAY : HasTVar := HasTVar(Types[T].Elem);
+    TYK_WILD : HasTVar := HasTVar(Types[T].Elem);
     TYK_CLASS : Begin
       For I := 0 To Types[T].NArgs - 1 Do
         If HasTVar(Types[T].Args[I]) Then Begin HasTVar := True; Exit; End;
@@ -12542,10 +12680,30 @@ Begin
     EnsureHeader(K);
     For I := 0 To Length(Classes[K].TPars) - 1 Do
       If (I < Types[O].NArgs) And (N < MAXMAP) Then Begin
-        Fr[N] := Classes[K].TPars[I]; Tt[N] := Types[O].Args[I]; Inc(N);
+        Fr[N] := Classes[K].TPars[I]; Tt[N] := UnwrapW(Types[O].Args[I]); Inc(N);
       End;
     O := Types[O].Outer;
   End;
+End;
+
+{ Borne declaree du I-eme parametre de type de la classe C (0 si aucune) }
+Function DeclBoundOf(C, I : LongInt) : LongInt;
+Begin
+  DeclBoundOf := 0;
+  EnsureHeader(C);
+  If (I >= 0) And (I < Length(Classes[C].TPars)) Then DeclBoundOf := TVars[Types[Classes[C].TPars[I]].TV].Bound;
+End;
+
+{ Argument de type d'un parametre de classe : un joker non borne herite de la borne declaree du parametre }
+Function NormWildArg(C, I, X : LongInt) : LongInt;
+Var DB : LongInt;
+Begin
+  NormWildArg := X;
+  If Not (IsWildT(X) And (Types[X].Cls = 0)) Then Exit;
+  DB := DeclBoundOf(C, I);
+  If DB = 0 Then Exit;
+  DB := Erasure(DB);
+  If DB <> T_OBJECT Then NormWildArg := WildT(1, DB);
 End;
 
 { Parametrisation de la classe D vue comme super-type de T ; 0 si absent }
@@ -12584,7 +12742,7 @@ Begin
   If N > MAXTARGS Then N := MAXTARGS;
   For I := 0 To N - 1 Do Begin
     Fr[I] := Classes[C].TPars[I];
-    If I < Types[T].NArgs Then Tt[I] := Types[T].Args[I]
+    If I < Types[T].NArgs Then Tt[I] := NormWildArg(C, I, Types[T].Args[I])
     Else Begin
       If TVars[Types[Fr[I]].TV].Bound = 0 Then Tt[I] := T_OBJECT
       Else Tt[I] := Erasure(TVars[Types[Fr[I]].TV].Bound);
@@ -12603,6 +12761,26 @@ Begin
   End;
 End;
 
+Var
+  CapMode : LongInt;      { 0 : approximation par la borne ; 1 : lecture (resultat) ; 2 : parametre }
+
+{ Argument de type d'un site, vu par un membre : approximation de la conversion de capture }
+Function CapArg(X, DB : LongInt) : LongInt;
+Begin
+  CapArg := X;
+  If Not IsWildT(X) Then Exit;
+  Case CapMode Of
+    1 : Begin
+      If Types[X].Cls = 1 Then CapArg := Types[X].Elem
+      Else If DB <> 0 Then CapArg := Erasure(DB)       { la capture est bornee par la borne declaree du parametre }
+      Else CapArg := T_OBJECT;
+    End;
+    2 : If Types[X].Cls = 2 Then CapArg := Types[X].Elem Else CapArg := TY_NULL;
+  Else
+    CapArg := Types[X].Elem;
+  End;
+End;
+
 { Type d'un membre declare dans la classe Owner, vu depuis le type Site }
 Function MemberType(Site, Owner, T : LongInt) : LongInt;
 Var A, C, N, I : LongInt; Fr, Tt : Array[0..MAXMAP - 1] Of LongInt;
@@ -12616,7 +12794,7 @@ Begin
   If Site > 0 Then A := AsSuper(Site, Owner);
   For I := 0 To N - 1 Do Begin
     Fr[I] := Classes[Owner].TPars[I];
-    If (A <> 0) And (I < Types[A].NArgs) Then Tt[I] := Types[A].Args[I]
+    If (A <> 0) And (I < Types[A].NArgs) Then Tt[I] := CapArg(Types[A].Args[I], DeclBoundOf(Owner, I))
     Else If (A <> 0) And (Types[A].NArgs = 0) Then Tt[I] := Erasure(Fr[I])
     Else If A = 0 Then Tt[I] := Fr[I]
     Else Tt[I] := T_OBJECT;
@@ -12624,45 +12802,170 @@ Begin
   If A <> 0 Then AddOuterMap(A, Fr, Tt, N);
   If N = 0 Then Exit;
   C := SubstType(T, Fr, Tt, N);
+  { membre d'un type brut : son type est l'effacement du type declare }
+  If (C <> T) And (Site > 0) And IsClassT(Site) And (Types[Site].NArgs = 0) And (Types[Site].Outer = 0) Then Begin
+    EnsureHeader(Types[Site].Cls);
+    If Length(Classes[Types[Site].Cls].TPars) > 0 Then C := Erasure(C);
+  End;
   MemberType := C;
+End;
+
+Function MemberTypeRet(Site, Owner, T : LongInt) : LongInt;
+Begin
+  CapMode := 1;
+  MemberTypeRet := MemberType(Site, Owner, T);
+  CapMode := 0;
+End;
+
+Function MemberTypeParam(Site, Owner, T : LongInt) : LongInt;
+Begin
+  CapMode := 2;
+  MemberTypeParam := MemberType(Site, Owner, T);
+  CapMode := 0;
 End;
 
 { ----- sous-typage et conversions ---------------------------------------- }
 
-Function IsSubtypeRef(A, B : LongInt) : Boolean;
+Function IsSubtypeErased(A, B : LongInt) : Boolean;
 Var Ba, Ex : LongInt;
 Begin
-  IsSubtypeRef := False;
-  If A = B Then Begin IsSubtypeRef := True; Exit; End;
-  If (A = TY_NONE) Or (B = TY_NONE) Then Begin IsSubtypeRef := True; Exit; End;
-  If A = TY_NULL Then Begin IsSubtypeRef := IsRef(B); Exit; End;
-  If (A = T_ANY) Or (B = T_ANY) Then Begin IsSubtypeRef := True; Exit; End;
+  IsSubtypeErased := False;
+  If A = B Then Begin IsSubtypeErased := True; Exit; End;
+  If (A = TY_NONE) Or (B = TY_NONE) Then Begin IsSubtypeErased := True; Exit; End;
+  If A = TY_NULL Then Begin IsSubtypeErased := IsRef(B); Exit; End;
+  If (A = T_ANY) Or (B = T_ANY) Then Begin IsSubtypeErased := True; Exit; End;
   If Not (IsRef(A) And IsRef(B)) Then Exit;
-  If B = T_OBJECT Then Begin IsSubtypeRef := True; Exit; End;
+  If B = T_OBJECT Then Begin IsSubtypeErased := True; Exit; End;
   If IsTVarT(A) Then Begin
     Ba := TVars[Types[A].TV].Bound;
     If Ba = 0 Then Ba := T_OBJECT;
-    IsSubtypeRef := IsSubtypeRef(Ba, B);
+    IsSubtypeErased := IsSubtypeErased(Ba, B);
     For Ex := 0 To Length(TVars[Types[A].TV].Extra) - 1 Do
-      If IsSubtypeRef(TVars[Types[A].TV].Extra[Ex], B) Then IsSubtypeRef := True;
+      If IsSubtypeErased(TVars[Types[A].TV].Extra[Ex], B) Then IsSubtypeErased := True;
     Exit;
   End;
   If IsTVarT(B) Then Begin
     { une variable de type n'est super-type que d'elle-meme ; on est tolerant }
-    IsSubtypeRef := IsSubtypeRef(A, Erasure(B)) And (HasTVar(A) Or True);
+    IsSubtypeErased := IsSubtypeErased(A, Erasure(B)) And (HasTVar(A) Or True);
     Exit;
   End;
   If IsArrayT(A) Then Begin
     If IsArrayT(B) Then Begin
-      If IsPrim(Types[A].Elem) Or IsPrim(Types[B].Elem) Then IsSubtypeRef := Types[A].Elem = Types[B].Elem
-      Else IsSubtypeRef := IsSubtypeRef(Types[A].Elem, Types[B].Elem);
+      If IsPrim(Types[A].Elem) Or IsPrim(Types[B].Elem) Then IsSubtypeErased := Types[A].Elem = Types[B].Elem
+      Else IsSubtypeErased := IsSubtypeErased(Types[A].Elem, Types[B].Elem);
     End
     Else If IsClassT(B) Then
-      IsSubtypeRef := (Types[B].Cls = C_OBJECT) Or (Types[B].Cls = C_CLONEABLE) Or (Types[B].Cls = C_SERIAL);
+      IsSubtypeErased := (Types[B].Cls = C_OBJECT) Or (Types[B].Cls = C_CLONEABLE) Or (Types[B].Cls = C_SERIAL);
     Exit;
   End;
-  If IsClassT(A) And IsClassT(B) Then IsSubtypeRef := IsSubClass(Types[A].Cls, Types[B].Cls)
-  Else If IsClassT(A) And IsArrayT(B) Then IsSubtypeRef := False;
+  If IsClassT(A) And IsClassT(B) Then IsSubtypeErased := IsSubClass(Types[A].Cls, Types[B].Cls)
+  Else If IsClassT(A) And IsArrayT(B) Then IsSubtypeErased := False;
+End;
+
+{ ----- sous-typage avec arguments de type (conteneurs, jokers) ----------- }
+
+Function IsSubtypeRef(A, B : LongInt) : Boolean; Forward;
+Function HasIVar(T : LongInt) : Boolean; Forward;
+
+{ Joker equivalent a "?" compte tenu de la borne declaree ? }
+Function WildIsUnbounded(W, DB : LongInt) : Boolean;
+Begin
+  WildIsUnbounded := (Types[W].Cls = 0) Or
+    ((Types[W].Cls = 1) And ((Types[W].Elem = T_OBJECT) Or ((DB <> 0) And IsSubtypeErased(Erasure(DB), Types[W].Elem))));
+End;
+
+{ Egalite structurelle de deux arguments de type, tolerante pour les types inconnus ; DB : borne declaree du parametre }
+Function TypeArgEq(A, B, DB : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  TypeArgEq := True;
+  If A = B Then Exit;
+  If (A = T_ANY) Or (B = T_ANY) Or (A = TY_NONE) Or (B = TY_NONE) Then Exit;
+  TypeArgEq := False;
+  If (A < TY_FIRSTDYN) Or (B < TY_FIRSTDYN) Then Exit;
+  If Types[A].Kind <> Types[B].Kind Then Exit;
+  Case Types[A].Kind Of
+    TYK_ARRAY : TypeArgEq := TypeArgEq(Types[A].Elem, Types[B].Elem, 0);
+    TYK_WILD : Begin
+      If WildIsUnbounded(A, DB) And WildIsUnbounded(B, DB) Then TypeArgEq := True
+      Else TypeArgEq := (Types[A].Cls = Types[B].Cls) And TypeArgEq(Types[A].Elem, Types[B].Elem, 0);
+    End;
+    TYK_CLASS : Begin
+      If Types[A].Cls <> Types[B].Cls Then Exit;
+      If Types[A].NArgs <> Types[B].NArgs Then Begin
+        TypeArgEq := (Types[A].NArgs = 0) Or (Types[B].NArgs = 0);     { brut : tolerant }
+        Exit;
+      End;
+      For I := 0 To Types[A].NArgs - 1 Do
+        If Not TypeArgEq(Types[A].Args[I], Types[B].Args[I], DeclBoundOf(Types[A].Cls, I)) Then Exit;
+      TypeArgEq := True;
+    End;
+  End;
+End;
+
+{ L'argument de type Sa (vu depuis le sous-type) est-il contenu dans l'argument Ta de la cible ?
+  DB : borne declaree du parametre de type correspondant }
+Function TypeArgContained(Sa, Ta, DB : LongInt) : Boolean;
+Var Lo, Up : LongInt;
+Begin
+  TypeArgContained := True;
+  If (Sa = Ta) Or (Sa = T_ANY) Or (Ta = T_ANY) Or (Sa = TY_NONE) Or (Ta = TY_NONE) Then Exit;
+  If HasIVar(Sa) Or HasIVar(Ta) Then Exit;
+  If IsWildT(Ta) Then Begin
+    Case Types[Ta].Cls Of
+      0 : Exit;
+      1 : Begin
+        If IsWildT(Sa) Then Begin
+          If Types[Sa].Cls = 1 Then Up := Types[Sa].Elem Else Up := T_OBJECT;
+          { la borne declaree du parametre borne aussi le joker }
+          If (DB <> 0) And IsSubtypeErased(Erasure(DB), Types[Ta].Elem) Then Exit;
+        End
+        Else Up := Sa;
+        TypeArgContained := IsSubtypeRef(Up, Types[Ta].Elem);
+      End;
+      2 : Begin
+        If IsWildT(Sa) Then Begin
+          If Types[Sa].Cls = 2 Then Lo := Types[Sa].Elem
+          Else Begin TypeArgContained := False; Exit; End;
+        End
+        Else Lo := Sa;
+        TypeArgContained := IsSubtypeRef(Types[Ta].Elem, Lo);
+      End;
+    End;
+    Exit;
+  End;
+  { cible sans joker : il faut l'egalite ; un joker source est une capture que l'on ne modelise pas }
+  If IsWildT(Sa) Then Exit;
+  TypeArgContained := TypeArgEq(Sa, Ta, DB);
+End;
+
+Function IsSubtypeRef(A, B : LongInt) : Boolean;
+Var Sup, I, Ex : LongInt;
+Begin
+  IsSubtypeRef := IsSubtypeErased(A, B);
+  If Not IsSubtypeErased(A, B) Then Exit;
+  If (A < TY_FIRSTDYN) Or (B < TY_FIRSTDYN) Then Exit;
+  If IsTVarT(A) And Not IsTVarT(B) Then Begin
+    { la variable de type est sous-type si l'une de ses bornes l'est (avec arguments) }
+    IsSubtypeRef := False;
+    If TVars[Types[A].TV].Bound = 0 Then Begin IsSubtypeRef := IsSubtypeErased(T_OBJECT, B); Exit; End;
+    If IsSubtypeRef(TVars[Types[A].TV].Bound, B) Then IsSubtypeRef := True;
+    For Ex := 0 To Length(TVars[Types[A].TV].Extra) - 1 Do
+      If IsSubtypeRef(TVars[Types[A].TV].Extra[Ex], B) Then IsSubtypeRef := True;
+    Exit;
+  End;
+  If IsArrayT(A) And IsArrayT(B) Then Begin
+    If Not (IsPrim(Types[A].Elem) Or IsPrim(Types[B].Elem)) Then IsSubtypeRef := IsSubtypeRef(Types[A].Elem, Types[B].Elem);
+    Exit;
+  End;
+  If Not (IsClassT(A) And IsClassT(B)) Then Exit;
+  If Types[B].NArgs = 0 Then Exit;
+  EnsureHeader(Types[A].Cls);
+  If (Types[A].NArgs = 0) And (Length(Classes[Types[A].Cls].TPars) > 0) Then Exit;      { type brut : conversion non verifiee }
+  Sup := AsSuper(A, Types[B].Cls);
+  If (Sup = 0) Or (Types[Sup].NArgs <> Types[B].NArgs) Then Exit;       { brut : conversion non verifiee }
+  For I := 0 To Types[B].NArgs - 1 Do
+    If Not TypeArgContained(Types[Sup].Args[I], Types[B].Args[I], DeclBoundOf(Types[B].Cls, I)) Then Begin IsSubtypeRef := False; Exit; End;
 End;
 
 Function PrimWidens(A, B : LongInt) : Boolean;
@@ -12749,7 +13052,7 @@ Begin
   End;
   { reference -> reference }
   If (From = TY_NULL) Or (From = T_ANY) Or (To_ = T_ANY) Then Begin IsCastable := True; Exit; End;
-  If IsSubtypeRef(From, To_) Or IsSubtypeRef(To_, From) Then Begin IsCastable := True; Exit; End;
+  If IsSubtypeErased(From, To_) Or IsSubtypeErased(To_, From) Then Begin IsCastable := True; Exit; End;
   If IsTVarT(From) Or IsTVarT(To_) Then Begin
     IsCastable := IsCastable(Erasure(From), Erasure(To_)) Or True; Exit;
   End;
@@ -13120,6 +13423,9 @@ Begin
 End;
 
 { Acces a un membre de drapeaux Flags declare dans la classe Owner (JLS 6.6) }
+Var
+  AnonCtorOk : Boolean;       { creation d'une classe anonyme : un constructeur protege est accessible }
+
 Function IsAccessible(Flags, Owner : LongInt) : Boolean;
 Begin
   IsAccessible := True;
@@ -13132,7 +13438,7 @@ Begin
   { membres d'interface : publics }
   If (Classes[Owner].Flags And ACC_INTERFACE) <> 0 Then Exit;
   If ClassPackage(Owner) = CurPackage Then Exit;
-  If (Flags And ACC_PROTECTED) <> 0 Then IsAccessible := EnclosingIsSubclassOf(Owner)
+  If (Flags And ACC_PROTECTED) <> 0 Then IsAccessible := AnonCtorOk Or EnclosingIsSubclassOf(Owner)
   Else IsAccessible := False;
 End;
 
@@ -13353,6 +13659,7 @@ Begin
   If T < TY_FIRSTDYN Then Exit;
   Case Types[T].Kind Of
     TYK_TVAR : MentionsTVar := True;
+    TYK_WILD : MentionsTVar := MentionsTVar(Types[T].Elem);
     TYK_ARRAY : MentionsTVar := MentionsTVar(Types[T].Elem);
     TYK_CLASS : For I := 0 To Types[T].NArgs - 1 Do If MentionsTVar(Types[T].Args[I]) Then MentionsTVar := True;
   End;
@@ -13385,15 +13692,24 @@ Const
   CALL_CTOR    = 8;
   CALL_ARRCLONE = 16;
   CALL_IFACEOBJ = 32;   { methode d'Object appelee sur une interface }
+  CALL_POLY    = 64;    { appel generique / diamant : expression polymorphe, typee par son contexte }
 
   CV_ASSIGN = 0;
   CV_ARG    = 1;
 
+  EK_VALUE = 0;
+  EK_TYPE  = 1;
+  EK_PKG   = 2;
+
 Var
   IFr, ITo   : Array[0..MAXIV - 1] Of LongInt;
   NIV        : LongInt;
+  LastEK     : LongInt;      { nature de la derniere expression qualifiante attribuee }
+  ISoft      : Array[0..MAXIV - 1] Of Byte;     { 1 : valeur issue d'un argument polymorphe, 2 : simple borne superieure (? super) ; precisable par le contexte }
+  UnifySoft  : Boolean;
 
 Function AttribExpr(N, Expected : LongInt) : LongInt; Forward;
+Function AttribQual(N : LongInt) : LongInt; Forward;
 Procedure AttribStmt(N : LongInt); Forward;
 Function AttribLambda(N, Target : LongInt; Infer : Boolean) : LongInt; Forward;
 Function AttribMethodRef(N, Target : LongInt) : LongInt; Forward;
@@ -13467,7 +13783,7 @@ End;
 Procedure IVAdd(T : LongInt);
 Begin
   If IVIndex(T) >= 0 Then Exit;
-  If NIV < MAXIV Then Begin IFr[NIV] := T; ITo[NIV] := 0; Inc(NIV); End;
+  If NIV < MAXIV Then Begin IFr[NIV] := T; ITo[NIV] := 0; ISoft[NIV] := 0; Inc(NIV); End;
 End;
 
 Function HasIVar(T : LongInt) : Boolean;
@@ -13478,14 +13794,16 @@ Begin
   Case Types[T].Kind Of
     TYK_TVAR : HasIVar := IVIndex(T) >= 0;
     TYK_ARRAY : HasIVar := HasIVar(Types[T].Elem);
+    TYK_WILD : HasIVar := HasIVar(Types[T].Elem);
     TYK_CLASS : For I := 0 To Types[T].NArgs - 1 Do
       If HasIVar(Types[T].Args[I]) Then Begin HasIVar := True; Exit; End;
   End;
 End;
 
 Procedure Unify(P, A : LongInt);
-Var I, K, Aa : LongInt;
+Var I, K, Aa, Pa, Ba : LongInt;
 Begin
+  If IsWildT(A) Then A := Types[A].Elem;
   If (A = TY_NONE) Or (A = TY_NULL) Or (A = TY_VOID) Or (P = TY_NONE) Then Exit;
   K := IVIndex(P);
   If K >= 0 Then Begin
@@ -13493,6 +13811,7 @@ Begin
     If A = T_ANY Then Exit;
     If ITo[K] = 0 Then ITo[K] := A
     Else If ITo[K] <> A Then ITo[K] := LubType(ITo[K], A);
+    If UnifySoft Then ISoft[K] := 1;
     Exit;
   End;
   If P < TY_FIRSTDYN Then Exit;
@@ -13502,30 +13821,145 @@ Begin
       If Types[P].NArgs = 0 Then Exit;
       Aa := AsSuper(A, Types[P].Cls);
       If (Aa <> 0) And (Types[Aa].NArgs = Types[P].NArgs) Then
-        For I := 0 To Types[P].NArgs - 1 Do Unify(Types[P].Args[I], Types[Aa].Args[I]);
+        For I := 0 To Types[P].NArgs - 1 Do Begin
+          Pa := Types[P].Args[I];
+          If IsWildT(Pa) And (Types[Pa].Cls = 2) Then Begin
+            { ? super T : T n'est borne que par le haut ; ne sert que s'il n'a pas d'autre contrainte }
+            K := IVIndex(Types[Pa].Elem);
+            If K >= 0 Then Begin
+              Ba := UnwrapW(Types[Aa].Args[I]);
+              If (ITo[K] = 0) And (Ba <> T_ANY) And (Ba > TY_NULL) Then Begin ITo[K] := BoxedType(Ba); ISoft[K] := 2; End;
+            End
+            Else Unify(Types[Pa].Elem, Types[Aa].Args[I]);
+          End
+          Else Begin
+            Ba := Types[Aa].Args[I];
+            { joker non borne : approximation de la capture par la borne declaree du parametre }
+            If IsWildT(Ba) And (Types[Ba].Cls = 0) And (DeclBoundOf(Types[Aa].Cls, I) <> 0) Then Ba := Erasure(DeclBoundOf(Types[Aa].Cls, I));
+            Unify(UnwrapW(Pa), Ba);
+          End;
+        End;
     End;
   End;
 End;
 
-{ Inference a partir du type attendu (position de retour) }
-Procedure UnifyExpected(Ret, Exp : LongInt);
+{ La variable de type T est-elle declaree par la methode ou la classe en cours d'attribution ? }
+Function TVarInScope(T : LongInt) : Boolean;
+Var K, I : LongInt;
+Begin
+  TVarInScope := False;
+  If Not IsTVarT(T) Then Exit;
+  If CurMeth >= 0 Then
+    For I := 0 To Length(Meths[CurMeth].TPar) - 1 Do
+      If Meths[CurMeth].TPar[I] = T Then Begin TVarInScope := True; Exit; End;
+  K := CurClass;
+  While K >= 0 Do Begin
+    EnsureHeader(K);
+    For I := 0 To Length(Classes[K].TPars) - 1 Do
+      If Classes[K].TPars[I] = T Then Begin TVarInScope := True; Exit; End;
+    K := Classes[K].Outer;
+  End;
+End;
+
+{ Remplace par T_ANY les variables de type qui ne sont pas visibles ici (variables d'une inference englobante) }
+Function ScrubTV(T : LongInt) : LongInt;
+Var I : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; Ch : Boolean; R, O : LongInt;
+Begin
+  ScrubTV := T;
+  If T < TY_FIRSTDYN Then Exit;
+  Case Types[T].Kind Of
+    TYK_TVAR : If Not TVarInScope(T) Then ScrubTV := T_ANY;
+    TYK_ARRAY : Begin
+      R := ScrubTV(Types[T].Elem);
+      If R <> Types[T].Elem Then ScrubTV := ArrayT(R);
+    End;
+    TYK_WILD : Begin
+      R := ScrubTV(Types[T].Elem);
+      If R = T_ANY Then ScrubTV := WildT(0, 0)
+      Else If R <> Types[T].Elem Then ScrubTV := WildT(Types[T].Cls, R);
+    End;
+    TYK_CLASS : Begin
+      If (Types[T].NArgs = 0) And (Types[T].Outer = 0) Then Exit;
+      Ch := False;
+      For I := 0 To Types[T].NArgs - 1 Do Begin
+        Args[I] := ScrubTV(Types[T].Args[I]);
+        If Args[I] <> Types[T].Args[I] Then Ch := True;
+      End;
+      O := Types[T].Outer;
+      If O <> 0 Then Begin
+        O := ScrubTV(O);
+        If O <> Types[T].Outer Then Ch := True;
+      End;
+      If Ch Then ScrubTV := ClassTO(Types[T].Cls, Types[T].NArgs, Args, O);
+    End;
+  End;
+End;
+
+{ A est-il compatible avec B quand les arguments de type de A peuvent encore etre precises (covariance toleree) ? }
+Function SoftCompat(A, B : LongInt) : Boolean;
+Var S, I, Sa, Ea : LongInt;
+Begin
+  SoftCompat := True;
+  If A = B Then Exit;
+  SoftCompat := False;
+  If Not IsSubtypeErased(A, B) Then Exit;
+  SoftCompat := True;
+  If Not (IsClassT(B) And IsClassT(A)) Then Exit;
+  If Types[B].NArgs = 0 Then Exit;
+  S := AsSuper(A, Types[B].Cls);
+  If (S = 0) Or (Types[S].NArgs <> Types[B].NArgs) Then Exit;
+  For I := 0 To Types[B].NArgs - 1 Do Begin
+    Sa := Types[S].Args[I]; Ea := Types[B].Args[I];
+    If IsWildT(Ea) Then Begin
+      If Not TypeArgContained(Sa, Ea, 0) Then Begin SoftCompat := False; Exit; End;
+    End
+    Else If Not SoftCompat(UnwrapW(Sa), Ea) Then Begin SoftCompat := False; Exit; End;
+  End;
+End;
+
+{ Inference a partir du type attendu (position de retour) ; Eq : contexte d'egalite (argument de type sans joker) }
+Procedure UnifyExpectedX(Ret, Exp : LongInt; Mode : LongInt);
 Var I, K, Aa : LongInt;
 Begin
   If (Exp = 0) Or (Exp = TY_NONE) Or (Ret = TY_NONE) Then Exit;
   K := IVIndex(Ret);
   If K >= 0 Then Begin
-    If (ITo[K] = 0) And (Not IsTVarT(Exp)) And (Exp <> T_OBJECT) And (Exp <> T_ANY) And (Exp <> TY_VOID) Then
-      ITo[K] := BoxedType(Exp);
+    If (ITo[K] = 0) And (Not IsTVarT(Exp) Or (TVarInScope(Exp) And (IVIndex(Exp) < 0))) And (Exp <> T_OBJECT) And (Exp <> T_ANY) And (Exp <> TY_VOID) Then
+      ITo[K] := BoxedType(ScrubTV(Exp))
+    Else If (Mode <> 2) And (ITo[K] <> 0) And (ISoft[K] = 1) And (ITo[K] <> Exp) And (Exp <> T_ANY) And (Exp > TY_NULL) And Not IsTVarT(Exp) And
+            Not HasIVar(Exp) And Not IsWildT(Exp) And Not IsPrim(Exp) And (ScrubTV(Exp) = Exp) And SoftCompat(ITo[K], Exp) Then Begin
+      ITo[K] := Exp;
+      ISoft[K] := 0;
+    End
+    Else If (Mode <> 2) And (ITo[K] <> 0) And (ISoft[K] = 2) And (ITo[K] <> Exp) And (Exp <> T_ANY) And (Exp > TY_NULL) And Not IsTVarT(Exp) And
+            Not HasIVar(Exp) And Not IsWildT(Exp) And Not IsPrim(Exp) And (ScrubTV(Exp) = Exp) And IsSubtypeRef(Exp, ITo[K]) Then Begin
+      ITo[K] := Exp;
+      ISoft[K] := 0;
+    End
+    Else If (Mode = 1) And (ITo[K] <> 0) And (ITo[K] <> Exp) And (Exp <> T_ANY) And (Exp <> TY_VOID) And (Exp > TY_NULL) And
+            Not IsTVarT(Exp) And Not HasIVar(Exp) And Not IsWildT(Exp) And Not IsPrim(Exp) And (ScrubTV(Exp) = Exp) And IsSubtypeRef(ITo[K], Exp) Then
+      ITo[K] := Exp;
     Exit;
   End;
   If (Ret < TY_FIRSTDYN) Or (Exp < TY_FIRSTDYN) Then Exit;
   If (Types[Ret].Kind = TYK_CLASS) And (Types[Exp].Kind = TYK_CLASS) And (Types[Exp].NArgs > 0) Then Begin
     Aa := AsSuper(Ret, Types[Exp].Cls);
     If (Aa <> 0) And (Types[Aa].NArgs = Types[Exp].NArgs) Then
-      For I := 0 To Types[Exp].NArgs - 1 Do UnifyExpected(Types[Aa].Args[I], Types[Exp].Args[I]);
+      For I := 0 To Types[Exp].NArgs - 1 Do Begin
+        If IsWildT(Types[Exp].Args[I]) Then Begin
+          { joker non borne : aucune information ; borne : borne superieure ou inferieure seulement }
+          If Types[Types[Exp].Args[I]].Cls <> 0 Then UnifyExpectedX(UnwrapW(Types[Aa].Args[I]), UnwrapW(Types[Exp].Args[I]), 2);
+        End
+        Else UnifyExpectedX(UnwrapW(Types[Aa].Args[I]), Types[Exp].Args[I], 1);
+      End;
   End
   Else If (Types[Ret].Kind = TYK_ARRAY) And (Types[Exp].Kind = TYK_ARRAY) Then
-    UnifyExpected(Types[Ret].Elem, Types[Exp].Elem);
+    UnifyExpectedX(Types[Ret].Elem, Types[Exp].Elem, Mode);
+End;
+
+Procedure UnifyExpected(Ret, Exp : LongInt);
+Begin
+  UnifyExpectedX(Ret, Exp, 0);
 End;
 
 
@@ -13556,6 +13990,10 @@ Function IsCheckedExc(C : LongInt) : Boolean;
 Begin
   IsCheckedExc := IsSubClass(C, ClsOf(T_THROWABLE)) And Not IsSubClass(C, C_RUNTIMEEX) And Not IsSubClass(C, C_ERROR);
 End;
+
+Var
+  LamThrown : Array Of LongInt;      { exceptions verifiees lancees par le corps de la derniere lambda attribuee }
+  NLamThrown : LongInt;
 
 Procedure PushThrowCtx(Kind : Byte);
 Begin
@@ -13603,6 +14041,10 @@ Begin
       If Done Then Exit;
     End
     Else Begin
+      { memorise pour l'inference des exceptions d'une lambda (throws E) }
+      If ThrowCtx[I].NThrown >= Length(ThrowCtx[I].Thrown) Then SetLength(ThrowCtx[I].Thrown, ThrowCtx[I].NThrown * 2 + 4);
+      ThrowCtx[I].Thrown[ThrowCtx[I].NThrown] := C;
+      Inc(ThrowCtx[I].NThrown);
       For K := 0 To ThrowCtx[I].NTypes - 1 Do
         If IsSubClass(C, ThrowCtx[I].Types[K]) Then Exit;
       Err(Line, 'exception non signalee ' + Classes[C].Simple + ' ; elle doit etre interceptee ou declaree (throws)');
@@ -13612,6 +14054,11 @@ Begin
   End;
 End;
 
+Procedure NoteClassThrows(Cls, Line : LongInt);
+Begin
+  NoteThrown(Cls, Line);
+End;
+
 Procedure NoteMethodThrows(M, Line : LongInt);
 Var K : LongInt;
 Begin
@@ -13619,6 +14066,13 @@ Begin
 End;
 
 { ----- conversions d'affectation --------------------------------------- }
+
+{ L'expression est-elle un appel generique ou un diamant (expression polymorphe) ? }
+Function IsPolyExpr(N : LongInt) : Boolean;
+Begin
+  While (N <> 0) And (Nodes[N].Kind = N_CONV) And (Nodes[N].Aux = 0) Do N := Nodes[N].A;
+  IsPolyExpr := (N <> 0) And (Nodes[N].Kind In [N_CALL, N_NEW]) And ((Nodes[N].Mods And CALL_POLY) <> 0);
+End;
 
 Procedure Coerce(N, Target : LongInt; Ctx : Byte);
 Var T, U, Bx : LongInt;
@@ -13672,7 +14126,7 @@ Begin
   Else If IsArrayT(Target) And IsArrayT(T) And (Nodes[N].Kind In [N_NAME, N_SELECT, N_NEWARRAY]) And IsClassT(ElemOf(Target)) And
           (Types[ElemOf(Target)].NArgs > 0) And IsRawType(ElemOf(T)) Then
     LintUnchecked(PrefPos(N), 'conversion non controlee : requis ' + TypeStr(Target) + ', trouve ' + TypeStr(T));
-  If IsSubtypeRef(T, Target) Then Begin
+  If IsSubtypeRef(T, Target) Or ((Ctx = CV_ARG) And IsPolyExpr(N) And IsSubtypeErased(T, Target)) Then Begin
     If (T = T_ANY) And (Target <> T_OBJECT) Then WrapConv(N, Target);
   End
   Else TypeErr(PrefPos(N), T, Target);
@@ -13820,9 +14274,12 @@ End;
   ============================================================================ }
 
 Const
-  MAXARGS = 24;
+  MAXARGS = 255;
   MAXLC   = 90;
   RET_INFER = -2;
+
+Var
+  ExplTArgs : LongInt;       { arguments de type explicites de l'appel en cours de resolution (liste de noeuds) }
 
 Type
   TResolved = Record
@@ -13832,10 +14289,18 @@ Type
     NPar    : LongInt;            { nombre de parametres declares }
     ParT    : Array[0..MAXARGS - 1] Of LongInt;   { type final de chaque argument }
     Ret     : LongInt;
+    NThr    : LongInt;            { exceptions declarees, apres inference (throws X) }
+    ThrC    : Array[0..15] Of LongInt;
   End;
 
 Var
   CurLambda : LongInt;
+
+Procedure NoteResolvedThrows(Const R : TResolved; Line : LongInt);
+Var K : LongInt;
+Begin
+  For K := 0 To R.NThr - 1 Do NoteThrown(R.ThrC[K], Line);
+End;
 
 Function IsFnNode(N : LongInt) : Boolean;
 Begin
@@ -13910,6 +14375,43 @@ Begin
   End;
 End;
 
+{ Une reference de methode est-elle potentiellement compatible avec une interface fonctionnelle de Np parametres ?
+  (il doit exister une methode de la bonne arite) }
+Function MethodRefFits(N, Np : LongInt) : Boolean;
+Var Qual, QT, I, M : LongInt; IsType : Boolean;
+Begin
+  MethodRefFits := True;
+  Qual := Nodes[N].A;
+  If Nodes[N].Aux = 1 Then Begin
+    QT := ResolveType(Qual);
+    IsType := True;
+  End
+  Else If Nodes[Qual].Kind = N_THIS Then Begin
+    If (Nodes[Qual].A <> 0) Or (CurClass < 0) Then Exit;
+    QT := ThisTypeOf(CurClass);
+    IsType := False;
+  End
+  Else If Nodes[Qual].Kind In [N_NAME, N_SELECT] Then Begin
+    QT := AttribQual(Qual);
+    If (LastEK = EK_PKG) Or (QT = TY_NONE) Then Exit;
+    IsType := LastEK = EK_TYPE;
+  End
+  Else Exit;
+  If Not (IsClassT(QT) Or IsTVarT(QT)) Then Exit;
+  CollectMethods(QT, Nodes[N].S, False);
+  If NCand = 0 Then Exit;
+  MethodRefFits := False;
+  For I := 0 To NCand - 1 Do Begin
+    M := CandM[I];
+    If Meths[M].Varargs Then Begin MethodRefFits := True; Exit; End;
+    If IsType Then Begin
+      If ((Meths[M].Flags And ACC_STATIC) <> 0) And (Meths[M].NPar = Np) Then Begin MethodRefFits := True; Exit; End;
+      If ((Meths[M].Flags And ACC_STATIC) = 0) And (Np >= 1) And (Meths[M].NPar = Np - 1) Then Begin MethodRefFits := True; Exit; End;
+    End
+    Else If Meths[M].NPar = Np Then Begin MethodRefFits := True; Exit; End;
+  End;
+End;
+
 Function FnArgFits(N, P : LongInt) : Boolean;
 Var Sam, Np : LongInt;
 Begin
@@ -13922,6 +14424,7 @@ Begin
     If Np <> Meths[Sam].NPar Then Exit;
     FnArgFits := LambdaShapeOk(N, Meths[Sam].Ret = TY_VOID);
   End
+  Else If (Nodes[N].Kind = N_METHODREF) And (Nodes[N].S <> 'new') Then FnArgFits := MethodRefFits(N, Meths[Sam].NPar)
   Else FnArgFits := True;
 End;
 
@@ -13980,24 +14483,57 @@ Var
   NA, I, K, Ci, Phase, Chosen, M, Cnt, Best : LongInt;
   A : LongInt;
   SvFr, SvTo : Array[0..MAXIV - 1] Of LongInt;
+  SvSoft : Array[0..MAXIV - 1] Of Byte;
   SvN : LongInt;
   Ok : Boolean;
   App : Array[0..MAXLC - 1] Of Boolean;
   Found : Boolean;
   ArgsTxt : String;
+  ETA : LongInt;
   OwnerT, Ret, PT, Q, Tgt, Sam, BodyT, RP : LongInt;
   UseVar : Boolean;
   AllExact : Boolean;
+
+  { epingle les variables d'inference de la methode sur les arguments de type explicites }
+  Procedure PinExplicit;
+  Var Q, K : LongInt;
+  Begin
+    Q := ETA; K := 0;
+    While (Q <> 0) And (K < Length(Meths[LM[Chosen]].TPar)) Do Begin
+      If IVIndex(Meths[LM[Chosen]].TPar[K]) >= 0 Then ITo[IVIndex(Meths[LM[Chosen]].TPar[K])] := ResolveType(Q);
+      Q := Nodes[Q].Next; Inc(K);
+    End;
+  End;
+
+  { variables d'inference de l'appel (methode et classe du diamant) remplacees par "inconnu" dans le type attendu d'un argument }
+  Function ScrubOwnVars(T, Mm : LongInt) : LongInt;
+  Var Fr, Tt : Array[0..MAXIV - 1] Of LongInt; Nv, K : LongInt;
+  Begin
+    Nv := 0;
+    For K := 0 To Length(Meths[Mm].TPar) - 1 Do
+      If Nv < MAXIV Then Begin Fr[Nv] := Meths[Mm].TPar[K]; Tt[Nv] := T_ANY; Inc(Nv); End;
+    If DiamondCls >= 0 Then
+      For K := 0 To Length(Classes[DiamondCls].TPars) - 1 Do
+        If Nv < MAXIV Then Begin Fr[Nv] := Classes[DiamondCls].TPars[K]; Tt[Nv] := T_ANY; Inc(Nv); End;
+    ScrubOwnVars := SubstType(T, Fr, Tt, Nv);
+  End;
 
   Function ParamAt(C, Idx, Ph : LongInt) : LongInt;
   Var Mm, Np : LongInt;
   Begin
     Mm := LM[C];
     Np := Meths[Mm].NPar;
-    If (Ph = 3) And (Idx >= Np - 1) Then
-      ParamAt := MemberType(SiteT, Meths[Mm].Owner, ElemOf(Meths[Mm].Par[Np - 1]))
+    { cible d'une lambda ou d'une reference de methode : approximation par les bornes des jokers }
+    If (Idx < MAXARGS) And IsFn[Idx] Then Begin
+      If (Ph = 3) And (Idx >= Np - 1) Then
+        ParamAt := MemberType(SiteT, Meths[Mm].Owner, ElemOf(Meths[Mm].Par[Np - 1]))
+      Else
+        ParamAt := MemberType(SiteT, Meths[Mm].Owner, Meths[Mm].Par[Idx]);
+    End
+    Else If (Ph = 3) And (Idx >= Np - 1) Then
+      ParamAt := MemberTypeParam(SiteT, Meths[Mm].Owner, ElemOf(Meths[Mm].Par[Np - 1]))
     Else
-      ParamAt := MemberType(SiteT, Meths[Mm].Owner, Meths[Mm].Par[Idx]);
+      ParamAt := MemberTypeParam(SiteT, Meths[Mm].Owner, Meths[Mm].Par[Idx]);
   End;
 
   Function Applicable(C, Ph : LongInt) : Boolean;
@@ -14052,12 +14588,13 @@ Var
 
 Begin
   ResolveCall := False;
+  ETA := ExplTArgs; ExplTArgs := 0;
   R.M := -1;
   R.Site := SiteT;
   R.Varargs := False;
   { sauvegarde du contexte d'inference de l'appelant }
   SvN := NIV;
-  For I := 0 To NIV - 1 Do Begin SvFr[I] := IFr[I]; SvTo[I] := ITo[I]; End;
+  For I := 0 To NIV - 1 Do Begin SvFr[I] := IFr[I]; SvTo[I] := ITo[I]; SvSoft[I] := ISoft[I]; End;
   NIV := 0;
   { arguments }
   NA := 0;
@@ -14090,7 +14627,7 @@ Begin
     End
     Else Err(Line, 'la methode ' + Name + ' ne peut pas etre appliquee aux arguments (' + ArgsTxt + ')');
     NIV := SvN;
-    For I := 0 To NIV - 1 Do Begin IFr[I] := SvFr[I]; ITo[I] := SvTo[I]; End;
+    For I := 0 To NIV - 1 Do Begin IFr[I] := SvFr[I]; ITo[I] := SvTo[I]; ISoft[I] := SvSoft[I]; End;
     Exit;
   End;
   { attribution des arguments (le type attendu est connu s'il n'y a qu'un candidat) }
@@ -14101,14 +14638,15 @@ Begin
       If (NL = 1) Then Begin
         M := LM[0];
         If Meths[M].NPar > 0 Then Begin
-          If I < Meths[M].NPar - 1 Then PT := MemberType(SiteT, Meths[M].Owner, Meths[M].Par[I])
+          If I < Meths[M].NPar - 1 Then PT := MemberTypeParam(SiteT, Meths[M].Owner, Meths[M].Par[I])
           Else If Meths[M].Varargs Then Begin
             If (NA = Meths[M].NPar) Then PT := 0
-            Else PT := MemberType(SiteT, Meths[M].Owner, ElemOf(Meths[M].Par[Meths[M].NPar - 1]));
+            Else PT := MemberTypeParam(SiteT, Meths[M].Owner, ElemOf(Meths[M].Par[Meths[M].NPar - 1]));
           End
-          Else PT := MemberType(SiteT, Meths[M].Owner, Meths[M].Par[I]);
+          Else PT := MemberTypeParam(SiteT, Meths[M].Owner, Meths[M].Par[I]);
         End;
         If (PT <> 0) And IsTVarT(PT) Then PT := 0;
+        If PT <> 0 Then PT := ScrubOwnVars(PT, M);
       End;
       ArgT[I] := AttribExpr(Args[I], PT);
       If ArgT[I] = TY_VOID Then Begin
@@ -14166,7 +14704,7 @@ Begin
       End;
     End;
     NIV := SvN;
-    For I := 0 To NIV - 1 Do Begin IFr[I] := SvFr[I]; ITo[I] := SvTo[I]; End;
+    For I := 0 To NIV - 1 Do Begin IFr[I] := SvFr[I]; ITo[I] := SvTo[I]; ISoft[I] := SvSoft[I]; End;
     Exit;
   End;
   M := LM[Chosen];
@@ -14178,9 +14716,15 @@ Begin
   If DiamondCls >= 0 Then
     For I := 0 To Length(Classes[DiamondCls].TPars) - 1 Do IVAdd(Classes[DiamondCls].TPars[I]);
   If Ctor And (DiamondCls >= 0) Then Ret := SiteT
-  Else Ret := MemberType(SiteT, Meths[M].Owner, Meths[M].Ret);
+  Else Ret := MemberTypeRet(SiteT, Meths[M].Owner, Meths[M].Ret);
+  If ETA <> 0 Then PinExplicit;
   For I := 0 To NA - 1 Do
-    If Not IsFn[I] Then Unify(ParamAt(Chosen, I, Ord(R.Varargs) * 3 + Ord(Not R.Varargs)), ArgT[I]);
+    If Not IsFn[I] Then Begin
+      UnifySoft := IsPolyExpr(Args[I]);
+      Unify(ParamAt(Chosen, I, Ord(R.Varargs) * 3 + Ord(Not R.Varargs)), ArgT[I]);
+      UnifySoft := False;
+    End;
+  If ETA <> 0 Then PinExplicit;
   If (NIV > 0) And (Expected > 0) Then UnifyExpected(Ret, Expected);
   { lambdas et references de methode }
   For I := 0 To NA - 1 Do
@@ -14190,6 +14734,17 @@ Begin
       If Nodes[Args[I]].Kind = N_LAMBDA Then BodyT := AttribLambda(Args[I], Tgt, HasIVar(Tgt))
       Else BodyT := AttribMethodRef(Args[I], Tgt);
       Sam := FindSAM(Tgt);
+      { throws E de l'interface fonctionnelle : E est borne inferieurement par les exceptions lancees par le corps }
+      If Sam >= 0 Then
+        For K := 0 To Length(Meths[Sam].ThrVar) - 1 Do
+          If Meths[Sam].ThrVar[K] <> 0 Then Begin
+            Q := IVIndex(MemberType(Tgt, Meths[Sam].Owner, Meths[Sam].ThrVar[K]));
+            If Q >= 0 Then
+              For Ci := 0 To NLamThrown - 1 Do Begin
+                If ITo[Q] = 0 Then ITo[Q] := ClassT(LamThrown[Ci])
+                Else ITo[Q] := LubType(ITo[Q], ClassT(LamThrown[Ci]));
+              End;
+          End;
       If (Sam >= 0) And (BodyT <> TY_NONE) And (BodyT <> TY_VOID) Then Begin
         RP := SamRetOf(Tgt, Sam);
         Unify(RP, BodyT);
@@ -14199,6 +14754,7 @@ Begin
       End;
     End;
   { types finaux des parametres }
+  If ETA <> 0 Then PinExplicit;
   Cnt := 0;
   For I := 0 To NA - 1 Do Begin
     PT := ResolveIVars(ParamAt(Chosen, I, Ord(R.Varargs) * 3 + Ord(Not R.Varargs)));
@@ -14208,9 +14764,30 @@ Begin
   End;
   R.Ret := ResolveIVarsAny(Ret);
   If R.Ret = TY_NONE Then R.Ret := Ret;
+  { exceptions declarees : une variable de type de throws est remplacee par sa valeur inferee
+    (RuntimeException si elle n'est contrainte par rien) }
+  R.NThr := 0;
+  For K := 0 To Length(Meths[M].Thr) - 1 Do
+    If R.NThr < 16 Then Begin
+      Ci := Meths[M].Thr[K];
+      If (K < Length(Meths[M].ThrVar)) And (Meths[M].ThrVar[K] <> 0) Then Begin
+        Phase := IVIndex(Meths[M].ThrVar[K]);
+        If Phase >= 0 Then Begin
+          If ITo[Phase] = 0 Then Ci := C_RUNTIMEEX
+          Else If IsClassT(ITo[Phase]) Then Ci := Types[ITo[Phase]].Cls
+          Else If IsClassT(Erasure(ITo[Phase])) Then Ci := Types[Erasure(ITo[Phase])].Cls;
+        End
+        Else Begin
+          Best := MemberType(SiteT, Meths[M].Owner, Meths[M].ThrVar[K]);
+          If IsClassT(Best) Then Ci := Types[Best].Cls;
+        End;
+      End;
+      R.ThrC[R.NThr] := Ci;
+      Inc(R.NThr);
+    End;
   ResolveCall := True;
   NIV := SvN;
-  For I := 0 To NIV - 1 Do Begin IFr[I] := SvFr[I]; ITo[I] := SvTo[I]; End;
+  For I := 0 To NIV - 1 Do Begin IFr[I] := SvFr[I]; ITo[I] := SvTo[I]; ISoft[I] := SvSoft[I]; End;
 End;
 
 { ============================================================================
@@ -14218,18 +14795,14 @@ End;
   ============================================================================ }
 
 Const
-  EK_VALUE = 0;
-  EK_TYPE  = 1;
-  EK_PKG   = 2;
-
   LF_PATTERN = $1000000;     { variable liee par instanceof }
   LF_PARAM   = $2000000;     { parametre }
   LF_CATCH   = $4000000;     { parametre d'une clause catch }
 
 Var
-  LastEK      : LongInt;
   YieldNodes  : Array Of LongInt;
   NYields     : LongInt;
+  YieldExpected : LongInt;     { type attendu des valeurs de l'expression switch en cours }
   LoopDepth   : LongInt;
   SwitchDepth : LongInt;
   LabelNames  : Array Of String;
@@ -14237,7 +14810,6 @@ Var
   NLabelStk   : LongInt;
   AnonSuperCtor : LongInt;
 
-Function AttribQual(N : LongInt) : LongInt; Forward;
 Function AttribCall(N, Expected : LongInt) : LongInt; Forward;
 Function AttribNew(N, Expected : LongInt) : LongInt; Forward;
 Function AttribSwitchExpr(N, Expected : LongInt) : LongInt; Forward;
@@ -14507,7 +15079,7 @@ Begin
   End
   Else Begin
     Nodes[N].Aux := 1;
-    Nodes[N].Typ := MemberType(VT, Owner, Fields[F].Typ);
+    Nodes[N].Typ := MemberTypeRet(VT, Owner, Fields[F].Typ);
   End;
   If (Fields[F].Flags And ACC_FINAL) <> 0 Then ReadConstFromField(N, F);
   SelectOnValue := Nodes[N].Typ;
@@ -15043,7 +15615,7 @@ Begin
   Tn := Nodes[N].A;
   T := ResolveType(Tn);
   B := Nodes[N].B;
-  TB := AttribExpr(B, T);
+  If IsFnNode(B) Then TB := AttribExpr(B, T) Else TB := AttribExpr(B, 0);      { le contexte de cast ne type que les lambdas }
   AttribCast := T;
   { cast d'intersection (A & B & ...) }
   If (Nodes[N].C <> 0) And (T <> TY_NONE) Then Begin
@@ -15419,7 +15991,7 @@ Begin
   Ok := ResolveCall('<init>', SiteT, True, Nodes[N].B, 0, Nodes[N].Line, -1, R);
   If Ok Then Begin
     Nodes[N].Sym := R.M;
-    NoteMethodThrows(R.M, Nodes[N].Line);
+    NoteResolvedThrows(R, Nodes[N].Line);
     LintMethodUse(R.M, Nodes[N].Line);
     If R.Varargs Then Begin Nodes[N].Mods := Nodes[N].Mods Or CALL_VARARGS; Nodes[N].N := R.NPar; End;
   End;
@@ -15427,7 +15999,7 @@ End;
 
 Function AttribCall(N, Expected : LongInt) : LongInt;
 Var
-  Name : String; Tgt, QT, SiteT, K, M, Ret : LongInt; R : TResolved; Ok : Boolean;
+  Name : String; Tgt, QT, SiteT, K, M, Ret, RT : LongInt; R : TResolved; Ok : Boolean;
   StaticOnly, IsSuper, ImplicitThis : Boolean; ArgS : String; Recv : LongInt; Imported : Boolean;
 Begin
   Name := Nodes[N].S;
@@ -15460,6 +16032,11 @@ Begin
     If Nodes[Tgt].A <> 0 Then Begin
       QT := AttribQual(Nodes[Tgt].A);
       SiteT := QT;
+      { Interface.super.m() : parametrisation de l'interface vue depuis la classe courante }
+      If IsClassT(QT) And (Types[QT].NArgs = 0) Then Begin
+        RT := AsSuper(ThisTypeOf(CurClass), Types[QT].Cls);
+        If RT > 0 Then SiteT := RT;
+      End;
     End
     Else SiteT := Classes[CurClass].Super;
     If SiteT = 0 Then SiteT := T_OBJECT;
@@ -15492,11 +16069,13 @@ Begin
       SiteT := QT;
     End;
   End;
+  ExplTArgs := Nodes[N].C;
   Ok := ResolveCall(Name, SiteT, False, Nodes[N].B, Expected, Nodes[N].Line, -1, R);
   If Not Ok Then Exit;
   M := R.M;
   Nodes[N].Sym := M;
-  NoteMethodThrows(M, Nodes[N].Line);
+  { le clone() d'un tableau ne declare aucune exception }
+  If Not ((Name = 'clone') And (Meths[M].NPar = 0) And IsArrayT(SiteT)) Then NoteResolvedThrows(R, Nodes[N].Line);
   LintMethodUse(M, Nodes[N].Line);
   If (Tgt <> 0) And Not StaticOnly And Not IsSuper Then Begin
     If (Meths[M].Flags And ACC_STATIC) <> 0 Then Begin
@@ -15539,6 +16118,7 @@ Begin
       Nodes[N].Mods := Nodes[N].Mods Or CALL_IFACEOBJ;
   End;
   If R.Varargs Then Begin Nodes[N].Mods := Nodes[N].Mods Or CALL_VARARGS; Nodes[N].N := R.NPar; End;
+  If Length(Meths[M].TPar) > 0 Then Nodes[N].Mods := Nodes[N].Mods Or CALL_POLY;
   Ret := R.Ret;
   { cas particuliers }
   If (Name = 'getClass') And (Meths[M].NPar = 0) And (Meths[M].Owner = C_OBJECT) Then Begin
@@ -15623,25 +16203,28 @@ Begin
       If Expected > 0 Then Begin
         For K := 0 To Length(Classes[C].TPars) - 1 Do IVAdd(Classes[C].TPars[K]);
         UnifyExpected(SiteT, Expected);
-        T := ResolveIVars(SiteT);
+        { contexte attendu encore parametre par des variables d'une inference englobante : inconnu plutot qu'Object }
+        T := ResolveIVarsAny(SiteT);
         NIV := 0;
       End
       Else T := Erasure(SiteT);
     End;
   End
   Else Begin
+    AnonCtorOk := Body <> 0;
     Ok := ResolveCall('<init>', SiteT, True, Args, Expected, Nodes[N].Line, DiamondCls, R);
+    AnonCtorOk := False;
     If Ok Then Begin
       { constructeur protege : accessible seulement dans le paquetage (ou par super / classe anonyme) }
       If (Body = 0) And ((Meths[R.M].Flags And (ACC_PUBLIC Or ACC_PRIVATE)) = 0) And ((Meths[R.M].Flags And ACC_PROTECTED) <> 0) And
          (ClassPackage(C) <> CurPackage) Then
         Err(Nodes[N].Line, 'le constructeur de ' + Classes[C].Simple + ' est protege et inaccessible ici');
       Nodes[N].Sym := R.M;
-      NoteMethodThrows(R.M, Nodes[N].Line);
+      NoteResolvedThrows(R, Nodes[N].Line);
       LintMethodUse(R.M, Nodes[N].Line);
       If (Body = 0) And Not Diamond Then LintRawCall(R.M, Nodes[N].Line, T);
       If R.Varargs Then Begin Nodes[N].Mods := Nodes[N].Mods Or CALL_VARARGS; Nodes[N].N := R.NPar; End;
-      If DiamondCls >= 0 Then T := R.Ret;
+      If DiamondCls >= 0 Then Begin T := R.Ret; Nodes[N].Mods := Nodes[N].Mods Or CALL_POLY; End;
     End;
   End;
   Nodes[N].E := 0;
@@ -15770,6 +16353,10 @@ Begin
   End;
   CurRet := SvRet; LambdaRets := SvLR; CurCtx := SvCtx; CurLambda := SvLam;
   LoopDepth := SvLoop; SwitchDepth := SvSw; NLabelStk := SvLab;
+  { exceptions verifiees lancees par le corps }
+  NLamThrown := ThrowCtx[NThrowCtx - 1].NThrown;
+  SetLength(LamThrown, NLamThrown);
+  For K := 0 To NLamThrown - 1 Do LamThrown[K] := ThrowCtx[NThrowCtx - 1].Thrown[K];
   Dec(NThrowCtx);
   NScope := Mark;
   Nodes[N].Typ := Target;
@@ -16170,7 +16757,7 @@ Function ElementTypeOfIterable(T : LongInt) : LongInt;
 Var A : LongInt;
 Begin
   A := AsSuper(T, C_ITERABLE);
-  If (A <> 0) And (Types[A].NArgs = 1) Then ElementTypeOfIterable := Types[A].Args[0]
+  If (A <> 0) And (Types[A].NArgs = 1) Then ElementTypeOfIterable := UnwrapW(Types[A].Args[0])
   Else If A <> 0 Then ElementTypeOfIterable := T_OBJECT
   Else ElementTypeOfIterable := TY_NONE;
 End;
@@ -16432,7 +17019,7 @@ Begin
       Classes[CurClass].HasAssert := True;
     End;
     N_YIELD : Begin
-      T := AttribExpr(Nodes[N].A, 0);
+      T := AttribExpr(Nodes[N].A, YieldExpected);
       If NYields >= Length(YieldNodes) Then SetLength(YieldNodes, NYields * 2 + 16);
       YieldNodes[NYields] := N;
       Inc(NYields);
@@ -16938,14 +17525,17 @@ End;
 
 Function AttribSwitchExpr(N, Expected : LongInt) : LongInt;
 Var
-  ST, Mode, Base, I, RT, T, PT, Y, K : LongInt; AllNum, AllBool, Same : Boolean; P : LongInt;
+  ST, Mode, Base, I, RT, T, PT, Y, K, SvYE : LongInt; AllNum, AllBool, Same : Boolean; P : LongInt;
 Begin
   ST := AttribSwitchSel(N, Mode);
   Base := NYields;
   AttribSwitchExpr := TY_NONE;
   Nodes[N].Typ := TY_NONE;
   If ST = TY_NONE Then Begin NYields := Base; Exit; End;
+  SvYE := YieldExpected;
+  YieldExpected := Expected;
   AttribSwitchBody(N, ST, Mode);
+  YieldExpected := SvYE;
   If NYields = Base Then Begin
     Err(Nodes[N].Line, 'l''expression switch ne contient aucune valeur de resultat');
     Exit;
@@ -19025,7 +19615,7 @@ Begin
         Exit;
       End;
       VTAssignable := (TypeDesc(Target) = N) Or ((Copy(N, 1, 2) = '[L') And (Copy(TypeDesc(Target), 1, 2) = '[L') And
-        IsSubtypeRef(ClassT(GetClass(Copy(N, 3, Length(N) - 3))), Types[Target].Elem));
+        IsSubtypeErased(ClassT(GetClass(Copy(N, 3, Length(N) - 3))), Types[Target].Elem));
       Exit;
     End;
     VTAssignable := (Target = T_OBJECT) Or (ClsOf(Target) = C_CLONEABLE) Or (ClsOf(Target) = C_SERIAL);
@@ -19034,7 +19624,7 @@ Begin
   C := LookupClass(N);
   If (C < 0) Or Not IsClassT(Target) Then Begin VTAssignable := False; Exit; End;
   Src := ClassT(C);
-  VTAssignable := IsSubtypeRef(Src, Target);
+  VTAssignable := IsSubtypeErased(Src, Target);
 End;
 
 { ----- pile et locales ----------------------------------------------------- }
@@ -22984,6 +23574,14 @@ Begin
   Case Types[T].Kind Of
     TYK_ARRAY : SigOfType := '[' + SigOfType(Types[T].Elem);
     TYK_TVAR  : SigOfType := 'T' + TVars[Types[T].TV].Name + ';';
+    TYK_WILD  : Begin
+      Case Types[T].Cls Of
+        1 : SigOfType := '+' + SigOfType(Types[T].Elem);
+        2 : SigOfType := '-' + SigOfType(Types[T].Elem);
+      Else
+        SigOfType := '*';
+      End;
+    End;
     TYK_CLASS : Begin
       If Types[T].Outer <> 0 Then Begin
         S := SigOfType(Types[T].Outer);
