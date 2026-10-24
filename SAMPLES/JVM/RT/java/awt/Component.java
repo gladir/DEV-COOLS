@@ -3,6 +3,9 @@ import java.awt.event.*;
 import java.util.ArrayList;
 public abstract class Component implements java.awt.image.ImageObserver, java.io.Serializable {
     public static final float TOP_ALIGNMENT = 0.0f, CENTER_ALIGNMENT = 0.5f, BOTTOM_ALIGNMENT = 1.0f, LEFT_ALIGNMENT = 0.0f, RIGHT_ALIGNMENT = 1.0f;
+    public enum BaselineResizeBehavior { CONSTANT_ASCENT, CONSTANT_DESCENT, CENTER_OFFSET, OTHER }
+    public BaselineResizeBehavior getBaselineResizeBehavior() { return BaselineResizeBehavior.OTHER; }
+    public int getBaseline(int w, int h) { return -1; }
     protected int x, y, width, height;
     protected Container parent;
     protected boolean visible = true, enabled = true, focusable = true, valid = false;

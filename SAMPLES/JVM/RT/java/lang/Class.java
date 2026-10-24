@@ -27,7 +27,10 @@ public final class Class<T> implements java.io.Serializable {
     }
     public T newInstance() throws InstantiationException, IllegalAccessException { return (T) VM.newInstance(this); }
     public String toString() { return (isInterface() ? "interface " : (isPrimitive() ? "" : "class ")) + getName(); }
-    public boolean isSealed() { return false; }
+    public native Class<?>[] getInterfaces();
+    native Class<?>[] permitted0();
+    public boolean isSealed() { return permitted0().length > 0; }
+    public Class<?>[] getPermittedSubclasses() { Class<?>[] r = permitted0(); return r.length == 0 ? null : r; }
     public boolean isAnnotation() { return false; }
     public native boolean isSynthetic();
     public boolean isMemberClass() { return false; }

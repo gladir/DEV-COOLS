@@ -10,6 +10,8 @@ public final class StackTraceElement implements java.io.Serializable {
     public String getFileName() { return fileName; }
     public int getLineNumber() { return lineNumber; }
     public boolean isNativeMethod() { return lineNumber == -2; }
+    public boolean equals(Object o) { return o instanceof StackTraceElement e && e.lineNumber == lineNumber && e.declaringClass.equals(declaringClass) && e.methodName.equals(methodName) && java.util.Objects.equals(e.fileName, fileName); }
+    public int hashCode() { return 31 * (31 * declaringClass.hashCode() + methodName.hashCode()) + lineNumber; }
     public String toString() {
         return declaringClass + "." + methodName + "(" + (fileName == null ? "Unknown Source" : (lineNumber >= 0 ? fileName + ":" + lineNumber : fileName)) + ")";
     }
