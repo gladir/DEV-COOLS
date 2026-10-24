@@ -1,0 +1,8 @@
+package java.util;
+import java.lang.RuntimeException;
+public class EmptyStackException extends RuntimeException {
+    public EmptyStackException() { super(); }
+    public EmptyStackException(String s) { super(s); }
+    public EmptyStackException(String s, Throwable cause) { super(s, cause); }
+    public EmptyStackException(Throwable cause) { super(cause); }
+}

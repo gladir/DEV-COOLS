@@ -55317,6 +55317,7 @@ Begin
     Else Classes[C].Super := T_OBJECT;
   End
   Else Classes[C].Super := T_OBJECT;
+  If Classes[C].Name = 'java/lang/Object' Then Classes[C].Super := 0;
   { interfaces }
   NI := 0;
   SetLength(Ifs, 0);
