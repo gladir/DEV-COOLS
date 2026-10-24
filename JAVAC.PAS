@@ -17651,6 +17651,98 @@ End;
 
 { ----- declarations de variables -------------------------------------------- }
 
+{ ----- accessibilite des instructions (JLS 14.22) ------------------------------- }
+
+{ Y a-t-il dans S un 'break' (sans etiquette hors boucle/switch interne, ou avec l'etiquette Lab) ? }
+Function HasBreak(S : LongInt; Const Lab : String; Nested : Boolean) : Boolean;
+Var C : LongInt;
+Begin
+  HasBreak := False;
+  While S <> 0 Do Begin
+    Case Nodes[S].Kind Of
+      N_BREAK : If ((Nodes[S].S = '') And Not Nested) Or ((Nodes[S].S <> '') And (Nodes[S].S = Lab)) Then Begin HasBreak := True; Exit; End;
+      N_BLOCK : If HasBreak(Nodes[S].A, Lab, Nested) Then Begin HasBreak := True; Exit; End;
+      N_IF : If HasBreak(Nodes[S].B, Lab, Nested) Or HasBreak(Nodes[S].C, Lab, Nested) Then Begin HasBreak := True; Exit; End;
+      N_LABELED, N_SYNC : If HasBreak(Nodes[S].A, Lab, Nested) Or HasBreak(Nodes[S].B, Lab, Nested) Then Begin HasBreak := True; Exit; End;
+      N_WHILE : If HasBreak(Nodes[S].B, Lab, True) Then Begin HasBreak := True; Exit; End;
+      N_DO : If HasBreak(Nodes[S].A, Lab, True) Then Begin HasBreak := True; Exit; End;
+      N_FOR : If HasBreak(Nodes[S].D, Lab, True) Then Begin HasBreak := True; Exit; End;
+      N_FOREACH : If HasBreak(Nodes[S].C, Lab, True) Then Begin HasBreak := True; Exit; End;
+      N_SWITCH : Begin
+        C := Nodes[S].B;
+        While C <> 0 Do Begin
+          If HasBreak(Nodes[C].B, Lab, True) Then Begin HasBreak := True; Exit; End;
+          C := Nodes[C].Next;
+        End;
+      End;
+      N_TRY : Begin
+        If HasBreak(Nodes[S].B, Lab, Nested) Or HasBreak(Nodes[S].D, Lab, Nested) Then Begin HasBreak := True; Exit; End;
+        C := Nodes[S].C;
+        While C <> 0 Do Begin
+          If HasBreak(Nodes[C].B, Lab, Nested) Then Begin HasBreak := True; Exit; End;
+          C := Nodes[C].Next;
+        End;
+      End;
+    End;
+    S := Nodes[S].Next;
+  End;
+End;
+
+Function CanComplete(S : LongInt) : Boolean;
+Var C, L : LongInt; R : Boolean; HasDef : Boolean;
+Begin
+  CanComplete := True;
+  If S = 0 Then Exit;
+  Case Nodes[S].Kind Of
+    N_RETURN, N_THROW, N_BREAK, N_CONTINUE, N_YIELD : CanComplete := False;
+    N_BLOCK : Begin
+      L := Nodes[S].A;
+      R := True;
+      While L <> 0 Do Begin R := CanComplete(L); If Not R Then Break; L := Nodes[L].Next; End;
+      CanComplete := R;
+    End;
+    N_IF : If Nodes[S].C = 0 Then CanComplete := True
+           Else CanComplete := CanComplete(Nodes[S].B) Or CanComplete(Nodes[S].C);
+    N_WHILE : CanComplete := Not ((Nodes[Nodes[S].A].CK = CK_INT) And (Nodes[Nodes[S].A].CI <> 0)) Or HasBreak(Nodes[S].B, '', False);
+    N_DO : CanComplete := (CanComplete(Nodes[S].A) And Not ((Nodes[Nodes[S].B].CK = CK_INT) And (Nodes[Nodes[S].B].CI <> 0))) Or HasBreak(Nodes[S].A, '', False);
+    N_FOR : CanComplete := ((Nodes[S].B <> 0) And Not ((Nodes[Nodes[S].B].CK = CK_INT) And (Nodes[Nodes[S].B].CI <> 0))) Or HasBreak(Nodes[S].D, '', False);
+    N_LABELED : CanComplete := CanComplete(Nodes[S].A) Or HasBreak(Nodes[S].A, Nodes[S].S, False);
+    N_SYNC : CanComplete := CanComplete(Nodes[S].B);
+    N_TRY : Begin
+      R := CanComplete(Nodes[S].B);
+      C := Nodes[S].C;
+      While C <> 0 Do Begin If CanComplete(Nodes[C].B) Then R := True; C := Nodes[C].Next; End;
+      If (Nodes[S].D <> 0) And Not CanComplete(Nodes[S].D) Then R := False;
+      CanComplete := R;
+    End;
+    N_SWITCH : Begin
+      HasDef := False;
+      R := False;
+      C := Nodes[S].B;
+      While C <> 0 Do Begin
+        If (Nodes[C].Aux And 1) <> 0 Then HasDef := True;
+        If HasBreak(Nodes[C].B, '', False) Then R := True;
+        If (Nodes[C].Aux And 2) <> 0 Then Begin
+          If CanComplete(Nodes[C].B) Then R := True;
+        End
+        Else If Nodes[C].Next = 0 Then Begin
+          { dernier groupe : doit pouvoir se terminer normalement }
+          L := Nodes[C].B;
+          If L = 0 Then R := True
+          Else Begin
+            If CanComplete(Nodes[C].B) Then R := True;
+            While L <> 0 Do Begin If Not CanComplete(L) Then Begin R := R And False; Break; End; L := Nodes[L].Next; End;
+          End;
+        End;
+        C := Nodes[C].Next;
+      End;
+      If (Nodes[S].E <> SW_PATTERN) And Not HasDef Then R := True;
+      If (Nodes[S].E = SW_PATTERN) And Not HasDef Then R := True;
+      CanComplete := R;
+    End;
+  End;
+End;
+
 Procedure GenLocalVar(N : LongInt);
 Var V, L, Init : LongInt;
 Begin
@@ -17931,7 +18023,7 @@ Var
   CaseL : Array Of LongInt; Keys, Tg : Array Of LongInt; Strs : Array Of String; StrCase : Array Of LongInt;
   Hashes, HTg, HK : Array Of LongInt; NH, B, F : LongInt; Bucket : Array Of LongInt; Hl : Array Of LongInt;
   Nxt, After1, Ci, Ord_ : LongInt; Have : Boolean; ET : LongInt; ThrowL : LongInt; Ctx : LongInt;
-  TabKeys, TabTg : Array Of LongInt;
+  TabKeys, TabTg : Array Of LongInt; PrevB : LongInt;
 Begin
   Mode := Nodes[N].E;
   If Mode = SW_PATTERN Then Begin GenPatternSwitch(N, IsExpr); Exit; End;
@@ -18066,9 +18158,11 @@ Begin
       End
       Else Begin
         Body := Nodes[Cs].B;
+        PrevB := 0;
         While Body <> 0 Do Begin
-          If Not Alive Then Begin Err(Nodes[Body].Line, 'instruction inatteignable'); Break; End;
+          If Not Alive Then Begin If (PrevB <> 0) And Not CanComplete(PrevB) Then Err(Nodes[Body].Line, 'instruction inatteignable'); Break; End;
           GenStmt(Body);
+          PrevB := Body;
           Body := Nodes[Body].Next;
         End;
       End;
@@ -18581,7 +18675,7 @@ Begin
 End;
 
 Procedure GenStmt(N : LongInt);
-Var S, Mark, T, L, Lab : LongInt;
+Var S, Mark, T, L, Lab, Prev : LongInt;
 Begin
   If N = 0 Then Exit;
   If Not Alive Then Exit;
@@ -18589,13 +18683,15 @@ Begin
   Case Nodes[N].Kind Of
     N_BLOCK : Begin
       Mark := NextLoc;
+      Prev := 0;
       S := Nodes[N].A;
       While S <> 0 Do Begin
         If Not Alive Then Begin
-          If Nodes[S].Kind <> N_LOCALCLASS Then Err(Nodes[S].Line, 'instruction inatteignable');
+          If (Prev <> 0) And Not CanComplete(Prev) Then Err(Nodes[S].Line, 'instruction inatteignable');
           Break;
         End;
         GenStmt(S);
+        Prev := S;
         S := Nodes[S].Next;
       End;
       FreeLocals(Mark);
@@ -19088,12 +19184,12 @@ End;
 
 Procedure GenCtorBody(C, M : LongInt);
 Var
-  D, Body, First, Rest, I, F, K : LongInt; IsThis, HasCall : Boolean; Call : LongInt;
+  D, Body, First, Rest, I, F, K, PrevR : LongInt; IsThis, HasCall : Boolean; Call : LongInt;
 Begin
   D := Meths[M].Decl;
   Body := Nodes[D].C;
   First := Nodes[Body].A;
-  IsThis := False; HasCall := False;
+  IsThis := False; HasCall := False; PrevR := 0;
   If First <> 0 Then
     If (Nodes[First].Kind = N_EXPRSTMT) And (Nodes[Nodes[First].A].Kind = N_CALL) And (Nodes[Nodes[First].A].Aux = 1) Then Begin
       HasCall := True;
@@ -19132,8 +19228,9 @@ Begin
   End;
   If Not IsThis Then GenInstanceInit(C);
   While Rest <> 0 Do Begin
-    If Not Alive Then Begin Err(Nodes[Rest].Line, 'instruction inatteignable'); Break; End;
+    If Not Alive Then Begin If (PrevR <> 0) And Not CanComplete(PrevR) Then Err(Nodes[Rest].Line, 'instruction inatteignable'); Break; End;
     GenStmt(Rest);
+    PrevR := Rest;
     Rest := Nodes[Rest].Next;
   End;
   { record : affectation des composants a la fin du constructeur canonique }
