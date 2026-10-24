@@ -157038,6 +157038,183 @@ Begin
 End;
 {$ENDIF}
 
+{ PING (2026-10-24, demande explicite - voir                               }
+{ C:\SOURCE\GITHUB\NETWORKKIT-P\PING.PAS pour la syntaxe/le comportement    }
+{ de reference) : ping REEL de l'hote via ICMP (icmp.dll/IcmpSendEcho,      }
+{ meme liaison deja utilisee par la passerelle WATTCP, voir                 }
+{ Wtcp_HandleIcmp plus bas) - pas de privileges administrateur necessaires, }
+{ contrairement a un socket SOCK_RAW/IPPROTO_ICMP (approche de PING.PAS     }
+{ sous FPC). Si la cible correspond au nom d'un site deja configure dans    }
+{ Outils > IIS (voir IISResolveTarget), on ping 127.0.0.1 : ce site est     }
+{ servi localement par DEVENV lui-meme (TIISSite n'a pas d'adresse reseau   }
+{ propre), ce n'est pas un vrai hote distant. Restreinte, par demande       }
+{ explicite, a "Invite de commande"/"Norton Commander"/"Powershell dev"/    }
+{ Bash (voir le garde SK_CMD/SK_NCOMMANDER/SK_POWERSHELL/SK_BASH dans        }
+{ TermExecuteCommand) - pas etendue aux autres shells historiques sans      }
+{ rapport (OS/2&REXX, VMS, FLEX, CP/M...). }
+Function Ping_FindIISSite(Const HostName: String): Boolean;
+Var
+ I: Integer;
+Begin
+ Ping_FindIISSite := False;
+ IIS_EnsureConfigLoaded;
+ For I := 0 To IISMgr.SiteCount - 1 Do
+  If UpCaseStr(TrimStr(IISMgr.Sites[I].Name)) = UpCaseStr(TrimStr(HostName)) Then Begin
+   Ping_FindIISSite := True;
+   Exit;
+  End;
+End;
+
+Function Ping_IpToStr(IP: LongWord): String;
+Begin
+ Ping_IpToStr := IntToStr(Byte(IP)) + '.' + IntToStr(Byte(IP Shr 8)) + '.' +
+  IntToStr(Byte(IP Shr 16)) + '.' + IntToStr(Byte(IP Shr 24));
+End;
+
+Procedure TermCmd_Ping(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Const
+ DEF_COUNT   = 4;
+ DEF_SIZE    = 32;
+ DEF_TIMEOUT = 4000;
+Var
+ Idx, ErrCode, I: Integer;
+ Count, PingSize, Timeout: Integer;
+ Tok, Dest: String;
+ WSD: TMdbcWSAData;
+ He: PMdbcHostEnt;
+ DstIP: LongWord;
+ IcmpHandle: LongInt;
+ EchoReply: TWtcpIcmpEchoReply;
+ ReqData: Array[0..255] Of Byte;
+ RC: LongWord;
+ Sent, Received: Integer;
+ MinTime, MaxTime, SumTime: LongInt;
+ LossPct: Integer;
+Begin
+ If TermTrim(ParamStr) = '/?' Then Begin
+  TermAddLine(TP, 'PING : envoie des requetes ICMP ECHO reelles vers un hote ' +
+   'et affiche les reponses.');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Syntaxe : PING [-n nombre] [-l taille] [-w timeout] destination');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  -n nombre   Nombre de requetes d''echo a envoyer (defaut : 4).');
+  TermAddLine(TP, '  -l taille   Taille, en octets, du tampon d''envoi (defaut : 32).');
+  TermAddLine(TP, '  -w timeout  Delai d''attente, en ms, pour chaque reponse (defaut : 4000).');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Si "destination" correspond au nom d''un site configure dans');
+  TermAddLine(TP, 'Outils > IIS, PING envoie ses requetes vers 127.0.0.1 (site local).');
+  Exit;
+ End;
+ Count := DEF_COUNT; PingSize := DEF_SIZE; Timeout := DEF_TIMEOUT;
+ Dest := '';
+ Idx := 1;
+ Tok := TermExtractParam(ParamStr, Idx);
+ While Tok <> '' Do Begin
+  If UpCaseStr(Tok) = '-N' Then Begin
+   Inc(Idx);
+   Val(TermExtractParam(ParamStr, Idx), Count, ErrCode);
+   If ErrCode <> 0 Then Begin
+    TermAddLine(TP, 'PING : valeur invalide pour -n.');
+    Exit;
+   End;
+  End Else If UpCaseStr(Tok) = '-L' Then Begin
+   Inc(Idx);
+   Val(TermExtractParam(ParamStr, Idx), PingSize, ErrCode);
+   If ErrCode <> 0 Then Begin
+    TermAddLine(TP, 'PING : valeur invalide pour -l.');
+    Exit;
+   End;
+  End Else If UpCaseStr(Tok) = '-W' Then Begin
+   Inc(Idx);
+   Val(TermExtractParam(ParamStr, Idx), Timeout, ErrCode);
+   If ErrCode <> 0 Then Begin
+    TermAddLine(TP, 'PING : valeur invalide pour -w.');
+    Exit;
+   End;
+  End Else If Dest = '' Then
+   Dest := Tok
+  Else Begin
+   TermAddLine(TP, 'PING : parametre invalide : ' + Tok);
+   Exit;
+  End;
+  Inc(Idx);
+  Tok := TermExtractParam(ParamStr, Idx);
+ End;
+ If Dest = '' Then Begin
+  TermAddLine(TP, 'PING : syntaxe incorrecte. Tapez PING /? pour obtenir de l''aide.');
+  Exit;
+ End;
+ If (PingSize < 0) Or (PingSize > SizeOf(ReqData)) Then PingSize := DEF_SIZE;
+ If Count < 1 Then Count := 1;
+ If Timeout < 1 Then Timeout := DEF_TIMEOUT;
+
+ If Ping_FindIISSite(Dest) Then
+  DstIP := Mdbc_inet_addr('127.0.0.1')
+ Else Begin
+  DstIP := Mdbc_inet_addr(PChar(AnsiString(Dest)));
+  If DstIP = LongWord($FFFFFFFF) Then Begin
+   If Mdbc_WSAStartup($0202, WSD) <> 0 Then Begin
+    TermAddLine(TP, 'PING : impossible d''initialiser Winsock.');
+    Exit;
+   End;
+   He := Mdbc_gethostbyname(PChar(AnsiString(Dest)));
+   If He = Nil Then Begin
+    TermAddLine(TP, 'Impossible de resoudre ' + Dest + ' : hote introuvable.');
+    Exit;
+   End;
+   DstIP := PLongWord(He^.h_addr_list^)^;
+  End;
+ End;
+
+ FillChar(ReqData, SizeOf(ReqData), $41); { meme octet de bourrage ("AAAA...") qu'un vrai PING.EXE }
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Envoi d''une requete ''ping'' sur ' + Dest + ' [' + Ping_IpToStr(DstIP) +
+  '] avec ' + IntToStr(PingSize) + ' octets de donnees :');
+ Sent := 0; Received := 0;
+ MinTime := 0; MaxTime := 0; SumTime := 0;
+ For I := 1 To Count Do Begin
+  Inc(Sent);
+  IcmpHandle := Wtcp_IcmpCreateFile;
+  If IcmpHandle = LongInt(LongWord($FFFFFFFF)) Then Begin
+   TermAddLine(TP, 'PING : impossible d''ouvrir le pilote ICMP.');
+   Exit;
+  End;
+  FillChar(EchoReply, SizeOf(EchoReply), 0);
+  RC := Wtcp_IcmpSendEcho(IcmpHandle, DstIP, @ReqData, Word(PingSize), Nil,
+   EchoReply, SizeOf(EchoReply), LongWord(Timeout));
+  Wtcp_IcmpCloseHandle(IcmpHandle);
+  If (RC <> 0) And (EchoReply.Status = 0) Then Begin
+   Inc(Received);
+   If (Received = 1) Or (LongInt(EchoReply.RoundTripTime) < MinTime) Then
+    MinTime := LongInt(EchoReply.RoundTripTime);
+   If LongInt(EchoReply.RoundTripTime) > MaxTime Then
+    MaxTime := LongInt(EchoReply.RoundTripTime);
+   SumTime := SumTime + LongInt(EchoReply.RoundTripTime);
+   TermAddLine(TP, 'Reponse de ' + Ping_IpToStr(EchoReply.Address) + ' : octets=' +
+    IntToStr(PingSize) + ' temps=' + IntToStr(LongInt(EchoReply.RoundTripTime)) +
+    'ms TTL=' + IntToStr(EchoReply.OptTTL));
+  End Else
+   TermAddLine(TP, 'Delai d''attente de la demande depasse.');
+ End;
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Statistiques Ping pour ' + Ping_IpToStr(DstIP) + ' :');
+ If Sent > 0 Then LossPct := ((Sent - Received) * 100) Div Sent Else LossPct := 0;
+ TermAddLine(TP, '    Paquets : envoyes = ' + IntToStr(Sent) + ', recus = ' +
+  IntToStr(Received) + ', perdus = ' + IntToStr(Sent - Received) +
+  ' (perte ' + IntToStr(LossPct) + '%),');
+ If Received > 0 Then Begin
+  TermAddLine(TP, 'Duree approximative des boucles en millisecondes :');
+  TermAddLine(TP, '    Minimum = ' + IntToStr(MinTime) + 'ms, Maximum = ' +
+   IntToStr(MaxTime) + 'ms, Moyenne = ' + IntToStr(SumTime Div Received) + 'ms');
+ End;
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'PING : disponible uniquement sous Windows.');
+End;
+{$ENDIF}
+
 { ============================================================ }
 { === Commandes JIRA (PowerShell dev uniquement)           === }
 { ============================================================ }
@@ -169077,6 +169254,16 @@ Begin
  { duplique dans chacun. }
  If CurrCmd = 'IPCONFIG' Then Begin
   TermCmd_IPConfig(TP, ParamStr);
+  Exit;
+ End;
+ { PING (demande explicite, 2026-10-24 - voir TermCmd_Ping plus haut) :     }
+ { CONTRAIREMENT a CURL/IPCONFIG juste au-dessus (communes aux 5 shells),   }
+ { restreinte explicitement a "Invite de commande"/"Norton Commander"/      }
+ { "Powershell dev"/Bash - garde necessaire ici, pas seulement l interception}
+ { sans condition utilisee par CURL/IPCONFIG. }
+ If (CurrCmd = 'PING') And
+  (TP.Shell In [SK_CMD, SK_POWERSHELL, SK_BASH, SK_NCOMMANDER]) Then Begin
+  TermCmd_Ping(TP, ParamStr);
   Exit;
  End;
  { Dispatcher selon le type de shell }
