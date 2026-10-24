@@ -167,6 +167,7 @@ Const
   N_PARAM      = 85;
   N_INIT       = 86;
   N_ENUMCONST  = 87;
+  N_PATTERN    = 88;   { motif : A=type, S=nom lie, B=sous-motifs (record), Aux=1 record }
 
   { Operateurs }
   OP_ADD = 1;  OP_SUB = 2;  OP_MUL = 3;  OP_DIV = 4;  OP_REM = 5;
@@ -1279,6 +1280,7 @@ Function ParseArrayInit : LongInt; Forward;
 Function ParseSwitchBody(IsExpr : Boolean) : LongInt; Forward;
 Function ParseLambdaFrom(Line : LongInt) : LongInt; Forward;
 Procedure ParseClassBody(Cls : LongInt); Forward;
+Function ParsePattern : LongInt; Forward;
 
 Function MkName(Const S : String; Line : LongInt) : LongInt;
 Var N : LongInt;
@@ -1873,7 +1875,7 @@ Begin
 End;
 
 Function ParseBinary(MinPrec : LongInt) : LongInt;
-Var Lhs, Rhs, N, Op, Len, Prec, Line, V : LongInt;
+Var Lhs, Rhs, N, Op, Len, Prec, Line, V, Q : LongInt;
 Begin
   Lhs := ParseUnary;
   While True Do Begin
@@ -1888,11 +1890,20 @@ Begin
       N := NewNode(N_INSTANCEOF, Line);
       Nodes[N].A := Lhs;
       AcceptKw('final');
-      Nodes[N].B := ParseType;
-      If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Begin
-        V := NewNode(N_VARDECL, CurLine);
-        Nodes[V].S := ExpectIdent;
-        Nodes[N].C := V;
+      Q := SkipTypeAt(P);
+      If (Q > 0) And (Toks[Q].Kind = TK_OP) And (Toks[Q].Str = '(') Then Begin
+        { motif record : x instanceof Point(int a, int b) }
+        Nodes[N].C := ParsePattern;
+        Nodes[N].Aux := 1;
+        Nodes[N].B := Nodes[Nodes[N].C].A;
+      End
+      Else Begin
+        Nodes[N].B := ParseType;
+        If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Begin
+          V := NewNode(N_VARDECL, CurLine);
+          Nodes[V].S := ExpectIdent;
+          Nodes[N].C := V;
+        End;
       End;
       Lhs := N;
       Continue;
@@ -1977,6 +1988,45 @@ End;
   switch (instruction et expression)
   --------------------------------------------------------------------------- }
 
+{ Un motif commence-t-il ici : Type ident, ou Type( ... ) ? }
+Function IsPatternStart : Boolean;
+Var Q : LongInt;
+Begin
+  IsPatternStart := False;
+  If Not (IsIdentAt(0) Or IsPrimKw(0)) Then Exit;
+  Q := SkipTypeAt(P);
+  If Q < 0 Then Exit;
+  If Toks[Q].Kind = TK_IDENT Then
+    IsPatternStart := True
+  Else If (Toks[Q].Kind = TK_OP) And (Toks[Q].Str = '(') And IsIdentAt(0) Then
+    IsPatternStart := True;
+End;
+
+Function ParsePattern : LongInt;
+Var N, T, Hd, Tl : LongInt;
+Begin
+  N := NewNode(N_PATTERN, CurLine);
+  While IsKw('final') Do Inc(P);
+  T := ParseType;
+  Nodes[N].A := T;
+  If IsOp('(') Then Begin
+    Inc(P);
+    Nodes[N].Aux := 1;
+    Hd := 0; Tl := 0;
+    If Not IsOp(')') Then Begin
+      While True Do Begin
+        AppendNode(Hd, Tl, ParsePattern);
+        If Not Accept(',') Then Break;
+      End;
+    End;
+    Expect(')');
+    Nodes[N].B := Hd;
+    If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Nodes[N].S := ExpectIdent;
+  End
+  Else If IsIdentAt(0) Then Nodes[N].S := ExpectIdent;
+  ParsePattern := N;
+End;
+
 Function ParseSwitchBody(IsExpr : Boolean) : LongInt;
 Var
   Head, Tail, C, LH, LT, SH, ST, S, Y, Line : LongInt;
@@ -1998,6 +2048,7 @@ Begin
         If IsKw('default') Then Begin
           Inc(P); Nodes[C].Aux := Nodes[C].Aux Or 1;
         End
+        Else If IsPatternStart Then AppendNode(LH, LT, ParsePattern)
         Else Begin
           InCaseLabel := True;
           AppendNode(LH, LT, ParseTernary);
@@ -2007,6 +2058,12 @@ Begin
       End;
     End;
     Nodes[C].A := LH;
+    If IsIdentStr(0, 'when') Then Begin
+      Inc(P);
+      InCaseLabel := True;
+      Nodes[C].E := ParseTernary;
+      InCaseLabel := False;
+    End;
     If IsOp('->') Then Begin
       Inc(P);
       Nodes[C].Aux := Nodes[C].Aux Or 2;
@@ -12813,14 +12870,71 @@ Begin
   End;
 End;
 
+{ Attribue un motif (type, ou record avec sous-motifs) applique a une valeur de type ValueT }
+Procedure AttribPattern(Pat, ValueT : LongInt);
+Var
+  Tn, T, C, Sub, K, F, Ct, Cnt, L : LongInt; IsVar : Boolean; Pm : LongInt; Nm : String;
+Begin
+  Tn := Nodes[Pat].A;
+  IsVar := (Nodes[Tn].Aux = 0) And (Nodes[Tn].S = 'var') And (Nodes[Tn].N = 0) And (Nodes[Pat].Aux = 0);
+  If IsVar Then T := ValueT Else T := ResolveType(Tn);
+  Nodes[Pat].Typ := T;
+  Nodes[Pat].Sym := -1;
+  If (T <> TY_NONE) And (ValueT <> TY_NONE) And Not IsVar Then Begin
+    If IsPrim(T) Or IsPrim(ValueT) Then Begin
+      If T <> ValueT Then Err(Nodes[Pat].Line, 'types incompatibles : ' + TypeStr(ValueT) + ' ne peut pas etre converti en ' + TypeStr(T));
+    End
+    Else If Not IsCastable(ValueT, T) Then
+      Err(Nodes[Pat].Line, 'types incompatibles : ' + TypeStr(ValueT) + ' ne peut pas etre converti en ' + TypeStr(T));
+  End;
+  If Nodes[Pat].Aux = 1 Then Begin
+    C := ClsOf(T);
+    If (C < 0) Or Not Classes[C].IsSrc Or (Nodes[Classes[C].Decl].Aux <> CLS_RECORD) Then Begin
+      If T <> TY_NONE Then Err(Nodes[Pat].Line, 'motif de record attendu : ' + TypeStr(T) + ' n''est pas un record');
+      Sub := Nodes[Pat].B;
+      While Sub <> 0 Do Begin AttribPattern(Sub, TY_NONE); Sub := Nodes[Sub].Next; End;
+      Exit;
+    End;
+    EnsureMembers(C);
+    Nodes[Pat].E := C;
+    Pm := Nodes[Classes[C].Decl].E;
+    Cnt := ChainLen(Pm);
+    If Cnt <> ChainLen(Nodes[Pat].B) Then
+      Err(Nodes[Pat].Line, 'nombre de sous-motifs incorrect pour le record ' + Classes[C].Simple);
+    Sub := Nodes[Pat].B;
+    While (Sub <> 0) And (Pm <> 0) Do Begin
+      F := FindFieldIn(C, Nodes[Pm].S);
+      If F >= 0 Then Ct := MemberType(T, C, Fields[F].Typ) Else Ct := TY_NONE;
+      AttribPattern(Sub, Ct);
+      Sub := Nodes[Sub].Next;
+      Pm := Nodes[Pm].Next;
+    End;
+  End;
+  Nm := Nodes[Pat].S;
+  If Nm <> '' Then Begin
+    L := NewLocal(Nm, T, LF_PATTERN, Pat);
+    Locals[L].HasInit := True;
+    Nodes[Pat].Sym := L;
+    PushScope(SC_LOCAL, Nm, L);
+  End;
+  K := 0;
+End;
+
 Function AttribInstanceOf(N : LongInt) : LongInt;
 Var A, T, TA, V, L : LongInt;
 Begin
   A := Nodes[N].A;
   TA := AttribExpr(A, 0);
-  T := ResolveType(Nodes[N].B);
+  If Nodes[N].Aux = 1 Then T := TY_NONE Else T := ResolveType(Nodes[N].B);
   Nodes[N].Typ := TY_BOOLEAN;
   AttribInstanceOf := TY_BOOLEAN;
+  If Nodes[N].Aux = 1 Then Begin
+    { motif record }
+    If IsPrim(TA) Then Err(Nodes[N].Line, 'types incompatibles : ' + TypeStr(TA) + ' ne peut pas etre converti en un record');
+    AttribPattern(Nodes[N].C, TA);
+    Nodes[N].E := Nodes[Nodes[N].C].Typ;
+    Exit;
+  End;
   If IsPrim(TA) Then Begin
     Err(Nodes[N].Line, 'types incompatibles : ' + TypeStr(TA) + ' ne peut pas etre converti en ' + TypeStr(T));
     Exit;
@@ -13955,6 +14069,24 @@ Const
   SW_INT = 0;
   SW_STR = 1;
   SW_ENUM = 2;
+  SW_PATTERN = 3;
+
+Function SwitchHasPattern(N : LongInt) : Boolean;
+Var Cs, Lb : LongInt;
+Begin
+  SwitchHasPattern := False;
+  Cs := Nodes[N].B;
+  While Cs <> 0 Do Begin
+    Lb := Nodes[Cs].A;
+    While Lb <> 0 Do Begin
+      If (Nodes[Lb].Kind = N_PATTERN) Or ((Nodes[Lb].Kind = N_LIT) And (Nodes[Lb].Aux = LIT_NULL)) Then Begin
+        SwitchHasPattern := True; Exit;
+      End;
+      Lb := Nodes[Lb].Next;
+    End;
+    Cs := Nodes[Cs].Next;
+  End;
+End;
 
 Function AttribSwitchSel(N : LongInt; Var Mode : LongInt) : LongInt;
 Var Sel, ST, U : LongInt;
@@ -13964,6 +14096,15 @@ Begin
   Mode := SW_INT;
   AttribSwitchSel := ST;
   If ST = TY_NONE Then Exit;
+  If SwitchHasPattern(N) Then Begin
+    If IsPrim(ST) Then Begin
+      Err(Nodes[N].Line, 'selecteur de switch invalide pour un motif : ' + TypeStr(ST));
+      AttribSwitchSel := TY_NONE;
+    End;
+    Mode := SW_PATTERN;
+    Nodes[N].E := Mode;
+    Exit;
+  End;
   If ST = T_STRING Then Mode := SW_STR
   Else If IsClassT(ST) And ((Classes[Types[ST].Cls].Flags And ACC_ENUM) <> 0) Then Mode := SW_ENUM
   Else Begin
@@ -13985,6 +14126,20 @@ Begin
   Lb := Nodes[Cs].A;
   While Lb <> 0 Do Begin
     Case Mode Of
+      SW_PATTERN : Begin
+        If Nodes[Lb].Kind = N_PATTERN Then AttribPattern(Lb, ST)
+        Else If (Nodes[Lb].Kind = N_NAME) And IsClassT(ST) And ((Classes[Types[ST].Cls].Flags And ACC_ENUM) <> 0) Then Begin
+          F := FieldInHierarchy(Types[ST].Cls, Nodes[Lb].S, Owner);
+          If F < 0 Then Err(Nodes[Lb].Line, 'constante enum introuvable : ' + Nodes[Lb].S)
+          Else Begin Nodes[Lb].Sym := F; Nodes[Lb].Aux := 99; Nodes[Lb].Typ := ST; Nodes[Lb].Att := 1; End;
+        End
+        Else Begin
+          T := AttribExpr(Lb, ST);
+          If (Nodes[Lb].Kind = N_SELECT) And (Nodes[Lb].Aux = 2) And ((Fields[Nodes[Lb].Sym].Flags And ACC_ENUM) <> 0) Then Nodes[Lb].Aux := 98
+          Else If (Nodes[Lb].Kind = N_LIT) And (Nodes[Lb].Aux = LIT_NULL) Then
+          Else If Nodes[Lb].CK <> CK_STR Then Err(Nodes[Lb].Line, 'libelle de case non supporte dans un switch a motifs');
+        End;
+      End;
       SW_ENUM : Begin
         F := -1;
         If Nodes[Lb].Kind = N_NAME Then Begin
@@ -14018,6 +14173,7 @@ Begin
     End;
     { doublons }
     Pv := Nodes[Cs].A;
+    If Mode = SW_PATTERN Then Pv := Lb;
     While Pv <> Lb Do Begin
       Dupe := False;
       Case Mode Of
@@ -14036,6 +14192,7 @@ End;
 Procedure CheckDuplicateLabels(N : LongInt; Mode : LongInt);
 Var C1, C2, L1, L2 : LongInt; Dupe : Boolean;
 Begin
+  If Mode = SW_PATTERN Then Exit;
   C1 := Nodes[N].B;
   While C1 <> 0 Do Begin
     C2 := Nodes[C1].Next;
@@ -14064,13 +14221,15 @@ Begin
 End;
 
 Procedure AttribSwitchBody(N : LongInt; ST, Mode : LongInt);
-Var Cs, S, Mark : LongInt;
+Var Cs, S, Mark, CaseMark : LongInt;
 Begin
   Mark := NScope;
   Inc(SwitchDepth);
   Cs := Nodes[N].B;
   While Cs <> 0 Do Begin
+    CaseMark := NScope;
     AttribCaseLabels(Cs, ST, Mode);
+    If Nodes[Cs].E <> 0 Then AttribCondition(Nodes[Cs].E);
     If (Nodes[Cs].Aux And 2) <> 0 Then Begin
       Mark := NScope;
       AttribStmt(Nodes[Cs].B);
@@ -14080,6 +14239,7 @@ Begin
       S := Nodes[Cs].B;
       While S <> 0 Do Begin AttribStmt(S); S := Nodes[S].Next; End;
     End;
+    If Mode = SW_PATTERN Then NScope := CaseMark;
     Cs := Nodes[Cs].Next;
   End;
   CheckDuplicateLabels(N, Mode);
@@ -15956,6 +16116,7 @@ Procedure GenBranch(N, Target : LongInt; JumpIf : Boolean); Forward;
 Procedure GenStmt(N : LongInt); Forward;
 Procedure GenBoolValue(N : LongInt); Forward;
 Procedure GenArrayInit(N, ArrT : LongInt); Forward;
+Procedure GenPatternMatch(Pat, Slot, ValT, Fail : LongInt); Forward;
 
 { ----- variables locales ---------------------------------------------------- }
 
@@ -16778,7 +16939,19 @@ Begin
     N_INSTANCEOF : Begin
       TT := Nodes[N].E;
       GenExpr(Nodes[N].A);
-      If Nodes[N].C = 0 Then Begin
+      If Nodes[N].Aux = 1 Then Begin
+        { motif record }
+        Slot := AllocSlot(Nodes[Nodes[N].A].Typ);
+        EmitStore('A', Slot, VTOfType(Nodes[Nodes[N].A].Typ));
+        If JumpIf Then Begin
+          Skip := NewLabel;
+          GenPatternMatch(Nodes[N].C, Slot, Nodes[Nodes[N].A].Typ, Skip);
+          EmitJump(OP_GOTO, Target);
+          PlaceLabel(Skip);
+        End
+        Else GenPatternMatch(Nodes[N].C, Slot, Nodes[Nodes[N].A].Typ, Target);
+      End
+      Else If Nodes[N].C = 0 Then Begin
         EmitInstanceof(TypeClassName(Erasure(TT)));
         If JumpIf Then EmitJump(OP_IFNE, Target) Else EmitJump(OP_IFEQ, Target);
       End
@@ -17320,6 +17493,188 @@ Begin
   End;
 End;
 
+{ ----- motifs (instanceof et switch) ------------------------------------------- }
+
+{ La valeur est dans la variable locale Slot (type statique ValT). En cas d'echec on
+  saute a Fail ; sinon les variables liees sont affectees. }
+Procedure GenPatternMatch(Pat, Slot, ValT, Fail : LongInt);
+Var
+  T, C, K, Sub, Pm, Cs, Cm, F, Ct, M2, Cslot : LongInt; NeedTest : Boolean; Et : LongInt;
+Begin
+  T := Nodes[Pat].Typ;
+  If IsPrim(T) Then Begin
+    If Nodes[Pat].Sym >= 0 Then Begin
+      DeclSlot(Nodes[Pat].Sym);
+      EmitLoad(KindOf(T), Slot);
+      StoreLocal(Nodes[Pat].Sym);
+    End;
+    Exit;
+  End;
+  Et := Erasure(T);
+  NeedTest := (Nodes[Pat].Aux = 1) Or Not IsSubtypeRef(Erasure(ValT), Et);
+  If NeedTest Then Begin
+    EmitLoad('A', Slot);
+    EmitInstanceof(TypeClassName(Et));
+    EmitJump(OP_IFEQ, Fail);
+  End;
+  If Nodes[Pat].Aux = 1 Then Begin
+    C := Nodes[Pat].E;
+    Cslot := AllocSlot(T_OBJECT);
+    EmitLoad('A', Slot);
+    EmitCheckcast(TypeClassName(Et));
+    EmitStore('A', Cslot, VTOfType(Et));
+    Pm := Nodes[Classes[C].Decl].E;
+    Sub := Nodes[Pat].B;
+    While (Sub <> 0) And (Pm <> 0) Do Begin
+      F := FindFieldIn(C, Nodes[Pm].S);
+      M2 := FindMethodDecl(C, Nodes[Pm].S, 0);
+      If (F >= 0) And (M2 >= 0) Then Begin
+        Ct := MemberType(T, C, Fields[F].Typ);
+        EmitLoad('A', Cslot);
+        EmitInvoke(OP_INVOKEVIRTUAL, Classes[C].Name, Meths[M2].Name, Meths[M2].Desc, False);
+        EnsureStackType(Ct);
+        K := AllocSlot(Ct);
+        EmitStore(KindOf(Ct), K, VTOfType(Ct));
+        GenPatternMatch(Sub, K, Ct, Fail);
+      End;
+      Sub := Nodes[Sub].Next;
+      Pm := Nodes[Pm].Next;
+    End;
+  End;
+  If Nodes[Pat].Sym >= 0 Then Begin
+    DeclSlot(Nodes[Pat].Sym);
+    EmitLoad('A', Slot);
+    If Not VTAssignable(TopVT, Et) Then EmitCheckcast(TypeClassName(Et));
+    StoreLocal(Nodes[Pat].Sym);
+  End;
+  Cs := 0; Cm := 0;
+End;
+
+Procedure GenPatternSwitch(N : LongInt; IsExpr : Boolean);
+Var
+  Sel, ST, S, EndL, Cs, Lb, Lnext, Lbody, Ljn, Mark, Mark2, Body, DefCs, K, NullBody, Ctx : LongInt;
+  HasNull, IsDefault : Boolean; Tj : LongInt; Cm : LongInt; Lnull : LongInt;
+  NullLabelCase : LongInt;
+Begin
+  Sel := Nodes[N].A;
+  ST := Nodes[Sel].Typ;
+  Mark := NextLoc;
+  EndL := NewLabel;
+  PushGCtx(GC_SWITCH);
+  If IsExpr Then GCtx[NGCtx - 1].Kind := GC_SWEXPR;
+  GCtx[NGCtx - 1].BreakL := EndL;
+  GCtx[NGCtx - 1].ResType := Nodes[N].Typ;
+  Ctx := NGCtx - 1;
+  LineMark(Nodes[N].Line);
+  GenExpr(Sel);
+  S := AllocSlot(ST);
+  EmitStore('A', S, VTOfType(ST));
+  { cas null ? }
+  HasNull := False;
+  DefCs := 0;
+  NullLabelCase := 0;
+  Cs := Nodes[N].B;
+  While Cs <> 0 Do Begin
+    Lb := Nodes[Cs].A;
+    While Lb <> 0 Do Begin
+      If (Nodes[Lb].Kind = N_LIT) And (Nodes[Lb].Aux = LIT_NULL) Then Begin HasNull := True; NullLabelCase := Cs; End;
+      Lb := Nodes[Lb].Next;
+    End;
+    If (Nodes[Cs].Aux And 1) <> 0 Then DefCs := Cs;
+    Cs := Nodes[Cs].Next;
+  End;
+  Lnull := -1;
+  If HasNull Then Begin
+    Lnull := NewLabel;
+    EmitLoad('A', S);
+    EmitJump(OP_IFNULL, Lnull);
+  End
+  Else Begin
+    EmitLoad('A', S);
+    EmitInvoke(OP_INVOKESTATIC, 'java/util/Objects', 'requireNonNull', '(Ljava/lang/Object;)Ljava/lang/Object;', False);
+    EmitPop(T_OBJECT);
+  End;
+  { les cas dans l'ordre, sauf default }
+  Cs := Nodes[N].B;
+  While Cs <> 0 Do Begin
+    If ((Nodes[Cs].Aux And 1) = 0) Or (Nodes[Cs].A <> 0) Then Begin
+      Lnext := NewLabel;
+      Lbody := NewLabel;
+      Mark2 := NextLoc;
+      Lb := Nodes[Cs].A;
+      While Lb <> 0 Do Begin
+        If Not ((Nodes[Lb].Kind = N_LIT) And (Nodes[Lb].Aux = LIT_NULL)) Then Begin
+          Ljn := NewLabel;
+          If Nodes[Lb].Kind = N_PATTERN Then GenPatternMatch(Lb, S, ST, Ljn)
+          Else If Nodes[Lb].Aux In [98, 99] Then Begin
+            EmitLoad('A', S);
+            EmitGetField(True, Classes[Fields[Nodes[Lb].Sym].Owner].Name, Fields[Nodes[Lb].Sym].Name,
+                         'L' + Classes[Fields[Nodes[Lb].Sym].Owner].Name + ';', ST);
+            EmitJump(OP_IF_ACMPNE, Ljn);
+          End
+          Else Begin
+            EmitConstString(Nodes[Lb].CS);
+            EmitLoad('A', S);
+            EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/String', 'equals', '(Ljava/lang/Object;)Z', False);
+            EmitJump(OP_IFEQ, Ljn);
+          End;
+          If Alive Then EmitJump(OP_GOTO, Lbody);
+          PlaceLabel(Ljn);
+        End;
+        Lb := Nodes[Lb].Next;
+      End;
+      If Alive Then EmitJump(OP_GOTO, Lnext);
+      PlaceLabel(Lbody);
+      If (Cs = NullLabelCase) And (Lnull >= 0) Then PlaceLabel(Lnull);
+      { garde }
+      If Alive And (Nodes[Cs].E <> 0) Then GenBranch(Nodes[Cs].E, Lnext, False);
+      If Alive Then Begin
+        If (Nodes[Cs].Aux And 2) <> 0 Then GenStmt(Nodes[Cs].B)
+        Else Begin
+          Body := Nodes[Cs].B;
+          While Body <> 0 Do Begin GenStmt(Body); Body := Nodes[Body].Next; End;
+        End;
+        If Alive And Not IsExpr Then EmitJump(OP_GOTO, EndL);
+      End;
+      FreeLocals(Mark2);
+      PlaceLabel(Lnext);
+    End;
+    Cs := Nodes[Cs].Next;
+  End;
+  { cas default }
+  If DefCs <> 0 Then Begin
+    If Lnull >= 0 Then Begin
+      { null atteint le default seulement s'il le contient }
+    End;
+    Lb := Nodes[DefCs].A;
+    If Alive Or (Lnull >= 0) Then Begin
+      If (Lnull >= 0) And (NullLabelCase = 0) Then PlaceLabel(Lnull);
+      If Alive Then Begin
+        If (Nodes[DefCs].Aux And 2) <> 0 Then GenStmt(Nodes[DefCs].B)
+        Else Begin
+          Body := Nodes[DefCs].B;
+          While Body <> 0 Do Begin GenStmt(Body); Body := Nodes[Body].Next; End;
+        End;
+      End;
+    End;
+  End
+  Else If IsExpr Then Begin
+    If Lnull >= 0 Then PlaceLabel(Lnull);
+    If Alive Then Begin
+      EmitNew('java/lang/IncompatibleClassChangeError');
+      EmitDupValue;
+      EmitInvoke(OP_INVOKESPECIAL, 'java/lang/IncompatibleClassChangeError', '<init>', '()V', False);
+      EmitThrow;
+    End;
+  End
+  Else If Lnull >= 0 Then PlaceLabel(Lnull);
+  Dec(NGCtx);
+  PlaceLabel(EndL);
+  FreeLocals(Mark);
+  Tj := Ctx; K := 0; Cm := 0; NullBody := 0;
+  IsDefault := False;
+End;
+
 Procedure GenSwitch(N : LongInt; IsExpr : Boolean);
 Var
   Mode, Sel, Cs, Lb, K, NCases, NKeys, I, J, Mark, Dflt, EndL, DefCase, S1, S2, Cnt, Body : LongInt;
@@ -17329,6 +17684,7 @@ Var
   TabKeys, TabTg : Array Of LongInt;
 Begin
   Mode := Nodes[N].E;
+  If Mode = SW_PATTERN Then Begin GenPatternSwitch(N, IsExpr); Exit; End;
   Sel := Nodes[N].A;
   Mark := NextLoc;
   EndL := NewLabel;
