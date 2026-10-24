@@ -233,6 +233,7 @@ Var
   OptOutDir  : String;
   OptTarget  : LongInt;    { version de classe (major) }
   OptDumpAst : Boolean;
+  OptParseOnly : Boolean;
 
   { Source et jetons }
   Src        : String;
@@ -657,6 +658,7 @@ Var
   Dg : LongInt;
   Suffix : Char;
   Big : Boolean;
+  HexMant : Double; HexFrac, HexExp : LongInt; HexNeg : Boolean;
 Begin
   S := '';
   IsFloat := False; IsHex := False; IsBin := False; IsOct := False;
@@ -666,6 +668,43 @@ Begin
     While (I <= SrcLen) And ((HexVal(Src[I]) >= 0) Or (Src[I] = '_')) Do Begin
       If Src[I] <> '_' Then S := S + Src[I];
       Inc(I);
+    End;
+    { litteral flottant hexadecimal : 0x1.8p3 }
+    If (I <= SrcLen) And ((Src[I] = '.') Or (Src[I] In ['p', 'P'])) Then Begin
+      HexMant := 0; HexFrac := 0;
+      For K := 1 To Length(S) Do HexMant := HexMant * 16 + HexVal(S[K]);
+      If Src[I] = '.' Then Begin
+        Inc(I);
+        While (I <= SrcLen) And ((HexVal(Src[I]) >= 0) Or (Src[I] = '_')) Do Begin
+          If Src[I] <> '_' Then Begin HexMant := HexMant * 16 + HexVal(Src[I]); Inc(HexFrac, 4); End;
+          Inc(I);
+        End;
+      End;
+      HexExp := 0;
+      If (I <= SrcLen) And (Src[I] In ['p', 'P']) Then Begin
+        Inc(I);
+        HexNeg := False;
+        If (I <= SrcLen) And (Src[I] In ['+', '-']) Then Begin HexNeg := Src[I] = '-'; Inc(I); End;
+        While (I <= SrcLen) And IsDigit(Src[I]) Do Begin HexExp := HexExp * 10 + Ord(Src[I]) - 48; Inc(I); End;
+        If HexNeg Then HexExp := -HexExp;
+      End
+      Else Err(Line, 'exposant binaire attendu dans le litteral flottant hexadecimal');
+      HexExp := HexExp - HexFrac;
+      D := HexMant;
+      While HexExp > 0 Do Begin D := D * 2; Dec(HexExp); End;
+      While HexExp < 0 Do Begin D := D / 2; Inc(HexExp); End;
+      Suffix := ' ';
+      If (I <= SrcLen) And (Src[I] In ['f', 'F', 'd', 'D']) Then Begin Suffix := UpCase(Src[I]); Inc(I); End;
+      If Suffix = 'F' Then Begin
+        AddTok(TK_FLOAT, 'hexfloat', Line);
+        Sg := D;
+        Toks[NToks - 1].Dbl := Sg;
+      End
+      Else Begin
+        AddTok(TK_DOUBLE, 'hexfloat', Line);
+        Toks[NToks - 1].Dbl := D;
+      End;
+      Exit;
     End;
   End
   Else If (Src[I] = '0') And (I < SrcLen) And (Src[I + 1] In ['b', 'B']) Then Begin
@@ -1581,6 +1620,15 @@ Begin
   ParsePrimary := 0;
 End;
 
+Function ExprDottedP(N : LongInt) : String;
+Begin
+  ExprDottedP := '';
+  Case Nodes[N].Kind Of
+    N_NAME : ExprDottedP := Nodes[N].S;
+    N_SELECT : ExprDottedP := ExprDottedP(Nodes[N].A) + '.' + Nodes[N].S;
+  End;
+End;
+
 Function ParsePostfix(N : LongInt) : LongInt;
 Var M, Line : LongInt;
 Begin
@@ -1614,8 +1662,17 @@ Begin
       End
       Else If IsKw('super') Then Begin
         Inc(P);
-        M := NewNode(N_SUPER, Line);
-        Nodes[M].A := N;
+        If IsOp('(') Then Begin
+          M := NewNode(N_CALL, Line);
+          Nodes[M].S := 'super';
+          Nodes[M].Aux := 1;
+          Nodes[M].D := N;
+          Nodes[M].B := ParseArgs;
+        End
+        Else Begin
+          M := NewNode(N_SUPER, Line);
+          Nodes[M].A := N;
+        End;
         N := M;
       End
       Else Begin
@@ -1632,6 +1689,26 @@ Begin
           Nodes[M].S := ExpectIdent;
         End;
         N := M;
+      End;
+    End
+    Else If IsOp('[') And IsOpAt(1, ']') And (Nodes[N].Kind In [N_NAME, N_SELECT]) Then Begin
+      { Type[].class ou Type[]::new avec un nom qualifie }
+      M := NewNode(N_TYPE, Line);
+      Nodes[M].S := ExprDottedP(N);
+      While IsOp('[') And IsOpAt(1, ']') Do Begin Inc(P, 2); Inc(Nodes[M].N); End;
+      If IsOp('::') Then Begin
+        Inc(P);
+        N := NewNode(N_METHODREF, Line);
+        Nodes[N].A := M;
+        Nodes[N].Aux := 1;
+        If IsKw('new') Then Begin Inc(P); Nodes[N].S := 'new'; End
+        Else Nodes[N].S := ExpectIdent;
+      End
+      Else Begin
+        Expect('.');
+        ExpectKw('class');
+        N := NewNode(N_CLASSLIT, Line);
+        Nodes[N].A := M;
       End;
     End
     Else If IsOp('[') Then Begin
@@ -2284,7 +2361,7 @@ Begin
       Nodes[N].A := ParseStatement;
       ParseStatement := N; Exit;
     End;
-    If IsIdentStr(0, 'yield') And Not (IsOpAt(1, '=') Or IsOpAt(1, '.') Or IsOpAt(1, '(') Or
+    If IsIdentStr(0, 'yield') And Not (IsOpAt(1, '=') Or IsOpAt(1, '.') Or
                                        IsOpAt(1, '++') Or IsOpAt(1, '--') Or IsOpAt(1, '[')) Then Begin
       Inc(P);
       N := NewNode(N_YIELD, Line);
@@ -10501,11 +10578,33 @@ Begin
         End;
         Mt := EnterMethod(C, M);
         If Nodes[M].Aux = 1 Then HasCtor := True;
+        If (Kind = CLS_ENUM) And ((Meths[Mt].Flags And ACC_ABSTRACT) <> 0) Then
+          Classes[C].Flags := Classes[C].Flags Or ACC_ABSTRACT;
       End;
     End;
     M := Nodes[M].Next;
   End;
   Classes[C].EnumCount := Ne;
+  { membres synthetiques d'un record : accesseurs, toString, equals, hashCode }
+  If Kind = CLS_RECORD Then Begin
+    P := Nodes[D].E;
+    While P <> 0 Do Begin
+      F := FindFieldIn(C, Nodes[P].S);
+      If (F >= 0) And (FindMethodDecl(C, Nodes[P].S, 0) < 0) Then Begin
+        Mt := NewSynMethod(C, Nodes[P].S, ACC_PUBLIC, 4, '()' + TypeDesc(Erasure(Fields[F].Typ)), Fields[F].Typ);
+        Meths[Mt].Bridge := F;
+      End;
+      P := Nodes[P].Next;
+    End;
+    If FindMethodDecl(C, 'toString', 0) < 0 Then
+      NewSynMethod(C, 'toString', ACC_PUBLIC Or ACC_FINAL, 5, '()Ljava/lang/String;', T_STRING);
+    If FindMethodDecl(C, 'hashCode', 0) < 0 Then
+      NewSynMethod(C, 'hashCode', ACC_PUBLIC Or ACC_FINAL, 7, '()I', TY_INT);
+    If FindMethodDecl(C, 'equals', 1) < 0 Then Begin
+      Mt := NewSynMethod(C, 'equals', ACC_PUBLIC Or ACC_FINAL, 6, '(Ljava/lang/Object;)Z', TY_BOOLEAN);
+      SetLength(Meths[Mt].Par, 1); Meths[Mt].Par[0] := T_OBJECT; Meths[Mt].NPar := 1;
+    End;
+  End;
   If (Kind = CLS_ENUM) Then Begin
     M := NewSynMethod(C, 'values', ACC_PUBLIC Or ACC_STATIC, 2, '()[L' + Classes[C].Name + ';', ArrayT(OwnT));
     M := NewSynMethod(C, 'valueOf', ACC_PUBLIC Or ACC_STATIC, 3, '(Ljava/lang/String;)L' + Classes[C].Name + ';', OwnT);
@@ -11188,6 +11287,20 @@ Begin
   ResolveIVars := SubstType(T, Fr, Tt, N);
 End;
 
+{ Comme ResolveIVars mais les variables non resolues deviennent "inconnu" (T_ANY) :
+  utilise pour le type de retour afin de ne pas fausser l'inference des appels imbriques }
+Function ResolveIVarsAny(T : LongInt) : LongInt;
+Var Fr, Tt : Array[0..MAXIV - 1] Of LongInt; I, N : LongInt;
+Begin
+  N := 0;
+  For I := 0 To NIV - 1 Do Begin
+    Fr[N] := IFr[I];
+    If ITo[I] <> 0 Then Tt[N] := ITo[I] Else Tt[N] := T_ANY;
+    Inc(N);
+  End;
+  ResolveIVarsAny := SubstType(T, Fr, Tt, N);
+End;
+
 { Substitue seulement les variables deja liees, laisse les autres }
 Function SubstBound(T : LongInt) : LongInt;
 Var Fr, Tt : Array[0..MAXIV - 1] Of LongInt; I, N : LongInt;
@@ -11852,7 +11965,7 @@ Begin
     If IsFn[I] Then FinishLambda(Args[I], PT)
     Else Coerce(Args[I], PT, CV_ARG);
   End;
-  R.Ret := ResolveIVars(Ret);
+  R.Ret := ResolveIVarsAny(Ret);
   If R.Ret = TY_NONE Then R.Ret := Ret;
   ResolveCall := True;
   NIV := SvN;
@@ -12214,8 +12327,9 @@ Begin
     N_TYPEEXPR : Begin LastEK := EK_TYPE; AttribQual := Nodes[N].Typ; End;
     N_PKGREF : Begin LastEK := EK_PKG; AttribQual := TY_NONE; End;
   Else
+    T := AttribExpr(N, 0);
     LastEK := EK_VALUE;
-    AttribQual := AttribExpr(N, 0);
+    AttribQual := T;
   End;
 End;
 
@@ -15949,8 +16063,6 @@ Begin
   E := Erasure(T);
   If E = T_OBJECT Then Exit;
   If VTAssignable(V, E) Then Exit;
-  { tableau generique efface : pas de conversion }
-  If IsArrayT(E) And (VTName(V)[1] = '[') Then Exit;
   EmitCheckcast(TypeClassName(E));
 End;
 
@@ -18109,7 +18221,7 @@ Begin
   C := 0;
   While C < NClasses Do Begin
     If Classes[C].IsSrc Then Begin
-      If (Classes[C].Flags And ACC_ENUM <> 0) Or Classes[C].HasAssert Or HasStaticInit(C) Then Begin
+      If (((Classes[C].Flags And ACC_ENUM) <> 0) And ((Classes[C].Flags And MOD_ANON) = 0)) Or Classes[C].HasAssert Or HasStaticInit(C) Then Begin
         M := NewSynMethod(C, '<clinit>', ACC_STATIC, 8, '()V', TY_VOID);
       End;
       MakeBridges(C);
@@ -18165,7 +18277,7 @@ Begin
     EmitPutField(True, Classes[C].Name, '$assertionsDisabled', 'Z');
   End;
   { constantes d'enumeration }
-  If (Classes[C].Flags And ACC_ENUM) <> 0 Then Begin
+  If ((Classes[C].Flags And ACC_ENUM) <> 0) And ((Classes[C].Flags And MOD_ANON) = 0) Then Begin
     Ne := 0;
     M := Nodes[Classes[C].Decl].D;
     While M <> 0 Do Begin
@@ -18228,6 +18340,133 @@ Begin
   Sub := 0; Cn := '';
 End;
 
+{ ----- methodes synthetiques des records ------------------------------------ }
+
+Function RecordFieldList(C : LongInt; Var Fl : Array Of LongInt) : LongInt;
+Var P, N, F : LongInt;
+Begin
+  N := 0;
+  P := Nodes[Classes[C].Decl].E;
+  While P <> 0 Do Begin
+    F := FindFieldIn(C, Nodes[P].S);
+    If (F >= 0) And (N <= High(Fl)) Then Begin Fl[N] := F; Inc(N); End;
+    P := Nodes[P].Next;
+  End;
+  RecordFieldList := N;
+End;
+
+Function HashDescFor(T : LongInt; Var Cls : String) : String;
+Begin
+  Case T Of
+    TY_BOOLEAN : Begin Cls := 'java/lang/Boolean'; HashDescFor := '(Z)I'; End;
+    TY_BYTE : Begin Cls := 'java/lang/Byte'; HashDescFor := '(B)I'; End;
+    TY_CHAR : Begin Cls := 'java/lang/Character'; HashDescFor := '(C)I'; End;
+    TY_SHORT : Begin Cls := 'java/lang/Short'; HashDescFor := '(S)I'; End;
+    TY_INT : Begin Cls := 'java/lang/Integer'; HashDescFor := '(I)I'; End;
+    TY_LONG : Begin Cls := 'java/lang/Long'; HashDescFor := '(J)I'; End;
+    TY_FLOAT : Begin Cls := 'java/lang/Float'; HashDescFor := '(F)I'; End;
+    TY_DOUBLE : Begin Cls := 'java/lang/Double'; HashDescFor := '(D)I'; End;
+  Else
+    Cls := 'java/util/Objects'; HashDescFor := '(Ljava/lang/Object;)I';
+  End;
+End;
+
+Procedure GenRecordMethod(C, M : LongInt);
+Var
+  Fl : Array[0..63] Of LongInt; N, I, F, T, Lf, Lt, Lx : LongInt; Cls, Dsc : String;
+Begin
+  N := RecordFieldList(C, Fl);
+  Case Meths[M].Synth Of
+    4 : Begin
+      F := Meths[M].Bridge;
+      EmitThis;
+      EmitGetField(False, Classes[C].Name, Fields[F].Name, FieldDescOf(F), Fields[F].Typ);
+      EmitReturnOp(KindOf(Fields[F].Typ));
+    End;
+    5 : Begin
+      EmitNewStringBuilder;
+      EmitConstString(Classes[C].Simple + '[');
+      EmitAppend(T_STRING);
+      For I := 0 To N - 1 Do Begin
+        F := Fl[I];
+        If I > 0 Then EmitConstString(', ' + Fields[F].Name + '=') Else EmitConstString(Fields[F].Name + '=');
+        EmitAppend(T_STRING);
+        EmitThis;
+        EmitGetField(False, Classes[C].Name, Fields[F].Name, FieldDescOf(F), Fields[F].Typ);
+        EmitAppend(Erasure(Fields[F].Typ));
+      End;
+      EmitConstString(']');
+      EmitAppend(T_STRING);
+      EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/StringBuilder', 'toString', '()Ljava/lang/String;', False);
+      EmitReturnOp('A');
+    End;
+    7 : Begin
+      EmitConstInt(0);
+      For I := 0 To N - 1 Do Begin
+        F := Fl[I];
+        EmitConstInt(31);
+        EmitArith(OP_IMUL, 'I');
+        EmitThis;
+        EmitGetField(False, Classes[C].Name, Fields[F].Name, FieldDescOf(F), Fields[F].Typ);
+        Dsc := HashDescFor(Erasure(Fields[F].Typ), Cls);
+        EmitInvoke(OP_INVOKESTATIC, Cls, 'hashCode', Dsc, False);
+        EmitArith(OP_IADD, 'I');
+      End;
+      EmitReturnOp('I');
+    End;
+    6 : Begin
+      EnsureLocal(4);
+      CurL[1] := VTObj('java/lang/Object');
+      NextLoc := 2;
+      Lf := NewLabel; Lt := NewLabel; Lx := NewLabel;
+      EmitThis;
+      EmitLoad('A', 1);
+      EmitJump(OP_IF_ACMPNE, Lt);
+      EmitConstInt(1);
+      EmitReturnOp('I');
+      PlaceLabel(Lt);
+      EmitLoad('A', 1);
+      EmitInstanceof(Classes[C].Name);
+      EmitJump(OP_IFNE, Lx);
+      EmitConstInt(0);
+      EmitReturnOp('I');
+      PlaceLabel(Lx);
+      EmitLoad('A', 1);
+      EmitCheckcast(Classes[C].Name);
+      EmitStore('A', 2, VTObj(Classes[C].Name));
+      NextLoc := 3;
+      For I := 0 To N - 1 Do Begin
+        F := Fl[I];
+        T := Erasure(Fields[F].Typ);
+        EmitThis;
+        EmitGetField(False, Classes[C].Name, Fields[F].Name, FieldDescOf(F), Fields[F].Typ);
+        EmitLoad('A', 2);
+        EmitGetField(False, Classes[C].Name, Fields[F].Name, FieldDescOf(F), Fields[F].Typ);
+        Case T Of
+          TY_BOOLEAN, TY_BYTE, TY_CHAR, TY_SHORT, TY_INT : EmitJump(OP_IF_ICMPNE, Lf);
+          TY_LONG : Begin EmitSimple(OP_LCMP, 'JJ', 'I'); EmitJump(OP_IFNE, Lf); End;
+          TY_FLOAT : Begin
+            EmitInvoke(OP_INVOKESTATIC, 'java/lang/Float', 'compare', '(FF)I', False);
+            EmitJump(OP_IFNE, Lf);
+          End;
+          TY_DOUBLE : Begin
+            EmitInvoke(OP_INVOKESTATIC, 'java/lang/Double', 'compare', '(DD)I', False);
+            EmitJump(OP_IFNE, Lf);
+          End;
+        Else
+          EmitInvoke(OP_INVOKESTATIC, 'java/util/Objects', 'equals', '(Ljava/lang/Object;Ljava/lang/Object;)Z', False);
+          EmitJump(OP_IFEQ, Lf);
+        End;
+      End;
+      EmitConstInt(1);
+      EmitReturnOp('I');
+      PlaceLabel(Lf);
+      EmitConstInt(0);
+      EmitReturnOp('I');
+    End;
+  End;
+End;
+
 Procedure GenCtorBody(C, M : LongInt);
 Var
   D, Body, First, Rest, I, F, K : LongInt; IsThis, HasCall : Boolean; Call : LongInt;
@@ -18276,6 +18515,19 @@ Begin
   While Rest <> 0 Do Begin
     GenStmt(Rest);
     Rest := Nodes[Rest].Next;
+  End;
+  { record : affectation des composants a la fin du constructeur canonique }
+  If Alive And ((Nodes[D].Mods And MOD_RECORD) <> 0) Then Begin
+    I := 0;
+    F := Nodes[Nodes[D].B].Sym;
+    Rest := Nodes[D].B;
+    While Rest <> 0 Do Begin
+      K := FindFieldIn(C, Nodes[Rest].S);
+      EmitThis;
+      LoadLocal(Nodes[Rest].Sym, Nodes[D].Line);
+      EmitPutField(False, Classes[C].Name, Fields[K].Name, FieldDescOf(K));
+      Rest := Nodes[Rest].Next;
+    End;
   End;
   K := 0;
 End;
@@ -18397,6 +18649,9 @@ Begin
     EmitInvoke(OP_INVOKESTATIC, 'java/lang/Enum', 'valueOf', '(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/Enum;', False);
     EmitCheckcast(Classes[C].Name);
     EmitReturnOp('A');
+  End
+  Else If Meths[M].Synth In [4, 5, 6, 7] Then Begin
+    GenRecordMethod(C, M);
   End
   Else If Meths[M].Synth = 8 Then Begin
     GenStaticInit(C);
@@ -18693,6 +18948,9 @@ Var
   Arg      : String;
 
 Begin
+  { exceptions flottantes masquees : le repli de constantes suit IEEE 754 comme Java }
+  {$IFDEF CPUX86_64}SetMXCSR($1F80);{$ENDIF}
+  {$IFDEF CPUI386}Set8087CW($133F);{$ENDIF}
   ErrCount := 0; WarnCount := 0;
   OptVerbose := False; OptOutDir := ''; OptTarget := 55;
   NNodes := 1;
@@ -18717,6 +18975,7 @@ Begin
       End;
     End
     Else If Arg = '-verbose' Then OptVerbose := True
+    Else If Arg = '-Xparse' Then OptParseOnly := True
     Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '-h') Or (Arg = '/?') Then Begin Usage; Halt(0); End
     Else If (Arg = '-version') Or (Arg = '--version') Then Begin WriteLn(VERSION); Halt(0); End
     Else If (Arg <> '') And (Arg[1] = '-') Then Begin
@@ -18738,7 +18997,11 @@ Begin
     MapPut(ClassMap, '@src:' + Files[I], 0);
   End;
   For I := 0 To NFiles - 1 Do LoadSourceFile(Files[I]);
-  If ErrCount = 0 Then AttribAll;
+  If (ErrCount = 0) And Not OptParseOnly Then AttribAll;
+  If OptParseOnly Then Begin
+    If ErrCount > 0 Then Halt(1);
+    Halt(0);
+  End;
   If ErrCount = 0 Then Begin
     PrepareAll;
     K := 0;
