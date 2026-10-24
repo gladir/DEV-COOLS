@@ -1986,8 +1986,42 @@ Const
  CPU_TYPE_80386       = 7;
  CPU_TYPE_80486       = 8;
  CPU_TYPE_PENTIUM     = 9;
- DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
+ DOS_VIDEO_COUNT      = 23;      { nombre de cartes video emulables }
+ { EMU_VID_NONE reste a 21 (valeur INCHANGEE depuis avant l'ajout de S3) et }
+ { S3 Trio64 est AJOUTEE APRES, a l'index 22 (tout nouveau, jamais utilise  }
+ { auparavant) : un DEVENV.CFG existant avec DosVideo1/2=21 ("Aucune",      }
+ { ecrit par un build anterieur a cet ajout) doit continuer a signifier     }
+ { "Aucune" et non se retrouver silencieusement reinterprete comme "S3      }
+ { Trio64" simplement parce qu une nouvelle carte se serait inseree AVANT   }
+ { elle dans la liste - voir DosVideoName/Emu_VGAActive plus bas. }
  EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
+ EMU_VID_S3           = 22;      { index DosVideo1/2 = S3 Trio64 (VESA/VBE) }
+ { VRAM dediee S3 Trio64 (1 Mo - capacite reelle d'une Trio64 1 Mo,        }
+ { suffisante pour 1024x768x256 ou 800x600x16bpp, voir S3VbeWidth/Height/  }
+ { Bpp pres de Emu_DoInt10_VBE) : separee de TEmuVideoMem (256 Ko, VGA/    }
+ { EGA/CGA planar, voir plus bas) car allouee seulement quand Video1/2 =   }
+ { S3 Trio64, pour ne rien changer au format/comportement des autres       }
+ { cartes deja en place. }
+ S3_VRAM_SIZE         = 1048576;
+ { Table des modes VESA/VBE geres par la S3 Trio64 emulee (voir             }
+ { Emu_DoInt10_VBE) - sous-ensemble volontairement modeste (3 modes 256      }
+ { couleurs banques + 2 modes 16 bits/pixel "haute couleur", tous verifies   }
+ { tenir dans S3_VRAM_SIZE=1 Mo, comme une vraie Trio64 1 Mo : 1024x768      }
+ { n est dispo qu en 256 couleurs, pas en 16 bits/pixel, faute de place -    }
+ { limite authentique, pas un oubli). Pas de mode "flat/lineaire" (bit 14    }
+ { de BX sur AX=4F02h) : uniquement l acces banque classique (AX=4F05h),     }
+ { le seul que ce CPU 8086/80386 reel-mode emule necessite vraiment. }
+ S3_VBE_MODE_COUNT    = 5;
+ S3VbeModeNum : Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
+  ($101, $103, $105, $110, $111);
+ S3VbeWidth   : Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
+  (640, 800, 1024, 640, 800);
+ S3VbeHeight  : Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
+  (480, 600, 768, 480, 600);
+ S3VbeBpp     : Array[0..S3_VBE_MODE_COUNT - 1] Of Byte =
+  (8, 8, 8, 16, 16);
+ S3VbeBytesPerLine: Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
+  (640, 800, 1024, 1280, 1600);
  DOS_DISK_IF_COUNT    = 13;      { nombre d interfaces de disque emulables }
  DOS_LAN_VENDOR_COUNT = 8;       { nombre de produits pilote LAN emulables }
  DOS_EMS_VERSION_COUNT = 3;      { nombre de versions LIM EMS emulables   }
@@ -4983,6 +5017,11 @@ Type
    ======================================================== }
  TEmuVideoMem = Array[0..262143] Of Byte;  { 4 plans x 64K }
  PEmuVideoMem = ^TEmuVideoMem;
+ { VRAM S3 Trio64 dediee (voir S3_VRAM_SIZE) - memoire lineaire banquee    }
+ { (fenetre 64 Ko a $A000, banc selectionne par AX=4F05h), separee de      }
+ { TEmuVideoMem ci-dessus. }
+ TS3VideoMem = Array[0..S3_VRAM_SIZE - 1] Of Byte;
+ PS3VideoMem = ^TS3VideoMem;
 
  TEmuVideoState = Record
   Mode       : Byte;    { 0..13h, 7Fh inconnu               }
@@ -5036,6 +5075,17 @@ Type
                          { reinitialisations redondantes                   }
   GSTxt132Emul: Boolean;{ Vrai = GSEmulTextModeC132x25 (132 col, moniteur  }
                          { monochrome), Faux = GSTextModeC132x25 (couleur) }
+  { --- S3 Trio64 / VESA VBE (2026-10-24, demande explicite - vraie        }
+  { emulation S3/SVGA, pas une simple entree de liste) : etat du mode VBE   }
+  { en cours, distinct de Mode (Byte, 0..13h classique BIOS) car les        }
+  { numeros de mode VBE sont sur 16 bits (ex. $101, $103...). Voir          }
+  { Emu_DoInt10_VBE (INT 10h AH=4Fh). --- }
+  VBEActive  : Boolean; { Vrai = mode VESA/VBE actif (prioritaire sur Mode) }
+  VBEMode    : Word;    { numero de mode VBE courant (ex. $101)            }
+  VBEBank    : Word;    { banc courant (granularite 64 Ko, AX=4F05h)       }
+  VBEBytesPerScanLine: Word;
+  S3Mem      : PS3VideoMem; { VRAM S3 dediee (1 Mo), voir S3_VRAM_SIZE     }
+  S3MemReady : Boolean;
  End;
 
  { --- Controleur d interruptions programmable 8259A (Options > Emulateur >  }
@@ -14941,6 +14991,7 @@ Function Emu_VGAActive: Boolean; Forward;
 Function Emu_EGAActive: Boolean; Forward;
 Function Emu_CGAActive: Boolean; Forward;
 Function Emu_ATIActive: Boolean; Forward;
+Function Emu_S3Active: Boolean; Forward;
 Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
 Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
 { Emu_ReadWord a deja un Forward plus haut (~ligne 10888, crochet         }
@@ -92959,7 +93010,7 @@ Var
  F: File;
  Year, Month, Day, DOW, Hour, Min, Sec, Sec100: Word;
  Err: Word;
- HasMem, HasVideo, HasVideoMem: Byte;
+ HasMem, HasVideo, HasVideoMem, HasS3Mem: Byte;
  DiskIdx: Byte;
  DiskCount: Integer;
  DiskSuffix, AvhdxPath: String;
@@ -93027,6 +93078,12 @@ Begin
  If EmuVideo.MemReady Then HasVideoMem := 1 Else HasVideoMem := 0;
  BlockWrite(F, HasVideoMem, SizeOf(HasVideoMem));
  If HasVideoMem = 1 Then BlockWrite(F, EmuVideo.Mem^, SizeOf(TEmuVideoMem));
+ { VRAM S3 dediee (voir TEmuVideoState.S3Mem) - ecrite APRES, en fin de    }
+ { fichier : un .vmrs charge par un ancien build sans ce bloc s arrete      }
+ { simplement a EOF, sans erreur (voir le garde symetrique au chargement). }
+ If EmuVideo.S3MemReady Then HasS3Mem := 1 Else HasS3Mem := 0;
+ BlockWrite(F, HasS3Mem, SizeOf(HasS3Mem));
+ If HasS3Mem = 1 Then BlockWrite(F, EmuVideo.S3Mem^, SizeOf(TS3VideoMem));
  Close(F);
  { --- <base>.avhdx (+ <base>_D.avhdx) : copie du/des disque(s) monte(s)   }
  { sur C:/D: au moment du checkpoint - SIMPLIFICATION documentee ci-dessus }
@@ -93074,9 +93131,11 @@ Var
   SavedTargetCPU, SavedVMName, AvhdxPath: String;
  F: File;
  Err: Word;
- HasMem, HasVideo, HasVideoMem: Byte;
+ HasMem, HasVideo, HasVideoMem, HasS3Mem: Byte;
  SavedVideoMem: PEmuVideoMem;
  SavedVideoMemReady: Boolean;
+ SavedS3Mem: PS3VideoMem;
+ SavedS3MemReady: Boolean;
  Year, Month, Day, Hour, Min, Sec: Word;
  DiskCount: Integer;
 Begin
@@ -93160,14 +93219,27 @@ Begin
  If HasVideo = 1 Then Begin
   SavedVideoMem := EmuVideo.Mem;
   SavedVideoMemReady := EmuVideo.MemReady;
+  SavedS3Mem := EmuVideo.S3Mem;
+  SavedS3MemReady := EmuVideo.S3MemReady;
   BlockRead(F, EmuVideo, SizeOf(EmuVideo));
   EmuVideo.Mem := SavedVideoMem;
   EmuVideo.MemReady := SavedVideoMemReady;
+  EmuVideo.S3Mem := SavedS3Mem;
+  EmuVideo.S3MemReady := SavedS3MemReady;
   BlockRead(F, HasVideoMem, SizeOf(HasVideoMem));
   If (HasVideoMem = 1) And EmuVideo.MemReady Then
    BlockRead(F, EmuVideo.Mem^, SizeOf(TEmuVideoMem))
   Else If HasVideoMem = 1 Then
    Seek(F, FilePos(F) + SizeOf(TEmuVideoMem));
+  { VRAM S3 dediee - voir le meme garde a l ecriture (Checkpoint-VM). Un    }
+  { ancien .vmrs sans ce bloc final laisse simplement HasS3Mem a 0 (EOF,    }
+  { voir disclosure a l ecriture) : aucune donnee S3 n est alors lue.      }
+  HasS3Mem := 0;
+  BlockRead(F, HasS3Mem, SizeOf(HasS3Mem));
+  If (HasS3Mem = 1) And EmuVideo.S3MemReady Then
+   BlockRead(F, EmuVideo.S3Mem^, SizeOf(TS3VideoMem))
+  Else If HasS3Mem = 1 Then
+   Seek(F, FilePos(F) + SizeOf(TS3VideoMem));
  End;
  Close(F);
  { --- <base>.avhdx / <base>_D.avhdx : remonte le(s) disque(s) associe(s), }
@@ -179170,6 +179242,7 @@ Begin
   19: DosVideoName := 'Matrox Millennium G400';
   20: DosVideoName := 'NVidia GeForce 6';
   21: DosVideoName := 'Aucune';
+  22: DosVideoName := 'S3 Trio64 (VESA/VBE)';
  Else
   DosVideoName := '???';
  End;
@@ -179272,7 +179345,7 @@ Begin
 End;
 
 { Une liste deroulante de la page Emulateur > DOS peut compter plus     }
-{ d items (ex: Video 1/2, DOS_VIDEO_COUNT=21) que de place disponible   }
+{ d items (ex: Video 1/2, DOS_VIDEO_COUNT=23) que de place disponible   }
 { entre le champ et le bas du dialogue - sans quoi les derniers items   }
 { seraient dessines hors du canevas graphique (rogne par le ClipOn du   }
 { SetViewPort) et donc inaccessibles au clic. Ces deux fonctions        }
@@ -184442,6 +184515,11 @@ Var
  ColorByte, BgiC: Byte;
  PrevC, RunStart: Integer;
  EmuBackPage: Integer;
+ { --- S3 Trio64 / VESA VBE (voir TEmuVideoState.VBEActive) --- }
+ S3PixOfs: LongInt;
+ S3PixWord: Word;
+ S3R5, S3G6, S3B5: Word;
+ S3PalIdx: Integer;
 Begin
  ScrH := GetScreenHeight;
  { Mode NES : rendu pixel du framebuffer 256x240 ----------------------- }
@@ -184650,29 +184728,85 @@ Begin
   DrawFilledRect(P.PanelX, P.PanelY,
    P.PanelX + GridW, P.PanelY + 22,
    CLR_TITLEBAR_ACTIVE);
-  { Compter les pixels non-noirs pour diagnostic. }
+  { Compter les pixels non-noirs pour diagnostic. En mode VESA/VBE (S3),   }
+  { Emu_VidGetPixel se limite au 8 bits/pixel (voir disclosure la-bas) -   }
+  { lire S3Mem directement ici couvre aussi le 16 bits/pixel. }
   RunStart := 0;
-  For Sy := 0 To GfxH - 1 Do
-   For Sx := 0 To GfxW - 1 Do
-    If Emu_VidGetPixel(Sx, Sy) <> 0 Then Inc(RunStart);
-  FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
-           ' [mode $' + HexByte(EmuVideo.Mode) + ' ' +
-           IntToStr(GfxW) + 'x' + IntToStr(GfxH) +
-           ' px<>0=' + IntToStr(RunStart) + ']';
+  If EmuVideo.VBEActive Then Begin
+   If EmuVideo.S3MemReady Then
+    For Sy := 0 To GfxH - 1 Do
+     For Sx := 0 To GfxW - 1 Do Begin
+      S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine +
+       Sx * (EmuVideo.BitsPerPix Div 8);
+      If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) And
+       (EmuVideo.S3Mem^[S3PixOfs] <> 0) Then Inc(RunStart);
+     End;
+  End Else
+   For Sy := 0 To GfxH - 1 Do
+    For Sx := 0 To GfxW - 1 Do
+     If Emu_VidGetPixel(Sx, Sy) <> 0 Then Inc(RunStart);
+  If EmuVideo.VBEActive Then
+   FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
+            ' [VESA $' + HexWord(EmuVideo.VBEMode) + ' ' +
+            IntToStr(GfxW) + 'x' + IntToStr(GfxH) + 'x' +
+            IntToStr(EmuVideo.BitsPerPix) + ' px<>0=' + IntToStr(RunStart) + ']'
+  Else
+   FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
+            ' [mode $' + HexByte(EmuVideo.Mode) + ' ' +
+            IntToStr(GfxW) + 'x' + IntToStr(GfxH) +
+            ' px<>0=' + IntToStr(RunStart) + ']';
   Title := TruncateTitleToWidth(FullTitle, GridW - 108);
   DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
   DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
    '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
   { Fond noir }
   DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, 0);
+  { Mode VESA/VBE (S3) 256 couleurs : reprogrammer la palette hote avec la }
+  { VRAI palette VBE courante (EmuVideo.DAC, deja mise a jour par AX=4F09h)}
+  { pour un rendu fidele (jusqu a 256 couleurs simultanees), au lieu de    }
+  { l approximation 16 couleurs utilisee pour les autres cartes - meme     }
+  { technique et meme compromis (palette hote partagee, voir               }
+  { InitializeHTMLPalette) que le rendu HTML du Navigateur Web. Sans objet }
+  { pour le 16 bits/pixel (pas de palette indexee), approxime en 16        }
+  { couleurs comme les autres modes faute de pilote hote "vraies couleurs" }
+  { (voir disclosure pres de SelectScreenDriverMode/InitializeHTMLPalette).}
+  If EmuVideo.VBEActive And (EmuVideo.BitsPerPix = 8) And (GetMaxColor >= 255) Then
+   For S3PalIdx := 0 To 255 Do
+    SetRGBPalette(S3PalIdx,
+     (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 0]) * 255) Div 63,
+     (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 1]) * 255) Div 63,
+     (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 2]) * 255) Div 63);
   { Rendu pixel : RLE par ligne pour limiter le nombre de
     primitives de dessin. }
   For Sy := 0 To GfxH - 1 Do Begin
    PrevC := -1; RunStart := 0;
    ScY := GridY + Sy * Scale;
    For Sx := 0 To GfxW - 1 Do Begin
-    ColorByte := Emu_VidGetPixel(Sx, Sy);
-    BgiC := Emu_VidPixelToBGI(ColorByte);
+    If EmuVideo.VBEActive Then Begin
+     BgiC := 0;
+     If EmuVideo.S3MemReady Then Begin
+      If EmuVideo.BitsPerPix = 8 Then Begin
+       S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx;
+       If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) Then
+        BgiC := EmuVideo.S3Mem^[S3PixOfs]; { index VBE brut = index palette hote }
+      End Else If EmuVideo.BitsPerPix = 16 Then Begin
+       S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx * 2;
+       If (S3PixOfs >= 0) And (S3PixOfs + 1 < S3_VRAM_SIZE) Then Begin
+        S3PixWord := Word(EmuVideo.S3Mem^[S3PixOfs]) Or
+         (Word(EmuVideo.S3Mem^[S3PixOfs + 1]) Shl 8);
+        { RGB565 -> approximation 16 couleurs (voir disclosure ci-dessus). }
+        S3R5 := (S3PixWord Shr 11) And $1F;
+        S3G6 := (S3PixWord Shr 5) And $3F;
+        S3B5 := S3PixWord And $1F;
+        BgiC := Emu_VidApprox16(Byte((S3R5 * 255) Div 31),
+         Byte((S3G6 * 255) Div 63), Byte((S3B5 * 255) Div 31));
+       End;
+      End;
+     End;
+    End Else Begin
+     ColorByte := Emu_VidGetPixel(Sx, Sy);
+     BgiC := Emu_VidPixelToBGI(ColorByte);
+    End;
     If BgiC <> PrevC Then Begin
      If (PrevC > 0) Then
       DrawFilledRect(GridX + RunStart * Scale, ScY,
@@ -191521,6 +191655,17 @@ Begin
   FillChar(EmuVideo.Mem^, SizeOf(EmuVideo.Mem^), 0);
   EmuVideo.MemReady := True;
  End;
+ { VRAM S3 dediee, allouee seulement si Video 1/2 = S3 Trio64 (sans quoi   }
+ { aucune autre carte n est affectee, ni en memoire ni en format .vmrs).  }
+ If Emu_S3Active And (Not EmuVideo.S3MemReady) Then Begin
+  New(EmuVideo.S3Mem);
+  FillChar(EmuVideo.S3Mem^, SizeOf(EmuVideo.S3Mem^), 0);
+  EmuVideo.S3MemReady := True;
+ End;
+ EmuVideo.VBEActive := False;
+ EmuVideo.VBEMode := 0;
+ EmuVideo.VBEBank := 0;
+ EmuVideo.VBEBytesPerScanLine := 0;
  EmuVideo.Mode := $03;
  EmuVideo.Width := 720; EmuVideo.Height := 400;
  EmuVideo.TextCols := 80; EmuVideo.TextRows := 25;
@@ -191582,9 +191727,20 @@ End;
 Function Emu_VidReadByte(MemOfs: LongInt): Byte;
 Var I, ReadPlane, ReadMode: Byte;
     V, Match, NotCare: Byte;
+    S3Ofs: LongInt;
 Begin
  Emu_VidReadByte := 0;
  If Not EmuVideo.MemReady Then Exit;
+ { Mode VESA/VBE (S3) : fenetre banquee 64 Ko a $A000, banc EmuVideo.VBEBank}
+ { (granularite 64 Ko, voir AX=4F05h/Emu_DoInt10_VBE) - prioritaire sur le  }
+ { decodage CGA/planar/chain-4 classique ci-dessous, memoire dediee S3Mem.  }
+ If EmuVideo.VBEActive Then Begin
+  If EmuVideo.S3MemReady And (MemOfs >= 0) And (MemOfs < $10000) Then Begin
+   S3Ofs := LongInt(EmuVideo.VBEBank) * 65536 + MemOfs;
+   If S3Ofs < S3_VRAM_SIZE Then Emu_VidReadByte := EmuVideo.S3Mem^[S3Ofs];
+  End;
+  Exit;
+ End;
  { Plages CGA et MDA = lineaires simples }
  If (MemOfs >= $20000) And (MemOfs < $40000) Then Begin
   Emu_VidReadByte := EmuVideo.Mem^[MemOfs];
@@ -191641,9 +191797,21 @@ Procedure Emu_VidWriteByte(MemOfs: LongInt; Value: Byte);
 Var WriteMode, Plane, PlaneMask, Rot, BitMask: Byte;
     SetReset, EnableSR, LogicOp: Byte;
     I, NewVal, Src: Byte;
+    S3Ofs: LongInt;
 Begin
  If Not EmuVideo.MemReady Then Exit;
  Inc(EmuDiag_VidWrCnt);
+ { Mode VESA/VBE (S3) : voir le meme garde dans Emu_VidReadByte ci-dessus. }
+ If EmuVideo.VBEActive Then Begin
+  If EmuVideo.S3MemReady And (MemOfs >= 0) And (MemOfs < $10000) Then Begin
+   S3Ofs := LongInt(EmuVideo.VBEBank) * 65536 + MemOfs;
+   If S3Ofs < S3_VRAM_SIZE Then Begin
+    EmuVideo.S3Mem^[S3Ofs] := Value;
+    EmuVideo.GfxDirty := True;
+   End;
+  End;
+  Exit;
+ End;
  If (MemOfs >= $20000) And (MemOfs < $40000) Then Begin
   EmuVideo.Mem^[MemOfs] := Value;
   EmuVideo.GfxDirty := True;
@@ -191726,6 +191894,19 @@ Begin
  If (X < 0) Or (Y < 0) Or
     (X >= EmuVideo.Width) Or (Y >= EmuVideo.Height) Then Exit;
  Inc(EmuDiag_PixWrCnt);
+ { Mode VESA/VBE (S3) 256 couleurs : AH=0Ch (BIOS Write Graphics Pixel) ne }
+ { transporte qu un AL=Byte, donc seul le cas 8 bits/pixel est couvre ici  }
+ { - un vrai BIOS a la meme limite dans ses modes VESA 16/24 bits/pixel    }
+ { (programmes d epoque y ecrivent directement la fenetre banquee, jamais  }
+ { via cet appel). Voir le rendu dedie (DrawEmulatorPanel) pour 16 bpp. }
+ If EmuVideo.VBEActive Then Begin
+  If EmuVideo.S3MemReady And (EmuVideo.BitsPerPix = 8) Then Begin
+   Lin := LongInt(Y) * EmuVideo.VBEBytesPerScanLine + X;
+   If Lin < S3_VRAM_SIZE Then EmuVideo.S3Mem^[Lin] := Color;
+   EmuVideo.GfxDirty := True;
+  End;
+  Exit;
+ End;
  Case EmuVideo.Mode Of
   $04, $05: Begin
    { CGA 320x200x4 : 2 bits par pixel, 80 octets par ligne,
@@ -191831,6 +192012,15 @@ Begin
  If Not EmuVideo.IsGraphic Then Exit;
  If (X < 0) Or (Y < 0) Or
     (X >= EmuVideo.Width) Or (Y >= EmuVideo.Height) Then Exit;
+ { Mode VESA/VBE (S3) 256 couleurs : voir le meme garde/limite (AL=Byte)   }
+ { dans Emu_VidSetPixel ci-dessus. }
+ If EmuVideo.VBEActive Then Begin
+  If EmuVideo.S3MemReady And (EmuVideo.BitsPerPix = 8) Then Begin
+   Lin := LongInt(Y) * EmuVideo.VBEBytesPerScanLine + X;
+   If Lin < S3_VRAM_SIZE Then Emu_VidGetPixel := EmuVideo.S3Mem^[Lin];
+  End;
+  Exit;
+ End;
  Case EmuVideo.Mode Of
   $04, $05: Begin
    If (Y And 1) = 0 Then BankOfs := $20000
@@ -191905,6 +192095,11 @@ Begin
  { Carte absente pour ce mode : un vrai BIOS n aurait pas cette entree de }
  { table de modes, INT 10h AH=00h reste donc sans effet (mode inchange). }
  If Not Emu_VidModeSupported(NewMode And $7F) Then Exit;
+ { INT 10h AH=00h (mode BIOS classique) quitte tout mode VESA/VBE en cours}
+ { - un vrai S3 Trio64 retombe en mode registre VGA standard des qu un      }
+ { AH=00h classique est appele, voir Emu_DoInt10_VBE/AX=4F02h pour le        }
+ { chemin inverse. }
+ EmuVideo.VBEActive := False;
  EmuVideo.Mode := NewMode And $7F;
  EmuDiag_LastMode := EmuVideo.Mode;
  { Reinitialiser registres de base }
@@ -192042,20 +192237,34 @@ Begin
 End;
 
 { Vrai si au moins un des deux emplacements Video 1/Video 2 porte une      }
-{ carte reelle (different de "Aucune", EMU_VID_NONE=21). }
+{ carte reelle (different de "Aucune", EMU_VID_NONE). }
 Function Emu_AnyVideoActive: Boolean;
 Begin
  Emu_AnyVideoActive := (OptionsDlg.Data.DosVideo1 <> EMU_VID_NONE) Or
   (OptionsDlg.Data.DosVideo2 <> EMU_VID_NONE);
 End;
 
-{ VGA et compatibles (index 8 a 20 de DosVideoName). }
+{ VGA et compatibles (index 8 a 20 de DosVideoName, PLUS EMU_VID_S3=22 :   }
+{ une vraie carte S3 reste pleinement compatible registre VGA standard,    }
+{ voir Emu_S3Active ci-dessous pour ses seules extensions VESA/VBE) - 21   }
+{ (EMU_VID_NONE, "Aucune") est delibarement exclu de la plage, d ou le     }
+{ test explicite plutot qu un simple intervalle continu. }
 Function Emu_VGAActive: Boolean;
 Var D1, D2: Integer;
 Begin
  D1 := OptionsDlg.Data.DosVideo1;
  D2 := OptionsDlg.Data.DosVideo2;
- Emu_VGAActive := ((D1 >= 8) And (D1 <= 20)) Or ((D2 >= 8) And (D2 <= 20));
+ Emu_VGAActive := ((D1 >= 8) And (D1 <= 20)) Or (D1 = EMU_VID_S3) Or
+  ((D2 >= 8) And (D2 <= 20)) Or (D2 = EMU_VID_S3);
+End;
+
+{ S3 Trio64 specifiquement (index EMU_VID_S3=22 de DosVideoName) : gate    }
+{ les extensions VESA/VBE (INT 10h AH=4Fh, voir Emu_DoInt10_VBE) qu aucune }
+{ autre carte "VGA et compatibles" de la liste ne possede. }
+Function Emu_S3Active: Boolean;
+Begin
+ Emu_S3Active := (OptionsDlg.Data.DosVideo1 = EMU_VID_S3) Or
+  (OptionsDlg.Data.DosVideo2 = EMU_VID_S3);
 End;
 
 { EGA et compatibles (index 5 a 7). Une VGA est retrocompatible EGA sur le }
@@ -194085,6 +194294,232 @@ Begin
  P.NeedRepaint := True;
 End;
 
+{ --- S3VbeModeNum[]/Width[]/Height[]/Bpp[]/BytesPerLine[] : voir leur      }
+{ declaration pres de S3_VBE_MODE_COUNT. Recherche lineaire : 5 entrees,    }
+{ jamais un cout sensible ici (appelee une fois par Get/SetMode, pas par    }
+{ pixel). --- }
+Function S3_FindVbeMode(ModeNum: Word): Integer;
+Var I: Integer;
+Begin
+ S3_FindVbeMode := -1;
+ For I := 0 To S3_VBE_MODE_COUNT - 1 Do
+  If S3VbeModeNum[I] = ModeNum Then Begin
+   S3_FindVbeMode := I;
+   Exit;
+  End;
+End;
+
+{ --- INT 10h AH=4Fh : VESA BIOS Extensions (VBE) - S3 Trio64 uniquement   }
+{ (demande explicite, 2026-10-24 - voir Emu_S3Active). Implementation       }
+{ "fenetre banquee" (AX=4F05h) exclusivement : pas de framebuffer           }
+{ lineaire/plat (bit 14 de BX sur AX=4F02h, refuse explicitement plus bas)  }
+{ car un acces 32 bits a plat exigerait un mode protege/non-reel hors de    }
+{ portee de ce CPU emule en reel pur - la quasi-totalite des logiciels DOS  }
+{ reel-mode de l epoque (tests VESA, demos, jeux SVGA) utilisent de toute    }
+{ facon le mode banque, seul garanti disponible partout. Les champs des     }
+{ structures VBE ne sont pas exhaustivement conformes a la norme (quelques  }
+{ champs rarement lus, ex. DirectColorModeInfo, sont laisses a 0) - assez   }
+{ pour qu un vrai utilitaire de detection VESA (ex. CHKVESA, UNIVBE) ou un   }
+{ petit programme de test voie une carte SVGA coherente et fonctionnelle. }
+Procedure Emu_DoInt10_VBE(Var P: TEmulatorPanel);
+Var
+ ModeNum: Word;
+ ModeIdx: Integer;
+ I: Integer;
+ Seg, Ofs: Word;
+ InfoSeg, InfoOfs: Word;
+ OemStr: String;
+ ModeAttr: Word;
+ Entries, StartIdx: Word;
+ R8, G8, B8: Byte;
+Begin
+ If Not Emu_S3Active Then Begin
+  P.CPU.Regs.AX := $0100; { pas de VESA sans S3 Trio64 configure (Video 1/2) }
+  Exit;
+ End;
+ Case P.CPU.Regs.AL Of
+  $00: Begin
+   { Get SuperVGA Info. ES:DI -> tampon (>= 512 octets par convention de    }
+   { l appelant VBE2, voir disclosure de tete) : bloc fixe 0..255, PUIS     }
+   { (technique permise par la norme : pointeurs internes au tampon de      }
+   { l appelant) la chaine OEM a partir de 256 et la liste de modes a       }
+   { partir de 320 - evite de simuler une ROM BIOS separee (aucune carte    }
+   { de ce projet n en a, voir Emu_DoInt10). }
+   InfoSeg := P.CPU.Segs.ES;
+   InfoOfs := P.CPU.Regs.DI;
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 0, Ord('V'));
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 1, Ord('E'));
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 2, Ord('S'));
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 3, Ord('A'));
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 4, $0200);          { VBE 2.0 }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 6, InfoOfs + 256);  { OemStringPtr.Ofs }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 8, InfoSeg);        { OemStringPtr.Seg }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 10, 0);  { Capabilities : DAC fixe 6 bits }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 12, 0);
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 14, InfoOfs + 320); { VideoModePtr.Ofs }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 16, InfoSeg);       { VideoModePtr.Seg }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 18, S3_VRAM_SIZE Div 65536); { Mo en blocs 64 Ko }
+   OemStr := 'S3 Trio64 (DEVENV emulator)';
+   For I := 1 To Length(OemStr) Do
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 255 + I, Ord(OemStr[I]));
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 256 + Word(Length(OemStr)), 0);
+   For I := 0 To S3_VBE_MODE_COUNT - 1 Do
+    Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 320 + I * 2, S3VbeModeNum[I]);
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 320 + S3_VBE_MODE_COUNT * 2, $FFFF);
+   P.CPU.Regs.AX := $004F;
+  End;
+  $01: Begin
+   { Get Mode Info. CX=numero de mode (9 bits utiles), ES:DI -> tampon      }
+   { 256 octets. }
+   ModeNum := P.CPU.Regs.CX And $01FF;
+   ModeIdx := S3_FindVbeMode(ModeNum);
+   If ModeIdx < 0 Then Begin
+    P.CPU.Regs.AX := $014F;
+    Exit;
+   End;
+   InfoSeg := P.CPU.Segs.ES;
+   InfoOfs := P.CPU.Regs.DI;
+   If S3VbeBpp[ModeIdx] = 8 Then
+    ModeAttr := $1B  { supporte + sortie TTY BIOS + couleur + graphique }
+   Else
+    ModeAttr := $9B; { idem, bit7 = couleur directe (pas de palette DAC) }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 0, ModeAttr);
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 2, $07);  { WinAAttributes }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 3, $00);  { WinBAttributes : absente }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 4, 64);   { WinGranularity (Ko) }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 6, 64);   { WinSize (Ko) }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 8, $A000);{ WinASegment }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 10, 0);   { WinBSegment }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 12, 0);   { WinFuncPtr.Ofs (non fourni) }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 14, 0);   { WinFuncPtr.Seg }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 16, S3VbeBytesPerLine[ModeIdx]);
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 18, S3VbeWidth[ModeIdx]);
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 20, S3VbeHeight[ModeIdx]);
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 22, 8);   { XCharSize }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 23, 16);  { YCharSize }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 24, 1);   { NumberOfPlanes (chaine) }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 25, S3VbeBpp[ModeIdx]);
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 26, 1);   { NumberOfBanks }
+   If S3VbeBpp[ModeIdx] = 8 Then
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 27, 4)   { MemoryModel : packed pixel }
+   Else
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 27, 6);  { MemoryModel : couleur directe }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 28, 64);  { BankSize (Ko) }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 29, 0);   { NumberOfImagePages }
+   Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 30, 0);   { Reserved1 }
+   If S3VbeBpp[ModeIdx] = 16 Then Begin
+    { Couleur directe RGB565 - champs VBE 1.2 }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 31, 5);  { RedMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 32, 11); { RedFieldPosition }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 33, 6);  { GreenMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 34, 5);  { GreenFieldPosition }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 35, 5);  { BlueMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 36, 0);  { BlueFieldPosition }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 37, 0);  { RsvdMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 38, 0);  { RsvdFieldPosition }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 39, 0);  { DirectColorModeInfo }
+   End;
+   P.CPU.Regs.AX := $004F;
+  End;
+  $02: Begin
+   { Set Mode. BX=numero de mode (bit14=framebuffer lineaire, refuse -     }
+   { voir disclosure de tete -, bit15=ne pas effacer la VRAM). }
+   ModeNum := P.CPU.Regs.BX And $01FF;
+   If (P.CPU.Regs.BX And $4000) <> 0 Then Begin
+    P.CPU.Regs.AX := $014F; { framebuffer lineaire non supporte - echec propre }
+    Exit;
+   End;
+   ModeIdx := S3_FindVbeMode(ModeNum);
+   If ModeIdx < 0 Then Begin
+    P.CPU.Regs.AX := $014F;
+    Exit;
+   End;
+   If Not EmuVideo.MemReady Then Emu_VidInit;
+   If Not EmuVideo.S3MemReady Then Begin
+    New(EmuVideo.S3Mem);
+    FillChar(EmuVideo.S3Mem^, SizeOf(EmuVideo.S3Mem^), 0);
+    EmuVideo.S3MemReady := True;
+   End;
+   EmuVideo.VBEActive := True;
+   EmuVideo.VBEMode := ModeNum;
+   EmuVideo.VBEBank := 0;
+   EmuVideo.VBEBytesPerScanLine := S3VbeBytesPerLine[ModeIdx];
+   EmuVideo.Width := S3VbeWidth[ModeIdx];
+   EmuVideo.Height := S3VbeHeight[ModeIdx];
+   EmuVideo.BitsPerPix := S3VbeBpp[ModeIdx];
+   EmuVideo.IsGraphic := True;
+   EmuVideo.IsPlanar := False;
+   EmuVideo.ChainFour := False;
+   { Sentinelle "mode VBE actif" pour AH=0Fh/le titre du panneau classique -}
+   { la verite vient de VBEMode/VBEActive, pas de cet octet 0..7Fh. }
+   EmuVideo.Mode := $6A;
+   EmuVideo.GfxDirty := True;
+   If (P.CPU.Regs.BX And $8000) = 0 Then
+    FillChar(EmuVideo.S3Mem^, SizeOf(EmuVideo.S3Mem^), 0);
+   P.CPU.Regs.AX := $004F;
+  End;
+  $03: Begin
+   { Get Mode. Retourne BX=numero de mode VBE courant. }
+   If EmuVideo.VBEActive Then P.CPU.Regs.BX := EmuVideo.VBEMode
+   Else P.CPU.Regs.BX := 0;
+   P.CPU.Regs.AX := $004F;
+  End;
+  $05: Begin
+   { CPU Window Control (bank switching). BH=0 Set, BH=1 Get. BL=numero de }
+   { fenetre (0=A, 1=B) - une seule fenetre existe ici (granularite =      }
+   { taille de fenetre, voir AL=01h), BL=1 repond donc succes sans effet   }
+   { (comportement courant sur ce type de materiel reel mono-fenetre).     }
+   { DX = numero de banc, en unites de WinGranularity (64 Ko). }
+   If P.CPU.Regs.BH = 0 Then Begin
+    If P.CPU.Regs.BL = 0 Then EmuVideo.VBEBank := P.CPU.Regs.DX;
+    P.CPU.Regs.AX := $004F;
+   End Else If P.CPU.Regs.BH = 1 Then Begin
+    If P.CPU.Regs.BL = 0 Then P.CPU.Regs.DX := EmuVideo.VBEBank
+    Else P.CPU.Regs.DX := 0;
+    P.CPU.Regs.AX := $004F;
+   End Else
+    P.CPU.Regs.AX := $014F;
+  End;
+  $09: Begin
+   { Set/Get Palette Data. BL=0 Set, BL=1 Get, CX=nombre d entrees,        }
+   { DX=index de depart, ES:DI -> tableau d entrees 4 octets               }
+   { (Bleu,Vert,Rouge,Reserve - ordre VESA, INVERSE de l ordre R,G,B de     }
+   { EmuVideo.DAC/du port $3C9 classique). DAC fixe 6 bits (Capabilities   }
+   { bit0=0, voir AL=00h) : memes valeurs 0..63 que $3C9, aucune            }
+   { conversion 8 bits necessaire. }
+   Seg := P.CPU.Segs.ES;
+   Ofs := P.CPU.Regs.DI;
+   Entries := P.CPU.Regs.CX;
+   StartIdx := P.CPU.Regs.DX;
+   If P.CPU.Regs.BL = 0 Then Begin
+    For I := 0 To Integer(Entries) - 1 Do
+     If (StartIdx + I) < 256 Then Begin
+      B8 := Emu_ReadByte(P.CPU, Seg, Ofs + I * 4 + 0);
+      G8 := Emu_ReadByte(P.CPU, Seg, Ofs + I * 4 + 1);
+      R8 := Emu_ReadByte(P.CPU, Seg, Ofs + I * 4 + 2);
+      EmuVideo.DAC[(StartIdx + I) * 3 + 0] := R8 And $3F;
+      EmuVideo.DAC[(StartIdx + I) * 3 + 1] := G8 And $3F;
+      EmuVideo.DAC[(StartIdx + I) * 3 + 2] := B8 And $3F;
+     End;
+    EmuVideo.GfxDirty := True;
+    P.CPU.Regs.AX := $004F;
+   End Else If P.CPU.Regs.BL = 1 Then Begin
+    For I := 0 To Integer(Entries) - 1 Do
+     If (StartIdx + I) < 256 Then Begin
+      Emu_WriteByte(P.CPU, Seg, Ofs + I * 4 + 0, EmuVideo.DAC[(StartIdx + I) * 3 + 2]);
+      Emu_WriteByte(P.CPU, Seg, Ofs + I * 4 + 1, EmuVideo.DAC[(StartIdx + I) * 3 + 1]);
+      Emu_WriteByte(P.CPU, Seg, Ofs + I * 4 + 2, EmuVideo.DAC[(StartIdx + I) * 3 + 0]);
+      Emu_WriteByte(P.CPU, Seg, Ofs + I * 4 + 3, 0);
+     End;
+    P.CPU.Regs.AX := $004F;
+   End Else
+    P.CPU.Regs.AX := $014F;
+  End;
+ Else
+  P.CPU.Regs.AX := $014F; { sous-fonction non geree (AL=04h save/restore d etat, etc.) }
+ End;
+End;
+
 Procedure Emu_DoInt10(Var P: TEmulatorPanel);
 Var
  I: Integer;
@@ -194398,8 +194833,10 @@ Begin
     P.CPU.Regs.BX := 64;
    End;
   $4F:
-   { VESA SuperVGA BIOS. Non supporte : retourner AH=01 (echec). }
-   P.CPU.Regs.AX := $0100;
+   { VESA SuperVGA BIOS. S3 Trio64 configure (Video 1/2) : vraie           }
+   { implementation VBE, voir Emu_DoInt10_VBE - sinon (aucune carte S3)     }
+   { AH=01 (echec), un vrai BIOS CGA/EGA/VGA simple n a pas cette extension.}
+   Emu_DoInt10_VBE(P);
   $FE, $FF:
    { Topview/DESQview. Stub. }
    ;
