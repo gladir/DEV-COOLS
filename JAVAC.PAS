@@ -235,6 +235,8 @@ Type
     Dbl  : Double;
     Aux  : LongInt;     { base du litteral entier, ou 1 si debordement decimal }
     Adj  : Boolean;     { jeton colle au suivant (pour les '>') }
+    Col  : Integer;     { colonne (1 = premier octet de la ligne) }
+    EndCol : Integer;   { colonne juste apres le jeton }
   End;
 
   TNode = Record
@@ -274,6 +276,8 @@ Var
   OptTarget  : LongInt;    { version de classe (major) }
   OptDumpAst : Boolean;
   OptParseOnly : Boolean;
+  OptMaxErrs  : LongInt;    { nombre maximal d'erreurs affichees (-Xmaxerrs) }
+  OptMaxWarns : LongInt;
   OptModulePath : Boolean;  { --module-path donne : les modules inconnus ne sont pas des erreurs }
 
   { Source et jetons }
@@ -389,10 +393,26 @@ Begin
   End;
 End;
 
-{ Affiche la ligne de source fautive (relue depuis le fichier) }
-Procedure ShowSrcLine(Const Fn : String; Line : LongInt);
-Var F : Text; S : String; K : LongInt;
+{ Position codee : ligne dans les 20 bits bas, colonne (1..2047) au-dessus }
+Function PosLine(Pos : LongInt) : LongInt;
+Begin PosLine := Pos And $FFFFF; End;
+
+Function PosCol(Pos : LongInt) : LongInt;
+Begin PosCol := (Pos Shr 20) And $7FF; End;
+
+Function MakePos(Line, Col : LongInt) : LongInt;
 Begin
+  If Col > 2047 Then Col := 2047;
+  If Col < 0 Then Col := 0;
+  MakePos := (Line And $FFFFF) Or (Col Shl 20);
+End;
+
+{ Affiche la ligne de source fautive (relue depuis le fichier) puis un curseur ^ a la colonne }
+Procedure ShowSrcLine(Const Fn : String; Pos : LongInt);
+Var F : Text; S, Pad : String; K, Line, Col, I : LongInt;
+Begin
+  Line := PosLine(Pos);
+  Col := PosCol(Pos);
   If (Line <= 0) Or (Fn = '') Then Exit;
   Assign(F, Fn);
   Reset(F);
@@ -404,36 +424,106 @@ Begin
     Inc(K);
   End;
   Close(F);
-  If K = Line Then WriteLn('    ', S);
+  If K = Line Then Begin
+    WriteLn(S);
+    If Col > 0 Then Begin
+      { un espace par caractere (les tabulations sont conservees, les suites UTF-8 comptent pour un) }
+      Pad := '';
+      For I := 1 To Col - 1 Do Begin
+        If I > Length(S) Then Break;
+        If S[I] = #9 Then Pad := Pad + #9
+        Else If (Ord(S[I]) And $C0) <> $80 Then Pad := Pad + ' ';
+      End;
+      WriteLn(Pad, '^');
+    End;
+  End;
   If IOResult <> 0 Then ;
 End;
 
 Procedure ErrSummary;
 Begin
   If ErrCount = 1 Then WriteLn('1 erreur') Else WriteLn(ErrCount, ' erreurs');
+  If (OptMaxErrs > 0) And (ErrCount > OptMaxErrs) Then
+    WriteLn('seules les ', OptMaxErrs, ' premieres erreurs sont affichees (-Xmaxerrs pour en afficher plus)');
 End;
+
+{ Diagnostics : affichage direct, ou mise en tampon (analyse lexicale et syntaxique d'un fichier) puis
+  affichage trie par position }
+Type
+  TDiag = Record
+    Pos  : LongInt;
+    Msg  : String;
+    IsWarn : Boolean;
+    Show : Boolean;
+    FileN : String;
+  End;
+
+Var
+  DiagBuf : Array Of TDiag;
+  NDiag   : LongInt;
+  DiagBuffering : Boolean;
+
+Procedure PrintDiag(Const Fn : String; Pos : LongInt; Const Msg : String; IsWarn : Boolean);
+Var Kind : String;
+Begin
+  If IsWarn Then Kind := 'avertissement' Else Kind := 'erreur';
+  If PosLine(Pos) > 0 Then Begin
+    WriteLn(Fn, ':', PosLine(Pos), ': ', Kind, ': ', Msg);
+    ShowSrcLine(Fn, Pos);
+  End
+  Else WriteLn(Fn, ': ', Kind, ': ', Msg);
+End;
+
+Procedure PostDiag(Pos : LongInt; Const Msg : String; IsWarn : Boolean; Show : Boolean);
+Begin
+  If Not Show Then Exit;
+  If DiagBuffering Then Begin
+    If NDiag >= Length(DiagBuf) Then SetLength(DiagBuf, NDiag * 2 + 16);
+    DiagBuf[NDiag].Pos := Pos; DiagBuf[NDiag].Msg := Msg; DiagBuf[NDiag].IsWarn := IsWarn;
+    DiagBuf[NDiag].FileN := CurFile;
+    Inc(NDiag);
+  End
+  Else PrintDiag(CurFile, Pos, Msg, IsWarn);
+End;
+
+{ Affiche les diagnostics en tampon, tries par ligne puis colonne (tri stable) }
+Procedure FlushDiags;
+Var I, J : LongInt; T : TDiag;
+Begin
+  For I := 1 To NDiag - 1 Do Begin
+    T := DiagBuf[I];
+    J := I - 1;
+    While (J >= 0) And ((PosLine(DiagBuf[J].Pos) > PosLine(T.Pos)) Or
+          ((PosLine(DiagBuf[J].Pos) = PosLine(T.Pos)) And (PosCol(DiagBuf[J].Pos) > PosCol(T.Pos)))) Do Begin
+      DiagBuf[J + 1] := DiagBuf[J];
+      Dec(J);
+    End;
+    DiagBuf[J + 1] := T;
+  End;
+  For I := 0 To NDiag - 1 Do PrintDiag(DiagBuf[I].FileN, DiagBuf[I].Pos, DiagBuf[I].Msg, DiagBuf[I].IsWarn);
+  NDiag := 0;
+  DiagBuffering := False;
+End;
+
+Var LexErrLine : LongInt;     { ligne de la derniere erreur lexicale }
 
 { Erreurs et avertissements }
 Procedure Err(Line : LongInt; Const Msg : String);
 Begin
-  If Line > 0 Then Begin
-    WriteLn(CurFile, ':', Line, ': erreur: ', Msg);
-    ShowSrcLine(CurFile, Line);
-  End
-  Else
-    WriteLn(CurFile, ': erreur: ', Msg);
   Inc(ErrCount);
+  PostDiag(Line, Msg, False, (OptMaxErrs <= 0) Or (ErrCount <= OptMaxErrs));
 End;
 
 Procedure Warn(Line : LongInt; Const Msg : String);
 Begin
-  WriteLn(CurFile, ':', Line, ': avertissement: ', Msg);
   Inc(WarnCount);
+  PostDiag(Line, Msg, True, (OptMaxWarns <= 0) Or (WarnCount <= OptMaxWarns));
 End;
 
 Procedure Fatal(Line : LongInt; Const Msg : String);
 Begin
   Err(Line, Msg);
+  FlushDiags;
   ErrSummary;
   Halt(1);
 End;
@@ -618,6 +708,19 @@ Begin
     If KeywordTab[I] = S Then Begin IsKeyword := True; Exit; End;
 End;
 
+Var TokStartI : LongInt;
+
+{ Colonne (1-based, en octets) de l'indice I dans Src }
+Function ColOf(I : LongInt) : LongInt;
+Var K : LongInt;
+Begin
+  K := I;
+  While (K > 1) And (Src[K - 1] <> #10) Do Dec(K);
+  K := I - K + 1;
+  If K > 2047 Then K := 2047;
+  ColOf := K;
+End;
+
 Procedure AddTok(Kind : Byte; Const S : String; Line : LongInt);
 Begin
   If NToks >= TokCap Then Begin
@@ -631,6 +734,8 @@ Begin
   Toks[NToks].Dbl := 0;
   Toks[NToks].Aux := 0;
   Toks[NToks].Adj := False;
+  Toks[NToks].Col := ColOf(TokStartI);
+  Toks[NToks].EndCol := 0;
   Inc(NToks);
 End;
 
@@ -975,6 +1080,8 @@ Begin
   I := 1;
   Line := 1;
   While I <= SrcLen Do Begin
+    If (NToks > 0) And (Toks[NToks - 1].EndCol = 0) Then Toks[NToks - 1].EndCol := ColOf(I);
+    TokStartI := I;
     C := Src[I];
     If C = #10 Then Begin Inc(Line); Inc(I); End
     Else If C In [' ', #9, #13, #12] Then Inc(I)
@@ -1027,7 +1134,7 @@ Begin
             Inc(I, L);
           End;
         End;
-        If Not Closed Then Err(Start, 'literal de chaine non termine');
+        If Not Closed Then Begin Err(MakePos(Start, ColOf(TokStartI)), 'literal de chaine non termine'); LexErrLine := Start; End;
         AddTok(TK_STRING, S, Start);
       End;
     End
@@ -1088,7 +1195,10 @@ Begin
         If (I <= SrcLen) And ((Src[I] = '>') Or (Src[I] = '=')) Then Toks[NToks - 1].Adj := True;
     End;
   End;
+  If (NToks > 0) And (Toks[NToks - 1].EndCol = 0) Then Toks[NToks - 1].EndCol := ColOf(SrcLen + 1);
+  TokStartI := SrcLen + 1;
   AddTok(TK_EOF, '<fin de fichier>', Line);
+  Toks[NToks - 1].EndCol := Toks[NToks - 1].Col;
 End;
 
 { ============================================================================
@@ -1170,24 +1280,91 @@ Begin IsOp := IsOpAt(0, S); End;
 Function IsKw(Const S : String) : Boolean;
 Begin IsKw := IsKwAt(0, S); End;
 
+Function TokPos(K : LongInt) : LongInt;
+Begin TokPos := MakePos(Toks[K].Line, Toks[K].Col); End;
+
 Function CurLine : LongInt;
-Begin CurLine := Toks[TokIdx(0)].Line; End;
+Begin CurLine := TokPos(TokIdx(0)); End;
+
+{ Recuperation d'erreurs : une erreur de syntaxe leve TParseAbort ; la boucle des membres ou des
+  instructions reprend apres avoir saute jusqu'a un point de synchronisation. }
+Type
+  TParseAbort = class(TObject)
+  End;
+
+Var
+  RecoverDepth : LongInt;      { > 0 dans une boucle capable de reprendre }
+
+Var LastSynPos : LongInt;
+
+{ Signale une erreur de syntaxe (une seule par position) et continue l'analyse }
+Procedure SyntaxErrAt(Pos : LongInt; Const Msg : String);
+Begin
+  { comme javac, une erreur n'est signalee que si elle suit strictement la precedente }
+  If (PosLine(Pos) * 4096 + PosCol(Pos) > LastSynPos) And (PosLine(Pos) <> LexErrLine) Then Begin
+    Err(Pos, Msg);
+    LastSynPos := PosLine(Pos) * 4096 + PosCol(Pos);
+  End;
+  If (RecoverDepth = 0) Or (ErrCount >= 1000) Then Begin
+    FlushDiags;
+    ErrSummary;
+    Halt(1);
+  End;
+  { fin de fichier : aucune reprise possible a cet endroit }
+  If Toks[TokIdx(0)].Kind = TK_EOF Then Raise TParseAbort.Create;
+End;
 
 Procedure SyntaxErr(Const Msg : String);
 Begin
-  Fatal(CurLine, Msg);
+  SyntaxErrAt(CurLine, Msg);
+End;
+
+{ Erreur irrecuperable sur place : on abandonne la construction en cours (reprise a l'appelant) }
+Procedure SyntaxFail(Const Msg : String);
+Begin
+  SyntaxErrAt(CurLine, Msg);
+  Raise TParseAbort.Create;
+End;
+
+{ "x attendu" : javac signale la position juste apres le jeton precedent }
+Procedure ExpectedErr(Const What : String);
+Var Q : LongInt;
+Begin
+  Q := TokIdx(0) - 1;
+  If (Q >= 0) And (Toks[Q].EndCol > 0) Then SyntaxErrAt(MakePos(Toks[Q].Line, Toks[Q].EndCol), What + ' attendu')
+  Else SyntaxErrAt(CurLine, What + ' attendu');
 End;
 
 Procedure Expect(Const S : String);
 Begin
   If IsOp(S) Then Inc(P)
-  Else SyntaxErr('''' + S + ''' attendu');
+  Else ExpectedErr('''' + S + '''');
 End;
 
 Procedure ExpectKw(Const S : String);
 Begin
   If IsKw(S) Then Inc(P)
-  Else SyntaxErr('''' + S + ''' attendu');
+  Else ExpectedErr('''' + S + '''');
+End;
+
+{ Saute les jetons jusqu'a un point de reprise : apres ';' ou apres un bloc equilibre ; ne consomme pas
+  l'accolade fermante du bloc englobant }
+Procedure SkipToSync;
+Var Depth, Start : LongInt;
+Begin
+  Start := P;
+  Depth := 0;
+  While Toks[TokIdx(0)].Kind <> TK_EOF Do Begin
+    If IsOp('{') Then Inc(Depth)
+    Else If IsOp('}') Then Begin
+      If Depth = 0 Then Break;
+      Dec(Depth);
+      If Depth = 0 Then Begin Inc(P); Break; End;
+    End
+    Else If IsOp(';') And (Depth = 0) Then Begin Inc(P); Break; End;
+    Inc(P);
+  End;
+  If P = Start Then Inc(P);
 End;
 
 Function Accept(Const S : String) : Boolean;
@@ -1209,7 +1386,7 @@ Begin
     Inc(P);
   End
   Else Begin
-    SyntaxErr('<identificateur> attendu');
+    ExpectedErr('<identificateur>');
     ExpectIdent := '';
   End;
 End;
@@ -1234,7 +1411,7 @@ Var Depth : LongInt;
 Begin
   Depth := 0;
   Repeat
-    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxErr('fin de fichier inattendue');
+    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxFail('fin de fichier inattendue');
     If IsOp(Open) Then Inc(Depth)
     Else If IsOp(Close) Then Dec(Depth);
     Inc(P);
@@ -1561,7 +1738,7 @@ Begin
         Inc(P); Inc(Dims);
       End
       Else Begin
-        If Dims > Nodes[N].N Then SyntaxErr('dimension attendue');
+        If Dims > Nodes[N].N Then SyntaxFail('dimension attendue');
         AppendNode(Head, Tail, ParseExpr);
         Expect(']');
         Inc(Dims);
@@ -1571,7 +1748,7 @@ Begin
     Nodes[N].B := Head;
     Nodes[N].Aux := Dims;     { nombre total de dimensions }
     If IsOp('{') Then Nodes[N].C := ParseArrayInit;
-    If (Nodes[N].B = 0) And (Nodes[N].C = 0) Then SyntaxErr('dimension ou initialiseur de tableau attendu');
+    If (Nodes[N].B = 0) And (Nodes[N].C = 0) Then SyntaxFail('dimension ou initialiseur de tableau attendu');
     ParseNewExpr := N;
     Exit;
   End;
@@ -1610,7 +1787,7 @@ Function ParseLiteral : LongInt;
 Var N : LongInt; T : TToken;
 Begin
   T := Toks[P];
-  N := NewNode(N_LIT, T.Line);
+  N := NewNode(N_LIT, TokPos(P));
   Case T.Kind Of
     TK_INT : Begin
       Nodes[N].Aux := LIT_INT; Nodes[N].CK := CK_INT; Nodes[N].CI := T.Num;
@@ -1642,6 +1819,17 @@ Procedure SkipExplicitTypeArgs;
 Var X : LongInt;
 Begin
   X := ParseTypeArgs;
+End;
+
+{ Expression absente ou illegale : erreur, noeud de remplacement ; saute le jeton fautif sauf s'il ferme la construction }
+Function IllegalStart : LongInt;
+Var N : LongInt;
+Begin
+  SyntaxErr('expression illegale au debut');
+  N := NewNode(N_LIT, CurLine);
+  Nodes[N].Aux := LIT_NULL;
+  If Not (IsOp(';') Or IsOp(')') Or IsOp('}') Or IsOp(']') Or IsOp(',') Or (Toks[TokIdx(0)].Kind = TK_EOF)) Then Inc(P);
+  IllegalStart := N;
 End;
 
 Function ParsePrimary : LongInt;
@@ -1689,7 +1877,7 @@ Begin
         Else If IsOp('::') Then N := NewNode(N_SUPER, Line)
         Else Begin
           N := NewNode(N_SUPER, Line);
-          If Not IsOp('.') Then SyntaxErr('''.'' attendu');
+          If Not IsOp('.') Then SyntaxFail('''.'' attendu');
         End;
         ParsePrimary := N; Exit;
       End;
@@ -1723,7 +1911,7 @@ Begin
         Nodes[N].A := T;
         ParsePrimary := N; Exit;
       End;
-      SyntaxErr('expression illegale au debut : ' + S);
+      ParsePrimary := IllegalStart; Exit;
     End;
     TK_IDENT : Begin
       If IsOpAt(1, '->') And Not InCaseLabel Then Begin
@@ -1733,6 +1921,7 @@ Begin
         N := NewNode(N_CALL, Line);
         Nodes[N].S := Toks[P].Str;
         Inc(P);
+        Nodes[N].Dflt := CurLine;
         Nodes[N].B := ParseArgs;
         ParsePrimary := N; Exit;
       End;
@@ -1772,10 +1961,10 @@ Begin
         { conserve le groupement : marque pour distinguer (a)=.. }
         ParsePrimary := N; Exit;
       End;
-      SyntaxErr('expression illegale au debut : ' + Toks[P].Str);
+      ParsePrimary := IllegalStart; Exit;
     End;
   Else
-    SyntaxErr('expression attendue');
+    ParsePrimary := IllegalStart; Exit;
   End;
   ParsePrimary := 0;
 End;
@@ -1841,6 +2030,7 @@ Begin
           Nodes[M].A := N;
           Nodes[M].S := Toks[P].Str;
           Inc(P);
+          Nodes[M].Dflt := CurLine;       { position de la parenthese : erreurs de type du resultat }
           Nodes[M].B := ParseArgs;
         End
         Else Begin
@@ -2260,15 +2450,24 @@ End;
   --------------------------------------------------------------------------- }
 
 Function ParseBlock : LongInt;
-Var N, Head, Tail : LongInt;
+Var N, Head, Tail, PStart, SvRD : LongInt;
 Begin
   N := NewNode(N_BLOCK, CurLine);
   Head := 0; Tail := 0;
   Expect('{');
+  Inc(RecoverDepth);
+  SvRD := RecoverDepth;
   While Not IsOp('}') Do Begin
-    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxErr('fin de fichier inattendue (''}'' manquant)');
-    AppendNode(Head, Tail, ParseStatement);
+    If Toks[TokIdx(0)].Kind = TK_EOF Then Begin ExpectedErr('''}'''); Break; End;
+    PStart := P;
+    Try
+      AppendNode(Head, Tail, ParseStatement);
+    Except
+      On E : TParseAbort Do Begin RecoverDepth := SvRD; SkipToSync; End;
+    End;
+    If P = PStart Then Inc(P);
   End;
+  Dec(RecoverDepth);
   Expect('}');
   Nodes[N].A := Head;
   ParseBlock := N;
@@ -2564,7 +2763,7 @@ Begin
       { expression }
     End
     Else Begin
-      SyntaxErr('instruction illegale au debut : ' + S);
+      SyntaxFail('instruction illegale au debut : ' + S);
     End;
   End;
   { identificateur : etiquette, yield, record local, declaration ou expression }
@@ -2795,7 +2994,7 @@ End;
 
 Procedure ParseClassBody(Cls : LongInt);
 Var
-  Head, Tail, M, Mods, TP, T, Line, V, Q, MAnn : LongInt;
+  Head, Tail, M, Mods, TP, T, Line, V, Q, MAnn, PStart, SvRD : LongInt;
   Name : String;
   IsIface : Boolean;
   Simple : String;
@@ -2812,8 +3011,12 @@ Begin
     End;
     If Not IsOp('}') Then Expect(';');
   End;
+  Inc(RecoverDepth);
+  SvRD := RecoverDepth;
   While Not IsOp('}') Do Begin
-    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxErr('fin de fichier inattendue (''}'' manquant)');
+    If Toks[TokIdx(0)].Kind = TK_EOF Then Begin ExpectedErr('''}'''); Break; End;
+    PStart := P;
+    Try
     If Accept(';') Then Continue;
     Line := CurLine;
     Mods := ParseModifiers;
@@ -2855,6 +3058,7 @@ Begin
       Continue;
     End;
     T := ParseType;
+    If Not IsIdentAt(0) Then Begin ExpectedErr('<identificateur>'); Raise TParseAbort.Create; End;
     Name := ExpectIdent;
     If IsOp('(') Then Begin
       M := ParseMethodRest(Mods, TP, T, Name, Line, False);
@@ -2874,7 +3078,12 @@ Begin
       Expect(';');
       AppendNode(Head, Tail, M);
     End;
+    Except
+      On E : TParseAbort Do Begin RecoverDepth := SvRD; SkipToSync; End;
+    End;
+    If P = PStart Then Inc(P);
   End;
+  Dec(RecoverDepth);
   Expect('}');
   Nodes[Cls].D := Head;
 End;
@@ -2891,7 +3100,7 @@ Begin
   Else If IsKw('enum') Then Begin Kind := CLS_ENUM; Inc(P); End
   Else If IsOp('@') Then Begin Kind := CLS_ANNOTATION; Inc(P, 2); End
   Else If IsIdentStr(0, 'record') Then Begin Kind := CLS_RECORD; Inc(P); End
-  Else Begin SyntaxErr('class, interface ou enum attendu'); Kind := 0; End;
+  Else Begin SyntaxFail('class, interface ou enum attendu'); Kind := 0; End;
   Nodes[N].Aux := Kind;
   Nodes[N].S := ExpectIdent;
   If IsOp('<') Then Nodes[N].A := ParseTypeParams;
@@ -2952,7 +3161,7 @@ Begin
   Expect('{');
   Head := 0; Tail := 0;
   While Not IsOp('}') Do Begin
-    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxErr('fin de fichier inattendue (accolade fermante manquante)');
+    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxFail('fin de fichier inattendue (accolade fermante manquante)');
     D := NewNode(N_DIRECTIVE, CurLine);
     Kind := ExpectIdent;
     Nodes[D].S := Kind;
@@ -2981,7 +3190,7 @@ Begin
     Else If Kind = 'uses' Then Nodes[D].CS := ParseDottedName
     Else If Kind = 'provides' Then Begin
       Nodes[D].CS := ParseDottedName;
-      If Not IsIdentStr(0, 'with') Then SyntaxErr('with attendu');
+      If Not IsIdentStr(0, 'with') Then SyntaxFail('with attendu');
       Inc(P);
       Hb := 0; Tb := 0;
       Repeat
@@ -2991,7 +3200,7 @@ Begin
       Until Not Accept(',');
       Nodes[D].B := Hb;
     End
-    Else SyntaxErr('directive de module inconnue : ' + Kind);
+    Else SyntaxFail('directive de module inconnue : ' + Kind);
     Expect(';');
     AppendNode(Head, Tail, D);
   End;
@@ -3001,7 +3210,7 @@ Begin
 End;
 
 Function ParseCompilationUnit : LongInt;
-Var N, Head, Tail, I, Mods, Line : LongInt; S : String;
+Var N, Head, Tail, I, Mods, Line, PStart, SvRD : LongInt; S : String;
 Begin
   N := NewNode(N_CU, 1);
   Head := 0; Tail := 0;
@@ -3029,7 +3238,11 @@ Begin
   End;
   Nodes[N].A := Head;
   Head := 0; Tail := 0;
+  Inc(RecoverDepth);
+  SvRD := RecoverDepth;
   While Toks[TokIdx(0)].Kind <> TK_EOF Do Begin
+    PStart := P;
+    Try
     If Accept(';') Then Continue;
     Mods := ParseModifiers;
     If (IsIdentStr(0, 'module') And IsIdentAt(1)) Or (IsIdentStr(0, 'open') And IsIdentStr(1, 'module')) Then
@@ -3038,8 +3251,13 @@ Begin
        (IsIdentStr(0, 'record') And IsIdentAt(1)) Then
       AppendNode(Head, Tail, ParseClassDecl(Mods))
     Else
-      SyntaxErr('class, interface ou enum attendu');
+      SyntaxFail('class, interface ou enum attendu');
+    Except
+      On E : TParseAbort Do Begin RecoverDepth := SvRD; SkipToSync; End;
+    End;
+    If P = PStart Then Inc(P);
   End;
+  Dec(RecoverDepth);
   Nodes[N].B := Head;
   ParseCompilationUnit := N;
 End;
@@ -12521,6 +12739,13 @@ Function AttribMethodRef(N, Target : LongInt) : LongInt; Forward;
 Function EnterLocalClass(Decl : LongInt; AnonSuper : LongInt) : LongInt; Forward;
 Procedure AttribClassBody(C : LongInt); Forward;
 
+{ Position privilegiee d'une expression pour les erreurs de type (parenthese d'un appel, sinon debut) }
+Function PrefPos(N : LongInt) : LongInt;
+Begin
+  If (Nodes[N].Kind = N_CALL) And (Nodes[N].Dflt <> 0) Then PrefPos := Nodes[N].Dflt
+  Else PrefPos := Nodes[N].Line;
+End;
+
 Function TypeErr(Line : LongInt; From, To_ : LongInt) : Boolean;
 Begin
   If IsPrim(From) And IsPrim(To_) And IsNumeric(From) And IsNumeric(To_) Then
@@ -12740,7 +12965,7 @@ Begin
   T := Nodes[N].Typ;
   If (Target = TY_NONE) Or (T = TY_NONE) Or (T = Target) Then Exit;
   If T = TY_VOID Then Begin
-    Err(Nodes[N].Line, 'types incompatibles : void ne peut pas etre converti en ' + TypeStr(Target));
+    Err(PrefPos(N), 'types incompatibles : void ne peut pas etre converti en ' + TypeStr(Target));
     Nodes[N].Typ := TY_NONE;
     Exit;
   End;
@@ -12750,7 +12975,7 @@ Begin
     Else If (Ctx = CV_ASSIGN) And (Nodes[N].CK = CK_INT) And (T <> TY_BOOLEAN) And
             (Target In [TY_BYTE, TY_SHORT, TY_CHAR]) And ConstFits(Nodes[N].CI, Target) Then
       Nodes[N].Typ := Target
-    Else TypeErr(Nodes[N].Line, T, Target);
+    Else TypeErr(PrefPos(N), T, Target);
     Exit;
   End;
   If IsPrim(T) Then Begin
@@ -12763,12 +12988,12 @@ Begin
         WrapConv(N, Target);
         Exit;
       End;
-      TypeErr(Nodes[N].Line, T, Target);
+      TypeErr(PrefPos(N), T, Target);
       Exit;
     End;
     Bx := BoxedType(T);
     If IsSubtypeRef(Bx, Target) Then WrapConv(N, Bx)
-    Else TypeErr(Nodes[N].Line, T, Target);
+    Else TypeErr(PrefPos(N), T, Target);
     Exit;
   End;
   If IsPrim(Target) Then Begin
@@ -12776,14 +13001,14 @@ Begin
     If (U = TY_NONE) And IsTVarT(T) Then U := UnboxedType(Erasure(T));
     If (U <> TY_NONE) And PrimWidens(U, Target) Then WrapConv(N, Target)
     Else If T = T_ANY Then WrapConv(N, Target)
-    Else TypeErr(Nodes[N].Line, T, Target);
+    Else TypeErr(PrefPos(N), T, Target);
     Exit;
   End;
   { reference -> reference }
   If IsSubtypeRef(T, Target) Then Begin
     If (T = T_ANY) And (Target <> T_OBJECT) Then WrapConv(N, Target);
   End
-  Else TypeErr(Nodes[N].Line, T, Target);
+  Else TypeErr(PrefPos(N), T, Target);
 End;
 
 { Promotion numerique unaire / binaire : convertit le noeud en type primitif P }
@@ -13537,6 +13762,7 @@ Begin
   C := ClsOf(QT);
   If C < 0 Then Begin
     Err(Nodes[N].Line, 'symbole introuvable : ' + Name);
+    LastEK := EK_VALUE;
     Exit;
   End;
   F := FieldInHierarchy(C, Name, Owner);
@@ -13567,6 +13793,7 @@ Begin
     Exit;
   End;
   Err(Nodes[N].Line, 'symbole introuvable : variable ' + Name + ' dans ' + TypeStr(QT));
+  LastEK := EK_VALUE;
 End;
 
 Function SelectOnValue(N, VT : LongInt; Const Name : String) : LongInt;
@@ -14079,10 +14306,10 @@ Function AttribCond(N, Expected : LongInt) : LongInt;
 Var C, B, E, TB, TE, PB, PE, RT, PT : LongInt;
 Begin
   C := Nodes[N].A; B := Nodes[N].B; E := Nodes[N].C;
-  AttribExpr(C, 0);
-  PromoteTo(C, TY_BOOLEAN);
-  If (Nodes[C].Typ <> TY_NONE) And (NumTypeOf(Nodes[C].Typ) <> TY_BOOLEAN) And (Nodes[C].Kind <> N_CONV) Then
-    Err(Nodes[N].Line, 'types incompatibles : ' + TypeStr(Nodes[C].Typ) + ' ne peut pas etre converti en boolean');
+  TB := AttribExpr(C, 0);
+  If (TB <> TY_NONE) And (NumTypeOf(TB) <> TY_BOOLEAN) Then
+    Err(PrefPos(C), 'types incompatibles : ' + TypeStr(TB) + ' ne peut pas etre converti en boolean')
+  Else PromoteTo(C, TY_BOOLEAN);
   If IsFnNode(B) Or IsFnNode(E) Then Begin
     TB := AttribExpr(B, Expected);
     TE := AttribExpr(E, Expected);
@@ -14143,7 +14370,7 @@ Begin
   AttribCast := T;
   If (T = TY_NONE) Or (TB = TY_NONE) Then Begin Nodes[N].Typ := T; Nodes[N].Kind := N_CONV; Nodes[N].A := B; Nodes[N].B := 0; Exit; End;
   If Not IsCastable(TB, T) Then Begin
-    Err(Nodes[N].Line, 'types incompatibles : ' + TypeStr(TB) + ' ne peut pas etre converti en ' + TypeStr(T));
+    Err(PrefPos(B), 'types incompatibles : ' + TypeStr(TB) + ' ne peut pas etre converti en ' + TypeStr(T));
   End;
   If IsFnNode(B) Then Begin
     { cast sur lambda : le type de la lambda est celui du cast }
@@ -15183,7 +15410,7 @@ Begin
   T := AttribExpr(N, 0);
   If T = TY_NONE Then Exit;
   If NumTypeOf(T) <> TY_BOOLEAN Then Begin
-    Err(Nodes[N].Line, 'types incompatibles : ' + TypeStr(T) + ' ne peut pas etre converti en boolean');
+    Err(PrefPos(N), 'types incompatibles : ' + TypeStr(T) + ' ne peut pas etre converti en boolean');
     Exit;
   End;
   PromoteTo(N, TY_BOOLEAN);
@@ -15392,7 +15619,7 @@ Begin
       Else Begin
         If CurRet = TY_VOID Then Begin
           AttribExpr(Nodes[N].A, 0);
-          Err(Nodes[N].Line, 'types incompatibles : valeur de retour inattendue');
+          Err(PrefPos(Nodes[N].A), 'types incompatibles : valeur de retour inattendue');
         End
         Else Begin
           If Nodes[Nodes[N].A].Kind = N_ARRAYINIT Then AttribArrayInit(Nodes[N].A, CurRet)
@@ -17029,10 +17256,11 @@ Begin
     Delete(Src, 1, 3);
     SrcLen := Length(Src);
   End;
+  DiagBuffering := True; NDiag := 0; LexErrLine := 0; LastSynPos := -1; RecoverDepth := 0;
   Lex;
   P := 0;
-  If ErrCount > 0 Then Begin CurFile := SvFile; Exit; End;
   Root := ParseCompilationUnit;
+  FlushDiags;
   If NCUs >= Length(CUs) Then SetLength(CUs, NCUs * 2 + 8);
   Cu := NCUs;
   Inc(NCUs);
@@ -17817,8 +18045,9 @@ End;
 
 Procedure LineMark(Line : LongInt);
 Begin
-  If Line <= 0 Then Exit;
+  If PosLine(Line) <= 0 Then Exit;
   LastLine := Line;
+  Line := PosLine(Line);
   If NLn > 0 Then
     If (LnPC[NLn - 1] = Code.N) Then Begin LnLine[NLn - 1] := Line; Exit; End
     Else If LnLine[NLn - 1] = Line Then Exit;
@@ -22737,6 +22966,8 @@ Begin
   WriteLn('  -p, --module-path chemin   modules (ajoutes au classpath)');
   WriteLn('  -target N          version de classe visee (8 a 25, defaut 11)');
   WriteLn('  --release N        synonyme de -target');
+  WriteLn('  -Xmaxerrs N        nombre maximal d''erreurs affichees (defaut 100, 0 = illimite)');
+  WriteLn('  -Xmaxwarns N       nombre maximal d''avertissements affiches');
   WriteLn('  -verbose           affiche les fichiers ecrits');
   WriteLn('  -g, -nowarn, -Xlint  (acceptes et ignores)');
   WriteLn('  -help              affiche cette aide');
@@ -22753,7 +22984,7 @@ Begin
   { exceptions flottantes masquees : le repli de constantes suit IEEE 754 comme Java }
   {$IFDEF CPUX86_64}SetMXCSR($1F80);{$ENDIF}
   {$IFDEF CPUI386}Set8087CW($133F);{$ENDIF}
-  ErrCount := 0; WarnCount := 0;
+  ErrCount := 0; WarnCount := 0; OptMaxErrs := 100; OptMaxWarns := 100;
   OptVerbose := False; OptOutDir := ''; OptTarget := 55;
   NNodes := 1;
   CurFile := 'javac';
@@ -22784,6 +23015,9 @@ Begin
       Inc(I); OptModulePath := True;
       If CpArg = '' Then CpArg := ParamStr(I) Else CpArg := CpArg + ':' + ParamStr(I);
     End
+    Else If Copy(Arg, 1, 10) = '-Xmaxerrs=' Then OptMaxErrs := ToInt(Copy(Arg, 11, 10))
+    Else If (Arg = '-Xmaxerrs') And (I < ParamCount) Then Begin Inc(I); OptMaxErrs := ToInt(ParamStr(I)); End
+    Else If (Arg = '-Xmaxwarns') And (I < ParamCount) Then Begin Inc(I); OptMaxWarns := ToInt(ParamStr(I)); End
     Else If Arg = '-verbose' Then OptVerbose := True
     Else If Arg = '-Xparse' Then OptParseOnly := True
     Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '-h') Or (Arg = '/?') Then Begin Usage; Halt(0); End
