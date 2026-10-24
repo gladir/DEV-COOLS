@@ -2935,6 +2935,7 @@ Type
   Os9Batch        : TString;   { /OS9:fichier - shell OS-9 (CoCo 3) }
   CosBatch        : TString;   { /COS:fichier - shell COS (Cray-1) }
   AppleDOSBatch   : TString;   { /APPLEDOS:fichier - shell Apple DOS 3.3 }
+  FlexBatch       : TString;   { /FLEX:fichier - shell FLEX (TSC 6800/6809) }
   RexxFile        : TString;   { /REXX:fichier.rex }
   AwkFile         : TString;   { /AWK:fichier.awk }
   PerlFile        : TString;   { /PERL:fichier.pl }
@@ -12620,6 +12621,8 @@ Procedure ShowHelp;Begin
  ConRawWriteLn('                              ce script');
  ConRawWriteLn('  /COS:fichier                Ouvrir le Terminal en mode COS (Cray-1) et ex'+#130+'cuter');
  ConRawWriteLn('                              ce script');
+ ConRawWriteLn('  /FLEX:fichier               Ouvrir le Terminal en mode FLEX (TSC 6800/6809) et');
+ ConRawWriteLn('                              ex'+#130+'cuter ce script');
  ConRawWriteLn('  /REXX:fichier.rex           Ouvrir OS/2 & REXX et ex'+#130+'cuter ce script REXX');
  ConRawWriteLn('  /AWK:fichier.awk            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter');
  ConRawWriteLn('                              ce script AWK');
@@ -12683,6 +12686,7 @@ Begin
  Opts.Os9Batch         := '';
  Opts.CosBatch         := '';
  Opts.AppleDOSBatch    := '';
+ Opts.FlexBatch        := '';
  Opts.RexxFile         := '';
  Opts.AwkFile          := '';
  Opts.PerlFile         := '';
@@ -12836,6 +12840,16 @@ Begin
     Opts.AppleDOSBatch := Copy(Arg, 11, Length(Arg) - 10);
    If (Opts.AppleDOSBatch = '') Or (Not FileExists(Opts.AppleDOSBatch)) Then
     FatalError('Fichier script introuvable: ' + Opts.AppleDOSBatch);
+  End Else
+    { /FLEX:fichier - meme principe, mais ouvre le shell "FLEX" (SK_FLEX) -}
+    { demande explicite de l'utilisateur, 2026-10-24 (meme chantier que    }
+    { l'ajout de la commande CONVERT dans ce shell). }
+    If (Length(Arg) >= 6) And
+      ((Copy(Arg, 1, 6) = '/FLEX:') Or (Copy(Arg, 1, 6) = '/flex:') Or
+      (Copy(Arg, 1, 6) = '-FLEX:') Or (Copy(Arg, 1, 6) = '-flex:')) Then Begin
+    Opts.FlexBatch := Copy(Arg, 7, Length(Arg) - 6);
+   If (Opts.FlexBatch = '') Or (Not FileExists(Opts.FlexBatch)) Then
+    FatalError('Fichier script introuvable: ' + Opts.FlexBatch);
   End Else
     If (Length(Arg) >= 6) And
       ((Copy(Arg, 1, 6) = '/REXX:') Or (Copy(Arg, 1, 6) = '/rexx:') Or
@@ -97615,7 +97629,9 @@ End;
   reutilise les handlers TermCmd_* generiques 1:1 quand ils existent
   (COPY/DELETE/RENAME/LIST->TYPE/DATE/ECHO), nouveau code TermCmd_FLEX_*
   reel pour CAT/APPEND/TOUCH/EXEC/FIX/XOUT/PROT/VER (voir chaque
-  procedure), accuse de reception honnete pour tout ce qui depend d'un
+  procedure) ainsi que CONVERT (2026-10-24, demande explicite - port reel
+  de CONVERT.PAS, n'existe pas dans le vrai FLEX TSC), accuse de
+  reception honnete pour tout ce qui depend d'un
   materiel des annees 1980 sans equivalent (CalComp Marksman, EPROM
   programmer MP-R, unites DMAF/MF-68) ou d'un modele memoire/impression
   que ce shell HOTE ne modelise pas (JUMP/GET/SAVE simplifies, P.COR/PO/
@@ -97865,12 +97881,100 @@ Begin
    IntToStr(Ord((CurAttr And ReadOnly) <> 0)) + ' (0=R/W, 1=R/O).');
 End;
 
+{ --- CONVERT (port reel de C:\SOURCE\GITHUB\DEV-COOLS\CONVERT.PAS -       }
+{ convertit en minuscule/majuscule/capitale un fichier de code source       }
+{ Pascal, en preservant tel quel le contenu des chaines entre apostrophes   }
+{ et des commentaires entre accolades - meme algorithme caractere par       }
+{ caractere que la reference. CONVERT.PAS ecrit lui-meme sur la console     }
+{ (pas dans un fichier ni en place) : meme comportement ici, via            }
+{ TermAddLine. --- }
+Procedure TermCmd_FLEX_Convert(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ MD_LOWER   = 0;
+ MD_UPPER   = 1;
+ MD_CAPITAL = 2;
+Var
+ Idx: Integer;
+ Tok, FName, Line: String;
+ Mode: Byte;
+ Handle: Text;
+ Err: Word;
+ Ch: Char;
+ InString, InComment, FirstChar: Boolean;
+Begin
+ If TermTrim(ParamStr) = '/?' Then Begin
+  TermAddLine(TP, 'CONVERT : convertit en minuscule, majuscule ou capitale un ' +
+   'fichier de code source Pascal (chaines et commentaires preserves tels quels).');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Syntaxe : CONVERT [/LOWER|/UPPER|/CAPITAL] fichier.pas');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  /LOWER    Convertit en minuscule (valeur par defaut).');
+  TermAddLine(TP, '  /UPPER    Convertit en majuscule.');
+  TermAddLine(TP, '  /CAPITAL  Met en capitale la premiere lettre de chaque mot.');
+  Exit;
+ End;
+ Mode := MD_LOWER;
+ FName := '';
+ Idx := 1;
+ Tok := TermExtractParam(ParamStr, Idx);
+ While Tok <> '' Do Begin
+  If UpCaseStr(Tok) = '/LOWER' Then Mode := MD_LOWER
+  Else If UpCaseStr(Tok) = '/UPPER' Then Mode := MD_UPPER
+  Else If UpCaseStr(Tok) = '/CAPITAL' Then Mode := MD_CAPITAL
+  Else FName := Tok;
+  Inc(Idx);
+  Tok := TermExtractParam(ParamStr, Idx);
+ End;
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : CONVERT [/LOWER|/UPPER|/CAPITAL] fichier.pas');
+  Exit;
+ End;
+ {$I-} Assign(Handle, FName); Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Impossible de lire le fichier : ' + FName);
+  Exit;
+ End;
+ InString := False;
+ InComment := False;
+ FirstChar := True;
+ While Not EOF(Handle) Do Begin
+  Line := '';
+  While Not EOLn(Handle) Do Begin
+   Read(Handle, Ch);
+   If (Ch = '''') And (Not InComment) Then InString := Not InString;
+   If (Ch = '{') And (Not InString) Then InComment := True;
+   If (Ch = '}') And (Not InString) Then InComment := False;
+   If (Not InString) And (Not InComment) Then Begin
+    Case Mode Of
+     MD_LOWER: If Ch In ['A'..'Z'] Then Ch := Chr(Ord(Ch) - Ord('A') + Ord('a'));
+     MD_UPPER: If Ch In ['a'..'z'] Then Ch := Chr(Ord(Ch) - Ord('a') + Ord('A'));
+     MD_CAPITAL: Begin
+      If Ch In ['A'..'Z', 'a'..'z'] Then Begin
+       If FirstChar Then Begin
+        If Ch In ['a'..'z'] Then Ch := Chr(Ord(Ch) - Ord('a') + Ord('A'));
+        FirstChar := False;
+       End Else
+        If Ch In ['A'..'Z'] Then Ch := Chr(Ord(Ch) - Ord('A') + Ord('a'));
+      End Else
+       FirstChar := True;
+     End;
+    End;
+   End;
+   Line := Line + Ch;
+  End;
+  ReadLn(Handle);
+  TermAddLine(TP, Line);
+ End;
+ Close(Handle);
+End;
+
 { --- HELP (liste des commandes du shell FLEX) --- }
 Procedure TermCmd_FLEX_HELP(Var TP: TTerminalPanel);
 Begin
  TermAddLine(TP, 'FLEX shell built-in commands :');
- TermAddLine(TP, '  APPEND ASN BUILD C4MAT CAT CLEAN COPY DATE DELETE ECHO');
- TermAddLine(TP, '  EXEC FIX GET I JUMP LINK LIST MON N NEWDISK O P P.COR');
+ TermAddLine(TP, '  APPEND ASN BUILD C4MAT CAT CLEAN CONVERT COPY DATE DELETE');
+ TermAddLine(TP, '  ECHO EXEC FIX GET I JUMP LINK LIST MON N NEWDISK O P P.COR');
  TermAddLine(TP, '  PO PROT PSP Q QCHECK READPROM RENAME RM S SAVE SAVE.LOW');
  TermAddLine(TP, '  SBOX SP STARTUP TOUCH TTYSET UCAL USEMF VER VERIFY');
  TermAddLine(TP, '  WRITPROM XOUT Y');
@@ -170557,6 +170661,7 @@ Begin
    Else If CurrCmd = 'FIX' Then TermCmd_FLEX_FIX(TP, ParamStr)
    Else If CurrCmd = 'XOUT' Then TermCmd_FLEX_XOUT(TP)
    Else If CurrCmd = 'PROT' Then TermCmd_FLEX_PROT(TP, ParamStr)
+   Else If CurrCmd = 'CONVERT' Then TermCmd_FLEX_Convert(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then TermCmd_FLEX_HELP(TP)
    Else If CurrCmd = 'VER' Then
     TermAddLine(TP, 'FLEX (TM) - Technical Systems Consultants - emulation DEVENV.')
@@ -254840,6 +254945,31 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   {$I-} Assign(BatchFile, Opts.AppleDOSBatch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /FLEX:fichier - meme principe, mais ouvre le shell "FLEX" (SK_FLEX) -   }
+ { demande explicite de l'utilisateur, 2026-10-24 (meme chantier que       }
+ { l'ajout de la commande CONVERT dans ce shell, voir TermCmd_FLEX_Convert).}
+ If Opts.FlexBatch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_FLEX;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.FlexBatch); Reset(BatchFile); {$I+}
   If IOResult = 0 Then Begin
    While Not Eof(BatchFile) Do Begin
     ReadLn(BatchFile, BatchLine);
