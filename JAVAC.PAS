@@ -2919,7 +2919,9 @@ Begin
   End;
   If IsIdentStr(0, 'permits') Then Begin
     Inc(P);
-    Repeat ParseType Until Not Accept(',');
+    Head := 0; Tail := 0;
+    Repeat AppendNode(Head, Tail, ParseType) Until Not Accept(',');
+    Nodes[N].Dflt := Head;       { classes permises (classe scellee) }
   End;
   ParseClassBody(N);
   ParseClassDecl := N;
@@ -9445,6 +9447,8 @@ Type
     Flags        : LongInt;
     Super        : LongInt;
     Ifaces       : Array Of LongInt;
+    Permits      : Array Of LongInt;   { classes permises (classe scellee), explicites ou deduites }
+    PermitsState : Byte;               { 0 non calcule, 2 calcule }
     TPars        : Array Of LongInt;
     Outer        : LongInt;
     IsSrc        : Boolean;
@@ -10833,6 +10837,13 @@ Begin
     AL := RdU4(B, Q + 2);
     AP := Q + 6;
     If AName = 'Signature' Then ClsSig := UName(RdU2(B, AP))
+    Else If AName = 'PermittedSubclasses' Then Begin
+      K := RdU2(B, AP);
+      SetLength(Classes[C].Permits, K);
+      For J := 0 To K - 1 Do Classes[C].Permits[J] := GetClass(CName(RdU2(B, AP + 2 + J * 2)));
+      Classes[C].PermitsState := 2;
+      ClassFl := ClassFl Or MOD_SEALED;
+    End
     Else If AName = 'InnerClasses' Then Begin
       K := RdU2(B, AP);
       For J := 0 To K - 1 Do
@@ -11322,6 +11333,8 @@ Begin
   Else PrimByName := TY_NONE;
 End;
 
+Function ClassAccessible(C : LongInt) : Boolean; Forward;
+
 Function ResolveType(N : LongInt) : LongInt;
 Var T, A, I, Cnt : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; Nm : String; W : LongInt;
 Begin
@@ -11341,6 +11354,11 @@ Begin
     If AmbigType Then Err(Nodes[N].Line, 'la reference a ' + Nm + ' est ambigue');
     If T <= 0 Then Begin
       Err(Nodes[N].Line, 'symbole introuvable : classe ' + Nm);
+      T := TY_NONE;
+    End
+    Else If IsClassT(T) And Not ClassAccessible(Types[T].Cls) Then Begin
+      Err(Nodes[N].Line, Classes[Types[T].Cls].Simple + ' n''est pas public dans ' + ReplaceAll(Copy(Classes[Types[T].Cls].Name, 1,
+          LastPos('/', Classes[Types[T].Cls].Name) - 1), '/', '.') + ' ; inaccessible depuis l''exterieur du paquetage');
       T := TY_NONE;
     End
     Else If IsClassT(T) And (Nodes[N].A <> 0) Then Begin
@@ -11420,6 +11438,7 @@ Begin
   If (Kind <> CLS_CLASS) And (Outer >= 0) Then Fl := Fl Or ACC_STATIC;     { imbriquee implicitement statique }
   If (Outer >= 0) And ((Classes[Outer].Flags And ACC_INTERFACE) <> 0) And Not IsLocal Then
     Fl := Fl Or ACC_STATIC Or ACC_PUBLIC;
+  Fl := Fl Or (Nodes[Decl].Mods And (MOD_SEALED Or MOD_NONSEALED));
   If (Nodes[Decl].Mods And MOD_ANON) <> 0 Then Fl := Fl Or MOD_ANON Or MOD_LOCAL;
   If IsLocal Then Fl := Fl Or MOD_LOCAL;
   Classes[C].Flags := Fl;
@@ -11505,6 +11524,33 @@ Begin
   End;
 End;
 
+{ Detecte un cycle d'heritage passant par C ; le cycle est coupe pour eviter les boucles infinies }
+Function ReachesClass(X, Target, Depth : LongInt) : Boolean;
+Var I, Y : LongInt;
+Begin
+  ReachesClass := False;
+  If (X < 0) Or (Depth > 200) Or Not Classes[X].IsSrc Then Exit;
+  EnsureHeader(X);
+  If IsClassT(Classes[X].Super) Then Begin
+    Y := Types[Classes[X].Super].Cls;
+    If (Y = Target) Or ReachesClass(Y, Target, Depth + 1) Then Begin ReachesClass := True; Exit; End;
+  End;
+  For I := 0 To Length(Classes[X].Ifaces) - 1 Do
+    If IsClassT(Classes[X].Ifaces[I]) Then Begin
+      Y := Types[Classes[X].Ifaces[I]].Cls;
+      If (Y = Target) Or ReachesClass(Y, Target, Depth + 1) Then Begin ReachesClass := True; Exit; End;
+    End;
+End;
+
+Procedure CheckCycle(C : LongInt);
+Begin
+  If ReachesClass(C, C, 0) Then Begin
+    Err(Nodes[Classes[C].Decl].Line, 'heritage cyclique impliquant ' + Classes[C].Simple);
+    Classes[C].Super := T_OBJECT;
+    SetLength(Classes[C].Ifaces, 0);
+  End;
+End;
+
 Procedure ResolveSrcHeader(C : LongInt);
 Var
   S : TSavedCtx; D, N, I, T, Tp : LongInt; Tps : Array[0..15] Of LongInt; Kind : LongInt;
@@ -11559,6 +11605,7 @@ Begin
   Classes[C].Ifaces := Ifs;
   IsolateLeave(S);
   Classes[C].HdrState := 2;
+  CheckCycle(C);
 End;
 
 { ----- membres d'une classe source ---------------------------------------- }
@@ -12330,11 +12377,71 @@ Begin
 End;
 
 { Accessibilite (simplifiee) : prive -> meme classe de tete ; sinon accessible }
+{ Paquetage (avec '/' final) de la classe courante }
+Function CurPackage : String;
+Var K : LongInt;
+Begin
+  If CurClass >= 0 Then Begin
+    K := LastPos('/', Classes[CurClass].Name);
+    CurPackage := Copy(Classes[CurClass].Name, 1, K);
+  End
+  Else If CurCU >= 0 Then CurPackage := PkgPath(CUs[CurCU].Pkg)
+  Else CurPackage := '';
+End;
+
+Function ClassPackage(C : LongInt) : String;
+Var K : LongInt;
+Begin
+  K := LastPos('/', Classes[C].Name);
+  ClassPackage := Copy(Classes[C].Name, 1, K);
+End;
+
+{ Une classe englobante de la classe courante est-elle sous-classe de Owner ? }
+Function EnclosingIsSubclassOf(Owner : LongInt) : Boolean;
+Var K : LongInt;
+Begin
+  EnclosingIsSubclassOf := False;
+  K := CurClass;
+  While K >= 0 Do Begin
+    If IsSubClass(K, Owner) Then Begin EnclosingIsSubclassOf := True; Exit; End;
+    K := Classes[K].Outer;
+  End;
+End;
+
+{ Acces a un membre de drapeaux Flags declare dans la classe Owner (JLS 6.6) }
 Function IsAccessible(Flags, Owner : LongInt) : Boolean;
 Begin
-  If (Flags And ACC_PRIVATE) <> 0 Then
-    IsAccessible := Classes[Owner].TopClass = Classes[CurClass].TopClass
-  Else IsAccessible := True;
+  IsAccessible := True;
+  If CurClass < 0 Then Exit;
+  If (Flags And ACC_PUBLIC) <> 0 Then Exit;
+  If (Flags And ACC_PRIVATE) <> 0 Then Begin
+    IsAccessible := Classes[Owner].TopClass = Classes[CurClass].TopClass;
+    Exit;
+  End;
+  { membres d'interface : publics }
+  If (Classes[Owner].Flags And ACC_INTERFACE) <> 0 Then Exit;
+  If ClassPackage(Owner) = CurPackage Then Exit;
+  If (Flags And ACC_PROTECTED) <> 0 Then IsAccessible := EnclosingIsSubclassOf(Owner)
+  Else IsAccessible := False;
+End;
+
+{ Une classe (non locale) est-elle accessible depuis la classe courante ? }
+Function ClassAccessible(C : LongInt) : Boolean;
+Var Fl : LongInt;
+Begin
+  ClassAccessible := True;
+  If (CurClass < 0) And (CurCU < 0) Then Exit;
+  EnsureHeader(C);
+  Fl := Classes[C].Flags;
+  If (Fl And MOD_LOCAL) <> 0 Then Exit;
+  If Classes[C].Outer >= 0 Then Begin
+    If CurClass < 0 Then Begin
+      ClassAccessible := (Fl And (ACC_PUBLIC Or ACC_PROTECTED)) <> 0;
+      Exit;
+    End;
+    ClassAccessible := IsAccessible(Fl, Classes[C].Outer) And ClassAccessible(Classes[C].Outer);
+  End
+  Else ClassAccessible := ((Fl And ACC_PUBLIC) <> 0) Or (ClassPackage(C) = CurPackage);
 End;
 
 { ----- methode fonctionnelle (SAM) d'une interface ------------------------ }
@@ -13326,6 +13433,8 @@ End;
 Function FieldRefByName(N, F, Owner, K : LongInt) : LongInt;
 Var Recv : LongInt;
 Begin
+  If Not IsAccessible(Fields[F].Flags, Owner) Then
+    Err(Nodes[N].Line, Fields[F].Name + ' n''est pas accessible dans ' + Classes[Owner].Simple);
   Nodes[N].Kind := N_SELECT;
   Nodes[N].Sym := F;
   Nodes[N].S := Fields[F].Name;
@@ -14554,6 +14663,10 @@ Begin
   Else Begin
     Ok := ResolveCall('<init>', SiteT, True, Args, Expected, Nodes[N].Line, DiamondCls, R);
     If Ok Then Begin
+      { constructeur protege : accessible seulement dans le paquetage (ou par super / classe anonyme) }
+      If (Body = 0) And ((Meths[R.M].Flags And (ACC_PUBLIC Or ACC_PRIVATE)) = 0) And ((Meths[R.M].Flags And ACC_PROTECTED) <> 0) And
+         (ClassPackage(C) <> CurPackage) Then
+        Err(Nodes[N].Line, 'le constructeur de ' + Classes[C].Simple + ' est protege et inaccessible ici');
       Nodes[N].Sym := R.M;
       NoteMethodThrows(R.M, Nodes[N].Line);
       If R.Varargs Then Begin Nodes[N].Mods := Nodes[N].Mods Or CALL_VARARGS; Nodes[N].N := R.NPar; End;
@@ -14853,6 +14966,125 @@ Begin
   Q := 0; Cls := 0; Elem := 0; Cn := 0; ArgT := 0;
 End;
 
+{ ============================================================================
+  Classes scellees : permits, verifications de la hierarchie
+  ============================================================================ }
+
+Function IsSealedC(C : LongInt) : Boolean;
+Begin
+  EnsureHeader(C);
+  IsSealedC := (C >= 0) And ((Classes[C].Flags And MOD_SEALED) <> 0);
+End;
+
+Function DirectlyExtends(X, C : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  DirectlyExtends := False;
+  EnsureHeader(X);
+  If IsClassT(Classes[X].Super) And (Types[Classes[X].Super].Cls = C) Then DirectlyExtends := True;
+  For I := 0 To Length(Classes[X].Ifaces) - 1 Do
+    If IsClassT(Classes[X].Ifaces[I]) And (Types[Classes[X].Ifaces[I]].Cls = C) Then DirectlyExtends := True;
+End;
+
+{ Classes permises d'une classe scellee : clause permits, sinon sous-classes directes du meme fichier }
+Procedure ComputePermits(C : LongInt);
+Var D, T, X, N : LongInt; S : TSavedCtx; Ty : LongInt;
+Begin
+  If Classes[C].PermitsState = 2 Then Exit;
+  Classes[C].PermitsState := 2;
+  SetLength(Classes[C].Permits, 0);
+  If Not Classes[C].IsSrc Then Exit;
+  D := Classes[C].Decl;
+  N := 0;
+  If Nodes[D].Dflt <> 0 Then Begin
+    IsolateEnter(C, S);
+    T := Nodes[D].Dflt;
+    While T <> 0 Do Begin
+      Ty := ResolveType(T);
+      If IsClassT(Ty) Then Begin
+        SetLength(Classes[C].Permits, N + 1);
+        Classes[C].Permits[N] := Types[Ty].Cls;
+        Inc(N);
+      End;
+      T := Nodes[T].Next;
+    End;
+    IsolateLeave(S);
+    Exit;
+  End;
+  { clause absente : sous-classes directes declarees dans le meme fichier source }
+  For X := 0 To NClasses - 1 Do
+    If Classes[X].IsSrc And (Classes[X].CU = Classes[C].CU) And (X <> C) And ((Classes[X].Flags And MOD_LOCAL) = 0) Then
+      If DirectlyExtends(X, C) Then Begin
+        SetLength(Classes[C].Permits, N + 1);
+        Classes[C].Permits[N] := X;
+        Inc(N);
+      End;
+End;
+
+Function PkgOfClass(C : LongInt) : String;
+Var K : LongInt;
+Begin
+  K := LastPos('/', Classes[C].Name);
+  PkgOfClass := Copy(Classes[C].Name, 1, K);
+End;
+
+Procedure CheckSealed(C : LongInt);
+Var
+  D, Line, I, K, SupCount : LongInt; Fl : LongInt; Sups : Array Of LongInt; HasSealedSup, InList : Boolean;
+Begin
+  If Not Classes[C].IsSrc Then Exit;
+  D := Classes[C].Decl;
+  Line := Nodes[D].Line;
+  Fl := Classes[C].Flags;
+  If ((Fl And MOD_SEALED) <> 0) And ((Fl And MOD_NONSEALED) <> 0) Then
+    Err(Line, 'les modificateurs sealed et non-sealed sont incompatibles');
+  If ((Fl And MOD_SEALED) <> 0) And ((Fl And ACC_FINAL) <> 0) Then
+    Err(Line, 'les modificateurs sealed et final sont incompatibles');
+  If ((Fl And MOD_SEALED) <> 0) And ((Fl And MOD_ANON) <> 0) Then
+    Err(Line, 'une classe anonyme ne peut pas etre scellee');
+  { classe scellee : sous-classes permises }
+  If (Fl And MOD_SEALED) <> 0 Then Begin
+    ComputePermits(C);
+    If Length(Classes[C].Permits) = 0 Then
+      Err(Line, 'la classe scellee ' + Classes[C].Simple + ' doit avoir des sous-classes')
+    Else
+      For I := 0 To Length(Classes[C].Permits) - 1 Do Begin
+        K := Classes[C].Permits[I];
+        If K < 0 Then Continue;
+        If Not DirectlyExtends(K, C) Then
+          Err(Line, 'clause permits invalide : ' + Classes[K].Simple + ' doit heriter directement de la classe scellee ' + Classes[C].Simple)
+        Else If PkgOfClass(K) <> PkgOfClass(C) Then
+          Err(Line, 'clause permits invalide : la sous-classe ' + Classes[K].Simple + ' doit etre dans le meme paquetage que ' + Classes[C].Simple);
+      End;
+  End;
+  { super-types directs }
+  SupCount := 0;
+  SetLength(Sups, 0);
+  If IsClassT(Classes[C].Super) Then Begin SetLength(Sups, 1); Sups[0] := Types[Classes[C].Super].Cls; SupCount := 1; End;
+  For I := 0 To Length(Classes[C].Ifaces) - 1 Do
+    If IsClassT(Classes[C].Ifaces[I]) Then Begin
+      SetLength(Sups, SupCount + 1); Sups[SupCount] := Types[Classes[C].Ifaces[I]].Cls; Inc(SupCount);
+    End;
+  HasSealedSup := False;
+  For I := 0 To SupCount - 1 Do Begin
+    If Not IsSealedC(Sups[I]) Then Continue;
+    HasSealedSup := True;
+    If (Fl And MOD_LOCAL) <> 0 Then Begin
+      Err(Line, 'une classe locale ou anonyme ne peut pas heriter de la classe scellee ' + Classes[Sups[I]].Simple);
+      Continue;
+    End;
+    ComputePermits(Sups[I]);
+    InList := False;
+    For K := 0 To Length(Classes[Sups[I]].Permits) - 1 Do If Classes[Sups[I]].Permits[K] = C Then InList := True;
+    If Not InList Then
+      Err(Line, 'la classe ' + Classes[C].Simple + ' ne peut pas heriter de la classe scellee ' + Classes[Sups[I]].Simple +
+          ' (elle n''est pas listee dans sa clause permits)');
+    If ((Fl And (ACC_FINAL Or MOD_SEALED Or MOD_NONSEALED Or ACC_ENUM)) = 0) Then
+      Err(Line, 'les modificateurs sealed, non-sealed ou final sont attendus pour ' + Classes[C].Simple);
+  End;
+  If ((Fl And MOD_NONSEALED) <> 0) And Not HasSealedSup Then
+    Err(Line, 'le modificateur non-sealed n''est pas autorise ici : ' + Classes[C].Simple + ' n''a pas de super-type scelle');
+End;
 { ============================================================================
   4. ANALYSE SEMANTIQUE : repartition des expressions et instructions
   ============================================================================ }
@@ -15482,6 +15714,206 @@ Begin
   End;
 End;
 
+{ ----- exhaustivite des switch (JLS 14.11.1.1) ---------------------------------------------- }
+
+Type
+  TRow  = Array Of LongInt;
+  TRows = Array Of TRow;
+  TTyArr = Array Of LongInt;
+
+Const
+  PAT_ANY = 0;
+
+{ Decompose un type en "feuilles" : sous-types permis d'une classe scellee abstraite, constantes d'enum }
+Procedure DecomposeLeaves(T : LongInt; Var LT, LE : TTyArr; Depth : LongInt);
+Var C, F, I, N : LongInt;
+  Procedure Add(Ty, Ef : LongInt);
+  Begin
+    N := Length(LT);
+    SetLength(LT, N + 1); SetLength(LE, N + 1);
+    LT[N] := Ty; LE[N] := Ef;
+  End;
+Begin
+  If IsTVarT(T) Then T := Erasure(T);
+  If (Not IsClassT(T)) Or (Depth > 24) Then Begin Add(T, -1); Exit; End;
+  C := Types[T].Cls;
+  EnsureHeader(C);
+  If (Classes[C].Flags And ACC_ENUM) <> 0 Then Begin
+    EnsureMembers(C);
+    F := Classes[C].FirstField;
+    N := 0;
+    While F >= 0 Do Begin
+      If (Fields[F].Flags And ACC_ENUM) <> 0 Then Begin Add(T, F); Inc(N); End;
+      F := Fields[F].Next;
+    End;
+    If N = 0 Then Add(T, -1);
+    Exit;
+  End;
+  If IsSealedC(C) Then Begin
+    ComputePermits(C);
+    If (Classes[C].Flags And (ACC_ABSTRACT Or ACC_INTERFACE)) = 0 Then Add(T, -1);
+    For I := 0 To Length(Classes[C].Permits) - 1 Do
+      If Classes[C].Permits[I] >= 0 Then
+        If IsCastable(T, ClassT(Classes[C].Permits[I])) Then
+          DecomposeLeaves(ClassT(Classes[C].Permits[I]), LT, LE, Depth + 1);
+    Exit;
+  End;
+  Add(T, -1);
+End;
+
+Function LeafSubtype(X, PT : LongInt) : Boolean;
+Begin
+  If IsPrim(X) Or IsPrim(PT) Then LeafSubtype := X = PT
+  Else If (X = TY_NONE) Or (PT = TY_NONE) Then LeafSubtype := True
+  Else LeafSubtype := IsSubtypeRef(Erasure(X), Erasure(PT));
+End;
+
+Function PatMatches(P, X, EF : LongInt) : Boolean;
+Begin
+  PatMatches := False;
+  If P = PAT_ANY Then Begin PatMatches := True; Exit; End;
+  If Nodes[P].Kind = N_PATTERN Then Begin
+    If Nodes[P].Aux = 1 Then Begin
+      PatMatches := IsClassT(X) And (Nodes[P].E = Types[X].Cls);
+    End
+    Else PatMatches := LeafSubtype(X, Nodes[P].Typ);
+    Exit;
+  End;
+  { constante d'enum }
+  If (EF >= 0) And ((Nodes[P].Aux = 98) Or (Nodes[P].Aux = 99)) Then PatMatches := Nodes[P].Sym = EF;
+End;
+
+Function ExhaustRows(Const Tys : TTyArr; Const Rows : TRows; Depth : LongInt) : Boolean;
+Var
+  LT, LE : TTyArr; NewRows : TRows; NewTys : TTyArr; I, J, K, M, Cl, F, Sub, Pm, NR : LongInt;
+  IsRec : Boolean; R, NRw : TRow; Ct : LongInt;
+Begin
+  ExhaustRows := True;
+  If Length(Tys) = 0 Then Begin ExhaustRows := Length(Rows) > 0; Exit; End;
+  If Depth > 12 Then Exit;
+  SetLength(LT, 0); SetLength(LE, 0);
+  DecomposeLeaves(Tys[0], LT, LE, 0);
+  For I := 0 To Length(LT) - 1 Do Begin
+    IsRec := False; Cl := -1;
+    If IsClassT(LT[I]) Then Begin
+      Cl := Types[LT[I]].Cls;
+      IsRec := Classes[Cl].IsSrc And (Nodes[Classes[Cl].Decl].Aux = CLS_RECORD);
+    End;
+    M := 0;
+    If IsRec Then Begin EnsureMembers(Cl); M := ChainLen(Nodes[Classes[Cl].Decl].E); End;
+    SetLength(NewRows, 0);
+    NR := 0;
+    For J := 0 To Length(Rows) - 1 Do Begin
+      R := Rows[J];
+      If Not PatMatches(R[0], LT[I], LE[I]) Then Continue;
+      SetLength(NRw, 0);
+      If IsRec Then Begin
+        SetLength(NRw, M + Length(R) - 1);
+        Sub := 0;
+        If (R[0] <> PAT_ANY) And (Nodes[R[0]].Kind = N_PATTERN) And (Nodes[R[0]].Aux = 1) Then Sub := Nodes[R[0]].B;
+        For K := 0 To M - 1 Do Begin
+          If Sub <> 0 Then Begin NRw[K] := Sub; Sub := Nodes[Sub].Next; End
+          Else NRw[K] := PAT_ANY;
+        End;
+        For K := 1 To Length(R) - 1 Do NRw[M + K - 1] := R[K];
+      End
+      Else Begin
+        SetLength(NRw, Length(R) - 1);
+        For K := 1 To Length(R) - 1 Do NRw[K - 1] := R[K];
+      End;
+      SetLength(NewRows, NR + 1);
+      NewRows[NR] := NRw;
+      Inc(NR);
+    End;
+    SetLength(NewTys, 0);
+    If IsRec Then Begin
+      SetLength(NewTys, M + Length(Tys) - 1);
+      Pm := Nodes[Classes[Cl].Decl].E;
+      For K := 0 To M - 1 Do Begin
+        F := FindFieldIn(Cl, Nodes[Pm].S);
+        If F >= 0 Then Ct := MemberType(LT[I], Cl, Fields[F].Typ) Else Ct := TY_NONE;
+        NewTys[K] := Ct;
+        Pm := Nodes[Pm].Next;
+      End;
+      For K := 1 To Length(Tys) - 1 Do NewTys[M + K - 1] := Tys[K];
+    End
+    Else Begin
+      SetLength(NewTys, Length(Tys) - 1);
+      For K := 1 To Length(Tys) - 1 Do NewTys[K - 1] := Tys[K];
+    End;
+    If Not ExhaustRows(NewTys, NewRows, Depth + 1) Then Begin ExhaustRows := False; Exit; End;
+  End;
+End;
+
+{ Le switch N (selecteur de type ST) couvre-t-il toutes les valeurs ? Verifie aussi la dominance des motifs. }
+Procedure CheckSwitchCoverage(N, ST, Mode : LongInt);
+Var
+  Cs, Lb, Q, Pr, NR : LongInt; Rows : TRows; Tys : TTyArr; HasDefault, IsExpr, Need, Guarded : Boolean;
+  Seen : Array Of LongInt; NSeen, I : LongInt;
+Begin
+  If (ST = TY_NONE) Or (ST = T_ANY) Then Exit;
+  IsExpr := Nodes[N].Kind = N_SWITCHEXPR;
+  HasDefault := False;
+  NR := 0; NSeen := 0;
+  SetLength(Rows, 0);
+  Cs := Nodes[N].B;
+  While Cs <> 0 Do Begin
+    Guarded := False;
+    If Nodes[Cs].E <> 0 Then
+      Guarded := Not ((Nodes[Nodes[Cs].E].CK = CK_INT) And (Nodes[Nodes[Cs].E].CI = 1));
+    If (Nodes[Cs].Aux And 1) <> 0 Then HasDefault := True;
+    Lb := Nodes[Cs].A;
+    While Lb <> 0 Do Begin
+      If Nodes[Lb].Kind = N_PATTERN Then Begin
+        { dominance par un motif de type inconditionnel precedent }
+        If Mode = SW_PATTERN Then
+          For I := 0 To NSeen - 1 Do
+            If LeafSubtype(Nodes[Lb].Typ, Nodes[Seen[I]].Typ) Then Begin
+              Err(Nodes[Lb].Line, 'ce libelle case est domine par un libelle precedent');
+              Break;
+            End;
+        If Not Guarded Then Begin
+          SetLength(Rows, NR + 1);
+          SetLength(Rows[NR], 1);
+          Rows[NR][0] := Lb;
+          Inc(NR);
+          If Nodes[Lb].Aux = 0 Then Begin
+            SetLength(Seen, NSeen + 1); Seen[NSeen] := Lb; Inc(NSeen);
+            { motif inconditionnel : couvre tout }
+            If LeafSubtype(ST, Nodes[Lb].Typ) Then Begin
+              If HasDefault Then Err(Nodes[Lb].Line, 'le switch a a la fois un motif inconditionnel et un libelle default');
+              HasDefault := True;
+            End;
+          End;
+        End;
+      End
+      Else If (Nodes[Lb].Aux = 98) Or (Nodes[Lb].Aux = 99) Then Begin
+        If Not Guarded Then Begin
+          SetLength(Rows, NR + 1);
+          SetLength(Rows[NR], 1);
+          Rows[NR][0] := Lb;
+          Inc(NR);
+        End;
+      End;
+      Lb := Nodes[Lb].Next;
+    End;
+    Cs := Nodes[Cs].Next;
+  End;
+  Need := IsExpr Or (Mode = SW_PATTERN);
+  If (Not Need) Or HasDefault Then Exit;
+  If (Mode = SW_INT) Or (Mode = SW_STR) Then Begin
+    Err(Nodes[N].Line, 'le switch ne couvre pas toutes les valeurs d''entree possibles');
+    Exit;
+  End;
+  SetLength(Tys, 1);
+  Tys[0] := ST;
+  If Not ExhaustRows(Tys, Rows, 0) Then Begin
+    If IsExpr Then Err(Nodes[N].Line, 'l''expression switch ne couvre pas toutes les valeurs d''entree possibles')
+    Else Err(Nodes[N].Line, 'l''instruction switch ne couvre pas toutes les valeurs d''entree possibles');
+  End;
+  Pr := 0; Q := 0;
+End;
+
 Procedure AttribSwitchBody(N : LongInt; ST, Mode : LongInt);
 Var Cs, S, Mark, CaseMark : LongInt;
 Begin
@@ -15505,6 +15937,7 @@ Begin
     Cs := Nodes[Cs].Next;
   End;
   CheckDuplicateLabels(N, Mode);
+  CheckSwitchCoverage(N, ST, Mode);
   Dec(SwitchDepth);
   NScope := Mark;
 End;
@@ -16109,6 +16542,18 @@ Begin
   PushThrowCtx(TC_BOUND);
   If Nodes[D].Aux = CLS_ANNOTATION Then Tg := TGT_TYPE Or TGT_ANNOT Else Tg := TGT_TYPE;
   AttribAnnotChain(Nodes[D].Ann, Tg);
+  { @FunctionalInterface : interface avec exactement une methode abstraite }
+  P := Nodes[D].Ann;
+  While P <> 0 Do Begin
+    If (Nodes[P].Sym >= 0) And (Classes[Nodes[P].Sym].Name = 'java/lang/FunctionalInterface') Then Begin
+      If ((Classes[C].Flags And ACC_INTERFACE) = 0) Or ((Classes[C].Flags And ACC_ANNOTATION) <> 0) Then
+        Err(Nodes[P].Line, 'annotation @FunctionalInterface inattendue : ' + Classes[C].Simple + ' n''est pas une interface fonctionnelle')
+      Else If FindSAM(ThisTypeOf(C)) < 0 Then
+        Err(Nodes[P].Line, 'annotation @FunctionalInterface inattendue : ' + Classes[C].Simple +
+            ' n''est pas une interface fonctionnelle (aucune ou plusieurs methodes abstraites)');
+    End;
+    P := Nodes[P].Next;
+  End;
   If Nodes[D].Aux = CLS_RECORD Then Begin
     P := Nodes[D].E;
     While P <> 0 Do Begin
@@ -16359,6 +16804,39 @@ Begin
   Pt := 0;
 End;
 
+{ Conflit de noms avec une methode heritee : meme effacement sans redefinition (JLS 8.4.8.3) }
+Procedure CheckInheritedClash(C, M : LongInt);
+Var Depth : LongInt;
+  Procedure Walk(K : LongInt; D : LongInt);
+  Var M2, I : LongInt; Same : Boolean; Line : LongInt;
+  Begin
+    If (K < 0) Or (D > 30) Then Exit;
+    EnsureMembers(K);
+    M2 := Classes[K].FirstMeth;
+    While M2 >= 0 Do Begin
+      If (Meths[M2].Name = Meths[M].Name) And (Meths[M2].NPar = Meths[M].NPar) And (Meths[M2].Synth = 0) And
+         ((Meths[M2].Flags And (ACC_STATIC Or ACC_PRIVATE)) = 0) And SameErasedParams(M, M2) Then Begin
+        Same := True;
+        For I := 0 To Meths[M].NPar - 1 Do
+          If Erasure(MemberType(ThisTypeOf(C), K, Meths[M2].Par[I])) <> Erasure(Meths[M].Par[I]) Then Same := False;
+        If Not Same Then Begin
+          Line := Nodes[Meths[M].Decl].Line;
+          Err(Line, 'conflit de noms : ' + Meths[M].Name + ' dans ' + Classes[C].Simple + ' et ' + Meths[M2].Name + ' dans ' +
+              Classes[K].Simple + ' ont la meme signature apres effacement, mais aucune ne redefinit l''autre');
+          Exit;
+        End;
+      End;
+      M2 := Meths[M2].Next;
+    End;
+    Walk(SuperClsOf(K), D + 1);
+    For I := 0 To Length(Classes[K].Ifaces) - 1 Do Walk(ClsOf(Classes[K].Ifaces[I]), D + 1);
+  End;
+Begin
+  Depth := 0;
+  Walk(SuperClsOf(C), 1);
+  For Depth := 0 To Length(Classes[C].Ifaces) - 1 Do Walk(ClsOf(Classes[C].Ifaces[Depth]), 1);
+End;
+
 { Controles de declaration : doublons, heritage de classe finale, redefinition de methode finale }
 Procedure CheckClassDecl(C : LongInt);
 Var F, F2, M, M2, S, Sup : LongInt; Line : LongInt; D : LongInt;
@@ -16388,6 +16866,13 @@ Begin
         M2 := Meths[M2].Next;
       End;
     End;
+    M := Meths[M].Next;
+  End;
+  { conflits avec les methodes heritees }
+  M := Classes[C].FirstMeth;
+  While M >= 0 Do Begin
+    If (Meths[M].Synth = 0) And (Meths[M].Decl <> 0) And (Meths[M].Name <> '<init>') And (Meths[M].Lambda < 0) And
+       ((Meths[M].Flags And (ACC_STATIC Or ACC_PRIVATE)) = 0) Then CheckInheritedClash(C, M);
     M := Meths[M].Next;
   End;
   { super-classe finale }
@@ -16434,6 +16919,7 @@ Begin
   PushScope(SC_CLASSMARK, '', C);
   D := Classes[C].Decl;
   CheckClassDecl(C);
+  CheckSealed(C);
   AttribClassAnnots(C);
   M := Nodes[D].D;
   While M <> 0 Do Begin
@@ -16998,6 +17484,7 @@ Type
     NLL      : LongInt;
     LS       : Array Of TVT;
     NLS      : LongInt;
+    FinMask  : Int64;       { champs final definitivement affectes }
   End;
 
   TFrame = Record
@@ -17015,6 +17502,7 @@ Var
 
   Code      : TBuf;
   CurL      : Array Of TVT;
+  CurFin    : Int64;         { champs final (blancs) definitivement affectes }
   CurS      : Array Of TVT;
   NSt       : LongInt;
   StDepth   : LongInt;
@@ -17206,10 +17694,12 @@ Begin
     If Length(Labels[L].LS) < NSt Then SetLength(Labels[L].LS, NSt + 8);
     For I := 0 To NSt - 1 Do Labels[L].LS[I] := CurS[I];
     Labels[L].NLS := NSt;
+    Labels[L].FinMask := CurFin;
     Labels[L].HasState := True;
   End
   Else Begin
     If Labels[L].NLS <> NSt Then Internal('hauteurs de pile differentes a une jonction (ligne ' + IStr(LastLine) + ')');
+    Labels[L].FinMask := Labels[L].FinMask And CurFin;
     { locales : intersection }
     For I := 0 To Labels[L].NLL - 1 Do Begin
       If I >= N Then Labels[L].LL[I] := VTSimple(VT_TOP)
@@ -17262,6 +17752,7 @@ Begin
   Labels[L].Pos := Code.N;
   If Not Labels[L].HasState Then Exit;      { code mort }
   { l'etat courant devient celui de l'etiquette }
+  CurFin := Labels[L].FinMask;
   EnsureLocal(Labels[L].NLL);
   For I := 0 To Length(CurL) - 1 Do CurL[I] := VTSimple(VT_TOP);
   For I := 0 To Labels[L].NLL - 1 Do CurL[I] := Labels[L].LL[I];
@@ -17653,8 +18144,11 @@ Begin
 End;
 
 { Fin d'une methode / instruction terminale }
+Procedure FinCheckReturn; Forward;
+
 Procedure EmitReturnOp(K : Char);
 Begin
+  If K = 'V' Then FinCheckReturn;
   Case K Of
     'V' : B1(Code, OP_RETURN);
     'I' : Begin B1(Code, OP_IRETURN); PopVT; End;
@@ -17984,6 +18478,7 @@ Begin
   Alive := True;
   NLabels := 0; NFix := 0; NFrames := 0; NLn := 0; NEx := 0;
   LastLine := 0;
+  CurFin := 0;
   Inc(GenId);
 End;
 
@@ -18650,6 +19145,59 @@ Begin
   End;
 End;
 
+{ ----- champs final blancs : affectation definitive (constructeurs, initialiseurs statiques) ----- }
+
+Var
+  FinFields : Array Of LongInt;
+  NFin      : LongInt;
+  FinActive : Boolean;
+
+Procedure FinSetup(C : LongInt; Static : Boolean);
+Var F : LongInt;
+Begin
+  NFin := 0;
+  FinActive := False;
+  CurFin := 0;
+  If (Classes[C].Decl <= 0) Or (Nodes[Classes[C].Decl].Aux = CLS_RECORD) Then Exit;
+  F := Classes[C].FirstField;
+  While F >= 0 Do Begin
+    If ((Fields[F].Flags And ACC_FINAL) <> 0) And (((Fields[F].Flags And ACC_STATIC) <> 0) = Static) And
+       (Fields[F].Decl > 0) Then
+      If (Nodes[Fields[F].Decl].Kind = N_VARDECL) And (Nodes[Fields[F].Decl].A = 0) And (NFin < 62) Then Begin
+        SetLength(FinFields, NFin + 1);
+        FinFields[NFin] := F;
+        Inc(NFin);
+      End;
+    F := Fields[F].Next;
+  End;
+  FinActive := NFin > 0;
+End;
+
+Procedure FinNoteStore(F, Line : LongInt);
+Var K : LongInt;
+Begin
+  If Not FinActive Then Exit;
+  For K := 0 To NFin - 1 Do
+    If FinFields[K] = F Then Begin
+      If (CurFin And (Int64(1) Shl K)) <> 0 Then
+        Err(Line, 'la variable finale ' + Fields[F].Name + ' peut deja avoir ete affectee');
+      CurFin := CurFin Or (Int64(1) Shl K);
+    End;
+End;
+
+Procedure FinCheckReturn;
+Var K : LongInt; Ln : LongInt;
+Begin
+  If Not FinActive Then Exit;
+  Ln := LastLine;
+  For K := 0 To NFin - 1 Do
+    If (CurFin And (Int64(1) Shl K)) = 0 Then
+      If (Fields[FinFields[K]].Flags And ACC_STATIC) <> 0 Then
+        Err(Nodes[Fields[FinFields[K]].Decl].Line, 'la variable finale ' + Fields[FinFields[K]].Name + ' n''a peut-etre pas ete initialisee')
+      Else
+      Err(Ln, 'la variable finale ' + Fields[FinFields[K]].Name + ' n''a peut-etre pas ete initialisee');
+End;
+
 Procedure GenLvalStore(N : LongInt);
 Var F : LongInt;
 Begin
@@ -18658,6 +19206,7 @@ Begin
     N_SELECT : Begin
       F := Nodes[N].Sym;
       EmitPutField(Nodes[N].Aux = 2, FieldOwnerName(F), Fields[F].Name, FieldDescOf(F));
+      FinNoteStore(F, Nodes[N].Line);
     End;
     N_INDEX : EmitArrayStore(Erasure(Types[Nodes[Nodes[N].A].Typ].Elem));
   End;
@@ -19756,16 +20305,18 @@ Begin
       End;
     End;
   End
-  Else If IsExpr Then Begin
+  Else Begin
+    { switch a motifs exhaustif sans default : MatchException si aucun cas ne correspond }
     If Lnull >= 0 Then PlaceLabel(Lnull);
     If Alive Then Begin
-      EmitNew('java/lang/IncompatibleClassChangeError');
+      EmitNew('java/lang/MatchException');
       EmitDupValue;
-      EmitInvoke(OP_INVOKESPECIAL, 'java/lang/IncompatibleClassChangeError', '<init>', '()V', False);
+      EmitNull;
+      EmitNull;
+      EmitInvoke(OP_INVOKESPECIAL, 'java/lang/MatchException', '<init>', '(Ljava/lang/String;Ljava/lang/Throwable;)V', False);
       EmitThrow;
     End;
-  End
-  Else If Lnull >= 0 Then PlaceLabel(Lnull);
+  End;
   Dec(NGCtx);
   PlaceLabel(EndL);
   FreeLocals(Mark);
@@ -19955,6 +20506,7 @@ Type
   TSnap = Record
     L : Array Of TVT;
     N : LongInt;
+    Fin : Int64;
   End;
 
 Procedure TakeSnap(Var S : TSnap);
@@ -19963,6 +20515,7 @@ Begin
   SetLength(S.L, Length(CurL));
   For I := 0 To Length(CurL) - 1 Do S.L[I] := CurL[I];
   S.N := Length(CurL);
+  S.Fin := CurFin;
 End;
 
 Procedure RestoreSnap(Var S : TSnap; Const Exc : TVT);
@@ -19971,6 +20524,7 @@ Begin
   For I := 0 To Length(CurL) - 1 Do
     If I < S.N Then CurL[I] := S.L[I] Else CurL[I] := VTSimple(VT_TOP);
   NSt := 0; StDepth := 0;
+  CurFin := S.Fin;
   PushVT(Exc);
   Alive := True;
   AddFrame(Code.N);
@@ -21051,6 +21605,37 @@ Begin
   B2(Attr, CPUtf8('Record')); B4(Attr, 2 + Buf.N); B2(Attr, Cnt); BAppend(Attr, Buf); Inc(NA);
 End;
 
+
+{ Sous-classes permises ecrites dans PermittedSubclasses : classes scellees et enums a constantes a corps }
+Procedure PermittedOf(C : LongInt; Var L : TTyArr);
+Var X, N : LongInt;
+Begin
+  SetLength(L, 0);
+  If Not Classes[C].IsSrc Then Exit;
+  If (Classes[C].Flags And MOD_SEALED) <> 0 Then Begin
+    ComputePermits(C);
+    SetLength(L, Length(Classes[C].Permits));
+    For N := 0 To Length(Classes[C].Permits) - 1 Do L[N] := Classes[C].Permits[N];
+  End
+  Else If (Classes[C].Flags And ACC_ENUM) <> 0 Then Begin
+    N := 0;
+    For X := 0 To NClasses - 1 Do
+      If Classes[X].IsSrc And ((Classes[X].Flags And MOD_ANON) <> 0) And IsClassT(Classes[X].Super) And
+         (Types[Classes[X].Super].Cls = C) Then Begin
+        SetLength(L, N + 1); L[N] := X; Inc(N);
+      End;
+  End;
+End;
+
+Procedure EmitPermittedAttr(Var Attr : TBuf; Var NA : LongInt; C : LongInt);
+Var L : TTyArr; I : LongInt;
+Begin
+  PermittedOf(C, L);
+  If Length(L) = 0 Then Exit;
+  B2(Attr, CPUtf8('PermittedSubclasses')); B4(Attr, 2 + 2 * Length(L)); B2(Attr, Length(L));
+  For I := 0 To Length(L) - 1 Do B2(Attr, CPClass(Classes[L[I]].Name));
+  Inc(NA);
+End;
 { ============================================================================
   4b. DESUCRAGE : preparation des classes (champs synthetiques, descripteurs,
       enum, ponts) puis generation des methodes et des fichiers .class
@@ -21475,9 +22060,11 @@ Begin
       End;
       EmitConstInt(1);
       EmitReturnOp('I');
-      PlaceLabel(Lf);
-      EmitConstInt(0);
-      EmitReturnOp('I');
+      If Labels[Lf].HasState Then Begin
+        PlaceLabel(Lf);
+        EmitConstInt(0);
+        EmitReturnOp('I');
+      End;
     End;
   End;
 End;
@@ -21496,6 +22083,7 @@ Begin
       Call := Nodes[First].A;
       IsThis := Nodes[Call].S = 'this';
     End;
+  If IsThis Then FinActive := False Else FinSetup(C, False);
   { prologue : instance englobante et variables capturees }
   If Not IsThis Then Begin
     If Classes[C].ThisField >= 0 Then Begin
@@ -21605,6 +22193,7 @@ Var
 Begin
   Static := (Meths[M].Flags And ACC_STATIC) <> 0;
   BeginMethod;
+  FinActive := False;
   NGCtx := 0;
   PendingLabelCtx := -1;
   GenCls := C; GenMeth := M; GenStatic := Static;
@@ -21671,6 +22260,7 @@ Begin
     GenRecordMethod(C, M);
   End
   Else If Meths[M].Synth = 8 Then Begin
+    FinSetup(C, True);
     GenStaticInit(C);
     If Alive Then EmitReturnOp('V');
   End
@@ -21876,7 +22466,7 @@ End;
 Procedure WriteClassFile(C : LongInt);
 Var
   Out, Attr, Ifs, InnerBuf, NestBuf : TBuf; M, F, I, X, NA, NInner, NNest, SuperIdx : LongInt; Path, Dir, Nm : String;
-  Version : LongInt;
+  Version : LongInt; PermL : TTyArr;
 Begin
   PoolInit;
   BInit(FieldBuf); BInit(MethBuf); BInit(BsmBuf); BsmCount := 0;
@@ -21900,8 +22490,10 @@ Begin
   BInit(Out);
   B4(Out, $CAFEBABE);
   B2(Out, 0);
-  { l'attribut Record n'est reconnu qu'a partir de la version 60 }
-  If Classes[C].IsSrc And (Classes[C].Decl > 0) And (Nodes[Classes[C].Decl].Aux = CLS_RECORD) And (OptTarget < 60) Then
+  { Record : version 60 ; PermittedSubclasses : version 61 }
+  PermittedOf(C, PermL);
+  If (Length(PermL) > 0) And (OptTarget < 61) Then B2(Out, 61)
+  Else If Classes[C].IsSrc And (Classes[C].Decl > 0) And (Nodes[Classes[C].Decl].Aux = CLS_RECORD) And (OptTarget < 60) Then
     B2(Out, 60)
   Else B2(Out, OptTarget);
   { attributs de classe }
@@ -21914,6 +22506,7 @@ Begin
     If Nodes[Classes[C].Decl].Aux = CLS_ANNOTATION Then EmitAnnotAttrs(Attr, NA, Nodes[Classes[C].Decl].Ann, TGT_TYPE Or TGT_ANNOT)
     Else EmitAnnotAttrs(Attr, NA, Nodes[Classes[C].Decl].Ann, TGT_TYPE);
     If Nodes[Classes[C].Decl].Aux = CLS_RECORD Then EmitRecordAttr(Attr, NA, C);
+    EmitPermittedAttr(Attr, NA, C);
   End;
   { classes imbriquees }
   BInit(InnerBuf);
