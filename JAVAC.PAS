@@ -13508,6 +13508,7 @@ Begin
   End;
   Nodes[N].E := 0;
   If Body <> 0 Then Begin
+    AnonSuperCtor := Nodes[N].Sym;
     Anon := EnterLocalClass(Body, T);
     Nodes[N].E := Anon + 1;      { classe anonyme + 1 }
     Nodes[N].Typ := ClassT(Anon);
@@ -16539,8 +16540,16 @@ End;
 Procedure GenOuterThis(K : LongInt);
 Var C, F : LongInt;
 Begin
-  EmitThis;
-  C := GenCls;
+  If (GenMeth >= 0) And (Meths[GenMeth].Name = '<init>') And Classes[GenCls].IsInner And
+     (Length(Meths[GenMeth].PreLoc) > 0) And ((Classes[GenCls].Flags And ACC_ENUM) = 0) Then Begin
+    { dans un constructeur : le parametre d'instance englobante (this peut ne pas etre initialise) }
+    LoadLocal(Meths[GenMeth].PreLoc[0], LastLine);
+    C := Classes[GenCls].Outer;
+  End
+  Else Begin
+    EmitThis;
+    C := GenCls;
+  End;
   While (C >= 0) And Not IsSubClass(C, K) Do Begin
     F := Classes[C].ThisField;
     If F < 0 Then Begin
@@ -16624,8 +16633,16 @@ Begin
     Else If Classes[C].IsInner Then Begin
       { la super-classe est interne : instance englobante }
       K := Classes[C].Outer;
-      If (GenCls >= 0) And Classes[GenCls].IsInner And IsSubClass(Classes[GenCls].Outer, K) And (Length(Meths[GenMeth].PreLoc) > 0) Then
-        LoadLocal(Meths[GenMeth].PreLoc[0], Nodes[N].Line)
+      If (GenCls >= 0) And Classes[GenCls].IsInner And (Length(Meths[GenMeth].PreLoc) > 0) Then Begin
+        LoadLocal(Meths[GenMeth].PreLoc[0], Nodes[N].Line);
+        F := Classes[GenCls].Outer;
+        While (F >= 0) And Not IsSubClass(F, K) And (Classes[F].ThisField >= 0) Do Begin
+          EmitGetField(False, Classes[F].Name, Fields[Classes[F].ThisField].Name,
+                       TypeDesc(Erasure(Fields[Classes[F].ThisField].Typ)), Fields[Classes[F].ThisField].Typ);
+          F := Classes[F].Outer;
+        End;
+        If Not IsSubClass(F, K) Then Err(Nodes[N].Line, 'instance englobante requise pour la super-classe');
+      End
       Else Begin
         Err(Nodes[N].Line, 'instance englobante requise pour la super-classe');
         EmitNull;
@@ -17535,6 +17552,27 @@ Begin
   GCtx[I].RStart := Code.N;
 End;
 
+{ Masque temporairement les contextes a partir de I pendant l'emission inline d'un
+  finalisateur (les pushes du finalisateur ne doivent pas ecraser ces contextes) }
+Procedure HideCtxs(I : LongInt; Var Svd : Array Of TGenCtx; Var Sv : LongInt);
+Var K : LongInt;
+Begin
+  Sv := NGCtx;
+  For K := I To Sv - 1 Do Begin
+    Svd[K - I] := GCtx[K];
+    SetLength(GCtx[K].R1, 0);     { evite le partage des tableaux avec la copie sauvegardee }
+    SetLength(GCtx[K].R2, 0);
+  End;
+  NGCtx := I;
+End;
+
+Procedure ShowCtxs(I : LongInt; Var Svd : Array Of TGenCtx; Sv : LongInt);
+Var K : LongInt;
+Begin
+  For K := I To Sv - 1 Do GCtx[K] := Svd[K - I];
+  NGCtx := Sv;
+End;
+
 Procedure EmitFinalizer(I : LongInt);
 Var Skip, Plain, TryS, TryE, Handler, Done, Sup : LongInt; Slot : LongInt; SvL : Array Of TVT; K : LongInt;
 Begin
@@ -17585,15 +17623,14 @@ End;
 
 { Quitte les contextes au-dessus de Target (executant les finalisations) avant un saut }
 Procedure LeaveCtxs(Target : LongInt);
-Var I, Sv : LongInt;
+Var I, Sv : LongInt; Svd : Array[0..63] Of TGenCtx;
 Begin
   For I := NGCtx - 1 Downto Target + 1 Do Begin
     If GCtx[I].Kind = GC_TRY Then CloseRange(I);
     If (GCtx[I].Kind = GC_TRY) And (GCtx[I].FinKind <> FIN_NONE) And Alive Then Begin
-      Sv := NGCtx;
-      NGCtx := I;
+      HideCtxs(I, Svd, Sv);
       EmitFinalizer(I);
-      NGCtx := Sv;
+      ShowCtxs(I, Svd, Sv);
     End;
   End;
 End;
@@ -18099,6 +18136,7 @@ End;
 
 Procedure GenTry(N : LongInt);
 Var
+  Svd : Array[0..63] Of TGenCtx;
   Ctx, EndL, Cc, Ct, I, K, Mark, HPc, AnyPc, Tmp, EntryLoc, V : LongInt; Snap : TSnap; HasFin : Boolean;
   Hand : Array Of LongInt; NHand : LongInt; ExcT : LongInt; Sv : LongInt; Pcs : Array Of LongInt;
 Begin
@@ -18116,9 +18154,9 @@ Begin
   FreeLocals(EntryLoc);
   If Alive Then Begin
     If HasFin Then Begin
-      Sv := NGCtx; NGCtx := Ctx;
+      HideCtxs(Ctx, Svd, Sv);
       GenStmt(Nodes[N].D);
-      NGCtx := Sv;
+      ShowCtxs(Ctx, Svd, Sv);
     End;
     If Alive Then EmitJump(OP_GOTO, EndL);
   End;
@@ -18142,9 +18180,9 @@ Begin
     FreeLocals(Mark);
     If Alive Then Begin
       If HasFin Then Begin
-        Sv := NGCtx; NGCtx := Ctx;
+        HideCtxs(Ctx, Svd, Sv);
         GenStmt(Nodes[N].D);
-        NGCtx := Sv;
+        ShowCtxs(Ctx, Svd, Sv);
       End;
       If Alive Then EmitJump(OP_GOTO, EndL);
     End;
@@ -18158,9 +18196,9 @@ Begin
     Mark := NextLoc;
     Tmp := AllocSlot(T_THROWABLE);
     EmitStore('A', Tmp, VTObj('java/lang/Throwable'));
-    Sv := NGCtx; NGCtx := Ctx;
+    HideCtxs(Ctx, Svd, Sv);
     GenStmt(Nodes[N].D);
-    NGCtx := Sv;
+    ShowCtxs(Ctx, Svd, Sv);
     If Alive Then Begin
       EmitLoad('A', Tmp);
       EmitThrow;
@@ -18198,6 +18236,7 @@ End;
 { try-with-resources : chaque ressource est fermee par un contexte de finalisation }
 Procedure GenResources(N, R : LongInt);
 Var
+  Svd : Array[0..63] Of TGenCtx;
   Ctx, EndL, V, L, Slot, PSlot, Tmp, I, Mark, EntryLoc, AnyPc, Sv : LongInt; Snap : TSnap; T : LongInt;
 Begin
   If R = 0 Then Begin GenStmt(Nodes[N].B); Exit; End;
@@ -18228,9 +18267,9 @@ Begin
   GenResources(N, Nodes[R].Next);
   CloseRange(Ctx);
   If Alive Then Begin
-    Sv := NGCtx; NGCtx := Ctx;
+    HideCtxs(Ctx, Svd, Sv);
     EmitFinalizer(Ctx);
-    NGCtx := Sv;
+    ShowCtxs(Ctx, Svd, Sv);
     EmitJump(OP_GOTO, EndL);
   End;
   { gestionnaire : primary = e ; fermeture ; relance }
@@ -18240,9 +18279,9 @@ Begin
   EmitStore('A', Tmp, VTObj('java/lang/Throwable'));
   EmitLoad('A', Tmp);
   EmitStore('A', PSlot, VTObj('java/lang/Throwable'));
-  Sv := NGCtx; NGCtx := Ctx;
+  HideCtxs(Ctx, Svd, Sv);
   EmitFinalizer(Ctx);
-  NGCtx := Sv;
+  ShowCtxs(Ctx, Svd, Sv);
   EmitLoad('A', Tmp);
   EmitThrow;
   I := 0;
@@ -18257,7 +18296,7 @@ Begin
 End;
 
 Procedure GenSync(N : LongInt);
-Var Ctx, Slot, AnyPc, EndL, Tmp, Mark, I, Sv, EntryLoc : LongInt; Snap : TSnap; T : LongInt;
+Var Svd : Array[0..63] Of TGenCtx; Ctx, Slot, AnyPc, EndL, Tmp, Mark, I, Sv, EntryLoc : LongInt; Snap : TSnap; T : LongInt;
 Begin
   LineMark(Nodes[N].Line);
   EntryLoc := NextLoc;
@@ -18277,18 +18316,18 @@ Begin
   GenStmt(Nodes[N].B);
   CloseRange(Ctx);
   If Alive Then Begin
-    Sv := NGCtx; NGCtx := Ctx;
+    HideCtxs(Ctx, Svd, Sv);
     EmitFinalizer(Ctx);
-    NGCtx := Sv;
+    ShowCtxs(Ctx, Svd, Sv);
     EmitJump(OP_GOTO, EndL);
   End;
   RestoreSnap(Snap, VTObj('java/lang/Throwable'));
   AnyPc := Code.N;
   Tmp := AllocSlot(T_THROWABLE);
   EmitStore('A', Tmp, VTObj('java/lang/Throwable'));
-  Sv := NGCtx; NGCtx := Ctx;
+  HideCtxs(Ctx, Svd, Sv);
   EmitFinalizer(Ctx);
-  NGCtx := Sv;
+  ShowCtxs(Ctx, Svd, Sv);
   EmitLoad('A', Tmp);
   EmitThrow;
   I := 0;
