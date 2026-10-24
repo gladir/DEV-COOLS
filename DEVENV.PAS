@@ -1895,6 +1895,18 @@ Const
  NEWFILE_HEIGHT        = 280;     { hauteur dialogue nouveau fichier}
  NEWFILE_TYPE_COUNT    = 5;       { nombre de types de fichier      }
  NEWFILE_LIST_HEIGHT   = 100;     { hauteur liste des types         }
+ { Dialogue "Ajouter un fichier de deploiement" (menu contextuel du       }
+ { noeud projet dans l Explorateur de solutions, demande explicite de     }
+ { l utilisateur) : cible (Azure Pipelines/GitHub Actions/Heroku/AWS      }
+ { CodeBuild), etapes a cocher (Restaurer/Compiler/Tester/Publier/        }
+ { Deployer) et commande de compilation - genere le fichier correspondant.}
+ DEPLOY_WIDTH          = 460;     { largeur dialogue deploiement    }
+ DEPLOY_HEIGHT         = 380;     { hauteur dialogue deploiement    }
+ DEPLOY_TARGET_COUNT   = 4;       { nombre de cibles de deploiement }
+ DEPLOY_TARGET_LIST_HEIGHT = DEPLOY_TARGET_COUNT * DLG_LIST_ROW_HEIGHT;
+ DEPLOY_STEP_COUNT     = 5;       { Restaurer/Compiler/Tester/Publier/Deployer }
+ DEPLOY_CHECK_SIZE     = 14;      { taille case a cocher            }
+ DEPLOY_ROW_SPACING    = 22;      { espacement vertical entre etapes}
  ADDREF_WIDTH          = 480;     { largeur dialogue references     }
  ADDREF_HEIGHT         = 360;     { hauteur dialogue references     }
  ADDREF_TAB_COUNT      = 3;       { nombre d onglets                }
@@ -4619,6 +4631,29 @@ Type
   FileName     : String[127];           { nom du fichier             }
   FileNameCursor: Integer;              { curseur champ nom          }
   ScrollTop    : Integer;               { premiere ligne visible     }
+  Confirmed    : Boolean;               { True si valide par OK      }
+ End;
+
+ { Cible du fichier de deploiement (menu contextuel du noeud projet,       }
+ { demande explicite de l utilisateur). }
+ TDeployTarget = (
+  DPT_AZURE_PIPELINES,  { Azure Pipelines (azure-pipelines.yml)          }
+  DPT_GITHUB_ACTIONS,   { GitHub Actions (.github/workflows/deploy.yml)  }
+  DPT_HEROKU,           { Heroku (Procfile + app.json)                   }
+  DPT_AWS_CODEBUILD     { AWS CodeBuild (buildspec.yml)                   }
+ );
+
+ { Boite de dialogue Ajouter un fichier de deploiement }
+ TDeployFileDialog = Record
+  Base         : TDialog;               { dialogue de base           }
+  Target       : TDeployTarget;         { cible selectionnee         }
+  StepRestore  : Boolean;               { etape : restaurer          }
+  StepBuild    : Boolean;               { etape : compiler           }
+  StepTest     : Boolean;               { etape : tester             }
+  StepPublish  : Boolean;               { etape : publier            }
+  StepDeploy   : Boolean;               { etape : deployer           }
+  BuildCommand : String[127];           { commande de compilation    }
+  BuildCmdCursor: Integer;              { curseur champ commande     }
   Confirmed    : Boolean;               { True si valide par OK      }
  End;
 
@@ -8517,6 +8552,7 @@ Var
  NewProjDlg     : TNewProjectDialog;
  { Dialogue nouveau fichier }
  NewFileDlg     : TNewFileDialog;
+ DeployFileDlg  : TDeployFileDialog;
  { Dialogue ouvrir fichier }
  FileDlg        : TFileDialog;
  { Dialogue proprietes du projet }
@@ -14744,6 +14780,14 @@ Procedure ShowNewFileDialog(Var Dlg: TNewFileDialog); Forward;
 Procedure HandleNewFileDialogEvent(Var Dlg: TNewFileDialog;
  Var Ev: TEvent); Forward;
 Procedure DrawNewFileDialog(Var Dlg: TNewFileDialog); Forward;
+
+{ Declarations anticipees pour dialogue "Ajouter un fichier de           }
+{ deploiement" (menu contextuel du noeud projet, demande explicite) }
+Procedure ShowDeployFileDialog(Var Dlg: TDeployFileDialog); Forward;
+Procedure HandleDeployFileDialogEvent(Var Dlg: TDeployFileDialog;
+ Var Ev: TEvent); Forward;
+Procedure DrawDeployFileDialog(Var Dlg: TDeployFileDialog); Forward;
+Procedure HandleDeployFileConfirmed; Forward;
 
 { Declarations anticipees pour dialogue proprietes du projet }
 Procedure InitProjectPropertiesDialog(
@@ -41658,6 +41702,7 @@ Begin
    AddContextSeparator(CM);
    AddContextItem(CM, 'Ajouter un fichier...', 411);
    AddContextItem(CM, 'Ajouter une reference...', 412);
+   AddContextItem(CM, 'Ajouter un fichier de deploiement...', 413);
    AddContextSeparator(CM);
    AddContextItem(CM, 'Renommer', 420);
    AddContextItem(CM, 'Supprimer', 421);
@@ -179843,6 +179888,292 @@ Begin
  DrawNewFileDialog(Dlg);
 End;
 
+{ ------------------------------------------------------------
+  Dialogue "Ajouter un fichier de deploiement" (menu contextuel du noeud
+  projet dans l Explorateur de solutions, demande explicite de
+  l utilisateur) : une liste de cibles (Azure Pipelines/GitHub Actions/
+  Heroku/AWS CodeBuild), des cases a cocher pour les etapes standard
+  (Restaurer/Compiler/Tester/Publier/Deployer) et un champ pour la
+  commande de compilation - meme squelette Init/Draw/HandleKey/
+  HandleEvent/Show que TNewFileDialog juste au-dessus (liste a selection
+  simple) combine aux cases a cocher de TAddReferenceDialog (Checked).
+  ------------------------------------------------------------ }
+
+{ --- Nom affiche d une cible de deploiement --- }
+
+Function DeployTargetName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  Ord(DPT_AZURE_PIPELINES): DeployTargetName := 'Azure Pipelines (azure-pipelines.yml)';
+  Ord(DPT_GITHUB_ACTIONS): DeployTargetName := 'GitHub Actions (.github/workflows/deploy.yml)';
+  Ord(DPT_HEROKU): DeployTargetName := 'Heroku (Procfile + app.json)';
+  Ord(DPT_AWS_CODEBUILD): DeployTargetName := 'AWS CodeBuild (buildspec.yml)';
+  Else DeployTargetName := '';
+ End;
+End;
+
+{ --- Initialiser le dialogue Ajouter un fichier de deploiement --- }
+
+Procedure InitDeployFileDialog(Var Dlg: TDeployFileDialog);
+Begin
+ InitDialog(Dlg.Base, 'Ajouter un fichier de deploiement', DEPLOY_WIDTH,
+  DEPLOY_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.Target := DPT_AZURE_PIPELINES;
+ Dlg.StepRestore := True;
+ Dlg.StepBuild := True;
+ Dlg.StepTest := True;
+ Dlg.StepPublish := False;
+ Dlg.StepDeploy := False;
+ Dlg.BuildCommand := 'fpc MonProjet.pas';
+ Dlg.BuildCmdCursor := Length(Dlg.BuildCommand);
+ Dlg.Confirmed := False;
+End;
+
+{ --- Dessiner la liste des cibles de deploiement --- }
+
+Procedure DrawDeployTargetList(Var Dlg: TDeployFileDialog);
+Var
+ I: Integer;
+ LX, LY, LW, RH: Integer;
+ Bg, Fg: LongInt;
+Begin
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ RH := DLG_LIST_ROW_HEIGHT;
+ DrawFilledRect(LX, LY, LX + LW, LY + DEPLOY_TARGET_LIST_HEIGHT, CLR_WINDOW);
+ DrawRect(LX, LY, LX + LW, LY + DEPLOY_TARGET_LIST_HEIGHT, CLR_BORDER);
+ For I := 0 To DEPLOY_TARGET_COUNT - 1 Do
+ Begin
+  If I = Ord(Dlg.Target) Then
+  Begin
+   Bg := CLR_HIGHLIGHT;
+   Fg := CLR_HIGHLIGHTTEXT;
+   DrawFilledRect(LX + 1, LY + 1 + I * RH,
+    LX + LW - 1, LY + 1 + (I + 1) * RH, Bg);
+  End
+  Else
+  Begin
+   Bg := CLR_WINDOW;
+   Fg := CLR_WINDOWTEXT;
+  End;
+  DrawText(LX + 4, LY + 2 + I * RH, DeployTargetName(I), Fg);
+ End;
+End;
+
+{ --- Dessiner les cases a cocher des etapes --- }
+
+Procedure DrawDeploySteps(Var Dlg: TDeployFileDialog);
+Var
+ FX, FW, BaseY: Integer;
+
+ Procedure Check(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + DEPLOY_CHECK_SIZE,
+   BaseY + DEPLOY_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, DEPLOY_CHECK_SIZE);
+  DrawText(FX + DEPLOY_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + DEPLOY_ROW_SPACING;
+ End;
+
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  DEPLOY_TARGET_LIST_HEIGHT + DLG_PADDING;
+ DrawText(FX, BaseY, 'Etapes :', CLR_WINDOWTEXT);
+ BaseY := BaseY + DEPLOY_ROW_SPACING;
+ Check(Dlg.StepRestore, 'Restaurer (install des dependances)');
+ Check(Dlg.StepBuild, 'Compiler');
+ Check(Dlg.StepTest, 'Tester');
+ Check(Dlg.StepPublish, 'Publier (artefacts)');
+ Check(Dlg.StepDeploy, 'Deployer');
+End;
+
+{ --- Dessiner le champ de saisie de la commande de compilation --- }
+
+Procedure DrawDeployCmdField(Var Dlg: TDeployFileDialog);
+Var
+ FX, FY, FW: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ FY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  DEPLOY_TARGET_LIST_HEIGHT + DLG_PADDING +
+  DEPLOY_ROW_SPACING * (DEPLOY_STEP_COUNT + 1) + 6;
+ DrawText(FX, FY, 'Commande de compilation :', CLR_WINDOWTEXT);
+ FY := FY + 18;
+ DrawFilledRect(FX, FY - 2, FX + FW, FY + DLG_INPUT_HEIGHT, CLR_WINDOW);
+ DrawRect(FX, FY - 2, FX + FW, FY + DLG_INPUT_HEIGHT, CLR_BORDER);
+ DrawText(FX + 4, FY, Dlg.BuildCommand, CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner le dialogue Ajouter un fichier de deploiement --- }
+
+Procedure DrawDeployFileDialog(Var Dlg: TDeployFileDialog);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawDeployTargetList(Dlg);
+ DrawDeploySteps(Dlg);
+ DrawDeployCmdField(Dlg);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Test de clic sur la liste des cibles --- }
+
+Function DeployTargetHitTest(Var Dlg: TDeployFileDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, RH, I: Integer;
+Begin
+ DeployTargetHitTest := -1;
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ RH := DLG_LIST_ROW_HEIGHT;
+ If (MX >= LX) And (MX < LX + LW) And (MY >= LY) And
+  (MY < LY + DEPLOY_TARGET_LIST_HEIGHT) Then
+ Begin
+  I := (MY - LY) Div RH;
+  If (I >= 0) And (I < DEPLOY_TARGET_COUNT) Then
+   DeployTargetHitTest := I;
+ End;
+End;
+
+{ --- Test de clic sur une case a cocher d etape (0..4, -1 si aucune) --- }
+
+Function DeployStepHitTest(Var Dlg: TDeployFileDialog;
+ MX, MY: Integer): Integer;
+Var
+ FX, FW, BaseY, I: Integer;
+Begin
+ DeployStepHitTest := -1;
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  DEPLOY_TARGET_LIST_HEIGHT + DLG_PADDING + DEPLOY_ROW_SPACING;
+ For I := 0 To DEPLOY_STEP_COUNT - 1 Do
+ Begin
+  If (MX >= FX) And (MX < FX + FW) And (MY >= BaseY) And
+   (MY < BaseY + DEPLOY_ROW_SPACING) Then
+  Begin
+   DeployStepHitTest := I;
+   Exit;
+  End;
+  BaseY := BaseY + DEPLOY_ROW_SPACING;
+ End;
+End;
+
+{ --- Basculer l etape I (0..4) --- }
+
+Procedure ToggleDeployStep(Var Dlg: TDeployFileDialog; I: Integer);
+Begin
+ Case I Of
+  0: Dlg.StepRestore := Not Dlg.StepRestore;
+  1: Dlg.StepBuild := Not Dlg.StepBuild;
+  2: Dlg.StepTest := Not Dlg.StepTest;
+  3: Dlg.StepPublish := Not Dlg.StepPublish;
+  4: Dlg.StepDeploy := Not Dlg.StepDeploy;
+ End;
+End;
+
+{ --- Gestion des touches du dialogue Ajouter un fichier de deploiement --- }
+
+Procedure HandleDeployFileDialogKey(Var Dlg: TDeployFileDialog;
+ Key: Word; Ch: Char);
+Begin
+ If Key = $1B Then
+ Begin
+  Dlg.Confirmed := False;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $0D Then
+ Begin
+  Dlg.Confirmed := True;
+  Dlg.Base.Result := DR_OK;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = 72 Then Begin { Fleche haut }
+  If Ord(Dlg.Target) > 0 Then
+   Dlg.Target := TDeployTarget(Ord(Dlg.Target) - 1);
+  Exit;
+ End;
+ If Key = 80 Then Begin { Fleche bas }
+  If Ord(Dlg.Target) < DEPLOY_TARGET_COUNT - 1 Then
+   Dlg.Target := TDeployTarget(Ord(Dlg.Target) + 1);
+  Exit;
+ End;
+ If (Ch >= ' ') And (Length(Dlg.BuildCommand) < 127) Then
+ Begin
+  Dlg.BuildCommand := Dlg.BuildCommand + Ch;
+  Inc(Dlg.BuildCmdCursor);
+ End
+ Else If Key = $08 Then
+ Begin
+  If Length(Dlg.BuildCommand) > 0 Then
+  Begin
+   Delete(Dlg.BuildCommand, Length(Dlg.BuildCommand), 1);
+   Dec(Dlg.BuildCmdCursor);
+  End;
+ End;
+End;
+
+{ --- Gestion des evenements du dialogue Ajouter un fichier de deploiement --- }
+
+Procedure HandleDeployFileDialogEvent(Var Dlg: TDeployFileDialog;
+ Var Ev: TEvent);
+Var
+ Idx, StepIdx, BtnR: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.Kind Of
+  EV_KEY_DOWN, EV_KEY_CHAR:
+   HandleDeployFileDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
+  EV_MOUSE_DOWN:
+  Begin
+   Idx := DeployTargetHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If Idx >= 0 Then
+   Begin
+    Dlg.Target := TDeployTarget(Idx);
+    DrawDeployFileDialog(Dlg);
+    Exit;
+   End;
+   StepIdx := DeployStepHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If StepIdx >= 0 Then
+   Begin
+    ToggleDeployStep(Dlg, StepIdx);
+    DrawDeployFileDialog(Dlg);
+    Exit;
+   End;
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
+   If BtnR >= 0 Then
+   Begin
+    If BtnR = 0 Then Begin
+     Dlg.Confirmed := True;
+     Dlg.Base.Result := DR_OK;
+    End Else Begin
+     Dlg.Confirmed := False;
+     Dlg.Base.Result := DR_CANCEL;
+    End;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue Ajouter un fichier de deploiement --- }
+
+Procedure ShowDeployFileDialog(Var Dlg: TDeployFileDialog);
+Begin
+ InitDeployFileDialog(Dlg);
+ Dlg.Base.Visible := True;
+ DrawDeployFileDialog(Dlg);
+End;
+
 { --- Initialiser une entree de reference --- }
 
 Procedure InitRefListEntry(Var E: TRefListEntry);
@@ -246342,6 +246673,271 @@ Begin
   'Nouveau fichier cree : ' + FullPath, Ord(OTK_BUILD));
 End;
 
+{ ------------------------------------------------------------
+  "Ajouter un fichier de deploiement" (menu contextuel du noeud projet
+  dans l Explorateur de solutions, demande explicite de l utilisateur) :
+  genere azure-pipelines.yml / .github/workflows/deploy.yml / Procfile+
+  app.json / buildspec.yml selon la cible choisie dans DeployFileDlg,
+  d apres les etapes cochees (Restaurer/Compiler/Tester/Publier/
+  Deployer) et la commande de compilation fournie.
+  ------------------------------------------------------------ }
+
+{ --- Contenu Azure Pipelines (azure-pipelines.yml) --- }
+
+Procedure WriteDeployAzurePipelines(Var F: Text; Var Dlg: TDeployFileDialog);
+Begin
+ WriteLn(F, 'trigger:');
+ WriteLn(F, '- main');
+ WriteLn(F, '');
+ WriteLn(F, 'pool:');
+ WriteLn(F, '  vmImage: ''windows-latest''');
+ WriteLn(F, '');
+ WriteLn(F, 'steps:');
+ If Dlg.StepRestore Then Begin
+  WriteLn(F, '- script: echo Restauration des dependances');
+  WriteLn(F, '  displayName: ''Restaurer''');
+ End;
+ If Dlg.StepBuild Then Begin
+  WriteLn(F, '- script: ', Dlg.BuildCommand);
+  WriteLn(F, '  displayName: ''Compiler''');
+ End;
+ If Dlg.StepTest Then Begin
+  WriteLn(F, '- script: echo Executer les tests');
+  WriteLn(F, '  displayName: ''Tester''');
+ End;
+ If Dlg.StepPublish Then Begin
+  WriteLn(F, '- task: PublishBuildArtifacts@1');
+  WriteLn(F, '  displayName: ''Publier''');
+  WriteLn(F, '  inputs:');
+  WriteLn(F, '    pathToPublish: ''$(Build.ArtifactStagingDirectory)''');
+  WriteLn(F, '    artifactName: ''drop''');
+ End;
+ If Dlg.StepDeploy Then Begin
+  WriteLn(F, '- script: echo Deploiement');
+  WriteLn(F, '  displayName: ''Deployer''');
+ End;
+End;
+
+{ --- Contenu GitHub Actions (.github/workflows/deploy.yml) --- }
+
+Procedure WriteDeployGithubActions(Var F: Text; Var Dlg: TDeployFileDialog);
+Begin
+ WriteLn(F, 'name: CI/CD');
+ WriteLn(F, '');
+ WriteLn(F, 'on:');
+ WriteLn(F, '  push:');
+ WriteLn(F, '    branches: [ main ]');
+ WriteLn(F, '');
+ WriteLn(F, 'jobs:');
+ WriteLn(F, '  build:');
+ WriteLn(F, '    runs-on: windows-latest');
+ WriteLn(F, '    steps:');
+ WriteLn(F, '      - uses: actions/checkout@v4');
+ If Dlg.StepRestore Then Begin
+  WriteLn(F, '      - name: Restaurer');
+  WriteLn(F, '        run: echo Restauration des dependances');
+ End;
+ If Dlg.StepBuild Then Begin
+  WriteLn(F, '      - name: Compiler');
+  WriteLn(F, '        run: ', Dlg.BuildCommand);
+ End;
+ If Dlg.StepTest Then Begin
+  WriteLn(F, '      - name: Tester');
+  WriteLn(F, '        run: echo Executer les tests');
+ End;
+ If Dlg.StepPublish Then Begin
+  WriteLn(F, '      - name: Publier');
+  WriteLn(F, '        uses: actions/upload-artifact@v4');
+  WriteLn(F, '        with:');
+  WriteLn(F, '          name: build');
+  WriteLn(F, '          path: .');
+ End;
+ If Dlg.StepDeploy Then Begin
+  WriteLn(F, '      - name: Deployer');
+  WriteLn(F, '        run: echo Deploiement');
+ End;
+End;
+
+{ --- Contenu Heroku : Procfile --- }
+
+Procedure WriteDeployHerokuProcfile(Var F: Text; Var Dlg: TDeployFileDialog);
+Begin
+ WriteLn(F, '# Procfile Heroku - declare les types de processus de');
+ WriteLn(F, '# l''application. Adapter la commande "web" pour qu''elle');
+ WriteLn(F, '# lance reellement l''executable produit par la compilation.');
+ If Dlg.StepBuild Then
+  WriteLn(F, 'release: ', Dlg.BuildCommand);
+ WriteLn(F, 'web: ', Dlg.BuildCommand);
+End;
+
+{ --- Contenu Heroku : app.json --- }
+
+Procedure WriteDeployHerokuAppJson(Var F: Text; Var Dlg: TDeployFileDialog);
+Begin
+ WriteLn(F, '{');
+ WriteLn(F, '  "name": "MonProjet",');
+ WriteLn(F, '  "description": "Application deployee via Heroku",');
+ WriteLn(F, '  "scripts": {');
+ WriteLn(F, '    "postdeploy": "', Dlg.BuildCommand, '"');
+ WriteLn(F, '  },');
+ WriteLn(F, '  "env": {}');
+ WriteLn(F, '}');
+End;
+
+{ --- Contenu AWS CodeBuild (buildspec.yml) --- }
+
+Procedure WriteDeployAwsBuildspec(Var F: Text; Var Dlg: TDeployFileDialog);
+Begin
+ WriteLn(F, 'version: 0.2');
+ WriteLn(F, '');
+ WriteLn(F, 'phases:');
+ If Dlg.StepRestore Then Begin
+  WriteLn(F, '  install:');
+  WriteLn(F, '    commands:');
+  WriteLn(F, '      - echo Restauration des dependances');
+ End;
+ If Dlg.StepBuild Then Begin
+  WriteLn(F, '  build:');
+  WriteLn(F, '    commands:');
+  WriteLn(F, '      - ', Dlg.BuildCommand);
+ End;
+ If Dlg.StepTest Or Dlg.StepDeploy Then Begin
+  WriteLn(F, '  post_build:');
+  WriteLn(F, '    commands:');
+  If Dlg.StepTest Then
+   WriteLn(F, '      - echo Executer les tests');
+  If Dlg.StepDeploy Then
+   WriteLn(F, '      - echo Deploiement (configurer CodeDeploy/CodePipeline)');
+ End;
+ WriteLn(F, '');
+ If Dlg.StepPublish Then Begin
+  WriteLn(F, 'artifacts:');
+  WriteLn(F, '  files:');
+  WriteLn(F, '    - ''**/*''');
+ End;
+End;
+
+{ --- Enregistrer un fichier genere dans l Explorateur de solutions et le }
+{ projet courant (meme motif que la fin de HandleNewFileConfirmed). --- }
+
+Procedure RegisterDeployedFile(Const FN: String);
+Var
+ ProjIdx, I: Integer;
+Begin
+ If (SolExplorer.NodeCount = 0) Or
+    (SolExplorer.Nodes[0].Kind <> ENK_SOLUTION) Then Begin
+  ClearExplorer(SolExplorer);
+  AddExplorerNode(SolExplorer, 'Solution sans nom', ENK_SOLUTION, -1);
+  SolExplorer.Nodes[0].Expanded := True;
+  SolExplorer.Nodes[0].HasChildren := True;
+ End;
+ ProjIdx := -1;
+ For I := 0 To SolExplorer.NodeCount - 1 Do
+  If SolExplorer.Nodes[I].Kind = ENK_PROJECT Then Begin
+   ProjIdx := I;
+   Break;
+  End;
+ If ProjIdx < 0 Then ProjIdx := 0;
+ AddExplorerNode(SolExplorer, FN, NodeKindFromExtension(FN), ProjIdx);
+ SolExplorer.SelectedIdx := SolExplorer.NodeCount - 1;
+ SolExplorer.Nodes[SolExplorer.NodeCount - 1].Selected := True;
+ SolExplorer.NeedRepaint := True;
+ If SolutionLoaded Then AddFileToProject(CurrentProject, FN);
+End;
+
+{ --- Traiter la confirmation du dialogue de fichier de deploiement --- }
+
+Procedure HandleDeployFileConfirmed;
+Var
+ SolDir, ProjDir, FullPath, FullPath2, FN, FN2: String;
+ I, WIdx: Integer;
+ TmpF: Text;
+Begin
+ If EditorReady Then SyncActiveWindowOut;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(CurrentSolution.Projects[0].ProjectPath);
+ End Else Begin
+  SolDir := '';
+  ProjDir := '';
+ End;
+ FN := '';
+ FN2 := '';
+ Case DeployFileDlg.Target Of
+  DPT_AZURE_PIPELINES: FN := 'azure-pipelines.yml';
+  DPT_GITHUB_ACTIONS: Begin
+   FN := '.github\workflows\deploy.yml';
+   { MkDir ne cree qu un seul niveau de repertoire a la fois - il faut    }
+   { creer .github PUIS .github\workflows separement. }
+   {$I-} MkDir(SolDir + ProjDir + '.github'); {$I+} If IOResult <> 0 Then ;
+   {$I-} MkDir(SolDir + ProjDir + '.github\workflows'); {$I+}
+   If IOResult <> 0 Then ;
+  End;
+  DPT_HEROKU: Begin
+   FN := 'Procfile';
+   FN2 := 'app.json';
+  End;
+  DPT_AWS_CODEBUILD: FN := 'buildspec.yml';
+ End;
+ FullPath := SolDir + ProjDir + FN;
+ For I := 1 To Length(FullPath) Do
+  If FullPath[I] = '/' Then FullPath[I] := '\';
+ Assign(TmpF, FullPath);
+ {$I-} Rewrite(TmpF); {$I+}
+ If IOResult = 0 Then Begin
+  Case DeployFileDlg.Target Of
+   DPT_AZURE_PIPELINES: WriteDeployAzurePipelines(TmpF, DeployFileDlg);
+   DPT_GITHUB_ACTIONS: WriteDeployGithubActions(TmpF, DeployFileDlg);
+   DPT_HEROKU: WriteDeployHerokuProcfile(TmpF, DeployFileDlg);
+   DPT_AWS_CODEBUILD: WriteDeployAwsBuildspec(TmpF, DeployFileDlg);
+  End;
+  Close(TmpF);
+ End;
+ RegisterDeployedFile(FN);
+ AppendOutput(OutputPanel,
+  'Fichier de deploiement cree : ' + FullPath, Ord(OTK_BUILD));
+ If FN2 <> '' Then Begin
+  FullPath2 := SolDir + ProjDir + FN2;
+  For I := 1 To Length(FullPath2) Do
+   If FullPath2[I] = '/' Then FullPath2[I] := '\';
+  Assign(TmpF, FullPath2);
+  {$I-} Rewrite(TmpF); {$I+}
+  If IOResult = 0 Then Begin
+   WriteDeployHerokuAppJson(TmpF, DeployFileDlg);
+   Close(TmpF);
+  End;
+  RegisterDeployedFile(FN2);
+  AppendOutput(OutputPanel,
+   'Fichier de deploiement cree : ' + FullPath2, Ord(OTK_BUILD));
+ End;
+ If SolutionLoaded Then Begin
+  SolutionModified := True;
+  SaveCurrentSolution;
+ End;
+ { Ouvrir le premier fichier genere dans l editeur }
+ WIdx := FindEditorByFileName(FullPath);
+ If WIdx >= 0 Then
+  ActivateWindow(WIdx)
+ Else Begin
+  CreateEditorWindow(FullPath);
+  WIdx := WinMgr.ActiveIdx;
+  LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, FullPath);
+  ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
+  Opts.SourceFile := FullPath;
+  EditorReady := True;
+ End;
+ FullRepaintNeeded := True;
+End;
+
 { ============================================================
   BARRE DES TACHES WINDOWS 95 (/TASKBARWIN95)
   ------------------------------------------------------------
@@ -248296,6 +248892,8 @@ Begin
  { Dessiner le dialogue par-dessus si visible }
  If NewFileDlg.Base.Visible Then
   DrawNewFileDialog(NewFileDlg);
+ If DeployFileDlg.Base.Visible Then
+  DrawDeployFileDialog(DeployFileDlg);
  If NewProjDlg.Base.Visible Then
   DrawNewProjectDialog(NewProjDlg);
  If FileDlg.Base.Visible Then
@@ -252183,6 +252781,9 @@ Begin
      412: Begin { Ajouter une reference... }
       ShowAddReferenceDialog(AddRefDlg);
      End;
+     413: Begin { Ajouter un fichier de deploiement... }
+      ShowDeployFileDialog(DeployFileDlg);
+     End;
      320, 420, 520: Begin { Renommer }
       StartExplorerRename(SolExplorer, CtxMenu.NodeIdx);
       DrawExplorer(SolExplorer);
@@ -252576,6 +253177,19 @@ Begin
    FullRepaintNeeded := True;
   End;
   DrawNewFileDialog(NewFileDlg);
+  Exit;
+ End;
+ { "Ajouter un fichier de deploiement" du menu contextuel du noeud projet }
+ { de l Explorateur de solutions (demande explicite) - meme motif         }
+ { image-par-image que NewFileDlg juste au-dessus. }
+ If DeployFileDlg.Base.Visible Then Begin
+  HandleDeployFileDialogEvent(DeployFileDlg, Ev);
+  If Not DeployFileDlg.Base.Visible Then Begin
+   If DeployFileDlg.Confirmed Then
+    HandleDeployFileConfirmed;
+   FullRepaintNeeded := True;
+  End;
+  DrawDeployFileDialog(DeployFileDlg);
   Exit;
  End;
  If NewProjDlg.Base.Visible Then Begin
