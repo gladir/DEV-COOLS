@@ -123,6 +123,24 @@ Const
   MOD_LOCAL        = $80000;   { classe locale ou anonyme }
   MOD_ANON         = $100000;  { classe anonyme }
   MOD_NONSEALED    = $200000;
+  MOD_DEPRECATED   = $400000;  { membre ou classe obsolete (@Deprecated) }
+  MOD_REMOVAL      = $800000;  { obsolete et marque pour suppression }
+
+  { Categories d'avertissements (-Xlint) }
+  LINT_DEPRECATION = 1;
+  LINT_REMOVAL     = 2;
+  LINT_UNCHECKED   = 4;
+  LINT_RAWTYPES    = 8;
+  LINT_CAST        = 16;
+  LINT_DIVZERO     = 32;
+  LINT_EMPTY       = 64;
+  LINT_FALLTHROUGH = 128;
+  LINT_FINALLY     = 256;
+  LINT_STATIC      = 512;
+  LINT_SERIAL      = 1024;
+  LINT_OVERRIDES   = 2048;
+  LINT_ALL         = $FFFF;
+
 
   { Genres de jetons }
   TK_EOF     = 0;
@@ -276,6 +294,12 @@ Var
   OptTarget  : LongInt;    { version de classe (major) }
   OptDumpAst : Boolean;
   OptParseOnly : Boolean;
+  OptSource   : LongInt;    { niveau du langage (-source), 99 = pas de restriction }
+  OptEncoding : String;     { encodage des sources (-encoding) }
+  OptHeaderDir : String;    { repertoire des en-tetes JNI (-h) }
+  OptImplicitNone : Boolean; { -implicit:none : pas de .class pour les sources chargees implicitement }
+  OptWerror   : Boolean;    { -Werror }
+  OptLint     : LongInt;    { categories -Xlint actives (masque LINT_*) }
   OptGLines   : Boolean;    { LineNumberTable (defaut oui) }
   OptGSource  : Boolean;    { SourceFile (defaut oui) }
   OptGVars    : Boolean;    { LocalVariableTable / LocalVariableTypeTable (-g) }
@@ -299,6 +323,14 @@ Var
 { ============================================================================
   UTILITAIRES
   ============================================================================ }
+
+Function LowerStr(Const S : String) : String;
+Var I : LongInt; R : String;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do If (R[I] >= 'A') And (R[I] <= 'Z') Then R[I] := Chr(Ord(R[I]) + 32);
+  LowerStr := R;
+End;
 
 Function IStr(V : Int64) : String;
 Var S : String;
@@ -524,6 +556,38 @@ Begin
   PostDiag(Line, Msg, True, (OptMaxWarns <= 0) Or (WarnCount <= OptMaxWarns));
 End;
 
+{ Avertissements -Xlint : affiches si la categorie est active ; sinon, pour deprecation et unchecked,
+  on retient le fichier pour la note finale "utilise une API obsolete" }
+Var
+  DeprFiles, UncFiles : Array Of String;
+  NDeprFiles, NUncFiles : LongInt;
+  OptNoWarn : Boolean;
+
+Procedure NoteDeprFile(Const F : String);
+Var I : LongInt;
+Begin
+  For I := 0 To NDeprFiles - 1 Do If DeprFiles[I] = F Then Exit;
+  SetLength(DeprFiles, NDeprFiles + 1);
+  DeprFiles[NDeprFiles] := F;
+  Inc(NDeprFiles);
+End;
+
+Procedure NoteUncFile(Const F : String);
+Var I : LongInt;
+Begin
+  For I := 0 To NUncFiles - 1 Do If UncFiles[I] = F Then Exit;
+  SetLength(UncFiles, NUncFiles + 1);
+  UncFiles[NUncFiles] := F;
+  Inc(NUncFiles);
+End;
+
+Procedure LintWarn(Cat, Pos : LongInt; Const Tag, Msg : String);
+Begin
+  If (OptLint And Cat) <> 0 Then Warn(Pos, '[' + Tag + '] ' + Msg)
+  Else If Cat = LINT_DEPRECATION Then NoteDeprFile(CurFile)
+  Else If Cat = LINT_UNCHECKED Then NoteUncFile(CurFile);
+End;
+
 Procedure Fatal(Line : LongInt; Const Msg : String);
 Begin
   Err(Line, Msg);
@@ -712,7 +776,16 @@ Begin
     If KeywordTab[I] = S Then Begin IsKeyword := True; Exit; End;
 End;
 
+
 Var TokStartI : LongInt;
+
+{ Fonctionnalite de langage disponible a partir de la version Min ; sinon erreur selon -source }
+Procedure NeedFeature(Pos, Min : LongInt; Const Name : String);
+Begin
+  If OptSource < Min Then
+    Err(Pos, 'la fonctionnalite ' + Name + ' n''est pas prise en charge avec -source ' + IStr(OptSource) +
+        ' (disponible a partir de la version ' + IStr(Min) + ')');
+End;
 
 { Colonne (1-based, en octets) de l'indice I dans Src }
 Function ColOf(I : LongInt) : LongInt;
@@ -817,6 +890,7 @@ Var
   NL, K, J, Ind, MinInd, StartLine : LongInt;
   Done, Blank : Boolean;
 Begin
+  NeedFeature(MakePos(Line, ColOf(TokStartI)), 15, 'bloc de texte');
   StartLine := Line;
   { saute les blancs jusqu'a la fin de ligne }
   While (I <= SrcLen) And (Src[I] In [' ', #9, #13]) Do Inc(I);
@@ -1890,6 +1964,7 @@ Begin
       End;
       If S = 'switch' Then Begin
         N := NewNode(N_SWITCHEXPR, Line);
+        NeedFeature(Line, 14, 'expression switch');
         Inc(P);
         Expect('(');
         Nodes[N].A := ParseExpr;
@@ -2245,6 +2320,7 @@ Begin
       Q := SkipTypeAt(P);
       If (Q > 0) And (Toks[Q].Kind = TK_OP) And (Toks[Q].Str = '(') Then Begin
         { motif record : x instanceof Point(int a, int b) }
+        NeedFeature(CurLine, 21, 'motif de record');
         Nodes[N].C := ParsePattern;
         Nodes[N].Aux := 1;
         Nodes[N].B := Nodes[Nodes[N].C].A;
@@ -2252,6 +2328,7 @@ Begin
       Else Begin
         Nodes[N].B := ParseType;
         If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Begin
+          NeedFeature(CurLine, 16, 'motif de type avec instanceof');
           V := NewNode(N_VARDECL, CurLine);
           Nodes[V].S := ExpectIdent;
           Nodes[N].C := V;
@@ -2381,12 +2458,14 @@ End;
 
 Function ParseSwitchBody(IsExpr : Boolean) : LongInt;
 Var
-  Head, Tail, C, LH, LT, SH, ST, S, Y, Line : LongInt;
+  Head, Tail, C, LH, LT, SH, ST, S, Y, Line, PStart, PStart2 : LongInt;
   Arrow : Boolean;
 Begin
   Head := 0; Tail := 0;
   Expect('{');
   While Not IsOp('}') Do Begin
+    If Toks[TokIdx(0)].Kind = TK_EOF Then Begin ExpectedErr('''}'''); Break; End;
+    PStart := P;
     Line := CurLine;
     C := NewNode(N_CASE, Line);
     LH := 0; LT := 0;
@@ -2400,13 +2479,17 @@ Begin
         If IsKw('default') Then Begin
           Inc(P); Nodes[C].Aux := Nodes[C].Aux Or 1;
         End
-        Else If IsPatternStart Then AppendNode(LH, LT, ParsePattern)
+        Else If IsPatternStart Then Begin
+          NeedFeature(CurLine, 21, 'motifs dans un switch');
+          AppendNode(LH, LT, ParsePattern);
+        End
         Else Begin
           InCaseLabel := True;
           AppendNode(LH, LT, ParseTernary);
           InCaseLabel := False;
         End;
         If Not Accept(',') Then Break;
+        NeedFeature(CurLine, 14, 'plusieurs libelles dans un case');
       End;
     End;
     Nodes[C].A := LH;
@@ -2417,6 +2500,7 @@ Begin
       InCaseLabel := False;
     End;
     If IsOp('->') Then Begin
+      NeedFeature(CurLine, 14, 'case avec ->');
       Inc(P);
       Nodes[C].Aux := Nodes[C].Aux Or 2;
       If IsOp('{') Then Nodes[C].B := ParseBlock
@@ -2439,11 +2523,16 @@ Begin
     Else Begin
       Expect(':');
       SH := 0; ST := 0;
-      While Not (IsKw('case') Or IsKw('default') Or IsOp('}')) Do
+      While Not (IsKw('case') Or IsKw('default') Or IsOp('}')) Do Begin
+        If Toks[TokIdx(0)].Kind = TK_EOF Then Break;
+        PStart2 := P;
         AppendNode(SH, ST, ParseStatement);
+        If P = PStart2 Then Inc(P);
+      End;
       Nodes[C].B := SH;
     End;
     AppendNode(Head, Tail, C);
+    If P = PStart Then Inc(P);
   End;
   Expect('}');
   ParseSwitchBody := Head;
@@ -2520,6 +2609,7 @@ Var N, T : LongInt;
 Begin
   N := NewNode(N_LOCALVAR, CurLine);
   T := ParseType;
+  If (Nodes[T].S = 'var') And (Nodes[T].Aux = 0) And (Nodes[T].N = 0) Then NeedFeature(Nodes[N].Line, 10, 'var');
   Nodes[N].A := T;
   Nodes[N].Mods := Mods;
   Nodes[N].B := ParseDeclarators(T, Mods);
@@ -2903,9 +2993,11 @@ Begin
     End
     Else If IsIdentStr(0, 'sealed') And (IsKwAt(1, 'class') Or IsKwAt(1, 'interface') Or
             IsKwAt(1, 'abstract') Or IsKwAt(1, 'public') Or IsKwAt(1, 'static')) Then Begin
+      NeedFeature(CurLine, 17, 'classe scellee (sealed)');
       M := M Or MOD_SEALED; Inc(P);
     End
     Else If IsIdentStr(0, 'non') And IsOpAt(1, '-') And IsIdentStr(2, 'sealed') Then Begin
+      NeedFeature(CurLine, 17, 'non-sealed');
       M := M Or MOD_NONSEALED; Inc(P, 3);
     End
     Else Break;
@@ -3103,7 +3195,7 @@ Begin
   Else If IsKw('interface') Then Begin Kind := CLS_INTERFACE; Inc(P); End
   Else If IsKw('enum') Then Begin Kind := CLS_ENUM; Inc(P); End
   Else If IsOp('@') Then Begin Kind := CLS_ANNOTATION; Inc(P, 2); End
-  Else If IsIdentStr(0, 'record') Then Begin Kind := CLS_RECORD; Inc(P); End
+  Else If IsIdentStr(0, 'record') Then Begin Kind := CLS_RECORD; NeedFeature(CurLine, 16, 'record'); Inc(P); End
   Else Begin SyntaxFail('class, interface ou enum attendu'); Kind := 0; End;
   Nodes[N].Aux := Kind;
   Nodes[N].S := ExpectIdent;
@@ -3133,6 +3225,7 @@ Begin
   If IsIdentStr(0, 'permits') Then Begin
     Inc(P);
     Head := 0; Tail := 0;
+    NeedFeature(Nodes[N].Line, 17, 'permits');
     Repeat AppendNode(Head, Tail, ParseType) Until Not Accept(',');
     Nodes[N].Dflt := Head;       { classes permises (classe scellee) }
   End;
@@ -3282,7 +3375,7 @@ Const
   LibTab : Array[0..LIBN - 1] Of String = (
 'C|1|java/lang/Object|~O',
 'M|1|<init>|()V||',
-'M|4|finalize|()V||java/lang/Throwable',
+'M|12582916|finalize|()V||java/lang/Throwable',
 'M|1|equals|(~O)Z||',
 'M|1|toString|()~S||',
 'M|257|hashCode|()I||',
@@ -3307,8 +3400,8 @@ Const
 'M|1|<init>|(~S)V||',
 'M|1|<init>|()V||',
 'M|1|<init>|([BII~S)V||java/io/UnsupportedEncodingException',
-'M|1|<init>|([BI)V||',
-'M|1|<init>|([BIII)V||',
+'M|4194305|<init>|([BI)V||',
+'M|4194305|<init>|([BIII)V||',
 'M|1|<init>|([III)V||',
 'M|1|equals|(~O)Z||',
 'M|1|length|()I||',
@@ -3337,7 +3430,7 @@ Const
 'M|1|codePointCount|(II)I||',
 'M|1|offsetByCodePoints|(II)I||',
 'M|1|getBytes|()[B||',
-'M|1|getBytes|(II[BI)V||',
+'M|4194305|getBytes|(II[BI)V||',
 'M|1|getBytes|(~S)[B||java/io/UnsupportedEncodingException',
 'M|1|getBytes|(Ljava/nio/charset/Charset;)[B||',
 'M|1|contentEquals|(~1CharSequence;)Z||',
@@ -3788,7 +3881,7 @@ Const
 'F|25|out|~4PrintStream;||',
 'F|25|err|~4PrintStream;||',
 'M|9|exit|(I)V||',
-'M|9|runFinalization|()V||',
+'M|12582921|runFinalization|()V||',
 'M|9|getProperty|(~S)~S||',
 'M|9|getProperty|(~S~S)~S||',
 'M|265|identityHashCode|(~O)I||',
@@ -3796,11 +3889,11 @@ Const
 'M|265|nanoTime|()J||',
 'M|265|arraycopy|(~OI~OII)V||',
 'M|9|load|(~S)V||',
-'M|9|getSecurityManager|()~1SecurityManager;||',
+'M|12582921|getSecurityManager|()~1SecurityManager;||',
 'M|9|loadLibrary|(~S)V||',
 'M|9|console|()~4Console;||',
 'M|9|inheritedChannel|()Ljava/nio/channels/Channel;||java/io/IOException',
-'M|9|setSecurityManager|(~1SecurityManager;)V||',
+'M|12582921|setSecurityManager|(~1SecurityManager;)V||',
 'M|9|lineSeparator|()~S||',
 'M|9|setProperty|(~S~S)~S||',
 'M|9|getenv|(~S)~S||',
@@ -3821,8 +3914,8 @@ Const
 'F|25|TYPE|~1Class;|~1Class<~1Integer;>;|',
 'F|25|SIZE|I||I32',
 'F|25|BYTES|I||I4',
-'M|1|<init>|(~S)V||java/lang/NumberFormatException',
-'M|1|<init>|(I)V||',
+'M|12582913|<init>|(~S)V||java/lang/NumberFormatException',
+'M|12582913|<init>|(I)V||',
 'M|9|numberOfLeadingZeros|(I)I||',
 'M|9|numberOfTrailingZeros|(I)I||',
 'M|9|bitCount|(I)I||',
@@ -3882,8 +3975,8 @@ Const
 'F|25|TYPE|~1Class;|~1Class<~1Long;>;|',
 'F|25|SIZE|I||I64',
 'F|25|BYTES|I||I8',
-'M|1|<init>|(~S)V||java/lang/NumberFormatException',
-'M|1|<init>|(J)V||',
+'M|12582913|<init>|(~S)V||java/lang/NumberFormatException',
+'M|12582913|<init>|(J)V||',
 'M|9|numberOfLeadingZeros|(J)I||',
 'M|9|numberOfTrailingZeros|(J)I||',
 'M|9|bitCount|(J)I||',
@@ -3949,8 +4042,8 @@ Const
 'F|25|MIN_EXPONENT|I||I-1022',
 'F|25|BYTES|I||I8',
 'F|25|TYPE|~1Class;|~1Class<~1Double;>;|',
-'M|1|<init>|(D)V||',
-'M|1|<init>|(~S)V||java/lang/NumberFormatException',
+'M|12582913|<init>|(D)V||',
+'M|12582913|<init>|(~S)V||java/lang/NumberFormatException',
 'M|1|equals|(~O)Z||',
 'M|9|toString|(D)~S||',
 'M|1|toString|()~S||',
@@ -3994,9 +4087,9 @@ Const
 'F|25|MIN_EXPONENT|I||I-126',
 'F|25|BYTES|I||I4',
 'F|25|TYPE|~1Class;|~1Class<~1Float;>;|',
-'M|1|<init>|(~S)V||java/lang/NumberFormatException',
-'M|1|<init>|(D)V||',
-'M|1|<init>|(F)V||',
+'M|12582913|<init>|(~S)V||java/lang/NumberFormatException',
+'M|12582913|<init>|(D)V||',
+'M|12582913|<init>|(F)V||',
 'M|1|equals|(~O)Z||',
 'M|9|toString|(F)~S||',
 'M|1|toString|()~S||',
@@ -4035,8 +4128,8 @@ Const
 'F|25|TYPE|~1Class;|~1Class<~1Short;>;|',
 'F|25|SIZE|I||I16',
 'F|25|BYTES|I||I2',
-'M|1|<init>|(S)V||',
-'M|1|<init>|(~S)V||java/lang/NumberFormatException',
+'M|12582913|<init>|(S)V||',
+'M|12582913|<init>|(~S)V||java/lang/NumberFormatException',
 'M|1|equals|(~O)Z||',
 'M|1|toString|()~S||',
 'M|9|toString|(S)~S||',
@@ -4067,8 +4160,8 @@ Const
 'F|25|TYPE|~1Class;|~1Class<~1Byte;>;|',
 'F|25|SIZE|I||I8',
 'F|25|BYTES|I||I1',
-'M|1|<init>|(B)V||',
-'M|1|<init>|(~S)V||java/lang/NumberFormatException',
+'M|12582913|<init>|(B)V||',
+'M|12582913|<init>|(~S)V||java/lang/NumberFormatException',
 'M|1|equals|(~O)Z||',
 'M|1|toString|()~S||',
 'M|9|toString|(B)~S||',
@@ -4163,7 +4256,7 @@ Const
 'F|25|MAX_CODE_POINT|I||I1114111',
 'F|25|SIZE|I||I16',
 'F|25|BYTES|I||I2',
-'M|1|<init>|(C)V||',
+'M|12582913|<init>|(C)V||',
 'M|9|getName|(I)~S||',
 'M|9|isJavaIdentifierStart|(C)Z||',
 'M|9|isJavaIdentifierStart|(I)Z||',
@@ -4253,18 +4346,18 @@ Const
 'M|9|isMirrored|(I)Z||',
 'M|9|isSurrogatePair|(CC)Z||',
 'M|9|charCount|(I)I||',
-'M|9|isJavaLetter|(C)Z||',
-'M|9|isJavaLetterOrDigit|(C)Z||',
+'M|4194313|isJavaLetter|(C)Z||',
+'M|4194313|isJavaLetterOrDigit|(C)Z||',
 'M|9|isAlphabetic|(I)Z||',
-'M|9|isSpace|(C)Z||',
+'M|4194313|isSpace|(C)Z||',
 'M|9|forDigit|(II)C||',
 'M|9|codePointOf|(~S)I||',
 'C|17|java/lang/Boolean|~O~4Serializable;~1Comparable<~1Boolean;>;~1constant/Constable;',
 'F|25|TRUE|~1Boolean;||',
 'F|25|FALSE|~1Boolean;||',
 'F|25|TYPE|~1Class;|~1Class<~1Boolean;>;|',
-'M|1|<init>|(Z)V||',
-'M|1|<init>|(~S)V||',
+'M|12582913|<init>|(Z)V||',
+'M|12582913|<init>|(~S)V||',
 'M|1|equals|(~O)Z||',
 'M|1|toString|()~S||',
 'M|9|toString|(Z)~S||',
@@ -4294,7 +4387,7 @@ Const
 'C|1025|java/lang/Enum|<E:~1Enum<TE;>;>~O~1constant/Constable;~1Comparable<TE;>;~4Serializable;',
 'M|4|<init>|(~SI)V||',
 'M|17|name|()~S||',
-'M|20|finalize|()V||',
+'M|12582932|finalize|()V||',
 'M|17|equals|(~O)Z||',
 'M|1|toString|()~S||',
 'M|17|hashCode|()I||',
@@ -4337,7 +4430,7 @@ Const
 'M|17|join|(Ljava/time/Duration;)Z||java/lang/InterruptedException',
 'M|1|setContextClassLoader|(~1ClassLoader;)V||',
 'M|17|getThreadGroup|()~1ThreadGroup;||',
-'M|17|checkAccess|()V||',
+'M|12582929|checkAccess|()V||',
 'M|9|dumpStack|()V||',
 'M|17|setPriority|(I)V||',
 'M|17|setDaemon|(Z)V||',
@@ -4359,15 +4452,15 @@ Const
 'M|9|ofPlatform|()~1Thread$Builder$OfPlatform;||',
 'M|9|ofVirtual|()~1Thread$Builder$OfVirtual;||',
 'M|9|startVirtualThread|(~1Runnable;)~1Thread;||',
-'M|17|stop|()V||',
+'M|12582929|stop|()V||',
 'M|1|isInterrupted|()Z||',
-'M|17|suspend|()V||',
-'M|17|resume|()V||',
+'M|12582929|suspend|()V||',
+'M|12582929|resume|()V||',
 'M|49|setName|(~S)V||',
-'M|1|countStackFrames|()I||',
+'M|12582913|countStackFrames|()I||',
 'M|265|holdsLock|(~O)Z||',
 'M|9|getAllStackTraces|()~2Map;|()~2Map<~1Thread;[~1StackTraceElement;>;|',
-'M|1|getId|()J||',
+'M|4194305|getId|()J||',
 'M|1|getState|()~1Thread$State;||',
 'M|9|getDefaultUncaughtExceptionHandler|()~1Thread$UncaughtExceptionHandler;||',
 'M|1|setUncaughtExceptionHandler|(~1Thread$UncaughtExceptionHandler;)V||',
@@ -4565,7 +4658,7 @@ Const
 'M|1|isRecord|()Z||',
 'M|1|getTypeParameters|()[~1reflect/TypeVariable;|()[~1reflect/TypeVariable<~1Class<TT;>;>;|',
 'M|1|getClassLoader|()~1ClassLoader;||',
-'M|1|newInstance|()~O|()TT;|java/lang/InstantiationException,java/lang/IllegalAccessException',
+'M|4194305|newInstance|()~O|()TT;|java/lang/InstantiationException,java/lang/IllegalAccessException',
 'M|1|getInterfaces|()[~1Class;|()[~1Class<*>;|',
 'M|1|isMemberClass|()Z||',
 'M|1|isLocalClass|()Z||',
@@ -4638,7 +4731,7 @@ Const
 'M|1|getResourceAsStream|(~S)~4InputStream;||',
 'M|9|getSystemResource|(~S)Ljava/net/URL;||',
 'M|1|getResource|(~S)Ljava/net/URL;||',
-'M|4|getPackage|(~S)~1Package;||',
+'M|4194308|getPackage|(~S)~1Package;||',
 'M|20|setSigners|(~1Class;[~O)V|(~1Class<*>;[~O)V|',
 'M|4|getClassLoadingLock|(~S)~O||',
 'M|20|findLoadedClass|(~S)~1Class;|(~S)~1Class<*>;|',
@@ -4648,7 +4741,7 @@ Const
 'M|20|defineClass|(~S[BIILjava/security/ProtectionDomain;)~1Class;|(~S[BIILjava/security/ProtectionDomain;)~1Class<*>;|java/lang/ClassFormatError',
 'M|20|defineClass|(~S[BII)~1Class;|(~S[BII)~1Class<*>;|java/lang/ClassFormatError',
 'M|20|defineClass|(~SLjava/nio/ByteBuffer;Ljava/security/ProtectionDomain;)~1Class;|(~SLjava/nio/ByteBuffer;Ljava/security/ProtectionDomain;)~1Class<*>;|java/lang/ClassFormatError',
-'M|20|defineClass|([BII)~1Class;|([BII)~1Class<*>;|java/lang/ClassFormatError',
+'M|4194324|defineClass|([BII)~1Class;|([BII)~1Class<*>;|java/lang/ClassFormatError',
 'M|1|getResources|(~S)~2Enumeration;|(~S)~2Enumeration<Ljava/net/URL;>;|java/io/IOException',
 'M|4|findResources|(~S)~2Enumeration;|(~S)~2Enumeration<Ljava/net/URL;>;|java/io/IOException',
 'M|12|registerAsParallelCapable|()Z||',
@@ -4669,7 +4762,7 @@ Const
 'C|1|java/lang/Runtime|~O',
 'M|9|getRuntime|()~1Runtime;||',
 'M|1|exit|(I)V||',
-'M|1|runFinalization|()V||',
+'M|12582913|runFinalization|()V||',
 'M|9|version|()~1Runtime$Version;||',
 'M|1|load|(~S)V||',
 'M|1|loadLibrary|(~S)V||',
@@ -4678,9 +4771,9 @@ Const
 'M|257|freeMemory|()J||',
 'M|257|maxMemory|()J||',
 'M|1|exec|([~S)~1Process;||java/io/IOException',
-'M|1|exec|(~S[~S~4File;)~1Process;||java/io/IOException',
-'M|1|exec|(~S)~1Process;||java/io/IOException',
-'M|1|exec|(~S[~S)~1Process;||java/io/IOException',
+'M|4194305|exec|(~S[~S~4File;)~1Process;||java/io/IOException',
+'M|4194305|exec|(~S)~1Process;||java/io/IOException',
+'M|4194305|exec|(~S[~S)~1Process;||java/io/IOException',
 'M|1|exec|([~S[~S)~1Process;||java/io/IOException',
 'M|1|exec|([~S[~S~4File;)~1Process;||java/io/IOException',
 'M|1|halt|(I)V||',
@@ -5139,7 +5232,7 @@ Const
 'M|1|canRead|()Z||',
 'M|1|getPath|()~S||',
 'M|1|toURI|()Ljava/net/URI;||',
-'M|1|toURL|()Ljava/net/URL;||java/net/MalformedURLException',
+'M|4194305|toURL|()Ljava/net/URL;||java/net/MalformedURLException',
 'M|1|getAbsolutePath|()~S||',
 'M|1|exists|()Z||',
 'M|1|createNewFile|()Z||java/io/IOException',
@@ -5251,7 +5344,7 @@ Const
 'M|33|reset|()V||',
 'M|33|toString|(~S)~S||java/io/UnsupportedEncodingException',
 'M|33|toString|(Ljava/nio/charset/Charset;)~S||',
-'M|33|toString|(I)~S||',
+'M|4194337|toString|(I)~S||',
 'M|33|toString|()~S||',
 'M|33|write|([BII)V||',
 'M|33|write|(I)V||',
@@ -5281,7 +5374,7 @@ Const
 'M|1|<init>|(~4InputStream;)V||',
 'M|17|read|([B)I||java/io/IOException',
 'M|17|read|([BII)I||java/io/IOException',
-'M|17|readLine|()~S||java/io/IOException',
+'M|4194321|readLine|()~S||java/io/IOException',
 'M|17|readInt|()I||java/io/IOException',
 'M|17|readUTF|()~S||java/io/IOException',
 'M|25|readUTF|(~4DataInput;)~S||java/io/IOException',
@@ -5379,7 +5472,7 @@ Const
 'M|1|read|([BII)I||java/io/IOException',
 'M|1|read|()I||java/io/IOException',
 'M|1|readFields|()~4ObjectInputStream$GetField;||java/io/IOException,java/lang/ClassNotFoundException',
-'M|1|readLine|()~S||java/io/IOException',
+'M|4194305|readLine|()~S||java/io/IOException',
 'M|1|close|()V||java/io/IOException',
 'M|1|readInt|()I||java/io/IOException',
 'M|1|available|()I||java/io/IOException',
@@ -6732,41 +6825,41 @@ Const
 'M|1|getMostSignificantBits|()J||',
 'M|1|clockSequence|()I||',
 'C|1|java/util/Date|~O~4Serializable;~1Cloneable;~1Comparable<~2Date;>;',
-'M|1|<init>|(~S)V||',
-'M|1|<init>|(IIIIII)V||',
-'M|1|<init>|(IIIII)V||',
+'M|4194305|<init>|(~S)V||',
+'M|4194305|<init>|(IIIIII)V||',
+'M|4194305|<init>|(IIIII)V||',
 'M|1|<init>|()V||',
 'M|1|<init>|(J)V||',
-'M|1|<init>|(III)V||',
+'M|4194305|<init>|(III)V||',
 'M|1|equals|(~O)Z||',
 'M|1|toString|()~S||',
 'M|1|hashCode|()I||',
 'M|1|clone|()~O||',
 'M|1|compareTo|(~2Date;)I||',
 'M|9|from|(Ljava/time/Instant;)~2Date;||',
-'M|9|UTC|(IIIIII)J||',
-'M|9|parse|(~S)J||',
+'M|4194313|UTC|(IIIIII)J||',
+'M|4194313|parse|(~S)J||',
 'M|1|before|(~2Date;)Z||',
 'M|1|after|(~2Date;)Z||',
 'M|1|getTime|()J||',
 'M|1|toInstant|()Ljava/time/Instant;||',
-'M|1|getYear|()I||',
+'M|4194305|getYear|()I||',
 'M|1|setTime|(J)V||',
-'M|1|getSeconds|()I||',
-'M|1|getMonth|()I||',
-'M|1|setDate|(I)V||',
-'M|1|setMonth|(I)V||',
-'M|1|getHours|()I||',
-'M|1|setHours|(I)V||',
-'M|1|getMinutes|()I||',
-'M|1|setMinutes|(I)V||',
-'M|1|setSeconds|(I)V||',
-'M|1|setYear|(I)V||',
-'M|1|getDate|()I||',
-'M|1|getDay|()I||',
-'M|1|toLocaleString|()~S||',
-'M|1|toGMTString|()~S||',
-'M|1|getTimezoneOffset|()I||',
+'M|4194305|getSeconds|()I||',
+'M|4194305|getMonth|()I||',
+'M|4194305|setDate|(I)V||',
+'M|4194305|setMonth|(I)V||',
+'M|4194305|getHours|()I||',
+'M|4194305|setHours|(I)V||',
+'M|4194305|getMinutes|()I||',
+'M|4194305|setMinutes|(I)V||',
+'M|4194305|setSeconds|(I)V||',
+'M|4194305|setYear|(I)V||',
+'M|4194305|getDate|()I||',
+'M|4194305|getDay|()I||',
+'M|4194305|toLocaleString|()~S||',
+'M|4194305|toGMTString|()~S||',
+'M|4194305|getTimezoneOffset|()I||',
 'C|1025|java/util/Calendar|~O~4Serializable;~1Cloneable;~1Comparable<~2Calendar;>;',
 'F|25|ERA|I||I0',
 'F|25|YEAR|I||I1',
@@ -6940,9 +7033,9 @@ Const
 'F|25|TAIWAN|~2Locale;||',
 'F|25|PRIVATE_USE_EXTENSION|C||C120',
 'F|25|UNICODE_LOCALE_EXTENSION|C||C117',
-'M|1|<init>|(~S)V||',
-'M|1|<init>|(~S~S~S)V||',
-'M|1|<init>|(~S~S)V||',
+'M|4194305|<init>|(~S)V||',
+'M|4194305|<init>|(~S~S~S)V||',
+'M|4194305|<init>|(~S~S)V||',
 'M|1|equals|(~O)Z||',
 'M|17|toString|()~S||',
 'M|1|hashCode|()I||',
@@ -7227,7 +7320,7 @@ Const
 'M|1|containsValue|(~O)Z||',
 'M|1|getOrDefault|(~O~O)~O||',
 'M|33|computeIfPresent|(~O~3BiFunction;)~O|(~O~3BiFunction<-~O-~O*>;)~O|',
-'M|1|save|(~4OutputStream;~S)V||',
+'M|4194305|save|(~4OutputStream;~S)V||',
 'M|33|loadFromXML|(~4InputStream;)V||java/io/IOException,java/util/InvalidPropertiesFormatException',
 'M|1|propertyNames|()~2Enumeration;|()~2Enumeration<*>;|',
 'M|1|stringPropertyNames|()~2Set;|()~2Set<~S>;|',
@@ -7761,7 +7854,7 @@ Const
 'M|17|compareAndExchangeAcquire|(II)I||',
 'M|17|compareAndExchangeRelease|(II)I||',
 'M|17|weakCompareAndSetPlain|(II)Z||',
-'M|17|weakCompareAndSet|(II)Z||',
+'M|4194321|weakCompareAndSet|(II)Z||',
 'M|17|weakCompareAndSetAcquire|(II)Z||',
 'M|17|weakCompareAndSetRelease|(II)Z||',
 'M|17|getAndSet|(I)I||',
@@ -7798,7 +7891,7 @@ Const
 'M|17|compareAndExchangeAcquire|(JJ)J||',
 'M|17|compareAndExchangeRelease|(JJ)J||',
 'M|17|weakCompareAndSetPlain|(JJ)Z||',
-'M|17|weakCompareAndSet|(JJ)Z||',
+'M|4194321|weakCompareAndSet|(JJ)Z||',
 'M|17|weakCompareAndSetAcquire|(JJ)Z||',
 'M|17|weakCompareAndSetRelease|(JJ)Z||',
 'M|17|getAndSet|(J)J||',
@@ -7831,7 +7924,7 @@ Const
 'M|17|compareAndExchangeAcquire|(ZZ)Z||',
 'M|17|compareAndExchangeRelease|(ZZ)Z||',
 'M|1|weakCompareAndSetPlain|(ZZ)Z||',
-'M|1|weakCompareAndSet|(ZZ)Z||',
+'M|4194305|weakCompareAndSet|(ZZ)Z||',
 'M|17|weakCompareAndSetAcquire|(ZZ)Z||',
 'M|17|weakCompareAndSetRelease|(ZZ)Z||',
 'M|17|getAndSet|(Z)Z||',
@@ -7854,7 +7947,7 @@ Const
 'M|17|compareAndExchangeAcquire|(~O~O)~O|(TV;TV;)TV;|',
 'M|17|compareAndExchangeRelease|(~O~O)~O|(TV;TV;)TV;|',
 'M|17|weakCompareAndSetPlain|(~O~O)Z|(TV;TV;)Z|',
-'M|17|weakCompareAndSet|(~O~O)Z|(TV;TV;)Z|',
+'M|4194321|weakCompareAndSet|(~O~O)Z|(TV;TV;)Z|',
 'M|17|weakCompareAndSetAcquire|(~O~O)Z|(TV;TV;)Z|',
 'M|17|weakCompareAndSetRelease|(~O~O)Z|(TV;TV;)Z|',
 'M|17|getAndSet|(~O)~O|(TV;)TV;|',
@@ -7905,30 +7998,30 @@ Const
 'C|1537|java/util/concurrent/Executor|~O',
 'M|1025|execute|(~1Runnable;)V||',
 'C|1|java/util/concurrent/Executors|~O',
-'M|9|newScheduledThreadPool|(I~2concurrent/ThreadFactory;)~2concurrent/ScheduledExecutorService;||',
-'M|9|newScheduledThreadPool|(I)~2concurrent/ScheduledExecutorService;||',
-'M|9|callable|(~1Runnable;~O)~2concurrent/Callable;|<T:~O>(~1Runnable;TT;)~2concurrent/Callable<TT;>;|',
-'M|9|callable|(~1Runnable;)~2concurrent/Callable;|(~1Runnable;)~2concurrent/Callable<~O>;|',
-'M|9|callable|(Ljava/security/PrivilegedAction;)~2concurrent/Callable;|(Ljava/security/PrivilegedAction<*>;)~2concurrent/Callable<~O>;|',
-'M|9|callable|(Ljava/security/PrivilegedExceptionAction;)~2concurrent/Callable;|(Ljava/security/PrivilegedExceptionAction<*>;)~2concurrent/Callable<~O>;|',
 'M|9|defaultThreadFactory|()~2concurrent/ThreadFactory;||',
 'M|9|newSingleThreadExecutor|(~2concurrent/ThreadFactory;)~2concurrent/ExecutorService;||',
 'M|9|newSingleThreadExecutor|()~2concurrent/ExecutorService;||',
 'M|9|newThreadPerTaskExecutor|(~2concurrent/ThreadFactory;)~2concurrent/ExecutorService;||',
 'M|9|newFixedThreadPool|(I)~2concurrent/ExecutorService;||',
 'M|9|newFixedThreadPool|(I~2concurrent/ThreadFactory;)~2concurrent/ExecutorService;||',
-'M|9|newWorkStealingPool|()~2concurrent/ExecutorService;||',
 'M|9|newWorkStealingPool|(I)~2concurrent/ExecutorService;||',
-'M|9|newCachedThreadPool|(~2concurrent/ThreadFactory;)~2concurrent/ExecutorService;||',
+'M|9|newWorkStealingPool|()~2concurrent/ExecutorService;||',
 'M|9|newCachedThreadPool|()~2concurrent/ExecutorService;||',
+'M|9|newCachedThreadPool|(~2concurrent/ThreadFactory;)~2concurrent/ExecutorService;||',
 'M|9|newVirtualThreadPerTaskExecutor|()~2concurrent/ExecutorService;||',
-'M|9|newSingleThreadScheduledExecutor|(~2concurrent/ThreadFactory;)~2concurrent/ScheduledExecutorService;||',
 'M|9|newSingleThreadScheduledExecutor|()~2concurrent/ScheduledExecutorService;||',
+'M|9|newSingleThreadScheduledExecutor|(~2concurrent/ThreadFactory;)~2concurrent/ScheduledExecutorService;||',
 'M|9|unconfigurableExecutorService|(~2concurrent/ExecutorService;)~2concurrent/ExecutorService;||',
 'M|9|unconfigurableScheduledExecutorService|(~2concurrent/ScheduledExecutorService;)~2concurrent/ScheduledExecutorService;||',
-'M|9|privilegedThreadFactory|()~2concurrent/ThreadFactory;||',
-'M|9|privilegedCallable|(~2concurrent/Callable;)~2concurrent/Callable;|<T:~O>(~2concurrent/Callable<TT;>;)~2concurrent/Callable<TT;>;|',
-'M|9|privilegedCallableUsingCurrentClassLoader|(~2concurrent/Callable;)~2concurrent/Callable;|<T:~O>(~2concurrent/Callable<TT;>;)~2concurrent/Callable<TT;>;|',
+'M|12582921|privilegedThreadFactory|()~2concurrent/ThreadFactory;||',
+'M|12582921|privilegedCallable|(~2concurrent/Callable;)~2concurrent/Callable;|<T:~O>(~2concurrent/Callable<TT;>;)~2concurrent/Callable<TT;>;|',
+'M|12582921|privilegedCallableUsingCurrentClassLoader|(~2concurrent/Callable;)~2concurrent/Callable;|<T:~O>(~2concurrent/Callable<TT;>;)~2concurrent/Callable<TT;>;|',
+'M|9|newScheduledThreadPool|(I~2concurrent/ThreadFactory;)~2concurrent/ScheduledExecutorService;||',
+'M|9|newScheduledThreadPool|(I)~2concurrent/ScheduledExecutorService;||',
+'M|9|callable|(~1Runnable;~O)~2concurrent/Callable;|<T:~O>(~1Runnable;TT;)~2concurrent/Callable<TT;>;|',
+'M|9|callable|(Ljava/security/PrivilegedExceptionAction;)~2concurrent/Callable;|(Ljava/security/PrivilegedExceptionAction<*>;)~2concurrent/Callable<~O>;|',
+'M|9|callable|(Ljava/security/PrivilegedAction;)~2concurrent/Callable;|(Ljava/security/PrivilegedAction<*>;)~2concurrent/Callable<~O>;|',
+'M|9|callable|(~1Runnable;)~2concurrent/Callable;|(~1Runnable;)~2concurrent/Callable<~O>;|',
 'C|1537|java/util/concurrent/Callable|<V:~O>~O',
 'M|1025|call|()~O|()TV;|java/lang/Exception',
 'C|1537|java/util/concurrent/Future|<V:~O>~O',
@@ -8143,28 +8236,31 @@ Const
 'M|1|<init>|()V||',
 'M|1|<init>|(~S)V||',
 'C|1537|java/util/concurrent/BlockingQueue|<E:~O>~O~2Queue<TE;>;',
+'M|1025|remainingCapacity|()I||',
+'M|1025|drainTo|(~2Collection;I)I|(~2Collection<-TE;>;I)I|',
+'M|1025|drainTo|(~2Collection;)I|(~2Collection<-TE;>;)I|',
 'M|1025|remove|(~O)Z||',
 'M|1025|put|(~O)V|(TE;)V|java/lang/InterruptedException',
 'M|1025|add|(~O)Z|(TE;)Z|',
 'M|1025|contains|(~O)Z||',
 'M|1025|poll|(J~2concurrent/TimeUnit;)~O|(J~2concurrent/TimeUnit;)TE;|java/lang/InterruptedException',
-'M|1025|offer|(~O)Z|(TE;)Z|',
 'M|1025|offer|(~OJ~2concurrent/TimeUnit;)Z|(TE;J~2concurrent/TimeUnit;)Z|java/lang/InterruptedException',
+'M|1025|offer|(~O)Z|(TE;)Z|',
 'M|1025|take|()~O|()TE;|java/lang/InterruptedException',
-'M|1025|remainingCapacity|()I||',
-'M|1025|drainTo|(~2Collection;)I|(~2Collection<-TE;>;)I|',
-'M|1025|drainTo|(~2Collection;I)I|(~2Collection<-TE;>;I)I|',
 'C|1|java/util/concurrent/LinkedBlockingQueue|<E:~O>~2AbstractQueue<TE;>;~2concurrent/BlockingQueue<TE;>;~4Serializable;',
-'M|1|<init>|(I)V||',
 'M|1|<init>|()V||',
+'M|1|<init>|(I)V||',
 'M|1|<init>|(~2Collection;)V|(~2Collection<+TE;>;)V|',
+'M|1|remainingCapacity|()I||',
+'M|1|drainTo|(~2Collection;I)I|(~2Collection<-TE;>;I)I|',
+'M|1|drainTo|(~2Collection;)I|(~2Collection<-TE;>;)I|',
 'M|1|remove|(~O)Z||',
 'M|1|size|()I||',
 'M|1|put|(~O)V|(TE;)V|java/lang/InterruptedException',
 'M|1|toString|()~S||',
 'M|1|clear|()V||',
-'M|1|toArray|([~O)[~O|<T:~O>([TT;)[TT;|',
 'M|1|toArray|()[~O||',
+'M|1|toArray|([~O)[~O|<T:~O>([TT;)[TT;|',
 'M|1|iterator|()~2Iterator;|()~2Iterator<TE;>;|',
 'M|1|contains|(~O)Z||',
 'M|1|spliterator|()~2Spliterator;|()~2Spliterator<TE;>;|',
@@ -8178,9 +8274,6 @@ Const
 'M|1|offer|(~OJ~2concurrent/TimeUnit;)Z|(TE;J~2concurrent/TimeUnit;)Z|java/lang/InterruptedException',
 'M|1|offer|(~O)Z|(TE;)Z|',
 'M|1|take|()~O|()TE;|java/lang/InterruptedException',
-'M|1|remainingCapacity|()I||',
-'M|1|drainTo|(~2Collection;I)I|(~2Collection<-TE;>;I)I|',
-'M|1|drainTo|(~2Collection;)I|(~2Collection<-TE;>;)I|',
 'C|1|java/util/concurrent/ConcurrentLinkedQueue|<E:~O>~2AbstractQueue<TE;>;~2Queue<TE;>;~4Serializable;',
 'M|1|<init>|()V||',
 'M|1|<init>|(~2Collection;)V|(~2Collection<+TE;>;)V|',
@@ -8190,8 +8283,8 @@ Const
 'M|1|clear|()V||',
 'M|1|isEmpty|()Z||',
 'M|1|add|(~O)Z|(TE;)Z|',
-'M|1|toArray|([~O)[~O|<T:~O>([TT;)[TT;|',
 'M|1|toArray|()[~O||',
+'M|1|toArray|([~O)[~O|<T:~O>([TT;)[TT;|',
 'M|1|iterator|()~2Iterator;|()~2Iterator<TE;>;|',
 'M|1|contains|(~O)Z||',
 'M|1|spliterator|()~2Spliterator;|()~2Spliterator<TE;>;|',
@@ -8293,14 +8386,14 @@ Const
 'F|25|ONE|Ljava/math/BigDecimal;||',
 'F|25|TWO|Ljava/math/BigDecimal;||',
 'F|25|TEN|Ljava/math/BigDecimal;||',
-'F|25|ROUND_UP|I||I0',
-'F|25|ROUND_DOWN|I||I1',
-'F|25|ROUND_CEILING|I||I2',
-'F|25|ROUND_FLOOR|I||I3',
-'F|25|ROUND_HALF_UP|I||I4',
-'F|25|ROUND_HALF_DOWN|I||I5',
-'F|25|ROUND_HALF_EVEN|I||I6',
-'F|25|ROUND_UNNECESSARY|I||I7',
+'F|4194329|ROUND_UP|I||I0',
+'F|4194329|ROUND_DOWN|I||I1',
+'F|4194329|ROUND_CEILING|I||I2',
+'F|4194329|ROUND_FLOOR|I||I3',
+'F|4194329|ROUND_HALF_UP|I||I4',
+'F|4194329|ROUND_HALF_DOWN|I||I5',
+'F|4194329|ROUND_HALF_EVEN|I||I6',
+'F|4194329|ROUND_UNNECESSARY|I||I7',
 'M|1|<init>|(Ljava/math/BigInteger;I)V||',
 'M|1|<init>|(Ljava/math/BigInteger;Ljava/math/MathContext;)V||',
 'M|1|<init>|(Ljava/math/BigInteger;)V||',
@@ -8351,9 +8444,9 @@ Const
 'M|1|negate|(Ljava/math/MathContext;)Ljava/math/BigDecimal;||',
 'M|1|toBigInteger|()Ljava/math/BigInteger;||',
 'M|1|divide|(Ljava/math/BigDecimal;Ljava/math/MathContext;)Ljava/math/BigDecimal;||',
-'M|1|divide|(Ljava/math/BigDecimal;II)Ljava/math/BigDecimal;||',
+'M|4194305|divide|(Ljava/math/BigDecimal;II)Ljava/math/BigDecimal;||',
 'M|1|divide|(Ljava/math/BigDecimal;ILjava/math/RoundingMode;)Ljava/math/BigDecimal;||',
-'M|1|divide|(Ljava/math/BigDecimal;I)Ljava/math/BigDecimal;||',
+'M|4194305|divide|(Ljava/math/BigDecimal;I)Ljava/math/BigDecimal;||',
 'M|1|divide|(Ljava/math/BigDecimal;)Ljava/math/BigDecimal;||',
 'M|1|divide|(Ljava/math/BigDecimal;Ljava/math/RoundingMode;)Ljava/math/BigDecimal;||',
 'M|1|divideAndRemainder|(Ljava/math/BigDecimal;Ljava/math/MathContext;)[Ljava/math/BigDecimal;||',
@@ -8372,7 +8465,7 @@ Const
 'M|1|precision|()I||',
 'M|1|unscaledValue|()Ljava/math/BigInteger;||',
 'M|1|setScale|(ILjava/math/RoundingMode;)Ljava/math/BigDecimal;||',
-'M|1|setScale|(II)Ljava/math/BigDecimal;||',
+'M|4194305|setScale|(II)Ljava/math/BigDecimal;||',
 'M|1|setScale|(I)Ljava/math/BigDecimal;||',
 'M|1|stripTrailingZeros|()Ljava/math/BigDecimal;||',
 'M|1|movePointLeft|(I)Ljava/math/BigDecimal;||',
@@ -9318,7 +9411,7 @@ Const
 'M|1|getAnnotatedReceiverType|()~1reflect/AnnotatedType;||',
 'M|1|getAnnotatedExceptionTypes|()[~1reflect/AnnotatedType;||',
 'C|1|java/lang/reflect/AccessibleObject|~O~1reflect/AnnotatedElement;',
-'M|4|<init>|()V||',
+'M|4194308|<init>|()V||',
 'M|1|isAnnotationPresent|(~1Class;)Z|(~1Class<+~1annotation/Annotation;>;)Z|',
 'M|1|getAnnotation|(~1Class;)~1annotation/Annotation;|<T::~1annotation/Annotation;>(~1Class<TT;>;)TT;|',
 'M|1|getAnnotationsByType|(~1Class;)[~1annotation/Annotation;|<T::~1annotation/Annotation;>(~1Class<TT;>;)[TT;|',
@@ -9330,7 +9423,7 @@ Const
 'M|1|setAccessible|(Z)V||',
 'M|17|trySetAccessible|()Z||',
 'M|17|canAccess|(~O)Z||',
-'M|1|isAccessible|()Z||',
+'M|4194305|isAccessible|()Z||',
 'C|1537|java/lang/reflect/Member|~O',
 'F|25|PUBLIC|I||I0',
 'F|25|DECLARED|I||I1',
@@ -9704,6 +9797,8 @@ Type
     Pkg, FileName : String;
     Imports       : LongInt;
     Root          : LongInt;
+    Explicit      : Boolean;      { donne sur la ligne de commande (sinon charge implicitement) }
+    ModName       : String;       { module (mode --module-source-path), sinon vide }
   End;
 
 Var
@@ -9879,6 +9974,35 @@ End;
 Function ExtFind(Const Name : String; UseJdk : Boolean) : Boolean; Forward;
 Procedure LoadExtClass(C : LongInt); Forward;
 
+Var
+  SrcPathDirs     : Array Of String;       { repertoires de sources (-sourcepath) }
+  NSrcDirs    : LongInt;
+  LoadingExplicit : Boolean;
+  LoadingModule   : String;           { module du fichier en cours de chargement (--module-source-path) }
+
+Procedure LoadSourceFile(Const Fn : String); Forward;
+
+{ Cherche la classe Name (nom interne) dans les repertoires de sources ; charge le fichier si trouve }
+Function TrySourcePath(Const Name : String) : LongInt;
+Var D, K : LongInt; Base, Fn : String;
+Begin
+  TrySourcePath := -1;
+  If NSrcDirs = 0 Then Exit;
+  If MapFind(ExtMemo, '@sp:' + Name) >= 0 Then Exit;
+  MapPut(ExtMemo, '@sp:' + Name, 1);
+  Base := Name;
+  K := Pos('$', Base);
+  If K > 0 Then Base := Copy(Base, 1, K - 1);
+  For D := 0 To NSrcDirs - 1 Do Begin
+    Fn := SrcPathDirs[D] + Base + '.java';
+    If FileExists(Fn) And (MapFind(ClassMap, '@src:' + Fn) < 0) Then Begin
+      LoadSourceFile(Fn);
+      TrySourcePath := MapFind(ClassMap, Name);
+      Exit;
+    End;
+  End;
+End;
+
 { Cherche une classe par nom interne ; cree une entree si elle figure dans la
   table de la bibliotheque. Retourne -1 si inconnue. }
 Function LookupClass(Const Name : String) : LongInt;
@@ -9901,7 +10025,7 @@ Begin
       Classes[I].Loaded := 0;
       LookupClass := I;
     End
-    Else LookupClass := -1;
+    Else LookupClass := TrySourcePath(Name);
     Exit;
   End;
   I := NewClass(Name);
@@ -10379,6 +10503,7 @@ Begin
       If Sig = '' Then Sig := Desc;
       M := NewMeth(C, BarField(Line, 2), Fl And $FFFF);
       If (Fl And MOD_DEFAULT) <> 0 Then Meths[M].Flags := Meths[M].Flags Or MOD_DEFAULT;
+      Meths[M].Flags := Meths[M].Flags Or (Fl And (MOD_DEPRECATED Or MOD_REMOVAL));
       Meths[M].Desc := Desc;
       Meths[M].Varargs := (Fl And ACC_VARARGS) <> 0;
       Meths[M].Flags := Meths[M].Flags And Not ACC_VARARGS;
@@ -10996,7 +11121,7 @@ Var
   CpTag : Array Of Byte; CpA : Array Of LongInt; CpPos : Array Of LongInt; CpStr : Array Of String;
   Sig, Desc, Nm, ClsSig, AName : String; BaseTop, BaseM, N, T, MemStart, ExcPos, ExcN, Cvi, Q, J, Np : LongInt;
   Tp : Array[0..15] Of LongInt; Ifs : Array Of LongInt; NI : LongInt; ClassFl : LongInt;
-  Bits : TDblBits;
+  Bits : TDblBits; DepF : LongInt;
   Function CName(Idx : LongInt) : String;
   Begin
     If (Idx <= 0) Or (Idx >= Cnt) Then CName := '' Else CName := CpStr[CpA[Idx]];
@@ -11004,6 +11129,49 @@ Var
   Function UName(Idx : LongInt) : String;
   Begin
     If (Idx <= 0) Or (Idx >= Cnt) Then UName := '' Else UName := CpStr[Idx];
+  End;
+  Procedure SkipAnn(Var Qp : LongInt); Forward;
+  Procedure SkipEV(Var Qp : LongInt);
+  Var Tg, Nn, Ii : LongInt;
+  Begin
+    Tg := RdU1(B, Qp); Inc(Qp);
+    Case Chr(Tg) Of
+      'e' : Inc(Qp, 4);
+      '@' : SkipAnn(Qp);
+      '[' : Begin Nn := RdU2(B, Qp); Inc(Qp, 2); For Ii := 1 To Nn Do SkipEV(Qp); End;
+    Else
+      Inc(Qp, 2);
+    End;
+  End;
+  Procedure SkipAnn(Var Qp : LongInt);
+  Var Np, Ii : LongInt;
+  Begin
+    Np := RdU2(B, Qp + 2); Inc(Qp, 4);
+    For Ii := 1 To Np Do Begin Inc(Qp, 2); SkipEV(Qp); End;
+  End;
+  { drapeaux d'obsolescence d'une liste RuntimeVisibleAnnotations commencant en Ap }
+  Function DeprFlags(Ap : LongInt) : LongInt;
+  Var Na, Ii, Np, Jj, Cv : LongInt; Tn, Pn : String;
+  Begin
+    DeprFlags := 0;
+    Na := RdU2(B, Ap); Inc(Ap, 2);
+    For Ii := 1 To Na Do Begin
+      Tn := UName(RdU2(B, Ap));
+      If Tn = 'Ljava/lang/Deprecated;' Then Begin
+        DeprFlags := MOD_DEPRECATED;
+        Np := RdU2(B, Ap + 2);
+        Cv := Ap + 4;
+        For Jj := 1 To Np Do Begin
+          Pn := UName(RdU2(B, Cv));
+          If (Pn = 'forRemoval') And (RdU1(B, Cv + 2) = Ord('Z')) Then
+            If RdU4(B, CpPos[RdU2(B, Cv + 3)]) <> 0 Then DeprFlags := MOD_DEPRECATED Or MOD_REMOVAL;
+          Inc(Cv, 2);
+          SkipEV(Cv);
+        End;
+        Exit;
+      End;
+      SkipAnn(Ap);
+    End;
   End;
 Begin
   Classes[C].Loaded := 2;
@@ -11066,6 +11234,7 @@ Begin
       Classes[C].PermitsState := 2;
       ClassFl := ClassFl Or MOD_SEALED;
     End
+    Else If AName = 'RuntimeVisibleAnnotations' Then ClassFl := ClassFl Or DeprFlags(AP)
     Else If AName = 'InnerClasses' Then Begin
       K := RdU2(B, AP);
       For J := 0 To K - 1 Do
@@ -11119,20 +11288,21 @@ Begin
       NA := RdU2(B, Q + 6);
       Inc(Q, 8);
       Sig := Desc;
-      Cvi := 0; ExcN := 0; ExcPos := 0;
+      Cvi := 0; ExcN := 0; ExcPos := 0; DepF := 0;
       While NA > 0 Do Begin
         AName := UName(RdU2(B, Q));
         AL := RdU4(B, Q + 2);
         If AName = 'Signature' Then Sig := UName(RdU2(B, Q + 6))
         Else If AName = 'ConstantValue' Then Cvi := RdU2(B, Q + 6)
-        Else If AName = 'Exceptions' Then Begin ExcN := RdU2(B, Q + 6); ExcPos := Q + 8; End;
+        Else If AName = 'Exceptions' Then Begin ExcN := RdU2(B, Q + 6); ExcPos := Q + 8; End
+        Else If AName = 'RuntimeVisibleAnnotations' Then DepF := DepF Or DeprFlags(Q + 6);
         Inc(Q, 6 + AL);
         Dec(NA);
       End;
       If ((Fl And ACC_PRIVATE) <> 0) Or ((Fl And ACC_SYNTHETIC) <> 0) Then Continue;
       If I = 1 Then Begin
         T := 1;
-        F := NewField(C, Nm, Fl And $FFFF, ParseSigType(Sig, T));
+        F := NewField(C, Nm, (Fl And $FFFF) Or DepF, ParseSigType(Sig, T));
         If (Cvi > 0) And ((Fl And (ACC_STATIC Or ACC_FINAL)) = (ACC_STATIC Or ACC_FINAL)) Then
           Case CpTag[Cvi] Of
             3 : Begin Fields[F].CK := CK_INT; Fields[F].CI := LongInt(RdU4(B, CpPos[Cvi])); End;
@@ -11147,7 +11317,7 @@ Begin
       End
       Else Begin
         If Nm = '<clinit>' Then Continue;
-        M := NewMeth(C, Nm, (Fl And $FFFF) And Not ACC_BRIDGE);
+        M := NewMeth(C, Nm, ((Fl And $FFFF) And Not ACC_BRIDGE) Or DepF);
         If ((Acc And ACC_INTERFACE) <> 0) And ((Fl And (ACC_ABSTRACT Or ACC_STATIC Or ACC_PRIVATE)) = 0) Then
           Meths[M].Flags := Meths[M].Flags Or MOD_DEFAULT;
         Meths[M].Desc := Desc;
@@ -11417,7 +11587,6 @@ Begin
   End;
 End;
 
-Procedure LoadSourceFile(Const Fn : String); Forward;
 
 { Cherche une classe d'apres un nom simple, en dehors des portees locales }
 Function LookupTypeInCU(Const Name : String) : LongInt;
@@ -11555,6 +11724,33 @@ Begin
   Else PrimByName := TY_NONE;
 End;
 
+{ Indicateurs d'obsolescence d'apres les annotations syntaxiques d'une declaration }
+Function DeprBitsOf(Ann : LongInt) : LongInt;
+Var A, G, K : LongInt; Nm : String; R : LongInt;
+Begin
+  R := 0;
+  A := Ann;
+  While A <> 0 Do Begin
+    Nm := Nodes[A].S;
+    K := LastPos('.', Nm);
+    Nm := Copy(Nm, K + 1, Length(Nm));
+    If Nm = 'Deprecated' Then Begin
+      R := R Or MOD_DEPRECATED;
+      G := Nodes[A].A;
+      While G <> 0 Do Begin
+        If (Nodes[G].S = 'forRemoval') And (Nodes[Nodes[G].A].Kind = N_LIT) And (Nodes[Nodes[G].A].Aux = LIT_BOOL) And
+           (Nodes[Nodes[G].A].CI <> 0) Then R := R Or MOD_REMOVAL;
+        G := Nodes[G].Next;
+      End;
+    End;
+    A := Nodes[A].Next;
+  End;
+  DeprBitsOf := R;
+End;
+
+Procedure LintClassUse(C, Pos : LongInt); Forward;
+Procedure LintRawType(N, T : LongInt); Forward;
+
 Function ClassAccessible(C : LongInt) : Boolean; Forward;
 
 Function ResolveType(N : LongInt) : LongInt;
@@ -11597,6 +11793,11 @@ Begin
   For I := 1 To Nodes[N].N Do
     If T <> TY_NONE Then T := ArrayT(T);
   If Nodes[N].Kind = N_TYPE Then Nodes[N].Typ := T;      { memorise pour l'attribut Signature }
+  If (Nodes[N].Aux = 0) And (Nodes[N].Att = 0) And IsClassT(T) And (Nodes[N].Kind = N_TYPE) Then Begin
+    Nodes[N].Att := 1;
+    LintClassUse(Types[T].Cls, Nodes[N].Line);
+    LintRawType(N, T);
+  End;
   ResolveType := T;
 End;
 
@@ -11660,7 +11861,7 @@ Begin
   If (Kind <> CLS_CLASS) And (Outer >= 0) Then Fl := Fl Or ACC_STATIC;     { imbriquee implicitement statique }
   If (Outer >= 0) And ((Classes[Outer].Flags And ACC_INTERFACE) <> 0) And Not IsLocal Then
     Fl := Fl Or ACC_STATIC Or ACC_PUBLIC;
-  Fl := Fl Or (Nodes[Decl].Mods And (MOD_SEALED Or MOD_NONSEALED));
+  Fl := Fl Or (Nodes[Decl].Mods And (MOD_SEALED Or MOD_NONSEALED)) Or DeprBitsOf(Nodes[Decl].Ann);
   If (Nodes[Decl].Mods And MOD_ANON) <> 0 Then Fl := Fl Or MOD_ANON Or MOD_LOCAL;
   If IsLocal Then Fl := Fl Or MOD_LOCAL;
   Classes[C].Flags := Fl;
@@ -11853,7 +12054,7 @@ Begin
     If (Fl And ACC_PRIVATE) = 0 Then Fl := Fl Or ACC_PUBLIC;
     If (Nodes[Decl].C = 0) And ((Fl And (ACC_STATIC Or MOD_DEFAULT Or ACC_PRIVATE)) = 0) Then Fl := Fl Or ACC_ABSTRACT;
   End;
-  M := NewMeth(C, Nodes[Decl].S, Fl);
+  M := NewMeth(C, Nodes[Decl].S, Fl Or DeprBitsOf(Nodes[Decl].Ann));
   Meths[M].Decl := Decl;
   Nodes[Decl].Sym := M;
   Base := NScope;
@@ -11909,7 +12110,7 @@ Begin
   While V <> 0 Do Begin
     T := Tn;
     For I := 1 To Nodes[V].N Do If T <> TY_NONE Then T := ArrayT(T);
-    F := NewField(C, Nodes[V].S, Fl, T);
+    F := NewField(C, Nodes[V].S, Fl Or DeprBitsOf(Nodes[Decl].Ann), T);
     Fields[F].Decl := V;
     Fields[F].ConstInit := Nodes[V].A;
     If (Fl And ACC_FINAL) <> 0 Then Fields[F].ConstState := 0 Else Fields[F].ConstState := 2;
@@ -12716,6 +12917,174 @@ Begin
 End;
 
 { ============================================================================
+  Avertissements -Xlint : obsolescence, types bruts, conversions non controlees, ...
+  ============================================================================ }
+
+Var
+  RawOK : Boolean;       { vrai : les types bruts sont permis ici (instanceof, litteraux de classe) }
+
+{ Un avertissement de la cle donnee est-il supprime par @SuppressWarnings (ou @Deprecated) du contexte ? }
+Function AnnSuppresses(Ann : LongInt; Const Key : String; IncludeDeprecated : Boolean) : Boolean;
+Var A, G, V : LongInt; Nm : String;
+
+  Function HasKey(N : LongInt) : Boolean;
+  Var X : LongInt;
+  Begin
+    HasKey := False;
+    If N = 0 Then Exit;
+    If Nodes[N].Kind = N_ARRAYINIT Then Begin
+      X := Nodes[N].A;
+      While X <> 0 Do Begin If HasKey(X) Then Begin HasKey := True; Exit; End; X := Nodes[X].Next; End;
+    End
+    Else If (Nodes[N].CK = CK_STR) And ((Nodes[N].CS = Key) Or (Nodes[N].CS = 'all')) Then HasKey := True
+    Else If (Nodes[N].Kind = N_LIT) And (Nodes[N].Aux = LIT_STRING) And ((Nodes[N].CS = Key) Or (Nodes[N].CS = 'all')) Then HasKey := True;
+  End;
+
+Begin
+  AnnSuppresses := False;
+  A := Ann;
+  While A <> 0 Do Begin
+    Nm := Nodes[A].S;
+    Nm := Copy(Nm, LastPos('.', Nm) + 1, Length(Nm));
+    If IncludeDeprecated And (Nm = 'Deprecated') Then Begin AnnSuppresses := True; Exit; End;
+    If Nm = 'SuppressWarnings' Then Begin
+      G := Nodes[A].A;
+      While G <> 0 Do Begin
+        V := Nodes[G].A;
+        If HasKey(V) Then Begin AnnSuppresses := True; Exit; End;
+        G := Nodes[G].Next;
+      End;
+    End;
+    A := Nodes[A].Next;
+  End;
+End;
+
+{ Le contexte courant (methode, classes englobantes) supprime-t-il les avertissements Key ? }
+Function SuppressedWarn(Const Key : String; IncludeDeprecated : Boolean) : Boolean;
+Var K : LongInt;
+Begin
+  SuppressedWarn := True;
+  If (CurMeth >= 0) And (Meths[CurMeth].Decl > 0) Then
+    If AnnSuppresses(Nodes[Meths[CurMeth].Decl].Ann, Key, IncludeDeprecated) Then Exit;
+  K := CurClass;
+  While K >= 0 Do Begin
+    If Classes[K].IsSrc And (Classes[K].Decl > 0) Then
+      If AnnSuppresses(Nodes[Classes[K].Decl].Ann, Key, IncludeDeprecated) Then Exit;
+    K := Classes[K].Outer;
+  End;
+  SuppressedWarn := False;
+End;
+
+{ "nom(types) dans Classe" }
+Function MethodDescStr(M : LongInt) : String;
+Var I : LongInt; S : String;
+Begin
+  If Meths[M].Name = '<init>' Then S := Classes[Meths[M].Owner].Simple Else S := Meths[M].Name;
+  S := S + '(';
+  For I := 0 To Meths[M].NPar - 1 Do Begin
+    If I > 0 Then S := S + ',';
+    S := S + TypeStr(Meths[M].Par[I]);
+  End;
+  MethodDescStr := S + ')';
+End;
+
+Procedure LintDeprecatedUse(Flags, Owner, Pos : LongInt; Const What : String);
+Begin
+  If (Flags And MOD_DEPRECATED) = 0 Then Exit;
+  If CurClass < 0 Then Exit;
+  If (Owner >= 0) And Classes[Owner].IsSrc And (Classes[Owner].TopClass = Classes[CurClass].TopClass) Then Exit;
+  If (Flags And MOD_REMOVAL) <> 0 Then Begin
+    If SuppressedWarn('removal', False) Then Exit;
+    LintWarn(LINT_REMOVAL, Pos, 'removal', What + ' est obsolete et marque pour suppression');
+  End
+  Else Begin
+    If SuppressedWarn('deprecation', True) Then Exit;
+    LintWarn(LINT_DEPRECATION, Pos, 'deprecation', What + ' est obsolete');
+  End;
+End;
+
+Procedure LintMethodUse(M, Pos : LongInt);
+Begin
+  If M < 0 Then Exit;
+  LintDeprecatedUse(Meths[M].Flags, Meths[M].Owner, Pos, MethodDescStr(M) + ' dans ' + Classes[Meths[M].Owner].Simple);
+End;
+
+Procedure LintFieldUse(F, Pos : LongInt);
+Begin
+  If F < 0 Then Exit;
+  LintDeprecatedUse(Fields[F].Flags, Fields[F].Owner, Pos, Fields[F].Name + ' dans ' + Classes[Fields[F].Owner].Simple);
+End;
+
+Procedure LintClassUse(C, Pos : LongInt);
+Begin
+  If C < 0 Then Exit;
+  EnsureHeader(C);
+  If (Classes[C].Flags And MOD_DEPRECATED) = 0 Then Exit;
+  If CurClass < 0 Then Exit;
+  If Classes[C].IsSrc And (Classes[C].TopClass = Classes[CurClass].TopClass) Then Exit;
+  LintDeprecatedUse(Classes[C].Flags, -1, Pos, Classes[C].Simple);
+End;
+
+{ Type brut : classe generique utilisee sans arguments }
+Procedure LintRawType(N, T : LongInt);
+Var C : LongInt;
+Begin
+  If RawOK Or (Nodes[N].A <> 0) Or (Nodes[N].Mods = 1) Then Exit;
+  C := Types[T].Cls;
+  EnsureHeader(C);
+  If Length(Classes[C].TPars) = 0 Then Exit;
+  If CurClass >= 0 Then
+    If SuppressedWarn('rawtypes', False) Then Exit;
+  LintWarn(LINT_RAWTYPES, Nodes[N].Line, 'rawtypes', 'type brut trouve : ' + Classes[C].Simple);
+End;
+
+{ Le type T est-il un type brut (classe generique sans arguments) ? }
+Function IsRawType(T : LongInt) : Boolean;
+Var C : LongInt;
+Begin
+  IsRawType := False;
+  If Not IsClassT(T) Then Exit;
+  If Types[T].NArgs > 0 Then Exit;
+  C := Types[T].Cls;
+  EnsureHeader(C);
+  IsRawType := Length(Classes[C].TPars) > 0;
+End;
+
+Procedure LintUnchecked(Pos : LongInt; Const Msg : String);
+Begin
+  If CurClass >= 0 Then
+    If SuppressedWarn('unchecked', False) Then Exit;
+  LintWarn(LINT_UNCHECKED, Pos, 'unchecked', Msg);
+End;
+
+{ Le type T mentionne-t-il une variable de type ? }
+Function MentionsTVar(T : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  MentionsTVar := False;
+  If T < TY_FIRSTDYN Then Exit;
+  Case Types[T].Kind Of
+    TYK_TVAR : MentionsTVar := True;
+    TYK_ARRAY : MentionsTVar := MentionsTVar(Types[T].Elem);
+    TYK_CLASS : For I := 0 To Types[T].NArgs - 1 Do If MentionsTVar(Types[T].Args[I]) Then MentionsTVar := True;
+  End;
+End;
+
+Function ParamsMentionTVar(M : LongInt) : Boolean;
+Var I : LongInt;
+Begin
+  ParamsMentionTVar := False;
+  For I := 0 To Meths[M].NPar - 1 Do If MentionsTVar(Meths[M].Par[I]) Then ParamsMentionTVar := True;
+End;
+
+{ appel non controle d'un membre d'un type brut }
+Procedure LintRawCall(M, Pos, RawT : LongInt);
+Begin
+  If (M < 0) Or Not IsRawType(RawT) Then Exit;
+  If Not ParamsMentionTVar(M) Then Exit;
+  LintUnchecked(Pos, 'appel non controle a ' + MethodDescStr(M) + ' en tant que membre du type brut ' + Classes[Types[RawT].Cls].Simple);
+End;
+{ ============================================================================
   4. ANALYSE SEMANTIQUE (3/4) : conversions, inference de types generiques,
      resolution de la surcharge
   ============================================================================ }
@@ -13009,6 +13378,12 @@ Begin
     Exit;
   End;
   { reference -> reference }
+  If IsClassT(Target) And (Types[Target].NArgs > 0) And IsRawType(T) And (Nodes[N].Kind In [N_NAME, N_SELECT]) And
+     IsSubtypeRef(T, Target) Then
+    LintUnchecked(PrefPos(N), 'conversion non controlee : requis ' + TypeStr(Target) + ', trouve ' + TypeStr(T))
+  Else If IsArrayT(Target) And IsArrayT(T) And (Nodes[N].Kind In [N_NAME, N_SELECT, N_NEWARRAY]) And IsClassT(ElemOf(Target)) And
+          (Types[ElemOf(Target)].NArgs > 0) And IsRawType(ElemOf(T)) Then
+    LintUnchecked(PrefPos(N), 'conversion non controlee : requis ' + TypeStr(Target) + ', trouve ' + TypeStr(T));
   If IsSubtypeRef(T, Target) Then Begin
     If (T = T_ANY) And (Target <> T_OBJECT) Then WrapConv(N, Target);
   End
@@ -13666,6 +14041,7 @@ Begin
     Err(Nodes[N].Line, Fields[F].Name + ' n''est pas accessible dans ' + Classes[Owner].Simple);
   Nodes[N].Kind := N_SELECT;
   Nodes[N].Sym := F;
+  LintFieldUse(F, Nodes[N].Line);
   Nodes[N].S := Fields[F].Name;
   If (Fields[F].Flags And ACC_STATIC) <> 0 Then Begin
     Nodes[N].Aux := 2;
@@ -13780,6 +14156,7 @@ Begin
     Nodes[N].Aux := 2;
     Nodes[N].A := 0;
     Nodes[N].Sym := F;
+    LintFieldUse(F, Nodes[N].Line);
     Nodes[N].Typ := Fields[F].Typ;
     If (Fields[F].Flags And ACC_FINAL) <> 0 Then ReadConstFromField(N, F);
     LastEK := EK_VALUE;
@@ -13831,6 +14208,10 @@ Begin
   If Not IsAccessible(Fields[F].Flags, Owner) Then
     Err(Nodes[N].Line, Name + ' a un acces prive dans ' + Classes[Owner].Simple);
   Nodes[N].Sym := F;
+  LintFieldUse(F, Nodes[N].Line);
+  If ((Fields[F].Flags And ACC_STATIC) <> 0) And Not SuppressedWarn('static', False) Then
+    LintWarn(LINT_STATIC, Nodes[N].Line, 'static', 'la variable statique devrait etre qualifiee par le nom du type, ' +
+             Classes[Owner].Simple + ', et non par une expression');
   If (Fields[F].Flags And ACC_STATIC) <> 0 Then Begin
     Nodes[N].Aux := 2;
     Nodes[N].A := 0;
@@ -14052,6 +14433,9 @@ Begin
       PT := BinaryPromote(PA, PB);
       PromoteTo(A, PT); PromoteTo(B, PT);
       Nodes[N].Typ := PT;
+      If ((Op = OP_DIV) Or (Op = OP_REM)) And ((PT = TY_INT) Or (PT = TY_LONG)) And (Nodes[B].CK In [CK_INT, CK_LONG]) And
+         (Nodes[B].CI = 0) And Not SuppressedWarn('divzero', False) Then
+        LintWarn(LINT_DIVZERO, Nodes[B].Line, 'divzero', 'division par zero');
       FoldBinary(N, Op, PT);
       AttribBinary := PT;
     End;
@@ -14366,15 +14750,32 @@ Begin
 End;
 
 Function AttribCast(N : LongInt) : LongInt;
-Var T, B, TB, Ch : LongInt;
+Var T, B, TB, Ch, Tn, Ar : LongInt; AllWild : Boolean;
 Begin
-  T := ResolveType(Nodes[N].A);
+  Tn := Nodes[N].A;
+  T := ResolveType(Tn);
   B := Nodes[N].B;
   TB := AttribExpr(B, T);
   AttribCast := T;
   If (T = TY_NONE) Or (TB = TY_NONE) Then Begin Nodes[N].Typ := T; Nodes[N].Kind := N_CONV; Nodes[N].A := B; Nodes[N].B := 0; Exit; End;
   If Not IsCastable(TB, T) Then Begin
     Err(PrefPos(B), 'types incompatibles : ' + TypeStr(TB) + ' ne peut pas etre converti en ' + TypeStr(T));
+  End;
+  If Not IsFnNode(B) And (T <> TY_NONE) And (TB <> TY_NONE) And (TB <> TY_NULL) And (TB <> T_ANY) Then Begin
+    { cast redondant }
+    If (TB = T) And Not SuppressedWarn('cast', False) Then
+      LintWarn(LINT_CAST, Nodes[N].Line, 'cast', 'cast redondant vers ' + TypeStr(T));
+    { cast non controle vers un type parametre }
+    If IsClassT(T) And (Nodes[Tn].A <> 0) And Not IsPrim(TB) And Not IsSubtypeRef(TB, T) Then Begin
+      AllWild := True;
+      Ar := Nodes[Tn].A;
+      While Ar <> 0 Do Begin
+        If Not ((Nodes[Ar].Kind = N_WILD) And ((Nodes[Ar].Aux = 0) Or (Nodes[Ar].A = 0))) Then AllWild := False;
+        Ar := Nodes[Ar].Next;
+      End;
+      If Not AllWild Then
+        LintUnchecked(PrefPos(B), 'cast non controle : requis ' + TypeStr(T) + ', trouve ' + TypeStr(TB));
+    End;
   End;
   If IsFnNode(B) Then Begin
     { cast sur lambda : le type de la lambda est celui du cast }
@@ -14451,7 +14852,9 @@ Var A, T, TA, V, L : LongInt;
 Begin
   A := Nodes[N].A;
   TA := AttribExpr(A, 0);
+  RawOK := True;
   If Nodes[N].Aux = 1 Then T := TY_NONE Else T := ResolveType(Nodes[N].B);
+  RawOK := False;
   Nodes[N].Typ := TY_BOOLEAN;
   AttribInstanceOf := TY_BOOLEAN;
   If Nodes[N].Aux = 1 Then Begin
@@ -14596,7 +14999,7 @@ Begin
     End;
     T := Q;
   End
-  Else T := ResolveType(Nodes[N].A);
+  Else Begin RawOK := True; T := ResolveType(Nodes[N].A); RawOK := False; End;
   Nodes[N].E := T;
   Nodes[N].Typ := ClassT1(C_CLASS, BoxedType(T));
   If T = TY_VOID Then Nodes[N].Typ := ClassT1(C_CLASS, ClassT(GetClass('java/lang/Void')));
@@ -14700,6 +15103,7 @@ Begin
   If Ok Then Begin
     Nodes[N].Sym := R.M;
     NoteMethodThrows(R.M, Nodes[N].Line);
+    LintMethodUse(R.M, Nodes[N].Line);
     If R.Varargs Then Begin Nodes[N].Mods := Nodes[N].Mods Or CALL_VARARGS; Nodes[N].N := R.NPar; End;
   End;
 End;
@@ -14776,6 +15180,15 @@ Begin
   M := R.M;
   Nodes[N].Sym := M;
   NoteMethodThrows(M, Nodes[N].Line);
+  LintMethodUse(M, Nodes[N].Line);
+  If (Tgt <> 0) And Not StaticOnly And Not IsSuper Then Begin
+    If (Meths[M].Flags And ACC_STATIC) <> 0 Then Begin
+      If Not SuppressedWarn('static', False) Then
+        LintWarn(LINT_STATIC, Nodes[N].Line, 'static', 'la methode statique devrait etre qualifiee par le nom du type, ' +
+                 Classes[Meths[M].Owner].Simple + ', et non par une expression');
+    End
+    Else LintRawCall(M, Nodes[N].Line, SiteT);
+  End;
   { methode statique / d'instance }
   If (Meths[M].Flags And ACC_STATIC) <> 0 Then Begin
     Nodes[N].Mods := Nodes[N].Mods Or CALL_STATIC;
@@ -14900,6 +15313,8 @@ Begin
         Err(Nodes[N].Line, 'le constructeur de ' + Classes[C].Simple + ' est protege et inaccessible ici');
       Nodes[N].Sym := R.M;
       NoteMethodThrows(R.M, Nodes[N].Line);
+      LintMethodUse(R.M, Nodes[N].Line);
+      If (Body = 0) And Not Diamond Then LintRawCall(R.M, Nodes[N].Line, T);
       If R.Varargs Then Begin Nodes[N].Mods := Nodes[N].Mods Or CALL_VARARGS; Nodes[N].N := R.NPar; End;
       If DiamondCls >= 0 Then T := R.Ret;
     End;
@@ -15543,6 +15958,8 @@ Begin
     N_IF : Begin
       AttribCondition(Nodes[N].A);
       Mark := NScope;
+      If (Nodes[Nodes[N].B].Kind = N_EMPTY) And (Nodes[N].C = 0) And Not SuppressedWarn('empty', False) Then
+        LintWarn(LINT_EMPTY, Nodes[Nodes[N].B].Line, 'empty', 'instruction vide apres if');
       AttribStmt(Nodes[N].B);
       If Nodes[N].C <> 0 Then AttribStmt(Nodes[N].C);
     End;
@@ -16267,8 +16684,10 @@ Type
   End;
 
 Var
-  ModDecl : LongInt;      { noeud N_MODULE de module-info.java, ou 0 }
+  ModDecl : LongInt;      { noeud N_MODULE du module en cours de traitement, ou 0 }
   ModCU   : LongInt;
+  AllModDecl, AllModCU : Array Of LongInt;     { tous les module-info.java compiles }
+  NAllMods : LongInt;
   ClsParentCtx : LongInt;
   AnnMetas : Array Of TAnnMetaRec;
   ExtAB    : TBuf;
@@ -16758,6 +17177,40 @@ Begin
   End;
 End;
 
+{ Annotation de ce nom (dernier composant) dans la chaine ? }
+Function HasAnnNamed(Ann : LongInt; Const Nm : String) : Boolean;
+Var A : LongInt; S : String;
+Begin
+  HasAnnNamed := False;
+  A := Ann;
+  While A <> 0 Do Begin
+    S := Nodes[A].S;
+    S := Copy(S, LastPos('.', S) + 1, Length(S));
+    If S = Nm Then HasAnnNamed := True;
+    A := Nodes[A].Next;
+  End;
+End;
+
+{ Le type d'element d'un parametre varargs (noeud de type, dimension varargs comprise) est-il non reifiable ? }
+Function NodeNonReifiableElem(TNode : LongInt) : Boolean;
+Var T, A : LongInt; AllWild : Boolean;
+Begin
+  NodeNonReifiableElem := False;
+  T := Nodes[TNode].Typ;
+  While IsArrayT(T) Do T := ElemOf(T);
+  If T <= 0 Then Exit;
+  If IsTVarT(T) Then Begin NodeNonReifiableElem := True; Exit; End;
+  If IsClassT(T) And (Nodes[TNode].A <> 0) Then Begin
+    AllWild := True;
+    A := Nodes[TNode].A;
+    While A <> 0 Do Begin
+      If Not ((Nodes[A].Kind = N_WILD) And ((Nodes[A].Aux = 0) Or (Nodes[A].A = 0))) Then AllWild := False;
+      A := Nodes[A].Next;
+    End;
+    NodeNonReifiableElem := Not AllWild;
+  End;
+End;
+
 { Analyse toutes les annotations declarees dans la classe C (classe, composants, champs, methodes, parametres) }
 Procedure AttribClassAnnots(C : LongInt);
 Var
@@ -16804,6 +17257,10 @@ Begin
         P := Nodes[M].B;
         While P <> 0 Do Begin
           AttribAnnotChain(Nodes[P].Ann, TGT_PARAMETER);
+          { pollution de tas : parametre varargs de type non reifiable sans @SafeVarargs }
+          If (Nodes[P].Aux = 1) And (Mt >= 0) And Not AnnSuppresses(Nodes[M].Ann, 'unchecked', False) And Not HasAnnNamed(Nodes[M].Ann, 'SafeVarargs') Then
+            If NodeNonReifiableElem(Nodes[P].A) Then
+              LintUnchecked(Nodes[P].Line, 'pollution de tas possible due au type varargs parametre ' + TypeStr(ElemOf(Meths[Mt].Par[Meths[Mt].NPar - 1])));
           P := Nodes[P].Next;
         End;
         If (Nodes[M].Dflt <> 0) And (Mt >= 0) Then AttribElemValue(Nodes[M].Dflt, Meths[Mt].Ret);
@@ -16813,6 +17270,52 @@ Begin
   End;
   Dec(NThrowCtx);
   CurCtx := SvCtx; CurMeth := SvMeth; CurRet := SvRet; CurStatic := SvStatic;
+End;
+
+{ ----- avertissements de classe : serialVersionUID, equals sans hashCode ---------------------- }
+
+Function DeclaresMeth(K : LongInt; Const Name : String; Np : LongInt) : Boolean;
+Var M : LongInt;
+Begin
+  DeclaresMeth := False;
+  M := Classes[K].FirstMeth;
+  While M >= 0 Do Begin
+    If (Meths[M].Name = Name) And (Meths[M].NPar = Np) Then Begin DeclaresMeth := True; Exit; End;
+    M := Meths[M].Next;
+  End;
+End;
+
+Procedure LintClassChecks(C : LongInt);
+Var D, S : LongInt; HasEq, HasHash, SuperHash, SuperEq, Ser : Boolean; SerC : LongInt;
+Begin
+  D := Classes[C].Decl;
+  If (D <= 0) Or ((Classes[C].Flags And MOD_ANON) <> 0) Then Exit;
+  { classe serialisable sans serialVersionUID }
+  If ((Classes[C].Flags And (ACC_INTERFACE Or ACC_ENUM)) = 0) And (Nodes[D].Aux <> CLS_RECORD) Then Begin
+    SerC := LookupClass('java/io/Serializable');
+    Ser := (SerC >= 0) And IsSubClass(C, SerC);
+    If Ser And (FindFieldIn(C, 'serialVersionUID') < 0) And Not SuppressedWarn('serial', False) Then
+      LintWarn(LINT_SERIAL, Nodes[D].Line, 'serial', 'la classe serialisable ' + Classes[C].Simple + ' n''a pas de definition de serialVersionUID');
+  End;
+  { equals sans hashCode (et reciproquement) }
+  If (Classes[C].Flags And ACC_INTERFACE) = 0 Then Begin
+    HasEq := DeclaresMeth(C, 'equals', 1);
+    HasHash := DeclaresMeth(C, 'hashCode', 0);
+    SuperEq := False; SuperHash := False;
+    S := SuperClsOf(C);
+    While (S >= 0) And (S <> C_OBJECT) Do Begin
+      EnsureMembers(S);
+      If DeclaresMeth(S, 'hashCode', 0) Then SuperHash := True;
+      If DeclaresMeth(S, 'equals', 1) Then SuperEq := True;
+      S := SuperClsOf(S);
+    End;
+    If HasEq And Not HasHash And Not SuperHash And Not SuppressedWarn('overrides', False) Then
+      LintWarn(LINT_OVERRIDES, Nodes[D].Line, 'overrides', 'la classe ' + Classes[C].Simple +
+               ' redefinit equals, mais ni elle ni une super-classe ne redefinit hashCode');
+    If HasHash And Not HasEq And Not SuperEq And Not SuppressedWarn('overrides', False) Then
+      LintWarn(LINT_OVERRIDES, Nodes[D].Line, 'overrides', 'la classe ' + Classes[C].Simple +
+               ' redefinit hashCode, mais ni elle ni une super-classe ne redefinit equals');
+  End;
 End;
 { ============================================================================
   4. ANALYSE SEMANTIQUE : classes, methodes, classes locales, pilote
@@ -17152,6 +17655,7 @@ Begin
   CheckClassDecl(C);
   CheckSealed(C);
   AttribClassAnnots(C);
+  LintClassChecks(C);
   M := Nodes[D].D;
   While M <> 0 Do Begin
     Case Nodes[M].Kind Of
@@ -17235,6 +17739,32 @@ Begin
   End;
 End;
 
+{ Convertit en UTF-8 un source ecrit en ISO-8859-1, Windows-1252 ou US-ASCII (option -encoding) }
+Procedure TranscodeSource;
+Const
+  Cp1252 : Array[0..31] Of Word = ($20AC, $81, $201A, $0192, $201E, $2026, $2020, $2021, $02C6, $2030, $0160, $2039, $0152, $8D,
+                                   $017D, $8F, $90, $2018, $2019, $201C, $201D, $2022, $2013, $2014, $02DC, $2122, $0161, $203A,
+                                   $0153, $9D, $017E, $0178);
+Var E, Out : String; I, B, Cp : LongInt; Win : Boolean;
+Begin
+  E := LowerStr(OptEncoding);
+  If (E = '') Or (E = 'utf-8') Or (E = 'utf8') Then Exit;
+  Win := (E = 'cp1252') Or (E = 'windows-1252');
+  If Not (Win Or (E = 'iso-8859-1') Or (E = 'iso8859-1') Or (E = 'latin1') Or (E = 'iso-8859-15') Or (E = 'us-ascii') Or (E = 'ascii')) Then Exit;
+  Out := '';
+  SetLength(Out, 0);
+  For I := 1 To SrcLen Do Begin
+    B := Ord(Src[I]);
+    If B < $80 Then Out := Out + Src[I]
+    Else Begin
+      If Win And (B < $A0) Then Cp := Cp1252[B - $80] Else Cp := B;
+      AppendMUtf8(Out, Cp);
+    End;
+  End;
+  Src := Out;
+  SrcLen := Length(Src);
+End;
+
 { Lecture, analyse lexicale et syntaxique d'un fichier ; entree de ses classes }
 Procedure LoadSourceFile(Const Fn : String);
 Var
@@ -17261,6 +17791,7 @@ Begin
     SrcLen := Length(Src);
   End;
   DiagBuffering := True; NDiag := 0; LexErrLine := 0; LastSynPos := -1; RecoverDepth := 0;
+  TranscodeSource;
   Lex;
   P := 0;
   Root := ParseCompilationUnit;
@@ -17272,10 +17803,14 @@ Begin
   CUs[Cu].FileName := Fn;
   CUs[Cu].Imports := Nodes[Root].A;
   CUs[Cu].Root := Root;
+  CUs[Cu].Explicit := LoadingExplicit;
+  CUs[Cu].ModName := LoadingModule;
   If Nodes[Root].C <> 0 Then Begin
-    If ModDecl <> 0 Then Err(Nodes[Nodes[Root].C].Line, 'plusieurs declarations de module');
-    ModDecl := Nodes[Root].C;
-    ModCU := Cu;
+    If (NAllMods > 0) And (LoadingModule = '') Then Err(Nodes[Nodes[Root].C].Line, 'plusieurs declarations de module');
+    SetLength(AllModDecl, NAllMods + 1); SetLength(AllModCU, NAllMods + 1);
+    AllModDecl[NAllMods] := Nodes[Root].C;
+    AllModCU[NAllMods] := Cu;
+    Inc(NAllMods);
   End;
   Decl := Nodes[Root].B;
   Imp := 0;
@@ -17296,6 +17831,13 @@ Begin
   JdkHasModule := JdkReady And JdkLocate('/' + Nm + '/module-info.class', A, B, C);
 End;
 
+Function IsSourceModule(Const Nm : String) : Boolean;
+Var I : LongInt;
+Begin
+  IsSourceModule := False;
+  For I := 0 To NAllMods - 1 Do If Nodes[AllModDecl[I]].S = Nm Then IsSourceModule := True;
+End;
+
 Function SourcePkgExists(Const Pkg : String) : Boolean;
 Var I : LongInt;
 Begin
@@ -17304,7 +17846,7 @@ Begin
     If (CUs[I].Pkg = Pkg) And (Nodes[CUs[I].Root].B <> 0) Then SourcePkgExists := True;
 End;
 
-Procedure AttribModule;
+Procedure AttribOneModule;
 Var
   D, X, K, Cl, Svc, I : LongInt; Q : LongInt;
   SvCU, SvCtx, SvMeth, SvCls : LongInt; SvStatic : Boolean; Dup : LongInt; HasProv : Boolean;
@@ -17332,7 +17874,7 @@ Begin
     End;
     If Nodes[D].S = 'requires' Then Begin
       If Nodes[D].CS = Nodes[ModDecl].S Then Err(Nodes[D].Line, 'dependance cyclique du module ' + Nodes[D].CS)
-      Else If (Not JdkHasModule(Nodes[D].CS)) And (Not OptModulePath) Then
+      Else If (Not JdkHasModule(Nodes[D].CS)) And (Not OptModulePath) And (Not IsSourceModule(Nodes[D].CS)) Then
         Err(Nodes[D].Line, 'module introuvable : ' + Nodes[D].CS);
     End
     Else If Nodes[D].S = 'exports' Then Begin
@@ -17379,6 +17921,15 @@ Begin
   End;
   CurCU := SvCU; CurCtx := SvCtx; CurMeth := SvMeth; CurClass := SvCls; CurStatic := SvStatic;
   If CurCU >= 0 Then CurFile := CUs[CurCU].FileName;
+End;
+
+Procedure AttribModule;
+Var I : LongInt;
+Begin
+  For I := 0 To NAllMods - 1 Do Begin
+    ModDecl := AllModDecl[I]; ModCU := AllModCU[I];
+    AttribOneModule;
+  End;
 End;
 
 Procedure AttribAll;
@@ -20711,7 +21262,7 @@ Var
   CaseL : Array Of LongInt; Keys, Tg : Array Of LongInt; Strs : Array Of String; StrCase : Array Of LongInt;
   Hashes, HTg, HK : Array Of LongInt; NH, B, F : LongInt; Bucket : Array Of LongInt; Hl : Array Of LongInt;
   Nxt, After1, Ci, Ord_ : LongInt; Have : Boolean; ET : LongInt; ThrowL : LongInt; Ctx : LongInt;
-  TabKeys, TabTg : Array Of LongInt; PrevB : LongInt;
+  TabKeys, TabTg : Array Of LongInt; PrevB, PrevCs : LongInt;
 Begin
   Mode := Nodes[N].E;
   If Mode = SW_PATTERN Then Begin GenPatternSwitch(N, IsExpr); Exit; End;
@@ -20836,8 +21387,13 @@ Begin
     End;
   End;
   { corps des cas }
-  Cs := Nodes[N].B; K := 0;
+  Cs := Nodes[N].B; K := 0; PrevCs := 0;
   While Cs <> 0 Do Begin
+    { chute d'un cas non vide dans le suivant }
+    If (PrevCs <> 0) And Alive And ((Nodes[PrevCs].Aux And 2) = 0) And (Nodes[PrevCs].B <> 0) Then
+      If Not SuppressedWarn('fallthrough', False) Then
+        LintWarn(LINT_FALLTHROUGH, Nodes[Cs].Line, 'fallthrough', 'chute possible dans le case suivant');
+    PrevCs := Cs;
     PlaceLabel(CaseL[K]);
     If Alive Then Begin
       If (Nodes[Cs].Aux And 2) <> 0 Then Begin
@@ -20927,6 +21483,9 @@ Var
 Begin
   LineMark(Nodes[N].Line);
   HasFin := Nodes[N].D <> 0;
+  If HasFin Then
+    If Not CanComplete(Nodes[N].D) And Not SuppressedWarn('finally', False) Then
+      LintWarn(LINT_FINALLY, Nodes[Nodes[N].D].Line, 'finally', 'la clause finally ne peut pas se terminer normalement');
   EndL := NewLabel;
   EntryLoc := NextLoc;
   TakeSnap(Snap);
@@ -22572,9 +23131,11 @@ Begin
 End;
 
 Procedure GenMethodBodyOnce(C, M : LongInt);
-Var
+Var SvCC, SvCM : LongInt;
   D, Body, P, L, I, Slot : LongInt; IsCtor, Static : Boolean; Dsc : String;
 Begin
+  SvCC := CurClass; SvCM := CurMeth;
+  CurClass := C; CurMeth := M;
   Static := (Meths[M].Flags And ACC_STATIC) <> 0;
   BeginMethod;
   FinActive := False;
@@ -22665,6 +23226,7 @@ Begin
     End;
   End;
   Dsc := '';
+  CurClass := SvCC; CurMeth := SvCM;
 End;
 
 { Genere le corps ; si un saut court deborde (methode de plus de 32 Ko), regenere en mode "sauts longs" }
@@ -23055,6 +23617,7 @@ Begin
   If OptOutDir <> '' Then Begin
     Path := OptOutDir;
     If (Path[Length(Path)] <> '/') And (Path[Length(Path)] <> '\') Then Path := Path + '/';
+    If CUs[Classes[C].CU].ModName <> '' Then Path := Path + CUs[Classes[C].CU].ModName + '/';
     Path := Path + Nm + '.class';
     MakeDirs(Path);
   End
@@ -23087,7 +23650,7 @@ Begin
   If V = '' Then ModVerIdx := 0 Else ModVerIdx := CPUtf8(V);
 End;
 
-Procedure WriteModuleInfo;
+Procedure WriteOneModuleInfo;
 Var
   Out, Attr, Mod_, Tmp : TBuf; NA, D, K, N, NReq, NExp, NOpen, NUses, NProv, I : LongInt; Path, Dir, Fn : String;
   HasBase : Boolean; ReqB, ExpB, OpenB, UsesB, ProvB : TBuf; X : LongInt;
@@ -23174,6 +23737,7 @@ Begin
   If OptOutDir <> '' Then Begin
     Path := OptOutDir;
     If (Path[Length(Path)] <> '/') And (Path[Length(Path)] <> '\') Then Path := Path + '/';
+    If CUs[ModCU].ModName <> '' Then Path := Path + CUs[ModCU].ModName + '/';
     Path := Path + 'module-info.class';
     MakeDirs(Path);
   End
@@ -23187,42 +23751,372 @@ Begin
   Else If OptVerbose Then WriteLn('[ecrit ', Path, ']');
   N := 0; Fn := ''; Tmp.N := 0;
 End;
+
+{ ----- en-tetes JNI (option -h) ------------------------------------------------------------ }
+
+Function JniMangle(Const S : String) : String;
+Var I : LongInt; R : String; C : Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do Begin
+    C := S[I];
+    If C = '/' Then R := R + '_'
+    Else If C = '_' Then R := R + '_1'
+    Else If C = ';' Then R := R + '_2'
+    Else If C = '[' Then R := R + '_3'
+    Else If ((C >= 'a') And (C <= 'z')) Or ((C >= 'A') And (C <= 'Z')) Or ((C >= '0') And (C <= '9')) Then R := R + C
+    Else R := R + '_0' + LowerStr(HexStr(Ord(C), 4));
+  End;
+  JniMangle := R;
+End;
+
+{ nom de type C JNI d'un descripteur de champ commencant en I (I avance) }
+Function JniTypeOf(Const D : String; Var I : LongInt) : String;
+Var Dims : LongInt; Nm, Base : String;
+Begin
+  Dims := 0;
+  While D[I] = '[' Do Begin Inc(Dims); Inc(I); End;
+  Case D[I] Of
+    'Z' : Base := 'boolean'; 'B' : Base := 'byte'; 'C' : Base := 'char'; 'S' : Base := 'short';
+    'I' : Base := 'int'; 'J' : Base := 'long'; 'F' : Base := 'float'; 'D' : Base := 'double';
+    'V' : Base := 'void';
+    'L' : Begin
+      Nm := '';
+      Inc(I);
+      While D[I] <> ';' Do Begin Nm := Nm + D[I]; Inc(I); End;
+      Base := '';
+      If Dims = 0 Then Begin
+        If Nm = 'java/lang/String' Then JniTypeOf := 'jstring'
+        Else If Nm = 'java/lang/Class' Then JniTypeOf := 'jclass'
+        Else If Nm = 'java/lang/Throwable' Then JniTypeOf := 'jthrowable'
+        Else JniTypeOf := 'jobject';
+        Inc(I);
+        Exit;
+      End;
+      Inc(I);
+      If Dims = 1 Then Begin JniTypeOf := 'jobjectArray'; Exit; End;
+      JniTypeOf := 'jobjectArray';
+      Exit;
+    End;
+  Else
+    Base := 'int';
+  End;
+  Inc(I);
+  If Dims = 0 Then Begin
+    If Base = 'void' Then JniTypeOf := 'void' Else JniTypeOf := 'j' + Base;
+  End
+  Else If Dims = 1 Then JniTypeOf := 'j' + Base + 'Array'
+  Else JniTypeOf := 'jobjectArray';
+End;
+
+Function CDoubleStr(D : Double) : String;
+Var P : LongInt; S : String; Back : Double; Code : LongInt;
+Begin
+  For P := 1 To 17 Do Begin
+    Str(D : 0 : P, S);
+    Val(S, Back, Code);
+    If (Code = 0) And (Back = D) Then Break;
+  End;
+  While (Length(S) > 2) And (S[Length(S)] = '0') And (S[Length(S) - 1] <> '.') Do Delete(S, Length(S), 1);
+  CDoubleStr := S;
+End;
+
+Procedure WriteJniHeader(C : LongInt);
+Var
+  M, F, I, K, NNat, NSame : LongInt; Fn, Hdr, Nm, Name, Desc, Args, Fname, Sig : String; T : Text; HasContent : Boolean;
+  Consts : Boolean;
+Begin
+  Name := Classes[C].Name;
+  { methodes natives ? constantes ? }
+  NNat := 0;
+  M := Classes[C].FirstMeth;
+  While M >= 0 Do Begin
+    If (Meths[M].Flags And ACC_NATIVE) <> 0 Then Inc(NNat);
+    M := Meths[M].Next;
+  End;
+  Consts := False;
+  F := Classes[C].FirstField;
+  While F >= 0 Do Begin
+    If ((Fields[F].Flags And (ACC_STATIC Or ACC_FINAL)) = (ACC_STATIC Or ACC_FINAL)) And (Fields[F].CK <> CK_NONE) And (Fields[F].CK <> CK_STR) Then Consts := True;
+    F := Fields[F].Next;
+  End;
+  If (NNat = 0) And Not Consts Then Exit;
+  Nm := ReplaceAll(Name, '/', '_');
+  Nm := ReplaceAll(Nm, '$', '_');
+  Hdr := OptHeaderDir;
+  If (Hdr <> '') And (Hdr[Length(Hdr)] <> '/') And (Hdr[Length(Hdr)] <> '\') Then Hdr := Hdr + '/';
+  Fn := Hdr + Nm + '.h';
+  MakeDirs(Fn);
+  Assign(T, Fn);
+  Rewrite(T);
+  If IOResult <> 0 Then Begin Err(0, 'impossible d''ecrire le fichier ' + Fn); Exit; End;
+  WriteLn(T, '/* DO NOT EDIT THIS FILE - it is machine generated */');
+  WriteLn(T, '#include <jni.h>');
+  WriteLn(T, '/* Header for class ', Nm, ' */');
+  WriteLn(T);
+  WriteLn(T, '#ifndef _Included_', Nm);
+  WriteLn(T, '#define _Included_', Nm);
+  WriteLn(T, '#ifdef __cplusplus');
+  WriteLn(T, 'extern "C" {');
+  WriteLn(T, '#endif');
+  F := Classes[C].FirstField;
+  While F >= 0 Do Begin
+    If ((Fields[F].Flags And (ACC_STATIC Or ACC_FINAL)) = (ACC_STATIC Or ACC_FINAL)) And (Fields[F].CK <> CK_NONE) And (Fields[F].CK <> CK_STR) Then Begin
+      WriteLn(T, '#undef ', Nm, '_', Fields[F].Name);
+      Write(T, '#define ', Nm, '_', Fields[F].Name, ' ');
+      Case Fields[F].CK Of
+        CK_INT : WriteLn(T, Fields[F].CI, 'L');
+        CK_LONG : WriteLn(T, Fields[F].CI, 'LL');
+        CK_FLOAT : WriteLn(T, CDoubleStr(Fields[F].CD), 'f');
+        CK_DOUBLE : WriteLn(T, CDoubleStr(Fields[F].CD));
+      End;
+    End;
+    F := Fields[F].Next;
+  End;
+  M := Classes[C].FirstMeth;
+  While M >= 0 Do Begin
+    If (Meths[M].Flags And ACC_NATIVE) <> 0 Then Begin
+      Desc := Meths[M].Desc;
+      { arguments }
+      Args := '(JNIEnv *, ';
+      If (Meths[M].Flags And ACC_STATIC) <> 0 Then Args := Args + 'jclass' Else Args := Args + 'jobject';
+      I := 2;
+      While Desc[I] <> ')' Do Args := Args + ', ' + JniTypeOf(Desc, I);
+      Args := Args + ')';
+      Inc(I);
+      Fname := 'Java_' + JniMangle(Name) + '_' + JniMangle(Meths[M].Name);
+      { surcharge : signature ajoutee }
+      NSame := 0;
+      K := Classes[C].FirstMeth;
+      While K >= 0 Do Begin
+        If ((Meths[K].Flags And ACC_NATIVE) <> 0) And (Meths[K].Name = Meths[M].Name) Then Inc(NSame);
+        K := Meths[K].Next;
+      End;
+      Sig := Copy(Desc, 2, Pos(')', Desc) - 2);
+      If NSame > 1 Then Fname := Fname + '__' + JniMangle(Sig);
+      WriteLn(T, '/*');
+      WriteLn(T, ' * Class:     ', Nm);
+      WriteLn(T, ' * Method:    ', Meths[M].Name);
+      WriteLn(T, ' * Signature: ', Desc);
+      WriteLn(T, ' */');
+      WriteLn(T, 'JNIEXPORT ', JniTypeOf(Desc, I), ' JNICALL ', Fname);
+      WriteLn(T, '  ', Args, ';');
+      WriteLn(T);
+    End;
+    M := Meths[M].Next;
+  End;
+  WriteLn(T, '#ifdef __cplusplus');
+  WriteLn(T, '}');
+  WriteLn(T, '#endif');
+  WriteLn(T, '#endif');
+  Close(T);
+  HasContent := False; Name := '';
+  If HasContent Then ;
+End;
+
+Procedure WriteModuleInfo;
+Var I : LongInt;
+Begin
+  For I := 0 To NAllMods - 1 Do Begin
+    ModDecl := AllModDecl[I]; ModCU := AllModCU[I];
+    WriteOneModuleInfo;
+  End;
+End;
 { ============================================================================
   PROGRAMME PRINCIPAL
   ============================================================================ }
 
-Type
-  TOutFile = Record
-    Path : String;
-    Data : TBuf;
-  End;
-
 Procedure Usage;
 Begin
   WriteLn(VERSION);
-  WriteLn('Usage : JAVAC [options] fichier.java [fichier2.java ...]');
+  WriteLn('Usage : JAVAC [options] fichier.java [fichier2.java ...]   (@fichier : arguments lus dans un fichier)');
   WriteLn;
   WriteLn('Options :');
-  WriteLn('  -d repertoire      repertoire de sortie des fichiers .class');
-  WriteLn('  -cp chemin         classpath (repertoires et archives .jar)');
+  WriteLn('  -d repertoire          repertoire de sortie des fichiers .class');
+  WriteLn('  -cp, -classpath chemin classpath (repertoires et archives .jar)');
+  WriteLn('  -sourcepath chemin     repertoires de recherche des sources');
+  WriteLn('  --module-source-path D -m a,b   compile les modules a et b (sorties dans repertoire/module)');
   WriteLn('  -p, --module-path chemin   modules (ajoutes au classpath)');
-  WriteLn('  -target N          version de classe visee (8 a 25, defaut 11)');
-  WriteLn('  --release N        synonyme de -target');
-  WriteLn('  -Xmaxerrs N        nombre maximal d''erreurs affichees (defaut 100, 0 = illimite)');
-  WriteLn('  -Xmaxwarns N       nombre maximal d''avertissements affiches');
-  WriteLn('  -verbose           affiche les fichiers ecrits');
+  WriteLn('  -encoding nom          encodage des sources (UTF-8, ISO-8859-1, Cp1252, US-ASCII)');
+  WriteLn('  -source N              niveau du langage (les fonctionnalites plus recentes sont refusees)');
+  WriteLn('  -target N, --release N version de classe visee (8 a 25, defaut 11)');
   WriteLn('  -g, -g:none|lines,vars,source   informations de debogage (defaut : lines,source)');
-  WriteLn('  -parameters        attribut MethodParameters (noms des parametres)');
-  WriteLn('  -nowarn, -Xlint    (acceptes et ignores)');
-  WriteLn('  -help              affiche cette aide');
+  WriteLn('  -parameters            attribut MethodParameters (noms des parametres)');
+  WriteLn('  -h repertoire          genere les en-tetes JNI des methodes natives');
+  WriteLn('  -implicit:none|class   .class des fichiers charges implicitement (defaut : class)');
+  WriteLn('  -nowarn, -deprecation, -Xlint[:cle,...], -Werror   avertissements');
+  WriteLn('  -Xmaxerrs N, -Xmaxwarns N   nombre maximal de diagnostics affiches (defaut 100)');
+  WriteLn('  -proc:none|only, -processor, -s, -A...   (traitement d''annotations non pris en charge)');
+  WriteLn('  -verbose, -version, -help');
 End;
 
 Var
+  Args     : Array Of String;
+  NArgs    : LongInt;
   Files    : Array Of String;
   NFiles   : LongInt;
   I, K, V  : LongInt;
   Arg      : String;
-  CpArg    : String;
+  CpArg, SpArg : String;
+  ProcOnly, HasProcessor : Boolean;
+
+Var
+  FileMods : Array Of String;       { module de chaque fichier (--module-source-path) }
+  ModSrcDir : String;
+  ModList   : String;
+
+Procedure AddFile(Const Fn, Md : String);
+Begin
+  SetLength(Files, NFiles + 1);
+  SetLength(FileMods, NFiles + 1);
+  Files[NFiles] := Fn;
+  FileMods[NFiles] := Md;
+  Inc(NFiles);
+End;
+
+{ Ajoute tous les fichiers .java du repertoire Dir (recursivement) }
+Procedure ListJava(Const Dir, Md : String);
+Var Sr : SearchRec; N : String;
+Begin
+  FindFirst(Dir + '*', AnyFile, Sr);
+  While DosError = 0 Do Begin
+    N := Sr.Name;
+    If (Sr.Attr And Directory) <> 0 Then Begin
+      If (N <> '.') And (N <> '..') Then ListJava(Dir + N + '/', Md);
+    End
+    Else If (Length(N) > 5) And (Copy(N, Length(N) - 4, 5) = '.java') Then AddFile(Dir + N, Md);
+    FindNext(Sr);
+  End;
+  FindClose(Sr);
+End;
+
+{ Module d'un fichier d'apres --module-source-path (DIR/module/...) }
+Function ModuleOfPath(Const Fn : String) : String;
+Var Rest : String; K : LongInt;
+Begin
+  ModuleOfPath := '';
+  If ModSrcDir = '' Then Exit;
+  If Copy(Fn, 1, Length(ModSrcDir)) <> ModSrcDir Then Exit;
+  Rest := Copy(Fn, Length(ModSrcDir) + 1, Length(Fn));
+  K := Pos('/', Rest);
+  If K > 0 Then ModuleOfPath := Copy(Rest, 1, K - 1);
+End;
+
+Procedure AddArg(Const S : String);
+Begin
+  SetLength(Args, NArgs + 1);
+  Args[NArgs] := S;
+  Inc(NArgs);
+End;
+
+{ Lit les arguments d'un fichier @argfile : separes par des blancs, guillemets permis, # commentaire }
+Procedure ReadArgFile(Const Fn : String; Depth : LongInt);
+Var F : Text; Line, Cur : String; I, J : LongInt; Q : Char; InArg : Boolean;
+Begin
+  If Depth > 8 Then Exit;
+  Assign(F, Fn);
+  Reset(F);
+  If IOResult <> 0 Then Begin WriteLn('javac: fichier d''arguments introuvable : ', Fn); Halt(2); End;
+  While Not Eof(F) Do Begin
+    ReadLn(F, Line);
+    I := 1; Cur := ''; InArg := False; Q := #0;
+    While I <= Length(Line) Do Begin
+      If Q <> #0 Then Begin
+        If Line[I] = Q Then Q := #0
+        Else If (Line[I] = '\') And (I < Length(Line)) Then Begin Inc(I); Cur := Cur + Line[I]; End
+        Else Cur := Cur + Line[I];
+      End
+      Else If (Line[I] = '"') Or (Line[I] = '''') Then Begin Q := Line[I]; InArg := True; End
+      Else If (Line[I] = '#') And Not InArg And (Cur = '') Then Break
+      Else If (Line[I] = ' ') Or (Line[I] = #9) Then Begin
+        If InArg Or (Cur <> '') Then Begin
+          If (Cur <> '') And (Cur[1] = '@') And (Length(Cur) > 1) Then ReadArgFile(Copy(Cur, 2, Length(Cur)), Depth + 1)
+          Else AddArg(Cur);
+        End;
+        Cur := ''; InArg := False;
+      End
+      Else Begin Cur := Cur + Line[I]; InArg := True; End;
+      Inc(I);
+    End;
+    If InArg Or (Cur <> '') Then Begin
+      If (Cur <> '') And (Cur[1] = '@') And (Length(Cur) > 1) Then ReadArgFile(Copy(Cur, 2, Length(Cur)), Depth + 1)
+      Else AddArg(Cur);
+    End;
+  End;
+  Close(F);
+  J := 0;
+End;
+
+{ -Xlint:cle,-cle,all,none }
+Procedure ApplyLint(Const Spec : String);
+Var Cur, Item : String; I : LongInt; Neg : Boolean; Bit : LongInt;
+  Function BitOf(Const Nm : String) : LongInt;
+  Begin
+    If Nm = 'deprecation' Then BitOf := LINT_DEPRECATION
+    Else If Nm = 'removal' Then BitOf := LINT_REMOVAL
+    Else If Nm = 'unchecked' Then BitOf := LINT_UNCHECKED
+    Else If Nm = 'rawtypes' Then BitOf := LINT_RAWTYPES
+    Else If Nm = 'cast' Then BitOf := LINT_CAST
+    Else If Nm = 'divzero' Then BitOf := LINT_DIVZERO
+    Else If Nm = 'empty' Then BitOf := LINT_EMPTY
+    Else If Nm = 'fallthrough' Then BitOf := LINT_FALLTHROUGH
+    Else If Nm = 'finally' Then BitOf := LINT_FINALLY
+    Else If Nm = 'static' Then BitOf := LINT_STATIC
+    Else If Nm = 'serial' Then BitOf := LINT_SERIAL
+    Else If Nm = 'overrides' Then BitOf := LINT_OVERRIDES
+    Else If Nm = 'all' Then BitOf := LINT_ALL
+    Else BitOf := 0;
+  End;
+Begin
+  Cur := Spec + ',';
+  Item := '';
+  For I := 1 To Length(Cur) Do Begin
+    If Cur[I] = ',' Then Begin
+      Neg := (Item <> '') And (Item[1] = '-');
+      If Neg Then Delete(Item, 1, 1);
+      If Item = 'none' Then OptLint := 0
+      Else Begin
+        Bit := BitOf(Item);
+        If Neg Then OptLint := OptLint And Not Bit Else OptLint := OptLint Or Bit;
+      End;
+      Item := '';
+    End
+    Else Item := Item + Cur[I];
+  End;
+End;
+
+Procedure AddSourceDir(Const D : String);
+Var S : String;
+Begin
+  S := D;
+  If S = '' Then Exit;
+  If (S[Length(S)] <> '/') And (S[Length(S)] <> '\') Then S := S + '/';
+  SetLength(SrcPathDirs, NSrcDirs + 1);
+  SrcPathDirs[NSrcDirs] := S;
+  Inc(NSrcDirs);
+End;
+
+Procedure SplitPath(Const S : String; Add : Boolean);
+Var Sep : Char; Cur : String; I : LongInt;
+Begin
+  Sep := ':';
+  If (Pos(';', S) > 0) Or ((Length(S) > 1) And (S[2] = ':') And (Pos('\', S) > 0)) Then Sep := ';';
+  Cur := '';
+  For I := 1 To Length(S) Do
+    If S[I] = Sep Then Begin If Add Then AddSourceDir(Cur); Cur := ''; End
+    Else Cur := Cur + S[I];
+  If Add Then AddSourceDir(Cur);
+End;
+
+Procedure PrintNotes;
+Begin
+  If NDeprFiles = 1 Then WriteLn('Note : ', DeprFiles[0], ' utilise ou redefinit une API obsolete.')
+  Else If NDeprFiles > 1 Then WriteLn('Note : Certains fichiers d''entree utilisent ou redefinissent une API obsolete.');
+  If NDeprFiles > 0 Then WriteLn('Note : Recompilez avec -Xlint:deprecation pour obtenir des details.');
+  If NUncFiles = 1 Then WriteLn('Note : ', UncFiles[0], ' utilise des operations non controlees ou non sures.')
+  Else If NUncFiles > 1 Then WriteLn('Note : Certains fichiers d''entree utilisent des operations non controlees ou non sures.');
+  If NUncFiles > 0 Then WriteLn('Note : Recompilez avec -Xlint:unchecked pour obtenir des details.');
+End;
 
 Begin
   { exceptions flottantes masquees : le repli de constantes suit IEEE 754 comme Java }
@@ -23230,39 +24124,75 @@ Begin
   {$IFDEF CPUI386}Set8087CW($133F);{$ENDIF}
   ErrCount := 0; WarnCount := 0; OptMaxErrs := 100; OptMaxWarns := 100;
   OptGLines := True; OptGSource := True; OptGVars := False;
+  OptSource := 99; OptLint := LINT_REMOVAL;
   OptVerbose := False; OptOutDir := ''; OptTarget := 55;
   NNodes := 1;
   CurFile := 'javac';
   If ParamCount = 0 Then Begin Usage; Halt(2); End;
-  NFiles := 0;
-  I := 1;
-  While I <= ParamCount Do Begin
+  { arguments, avec expansion des fichiers @argfile }
+  NArgs := 0;
+  For I := 1 To ParamCount Do Begin
     Arg := ParamStr(I);
-    If (Arg = '-d') And (I < ParamCount) Then Begin
-      Inc(I); OptOutDir := ParamStr(I);
+    If (Length(Arg) > 1) And (Arg[1] = '@') Then ReadArgFile(Copy(Arg, 2, Length(Arg)), 0)
+    Else AddArg(Arg);
+  End;
+  NFiles := 0;
+  ProcOnly := False; HasProcessor := False;
+  I := 0;
+  While I < NArgs Do Begin
+    Arg := Args[I];
+    If (Arg = '-d') And (I < NArgs - 1) Then Begin
+      Inc(I); OptOutDir := Args[I];
     End
-    Else If ((Arg = '-target') Or (Arg = '--release') Or (Arg = '-source')) And (I < ParamCount) Then Begin
+    Else If ((Arg = '-target') Or (Arg = '--release') Or (Arg = '-source') Or (Arg = '--source') Or (Arg = '--target')) And (I < NArgs - 1) Then Begin
       Inc(I);
-      V := ToInt(ParamStr(I));
-      If (Arg <> '-source') Then Begin
-        If V = 1 Then V := ToInt(Copy(ParamStr(I), 3, 3));     { 1.8 -> 8 }
+      V := ToInt(Args[I]);
+      If V = 1 Then V := ToInt(Copy(Args[I], 3, 3));     { 1.8 -> 8 }
+      If (Arg = '-source') Or (Arg = '--source') Then OptSource := V
+      Else Begin
         If (V >= 8) And (V <= 25) Then OptTarget := 44 + V
         Else Begin
-          WriteLn('javac: la version cible ', ParamStr(I), ' n''est pas prise en charge (8 a 25)');
+          WriteLn('javac: la version cible ', Args[I], ' n''est pas prise en charge (8 a 25)');
           Halt(2);
         End;
+        If Arg = '--release' Then OptSource := V;
       End;
     End
-    Else If ((Arg = '-cp') Or (Arg = '-classpath') Or (Arg = '--class-path')) And (I < ParamCount) Then Begin
-      Inc(I); CpArg := ParamStr(I);
+    Else If ((Arg = '-cp') Or (Arg = '-classpath') Or (Arg = '--class-path')) And (I < NArgs - 1) Then Begin
+      Inc(I); CpArg := Args[I];
     End
-    Else If ((Arg = '-p') Or (Arg = '--module-path')) And (I < ParamCount) Then Begin
+    Else If ((Arg = '-sourcepath') Or (Arg = '--source-path')) And (I < NArgs - 1) Then Begin
+      Inc(I); SpArg := Args[I];
+    End
+    Else If ((Arg = '-p') Or (Arg = '--module-path')) And (I < NArgs - 1) Then Begin
       Inc(I); OptModulePath := True;
-      If CpArg = '' Then CpArg := ParamStr(I) Else CpArg := CpArg + ':' + ParamStr(I);
+      If CpArg = '' Then CpArg := Args[I] Else CpArg := CpArg + ':' + Args[I];
     End
+    Else If (Arg = '-encoding') And (I < NArgs - 1) Then Begin Inc(I); OptEncoding := Args[I]; End
+    Else If (Arg = '-h') And (I < NArgs - 1) Then Begin Inc(I); OptHeaderDir := Args[I]; End
+    Else If (Arg = '-s') And (I < NArgs - 1) Then Inc(I)
+    Else If ((Arg = '--add-modules') Or (Arg = '--add-exports') Or (Arg = '--add-reads') Or (Arg = '--limit-modules') Or
+             (Arg = '--upgrade-module-path') Or (Arg = '--system') Or (Arg = '--module-version') Or (Arg = '--processor-path') Or
+             (Arg = '-processorpath') Or (Arg = '--processor-module-path') Or (Arg = '-Xplugin') Or (Arg = '--patch-module') Or
+             (Arg = '-bootclasspath') Or (Arg = '--boot-class-path') Or (Arg = '-extdirs') Or
+             (Arg = '-endorseddirs')) And (I < NArgs - 1) Then Inc(I)
+    Else If ((Arg = '--module-source-path') Or (Arg = '-modulesourcepath')) And (I < NArgs - 1) Then Begin
+      Inc(I); ModSrcDir := Args[I];
+      If (ModSrcDir <> '') And (ModSrcDir[Length(ModSrcDir)] <> '/') Then ModSrcDir := ModSrcDir + '/';
+    End
+    Else If ((Arg = '-m') Or (Arg = '--module')) And (I < NArgs - 1) Then Begin Inc(I); ModList := Args[I]; End
+    Else If (Arg = '-processor') And (I < NArgs - 1) Then Begin Inc(I); HasProcessor := True; End
+    Else If Arg = '-proc:none' Then HasProcessor := False
+    Else If Arg = '-proc:only' Then ProcOnly := True
+    Else If Copy(Arg, 1, 10) = '-implicit:' Then OptImplicitNone := Arg = '-implicit:none'
     Else If Copy(Arg, 1, 10) = '-Xmaxerrs=' Then OptMaxErrs := ToInt(Copy(Arg, 11, 10))
-    Else If (Arg = '-Xmaxerrs') And (I < ParamCount) Then Begin Inc(I); OptMaxErrs := ToInt(ParamStr(I)); End
-    Else If (Arg = '-Xmaxwarns') And (I < ParamCount) Then Begin Inc(I); OptMaxWarns := ToInt(ParamStr(I)); End
+    Else If (Arg = '-Xmaxerrs') And (I < NArgs - 1) Then Begin Inc(I); OptMaxErrs := ToInt(Args[I]); End
+    Else If (Arg = '-Xmaxwarns') And (I < NArgs - 1) Then Begin Inc(I); OptMaxWarns := ToInt(Args[I]); End
+    Else If Arg = '-Xlint' Then OptLint := LINT_ALL
+    Else If Copy(Arg, 1, 7) = '-Xlint:' Then ApplyLint(Copy(Arg, 8, Length(Arg)))
+    Else If Arg = '-deprecation' Then OptLint := OptLint Or LINT_DEPRECATION
+    Else If Arg = '-nowarn' Then OptNoWarn := True
+    Else If Arg = '-Werror' Then OptWerror := True
     Else If Arg = '-g' Then Begin OptGLines := True; OptGSource := True; OptGVars := True; End
     Else If Copy(Arg, 1, 3) = '-g:' Then Begin
       OptGLines := Pos('lines', Arg) > 0; OptGSource := Pos('source', Arg) > 0; OptGVars := Pos('vars', Arg) > 0;
@@ -23271,44 +24201,73 @@ Begin
     Else If Arg = '-parameters' Then OptParameters := True
     Else If Arg = '-verbose' Then OptVerbose := True
     Else If Arg = '-Xparse' Then OptParseOnly := True
-    Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '-h') Or (Arg = '/?') Then Begin Usage; Halt(0); End
+    Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '/?') Then Begin Usage; Halt(0); End
     Else If (Arg = '-version') Or (Arg = '--version') Then Begin WriteLn(VERSION); Halt(0); End
     Else If (Arg <> '') And (Arg[1] = '-') Then Begin
-      { options ignorees }
+      { options ignorees (-J..., -A..., -XD..., -Xdiags..., -Xprefer..., --enable-preview, ...) }
     End
-    Else Begin
-      SetLength(Files, NFiles + 1);
-      Files[NFiles] := Arg;
-      Inc(NFiles);
-    End;
+    Else AddFile(Arg, '');
     Inc(I);
   End;
+  { mode multi-modules : -m a,b liste les sources de chaque module }
+  If (ModSrcDir <> '') And (ModList <> '') Then Begin
+    ModList := ModList + ',';
+    While ModList <> '' Do Begin
+      K := Pos(',', ModList);
+      If K > 1 Then ListJava(ModSrcDir + Copy(ModList, 1, K - 1) + '/', Copy(ModList, 1, K - 1));
+      Delete(ModList, 1, K);
+    End;
+  End;
+  For I := 0 To NFiles - 1 Do If FileMods[I] = '' Then FileMods[I] := ModuleOfPath(Files[I]);
+  If OptNoWarn Then OptLint := OptLint And LINT_REMOVAL;
   If NFiles = 0 Then Begin WriteLn('javac: aucun fichier source'); Halt(2); End;
   InitTypes;
   If CpArg = '' Then CpArg := GetEnv('CLASSPATH');
   If CpArg <> '' Then SetClassPath(CpArg);
+  { sources implicites : -sourcepath, sinon les repertoires du classpath }
+  If SpArg <> '' Then SplitPath(SpArg, True)
+  Else For I := 0 To NCPath - 1 Do If CPath[I].Kind = 1 Then AddSourceDir(CPath[I].Path);
   CurCtx := -1; CurCU := -1; CurClass := -1; CurMeth := -1; ClsParentCtx := -1; CurLambda := -1;
   AnonSuperCtor := -1; PendingLabelCtx := -1;
   MapInit(VTMap, 1021);
+  If HasProcessor Then
+    WriteLn('avertissement: le traitement d''annotations n''est pas pris en charge ; les processeurs sont ignores');
   For I := 0 To NFiles - 1 Do Begin
     MapPut(ClassMap, '@src:' + Files[I], 0);
   End;
-  For I := 0 To NFiles - 1 Do LoadSourceFile(Files[I]);
+  LoadingExplicit := True;
+  For I := 0 To NFiles - 1 Do Begin
+    LoadingModule := FileMods[I];
+    LoadSourceFile(Files[I]);
+  End;
+  LoadingModule := '';
+  LoadingExplicit := False;
   If (ErrCount = 0) And Not OptParseOnly Then AttribAll;
   If OptParseOnly Then Begin
     If ErrCount > 0 Then Halt(1);
     Halt(0);
   End;
-  If ErrCount = 0 Then Begin
+  If (ErrCount = 0) And Not ProcOnly Then Begin
     PrepareAll;
     K := 0;
     For I := 0 To NClasses - 1 Do
-      If Classes[I].IsSrc And (Classes[I].CU >= 0) Then WriteClassFile(I);
+      If Classes[I].IsSrc And (Classes[I].CU >= 0) Then
+        If CUs[Classes[I].CU].Explicit Or Not OptImplicitNone Then Begin
+          WriteClassFile(I);
+          If OptHeaderDir <> '' Then WriteJniHeader(I);
+        End;
     WriteModuleInfo;
   End;
+  If (ErrCount = 0) And OptWerror And (WarnCount > 0) Then Begin
+    WriteLn('erreur: avertissements trouves et -Werror specifie');
+    Inc(ErrCount);
+  End;
   If ErrCount > 0 Then Begin
+    PrintNotes;
     ErrSummary;
+    If WarnCount = 1 Then WriteLn('1 avertissement') Else If WarnCount > 1 Then WriteLn(WarnCount, ' avertissements');
     Halt(1);
   End;
-  If WarnCount > 0 Then WriteLn(WarnCount, ' avertissement(s)');
+  PrintNotes;
+  If WarnCount = 1 Then WriteLn('1 avertissement') Else If WarnCount > 1 Then WriteLn(WarnCount, ' avertissements');
 End.
