@@ -10,39 +10,57 @@
   ============================================================================
   JAVAC est un compilateur Java complet ecrit en Pascal. A partir d'un ou de
   plusieurs fichiers source (.java) il produit un fichier .class par classe
-  (classes, interfaces, enums, classes imbriquees, locales et anonymes), que
-  l'on peut executer avec la machine virtuelle Java ("java Classe").
+  (classes, interfaces, enums, records, classes imbriquees, locales et
+  anonymes), que l'on peut executer avec la machine virtuelle Java
+  ("java Classe").
 
   Usage :  JAVAC [options] fichier.java [fichier2.java ...]
   Options :
     -d repertoire      repertoire de sortie des fichiers .class
-    -target N          version de classe visee (11 a 21, defaut 11)
+    -cp chemin         classpath : repertoires et archives .jar / .zip
+    -target N          version de classe visee (8 a 25, defaut 11)
     --release N        synonyme de -target
-    -g                 (accepte, ignore : LineNumberTable toujours generee)
-    -nowarn -Xlint     (acceptes, ignores)
-    -verbose           affiche chaque classe ecrite
+    -verbose           affiche chaque fichier .class ecrit
+    -g -nowarn -Xlint  (acceptes, ignores : LineNumberTable toujours generee)
     -help              affiche cette aide
 
   PHASES DU COMPILATEUR
   ---------------------
     1. Analyse lexicale    : source -> jetons (Tokens)         [Lex...]
+       (Unicode, litteraux hexadecimaux et flottants hexadecimaux, blocs
+       de texte, sequences d'echappement)
     2. Analyse syntaxique  : jetons -> arbre syntaxique (AST)  [Parse...]
+       (Java 21 : generiques, lambdas, references de methode, records,
+       enums, interfaces, switch expressions, motifs, var, blocs de texte)
     3. Analyse semantique  : symboles, types, portees, verification des
-                             methodes, surcharge, generiques, constantes
-                             [Enter... Attr...]
-    4. Desucrage           : for-each, try-with-resources, switch sur String
-                             et enum, lambdas, classes internes/anonymes,
-                             enum, assert, varargs, boxing, concatenation
-                             de chaines, methodes bridge       [Lower...]
-    5. Generation du bytecode JVM : instructions, StackMapTable, exceptions,
-                             LineNumberTable                    [Gen...]
+                             methodes, surcharge, inference des types
+                             generiques, constantes, exceptions verifiees,
+                             accessibilite des instructions, definitions
+                             en double, variables non initialisees
+                             [Enter... Attrib...]
+    4. Desucrage           : for-each, try-with-resources, switch sur String,
+                             enum et motifs, lambdas (invokedynamic), classes
+                             internes / locales / anonymes (this$0, val$x),
+                             enum (values, valueOf, $VALUES), records,
+                             assert, varargs, boxing, concatenation de
+                             chaines, methodes pont (bridge), initialiseurs
+                             [Prepare... Gen...]
+    5. Generation du bytecode JVM : instructions, StackMapTable complete
+                             (verification de type), table des exceptions,
+                             LineNumberTable                    [Emit... Gen...]
     6. Ecriture des fichiers .class : pool de constantes, champs, methodes,
                              attributs (SourceFile, InnerClasses, NestHost,
-                             NestMembers, BootstrapMethods)     [Cls...]
+                             NestMembers, EnclosingMethod, BootstrapMethods)
+                                                                [CP... Write...]
 
-  La bibliotheque standard Java (java.lang, java.util, java.io, ...) est
-  decrite par une table interne de signatures (generee depuis le JDK) : le
-  compilateur n'a besoin d'aucun fichier externe en dehors des sources.
+  BIBLIOTHEQUE STANDARD
+  ---------------------
+  Une table interne de signatures (generee par reflexion depuis le JDK)
+  decrit les ~300 classes les plus courantes de java.lang, java.util,
+  java.io, java.util.function, java.util.stream, java.math, java.time... Les
+  autres classes sont lues directement dans les fichiers .class : classpath
+  (repertoires et archives jar, avec decompression Deflate) puis image des
+  modules du JDK (lib/modules, trouvee par JAVA_HOME ou /usr/lib/jvm).
   Aucune unite autre que DOS n'est utilisee.
   ============================================================================ }
 
@@ -2657,7 +2675,7 @@ Begin
   End;
   If IsOp('{') Then Nodes[M].C := ParseBlock
   Else Begin
-    If IsKw('default') Then Begin Inc(P); ParseExpr; End;   { valeur par defaut d'annotation }
+    If IsKw('default') Then Begin Inc(P); If IsOp('{') Then ParseArrayInit Else ParseTernary; End;   { valeur par defaut d'annotation }
     Expect(';');
   End;
   ParseMethodRest := M;
@@ -14399,7 +14417,7 @@ Begin
   P := Nodes[N].A;
   I := 0;
   While P <> 0 Do Begin
-    If Nodes[P].A <> 0 Then PT := ResolveType(Nodes[P].A)
+    If (Nodes[P].A <> 0) And Not ((Nodes[Nodes[P].A].Aux = 0) And (Nodes[Nodes[P].A].S = 'var') And (Nodes[Nodes[P].A].N = 0)) Then PT := ResolveType(Nodes[P].A)
     Else PT := ResolveIVars(MemberType(Target, Owner, Meths[Sam].Par[I]));
     If PT = T_ANY Then PT := T_OBJECT;
     Li := NewLocal(Nodes[P].S, PT, Nodes[P].Mods Or LF_PARAM, P);
