@@ -1649,7 +1649,7 @@ Begin
 End;
 
 Function ParseType : LongInt;
-Var N, Args : LongInt; S : String;
+Var N, Args, Pfx : LongInt; S : String;
 Begin
   SkipAnnotations;
   N := NewNode(N_TYPE, CurLine);
@@ -1668,6 +1668,13 @@ Begin
       End;
       If IsOp('.') And IsIdentAt(1) Then Begin
         Inc(P);
+        { Outer<Args>.Inner : on garde le prefixe parametre }
+        If Nodes[N].A <> 0 Then Begin
+          Pfx := NewNode(N_TYPE, Nodes[N].Line);
+          Nodes[Pfx].S := S;
+          Nodes[Pfx].A := Nodes[N].A;
+          Nodes[N].E := Pfx;
+        End;
         S := S + '.' + ExpectIdent;
         Nodes[N].A := 0;
       End
@@ -2230,7 +2237,7 @@ Begin
 End;
 
 Function ParseUnary : LongInt;
-Var N, Line, T, M : LongInt; Op : LongInt;
+Var N, Line, T, M, Hb, Tb : LongInt; Op : LongInt;
 Begin
   Line := CurLine;
   If IsOp('+') Or IsOp('-') Or IsOp('!') Or IsOp('~') Or IsOp('++') Or IsOp('--') Then Begin
@@ -2261,7 +2268,9 @@ Begin
     Inc(P);
     N := NewNode(N_CAST, Line);
     T := ParseType;
-    While Accept('&') Do M := ParseType;     { cast d'intersection : seul le premier type compte }
+    Hb := 0; Tb := 0;
+    While Accept('&') Do AppendNode(Hb, Tb, ParseType);     { cast d'intersection : types supplementaires }
+    Nodes[N].C := Hb;
     Nodes[N].A := T;
     Expect(')');
     Nodes[N].B := ParseUnary;
@@ -9794,12 +9803,14 @@ Type
     NArgs : LongInt;
     Args  : Array[0..MAXTARGS - 1] Of LongInt;
     TV    : LongInt;
+    Outer : LongInt;     { type englobant parametre d'une classe interne (Outer<T>.Inner), ou 0 }
   End;
 
   TTVarRec = Record
     Name  : String;
     Bound : LongInt;
     Ty    : LongInt;
+    Extra : Array Of LongInt;      { bornes supplementaires (T extends A & B & C) }
   End;
 
   TFieldRec = Record
@@ -9922,7 +9933,7 @@ Var
 Function InternType(Var R : TTypeRec) : LongInt;
 Var K : String; I, Id : LongInt;
 Begin
-  K := IStr(R.Kind) + '|' + IStr(R.Cls) + '|' + IStr(R.Elem) + '|' + IStr(R.TV);
+  K := IStr(R.Kind) + '|' + IStr(R.Cls) + '|' + IStr(R.Elem) + '|' + IStr(R.TV) + '|' + IStr(R.Outer);
   For I := 0 To R.NArgs - 1 Do K := K + '|' + IStr(R.Args[I]);
   Id := MapFind(TypeMap, K);
   If Id >= 0 Then Begin InternType := Id; Exit; End;
@@ -9950,6 +9961,19 @@ Begin
   R.NArgs := N;
   For I := 0 To N - 1 Do R.Args[I] := A[I];
   ClassTA := InternType(R);
+End;
+
+{ Type de classe interne dont le type englobant (parametre) est Outer }
+Function ClassTO(C : LongInt; N : LongInt; Const A : Array Of LongInt; Outer : LongInt) : LongInt;
+Var R : TTypeRec; I : LongInt;
+Begin
+  FillChar(R, SizeOf(R), 0);
+  R.Kind := TYK_CLASS; R.Cls := C;
+  If N > MAXTARGS Then N := MAXTARGS;
+  R.NArgs := N;
+  For I := 0 To N - 1 Do R.Args[I] := A[I];
+  R.Outer := Outer;
+  ClassTO := InternType(R);
 End;
 
 Function ClassT1(C, A : LongInt) : LongInt;
@@ -10169,6 +10193,12 @@ Begin
   IsInterfaceC := (Classes[C].Flags And ACC_INTERFACE) <> 0;
 End;
 
+{ Classe membre non statique (possede une instance englobante) }
+Function IsInnerMemberClass(C : LongInt) : Boolean;
+Begin
+  IsInnerMemberClass := (Classes[C].Outer >= 0) And ((Classes[C].Flags And (ACC_STATIC Or ACC_INTERFACE Or ACC_ENUM Or MOD_LOCAL)) = 0);
+End;
+
 Function IsSubClass(C, D : LongInt) : Boolean;
 Var K : String; R, I, S : LongInt;
 Begin
@@ -10195,7 +10225,7 @@ Function Erasure(T : LongInt) : LongInt;
 Begin
   If T < TY_FIRSTDYN Then Begin Erasure := T; Exit; End;
   Case Types[T].Kind Of
-    TYK_CLASS : If Types[T].NArgs = 0 Then Erasure := T Else Erasure := ClassT(Types[T].Cls);
+    TYK_CLASS : If (Types[T].NArgs = 0) And (Types[T].Outer = 0) Then Erasure := T Else Erasure := ClassT(Types[T].Cls);
     TYK_ARRAY : Erasure := ArrayT(Erasure(Types[T].Elem));
     TYK_TVAR  : Begin
       If TVars[Types[T].TV].Bound = 0 Then Erasure := T_OBJECT
@@ -10271,6 +10301,11 @@ Begin
       I := LastPos('/', S);
       S := Copy(S, I + 1, Length(S));
       S := ReplaceAll(S, '$', '.');
+      If Types[T].Outer <> 0 Then Begin
+        { Outer<T>.Inner }
+        I := LastPos('.', S);
+        S := TypeStr(Types[T].Outer) + '.' + Copy(S, I + 1, Length(S));
+      End;
       If Types[T].NArgs > 0 Then Begin
         S := S + '<';
         For I := 0 To Types[T].NArgs - 1 Do Begin
@@ -10426,7 +10461,11 @@ Begin
       Inc(I);
       If (I <= Length(S)) And (S[I] <> ':') Then Begin
         B := ParseSigType(S, I);
-        If First = 1 Then TVars[Types[Ty].TV].Bound := B;
+        If First = 1 Then TVars[Types[Ty].TV].Bound := B
+        Else If B <> TY_NONE Then Begin
+          SetLength(TVars[Types[Ty].TV].Extra, Length(TVars[Types[Ty].TV].Extra) + 1);
+          TVars[Types[Ty].TV].Extra[Length(TVars[Types[Ty].TV].Extra) - 1] := B;
+        End;
       End;
       First := 0;
     End;
@@ -11547,6 +11586,11 @@ Type
     Name     : String;
     Caps     : Array Of LongInt;
     UsesThis : Boolean;
+    Markers  : Array Of LongInt;   { interfaces marqueurs d'un cast d'intersection (classes) }
+    Ser      : Boolean;            { lambda serialisable }
+    MetaPlus1 : LongInt;           { indice de l'amorceur + 1 (0 = pas encore cree) }
+    IndyDesc, SamName, SamDesc, IfaceName, ImplName, ImplDesc, ImplOwner : String;   { pour $deserializeLambda$ }
+    ImplKind : LongInt;
   End;
 
 Var
@@ -11855,6 +11899,35 @@ Procedure LintRawType(N, T : LongInt); Forward;
 
 Function ClassAccessible(C : LongInt) : Boolean; Forward;
 
+{ Classe interne dont l'englobante est parametree : ajoute le type englobant (Outer<T>.Inner) }
+Function ResolveType(N : LongInt) : LongInt; Forward;
+Function AsSuper(T : LongInt; D : LongInt) : LongInt; Forward;
+Function ThisTypeOf(C : LongInt) : LongInt; Forward;
+
+Function WithOuterType(T, N : LongInt) : LongInt;
+Var C, OC, OT, K, I : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt;
+Begin
+  WithOuterType := T;
+  C := Types[T].Cls;
+  OC := Classes[C].Outer;
+  If OC < 0 Then Exit;
+  EnsureHeader(OC);
+  OT := 0;
+  If Nodes[N].E <> 0 Then Begin
+    OT := ResolveType(Nodes[N].E);
+    If IsClassT(OT) Then OT := AsSuper(OT, OC) Else OT := 0;
+  End
+  Else Begin
+    K := CurClass;
+    While (K >= 0) And Not IsSubClass(K, OC) Do K := Classes[K].Outer;
+    If K >= 0 Then OT := AsSuper(ThisTypeOf(K), OC);
+  End;
+  If OT <= 0 Then Exit;
+  If (Types[OT].NArgs = 0) And (Types[OT].Outer = 0) Then Exit;
+  For I := 0 To Types[T].NArgs - 1 Do Args[I] := Types[T].Args[I];
+  WithOuterType := ClassTO(C, Types[T].NArgs, Args, OT);
+End;
+
 Function ResolveType(N : LongInt) : LongInt;
 Var T, A, I, Cnt : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; Nm : String; W : LongInt;
 Begin
@@ -11891,6 +11964,7 @@ Begin
       End;
       T := ClassTA(Types[T].Cls, Cnt, Args);
     End;
+    If IsClassT(T) And IsInnerMemberClass(Types[T].Cls) Then T := WithOuterType(T, N);
   End;
   For I := 1 To Nodes[N].N Do
     If T <> TY_NONE Then T := ArrayT(T);
@@ -12045,7 +12119,15 @@ Begin
   P := Decl;
   While P <> 0 Do Begin
     B := Nodes[P].A;
-    If B <> 0 Then TVars[Nodes[P].Sym].Bound := ResolveType(B);
+    If B <> 0 Then Begin
+      TVars[Nodes[P].Sym].Bound := ResolveType(B);
+      B := Nodes[B].Next;
+      While B <> 0 Do Begin
+        SetLength(TVars[Nodes[P].Sym].Extra, Length(TVars[Nodes[P].Sym].Extra) + 1);
+        TVars[Nodes[P].Sym].Extra[Length(TVars[Nodes[P].Sym].Extra) - 1] := ResolveType(B);
+        B := Nodes[B].Next;
+      End;
+    End;
     P := Nodes[P].Next;
   End;
 End;
@@ -12380,8 +12462,11 @@ End;
 
 { ----- substitution et parametrisation ---------------------------------- }
 
+Const
+  MAXMAP = 24;
+
 Function SubstType(T : LongInt; Const Fr, Tt : Array Of LongInt; N : LongInt) : LongInt;
-Var I, J : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; Ch : Boolean; R : LongInt;
+Var I, J : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt; Ch : Boolean; R, O : LongInt;
 Begin
   SubstType := T;
   If (T < TY_FIRSTDYN) Or (N = 0) Then Exit;
@@ -12395,13 +12480,18 @@ Begin
       If R <> Types[T].Elem Then SubstType := ArrayT(R);
     End;
     TYK_CLASS : Begin
-      If Types[T].NArgs = 0 Then Exit;
+      If (Types[T].NArgs = 0) And (Types[T].Outer = 0) Then Exit;
       Ch := False;
       For J := 0 To Types[T].NArgs - 1 Do Begin
         Args[J] := SubstType(Types[T].Args[J], Fr, Tt, N);
         If Args[J] <> Types[T].Args[J] Then Ch := True;
       End;
-      If Ch Then SubstType := ClassTA(Types[T].Cls, Types[T].NArgs, Args);
+      O := Types[T].Outer;
+      If O <> 0 Then Begin
+        O := SubstType(O, Fr, Tt, N);
+        If O <> Types[T].Outer Then Ch := True;
+      End;
+      If Ch Then SubstType := ClassTO(Types[T].Cls, Types[T].NArgs, Args, O);
     End;
   End;
 End;
@@ -12415,26 +12505,53 @@ Begin
   Case Types[T].Kind Of
     TYK_TVAR : HasTVar := True;
     TYK_ARRAY : HasTVar := HasTVar(Types[T].Elem);
-    TYK_CLASS : For I := 0 To Types[T].NArgs - 1 Do
-      If HasTVar(Types[T].Args[I]) Then Begin HasTVar := True; Exit; End;
+    TYK_CLASS : Begin
+      For I := 0 To Types[T].NArgs - 1 Do
+        If HasTVar(Types[T].Args[I]) Then Begin HasTVar := True; Exit; End;
+      If (Types[T].Outer <> 0) And HasTVar(Types[T].Outer) Then HasTVar := True;
+    End;
   End;
 End;
 
+{ Type de l'instance englobante d'une classe interne dont l'englobante est generique : Outer<T>.Inner }
 Function ThisTypeOf(C : LongInt) : LongInt;
-Var A : Array[0..MAXTARGS - 1] Of LongInt; I, N : LongInt;
+Var A : Array[0..MAXTARGS - 1] Of LongInt; I, N, O : LongInt;
 Begin
   EnsureHeader(C);
   N := Length(Classes[C].TPars);
-  If N = 0 Then Begin ThisTypeOf := ClassT(C); Exit; End;
   If N > MAXTARGS Then N := MAXTARGS;
+  O := 0;
+  If IsInnerMemberClass(C) Then Begin
+    O := ThisTypeOf(Classes[C].Outer);
+    If (Types[O].NArgs = 0) And (Types[O].Outer = 0) Then O := 0;
+  End;
   For I := 0 To N - 1 Do A[I] := Classes[C].TPars[I];
-  ThisTypeOf := ClassTA(C, N, A);
+  If (N = 0) And (O = 0) Then ThisTypeOf := ClassT(C)
+  Else ThisTypeOf := ClassTO(C, N, A, O);
+End;
+
+{ Ajoute a Fr/Tt la correspondance parametres -> arguments de la chaine des types englobants de T }
+Procedure AddOuterMap(T : LongInt; Var Fr, Tt : Array Of LongInt; Var N : LongInt);
+Var O, K, I : LongInt;
+Begin
+  If T < TY_FIRSTDYN Then Exit;
+  If Types[T].Kind <> TYK_CLASS Then Exit;
+  O := Types[T].Outer;
+  While O <> 0 Do Begin
+    K := Types[O].Cls;
+    EnsureHeader(K);
+    For I := 0 To Length(Classes[K].TPars) - 1 Do
+      If (I < Types[O].NArgs) And (N < MAXMAP) Then Begin
+        Fr[N] := Classes[K].TPars[I]; Tt[N] := Types[O].Args[I]; Inc(N);
+      End;
+    O := Types[O].Outer;
+  End;
 End;
 
 { Parametrisation de la classe D vue comme super-type de T ; 0 si absent }
 Function AsSuper(T : LongInt; D : LongInt) : LongInt;
 Var
-  C, I, S, R, N : LongInt; Fr, Tt : Array[0..MAXTARGS - 1] Of LongInt;
+  C, I, S, R, N : LongInt; Fr, Tt : Array[0..MAXMAP - 1] Of LongInt;
   Sup : LongInt;
 Begin
   AsSuper := 0;
@@ -12442,7 +12559,13 @@ Begin
   Case Types[T].Kind Of
     TYK_TVAR : Begin
       If TVars[Types[T].TV].Bound = 0 Then S := T_OBJECT Else S := TVars[Types[T].TV].Bound;
-      AsSuper := AsSuper(S, D); Exit;
+      R := AsSuper(S, D);
+      I := 0;
+      While (R = 0) And (I < Length(TVars[Types[T].TV].Extra)) Do Begin
+        R := AsSuper(TVars[Types[T].TV].Extra[I], D);
+        Inc(I);
+      End;
+      AsSuper := R; Exit;
     End;
     TYK_ARRAY : Begin
       If (D = C_OBJECT) Or (D = C_CLONEABLE) Or (D = C_SERIAL) Then AsSuper := ClassT(D);
@@ -12467,6 +12590,7 @@ Begin
       Else Tt[I] := Erasure(TVars[Types[Fr[I]].TV].Bound);
     End;
   End;
+  AddOuterMap(T, Fr, Tt, N);
   If Classes[C].Super <> 0 Then Begin
     Sup := SubstType(Classes[C].Super, Fr, Tt, N);
     R := AsSuper(Sup, D);
@@ -12481,13 +12605,12 @@ End;
 
 { Type d'un membre declare dans la classe Owner, vu depuis le type Site }
 Function MemberType(Site, Owner, T : LongInt) : LongInt;
-Var A, C, N, I : LongInt; Fr, Tt : Array[0..MAXTARGS - 1] Of LongInt;
+Var A, C, N, I : LongInt; Fr, Tt : Array[0..MAXMAP - 1] Of LongInt;
 Begin
   MemberType := T;
   If Not HasTVar(T) Then Exit;
   EnsureHeader(Owner);
   N := Length(Classes[Owner].TPars);
-  If N = 0 Then Exit;
   If N > MAXTARGS Then N := MAXTARGS;
   A := 0;
   If Site > 0 Then A := AsSuper(Site, Owner);
@@ -12498,6 +12621,8 @@ Begin
     Else If A = 0 Then Tt[I] := Fr[I]
     Else Tt[I] := T_OBJECT;
   End;
+  If A <> 0 Then AddOuterMap(A, Fr, Tt, N);
+  If N = 0 Then Exit;
   C := SubstType(T, Fr, Tt, N);
   MemberType := C;
 End;
@@ -12505,7 +12630,7 @@ End;
 { ----- sous-typage et conversions ---------------------------------------- }
 
 Function IsSubtypeRef(A, B : LongInt) : Boolean;
-Var Ba : LongInt;
+Var Ba, Ex : LongInt;
 Begin
   IsSubtypeRef := False;
   If A = B Then Begin IsSubtypeRef := True; Exit; End;
@@ -12518,6 +12643,8 @@ Begin
     Ba := TVars[Types[A].TV].Bound;
     If Ba = 0 Then Ba := T_OBJECT;
     IsSubtypeRef := IsSubtypeRef(Ba, B);
+    For Ex := 0 To Length(TVars[Types[A].TV].Extra) - 1 Do
+      If IsSubtypeRef(TVars[Types[A].TV].Extra[Ex], B) Then IsSubtypeRef := True;
     Exit;
   End;
   If IsTVarT(B) Then Begin
@@ -12641,9 +12768,38 @@ Begin
   End;
 End;
 
-{ Type "le plus petit commun super-type" (approximation) }
+{ Ajoute a la liste Lst (N entrees) la classe C et tous ses super-types }
+Procedure CollectSupers(C : LongInt; Var Lst : Array Of LongInt; Var N : LongInt; Depth : LongInt);
+Var I : LongInt;
+Begin
+  If (C < 0) Or (Depth > 40) Or (N >= 60) Then Exit;
+  For I := 0 To N - 1 Do If Lst[I] = C Then Exit;
+  EnsureHeader(C);
+  Lst[N] := C; Inc(N);
+  CollectSupers(SuperClsOf(C), Lst, N, Depth + 1);
+  For I := 0 To Length(Classes[C].Ifaces) - 1 Do CollectSupers(ClsOf(Classes[C].Ifaces[I]), Lst, N, Depth + 1);
+End;
+
+{ Parametrisation commune de la classe D vue depuis A et B (arguments differents : inconnu) }
+Function CommonParam(A, B, D : LongInt) : LongInt;
+Var PA, PB, I : LongInt; Args : Array[0..MAXTARGS - 1] Of LongInt;
+Begin
+  PA := AsSuper(A, D);
+  PB := AsSuper(B, D);
+  If (PA = 0) Or (PB = 0) Then Begin CommonParam := ClassT(D); Exit; End;
+  If PA = PB Then Begin CommonParam := PA; Exit; End;
+  If (Types[PA].NArgs = 0) Or (Types[PA].NArgs <> Types[PB].NArgs) Then Begin CommonParam := ClassT(D); Exit; End;
+  For I := 0 To Types[PA].NArgs - 1 Do
+    If Types[PA].Args[I] = Types[PB].Args[I] Then Args[I] := Types[PA].Args[I] Else Args[I] := T_ANY;
+  CommonParam := ClassTA(D, Types[PA].NArgs, Args);
+End;
+
+{ Type "le plus petit commun super-type" : la classe ou les interfaces minimales communes ;
+  plusieurs candidats -> type intersection (variable de type anonyme a bornes multiples) }
 Function LubType(A, B : LongInt) : LongInt;
-Var C : LongInt;
+Var
+  LA, LB, Cand, Mn : Array[0..63] Of LongInt; NA, NB, NC, NM, I, J, K : LongInt; Keep : Boolean; R, Cls : LongInt;
+  Parts : Array[0..15] Of LongInt;
 Begin
   If A = B Then Begin LubType := A; Exit; End;
   If A = TY_NULL Then Begin LubType := B; Exit; End;
@@ -12651,16 +12807,40 @@ Begin
   If (A = TY_NONE) Or (B = TY_NONE) Then Begin LubType := TY_NONE; Exit; End;
   If IsSubtypeRef(A, B) Then Begin LubType := B; Exit; End;
   If IsSubtypeRef(B, A) Then Begin LubType := A; Exit; End;
+  If IsTVarT(A) Then A := Erasure(A);
+  If IsTVarT(B) Then B := Erasure(B);
   If IsClassT(A) And IsClassT(B) Then Begin
-    C := Types[A].Cls;
-    While C >= 0 Do Begin
-      If IsSubClass(Types[B].Cls, C) And (C <> C_OBJECT) Then Begin LubType := AsSuper(A, C); Exit; End;
-      C := SuperClsOf(C);
+    NA := 0; NB := 0;
+    CollectSupers(Types[A].Cls, LA, NA, 0);
+    CollectSupers(Types[B].Cls, LB, NB, 0);
+    NC := 0;
+    For I := 0 To NA - 1 Do Begin
+      Keep := False;
+      For J := 0 To NB - 1 Do If LB[J] = LA[I] Then Keep := True;
+      If Keep And (LA[I] <> C_OBJECT) Then Begin Cand[NC] := LA[I]; Inc(NC); End;
     End;
-    { une interface commune ? }
-    C := Types[A].Cls;
-    EnsureHeader(C);
-    LubType := T_OBJECT;
+    { elements minimaux : ceux qui ne sont pas super-type d'un autre candidat }
+    NM := 0;
+    For I := 0 To NC - 1 Do Begin
+      Keep := True;
+      For J := 0 To NC - 1 Do
+        If (J <> I) And (Cand[J] <> Cand[I]) And IsSubClass(Cand[J], Cand[I]) Then Keep := False;
+      If Keep Then Begin Mn[NM] := Cand[I]; Inc(NM); End;
+    End;
+    If NM = 0 Then Begin LubType := T_OBJECT; Exit; End;
+    If NM = 1 Then Begin LubType := CommonParam(A, B, Mn[0]); Exit; End;
+    { plusieurs candidats : une classe d'abord (s'il y en a une), puis les interfaces }
+    If NM > 16 Then NM := 16;
+    K := 0;
+    For I := 0 To NM - 1 Do If (Classes[Mn[I]].Flags And ACC_INTERFACE) = 0 Then Begin Parts[K] := CommonParam(A, B, Mn[I]); Inc(K); End;
+    For I := 0 To NM - 1 Do If (Classes[Mn[I]].Flags And ACC_INTERFACE) <> 0 Then Begin Parts[K] := CommonParam(A, B, Mn[I]); Inc(K); End;
+    R := NewTVar('&', Parts[0]);
+    For I := 1 To K - 1 Do Begin
+      SetLength(TVars[Types[R].TV].Extra, Length(TVars[Types[R].TV].Extra) + 1);
+      TVars[Types[R].TV].Extra[Length(TVars[Types[R].TV].Extra) - 1] := Parts[I];
+    End;
+    LubType := R;
+    Cls := 0;
     Exit;
   End;
   LubType := T_OBJECT;
@@ -12898,7 +13078,12 @@ Begin
   Else C := ClsOf(SiteT);
   If C < 0 Then C := C_OBJECT;
   VisitMethods(C, Name, SiteT, Ctor);
-  { variable de type a bornes multiples non geree ; Object en dernier recours }
+  { bornes supplementaires d'une variable de type }
+  If IsTVarT(SiteT) Then
+    For C := 0 To Length(TVars[Types[SiteT].TV].Extra) - 1 Do
+      If ClsOf(Erasure(TVars[Types[SiteT].TV].Extra[C])) >= 0 Then
+        VisitMethods(ClsOf(Erasure(TVars[Types[SiteT].TV].Extra[C])), Name, SiteT, Ctor);
+  { Object en dernier recours }
   If IsTVarT(SiteT) And (NCand = 0) Then VisitMethods(C_OBJECT, Name, SiteT, Ctor);
 End;
 
@@ -14853,13 +15038,42 @@ Begin
 End;
 
 Function AttribCast(N : LongInt) : LongInt;
-Var T, B, TB, Ch, Tn, Ar : LongInt; AllWild : Boolean;
+Var T, B, TB, Ch, Tn, Ar, Ex, X : LongInt; AllWild : Boolean;
 Begin
   Tn := Nodes[N].A;
   T := ResolveType(Tn);
   B := Nodes[N].B;
   TB := AttribExpr(B, T);
   AttribCast := T;
+  { cast d'intersection (A & B & ...) }
+  If (Nodes[N].C <> 0) And (T <> TY_NONE) Then Begin
+    Ex := Nodes[N].C;
+    If IsFnNode(B) Then Begin
+      If Nodes[B].Sym >= 0 Then
+        While Ex <> 0 Do Begin
+          X := ResolveType(Ex);
+          If IsClassT(X) Then Begin
+            If Classes[Types[X].Cls].Name = 'java/io/Serializable' Then Lambdas[Nodes[B].Sym].Ser := True
+            Else Begin
+              SetLength(Lambdas[Nodes[B].Sym].Markers, Length(Lambdas[Nodes[B].Sym].Markers) + 1);
+              Lambdas[Nodes[B].Sym].Markers[Length(Lambdas[Nodes[B].Sym].Markers) - 1] := Types[X].Cls;
+            End;
+          End;
+          Ex := Nodes[Ex].Next;
+        End;
+    End
+    Else Begin
+      { type intersection : variable de type anonyme bornee par A, avec les bornes supplementaires }
+      X := NewTVar('&', T);
+      While Ex <> 0 Do Begin
+        SetLength(TVars[Types[X].TV].Extra, Length(TVars[Types[X].TV].Extra) + 1);
+        TVars[Types[X].TV].Extra[Length(TVars[Types[X].TV].Extra) - 1] := ResolveType(Ex);
+        Ex := Nodes[Ex].Next;
+      End;
+      T := X;
+      AttribCast := T;
+    End;
+  End;
   If (T = TY_NONE) Or (TB = TY_NONE) Then Begin Nodes[N].Typ := T; Nodes[N].Kind := N_CONV; Nodes[N].A := B; Nodes[N].B := 0; Exit; End;
   If Not IsCastable(TB, T) Then Begin
     Err(PrefPos(B), 'types incompatibles : ' + TypeStr(TB) + ' ne peut pas etre converti en ' + TypeStr(T));
@@ -15341,7 +15555,7 @@ End;
 Function AttribNew(N, Expected : LongInt) : LongInt;
 Var
   TNode, Body, OuterE, T, C, OT, SiteT, DiamondCls, Anon, K, Recv, ObjCtor : LongInt;
-  R : TResolved; Ok, Diamond : Boolean; Args : LongInt;
+  R : TResolved; Ok, Diamond : Boolean; Args : LongInt; RT : LongInt; OArgs : Array[0..MAXTARGS - 1] Of LongInt;
 Begin
   TNode := Nodes[N].A; Args := Nodes[N].B; Body := Nodes[N].C; OuterE := Nodes[N].D;
   Nodes[N].Typ := TY_NONE;
@@ -15361,6 +15575,14 @@ Begin
         If Nodes[TNode].A <> 0 Then Begin
           Nodes[TNode].Aux := 0;
           T := ResolveType(TNode);
+        End;
+        { instance englobante parametree : x.new Inner() }
+        If IsInnerMemberClass(C) And IsClassT(T) Then Begin
+          RT := AsSuper(OT, Classes[C].Outer);
+          If (RT > 0) And ((Types[RT].NArgs > 0) Or (Types[RT].Outer <> 0)) Then Begin
+            For K := 0 To Types[T].NArgs - 1 Do OArgs[K] := Types[T].Args[K];
+            T := ClassTO(C, Types[T].NArgs, OArgs, RT);
+          End;
         End;
       End;
     End;
@@ -15578,6 +15800,12 @@ Begin
   If Nodes[N].Aux = 1 Then Begin
     QT := ResolveType(Qual);
     IsType := True;
+  End
+  Else If (Nodes[Qual].Kind = N_SUPER) And (Nodes[Qual].A = 0) Then Begin
+    { super::methode }
+    QT := Classes[CurClass].Super;
+    If QT = 0 Then QT := T_OBJECT;
+    IsType := False;
   End
   Else Begin
     QT := AttribQual(Qual);
@@ -20145,12 +20373,31 @@ Begin
   Else ClassNameOfType := 'java/lang/Object';
 End;
 
+{ Methode appelee sur une variable de type a bornes multiples : classe de la borne qui la declare, ou -1 }
+Function ExtraBoundClassFor(N : LongInt) : LongInt;
+Var M, Site, I, K : LongInt;
+Begin
+  ExtraBoundClassFor := -1;
+  M := Nodes[N].Sym;
+  Site := Nodes[N].E;
+  If (M < 0) Or (Site <= 0) Or Not IsTVarT(Site) Then Exit;
+  If Length(TVars[Types[Site].TV].Extra) = 0 Then Exit;
+  K := ClsOf(Erasure(Site));
+  If (K >= 0) And IsSubClass(K, Meths[M].Owner) Then Exit;
+  For I := 0 To Length(TVars[Types[Site].TV].Extra) - 1 Do Begin
+    K := ClsOf(Erasure(TVars[Types[Site].TV].Extra[I]));
+    If (K >= 0) And IsSubClass(K, Meths[M].Owner) Then Begin ExtraBoundClassFor := K; Exit; End;
+  End;
+End;
+
 Function CallOwnerName(N : LongInt) : String;
-Var M, Site : LongInt;
+Var M, Site, Bc : LongInt;
 Begin
   M := Nodes[N].Sym;
   Site := Nodes[N].E;
-  If (Nodes[N].Mods And CALL_IFACEOBJ) <> 0 Then CallOwnerName := 'java/lang/Object'
+  Bc := ExtraBoundClassFor(N);
+  If Bc >= 0 Then CallOwnerName := Classes[Bc].Name
+  Else If (Nodes[N].Mods And CALL_IFACEOBJ) <> 0 Then CallOwnerName := 'java/lang/Object'
   Else If (Site > 0) And (IsClassT(Erasure(Site))) Then CallOwnerName := ClassNameOfType(Site)
   Else CallOwnerName := Classes[Meths[M].Owner].Name;
 End;
@@ -20262,6 +20509,7 @@ Begin
   End
   Else Begin
     GenExpr(Nodes[N].A);
+    If ExtraBoundClassFor(N) >= 0 Then EmitCheckcast(Owner);
     If (Nodes[N].Mods And CALL_SUPER) <> 0 Then Op := OP_INVOKESPECIAL
     Else If Iface Then Op := OP_INVOKEINTERFACE
     Else Op := OP_INVOKEVIRTUAL;
@@ -20935,11 +21183,24 @@ Begin
   Meths[M].Desc := LambdaMethodDesc(I);
 End;
 
+Var
+  SerList  : Array Of LongInt;      { lambdas serialisables de la classe en cours }
+  NSerList : LongInt;
+
+Procedure NoteSerLambda(I : LongInt);
+Var K : LongInt;
+Begin
+  For K := 0 To NSerList - 1 Do If SerList[K] = I Then Exit;
+  SetLength(SerList, NSerList + 1);
+  SerList[NSerList] := I;
+  Inc(NSerList);
+End;
+
 Procedure GenIndy(N : LongInt);
 Var
   I, Sam, K, M, Bsm, Mh, Ref : LongInt; IfaceName, Name, SamDesc, InstDesc, ImplDesc, CallDesc : String;
   Imp : String; InstT : LongInt; Static, OwnerIface : Boolean; Caps : Array Of LongInt; Ownr : String;
-  Meta : LongInt; Args : TBuf;
+  Meta, Flags, NArgsB : LongInt; Args : TBuf; Ser : Boolean;
 Begin
   I := Nodes[N].Sym;
   EnsureLambdaMethod(I);
@@ -20967,19 +21228,54 @@ Begin
     InstDesc := InstDesc + TypeDesc(Erasure(Lambdas[I].ParT[K]));
   InstDesc := InstDesc + ')' + TypeDesc(Erasure(Lambdas[I].RetT));
   ImplDesc := Meths[M].Desc;
-  { methode d'amorcage }
-  Ref := CPMethod('java/lang/invoke/LambdaMetafactory', 'metafactory',
-    '(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;', False);
-  Bsm := CPMethodHandle(6, Ref);
-  If Static Then Mh := CPMethodHandle(6, CPMethod(Ownr, Meths[M].Name, ImplDesc, OwnerIface))
-  Else Mh := CPMethodHandle(7, CPMethod(Ownr, Meths[M].Name, ImplDesc, OwnerIface));
-  B2(BsmBuf, Bsm);
-  B2(BsmBuf, 3);
-  B2(BsmBuf, CPMethodType(SamDesc));
-  B2(BsmBuf, Mh);
-  B2(BsmBuf, CPMethodType(InstDesc));
-  Meta := BsmCount;
-  Inc(BsmCount);
+  { methode d'amorcage ; lambda serialisable ou avec marqueurs : altMetafactory }
+  Ser := Lambdas[I].Ser Or (IsClassT(Lambdas[I].IfaceT) And IsSubClass(ClsOf(Lambdas[I].IfaceT), GetClass('java/io/Serializable')));
+  If Static Then Begin Mh := CPMethodHandle(6, CPMethod(Ownr, Meths[M].Name, ImplDesc, OwnerIface)); Lambdas[I].ImplKind := 6; End
+  Else Begin Mh := CPMethodHandle(7, CPMethod(Ownr, Meths[M].Name, ImplDesc, OwnerIface)); Lambdas[I].ImplKind := 7; End;
+  Lambdas[I].IndyDesc := CallDesc;
+  Lambdas[I].SamName := Meths[Sam].Name;
+  Lambdas[I].SamDesc := SamDesc;
+  Lambdas[I].IfaceName := IfaceName;
+  Lambdas[I].ImplName := Meths[M].Name;
+  Lambdas[I].ImplDesc := ImplDesc;
+  Lambdas[I].ImplOwner := Ownr;
+  If Lambdas[I].MetaPlus1 = 0 Then Begin
+    If Ser Or (Length(Lambdas[I].Markers) > 0) Then Begin
+      Ref := CPMethod('java/lang/invoke/LambdaMetafactory', 'altMetafactory',
+        '(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;', False);
+      Bsm := CPMethodHandle(6, Ref);
+      Flags := 4;
+      If Ser Then Flags := Flags Or 1;
+      If Length(Lambdas[I].Markers) > 0 Then Flags := Flags Or 2;
+      B2(BsmBuf, Bsm);
+      NArgsB := 5;
+      If Length(Lambdas[I].Markers) > 0 Then Inc(NArgsB, 1 + Length(Lambdas[I].Markers));
+      B2(BsmBuf, NArgsB);
+      B2(BsmBuf, CPMethodType(SamDesc));
+      B2(BsmBuf, Mh);
+      B2(BsmBuf, CPMethodType(InstDesc));
+      B2(BsmBuf, CPInt(Flags));
+      If Length(Lambdas[I].Markers) > 0 Then Begin
+        B2(BsmBuf, CPInt(Length(Lambdas[I].Markers)));
+        For K := 0 To Length(Lambdas[I].Markers) - 1 Do B2(BsmBuf, CPClass(Classes[Lambdas[I].Markers[K]].Name));
+      End;
+      B2(BsmBuf, CPInt(0));
+    End
+    Else Begin
+      Ref := CPMethod('java/lang/invoke/LambdaMetafactory', 'metafactory',
+        '(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;', False);
+      Bsm := CPMethodHandle(6, Ref);
+      B2(BsmBuf, Bsm);
+      B2(BsmBuf, 3);
+      B2(BsmBuf, CPMethodType(SamDesc));
+      B2(BsmBuf, Mh);
+      B2(BsmBuf, CPMethodType(InstDesc));
+    End;
+    Lambdas[I].MetaPlus1 := BsmCount + 1;
+    Inc(BsmCount);
+  End;
+  Meta := Lambdas[I].MetaPlus1 - 1;
+  If Ser Then NoteSerLambda(I);
   EmitInvokeDynamic(Meta, Meths[Sam].Name, CallDesc);
   Imp := '';
   InstT := 0;
@@ -22689,7 +22985,11 @@ Begin
     TYK_ARRAY : SigOfType := '[' + SigOfType(Types[T].Elem);
     TYK_TVAR  : SigOfType := 'T' + TVars[Types[T].TV].Name + ';';
     TYK_CLASS : Begin
-      S := 'L' + Classes[Types[T].Cls].Name;
+      If Types[T].Outer <> 0 Then Begin
+        S := SigOfType(Types[T].Outer);
+        S := Copy(S, 1, Length(S) - 1) + '.' + Classes[Types[T].Cls].Simple;
+      End
+      Else S := 'L' + Classes[Types[T].Cls].Name;
       If Types[T].NArgs > 0 Then Begin
         S := S + '<';
         For I := 0 To Types[T].NArgs - 1 Do S := S + SigOfType(Types[T].Args[I]);
@@ -22710,7 +23010,7 @@ Begin
   I := T;
   While IsArrayT(I) Do I := ElemOf(I);
   If I >= TY_FIRSTDYN Then
-    TypeGenericT := (Types[I].Kind = TYK_TVAR) Or ((Types[I].Kind = TYK_CLASS) And (Types[I].NArgs > 0));
+    TypeGenericT := (Types[I].Kind = TYK_TVAR) Or ((Types[I].Kind = TYK_CLASS) And ((Types[I].NArgs > 0) Or (Types[I].Outer <> 0)));
 End;
 
 { Le type decrit par le noeud N est-il generique (variable de type ou type parametre) ? }
@@ -22726,7 +23026,7 @@ Begin
   While IsArrayT(I) Do I := ElemOf(I);
   If I >= TY_FIRSTDYN Then
     If Types[I].Kind = TYK_TVAR Then NodeGeneric := True
-    Else If (Types[I].Kind = TYK_CLASS) And (Nodes[N].A <> 0) Then NodeGeneric := True;
+    Else If (Types[I].Kind = TYK_CLASS) And ((Nodes[N].A <> 0) Or (Types[I].Outer <> 0)) Then NodeGeneric := True;
 End;
 
 Function SigOfNode(N : LongInt) : String;
@@ -22749,7 +23049,11 @@ Begin
     S := S + '[';
   End;
   If (T >= TY_FIRSTDYN) And (Types[T].Kind = TYK_CLASS) Then Begin
-    S := S + 'L' + Classes[Types[T].Cls].Name;
+    If Types[T].Outer <> 0 Then Begin
+      Args := SigOfType(Types[T].Outer);
+      S := S + Copy(Args, 1, Length(Args) - 1) + '.' + Classes[Types[T].Cls].Simple;
+    End
+    Else S := S + 'L' + Classes[Types[T].Cls].Name;
     If Nodes[N].A <> 0 Then Begin
       Args := '<';
       A := Nodes[N].A;
@@ -23109,6 +23413,7 @@ Begin
       Cnt := 0;
       While M >= 0 Do Begin
         If (Meths[M].Name = Meths[M2].Name) And (Meths[M].NPar = Meths[M2].NPar) And (Meths[M].Synth = 0) And
+           (((Classes[C].Flags And ACC_INTERFACE) = 0) Or ((Meths[M].Flags And ACC_ABSTRACT) = 0)) And
            ((Meths[M].Flags And (ACC_STATIC Or ACC_PRIVATE)) = 0) And (Meths[M].Desc <> Meths[M2].Desc) Then Begin
           Same := True;
           For K := 0 To Meths[M].NPar - 1 Do
@@ -23134,7 +23439,6 @@ End;
 Procedure MakeBridges(C : LongInt);
 Var I, K : LongInt; Last : LongInt;
 Begin
-  If (Classes[C].Flags And ACC_INTERFACE) <> 0 Then Exit;
   NBrVisited := 0;
   Last := Classes[C].LastMeth;
   BridgesFrom(C, SuperClsOf(C));
@@ -23512,7 +23816,8 @@ Begin
     Inc(K);
   End;
   Ret := DescRetType(Meths[T].Desc);
-  EmitInvoke(OP_INVOKEVIRTUAL, Classes[C].Name, Meths[T].Name, Meths[T].Desc, False);
+  If (Classes[C].Flags And ACC_INTERFACE) <> 0 Then EmitInvoke(OP_INVOKEINTERFACE, Classes[C].Name, Meths[T].Name, Meths[T].Desc, True)
+  Else EmitInvoke(OP_INVOKEVIRTUAL, Classes[C].Name, Meths[T].Name, Meths[T].Desc, False);
   If Ret = 'V' Then EmitReturnOp('V')
   Else Begin
     Case Ret[1] Of
@@ -23525,6 +23830,66 @@ Begin
     End;
   End;
   P := 0;
+End;
+
+{ $deserializeLambda$ : recree les lambdas serialisables de la classe }
+Procedure GenDeserializeLambda(C : LongInt);
+Var
+  K, I, J, Nx, Capt : LongInt; Fail : LongInt; ThisCap : Boolean; Ct : LongInt; Nxt : LongInt;
+  Procedure Chk(Const Meth, Val : String);
+  Begin
+    EmitLoad('A', 0);
+    EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/invoke/SerializedLambda', Meth, '()Ljava/lang/String;', False);
+    EmitConstString(Val);
+    EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/Object', 'equals', '(Ljava/lang/Object;)Z', False);
+    EmitJump(OP_IFEQ, Nxt);
+  End;
+Begin
+  For K := 0 To NSerList - 1 Do Begin
+    I := SerList[K];
+    Nxt := NewLabel;
+    Chk('getImplMethodName', Lambdas[I].ImplName);
+    EmitLoad('A', 0);
+    EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/invoke/SerializedLambda', 'getImplMethodKind', '()I', False);
+    EmitConstInt(Lambdas[I].ImplKind);
+    EmitJump(OP_IF_ICMPNE, Nxt);
+    Chk('getFunctionalInterfaceClass', Lambdas[I].IfaceName);
+    Chk('getFunctionalInterfaceMethodName', Lambdas[I].SamName);
+    Chk('getFunctionalInterfaceMethodSignature', Lambdas[I].SamDesc);
+    Chk('getImplClass', Lambdas[I].ImplOwner);
+    Chk('getImplMethodSignature', Lambdas[I].ImplDesc);
+    { arguments captures : this puis les variables }
+    Capt := 0;
+    ThisCap := Lambdas[I].ImplKind = 7;
+    If ThisCap Then Begin
+      EmitLoad('A', 0);
+      EmitConstInt(0);
+      EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/invoke/SerializedLambda', 'getCapturedArg', '(I)Ljava/lang/Object;', False);
+      EmitCheckcast(Classes[C].Name);
+      Inc(Capt);
+    End;
+    For J := 0 To Length(Lambdas[I].Caps) - 1 Do Begin
+      Ct := Erasure(Locals[Lambdas[I].Caps[J]].Typ);
+      EmitLoad('A', 0);
+      EmitConstInt(Capt);
+      EmitInvoke(OP_INVOKEVIRTUAL, 'java/lang/invoke/SerializedLambda', 'getCapturedArg', '(I)Ljava/lang/Object;', False);
+      If IsPrim(Ct) Then Begin
+        EmitCheckcast(BoxClassName(Ct));
+        EmitUnbox(Ct);
+      End
+      Else If Ct <> T_OBJECT Then EmitCheckcast(TypeClassName(Ct));
+      Inc(Capt);
+    End;
+    EmitInvokeDynamic(Lambdas[I].MetaPlus1 - 1, Lambdas[I].SamName, Lambdas[I].IndyDesc);
+    EmitReturnOp('A');
+    PlaceLabel(Nxt);
+  End;
+  EmitNew('java/lang/IllegalArgumentException');
+  EmitDupValue;
+  EmitConstString('Invalid lambda deserialization');
+  EmitInvoke(OP_INVOKESPECIAL, 'java/lang/IllegalArgumentException', '<init>', '(Ljava/lang/String;)V', False);
+  EmitThrow;
+  Nx := 0; Fail := 0;
 End;
 
 Procedure GenMethodBodyOnce(C, M : LongInt);
@@ -23572,7 +23937,7 @@ Begin
       P := Nodes[P].Next;
     End;
   End
-  Else If Meths[M].Synth = 3 Then Begin
+  Else If Meths[M].Synth In [3, 9] Then Begin
     { methode synthetique sans declaration : parametres selon le descripteur }
     Slot := NextLoc;
     For I := 0 To Meths[M].NPar - 1 Do Begin
@@ -23607,6 +23972,9 @@ Begin
   End
   Else If Meths[M].Synth In [4, 5, 6, 7] Then Begin
     GenRecordMethod(C, M);
+  End
+  Else If Meths[M].Synth = 9 Then Begin
+    GenDeserializeLambda(C);
   End
   Else If Meths[M].Synth = 8 Then Begin
     FinSetup(C, True);
@@ -23875,7 +24243,7 @@ Var
 Begin
   PoolInit;
   BInit(FieldBuf); BInit(MethBuf); BInit(BsmBuf); BsmCount := 0;
-  NFieldOut := 0; NMethOut := 0; LambdaCount := 0;
+  NFieldOut := 0; NMethOut := 0; LambdaCount := 0; NSerList := 0;
   CurFile := CUs[Classes[C].CU].FileName;
   ThisClsName := Classes[C].Name;
   GenCls := C;
@@ -23890,6 +24258,15 @@ Begin
   While M >= 0 Do Begin
     GenMethodInfo(C, M);
     M := Meths[M].Next;
+  End;
+  { $deserializeLambda$ si la classe contient des lambdas serialisables }
+  If NSerList > 0 Then Begin
+    M := NewSynMethod(C, '$deserializeLambda$', ACC_PRIVATE Or ACC_STATIC Or ACC_SYNTHETIC, 9,
+                      '(Ljava/lang/invoke/SerializedLambda;)Ljava/lang/Object;', T_OBJECT);
+    SetLength(Meths[M].Par, 1);
+    Meths[M].Par[0] := ClassT(GetClass('java/lang/invoke/SerializedLambda'));
+    Meths[M].NPar := 1;
+    GenMethodInfo(C, M);
   End;
   { en-tete }
   BInit(Out);
