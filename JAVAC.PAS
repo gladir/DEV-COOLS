@@ -11525,6 +11525,8 @@ Begin
   If K > 0 Then Begin
     Classes[C].Outer := LookupClass(Copy(Classes[C].Name, 1, K - 1));
     Classes[C].Simple := Copy(Classes[C].Name, K + 1, Length(Classes[C].Name));
+    { classe membre non statique : instance englobante implicite }
+    Classes[C].IsInner := (Classes[C].Outer >= 0) And ((ClassFl And (ACC_STATIC Or ACC_INTERFACE Or ACC_ENUM Or ACC_ANNOTATION)) = 0);
     If Classes[C].Outer >= 0 Then Begin
       N := Length(Classes[Classes[C].Outer].Nested);
       SetLength(Classes[Classes[C].Outer].Nested, N + 1);
@@ -11608,6 +11610,13 @@ Begin
             Inc(Np);
           End;
           Meths[M].NPar := Np;
+        End;
+        { constructeur d'une classe interne (non statique) : le parametre synthetique de l'instance englobante n'est pas visible }
+        If (Nm = '<init>') And (LastPos('$', Classes[C].Name) > 0) And ((ClassFl And (ACC_STATIC Or ACC_INTERFACE Or ACC_ENUM)) = 0) And
+           (Meths[M].NPar = CountDescParams(Desc)) And (Meths[M].NPar >= 1) Then Begin
+          For Np := 1 To Meths[M].NPar - 1 Do Meths[M].Par[Np - 1] := Meths[M].Par[Np];
+          SetLength(Meths[M].Par, Meths[M].NPar - 1);
+          Meths[M].NPar := Meths[M].NPar - 1;
         End;
         { exceptions : la signature generique (^Type) l'emporte sur l'attribut Exceptions }
         If NThrT > 0 Then Begin
@@ -11874,6 +11883,19 @@ Begin
       If Last = Name Then Begin
         R := LookupClassQualified(S);
         If R >= 0 Then Begin LookupTypeInCU := R; Exit; End;
+      End;
+    End
+    Else If (Nodes[Imp].Aux = 0) Then Begin
+      { import static Classe.Membre : peut designer un type membre }
+      S := Nodes[Imp].S;
+      K := LastPos('.', S);
+      Last := Copy(S, K + 1, Length(S));
+      If Last = Name Then Begin
+        K := LookupClassQualified(Copy(S, 1, K - 1));
+        If K >= 0 Then Begin
+          R := FindMemberClass(K, Name);
+          If R >= 0 Then Begin LookupTypeInCU := R; Exit; End;
+        End;
       End;
     End;
     Imp := Nodes[Imp].Next;
@@ -15150,6 +15172,25 @@ Begin
     End;
     N_TYPEEXPR : Begin LastEK := EK_TYPE; AttribQual := Nodes[N].Typ; End;
     N_PKGREF : Begin LastEK := EK_PKG; AttribQual := TY_NONE; End;
+    N_SUPER : Begin
+      { super.champ : acces au champ de la super-classe, sur this }
+      If (Nodes[N].A = 0) And (CurClass >= 0) Then Begin
+        If CurStatic Then Err(Nodes[N].Line, 'super ne peut pas etre reference depuis un contexte statique');
+        NoteThisUse;
+        Nodes[N].Kind := N_THIS;
+        Nodes[N].Att := 1;
+        T := Classes[CurClass].Super;
+        If T = 0 Then T := T_OBJECT;
+        Nodes[N].Typ := T;
+        AttribQual := T;
+        LastEK := EK_VALUE;
+      End
+      Else Begin
+        T := AttribExpr(N, 0);
+        LastEK := EK_VALUE;
+        AttribQual := T;
+      End;
+    End;
   Else
     T := AttribExpr(N, 0);
     LastEK := EK_VALUE;
@@ -17156,6 +17197,7 @@ Begin
   Mode := SW_INT;
   AttribSwitchSel := ST;
   If ST = TY_NONE Then Exit;
+  If IsClassT(ST) Then EnsureMembers(Types[ST].Cls);       { classe de bibliotheque : en-tete et membres charges a la demande }
   If SwitchHasPattern(N) Then Begin
     If IsPrim(ST) Then Begin
       Err(Nodes[N].Line, 'selecteur de switch invalide pour un motif : ' + TypeStr(ST));
@@ -17304,6 +17346,7 @@ Begin
   If (Not IsClassT(T)) Or (Depth > 24) Then Begin Add(T, -1); Exit; End;
   C := Types[T].Cls;
   EnsureHeader(C);
+  EnsureMembers(C);
   If (Classes[C].Flags And ACC_ENUM) <> 0 Then Begin
     EnsureMembers(C);
     F := Classes[C].FirstField;
