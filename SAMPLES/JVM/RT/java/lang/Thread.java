@@ -32,7 +32,12 @@ public class Thread implements Runnable {
     }
     public final void join() throws InterruptedException { }
     public final void join(long ms) throws InterruptedException { }
-    public static void sleep(long ms) throws InterruptedException { VM.sleep(ms); }
+    public static void sleep(long ms) throws InterruptedException {
+        if (VM.pumpHook != null) {
+            long end = System.currentTimeMillis() + ms;
+            do { VM.pumpHook.run(); long left = end - System.currentTimeMillis(); if (left > 0) VM.sleep(Math.min(left, 8)); } while (System.currentTimeMillis() < end);
+        } else VM.sleep(ms);
+    }
     public static void sleep(long ms, int nanos) throws InterruptedException { VM.sleep(ms); }
     public static void yield() { }
     public static void onSpinWait() { }

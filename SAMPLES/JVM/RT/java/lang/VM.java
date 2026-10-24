@@ -15,4 +15,5 @@ public final class VM {
     public static native String fixed(double d, int prec);
     public static native Object newInstance(Class<?> c);
     public static native Object newArray(Class<?> c, int n);
+    public static Runnable pumpHook;
 }
