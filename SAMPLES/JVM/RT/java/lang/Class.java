@@ -29,7 +29,7 @@ public final class Class<T> implements java.io.Serializable {
     public String toString() { return (isInterface() ? "interface " : (isPrimitive() ? "" : "class ")) + getName(); }
     public boolean isSealed() { return false; }
     public boolean isAnnotation() { return false; }
-    public boolean isSynthetic() { return false; }
+    public native boolean isSynthetic();
     public boolean isMemberClass() { return false; }
     public boolean isLocalClass() { return false; }
     public ClassLoader getClassLoader() { return null; }
