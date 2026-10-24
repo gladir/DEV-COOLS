@@ -299,6 +299,8 @@ Var
   OptHeaderDir : String;    { repertoire des en-tetes JNI (-h) }
   OptImplicitNone : Boolean; { -implicit:none : pas de .class pour les sources chargees implicitement }
   OptWerror   : Boolean;    { -Werror }
+  OptPreview  : Boolean;    { --enable-preview }
+  PreviewUsed : Boolean;    { le fichier en cours utilise une fonctionnalite en apercu }
   OptLint     : LongInt;    { categories -Xlint actives (masque LINT_*) }
   OptGLines   : Boolean;    { LineNumberTable (defaut oui) }
   OptGSource  : Boolean;    { SourceFile (defaut oui) }
@@ -778,6 +780,18 @@ End;
 
 
 Var TokStartI : LongInt;
+
+{ Fonctionnalite finale a partir de FinalVer, en apercu (--enable-preview) a partir de PreviewVer }
+Procedure NeedPreviewFeature(Pos, FinalVer, PreviewVer : LongInt; Const Name : String);
+Begin
+  If OptSource >= FinalVer Then Exit;
+  If OptPreview And (OptSource >= PreviewVer) Then Begin PreviewUsed := True; Exit; End;
+  If OptSource >= PreviewVer Then
+    Err(Pos, 'la fonctionnalite ' + Name + ' est un apercu et est desactivee par defaut (utiliser --enable-preview)')
+  Else
+    Err(Pos, 'la fonctionnalite ' + Name + ' n''est pas prise en charge avec -source ' + IStr(OptSource) +
+        ' (disponible a partir de la version ' + IStr(FinalVer) + ')');
+End;
 
 { Fonctionnalite de langage disponible a partir de la version Min ; sinon erreur selon -source }
 Procedure NeedFeature(Pos, Min : LongInt; Const Name : String);
@@ -1469,6 +1483,21 @@ Begin
   End;
 End;
 
+{ Nom d'une variable declaree : '_' (variable non nommee, Java 22) recoit un nom interne unique }
+Var UnnamedCount : LongInt;
+
+Function ExpectDeclIdent : String;
+Var S : String;
+Begin
+  S := ExpectIdent;
+  If S = '_' Then Begin
+    NeedPreviewFeature(TokPos(TokIdx(-1)), 22, 21, 'variable non nommee (_)');
+    Inc(UnnamedCount);
+    S := '$unnamed' + IStr(UnnamedCount);
+  End;
+  ExpectDeclIdent := S;
+End;
+
 Function IsPrimKw(K : LongInt) : Boolean;
 Var S : String; T : LongInt;
 Begin
@@ -1683,6 +1712,7 @@ End;
   --------------------------------------------------------------------------- }
 
 Var InCaseLabel : Boolean;
+    CompactBody : Boolean;     { le prochain ParseClassBody analyse un fichier source compact (jusqu'a la fin du fichier) }
 
 Function ParseExpr : LongInt; Forward;
 Function ParseUnary : LongInt; Forward;
@@ -1754,11 +1784,11 @@ Begin
         While IsKw('final') Or IsOp('@') Do
           If IsOp('@') Then SkipAnnotation Else Begin Inc(P); Nodes[Prm].Mods := Nodes[Prm].Mods Or ACC_FINAL; End;
         If IsIdentAt(0) And (IsOpAt(1, ',') Or IsOpAt(1, ')')) Then
-          Nodes[Prm].S := ExpectIdent
+          Nodes[Prm].S := ExpectDeclIdent
         Else Begin
           Nodes[Prm].A := ParseType;
           If IsOp('.') And IsOpAt(1, '.') Then Inc(P, 2);
-          Nodes[Prm].S := ExpectIdent;
+          Nodes[Prm].S := ExpectDeclIdent;
         End;
         AppendNode(Head, Tail, Prm);
         If Not Accept(',') Then Break;
@@ -1768,7 +1798,7 @@ Begin
   End
   Else Begin
     Prm := NewNode(N_PARAM, CurLine);
-    Nodes[Prm].S := ExpectIdent;
+    Nodes[Prm].S := ExpectDeclIdent;
     AppendNode(Head, Tail, Prm);
   End;
   Expect('->');
@@ -2330,7 +2360,7 @@ Begin
         If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Begin
           NeedFeature(CurLine, 16, 'motif de type avec instanceof');
           V := NewNode(N_VARDECL, CurLine);
-          Nodes[V].S := ExpectIdent;
+          Nodes[V].S := ExpectDeclIdent;
           Nodes[N].C := V;
         End;
       End;
@@ -2435,6 +2465,18 @@ Function ParsePattern : LongInt;
 Var N, T, Hd, Tl : LongInt;
 Begin
   N := NewNode(N_PATTERN, CurLine);
+  { motif non nomme : _ }
+  If IsIdentStr(0, '_') And (IsOpAt(1, ',') Or IsOpAt(1, ')')) Then Begin
+    NeedPreviewFeature(CurLine, 22, 21, 'motif non nomme (_)');
+    Inc(P);
+    T := NewNode(N_TYPE, Nodes[N].Line);
+    Nodes[T].S := 'var';
+    Nodes[N].A := T;
+    Inc(UnnamedCount);
+    Nodes[N].S := '$unnamed' + IStr(UnnamedCount);
+    ParsePattern := N;
+    Exit;
+  End;
   While IsKw('final') Do Inc(P);
   T := ParseType;
   Nodes[N].A := T;
@@ -2450,9 +2492,9 @@ Begin
     End;
     Expect(')');
     Nodes[N].B := Hd;
-    If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Nodes[N].S := ExpectIdent;
+    If IsIdentAt(0) And Not IsIdentStr(0, 'when') Then Nodes[N].S := ExpectDeclIdent;
   End
-  Else If IsIdentAt(0) Then Nodes[N].S := ExpectIdent;
+  Else If IsIdentAt(0) Then Nodes[N].S := ExpectDeclIdent;
   ParsePattern := N;
 End;
 
@@ -2591,7 +2633,7 @@ Begin
   Head := 0; Tail := 0;
   While True Do Begin
     V := NewNode(N_VARDECL, CurLine);
-    Nodes[V].S := ExpectIdent;
+    Nodes[V].S := ExpectDeclIdent;
     Nodes[V].Mods := Mods;
     While IsOp('[') And IsOpAt(1, ']') Do Begin Inc(P, 2); Inc(Nodes[V].N); End;
     If Accept('=') Then Begin
@@ -2628,7 +2670,7 @@ Begin
     T := ParseType;
     Nodes[V].A := T;
     Nodes[V].B := NewNode(N_VARDECL, CurLine);
-    Nodes[Nodes[V].B].S := ExpectIdent;
+    Nodes[Nodes[V].B].S := ExpectDeclIdent;
     Expect('=');
     Nodes[Nodes[V].B].A := ParseExpr;
     ParseResource := V;
@@ -2698,7 +2740,7 @@ Begin
            (Toks[Q + 1].Str = ':') Then Begin
           N := NewNode(N_FOREACH, Line);
           Nodes[N].A := ParseType;
-          Nodes[N].S := ExpectIdent;
+          Nodes[N].S := ExpectDeclIdent;
           Nodes[N].Mods := Mods;
           Expect(':');
           Nodes[N].B := ParseExpr;
@@ -2791,7 +2833,7 @@ Begin
         AppendNode(Hc, Tc, ParseType);
         While Accept('|') Do AppendNode(Hc, Tc, ParseType);
         Nodes[C].A := Hc;
-        Nodes[C].S := ExpectIdent;
+        Nodes[C].S := ExpectDeclIdent;
         Expect(')');
         Nodes[C].B := ParseBlock;
         AppendNode(H, Tl, C);
@@ -3028,7 +3070,7 @@ Begin
         Inc(Nodes[Nodes[Prm].A].N);
       End;
       If IsKw('this') Then Begin Inc(P); Accept(','); Continue; End;
-      Nodes[Prm].S := ExpectIdent;
+      Nodes[Prm].S := ExpectDeclIdent;
       While IsOp('[') And IsOpAt(1, ']') Do Begin
         Inc(P, 2);
         Inc(Nodes[Nodes[Prm].A].N);
@@ -3092,13 +3134,15 @@ Procedure ParseClassBody(Cls : LongInt);
 Var
   Head, Tail, M, Mods, TP, T, Line, V, Q, MAnn, PStart, SvRD : LongInt;
   Name : String;
-  IsIface : Boolean;
+  IsIface, Compact : Boolean;
   Simple : String;
 Begin
   Head := 0; Tail := 0;
+  Compact := CompactBody;
+  CompactBody := False;
   Simple := Nodes[Cls].S;
   IsIface := (Nodes[Cls].Aux = CLS_INTERFACE) Or (Nodes[Cls].Aux = CLS_ANNOTATION);
-  Expect('{');
+  If Not Compact Then Expect('{');
   { constantes d'enumeration }
   If Nodes[Cls].Aux = CLS_ENUM Then Begin
     While IsIdentAt(0) Or IsOp('@') Do Begin
@@ -3109,8 +3153,8 @@ Begin
   End;
   Inc(RecoverDepth);
   SvRD := RecoverDepth;
-  While Not IsOp('}') Do Begin
-    If Toks[TokIdx(0)].Kind = TK_EOF Then Begin ExpectedErr('''}'''); Break; End;
+  While Not (IsOp('}') And Not Compact) Do Begin
+    If Toks[TokIdx(0)].Kind = TK_EOF Then Begin If Not Compact Then ExpectedErr('''}'''); Break; End;
     PStart := P;
     Try
     If Accept(';') Then Continue;
@@ -3180,7 +3224,7 @@ Begin
     If P = PStart Then Inc(P);
   End;
   Dec(RecoverDepth);
-  Expect('}');
+  If Not Compact Then Expect('}');
   Nodes[Cls].D := Head;
 End;
 
@@ -3307,7 +3351,7 @@ Begin
 End;
 
 Function ParseCompilationUnit : LongInt;
-Var N, Head, Tail, I, Mods, Line, PStart, SvRD : LongInt; S : String;
+Var N, Head, Tail, I, Mods, Line, PStart, SvRD, PBody, Cls : LongInt; S : String; Compact : Boolean;
 Begin
   N := NewNode(N_CU, 1);
   Head := 0; Tail := 0;
@@ -3323,6 +3367,17 @@ Begin
     Line := CurLine;
     Inc(P);
     I := NewNode(N_IMPORT, Line);
+    If IsIdentStr(0, 'module') And IsIdentAt(1) And Not IsOpAt(1, '.') Then Begin
+      { import module M; : tous les paquetages exportes par le module }
+      NeedPreviewFeature(Line, 25, 23, 'import de module');
+      Inc(P);
+      Nodes[I].Aux := 2;
+      S := ParseDottedName;
+      Expect(';');
+      Nodes[I].S := S;
+      AppendNode(Head, Tail, I);
+      Continue;
+    End;
     If AcceptKw('static') Then Nodes[I].Mods := ACC_STATIC;
     S := ExpectIdent;
     While Accept('.') Do Begin
@@ -3335,6 +3390,8 @@ Begin
   End;
   Nodes[N].A := Head;
   Head := 0; Tail := 0;
+  PBody := P;
+  Compact := False;
   Inc(RecoverDepth);
   SvRD := RecoverDepth;
   While Toks[TokIdx(0)].Kind <> TK_EOF Do Begin
@@ -3347,14 +3404,39 @@ Begin
     Else If IsKw('class') Or IsKw('interface') Or IsKw('enum') Or (IsOp('@') And IsKwAt(1, 'interface')) Or
        (IsIdentStr(0, 'record') And IsIdentAt(1)) Then
       AppendNode(Head, Tail, ParseClassDecl(Mods))
-    Else
+    Else Begin
+      { methode ou champ au niveau superieur : fichier source compact (classe implicite) }
+      If IsIdentAt(0) Or IsPrimKw(0) Or IsKw('void') Or IsOp('<') Then Begin Compact := True; Break; End;
       SyntaxFail('class, interface ou enum attendu');
+    End;
     Except
       On E : TParseAbort Do Begin RecoverDepth := SvRD; SkipToSync; End;
     End;
     If P = PStart Then Inc(P);
   End;
   Dec(RecoverDepth);
+  If Compact Then Begin
+    NeedPreviewFeature(TokPos(TokIdx(0)), 25, 21, 'fichier source compact (classe sans nom)');
+    P := PBody;
+    Cls := NewNode(N_CLASS, TokPos(TokIdx(0)));
+    S := CurFile;
+    I := LastPos('/', S); If I = 0 Then I := LastPos('\', S);
+    S := Copy(S, I + 1, Length(S));
+    If (Length(S) > 5) And (Copy(S, Length(S) - 4, 5) = '.java') Then Delete(S, Length(S) - 4, 5);
+    Nodes[Cls].S := S;
+    Nodes[Cls].Mods := ACC_FINAL;
+    Nodes[Cls].Aux := CLS_CLASS;
+    { import module java.base implicite }
+    I := NewNode(N_IMPORT, Nodes[Cls].Line);
+    Nodes[I].Aux := 2;
+    Nodes[I].S := 'java.base';
+    Nodes[I].Next := Nodes[N].A;
+    Nodes[N].A := I;
+    CompactBody := True;
+    Head := 0; Tail := 0;
+    AppendNode(Head, Tail, Cls);
+    ParseClassBody(Cls);
+  End;
   Nodes[N].B := Head;
   ParseCompilationUnit := N;
 End;
@@ -9798,6 +9880,7 @@ Type
     Imports       : LongInt;
     Root          : LongInt;
     Explicit      : Boolean;      { donne sur la ligne de commande (sinon charge implicitement) }
+    Preview       : Boolean;      { utilise une fonctionnalite en apercu }
     ModName       : String;       { module (mode --module-source-path), sinon vide }
   End;
 
@@ -10668,13 +10751,22 @@ Var
   JdkModuleOf : TStrMap;
 
 Const
-  NJMODS = 22;
+  NJMODS = 69;
   JdkMods : Array[1..NJMODS] Of String = (
     'java.base', 'java.desktop', 'java.sql', 'java.xml', 'java.logging', 'java.management',
     'java.naming', 'java.net.http', 'java.prefs', 'java.rmi', 'java.scripting',
     'java.security.jgss', 'java.sql.rowset', 'java.compiler', 'java.datatransfer',
     'java.instrument', 'java.xml.crypto', 'jdk.httpserver', 'jdk.unsupported',
-    'java.management.rmi', 'jdk.compiler', 'jdk.jfr');
+    'java.management.rmi', 'jdk.compiler', 'jdk.jfr',
+    'java.security.sasl', 'java.smartcardio', 'java.transaction.xa', 'jdk.accessibility', 'jdk.attach',
+    'jdk.charsets', 'jdk.crypto.cryptoki', 'jdk.crypto.ec', 'jdk.dynalink', 'jdk.editpad', 'jdk.hotspot.agent',
+    'jdk.incubator.vector', 'jdk.internal.ed', 'jdk.internal.jvmstat', 'jdk.internal.le', 'jdk.internal.opt',
+    'jdk.internal.vm.ci', 'jdk.internal.vm.compiler', 'jdk.internal.vm.compiler.management', 'jdk.jartool',
+    'jdk.javadoc', 'jdk.jcmd', 'jdk.jconsole', 'jdk.jdeps', 'jdk.jdi', 'jdk.jdwp.agent', 'jdk.jlink', 'jdk.jpackage',
+    'jdk.jshell', 'jdk.jsobject', 'jdk.jstatd', 'jdk.localedata', 'jdk.management', 'jdk.management.agent',
+    'jdk.management.jfr', 'jdk.naming.dns', 'jdk.naming.rmi', 'jdk.net', 'jdk.nio.mapmode', 'jdk.random',
+    'jdk.sctp', 'jdk.security.auth', 'jdk.security.jgss', 'jdk.unsupported.desktop', 'jdk.xml.dom', 'jdk.zipfs',
+    'java.se');
 
 { ----- lecture de fichiers ----------------------------------------------------- }
 
@@ -11588,6 +11680,8 @@ Begin
 End;
 
 
+Function ModuleImportLookup(Const Mod_, Name : String) : LongInt; Forward;
+
 { Cherche une classe d'apres un nom simple, en dehors des portees locales }
 Function LookupTypeInCU(Const Name : String) : LongInt;
 Var Imp, R, K, Found1 : LongInt; S, Last : String; Dir : String; Pk : String;
@@ -11621,6 +11715,13 @@ Begin
         K := LookupClassQualified(Nodes[Imp].S);
         If K >= 0 Then R := FindMemberClass(K, Name);
       End;
+      If R >= 0 Then Begin
+        If (Found1 >= 0) And (Found1 <> R) Then AmbigType := True;
+        If Found1 < 0 Then Found1 := R;
+      End;
+    End
+    Else If (Nodes[Imp].Aux = 2) Then Begin
+      R := ModuleImportLookup(Nodes[Imp].S, Name);
       If R >= 0 Then Begin
         If (Found1 >= 0) And (Found1 <> R) Then AmbigType := True;
         If Found1 < 0 Then Found1 := R;
@@ -11748,6 +11849,7 @@ Begin
   DeprBitsOf := R;
 End;
 
+Procedure CheckModuleVisible(C, Pos : LongInt); Forward;
 Procedure LintClassUse(C, Pos : LongInt); Forward;
 Procedure LintRawType(N, T : LongInt); Forward;
 
@@ -11795,6 +11897,7 @@ Begin
   If Nodes[N].Kind = N_TYPE Then Nodes[N].Typ := T;      { memorise pour l'attribut Signature }
   If (Nodes[N].Aux = 0) And (Nodes[N].Att = 0) And IsClassT(T) And (Nodes[N].Kind = N_TYPE) Then Begin
     Nodes[N].Att := 1;
+    CheckModuleVisible(Types[T].Cls, Nodes[N].Line);
     LintClassUse(Types[T].Cls, Nodes[N].Line);
     LintRawType(N, T);
   End;
@@ -17792,6 +17895,7 @@ Begin
   End;
   DiagBuffering := True; NDiag := 0; LexErrLine := 0; LastSynPos := -1; RecoverDepth := 0;
   TranscodeSource;
+  PreviewUsed := False;
   Lex;
   P := 0;
   Root := ParseCompilationUnit;
@@ -17804,6 +17908,7 @@ Begin
   CUs[Cu].Imports := Nodes[Root].A;
   CUs[Cu].Root := Root;
   CUs[Cu].Explicit := LoadingExplicit;
+  CUs[Cu].Preview := PreviewUsed;
   CUs[Cu].ModName := LoadingModule;
   If Nodes[Root].C <> 0 Then Begin
     If (NAllMods > 0) And (LoadingModule = '') Then Err(Nodes[Nodes[Root].C].Line, 'plusieurs declarations de module');
@@ -17932,9 +18037,12 @@ Begin
   End;
 End;
 
+Procedure CheckImportsVisible; Forward;
+
 Procedure AttribAll;
 Var I : LongInt;
 Begin
+  CheckImportsVisible;
   I := 0;
   While I < NClasses Do Begin
     If Classes[I].IsSrc And (Classes[I].Ctx < 0) Then Begin
@@ -17954,6 +18062,295 @@ Begin
   AttribModule;
 End;
 
+{ ============================================================================
+  Visibilite des modules : graphe de lecture et paquetages exportes
+  ============================================================================ }
+
+Type
+  TModInfo = Record
+    Name   : String;
+    Req    : Array Of String;
+    ReqTr  : Array Of Boolean;       { requires transitive }
+    Exp    : Array Of String;        { paquetages exportes (a/b/c) }
+    ExpTo  : Array Of String;        { '' : a tous ; sinon liste de modules separes par ',' }
+    Known  : Boolean;
+  End;
+
+Var
+  ModInfos  : Array Of TModInfo;
+  NModInfos : LongInt;
+  ModBuf    : TBuf;
+  ModCp     : Array Of String;
+
+Function MUtf(Idx : LongInt) : String;
+Begin
+  If (Idx <= 0) Or (Idx >= Length(ModCp)) Then MUtf := '' Else MUtf := ModCp[Idx];
+End;
+
+{ nom (Utf8) pointe par une entree Module / Package du pool }
+Function MRef(Idx : LongInt; Var Ref : Array Of LongInt) : String;
+Begin
+  If (Idx <= 0) Or (Idx >= Length(Ref)) Then MRef := '' Else MRef := MUtf(Ref[Idx]);
+End;
+
+{ Lit le module-info.class d'un module du JDK }
+Procedure LoadJdkModInfo(Var Mi : TModInfo);
+Var
+  A, Bz, C, Cnt, I, P, Tag, K, Q, NA, AL, J, N, Pk, Nt, X : LongInt; AName : String; Ref : Array Of LongInt;
+Begin
+  Mi.Known := False;
+  SetLength(Mi.Req, 0); SetLength(Mi.ReqTr, 0); SetLength(Mi.Exp, 0); SetLength(Mi.ExpTo, 0);
+  JdkOpen;
+  If Not JdkReady Then Exit;
+  If Not JdkLocate('/' + Mi.Name + '/module-info.class', A, Bz, C) Then Exit;
+  If C <> 0 Then Exit;
+  If Not ReadFileRange(JdkImage, A, Bz, ModBuf) Then Exit;
+  Cnt := RdU2(ModBuf, 8);
+  SetLength(ModCp, 0); SetLength(ModCp, Cnt);
+  SetLength(Ref, 0); SetLength(Ref, Cnt);
+  P := 10;
+  I := 1;
+  While I < Cnt Do Begin
+    Tag := RdU1(ModBuf, P);
+    Case Tag Of
+      1 : Begin K := RdU2(ModBuf, P + 1); ModCp[I] := BytesToStr(ModBuf, P + 3, K); Inc(P, 3 + K); End;
+      3, 4 : Inc(P, 5);
+      5, 6 : Begin Inc(P, 9); Inc(I); End;
+      7, 8, 16, 19, 20 : Begin Ref[I] := RdU2(ModBuf, P + 1); Inc(P, 3); End;
+      15 : Inc(P, 4);
+    Else
+      Inc(P, 5);
+    End;
+    Inc(I);
+  End;
+  Inc(P, 6);
+  K := RdU2(ModBuf, P);
+  Inc(P, 2 + 2 * K);
+  Q := P;
+  For I := 1 To 2 Do Begin
+    K := RdU2(ModBuf, Q);
+    Inc(Q, 2);
+    While K > 0 Do Begin
+      NA := RdU2(ModBuf, Q + 6);
+      Inc(Q, 8);
+      While NA > 0 Do Begin Inc(Q, 6 + RdU4(ModBuf, Q + 2)); Dec(NA); End;
+      Dec(K);
+    End;
+  End;
+  NA := RdU2(ModBuf, Q);
+  Inc(Q, 2);
+  While NA > 0 Do Begin
+    AName := MUtf(RdU2(ModBuf, Q));
+    AL := RdU4(ModBuf, Q + 2);
+    If AName = 'Module' Then Begin
+      P := Q + 6 + 6;                         { nom, drapeaux, version }
+      N := RdU2(ModBuf, P); Inc(P, 2);
+      SetLength(Mi.Req, N); SetLength(Mi.ReqTr, N);
+      For J := 0 To N - 1 Do Begin
+        Mi.Req[J] := MRef(RdU2(ModBuf, P), Ref);
+        Mi.ReqTr[J] := (RdU2(ModBuf, P + 2) And $20) <> 0;
+        Inc(P, 6);
+      End;
+      N := RdU2(ModBuf, P); Inc(P, 2);
+      SetLength(Mi.Exp, N); SetLength(Mi.ExpTo, N);
+      For J := 0 To N - 1 Do Begin
+        Mi.Exp[J] := MRef(RdU2(ModBuf, P), Ref);
+        Nt := RdU2(ModBuf, P + 4);
+        Mi.ExpTo[J] := '';
+        For X := 0 To Nt - 1 Do
+          If X = 0 Then Mi.ExpTo[J] := MRef(RdU2(ModBuf, P + 6), Ref) Else Mi.ExpTo[J] := Mi.ExpTo[J] + ',' + MRef(RdU2(ModBuf, P + 6 + 2 * X), Ref);
+        Inc(P, 6 + 2 * Nt);
+      End;
+      Mi.Known := True;
+      Pk := 0;
+      Exit;
+    End;
+    Inc(Q, 6 + AL);
+    Dec(NA);
+  End;
+End;
+
+{ Informations d'un module : source (module-info.java compile) ou JDK }
+Function ModInfoIndex(Const Name : String) : LongInt;
+Var I, D, K : LongInt; Mi : TModInfo;
+Begin
+  For I := 0 To NModInfos - 1 Do If ModInfos[I].Name = Name Then Begin ModInfoIndex := I; Exit; End;
+  Mi.Name := Name;
+  Mi.Known := False;
+  SetLength(Mi.Req, 0); SetLength(Mi.ReqTr, 0); SetLength(Mi.Exp, 0); SetLength(Mi.ExpTo, 0);
+  For I := 0 To NAllMods - 1 Do
+    If Nodes[AllModDecl[I]].S = Name Then Begin
+      Mi.Known := True;
+      D := Nodes[AllModDecl[I]].A;
+      While D <> 0 Do Begin
+        If Nodes[D].S = 'requires' Then Begin
+          SetLength(Mi.Req, Length(Mi.Req) + 1); SetLength(Mi.ReqTr, Length(Mi.ReqTr) + 1);
+          Mi.Req[Length(Mi.Req) - 1] := Nodes[D].CS;
+          Mi.ReqTr[Length(Mi.ReqTr) - 1] := (Nodes[D].Mods And $20) <> 0;
+        End
+        Else If Nodes[D].S = 'exports' Then Begin
+          SetLength(Mi.Exp, Length(Mi.Exp) + 1); SetLength(Mi.ExpTo, Length(Mi.ExpTo) + 1);
+          Mi.Exp[Length(Mi.Exp) - 1] := ReplaceAll(Nodes[D].CS, '.', '/');
+          Mi.ExpTo[Length(Mi.ExpTo) - 1] := '';
+          K := Nodes[D].B;
+          While K <> 0 Do Begin
+            If Mi.ExpTo[Length(Mi.ExpTo) - 1] = '' Then Mi.ExpTo[Length(Mi.ExpTo) - 1] := Nodes[K].S
+            Else Mi.ExpTo[Length(Mi.ExpTo) - 1] := Mi.ExpTo[Length(Mi.ExpTo) - 1] + ',' + Nodes[K].S;
+            K := Nodes[K].Next;
+          End;
+        End;
+        D := Nodes[D].Next;
+      End;
+    End;
+  If Not Mi.Known Then LoadJdkModInfo(Mi);
+  If NModInfos >= Length(ModInfos) Then SetLength(ModInfos, NModInfos * 2 + 8);
+  ModInfos[NModInfos] := Mi;
+  ModInfoIndex := NModInfos;
+  Inc(NModInfos);
+End;
+
+{ Le module M lit-il le module R ? (R requis directement, ou par transitivite) }
+Function ModuleReads(Const M, R : String) : Boolean;
+Var Seen : Array Of String; NSeen : LongInt;
+
+  Function Has(Const S : String) : Boolean;
+  Var I : LongInt;
+  Begin
+    Has := False;
+    For I := 0 To NSeen - 1 Do If Seen[I] = S Then Has := True;
+  End;
+
+  { ajoute Nm et ce qu'il exporte par transitivite }
+  Procedure AddTrans(Const Nm : String);
+  Var K, I : LongInt;
+  Begin
+    If Has(Nm) Then Exit;
+    SetLength(Seen, NSeen + 1); Seen[NSeen] := Nm; Inc(NSeen);
+    K := ModInfoIndex(Nm);
+    For I := 0 To Length(ModInfos[K].Req) - 1 Do
+      If ModInfos[K].ReqTr[I] Then AddTrans(ModInfos[K].Req[I]);
+  End;
+
+Var K, I : LongInt;
+Begin
+  NSeen := 0;
+  If (M = R) Or (R = 'java.base') Then Begin ModuleReads := True; Exit; End;
+  K := ModInfoIndex(M);
+  For I := 0 To Length(ModInfos[K].Req) - 1 Do AddTrans(ModInfos[K].Req[I]);
+  ModuleReads := Has(R);
+End;
+
+Function ModuleExports(Const Owner, Pkg, Reader : String) : Boolean;
+Var K, I : LongInt; L : String;
+Begin
+  ModuleExports := False;
+  K := ModInfoIndex(Owner);
+  If Not ModInfos[K].Known Then Begin ModuleExports := True; Exit; End;
+  For I := 0 To Length(ModInfos[K].Exp) - 1 Do
+    If ModInfos[K].Exp[I] = Pkg Then Begin
+      L := ModInfos[K].ExpTo[I];
+      If L = '' Then Begin ModuleExports := True; Exit; End;
+      If Pos(',' + Reader + ',', ',' + L + ',') > 0 Then Begin ModuleExports := True; Exit; End;
+    End;
+End;
+
+{ Module du fichier source (CU) : module du mode multi-modules, ou module unique compile }
+Function ModuleOfCU(Cu : LongInt) : String;
+Begin
+  ModuleOfCU := '';
+  If Cu < 0 Then Exit;
+  If CUs[Cu].ModName <> '' Then ModuleOfCU := CUs[Cu].ModName
+  Else If NAllMods = 1 Then ModuleOfCU := Nodes[AllModDecl[0]].S;
+End;
+
+{ Module qui definit la classe C : '' pour le classpath (module sans nom) ou si inconnu }
+Function ModuleOfClass(C : LongInt) : String;
+Var A, B, D, M, K : LongInt; Pkg : String;
+Begin
+  ModuleOfClass := '';
+  If Classes[C].IsSrc Then Begin ModuleOfClass := ModuleOfCU(Classes[C].CU); Exit; End;
+  K := LastPos('/', Classes[C].Name);
+  Pkg := Copy(Classes[C].Name, 1, K);
+  If (NCPath > 0) And ExtFind(Classes[C].Name, False) Then Exit;
+  If Not JdkModuleFor(Classes[C].Name, A, B, D) Then Exit;
+  M := MapFind(JdkModuleOf, Pkg);
+  If (M >= 1) And (M <= NJMODS) Then ModuleOfClass := JdkMods[M];
+End;
+
+{ Verifie que la classe C est visible du module de la classe courante ; sinon signale une erreur }
+Procedure CheckModuleVisible(C, Pos : LongInt);
+Var Mine, Theirs, Pkg : String; K : LongInt;
+Begin
+  If NAllMods = 0 Then Exit;
+  If CurCU < 0 Then Exit;
+  Mine := ModuleOfCU(CurCU);
+  If Mine = '' Then Exit;
+  If Classes[C].Outer >= 0 Then Exit;
+  Theirs := ModuleOfClass(C);
+  If (Theirs = '') Or (Theirs = Mine) Then Exit;
+  K := LastPos('/', Classes[C].Name);
+  Pkg := Copy(Classes[C].Name, 1, K - 1);
+  If Not ModuleReads(Mine, Theirs) Then
+    Err(Pos, 'le paquetage ' + ReplaceAll(Pkg, '/', '.') + ' n''est pas visible (le paquetage est declare dans le module ' + Theirs +
+        ', mais le module ' + Mine + ' ne le lit pas)')
+  Else If Not ModuleExports(Theirs, Pkg, Mine) Then
+    Err(Pos, 'le paquetage ' + ReplaceAll(Pkg, '/', '.') + ' n''est pas visible (le paquetage est declare dans le module ' + Theirs +
+        ', qui ne l''exporte pas' + ')');
+End;
+
+{ Controle les imports de chaque fichier source d'un module }
+Procedure CheckImportsVisible;
+Var Cu, Imp, C : LongInt; S : String; SvCU : LongInt;
+Begin
+  If NAllMods = 0 Then Exit;
+  SvCU := CurCU;
+  For Cu := 0 To NCUs - 1 Do Begin
+    CurCU := Cu;
+    CurFile := CUs[Cu].FileName;
+    Imp := CUs[Cu].Imports;
+    While Imp <> 0 Do Begin
+      S := Nodes[Imp].S;
+      If (Nodes[Imp].Mods And ACC_STATIC) = 0 Then Begin
+        If Nodes[Imp].Aux = 1 Then Begin
+          { import a la demande : p.* }
+        End
+        Else Begin
+          C := LookupClassQualified(S);
+          If C >= 0 Then CheckModuleVisible(C, Nodes[Imp].Line);
+        End;
+      End;
+      Imp := Nodes[Imp].Next;
+    End;
+  End;
+  CurCU := SvCU;
+  If CurCU >= 0 Then CurFile := CUs[CurCU].FileName;
+End;
+
+{ import module M : cherche Name dans les paquetages exportes par M (et par transitivite) }
+Function ModuleImportLookup(Const Mod_, Name : String) : LongInt;
+Var Seen : Array Of String; NSeen : LongInt; Res : LongInt;
+
+  Procedure Visit(Const Nm : String);
+  Var K, I, R : LongInt;
+  Begin
+    For I := 0 To NSeen - 1 Do If Seen[I] = Nm Then Exit;
+    SetLength(Seen, NSeen + 1); Seen[NSeen] := Nm; Inc(NSeen);
+    K := ModInfoIndex(Nm);
+    For I := 0 To Length(ModInfos[K].Exp) - 1 Do
+      If (ModInfos[K].ExpTo[I] = '') And (Res < 0) Then Begin
+        R := LookupClass(ModInfos[K].Exp[I] + '/' + Name);
+        If R >= 0 Then Res := R;
+      End;
+    For I := 0 To Length(ModInfos[K].Req) - 1 Do
+      If ModInfos[K].ReqTr[I] Then Visit(ModInfos[K].Req[I]);
+  End;
+
+Begin
+  NSeen := 0;
+  Res := -1;
+  Visit(Mod_);
+  ModuleImportLookup := Res;
+End;
 { ============================================================================
   6. FICHIERS .CLASS : tampons d'octets, pool de constantes, ecriture
   ============================================================================ }
@@ -23497,7 +23894,7 @@ Begin
   { en-tete }
   BInit(Out);
   B4(Out, $CAFEBABE);
-  B2(Out, 0);
+  If OptPreview And CUs[Classes[C].CU].Preview Then B2(Out, $FFFF) Else B2(Out, 0);
   { Record : version 60 ; PermittedSubclasses : version 61 }
   PermittedOf(C, PermL);
   If (Length(PermL) > 0) And (OptTarget < 61) Then B2(Out, 61)
@@ -23941,6 +24338,7 @@ Begin
   WriteLn('  -source N              niveau du langage (les fonctionnalites plus recentes sont refusees)');
   WriteLn('  -target N, --release N version de classe visee (8 a 25, defaut 11)');
   WriteLn('  -g, -g:none|lines,vars,source   informations de debogage (defaut : lines,source)');
+  WriteLn('  --enable-preview       autorise les fonctionnalites en apercu (variables _, fichiers compacts)');
   WriteLn('  -parameters            attribut MethodParameters (noms des parametres)');
   WriteLn('  -h repertoire          genere les en-tetes JNI des methodes natives');
   WriteLn('  -implicit:none|class   .class des fichiers charges implicitement (defaut : class)');
@@ -24109,7 +24507,19 @@ Begin
 End;
 
 Procedure PrintNotes;
+Var I, Cnt : LongInt; First : String;
 Begin
+  { fonctionnalites en apercu utilisees }
+  Cnt := 0;
+  If OptPreview Then
+    For I := 0 To NCUs - 1 Do
+      If CUs[I].Preview Then Begin
+        If Cnt = 0 Then First := CUs[I].FileName;
+        Inc(Cnt);
+      End;
+  If Cnt = 1 Then WriteLn('Note : ', First, ' utilise des fonctionnalites en apercu de Java SE ', OptTarget - 44, '.')
+  Else If Cnt > 1 Then WriteLn('Note : Certains fichiers d''entree utilisent des fonctionnalites en apercu de Java SE ', OptTarget - 44, '.');
+  If Cnt > 0 Then WriteLn('Note : Recompilez avec -Xlint:preview pour obtenir des details.');
   If NDeprFiles = 1 Then WriteLn('Note : ', DeprFiles[0], ' utilise ou redefinit une API obsolete.')
   Else If NDeprFiles > 1 Then WriteLn('Note : Certains fichiers d''entree utilisent ou redefinissent une API obsolete.');
   If NDeprFiles > 0 Then WriteLn('Note : Recompilez avec -Xlint:deprecation pour obtenir des details.');
@@ -24193,6 +24603,7 @@ Begin
     Else If Arg = '-deprecation' Then OptLint := OptLint Or LINT_DEPRECATION
     Else If Arg = '-nowarn' Then OptNoWarn := True
     Else If Arg = '-Werror' Then OptWerror := True
+    Else If Arg = '--enable-preview' Then OptPreview := True
     Else If Arg = '-g' Then Begin OptGLines := True; OptGSource := True; OptGVars := True; End
     Else If Copy(Arg, 1, 3) = '-g:' Then Begin
       OptGLines := Pos('lines', Arg) > 0; OptGSource := Pos('source', Arg) > 0; OptGVars := Pos('vars', Arg) > 0;
@@ -24220,6 +24631,10 @@ Begin
   End;
   For I := 0 To NFiles - 1 Do If FileMods[I] = '' Then FileMods[I] := ModuleOfPath(Files[I]);
   If OptNoWarn Then OptLint := OptLint And LINT_REMOVAL;
+  { apercu : la version de classe doit etre celle du JDK (ici 21 par defaut) }
+  If OptPreview And (OptTarget < 65) Then Begin
+    If OptSource < 99 Then OptTarget := 44 + OptSource Else OptTarget := 65;
+  End;
   If NFiles = 0 Then Begin WriteLn('javac: aucun fichier source'); Halt(2); End;
   InitTypes;
   If CpArg = '' Then CpArg := GetEnv('CLASSPATH');
