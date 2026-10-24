@@ -177,6 +177,10 @@ Const
   N_EMPTY      = 70;
   N_LOCALCLASS = 71;
   N_YIELD      = 72;
+  N_ANNOT      = 73;   { annotation : S=nom, A=elements (N_ANNARG), Sym=classe }
+  N_MODULE     = 75;   { declaration de module : S=nom, Mods=1 si open, A=directives }
+  N_DIRECTIVE  = 76;   { directive : S=genre, CS=nom principal, B=noms (to / with), Mods=indicateurs }
+  N_ANNARG     = 74;   { element d'annotation : S=nom, A=valeur, Sym=methode }
   N_CU         = 80;
   N_IMPORT     = 81;
   N_CLASS      = 82;
@@ -228,6 +232,8 @@ Type
     S    : String;
     Typ  : LongInt;
     Sym  : LongInt;
+    Ann  : LongInt;     { annotations de la declaration (chaine de N_ANNOT) }
+    Dflt : LongInt;     { valeur par defaut d'un element d'annotation }
     Att  : Byte;
     CK   : Byte;
     CI   : Int64;
@@ -253,6 +259,7 @@ Var
   OptTarget  : LongInt;    { version de classe (major) }
   OptDumpAst : Boolean;
   OptParseOnly : Boolean;
+  OptModulePath : Boolean;  { --module-path donne : les modules inconnus ne sont pas des erreurs }
 
   { Source et jetons }
   Src        : String;
@@ -2583,12 +2590,82 @@ End;
   Declarations
   --------------------------------------------------------------------------- }
 
+{ Valeur d'un element d'annotation : expression, tableau entre accolades ou annotation imbriquee }
+Function ParseAnnotation : LongInt; Forward;
+
+Function ParseElemValue : LongInt;
+Var N, Head, Tail : LongInt;
+Begin
+  If IsOp('@') Then ParseElemValue := ParseAnnotation
+  Else If IsOp('{') Then Begin
+    N := NewNode(N_ARRAYINIT, CurLine);
+    Inc(P);
+    Head := 0; Tail := 0;
+    While Not IsOp('}') Do Begin
+      AppendNode(Head, Tail, ParseElemValue);
+      If Not Accept(',') Then Break;
+    End;
+    Expect('}');
+    Nodes[N].A := Head;
+    ParseElemValue := N;
+  End
+  Else ParseElemValue := ParseTernary;
+End;
+
+{ P est sur '@' : construit un N_ANNOT (S = nom, A = chaine de N_ANNARG) }
+Function ParseAnnotation : LongInt;
+Var N, G, Head, Tail : LongInt; S : String;
+Begin
+  N := NewNode(N_ANNOT, CurLine);
+  Inc(P);
+  S := ExpectIdent;
+  While IsOp('.') And IsIdentAt(1) Do Begin
+    Inc(P);
+    S := S + '.' + ExpectIdent;
+  End;
+  Nodes[N].S := S;
+  If IsOp('(') Then Begin
+    Inc(P);
+    Head := 0; Tail := 0;
+    If Not IsOp(')') Then Begin
+      If IsIdentAt(0) And IsOpAt(1, '=') Then Begin
+        While True Do Begin
+          G := NewNode(N_ANNARG, CurLine);
+          Nodes[G].S := ExpectIdent;
+          Expect('=');
+          Nodes[G].A := ParseElemValue;
+          AppendNode(Head, Tail, G);
+          If Not Accept(',') Then Break;
+        End;
+      End
+      Else Begin
+        G := NewNode(N_ANNARG, CurLine);
+        Nodes[G].S := 'value';
+        Nodes[G].A := ParseElemValue;
+        AppendNode(Head, Tail, G);
+      End;
+    End;
+    Expect(')');
+    Nodes[N].A := Head;
+  End;
+  ParseAnnotation := N;
+End;
+
+{ Annotations de declaration en tete : ajoutees a la chaine Head }
+Procedure ParseAnnotationsInto(Var Head, Tail : LongInt);
+Begin
+  While IsOp('@') And Not IsKwAt(1, 'interface') Do AppendNode(Head, Tail, ParseAnnotation);
+End;
+
+Var PendAnn : LongInt;      { annotations lues par ParseModifiers, reprises par le constructeur de noeud }
+
 Function ParseModifiers : LongInt;
-Var M : LongInt; S : String;
+Var M : LongInt; S : String; AnnTail : LongInt;
 Begin
   M := 0;
+  PendAnn := 0; AnnTail := 0;
   While True Do Begin
-    If IsOp('@') And Not IsKwAt(1, 'interface') Then Begin SkipAnnotation; Continue; End;
+    If IsOp('@') And Not IsKwAt(1, 'interface') Then Begin AppendNode(PendAnn, AnnTail, ParseAnnotation); Continue; End;
     If Toks[TokIdx(0)].Kind = TK_KEYWORD Then Begin
       S := Toks[P].Str;
       If S = 'public' Then M := M Or ACC_PUBLIC
@@ -2619,15 +2696,16 @@ Begin
 End;
 
 Function ParseParams : LongInt;
-Var Head, Tail, Prm : LongInt;
+Var Head, Tail, Prm, PAnnT : LongInt;
 Begin
   Head := 0; Tail := 0;
   Expect('(');
   If Not IsOp(')') Then Begin
     While True Do Begin
       Prm := NewNode(N_PARAM, CurLine);
+      PAnnT := 0;
       While IsKw('final') Or IsOp('@') Do
-        If IsOp('@') Then SkipAnnotation Else Begin Inc(P); Nodes[Prm].Mods := Nodes[Prm].Mods Or ACC_FINAL; End;
+        If IsOp('@') Then AppendNode(Nodes[Prm].Ann, PAnnT, ParseAnnotation) Else Begin Inc(P); Nodes[Prm].Mods := Nodes[Prm].Mods Or ACC_FINAL; End;
       Nodes[Prm].A := ParseType;
       If IsOp('.') And IsOpAt(1, '.') And IsOpAt(2, '.') Then Begin
         Inc(P, 3);
@@ -2675,17 +2753,19 @@ Begin
   End;
   If IsOp('{') Then Nodes[M].C := ParseBlock
   Else Begin
-    If IsKw('default') Then Begin Inc(P); If IsOp('{') Then ParseArrayInit Else ParseTernary; End;   { valeur par defaut d'annotation }
+    If IsKw('default') Then Begin Inc(P); Nodes[M].Dflt := ParseElemValue; End;   { valeur par defaut d'annotation }
     Expect(';');
   End;
   ParseMethodRest := M;
 End;
 
 Function ParseEnumConst : LongInt;
-Var N, E : LongInt;
+Var N, E, At : LongInt;
 Begin
-  SkipAnnotations;
+  At := 0; E := 0;
+  ParseAnnotationsInto(At, E);
   N := NewNode(N_ENUMCONST, CurLine);
+  Nodes[N].Ann := At;
   Nodes[N].S := ExpectIdent;
   If IsOp('(') Then Nodes[N].A := ParseArgs;
   If IsOp('{') Then Begin
@@ -2700,7 +2780,7 @@ End;
 
 Procedure ParseClassBody(Cls : LongInt);
 Var
-  Head, Tail, M, Mods, TP, T, Line, V, Q : LongInt;
+  Head, Tail, M, Mods, TP, T, Line, V, Q, MAnn : LongInt;
   Name : String;
   IsIface : Boolean;
   Simple : String;
@@ -2711,11 +2791,9 @@ Begin
   Expect('{');
   { constantes d'enumeration }
   If Nodes[Cls].Aux = CLS_ENUM Then Begin
-    SkipAnnotations;
-    While IsIdentAt(0) Do Begin
+    While IsIdentAt(0) Or IsOp('@') Do Begin
       AppendNode(Head, Tail, ParseEnumConst);
       If Not Accept(',') Then Break;
-      SkipAnnotations;
     End;
     If Not IsOp('}') Then Expect(';');
   End;
@@ -2724,6 +2802,7 @@ Begin
     If Accept(';') Then Continue;
     Line := CurLine;
     Mods := ParseModifiers;
+    MAnn := PendAnn; PendAnn := 0;
     If IsOp('{') Then Begin
       M := NewNode(N_INIT, Line);
       Nodes[M].Mods := Mods;
@@ -2733,6 +2812,7 @@ Begin
     End;
     If IsKw('class') Or IsKw('interface') Or IsKw('enum') Or (IsOp('@') And IsKwAt(1, 'interface')) Or
        (IsIdentStr(0, 'record') And IsIdentAt(1) And (IsOpAt(2, '(') Or IsOpAt(2, '<'))) Then Begin
+      PendAnn := MAnn;
       AppendNode(Head, Tail, ParseClassDecl(Mods));
       Continue;
     End;
@@ -2743,6 +2823,7 @@ Begin
       Name := '<init>';
       Inc(P);
       M := ParseMethodRest(Mods, TP, 0, Name, Line, True);
+      Nodes[M].Ann := MAnn;
       AppendNode(Head, Tail, M);
       Continue;
     End;
@@ -2753,6 +2834,7 @@ Begin
       Nodes[M].S := '<init>';
       Nodes[M].Mods := Mods;
       Nodes[M].Aux := 3;          { constructeur compact }
+      Nodes[M].Ann := MAnn;
       Nodes[M].C := ParseBlock;
       AppendNode(Head, Tail, M);
       Continue;
@@ -2761,6 +2843,7 @@ Begin
     Name := ExpectIdent;
     If IsOp('(') Then Begin
       M := ParseMethodRest(Mods, TP, T, Name, Line, False);
+      Nodes[M].Ann := MAnn;
       AppendNode(Head, Tail, M);
     End
     Else Begin
@@ -2770,6 +2853,9 @@ Begin
       Nodes[M].Mods := Mods;
       Nodes[M].A := T;
       Nodes[M].B := ParseDeclarators(T, Mods);
+      Nodes[M].Ann := MAnn;
+      V := Nodes[M].B;
+      While V <> 0 Do Begin Nodes[V].Ann := MAnn; V := Nodes[V].Next; End;
       Expect(';');
       AppendNode(Head, Tail, M);
     End;
@@ -2784,6 +2870,7 @@ Begin
   Line := CurLine;
   N := NewNode(N_CLASS, Line);
   Nodes[N].Mods := Mods;
+  Nodes[N].Ann := PendAnn; PendAnn := 0;
   If IsKw('class') Then Begin Kind := CLS_CLASS; Inc(P); End
   Else If IsKw('interface') Then Begin Kind := CLS_INTERFACE; Inc(P); End
   Else If IsKw('enum') Then Begin Kind := CLS_ENUM; Inc(P); End
@@ -2823,6 +2910,79 @@ Begin
   ParseClassDecl := N;
 End;
 
+{ Nom pointe : a.b.c }
+Function ParseDottedName : String;
+Var S : String;
+Begin
+  S := ExpectIdent;
+  While IsOp('.') And IsIdentAt(1) Do Begin
+    Inc(P);
+    S := S + '.' + ExpectIdent;
+  End;
+  ParseDottedName := S;
+End;
+
+{ module [open] nom, puis les directives entre accolades ; P est sur "open" ou "module" ;
+  les annotations sont dans PendAnn }
+Function ParseModuleDecl : LongInt;
+Var N, D, Head, Tail, Hb, Tb, X : LongInt; Kind : String; Mods : LongInt;
+Begin
+  N := NewNode(N_MODULE, CurLine);
+  Nodes[N].Ann := PendAnn; PendAnn := 0;
+  If IsIdentStr(0, 'open') Then Begin Inc(P); Nodes[N].Mods := 1; End;
+  Inc(P);   { module }
+  Nodes[N].S := ParseDottedName;
+  Expect('{');
+  Head := 0; Tail := 0;
+  While Not IsOp('}') Do Begin
+    If Toks[TokIdx(0)].Kind = TK_EOF Then SyntaxErr('fin de fichier inattendue (accolade fermante manquante)');
+    D := NewNode(N_DIRECTIVE, CurLine);
+    Kind := ExpectIdent;
+    Nodes[D].S := Kind;
+    If Kind = 'requires' Then Begin
+      Mods := 0;
+      While (IsIdentStr(0, 'transitive') Or IsKw('static')) And Not IsOpAt(1, ';') And Not IsOpAt(1, '.') Do Begin
+        If IsKw('static') Then Mods := Mods Or $40 Else Mods := Mods Or $20;
+        Inc(P);
+      End;
+      Nodes[D].Mods := Mods;
+      Nodes[D].CS := ParseDottedName;
+    End
+    Else If (Kind = 'exports') Or (Kind = 'opens') Then Begin
+      Nodes[D].CS := ParseDottedName;
+      If IsIdentStr(0, 'to') Then Begin
+        Inc(P);
+        Hb := 0; Tb := 0;
+        Repeat
+          X := NewNode(N_NAME, CurLine);
+          Nodes[X].S := ParseDottedName;
+          AppendNode(Hb, Tb, X);
+        Until Not Accept(',');
+        Nodes[D].B := Hb;
+      End;
+    End
+    Else If Kind = 'uses' Then Nodes[D].CS := ParseDottedName
+    Else If Kind = 'provides' Then Begin
+      Nodes[D].CS := ParseDottedName;
+      If Not IsIdentStr(0, 'with') Then SyntaxErr('with attendu');
+      Inc(P);
+      Hb := 0; Tb := 0;
+      Repeat
+        X := NewNode(N_NAME, CurLine);
+        Nodes[X].S := ParseDottedName;
+        AppendNode(Hb, Tb, X);
+      Until Not Accept(',');
+      Nodes[D].B := Hb;
+    End
+    Else SyntaxErr('directive de module inconnue : ' + Kind);
+    Expect(';');
+    AppendNode(Head, Tail, D);
+  End;
+  Expect('}');
+  Nodes[N].A := Head;
+  ParseModuleDecl := N;
+End;
+
 Function ParseCompilationUnit : LongInt;
 Var N, Head, Tail, I, Mods, Line : LongInt; S : String;
 Begin
@@ -2855,7 +3015,9 @@ Begin
   While Toks[TokIdx(0)].Kind <> TK_EOF Do Begin
     If Accept(';') Then Continue;
     Mods := ParseModifiers;
-    If IsKw('class') Or IsKw('interface') Or IsKw('enum') Or (IsOp('@') And IsKwAt(1, 'interface')) Or
+    If (IsIdentStr(0, 'module') And IsIdentAt(1)) Or (IsIdentStr(0, 'open') And IsIdentStr(1, 'module')) Then
+      Nodes[N].C := ParseModuleDecl
+    Else If IsKw('class') Or IsKw('interface') Or IsKw('enum') Or (IsOp('@') And IsKwAt(1, 'interface')) Or
        (IsIdentStr(0, 'record') And IsIdentAt(1)) Then
       AppendNode(Head, Tail, ParseClassDecl(Mods))
     Else
@@ -2877,7 +3039,7 @@ End;
   ============================================================================ }
 
 Const
-  LIBN = 6278;
+  LIBN = 6304;
   LibTab : Array[0..LIBN - 1] Of String = (
 'C|1|java/lang/Object|~O',
 'M|1|<init>|()V||',
@@ -8841,6 +9003,32 @@ Const
 'M|65537|namedGroups|()~2Map;|()~2Map<~S~1Integer;>;|',
 'M|1025|groupCount|()I||',
 'M|65537|hasMatch|()Z||',
+'C|9729|java/lang/annotation/Retention|~O~1annotation/Annotation;',
+'M|1025|value|()~1annotation/RetentionPolicy;||',
+'C|16401|java/lang/annotation/RetentionPolicy|~1Enum<~1annotation/RetentionPolicy;>;',
+'F|16409|SOURCE|~1annotation/RetentionPolicy;||',
+'F|16409|CLASS|~1annotation/RetentionPolicy;||',
+'F|16409|RUNTIME|~1annotation/RetentionPolicy;||',
+'C|9729|java/lang/annotation/Target|~O~1annotation/Annotation;',
+'M|1025|value|()[~1annotation/ElementType;||',
+'C|16401|java/lang/annotation/ElementType|~1Enum<~1annotation/ElementType;>;',
+'F|16409|TYPE|~1annotation/ElementType;||',
+'F|16409|FIELD|~1annotation/ElementType;||',
+'F|16409|METHOD|~1annotation/ElementType;||',
+'F|16409|PARAMETER|~1annotation/ElementType;||',
+'F|16409|CONSTRUCTOR|~1annotation/ElementType;||',
+'F|16409|LOCAL_VARIABLE|~1annotation/ElementType;||',
+'F|16409|ANNOTATION_TYPE|~1annotation/ElementType;||',
+'F|16409|PACKAGE|~1annotation/ElementType;||',
+'F|16409|TYPE_PARAMETER|~1annotation/ElementType;||',
+'F|16409|TYPE_USE|~1annotation/ElementType;||',
+'F|16409|MODULE|~1annotation/ElementType;||',
+'F|16409|RECORD_COMPONENT|~1annotation/ElementType;||',
+'C|9729|java/lang/annotation/Documented|~O~1annotation/Annotation;',
+'C|9729|java/lang/annotation/Inherited|~O~1annotation/Annotation;',
+'C|9729|java/lang/annotation/Repeatable|~O~1annotation/Annotation;',
+'M|1025|value|()~1Class;|()~1Class<+~1annotation/Annotation;>;|',
+'C|9729|java/lang/annotation/Native|~O~1annotation/Annotation;',
 'C|1537|java/lang/constant/Constable|~O',
 'M|1025|describeConstable|()~2Optional;|()~2Optional<+~1constant/ConstantDesc;>;|',
 'C|1537|java/lang/constant/ConstantDesc|~O',
@@ -11348,6 +11536,10 @@ Begin
     End;
     T := Nodes[T].Next;
   End;
+  If Kind = CLS_ANNOTATION Then Begin
+    SetLength(Ifs, NI + 1);
+    Ifs[NI] := ClassT(GetClass('java/lang/annotation/Annotation'));
+  End;
   Classes[C].Ifaces := Ifs;
   IsolateLeave(S);
   Classes[C].HdrState := 2;
@@ -11513,6 +11705,7 @@ Begin
             Nodes[Prm].S := Nodes[P].S;
             Nodes[Prm].A := Nodes[P].A;
             Nodes[Prm].Aux := Nodes[P].Aux;
+            Nodes[Prm].Ann := Nodes[P].Ann;
             AppendNode(Nodes[M].B, Tl, Prm);
             P := Nodes[P].Next;
           End;
@@ -11572,6 +11765,7 @@ Begin
         Nodes[Prm].S := Nodes[P].S;
         Nodes[Prm].A := Nodes[P].A;
         Nodes[Prm].Aux := Nodes[P].Aux;
+        Nodes[Prm].Ann := Nodes[P].Ann;
         AppendNode(Nodes[M].B, Blk, Prm);
         P := Nodes[P].Next;
       End;
@@ -14122,7 +14316,7 @@ Begin
 End;
 
 Function AttribCtorCall(N : LongInt) : LongInt;
-Var SiteT : LongInt; R : TResolved; Name : String; Ok : Boolean;
+Var SiteT, QT : LongInt; R : TResolved; Name : String; Ok : Boolean;
 Begin
   Name := Nodes[N].S;
   Nodes[N].Typ := TY_VOID;
@@ -14136,6 +14330,16 @@ Begin
   If SiteT = 0 Then SiteT := T_OBJECT;
   Nodes[N].Mods := Nodes[N].Mods Or CALL_CTOR;
   Nodes[N].E := SiteT;
+  { super qualifie : expr.super(...) fournit l'instance englobante de la super-classe interne }
+  If Nodes[N].D <> 0 Then Begin
+    QT := AttribExpr(Nodes[N].D, 0);
+    If Name = 'this' Then Err(Nodes[N].Line, 'un appel this(...) ne peut pas etre qualifie')
+    Else If Not IsClassT(SiteT) Or Not Classes[ClsOf(SiteT)].IsInner Then
+      Err(Nodes[N].Line, 'la super-classe n''est pas une classe interne : l''appel qualifie super est invalide')
+    Else If (QT <> TY_NONE) And Not IsSubtypeRef(Erasure(QT), ClassT(Classes[ClsOf(SiteT)].Outer)) Then
+      Err(Nodes[N].Line, 'types incompatibles : ' + TypeStr(QT) + ' ne peut pas etre converti en ' +
+          TypeStr(ClassT(Classes[ClsOf(SiteT)].Outer)));
+  End;
   Ok := ResolveCall('<init>', SiteT, True, Nodes[N].B, 0, Nodes[N].Line, -1, R);
   If Ok Then Begin
     Nodes[N].Sym := R.M;
@@ -15352,11 +15556,575 @@ Begin
 End;
 
 { ============================================================================
-  4. ANALYSE SEMANTIQUE : classes, methodes, classes locales, pilote
+  4b. ANNOTATIONS : meta-annotations (retention, cibles, conteneur) et analyse
   ============================================================================ }
 
+Const
+  RET_SOURCE  = 0;
+  RET_CLASS   = 1;
+  RET_RUNTIME = 2;
+
+  TGT_TYPE        = 1;
+  TGT_FIELD       = 2;
+  TGT_METHOD      = 4;
+  TGT_PARAMETER   = 8;
+  TGT_CONSTRUCTOR = 16;
+  TGT_LOCAL       = 32;
+  TGT_ANNOT       = 64;
+  TGT_PACKAGE     = 128;
+  TGT_TPARAM      = 256;
+  TGT_TYPEUSE     = 512;
+  TGT_MODULE      = 1024;
+  TGT_RECCOMP     = 2048;
+  TGT_DECL        = $FFF - 512;     { tous les contextes de declaration }
+
+Type
+  TAnnMetaRec = Record
+    Done : Boolean;
+    Ret  : Byte;
+    Tgt  : LongInt;
+    Cont : LongInt;       { classe conteneur d'une annotation repetable, ou -1 }
+  End;
+
 Var
+  ModDecl : LongInt;      { noeud N_MODULE de module-info.java, ou 0 }
+  ModCU   : LongInt;
   ClsParentCtx : LongInt;
+  AnnMetas : Array Of TAnnMetaRec;
+  ExtAB    : TBuf;
+  ExtACp   : Array Of String;
+
+Function TargetBit(Const S : String) : LongInt;
+Begin
+  If S = 'TYPE' Then TargetBit := TGT_TYPE
+  Else If S = 'FIELD' Then TargetBit := TGT_FIELD
+  Else If S = 'METHOD' Then TargetBit := TGT_METHOD
+  Else If S = 'PARAMETER' Then TargetBit := TGT_PARAMETER
+  Else If S = 'CONSTRUCTOR' Then TargetBit := TGT_CONSTRUCTOR
+  Else If S = 'LOCAL_VARIABLE' Then TargetBit := TGT_LOCAL
+  Else If S = 'ANNOTATION_TYPE' Then TargetBit := TGT_ANNOT
+  Else If S = 'PACKAGE' Then TargetBit := TGT_PACKAGE
+  Else If S = 'TYPE_PARAMETER' Then TargetBit := TGT_TPARAM
+  Else If S = 'TYPE_USE' Then TargetBit := TGT_TYPEUSE
+  Else If S = 'MODULE' Then TargetBit := TGT_MODULE
+  Else If S = 'RECORD_COMPONENT' Then TargetBit := TGT_RECCOMP
+  Else TargetBit := 0;
+End;
+
+Function RetentionOf(Const S : String) : Byte;
+Begin
+  If S = 'SOURCE' Then RetentionOf := RET_SOURCE
+  Else If S = 'RUNTIME' Then RetentionOf := RET_RUNTIME
+  Else RetentionOf := RET_CLASS;
+End;
+
+Function LastComp(Const S : String) : String;
+Var K : LongInt;
+Begin
+  K := LastPos('.', S);
+  LastComp := Copy(S, K + 1, Length(S));
+End;
+
+{ ----- lecture des meta-annotations d'une classe externe (.class) ------------------------ }
+
+Function ExtUtf(Idx : LongInt) : String;
+Begin
+  If (Idx <= 0) Or (Idx >= Length(ExtACp)) Then ExtUtf := '' Else ExtUtf := ExtACp[Idx];
+End;
+
+Procedure ExtReadAnn(Var Q : LongInt; Var Names : String); Forward;
+
+{ saute une valeur d'element en accumulant les noms d'enumeration / descripteurs de classe }
+Procedure ExtReadEV(Var Q : LongInt; Var Names : String);
+Var Tag, N, I : LongInt;
+Begin
+  Tag := RdU1(ExtAB, Q);
+  Inc(Q);
+  Case Chr(Tag) Of
+    'e' : Begin
+      Names := Names + ExtUtf(RdU2(ExtAB, Q + 2)) + ',';
+      Inc(Q, 4);
+    End;
+    'c' : Begin
+      Names := Names + ExtUtf(RdU2(ExtAB, Q)) + ',';
+      Inc(Q, 2);
+    End;
+    '@' : ExtReadAnn(Q, Names);
+    '[' : Begin
+      N := RdU2(ExtAB, Q);
+      Inc(Q, 2);
+      For I := 1 To N Do ExtReadEV(Q, Names);
+    End;
+  Else
+    Inc(Q, 2);
+  End;
+End;
+
+Procedure ExtReadAnn(Var Q : LongInt; Var Names : String);
+Var NP, I : LongInt;
+Begin
+  Inc(Q, 2);
+  NP := RdU2(ExtAB, Q);
+  Inc(Q, 2);
+  For I := 1 To NP Do Begin
+    Inc(Q, 2);
+    ExtReadEV(Q, Names);
+  End;
+End;
+
+Procedure ReadExtAnnMeta(C : LongInt; Var R : TAnnMetaRec);
+Var
+  Cnt, I, P, Tag, K, Q, NA, J, NF, AL, AP, NAnn : LongInt; AName, TypeD, Names, Part : String;
+  Sp : LongInt;
+Begin
+  If Not ExtGetBytes(Classes[C].Name, ExtAB) Then Exit;
+  Cnt := RdU2(ExtAB, 8);
+  SetLength(ExtACp, 0);
+  SetLength(ExtACp, Cnt);
+  P := 10;
+  I := 1;
+  While I < Cnt Do Begin
+    Tag := RdU1(ExtAB, P);
+    Case Tag Of
+      1 : Begin K := RdU2(ExtAB, P + 1); ExtACp[I] := BytesToStr(ExtAB, P + 3, K); Inc(P, 3 + K); End;
+      3, 4 : Inc(P, 5);
+      5, 6 : Begin Inc(P, 9); Inc(I); End;
+      7, 8, 16, 19, 20 : Inc(P, 3);
+      15 : Inc(P, 4);
+    Else
+      Inc(P, 5);
+    End;
+    Inc(I);
+  End;
+  Inc(P, 6);
+  K := RdU2(ExtAB, P);
+  Inc(P, 2 + 2 * K);
+  Q := P;
+  For I := 1 To 2 Do Begin
+    NF := RdU2(ExtAB, Q);
+    Inc(Q, 2);
+    For J := 1 To NF Do Begin
+      NA := RdU2(ExtAB, Q + 6);
+      Inc(Q, 8);
+      While NA > 0 Do Begin Inc(Q, 6 + RdU4(ExtAB, Q + 2)); Dec(NA); End;
+    End;
+  End;
+  NA := RdU2(ExtAB, Q);
+  Inc(Q, 2);
+  While NA > 0 Do Begin
+    AName := ExtUtf(RdU2(ExtAB, Q));
+    AL := RdU4(ExtAB, Q + 2);
+    AP := Q + 6;
+    If AName = 'RuntimeVisibleAnnotations' Then Begin
+      NAnn := RdU2(ExtAB, AP);
+      Inc(AP, 2);
+      For I := 1 To NAnn Do Begin
+        TypeD := ExtUtf(RdU2(ExtAB, AP));
+        Names := '';
+        ExtReadAnn(AP, Names);
+        If TypeD = 'Ljava/lang/annotation/Retention;' Then Begin
+          Sp := Pos(',', Names);
+          If Sp > 0 Then R.Ret := RetentionOf(Copy(Names, 1, Sp - 1));
+        End
+        Else If TypeD = 'Ljava/lang/annotation/Target;' Then Begin
+          R.Tgt := 0;
+          While Names <> '' Do Begin
+            Sp := Pos(',', Names);
+            Part := Copy(Names, 1, Sp - 1);
+            Delete(Names, 1, Sp);
+            R.Tgt := R.Tgt Or TargetBit(Part);
+          End;
+        End
+        Else If TypeD = 'Ljava/lang/annotation/Repeatable;' Then Begin
+          Sp := Pos(',', Names);
+          If Sp > 2 Then R.Cont := GetClass(Copy(Names, 2, Sp - 3));
+        End;
+      End;
+    End;
+    Inc(Q, 6 + AL);
+    Dec(NA);
+  End;
+End;
+
+{ Version d'un module du JDK (attribut Module de son module-info.class), ou '' }
+Function JdkModuleVersion(Const Nm : String) : String;
+Var
+  A, Bz, C, Cnt, I, P, Tag, K, Q, NA, AL : LongInt; AName : String;
+Begin
+  JdkModuleVersion := '';
+  JdkOpen;
+  If Not JdkReady Then Exit;
+  If Not JdkLocate('/' + Nm + '/module-info.class', A, Bz, C) Then Exit;
+  If C <> 0 Then Exit;
+  If Not ReadFileRange(JdkImage, A, Bz, ExtAB) Then Exit;
+  Cnt := RdU2(ExtAB, 8);
+  SetLength(ExtACp, 0);
+  SetLength(ExtACp, Cnt);
+  P := 10;
+  I := 1;
+  While I < Cnt Do Begin
+    Tag := RdU1(ExtAB, P);
+    Case Tag Of
+      1 : Begin K := RdU2(ExtAB, P + 1); ExtACp[I] := BytesToStr(ExtAB, P + 3, K); Inc(P, 3 + K); End;
+      3, 4 : Inc(P, 5);
+      5, 6 : Begin Inc(P, 9); Inc(I); End;
+      7, 8, 16, 19, 20 : Inc(P, 3);
+      15 : Inc(P, 4);
+    Else
+      Inc(P, 5);
+    End;
+    Inc(I);
+  End;
+  Inc(P, 6);
+  K := RdU2(ExtAB, P);
+  Inc(P, 2 + 2 * K);
+  Q := P;
+  For I := 1 To 2 Do Begin
+    K := RdU2(ExtAB, Q);
+    Inc(Q, 2);
+    While K > 0 Do Begin
+      NA := RdU2(ExtAB, Q + 6);
+      Inc(Q, 8);
+      While NA > 0 Do Begin Inc(Q, 6 + RdU4(ExtAB, Q + 2)); Dec(NA); End;
+      Dec(K);
+    End;
+  End;
+  NA := RdU2(ExtAB, Q);
+  Inc(Q, 2);
+  While NA > 0 Do Begin
+    AName := ExtUtf(RdU2(ExtAB, Q));
+    AL := RdU4(ExtAB, Q + 2);
+    If AName = 'Module' Then Begin
+      K := RdU2(ExtAB, Q + 6 + 4);
+      If K > 0 Then JdkModuleVersion := ExtUtf(K);
+      Exit;
+    End;
+    Inc(Q, 6 + AL);
+    Dec(NA);
+  End;
+End;
+
+{ ----- lecture des meta-annotations d'une classe source ------------------------------------ }
+
+Procedure ReadSrcAnnMeta(C : LongInt; Var R : TAnnMetaRec);
+Var A, V, Ch : LongInt; Nm : String; S : TSavedCtx;
+Begin
+  A := Nodes[Classes[C].Decl].Ann;
+  While A <> 0 Do Begin
+    Nm := LastComp(Nodes[A].S);
+    If Nodes[A].A <> 0 Then V := Nodes[Nodes[A].A].A Else V := 0;
+    If V <> 0 Then Begin
+      If Nm = 'Retention' Then R.Ret := RetentionOf(Nodes[V].S)
+      Else If Nm = 'Target' Then Begin
+        R.Tgt := 0;
+        If Nodes[V].Kind = N_ARRAYINIT Then Begin
+          Ch := Nodes[V].A;
+          While Ch <> 0 Do Begin R.Tgt := R.Tgt Or TargetBit(Nodes[Ch].S); Ch := Nodes[Ch].Next; End;
+        End
+        Else R.Tgt := TargetBit(Nodes[V].S);
+      End
+      Else If (Nm = 'Repeatable') And (Nodes[V].Kind = N_CLASSLIT) Then Begin
+        IsolateEnter(C, S);
+        AttribClassLit(V);
+        IsolateLeave(S);
+        If IsClassT(Nodes[V].E) Then R.Cont := ClsOf(Nodes[V].E);
+      End;
+    End;
+    A := Nodes[A].Next;
+  End;
+End;
+
+Function AnnMeta(C : LongInt) : TAnnMetaRec;
+Var R : TAnnMetaRec; Nm : String;
+Begin
+  If C >= Length(AnnMetas) Then SetLength(AnnMetas, NClasses + 64);
+  If AnnMetas[C].Done Then Begin AnnMeta := AnnMetas[C]; Exit; End;
+  R.Done := True; R.Ret := RET_CLASS; R.Tgt := TGT_DECL; R.Cont := -1;
+  Nm := Classes[C].Name;
+  If Classes[C].IsSrc Then ReadSrcAnnMeta(C, R)
+  Else If Nm = 'java/lang/Override' Then Begin R.Ret := RET_SOURCE; R.Tgt := TGT_METHOD; End
+  Else If Nm = 'java/lang/SuppressWarnings' Then Begin
+    R.Ret := RET_SOURCE; R.Tgt := TGT_TYPE Or TGT_FIELD Or TGT_METHOD Or TGT_PARAMETER Or TGT_CONSTRUCTOR Or TGT_LOCAL Or TGT_MODULE;
+  End
+  Else If Nm = 'java/lang/FunctionalInterface' Then Begin R.Ret := RET_RUNTIME; R.Tgt := TGT_TYPE; End
+  Else If Nm = 'java/lang/SafeVarargs' Then Begin R.Ret := RET_RUNTIME; R.Tgt := TGT_CONSTRUCTOR Or TGT_METHOD; End
+  Else If Nm = 'java/lang/Deprecated' Then Begin
+    R.Ret := RET_RUNTIME;
+    R.Tgt := TGT_CONSTRUCTOR Or TGT_FIELD Or TGT_LOCAL Or TGT_METHOD Or TGT_PACKAGE Or TGT_MODULE Or TGT_PARAMETER Or TGT_TYPE;
+  End
+  Else If Copy(Nm, 1, 21) = 'java/lang/annotation/' Then Begin
+    R.Ret := RET_RUNTIME; R.Tgt := TGT_ANNOT;
+    If Nm = 'java/lang/annotation/Native' Then Begin R.Ret := RET_SOURCE; R.Tgt := TGT_FIELD; End;
+  End
+  Else ReadExtAnnMeta(C, R);
+  AnnMetas[C] := R;
+  AnnMeta := R;
+End;
+
+{ ----- analyse semantique ---------------------------------------------------------------- }
+
+Procedure AttribAnnot(A, Target : LongInt); Forward;
+
+Procedure AttribElemValue(N, T : LongInt);
+Var E, Ch, F, Cl : LongInt; Ok : Boolean;
+Begin
+  If (N = 0) Or (T = TY_NONE) Then Exit;
+  If IsArrayT(T) Then Begin
+    E := ElemOf(T);
+    If Nodes[N].Kind = N_ARRAYINIT Then Begin
+      Ch := Nodes[N].A;
+      While Ch <> 0 Do Begin AttribElemValue(Ch, E); Ch := Nodes[Ch].Next; End;
+    End
+    Else AttribElemValue(N, E);
+    Exit;
+  End;
+  If Nodes[N].Kind = N_ARRAYINIT Then Begin
+    Err(Nodes[N].Line, 'initialiseur de tableau inattendu pour un element d''annotation de type ' + TypeStr(T));
+    Exit;
+  End;
+  If IsClassT(T) Then Cl := ClsOf(T) Else Cl := -1;
+  If Cl >= 0 Then EnsureHeader(Cl);
+  { annotation imbriquee }
+  If (Cl >= 0) And ((Classes[Cl].Flags And ACC_ANNOTATION) <> 0) Then Begin
+    If Nodes[N].Kind <> N_ANNOT Then Err(Nodes[N].Line, 'une annotation est attendue ici')
+    Else Begin
+      AttribAnnot(N, 0);
+      If (Nodes[N].Sym >= 0) And (Nodes[N].Sym <> Cl) Then
+        Err(Nodes[N].Line, 'types incompatibles : @' + Classes[Nodes[N].Sym].Simple + ' ne peut pas etre converti en ' + TypeStr(T));
+    End;
+    Exit;
+  End;
+  If Nodes[N].Kind = N_ANNOT Then Begin
+    Err(Nodes[N].Line, 'annotation inattendue pour un element de type ' + TypeStr(T));
+    Exit;
+  End;
+  { constante d'enumeration }
+  If (Cl >= 0) And ((Classes[Cl].Flags And ACC_ENUM) <> 0) Then Begin
+    EnsureMembers(Cl);
+    F := -1;
+    If Nodes[N].Kind = N_NAME Then Begin
+      F := FindFieldIn(Cl, Nodes[N].S);
+      If (F >= 0) And ((Fields[F].Flags And ACC_ENUM) = 0) Then F := -1;
+    End;
+    If F < 0 Then Begin
+      AttribExpr(N, T);
+      Ok := (Nodes[N].Kind In [N_NAME, N_SELECT]) And (Nodes[N].Aux <> 1) And (Nodes[N].Sym >= 0) And (Nodes[N].Sym < NFields);
+      If Ok Then Begin
+        F := Nodes[N].Sym;
+        If ((Fields[F].Flags And ACC_ENUM) = 0) Or (Fields[F].Owner <> Cl) Then F := -1;
+      End;
+      If F < 0 Then Begin
+        If Nodes[N].Typ <> TY_NONE Then Err(Nodes[N].Line, 'une constante d''enumeration est attendue ici');
+        Exit;
+      End;
+    End;
+    Nodes[N].Dflt := F + 1;
+    Exit;
+  End;
+  { litteral de classe }
+  If (Cl = C_CLASS) Then Begin
+    If Nodes[N].Kind <> N_CLASSLIT Then Err(Nodes[N].Line, 'un litteral de classe est attendu ici')
+    Else AttribExpr(N, TY_NONE);
+    Exit;
+  End;
+  { constante primitive ou chaine }
+  AttribExpr(N, T);
+  If Nodes[N].Typ = TY_NONE Then Exit;
+  If Not (IsPrim(T) Or (T = T_STRING)) Then Begin
+    Err(Nodes[N].Line, 'type d''element d''annotation invalide : ' + TypeStr(T));
+    Exit;
+  End;
+  Coerce(N, T, CV_ASSIGN);
+  If Nodes[N].Typ = TY_NONE Then Exit;
+  If Nodes[N].CK = CK_NONE Then
+    Err(Nodes[N].Line, 'la valeur d''un element d''annotation doit etre une expression constante');
+End;
+
+Procedure AttribAnnot(A, Target : LongInt);
+Var Tn, T, C, G, G2, M : LongInt; Meta : TAnnMetaRec; Found : Boolean;
+Begin
+  If Nodes[A].Aux = 1 Then Exit;       { deja analysee (partagee entre composant, champ, ...) }
+  Nodes[A].Aux := 1;
+  Nodes[A].Sym := -1;
+  Tn := NewNode(N_TYPE, Nodes[A].Line);
+  Nodes[Tn].S := Nodes[A].S;
+  T := ResolveType(Tn);
+  If (T <= 0) Or Not IsClassT(T) Then Exit;
+  C := ClsOf(T);
+  EnsureHeader(C);
+  If (Classes[C].Flags And ACC_ANNOTATION) = 0 Then Begin
+    Err(Nodes[A].Line, Classes[C].Simple + ' n''est pas un type d''annotation');
+    Exit;
+  End;
+  Nodes[A].Sym := C;
+  EnsureMembers(C);
+  Meta := AnnMeta(C);
+  If (Target <> 0) And ((Meta.Tgt And Target) = 0) And ((Meta.Tgt And TGT_TYPEUSE) = 0) Then
+    Err(Nodes[A].Line, 'le type d''annotation @' + Classes[C].Simple + ' n''est pas applicable a ce type de declaration');
+  G := Nodes[A].A;
+  While G <> 0 Do Begin
+    Nodes[G].Sym := -1;
+    M := Classes[C].FirstMeth;
+    While M >= 0 Do Begin
+      If (Meths[M].Name = Nodes[G].S) And (Meths[M].NPar = 0) And ((Meths[M].Flags And ACC_STATIC) = 0) Then Break;
+      M := Meths[M].Next;
+    End;
+    If M < 0 Then
+      Err(Nodes[G].Line, 'symbole introuvable : methode ' + Nodes[G].S + '() dans @' + Classes[C].Simple)
+    Else Begin
+      Nodes[G].Sym := M;
+      G2 := Nodes[A].A;
+      While G2 <> G Do Begin
+        If Nodes[G2].S = Nodes[G].S Then Err(Nodes[G].Line, 'l''element ' + Nodes[G].S + ' est deja specifie dans l''annotation');
+        G2 := Nodes[G2].Next;
+      End;
+      AttribElemValue(Nodes[G].A, Meths[M].Ret);
+    End;
+    G := Nodes[G].Next;
+  End;
+  { elements sans valeur par defaut (annotations declarees dans les sources) }
+  If Classes[C].IsSrc Then Begin
+    M := Classes[C].FirstMeth;
+    While M >= 0 Do Begin
+      If (Meths[M].Decl <> 0) And (Meths[M].Name <> '<init>') And (Nodes[Meths[M].Decl].Dflt = 0) Then Begin
+        Found := False;
+        G := Nodes[A].A;
+        While G <> 0 Do Begin
+          If Nodes[G].S = Meths[M].Name Then Found := True;
+          G := Nodes[G].Next;
+        End;
+        If Not Found Then
+          Err(Nodes[A].Line, 'il manque la valeur de l''element ' + Meths[M].Name + ' dans l''annotation @' + Classes[C].Simple);
+      End;
+      M := Meths[M].Next;
+    End;
+  End;
+End;
+
+Procedure AttribAnnotChain(Head, Target : LongInt);
+Var A, B : LongInt; Fresh : Boolean; Meta : TAnnMetaRec;
+Begin
+  If Head = 0 Then Exit;
+  Fresh := Nodes[Head].Aux = 0;
+  A := Head;
+  While A <> 0 Do Begin AttribAnnot(A, Target); A := Nodes[A].Next; End;
+  If Not Fresh Then Exit;
+  A := Head;
+  While A <> 0 Do Begin
+    If Nodes[A].Sym >= 0 Then Begin
+      B := Nodes[A].Next;
+      While B <> 0 Do Begin
+        If Nodes[B].Sym = Nodes[A].Sym Then Begin
+          Meta := AnnMeta(Nodes[A].Sym);
+          If Meta.Cont < 0 Then
+            Err(Nodes[B].Line, 'l''annotation @' + Classes[Nodes[A].Sym].Simple + ' n''est pas repetable');
+        End;
+        B := Nodes[B].Next;
+      End;
+    End;
+    A := Nodes[A].Next;
+  End;
+End;
+
+Function SuperHasMeth(K : LongInt; Const Name : String; Np, Depth : LongInt) : Boolean;
+Var M, I : LongInt;
+Begin
+  SuperHasMeth := False;
+  If (K < 0) Or (Depth > 40) Then Exit;
+  EnsureMembers(K);
+  M := Classes[K].FirstMeth;
+  While M >= 0 Do Begin
+    If (Meths[M].Name = Name) And (Meths[M].NPar = Np) And ((Meths[M].Flags And (ACC_STATIC Or ACC_PRIVATE)) = 0) Then Begin
+      SuperHasMeth := True; Exit;
+    End;
+    M := Meths[M].Next;
+  End;
+  If SuperHasMeth(SuperClsOf(K), Name, Np, Depth + 1) Then Begin SuperHasMeth := True; Exit; End;
+  For I := 0 To Length(Classes[K].Ifaces) - 1 Do
+    If SuperHasMeth(ClsOf(Classes[K].Ifaces[I]), Name, Np, Depth + 1) Then Begin SuperHasMeth := True; Exit; End;
+  If (Classes[K].Flags And ACC_INTERFACE) <> 0 Then
+    If SuperHasMeth(C_OBJECT, Name, Np, Depth + 1) Then SuperHasMeth := True;
+End;
+
+Procedure CheckOverrideAnnot(C, M, Head : LongInt);
+Var A, P : LongInt; Ok : Boolean;
+Begin
+  A := Head;
+  While A <> 0 Do Begin
+    If (Nodes[A].Sym >= 0) And (Classes[Nodes[A].Sym].Name = 'java/lang/Override') Then Begin
+      Ok := (Meths[M].Flags And ACC_STATIC) = 0;
+      If Ok Then Begin
+        Ok := SuperHasMeth(SuperClsOf(C), Meths[M].Name, Meths[M].NPar, 0);
+        If Not Ok Then Begin
+          P := 0;
+          Ok := SuperHasMeth(C_OBJECT, Meths[M].Name, Meths[M].NPar, 0) And ((Classes[C].Flags And ACC_INTERFACE) <> 0);
+        End;
+        If Not Ok Then
+          For P := 0 To Length(Classes[C].Ifaces) - 1 Do
+            If SuperHasMeth(ClsOf(Classes[C].Ifaces[P]), Meths[M].Name, Meths[M].NPar, 0) Then Ok := True;
+        { accesseur d'un composant de record }
+        If (Not Ok) And (Nodes[Classes[C].Decl].Aux = CLS_RECORD) And (Meths[M].NPar = 0) Then Begin
+          P := Nodes[Classes[C].Decl].E;
+          While P <> 0 Do Begin
+            If Nodes[P].S = Meths[M].Name Then Ok := True;
+            P := Nodes[P].Next;
+          End;
+        End;
+      End;
+      If Not Ok Then
+        Err(Nodes[A].Line, 'la methode ne redefinit et n''implemente aucune methode d''un super-type');
+    End;
+    A := Nodes[A].Next;
+  End;
+End;
+
+{ Analyse toutes les annotations declarees dans la classe C (classe, composants, champs, methodes, parametres) }
+Procedure AttribClassAnnots(C : LongInt);
+Var
+  D, M, P, Mt : LongInt; Tg : LongInt;
+  SvCtx, SvMeth, SvRet : LongInt; SvStatic : Boolean;
+Begin
+  D := Classes[C].Decl;
+  SvCtx := CurCtx; SvMeth := CurMeth; SvRet := CurRet; SvStatic := CurStatic;
+  CurCtx := NewCtx(CTX_METHOD, ClsParentCtx);
+  CurStatic := True;
+  CurMeth := -1;
+  CurRet := TY_NONE;
+  PushThrowCtx(TC_BOUND);
+  If Nodes[D].Aux = CLS_ANNOTATION Then Tg := TGT_TYPE Or TGT_ANNOT Else Tg := TGT_TYPE;
+  AttribAnnotChain(Nodes[D].Ann, Tg);
+  If Nodes[D].Aux = CLS_RECORD Then Begin
+    P := Nodes[D].E;
+    While P <> 0 Do Begin
+      AttribAnnotChain(Nodes[P].Ann, TGT_RECCOMP Or TGT_FIELD Or TGT_METHOD Or TGT_PARAMETER);
+      P := Nodes[P].Next;
+    End;
+  End;
+  M := Nodes[D].D;
+  While M <> 0 Do Begin
+    Case Nodes[M].Kind Of
+      N_FIELD, N_ENUMCONST : AttribAnnotChain(Nodes[M].Ann, TGT_FIELD);
+      N_METHOD : Begin
+        Mt := Nodes[M].Sym;
+        If Nodes[M].Aux = 1 Then AttribAnnotChain(Nodes[M].Ann, TGT_CONSTRUCTOR)
+        Else AttribAnnotChain(Nodes[M].Ann, TGT_METHOD);
+        If (Mt >= 0) And (Nodes[M].Aux <> 1) Then CheckOverrideAnnot(C, Mt, Nodes[M].Ann);
+        P := Nodes[M].B;
+        While P <> 0 Do Begin
+          AttribAnnotChain(Nodes[P].Ann, TGT_PARAMETER);
+          P := Nodes[P].Next;
+        End;
+        If (Nodes[M].Dflt <> 0) And (Mt >= 0) Then AttribElemValue(Nodes[M].Dflt, Meths[Mt].Ret);
+      End;
+    End;
+    M := Nodes[M].Next;
+  End;
+  Dec(NThrowCtx);
+  CurCtx := SvCtx; CurMeth := SvMeth; CurRet := SvRet; CurStatic := SvStatic;
+End;
+{ ============================================================================
+  4. ANALYSE SEMANTIQUE : classes, methodes, classes locales, pilote
+  ============================================================================ }
 
 Function SuperCtorParamCount(M : LongInt) : LongInt;
 Begin
@@ -15650,6 +16418,7 @@ Begin
   PushScope(SC_CLASSMARK, '', C);
   D := Classes[C].Decl;
   CheckClassDecl(C);
+  AttribClassAnnots(C);
   M := Nodes[D].D;
   While M <> 0 Do Begin
     Case Nodes[M].Kind Of
@@ -15769,6 +16538,11 @@ Begin
   CUs[Cu].FileName := Fn;
   CUs[Cu].Imports := Nodes[Root].A;
   CUs[Cu].Root := Root;
+  If Nodes[Root].C <> 0 Then Begin
+    If ModDecl <> 0 Then Err(Nodes[Nodes[Root].C].Line, 'plusieurs declarations de module');
+    ModDecl := Nodes[Root].C;
+    ModCU := Cu;
+  End;
   Decl := Nodes[Root].B;
   Imp := 0;
   While Decl <> 0 Do Begin
@@ -15777,6 +16551,100 @@ Begin
   End;
   CurFile := SvFile;
   If Imp = 0 Then ;
+End;
+
+{ ----- module-info.java ------------------------------------------------------------------ }
+
+Function JdkHasModule(Const Nm : String) : Boolean;
+Var A, B, C : LongInt;
+Begin
+  JdkOpen;
+  JdkHasModule := JdkReady And JdkLocate('/' + Nm + '/module-info.class', A, B, C);
+End;
+
+Function SourcePkgExists(Const Pkg : String) : Boolean;
+Var I : LongInt;
+Begin
+  SourcePkgExists := False;
+  For I := 0 To NCUs - 1 Do
+    If (CUs[I].Pkg = Pkg) And (Nodes[CUs[I].Root].B <> 0) Then SourcePkgExists := True;
+End;
+
+Procedure AttribModule;
+Var
+  D, X, K, Cl, Svc, I : LongInt; Q : LongInt;
+  SvCU, SvCtx, SvMeth, SvCls : LongInt; SvStatic : Boolean; Dup : LongInt; HasProv : Boolean;
+Begin
+  If ModDecl = 0 Then Exit;
+  If OptTarget < 53 Then Err(Nodes[ModDecl].Line, 'les modules necessitent une version cible 9 ou superieure');
+  SvCU := CurCU; SvCtx := CurCtx; SvMeth := CurMeth; SvCls := CurClass; SvStatic := CurStatic;
+  CurCU := ModCU; CurClass := -1; CurMeth := -1; CurStatic := True; CurRet := TY_NONE;
+  CurFile := CUs[ModCU].FileName;
+  CurCtx := NewCtx(CTX_METHOD, -1);
+  PushThrowCtx(TC_BOUND);
+  AttribAnnotChain(Nodes[ModDecl].Ann, TGT_MODULE);
+  Dec(NThrowCtx);
+  D := Nodes[ModDecl].A;
+  While D <> 0 Do Begin
+    { directive en double }
+    Q := Nodes[D].Next;
+    While Q <> 0 Do Begin
+      If (Nodes[Q].S = Nodes[D].S) And (Nodes[Q].CS = Nodes[D].CS) And (Nodes[D].S <> 'provides') Then Begin
+        If Nodes[D].S = 'requires' Then Err(Nodes[Q].Line, 'dependance de module en double : ' + Nodes[Q].CS)
+        Else If Nodes[D].S = 'uses' Then Err(Nodes[Q].Line, 'directive uses en double : ' + Nodes[Q].CS)
+        Else Err(Nodes[Q].Line, 'directive ' + Nodes[Q].S + ' en double pour le paquetage ' + Nodes[Q].CS);
+      End;
+      Q := Nodes[Q].Next;
+    End;
+    If Nodes[D].S = 'requires' Then Begin
+      If Nodes[D].CS = Nodes[ModDecl].S Then Err(Nodes[D].Line, 'dependance cyclique du module ' + Nodes[D].CS)
+      Else If (Not JdkHasModule(Nodes[D].CS)) And (Not OptModulePath) Then
+        Err(Nodes[D].Line, 'module introuvable : ' + Nodes[D].CS);
+    End
+    Else If Nodes[D].S = 'exports' Then Begin
+      If Not SourcePkgExists(Nodes[D].CS) Then
+        Err(Nodes[D].Line, 'le paquetage est vide ou n''existe pas : ' + Nodes[D].CS);
+    End
+    Else If Nodes[D].S = 'uses' Then Begin
+      X := LookupTypeName(Nodes[D].CS);
+      If X <= 0 Then Err(Nodes[D].Line, 'symbole introuvable : classe ' + Nodes[D].CS)
+      Else Nodes[D].Sym := ClsOf(X);
+    End
+    Else If Nodes[D].S = 'provides' Then Begin
+      Svc := -1;
+      X := LookupTypeName(Nodes[D].CS);
+      If X <= 0 Then Err(Nodes[D].Line, 'symbole introuvable : classe ' + Nodes[D].CS)
+      Else Begin Svc := ClsOf(X); Nodes[D].Sym := Svc; End;
+      K := Nodes[D].B;
+      While K <> 0 Do Begin
+        X := LookupTypeName(Nodes[K].S);
+        If X <= 0 Then Err(Nodes[K].Line, 'symbole introuvable : classe ' + Nodes[K].S)
+        Else Begin
+          Cl := ClsOf(X);
+          Nodes[K].Sym := Cl;
+          If Svc >= 0 Then Begin
+            EnsureMembers(Cl);
+            HasProv := False;
+            I := Classes[Cl].FirstMeth;
+            While I >= 0 Do Begin
+              If (Meths[I].Name = 'provider') And (Meths[I].NPar = 0) And ((Meths[I].Flags And ACC_STATIC) <> 0) Then HasProv := True;
+              I := Meths[I].Next;
+            End;
+            If Not HasProv Then Begin
+              If Not IsSubClass(Cl, Svc) Then
+                Err(Nodes[K].Line, 'le type d''implementation du service doit etre un sous-type de ' + Classes[Svc].Simple);
+              If (Classes[Cl].Flags And ACC_ABSTRACT) <> 0 Then
+                Err(Nodes[K].Line, 'l''implementation du service ne peut pas etre abstraite : ' + Classes[Cl].Simple);
+            End;
+          End;
+        End;
+        K := Nodes[K].Next;
+      End;
+    End;
+    D := Nodes[D].Next;
+  End;
+  CurCU := SvCU; CurCtx := SvCtx; CurMeth := SvMeth; CurClass := SvCls; CurStatic := SvStatic;
+  If CurCU >= 0 Then CurFile := CUs[CurCU].FileName;
 End;
 
 Procedure AttribAll;
@@ -15798,6 +16666,7 @@ Begin
   End;
   CloseCaptures;
   CheckCaptures;
+  AttribModule;
 End;
 
 { ============================================================================
@@ -15849,6 +16718,34 @@ Begin
   B2(Pool, U);
   MapPut(PoolMap, K, PoolN);
   CPClass := PoolN;
+  Inc(PoolN);
+End;
+
+Function CPModule(Const Name : String) : LongInt;
+Var K : String; I, U : LongInt;
+Begin
+  K := 'M' + Name;
+  I := PoolFind(K);
+  If I >= 0 Then Begin CPModule := I; Exit; End;
+  U := CPUtf8(Name);
+  B1(Pool, 19);
+  B2(Pool, U);
+  MapPut(PoolMap, K, PoolN);
+  CPModule := PoolN;
+  Inc(PoolN);
+End;
+
+Function CPPackage(Const Name : String) : LongInt;
+Var K : String; I, U : LongInt;
+Begin
+  K := 'P' + Name;
+  I := PoolFind(K);
+  If I >= 0 Then Begin CPPackage := I; Exit; End;
+  U := CPUtf8(Name);
+  B1(Pool, 20);
+  B2(Pool, U);
+  MapPut(PoolMap, K, PoolN);
+  CPPackage := PoolN;
   Inc(PoolN);
 End;
 
@@ -16061,7 +16958,7 @@ Const
   OP_IFEQ = 153; OP_IFNE = 154; OP_IFLT = 155; OP_IFGE = 156; OP_IFGT = 157; OP_IFLE = 158;
   OP_IF_ICMPEQ = 159; OP_IF_ICMPNE = 160; OP_IF_ICMPLT = 161; OP_IF_ICMPGE = 162;
   OP_IF_ICMPGT = 163; OP_IF_ICMPLE = 164; OP_IF_ACMPEQ = 165; OP_IF_ACMPNE = 166;
-  OP_GOTO = 167; OP_TABLESWITCH = 170; OP_LOOKUPSWITCH = 171;
+  OP_GOTO = 167; OP_GOTO_W = 200; OP_TABLESWITCH = 170; OP_LOOKUPSWITCH = 171;
   OP_IRETURN = 172; OP_RETURN = 177;
   OP_GETSTATIC = 178; OP_PUTSTATIC = 179; OP_GETFIELD = 180; OP_PUTFIELD = 181;
   OP_INVOKEVIRTUAL = 182; OP_INVOKESPECIAL = 183; OP_INVOKESTATIC = 184;
@@ -16109,6 +17006,8 @@ Var
   MaxLoc    : LongInt;
   NextLoc   : LongInt;
   Alive     : Boolean;
+  FatCode   : Boolean;       { sauts longs : goto_w et conditions inversees }
+  JumpOverflow : Boolean;    { un saut court n'atteint pas sa cible }
   Labels    : Array Of TLabel;
   NLabels   : LongInt;
   FixPos, FixBase, FixLab : Array Of LongInt;
@@ -16383,8 +17282,7 @@ Begin
   If Labels[Lab].Pos >= 0 Then Begin
     If Wide Then B4(Code, Labels[Lab].Pos - Base)
     Else Begin
-      If (Labels[Lab].Pos - Base < -32768) Or (Labels[Lab].Pos - Base > 32767) Then
-        Err(LastLine, 'saut trop long (methode trop grande)');
+      If (Labels[Lab].Pos - Base < -32768) Or (Labels[Lab].Pos - Base > 32767) Then JumpOverflow := True;
       B2(Code, Labels[Lab].Pos - Base);
     End;
   End
@@ -16402,7 +17300,7 @@ Begin
     Off := Labels[FixLab[I]].Pos - FixBase[I];
     If FixWide[I] Then BPatch4(Code, FixPos[I], Off)
     Else Begin
-      If (Off < -32768) Or (Off > 32767) Then Err(LastLine, 'saut trop long (methode trop grande)');
+      If (Off < -32768) Or (Off > 32767) Then JumpOverflow := True;
       BPatch2(Code, FixPos[I], Off);
     End;
   End;
@@ -16700,10 +17598,9 @@ Begin
 End;
 
 Procedure EmitJump(Op : LongInt; Lab : LongInt);
-Var Pc0, N : LongInt;
+Var Pc0, N, Inv : LongInt;
 Begin
   Pc0 := Code.N;
-  B1(Code, Op);
   Case Op Of
     OP_GOTO : N := 0;
     OP_IFEQ..OP_IFLE, OP_IFNULL, OP_IFNONNULL : N := 1;
@@ -16711,6 +17608,28 @@ Begin
   Else
     N := 0;
   End;
+  If FatCode Then Begin
+    { sauts longs : goto_w, ou condition inversee qui saute par-dessus un goto_w }
+    If Op = OP_GOTO Then Begin
+      B1(Code, OP_GOTO_W);
+      EmitOffset(Pc0, Lab, True);
+      RecordJump(Lab);
+      Alive := False;
+    End
+    Else Begin
+      If (Op = OP_IFNULL) Or (Op = OP_IFNONNULL) Then Inv := (OP_IFNULL + OP_IFNONNULL) - Op
+      Else Inv := ((Op - OP_IFEQ) Xor 1) + OP_IFEQ;
+      B1(Code, Inv);
+      B2(Code, 8);
+      While N > 0 Do Begin PopVT; Dec(N); End;
+      B1(Code, OP_GOTO_W);
+      EmitOffset(Pc0 + 3, Lab, True);
+      RecordJump(Lab);
+      AddFrame(Code.N);
+    End;
+    Exit;
+  End;
+  B1(Code, Op);
   While N > 0 Do Begin PopVT; Dec(N); End;
   EmitOffset(Pc0, Lab, False);
   RecordJump(Lab);
@@ -17447,7 +18366,14 @@ Begin
     Else If Classes[C].IsInner Then Begin
       { la super-classe est interne : instance englobante }
       K := Classes[C].Outer;
-      If (GenCls >= 0) And Classes[GenCls].IsInner And (Length(Meths[GenMeth].PreLoc) > 0) Then Begin
+      If Nodes[N].D <> 0 Then Begin
+        { super qualifie : expr.super(...) ; l'expression est testee contre null }
+        GenExpr(Nodes[N].D);
+        EmitDupValue;
+        EmitInvoke(OP_INVOKESTATIC, 'java/util/Objects', 'requireNonNull', '(Ljava/lang/Object;)Ljava/lang/Object;', False);
+        EmitPop(T_OBJECT);
+      End
+      Else If (GenCls >= 0) And Classes[GenCls].IsInner And (Length(Meths[GenMeth].PreLoc) > 0) Then Begin
         LoadLocal(Meths[GenMeth].PreLoc[0], Nodes[N].Line);
         F := Classes[GenCls].Outer;
         While (F >= 0) And Not IsSubClass(F, K) And (Classes[F].ThisField >= 0) Do Begin
@@ -19566,6 +20492,305 @@ Begin
 End;
 
 { ============================================================================
+  Ecriture des annotations dans les fichiers .class
+  (RuntimeVisibleAnnotations, RuntimeInvisibleAnnotations, parametres, AnnotationDefault)
+  ============================================================================ }
+
+Var NoDeprecatedAttr : Boolean;
+
+Function ElemTagOf(T : LongInt) : LongInt;
+Begin
+  Case T Of
+    TY_BOOLEAN : ElemTagOf := Ord('Z');
+    TY_BYTE    : ElemTagOf := Ord('B');
+    TY_CHAR    : ElemTagOf := Ord('C');
+    TY_SHORT   : ElemTagOf := Ord('S');
+    TY_INT     : ElemTagOf := Ord('I');
+    TY_LONG    : ElemTagOf := Ord('J');
+    TY_FLOAT   : ElemTagOf := Ord('F');
+    TY_DOUBLE  : ElemTagOf := Ord('D');
+  Else
+    ElemTagOf := Ord('s');
+  End;
+End;
+
+Procedure WriteAnnotation(Var B : TBuf; A : LongInt); Forward;
+
+Procedure WriteElemValue(Var B : TBuf; N, T : LongInt);
+Var E, Ch, Cnt : LongInt; Bits : TDblBits;
+Begin
+  If IsArrayT(T) Then Begin
+    E := ElemOf(T);
+    B1(B, Ord('['));
+    If Nodes[N].Kind = N_ARRAYINIT Then Begin
+      Cnt := ChainLen(Nodes[N].A);
+      B2(B, Cnt);
+      Ch := Nodes[N].A;
+      While Ch <> 0 Do Begin WriteElemValue(B, Ch, E); Ch := Nodes[Ch].Next; End;
+    End
+    Else Begin
+      B2(B, 1);
+      WriteElemValue(B, N, E);
+    End;
+    Exit;
+  End;
+  If Nodes[N].Kind = N_ANNOT Then Begin
+    B1(B, Ord('@'));
+    WriteAnnotation(B, N);
+    Exit;
+  End;
+  If IsPrim(T) Then Begin
+    FoldConstTo(N, T);
+    B1(B, ElemTagOf(T));
+    Case T Of
+      TY_LONG : B2(B, CPLong(Nodes[N].CI));
+      TY_FLOAT : Begin Bits.I := 0; Bits.S := Nodes[N].CD; B2(B, CPFloat(Bits.L)); End;
+      TY_DOUBLE : Begin Bits.D := Nodes[N].CD; B2(B, CPDouble(Bits.I)); End;
+    Else
+      B2(B, CPInt(Nodes[N].CI));
+    End;
+    Exit;
+  End;
+  If T = T_STRING Then Begin
+    B1(B, Ord('s'));
+    B2(B, CPUtf8(Nodes[N].CS));
+    Exit;
+  End;
+  If Nodes[N].Dflt > 0 Then Begin
+    { constante d'enumeration }
+    B1(B, Ord('e'));
+    B2(B, CPUtf8(TypeDesc(T)));
+    B2(B, CPUtf8(Fields[Nodes[N].Dflt - 1].Name));
+    Exit;
+  End;
+  { litteral de classe }
+  B1(B, Ord('c'));
+  B2(B, CPUtf8(TypeDesc(Erasure(Nodes[N].E))));
+End;
+
+Procedure WriteAnnotation(Var B : TBuf; A : LongInt);
+Var G, Cnt : LongInt;
+Begin
+  B2(B, CPUtf8('L' + Classes[Nodes[A].Sym].Name + ';'));
+  Cnt := 0;
+  G := Nodes[A].A;
+  While G <> 0 Do Begin If Nodes[G].Sym >= 0 Then Inc(Cnt); G := Nodes[G].Next; End;
+  B2(B, Cnt);
+  G := Nodes[A].A;
+  While G <> 0 Do Begin
+    If Nodes[G].Sym >= 0 Then Begin
+      B2(B, CPUtf8(Nodes[G].S));
+      WriteElemValue(B, Nodes[G].A, Meths[Nodes[G].Sym].Ret);
+    End;
+    G := Nodes[G].Next;
+  End;
+End;
+
+{ L'annotation A (analysee) s'applique-t-elle a la cible Kind (masque TGT_*) ? }
+Function AnnApplies(A, Kind : LongInt) : Boolean;
+Var Meta : TAnnMetaRec;
+Begin
+  AnnApplies := False;
+  If Nodes[A].Sym < 0 Then Exit;
+  Meta := AnnMeta(Nodes[A].Sym);
+  AnnApplies := ((Meta.Tgt And Kind) <> 0) Or (((Kind And TGT_TYPE) <> 0) And ((Meta.Tgt And TGT_TYPEUSE) <> 0));
+End;
+
+{ Ecrit dans Buf les annotations de la chaine Head dont la retention est Ret ; Cnt = nombre ecrit.
+  Les annotations repetees sont regroupees dans leur conteneur. }
+Procedure CollectAnnots(Var Buf : TBuf; Var Cnt : LongInt; Head, Kind, Ret : LongInt);
+Var
+  L : Array[0..127] Of LongInt; Done : Array[0..127] Of Boolean; N, I, J, K, Same : LongInt; Meta, Meta2 : TAnnMetaRec;
+  A : LongInt;
+Begin
+  N := 0;
+  A := Head;
+  While (A <> 0) And (N < 128) Do Begin
+    If AnnApplies(A, Kind) Then Begin L[N] := A; Done[N] := False; Inc(N); End;
+    A := Nodes[A].Next;
+  End;
+  For I := 0 To N - 1 Do Begin
+    If Done[I] Then Continue;
+    Meta := AnnMeta(Nodes[L[I]].Sym);
+    Same := 0;
+    For J := I To N - 1 Do If Nodes[L[J]].Sym = Nodes[L[I]].Sym Then Begin Inc(Same); Done[J] := True; End;
+    If (Same > 1) And (Meta.Cont >= 0) Then Begin
+      Meta2 := AnnMeta(Meta.Cont);
+      If Meta2.Ret = Ret Then Begin
+        B2(Buf, CPUtf8('L' + Classes[Meta.Cont].Name + ';'));
+        B2(Buf, 1);
+        B2(Buf, CPUtf8('value'));
+        B1(Buf, Ord('['));
+        B2(Buf, Same);
+        For K := I To N - 1 Do
+          If Nodes[L[K]].Sym = Nodes[L[I]].Sym Then Begin B1(Buf, Ord('@')); WriteAnnotation(Buf, L[K]); End;
+        Inc(Cnt);
+      End;
+    End
+    Else If Meta.Ret = Ret Then Begin
+      WriteAnnotation(Buf, L[I]);
+      Inc(Cnt);
+    End;
+  End;
+End;
+
+Function HasDeprecated(Head : LongInt) : Boolean;
+Var A : LongInt;
+Begin
+  HasDeprecated := False;
+  A := Head;
+  While A <> 0 Do Begin
+    If (Nodes[A].Sym >= 0) And (Classes[Nodes[A].Sym].Name = 'java/lang/Deprecated') Then HasDeprecated := True;
+    A := Nodes[A].Next;
+  End;
+End;
+
+{ Attributs d'annotations d'une declaration : Deprecated, RuntimeVisible/InvisibleAnnotations }
+Procedure EmitAnnotAttrs(Var Attr : TBuf; Var NA : LongInt; Head, Kind : LongInt);
+Var Vis, Inv : TBuf; NV, NI : LongInt;
+Begin
+  If Head = 0 Then Exit;
+  BInit(Vis); BInit(Inv);
+  NV := 0; NI := 0;
+  CollectAnnots(Vis, NV, Head, Kind, RET_RUNTIME);
+  CollectAnnots(Inv, NI, Head, Kind, RET_CLASS);
+  If HasDeprecated(Head) And Not NoDeprecatedAttr Then Begin B2(Attr, CPUtf8('Deprecated')); B4(Attr, 0); Inc(NA); End;
+  If NV > 0 Then Begin
+    B2(Attr, CPUtf8('RuntimeVisibleAnnotations')); B4(Attr, 2 + Vis.N); B2(Attr, NV); BAppend(Attr, Vis); Inc(NA);
+  End;
+  If NI > 0 Then Begin
+    B2(Attr, CPUtf8('RuntimeInvisibleAnnotations')); B4(Attr, 2 + Inv.N); B2(Attr, NI); BAppend(Attr, Inv); Inc(NA);
+  End;
+End;
+
+{ Annotations des parametres : Params = chaine de N_PARAM }
+Procedure EmitParamAnnotAttrs(Var Attr : TBuf; Var NA : LongInt; Params : LongInt);
+Var
+  Ret, NP, P, Cnt, Any : LongInt; Buf, Tmp : TBuf; Nm : String;
+Begin
+  If Params = 0 Then Exit;
+  NP := ChainLen(Params);
+  For Ret := RET_CLASS To RET_RUNTIME Do Begin
+    BInit(Buf);
+    Any := 0;
+    B1(Buf, NP);
+    P := Params;
+    While P <> 0 Do Begin
+      BInit(Tmp);
+      Cnt := 0;
+      CollectAnnots(Tmp, Cnt, Nodes[P].Ann, TGT_PARAMETER, Ret);
+      B2(Buf, Cnt);
+      BAppend(Buf, Tmp);
+      Inc(Any, Cnt);
+      P := Nodes[P].Next;
+    End;
+    If Any > 0 Then Begin
+      If Ret = RET_RUNTIME Then Nm := 'RuntimeVisibleParameterAnnotations' Else Nm := 'RuntimeInvisibleParameterAnnotations';
+      B2(Attr, CPUtf8(Nm)); B4(Attr, Buf.N); BAppend(Attr, Buf); Inc(NA);
+    End;
+  End;
+End;
+
+Procedure EmitAnnotDefault(Var Attr : TBuf; Var NA : LongInt; Decl, RetT : LongInt);
+Var Tmp : TBuf;
+Begin
+  If (Decl = 0) Or (Nodes[Decl].Dflt = 0) Then Exit;
+  BInit(Tmp);
+  WriteElemValue(Tmp, Nodes[Decl].Dflt, RetT);
+  B2(Attr, CPUtf8('AnnotationDefault')); B4(Attr, Tmp.N); BAppend(Attr, Tmp); Inc(NA);
+End;
+
+{ Attribut Record : un composant par parametre de l'en-tete du record }
+Procedure EmitRecordAttr(Var Attr : TBuf; Var NA : LongInt; C : LongInt);
+Var P, F, Cnt, NA2 : LongInt; Buf, Comp : TBuf;
+Begin
+  BInit(Buf);
+  Cnt := 0;
+  P := Nodes[Classes[C].Decl].E;
+  While P <> 0 Do Begin
+    F := FindFieldIn(C, Nodes[P].S);
+    If F >= 0 Then Begin
+      B2(Buf, CPUtf8(Nodes[P].S));
+      B2(Buf, CPUtf8(FieldDescOf(F)));
+      BInit(Comp);
+      NA2 := 0;
+      EmitAnnotAttrs(Comp, NA2, Nodes[P].Ann, TGT_RECCOMP);
+      B2(Buf, NA2);
+      BAppend(Buf, Comp);
+      Inc(Cnt);
+    End;
+    P := Nodes[P].Next;
+  End;
+  B2(Attr, CPUtf8('Record')); B4(Attr, 2 + Buf.N); B2(Attr, Cnt); BAppend(Attr, Buf); Inc(NA);
+End;
+
+{ ----- annotations de type (TYPE_USE) placees en position de declaration ----------------------- }
+
+{ chemin de type d'une annotation placee devant le type declare T : une etape par dimension de tableau,
+  puis une etape par niveau de classe interne (non statique) }
+Procedure TypePathOf(T : LongInt; Var Path : TBuf; Var Len : LongInt);
+Var K : LongInt;
+Begin
+  Len := 0;
+  BInit(Path);
+  While IsArrayT(T) Do Begin B1(Path, 0); B1(Path, 0); Inc(Len); T := ElemOf(T); End;
+  If IsClassT(T) Then Begin
+    K := ClsOf(T);
+    While (Classes[K].Outer >= 0) And ((Classes[K].Flags And (ACC_STATIC Or ACC_INTERFACE Or ACC_ENUM)) = 0) And
+          ((Classes[K].Flags And MOD_LOCAL) = 0) And (Nodes[Classes[K].Decl].Aux <> CLS_RECORD) Do Begin
+      B1(Path, 1); B1(Path, 0); Inc(Len);
+      K := Classes[K].Outer;
+    End;
+  End;
+End;
+
+Var
+  TaBuf : Array[0..2] Of TBuf;
+  TaCnt : Array[0..2] Of LongInt;
+
+Procedure TypeAnnotsReset;
+Var R : LongInt;
+Begin
+  For R := 0 To 2 Do Begin BInit(TaBuf[R]); TaCnt[R] := 0; End;
+End;
+
+{ Accumule les annotations TYPE_USE de Head.
+  TgtType : 13h champ, 14h retour de methode / constructeur, 16h parametre (Idx) }
+Procedure TypeAnnotsAdd(Head, TgtType, Idx, T : LongInt);
+Var A, PLen, Ret : LongInt; Path : TBuf; Meta : TAnnMetaRec;
+Begin
+  If Head = 0 Then Exit;
+  TypePathOf(T, Path, PLen);
+  A := Head;
+  While A <> 0 Do Begin
+    If Nodes[A].Sym >= 0 Then Begin
+      Meta := AnnMeta(Nodes[A].Sym);
+      Ret := Meta.Ret;
+      If ((Meta.Tgt And TGT_TYPEUSE) <> 0) And (Ret >= RET_CLASS) Then Begin
+        B1(TaBuf[Ret], TgtType);
+        If TgtType = $16 Then B1(TaBuf[Ret], Idx);
+        B1(TaBuf[Ret], PLen);
+        BAppend(TaBuf[Ret], Path);
+        WriteAnnotation(TaBuf[Ret], A);
+        Inc(TaCnt[Ret]);
+      End;
+    End;
+    A := Nodes[A].Next;
+  End;
+End;
+
+Procedure TypeAnnotsFlush(Var Attr : TBuf; Var NA : LongInt);
+Begin
+  If TaCnt[RET_CLASS] > 0 Then Begin
+    B2(Attr, CPUtf8('RuntimeInvisibleTypeAnnotations')); B4(Attr, 2 + TaBuf[RET_CLASS].N);
+    B2(Attr, TaCnt[RET_CLASS]); BAppend(Attr, TaBuf[RET_CLASS]); Inc(NA);
+  End;
+  If TaCnt[RET_RUNTIME] > 0 Then Begin
+    B2(Attr, CPUtf8('RuntimeVisibleTypeAnnotations')); B4(Attr, 2 + TaBuf[RET_RUNTIME].N);
+    B2(Attr, TaCnt[RET_RUNTIME]); BAppend(Attr, TaBuf[RET_RUNTIME]); Inc(NA);
+  End;
+End;
+{ ============================================================================
   4b. DESUCRAGE : preparation des classes (champs synthetiques, descripteurs,
       enum, ponts) puis generation des methodes et des fichiers .class
   ============================================================================ }
@@ -20113,7 +21338,7 @@ Begin
   P := 0;
 End;
 
-Procedure GenMethodBody(C, M : LongInt);
+Procedure GenMethodBodyOnce(C, M : LongInt);
 Var
   D, Body, P, L, I, Slot : LongInt; IsCtor, Static : Boolean; Dsc : String;
 Begin
@@ -20200,6 +21425,23 @@ Begin
   Dsc := '';
 End;
 
+{ Genere le corps ; si un saut court deborde (methode de plus de 32 Ko), regenere en mode "sauts longs" }
+Procedure GenMethodBody(C, M : LongInt);
+Var Errs : LongInt;
+Begin
+  FatCode := False;
+  JumpOverflow := False;
+  Errs := ErrCount;
+  GenMethodBodyOnce(C, M);
+  ResolveFixups;
+  If JumpOverflow And (ErrCount = Errs) Then Begin
+    FatCode := True;
+    JumpOverflow := False;
+    GenMethodBodyOnce(C, M);
+    FatCode := False;
+  End;
+End;
+
 { ----- ecriture d'une classe ------------------------------------------------- }
 
 Var
@@ -20265,6 +21507,7 @@ Begin
   B2(FieldBuf, Fl);
   B2(FieldBuf, CPUtf8(Fields[F].Name));
   B2(FieldBuf, CPUtf8(FieldDescOf(F)));
+  BInit(Attr);
   NA := 0;
   { ConstantValue pour les constantes statiques finales }
   If ((Fields[F].Flags And (ACC_STATIC Or ACC_FINAL)) = (ACC_STATIC Or ACC_FINAL)) And (Fields[F].CK <> CK_NONE) Then Begin
@@ -20277,18 +21520,23 @@ Begin
       Idx := CPString(Fields[F].CS);
     End;
     NA := 1;
-    B2(FieldBuf, 1);
-    B2(FieldBuf, CPUtf8('ConstantValue'));
-    B4(FieldBuf, 2);
-    B2(FieldBuf, Idx);
-  End
-  Else B2(FieldBuf, 0);
+    B2(Attr, CPUtf8('ConstantValue'));
+    B4(Attr, 2);
+    B2(Attr, Idx);
+  End;
+  If Fields[F].Decl > 0 Then Begin
+    EmitAnnotAttrs(Attr, NA, Nodes[Fields[F].Decl].Ann, TGT_FIELD);
+    TypeAnnotsReset;
+    TypeAnnotsAdd(Nodes[Fields[F].Decl].Ann, $13, 0, Fields[F].Typ);
+    TypeAnnotsFlush(Attr, NA);
+  End;
+  B2(FieldBuf, NA);
+  BAppend(FieldBuf, Attr);
   Inc(NFieldOut);
-  Attr.N := 0;
 End;
 
 Procedure GenMethodInfo(C, M : LongInt);
-Var Fl : LongInt; HasCode : Boolean; Out : TBuf; NA : LongInt;
+Var Fl : LongInt; HasCode : Boolean; Extra : TBuf; NX, D, Fd, Pr, Ix : LongInt;
 Begin
   Fl := Meths[M].Flags And $FFFF;
   If (OptTarget < 55) And (Meths[M].Lambda < 0) And ((Classes[C].Flags And ACC_INTERFACE) = 0) Then Fl := Fl And Not ACC_PRIVATE;
@@ -20298,16 +21546,41 @@ Begin
   HasCode := (Meths[M].Flags And (ACC_ABSTRACT Or ACC_NATIVE)) = 0;
   If (Meths[M].Synth = 0) And (Meths[M].Decl = 0) Then HasCode := False;
   If HasCode Then GenMethodBody(C, M);
+  { attributs hors Code : annotations }
+  BInit(Extra);
+  NX := 0;
+  D := Meths[M].Decl;
+  If (D > 0) And (Meths[M].Synth = 0) And (Meths[M].Lambda < 0) Then Begin
+    If Nodes[D].Aux = 1 Then EmitAnnotAttrs(Extra, NX, Nodes[D].Ann, TGT_CONSTRUCTOR)
+    Else EmitAnnotAttrs(Extra, NX, Nodes[D].Ann, TGT_METHOD);
+    EmitParamAnnotAttrs(Extra, NX, Nodes[D].B);
+    EmitAnnotDefault(Extra, NX, D, Meths[M].Ret);
+    TypeAnnotsReset;
+    If (Nodes[D].Aux = 1) Or (Meths[M].Ret <> TY_VOID) Then
+      TypeAnnotsAdd(Nodes[D].Ann, $14, 0, Meths[M].Ret);
+    Pr := Nodes[D].B;
+    Ix := 0;
+    While Pr <> 0 Do Begin
+      If Ix < Meths[M].NPar Then TypeAnnotsAdd(Nodes[Pr].Ann, $16, Ix, Meths[M].Par[Ix]);
+      Inc(Ix);
+      Pr := Nodes[Pr].Next;
+    End;
+    TypeAnnotsFlush(Extra, NX);
+  End
+  Else If (Meths[M].Synth = 4) And (Meths[M].Bridge >= 0) Then Begin
+    Fd := Fields[Meths[M].Bridge].Decl;
+    If Fd > 0 Then EmitAnnotAttrs(Extra, NX, Nodes[Fd].Ann, TGT_METHOD);
+  End;
   B2(MethBuf, Fl);
   B2(MethBuf, CPUtf8(Meths[M].Name));
   B2(MethBuf, CPUtf8(Meths[M].Desc));
   If HasCode Then Begin
-    B2(MethBuf, 1);
+    B2(MethBuf, 1 + NX);
     WriteCodeAttr(MethBuf);
   End
-  Else B2(MethBuf, 0);
+  Else B2(MethBuf, NX);
+  BAppend(MethBuf, Extra);
   Inc(NMethOut);
-  NA := 0; Out.N := 0;
 End;
 
 Function SourceFileName(C : LongInt) : String;
@@ -20357,11 +21630,20 @@ Begin
   BInit(Out);
   B4(Out, $CAFEBABE);
   B2(Out, 0);
-  B2(Out, OptTarget);
+  { l'attribut Record n'est reconnu qu'a partir de la version 60 }
+  If Classes[C].IsSrc And (Classes[C].Decl > 0) And (Nodes[Classes[C].Decl].Aux = CLS_RECORD) And (OptTarget < 60) Then
+    B2(Out, 60)
+  Else B2(Out, OptTarget);
   { attributs de classe }
   BInit(Attr);
   NA := 0;
   B2(Attr, CPUtf8('SourceFile')); B4(Attr, 2); B2(Attr, CPUtf8(SourceFileName(C))); Inc(NA);
+  { annotations de la classe et attribut Record }
+  If Classes[C].IsSrc And (Classes[C].Decl > 0) Then Begin
+    If Nodes[Classes[C].Decl].Aux = CLS_ANNOTATION Then EmitAnnotAttrs(Attr, NA, Nodes[Classes[C].Decl].Ann, TGT_TYPE Or TGT_ANNOT)
+    Else EmitAnnotAttrs(Attr, NA, Nodes[Classes[C].Decl].Ann, TGT_TYPE);
+    If Nodes[Classes[C].Decl].Aux = CLS_RECORD Then EmitRecordAttr(Attr, NA, C);
+  End;
   { classes imbriquees }
   BInit(InnerBuf);
   NInner := 0;
@@ -20453,6 +21735,123 @@ Begin
   Version := 0; M := 0;
 End;
 
+{ ----- module-info.class ------------------------------------------------------------------- }
+
+Function DotsToSlashes(Const S : String) : String;
+Var I : LongInt; R : String;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do If R[I] = '.' Then R[I] := '/';
+  DotsToSlashes := R;
+End;
+
+Function ModVerIdx(Const Nm : String) : LongInt;
+Var V : String;
+Begin
+  V := JdkModuleVersion(Nm);
+  If V = '' Then ModVerIdx := 0 Else ModVerIdx := CPUtf8(V);
+End;
+
+Procedure WriteModuleInfo;
+Var
+  Out, Attr, Mod_, Tmp : TBuf; NA, D, K, N, NReq, NExp, NOpen, NUses, NProv, I : LongInt; Path, Dir, Fn : String;
+  HasBase : Boolean; ReqB, ExpB, OpenB, UsesB, ProvB : TBuf; X : LongInt;
+Begin
+  If ModDecl = 0 Then Exit;
+  PoolInit;
+  CurFile := CUs[ModCU].FileName;
+  BInit(Attr); BInit(Mod_); BInit(ReqB); BInit(ExpB); BInit(OpenB); BInit(UsesB); BInit(ProvB);
+  NA := 0; NReq := 0; NExp := 0; NOpen := 0; NUses := 0; NProv := 0;
+  HasBase := False;
+  D := Nodes[ModDecl].A;
+  While D <> 0 Do Begin
+    If (Nodes[D].S = 'requires') And (Nodes[D].CS = 'java.base') Then HasBase := True;
+    D := Nodes[D].Next;
+  End;
+  { java.base est toujours requis (obligatoire, implicite) }
+  If (Not HasBase) And (Nodes[ModDecl].S <> 'java.base') Then Begin
+    B2(ReqB, CPModule('java.base')); B2(ReqB, $8000); B2(ReqB, ModVerIdx('java.base')); Inc(NReq);
+  End;
+  D := Nodes[ModDecl].A;
+  While D <> 0 Do Begin
+    If Nodes[D].S = 'requires' Then Begin
+      B2(ReqB, CPModule(Nodes[D].CS)); B2(ReqB, Nodes[D].Mods); B2(ReqB, ModVerIdx(Nodes[D].CS)); Inc(NReq);
+    End
+    Else If (Nodes[D].S = 'exports') Or (Nodes[D].S = 'opens') Then Begin
+      If Nodes[D].S = 'exports' Then Begin
+        B2(ExpB, CPPackage(DotsToSlashes(Nodes[D].CS))); B2(ExpB, 0); B2(ExpB, ChainLen(Nodes[D].B));
+        K := Nodes[D].B;
+        While K <> 0 Do Begin B2(ExpB, CPModule(Nodes[K].S)); K := Nodes[K].Next; End;
+        Inc(NExp);
+      End
+      Else Begin
+        B2(OpenB, CPPackage(DotsToSlashes(Nodes[D].CS))); B2(OpenB, 0); B2(OpenB, ChainLen(Nodes[D].B));
+        K := Nodes[D].B;
+        While K <> 0 Do Begin B2(OpenB, CPModule(Nodes[K].S)); K := Nodes[K].Next; End;
+        Inc(NOpen);
+      End;
+    End
+    Else If Nodes[D].S = 'uses' Then Begin
+      If Nodes[D].Sym > 0 Then Begin B2(UsesB, CPClass(Classes[Nodes[D].Sym].Name)); Inc(NUses); End;
+    End
+    Else If Nodes[D].S = 'provides' Then Begin
+      If Nodes[D].Sym > 0 Then Begin
+        B2(ProvB, CPClass(Classes[Nodes[D].Sym].Name)); B2(ProvB, ChainLen(Nodes[D].B));
+        K := Nodes[D].B;
+        While K <> 0 Do Begin
+          If Nodes[K].Sym > 0 Then B2(ProvB, CPClass(Classes[Nodes[K].Sym].Name)) Else B2(ProvB, 0);
+          K := Nodes[K].Next;
+        End;
+        Inc(NProv);
+      End;
+    End;
+    D := Nodes[D].Next;
+  End;
+  { attribut Module }
+  B2(Mod_, CPModule(Nodes[ModDecl].S));
+  If Nodes[ModDecl].Mods = 1 Then B2(Mod_, $20) Else B2(Mod_, 0);
+  B2(Mod_, 0);
+  B2(Mod_, NReq);  BAppend(Mod_, ReqB);
+  B2(Mod_, NExp);  BAppend(Mod_, ExpB);
+  B2(Mod_, NOpen); BAppend(Mod_, OpenB);
+  B2(Mod_, NUses); BAppend(Mod_, UsesB);
+  B2(Mod_, NProv); BAppend(Mod_, ProvB);
+  B2(Attr, CPUtf8('SourceFile')); B4(Attr, 2); B2(Attr, CPUtf8('module-info.java')); Inc(NA);
+  B2(Attr, CPUtf8('Module')); B4(Attr, Mod_.N); BAppend(Attr, Mod_); Inc(NA);
+  NoDeprecatedAttr := True;
+  EmitAnnotAttrs(Attr, NA, Nodes[ModDecl].Ann, TGT_MODULE);
+  NoDeprecatedAttr := False;
+  X := CPClass('module-info');
+  BInit(Out);
+  B4(Out, $CAFEBABE);
+  B2(Out, 0);
+  B2(Out, OptTarget);
+  B2(Out, PoolN);
+  BAppend(Out, Pool);
+  B2(Out, $8000);
+  B2(Out, X);
+  B2(Out, 0);
+  B2(Out, 0);
+  B2(Out, 0);
+  B2(Out, 0);
+  B2(Out, NA);
+  BAppend(Out, Attr);
+  If OptOutDir <> '' Then Begin
+    Path := OptOutDir;
+    If (Path[Length(Path)] <> '/') And (Path[Length(Path)] <> '\') Then Path := Path + '/';
+    Path := Path + 'module-info.class';
+    MakeDirs(Path);
+  End
+  Else Begin
+    Dir := CUs[ModCU].FileName;
+    I := LastPos('/', Dir);
+    If I = 0 Then I := LastPos('\', Dir);
+    Path := Copy(Dir, 1, I) + 'module-info.class';
+  End;
+  If Not WriteBuf(Path, Out) Then Err(0, 'impossible d''ecrire le fichier ' + Path)
+  Else If OptVerbose Then WriteLn('[ecrit ', Path, ']');
+  N := 0; Fn := ''; Tmp.N := 0;
+End;
 { ============================================================================
   PROGRAMME PRINCIPAL
   ============================================================================ }
@@ -20471,6 +21870,7 @@ Begin
   WriteLn('Options :');
   WriteLn('  -d repertoire      repertoire de sortie des fichiers .class');
   WriteLn('  -cp chemin         classpath (repertoires et archives .jar)');
+  WriteLn('  -p, --module-path chemin   modules (ajoutes au classpath)');
   WriteLn('  -target N          version de classe visee (8 a 25, defaut 11)');
   WriteLn('  --release N        synonyme de -target');
   WriteLn('  -verbose           affiche les fichiers ecrits');
@@ -20516,6 +21916,10 @@ Begin
     Else If ((Arg = '-cp') Or (Arg = '-classpath') Or (Arg = '--class-path')) And (I < ParamCount) Then Begin
       Inc(I); CpArg := ParamStr(I);
     End
+    Else If ((Arg = '-p') Or (Arg = '--module-path')) And (I < ParamCount) Then Begin
+      Inc(I); OptModulePath := True;
+      If CpArg = '' Then CpArg := ParamStr(I) Else CpArg := CpArg + ':' + ParamStr(I);
+    End
     Else If Arg = '-verbose' Then OptVerbose := True
     Else If Arg = '-Xparse' Then OptParseOnly := True
     Else If (Arg = '-help') Or (Arg = '--help') Or (Arg = '-h') Or (Arg = '/?') Then Begin Usage; Halt(0); End
@@ -20551,6 +21955,7 @@ Begin
     K := 0;
     For I := 0 To NClasses - 1 Do
       If Classes[I].IsSrc And (Classes[I].CU >= 0) Then WriteClassFile(I);
+    WriteModuleInfo;
   End;
   If ErrCount > 0 Then Begin
     ErrSummary;
