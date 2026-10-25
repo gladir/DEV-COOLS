@@ -447,6 +447,8 @@ Type
 
 Var
   DeferDepth: Integer = 0;
+  DiagOpen: Boolean = False;    { la derniere ligne ecrite sur stderr n'est pas vide }
+  ErrFlushPhase: Integer = 1;   { phases d'avertissements imprimes avant une erreur : 1 typage, 2 verification d'emprunts }
   DeferBuf: array[0..7] of string;
   DeferPh, DeferLn, DeferCl: array[0..7] of Integer;
   DeferPass: array[0..7] of Boolean;
@@ -465,13 +467,13 @@ end;
 procedure WriteErr(const s: string);
 begin
   if DeferDepth > 0 then DeferBuf[DeferTop] := DeferBuf[DeferTop] + s
-  else Write(StdErr, s);
+  else begin Write(StdErr, s); if s <> '' then DiagOpen := True; end;
 end;
 
 procedure WriteErrLn(const s: string);
 begin
   if DeferDepth > 0 then DeferBuf[DeferTop] := DeferBuf[DeferTop] + s + #10
-  else WriteLn(StdErr, s);
+  else begin WriteLn(StdErr, s); DiagOpen := s <> ''; end;
 end;
 
 { Debut d'un diagnostic differe ; un diagnostic de phase 2 dans une region de phase 2 est fusionne }
@@ -520,6 +522,7 @@ var
   p, wn, code: Integer;
 begin
   i := 1;
+  if DiagOpen and (txt <> '') then begin WriteLn(StdErr, ''); DiagOpen := False; end;
   while i <= Length(txt) do
   begin
     j := i;
@@ -540,7 +543,7 @@ begin
         WriteLn(StdErr, Spaces(wn) + ' = note: ' + nt);
       end;
     end
-    else WriteLn(StdErr, ln);
+    else begin WriteLn(StdErr, ln); DiagOpen := ln <> ''; end;
   end;
 end;
 
@@ -623,7 +626,8 @@ var
   k, n: Integer;
 begin
   if SuppressDiag > 0 then Exit;
-  if isErr and (DeferDepth = 0) then DeferFlush(2);
+  if isErr and (DeferDepth = 0) then DeferFlush(ErrFlushPhase);
+  if (DeferDepth = 0) and DiagOpen then WriteErrLn('');
   if isErr then
   begin
     Inc(ErrCount);
@@ -841,7 +845,8 @@ var
   mark: string;
 begin
   if SuppressDiag > 0 then Exit;
-  if isErr and (DeferDepth = 0) then DeferFlush(2);
+  if isErr and (DeferDepth = 0) then DeferFlush(ErrFlushPhase);
+  if (DeferDepth = 0) and DiagOpen then WriteErrLn('');
   if isErr then begin Inc(ErrCount); head := 'error'; end
   else begin Inc(WarnCount); head := 'warning'; end;
   if code <> '' then head := head + '[' + code + ']';
@@ -895,6 +900,7 @@ begin
   if ErrCount > 0 then DeferFlush(99);
   if ErrCount > 0 then
   begin
+    if DiagOpen then WriteErrLn('');
     if ErrCount = 1 then
       WriteErr('error: aborting due to 1 previous error')
     else
@@ -2788,6 +2794,7 @@ begin
        (s = '|=') or (s = '<<=') or (s = '>>=') then
     begin
       n := MkFrom(eAssignOp, lo);
+      Nodes[n].iv := (Int64(Toks[TokPos].line) shl 20) or Int64(Toks[TokPos].col);
       Adv;
       Nodes[n].s := Copy(s, 1, Length(s) - 1);
       Nodes[n].a := lo;
@@ -11276,6 +11283,140 @@ begin
   ReportOpDiag('E0369', msg, labs, lt, trName);
 end;
 
+
+{ E0277 rustc pour un operateur arithmetique entre deux types numeriques differents }
+procedure NumOpInfo(const op: string; isFl, assign: Boolean; var file_: string; var decl, mline, mcol: Integer; var mac: string);
+begin
+  file_ := 'arith.rs';
+  mcol := 0;
+  if not assign then
+  begin
+    if op = '+' then begin decl := 98; mline := 113; mac := 'add_impl'; end
+    else if op = '-' then begin decl := 210; mline := 225; mac := 'sub_impl'; end
+    else if op = '*' then begin decl := 344; mline := 359; mac := 'mul_impl'; end
+    else if op = '/' then
+    begin
+      if isFl then begin decl := 511; mline := 524; mac := 'div_impl_float'; end
+      else begin decl := 488; mline := 505; mcol := 1; mac := 'div_impl_integer'; end;
+    end
+    else if op = '%' then
+    begin
+      if isFl then begin decl := 635; mline := 648; mac := 'rem_impl_float'; end
+      else begin decl := 597; mline := 614; mcol := 1; mac := 'rem_impl_integer'; end;
+    end
+    else if op = '&' then begin file_ := 'bit.rs'; decl := 174; mline := 187; mac := 'bitand_impl'; end
+    else if op = '|' then begin file_ := 'bit.rs'; decl := 278; mline := 291; mac := 'bitor_impl'; end
+    else begin file_ := 'bit.rs'; decl := 382; mline := 395; mac := 'bitxor_impl'; end;
+  end
+  else
+  begin
+    if op = '+' then begin decl := 786; mline := 799; mac := 'add_assign_impl'; end
+    else if op = '-' then begin decl := 857; mline := 870; mac := 'sub_assign_impl'; end
+    else if op = '*' then begin decl := 919; mline := 932; mac := 'mul_assign_impl'; end
+    else if op = '/' then begin decl := 981; mline := 993; mac := 'div_assign_impl'; end
+    else if op = '%' then begin decl := 1046; mline := 1058; mac := 'rem_assign_impl'; end
+    else if op = '&' then begin file_ := 'bit.rs'; decl := 746; mline := 757; mac := 'bitand_assign_impl'; end
+    else if op = '|' then begin file_ := 'bit.rs'; decl := 821; mline := 832; mac := 'bitor_assign_impl'; end
+    else begin file_ := 'bit.rs'; decl := 896; mline := 907; mac := 'bitxor_assign_impl'; end;
+  end;
+end;
+
+procedure ReportNumOp(n: Integer; const op: string; lt, rt: Integer; assign: Boolean);
+var
+  labs: TLabels;
+  msg, tn, ls, rs, trn, nm, base, f, mac, lbl: string;
+  b, w, decl, mline, mcol: Integer;
+  conc, isFl: Boolean;
+begin
+  b := Nodes[n].b;
+  ls := TyStrZ(lt);
+  rs := TyStrZ(rt);
+  nm := OpMethodName(op);
+  trn := Copy(nm, 1, 1);
+  trn := UpCase(trn[1]) + Copy(nm, 2, Length(nm));
+  if nm = 'bitand' then trn := 'BitAnd' else if nm = 'bitor' then trn := 'BitOr' else if nm = 'bitxor' then trn := 'BitXor';
+  if assign then trn := trn + 'Assign';
+  if not assign then
+  begin
+    if op = '+' then msg := 'cannot add `' + rs + '` to `' + ls + '`'
+    else if op = '-' then msg := 'cannot subtract `' + rs + '` from `' + ls + '`'
+    else if op = '*' then msg := 'cannot multiply `' + ls + '` by `' + rs + '`'
+    else if op = '/' then msg := 'cannot divide `' + ls + '` by `' + rs + '`'
+    else if op = '%' then msg := 'cannot calculate the remainder of `' + ls + '` divided by `' + rs + '`'
+    else msg := 'no implementation for `' + ls + ' ' + op + ' ' + rs + '`';
+    lbl := 'no implementation for `' + ls + ' ' + op + ' ' + rs + '`';
+  end
+  else
+  begin
+    if op = '+' then msg := 'cannot add-assign `' + rs + '` to `' + ls + '`'
+    else if op = '-' then msg := 'cannot subtract-assign `' + rs + '` from `' + ls + '`'
+    else if op = '*' then msg := 'cannot multiply-assign `' + ls + '` by `' + rs + '`'
+    else if op = '/' then msg := 'cannot divide-assign `' + ls + '` by `' + rs + '`'
+    else if op = '%' then msg := 'cannot calculate and assign the remainder of `' + ls + '` divided by `' + rs + '`'
+    else msg := 'no implementation for `' + ls + ' ' + op + '= ' + rs + '`';
+    lbl := 'no implementation for `' + ls + ' ' + op + '= ' + rs + '`';
+  end;
+  SetLength(labs, 1);
+  labs[0].fi := Nodes[n].fi; labs[0].line := Integer(Nodes[n].iv shr 20); labs[0].col := Integer(Nodes[n].iv and $FFFFF);
+  labs[0].len := Length(op);
+  if assign then labs[0].len := Length(op) + 1;
+  labs[0].primary := True; labs[0].text := lbl;
+  if labs[0].line = 0 then begin labs[0].line := Nodes[n].line; labs[0].col := Nodes[n].col; labs[0].len := NodeLen(n); end;
+  conc := (Tys[Shallow(lt)].k = tyInt) or (Tys[Shallow(lt)].k = tyFloat);
+  isFl := IsFloatTy(lt);
+  w := Length(IntToStr(labs[0].line));
+  if Length(IntToStr(Nodes[b].line)) > w then w := Length(IntToStr(Nodes[b].line));
+  RenderMinWidth := w;
+  ReportLabels(True, 'E0277', msg, labs);
+  RenderMinWidth := 0;
+  WriteErrLn(Spaces(w) + ' |');
+  WriteErrLn(Spaces(w) + ' = help: the trait `' + trn + '<' + rs + '>` is not implemented for `' + ls + '`');
+  if conc then
+  begin
+    NumOpInfo(op, isFl, assign, f, decl, mline, mcol, mac);
+    base := '/rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/';
+    if not assign then
+    begin
+      WriteErrLn('help: the following other types implement trait `' + trn + '<Rhs>`');
+      WriteErrLn(Spaces(w) + '--> ' + base + 'ops/' + f + ':' + IntToStr(decl) + ':8');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: `' + ls + '` implements `' + trn + '`');
+      WriteErrLn(Spaces(w - 1) + ' ::: ' + base + 'ops/' + f + ':' + IntToStr(mline) + ':' + IntToStr(mcol));
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: in this macro invocation');
+      WriteErrLn(Spaces(w) + '--> ' + base + 'internal_macros.rs:22:8');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: `&' + ls + '` implements `' + trn + '<' + ls + '>`');
+      WriteErrLn(Spaces(w - 1) + ' ::: ' + base + 'internal_macros.rs:33:8');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: `' + ls + '` implements `' + trn + '<&' + ls + '>`');
+      WriteErrLn(Spaces(w - 1) + ' ::: ' + base + 'internal_macros.rs:44:8');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: `&' + ls + '` implements `' + trn + '`');
+    end
+    else
+    begin
+      WriteErrLn('help: `' + ls + '` implements trait `' + trn + '<Rhs>`');
+      WriteErrLn(Spaces(w) + '--> ' + base + 'ops/' + f + ':' + IntToStr(decl) + ':8');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: `' + trn + '`');
+      WriteErrLn(Spaces(w - 1) + ' ::: ' + base + 'ops/' + f + ':' + IntToStr(mline) + ':' + IntToStr(mcol));
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: in this macro invocation');
+      WriteErrLn(Spaces(w) + '--> ' + base + 'internal_macros.rs:61:8');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(Spaces(w) + ' = note: `' + trn + '<&' + ls + '>`');
+    end;
+    WriteErrLn(Spaces(w) + ' = note: this error originates in the macro `' + mac +
+               '` (in Nightly builds, run with -Z macro-backtrace for more info)');
+    if isFl and (Tys[Shallow(rt)].k = tyVar) and (VarKind[Tys[Shallow(rt)].n] = 1) and (Nodes[b].k = eLit) and
+       (Nodes[b].eline = Nodes[b].line) then
+      PrintInsertHelp('consider using a floating-point literal by writing it with `.0`', Nodes[b].fi, Nodes[b].line,
+                      Nodes[b].col + NodeLen(b), '.0', w);
+  end;
+  WriteErrLn('');
+end;
+
 function CheckBinary(n: Integer; expected: Integer): Integer;
 var
   op: string;
@@ -11344,7 +11485,13 @@ begin
         { divergence de types : message rustc }
         if isCmp or True then
         begin
-          if (IsNumericTy(lt) and IsNumericTy(rt)) or (Tys[lt].k = tyBool) or (Tys[lt].k = tyChar) then
+          if IsNumericTy(lt) and IsNumericTy(rt) and (not isCmp) and not (isBit and (IsFloatTy(lt) or IsFloatTy(rt))) then
+          begin
+            if (IsIntegralTy(lt) and IsIntegralTy(rt)) or (IsFloatTy(lt) and IsFloatTy(rt)) then
+              ErrAt(Nodes[n].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(lt) + '`, found `' + TyStrZ(rt) + '`');
+            ReportNumOp(n, op, lt, rt, False);
+          end
+          else if (IsNumericTy(lt) and IsNumericTy(rt)) or (Tys[lt].k = tyBool) or (Tys[lt].k = tyChar) then
             ErrAt(Nodes[n].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(lt) + '`, found `' + TyStrZ(rt) + '`')
           else
             ErrAt(n, 'E0369', 'binary operation `' + op + '` cannot be applied to type `' + TyStrZ(lt) + '`',
@@ -11689,7 +11836,16 @@ begin
     if not isShift then
     begin
       if not TryUnify(lt, rt) then
-        ErrAt(Nodes[n].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(lt) + '`, found `' + TyStrZ(rt) + '`');
+      begin
+        if IsNumericTy(lt) and IsNumericTy(rt) and not (((op = '&') or (op = '|') or (op = '^')) and (IsFloatTy(lt) or IsFloatTy(rt))) then
+        begin
+          if (IsIntegralTy(lt) and IsIntegralTy(rt)) or (IsFloatTy(lt) and IsFloatTy(rt)) then
+            ErrAt(Nodes[n].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(lt) + '`, found `' + TyStrZ(rt) + '`');
+          ReportNumOp(n, op, lt, rt, True);
+        end
+        else
+          ErrAt(Nodes[n].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(lt) + '`, found `' + TyStrZ(rt) + '`');
+      end;
     end;
     h := HirAt(hAssignOp, TyUnit, n);
     Hirs[h].s := op;
@@ -20010,9 +20166,11 @@ begin
   if ErrCount = 0 then
     begin
       for j := Length(InstBodies) - 1 downto 0 do ClosureScanBody(InstBodies[j]);
+      ErrFlushPhase := 2;
       for j := 0 to Length(InstBodies) - 1 do MoveCheckBody(InstBodies[j]);
       if ErrCount = 0 then
         for j := 0 to Length(InstBodies) - 1 do BorrowCheckBody(InstBodies[j]);
+      ErrFlushPhase := 1;
     end;
   for i := firstBody * 0 to NClosures - 1 do
   begin
