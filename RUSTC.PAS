@@ -913,13 +913,38 @@ begin
   WriteErrLn(Spaces(LastWidth) + ' = help: ' + s);
 end;
 
+{ langue de l'interface : francais par defaut, anglais si LANGUAGE commence par
+    EN }
+var
+  LangEnCache: Integer = -1;
+
+function LangEn: Boolean;
+var
+  v: string;
+  i: Integer;
+begin
+  if LangEnCache < 0 then
+  begin
+    v := GetEnv('LANGUAGE');
+    for i := 1 to Length(v) do v[i] := UpCase(v[i]);
+    if (Length(v) >= 2) and (Copy(v, 1, 2) = 'EN') then LangEnCache := 1 else
+        LangEnCache := 0;
+  end;
+  Result := LangEnCache = 1;
+end;
+
+function Tr(const fr, en: string): string;
+begin
+  if LangEn then Result := en else Result := fr;
+end;
+
 procedure FatalMsg(const s: string);
 begin
   Inc(ErrCount);
   WriteErrLn('error: ' + s);
   WriteErrLn('');
-  WriteErrLn('error: aborting due to ' + IntToStr(ErrCount) + ' previous error'
-      + 's');
+  if LangEn then WriteErrLn('error: aborting due to previous error')
+  else WriteErrLn('error: arret a cause de l''erreur precedente');
   Halt(1);
 end;
 
@@ -29534,7 +29559,8 @@ begin
       ': F) -> Result<U, E> { match self { Ok(x) => f(x), Err(e) => Err(e) }' +
       ' }');
   BufLn(b, '        pub fn or_else<U, F: FnOnce(E) -> Result<T, U>>(self, f:' +
-      ' F) -> Result<T, U> { match self { Ok(x) => Ok(x), Err(e) => f(e) } }');
+      ' F) -> Result<T, U> { match self { Ok(x) => Ok(x), Err(e) => f(e) } ' +
+      '}');
   BufLn(b, '        pub fn and<U>(self, o: Result<U, E>) -> Result<U, E> { m' +
       'atch self { Ok(_) => o, Err(e) => Err(e) } }');
   BufLn(b, '        pub fn or<U>(self, o: Result<T, U>) -> Result<T, U> { ma' +
@@ -30281,7 +30307,8 @@ begin
   BufLn(b, '        fn cycle(self) -> Cycle<Self> where Self: Sized + Clone ' +
       '{ Cycle { orig: self.clone(), iter: self } }');
   BufLn(b, '        fn scan<St, B, F: FnMut(&mut St, Self::Item) -> Option<B' +
-      '>>(self, initial: St, f: F) -> Scan<Self, St, F> where Self: Sized {');
+      '>>(self, initial: St, f: F) -> Scan<Self, St, F> where Self: Sized ' +
+      '{');
   BufLn(b, '            Scan { iter: self, state: initial, f: f }');
   BufLn(b, '        }');
   BufLn(b, '        fn map_while<B, P: FnMut(Self::Item) -> Option<B>>(self,' +
@@ -30299,7 +30326,8 @@ begin
   BufLn(b, '            None');
   BufLn(b, '        }');
   BufLn(b, '        fn rfind<P: FnMut(&Self::Item) -> bool>(&mut self, mut p' +
-      ': P) -> Option<Self::Item> where Self: Sized + DoubleEndedIterator {');
+      ': P) -> Option<Self::Item> where Self: Sized + DoubleEndedIterator ' +
+      '{');
   BufLn(b, '            while let Some(x) = self.next_back() { if p(&x) { re' +
       'turn Some(x); } }');
   BufLn(b, '            None');
@@ -30668,7 +30696,8 @@ begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    impl<A: DoubleEndedIterator + ExactSizeIterator, B: DoubleEn' +
-      'dedIterator + ExactSizeIterator> DoubleEndedIterator for Zip<A, B> {');
+      'dedIterator + ExactSizeIterator> DoubleEndedIterator for Zip<A, B> ' +
+      '{');
   BufLn(b, '        fn next_back(&mut self) -> Option<(A::Item, B::Item)> {');
   BufLn(b, '            let la = self.a.len();');
   BufLn(b, '            let lb = self.b.len();');
@@ -30852,7 +30881,8 @@ begin
   BufLn(b, '        type Item = I::Item;');
   BufLn(b, '        fn size_hint(&self) -> (usize, Option<usize>) {');
   BufLn(b, '            let extra = match &self.peeked { Some(Some(_)) => 1u' +
-      'size, Some(None) => return (0usize, Some(0usize)), None => 0usize };');
+      'size, Some(None) => return (0usize, Some(0usize)), None => 0usize }' +
+      ';');
   BufLn(b, '            let (l, h) = self.iter.size_hint();');
   BufLn(b, '            (l.saturating_add(extra), match h { Some(x) => x.che' +
       'cked_add(extra), None => None })');
@@ -31027,7 +31057,8 @@ begin
       'pe Item = T; fn next(&mut self) -> Option<T> { (self.f)() } }');
   BufLn(b, '    pub struct Successors<T, F> { next: Option<T>, f: F }');
   BufLn(b, '    pub fn successors<T, F: FnMut(&T) -> Option<T>>(first: Optio' +
-      'n<T>, f: F) -> Successors<T, F> { Successors { next: first, f: f } }');
+      'n<T>, f: F) -> Successors<T, F> { Successors { next: first, f: f } ' +
+      '}');
   BufLn(b,
       '    impl<T, F: FnMut(&T) -> Option<T>> Iterator for Successors<T, F> {');
   BufLn(b, '        type Item = T;');
@@ -33220,7 +33251,8 @@ begin
   BufLn(b, '            if sz == 0 { self.cap = ::std::usize::MAX; return; }');
   BufLn(b, '            unsafe {');
   BufLn(b, '                let p = if self.cap == 0 { ::std::libc::malloc(n' +
-      ' * sz) } else { ::std::libc::realloc(self.ptr as *mut u8, n * sz) };');
+      ' * sz) } else { ::std::libc::realloc(self.ptr as *mut u8, n * sz) }' +
+      ';');
   BufLn(b, '                if p as usize == 0 { ::std::rt::alloc_failed(); }');
   BufLn(b, '                self.ptr = p as *mut T;');
   BufLn(b, '            }');
@@ -33888,7 +33920,8 @@ begin
       ') -> Option<&I::Output> { r.get(self) }');
   BufLn(b, '        fn get_range(&self, a: usize, b: usize) -> Option<&str> {');
   BufLn(b, '            if a <= b && b <= self.len() && self.is_char_boundar' +
-      'y(a) && self.is_char_boundary(b) { Some(&self[a..b]) } else { None }');
+      'y(a) && self.is_char_boundary(b) { Some(&self[a..b]) } else { None ' +
+      '}');
   BufLn(b, '        }');
   BufLn(b, '        pub fn to_string_owned(&self) -> String { let mut s = St' +
       'ring::new(); s.push_str(self); s }');
@@ -34176,7 +34209,8 @@ begin
   BufLn(b, '            loop {');
   BufLn(b, '                match p.find_in(self, pos) {');
   BufLn(b, '                    Some((a, b)) => { v.push((a, &self[a..b])); ' +
-      'pos = if b > a { b } else { b + 1 }; if pos > self.len() { break; } }');
+      'pos = if b > a { b } else { b + 1 }; if pos > self.len() { break; } ' +
+      '}');
   BufLn(b, '                    None => break,');
   BufLn(b, '                }');
   BufLn(b, '            }');
@@ -34443,7 +34477,8 @@ begin
   BufLn(b, '            if r.end > self.len() { ::std::rt::str_index_fail(se' +
       'lf, r.start, r.end); }');
   BufLn(b, '            if !self.is_char_boundary(r.start) || !self.is_char_' +
-      'boundary(r.end) { ::std::rt::str_index_fail(self, r.start, r.end); }');
+      'boundary(r.end) { ::std::rt::str_index_fail(self, r.start, r.end); ' +
+      '}');
   BufLn(b, '            unsafe { from_utf8_unchecked(::std::slice::from_raw_' +
       'parts(self.as_ptr().add(r.start), r.end - r.start)) }');
   BufLn(b, '        }');
@@ -36699,7 +36734,8 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, ''b, T: Hash + Eq + Clone, S: BuildHasher + De' +
-      'fault> ::std::ops::BitOr<&''b HashSet<T, S>> for &''a HashSet<T, S> {');
+      'fault> ::std::ops::BitOr<&''b HashSet<T, S>> for &''a HashSet<T, S> ' +
+      '{');
   BufLn(b, '            type Output = HashSet<T, S>;');
   BufLn(b, '            fn bitor(self, rhs: &HashSet<T, S>) -> HashSet<T, S>' +
       ' { self.union(rhs).cloned().collect() }');
@@ -37109,7 +37145,8 @@ begin
   BufLn(b, '        impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> { fn c' +
       'lone(&self) -> BTreeMap<K, V> { BTreeMap { v: self.v.clone() } } }');
   BufLn(b, '        impl<K: PartialEq, V: PartialEq> PartialEq for BTreeMap<' +
-      'K, V> { fn eq(&self, o: &BTreeMap<K, V>) -> bool { self.v == o.v } }');
+      'K, V> { fn eq(&self, o: &BTreeMap<K, V>) -> bool { self.v == o.v } ' +
+      '}');
   BufLn(b, '        impl<K: Eq, V: Eq> Eq for BTreeMap<K, V> {}');
   BufLn(b, '        impl<K: PartialOrd, V: PartialOrd> PartialOrd for BTreeM' +
       'ap<K, V> {');
@@ -37496,7 +37533,8 @@ begin
   BufLn(b, '            pub fn front_mut(&mut self) -> Option<&mut T> { self' +
       '.get_mut(0) }');
   BufLn(b, '            pub fn back_mut(&mut self) -> Option<&mut T> { if se' +
-      'lf.len == 0 { None } else { let n = self.len - 1; self.get_mut(n) } }');
+      'lf.len == 0 { None } else { let n = self.len - 1; self.get_mut(n) } ' +
+      '}');
   BufLn(b, '            pub fn get(&self, i: usize) -> Option<&T> {');
   BufLn(b, '                if i >= self.len { return None; }');
   BufLn(b, '                unsafe { Some(&*(self.ptr().add(self.phys(i)) as' +
@@ -40301,7 +40339,8 @@ begin
       ':std::cell::UnsafeCell<Vec<(u64, Box<T>)>> }');
   BufLn(b, '    impl<T: ''static> LocalKey<T> {');
   BufLn(b, '        pub const fn new(init: fn() -> T) -> LocalKey<T> { Local' +
-      'Key { init: init, slots: ::std::cell::UnsafeCell::new(Vec::new()) } }');
+      'Key { init: init, slots: ::std::cell::UnsafeCell::new(Vec::new()) } ' +
+      '}');
   BufLn(b, '        pub fn with<R, F: FnOnce(&T) -> R>(&''static self, f: F)' +
       ' -> R {');
   BufLn(b, '            unsafe {');
@@ -40628,7 +40667,8 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl<''a> ::std::fmt::Display for Location<''a> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::f' +
-      'mt::Result { write!(f, "{}:{}:{}", self.file, self.line, self.col) }');
+      'mt::Result { write!(f, "{}:{}:{}", self.file, self.line, self.col) ' +
+      '}');
   BufLn(b, '    }');
   BufLn(b, '    impl<''a> ::std::fmt::Debug for Location<''a> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::f' +
@@ -40767,7 +40807,8 @@ begin
       'bool { self.inner == o.inner } }');
   BufLn(b, '    impl Eq for OsString {}');
   BufLn(b, '    impl PartialOrd for OsStr { fn partial_cmp(&self, o: &OsStr)' +
-      ' -> Option<::std::cmp::Ordering> { Some(self.inner.cmp(&o.inner)) } }');
+      ' -> Option<::std::cmp::Ordering> { Some(self.inner.cmp(&o.inner)) } ' +
+      '}');
   BufLn(b, '    impl Ord for OsStr { fn cmp(&self, o: &OsStr) -> ::std::cmp:' +
       ':Ordering { self.inner.cmp(&o.inner) } }');
   BufLn(b, '    impl PartialOrd for OsString { fn partial_cmp(&self, o: &OsS' +
@@ -41152,7 +41193,8 @@ begin
   BufLn(b, '    impl fmt::Debug for Path { fn fmt(&self, f: &mut fmt::Format' +
       'ter) -> fmt::Result { fmt::Debug::fmt(&self.inner, f) } }');
   BufLn(b, '    impl fmt::Debug for PathBuf { fn fmt(&self, f: &mut fmt::For' +
-      'matter) -> fmt::Result { fmt::Debug::fmt(self.inner.as_str(), f) } }');
+      'matter) -> fmt::Result { fmt::Debug::fmt(self.inner.as_str(), f) } ' +
+      '}');
   BufLn(b, '    impl Clone for PathBuf { fn clone(&self) -> PathBuf { PathBu' +
       'f { inner: self.inner.clone() } } }');
   BufLn(b, '    impl Default for PathBuf { fn default() -> PathBuf { PathBuf' +
@@ -41202,7 +41244,8 @@ begin
   BufLn(b, '    impl PartialEq<str> for PathBuf { fn eq(&self, o: &str) -> b' +
       'ool { path_eq(self.as_path(), Path::from_str(o)) } }');
   BufLn(b, '    impl<''a> PartialEq<&''a str> for PathBuf { fn eq(&self, o: ' +
-      '&&''a str) -> bool { path_eq(self.as_path(), Path::from_str(*o)) } }');
+      '&&''a str) -> bool { path_eq(self.as_path(), Path::from_str(*o)) } ' +
+      '}');
   BufLn(b, '    impl PartialEq<str> for Path { fn eq(&self, o: &str) -> bool' +
       ' { path_eq(self, Path::from_str(o)) } }');
   BufLn(b, '    impl PartialOrd for Path { fn partial_cmp(&self, o: &Path) -' +
@@ -41318,7 +41361,8 @@ begin
       'bc::close(self.fd); } } }');
   BufLn(b, '    impl ::std::fmt::Debug for File {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::f' +
-      'mt::Result { f.debug_struct("File").field("fd", &self.fd).finish() }');
+      'mt::Result { f.debug_struct("File").field("fd", &self.fd).finish() ' +
+      '}');
   BufLn(b, '    }');
   BufLn(b, '    impl Read for File {');
   BufLn(b, '        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {');
@@ -41375,7 +41419,8 @@ begin
   BufLn(b,
       '        pub fn open<P: AsRef<Path>>(&self, p: P) -> io::Result<File> {');
   BufLn(b, '            let acc = if self.read && (self.write || self.append' +
-      ') { 2i32 } else if self.write || self.append { 1i32 } else { 0i32 };');
+      ') { 2i32 } else if self.write || self.append { 1i32 } else { 0i32 }' +
+      ';');
   BufLn(b, '            if !self.read && !self.write && !self.append { retur' +
       'n Err(io::Error::from_raw_os_error(22)); }');
   BufLn(b, '            let mut fl = acc;');
@@ -41553,7 +41598,8 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl ::std::fmt::Debug for DirEntry {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::f' +
-      'mt::Result { f.debug_tuple("DirEntry").field(&self.path()).finish() }');
+      'mt::Result { f.debug_tuple("DirEntry").field(&self.path()).finish() ' +
+      '}');
   BufLn(b, '    }');
   BufLn(b, '    pub struct ReadDir { it: ::std::vec::IntoIter<DirEntry> }');
   BufLn(b, '    impl Iterator for ReadDir {');
@@ -41889,7 +41935,8 @@ begin
       'div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } }' +
       ' }');
   BufLn(b, '    pub fn wrapping_rem(self, o: i8) -> i8 { match self.checked_' +
-      'rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+      'rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } ' +
+      '}');
   BufLn(b, '    pub fn saturating_div(self, o: i8) -> i8 { match self.checke' +
       'd_div(o) { Some(v) => v, None => if o == 0 { self / o } else { i8::MA' +
       'X } } }');
@@ -43011,7 +43058,8 @@ begin
   BufLn(b, '    pub fn saturating_add_unsigned(self, o: u32) -> i32 { match ' +
       'self.checked_add_unsigned(o) { Some(v) => v, None => 2147483647 } }');
   BufLn(b, '    pub fn saturating_sub_unsigned(self, o: u32) -> i32 { match ' +
-      'self.checked_sub_unsigned(o) { Some(v) => v, None => -2147483648 } }');
+      'self.checked_sub_unsigned(o) { Some(v) => v, None => -2147483648 } ' +
+      '}');
   BufLn(b, '    pub fn checked_abs(self) -> Option<i32> { if self == -214748' +
       '3648 { None } else { Some(if self < 0 { -self } else { self }) } }');
   BufLn(b, '    pub fn overflowing_neg(self) -> (i32, bool) { if self == -21' +
@@ -43897,7 +43945,8 @@ begin
   BufLn(b, '    pub fn checked_neg(self) -> Option<i128> { if self == (1i128' +
       ' << 127) { None } else { Some(-self) } }');
   BufLn(b, '    pub fn saturating_abs(self) -> i128 { if self == (1i128 << 1' +
-      '27) { (!(1i128 << 127)) } else if self < 0 { -self } else { self } }');
+      '27) { (!(1i128 << 127)) } else if self < 0 { -self } else { self } ' +
+      '}');
   BufLn(b, '    pub fn saturating_neg(self) -> i128 { if self == (1i128 << 1' +
       '27) { (!(1i128 << 127)) } else { -self } }');
   BufLn(b, '    pub fn midpoint(self, o: i128) -> i128 { ((self as i128 + o ' +
@@ -44607,7 +44656,8 @@ begin
       'div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } }' +
       ' }');
   BufLn(b, '    pub fn wrapping_rem(self, o: u8) -> u8 { match self.checked_' +
-      'rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+      'rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } ' +
+      '}');
 end;
 
 procedure PreludeChunk38(var b: TBuf);
@@ -46543,7 +46593,8 @@ begin
       'et (v, ov) = self.overflowing_add_signed(o); if ov { None } else { So' +
       'me(v) } }');
   BufLn(b, '    pub fn overflowing_add_signed(self, o: i128) -> (u128, bool)' +
-      ' { let r = self.wrapping_add(o as u128); (r, (o < 0) != (r < self)) }');
+      ' { let r = self.wrapping_add(o as u128); (r, (o < 0) != (r < self)) ' +
+      '}');
   BufLn(b, '    pub fn wrapping_add_signed(self, o: i128) -> u128 { self.wra' +
       'pping_add(o as u128) }');
   BufLn(b, '    pub fn saturating_add_signed(self, o: i128) -> u128 { match ' +
@@ -48085,7 +48136,8 @@ begin
   BufLn(b, '    impl<T: Debug> Debug for Wrapping<T> { fn fmt(&self, f: &mut' +
       ' Formatter) -> ::std::fmt::Result { Debug::fmt(&self.0, f) } }');
   BufLn(b, '    impl<T: Display> Display for Wrapping<T> { fn fmt(&self, f: ' +
-      '&mut Formatter) -> ::std::fmt::Result { Display::fmt(&self.0, f) } }');
+      '&mut Formatter) -> ::std::fmt::Result { Display::fmt(&self.0, f) } ' +
+      '}');
   BufLn(b, '    impl<T: LowerHex> LowerHex for Wrapping<T> { fn fmt(&self, f' +
       ': &mut Formatter) -> ::std::fmt::Result { LowerHex::fmt(&self.0, f) }' +
       ' }');
@@ -52210,51 +52262,138 @@ Var
   LangStartInst: Integer;
   PreludeStartLine: Integer;
 
+procedure UsageLine(const s: string);
+begin
+  WriteLn(s);
+end;
+
 procedure Usage;
 begin
-  WriteLn('Usage: rustc [OPTIONS] INPUT');
-  WriteLn;
-  WriteLn('Options:');
-  WriteLn('    -h, --help              Display this message');
-  WriteLn('        --crate-name NAME   Specify the name of the crate being b' +
-      'uilt');
-  WriteLn('        --crate-type [bin|lib|staticlib|cdylib]');
-  WriteLn('                            Comma separated list of types of crat' +
-      'es for the compiler to emit');
-  WriteLn('        --emit [asm|llvm-ir|obj|link|mir|hir|ast|tokens]');
-  WriteLn('                            Comma separated list of types of outp' +
-      'ut for the compiler to emit');
-  WriteLn('        --edition 2015|2018|2021|2024');
-  WriteLn('                            Specify which edition of the compiler' +
-      ' to use when compiling code');
-  WriteLn('        --out-dir DIR       Write output to compiler-chosen filen' +
-      'ame in <dir>');
-  WriteLn('        --target TRIPLE     Target triple for which the code is c' +
-      'ompiled');
-  WriteLn('        --cfg SPEC          Configure the compilation environment');
-  WriteLn('    -L PATH                 Add a directory to the library search' +
-      ' path');
-  WriteLn('    -l NAME                 Link the generated crate(s) to the sp' +
-      'ecified native library NAME');
-  WriteLn('    -g                      Equivalent to -C debuginfo=2');
-  WriteLn('    -O                      Equivalent to -C opt-level=2');
-  WriteLn('    -o FILENAME             Write output to <filename>');
-  WriteLn('    -C opt-level=0..3|s|z   Optimization level');
-  WriteLn('    -C overflow-checks=on|off');
-  WriteLn('    -C panic=abort|unwind');
-  WriteLn('    -C linker=PATH          Linker to use');
-  WriteLn('    -C link-arg=ARG         Extra argument passed to the linker');
-  WriteLn('    -Z unpretty=ast-tree|hir|mir');
-  WriteLn('                            Print the compiler''s representation ' +
-      'of the input');
-  WriteLn('        --print [sysroot|cfg|target-triple|crate-name|file-names]');
-  WriteLn('    -V, --version           Print version info and exit');
-  WriteLn('    -v, --verbose           Use verbose output');
-  WriteLn;
-  WriteLn('The compilation pipeline: lexing, parsing, name resolution, type ' +
-      'checking, HIR, MIR, LLVM IR,');
-  WriteLn('then llc (code generation) and the system linker (cc) produce the' +
-      ' executable.');
+  if LangEn then
+  begin
+    UsageLine(VERSION_TEXT);
+    UsageLine('Rust compiler clone: Rust source (.rs) -> HIR -> MIR -> LLVM ' +
+        'IR -> executable.');
+    UsageLine('');
+    UsageLine('Usage: rustc [OPTIONS] INPUT');
+    UsageLine('');
+    UsageLine('Options:');
+    UsageLine('    -h, --help, /?          Display this message');
+    UsageLine('        --crate-name NAME   Specify the name of the crate bei' +
+        'ng built');
+    UsageLine('        --crate-type [bin|lib|staticlib|cdylib]');
+    UsageLine('                            Comma separated list of types of ' +
+        'crates for the compiler to emit');
+    UsageLine('        --emit [asm|llvm-ir|obj|link|mir|hir|ast|tokens]');
+    UsageLine('                            Comma separated list of types of ' +
+        'output for the compiler to emit');
+    UsageLine('        --edition 2015|2018|2021|2024');
+    UsageLine('                            Specify which edition of the comp' +
+        'iler to use when compiling code');
+    UsageLine('        --out-dir DIR       Write output to compiler-chosen f' +
+        'ilename in <dir>');
+    UsageLine('        --target TRIPLE     Target triple for which the code ' +
+        'is compiled');
+    UsageLine('        --cfg SPEC          Configure the compilation environ' +
+        'ment');
+    UsageLine('    -L PATH                 Add a directory to the library se' +
+        'arch path');
+    UsageLine('    -l NAME                 Link the generated crate(s) to th' +
+        'e specified native library NAME');
+    UsageLine('    -g                      Equivalent to -C debuginfo=2');
+    UsageLine('    -O                      Equivalent to -C opt-level=2');
+    UsageLine('    -o FILENAME             Write output to <filename>');
+    UsageLine('    -C opt-level=0..3|s|z   Optimization level');
+    UsageLine('    -C overflow-checks=on|off');
+    UsageLine('    -C panic=abort|unwind');
+    UsageLine('    -C linker=PATH          Linker to use');
+    UsageLine('    -C link-arg=ARG         Extra argument passed to the link' +
+        'er');
+    UsageLine('    -Z unpretty=ast-tree|hir|mir');
+    UsageLine('                            Print the compiler''s representat' +
+        'ion of the input');
+    UsageLine('        --print [sysroot|cfg|target-triple|crate-name|file-na' +
+        'mes]');
+    UsageLine('    -V, --version           Print version info and exit');
+    UsageLine('    -v, --verbose           Use verbose output');
+    UsageLine('');
+    UsageLine('Environment variables:');
+    UsageLine('    LANGUAGE=EN             Messages in English (French by de' +
+        'fault)');
+    UsageLine('    RUSTC_LLC, RUSTC_OPT, RUSTC_LINKER');
+    UsageLine('                            Paths of llc, opt and of the link' +
+        'er (cc)');
+    UsageLine('');
+    UsageLine('The compilation pipeline: lexing, parsing, name resolution, t' +
+        'ype checking, HIR, MIR, LLVM IR,');
+    UsageLine('then llc (code generation) and the system linker (cc) produce' +
+        ' the executable.');
+    UsageLine('');
+    UsageLine('Example: rustc -O -o hello hello.rs');
+  end
+  else
+  begin
+    UsageLine(VERSION_TEXT);
+    UsageLine('Clone du compilateur Rust : source Rust (.rs) -> HIR -> MIR -' +
+        '> LLVM IR -> executable.');
+    UsageLine('');
+    UsageLine('Utilisation : rustc [OPTIONS] FICHIER');
+    UsageLine('');
+    UsageLine('Options :');
+    UsageLine('    -h, --help, /?          Affiche cette aide');
+    UsageLine('        --crate-name NOM    Nom du crate compile');
+    UsageLine('        --crate-type [bin|lib|staticlib|cdylib]');
+    UsageLine('                            Types de crates a produire (separ' +
+        'es par des virgules)');
+    UsageLine('        --emit [asm|llvm-ir|obj|link|mir|hir|ast|tokens]');
+    UsageLine('                            Types de sorties a produire (sepa' +
+        'res par des virgules)');
+    UsageLine('        --edition 2015|2018|2021|2024');
+    UsageLine('                            Edition du langage Rust a utiliser');
+    UsageLine('        --out-dir REP       Ecrit les fichiers produits dans ' +
+        'le repertoire REP');
+    UsageLine('        --target TRIPLET    Triplet de la cible de compilation');
+    UsageLine('        --cfg SPEC          Configure l''environnement de com' +
+        'pilation (cfg)');
+    UsageLine('    -L CHEMIN               Ajoute un repertoire de recherche' +
+        ' des bibliotheques');
+    UsageLine('    -l NOM                  Lie la bibliotheque native NOM');
+    UsageLine('    -g                      Equivalent a -C debuginfo=2');
+    UsageLine('    -O                      Equivalent a -C opt-level=2');
+    UsageLine('    -o FICHIER              Nom du fichier de sortie');
+    UsageLine('    -C opt-level=0..3|s|z   Niveau d''optimisation');
+    UsageLine('    -C overflow-checks=on|off');
+    UsageLine('                            Verification des debordements ari' +
+        'thmetiques');
+    UsageLine('    -C panic=abort|unwind   Strategie en cas de panic');
+    UsageLine('    -C linker=CHEMIN        Editeur de liens a utiliser');
+    UsageLine('    -C link-arg=ARG         Argument supplementaire pour l''e' +
+        'diteur de liens');
+    UsageLine('    -Z unpretty=ast-tree|hir|mir');
+    UsageLine('                            Affiche la representation interne' +
+        ' du programme');
+    UsageLine('        --print [sysroot|cfg|target-triple|crate-name|file-na' +
+        'mes]');
+    UsageLine('                            Affiche une information sur la ci' +
+        'ble ou le crate');
+    UsageLine('    -V, --version           Affiche la version et quitte');
+    UsageLine('    -v, --verbose           Mode bavard');
+    UsageLine('');
+    UsageLine('Variables d''environnement :');
+    UsageLine('    LANGUAGE=EN             Messages en anglais (francais par' +
+        ' defaut)');
+    UsageLine('    RUSTC_LLC, RUSTC_OPT, RUSTC_LINKER');
+    UsageLine('                            Chemins de llc, de opt et de l''e' +
+        'diteur de liens (cc)');
+    UsageLine('');
+    UsageLine('Chaine de compilation : analyse lexicale, analyse syntaxique,' +
+        ' resolution des noms,');
+    UsageLine('verification des types, HIR, MIR, LLVM IR, puis llc (generati' +
+        'on du code) et');
+    UsageLine('l''editeur de liens du systeme (cc) produisent l''executable.');
+    UsageLine('');
+    UsageLine('Exemple : rustc -O -o bonjour bonjour.rs');
+  end;
 end;
 
 function HasEmit(const k: string): Boolean;
@@ -52287,7 +52426,8 @@ var
   function NextArg: string;
   begin
     Inc(i);
-    if i > n then FatalMsg('missing argument for option `' + a + '`');
+    if i > n then FatalMsg(Tr('argument manquant pour l''option `' + a + '`',
+        'missing argument for option `' + a + '`'));
     Result := ParamStr(i);
   end;
   procedure CodegenOpt(const s: string);
@@ -52327,7 +52467,10 @@ begin
   while i <= n do
   begin
     a := ParamStr(i);
-    if (a = '-h') or (a = '--help') then begin Usage; Halt(0); end
+    if (a = '-h') or (a = '--help') or (a = '-?') or (a = '/?') or (a = '/h') or
+        (a = '/H') or
+       (a = '-help') or (a = '/help') or (a = '/HELP') then begin Usage;
+           Halt(0); end
     else if (a = '-V') or (a = '--version') then begin WriteLn(VERSION_TEXT);
         Halt(0); end
     else if (a = '-v') or (a = '--verbose') then Opt.verbose := True
@@ -52384,12 +52527,16 @@ begin
           NextArg;
     end
     else if StartsWith(a, '-') and (a <> '-') then
-      FatalMsg('Unrecognized option: ''' + Copy(a, 2, Length(a)) + '''')
+      FatalMsg(Tr('Option non reconnue : ''', 'Unrecognized option: ''') +
+          Copy(a, 2, Length(a)) + '''')
     else
     begin
-      if Opt.input <> '' then FatalMsg('multiple input filenames provided (f' +
-          'irst two filenames are `' + Opt.input +
-                                        '` and `' + a + '`)');
+      if Opt.input <> '' then FatalMsg(Tr('plusieurs fichiers source fournis' +
+          ' (les deux premiers sont `' + Opt.input + '` et `' + a + '`)',
+                                        'multiple input filenames provided (' +
+                                        'first two filenames are `' + Opt.input
+                                        +
+                                        '` and `' + a + '`)'));
       Opt.input := a;
     end;
     Inc(i);
@@ -52516,8 +52663,8 @@ begin
       vt := vt + ', ptr @"' + Insts[Vtables[i].slots[si]].sym + '"';
     BufAdd(LLGlobals, vt + ']'#10);
   end;
-  BufAdd(LLGlobals, '@rs_argc = global i32 0, align 4'#10'@rs_argv = global ' +
-      'ptr null, align 8'#10);
+  BufAdd(LLGlobals, '@rs_argc = global i32 0, align ' +
+      '4'#10'@rs_argv = global ptr null, align 8'#10);
   { en-tete }
   BufLn(b, '; ModuleID = ''' + Opt.crateName + '''');
   BufLn(b, 'source_filename = "' + Opt.input + '"');
@@ -52625,8 +52772,9 @@ begin
   FinishDiag;
   { crate utilisateur }
   if not ReadFileToString(Opt.input, txt) then
-    FatalMsg('couldn''t read ' + Opt.input +
-        ': No such file or directory (os error 2)');
+    FatalMsg(Tr('impossible de lire ' + Opt.input +
+        ' : fichier ou repertoire introuvable (erreur os 2)', 'couldn''t read '
+        + Opt.input + ': No such file or directory (os error 2)'));
   fi := AddSourceFile(Opt.input, txt);
   UserFile := fi;
   SrcPathForLoc := Opt.input;
@@ -52811,11 +52959,14 @@ begin
     else if clangPath <> '' then
       args := '-S -x ir -Wno-override-module -O' + IntToStr(Opt.optLevel) + ' '
           + QuoteArg(llPath) + ' -o ' + QuoteArg(asmPath)
-    else FatalMsg('could not find LLVM `llc` (or clang) in PATH');
+    else FatalMsg(Tr('LLVM `llc` (ou clang) introuvable dans PATH',
+        'could not find LLVM `llc` (or clang) in PATH'));
     if llcPath <> '' then rc := RunTool(llcPath, args) else rc :=
         RunTool(clangPath, args);
-    if rc <> 0 then FatalMsg('LLVM code generation failed (exit code ' +
-        IntToStr(rc) + ')');
+    if rc <> 0 then
+        FatalMsg(Tr('echec de la generation de code LLVM (code de sortie ' +
+        IntToStr(rc) + ')', 'LLVM code generation failed (exit code ' +
+        IntToStr(rc) + ')'));
   end;
   if doObj or doLink then
   begin
@@ -52836,15 +52987,20 @@ begin
     end
     else
     begin
-      FatalMsg('could not find the LLVM code generator (`llc` or `clang`) in' +
-          ' PATH');
+      FatalMsg(Tr('generateur de code LLVM (`llc` ou `clang`) introuvable da' +
+          'ns PATH',
+          'could not find the LLVM code generator (`llc` or `clang`) in PATH'));
       rc := 1;
     end;
-    if rc <> 0 then FatalMsg('LLVM code generation failed (exit code ' +
-        IntToStr(rc) + ')');
+    if rc <> 0 then
+        FatalMsg(Tr('echec de la generation de code LLVM (code de sortie ' +
+        IntToStr(rc) + ')', 'LLVM code generation failed (exit code ' +
+        IntToStr(rc) + ')'));
     if doLink then
     begin
-      if ccPath = '' then FatalMsg('linker `cc` not found in PATH');
+      if ccPath = '' then
+          FatalMsg(Tr('editeur de liens `cc` introuvable dans PATH',
+          'linker `cc` not found in PATH'));
       if Opt.output <> '' then outExe := Opt.output
       else if Opt.outDir <> '' then outExe := Opt.outDir + '/' + Opt.crateName
       else outExe := Opt.crateName;
@@ -52856,8 +53012,9 @@ begin
           Opt.linkArgs[i];
       args := args + ' -lm';
       rc := RunTool(ccPath, args);
-      if rc <> 0 then FatalMsg('linking with `' + ccPath +
-          '` failed: exit status: ' + IntToStr(rc));
+      if rc <> 0 then FatalMsg(Tr('echec de l''edition de liens avec `' + ccPath
+          + '` : code de sortie ' + IntToStr(rc), 'linking with `' + ccPath +
+          '` failed: exit status: ' + IntToStr(rc)));
       if not doObj then DeleteFile(objPath);
     end;
   end;
@@ -52888,9 +53045,8 @@ begin
   end;
   if Opt.input = '' then
   begin
-    WriteErrLn('error: no input filename given');
-    WriteErrLn('');
-    Halt(1);
+    Usage;
+    Halt(0);
   end;
   if Opt.crateName = '' then Opt.crateName := SanitizeName(FileStem(Opt.input));
   CompileMain;
