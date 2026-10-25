@@ -4172,9 +4172,66 @@ begin
   Result := MkTy0(tyClosure, 0, 0, id);
 end;
 
+Var
+  DynNames: TStrArr;       { listes de noms de liaisons associees (separes par des virgules) }
+  DynNamesMap: THashSI;
+
 function MkDyn(trait: Integer; const args: TIntArr): Integer;
 begin
   Result := MkTyArgs(tyDyn, 0, 0, trait, args);
+end;
+
+{ dyn Trait<a..> avec liaisons associees : args = arguments du trait puis valeurs des liaisons ;
+  f = nombre d'arguments du trait ; n = 1 + indice de la liste de noms }
+function MkDynB(trait: Integer; const targs: TIntArr; const bnames: TStrArr; const btys: TIntArr): Integer;
+var
+  i, k: Integer;
+  names: string;
+  a: TIntArr;
+begin
+  a := ICopy(targs);
+  names := '';
+  for i := 0 to Length(bnames) - 1 do
+  begin
+    if i > 0 then names := names + ',';
+    names := names + bnames[i];
+    IAdd(a, btys[i]);
+  end;
+  if Length(bnames) = 0 then
+  begin
+    Result := MkDyn(trait, a);
+    Exit;
+  end;
+  k := HFind(DynNamesMap, names);
+  if k < 0 then
+  begin
+    SAdd(DynNames, names);
+    k := Length(DynNames) - 1;
+    HPut(DynNamesMap, names, k);
+  end;
+  Result := MkTyArgs(tyDyn, k + 1, Length(targs), trait, a);
+end;
+
+{ position (dans args) de la liaison associee name d'un type dyn, ou -1 }
+function DynBindPos(t: Integer; const name: string): Integer;
+var
+  names: string;
+  i, p, cnt: Integer;
+  cur: string;
+begin
+  Result := -1;
+  if Tys[t].n = 0 then Exit;
+  names := DynNames[Tys[t].n - 1] + ',';
+  cnt := 0;
+  cur := '';
+  for i := 1 to Length(names) do
+    if names[i] = ',' then
+    begin
+      if cur = name then begin Result := Tys[t].f + cnt; Exit; end;
+      Inc(cnt);
+      cur := '';
+    end
+    else cur := cur + names[i];
 end;
 
 function MkOpaque(id: Integer): Integer;
@@ -4203,6 +4260,7 @@ begin
   NVars := 0;
   NTrail := 0;
   HInit(TyMap);
+  HInit(DynNamesMap);
   SetLength(Tys, 1024);
   TyErrT := MkTy0(tyErr, 0, 0, 0);
   TyBoolT := MkTy0(tyBool, 0, 0, 0);
@@ -4351,6 +4409,17 @@ begin
   s := Snapshot;
   Result := Unify(a, b);
   if not Result then Rollback(s);
+end;
+
+function ContainsDyn(t: Integer): Boolean;
+var
+  i: Integer;
+begin
+  t := Shallow(t);
+  Result := Tys[t].k = tyDyn;
+  if Result then Exit;
+  for i := 0 to Length(Tys[t].args) - 1 do
+    if ContainsDyn(Tys[t].args[i]) then begin Result := True; Exit; end;
 end;
 
 { Remplace toutes les variables liees par leur valeur }
@@ -5696,7 +5765,7 @@ begin
           { enlever Self }
           a := nil;
           for t := 1 to Length(targs) - 1 do IAdd(a, targs[t]);
-          Result := MkDyn(tr, a);
+          Result := MkDynB(tr, a, bn, bt);
           Break;
         end;
       end;
@@ -6237,6 +6306,19 @@ begin
     begin
       Result := 1;
       impl := -3;
+      { dyn Tr<A..> : unification des arguments du trait avec ceux de l'objet }
+      if Tys[selfT].def = trait then
+      begin
+        for i := 1 to Length(targs) - 1 do
+          if (i - 1 < Tys[selfT].f) or (Tys[selfT].n = 0) then
+            if i - 1 < Length(Tys[selfT].args) then
+              if not TryUnify(targs[i], Tys[selfT].args[i - 1]) then begin Result := 0; Exit; end;
+      end
+      else if (trait = LangFn) or (trait = LangFnMut) or (trait = LangFnOnce) then
+      begin
+        if (Length(targs) > 1) and (Length(Tys[selfT].args) > 0) then
+          if not TryUnify(targs[1], Tys[selfT].args[0]) then begin Result := 0; Exit; end;
+      end;
       Exit;
     end;
   end;
@@ -6331,6 +6413,12 @@ begin
   if Tys[selfT].k = tyVar then
   begin
     if VarKind[Tys[selfT].n] = 0 then begin Result := 2; Exit; end;
+  end;
+  { liaisons associees d'un objet-trait }
+  if Tys[selfT].k = tyDyn then
+  begin
+    i := DynBindPos(selfT, name);
+    if i >= 0 then begin res := Tys[selfT].args[i]; Exit; end;
   end;
   { FnOnce::Output des fermetures, pointeurs et fonctions }
   if ((trait = LangFnOnce) or (trait = LangFnMut) or (trait = LangFn)) and (name = 'Output') then
@@ -7072,6 +7160,20 @@ begin
     tyAdt, tyDyn, tyFnDef:
       begin
         s := Defs[Tys[t].def].name;
+        if (Tys[t].k = tyDyn) and (Defs[Tys[t].def].lang = 'fn') and (Length(Tys[t].args) >= 2) then
+        begin
+          { dyn Fn(A, B) -> R }
+          s := '';
+          for i := 0 to Length(Tys[Shallow(Tys[t].args[0])].args) - 1 do
+          begin
+            if i > 0 then s := s + ', ';
+            s := s + TyToStr(Tys[Shallow(Tys[t].args[0])].args[i]);
+          end;
+          s := 'dyn ' + Defs[Tys[t].def].name + '(' + s + ')';
+          if Shallow(Tys[t].args[1]) <> TyUnit then s := s + ' -> ' + TyToStr(Tys[t].args[1]);
+          Result := s;
+          Exit;
+        end;
         if Tys[t].k = tyDyn then s := 'dyn ' + s;
         if Tys[t].k = tyFnDef then
         begin
@@ -7330,10 +7432,16 @@ begin
   if defn < 0 then Exit;
   found := False;
   for i := 0 to Length(Defs[defn].gnames) - 1 do
-    if (i < Length(Cxs[CxBase + 1].env.tys)) and (Defs[defn].gnames[i] <> 'Self') and
-       (Shallow(Cxs[CxBase + 1].env.tys[i]) = X) then
+    if (i < Length(Cxs[CxBase + 1].env.tys)) and (Shallow(Cxs[CxBase + 1].env.tys[i]) = X) then
     begin
       found := True;
+      if Defs[defn].gnames[i] = 'Self' then
+      begin
+        { Self d'un trait : le trait lui-meme et ses super-traits sont toujours autorises }
+        if (Defs[defn].parent >= 0) and (Defs[Defs[defn].parent].kind = dkTrait) and
+           TraitIsA(Defs[defn].parent, tr, 0) then begin Result := True; Exit; end;
+        Continue;
+      end;
       if BoundsMention(defn, i, tr, Cxs[CxBase + 1].env.scope) then begin Result := True; Exit; end;
     end;
   if found then Result := False;
@@ -9514,6 +9622,9 @@ begin
   if n = 1 then Result := ' was supplied' else Result := ' were supplied';
 end;
 
+Var
+  ArgHints: TIntArr;
+
 { Verifie les arguments d'un appel contre les types de parametres (offset = parametres deja fournis) }
 procedure CheckCallArgs(callNode: Integer; const argNodes: TIntArr; const params: TIntArr; offset: Integer;
   variadic: Boolean; fnName: string; var outArgs: TIntArr);
@@ -9521,7 +9632,11 @@ var
   i, expect, pass, h: Integer;
   res: TIntArr;
   isClos: Boolean;
+  hints: TIntArr;
+  hk: Integer;
 begin
+  hints := ArgHints;
+  ArgHints := nil;
   expect := Length(params) - offset;
   SetLength(res, Length(argNodes));
   for i := 0 to Length(res) - 1 do res[i] := -1;
@@ -9535,7 +9650,19 @@ begin
     begin
       isClos := Nodes[argNodes[i]].k = eClosure;
       if (pass = 0) = isClos then Continue;
-      if i < expect then
+      if (i < expect) and (Length(hints) > offset + i) and (hints[offset + i] <> 0) then
+      begin
+        { attente "fudge" : l'indice sert de cible de coercition, sans lier les parametres }
+        h := CheckExpr(argNodes[i], hints[offset + i]);
+        hk := Shallow(hints[offset + i]);
+        if (Tys[hk].k <> tyDyn) and (Tys[hk].k <> tySlice) and (Tys[hk].k <> tyStr) then
+        begin
+          hk := TryCoerce(h, hints[offset + i]);
+          if hk >= 0 then h := hk;
+        end;
+        res[i] := CoerceTo(h, params[offset + i], argNodes[i]);
+      end
+      else if i < expect then
         res[i] := CheckExprCoerce(argNodes[i], params[offset + i])
       else
         res[i] := CheckExpr(argNodes[i], 0);
@@ -9560,7 +9687,10 @@ var
   fname: string;
   variadic: Boolean;
   nd: Integer;
+  ok: Integer;
+  hintArr: TIntArr;
 begin
+  hintArr := nil;
   FnDefSig(def, targs, params, ret);
   if (Defs[def].kind = dkStruct) or (Defs[def].kind = dkVariant) then
   begin
@@ -9596,8 +9726,27 @@ begin
   if (expected <> 0) and (Tys[Shallow(ret)].k <> tyNever) then
   begin
     e := Shallow(expected);
-    if (Tys[e].k <> tyVar) then TryUnify(ret, e);
+    if Tys[e].k <> tyVar then
+    begin
+      if not ContainsDyn(e) then TryUnify(ret, e)
+      else
+      begin
+        ok := Snapshot;
+        Inc(SuppressDiag);
+        if Unify(ret, e) then
+        begin
+          SetLength(hintArr, Length(params));
+          for i := 0 to Length(params) - 1 do
+          begin
+            hintArr[i] := Zonk(params[i]);
+          end;
+        end;
+        Dec(SuppressDiag);
+        Rollback(ok);
+      end;
+    end;
   end;
+  ArgHints := hintArr;
   args := nil;
   if recv >= 0 then IAdd(args, recv);
   if recv >= 0 then
@@ -14397,22 +14546,129 @@ begin
   Result := RequestInst(d, ta);
 end;
 
+{ ---- tables virtuelles (objets-trait) ---- }
+
+Type
+  TVtable = record
+    srcTy, dynTy: Integer;
+    slots: TIntArr;       { indices d'instances }
+    sym: string;
+  end;
+
+Var
+  Vtables: array of TVtable;
+  NVtables: Integer;
+  VtMap: THashSI;
+
+{ methodes presentes dans la table virtuelle : super-traits d'abord }
+procedure VMethods(tr: Integer; var list: TIntArr; depth: Integer);
+var
+  sup: TIntArr;
+  i, d: Integer;
+begin
+  if depth > 6 then Exit;
+  sup := SuperTraits(tr);
+  for i := 0 to Length(sup) - 1 do VMethods(sup[i], list, depth + 1);
+  for i := 0 to Length(Defs[tr].items) - 1 do
+  begin
+    d := Defs[tr].items[i];
+    if (Defs[d].kind = dkFn) and ((Defs[d].selfKind = 2) or (Defs[d].selfKind = 3)) and
+       (Length(Defs[d].gnames) = Length(Defs[tr].gnames)) and (IIndexOf(list, d) < 0) then
+      IAdd(list, d);
+  end;
+end;
+
+function VtableSlotOf(dynTy, meth: Integer): Integer;
+var
+  list: TIntArr;
+begin
+  dynTy := Shallow(dynTy);
+  if Defs[Tys[dynTy].def].lang = 'fn' then begin Result := 0; Exit; end;
+  list := nil;
+  VMethods(Tys[dynTy].def, list, 0);
+  Result := IIndexOf(list, meth);
+end;
+
+function RequestVtable(srcTy, dynTy: Integer): Integer;
+var
+  key: string;
+  list, ta: TIntArr;
+  i, j, k, owner, m: Integer;
+begin
+  srcTy := Zonk(srcTy);
+  dynTy := Zonk(dynTy);
+  key := IntToStr(srcTy) + '/' + IntToStr(dynTy);
+  Result := HFind(VtMap, key);
+  if Result >= 0 then Exit;
+  if NVtables >= Length(Vtables) then SetLength(Vtables, NVtables * 2 + 16);
+  Result := NVtables;
+  Inc(NVtables);
+  HPut(VtMap, key, Result);
+  Vtables[Result].srcTy := srcTy;
+  Vtables[Result].dynTy := dynTy;
+  Vtables[Result].slots := nil;
+  Vtables[Result].sym := 'vtable.' + IntToStr(Result);
+  if Defs[Tys[dynTy].def].lang = 'fn' then
+  begin
+    if Tys[srcTy].k = tyClosure then
+      IAdd(Vtables[Result].slots, RequestClosureInst(Tys[srcTy].def))
+    else
+    begin
+      Report(True, 'E0000', 'unsupported coercion of `' + TyToStr(srcTy) + '` to `' + TyToStr(dynTy) + '`', -1, 0, 0, 0,
+             'only closures can be coerced to `dyn Fn`');
+      IAdd(Vtables[Result].slots, 0);
+    end;
+    Exit;
+  end;
+  list := nil;
+  VMethods(Tys[dynTy].def, list, 0);
+  for i := 0 to Length(list) - 1 do
+  begin
+    m := list[i];
+    owner := Defs[m].parent;
+    ta := nil;
+    IAdd(ta, srcTy);
+    k := Length(Defs[owner].gnames) - 1;
+    for j := 0 to k - 1 do
+      if j < Length(Tys[dynTy].args) then IAdd(ta, Tys[dynTy].args[j]);
+    IAdd(Vtables[Result].slots, ResolvedInst(list[i], ta));
+  end;
+end;
+
 procedure MakeCall(def: Integer; const targs: TIntArr; const args: TOperandArr; const dest: TPlace; hasDest: Boolean;
   retTy: Integer; h: Integer);
 var
   t: TTerm;
   idx, nb: Integer;
+  st: Integer;
 begin
   FillChar(t, SizeOf(t), 0);
   t.k := tmCall;
   t.retTy := retTy;
-  idx := ResolvedInst(def, targs);
-  t.inst := idx;
-  t.def := Insts[idx].def;
-  t.targs := Insts[idx].targs;
-  t.sym := Insts[idx].sym;
-  if Insts[idx].intrinsic then t.callKind := ckIntrinsic else t.callKind := ckDirect;
-  if Insts[idx].intrinsic then t.sym := Defs[Insts[idx].def].name;
+  st := 0;
+  if (Length(targs) > 0) and (Defs[def].parent >= 0) and (Defs[Defs[def].parent].kind = dkTrait) then
+  begin
+    st := Shallow(Zonk(targs[0]));
+    if Tys[st].k <> tyDyn then st := 0;
+  end;
+  if st <> 0 then
+  begin
+    { appel virtuel }
+    t.callKind := ckVirtual;
+    t.def := def;
+    t.inst := VtableSlotOf(st, def);
+    t.sym := Defs[def].name;
+  end
+  else
+  begin
+    idx := ResolvedInst(def, targs);
+    t.inst := idx;
+    t.def := Insts[idx].def;
+    t.targs := Insts[idx].targs;
+    t.sym := Insts[idx].sym;
+    if Insts[idx].intrinsic then t.callKind := ckIntrinsic else t.callKind := ckDirect;
+    if Insts[idx].intrinsic then t.sym := Defs[Insts[idx].def].name;
+  end;
   t.args := args;
   t.dest := dest;
   t.hasDest := hasDest;
@@ -15248,6 +15504,11 @@ begin
           rv.a := a;
           rv.srcTy := Hirs[Hirs[h].a].ty;
           rv.n := Hirs[h].n;
+          if Hirs[h].n = 5 then
+          begin
+            { dimensionnement vers un objet-trait : table virtuelle de (type source, type dyn) }
+            rv.vidx := RequestVtable(Tys[Shallow(Zonk(rv.srcTy))].args[0], Tys[Shallow(Zonk(ty))].args[0]);
+          end;
           EmitAssign(dest, rv);
         end;
       end;
@@ -16484,6 +16745,37 @@ begin
   Emit('store i8 ' + t + ', ptr ' + addr + ', align 1');
 end;
 
+Var
+  CastKind: Integer;
+  CastVt: Integer;
+
+{ dimensionnement : &T / Box<T> / *T vers un pointeur large (tranche ou objet-trait) }
+procedure EmitUnsize(const a: TOperand; src, dst: Integer; const dstAddr: string);
+var
+  s, d, sp, dp: Integer;
+  v, t, mt: string;
+  addr: string;
+begin
+  s := Shallow(src);
+  d := Shallow(dst);
+  if (Tys[s].k = tyAdt) then
+  begin
+    addr := OperandAddr(a, False);
+    v := NewT;
+    Emit(v + ' = load ptr, ptr ' + addr + ', align 8');
+  end
+  else v := OperandScalar(a);
+  sp := Shallow(Tys[s].args[0]);
+  dp := Shallow(Tys[d].args[0]);
+  Emit('store ptr ' + v + ', ptr ' + dstAddr + ', align 8');
+  if Tys[dp].k = tyDyn then
+    Emit('store i64 ptrtoint (ptr @"' + Vtables[CastVt].sym + '" to i64), ptr ' + Gep(dstAddr, 8) + ', align 8')
+  else if (Tys[sp].k = tyArray) and (Tys[dp].k = tySlice) then
+    Emit('store i64 ' + IntToStr(Tys[Shallow(Tys[sp].args[1])].n) + ', ptr ' + Gep(dstAddr, 8) + ', align 8')
+  else
+    Emit('store i64 0, ptr ' + Gep(dstAddr, 8) + ', align 8');
+end;
+
 { conversion de type : a (operande) de type src vers dst, ecrit a l'adresse dstAddr }
 procedure EmitCast(const a: TOperand; src, dst: Integer; const dstAddr: string);
 var
@@ -16499,6 +16791,11 @@ var
 begin
   s := Shallow(src);
   d := Shallow(dst);
+  if (CastKind = 5) or ((CastKind = 3) and (Tys[s].k = tyAdt)) then
+  begin
+    EmitUnsize(a, s, d, dstAddr);
+    Exit;
+  end;
   { entier / flottant / bool / char -> entier / flottant }
   if (Tys[d].k = tyInt) or (Tys[d].k = tyFloat) or (Tys[d].k = tyChar) or (Tys[d].k = tyBool) then
   begin
@@ -16794,7 +17091,12 @@ begin
         StoreScalar(t, da.ptr, dty);
       end;
     rvCast:
-      EmitCast(rv.a, Zonk(rv.a.ty), dty, da.ptr);
+      begin
+        CastKind := rv.n;
+        CastVt := rv.vidx;
+        EmitCast(rv.a, Zonk(rv.a.ty), dty, da.ptr);
+        CastKind := 0;
+      end;
     rvAgg:
       EmitAggregateStore(rv, da.ptr, dty);
     rvDiscr:
@@ -17192,6 +17494,7 @@ var
   varArgs: Boolean;
   ptys: string;
   nd: Integer;
+  vfn, vdata, vtab: string;
 begin
   if t.callKind = ckIntrinsic then
   begin
@@ -17211,6 +17514,7 @@ begin
     argStr := 'ptr ' + tmpRet;
     ptys := 'ptr';
   end;
+  vfn := '';
   for i := 0 to Length(t.args) - 1 do
   begin
     o := t.args[i];
@@ -17218,6 +17522,20 @@ begin
     if IsZstTy(pty) then Continue;
     if argStr <> '' then argStr := argStr + ', ';
     if ptys <> '' then ptys := ptys + ', ';
+    if (i = 0) and (t.callKind = ckVirtual) then
+    begin
+      { receveur : pointeur large (donnees, table virtuelle) }
+      v := OperandAddr(o, False);
+      vdata := NewT;
+      Emit(vdata + ' = load ptr, ptr ' + v + ', align 8');
+      vtab := NewT;
+      Emit(vtab + ' = load ptr, ptr ' + Gep(v, 8) + ', align 8');
+      vfn := NewT;
+      Emit(vfn + ' = load ptr, ptr ' + Gep(vtab, 8 * (3 + t.inst)) + ', align 8');
+      argStr := argStr + 'ptr ' + vdata;
+      ptys := ptys + 'ptr';
+      Continue;
+    end;
     if IsScalarTy(pty) then
     begin
       argStr := argStr + LLScalar(pty) + ' ' + OperandScalar(o);
@@ -17246,6 +17564,8 @@ begin
         if varArgs then callStr := retLL + ' (' + ptys + ', ...) @"' + t.sym + '"'
         else callStr := retLL + ' @"' + t.sym + '"';
       end;
+    ckVirtual:
+      callStr := retLL + ' ' + vfn;
     ckIndirect:
       begin
         calleeV := OperandScalar(t.callee);
@@ -24867,6 +25187,7 @@ var
   mainSym, ls: string;
   initSyms: string;
   si: Integer;
+  vt: string;
 begin
   BufInit(b);
   BufInit(ModBuf);
@@ -24901,6 +25222,16 @@ begin
       si := HFind(InstMap, 's' + IntToStr(d));
       if si >= 0 then initSyms := initSyms + '  call void @"' + Insts[si].sym + '"()'#10;
     end;
+  end;
+  { tables virtuelles }
+  for i := 0 to NVtables - 1 do
+  begin
+    vt := '@"' + Vtables[i].sym + '" = private unnamed_addr constant [' + IntToStr(3 + Length(Vtables[i].slots)) +
+          ' x ptr] [ptr null, ptr inttoptr (i64 ' + IntToStr(TySize(Vtables[i].srcTy)) + ' to ptr), ptr inttoptr (i64 ' +
+          IntToStr(AlignOfTy(Vtables[i].srcTy)) + ' to ptr)';
+    for si := 0 to Length(Vtables[i].slots) - 1 do
+      vt := vt + ', ptr @"' + Insts[Vtables[i].slots[si]].sym + '"';
+    BufAdd(LLGlobals, vt + ']'#10);
   end;
   BufAdd(LLGlobals, '@rs_argc = global i32 0, align 4'#10'@rs_argv = global ptr null, align 8'#10);
   { en-tete }
@@ -24997,7 +25328,7 @@ begin
   OvfChecks := (Opt.overflow = 1) or ((Opt.overflow = -1) and (Opt.optLevel = 0));
   InitTypes;
   HInit(ScopeMap); HInit(MethodTraits); HInit(HeadMap); HInit(BodyMap); HInit(CopyCache); HInit(LayMap);
-  HInit(InstMap); HInit(SymNames);
+  HInit(InstMap); HInit(SymNames); HInit(VtMap);
   NDefs := 0;
   NewDef(0, '<none>', 0, -1);
   LoadStd;
