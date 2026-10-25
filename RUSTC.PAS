@@ -52547,24 +52547,48 @@ function FindInPath(const name: string): string;
 var
   path, dir: string;
   i, st: Integer;
+
+  function Probe(const d, nm: string): string;
+  begin
+    Result := '';
+{$IFDEF WINDOWS}
+    if FileExists(d + '\' + nm + '.exe') then Result := d + '\' + nm + '.exe'
+    else if FileExists(d + '\' + nm) then Result := d + '\' + nm;
+{$ELSE}
+    if FileExists(d + '/' + nm) then Result := d + '/' + nm;
+{$ENDIF}
+  end;
 begin
   Result := '';
-  if Pos('/', name) > 0 then
+  if (Pos('/', name) > 0) or (Pos('\', name) > 0) then
   begin
-    if FileExists(name) then Result := name;
+    if FileExists(name) then Result := name
+    else if FileExists(name + '.exe') then Result := name + '.exe';
     Exit;
   end;
   path := GetEnv('PATH');
   st := 1;
   for i := 1 to Length(path) + 1 do
+{$IFDEF WINDOWS}
+    if (i > Length(path)) or (path[i] = ';') then
+{$ELSE}
     if (i > Length(path)) or (path[i] = ':') or (path[i] = ';') then
+{$ENDIF}
     begin
       dir := Copy(path, st, i - st);
+      if (Length(dir) > 1) and (dir[1] = '"') and (dir[Length(dir)] = '"') then
+          dir := Copy(dir, 2, Length(dir) - 2);
       if dir <> '' then
-        if FileExists(dir + '/' + name) then begin Result := dir + '/' + name;
-            Exit; end;
+      begin
+        Result := Probe(dir, name);
+        if Result <> '' then Exit;
+      end;
       st := i + 1;
     end;
+{$IFDEF WINDOWS}
+  Result := Probe('C:\Program Files\LLVM\bin', name);
+  if Result = '' then Result := Probe('C:\Program Files (x86)\LLVM\bin', name);
+{$ENDIF}
 end;
 
 function RunTool(const path: string; const args: string): Integer;
@@ -52988,8 +53012,9 @@ begin
     else
     begin
       FatalMsg(Tr('generateur de code LLVM (`llc` ou `clang`) introuvable da' +
-          'ns PATH',
-          'could not find the LLVM code generator (`llc` or `clang`) in PATH'));
+          'ns PATH ; utilisez --emit=llvm-ir pour obtenir seulement le LLVM ' +
+          'IR', 'could not find the LLVM code generator (`llc` or `clang`) i' +
+          'n PATH; use --emit=llvm-ir to get the LLVM IR only'));
       rc := 1;
     end;
     if rc <> 0 then
