@@ -4732,6 +4732,7 @@ Type
     scopeMod: Integer;       { module (ou bloc) de resolution de noms de l'item }
     isCtor: Boolean;
     trackCaller: Boolean;
+    promTy: Integer;         { statique synthetique d'une constante promue : type de la valeur }
     fieldCount: Integer;
     isExtern: Boolean;
     lang: string;
@@ -4775,6 +4776,7 @@ begin
   Defs[Result].parent := parent;
   Defs[Result].crate := CurCrate;
   Defs[Result].implTrait := -1;
+  Defs[Result].promTy := 0;
   Defs[Result].scopeMod := parent;
   if node > 0 then
   begin
@@ -7794,6 +7796,154 @@ begin
     end;
 end;
 
+
+{ ---- mismatched_lifetime_syntaxes : `fn f(s: &str) -> Cow<str>` ---- }
+
+function LsDefHasLife(d: Integer): Boolean;
+var
+  i, n: Integer;
+begin
+  Result := False;
+  n := Defs[d].node;
+  if n <= 0 then Exit;
+  for i := 0 to Length(Nodes[n].l) - 1 do
+    if (Nodes[Nodes[n].l[i]].k = nGenParam) and (Nodes[Nodes[n].l[i]].f = 1) then begin Result := True; Exit; end;
+end;
+
+{ premier type reference a duree elidee dans l'arbre de type t }
+function LsFindElidedRef(t: Integer): Integer;
+var
+  i, j, r: Integer;
+begin
+  Result := 0;
+  if t <= 0 then Exit;
+  if (Nodes[t].k = tRef) and (Nodes[t].s2 = '') then begin Result := t; Exit; end;
+  r := LsFindElidedRef(Nodes[t].a);
+  if r > 0 then begin Result := r; Exit; end;
+  if Nodes[t].k = tPath then
+  begin
+    for i := 0 to Length(Nodes[t].l) - 1 do
+      for j := 0 to Length(Nodes[Nodes[t].l[i]].l) - 1 do
+      begin
+        r := LsFindElidedRef(Nodes[Nodes[t].l[i]].l[j]);
+        if r > 0 then begin Result := r; Exit; end;
+      end;
+  end
+  else
+    for i := 0 to Length(Nodes[t].l) - 1 do
+    begin
+      r := LsFindElidedRef(Nodes[t].l[i]);
+      if r > 0 then begin Result := r; Exit; end;
+    end;
+end;
+
+{ premier chemin de type vers un ADT a parametre de duree, sans duree ecrite }
+function LsFindHiddenPath(t, scope: Integer): Integer;
+var
+  i, j, r, d, used: Integer;
+  segs: TStrArr;
+begin
+  Result := 0;
+  if t <= 0 then Exit;
+  if (Nodes[t].k = tPath) and (Nodes[t].a = 0) and (Length(Nodes[t].l) > 0) then
+  begin
+    segs := nil;
+    for i := 0 to Length(Nodes[t].l) - 1 do SAdd(segs, Nodes[Nodes[t].l[i]].s);
+    if segs[0] <> 'Self' then
+    begin
+      d := ResolveSegs(scope, segs, 'T', used);
+      if (d >= 0) and (used = Length(segs)) and ((Defs[d].kind = dkStruct) or (Defs[d].kind = dkEnum)) and
+         LsDefHasLife(d) and (Nodes[Nodes[t].l[Length(Nodes[t].l) - 1]].s2 <> 'L') then
+      begin
+        Result := t;
+        Exit;
+      end;
+    end;
+    for i := 0 to Length(Nodes[t].l) - 1 do
+      for j := 0 to Length(Nodes[Nodes[t].l[i]].l) - 1 do
+      begin
+        r := LsFindHiddenPath(Nodes[Nodes[t].l[i]].l[j], scope);
+        if r > 0 then begin Result := r; Exit; end;
+      end;
+    Exit;
+  end;
+  r := LsFindHiddenPath(Nodes[t].a, scope);
+  if r > 0 then begin Result := r; Exit; end;
+  if Nodes[t].k <> tPath then
+    for i := 0 to Length(Nodes[t].l) - 1 do
+    begin
+      r := LsFindHiddenPath(Nodes[t].l[i], scope);
+      if r > 0 then begin Result := r; Exit; end;
+    end;
+end;
+
+procedure CheckLifetimeSyntax(d: Integer);
+var
+  fn, i, p, src, hid, nsrc: Integer;
+  labs: TLabels;
+  ln, sug: string;
+  w, col, lastSegEnd: Integer;
+  seg: Integer;
+begin
+  fn := Defs[d].node;
+  if (Nodes[fn].a = 0) or (Nodes[fn].line <= 0) then Exit;
+  hid := LsFindHiddenPath(Nodes[fn].a, Defs[d].scopeMod);
+  if hid <= 0 then Exit;
+  { source de duree elidee : l'unique parametre contenant une reference elidee ; &self : pas d'avertissement }
+  src := 0;
+  nsrc := 0;
+  for i := 0 to Length(Nodes[fn].l2) - 1 do
+  begin
+    p := Nodes[fn].l2[i];
+    if Nodes[p].k = nSelfParam then
+    begin
+      if (Nodes[p].f and 1) <> 0 then Exit;
+    end
+    else if LsFindElidedRef(Nodes[p].b) > 0 then
+    begin
+      Inc(nsrc);
+      src := LsFindElidedRef(Nodes[p].b);
+    end;
+  end;
+  if nsrc <> 1 then Exit;
+  SetLength(labs, 2);
+  labs[0].fi := Nodes[src].fi; labs[0].line := Nodes[src].line; labs[0].col := Nodes[src].col; labs[0].len := NodeLen(src);
+  labs[0].primary := True;
+  labs[0].text := 'the lifetime is elided here';
+  labs[1].fi := Nodes[hid].fi; labs[1].line := Nodes[hid].line; labs[1].col := Nodes[hid].col; labs[1].len := NodeLen(hid);
+  labs[1].primary := True;
+  labs[1].text := 'the same lifetime is hidden here';
+  ReportLabels(False, '', 'hiding a lifetime that''s elided elsewhere is confusing', labs);
+  Help('the same lifetime is referred to in inconsistent ways, making the signature confusing');
+  Note('`#[warn(mismatched_lifetime_syntaxes)]` on by default');
+  seg := Nodes[hid].l[Length(Nodes[hid].l) - 1];
+  ln := SourceLine(Nodes[hid].fi, Nodes[hid].line);
+  w := Length(IntToStr(Nodes[hid].line));
+  if Length(Nodes[seg].l) > 0 then
+  begin
+    col := Pos('<', Copy(ln, Nodes[hid].col, Length(ln)));
+    if col > 0 then
+    begin
+      col := Nodes[hid].col + col;
+      sug := Copy(ln, 1, col - 1) + '''_, ' + Copy(ln, col, Length(ln));
+      WriteErrLn('help: use `''_` for type paths');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(PadL(IntToStr(Nodes[hid].line), w) + ' | ' + ExpandTabs(sug));
+      WriteErrLn(Spaces(w) + ' | ' + Spaces(col - 1) + '+++');
+    end;
+  end
+  else
+  begin
+    lastSegEnd := Nodes[hid].col + NodeLen(hid);
+    sug := Copy(ln, 1, lastSegEnd - 1) + '<''_>' + Copy(ln, lastSegEnd, Length(ln));
+    WriteErrLn('help: use `''_` for type paths');
+    WriteErrLn(Spaces(w) + ' |');
+    WriteErrLn(PadL(IntToStr(Nodes[hid].line), w) + ' | ' + ExpandTabs(sug));
+    WriteErrLn(Spaces(w) + ' | ' + Spaces(lastSegEnd - 1) + '++++');
+  end;
+  WriteErrLn('');
+end;
+
 procedure CheckSignatures;
 var
   d: Integer;
@@ -7802,7 +7952,7 @@ begin
   begin
     if Defs[d].crate <> 0 then Continue;
     if Defs[d].node <= 0 then Continue;
-    if (Defs[d].kind = dkFn) and (Nodes[Defs[d].node].k = nFn) then CheckFnElision(d)
+    if (Defs[d].kind = dkFn) and (Nodes[Defs[d].node].k = nFn) then begin CheckFnElision(d); CheckLifetimeSyntax(d); end
     else if (Defs[d].kind = dkStruct) or (Defs[d].kind = dkEnum) then CheckFieldElision(d);
   end;
 end;
@@ -15174,6 +15324,7 @@ Type
     x: Integer;              { variable empruntee }
     path: string;            { chemin de champs "3.1" ('' = variable entiere) }
     mut, tph, isCap, weak, explicit, temp: Boolean;
+    pty: Integer;            { type de la place empruntee (0 = inconnu) }
     hid: Integer;
     fi, line, col, len: Integer;
   end;
@@ -15212,6 +15363,7 @@ Var
   BcUses: array of TIntArr;
   BcDefs: array of TIntArr;
   BcAsg: array of TIntArr;
+  BcInit: TIntArr;          { par variable : hir du let avec initialiseur (-1 sinon) }
   BcDecl: TIntArr;
   BcDeclBlk: TIntArr;
   BcLoops: array of TBcLoop;
@@ -15271,6 +15423,68 @@ begin
         for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
           if BcTyHolds(Closures[Tys[t].def].capTys[i], depth + 1) then begin Result := True; Exit; end;
       end;
+  end;
+end;
+
+{ types possedes par le type t (pour savoir ce qu'une reference peut designer) }
+procedure BcAddParts(t, depth: Integer; var parts: TIntArr);
+var
+  i, d: Integer;
+begin
+  t := Shallow(Zonk(t));
+  for i := 0 to Length(parts) - 1 do
+    if parts[i] = t then Exit;
+  IAdd(parts, t);
+  if depth > 5 then Exit;
+  case Tys[t].k of
+    tyAdt:
+      begin
+        d := Tys[t].def;
+        if Defs[d].lang = 'string' then begin BcAddParts(TyStrT, depth + 1, parts); BcAddParts(MkSlice(TyU8), depth + 1, parts); end;
+        if (Defs[d].lang = 'vec') and (Length(Tys[t].args) > 0) then BcAddParts(MkSlice(Tys[t].args[0]), depth + 1, parts);
+        if (Defs[d].crate = 1) and BcDefHasLife(d) then Exit;
+        for i := 0 to Length(Tys[t].args) - 1 do BcAddParts(Tys[t].args[i], depth + 1, parts);
+        if Defs[d].kind = dkStruct then
+          for i := 0 to Length(Nodes[Defs[d].node].l2) - 1 do BcAddParts(FieldTyOf(t, d, i), depth + 1, parts);
+      end;
+    tyArray:
+      begin
+        BcAddParts(Tys[t].args[0], depth + 1, parts);
+        BcAddParts(MkSlice(Tys[t].args[0]), depth + 1, parts);
+      end;
+    tySlice: BcAddParts(Tys[t].args[0], depth + 1, parts);
+    tyTuple:
+      for i := 0 to Length(Tys[t].args) - 1 do BcAddParts(Tys[t].args[i], depth + 1, parts);
+  end;
+end;
+
+{ le type de resultat peut-il contenir une reference vers une partie de pty ? }
+function BcCanPoint(resTy: Integer; const parts: TIntArr; depth: Integer): Boolean;
+var
+  i, j, u: Integer;
+begin
+  Result := False;
+  if depth > 6 then begin Result := True; Exit; end;
+  resTy := Shallow(Zonk(resTy));
+  case Tys[resTy].k of
+    tyRef:
+      begin
+        u := Shallow(Zonk(Tys[resTy].args[0]));
+        if Tys[u].k in [tyDyn, tyVar, tyErr, tyOpaque, tyClosure] then begin Result := True; Exit; end;
+        for j := 0 to Length(parts) - 1 do
+          if parts[j] = u then begin Result := True; Exit; end;
+        Result := BcCanPoint(u, parts, depth + 1);
+      end;
+    tyDyn, tyVar, tyErr, tyOpaque, tyClosure: Result := True;
+    tyAdt:
+      begin
+        if BcDefHasLife(Tys[resTy].def) then begin Result := True; Exit; end;
+        for i := 0 to Length(Tys[resTy].args) - 1 do
+          if BcCanPoint(Tys[resTy].args[i], parts, depth + 1) then begin Result := True; Exit; end;
+      end;
+    tyTuple, tyArray, tySlice:
+      for i := 0 to Length(Tys[resTy].args) - 1 do
+        if BcCanPoint(Tys[resTy].args[i], parts, depth + 1) then begin Result := True; Exit; end;
   end;
 end;
 
@@ -15462,7 +15676,7 @@ begin
           BcVarClos[Pats[Integer(Hirs[h].n)].v] := Hirs[h].a;
         { definition de la variable par le let }
         if (Hirs[h].a <> 0) and (Pats[Integer(Hirs[h].n)].k = pkBind) and (Pats[Integer(Hirs[h].n)].v >= 0) then
-          IAdd(BcDefs[Pats[Integer(Hirs[h].n)].v], BcOrd[h]);
+          begin IAdd(BcDefs[Pats[Integer(Hirs[h].n)].v], BcOrd[h]); BcInit[Pats[Integer(Hirs[h].n)].v] := h; end;
       end;
     hBlock:
       begin
@@ -16105,7 +16319,7 @@ begin
   Result := (nm = 'deref') or (nm = 'deref_mut') or (nm = 'index') or (nm = 'index_mut');
 end;
 
-function BcNewLoan(acc, v: Integer; const path: string; mut: Boolean; autoCall: Integer): Integer;
+function BcNewLoan(acc, v: Integer; const path: string; mut: Boolean; autoCall: Integer; pty: Integer): Integer;
 var
   l, opH: Integer;
 begin
@@ -16124,6 +16338,7 @@ begin
   BcLoans[l].weak := False;
   BcLoans[l].explicit := False;
   BcLoans[l].temp := False;
+  BcLoans[l].pty := pty;
   BcLoans[l].hid := acc;
   BcLoans[l].fi := Hirs[acc].fi;
   BcLoans[l].line := Hirs[acc].line;
@@ -16317,7 +16532,7 @@ begin
   case kind of
     akShared, akMut:
       begin
-        l := BcNewLoan(acc, v, path, kind = akMut, autoCall);
+        l := BcNewLoan(acc, v, path, kind = akMut, autoCall, Hirs[h].ty);
         BcAdd1(Result, l);
         BcUnion(Result, BcHeldIf(st, v));
       end;
@@ -16685,7 +16900,7 @@ begin
              (not IsCopyTy(Hirs[arg].ty)) and (Tys[Shallow(Zonk(Hirs[arg].ty))].k <> tyRef) and
              (not BcIsSynth(ac)) then
           begin
-            j := BcNewLoan(h, -2, '', Hirs[h].n = 1, -1);
+            j := BcNewLoan(h, -2, '', Hirs[h].n = 1, -1, 0);
             BcLoans[j].temp := True;
             BcLoans[j].fi := Hirs[arg].fi;
             BcLoans[j].line := Hirs[arg].line;
@@ -17012,7 +17227,7 @@ begin
             mut := BcCapMut(Bodies[Closures[cid].bodyIdx].root, k);
             if mut then kd := akMut else kd := akShared;
             BcCheck(st, kd, v, '', arg, arg);
-            j := BcNewLoan(arg, v, '', mut, -1);
+            j := BcNewLoan(arg, v, '', mut, -1, 0);
             BcLoans[j].isCap := True;
             BcLoans[j].weak := True;
             if BcClosureHead(h, cc, cl) then
@@ -17031,9 +17246,26 @@ begin
 end;
 
 function BcExpr(h: Integer; var st: TBcState): TIntArr;
+var
+  i: Integer;
+  keep: TIntArr;
+  parts: TIntArr;
 begin
   Result := BcExpr1(h, st);
   if (Result <> nil) and (h > 0) and (not BcTyHolds(Hirs[h].ty, 0)) then Result := nil;
+  { filtre de provenance : un pret sur une place de type T ne peut etre porte que par des types qui peuvent designer T }
+  if (Result <> nil) and (h > 0) and (Hirs[h].k in [hCall, hCallClosure, hMatch, hIf, hBlock]) then
+  begin
+    keep := nil;
+    for i := 0 to Length(Result) - 1 do
+    begin
+      if BcLoans[Result[i]].pty = 0 then begin IAdd(keep, Result[i]); Continue; end;
+      parts := nil;
+      BcAddParts(BcLoans[Result[i]].pty, 0, parts);
+      if BcCanPoint(Hirs[h].ty, parts, 0) then IAdd(keep, Result[i]);
+    end;
+    Result := keep;
+  end;
 end;
 
 procedure BcDump(h, ind: Integer);
@@ -17073,6 +17305,9 @@ begin
   SetLength(BcDefs, 0);
   SetLength(BcAsg, 0);
   SetLength(BcAsg, nv);
+  SetLength(BcInit, 0);
+  SetLength(BcInit, nv);
+  for i := 0 to nv - 1 do BcInit[i] := -1;
   SetLength(BcUses, nv);
   SetLength(BcDefs, nv);
   SetLength(BcDecl, nv);
@@ -17350,7 +17585,107 @@ begin
   for i := 0 to Length(Hirs[h].l) - 1 do LintMustUse(Hirs[h].l[i]);
 end;
 
-procedure LintBodyVars(b: Integer);
+{ chemin ";id:arm;..." : p est-il un prefixe de q ? }
+function LintPathPrefix(const p, q: string): Boolean;
+begin
+  Result := Copy(q, 1, Length(p)) = p;
+end;
+
+{ La definition de v a l'ordinal oa est-elle relue ? (analyse approchee) }
+function LintDefLive(v, oa: Integer; var overwriter: Integer): Boolean;
+var
+  i, o, best, k, lp, u: Integer;
+  evOrd: array of Integer;
+  evKind: array of Integer;   { 0 lecture, 1 definition (affectation), 2 definition (let) }
+  evHir: array of Integer;
+  n, j, tmp: Integer;
+begin
+  Result := False;
+  overwriter := -1;
+  n := 0;
+  SetLength(evOrd, Length(BcUses[v]) + Length(BcAsg[v]) + 2);
+  SetLength(evKind, Length(evOrd));
+  SetLength(evHir, Length(evOrd));
+  for i := 0 to Length(BcUses[v]) - 1 do
+  begin
+    evOrd[n] := BcOrd[BcUses[v][i]]; evKind[n] := 0; evHir[n] := BcUses[v][i]; Inc(n);
+  end;
+  for i := 0 to Length(BcAsg[v]) - 1 do
+  begin
+    evOrd[n] := BcOrd[BcAsg[v][i]]; evKind[n] := 1; evHir[n] := BcAsg[v][i]; Inc(n);
+  end;
+  { tri par ordinal }
+  for i := 0 to n - 2 do
+    for j := i + 1 to n - 1 do
+      if evOrd[j] < evOrd[i] then
+      begin
+        tmp := evOrd[i]; evOrd[i] := evOrd[j]; evOrd[j] := tmp;
+        tmp := evKind[i]; evKind[i] := evKind[j]; evKind[j] := tmp;
+        tmp := evHir[i]; evHir[i] := evHir[j]; evHir[j] := tmp;
+      end;
+  for i := 0 to n - 1 do
+  begin
+    o := evOrd[i];
+    if o <= oa then Continue;
+    if o > BcLim[oa] then Break;
+    if BcExcl(BcPathOf[oa], BcPathOf[o]) then Continue;
+    if evKind[i] = 0 then begin Result := True; Exit; end;
+    { affectation : inconditionnelle si son chemin est un prefixe de celui de la definition }
+    if LintPathPrefix(BcPathOf[o], BcPathOf[oa]) then
+    begin
+      overwriter := evHir[i];
+      Exit;
+    end;
+  end;
+  { portage par une boucle englobante }
+  lp := BcLoopOf(oa);
+  if (lp >= 0) and (BcLimIn[oa] = BcInf) and (BcDecl[v] < BcLoops[lp].s) then
+    for i := 0 to Length(BcUses[v]) - 1 do
+    begin
+      u := BcOrd[BcUses[v][i]];
+      if (u >= BcLoops[lp].s) and (u <= BcLoops[lp].e) then begin Result := True; Exit; end;
+    end;
+end;
+
+procedure LintDeadAssigns(b: Integer);
+var
+  v, i, ow: Integer;
+  vn: TVarInfo;
+  labs: TLabels;
+  nm: string;
+begin
+  for v := 0 to Bodies[b].nvars - 1 do
+  begin
+    vn := Bodies[b].vars[v];
+    nm := vn.name;
+    if (vn.node <= 0) or (nm = '') or (nm[1] = '_') or (Length(BcUses[v]) = 0) then Continue;
+    if Nodes[vn.node].line <= 0 then Continue;
+    { initialisation par let }
+    if BcInit[v] >= 0 then
+      if (BcOrd[BcInit[v]] >= 0) and (not LintDefLive(v, BcOrd[BcInit[v]], ow)) and (ow >= 0) then
+      begin
+        labs := nil;
+        BcLabH(labs, Hirs[BcInit[v]].a, True, 'this value is reassigned later and never used');
+        BcLabH(labs, ow, False, '`' + nm + '` is overwritten here before the previous value is read');
+        ReportLabels(False, '', 'value assigned to `' + nm + '` is never read', labs);
+        LintNote('unused_assignments');
+        WriteErrLn('');
+      end;
+    for i := 0 to Length(BcAsg[v]) - 1 do
+      if BcOrd[BcAsg[v][i]] >= 0 then
+        if not LintDefLive(v, BcOrd[BcAsg[v][i]], ow) then
+        begin
+          labs := nil;
+          BcLabH(labs, BcAsg[v][i], True, '');
+          ReportLabels(False, '', 'value assigned to `' + nm + '` is never read', labs);
+          Help('maybe it is overwritten before being read?');
+          LintNote('unused_assignments');
+          WriteErrLn('');
+        end;
+  end;
+end;
+
+procedure LintBodyVars0(b: Integer);
 var
   v, i, mcol, ncol: Integer;
   vn: TVarInfo;
@@ -17417,6 +17752,12 @@ begin
       end;
     end;
   end;
+end;
+
+procedure LintBodyVars(b: Integer);
+begin
+  LintBodyVars0(b);
+  if (Defs[Bodies[b].def].crate = 0) and (not LintAllowed('unused_assignments')) then LintDeadAssigns(b);
 end;
 
 { ============================================================ }
@@ -20182,7 +20523,7 @@ var
 begin
   if IIndexOf(StaticDefs, def) >= 0 then Exit;
   IAdd(StaticDefs, def);
-  if Defs[def].isExtern then Exit;
+  if Defs[def].isExtern or (Defs[def].promTy <> 0) then Exit;
   key := 's' + IntToStr(def);
   if NInsts >= Length(Insts) then SetLength(Insts, NInsts * 2 + 64);
   i := NInsts;
@@ -21171,6 +21512,50 @@ begin
   Result := OCopyPlace(tmp);
 end;
 
+{ expression constante promouvable en statique ('static) quand on en prend l'adresse }
+function IsPromotable(h: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  if h <= 0 then Exit;
+  case Hirs[h].k of
+    hLitInt, hLitFloat, hLitBool, hLitChar, hLitStr, hLitByteStr, hUnit, hFnRef: Result := True;
+    hConstVal: Result := not NeedsDrop(Hirs[h].ty);
+    hTuple, hArray:
+      begin
+        Result := not NeedsDrop(Hirs[h].ty);
+        for i := 0 to Length(Hirs[h].l) - 1 do
+          if not IsPromotable(Hirs[h].l[i]) then begin Result := False; Exit; end;
+      end;
+    hRepeat: Result := IsPromotable(Hirs[h].a) and (not NeedsDrop(Hirs[h].ty));
+    hAdt:
+      begin
+        Result := (Hirs[h].a = 0) and (not NeedsDrop(Hirs[h].ty));
+        for i := 0 to Length(Hirs[h].l) - 1 do
+          if (Hirs[h].l[i] <> 0) and (not IsPromotable(Hirs[h].l[i])) then begin Result := False; Exit; end;
+      end;
+    hUnary, hCast: Result := IsPromotable(Hirs[h].a);
+    hBinary: Result := IsPromotable(Hirs[h].a) and IsPromotable(Hirs[h].b);
+    hAddr: Result := (Hirs[h].n = 0) and (not IsPlaceHir(Hirs[h].a)) and IsPromotable(Hirs[h].a);
+    hCoerce: Result := (Hirs[h].n <> 1) and IsPromotable(Hirs[h].a);
+  end;
+end;
+
+{ cree un statique synthetique contenant la valeur de l'expression h }
+function PromotedPlace(h: Integer): TPlace;
+var
+  d: Integer;
+begin
+  d := NewDef(dkStatic, 'promoted', 0, -1);
+  Defs[d].crate := 0;
+  Defs[d].promTy := Zonk(Hirs[h].ty);
+  Defs[d].node := 0;
+  RequestStatic(d);
+  Result := PLocal(0, Zonk(Hirs[h].ty));
+  Result.glob := d;
+end;
+
 procedure ExprInto(h: Integer; const dest: TPlace);
 var
   ty, i, j, k, lp, brk, cont, th, el, jn, id, cid, fldIdx, nfld, bodyBB: Integer;
@@ -21218,7 +21603,13 @@ begin
           rv := MkRv(rvRef, ty);
           rv.mut := Hirs[h].n = 1;
         end;
-        rv.place := HirPlaceOrTemp(Hirs[h].a);
+        if (Hirs[h].n = 0) and (not IsPlaceHir(Hirs[h].a)) and IsPromotable(Hirs[h].a) then
+        begin
+          pl := PromotedPlace(Hirs[h].a);
+          ExprInto(Hirs[h].a, pl);
+          rv.place := pl;
+        end
+        else rv.place := HirPlaceOrTemp(Hirs[h].a);
         EmitAssign(dest, rv);
       end;
     hCast:
@@ -22170,6 +22561,7 @@ var
   params: TIntArr;
   ret: Integer;
 begin
+  if Defs[def].promTy <> 0 then begin Result := Zonk(Defs[def].promTy); Exit; end;
   FnDefSig(def, nil, params, ret);
   Result := Zonk(ret);
 end;
@@ -25949,13 +26341,147 @@ begin
   BufLn(b, '            let n = self.len();');
   BufLn(b, '            if n == 0 { None } else { Some((&self[n - 1], &self[..n - 1])) }');
   BufLn(b, '        }');
-  BufLn(b, '        pub fn windows(&self, size: usize) -> Windows<T> { Windows { v: self, size: size } }');
-  BufLn(b, '        pub fn chunks(&self, size: usize) -> Chunks<T> { Chunks { v: self, size: size } }');
-  BufLn(b, '        pub fn chunks_exact(&self, size: usize) -> Chunks<T> {');
+  BufLn(b, '        pub fn split_first_mut(&mut self) -> Option<(&mut T, &mut [T])> {');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            if n == 0 { None } else {');
 end;
 
 procedure PreludeChunk7(var b: TBuf);
 begin
+  BufLn(b, '                let p = self.as_mut_ptr();');
+  BufLn(b, '                unsafe { Some((&mut *p, ::std::slice::from_raw_parts_mut(p.add(1), n - 1))) }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn split_last_mut(&mut self) -> Option<(&mut T, &mut [T])> {');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            if n == 0 { None } else {');
+  BufLn(b, '                let p = self.as_mut_ptr();');
+  BufLn(b, '                unsafe { Some((&mut *p.add(n - 1), ::std::slice::from_raw_parts_mut(p, n - 1))) }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn chunks_mut(&mut self, size: usize) -> ChunksMut<T> { ChunksMut { ptr: self.as_mut_ptr(), len: self.len(), size: size, _m: ::std::marker::PhantomData } }');
+  BufLn(b, '        pub fn chunks_exact_mut(&mut self, size: usize) -> ChunksMut<T> {');
+  BufLn(b, '            let n = self.len() / size * size;');
+  BufLn(b, '            ChunksMut { ptr: self.as_mut_ptr(), len: n, size: size, _m: ::std::marker::PhantomData }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn binary_search_by_key<B: Ord, F: FnMut(&T) -> B>(&self, b: &B, mut f: F) -> Result<usize, usize> {');
+  BufLn(b, '            self.binary_search_by(|x| f(x).cmp(b))');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn partition_point<P: FnMut(&T) -> bool>(&self, mut pred: P) -> usize {');
+  BufLn(b, '            let mut lo = 0usize;');
+  BufLn(b, '            let mut hi = self.len();');
+  BufLn(b, '            while lo < hi {');
+  BufLn(b, '                let mid = lo + (hi - lo) / 2;');
+  BufLn(b, '                if pred(&self[mid]) { lo = mid + 1; } else { hi = mid; }');
+  BufLn(b, '            }');
+  BufLn(b, '            lo');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn sort_by_cached_key<K: Ord, F: FnMut(&T) -> K>(&mut self, mut f: F) {');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            if n < 2 { return; }');
+  BufLn(b, '            let mut keyed: Vec<(K, usize)> = Vec::new();');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < n { keyed.push((f(&self[i]), i)); i += 1; }');
+  BufLn(b, '            keyed.sort_by(|a, b| a.0.cmp(&b.0));');
+  BufLn(b, '            // permutation en place : element i recoit l''ancien element keyed[i].1');
+  BufLn(b, '            let mut order: Vec<usize> = Vec::new();');
+  BufLn(b, '            for kv in keyed.iter() { order.push(kv.1); }');
+  BufLn(b, '            let mut visited: Vec<bool> = vec![false; n];');
+  BufLn(b, '            let mut start = 0usize;');
+  BufLn(b, '            while start < n {');
+  BufLn(b, '                if !visited[start] && order[start] != start {');
+  BufLn(b, '                    unsafe {');
+  BufLn(b, '                        let p = self.as_mut_ptr();');
+  BufLn(b, '                        let first = ::std::intrinsics::ptr_read(p.add(start));');
+  BufLn(b, '                        let mut cur = start;');
+  BufLn(b, '                        loop {');
+  BufLn(b, '                            visited[cur] = true;');
+  BufLn(b, '                            let nxt = order[cur];');
+  BufLn(b, '                            if nxt == start { ::std::intrinsics::ptr_write(p.add(cur), first); break; }');
+  BufLn(b, '                            ::std::intrinsics::ptr_write(p.add(cur), ::std::intrinsics::ptr_read(p.add(nxt)));');
+  BufLn(b, '                            cur = nxt;');
+  BufLn(b, '                        }');
+  BufLn(b, '                    }');
+  BufLn(b, '                } else { visited[start] = true; }');
+  BufLn(b, '                start += 1;');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn select_nth_unstable(&mut self, k: usize) -> (&mut [T], &mut T, &mut [T]) where T: Ord {');
+  BufLn(b, '            self.sort();');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            let p = self.as_mut_ptr();');
+  BufLn(b, '            unsafe { (::std::slice::from_raw_parts_mut(p, k), &mut *p.add(k), ::std::slice::from_raw_parts_mut(p.add(k + 1), n - k - 1)) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn fill_with<F: FnMut() -> T>(&mut self, mut f: F) { let n = self.len(); let mut i = 0usize; while i < n { self[i] = f(); i += 1; } }');
+  BufLn(b, '        pub fn copy_within(&mut self, src: ::std::ops::Range<usize>, dest: usize) where T: Copy {');
+  BufLn(b, '            let cnt = src.end - src.start;');
+  BufLn(b, '            let tmp: Vec<T> = self[src.start..src.end].to_vec();');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < cnt { self[dest + i] = tmp[i]; i += 1; }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn swap_with_slice(&mut self, o: &mut [T]) {');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < n { ::std::mem::swap(&mut self[i], &mut o[i]); i += 1; }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn is_sorted(&self) -> bool where T: PartialOrd {');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            let mut i = 1usize;');
+  BufLn(b, '            while i < n { if self[i - 1] > self[i] { return false; } i += 1; }');
+  BufLn(b, '            true');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn is_sorted_by_key<K: PartialOrd, F: FnMut(&T) -> K>(&self, mut f: F) -> bool {');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            let mut i = 1usize;');
+  BufLn(b, '            while i < n { if f(&self[i - 1]) > f(&self[i]) { return false; } i += 1; }');
+  BufLn(b, '            true');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn repeat(&self, n: usize) -> Vec<T> where T: Clone {');
+  BufLn(b, '            let mut v: Vec<T> = Vec::new();');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < n { v.extend_from_slice(self); i += 1; }');
+  BufLn(b, '            v');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn strip_prefix(&self, p: &[T]) -> Option<&[T]> where T: PartialEq {');
+  BufLn(b, '            if self.len() >= p.len() && &self[..p.len()] == p { Some(&self[p.len()..]) } else { None }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn strip_suffix(&self, p: &[T]) -> Option<&[T]> where T: PartialEq {');
+  BufLn(b, '            if self.len() >= p.len() && &self[self.len() - p.len()..] == p { Some(&self[..self.len() - p.len()]) } else { None }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn chunk_by<F: FnMut(&T, &T) -> bool>(&self, mut pred: F) -> ::std::vec::IntoIter<&[T]> {');
+  BufLn(b, '            let mut out: Vec<&[T]> = Vec::new();');
+  BufLn(b, '            let n = self.len();');
+  BufLn(b, '            let mut start = 0usize;');
+  BufLn(b, '            let mut i = 1usize;');
+  BufLn(b, '            while i <= n {');
+  BufLn(b, '                if i == n || !pred(&self[i - 1], &self[i]) {');
+  BufLn(b, '                    if start < i { out.push(&self[start..i]); }');
+  BufLn(b, '                    start = i;');
+  BufLn(b, '                }');
+  BufLn(b, '                i += 1;');
+  BufLn(b, '            }');
+  BufLn(b, '            out.into_iter()');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn splitn<P: FnMut(&T) -> bool>(&self, n: usize, mut pred: P) -> ::std::vec::IntoIter<&[T]> {');
+  BufLn(b, '            let mut out: Vec<&[T]> = Vec::new();');
+  BufLn(b, '            let len = self.len();');
+  BufLn(b, '            let mut start = 0usize;');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < len && out.len() + 1 < n {');
+  BufLn(b, '                if pred(&self[i]) { out.push(&self[start..i]); start = i + 1; }');
+  BufLn(b, '                i += 1;');
+  BufLn(b, '            }');
+  BufLn(b, '            out.push(&self[start..]);');
+  BufLn(b, '            out.into_iter()');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn rsplit<P: FnMut(&T) -> bool>(&self, pred: P) -> ::std::vec::IntoIter<&[T]> {');
+  BufLn(b, '            let mut v: Vec<&[T]> = self.split(pred).collect();');
+  BufLn(b, '            v.reverse();');
+  BufLn(b, '            v.into_iter()');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn windows(&self, size: usize) -> Windows<T> { Windows { v: self, size: size } }');
+  BufLn(b, '        pub fn chunks(&self, size: usize) -> Chunks<T> { Chunks { v: self, size: size } }');
+  BufLn(b, '        pub fn chunks_exact(&self, size: usize) -> Chunks<T> {');
   BufLn(b, '            let n = self.len() / size * size;');
   BufLn(b, '            Chunks { v: &self[0..n], size: size }');
   BufLn(b, '        }');
@@ -26122,6 +26648,10 @@ begin
   BufLn(b, '            let mut out = String::new();');
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < self.len() {');
+end;
+
+procedure PreludeChunk8(var b: TBuf);
+begin
   BufLn(b, '                if i > 0 { out.push_str(sep); }');
   BufLn(b, '                out.push_str(self[i]);');
   BufLn(b, '                i += 1;');
@@ -26210,6 +26740,19 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
+  BufLn(b, '    pub struct ChunksMut<''a, T> { ptr: *mut T, len: usize, size: usize, _m: ::std::marker::PhantomData<&''a mut T> }');
+  BufLn(b, '    impl<''a, T> Iterator for ChunksMut<''a, T> {');
+  BufLn(b, '        type Item = &''a mut [T];');
+  BufLn(b, '        fn next(&mut self) -> Option<&''a mut [T]> {');
+  BufLn(b, '            if self.len == 0 { None } else {');
+  BufLn(b, '                let n = if self.size < self.len { self.size } else { self.len };');
+  BufLn(b, '                let r = unsafe { ::std::slice::from_raw_parts_mut(self.ptr, n) };');
+  BufLn(b, '                self.ptr = unsafe { self.ptr.add(n) };');
+  BufLn(b, '                self.len -= n;');
+  BufLn(b, '                Some(r)');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
   BufLn(b, '    pub struct Chunks<''a, T> { v: &''a [T], size: usize }');
   BufLn(b, '    impl<''a, T> Iterator for Chunks<''a, T> {');
   BufLn(b, '        type Item = &''a [T];');
@@ -26256,10 +26799,6 @@ begin
   BufLn(b, '            while i < self.len() { if self[i] != other[i] { return false; } i += 1; }');
   BufLn(b, '            true');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk8(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '    impl<T: Eq> Eq for [T] {}');
   BufLn(b, '    impl<T: PartialOrd> PartialOrd for [T] {');
@@ -26413,6 +26952,10 @@ begin
   BufLn(b, '    impl<T, const N: usize> ::std::ops::IndexMut<::std::ops::RangeFull> for [T; N] {');
   BufLn(b, '        fn index_mut(&mut self, r: ::std::ops::RangeFull) -> &mut [T] { self.as_mut_slice() }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk9(var b: TBuf);
+begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod vec {');
@@ -26560,10 +27103,6 @@ begin
   BufLn(b, '                    if *self.ptr.add(r) != *self.ptr.add(w - 1) {');
   BufLn(b, '                        if w != r { ::std::intrinsics::copy(self.ptr.add(r) as *const T, self.ptr.add(w), 1usize); }');
   BufLn(b, '                        w += 1;');
-end;
-
-procedure PreludeChunk9(var b: TBuf);
-begin
   BufLn(b, '                    } else {');
   BufLn(b, '                        ::std::intrinsics::drop_in_place(self.ptr.add(r));');
   BufLn(b, '                    }');
@@ -26717,6 +27256,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl<T> FromIterator<T> for Vec<T> {');
   BufLn(b, '        fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Vec<T> {');
+end;
+
+procedure PreludeChunk10(var b: TBuf);
+begin
   BufLn(b, '            let mut it = iter.into_iter();');
   BufLn(b, '            let (lo, _) = it.size_hint();');
   BufLn(b, '            let mut v = Vec::with_capacity(lo);');
@@ -26864,10 +27407,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl Pattern for char {');
   BufLn(b, '        fn find_in(&mut self, hay: &str, from: usize) -> Option<(usize, usize)> {');
-end;
-
-procedure PreludeChunk10(var b: TBuf);
-begin
   BufLn(b, '            let mut it = hay[from..].char_indices();');
   BufLn(b, '            while let Some((i, c)) = it.next() {');
   BufLn(b, '                if c == *self { return Some((from + i, from + i + c.len_utf8())); }');
@@ -27021,6 +27560,10 @@ begin
   BufLn(b, '            if n > 0 { v.push(&self[..end]); }');
   BufLn(b, '            v.into_iter()');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk11(var b: TBuf);
+begin
   BufLn(b, '        pub fn split_inclusive<P: Pattern>(&self, mut p: P) -> ::std::vec::IntoIter<&str> {');
   BufLn(b, '            let mut v: Vec<&str> = Vec::new();');
   BufLn(b, '            let mut pos = 0usize;');
@@ -27168,10 +27711,6 @@ begin
   BufLn(b, '            if self.ptr as usize == self.end as usize { return None; }');
   BufLn(b, '            unsafe {');
   BufLn(b, '                let b0 = *self.ptr as u32;');
-end;
-
-procedure PreludeChunk11(var b: TBuf);
-begin
   BufLn(b, '                if b0 < 0x80u32 { self.ptr = self.ptr.add(1usize); return Some(b0 as u8 as char); }');
   BufLn(b, '                if b0 < 0xE0u32 {');
   BufLn(b, '                    let c = ((b0 & 0x1Fu32) << 6) | (*self.ptr.add(1usize) as u32 & 0x3Fu32);');
@@ -27325,6 +27864,10 @@ begin
   BufLn(b, '            if line.len() > 0 && line.as_bytes()[line.len() - 1] == 13u8 { line = &line[..line.len() - 1]; }');
   BufLn(b, '            Some(line)');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk12(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl<''a> DoubleEndedIterator for Lines<''a> {');
@@ -27472,10 +28015,6 @@ begin
   BufLn(b, '            *self = out;');
   BufLn(b, '        }');
   BufLn(b, '        pub fn drain_range(&mut self, a: usize, b: usize) -> String {');
-end;
-
-procedure PreludeChunk12(var b: TBuf);
-begin
   BufLn(b, '            let s = String::from(&self.as_str()[a..b]);');
   BufLn(b, '            let mut i = a;');
   BufLn(b, '            while i < b { self.vec.remove(a); i += 1; }');
@@ -27629,6 +28168,10 @@ begin
   BufLn(b, '    impl<T: Clone> ToOwned for T { type Owned = T; fn to_owned(&self) -> T { self.clone() } }');
   BufLn(b, '    impl ToOwned for str { type Owned = String; fn to_owned(&self) -> String { String::from(self) } }');
   BufLn(b, '    impl<T: Clone> ToOwned for [T] { type Owned = Vec<T>; fn to_owned(&self) -> Vec<T> { self.to_vec() } }');
+end;
+
+procedure PreludeChunk13(var b: TBuf);
+begin
   BufLn(b, '    impl<T> Borrow<[T]> for Vec<T> { fn borrow(&self) -> &[T] { self.as_slice() } }');
   BufLn(b, '    pub enum Cow<''a, B: ?Sized + ToOwned> { Borrowed(&''a B), Owned(<B as ToOwned>::Owned) }');
   BufLn(b, '    impl<''a, B: ?Sized + ToOwned> Cow<''a, B> where B::Owned: Borrow<B> {');
@@ -27776,10 +28319,6 @@ begin
   BufLn(b, '            match from_u32(c) { Some(x) => Ok(x), None => Err(::std::convert::TryFromIntError(())) }');
   BufLn(b, '        }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk13(var b: TBuf);
-begin
   BufLn(b, '    impl ::std::str::FromStr for char {');
   BufLn(b, '        type Err = ParseCharError;');
   BufLn(b, '        fn from_str(s: &str) -> Result<char, ParseCharError> {');
@@ -27933,6 +28472,10 @@ begin
   BufLn(b, '        begin_panic(m, "library/core/src/slice/mod.rs:0:0")');
   BufLn(b, '    }');
   BufLn(b, '    pub fn unwrap_failed(msg: &str) -> ! { begin_panic_str(msg, "library/core/src/option.rs:0:0") }');
+end;
+
+procedure PreludeChunk14(var b: TBuf);
+begin
   BufLn(b, '    pub fn expect_failed(msg: &str) -> ! { begin_panic_str(msg, "library/core/src/option.rs:0:0") }');
   BufLn(b, '    pub fn unwrap_failed_err<E: ::std::fmt::Debug + ?Sized>(msg: &str, e: &E) -> ! {');
   BufLn(b, '        let m = format!("{}: {:?}", msg, e);');
@@ -28080,10 +28623,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    pub struct DefaultHasher { state: u64 }');
-end;
-
-procedure PreludeChunk14(var b: TBuf);
-begin
   BufLn(b, '    impl DefaultHasher {');
   BufLn(b, '        pub fn new() -> DefaultHasher { DefaultHasher { state: (0xcbf29ce4u64 << 32) | 0x84222325u64 } }');
   BufLn(b, '    }');
@@ -28237,6 +28776,10 @@ begin
   BufLn(b, '            fn find<Q: ?Sized + Hash + Eq>(&self, hash: u64, k: &Q) -> Option<usize> where K: Borrow<Q> {');
   BufLn(b, '                if self.table.len() == 0 { return None; }');
   BufLn(b, '                let mask = self.table.len() - 1;');
+end;
+
+procedure PreludeChunk15(var b: TBuf);
+begin
   BufLn(b, '                let mut pos = (hash as usize) & mask;');
   BufLn(b, '                loop {');
   BufLn(b, '                    let t = self.table[pos];');
@@ -28384,10 +28927,6 @@ begin
   BufLn(b, '                    Entry::Vacant(e) => { let v = f(&e.key); e.insert(v) }');
   BufLn(b, '                }');
   BufLn(b, '            }');
-end;
-
-procedure PreludeChunk15(var b: TBuf);
-begin
   BufLn(b, '            pub fn or_default(self) -> &''a mut V where V: Default {');
   BufLn(b, '                match self {');
   BufLn(b, '                    Entry::Occupied(e) => e.into_mut(),');
@@ -28541,6 +29080,10 @@ begin
   BufLn(b, '                true');
   BufLn(b, '            }');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk16(var b: TBuf);
+begin
   BufLn(b, '        impl<K: Hash + Eq, V: Eq, S: BuildHasher> Eq for HashMap<K, V, S> {}');
   BufLn(b, '        impl<K: ::std::fmt::Debug, V: ::std::fmt::Debug, S> ::std::fmt::Debug for HashMap<K, V, S> {');
   BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {');
@@ -28688,10 +29231,6 @@ begin
   BufLn(b, '            type Output = HashSet<T, S>;');
   BufLn(b, '            fn bitor(self, rhs: &HashSet<T, S>) -> HashSet<T, S> { self.union(rhs).cloned().collect() }');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk16(var b: TBuf);
-begin
   BufLn(b, '        impl<''a, ''b, T: Hash + Eq + Clone, S: BuildHasher + Default> ::std::ops::BitAnd<&''b HashSet<T, S>> for &''a HashSet<T, S> {');
   BufLn(b, '            type Output = HashSet<T, S>;');
   BufLn(b, '            fn bitand(self, rhs: &HashSet<T, S>) -> HashSet<T, S> { self.intersection(rhs).cloned().collect() }');
@@ -28845,6 +29384,10 @@ begin
   BufLn(b, '            pub fn or_insert(self, default: V) -> &''a mut V {');
   BufLn(b, '                match self { Entry::Occupied(e) => e.into_mut(), Entry::Vacant(e) => e.insert(default) }');
   BufLn(b, '            }');
+end;
+
+procedure PreludeChunk17(var b: TBuf);
+begin
   BufLn(b, '            pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &''a mut V {');
   BufLn(b, '                match self { Entry::Occupied(e) => e.into_mut(), Entry::Vacant(e) => e.insert(f()) }');
   BufLn(b, '            }');
@@ -28992,10 +29535,6 @@ begin
   BufLn(b, '                let mut d = f.debug_map();');
   BufLn(b, '                for e in self.v.iter() { d.entry(&e.0, &e.1); }');
   BufLn(b, '                d.finish()');
-end;
-
-procedure PreludeChunk17(var b: TBuf);
-begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K: Ord + Borrow<Q>, Q: ?Sized + Ord, V> ::std::ops::Index<&''a Q> for BTreeMap<K, V> {');
@@ -29149,6 +29688,10 @@ begin
   BufLn(b, '        impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {');
   BufLn(b, '            fn from(arr: [T; N]) -> BTreeSet<T> {');
   BufLn(b, '                let mut s = BTreeSet::new();');
+end;
+
+procedure PreludeChunk18(var b: TBuf);
+begin
   BufLn(b, '                for x in arr { s.insert(x); }');
   BufLn(b, '                s');
   BufLn(b, '            }');
@@ -29296,10 +29839,6 @@ begin
   BufLn(b, '            fn next_back(&mut self) -> Option<&''a T> {');
   BufLn(b, '                if self.front >= self.back { return None; }');
   BufLn(b, '                self.back -= 1;');
-end;
-
-procedure PreludeChunk18(var b: TBuf);
-begin
   BufLn(b, '                self.dq.get(self.back)');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -29453,6 +29992,10 @@ begin
   BufLn(b, '            pub fn clear(&mut self) { self.data.clear(); }');
   BufLn(b, '            pub fn iter(&self) -> ::std::slice::Iter<T> { self.data.iter() }');
   BufLn(b, '            pub fn into_vec(self) -> Vec<T> { self.data }');
+end;
+
+procedure PreludeChunk19(var b: TBuf);
+begin
   BufLn(b, '            pub fn as_slice(&self) -> &[T] { self.data.as_slice() }');
   BufLn(b, '            pub fn drain(&mut self) -> ::std::vec::IntoIter<T> {');
   BufLn(b, '                let old = ::std::mem::replace(&mut self.data, Vec::new());');
@@ -29600,10 +30143,6 @@ begin
   BufLn(b, '            ::std::mem::swap(&mut *self.borrow_mut(), &mut *other.borrow_mut());');
   BufLn(b, '        }');
   BufLn(b, '        pub fn take(&self) -> T where T: Default { self.replace(T::default()) }');
-end;
-
-procedure PreludeChunk19(var b: TBuf);
-begin
   BufLn(b, '        pub fn get_mut(&mut self) -> &mut T { self.value.get_mut() }');
   BufLn(b, '        pub fn as_ptr(&self) -> *mut T { self.value.get() }');
   BufLn(b, '    }');
@@ -29757,6 +30296,10 @@ begin
   BufLn(b, '                    *this = Rc::new(c);');
   BufLn(b, '                }');
   BufLn(b, '                &mut (*this.ptr).value');
+end;
+
+procedure PreludeChunk20(var b: TBuf);
+begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
@@ -29904,10 +30447,6 @@ begin
   BufLn(b, '    impl<''a, T: ::std::fmt::Debug> ::std::fmt::Debug for MutexGuard<''a, T> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk20(var b: TBuf);
-begin
   BufLn(b, '    impl<''a, T: ::std::fmt::Display> ::std::fmt::Display for MutexGuard<''a, T> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
   BufLn(b, '    }');
@@ -30061,6 +30600,10 @@ begin
   BufLn(b, '        impl From<i8> for AtomicI8 { fn from(x: i8) -> AtomicI8 { AtomicI8::new(x) } }');
   BufLn(b, '        impl ::std::fmt::Debug for AtomicI8 {');
   BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+end;
+
+procedure PreludeChunk21(var b: TBuf);
+begin
   BufLn(b, '        }');
   BufLn(b, '        pub struct AtomicI16 { v: ::std::cell::Cell<i16> }');
   BufLn(b, '        impl AtomicI16 {');
@@ -30208,10 +30751,6 @@ begin
   BufLn(b, '            pub fn get_mut(&mut self) -> &mut u16 { self.v.get_mut() }');
   BufLn(b, '        }');
   BufLn(b, '        impl Default for AtomicU16 { fn default() -> AtomicU16 { AtomicU16::new(0) } }');
-end;
-
-procedure PreludeChunk21(var b: TBuf);
-begin
   BufLn(b, '        impl From<u16> for AtomicU16 { fn from(x: u16) -> AtomicU16 { AtomicU16::new(x) } }');
   BufLn(b, '        impl ::std::fmt::Debug for AtomicU16 {');
   BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
@@ -30365,6 +30904,10 @@ begin
   BufLn(b, '                    match r {');
   BufLn(b, '                        Some(v) => return Ok(v),');
   BufLn(b, '                        None => {}');
+end;
+
+procedure PreludeChunk22(var b: TBuf);
+begin
   BufLn(b, '                    }');
   BufLn(b, '                    if self.c.borrow().senders == 0 { return Err(RecvError); }');
   BufLn(b, '                    if !::std::thread::__run_one() { return Err(RecvError); }');
@@ -30512,10 +31055,6 @@ begin
   BufLn(b, '            match *self {');
   BufLn(b, '                ErrorKind::NotFound => "entity not found",');
   BufLn(b, '                ErrorKind::PermissionDenied => "permission denied",');
-end;
-
-procedure PreludeChunk22(var b: TBuf);
-begin
   BufLn(b, '                ErrorKind::ConnectionRefused => "connection refused",');
   BufLn(b, '                ErrorKind::ConnectionReset => "connection reset",');
   BufLn(b, '                ErrorKind::ConnectionAborted => "connection aborted",');
@@ -30669,6 +31208,10 @@ begin
   BufLn(b, '        let n = unsafe { ::std::libc::write(fd, buf.as_ptr(), buf.len()) };');
   BufLn(b, '        if n < 0 { Err(Error::new(ErrorKind::Other, "write failed")) } else { Ok(n as usize) }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk23(var b: TBuf);
+begin
   BufLn(b, '    impl Write for Stdout {');
   BufLn(b, '        fn write(&mut self, buf: &[u8]) -> Result<usize> { raw_write(1, buf) }');
   BufLn(b, '        fn flush(&mut self) -> Result<()> { Ok(()) }');
@@ -30816,10 +31359,6 @@ begin
   BufLn(b, '        fn read(&mut self, buf: &mut [u8]) -> Result<usize> { self.inner.read(buf) }');
   BufLn(b, '    }');
   BufLn(b, '    impl<R: Read> BufRead for BufReader<R> {');
-end;
-
-procedure PreludeChunk23(var b: TBuf);
-begin
   BufLn(b, '        fn read_line(&mut self, buf: &mut String) -> Result<usize> {');
   BufLn(b, '            let mut bytes: Vec<u8> = Vec::new();');
   BufLn(b, '            let mut b = [0u8; 1];');
@@ -30973,6 +31512,10 @@ begin
   BufLn(b, '        fn mul(self, k: u32) -> Duration { Duration::from_nanos((self.as_nanos() * k as u128) as u64) }');
   BufLn(b, '    }');
   BufLn(b, '    impl ::std::ops::Div<u32> for Duration {');
+end;
+
+procedure PreludeChunk24(var b: TBuf);
+begin
   BufLn(b, '        type Output = Duration;');
   BufLn(b, '        fn div(self, k: u32) -> Duration { Duration::from_nanos((self.as_nanos() / k as u128) as u64) }');
   BufLn(b, '    }');
@@ -31120,10 +31663,6 @@ begin
   BufLn(b, '');
   BufLn(b, '    pub fn sleep(d: ::std::time::Duration) { __run_all(); }');
   BufLn(b, '    pub fn yield_now() { __run_one(); }');
-end;
-
-procedure PreludeChunk24(var b: TBuf);
-begin
   BufLn(b, '    pub fn available_parallelism() -> ::std::io::Result<usize> { Ok(4usize) }');
   BufLn(b, '');
   BufLn(b, '    pub struct Builder { name: Option<String> }');
@@ -31277,6 +31816,10 @@ begin
   BufLn(b, '        pub fn payload_as_str(&self) -> Option<&str> { Some(self.msg) }');
   BufLn(b, '        pub fn message(&self) -> &str { self.msg }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk25(var b: TBuf);
+begin
   BufLn(b, '    impl<''a> ::std::fmt::Display for PanicHookInfo<''a> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { write!(f, "panicked at {}:\n{}", self.loc, self.msg) }');
   BufLn(b, '    }');
@@ -31424,10 +31967,6 @@ begin
   BufLn(b, 'impl LowerHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, false, "0x") } }');
   BufLn(b, 'impl UpperHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, true, "0x") } }');
   BufLn(b, 'impl Binary for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 2, false, "0b") } }');
-end;
-
-procedure PreludeChunk25(var b: TBuf);
-begin
   BufLn(b, 'impl Octal for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 8, false, "0o") } }');
   BufLn(b, 'impl FromStr for i8 {');
   BufLn(b, '    type Err = ParseIntError;');
@@ -31581,6 +32120,10 @@ begin
   BufLn(b, '    pub fn abs(self) -> i8 { if self < 0 { -self } else { self } }');
   BufLn(b, '    pub fn signum(self) -> i8 { if self < 0 { -1 } else if self == 0 { 0 } else { 1 } }');
   BufLn(b, '    pub fn is_positive(self) -> bool { self > 0 }');
+end;
+
+procedure PreludeChunk26(var b: TBuf);
+begin
   BufLn(b, '    pub fn is_negative(self) -> bool { self < 0 }');
   BufLn(b, '    pub fn unsigned_abs(self) -> u8 { if self < 0 { (self as u8).wrapping_neg() } else { self as u8 } }');
   BufLn(b, '    pub fn wrapping_abs(self) -> i8 { if self < 0 { self.wrapping_neg() } else { self } }');
@@ -31728,10 +32271,6 @@ begin
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<i16> {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: i16 = 1;');
-end;
-
-procedure PreludeChunk26(var b: TBuf);
-begin
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '            exp = exp / 2;');
@@ -31885,6 +32424,10 @@ begin
   BufLn(b, 'impl MulAssign for i32 { fn mul_assign(&mut self, o: i32) { *self = *self * o; } }');
   BufLn(b, 'impl DivAssign for i32 { fn div_assign(&mut self, o: i32) { *self = *self / o; } }');
   BufLn(b, 'impl RemAssign for i32 { fn rem_assign(&mut self, o: i32) { *self = *self % o; } }');
+end;
+
+procedure PreludeChunk27(var b: TBuf);
+begin
   BufLn(b, 'impl BitAndAssign for i32 { fn bitand_assign(&mut self, o: i32) { *self = *self & o; } }');
   BufLn(b, 'impl BitOrAssign for i32 { fn bitor_assign(&mut self, o: i32) { *self = *self | o; } }');
   BufLn(b, 'impl BitXorAssign for i32 { fn bitxor_assign(&mut self, o: i32) { *self = *self ^ o; } }');
@@ -32032,10 +32575,6 @@ begin
   BufLn(b, '        if neg { let lim = (i32::MAX as u64) + 1; if acc > lim { return Err(ParseIntError { kind: IntErrorKind::NegOverflow }); } if acc == lim { return Ok(i32::MIN); } Ok(0 - (acc as i32)) } else { if acc > (i32::MAX as u64) { return Err(ParseIntError { kind: IntErrorKind::PosOverflow }); } Ok(acc as i32) }');
   BufLn(b, '    }');
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 4] {');
-end;
-
-procedure PreludeChunk27(var b: TBuf);
-begin
   BufLn(b, '        let mut out = [0u8; 4];');
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 4 { out[i] = ((self >> ((4 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
@@ -32189,6 +32728,10 @@ begin
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            base = base.wrapping_mul(base);');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk28(var b: TBuf);
+begin
   BufLn(b, '        acc');
   BufLn(b, '    }');
   BufLn(b, '    pub fn overflowing_add(self, o: i64) -> (i64, bool) { unsafe { ::std::intrinsics::add_with_overflow(self, o) } }');
@@ -32336,10 +32879,6 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl Add for i128 { type Output = i128; fn add(self, o: i128) -> i128 { self + o } }');
   BufLn(b, 'impl Sub for i128 { type Output = i128; fn sub(self, o: i128) -> i128 { self - o } }');
-end;
-
-procedure PreludeChunk28(var b: TBuf);
-begin
   BufLn(b, 'impl Mul for i128 { type Output = i128; fn mul(self, o: i128) -> i128 { self * o } }');
   BufLn(b, 'impl Div for i128 { type Output = i128; fn div(self, o: i128) -> i128 { self / o } }');
   BufLn(b, 'impl Rem for i128 { type Output = i128; fn rem(self, o: i128) -> i128 { self % o } }');
@@ -32493,6 +33032,10 @@ begin
   BufLn(b, '    pub fn isqrt(self) -> i128 {');
   BufLn(b, '        if self < 2 { return self; }');
   BufLn(b, '        let mut x = self;');
+end;
+
+procedure PreludeChunk29(var b: TBuf);
+begin
   BufLn(b, '        let mut y = (x + 1) / 2;');
   BufLn(b, '        while y < x { x = y; y = (x + self / x) / 2; }');
   BufLn(b, '        x');
@@ -32640,10 +33183,6 @@ begin
   BufLn(b, '    pub const MIN: isize = -9223372036854775808;');
   BufLn(b, '    pub const MAX: isize = 9223372036854775807;');
   BufLn(b, '    pub const BITS: u32 = 64;');
-end;
-
-procedure PreludeChunk29(var b: TBuf);
-begin
   BufLn(b, '    pub fn min_value() -> isize { -9223372036854775808 }');
   BufLn(b, '    pub fn max_value() -> isize { 9223372036854775807 }');
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> isize {');
@@ -32797,6 +33336,10 @@ begin
   BufLn(b, 'impl Default for u8 { fn default() -> u8 { 0 } }');
   BufLn(b, 'impl PartialEq for u8 {');
   BufLn(b, '    fn eq(&self, o: &u8) -> bool { *self == *o }');
+end;
+
+procedure PreludeChunk30(var b: TBuf);
+begin
   BufLn(b, '    fn ne(&self, o: &u8) -> bool { *self != *o }');
   BufLn(b, '}');
   BufLn(b, 'impl Eq for u8 {}');
@@ -32944,10 +33487,6 @@ begin
   BufLn(b, '    pub fn saturating_pow(self, exp: u32) -> u8 {');
   BufLn(b, '        match self.checked_pow(exp) { Some(v) => v, None => if self < 0 && exp % 2 == 1 { 0 } else { 255 } }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk30(var b: TBuf);
-begin
   BufLn(b, '    pub fn count_ones(self) -> u32 { unsafe { ::std::intrinsics::ctpop(self) } }');
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 8 - self.count_ones() }');
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
@@ -33101,6 +33640,10 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl Display for u16 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u64, true, 10, false, "") } }');
   BufLn(b, 'impl Debug for u16 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u64, true, 10, false, "") } }');
+end;
+
+procedure PreludeChunk31(var b: TBuf);
+begin
   BufLn(b, 'impl LowerHex for u16 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u16 as u64, true, 16, false, "0x") } }');
   BufLn(b, 'impl UpperHex for u16 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u16 as u64, true, 16, true, "0x") } }');
   BufLn(b, 'impl Binary for u16 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u16 as u64, true, 2, false, "0b") } }');
@@ -33248,10 +33791,6 @@ begin
   BufLn(b, '        v');
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 2]) -> u16 {');
-end;
-
-procedure PreludeChunk31(var b: TBuf);
-begin
   BufLn(b, '        let mut v: u16 = 0;');
   BufLn(b, '        let mut i = 2;');
   BufLn(b, '        while i > 0 { i -= 1; v = (v << 8) | (b[i] as u16); }');
@@ -33405,6 +33944,10 @@ begin
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<u32> {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: u32 = 1;');
+end;
+
+procedure PreludeChunk32(var b: TBuf);
+begin
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '            exp = exp / 2;');
@@ -33552,10 +34095,6 @@ begin
   BufLn(b, 'impl<''a, ''b> Mul<&''b u64> for &''a u64 { type Output = u64; fn mul(self, o: &''b u64) -> u64 { *self * *o } }');
   BufLn(b, 'impl AddAssign for u64 { fn add_assign(&mut self, o: u64) { *self = *self + o; } }');
   BufLn(b, 'impl SubAssign for u64 { fn sub_assign(&mut self, o: u64) { *self = *self - o; } }');
-end;
-
-procedure PreludeChunk32(var b: TBuf);
-begin
   BufLn(b, 'impl MulAssign for u64 { fn mul_assign(&mut self, o: u64) { *self = *self * o; } }');
   BufLn(b, 'impl DivAssign for u64 { fn div_assign(&mut self, o: u64) { *self = *self / o; } }');
   BufLn(b, 'impl RemAssign for u64 { fn rem_assign(&mut self, o: u64) { *self = *self % o; } }');
@@ -33709,6 +34248,10 @@ begin
   BufLn(b, '        let mut out = [0u8; 8];');
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 8 { out[i] = ((self >> ((8 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
+end;
+
+procedure PreludeChunk33(var b: TBuf);
+begin
   BufLn(b, '        out');
   BufLn(b, '    }');
   BufLn(b, '    pub fn to_le_bytes(self) -> [u8; 8] {');
@@ -33856,10 +34399,6 @@ begin
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            base = base.wrapping_mul(base);');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk33(var b: TBuf);
-begin
   BufLn(b, '        acc');
   BufLn(b, '    }');
   BufLn(b, '    pub fn overflowing_add(self, o: u128) -> (u128, bool) { unsafe { ::std::intrinsics::add_with_overflow(self, o) } }');
@@ -34013,6 +34552,10 @@ begin
   BufLn(b, 'impl Not for usize { type Output = usize; fn not(self) -> usize { !self } }');
   BufLn(b, 'impl Shl<u32> for usize { type Output = usize; fn shl(self, o: u32) -> usize { self << o } }');
   BufLn(b, 'impl Shr<u32> for usize { type Output = usize; fn shr(self, o: u32) -> usize { self >> o } }');
+end;
+
+procedure PreludeChunk34(var b: TBuf);
+begin
   BufLn(b, 'impl Shl<usize> for usize { type Output = usize; fn shl(self, o: usize) -> usize { self << o } }');
   BufLn(b, 'impl Shr<usize> for usize { type Output = usize; fn shr(self, o: usize) -> usize { self >> o } }');
   BufLn(b, 'impl Shl<i32> for usize { type Output = usize; fn shl(self, o: i32) -> usize { self << o } }');
@@ -34160,10 +34703,6 @@ begin
   BufLn(b, '        let mut y = (x + 1) / 2;');
   BufLn(b, '        while y < x { x = y; y = (x + self / x) / 2; }');
   BufLn(b, '        x');
-end;
-
-procedure PreludeChunk34(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<usize, ParseIntError> {');
   BufLn(b, '        let b = s.as_bytes();');
@@ -34317,6 +34856,10 @@ begin
   BufLn(b, '    pub fn clamp(self, lo: f64, hi: f64) -> f64 { if self < lo { lo } else if self > hi { hi } else { self } }');
   BufLn(b, '    pub fn is_nan(self) -> bool { self != self }');
   BufLn(b, '    pub fn is_infinite(self) -> bool { self == 1.0 / 0.0 || self == -1.0 / 0.0 }');
+end;
+
+procedure PreludeChunk35(var b: TBuf);
+begin
   BufLn(b, '    pub fn is_finite(self) -> bool { !self.is_nan() && !self.is_infinite() }');
   BufLn(b, '    pub fn is_sign_negative(self) -> bool { self < 0.0 || (self == 0.0 && 1.0 / self < 0.0) }');
   BufLn(b, '    pub fn is_sign_positive(self) -> bool { !self.is_sign_negative() }');
@@ -34464,10 +35007,6 @@ begin
   BufLn(b, 'impl From<i8> for isize { fn from(x: i8) -> isize { x as isize } }');
   BufLn(b, 'impl TryFrom<i8> for u8 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u8, TryFromIntError> { if (x as i128) < (u8::MIN as i128) || (x as i128) > (u8::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u8) } } }');
   BufLn(b, 'impl TryFrom<i8> for u16 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u16, TryFromIntError> { if (x as i128) < (u16::MIN as i128) || (x as i128) > (u16::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u16) } } }');
-end;
-
-procedure PreludeChunk35(var b: TBuf);
-begin
   BufLn(b, 'impl TryFrom<i8> for u32 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u32, TryFromIntError> { if (x as i128) < (u32::MIN as i128) || (x as i128) > (u32::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u32) } } }');
   BufLn(b, 'impl TryFrom<i8> for u64 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u64, TryFromIntError> { if (x as i128) < (u64::MIN as i128) || (x as i128) > (u64::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u64) } } }');
   BufLn(b, 'impl TryFrom<i8> for u128 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u128, TryFromIntError> { if (x as i128) < 0 { Err(TryFromIntError(())) } else { Ok(x as u128) } } }');
@@ -34621,6 +35160,10 @@ begin
   BufLn(b, 'pub mod i16 { pub const MIN: i16 = -32768; pub const MAX: i16 = 32767; }');
   BufLn(b, 'pub mod i32 { pub const MIN: i32 = -2147483648; pub const MAX: i32 = 2147483647; }');
   BufLn(b, 'pub mod i64 { pub const MIN: i64 = -9223372036854775808; pub const MAX: i64 = 9223372036854775807; }');
+end;
+
+procedure PreludeChunk36(var b: TBuf);
+begin
   BufLn(b, 'pub mod i128 { pub const MIN: i128 = (1i128 << 127); pub const MAX: i128 = (!(1i128 << 127)); }');
   BufLn(b, 'pub mod isize { pub const MIN: isize = -9223372036854775808; pub const MAX: isize = 9223372036854775807; }');
   BufLn(b, 'pub mod u8 { pub const MIN: u8 = 0; pub const MAX: u8 = 255; }');
@@ -34794,6 +35337,7 @@ begin
   PreludeChunk33(b);
   PreludeChunk34(b);
   PreludeChunk35(b);
+  PreludeChunk36(b);
   s := BufStr(b);
 end;
 { ============================================================ }
@@ -35596,6 +36140,7 @@ Var
   LgTraitUsed: THashSI;
   LgReachedDef: THashSI;
   LgNames: THashSI;
+  LgFirst: THashSI;
 
 function LgIsDerivedDef(d: Integer): Boolean;
 var
@@ -35674,13 +36219,6 @@ begin
         LgScanHir(Bodies[Closures[Integer(Hirs[h].n)].bodyIdx].root, False, depth + 1);
       end;
   end;
-  if Hirs[h].k = hAssign then
-  begin
-    LgScanHir(Hirs[h].b, False, depth + 1);
-    if Hirs[Hirs[h].a].k = hField then LgScanHir(Hirs[Hirs[h].a].a, False, depth + 1)
-    else LgScanHir(Hirs[h].a, False, depth + 1);
-    Exit;
-  end;
   LgScanHir(Hirs[h].a, False, depth + 1);
   LgScanHir(Hirs[h].b, False, depth + 1);
   LgScanHir(Hirs[h].c, False, depth + 1);
@@ -35757,6 +36295,15 @@ begin
     if a[i] = x then begin Result := i; Exit; end;
 end;
 
+{ derive qui lit les champs (PartialEq, PartialOrd, Ord, Hash) : les champs sont consideres lus }
+function LgDeriveReads(d: Integer): Boolean;
+var
+  dl: string;
+begin
+  dl := DeriveList(Nodes[Defs[d].node].at);
+  Result := (Pos('PartialEq', dl) > 0) or (Pos('PartialOrd', dl) > 0) or (Pos('Ord', dl) > 0) or (Pos('Hash', dl) > 0);
+end;
+
 function LgDeriveNote(d: Integer): string;
 var
   dl, tr: string;
@@ -35796,12 +36343,14 @@ var
   n, i, seg: Integer;
 begin
   HInit(LgNames);
+  HInit(LgFirst);
   for n := 1 to NNodes - 1 do
     if (Nodes[n].fi = UserFile) and (Nodes[n].k = tPath) then
       for i := 0 to Length(Nodes[n].l) - 1 do
       begin
         seg := Nodes[n].l[i];
         HPut(LgNames, Nodes[seg].s, HFind(LgNames, Nodes[seg].s) + 2);
+        if i = 0 then HPut(LgFirst, Nodes[seg].s, 1);
       end;
 end;
 
@@ -35827,6 +36376,7 @@ begin
   labs := nil;
   nUnread := 0;
   isTuple := False;
+  if LgDeriveReads(typeDef) then Exit;
   for j := 0 to Length(Nodes[fieldsNode].l2) - 1 do
   begin
     fld := Nodes[fieldsNode].l2[j];
@@ -35901,8 +36451,8 @@ begin
     d := ScopeLookup(Imports[i].mod_, 'T', Imports[i].alias, 0);
     if d < 0 then d := ScopeLookup(Imports[i].mod_, 'V', Imports[i].alias, 0);
     if d < 0 then Continue;
-    if (Defs[d].kind = dkTrait) and (Defs[d].crate = 1) and (HFind(TraitImpUsed, IntToStr(d)) >= 0) then Continue;
-    if (Defs[d].kind = dkTrait) and (Defs[d].crate <> 1) then Continue;
+    if (Defs[d].kind = dkTrait) and (HFind(TraitImpUsed, IntToStr(d)) >= 0) then Continue;
+    if HFind(LgFirst, Imports[i].alias) >= 0 then Continue;
     { remise a zero de l'indicateur d'usage causee par notre propre recherche }
     Imports[i].used := False;
     ln := SourceLine(Nodes[Imports[i].node].fi, Nodes[Imports[i].node].line);
@@ -35954,6 +36504,15 @@ begin
   HInit(LgTraitUsed);
   HInit(LgReachedDef);
   LgCollectNames;
+  { corps des methodes d'impl de traits (toujours vivantes) }
+  for i := 0 to NBodies - 1 do
+  begin
+    d := Bodies[i].def;
+    if (d < 0) or (Defs[d].crate <> 0) or Bodies[i].isClosure or (Bodies[i].root <= 0) then Continue;
+    if (Defs[d].parent >= 0) and (Defs[Defs[d].parent].kind = dkImpl) and (Defs[Defs[d].parent].implTrait >= 0) and
+       (not LgIsDerivedDef(d)) then
+      LgScanHir(Bodies[i].root, False, 0);
+  end;
   { parcours des corps atteints }
   for i := 0 to NInsts - 1 do
   begin
