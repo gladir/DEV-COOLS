@@ -6311,6 +6311,7 @@ Type
     selfFn: Integer;      { fonction de fermeture generee }
     isMut: Boolean;
     capKeys: TStrArr;
+    capMoved: TIntArr;    { 1 = la capture est deplacee dans le corps (fermeture FnOnce) }
     bodyIdx: Integer;
   end;
 
@@ -6336,6 +6337,8 @@ Var
 
 procedure FnDefSig(def: Integer; const args: TIntArr; var params: TIntArr; var ret: Integer); forward;
 function TraitAllowedFor(X, tr: Integer): Boolean; forward;
+function EnvBoundTargs(X, tr: Integer; var targs: TIntArr): Boolean; forward;
+function IsCopyTy(t: Integer): Boolean; forward;
 function TraitUsableHere(tr, recvTy: Integer): Boolean; forward;
 
 Var
@@ -6466,8 +6469,25 @@ begin
   Closures[Result].capByRef := nil;
   Closures[Result].capTys := nil;
   Closures[Result].capKeys := nil;
+  Closures[Result].capMoved := nil;
   Closures[Result].bodyIdx := -1;
   Closures[Result].selfFn := -1;
+end;
+
+{ capture par valeur : fermeture `move` ou capture deplacee dans le corps }
+function ClosureByValue(cid, i: Integer): Boolean;
+begin
+  Result := Closures[cid].isMove or ((i < Length(Closures[cid].capMoved)) and (Closures[cid].capMoved[i] <> 0));
+end;
+
+{ fermeture qui consomme au moins une de ses captures }
+function ClosureConsuming(cid: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(Closures[cid].capMoved) - 1 do
+    if Closures[cid].capMoved[i] <> 0 then begin Result := True; Exit; end;
 end;
 
 { ---- obligations ---- }
@@ -6633,6 +6653,11 @@ begin
     end;
     Exit;
   end;
+  if (trait = LangClone) and (Tys[selfT].k = tyClosure) then
+  begin
+    if IsCopyTy(selfT) then Result := 1 else Result := 0;
+    Exit;
+  end;
   if (trait = LangFn) or (trait = LangFnMut) or (trait = LangFnOnce) then
   begin
     case Tys[selfT].k of
@@ -6774,12 +6799,9 @@ begin
     tyClosure:
       begin
         Result := True;
-        if Closures[Tys[t].def].isMove then
-        begin
-          for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
-            if not IsCopyTy(Closures[Tys[t].def].capTys[i]) then begin Result := False; Break; end;
-        end
-        else if Closures[Tys[t].def].isMut then Result := False;
+        for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
+          if ClosureByValue(Tys[t].def, i) and (not IsCopyTy(Closures[Tys[t].def].capTys[i])) then begin Result := False; Break; end;
+        if Result and (not Closures[Tys[t].def].isMove) and Closures[Tys[t].def].isMut then Result := False;
         Exit;
       end;
     tyVar: begin Result := VarKind[Tys[t].n] <> 0; Exit; end;
@@ -7108,6 +7130,7 @@ var
   iargs: TIntArr;
   env: TEnv;
   fnd: Integer;
+  bt: TIntArr;
   spt: Integer;
   trs: TIntArr;
   targs: TIntArr;
@@ -7261,6 +7284,9 @@ begin
           SetLength(targs, Length(Defs[tr].gnames));
           targs[0] := X;
           for j := 1 to Length(targs) - 1 do targs[j] := NewTyVar(0);
+          if EnvBoundTargs(X, tr, bt) then
+            for j := 1 to Length(targs) - 1 do
+              if j < Length(bt) then TryUnify(targs[j], bt[j]);
           s := Snapshot;
           Inc(SuppressDiag);
           r := SelectImpl(tr, targs, impl, ia, True);
@@ -8097,6 +8123,8 @@ Type
     unsafeDepth: Integer;
     env: TEnv;
     isConstCtx: Boolean;
+    bounds: TBoundArr;
+    boundsDone: Boolean;
   end;
 
   TValRes = record
@@ -8137,6 +8165,8 @@ begin
   Inc(CxTop);
   if CxTop >= Length(Cxs) then SetLength(Cxs, CxTop * 2 + 8);
   Cxs[CxTop].body := bodyIdx;
+  Cxs[CxTop].bounds := nil;
+  Cxs[CxTop].boundsDone := False;
   Cxs[CxTop].sNames := nil;
   Cxs[CxTop].sIds := nil;
   Cxs[CxTop].nS := 0;
@@ -8292,6 +8322,39 @@ begin
       if BoundsMention(defn, i, tr, Cxs[CxBase + 1].env.scope) then begin Result := True; Exit; end;
     end;
   if found then Result := False;
+end;
+
+{ Arguments de trait imposes par une borne de la fonction courante (ex. T: AsRef<str>) }
+function EnvBoundTargs(X, tr: Integer; var targs: TIntArr): Boolean;
+var
+  defn, i, cnt, which: Integer;
+  env: TEnv;
+begin
+  Result := False;
+  if (CxTop < 0) or (CxBase + 1 > CxTop) then Exit;
+  defn := Cxs[CxBase + 1].env.defn;
+  if defn < 0 then Exit;
+  if not Cxs[CxBase + 1].boundsDone then
+  begin
+    Cxs[CxBase + 1].boundsDone := True;
+    env := Cxs[CxBase + 1].env;
+    env.infer := False;
+    Inc(SuppressDiag);
+    LowerBoundsOf(defn, env, Cxs[CxBase + 1].bounds);
+    Dec(SuppressDiag);
+  end;
+  cnt := 0;
+  which := -1;
+  X := Shallow(X);
+  for i := 0 to Length(Cxs[CxBase + 1].bounds) - 1 do
+    if (Cxs[CxBase + 1].bounds[i].trait = tr) and (Shallow(Cxs[CxBase + 1].bounds[i].subj) = X) then
+    begin
+      Inc(cnt);
+      which := i;
+    end;
+  if cnt <> 1 then Exit;
+  targs := Cxs[CxBase + 1].bounds[which].targs;
+  Result := Length(targs) > 1;
 end;
 
 { Le trait est-il utilisable pour un appel de methode ici ? (dans la portee, borne, ou objet-trait) }
@@ -8732,6 +8795,9 @@ end;
 function CheckDerefCall(h: Integer; mutable: Boolean; node: Integer): Integer; forward;
 
 { Convertit une expression pour qu'elle ait le type cible, ou retourne -1 si impossible }
+Var
+  FallbackVars: TIntArr;
+
 function TryCoerce(h: Integer; target: Integer): Integer;
 var
   src, tgt, s0, t0, cur, k, nx, sn, tn: Integer;
@@ -8752,6 +8818,7 @@ begin
   if (Tys[src].k = tyErr) or (Tys[tgt].k = tyErr) then begin Result := h; Exit; end;
   if Tys[src].k = tyNever then
   begin
+    if (Tys[tgt].k = tyVar) and (VarKind[Tys[tgt].n] = 0) then IAdd(FallbackVars, tgt);
     Result := WrapCoerce(h, target, 1);
     Exit;
   end;
@@ -10267,7 +10334,13 @@ begin
   src := StructResolve(Hirs[a].ty);
   { litteral sans suffixe converti : le type du litteral reste libre (i32 par defaut) }
   if (Tys[src].k = tyVar) and (VarKind[Tys[src].n] = 0) then TryUnify(src, tgt);
-  { coercion simple (ex. &x as &dyn T, &[..] as &[..]) }
+  { coercion simple (ex. &x as &dyn T, Box<T> as Box<dyn Tr>, fn item as fn(..)) }
+  if ((Tys[Shallow(tgt)].k = tyRef) or (Tys[Shallow(tgt)].k = tyFnPtr) or (Tys[Shallow(tgt)].k = tyAdt)) and
+     (Tys[src].k <> tyVar) then
+  begin
+    h := TryCoerce(a, tgt);
+    if h >= 0 then begin Result := h; Exit; end;
+  end;
   h := HirAt(hCast, tgt, n);
   Hirs[h].a := a;
   Result := h;
@@ -13372,8 +13445,8 @@ var
   newline: Boolean;
   nodeCopy: TNode;
   isDebug: Boolean;
-  s: string;
-  lit: Integer;
+  s, fs0: string;
+  lit, fmt0: Integer;
 begin
   name := Nodes[n].s;
   args := Nodes[n].l;
@@ -13543,8 +13616,17 @@ begin
   end;
   if name = 'panic' then
   begin
+    fs0 := '';
+    if Length(args) = 1 then
+    begin
+      fmt0 := args[0];
+      while Nodes[fmt0].k = eParen do fmt0 := Nodes[fmt0].a;
+      if (Nodes[fmt0].k = eLit) and (Nodes[fmt0].f = lkStr) then fs0 := Nodes[fmt0].s;
+    end;
     if Length(args) = 0 then
       text := '{ ::std::rt::begin_panic_str("explicit panic", ' + loc + ') }'
+    else if (Length(args) = 1) and (fs0 <> '') and (Pos('{', fs0) = 0) and (Pos('}', fs0) = 0) then
+      text := '{ ::std::rt::begin_panic_str("' + RustEscape(fs0) + '", ' + loc + ') }'
     else
     begin
       body := BuildFormatBody(n, 0, False, argNodes, ok);
@@ -14338,6 +14420,7 @@ Var
   MvQuiet: Integer;
   MvCurHow: Integer;
   MvAssigned: array of Boolean;
+  MvCid: Integer = -1;
 
 function MvEmpty: TMState;
 begin
@@ -14648,10 +14731,39 @@ begin
   end;
 end;
 
+procedure MvNoteCapMove(idx: Integer);
+begin
+  if (MvCid < 0) or (idx < 0) then Exit;
+  if Length(Closures[MvCid].capMoved) < Length(Closures[MvCid].capVars) then
+    SetLength(Closures[MvCid].capMoved, Length(Closures[MvCid].capVars));
+  if idx < Length(Closures[MvCid].capMoved) then Closures[MvCid].capMoved[idx] := 1;
+end;
+
+function MvUpvarRoot(h: Integer): Integer;
+var
+  cur: Integer;
+begin
+  Result := -1;
+  cur := h;
+  while True do
+  begin
+    case Hirs[cur].k of
+      hCoerce, hField: cur := Hirs[cur].a;
+      hUpvar: begin Result := Integer(Hirs[cur].n); Exit; end;
+    else
+      Exit;
+    end;
+  end;
+end;
+
 procedure MvUsePlace(h: Integer; var st: TMState; borrow: Boolean; moving: Boolean);
 var
   v, f: Integer;
 begin
+  if moving and (not borrow) and (MvCid >= 0) and (not IsCopyTy(Hirs[h].ty)) and
+     (Tys[Shallow(Zonk(Hirs[h].ty))].k <> tyNever) and (not ((Tys[Shallow(Zonk(Hirs[h].ty))].k = tyRef) and
+      ((Tys[Shallow(Zonk(Hirs[h].ty))].f and 1) <> 0))) then
+    MvNoteCapMove(MvUpvarRoot(h));
   if PathRoot(h, v, f) then
   begin
     if MvFind(st, v, f) >= 0 then
@@ -14743,6 +14855,11 @@ begin
         if k >= 0 then MvReportUse(st, v, -1, h, mode = 1, st.items[k].f >= 0);
         if (mode = 0) and (not IsCopyTy(Hirs[h].ty)) then MvAdd(st, v, -1, h, 0);
       end;
+    hUpvar:
+      if (mode = 0) and (MvCid >= 0) and (not IsCopyTy(Hirs[h].ty)) and
+         (Tys[Shallow(Zonk(Hirs[h].ty))].k <> tyNever) and
+         (not ((Tys[Shallow(Zonk(Hirs[h].ty))].k = tyRef) and ((Tys[Shallow(Zonk(Hirs[h].ty))].f and 1) <> 0))) then
+        MvNoteCapMove(Integer(Hirs[h].n));
     hField, hDeref, hIndex:
       MvUsePlace(h, st, mode = 1, mode = 0);
     hAddr: MvWalk(Hirs[h].a, st, 1);
@@ -14951,19 +15068,38 @@ begin
       begin
         for i := 0 to Length(Hirs[h].l) - 1 do
         begin
-          if Closures[Integer(Hirs[h].n)].isMove then
+          if ClosureByValue(Integer(Hirs[h].n), i) then
           begin
             if Hirs[Hirs[h].l[i]].k = hLocal then
             begin
               v := Integer(Hirs[Hirs[h].l[i]].n);
               if MvFind(st, v, -1) >= 0 then MvReportUse(st, v, -1, Hirs[h].l[i], False, False);
               if not IsCopyTy(Hirs[Hirs[h].l[i]].ty) then MvAdd(st, v, -1, Hirs[h].l[i], 2);
-            end;
+            end
+            else if (Hirs[Hirs[h].l[i]].k = hUpvar) and (not IsCopyTy(Hirs[Hirs[h].l[i]].ty)) then
+              MvNoteCapMove(Integer(Hirs[Hirs[h].l[i]].n));
           end
           else MvWalk(Hirs[h].l[i], st, 1);
         end;
       end;
   end;
+end;
+
+{ pre-analyse : captures deplacees par le corps d'une fermeture }
+procedure ClosureScanBody(b: Integer);
+var
+  st: TMState;
+begin
+  if not Bodies[b].isClosure then Exit;
+  MvBody := b;
+  MvNLoops := 0;
+  MvQuiet := 1;
+  MvCid := Bodies[b].closure;
+  SetLength(MvAssigned, Bodies[b].nvars);
+  st := MvEmpty;
+  MvWalk(Bodies[b].root, st, 0);
+  MvQuiet := 0;
+  MvCid := -1;
 end;
 
 procedure MoveCheckBody(b: Integer);
@@ -15094,7 +15230,8 @@ begin
     tyClosure:
       begin
         if Length(Closures[Tys[t].def].capVars) = 0 then Exit;
-        if not Closures[Tys[t].def].isMove then begin Result := True; Exit; end;
+        for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
+          if not ClosureByValue(Tys[t].def, i) then begin Result := True; Exit; end;
         for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
           if BcTyHolds(Closures[Tys[t].def].capTys[i], depth + 1) then begin Result := True; Exit; end;
       end;
@@ -16568,7 +16705,7 @@ begin
         { thread::spawn exige 'static }
         if isRef and (Defs[def].name = 'spawn') and (Defs[def].scopeMod > 0) and (Defs[Defs[def].scopeMod].name = 'thread') then
           for i := 0 to Length(Hirs[h].l) - 1 do
-            if (Hirs[Hirs[h].l[i]].k = hClosure) and (not Closures[Integer(Hirs[Hirs[h].l[i]].n)].isMove) then
+            if (Hirs[Hirs[h].l[i]].k = hClosure) and (not ClosureByValue(Integer(Hirs[Hirs[h].l[i]].n), 0)) then
               for j := 0 to Length(rs[i]) - 1 do
                 if BcLoans[rs[i][j]].isCap then begin BcReportE0373(rs[i][j], Hirs[h].l[i], h, True); Break; end;
         if isRef then fl := BcFnLinks(def, Hirs[h].ty, Length(Hirs[h].l))
@@ -16828,7 +16965,7 @@ begin
           arg := Hirs[h].l[k];
           if Hirs[arg].k <> hLocal then Continue;
           v := Integer(Hirs[arg].n);
-          if Closures[cid].isMove then
+          if ClosureByValue(cid, k) then
           begin
             if IsCopyTy(Hirs[arg].ty) or BcIsMutRef(Hirs[arg].ty) then kd := akRead else kd := akMove;
             BcCheck(st, kd, v, '', arg, arg);
@@ -17368,6 +17505,11 @@ var
   neg: Boolean;
 begin
   SolveObligations;
+  { repli du type `!` vers `()` pour les variables non contraintes }
+  for i := 0 to Length(FallbackVars) - 1 do
+    if Tys[Shallow(FallbackVars[i])].k = tyVar then TryUnify(FallbackVars[i], TyUnit);
+  FallbackVars := nil;
+  SolveObligations;
   for i := hirStart to NHirs - 1 do DefaultTy(Hirs[i].ty);
   for i := patStart to NPats - 1 do DefaultTy(Pats[i].ty);
   for j := 0 to Length(InstBodies) - 1 do
@@ -17423,6 +17565,7 @@ begin
   end;
   if ErrCount = 0 then
     begin
+      for j := Length(InstBodies) - 1 downto 0 do ClosureScanBody(InstBodies[j]);
       for j := 0 to Length(InstBodies) - 1 do MoveCheckBody(InstBodies[j]);
       if ErrCount = 0 then
         for j := 0 to Length(InstBodies) - 1 do BorrowCheckBody(InstBodies[j]);
@@ -18551,6 +18694,7 @@ Const
   ikClosure = 1;
   ikStaticInit = 2;
   ikCtor = 3;
+  ikThunk = 5;
 
 Var
   Insts: array of TInst;
@@ -18713,6 +18857,29 @@ begin
   Insts[Result].external := False;
   Insts[Result].intrinsic := False;
   Insts[Result].sym := UniqueSym(DefPathName(Insts[Result].def) + '::{closure#' + IntToStr(cid) + '}');
+  HPut(InstMap, key, Result);
+end;
+
+function RequestClosureThunk(cid: Integer): Integer;
+var
+  key: string;
+begin
+  key := 't' + IntToStr(cid);
+  Result := HFind(InstMap, key);
+  if Result >= 0 then Exit;
+  if NInsts >= Length(Insts) then SetLength(Insts, NInsts * 2 + 64);
+  Result := NInsts;
+  Inc(NInsts);
+  Insts[Result].def := Bodies[Closures[cid].bodyIdx].def;
+  Insts[Result].targs := nil;
+  Insts[Result].key := key;
+  Insts[Result].kind := ikThunk;
+  Insts[Result].closure := cid;
+  Insts[Result].built := False;
+  Insts[Result].mir := -1;
+  Insts[Result].external := False;
+  Insts[Result].intrinsic := False;
+  Insts[Result].sym := UniqueSym(DefPathName(Insts[Result].def) + '::{closure#' + IntToStr(cid) + '}::{thunk}');
   HPut(InstMap, key, Result);
 end;
 
@@ -18994,6 +19161,9 @@ begin
   end;
 end;
 
+Var
+  UpShadow: TIntArr;
+
 function UpvarPlace(idx: Integer; ty: Integer): TPlace;
 var
   env: TPlace;
@@ -19001,10 +19171,15 @@ var
   envTy, fieldTy: Integer;
 begin
   cid := BClosure;
+  if (idx < Length(UpShadow)) and (UpShadow[idx] >= 0) then
+  begin
+    Result := PLocal(UpShadow[idx], ty);
+    Exit;
+  end;
   envTy := MirFns[BI].locals[1].ty;
   env := PLocal(1, envTy);
   Result := PProj(env, peDeref, 0, Tys[Shallow(envTy)].args[0]);
-  if Closures[cid].isMove then
+  if ClosureByValue(cid, idx) then
     Result := PProj(Result, peField, idx, ty)
   else
   begin
@@ -19190,11 +19365,10 @@ begin
     tyDyn: Result := True;
     tyClosure:
       begin
-        if Closures[Tys[t].def].isMove then
         begin
           IAdd(NdStack, t);
           for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
-            if NeedsDropRec(Closures[Tys[t].def].capTys[i]) then begin Result := True; Break; end;
+            if ClosureByValue(Tys[t].def, i) and NeedsDropRec(Closures[Tys[t].def].capTys[i]) then begin Result := True; Break; end;
           SetLength(NdStack, Length(NdStack) - 1);
         end;
       end;
@@ -19834,10 +20008,27 @@ begin
         CurBB := nb;
       end;
     tyClosure:
-      if Closures[Tys[t].def].isMove then
+      begin
+        if ClosureConsuming(Tys[t].def) then
+        begin
+          { l'indicateur "consomme" est positionne par le corps : plus rien a detruire }
+          c := NewTemp(TyBoolT);
+          AssignOp(c, OCopyPlace(PProj(p, peField, Length(Closures[Tys[t].def].capTys), TyBoolT)));
+          nb := NewBB;
+          nxt := NewBB;
+          TermSwitchBool(OCopyPlace(c), nxt, nb);
+          CurBB := nb;
+        end
+        else nxt := -1;
         for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
-          if NeedsDrop(Closures[Tys[t].def].capTys[i]) then
+          if ClosureByValue(Tys[t].def, i) and NeedsDrop(Closures[Tys[t].def].capTys[i]) then
             EmitGlueCall(PProj(p, peField, i, Zonk(Closures[Tys[t].def].capTys[i])));
+        if nxt >= 0 then
+        begin
+          TermGoto(nxt);
+          CurBB := nxt;
+        end;
+      end;
     tyAdt:
       begin
         d := Tys[t].def;
@@ -20086,6 +20277,14 @@ begin
   t.k := tmCall;
   t.retTy := retTy;
   st := 0;
+  { Clone::clone sur une fermeture copiable : copie de l'environnement }
+  if (Length(targs) > 0) and (Defs[def].name = 'clone') and (Defs[def].parent >= 0) and (Defs[Defs[def].parent].kind = dkTrait) and
+     (Defs[Defs[def].parent].name = 'Clone') and (Tys[Shallow(Zonk(targs[0]))].k = tyClosure) and (Length(args) = 1) and
+     (args[0].k <> opConst) then
+  begin
+    if hasDest then AssignOp(dest, OCopyPlace(PProj(args[0].place, peDeref, 0, Zonk(targs[0]))));
+    Exit;
+  end;
   if (Length(targs) > 0) and (Defs[def].parent >= 0) and (Defs[Defs[def].parent].kind = dkTrait) then
   begin
     st := Shallow(Zonk(targs[0]));
@@ -20365,7 +20564,8 @@ var
   cty, nb, cid, idx: Integer;
   full: TOperandArr;
   i: Integer;
-  cplace: TPlace;
+  cplace, boxPl, tmpBox: TPlace;
+  boxTy, boxH: Integer;
 begin
   callee := Hirs[h].a;
   if Hirs[h].k = hCall then
@@ -20405,7 +20605,25 @@ begin
   end;
   { appel de fermeture (ou objet-trait Fn) }
   cty := Shallow(Hirs[callee].ty);
-  cplace := HirPlaceOrTemp(callee);
+  boxH := 0;
+  if (Hirs[callee].k = hDeref) and (Tys[cty].k = tyDyn) and (Tys[cty].def = LangFnOnce) then
+  begin
+    if (Hirs[Hirs[callee].a].k = hField) and (Tys[Shallow(Zonk(Hirs[Hirs[Hirs[callee].a].a].ty))].k = tyAdt) and
+       (Defs[Tys[Shallow(Zonk(Hirs[Hirs[Hirs[callee].a].a].ty))].def].lang = 'box') then
+      boxH := Hirs[Hirs[callee].a].a;
+  end;
+  if boxH > 0 then
+  begin
+    { Box<dyn FnOnce> : l'appel consomme la boite, detruite a la fin de l'instruction }
+    boxPl := HirPlace(boxH);
+    boxTy := Zonk(Hirs[boxH].ty);
+    tmpBox := NewTemp(boxTy);
+    AssignOp(tmpBox, OCopyPlace(boxPl));
+    NoteMovePlace(boxPl);
+    cplace := PProj(PProj(tmpBox, peField, 0, MkPtr(cty, True)), peDeref, 0, cty);
+  end
+  else
+    cplace := HirPlaceOrTemp(callee);
   envOp := RefOfPlace(cplace, True);
   args := EvalArgs(Hirs[h].l);
   SetLength(full, Length(args) + 1);
@@ -20444,6 +20662,7 @@ begin
     t.target := nb;
     SetTerm(t);
     CurBB := nb;
+    if boxH > 0 then EmitGlueCall(tmpBox);
   end;
 end;
 
@@ -20929,6 +21148,7 @@ var
   cplace: TPlace;
   ft: Integer;
   isUnit: Boolean;
+  idx2: Integer;
 begin
   ty := Hirs[h].ty;
   case Hirs[h].k of
@@ -20981,19 +21201,32 @@ begin
           4:
             begin
               { fonction -> pointeur de fonction }
-              a := ExprOp(Hirs[h].a);
-              if a.ck = ckFnItem then
+              if Tys[Shallow(Zonk(Hirs[Hirs[h].a].ty))].k = tyClosure then
               begin
-                a.ck := ckFnPtr;
-                a.ty := ty;
+                { fermeture sans capture -> pointeur de fonction : adaptateur sans environnement }
+                idx2 := RequestClosureThunk(Tys[Shallow(Zonk(Hirs[Hirs[h].a].ty))].def);
+                a := OConst(ckFnPtr, ty, 0);
+                a.s := Insts[idx2].sym;
                 AssignOp(dest, a);
               end
               else
               begin
-                rv := MkRv(rvCast, ty);
-                rv.a := a;
-                rv.srcTy := Hirs[Hirs[h].a].ty;
-                EmitAssign(dest, rv);
+                a := ExprOp(Hirs[h].a);
+                if a.ck = ckFnItem then
+                begin
+                  idx2 := ResolvedInst(a.def, a.targs);
+                  a.ck := ckFnPtr;
+                  a.ty := ty;
+                  a.s := Insts[idx2].sym;
+                  AssignOp(dest, a);
+                end
+                else
+                begin
+                  rv := MkRv(rvCast, ty);
+                  rv.a := a;
+                  rv.srcTy := Hirs[Hirs[h].a].ty;
+                  EmitAssign(dest, rv);
+                end;
               end;
             end;
         else
@@ -21245,12 +21478,17 @@ begin
         for i := 0 to Length(Hirs[h].l) - 1 do
         begin
           pl := HirPlace(Hirs[h].l[i]);
-          if Closures[cid].isMove then
+          if ClosureByValue(cid, i) then
           begin
             ops[i] := OCopyPlace(pl);
             if ops[i].k = opMove then NoteMovePlace(pl);
           end
           else ops[i] := RefOfPlace(pl, True);
+        end;
+        if ClosureConsuming(cid) then
+        begin
+          SetLength(ops, Length(ops) + 1);
+          ops[Length(ops) - 1] := OBool(False);
         end;
         EmitAggregate(dest, agClosure, cid, 0, ops, ty);
         RequestClosureInst(cid);
@@ -21305,7 +21543,8 @@ procedure BuildBodyMir(instIdx: Integer; b: Integer; cid: Integer);
 var
   idx, i, v, l: Integer;
   ret: Integer;
-  ty: Integer;
+  ty, envTy2: Integer;
+  envPl: TPlace;
   isParam: array of Boolean;
 begin
   if cid >= 0 then ret := Zonk(Closures[cid].ret) else ret := Zonk(Bodies[b].ret);
@@ -21344,6 +21583,28 @@ begin
   PushScope;
   for i := 0 to Length(Bodies[b].params) - 1 do
     DeclDropLocal(VarLoc[Bodies[b].params[i]], False, True);
+  UpShadow := nil;
+  if cid >= 0 then
+  begin
+    SetLength(UpShadow, Length(Closures[cid].capTys));
+    for i := 0 to Length(UpShadow) - 1 do UpShadow[i] := -1;
+    if ClosureConsuming(cid) then
+    begin
+      { corps consommant : les captures par valeur sont deplacees dans des variables locales }
+      envTy2 := MirFns[idx].locals[1].ty;
+      envPl := PProj(PLocal(1, envTy2), peDeref, 0, Tys[Shallow(envTy2)].args[0]);
+      for i := 0 to Length(UpShadow) - 1 do
+        if ClosureByValue(cid, i) and NeedsDrop(Closures[cid].capTys[i]) then
+        begin
+          l := NewLocal(Zonk(Closures[cid].capTys[i]), '', True);
+          UpShadow[i] := l;
+          AssignOp(PLocal(l, Zonk(Closures[cid].capTys[i])),
+                   OCopyPlace(PProj(envPl, peField, i, Zonk(Closures[cid].capTys[i]))));
+          DeclDropLocal(l, False, True);
+        end;
+      AssignOp(PProj(envPl, peField, Length(UpShadow), TyBoolT), OBool(True));
+    end;
+  end;
   ExprInto(Bodies[b].root, PLocal(0, ret));
   PopScope(True);
   FinishMirFn;
@@ -21415,6 +21676,65 @@ begin
   FinishMirFn;
 end;
 
+procedure BuildClosureThunk(instIdx: Integer);
+var
+  cid, idx, i, l, envl, nb, cinst, ret: Integer;
+  params: TIntArr;
+  full: TOperandArr;
+  t: TTerm;
+  cty: Integer;
+begin
+  cid := Insts[instIdx].closure;
+  ret := Zonk(Closures[cid].ret);
+  params := Closures[cid].params;
+  idx := NewMirFn(Insts[instIdx].sym, Insts[instIdx].def, nil, ret);
+  Insts[instIdx].mir := idx;
+  BI := idx;
+  BBody := Closures[cid].bodyIdx;
+  BClosure := -1;
+  NLoops := 0;
+  SetLength(VarLoc, 0);
+  ResetDropState;
+  l := NewLocal(ret, '', True);
+  SetLength(full, Length(params) + 1);
+  for i := 0 to Length(params) - 1 do
+  begin
+    l := NewLocal(Zonk(params[i]), '', False);
+    MirFns[idx].locals[l].isArg := True;
+    Inc(MirFns[idx].nargs);
+    full[i + 1] := OCopyPlace(PLocal(l, Zonk(params[i])));
+  end;
+  cty := MkClosureTy(cid);
+  envl := NewLocal(cty, '', False);
+  CurBB := NewBB;
+  RetBB := NewBB;
+  full[0] := RefOfPlace(PLocal(envl, cty), True);
+  cinst := RequestClosureInst(cid);
+  FillChar(t, SizeOf(t), 0);
+  t.k := tmCall;
+  t.retTy := ret;
+  t.args := full;
+  t.dest := PLocal(0, ret);
+  t.hasDest := True;
+  t.callKind := ckClosureCall;
+  t.inst := cinst;
+  t.sym := Insts[cinst].sym;
+  if Tys[Shallow(ret)].k = tyNever then
+  begin
+    t.target := -1;
+    SetTerm(t);
+    CurBB := NewBB;
+  end
+  else
+  begin
+    nb := NewBB;
+    t.target := nb;
+    SetTerm(t);
+    CurBB := nb;
+  end;
+  FinishMirFn;
+end;
+
 procedure BuildInst(i: Integer);
 var
   b: Integer;
@@ -21424,6 +21744,7 @@ begin
   if Insts[i].external then Exit;
   case Insts[i].kind of
     ikCtor: BuildCtor(i);
+    ikThunk: BuildClosureThunk(i);
     ikGlue: BuildGlue(i);
     ikStaticInit: BuildStaticInit(i);
     ikClosure:
@@ -21511,8 +21832,9 @@ var
 begin
   Result := nil;
   for i := 0 to Length(Closures[cid].capTys) - 1 do
-    if Closures[cid].isMove then IAdd(Result, Closures[cid].capTys[i])
+    if ClosureByValue(cid, i) then IAdd(Result, Closures[cid].capTys[i])
     else IAdd(Result, MkRef(Closures[cid].capTys[i], True));
+  if ClosureConsuming(cid) then IAdd(Result, TyBoolT);
 end;
 
 function LayoutOf(t: Integer): Integer; forward;
@@ -23338,7 +23660,10 @@ begin
     ps := ps + '...';
   end;
   if RetKindOf(ret) = 1 then s := LLScalar(ret) else s := 'void';
-  BufAdd(LLDecls, 'declare ' + s + ' @' + Insts[i].sym + '(' + ps + ')'#10);
+  if (Insts[i].sym = '_setjmp') or (Insts[i].sym = 'setjmp') then
+    BufAdd(LLDecls, 'declare ' + s + ' @' + Insts[i].sym + '(' + ps + ') returns_twice'#10)
+  else
+    BufAdd(LLDecls, 'declare ' + s + ' @' + Insts[i].sym + '(' + ps + ')'#10);
 end;
 
 { ============================================================ }
@@ -23500,6 +23825,8 @@ begin
   BufLn(b, '        pub fn memcpy(a: *mut u8, b: *const u8, n: usize) -> *mut u8;');
   BufLn(b, '        pub fn memmove(a: *mut u8, b: *const u8, n: usize) -> *mut u8;');
   BufLn(b, '        pub fn exit(code: i32) -> !;');
+  BufLn(b, '        pub fn _setjmp(env: *mut u64) -> i32;');
+  BufLn(b, '        pub fn longjmp(env: *mut u64, val: i32) -> !;');
   BufLn(b, '        pub fn abort() -> !;');
   BufLn(b, '        pub fn snprintf(buf: *mut u8, n: usize, fmt: *const u8, ...) -> i32;');
   BufLn(b, '        pub fn strtod(s: *const u8, end: *mut *mut u8) -> f64;');
@@ -23726,12 +24053,12 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl<T: Eq> Eq for Option<T> {}');
   BufLn(b, '    impl<T: PartialOrd> PartialOrd for Option<T> {');
-  BufLn(b, '        fn partial_cmp(&self, other: &Option<T>) -> Option<Ordering> {');
-  BufLn(b, '            match (self, other) {');
 end;
 
 procedure PreludeChunk1(var b: TBuf);
 begin
+  BufLn(b, '        fn partial_cmp(&self, other: &Option<T>) -> Option<Ordering> {');
+  BufLn(b, '            match (self, other) {');
   BufLn(b, '                (Some(a), Some(b)) => a.partial_cmp(b),');
   BufLn(b, '                (None, None) => Some(Ordering::Equal),');
   BufLn(b, '                (None, Some(_)) => Some(Ordering::Less),');
@@ -23829,6 +24156,17 @@ begin
   BufLn(b, '        type IntoIter = OptionIter<T>;');
   BufLn(b, '        fn into_iter(self) -> OptionIter<T> { OptionIter { v: self } }');
   BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    impl<''a, T> IntoIterator for &''a Option<T> {');
+  BufLn(b, '        type Item = &''a T;');
+  BufLn(b, '        type IntoIter = OptionIter<&''a T>;');
+  BufLn(b, '        fn into_iter(self) -> OptionIter<&''a T> { OptionIter { v: self.as_ref() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> IntoIterator for &''a mut Option<T> {');
+  BufLn(b, '        type Item = &''a mut T;');
+  BufLn(b, '        type IntoIter = OptionIter<&''a mut T>;');
+  BufLn(b, '        fn into_iter(self) -> OptionIter<&''a mut T> { OptionIter { v: self.as_mut() } }');
+  BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod result {');
@@ -23884,6 +24222,9 @@ begin
   BufLn(b, '    pub trait TryInto<T>: Sized { type Error; fn try_into(self) -> Result<T, Self::Error>; }');
   BufLn(b, '    pub trait AsRef<T: ?Sized> { fn as_ref(&self) -> &T; }');
   BufLn(b, '    pub trait AsMut<T: ?Sized> { fn as_mut(&mut self) -> &mut T; }');
+  BufLn(b, '    impl<''a, T: ?Sized + AsRef<U>, U: ?Sized> AsRef<U> for &''a T { fn as_ref(&self) -> &U { (**self).as_ref() } }');
+  BufLn(b, '    impl<''a, T: ?Sized + AsRef<U>, U: ?Sized> AsRef<U> for &''a mut T { fn as_ref(&self) -> &U { (**self).as_ref() } }');
+  BufLn(b, '    impl<''a, T: ?Sized + AsMut<U>, U: ?Sized> AsMut<U> for &''a mut T { fn as_mut(&mut self) -> &mut U { (**self).as_mut() } }');
   BufLn(b, '    impl<T> From<T> for T { fn from(t: T) -> T { t } }');
   BufLn(b, '    impl<T, U: From<T>> Into<U> for T { fn into(self) -> U { U::from(self) } }');
   BufLn(b, '    impl<T, U: TryFrom<T>> TryInto<U> for T {');
@@ -24016,6 +24357,10 @@ begin
   BufLn(b, '');
   BufLn(b, 'pub mod iter {');
   BufLn(b, '    use crate::cmp::Ordering;');
+end;
+
+procedure PreludeChunk2(var b: TBuf);
+begin
   BufLn(b, '    pub trait Iterator {');
   BufLn(b, '        type Item;');
   BufLn(b, '        fn next(&mut self) -> Option<Self::Item>;');
@@ -24032,10 +24377,6 @@ begin
   BufLn(b, '            while let Some(x) = it.next() { last = Some(x); }');
   BufLn(b, '            last');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk2(var b: TBuf);
-begin
   BufLn(b, '        fn nth(&mut self, n: usize) -> Option<Self::Item> {');
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n {');
@@ -24320,6 +24661,10 @@ begin
   BufLn(b, '    pub trait FromIterator<A>: Sized {');
   BufLn(b, '        fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self;');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk3(var b: TBuf);
+begin
   BufLn(b, '    pub trait Extend<A> {');
   BufLn(b, '        fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T);');
   BufLn(b, '        fn extend_one(&mut self, item: A) { self.extend(Some(item)); }');
@@ -24336,10 +24681,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl<I: DoubleEndedIterator + ?Sized> DoubleEndedIterator for &mut I {');
   BufLn(b, '        fn next_back(&mut self) -> Option<I::Item> { (**self).next_back() }');
-end;
-
-procedure PreludeChunk3(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    pub trait Try: Sized {');
@@ -24624,6 +24965,10 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk4(var b: TBuf);
+begin
   BufLn(b, '    pub struct Flatten<I, U> { iter: I, cur: Option<U> }');
   BufLn(b, '    impl<I: Iterator, U: Iterator> Iterator for Flatten<I, U> where I::Item: IntoIterator<IntoIter = U, Item = U::Item> {');
   BufLn(b, '        type Item = U::Item;');
@@ -24640,10 +24985,6 @@ begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    pub struct Cloned<I> { iter: I }');
-end;
-
-procedure PreludeChunk4(var b: TBuf);
-begin
   BufLn(b, '    impl<''a, T: ''a + Clone, I: Iterator<Item = &''a T>> Iterator for Cloned<I> {');
   BufLn(b, '        type Item = T;');
   BufLn(b, '        fn next(&mut self) -> Option<T> { match self.iter.next() { Some(x) => Some(x.clone()), None => None } }');
@@ -24928,6 +25269,10 @@ begin
   BufLn(b, '        f.flags = parent.flags;');
   BufLn(b, '        f');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk5(var b: TBuf);
+begin
   BufLn(b, '');
   BufLn(b, '    pub struct DebugStruct<''a> { fmt: &''a mut Formatter, has_fields: bool }');
   BufLn(b, '    impl<''a> DebugStruct<''a> {');
@@ -24944,10 +25289,6 @@ begin
   BufLn(b, '                if self.has_fields { self.fmt.buf.push_str(", "); } else { self.fmt.buf.push_str(" { "); }');
   BufLn(b, '                self.fmt.buf.push_str(name);');
   BufLn(b, '                self.fmt.buf.push_str(": ");');
-end;
-
-procedure PreludeChunk5(var b: TBuf);
-begin
   BufLn(b, '                let _ = value.fmt(self.fmt);');
   BufLn(b, '            }');
   BufLn(b, '            self.has_fields = true;');
@@ -25232,6 +25573,10 @@ begin
   BufLn(b, '            p += 1;');
   BufLn(b, '        }');
   BufLn(b, '        let mut i = 0usize;');
+end;
+
+procedure PreludeChunk6(var b: TBuf);
+begin
   BufLn(b, '        while buf[i] != 0u8 && buf[i] != 101u8 {');
   BufLn(b, '            if buf[i] != 46u8 { digits.push(buf[i] as char); }');
   BufLn(b, '            i += 1;');
@@ -25248,10 +25593,6 @@ begin
   BufLn(b, '    pub fn float_to_decimal(a: f64, is32: bool, debug: bool, prec: usize) -> String {');
   BufLn(b, '        let mut out = String::new();');
   BufLn(b, '        if prec != ::std::usize::MAX {');
-end;
-
-procedure PreludeChunk6(var b: TBuf);
-begin
   BufLn(b, '            let mut buf = [0u8; 512];');
   BufLn(b, '            unsafe {');
   BufLn(b, '                let mut p = prec;');
@@ -25536,6 +25877,10 @@ begin
   BufLn(b, '            let n = self.len();');
   BufLn(b, '            if n < 2 { return; }');
   BufLn(b, '            // tri fusion stable');
+end;
+
+procedure PreludeChunk7(var b: TBuf);
+begin
   BufLn(b, '            unsafe {');
   BufLn(b, '                let src = self.as_mut_ptr();');
   BufLn(b, '                let tmp = ::std::libc::malloc(n * ::std::intrinsics::size_of::<T>() + 1) as *mut T;');
@@ -25552,10 +25897,6 @@ begin
   BufLn(b, '                        let mut k = i;');
   BufLn(b, '                        while a < mid && b < hi {');
   BufLn(b, '                            if f(&*(from.add(b) as *const T), &*(from.add(a) as *const T)) == Ordering::Less {');
-end;
-
-procedure PreludeChunk7(var b: TBuf);
-begin
   BufLn(b, '                                ::std::intrinsics::copy_nonoverlapping(from.add(b) as *const T, to.add(k), 1usize);');
   BufLn(b, '                                b += 1;');
   BufLn(b, '                            } else {');
@@ -25840,6 +26181,10 @@ begin
   BufLn(b, '                let src = &self as *const [T; N] as *const T;');
   BufLn(b, '                let mut i = 0usize;');
   BufLn(b, '                while i < N { ::std::intrinsics::ptr_write((&mut out[i]) as *mut U, f(::std::intrinsics::ptr_read(src.add(i)))); i += 1; }');
+end;
+
+procedure PreludeChunk8(var b: TBuf);
+begin
   BufLn(b, '                out');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -25856,10 +26201,6 @@ begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    impl<T> ::std::ops::IndexMut<::std::ops::Range<usize>> for [T] {');
-end;
-
-procedure PreludeChunk8(var b: TBuf);
-begin
   BufLn(b, '        fn index_mut(&mut self, r: ::std::ops::Range<usize>) -> &mut [T] {');
   BufLn(b, '            if r.start > r.end { ::std::rt::slice_index_order_fail(r.start, r.end); }');
   BufLn(b, '            if r.end > self.len() { ::std::rt::slice_end_index_len_fail(r.end, self.len()); }');
@@ -26144,6 +26485,10 @@ begin
   BufLn(b, '                }');
   BufLn(b, '                r += 1;');
   BufLn(b, '            }');
+end;
+
+procedure PreludeChunk9(var b: TBuf);
+begin
   BufLn(b, '            self.len = w;');
   BufLn(b, '        }');
   BufLn(b, '        pub fn retain_mut<F: FnMut(&mut T) -> bool>(&mut self, mut f: F) {');
@@ -26160,10 +26505,6 @@ begin
   BufLn(b, '                    }');
   BufLn(b, '                }');
   BufLn(b, '                r += 1;');
-end;
-
-procedure PreludeChunk9(var b: TBuf);
-begin
   BufLn(b, '            }');
   BufLn(b, '            self.len = w;');
   BufLn(b, '        }');
@@ -26448,6 +26789,10 @@ begin
   BufLn(b, '        pub fn len(&self) -> usize { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.1 } }');
   BufLn(b, '        pub fn is_empty(&self) -> bool { self.len() == 0 }');
   BufLn(b, '        pub fn as_ptr(&self) -> *const u8 { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.0 } }');
+end;
+
+procedure PreludeChunk10(var b: TBuf);
+begin
   BufLn(b, '        pub fn as_bytes(&self) -> &[u8] { unsafe { ::std::slice::from_raw_parts(self.as_ptr(), self.len()) } }');
   BufLn(b, '        pub fn as_str(&self) -> &str { self }');
   BufLn(b, '        pub fn chars(&self) -> Chars { let p = self.as_ptr(); Chars { ptr: p, end: p.add(self.len()) } }');
@@ -26464,10 +26809,6 @@ begin
   BufLn(b, '            } else { None }');
   BufLn(b, '        }');
   BufLn(b, '        pub fn to_string_owned(&self) -> String { let mut s = String::new(); s.push_str(self); s }');
-end;
-
-procedure PreludeChunk10(var b: TBuf);
-begin
   BufLn(b, '        pub fn to_uppercase(&self) -> String {');
   BufLn(b, '            let mut s = String::new();');
   BufLn(b, '            let mut it = self.chars();');
@@ -26523,6 +26864,32 @@ begin
   BufLn(b, '        pub fn rsplit<P: Pattern>(&self, p: P) -> ::std::vec::IntoIter<&str> {');
   BufLn(b, '            let mut v: Vec<&str> = self.split(p).collect();');
   BufLn(b, '            v.reverse();');
+  BufLn(b, '            v.into_iter()');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn rsplitn<P: Pattern>(&self, n: usize, mut p: P) -> ::std::vec::IntoIter<&str> {');
+  BufLn(b, '            let mut v: Vec<&str> = Vec::new();');
+  BufLn(b, '            let mut end = self.len();');
+  BufLn(b, '            let mut cnt = 1usize;');
+  BufLn(b, '            while cnt < n {');
+  BufLn(b, '                match p.rfind_in(&self[..end], end) {');
+  BufLn(b, '                    Some((a, b)) => { v.push(&self[b..end]); end = a; cnt += 1; }');
+  BufLn(b, '                    None => break,');
+  BufLn(b, '                }');
+  BufLn(b, '            }');
+  BufLn(b, '            if n > 0 { v.push(&self[..end]); }');
+  BufLn(b, '            v.into_iter()');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn split_inclusive<P: Pattern>(&self, mut p: P) -> ::std::vec::IntoIter<&str> {');
+  BufLn(b, '            let mut v: Vec<&str> = Vec::new();');
+  BufLn(b, '            let mut pos = 0usize;');
+  BufLn(b, '            let mut start = 0usize;');
+  BufLn(b, '            loop {');
+  BufLn(b, '                match p.find_in(self, pos) {');
+  BufLn(b, '                    Some((a, b)) => { v.push(&self[start..b]); start = b; pos = if b > a { b } else { b + 1 }; if pos > self.len() { break; } }');
+  BufLn(b, '                    None => break,');
+  BufLn(b, '                }');
+  BufLn(b, '            }');
+  BufLn(b, '            if start < self.len() { v.push(&self[start..]); }');
   BufLn(b, '            v.into_iter()');
   BufLn(b, '        }');
   BufLn(b, '        pub fn split_terminator<P: Pattern>(&self, p: P) -> ::std::vec::IntoIter<&str> {');
@@ -26726,6 +27093,10 @@ begin
   BufLn(b, '    impl<''a> DoubleEndedIterator for Bytes<''a> {');
   BufLn(b, '        fn next_back(&mut self) -> Option<u8> { match self.iter.next_back() { Some(b) => Some(*b), None => None } }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk11(var b: TBuf);
+begin
   BufLn(b, '    impl<''a> ExactSizeIterator for Bytes<''a> {}');
   BufLn(b, '');
   BufLn(b, '    pub struct Split<''a, P> { hay: &''a str, pos: usize, end: usize, p: P, done: bool, limit: usize }');
@@ -26768,10 +27139,6 @@ begin
   BufLn(b, '                Some((a, b)) => {');
   BufLn(b, '                    if a < self.pos || b <= a && a <= self.pos { self.done = true; return Some(&self.hay[self.pos..self.end]); }');
   BufLn(b, '                    let r = &self.hay[b..self.end];');
-end;
-
-procedure PreludeChunk11(var b: TBuf);
-begin
   BufLn(b, '                    self.end = a;');
   BufLn(b, '                    Some(r)');
   BufLn(b, '                }');
@@ -27030,6 +27397,10 @@ begin
   BufLn(b, '    impl ::std::str::FromStr for String {');
   BufLn(b, '        type Err = ::std::convert::Infallible;');
   BufLn(b, '        fn from_str(s: &str) -> Result<String, ::std::convert::Infallible> { Ok(String::from(s)) }');
+end;
+
+procedure PreludeChunk12(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '    impl FromIterator<char> for String {');
   BufLn(b, '        fn from_iter<I: IntoIterator<Item = char>>(iter: I) -> String {');
@@ -27072,10 +27443,6 @@ begin
   BufLn(b, '    impl<''a> Extend<&''a str> for String {');
   BufLn(b, '        fn extend<I: IntoIterator<Item = &''a str>>(&mut self, iter: I) {');
   BufLn(b, '            let mut it = iter.into_iter();');
-end;
-
-procedure PreludeChunk12(var b: TBuf);
-begin
   BufLn(b, '            while let Some(c) = it.next() { self.push_str(c); }');
   BufLn(b, '        }');
   BufLn(b, '    }');
@@ -27120,7 +27487,46 @@ begin
   BufLn(b, '    impl<T: Clone> ToOwned for T { type Owned = T; fn to_owned(&self) -> T { self.clone() } }');
   BufLn(b, '    impl ToOwned for str { type Owned = String; fn to_owned(&self) -> String { String::from(self) } }');
   BufLn(b, '    impl<T: Clone> ToOwned for [T] { type Owned = Vec<T>; fn to_owned(&self) -> Vec<T> { self.to_vec() } }');
-  BufLn(b, '    pub enum Cow<''a, B: ?Sized + ToOwned> { Borrowed(&''a B), Owned(B::Owned) }');
+  BufLn(b, '    impl<T> Borrow<[T]> for Vec<T> { fn borrow(&self) -> &[T] { self.as_slice() } }');
+  BufLn(b, '    pub enum Cow<''a, B: ?Sized + ToOwned> { Borrowed(&''a B), Owned(<B as ToOwned>::Owned) }');
+  BufLn(b, '    impl<''a, B: ?Sized + ToOwned> Cow<''a, B> where B::Owned: Borrow<B> {');
+  BufLn(b, '        pub fn into_owned(self) -> B::Owned { match self { Cow::Borrowed(b) => b.to_owned(), Cow::Owned(o) => o } }');
+  BufLn(b, '        pub fn is_borrowed(&self) -> bool { match self { Cow::Borrowed(_) => true, _ => false } }');
+  BufLn(b, '        pub fn is_owned(&self) -> bool { match self { Cow::Owned(_) => true, _ => false } }');
+  BufLn(b, '        pub fn to_mut(&mut self) -> &mut B::Owned {');
+  BufLn(b, '            if let Cow::Borrowed(b) = self { let o = b.to_owned(); *self = Cow::Owned(o); }');
+  BufLn(b, '            match self { Cow::Owned(o) => o, Cow::Borrowed(_) => ::std::rt::panic_str("unreachable") }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, B: ?Sized + ToOwned> ::std::ops::Deref for Cow<''a, B> where B::Owned: Borrow<B> {');
+  BufLn(b, '        type Target = B;');
+  BufLn(b, '        fn deref(&self) -> &B { match self { Cow::Borrowed(b) => *b, Cow::Owned(o) => o.borrow() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, B: ?Sized + ToOwned> AsRef<B> for Cow<''a, B> where B::Owned: Borrow<B> {');
+  BufLn(b, '        fn as_ref(&self) -> &B { match self { Cow::Borrowed(b) => *b, Cow::Owned(o) => o.borrow() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, B: ?Sized + ToOwned + ::std::fmt::Display> ::std::fmt::Display for Cow<''a, B> where B::Owned: Borrow<B> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, B: ?Sized + ToOwned + ::std::fmt::Debug> ::std::fmt::Debug for Cow<''a, B> where B::Owned: Borrow<B> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, B: ?Sized + ToOwned> Clone for Cow<''a, B> where B::Owned: Borrow<B> + Clone {');
+  BufLn(b, '        fn clone(&self) -> Cow<''a, B> { match self { Cow::Borrowed(b) => Cow::Borrowed(*b), Cow::Owned(o) => Cow::Owned(o.clone()) } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, ''b, B: ?Sized + ToOwned + PartialEq> PartialEq<Cow<''b, B>> for Cow<''a, B> where B::Owned: Borrow<B> {');
+  BufLn(b, '        fn eq(&self, o: &Cow<''b, B>) -> bool { **self == **o }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a> PartialEq<str> for Cow<''a, str> { fn eq(&self, o: &str) -> bool { &**self == o } }');
+  BufLn(b, '    impl<''a, ''b> PartialEq<&''b str> for Cow<''a, str> { fn eq(&self, o: &&''b str) -> bool { &**self == *o } }');
+  BufLn(b, '    impl<''a> From<&''a str> for Cow<''a, str> { fn from(s: &''a str) -> Cow<''a, str> { Cow::Borrowed(s) } }');
+  BufLn(b, '    impl<''a> From<String> for Cow<''a, str> { fn from(s: String) -> Cow<''a, str> { Cow::Owned(s) } }');
+  BufLn(b, '    impl<''a> From<&''a String> for Cow<''a, str> { fn from(s: &''a String) -> Cow<''a, str> { Cow::Borrowed(s.as_str()) } }');
+  BufLn(b, '    impl<''a> Default for Cow<''a, str> { fn default() -> Cow<''a, str> { Cow::Borrowed("") } }');
+  BufLn(b, '    impl<''a> ::std::ops::Add<&''a str> for Cow<''a, str> {');
+  BufLn(b, '        type Output = Cow<''a, str>;');
+  BufLn(b, '        fn add(self, rhs: &''a str) -> Cow<''a, str> { let mut s = self.into_owned(); s.push_str(rhs); Cow::Owned(s) }');
+  BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod char {');
@@ -27295,6 +27701,10 @@ begin
   BufLn(b, '    impl<T: ?Sized + Iterator> Iterator for Box<T> {');
   BufLn(b, '        type Item = T::Item;');
   BufLn(b, '        fn next(&mut self) -> Option<T::Item> { (**self).next() }');
+end;
+
+procedure PreludeChunk13(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
@@ -27317,17 +27727,64 @@ begin
   BufLn(b, '            begin_panic(m, l)');
   BufLn(b, '        }');
   BufLn(b, '    }');
-  BufLn(b, '    pub fn begin_panic_str(msg: &str, loc: &str) -> ! {');
+  BufLn(b, '    pub static mut CATCH_TOP: *mut u8 = 0 as *mut u8;');
+  BufLn(b, '    pub static mut PAYLOAD: Option<Box<dyn ::std::any::Any + Send>> = None;');
+  BufLn(b, '    pub static mut HOOK: Option<Box<dyn Fn(&::std::panic::PanicHookInfo)>> = None;');
+  BufLn(b, '    pub static mut NOTE_SHOWN: bool = false;');
+  BufLn(b, '');
+  BufLn(b, '    pub fn default_hook_print(msg: &str, loc: &str) {');
   BufLn(b, '        let mut s = String::new();');
-  BufLn(b, '        s.push_str("\nthread ''main'' panicked at ");');
+  BufLn(b, '        s.push_str("\nthread ''");');
+  BufLn(b, '        s.push_str(&::std::thread::__name_for_panic());');
+  BufLn(b, '        s.push_str("'' panicked at ");');
   BufLn(b, '        s.push_str(loc);');
   BufLn(b, '        s.push_str(":\n");');
   BufLn(b, '        s.push_str(msg);');
-  BufLn(b, '        s.push_str("\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n");');
+  BufLn(b, '        s.push_str("\n");');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            if !NOTE_SHOWN {');
+  BufLn(b, '                NOTE_SHOWN = true;');
+  BufLn(b, '                s.push_str("note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n");');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
   BufLn(b, '        write_err(&s[1..]);');
-  BufLn(b, '        unsafe { ::std::libc::exit(101) }');
   BufLn(b, '    }');
-  BufLn(b, '    pub fn begin_panic(msg: String, loc: &str) -> ! { begin_panic_str(msg.as_str(), loc) }');
+  BufLn(b, '    pub fn take_payload() -> Box<dyn ::std::any::Any + Send> {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            match PAYLOAD.take() { Some(p) => p, None => Box::new("unknown panic") }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    pub fn unwind_with(payload: Box<dyn ::std::any::Any + Send>) -> ! {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            if !CATCH_TOP.is_null() {');
+  BufLn(b, '                PAYLOAD = Some(payload);');
+  BufLn(b, '                ::std::libc::longjmp(((CATCH_TOP as usize) + 8usize) as *mut u64, 1);');
+  BufLn(b, '            }');
+  BufLn(b, '            ::std::libc::exit(101)');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    pub fn finish_panic(msg: &str, loc: &str, payload: Box<dyn ::std::any::Any + Send>) -> ! {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            match &HOOK {');
+  BufLn(b, '                Some(h) => {');
+  BufLn(b, '                    let info = ::std::panic::PanicHookInfo::__new(msg, loc, &*payload);');
+  BufLn(b, '                    h(&info);');
+  BufLn(b, '                }');
+  BufLn(b, '                None => default_hook_print(msg, loc),');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        unwind_with(payload)');
+  BufLn(b, '    }');
+  BufLn(b, '    pub fn begin_panic_str(msg: &str, loc: &str) -> ! {');
+  BufLn(b, '        let st: &''static str = unsafe { ::std::intrinsics::transmute(msg) };');
+  BufLn(b, '        let p: Box<dyn ::std::any::Any + Send> = Box::new(st);');
+  BufLn(b, '        finish_panic(msg, loc, p)');
+  BufLn(b, '    }');
+  BufLn(b, '    pub fn begin_panic(msg: String, loc: &str) -> ! {');
+  BufLn(b, '        let m2 = msg.clone();');
+  BufLn(b, '        let p: Box<dyn ::std::any::Any + Send> = Box::new(m2);');
+  BufLn(b, '        finish_panic(msg.as_str(), loc, p)');
+  BufLn(b, '    }');
   BufLn(b, '    pub fn panic_str(msg: &str) -> ! { begin_panic_str(msg, "library/core/src/panicking.rs:0:0") }');
   BufLn(b, '    pub fn panic_bounds_check(idx: usize, len: usize) -> ! {');
   BufLn(b, '        let m = format!("index out of bounds: the len is {} but the index is {}", len, idx);');
@@ -27376,10 +27833,6 @@ begin
   BufLn(b, '        type Item = A;');
   BufLn(b, '        fn next(&mut self) -> Option<A> {');
   BufLn(b, '            if self.start < self.end {');
-end;
-
-procedure PreludeChunk13(var b: TBuf);
-begin
   BufLn(b, '                let n = self.start.forward();');
   BufLn(b, '                Some(::std::mem::replace(&mut self.start, n))');
   BufLn(b, '            } else { None }');
@@ -27552,6 +28005,10 @@ begin
   BufLn(b, '        fn hash<H: Hasher>(&self, state: &mut H) {');
   BufLn(b, '            match self {');
   BufLn(b, '                None => state.write_isize(0isize),');
+end;
+
+procedure PreludeChunk14(var b: TBuf);
+begin
   BufLn(b, '                Some(x) => { state.write_isize(1isize); x.hash(state); }');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -27680,10 +28137,6 @@ begin
   BufLn(b, '');
   BufLn(b, '            fn slot_of_index(&self, idx: usize) -> usize {');
   BufLn(b, '                let mask = self.table.len() - 1;');
-end;
-
-procedure PreludeChunk14(var b: TBuf);
-begin
   BufLn(b, '                let mut pos = (self.entries[idx].hash as usize) & mask;');
   BufLn(b, '                while self.table[pos] != idx + 1 { pos = (pos + 1) & mask; }');
   BufLn(b, '                pos');
@@ -27856,6 +28309,10 @@ begin
   BufLn(b, '        impl<''a, K, V> Iterator for Values<''a, K, V> {');
   BufLn(b, '            type Item = &''a V;');
   BufLn(b, '            fn next(&mut self) -> Option<&''a V> { match self.it.next() { Some(b) => Some(&b.value), None => None } }');
+end;
+
+procedure PreludeChunk15(var b: TBuf);
+begin
   BufLn(b, '            fn size_hint(&self) -> (usize, Option<usize>) { self.it.size_hint() }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K, V> ExactSizeIterator for Values<''a, K, V> {}');
@@ -27984,10 +28441,6 @@ begin
   BufLn(b, '                match old { Some((k, _)) => Some(k), None => None }');
   BufLn(b, '            }');
   BufLn(b, '            pub fn contains<Q: ?Sized + Hash + Eq>(&self, x: &Q) -> bool where T: Borrow<Q> { self.map.contains_key(x) }');
-end;
-
-procedure PreludeChunk15(var b: TBuf);
-begin
   BufLn(b, '            pub fn get<Q: ?Sized + Hash + Eq>(&self, x: &Q) -> Option<&T> where T: Borrow<Q> {');
   BufLn(b, '                match self.map.get_key_value(x) { Some((k, _)) => Some(k), None => None }');
   BufLn(b, '            }');
@@ -28160,6 +28613,10 @@ begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn pop_first(&mut self) -> Option<(K, V)> {');
   BufLn(b, '                if self.v.len() == 0 { None } else { Some(self.v.remove(0)) }');
+end;
+
+procedure PreludeChunk16(var b: TBuf);
+begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn pop_last(&mut self) -> Option<(K, V)> { self.v.pop() }');
   BufLn(b, '        }');
@@ -28288,10 +28745,6 @@ begin
   BufLn(b, '            fn next_back(&mut self) -> Option<(&''a K, &''a V)> { match self.it.next_back() { Some(e) => Some((&e.0, &e.1)), None => None } }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K, V> ExactSizeIterator for Iter<''a, K, V> {}');
-end;
-
-procedure PreludeChunk16(var b: TBuf);
-begin
   BufLn(b, '        impl<''a, K, V> Clone for Iter<''a, K, V> { fn clone(&self) -> Iter<''a, K, V> { Iter { it: self.it.clone() } } }');
   BufLn(b, '        pub struct IterMut<''a, K, V> { it: ::std::slice::IterMut<''a, (K, V)> }');
   BufLn(b, '        impl<''a, K, V> Iterator for IterMut<''a, K, V> {');
@@ -28464,6 +28917,10 @@ begin
   BufLn(b, '                let mut hi = lo;');
   BufLn(b, '                while hi < self.v.len() && r.before_hi(&self.v[hi]) { hi += 1; }');
   BufLn(b, '                Iter { it: self.v[lo..hi].iter() }');
+end;
+
+procedure PreludeChunk17(var b: TBuf);
+begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn is_subset(&self, other: &BTreeSet<T>) -> bool {');
   BufLn(b, '                for x in self.iter() { if !other.contains(x) { return false; } }');
@@ -28592,10 +29049,6 @@ begin
   BufLn(b, '                let mut i = 0usize;');
   BufLn(b, '                while i < self.len {');
   BufLn(b, '                    let p = (self.head + i) & (old - 1);');
-end;
-
-procedure PreludeChunk17(var b: TBuf);
-begin
   BufLn(b, '                    nb.push(self.buf[p].take());');
   BufLn(b, '                    i += 1;');
   BufLn(b, '                }');
@@ -28768,6 +29221,10 @@ begin
   BufLn(b, '            fn from(d: VecDeque<T>) -> Vec<T> { let mut v = Vec::new(); for x in d { v.push(x); } v }');
   BufLn(b, '        }');
   BufLn(b, '        impl<T> Default for VecDeque<T> { fn default() -> VecDeque<T> { VecDeque::new() } }');
+end;
+
+procedure PreludeChunk18(var b: TBuf);
+begin
   BufLn(b, '        impl<T: Clone> Clone for VecDeque<T> {');
   BufLn(b, '            fn clone(&self) -> VecDeque<T> { let mut d = VecDeque::new(); for x in self.iter() { d.push_back(x.clone()); } d }');
   BufLn(b, '        }');
@@ -28896,10 +29353,6 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk18(var b: TBuf);
-begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod cell {');
@@ -29072,6 +29525,10 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk19(var b: TBuf);
+begin
   BufLn(b, '');
   BufLn(b, '    pub struct OnceCell<T> { inner: UnsafeCell<Option<T>> }');
   BufLn(b, '    impl<T> OnceCell<T> {');
@@ -29200,10 +29657,6 @@ begin
   BufLn(b, '        fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) { (**self).hash(state); }');
   BufLn(b, '    }');
   BufLn(b, '    impl<T: ?Sized + ::std::fmt::Display> ::std::fmt::Display for Rc<T> {');
-end;
-
-procedure PreludeChunk19(var b: TBuf);
-begin
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
   BufLn(b, '    }');
   BufLn(b, '    impl<T: ?Sized + ::std::fmt::Debug> ::std::fmt::Debug for Rc<T> {');
@@ -29349,47 +29802,360 @@ begin
   BufLn(b, '    impl<''a, T> ::std::ops::DerefMut for RwLockWriteGuard<''a, T> {');
   BufLn(b, '        fn deref_mut(&mut self) -> &mut T { unsafe { &mut *self.lock.data.get() } }');
   BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T: ::std::fmt::Debug> ::std::fmt::Debug for RwLockReadGuard<''a, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T: ::std::fmt::Display> ::std::fmt::Display for RwLockReadGuard<''a, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T: ::std::fmt::Debug> ::std::fmt::Debug for RwLockWriteGuard<''a, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T: ::std::fmt::Display> ::std::fmt::Display for RwLockWriteGuard<''a, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ::std::fmt::Debug> ::std::fmt::Debug for RwLock<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {');
+  BufLn(b, '            f.debug_struct("RwLock").field("data", unsafe { &*self.data.get() }).finish()');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
   BufLn(b, '    impl<T: Default> Default for RwLock<T> { fn default() -> RwLock<T> { RwLock::new(T::default()) } }');
   BufLn(b, '');
   BufLn(b, '    pub mod atomic {');
+  BufLn(b, '        #[derive(Debug, Clone, Copy, PartialEq, Eq)]');
   BufLn(b, '        pub enum Ordering { Relaxed, Release, Acquire, AcqRel, SeqCst }');
+  BufLn(b, '        pub fn fence(o: Ordering) {}');
+  BufLn(b, '        pub fn compiler_fence(o: Ordering) {}');
   BufLn(b, '        pub struct AtomicUsize { v: ::std::cell::Cell<usize> }');
   BufLn(b, '        impl AtomicUsize {');
-  BufLn(b, '            pub fn new(v: usize) -> AtomicUsize { AtomicUsize { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub const fn new(v: usize) -> AtomicUsize { AtomicUsize { v: ::std::cell::Cell::new(v) } }');
+end;
+
+procedure PreludeChunk20(var b: TBuf);
+begin
   BufLn(b, '            pub fn load(&self, o: Ordering) -> usize { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: usize, o: Ordering) { self.v.set(x); }');
-  BufLn(b, '            pub fn fetch_add(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r + x); r }');
-  BufLn(b, '            pub fn fetch_sub(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r - x); r }');
   BufLn(b, '            pub fn swap(&self, x: usize, o: Ordering) -> usize { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: usize, new: usize, s: Ordering, f: Ordering) -> Result<usize, usize> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: usize, new: usize, s: Ordering, f: Ordering) -> Result<usize, usize> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(usize) -> Option<usize>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<usize, usize> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> usize { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut usize { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicUsize { fn default() -> AtomicUsize { AtomicUsize::new(0) } }');
+  BufLn(b, '        impl From<usize> for AtomicUsize { fn from(x: usize) -> AtomicUsize { AtomicUsize::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicUsize {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicIsize { v: ::std::cell::Cell<isize> }');
+  BufLn(b, '        impl AtomicIsize {');
+  BufLn(b, '            pub const fn new(v: isize) -> AtomicIsize { AtomicIsize { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> isize { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: isize, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: isize, o: Ordering) -> isize { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: isize, o: Ordering) -> isize { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: isize, new: isize, s: Ordering, f: Ordering) -> Result<isize, isize> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: isize, new: isize, s: Ordering, f: Ordering) -> Result<isize, isize> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(isize) -> Option<isize>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<isize, isize> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> isize { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut isize { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicIsize { fn default() -> AtomicIsize { AtomicIsize::new(0) } }');
+  BufLn(b, '        impl From<isize> for AtomicIsize { fn from(x: isize) -> AtomicIsize { AtomicIsize::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicIsize {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicI8 { v: ::std::cell::Cell<i8> }');
+  BufLn(b, '        impl AtomicI8 {');
+  BufLn(b, '            pub const fn new(v: i8) -> AtomicI8 { AtomicI8 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> i8 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: i8, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: i8, o: Ordering) -> i8 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: i8, o: Ordering) -> i8 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: i8, new: i8, s: Ordering, f: Ordering) -> Result<i8, i8> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: i8, new: i8, s: Ordering, f: Ordering) -> Result<i8, i8> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(i8) -> Option<i8>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<i8, i8> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> i8 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut i8 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicI8 { fn default() -> AtomicI8 { AtomicI8::new(0) } }');
+  BufLn(b, '        impl From<i8> for AtomicI8 { fn from(x: i8) -> AtomicI8 { AtomicI8::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicI8 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicI16 { v: ::std::cell::Cell<i16> }');
+  BufLn(b, '        impl AtomicI16 {');
+  BufLn(b, '            pub const fn new(v: i16) -> AtomicI16 { AtomicI16 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> i16 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: i16, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: i16, o: Ordering) -> i16 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: i16, o: Ordering) -> i16 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: i16, new: i16, s: Ordering, f: Ordering) -> Result<i16, i16> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: i16, new: i16, s: Ordering, f: Ordering) -> Result<i16, i16> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(i16) -> Option<i16>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<i16, i16> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> i16 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut i16 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicI16 { fn default() -> AtomicI16 { AtomicI16::new(0) } }');
+  BufLn(b, '        impl From<i16> for AtomicI16 { fn from(x: i16) -> AtomicI16 { AtomicI16::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicI16 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
   BufLn(b, '        }');
   BufLn(b, '        pub struct AtomicI32 { v: ::std::cell::Cell<i32> }');
   BufLn(b, '        impl AtomicI32 {');
-  BufLn(b, '            pub fn new(v: i32) -> AtomicI32 { AtomicI32 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub const fn new(v: i32) -> AtomicI32 { AtomicI32 { v: ::std::cell::Cell::new(v) } }');
   BufLn(b, '            pub fn load(&self, o: Ordering) -> i32 { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: i32, o: Ordering) { self.v.set(x); }');
-  BufLn(b, '            pub fn fetch_add(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r + x); r }');
-  BufLn(b, '            pub fn fetch_sub(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r - x); r }');
+  BufLn(b, '            pub fn swap(&self, x: i32, o: Ordering) -> i32 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: i32, new: i32, s: Ordering, f: Ordering) -> Result<i32, i32> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: i32, new: i32, s: Ordering, f: Ordering) -> Result<i32, i32> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(i32) -> Option<i32>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<i32, i32> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> i32 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut i32 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicI32 { fn default() -> AtomicI32 { AtomicI32::new(0) } }');
+  BufLn(b, '        impl From<i32> for AtomicI32 { fn from(x: i32) -> AtomicI32 { AtomicI32::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicI32 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
   BufLn(b, '        }');
   BufLn(b, '        pub struct AtomicI64 { v: ::std::cell::Cell<i64> }');
   BufLn(b, '        impl AtomicI64 {');
-  BufLn(b, '            pub fn new(v: i64) -> AtomicI64 { AtomicI64 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub const fn new(v: i64) -> AtomicI64 { AtomicI64 { v: ::std::cell::Cell::new(v) } }');
   BufLn(b, '            pub fn load(&self, o: Ordering) -> i64 { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: i64, o: Ordering) { self.v.set(x); }');
-  BufLn(b, '            pub fn fetch_add(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r + x); r }');
+  BufLn(b, '            pub fn swap(&self, x: i64, o: Ordering) -> i64 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: i64, new: i64, s: Ordering, f: Ordering) -> Result<i64, i64> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: i64, new: i64, s: Ordering, f: Ordering) -> Result<i64, i64> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(i64) -> Option<i64>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<i64, i64> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> i64 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut i64 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicI64 { fn default() -> AtomicI64 { AtomicI64::new(0) } }');
+  BufLn(b, '        impl From<i64> for AtomicI64 { fn from(x: i64) -> AtomicI64 { AtomicI64::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicI64 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicU8 { v: ::std::cell::Cell<u8> }');
+  BufLn(b, '        impl AtomicU8 {');
+  BufLn(b, '            pub const fn new(v: u8) -> AtomicU8 { AtomicU8 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> u8 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: u8, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: u8, o: Ordering) -> u8 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: u8, o: Ordering) -> u8 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: u8, new: u8, s: Ordering, f: Ordering) -> Result<u8, u8> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: u8, new: u8, s: Ordering, f: Ordering) -> Result<u8, u8> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(u8) -> Option<u8>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<u8, u8> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> u8 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut u8 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicU8 { fn default() -> AtomicU8 { AtomicU8::new(0) } }');
+  BufLn(b, '        impl From<u8> for AtomicU8 { fn from(x: u8) -> AtomicU8 { AtomicU8::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicU8 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicU16 { v: ::std::cell::Cell<u16> }');
+  BufLn(b, '        impl AtomicU16 {');
+  BufLn(b, '            pub const fn new(v: u16) -> AtomicU16 { AtomicU16 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> u16 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: u16, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: u16, o: Ordering) -> u16 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: u16, o: Ordering) -> u16 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: u16, new: u16, s: Ordering, f: Ordering) -> Result<u16, u16> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: u16, new: u16, s: Ordering, f: Ordering) -> Result<u16, u16> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(u16) -> Option<u16>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<u16, u16> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> u16 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut u16 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicU16 { fn default() -> AtomicU16 { AtomicU16::new(0) } }');
+  BufLn(b, '        impl From<u16> for AtomicU16 { fn from(x: u16) -> AtomicU16 { AtomicU16::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicU16 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicU32 { v: ::std::cell::Cell<u32> }');
+  BufLn(b, '        impl AtomicU32 {');
+  BufLn(b, '            pub const fn new(v: u32) -> AtomicU32 { AtomicU32 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> u32 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: u32, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: u32, o: Ordering) -> u32 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: u32, o: Ordering) -> u32 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: u32, new: u32, s: Ordering, f: Ordering) -> Result<u32, u32> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: u32, new: u32, s: Ordering, f: Ordering) -> Result<u32, u32> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(u32) -> Option<u32>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<u32, u32> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> u32 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut u32 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicU32 { fn default() -> AtomicU32 { AtomicU32::new(0) } }');
+  BufLn(b, '        impl From<u32> for AtomicU32 { fn from(x: u32) -> AtomicU32 { AtomicU32::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicU32 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
   BufLn(b, '        }');
   BufLn(b, '        pub struct AtomicU64 { v: ::std::cell::Cell<u64> }');
   BufLn(b, '        impl AtomicU64 {');
-  BufLn(b, '            pub fn new(v: u64) -> AtomicU64 { AtomicU64 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub const fn new(v: u64) -> AtomicU64 { AtomicU64 { v: ::std::cell::Cell::new(v) } }');
   BufLn(b, '            pub fn load(&self, o: Ordering) -> u64 { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: u64, o: Ordering) { self.v.set(x); }');
-  BufLn(b, '            pub fn fetch_add(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r + x); r }');
+  BufLn(b, '            pub fn swap(&self, x: u64, o: Ordering) -> u64 { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_add(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r.wrapping_add(x)); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r.wrapping_sub(x)); r }');
+  BufLn(b, '            pub fn fetch_and(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_max(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); if x > r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn fetch_min(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); if x < r { self.v.set(x); } r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: u64, new: u64, s: Ordering, f: Ordering) -> Result<u64, u64> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: u64, new: u64, s: Ordering, f: Ordering) -> Result<u64, u64> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn fetch_update<F: FnMut(u64) -> Option<u64>>(&self, s: Ordering, f: Ordering, mut g: F) -> Result<u64, u64> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                match g(r) { Some(n) => { self.v.set(n); Ok(r) }, None => Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn into_inner(self) -> u64 { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut u64 { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicU64 { fn default() -> AtomicU64 { AtomicU64::new(0) } }');
+  BufLn(b, '        impl From<u64> for AtomicU64 { fn from(x: u64) -> AtomicU64 { AtomicU64::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicU64 {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
   BufLn(b, '        }');
   BufLn(b, '        pub struct AtomicBool { v: ::std::cell::Cell<bool> }');
   BufLn(b, '        impl AtomicBool {');
-  BufLn(b, '            pub fn new(v: bool) -> AtomicBool { AtomicBool { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub const fn new(v: bool) -> AtomicBool { AtomicBool { v: ::std::cell::Cell::new(v) } }');
+end;
+
+procedure PreludeChunk21(var b: TBuf);
+begin
   BufLn(b, '            pub fn load(&self, o: Ordering) -> bool { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: bool, o: Ordering) { self.v.set(x); }');
   BufLn(b, '            pub fn swap(&self, x: bool, o: Ordering) -> bool { self.v.replace(x) }');
+  BufLn(b, '            pub fn fetch_and(&self, x: bool, o: Ordering) -> bool { let r = self.v.get(); self.v.set(r & x); r }');
+  BufLn(b, '            pub fn fetch_or(&self, x: bool, o: Ordering) -> bool { let r = self.v.get(); self.v.set(r | x); r }');
+  BufLn(b, '            pub fn fetch_xor(&self, x: bool, o: Ordering) -> bool { let r = self.v.get(); self.v.set(r ^ x); r }');
+  BufLn(b, '            pub fn fetch_not(&self, o: Ordering) -> bool { let r = self.v.get(); self.v.set(!r); r }');
+  BufLn(b, '            pub fn compare_exchange(&self, cur: bool, new: bool, s: Ordering, f: Ordering) -> Result<bool, bool> {');
+  BufLn(b, '                let r = self.v.get();');
+  BufLn(b, '                if r == cur { self.v.set(new); Ok(r) } else { Err(r) }');
+  BufLn(b, '            }');
+  BufLn(b, '            pub fn compare_exchange_weak(&self, cur: bool, new: bool, s: Ordering, f: Ordering) -> Result<bool, bool> { self.compare_exchange(cur, new, s, f) }');
+  BufLn(b, '            pub fn into_inner(self) -> bool { self.v.get() }');
+  BufLn(b, '            pub fn get_mut(&mut self) -> &mut bool { self.v.get_mut() }');
+  BufLn(b, '        }');
+  BufLn(b, '        impl Default for AtomicBool { fn default() -> AtomicBool { AtomicBool::new(false) } }');
+  BufLn(b, '        impl From<bool> for AtomicBool { fn from(x: bool) -> AtomicBool { AtomicBool::new(x) } }');
+  BufLn(b, '        impl ::std::fmt::Debug for AtomicBool {');
+  BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '');
@@ -29504,10 +30270,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    pub struct Condvar { n: Cell<u32> }');
-end;
-
-procedure PreludeChunk20(var b: TBuf);
-begin
   BufLn(b, '    impl Condvar {');
   BufLn(b, '        pub fn new() -> Condvar { Condvar { n: Cell::new(0u32) } }');
   BufLn(b, '        pub fn wait<''a, T>(&self, g: MutexGuard<''a, T>) -> LockResult<MutexGuard<''a, T>> {');
@@ -29675,6 +30437,10 @@ begin
   BufLn(b, '                Ok(s) => { buf.push_str(s.as_str()); Ok(n) }');
   BufLn(b, '                Err(_) => Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),');
   BufLn(b, '            }');
+end;
+
+procedure PreludeChunk22(var b: TBuf);
+begin
   BufLn(b, '        }');
   BufLn(b, '        fn bytes(self) -> Bytes<Self> where Self: Sized { Bytes { inner: self } }');
   BufLn(b, '    }');
@@ -29808,10 +30574,6 @@ begin
   BufLn(b, '        pub fn get_ref(&self) -> &W { self.inner.as_ref().unwrap() }');
   BufLn(b, '        pub fn get_mut(&mut self) -> &mut W { self.inner.as_mut().unwrap() }');
   BufLn(b, '        pub fn into_inner(mut self) -> ::std::result::Result<W, Error> {');
-end;
-
-procedure PreludeChunk21(var b: TBuf);
-begin
   BufLn(b, '            self.flush_buf()?;');
   BufLn(b, '            Ok(self.inner.take().unwrap())');
   BufLn(b, '        }');
@@ -29979,6 +30741,10 @@ begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod env {');
+end;
+
+procedure PreludeChunk23(var b: TBuf);
+begin
   BufLn(b, '    pub struct Args { v: ::std::vec::IntoIter<String> }');
   BufLn(b, '    pub fn args() -> Args {');
   BufLn(b, '        let mut out: Vec<String> = Vec::new();');
@@ -30112,10 +30878,6 @@ begin
   BufLn(b, '        pub fn now() -> SystemTime { SystemTime { ns: now_ns(0) } }');
   BufLn(b, '        pub fn duration_since(&self, earlier: SystemTime) -> Result<Duration, SystemTimeError> {');
   BufLn(b, '            if self.ns >= earlier.ns { Ok(Duration::from_nanos((self.ns - earlier.ns) as u64)) } else { Err(SystemTimeError) }');
-end;
-
-procedure PreludeChunk22(var b: TBuf);
-begin
   BufLn(b, '        }');
   BufLn(b, '        pub fn elapsed(&self) -> Result<Duration, SystemTimeError> { SystemTime::now().duration_since(*self) }');
   BufLn(b, '    }');
@@ -30128,7 +30890,16 @@ begin
   BufLn(b, '    struct Slot { f: Option<Box<dyn FnOnce()>> }');
   BufLn(b, '    static mut PENDING: Vec<Rc<RefCell<Slot>>> = Vec::new();');
   BufLn(b, '');
-  BufLn(b, '    pub struct JoinHandle<T> { slot: Rc<RefCell<Slot>>, result: Rc<RefCell<Option<T>>>, th: Thread }');
+  BufLn(b, '    pub struct JoinHandle<T> { slot: Rc<RefCell<Slot>>, result: Rc<RefCell<Option<Result<T, Box<dyn ::std::any::Any + Send>>>>>, th: Thread }');
+  BufLn(b, '    static mut NAMES: Vec<(u64, String)> = Vec::new();');
+  BufLn(b, '    pub fn __name_for_panic() -> String {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            if CURRENT == 1 { return String::from("main"); }');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < NAMES.len() { if NAMES[i].0 == CURRENT { return NAMES[i].1.clone(); } i += 1; }');
+  BufLn(b, '            String::from("<unnamed>")');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
   BufLn(b, '    pub struct ThreadId(u64);');
   BufLn(b, '    impl Clone for ThreadId { fn clone(&self) -> ThreadId { ThreadId(self.0) } }');
   BufLn(b, '    impl Copy for ThreadId {}');
@@ -30146,7 +30917,14 @@ begin
   BufLn(b, '    static mut NEXT_ID: u64 = 2;');
   BufLn(b, '    static mut CURRENT: u64 = 1;');
   BufLn(b, '');
-  BufLn(b, '    pub fn current() -> Thread { unsafe { Thread { id: CURRENT, name: if CURRENT == 1 { Some(String::from("main")) } else { None } } } }');
+  BufLn(b, '    pub fn current() -> Thread {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            if CURRENT == 1 { return Thread { id: 1, name: Some(String::from("main")) }; }');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < NAMES.len() { if NAMES[i].0 == CURRENT { return Thread { id: CURRENT, name: Some(NAMES[i].1.clone()) }; } i += 1; }');
+  BufLn(b, '            Thread { id: CURRENT, name: None }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    // execute le premier thread en attente ; retourne faux s''il n''y en a pas');
   BufLn(b, '    pub fn __run_one() -> bool {');
@@ -30172,7 +30950,7 @@ begin
   BufLn(b, '            let f = self.slot.borrow_mut().f.take();');
   BufLn(b, '            match f { Some(g) => g(), None => {} }');
   BufLn(b, '            match self.result.borrow_mut().take() {');
-  BufLn(b, '                Some(v) => Ok(v),');
+  BufLn(b, '                Some(v) => v,');
   BufLn(b, '                None => Err(Box::new(0i32)),');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -30180,19 +30958,22 @@ begin
   BufLn(b, '        pub fn is_finished(&self) -> bool { self.slot.borrow().f.is_none() }');
   BufLn(b, '    }');
   BufLn(b, '');
-  BufLn(b, '    pub fn spawn<F: FnOnce() -> T + ''static, T: ''static>(f: F) -> JoinHandle<T> {');
-  BufLn(b, '        let result: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(None));');
+  BufLn(b, '    pub fn spawn<F: FnOnce() -> T + ''static, T: ''static>(f: F) -> JoinHandle<T> { __spawn_named(f, None) }');
+  BufLn(b, '    pub fn __spawn_named<F: FnOnce() -> T + ''static, T: ''static>(f: F, name: Option<String>) -> JoinHandle<T> {');
+  BufLn(b, '        let result: Rc<RefCell<Option<Result<T, Box<dyn ::std::any::Any + Send>>>>> = Rc::new(RefCell::new(None));');
   BufLn(b, '        let r2 = Rc::clone(&result);');
   BufLn(b, '        let id = unsafe { let i = NEXT_ID; NEXT_ID += 1; i };');
+  BufLn(b, '        let nm2 = name.clone();');
+  BufLn(b, '        if let Some(n) = name { unsafe { NAMES.push((id, n)); } }');
   BufLn(b, '        let job: Box<dyn FnOnce()> = Box::new(move || {');
   BufLn(b, '            let prev = unsafe { let p = CURRENT; CURRENT = id; p };');
-  BufLn(b, '            let v = f();');
+  BufLn(b, '            let v = ::std::panic::catch_unwind(f);');
   BufLn(b, '            unsafe { CURRENT = prev; }');
   BufLn(b, '            *r2.borrow_mut() = Some(v);');
   BufLn(b, '        });');
   BufLn(b, '        let slot = Rc::new(RefCell::new(Slot { f: Some(job) }));');
   BufLn(b, '        unsafe { PENDING.push(Rc::clone(&slot)); }');
-  BufLn(b, '        JoinHandle { slot: slot, result: result, th: Thread { id: id, name: None } }');
+  BufLn(b, '        JoinHandle { slot: slot, result: result, th: Thread { id: id, name: nm2 } }');
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    pub fn sleep(d: ::std::time::Duration) { __run_all(); }');
@@ -30204,7 +30985,7 @@ begin
   BufLn(b, '        pub fn new() -> Builder { Builder { name: None } }');
   BufLn(b, '        pub fn name(mut self, n: String) -> Builder { self.name = Some(n); self }');
   BufLn(b, '        pub fn stack_size(self, n: usize) -> Builder { self }');
-  BufLn(b, '        pub fn spawn<F: FnOnce() -> T + ''static, T: ''static>(self, f: F) -> ::std::io::Result<JoinHandle<T>> { Ok(spawn(f)) }');
+  BufLn(b, '        pub fn spawn<F: FnOnce() -> T + ''static, T: ''static>(self, f: F) -> ::std::io::Result<JoinHandle<T>> { Ok(__spawn_named(f, self.name)) }');
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    pub struct Scope { handles: RefCell<Vec<Rc<RefCell<Slot>>>> }');
@@ -30214,10 +30995,15 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl Scope {');
   BufLn(b, '        pub fn spawn<F: FnOnce() -> T, T>(&self, f: F) -> ScopedJoinHandle<T> {');
-  BufLn(b, '            let result: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(None));');
+  BufLn(b, '            let result: Rc<RefCell<Option<Result<T, Box<dyn ::std::any::Any + Send>>>>> = Rc::new(RefCell::new(None));');
   BufLn(b, '            let r2 = Rc::clone(&result);');
   BufLn(b, '            let id = unsafe { let i = NEXT_ID; NEXT_ID += 1; i };');
-  BufLn(b, '            let job: Box<dyn FnOnce() + ''_> = Box::new(move || { let v = f(); *r2.borrow_mut() = Some(v); });');
+  BufLn(b, '            let job: Box<dyn FnOnce() + ''_> = Box::new(move || {');
+  BufLn(b, '                let prev = unsafe { let p = CURRENT; CURRENT = id; p };');
+  BufLn(b, '                let v = ::std::panic::catch_unwind(f);');
+  BufLn(b, '                unsafe { CURRENT = prev; }');
+  BufLn(b, '                *r2.borrow_mut() = Some(v);');
+  BufLn(b, '            });');
   BufLn(b, '            let job2: Box<dyn FnOnce()> = unsafe { ::std::intrinsics::transmute(job) };');
   BufLn(b, '            let slot = Rc::new(RefCell::new(Slot { f: Some(job2) }));');
   BufLn(b, '            unsafe { PENDING.push(Rc::clone(&slot)); }');
@@ -30259,6 +31045,10 @@ begin
   BufLn(b, '        pub fn downcast_ref<T: Any>(&self) -> Option<&T> {');
   BufLn(b, '            if self.is::<T>() { unsafe { Some(&*(self as *const dyn Any as *const T)) } } else { None }');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk24(var b: TBuf);
+begin
   BufLn(b, '        pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {');
   BufLn(b, '            if self.is::<T>() { unsafe { Some(&mut *(self as *mut dyn Any as *mut T)) } } else { None }');
   BufLn(b, '        }');
@@ -30281,14 +31071,85 @@ begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod panic {');
+  BufLn(b, '    pub trait UnwindSafe {}');
+  BufLn(b, '    impl<T: ?Sized> UnwindSafe for T {}');
+  BufLn(b, '    pub trait RefUnwindSafe {}');
+  BufLn(b, '    impl<T: ?Sized> RefUnwindSafe for T {}');
   BufLn(b, '    pub struct AssertUnwindSafe<T>(pub T);');
   BufLn(b, '    impl<T> ::std::ops::Deref for AssertUnwindSafe<T> { type Target = T; fn deref(&self) -> &T { &self.0 } }');
-  BufLn(b, '    impl<R, F: FnOnce() -> R> FnOnce<()> for AssertUnwindSafe<F> { type Output = R; }');
-  BufLn(b, '    pub fn catch_unwind<F: FnOnce() -> R, R>(f: F) -> Result<R, Box<dyn ::std::any::Any + Send>> { Ok(f()) }');
-  BufLn(b, '    pub struct PanicInfo;');
-  BufLn(b, '    pub type PanicHookInfo = PanicInfo;');
-  BufLn(b, '    pub fn set_hook(hook: Box<dyn Fn(&PanicInfo)>) {}');
-  BufLn(b, '    pub fn take_hook() -> Box<dyn Fn(&PanicInfo)> { Box::new(|_| {}) }');
+  BufLn(b, '    impl<T> ::std::ops::DerefMut for AssertUnwindSafe<T> { fn deref_mut(&mut self) -> &mut T { &mut self.0 } }');
+  BufLn(b, '    pub trait __CallOnce<R> { fn __call_it(self) -> R; }');
+  BufLn(b, '    impl<R, F: FnOnce() -> R> __CallOnce<R> for F { fn __call_it(self) -> R { self() } }');
+  BufLn(b, '    impl<R, F: FnOnce() -> R> __CallOnce<R> for AssertUnwindSafe<F> { fn __call_it(self) -> R { (self.0)() } }');
+  BufLn(b, '');
+  BufLn(b, '    pub fn catch_unwind<F: __CallOnce<R>, R>(f: F) -> Result<R, Box<dyn ::std::any::Any + Send>> {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            let frame = ::std::libc::malloc(280usize);');
+  BufLn(b, '            *(frame as *mut *mut u8) = ::std::rt::CATCH_TOP;');
+  BufLn(b, '            ::std::rt::CATCH_TOP = frame;');
+  BufLn(b, '            if ::std::libc::_setjmp(((frame as usize) + 8usize) as *mut u64) == 0 {');
+  BufLn(b, '                let r = f.__call_it();');
+  BufLn(b, '                ::std::rt::CATCH_TOP = *(frame as *mut *mut u8);');
+  BufLn(b, '                ::std::libc::free(frame);');
+  BufLn(b, '                Ok(r)');
+  BufLn(b, '            } else {');
+  BufLn(b, '                ::std::rt::CATCH_TOP = *(frame as *mut *mut u8);');
+  BufLn(b, '                ::std::libc::free(frame);');
+  BufLn(b, '                Err(::std::rt::take_payload())');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    pub fn resume_unwind(payload: Box<dyn ::std::any::Any + Send>) -> ! { ::std::rt::unwind_with(payload) }');
+  BufLn(b, '    pub fn panic_any<M: ''static + ::std::any::Any + Send>(msg: M) -> ! {');
+  BufLn(b, '        let p: Box<dyn ::std::any::Any + Send> = Box::new(msg);');
+  BufLn(b, '        ::std::rt::finish_panic("Box<dyn Any>", "src/main.rs:0:0", p)');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct Location<''a> { file: &''a str, line: u32, col: u32 }');
+  BufLn(b, '    impl<''a> Location<''a> {');
+  BufLn(b, '        pub fn file(&self) -> &str { self.file }');
+  BufLn(b, '        pub fn line(&self) -> u32 { self.line }');
+  BufLn(b, '        pub fn column(&self) -> u32 { self.col }');
+  BufLn(b, '        pub fn caller() -> &''static Location<''static> { unsafe { &*(0 as *const Location<''static>) } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a> ::std::fmt::Display for Location<''a> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { write!(f, "{}:{}:{}", self.file, self.line, self.col) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a> ::std::fmt::Debug for Location<''a> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {');
+  BufLn(b, '            f.debug_struct("Location").field("file", &self.file).field("line", &self.line).field("col", &self.col).finish()');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    pub struct PanicHookInfo<''a> { msg: &''a str, payload: &''a (dyn ::std::any::Any + Send), loc: Location<''a> }');
+  BufLn(b, '    pub type PanicInfo<''a> = PanicHookInfo<''a>;');
+  BufLn(b, '    impl<''a> PanicHookInfo<''a> {');
+  BufLn(b, '        pub fn __new(msg: &''a str, loc: &''a str, payload: &''a (dyn ::std::any::Any + Send)) -> PanicHookInfo<''a> {');
+  BufLn(b, '            let mut parts = loc.rsplitn(3, '':'');');
+  BufLn(b, '            let col: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);');
+  BufLn(b, '            let line: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);');
+  BufLn(b, '            let file = parts.next().unwrap_or("");');
+  BufLn(b, '            PanicHookInfo { msg: msg, payload: payload, loc: Location { file: file, line: line, col: col } }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn payload(&self) -> &(dyn ::std::any::Any + Send) { self.payload }');
+  BufLn(b, '        pub fn location(&self) -> Option<&Location<''a>> { Some(&self.loc) }');
+  BufLn(b, '        pub fn payload_as_str(&self) -> Option<&str> { Some(self.msg) }');
+  BufLn(b, '        pub fn message(&self) -> &str { self.msg }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a> ::std::fmt::Display for PanicHookInfo<''a> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { write!(f, "panicked at {}:\n{}", self.loc, self.msg) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a> ::std::fmt::Debug for PanicHookInfo<''a> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { write!(f, "PanicHookInfo {{ .. }}") }');
+  BufLn(b, '    }');
+  BufLn(b, '    pub fn set_hook(hook: Box<dyn Fn(&PanicHookInfo<''_>)>) { unsafe { ::std::rt::HOOK = Some(hook); } }');
+  BufLn(b, '    pub fn take_hook() -> Box<dyn Fn(&PanicHookInfo<''_>)> {');
+  BufLn(b, '        unsafe {');
+  BufLn(b, '            match ::std::rt::HOOK.take() {');
+  BufLn(b, '                Some(h) => h,');
+  BufLn(b, '                None => Box::new(|info: &PanicHookInfo| { ::std::rt::default_hook_print(info.msg, &format!("{}", info.loc)); }),');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod num {');
@@ -30416,10 +31277,6 @@ begin
   BufLn(b, 'impl<''a> Product<&''a i8> for i8 {');
   BufLn(b, '    fn product<I: Iterator<Item = &''a i8>>(iter: I) -> i8 { let mut s: i8 = 1; let mut it = iter; while let Some(x) = it.next() { s = s * *x; } s }');
   BufLn(b, '}');
-end;
-
-procedure PreludeChunk23(var b: TBuf);
-begin
   BufLn(b, 'impl Display for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { let v = *self as i64; let neg = v < 0; let abs = if neg { ::std::intrinsics::wrapping_add(!(v as u64), 1 as u64) } else { v as u64 }; fmt_u64_radix(f, abs, !neg, 10, false, "") } }');
   BufLn(b, 'impl Debug for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { let v = *self as i64; let neg = v < 0; let abs = if neg { ::std::intrinsics::wrapping_add(!(v as u64), 1 as u64) } else { v as u64 }; fmt_u64_radix(f, abs, !neg, 10, false, "") } }');
   BufLn(b, 'impl LowerHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, false, "0x") } }');
@@ -30492,6 +31349,10 @@ begin
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            if exp > 0 { base = match base.checked_mul(base) { Some(v) => v, None => return None }; }');
+end;
+
+procedure PreludeChunk25(var b: TBuf);
+begin
   BufLn(b, '        }');
   BufLn(b, '        Some(acc)');
   BufLn(b, '    }');
@@ -30720,10 +31581,6 @@ begin
   BufLn(b, '    pub fn checked_rem(self, o: i16) -> Option<i16> {');
   BufLn(b, '        if o == 0 { return None; }');
   BufLn(b, '        if self == i16::MIN && o == -1 { return None; }');
-end;
-
-procedure PreludeChunk24(var b: TBuf);
-begin
   BufLn(b, '        Some(self % o)');
   BufLn(b, '    }');
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<i16> {');
@@ -30796,6 +31653,10 @@ begin
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 2 { out[i] = ((self >> ((2 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
   BufLn(b, '        out');
+end;
+
+procedure PreludeChunk26(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn to_le_bytes(self) -> [u8; 2] {');
   BufLn(b, '        let mut out = [0u8; 2];');
@@ -31024,10 +31885,6 @@ begin
   BufLn(b, '            let d = match (b[i] as char).to_digit(radix) { Some(d) => d, None => return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }) };');
   BufLn(b, '            acc = match acc.checked_mul(radix as u64) { Some(v) => v, None => return Err(ParseIntError { kind: if neg { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }) };');
   BufLn(b, '            acc = match acc.checked_add(d as u64) { Some(v) => v, None => return Err(ParseIntError { kind: if neg { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }) };');
-end;
-
-procedure PreludeChunk25(var b: TBuf);
-begin
   BufLn(b, '            i += 1;');
   BufLn(b, '        }');
   BufLn(b, '        if neg { let lim = (i32::MAX as u64) + 1; if acc > lim { return Err(ParseIntError { kind: IntErrorKind::NegOverflow }); } if acc == lim { return Ok(i32::MIN); } Ok(0 - (acc as i32)) } else { if acc > (i32::MAX as u64) { return Err(ParseIntError { kind: IntErrorKind::PosOverflow }); } Ok(acc as i32) }');
@@ -31100,6 +31957,10 @@ begin
   BufLn(b, 'impl Div for i64 { type Output = i64; fn div(self, o: i64) -> i64 { self / o } }');
   BufLn(b, 'impl Rem for i64 { type Output = i64; fn rem(self, o: i64) -> i64 { self % o } }');
   BufLn(b, 'impl BitAnd for i64 { type Output = i64; fn bitand(self, o: i64) -> i64 { self & o } }');
+end;
+
+procedure PreludeChunk27(var b: TBuf);
+begin
   BufLn(b, 'impl BitOr for i64 { type Output = i64; fn bitor(self, o: i64) -> i64 { self | o } }');
   BufLn(b, 'impl BitXor for i64 { type Output = i64; fn bitxor(self, o: i64) -> i64 { self ^ o } }');
   BufLn(b, 'impl Not for i64 { type Output = i64; fn not(self) -> i64 { !self } }');
@@ -31328,10 +32189,6 @@ begin
   BufLn(b, '    fn cmp(&self, o: &i128) -> Ordering {');
   BufLn(b, '        if *self < *o { Ordering::Less } else if *self == *o { Ordering::Equal } else { Ordering::Greater }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk26(var b: TBuf);
-begin
   BufLn(b, '    fn max(self, o: i128) -> i128 { if o < self { self } else { o } }');
   BufLn(b, '    fn min(self, o: i128) -> i128 { if o < self { o } else { self } }');
   BufLn(b, '}');
@@ -31404,6 +32261,10 @@ begin
   BufLn(b, '    pub fn max_value() -> i128 { (!(1i128 << 127)) }');
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> i128 {');
   BufLn(b, '        let mut base = self;');
+end;
+
+procedure PreludeChunk28(var b: TBuf);
+begin
   BufLn(b, '        let mut acc: i128 = 1;');
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
@@ -31632,10 +32493,6 @@ begin
   BufLn(b, '    fn backward(&self) -> isize { *self - 1 }');
   BufLn(b, '    fn steps_between(a: &isize, b: &isize) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
   BufLn(b, '    fn forward_n(&self, n: usize) -> isize { (*self as i128 + n as i128) as isize }');
-end;
-
-procedure PreludeChunk27(var b: TBuf);
-begin
   BufLn(b, '}');
   BufLn(b, 'impl isize {');
   BufLn(b, '    pub const MIN: isize = -9223372036854775808;');
@@ -31708,6 +32565,10 @@ begin
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 64 - self.count_ones() }');
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
+end;
+
+procedure PreludeChunk29(var b: TBuf);
+begin
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
   BufLn(b, '    pub fn trailing_ones(self) -> u32 { (!self).trailing_zeros() }');
   BufLn(b, '    pub fn swap_bytes(self) -> isize { unsafe { ::std::intrinsics::bswap(self) } }');
@@ -31936,10 +32797,6 @@ begin
   BufLn(b, '    pub fn saturating_add(self, o: u8) -> u8 { unsafe { ::std::intrinsics::saturating_add(self, o) } }');
   BufLn(b, '    pub fn saturating_sub(self, o: u8) -> u8 { unsafe { ::std::intrinsics::saturating_sub(self, o) } }');
   BufLn(b, '    pub fn saturating_mul(self, o: u8) -> u8 {');
-end;
-
-procedure PreludeChunk28(var b: TBuf);
-begin
   BufLn(b, '        match self.checked_mul(o) { Some(v) => v, None => if (self < 0) == (o < 0) { 255 } else { 0 } }');
   BufLn(b, '    }');
   BufLn(b, '    pub fn saturating_pow(self, exp: u32) -> u8 {');
@@ -32012,6 +32869,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 1]) -> u8 {');
   BufLn(b, '        let mut v: u8 = 0;');
+end;
+
+procedure PreludeChunk30(var b: TBuf);
+begin
   BufLn(b, '        let mut i = 1;');
   BufLn(b, '        while i > 0 { i -= 1; v = (v << 8) | (b[i] as u8); }');
   BufLn(b, '        v');
@@ -32240,10 +33101,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_be_bytes(b: [u8; 2]) -> u16 {');
   BufLn(b, '        let mut v: u16 = 0;');
-end;
-
-procedure PreludeChunk29(var b: TBuf);
-begin
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 2 { v = (v << 8) | (b[i] as u16); i += 1; }');
   BufLn(b, '        v');
@@ -32316,6 +33173,10 @@ begin
   BufLn(b, 'impl AddAssign for u32 { fn add_assign(&mut self, o: u32) { *self = *self + o; } }');
   BufLn(b, 'impl SubAssign for u32 { fn sub_assign(&mut self, o: u32) { *self = *self - o; } }');
   BufLn(b, 'impl MulAssign for u32 { fn mul_assign(&mut self, o: u32) { *self = *self * o; } }');
+end;
+
+procedure PreludeChunk31(var b: TBuf);
+begin
   BufLn(b, 'impl DivAssign for u32 { fn div_assign(&mut self, o: u32) { *self = *self / o; } }');
   BufLn(b, 'impl RemAssign for u32 { fn rem_assign(&mut self, o: u32) { *self = *self % o; } }');
   BufLn(b, 'impl BitAndAssign for u32 { fn bitand_assign(&mut self, o: u32) { *self = *self & o; } }');
@@ -32544,10 +33405,6 @@ begin
   BufLn(b, 'impl<''a> Add<u64> for &''a u64 { type Output = u64; fn add(self, o: u64) -> u64 { *self + o } }');
   BufLn(b, 'impl<''a> Sub<u64> for &''a u64 { type Output = u64; fn sub(self, o: u64) -> u64 { *self - o } }');
   BufLn(b, 'impl<''a> Mul<u64> for &''a u64 { type Output = u64; fn mul(self, o: u64) -> u64 { *self * o } }');
-end;
-
-procedure PreludeChunk30(var b: TBuf);
-begin
   BufLn(b, 'impl<''a, ''b> Add<&''b u64> for &''a u64 { type Output = u64; fn add(self, o: &''b u64) -> u64 { *self + *o } }');
   BufLn(b, 'impl<''a, ''b> Sub<&''b u64> for &''a u64 { type Output = u64; fn sub(self, o: &''b u64) -> u64 { *self - *o } }');
   BufLn(b, 'impl<''a, ''b> Mul<&''b u64> for &''a u64 { type Output = u64; fn mul(self, o: &''b u64) -> u64 { *self * *o } }');
@@ -32620,6 +33477,10 @@ begin
   BufLn(b, '            base = base.wrapping_mul(base);');
   BufLn(b, '        }');
   BufLn(b, '        acc');
+end;
+
+procedure PreludeChunk32(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn overflowing_add(self, o: u64) -> (u64, bool) { unsafe { ::std::intrinsics::add_with_overflow(self, o) } }');
   BufLn(b, '    pub fn overflowing_sub(self, o: u64) -> (u64, bool) { unsafe { ::std::intrinsics::sub_with_overflow(self, o) } }');
@@ -32848,10 +33709,6 @@ begin
   BufLn(b, '    pub fn wrapping_pow(self, mut exp: u32) -> u128 {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: u128 = 1;');
-end;
-
-procedure PreludeChunk31(var b: TBuf);
-begin
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc.wrapping_mul(base); }');
   BufLn(b, '            exp = exp / 2;');
@@ -32924,6 +33781,10 @@ begin
   BufLn(b, '        while y < x { x = y; y = (x + self / x) / 2; }');
   BufLn(b, '        x');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk33(var b: TBuf);
+begin
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<u128, ParseIntError> {');
   BufLn(b, '        let b = s.as_bytes();');
   BufLn(b, '        if b.len() == 0 { return Err(ParseIntError { kind: IntErrorKind::Empty }); }');
@@ -33152,10 +34013,6 @@ begin
   BufLn(b, '    pub fn ilog10(self) -> u32 { let mut n = 0u32; let mut v = self; while v >= 10 { v = v / 10; n += 1; } n }');
   BufLn(b, '    pub fn ilog(self, base: usize) -> u32 { let mut n = 0u32; let mut v = self; while v >= base { v = v / base; n += 1; } n }');
   BufLn(b, '    pub fn isqrt(self) -> usize {');
-end;
-
-procedure PreludeChunk32(var b: TBuf);
-begin
   BufLn(b, '        if self < 2 { return self; }');
   BufLn(b, '        let mut x = self;');
   BufLn(b, '        let mut y = (x + 1) / 2;');
@@ -33228,6 +34085,10 @@ begin
   BufLn(b, '    fn le(&self, o: &f64) -> bool { *self <= *o }');
   BufLn(b, '    fn gt(&self, o: &f64) -> bool { *self > *o }');
   BufLn(b, '    fn ge(&self, o: &f64) -> bool { *self >= *o }');
+end;
+
+procedure PreludeChunk34(var b: TBuf);
+begin
   BufLn(b, '}');
   BufLn(b, 'impl Add for f64 { type Output = f64; fn add(self, o: f64) -> f64 { self + o } }');
   BufLn(b, 'impl Sub for f64 { type Output = f64; fn sub(self, o: f64) -> f64 { self - o } }');
@@ -33456,10 +34317,6 @@ begin
   BufLn(b, '');
   BufLn(b, 'impl From<i8> for i16 { fn from(x: i8) -> i16 { x as i16 } }');
   BufLn(b, 'impl From<i8> for i32 { fn from(x: i8) -> i32 { x as i32 } }');
-end;
-
-procedure PreludeChunk33(var b: TBuf);
-begin
   BufLn(b, 'impl From<i8> for i64 { fn from(x: i8) -> i64 { x as i64 } }');
   BufLn(b, 'impl From<i8> for i128 { fn from(x: i8) -> i128 { x as i128 } }');
   BufLn(b, 'impl From<i8> for isize { fn from(x: i8) -> isize { x as isize } }');
@@ -33532,6 +34389,10 @@ begin
   BufLn(b, 'impl From<u8> for isize { fn from(x: u8) -> isize { x as isize } }');
   BufLn(b, 'impl From<u8> for u16 { fn from(x: u8) -> u16 { x as u16 } }');
   BufLn(b, 'impl From<u8> for u32 { fn from(x: u8) -> u32 { x as u32 } }');
+end;
+
+procedure PreludeChunk35(var b: TBuf);
+begin
   BufLn(b, 'impl From<u8> for u64 { fn from(x: u8) -> u64 { x as u64 } }');
   BufLn(b, 'impl From<u8> for u128 { fn from(x: u8) -> u128 { x as u128 } }');
   BufLn(b, 'impl From<u8> for usize { fn from(x: u8) -> usize { x as usize } }');
@@ -33789,6 +34650,8 @@ begin
   PreludeChunk31(b);
   PreludeChunk32(b);
   PreludeChunk33(b);
+  PreludeChunk34(b);
+  PreludeChunk35(b);
   s := BufStr(b);
 end;
 { ============================================================ }
