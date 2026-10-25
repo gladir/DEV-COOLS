@@ -5430,7 +5430,8 @@ var
   i, used, d, d2, rounds: Integer;
   segs: TStrArr;
   found: Boolean;
-  nm: string;
+  nm, pn, lastSeg: string;
+  j, k: Integer;
 begin
   rounds := 0;
   repeat
@@ -5482,8 +5483,20 @@ begin
   for i := 0 to NImports - 1 do
     if not Imports[i].done then
     begin
-      DefSpanErr('E0432', 'unresolved import `' + Imports[i].path + '`', Imports[i].node, 'no `' +
-                 Imports[i].alias + '` in the root');
+      begin
+        { nom du module parent : avant-dernier segment du chemin (au moins 3 segments), sinon la racine }
+        pn := Imports[i].path;
+        k := 0;
+        for j := 1 to Length(pn) - 1 do
+          if (pn[j] = ':') and (pn[j + 1] = ':') then Inc(k);
+        lastSeg := pn;
+        while Pos('::', lastSeg) > 0 do lastSeg := Copy(lastSeg, Pos('::', lastSeg) + 2, Length(lastSeg));
+        pn := Copy(pn, 1, Length(pn) - Length(lastSeg) - 2);
+        while Pos('::', pn) > 0 do pn := Copy(pn, Pos('::', pn) + 2, Length(pn));
+        if k >= 2 then pn := 'in `' + pn + '`' else pn := 'in the root';
+        DefSpanErr('E0432', 'unresolved import `' + Imports[i].path + '`', Imports[i].node, 'no `' +
+                   lastSeg + '` ' + pn);
+      end;
     end;
 end;
 
@@ -17787,6 +17800,8 @@ end;
 { Verification d'une instance de fonction (monomorphisation)    }
 { ============================================================ }
 
+function LgNamePos(node: Integer; const kw, name: string; var line, col: Integer): Boolean; forward;
+
 function InstanceKey(def: Integer; const args: TIntArr): string;
 var
   i: Integer;
@@ -17996,6 +18011,8 @@ var
   vi: Integer;
   isSelf: Boolean;
   fnBody: Integer;
+  labs: TLabels;
+  nline, ncol: Integer;
   svFirstBody: Integer;
 begin
   key := InstanceKey(def, args);
@@ -18098,7 +18115,18 @@ begin
     begin
       if (Hirs[bodyH].k = hBlock) and (Hirs[bodyH].a = 0) and (not TryUnify(ret, TyUnit)) then
       begin
-        ErrAt(Nodes[nd].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(ret) + '`, found `()`');
+        if (Nodes[nd].a > 0) and (Nodes[nd].line > 0) then
+        begin
+          labs := nil;
+          BcLab(labs, Nodes[Nodes[nd].a].fi, Nodes[Nodes[nd].a].line, Nodes[Nodes[nd].a].col, NodeLen(Nodes[nd].a), True,
+                'expected `' + TyStrZ(ret) + '`, found `()`');
+          if LgNamePos(nd, 'fn', Nodes[nd].s, nline, ncol) then
+            BcLab(labs, Nodes[nd].fi, nline, ncol, Length(Nodes[nd].s), False,
+                  'implicitly returns `()` as its body has no tail or `return` expression');
+          ReportLabels(True, 'E0308', 'mismatched types', labs);
+        end
+        else
+          ErrAt(Nodes[nd].b, 'E0308', 'mismatched types', 'expected `' + TyStrZ(ret) + '`, found `()`');
       end
       else
         bodyH := CoerceTo(bodyH, ret, Nodes[nd].b);
@@ -22232,6 +22260,15 @@ Type
     tagSize: Integer;
     tagSigned: Boolean;
     vlay: array of TLayoutV;       { variantes d'enum }
+    nOff: Int64;                   { niche : decalage (-1 : aucune), taille, premiere valeur libre, nombre de valeurs }
+    nSz: Integer;
+    nStart: Int64;
+    nAvail: Int64;
+    eNiche: Boolean;               { enum codee dans une niche du champ de la variante riche }
+    eData, eFirst, eLast: Integer;
+    eStart: Int64;                 { enum a niche : position, taille et premier motif de codage }
+    eOff: Int64;
+    eSz: Integer;
   end;
 
 Var
@@ -22291,17 +22328,92 @@ end;
 
 function LayoutOf(t: Integer): Integer; forward;
 
-procedure LayStruct(idx: Integer; const ftys: TIntArr);
-var
-  i, l: Integer;
-  off, al, sz: Int64;
+{ attention : Lays[LayoutOf(x)] evalue l'adresse du tableau avant l'appel (qui peut le reallouer) }
+function LaySizeOf(t: Integer): Int64;
+var l: Integer;
 begin
-  off := 0;
+  l := LayoutOf(t);
+  Result := Lays[l].size;
+end;
+
+function LayAlignOf(t: Integer): Int64;
+var l: Integer;
+begin
+  l := LayoutOf(t);
+  Result := Lays[l].align;
+end;
+
+function LayAvailOf(t: Integer): Int64;
+var l: Integer;
+begin
+  l := LayoutOf(t);
+  Result := Lays[l].nAvail;
+end;
+
+function NewTmpLay: Integer;
+begin
+  if NLays >= Length(Lays) then SetLength(Lays, NLays * 2 + 64);
+  Result := NLays;
+  Inc(NLays);
+  Lays[Result].offsets := nil;
+  Lays[Result].ftys := nil;
+  Lays[Result].vlay := nil;
+  Lays[Result].nOff := -1;
+  Lays[Result].tagSize := 0;
+  Lays[Result].eNiche := False;
+  Lays[Result].nAvail := 0;
+  Lays[Result].nStart := 0;
+  Lays[Result].nSz := 0;
+  Lays[Result].size := 0;
+  Lays[Result].align := 1;
+end;
+
+{ mode : 0 ordre de declaration, 1 alignement decroissant (structs, tuples), 2 croissant (variantes apres l'etiquette) ;
+  pinLast : le dernier champ reste en dernier (queue possiblement non dimensionnee) ; prefix : octets deja occupes }
+procedure LayStruct(idx: Integer; const ftys: TIntArr; mode: Integer; pinLast: Boolean; prefix: Int64);
+var
+  i, j, l, n, k, best: Integer;
+  off, al: Int64;
+  ord: TIntArr;
+  used: array of Boolean;
+  bestAl, a2: Int64;
+begin
+  off := prefix;
   al := 1;
-  SetLength(Lays[idx].offsets, Length(ftys));
+  n := Length(ftys);
+  SetLength(Lays[idx].offsets, n);
   Lays[idx].ftys := ftys;
-  for i := 0 to Length(ftys) - 1 do
+  ord := nil;
+  if (mode = 0) or (n < 2) then
+    for i := 0 to n - 1 do IAdd(ord, i)
+  else
   begin
+    SetLength(used, n);
+    for i := 0 to n - 1 do used[i] := False;
+    k := n;
+    if pinLast then begin used[n - 1] := True; k := n - 1; end;
+    for j := 1 to k do
+    begin
+      best := -1;
+      bestAl := 0;
+      for i := 0 to n - 1 do
+      begin
+        if used[i] then Continue;
+        a2 := LayAlignOf(ftys[i]);
+        if (best < 0) or ((mode = 1) and (a2 > bestAl)) or ((mode = 2) and (a2 < bestAl)) then
+        begin
+          best := i;
+          bestAl := a2;
+        end;
+      end;
+      used[best] := True;
+      IAdd(ord, best);
+    end;
+    if pinLast then IAdd(ord, n - 1);
+  end;
+  for j := 0 to n - 1 do
+  begin
+    i := ord[j];
     l := LayoutOf(ftys[i]);
     off := AlignUp(off, Lays[l].align);
     Lays[idx].offsets[i] := off;
@@ -22310,6 +22422,35 @@ begin
   end;
   Lays[idx].size := AlignUp(off, al);
   Lays[idx].align := al;
+  { niche : le champ offrant le plus de valeurs libres }
+  best := -1;
+  for i := 0 to n - 1 do
+  begin
+    l := LayoutOf(ftys[i]);
+    if (Lays[l].nOff >= 0) and ((best < 0) or (Lays[l].nAvail > LayAvailOf(ftys[best]))) then best := i;
+  end;
+  if best >= 0 then
+  begin
+    l := LayoutOf(ftys[best]);
+    Lays[idx].nOff := Lays[idx].offsets[best] + Lays[l].nOff;
+    Lays[idx].nSz := Lays[l].nSz;
+    Lays[idx].nStart := Lays[l].nStart;
+    Lays[idx].nAvail := Lays[l].nAvail;
+  end;
+end;
+
+{ Niche reservee a certains types de la bibliotheque (pointeurs non nuls, capacite, nanosecondes) }
+function PreludeNiche(d: Integer; var fidx: Integer; var start, avail: Int64): Boolean;
+var
+  nm: string;
+begin
+  Result := False;
+  if Defs[d].crate <> 1 then Exit;
+  nm := Defs[d].name;
+  if (nm = 'Box') or (nm = 'Rc') or (nm = 'NonNull') then begin fidx := 0; start := 0; avail := 1; Result := True; end
+  else if nm = 'NonZero' then begin fidx := 0; start := 0; avail := 1; Result := True; end
+  else if nm = 'Vec' then begin fidx := 1; start := Int64($4000000000000000) * 2; avail := Int64($4000000000000000) * 2 - 1; Result := True; end
+  else if nm = 'Duration' then begin fidx := 1; start := 1000000000; avail := 4294967296 - 1000000000; Result := True; end;
 end;
 
 function LayoutOf(t: Integer): Integer;
@@ -22320,6 +22461,16 @@ var
   al, sz, maxSz, tagSz: Int64;
   ftys: TIntArr;
   vl: TLayoutV;
+  fi, dataV, nOthers, firstO, lastO, cnt, nl, vsz: Integer;
+  nstart, navail: Int64;
+  reprC, pinL, canNiche: Boolean;
+  reprTag: Integer;
+  tagUnsigned: Boolean;
+  rs: string;
+  vtmp: array of Integer;
+  nv, bigV, nOffB, nSzB: Integer;
+  al2, sz2, availT, availN: Int64;
+  shifts: array of Int64;
 begin
   t := Zonk(t);
   key := HFind(LayMap, IntToStr(t));
@@ -22334,10 +22485,23 @@ begin
   Lays[Result].ftys := nil;
   Lays[Result].vlay := nil;
   Lays[Result].tagSize := 0;
+  Lays[Result].nOff := -1;
+  Lays[Result].nSz := 0;
+  Lays[Result].nStart := 0;
+  Lays[Result].nAvail := 0;
+  Lays[Result].eNiche := False;
   tt := t;
   case Tys[tt].k of
-    tyBool: begin Lays[Result].size := 1; Lays[Result].align := 1; end;
-    tyChar: begin Lays[Result].size := 4; Lays[Result].align := 4; end;
+    tyBool:
+      begin
+        Lays[Result].size := 1; Lays[Result].align := 1;
+        Lays[Result].nOff := 0; Lays[Result].nSz := 1; Lays[Result].nStart := 2; Lays[Result].nAvail := 254;
+      end;
+    tyChar:
+      begin
+        Lays[Result].size := 4; Lays[Result].align := 4;
+        Lays[Result].nOff := 0; Lays[Result].nSz := 4; Lays[Result].nStart := $110000; Lays[Result].nAvail := 4294967296 - $110000;
+      end;
     tyInt:
       begin
         Lays[Result].size := Tys[tt].n div 8;
@@ -22364,16 +22528,21 @@ begin
           Lays[Result].size := 8;
           Lays[Result].align := 8;
         end;
+        if Tys[tt].k = tyRef then
+        begin
+          Lays[Result].nOff := 0; Lays[Result].nSz := 8; Lays[Result].nStart := 0; Lays[Result].nAvail := 1;
+        end;
       end;
     tyFnPtr:
       begin
         Lays[Result].size := 8;
         Lays[Result].align := 8;
+        Lays[Result].nOff := 0; Lays[Result].nSz := 8; Lays[Result].nStart := 0; Lays[Result].nAvail := 1;
       end;
     tyTuple:
       begin
         ftys := ICopy(Tys[tt].args);
-        LayStruct(Result, ftys);
+        LayStruct(Result, ftys, 1, False, 0);
       end;
     tyArray:
       begin
@@ -22383,18 +22552,40 @@ begin
         else
           Lays[Result].size := 0;
         Lays[Result].align := Lays[l].align;
+        if (Lays[l].nOff >= 0) and (Lays[Result].size > 0) then
+        begin
+          Lays[Result].nOff := Lays[l].nOff; Lays[Result].nSz := Lays[l].nSz;
+          Lays[Result].nStart := Lays[l].nStart; Lays[Result].nAvail := Lays[l].nAvail;
+        end;
       end;
     tyClosure:
       begin
         ftys := ClosureFieldTys(Tys[tt].def);
-        LayStruct(Result, ftys);
+        LayStruct(Result, ftys, 1, False, 0);
       end;
     tyAdt:
       begin
         if Defs[Tys[tt].def].kind = dkStruct then
         begin
           ftys := AdtVariantFields(tt, Tys[tt].def);
-          LayStruct(Result, ftys);
+          par := Tys[tt].def;
+          reprC := Pos('repr(C', Nodes[Defs[par].node].at) > 0;
+          pinL := False;
+          if Length(ftys) > 0 then
+          begin
+            if IsUnsizedTy(ftys[Length(ftys) - 1]) then pinL := True;
+            for i := 0 to Length(Defs[par].gnames) - 1 do
+              if (Defs[par].gnames[i] <> 'Self') and ParamMaybeUnsized(par, i) then pinL := True;
+          end;
+          if reprC then LayStruct(Result, ftys, 0, False, 0) else LayStruct(Result, ftys, 1, pinL, 0);
+          if PreludeNiche(par, fi, nstart, navail) and (fi < Length(ftys)) then
+          begin
+            Lays[Result].nOff := Lays[Result].offsets[fi];
+            Lays[Result].nSz := Integer(LaySizeOf(ftys[fi]));
+            if Lays[Result].nSz > 8 then Lays[Result].nSz := 8;
+            Lays[Result].nStart := nstart;
+            Lays[Result].nAvail := navail;
+          end;
         end
         else
         begin
@@ -22405,40 +22596,155 @@ begin
             Lays[Result].align := 1;
             Exit;
           end;
-          mn := 0; mx := 0;
+          mn := VariantDisc(Defs[par].variants[0]); mx := mn;
           for v := 0 to Length(Defs[par].variants) - 1 do
           begin
             vd := VariantDisc(Defs[par].variants[v]);
             if vd < mn then mn := vd;
             if vd > mx then mx := vd;
           end;
-          if (mn >= -128) and (mx <= 127) then begin tagSz := 1; end
-          else if (mn >= -32768) and (mx <= 32767) then tagSz := 2
-          else if (mn >= -2147483648) and (mx <= 2147483647) then tagSz := 4
-          else tagSz := 8;
+          { type de l'etiquette : #[repr(u8)] etc., sinon le plus petit entier convenable }
+          reprTag := 0;
+          tagUnsigned := False;
+          rs := Nodes[Defs[par].node].at;
+          if Pos('repr(', rs) > 0 then
+          begin
+            if (Pos('repr(u8', rs) > 0) then begin reprTag := 1; tagUnsigned := True; end
+            else if Pos('repr(i8', rs) > 0 then reprTag := 1
+            else if Pos('repr(u16', rs) > 0 then begin reprTag := 2; tagUnsigned := True; end
+            else if Pos('repr(i16', rs) > 0 then reprTag := 2
+            else if Pos('repr(u32', rs) > 0 then begin reprTag := 4; tagUnsigned := True; end
+            else if Pos('repr(i32', rs) > 0 then reprTag := 4
+            else if Pos('repr(u64', rs) > 0 then begin reprTag := 8; tagUnsigned := True; end
+            else if Pos('repr(i64', rs) > 0 then reprTag := 8
+            else if Pos('repr(usize', rs) > 0 then begin reprTag := 8; tagUnsigned := True; end
+            else if Pos('repr(isize', rs) > 0 then reprTag := 8
+            else if Pos('repr(C', rs) > 0 then reprTag := 4;
+          end;
+          if reprTag > 0 then tagSz := reprTag
+          else if mn >= 0 then
+          begin
+            tagUnsigned := True;
+            if mx <= 255 then tagSz := 1
+            else if mx <= 65535 then tagSz := 2
+            else if mx <= 4294967295 then tagSz := 4
+            else tagSz := 8;
+          end
+          else
+          begin
+            if (mn >= -128) and (mx <= 127) then tagSz := 1
+            else if (mn >= -32768) and (mx <= 32767) then tagSz := 2
+            else if (mn >= -2147483648) and (mx <= 2147483647) then tagSz := 4
+            else tagSz := 8;
+          end;
+          nv := Length(Defs[par].variants);
+          SetLength(Lays[Result].vlay, nv);
+          { ---- mise en page "etiquetee" : variantes apres l'etiquette, alignements croissants ---- }
           Lays[Result].tagSize := tagSz;
-          Lays[Result].tagSigned := True;
-          SetLength(Lays[Result].vlay, Length(Defs[par].variants));
+          Lays[Result].tagSigned := not tagUnsigned;
           al := tagSz;
           maxSz := tagSz;
-          for v := 0 to Length(Defs[par].variants) - 1 do
+          for v := 0 to nv - 1 do
           begin
             ftys := AdtVariantFields(tt, Defs[par].variants[v]);
+            nl := NewTmpLay;
+            LayStruct(nl, ftys, 2, False, tagSz);
             Lays[Result].vlay[v].ftys := ftys;
             SetLength(Lays[Result].vlay[v].offsets, Length(ftys));
-            off := tagSz;
-            for i := 0 to Length(ftys) - 1 do
-            begin
-              l := LayoutOf(ftys[i]);
-              off := AlignUp(off, Lays[l].align);
-              Lays[Result].vlay[v].offsets[i] := off;
-              off := off + Lays[l].size;
-              if Lays[l].align > al then al := Lays[l].align;
-            end;
-            if off > maxSz then maxSz := off;
+            for i := 0 to Length(ftys) - 1 do Lays[Result].vlay[v].offsets[i] := Lays[nl].offsets[i];
+            if Lays[nl].size > maxSz then maxSz := Lays[nl].size;
+            if Lays[nl].align > al then al := Lays[nl].align;
           end;
           Lays[Result].align := al;
           Lays[Result].size := AlignUp(maxSz, al);
+          { niche de l'etiquette : valeurs au-dela du dernier discriminant }
+          Lays[Result].nOff := -1;
+          if tagSz < 8 then
+          begin
+            Lays[Result].nSz := tagSz;
+            Lays[Result].nStart := mx + 1;
+            Lays[Result].nAvail := (Int64(1) shl (tagSz * 8)) - (mx - mn + 1);
+            if Lays[Result].nAvail > 0 then Lays[Result].nOff := 0 else Lays[Result].nAvail := 0;
+          end;
+          { ---- mise en page par remplissage de niche : la plus grande variante porte la niche ---- }
+          canNiche := (reprTag = 0) and (nv >= 2);
+          for v := 0 to nv - 1 do
+            if VariantDisc(Defs[par].variants[v]) <> v then canNiche := False;
+          if canNiche then
+          begin
+            SetLength(vtmp, nv);
+            bigV := 0;
+            for v := 0 to nv - 1 do
+            begin
+              nl := NewTmpLay;
+              LayStruct(nl, AdtVariantFields(tt, Defs[par].variants[v]), 1, False, 0);
+              vtmp[v] := nl;
+              if Lays[nl].size >= Lays[vtmp[bigV]].size then bigV := v;
+            end;
+            canNiche := Lays[vtmp[bigV]].nOff >= 0;
+          end;
+          if canNiche then
+          begin
+            firstO := -1; lastO := -1;
+            for v := 0 to nv - 1 do
+              if v <> bigV then
+              begin
+                if firstO < 0 then firstO := v;
+                lastO := v;
+              end;
+            cnt := lastO - firstO + 1;
+            canNiche := Lays[vtmp[bigV]].nAvail >= cnt;
+          end;
+          if canNiche then
+          begin
+            al2 := 1;
+            for v := 0 to nv - 1 do
+              if Lays[vtmp[v]].align > al2 then al2 := Lays[vtmp[v]].align;
+            sz2 := AlignUp(Lays[vtmp[bigV]].size, al2);
+            nOffB := Lays[vtmp[bigV]].nOff;
+            nSzB := Lays[vtmp[bigV]].nSz;
+            SetLength(shifts, nv);
+            for v := 0 to nv - 1 do
+            begin
+              shifts[v] := 0;
+              if v = bigV then Continue;
+              if Lays[vtmp[v]].size <= nOffB then Continue;
+              shifts[v] := AlignUp(nOffB + nSzB, Lays[vtmp[v]].align);
+              if shifts[v] + Lays[vtmp[v]].size > sz2 then canNiche := False;
+            end;
+          end;
+          if canNiche then
+          begin
+            { choix : la plus petite ; a taille egale, celle qui garde le plus de niche }
+            availT := Lays[Result].nAvail;
+            availN := Lays[vtmp[bigV]].nAvail - cnt;
+            if (sz2 < Lays[Result].size) or ((sz2 = Lays[Result].size) and (availN > availT)) then
+            begin
+              Lays[Result].eNiche := True;
+              Lays[Result].eData := bigV;
+              Lays[Result].eFirst := firstO;
+              Lays[Result].eLast := lastO;
+              Lays[Result].eStart := Lays[vtmp[bigV]].nStart;
+              Lays[Result].eOff := nOffB;
+              Lays[Result].eSz := nSzB;
+              Lays[Result].size := sz2;
+              Lays[Result].align := al2;
+              Lays[Result].tagSize := 0;
+              Lays[Result].tagSigned := False;
+              Lays[Result].nOff := nOffB;
+              Lays[Result].nSz := nSzB;
+              Lays[Result].nStart := Lays[vtmp[bigV]].nStart + cnt;
+              Lays[Result].nAvail := availN;
+              if availN <= 0 then begin Lays[Result].nOff := -1; Lays[Result].nAvail := 0; end;
+              for v := 0 to nv - 1 do
+              begin
+                Lays[Result].vlay[v].ftys := Lays[vtmp[v]].ftys;
+                SetLength(Lays[Result].vlay[v].offsets, Length(Lays[vtmp[v]].ftys));
+                for i := 0 to Length(Lays[vtmp[v]].ftys) - 1 do
+                  Lays[Result].vlay[v].offsets[i] := Lays[vtmp[v]].offsets[i] + shifts[v];
+              end;
+            end;
+          end;
         end;
       end;
     tyNever, tyFnDef, tyStr, tySlice, tyDyn, tyErr, tyConst, tyOpaque: ;
@@ -23007,6 +23313,73 @@ begin
   Result := t;
 end;
 
+{ litteral entier LLVM de largeur bits, ramene dans l'intervalle signe }
+function LitW(v: Int64; bits: Integer): string;
+var
+  m, h: Int64;
+begin
+  if bits < 64 then
+  begin
+    m := Int64(1) shl bits;
+    v := v and (m - 1);
+    h := Int64(1) shl (bits - 1);
+    if v >= h then v := v - m;
+  end;
+  Result := IntToStr(v);
+end;
+
+{ lit la discrimination (valeur i64) d'une enum situee en ptr }
+function EmitReadDiscr(lay: Integer; const ptr: string): string;
+var
+  t, rel, isn, relz, dv, res, nl: string;
+  bits: Integer;
+begin
+  if Lays[lay].eNiche then
+  begin
+    bits := Lays[lay].eSz * 8;
+    nl := 'i' + IntToStr(bits);
+    t := NewT;
+    Emit(t + ' = load ' + nl + ', ptr ' + Gep(ptr, Lays[lay].eOff) + ', align 1');
+    rel := NewT;
+    Emit(rel + ' = sub ' + nl + ' ' + t + ', ' + LitW(Lays[lay].eStart, bits));
+    isn := NewT;
+    Emit(isn + ' = icmp ule ' + nl + ' ' + rel + ', ' + LitW(Lays[lay].eLast - Lays[lay].eFirst, bits));
+    relz := ZextTo(rel, bits, 64, False);
+    dv := NewT;
+    Emit(dv + ' = add i64 ' + relz + ', ' + IntToStr(Lays[lay].eFirst));
+    res := NewT;
+    Emit(res + ' = select i1 ' + isn + ', i64 ' + dv + ', i64 ' + IntToStr(Lays[lay].eData));
+    Result := res;
+  end
+  else
+  begin
+    bits := Lays[lay].tagSize * 8;
+    t := NewT;
+    Emit(t + ' = load i' + IntToStr(bits) + ', ptr ' + ptr + ', align ' + IntToStr(Lays[lay].tagSize));
+    Result := ZextTo(t, bits, 64, Lays[lay].tagSigned);
+  end;
+end;
+
+{ ecrit la discrimination de la variante vidx (valeur de discriminant disc) }
+procedure EmitWriteDiscr(lay: Integer; const ptr: string; vidx: Integer; disc: Int64);
+var
+  bits: Integer;
+begin
+  if Lays[lay].eNiche then
+  begin
+    if vidx = Lays[lay].eData then Exit;
+    bits := Lays[lay].eSz * 8;
+    Emit('store i' + IntToStr(bits) + ' ' + LitW(Lays[lay].eStart + (vidx - Lays[lay].eFirst), bits) + ', ptr ' +
+         Gep(ptr, Lays[lay].eOff) + ', align 1');
+  end
+  else
+  begin
+    bits := Lays[lay].tagSize * 8;
+    if bits = 0 then Exit;
+    Emit('store i' + IntToStr(bits) + ' ' + LitW(disc, bits) + ', ptr ' + ptr + ', align ' + IntToStr(Lays[lay].tagSize));
+  end;
+end;
+
 function ScalarBits(ty: Integer): Integer;
 begin
   ty := Shallow(ty);
@@ -23159,12 +23532,9 @@ begin
       { enum -> entier : lecture de la discrimination }
       pa := PlaceAddr(a.place);
       lay := LayoutOf(s);
-      tagSz := Lays[lay].tagSize;
-      tagLL := 'i' + IntToStr(tagSz * 8);
-      t := NewT;
-      Emit(t + ' = load ' + tagLL + ', ptr ' + pa.ptr + ', align ' + IntToStr(tagSz));
+      t := EmitReadDiscr(lay, pa.ptr);
       db := ScalarBits(d);
-      v := ZextTo(t, tagSz * 8, db, True);
+      v := ZextTo(t, 64, db, True);
       Emit('store ' + LLScalar(d) + ' ' + v + ', ptr ' + dstAddr + ', align ' + IntToStr(AlignOfTy(d)));
       Exit;
     end;
@@ -23363,9 +23733,7 @@ begin
         else
         begin
           vidx := rv.vidx;
-          tagSz := Lays[lay].tagSize;
-          tagLL := 'i' + IntToStr(tagSz * 8);
-          Emit('store ' + tagLL + ' ' + IntToStr(VariantDisc(rv.def)) + ', ptr ' + dstAddr + ', align ' + IntToStr(tagSz));
+          EmitWriteDiscr(lay, dstAddr, vidx, VariantDisc(rv.def));
           for i := 0 to Length(rv.ops) - 1 do
             StoreOperand(rv.ops[i], Gep(dstAddr, Lays[lay].vlay[vidx].offsets[i]), Lays[lay].vlay[vidx].ftys[i]);
         end;
@@ -23458,10 +23826,7 @@ begin
       begin
         sa := PlaceAddr(rv.place);
         lay := LayoutOf(sa.ty);
-        tagSz := Lays[lay].tagSize;
-        t := NewT;
-        Emit(t + ' = load i' + IntToStr(tagSz * 8) + ', ptr ' + sa.ptr + ', align ' + IntToStr(tagSz));
-        v := ZextTo(t, tagSz * 8, 64, True);
+        v := EmitReadDiscr(lay, sa.ptr);
         Emit('store i64 ' + v + ', ptr ' + da.ptr + ', align 8');
       end;
     rvLen:
@@ -23700,11 +24065,9 @@ begin
     v := OperandScalar(t.args[0]);
     i := LayoutOf(ty0);
     tag := Lays[i].tagSize;
-    if (Tys[Shallow(ty0)].k = tyAdt) and (Defs[Tys[Shallow(ty0)].def].kind = dkEnum) and (tag > 0) then
+    if (Tys[Shallow(ty0)].k = tyAdt) and (Defs[Tys[Shallow(ty0)].def].kind = dkEnum) and ((tag > 0) or Lays[i].eNiche) then
     begin
-      r := NewT;
-      Emit(r + ' = load i' + IntToStr(tag * 8) + ', ptr ' + v + ', align ' + IntToStr(tag));
-      v2 := ZextTo(r, tag * 8, 64, True);
+      v2 := EmitReadDiscr(i, v);
       Emit('store i64 ' + v2 + ', ptr ' + da.ptr + ', align 8');
     end
     else Emit('store i64 0, ptr ' + da.ptr + ', align 8');
@@ -27026,7 +27389,7 @@ begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl<T> Vec<T> {');
-  BufLn(b, '        pub fn new() -> Vec<T> { Vec { ptr: ::std::ptr::null_mut(), cap: 0, len: 0 } }');
+  BufLn(b, '        pub fn new() -> Vec<T> { Vec { ptr: ::std::mem::align_of::<T>() as *mut T, cap: 0, len: 0 } }');
   BufLn(b, '        pub fn with_capacity(n: usize) -> Vec<T> {');
   BufLn(b, '            let mut v = Vec::new();');
   BufLn(b, '            if n > 0 { v.grow_to(n); }');
@@ -32778,6 +33141,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: i8) -> i8 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: i8) -> i8 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: i8) -> i8 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: i8) -> i8 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: i8) -> i8 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: i8) -> i8 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { i8::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> i8 { unsafe { ::std::intrinsics::wrapping_sub(0 as i8, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> i8 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 8) as i8) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> i8 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 8) as i8) } }');
@@ -33015,6 +33381,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: i16) -> i16 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: i16) -> i16 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: i16) -> i16 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: i16) -> i16 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: i16) -> i16 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: i16) -> i16 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { i16::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> i16 { unsafe { ::std::intrinsics::wrapping_sub(0 as i16, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> i16 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 16) as i16) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> i16 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 16) as i16) } }');
@@ -33049,16 +33418,16 @@ begin
   BufLn(b, '        let mut acc: i16 = 1;');
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
+end;
+
+procedure PreludeChunk29(var b: TBuf);
+begin
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            if exp > 0 { base = match base.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '        }');
   BufLn(b, '        Some(acc)');
   BufLn(b, '    }');
   BufLn(b, '    pub fn saturating_add(self, o: i16) -> i16 { unsafe { ::std::intrinsics::saturating_add(self, o) } }');
-end;
-
-procedure PreludeChunk29(var b: TBuf);
-begin
   BufLn(b, '    pub fn saturating_sub(self, o: i16) -> i16 { unsafe { ::std::intrinsics::saturating_sub(self, o) } }');
   BufLn(b, '    pub fn saturating_mul(self, o: i16) -> i16 {');
   BufLn(b, '        match self.checked_mul(o) { Some(v) => v, None => if (self < 0) == (o < 0) { 32767 } else { -32768 } }');
@@ -33256,6 +33625,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: i32) -> i32 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: i32) -> i32 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: i32) -> i32 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: i32) -> i32 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: i32) -> i32 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: i32) -> i32 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { i32::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> i32 { unsafe { ::std::intrinsics::wrapping_sub(0 as i32, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> i32 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 32) as i32) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> i32 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 32) as i32) } }');
@@ -33350,6 +33722,10 @@ begin
   BufLn(b, '        }');
   BufLn(b, '        if neg { let lim = (i32::MAX as u64) + 1; if acc > lim { return Err(ParseIntError { kind: IntErrorKind::NegOverflow }); } if acc == lim { return Ok(i32::MIN); } Ok(0 - (acc as i32)) } else { if acc > (i32::MAX as u64) { return Err(ParseIntError { kind: IntErrorKind::PosOverflow }); } Ok(acc as i32) }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk30(var b: TBuf);
+begin
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 4] {');
   BufLn(b, '        let mut out = [0u8; 4];');
   BufLn(b, '        let mut i = 0usize;');
@@ -33359,10 +33735,6 @@ begin
   BufLn(b, '    pub fn to_le_bytes(self) -> [u8; 4] {');
   BufLn(b, '        let mut out = [0u8; 4];');
   BufLn(b, '        let mut i = 0usize;');
-end;
-
-procedure PreludeChunk30(var b: TBuf);
-begin
   BufLn(b, '        while i < 4 { out[i] = ((self >> (i * 8)) & 0xFF) as u8; i += 1; }');
   BufLn(b, '        out');
   BufLn(b, '    }');
@@ -33497,6 +33869,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: i64) -> i64 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: i64) -> i64 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: i64) -> i64 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: i64) -> i64 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: i64) -> i64 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: i64) -> i64 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { i64::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> i64 { unsafe { ::std::intrinsics::wrapping_sub(0 as i64, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> i64 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 64) as i64) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> i64 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 64) as i64) } }');
@@ -33651,6 +34026,10 @@ begin
   BufLn(b, '        if *self < *o { Ordering::Less } else if *self == *o { Ordering::Equal } else { Ordering::Greater }');
   BufLn(b, '    }');
   BufLn(b, '    fn max(self, o: i128) -> i128 { if o < self { self } else { o } }');
+end;
+
+procedure PreludeChunk31(var b: TBuf);
+begin
   BufLn(b, '    fn min(self, o: i128) -> i128 { if o < self { o } else { self } }');
   BufLn(b, '}');
   BufLn(b, 'impl Add for i128 { type Output = i128; fn add(self, o: i128) -> i128 { self + o } }');
@@ -33663,10 +34042,6 @@ begin
   BufLn(b, 'impl BitXor for i128 { type Output = i128; fn bitxor(self, o: i128) -> i128 { self ^ o } }');
   BufLn(b, 'impl Not for i128 { type Output = i128; fn not(self) -> i128 { !self } }');
   BufLn(b, 'impl Shl<u32> for i128 { type Output = i128; fn shl(self, o: u32) -> i128 { self << o } }');
-end;
-
-procedure PreludeChunk31(var b: TBuf);
-begin
   BufLn(b, 'impl Shr<u32> for i128 { type Output = i128; fn shr(self, o: u32) -> i128 { self >> o } }');
   BufLn(b, 'impl Shl<usize> for i128 { type Output = i128; fn shl(self, o: usize) -> i128 { self << o } }');
   BufLn(b, 'impl Shr<usize> for i128 { type Output = i128; fn shr(self, o: usize) -> i128 { self >> o } }');
@@ -33738,6 +34113,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: i128) -> i128 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: i128) -> i128 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: i128) -> i128 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: i128) -> i128 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: i128) -> i128 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: i128) -> i128 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { i128::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> i128 { unsafe { ::std::intrinsics::wrapping_sub(0 as i128, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> i128 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 128) as i128) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> i128 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 128) as i128) } }');
@@ -33952,6 +34330,10 @@ begin
   BufLn(b, 'impl Step for isize {');
   BufLn(b, '    fn forward(&self) -> isize { *self + 1 }');
   BufLn(b, '    fn backward(&self) -> isize { *self - 1 }');
+end;
+
+procedure PreludeChunk32(var b: TBuf);
+begin
   BufLn(b, '    fn steps_between(a: &isize, b: &isize) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
   BufLn(b, '    fn forward_n(&self, n: usize) -> isize { (*self as i128 + n as i128) as isize }');
   BufLn(b, '}');
@@ -33967,10 +34349,6 @@ begin
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
   BufLn(b, '            exp = exp / 2;');
-end;
-
-procedure PreludeChunk32(var b: TBuf);
-begin
   BufLn(b, '            base = base * base;');
   BufLn(b, '        }');
   BufLn(b, '        if exp == 1 { acc = acc * base; }');
@@ -33979,6 +34357,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: isize) -> isize { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: isize) -> isize { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: isize) -> isize { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: isize) -> isize { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: isize) -> isize { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: isize) -> isize { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { isize::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> isize { unsafe { ::std::intrinsics::wrapping_sub(0 as isize, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> isize { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 64) as isize) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> isize { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 64) as isize) } }');
@@ -34216,6 +34597,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: u8) -> u8 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: u8) -> u8 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: u8) -> u8 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: u8) -> u8 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: u8) -> u8 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: u8) -> u8 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { u8::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> u8 { unsafe { ::std::intrinsics::wrapping_sub(0 as u8, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> u8 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 8) as u8) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> u8 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 8) as u8) } }');
@@ -34250,6 +34634,10 @@ begin
   BufLn(b, '        let mut acc: u8 = 1;');
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
+end;
+
+procedure PreludeChunk33(var b: TBuf);
+begin
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            if exp > 0 { base = match base.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '        }');
@@ -34271,10 +34659,6 @@ begin
   BufLn(b, '    pub fn trailing_ones(self) -> u32 { (!self).trailing_zeros() }');
   BufLn(b, '    pub fn swap_bytes(self) -> u8 { unsafe { ::std::intrinsics::bswap(self) } }');
   BufLn(b, '    pub fn reverse_bits(self) -> u8 { unsafe { ::std::intrinsics::bitreverse(self) } }');
-end;
-
-procedure PreludeChunk33(var b: TBuf);
-begin
   BufLn(b, '    pub fn rotate_left(self, n: u32) -> u8 { unsafe { ::std::intrinsics::rotate_left(self, n) } }');
   BufLn(b, '    pub fn rotate_right(self, n: u32) -> u8 { unsafe { ::std::intrinsics::rotate_right(self, n) } }');
   BufLn(b, '    pub fn to_be(self) -> u8 { self.swap_bytes() }');
@@ -34454,6 +34838,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: u16) -> u16 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: u16) -> u16 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: u16) -> u16 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: u16) -> u16 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: u16) -> u16 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: u16) -> u16 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { u16::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> u16 { unsafe { ::std::intrinsics::wrapping_sub(0 as u16, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> u16 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 16) as u16) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> u16 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 16) as u16) } }');
@@ -34551,6 +34938,10 @@ begin
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 2] {');
   BufLn(b, '        let mut out = [0u8; 2];');
   BufLn(b, '        let mut i = 0usize;');
+end;
+
+procedure PreludeChunk34(var b: TBuf);
+begin
   BufLn(b, '        while i < 2 { out[i] = ((self >> ((2 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
   BufLn(b, '        out');
   BufLn(b, '    }');
@@ -34575,10 +34966,6 @@ begin
   BufLn(b, '    ');
   BufLn(b, '    pub fn is_power_of_two(self) -> bool { self != 0 && (self & (self - 1)) == 0 }');
   BufLn(b, '    pub fn next_power_of_two(self) -> u16 { let mut p: u16 = 1; while p < self { p = p * 2; } p }');
-end;
-
-procedure PreludeChunk34(var b: TBuf);
-begin
   BufLn(b, '    pub fn checked_next_power_of_two(self) -> Option<u16> { let mut p: u16 = 1; while p < self { p = match p.checked_mul(2) { Some(v) => v, None => return None }; } Some(p) }');
   BufLn(b, '    pub fn checked_neg(self) -> Option<u16> { if self == 0 { Some(0) } else { None } }');
   BufLn(b, '    pub fn div_ceil(self, o: u16) -> u16 { let d = self / o; if self % o > 0 { d + 1 } else { d } }');
@@ -34692,6 +35079,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: u32) -> u32 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: u32) -> u32 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: u32) -> u32 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: u32) -> u32 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: u32) -> u32 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: u32) -> u32 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { u32::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> u32 { unsafe { ::std::intrinsics::wrapping_sub(0 as u32, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> u32 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 32) as u32) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> u32 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 32) as u32) } }');
@@ -34852,6 +35242,10 @@ begin
   BufLn(b, 'impl Rem for u64 { type Output = u64; fn rem(self, o: u64) -> u64 { self % o } }');
   BufLn(b, 'impl BitAnd for u64 { type Output = u64; fn bitand(self, o: u64) -> u64 { self & o } }');
   BufLn(b, 'impl BitOr for u64 { type Output = u64; fn bitor(self, o: u64) -> u64 { self | o } }');
+end;
+
+procedure PreludeChunk35(var b: TBuf);
+begin
   BufLn(b, 'impl BitXor for u64 { type Output = u64; fn bitxor(self, o: u64) -> u64 { self ^ o } }');
   BufLn(b, 'impl Not for u64 { type Output = u64; fn not(self) -> u64 { !self } }');
   BufLn(b, 'impl Shl<u32> for u64 { type Output = u64; fn shl(self, o: u32) -> u64 { self << o } }');
@@ -34879,10 +35273,6 @@ begin
   BufLn(b, 'impl BitXorAssign for u64 { fn bitxor_assign(&mut self, o: u64) { *self = *self ^ o; } }');
   BufLn(b, 'impl<''a> AddAssign<&''a u64> for u64 { fn add_assign(&mut self, o: &''a u64) { *self = *self + *o; } }');
   BufLn(b, 'impl Sum for u64 {');
-end;
-
-procedure PreludeChunk35(var b: TBuf);
-begin
   BufLn(b, '    fn sum<I: Iterator<Item = u64>>(iter: I) -> u64 { let mut s: u64 = 0; let mut it = iter; while let Some(x) = it.next() { s = s + x; } s }');
   BufLn(b, '}');
   BufLn(b, 'impl<''a> Sum<&''a u64> for u64 {');
@@ -34930,6 +35320,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: u64) -> u64 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: u64) -> u64 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: u64) -> u64 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: u64) -> u64 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: u64) -> u64 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: u64) -> u64 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { u64::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> u64 { unsafe { ::std::intrinsics::wrapping_sub(0 as u64, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> u64 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 64) as u64) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> u64 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 64) as u64) } }');
@@ -35153,6 +35546,10 @@ begin
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> u128 {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: u128 = 1;');
+end;
+
+procedure PreludeChunk36(var b: TBuf);
+begin
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
   BufLn(b, '            exp = exp / 2;');
@@ -35164,6 +35561,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: u128) -> u128 { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: u128) -> u128 { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: u128) -> u128 { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: u128) -> u128 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: u128) -> u128 { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: u128) -> u128 { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { u128::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> u128 { unsafe { ::std::intrinsics::wrapping_sub(0 as u128, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> u128 { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 128) as u128) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> u128 { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 128) as u128) } }');
@@ -35183,10 +35583,6 @@ begin
   BufLn(b, '    pub fn checked_add(self, o: u128) -> Option<u128> { let (v, ov) = self.overflowing_add(o); if ov { None } else { Some(v) } }');
   BufLn(b, '    pub fn checked_sub(self, o: u128) -> Option<u128> { let (v, ov) = self.overflowing_sub(o); if ov { None } else { Some(v) } }');
   BufLn(b, '    pub fn checked_mul(self, o: u128) -> Option<u128> { let (v, ov) = self.overflowing_mul(o); if ov { None } else { Some(v) } }');
-end;
-
-procedure PreludeChunk36(var b: TBuf);
-begin
   BufLn(b, '    pub fn checked_div(self, o: u128) -> Option<u128> {');
   BufLn(b, '        if o == 0 { return None; }');
   BufLn(b, '        ');
@@ -35402,6 +35798,9 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: usize) -> usize { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: usize) -> usize { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: usize) -> usize { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
+  BufLn(b, '    pub fn wrapping_div(self, o: usize) -> usize { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { self } } }');
+  BufLn(b, '    pub fn wrapping_rem(self, o: usize) -> usize { match self.checked_rem(o) { Some(v) => v, None => if o == 0 { self % o } else { 0 } } }');
+  BufLn(b, '    pub fn saturating_div(self, o: usize) -> usize { match self.checked_div(o) { Some(v) => v, None => if o == 0 { self / o } else { usize::MAX } } }');
   BufLn(b, '    pub fn wrapping_neg(self) -> usize { unsafe { ::std::intrinsics::wrapping_sub(0 as usize, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> usize { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 64) as usize) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> usize { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 64) as usize) } }');
@@ -35451,6 +35850,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn count_ones(self) -> u32 { unsafe { ::std::intrinsics::ctpop(self) } }');
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 64 - self.count_ones() }');
+end;
+
+procedure PreludeChunk37(var b: TBuf);
+begin
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
@@ -35487,10 +35890,6 @@ begin
   BufLn(b, '        let mut neg = false;');
   BufLn(b, '        if b[0] == 43u8 { i = 1; } else if b[0] == 45u8 { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); neg = true; i = 1; }');
   BufLn(b, '        if i >= b.len() { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); }');
-end;
-
-procedure PreludeChunk37(var b: TBuf);
-begin
   BufLn(b, '        let mut acc: u64 = 0;');
   BufLn(b, '        while i < b.len() {');
   BufLn(b, '            let d = match (b[i] as char).to_digit(radix) { Some(d) => d, None => return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }) };');
@@ -35755,6 +36154,10 @@ begin
   BufLn(b, '    pub fn min(self, o: f32) -> f32 { if self != self { o } else if o != o { self } else if self < o { self } else { o } }');
   BufLn(b, '    pub fn max(self, o: f32) -> f32 { if self != self { o } else if o != o { self } else if self > o { self } else { o } }');
   BufLn(b, '    pub fn clamp(self, lo: f32, hi: f32) -> f32 { if self < lo { lo } else if self > hi { hi } else { self } }');
+end;
+
+procedure PreludeChunk38(var b: TBuf);
+begin
   BufLn(b, '    pub fn is_nan(self) -> bool { self != self }');
   BufLn(b, '    pub fn is_infinite(self) -> bool { self == 1.0 / 0.0 || self == -1.0 / 0.0 }');
   BufLn(b, '    pub fn is_finite(self) -> bool { !self.is_nan() && !self.is_infinite() }');
@@ -35791,10 +36194,6 @@ begin
   BufLn(b, 'impl From<i16> for i32 { fn from(x: i16) -> i32 { x as i32 } }');
   BufLn(b, 'impl From<i16> for i64 { fn from(x: i16) -> i64 { x as i64 } }');
   BufLn(b, 'impl From<i16> for i128 { fn from(x: i16) -> i128 { x as i128 } }');
-end;
-
-procedure PreludeChunk38(var b: TBuf);
-begin
   BufLn(b, 'impl From<i16> for isize { fn from(x: i16) -> isize { x as isize } }');
   BufLn(b, 'impl TryFrom<i16> for u8 { type Error = TryFromIntError; fn try_from(x: i16) -> Result2<u8, TryFromIntError> { if (x as i128) < (u8::MIN as i128) || (x as i128) > (u8::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u8) } } }');
   BufLn(b, 'impl TryFrom<i16> for u16 { type Error = TryFromIntError; fn try_from(x: i16) -> Result2<u16, TryFromIntError> { if (x as i128) < (u16::MIN as i128) || (x as i128) > (u16::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u16) } } }');
@@ -35935,6 +36334,585 @@ begin
   BufLn(b, 'impl From<u16> for f64 { fn from(x: u16) -> f64 { x as f64 } }');
   BufLn(b, 'impl From<u32> for f64 { fn from(x: u32) -> f64 { x as f64 } }');
   BufLn(b, 'impl From<f32> for f64 { fn from(x: f32) -> f64 { x as f64 } }');
+  BufLn(b, '');
+  BufLn(b, '    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]');
+  BufLn(b, '    pub struct Wrapping<T>(pub T);');
+  BufLn(b, '    impl<T: Debug> Debug for Wrapping<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Debug::fmt(&self.0, f) } }');
+  BufLn(b, '    impl<T: Display> Display for Wrapping<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Display::fmt(&self.0, f) } }');
+  BufLn(b, '    impl<T: LowerHex> LowerHex for Wrapping<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { LowerHex::fmt(&self.0, f) } }');
+  BufLn(b, '    impl<T: UpperHex> UpperHex for Wrapping<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { UpperHex::fmt(&self.0, f) } }');
+  BufLn(b, '    impl<T: Binary> Binary for Wrapping<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Binary::fmt(&self.0, f) } }');
+  BufLn(b, '    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]');
+  BufLn(b, '    pub struct Saturating<T>(pub T);');
+  BufLn(b, '    impl<T: Debug> Debug for Saturating<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Debug::fmt(&self.0, f) } }');
+  BufLn(b, '    impl<T: Display> Display for Saturating<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Display::fmt(&self.0, f) } }');
+  BufLn(b, '    ');
+  BufLn(b, 'impl Add for Wrapping<i8> { type Output = Wrapping<i8>; fn add(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<i8>> for Wrapping<i8> { type Output = Wrapping<i8>; fn add(self, o: &''a Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<i8> { fn add_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<i8> for Wrapping<i8> { fn add_assign(&mut self, o: i8) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<i8> { type Output = Saturating<i8>; fn add(self, o: Saturating<i8>) -> Saturating<i8> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<i8> { fn add_assign(&mut self, o: Saturating<i8>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<i8> { type Output = Wrapping<i8>; fn sub(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<i8>> for Wrapping<i8> { type Output = Wrapping<i8>; fn sub(self, o: &''a Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<i8> { fn sub_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<i8> for Wrapping<i8> { fn sub_assign(&mut self, o: i8) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<i8> { type Output = Saturating<i8>; fn sub(self, o: Saturating<i8>) -> Saturating<i8> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<i8> { fn sub_assign(&mut self, o: Saturating<i8>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<i8> { type Output = Wrapping<i8>; fn mul(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<i8>> for Wrapping<i8> { type Output = Wrapping<i8>; fn mul(self, o: &''a Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<i8> { fn mul_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<i8> for Wrapping<i8> { fn mul_assign(&mut self, o: i8) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<i8> { type Output = Saturating<i8>; fn mul(self, o: Saturating<i8>) -> Saturating<i8> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<i8> { fn mul_assign(&mut self, o: Saturating<i8>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<i8> { type Output = Wrapping<i8>; fn div(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<i8>> for Wrapping<i8> { type Output = Wrapping<i8>; fn div(self, o: &''a Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<i8> { fn div_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<i8> for Wrapping<i8> { fn div_assign(&mut self, o: i8) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<i8> { type Output = Saturating<i8>; fn div(self, o: Saturating<i8>) -> Saturating<i8> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<i8> { fn div_assign(&mut self, o: Saturating<i8>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<i8> { type Output = Wrapping<i8>; fn rem(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<i8>> for Wrapping<i8> { type Output = Wrapping<i8>; fn rem(self, o: &''a Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<i8> { fn rem_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<i8> for Wrapping<i8> { fn rem_assign(&mut self, o: i8) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<i8> { type Output = Wrapping<i8>; fn bitand(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<i8> { fn bitand_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<i8> { type Output = Wrapping<i8>; fn bitor(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<i8> { fn bitor_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<i8> { type Output = Wrapping<i8>; fn bitxor(self, o: Wrapping<i8>) -> Wrapping<i8> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<i8> { fn bitxor_assign(&mut self, o: Wrapping<i8>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<i8> { type Output = Wrapping<i8>; fn shl(self, n: usize) -> Wrapping<i8> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<i8> { type Output = Wrapping<i8>; fn shr(self, n: usize) -> Wrapping<i8> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<i8> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<i8> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<i8> { type Output = Wrapping<i8>; fn not(self) -> Wrapping<i8> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<i8> { type Output = Wrapping<i8>; fn neg(self) -> Wrapping<i8> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<i8> { fn sum<I: Iterator<Item = Wrapping<i8>>>(iter: I) -> Wrapping<i8> { let mut a = Wrapping(0 as i8); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<i8> { pub const MIN: Wrapping<i8> = Wrapping(i8::MIN); pub const MAX: Wrapping<i8> = Wrapping(i8::MAX); pub fn pow(self, e: u32) -> Wrapping<i8> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<i8> { pub const MIN: NonZero<i8> = NonZero(i8::MIN); pub const MAX: NonZero<i8> = NonZero(i8::MAX); pub const fn new(n: i8) -> Option<NonZero<i8>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> i8 { self.0 } pub fn checked_add(self, o: i8) -> Option<NonZero<i8>> { match self.0.checked_add(o) { Some(v) => NonZero::<i8>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<i8>) -> Option<NonZero<i8>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<i8>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<i8>> for i8 { fn from(n: NonZero<i8>) -> i8 { n.0 } }');
+  BufLn(b, 'impl TryFrom<i8> for NonZero<i8> { type Error = TryFromIntError; fn try_from(n: i8) -> Result2<NonZero<i8>, TryFromIntError> { match NonZero::<i8>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroI8 = NonZero<i8>;');
+  BufLn(b, 'impl Add for Wrapping<i16> { type Output = Wrapping<i16>; fn add(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<i16>> for Wrapping<i16> { type Output = Wrapping<i16>; fn add(self, o: &''a Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<i16> { fn add_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<i16> for Wrapping<i16> { fn add_assign(&mut self, o: i16) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<i16> { type Output = Saturating<i16>; fn add(self, o: Saturating<i16>) -> Saturating<i16> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<i16> { fn add_assign(&mut self, o: Saturating<i16>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<i16> { type Output = Wrapping<i16>; fn sub(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<i16>> for Wrapping<i16> { type Output = Wrapping<i16>; fn sub(self, o: &''a Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<i16> { fn sub_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<i16> for Wrapping<i16> { fn sub_assign(&mut self, o: i16) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<i16> { type Output = Saturating<i16>; fn sub(self, o: Saturating<i16>) -> Saturating<i16> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<i16> { fn sub_assign(&mut self, o: Saturating<i16>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<i16> { type Output = Wrapping<i16>; fn mul(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<i16>> for Wrapping<i16> { type Output = Wrapping<i16>; fn mul(self, o: &''a Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<i16> { fn mul_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<i16> for Wrapping<i16> { fn mul_assign(&mut self, o: i16) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<i16> { type Output = Saturating<i16>; fn mul(self, o: Saturating<i16>) -> Saturating<i16> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<i16> { fn mul_assign(&mut self, o: Saturating<i16>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<i16> { type Output = Wrapping<i16>; fn div(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<i16>> for Wrapping<i16> { type Output = Wrapping<i16>; fn div(self, o: &''a Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<i16> { fn div_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<i16> for Wrapping<i16> { fn div_assign(&mut self, o: i16) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<i16> { type Output = Saturating<i16>; fn div(self, o: Saturating<i16>) -> Saturating<i16> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<i16> { fn div_assign(&mut self, o: Saturating<i16>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<i16> { type Output = Wrapping<i16>; fn rem(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<i16>> for Wrapping<i16> { type Output = Wrapping<i16>; fn rem(self, o: &''a Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<i16> { fn rem_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<i16> for Wrapping<i16> { fn rem_assign(&mut self, o: i16) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<i16> { type Output = Wrapping<i16>; fn bitand(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<i16> { fn bitand_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<i16> { type Output = Wrapping<i16>; fn bitor(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<i16> { fn bitor_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<i16> { type Output = Wrapping<i16>; fn bitxor(self, o: Wrapping<i16>) -> Wrapping<i16> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<i16> { fn bitxor_assign(&mut self, o: Wrapping<i16>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<i16> { type Output = Wrapping<i16>; fn shl(self, n: usize) -> Wrapping<i16> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<i16> { type Output = Wrapping<i16>; fn shr(self, n: usize) -> Wrapping<i16> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<i16> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<i16> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<i16> { type Output = Wrapping<i16>; fn not(self) -> Wrapping<i16> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<i16> { type Output = Wrapping<i16>; fn neg(self) -> Wrapping<i16> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<i16> { fn sum<I: Iterator<Item = Wrapping<i16>>>(iter: I) -> Wrapping<i16> { let mut a = Wrapping(0 as i16); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<i16> { pub const MIN: Wrapping<i16> = Wrapping(i16::MIN); pub const MAX: Wrapping<i16> = Wrapping(i16::MAX); pub fn pow(self, e: u32) -> Wrapping<i16> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<i16> { pub const MIN: NonZero<i16> = NonZero(i16::MIN); pub const MAX: NonZero<i16> = NonZero(i16::MAX); pub const fn new(n: i16) -> Option<NonZero<i16>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> i16 { self.0 } pub fn checked_add(self, o: i16) -> Option<NonZero<i16>> { match self.0.checked_add(o) { Some(v) => NonZero::<i16>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<i16>) -> Option<NonZero<i16>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<i16>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<i16>> for i16 { fn from(n: NonZero<i16>) -> i16 { n.0 } }');
+  BufLn(b, 'impl TryFrom<i16> for NonZero<i16> { type Error = TryFromIntError; fn try_from(n: i16) -> Result2<NonZero<i16>, TryFromIntError> { match NonZero::<i16>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroI16 = NonZero<i16>;');
+  BufLn(b, 'impl Add for Wrapping<i32> { type Output = Wrapping<i32>; fn add(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn add(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<i32> { fn add_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<i32> for Wrapping<i32> { fn add_assign(&mut self, o: i32) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<i32> { type Output = Saturating<i32>; fn add(self, o: Saturating<i32>) -> Saturating<i32> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<i32> { fn add_assign(&mut self, o: Saturating<i32>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<i32> { type Output = Wrapping<i32>; fn sub(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn sub(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<i32> { fn sub_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<i32> for Wrapping<i32> { fn sub_assign(&mut self, o: i32) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<i32> { type Output = Saturating<i32>; fn sub(self, o: Saturating<i32>) -> Saturating<i32> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<i32> { fn sub_assign(&mut self, o: Saturating<i32>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<i32> { type Output = Wrapping<i32>; fn mul(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn mul(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<i32> { fn mul_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<i32> for Wrapping<i32> { fn mul_assign(&mut self, o: i32) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<i32> { type Output = Saturating<i32>; fn mul(self, o: Saturating<i32>) -> Saturating<i32> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<i32> { fn mul_assign(&mut self, o: Saturating<i32>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<i32> { type Output = Wrapping<i32>; fn div(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_div(o.0)) } }');
+end;
+
+procedure PreludeChunk39(var b: TBuf);
+begin
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn div(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<i32> { fn div_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<i32> for Wrapping<i32> { fn div_assign(&mut self, o: i32) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<i32> { type Output = Saturating<i32>; fn div(self, o: Saturating<i32>) -> Saturating<i32> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<i32> { fn div_assign(&mut self, o: Saturating<i32>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<i32> { type Output = Wrapping<i32>; fn rem(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn rem(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<i32> { fn rem_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<i32> for Wrapping<i32> { fn rem_assign(&mut self, o: i32) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<i32> { type Output = Wrapping<i32>; fn bitand(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<i32> { fn bitand_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<i32> { type Output = Wrapping<i32>; fn bitor(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<i32> { fn bitor_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<i32> { type Output = Wrapping<i32>; fn bitxor(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<i32> { fn bitxor_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<i32> { type Output = Wrapping<i32>; fn shl(self, n: usize) -> Wrapping<i32> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<i32> { type Output = Wrapping<i32>; fn shr(self, n: usize) -> Wrapping<i32> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<i32> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<i32> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<i32> { type Output = Wrapping<i32>; fn not(self) -> Wrapping<i32> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<i32> { type Output = Wrapping<i32>; fn neg(self) -> Wrapping<i32> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<i32> { fn sum<I: Iterator<Item = Wrapping<i32>>>(iter: I) -> Wrapping<i32> { let mut a = Wrapping(0 as i32); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<i32> { pub const MIN: Wrapping<i32> = Wrapping(i32::MIN); pub const MAX: Wrapping<i32> = Wrapping(i32::MAX); pub fn pow(self, e: u32) -> Wrapping<i32> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<i32> { pub const MIN: NonZero<i32> = NonZero(i32::MIN); pub const MAX: NonZero<i32> = NonZero(i32::MAX); pub const fn new(n: i32) -> Option<NonZero<i32>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> i32 { self.0 } pub fn checked_add(self, o: i32) -> Option<NonZero<i32>> { match self.0.checked_add(o) { Some(v) => NonZero::<i32>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<i32>) -> Option<NonZero<i32>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<i32>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<i32>> for i32 { fn from(n: NonZero<i32>) -> i32 { n.0 } }');
+  BufLn(b, 'impl TryFrom<i32> for NonZero<i32> { type Error = TryFromIntError; fn try_from(n: i32) -> Result2<NonZero<i32>, TryFromIntError> { match NonZero::<i32>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroI32 = NonZero<i32>;');
+  BufLn(b, 'impl Add for Wrapping<i64> { type Output = Wrapping<i64>; fn add(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<i64>> for Wrapping<i64> { type Output = Wrapping<i64>; fn add(self, o: &''a Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<i64> { fn add_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<i64> for Wrapping<i64> { fn add_assign(&mut self, o: i64) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<i64> { type Output = Saturating<i64>; fn add(self, o: Saturating<i64>) -> Saturating<i64> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<i64> { fn add_assign(&mut self, o: Saturating<i64>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<i64> { type Output = Wrapping<i64>; fn sub(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<i64>> for Wrapping<i64> { type Output = Wrapping<i64>; fn sub(self, o: &''a Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<i64> { fn sub_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<i64> for Wrapping<i64> { fn sub_assign(&mut self, o: i64) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<i64> { type Output = Saturating<i64>; fn sub(self, o: Saturating<i64>) -> Saturating<i64> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<i64> { fn sub_assign(&mut self, o: Saturating<i64>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<i64> { type Output = Wrapping<i64>; fn mul(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<i64>> for Wrapping<i64> { type Output = Wrapping<i64>; fn mul(self, o: &''a Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<i64> { fn mul_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<i64> for Wrapping<i64> { fn mul_assign(&mut self, o: i64) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<i64> { type Output = Saturating<i64>; fn mul(self, o: Saturating<i64>) -> Saturating<i64> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<i64> { fn mul_assign(&mut self, o: Saturating<i64>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<i64> { type Output = Wrapping<i64>; fn div(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<i64>> for Wrapping<i64> { type Output = Wrapping<i64>; fn div(self, o: &''a Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<i64> { fn div_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<i64> for Wrapping<i64> { fn div_assign(&mut self, o: i64) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<i64> { type Output = Saturating<i64>; fn div(self, o: Saturating<i64>) -> Saturating<i64> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<i64> { fn div_assign(&mut self, o: Saturating<i64>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<i64> { type Output = Wrapping<i64>; fn rem(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<i64>> for Wrapping<i64> { type Output = Wrapping<i64>; fn rem(self, o: &''a Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<i64> { fn rem_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<i64> for Wrapping<i64> { fn rem_assign(&mut self, o: i64) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<i64> { type Output = Wrapping<i64>; fn bitand(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<i64> { fn bitand_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<i64> { type Output = Wrapping<i64>; fn bitor(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<i64> { fn bitor_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<i64> { type Output = Wrapping<i64>; fn bitxor(self, o: Wrapping<i64>) -> Wrapping<i64> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<i64> { fn bitxor_assign(&mut self, o: Wrapping<i64>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<i64> { type Output = Wrapping<i64>; fn shl(self, n: usize) -> Wrapping<i64> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<i64> { type Output = Wrapping<i64>; fn shr(self, n: usize) -> Wrapping<i64> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<i64> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<i64> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<i64> { type Output = Wrapping<i64>; fn not(self) -> Wrapping<i64> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<i64> { type Output = Wrapping<i64>; fn neg(self) -> Wrapping<i64> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<i64> { fn sum<I: Iterator<Item = Wrapping<i64>>>(iter: I) -> Wrapping<i64> { let mut a = Wrapping(0 as i64); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<i64> { pub const MIN: Wrapping<i64> = Wrapping(i64::MIN); pub const MAX: Wrapping<i64> = Wrapping(i64::MAX); pub fn pow(self, e: u32) -> Wrapping<i64> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<i64> { pub const MIN: NonZero<i64> = NonZero(i64::MIN); pub const MAX: NonZero<i64> = NonZero(i64::MAX); pub const fn new(n: i64) -> Option<NonZero<i64>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> i64 { self.0 } pub fn checked_add(self, o: i64) -> Option<NonZero<i64>> { match self.0.checked_add(o) { Some(v) => NonZero::<i64>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<i64>) -> Option<NonZero<i64>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<i64>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<i64>> for i64 { fn from(n: NonZero<i64>) -> i64 { n.0 } }');
+  BufLn(b, 'impl TryFrom<i64> for NonZero<i64> { type Error = TryFromIntError; fn try_from(n: i64) -> Result2<NonZero<i64>, TryFromIntError> { match NonZero::<i64>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroI64 = NonZero<i64>;');
+  BufLn(b, 'impl Add for Wrapping<i128> { type Output = Wrapping<i128>; fn add(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<i128>> for Wrapping<i128> { type Output = Wrapping<i128>; fn add(self, o: &''a Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<i128> { fn add_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<i128> for Wrapping<i128> { fn add_assign(&mut self, o: i128) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<i128> { type Output = Saturating<i128>; fn add(self, o: Saturating<i128>) -> Saturating<i128> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<i128> { fn add_assign(&mut self, o: Saturating<i128>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<i128> { type Output = Wrapping<i128>; fn sub(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<i128>> for Wrapping<i128> { type Output = Wrapping<i128>; fn sub(self, o: &''a Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<i128> { fn sub_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<i128> for Wrapping<i128> { fn sub_assign(&mut self, o: i128) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<i128> { type Output = Saturating<i128>; fn sub(self, o: Saturating<i128>) -> Saturating<i128> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<i128> { fn sub_assign(&mut self, o: Saturating<i128>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<i128> { type Output = Wrapping<i128>; fn mul(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<i128>> for Wrapping<i128> { type Output = Wrapping<i128>; fn mul(self, o: &''a Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<i128> { fn mul_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<i128> for Wrapping<i128> { fn mul_assign(&mut self, o: i128) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<i128> { type Output = Saturating<i128>; fn mul(self, o: Saturating<i128>) -> Saturating<i128> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<i128> { fn mul_assign(&mut self, o: Saturating<i128>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<i128> { type Output = Wrapping<i128>; fn div(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<i128>> for Wrapping<i128> { type Output = Wrapping<i128>; fn div(self, o: &''a Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<i128> { fn div_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<i128> for Wrapping<i128> { fn div_assign(&mut self, o: i128) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<i128> { type Output = Saturating<i128>; fn div(self, o: Saturating<i128>) -> Saturating<i128> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<i128> { fn div_assign(&mut self, o: Saturating<i128>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<i128> { type Output = Wrapping<i128>; fn rem(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<i128>> for Wrapping<i128> { type Output = Wrapping<i128>; fn rem(self, o: &''a Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<i128> { fn rem_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<i128> for Wrapping<i128> { fn rem_assign(&mut self, o: i128) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<i128> { type Output = Wrapping<i128>; fn bitand(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<i128> { fn bitand_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<i128> { type Output = Wrapping<i128>; fn bitor(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<i128> { fn bitor_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<i128> { type Output = Wrapping<i128>; fn bitxor(self, o: Wrapping<i128>) -> Wrapping<i128> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<i128> { fn bitxor_assign(&mut self, o: Wrapping<i128>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<i128> { type Output = Wrapping<i128>; fn shl(self, n: usize) -> Wrapping<i128> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<i128> { type Output = Wrapping<i128>; fn shr(self, n: usize) -> Wrapping<i128> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<i128> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<i128> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<i128> { type Output = Wrapping<i128>; fn not(self) -> Wrapping<i128> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<i128> { type Output = Wrapping<i128>; fn neg(self) -> Wrapping<i128> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<i128> { fn sum<I: Iterator<Item = Wrapping<i128>>>(iter: I) -> Wrapping<i128> { let mut a = Wrapping(0 as i128); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<i128> { pub const MIN: Wrapping<i128> = Wrapping(i128::MIN); pub const MAX: Wrapping<i128> = Wrapping(i128::MAX); pub fn pow(self, e: u32) -> Wrapping<i128> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<i128> { pub const MIN: NonZero<i128> = NonZero(i128::MIN); pub const MAX: NonZero<i128> = NonZero(i128::MAX); pub const fn new(n: i128) -> Option<NonZero<i128>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> i128 { self.0 } pub fn checked_add(self, o: i128) -> Option<NonZero<i128>> { match self.0.checked_add(o) { Some(v) => NonZero::<i128>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<i128>) -> Option<NonZero<i128>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<i128>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<i128>> for i128 { fn from(n: NonZero<i128>) -> i128 { n.0 } }');
+  BufLn(b, 'impl TryFrom<i128> for NonZero<i128> { type Error = TryFromIntError; fn try_from(n: i128) -> Result2<NonZero<i128>, TryFromIntError> { match NonZero::<i128>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroI128 = NonZero<i128>;');
+  BufLn(b, 'impl Add for Wrapping<isize> { type Output = Wrapping<isize>; fn add(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<isize>> for Wrapping<isize> { type Output = Wrapping<isize>; fn add(self, o: &''a Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<isize> { fn add_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<isize> for Wrapping<isize> { fn add_assign(&mut self, o: isize) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<isize> { type Output = Saturating<isize>; fn add(self, o: Saturating<isize>) -> Saturating<isize> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<isize> { fn add_assign(&mut self, o: Saturating<isize>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<isize> { type Output = Wrapping<isize>; fn sub(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<isize>> for Wrapping<isize> { type Output = Wrapping<isize>; fn sub(self, o: &''a Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<isize> { fn sub_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<isize> for Wrapping<isize> { fn sub_assign(&mut self, o: isize) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<isize> { type Output = Saturating<isize>; fn sub(self, o: Saturating<isize>) -> Saturating<isize> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<isize> { fn sub_assign(&mut self, o: Saturating<isize>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<isize> { type Output = Wrapping<isize>; fn mul(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<isize>> for Wrapping<isize> { type Output = Wrapping<isize>; fn mul(self, o: &''a Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<isize> { fn mul_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<isize> for Wrapping<isize> { fn mul_assign(&mut self, o: isize) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<isize> { type Output = Saturating<isize>; fn mul(self, o: Saturating<isize>) -> Saturating<isize> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<isize> { fn mul_assign(&mut self, o: Saturating<isize>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<isize> { type Output = Wrapping<isize>; fn div(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<isize>> for Wrapping<isize> { type Output = Wrapping<isize>; fn div(self, o: &''a Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<isize> { fn div_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<isize> for Wrapping<isize> { fn div_assign(&mut self, o: isize) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<isize> { type Output = Saturating<isize>; fn div(self, o: Saturating<isize>) -> Saturating<isize> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<isize> { fn div_assign(&mut self, o: Saturating<isize>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<isize> { type Output = Wrapping<isize>; fn rem(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<isize>> for Wrapping<isize> { type Output = Wrapping<isize>; fn rem(self, o: &''a Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<isize> { fn rem_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<isize> for Wrapping<isize> { fn rem_assign(&mut self, o: isize) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<isize> { type Output = Wrapping<isize>; fn bitand(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<isize> { fn bitand_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<isize> { type Output = Wrapping<isize>; fn bitor(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<isize> { fn bitor_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<isize> { type Output = Wrapping<isize>; fn bitxor(self, o: Wrapping<isize>) -> Wrapping<isize> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<isize> { fn bitxor_assign(&mut self, o: Wrapping<isize>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<isize> { type Output = Wrapping<isize>; fn shl(self, n: usize) -> Wrapping<isize> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<isize> { type Output = Wrapping<isize>; fn shr(self, n: usize) -> Wrapping<isize> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<isize> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<isize> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<isize> { type Output = Wrapping<isize>; fn not(self) -> Wrapping<isize> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<isize> { type Output = Wrapping<isize>; fn neg(self) -> Wrapping<isize> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<isize> { fn sum<I: Iterator<Item = Wrapping<isize>>>(iter: I) -> Wrapping<isize> { let mut a = Wrapping(0 as isize); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<isize> { pub const MIN: Wrapping<isize> = Wrapping(isize::MIN); pub const MAX: Wrapping<isize> = Wrapping(isize::MAX); pub fn pow(self, e: u32) -> Wrapping<isize> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<isize> { pub const MIN: NonZero<isize> = NonZero(isize::MIN); pub const MAX: NonZero<isize> = NonZero(isize::MAX); pub const fn new(n: isize) -> Option<NonZero<isize>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> isize { self.0 } pub fn checked_add(self, o: isize) -> Option<NonZero<isize>> { match self.0.checked_add(o) { Some(v) => NonZero::<isize>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<isize>) -> Option<NonZero<isize>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<isize>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<isize>> for isize { fn from(n: NonZero<isize>) -> isize { n.0 } }');
+  BufLn(b, 'impl TryFrom<isize> for NonZero<isize> { type Error = TryFromIntError; fn try_from(n: isize) -> Result2<NonZero<isize>, TryFromIntError> { match NonZero::<isize>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroIsize = NonZero<isize>;');
+  BufLn(b, 'impl Add for Wrapping<u8> { type Output = Wrapping<u8>; fn add(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<u8>> for Wrapping<u8> { type Output = Wrapping<u8>; fn add(self, o: &''a Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<u8> { fn add_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<u8> for Wrapping<u8> { fn add_assign(&mut self, o: u8) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<u8> { type Output = Saturating<u8>; fn add(self, o: Saturating<u8>) -> Saturating<u8> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<u8> { fn add_assign(&mut self, o: Saturating<u8>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<u8> { type Output = Wrapping<u8>; fn sub(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<u8>> for Wrapping<u8> { type Output = Wrapping<u8>; fn sub(self, o: &''a Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<u8> { fn sub_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<u8> for Wrapping<u8> { fn sub_assign(&mut self, o: u8) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<u8> { type Output = Saturating<u8>; fn sub(self, o: Saturating<u8>) -> Saturating<u8> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<u8> { fn sub_assign(&mut self, o: Saturating<u8>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<u8> { type Output = Wrapping<u8>; fn mul(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<u8>> for Wrapping<u8> { type Output = Wrapping<u8>; fn mul(self, o: &''a Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<u8> { fn mul_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<u8> for Wrapping<u8> { fn mul_assign(&mut self, o: u8) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<u8> { type Output = Saturating<u8>; fn mul(self, o: Saturating<u8>) -> Saturating<u8> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<u8> { fn mul_assign(&mut self, o: Saturating<u8>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<u8> { type Output = Wrapping<u8>; fn div(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<u8>> for Wrapping<u8> { type Output = Wrapping<u8>; fn div(self, o: &''a Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<u8> { fn div_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<u8> for Wrapping<u8> { fn div_assign(&mut self, o: u8) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<u8> { type Output = Saturating<u8>; fn div(self, o: Saturating<u8>) -> Saturating<u8> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<u8> { fn div_assign(&mut self, o: Saturating<u8>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<u8> { type Output = Wrapping<u8>; fn rem(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<u8>> for Wrapping<u8> { type Output = Wrapping<u8>; fn rem(self, o: &''a Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<u8> { fn rem_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<u8> for Wrapping<u8> { fn rem_assign(&mut self, o: u8) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<u8> { type Output = Wrapping<u8>; fn bitand(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<u8> { fn bitand_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<u8> { type Output = Wrapping<u8>; fn bitor(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<u8> { fn bitor_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<u8> { type Output = Wrapping<u8>; fn bitxor(self, o: Wrapping<u8>) -> Wrapping<u8> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<u8> { fn bitxor_assign(&mut self, o: Wrapping<u8>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<u8> { type Output = Wrapping<u8>; fn shl(self, n: usize) -> Wrapping<u8> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<u8> { type Output = Wrapping<u8>; fn shr(self, n: usize) -> Wrapping<u8> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<u8> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<u8> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<u8> { type Output = Wrapping<u8>; fn not(self) -> Wrapping<u8> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<u8> { type Output = Wrapping<u8>; fn neg(self) -> Wrapping<u8> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<u8> { fn sum<I: Iterator<Item = Wrapping<u8>>>(iter: I) -> Wrapping<u8> { let mut a = Wrapping(0 as u8); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<u8> { pub const MIN: Wrapping<u8> = Wrapping(u8::MIN); pub const MAX: Wrapping<u8> = Wrapping(u8::MAX); pub fn pow(self, e: u32) -> Wrapping<u8> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<u8> { pub const MIN: NonZero<u8> = NonZero(1); pub const MAX: NonZero<u8> = NonZero(u8::MAX); pub const fn new(n: u8) -> Option<NonZero<u8>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> u8 { self.0 } pub fn checked_add(self, o: u8) -> Option<NonZero<u8>> { match self.0.checked_add(o) { Some(v) => NonZero::<u8>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<u8>) -> Option<NonZero<u8>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<u8>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<u8>> for u8 { fn from(n: NonZero<u8>) -> u8 { n.0 } }');
+  BufLn(b, 'impl TryFrom<u8> for NonZero<u8> { type Error = TryFromIntError; fn try_from(n: u8) -> Result2<NonZero<u8>, TryFromIntError> { match NonZero::<u8>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroU8 = NonZero<u8>;');
+  BufLn(b, 'impl Add for Wrapping<u16> { type Output = Wrapping<u16>; fn add(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<u16>> for Wrapping<u16> { type Output = Wrapping<u16>; fn add(self, o: &''a Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<u16> { fn add_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<u16> for Wrapping<u16> { fn add_assign(&mut self, o: u16) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<u16> { type Output = Saturating<u16>; fn add(self, o: Saturating<u16>) -> Saturating<u16> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<u16> { fn add_assign(&mut self, o: Saturating<u16>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<u16> { type Output = Wrapping<u16>; fn sub(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<u16>> for Wrapping<u16> { type Output = Wrapping<u16>; fn sub(self, o: &''a Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<u16> { fn sub_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<u16> for Wrapping<u16> { fn sub_assign(&mut self, o: u16) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<u16> { type Output = Saturating<u16>; fn sub(self, o: Saturating<u16>) -> Saturating<u16> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<u16> { fn sub_assign(&mut self, o: Saturating<u16>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<u16> { type Output = Wrapping<u16>; fn mul(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<u16>> for Wrapping<u16> { type Output = Wrapping<u16>; fn mul(self, o: &''a Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<u16> { fn mul_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<u16> for Wrapping<u16> { fn mul_assign(&mut self, o: u16) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<u16> { type Output = Saturating<u16>; fn mul(self, o: Saturating<u16>) -> Saturating<u16> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<u16> { fn mul_assign(&mut self, o: Saturating<u16>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<u16> { type Output = Wrapping<u16>; fn div(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<u16>> for Wrapping<u16> { type Output = Wrapping<u16>; fn div(self, o: &''a Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<u16> { fn div_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<u16> for Wrapping<u16> { fn div_assign(&mut self, o: u16) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<u16> { type Output = Saturating<u16>; fn div(self, o: Saturating<u16>) -> Saturating<u16> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<u16> { fn div_assign(&mut self, o: Saturating<u16>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<u16> { type Output = Wrapping<u16>; fn rem(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<u16>> for Wrapping<u16> { type Output = Wrapping<u16>; fn rem(self, o: &''a Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<u16> { fn rem_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<u16> for Wrapping<u16> { fn rem_assign(&mut self, o: u16) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<u16> { type Output = Wrapping<u16>; fn bitand(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<u16> { fn bitand_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<u16> { type Output = Wrapping<u16>; fn bitor(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<u16> { fn bitor_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<u16> { type Output = Wrapping<u16>; fn bitxor(self, o: Wrapping<u16>) -> Wrapping<u16> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<u16> { fn bitxor_assign(&mut self, o: Wrapping<u16>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<u16> { type Output = Wrapping<u16>; fn shl(self, n: usize) -> Wrapping<u16> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<u16> { type Output = Wrapping<u16>; fn shr(self, n: usize) -> Wrapping<u16> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<u16> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<u16> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<u16> { type Output = Wrapping<u16>; fn not(self) -> Wrapping<u16> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<u16> { type Output = Wrapping<u16>; fn neg(self) -> Wrapping<u16> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<u16> { fn sum<I: Iterator<Item = Wrapping<u16>>>(iter: I) -> Wrapping<u16> { let mut a = Wrapping(0 as u16); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<u16> { pub const MIN: Wrapping<u16> = Wrapping(u16::MIN); pub const MAX: Wrapping<u16> = Wrapping(u16::MAX); pub fn pow(self, e: u32) -> Wrapping<u16> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<u16> { pub const MIN: NonZero<u16> = NonZero(1); pub const MAX: NonZero<u16> = NonZero(u16::MAX); pub const fn new(n: u16) -> Option<NonZero<u16>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> u16 { self.0 } pub fn checked_add(self, o: u16) -> Option<NonZero<u16>> { match self.0.checked_add(o) { Some(v) => NonZero::<u16>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<u16>) -> Option<NonZero<u16>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<u16>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<u16>> for u16 { fn from(n: NonZero<u16>) -> u16 { n.0 } }');
+  BufLn(b, 'impl TryFrom<u16> for NonZero<u16> { type Error = TryFromIntError; fn try_from(n: u16) -> Result2<NonZero<u16>, TryFromIntError> { match NonZero::<u16>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroU16 = NonZero<u16>;');
+  BufLn(b, 'impl Add for Wrapping<u32> { type Output = Wrapping<u32>; fn add(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<u32>> for Wrapping<u32> { type Output = Wrapping<u32>; fn add(self, o: &''a Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<u32> { fn add_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<u32> for Wrapping<u32> { fn add_assign(&mut self, o: u32) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<u32> { type Output = Saturating<u32>; fn add(self, o: Saturating<u32>) -> Saturating<u32> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<u32> { fn add_assign(&mut self, o: Saturating<u32>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<u32> { type Output = Wrapping<u32>; fn sub(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<u32>> for Wrapping<u32> { type Output = Wrapping<u32>; fn sub(self, o: &''a Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<u32> { fn sub_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<u32> for Wrapping<u32> { fn sub_assign(&mut self, o: u32) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<u32> { type Output = Saturating<u32>; fn sub(self, o: Saturating<u32>) -> Saturating<u32> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<u32> { fn sub_assign(&mut self, o: Saturating<u32>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<u32> { type Output = Wrapping<u32>; fn mul(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<u32>> for Wrapping<u32> { type Output = Wrapping<u32>; fn mul(self, o: &''a Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<u32> { fn mul_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<u32> for Wrapping<u32> { fn mul_assign(&mut self, o: u32) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<u32> { type Output = Saturating<u32>; fn mul(self, o: Saturating<u32>) -> Saturating<u32> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<u32> { fn mul_assign(&mut self, o: Saturating<u32>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<u32> { type Output = Wrapping<u32>; fn div(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<u32>> for Wrapping<u32> { type Output = Wrapping<u32>; fn div(self, o: &''a Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<u32> { fn div_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<u32> for Wrapping<u32> { fn div_assign(&mut self, o: u32) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<u32> { type Output = Saturating<u32>; fn div(self, o: Saturating<u32>) -> Saturating<u32> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<u32> { fn div_assign(&mut self, o: Saturating<u32>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<u32> { type Output = Wrapping<u32>; fn rem(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<u32>> for Wrapping<u32> { type Output = Wrapping<u32>; fn rem(self, o: &''a Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<u32> { fn rem_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<u32> for Wrapping<u32> { fn rem_assign(&mut self, o: u32) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<u32> { type Output = Wrapping<u32>; fn bitand(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<u32> { fn bitand_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<u32> { type Output = Wrapping<u32>; fn bitor(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<u32> { fn bitor_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<u32> { type Output = Wrapping<u32>; fn bitxor(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<u32> { fn bitxor_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<u32> { type Output = Wrapping<u32>; fn shl(self, n: usize) -> Wrapping<u32> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<u32> { type Output = Wrapping<u32>; fn shr(self, n: usize) -> Wrapping<u32> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<u32> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<u32> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<u32> { type Output = Wrapping<u32>; fn not(self) -> Wrapping<u32> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<u32> { type Output = Wrapping<u32>; fn neg(self) -> Wrapping<u32> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<u32> { fn sum<I: Iterator<Item = Wrapping<u32>>>(iter: I) -> Wrapping<u32> { let mut a = Wrapping(0 as u32); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<u32> { pub const MIN: Wrapping<u32> = Wrapping(u32::MIN); pub const MAX: Wrapping<u32> = Wrapping(u32::MAX); pub fn pow(self, e: u32) -> Wrapping<u32> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<u32> { pub const MIN: NonZero<u32> = NonZero(1); pub const MAX: NonZero<u32> = NonZero(u32::MAX); pub const fn new(n: u32) -> Option<NonZero<u32>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> u32 { self.0 } pub fn checked_add(self, o: u32) -> Option<NonZero<u32>> { match self.0.checked_add(o) { Some(v) => NonZero::<u32>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<u32>) -> Option<NonZero<u32>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<u32>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+end;
+
+procedure PreludeChunk40(var b: TBuf);
+begin
+  BufLn(b, 'impl From<NonZero<u32>> for u32 { fn from(n: NonZero<u32>) -> u32 { n.0 } }');
+  BufLn(b, 'impl TryFrom<u32> for NonZero<u32> { type Error = TryFromIntError; fn try_from(n: u32) -> Result2<NonZero<u32>, TryFromIntError> { match NonZero::<u32>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroU32 = NonZero<u32>;');
+  BufLn(b, 'impl Add for Wrapping<u64> { type Output = Wrapping<u64>; fn add(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<u64>> for Wrapping<u64> { type Output = Wrapping<u64>; fn add(self, o: &''a Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<u64> { fn add_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<u64> for Wrapping<u64> { fn add_assign(&mut self, o: u64) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<u64> { type Output = Saturating<u64>; fn add(self, o: Saturating<u64>) -> Saturating<u64> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<u64> { fn add_assign(&mut self, o: Saturating<u64>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<u64> { type Output = Wrapping<u64>; fn sub(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<u64>> for Wrapping<u64> { type Output = Wrapping<u64>; fn sub(self, o: &''a Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<u64> { fn sub_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<u64> for Wrapping<u64> { fn sub_assign(&mut self, o: u64) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<u64> { type Output = Saturating<u64>; fn sub(self, o: Saturating<u64>) -> Saturating<u64> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<u64> { fn sub_assign(&mut self, o: Saturating<u64>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<u64> { type Output = Wrapping<u64>; fn mul(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<u64>> for Wrapping<u64> { type Output = Wrapping<u64>; fn mul(self, o: &''a Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<u64> { fn mul_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<u64> for Wrapping<u64> { fn mul_assign(&mut self, o: u64) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<u64> { type Output = Saturating<u64>; fn mul(self, o: Saturating<u64>) -> Saturating<u64> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<u64> { fn mul_assign(&mut self, o: Saturating<u64>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<u64> { type Output = Wrapping<u64>; fn div(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<u64>> for Wrapping<u64> { type Output = Wrapping<u64>; fn div(self, o: &''a Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<u64> { fn div_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<u64> for Wrapping<u64> { fn div_assign(&mut self, o: u64) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<u64> { type Output = Saturating<u64>; fn div(self, o: Saturating<u64>) -> Saturating<u64> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<u64> { fn div_assign(&mut self, o: Saturating<u64>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<u64> { type Output = Wrapping<u64>; fn rem(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<u64>> for Wrapping<u64> { type Output = Wrapping<u64>; fn rem(self, o: &''a Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<u64> { fn rem_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<u64> for Wrapping<u64> { fn rem_assign(&mut self, o: u64) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<u64> { type Output = Wrapping<u64>; fn bitand(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<u64> { fn bitand_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<u64> { type Output = Wrapping<u64>; fn bitor(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<u64> { fn bitor_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<u64> { type Output = Wrapping<u64>; fn bitxor(self, o: Wrapping<u64>) -> Wrapping<u64> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<u64> { fn bitxor_assign(&mut self, o: Wrapping<u64>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<u64> { type Output = Wrapping<u64>; fn shl(self, n: usize) -> Wrapping<u64> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<u64> { type Output = Wrapping<u64>; fn shr(self, n: usize) -> Wrapping<u64> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<u64> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<u64> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<u64> { type Output = Wrapping<u64>; fn not(self) -> Wrapping<u64> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<u64> { type Output = Wrapping<u64>; fn neg(self) -> Wrapping<u64> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<u64> { fn sum<I: Iterator<Item = Wrapping<u64>>>(iter: I) -> Wrapping<u64> { let mut a = Wrapping(0 as u64); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<u64> { pub const MIN: Wrapping<u64> = Wrapping(u64::MIN); pub const MAX: Wrapping<u64> = Wrapping(u64::MAX); pub fn pow(self, e: u32) -> Wrapping<u64> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<u64> { pub const MIN: NonZero<u64> = NonZero(1); pub const MAX: NonZero<u64> = NonZero(u64::MAX); pub const fn new(n: u64) -> Option<NonZero<u64>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> u64 { self.0 } pub fn checked_add(self, o: u64) -> Option<NonZero<u64>> { match self.0.checked_add(o) { Some(v) => NonZero::<u64>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<u64>) -> Option<NonZero<u64>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<u64>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<u64>> for u64 { fn from(n: NonZero<u64>) -> u64 { n.0 } }');
+  BufLn(b, 'impl TryFrom<u64> for NonZero<u64> { type Error = TryFromIntError; fn try_from(n: u64) -> Result2<NonZero<u64>, TryFromIntError> { match NonZero::<u64>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroU64 = NonZero<u64>;');
+  BufLn(b, 'impl Add for Wrapping<u128> { type Output = Wrapping<u128>; fn add(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<u128>> for Wrapping<u128> { type Output = Wrapping<u128>; fn add(self, o: &''a Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<u128> { fn add_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<u128> for Wrapping<u128> { fn add_assign(&mut self, o: u128) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<u128> { type Output = Saturating<u128>; fn add(self, o: Saturating<u128>) -> Saturating<u128> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<u128> { fn add_assign(&mut self, o: Saturating<u128>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<u128> { type Output = Wrapping<u128>; fn sub(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<u128>> for Wrapping<u128> { type Output = Wrapping<u128>; fn sub(self, o: &''a Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<u128> { fn sub_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<u128> for Wrapping<u128> { fn sub_assign(&mut self, o: u128) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<u128> { type Output = Saturating<u128>; fn sub(self, o: Saturating<u128>) -> Saturating<u128> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<u128> { fn sub_assign(&mut self, o: Saturating<u128>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<u128> { type Output = Wrapping<u128>; fn mul(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<u128>> for Wrapping<u128> { type Output = Wrapping<u128>; fn mul(self, o: &''a Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<u128> { fn mul_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<u128> for Wrapping<u128> { fn mul_assign(&mut self, o: u128) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<u128> { type Output = Saturating<u128>; fn mul(self, o: Saturating<u128>) -> Saturating<u128> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<u128> { fn mul_assign(&mut self, o: Saturating<u128>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<u128> { type Output = Wrapping<u128>; fn div(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<u128>> for Wrapping<u128> { type Output = Wrapping<u128>; fn div(self, o: &''a Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<u128> { fn div_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<u128> for Wrapping<u128> { fn div_assign(&mut self, o: u128) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<u128> { type Output = Saturating<u128>; fn div(self, o: Saturating<u128>) -> Saturating<u128> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<u128> { fn div_assign(&mut self, o: Saturating<u128>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<u128> { type Output = Wrapping<u128>; fn rem(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<u128>> for Wrapping<u128> { type Output = Wrapping<u128>; fn rem(self, o: &''a Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<u128> { fn rem_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<u128> for Wrapping<u128> { fn rem_assign(&mut self, o: u128) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<u128> { type Output = Wrapping<u128>; fn bitand(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<u128> { fn bitand_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<u128> { type Output = Wrapping<u128>; fn bitor(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<u128> { fn bitor_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<u128> { type Output = Wrapping<u128>; fn bitxor(self, o: Wrapping<u128>) -> Wrapping<u128> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<u128> { fn bitxor_assign(&mut self, o: Wrapping<u128>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<u128> { type Output = Wrapping<u128>; fn shl(self, n: usize) -> Wrapping<u128> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<u128> { type Output = Wrapping<u128>; fn shr(self, n: usize) -> Wrapping<u128> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<u128> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<u128> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<u128> { type Output = Wrapping<u128>; fn not(self) -> Wrapping<u128> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<u128> { type Output = Wrapping<u128>; fn neg(self) -> Wrapping<u128> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<u128> { fn sum<I: Iterator<Item = Wrapping<u128>>>(iter: I) -> Wrapping<u128> { let mut a = Wrapping(0 as u128); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<u128> { pub const MIN: Wrapping<u128> = Wrapping(u128::MIN); pub const MAX: Wrapping<u128> = Wrapping(u128::MAX); pub fn pow(self, e: u32) -> Wrapping<u128> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<u128> { pub const MIN: NonZero<u128> = NonZero(1); pub const MAX: NonZero<u128> = NonZero(u128::MAX); pub const fn new(n: u128) -> Option<NonZero<u128>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> u128 { self.0 } pub fn checked_add(self, o: u128) -> Option<NonZero<u128>> { match self.0.checked_add(o) { Some(v) => NonZero::<u128>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<u128>) -> Option<NonZero<u128>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<u128>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<u128>> for u128 { fn from(n: NonZero<u128>) -> u128 { n.0 } }');
+  BufLn(b, 'impl TryFrom<u128> for NonZero<u128> { type Error = TryFromIntError; fn try_from(n: u128) -> Result2<NonZero<u128>, TryFromIntError> { match NonZero::<u128>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroU128 = NonZero<u128>;');
+  BufLn(b, 'impl Add for Wrapping<usize> { type Output = Wrapping<usize>; fn add(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl<''a> Add<&''a Wrapping<usize>> for Wrapping<usize> { type Output = Wrapping<usize>; fn add(self, o: &''a Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Wrapping<usize> { fn add_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0.wrapping_add(o.0); } }');
+  BufLn(b, 'impl AddAssign<usize> for Wrapping<usize> { fn add_assign(&mut self, o: usize) { self.0 = self.0.wrapping_add(o); } }');
+  BufLn(b, 'impl Add for Saturating<usize> { type Output = Saturating<usize>; fn add(self, o: Saturating<usize>) -> Saturating<usize> { Saturating(self.0.saturating_add(o.0)) } }');
+  BufLn(b, 'impl AddAssign for Saturating<usize> { fn add_assign(&mut self, o: Saturating<usize>) { self.0 = self.0.saturating_add(o.0); } }');
+  BufLn(b, 'impl Sub for Wrapping<usize> { type Output = Wrapping<usize>; fn sub(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl<''a> Sub<&''a Wrapping<usize>> for Wrapping<usize> { type Output = Wrapping<usize>; fn sub(self, o: &''a Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Wrapping<usize> { fn sub_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0.wrapping_sub(o.0); } }');
+  BufLn(b, 'impl SubAssign<usize> for Wrapping<usize> { fn sub_assign(&mut self, o: usize) { self.0 = self.0.wrapping_sub(o); } }');
+  BufLn(b, 'impl Sub for Saturating<usize> { type Output = Saturating<usize>; fn sub(self, o: Saturating<usize>) -> Saturating<usize> { Saturating(self.0.saturating_sub(o.0)) } }');
+  BufLn(b, 'impl SubAssign for Saturating<usize> { fn sub_assign(&mut self, o: Saturating<usize>) { self.0 = self.0.saturating_sub(o.0); } }');
+  BufLn(b, 'impl Mul for Wrapping<usize> { type Output = Wrapping<usize>; fn mul(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl<''a> Mul<&''a Wrapping<usize>> for Wrapping<usize> { type Output = Wrapping<usize>; fn mul(self, o: &''a Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Wrapping<usize> { fn mul_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0.wrapping_mul(o.0); } }');
+  BufLn(b, 'impl MulAssign<usize> for Wrapping<usize> { fn mul_assign(&mut self, o: usize) { self.0 = self.0.wrapping_mul(o); } }');
+  BufLn(b, 'impl Mul for Saturating<usize> { type Output = Saturating<usize>; fn mul(self, o: Saturating<usize>) -> Saturating<usize> { Saturating(self.0.saturating_mul(o.0)) } }');
+  BufLn(b, 'impl MulAssign for Saturating<usize> { fn mul_assign(&mut self, o: Saturating<usize>) { self.0 = self.0.saturating_mul(o.0); } }');
+  BufLn(b, 'impl Div for Wrapping<usize> { type Output = Wrapping<usize>; fn div(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl<''a> Div<&''a Wrapping<usize>> for Wrapping<usize> { type Output = Wrapping<usize>; fn div(self, o: &''a Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Wrapping<usize> { fn div_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0.wrapping_div(o.0); } }');
+  BufLn(b, 'impl DivAssign<usize> for Wrapping<usize> { fn div_assign(&mut self, o: usize) { self.0 = self.0.wrapping_div(o); } }');
+  BufLn(b, 'impl Div for Saturating<usize> { type Output = Saturating<usize>; fn div(self, o: Saturating<usize>) -> Saturating<usize> { Saturating(self.0.saturating_div(o.0)) } }');
+  BufLn(b, 'impl DivAssign for Saturating<usize> { fn div_assign(&mut self, o: Saturating<usize>) { self.0 = self.0.saturating_div(o.0); } }');
+  BufLn(b, 'impl Rem for Wrapping<usize> { type Output = Wrapping<usize>; fn rem(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl<''a> Rem<&''a Wrapping<usize>> for Wrapping<usize> { type Output = Wrapping<usize>; fn rem(self, o: &''a Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+  BufLn(b, 'impl RemAssign for Wrapping<usize> { fn rem_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0.wrapping_rem(o.0); } }');
+  BufLn(b, 'impl RemAssign<usize> for Wrapping<usize> { fn rem_assign(&mut self, o: usize) { self.0 = self.0.wrapping_rem(o); } }');
+  BufLn(b, 'impl BitAnd for Wrapping<usize> { type Output = Wrapping<usize>; fn bitand(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0 & o.0) } }');
+  BufLn(b, 'impl BitAndAssign for Wrapping<usize> { fn bitand_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0 & o.0; } }');
+  BufLn(b, 'impl BitOr for Wrapping<usize> { type Output = Wrapping<usize>; fn bitor(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0 | o.0) } }');
+  BufLn(b, 'impl BitOrAssign for Wrapping<usize> { fn bitor_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0 | o.0; } }');
+  BufLn(b, 'impl BitXor for Wrapping<usize> { type Output = Wrapping<usize>; fn bitxor(self, o: Wrapping<usize>) -> Wrapping<usize> { Wrapping(self.0 ^ o.0) } }');
+  BufLn(b, 'impl BitXorAssign for Wrapping<usize> { fn bitxor_assign(&mut self, o: Wrapping<usize>) { self.0 = self.0 ^ o.0; } }');
+  BufLn(b, 'impl Shl<usize> for Wrapping<usize> { type Output = Wrapping<usize>; fn shl(self, n: usize) -> Wrapping<usize> { Wrapping(self.0.wrapping_shl(n as u32)) } }');
+  BufLn(b, 'impl Shr<usize> for Wrapping<usize> { type Output = Wrapping<usize>; fn shr(self, n: usize) -> Wrapping<usize> { Wrapping(self.0.wrapping_shr(n as u32)) } }');
+  BufLn(b, 'impl ShlAssign<usize> for Wrapping<usize> { fn shl_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shl(n as u32); } }');
+  BufLn(b, 'impl ShrAssign<usize> for Wrapping<usize> { fn shr_assign(&mut self, n: usize) { self.0 = self.0.wrapping_shr(n as u32); } }');
+  BufLn(b, 'impl Not for Wrapping<usize> { type Output = Wrapping<usize>; fn not(self) -> Wrapping<usize> { Wrapping(!self.0) } }');
+  BufLn(b, 'impl Neg for Wrapping<usize> { type Output = Wrapping<usize>; fn neg(self) -> Wrapping<usize> { Wrapping(self.0.wrapping_neg()) } }');
+  BufLn(b, 'impl Sum for Wrapping<usize> { fn sum<I: Iterator<Item = Wrapping<usize>>>(iter: I) -> Wrapping<usize> { let mut a = Wrapping(0 as usize); for x in iter { a = a + x; } a } }');
+  BufLn(b, 'impl Wrapping<usize> { pub const MIN: Wrapping<usize> = Wrapping(usize::MIN); pub const MAX: Wrapping<usize> = Wrapping(usize::MAX); pub fn pow(self, e: u32) -> Wrapping<usize> { Wrapping(self.0.wrapping_pow(e)) } }');
+  BufLn(b, 'impl NonZero<usize> { pub const MIN: NonZero<usize> = NonZero(1); pub const MAX: NonZero<usize> = NonZero(usize::MAX); pub const fn new(n: usize) -> Option<NonZero<usize>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> usize { self.0 } pub fn checked_add(self, o: usize) -> Option<NonZero<usize>> { match self.0.checked_add(o) { Some(v) => NonZero::<usize>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<usize>) -> Option<NonZero<usize>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<usize>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
+  BufLn(b, 'impl From<NonZero<usize>> for usize { fn from(n: NonZero<usize>) -> usize { n.0 } }');
+  BufLn(b, 'impl TryFrom<usize> for NonZero<usize> { type Error = TryFromIntError; fn try_from(n: usize) -> Result2<NonZero<usize>, TryFromIntError> { match NonZero::<usize>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
+  BufLn(b, 'pub type NonZeroUsize = NonZero<usize>;');
+  BufLn(b, '');
+  BufLn(b, '    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]');
+  BufLn(b, '    pub struct NonZero<T>(T);');
+  BufLn(b, '    impl<T: Debug> Debug for NonZero<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Debug::fmt(&self.0, f) } }');
+  BufLn(b, '    impl<T: Display> Display for NonZero<T> { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { Display::fmt(&self.0, f) } }');
+  BufLn(b, '    ');
   BufLn(b, '}');
   BufLn(b, 'pub mod i8 { pub const MIN: i8 = -128; pub const MAX: i8 = 127; }');
   BufLn(b, 'pub mod i16 { pub const MIN: i16 = -32768; pub const MAX: i16 = 32767; }');
@@ -36116,6 +37094,8 @@ begin
   PreludeChunk36(b);
   PreludeChunk37(b);
   PreludeChunk38(b);
+  PreludeChunk39(b);
+  PreludeChunk40(b);
   s := BufStr(b);
 end;
 { ============================================================ }
