@@ -1592,6 +1592,8 @@ begin
     begin
       Adv;
       p := ParsePath(0);
+      Nodes[p].s2 := '?';
+      IAdd(lst, p);
     end
     else if IsPunct('(') then
     begin
@@ -6191,6 +6193,37 @@ function TyToStr(t: Integer): string; forward;
 function TryProject(selfTy, trait: Integer; const targs: TIntArr; const name: string; errNode: Integer;
   var res: Integer): Integer; forward;
 
+{ le parametre gi de d est-il declare ?Sized ? }
+function ParamMaybeUnsized(d, gi: Integer): Boolean;
+var
+  g, i, j, w, nd, pass, p: Integer;
+begin
+  Result := False;
+  g := Defs[d].gnodes[gi];
+  if g > 0 then
+    for i := 0 to Length(Nodes[g].l) - 1 do
+      if Nodes[Nodes[g].l[i]].s2 = '?' then begin Result := True; Exit; end;
+  for pass := 0 to 1 do
+  begin
+    if pass = 0 then nd := Defs[d].node
+    else
+    begin
+      p := Defs[d].parent;
+      if (p >= 0) and ((Defs[p].kind = dkImpl) or (Defs[p].kind = dkTrait)) then nd := Defs[p].node else nd := 0;
+    end;
+    if nd = 0 then Continue;
+    for i := 0 to Length(Nodes[nd].l) - 1 do
+    begin
+      w := Nodes[nd].l[i];
+      if Nodes[w].k <> nWhere then Continue;
+      if (Nodes[Nodes[w].a].k = tPath) and (Length(Nodes[Nodes[w].a].l) = 1) and
+         (Nodes[Nodes[Nodes[w].a].l[0]].s = Defs[d].gnames[gi]) then
+        for j := 0 to Length(Nodes[w].l) - 1 do
+          if Nodes[Nodes[w].l[j]].s2 = '?' then begin Result := True; Exit; end;
+    end;
+  end;
+end;
+
 function ImplBoundsHold(impl: Integer; var env: TEnv): Boolean;
 var
   bs: TBoundArr;
@@ -6200,6 +6233,14 @@ var
 begin
   Result := True;
   if ImplDepth > 6 then Exit;
+  { parametres de type implicitement Sized }
+  for i := 0 to Length(Defs[impl].gnames) - 1 do
+    if (i < Length(env.tys)) and (Defs[impl].gnames[i] <> 'Self') then
+    begin
+      t := Shallow(env.tys[i]);
+      if (Tys[t].k = tyStr) or (Tys[t].k = tySlice) or (Tys[t].k = tyDyn) then
+        if not ParamMaybeUnsized(impl, i) then begin Result := False; Exit; end;
+    end;
   LowerBoundsOf(impl, env, bs);
   Inc(ImplDepth);
   for i := 0 to Length(bs) - 1 do
@@ -6998,7 +7039,7 @@ begin
   r := SelectImpl(tr, targs, impl, ia, True);
   if (r = 1) and (impl >= 0) then
   begin
-    m := ImplAssocItem(impl, name, dkFn);
+    m := ImplAssocItem(impl, name, Defs[def].kind);
     if m >= 0 then
     begin
       nargs := nil;
@@ -9500,11 +9541,7 @@ begin
     if (Tys[e].k = tyRef) or (Tys[e].k = tyPtr) then
     begin
       hint := Tys[e].args[0];
-      if (Tys[Shallow(hint)].k = tySlice) or (Tys[Shallow(hint)].k = tyStr) or (Tys[Shallow(hint)].k = tyDyn) then
-      begin
-        { l'operande sera dimensionne : indice partiel }
-        if Tys[Shallow(hint)].k = tySlice then hint := 0 else hint := 0;
-      end;
+      if (Tys[Shallow(hint)].k = tyStr) or (Tys[Shallow(hint)].k = tyDyn) then hint := 0;
     end;
   end;
   a := CheckExpr(Nodes[n].a, hint);
@@ -25157,7 +25194,7 @@ begin
   BufLn(b, '    impl Error for ::std::cell::BorrowError {}');
   BufLn(b, '    impl Error for ::std::cell::BorrowMutError {}');
   BufLn(b, '    impl Error for ::std::io::Error {}');
-  BufLn(b, '    impl<T: Error + ?Sized> Error for Box<T> {}');
+  BufLn(b, '    impl<T: Error> Error for Box<T> {}');
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod io {');
