@@ -70,6 +70,12 @@ public abstract class AbstractButton extends JComponent implements SwingConstant
         int h = Math.max(fm.getHeight(), icon != null ? icon.getIconHeight() : 0);
         return new Dimension(w + in.left + in.right + extraW(), h + in.top + in.bottom + extraH());
     }
+    public int getBaseline(int w, int h) {
+        if (w < 0 || h < 0) throw new IllegalArgumentException("Width and height must be >= 0");
+        FontMetrics fm = new FontMetrics(getFont());
+        return (h - fm.getHeight()) / 2 + fm.getAscent();
+    }
+    public BaselineResizeBehavior getBaselineResizeBehavior() { return BaselineResizeBehavior.CENTER_OFFSET; }
     int extraW() { return 0; }
     int extraH() { return 0; }
     protected void processMouseEvent(MouseEvent e) {

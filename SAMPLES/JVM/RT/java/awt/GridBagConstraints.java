@@ -44,6 +44,9 @@ public class GridBagConstraints implements Cloneable, java.io.Serializable {
     public int ipadx = 0;
     public int ipady = 0;
     int tempX, tempY, tempWidth, tempHeight, minWidth, minHeight;
+    transient int ascent, descent, centerPadding, centerOffset;
+    transient Component.BaselineResizeBehavior baselineResizeBehavior;
+    boolean isVerticallyResizable() { return (fill == BOTH || fill == VERTICAL); }
     public GridBagConstraints() { }
     public GridBagConstraints(int gridx, int gridy, int gridwidth, int gridheight, double weightx, double weighty, int anchor, int fill, Insets insets, int ipadx, int ipady) {
         this.gridx = gridx; this.gridy = gridy; this.gridwidth = gridwidth; this.gridheight = gridheight;

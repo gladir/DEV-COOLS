@@ -8,6 +8,7 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
     protected Hashtable<Component, GridBagConstraints> comptable;
     protected GridBagConstraints defaultConstraints;
     protected GridBagLayoutInfo layoutInfo;
+    private Component componentAdjusting;
     public int[] columnWidths;
     public int[] rowHeights;
     public double[] columnWeights;
@@ -17,6 +18,11 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
         int startx, starty;
         int[] minWidth, minHeight;
         double[] weightX, weightY;
+        boolean hasBaseline;
+        short[] baselineType;
+        int[] maxAscent, maxDescent;
+        boolean hasConstantDescent(int row) { return ((baselineType[row] & (1 << Component.BaselineResizeBehavior.CONSTANT_DESCENT.ordinal())) != 0); }
+        boolean hasBaseline(int row) { return (hasBaseline && baselineType[row] != 0); }
         GridBagLayoutInfo(int width, int height) {
             this.width = width; this.height = height;
             minWidth = new int[width]; minHeight = new int[height];
@@ -112,6 +118,7 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
         int[] xMaxArray = new int[MAXGRIDSIZE];
         int[] yMaxArray = new int[MAXGRIDSIZE];
         int width = 0, height = 0;
+        boolean hasBaseline = false;
         curRow = curCol = -1;
         // Pass #1: dimensions de la grille
         for (compindex = 0; compindex < components.length; compindex++) {
@@ -148,6 +155,7 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
             else d = comp.getMinimumSize();
             constraints.minWidth = d.width;
             constraints.minHeight = d.height;
+            if (calculateBaseline(comp, constraints, d)) hasBaseline = true;
             if (constraints.gridheight == 0 && constraints.gridwidth == 0) curRow = curCol = -1;
             if (constraints.gridheight == 0 && curRow < 0) curCol = curX + curWidth;
             else if (constraints.gridwidth == 0 && curCol < 0) curRow = curY + curHeight;
@@ -159,6 +167,14 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
         curRow = curCol = -1;
         java.util.Arrays.fill(xMaxArray, 0);
         java.util.Arrays.fill(yMaxArray, 0);
+        int[] maxAscent = null, maxDescent = null;
+        short[] baselineType = null;
+        if (hasBaseline) {
+            r.maxAscent = maxAscent = new int[r.height];
+            r.maxDescent = maxDescent = new int[r.height];
+            r.baselineType = baselineType = new short[r.height];
+            r.hasBaseline = true;
+        }
         for (compindex = 0; compindex < components.length; compindex++) {
             comp = components[compindex];
             if (!comp.isVisible()) continue;
@@ -210,6 +226,41 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
             constraints.tempY = curY;
             constraints.tempWidth = curWidth;
             constraints.tempHeight = curHeight;
+            if (hasBaseline) {
+                switch (constraints.anchor) {
+                    case GridBagConstraints.BASELINE:
+                    case GridBagConstraints.BASELINE_LEADING:
+                    case GridBagConstraints.BASELINE_TRAILING:
+                        if (constraints.ascent >= 0) {
+                            if (curHeight == 1) {
+                                maxAscent[curY] = Math.max(maxAscent[curY], constraints.ascent);
+                                maxDescent[curY] = Math.max(maxDescent[curY], constraints.descent);
+                            } else {
+                                if (constraints.baselineResizeBehavior == Component.BaselineResizeBehavior.CONSTANT_DESCENT)
+                                    maxDescent[curY + curHeight - 1] = Math.max(maxDescent[curY + curHeight - 1], constraints.descent);
+                                else maxAscent[curY] = Math.max(maxAscent[curY], constraints.ascent);
+                            }
+                            if (constraints.baselineResizeBehavior == Component.BaselineResizeBehavior.CONSTANT_DESCENT)
+                                baselineType[curY + curHeight - 1] |= (1 << constraints.baselineResizeBehavior.ordinal());
+                            else baselineType[curY] |= (1 << constraints.baselineResizeBehavior.ordinal());
+                        }
+                        break;
+                    case GridBagConstraints.ABOVE_BASELINE:
+                    case GridBagConstraints.ABOVE_BASELINE_LEADING:
+                    case GridBagConstraints.ABOVE_BASELINE_TRAILING:
+                        pixels_diff = constraints.minHeight + constraints.insets.top + constraints.ipady;
+                        maxAscent[curY] = Math.max(maxAscent[curY], pixels_diff);
+                        maxDescent[curY] = Math.max(maxDescent[curY], constraints.insets.bottom);
+                        break;
+                    case GridBagConstraints.BELOW_BASELINE:
+                    case GridBagConstraints.BELOW_BASELINE_LEADING:
+                    case GridBagConstraints.BELOW_BASELINE_TRAILING:
+                        pixels_diff = constraints.minHeight + constraints.insets.bottom + constraints.ipady;
+                        maxDescent[curY] = Math.max(maxDescent[curY], pixels_diff);
+                        maxAscent[curY] = Math.max(maxAscent[curY], constraints.insets.top);
+                        break;
+                }
+            }
         }
         if (columnWidths != null) System.arraycopy(columnWidths, 0, r.minWidth, 0, columnWidths.length);
         if (rowHeights != null) System.arraycopy(rowHeights, 0, r.minHeight, 0, rowHeights.length);
@@ -269,7 +320,32 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
                         }
                         r.weightY[py - 1] += weight_diff;
                     }
-                    pixels_diff = constraints.minHeight + constraints.ipady + constraints.insets.top + constraints.insets.bottom;
+                    pixels_diff = -1;
+                    if (hasBaseline) {
+                        switch (constraints.anchor) {
+                            case GridBagConstraints.BASELINE:
+                            case GridBagConstraints.BASELINE_LEADING:
+                            case GridBagConstraints.BASELINE_TRAILING:
+                                if (constraints.ascent >= 0) {
+                                    if (constraints.tempHeight == 1) pixels_diff = maxAscent[constraints.tempY] + maxDescent[constraints.tempY];
+                                    else if (constraints.baselineResizeBehavior != Component.BaselineResizeBehavior.CONSTANT_DESCENT)
+                                        pixels_diff = maxAscent[constraints.tempY] + constraints.descent;
+                                    else pixels_diff = constraints.ascent + maxDescent[constraints.tempY + constraints.tempHeight - 1];
+                                }
+                                break;
+                            case GridBagConstraints.ABOVE_BASELINE:
+                            case GridBagConstraints.ABOVE_BASELINE_LEADING:
+                            case GridBagConstraints.ABOVE_BASELINE_TRAILING:
+                                pixels_diff = constraints.insets.top + constraints.minHeight + constraints.ipady + maxDescent[constraints.tempY];
+                                break;
+                            case GridBagConstraints.BELOW_BASELINE:
+                            case GridBagConstraints.BELOW_BASELINE_LEADING:
+                            case GridBagConstraints.BELOW_BASELINE_TRAILING:
+                                pixels_diff = maxAscent[constraints.tempY] + constraints.minHeight + constraints.insets.bottom + constraints.ipady;
+                                break;
+                        }
+                    }
+                    if (pixels_diff == -1) pixels_diff = constraints.minHeight + constraints.ipady + constraints.insets.top + constraints.insets.bottom;
                     for (k = constraints.tempY; k < py; k++) pixels_diff -= r.minHeight[k];
                     if (pixels_diff > 0) {
                         weight = 0.0;
@@ -287,6 +363,34 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
             }
         }
         return r;
+    }
+    private boolean calculateBaseline(Component c, GridBagConstraints constraints, Dimension size) {
+        int anchor = constraints.anchor;
+        if (anchor == GridBagConstraints.BASELINE || anchor == GridBagConstraints.BASELINE_LEADING || anchor == GridBagConstraints.BASELINE_TRAILING) {
+            int w = size.width + constraints.ipadx;
+            int h = size.height + constraints.ipady;
+            constraints.ascent = c.getBaseline(w, h);
+            if (constraints.ascent >= 0) {
+                int baseline = constraints.ascent;
+                constraints.descent = h - constraints.ascent + constraints.insets.bottom;
+                constraints.ascent += constraints.insets.top;
+                constraints.baselineResizeBehavior = c.getBaselineResizeBehavior();
+                constraints.centerPadding = 0;
+                if (constraints.baselineResizeBehavior == Component.BaselineResizeBehavior.CENTER_OFFSET) {
+                    int nextBaseline = c.getBaseline(w, h + 1);
+                    constraints.centerOffset = baseline - h / 2;
+                    if (h % 2 == 0) {
+                        if (baseline != nextBaseline) constraints.centerPadding = 1;
+                    } else if (baseline == nextBaseline) {
+                        constraints.centerOffset--;
+                        constraints.centerPadding = 1;
+                    }
+                }
+            }
+            return true;
+        }
+        constraints.ascent = -1;
+        return false;
     }
     protected Dimension getMinSize(Container parent, GridBagLayoutInfo info) {
         Dimension d = new Dimension();
@@ -370,6 +474,7 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
             for (i = constraints.tempX; i < (constraints.tempX + constraints.tempWidth); i++) r.width += info.minWidth[i];
             r.height = 0;
             for (i = constraints.tempY; i < (constraints.tempY + constraints.tempHeight); i++) r.height += info.minHeight[i];
+            componentAdjusting = comp;
             adjustForGravity(constraints, r);
             if (r.x < 0) { r.width += r.x; r.x = 0; }
             if (r.y < 0) { r.height += r.y; r.y = 0; }
@@ -383,6 +488,8 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
     protected void adjustForGravity(GridBagConstraints constraints, Rectangle r) { AdjustForGravity(constraints, r); }
     protected void AdjustForGravity(GridBagConstraints constraints, Rectangle r) {
         int diffx, diffy;
+        int cellY = r.y;
+        int cellHeight = r.height;
         r.x += constraints.insets.left;
         r.width -= (constraints.insets.left + constraints.insets.right);
         r.y += constraints.insets.top;
@@ -398,21 +505,55 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
             r.height = constraints.minHeight + constraints.ipady;
         }
         switch (constraints.anchor) {
+            case GridBagConstraints.BASELINE:
+                r.x += diffx / 2;
+                alignOnBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.BASELINE_LEADING:
+                alignOnBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.BASELINE_TRAILING:
+                r.x += diffx;
+                alignOnBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.ABOVE_BASELINE:
+                r.x += diffx / 2;
+                alignAboveBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.ABOVE_BASELINE_LEADING:
+                alignAboveBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.ABOVE_BASELINE_TRAILING:
+                r.x += diffx;
+                alignAboveBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.BELOW_BASELINE:
+                r.x += diffx / 2;
+                alignBelowBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.BELOW_BASELINE_LEADING:
+                alignBelowBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.BELOW_BASELINE_TRAILING:
+                r.x += diffx;
+                alignBelowBaseline(constraints, r, cellY, cellHeight);
+                break;
+            case GridBagConstraints.CENTER:
+                r.x += diffx / 2;
+                r.y += diffy / 2;
+                break;
             case GridBagConstraints.PAGE_START:
             case GridBagConstraints.NORTH:
                 r.x += diffx / 2;
                 break;
             case GridBagConstraints.NORTHEAST:
-            case GridBagConstraints.FIRST_LINE_END:
                 r.x += diffx;
                 break;
             case GridBagConstraints.EAST:
-            case GridBagConstraints.LINE_END:
                 r.x += diffx;
                 r.y += diffy / 2;
                 break;
             case GridBagConstraints.SOUTHEAST:
-            case GridBagConstraints.LAST_LINE_END:
                 r.x += diffx;
                 r.y += diffy;
                 break;
@@ -422,20 +563,127 @@ public class GridBagLayout implements LayoutManager2, java.io.Serializable {
                 r.y += diffy;
                 break;
             case GridBagConstraints.SOUTHWEST:
-            case GridBagConstraints.LAST_LINE_START:
                 r.y += diffy;
                 break;
             case GridBagConstraints.WEST:
-            case GridBagConstraints.LINE_START:
                 r.y += diffy / 2;
                 break;
             case GridBagConstraints.NORTHWEST:
-            case GridBagConstraints.FIRST_LINE_START:
                 break;
-            default:
-                r.x += diffx / 2;
+            case GridBagConstraints.LINE_START:
                 r.y += diffy / 2;
                 break;
+            case GridBagConstraints.LINE_END:
+                r.x += diffx;
+                r.y += diffy / 2;
+                break;
+            case GridBagConstraints.FIRST_LINE_START:
+                break;
+            case GridBagConstraints.FIRST_LINE_END:
+                r.x += diffx;
+                break;
+            case GridBagConstraints.LAST_LINE_START:
+                r.y += diffy;
+                break;
+            case GridBagConstraints.LAST_LINE_END:
+                r.x += diffx;
+                r.y += diffy;
+                break;
+            default:
+                throw new IllegalArgumentException("illegal anchor value");
+        }
+    }
+    private void alignOnBaseline(GridBagConstraints cons, Rectangle r, int cellY, int cellHeight) {
+        if (cons.ascent >= 0) {
+            if (cons.baselineResizeBehavior == Component.BaselineResizeBehavior.CONSTANT_DESCENT) {
+                int maxY = cellY + cellHeight - layoutInfo.maxDescent[cons.tempY + cons.tempHeight - 1] + cons.descent - cons.insets.bottom;
+                if (!cons.isVerticallyResizable()) {
+                    r.y = maxY - cons.minHeight;
+                    r.height = cons.minHeight;
+                } else {
+                    r.height = maxY - cellY - cons.insets.top;
+                }
+            } else {
+                int baseline;
+                int ascent = cons.ascent;
+                if (layoutInfo.hasConstantDescent(cons.tempY)) baseline = cellHeight - layoutInfo.maxDescent[cons.tempY];
+                else baseline = layoutInfo.maxAscent[cons.tempY];
+                if (cons.baselineResizeBehavior == Component.BaselineResizeBehavior.OTHER) {
+                    boolean fits = false;
+                    ascent = componentAdjusting.getBaseline(r.width, r.height);
+                    if (ascent >= 0) ascent += cons.insets.top;
+                    if (ascent >= 0 && ascent <= baseline) {
+                        if (baseline + (r.height - ascent - cons.insets.top) <= cellHeight - cons.insets.bottom) {
+                            fits = true;
+                        } else if (cons.isVerticallyResizable()) {
+                            int ascent2 = componentAdjusting.getBaseline(r.width, cellHeight - cons.insets.bottom - baseline + ascent);
+                            if (ascent2 >= 0) ascent2 += cons.insets.top;
+                            if (ascent2 >= 0 && ascent2 <= ascent) {
+                                r.height = cellHeight - cons.insets.bottom - baseline + ascent;
+                                ascent = ascent2;
+                                fits = true;
+                            }
+                        }
+                    }
+                    if (!fits) {
+                        ascent = cons.ascent;
+                        r.width = cons.minWidth;
+                        r.height = cons.minHeight;
+                    }
+                }
+                r.y = cellY + baseline - ascent + cons.insets.top;
+                if (cons.isVerticallyResizable()) {
+                    switch (cons.baselineResizeBehavior) {
+                        case CONSTANT_ASCENT:
+                            r.height = Math.max(cons.minHeight, cellY + cellHeight - r.y - cons.insets.bottom);
+                            break;
+                        case CENTER_OFFSET: {
+                            int upper = r.y - cellY - cons.insets.top;
+                            int lower = cellY + cellHeight - r.y - cons.minHeight - cons.insets.bottom;
+                            int delta = Math.min(upper, lower);
+                            delta += delta;
+                            if (delta > 0 && (cons.minHeight + cons.centerPadding + delta) / 2 + cons.centerOffset != baseline) delta--;
+                            r.height = cons.minHeight + delta;
+                            r.y = cellY + baseline - (r.height + cons.centerPadding) / 2 - cons.centerOffset;
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
+            }
+        } else {
+            centerVertically(cons, r, cellHeight);
+        }
+    }
+    private void alignAboveBaseline(GridBagConstraints cons, Rectangle r, int cellY, int cellHeight) {
+        if (layoutInfo.hasBaseline(cons.tempY)) {
+            int maxY;
+            if (layoutInfo.hasConstantDescent(cons.tempY)) maxY = cellY + cellHeight - layoutInfo.maxDescent[cons.tempY];
+            else maxY = cellY + layoutInfo.maxAscent[cons.tempY];
+            if (cons.isVerticallyResizable()) {
+                r.y = cellY + cons.insets.top;
+                r.height = maxY - r.y;
+            } else {
+                r.height = cons.minHeight + cons.ipady;
+                r.y = maxY - r.height;
+            }
+        } else {
+            centerVertically(cons, r, cellHeight);
+        }
+    }
+    private void alignBelowBaseline(GridBagConstraints cons, Rectangle r, int cellY, int cellHeight) {
+        if (layoutInfo.hasBaseline(cons.tempY)) {
+            if (layoutInfo.hasConstantDescent(cons.tempY)) r.y = cellY + cellHeight - layoutInfo.maxDescent[cons.tempY];
+            else r.y = cellY + layoutInfo.maxAscent[cons.tempY];
+            if (cons.isVerticallyResizable()) r.height = cellY + cellHeight - r.y - cons.insets.bottom;
+        } else {
+            centerVertically(cons, r, cellHeight);
+        }
+    }
+    private void centerVertically(GridBagConstraints cons, Rectangle r, int cellHeight) {
+        if (!cons.isVerticallyResizable()) {
+            r.y += Math.max(0, (cellHeight - cons.insets.top - cons.insets.bottom - cons.minHeight - cons.ipady) / 2);
         }
     }
 }

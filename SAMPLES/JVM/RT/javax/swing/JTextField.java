@@ -26,6 +26,12 @@ public class JTextField extends JTextComponent {
         return new Dimension(w + in.left + in.right, fm.getHeight() + in.top + in.bottom + 4);
     }
     protected String shown() { return getText(); }
+    public int getBaseline(int w, int h) {
+        if (w < 0 || h < 0) throw new IllegalArgumentException("Width and height must be >= 0");
+        FontMetrics fm = new FontMetrics(getFont());
+        return (h - fm.getHeight()) / 2 + fm.getAscent();
+    }
+    public BaselineResizeBehavior getBaselineResizeBehavior() { return BaselineResizeBehavior.CENTER_OFFSET; }
     protected void paintComponent(Graphics g) {
         g.setColor(editable && enabled ? Color.WHITE : new Color(238, 238, 238));
         g.fillRect(0, 0, width, height);

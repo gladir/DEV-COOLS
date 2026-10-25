@@ -41,6 +41,7 @@ public class JViewport extends JComponent {
     public Point toViewCoordinates(Point p) { return new Point(p.x + vx, p.y + vy); }
     public void scrollRectToVisible(Rectangle r) {
         if (view == null) return;
+        if (!view.isValid() && getWindow() != null) { doLayout(); if (view instanceof Container) ((Container) view).validate(); }
         int dx = positionAdjustment(width, r.width, r.x);
         int dy = positionAdjustment(height, r.height, r.y);
         if (dx != 0 || dy != 0) {

@@ -19,6 +19,11 @@ public class JTextArea extends JTextComponent implements Scrollable {
     public void setTabSize(int n) { }
     public int getLineCount() { int n = 1; for (int i = 0; i < sb.length(); i++) if (sb.charAt(i) == '\n') n++; return n; }
     public boolean isMultiLine() { return true; }
+    public int getBaseline(int w, int h) {
+        if (w < 0 || h < 0) throw new IllegalArgumentException("Width and height must be >= 0");
+        return getInsets().top + new FontMetrics(getFont()).getAscent();
+    }
+    public BaselineResizeBehavior getBaselineResizeBehavior() { return BaselineResizeBehavior.CONSTANT_ASCENT; }
     public Insets getInsets() { return new Insets(3, 5, 3, 5); }
     protected void enter() { insert("\n"); }
     protected int lineStart() { int i = caret; while (i > 0 && sb.charAt(i - 1) != '\n') i--; return i; }

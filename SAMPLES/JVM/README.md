@@ -30,15 +30,21 @@ sans fichier d'inclusion. Elle execute les `.class` produits par `JAVAC.PAS` (ou
   redimensionnement et deplacement de colonnes, rendus et editeurs de cellules, tri et
   filtrage par `TableRowSorter`/`RowFilter`), `JTabbedPane` (4 positions, plusieurs rangees),
   `JSplitPane` (divise glissante, `resizeWeight`, `oneTouchExpandable`) et `GridBagLayout`
-  (algorithme du JDK, resultats identiques). `java.beans.PropertyChangeSupport`
+  (algorithme du JDK, y compris l'alignement sur la ligne de base, resultats identiques),
+  `JTabbedPane` avec `SCROLL_TAB_LAYOUT` (boutons de defilement des onglets) et `JTree`
+  (`javax.swing.tree` : `DefaultMutableTreeNode`, `DefaultTreeModel`, `TreePath`,
+  `DefaultTreeSelectionModel` et ses trois modes, rendus et editeur de noeuds, evenements
+  d'expansion/de selection/de modele, `TreeWillExpandListener`, fleches, recherche par
+  frappe, `Scrollable`). `java.beans.PropertyChangeSupport`
   est present et les proprietes des composants notifient leurs ecouteurs.
 
 ## Tests
 
 `TESTS/` contient des programmes dont la sortie est comparee a celle d'un vrai JDK 21
 (`Refl*`, `Serial*`, `Io1`, `Zip1`, `Loader1`, `Table1` : modeles, selection, tri, filtres et
-edition de JTable, `GridBag1` : positions calculees par GridBagLayout) et deux demonstrations
-graphiques (`SwingDemo1`, `SwingDemo2`).
+edition de JTable, `GridBag1` et `GridBagBaseline1` : positions calculees par GridBagLayout,
+`Tabs1`, `Tree1` : JTree, noeuds, modeles, selection et evenements) et des demonstrations
+graphiques (`SwingDemo1` a `SwingDemo4`).
 
 ## Limites
 
@@ -49,7 +55,6 @@ graphiques (`SwingDemo1`, `SwingDemo2`).
   avec un seul aspect visuel (inspire de Metal/Ocean).
 - La souris ne transmet pas l'etat des touches Maj/Ctrl : les selections multiples se font
   par glisser, au clavier (fleches, Ctrl+A) ou par programme.
-- Pas de `JTree`, de composants de texte riches (`JEditorPane`, `JTextPane`) ni d'alignement
-  sur la ligne de base dans `GridBagLayout` ; `JTabbedPane.SCROLL_TAB_LAYOUT` se comporte
-  comme `WRAP_TAB_LAYOUT`.
+- Pas de composants de texte riches (`JEditorPane`, `JTextPane`), de `JSpinner`, de
+  glisser-deposer ni de changement d'aspect (`UIManager.setLookAndFeel` est sans effet).
 - Les unites PtcGraph/PtcCrt demandent un affichage meme pour les programmes console.

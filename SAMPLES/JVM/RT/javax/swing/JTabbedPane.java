@@ -17,8 +17,14 @@ public class JTabbedPane extends JComponent implements SwingConstants {
     private Rectangle contentRect = new Rectangle();
     private int areaSize;
     private boolean tabsValid;
+    private int leading;
+    private boolean ensureSel;
+    private Rectangle tabClip;
+    private Rectangle[] scrollBtn;
+    private int scrollOff, scrollMax;
+    static final int SBTN = 16;
     private ChangeListener modelListener = new ChangeListener() {
-        public void stateChanged(ChangeEvent e) { fireStateChanged(); tabsValid = false; revalidate(); repaint(); }
+        public void stateChanged(ChangeEvent e) { fireStateChanged(); ensureSel = true; tabsValid = false; revalidate(); repaint(); }
     };
     public JTabbedPane() { this(TOP, WRAP_TAB_LAYOUT); }
     public JTabbedPane(int tabPlacement) { this(tabPlacement, WRAP_TAB_LAYOUT); }
@@ -195,6 +201,7 @@ public class JTabbedPane extends JComponent implements SwingConstants {
     public int tabForCoordinate(int x, int y) { return indexAtLocation(x, y); }
     public int indexAtLocation(int x, int y) {
         computeTabs();
+        if (tabClip != null && !tabClip.contains(x, y)) return -1;
         for (int i = 0; i < rects.length; i++) if (rects[i].contains(x, y)) return i;
         return -1;
     }
@@ -222,6 +229,58 @@ public class JTabbedPane extends JComponent implements SwingConstants {
         int[] tw = new int[n];
         for (int i = 0; i < n; i++) tw[i] = tabW(pages.get(i), fm);
         int sel = getSelectedIndex();
+        tabClip = null;
+        scrollBtn = null;
+        if (tabLayoutPolicy == SCROLL_TAB_LAYOUT && n > 0) {
+            boolean horiz = tabPlacement == TOP || tabPlacement == BOTTOM;
+            int[] start = new int[n + 1];
+            int[] len = new int[n];
+            int mw = 0;
+            for (int i = 0; i < n; i++) mw = Math.max(mw, tw[i]);
+            for (int i = 0; i < n; i++) { len[i] = horiz ? tw[i] : th; start[i + 1] = start[i] + len[i]; }
+            int total = start[n];
+            int avail = horiz ? (width > 0 ? width : 100000) : (height > 0 ? height : 100000);
+            boolean need = total > avail;
+            int vis = need ? avail - (horiz ? 2 * SBTN : SBTN) : avail;
+            if (vis < 1) vis = 1;
+            scrollMax = Math.max(0, total - vis);
+            if (leading >= n) leading = n - 1;
+            if (leading < 0) leading = 0;
+            if (ensureSel && sel >= 0 && sel < n) {
+                ensureSel = false;
+                int off = Math.min(start[leading], scrollMax);
+                if (start[sel] < off) leading = sel;
+                else if (start[sel + 1] > off + vis) {
+                    int l = leading;
+                    while (l < sel && start[sel + 1] - start[l] > vis) l++;
+                    leading = l;
+                }
+            }
+            scrollOff = need ? Math.min(start[leading], scrollMax) : 0;
+            int cross = horiz ? th : mw;
+            for (int i = 0; i < n; i++) {
+                int pos = start[i] - scrollOff;
+                if (horiz) rects[i] = new Rectangle(pos, tabPlacement == TOP ? 0 : height - th, tw[i], th);
+                else rects[i] = new Rectangle(tabPlacement == LEFT ? 0 : width - mw, pos, mw, th);
+            }
+            runCount = 1;
+            areaSize = cross;
+            if (horiz) {
+                int y = tabPlacement == TOP ? 0 : height - th;
+                tabClip = new Rectangle(0, y, vis, th);
+                if (need) scrollBtn = new Rectangle[] { new Rectangle(vis, y, SBTN, th), new Rectangle(vis + SBTN, y, SBTN, th) };
+                if (tabPlacement == TOP) contentRect = new Rectangle(0, areaSize - 1, width, Math.max(0, height - areaSize + 1));
+                else contentRect = new Rectangle(0, 0, width, Math.max(0, height - areaSize + 1));
+            } else {
+                int x = tabPlacement == LEFT ? 0 : width - mw;
+                tabClip = new Rectangle(x, 0, mw, vis);
+                if (need) scrollBtn = new Rectangle[] { new Rectangle(x, vis, mw / 2, SBTN), new Rectangle(x + mw / 2, vis, mw - mw / 2, SBTN) };
+                if (tabPlacement == LEFT) contentRect = new Rectangle(areaSize - 1, 0, Math.max(0, width - areaSize + 1), height);
+                else contentRect = new Rectangle(0, 0, Math.max(0, width - areaSize + 1), height);
+            }
+            tabsValid = true;
+            return;
+        }
         if (tabPlacement == TOP || tabPlacement == BOTTOM) {
             int avail = width > 0 ? width : 100000;
             ArrayList<int[]> runs = new ArrayList<>();
@@ -307,6 +366,18 @@ public class JTabbedPane extends JComponent implements SwingConstants {
     protected void processMouseEvent(MouseEvent e) {
         super.processMouseEvent(e);
         if (e.getID() == MouseEvent.MOUSE_PRESSED && e.getButton() == 1 && enabled) {
+            computeTabs();
+            if (scrollBtn != null) {
+                for (int b = 0; b < 2; b++) {
+                    if (scrollBtn[b].contains(e.getX(), e.getY())) {
+                        if (b == 0 && scrollOff > 0) leading--;
+                        else if (b == 1 && scrollOff < scrollMax) leading++;
+                        tabsValid = false;
+                        repaint();
+                        return;
+                    }
+                }
+            }
             int i = indexAtLocation(e.getX(), e.getY());
             if (i >= 0 && pages.get(i).enabled) {
                 if (i != getSelectedIndex()) setSelectedIndex(i);
@@ -347,10 +418,30 @@ public class JTabbedPane extends JComponent implements SwingConstants {
         if (tabPlacement == TOP) g.drawLine(c.x + 1, c.y + 1, c.x + c.width - 3, c.y + 1);
         FontMetrics fm = g.getFontMetrics(getFont());
         g.setFont(getFont());
+        Graphics tg = g;
+        if (tabClip != null) {
+            tg = g.create(tabClip.x, tabClip.y, tabClip.width, tabClip.height);
+            tg.translate(-tabClip.x, -tabClip.y);
+            tg.setFont(getFont());
+        }
         for (int pass = 0; pass < 2; pass++) {
             for (int i = 0; i < rects.length; i++) {
                 if ((i == sel) != (pass == 1)) continue;
-                paintTab(g, i, rects[i], i == sel, line, fm);
+                paintTab(tg, i, rects[i], i == sel, line, fm);
+            }
+        }
+        if (tabClip != null) tg.dispose();
+        if (scrollBtn != null) {
+            boolean horiz = tabPlacement == TOP || tabPlacement == BOTTOM;
+            for (int b = 0; b < 2; b++) {
+                Rectangle r = scrollBtn[b];
+                boolean on = b == 0 ? scrollOff > 0 : scrollOff < scrollMax;
+                if (on) AbstractButton.gradient(g, r.x + 1, r.y + 1, r.width - 2, r.height - 2, false, false);
+                else { g.setColor(new Color(238, 238, 238)); g.fillRect(r.x + 1, r.y + 1, r.width - 2, r.height - 2); }
+                g.setColor(on ? line : new Color(184, 184, 184));
+                g.drawRect(r.x, r.y, r.width - 1, r.height - 1);
+                g.setColor(on ? new Color(51, 51, 51) : new Color(153, 153, 153));
+                JScrollBar.arrow(g, r.x + r.width / 2, r.y + r.height / 2, horiz ? 2 + b : b);
             }
         }
     }

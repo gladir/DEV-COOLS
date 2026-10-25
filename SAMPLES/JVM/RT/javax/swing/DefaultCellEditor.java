@@ -3,7 +3,7 @@ import java.awt.Component;
 import java.awt.event.*;
 import java.util.EventObject;
 import javax.swing.table.*;
-public class DefaultCellEditor extends AbstractCellEditor implements TableCellEditor {
+public class DefaultCellEditor extends AbstractCellEditor implements TableCellEditor, javax.swing.tree.TreeCellEditor {
     protected JComponent editorComponent;
     protected EditorDelegate delegate;
     protected int clickCountToStart = 1;
@@ -51,6 +51,11 @@ public class DefaultCellEditor extends AbstractCellEditor implements TableCellEd
     public void cancelCellEditing() { delegate.cancelCellEditing(); }
     public Component getTableCellEditorComponent(JTable table, Object value, boolean isSelected, int row, int column) {
         delegate.setValue(value);
+        return editorComponent;
+    }
+    public Component getTreeCellEditorComponent(JTree tree, Object value, boolean isSelected, boolean expanded, boolean leaf, int row) {
+        String stringValue = tree.convertValueToText(value, isSelected, expanded, leaf, row, false);
+        delegate.setValue(stringValue);
         return editorComponent;
     }
     protected class EditorDelegate implements ActionListener, ItemListener, java.io.Serializable {

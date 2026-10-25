@@ -40,6 +40,12 @@ public class JComboBox<E> extends JComponent implements ItemSelectable {
     public void removeItemListener(ItemListener l) { il.remove(l); }
     public Object[] getSelectedObjects() { return new Object[] { getSelectedItem() }; }
     public boolean focusTraversable() { return true; }
+    public int getBaseline(int w, int h) {
+        if (w < 0 || h < 0) throw new IllegalArgumentException("Width and height must be >= 0");
+        FontMetrics fm = new FontMetrics(getFont());
+        return (h - fm.getHeight()) / 2 + fm.getAscent();
+    }
+    public BaselineResizeBehavior getBaselineResizeBehavior() { return BaselineResizeBehavior.CENTER_OFFSET; }
     public boolean wantsMouse() { return true; }
     public Dimension getPreferredSize() {
         if (prefSize != null) return new Dimension(prefSize);
