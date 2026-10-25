@@ -88,6 +88,7 @@ Type
 
 Var
   ErrCount, WarnCount: Integer;
+  FirstErrCode: string;
   Files: array of TSrcFile;
   NFiles: Integer;
   OptVerbose: Boolean;
@@ -428,6 +429,12 @@ begin
     if (i <= Length(s)) and (s[i] = #9) then Inc(Result, 4) else Inc(Result);
 end;
 
+function PadL(const s: string; w: Integer): string;
+begin
+  Result := s;
+  while Length(Result) < w do Result := ' ' + Result;
+end;
+
 procedure WriteErrLn(const s: string);
 begin
   WriteLn(StdErr, s);
@@ -451,6 +458,7 @@ begin
     head := 'warning';
   end;
   if code <> '' then head := head + '[' + code + ']';
+  if isErr and (code <> '') and (FirstErrCode = '') then FirstErrCode := code;
   WriteErrLn(head + ': ' + msg);
   if (fi >= 0) and (fi < NFiles) and (line > 0) then
   begin
@@ -475,6 +483,87 @@ begin
     while len > 0 do begin ln := ln + '^'; Dec(len); end;
     if lbl <> '' then ln := ln + ' ' + lbl;
     WriteErrLn(ln);
+  end;
+  if ErrCount >= MAX_ERRORS then
+  begin
+    WriteErrLn('error: aborting due to too many errors');
+    Halt(1);
+  end;
+end;
+
+Type
+  TLabel = record
+    fi, line, col, len: Integer;
+    text: string;
+    primary: Boolean;
+  end;
+  TLabels = array of TLabel;
+
+{ Diagnostic avec plusieurs etiquettes (en-tete, extrait de source, marques ^ et -) }
+procedure ReportLabels(isErr: Boolean; const code, msg: string; const labs: TLabels);
+var
+  head, ln, w, pad: string;
+  i, j, n, k, prim, width, dc, len, prevLine: Integer;
+  order: array of Integer;
+  tmp: Integer;
+  mark: string;
+begin
+  if SuppressDiag > 0 then Exit;
+  if isErr then begin Inc(ErrCount); head := 'error'; end
+  else begin Inc(WarnCount); head := 'warning'; end;
+  if code <> '' then head := head + '[' + code + ']';
+  if isErr and (code <> '') and (FirstErrCode = '') then FirstErrCode := code;
+  WriteErrLn(head + ': ' + msg);
+  prim := 0;
+  for i := 0 to Length(labs) - 1 do
+    if labs[i].primary then begin prim := i; Break; end;
+  if Length(labs) > 0 then
+  begin
+    width := 1;
+    for i := 0 to Length(labs) - 1 do
+      if Length(IntToStr(labs[i].line)) > width then width := Length(IntToStr(labs[i].line));
+    pad := Spaces(width);
+    WriteErrLn(pad + '--> ' + Files[labs[prim].fi].name + ':' + IntToStr(labs[prim].line) + ':' + IntToStr(labs[prim].col));
+    WriteErrLn(pad + ' |');
+    SetLength(order, Length(labs));
+    for i := 0 to Length(labs) - 1 do order[i] := i;
+    for i := 0 to Length(labs) - 2 do
+      for j := i + 1 to Length(labs) - 1 do
+        if (labs[order[j]].line < labs[order[i]].line) or
+           ((labs[order[j]].line = labs[order[i]].line) and (labs[order[j]].col < labs[order[i]].col)) then
+        begin
+          tmp := order[i]; order[i] := order[j]; order[j] := tmp;
+        end;
+    prevLine := 0;
+    for i := 0 to Length(order) - 1 do
+    begin
+      k := order[i];
+      if (labs[k].line <> prevLine) or (i = 0) then
+      begin
+        if (prevLine > 0) and (labs[k].line - prevLine = 2) then
+          WriteErrLn(PadL(IntToStr(prevLine + 1), width) + ' | ' + ExpandTabs(SourceLine(labs[k].fi, prevLine + 1)))
+        else if (prevLine > 0) and (labs[k].line - prevLine > 2) then
+          WriteErrLn('...');
+        ln := SourceLine(labs[k].fi, labs[k].line);
+        WriteErrLn(PadL(IntToStr(labs[k].line), width) + ' | ' + ExpandTabs(ln));
+        prevLine := labs[k].line;
+      end;
+      ln := SourceLine(labs[k].fi, labs[k].line);
+      n := DisplayCol(ln, labs[k].col);
+      len := labs[k].len;
+      if len < 1 then len := 1;
+      if len > 1 then
+      begin
+        dc := DisplayCol(ln, labs[k].col + len) - n;
+        if dc < 1 then dc := 1;
+        len := dc;
+      end;
+      if labs[k].primary then mark := '^' else mark := '-';
+      w := pad + ' | ' + Spaces(n);
+      while len > 0 do begin w := w + mark; Dec(len); end;
+      if labs[k].text <> '' then w := w + ' ' + labs[k].text;
+      WriteErrLn(w);
+    end;
   end;
   if ErrCount >= MAX_ERRORS then
   begin
@@ -511,6 +600,8 @@ begin
     else
       WriteErrLn('error: aborting due to ' + IntToStr(ErrCount) + ' previous errors');
     WriteErrLn('');
+    if FirstErrCode <> '' then
+      WriteErrLn('For more information about this error, try `rustc --explain ' + FirstErrCode + '`.');
     Halt(1);
   end;
 end;
@@ -11727,6 +11818,7 @@ begin
   SetLength(args, 1);
   args[0] := iterE;
   m := HCallFn(TraitAssocItem(LangIntoIterator, 'into_iter', dkFn), targs, args, ityp, Nodes[n].b);
+  Hirs[m].s := 'for';
   p := NewPat(pkBind, ityp);
   Pats[p].v := v;
   PatPos(p, n);
@@ -12865,6 +12957,625 @@ begin
   ErrAt(n, '', 'cannot find macro `' + name + '` in this scope', '');
   Result := HirAt(hUnit, TyErrT, n);
 end;
+{ ============================================================ }
+{ Verification des deplacements (E0382)                        }
+{ ============================================================ }
+
+Type
+  TMoveRec = record
+    v, f: Integer;           { variable ; champ (-1 = entiere) }
+    fi, line, col, len: Integer;
+    how: Integer;            { 0 valeur, 1 recepteur de methode, 2 fermeture }
+    name: string;
+  end;
+
+  TMState = record
+    items: array of TMoveRec;
+    dead: Boolean;
+  end;
+
+  TLoopCtx = record
+    id: Integer;
+    brk: TMState;
+    cont: TMState;
+    hasBrk: Boolean;
+    hasCont: Boolean;
+  end;
+
+Var
+  MvBody: Integer;
+  MvLoops: array of TLoopCtx;
+  MvNLoops: Integer;
+  MvSeen: THashSI;
+  MvQuiet: Integer;
+  MvCurHow: Integer;
+
+function MvEmpty: TMState;
+begin
+  Result.items := nil;
+  Result.dead := False;
+end;
+
+function MvDead: TMState;
+begin
+  Result.items := nil;
+  Result.dead := True;
+end;
+
+function MvMerge(const a, b: TMState): TMState;
+var
+  i, j: Integer;
+  found: Boolean;
+begin
+  if a.dead then begin Result := b; Exit; end;
+  if b.dead then begin Result := a; Exit; end;
+  Result := a;
+  for i := 0 to Length(b.items) - 1 do
+  begin
+    found := False;
+    for j := 0 to Length(Result.items) - 1 do
+      if (Result.items[j].v = b.items[i].v) and (Result.items[j].f = b.items[i].f) then begin found := True; Break; end;
+    if not found then
+    begin
+      SetLength(Result.items, Length(Result.items) + 1);
+      Result.items[Length(Result.items) - 1] := b.items[i];
+    end;
+  end;
+end;
+
+function MvFind(const st: TMState; v, f: Integer): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := 0 to Length(st.items) - 1 do
+    if st.items[i].v = v then
+    begin
+      if (f < 0) or (st.items[i].f < 0) or (st.items[i].f = f) then begin Result := i; Exit; end;
+    end;
+end;
+
+procedure MvClear(var st: TMState; v, f: Integer);
+var
+  i, k: Integer;
+begin
+  k := 0;
+  for i := 0 to Length(st.items) - 1 do
+  begin
+    if (st.items[i].v = v) and ((f < 0) or (st.items[i].f = f) or (st.items[i].f < 0)) then Continue;
+    st.items[k] := st.items[i];
+    Inc(k);
+  end;
+  SetLength(st.items, k);
+end;
+
+procedure MvAdd(var st: TMState; v, f: Integer; h: Integer; how: Integer);
+var
+  r: TMoveRec;
+  tt: Integer;
+begin
+  if MvFind(st, v, f) >= 0 then Exit;
+  { les references mutables sont reemprunteees implicitement }
+  tt := Shallow(Zonk(Hirs[h].ty));
+  if (Tys[tt].k = tyRef) and ((Tys[tt].f and 1) <> 0) then Exit;
+  r.v := v; r.f := f;
+  r.fi := Hirs[h].fi; r.line := Hirs[h].line; r.col := Hirs[h].col; r.len := Hirs[h].len;
+  if how = 0 then r.how := MvCurHow else r.how := how;
+  r.name := '';
+  SetLength(st.items, Length(st.items) + 1);
+  st.items[Length(st.items) - 1] := r;
+end;
+
+{ ---- erreur ---- }
+
+function MvFieldName(t, f: Integer): string;
+begin
+  t := Shallow(t);
+  if Tys[t].k = tyTuple then Result := IntToStr(f)
+  else if (Tys[t].k = tyAdt) and (Defs[Tys[t].def].kind = dkStruct) then
+    Result := Nodes[Nodes[Defs[Tys[t].def].node].l2[f]].s
+  else Result := IntToStr(f);
+end;
+
+function MvFieldType(t, f: Integer): Integer;
+begin
+  t := Shallow(t);
+  if Tys[t].k = tyTuple then Result := Tys[t].args[f]
+  else if (Tys[t].k = tyAdt) and (Defs[Tys[t].def].kind = dkStruct) then Result := FieldTyOf(t, Tys[t].def, f)
+  else Result := TyErrT;
+end;
+
+procedure MvReportUse(const st: TMState; v, f: Integer; h: Integer; borrow: Boolean; partialUse: Boolean);
+var
+  idx: Integer;
+  labs: TLabels;
+  vn: TVarInfo;
+  key, what, movedPath: string;
+  mr: TMoveRec;
+  nl, k, w: Integer;
+  ln, sug: string;
+  isPartial, sameSite: Boolean;
+begin
+  idx := MvFind(st, v, f);
+  if idx < 0 then Exit;
+  if MvQuiet > 0 then Exit;
+  mr := st.items[idx];
+  vn := Bodies[MvBody].vars[v];
+  key := IntToStr(Hirs[h].fi) + ':' + IntToStr(Hirs[h].line) + ':' + IntToStr(Hirs[h].col);
+  if HFind(MvSeen, key) >= 0 then Exit;
+  HPut(MvSeen, key, 1);
+  if borrow then what := 'borrow' else what := 'use';
+  isPartial := mr.f >= 0;
+  sameSite := (mr.line = Hirs[h].line) and (mr.col = Hirs[h].col);
+  SetLength(labs, 0);
+  nl := 0;
+  if (not isPartial) and (vn.node > 0) and (Nodes[vn.node].line > 0) then
+  begin
+    SetLength(labs, nl + 1);
+    labs[nl].fi := Nodes[vn.node].fi; labs[nl].line := Nodes[vn.node].line; labs[nl].col := Nodes[vn.node].col;
+    labs[nl].len := Length(vn.name);
+    if vn.mut then
+    begin
+      { le motif `mut x` occupe aussi le mot cle }
+      ln := SourceLine(Nodes[vn.node].fi, Nodes[vn.node].line);
+      if Copy(ln, Nodes[vn.node].col, 4) = 'mut ' then labs[nl].len := Length(vn.name) + 4
+      else if (Nodes[vn.node].col > 4) and (Copy(ln, Nodes[vn.node].col - 4, 4) = 'mut ') then
+      begin
+        labs[nl].col := Nodes[vn.node].col - 4;
+        labs[nl].len := Length(vn.name) + 4;
+      end;
+    end;
+    labs[nl].primary := False;
+    labs[nl].text := 'move occurs because `' + vn.name + '` has type `' + TyToStr(Zonk(vn.ty)) +
+                     '`, which does not implement the `Copy` trait';
+    Inc(nl);
+  end;
+  SetLength(labs, nl + 1);
+  labs[nl].fi := mr.fi; labs[nl].line := mr.line; labs[nl].col := mr.col; labs[nl].len := mr.len;
+  labs[nl].primary := False;
+  if sameSite then labs[nl].text := 'value moved here, in previous iteration of loop'
+  else if isPartial then labs[nl].text := 'value partially moved here'
+  else labs[nl].text := 'value moved here';
+  if mr.how = 2 then labs[nl].text := 'value moved into closure here';
+  if mr.how = 3 then labs[nl].text := '`' + vn.name + '` moved due to this implicit call to `.into_iter()`';
+  if mr.how = 1 then labs[nl].text := '`' + vn.name + '` moved due to this method call';
+  Inc(nl);
+  if not sameSite then
+  begin
+    SetLength(labs, nl + 1);
+    labs[nl].fi := Hirs[h].fi; labs[nl].line := Hirs[h].line; labs[nl].col := Hirs[h].col; labs[nl].len := Hirs[h].len;
+    labs[nl].primary := True;
+    if isPartial then
+    begin
+      if borrow then labs[nl].text := 'value borrowed here after partial move'
+      else labs[nl].text := 'value used here after partial move';
+    end
+    else if borrow then labs[nl].text := 'value borrowed here after move'
+    else labs[nl].text := 'value used here after move';
+    Inc(nl);
+  end
+  else
+    labs[nl - 1].primary := True;
+  if isPartial then
+    ReportLabels(True, 'E0382', what + ' of partially moved value: `' + vn.name + '`', labs)
+  else
+    ReportLabels(True, 'E0382', what + ' of moved value: `' + vn.name + '`', labs);
+  w := Length(IntToStr(Hirs[h].line));
+  for k := 0 to Length(labs) - 1 do
+    if Length(IntToStr(labs[k].line)) > w then w := Length(IntToStr(labs[k].line));
+  if isPartial then
+  begin
+    WriteErrLn(Spaces(w) + ' |');
+    movedPath := vn.name + '.' + MvFieldName(Zonk(vn.ty), mr.f);
+    WriteErrLn(Spaces(w) + ' = note: partial move occurs because `' + movedPath + '` has type `' +
+               TyToStr(Zonk(MvFieldType(Zonk(vn.ty), mr.f))) + '`, which does not implement the `Copy` trait');
+  end
+  else if (mr.how = 0) or (mr.how = 3) then
+  begin
+    WriteErrLn(Spaces(w) + ' |');
+    ln := ExpandTabs(SourceLine(mr.fi, mr.line));
+    if mr.how = 3 then
+    begin
+      WriteErrLn('help: consider iterating over a slice of the `' + TyToStr(Zonk(vn.ty)) +
+                 '`''s content to avoid moving into the `for` loop');
+      WriteErrLn(Spaces(w) + ' |');
+      sug := Copy(ln, 1, mr.col - 1) + '&' + Copy(ln, mr.col, Length(ln));
+      WriteErrLn(PadL(IntToStr(mr.line), w) + ' | ' + sug);
+      WriteErrLn(Spaces(w) + ' | ' + Spaces(mr.col - 1) + '+');
+    end
+    else
+    begin
+      WriteErrLn('help: consider cloning the value if the performance cost is acceptable');
+      WriteErrLn(Spaces(w) + ' |');
+      sug := Copy(ln, 1, mr.col - 1 + mr.len) + '.clone()' + Copy(ln, mr.col + mr.len, Length(ln));
+      WriteErrLn(PadL(IntToStr(mr.line), w) + ' | ' + sug);
+      WriteErrLn(Spaces(w) + ' | ' + Spaces(mr.col - 1 + mr.len) + '++++++++');
+    end;
+  end;
+  WriteErrLn('');
+end;
+
+{ ---- analyse ---- }
+
+procedure MvWalk(h: Integer; var st: TMState; mode: Integer); forward;
+
+function PatMoves(p: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  if p < 0 then Exit;
+  case Pats[p].k of
+    pkBind:
+      begin
+        if (Pats[p].byRef = 0) and (not IsCopyTy(Pats[p].ty)) then begin Result := True; Exit; end;
+        if Pats[p].a >= 0 then Result := PatMoves(Pats[p].a);
+      end;
+    pkTuple, pkAdt, pkOr:
+      for i := 0 to Length(Pats[p].l) - 1 do
+        if PatMoves(Pats[p].l[i]) then begin Result := True; Exit; end;
+    pkSlice:
+      for i := 0 to Length(Pats[p].l) - 1 do
+        if PatMoves(Pats[p].l[i]) then begin Result := True; Exit; end;
+  end;
+end;
+
+procedure PatDeclare(p: Integer; var st: TMState);
+var
+  i: Integer;
+begin
+  if p < 0 then Exit;
+  case Pats[p].k of
+    pkBind:
+      begin
+        if Pats[p].v >= 0 then MvClear(st, Pats[p].v, -1);
+        if Pats[p].a >= 0 then PatDeclare(Pats[p].a, st);
+      end;
+    pkTuple, pkAdt, pkOr:
+      for i := 0 to Length(Pats[p].l) - 1 do PatDeclare(Pats[p].l[i], st);
+    pkDeref: PatDeclare(Pats[p].a, st);
+    pkSlice:
+      begin
+        for i := 0 to Length(Pats[p].l) - 1 do PatDeclare(Pats[p].l[i], st);
+        for i := 0 to Length(Pats[p].l2) - 1 do PatDeclare(Pats[p].l2[i], st);
+        if Pats[p].a >= 0 then PatDeclare(Pats[p].a, st);
+      end;
+  end;
+end;
+
+{ racine d'un chemin de champs : variable locale et premier champ ; retourne faux si le chemin passe par un deref/index }
+function PathRoot(h: Integer; var v, f: Integer): Boolean;
+var
+  cur: Integer;
+begin
+  Result := False;
+  f := -1;
+  cur := h;
+  while True do
+  begin
+    case Hirs[cur].k of
+      hLocal: begin v := Integer(Hirs[cur].n); Result := True; Exit; end;
+      hField: begin f := Integer(Hirs[cur].n); cur := Hirs[cur].a; end;
+      hCoerce: cur := Hirs[cur].a;
+    else
+      Exit;
+    end;
+  end;
+end;
+
+procedure MvUsePlace(h: Integer; var st: TMState; borrow: Boolean; moving: Boolean);
+var
+  v, f: Integer;
+begin
+  if PathRoot(h, v, f) then
+  begin
+    if MvFind(st, v, f) >= 0 then
+      MvReportUse(st, v, f, h, borrow, (f < 0) and (st.items[MvFind(st, v, f)].f >= 0))
+    else if (f >= 0) and (MvFind(st, v, -1) >= 0) then ;
+    if moving and (not IsCopyTy(Hirs[h].ty)) and (Tys[Zonk(Hirs[h].ty)].k <> tyNever) then
+    begin
+      MvAdd(st, v, f, h, 0);
+    end;
+  end
+  else
+  begin
+    case Hirs[h].k of
+      hField: MvWalk(Hirs[h].a, st, 1);
+      hDeref:
+        begin
+          if moving and (not IsCopyTy(Hirs[h].ty)) and (Hirs[Hirs[h].a].k = hLocal) then
+          begin
+            { deplacement hors d'une boite : la variable est consideree deplacee }
+            v := Integer(Hirs[Hirs[h].a].n);
+            if (Tys[Zonk(Hirs[Hirs[h].a].ty)].k = tyAdt) then
+            begin
+              if MvFind(st, v, -1) >= 0 then MvReportUse(st, v, -1, Hirs[h].a, False, False);
+              MvAdd(st, v, -1, h, 0);
+              Exit;
+            end;
+          end;
+          MvWalk(Hirs[h].a, st, 1);
+        end;
+      hIndex:
+        begin
+          MvWalk(Hirs[h].a, st, 1);
+          MvWalk(Hirs[h].b, st, 0);
+        end;
+    else
+      MvWalk(h, st, 0);
+    end;
+  end;
+end;
+
+procedure MvLoopPush(id: Integer);
+begin
+  if MvNLoops >= Length(MvLoops) then SetLength(MvLoops, MvNLoops * 2 + 8);
+  MvLoops[MvNLoops].id := id;
+  MvLoops[MvNLoops].brk := MvDead;
+  MvLoops[MvNLoops].cont := MvDead;
+  MvLoops[MvNLoops].hasBrk := False;
+  MvLoops[MvNLoops].hasCont := False;
+  Inc(MvNLoops);
+end;
+
+function MvLoopFind(id: Integer): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := MvNLoops - 1 downto 0 do
+    if MvLoops[i].id = id then begin Result := i; Exit; end;
+end;
+
+procedure MvMatchScrut(sc: Integer; const pats: TIntArr; var st: TMState; var moves: Boolean);
+var
+  i: Integer;
+begin
+  moves := False;
+  for i := 0 to Length(pats) - 1 do
+    if PatMoves(pats[i]) then moves := True;
+  if IsPlaceHir(sc) or (Hirs[sc].k = hCoerce) then
+    MvUsePlace(sc, st, False, False)
+  else
+    MvWalk(sc, st, 0);
+end;
+
+procedure MvWalk(h: Integer; var st: TMState; mode: Integer);
+var
+  i, v, f, k, li: Integer;
+  save, a, b, res: TMState;
+  arm: Integer;
+  plist: TIntArr;
+  moves: Boolean;
+  pidx: Integer;
+begin
+  if (h < 0) or st.dead then Exit;
+  case Hirs[h].k of
+    hLocal:
+      begin
+        v := Integer(Hirs[h].n);
+        k := MvFind(st, v, -1);
+        if k >= 0 then MvReportUse(st, v, -1, h, mode = 1, st.items[k].f >= 0);
+        if (mode = 0) and (not IsCopyTy(Hirs[h].ty)) then MvAdd(st, v, -1, h, 0);
+      end;
+    hField, hDeref, hIndex:
+      MvUsePlace(h, st, mode = 1, mode = 0);
+    hAddr: MvWalk(Hirs[h].a, st, 1);
+    hCoerce:
+      begin
+        if Hirs[h].n = 2 then MvWalk(Hirs[h].a, st, 1) else MvWalk(Hirs[h].a, st, mode);
+      end;
+    hCast, hUnary: MvWalk(Hirs[h].a, st, 0);
+    hBinary:
+      begin
+        MvWalk(Hirs[h].a, st, 0);
+        MvWalk(Hirs[h].b, st, 0);
+      end;
+    hAnd, hOr:
+      begin
+        MvWalk(Hirs[h].a, st, 0);
+        a := st;
+        MvWalk(Hirs[h].b, a, 0);
+        st := MvMerge(st, a);
+      end;
+    hCall:
+      begin
+        if Hirs[Hirs[h].a].k <> hFnRef then MvWalk(Hirs[h].a, st, 1);
+        if Hirs[h].s = 'for' then MvCurHow := 3;
+        for i := 0 to Length(Hirs[h].l) - 1 do MvWalk(Hirs[h].l[i], st, 0);
+        MvCurHow := 0;
+      end;
+    hCallClosure:
+      begin
+        MvWalk(Hirs[h].a, st, 1);
+        for i := 0 to Length(Hirs[h].l) - 1 do MvWalk(Hirs[h].l[i], st, 0);
+      end;
+    hAssign:
+      begin
+        MvWalk(Hirs[h].b, st, 0);
+        if st.dead then Exit;
+        if PathRoot(Hirs[h].a, v, f) then MvClear(st, v, f)
+        else MvWalk(Hirs[h].a, st, 1);
+      end;
+    hAssignOp:
+      begin
+        MvWalk(Hirs[h].b, st, 0);
+        MvWalk(Hirs[h].a, st, 1);
+      end;
+    hIf:
+      begin
+        MvWalk(Hirs[h].a, st, 0);
+        if st.dead then Exit;
+        a := st;
+        b := st;
+        MvWalk(Hirs[h].b, a, 0);
+        if Hirs[h].c <> 0 then MvWalk(Hirs[h].c, b, 0);
+        st := MvMerge(a, b);
+      end;
+    hLetCond:
+      begin
+        SetLength(plist, 1);
+        plist[0] := Integer(Hirs[h].n);
+        MvMatchScrut(Hirs[h].a, plist, st, moves);
+        if moves and PathRoot(Hirs[h].a, v, f) and (not IsCopyTy(Hirs[Hirs[h].a].ty)) then MvAdd(st, v, f, Hirs[h].a, 0);
+        PatDeclare(Integer(Hirs[h].n), st);
+      end;
+    hMatch:
+      begin
+        plist := nil;
+        for i := 0 to Length(Hirs[h].l) - 1 do IAdd(plist, Integer(Hirs[Hirs[h].l[i]].n));
+        MvMatchScrut(Hirs[h].a, plist, st, moves);
+        if st.dead then Exit;
+        res := MvDead;
+        save := st;
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arm := Hirs[h].l[i];
+          a := save;
+          PatDeclare(Integer(Hirs[arm].n), a);
+          if PatMoves(Integer(Hirs[arm].n)) and PathRoot(Hirs[h].a, v, f) and (not IsCopyTy(Hirs[Hirs[h].a].ty)) then
+            MvAdd(a, v, f, Hirs[h].a, 0);
+          if Hirs[arm].a <> 0 then MvWalk(Hirs[arm].a, a, 0);
+          MvWalk(Hirs[arm].b, a, 0);
+          res := MvMerge(res, a);
+        end;
+        st := res;
+      end;
+    hLoop:
+      begin
+        MvLoopPush(Integer(Hirs[h].n));
+        li := MvNLoops - 1;
+        { premiere passe silencieuse pour calculer l'etat de fin de corps }
+        Inc(MvQuiet);
+        a := st;
+        MvWalk(Hirs[h].a, a, 0);
+        Dec(MvQuiet);
+        if MvLoops[li].hasCont then a := MvMerge(a, MvLoops[li].cont);
+        b := MvMerge(st, a);
+        MvLoops[li].brk := MvDead;
+        MvLoops[li].hasBrk := False;
+        MvLoops[li].cont := MvDead;
+        MvLoops[li].hasCont := False;
+        a := b;
+        MvWalk(Hirs[h].a, a, 0);
+        if MvLoops[li].hasBrk then st := MvLoops[li].brk else st := MvDead;
+        Dec(MvNLoops);
+      end;
+    hBlockLabel:
+      begin
+        MvLoopPush(Integer(Hirs[h].n));
+        li := MvNLoops - 1;
+        a := st;
+        MvWalk(Hirs[h].a, a, 0);
+        if MvLoops[li].hasBrk then a := MvMerge(a, MvLoops[li].brk);
+        st := a;
+        Dec(MvNLoops);
+      end;
+    hBreak:
+      begin
+        if Hirs[h].a <> 0 then MvWalk(Hirs[h].a, st, 0);
+        li := MvLoopFind(Integer(Hirs[h].n));
+        if (li >= 0) and (not st.dead) then
+        begin
+          MvLoops[li].brk := MvMerge(MvLoops[li].brk, st);
+          MvLoops[li].hasBrk := True;
+        end;
+        st := MvDead;
+      end;
+    hContinue:
+      begin
+        li := MvLoopFind(Integer(Hirs[h].n));
+        if (li >= 0) and (not st.dead) then
+        begin
+          MvLoops[li].cont := MvMerge(MvLoops[li].cont, st);
+          MvLoops[li].hasCont := True;
+        end;
+        st := MvDead;
+      end;
+    hReturn:
+      begin
+        if Hirs[h].a <> 0 then MvWalk(Hirs[h].a, st, 0);
+        st := MvDead;
+      end;
+    hBlock:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arm := Hirs[h].l[i];
+          if Hirs[arm].k = hLet then
+          begin
+            if Hirs[arm].a <> 0 then
+            begin
+              plist := nil;
+              IAdd(plist, Integer(Hirs[arm].n));
+              pidx := Integer(Hirs[arm].n);
+              if IsPlaceHir(Hirs[arm].a) and (Pats[pidx].k <> pkBind) then
+              begin
+                MvMatchScrut(Hirs[arm].a, plist, st, moves);
+                if moves and PathRoot(Hirs[arm].a, v, f) and (not IsCopyTy(Hirs[Hirs[arm].a].ty)) then
+                  MvAdd(st, v, f, Hirs[arm].a, 0);
+              end
+              else MvWalk(Hirs[arm].a, st, 0);
+            end;
+            if Hirs[arm].b <> 0 then
+            begin
+              a := st;
+              MvWalk(Hirs[arm].b, a, 0);
+            end;
+            PatDeclare(Integer(Hirs[arm].n), st);
+          end
+          else
+            MvWalk(Hirs[arm].a, st, 0);
+          if st.dead then Exit;
+        end;
+        if Hirs[h].a <> 0 then MvWalk(Hirs[h].a, st, mode);
+      end;
+    hLet:
+      begin
+        if Hirs[h].a <> 0 then MvWalk(Hirs[h].a, st, 0);
+        PatDeclare(Integer(Hirs[h].n), st);
+      end;
+    hExprStmt: MvWalk(Hirs[h].a, st, 0);
+    hAdt:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do
+          if Hirs[h].l[i] <> 0 then MvWalk(Hirs[h].l[i], st, 0);
+        if Hirs[h].a <> 0 then MvWalk(Hirs[h].a, st, 1);
+      end;
+    hTuple, hArray:
+      for i := 0 to Length(Hirs[h].l) - 1 do MvWalk(Hirs[h].l[i], st, 0);
+    hRepeat: MvWalk(Hirs[h].a, st, 0);
+    hClosure:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          if Closures[Integer(Hirs[h].n)].isMove then
+          begin
+            if Hirs[Hirs[h].l[i]].k = hLocal then
+            begin
+              v := Integer(Hirs[Hirs[h].l[i]].n);
+              if MvFind(st, v, -1) >= 0 then MvReportUse(st, v, -1, Hirs[h].l[i], False, False);
+              if not IsCopyTy(Hirs[Hirs[h].l[i]].ty) then MvAdd(st, v, -1, Hirs[h].l[i], 2);
+            end;
+          end
+          else MvWalk(Hirs[h].l[i], st, 1);
+        end;
+      end;
+  end;
+end;
+
+procedure MoveCheckBody(b: Integer);
+var
+  st: TMState;
+  i: Integer;
+begin
+  if Defs[Bodies[b].def].crate <> 0 then Exit;
+  MvBody := b;
+  MvNLoops := 0;
+  MvQuiet := 0;
+  st := MvEmpty;
+  MvWalk(Bodies[b].root, st, 0);
+end;
 
 { ============================================================ }
 { Verification d'une instance de fonction (monomorphisation)    }
@@ -13041,6 +13752,8 @@ begin
     Bodies[b].ret := ZonkReveal(Bodies[b].ret);
     for i := 0 to Length(Bodies[b].paramTys) - 1 do Bodies[b].paramTys[i] := ZonkReveal(Bodies[b].paramTys[i]);
   end;
+  if ErrCount = 0 then
+    for j := 0 to Length(InstBodies) - 1 do MoveCheckBody(InstBodies[j]);
   for i := firstBody * 0 to NClosures - 1 do
   begin
     for j := 0 to Length(Closures[i].params) - 1 do Closures[i].params[j] := ZonkReveal(Closures[i].params[j]);
@@ -30596,7 +31309,7 @@ begin
   OvfChecks := (Opt.overflow = 1) or ((Opt.overflow = -1) and (Opt.optLevel = 0));
   InitTypes;
   HInit(ScopeMap); HInit(MethodTraits); HInit(HeadMap); HInit(BodyMap); HInit(CopyCache); HInit(LayMap);
-  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache);
+  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache); HInit(MvSeen);
   NDefs := 0;
   NewDef(0, '<none>', 0, -1);
   LoadStd;
