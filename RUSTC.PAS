@@ -438,14 +438,170 @@ begin
   while Length(Result) < w do Result := ' ' + Result;
 end;
 
+{ ---- avertissements differes : emis dans l'ordre des passes de rustc (precoces, corps, tardives) ---- }
+Type
+  TDeferEntry = record
+    phase, line, col, seq: Integer;
+    text: string;
+  end;
+
+Var
+  DeferDepth: Integer = 0;
+  DeferBuf: array[0..7] of string;
+  DeferPh, DeferLn, DeferCl: array[0..7] of Integer;
+  DeferPass: array[0..7] of Boolean;
+  DeferList: array of TDeferEntry;
+  NDefer: Integer = 0;
+  NoteKeys: TStrArr;
+  DeferSeq: Integer = 0;
+
+{ niveau recevant le texte : le plus haut niveau qui n'est pas "transparent" }
+function DeferTop: Integer;
+begin
+  Result := DeferDepth - 1;
+  while (Result > 0) and DeferPass[Result] do Dec(Result);
+end;
+
 procedure WriteErr(const s: string);
 begin
-  Write(StdErr, s);
+  if DeferDepth > 0 then DeferBuf[DeferTop] := DeferBuf[DeferTop] + s
+  else Write(StdErr, s);
 end;
 
 procedure WriteErrLn(const s: string);
 begin
-  WriteLn(StdErr, s);
+  if DeferDepth > 0 then DeferBuf[DeferTop] := DeferBuf[DeferTop] + s + #10
+  else WriteLn(StdErr, s);
+end;
+
+{ Debut d'un diagnostic differe ; un diagnostic de phase 2 dans une region de phase 2 est fusionne }
+procedure DeferBegin(phase, line, col: Integer);
+begin
+  if DeferDepth >= 8 then Exit;
+  DeferBuf[DeferDepth] := '';
+  DeferPh[DeferDepth] := phase;
+  DeferLn[DeferDepth] := line;
+  DeferCl[DeferDepth] := col;
+  DeferPass[DeferDepth] := (phase = 2) and (DeferDepth > 0) and (DeferPh[DeferTop] = 2);
+  Inc(DeferDepth);
+end;
+
+procedure DeferEnd;
+begin
+  if DeferDepth = 0 then Exit;
+  Dec(DeferDepth);
+  if DeferPass[DeferDepth] then Exit;
+  if DeferBuf[DeferDepth] = '' then Exit;
+  if NDefer >= Length(DeferList) then SetLength(DeferList, NDefer * 2 + 16);
+  DeferList[NDefer].phase := DeferPh[DeferDepth];
+  DeferList[NDefer].line := DeferLn[DeferDepth];
+  DeferList[NDefer].col := DeferCl[DeferDepth];
+  Inc(DeferSeq);
+  DeferList[NDefer].seq := DeferSeq;
+  DeferList[NDefer].text := DeferBuf[DeferDepth];
+  Inc(NDefer);
+end;
+
+function NoteKeyShown(const key: string): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(NoteKeys) - 1 do
+    if NoteKeys[i] = key then begin Result := True; Exit; end;
+  SAdd(NoteKeys, key);
+end;
+
+{ Ecrit un texte differe, en developpant les notes "une seule fois" selon l'ordre d'impression }
+procedure DeferPrint(const txt: string);
+var
+  i, j: Integer;
+  ln, key, nt, w, snip: string;
+  p, wn, code: Integer;
+begin
+  i := 1;
+  while i <= Length(txt) do
+  begin
+    j := i;
+    while (j <= Length(txt)) and (txt[j] <> #10) do Inc(j);
+    ln := Copy(txt, i, j - i);
+    i := j + 1;
+    if (ln <> '') and (ln[1] = #1) then
+    begin
+      Delete(ln, 1, 1);
+      p := Pos(#2, ln); key := Copy(ln, 1, p - 1); Delete(ln, 1, p);
+      p := Pos(#2, ln); nt := Copy(ln, 1, p - 1); Delete(ln, 1, p);
+      p := Pos(#2, ln); w := Copy(ln, 1, p - 1); Delete(ln, 1, p);
+      snip := ln;
+      if not NoteKeyShown(key) then
+      begin
+        Val(w, wn, code);
+        if snip = '1' then WriteLn(StdErr, Spaces(wn) + ' |');
+        WriteLn(StdErr, Spaces(wn) + ' = note: ' + nt);
+      end;
+    end
+    else WriteLn(StdErr, ln);
+  end;
+end;
+
+{ Imprime (dans l'ordre phase, ligne, colonne, sequence) les avertissements differes de phase <= maxPhase }
+procedure DeferFlush(maxPhase: Integer);
+var
+  i, j, n: Integer;
+  e: TDeferEntry;
+  keep: array of TDeferEntry;
+  sel: array of TDeferEntry;
+  ns, nk: Integer;
+begin
+  if NDefer = 0 then Exit;
+  sel := nil; keep := nil; ns := 0; nk := 0;
+  for i := 0 to NDefer - 1 do
+    if DeferList[i].phase <= maxPhase then
+    begin
+      SetLength(sel, ns + 1);
+      sel[ns] := DeferList[i];
+      Inc(ns);
+    end
+    else
+    begin
+      SetLength(keep, nk + 1);
+      keep[nk] := DeferList[i];
+      Inc(nk);
+    end;
+  { tri par insertion (stable) }
+  for i := 1 to ns - 1 do
+  begin
+    e := sel[i];
+    j := i - 1;
+    while (j >= 0) and ((sel[j].phase > e.phase) or ((sel[j].phase = e.phase) and ((sel[j].line > e.line) or
+          ((sel[j].line = e.line) and ((sel[j].col > e.col) or ((sel[j].col = e.col) and (sel[j].seq > e.seq))))))) do
+    begin
+      sel[j + 1] := sel[j];
+      Dec(j);
+    end;
+    sel[j + 1] := e;
+  end;
+  for i := 0 to ns - 1 do DeferPrint(sel[i].text);
+  n := 0;
+  for i := 0 to nk - 1 do begin DeferList[n] := keep[i]; Inc(n); end;
+  NDefer := n;
+end;
+
+{ Note affichee seulement la premiere fois (dans l'ordre d'impression) }
+procedure NoteOnce(const key, text: string);
+begin
+  if DeferDepth > 0 then
+  begin
+    if LastSnippet then WriteErrLn(#1 + key + #2 + text + #2 + IntToStr(LastWidth) + #2 + '1')
+    else WriteErrLn(#1 + key + #2 + text + #2 + IntToStr(LastWidth) + #2 + '0');
+    LastSnippet := False;
+  end
+  else if not NoteKeyShown(key) then
+  begin
+    if LastSnippet then WriteErrLn(Spaces(LastWidth) + ' |');
+    LastSnippet := False;
+    WriteErrLn(Spaces(LastWidth) + ' = note: ' + text);
+  end;
 end;
 
 { Emet un diagnostic au format rustc }
@@ -455,6 +611,7 @@ var
   k, n: Integer;
 begin
   if SuppressDiag > 0 then Exit;
+  if isErr and (DeferDepth = 0) then DeferFlush(2);
   if isErr then
   begin
     Inc(ErrCount);
@@ -630,6 +787,7 @@ var
   mark: string;
 begin
   if SuppressDiag > 0 then Exit;
+  if isErr and (DeferDepth = 0) then DeferFlush(2);
   if isErr then begin Inc(ErrCount); head := 'error'; end
   else begin Inc(WarnCount); head := 'warning'; end;
   if code <> '' then head := head + '[' + code + ']';
@@ -676,6 +834,7 @@ end;
 
 procedure FinishDiag;
 begin
+  if ErrCount > 0 then DeferFlush(99);
   if ErrCount > 0 then
   begin
     if ErrCount = 1 then
@@ -7929,9 +8088,10 @@ begin
   labs[1].fi := Nodes[hid].fi; labs[1].line := Nodes[hid].line; labs[1].col := Nodes[hid].col; labs[1].len := NodeLen(hid);
   labs[1].primary := True;
   labs[1].text := 'the same lifetime is hidden here';
+  DeferBegin(3, labs[0].line, labs[0].col);
   ReportLabels(False, '', 'hiding a lifetime that''s elided elsewhere is confusing', labs);
   Help('the same lifetime is referred to in inconsistent ways, making the signature confusing');
-  Note('`#[warn(mismatched_lifetime_syntaxes)]` on by default');
+  NoteOnce('mismatched_lifetime_syntaxes', '`#[warn(mismatched_lifetime_syntaxes)]` on by default');
   seg := Nodes[hid].l[Length(Nodes[hid].l) - 1];
   ln := SourceLine(Nodes[hid].fi, Nodes[hid].line);
   w := Length(IntToStr(Nodes[hid].line));
@@ -7958,6 +8118,7 @@ begin
     WriteErrLn(Spaces(w) + ' | ' + Spaces(lastSegEnd - 1) + '++++');
   end;
   WriteErrLn('');
+  DeferEnd;
 end;
 
 procedure CheckSignatures;
@@ -11136,7 +11297,8 @@ begin
     Exit;
   end;
   ProbeMethod(t, name, pr);
-  if pr.found and (pr.traitDef >= 0) then HPut(TraitImpUsed, IntToStr(pr.traitDef), 1);
+  if pr.found and (pr.traitDef >= 0) then
+    HPut(TraitImpUsed, IntToStr(pr.traitDef) + ':' + IntToStr(NearestMod(Cxs[CxTop].env.scope)), 1);
   if not pr.found then
   begin
     if (Tys[t].k = tyVar) and (VarKind[Tys[t].n] = 0) then
@@ -13663,7 +13825,7 @@ var
   args, argNodes, one: TIntArr;
   body, text, msg, cond, loc: string;
   ok: Boolean;
-  fmtIdx, i, h, m, arm, p1, p2, e, blk, startNode: Integer;
+  fmtIdx, i, h, m, arm, p1, p2, e, blk, startNode, k2: Integer;
   newline: Boolean;
   nodeCopy: TNode;
   isDebug: Boolean;
@@ -13814,6 +13976,10 @@ begin
   end;
   if (name = 'write') or (name = 'writeln') then
   begin
+    { write!/writeln! appellent write_fmt : les traits Write importes sont utilises }
+    for k2 := 1 to NDefs - 1 do
+      if (Defs[k2].kind = dkTrait) and (Defs[k2].crate = 1) and (Defs[k2].name = 'Write') then
+        HPut(TraitImpUsed, IntToStr(k2) + ':' + IntToStr(NearestMod(Cxs[CxTop].env.scope)), 1);
     if Length(args) = 0 then
     begin
       ErrAt(n, '', 'requires at least a format string argument', '');
@@ -17421,20 +17587,33 @@ begin
 end;
 
 procedure LintNote(const lint: string);
-var
-  i: Integer;
 begin
-  for i := 0 to Length(LintShown) - 1 do
-    if LintShown[i] = lint then Exit;
-  SAdd(LintShown, lint);
-  Note('`#[warn(' + lint + ')]` (part of `#[warn(unused)]`) on by default');
+  NoteOnce(lint, '`#[warn(' + lint + ')]` (part of `#[warn(unused)]`) on by default');
+end;
+
+{ phase d'impression d'un lint : 1 precoce, 2 corps / code mort, 3 tardive }
+function LintPhase(const lint: string): Integer;
+begin
+  if (lint = 'unused_imports') or (lint = 'non_camel_case_types') then Result := 1
+  else if (lint = 'mismatched_lifetime_syntaxes') or (lint = 'unused_must_use') or (lint = 'non_snake_case') or
+          (lint = 'non_upper_case_globals') or (lint = 'static_mut_refs') then Result := 3
+  else Result := 2;
 end;
 
 procedure LintWarn(const lint, msg: string; const labs: TLabels; withNote: Boolean);
+var
+  k, ln, cl: Integer;
 begin
+  ln := 0;
+  cl := 0;
+  for k := 0 to Length(labs) - 1 do
+    if labs[k].primary then begin ln := labs[k].line; cl := labs[k].col; Break; end;
+  if LintPhase(lint) = 2 then begin ln := 0; cl := 0; end;
+  DeferBegin(LintPhase(lint), ln, cl);
   ReportLabels(False, '', msg, labs);
   if withNote then LintNote(lint);
   WriteErrLn('');
+  DeferEnd;
 end;
 
 { mut explicite devant le nom : retourne vrai ; mcol = colonne de "mut", ncol = colonne du nom }
@@ -17562,18 +17741,16 @@ begin
         BcLabH(labs, opH, True, mut2str(mut) + ' reference to mutable static');
       if not BcSeenKey('MS' + IntToStr(h)) then
       begin
+        DeferBegin(3, Hirs[h].line, Hirs[h].col);
         ReportLabels(False, '', 'creating a ' + mut2str(mut) + ' reference to mutable static', labs);
         if mut then
           Note('mutable references to mutable statics are dangerous; it''s undefined behavior if any other pointer to the static is used while the reference lives')
         else
           Note('shared references to mutable statics are dangerous; it''s undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives');
         Note('for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>');
-        if not LintStaticSeen then
-        begin
-          LintStaticSeen := True;
-          Note('`#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default');
-        end;
+        NoteOnce('static_mut_refs', '`#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default');
         WriteErrLn('');
+        DeferEnd;
       end;
     end;
   end;
@@ -17602,6 +17779,7 @@ begin
     begin
       labs := nil;
       BcLabH(labs, e, True, '');
+      DeferBegin(3, Hirs[e].line, Hirs[e].col);
       ReportLabels(False, '', 'unused `Result` that must be used', labs);
       Note('this `Result` may be an `Err` variant, which should be handled');
       LintNote('unused_must_use');
@@ -17612,6 +17790,7 @@ begin
       WriteErrLn(PadL(IntToStr(Hirs[e].line), w) + ' | ' + Copy(ln, 1, Hirs[e].col - 1) + 'let _ = ' + Copy(ln, Hirs[e].col, Length(ln)));
       WriteErrLn(Spaces(w) + ' | ' + Spaces(Hirs[e].col - 1) + '+++++++');
       WriteErrLn('');
+      DeferEnd;
     end;
   end;
   if Hirs[h].k = hClosure then Exit;
@@ -17728,8 +17907,11 @@ var
   labs: TLabels;
   nm: string;
   hasMut: Boolean;
+  pendV, pendH: TIntArr;
 begin
   if Defs[Bodies[b].def].crate <> 0 then Exit;
+  pendV := nil;
+  pendH := nil;
   LintStaticRefs(Bodies[b].root);
   if not LintAllowed('unused_must_use') then LintMustUse(Bodies[b].root);
   if LintAllowed('unused_variables') and LintAllowed('unused_mut') then Exit;
@@ -17757,12 +17939,8 @@ begin
         WriteErrLn('');
         for i := 0 to Length(BcAsg[v]) - 1 do
         begin
-          labs := nil;
-          BcLabH(labs, BcAsg[v][i], True, '');
-          ReportLabels(False, '', 'value assigned to `' + nm + '` is never read', labs);
-          Help('maybe it is overwritten before being read?');
-          LintNote('unused_assignments');
-          WriteErrLn('');
+          IAdd(pendV, v);
+          IAdd(pendH, BcAsg[v][i]);
         end;
       end
       else
@@ -17788,12 +17966,25 @@ begin
       end;
     end;
   end;
+  { affectations jamais lues des variables jamais lues : apres tous les avertissements de variables }
+  for i := 0 to Length(pendV) - 1 do
+  begin
+    nm := Bodies[b].vars[pendV[i]].name;
+    labs := nil;
+    BcLabH(labs, pendH[i], True, '');
+    ReportLabels(False, '', 'value assigned to `' + nm + '` is never read', labs);
+    Help('maybe it is overwritten before being read?');
+    LintNote('unused_assignments');
+    WriteErrLn('');
+  end;
 end;
 
 procedure LintBodyVars(b: Integer);
 begin
+  DeferBegin(2, 0, 0);
   LintBodyVars0(b);
   if (Defs[Bodies[b].def].crate = 0) and (not LintAllowed('unused_assignments')) then LintDeadAssigns(b);
+  DeferEnd;
 end;
 
 { ============================================================ }
@@ -37894,6 +38085,7 @@ end;
 
 Var
   LgConstructed: THashSI;
+  LgMentioned: THashSI;
   LgFieldRead: THashSI;
   LgTraitUsed: THashSI;
   LgReachedDef: THashSI;
@@ -37934,11 +38126,25 @@ begin
   end;
 end;
 
+{ types ADT cites dans du code vivant : ils comptent comme utilises }
+procedure LgMarkTy(t: Integer; depth: Integer);
+var
+  i: Integer;
+begin
+  if depth > 12 then Exit;
+  t := Shallow(Zonk(t));
+  if (t < 0) or (t >= NTys) then Exit;
+  if Tys[t].k = tyAdt then HPut(LgMentioned, IntToStr(Tys[t].def), 1);
+  for i := 0 to Length(Tys[t].args) - 1 do LgMarkTy(Tys[t].args[i], depth + 1);
+end;
+
 procedure LgScanHir(h: Integer; skipRead: Boolean; depth: Integer);
 var
   i, d, t, tr: Integer;
 begin
   if (h <= 0) or (depth > 400) then Exit;
+  LgMarkTy(Hirs[h].ty, 0);
+  for i := 0 to Length(Hirs[h].targs) - 1 do LgMarkTy(Hirs[h].targs[i], 0);
   case Hirs[h].k of
     hAdt:
       begin
@@ -38099,9 +38305,22 @@ end;
 procedure LgCollectNames;
 var
   n, i, seg: Integer;
+  der: string;
 begin
   HInit(LgNames);
   HInit(LgFirst);
+  for n := 1 to NNodes - 1 do
+    if (Nodes[n].fi = UserFile) and (Pos('derive(', Nodes[n].at) > 0) then
+    begin
+      der := DeriveList(Nodes[n].at);
+      while der <> '' do
+      begin
+        i := Pos(',', der);
+        if i = 0 then i := Length(der) + 1;
+        HPut(LgFirst, Copy(der, 1, i - 1), 1);
+        Delete(der, 1, i);
+      end;
+    end;
   for n := 1 to NNodes - 1 do
     if (Nodes[n].fi = UserFile) and (Nodes[n].k = tPath) then
       for i := 0 to Length(Nodes[n].l) - 1 do
@@ -38209,7 +38428,7 @@ begin
     d := ScopeLookup(Imports[i].mod_, 'T', Imports[i].alias, 0);
     if d < 0 then d := ScopeLookup(Imports[i].mod_, 'V', Imports[i].alias, 0);
     if d < 0 then Continue;
-    if (Defs[d].kind = dkTrait) and (HFind(TraitImpUsed, IntToStr(d)) >= 0) then Continue;
+    if (Defs[d].kind = dkTrait) and (HFind(TraitImpUsed, IntToStr(d) + ':' + IntToStr(Imports[i].mod_)) >= 0) then Continue;
     if HFind(LgFirst, Imports[i].alias) >= 0 then Continue;
     { remise a zero de l'indicateur d'usage causee par notre propre recherche }
     Imports[i].used := False;
@@ -38241,7 +38460,7 @@ begin
   end;
 end;
 
-procedure LintGlobal;
+procedure LintGlobal0;
 var
   i, d, j, k, b, vd, fnd, fld, nUnread: Integer;
   key: string;
@@ -38258,6 +38477,7 @@ var
 begin
   LintSetup;
   HInit(LgConstructed);
+  HInit(LgMentioned);
   HInit(LgFieldRead);
   HInit(LgTraitUsed);
   HInit(LgReachedDef);
@@ -38280,6 +38500,8 @@ begin
     if LgIsDerivedDef(Insts[i].def) then Continue;
     b := HFind(BodyMap, Insts[i].key);
     if b < 0 then Continue;
+    for j := 0 to Length(Bodies[b].paramTys) - 1 do LgMarkTy(Bodies[b].paramTys[j], 0);
+    LgMarkTy(Bodies[b].ret, 0);
     LgScanHir(Bodies[b].root, False, 0);
   end;
   LintImports;
@@ -38330,7 +38552,8 @@ begin
       dkStruct:
         begin
           if LgAllowedAttr(d) then Continue;
-          if HFind(LgConstructed, IntToStr(d)) < 0 then
+          if (Pos('repr(C', Nodes[Defs[d].node].at) > 0) or (Pos('repr(transparent', Nodes[Defs[d].node].at) > 0) then Continue;
+          if (HFind(LgConstructed, IntToStr(d)) < 0) and (HFind(LgMentioned, IntToStr(d)) < 0) then
           begin
             if Nodes[Defs[d].node].k <> nStruct then Continue;
             if (Pos('PhantomData', Nodes[Defs[d].node].at) > 0) then Continue;
@@ -38414,6 +38637,14 @@ begin
         end;
     end;
   end;
+end;
+
+procedure LintGlobal;
+begin
+  DeferBegin(2, 0, 0);
+  LintGlobal0;
+  DeferEnd;
+  DeferFlush(99);
 end;
 
 procedure WarnSummary;
@@ -39280,6 +39511,7 @@ begin
   end;
   FinishDiag;
   if Opt.crateType = 'bin' then LintGlobal;
+  DeferFlush(99);
   if Opt.unpretty = 'hir' then
   begin
     BufInit(b);
