@@ -25460,7 +25460,7 @@ begin
       end;
     hCoerce:
       begin
-        case Hirs[h].n of
+        case Integer(Hirs[h].n) of
           1:
             begin
               ExprDiscard(Hirs[h].a);
@@ -27713,7 +27713,7 @@ end;
 procedure EmitRepeat(const dstAddr: string; const elem: TOperand; ety: Integer;
     n: Int64);
 var
-  i: Int64;
+  i: Integer;
   p, cnt, lh, lb, le, c, ip, nx: string;
   esz: Int64;
   v: string;
@@ -52007,7 +52007,7 @@ begin
     hDeref: Result := '*' + HpExpr(Hirs[h].a, ind);
     hAddr:
       begin
-        case Hirs[h].n of
+        case Integer(Hirs[h].n) of
           0: Result := '&' + HpExpr(Hirs[h].a, ind);
           1: Result := '&mut ' + HpExpr(Hirs[h].a, ind);
           2: Result := '&raw const ' + HpExpr(Hirs[h].a, ind);
@@ -52118,7 +52118,7 @@ begin
     hUnreachable: Result := 'unreachable!()';
     hCoerce:
       begin
-        case Hirs[h].n of
+        case Integer(Hirs[h].n) of
           1: op := 'never-to-any';
           2: op := 'reborrow';
           3: op := 'unsize';
