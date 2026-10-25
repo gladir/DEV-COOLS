@@ -1,0 +1,30 @@
+package java.io;
+public interface ObjectStreamConstants {
+    short STREAM_MAGIC = (short) 0xaced;
+    short STREAM_VERSION = 5;
+    byte TC_BASE = 0x70;
+    byte TC_NULL = (byte) 0x70;
+    byte TC_REFERENCE = (byte) 0x71;
+    byte TC_CLASSDESC = (byte) 0x72;
+    byte TC_OBJECT = (byte) 0x73;
+    byte TC_STRING = (byte) 0x74;
+    byte TC_ARRAY = (byte) 0x75;
+    byte TC_CLASS = (byte) 0x76;
+    byte TC_BLOCKDATA = (byte) 0x77;
+    byte TC_ENDBLOCKDATA = (byte) 0x78;
+    byte TC_RESET = (byte) 0x79;
+    byte TC_BLOCKDATALONG = (byte) 0x7A;
+    byte TC_EXCEPTION = (byte) 0x7B;
+    byte TC_LONGSTRING = (byte) 0x7C;
+    byte TC_PROXYCLASSDESC = (byte) 0x7D;
+    byte TC_ENUM = (byte) 0x7E;
+    byte TC_MAX = (byte) 0x7E;
+    int baseWireHandle = 0x7e0000;
+    byte SC_WRITE_METHOD = 0x01;
+    byte SC_BLOCK_DATA = 0x08;
+    byte SC_SERIALIZABLE = 0x02;
+    byte SC_EXTERNALIZABLE = 0x04;
+    byte SC_ENUM = 0x10;
+    int PROTOCOL_VERSION_1 = 1;
+    int PROTOCOL_VERSION_2 = 2;
+}

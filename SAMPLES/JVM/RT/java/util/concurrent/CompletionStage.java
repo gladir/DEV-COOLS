@@ -1,0 +1,2 @@
+package java.util.concurrent;
+public interface CompletionStage<T> { CompletableFuture<T> toCompletableFuture(); }
