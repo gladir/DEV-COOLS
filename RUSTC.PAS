@@ -3132,6 +3132,7 @@ end;
 { ---- items ---- }
 
 procedure RegisterMacro(const name: string; firstTok, lastTok: Integer); forward;
+procedure GenDerives(n: Integer; var lst: TIntArr); forward;
 procedure ParseFileItems(fi: Integer; const modDir: string; var lst: TIntArr); forward;
 
 function ParseVis: Integer;
@@ -3347,6 +3348,7 @@ begin
     vat := ''; sk := False;
     ParseAttrs(vat, sk);
     v := MkN(nVariant);
+    Nodes[v].at := vat;
     Nodes[v].s := ExpectIdent;
     if IsPunct('(') then
     begin
@@ -3706,7 +3708,11 @@ begin
   end
   else
     ParseErr('expected item, found ' + TokDesc(Toks[TokPos]), 'expected item');
-  if (n <> 0) and (not sk) then IAdd(lst, n);
+  if (n <> 0) and (not sk) then
+  begin
+    IAdd(lst, n);
+    if (Nodes[n].k = nStruct) or (Nodes[n].k = nEnum) then GenDerives(n, lst);
+  end;
 end;
 
 procedure ParseFileItems(fi: Integer; const modDir: string; var lst: TIntArr);
@@ -5915,6 +5921,10 @@ Var
   CopyCache: THashSI;
 
 procedure FnDefSig(def: Integer; const args: TIntArr; var params: TIntArr; var ret: Integer); forward;
+function TraitAllowedFor(X, tr: Integer): Boolean; forward;
+
+Var
+  ProbeRestrict: Boolean;
 
 function HeadOfTypeNode(tn, d: Integer): string;
 var
@@ -6063,10 +6073,13 @@ end;
 function TyToStr(t: Integer): string; forward;
 
 { Verifie les bornes d'un impl : 0 non, 1 oui/peut-etre }
+function TryProject(selfTy, trait: Integer; const targs: TIntArr; const name: string; errNode: Integer;
+  var res: Integer): Integer; forward;
+
 function ImplBoundsHold(impl: Integer; var env: TEnv): Boolean;
 var
   bs: TBoundArr;
-  i, r, impl2: Integer;
+  i, r, impl2, k, st, pv: Integer;
   ia: TIntArr;
   t: Integer;
 begin
@@ -6079,8 +6092,18 @@ begin
     t := Shallow(bs[i].subj);
     if Tys[t].k = tyVar then Continue;
     if bs[i].trait = LangSized then Continue;
-    r := SelectImpl(bs[i].trait, bs[i].targs, impl2, ia, False);
+    r := SelectImpl(bs[i].trait, bs[i].targs, impl2, ia, True);
     if r = 0 then begin Result := False; Break; end;
+    if r = 1 then
+      for k := 0 to Length(bs[i].bnames) - 1 do
+      begin
+        st := TryProject(bs[i].subj, bs[i].trait, bs[i].targs, bs[i].bnames[k], 0, pv);
+        if st = 1 then
+        begin
+          if not Unify(pv, bs[i].btys[k]) then begin Result := False; Break; end;
+        end;
+      end;
+    if not Result then Break;
   end;
   Dec(ImplDepth);
 end;
@@ -6291,57 +6314,47 @@ begin
   if Result then HPut(CopyCache, IntToStr(t), 1) else HPut(CopyCache, IntToStr(t), 0);
 end;
 
-{ Type associe : <selfTy as trait<targs>>::name }
-function ProjectAssoc(selfTy, trait: Integer; const targs: TIntArr; const name: string; errNode: Integer): Integer;
+{ Type associe : <selfTy as trait<targs>>::name.  status : 0 erreur, 1 resolu, 2 ambigu (a retenter) }
+function TryProject(selfTy, trait: Integer; const targs: TIntArr; const name: string; errNode: Integer;
+  var res: Integer): Integer;
 var
   selfT, r, impl, item, i: Integer;
   iargs: TIntArr;
   env: TEnv;
-  res: Integer;
   params: TIntArr;
   ret: Integer;
 begin
   selfT := Shallow(selfTy);
-  if Tys[selfT].k = tyErr then begin Result := TyErrT; Exit; end;
+  res := TyErrT;
+  Result := 1;
+  if Tys[selfT].k = tyErr then Exit;
   if Tys[selfT].k = tyVar then
   begin
-    res := NewTyVar(0);
-    AddObl(oblProj, selfT, trait, targs, name, res, errNode);
-    Result := res;
-    Exit;
+    if VarKind[Tys[selfT].n] = 0 then begin Result := 2; Exit; end;
   end;
   { FnOnce::Output des fermetures, pointeurs et fonctions }
   if ((trait = LangFnOnce) or (trait = LangFnMut) or (trait = LangFn)) and (name = 'Output') then
   begin
     case Tys[selfT].k of
-      tyClosure: begin Result := Closures[Tys[selfT].def].ret; Exit; end;
-      tyFnDef: begin FnDefSig(Tys[selfT].def, Tys[selfT].args, params, ret); Result := ret; Exit; end;
-      tyFnPtr: begin Result := Tys[selfT].args[Length(Tys[selfT].args) - 1]; Exit; end;
+      tyClosure: begin res := Closures[Tys[selfT].def].ret; Exit; end;
+      tyFnDef: begin FnDefSig(Tys[selfT].def, Tys[selfT].args, params, ret); res := ret; Exit; end;
+      tyFnPtr: begin res := Tys[selfT].args[Length(Tys[selfT].args) - 1]; Exit; end;
       tyRef:
         begin
-          Result := ProjectAssoc(Tys[selfT].args[0], trait, targs, name, errNode);
+          Result := TryProject(Tys[selfT].args[0], trait, targs, name, errNode, res);
           Exit;
         end;
     end;
   end;
-  { Item de l'objet-trait : type associe lie dans dyn Trait<Item=...> non gere }
   r := SelectImpl(trait, targs, impl, iargs, True);
-  if r = 2 then
-  begin
-    res := NewTyVar(0);
-    AddObl(oblProj, selfT, trait, targs, name, res, errNode);
-    Result := res;
-    Exit;
-  end;
+  if r = 2 then begin Result := 2; Exit; end;
   if r = 0 then
   begin
     if errNode > 0 then
-    begin
       Report(True, 'E0277', 'the trait bound `' + TyToStr(selfT) + ': ' + Defs[trait].name + '` is not satisfied',
              Nodes[errNode].fi, Nodes[errNode].line, Nodes[errNode].col, NodeLen(errNode),
              'the trait `' + Defs[trait].name + '` is not implemented for `' + TyToStr(selfT) + '`');
-    end;
-    Result := TyErrT;
+    Result := 0;
     Exit;
   end;
   if impl >= 0 then
@@ -6351,20 +6364,33 @@ begin
     begin
       EnvForDef(item, iargs, env);
       env.infer := True;
-      Result := LowerTy(Nodes[Defs[item].node].a, env);
+      res := LowerTy(Nodes[Defs[item].node].a, env);
       Exit;
     end;
   end;
-  { valeur par defaut dans le trait }
   item := TraitAssocItem(trait, name, dkTypeAlias);
   if (item >= 0) and (Nodes[Defs[item].node].a <> 0) then
   begin
     EnvForDef(item, targs, env);
     env.infer := True;
-    Result := LowerTy(Nodes[Defs[item].node].a, env);
+    res := LowerTy(Nodes[Defs[item].node].a, env);
     Exit;
   end;
-  Result := TyErrT;
+  res := TyErrT;
+end;
+
+function ProjectAssoc(selfTy, trait: Integer; const targs: TIntArr; const name: string; errNode: Integer): Integer;
+var
+  res, st, v: Integer;
+begin
+  st := TryProject(selfTy, trait, targs, name, errNode, res);
+  if st = 2 then
+  begin
+    v := NewTyVar(0);
+    AddObl(oblProj, selfTy, trait, targs, name, v, errNode);
+    Result := v;
+  end
+  else Result := res;
 end;
 
 procedure SolveObligations;
@@ -6388,15 +6414,18 @@ begin
       t := Shallow(Obls[i].selfTy);
       case Obls[i].kind of
         oblProj:
-          if Tys[t].k <> tyVar then
+          if (Tys[t].k <> tyVar) or (VarKind[Tys[t].n] <> 0) then
           begin
-            Obls[i].done := True;
-            v := ProjectAssoc(t, Obls[i].trait, Obls[i].targs, Obls[i].name, Obls[i].node);
-            Unify(Obls[i].res, v);
-            progress := True;
+            r := TryProject(t, Obls[i].trait, Obls[i].targs, Obls[i].name, Obls[i].node, v);
+            if r <> 2 then
+            begin
+              Obls[i].done := True;
+              Unify(Obls[i].res, v);
+              progress := True;
+            end;
           end;
         oblTrait:
-          if Tys[t].k <> tyVar then
+          if (Tys[t].k <> tyVar) or (VarKind[Tys[t].n] <> 0) then
           begin
             r := SelectImpl(Obls[i].trait, Obls[i].targs, impl, ia, True);
             if r = 1 then begin Obls[i].done := True; progress := True; end
@@ -6554,7 +6583,7 @@ begin
 end;
 
 { Recherche d'une methode par nom a partir du type recepteur (avec auto-deref / auto-ref) }
-procedure ProbeMethod(recvTy: Integer; const name: string; var res: TProbe);
+procedure ProbeMethod1(recvTy: Integer; const name: string; var res: TProbe);
 var
   steps: TIntArr;
   kinds: TIntArr;
@@ -6710,6 +6739,7 @@ begin
           begin
             if VarKind[Tys[X].n] = 0 then Continue;
           end;
+          if ProbeRestrict and (not TraitAllowedFor(X, tr)) then Continue;
           { X : Trait ? }
           SetLength(targs, Length(Defs[tr].gnames));
           targs[0] := X;
@@ -6754,6 +6784,14 @@ begin
       end;
     end;
   end;
+end;
+
+procedure ProbeMethod(recvTy: Integer; const name: string; var res: TProbe);
+begin
+  ProbeRestrict := True;
+  ProbeMethod1(recvTy, name, res);
+  ProbeRestrict := False;
+  if not res.found then ProbeMethod1(recvTy, name, res);
 end;
 
 { ---- resolution d'instances (monomorphisation) ---- }
@@ -7242,6 +7280,65 @@ begin
   Result := Bodies[Cxs[level].body].vars[v].ty;
 end;
 
+{ Le trait tr est-il autorise pour un recepteur de type X ? (bornes des parametres generiques) }
+function BoundsMention(defn: Integer; gi: Integer; tr: Integer; scope: Integer): Boolean;
+var
+  g, i, j, w, nd, bn, d: Integer;
+  pass, p: Integer;
+begin
+  Result := False;
+  g := Defs[defn].gnodes[gi];
+  if g > 0 then
+    for i := 0 to Length(Nodes[g].l) - 1 do
+    begin
+      d := TraitOfPath(Nodes[g].l[i], scope);
+      if (d >= 0) and TraitIsA(d, tr, 0) then begin Result := True; Exit; end;
+    end;
+  for pass := 0 to 1 do
+  begin
+    if pass = 0 then nd := Defs[defn].node
+    else
+    begin
+      p := Defs[defn].parent;
+      if (p >= 0) and ((Defs[p].kind = dkImpl) or (Defs[p].kind = dkTrait)) then nd := Defs[p].node else nd := 0;
+    end;
+    if nd = 0 then Continue;
+    for i := 0 to Length(Nodes[nd].l) - 1 do
+    begin
+      w := Nodes[nd].l[i];
+      if Nodes[w].k <> nWhere then Continue;
+      bn := Nodes[w].a;
+      if (Nodes[bn].k = tPath) and (Length(Nodes[bn].l) = 1) and (Nodes[Nodes[bn].l[0]].s = Defs[defn].gnames[gi]) then
+        for j := 0 to Length(Nodes[w].l) - 1 do
+        begin
+          d := TraitOfPath(Nodes[w].l[j], scope);
+          if (d >= 0) and TraitIsA(d, tr, 0) then begin Result := True; Exit; end;
+        end;
+    end;
+  end;
+end;
+
+function TraitAllowedFor(X, tr: Integer): Boolean;
+var
+  defn, i: Integer;
+  found: Boolean;
+  env: ^TEnv;
+begin
+  Result := True;
+  if (CxTop < 0) or (CxBase + 1 > CxTop) then Exit;
+  defn := Cxs[CxBase + 1].env.defn;
+  if defn < 0 then Exit;
+  found := False;
+  for i := 0 to Length(Defs[defn].gnames) - 1 do
+    if (i < Length(Cxs[CxBase + 1].env.tys)) and (Defs[defn].gnames[i] <> 'Self') and
+       (Shallow(Cxs[CxBase + 1].env.tys[i]) = X) then
+    begin
+      found := True;
+      if BoundsMention(defn, i, tr, Cxs[CxBase + 1].env.scope) then begin Result := True; Exit; end;
+    end;
+  if found then Result := False;
+end;
+
 { ---- diagnostics du verificateur ---- }
 
 procedure ErrAt(node: Integer; const code, msg, lbl: string);
@@ -7682,6 +7779,16 @@ begin
       Result := WrapCoerce(h, target, 5);
       Exit;
     end;
+    { reemprunt &mut T -> &T }
+    if (Tys[src].f and 1) <> (Tys[tgt].f and 1) then
+      if TryUnify(s0, t0) then
+      begin
+        curH := HDerefOf(h, 0);
+        Result := HAddrOf(curH, (Tys[tgt].f and 1) <> 0, 0);
+        Hirs[Result].fi := Hirs[h].fi; Hirs[Result].line := Hirs[h].line; Hirs[Result].col := Hirs[h].col; Hirs[Result].len := Hirs[h].len;
+        Hirs[curH].fi := Hirs[h].fi; Hirs[curH].line := Hirs[h].line; Hirs[curH].col := Hirs[h].col; Hirs[curH].len := Hirs[h].len;
+        Exit;
+      end;
     { deref successifs : &String -> &str, &Vec<T> -> &[T], &&T -> &T, &Box<T> -> &T }
     cur := s0;
     curH := HDerefOf(h, 0);
@@ -8517,7 +8624,8 @@ begin
     hLocal:
       begin
         v := Hirs[h].n;
-        if not Bodies[Cxs[CxTop].body].vars[v].mut then Result := 'local:' + Bodies[Cxs[CxTop].body].vars[v].name;
+        if (not Bodies[Cxs[CxTop].body].vars[v].mut) and (not Bodies[Cxs[CxTop].body].vars[v].declared) then
+          Result := 'local:' + Bodies[Cxs[CxTop].body].vars[v].name;
       end;
     hUpvar:
       begin
@@ -8533,19 +8641,21 @@ begin
       begin
         b := Hirs[h].a;
         t := Shallow(Hirs[b].ty);
+        if (Hirs[b].k = hCall) and (Hirs[Hirs[b].a].k = hFnRef) and
+           ((Hirs[Hirs[b].a].def = DerefMutFn) or (Hirs[Hirs[b].a].def = IndexMutFn)) then
+        begin
+          Result := PlaceMutError(Hirs[Hirs[b].l[0]].a, bad);
+          Exit;
+        end;
         case Tys[t].k of
           tyRef:
             if (Tys[t].f and 1) = 0 then Result := 'ref:' + PlaceDesc(b);
           tyPtr:
             if (Tys[t].f and 1) = 0 then Result := 'ptr:' + PlaceDesc(b);
         else
-          { Deref via appel : examiner la base }
-          if (Hirs[b].k = hCall) and (Hirs[Hirs[b].a].k = hFnRef) then
-            Result := PlaceMutError(Hirs[Hirs[b].l[0]].a, bad)
-          else if Hirs[b].k = hField then
+          if Hirs[b].k = hField then
             Result := PlaceMutError(Hirs[b].a, bad);
         end;
-        if (Tys[t].k = tyRef) and ((Tys[t].f and 1) <> 0) then Result := '';
       end;
   end;
 end;
@@ -8927,6 +9037,7 @@ begin
       h := HirAt(hLitInt, Hirs[a].ty, n);
       Hirs[h].n := -Hirs[a].n;
       Hirs[h].s := '-';
+      Hirs[a].line := 0;
       Result := h;
       Exit;
     end;
@@ -9052,8 +9163,8 @@ begin
   end
   else
   begin
-    CheckMutable(l, lhs, True);
     MakeMutPlace(l);
+    CheckMutable(l, lhs, True);
   end;
   r := CheckExprCoerce(Nodes[n].b, Hirs[l].ty);
   h := HirAt(hAssign, TyUnit, n);
@@ -9086,6 +9197,7 @@ begin
     ErrAt(Nodes[n].a, 'E0067', 'invalid left-hand side of compound assignment', 'cannot assign to this expression')
   else
   begin
+    MakeMutPlace(l);
     CheckMutable(l, Nodes[n].a, True);
   end;
   if (IsPrimScalar(lt) or (Tys[lt].k = tyVar)) and (IsPrimScalar(rt) or (Tys[rt].k = tyVar)) then
@@ -9165,8 +9277,8 @@ begin
   begin
     if IsPlaceHir(a) then
     begin
-      CheckMutable(a, Nodes[n].a, False);
       MakeMutPlace(a);
+      CheckMutable(a, Nodes[n].a, False);
     end;
   end;
   if (Nodes[n].f and 2) <> 0 then
@@ -9676,12 +9788,12 @@ begin
   if pr.unsize then
   begin
     { cur : place de type tableau ; on veut &[T] }
-    h := HAddrOf(cur, pr.adj = 2, n);
     if pr.adj = 2 then
     begin
-      CheckMutable(cur, Nodes[n].a, False);
       MakeMutPlace(cur);
+      CheckMutable(cur, Nodes[n].a, False);
     end;
+    h := HAddrOf(cur, pr.adj = 2, n);
     cur := WrapCoerce(h, MkRef(MkSlice(Tys[Shallow(Hirs[cur].ty)].args[0]), pr.adj = 2), 3);
   end
   else
@@ -9702,8 +9814,8 @@ begin
         begin
           if IsPlaceHir(cur) then
           begin
-            CheckMutable(cur, Nodes[n].a, False);
             MakeMutPlace(cur);
+            CheckMutable(cur, Nodes[n].a, False);
           end;
           cur := HAddrOf(cur, True, n);
         end;
@@ -9967,6 +10079,7 @@ var
   incl: Boolean;
   nm: string;
   a, b: Integer;
+  rv: TValRes;
 begin
   incl := (Nodes[n].f and 1) <> 0;
   lo := 0;
@@ -10001,9 +10114,9 @@ begin
       SetLength(args, 2);
       args[0] := lo;
       args[1] := hi;
-      def := TraitAssocItem(0, '', 0);
-      def := ScopeLookup(LangRangeInclusive, 'V', 'new', 0);
-      Result := HCallFn(def, targs, args, MkAdt(LangRangeInclusive, targs), n);
+      rv.kind := vrNone;
+      FindAssocItem(MkAdt(LangRangeInclusive, targs), 'new', 0, rv);
+      Result := HCallFn(rv.def, rv.targs, args, MkAdt(LangRangeInclusive, targs), n);
       Exit;
     end;
     def := LangRange;
@@ -10383,6 +10496,7 @@ function CheckLitPatValue(n: Integer; expected: Integer; var pat: Integer): Bool
 var
   h: Integer;
   e: Integer;
+  okc: Boolean;
 begin
   h := CheckExpr(n, expected);
   e := Shallow(expected);
@@ -10396,6 +10510,11 @@ begin
     hLitInt, hLitChar, hLitBool: Pats[pat].n := Hirs[h].n;
     hLitFloat: Pats[pat].fv := Hirs[h].fv;
     hLitStr, hLitByteStr: Pats[pat].s := Hirs[h].s;
+  else
+    begin
+      okc := True;
+      Pats[pat].n := ConstEvalExpr(n, Cxs[CxTop].env, okc);
+    end;
   end;
   if Hirs[h].k = hLitStr then Pats[pat].m := 1
   else if Hirs[h].k = hLitFloat then Pats[pat].m := 2
@@ -12029,7 +12148,8 @@ begin
   Result := '';
   if fmtIdx >= Length(args) then
   begin
-    if newline then Result := '__f.push_str("\n");';
+    Result := 'let mut __f = ::std::fmt::Formatter::new();';
+    if newline then Result := Result + ' __f.push_str("\n");';
     Exit;
   end;
   fmtNode := args[fmtIdx];
@@ -12761,6 +12881,543 @@ begin
 end;
 
 { ============================================================ }
+{ #[derive(...)] : generation de code source puis analyse       }
+{ ============================================================ }
+
+function TypeSrc(n: Integer): string; forward;
+
+function ExprSrc(n: Integer): string;
+begin
+  Result := SourceText(n);
+end;
+
+function SegSrc(seg: Integer): string;
+var
+  i: Integer;
+  s: string;
+  a: Integer;
+begin
+  Result := Nodes[seg].s;
+  if Nodes[seg].f = 1 then
+  begin
+    s := '';
+    for i := 0 to Length(Nodes[seg].l) - 1 do
+    begin
+      if i > 0 then s := s + ', ';
+      s := s + TypeSrc(Nodes[seg].l[i]);
+    end;
+    Result := Result + '(' + s + ')';
+    if Nodes[seg].a <> 0 then Result := Result + ' -> ' + TypeSrc(Nodes[seg].a);
+    Exit;
+  end;
+  if (Length(Nodes[seg].l) > 0) or (Length(Nodes[seg].l2) > 0) then
+  begin
+    s := '';
+    for i := 0 to Length(Nodes[seg].l) - 1 do
+    begin
+      if s <> '' then s := s + ', ';
+      a := Nodes[seg].l[i];
+      if Nodes[a].k = nConstArg then s := s + '{' + ExprSrc(Nodes[a].a) + '}' else s := s + TypeSrc(a);
+    end;
+    for i := 0 to Length(Nodes[seg].l2) - 1 do
+    begin
+      if s <> '' then s := s + ', ';
+      s := s + Nodes[Nodes[seg].l2[i]].s + ' = ' + TypeSrc(Nodes[Nodes[seg].l2[i]].a);
+    end;
+    Result := Result + '<' + s + '>';
+  end;
+end;
+
+function TypeSrc(n: Integer): string;
+var
+  i: Integer;
+  s: string;
+begin
+  Result := '_';
+  if n = 0 then begin Result := '()'; Exit; end;
+  case Nodes[n].k of
+    tPath:
+      begin
+        s := '';
+        if Nodes[n].a <> 0 then
+        begin
+          s := '<' + TypeSrc(Nodes[n].a);
+          if Nodes[n].b <> 0 then s := s + ' as ' + TypeSrc(Nodes[n].b);
+          s := s + '>::';
+        end
+        else if Nodes[n].f = 1 then s := '::';
+        for i := 0 to Length(Nodes[n].l) - 1 do
+        begin
+          if i > 0 then s := s + '::';
+          s := s + SegSrc(Nodes[n].l[i]);
+        end;
+        Result := s;
+      end;
+    tRef:
+      if (Nodes[n].f and 1) <> 0 then Result := '&mut ' + TypeSrc(Nodes[n].a) else Result := '&' + TypeSrc(Nodes[n].a);
+    tPtr:
+      if (Nodes[n].f and 1) <> 0 then Result := '*mut ' + TypeSrc(Nodes[n].a) else Result := '*const ' + TypeSrc(Nodes[n].a);
+    tTuple:
+      begin
+        s := '';
+        for i := 0 to Length(Nodes[n].l) - 1 do
+        begin
+          if i > 0 then s := s + ', ';
+          s := s + TypeSrc(Nodes[n].l[i]);
+        end;
+        if Length(Nodes[n].l) = 1 then s := s + ',';
+        Result := '(' + s + ')';
+      end;
+    tArray: Result := '[' + TypeSrc(Nodes[n].a) + '; ' + ExprSrc(Nodes[n].b) + ']';
+    tSlice: Result := '[' + TypeSrc(Nodes[n].a) + ']';
+    tNever: Result := '!';
+    tInfer: Result := '_';
+    tFnPtr:
+      begin
+        s := '';
+        for i := 0 to Length(Nodes[n].l) - 1 do
+        begin
+          if i > 0 then s := s + ', ';
+          s := s + TypeSrc(Nodes[n].l[i]);
+        end;
+        Result := 'fn(' + s + ')';
+        if Nodes[n].a <> 0 then Result := Result + ' -> ' + TypeSrc(Nodes[n].a);
+      end;
+    tDyn, tImplTrait:
+      begin
+        s := '';
+        for i := 0 to Length(Nodes[n].l) - 1 do
+        begin
+          if i > 0 then s := s + ' + ';
+          s := s + TypeSrc(Nodes[n].l[i]);
+        end;
+        if Nodes[n].k = tDyn then Result := 'dyn ' + s else Result := 'impl ' + s;
+      end;
+  end;
+end;
+
+function BoundsSrc(const l: TIntArr): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 0 to Length(l) - 1 do
+  begin
+    if i > 0 then Result := Result + ' + ';
+    Result := Result + TypeSrc(l[i]);
+  end;
+end;
+
+// Entete impl avec generiques, Trait for Nom, clause where
+function DeriveHeader(n: Integer; const trait: string; const boundTrait: string): string;
+var
+  i, g, w: Integer;
+  gens, args, wh, bnds: string;
+begin
+  gens := '';
+  args := '';
+  wh := '';
+  for i := 0 to Length(Nodes[n].l) - 1 do
+  begin
+    g := Nodes[n].l[i];
+    if Nodes[g].k = nGenParam then
+    begin
+      if gens <> '' then begin gens := gens + ', '; args := args + ', '; end;
+      if Nodes[g].f = 1 then
+      begin
+        gens := gens + Nodes[g].s;
+        args := args + Nodes[g].s;
+      end
+      else if Nodes[g].f = 2 then
+      begin
+        gens := gens + 'const ' + Nodes[g].s + ': ' + TypeSrc(Nodes[g].b);
+        args := args + Nodes[g].s;
+      end
+      else
+      begin
+        gens := gens + Nodes[g].s;
+        bnds := BoundsSrc(Nodes[g].l);
+        if bnds <> '' then gens := gens + ': ' + bnds;
+        if boundTrait <> '' then
+        begin
+          if bnds <> '' then gens := gens + ' + ' + boundTrait else gens := gens + ': ' + boundTrait;
+        end;
+        args := args + Nodes[g].s;
+      end;
+    end
+    else if Nodes[g].k = nWhere then
+    begin
+      if wh <> '' then wh := wh + ', ';
+      wh := wh + TypeSrc(Nodes[g].a) + ': ' + BoundsSrc(Nodes[g].l);
+    end;
+  end;
+  Result := 'impl';
+  if gens <> '' then Result := Result + '<' + gens + '>';
+  Result := Result + ' ' + trait + ' for ' + Nodes[n].s;
+  if args <> '' then Result := Result + '<' + args + '>';
+  if wh <> '' then Result := Result + ' where ' + wh;
+end;
+
+function FieldNameOf(vn: Integer; i: Integer): string;
+begin
+  Result := Nodes[Nodes[vn].l2[i]].s;
+end;
+
+function IsNamedForm(node: Integer): Boolean;
+begin
+  Result := ((Nodes[node].f shr 8) and 3) = 0;
+end;
+
+// Motif d'une variante : Self::V(__p0, ...) ou Self::V avec champs nommes ; prefix = a ou b
+function VariantPat(vn: Integer; const pfx: string): string;
+var
+  i: Integer;
+  s: string;
+begin
+  Result := 'Self::' + Nodes[vn].s;
+  if Length(Nodes[vn].l2) = 0 then
+  begin
+    if IsNamedForm(vn) then Result := Result + ' {}';
+    Exit;
+  end;
+  s := '';
+  if IsNamedForm(vn) then
+  begin
+    for i := 0 to Length(Nodes[vn].l2) - 1 do
+    begin
+      if i > 0 then s := s + ', ';
+      s := s + FieldNameOf(vn, i) + ': __' + pfx + IntToStr(i);
+    end;
+    Result := Result + ' { ' + s + ' }';
+  end
+  else
+  begin
+    for i := 0 to Length(Nodes[vn].l2) - 1 do
+    begin
+      if i > 0 then s := s + ', ';
+      s := s + '__' + pfx + IntToStr(i);
+    end;
+    Result := Result + '(' + s + ')';
+  end;
+end;
+
+function DeriveBody(n: Integer; const d: string): string;
+var
+  i, j, v, vn: Integer;
+  s, arms, fl, t1, t2: string;
+  isEnum: Boolean;
+  nf: Integer;
+  nm: string;
+begin
+  isEnum := Nodes[n].k = nEnum;
+  nm := Nodes[n].s;
+  Result := '';
+  if d = 'Clone' then
+  begin
+    if not isEnum then
+    begin
+      nf := Length(Nodes[n].l2);
+      if IsUnitLike(n) then Result := 'Self'
+      else if IsTupleLike(n) then
+      begin
+        s := '';
+        for i := 0 to nf - 1 do
+        begin
+          if i > 0 then s := s + ', ';
+          s := s + '::std::clone::Clone::clone(&self.' + IntToStr(i) + ')';
+        end;
+        Result := 'Self(' + s + ')';
+      end
+      else
+      begin
+        s := '';
+        for i := 0 to nf - 1 do
+        begin
+          if i > 0 then s := s + ', ';
+          s := s + FieldNameOf(n, i) + ': ::std::clone::Clone::clone(&self.' + FieldNameOf(n, i) + ')';
+        end;
+        Result := 'Self { ' + s + ' }';
+      end;
+      Result := '#[inline] fn clone(&self) -> Self { ' + Result + ' }';
+    end
+    else
+    begin
+      arms := '';
+      for v := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        vn := Nodes[n].l2[v];
+        s := '';
+        if Length(Nodes[vn].l2) = 0 then
+        begin
+          if IsNamedForm(vn) then s := 'Self::' + Nodes[vn].s + ' {}' else s := 'Self::' + Nodes[vn].s;
+        end
+        else if IsNamedForm(vn) then
+        begin
+          fl := '';
+          for i := 0 to Length(Nodes[vn].l2) - 1 do
+          begin
+            if i > 0 then fl := fl + ', ';
+            fl := fl + FieldNameOf(vn, i) + ': ::std::clone::Clone::clone(__a' + IntToStr(i) + ')';
+          end;
+          s := 'Self::' + Nodes[vn].s + ' { ' + fl + ' }';
+        end
+        else
+        begin
+          fl := '';
+          for i := 0 to Length(Nodes[vn].l2) - 1 do
+          begin
+            if i > 0 then fl := fl + ', ';
+            fl := fl + '::std::clone::Clone::clone(__a' + IntToStr(i) + ')';
+          end;
+          s := 'Self::' + Nodes[vn].s + '(' + fl + ')';
+        end;
+        arms := arms + VariantPat(vn, 'a') + ' => ' + s + ', ';
+      end;
+      if arms = '' then arms := '_ => loop {}, ';
+      Result := '#[inline] fn clone(&self) -> Self { match self { ' + arms + '} }';
+    end;
+  end
+  else if d = 'Debug' then
+  begin
+    if not isEnum then
+    begin
+      nf := Length(Nodes[n].l2);
+      if IsUnitLike(n) then s := 'f.write_str("' + nm + '")'
+      else if IsTupleLike(n) then
+      begin
+        s := 'f.debug_tuple("' + nm + '")';
+        for i := 0 to nf - 1 do s := s + '.field(&self.' + IntToStr(i) + ')';
+        s := s + '.finish()';
+      end
+      else
+      begin
+        s := 'f.debug_struct("' + nm + '")';
+        for i := 0 to nf - 1 do s := s + '.field("' + FieldNameOf(n, i) + '", &self.' + FieldNameOf(n, i) + ')';
+        s := s + '.finish()';
+      end;
+      Result := 'fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ' + s + ' }';
+    end
+    else
+    begin
+      arms := '';
+      for v := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        vn := Nodes[n].l2[v];
+        if Length(Nodes[vn].l2) = 0 then s := 'f.write_str("' + Nodes[vn].s + '")'
+        else if IsNamedForm(vn) then
+        begin
+          s := 'f.debug_struct("' + Nodes[vn].s + '")';
+          for i := 0 to Length(Nodes[vn].l2) - 1 do s := s + '.field("' + FieldNameOf(vn, i) + '", __a' + IntToStr(i) + ')';
+          s := s + '.finish()';
+        end
+        else
+        begin
+          s := 'f.debug_tuple("' + Nodes[vn].s + '")';
+          for i := 0 to Length(Nodes[vn].l2) - 1 do s := s + '.field(__a' + IntToStr(i) + ')';
+          s := s + '.finish()';
+        end;
+        arms := arms + VariantPat(vn, 'a') + ' => ' + s + ', ';
+      end;
+      if arms = '' then arms := '_ => loop {}, ';
+      Result := 'fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { match self { ' + arms + '} }';
+    end;
+  end
+  else if d = 'PartialEq' then
+  begin
+    if not isEnum then
+    begin
+      nf := Length(Nodes[n].l2);
+      s := '';
+      for i := 0 to nf - 1 do
+      begin
+        if i > 0 then s := s + ' && ';
+        if IsTupleLike(n) then
+          s := s + 'self.' + IntToStr(i) + ' == other.' + IntToStr(i)
+        else
+          s := s + 'self.' + FieldNameOf(n, i) + ' == other.' + FieldNameOf(n, i);
+      end;
+      if s = '' then s := 'true';
+      Result := 'fn eq(&self, other: &Self) -> bool { ' + s + ' }';
+    end
+    else
+    begin
+      arms := '';
+      for v := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        vn := Nodes[n].l2[v];
+        s := '';
+        for i := 0 to Length(Nodes[vn].l2) - 1 do
+        begin
+          if i > 0 then s := s + ' && ';
+          s := s + '*__a' + IntToStr(i) + ' == *__b' + IntToStr(i);
+        end;
+        if s = '' then s := 'true';
+        arms := arms + '(' + VariantPat(vn, 'a') + ', ' + VariantPat(vn, 'b') + ') => ' + s + ', ';
+      end;
+      if Length(Nodes[n].l2) <> 1 then arms := arms + '_ => false, ';
+      if Length(Nodes[n].l2) = 0 then arms := '_ => true, ';
+      Result := 'fn eq(&self, other: &Self) -> bool { match (self, other) { ' + arms + '} }';
+    end;
+  end
+  else if (d = 'PartialOrd') or (d = 'Ord') then
+  begin
+    if d = 'Ord' then
+    begin
+      t1 := '::std::cmp::Ord::cmp';
+      t2 := '::std::cmp::Ordering::Equal';
+    end
+    else
+    begin
+      t1 := '::std::cmp::PartialOrd::partial_cmp';
+      t2 := '::std::option::Option::Some(::std::cmp::Ordering::Equal)';
+    end;
+    if not isEnum then
+    begin
+      nf := Length(Nodes[n].l2);
+      s := '';
+      for i := 0 to nf - 1 do
+      begin
+        if IsTupleLike(n) then
+          s := s + 'match ' + t1 + '(&self.' + IntToStr(i) + ', &other.' + IntToStr(i) + ') { ' + t2 + ' => {} c => return c, } '
+        else
+          s := s + 'match ' + t1 + '(&self.' + FieldNameOf(n, i) + ', &other.' + FieldNameOf(n, i) + ') { ' + t2 + ' => {} c => return c, } ';
+      end;
+      s := s + t2;
+    end
+    else
+    begin
+      s := 'let __d1 = unsafe { ::std::intrinsics::discriminant_value(self) }; let __d2 = unsafe { ::std::intrinsics::discriminant_value(other) }; ' +
+           'if __d1 != __d2 { return ' + t1 + '(&__d1, &__d2); } match (self, other) { ';
+      for v := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        vn := Nodes[n].l2[v];
+        fl := '';
+        for i := 0 to Length(Nodes[vn].l2) - 1 do
+          fl := fl + 'match ' + t1 + '(__a' + IntToStr(i) + ', __b' + IntToStr(i) + ') { ' + t2 + ' => {} c => return c, } ';
+        s := s + '(' + VariantPat(vn, 'a') + ', ' + VariantPat(vn, 'b') + ') => { ' + fl + t2 + ' } ';
+      end;
+      s := s + '_ => ' + t2 + ', }';
+    end;
+    if d = 'Ord' then
+      Result := 'fn cmp(&self, other: &Self) -> ::std::cmp::Ordering { ' + s + ' }'
+    else
+      Result := 'fn partial_cmp(&self, other: &Self) -> ::std::option::Option<::std::cmp::Ordering> { ' + s + ' }';
+  end
+  else if d = 'Hash' then
+  begin
+    s := '';
+    if isEnum then
+    begin
+      s := '::std::hash::Hash::hash(&unsafe { ::std::intrinsics::discriminant_value(self) }, state); match self { ';
+      for v := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        vn := Nodes[n].l2[v];
+        fl := '';
+        for i := 0 to Length(Nodes[vn].l2) - 1 do fl := fl + '::std::hash::Hash::hash(__a' + IntToStr(i) + ', state); ';
+        s := s + VariantPat(vn, 'a') + ' => { ' + fl + '} ';
+      end;
+      s := s + '_ => {} }';
+    end
+    else
+    begin
+      for i := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        if IsTupleLike(n) then s := s + '::std::hash::Hash::hash(&self.' + IntToStr(i) + ', state); '
+        else s := s + '::std::hash::Hash::hash(&self.' + FieldNameOf(n, i) + ', state); ';
+      end;
+    end;
+    Result := 'fn hash<__H: ::std::hash::Hasher>(&self, state: &mut __H) { ' + s + ' }';
+  end
+  else if d = 'Default' then
+  begin
+    if isEnum then
+    begin
+      s := '';
+      for v := 0 to Length(Nodes[n].l2) - 1 do
+        if Pos('default', Nodes[Nodes[n].l2[v]].at) > 0 then s := 'Self::' + Nodes[Nodes[n].l2[v]].s;
+      if s = '' then s := 'Self::' + Nodes[Nodes[n].l2[0]].s;
+    end
+    else if IsUnitLike(n) then s := 'Self'
+    else if IsTupleLike(n) then
+    begin
+      fl := '';
+      for i := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        if i > 0 then fl := fl + ', ';
+        fl := fl + '::std::default::Default::default()';
+      end;
+      s := 'Self(' + fl + ')';
+    end
+    else
+    begin
+      fl := '';
+      for i := 0 to Length(Nodes[n].l2) - 1 do
+      begin
+        if i > 0 then fl := fl + ', ';
+        fl := fl + FieldNameOf(n, i) + ': ::std::default::Default::default()';
+      end;
+      s := 'Self { ' + fl + ' }';
+    end;
+    Result := 'fn default() -> Self { ' + s + ' }';
+  end;
+end;
+
+procedure GenDerives(n: Integer; var lst: TIntArr);
+var
+  ds, d, text, tp, bound: string;
+  i, j, st, fi, k: Integer;
+  items: TIntArr;
+  svToks: TTokArr;
+  svN, svPos: Integer;
+  startNode: Integer;
+begin
+  ds := DeriveList(Nodes[n].at);
+  if ds = '' then Exit;
+  text := '';
+  i := 1;
+  while i <= Length(ds) do
+  begin
+    j := i;
+    while (j <= Length(ds)) and (ds[j] <> ',') do Inc(j);
+    d := Copy(ds, i, j - i);
+    i := j + 1;
+    if d = '' then Continue;
+    k := Pos('::', d);
+    while k > 0 do begin d := Copy(d, k + 2, Length(d)); k := Pos('::', d); end;
+    bound := '';
+    if d = 'Clone' then begin tp := '::std::clone::Clone'; bound := tp; end
+    else if d = 'Copy' then begin tp := '::std::marker::Copy'; bound := tp; end
+    else if d = 'Debug' then begin tp := '::std::fmt::Debug'; bound := tp; end
+    else if d = 'PartialEq' then begin tp := '::std::cmp::PartialEq'; bound := tp; end
+    else if d = 'Eq' then begin tp := '::std::cmp::Eq'; bound := tp; end
+    else if d = 'PartialOrd' then begin tp := '::std::cmp::PartialOrd'; bound := tp; end
+    else if d = 'Ord' then begin tp := '::std::cmp::Ord'; bound := tp; end
+    else if d = 'Hash' then begin tp := '::std::hash::Hash'; bound := tp; end
+    else if d = 'Default' then begin tp := '::std::default::Default'; bound := tp; end
+    else Continue;
+    if (d = 'Copy') or (d = 'Eq') then
+      text := text + DeriveHeader(n, tp, bound) + ' {}'#10
+    else
+      text := text + DeriveHeader(n, tp, bound) + ' { ' + DeriveBody(n, d) + ' }'#10;
+  end;
+  if text = '' then Exit;
+  Inc(SynthCounter);
+  fi := AddSourceFile('<derive ' + IntToStr(SynthCounter) + '>', text);
+  startNode := NNodes;
+  items := nil;
+  ParseFileItems(fi, '', items);
+  for i := startNode to NNodes - 1 do
+  begin
+    Nodes[i].fi := Nodes[n].fi;
+    Nodes[i].line := Nodes[n].line;
+    Nodes[i].col := Nodes[n].col;
+    Nodes[i].eline := Nodes[n].eline;
+    Nodes[i].ecol := Nodes[n].ecol;
+  end;
+  for i := 0 to Length(items) - 1 do IAdd(lst, items[i]);
+end;
+
+{ ============================================================ }
 { MIR : representation intermediaire basee sur des blocs        }
 { ============================================================ }
 
@@ -12804,6 +13461,7 @@ Const
   rvLen = 10;
   rvRepeat = 11;
   rvSizeOf = 12;
+  rvSubslice = 13;    { place, n = elements du debut, vidx = elements de la fin }
 
   { agregats }
   agTuple = 1;
@@ -13045,6 +13703,7 @@ begin
     rvLen: Result := 'Len(' + PlaceStr(r.place) + ')';
     rvRepeat: Result := '[' + OperandStr(r.a) + '; ' + IntToStr(r.n) + ']';
     rvSizeOf: Result := 'SizeOf(' + TyToStr(r.srcTy) + ')';
+    rvSubslice: Result := '&' + PlaceStr(r.place) + '[' + IntToStr(r.n) + '..-' + IntToStr(r.vidx) + ']';
   else
     Result := '?';
   end;
@@ -14288,7 +14947,12 @@ begin
         end;
         if (Pats[p].a >= 0) and (Pats[Pats[p].a].k = pkBind) then
         begin
-          { reste lie a une tranche : sous-tranche non geree pour les tableaux }
+          pl := PLocal(VarLoc[Pats[Pats[p].a].v], MirFns[BI].locals[VarLoc[Pats[Pats[p].a].v]].ty);
+          rv := MkRv(rvSubslice, pl.ty);
+          rv.place := place;
+          rv.n := n1;
+          rv.vidx := n2;
+          EmitAssign(pl, rv);
         end;
       end;
     pkConst: ;
@@ -16156,6 +16820,21 @@ begin
       end;
     rvSizeOf:
       Emit('store i64 ' + IntToStr(TySize(rv.srcTy)) + ', ptr ' + da.ptr + ', align 8');
+    rvSubslice:
+      begin
+        sa := PlaceAddr(rv.place);
+        aty := Zonk(Tys[Shallow(sa.ty)].args[0]);
+        p2 := Gep(sa.ptr, TySize(aty) * rv.n);
+        Emit('store ptr ' + p2 + ', ptr ' + da.ptr + ', align 8');
+        if sa.meta <> '' then
+        begin
+          t := NewT;
+          Emit(t + ' = sub i64 ' + sa.meta + ', ' + IntToStr(rv.n + rv.vidx));
+          Emit('store i64 ' + t + ', ptr ' + Gep(da.ptr, 8) + ', align 8');
+        end
+        else
+          Emit('store i64 ' + IntToStr(Tys[Shallow(Tys[Shallow(sa.ty)].args[1])].n - rv.n - rv.vidx) + ', ptr ' + Gep(da.ptr, 8) + ', align 8');
+      end;
   end;
 end;
 
@@ -17637,6 +18316,13 @@ begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '');
+  BufLn(b, '    pub trait Step: Clone + PartialOrd {');
+  BufLn(b, '        fn forward(&self) -> Self;');
+  BufLn(b, '        fn backward(&self) -> Self;');
+  BufLn(b, '        fn steps_between(a: &Self, b: &Self) -> usize;');
+  BufLn(b, '        fn forward_n(&self, n: usize) -> Self;');
+  BufLn(b, '    }');
+  BufLn(b, '');
   BufLn(b, '    pub trait DoubleEndedIterator: Iterator {');
   BufLn(b, '        fn next_back(&mut self) -> Option<Self::Item>;');
   BufLn(b, '    }');
@@ -17762,6 +18448,10 @@ begin
   BufLn(b, '        type Item = I::Item;');
   BufLn(b, '        fn next(&mut self) -> Option<I::Item> {');
   BufLn(b, '            if self.n == 0 { None } else { self.n -= 1; self.iter.next() }');
+end;
+
+procedure PreludeChunk3(var b: TBuf);
+begin
   BufLn(b, '        }');
   BufLn(b, '        fn size_hint(&self) -> (usize, Option<usize>) {');
   BufLn(b, '            let (l, _) = self.iter.size_hint();');
@@ -17769,10 +18459,6 @@ begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    impl<I: ExactSizeIterator> ExactSizeIterator for Take<I> {}');
-end;
-
-procedure PreludeChunk3(var b: TBuf);
-begin
   BufLn(b, '    pub struct Skip<I> { iter: I, n: usize }');
   BufLn(b, '    impl<I: Iterator> Iterator for Skip<I> {');
   BufLn(b, '        type Item = I::Item;');
@@ -18066,6 +18752,10 @@ begin
   BufLn(b, '        pub fn sign_aware_zero_pad(&self) -> bool { (self.flags & 4) != 0 }');
   BufLn(b, '');
   BufLn(b, '        fn push_fill(&mut self, n: usize) {');
+end;
+
+procedure PreludeChunk4(var b: TBuf);
+begin
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n { self.buf.push(self.fill); i += 1; }');
   BufLn(b, '        }');
@@ -18073,10 +18763,6 @@ begin
   BufLn(b, '        pub fn pad(&mut self, s: &str) -> Result {');
   BufLn(b, '            let mut st = s;');
   BufLn(b, '            if self.prec != ::std::usize::MAX {');
-end;
-
-procedure PreludeChunk4(var b: TBuf);
-begin
   BufLn(b, '                let mut cnt = 0usize;');
   BufLn(b, '                let mut end = 0usize;');
   BufLn(b, '                let mut it = s.char_indices();');
@@ -18370,6 +19056,10 @@ begin
   BufLn(b, '                if u < 32 || u == 127 {');
   BufLn(b, '                    out.push_str("\\u{");');
   BufLn(b, '                    let mut f = Formatter::new();');
+end;
+
+procedure PreludeChunk5(var b: TBuf);
+begin
   BufLn(b, '                    let _ = LowerHex::fmt(&u, &mut f);');
   BufLn(b, '                    out.push_str(f.buf.as_str());');
   BufLn(b, '                    out.push_str("}");');
@@ -18377,10 +19067,6 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk5(var b: TBuf);
-begin
   BufLn(b, '    impl Debug for str {');
   BufLn(b, '        fn fmt(&self, f: &mut Formatter) -> Result {');
   BufLn(b, '            let mut s = String::new();');
@@ -18674,6 +19360,10 @@ begin
   BufLn(b, '            let n = needle.len();');
   BufLn(b, '            let m = self.len();');
   BufLn(b, '            if m < n { return false; }');
+end;
+
+procedure PreludeChunk6(var b: TBuf);
+begin
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n { if self[m - n + i] != needle[i] { return false; } i += 1; }');
   BufLn(b, '            true');
@@ -18681,10 +19371,6 @@ begin
   BufLn(b, '        pub fn to_vec(&self) -> Vec<T> where T: Clone {');
   BufLn(b, '            let mut v = Vec::with_capacity(self.len());');
   BufLn(b, '            let mut i = 0usize;');
-end;
-
-procedure PreludeChunk6(var b: TBuf);
-begin
   BufLn(b, '            while i < self.len() { v.push(self[i].clone()); i += 1; }');
   BufLn(b, '            v');
   BufLn(b, '        }');
@@ -18978,6 +19664,10 @@ begin
   BufLn(b, '        type IntoIter = ::std::vec::IntoIter<T>;');
   BufLn(b, '        fn into_iter(self) -> ::std::vec::IntoIter<T> { ::std::vec::from_array(self).into_iter() }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk7(var b: TBuf);
+begin
   BufLn(b, '');
   BufLn(b, '    impl<T: PartialEq<U>, U> PartialEq<[U]> for [T] {');
   BufLn(b, '        fn eq(&self, other: &[U]) -> bool {');
@@ -18985,10 +19675,6 @@ begin
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < self.len() { if self[i] != other[i] { return false; } i += 1; }');
   BufLn(b, '            true');
-end;
-
-procedure PreludeChunk7(var b: TBuf);
-begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    impl<T: Eq> Eq for [T] {}');
@@ -19060,8 +19746,8 @@ begin
   BufLn(b, '                out');
   BufLn(b, '            }');
   BufLn(b, '        }');
-  BufLn(b, '        pub fn as_slice(&self) -> &[T] { &self[..] }');
-  BufLn(b, '        pub fn as_mut_slice(&mut self) -> &mut [T] { &mut self[..] }');
+  BufLn(b, '        pub fn as_slice(&self) -> &[T] { self }');
+  BufLn(b, '        pub fn as_mut_slice(&mut self) -> &mut [T] { self }');
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl<T> ::std::ops::Index<::std::ops::Range<usize>> for [T] {');
@@ -19282,6 +19968,10 @@ begin
   BufLn(b, '                while self.len < n { self.push(v.clone()); }');
   BufLn(b, '            }');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk8(var b: TBuf);
+begin
   BufLn(b, '        pub fn split_off(&mut self, at: usize) -> Vec<T> {');
   BufLn(b, '            if at > self.len { ::std::rt::panic_str("`at` split index out of bounds"); }');
   BufLn(b, '            let mut other = Vec::with_capacity(self.len - at);');
@@ -19289,10 +19979,6 @@ begin
   BufLn(b, '            other.len = self.len - at;');
   BufLn(b, '            self.len = at;');
   BufLn(b, '            other');
-end;
-
-procedure PreludeChunk8(var b: TBuf);
-begin
   BufLn(b, '        }');
   BufLn(b, '        pub fn drain(&mut self, r: ::std::ops::Range<usize>) -> IntoIter<T> {');
   BufLn(b, '            let mut out = Vec::with_capacity(r.end - r.start);');
@@ -19586,6 +20272,10 @@ begin
   BufLn(b, '            while let Some(c) = it.next() { s.push(c.to_ascii_uppercase()); }');
   BufLn(b, '            s');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk9(var b: TBuf);
+begin
   BufLn(b, '        pub fn to_ascii_lowercase(&self) -> String {');
   BufLn(b, '            let mut s = String::new();');
   BufLn(b, '            let mut it = self.chars();');
@@ -19593,10 +20283,6 @@ begin
   BufLn(b, '            s');
   BufLn(b, '        }');
   BufLn(b, '        pub fn eq_ignore_ascii_case(&self, o: &str) -> bool { self.to_ascii_lowercase() == o.to_ascii_lowercase() }');
-end;
-
-procedure PreludeChunk9(var b: TBuf);
-begin
   BufLn(b, '        pub fn repeat(&self, n: usize) -> String {');
   BufLn(b, '            let mut s = String::new();');
   BufLn(b, '            let mut i = 0usize;');
@@ -19890,6 +20576,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl PartialEq for str { fn eq(&self, o: &str) -> bool { __str_eq(self, o) } }');
+end;
+
+procedure PreludeChunk10(var b: TBuf);
+begin
   BufLn(b, '    impl Eq for str {}');
   BufLn(b, '    impl PartialOrd for str { fn partial_cmp(&self, o: &str) -> Option<Ordering> { Some(self.cmp(o)) } }');
   BufLn(b, '    impl Ord for str {');
@@ -19897,10 +20587,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl ::std::ops::Index<::std::ops::Range<usize>> for str {');
   BufLn(b, '        type Output = str;');
-end;
-
-procedure PreludeChunk10(var b: TBuf);
-begin
   BufLn(b, '        fn index(&self, r: ::std::ops::Range<usize>) -> &str {');
   BufLn(b, '            if r.start > r.end { ::std::rt::slice_index_order_fail(r.start, r.end); }');
   BufLn(b, '            if r.end > self.len() { ::std::rt::str_index_fail(self, r.start, r.end); }');
@@ -20194,6 +20880,10 @@ begin
   BufLn(b, '            else if c < 0x800u32 { b[0] = (0xC0u32 | (c >> 6)) as u8; b[1] = (0x80u32 | (c & 0x3Fu32)) as u8; 2usize }');
   BufLn(b, '            else if c < 0x10000u32 {');
   BufLn(b, '                b[0] = (0xE0u32 | (c >> 12)) as u8; b[1] = (0x80u32 | ((c >> 6) & 0x3Fu32)) as u8; b[2] = (0x80u32 | (c & 0x3Fu32)) as u8; 3usize');
+end;
+
+procedure PreludeChunk11(var b: TBuf);
+begin
   BufLn(b, '            } else {');
   BufLn(b, '                b[0] = (0xF0u32 | (c >> 18)) as u8; b[1] = (0x80u32 | ((c >> 12) & 0x3Fu32)) as u8;');
   BufLn(b, '                b[2] = (0x80u32 | ((c >> 6) & 0x3Fu32)) as u8; b[3] = (0x80u32 | (c & 0x3Fu32)) as u8; 4usize');
@@ -20201,10 +20891,6 @@ begin
   BufLn(b, '        }');
   BufLn(b, '        pub fn is_ascii(&self) -> bool { (*self as u32) < 0x80u32 }');
   BufLn(b, '        pub fn is_ascii_digit(&self) -> bool { *self >= ''0'' && *self <= ''9'' }');
-end;
-
-procedure PreludeChunk11(var b: TBuf);
-begin
   BufLn(b, '        pub fn is_ascii_alphabetic(&self) -> bool { (*self >= ''a'' && *self <= ''z'') || (*self >= ''A'' && *self <= ''Z'') }');
   BufLn(b, '        pub fn is_ascii_alphanumeric(&self) -> bool { self.is_ascii_digit() || self.is_ascii_alphabetic() }');
   BufLn(b, '        pub fn is_ascii_uppercase(&self) -> bool { *self >= ''A'' && *self <= ''Z'' }');
@@ -20431,10 +21117,89 @@ begin
   BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
+  BufLn(b, 'pub mod range_iter {');
+  BufLn(b, '    use crate::ops::{Range, RangeInclusive, RangeFrom};');
+  BufLn(b, '    use crate::iter::Step;');
+  BufLn(b, '    impl<A: Step> Iterator for Range<A> {');
+  BufLn(b, '        type Item = A;');
+  BufLn(b, '        fn next(&mut self) -> Option<A> {');
+  BufLn(b, '            if self.start < self.end {');
+  BufLn(b, '                let n = self.start.forward();');
+  BufLn(b, '                Some(::std::mem::replace(&mut self.start, n))');
+  BufLn(b, '            } else { None }');
+  BufLn(b, '        }');
+  BufLn(b, '        fn size_hint(&self) -> (usize, Option<usize>) {');
+  BufLn(b, '            let n = A::steps_between(&self.start, &self.end);');
+  BufLn(b, '            (n, Some(n))');
+  BufLn(b, '        }');
+  BufLn(b, '        fn nth(&mut self, n: usize) -> Option<A> {');
+  BufLn(b, '            let rem = A::steps_between(&self.start, &self.end);');
+  BufLn(b, '            if n >= rem { self.start = self.end.clone(); None } else {');
+  BufLn(b, '                let v = self.start.forward_n(n);');
+  BufLn(b, '                self.start = v.forward();');
+  BufLn(b, '                Some(v)');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<A: Step> DoubleEndedIterator for Range<A> {');
+  BufLn(b, '        fn next_back(&mut self) -> Option<A> {');
+  BufLn(b, '            if self.start < self.end { self.end = self.end.backward(); Some(self.end.clone()) } else { None }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<A: Step> ExactSizeIterator for Range<A> {}');
+  BufLn(b, '    impl<A: Step> Iterator for RangeInclusive<A> {');
+  BufLn(b, '        type Item = A;');
+  BufLn(b, '        fn next(&mut self) -> Option<A> {');
+  BufLn(b, '            if self.exhausted || self.start > self.end { return None; }');
+  BufLn(b, '            let v = self.start.clone();');
+  BufLn(b, '            if self.start < self.end { self.start = v.forward(); } else { self.exhausted = true; }');
+  BufLn(b, '            Some(v)');
+  BufLn(b, '        }');
+  BufLn(b, '        fn size_hint(&self) -> (usize, Option<usize>) {');
+  BufLn(b, '            if self.exhausted || self.start > self.end { (0, Some(0)) } else {');
+  BufLn(b, '                let n = A::steps_between(&self.start, &self.end) + 1;');
+  BufLn(b, '                (n, Some(n))');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<A: Step> DoubleEndedIterator for RangeInclusive<A> {');
+  BufLn(b, '        fn next_back(&mut self) -> Option<A> {');
+  BufLn(b, '            if self.exhausted || self.start > self.end { return None; }');
+  BufLn(b, '            let v = self.end.clone();');
+  BufLn(b, '            if self.start < self.end { self.end = v.backward(); } else { self.exhausted = true; }');
+  BufLn(b, '            Some(v)');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<A: Step> ExactSizeIterator for RangeInclusive<A> {}');
+  BufLn(b, '    impl<A: Step> Iterator for RangeFrom<A> {');
+  BufLn(b, '        type Item = A;');
+  BufLn(b, '        fn next(&mut self) -> Option<A> {');
+  BufLn(b, '            let n = self.start.forward();');
+  BufLn(b, '            Some(::std::mem::replace(&mut self.start, n))');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl Step for char {');
+  BufLn(b, '        fn forward(&self) -> char {');
+  BufLn(b, '            let c = *self as u32 + 1;');
+  BufLn(b, '            if c == 0xD800u32 { ''\u{E000}'' } else { unsafe { ::std::intrinsics::transmute::<u32, char>(c) } }');
+  BufLn(b, '        }');
+  BufLn(b, '        fn backward(&self) -> char {');
+end;
+
+procedure PreludeChunk12(var b: TBuf);
+begin
+  BufLn(b, '            let c = *self as u32 - 1;');
+  BufLn(b, '            if c == 0xDFFFu32 { ''\u{D7FF}'' } else { unsafe { ::std::intrinsics::transmute::<u32, char>(c) } }');
+  BufLn(b, '        }');
+  BufLn(b, '        fn steps_between(a: &char, b: &char) -> usize { if *a < *b { (*b as u32 - *a as u32) as usize } else { 0 } }');
+  BufLn(b, '        fn forward_n(&self, n: usize) -> char { unsafe { ::std::intrinsics::transmute::<u32, char>(*self as u32 + n as u32) } }');
+  BufLn(b, '    }');
+  BufLn(b, '}');
+  BufLn(b, '');
   BufLn(b, 'pub mod num {');
   BufLn(b, '    use crate::cmp::Ordering;');
   BufLn(b, '    use crate::ops::*;');
-  BufLn(b, '    use crate::iter::{Sum, Product};');
+  BufLn(b, '    use crate::iter::{Sum, Product, Step};');
   BufLn(b, '    use crate::fmt::{Display, Debug, LowerHex, UpperHex, Binary, Octal, Formatter, fmt_u64_radix, fmt_u128_radix};');
   BufLn(b, '    use crate::str::FromStr;');
   BufLn(b, '    use crate::convert::TryFromIntError;');
@@ -20505,10 +21270,6 @@ begin
   BufLn(b, '    fn ge(&self, o: &i8) -> bool { *self >= *o }');
   BufLn(b, '}');
   BufLn(b, 'impl Ord for i8 {');
-end;
-
-procedure PreludeChunk12(var b: TBuf);
-begin
   BufLn(b, '    fn cmp(&self, o: &i8) -> Ordering {');
   BufLn(b, '        if *self < *o { Ordering::Less } else if *self == *o { Ordering::Equal } else { Ordering::Greater }');
   BufLn(b, '    }');
@@ -20570,49 +21331,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<i8, ParseIntError> { i8::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<i8> {');
-  BufLn(b, '    type Item = i8;');
-  BufLn(b, '    fn next(&mut self) -> Option<i8> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<i8> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as i8; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<i8> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i8> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<i8> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<i8> {');
-  BufLn(b, '    type Item = i8;');
-  BufLn(b, '    fn next(&mut self) -> Option<i8> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<i8> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i8> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<i8> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<i8> {');
-  BufLn(b, '    type Item = i8;');
-  BufLn(b, '    fn next(&mut self) -> Option<i8> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for i8 {');
+  BufLn(b, '    fn forward(&self) -> i8 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> i8 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &i8, b: &i8) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> i8 { (*self as i128 + n as i128) as i8 }');
   BufLn(b, '}');
   BufLn(b, 'impl i8 {');
   BufLn(b, '    pub const MIN: i8 = -128;');
@@ -20765,6 +21488,10 @@ begin
   BufLn(b, '');
   BufLn(b, '}');
   BufLn(b, '');
+end;
+
+procedure PreludeChunk13(var b: TBuf);
+begin
   BufLn(b, '');
   BufLn(b, 'impl Clone for i16 { fn clone(&self) -> i16 { *self } }');
   BufLn(b, 'impl Copy for i16 {}');
@@ -20809,10 +21536,6 @@ begin
   BufLn(b, 'impl<''a> Sub<&''a i16> for i16 { type Output = i16; fn sub(self, o: &''a i16) -> i16 { self - *o } }');
   BufLn(b, 'impl<''a> Mul<&''a i16> for i16 { type Output = i16; fn mul(self, o: &''a i16) -> i16 { self * *o } }');
   BufLn(b, 'impl<''a> Add<i16> for &''a i16 { type Output = i16; fn add(self, o: i16) -> i16 { *self + o } }');
-end;
-
-procedure PreludeChunk13(var b: TBuf);
-begin
   BufLn(b, 'impl<''a> Sub<i16> for &''a i16 { type Output = i16; fn sub(self, o: i16) -> i16 { *self - o } }');
   BufLn(b, 'impl<''a> Mul<i16> for &''a i16 { type Output = i16; fn mul(self, o: i16) -> i16 { *self * o } }');
   BufLn(b, 'impl<''a, ''b> Add<&''b i16> for &''a i16 { type Output = i16; fn add(self, o: &''b i16) -> i16 { *self + *o } }');
@@ -20849,49 +21572,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<i16, ParseIntError> { i16::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<i16> {');
-  BufLn(b, '    type Item = i16;');
-  BufLn(b, '    fn next(&mut self) -> Option<i16> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<i16> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as i16; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<i16> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i16> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<i16> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<i16> {');
-  BufLn(b, '    type Item = i16;');
-  BufLn(b, '    fn next(&mut self) -> Option<i16> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<i16> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i16> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<i16> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<i16> {');
-  BufLn(b, '    type Item = i16;');
-  BufLn(b, '    fn next(&mut self) -> Option<i16> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for i16 {');
+  BufLn(b, '    fn forward(&self) -> i16 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> i16 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &i16, b: &i16) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> i16 { (*self as i128 + n as i128) as i16 }');
   BufLn(b, '}');
   BufLn(b, 'impl i16 {');
   BufLn(b, '    pub const MIN: i16 = -32768;');
@@ -21107,16 +21792,16 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl<''a> Sum<&''a i32> for i32 {');
   BufLn(b, '    fn sum<I: Iterator<Item = &''a i32>>(iter: I) -> i32 { let mut s: i32 = 0; let mut it = iter; while let Some(x) = it.next() { s = s + *x; } s }');
+end;
+
+procedure PreludeChunk14(var b: TBuf);
+begin
   BufLn(b, '}');
   BufLn(b, 'impl Product for i32 {');
   BufLn(b, '    fn product<I: Iterator<Item = i32>>(iter: I) -> i32 { let mut s: i32 = 1; let mut it = iter; while let Some(x) = it.next() { s = s * x; } s }');
   BufLn(b, '}');
   BufLn(b, 'impl<''a> Product<&''a i32> for i32 {');
   BufLn(b, '    fn product<I: Iterator<Item = &''a i32>>(iter: I) -> i32 { let mut s: i32 = 1; let mut it = iter; while let Some(x) = it.next() { s = s * *x; } s }');
-end;
-
-procedure PreludeChunk14(var b: TBuf);
-begin
   BufLn(b, '}');
   BufLn(b, 'impl Display for i32 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { let v = *self as i64; let neg = v < 0; let abs = if neg { ::std::intrinsics::wrapping_add(!(v as u64), 1 as u64) } else { v as u64 }; fmt_u64_radix(f, abs, !neg, 10, false, "") } }');
   BufLn(b, 'impl Debug for i32 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { let v = *self as i64; let neg = v < 0; let abs = if neg { ::std::intrinsics::wrapping_add(!(v as u64), 1 as u64) } else { v as u64 }; fmt_u64_radix(f, abs, !neg, 10, false, "") } }');
@@ -21128,49 +21813,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<i32, ParseIntError> { i32::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<i32> {');
-  BufLn(b, '    type Item = i32;');
-  BufLn(b, '    fn next(&mut self) -> Option<i32> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<i32> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as i32; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<i32> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i32> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<i32> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<i32> {');
-  BufLn(b, '    type Item = i32;');
-  BufLn(b, '    fn next(&mut self) -> Option<i32> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<i32> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i32> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<i32> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<i32> {');
-  BufLn(b, '    type Item = i32;');
-  BufLn(b, '    fn next(&mut self) -> Option<i32> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for i32 {');
+  BufLn(b, '    fn forward(&self) -> i32 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> i32 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &i32, b: &i32) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> i32 { (*self as i128 + n as i128) as i32 }');
   BufLn(b, '}');
   BufLn(b, 'impl i32 {');
   BufLn(b, '    pub const MIN: i32 = -2147483648;');
@@ -21403,53 +22050,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<i64, ParseIntError> { i64::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<i64> {');
-  BufLn(b, '    type Item = i64;');
-  BufLn(b, '    fn next(&mut self) -> Option<i64> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<i64> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as i64; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<i64> {');
-end;
-
-procedure PreludeChunk15(var b: TBuf);
-begin
-  BufLn(b, '    fn next_back(&mut self) -> Option<i64> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<i64> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<i64> {');
-  BufLn(b, '    type Item = i64;');
-  BufLn(b, '    fn next(&mut self) -> Option<i64> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<i64> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i64> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<i64> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<i64> {');
-  BufLn(b, '    type Item = i64;');
-  BufLn(b, '    fn next(&mut self) -> Option<i64> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for i64 {');
+  BufLn(b, '    fn forward(&self) -> i64 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> i64 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &i64, b: &i64) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> i64 { (*self as i128 + n as i128) as i64 }');
   BufLn(b, '}');
   BufLn(b, 'impl i64 {');
   BufLn(b, '    pub const MIN: i64 = -9223372036854775808;');
@@ -21491,6 +22096,10 @@ begin
   BufLn(b, '    pub fn checked_sub(self, o: i64) -> Option<i64> { let (v, ov) = self.overflowing_sub(o); if ov { None } else { Some(v) } }');
   BufLn(b, '    pub fn checked_mul(self, o: i64) -> Option<i64> { let (v, ov) = self.overflowing_mul(o); if ov { None } else { Some(v) } }');
   BufLn(b, '    pub fn checked_div(self, o: i64) -> Option<i64> {');
+end;
+
+procedure PreludeChunk15(var b: TBuf);
+begin
   BufLn(b, '        if o == 0 { return None; }');
   BufLn(b, '        if self == i64::MIN && o == -1 { return None; }');
   BufLn(b, '        Some(self / o)');
@@ -21682,53 +22291,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<i128, ParseIntError> { i128::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<i128> {');
-  BufLn(b, '    type Item = i128;');
-  BufLn(b, '    fn next(&mut self) -> Option<i128> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<i128> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as i128; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<i128> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i128> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<i128> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<i128> {');
-  BufLn(b, '    type Item = i128;');
-  BufLn(b, '    fn next(&mut self) -> Option<i128> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<i128> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<i128> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-end;
-
-procedure PreludeChunk16(var b: TBuf);
-begin
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<i128> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<i128> {');
-  BufLn(b, '    type Item = i128;');
-  BufLn(b, '    fn next(&mut self) -> Option<i128> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for i128 {');
+  BufLn(b, '    fn forward(&self) -> i128 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> i128 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &i128, b: &i128) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> i128 { (*self as i128 + n as i128) as i128 }');
   BufLn(b, '}');
   BufLn(b, 'impl i128 {');
   BufLn(b, '    pub const MIN: i128 = (1i128 << 127);');
@@ -21833,6 +22400,10 @@ begin
   BufLn(b, '        if b.len() == 0 { return Err(ParseIntError { kind: IntErrorKind::Empty }); }');
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        let mut neg = false;');
+end;
+
+procedure PreludeChunk16(var b: TBuf);
+begin
   BufLn(b, '        if b[0] == 43u8 { i = 1; } else if b[0] == 45u8 {  neg = true; i = 1; }');
   BufLn(b, '        if i >= b.len() { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); }');
   BufLn(b, '        let mut acc: u128 = 0;');
@@ -21961,49 +22532,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<isize, ParseIntError> { isize::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<isize> {');
-  BufLn(b, '    type Item = isize;');
-  BufLn(b, '    fn next(&mut self) -> Option<isize> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<isize> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as isize; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<isize> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<isize> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<isize> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<isize> {');
-  BufLn(b, '    type Item = isize;');
-  BufLn(b, '    fn next(&mut self) -> Option<isize> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<isize> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<isize> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<isize> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<isize> {');
-  BufLn(b, '    type Item = isize;');
-  BufLn(b, '    fn next(&mut self) -> Option<isize> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for isize {');
+  BufLn(b, '    fn forward(&self) -> isize { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> isize { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &isize, b: &isize) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> isize { (*self as i128 + n as i128) as isize }');
   BufLn(b, '}');
   BufLn(b, 'impl isize {');
   BufLn(b, '    pub const MIN: isize = -9223372036854775808;');
@@ -22025,10 +22558,6 @@ begin
   BufLn(b, '    pub fn wrapping_add(self, o: isize) -> isize { unsafe { ::std::intrinsics::wrapping_add(self, o) } }');
   BufLn(b, '    pub fn wrapping_sub(self, o: isize) -> isize { unsafe { ::std::intrinsics::wrapping_sub(self, o) } }');
   BufLn(b, '    pub fn wrapping_mul(self, o: isize) -> isize { unsafe { ::std::intrinsics::wrapping_mul(self, o) } }');
-end;
-
-procedure PreludeChunk17(var b: TBuf);
-begin
   BufLn(b, '    pub fn wrapping_neg(self) -> isize { unsafe { ::std::intrinsics::wrapping_sub(0 as isize, self) } }');
   BufLn(b, '    pub fn wrapping_shl(self, n: u32) -> isize { unsafe { ::std::intrinsics::unchecked_shl(self, (n % 64) as isize) } }');
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> isize { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 64) as isize) } }');
@@ -22175,6 +22704,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    fn lt(&self, o: &u8) -> bool { *self < *o }');
   BufLn(b, '    fn le(&self, o: &u8) -> bool { *self <= *o }');
+end;
+
+procedure PreludeChunk17(var b: TBuf);
+begin
   BufLn(b, '    fn gt(&self, o: &u8) -> bool { *self > *o }');
   BufLn(b, '    fn ge(&self, o: &u8) -> bool { *self >= *o }');
   BufLn(b, '}');
@@ -22240,49 +22773,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<u8, ParseIntError> { u8::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<u8> {');
-  BufLn(b, '    type Item = u8;');
-  BufLn(b, '    fn next(&mut self) -> Option<u8> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<u8> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as u8; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<u8> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u8> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<u8> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<u8> {');
-  BufLn(b, '    type Item = u8;');
-  BufLn(b, '    fn next(&mut self) -> Option<u8> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<u8> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u8> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<u8> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<u8> {');
-  BufLn(b, '    type Item = u8;');
-  BufLn(b, '    fn next(&mut self) -> Option<u8> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for u8 {');
+  BufLn(b, '    fn forward(&self) -> u8 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> u8 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &u8, b: &u8) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> u8 { (*self as i128 + n as i128) as u8 }');
   BufLn(b, '}');
   BufLn(b, 'impl u8 {');
   BufLn(b, '    pub const MIN: u8 = 0;');
@@ -22329,10 +22824,6 @@ begin
   BufLn(b, '        Some(self / o)');
   BufLn(b, '    }');
   BufLn(b, '    pub fn checked_rem(self, o: u8) -> Option<u8> {');
-end;
-
-procedure PreludeChunk18(var b: TBuf);
-begin
   BufLn(b, '        if o == 0 { return None; }');
   BufLn(b, '        ');
   BufLn(b, '        Some(self % o)');
@@ -22516,49 +23007,15 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<u16, ParseIntError> { u16::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<u16> {');
-  BufLn(b, '    type Item = u16;');
-  BufLn(b, '    fn next(&mut self) -> Option<u16> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<u16> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as u16; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<u16> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u16> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<u16> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<u16> {');
-  BufLn(b, '    type Item = u16;');
-  BufLn(b, '    fn next(&mut self) -> Option<u16> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<u16> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u16> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<u16> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<u16> {');
-  BufLn(b, '    type Item = u16;');
-  BufLn(b, '    fn next(&mut self) -> Option<u16> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for u16 {');
+end;
+
+procedure PreludeChunk18(var b: TBuf);
+begin
+  BufLn(b, '    fn forward(&self) -> u16 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> u16 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &u16, b: &u16) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> u16 { (*self as i128 + n as i128) as u16 }');
   BufLn(b, '}');
   BufLn(b, 'impl u16 {');
   BufLn(b, '    pub const MIN: u16 = 0;');
@@ -22633,10 +23090,6 @@ begin
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
   BufLn(b, '    pub fn trailing_ones(self) -> u32 { (!self).trailing_zeros() }');
-end;
-
-procedure PreludeChunk19(var b: TBuf);
-begin
   BufLn(b, '    pub fn swap_bytes(self) -> u16 { unsafe { ::std::intrinsics::bswap(self) } }');
   BufLn(b, '    pub fn reverse_bits(self) -> u16 { unsafe { ::std::intrinsics::bitreverse(self) } }');
   BufLn(b, '    pub fn rotate_left(self, n: u32) -> u16 { unsafe { ::std::intrinsics::rotate_left(self, n) } }');
@@ -22792,49 +23245,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<u32, ParseIntError> { u32::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<u32> {');
-  BufLn(b, '    type Item = u32;');
-  BufLn(b, '    fn next(&mut self) -> Option<u32> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<u32> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as u32; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<u32> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u32> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<u32> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<u32> {');
-  BufLn(b, '    type Item = u32;');
-  BufLn(b, '    fn next(&mut self) -> Option<u32> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<u32> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u32> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<u32> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<u32> {');
-  BufLn(b, '    type Item = u32;');
-  BufLn(b, '    fn next(&mut self) -> Option<u32> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for u32 {');
+  BufLn(b, '    fn forward(&self) -> u32 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> u32 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &u32, b: &u32) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> u32 { (*self as i128 + n as i128) as u32 }');
   BufLn(b, '}');
   BufLn(b, 'impl u32 {');
   BufLn(b, '    pub const MIN: u32 = 0;');
@@ -22897,6 +23312,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn saturating_add(self, o: u32) -> u32 { unsafe { ::std::intrinsics::saturating_add(self, o) } }');
   BufLn(b, '    pub fn saturating_sub(self, o: u32) -> u32 { unsafe { ::std::intrinsics::saturating_sub(self, o) } }');
+end;
+
+procedure PreludeChunk19(var b: TBuf);
+begin
   BufLn(b, '    pub fn saturating_mul(self, o: u32) -> u32 {');
   BufLn(b, '        match self.checked_mul(o) { Some(v) => v, None => if (self < 0) == (o < 0) { 4294967295 } else { 0 } }');
   BufLn(b, '    }');
@@ -22937,10 +23356,6 @@ begin
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<u32, ParseIntError> {');
   BufLn(b, '        let b = s.as_bytes();');
   BufLn(b, '        if b.len() == 0 { return Err(ParseIntError { kind: IntErrorKind::Empty }); }');
-end;
-
-procedure PreludeChunk20(var b: TBuf);
-begin
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        let mut neg = false;');
   BufLn(b, '        if b[0] == 43u8 { i = 1; } else if b[0] == 45u8 { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); neg = true; i = 1; }');
@@ -23068,49 +23483,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<u64, ParseIntError> { u64::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<u64> {');
-  BufLn(b, '    type Item = u64;');
-  BufLn(b, '    fn next(&mut self) -> Option<u64> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<u64> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as u64; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<u64> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u64> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<u64> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<u64> {');
-  BufLn(b, '    type Item = u64;');
-  BufLn(b, '    fn next(&mut self) -> Option<u64> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<u64> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u64> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<u64> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<u64> {');
-  BufLn(b, '    type Item = u64;');
-  BufLn(b, '    fn next(&mut self) -> Option<u64> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for u64 {');
+  BufLn(b, '    fn forward(&self) -> u64 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> u64 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &u64, b: &u64) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> u64 { (*self as i128 + n as i128) as u64 }');
   BufLn(b, '}');
   BufLn(b, 'impl u64 {');
   BufLn(b, '    pub const MIN: u64 = 0;');
@@ -23239,12 +23616,12 @@ begin
   BufLn(b, '        out');
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_be_bytes(b: [u8; 8]) -> u64 {');
-  BufLn(b, '        let mut v: u64 = 0;');
-  BufLn(b, '        let mut i = 0usize;');
 end;
 
-procedure PreludeChunk21(var b: TBuf);
+procedure PreludeChunk20(var b: TBuf);
 begin
+  BufLn(b, '        let mut v: u64 = 0;');
+  BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 8 { v = (v << 8) | (b[i] as u64); i += 1; }');
   BufLn(b, '        v');
   BufLn(b, '    }');
@@ -23344,49 +23721,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<u128, ParseIntError> { u128::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<u128> {');
-  BufLn(b, '    type Item = u128;');
-  BufLn(b, '    fn next(&mut self) -> Option<u128> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<u128> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as u128; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<u128> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u128> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<u128> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<u128> {');
-  BufLn(b, '    type Item = u128;');
-  BufLn(b, '    fn next(&mut self) -> Option<u128> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<u128> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<u128> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<u128> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<u128> {');
-  BufLn(b, '    type Item = u128;');
-  BufLn(b, '    fn next(&mut self) -> Option<u128> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for u128 {');
+  BufLn(b, '    fn forward(&self) -> u128 { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> u128 { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &u128, b: &u128) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> u128 { (*self as i128 + n as i128) as u128 }');
   BufLn(b, '}');
   BufLn(b, 'impl u128 {');
   BufLn(b, '    pub const MIN: u128 = 0;');
@@ -23545,10 +23884,6 @@ begin
   BufLn(b, '    fn ne(&self, o: &usize) -> bool { *self != *o }');
   BufLn(b, '}');
   BufLn(b, 'impl Eq for usize {}');
-end;
-
-procedure PreludeChunk22(var b: TBuf);
-begin
   BufLn(b, 'impl PartialOrd for usize {');
   BufLn(b, '    fn partial_cmp(&self, o: &usize) -> Option<Ordering> {');
   BufLn(b, '        if *self < *o { Some(Ordering::Less) } else if *self == *o { Some(Ordering::Equal) } else { Some(Ordering::Greater) }');
@@ -23585,6 +23920,10 @@ begin
   BufLn(b, 'impl<''a> Mul<&''a usize> for usize { type Output = usize; fn mul(self, o: &''a usize) -> usize { self * *o } }');
   BufLn(b, 'impl<''a> Add<usize> for &''a usize { type Output = usize; fn add(self, o: usize) -> usize { *self + o } }');
   BufLn(b, 'impl<''a> Sub<usize> for &''a usize { type Output = usize; fn sub(self, o: usize) -> usize { *self - o } }');
+end;
+
+procedure PreludeChunk21(var b: TBuf);
+begin
   BufLn(b, 'impl<''a> Mul<usize> for &''a usize { type Output = usize; fn mul(self, o: usize) -> usize { *self * o } }');
   BufLn(b, 'impl<''a, ''b> Add<&''b usize> for &''a usize { type Output = usize; fn add(self, o: &''b usize) -> usize { *self + *o } }');
   BufLn(b, 'impl<''a, ''b> Sub<&''b usize> for &''a usize { type Output = usize; fn sub(self, o: &''b usize) -> usize { *self - *o } }');
@@ -23620,49 +23959,11 @@ begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<usize, ParseIntError> { usize::from_str_radix(s, 10) }');
   BufLn(b, '}');
-  BufLn(b, 'impl Iterator for Range<usize> {');
-  BufLn(b, '    type Item = usize;');
-  BufLn(b, '    fn next(&mut self) -> Option<usize> {');
-  BufLn(b, '        if self.start < self.end { let v = self.start; self.start = v + 1; Some(v) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.start < self.end { let n = (self.end as i128 - self.start as i128) as usize; (n, Some(n)) } else { (0, Some(0)) }');
-  BufLn(b, '    }');
-  BufLn(b, '    fn nth(&mut self, n: usize) -> Option<usize> {');
-  BufLn(b, '        let rem = if self.start < self.end { (self.end as i128 - self.start as i128) as usize } else { 0 };');
-  BufLn(b, '        if n >= rem { self.start = self.end; None } else { let v = (self.start as i128 + n as i128) as usize; self.start = v + 1; Some(v) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for Range<usize> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<usize> {');
-  BufLn(b, '        if self.start < self.end { self.end = self.end - 1; Some(self.end) } else { None }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for Range<usize> {}');
-  BufLn(b, 'impl Iterator for RangeInclusive<usize> {');
-  BufLn(b, '    type Item = usize;');
-  BufLn(b, '    fn next(&mut self) -> Option<usize> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.start;');
-  BufLn(b, '        if self.start < self.end { self.start = v + 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '    fn size_hint(&self) -> (usize, Option<usize>) {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { (0, Some(0)) } else { let n = (self.end as i128 - self.start as i128 + 1) as usize; (n, Some(n)) }');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl DoubleEndedIterator for RangeInclusive<usize> {');
-  BufLn(b, '    fn next_back(&mut self) -> Option<usize> {');
-  BufLn(b, '        if self.exhausted || self.start > self.end { return None; }');
-  BufLn(b, '        let v = self.end;');
-  BufLn(b, '        if self.start < self.end { self.end = v - 1; } else { self.exhausted = true; }');
-  BufLn(b, '        Some(v)');
-  BufLn(b, '    }');
-  BufLn(b, '}');
-  BufLn(b, 'impl ExactSizeIterator for RangeInclusive<usize> {}');
-  BufLn(b, 'impl Iterator for RangeFrom<usize> {');
-  BufLn(b, '    type Item = usize;');
-  BufLn(b, '    fn next(&mut self) -> Option<usize> { let v = self.start; self.start = v + 1; Some(v) }');
+  BufLn(b, 'impl Step for usize {');
+  BufLn(b, '    fn forward(&self) -> usize { *self + 1 }');
+  BufLn(b, '    fn backward(&self) -> usize { *self - 1 }');
+  BufLn(b, '    fn steps_between(a: &usize, b: &usize) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
+  BufLn(b, '    fn forward_n(&self, n: usize) -> usize { (*self as i128 + n as i128) as usize }');
   BufLn(b, '}');
   BufLn(b, 'impl usize {');
   BufLn(b, '    pub const MIN: usize = 0;');
@@ -23849,10 +24150,6 @@ begin
   BufLn(b, '    fn sum<I: Iterator<Item = &''a f64>>(iter: I) -> f64 { let mut s: f64 = 0.0; let mut it = iter; while let Some(x) = it.next() { s = s + *x; } s }');
   BufLn(b, '}');
   BufLn(b, 'impl Product for f64 {');
-end;
-
-procedure PreludeChunk23(var b: TBuf);
-begin
   BufLn(b, '    fn product<I: Iterator<Item = f64>>(iter: I) -> f64 { let mut s: f64 = 1.0; let mut it = iter; while let Some(x) = it.next() { s = s * x; } s }');
   BufLn(b, '}');
   BufLn(b, 'impl<''a> Product<&''a f64> for f64 {');
@@ -23927,6 +24224,10 @@ begin
   BufLn(b, '    pub fn to_radians(self) -> f64 { self * (3.14159265358979323846264338327950288 / 180.0) }');
   BufLn(b, '    pub fn rem_euclid(self, o: f64) -> f64 { let r = self % o; if r < 0.0 { r + o.abs() } else { r } }');
   BufLn(b, '    pub fn div_euclid(self, o: f64) -> f64 { let q = (self / o).trunc(); if self % o < 0.0 { if o > 0.0 { q - 1.0 } else { q + 1.0 } } else { q } }');
+end;
+
+procedure PreludeChunk22(var b: TBuf);
+begin
   BufLn(b, '    pub fn total_cmp(&self, o: &f64) -> Ordering {');
   BufLn(b, '        let mut a = *self as f64; let mut b = *o as f64;');
   BufLn(b, '        if a != a { return if b != b { Ordering::Equal } else { Ordering::Greater }; }');
@@ -24153,10 +24454,6 @@ begin
   BufLn(b, 'impl From<u32> for i128 { fn from(x: u32) -> i128 { x as i128 } }');
   BufLn(b, 'impl TryFrom<u32> for isize { type Error = TryFromIntError; fn try_from(x: u32) -> Result2<isize, TryFromIntError> { if (x as i128) < (isize::MIN as i128) || (x as i128) > (isize::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as isize) } } }');
   BufLn(b, 'impl TryFrom<u32> for u8 { type Error = TryFromIntError; fn try_from(x: u32) -> Result2<u8, TryFromIntError> { if (x as i128) < (u8::MIN as i128) || (x as i128) > (u8::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u8) } } }');
-end;
-
-procedure PreludeChunk24(var b: TBuf);
-begin
   BufLn(b, 'impl TryFrom<u32> for u16 { type Error = TryFromIntError; fn try_from(x: u32) -> Result2<u16, TryFromIntError> { if (x as i128) < (u16::MIN as i128) || (x as i128) > (u16::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u16) } } }');
   BufLn(b, 'impl From<u32> for u64 { fn from(x: u32) -> u64 { x as u64 } }');
   BufLn(b, 'impl From<u32> for u128 { fn from(x: u32) -> u128 { x as u128 } }');
@@ -24231,6 +24528,10 @@ begin
   BufLn(b, 'pub mod u128 { pub const MIN: u128 = 0; pub const MAX: u128 = (!0u128); }');
   BufLn(b, 'pub mod usize { pub const MIN: usize = 0; pub const MAX: usize = 18446744073709551615; }');
   BufLn(b, 'pub mod f64 {');
+end;
+
+procedure PreludeChunk23(var b: TBuf);
+begin
   BufLn(b, '    pub const EPSILON: f64 = 2.220446049250313e-16;');
   BufLn(b, '    pub const MAX: f64 = 1.7976931348623157e+308;');
   BufLn(b, '    pub const MIN: f64 = -1.7976931348623157e+308;');
@@ -24294,7 +24595,6 @@ begin
   PreludeChunk21(b);
   PreludeChunk22(b);
   PreludeChunk23(b);
-  PreludeChunk24(b);
   s := BufStr(b);
 end;
 
