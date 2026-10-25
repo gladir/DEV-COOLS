@@ -4529,6 +4529,7 @@ Type
     isExtern: Boolean;
     lang: string;
     impls: TIntArr;
+    trs: TIntArr;          { traits nommes dans cette portee (definitions et imports) }
   end;
 
   TImport = record
@@ -4605,6 +4606,7 @@ begin
     Exit;
   end;
   HPut(ScopeMap, ScopeKey(m, ns, name), d);
+  if (Defs[d].kind = dkTrait) and (IIndexOf(Defs[m].trs, d) < 0) then IAdd(Defs[m].trs, d);
 end;
 
 { Cherche un nom dans un module, y compris les imports glob }
@@ -4648,6 +4650,31 @@ begin
     if Defs[m].isBlock then m := Defs[m].parent else Break;
   end;
   if (PreludeMod > 0) then Result := ScopeLookup(PreludeMod, ns, name, 0);
+end;
+
+{ Le trait tr est-il nomme dans la portee (definition, import, glob, prelude) ? }
+function TraitInModule(m, tr, depth: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := IIndexOf(Defs[m].trs, tr) >= 0;
+  if Result or (depth > 6) then Exit;
+  for i := 0 to Length(Defs[m].globs) - 1 do
+    if TraitInModule(Defs[m].globs[i], tr, depth + 1) then begin Result := True; Exit; end;
+end;
+
+function TraitInScope(tr, scope: Integer): Boolean;
+var
+  m: Integer;
+begin
+  Result := False;
+  m := scope;
+  while True do
+  begin
+    if TraitInModule(m, tr, 0) then begin Result := True; Exit; end;
+    if Defs[m].isBlock then m := Defs[m].parent else Break;
+  end;
+  if PreludeMod > 0 then Result := TraitInModule(PreludeMod, tr, 0);
 end;
 
 { ---- generiques ---- }
@@ -5108,7 +5135,8 @@ begin
       d := ResolveSegs(Imports[i].mod_, segs, 'T', used);
       if (d >= 0) and (used = Length(segs)) then
       begin
-        if nm <> '_' then AddMember(Imports[i].mod_, 'T', nm, d);
+        if nm <> '_' then AddMember(Imports[i].mod_, 'T', nm, d)
+        else if (Defs[d].kind = dkTrait) and (IIndexOf(Defs[Imports[i].mod_].trs, d) < 0) then IAdd(Defs[Imports[i].mod_].trs, d);
         found := True;
       end;
       d2 := ResolveSegs(Imports[i].mod_, segs, 'V', used);
@@ -5991,6 +6019,7 @@ Var
 
 procedure FnDefSig(def: Integer; const args: TIntArr; var params: TIntArr; var ret: Integer); forward;
 function TraitAllowedFor(X, tr: Integer): Boolean; forward;
+function TraitUsableHere(tr, recvTy: Integer): Boolean; forward;
 
 Var
   ProbeRestrict: Boolean;
@@ -6828,6 +6857,7 @@ begin
             if VarKind[Tys[X].n] = 0 then Continue;
           end;
           if ProbeRestrict and (not TraitAllowedFor(X, tr)) then Continue;
+          if not TraitUsableHere(tr, U) then Continue;
           { X : Trait ? }
           SetLength(targs, Length(Defs[tr].gnames));
           targs[0] := X;
@@ -7447,6 +7477,28 @@ begin
   if found then Result := False;
 end;
 
+{ Le trait est-il utilisable pour un appel de methode ici ? (dans la portee, borne, ou objet-trait) }
+function TraitUsableHere(tr, recvTy: Integer): Boolean;
+var
+  scope, defn, i: Integer;
+begin
+  Result := True;
+  if (CxTop < 0) or (CxBase + 1 > CxTop) then Exit;
+  scope := Cxs[CxBase + 1].env.scope;
+  if scope < 0 then Exit;
+  if Defs[scope].crate = 1 then Exit;
+  recvTy := Shallow(recvTy);
+  if (Tys[recvTy].k = tyDyn) and TraitIsA(Tys[recvTy].def, tr, 0) then Exit;
+  if TraitInScope(tr, scope) then Exit;
+  defn := Cxs[CxBase + 1].env.defn;
+  if defn >= 0 then
+    for i := 0 to Length(Defs[defn].gnames) - 1 do
+      if (i < Length(Cxs[CxBase + 1].env.tys)) and (Defs[defn].gnames[i] <> 'Self') and
+         (Shallow(Cxs[CxBase + 1].env.tys[i]) = recvTy) and
+         BoundsMention(defn, i, tr, Cxs[CxBase + 1].env.scope) then Exit;
+  Result := False;
+end;
+
 { ---- diagnostics du verificateur ---- }
 
 procedure ErrAt(node: Integer; const code, msg, lbl: string);
@@ -7574,6 +7626,12 @@ function IsPrimScalar(t: Integer): Boolean;
 begin
   t := Shallow(t);
   Result := IsNumericTy(t) or (Tys[t].k = tyBool) or (Tys[t].k = tyChar);
+end;
+
+function IsRcTy(t: Integer): Boolean;
+begin
+  t := Shallow(t);
+  Result := (Tys[t].k = tyAdt) and (Defs[Tys[t].def].lang = 'rc');
 end;
 
 function IsBoxTy(t: Integer): Boolean;
@@ -7984,8 +8042,8 @@ begin
     end;
     Exit;
   end;
-  { Box<T> -> Box<dyn Trait> }
-  if IsBoxTy(src) and IsBoxTy(tgt) then
+  { Box<T> -> Box<dyn Trait>, Rc<T> -> Rc<dyn Trait> }
+  if (IsBoxTy(src) and IsBoxTy(tgt)) or (IsRcTy(src) and IsRcTy(tgt) and (Tys[src].def = Tys[tgt].def)) then
   begin
     s0 := Shallow(Tys[src].args[0]);
     t0 := Shallow(Tys[tgt].args[0]);
@@ -16918,9 +16976,20 @@ begin
 end;
 
 function IsUnsizedTy(t: Integer): Boolean;
+var
+  d, n: Integer;
 begin
   t := Shallow(t);
   Result := (Tys[t].k = tyStr) or (Tys[t].k = tySlice) or (Tys[t].k = tyDyn);
+  if (not Result) and (Tys[t].k = tyAdt) then
+  begin
+    d := Tys[t].def;
+    if Defs[d].kind = dkStruct then
+    begin
+      n := Length(Nodes[Defs[d].node].l2);
+      if n > 0 then Result := IsUnsizedTy(FieldTyOf(t, d, n - 1));
+    end;
+  end;
 end;
 
 function PointeeUnsized(t: Integer): Boolean;
@@ -18802,6 +18871,7 @@ begin
   LangBox := FindStd('boxed::Box', 'T');
   LangDrop := FindStd('ops::Drop', 'T');
   d := FindStd('vec::IntoIter', 'T'); if d > 0 then Defs[d].lang := 'vec_iter';
+  d := FindStd('rc::Rc', 'T'); if d > 0 then Defs[d].lang := 'rc';
   LangString := FindStd('string::String', 'T');
   LangVec := FindStd('vec::Vec', 'T');
   LangPartialEq := FindStd('cmp::PartialEq', 'T');
@@ -19371,6 +19441,11 @@ begin
   BufLn(b, '    pub fn null_mut<T>() -> *mut T { 0usize as *mut T }');
   BufLn(b, '    pub unsafe fn read<T>(p: *const T) -> T { ::std::intrinsics::ptr_read(p) }');
   BufLn(b, '    pub unsafe fn drop_in_place<T: ?Sized>(p: *mut T) { ::std::intrinsics::drop_in_place(p) }');
+  BufLn(b, '    pub unsafe fn swap_raw<T>(a: *mut T, b: *mut T) {');
+  BufLn(b, '        let t = ::std::intrinsics::ptr_read(a as *const T);');
+  BufLn(b, '        ::std::intrinsics::copy_nonoverlapping(b as *const T, a, 1usize);');
+  BufLn(b, '        ::std::intrinsics::ptr_write(b, t);');
+  BufLn(b, '    }');
   BufLn(b, '    pub unsafe fn write<T>(p: *mut T, v: T) { ::std::intrinsics::ptr_write(p, v) }');
   BufLn(b, '    pub unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) { ::std::intrinsics::copy_nonoverlapping(src, dst, count) }');
   BufLn(b, '    pub unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) { ::std::intrinsics::copy(src, dst, count) }');
@@ -19427,6 +19502,7 @@ begin
   BufLn(b, '    pub mod v1 {');
   BufLn(b, '        pub use crate::marker::{Sized, Send, Sync, Copy, Unpin};');
   BufLn(b, '        pub use crate::clone::Clone;');
+  BufLn(b, '        pub use crate::fmt::__WriteFmt;');
   BufLn(b, '        pub use crate::cmp::{PartialEq, Eq, PartialOrd, Ord};');
   BufLn(b, '        pub use crate::default::Default;');
   BufLn(b, '        pub use crate::convert::{From, Into, TryFrom, TryInto, AsRef, AsMut};');
@@ -19460,16 +19536,16 @@ begin
   BufLn(b, '            while let Some(x) = it.next() { last = Some(x); }');
   BufLn(b, '            last');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk2(var b: TBuf);
+begin
   BufLn(b, '        fn nth(&mut self, n: usize) -> Option<Self::Item> {');
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n {');
   BufLn(b, '                if self.next().is_none() { return None; }');
   BufLn(b, '                i += 1;');
   BufLn(b, '            }');
-end;
-
-procedure PreludeChunk2(var b: TBuf);
-begin
   BufLn(b, '            self.next()');
   BufLn(b, '        }');
   BufLn(b, '        fn map<B, F: FnMut(Self::Item) -> B>(self, f: F) -> Map<Self, F> where Self: Sized { Map { iter: self, f: f } }');
@@ -19764,16 +19840,16 @@ begin
   BufLn(b, '            if let Some(a) = self.a.as_mut() {');
   BufLn(b, '                match a.next() { Some(x) => return Some(x), None => {} }');
   BufLn(b, '                self.a = None;');
+end;
+
+procedure PreludeChunk3(var b: TBuf);
+begin
   BufLn(b, '            }');
   BufLn(b, '            match self.b.as_mut() { Some(b) => b.next(), None => None }');
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    pub struct Take<I> { iter: I, n: usize }');
   BufLn(b, '    impl<I: Iterator> Iterator for Take<I> {');
-end;
-
-procedure PreludeChunk3(var b: TBuf);
-begin
   BufLn(b, '        type Item = I::Item;');
   BufLn(b, '        fn next(&mut self) -> Option<I::Item> {');
   BufLn(b, '            if self.n == 0 { None } else { self.n -= 1; self.iter.next() }');
@@ -20068,16 +20144,16 @@ begin
   BufLn(b, '            unsafe { ::std::libc::write(2, self.buf.as_ptr(), self.buf.len()); }');
   BufLn(b, '        }');
   BufLn(b, '        pub fn write_str(&mut self, s: &str) -> Result { self.buf.push_str(s); Ok(()) }');
+end;
+
+procedure PreludeChunk4(var b: TBuf);
+begin
   BufLn(b, '        pub fn write_char(&mut self, c: char) -> Result { self.buf.push(c); Ok(()) }');
   BufLn(b, '        pub fn alternate(&self) -> bool { (self.flags & 2) != 0 }');
   BufLn(b, '        pub fn width(&self) -> Option<usize> { if self.width == ::std::usize::MAX { None } else { Some(self.width) } }');
   BufLn(b, '        pub fn precision(&self) -> Option<usize> { if self.prec == ::std::usize::MAX { None } else { Some(self.prec) } }');
   BufLn(b, '        pub fn fill(&self) -> char { self.fill }');
   BufLn(b, '        pub fn sign_plus(&self) -> bool { (self.flags & 1) != 0 }');
-end;
-
-procedure PreludeChunk4(var b: TBuf);
-begin
   BufLn(b, '        pub fn sign_aware_zero_pad(&self) -> bool { (self.flags & 4) != 0 }');
   BufLn(b, '');
   BufLn(b, '        fn push_fill(&mut self, n: usize) {');
@@ -20372,16 +20448,16 @@ begin
   BufLn(b, '            ''\n'' => out.push_str("\\n"),');
   BufLn(b, '            ''\r'' => out.push_str("\\r"),');
   BufLn(b, '            ''\t'' => out.push_str("\\t"),');
+end;
+
+procedure PreludeChunk5(var b: TBuf);
+begin
   BufLn(b, '            ''\\'' => out.push_str("\\\\"),');
   BufLn(b, '            ''\0'' => out.push_str("\\0"),');
   BufLn(b, '            ''"'' => { if in_str { out.push_str("\\\""); } else { out.push(''"''); } }');
   BufLn(b, '            ''\'''' => { if in_str { out.push(''\''''); } else { out.push_str("\\''"); } }');
   BufLn(b, '            _ => {');
   BufLn(b, '                let u = c as u32;');
-end;
-
-procedure PreludeChunk5(var b: TBuf);
-begin
   BufLn(b, '                if u < 32 || u == 127 {');
   BufLn(b, '                    out.push_str("\\u{");');
   BufLn(b, '                    let mut f = Formatter::new();');
@@ -20676,16 +20752,16 @@ begin
   BufLn(b, '        }');
   BufLn(b, '        pub fn starts_with(&self, needle: &[T]) -> bool where T: PartialEq {');
   BufLn(b, '            let n = needle.len();');
+end;
+
+procedure PreludeChunk6(var b: TBuf);
+begin
   BufLn(b, '            if self.len() < n { return false; }');
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n { if self[i] != needle[i] { return false; } i += 1; }');
   BufLn(b, '            true');
   BufLn(b, '        }');
   BufLn(b, '        pub fn ends_with(&self, needle: &[T]) -> bool where T: PartialEq {');
-end;
-
-procedure PreludeChunk6(var b: TBuf);
-begin
   BufLn(b, '            let n = needle.len();');
   BufLn(b, '            let m = self.len();');
   BufLn(b, '            if m < n { return false; }');
@@ -20980,16 +21056,16 @@ begin
   BufLn(b, '        fn into_iter(self) -> Iter<''a, T> { self.iter() }');
   BufLn(b, '    }');
   BufLn(b, '    impl<''a, T, const N: usize> IntoIterator for &''a mut [T; N] {');
+end;
+
+procedure PreludeChunk7(var b: TBuf);
+begin
   BufLn(b, '        type Item = &''a mut T;');
   BufLn(b, '        type IntoIter = IterMut<''a, T>;');
   BufLn(b, '        fn into_iter(self) -> IterMut<''a, T> { self.iter_mut() }');
   BufLn(b, '    }');
   BufLn(b, '    impl<T, const N: usize> IntoIterator for [T; N] {');
   BufLn(b, '        type Item = T;');
-end;
-
-procedure PreludeChunk7(var b: TBuf);
-begin
   BufLn(b, '        type IntoIter = ::std::vec::IntoIter<T>;');
   BufLn(b, '        fn into_iter(self) -> ::std::vec::IntoIter<T> { ::std::vec::from_array(self).into_iter() }');
   BufLn(b, '    }');
@@ -21284,16 +21360,16 @@ begin
   BufLn(b, '            }');
   BufLn(b, '            self.len = w;');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk8(var b: TBuf);
+begin
   BufLn(b, '        pub fn dedup(&mut self) where T: PartialEq {');
   BufLn(b, '            if self.len < 2 { return; }');
   BufLn(b, '            let mut w = 1usize;');
   BufLn(b, '            let mut r = 1usize;');
   BufLn(b, '            while r < self.len {');
   BufLn(b, '                unsafe {');
-end;
-
-procedure PreludeChunk8(var b: TBuf);
-begin
   BufLn(b, '                    if *self.ptr.add(r) != *self.ptr.add(w - 1) {');
   BufLn(b, '                        if w != r { ::std::intrinsics::copy(self.ptr.add(r) as *const T, self.ptr.add(w), 1usize); }');
   BufLn(b, '                        w += 1;');
@@ -21588,16 +21664,16 @@ begin
   BufLn(b, '                if self.contains(&c) { return Some((from + i, from + i + c.len_utf8())); }');
   BufLn(b, '            }');
   BufLn(b, '            None');
+end;
+
+procedure PreludeChunk9(var b: TBuf);
+begin
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl str {');
   BufLn(b, '        pub fn len(&self) -> usize { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.1 } }');
   BufLn(b, '        pub fn is_empty(&self) -> bool { self.len() == 0 }');
-end;
-
-procedure PreludeChunk9(var b: TBuf);
-begin
   BufLn(b, '        pub fn as_ptr(&self) -> *const u8 { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.0 } }');
   BufLn(b, '        pub fn as_bytes(&self) -> &[u8] { unsafe { ::std::slice::from_raw_parts(self.as_ptr(), self.len()) } }');
   BufLn(b, '        pub fn as_str(&self) -> &str { self }');
@@ -21892,16 +21968,16 @@ begin
   BufLn(b, '                        let c = self.hay[a..].chars().next().unwrap();');
   BufLn(b, '                        let r = &self.hay[self.pos..a];');
   BufLn(b, '                        self.pos = a + c.len_utf8();');
+end;
+
+procedure PreludeChunk10(var b: TBuf);
+begin
   BufLn(b, '                        if self.limit != ::std::usize::MAX { self.limit -= 1; }');
   BufLn(b, '                        return Some(r);');
   BufLn(b, '                    }');
   BufLn(b, '                    let r = &self.hay[self.pos..a];');
   BufLn(b, '                    self.pos = b;');
   BufLn(b, '                    if self.limit != ::std::usize::MAX { self.limit -= 1; }');
-end;
-
-procedure PreludeChunk10(var b: TBuf);
-begin
   BufLn(b, '                    Some(r)');
   BufLn(b, '                }');
   BufLn(b, '                None => { self.done = true; Some(&self.hay[self.pos..]) }');
@@ -22196,16 +22272,16 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl ::std::ops::Index<::std::ops::RangeInclusive<usize>> for String {');
   BufLn(b, '        type Output = str;');
+end;
+
+procedure PreludeChunk11(var b: TBuf);
+begin
   BufLn(b, '        fn index(&self, r: ::std::ops::RangeInclusive<usize>) -> &str { &self.as_str()[r] }');
   BufLn(b, '    }');
   BufLn(b, '    impl ::std::borrow::Borrow<str> for String { fn borrow(&self) -> &str { self.as_str() } }');
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod borrow {');
-end;
-
-procedure PreludeChunk11(var b: TBuf);
-begin
   BufLn(b, '    pub trait Borrow<Borrowed: ?Sized> { fn borrow(&self) -> &Borrowed; }');
   BufLn(b, '    pub trait BorrowMut<Borrowed: ?Sized>: Borrow<Borrowed> { fn borrow_mut(&mut self) -> &mut Borrowed; }');
   BufLn(b, '    impl<T: ?Sized> Borrow<T> for T { fn borrow(&self) -> &T { self } }');
@@ -22500,16 +22576,16 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl<A: Step> DoubleEndedIterator for Range<A> {');
   BufLn(b, '        fn next_back(&mut self) -> Option<A> {');
+end;
+
+procedure PreludeChunk12(var b: TBuf);
+begin
   BufLn(b, '            if self.start < self.end { self.end = self.end.backward(); Some(self.end.clone()) } else { None }');
   BufLn(b, '        }');
   BufLn(b, '    }');
   BufLn(b, '    impl<A: Step> ExactSizeIterator for Range<A> {}');
   BufLn(b, '    impl<A: Step> Iterator for RangeInclusive<A> {');
   BufLn(b, '        type Item = A;');
-end;
-
-procedure PreludeChunk12(var b: TBuf);
-begin
   BufLn(b, '        fn next(&mut self) -> Option<A> {');
   BufLn(b, '            if self.exhausted || self.start > self.end { return None; }');
   BufLn(b, '            let v = self.start.clone();');
@@ -22804,16 +22880,16 @@ begin
   BufLn(b, '                    }');
   BufLn(b, '                    next = (next + 1) & mask;');
   BufLn(b, '                }');
+end;
+
+procedure PreludeChunk13(var b: TBuf);
+begin
   BufLn(b, '                self.table[pos] = 0;');
   BufLn(b, '                let last = self.entries.len() - 1;');
   BufLn(b, '                if idx != last {');
   BufLn(b, '                    let lp = self.slot_of_index(last);');
   BufLn(b, '                    self.table[lp] = idx + 1;');
   BufLn(b, '                }');
-end;
-
-procedure PreludeChunk13(var b: TBuf);
-begin
   BufLn(b, '                let b = self.entries.swap_remove(idx);');
   BufLn(b, '                (b.key, b.value)');
   BufLn(b, '            }');
@@ -23108,16 +23184,16 @@ begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn union<''a>(&''a self, other: &''a HashSet<T, S>) -> ::std::vec::IntoIter<&''a T> {');
   BufLn(b, '                let mut v: Vec<&''a T> = Vec::new();');
+end;
+
+procedure PreludeChunk14(var b: TBuf);
+begin
   BufLn(b, '                for x in self.iter() { v.push(x); }');
   BufLn(b, '                for x in other.iter() { if !self.contains(x) { v.push(x); } }');
   BufLn(b, '                v.into_iter()');
   BufLn(b, '            }');
   BufLn(b, '            pub fn intersection<''a>(&''a self, other: &''a HashSet<T, S>) -> ::std::vec::IntoIter<&''a T> {');
   BufLn(b, '                let mut v: Vec<&''a T> = Vec::new();');
-end;
-
-procedure PreludeChunk14(var b: TBuf);
-begin
   BufLn(b, '                for x in self.iter() { if other.contains(x) { v.push(x); } }');
   BufLn(b, '                v.into_iter()');
   BufLn(b, '            }');
@@ -23412,16 +23488,16 @@ begin
   BufLn(b, '        impl<''a, K, V> DoubleEndedIterator for Keys<''a, K, V> {');
   BufLn(b, '            fn next_back(&mut self) -> Option<&''a K> { match self.it.next_back() { Some(e) => Some(&e.0), None => None } }');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk15(var b: TBuf);
+begin
   BufLn(b, '        impl<''a, K, V> ExactSizeIterator for Keys<''a, K, V> {}');
   BufLn(b, '        impl<''a, K, V> Clone for Keys<''a, K, V> { fn clone(&self) -> Keys<''a, K, V> { Keys { it: self.it.clone() } } }');
   BufLn(b, '        pub struct Values<''a, K, V> { it: ::std::slice::Iter<''a, (K, V)> }');
   BufLn(b, '        impl<''a, K, V> Iterator for Values<''a, K, V> {');
   BufLn(b, '            type Item = &''a V;');
   BufLn(b, '            fn next(&mut self) -> Option<&''a V> { match self.it.next() { Some(e) => Some(&e.1), None => None } }');
-end;
-
-procedure PreludeChunk15(var b: TBuf);
-begin
   BufLn(b, '            fn size_hint(&self) -> (usize, Option<usize>) { self.it.size_hint() }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K, V> DoubleEndedIterator for Values<''a, K, V> {');
@@ -23716,16 +23792,16 @@ begin
   BufLn(b, '                let h = self.head;');
   BufLn(b, '                self.buf[h] = Some(x);');
   BufLn(b, '                self.len += 1;');
+end;
+
+procedure PreludeChunk16(var b: TBuf);
+begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn pop_front(&mut self) -> Option<T> {');
   BufLn(b, '                if self.len == 0 { return None; }');
   BufLn(b, '                let h = self.head;');
   BufLn(b, '                let x = self.buf[h].take();');
   BufLn(b, '                self.head = (self.head + 1) & (self.buf.len() - 1);');
-end;
-
-procedure PreludeChunk16(var b: TBuf);
-begin
   BufLn(b, '                self.len -= 1;');
   BufLn(b, '                x');
   BufLn(b, '            }');
@@ -24003,6 +24079,502 @@ begin
   BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
+  BufLn(b, 'pub mod cell {');
+  BufLn(b, '    pub struct UnsafeCell<T> { value: T }');
+  BufLn(b, '    impl<T> UnsafeCell<T> {');
+  BufLn(b, '        pub fn new(value: T) -> UnsafeCell<T> { UnsafeCell { value: value } }');
+  BufLn(b, '        pub fn get(&self) -> *mut T { &self.value as *const T as *mut T }');
+  BufLn(b, '        pub fn into_inner(self) -> T { self.value }');
+  BufLn(b, '        pub fn get_mut(&mut self) -> &mut T { &mut self.value }');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct Cell<T> { value: UnsafeCell<T> }');
+  BufLn(b, '    impl<T> Cell<T> {');
+  BufLn(b, '        pub fn new(value: T) -> Cell<T> { Cell { value: UnsafeCell::new(value) } }');
+  BufLn(b, '        pub fn set(&self, val: T) {');
+  BufLn(b, '            let old = self.replace(val);');
+  BufLn(b, '            ::std::mem::drop(old);');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn replace(&self, val: T) -> T {');
+end;
+
+procedure PreludeChunk17(var b: TBuf);
+begin
+  BufLn(b, '            unsafe { ::std::mem::replace(&mut *self.value.get(), val) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn swap(&self, other: &Cell<T>) {');
+  BufLn(b, '            unsafe { ::std::ptr::swap_raw(self.value.get(), other.value.get()); }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn into_inner(self) -> T { self.value.into_inner() }');
+  BufLn(b, '        pub fn get_mut(&mut self) -> &mut T { self.value.get_mut() }');
+  BufLn(b, '        pub fn as_ptr(&self) -> *mut T { self.value.get() }');
+  BufLn(b, '        pub fn take(&self) -> T where T: Default { self.replace(T::default()) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Copy> Cell<T> {');
+  BufLn(b, '        pub fn get(&self) -> T { unsafe { *self.value.get() } }');
+  BufLn(b, '        pub fn update<F: FnOnce(T) -> T>(&self, f: F) { let o = self.get(); self.set(f(o)); }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Copy> Clone for Cell<T> { fn clone(&self) -> Cell<T> { Cell::new(self.get()) } }');
+  BufLn(b, '    impl<T: Default> Default for Cell<T> { fn default() -> Cell<T> { Cell::new(T::default()) } }');
+  BufLn(b, '    impl<T: Copy + PartialEq> PartialEq for Cell<T> { fn eq(&self, o: &Cell<T>) -> bool { self.get() == o.get() } }');
+  BufLn(b, '    impl<T: Copy + Eq> Eq for Cell<T> {}');
+  BufLn(b, '    impl<T: Copy + PartialOrd> PartialOrd for Cell<T> {');
+  BufLn(b, '        fn partial_cmp(&self, o: &Cell<T>) -> Option<::std::cmp::Ordering> { self.get().partial_cmp(&o.get()) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Copy + Ord> Ord for Cell<T> { fn cmp(&self, o: &Cell<T>) -> ::std::cmp::Ordering { self.get().cmp(&o.get()) } }');
+  BufLn(b, '    impl<T> From<T> for Cell<T> { fn from(t: T) -> Cell<T> { Cell::new(t) } }');
+  BufLn(b, '    impl<T: Copy + ::std::fmt::Debug> ::std::fmt::Debug for Cell<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {');
+  BufLn(b, '            f.debug_struct("Cell").field("value", &self.get()).finish()');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct BorrowError;');
+  BufLn(b, '    pub struct BorrowMutError;');
+  BufLn(b, '    impl ::std::fmt::Debug for BorrowError {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("BorrowError") }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl ::std::fmt::Display for BorrowError {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("already mutably borrowed") }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl ::std::fmt::Debug for BorrowMutError {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("BorrowMutError") }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl ::std::fmt::Display for BorrowMutError {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("already borrowed") }');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct RefCell<T> { borrow: Cell<isize>, value: UnsafeCell<T> }');
+  BufLn(b, '    pub struct Ref<''b, T> { value: *const T, borrow: &''b Cell<isize> }');
+  BufLn(b, '    pub struct RefMut<''b, T> { value: *mut T, borrow: &''b Cell<isize> }');
+  BufLn(b, '');
+  BufLn(b, '    impl<T> RefCell<T> {');
+  BufLn(b, '        pub fn new(value: T) -> RefCell<T> { RefCell { borrow: Cell::new(0isize), value: UnsafeCell::new(value) } }');
+  BufLn(b, '        pub fn into_inner(self) -> T { self.value.into_inner() }');
+  BufLn(b, '        pub fn try_borrow(&self) -> Result<Ref<T>, BorrowError> {');
+  BufLn(b, '            let b = self.borrow.get();');
+  BufLn(b, '            if b < 0 { Err(BorrowError) } else {');
+  BufLn(b, '                self.borrow.set(b + 1);');
+  BufLn(b, '                Ok(Ref { value: self.value.get() as *const T, borrow: &self.borrow })');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn try_borrow_mut(&self) -> Result<RefMut<T>, BorrowMutError> {');
+  BufLn(b, '            if self.borrow.get() != 0 { Err(BorrowMutError) } else {');
+  BufLn(b, '                self.borrow.set(-1isize);');
+  BufLn(b, '                Ok(RefMut { value: self.value.get(), borrow: &self.borrow })');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn borrow(&self) -> Ref<T> {');
+  BufLn(b, '            match self.try_borrow() {');
+  BufLn(b, '                Ok(r) => r,');
+  BufLn(b, '                Err(_) => ::std::rt::panic_str("already mutably borrowed: BorrowError"),');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn borrow_mut(&self) -> RefMut<T> {');
+  BufLn(b, '            match self.try_borrow_mut() {');
+  BufLn(b, '                Ok(r) => r,');
+  BufLn(b, '                Err(_) => ::std::rt::panic_str("already borrowed: BorrowMutError"),');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn replace(&self, t: T) -> T { ::std::mem::replace(&mut *self.borrow_mut(), t) }');
+  BufLn(b, '        pub fn replace_with<F: FnOnce(&mut T) -> T>(&self, f: F) -> T {');
+  BufLn(b, '            let mut b = self.borrow_mut();');
+  BufLn(b, '            let n = f(&mut *b);');
+  BufLn(b, '            ::std::mem::replace(&mut *b, n)');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn swap(&self, other: &RefCell<T>) {');
+  BufLn(b, '            ::std::mem::swap(&mut *self.borrow_mut(), &mut *other.borrow_mut());');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn take(&self) -> T where T: Default { self.replace(T::default()) }');
+  BufLn(b, '        pub fn get_mut(&mut self) -> &mut T { self.value.get_mut() }');
+  BufLn(b, '        pub fn as_ptr(&self) -> *mut T { self.value.get() }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> Drop for Ref<''b, T> {');
+  BufLn(b, '        fn drop(&mut self) { self.borrow.set(self.borrow.get() - 1); }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> Drop for RefMut<''b, T> {');
+  BufLn(b, '        fn drop(&mut self) { self.borrow.set(0isize); }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> ::std::ops::Deref for Ref<''b, T> {');
+  BufLn(b, '        type Target = T;');
+  BufLn(b, '        fn deref(&self) -> &T { unsafe { &*self.value } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> ::std::ops::Deref for RefMut<''b, T> {');
+  BufLn(b, '        type Target = T;');
+  BufLn(b, '        fn deref(&self) -> &T { unsafe { &*self.value } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> ::std::ops::DerefMut for RefMut<''b, T> {');
+  BufLn(b, '        fn deref_mut(&mut self) -> &mut T { unsafe { &mut *self.value } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> Ref<''b, T> {');
+  BufLn(b, '        pub fn clone(orig: &Ref<''b, T>) -> Ref<''b, T> {');
+  BufLn(b, '            orig.borrow.set(orig.borrow.get() + 1);');
+  BufLn(b, '            Ref { value: orig.value, borrow: orig.borrow }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn map<U, F: FnOnce(&T) -> &U>(orig: Ref<''b, T>, f: F) -> Ref<''b, U> {');
+  BufLn(b, '            let r = Ref { value: f(unsafe { &*orig.value }) as *const U, borrow: orig.borrow };');
+  BufLn(b, '            ::std::mem::forget(orig);');
+  BufLn(b, '            r');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T> RefMut<''b, T> {');
+  BufLn(b, '        pub fn map<U, F: FnOnce(&mut T) -> &mut U>(orig: RefMut<''b, T>, f: F) -> RefMut<''b, U> {');
+  BufLn(b, '            let r = RefMut { value: f(unsafe { &mut *orig.value }) as *mut U, borrow: orig.borrow };');
+  BufLn(b, '            ::std::mem::forget(orig);');
+  BufLn(b, '            r');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T: ::std::fmt::Debug> ::std::fmt::Debug for Ref<''b, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T: ::std::fmt::Display> ::std::fmt::Display for Ref<''b, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T: ::std::fmt::Debug> ::std::fmt::Debug for RefMut<''b, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''b, T: ::std::fmt::Display> ::std::fmt::Display for RefMut<''b, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Clone> Clone for RefCell<T> { fn clone(&self) -> RefCell<T> { RefCell::new(self.borrow().clone()) } }');
+  BufLn(b, '    impl<T: Default> Default for RefCell<T> { fn default() -> RefCell<T> { RefCell::new(T::default()) } }');
+  BufLn(b, '    impl<T: PartialEq> PartialEq for RefCell<T> { fn eq(&self, o: &RefCell<T>) -> bool { *self.borrow() == *o.borrow() } }');
+  BufLn(b, '    impl<T: Eq> Eq for RefCell<T> {}');
+  BufLn(b, '    impl<T: PartialOrd> PartialOrd for RefCell<T> {');
+  BufLn(b, '        fn partial_cmp(&self, o: &RefCell<T>) -> Option<::std::cmp::Ordering> { self.borrow().partial_cmp(&*o.borrow()) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Ord> Ord for RefCell<T> { fn cmp(&self, o: &RefCell<T>) -> ::std::cmp::Ordering { self.borrow().cmp(&*o.borrow()) } }');
+  BufLn(b, '    impl<T> From<T> for RefCell<T> { fn from(t: T) -> RefCell<T> { RefCell::new(t) } }');
+  BufLn(b, '    impl<T: ::std::fmt::Debug> ::std::fmt::Debug for RefCell<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {');
+  BufLn(b, '            match self.try_borrow() {');
+  BufLn(b, '                Ok(b) => f.debug_struct("RefCell").field("value", &*b).finish(),');
+  BufLn(b, '                Err(_) => f.write_str("RefCell { value: <borrowed> }"),');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct OnceCell<T> { inner: UnsafeCell<Option<T>> }');
+  BufLn(b, '    impl<T> OnceCell<T> {');
+  BufLn(b, '        pub fn new() -> OnceCell<T> { OnceCell { inner: UnsafeCell::new(None) } }');
+  BufLn(b, '        pub fn get(&self) -> Option<&T> { unsafe { (*self.inner.get()).as_ref() } }');
+  BufLn(b, '        pub fn set(&self, v: T) -> Result<(), T> {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                if (*self.inner.get()).is_some() { Err(v) } else { *self.inner.get() = Some(v); Ok(()) }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                if (*self.inner.get()).is_none() { let v = f(); *self.inner.get() = Some(v); }');
+  BufLn(b, '                (*self.inner.get()).as_ref().unwrap()');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '}');
+  BufLn(b, '');
+  BufLn(b, 'pub mod rc {');
+  BufLn(b, '    use ::std::cell::Cell;');
+  BufLn(b, '');
+  BufLn(b, '    struct RcBox<T: ?Sized> { strong: Cell<usize>, weak: Cell<usize>, value: T }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct Rc<T: ?Sized> { ptr: *mut RcBox<T> }');
+  BufLn(b, '    pub struct Weak<T: ?Sized> { ptr: *mut RcBox<T> }');
+  BufLn(b, '');
+  BufLn(b, '    impl<T> Rc<T> {');
+  BufLn(b, '        pub fn new(value: T) -> Rc<T> {');
+  BufLn(b, '            let b = Box::new(RcBox { strong: Cell::new(1usize), weak: Cell::new(1usize), value: value });');
+  BufLn(b, '            Rc { ptr: ::std::boxed::into_raw(b) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn try_unwrap(this: Rc<T>) -> Result<T, Rc<T>> {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                if (*this.ptr).strong.get() == 1 {');
+  BufLn(b, '                    (*this.ptr).strong.set(0usize);');
+  BufLn(b, '                    let v = ::std::intrinsics::ptr_read(&(*this.ptr).value as *const T);');
+  BufLn(b, '                    ::std::mem::forget(this);');
+  BufLn(b, '                    Ok(v)');
+  BufLn(b, '                } else { Err(this) }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn into_inner(this: Rc<T>) -> Option<T> {');
+  BufLn(b, '            match Rc::try_unwrap(this) { Ok(v) => Some(v), Err(_) => None }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn unwrap_or_clone(this: Rc<T>) -> T where T: Clone {');
+  BufLn(b, '            match Rc::try_unwrap(this) { Ok(v) => v, Err(r) => (*r).clone() }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn new_cyclic<F: FnOnce(&Weak<T>) -> T>(f: F) -> Rc<T> {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                let sz = ::std::mem::size_of::<RcBox<T>>();');
+  BufLn(b, '                let p = ::std::libc::malloc(sz) as *mut RcBox<T>;');
+  BufLn(b, '                ::std::intrinsics::ptr_write(&mut (*p).strong as *mut Cell<usize>, Cell::new(0usize));');
+  BufLn(b, '                ::std::intrinsics::ptr_write(&mut (*p).weak as *mut Cell<usize>, Cell::new(1usize));');
+  BufLn(b, '                let w = Weak { ptr: p };');
+  BufLn(b, '                let v = f(&w);');
+  BufLn(b, '                ::std::intrinsics::ptr_write(&mut (*p).value as *mut T, v);');
+  BufLn(b, '                (*p).strong.set(1usize);');
+  BufLn(b, '                ::std::mem::forget(w);');
+  BufLn(b, '                Rc { ptr: p }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> Rc<T> {');
+  BufLn(b, '        pub fn strong_count(this: &Rc<T>) -> usize { unsafe { (*this.ptr).strong.get() } }');
+  BufLn(b, '        pub fn weak_count(this: &Rc<T>) -> usize { unsafe { (*this.ptr).weak.get() - 1usize } }');
+  BufLn(b, '        pub fn ptr_eq(a: &Rc<T>, b: &Rc<T>) -> bool { a.ptr as *const u8 as usize == b.ptr as *const u8 as usize }');
+  BufLn(b, '        pub fn downgrade(this: &Rc<T>) -> Weak<T> {');
+  BufLn(b, '            unsafe { (*this.ptr).weak.set((*this.ptr).weak.get() + 1usize); }');
+  BufLn(b, '            Weak { ptr: this.ptr }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn get_mut(this: &mut Rc<T>) -> Option<&mut T> {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                if (*this.ptr).strong.get() == 1 && (*this.ptr).weak.get() == 1 { Some(&mut (*this.ptr).value) } else { None }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn as_ptr(this: &Rc<T>) -> *const T { unsafe { &(*this.ptr).value as *const T } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Clone> Rc<T> {');
+  BufLn(b, '        pub fn make_mut(this: &mut Rc<T>) -> &mut T {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                if (*this.ptr).strong.get() != 1 {');
+  BufLn(b, '                    let c = (**this).clone();');
+  BufLn(b, '                    *this = Rc::new(c);');
+  BufLn(b, '                }');
+  BufLn(b, '                &mut (*this.ptr).value');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> Clone for Rc<T> {');
+  BufLn(b, '        fn clone(&self) -> Rc<T> {');
+  BufLn(b, '            unsafe { (*self.ptr).strong.set((*self.ptr).strong.get() + 1usize); }');
+  BufLn(b, '            Rc { ptr: self.ptr }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> Drop for Rc<T> {');
+  BufLn(b, '        fn drop(&mut self) {');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                let s = (*self.ptr).strong.get() - 1usize;');
+  BufLn(b, '                (*self.ptr).strong.set(s);');
+  BufLn(b, '                if s == 0 {');
+  BufLn(b, '                    ::std::intrinsics::drop_in_place(&mut (*self.ptr).value as *mut T);');
+  BufLn(b, '                }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> ::std::ops::Deref for Rc<T> {');
+  BufLn(b, '        type Target = T;');
+  BufLn(b, '        fn deref(&self) -> &T { unsafe { &(*self.ptr).value } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> ::std::borrow::Borrow<T> for Rc<T> {');
+  BufLn(b, '        fn borrow(&self) -> &T { unsafe { &(*self.ptr).value } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> AsRef<T> for Rc<T> {');
+  BufLn(b, '        fn as_ref(&self) -> &T { unsafe { &(*self.ptr).value } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Default> Default for Rc<T> { fn default() -> Rc<T> { Rc::new(T::default()) } }');
+  BufLn(b, '    impl<T> From<T> for Rc<T> { fn from(t: T) -> Rc<T> { Rc::new(t) } }');
+  BufLn(b, '    impl<T: ?Sized + PartialEq> PartialEq for Rc<T> { fn eq(&self, o: &Rc<T>) -> bool { **self == **o } }');
+  BufLn(b, '    impl<T: ?Sized + Eq> Eq for Rc<T> {}');
+  BufLn(b, '    impl<T: ?Sized + PartialOrd> PartialOrd for Rc<T> {');
+  BufLn(b, '        fn partial_cmp(&self, o: &Rc<T>) -> Option<::std::cmp::Ordering> { (**self).partial_cmp(&**o) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized + Ord> Ord for Rc<T> { fn cmp(&self, o: &Rc<T>) -> ::std::cmp::Ordering { (**self).cmp(&**o) } }');
+  BufLn(b, '    impl<T: ?Sized + ::std::hash::Hash> ::std::hash::Hash for Rc<T> {');
+  BufLn(b, '        fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) { (**self).hash(state); }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized + ::std::fmt::Display> ::std::fmt::Display for Rc<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized + ::std::fmt::Debug> ::std::fmt::Debug for Rc<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    impl<T> Weak<T> {');
+  BufLn(b, '        pub fn new() -> Weak<T> { Weak { ptr: 0usize as *mut RcBox<T> } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> Weak<T> {');
+  BufLn(b, '        pub fn upgrade(&self) -> Option<Rc<T>> {');
+  BufLn(b, '            if self.ptr as *const u8 as usize == 0 { return None; }');
+  BufLn(b, '            unsafe {');
+  BufLn(b, '                let s = (*self.ptr).strong.get();');
+  BufLn(b, '                if s == 0 { None } else {');
+  BufLn(b, '                    (*self.ptr).strong.set(s + 1usize);');
+  BufLn(b, '                    Some(Rc { ptr: self.ptr })');
+  BufLn(b, '                }');
+  BufLn(b, '            }');
+end;
+
+procedure PreludeChunk18(var b: TBuf);
+begin
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn strong_count(&self) -> usize {');
+  BufLn(b, '            if self.ptr as *const u8 as usize == 0 { 0usize } else { unsafe { (*self.ptr).strong.get() } }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn weak_count(&self) -> usize {');
+  BufLn(b, '            if self.ptr as *const u8 as usize == 0 { 0usize } else {');
+  BufLn(b, '                unsafe {');
+  BufLn(b, '                    let w = (*self.ptr).weak.get();');
+  BufLn(b, '                    if (*self.ptr).strong.get() > 0 { w - 1usize } else { w }');
+  BufLn(b, '                }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn ptr_eq(&self, o: &Weak<T>) -> bool { self.ptr as *const u8 as usize == o.ptr as *const u8 as usize }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> Clone for Weak<T> {');
+  BufLn(b, '        fn clone(&self) -> Weak<T> {');
+  BufLn(b, '            if self.ptr as *const u8 as usize != 0 {');
+  BufLn(b, '                unsafe { (*self.ptr).weak.set((*self.ptr).weak.get() + 1usize); }');
+  BufLn(b, '            }');
+  BufLn(b, '            Weak { ptr: self.ptr }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: ?Sized> Drop for Weak<T> {');
+  BufLn(b, '        fn drop(&mut self) {');
+  BufLn(b, '            if self.ptr as *const u8 as usize != 0 {');
+  BufLn(b, '                unsafe { (*self.ptr).weak.set((*self.ptr).weak.get() - 1usize); }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T> Default for Weak<T> { fn default() -> Weak<T> { Weak::new() } }');
+  BufLn(b, '    impl<T: ?Sized> ::std::fmt::Debug for Weak<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("(Weak)") }');
+  BufLn(b, '    }');
+  BufLn(b, '}');
+  BufLn(b, '');
+  BufLn(b, 'pub mod sync {');
+  BufLn(b, '    pub use ::std::rc::Rc as Arc;');
+  BufLn(b, '    pub use ::std::rc::Weak;');
+  BufLn(b, '    use ::std::cell::{Cell, UnsafeCell};');
+  BufLn(b, '');
+  BufLn(b, '    pub struct PoisonError<T> { guard: T }');
+  BufLn(b, '    impl<T> PoisonError<T> {');
+  BufLn(b, '        pub fn into_inner(self) -> T { self.guard }');
+  BufLn(b, '        pub fn get_ref(&self) -> &T { &self.guard }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T> ::std::fmt::Debug for PoisonError<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("PoisonError { .. }") }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T> ::std::fmt::Display for PoisonError<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.write_str("poisoned lock: another task failed inside") }');
+  BufLn(b, '    }');
+  BufLn(b, '    pub type LockResult<G> = Result<G, PoisonError<G>>;');
+  BufLn(b, '');
+  BufLn(b, '    pub struct Mutex<T> { locked: Cell<bool>, data: UnsafeCell<T> }');
+  BufLn(b, '    pub struct MutexGuard<''a, T> { lock: &''a Mutex<T> }');
+  BufLn(b, '');
+  BufLn(b, '    impl<T> Mutex<T> {');
+  BufLn(b, '        pub fn new(t: T) -> Mutex<T> { Mutex { locked: Cell::new(false), data: UnsafeCell::new(t) } }');
+  BufLn(b, '        pub fn lock(&self) -> LockResult<MutexGuard<T>> {');
+  BufLn(b, '            if self.locked.get() { ::std::rt::panic_str("deadlock: Mutex already locked by this thread"); }');
+  BufLn(b, '            self.locked.set(true);');
+  BufLn(b, '            Ok(MutexGuard { lock: self })');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn try_lock(&self) -> Result<MutexGuard<T>, PoisonError<MutexGuard<T>>> {');
+  BufLn(b, '            if self.locked.get() { Err(PoisonError { guard: MutexGuard { lock: self } }) } else {');
+  BufLn(b, '                self.locked.set(true);');
+  BufLn(b, '                Ok(MutexGuard { lock: self })');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn into_inner(self) -> LockResult<T> { Ok(self.data.into_inner()) }');
+  BufLn(b, '        pub fn get_mut(&mut self) -> LockResult<&mut T> { Ok(self.data.get_mut()) }');
+  BufLn(b, '        pub fn is_poisoned(&self) -> bool { false }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> Drop for MutexGuard<''a, T> {');
+  BufLn(b, '        fn drop(&mut self) { self.lock.locked.set(false); }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> ::std::ops::Deref for MutexGuard<''a, T> {');
+  BufLn(b, '        type Target = T;');
+  BufLn(b, '        fn deref(&self) -> &T { unsafe { &*self.lock.data.get() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> ::std::ops::DerefMut for MutexGuard<''a, T> {');
+  BufLn(b, '        fn deref_mut(&mut self) -> &mut T { unsafe { &mut *self.lock.data.get() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T: ::std::fmt::Debug> ::std::fmt::Debug for MutexGuard<''a, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T: ::std::fmt::Display> ::std::fmt::Display for MutexGuard<''a, T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Default> Default for Mutex<T> { fn default() -> Mutex<T> { Mutex::new(T::default()) } }');
+  BufLn(b, '    impl<T: ::std::fmt::Debug> ::std::fmt::Debug for Mutex<T> {');
+  BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {');
+  BufLn(b, '            f.debug_struct("Mutex").field("data", unsafe { &*self.data.get() }).finish()');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    pub struct RwLock<T> { state: Cell<isize>, data: UnsafeCell<T> }');
+  BufLn(b, '    pub struct RwLockReadGuard<''a, T> { lock: &''a RwLock<T> }');
+  BufLn(b, '    pub struct RwLockWriteGuard<''a, T> { lock: &''a RwLock<T> }');
+  BufLn(b, '    impl<T> RwLock<T> {');
+  BufLn(b, '        pub fn new(t: T) -> RwLock<T> { RwLock { state: Cell::new(0isize), data: UnsafeCell::new(t) } }');
+  BufLn(b, '        pub fn read(&self) -> LockResult<RwLockReadGuard<T>> {');
+  BufLn(b, '            if self.state.get() < 0 { ::std::rt::panic_str("rwlock read lock would result in deadlock"); }');
+  BufLn(b, '            self.state.set(self.state.get() + 1);');
+  BufLn(b, '            Ok(RwLockReadGuard { lock: self })');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn write(&self) -> LockResult<RwLockWriteGuard<T>> {');
+  BufLn(b, '            if self.state.get() != 0 { ::std::rt::panic_str("rwlock write lock would result in deadlock"); }');
+  BufLn(b, '            self.state.set(-1isize);');
+  BufLn(b, '            Ok(RwLockWriteGuard { lock: self })');
+  BufLn(b, '        }');
+  BufLn(b, '        pub fn into_inner(self) -> LockResult<T> { Ok(self.data.into_inner()) }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> Drop for RwLockReadGuard<''a, T> { fn drop(&mut self) { self.lock.state.set(self.lock.state.get() - 1); } }');
+  BufLn(b, '    impl<''a, T> Drop for RwLockWriteGuard<''a, T> { fn drop(&mut self) { self.lock.state.set(0isize); } }');
+  BufLn(b, '    impl<''a, T> ::std::ops::Deref for RwLockReadGuard<''a, T> {');
+  BufLn(b, '        type Target = T;');
+  BufLn(b, '        fn deref(&self) -> &T { unsafe { &*self.lock.data.get() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> ::std::ops::Deref for RwLockWriteGuard<''a, T> {');
+  BufLn(b, '        type Target = T;');
+  BufLn(b, '        fn deref(&self) -> &T { unsafe { &*self.lock.data.get() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<''a, T> ::std::ops::DerefMut for RwLockWriteGuard<''a, T> {');
+  BufLn(b, '        fn deref_mut(&mut self) -> &mut T { unsafe { &mut *self.lock.data.get() } }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T: Default> Default for RwLock<T> { fn default() -> RwLock<T> { RwLock::new(T::default()) } }');
+  BufLn(b, '');
+  BufLn(b, '    pub mod atomic {');
+  BufLn(b, '        pub enum Ordering { Relaxed, Release, Acquire, AcqRel, SeqCst }');
+  BufLn(b, '        pub struct AtomicUsize { v: ::std::cell::Cell<usize> }');
+  BufLn(b, '        impl AtomicUsize {');
+  BufLn(b, '            pub fn new(v: usize) -> AtomicUsize { AtomicUsize { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> usize { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: usize, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn fetch_add(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r + x); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: usize, o: Ordering) -> usize { let r = self.v.get(); self.v.set(r - x); r }');
+  BufLn(b, '            pub fn swap(&self, x: usize, o: Ordering) -> usize { self.v.replace(x) }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicI32 { v: ::std::cell::Cell<i32> }');
+  BufLn(b, '        impl AtomicI32 {');
+  BufLn(b, '            pub fn new(v: i32) -> AtomicI32 { AtomicI32 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> i32 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: i32, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn fetch_add(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r + x); r }');
+  BufLn(b, '            pub fn fetch_sub(&self, x: i32, o: Ordering) -> i32 { let r = self.v.get(); self.v.set(r - x); r }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicI64 { v: ::std::cell::Cell<i64> }');
+  BufLn(b, '        impl AtomicI64 {');
+  BufLn(b, '            pub fn new(v: i64) -> AtomicI64 { AtomicI64 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> i64 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: i64, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn fetch_add(&self, x: i64, o: Ordering) -> i64 { let r = self.v.get(); self.v.set(r + x); r }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicU64 { v: ::std::cell::Cell<u64> }');
+  BufLn(b, '        impl AtomicU64 {');
+  BufLn(b, '            pub fn new(v: u64) -> AtomicU64 { AtomicU64 { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> u64 { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: u64, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn fetch_add(&self, x: u64, o: Ordering) -> u64 { let r = self.v.get(); self.v.set(r + x); r }');
+  BufLn(b, '        }');
+  BufLn(b, '        pub struct AtomicBool { v: ::std::cell::Cell<bool> }');
+  BufLn(b, '        impl AtomicBool {');
+  BufLn(b, '            pub fn new(v: bool) -> AtomicBool { AtomicBool { v: ::std::cell::Cell::new(v) } }');
+  BufLn(b, '            pub fn load(&self, o: Ordering) -> bool { self.v.get() }');
+  BufLn(b, '            pub fn store(&self, x: bool, o: Ordering) { self.v.set(x); }');
+  BufLn(b, '            pub fn swap(&self, x: bool, o: Ordering) -> bool { self.v.replace(x) }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '}');
+  BufLn(b, '');
   BufLn(b, 'pub mod num {');
   BufLn(b, '    use crate::cmp::Ordering;');
   BufLn(b, '    use crate::ops::*;');
@@ -24026,10 +24598,6 @@ begin
   BufLn(b, '    impl Debug for Raw { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { f.write_str(self.0) } }');
   BufLn(b, '    impl Display for ParseIntError {');
   BufLn(b, '        fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result {');
-end;
-
-procedure PreludeChunk17(var b: TBuf);
-begin
   BufLn(b, '            f.pad(match self.kind {');
   BufLn(b, '                IntErrorKind::Empty => "cannot parse integer from empty string",');
   BufLn(b, '                IntErrorKind::InvalidDigit => "invalid digit found in string",');
@@ -24136,6 +24704,10 @@ begin
   BufLn(b, 'impl Debug for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { let v = *self as i64; let neg = v < 0; let abs = if neg { ::std::intrinsics::wrapping_add(!(v as u64), 1 as u64) } else { v as u64 }; fmt_u64_radix(f, abs, !neg, 10, false, "") } }');
   BufLn(b, 'impl LowerHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, false, "0x") } }');
   BufLn(b, 'impl UpperHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, true, "0x") } }');
+end;
+
+procedure PreludeChunk19(var b: TBuf);
+begin
   BufLn(b, 'impl Binary for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 2, false, "0b") } }');
   BufLn(b, 'impl Octal for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 8, false, "0o") } }');
   BufLn(b, 'impl FromStr for i8 {');
@@ -24330,10 +24902,6 @@ begin
   BufLn(b, 'impl Div for i16 { type Output = i16; fn div(self, o: i16) -> i16 { self / o } }');
   BufLn(b, 'impl Rem for i16 { type Output = i16; fn rem(self, o: i16) -> i16 { self % o } }');
   BufLn(b, 'impl BitAnd for i16 { type Output = i16; fn bitand(self, o: i16) -> i16 { self & o } }');
-end;
-
-procedure PreludeChunk18(var b: TBuf);
-begin
   BufLn(b, 'impl BitOr for i16 { type Output = i16; fn bitor(self, o: i16) -> i16 { self | o } }');
   BufLn(b, 'impl BitXor for i16 { type Output = i16; fn bitxor(self, o: i16) -> i16 { self ^ o } }');
   BufLn(b, 'impl Not for i16 { type Output = i16; fn not(self) -> i16 { !self } }');
@@ -24440,6 +25008,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<i16> {');
   BufLn(b, '        let mut base = self;');
+end;
+
+procedure PreludeChunk20(var b: TBuf);
+begin
   BufLn(b, '        let mut acc: i16 = 1;');
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
@@ -24634,10 +25206,6 @@ begin
   BufLn(b, '    pub fn max_value() -> i32 { 2147483647 }');
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> i32 {');
   BufLn(b, '        let mut base = self;');
-end;
-
-procedure PreludeChunk19(var b: TBuf);
-begin
   BufLn(b, '        let mut acc: i32 = 1;');
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
@@ -24744,6 +25312,10 @@ begin
   BufLn(b, '        }');
   BufLn(b, '        if neg { let lim = (i32::MAX as u64) + 1; if acc > lim { return Err(ParseIntError { kind: IntErrorKind::NegOverflow }); } if acc == lim { return Ok(i32::MIN); } Ok(0 - (acc as i32)) } else { if acc > (i32::MAX as u64) { return Err(ParseIntError { kind: IntErrorKind::PosOverflow }); } Ok(acc as i32) }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk21(var b: TBuf);
+begin
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 4] {');
   BufLn(b, '        let mut out = [0u8; 4];');
   BufLn(b, '        let mut i = 0usize;');
@@ -24938,10 +25510,6 @@ begin
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 64 - self.count_ones() }');
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
-end;
-
-procedure PreludeChunk20(var b: TBuf);
-begin
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
   BufLn(b, '    pub fn trailing_ones(self) -> u32 { (!self).trailing_zeros() }');
   BufLn(b, '    pub fn swap_bytes(self) -> i64 { unsafe { ::std::intrinsics::bswap(self) } }');
@@ -25048,6 +25616,10 @@ begin
   BufLn(b, '    fn min(self, o: i128) -> i128 { if o < self { o } else { self } }');
   BufLn(b, '}');
   BufLn(b, 'impl Add for i128 { type Output = i128; fn add(self, o: i128) -> i128 { self + o } }');
+end;
+
+procedure PreludeChunk22(var b: TBuf);
+begin
   BufLn(b, 'impl Sub for i128 { type Output = i128; fn sub(self, o: i128) -> i128 { self - o } }');
   BufLn(b, 'impl Mul for i128 { type Output = i128; fn mul(self, o: i128) -> i128 { self * o } }');
   BufLn(b, 'impl Div for i128 { type Output = i128; fn div(self, o: i128) -> i128 { self / o } }');
@@ -25242,10 +25814,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 16]) -> i128 {');
   BufLn(b, '        let mut v: i128 = 0;');
-end;
-
-procedure PreludeChunk21(var b: TBuf);
-begin
   BufLn(b, '        let mut i = 16;');
   BufLn(b, '        while i > 0 { i -= 1; v = (v << 8) | (b[i] as i128); }');
   BufLn(b, '        v');
@@ -25352,6 +25920,10 @@ begin
   BufLn(b, 'impl isize {');
   BufLn(b, '    pub const MIN: isize = -9223372036854775808;');
   BufLn(b, '    pub const MAX: isize = 9223372036854775807;');
+end;
+
+procedure PreludeChunk23(var b: TBuf);
+begin
   BufLn(b, '    pub const BITS: u32 = 64;');
   BufLn(b, '    pub fn min_value() -> isize { -9223372036854775808 }');
   BufLn(b, '    pub fn max_value() -> isize { 9223372036854775807 }');
@@ -25546,10 +26118,6 @@ begin
   BufLn(b, 'impl<''a> Add<u8> for &''a u8 { type Output = u8; fn add(self, o: u8) -> u8 { *self + o } }');
   BufLn(b, 'impl<''a> Sub<u8> for &''a u8 { type Output = u8; fn sub(self, o: u8) -> u8 { *self - o } }');
   BufLn(b, 'impl<''a> Mul<u8> for &''a u8 { type Output = u8; fn mul(self, o: u8) -> u8 { *self * o } }');
-end;
-
-procedure PreludeChunk22(var b: TBuf);
-begin
   BufLn(b, 'impl<''a, ''b> Add<&''b u8> for &''a u8 { type Output = u8; fn add(self, o: &''b u8) -> u8 { *self + *o } }');
   BufLn(b, 'impl<''a, ''b> Sub<&''b u8> for &''a u8 { type Output = u8; fn sub(self, o: &''b u8) -> u8 { *self - *o } }');
   BufLn(b, 'impl<''a, ''b> Mul<&''b u8> for &''a u8 { type Output = u8; fn mul(self, o: &''b u8) -> u8 { *self * *o } }');
@@ -25656,6 +26224,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn saturating_pow(self, exp: u32) -> u8 {');
   BufLn(b, '        match self.checked_pow(exp) { Some(v) => v, None => if self < 0 && exp % 2 == 1 { 0 } else { 255 } }');
+end;
+
+procedure PreludeChunk24(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn count_ones(self) -> u32 { unsafe { ::std::intrinsics::ctpop(self) } }');
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 8 - self.count_ones() }');
@@ -25850,10 +26422,6 @@ begin
   BufLn(b, '    pub fn wrapping_pow(self, mut exp: u32) -> u16 {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: u16 = 1;');
-end;
-
-procedure PreludeChunk23(var b: TBuf);
-begin
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc.wrapping_mul(base); }');
   BufLn(b, '            exp = exp / 2;');
@@ -25960,6 +26528,10 @@ begin
   BufLn(b, '        while i < 2 { v = (v << 8) | (b[i] as u16); i += 1; }');
   BufLn(b, '        v');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk25(var b: TBuf);
+begin
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 2]) -> u16 {');
   BufLn(b, '        let mut v: u16 = 0;');
   BufLn(b, '        let mut i = 2;');
@@ -26154,10 +26726,6 @@ begin
   BufLn(b, '    pub fn ilog10(self) -> u32 { let mut n = 0u32; let mut v = self; while v >= 10 { v = v / 10; n += 1; } n }');
   BufLn(b, '    pub fn ilog(self, base: u32) -> u32 { let mut n = 0u32; let mut v = self; while v >= base { v = v / base; n += 1; } n }');
   BufLn(b, '    pub fn isqrt(self) -> u32 {');
-end;
-
-procedure PreludeChunk24(var b: TBuf);
-begin
   BufLn(b, '        if self < 2 { return self; }');
   BufLn(b, '        let mut x = self;');
   BufLn(b, '        let mut y = (x + 1) / 2;');
@@ -26264,6 +26832,10 @@ begin
   BufLn(b, 'impl<''a, ''b> Sub<&''b u64> for &''a u64 { type Output = u64; fn sub(self, o: &''b u64) -> u64 { *self - *o } }');
   BufLn(b, 'impl<''a, ''b> Mul<&''b u64> for &''a u64 { type Output = u64; fn mul(self, o: &''b u64) -> u64 { *self * *o } }');
   BufLn(b, 'impl AddAssign for u64 { fn add_assign(&mut self, o: u64) { *self = *self + o; } }');
+end;
+
+procedure PreludeChunk26(var b: TBuf);
+begin
   BufLn(b, 'impl SubAssign for u64 { fn sub_assign(&mut self, o: u64) { *self = *self - o; } }');
   BufLn(b, 'impl MulAssign for u64 { fn mul_assign(&mut self, o: u64) { *self = *self * o; } }');
   BufLn(b, 'impl DivAssign for u64 { fn div_assign(&mut self, o: u64) { *self = *self / o; } }');
@@ -26458,10 +27030,6 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl Eq for u128 {}');
   BufLn(b, 'impl PartialOrd for u128 {');
-end;
-
-procedure PreludeChunk25(var b: TBuf);
-begin
   BufLn(b, '    fn partial_cmp(&self, o: &u128) -> Option<Ordering> {');
   BufLn(b, '        if *self < *o { Some(Ordering::Less) } else if *self == *o { Some(Ordering::Equal) } else { Some(Ordering::Greater) }');
   BufLn(b, '    }');
@@ -26568,6 +27136,10 @@ begin
   BufLn(b, '            if (exp & 1) == 1 { acc = acc.wrapping_mul(base); }');
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            base = base.wrapping_mul(base);');
+end;
+
+procedure PreludeChunk27(var b: TBuf);
+begin
   BufLn(b, '        }');
   BufLn(b, '        acc');
   BufLn(b, '    }');
@@ -26762,10 +27334,6 @@ begin
   BufLn(b, 'impl UpperHex for usize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as usize as u64, true, 16, true, "0x") } }');
   BufLn(b, 'impl Binary for usize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as usize as u64, true, 2, false, "0b") } }');
   BufLn(b, 'impl Octal for usize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as usize as u64, true, 8, false, "0o") } }');
-end;
-
-procedure PreludeChunk26(var b: TBuf);
-begin
   BufLn(b, 'impl FromStr for usize {');
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<usize, ParseIntError> { usize::from_str_radix(s, 10) }');
@@ -26872,6 +27440,10 @@ begin
   BufLn(b, '        let mut x = self;');
   BufLn(b, '        let mut y = (x + 1) / 2;');
   BufLn(b, '        while y < x { x = y; y = (x + self / x) / 2; }');
+end;
+
+procedure PreludeChunk28(var b: TBuf);
+begin
   BufLn(b, '        x');
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<usize, ParseIntError> {');
@@ -27066,10 +27638,6 @@ begin
   BufLn(b, 'impl Sub for f32 { type Output = f32; fn sub(self, o: f32) -> f32 { self - o } }');
   BufLn(b, 'impl Mul for f32 { type Output = f32; fn mul(self, o: f32) -> f32 { self * o } }');
   BufLn(b, 'impl Div for f32 { type Output = f32; fn div(self, o: f32) -> f32 { self / o } }');
-end;
-
-procedure PreludeChunk27(var b: TBuf);
-begin
   BufLn(b, 'impl Rem for f32 { type Output = f32; fn rem(self, o: f32) -> f32 { self % o } }');
   BufLn(b, 'impl Neg for f32 { type Output = f32; fn neg(self) -> f32 { -self } }');
   BufLn(b, 'impl<''a> Add<&''a f32> for f32 { type Output = f32; fn add(self, o: &''a f32) -> f32 { self + *o } }');
@@ -27176,6 +27744,10 @@ begin
   BufLn(b, 'impl From<i8> for i128 { fn from(x: i8) -> i128 { x as i128 } }');
   BufLn(b, 'impl From<i8> for isize { fn from(x: i8) -> isize { x as isize } }');
   BufLn(b, 'impl TryFrom<i8> for u8 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u8, TryFromIntError> { if (x as i128) < (u8::MIN as i128) || (x as i128) > (u8::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u8) } } }');
+end;
+
+procedure PreludeChunk29(var b: TBuf);
+begin
   BufLn(b, 'impl TryFrom<i8> for u16 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u16, TryFromIntError> { if (x as i128) < (u16::MIN as i128) || (x as i128) > (u16::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u16) } } }');
   BufLn(b, 'impl TryFrom<i8> for u32 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u32, TryFromIntError> { if (x as i128) < (u32::MIN as i128) || (x as i128) > (u32::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u32) } } }');
   BufLn(b, 'impl TryFrom<i8> for u64 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u64, TryFromIntError> { if (x as i128) < (u64::MIN as i128) || (x as i128) > (u64::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u64) } } }');
@@ -27370,10 +27942,6 @@ begin
   BufLn(b, '        pub const TAU: f32 = 6.28318530717958647692528676655900577;');
   BufLn(b, '        pub const SQRT_2: f32 = 1.41421356237309504880168872420969808;');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk28(var b: TBuf);
-begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod hash_impls {');
@@ -27500,6 +28068,7 @@ begin
   PreludeChunk26(b);
   PreludeChunk27(b);
   PreludeChunk28(b);
+  PreludeChunk29(b);
   s := BufStr(b);
 end;
 
