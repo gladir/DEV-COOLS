@@ -499,8 +499,7 @@ Type
   end;
   TLabels = array of TLabel;
 
-{ Diagnostic avec plusieurs etiquettes (en-tete, extrait de source, marques ^ et -) }
-procedure ReportLabels(isErr: Boolean; const code, msg: string; const labs: TLabels);
+procedure RenderLabels(const labs: TLabels);
 var
   head, ln, w, pad: string;
   i, j, n, k, prim, width, dc, len, prevLine: Integer;
@@ -508,12 +507,6 @@ var
   tmp: Integer;
   mark: string;
 begin
-  if SuppressDiag > 0 then Exit;
-  if isErr then begin Inc(ErrCount); head := 'error'; end
-  else begin Inc(WarnCount); head := 'warning'; end;
-  if code <> '' then head := head + '[' + code + ']';
-  if isErr and (code <> '') and (FirstErrCode = '') then FirstErrCode := code;
-  WriteErrLn(head + ': ' + msg);
   prim := 0;
   for i := 0 to Length(labs) - 1 do
     if labs[i].primary then begin prim := i; Break; end;
@@ -565,11 +558,37 @@ begin
       WriteErrLn(w);
     end;
   end;
+end;
+
+{ Diagnostic avec plusieurs etiquettes (en-tete, extrait de source, marques ^ et -) }
+procedure ReportLabels(isErr: Boolean; const code, msg: string; const labs: TLabels);
+var
+  head, ln, w, pad: string;
+  i, j, n, k, prim, width, dc, len, prevLine: Integer;
+  order: array of Integer;
+  tmp: Integer;
+  mark: string;
+begin
+  if SuppressDiag > 0 then Exit;
+  if isErr then begin Inc(ErrCount); head := 'error'; end
+  else begin Inc(WarnCount); head := 'warning'; end;
+  if code <> '' then head := head + '[' + code + ']';
+  if isErr and (code <> '') and (FirstErrCode = '') then FirstErrCode := code;
+  WriteErrLn(head + ': ' + msg);
+  RenderLabels(labs);
   if ErrCount >= MAX_ERRORS then
   begin
     WriteErrLn('error: aborting due to too many errors');
     Halt(1);
   end;
+end;
+
+{ Sous-diagnostic (note: / help:) avec extrait de source }
+procedure ReportSubLabels(const kind, msg: string; const labs: TLabels);
+begin
+  if SuppressDiag > 0 then Exit;
+  WriteErrLn(kind + ': ' + msg);
+  RenderLabels(labs);
 end;
 
 procedure Note(const s: string);
@@ -2963,6 +2982,7 @@ var
   nm: string;
   txt: string;
   k: Integer;
+  npos: QWord;
 begin
   while True do
   begin
@@ -3022,10 +3042,12 @@ begin
       end
       else
       begin
+        npos := (QWord(Toks[TokPos].line) shl 20) or QWord(Toks[TokPos].col);
         nm := ExpectIdent;
         if IsPunct('(') or (IsPunct('::') and PeekPunct(1, '<')) then
         begin
           n := MkFrom(eMethod, e);
+          Nodes[n].iv := npos;
           Nodes[n].s := nm;
           Nodes[n].a := e;
           if IsPunct('::') then
@@ -3042,6 +3064,7 @@ begin
         else
         begin
           n := MkFrom(eField, e);
+          Nodes[n].iv := npos;
           Nodes[n].s := nm;
           Nodes[n].a := e;
           e := Done(n);
@@ -4645,6 +4668,7 @@ Var
   AllImpls: TIntArr;
   AllTraits: TIntArr;
   CurCrate: Integer;
+  PrivDef, PrivSeg: Integer;
 
 function NewDef(kind: Integer; const name: string; node, parent: Integer): Integer;
 begin
@@ -5158,11 +5182,22 @@ end;
 
 { Resout segs[0..] a partir de scope. Retourne la definition du dernier segment atteint
   (module / enum / autre) ; used = nombre de segments consommes. ns = espace de noms du dernier segment. }
+function ModIsWithin(m, anc: Integer): Boolean;
+begin
+  Result := False;
+  while m >= 0 do
+  begin
+    if m = anc then begin Result := True; Exit; end;
+    m := Defs[m].parent;
+  end;
+end;
+
 function ResolveSegs(scope: Integer; const segs: TStrArr; ns: Char; var used: Integer): Integer;
 var
   cur, nx, i: Integer;
   nsi: Char;
 begin
+  PrivDef := -1;
   used := 0;
   Result := -1;
   if Length(segs) = 0 then Exit;
@@ -5184,10 +5219,64 @@ begin
     else if segs[i] = 'self' then nx := cur
     else nx := ScopeLookup(cur, nsi, segs[i], 0);
     if nx < 0 then Exit;
+    if (PrivDef < 0) and (Defs[cur].kind = dkMod) and (Defs[nx].crate = 0) and (not Defs[nx].pub) and
+       ((Defs[nx].parent = cur) or ((Defs[nx].parent < 0) and (Defs[nx].scopeMod = cur))) and (Defs[nx].kind in [dkFn, dkStruct, dkEnum, dkMod, dkConst, dkStatic, dkTrait, dkTypeAlias]) and
+       (not ModIsWithin(NearestMod(scope), cur)) then
+    begin
+      PrivDef := nx;
+      PrivSeg := i;
+    end;
     cur := nx;
     used := i + 1;
     Result := cur;
   end;
+end;
+
+function DefKindWord(d: Integer): string;
+begin
+  case Defs[d].kind of
+    dkFn: Result := 'function';
+    dkStruct: Result := 'struct';
+    dkEnum: Result := 'enum';
+    dkMod: Result := 'module';
+    dkConst: Result := 'constant';
+    dkStatic: Result := 'static';
+    dkTrait: Result := 'trait';
+    dkTypeAlias: Result := 'type alias';
+  else
+    Result := 'item';
+  end;
+end;
+
+{ Signale (E0603) un chemin qui traverse un element prive }
+procedure ReportPrivIfAny(pathNode: Integer);
+var
+  labs: TLabels;
+  d, seg: Integer;
+begin
+  if PrivDef < 0 then Exit;
+  d := PrivDef;
+  seg := PrivSeg;
+  PrivDef := -1;
+  if (pathNode <= 0) or (seg >= Length(Nodes[pathNode].l)) then Exit;
+  if Defs[d].node <= 0 then Exit;
+  SetLength(labs, 1);
+  labs[0].fi := Nodes[Nodes[pathNode].l[seg]].fi;
+  labs[0].line := Nodes[Nodes[pathNode].l[seg]].line;
+  labs[0].col := Nodes[Nodes[pathNode].l[seg]].col;
+  labs[0].len := Length(Defs[d].name);
+  labs[0].primary := True;
+  labs[0].text := 'private ' + DefKindWord(d);
+  ReportLabels(True, 'E0603', DefKindWord(d) + ' `' + Defs[d].name + '` is private', labs);
+  SetLength(labs, 1);
+  labs[0].fi := Nodes[Defs[d].node].fi;
+  labs[0].line := Nodes[Defs[d].node].line;
+  labs[0].col := Nodes[Defs[d].node].col;
+  labs[0].len := NodeLen(Defs[d].node);
+  labs[0].primary := True;
+  labs[0].text := '';
+  ReportSubLabels('note', 'the ' + DefKindWord(d) + ' `' + Defs[d].name + '` is defined here', labs);
+  WriteErrLn('');
 end;
 
 { Resout les imports par iteration jusqu'a point fixe }
@@ -5784,6 +5873,7 @@ begin
     Exit;
   end;
   d := ResolveSegs(env.scope, segs, 'T', used);
+  ReportPrivIfAny(n);
   if d < 0 then
   begin
     if Length(segs) = 1 then
@@ -7143,6 +7233,129 @@ begin
   end;
   { methode par defaut du trait : arguments inchanges (Self concret) }
 end;
+{ ============================================================ }
+{ Verification des impls de traits (E0046, E0407, E0050)        }
+{ ============================================================ }
+
+function ImplHeaderLen(node: Integer): Integer;
+var
+  ln: string;
+  i: Integer;
+begin
+  ln := SourceLine(Nodes[node].fi, Nodes[node].line);
+  i := Nodes[node].col;
+  while (i <= Length(ln)) and (ln[i] <> '{') do Inc(i);
+  Result := i - Nodes[node].col;
+  while (Result > 1) and (ln[Nodes[node].col + Result - 1] = ' ') do Dec(Result);
+  if Result < 1 then Result := 4;
+end;
+
+function ItemRequired(d: Integer): Boolean;
+begin
+  case Defs[d].kind of
+    dkFn: Result := Nodes[Defs[d].node].b = 0;
+    dkTypeAlias: Result := Nodes[Defs[d].node].a = 0;
+    dkConst: Result := Nodes[Defs[d].node].b = 0;
+  else
+    Result := False;
+  end;
+end;
+
+function FnParamCount(fn: Integer): Integer;
+begin
+  Result := Length(Nodes[Defs[fn].node].l2);
+end;
+
+procedure CheckImplItems;
+var
+  i, j, d, tr, it, impl, node, k, nl: Integer;
+  missing: TStrArr;
+  labs: TLabels;
+  names: string;
+  other: Integer;
+begin
+  for i := 0 to Length(AllImpls) - 1 do
+  begin
+    d := AllImpls[i];
+    if Defs[d].crate <> 0 then Continue;
+    tr := Defs[d].implTrait;
+    if tr < 0 then Continue;
+    node := Defs[d].node;
+    { elements requis manquants }
+    missing := nil;
+    SetLength(labs, 1);
+    nl := 1;
+    labs[0].fi := Nodes[node].fi; labs[0].line := Nodes[node].line; labs[0].col := Nodes[node].col;
+    labs[0].len := ImplHeaderLen(node);
+    labs[0].primary := True;
+    for j := 0 to Length(Defs[tr].items) - 1 do
+    begin
+      it := Defs[tr].items[j];
+      if not ItemRequired(it) then Continue;
+      if ImplAssocItem(d, Defs[it].name, Defs[it].kind) >= 0 then Continue;
+      SAdd(missing, Defs[it].name);
+      if Defs[tr].crate = 0 then
+      begin
+        SetLength(labs, nl + 1);
+        labs[nl].fi := Nodes[Defs[it].node].fi; labs[nl].line := Nodes[Defs[it].node].line;
+        labs[nl].col := Nodes[Defs[it].node].col; labs[nl].len := NodeLen(Defs[it].node);
+        labs[nl].primary := False;
+        labs[nl].text := '`' + Defs[it].name + '` from trait';
+        Inc(nl);
+      end;
+    end;
+    if Length(missing) > 0 then
+    begin
+      names := '';
+      for k := 0 to Length(missing) - 1 do
+      begin
+        if k > 0 then names := names + ', ';
+        names := names + '`' + missing[k] + '`';
+      end;
+      labs[0].text := 'missing ' + names + ' in implementation';
+      ReportLabels(True, 'E0046', 'not all trait items implemented, missing: ' + names, labs);
+      WriteErrLn('');
+    end;
+    { elements de l'impl absents du trait }
+    for j := 0 to Length(Defs[d].items) - 1 do
+    begin
+      impl := Defs[d].items[j];
+      other := TraitAssocItem(tr, Defs[impl].name, Defs[impl].kind);
+      if other < 0 then
+      begin
+        SetLength(labs, 1);
+        labs[0].fi := Nodes[Defs[impl].node].fi; labs[0].line := Nodes[Defs[impl].node].line;
+        labs[0].col := Nodes[Defs[impl].node].col + 3; labs[0].len := Length(Defs[impl].name);
+        if Defs[impl].kind = dkTypeAlias then labs[0].col := Nodes[Defs[impl].node].col + 5;
+        if Defs[impl].kind = dkConst then labs[0].col := Nodes[Defs[impl].node].col + 6;
+        labs[0].primary := True;
+        labs[0].text := 'not a member of trait `' + Defs[tr].name + '`';
+        case Defs[impl].kind of
+          dkFn: ReportLabels(True, 'E0407', 'method `' + Defs[impl].name + '` is not a member of trait `' + Defs[tr].name + '`', labs);
+          dkTypeAlias: ReportLabels(True, 'E0437', 'type `' + Defs[impl].name + '` is not a member of trait `' + Defs[tr].name + '`', labs);
+          dkConst: ReportLabels(True, 'E0438', 'const `' + Defs[impl].name + '` is not a member of trait `' + Defs[tr].name + '`', labs);
+        end;
+        WriteErrLn('');
+      end
+      else if (Defs[impl].kind = dkFn) and (FnParamCount(impl) <> FnParamCount(other)) and (Defs[tr].crate = 0) then
+      begin
+        SetLength(labs, 2);
+        labs[0].fi := Nodes[Defs[impl].node].fi; labs[0].line := Nodes[Defs[impl].node].line;
+        labs[0].col := Nodes[Defs[impl].node].col; labs[0].len := NodeLen(Defs[impl].node);
+        labs[0].primary := True;
+        labs[0].text := 'expected ' + IntToStr(FnParamCount(other)) + ' parameter' + 's' + ', found ' + IntToStr(FnParamCount(impl));
+        labs[1].fi := Nodes[Defs[other].node].fi; labs[1].line := Nodes[Defs[other].node].line;
+        labs[1].col := Nodes[Defs[other].node].col; labs[1].len := NodeLen(Defs[other].node);
+        labs[1].primary := False;
+        labs[1].text := 'trait requires ' + IntToStr(FnParamCount(other)) + ' parameter' + 's';
+        ReportLabels(True, 'E0050', 'method `' + Defs[impl].name + '` has ' + IntToStr(FnParamCount(impl)) +
+                     ' parameter' + 's' + ' but the declaration in trait `' + Defs[tr].name + '::' + Defs[impl].name + '` has ' +
+                     IntToStr(FnParamCount(other)), labs);
+        WriteErrLn('');
+      end;
+    end;
+  end;
+end;
 
 { ============================================================ }
 { HIR : representation de haut niveau typee et desucree        }
@@ -7708,6 +7921,22 @@ begin
     Report(True, code, msg, Nodes[node].fi, Nodes[node].line, Nodes[node].col, NodeLen(node), lbl)
   else
     Report(True, code, msg, -1, 0, 0, 0, lbl);
+end;
+
+{ Erreur sur le nom de la methode / du champ d'un noeud eMethod / eField }
+procedure ErrAtName(node: Integer; const code, msg, lbl: string);
+begin
+  if (node > 0) and (Nodes[node].iv <> 0) then
+    Report(True, code, msg, Nodes[node].fi, Integer(Nodes[node].iv shr 20), Integer(Nodes[node].iv and $FFFFF),
+           Length(Nodes[node].s), lbl)
+  else
+    ErrAt(node, code, msg, lbl);
+end;
+
+{ Le module courant peut-il acceder a un element prive defini dans le module mod_ ? }
+function PrivAccessible(mod_: Integer): Boolean;
+begin
+  Result := ModIsWithin(NearestMod(Cxs[CxTop].env.scope), NearestMod(mod_));
 end;
 
 procedure ErrAtHir(h: Integer; const code, msg, lbl: string);
@@ -8638,6 +8867,7 @@ begin
     end;
   end;
   d := ResolveSegs(Cxs[CxTop].env.scope, segs, 'V', used);
+  ReportPrivIfAny(p);
   if (d >= 0) and (used = n) then
   begin
     if ValueDefResult(d, p, used, r) then begin Result := True; Exit; end;
@@ -9729,6 +9959,12 @@ begin
   Result := LowerTy(Nodes[Nodes[nd].l2[idx]].a, env);
 end;
 
+function StructModule(sdef: Integer): Integer;
+begin
+  if (Defs[sdef].parent >= 0) and (Defs[Defs[sdef].parent].kind = dkMod) then Result := Defs[sdef].parent
+  else Result := Defs[sdef].scopeMod;
+end;
+
 function CheckField(n: Integer): Integer;
 var
   base, cur, t, idx, h, steps: Integer;
@@ -9746,6 +9982,9 @@ begin
       idx := FieldIndexOf(Tys[t].def, name);
       if idx >= 0 then
       begin
+        if (Defs[Tys[t].def].crate = 0) and ((Nodes[Nodes[Defs[Tys[t].def].node].l2[idx]].f and fPub) = 0) and
+           (not PrivAccessible(StructModule(Tys[t].def))) then
+          ErrAtName(n, 'E0616', 'field `' + name + '` of struct `' + Defs[Tys[t].def].name + '` is private', 'private field');
         h := HirAt(hField, FieldTyOf(t, Tys[t].def, idx), n);
         Hirs[h].a := cur;
         Hirs[h].n := idx;
@@ -9758,7 +9997,7 @@ begin
     cur := h;
   end;
   t := StructResolve(Hirs[base].ty);
-  ErrAt(n, 'E0609', 'no field `' + name + '` on type `' + TyStrZ(t) + '`', 'unknown field');
+  ErrAtName(n, 'E0609', 'no field `' + name + '` on type `' + TyStrZ(t) + '`', 'unknown field');
   Result := HirAt(hUnit, TyErrT, n);
 end;
 
@@ -10162,6 +10401,7 @@ var
   nd: Integer;
   steps: Integer;
   baseTargs: TIntArr;
+  privLab: TLabels;
   nOwnExplicit: Integer;
   fld: Integer;
 begin
@@ -10183,11 +10423,25 @@ begin
     else if (Tys[t].k = tyVar) then
       ErrAt(n, 'E0689', 'can''t call method `' + name + '` on ambiguous numeric type `' + TyStrZ(t) + '`', '')
     else
-      ErrAt(n, 'E0599', 'no method named `' + name + '` found for ' + KindWord(t) + ' `' + TyStrZ(t) +
+      ErrAtName(n, 'E0599', 'no method named `' + name + '` found for ' + KindWord(t) + ' `' + TyStrZ(t) +
             '` in the current scope', 'method not found in `' + TyStrZ(t) + '`');
     for i := 0 to Length(argNodes) - 1 do CheckExpr(argNodes[i], 0);
     Result := HirAt(hUnit, TyErrT, n);
     Exit;
+  end;
+  { methode privee d'un impl d'une autre portion de module }
+  if (pr.fnDef >= 0) and (Defs[pr.fnDef].crate = 0) and (not Defs[pr.fnDef].pub) and (pr.traitDef < 0) and
+     (Defs[pr.fnDef].parent >= 0) and (Defs[Defs[pr.fnDef].parent].kind = dkImpl) and
+     (Defs[Defs[pr.fnDef].parent].implTrait < 0) and (not PrivAccessible(Defs[Defs[pr.fnDef].parent].scopeMod)) then
+  begin
+    ErrAtName(n, 'E0624', 'method `' + name + '` is private', 'private method');
+    SetLength(privLab, 1);
+    privLab[0].fi := Nodes[Defs[pr.fnDef].node].fi; privLab[0].line := Nodes[Defs[pr.fnDef].node].line;
+    privLab[0].col := Nodes[Defs[pr.fnDef].node].col; privLab[0].len := NodeLen(Defs[pr.fnDef].node);
+    privLab[0].primary := True;
+    privLab[0].text := 'private method defined here';
+    RenderLabels(privLab);
+    WriteErrLn('');
   end;
   { ajustements du recepteur }
   cur := recv;
@@ -10292,6 +10546,7 @@ begin
     Exit;
   end;
   d := ResolveSegs(Cxs[CxTop].env.scope, segs, 'T', used);
+  ReportPrivIfAny(p);
   if (d < 0) or (used <> Length(segs)) then
   begin
     ErrAt(p, 'E0422', 'cannot find struct, variant or union type `' + segs[Length(segs) - 1] + '` in this scope',
@@ -12958,6 +13213,669 @@ begin
   Result := HirAt(hUnit, TyErrT, n);
 end;
 { ============================================================ }
+{ Verification de l'exhaustivite des motifs (E0004 / E0005)    }
+{ ============================================================ }
+
+Const
+  xcVariant = 1;
+  xcSingle = 2;
+  xcBool = 3;
+  xcRange = 4;
+  xcOpaque = 5;
+  xcSlice = 6;
+
+Type
+  TXCtor = record
+    kind: Integer;
+    def: Integer;        { variante ou structure }
+    vidx: Integer;
+    lo, hi: Int64;
+    len: Integer;
+    varlen: Boolean;
+  end;
+  TXCtorArr = array of TXCtor;
+  TXRows = array of TIntArr;
+  TXWit = TStrArr;
+  TXWits = array of TXWit;
+
+function XStrip(p: Integer): Integer;
+begin
+  Result := p;
+  while Result >= 0 do
+  begin
+    if Pats[Result].k = pkBind then
+    begin
+      if Pats[Result].a >= 0 then Result := Pats[Result].a else begin Result := -1; Exit; end;
+    end
+    else if Pats[Result].k = pkWild then begin Result := -1; Exit; end
+    else Exit;
+  end;
+end;
+
+function XIsInt(t: Integer): Boolean;
+begin
+  t := Shallow(t);
+  Result := (Tys[t].k = tyInt) and (Tys[t].n < 128);
+end;
+
+procedure XIntBounds(t: Integer; var lo, hi: Int64);
+var
+  bits: Integer;
+begin
+  t := Shallow(t);
+  if Tys[t].k = tyChar then begin lo := 0; hi := $10FFFF; Exit; end;
+  bits := Integer(Tys[t].n);
+  if (Tys[t].f and 1) <> 0 then
+  begin
+    if bits = 64 then begin lo := Low(Int64); hi := High(Int64); end
+    else begin hi := (Int64(1) shl (bits - 1)) - 1; lo := -hi - 1; end;
+  end
+  else
+  begin
+    lo := 0;
+    if bits >= 63 then hi := High(Int64) else hi := (Int64(1) shl bits) - 1;
+  end;
+end;
+
+function XTyName(t: Integer): string;
+begin
+  Result := TyToStr(Zonk(t));
+end;
+
+function XIntStr(v: Int64; t: Integer): string;
+var
+  lo, hi: Int64;
+begin
+  t := Shallow(t);
+  if Tys[t].k = tyChar then begin Result := '''' + Utf8Encode(Integer(v)) + ''''; Exit; end;
+  XIntBounds(t, lo, hi);
+  if v = hi then Result := XTyName(t) + '::MAX'
+  else if (v = lo) and (lo < 0) then Result := XTyName(t) + '::MIN'
+  else Result := IntToStr(v) + '_' + XTyName(t);
+end;
+
+{ constructeur d'un motif (deja nettoye) }
+function XCtorOf(p: Integer; var c: TXCtor): Boolean;
+var
+  t: Integer;
+begin
+  Result := True;
+  FillChar(c, SizeOf(c), 0);
+  case Pats[p].k of
+    pkAdt:
+      begin
+        c.def := Pats[p].def;
+        c.vidx := Pats[p].vidx;
+        if Defs[Pats[p].def].kind = dkVariant then c.kind := xcVariant else c.kind := xcSingle;
+      end;
+    pkTuple, pkDeref: c.kind := xcSingle;
+    pkLit:
+      begin
+        t := Shallow(Pats[p].ty);
+        if Tys[t].k = tyBool then begin c.kind := xcBool; c.lo := Pats[p].n; c.hi := Pats[p].n; end
+        else if (Tys[t].k = tyInt) or (Tys[t].k = tyChar) then
+        begin
+          c.kind := xcRange; c.lo := Pats[p].n; c.hi := Pats[p].n;
+        end
+        else c.kind := xcOpaque;
+      end;
+    pkRange:
+      begin
+        t := Shallow(Pats[p].ty);
+        c.kind := xcRange;
+        XIntBounds(t, c.lo, c.hi);
+        if Pats[p].l[0] = 1 then c.lo := Pats[p].n;
+        if Pats[p].l[1] = 1 then
+        begin
+          c.hi := Pats[p].m;
+          if not Pats[p].incl then Dec(c.hi);
+        end;
+      end;
+    pkSlice:
+      begin
+        c.kind := xcSlice;
+        c.len := Length(Pats[p].l) + Length(Pats[p].l2);
+        c.varlen := Pats[p].m = 1;
+      end;
+  else
+    c.kind := xcOpaque;
+  end;
+end;
+
+function XCount(const l: TIntArr): Integer;
+begin
+  Result := Length(l);
+end;
+
+{ sous-types d'un constructeur pour un type T }
+procedure XSubTys(t: Integer; const c: TXCtor; var sub: TIntArr);
+var
+  i, nd, vd: Integer;
+begin
+  sub := nil;
+  t := Shallow(t);
+  case c.kind of
+    xcVariant:
+      begin
+        vd := c.def;
+        nd := Defs[vd].node;
+        for i := 0 to Length(Nodes[nd].l2) - 1 do IAdd(sub, Zonk(FieldTyOf(t, vd, i)));
+      end;
+    xcSingle:
+      begin
+        if Tys[t].k = tyTuple then
+          for i := 0 to Length(Tys[t].args) - 1 do IAdd(sub, Zonk(Tys[t].args[i]))
+        else if Tys[t].k = tyRef then IAdd(sub, Zonk(Tys[t].args[0]))
+        else if (Tys[t].k = tyAdt) and (Defs[Tys[t].def].kind = dkStruct) then
+        begin
+          nd := Defs[Tys[t].def].node;
+          for i := 0 to Length(Nodes[nd].l2) - 1 do IAdd(sub, Zonk(FieldTyOf(t, Tys[t].def, i)));
+        end
+        else if Tys[t].k = tyArray then
+          for i := 0 to Integer(Tys[Shallow(Tys[t].args[1])].n) - 1 do IAdd(sub, Zonk(Tys[t].args[0]));
+      end;
+    xcSlice:
+      for i := 0 to c.len - 1 do IAdd(sub, Zonk(Tys[t].args[0]));
+  end;
+end;
+
+{ sous-motifs d'un motif pour un constructeur c }
+procedure XSubPats(p: Integer; const c: TXCtor; arity: Integer; var sub: TIntArr);
+var
+  i, np, ns: Integer;
+begin
+  sub := nil;
+  if p < 0 then
+  begin
+    for i := 1 to arity do IAdd(sub, -1);
+    Exit;
+  end;
+  case Pats[p].k of
+    pkAdt, pkTuple: sub := ICopy(Pats[p].l);
+    pkDeref: IAdd(sub, Pats[p].a);
+    pkSlice:
+      begin
+        np := Length(Pats[p].l);
+        ns := Length(Pats[p].l2);
+        for i := 0 to np - 1 do IAdd(sub, Pats[p].l[i]);
+        for i := 1 to arity - np - ns do IAdd(sub, -1);
+        for i := 0 to ns - 1 do IAdd(sub, Pats[p].l2[i]);
+      end;
+  else
+    for i := 1 to arity do IAdd(sub, -1);
+  end;
+  while Length(sub) < arity do IAdd(sub, -1);
+end;
+
+function XSameCtor(const a, b: TXCtor): Boolean;
+begin
+  Result := a.kind = b.kind;
+  if not Result then Exit;
+  case a.kind of
+    xcVariant: Result := a.def = b.def;
+    xcBool: Result := a.lo = b.lo;
+    xcRange: Result := (a.lo = b.lo) and (a.hi = b.hi);
+    xcSlice: Result := (a.len = b.len) and (a.varlen = b.varlen);
+    xcOpaque: Result := False;
+  end;
+end;
+
+{ le motif p (tete de ligne) couvre-t-il le constructeur c ? }
+function XCovers(p: Integer; const c: TXCtor): Boolean;
+var
+  pc: TXCtor;
+begin
+  if p < 0 then begin Result := True; Exit; end;
+  XCtorOf(p, pc);
+  Result := False;
+  if (pc.kind = xcSlice) and (c.kind = xcSingle) then begin Result := True; Exit; end;
+  if pc.kind <> c.kind then Exit;
+  case c.kind of
+    xcVariant: Result := pc.def = c.def;
+    xcSingle: Result := True;
+    xcBool: Result := pc.lo = c.lo;
+    xcRange: Result := (pc.lo <= c.lo) and (pc.hi >= c.hi);
+    xcSlice:
+      begin
+        if c.varlen then Result := pc.varlen
+        else if pc.varlen then Result := c.len >= pc.len
+        else Result := c.len = pc.len;
+      end;
+  end;
+end;
+
+function XCtorStr(t: Integer; const c: TXCtor; const subs: TStrArr): string;
+var
+  i, vd: Integer;
+  s, nm: string;
+  allWild: Boolean;
+begin
+  t := Shallow(t);
+  case c.kind of
+    xcVariant:
+      begin
+        vd := c.def;
+        nm := Defs[Defs[vd].parent].name + '::' + Defs[vd].name;
+        if (Defs[Defs[vd].parent].lang = 'option') or (Defs[Defs[vd].parent].lang = 'result') then nm := Defs[vd].name;
+        if Length(subs) = 0 then Result := nm
+        else
+        begin
+          s := '';
+          for i := 0 to Length(subs) - 1 do
+          begin
+            if i > 0 then s := s + ', ';
+            s := s + subs[i];
+          end;
+          if Length(Nodes[Defs[vd].node].l2) > 0 then
+            if (Nodes[Defs[vd].node].l2[0] > 0) and (Nodes[Nodes[Defs[vd].node].l2[0]].s <> '') and
+               (not (Nodes[Nodes[Defs[vd].node].l2[0]].s[1] in ['0'..'9'])) then
+            begin
+              s := '';
+              allWild := True;
+              for i := 0 to Length(subs) - 1 do
+              begin
+                if subs[i] <> '_' then allWild := False;
+                if i > 0 then s := s + ', ';
+                s := s + Nodes[Nodes[Defs[vd].node].l2[i]].s + ': ' + subs[i];
+              end;
+              if allWild then Result := nm + ' { .. }' else Result := nm + ' { ' + s + ' }';
+              Exit;
+            end;
+          Result := nm + '(' + s + ')';
+        end;
+      end;
+    xcSingle:
+      begin
+        s := '';
+        for i := 0 to Length(subs) - 1 do
+        begin
+          if i > 0 then s := s + ', ';
+          s := s + subs[i];
+        end;
+        if Tys[t].k = tyTuple then
+        begin
+          if Length(subs) = 1 then Result := '(' + s + ',)' else Result := '(' + s + ')';
+        end
+        else if Tys[t].k = tyRef then Result := '&' + s
+        else if Tys[t].k = tyArray then Result := '[' + s + ']'
+        else if (Tys[t].k = tyAdt) and (Length(subs) > 0) then Result := Defs[Tys[t].def].name + '(' + s + ')'
+        else Result := Defs[Tys[t].def].name;
+      end;
+    xcBool: if c.lo = 1 then Result := 'true' else Result := 'false';
+    xcRange:
+      begin
+        if c.lo = c.hi then Result := XIntStr(c.lo, t)
+        else Result := XIntStr(c.lo, t) + '..=' + XIntStr(c.hi, t);
+      end;
+    xcSlice:
+      begin
+        s := '';
+        for i := 0 to Length(subs) - 1 do
+        begin
+          if i > 0 then s := s + ', ';
+          s := s + subs[i];
+        end;
+        if c.varlen then
+        begin
+          if s <> '' then s := s + ', ';
+          s := s + '..';
+        end;
+        Result := '[' + s + ']';
+      end;
+  else
+    Result := '_';
+  end;
+end;
+
+procedure XExpandOr(var rows: TXRows);
+var
+  i, j, k: Integer;
+  out_: TXRows;
+  head: Integer;
+  changed: Boolean;
+  r: TIntArr;
+begin
+  repeat
+    changed := False;
+    out_ := nil;
+    for i := 0 to Length(rows) - 1 do
+    begin
+      head := -1;
+      if Length(rows[i]) > 0 then head := XStrip(rows[i][0]);
+      if (head >= 0) and (Pats[head].k = pkOr) then
+      begin
+        changed := True;
+        for j := 0 to Length(Pats[head].l) - 1 do
+        begin
+          r := ICopy(rows[i]);
+          r[0] := Pats[head].l[j];
+          SetLength(out_, Length(out_) + 1);
+          out_[Length(out_) - 1] := r;
+        end;
+      end
+      else
+      begin
+        SetLength(out_, Length(out_) + 1);
+        out_[Length(out_) - 1] := rows[i];
+      end;
+    end;
+    rows := out_;
+  until not changed;
+  k := 0;
+  for i := 0 to Length(rows) - 1 do
+    if Length(rows[i]) > 0 then rows[i][0] := XStrip(rows[i][0]);
+  k := k + 0;
+end;
+
+procedure XAddWit(var res: TXWits; const w: TXWit);
+begin
+  if Length(res) >= 6 then Exit;
+  SetLength(res, Length(res) + 1);
+  res[Length(res) - 1] := w;
+end;
+
+{ liste des temoins de non-couverture pour la matrice rows (colonnes de types ctys) }
+function XMissing(rows: TXRows; const ctys: TIntArr; depth: Integer): TXWits;
+var
+  i, j, k, a: Integer;
+  t: Integer;
+  ctors: TXCtorArr;
+  c: TXCtor;
+  present: Boolean;
+  allCtors: TXCtorArr;
+  sub: TIntArr;
+  subTys, rest: TIntArr;
+  nrows: TXRows;
+  w: TXWits;
+  wi: TXWit;
+  r, nr: TIntArr;
+  complete: Boolean;
+  head: Integer;
+  firstW: TXWit;
+  subStrs: TStrArr;
+  nd, v: Integer;
+  pts: array of Int64;
+  lo, hi, cur: Int64;
+  anyRange: Boolean;
+  maxLen: Integer;
+begin
+  Result := nil;
+  if depth > 40 then Exit;
+  if Length(ctys) = 0 then
+  begin
+    if Length(rows) = 0 then begin SetLength(Result, 1); Result[0] := nil; end;
+    Exit;
+  end;
+  if Length(rows) = 0 then
+  begin
+    SetLength(Result, 1);
+    SetLength(Result[0], Length(ctys));
+    for i := 0 to Length(ctys) - 1 do Result[0][i] := '_';
+    Exit;
+  end;
+  XExpandOr(rows);
+  t := Shallow(ctys[0]);
+  SetLength(rest, Length(ctys) - 1);
+  for i := 1 to Length(ctys) - 1 do rest[i - 1] := ctys[i];
+  { constructeurs presents }
+  ctors := nil;
+  for i := 0 to Length(rows) - 1 do
+  begin
+    head := rows[i][0];
+    if head < 0 then Continue;
+    XCtorOf(head, c);
+    SetLength(ctors, Length(ctors) + 1);
+    ctors[Length(ctors) - 1] := c;
+  end;
+  { signature complete du type ? }
+  allCtors := nil;
+  complete := False;
+  case Tys[t].k of
+    tyBool:
+      begin
+        FillChar(c, SizeOf(c), 0); c.kind := xcBool; c.lo := 0; c.hi := 0;
+        SetLength(allCtors, 2); allCtors[0] := c;
+        c.lo := 1; c.hi := 1; allCtors[1] := c;
+        complete := True;
+      end;
+    tyAdt:
+      begin
+        if Defs[Tys[t].def].kind = dkEnum then
+        begin
+          for v := 0 to Length(Defs[Tys[t].def].variants) - 1 do
+          begin
+            FillChar(c, SizeOf(c), 0);
+            c.kind := xcVariant;
+            c.def := Defs[Tys[t].def].variants[v];
+            c.vidx := v;
+            SetLength(allCtors, Length(allCtors) + 1);
+            allCtors[Length(allCtors) - 1] := c;
+          end;
+          complete := True;
+        end
+        else if Defs[Tys[t].def].kind = dkStruct then
+        begin
+          FillChar(c, SizeOf(c), 0); c.kind := xcSingle; c.def := Tys[t].def;
+          SetLength(allCtors, 1); allCtors[0] := c;
+          complete := True;
+        end;
+      end;
+    tyTuple, tyRef:
+      begin
+        FillChar(c, SizeOf(c), 0); c.kind := xcSingle;
+        SetLength(allCtors, 1); allCtors[0] := c;
+        complete := True;
+      end;
+    tyArray:
+      begin
+        FillChar(c, SizeOf(c), 0); c.kind := xcSingle;
+        SetLength(allCtors, 1); allCtors[0] := c;
+        complete := True;
+      end;
+    tySlice:
+      begin
+        maxLen := 0;
+        for i := 0 to Length(ctors) - 1 do
+          if ctors[i].kind = xcSlice then
+            if ctors[i].len > maxLen then maxLen := ctors[i].len;
+        for k := 0 to maxLen do
+        begin
+          FillChar(c, SizeOf(c), 0); c.kind := xcSlice; c.len := k;
+          SetLength(allCtors, Length(allCtors) + 1);
+          allCtors[Length(allCtors) - 1] := c;
+        end;
+        FillChar(c, SizeOf(c), 0); c.kind := xcSlice; c.len := maxLen + 1; c.varlen := True;
+        SetLength(allCtors, Length(allCtors) + 1);
+        allCtors[Length(allCtors) - 1] := c;
+        complete := True;
+      end;
+    tyInt, tyChar:
+      begin
+        if XIsInt(t) or (Tys[t].k = tyChar) then
+        begin
+          XIntBounds(t, lo, hi);
+          pts := nil;
+          anyRange := False;
+          for i := 0 to Length(ctors) - 1 do
+            if ctors[i].kind = xcRange then
+            begin
+              anyRange := True;
+              SetLength(pts, Length(pts) + 2);
+              pts[Length(pts) - 2] := ctors[i].lo;
+              pts[Length(pts) - 1] := ctors[i].hi;
+            end;
+          if anyRange then
+          begin
+            { decoupage de [lo, hi] aux bornes des intervalles }
+            cur := lo;
+            while True do
+            begin
+              FillChar(c, SizeOf(c), 0);
+              c.kind := xcRange;
+              c.lo := cur;
+              { fin de l'intervalle : avant la prochaine borne de debut ou apres la prochaine borne de fin }
+              c.hi := hi;
+              for i := 0 to Length(pts) div 2 - 1 do
+              begin
+                if (pts[2 * i] > cur) and (pts[2 * i] - 1 < c.hi) then c.hi := pts[2 * i] - 1;
+                if (pts[2 * i + 1] >= cur) and (pts[2 * i + 1] < c.hi) then c.hi := pts[2 * i + 1];
+              end;
+              SetLength(allCtors, Length(allCtors) + 1);
+              allCtors[Length(allCtors) - 1] := c;
+              if c.hi >= hi then Break;
+              cur := c.hi + 1;
+              if Length(allCtors) > 500 then Break;
+            end;
+            complete := True;
+          end;
+        end;
+      end;
+  end;
+  if complete then
+  begin
+    { tous les constructeurs doivent etre examines : les manquants engendrent des temoins }
+    for k := 0 to Length(allCtors) - 1 do
+    begin
+      c := allCtors[k];
+      XSubTys(t, c, subTys);
+      a := Length(subTys);
+      nrows := nil;
+      for i := 0 to Length(rows) - 1 do
+      begin
+        head := rows[i][0];
+        if XCovers(head, c) then
+        begin
+          XSubPats(head, c, a, sub);
+          SetLength(nr, a + Length(rows[i]) - 1);
+          for j := 0 to a - 1 do nr[j] := sub[j];
+          for j := 1 to Length(rows[i]) - 1 do nr[a + j - 1] := rows[i][j];
+          SetLength(nrows, Length(nrows) + 1);
+          nrows[Length(nrows) - 1] := ICopy(nr);
+        end;
+      end;
+      SetLength(r, a + Length(rest));
+      for j := 0 to a - 1 do r[j] := subTys[j];
+      for j := 0 to Length(rest) - 1 do r[a + j] := rest[j];
+      w := XMissing(nrows, r, depth + 1);
+      for i := 0 to Length(w) - 1 do
+      begin
+        SetLength(subStrs, a);
+        for j := 0 to a - 1 do subStrs[j] := w[i][j];
+        SetLength(wi, 1 + Length(w[i]) - a);
+        wi[0] := XCtorStr(t, c, subStrs);
+        for j := a to Length(w[i]) - 1 do wi[1 + j - a] := w[i][j];
+        XAddWit(Result, wi);
+      end;
+    end;
+    Exit;
+  end;
+  { signature incomplete : matrice par defaut }
+  nrows := nil;
+  for i := 0 to Length(rows) - 1 do
+    if rows[i][0] < 0 then
+    begin
+      SetLength(nr, Length(rows[i]) - 1);
+      for j := 1 to Length(rows[i]) - 1 do nr[j - 1] := rows[i][j];
+      SetLength(nrows, Length(nrows) + 1);
+      nrows[Length(nrows) - 1] := ICopy(nr);
+    end;
+  w := XMissing(nrows, rest, depth + 1);
+  for i := 0 to Length(w) - 1 do
+  begin
+    SetLength(wi, 1 + Length(w[i]));
+    wi[0] := '_';
+    for j := 0 to Length(w[i]) - 1 do wi[1 + j] := w[i][j];
+    XAddWit(Result, wi);
+  end;
+end;
+
+function XWitList(const ws: TXWits): string;
+var
+  i, n: Integer;
+begin
+  n := Length(ws);
+  Result := '';
+  for i := 0 to n - 1 do
+  begin
+    if i > 0 then
+    begin
+      if (i = n - 1) and (n <= 3) then Result := Result + ' and ' else Result := Result + ', ';
+    end;
+    if i >= 3 then begin Result := Result + ' and more'; Break; end;
+    Result := Result + '`' + ws[i][0] + '`';
+  end;
+end;
+
+procedure CheckMatchExhaustive(h: Integer);
+var
+  rows: TXRows;
+  i, arm: Integer;
+  ctys: TIntArr;
+  ws: TXWits;
+  labs: TLabels;
+  t, sc: Integer;
+  msg, ws2: string;
+  r: TIntArr;
+  nl: Integer;
+begin
+  if Hirs[h].line <= 0 then Exit;
+  sc := Hirs[h].a;
+  rows := nil;
+  for i := 0 to Length(Hirs[h].l) - 1 do
+  begin
+    arm := Hirs[h].l[i];
+    if Hirs[arm].a <> 0 then Continue;
+    SetLength(r, 1);
+    r[0] := Integer(Hirs[arm].n);
+    SetLength(rows, Length(rows) + 1);
+    rows[Length(rows) - 1] := ICopy(r);
+  end;
+  SetLength(ctys, 1);
+  ctys[0] := Zonk(Hirs[sc].ty);
+  ws := XMissing(rows, ctys, 0);
+  if Length(ws) = 0 then Exit;
+  t := Shallow(Zonk(Hirs[sc].ty));
+  SetLength(labs, 1);
+  labs[0].fi := Hirs[sc].fi; labs[0].line := Hirs[sc].line; labs[0].col := Hirs[sc].col; labs[0].len := Hirs[sc].len;
+  labs[0].primary := True;
+  if Length(ws) = 1 then ws2 := 'pattern ' else ws2 := 'patterns ';
+  msg := XWitList(ws);
+  labs[0].text := ws2 + msg + ' not covered';
+  ReportLabels(True, 'E0004', 'non-exhaustive patterns: ' + msg + ' not covered', labs);
+  WriteErrLn('  = note: the matched value is of type `' + TyToStr(t) + '`');
+  WriteErrLn('');
+end;
+
+procedure CheckLetIrrefutable(p: Integer; init: Integer; pos: Integer);
+var
+  rows: TXRows;
+  ctys, r: TIntArr;
+  ws: TXWits;
+  labs: TLabels;
+  msg: string;
+begin
+  if (p < 0) or (Pats[p].line <= 0) then Exit;
+  SetLength(r, 1);
+  r[0] := p;
+  SetLength(rows, 1);
+  rows[0] := ICopy(r);
+  SetLength(ctys, 1);
+  ctys[0] := Zonk(Pats[p].ty);
+  ws := XMissing(rows, ctys, 0);
+  if Length(ws) = 0 then Exit;
+  SetLength(labs, 1);
+  labs[0].fi := Pats[p].fi; labs[0].line := Pats[p].line; labs[0].col := Pats[p].col; labs[0].len := Pats[p].len;
+  labs[0].primary := True;
+  msg := XWitList(ws);
+  if Length(ws) = 1 then labs[0].text := 'pattern ' + msg + ' not covered'
+  else labs[0].text := 'patterns ' + msg + ' not covered';
+  ReportLabels(True, 'E0005', 'refutable pattern in local binding', labs);
+  WriteErrLn('  = note: `let` bindings require an "irrefutable pattern", like a `struct` or an `enum` with only one variant');
+  WriteErrLn('  = note: for more information, visit https://doc.rust-lang.org/book/ch19-02-refutability.html');
+  WriteErrLn('  = note: the matched value is of type `' + TyToStr(Zonk(Pats[p].ty)) + '`');
+  WriteErrLn('');
+end;
+{ ============================================================ }
 { Verification des deplacements (E0382)                        }
 { ============================================================ }
 
@@ -13422,6 +14340,11 @@ begin
       end;
     hMatch:
       begin
+        if (MvQuiet = 0) and (HFind(MvSeen, 'M' + IntToStr(h)) < 0) then
+        begin
+          HPut(MvSeen, 'M' + IntToStr(h), 1);
+          CheckMatchExhaustive(h);
+        end;
         plist := nil;
         for i := 0 to Length(Hirs[h].l) - 1 do IAdd(plist, Integer(Hirs[Hirs[h].l[i]].n));
         MvMatchScrut(Hirs[h].a, plist, st, moves);
@@ -13504,6 +14427,11 @@ begin
           arm := Hirs[h].l[i];
           if Hirs[arm].k = hLet then
           begin
+            if (Hirs[arm].b = 0) and (MvQuiet = 0) and (HFind(MvSeen, 'L' + IntToStr(arm)) < 0) then
+            begin
+              HPut(MvSeen, 'L' + IntToStr(arm), 1);
+              CheckLetIrrefutable(Integer(Hirs[arm].n), Hirs[arm].a, 0);
+            end;
             if Hirs[arm].a <> 0 then
             begin
               plist := nil;
@@ -31340,6 +32268,7 @@ begin
   ResolveImports;
   FinishDiag;
   IndexImpls;
+  CheckImplItems;
   InitLang;
   FinishDiag;
   MainDef := ScopeLookup(UserRoot, 'V', 'main', 0);
