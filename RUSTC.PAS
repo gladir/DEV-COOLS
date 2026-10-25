@@ -89,6 +89,8 @@ Type
 Var
   ErrCount, WarnCount: Integer;
   FirstErrCode: string;
+  LastWidth: Integer = 1;
+  LastSnippet: Boolean = False;
   Files: array of TSrcFile;
   NFiles: Integer;
   OptVerbose: Boolean;
@@ -483,7 +485,10 @@ begin
     while len > 0 do begin ln := ln + '^'; Dec(len); end;
     if lbl <> '' then ln := ln + ' ' + lbl;
     WriteErrLn(ln);
-  end;
+    LastWidth := Length(IntToStr(line));
+    LastSnippet := True;
+  end
+  else LastSnippet := False;
   if ErrCount >= MAX_ERRORS then
   begin
     WriteErrLn('error: aborting due to too many errors');
@@ -502,7 +507,7 @@ Type
 procedure RenderLabels(const labs: TLabels);
 var
   head, ln, w, pad: string;
-  i, j, n, k, prim, width, dc, len, prevLine: Integer;
+  i, j, n, k, prim, width, dc, len, prevLine, grp: Integer;
   order: array of Integer;
   tmp: Integer;
   mark: string;
@@ -516,6 +521,8 @@ begin
     for i := 0 to Length(labs) - 1 do
       if Length(IntToStr(labs[i].line)) > width then width := Length(IntToStr(labs[i].line));
     pad := Spaces(width);
+    LastWidth := width;
+    LastSnippet := True;
     WriteErrLn(pad + '--> ' + Files[labs[prim].fi].name + ':' + IntToStr(labs[prim].line) + ':' + IntToStr(labs[prim].col));
     WriteErrLn(pad + ' |');
     SetLength(order, Length(labs));
@@ -528,9 +535,13 @@ begin
           tmp := order[i]; order[i] := order[j]; order[j] := tmp;
         end;
     prevLine := 0;
-    for i := 0 to Length(order) - 1 do
+    i := 0;
+    while i < Length(order) do
     begin
       k := order[i];
+      { regroupe les etiquettes d'une meme ligne }
+      grp := i;
+      while (grp + 1 < Length(order)) and (labs[order[grp + 1]].line = labs[k].line) do Inc(grp);
       if (labs[k].line <> prevLine) or (i = 0) then
       begin
         if (prevLine > 0) and (labs[k].line - prevLine = 2) then
@@ -542,20 +553,59 @@ begin
         prevLine := labs[k].line;
       end;
       ln := SourceLine(labs[k].fi, labs[k].line);
-      n := DisplayCol(ln, labs[k].col);
-      len := labs[k].len;
-      if len < 1 then len := 1;
-      if len > 1 then
+      { ligne de marques }
+      w := '';
+      for j := i to grp do
       begin
-        dc := DisplayCol(ln, labs[k].col + len) - n;
-        if dc < 1 then dc := 1;
-        len := dc;
+        n := DisplayCol(ln, labs[order[j]].col);
+        len := labs[order[j]].len;
+        if len < 1 then len := 1;
+        if len > 1 then
+        begin
+          dc := DisplayCol(ln, labs[order[j]].col + len) - n;
+          if dc < 1 then dc := 1;
+          len := dc;
+        end;
+        while Length(w) < n do w := w + ' ';
+        if labs[order[j]].primary then mark := '^' else mark := '-';
+        while len > 0 do begin w := w + mark; Dec(len); end;
       end;
-      if labs[k].primary then mark := '^' else mark := '-';
-      w := pad + ' | ' + Spaces(n);
-      while len > 0 do begin w := w + mark; Dec(len); end;
-      if labs[k].text <> '' then w := w + ' ' + labs[k].text;
-      WriteErrLn(w);
+      if labs[order[grp]].text <> '' then w := w + ' ' + labs[order[grp]].text;
+      WriteErrLn(pad + ' | ' + w);
+      { etiquettes precedentes ayant un texte }
+      if grp > i then
+      begin
+        tmp := 0;
+        for j := i to grp - 1 do if labs[order[j]].text <> '' then Inc(tmp);
+        if tmp > 0 then
+        begin
+          w := '';
+          for j := i to grp - 1 do
+            if labs[order[j]].text <> '' then
+            begin
+              n := DisplayCol(ln, labs[order[j]].col);
+              while Length(w) < n do w := w + ' ';
+              w := w + '|';
+            end;
+          WriteErrLn(pad + ' | ' + w);
+          for j := grp - 1 downto i do
+            if labs[order[j]].text <> '' then
+            begin
+              w := '';
+              for dc := i to j - 1 do
+                if labs[order[dc]].text <> '' then
+                begin
+                  n := DisplayCol(ln, labs[order[dc]].col);
+                  while Length(w) < n do w := w + ' ';
+                  w := w + '|';
+                end;
+              n := DisplayCol(ln, labs[order[j]].col);
+              while Length(w) < n do w := w + ' ';
+              WriteErrLn(pad + ' | ' + w + labs[order[j]].text);
+            end;
+        end;
+      end;
+      i := grp + 1;
     end;
   end;
 end;
@@ -593,12 +643,16 @@ end;
 
 procedure Note(const s: string);
 begin
-  WriteErrLn('  = note: ' + s);
+  if LastSnippet then WriteErrLn(Spaces(LastWidth) + ' |');
+  LastSnippet := False;
+  WriteErrLn(Spaces(LastWidth) + ' = note: ' + s);
 end;
 
 procedure Help(const s: string);
 begin
-  WriteErrLn('  = help: ' + s);
+  if LastSnippet then WriteErrLn(Spaces(LastWidth) + ' |');
+  LastSnippet := False;
+  WriteErrLn(Spaces(LastWidth) + ' = help: ' + s);
 end;
 
 procedure FatalMsg(const s: string);
@@ -1751,7 +1805,7 @@ begin
   Adv; { < }
   while not (IsPunct('>') or IsPunct('>>') or IsPunct('>=') or IsPunct('>>=')) do
   begin
-    if CurK = tkLifetime then Adv
+    if CurK = tkLifetime then begin Nodes[seg].s2 := 'L'; Adv; end
     else if (CurK = tkIdent) and PeekPunct(1, '=') then
     begin
       b := MkN(nAssocBind);
@@ -1961,7 +2015,7 @@ begin
   begin
     Nodes[n].k := tRef;
     if IsPunct('&&') then SplitFirst else Adv;
-    if CurK = tkLifetime then Adv;
+    if CurK = tkLifetime then begin Nodes[n].s2 := CurS; Adv; end;
     if AcceptKw('mut') then Nodes[n].f := 1;
     Nodes[n].a := ParseType;
   end
@@ -7354,6 +7408,186 @@ begin
         WriteErrLn('');
       end;
     end;
+  end;
+end;
+{ ============================================================ }
+{ Verification des signatures : elision des durees de vie (E0106) }
+{ ============================================================ }
+
+Var
+  SgElided: Integer;
+  SgNamed: TStrArr;
+  SgOutPos: TIntArr;     { noeuds de references elidees dans le type de sortie }
+  SgInPos: TIntArr;      { types de parametres contenant une duree elidee }
+  SgCollectOut: Boolean;
+  SgCurParamHas: Boolean;
+
+procedure SgWalkTy(t: Integer);
+var
+  i, j: Integer;
+begin
+  if t <= 0 then Exit;
+  case Nodes[t].k of
+    tRef:
+      begin
+        if (Nodes[t].s2 = '') or (Nodes[t].s2 = '_') then
+        begin
+          if SgCollectOut then IAdd(SgOutPos, t)
+          else begin Inc(SgElided); SgCurParamHas := True; end;
+        end
+        else if not SgCollectOut then
+        begin
+          if Nodes[t].s2 <> 'static' then
+          begin
+            j := 0;
+            for i := 0 to Length(SgNamed) - 1 do if SgNamed[i] = Nodes[t].s2 then j := 1;
+            if j = 0 then SAdd(SgNamed, Nodes[t].s2);
+          end;
+        end;
+        SgWalkTy(Nodes[t].a);
+      end;
+    tPath:
+      begin
+        for i := 0 to Length(Nodes[t].l) - 1 do
+        begin
+          if (Nodes[Nodes[t].l[i]].s2 = 'L') and (not SgCollectOut) then
+          begin
+            j := 0;
+            for j := 0 to Length(SgNamed) - 1 do ;
+            SAdd(SgNamed, '<' + IntToStr(t) + '>');
+          end;
+          for j := 0 to Length(Nodes[Nodes[t].l[i]].l) - 1 do SgWalkTy(Nodes[Nodes[t].l[i]].l[j]);
+        end;
+        if Nodes[t].a <> 0 then SgWalkTy(Nodes[t].a);
+      end;
+    tTuple: for i := 0 to Length(Nodes[t].l) - 1 do SgWalkTy(Nodes[t].l[i]);
+    tArray, tSlice, tPtr: SgWalkTy(Nodes[t].a);
+  end;
+end;
+
+procedure CheckFnElision(d: Integer);
+var
+  fn, i, p, ret, nl: Integer;
+  hasSelfRef: Boolean;
+  labs: TLabels;
+  names: string;
+  cnt: Integer;
+begin
+  fn := Defs[d].node;
+  ret := Nodes[fn].a;
+  if ret = 0 then Exit;
+  SgOutPos := nil;
+  SgCollectOut := True;
+  SgWalkTy(ret);
+  if Length(SgOutPos) = 0 then Exit;
+  SgCollectOut := False;
+  SgElided := 0;
+  SgNamed := nil;
+  SgInPos := nil;
+  hasSelfRef := False;
+  for i := 0 to Length(Nodes[fn].l2) - 1 do
+  begin
+    p := Nodes[fn].l2[i];
+    if Nodes[p].k = nSelfParam then
+    begin
+      if (Nodes[p].f and 1) <> 0 then hasSelfRef := True
+      else if Nodes[p].a <> 0 then
+      begin
+        SgCurParamHas := False;
+        SgWalkTy(Nodes[p].a);
+        if SgCurParamHas then hasSelfRef := True;
+      end;
+    end
+    else if Nodes[p].b <> 0 then
+    begin
+      SgCurParamHas := False;
+      SgWalkTy(Nodes[p].b);
+      if SgCurParamHas then IAdd(SgInPos, Nodes[p].b);
+    end;
+  end;
+  if hasSelfRef then Exit;
+  cnt := SgElided + Length(SgNamed);
+  if cnt = 1 then Exit;
+  { E0106 }
+  nl := 0;
+  SetLength(labs, 0);
+  for i := 0 to Length(SgInPos) - 1 do
+  begin
+    SetLength(labs, nl + 1);
+    labs[nl].fi := Nodes[SgInPos[i]].fi; labs[nl].line := Nodes[SgInPos[i]].line; labs[nl].col := Nodes[SgInPos[i]].col;
+    labs[nl].len := NodeLen(SgInPos[i]);
+    labs[nl].primary := False;
+    labs[nl].text := '';
+    Inc(nl);
+  end;
+  SetLength(labs, nl + 1);
+  labs[nl].fi := Nodes[SgOutPos[0]].fi; labs[nl].line := Nodes[SgOutPos[0]].line; labs[nl].col := Nodes[SgOutPos[0]].col;
+  labs[nl].len := 1;
+  labs[nl].primary := True;
+  labs[nl].text := 'expected named lifetime parameter';
+  ReportLabels(True, 'E0106', 'missing lifetime specifier', labs);
+  if cnt = 0 then
+    Help('this function''s return type contains a borrowed value, but there is no value for it to be borrowed from')
+  else
+  begin
+    names := '';
+    for i := 0 to Length(Nodes[fn].l2) - 1 do
+    begin
+      p := Nodes[fn].l2[i];
+      if (Nodes[p].k = nParam) and (Nodes[p].b <> 0) and (Nodes[Nodes[p].a].k = pIdent) then
+      begin
+        if names <> '' then names := names + ' or ';
+        names := names + '`' + Nodes[Nodes[p].a].s + '`';
+      end;
+    end;
+    Help('this function''s return type contains a borrowed value, but the signature does not say whether it is borrowed from ' + names);
+  end;
+  WriteErrLn('');
+end;
+
+procedure CheckFieldElision(d: Integer);
+var
+  nd, i, j, f: Integer;
+  labs: TLabels;
+  vd: Integer;
+  procedure CheckF(f: Integer);
+  begin
+    SgOutPos := nil;
+    SgCollectOut := True;
+    SgWalkTy(Nodes[f].a);
+    if Length(SgOutPos) > 0 then
+    begin
+      SetLength(labs, 1);
+      labs[0].fi := Nodes[SgOutPos[0]].fi; labs[0].line := Nodes[SgOutPos[0]].line; labs[0].col := Nodes[SgOutPos[0]].col;
+      labs[0].len := 1;
+      labs[0].primary := True;
+      labs[0].text := 'expected named lifetime parameter';
+      ReportLabels(True, 'E0106', 'missing lifetime specifier', labs);
+      WriteErrLn('');
+    end;
+  end;
+begin
+  nd := Defs[d].node;
+  if Defs[d].kind = dkStruct then
+    for i := 0 to Length(Nodes[nd].l2) - 1 do CheckF(Nodes[nd].l2[i])
+  else if Defs[d].kind = dkEnum then
+    for j := 0 to Length(Defs[d].variants) - 1 do
+    begin
+      vd := Defs[d].variants[j];
+      for i := 0 to Length(Nodes[Defs[vd].node].l2) - 1 do CheckF(Nodes[Defs[vd].node].l2[i]);
+    end;
+end;
+
+procedure CheckSignatures;
+var
+  d: Integer;
+begin
+  for d := 0 to NDefs - 1 do
+  begin
+    if Defs[d].crate <> 0 then Continue;
+    if Defs[d].node <= 0 then Continue;
+    if (Defs[d].kind = dkFn) and (Nodes[Defs[d].node].k = nFn) then CheckFnElision(d)
+    else if (Defs[d].kind = dkStruct) or (Defs[d].kind = dkEnum) then CheckFieldElision(d);
   end;
 end;
 
@@ -13842,7 +14076,7 @@ begin
   msg := XWitList(ws);
   labs[0].text := ws2 + msg + ' not covered';
   ReportLabels(True, 'E0004', 'non-exhaustive patterns: ' + msg + ' not covered', labs);
-  WriteErrLn('  = note: the matched value is of type `' + TyToStr(t) + '`');
+  Note('the matched value is of type `' + TyToStr(t) + '`');
   WriteErrLn('');
 end;
 
@@ -13870,9 +14104,9 @@ begin
   if Length(ws) = 1 then labs[0].text := 'pattern ' + msg + ' not covered'
   else labs[0].text := 'patterns ' + msg + ' not covered';
   ReportLabels(True, 'E0005', 'refutable pattern in local binding', labs);
-  WriteErrLn('  = note: `let` bindings require an "irrefutable pattern", like a `struct` or an `enum` with only one variant');
-  WriteErrLn('  = note: for more information, visit https://doc.rust-lang.org/book/ch19-02-refutability.html');
-  WriteErrLn('  = note: the matched value is of type `' + TyToStr(Zonk(Pats[p].ty)) + '`');
+  Note('`let` bindings require an "irrefutable pattern", like a `struct` or an `enum` with only one variant');
+  Note('for more information, visit https://doc.rust-lang.org/book/ch19-02-refutability.html');
+  Note('the matched value is of type `' + TyToStr(Zonk(Pats[p].ty)) + '`');
   WriteErrLn('');
 end;
 { ============================================================ }
@@ -13907,6 +14141,7 @@ Var
   MvSeen: THashSI;
   MvQuiet: Integer;
   MvCurHow: Integer;
+  MvAssigned: array of Boolean;
 
 function MvEmpty: TMState;
 begin
@@ -13986,6 +14221,21 @@ end;
 
 { ---- erreur ---- }
 
+procedure MvAddUninit(var st: TMState; v: Integer);
+var
+  r: TMoveRec;
+  vn: TVarInfo;
+begin
+  vn := Bodies[MvBody].vars[v];
+  if vn.node <= 0 then Exit;
+  r.v := v; r.f := -1;
+  r.fi := Nodes[vn.node].fi; r.line := Nodes[vn.node].line; r.col := Nodes[vn.node].col; r.len := Length(vn.name);
+  r.how := 9;
+  r.name := '';
+  SetLength(st.items, Length(st.items) + 1);
+  st.items[Length(st.items) - 1] := r;
+end;
+
 function MvFieldName(t, f: Integer): string;
 begin
   t := Shallow(t);
@@ -14023,6 +14273,27 @@ begin
   if HFind(MvSeen, key) >= 0 then Exit;
   HPut(MvSeen, key, 1);
   if borrow then what := 'borrow' else what := 'use';
+  if mr.how = 9 then
+  begin
+    SetLength(labs, 2);
+    labs[0].fi := mr.fi; labs[0].line := mr.line; labs[0].col := mr.col; labs[0].len := mr.len;
+    labs[0].primary := False;
+    labs[0].text := 'binding declared here but left uninitialized';
+    labs[1].fi := Hirs[h].fi; labs[1].line := Hirs[h].line; labs[1].col := Hirs[h].col; labs[1].len := Hirs[h].len;
+    labs[1].primary := True;
+    if (v < Length(MvAssigned)) and MvAssigned[v] then
+    begin
+      labs[1].text := '`' + vn.name + '` used here but it is possibly-uninitialized';
+      ReportLabels(True, 'E0381', 'used binding `' + vn.name + '` is possibly-uninitialized', labs);
+    end
+    else
+    begin
+      labs[1].text := '`' + vn.name + '` used here but it isn''t initialized';
+      ReportLabels(True, 'E0381', 'used binding `' + vn.name + '` isn''t initialized', labs);
+    end;
+    WriteErrLn('');
+    Exit;
+  end;
   isPartial := mr.f >= 0;
   sameSite := (mr.line = Hirs[h].line) and (mr.col = Hirs[h].col);
   SetLength(labs, 0);
@@ -14312,7 +14583,11 @@ begin
       begin
         MvWalk(Hirs[h].b, st, 0);
         if st.dead then Exit;
-        if PathRoot(Hirs[h].a, v, f) then MvClear(st, v, f)
+        if PathRoot(Hirs[h].a, v, f) then
+        begin
+          if (f < 0) and (v < Length(MvAssigned)) then MvAssigned[v] := True;
+          MvClear(st, v, f);
+        end
         else MvWalk(Hirs[h].a, st, 1);
       end;
     hAssignOp:
@@ -14451,6 +14726,9 @@ begin
               MvWalk(Hirs[arm].b, a, 0);
             end;
             PatDeclare(Integer(Hirs[arm].n), st);
+            pidx := Integer(Hirs[arm].n);
+            if (Hirs[arm].a = 0) and (Pats[pidx].k = pkBind) and (Pats[pidx].v >= 0) then
+              MvAddUninit(st, Pats[pidx].v);
           end
           else
             MvWalk(Hirs[arm].a, st, 0);
@@ -14501,6 +14779,8 @@ begin
   MvBody := b;
   MvNLoops := 0;
   MvQuiet := 0;
+  SetLength(MvAssigned, Bodies[b].nvars);
+  for i := 0 to Bodies[b].nvars - 1 do MvAssigned[i] := False;
   st := MvEmpty;
   MvWalk(Bodies[b].root, st, 0);
 end;
@@ -32269,6 +32549,7 @@ begin
   FinishDiag;
   IndexImpls;
   CheckImplItems;
+  CheckSignatures;
   InitLang;
   FinishDiag;
   MainDef := ScopeLookup(UserRoot, 'V', 'main', 0);
