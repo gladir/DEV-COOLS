@@ -604,6 +604,18 @@ begin
   end;
 end;
 
+Var
+  ErrCodes: TStrArr;
+
+procedure NoteErrCode(const code: string);
+var
+  i: Integer;
+begin
+  for i := 0 to Length(ErrCodes) - 1 do
+    if ErrCodes[i] = code then Exit;
+  SAdd(ErrCodes, code);
+end;
+
 { Emet un diagnostic au format rustc }
 procedure Report(isErr: Boolean; const code, msg: string; fi, line, col, len: Integer; const lbl: string);
 var
@@ -623,6 +635,7 @@ begin
     head := 'warning';
   end;
   if code <> '' then head := head + '[' + code + ']';
+  if isErr and (code <> '') then NoteErrCode(code);
   if isErr and (code <> '') and (FirstErrCode = '') then FirstErrCode := code;
   WriteErrLn(head + ': ' + msg);
   if (fi >= 0) and (fi < NFiles) and (line > 0) then
@@ -669,6 +682,7 @@ Type
 
 Var
   RenderArrowIdx: Integer = -1;
+  RenderMinWidth: Integer = 0;
 
 procedure RenderLabels(const labs: TLabels);
 var
@@ -687,6 +701,7 @@ begin
     width := 1;
     for i := 0 to Length(labs) - 1 do
       if Length(IntToStr(labs[i].line)) > width then width := Length(IntToStr(labs[i].line));
+    if RenderMinWidth > width then width := RenderMinWidth;
     pad := Spaces(width);
     LastWidth := width;
     LastSnippet := True;
@@ -791,6 +806,7 @@ begin
   if isErr then begin Inc(ErrCount); head := 'error'; end
   else begin Inc(WarnCount); head := 'warning'; end;
   if code <> '' then head := head + '[' + code + ']';
+  if isErr and (code <> '') then NoteErrCode(code);
   if isErr and (code <> '') and (FirstErrCode = '') then FirstErrCode := code;
   WriteErrLn(head + ': ' + msg);
   RenderLabels(labs);
@@ -833,6 +849,9 @@ begin
 end;
 
 procedure FinishDiag;
+var
+  i, j: Integer;
+  tmpS: string;
 begin
   if ErrCount > 0 then DeferFlush(99);
   if ErrCount > 0 then
@@ -845,7 +864,22 @@ begin
     else if WarnCount > 1 then WriteErr('; ' + IntToStr(WarnCount) + ' warnings emitted');
     WriteErrLn('');
     WriteErrLn('');
-    if FirstErrCode <> '' then
+    if Length(ErrCodes) > 1 then
+    begin
+      { codes tries par ordre croissant }
+      for i := 0 to Length(ErrCodes) - 2 do
+        for j := i + 1 to Length(ErrCodes) - 1 do
+          if ErrCodes[j] < ErrCodes[i] then begin tmpS := ErrCodes[i]; ErrCodes[i] := ErrCodes[j]; ErrCodes[j] := tmpS; end;
+      tmpS := '';
+      for i := 0 to Length(ErrCodes) - 1 do
+      begin
+        if i > 0 then tmpS := tmpS + ', ';
+        tmpS := tmpS + ErrCodes[i];
+      end;
+      WriteErrLn('Some errors have detailed explanations: ' + tmpS + '.');
+      WriteErrLn('For more information about an error, try `rustc --explain ' + ErrCodes[0] + '`.');
+    end
+    else if FirstErrCode <> '' then
       WriteErrLn('For more information about this error, try `rustc --explain ' + FirstErrCode + '`.');
     Halt(1);
   end;
@@ -2636,12 +2670,14 @@ function ParseBin(minPrec: Integer): Integer;
 var
   left, right, n, prec, t: Integer;
   op: string;
+  opPos: QWord;
 begin
   left := ParseUnary;
   while True do
   begin
     prec := BinInfo(op);
     if (prec < 0) or (prec < minPrec) then Break;
+    opPos := (QWord(Toks[TokPos].line) shl 20) or QWord(Toks[TokPos].col);
     Adv;
     if op = 'as' then
     begin
@@ -2654,6 +2690,7 @@ begin
     begin
       right := ParseBin(prec + 1);
       n := MkFrom(eBinary, left);
+      Nodes[n].iv := opPos;
       Nodes[n].s := op;
       Nodes[n].a := left;
       Nodes[n].b := right;
@@ -4388,6 +4425,8 @@ Const
   tyDyn = 17;       { def = trait, args = arguments du trait (sans Self) }
   tyConst = 18;     { n = valeur }
   tyOpaque = 19;    { type "impl Trait" retourne : def = indice }
+  tyProj = 21;      { projection rigide <T as Trait>::Nom d'un parametre : def = trait, args = arguments du trait, n = indice du nom }
+  tyParam = 20;     { parametre de type generique opaque (verification generique) : def = definition, n = indice }
 
 Type
   TTy = record
@@ -4600,6 +4639,29 @@ begin
     else cur := cur + names[i];
 end;
 
+Var
+  ProjNames: TStrArr;
+  ProjNamesMap: THashSI;
+
+function MkProj(trait: Integer; const targs: TIntArr; const name: string): Integer;
+var
+  k: Integer;
+begin
+  k := HFind(ProjNamesMap, name);
+  if k < 0 then
+  begin
+    SAdd(ProjNames, name);
+    k := Length(ProjNames) - 1;
+    HPut(ProjNamesMap, name, k);
+  end;
+  Result := MkTyArgs(tyProj, k, 0, trait, targs);
+end;
+
+function MkParam(owner, idx: Integer): Integer;
+begin
+  Result := MkTy0(tyParam, idx, 0, owner);
+end;
+
 function MkOpaque(id: Integer): Integer;
 begin
   Result := MkTy0(tyOpaque, 0, 0, id);
@@ -4627,6 +4689,7 @@ begin
   NTrail := 0;
   HInit(TyMap);
   HInit(DynNamesMap);
+  HInit(ProjNamesMap);
   SetLength(Tys, 1024);
   TyErrT := MkTy0(tyErr, 0, 0, 0);
   TyBoolT := MkTy0(tyBool, 0, 0, 0);
@@ -4817,6 +4880,18 @@ begin
   Result := False;
   for i := 0 to Length(Tys[t].args) - 1 do
     if HasVars(Tys[t].args[i]) then begin Result := True; Exit; end;
+end;
+
+{ Le type contient-il un parametre de type opaque ? }
+function TyHasParam(t: Integer): Boolean;
+var
+  i: Integer;
+begin
+  t := Shallow(t);
+  if Tys[t].k = tyParam then begin Result := True; Exit; end;
+  Result := False;
+  for i := 0 to Length(Tys[t].args) - 1 do
+    if TyHasParam(Tys[t].args[i]) then begin Result := True; Exit; end;
 end;
 
 { Remplace les variables d'entiers / flottants restantes par i32 / f64 }
@@ -5872,6 +5947,8 @@ begin
     tyClosure: Result := 'closure';
     tyDyn: Result := 'dyn' + IntToStr(Tys[t].def);
     tyVar: Result := 'var';
+    tyParam: Result := 'param';
+    tyProj: Result := 'param';
   else
     Result := 'other';
   end;
@@ -6537,6 +6614,10 @@ procedure FnDefSig(def: Integer; const args: TIntArr; var params: TIntArr; var r
 function TraitAllowedFor(X, tr: Integer): Boolean; forward;
 function EnvBoundTargs(X, tr: Integer; var targs: TIntArr): Boolean; forward;
 function EnvHasBoundOn(X, tr: Integer): Boolean; forward;
+function ParamSelect(trait: Integer; const targs: TIntArr; selfT: Integer; commit: Boolean): Integer; forward;
+function ParamProject(selfT, trait: Integer; const name: string; var res: Integer; var hasBound: Boolean): Boolean; forward;
+var
+  ParamAssume: Boolean = False;
 function IsCopyTy(t: Integer): Boolean; forward;
 function TraitUsableHere(tr, recvTy: Integer): Boolean; forward;
 
@@ -6847,10 +6928,23 @@ begin
     case Tys[selfT].k of
       tyStr, tySlice, tyDyn: Result := 0;
       tyVar: Result := 2;
+      tyParam: if ParamMaybeUnsized(Tys[selfT].def, Tys[selfT].n) then Result := 0 else Result := 1;
+      tyProj: Result := 1;
     else
       Result := 1;
     end;
     Exit;
+  end;
+  if (Tys[selfT].k = tyParam) or (Tys[selfT].k = tyProj) then
+  begin
+    { traits marqueurs automatiques : acceptes ; sinon bornes de l'environnement puis impls generiques }
+    if (trait = LangSend) or (trait = LangSync) or (trait = LangUnpin) then begin Result := 1; Exit; end;
+    if ParamSelect(trait, targs, selfT, commit) = 1 then
+    begin
+      Result := 1;
+      impl := -4;
+      Exit;
+    end;
   end;
   if (trait = LangClone) and (Tys[selfT].k = tyClosure) then
   begin
@@ -7022,6 +7116,8 @@ var
   env: TEnv;
   params: TIntArr;
   ret: Integer;
+  hasB: Boolean;
+  za: TIntArr;
 begin
   selfT := Shallow(selfTy);
   res := TyErrT;
@@ -7030,6 +7126,20 @@ begin
   if Tys[selfT].k = tyVar then
   begin
     if VarKind[Tys[selfT].n] = 0 then begin Result := 2; Exit; end;
+  end;
+  { liaisons associees d'une borne de parametre }
+  if (Tys[selfT].k = tyParam) or (Tys[selfT].k = tyProj) then
+  begin
+    if ParamProject(selfT, trait, name, res, hasB) then Exit;
+    if ParamAssume then hasB := True;
+    if hasB then
+    begin
+      za := nil;
+      for i := 0 to Length(targs) - 1 do IAdd(za, Zonk(targs[i]));
+      za[0] := selfT;
+      res := MkProj(trait, za, name);
+      Exit;
+    end;
   end;
   { liaisons associees d'un objet-trait }
   if Tys[selfT].k = tyDyn then
@@ -7289,11 +7399,38 @@ end;
 
 { Le trait tr peut-il fournir la methode name pour le type de recepteur P (apres autoref) ? }
 function TraitCandX(tr: Integer; const name: string; P, U: Integer; var X, fnd: Integer): Boolean;
+var
+  fargs: TIntArr;
+  env: TEnv;
+  spt, sn: Integer;
 begin
   Result := False;
   fnd := TraitAssocItem(tr, name, dkFn);
   if fnd < 0 then Exit;
   if Defs[fnd].selfKind = 0 then Exit;
+  if Defs[fnd].selfKind = 4 then
+  begin
+    { self: Box<Self> / Rc<Self> / ... : le type de recepteur determine Self }
+    sn := Snapshot;
+    Inc(SuppressDiag);
+    fargs := FreshArgs(fnd);
+    EnvForDef(fnd, fargs, env);
+    env.infer := True;
+    spt := SelfParamType(fnd, fargs[0], env);
+    if (spt <> 0) and Unify(spt, P) then
+    begin
+      X := Zonk(fargs[0]);
+      Dec(SuppressDiag);
+      Rollback(sn);
+      if Tys[X].k = tyVar then Exit;
+      if not TraitUsableHere(tr, U) then Exit;
+      Result := True;
+      Exit;
+    end;
+    Dec(SuppressDiag);
+    Rollback(sn);
+    Exit;
+  end;
   case Defs[fnd].selfKind of
     1: X := P;
     2: begin
@@ -8435,6 +8572,22 @@ begin
           Result := Result + ' -> ' + TyToStr(Tys[t].args[Length(Tys[t].args) - 1]);
       end;
     tyClosure: Result := '{closure}';
+    tyParam: Result := Defs[Tys[t].def].gnames[Tys[t].n];
+    tyProj:
+      begin
+        s := '<' + TyToStr(Tys[t].args[0]) + ' as ' + Defs[Tys[t].def].name;
+        if Length(Tys[t].args) > 1 then
+        begin
+          s := s + '<';
+          for i := 1 to Length(Tys[t].args) - 1 do
+          begin
+            if i > 1 then s := s + ', ';
+            s := s + TyToStr(Tys[t].args[i]);
+          end;
+          s := s + '>';
+        end;
+        Result := s + '>::' + ProjNames[Tys[t].n];
+      end;
     tyVar:
       case VarKind[Tys[t].n] of
         1: Result := '{integer}';
@@ -8507,6 +8660,8 @@ Var
   InstBodies: TIntArr;
   CheckDepth: Integer;
   WarnUnused: Boolean;
+  GenericCheck: Boolean = False;     { verification d'un corps generique (parametres opaques) }
+  PBounds: TBoundArr;                { bornes de l'instance courante (verification generique) }
 
 function Cx: Integer;
 begin
@@ -8728,6 +8883,227 @@ begin
       Result := True;
       Exit;
     end;
+end;
+
+{ ---- verification generique : bornes de l'environnement ---- }
+
+procedure AddSupersOf(const b: TBound; depth: Integer; var res: TBoundArr);
+var
+  i, tr2, nd, n: Integer;
+  env2: TEnv;
+  ta: TIntArr;
+  bn: TStrArr;
+  bt: TIntArr;
+  nb: TBound;
+begin
+  if depth > 6 then Exit;
+  nd := Defs[b.trait].node;
+  if nd <= 0 then Exit;
+  for i := 0 to Length(Nodes[nd].l3) - 1 do
+  begin
+    EnvForDef(b.trait, b.targs, env2);
+    env2.infer := False;
+    ta := nil; bn := nil; bt := nil;
+    Inc(SuppressDiag);
+    tr2 := ResolveTraitRef(Nodes[nd].l3[i], env2, b.subj, ta, bn, bt);
+    Dec(SuppressDiag);
+    if tr2 < 0 then Continue;
+    nb.subj := b.subj;
+    nb.trait := tr2;
+    nb.targs := ta;
+    nb.bnames := bn;
+    nb.btys := bt;
+    nb.node := b.node;
+    n := Length(res);
+    SetLength(res, n + 1);
+    res[n] := nb;
+    AddSupersOf(nb, depth + 1, res);
+  end;
+end;
+
+{ Bornes (avec super-traits) de l'environnement d'une instance dont les arguments sont des parametres opaques }
+function BuildParamBounds(defn: Integer; var env: TEnv): TBoundArr;
+var
+  p, i, n, k: Integer;
+  base: TBoundArr;
+  nb: TBound;
+  env2: TEnv;
+begin
+  Result := nil;
+  if defn < 0 then Exit;
+  env2 := env;
+  env2.infer := False;
+  Inc(SuppressDiag);
+  ParamAssume := True;
+  LowerBoundsOf(defn, env2, base);
+  ParamAssume := False;
+  Dec(SuppressDiag);
+  Result := base;
+  { dans un trait : Self: Trait }
+  p := Defs[defn].parent;
+  if (p >= 0) and (Defs[p].kind = dkTrait) and (Length(env.tys) >= Length(Defs[p].gnames)) then
+  begin
+    nb.subj := env.tys[0];
+    nb.trait := p;
+    nb.targs := nil;
+    for k := 0 to Length(Defs[p].gnames) - 1 do IAdd(nb.targs, env.tys[k]);
+    nb.bnames := nil;
+    nb.btys := nil;
+    nb.node := 0;
+    n := Length(Result);
+    SetLength(Result, n + 1);
+    Result[n] := nb;
+  end;
+  n := Length(Result);
+  for i := 0 to n - 1 do
+    AddSupersOf(Result[i], 0, Result);
+end;
+
+{ Bornes declarees sur un type associe d'un trait (type IntoIter: Iterator<Item = Self::Item>;) pour une projection rigide }
+Var
+  ProjBoundCache: THashSI;
+  ProjBoundLists: array of TBoundArr;
+  NProjBoundLists: Integer;
+  ProjBoundInit: Boolean = False;
+
+function ProjAssumed(selfT: Integer): TBoundArr;
+var
+  idx, item, nd, i, n: Integer;
+  env: TEnv;
+  ta: TIntArr;
+  bn: TStrArr;
+  bt: TIntArr;
+  tr: Integer;
+  nb: TBound;
+  res: TBoundArr;
+  sv: Boolean;
+begin
+  Result := nil;
+  if not ProjBoundInit then begin ProjBoundInit := True; HInit(ProjBoundCache); end;
+  idx := HFind(ProjBoundCache, IntToStr(selfT));
+  if idx >= 0 then begin Result := ProjBoundLists[idx]; Exit; end;
+  res := nil;
+  item := TraitAssocItem(Tys[selfT].def, ProjNames[Tys[selfT].n], dkTypeAlias);
+  if item >= 0 then
+  begin
+    nd := Defs[item].node;
+    EnvForDef(Tys[selfT].def, Tys[selfT].args, env);
+    env.infer := False;
+    sv := ParamAssume;
+    ParamAssume := True;
+    Inc(SuppressDiag);
+    for i := 0 to Length(Nodes[nd].l3) - 1 do
+    begin
+      ta := nil; bn := nil; bt := nil;
+      tr := ResolveTraitRef(Nodes[nd].l3[i], env, selfT, ta, bn, bt);
+      if tr < 0 then Continue;
+      nb.subj := selfT;
+      nb.trait := tr;
+      nb.targs := ta;
+      nb.bnames := bn;
+      nb.btys := bt;
+      nb.node := 0;
+      n := Length(res);
+      SetLength(res, n + 1);
+      res[n] := nb;
+      AddSupersOf(nb, 0, res);
+    end;
+    Dec(SuppressDiag);
+    ParamAssume := sv;
+  end;
+  if NProjBoundLists >= Length(ProjBoundLists) then SetLength(ProjBoundLists, NProjBoundLists * 2 + 16);
+  ProjBoundLists[NProjBoundLists] := res;
+  HPut(ProjBoundCache, IntToStr(selfT), NProjBoundLists);
+  Inc(NProjBoundLists);
+  Result := res;
+end;
+
+function ParamSelectIn(const bs: TBoundArr; trait: Integer; const targs: TIntArr; selfT: Integer; commit: Boolean): Integer;
+var
+  i, j, s: Integer;
+  ok: Boolean;
+begin
+  Result := 3;
+  for i := 0 to Length(bs) - 1 do
+  begin
+    if bs[i].trait <> trait then Continue;
+    if Shallow(bs[i].subj) <> selfT then Continue;
+    s := Snapshot;
+    ok := True;
+    for j := 1 to Length(targs) - 1 do
+      if j < Length(bs[i].targs) then
+        if not Unify(targs[j], bs[i].targs[j]) then begin ok := False; Break; end;
+    if ok then
+    begin
+      if not commit then Rollback(s);
+      Result := 1;
+      Exit;
+    end;
+    Rollback(s);
+  end;
+end;
+
+{ Trait satisfait par une borne de l'environnement pour un parametre de type : 1 oui, 3 aucune borne ne convient }
+function ParamSelect(trait: Integer; const targs: TIntArr; selfT: Integer; commit: Boolean): Integer;
+var
+  i, j, s: Integer;
+  ok: Boolean;
+begin
+  Result := 3;
+  Result := ParamSelectIn(PBounds, trait, targs, selfT, commit);
+  if (Result = 3) and (Tys[selfT].k = tyProj) then Result := ParamSelectIn(ProjAssumed(selfT), trait, targs, selfT, commit);
+end;
+
+{ Type associe d'un parametre : liaison de borne (T: Iterator<Item = X>) ; hasBound = une borne existe sans liaison }
+function ParamProjectIn(const bs: TBoundArr; selfT, trait: Integer; const name: string; var res: Integer;
+  var hasBound: Boolean): Boolean;
+var
+  i, k: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(bs) - 1 do
+  begin
+    if Shallow(bs[i].subj) <> selfT then Continue;
+    for k := 0 to Length(bs[i].bnames) - 1 do
+      if (bs[i].bnames[k] = name) and TraitIsA(bs[i].trait, trait, 0) then
+      begin
+        res := bs[i].btys[k];
+        Result := True;
+        Exit;
+      end;
+    if bs[i].trait = trait then hasBound := True;
+  end;
+end;
+
+function ParamProject(selfT, trait: Integer; const name: string; var res: Integer; var hasBound: Boolean): Boolean;
+begin
+  hasBound := False;
+  Result := ParamProjectIn(PBounds, selfT, trait, name, res, hasBound);
+  if (not Result) and (Tys[selfT].k = tyProj) then
+    Result := ParamProjectIn(ProjAssumed(selfT), selfT, trait, name, res, hasBound);
+end;
+
+{ Signature d'appel d'un parametre de type borne par Fn / FnMut / FnOnce }
+function ParamFnSig(t: Integer; var params: TIntArr; var ret: Integer): Boolean;
+var
+  i, k, tup: Integer;
+begin
+  Result := False;
+  t := Shallow(t);
+  for i := 0 to Length(PBounds) - 1 do
+  begin
+    if Shallow(PBounds[i].subj) <> t then Continue;
+    if (PBounds[i].trait <> LangFn) and (PBounds[i].trait <> LangFnMut) and (PBounds[i].trait <> LangFnOnce) then Continue;
+    if Length(PBounds[i].targs) < 2 then Continue;
+    tup := Shallow(PBounds[i].targs[1]);
+    if Tys[tup].k <> tyTuple then Continue;
+    params := ICopy(Tys[tup].args);
+    ret := TyUnit;
+    for k := 0 to Length(PBounds[i].bnames) - 1 do
+      if PBounds[i].bnames[k] = 'Output' then ret := PBounds[i].btys[k];
+    Result := True;
+    Exit;
+  end;
 end;
 
 { Le trait est-il utilisable pour un appel de methode ici ? (dans la portee, borne, ou objet-trait) }
@@ -10318,6 +10694,252 @@ begin
   Result := n;
 end;
 
+{ ---- diagnostics d'operateurs : E0369 ---- }
+
+function TraitStdPath(const name: string; const paramName: string): string;
+begin
+  if (name = 'PartialEq') or (name = 'PartialOrd') or (name = 'Eq') or (name = 'Ord') then Result := 'std::cmp::' + name
+  else if (name = 'Add') or (name = 'Sub') or (name = 'Mul') or (name = 'Div') or (name = 'Rem') or
+          (name = 'Neg') or (name = 'Not') or (name = 'BitAnd') or (name = 'BitOr') or (name = 'BitXor') or
+          (name = 'Shl') or (name = 'Shr') then
+  begin
+    if (name = 'Not') or (name = 'BitAnd') or (name = 'BitOr') or (name = 'BitXor') then Result := 'std::ops::' + name + '<Output = ' + paramName + '>'
+    else Result := 'std::ops::' + name + '<Output = ' + paramName + '>';
+  end
+  else if (name = 'Display') or (name = 'Debug') or (name = 'LowerHex') or (name = 'UpperHex') or (name = 'Binary') then
+    Result := 'std::fmt::' + name
+  else if name = 'Hash' then Result := 'std::hash::Hash'
+  else if name = 'Iterator' then Result := 'Iterator'
+  else if (name = 'Sum') or (name = 'Product') then Result := 'std::iter::' + name
+  else Result := name;
+end;
+
+function IsDerivableTrait(const name: string): Boolean;
+begin
+  Result := (name = 'PartialEq') or (name = 'Eq') or (name = 'PartialOrd') or (name = 'Ord') or (name = 'Clone') or
+            (name = 'Copy') or (name = 'Debug') or (name = 'Default') or (name = 'Hash');
+end;
+
+{ type parametre (apres retrait des references) ; -1 si aucun }
+function PeelParam(t: Integer): Integer;
+begin
+  t := Shallow(Zonk(t));
+  while Tys[t].k = tyRef do t := Shallow(Tys[t].args[0]);
+  if Tys[t].k = tyParam then Result := t else Result := -1;
+end;
+
+{ position d'insertion d'une borne pour un parametre generique ; pre = ": " ou " + " }
+function ParamBoundInsertPos(pty: Integer; var fi, line, col: Integer; var pre: string): Boolean;
+var
+  g, b, d, idx: Integer;
+begin
+  Result := False;
+  d := Tys[pty].def;
+  idx := Tys[pty].n;
+  if (idx < 0) or (idx >= Length(Defs[d].gnodes)) then Exit;
+  g := Defs[d].gnodes[idx];
+  if (g <= 0) or (Nodes[g].line <= 0) or (Nodes[g].k <> nGenParam) then Exit;
+  fi := Nodes[g].fi;
+  line := Nodes[g].line;
+  if Length(Nodes[g].l) > 0 then
+  begin
+    b := Nodes[g].l[Length(Nodes[g].l) - 1];
+    if (Nodes[b].eline = Nodes[b].line) and (Nodes[b].ecol > Nodes[b].col) then col := Nodes[b].ecol
+    else col := Nodes[b].col + NodeLen(b);
+    pre := ' + ';
+  end
+  else
+  begin
+    col := Nodes[g].col + Length(Defs[d].gnames[idx]);
+    pre := ': ';
+  end;
+  Result := True;
+end;
+
+{ ecrit "help: ... \n | \n N | ligne avec insertion \n | +++" }
+procedure PrintInsertHelp(const msg: string; fi, line, col: Integer; const ins: string; width: Integer);
+var
+  ln: string;
+begin
+  ln := SourceLine(fi, line);
+  WriteErrLn('help: ' + msg);
+  WriteErrLn(Spaces(width) + ' |');
+  WriteErrLn(PadL(IntToStr(line), width) + ' | ' + ExpandTabs(Copy(ln, 1, col - 1) + ins + Copy(ln, col, Length(ln))));
+  WriteErrLn(Spaces(width) + ' | ' + Spaces(DisplayCol(ln, col)) + StringOfChar('+', Length(ins)));
+end;
+
+{ en-tete d'un item (struct / enum / trait) : de son debut jusqu'apres le nom et les generiques }
+function ItemHeaderSpan(d: Integer; var line, col, len: Integer): Boolean;
+var
+  nd, p, depth, e: Integer;
+  ln, nm: string;
+begin
+  Result := False;
+  nd := Defs[d].node;
+  if (nd <= 0) or (Nodes[nd].line <= 0) then Exit;
+  line := Nodes[nd].line;
+  col := Nodes[nd].col;
+  ln := SourceLine(Nodes[nd].fi, line);
+  nm := Defs[d].name;
+  p := Pos(nm, Copy(ln, col, Length(ln)));
+  if p = 0 then Exit;
+  e := col + p - 1 + Length(nm);
+  if (e <= Length(ln)) and (ln[e] = '<') then
+  begin
+    depth := 0;
+    while e <= Length(ln) do
+    begin
+      if ln[e] = '<' then Inc(depth)
+      else if ln[e] = '>' then
+      begin
+        Dec(depth);
+        if depth = 0 then begin Inc(e); Break; end;
+      end;
+      Inc(e);
+    end;
+  end;
+  len := e - col;
+  Result := True;
+end;
+
+{ emplacement de la definition d'un trait operateur dans la bibliotheque (rustc 1.97.0) }
+function StdOpTraitLoc(const nm: string): string;
+const
+  Base = '/rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/';
+begin
+  Result := '';
+  if nm = 'Add' then Result := 'arith.rs:76:0'
+  else if nm = 'Sub' then Result := 'arith.rs:188:0'
+  else if nm = 'Mul' then Result := 'arith.rs:322:0'
+  else if nm = 'Div' then Result := 'arith.rs:460:0'
+  else if nm = 'Rem' then Result := 'arith.rs:569:0'
+  else if nm = 'Neg' then Result := 'arith.rs:690:0'
+  else if nm = 'AddAssign' then Result := 'arith.rs:768:0'
+  else if nm = 'SubAssign' then Result := 'arith.rs:839:0'
+  else if nm = 'MulAssign' then Result := 'arith.rs:901:0'
+  else if nm = 'DivAssign' then Result := 'arith.rs:963:0'
+  else if nm = 'RemAssign' then Result := 'arith.rs:1028:0'
+  else if nm = 'Not' then Result := 'bit.rs:35:0'
+  else if nm = 'BitAnd' then Result := 'bit.rs:150:0'
+  else if nm = 'BitOr' then Result := 'bit.rs:254:0'
+  else if nm = 'BitXor' then Result := 'bit.rs:358:0'
+  else if nm = 'Shl' then Result := 'bit.rs:461:0'
+  else if nm = 'Shr' then Result := 'bit.rs:584:0'
+  else if nm = 'BitAndAssign' then Result := 'bit.rs:716:0'
+  else if nm = 'BitOrAssign' then Result := 'bit.rs:791:0'
+  else if nm = 'BitXorAssign' then Result := 'bit.rs:866:0'
+  else if nm = 'ShlAssign' then Result := 'bit.rs:939:0'
+  else if nm = 'ShrAssign' then Result := 'bit.rs:1026:0';
+  if Result <> '' then Result := Base + Result;
+end;
+
+{ Erreur d'operateur : etiquettes + aide selon le type de l'operande gauche (parametre, structure utilisateur) }
+procedure ReportOpDiag(const code, msg: string; var labs: TLabels; lt: Integer; const trName: string);
+var
+  ins, pn, pre, loc: string;
+  pt, fi2, l2, c2, hl, hc, hlen, w, k, kind, i0: Integer;
+  dl: string;
+  ta2, ia0: TIntArr;
+begin
+  w := 1;
+  for k := 0 to Length(labs) - 1 do if Length(IntToStr(labs[k].line)) > w then w := Length(IntToStr(labs[k].line));
+  kind := 0;
+  pt := PeelParam(lt);
+  if pt >= 0 then
+  begin
+    pn := Defs[Tys[pt].def].gnames[Tys[pt].n];
+    if ParamBoundInsertPos(pt, fi2, l2, c2, pre) then
+    begin
+      if Length(IntToStr(l2)) > w then w := Length(IntToStr(l2));
+      kind := 1;
+    end;
+  end
+  else
+  begin
+    pt := Shallow(Zonk(lt));
+    while Tys[pt].k = tyRef do pt := Shallow(Tys[pt].args[0]);
+    if (Tys[pt].k = tyAdt) and (Defs[Tys[pt].def].crate = 0) and ItemHeaderSpan(Tys[pt].def, hl, hc, hlen) then
+    begin
+      if Length(IntToStr(hl + 1)) > w then w := Length(IntToStr(hl + 1));
+      kind := 2;
+    end;
+  end;
+  RenderMinWidth := w;
+  ReportLabels(True, code, msg, labs);
+  RenderMinWidth := 0;
+  if kind = 1 then
+  begin
+    ins := pre + TraitStdPath(trName, pn);
+    WriteErrLn(Spaces(w) + ' |');
+    PrintInsertHelp('consider restricting type parameter `' + pn + '` with trait `' + trName + '`', fi2, l2, c2, ins, w);
+  end
+  else if kind = 2 then
+  begin
+    ItemHeaderSpan(Tys[pt].def, hl, hc, hlen);
+    SetLength(labs, 1);
+    labs[0].fi := Nodes[Defs[Tys[pt].def].node].fi; labs[0].line := hl; labs[0].col := hc; labs[0].len := hlen;
+    labs[0].primary := True; labs[0].text := 'must implement `' + trName + '`';
+    WriteErrLn(Spaces(w) + ' |');
+    RenderMinWidth := w;
+    ReportSubLabels('note', 'an implementation of `' + trName + '` might be missing for `' + Defs[Tys[pt].def].name + '`', labs);
+    RenderMinWidth := 0;
+    if IsDerivableTrait(trName) then
+    begin
+      dl := trName;
+      if ((trName = 'PartialOrd') or (trName = 'Eq')) and (LangPartialEq > 0) then
+      begin
+        SetLength(ta2, 2);
+        ta2[0] := pt;
+        ta2[1] := pt;
+        if SelectImpl(LangPartialEq, ta2, i0, ia0, False) = 0 then dl := 'PartialEq, ' + trName;
+      end;
+      WriteErrLn('help: consider annotating `' + Defs[Tys[pt].def].name + '` with `#[derive(' + dl + ')]`');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(PadL(IntToStr(hl), w) + ' + #[derive(' + dl + ')]');
+      WriteErrLn(PadL(IntToStr(hl + 1), w) + ' | ' + ExpandTabs(SourceLine(labs[0].fi, hl)));
+      WriteErrLn(Spaces(w) + ' |');
+    end
+    else
+    begin
+      loc := StdOpTraitLoc(trName);
+      if loc <> '' then
+      begin
+        WriteErrLn('note: the trait `' + trName + '` must be implemented');
+        WriteErrLn(Spaces(w) + '--> ' + loc);
+      end;
+    end;
+  end;
+  WriteErrLn('');
+end;
+
+procedure ReportBinOp(n: Integer; const op: string; lt, rt: Integer; const trName: string);
+var
+  labs: TLabels;
+  msg: string;
+  a, b: Integer;
+  isCmp: Boolean;
+begin
+  a := Nodes[n].a;
+  b := Nodes[n].b;
+  isCmp := (op = '==') or (op = '!=') or (op = '<') or (op = '>') or (op = '<=') or (op = '>=');
+  if isCmp then msg := 'binary operation `' + op + '` cannot be applied to type `' + TyStrZ(lt) + '`'
+  else if op = '+' then msg := 'cannot add `' + TyStrZ(rt) + '` to `' + TyStrZ(lt) + '`'
+  else if op = '-' then msg := 'cannot subtract `' + TyStrZ(rt) + '` from `' + TyStrZ(lt) + '`'
+  else if op = '*' then msg := 'cannot multiply `' + TyStrZ(lt) + '` by `' + TyStrZ(rt) + '`'
+  else if op = '/' then msg := 'cannot divide `' + TyStrZ(lt) + '` by `' + TyStrZ(rt) + '`'
+  else if op = '%' then msg := 'cannot calculate the remainder of `' + TyStrZ(lt) + '` divided by `' + TyStrZ(rt) + '`'
+  else msg := 'no implementation for `' + TyStrZ(lt) + ' ' + op + ' ' + TyStrZ(rt) + '`';
+  SetLength(labs, 3);
+  labs[0].fi := Nodes[a].fi; labs[0].line := Nodes[a].line; labs[0].col := Nodes[a].col; labs[0].len := NodeLen(a);
+  labs[0].primary := False; labs[0].text := TyStrZ(lt);
+  labs[1].fi := Nodes[n].fi; labs[1].line := Integer(Nodes[n].iv shr 20); labs[1].col := Integer(Nodes[n].iv and $FFFFF);
+  labs[1].len := Length(op); labs[1].primary := True; labs[1].text := '';
+  labs[2].fi := Nodes[b].fi; labs[2].line := Nodes[b].line; labs[2].col := Nodes[b].col; labs[2].len := NodeLen(b);
+  labs[2].primary := False; labs[2].text := TyStrZ(rt);
+  if labs[1].line = 0 then begin labs[1].line := Nodes[n].line; labs[1].col := Nodes[n].col; labs[1].len := NodeLen(n); end;
+  ReportOpDiag('E0369', msg, labs, lt, trName);
+end;
+
 function CheckBinary(n: Integer; expected: Integer): Integer;
 var
   op: string;
@@ -10328,6 +10950,7 @@ var
   mname: string;
   lhsE: Integer;
   e: Integer;
+  ia2: TIntArr;
 begin
   op := Nodes[n].s;
   { operateurs logiques paresseux }
@@ -10423,6 +11046,18 @@ begin
     SetLength(targs, 2);
     targs[0] := lt;
     targs[1] := rt;
+    { aucun impl du trait pour ce type, quel que soit le membre de droite : E0369 }
+    SetLength(args, 2);
+    args[0] := NewTyVar(0);
+    SetLength(ia2, 2);
+    ia2[0] := lt;
+    ia2[1] := args[0];
+    if (Tys[lt].k <> tyVar) and (SelectImpl(tr, ia2, i, args, False) = 0) then
+    begin
+      ReportBinOp(n, op, lt, rt, Defs[tr].name);
+      Result := HirAt(hUnit, TyErrT, n);
+      Exit;
+    end;
     AddObl(oblTrait, lt, tr, targs, '', 0, n);
     SolveObligations;
     SetLength(args, 2);
@@ -10451,15 +11086,22 @@ begin
   if Tys[lt].k <> tyVar then
   begin
     SetLength(args, 0);
+    SetLength(ia2, 2);
+    ia2[0] := lt;
+    ia2[1] := NewTyVar(0);
+    e := SelectImpl(tr, ia2, i, args, False);
+    if e = 0 then
+    begin
+      ReportBinOp(n, op, lt, rt, Defs[tr].name);
+      Result := HirAt(hUnit, TyErrT, n);
+      Exit;
+    end;
+    SetLength(args, 0);
     e := SelectImpl(tr, targs, i, args, False);
     if e = 0 then
     begin
-      if (op = '+') then
-        ErrAt(n, 'E0369', 'cannot add `' + TyStrZ(rt) + '` to `' + TyStrZ(lt) + '`', 'no implementation for `' +
-              TyStrZ(lt) + ' + ' + TyStrZ(rt) + '`')
-      else
-        ErrAt(n, 'E0369', 'cannot ' + OpMethodName(op) + ' `' + TyStrZ(rt) + '` ' +
-              'to `' + TyStrZ(lt) + '`', '');
+      ErrAt(n, 'E0277', 'cannot ' + OpMethodName(op) + ' `' + TyStrZ(rt) + '` ' + 'to `' + TyStrZ(lt) + '`',
+            'no implementation for `' + TyStrZ(lt) + ' ' + op + ' ' + TyStrZ(rt) + '`');
       Result := HirAt(hUnit, TyErrT, n);
       Exit;
     end;
@@ -10471,12 +11113,22 @@ begin
   Result := CallTraitMethod(tr, OpMethodName(op), targs, args, outTy, n);
 end;
 
+procedure ReportUnaryOp(n: Integer; const op: string; t: Integer; const trName: string);
+var
+  labs: TLabels;
+begin
+  SetLength(labs, 1);
+  labs[0].fi := Nodes[n].fi; labs[0].line := Nodes[n].line; labs[0].col := Nodes[n].col; labs[0].len := NodeLen(n);
+  labs[0].primary := True; labs[0].text := 'cannot apply unary operator `' + op + '`';
+  ReportOpDiag('E0600', 'cannot apply unary operator `' + op + '` to type `' + TyStrZ(t) + '`', labs, t, trName);
+end;
+
 function CheckUnary(n: Integer; expected: Integer): Integer;
 var
   a, h, t: Integer;
   op: string;
   targs, args: TIntArr;
-  tr, outTy: Integer;
+  tr, outTy, i0: Integer;
 begin
   op := Nodes[n].s;
   a := CheckExpr(Nodes[n].a, expected);
@@ -10530,6 +11182,12 @@ begin
     if tr = 0 then begin Result := a; Exit; end;
     SetLength(targs, 1);
     targs[0] := t;
+    if (Tys[t].k <> tyVar) and (SelectImpl(tr, targs, i0, args, False) = 0) then
+    begin
+      ReportUnaryOp(n, '-', t, 'Neg');
+      Result := HirAt(hUnit, TyErrT, n);
+      Exit;
+    end;
     outTy := ProjectAssoc(t, tr, targs, 'Output', n);
     SetLength(args, 1);
     args[0] := a;
@@ -10550,6 +11208,12 @@ begin
   if tr = 0 then begin Result := a; Exit; end;
   SetLength(targs, 1);
   targs[0] := t;
+  if (Tys[t].k <> tyVar) and (SelectImpl(tr, targs, i0, args, False) = 0) then
+  begin
+    ReportUnaryOp(n, '!', t, 'Not');
+    Result := HirAt(hUnit, TyErrT, n);
+    Exit;
+  end;
   outTy := ProjectAssoc(t, tr, targs, 'Output', n);
   SetLength(args, 1);
   args[0] := a;
@@ -10639,6 +11303,23 @@ begin
   Result := h;
 end;
 
+procedure ReportAssignOp(n: Integer; const op: string; lt: Integer; const trName: string);
+var
+  labs: TLabels;
+  a: Integer;
+begin
+  a := Nodes[n].a;
+  SetLength(labs, 2);
+  labs[0].fi := Nodes[a].fi; labs[0].line := Nodes[a].line; labs[0].col := Nodes[a].col; labs[0].len := NodeLen(a);
+  labs[0].primary := False; labs[0].text := 'cannot use `' + op + '=` on type `' + TyStrZ(lt) + '`';
+  labs[1].fi := Nodes[n].fi; labs[1].line := Nodes[a].line; labs[1].col := Nodes[a].col + NodeLen(a);
+  labs[1].len := Nodes[n].col + NodeLen(n) - labs[1].col; labs[1].primary := True; labs[1].text := '';
+  if labs[1].len < 1 then labs[1].len := 1;
+  RenderArrowIdx := 0;
+  ReportOpDiag('E0368', 'binary assignment operation `' + op + '=` cannot be applied to type `' + TyStrZ(lt) + '`', labs, lt, trName);
+  RenderArrowIdx := -1;
+end;
+
 function CheckAssignOp(n: Integer): Integer;
 var
   op: string;
@@ -10687,6 +11368,18 @@ begin
     ErrAt(n, 'E0368', 'binary assignment operation `' + op + '=` cannot be applied to type `' + TyStrZ(lt) + '`', '');
     Result := HirAt(hUnit, TyErrT, n);
     Exit;
+  end;
+  if (Tys[lt].k <> tyVar) and (Tys[lt].k <> tyErr) then
+  begin
+    SetLength(targs, 2);
+    targs[0] := lt;
+    targs[1] := NewTyVar(0);
+    if SelectImpl(tr, targs, i, args, False) = 0 then
+    begin
+      ReportAssignOp(n, op, lt, Defs[tr].name);
+      Result := HirAt(hUnit, TyErrT, n);
+      Exit;
+    end;
   end;
   MakeMutPlace(l);
   if (Tys[lt].k = tyAdt) and (Tys[lt].def = LangString) and (Tys[rt].k = tyRef) and
@@ -10846,6 +11539,20 @@ begin
   else Result := Defs[sdef].scopeMod;
 end;
 
+{ champ prive d'une structure de la bibliotheque standard, vu depuis le crate utilisateur : invisible }
+function StdPrivField(sdef, idx: Integer): Boolean;
+var
+  scope: Integer;
+begin
+  Result := False;
+  if Defs[sdef].crate <> 1 then Exit;
+  if (CxTop < 0) or (CxBase + 1 > CxTop) then Exit;
+  scope := Cxs[CxBase + 1].env.scope;
+  if (scope < 0) or (Defs[scope].crate <> 0) then Exit;
+  if idx >= Length(Nodes[Defs[sdef].node].l2) then Exit;
+  Result := (Nodes[Nodes[Defs[sdef].node].l2[idx]].f and fPub) = 0;
+end;
+
 function CheckField(n: Integer): Integer;
 var
   base, cur, t, idx, h, steps: Integer;
@@ -10861,6 +11568,7 @@ begin
     if (Tys[t].k = tyAdt) and (Defs[Tys[t].def].kind = dkStruct) and (not IsTupleLike(Defs[Tys[t].def].node)) then
     begin
       idx := FieldIndexOf(Tys[t].def, name);
+      if (idx >= 0) and StdPrivField(Tys[t].def, idx) then idx := -1;
       if idx >= 0 then
       begin
         if (Defs[Tys[t].def].crate = 0) and ((Nodes[Nodes[Defs[Tys[t].def].node].l2[idx]].f and fPub) = 0) and
@@ -10903,7 +11611,7 @@ begin
       Exit;
     end;
     if (Tys[t].k = tyAdt) and (Defs[Tys[t].def].kind = dkStruct) and IsTupleLike(Defs[Tys[t].def].node) and
-       (idx < Defs[Tys[t].def].fieldCount) then
+       (idx < Defs[Tys[t].def].fieldCount) and (not StdPrivField(Tys[t].def, idx)) then
     begin
       h := HirAt(hField, FieldTyOf(t, Tys[t].def, idx), n);
       Hirs[h].a := cur;
@@ -11221,6 +11929,17 @@ begin
         begin
           params := Closures[Tys[ct].def].params;
           ret := Closures[Tys[ct].def].ret;
+          args := nil;
+          CheckCallArgs(n, argNodes, params, 0, False, 'function', args);
+          h := HirAt(hCallClosure, ret, n);
+          Hirs[h].a := cur;
+          Hirs[h].l := args;
+          Result := h;
+          Exit;
+        end;
+      tyParam:
+        if ParamFnSig(ct, params, ret) then
+        begin
           args := nil;
           CheckCallArgs(n, argNodes, params, 0, False, 'function', args);
           h := HirAt(hCallClosure, ret, n);
@@ -18205,6 +18924,7 @@ var
   labs: TLabels;
   nline, ncol: Integer;
   svFirstBody: Integer;
+  svPBounds: TBoundArr;
 begin
   key := InstanceKey(def, args);
   Result := HFind(BodyMap, key);
@@ -18248,6 +18968,10 @@ begin
   env.infer := True;
   Cxs[CxTop].env := env;
   Cxs[CxTop].unsafeDepth := 0;
+  svPBounds := PBounds;
+  PBounds := nil;
+  for k := 0 to Length(args) - 1 do
+    if TyHasParam(args[k]) then begin PBounds := BuildParamBounds(def, env); Break; end;
   EnterScope;
   stmts := nil;
   if Defs[def].kind = dkFn then
@@ -18341,6 +19065,7 @@ begin
   LeaveScope;
   PopCtx;
   FinalizeInstance(hirStart, patStart, b);
+  PBounds := svPBounds;
   Bodies[b].done := True;
   CxBase := svBase;
   InstBodies := svBodies;
@@ -18361,13 +19086,40 @@ begin
   if Tys[t].k <> tyOpaque then begin Result := t; Exit; end;
   args := Tys[t].args;
   for i := 0 to Length(args) - 1 do
+    if HasVars(args[i]) then
+    begin
+      SolveObligations;
+      args := Tys[Shallow(t)].args;
+      Break;
+    end;
+  for i := 0 to Length(args) - 1 do
     if HasVars(args[i]) then Exit;
+  args := ICopy(args);
+  for i := 0 to Length(args) - 1 do args[i] := Zonk(args[i]);
   b := CheckInstance(Tys[t].def, args);
   if b >= 0 then
   begin
     if Bodies[b].done then Result := Bodies[b].ret
     else Result := Bodies[b].ret;
   end;
+end;
+
+{ Verification d'une fonction generique avec des parametres de type opaques (comme rustc) }
+procedure CheckGenericDef(d: Integer);
+var
+  k: Integer;
+  args: TIntArr;
+begin
+  args := nil;
+  for k := 0 to Length(Defs[d].gnames) - 1 do
+  begin
+    { generiques constants : non verifies }
+    if (k < Length(Defs[d].gkinds)) and (Defs[d].gkinds[k] = 2) then Exit;
+    IAdd(args, MkParam(d, k));
+  end;
+  GenericCheck := True;
+  CheckInstance(d, args);
+  GenericCheck := False;
 end;
 
 { ============================================================ }
@@ -20823,7 +21575,7 @@ begin
   for i := 0 to Length(Defs[tr].items) - 1 do
   begin
     d := Defs[tr].items[i];
-    if (Defs[d].kind = dkFn) and ((Defs[d].selfKind = 2) or (Defs[d].selfKind = 3)) and
+    if (Defs[d].kind = dkFn) and ((Defs[d].selfKind = 2) or (Defs[d].selfKind = 3) or (Defs[d].selfKind = 4)) and
        (Length(Defs[d].gnames) = Length(Defs[tr].gnames)) and (IIndexOf(list, d) < 0) then
       IAdd(list, d);
   end;
@@ -24392,7 +25144,7 @@ end;
 procedure EmitCallTerm(const t: TTerm);
 var
   i: Integer;
-  argStr, v, calleeV, sigStr, retLL, tmpRet, rv, callStr: string;
+  argStr, v, calleeV, sigStr, retLL, tmpRet, rv, callStr, vslot: string;
   rk: Integer;
   retTy: Integer;
   da: TAddr;
@@ -24463,6 +25215,13 @@ begin
       Emit(vtab + ' = load ptr, ptr ' + Gep(v, 8) + ', align 8');
       vfn := NewT;
       Emit(vfn + ' = load ptr, ptr ' + Gep(vtab, 8 * (3 + t.inst)) + ', align 8');
+      if Tys[Shallow(pty)].k = tyAdt then
+      begin
+        { self: Box<Self> : le receveur est passe par adresse }
+        vslot := AllocaOf(TyUsize);
+        Emit('store ptr ' + vdata + ', ptr ' + vslot + ', align 8');
+        vdata := vslot;
+      end;
       argStr := argStr + 'ptr ' + vdata;
       ptys := ptys + 'ptr';
       Continue;
@@ -33466,6 +34225,9 @@ begin
   BufLn(b, '');
   BufLn(b, '}');
   BufLn(b, '');
+  BufLn(b, 'impl Neg for i8 { type Output = i8; fn neg(self) -> i8 { -self } }');
+  BufLn(b, 'impl<''a> Neg for &''a i8 { type Output = i8; fn neg(self) -> i8 { -*self } }');
+  BufLn(b, '');
   BufLn(b, '');
   BufLn(b, 'impl Clone for i16 { fn clone(&self) -> i16 { *self } }');
   BufLn(b, 'impl Copy for i16 {}');
@@ -33606,13 +34368,13 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<i16> {');
   BufLn(b, '        let mut base = self;');
-  BufLn(b, '        let mut acc: i16 = 1;');
-  BufLn(b, '        while exp > 0 {');
-  BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
 end;
 
 procedure PreludeChunk29(var b: TBuf);
 begin
+  BufLn(b, '        let mut acc: i16 = 1;');
+  BufLn(b, '        while exp > 0 {');
+  BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            if exp > 0 { base = match base.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '        }');
@@ -33709,6 +34471,9 @@ begin
   BufLn(b, '    pub fn overflowing_neg(self) -> (i16, bool) { if self == -32768 { (self, true) } else { (-self, false) } }');
   BufLn(b, '');
   BufLn(b, '}');
+  BufLn(b, '');
+  BufLn(b, 'impl Neg for i16 { type Output = i16; fn neg(self) -> i16 { -self } }');
+  BufLn(b, 'impl<''a> Neg for &''a i16 { type Output = i16; fn neg(self) -> i16 { -*self } }');
   BufLn(b, '');
   BufLn(b, '');
   BufLn(b, 'impl Clone for i32 { fn clone(&self) -> i32 { *self } }');
@@ -33907,16 +34672,16 @@ begin
   BufLn(b, '        let mut acc: u64 = 0;');
   BufLn(b, '        while i < b.len() {');
   BufLn(b, '            let d = match (b[i] as char).to_digit(radix) { Some(d) => d, None => return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }) };');
+end;
+
+procedure PreludeChunk30(var b: TBuf);
+begin
   BufLn(b, '            acc = match acc.checked_mul(radix as u64) { Some(v) => v, None => return Err(ParseIntError { kind: if neg { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }) };');
   BufLn(b, '            acc = match acc.checked_add(d as u64) { Some(v) => v, None => return Err(ParseIntError { kind: if neg { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }) };');
   BufLn(b, '            i += 1;');
   BufLn(b, '        }');
   BufLn(b, '        if neg { let lim = (i32::MAX as u64) + 1; if acc > lim { return Err(ParseIntError { kind: IntErrorKind::NegOverflow }); } if acc == lim { return Ok(i32::MIN); } Ok(0 - (acc as i32)) } else { if acc > (i32::MAX as u64) { return Err(ParseIntError { kind: IntErrorKind::PosOverflow }); } Ok(acc as i32) }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk30(var b: TBuf);
-begin
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 4] {');
   BufLn(b, '        let mut out = [0u8; 4];');
   BufLn(b, '        let mut i = 0usize;');
@@ -33953,6 +34718,9 @@ begin
   BufLn(b, '    pub fn overflowing_neg(self) -> (i32, bool) { if self == -2147483648 { (self, true) } else { (-self, false) } }');
   BufLn(b, '');
   BufLn(b, '}');
+  BufLn(b, '');
+  BufLn(b, 'impl Neg for i32 { type Output = i32; fn neg(self) -> i32 { -self } }');
+  BufLn(b, 'impl<''a> Neg for &''a i32 { type Output = i32; fn neg(self) -> i32 { -*self } }');
   BufLn(b, '');
   BufLn(b, '');
   BufLn(b, 'impl Clone for i64 { fn clone(&self) -> i64 { *self } }');
@@ -34194,6 +34962,9 @@ begin
   BufLn(b, '');
   BufLn(b, '}');
   BufLn(b, '');
+  BufLn(b, 'impl Neg for i64 { type Output = i64; fn neg(self) -> i64 { -self } }');
+  BufLn(b, 'impl<''a> Neg for &''a i64 { type Output = i64; fn neg(self) -> i64 { -*self } }');
+  BufLn(b, '');
   BufLn(b, '');
   BufLn(b, 'impl Clone for i128 { fn clone(&self) -> i128 { *self } }');
   BufLn(b, 'impl Copy for i128 {}');
@@ -34205,6 +34976,10 @@ begin
   BufLn(b, 'impl Eq for i128 {}');
   BufLn(b, 'impl PartialOrd for i128 {');
   BufLn(b, '    fn partial_cmp(&self, o: &i128) -> Option<Ordering> {');
+end;
+
+procedure PreludeChunk31(var b: TBuf);
+begin
   BufLn(b, '        if *self < *o { Some(Ordering::Less) } else if *self == *o { Some(Ordering::Equal) } else { Some(Ordering::Greater) }');
   BufLn(b, '    }');
   BufLn(b, '    fn lt(&self, o: &i128) -> bool { *self < *o }');
@@ -34217,10 +34992,6 @@ begin
   BufLn(b, '        if *self < *o { Ordering::Less } else if *self == *o { Ordering::Equal } else { Ordering::Greater }');
   BufLn(b, '    }');
   BufLn(b, '    fn max(self, o: i128) -> i128 { if o < self { self } else { o } }');
-end;
-
-procedure PreludeChunk31(var b: TBuf);
-begin
   BufLn(b, '    fn min(self, o: i128) -> i128 { if o < self { o } else { self } }');
   BufLn(b, '}');
   BufLn(b, 'impl Add for i128 { type Output = i128; fn add(self, o: i128) -> i128 { self + o } }');
@@ -34438,6 +35209,9 @@ begin
   BufLn(b, '');
   BufLn(b, '}');
   BufLn(b, '');
+  BufLn(b, 'impl Neg for i128 { type Output = i128; fn neg(self) -> i128 { -self } }');
+  BufLn(b, 'impl<''a> Neg for &''a i128 { type Output = i128; fn neg(self) -> i128 { -*self } }');
+  BufLn(b, '');
   BufLn(b, '');
   BufLn(b, 'impl Clone for isize { fn clone(&self) -> isize { *self } }');
   BufLn(b, 'impl Copy for isize {}');
@@ -34506,6 +35280,10 @@ begin
   BufLn(b, '    fn product<I: Iterator<Item = isize>>(iter: I) -> isize { let mut s: isize = 1; let mut it = iter; while let Some(x) = it.next() { s = s * x; } s }');
   BufLn(b, '}');
   BufLn(b, 'impl<''a> Product<&''a isize> for isize {');
+end;
+
+procedure PreludeChunk32(var b: TBuf);
+begin
   BufLn(b, '    fn product<I: Iterator<Item = &''a isize>>(iter: I) -> isize { let mut s: isize = 1; let mut it = iter; while let Some(x) = it.next() { s = s * *x; } s }');
   BufLn(b, '}');
   BufLn(b, 'impl Display for isize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { let v = *self as i64; let neg = v < 0; let abs = if neg { ::std::intrinsics::wrapping_add(!(v as u64), 1 as u64) } else { v as u64 }; fmt_u64_radix(f, abs, !neg, 10, false, "") } }');
@@ -34521,10 +35299,6 @@ begin
   BufLn(b, 'impl Step for isize {');
   BufLn(b, '    fn forward(&self) -> isize { *self + 1 }');
   BufLn(b, '    fn backward(&self) -> isize { *self - 1 }');
-end;
-
-procedure PreludeChunk32(var b: TBuf);
-begin
   BufLn(b, '    fn steps_between(a: &isize, b: &isize) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
   BufLn(b, '    fn forward_n(&self, n: usize) -> isize { (*self as i128 + n as i128) as isize }');
   BufLn(b, '}');
@@ -34682,6 +35456,9 @@ begin
   BufLn(b, '');
   BufLn(b, '}');
   BufLn(b, '');
+  BufLn(b, 'impl Neg for isize { type Output = isize; fn neg(self) -> isize { -self } }');
+  BufLn(b, 'impl<''a> Neg for &''a isize { type Output = isize; fn neg(self) -> isize { -*self } }');
+  BufLn(b, '');
   BufLn(b, '');
   BufLn(b, 'impl Clone for u8 { fn clone(&self) -> u8 { *self } }');
   BufLn(b, 'impl Copy for u8 {}');
@@ -34807,6 +35584,10 @@ begin
   BufLn(b, '    pub fn overflowing_add(self, o: u8) -> (u8, bool) { unsafe { ::std::intrinsics::add_with_overflow(self, o) } }');
   BufLn(b, '    pub fn overflowing_sub(self, o: u8) -> (u8, bool) { unsafe { ::std::intrinsics::sub_with_overflow(self, o) } }');
   BufLn(b, '    pub fn overflowing_mul(self, o: u8) -> (u8, bool) { unsafe { ::std::intrinsics::mul_with_overflow(self, o) } }');
+end;
+
+procedure PreludeChunk33(var b: TBuf);
+begin
   BufLn(b, '    pub fn checked_add(self, o: u8) -> Option<u8> { let (v, ov) = self.overflowing_add(o); if ov { None } else { Some(v) } }');
   BufLn(b, '    pub fn checked_sub(self, o: u8) -> Option<u8> { let (v, ov) = self.overflowing_sub(o); if ov { None } else { Some(v) } }');
   BufLn(b, '    pub fn checked_mul(self, o: u8) -> Option<u8> { let (v, ov) = self.overflowing_mul(o); if ov { None } else { Some(v) } }');
@@ -34825,10 +35606,6 @@ begin
   BufLn(b, '        let mut acc: u8 = 1;');
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
-end;
-
-procedure PreludeChunk33(var b: TBuf);
-begin
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            if exp > 0 { base = match base.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '        }');
@@ -35111,6 +35888,10 @@ begin
   BufLn(b, '        x');
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<u16, ParseIntError> {');
+end;
+
+procedure PreludeChunk34(var b: TBuf);
+begin
   BufLn(b, '        let b = s.as_bytes();');
   BufLn(b, '        if b.len() == 0 { return Err(ParseIntError { kind: IntErrorKind::Empty }); }');
   BufLn(b, '        let mut i = 0usize;');
@@ -35129,10 +35910,6 @@ begin
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 2] {');
   BufLn(b, '        let mut out = [0u8; 2];');
   BufLn(b, '        let mut i = 0usize;');
-end;
-
-procedure PreludeChunk34(var b: TBuf);
-begin
   BufLn(b, '        while i < 2 { out[i] = ((self >> ((2 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
   BufLn(b, '        out');
   BufLn(b, '    }');
@@ -35415,6 +36192,10 @@ begin
   BufLn(b, '        if *self < *o { Some(Ordering::Less) } else if *self == *o { Some(Ordering::Equal) } else { Some(Ordering::Greater) }');
   BufLn(b, '    }');
   BufLn(b, '    fn lt(&self, o: &u64) -> bool { *self < *o }');
+end;
+
+procedure PreludeChunk35(var b: TBuf);
+begin
   BufLn(b, '    fn le(&self, o: &u64) -> bool { *self <= *o }');
   BufLn(b, '    fn gt(&self, o: &u64) -> bool { *self > *o }');
   BufLn(b, '    fn ge(&self, o: &u64) -> bool { *self >= *o }');
@@ -35433,10 +36214,6 @@ begin
   BufLn(b, 'impl Rem for u64 { type Output = u64; fn rem(self, o: u64) -> u64 { self % o } }');
   BufLn(b, 'impl BitAnd for u64 { type Output = u64; fn bitand(self, o: u64) -> u64 { self & o } }');
   BufLn(b, 'impl BitOr for u64 { type Output = u64; fn bitor(self, o: u64) -> u64 { self | o } }');
-end;
-
-procedure PreludeChunk35(var b: TBuf);
-begin
   BufLn(b, 'impl BitXor for u64 { type Output = u64; fn bitxor(self, o: u64) -> u64 { self ^ o } }');
   BufLn(b, 'impl Not for u64 { type Output = u64; fn not(self) -> u64 { !self } }');
   BufLn(b, 'impl Shl<u32> for u64 { type Output = u64; fn shl(self, o: u32) -> u64 { self << o } }');
@@ -35719,6 +36496,10 @@ begin
   BufLn(b, 'impl Binary for u128 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u128_radix(f, *self as u128 as u128, true, 2, false, "0b") } }');
   BufLn(b, 'impl Octal for u128 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u128_radix(f, *self as u128 as u128, true, 8, false, "0o") } }');
   BufLn(b, 'impl FromStr for u128 {');
+end;
+
+procedure PreludeChunk36(var b: TBuf);
+begin
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<u128, ParseIntError> { u128::from_str_radix(s, 10) }');
   BufLn(b, '}');
@@ -35737,10 +36518,6 @@ begin
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> u128 {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: u128 = 1;');
-end;
-
-procedure PreludeChunk36(var b: TBuf);
-begin
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
   BufLn(b, '            exp = exp / 2;');
@@ -36023,6 +36800,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<usize> {');
   BufLn(b, '        let mut base = self;');
+end;
+
+procedure PreludeChunk37(var b: TBuf);
+begin
   BufLn(b, '        let mut acc: usize = 1;');
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
@@ -36041,10 +36822,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn count_ones(self) -> u32 { unsafe { ::std::intrinsics::ctpop(self) } }');
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 64 - self.count_ones() }');
-end;
-
-procedure PreludeChunk37(var b: TBuf);
-begin
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
@@ -36327,6 +37104,10 @@ begin
   BufLn(b, '    pub fn ln(self) -> f32 { unsafe { ::std::intrinsics::log(self) } }');
   BufLn(b, '    pub fn log2(self) -> f32 { unsafe { ::std::intrinsics::log2(self) } }');
   BufLn(b, '    pub fn log10(self) -> f32 { unsafe { ::std::intrinsics::log10(self) } }');
+end;
+
+procedure PreludeChunk38(var b: TBuf);
+begin
   BufLn(b, '    pub fn log(self, base: f32) -> f32 { self.ln() / base.ln() }');
   BufLn(b, '    pub fn sin(self) -> f32 { unsafe { ::std::intrinsics::sin(self) } }');
   BufLn(b, '    pub fn cos(self) -> f32 { unsafe { ::std::intrinsics::cos(self) } }');
@@ -36345,10 +37126,6 @@ begin
   BufLn(b, '    pub fn min(self, o: f32) -> f32 { if self != self { o } else if o != o { self } else if self < o { self } else { o } }');
   BufLn(b, '    pub fn max(self, o: f32) -> f32 { if self != self { o } else if o != o { self } else if self > o { self } else { o } }');
   BufLn(b, '    pub fn clamp(self, lo: f32, hi: f32) -> f32 { if self < lo { lo } else if self > hi { hi } else { self } }');
-end;
-
-procedure PreludeChunk38(var b: TBuf);
-begin
   BufLn(b, '    pub fn is_nan(self) -> bool { self != self }');
   BufLn(b, '    pub fn is_infinite(self) -> bool { self == 1.0 / 0.0 || self == -1.0 / 0.0 }');
   BufLn(b, '    pub fn is_finite(self) -> bool { !self.is_nan() && !self.is_infinite() }');
@@ -36631,6 +37408,10 @@ begin
   BufLn(b, 'impl TryFrom<i16> for NonZero<i16> { type Error = TryFromIntError; fn try_from(n: i16) -> Result2<NonZero<i16>, TryFromIntError> { match NonZero::<i16>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
   BufLn(b, 'pub type NonZeroI16 = NonZero<i16>;');
   BufLn(b, 'impl Add for Wrapping<i32> { type Output = Wrapping<i32>; fn add(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_add(o.0)) } }');
+end;
+
+procedure PreludeChunk39(var b: TBuf);
+begin
   BufLn(b, 'impl<''a> Add<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn add(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_add(o.0)) } }');
   BufLn(b, 'impl AddAssign for Wrapping<i32> { fn add_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_add(o.0); } }');
   BufLn(b, 'impl AddAssign<i32> for Wrapping<i32> { fn add_assign(&mut self, o: i32) { self.0 = self.0.wrapping_add(o); } }');
@@ -36649,10 +37430,6 @@ begin
   BufLn(b, 'impl Mul for Saturating<i32> { type Output = Saturating<i32>; fn mul(self, o: Saturating<i32>) -> Saturating<i32> { Saturating(self.0.saturating_mul(o.0)) } }');
   BufLn(b, 'impl MulAssign for Saturating<i32> { fn mul_assign(&mut self, o: Saturating<i32>) { self.0 = self.0.saturating_mul(o.0); } }');
   BufLn(b, 'impl Div for Wrapping<i32> { type Output = Wrapping<i32>; fn div(self, o: Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_div(o.0)) } }');
-end;
-
-procedure PreludeChunk39(var b: TBuf);
-begin
   BufLn(b, 'impl<''a> Div<&''a Wrapping<i32>> for Wrapping<i32> { type Output = Wrapping<i32>; fn div(self, o: &''a Wrapping<i32>) -> Wrapping<i32> { Wrapping(self.0.wrapping_div(o.0)) } }');
   BufLn(b, 'impl DivAssign for Wrapping<i32> { fn div_assign(&mut self, o: Wrapping<i32>) { self.0 = self.0.wrapping_div(o.0); } }');
   BufLn(b, 'impl DivAssign<i32> for Wrapping<i32> { fn div_assign(&mut self, o: i32) { self.0 = self.0.wrapping_div(o); } }');
@@ -36935,6 +37712,10 @@ begin
   BufLn(b, 'impl Div for Saturating<u32> { type Output = Saturating<u32>; fn div(self, o: Saturating<u32>) -> Saturating<u32> { Saturating(self.0.saturating_div(o.0)) } }');
   BufLn(b, 'impl DivAssign for Saturating<u32> { fn div_assign(&mut self, o: Saturating<u32>) { self.0 = self.0.saturating_div(o.0); } }');
   BufLn(b, 'impl Rem for Wrapping<u32> { type Output = Wrapping<u32>; fn rem(self, o: Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_rem(o.0)) } }');
+end;
+
+procedure PreludeChunk40(var b: TBuf);
+begin
   BufLn(b, 'impl<''a> Rem<&''a Wrapping<u32>> for Wrapping<u32> { type Output = Wrapping<u32>; fn rem(self, o: &''a Wrapping<u32>) -> Wrapping<u32> { Wrapping(self.0.wrapping_rem(o.0)) } }');
   BufLn(b, 'impl RemAssign for Wrapping<u32> { fn rem_assign(&mut self, o: Wrapping<u32>) { self.0 = self.0.wrapping_rem(o.0); } }');
   BufLn(b, 'impl RemAssign<u32> for Wrapping<u32> { fn rem_assign(&mut self, o: u32) { self.0 = self.0.wrapping_rem(o); } }');
@@ -36953,10 +37734,6 @@ begin
   BufLn(b, 'impl Sum for Wrapping<u32> { fn sum<I: Iterator<Item = Wrapping<u32>>>(iter: I) -> Wrapping<u32> { let mut a = Wrapping(0 as u32); for x in iter { a = a + x; } a } }');
   BufLn(b, 'impl Wrapping<u32> { pub const MIN: Wrapping<u32> = Wrapping(u32::MIN); pub const MAX: Wrapping<u32> = Wrapping(u32::MAX); pub fn pow(self, e: u32) -> Wrapping<u32> { Wrapping(self.0.wrapping_pow(e)) } }');
   BufLn(b, 'impl NonZero<u32> { pub const MIN: NonZero<u32> = NonZero(1); pub const MAX: NonZero<u32> = NonZero(u32::MAX); pub const fn new(n: u32) -> Option<NonZero<u32>> { if n == 0 { None } else { Some(NonZero(n)) } } pub const fn get(self) -> u32 { self.0 } pub fn checked_add(self, o: u32) -> Option<NonZero<u32>> { match self.0.checked_add(o) { Some(v) => NonZero::<u32>::new(v), None => None } } pub fn checked_mul(self, o: NonZero<u32>) -> Option<NonZero<u32>> { match self.0.checked_mul(o.0) { Some(v) => NonZero::<u32>::new(v), None => None } } pub fn leading_zeros(self) -> u32 { self.0.leading_zeros() } pub fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() } }');
-end;
-
-procedure PreludeChunk40(var b: TBuf);
-begin
   BufLn(b, 'impl From<NonZero<u32>> for u32 { fn from(n: NonZero<u32>) -> u32 { n.0 } }');
   BufLn(b, 'impl TryFrom<u32> for NonZero<u32> { type Error = TryFromIntError; fn try_from(n: u32) -> Result2<NonZero<u32>, TryFromIntError> { match NonZero::<u32>::new(n) { Some(v) => Ok(v), None => Err(TryFromIntError(())) } } }');
   BufLn(b, 'pub type NonZeroU32 = NonZero<u32>;');
@@ -37239,6 +38016,10 @@ begin
   BufLn(b, '    impl<A: ::std::fmt::Debug, B: ::std::fmt::Debug, C: ::std::fmt::Debug, D: ::std::fmt::Debug, E: ::std::fmt::Debug, F: ::std::fmt::Debug, G: ::std::fmt::Debug, H: ::std::fmt::Debug> ::std::fmt::Debug for (A, B, C, D, E, F, G, H) { fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.debug_tuple("").field(&self.0).field(&self.1).field(&self.2).field(&self.3).field(&self.4).field(&self.5).field(&self.6).field(&self.7).finish() } }');
   BufLn(b, '    impl<A: ::std::hash::Hash, B: ::std::hash::Hash, C: ::std::hash::Hash, D: ::std::hash::Hash, E: ::std::hash::Hash, F: ::std::hash::Hash, G: ::std::hash::Hash, H: ::std::hash::Hash> ::std::hash::Hash for (A, B, C, D, E, F, G, H) { fn hash<HH: ::std::hash::Hasher>(&self, state: &mut HH) { ::std::hash::Hash::hash(&self.0, state); ::std::hash::Hash::hash(&self.1, state); ::std::hash::Hash::hash(&self.2, state); ::std::hash::Hash::hash(&self.3, state); ::std::hash::Hash::hash(&self.4, state); ::std::hash::Hash::hash(&self.5, state); ::std::hash::Hash::hash(&self.6, state); ::std::hash::Hash::hash(&self.7, state); } }');
   BufLn(b, '}');
+end;
+
+procedure PreludeChunk41(var b: TBuf);
+begin
   BufLn(b, '');
 end;
 
@@ -37287,6 +38068,7 @@ begin
   PreludeChunk38(b);
   PreludeChunk39(b);
   PreludeChunk40(b);
+  PreludeChunk41(b);
   s := BufStr(b);
 end;
 { ============================================================ }
@@ -39484,8 +40266,11 @@ begin
   { verification eager des fonctions non generiques du crate utilisateur }
   for i := 1 to NDefs - 1 do
   begin
-    if (Defs[i].crate = 0) and (Defs[i].kind = dkFn) and (Length(Defs[i].gnames) = 0) and Defs[i].hasBody then
-      CheckInstance(i, nil);
+    if (Defs[i].crate = 0) and (Defs[i].kind = dkFn) and Defs[i].hasBody then
+    begin
+      if Length(Defs[i].gnames) = 0 then CheckInstance(i, nil)
+      else if GetEnv('RUSTC_NOGENERIC') = '' then CheckGenericDef(i);
+    end;
   end;
   FinishDiag;
   if (Opt.crateType <> 'bin') then
