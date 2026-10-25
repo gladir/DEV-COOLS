@@ -14035,6 +14035,10 @@ function ExprOp(h: Integer): TOperand; forward;
 procedure ExprInto(h: Integer; const dest: TPlace); forward;
 function RequestInst(def: Integer; const targs: TIntArr): Integer; forward;
 procedure RequestStatic(def: Integer); forward;
+procedure AfterAssign(const p: TPlace); forward;
+procedure DeclDropLocal(loc: Integer; isTemp: Boolean; initTrue: Boolean); forward;
+function NeedsDrop(t: Integer): Boolean; forward;
+procedure AfterCallDest(target: Integer; const dest: TPlace); forward;
 
 { ---- noms de symboles ---- }
 
@@ -14278,6 +14282,7 @@ begin
   st.place := p;
   st.rv := rv;
   EmitStmt(st);
+  AfterAssign(p);
 end;
 
 function MkRv(k: Integer; ty: Integer): TRvalue;
@@ -14304,6 +14309,7 @@ begin
   EnsureOpen;
   MirFns[BI].blocks[CurBB].term := t;
   MirFns[BI].blocks[CurBB].terminated := True;
+  if (t.k = tmCall) and t.hasDest and (t.target >= 0) then AfterCallDest(t.target, t.dest);
 end;
 
 procedure TermGoto(target: Integer);
@@ -14428,6 +14434,7 @@ begin
   else
   begin
     t := NewTemp(Hirs[h].ty);
+    if NeedsDrop(Hirs[h].ty) then DeclDropLocal(t.local, True, False);
     ExprInto(h, t);
     Result := t;
   end;
@@ -14523,7 +14530,855 @@ begin
     Result := t;
   end;
 end;
+{ ============================================================ }
+{ MIR : destruction (Drop) : drapeaux, portees, glue           }
+{ ============================================================ }
 
+Const
+  ikGlue = 4;
+
+Type
+  TScope = record
+    items: TIntArr;      { locaux MIR enregistres }
+    temps: TIntArr;      { 1 si temporaire d'instruction }
+  end;
+
+Var
+  DropCache: THashSI;
+  NdStack: TIntArr;
+  DropFlag: TIntArr;               { par local : drapeau (local booleen) ou -1 }
+  FieldFlags: array of TIntArr;    { par local : drapeaux de champs (ou -1) }
+  Scopes: array of TScope;
+  NScopes: Integer;
+  EntryFalse: TIntArr;
+  EntryTrue: TIntArr;
+  LoopScope: TIntArr;
+
+procedure MakeCall(def: Integer; const targs: TIntArr; const args: TOperandArr; const dest: TPlace; hasDest: Boolean;
+  retTy: Integer; h: Integer); forward;
+function NewMirFn(const sym: string; def: Integer; const targs: TIntArr; retTy: Integer): Integer; forward;
+procedure FinishMirFn; forward;
+
+{ ---- types necessitant une destruction ---- }
+
+function HasDropImpl(t: Integer): Boolean;
+var
+  targs, ia: TIntArr;
+  impl: Integer;
+begin
+  Result := False;
+  if LangDrop <= 0 then Exit;
+  if Tys[t].k <> tyAdt then Exit;
+  SetLength(targs, 1);
+  targs[0] := t;
+  Result := SelectImpl(LangDrop, targs, impl, ia, False) = 1;
+end;
+
+function NeedsDropRec(t: Integer): Boolean;
+var
+  d, i, v, a, nd, vd: Integer;
+begin
+  t := Zonk(t);
+  Result := False;
+  if IIndexOf(NdStack, t) >= 0 then Exit;
+  case Tys[t].k of
+    tyAdt:
+      begin
+        d := Tys[t].def;
+        IAdd(NdStack, t);
+        if Defs[d].lang = 'box' then
+        begin
+          a := Shallow(Tys[t].args[0]);
+          Result := (Tys[a].k = tyDyn) or NeedsDropRec(a);
+        end
+        else if (Defs[d].lang = 'vec') or (Defs[d].lang = 'vec_iter') then
+          Result := NeedsDropRec(Tys[t].args[0])
+        else if HasDropImpl(t) then Result := True
+        else if Defs[d].kind = dkEnum then
+        begin
+          for v := 0 to Length(Defs[d].variants) - 1 do
+          begin
+            vd := Defs[d].variants[v];
+            nd := Defs[vd].node;
+            for i := 0 to Length(Nodes[nd].l2) - 1 do
+              if NeedsDropRec(FieldTyOf(t, vd, i)) then begin Result := True; Break; end;
+            if Result then Break;
+          end;
+        end
+        else if Defs[d].kind = dkStruct then
+        begin
+          nd := Defs[d].node;
+          for i := 0 to Length(Nodes[nd].l2) - 1 do
+            if NeedsDropRec(FieldTyOf(t, d, i)) then begin Result := True; Break; end;
+        end;
+        SetLength(NdStack, Length(NdStack) - 1);
+      end;
+    tyTuple:
+      begin
+        IAdd(NdStack, t);
+        for i := 0 to Length(Tys[t].args) - 1 do
+          if NeedsDropRec(Tys[t].args[i]) then begin Result := True; Break; end;
+        SetLength(NdStack, Length(NdStack) - 1);
+      end;
+    tyArray:
+      begin
+        if (Tys[Shallow(Tys[t].args[1])].k = tyConst) and (Tys[Shallow(Tys[t].args[1])].n = 0) then Exit;
+        IAdd(NdStack, t);
+        Result := NeedsDropRec(Tys[t].args[0]);
+        SetLength(NdStack, Length(NdStack) - 1);
+      end;
+    tySlice:
+      begin
+        IAdd(NdStack, t);
+        Result := NeedsDropRec(Tys[t].args[0]);
+        SetLength(NdStack, Length(NdStack) - 1);
+      end;
+    tyDyn: Result := True;
+    tyClosure:
+      begin
+        if Closures[Tys[t].def].isMove then
+        begin
+          IAdd(NdStack, t);
+          for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
+            if NeedsDropRec(Closures[Tys[t].def].capTys[i]) then begin Result := True; Break; end;
+          SetLength(NdStack, Length(NdStack) - 1);
+        end;
+      end;
+  end;
+end;
+
+function NeedsDrop(t: Integer): Boolean;
+var
+  k: Integer;
+  key: string;
+begin
+  t := Zonk(t);
+  case Tys[t].k of
+    tyBool, tyChar, tyInt, tyFloat, tyRef, tyPtr, tyFnPtr, tyFnDef, tyStr, tyNever, tyErr, tyConst, tyVar:
+      begin Result := False; Exit; end;
+  end;
+  key := IntToStr(t);
+  k := HFind(DropCache, key);
+  if k >= 0 then begin Result := k = 1; Exit; end;
+  NdStack := nil;
+  Result := NeedsDropRec(t);
+  NdStack := nil;
+  if Result then HPut(DropCache, key, 1) else HPut(DropCache, key, 0);
+end;
+
+{ ---- instances de glue ---- }
+
+function RequestGlue(t: Integer): Integer;
+var
+  key: string;
+begin
+  t := Zonk(t);
+  key := 'g' + IntToStr(t);
+  Result := HFind(InstMap, key);
+  if Result >= 0 then Exit;
+  if NInsts >= Length(Insts) then SetLength(Insts, NInsts * 2 + 64);
+  Result := NInsts;
+  Inc(NInsts);
+  Insts[Result].def := 0;
+  SetLength(Insts[Result].targs, 1);
+  Insts[Result].targs[0] := t;
+  Insts[Result].key := key;
+  Insts[Result].kind := ikGlue;
+  Insts[Result].closure := -1;
+  Insts[Result].built := False;
+  Insts[Result].mir := -1;
+  Insts[Result].external := False;
+  Insts[Result].intrinsic := False;
+  Insts[Result].sym := UniqueSym('core::ptr::drop_in_place<' + TyToStr(t) + '>');
+  HPut(InstMap, key, Result);
+end;
+
+function RefOfPlace(const p: TPlace; mut: Boolean): TOperand;
+var
+  tmp: TPlace;
+  rv: TRvalue;
+begin
+  tmp := NewTemp(MkRef(p.ty, mut));
+  rv := MkRv(rvRef, tmp.ty);
+  rv.place := p;
+  rv.mut := mut;
+  EmitAssign(tmp, rv);
+  Result := OCopyPlace(tmp);
+end;
+
+{ appel de la glue de destruction sur une place (la place est detruite) }
+procedure EmitGlueCall(const pl: TPlace);
+var
+  g, nb: Integer;
+  t: TTerm;
+begin
+  g := RequestGlue(pl.ty);
+  FillChar(t, SizeOf(t), 0);
+  t.k := tmCall;
+  t.retTy := TyUnit;
+  t.callKind := ckDirect;
+  t.inst := g;
+  t.def := 0;
+  t.sym := Insts[g].sym;
+  SetLength(t.args, 1);
+  t.args[0] := RefOfPlace(pl, True);
+  t.hasDest := False;
+  nb := NewBB;
+  t.target := nb;
+  SetTerm(t);
+  CurBB := nb;
+end;
+
+{ ---- drapeaux de destruction ---- }
+
+function FlagOf(loc: Integer): Integer;
+begin
+  if (loc >= 0) and (loc < Length(DropFlag)) then Result := DropFlag[loc] else Result := -1;
+end;
+
+function FieldFlagOf(loc, fld: Integer): Integer;
+begin
+  Result := -1;
+  if (loc >= 0) and (loc < Length(FieldFlags)) then
+    if (fld >= 0) and (fld < Length(FieldFlags[loc])) then Result := FieldFlags[loc][fld];
+end;
+
+procedure SetFlag(f: Integer; v: Boolean);
+begin
+  AssignOp(PLocal(f, TyBoolT), OBool(v));
+end;
+
+procedure ResetDropState;
+begin
+  DropFlag := nil;
+  FieldFlags := nil;
+  Scopes := nil;
+  NScopes := 0;
+  EntryFalse := nil;
+  EntryTrue := nil;
+  LoopScope := nil;
+end;
+
+procedure PushScope;
+begin
+  if NScopes >= Length(Scopes) then SetLength(Scopes, NScopes * 2 + 8);
+  Scopes[NScopes].items := nil;
+  Scopes[NScopes].temps := nil;
+  Inc(NScopes);
+end;
+
+{ ---- drapeaux de champs : indices de "cases" ---- }
+
+function FlagTypeEligible(ty: Integer): Boolean;
+begin
+  Result := False;
+  if Tys[ty].k = tyTuple then Result := True
+  else if Tys[ty].k = tyAdt then
+    Result := (Defs[Tys[ty].def].lang <> 'box') and (Defs[Tys[ty].def].lang <> 'vec') and
+              (Defs[Tys[ty].def].lang <> 'vec_iter') and (not HasDropImpl(ty)) and
+              ((Defs[Tys[ty].def].kind = dkStruct) or (Defs[Tys[ty].def].kind = dkEnum));
+end;
+
+function NFieldsOfVariant(vd: Integer): Integer;
+begin
+  Result := Length(Nodes[Defs[vd].node].l2);
+end;
+
+function SlotCountOf(ty: Integer): Integer;
+var
+  d, v: Integer;
+begin
+  if Tys[ty].k = tyTuple then begin Result := Length(Tys[ty].args); Exit; end;
+  d := Tys[ty].def;
+  if Defs[d].kind = dkStruct then Result := Length(Nodes[Defs[d].node].l2)
+  else
+  begin
+    Result := 0;
+    for v := 0 to Length(Defs[d].variants) - 1 do Inc(Result, NFieldsOfVariant(Defs[d].variants[v]));
+  end;
+end;
+
+function VariantSlotBase(ty, vi: Integer): Integer;
+var
+  d, v: Integer;
+begin
+  d := Tys[ty].def;
+  Result := 0;
+  for v := 0 to vi - 1 do Inc(Result, NFieldsOfVariant(Defs[d].variants[v]));
+end;
+
+function SlotTy(ty, slot: Integer): Integer;
+var
+  d, v, vd, n: Integer;
+begin
+  if Tys[ty].k = tyTuple then begin Result := Zonk(Tys[ty].args[slot]); Exit; end;
+  d := Tys[ty].def;
+  if Defs[d].kind = dkStruct then begin Result := Zonk(FieldTyOf(ty, d, slot)); Exit; end;
+  for v := 0 to Length(Defs[d].variants) - 1 do
+  begin
+    vd := Defs[d].variants[v];
+    n := NFieldsOfVariant(vd);
+    if slot < n then begin Result := Zonk(FieldTyOf(ty, vd, slot)); Exit; end;
+    Dec(slot, n);
+  end;
+  Result := TyErrT;
+end;
+
+function SlotOfPath(ty: Integer; const elems: array of TPlaceElem): Integer;
+begin
+  Result := -1;
+  if Length(elems) = 0 then Exit;
+  if (Tys[ty].k = tyTuple) or ((Tys[ty].k = tyAdt) and (Defs[Tys[ty].def].kind = dkStruct)) then
+  begin
+    if elems[0].k = peField then Result := elems[0].n;
+  end
+  else if (Tys[ty].k = tyAdt) and (Defs[Tys[ty].def].kind = dkEnum) then
+  begin
+    if (Length(elems) >= 2) and (elems[0].k = peDowncast) and (elems[1].k = peField) then
+      Result := VariantSlotBase(ty, elems[0].n) + elems[1].n;
+  end;
+end;
+
+function LocalTyZ(loc: Integer): Integer;
+begin
+  Result := Zonk(MirFns[BI].locals[loc].ty);
+end;
+
+procedure EmitDropLocal(loc: Integer);
+var
+  f, bbD, bbN, i, fb, nb, ft, v, vd, d, nv, slot, base, k: Integer;
+  ty: Integer;
+  fl: TIntArr;
+  c: TPlace;
+  rv: TRvalue;
+  any: Boolean;
+  vp: TPlace;
+begin
+  f := FlagOf(loc);
+  if f < 0 then Exit;
+  ty := LocalTyZ(loc);
+  bbD := NewBB;
+  bbN := NewBB;
+  TermSwitchBool(OCopyPlace(PLocal(f, TyBoolT)), bbD, bbN);
+  CurBB := bbD;
+  if (loc < Length(FieldFlags)) and (Length(FieldFlags[loc]) > 0) then
+  begin
+    fl := FieldFlags[loc];
+    if (Tys[ty].k = tyTuple) or (Defs[Tys[ty].def].kind = dkStruct) then
+    begin
+      for i := 0 to Length(fl) - 1 do
+      begin
+        if fl[i] < 0 then Continue;
+        fb := NewBB;
+        nb := NewBB;
+        TermSwitchBool(OCopyPlace(PLocal(fl[i], TyBoolT)), fb, nb);
+        CurBB := fb;
+        ft := SlotTy(ty, i);
+        EmitGlueCall(PProj(PLocal(loc, ty), peField, i, ft));
+        SetFlag(fl[i], False);
+        TermGoto(nb);
+        CurBB := nb;
+      end;
+    end
+    else
+    begin
+      { enum : selection de la variante puis champs conditionnels }
+      d := Tys[ty].def;
+      c := NewTemp(TyI64);
+      rv := MkRv(rvDiscr, TyI64);
+      rv.place := PLocal(loc, ty);
+      if Length(Defs[d].variants) > 1 then EmitAssign(c, rv);
+      for v := 0 to Length(Defs[d].variants) - 1 do
+      begin
+        vd := Defs[d].variants[v];
+        base := VariantSlotBase(ty, v);
+        any := False;
+        for k := 0 to NFieldsOfVariant(vd) - 1 do
+          if fl[base + k] >= 0 then any := True;
+        if not any then Continue;
+        nb := NewBB;
+        fb := NewBB;
+        if Length(Defs[d].variants) > 1 then TermSwitchInt(OCopyPlace(c), VariantDisc(vd), nb, fb)
+        else TermGoto(nb);
+        CurBB := nb;
+        vp := PProj(PLocal(loc, ty), peDowncast, v, ty);
+        for k := 0 to NFieldsOfVariant(vd) - 1 do
+        begin
+          slot := base + k;
+          if fl[slot] < 0 then Continue;
+          nb := NewBB;
+          bbD := NewBB;
+          TermSwitchBool(OCopyPlace(PLocal(fl[slot], TyBoolT)), nb, bbD);
+          CurBB := nb;
+          EmitGlueCall(PProj(vp, peField, k, SlotTy(ty, slot)));
+          SetFlag(fl[slot], False);
+          TermGoto(bbD);
+          CurBB := bbD;
+        end;
+        TermGoto(fb);
+        CurBB := fb;
+      end;
+    end;
+  end
+  else
+    EmitGlueCall(PLocal(loc, ty));
+  SetFlag(f, False);
+  TermGoto(bbN);
+  CurBB := bbN;
+end;
+
+procedure EmitDropsFromScope(sc, mark: Integer);
+var
+  i: Integer;
+begin
+  for i := Length(Scopes[sc].items) - 1 downto mark do
+    EmitDropLocal(Scopes[sc].items[i]);
+end;
+
+procedure PopScope(emit: Boolean);
+begin
+  if NScopes = 0 then Exit;
+  if emit then EmitDropsFromScope(NScopes - 1, 0);
+  Dec(NScopes);
+end;
+
+procedure EmitScopeDropsDownTo(depth: Integer);
+var
+  s: Integer;
+begin
+  for s := NScopes - 1 downto depth do
+    EmitDropsFromScope(s, 0);
+end;
+
+{ Fin d'instruction : detruit les temporaires enregistres depuis mark dans la portee courante }
+procedure DropTempsSince(mark: Integer);
+var
+  sc, i, j: Integer;
+  ni, nt: TIntArr;
+begin
+  if NScopes = 0 then Exit;
+  sc := NScopes - 1;
+  if Length(Scopes[sc].items) <= mark then Exit;
+  for i := Length(Scopes[sc].items) - 1 downto mark do
+    if Scopes[sc].temps[i] = 1 then EmitDropLocal(Scopes[sc].items[i]);
+  ni := nil;
+  nt := nil;
+  for i := 0 to Length(Scopes[sc].items) - 1 do
+    if (i < mark) or (Scopes[sc].temps[i] = 0) then
+    begin
+      IAdd(ni, Scopes[sc].items[i]);
+      IAdd(nt, Scopes[sc].temps[i]);
+    end;
+  Scopes[sc].items := ni;
+  Scopes[sc].temps := nt;
+  j := 0;
+end;
+
+{ Les temporaires crees depuis mark deviennent des variables de la portee (extension de duree de vie) }
+procedure ExtendTempsSince(mark: Integer);
+var
+  sc, i: Integer;
+begin
+  if NScopes = 0 then Exit;
+  sc := NScopes - 1;
+  for i := mark to Length(Scopes[sc].items) - 1 do Scopes[sc].temps[i] := 0;
+end;
+
+function ScopeMark: Integer;
+begin
+  if NScopes = 0 then Result := 0 else Result := Length(Scopes[NScopes - 1].items);
+end;
+
+procedure SetFieldFlagsTrue(loc: Integer);
+var
+  i: Integer;
+begin
+  if (loc < Length(FieldFlags)) then
+    for i := 0 to Length(FieldFlags[loc]) - 1 do
+      if FieldFlags[loc][i] >= 0 then SetFlag(FieldFlags[loc][i], True);
+end;
+
+procedure AfterAssign(const p: TPlace);
+var
+  f, k, i: Integer;
+begin
+  if p.glob >= 0 then Exit;
+  f := FlagOf(p.local);
+  if f < 0 then Exit;
+  if Length(p.elems) = 0 then
+  begin
+    SetFlag(f, True);
+    SetFieldFlagsTrue(p.local);
+  end
+  else if (p.local < Length(FieldFlags)) and (Length(FieldFlags[p.local]) > 0) then
+  begin
+    k := SlotOfPath(LocalTyZ(p.local), p.elems);
+    if (k >= 0) and (k < Length(FieldFlags[p.local])) and (FieldFlags[p.local][k] >= 0) then
+      SetFlag(FieldFlags[p.local][k], True);
+  end;
+end;
+
+procedure AfterCallDest(target: Integer; const dest: TPlace);
+var
+  sv: Integer;
+begin
+  if dest.glob >= 0 then Exit;
+  if FlagOf(dest.local) < 0 then Exit;
+  sv := CurBB;
+  CurBB := target;
+  AfterAssign(dest);
+  CurBB := sv;
+end;
+
+{ Declare un local ayant besoin de destruction dans la portee courante }
+procedure DeclDropLocal(loc: Integer; isTemp: Boolean; initTrue: Boolean);
+var
+  ty, f, i, n, ft: Integer;
+  ffl: TIntArr;
+  sc: Integer;
+begin
+  if (loc < Length(DropFlag)) and (DropFlag[loc] >= 0) then Exit;
+  ty := Zonk(MirFns[BI].locals[loc].ty);
+  if not NeedsDrop(ty) then Exit;
+  if loc >= Length(DropFlag) then
+  begin
+    n := Length(DropFlag);
+    SetLength(DropFlag, loc + 16);
+    SetLength(FieldFlags, loc + 16);
+    for i := n to Length(DropFlag) - 1 do DropFlag[i] := -1;
+  end;
+  f := NewLocal(TyBoolT, 'drop_flag', True);
+  DropFlag[loc] := f;
+  IAdd(EntryFalse, f);
+  if initTrue then IAdd(EntryTrue, f);
+  { drapeaux de champs pour les structures / tuples / enums sans impl Drop }
+  if FlagTypeEligible(ty) then
+  begin
+    ffl := nil;
+    n := SlotCountOf(ty);
+    for i := 0 to n - 1 do
+    begin
+      ft := SlotTy(ty, i);
+      if NeedsDrop(ft) then
+      begin
+        IAdd(ffl, NewLocal(TyBoolT, 'drop_flag', True));
+        IAdd(EntryFalse, ffl[Length(ffl) - 1]);
+        if initTrue then IAdd(EntryTrue, ffl[Length(ffl) - 1]);
+      end
+      else IAdd(ffl, -1);
+    end;
+    FieldFlags[loc] := ffl;
+  end;
+  if NScopes = 0 then PushScope;
+  sc := NScopes - 1;
+  IAdd(Scopes[sc].items, loc);
+  if isTemp then IAdd(Scopes[sc].temps, 1) else IAdd(Scopes[sc].temps, 0);
+end;
+
+{ Affectation a une place deja initialisee : destruction de l'ancienne valeur }
+procedure EmitDropOld(const pl: TPlace);
+var
+  f, i, bbD, bbN, fl, k: Integer;
+  viaDeref: Boolean;
+begin
+  if pl.glob < 0 then
+  begin
+    f := FlagOf(pl.local);
+    if f >= 0 then
+    begin
+      viaDeref := False;
+      for i := 0 to Length(pl.elems) - 1 do
+        if pl.elems[i].k = peDeref then viaDeref := True;
+      if not viaDeref then
+      begin
+        fl := f;
+        if (Length(pl.elems) > 0) and (pl.local < Length(FieldFlags)) and (Length(FieldFlags[pl.local]) > 0) then
+        begin
+          k := SlotOfPath(LocalTyZ(pl.local), pl.elems);
+          if (k >= 0) and (k < Length(FieldFlags[pl.local])) and (FieldFlags[pl.local][k] >= 0) then
+            fl := FieldFlags[pl.local][k];
+        end;
+        bbD := NewBB;
+        bbN := NewBB;
+        TermSwitchBool(OCopyPlace(PLocal(fl, TyBoolT)), bbD, bbN);
+        CurBB := bbD;
+        EmitGlueCall(pl);
+        TermGoto(bbN);
+        CurBB := bbN;
+        Exit;
+      end;
+    end;
+  end;
+  EmitGlueCall(pl);
+end;
+
+procedure NoteMovePlace(const pl: TPlace);
+var
+  f, k: Integer;
+begin
+  if pl.glob >= 0 then Exit;
+  f := FlagOf(pl.local);
+  if f < 0 then Exit;
+  if IsCopyTy(pl.ty) then Exit;
+  if Length(pl.elems) = 0 then
+  begin
+    SetFlag(f, False);
+    Exit;
+  end;
+  if (pl.local < Length(FieldFlags)) and (Length(FieldFlags[pl.local]) > 0) then
+  begin
+    k := SlotOfPath(LocalTyZ(pl.local), pl.elems);
+    if (k >= 0) and (k < Length(FieldFlags[pl.local])) then
+    begin
+      if FieldFlags[pl.local][k] >= 0 then SetFlag(FieldFlags[pl.local][k], False);
+      Exit;
+    end;
+  end;
+  SetFlag(f, False);
+end;
+
+procedure DeclPatVars(p: Integer);
+var
+  i: Integer;
+begin
+  if p < 0 then Exit;
+  case Pats[p].k of
+    pkBind:
+      begin
+        if Pats[p].byRef = 0 then
+          DeclDropLocal(VarLoc[Pats[p].v], False, False);
+        if Pats[p].a >= 0 then DeclPatVars(Pats[p].a);
+      end;
+    pkTuple, pkAdt, pkOr:
+      for i := 0 to Length(Pats[p].l) - 1 do DeclPatVars(Pats[p].l[i]);
+    pkDeref: DeclPatVars(Pats[p].a);
+    pkSlice:
+      begin
+        for i := 0 to Length(Pats[p].l) - 1 do DeclPatVars(Pats[p].l[i]);
+        for i := 0 to Length(Pats[p].l2) - 1 do DeclPatVars(Pats[p].l2[i]);
+      end;
+  end;
+end;
+
+{ Condition contenant des `let` : declare les variables liees }
+procedure DeclCondVars(h: Integer);
+begin
+  case Hirs[h].k of
+    hAnd: begin DeclCondVars(Hirs[h].a); DeclCondVars(Hirs[h].b); end;
+    hLetCond: DeclPatVars(Hirs[h].n);
+  end;
+end;
+
+{ Initialisation des drapeaux a l'entree de la fonction }
+procedure PrependEntryInits;
+var
+  i, j, n, m: Integer;
+  st: TStmt;
+  ns: array of TStmt;
+begin
+  n := Length(EntryFalse);
+  if n = 0 then Exit;
+  m := MirFns[BI].blocks[0].nst;
+  SetLength(ns, n + m + 4);
+  for i := 0 to n - 1 do
+  begin
+    FillChar(st, SizeOf(st), 0);
+    st.k := stAssign;
+    st.place := PLocal(EntryFalse[i], TyBoolT);
+    st.rv := MkRv(rvUse, TyBoolT);
+    st.rv.a := OBool(IIndexOf(EntryTrue, EntryFalse[i]) >= 0);
+    ns[i] := st;
+  end;
+  for j := 0 to m - 1 do ns[n + j] := MirFns[BI].blocks[0].stmts[j];
+  MirFns[BI].blocks[0].stmts := ns;
+  MirFns[BI].blocks[0].nst := n + m;
+end;
+
+{ ---- glue de destruction ---- }
+
+procedure GlueFields(const p: TPlace; t: Integer); forward;
+
+procedure GlueLoop(const p: TPlace; elemTy: Integer; const lenOp: TOperand);
+var
+  idx, c: TPlace;
+  head, body, done: Integer;
+  rv: TRvalue;
+begin
+  idx := NewTemp(TyUsize);
+  AssignOp(idx, OInt(TyUsize, 0));
+  head := NewBB;
+  body := NewBB;
+  done := NewBB;
+  TermGoto(head);
+  CurBB := head;
+  c := NewTemp(TyBoolT);
+  rv := MkRv(rvBin, TyBoolT);
+  rv.op := 'Lt';
+  rv.a := OCopyPlace(idx);
+  rv.b := lenOp;
+  rv.srcTy := TyUsize;
+  EmitAssign(c, rv);
+  TermSwitchBool(OCopyPlace(c), body, done);
+  CurBB := body;
+  EmitGlueCall(PProj(p, peIndex, idx.local, elemTy));
+  rv := MkRv(rvBin, TyUsize);
+  rv.op := 'Add';
+  rv.a := OCopyPlace(idx);
+  rv.b := OInt(TyUsize, 1);
+  rv.srcTy := TyUsize;
+  EmitAssign(idx, rv);
+  TermGoto(head);
+  CurBB := done;
+end;
+
+procedure GlueFields(const p: TPlace; t: Integer);
+var
+  d, i, v, vd, nd, nb, nxt, ft, n: Integer;
+  c: TPlace;
+  rv: TRvalue;
+  vp: TPlace;
+  lenT: TPlace;
+  needAny: Boolean;
+  tm: TTerm;
+  dropFn: Integer;
+  args: TOperandArr;
+  q: TPlace;
+  dargs: TIntArr;
+begin
+  t := Zonk(t);
+  case Tys[t].k of
+    tyTuple:
+      for i := 0 to Length(Tys[t].args) - 1 do
+        if NeedsDrop(Tys[t].args[i]) then EmitGlueCall(PProj(p, peField, i, Zonk(Tys[t].args[i])));
+    tyArray:
+      begin
+        n := Integer(Tys[Shallow(Tys[t].args[1])].n);
+        GlueLoop(p, Zonk(Tys[t].args[0]), OInt(TyUsize, n));
+      end;
+    tySlice:
+      begin
+        lenT := NewTemp(TyUsize);
+        rv := MkRv(rvLen, TyUsize);
+        rv.place := p;
+        EmitAssign(lenT, rv);
+        GlueLoop(p, Zonk(Tys[t].args[0]), OCopyPlace(lenT));
+      end;
+    tyDyn:
+      begin
+        FillChar(tm, SizeOf(tm), 0);
+        tm.k := tmCall;
+        tm.retTy := TyUnit;
+        tm.callKind := ckVirtual;
+        tm.inst := -3;
+        tm.def := 0;
+        tm.sym := 'drop';
+        SetLength(tm.args, 1);
+        tm.args[0] := OCopyPlace(PLocal(1, MirFns[BI].locals[1].ty));
+        nb := NewBB;
+        tm.target := nb;
+        SetTerm(tm);
+        CurBB := nb;
+      end;
+    tyClosure:
+      if Closures[Tys[t].def].isMove then
+        for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
+          if NeedsDrop(Closures[Tys[t].def].capTys[i]) then
+            EmitGlueCall(PProj(p, peField, i, Zonk(Closures[Tys[t].def].capTys[i])));
+    tyAdt:
+      begin
+        d := Tys[t].def;
+        if Defs[d].lang = 'box' then
+        begin
+          ft := Zonk(Tys[t].args[0]);
+          q := PProj(PProj(p, peField, 0, MkPtr(ft, True)), peDeref, 0, ft);
+          if NeedsDrop(ft) then EmitGlueCall(q);
+          Exit;
+        end;
+        if HasDropImpl(t) then
+        begin
+          dropFn := TraitAssocItem(LangDrop, 'drop', dkFn);
+          SetLength(args, 1);
+          args[0] := OCopyPlace(PLocal(1, MirFns[BI].locals[1].ty));
+          SetLength(dargs, 1);
+          dargs[0] := t;
+          MakeCall(dropFn, dargs, args, NoDest, False, TyUnit, 0);
+        end;
+        if (Defs[d].lang = 'vec') or (Defs[d].lang = 'vec_iter') then Exit;
+        if Defs[d].kind = dkStruct then
+        begin
+          nd := Defs[d].node;
+          for i := 0 to Length(Nodes[nd].l2) - 1 do
+          begin
+            ft := Zonk(FieldTyOf(t, d, i));
+            if NeedsDrop(ft) then EmitGlueCall(PProj(p, peField, i, ft));
+          end;
+        end
+        else if Defs[d].kind = dkEnum then
+        begin
+          if Length(Defs[d].variants) = 1 then
+          begin
+            vd := Defs[d].variants[0];
+            vp := PProj(p, peDowncast, 0, t);
+            for i := 0 to Length(Nodes[Defs[vd].node].l2) - 1 do
+            begin
+              ft := Zonk(FieldTyOf(t, vd, i));
+              if NeedsDrop(ft) then EmitGlueCall(PProj(vp, peField, i, ft));
+            end;
+            Exit;
+          end;
+          c := NewTemp(TyI64);
+          rv := MkRv(rvDiscr, TyI64);
+          rv.place := p;
+          EmitAssign(c, rv);
+          for v := 0 to Length(Defs[d].variants) - 1 do
+          begin
+            vd := Defs[d].variants[v];
+            nd := Defs[vd].node;
+            needAny := False;
+            for i := 0 to Length(Nodes[nd].l2) - 1 do
+              if NeedsDrop(FieldTyOf(t, vd, i)) then needAny := True;
+            if not needAny then Continue;
+            nb := NewBB;
+            nxt := NewBB;
+            TermSwitchInt(OCopyPlace(c), VariantDisc(vd), nb, nxt);
+            CurBB := nb;
+            vp := PProj(p, peDowncast, Defs[vd].vindex, t);
+            for i := 0 to Length(Nodes[nd].l2) - 1 do
+            begin
+              ft := Zonk(FieldTyOf(t, vd, i));
+              if NeedsDrop(ft) then EmitGlueCall(PProj(vp, peField, i, ft));
+            end;
+            TermGoto(nxt);
+            CurBB := nxt;
+          end;
+        end;
+      end;
+  end;
+end;
+
+procedure BuildGlue(instIdx: Integer);
+var
+  t, idx, l: Integer;
+  p: TPlace;
+begin
+  t := Insts[instIdx].targs[0];
+  idx := NewMirFn(Insts[instIdx].sym, 0, Insts[instIdx].targs, TyUnit);
+  Insts[instIdx].mir := idx;
+  BI := idx;
+  BBody := -1;
+  BClosure := -1;
+  NLoops := 0;
+  ResetDropState;
+  l := NewLocal(TyUnit, '', True);
+  l := NewLocal(MkRef(t, True), 'p', False);
+  MirFns[idx].locals[l].isArg := True;
+  Inc(MirFns[idx].nargs);
+  CurBB := NewBB;
+  RetBB := NewBB;
+  p := PProj(PLocal(1, MkRef(t, True)), peDeref, 0, t);
+  GlueFields(p, t);
+  FinishMirFn;
+end;
 { ============================================================ }
 { MIR : expressions, motifs, appels                             }
 { ============================================================ }
@@ -14581,6 +15436,7 @@ Type
   TVtable = record
     srcTy, dynTy: Integer;
     slots: TIntArr;       { indices d'instances }
+    dropInst: Integer;    { glue de destruction ou -1 }
     sym: string;
   end;
 
@@ -14637,6 +15493,7 @@ begin
   Vtables[Result].dynTy := dynTy;
   Vtables[Result].slots := nil;
   Vtables[Result].sym := 'vtable.' + IntToStr(Result);
+  if NeedsDrop(srcTy) then Vtables[Result].dropInst := RequestGlue(srcTy) else Vtables[Result].dropInst := -1;
   if Defs[Tys[dynTy].def].lang = 'fn' then
   begin
     if Tys[srcTy].k = tyClosure then
@@ -14680,6 +15537,38 @@ begin
     st := Shallow(Zonk(targs[0]));
     if Tys[st].k <> tyDyn then st := 0;
   end;
+  if (st = 0) and (Length(targs) > 0) and (Defs[def].isExtern) and (Nodes[Defs[def].node].s2 = 'rust-intrinsic') then
+  begin
+    if Defs[def].name = 'needs_drop' then
+    begin
+      AssignOp(dest, OBool(NeedsDrop(targs[0])));
+      Exit;
+    end;
+    if Defs[def].name = 'forget' then
+    begin
+      if hasDest then AssignOp(dest, OUnit);
+      Exit;
+    end;
+    if Defs[def].name = 'drop_in_place' then
+    begin
+      if NeedsDrop(targs[0]) then
+      begin
+        idx := RequestGlue(targs[0]);
+        t.callKind := ckDirect;
+        t.inst := idx;
+        t.def := 0;
+        t.sym := Insts[idx].sym;
+        t.args := args;
+        t.hasDest := False;
+        nb := NewBB;
+        t.target := nb;
+        SetTerm(t);
+        CurBB := nb;
+      end;
+      if hasDest then AssignOp(dest, OUnit);
+      Exit;
+    end;
+  end;
   if st <> 0 then
   begin
     { appel virtuel }
@@ -14720,19 +15609,6 @@ begin
     SetTerm(t);
     CurBB := nb;
   end;
-end;
-
-function RefOfPlace(const p: TPlace; mut: Boolean): TOperand;
-var
-  tmp: TPlace;
-  rv: TRvalue;
-begin
-  tmp := NewTemp(MkRef(p.ty, mut));
-  rv := MkRv(rvRef, tmp.ty);
-  rv.place := p;
-  rv.mut := mut;
-  EmitAssign(tmp, rv);
-  Result := OCopyPlace(tmp);
 end;
 
 { ---- operateurs arithmetiques ---- }
@@ -15064,7 +15940,11 @@ begin
           1: AssignOp(pl, RefOfPlace(place, False));
           2: AssignOp(pl, RefOfPlace(place, True));
         else
-          AssignOp(pl, OCopyPlace(place));
+          begin
+            op := OCopyPlace(place);
+            AssignOp(pl, op);
+            if op.k = opMove then NoteMovePlace(place);
+          end;
         end;
         if Pats[p].a >= 0 then TestPat(Pats[p].a, place, failBB);
       end;
@@ -15331,7 +16211,11 @@ begin
         Result.targs := Hirs[h].targs;
       end;
     hLocal, hUpvar, hStatic, hField, hIndex, hDeref:
-      Result := OCopyPlace(HirPlace(h));
+      begin
+        tmp := HirPlace(h);
+        Result := OCopyPlace(tmp);
+        if Result.k = opMove then NoteMovePlace(tmp);
+      end;
     hTuple:
       if Length(Hirs[h].l) = 0 then Result := OUnit
       else
@@ -15360,12 +16244,18 @@ end;
 procedure ExprDiscard(h: Integer);
 var
   tmp: TPlace;
+  mark: Integer;
+  dropIt: Boolean;
 begin
   case Hirs[h].k of
     hLocal, hUpvar, hStatic, hLitInt, hLitFloat, hLitBool, hLitChar, hLitStr: ;
   else
     tmp := NewTemp(Hirs[h].ty);
+    dropIt := NeedsDrop(Hirs[h].ty) and (Tys[Shallow(Hirs[h].ty)].k <> tyNever);
+    mark := ScopeMark;
+    if dropIt then DeclDropLocal(tmp.local, True, False);
     ExprInto(h, tmp);
+    if dropIt then DropTempsSince(mark);
   end;
 end;
 
@@ -15374,17 +16264,33 @@ var
   p, init, v, failBB, okBB: Integer;
   pl: TPlace;
   els: Integer;
+  mark: Integer;
+  extend: Boolean;
+  ih: Integer;
 begin
   p := Hirs[h].n;
   init := Hirs[h].a;
   els := Hirs[h].b;
-  if init = 0 then Exit;
+  if init = 0 then
+  begin
+    DeclPatVars(p);
+    Exit;
+  end;
+  { `let x = &temp();` : le temporaire vit autant que la portee }
+  ih := init;
+  while Hirs[ih].k = hCoerce do ih := Hirs[ih].a;
+  extend := Hirs[ih].k = hAddr;
+  mark := ScopeMark;
   if (Pats[p].k = pkBind) and (Pats[p].byRef = 0) and (Pats[p].a < 0) then
   begin
+    DeclPatVars(p);
     ExprInto(init, PLocal(VarLoc[Pats[p].v], MirFns[BI].locals[VarLoc[Pats[p].v]].ty));
+    if extend then ExtendTempsSince(mark);
     Exit;
   end;
   pl := HirPlaceOrTemp(init);
+  if extend then ExtendTempsSince(mark);
+  DeclPatVars(p);
   failBB := NewBB;
   TestPat(p, pl, failBB);
   okBB := NewBB;
@@ -15410,14 +16316,18 @@ begin
   begin
     arm := Hirs[h].l[i];
     nextBB := NewBB;
+    PushScope;
+    DeclPatVars(Hirs[arm].n);
     TestPat(Hirs[arm].n, scrut, nextBB);
     if Hirs[arm].a <> 0 then
     begin
       bodyBB := NewBB;
+      DeclCondVars(Hirs[arm].a);
       CondBranch(Hirs[arm].a, bodyBB, nextBB);
       CurBB := bodyBB;
     end;
     ExprInto(Hirs[arm].b, dest);
+    PopScope(True);
     TermGotoIfOpen(doneBB);
     CurBB := nextBB;
   end;
@@ -15471,7 +16381,12 @@ begin
     hLitInt, hLitFloat, hLitBool, hLitChar, hLitStr, hLitByteStr, hFnRef:
       AssignOp(dest, ExprOp(h));
     hLocal, hUpvar, hStatic, hField, hIndex, hDeref:
-      AssignOp(dest, OCopyPlace(HirPlace(h)));
+      begin
+        pl := HirPlace(h);
+        a := OCopyPlace(pl);
+        AssignOp(dest, a);
+        if a.k = opMove then NoteMovePlace(pl);
+      end;
     hConstVal:
       begin
         SetLength(args, 0);
@@ -15605,6 +16520,7 @@ begin
           a := OCopyPlace(tmp);
         end;
         pl := HirPlace(Hirs[h].a);
+        if NeedsDrop(Hirs[Hirs[h].a].ty) then EmitDropOld(pl);
         AssignOp(pl, a);
       end;
     hAssignOp:
@@ -15624,11 +16540,16 @@ begin
     hIf:
       begin
         th := NewBB; el := NewBB; jn := NewBB;
+        PushScope;
+        DeclCondVars(Hirs[h].a);
         CondBranch(Hirs[h].a, th, el);
         CurBB := th;
         ExprInto(Hirs[h].b, dest);
+        EmitDropsFromScope(NScopes - 1, 0);
         TermGotoIfOpen(jn);
         CurBB := el;
+        EmitDropsFromScope(NScopes - 1, 0);
+        PopScope(False);
         if Hirs[h].c <> 0 then ExprInto(Hirs[h].c, dest);
         TermGotoIfOpen(jn);
         CurBB := jn;
@@ -15650,6 +16571,8 @@ begin
         LoopBrk[NLoops] := brk;
         LoopCont[NLoops] := lp;
         LoopDest[NLoops] := dest;
+        if NLoops >= Length(LoopScope) then SetLength(LoopScope, NLoops * 2 + 8);
+        LoopScope[NLoops] := NScopes;
         Inc(NLoops);
         tmp := NewTemp(TyUnit);
         ExprInto(Hirs[h].a, tmp);
@@ -15671,6 +16594,8 @@ begin
         LoopBrk[NLoops] := brk;
         LoopCont[NLoops] := brk;
         LoopDest[NLoops] := dest;
+        if NLoops >= Length(LoopScope) then SetLength(LoopScope, NLoops * 2 + 8);
+        LoopScope[NLoops] := NScopes;
         Inc(NLoops);
         ExprInto(Hirs[h].a, dest);
         TermGotoIfOpen(brk);
@@ -15687,24 +16612,34 @@ begin
         if Hirs[h].k = hBreak then
         begin
           if Hirs[h].a <> 0 then ExprInto(Hirs[h].a, LoopDest[k]);
+          EmitScopeDropsDownTo(LoopScope[k]);
           TermGoto(LoopBrk[k]);
         end
-        else TermGoto(LoopCont[k]);
+        else
+        begin
+          EmitScopeDropsDownTo(LoopScope[k]);
+          TermGoto(LoopCont[k]);
+        end;
       end;
     hReturn:
       begin
         if Hirs[h].a <> 0 then ExprInto(Hirs[h].a, PLocal(0, MirFns[BI].retTy));
+        EmitScopeDropsDownTo(0);
         TermGoto(RetBB);
       end;
     hBlock:
       begin
+        PushScope;
         for i := 0 to Length(Hirs[h].l) - 1 do
         begin
           st := Hirs[h].l[i];
+          k := ScopeMark;
           if Hirs[st].k = hLet then LowerLet(st)
           else ExprDiscard(Hirs[st].a);
+          DropTempsSince(k);
         end;
         if Hirs[h].a <> 0 then ExprInto(Hirs[h].a, dest);
+        PopScope(True);
       end;
     hLet: LowerLet(h);
     hExprStmt: ExprDiscard(Hirs[h].a);
@@ -15756,7 +16691,11 @@ begin
         for i := 0 to Length(Hirs[h].l) - 1 do
         begin
           pl := HirPlace(Hirs[h].l[i]);
-          if Closures[cid].isMove then ops[i] := OCopyPlace(pl)
+          if Closures[cid].isMove then
+          begin
+            ops[i] := OCopyPlace(pl);
+            if ops[i].k = opMove then NoteMovePlace(pl);
+          end
           else ops[i] := RefOfPlace(pl, True);
         end;
         EmitAggregate(dest, agClosure, cid, 0, ops, ty);
@@ -15770,6 +16709,7 @@ begin
     AssignOp(dest, OUnit);
   end;
 end;
+
 
 { ============================================================ }
 { MIR : construction d'une fonction complete                    }
@@ -15804,6 +16744,7 @@ begin
   FillChar(t, SizeOf(t), 0);
   t.k := tmReturn;
   SetTerm(t);
+  PrependEntryInits;
 end;
 
 procedure BuildBodyMir(instIdx: Integer; b: Integer; cid: Integer);
@@ -15845,7 +16786,12 @@ begin
       VarLoc[v] := NewLocal(Zonk(Bodies[b].vars[v].ty), Bodies[b].vars[v].name, Bodies[b].vars[v].mut);
   CurBB := NewBB;
   RetBB := NewBB;
+  ResetDropState;
+  PushScope;
+  for i := 0 to Length(Bodies[b].params) - 1 do
+    DeclDropLocal(VarLoc[Bodies[b].params[i]], False, True);
   ExprInto(Bodies[b].root, PLocal(0, ret));
+  PopScope(True);
   FinishMirFn;
 end;
 
@@ -15867,6 +16813,7 @@ begin
   NLoops := 0;
   SetLength(VarLoc, Bodies[b].nvars);
   l := NewLocal(TyUnit, '', True);
+  ResetDropState;
   for l := 0 to Bodies[b].nvars - 1 do
     VarLoc[l] := NewLocal(Zonk(Bodies[b].vars[l].ty), Bodies[b].vars[l].name, Bodies[b].vars[l].mut);
   CurBB := NewBB;
@@ -15895,6 +16842,7 @@ begin
   BClosure := -1;
   NLoops := 0;
   SetLength(VarLoc, 0);
+  ResetDropState;
   l := NewLocal(ret, '', True);
   SetLength(ops, Length(params));
   for i := 0 to Length(params) - 1 do
@@ -15922,6 +16870,7 @@ begin
   if Insts[i].external then Exit;
   case Insts[i].kind of
     ikCtor: BuildCtor(i);
+    ikGlue: BuildGlue(i);
     ikStaticInit: BuildStaticInit(i);
     ikClosure:
       begin
@@ -17532,6 +18481,28 @@ begin
     else if t.target >= 0 then Emit('br label %bb' + IntToStr(t.target));
     Exit;
   end;
+  if (t.callKind = ckVirtual) and (t.inst = -3) then
+  begin
+    { destruction virtuelle : emplacement 0 de la table, peut etre nul }
+    v := OperandAddr(t.args[0], False);
+    vdata := NewT;
+    Emit(vdata + ' = load ptr, ptr ' + v + ', align 8');
+    vtab := NewT;
+    Emit(vtab + ' = load ptr, ptr ' + Gep(v, 8) + ', align 8');
+    vfn := NewT;
+    Emit(vfn + ' = load ptr, ptr ' + vtab + ', align 8');
+    calleeV := NewT;
+    Emit(calleeV + ' = icmp ne ptr ' + vfn + ', null');
+    argStr := NewLbl('vdrop.call');
+    sigStr := NewLbl('vdrop.done');
+    Emit('br i1 ' + calleeV + ', label %' + argStr + ', label %' + sigStr);
+    EmitLabel(argStr);
+    Emit('call void ' + vfn + '(ptr ' + vdata + ')');
+    Emit('br label %' + sigStr);
+    EmitLabel(sigStr);
+    if t.target >= 0 then Emit('br label %bb' + IntToStr(t.target));
+    Exit;
+  end;
   retTy := Zonk(t.retTy);
   rk := RetKindOf(retTy);
   argStr := '';
@@ -17829,6 +18800,8 @@ begin
   LangIterator := FindStd('iter::Iterator', 'T');
   LangIntoIterator := FindStd('iter::IntoIterator', 'T');
   LangBox := FindStd('boxed::Box', 'T');
+  LangDrop := FindStd('ops::Drop', 'T');
+  d := FindStd('vec::IntoIter', 'T'); if d > 0 then Defs[d].lang := 'vec_iter';
   LangString := FindStd('string::String', 'T');
   LangVec := FindStd('vec::Vec', 'T');
   LangPartialEq := FindStd('cmp::PartialEq', 'T');
@@ -17894,6 +18867,8 @@ begin
   BufLn(b, '        pub fn size_of<T>() -> usize;');
   BufLn(b, '        pub fn align_of<T>() -> usize;');
   BufLn(b, '        pub fn needs_drop<T>() -> bool;');
+  BufLn(b, '        pub fn forget<T>(x: T);');
+  BufLn(b, '        pub fn drop_in_place<T: ?Sized>(p: *mut T);');
   BufLn(b, '        pub fn transmute<T, U>(x: T) -> U;');
   BufLn(b, '        pub fn offset<T>(p: *const T, n: isize) -> *const T;');
   BufLn(b, '        pub fn ptr_offset_from<T>(a: *const T, b: *const T) -> isize;');
@@ -18187,12 +19162,12 @@ begin
   BufLn(b, '    impl<T: PartialOrd> PartialOrd for Option<T> {');
   BufLn(b, '        fn partial_cmp(&self, other: &Option<T>) -> Option<Ordering> {');
   BufLn(b, '            match (self, other) {');
-  BufLn(b, '                (Some(a), Some(b)) => a.partial_cmp(b),');
-  BufLn(b, '                (None, None) => Some(Ordering::Equal),');
 end;
 
 procedure PreludeChunk1(var b: TBuf);
 begin
+  BufLn(b, '                (Some(a), Some(b)) => a.partial_cmp(b),');
+  BufLn(b, '                (None, None) => Some(Ordering::Equal),');
   BufLn(b, '                (None, Some(_)) => Some(Ordering::Less),');
   BufLn(b, '                (Some(_), None) => Some(Ordering::Greater),');
   BufLn(b, '            }');
@@ -18376,7 +19351,7 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn take<T: Default>(dest: &mut T) -> T { replace(dest, T::default()) }');
   BufLn(b, '    pub fn drop<T>(_x: T) {}');
-  BufLn(b, '    pub fn forget<T>(_x: T) {}');
+  BufLn(b, '    pub fn forget<T>(x: T) { unsafe { ::std::intrinsics::forget(x) } }');
   BufLn(b, '    pub fn size_of<T>() -> usize { unsafe { ::std::intrinsics::size_of::<T>() } }');
   BufLn(b, '    pub fn align_of<T>() -> usize { unsafe { ::std::intrinsics::align_of::<T>() } }');
   BufLn(b, '    pub fn size_of_val<T>(_v: &T) -> usize { unsafe { ::std::intrinsics::size_of::<T>() } }');
@@ -18395,6 +19370,7 @@ begin
   BufLn(b, '    pub fn null<T>() -> *const T { 0usize as *const T }');
   BufLn(b, '    pub fn null_mut<T>() -> *mut T { 0usize as *mut T }');
   BufLn(b, '    pub unsafe fn read<T>(p: *const T) -> T { ::std::intrinsics::ptr_read(p) }');
+  BufLn(b, '    pub unsafe fn drop_in_place<T: ?Sized>(p: *mut T) { ::std::intrinsics::drop_in_place(p) }');
   BufLn(b, '    pub unsafe fn write<T>(p: *mut T, v: T) { ::std::intrinsics::ptr_write(p, v) }');
   BufLn(b, '    pub unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) { ::std::intrinsics::copy_nonoverlapping(src, dst, count) }');
   BufLn(b, '    pub unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) { ::std::intrinsics::copy(src, dst, count) }');
@@ -18490,13 +19466,13 @@ begin
   BufLn(b, '                if self.next().is_none() { return None; }');
   BufLn(b, '                i += 1;');
   BufLn(b, '            }');
-  BufLn(b, '            self.next()');
-  BufLn(b, '        }');
-  BufLn(b, '        fn map<B, F: FnMut(Self::Item) -> B>(self, f: F) -> Map<Self, F> where Self: Sized { Map { iter: self, f: f } }');
 end;
 
 procedure PreludeChunk2(var b: TBuf);
 begin
+  BufLn(b, '            self.next()');
+  BufLn(b, '        }');
+  BufLn(b, '        fn map<B, F: FnMut(Self::Item) -> B>(self, f: F) -> Map<Self, F> where Self: Sized { Map { iter: self, f: f } }');
   BufLn(b, '        fn filter<P: FnMut(&Self::Item) -> bool>(self, p: P) -> Filter<Self, P> where Self: Sized { Filter { iter: self, p: p } }');
   BufLn(b, '        fn filter_map<B, F: FnMut(Self::Item) -> Option<B>>(self, f: F) -> FilterMap<Self, F> where Self: Sized { FilterMap { iter: self, f: f } }');
   BufLn(b, '        fn enumerate(self) -> Enumerate<Self> where Self: Sized { Enumerate { iter: self, count: 0 } }');
@@ -18794,13 +19770,13 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub struct Take<I> { iter: I, n: usize }');
   BufLn(b, '    impl<I: Iterator> Iterator for Take<I> {');
-  BufLn(b, '        type Item = I::Item;');
-  BufLn(b, '        fn next(&mut self) -> Option<I::Item> {');
-  BufLn(b, '            if self.n == 0 { None } else { self.n -= 1; self.iter.next() }');
 end;
 
 procedure PreludeChunk3(var b: TBuf);
 begin
+  BufLn(b, '        type Item = I::Item;');
+  BufLn(b, '        fn next(&mut self) -> Option<I::Item> {');
+  BufLn(b, '            if self.n == 0 { None } else { self.n -= 1; self.iter.next() }');
   BufLn(b, '        }');
   BufLn(b, '        fn size_hint(&self) -> (usize, Option<usize>) {');
   BufLn(b, '            let (l, _) = self.iter.size_hint();');
@@ -19098,13 +20074,13 @@ begin
   BufLn(b, '        pub fn precision(&self) -> Option<usize> { if self.prec == ::std::usize::MAX { None } else { Some(self.prec) } }');
   BufLn(b, '        pub fn fill(&self) -> char { self.fill }');
   BufLn(b, '        pub fn sign_plus(&self) -> bool { (self.flags & 1) != 0 }');
-  BufLn(b, '        pub fn sign_aware_zero_pad(&self) -> bool { (self.flags & 4) != 0 }');
-  BufLn(b, '');
-  BufLn(b, '        fn push_fill(&mut self, n: usize) {');
 end;
 
 procedure PreludeChunk4(var b: TBuf);
 begin
+  BufLn(b, '        pub fn sign_aware_zero_pad(&self) -> bool { (self.flags & 4) != 0 }');
+  BufLn(b, '');
+  BufLn(b, '        fn push_fill(&mut self, n: usize) {');
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n { self.buf.push(self.fill); i += 1; }');
   BufLn(b, '        }');
@@ -19402,13 +20378,13 @@ begin
   BufLn(b, '            ''\'''' => { if in_str { out.push(''\''''); } else { out.push_str("\\''"); } }');
   BufLn(b, '            _ => {');
   BufLn(b, '                let u = c as u32;');
-  BufLn(b, '                if u < 32 || u == 127 {');
-  BufLn(b, '                    out.push_str("\\u{");');
-  BufLn(b, '                    let mut f = Formatter::new();');
 end;
 
 procedure PreludeChunk5(var b: TBuf);
 begin
+  BufLn(b, '                if u < 32 || u == 127 {');
+  BufLn(b, '                    out.push_str("\\u{");');
+  BufLn(b, '                    let mut f = Formatter::new();');
   BufLn(b, '                    let _ = LowerHex::fmt(&u, &mut f);');
   BufLn(b, '                    out.push_str(f.buf.as_str());');
   BufLn(b, '                    out.push_str("}");');
@@ -19706,13 +20682,13 @@ begin
   BufLn(b, '            true');
   BufLn(b, '        }');
   BufLn(b, '        pub fn ends_with(&self, needle: &[T]) -> bool where T: PartialEq {');
-  BufLn(b, '            let n = needle.len();');
-  BufLn(b, '            let m = self.len();');
-  BufLn(b, '            if m < n { return false; }');
 end;
 
 procedure PreludeChunk6(var b: TBuf);
 begin
+  BufLn(b, '            let n = needle.len();');
+  BufLn(b, '            let m = self.len();');
+  BufLn(b, '            if m < n { return false; }');
   BufLn(b, '            let mut i = 0usize;');
   BufLn(b, '            while i < n { if self[m - n + i] != needle[i] { return false; } i += 1; }');
   BufLn(b, '            true');
@@ -20010,13 +20986,13 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl<T, const N: usize> IntoIterator for [T; N] {');
   BufLn(b, '        type Item = T;');
-  BufLn(b, '        type IntoIter = ::std::vec::IntoIter<T>;');
-  BufLn(b, '        fn into_iter(self) -> ::std::vec::IntoIter<T> { ::std::vec::from_array(self).into_iter() }');
-  BufLn(b, '    }');
 end;
 
 procedure PreludeChunk7(var b: TBuf);
 begin
+  BufLn(b, '        type IntoIter = ::std::vec::IntoIter<T>;');
+  BufLn(b, '        fn into_iter(self) -> ::std::vec::IntoIter<T> { ::std::vec::from_array(self).into_iter() }');
+  BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl<T: PartialEq<U>, U> PartialEq<[U]> for [T] {');
   BufLn(b, '        fn eq(&self, other: &[U]) -> bool {');
@@ -20238,12 +21214,22 @@ begin
   BufLn(b, '        pub fn len(&self) -> usize { self.len }');
   BufLn(b, '        pub fn is_empty(&self) -> bool { self.len == 0 }');
   BufLn(b, '        pub fn capacity(&self) -> usize { self.cap }');
-  BufLn(b, '        pub fn clear(&mut self) { self.len = 0; }');
+  BufLn(b, '        pub fn clear(&mut self) { self.truncate(0usize); }');
   BufLn(b, '        pub fn as_ptr(&self) -> *const T { self.ptr as *const T }');
   BufLn(b, '        pub fn as_mut_ptr(&mut self) -> *mut T { self.ptr }');
   BufLn(b, '        pub fn as_slice(&self) -> &[T] { unsafe { ::std::slice::from_raw_parts(self.ptr as *const T, self.len) } }');
   BufLn(b, '        pub fn as_mut_slice(&mut self) -> &mut [T] { unsafe { ::std::slice::from_raw_parts_mut(self.ptr, self.len) } }');
-  BufLn(b, '        pub fn truncate(&mut self, n: usize) { if n < self.len { self.len = n; } }');
+  BufLn(b, '        pub fn truncate(&mut self, n: usize) {');
+  BufLn(b, '            let old = self.len;');
+  BufLn(b, '            if n < old {');
+  BufLn(b, '                self.len = n;');
+  BufLn(b, '                let mut i = n;');
+  BufLn(b, '                while i < old {');
+  BufLn(b, '                    unsafe { ::std::intrinsics::drop_in_place(self.ptr.add(i)); }');
+  BufLn(b, '                    i += 1;');
+  BufLn(b, '                }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
   BufLn(b, '        pub fn insert(&mut self, index: usize, v: T) {');
   BufLn(b, '            if index > self.len { ::std::rt::panic_str("insertion index out of bounds"); }');
   BufLn(b, '            if self.len == self.cap { self.reserve(1); }');
@@ -20290,6 +21276,8 @@ begin
   BufLn(b, '                    if keep {');
   BufLn(b, '                        if w != r { ::std::intrinsics::copy(self.ptr.add(r) as *const T, self.ptr.add(w), 1usize); }');
   BufLn(b, '                        w += 1;');
+  BufLn(b, '                    } else {');
+  BufLn(b, '                        ::std::intrinsics::drop_in_place(self.ptr.add(r));');
   BufLn(b, '                    }');
   BufLn(b, '                }');
   BufLn(b, '                r += 1;');
@@ -20302,9 +21290,15 @@ begin
   BufLn(b, '            let mut r = 1usize;');
   BufLn(b, '            while r < self.len {');
   BufLn(b, '                unsafe {');
+end;
+
+procedure PreludeChunk8(var b: TBuf);
+begin
   BufLn(b, '                    if *self.ptr.add(r) != *self.ptr.add(w - 1) {');
   BufLn(b, '                        if w != r { ::std::intrinsics::copy(self.ptr.add(r) as *const T, self.ptr.add(w), 1usize); }');
   BufLn(b, '                        w += 1;');
+  BufLn(b, '                    } else {');
+  BufLn(b, '                        ::std::intrinsics::drop_in_place(self.ptr.add(r));');
   BufLn(b, '                    }');
   BufLn(b, '                }');
   BufLn(b, '                r += 1;');
@@ -20312,15 +21306,11 @@ begin
   BufLn(b, '            self.len = w;');
   BufLn(b, '        }');
   BufLn(b, '        pub fn resize(&mut self, n: usize, v: T) where T: Clone {');
-  BufLn(b, '            if n <= self.len { self.len = n; } else {');
+  BufLn(b, '            if n <= self.len { self.truncate(n); } else {');
   BufLn(b, '                self.reserve(n - self.len);');
   BufLn(b, '                while self.len < n { self.push(v.clone()); }');
   BufLn(b, '            }');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk8(var b: TBuf);
-begin
   BufLn(b, '        pub fn split_off(&mut self, at: usize) -> Vec<T> {');
   BufLn(b, '            if at > self.len { ::std::rt::panic_str("`at` split index out of bounds"); }');
   BufLn(b, '            let mut other = Vec::with_capacity(self.len - at);');
@@ -20346,6 +21336,24 @@ begin
   BufLn(b, '        pub fn first_mut_vec(&mut self) -> Option<&mut T> { if self.len == 0 { None } else { unsafe { Some(&mut *self.ptr) } } }');
   BufLn(b, '    }');
   BufLn(b, '');
+  BufLn(b, '    impl<T> Drop for Vec<T> {');
+  BufLn(b, '        fn drop(&mut self) {');
+  BufLn(b, '            let mut i = 0usize;');
+  BufLn(b, '            while i < self.len {');
+  BufLn(b, '                unsafe { ::std::intrinsics::drop_in_place(self.ptr.add(i)); }');
+  BufLn(b, '                i += 1;');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
+  BufLn(b, '    impl<T> Drop for IntoIter<T> {');
+  BufLn(b, '        fn drop(&mut self) {');
+  BufLn(b, '            while self.ptr as usize != self.end as usize {');
+  BufLn(b, '                let p = self.ptr;');
+  BufLn(b, '                self.ptr = p.add(1usize);');
+  BufLn(b, '                unsafe { ::std::intrinsics::drop_in_place(p as *mut T); }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
+  BufLn(b, '    }');
   BufLn(b, '    impl<T> ::std::ops::Deref for Vec<T> {');
   BufLn(b, '        type Target = [T];');
   BufLn(b, '        fn deref(&self) -> &[T] { unsafe { ::std::slice::from_raw_parts(self.ptr as *const T, self.len) } }');
@@ -20586,6 +21594,10 @@ begin
   BufLn(b, '    impl str {');
   BufLn(b, '        pub fn len(&self) -> usize { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.1 } }');
   BufLn(b, '        pub fn is_empty(&self) -> bool { self.len() == 0 }');
+end;
+
+procedure PreludeChunk9(var b: TBuf);
+begin
   BufLn(b, '        pub fn as_ptr(&self) -> *const u8 { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.0 } }');
   BufLn(b, '        pub fn as_bytes(&self) -> &[u8] { unsafe { ::std::slice::from_raw_parts(self.as_ptr(), self.len()) } }');
   BufLn(b, '        pub fn as_str(&self) -> &str { self }');
@@ -20621,10 +21633,6 @@ begin
   BufLn(b, '            while let Some(c) = it.next() { s.push(c.to_ascii_uppercase()); }');
   BufLn(b, '            s');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk9(var b: TBuf);
-begin
   BufLn(b, '        pub fn to_ascii_lowercase(&self) -> String {');
   BufLn(b, '            let mut s = String::new();');
   BufLn(b, '            let mut it = self.chars();');
@@ -20890,6 +21898,10 @@ begin
   BufLn(b, '                    let r = &self.hay[self.pos..a];');
   BufLn(b, '                    self.pos = b;');
   BufLn(b, '                    if self.limit != ::std::usize::MAX { self.limit -= 1; }');
+end;
+
+procedure PreludeChunk10(var b: TBuf);
+begin
   BufLn(b, '                    Some(r)');
   BufLn(b, '                }');
   BufLn(b, '                None => { self.done = true; Some(&self.hay[self.pos..]) }');
@@ -20925,10 +21937,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl PartialEq for str { fn eq(&self, o: &str) -> bool { __str_eq(self, o) } }');
-end;
-
-procedure PreludeChunk10(var b: TBuf);
-begin
   BufLn(b, '    impl Eq for str {}');
   BufLn(b, '    impl PartialOrd for str { fn partial_cmp(&self, o: &str) -> Option<Ordering> { Some(self.cmp(o)) } }');
   BufLn(b, '    impl Ord for str {');
@@ -21194,6 +22202,10 @@ begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod borrow {');
+end;
+
+procedure PreludeChunk11(var b: TBuf);
+begin
   BufLn(b, '    pub trait Borrow<Borrowed: ?Sized> { fn borrow(&self) -> &Borrowed; }');
   BufLn(b, '    pub trait BorrowMut<Borrowed: ?Sized>: Borrow<Borrowed> { fn borrow_mut(&mut self) -> &mut Borrowed; }');
   BufLn(b, '    impl<T: ?Sized> Borrow<T> for T { fn borrow(&self) -> &T { self } }');
@@ -21229,10 +22241,6 @@ begin
   BufLn(b, '            else if c < 0x800u32 { b[0] = (0xC0u32 | (c >> 6)) as u8; b[1] = (0x80u32 | (c & 0x3Fu32)) as u8; 2usize }');
   BufLn(b, '            else if c < 0x10000u32 {');
   BufLn(b, '                b[0] = (0xE0u32 | (c >> 12)) as u8; b[1] = (0x80u32 | ((c >> 6) & 0x3Fu32)) as u8; b[2] = (0x80u32 | (c & 0x3Fu32)) as u8; 3usize');
-end;
-
-procedure PreludeChunk11(var b: TBuf);
-begin
   BufLn(b, '            } else {');
   BufLn(b, '                b[0] = (0xF0u32 | (c >> 18)) as u8; b[1] = (0x80u32 | ((c >> 12) & 0x3Fu32)) as u8;');
   BufLn(b, '                b[2] = (0x80u32 | ((c >> 6) & 0x3Fu32)) as u8; b[3] = (0x80u32 | (c & 0x3Fu32)) as u8; 4usize');
@@ -21350,8 +22358,8 @@ begin
   BufLn(b, '                Box(p as *mut T)');
   BufLn(b, '            }');
   BufLn(b, '        }');
-  BufLn(b, '        pub fn into_inner(self) -> T { unsafe { ::std::intrinsics::ptr_read(self.0 as *const T) } }');
-  BufLn(b, '        pub fn leak<''a>(b: Box<T>) -> &''a mut T { unsafe { &mut *b.0 } }');
+  BufLn(b, '        pub fn into_inner(self) -> T { unsafe { let v = ::std::intrinsics::ptr_read(self.0 as *const T); ::std::mem::forget(self); v } }');
+  BufLn(b, '        pub fn leak<''a>(b: Box<T>) -> &''a mut T { unsafe { let p = b.0; ::std::mem::forget(b); &mut *p } }');
   BufLn(b, '    }');
   BufLn(b, '    pub fn into_raw<T: ?Sized>(b: Box<T>) -> *mut T { let p = b.0; ::std::mem::forget(b); p }');
   BufLn(b, '    pub unsafe fn from_raw<T: ?Sized>(p: *mut T) -> Box<T> { Box(p) }');
@@ -21498,6 +22506,10 @@ begin
   BufLn(b, '    impl<A: Step> ExactSizeIterator for Range<A> {}');
   BufLn(b, '    impl<A: Step> Iterator for RangeInclusive<A> {');
   BufLn(b, '        type Item = A;');
+end;
+
+procedure PreludeChunk12(var b: TBuf);
+begin
   BufLn(b, '        fn next(&mut self) -> Option<A> {');
   BufLn(b, '            if self.exhausted || self.start > self.end { return None; }');
   BufLn(b, '            let v = self.start.clone();');
@@ -21533,10 +22545,6 @@ begin
   BufLn(b, '            if c == 0xD800u32 { ''\u{E000}'' } else { unsafe { ::std::intrinsics::transmute::<u32, char>(c) } }');
   BufLn(b, '        }');
   BufLn(b, '        fn backward(&self) -> char {');
-end;
-
-procedure PreludeChunk12(var b: TBuf);
-begin
   BufLn(b, '            let c = *self as u32 - 1;');
   BufLn(b, '            if c == 0xDFFFu32 { ''\u{D7FF}'' } else { unsafe { ::std::intrinsics::transmute::<u32, char>(c) } }');
   BufLn(b, '        }');
@@ -21802,6 +22810,10 @@ begin
   BufLn(b, '                    let lp = self.slot_of_index(last);');
   BufLn(b, '                    self.table[lp] = idx + 1;');
   BufLn(b, '                }');
+end;
+
+procedure PreludeChunk13(var b: TBuf);
+begin
   BufLn(b, '                let b = self.entries.swap_remove(idx);');
   BufLn(b, '                (b.key, b.value)');
   BufLn(b, '            }');
@@ -21837,10 +22849,6 @@ begin
   BufLn(b, '                let hash = self.hash_of(k);');
   BufLn(b, '                match self.find(hash, k) { Some(i) => Some(self.remove_index(i)), None => None }');
   BufLn(b, '            }');
-end;
-
-procedure PreludeChunk13(var b: TBuf);
-begin
   BufLn(b, '            pub fn entry(&mut self, key: K) -> Entry<K, V, S> {');
   BufLn(b, '                let hash = self.hash_of(&key);');
   BufLn(b, '                match self.find(hash, &key) {');
@@ -22106,6 +23114,10 @@ begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn intersection<''a>(&''a self, other: &''a HashSet<T, S>) -> ::std::vec::IntoIter<&''a T> {');
   BufLn(b, '                let mut v: Vec<&''a T> = Vec::new();');
+end;
+
+procedure PreludeChunk14(var b: TBuf);
+begin
   BufLn(b, '                for x in self.iter() { if other.contains(x) { v.push(x); } }');
   BufLn(b, '                v.into_iter()');
   BufLn(b, '            }');
@@ -22141,10 +23153,6 @@ begin
   BufLn(b, '            fn into_iter(self) -> IntoIter<T> { IntoIter { it: self.map.into_iter() } }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, T, S> IntoIterator for &''a HashSet<T, S> {');
-end;
-
-procedure PreludeChunk14(var b: TBuf);
-begin
   BufLn(b, '            type Item = &''a T;');
   BufLn(b, '            type IntoIter = Iter<''a, T>;');
   BufLn(b, '            fn into_iter(self) -> Iter<''a, T> { self.iter() }');
@@ -22410,6 +23418,10 @@ begin
   BufLn(b, '        impl<''a, K, V> Iterator for Values<''a, K, V> {');
   BufLn(b, '            type Item = &''a V;');
   BufLn(b, '            fn next(&mut self) -> Option<&''a V> { match self.it.next() { Some(e) => Some(&e.1), None => None } }');
+end;
+
+procedure PreludeChunk15(var b: TBuf);
+begin
   BufLn(b, '            fn size_hint(&self) -> (usize, Option<usize>) { self.it.size_hint() }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K, V> DoubleEndedIterator for Values<''a, K, V> {');
@@ -22445,10 +23457,6 @@ begin
   BufLn(b, '        impl<K, V> IntoIterator for BTreeMap<K, V> {');
   BufLn(b, '            type Item = (K, V);');
   BufLn(b, '            type IntoIter = IntoIter<K, V>;');
-end;
-
-procedure PreludeChunk15(var b: TBuf);
-begin
   BufLn(b, '            fn into_iter(self) -> IntoIter<K, V> { IntoIter { it: self.v.into_iter() } }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K, V> IntoIterator for &''a BTreeMap<K, V> {');
@@ -22714,6 +23722,10 @@ begin
   BufLn(b, '                let h = self.head;');
   BufLn(b, '                let x = self.buf[h].take();');
   BufLn(b, '                self.head = (self.head + 1) & (self.buf.len() - 1);');
+end;
+
+procedure PreludeChunk16(var b: TBuf);
+begin
   BufLn(b, '                self.len -= 1;');
   BufLn(b, '                x');
   BufLn(b, '            }');
@@ -22749,10 +23761,6 @@ begin
   BufLn(b, '                let pb = self.phys(b);');
   BufLn(b, '                self.buf.swap(pa, pb);');
   BufLn(b, '            }');
-end;
-
-procedure PreludeChunk16(var b: TBuf);
-begin
   BufLn(b, '            pub fn truncate(&mut self, n: usize) { while self.len > n { self.pop_back(); } }');
   BufLn(b, '            pub fn remove(&mut self, index: usize) -> Option<T> {');
   BufLn(b, '                if index >= self.len { return None; }');
@@ -23018,6 +24026,10 @@ begin
   BufLn(b, '    impl Debug for Raw { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { f.write_str(self.0) } }');
   BufLn(b, '    impl Display for ParseIntError {');
   BufLn(b, '        fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result {');
+end;
+
+procedure PreludeChunk17(var b: TBuf);
+begin
   BufLn(b, '            f.pad(match self.kind {');
   BufLn(b, '                IntErrorKind::Empty => "cannot parse integer from empty string",');
   BufLn(b, '                IntErrorKind::InvalidDigit => "invalid digit found in string",');
@@ -23053,10 +24065,6 @@ begin
   BufLn(b, '');
   BufLn(b, 'impl Clone for i8 { fn clone(&self) -> i8 { *self } }');
   BufLn(b, 'impl Copy for i8 {}');
-end;
-
-procedure PreludeChunk17(var b: TBuf);
-begin
   BufLn(b, 'impl Default for i8 { fn default() -> i8 { 0 } }');
   BufLn(b, 'impl PartialEq for i8 {');
   BufLn(b, '    fn eq(&self, o: &i8) -> bool { *self == *o }');
@@ -23322,6 +24330,10 @@ begin
   BufLn(b, 'impl Div for i16 { type Output = i16; fn div(self, o: i16) -> i16 { self / o } }');
   BufLn(b, 'impl Rem for i16 { type Output = i16; fn rem(self, o: i16) -> i16 { self % o } }');
   BufLn(b, 'impl BitAnd for i16 { type Output = i16; fn bitand(self, o: i16) -> i16 { self & o } }');
+end;
+
+procedure PreludeChunk18(var b: TBuf);
+begin
   BufLn(b, 'impl BitOr for i16 { type Output = i16; fn bitor(self, o: i16) -> i16 { self | o } }');
   BufLn(b, 'impl BitXor for i16 { type Output = i16; fn bitxor(self, o: i16) -> i16 { self ^ o } }');
   BufLn(b, 'impl Not for i16 { type Output = i16; fn not(self) -> i16 { !self } }');
@@ -23357,10 +24369,6 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl Product for i16 {');
   BufLn(b, '    fn product<I: Iterator<Item = i16>>(iter: I) -> i16 { let mut s: i16 = 1; let mut it = iter; while let Some(x) = it.next() { s = s * x; } s }');
-end;
-
-procedure PreludeChunk18(var b: TBuf);
-begin
   BufLn(b, '}');
   BufLn(b, 'impl<''a> Product<&''a i16> for i16 {');
   BufLn(b, '    fn product<I: Iterator<Item = &''a i16>>(iter: I) -> i16 { let mut s: i16 = 1; let mut it = iter; while let Some(x) = it.next() { s = s * *x; } s }');
@@ -23626,6 +24634,10 @@ begin
   BufLn(b, '    pub fn max_value() -> i32 { 2147483647 }');
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> i32 {');
   BufLn(b, '        let mut base = self;');
+end;
+
+procedure PreludeChunk19(var b: TBuf);
+begin
   BufLn(b, '        let mut acc: i32 = 1;');
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
@@ -23661,10 +24673,6 @@ begin
   BufLn(b, '        if o == 0 { return None; }');
   BufLn(b, '        if self == i32::MIN && o == -1 { return None; }');
   BufLn(b, '        Some(self / o)');
-end;
-
-procedure PreludeChunk19(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn checked_rem(self, o: i32) -> Option<i32> {');
   BufLn(b, '        if o == 0 { return None; }');
@@ -23930,6 +24938,10 @@ begin
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 64 - self.count_ones() }');
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
+end;
+
+procedure PreludeChunk20(var b: TBuf);
+begin
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
   BufLn(b, '    pub fn trailing_ones(self) -> u32 { (!self).trailing_zeros() }');
   BufLn(b, '    pub fn swap_bytes(self) -> i64 { unsafe { ::std::intrinsics::bswap(self) } }');
@@ -23965,10 +24977,6 @@ begin
   BufLn(b, '        if b[0] == 43u8 { i = 1; } else if b[0] == 45u8 {  neg = true; i = 1; }');
   BufLn(b, '        if i >= b.len() { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); }');
   BufLn(b, '        let mut acc: u64 = 0;');
-end;
-
-procedure PreludeChunk20(var b: TBuf);
-begin
   BufLn(b, '        while i < b.len() {');
   BufLn(b, '            let d = match (b[i] as char).to_digit(radix) { Some(d) => d, None => return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }) };');
   BufLn(b, '            acc = match acc.checked_mul(radix as u64) { Some(v) => v, None => return Err(ParseIntError { kind: if neg { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }) };');
@@ -24234,6 +25242,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 16]) -> i128 {');
   BufLn(b, '        let mut v: i128 = 0;');
+end;
+
+procedure PreludeChunk21(var b: TBuf);
+begin
   BufLn(b, '        let mut i = 16;');
   BufLn(b, '        while i > 0 { i -= 1; v = (v << 8) | (b[i] as i128); }');
   BufLn(b, '        v');
@@ -24269,10 +25281,6 @@ begin
   BufLn(b, '    fn gt(&self, o: &isize) -> bool { *self > *o }');
   BufLn(b, '    fn ge(&self, o: &isize) -> bool { *self >= *o }');
   BufLn(b, '}');
-end;
-
-procedure PreludeChunk21(var b: TBuf);
-begin
   BufLn(b, 'impl Ord for isize {');
   BufLn(b, '    fn cmp(&self, o: &isize) -> Ordering {');
   BufLn(b, '        if *self < *o { Ordering::Less } else if *self == *o { Ordering::Equal } else { Ordering::Greater }');
@@ -24538,6 +25546,10 @@ begin
   BufLn(b, 'impl<''a> Add<u8> for &''a u8 { type Output = u8; fn add(self, o: u8) -> u8 { *self + o } }');
   BufLn(b, 'impl<''a> Sub<u8> for &''a u8 { type Output = u8; fn sub(self, o: u8) -> u8 { *self - o } }');
   BufLn(b, 'impl<''a> Mul<u8> for &''a u8 { type Output = u8; fn mul(self, o: u8) -> u8 { *self * o } }');
+end;
+
+procedure PreludeChunk22(var b: TBuf);
+begin
   BufLn(b, 'impl<''a, ''b> Add<&''b u8> for &''a u8 { type Output = u8; fn add(self, o: &''b u8) -> u8 { *self + *o } }');
   BufLn(b, 'impl<''a, ''b> Sub<&''b u8> for &''a u8 { type Output = u8; fn sub(self, o: &''b u8) -> u8 { *self - *o } }');
   BufLn(b, 'impl<''a, ''b> Mul<&''b u8> for &''a u8 { type Output = u8; fn mul(self, o: &''b u8) -> u8 { *self * *o } }');
@@ -24573,10 +25585,6 @@ begin
   BufLn(b, '    fn from_str(s: &str) -> Result<u8, ParseIntError> { u8::from_str_radix(s, 10) }');
   BufLn(b, '}');
   BufLn(b, 'impl Step for u8 {');
-end;
-
-procedure PreludeChunk22(var b: TBuf);
-begin
   BufLn(b, '    fn forward(&self) -> u8 { *self + 1 }');
   BufLn(b, '    fn backward(&self) -> u8 { *self - 1 }');
   BufLn(b, '    fn steps_between(a: &u8, b: &u8) -> usize { if *a < *b { (*b as i128 - *a as i128) as usize } else { 0 } }');
@@ -24842,6 +25850,10 @@ begin
   BufLn(b, '    pub fn wrapping_pow(self, mut exp: u32) -> u16 {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: u16 = 1;');
+end;
+
+procedure PreludeChunk23(var b: TBuf);
+begin
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc.wrapping_mul(base); }');
   BufLn(b, '            exp = exp / 2;');
@@ -24877,10 +25889,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn saturating_add(self, o: u16) -> u16 { unsafe { ::std::intrinsics::saturating_add(self, o) } }');
   BufLn(b, '    pub fn saturating_sub(self, o: u16) -> u16 { unsafe { ::std::intrinsics::saturating_sub(self, o) } }');
-end;
-
-procedure PreludeChunk23(var b: TBuf);
-begin
   BufLn(b, '    pub fn saturating_mul(self, o: u16) -> u16 {');
   BufLn(b, '        match self.checked_mul(o) { Some(v) => v, None => if (self < 0) == (o < 0) { 65535 } else { 0 } }');
   BufLn(b, '    }');
@@ -25146,6 +26154,10 @@ begin
   BufLn(b, '    pub fn ilog10(self) -> u32 { let mut n = 0u32; let mut v = self; while v >= 10 { v = v / 10; n += 1; } n }');
   BufLn(b, '    pub fn ilog(self, base: u32) -> u32 { let mut n = 0u32; let mut v = self; while v >= base { v = v / base; n += 1; } n }');
   BufLn(b, '    pub fn isqrt(self) -> u32 {');
+end;
+
+procedure PreludeChunk24(var b: TBuf);
+begin
   BufLn(b, '        if self < 2 { return self; }');
   BufLn(b, '        let mut x = self;');
   BufLn(b, '        let mut y = (x + 1) / 2;');
@@ -25181,10 +26193,6 @@ begin
   BufLn(b, '        out');
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_be_bytes(b: [u8; 4]) -> u32 {');
-end;
-
-procedure PreludeChunk24(var b: TBuf);
-begin
   BufLn(b, '        let mut v: u32 = 0;');
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 4 { v = (v << 8) | (b[i] as u32); i += 1; }');
@@ -25450,6 +26458,10 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl Eq for u128 {}');
   BufLn(b, 'impl PartialOrd for u128 {');
+end;
+
+procedure PreludeChunk25(var b: TBuf);
+begin
   BufLn(b, '    fn partial_cmp(&self, o: &u128) -> Option<Ordering> {');
   BufLn(b, '        if *self < *o { Some(Ordering::Less) } else if *self == *o { Some(Ordering::Equal) } else { Some(Ordering::Greater) }');
   BufLn(b, '    }');
@@ -25485,10 +26497,6 @@ begin
   BufLn(b, 'impl<''a> Mul<&''a u128> for u128 { type Output = u128; fn mul(self, o: &''a u128) -> u128 { self * *o } }');
   BufLn(b, 'impl<''a> Add<u128> for &''a u128 { type Output = u128; fn add(self, o: u128) -> u128 { *self + o } }');
   BufLn(b, 'impl<''a> Sub<u128> for &''a u128 { type Output = u128; fn sub(self, o: u128) -> u128 { *self - o } }');
-end;
-
-procedure PreludeChunk25(var b: TBuf);
-begin
   BufLn(b, 'impl<''a> Mul<u128> for &''a u128 { type Output = u128; fn mul(self, o: u128) -> u128 { *self * o } }');
   BufLn(b, 'impl<''a, ''b> Add<&''b u128> for &''a u128 { type Output = u128; fn add(self, o: &''b u128) -> u128 { *self + *o } }');
   BufLn(b, 'impl<''a, ''b> Sub<&''b u128> for &''a u128 { type Output = u128; fn sub(self, o: &''b u128) -> u128 { *self - *o } }');
@@ -25754,6 +26762,10 @@ begin
   BufLn(b, 'impl UpperHex for usize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as usize as u64, true, 16, true, "0x") } }');
   BufLn(b, 'impl Binary for usize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as usize as u64, true, 2, false, "0b") } }');
   BufLn(b, 'impl Octal for usize { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as usize as u64, true, 8, false, "0o") } }');
+end;
+
+procedure PreludeChunk26(var b: TBuf);
+begin
   BufLn(b, 'impl FromStr for usize {');
   BufLn(b, '    type Err = ParseIntError;');
   BufLn(b, '    fn from_str(s: &str) -> Result<usize, ParseIntError> { usize::from_str_radix(s, 10) }');
@@ -25789,10 +26801,6 @@ begin
   BufLn(b, '    pub fn wrapping_shr(self, n: u32) -> usize { unsafe { ::std::intrinsics::unchecked_shr(self, (n % 64) as usize) } }');
   BufLn(b, '    pub fn wrapping_pow(self, mut exp: u32) -> usize {');
   BufLn(b, '        let mut base = self;');
-end;
-
-procedure PreludeChunk26(var b: TBuf);
-begin
   BufLn(b, '        let mut acc: usize = 1;');
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc.wrapping_mul(base); }');
@@ -26058,6 +27066,10 @@ begin
   BufLn(b, 'impl Sub for f32 { type Output = f32; fn sub(self, o: f32) -> f32 { self - o } }');
   BufLn(b, 'impl Mul for f32 { type Output = f32; fn mul(self, o: f32) -> f32 { self * o } }');
   BufLn(b, 'impl Div for f32 { type Output = f32; fn div(self, o: f32) -> f32 { self / o } }');
+end;
+
+procedure PreludeChunk27(var b: TBuf);
+begin
   BufLn(b, 'impl Rem for f32 { type Output = f32; fn rem(self, o: f32) -> f32 { self % o } }');
   BufLn(b, 'impl Neg for f32 { type Output = f32; fn neg(self) -> f32 { -self } }');
   BufLn(b, 'impl<''a> Add<&''a f32> for f32 { type Output = f32; fn add(self, o: &''a f32) -> f32 { self + *o } }');
@@ -26093,10 +27105,6 @@ begin
   BufLn(b, '        let b = s.as_bytes();');
   BufLn(b, '        let c0 = b[0];');
   BufLn(b, '        let ok_start = (c0 >= 48u8 && c0 <= 57u8) || c0 == 43u8 || c0 == 45u8 || c0 == 46u8 || c0 == 105u8 || c0 == 73u8 || c0 == 110u8 || c0 == 78u8;');
-end;
-
-procedure PreludeChunk27(var b: TBuf);
-begin
   BufLn(b, '        if !ok_start { return Err(ParseFloatError { empty: false }); }');
   BufLn(b, '        Ok(v as f32)');
   BufLn(b, '    }');
@@ -26362,6 +27370,10 @@ begin
   BufLn(b, '        pub const TAU: f32 = 6.28318530717958647692528676655900577;');
   BufLn(b, '        pub const SQRT_2: f32 = 1.41421356237309504880168872420969808;');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk28(var b: TBuf);
+begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod hash_impls {');
@@ -26397,10 +27409,6 @@ begin
   BufLn(b, '    impl<A: ::std::default::Default, B: ::std::default::Default> ::std::default::Default for (A, B) { fn default() -> (A, B) { (A::default(), B::default()) } }');
   BufLn(b, '    impl<A: ::std::fmt::Debug, B: ::std::fmt::Debug> ::std::fmt::Debug for (A, B) { fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { f.debug_tuple("").field(&self.0).field(&self.1).finish() } }');
   BufLn(b, '    impl<A: ::std::hash::Hash, B: ::std::hash::Hash> ::std::hash::Hash for (A, B) { fn hash<HH: ::std::hash::Hasher>(&self, state: &mut HH) { ::std::hash::Hash::hash(&self.0, state); ::std::hash::Hash::hash(&self.1, state); } }');
-end;
-
-procedure PreludeChunk28(var b: TBuf);
-begin
   BufLn(b, '    impl<A: ::std::clone::Clone, B: ::std::clone::Clone, C: ::std::clone::Clone> ::std::clone::Clone for (A, B, C) { fn clone(&self) -> (A, B, C) { (self.0.clone(), self.1.clone(), self.2.clone()) } }');
   BufLn(b, '    impl<A: ::std::marker::Copy, B: ::std::marker::Copy, C: ::std::marker::Copy> ::std::marker::Copy for (A, B, C) {}');
   BufLn(b, '    impl<A: ::std::cmp::PartialEq, B: ::std::cmp::PartialEq, C: ::std::cmp::PartialEq> ::std::cmp::PartialEq for (A, B, C) { fn eq(&self, o: &(A, B, C)) -> bool { self.0 == o.0 && self.1 == o.1 && self.2 == o.2 } }');
@@ -26755,6 +27763,11 @@ end;
 
 { ---- assemblage du module LLVM ---- }
 
+function DropSlotStr(i: Integer): string;
+begin
+  if Vtables[i].dropInst >= 0 then Result := '@"' + Insts[Vtables[i].dropInst].sym + '"' else Result := 'null';
+end;
+
 function BuildModule(var errs: Integer): string;
 var
   b: TBuf;
@@ -26804,7 +27817,7 @@ begin
   for i := 0 to NVtables - 1 do
   begin
     vt := '@"' + Vtables[i].sym + '" = private unnamed_addr constant [' + IntToStr(3 + Length(Vtables[i].slots)) +
-          ' x ptr] [ptr null, ptr inttoptr (i64 ' + IntToStr(TySize(Vtables[i].srcTy)) + ' to ptr), ptr inttoptr (i64 ' +
+          ' x ptr] [ptr ' + DropSlotStr(i) + ', ptr inttoptr (i64 ' + IntToStr(TySize(Vtables[i].srcTy)) + ' to ptr), ptr inttoptr (i64 ' +
           IntToStr(AlignOfTy(Vtables[i].srcTy)) + ' to ptr)';
     for si := 0 to Length(Vtables[i].slots) - 1 do
       vt := vt + ', ptr @"' + Insts[Vtables[i].slots[si]].sym + '"';
@@ -26905,7 +27918,7 @@ begin
   OvfChecks := (Opt.overflow = 1) or ((Opt.overflow = -1) and (Opt.optLevel = 0));
   InitTypes;
   HInit(ScopeMap); HInit(MethodTraits); HInit(HeadMap); HInit(BodyMap); HInit(CopyCache); HInit(LayMap);
-  HInit(InstMap); HInit(SymNames); HInit(VtMap);
+  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache);
   NDefs := 0;
   NewDef(0, '<none>', 0, -1);
   LoadStd;
