@@ -7665,6 +7665,7 @@ Type
     def: Integer;
     targs: TIntArr;
     fi, line, col, len: Integer;
+    eline, ecol: Integer;
   end;
 
   TPat = record
@@ -7751,6 +7752,8 @@ begin
     Hirs[h].line := Nodes[node].line;
     Hirs[h].col := Nodes[node].col;
     Hirs[h].len := NodeLen(node);
+    Hirs[h].eline := Nodes[node].eline;
+    Hirs[h].ecol := Nodes[node].ecol;
   end;
 end;
 
@@ -14784,6 +14787,1763 @@ begin
   st := MvEmpty;
   MvWalk(Bodies[b].root, st, 0);
 end;
+{ ============================================================ }
+{ Verificateur d'emprunts (E0499, E0502, E0503, E0505, E0506,   }
+{ E0507, E0515, E0597, E0373)                                  }
+{ ============================================================ }
+{ Principe : analyse de flux sur la HIR. Un emprunt (prêt) est cree }
+{ par chaque `&place` ; il est "porte" par les variables locales a  }
+{ qui la valeur est liee (let, affectation, appel mutant). Il est   }
+{ vivant tant qu'une de ces variables sera encore utilisee (NLL).  }
+
+Const
+  akRead = 0;
+  akMove = 1;
+  akShared = 2;
+  akMut = 3;
+  akAssign = 4;
+  BcInf = 1000000000;
+
+Type
+  TBcLoan = record
+    x: Integer;              { variable empruntee }
+    path: string;            { chemin de champs "3.1" ('' = variable entiere) }
+    mut, tph, isCap, weak, explicit: Boolean;
+    hid: Integer;
+    fi, line, col, len: Integer;
+  end;
+
+  TBcPair = record
+    l, h: Integer;           { emprunt, variable porteuse }
+  end;
+
+  TBcState = record
+    items: array of TBcPair;
+    dead: Boolean;
+  end;
+
+  TBcLoop = record
+    s, e: Integer;
+  end;
+
+  TBcLoopCtx = record
+    id: Integer;
+    brk, cont: TBcState;
+    hasBrk, hasCont: Boolean;
+  end;
+
+Var
+  BcBody: Integer;
+  BcRoot: Integer;
+  BcLoans: array of TBcLoan;
+  BcNLoans: Integer;
+  BcLoanAt: TIntArr;
+  BcOrd: TIntArr;
+  BcBlkS: TIntArr;
+  BcTouched: TIntArr;
+  BcCnt: Integer;
+  BcPathOf: TStrArr;
+  BcLim, BcLimIn, BcDepth: TIntArr;
+  BcUses: array of TIntArr;
+  BcDefs: array of TIntArr;
+  BcDecl: TIntArr;
+  BcDeclBlk: TIntArr;
+  BcLoops: array of TBcLoop;
+  BcNLoops: Integer;
+  BcCurPath: string;
+  BcCurDepth: Integer;
+  BcBlkStack: TIntArr;
+  BcNextBr: Integer;
+  BcPendL: TIntArr;
+  BcPendC: TIntArr;
+  BcQuiet: Integer;
+  BcSeen: THashSI;
+  BcAuto: Integer;
+  BcLastRoot: Integer;
+  BcLastPath: string;
+  BcLCtx: array of TBcLoopCtx;
+  BcNLCtx: Integer;
+  BcLoanTouched: TIntArr;
+
+{ ---- types portant des references ---- }
+
+function BcDefHasLife(d: Integer): Boolean;
+var
+  i, n: Integer;
+begin
+  Result := False;
+  n := Defs[d].node;
+  if n <= 0 then Exit;
+  for i := 0 to Length(Nodes[n].l) - 1 do
+    if (Nodes[Nodes[n].l[i]].k = nGenParam) and (Nodes[Nodes[n].l[i]].f = 1) then begin Result := True; Exit; end;
+end;
+
+function BcTyHolds(t, depth: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  if depth > 6 then Exit;
+  t := Shallow(Zonk(t));
+  case Tys[t].k of
+    tyRef, tyDyn, tyOpaque: Result := True;
+    tyTuple, tyArray, tySlice:
+      for i := 0 to Length(Tys[t].args) - 1 do
+        if BcTyHolds(Tys[t].args[i], depth + 1) then begin Result := True; Exit; end;
+    tyAdt:
+      begin
+        if BcDefHasLife(Tys[t].def) then begin Result := True; Exit; end;
+        for i := 0 to Length(Tys[t].args) - 1 do
+          if BcTyHolds(Tys[t].args[i], depth + 1) then begin Result := True; Exit; end;
+      end;
+    tyClosure:
+      begin
+        if Length(Closures[Tys[t].def].capVars) = 0 then Exit;
+        if not Closures[Tys[t].def].isMove then begin Result := True; Exit; end;
+        for i := 0 to Length(Closures[Tys[t].def].capTys) - 1 do
+          if BcTyHolds(Closures[Tys[t].def].capTys[i], depth + 1) then begin Result := True; Exit; end;
+      end;
+  end;
+end;
+
+function BcIsMutRef(t: Integer): Boolean;
+begin
+  t := Shallow(Zonk(t));
+  Result := (Tys[t].k = tyRef) and ((Tys[t].f and 1) <> 0);
+end;
+
+function BcSameTy(a, b: Integer): Boolean;
+begin
+  Result := Shallow(Zonk(a)) = Shallow(Zonk(b));
+end;
+
+{ ---- divergence ---- }
+
+function BcDiv(h, mode: Integer): Boolean;
+var
+  i: Integer;
+  ok: Boolean;
+begin
+  Result := False;
+  if h <= 0 then Exit;
+  case Hirs[h].k of
+    hReturn, hBreak, hUnreachable: begin Result := True; Exit; end;
+    hContinue: begin Result := mode = 0; Exit; end;
+  end;
+  if Tys[Shallow(Zonk(Hirs[h].ty))].k = tyNever then begin Result := True; Exit; end;
+  case Hirs[h].k of
+    hExprStmt, hCoerce, hCast, hUnary: Result := BcDiv(Hirs[h].a, mode);
+    hLet: Result := BcDiv(Hirs[h].a, mode);
+    hAssign: Result := BcDiv(Hirs[h].b, mode);
+    hBlock:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do
+          if BcDiv(Hirs[h].l[i], mode) then begin Result := True; Exit; end;
+        Result := BcDiv(Hirs[h].a, mode);
+      end;
+    hIf:
+      begin
+        if BcDiv(Hirs[h].a, mode) then begin Result := True; Exit; end;
+        Result := (Hirs[h].c <> 0) and BcDiv(Hirs[h].b, mode) and BcDiv(Hirs[h].c, mode);
+      end;
+    hMatch:
+      begin
+        if BcDiv(Hirs[h].a, mode) then begin Result := True; Exit; end;
+        ok := Length(Hirs[h].l) > 0;
+        for i := 0 to Length(Hirs[h].l) - 1 do
+          if not BcDiv(Hirs[Hirs[h].l[i]].b, mode) then ok := False;
+        Result := ok;
+      end;
+  end;
+end;
+
+{ ---- variables d'un motif ---- }
+
+procedure BcPatVars(p: Integer; var vs: TIntArr);
+var
+  i: Integer;
+begin
+  if p < 0 then Exit;
+  case Pats[p].k of
+    pkBind:
+      begin
+        if Pats[p].v >= 0 then IAdd(vs, Pats[p].v);
+        if Pats[p].a >= 0 then BcPatVars(Pats[p].a, vs);
+      end;
+    pkTuple, pkAdt, pkOr:
+      for i := 0 to Length(Pats[p].l) - 1 do BcPatVars(Pats[p].l[i], vs);
+    pkDeref: BcPatVars(Pats[p].a, vs);
+    pkSlice:
+      begin
+        for i := 0 to Length(Pats[p].l) - 1 do BcPatVars(Pats[p].l[i], vs);
+        for i := 0 to Length(Pats[p].l2) - 1 do BcPatVars(Pats[p].l2[i], vs);
+        if Pats[p].a >= 0 then BcPatVars(Pats[p].a, vs);
+      end;
+  end;
+end;
+
+{ ---- numerotation (ordre d'evaluation, post-ordre) ---- }
+
+procedure BcSetOrd(h: Integer);
+var
+  n: Integer;
+begin
+  if BcCnt >= Length(BcPathOf) then
+  begin
+    n := BcCnt * 2 + 256;
+    SetLength(BcPathOf, n);
+    SetLength(BcLim, n);
+    SetLength(BcLimIn, n);
+    SetLength(BcDepth, n);
+  end;
+  BcOrd[h] := BcCnt;
+  IAdd(BcTouched, h);
+  BcPathOf[BcCnt] := BcCurPath;
+  BcLim[BcCnt] := BcInf;
+  BcLimIn[BcCnt] := BcInf;
+  BcDepth[BcCnt] := BcCurDepth;
+  Inc(BcCnt);
+end;
+
+procedure BcNumPatVars(p: Integer; inBlock: Boolean);
+var
+  vs: TIntArr;
+  i: Integer;
+begin
+  vs := nil;
+  BcPatVars(p, vs);
+  for i := 0 to Length(vs) - 1 do
+  begin
+    BcDecl[vs[i]] := BcCnt;
+    if inBlock and (Length(BcBlkStack) > 0) then BcDeclBlk[vs[i]] := BcBlkStack[Length(BcBlkStack) - 1]
+    else BcDeclBlk[vs[i]] := -1;
+  end;
+end;
+
+procedure BcNum(h: Integer);
+var
+  i, id, bs, cut, cutIn, o, ls, v: Integer;
+  savePath: string;
+begin
+  if (h <= 0) or (BcOrd[h] >= 0) then Exit;
+  case Hirs[h].k of
+    hLocal:
+      begin
+        BcSetOrd(h);
+        v := Integer(Hirs[h].n);
+        if (v >= 0) and (v < Length(BcUses)) then IAdd(BcUses[v], h);
+      end;
+    hAssign:
+      begin
+        BcNum(Hirs[h].b);
+        if Hirs[Hirs[h].a].k = hLocal then BcSetOrd(Hirs[h].a)
+        else BcNum(Hirs[h].a);
+        BcSetOrd(h);
+        if Hirs[Hirs[h].a].k = hLocal then
+        begin
+          v := Integer(Hirs[Hirs[h].a].n);
+          if (v >= 0) and (v < Length(BcDefs)) then IAdd(BcDefs[v], BcOrd[h]);
+        end;
+      end;
+    hIf:
+      begin
+        BcNum(Hirs[h].a);
+        id := BcNextBr; Inc(BcNextBr);
+        savePath := BcCurPath;
+        BcCurPath := savePath + IntToStr(id) + ':0;';
+        BcNum(Hirs[h].b);
+        BcCurPath := savePath + IntToStr(id) + ':1;';
+        if Hirs[h].c <> 0 then BcNum(Hirs[h].c);
+        BcCurPath := savePath;
+        BcSetOrd(h);
+      end;
+    hMatch:
+      begin
+        BcNum(Hirs[h].a);
+        id := BcNextBr; Inc(BcNextBr);
+        savePath := BcCurPath;
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          BcCurPath := savePath + IntToStr(id) + ':' + IntToStr(i) + ';';
+          BcNum(Hirs[h].l[i]);
+        end;
+        BcCurPath := savePath;
+        BcSetOrd(h);
+      end;
+    hArm:
+      begin
+        BcNumPatVars(Integer(Hirs[h].n), False);
+        BcNum(Hirs[h].a);
+        BcNum(Hirs[h].b);
+        BcSetOrd(h);
+      end;
+    hLetCond:
+      begin
+        BcNum(Hirs[h].a);
+        BcNumPatVars(Integer(Hirs[h].n), False);
+        BcSetOrd(h);
+      end;
+    hLet:
+      begin
+        BcNum(Hirs[h].a);
+        BcNum(Hirs[h].b);
+        BcNumPatVars(Integer(Hirs[h].n), True);
+        BcSetOrd(h);
+        { definition de la variable par le let }
+        if (Hirs[h].a <> 0) and (Pats[Integer(Hirs[h].n)].k = pkBind) and (Pats[Integer(Hirs[h].n)].v >= 0) then
+          IAdd(BcDefs[Pats[Integer(Hirs[h].n)].v], BcOrd[h]);
+      end;
+    hBlock:
+      begin
+        bs := BcCnt;
+        IAdd(BcBlkStack, h);
+        BcBlkS[h] := bs;
+        cut := -1;
+        cutIn := -1;
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          BcNum(Hirs[h].l[i]);
+          if (cut < 0) and BcDiv(Hirs[h].l[i], 0) then cut := BcCnt - 1;
+          if (cutIn < 0) and BcDiv(Hirs[h].l[i], 1) then cutIn := BcCnt - 1;
+        end;
+        BcNum(Hirs[h].a);
+        SetLength(BcBlkStack, Length(BcBlkStack) - 1);
+        BcSetOrd(h);
+        if cut >= 0 then
+          for o := bs to cut do
+            if BcLim[o] > cut then BcLim[o] := cut;
+        if cutIn >= 0 then
+          for o := bs to cutIn do
+            if (BcDepth[o] = BcCurDepth) and (BcLimIn[o] > cutIn) then BcLimIn[o] := cutIn;
+      end;
+    hLoop:
+      begin
+        ls := BcCnt;
+        BcBlkS[h] := ls;
+        Inc(BcCurDepth);
+        BcNum(Hirs[h].a);
+        Dec(BcCurDepth);
+        if BcNLoops >= Length(BcLoops) then SetLength(BcLoops, BcNLoops * 2 + 8);
+        BcLoops[BcNLoops].s := ls;
+        BcLoops[BcNLoops].e := BcCnt - 1;
+        Inc(BcNLoops);
+        BcSetOrd(h);
+      end;
+    hClosure:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do BcNum(Hirs[h].l[i]);
+        BcSetOrd(h);
+      end;
+  else
+    begin
+      BcNum(Hirs[h].a);
+      BcNum(Hirs[h].b);
+      BcNum(Hirs[h].c);
+      for i := 0 to Length(Hirs[h].l) - 1 do BcNum(Hirs[h].l[i]);
+      BcSetOrd(h);
+    end;
+  end;
+end;
+
+{ ---- accessibilite ---- }
+
+function BcArmOf(const p: string; id: Integer): Integer;
+var
+  k, i: Integer;
+  key, aug: string;
+begin
+  Result := -1;
+  key := ';' + IntToStr(id) + ':';
+  aug := ';' + p;
+  k := Pos(key, aug);
+  if k = 0 then Exit;
+  i := k + Length(key);
+  Result := 0;
+  while (i <= Length(aug)) and (aug[i] <> ';') do
+  begin
+    Result := Result * 10 + (Ord(aug[i]) - 48);
+    Inc(i);
+  end;
+end;
+
+function BcExcl(const pa, pb: string): Boolean;
+var
+  i, j, id, arm, o: Integer;
+begin
+  Result := False;
+  i := 1;
+  while i <= Length(pa) do
+  begin
+    j := i;
+    while (j <= Length(pa)) and (pa[j] <> ':') do Inc(j);
+    id := StrToIntDef(Copy(pa, i, j - i), -1);
+    i := j + 1;
+    j := i;
+    while (j <= Length(pa)) and (pa[j] <> ';') do Inc(j);
+    arm := StrToIntDef(Copy(pa, i, j - i), -1);
+    i := j + 1;
+    o := BcArmOf(pb, id);
+    if (o >= 0) and (o <> arm) then begin Result := True; Exit; end;
+  end;
+end;
+
+function BcLoopOf(p: Integer): Integer;
+var
+  i, bestS: Integer;
+begin
+  Result := -1;
+  bestS := -1;
+  for i := 0 to BcNLoops - 1 do
+    if (BcLoops[i].s <= p) and (p <= BcLoops[i].e) and (BcLoops[i].s > bestS) then
+    begin
+      bestS := BcLoops[i].s;
+      Result := i;
+    end;
+end;
+
+function BcDefInLoop(v, lp: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(BcDefs[v]) - 1 do
+    if (BcDefs[v][i] >= BcLoops[lp].s) and (BcDefs[v][i] <= BcLoops[lp].e) then begin Result := True; Exit; end;
+end;
+
+{ premiere utilisation de la variable hv apres le point p (hir) ou -1 }
+function BcUseAfter(hv, p, declLimit: Integer): Integer;
+var
+  i, u, best, lp: Integer;
+begin
+  Result := -1;
+  if (hv < 0) or (hv >= Length(BcUses)) then Exit;
+  if BcDecl[hv] >= declLimit then Exit;
+  best := BcInf;
+  for i := 0 to Length(BcUses[hv]) - 1 do
+  begin
+    u := BcOrd[BcUses[hv][i]];
+    if (u > p) and (u <= BcLim[p]) and (u < best) and (not BcExcl(BcPathOf[p], BcPathOf[u])) then
+    begin
+      best := u;
+      Result := BcUses[hv][i];
+    end;
+  end;
+  if Result >= 0 then Exit;
+  lp := BcLoopOf(p);
+  if (lp >= 0) and (BcLimIn[p] = BcInf) and (BcDecl[hv] < BcLoops[lp].s) and (not BcDefInLoop(hv, lp)) then
+    for i := 0 to Length(BcUses[hv]) - 1 do
+    begin
+      u := BcOrd[BcUses[hv][i]];
+      if (u >= BcLoops[lp].s) and (u <= BcLoops[lp].e) and (u < best) then
+      begin
+        best := u;
+        Result := BcUses[hv][i];
+      end;
+    end;
+end;
+
+{ ---- etat ---- }
+
+function BcEmpty: TBcState;
+begin
+  Result.items := nil;
+  Result.dead := False;
+end;
+
+function BcDeadSt: TBcState;
+begin
+  Result.items := nil;
+  Result.dead := True;
+end;
+
+function BcHasPair(const st: TBcState; l, h: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(st.items) - 1 do
+    if (st.items[i].l = l) and (st.items[i].h = h) then begin Result := True; Exit; end;
+end;
+
+procedure BcAddPair(var st: TBcState; l, h: Integer);
+begin
+  if BcHasPair(st, l, h) then Exit;
+  SetLength(st.items, Length(st.items) + 1);
+  st.items[Length(st.items) - 1].l := l;
+  st.items[Length(st.items) - 1].h := h;
+end;
+
+function BcMerge(const a, b: TBcState): TBcState;
+var
+  i: Integer;
+begin
+  if a.dead then begin Result := b; Exit; end;
+  if b.dead then begin Result := a; Exit; end;
+  Result := a;
+  for i := 0 to Length(b.items) - 1 do BcAddPair(Result, b.items[i].l, b.items[i].h);
+end;
+
+procedure BcKill(var st: TBcState; v: Integer);
+var
+  i, k: Integer;
+begin
+  k := 0;
+  for i := 0 to Length(st.items) - 1 do
+    if st.items[i].h <> v then
+    begin
+      st.items[k] := st.items[i];
+      Inc(k);
+    end;
+  SetLength(st.items, k);
+end;
+
+procedure BcDropInner(var st: TBcState; ls: Integer);
+var
+  i, k: Integer;
+begin
+  k := 0;
+  for i := 0 to Length(st.items) - 1 do
+    if BcDecl[st.items[i].h] < ls then
+    begin
+      st.items[k] := st.items[i];
+      Inc(k);
+    end;
+  SetLength(st.items, k);
+end;
+
+procedure BcAdd1(var a: TIntArr; x: Integer);
+var
+  j: Integer;
+begin
+  for j := 0 to Length(a) - 1 do
+    if a[j] = x then Exit;
+  IAdd(a, x);
+end;
+
+procedure BcUnion(var a: TIntArr; const b: TIntArr);
+var
+  i, j: Integer;
+  f: Boolean;
+begin
+  for i := 0 to Length(b) - 1 do
+  begin
+    f := False;
+    for j := 0 to Length(a) - 1 do
+      if a[j] = b[i] then begin f := True; Break; end;
+    if not f then IAdd(a, b[i]);
+  end;
+end;
+
+function BcHeld(const st: TBcState; v: Integer): TIntArr;
+var
+  i: Integer;
+begin
+  Result := nil;
+  for i := 0 to Length(st.items) - 1 do
+    if st.items[i].h = v then BcAdd1(Result, st.items[i].l);
+end;
+
+function BcHeldIf(const st: TBcState; v: Integer): TIntArr;
+begin
+  Result := nil;
+  if BcTyHolds(Bodies[BcBody].vars[v].ty, 0) then Result := BcHeld(st, v);
+end;
+
+procedure BcAttach(var st: TBcState; const loans: TIntArr; v: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to Length(loans) - 1 do BcAddPair(st, loans[i], v);
+end;
+
+{ ---- libelles ---- }
+
+procedure BcLab(var labs: TLabels; fi, line, col, len: Integer; primary: Boolean; const text: string);
+var
+  n: Integer;
+begin
+  n := Length(labs);
+  SetLength(labs, n + 1);
+  labs[n].fi := fi; labs[n].line := line; labs[n].col := col; labs[n].len := len;
+  labs[n].primary := primary;
+  labs[n].text := text;
+end;
+
+procedure BcLabH(var labs: TLabels; h: Integer; primary: Boolean; const text: string);
+begin
+  BcLab(labs, Hirs[h].fi, Hirs[h].line, Hirs[h].col, Hirs[h].len, primary, text);
+end;
+
+procedure BcLabLoan(var labs: TLabels; l: Integer; primary: Boolean; const text: string);
+begin
+  BcLab(labs, BcLoans[l].fi, BcLoans[l].line, BcLoans[l].col, BcLoans[l].len, primary, text);
+end;
+
+function BcText(h: Integer): string;
+var
+  s: string;
+begin
+  Result := '';
+  if Hirs[h].line > 0 then
+  begin
+    s := SourceLine(Hirs[h].fi, Hirs[h].line);
+    if Hirs[h].col - 1 + Hirs[h].len <= Length(s) then Result := Copy(s, Hirs[h].col, Hirs[h].len);
+  end;
+end;
+
+function BcPlaceName(placeH, v: Integer): string;
+begin
+  Result := '';
+  if placeH > 0 then Result := BcText(placeH);
+  if (Result = '') or (Pos(#10, Result) > 0) then Result := Bodies[BcBody].vars[v].name;
+end;
+
+function BcSeenKey(const k: string): Boolean;
+begin
+  Result := HFind(BcSeen, k) >= 0;
+  if not Result then HPut(BcSeen, k, 1);
+end;
+
+{ ---- conflits ---- }
+
+function BcOverlap(const lp, ap: string; weak: Boolean): Boolean;
+begin
+  if weak then begin Result := ap = ''; Exit; end;
+  if (lp = '') or (ap = '') then begin Result := True; Exit; end;
+  Result := (lp = ap) or (Copy(ap, 1, Length(lp) + 1) = lp + '.') or (Copy(lp, 1, Length(ap) + 1) = ap + '.');
+end;
+
+procedure BcReportConflict(kind, l, acc, placeH, useH: Integer; viaCall: Boolean);
+var
+  labs: TLabels;
+  vn: TVarInfo;
+  v: Integer;
+  nm, later, lw: string;
+  lm: Boolean;
+begin
+  if BcQuiet > 0 then Exit;
+  if BcSeenKey('C' + IntToStr(acc) + ':' + IntToStr(l)) then Exit;
+  v := BcLoans[l].x;
+  vn := Bodies[BcBody].vars[v];
+  nm := BcPlaceName(placeH, v);
+  lm := BcLoans[l].mut;
+  if viaCall then later := 'used by call' else later := 'used here';
+  labs := nil;
+  case kind of
+    akMut:
+      if lm then
+      begin
+        BcLabLoan(labs, l, False, 'first mutable borrow occurs here');
+        BcLabH(labs, acc, True, 'second mutable borrow occurs here');
+        if useH >= 0 then BcLabH(labs, useH, False, 'first borrow later ' + later);
+        ReportLabels(True, 'E0499', 'cannot borrow `' + nm + '` as mutable more than once at a time', labs);
+      end
+      else
+      begin
+        BcLabLoan(labs, l, False, 'immutable borrow occurs here');
+        BcLabH(labs, acc, True, 'mutable borrow occurs here');
+        if useH >= 0 then BcLabH(labs, useH, False, 'immutable borrow later ' + later);
+        ReportLabels(True, 'E0502', 'cannot borrow `' + nm + '` as mutable because it is also borrowed as immutable', labs);
+      end;
+    akShared:
+      begin
+        BcLabLoan(labs, l, False, 'mutable borrow occurs here');
+        BcLabH(labs, acc, True, 'immutable borrow occurs here');
+        if useH >= 0 then BcLabH(labs, useH, False, 'mutable borrow later ' + later);
+        ReportLabels(True, 'E0502', 'cannot borrow `' + nm + '` as immutable because it is also borrowed as mutable', labs);
+      end;
+    akMove:
+      begin
+        if (vn.node > 0) and (Nodes[vn.node].line > 0) then
+          BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, Nodes[vn.node].col, Length(vn.name), False,
+                'binding `' + vn.name + '` declared here');
+        BcLabLoan(labs, l, False, 'borrow of `' + nm + '` occurs here');
+        BcLabH(labs, acc, True, 'move out of `' + nm + '` occurs here');
+        if useH >= 0 then BcLabH(labs, useH, False, 'borrow later ' + later);
+        ReportLabels(True, 'E0505', 'cannot move out of `' + nm + '` because it is borrowed', labs);
+      end;
+    akAssign:
+      begin
+        BcLabLoan(labs, l, False, '`' + nm + '` is borrowed here');
+        BcLabH(labs, acc, True, '`' + nm + '` is assigned to here but it was already borrowed');
+        if useH >= 0 then BcLabH(labs, useH, False, 'borrow later ' + later);
+        ReportLabels(True, 'E0506', 'cannot assign to `' + nm + '` because it is borrowed', labs);
+      end;
+  else
+    begin
+      BcLabLoan(labs, l, False, '`' + nm + '` is borrowed here');
+      BcLabH(labs, acc, True, 'use of borrowed `' + nm + '`');
+      if useH >= 0 then BcLabH(labs, useH, False, 'borrow later ' + later);
+      ReportLabels(True, 'E0503', 'cannot use `' + nm + '` because it was mutably borrowed', labs);
+    end;
+  end;
+  WriteErrLn('');
+end;
+
+procedure BcCheck(const st: TBcState; kind, x: Integer; const path: string; acc, placeH: Integer);
+var
+  i, l, p, useH: Integer;
+  lm: Boolean;
+begin
+  if (x < 0) or (acc <= 0) then Exit;
+  p := BcOrd[acc];
+  if p < 0 then Exit;
+  for i := 0 to Length(st.items) - 1 do
+  begin
+    l := st.items[i].l;
+    if (BcLoans[l].x <> x) or (BcLoans[l].hid = acc) then Continue;
+    if not BcOverlap(BcLoans[l].path, path, BcLoans[l].weak) then Continue;
+    lm := BcLoans[l].mut;
+    if (not lm) and (kind in [akRead, akShared]) then Continue;
+    useH := BcUseAfter(st.items[i].h, p, BcInf);
+    if useH < 0 then Continue;
+    BcReportConflict(kind, l, acc, placeH, useH, False);
+    Exit;
+  end;
+  for i := 0 to Length(BcPendL) - 1 do
+  begin
+    l := BcPendL[i];
+    if (BcLoans[l].x <> x) or (BcLoans[l].hid = acc) then Continue;
+    if not BcOverlap(BcLoans[l].path, path, BcLoans[l].weak) then Continue;
+    lm := BcLoans[l].mut;
+    if lm and BcLoans[l].tph and (kind in [akRead, akShared]) then lm := False;
+    if (not lm) and (kind in [akRead, akShared]) then Continue;
+    BcReportConflict(kind, l, acc, placeH, BcPendC[i], True);
+    Exit;
+  end;
+end;
+
+{ ---- E0597 : fin de portee ---- }
+
+procedure BcBlockExit(h: Integer; const st: TBcState);
+var
+  i, l, x, p, useH: Integer;
+  labs: TLabels;
+  vn: TVarInfo;
+begin
+  if (h = BcRoot) or (BcQuiet > 0) then Exit;
+  p := BcOrd[h];
+  for i := 0 to Length(st.items) - 1 do
+  begin
+    l := st.items[i].l;
+    x := BcLoans[l].x;
+    if BcDeclBlk[x] <> h then Continue;
+    if BcLoans[l].isCap then Continue;
+    useH := BcUseAfter(st.items[i].h, p, BcBlkS[h]);
+    if useH < 0 then Continue;
+    if BcSeenKey('S' + IntToStr(l)) then Continue;
+    vn := Bodies[BcBody].vars[x];
+    labs := nil;
+    if (vn.node > 0) and (Nodes[vn.node].line > 0) then
+      BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, Nodes[vn.node].col, Length(vn.name), False,
+            'binding `' + vn.name + '` declared here');
+    BcLabLoan(labs, l, True, 'borrowed value does not live long enough');
+    if Hirs[h].eline > 0 then
+      BcLab(labs, Hirs[h].fi, Hirs[h].eline, Hirs[h].ecol - 1, 1, False, '`' + vn.name + '` dropped here while still borrowed');
+    BcLabH(labs, useH, False, 'borrow later used here');
+    ReportLabels(True, 'E0597', '`' + vn.name + '` does not live long enough', labs);
+    WriteErrLn('');
+  end;
+end;
+
+{ ---- E0373 ---- }
+
+function BcClosureHead(h: Integer; var col, len: Integer): Boolean;
+var
+  s: string;
+  i, k: Integer;
+begin
+  Result := False;
+  col := Hirs[h].col;
+  len := Hirs[h].len;
+  s := SourceLine(Hirs[h].fi, Hirs[h].line);
+  i := col;
+  if Copy(s, i, 5) = 'move ' then i := i + 5;
+  if (i > Length(s)) or (s[i] <> '|') then Exit;
+  k := i + 1;
+  while (k <= Length(s)) and (s[k] <> '|') do Inc(k);
+  if k > Length(s) then Exit;
+  col := i;
+  len := k - i + 1;
+  Result := True;
+end;
+
+{ premiere utilisation de la capture idx dans le corps de la fermeture }
+function BcFindUpvar(h, idx: Integer): Integer;
+var
+  i, r: Integer;
+begin
+  Result := -1;
+  if h <= 0 then Exit;
+  if (Hirs[h].k = hUpvar) and (Integer(Hirs[h].n) = idx) then begin Result := h; Exit; end;
+  if Hirs[h].k = hClosure then Exit;
+  r := BcFindUpvar(Hirs[h].a, idx);
+  if r >= 0 then begin Result := r; Exit; end;
+  r := BcFindUpvar(Hirs[h].b, idx);
+  if r >= 0 then begin Result := r; Exit; end;
+  r := BcFindUpvar(Hirs[h].c, idx);
+  if r >= 0 then begin Result := r; Exit; end;
+  for i := 0 to Length(Hirs[h].l) - 1 do
+  begin
+    r := BcFindUpvar(Hirs[h].l[i], idx);
+    if r >= 0 then begin Result := r; Exit; end;
+  end;
+end;
+
+procedure BcReportE0373(l, closH, callH: Integer; viaSpawn: Boolean);
+var
+  labs: TLabels;
+  vn: TVarInfo;
+  cc, cl, ln, w, k, ui: Integer;
+  src, sug: string;
+  cid: Integer;
+begin
+  if BcQuiet > 0 then Exit;
+  if BcSeenKey('K' + IntToStr(l)) then Exit;
+  vn := Bodies[BcBody].vars[BcLoans[l].x];
+  BcClosureHead(closH, cc, cl);
+  labs := nil;
+  BcLab(labs, Hirs[closH].fi, Hirs[closH].line, cc, cl, True, 'may outlive borrowed value `' + vn.name + '`');
+  cid := Integer(Hirs[closH].n);
+  ui := -1;
+  for k := 0 to Length(Hirs[closH].l) - 1 do
+    if (Hirs[Hirs[closH].l[k]].k = hLocal) and (Integer(Hirs[Hirs[closH].l[k]].n) = BcLoans[l].x) then
+    begin
+      ui := Hirs[closH].l[k];
+      Break;
+    end;
+  if ui >= 0 then BcLabH(labs, ui, False, '`' + vn.name + '` is borrowed here');
+  ReportLabels(True, 'E0373', 'closure may outlive the current function, but it borrows `' + vn.name +
+               '`, which is owned by the current function', labs);
+  w := Length(IntToStr(Hirs[closH].line));
+  if callH > 0 then
+  begin
+    WriteErrLn(Spaces(w) + ' |');
+    labs := nil;
+    BcLabH(labs, callH, True, '');
+    ReportSubLabels('note', 'function requires argument type to outlive `''static`', labs);
+  end;
+  WriteErrLn(Spaces(w) + ' |');
+  src := ExpandTabs(SourceLine(Hirs[closH].fi, Hirs[closH].line));
+  WriteErrLn('help: to force the closure to take ownership of `' + vn.name + '` (and any other referenced variables), use the `move` keyword');
+  WriteErrLn(Spaces(w) + ' |');
+  sug := Copy(src, 1, cc - 1) + 'move ' + Copy(src, cc, Length(src));
+  WriteErrLn(PadL(IntToStr(Hirs[closH].line), w) + ' | ' + sug);
+  WriteErrLn(Spaces(w) + ' | ' + Spaces(cc - 1) + '++++');
+  WriteErrLn('');
+end;
+
+{ ---- E0515 ---- }
+
+function BcTailOf(h: Integer): Integer;
+begin
+  Result := h;
+  while True do
+  begin
+    if (Hirs[Result].k = hBlock) and (Hirs[Result].a <> 0) then Result := Hirs[Result].a
+    else if (Hirs[Result].k = hCoerce) then Result := Hirs[Result].a
+    else Break;
+  end;
+end;
+
+procedure BcReturn(const carried: TIntArr; h: Integer);
+var
+  i, l, x, t: Integer;
+  labs: TLabels;
+  vn: TVarInfo;
+  what, expl: string;
+begin
+  if BcQuiet > 0 then Exit;
+  for i := 0 to Length(carried) - 1 do
+  begin
+    l := carried[i];
+    x := BcLoans[l].x;
+    if x < 0 then Continue;
+    if BcLoans[l].isCap then
+    begin
+      BcReportE0373(l, BcLoans[l].hid, 0, False);
+      Exit;
+    end;
+    if BcSeenKey('R' + IntToStr(l)) then Continue;
+    vn := Bodies[BcBody].vars[x];
+    if vn.isParam then what := 'function parameter' else what := 'local variable';
+    labs := nil;
+    t := BcTailOf(h);
+    if BcLoans[l].explicit then
+    begin
+      BcLabLoan(labs, l, True, 'returns a reference to data owned by the current function');
+      ReportLabels(True, 'E0515', 'cannot return reference to ' + what + ' `' + vn.name + '`', labs);
+    end
+    else
+    begin
+      BcLabLoan(labs, l, False, '`' + vn.name + '` is borrowed here');
+      BcLabH(labs, t, True, 'returns a value referencing data owned by the current function');
+      ReportLabels(True, 'E0515', 'cannot return value referencing ' + what + ' `' + vn.name + '`', labs);
+    end;
+    WriteErrLn('');
+    Exit;
+  end;
+end;
+{ ---- parcours ---- }
+
+function BcExpr(h: Integer; var st: TBcState): TIntArr; forward;
+function BcPlace(h, kind: Integer; var st: TBcState; acc, autoCall: Integer): TIntArr; forward;
+
+function BcCalleeName(call: Integer): string;
+begin
+  Result := '';
+  if (call > 0) and (Hirs[call].k = hCall) and (Hirs[Hirs[call].a].k = hFnRef) then
+    Result := Defs[Hirs[Hirs[call].a].def].name;
+end;
+
+function BcIsSynth(call: Integer): Boolean;
+var
+  nm: string;
+begin
+  nm := BcCalleeName(call);
+  Result := (nm = 'deref') or (nm = 'deref_mut') or (nm = 'index') or (nm = 'index_mut');
+end;
+
+function BcNewLoan(acc, v: Integer; const path: string; mut: Boolean; autoCall: Integer): Integer;
+var
+  l, opH: Integer;
+begin
+  l := BcLoanAt[acc];
+  if l >= 0 then begin Result := l; Exit; end;
+  if BcNLoans >= Length(BcLoans) then SetLength(BcLoans, BcNLoans * 2 + 16);
+  l := BcNLoans;
+  Inc(BcNLoans);
+  BcLoanAt[acc] := l;
+  IAdd(BcLoanTouched, acc);
+  BcLoans[l].x := v;
+  BcLoans[l].path := path;
+  BcLoans[l].mut := mut;
+  BcLoans[l].tph := False;
+  BcLoans[l].isCap := False;
+  BcLoans[l].weak := False;
+  BcLoans[l].explicit := False;
+  BcLoans[l].hid := acc;
+  BcLoans[l].fi := Hirs[acc].fi;
+  BcLoans[l].line := Hirs[acc].line;
+  BcLoans[l].col := Hirs[acc].col;
+  BcLoans[l].len := Hirs[acc].len;
+  if Hirs[acc].k = hAddr then
+  begin
+    opH := Hirs[acc].a;
+    BcLoans[l].explicit := (Hirs[acc].col <> Hirs[opH].col) or (Hirs[acc].line <> Hirs[opH].line);
+    if autoCall >= 0 then
+    begin
+      if BcIsSynth(autoCall) then
+      begin
+        BcLoans[l].fi := Hirs[opH].fi;
+        BcLoans[l].line := Hirs[opH].line;
+        BcLoans[l].col := Hirs[opH].col;
+        BcLoans[l].len := Hirs[opH].len;
+      end
+      else if mut and (not BcLoans[l].explicit) then BcLoans[l].tph := True;
+    end;
+  end;
+  Result := l;
+end;
+
+procedure BcReportMoveOut(h, baseH: Integer);
+var
+  labs: TLabels;
+  nm, bt, ln, sug, ct: string;
+  t, w, a0: Integer;
+  isIdx: Boolean;
+begin
+  if BcQuiet > 0 then Exit;
+  if BcSeenKey('O' + IntToStr(h)) then Exit;
+  t := Zonk(Hirs[h].ty);
+  nm := BcText(h);
+  isIdx := (Hirs[h].k = hIndex) and (Hirs[baseH].k = hCall);
+  labs := nil;
+  if isIdx then
+  begin
+    a0 := Shallow(Zonk(Hirs[Hirs[baseH].l[0]].ty));
+    ct := TyToStr(Zonk(Tys[a0].args[0]));
+    BcLabH(labs, h, True, 'move occurs because value has type `' + TyToStr(t) + '`, which does not implement the `Copy` trait');
+    ReportLabels(True, 'E0507', 'cannot move out of index of `' + ct + '`', labs);
+  end
+  else
+  begin
+    if BcIsMutRef(Hirs[baseH].ty) then bt := 'a mutable reference' else bt := 'a shared reference';
+    BcLabH(labs, h, True, 'move occurs because `' + nm + '` has type `' + TyToStr(t) + '`, which does not implement the `Copy` trait');
+    ReportLabels(True, 'E0507', 'cannot move out of `' + nm + '` which is behind ' + bt, labs);
+  end;
+  w := Length(IntToStr(Hirs[h].line));
+  ln := ExpandTabs(SourceLine(Hirs[h].fi, Hirs[h].line));
+  WriteErrLn(Spaces(w) + ' |');
+  WriteErrLn('help: consider borrowing here');
+  WriteErrLn(Spaces(w) + ' |');
+  sug := Copy(ln, 1, Hirs[h].col - 1) + '&' + Copy(ln, Hirs[h].col, Length(ln));
+  WriteErrLn(PadL(IntToStr(Hirs[h].line), w) + ' | ' + sug);
+  WriteErrLn(Spaces(w) + ' | ' + Spaces(Hirs[h].col - 1) + '+');
+  if not isIdx then
+  begin
+    WriteErrLn('help: consider cloning the value if the performance cost is acceptable');
+    WriteErrLn(Spaces(w) + ' |');
+    sug := Copy(ln, 1, Hirs[h].col - 1 + Hirs[h].len) + '.clone()' + Copy(ln, Hirs[h].col + Hirs[h].len, Length(ln));
+    WriteErrLn(PadL(IntToStr(Hirs[h].line), w) + ' | ' + sug);
+    WriteErrLn(Spaces(w) + ' | ' + Spaces(Hirs[h].col - 1 + Hirs[h].len) + '++++++++');
+  end;
+  WriteErrLn('');
+end;
+
+function BcPlace(h, kind: Integer; var st: TBcState; acc, autoCall: Integer): TIntArr;
+var
+  cur, v, i, baseH, x, l: Integer;
+  path: string;
+  viaDeref: Boolean;
+  idxs, cb: TIntArr;
+  opTy: Integer;
+begin
+  Result := nil;
+  path := '';
+  v := -1;
+  baseH := -1;
+  viaDeref := False;
+  idxs := nil;
+  cur := h;
+  while True do
+  begin
+    case Hirs[cur].k of
+      hCoerce: cur := Hirs[cur].a;
+      hField:
+        begin
+          if path = '' then path := IntToStr(Hirs[cur].n) else path := IntToStr(Hirs[cur].n) + '.' + path;
+          cur := Hirs[cur].a;
+        end;
+      hIndex:
+        begin
+          IAdd(idxs, Hirs[cur].b);
+          if path = '' then path := '[]' else path := '[].' + path;
+          cur := Hirs[cur].a;
+        end;
+      hDeref:
+        begin
+          opTy := Shallow(Zonk(Hirs[Hirs[cur].a].ty));
+          if Tys[opTy].k = tyAdt then
+          begin
+            if path = '' then path := '*' else path := '*.' + path;
+            cur := Hirs[cur].a;
+          end
+          else
+          begin
+            viaDeref := True;
+            baseH := Hirs[cur].a;
+            Break;
+          end;
+        end;
+      hLocal: begin v := Integer(Hirs[cur].n); Break; end;
+    else
+      begin
+        viaDeref := True;
+        baseH := cur;
+        Break;
+      end;
+    end;
+  end;
+  for i := 0 to Length(idxs) - 1 do BcExpr(idxs[i], st);
+  if st.dead then Exit;
+  if viaDeref then
+  begin
+    cb := nil;
+    if not (Hirs[baseH].k in [hUpvar, hStatic]) then cb := BcExpr(baseH, st);
+    if (kind = akMove) and (Hirs[baseH].k <> hUpvar) and (Hirs[baseH].k <> hStatic) and (h <> baseH) and
+       (not IsCopyTy(Hirs[h].ty)) and (not BcIsMutRef(Hirs[h].ty)) and
+       (Tys[Shallow(Zonk(Hirs[h].ty))].k <> tyNever) and (Tys[Shallow(Zonk(Hirs[h].ty))].k <> tyStr) and
+       (Tys[Shallow(Zonk(Hirs[h].ty))].k <> tySlice) and (Tys[Shallow(Zonk(Hirs[h].ty))].k <> tyDyn) and
+       (((Hirs[h].k <> hIndex) and (Tys[Shallow(Zonk(Hirs[baseH].ty))].k = tyRef)) or
+        ((Hirs[h].k = hIndex) and (Hirs[baseH].k = hCall))) then
+      BcReportMoveOut(h, baseH);
+    if kind in [akShared, akMut] then Result := cb
+    else if BcTyHolds(Hirs[h].ty, 0) then
+    begin
+      for i := 0 to Length(cb) - 1 do
+      begin
+        x := BcLoans[cb[i]].x;
+        if (BcLoans[cb[i]].path = '') and BcSameTy(Bodies[BcBody].vars[x].ty, Hirs[h].ty) then BcUnion(Result, BcHeld(st, x))
+        else BcAdd1(Result, cb[i]);
+      end;
+    end;
+    BcLastRoot := -1;
+    Exit;
+  end;
+  if v < 0 then
+  begin
+    if not (Hirs[cur].k in [hUpvar, hStatic]) then Result := BcExpr(cur, st);
+    BcLastRoot := -1;
+    Exit;
+  end;
+  BcCheck(st, kind, v, path, acc, h);
+  case kind of
+    akShared, akMut:
+      begin
+        l := BcNewLoan(acc, v, path, kind = akMut, autoCall);
+        BcAdd1(Result, l);
+        BcUnion(Result, BcHeldIf(st, v));
+      end;
+    akRead, akMove:
+      if BcTyHolds(Hirs[h].ty, 0) then Result := BcHeldIf(st, v);
+  end;
+  BcLastRoot := v;
+  BcLastPath := path;
+end;
+
+procedure BcBindPat(p: Integer; const carried: TIntArr; var st: TBcState);
+var
+  vs: TIntArr;
+  i: Integer;
+begin
+  vs := nil;
+  BcPatVars(p, vs);
+  for i := 0 to Length(vs) - 1 do
+  begin
+    BcKill(st, vs[i]);
+    if BcTyHolds(Bodies[BcBody].vars[vs[i]].ty, 0) then BcAttach(st, carried, vs[i]);
+  end;
+end;
+
+{ variable qui recoit le stockage mutable passe en argument (v.push(x) : v) }
+function BcMutTarget(a: Integer; var pointee: Integer): Integer;
+var
+  cur: Integer;
+begin
+  Result := -1;
+  cur := a;
+  while Hirs[cur].k = hCoerce do cur := Hirs[cur].a;
+  if Hirs[cur].k = hLocal then
+  begin
+    if BcIsMutRef(Hirs[cur].ty) then
+    begin
+      Result := Integer(Hirs[cur].n);
+      pointee := Tys[Shallow(Zonk(Hirs[cur].ty))].args[0];
+    end;
+    Exit;
+  end;
+  if (Hirs[cur].k = hAddr) and (Hirs[cur].n = 1) then
+  begin
+    pointee := Hirs[Hirs[cur].a].ty;
+    cur := Hirs[cur].a;
+    while Hirs[cur].k in [hCoerce, hField, hIndex] do cur := Hirs[cur].a;
+    if Hirs[cur].k = hLocal then Result := Integer(Hirs[cur].n)
+    else if (Hirs[cur].k = hDeref) and (Hirs[Hirs[cur].a].k = hLocal) and BcIsMutRef(Hirs[Hirs[cur].a].ty) then
+      Result := Integer(Hirs[Hirs[cur].a].n);
+  end;
+end;
+
+function BcRootUp(h, idx: Integer): Boolean;
+var
+  cur: Integer;
+begin
+  cur := h;
+  while Hirs[cur].k in [hCoerce, hField, hIndex, hDeref] do cur := Hirs[cur].a;
+  Result := (Hirs[cur].k = hUpvar) and (Integer(Hirs[cur].n) = idx);
+end;
+
+function BcCapMut(h, idx: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  if h <= 0 then Exit;
+  case Hirs[h].k of
+    hClosure: Exit;
+    hAssign, hAssignOp:
+      if BcRootUp(Hirs[h].a, idx) then begin Result := True; Exit; end;
+    hAddr:
+      if (Hirs[h].n = 1) and BcRootUp(Hirs[h].a, idx) then begin Result := True; Exit; end;
+  end;
+  if BcCapMut(Hirs[h].a, idx) or BcCapMut(Hirs[h].b, idx) or BcCapMut(Hirs[h].c, idx) then begin Result := True; Exit; end;
+  for i := 0 to Length(Hirs[h].l) - 1 do
+    if BcCapMut(Hirs[h].l[i], idx) then begin Result := True; Exit; end;
+end;
+
+procedure BcLPush(id: Integer);
+begin
+  if BcNLCtx >= Length(BcLCtx) then SetLength(BcLCtx, BcNLCtx * 2 + 8);
+  BcLCtx[BcNLCtx].id := id;
+  BcLCtx[BcNLCtx].brk := BcDeadSt;
+  BcLCtx[BcNLCtx].cont := BcDeadSt;
+  BcLCtx[BcNLCtx].hasBrk := False;
+  BcLCtx[BcNLCtx].hasCont := False;
+  Inc(BcNLCtx);
+end;
+
+function BcLFind(id: Integer): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := BcNLCtx - 1 downto 0 do
+    if BcLCtx[i].id = id then begin Result := i; Exit; end;
+end;
+
+{ ---- liens de duree de vie d'une signature ---- }
+
+procedure BcWalkTy(n: Integer; var names: TStrArr; var hasRef, elided, hasL, named: Boolean; depth: Integer);
+var
+  i: Integer;
+begin
+  if (n <= 0) or (depth > 14) then Exit;
+  if Nodes[n].k = tRef then
+  begin
+    hasRef := True;
+    if (Nodes[n].s2 = '') or (Nodes[n].s2 = '_') then elided := True
+    else if Nodes[n].s2 <> 'static' then begin named := True; SAdd(names, '''' + Nodes[n].s2); end;
+  end;
+  if Nodes[n].k = tImplTrait then elided := True;
+  if Nodes[n].s <> '' then SAdd(names, Nodes[n].s);
+  if (Nodes[n].s2 = 'L') then hasL := True;
+  BcWalkTy(Nodes[n].a, names, hasRef, elided, hasL, named, depth + 1);
+  for i := 0 to Length(Nodes[n].l) - 1 do BcWalkTy(Nodes[n].l[i], names, hasRef, elided, hasL, named, depth + 1);
+  for i := 0 to Length(Nodes[n].l2) - 1 do BcWalkTy(Nodes[n].l2[i], names, hasRef, elided, hasL, named, depth + 1);
+end;
+
+function BcHasName(const names: TStrArr; const s: string): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(names) - 1 do
+    if names[i] = s then begin Result := True; Exit; end;
+end;
+
+function BcTyAdtLife(t, depth: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  if depth > 6 then Exit;
+  t := Shallow(Zonk(t));
+  case Tys[t].k of
+    tyOpaque: Result := True;
+    tyAdt:
+      begin
+        if BcDefHasLife(Tys[t].def) then begin Result := True; Exit; end;
+        for i := 0 to Length(Tys[t].args) - 1 do
+          if BcTyAdtLife(Tys[t].args[i], depth + 1) then begin Result := True; Exit; end;
+      end;
+    tyTuple, tyArray, tySlice:
+      for i := 0 to Length(Tys[t].args) - 1 do
+        if BcTyAdtLife(Tys[t].args[i], depth + 1) then begin Result := True; Exit; end;
+  end;
+end;
+
+{ drapeaux par argument : 1 = tout le prete circule vers le resultat, 2 = seuls les prets herites,
+  4 = parametre de type reference }
+function BcFnLinks(def, resultTy, nargs: Integer): TIntArr;
+var
+  fn, i, p, src, nref, nown, k: Integer;
+  retNames, gn: TStrArr;
+  retRef, retEl, retL, retNamed, retElided: Boolean;
+  pn: array of TStrArr;
+  ph, pl, sv: array of Boolean;
+  dummy1, dummy3: Boolean;
+  outer, inner: Boolean;
+begin
+  Result := nil;
+  SetLength(Result, nargs);
+  for i := 0 to nargs - 1 do Result[i] := 3;
+  fn := Defs[def].node;
+  if (fn <= 0) or (Nodes[fn].k <> nFn) or (Length(Nodes[fn].l2) <> nargs) or Defs[def].isCtor then Exit;
+  if Nodes[fn].a = 0 then
+  begin
+    for i := 0 to nargs - 1 do Result[i] := 0;
+    Exit;
+  end;
+  retNames := nil;
+  retRef := False; retEl := False; retL := False; retNamed := False;
+  BcWalkTy(Nodes[fn].a, retNames, retRef, retEl, retL, retNamed, 0);
+  retElided := retEl or ((not retL) and (not retNamed) and BcTyAdtLife(resultTy, 0));
+  gn := nil;
+  nown := Defs[def].nOwn;
+  for i := 0 to Length(Defs[def].gnames) - nown - 1 do SAdd(gn, Defs[def].gnames[i]);
+  SAdd(gn, 'Self');
+  SetLength(pn, nargs);
+  SetLength(ph, nargs);
+  SetLength(pl, nargs);
+  SetLength(sv, nargs);
+  nref := 0;
+  for i := 0 to nargs - 1 do
+  begin
+    p := Nodes[fn].l2[i];
+    pn[i] := nil;
+    ph[i] := False; pl[i] := False; sv[i] := False;
+    dummy1 := False; dummy3 := False;
+    if Nodes[p].k = nSelfParam then
+    begin
+      if Nodes[p].a <> 0 then BcWalkTy(Nodes[p].a, pn[i], ph[i], dummy1, pl[i], dummy3, 0)
+      else
+      begin
+        pn[i] := Copy(gn, 0, Length(gn));
+        ph[i] := (Nodes[p].f and 1) <> 0;
+        sv[i] := not ph[i];
+      end;
+    end
+    else BcWalkTy(Nodes[p].b, pn[i], ph[i], dummy1, pl[i], dummy3, 0);
+    if ph[i] or pl[i] then Inc(nref);
+  end;
+  src := -1;
+  if (nargs > 0) and (Nodes[Nodes[fn].l2[0]].k = nSelfParam) and ph[0] then src := 0
+  else if nref = 1 then
+    for i := 0 to nargs - 1 do
+      if ph[i] or pl[i] then src := i;
+  for i := 0 to nargs - 1 do
+  begin
+    outer := retElided and ((i = src) or ((src < 0) and (ph[i] or pl[i])));
+    if (not outer) and retNamed then
+      for k := 0 to Length(retNames) - 1 do
+        if (retNames[k][1] = '''') and BcHasName(pn[i], retNames[k]) then outer := True;
+    if (not outer) and retL and pl[i] then outer := True;
+    inner := outer or sv[i];
+    if not inner then
+      for k := 0 to Length(pn[i]) - 1 do
+        if BcHasName(gn, pn[i][k]) and BcHasName(retNames, pn[i][k]) then begin inner := True; Break; end;
+    if not ph[i] then
+    begin
+      if inner then Result[i] := 3 else Result[i] := 0;
+    end
+    else
+    begin
+      Result[i] := 4;
+      if outer then Result[i] := Result[i] or 1 or 2
+      else if inner then Result[i] := Result[i] or 2;
+    end;
+  end;
+end;
+
+function BcOuterLoan(arg: Integer): Integer;
+begin
+  while Hirs[arg].k = hCoerce do arg := Hirs[arg].a;
+  Result := -1;
+  if (Hirs[arg].k = hAddr) and (Hirs[arg].n < 2) then Result := BcLoanAt[arg];
+end;
+
+procedure BcAddCut(var res: TIntArr; const src: TIntArr; cut: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to Length(src) - 1 do
+    if src[i] <> cut then BcAdd1(res, src[i]);
+end;
+
+function BcExpr1(h: Integer; var st: TBcState): TIntArr;
+var
+  i, j, k, v, cid, arg, def, mark, li, ls, w, pointee, pat, init, ac: Integer;
+  rs: array of TIntArr;
+  a, b, save, res: TBcState;
+  r, r2: TIntArr;
+  sc: Integer;
+  kd: Integer;
+  mut: Boolean;
+  nm: string;
+  isRef: Boolean;
+  cc, cl: Integer;
+  fl: TIntArr;
+begin
+  Result := nil;
+  if (h <= 0) or st.dead then Exit;
+  case Hirs[h].k of
+    hLocal:
+      begin
+        v := Integer(Hirs[h].n);
+        if IsCopyTy(Hirs[h].ty) or BcIsMutRef(Hirs[h].ty) or (Tys[Shallow(Zonk(Hirs[h].ty))].k = tyNever) then kd := akRead
+        else kd := akMove;
+        BcCheck(st, kd, v, '', h, h);
+        Result := BcHeldIf(st, v);
+      end;
+    hField, hIndex, hDeref:
+      begin
+        if IsCopyTy(Hirs[h].ty) or BcIsMutRef(Hirs[h].ty) or (Tys[Shallow(Zonk(Hirs[h].ty))].k = tyNever) then kd := akRead
+        else kd := akMove;
+        Result := BcPlace(h, kd, st, h, -1);
+      end;
+    hAddr:
+      begin
+        ac := BcAuto;
+        BcAuto := -1;
+        if IsPlaceHir(Hirs[h].a) or (Hirs[Hirs[h].a].k = hCoerce) then
+        begin
+          if Hirs[h].n = 0 then Result := BcPlace(Hirs[h].a, akShared, st, h, ac)
+          else if Hirs[h].n = 1 then Result := BcPlace(Hirs[h].a, akMut, st, h, ac)
+          else BcPlace(Hirs[h].a, akRead, st, h, -1);
+        end
+        else Result := BcExpr(Hirs[h].a, st);
+      end;
+    hCoerce, hCast, hUnary:
+      begin
+        r := BcExpr(Hirs[h].a, st);
+        if Hirs[h].k = hCoerce then Result := r;
+      end;
+    hBinary:
+      begin
+        BcExpr(Hirs[h].a, st);
+        BcExpr(Hirs[h].b, st);
+      end;
+    hAnd, hOr:
+      begin
+        BcExpr(Hirs[h].a, st);
+        if st.dead then Exit;
+        a := st;
+        BcExpr(Hirs[h].b, a);
+        st := BcMerge(st, a);
+      end;
+    hCall:
+      begin
+        arg := Hirs[h].a;
+        isRef := Hirs[arg].k = hFnRef;
+        if not isRef then BcExpr(arg, st);
+        SetLength(rs, Length(Hirs[h].l));
+        mark := Length(BcPendL);
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arg := Hirs[h].l[i];
+          if (i = 0) and (Hirs[arg].k = hAddr) then BcAuto := h else BcAuto := -1;
+          rs[i] := BcExpr(arg, st);
+          BcAuto := -1;
+          if st.dead then Break;
+          for j := 0 to Length(rs[i]) - 1 do
+          begin
+            IAdd(BcPendL, rs[i][j]);
+            IAdd(BcPendC, h);
+          end;
+        end;
+        SetLength(BcPendL, mark);
+        SetLength(BcPendC, mark);
+        if st.dead then Exit;
+        def := -1;
+        if isRef then def := Hirs[Hirs[h].a].def;
+        { thread::spawn exige 'static }
+        if isRef and (Defs[def].name = 'spawn') and (Defs[def].scopeMod > 0) and (Defs[Defs[def].scopeMod].name = 'thread') then
+          for i := 0 to Length(Hirs[h].l) - 1 do
+            if (Hirs[Hirs[h].l[i]].k = hClosure) and (not Closures[Integer(Hirs[Hirs[h].l[i]].n)].isMove) then
+              for j := 0 to Length(rs[i]) - 1 do
+                if BcLoans[rs[i][j]].isCap then begin BcReportE0373(rs[i][j], Hirs[h].l[i], h, True); Break; end;
+        if isRef then fl := BcFnLinks(def, Hirs[h].ty, Length(Hirs[h].l))
+        else
+        begin
+          fl := nil;
+          SetLength(fl, Length(Hirs[h].l));
+          for i := 0 to Length(fl) - 1 do fl[i] := 3;
+        end;
+        { un appel qui range des references dans un conteneur mutable }
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          v := BcMutTarget(Hirs[h].l[i], pointee);
+          if (v >= 0) and BcTyHolds(pointee, 0) then
+            for j := 0 to Length(Hirs[h].l) - 1 do
+              if j <> i then
+              begin
+                r2 := nil;
+                if (fl[j] and 4) <> 0 then BcAddCut(r2, rs[j], BcOuterLoan(Hirs[h].l[j])) else r2 := rs[j];
+                for k := 0 to Length(r2) - 1 do
+                  if not BcLoans[r2[k]].isCap then BcAddPair(st, r2[k], v);
+              end;
+        end;
+        if BcTyHolds(Hirs[h].ty, 0) then
+          for i := 0 to Length(rs) - 1 do
+          begin
+            if (fl[i] and 1) <> 0 then BcUnion(Result, rs[i])
+            else if (fl[i] and 2) <> 0 then BcAddCut(Result, rs[i], BcOuterLoan(Hirs[h].l[i]));
+          end;
+      end;
+    hCallClosure:
+      begin
+        if IsPlaceHir(Hirs[h].a) then BcPlace(Hirs[h].a, akRead, st, Hirs[h].a, -1)
+        else BcExpr(Hirs[h].a, st);
+        SetLength(rs, Length(Hirs[h].l));
+        mark := Length(BcPendL);
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          rs[i] := BcExpr(Hirs[h].l[i], st);
+          if st.dead then Break;
+          for j := 0 to Length(rs[i]) - 1 do
+          begin
+            IAdd(BcPendL, rs[i][j]);
+            IAdd(BcPendC, h);
+          end;
+        end;
+        SetLength(BcPendL, mark);
+        SetLength(BcPendC, mark);
+        if BcTyHolds(Hirs[h].ty, 0) then
+          for i := 0 to Length(rs) - 1 do BcUnion(Result, rs[i]);
+      end;
+    hAssign:
+      begin
+        r := BcExpr(Hirs[h].b, st);
+        if st.dead then Exit;
+        arg := Hirs[h].a;
+        while Hirs[arg].k = hCoerce do arg := Hirs[arg].a;
+        if Hirs[arg].k = hLocal then
+        begin
+          v := Integer(Hirs[arg].n);
+          BcCheck(st, akAssign, v, '', h, arg);
+          BcKill(st, v);
+          if BcTyHolds(Bodies[BcBody].vars[v].ty, 0) then BcAttach(st, r, v);
+        end
+        else
+        begin
+          BcPlace(arg, akAssign, st, h, -1);
+          if (BcLastRoot >= 0) and BcTyHolds(Bodies[BcBody].vars[BcLastRoot].ty, 0) then BcAttach(st, r, BcLastRoot);
+        end;
+      end;
+    hAssignOp:
+      begin
+        BcExpr(Hirs[h].b, st);
+        if st.dead then Exit;
+        arg := Hirs[h].a;
+        while Hirs[arg].k = hCoerce do arg := Hirs[arg].a;
+        if IsPlaceHir(arg) then BcPlace(arg, akAssign, st, h, -1)
+        else BcExpr(arg, st);
+      end;
+    hIf:
+      begin
+        BcExpr(Hirs[h].a, st);
+        if st.dead then Exit;
+        a := st;
+        b := st;
+        Result := BcExpr(Hirs[h].b, a);
+        if Hirs[h].c <> 0 then BcUnion(Result, BcExpr(Hirs[h].c, b));
+        st := BcMerge(a, b);
+      end;
+    hLetCond:
+      begin
+        sc := Hirs[h].a;
+        if IsPlaceHir(sc) or (Hirs[sc].k = hCoerce) then r := BcPlace(sc, akRead, st, sc, -1)
+        else r := BcExpr(sc, st);
+        BcBindPat(Integer(Hirs[h].n), r, st);
+      end;
+    hMatch:
+      begin
+        sc := Hirs[h].a;
+        if IsPlaceHir(sc) or (Hirs[sc].k = hCoerce) then r := BcPlace(sc, akRead, st, sc, -1)
+        else r := BcExpr(sc, st);
+        if st.dead then Exit;
+        res := BcDeadSt;
+        save := st;
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arg := Hirs[h].l[i];
+          a := save;
+          BcBindPat(Integer(Hirs[arg].n), r, a);
+          if Hirs[arg].a <> 0 then BcExpr(Hirs[arg].a, a);
+          r2 := BcExpr(Hirs[arg].b, a);
+          BcUnion(Result, r2);
+          res := BcMerge(res, a);
+        end;
+        st := res;
+      end;
+    hLoop:
+      begin
+        BcLPush(Integer(Hirs[h].n));
+        li := BcNLCtx - 1;
+        ls := BcBlkS[h];
+        Inc(BcQuiet);
+        a := st;
+        BcExpr(Hirs[h].a, a);
+        Dec(BcQuiet);
+        if BcLCtx[li].hasCont then a := BcMerge(a, BcLCtx[li].cont);
+        if not a.dead then BcDropInner(a, ls);
+        b := BcMerge(st, a);
+        BcLCtx[li].brk := BcDeadSt;
+        BcLCtx[li].hasBrk := False;
+        BcLCtx[li].cont := BcDeadSt;
+        BcLCtx[li].hasCont := False;
+        a := b;
+        BcExpr(Hirs[h].a, a);
+        if BcLCtx[li].hasBrk then st := BcLCtx[li].brk else st := BcDeadSt;
+        Dec(BcNLCtx);
+      end;
+    hBlockLabel:
+      begin
+        BcLPush(Integer(Hirs[h].n));
+        li := BcNLCtx - 1;
+        a := st;
+        Result := BcExpr(Hirs[h].a, a);
+        if BcLCtx[li].hasBrk then a := BcMerge(a, BcLCtx[li].brk);
+        st := a;
+        Dec(BcNLCtx);
+      end;
+    hBreak:
+      begin
+        if Hirs[h].a <> 0 then BcExpr(Hirs[h].a, st);
+        li := BcLFind(Integer(Hirs[h].n));
+        if (li >= 0) and (not st.dead) then
+        begin
+          BcLCtx[li].brk := BcMerge(BcLCtx[li].brk, st);
+          BcLCtx[li].hasBrk := True;
+        end;
+        st := BcDeadSt;
+      end;
+    hContinue:
+      begin
+        li := BcLFind(Integer(Hirs[h].n));
+        if (li >= 0) and (not st.dead) then
+        begin
+          BcLCtx[li].cont := BcMerge(BcLCtx[li].cont, st);
+          BcLCtx[li].hasCont := True;
+        end;
+        st := BcDeadSt;
+      end;
+    hReturn:
+      begin
+        if Hirs[h].a <> 0 then
+        begin
+          r := BcExpr(Hirs[h].a, st);
+          if not st.dead then BcReturn(r, Hirs[h].a);
+        end;
+        st := BcDeadSt;
+      end;
+    hUnreachable: st := BcDeadSt;
+    hBlock:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arg := Hirs[h].l[i];
+          if Hirs[arg].k = hLet then
+          begin
+            pat := Integer(Hirs[arg].n);
+            init := Hirs[arg].a;
+            if init <> 0 then
+            begin
+              if (Hirs[init].k = hTuple) and (Pats[pat].k = pkTuple) and (Length(Hirs[init].l) = Length(Pats[pat].l)) then
+              begin
+                for j := 0 to Length(Hirs[init].l) - 1 do
+                begin
+                  r := BcExpr(Hirs[init].l[j], st);
+                  if st.dead then Break;
+                  BcBindPat(Pats[pat].l[j], r, st);
+                end;
+              end
+              else
+              begin
+                if (IsPlaceHir(init) or (Hirs[init].k = hCoerce)) and (Pats[pat].k <> pkBind) and (not PatMoves(pat)) then
+                  r := BcPlace(init, akRead, st, init, -1)
+                else r := BcExpr(init, st);
+                if not st.dead then BcBindPat(pat, r, st);
+              end;
+            end
+            else BcBindPat(pat, nil, st);
+            if (not st.dead) and (Hirs[arg].b <> 0) then
+            begin
+              a := st;
+              BcExpr(Hirs[arg].b, a);
+            end;
+          end
+          else BcExpr(arg, st);
+          if st.dead then Exit;
+        end;
+        if Hirs[h].a <> 0 then Result := BcExpr(Hirs[h].a, st);
+        if not st.dead then BcBlockExit(h, st);
+      end;
+    hExprStmt: BcExpr(Hirs[h].a, st);
+    hLet: if Hirs[h].a <> 0 then BcExpr(Hirs[h].a, st);
+    hAdt:
+      begin
+        for i := 0 to Length(Hirs[h].l) - 1 do
+          if Hirs[h].l[i] <> 0 then BcUnion(Result, BcExpr(Hirs[h].l[i], st));
+        if Hirs[h].a <> 0 then
+        begin
+          if IsPlaceHir(Hirs[h].a) then BcPlace(Hirs[h].a, akRead, st, Hirs[h].a, -1)
+          else BcExpr(Hirs[h].a, st);
+        end;
+      end;
+    hTuple, hArray:
+      for i := 0 to Length(Hirs[h].l) - 1 do BcUnion(Result, BcExpr(Hirs[h].l[i], st));
+    hRepeat: BcExpr(Hirs[h].a, st);
+    hClosure:
+      begin
+        cid := Integer(Hirs[h].n);
+        for k := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arg := Hirs[h].l[k];
+          if Hirs[arg].k <> hLocal then Continue;
+          v := Integer(Hirs[arg].n);
+          if Closures[cid].isMove then
+          begin
+            if IsCopyTy(Hirs[arg].ty) or BcIsMutRef(Hirs[arg].ty) then kd := akRead else kd := akMove;
+            BcCheck(st, kd, v, '', arg, arg);
+            BcUnion(Result, BcHeldIf(st, v));
+          end
+          else
+          begin
+            mut := BcCapMut(Bodies[Closures[cid].bodyIdx].root, k);
+            if mut then kd := akMut else kd := akShared;
+            BcCheck(st, kd, v, '', arg, arg);
+            j := BcNewLoan(arg, v, '', mut, -1);
+            BcLoans[j].isCap := True;
+            BcLoans[j].weak := True;
+            if BcClosureHead(h, cc, cl) then
+            begin
+              BcLoans[j].fi := Hirs[h].fi;
+              BcLoans[j].line := Hirs[h].line;
+              BcLoans[j].col := cc;
+              BcLoans[j].len := cl;
+            end;
+            BcAdd1(Result, j);
+            BcUnion(Result, BcHeldIf(st, v));
+          end;
+        end;
+      end;
+  end;
+end;
+
+function BcExpr(h: Integer; var st: TBcState): TIntArr;
+begin
+  Result := BcExpr1(h, st);
+  if (Result <> nil) and (h > 0) and (not BcTyHolds(Hirs[h].ty, 0)) then Result := nil;
+end;
+
+procedure BorrowCheckBody(b: Integer);
+var
+  st: TBcState;
+  rc: TIntArr;
+  i, nv: Integer;
+begin
+  if Defs[Bodies[b].def].crate <> 0 then Exit;
+  BcBody := b;
+  BcRoot := Bodies[b].root;
+  nv := Bodies[b].nvars;
+  if Length(BcOrd) < NHirs then
+  begin
+    i := Length(BcOrd);
+    SetLength(BcOrd, NHirs + 1024);
+    SetLength(BcLoanAt, NHirs + 1024);
+    SetLength(BcBlkS, NHirs + 1024);
+    while i < Length(BcOrd) do begin BcOrd[i] := -1; BcLoanAt[i] := -1; BcBlkS[i] := 0; Inc(i); end;
+  end;
+  SetLength(BcUses, 0);
+  SetLength(BcDefs, 0);
+  SetLength(BcUses, nv);
+  SetLength(BcDefs, nv);
+  SetLength(BcDecl, nv);
+  SetLength(BcDeclBlk, nv);
+  for i := 0 to nv - 1 do begin BcDecl[i] := -1; BcDeclBlk[i] := -1; end;
+  BcCnt := 0;
+  BcNLoops := 0;
+  BcCurPath := ';';
+  BcCurPath := '';
+  BcCurDepth := 0;
+  BcBlkStack := nil;
+  BcNextBr := 0;
+  BcTouched := nil;
+  BcLoanTouched := nil;
+  BcNLoans := 0;
+  BcPendL := nil;
+  BcPendC := nil;
+  BcQuiet := 0;
+  BcAuto := -1;
+  BcNLCtx := 0;
+  BcNum(BcRoot);
+  st := BcEmpty;
+  rc := BcExpr(BcRoot, st);
+  if not st.dead then BcReturn(rc, BcRoot);
+  for i := 0 to Length(BcTouched) - 1 do BcOrd[BcTouched[i]] := -1;
+  for i := 0 to Length(BcLoanTouched) - 1 do BcLoanAt[BcLoanTouched[i]] := -1;
+end;
 
 { ============================================================ }
 { Verification d'une instance de fonction (monomorphisation)    }
@@ -14961,7 +16721,11 @@ begin
     for i := 0 to Length(Bodies[b].paramTys) - 1 do Bodies[b].paramTys[i] := ZonkReveal(Bodies[b].paramTys[i]);
   end;
   if ErrCount = 0 then
-    for j := 0 to Length(InstBodies) - 1 do MoveCheckBody(InstBodies[j]);
+    begin
+      for j := 0 to Length(InstBodies) - 1 do MoveCheckBody(InstBodies[j]);
+      if ErrCount = 0 then
+        for j := 0 to Length(InstBodies) - 1 do BorrowCheckBody(InstBodies[j]);
+    end;
   for i := firstBody * 0 to NClosures - 1 do
   begin
     for j := 0 to Length(Closures[i].params) - 1 do Closures[i].params[j] := ZonkReveal(Closures[i].params[j]);
@@ -32517,7 +34281,7 @@ begin
   OvfChecks := (Opt.overflow = 1) or ((Opt.overflow = -1) and (Opt.optLevel = 0));
   InitTypes;
   HInit(ScopeMap); HInit(MethodTraits); HInit(HeadMap); HInit(BodyMap); HInit(CopyCache); HInit(LayMap);
-  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache); HInit(MvSeen);
+  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache); HInit(MvSeen); HInit(BcSeen);
   NDefs := 0;
   NewDef(0, '<none>', 0, -1);
   LoadStd;
