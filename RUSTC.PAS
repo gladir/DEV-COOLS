@@ -44,7 +44,7 @@
     -V, --version, -h, --help
 
   Exemple :
-      RUSTC hello.rs            { produit l'executable "hello" }
+      RUSTC hello.rs            (produit l executable hello)
       RUSTC --emit=llvm-ir hello.rs
   ============================================================================ }
 
