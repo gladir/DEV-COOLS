@@ -29022,19 +29022,795 @@ begin
   PreludeChunk33(b);
   s := BufStr(b);
 end;
+{ ============================================================ }
+{ macro_rules! : filtrage et transcription de jetons           }
+{ ============================================================ }
+
+Type
+  TMRule = record
+    mat: TTokArr;
+    tra: TTokArr;
+  end;
+
+  TMacro = record
+    name: string;
+    rules: array of TMRule;
+    defTok: Integer;
+  end;
+
+  { valeur d'une variable de macro : feuille (jetons) ou repetition (enfants) }
+  TMVal = record
+    leaf: Boolean;
+    frag: string;
+    toks: TTokArr;
+    kids: TIntArr;
+  end;
+
+  TBindScope = record
+    names: TStrArr;
+    vals: TIntArr;
+  end;
+
+Var
+  Macros: array of TMacro;
+  NMacros: Integer;
+  MVals: array of TMVal;
+  NMVals: Integer;
+  MacroExpansions: Integer;
+  MacroUniq: Integer;
+  HygNames: TStrArr;
+  HygSuffix: string;
+
+function FindMacro(const name: string): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := NMacros - 1 downto 0 do
+    if Macros[i].name = name then begin Result := i; Exit; end;
+end;
 
 function IsUserMacro(const name: string): Boolean;
 begin
-  Result := False;
+  Result := FindMacro(name) >= 0;
 end;
 
-function MacroInvoke(const name: string; ctx, startTok: Integer): Boolean;
+function NewMVal(leaf: Boolean): Integer;
+begin
+  if NMVals >= Length(MVals) then SetLength(MVals, NMVals * 2 + 64);
+  Result := NMVals;
+  Inc(NMVals);
+  MVals[Result].leaf := leaf;
+  MVals[Result].frag := '';
+  MVals[Result].toks := nil;
+  MVals[Result].kids := nil;
+end;
+
+{ ---- aides sur les jetons ---- }
+
+function TokIsP(const t: TToken; const s: string): Boolean;
+begin
+  Result := (t.k = tkPunct) and (t.s = s);
+end;
+
+function IsOpenT(const t: TToken): Boolean;
+begin
+  Result := (t.k = tkPunct) and ((t.s = '(') or (t.s = '[') or (t.s = '{'));
+end;
+
+function IsCloseT(const t: TToken): Boolean;
+begin
+  Result := (t.k = tkPunct) and ((t.s = ')') or (t.s = ']') or (t.s = '}'));
+end;
+
+{ indice apres l'arbre de jetons commencant en i (borne ie exclue) }
+function SkipTT(const a: TTokArr; i, ie: Integer): Integer;
+var
+  depth: Integer;
+begin
+  if i >= ie then begin Result := ie; Exit; end;
+  if not IsOpenT(a[i]) then begin Result := i + 1; Exit; end;
+  depth := 0;
+  while i < ie do
+  begin
+    if IsOpenT(a[i]) then Inc(depth)
+    else if IsCloseT(a[i]) then
+    begin
+      Dec(depth);
+      if depth = 0 then begin Result := i + 1; Exit; end;
+    end;
+    Inc(i);
+  end;
+  Result := ie;
+end;
+
+function TokText(const t: TToken): string;
+begin
+  case t.k of
+    tkStr: Result := '"' + t.s + '"';
+    tkChar: Result := '''' + t.s + '''';
+    tkLifetime: Result := '''' + t.s;
+  else
+    Result := t.s;
+  end;
+end;
+
+function SameTok(const a, b: TToken): Boolean;
+begin
+  Result := (a.k = b.k) and (a.s = b.s);
+  if Result and ((a.k = tkInt) or (a.k = tkFloat)) then Result := (a.iv = b.iv) and (a.sfx = b.sfx);
+end;
+
+{ ---- delimitation des fragments ---- }
+
+function ScanUntilStop(const a: TTokArr; i, ie: Integer; const stops: array of string; angle: Boolean): Integer;
+var
+  ad, k: Integer;
+  closure: Boolean;
+begin
+  ad := 0;
+  while i < ie do
+  begin
+    if IsOpenT(a[i]) then begin i := SkipTT(a, i, ie); Continue; end;
+    if IsCloseT(a[i]) then Break;
+    if a[i].k = tkPunct then
+    begin
+      if angle then
+      begin
+        if a[i].s = '<' then begin Inc(ad); Inc(i); Continue; end;
+        if (a[i].s = '<<') then begin Inc(ad, 2); Inc(i); Continue; end;
+        if a[i].s = '>' then
+        begin
+          if ad = 0 then Break;
+          Dec(ad); Inc(i); Continue;
+        end;
+        if a[i].s = '>>' then
+        begin
+          if ad < 2 then Break;
+          Dec(ad, 2); Inc(i); Continue;
+        end;
+      end
+      else if (a[i].s = '::') and (i + 1 < ie) and TokIsP(a[i + 1], '<') then
+      begin
+        { turbofish : sauter les arguments generiques }
+        Inc(i, 2);
+        ad := 1;
+        while (i < ie) and (ad > 0) do
+        begin
+          if TokIsP(a[i], '<') then Inc(ad)
+          else if TokIsP(a[i], '>') then Dec(ad)
+          else if TokIsP(a[i], '>>') then Dec(ad, 2)
+          else if IsOpenT(a[i]) then begin i := SkipTT(a, i, ie); Continue; end;
+          Inc(i);
+        end;
+        Continue;
+      end;
+      if (ad = 0) then
+      begin
+        for k := 0 to Length(stops) - 1 do
+          if a[i].s = stops[k] then begin Result := i; Exit; end;
+      end;
+      { liste de parametres d'une fermeture : |a, b| }
+      if (not angle) and (a[i].s = '|') and ((i = 0) or (a[i - 1].k = tkPunct)) and (not TokIsP(a[i - 1], ')')) then
+      begin
+        Inc(i);
+        while (i < ie) and (not TokIsP(a[i], '|')) do
+        begin
+          if IsOpenT(a[i]) then i := SkipTT(a, i, ie) else Inc(i);
+        end;
+        Inc(i);
+        Continue;
+      end;
+    end
+    else if (a[i].k = tkIdent) and (ad = 0) then
+    begin
+      for k := 0 to Length(stops) - 1 do
+        if a[i].s = stops[k] then begin Result := i; Exit; end;
+    end;
+    Inc(i);
+  end;
+  Result := i;
+end;
+
+{ essaie de filtrer un fragment ; retourne l'indice de fin (exclu) ou -1 }
+function MatchFrag(const frag: string; const a: TTokArr; i, ie: Integer): Integer;
+var
+  e: Integer;
+  stops: array of string;
+begin
+  Result := -1;
+  if frag = 'ident' then
+  begin
+    if (i < ie) and (a[i].k = tkIdent) and (a[i].s <> '_') then Result := i + 1;
+  end
+  else if frag = 'lifetime' then
+  begin
+    if (i < ie) and (a[i].k = tkLifetime) then Result := i + 1;
+  end
+  else if frag = 'tt' then
+  begin
+    if (i < ie) and (not IsCloseT(a[i])) then Result := SkipTT(a, i, ie);
+  end
+  else if frag = 'literal' then
+  begin
+    e := i;
+    if (e < ie) and TokIsP(a[e], '-') then Inc(e);
+    if (e < ie) and ((a[e].k in [tkInt, tkFloat, tkStr, tkChar, tkByte, tkByteStr]) or
+       ((a[e].k = tkIdent) and ((a[e].s = 'true') or (a[e].s = 'false')))) then Result := e + 1;
+  end
+  else if frag = 'block' then
+  begin
+    if (i < ie) and TokIsP(a[i], '{') then Result := SkipTT(a, i, ie);
+  end
+  else if frag = 'vis' then
+  begin
+    e := i;
+    if (e < ie) and (a[e].k = tkIdent) and (a[e].s = 'pub') then
+    begin
+      Inc(e);
+      if (e < ie) and TokIsP(a[e], '(') then e := SkipTT(a, e, ie);
+    end;
+    Result := e;
+  end
+  else if frag = 'expr' then
+  begin
+    if i >= ie then Exit;
+    SetLength(stops, 3);
+    stops[0] := ','; stops[1] := ';'; stops[2] := '=>';
+    e := ScanUntilStop(a, i, ie, stops, False);
+    if e > i then Result := e;
+  end
+  else if frag = 'stmt' then
+  begin
+    if i >= ie then Exit;
+    SetLength(stops, 1);
+    stops[0] := ';';
+    e := ScanUntilStop(a, i, ie, stops, False);
+    if e > i then Result := e;
+  end
+  else if frag = 'ty' then
+  begin
+    if i >= ie then Exit;
+    SetLength(stops, 9);
+    stops[0] := ','; stops[1] := ';'; stops[2] := '=>'; stops[3] := '='; stops[4] := '|'; stops[5] := ':';
+    stops[6] := 'as'; stops[7] := 'where'; stops[8] := '{';
+    e := ScanUntilStop(a, i, ie, stops, True);
+    if e > i then Result := e;
+  end
+  else if (frag = 'pat') or (frag = 'pat_param') then
+  begin
+    if i >= ie then Exit;
+    if frag = 'pat' then
+    begin
+      SetLength(stops, 5);
+      stops[0] := ','; stops[1] := '=>'; stops[2] := '='; stops[3] := 'if'; stops[4] := 'in';
+    end
+    else
+    begin
+      SetLength(stops, 6);
+      stops[0] := ','; stops[1] := '=>'; stops[2] := '='; stops[3] := 'if'; stops[4] := 'in'; stops[5] := '|';
+    end;
+    e := ScanUntilStop(a, i, ie, stops, False);
+    if e > i then Result := e;
+  end
+  else if (frag = 'path') or (frag = 'meta') then
+  begin
+    e := i;
+    if (e < ie) and TokIsP(a[e], '::') then Inc(e);
+    if (e < ie) and (a[e].k = tkIdent) then
+    begin
+      Inc(e);
+      while (e + 1 < ie) and TokIsP(a[e], '::') and (a[e + 1].k = tkIdent) do Inc(e, 2);
+      if (e < ie) and TokIsP(a[e], '<') and (frag = 'path') then
+      begin
+        SetLength(stops, 0);
+        e := ScanUntilStop(a, e, ie, stops, True);
+        if (e < ie) and TokIsP(a[e], '>') then Inc(e);
+      end;
+      if frag = 'meta' then
+      begin
+        if (e < ie) and IsOpenT(a[e]) then e := SkipTT(a, e, ie)
+        else if (e + 1 < ie) and TokIsP(a[e], '=') then Inc(e, 2);
+      end;
+      Result := e;
+    end;
+  end
+  else if frag = 'item' then
+  begin
+    e := i;
+    while (e < ie) and TokIsP(a[e], '#') do
+    begin
+      Inc(e);
+      if (e < ie) and TokIsP(a[e], '[') then e := SkipTT(a, e, ie);
+    end;
+    while e < ie do
+    begin
+      if TokIsP(a[e], ';') then begin Inc(e); Break; end;
+      if TokIsP(a[e], '{') then begin e := SkipTT(a, e, ie); Break; end;
+      if IsOpenT(a[e]) then e := SkipTT(a, e, ie) else Inc(e);
+    end;
+    if e > i then Result := e;
+  end;
+end;
+
+{ ---- liaisons ---- }
+
+function ScopeFind(const sc: TBindScope; const name: string): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := 0 to Length(sc.names) - 1 do
+    if sc.names[i] = name then begin Result := sc.vals[i]; Exit; end;
+end;
+
+procedure ScopeSet(var sc: TBindScope; const name: string; v: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to Length(sc.names) - 1 do
+    if sc.names[i] = name then begin sc.vals[i] := v; Exit; end;
+  SAdd(sc.names, name);
+  IAdd(sc.vals, v);
+end;
+
+{ variables $x:frag citees dans un morceau de matcher }
+procedure CollectMatcherVars(const m: TTokArr; ms, me: Integer; var names: TStrArr);
+var
+  i: Integer;
+begin
+  i := ms;
+  while i < me do
+  begin
+    if TokIsP(m[i], '$') and (i + 1 < me) and (m[i + 1].k = tkIdent) then
+    begin
+      SAdd(names, m[i + 1].s);
+      Inc(i, 2);
+      Continue;
+    end;
+    Inc(i);
+  end;
+end;
+
+{ indice du delimiteur fermant correspondant a l'ouvrant en i }
+function MatchClose(const a: TTokArr; i, ie: Integer): Integer;
+begin
+  Result := SkipTT(a, i, ie) - 1;
+end;
+
+function MatchSeq(const m: TTokArr; ms, me: Integer; const inp: TTokArr; var ip: Integer; ie: Integer;
+  var sc: TBindScope; full: Boolean): Boolean;
+var
+  pi, pc, e, k, startIp, saveIp, nIter, v, v2, ci, j: Integer;
+  sep: string;
+  hasSep: Boolean;
+  op: string;
+  frag, nm: string;
+  names: TStrArr;
+  subs: array of TBindScope;
+  iterOk: Boolean;
+  sub: TBindScope;
+  sv: Integer;
+  bodyEnd: Integer;
+  closeIn: Integer;
 begin
   Result := False;
+  pi := ms;
+  while pi < me do
+  begin
+    if TokIsP(m[pi], '$') and (pi + 1 < me) then
+    begin
+      if m[pi + 1].k = tkIdent then
+      begin
+        { $nom:fragment }
+        nm := m[pi + 1].s;
+        if not ((pi + 3 < me) and TokIsP(m[pi + 2], ':') and (m[pi + 3].k = tkIdent)) then Exit;
+        frag := m[pi + 3].s;
+        e := MatchFrag(frag, inp, ip, ie);
+        if e < 0 then Exit;
+        v := NewMVal(True);
+        MVals[v].frag := frag;
+        SetLength(MVals[v].toks, e - ip);
+        for k := ip to e - 1 do MVals[v].toks[k - ip] := inp[k];
+        ScopeSet(sc, nm, v);
+        ip := e;
+        Inc(pi, 4);
+        Continue;
+      end
+      else if TokIsP(m[pi + 1], '(') then
+      begin
+        { repetition $( ... ) sep? op }
+        pc := MatchClose(m, pi + 1, me);
+        bodyEnd := pc;
+        hasSep := False;
+        sep := '';
+        j := pc + 1;
+        if j < me then
+        begin
+          if (m[j].k = tkPunct) and ((m[j].s = '*') or (m[j].s = '+') or (m[j].s = '?')) then
+            op := m[j].s
+          else
+          begin
+            hasSep := True;
+            sep := TokText(m[j]);
+            Inc(j);
+            if j < me then op := m[j].s else op := '*';
+          end;
+        end
+        else op := '*';
+        names := nil;
+        CollectMatcherVars(m, pi + 2, bodyEnd, names);
+        subs := nil;
+        nIter := 0;
+        while True do
+        begin
+          saveIp := ip;
+          if (nIter > 0) and hasSep then
+          begin
+            if (ip < ie) and (TokText(inp[ip]) = sep) then Inc(ip) else Break;
+          end;
+          sub.names := nil;
+          sub.vals := nil;
+          sv := NMVals;
+          iterOk := MatchSeq(m, pi + 2, bodyEnd, inp, ip, ie, sub, False);
+          if (not iterOk) or (ip = saveIp) then
+          begin
+            ip := saveIp;
+            Break;
+          end;
+          SetLength(subs, nIter + 1);
+          subs[nIter] := sub;
+          Inc(nIter);
+          if op = '?' then Break;
+        end;
+        if (op = '+') and (nIter = 0) then Exit;
+        for k := 0 to Length(names) - 1 do
+        begin
+          v := NewMVal(False);
+          for ci := 0 to nIter - 1 do
+          begin
+            v2 := ScopeFind(subs[ci], names[k]);
+            if v2 >= 0 then IAdd(MVals[v].kids, v2);
+          end;
+          ScopeSet(sc, names[k], v);
+        end;
+        pi := j + 1;
+        Continue;
+      end;
+    end;
+    if IsOpenT(m[pi]) then
+    begin
+      { groupe delimite : doit correspondre au groupe de l'entree }
+      if (ip >= ie) or (not SameTok(m[pi], inp[ip])) then Exit;
+      pc := MatchClose(m, pi, me);
+      closeIn := MatchClose(inp, ip, ie);
+      k := ip + 1;
+      if not MatchSeq(m, pi + 1, pc, inp, k, closeIn, sc, True) then Exit;
+      ip := closeIn + 1;
+      pi := pc + 1;
+      Continue;
+    end;
+    { jeton litteral }
+    if (ip >= ie) or (not SameTok(m[pi], inp[ip])) then Exit;
+    Inc(ip);
+    Inc(pi);
+  end;
+  if full then Result := ip = ie else Result := True;
 end;
+
+{ ---- transcription ---- }
+
+procedure AppendTok(var outp: TTokArr; var n: Integer; const t: TToken);
+begin
+  if n >= Length(outp) then SetLength(outp, n * 2 + 32);
+  outp[n] := t;
+  Inc(n);
+end;
+
+function LookupVal(const sc: TBindScope; const name: string; const idx: TIntArr): Integer;
+var
+  v, d: Integer;
+begin
+  Result := -1;
+  v := ScopeFind(sc, name);
+  if v < 0 then Exit;
+  for d := 0 to Length(idx) - 1 do
+  begin
+    if MVals[v].leaf then Break;
+    if idx[d] >= Length(MVals[v].kids) then begin Result := -2; Exit; end;
+    v := MVals[v].kids[idx[d]];
+  end;
+  Result := v;
+end;
+
+function IsHygName(const s: string): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to Length(HygNames) - 1 do
+    if HygNames[i] = s then begin Result := True; Exit; end;
+end;
+
+procedure TranscribeSeq(const t: TTokArr; ts, te: Integer; const sc: TBindScope; var idx: TIntArr;
+  var outp: TTokArr; var n: Integer; callTok: Integer);
+var
+  i, pc, j, v, k, cnt, c2, d, e: Integer;
+  names: TStrArr;
+  sep: string;
+  hasSep: Boolean;
+  op: string;
+  tk, tk2: TToken;
+  vn: string;
+  found: Boolean;
+begin
+  i := ts;
+  while i < te do
+  begin
+    if TokIsP(t[i], '$') and (i + 1 < te) then
+    begin
+      if t[i + 1].k = tkIdent then
+      begin
+        vn := t[i + 1].s;
+        if vn = 'crate' then
+        begin
+          tk := t[i + 1];
+          AppendTok(outp, n, tk);
+          Inc(i, 2);
+          Continue;
+        end;
+        v := LookupVal(sc, vn, idx);
+        if v = -1 then
+        begin
+          { variable non liee : on emet tel quel }
+          AppendTok(outp, n, t[i]);
+          AppendTok(outp, n, t[i + 1]);
+          Inc(i, 2);
+          Continue;
+        end;
+        if (v = -2) or (not MVals[v].leaf) then
+        begin
+          Report(True, '', 'variable `' + vn + '` is still repeating at this depth', Toks[callTok].fi, Toks[callTok].line,
+                 Toks[callTok].col, 1, '');
+          FinishDiag;
+        end;
+        if (MVals[v].frag = 'expr') and (Length(MVals[v].toks) > 1) then
+        begin
+          tk := MVals[v].toks[0];
+          tk.k := tkPunct; tk.s := '('; tk.len := 1;
+          AppendTok(outp, n, tk);
+          for k := 0 to Length(MVals[v].toks) - 1 do AppendTok(outp, n, MVals[v].toks[k]);
+          tk2 := MVals[v].toks[Length(MVals[v].toks) - 1];
+          tk2.k := tkPunct; tk2.s := ')'; tk2.len := 1;
+          AppendTok(outp, n, tk2);
+        end
+        else
+          for k := 0 to Length(MVals[v].toks) - 1 do AppendTok(outp, n, MVals[v].toks[k]);
+        Inc(i, 2);
+        Continue;
+      end
+      else if TokIsP(t[i + 1], '(') then
+      begin
+        pc := MatchClose(t, i + 1, te);
+        j := pc + 1;
+        hasSep := False;
+        sep := '';
+        op := '*';
+        if j < te then
+        begin
+          if (t[j].k = tkPunct) and ((t[j].s = '*') or (t[j].s = '+') or (t[j].s = '?')) then op := t[j].s
+          else
+          begin
+            hasSep := True;
+            tk2 := t[j];
+            Inc(j);
+            if j < te then op := t[j].s;
+          end;
+        end;
+        { nombre d'iterations : variables du corps ayant une repetition a cette profondeur }
+        names := nil;
+        for k := i + 2 to pc - 1 do
+          if TokIsP(t[k], '$') and (k + 1 < pc) and (t[k + 1].k = tkIdent) then SAdd(names, t[k + 1].s);
+        cnt := -1;
+        for k := 0 to Length(names) - 1 do
+        begin
+          v := ScopeFind(sc, names[k]);
+          if v < 0 then Continue;
+          for d := 0 to Length(idx) - 1 do
+          begin
+            if MVals[v].leaf then Break;
+            if idx[d] < Length(MVals[v].kids) then v := MVals[v].kids[idx[d]] else begin v := -1; Break; end;
+          end;
+          if (v >= 0) and (not MVals[v].leaf) then
+          begin
+            c2 := Length(MVals[v].kids);
+            if (cnt < 0) or (c2 < cnt) then cnt := c2;
+          end;
+        end;
+        if cnt < 0 then
+        begin
+          Report(True, '', 'attempted to repeat an expression containing no syntax variables matched as repeating at this depth',
+                 Toks[callTok].fi, Toks[callTok].line, Toks[callTok].col, 1, '');
+          FinishDiag;
+        end;
+        for k := 0 to cnt - 1 do
+        begin
+          if (k > 0) and hasSep then AppendTok(outp, n, tk2);
+          IAdd(idx, k);
+          TranscribeSeq(t, i + 2, pc, sc, idx, outp, n, callTok);
+          SetLength(idx, Length(idx) - 1);
+        end;
+        i := j + 1;
+        Continue;
+      end;
+    end;
+    tk := t[i];
+    if (tk.k = tkIdent) and IsHygName(tk.s) and (not ((i > 0) and TokIsP(t[i - 1], '$'))) and
+       (not ((i > 0) and (TokIsP(t[i - 1], '.') or TokIsP(t[i - 1], '::')))) and
+       (not ((i + 1 < te) and (TokIsP(t[i + 1], '(') or TokIsP(t[i + 1], '::') or TokIsP(t[i + 1], '!')))) then
+      tk.s := tk.s + HygSuffix;
+    AppendTok(outp, n, tk);
+    Inc(i);
+  end;
+end;
+
+{ identifiants introduits par `let`, `for` ou parametres de fermeture dans le corps d'une regle }
+procedure CollectHygiene(const t: TToken; const tra: TTokArr);
+begin
+end;
+
+procedure ComputeHygiene(const tra: TTokArr);
+var
+  i, j: Integer;
+begin
+  HygNames := nil;
+  i := 0;
+  while i < Length(tra) do
+  begin
+    if (tra[i].k = tkIdent) and (tra[i].s = 'let') and (i + 1 < Length(tra)) then
+    begin
+      j := i + 1;
+      if (tra[j].k = tkIdent) and (tra[j].s = 'mut') then Inc(j);
+      if (j < Length(tra)) and (tra[j].k = tkIdent) and (not TokIsP(tra[j - 1], '$')) and
+         (j + 1 < Length(tra)) and (TokIsP(tra[j + 1], '=') or TokIsP(tra[j + 1], ':') or TokIsP(tra[j + 1], ';')) then
+        SAdd(HygNames, tra[j].s);
+    end
+    else if (tra[i].k = tkIdent) and (tra[i].s = 'for') and (i + 2 < Length(tra)) and (tra[i + 1].k = tkIdent) and
+            (tra[i + 2].k = tkIdent) and (tra[i + 2].s = 'in') and (not TokIsP(tra[i], '$')) then
+      SAdd(HygNames, tra[i + 1].s);
+    Inc(i);
+  end;
+end;
+
+{ ---- definition ---- }
 
 procedure RegisterMacro(const name: string; firstTok, lastTok: Integer);
+var
+  i, e, a, b, k: Integer;
+  m: Integer;
+  tt: TTokArr;
 begin
+  m := NMacros;
+  if NMacros >= Length(Macros) then SetLength(Macros, NMacros * 2 + 8);
+  Inc(NMacros);
+  Macros[m].name := name;
+  Macros[m].rules := nil;
+  Macros[m].defTok := firstTok;
+  { jetons du corps : firstTok = macro_rules, +1 = !, +2 = nom, +3 = delimiteur ouvrant }
+  i := firstTok + 4;
+  while i < lastTok do
+  begin
+    if not IsOpenT(Toks[i]) then begin Inc(i); Continue; end;
+    a := i;
+    b := SkipTT(Toks, i, lastTok + 1);
+    k := Length(Macros[m].rules);
+    SetLength(Macros[m].rules, k + 1);
+    SetLength(Macros[m].rules[k].mat, b - a - 2);
+    for e := a + 1 to b - 2 do Macros[m].rules[k].mat[e - a - 1] := Toks[e];
+    i := b;
+    { => }
+    if (i < lastTok) and TokIsP(Toks[i], '=>') then Inc(i);
+    if (i < lastTok) and IsOpenT(Toks[i]) then
+    begin
+      a := i;
+      b := SkipTT(Toks, i, lastTok + 1);
+      SetLength(Macros[m].rules[k].tra, b - a - 2);
+      for e := a + 1 to b - 2 do Macros[m].rules[k].tra[e - a - 1] := Toks[e];
+      i := b;
+    end;
+    if (i < lastTok) and TokIsP(Toks[i], ';') then Inc(i);
+  end;
+end;
+
+{ ---- invocation ---- }
+
+function MacroInvoke(const name: string; ctx, startTok: Integer): Boolean;
+var
+  mi, open_, close, r, ip, n, i, newLen, oldLen, k: Integer;
+  inp, outp, res: TTokArr;
+  sc: TBindScope;
+  idx: TIntArr;
+  matched: Boolean;
+  tk: TToken;
+begin
+  Result := False;
+  mi := FindMacro(name);
+  if mi < 0 then Exit;
+  Inc(MacroExpansions);
+  if MacroExpansions > 200000 then
+  begin
+    Report(True, '', 'recursion limit reached while expanding `' + name + '!`', Toks[startTok].fi, Toks[startTok].line,
+           Toks[startTok].col, Length(name), '');
+    FinishDiag;
+  end;
+  open_ := startTok + 2;
+  if (open_ >= NToks) or not IsOpenT(Toks[open_]) then Exit;
+  close := SkipTT(Toks, open_, NToks) - 1;
+  SetLength(inp, close - open_ - 1);
+  for i := open_ + 1 to close - 1 do inp[i - open_ - 1] := Toks[i];
+  matched := False;
+  for r := 0 to Length(Macros[mi].rules) - 1 do
+  begin
+    sc.names := nil;
+    sc.vals := nil;
+    ip := 0;
+    if MatchSeq(Macros[mi].rules[r].mat, 0, Length(Macros[mi].rules[r].mat), inp, ip, Length(inp), sc, True) then
+    begin
+      matched := True;
+      ComputeHygiene(Macros[mi].rules[r].tra);
+      Inc(MacroUniq);
+      HygSuffix := '__h' + IntToStr(MacroUniq);
+      outp := nil;
+      n := 0;
+      idx := nil;
+      TranscribeSeq(Macros[mi].rules[r].tra, 0, Length(Macros[mi].rules[r].tra), sc, idx, outp, n, startTok);
+      Break;
+    end;
+  end;
+  if not matched then
+  begin
+    if Length(inp) > 0 then
+      Report(True, '', 'no rules expected the token `' + TokText(inp[0]) + '`', inp[0].fi, inp[0].line, inp[0].col,
+             Length(TokText(inp[0])), 'no rules expected this token in macro call')
+    else
+      Report(True, '', 'unexpected end of macro invocation', Toks[startTok].fi, Toks[startTok].line, Toks[startTok].col,
+             Length(name), 'missing tokens in macro arguments');
+    FinishDiag;
+    Exit;
+  end;
+  { remplacement des jetons startTok..close par l'expansion }
+  if ctx = CtxExpr then
+  begin
+    SetLength(res, n + 2);
+    tk := Toks[startTok];
+    tk.k := tkPunct; tk.s := '('; tk.len := 1;
+    res[0] := tk;
+    for i := 0 to n - 1 do res[i + 1] := outp[i];
+    tk := Toks[close];
+    tk.k := tkPunct; tk.s := ')'; tk.len := 1;
+    res[n + 1] := tk;
+    n := n + 2;
+  end
+  else
+  begin
+    SetLength(res, n);
+    for i := 0 to n - 1 do res[i] := outp[i];
+  end;
+  oldLen := close - startTok + 1;
+  newLen := n;
+  if newLen > oldLen then
+  begin
+    SetLength(Toks, NToks + newLen - oldLen + 1);
+    for k := NToks - 1 downto close + 1 do Toks[k + newLen - oldLen] := Toks[k];
+  end
+  else if newLen < oldLen then
+  begin
+    for k := close + 1 to NToks - 1 do Toks[k + newLen - oldLen] := Toks[k];
+  end;
+  for i := 0 to n - 1 do Toks[startTok + i] := res[i];
+  NToks := NToks + newLen - oldLen;
+  TokPos := startTok;
+  Result := True;
 end;
 
 { ============================================================ }
