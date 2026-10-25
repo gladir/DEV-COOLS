@@ -986,6 +986,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Rust vers l'assembleur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>RUSTC.PAS</b></td>
+			<td>Cette commande est un clone du compilateur Rust (rustc) : à partir d'un fichier source Rust (.rs), elle effectue l'analyse lexicale et syntaxique (jetons, grammaire, AST), l'expansion des macros (macro_rules!, derive), la résolution des noms, l'analyse sémantique (inférence de types, traits, génériques, vérification des déplacements, des emprunts et de l'exhaustivité des motifs), les représentations intermédiaires HIR puis MIR, génère du LLVM IR puis appelle llc/clang pour produire l'objet et l'exécutable, comme le vrai rustc (options -o, -O, -C opt-level, --emit, --crate-type, --edition, -Z unpretty=...). Les diagnostics reprennent le format et les codes d'erreur de rustc (E0382, E0499, E0502, E0505, E0597, etc.) ainsi que les avertissements usuels. Elle n'utilise que l'unité DOS.</td>
+		</tr>
+		<tr>
 			<td><b>RUSTCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Rust pour l'assembleur du microprocesseur 80386 pour Windows (PE Win32).</td>
 		</tr>

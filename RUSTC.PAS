@@ -713,7 +713,7 @@ Type
     k: Integer;
     s: string;
     line, col, len, fi: Integer;
-    iv: QWord;
+    iv, iv2: QWord;
     fv: Double;
     sfx: string;
     raw: Boolean;
@@ -812,7 +812,7 @@ var
   hashes, startI: Integer;
   isFloat, found: Boolean;
   buf: string;
-  v: QWord;
+  v, vhi: QWord;
   digs: string;
   q: Integer;
   fl: string;
@@ -834,9 +834,31 @@ var
     t.len := 1;
     t.fi := fi;
     t.iv := 0;
+    t.iv2 := 0;
     t.fv := 0;
     t.sfx := '';
     t.raw := False;
+  end;
+
+  { v128 := v128 * base + dig ; retourne faux en cas de debordement }
+  function Mul128Add(var hi, lo: QWord; base, dig: Integer): Boolean;
+  var
+    a0, a1, p0, p1, r0, r1, b0, b1, q0, q1, s0: QWord;
+  begin
+    a0 := lo and $FFFFFFFF;
+    a1 := lo shr 32;
+    p0 := a0 * QWord(base) + QWord(dig);
+    r0 := p0 and $FFFFFFFF;
+    p1 := a1 * QWord(base) + (p0 shr 32);
+    r1 := p1 and $FFFFFFFF;
+    b0 := hi and $FFFFFFFF;
+    b1 := hi shr 32;
+    q0 := b0 * QWord(base) + (p1 shr 32);
+    s0 := q0 and $FFFFFFFF;
+    q1 := b1 * QWord(base) + (q0 shr 32);
+    Result := (q1 shr 32) = 0;
+    lo := (r1 shl 32) or r0;
+    hi := ((q1 and $FFFFFFFF) shl 32) or s0;
   end;
 
   { lit un echappement a partir de src[i]='\\' ; ajoute les octets a buf ; retourne le code }
@@ -1063,6 +1085,7 @@ begin
       isFloat := False;
       base := 10;
       v := 0;
+      vhi := 0;
       digs := '';
       if (c = '0') and ((Peek(1) = 'x') or (Peek(1) = 'o') or (Peek(1) = 'b')) then
       begin
@@ -1077,9 +1100,8 @@ begin
           if src[i] <> '_' then
           begin
             dig := HexVal(src[i]);
-            if (v > (High(QWord) - QWord(dig)) div QWord(base)) then
+            if not Mul128Add(vhi, v, base, dig) then
               LexError(fi, line, j - lstart + 1, i - j, 'integer literal is too large');
-            v := v * base + dig;
           end;
           Inc(i);
         end;
@@ -1138,16 +1160,17 @@ begin
       else if base = 10 then
       begin
         v := 0;
+        vhi := 0;
         for q := 1 to Length(digs) do
         begin
           dig := Ord(digs[q]) - 48;
-          if (v > (High(QWord) - QWord(dig)) div 10) then
+          if not Mul128Add(vhi, v, 10, dig) then
             LexError(fi, line, j - lstart + 1, i - j, 'integer literal is too large');
-          v := v * 10 + dig;
         end;
         t.iv := v;
+        t.iv2 := vhi;
       end
-      else t.iv := v;
+      else begin t.iv := v; t.iv2 := vhi; end;
       t.len := i - j;
       t.s := Copy(src, j, i - j - Length(t.sfx));
       TokAdd(t);
@@ -1376,6 +1399,7 @@ Type
     a, b, c, d: Integer;
     l, l2, l3: TIntArr;
     iv: QWord;
+    iv2: QWord;
     fv: Double;
     id: Integer;
   end;
@@ -2111,7 +2135,7 @@ var
 begin
   n := MkN(eLit);
   case CurK of
-    tkInt: begin Nodes[n].f := lkInt; Nodes[n].iv := Toks[TokPos].iv; Nodes[n].s2 := Toks[TokPos].sfx; Nodes[n].s := CurS; end;
+    tkInt: begin Nodes[n].f := lkInt; Nodes[n].iv := Toks[TokPos].iv; Nodes[n].iv2 := Toks[TokPos].iv2; Nodes[n].s2 := Toks[TokPos].sfx; Nodes[n].s := CurS; end;
     tkFloat: begin Nodes[n].f := lkFloat; Nodes[n].fv := Toks[TokPos].fv; Nodes[n].s2 := Toks[TokPos].sfx; Nodes[n].s := CurS; end;
     tkStr: begin Nodes[n].f := lkStr; Nodes[n].s := CurS; end;
     tkChar: begin Nodes[n].f := lkChar; Nodes[n].iv := Toks[TokPos].iv; end;
@@ -7852,6 +7876,8 @@ Type
     a, b, c: Integer;
     l: TIntArr;
     n: Int64;
+    n2: Int64;           { 64 bits de poids fort d'un litteral 128 bits }
+    big: Boolean;
     fv: Double;
     s: string;
     def: Integer;
@@ -9509,6 +9535,8 @@ begin
         begin
           h := HirAt(hLitInt, ty, n);
           Hirs[h].n := Int64(Nodes[n].iv);
+          Hirs[h].n2 := Int64(Nodes[n].iv2);
+          Hirs[h].big := (Nodes[n].iv2 <> 0) or ((Nodes[n].iv shr 63) <> 0);
         end;
         Result := h;
       end;
@@ -10120,6 +10148,14 @@ begin
       h := HirAt(hLitInt, Hirs[a].ty, n);
       Hirs[h].n := -Hirs[a].n;
       Hirs[h].s := '-';
+      if Hirs[a].big then
+      begin
+        { negation sur 128 bits }
+        Hirs[h].big := True;
+        Hirs[h].n := Int64(QWord(0) - QWord(Hirs[a].n));
+        Hirs[h].n2 := Int64(not QWord(Hirs[a].n2));
+        if Hirs[a].n = 0 then Hirs[h].n2 := Hirs[h].n2 + 1;
+      end;
       Hirs[a].line := 0;
       Result := h;
       Exit;
@@ -18387,6 +18423,8 @@ Type
     ty: Integer;
     ck: Integer;
     n: Int64;
+    n2: Int64;
+    big: Boolean;
     fv: Double;
     s: string;
     def: Integer;
@@ -20951,7 +20989,7 @@ begin
   Result.k := opConst;
   Result.ty := Hirs[h].ty;
   case Hirs[h].k of
-    hLitInt: begin Result.ck := ckInt; Result.n := Hirs[h].n; end;
+    hLitInt: begin Result.ck := ckInt; Result.n := Hirs[h].n; Result.n2 := Hirs[h].n2; Result.big := Hirs[h].big; end;
     hLitFloat: begin Result.ck := ckFloat; Result.fv := Hirs[h].fv; end;
     hLitBool: begin Result.ck := ckBool; Result.n := Hirs[h].n; end;
     hLitChar: begin Result.ck := ckChar; Result.n := Hirs[h].n; end;
@@ -22380,6 +22418,41 @@ begin
   if (o.ck = ckInt) and (Tys[Shallow(o.ty)].k = tyInt) and (Tys[Shallow(o.ty)].n < 64) and (o.n < 0) then ;
 end;
 
+{ decimal d'un entier de 128 bits (hi:lo) ; signed : interpretation en complement a deux }
+function Dec128Str(hi, lo: QWord; signed: Boolean): string;
+var
+  limbs: array[0..3] of QWord;
+  i: Integer;
+  rem, cur: QWord;
+  neg, allz: Boolean;
+  digits: string;
+begin
+  neg := False;
+  if signed and ((hi shr 63) <> 0) then
+  begin
+    neg := True;
+    lo := QWord(0) - lo;
+    hi := not hi;
+    if lo = 0 then hi := hi + 1;
+  end;
+  limbs[0] := hi shr 32; limbs[1] := hi and $FFFFFFFF; limbs[2] := lo shr 32; limbs[3] := lo and $FFFFFFFF;
+  digits := '';
+  repeat
+    rem := 0;
+    allz := True;
+    for i := 0 to 3 do
+    begin
+      cur := (rem shl 32) or limbs[i];
+      limbs[i] := cur div 10;
+      rem := cur mod 10;
+      if limbs[i] <> 0 then allz := False;
+    end;
+    digits := Chr(48 + Integer(rem)) + digits;
+  until allz;
+  if neg then digits := '-' + digits;
+  Result := digits;
+end;
+
 { valeur scalaire d'un operande }
 function OperandScalar(const o: TOperand): string;
 var
@@ -22389,6 +22462,8 @@ begin
   begin
     if (o.ck = ckInt) and (Tys[Shallow(o.ty)].k = tyFloat) then
       Result := FloatConstStr(o.n, Tys[Shallow(o.ty)].n)
+    else if (o.ck = ckInt) and o.big and (Tys[Shallow(o.ty)].k = tyInt) and (Tys[Shallow(o.ty)].n = 128) then
+      Result := Dec128Str(QWord(o.n2), QWord(o.n), (Tys[Shallow(o.ty)].f and 1) <> 0)
     else if (o.ck = ckInt) and (Tys[Shallow(o.ty)].k = tyInt) and ((o.n < 0)) then
       Result := IntToStr(o.n)
     else if (o.ck = ckInt) and (Tys[Shallow(o.ty)].k = tyInt) and (Tys[Shallow(o.ty)].n = 64) and ((Tys[Shallow(o.ty)].f and 1) = 0) then
@@ -25608,7 +25683,7 @@ begin
   BufLn(b, '        if a == 0.0 { digits.push(''0''); e = 0; } else { e = float_digits(a, is32, &mut digits); }');
   BufLn(b, '        let nd = digits.len() as i32;');
   BufLn(b, '        let db = digits.as_bytes();');
-  BufLn(b, '        if debug && (e < -5 || e >= 16) {');
+  BufLn(b, '        if debug && (e < -4 || e >= 16) {');
   BufLn(b, '            // notation scientifique');
   BufLn(b, '            out.push(db[0] as char);');
   BufLn(b, '            if nd > 1 {');
@@ -25652,25 +25727,68 @@ begin
   BufLn(b, '        f.pad_integral(!neg, "", s.as_str())');
   BufLn(b, '    }');
   BufLn(b, '');
-  BufLn(b, '    fn fmt_exp(f: &mut Formatter, v: f64, is32: bool, upper: bool) -> Result {');
-  BufLn(b, '        let neg = v < 0.0;');
-  BufLn(b, '        let a = if neg { 0.0 - v } else { v };');
-  BufLn(b, '        let mut digits = String::new();');
-  BufLn(b, '        let e;');
-  BufLn(b, '        if a == 0.0 { digits.push(''0''); e = 0; } else { e = float_digits(a, is32, &mut digits); }');
-  BufLn(b, '        let db = digits.as_bytes();');
+  BufLn(b, '    // digits : chiffres significatifs (sans zero de tete) ; e : exposant decimal du premier chiffre');
+  BufLn(b, '    fn exp_from_digits(f: &mut Formatter, neg: bool, digits: &str, e0: i32, upper: bool) -> Result {');
+  BufLn(b, '        let mut ds: Vec<u8> = Vec::new();');
+  BufLn(b, '        for b in digits.bytes() { ds.push(b); }');
+  BufLn(b, '        let mut e = e0;');
+  BufLn(b, '        match f.precision() {');
+  BufLn(b, '            Some(p) => {');
+  BufLn(b, '                let want = p + 1;');
+  BufLn(b, '                if ds.len() > want {');
+  BufLn(b, '                    let next = ds[want];');
+  BufLn(b, '                    let mut up = next > 53u8;');
+  BufLn(b, '                    if next == 53u8 {');
+  BufLn(b, '                        let mut rest_nonzero = false;');
+  BufLn(b, '                        let mut k = want + 1;');
+  BufLn(b, '                        while k < ds.len() { if ds[k] != 48u8 { rest_nonzero = true; } k += 1; }');
+  BufLn(b, '                        up = rest_nonzero || ((ds[want - 1] - 48u8) % 2 == 1);');
+  BufLn(b, '                    }');
+  BufLn(b, '                    ds.truncate(want);');
+  BufLn(b, '                    if up {');
+  BufLn(b, '                        let mut k = want;');
+  BufLn(b, '                        loop {');
+  BufLn(b, '                            if k == 0 { ds.insert(0, 49u8); ds.truncate(want); e += 1; break; }');
+  BufLn(b, '                            k -= 1;');
+  BufLn(b, '                            if ds[k] == 57u8 { ds[k] = 48u8; } else { ds[k] += 1; break; }');
+  BufLn(b, '                        }');
+  BufLn(b, '                    }');
+  BufLn(b, '                }');
+  BufLn(b, '                while ds.len() < want { ds.push(48u8); }');
+  BufLn(b, '            }');
+  BufLn(b, '            None => {');
+  BufLn(b, '                while ds.len() > 1 && ds[ds.len() - 1] == 48u8 { ds.pop(); }');
+  BufLn(b, '            }');
+  BufLn(b, '        }');
   BufLn(b, '        let mut out = String::new();');
-  BufLn(b, '        out.push(db[0] as char);');
-  BufLn(b, '        if digits.len() > 1 {');
+  BufLn(b, '        out.push(ds[0] as char);');
+  BufLn(b, '        if ds.len() > 1 {');
   BufLn(b, '            out.push(''.'');');
   BufLn(b, '            let mut i = 1usize;');
-  BufLn(b, '            while i < digits.len() { out.push(db[i] as char); i += 1; }');
+  BufLn(b, '            while i < ds.len() { out.push(ds[i] as char); i += 1; }');
   BufLn(b, '        }');
   BufLn(b, '        out.push(if upper { ''E'' } else { ''e'' });');
   BufLn(b, '        let mut t = Formatter::new();');
   BufLn(b, '        let _ = Display::fmt(&e, &mut t);');
   BufLn(b, '        out.push_str(t.buf.as_str());');
   BufLn(b, '        f.pad_integral(!neg, "", out.as_str())');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    fn fmt_exp(f: &mut Formatter, v: f64, is32: bool, upper: bool) -> Result {');
+  BufLn(b, '        let neg = v < 0.0;');
+  BufLn(b, '        let a = if neg { 0.0 - v } else { v };');
+  BufLn(b, '        let mut digits = String::new();');
+  BufLn(b, '        let e;');
+  BufLn(b, '        if a == 0.0 { digits.push(''0''); e = 0; } else { e = float_digits(a, is32, &mut digits); }');
+  BufLn(b, '        exp_from_digits(f, neg, digits.as_str(), e, upper)');
+  BufLn(b, '    }');
+  BufLn(b, '');
+  BufLn(b, '    fn fmt_int_exp(f: &mut Formatter, n: u128, neg: bool, upper: bool) -> Result {');
+  BufLn(b, '        let mut t = Formatter::new();');
+  BufLn(b, '        let _ = Display::fmt(&n, &mut t);');
+  BufLn(b, '        let s = t.buf.clone();');
+  BufLn(b, '        let e = (s.len() as i32) - 1;');
+  BufLn(b, '        exp_from_digits(f, neg, s.as_str(), e, upper)');
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    impl Display for f64 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_float(f, *self, false, false) } }');
@@ -25681,6 +25799,30 @@ begin
   BufLn(b, '    impl UpperExp for f64 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_exp(f, *self, false, true) } }');
   BufLn(b, '    impl LowerExp for f32 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_exp(f, *self as f64, true, false) } }');
   BufLn(b, '    impl UpperExp for f32 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_exp(f, *self as f64, true, true) } }');
+  BufLn(b, '    impl LowerExp for u8 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, false) } }');
+  BufLn(b, '    impl UpperExp for u8 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, true) } }');
+  BufLn(b, '    impl LowerExp for u16 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, false) } }');
+  BufLn(b, '    impl UpperExp for u16 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, true) } }');
+  BufLn(b, '    impl LowerExp for u32 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, false) } }');
+  BufLn(b, '    impl UpperExp for u32 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, true) } }');
+  BufLn(b, '    impl LowerExp for u64 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, false) } }');
+  BufLn(b, '    impl UpperExp for u64 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, true) } }');
+  BufLn(b, '    impl LowerExp for u128 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, false) } }');
+  BufLn(b, '    impl UpperExp for u128 { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, true) } }');
+  BufLn(b, '    impl LowerExp for usize { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, false) } }');
+  BufLn(b, '    impl UpperExp for usize { fn fmt(&self, f: &mut Formatter) -> Result { fmt_int_exp(f, *self as u128, false, true) } }');
+  BufLn(b, '    impl LowerExp for i8 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, false) } }');
+  BufLn(b, '    impl UpperExp for i8 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, true) } }');
+  BufLn(b, '    impl LowerExp for i16 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, false) } }');
+  BufLn(b, '    impl UpperExp for i16 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, true) } }');
+  BufLn(b, '    impl LowerExp for i32 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, false) } }');
+  BufLn(b, '    impl UpperExp for i32 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, true) } }');
+  BufLn(b, '    impl LowerExp for i64 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, false) } }');
+  BufLn(b, '    impl UpperExp for i64 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, true) } }');
+  BufLn(b, '    impl LowerExp for i128 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, false) } }');
+  BufLn(b, '    impl UpperExp for i128 { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, true) } }');
+  BufLn(b, '    impl LowerExp for isize { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, false) } }');
+  BufLn(b, '    impl UpperExp for isize { fn fmt(&self, f: &mut Formatter) -> Result { let neg = *self < 0; let a: u128 = if neg { (0 as i128 - (*self as i128)) as u128 } else { *self as u128 }; fmt_int_exp(f, a, neg, true) } }');
   BufLn(b, '');
   BufLn(b, '    // ---- entiers ----');
   BufLn(b, '    pub fn fmt_u128_radix(f: &mut Formatter, mut n: u128, nonneg: bool, radix: u32, upper: bool, prefix: &str) -> Result {');
@@ -25810,6 +25952,10 @@ begin
   BufLn(b, '        pub fn windows(&self, size: usize) -> Windows<T> { Windows { v: self, size: size } }');
   BufLn(b, '        pub fn chunks(&self, size: usize) -> Chunks<T> { Chunks { v: self, size: size } }');
   BufLn(b, '        pub fn chunks_exact(&self, size: usize) -> Chunks<T> {');
+end;
+
+procedure PreludeChunk7(var b: TBuf);
+begin
   BufLn(b, '            let n = self.len() / size * size;');
   BufLn(b, '            Chunks { v: &self[0..n], size: size }');
   BufLn(b, '        }');
@@ -25877,10 +26023,6 @@ begin
   BufLn(b, '            let n = self.len();');
   BufLn(b, '            if n < 2 { return; }');
   BufLn(b, '            // tri fusion stable');
-end;
-
-procedure PreludeChunk7(var b: TBuf);
-begin
   BufLn(b, '            unsafe {');
   BufLn(b, '                let src = self.as_mut_ptr();');
   BufLn(b, '                let tmp = ::std::libc::malloc(n * ::std::intrinsics::size_of::<T>() + 1) as *mut T;');
@@ -26114,6 +26256,10 @@ begin
   BufLn(b, '            while i < self.len() { if self[i] != other[i] { return false; } i += 1; }');
   BufLn(b, '            true');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk8(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '    impl<T: Eq> Eq for [T] {}');
   BufLn(b, '    impl<T: PartialOrd> PartialOrd for [T] {');
@@ -26181,10 +26327,6 @@ begin
   BufLn(b, '                let src = &self as *const [T; N] as *const T;');
   BufLn(b, '                let mut i = 0usize;');
   BufLn(b, '                while i < N { ::std::intrinsics::ptr_write((&mut out[i]) as *mut U, f(::std::intrinsics::ptr_read(src.add(i)))); i += 1; }');
-end;
-
-procedure PreludeChunk8(var b: TBuf);
-begin
   BufLn(b, '                out');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -26418,6 +26560,10 @@ begin
   BufLn(b, '                    if *self.ptr.add(r) != *self.ptr.add(w - 1) {');
   BufLn(b, '                        if w != r { ::std::intrinsics::copy(self.ptr.add(r) as *const T, self.ptr.add(w), 1usize); }');
   BufLn(b, '                        w += 1;');
+end;
+
+procedure PreludeChunk9(var b: TBuf);
+begin
   BufLn(b, '                    } else {');
   BufLn(b, '                        ::std::intrinsics::drop_in_place(self.ptr.add(r));');
   BufLn(b, '                    }');
@@ -26485,10 +26631,6 @@ begin
   BufLn(b, '                }');
   BufLn(b, '                r += 1;');
   BufLn(b, '            }');
-end;
-
-procedure PreludeChunk9(var b: TBuf);
-begin
   BufLn(b, '            self.len = w;');
   BufLn(b, '        }');
   BufLn(b, '        pub fn retain_mut<F: FnMut(&mut T) -> bool>(&mut self, mut f: F) {');
@@ -26722,6 +26864,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    impl Pattern for char {');
   BufLn(b, '        fn find_in(&mut self, hay: &str, from: usize) -> Option<(usize, usize)> {');
+end;
+
+procedure PreludeChunk10(var b: TBuf);
+begin
   BufLn(b, '            let mut it = hay[from..].char_indices();');
   BufLn(b, '            while let Some((i, c)) = it.next() {');
   BufLn(b, '                if c == *self { return Some((from + i, from + i + c.len_utf8())); }');
@@ -26789,10 +26935,6 @@ begin
   BufLn(b, '        pub fn len(&self) -> usize { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.1 } }');
   BufLn(b, '        pub fn is_empty(&self) -> bool { self.len() == 0 }');
   BufLn(b, '        pub fn as_ptr(&self) -> *const u8 { unsafe { let r: (*const u8, usize) = ::std::intrinsics::transmute(self); r.0 } }');
-end;
-
-procedure PreludeChunk10(var b: TBuf);
-begin
   BufLn(b, '        pub fn as_bytes(&self) -> &[u8] { unsafe { ::std::slice::from_raw_parts(self.as_ptr(), self.len()) } }');
   BufLn(b, '        pub fn as_str(&self) -> &str { self }');
   BufLn(b, '        pub fn chars(&self) -> Chars { let p = self.as_ptr(); Chars { ptr: p, end: p.add(self.len()) } }');
@@ -27026,6 +27168,10 @@ begin
   BufLn(b, '            if self.ptr as usize == self.end as usize { return None; }');
   BufLn(b, '            unsafe {');
   BufLn(b, '                let b0 = *self.ptr as u32;');
+end;
+
+procedure PreludeChunk11(var b: TBuf);
+begin
   BufLn(b, '                if b0 < 0x80u32 { self.ptr = self.ptr.add(1usize); return Some(b0 as u8 as char); }');
   BufLn(b, '                if b0 < 0xE0u32 {');
   BufLn(b, '                    let c = ((b0 & 0x1Fu32) << 6) | (*self.ptr.add(1usize) as u32 & 0x3Fu32);');
@@ -27093,10 +27239,6 @@ begin
   BufLn(b, '    impl<''a> DoubleEndedIterator for Bytes<''a> {');
   BufLn(b, '        fn next_back(&mut self) -> Option<u8> { match self.iter.next_back() { Some(b) => Some(*b), None => None } }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk11(var b: TBuf);
-begin
   BufLn(b, '    impl<''a> ExactSizeIterator for Bytes<''a> {}');
   BufLn(b, '');
   BufLn(b, '    pub struct Split<''a, P> { hay: &''a str, pos: usize, end: usize, p: P, done: bool, limit: usize }');
@@ -27330,6 +27472,10 @@ begin
   BufLn(b, '            *self = out;');
   BufLn(b, '        }');
   BufLn(b, '        pub fn drain_range(&mut self, a: usize, b: usize) -> String {');
+end;
+
+procedure PreludeChunk12(var b: TBuf);
+begin
   BufLn(b, '            let s = String::from(&self.as_str()[a..b]);');
   BufLn(b, '            let mut i = a;');
   BufLn(b, '            while i < b { self.vec.remove(a); i += 1; }');
@@ -27397,10 +27543,6 @@ begin
   BufLn(b, '    impl ::std::str::FromStr for String {');
   BufLn(b, '        type Err = ::std::convert::Infallible;');
   BufLn(b, '        fn from_str(s: &str) -> Result<String, ::std::convert::Infallible> { Ok(String::from(s)) }');
-end;
-
-procedure PreludeChunk12(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '    impl FromIterator<char> for String {');
   BufLn(b, '        fn from_iter<I: IntoIterator<Item = char>>(iter: I) -> String {');
@@ -27634,6 +27776,10 @@ begin
   BufLn(b, '            match from_u32(c) { Some(x) => Ok(x), None => Err(::std::convert::TryFromIntError(())) }');
   BufLn(b, '        }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk13(var b: TBuf);
+begin
   BufLn(b, '    impl ::std::str::FromStr for char {');
   BufLn(b, '        type Err = ParseCharError;');
   BufLn(b, '        fn from_str(s: &str) -> Result<char, ParseCharError> {');
@@ -27701,10 +27847,6 @@ begin
   BufLn(b, '    impl<T: ?Sized + Iterator> Iterator for Box<T> {');
   BufLn(b, '        type Item = T::Item;');
   BufLn(b, '        fn next(&mut self) -> Option<T::Item> { (**self).next() }');
-end;
-
-procedure PreludeChunk13(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '}');
   BufLn(b, '');
@@ -27938,6 +28080,10 @@ begin
   BufLn(b, '    }');
   BufLn(b, '');
   BufLn(b, '    pub struct DefaultHasher { state: u64 }');
+end;
+
+procedure PreludeChunk14(var b: TBuf);
+begin
   BufLn(b, '    impl DefaultHasher {');
   BufLn(b, '        pub fn new() -> DefaultHasher { DefaultHasher { state: (0xcbf29ce4u64 << 32) | 0x84222325u64 } }');
   BufLn(b, '    }');
@@ -28005,10 +28151,6 @@ begin
   BufLn(b, '        fn hash<H: Hasher>(&self, state: &mut H) {');
   BufLn(b, '            match self {');
   BufLn(b, '                None => state.write_isize(0isize),');
-end;
-
-procedure PreludeChunk14(var b: TBuf);
-begin
   BufLn(b, '                Some(x) => { state.write_isize(1isize); x.hash(state); }');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -28242,6 +28384,10 @@ begin
   BufLn(b, '                    Entry::Vacant(e) => { let v = f(&e.key); e.insert(v) }');
   BufLn(b, '                }');
   BufLn(b, '            }');
+end;
+
+procedure PreludeChunk15(var b: TBuf);
+begin
   BufLn(b, '            pub fn or_default(self) -> &''a mut V where V: Default {');
   BufLn(b, '                match self {');
   BufLn(b, '                    Entry::Occupied(e) => e.into_mut(),');
@@ -28309,10 +28455,6 @@ begin
   BufLn(b, '        impl<''a, K, V> Iterator for Values<''a, K, V> {');
   BufLn(b, '            type Item = &''a V;');
   BufLn(b, '            fn next(&mut self) -> Option<&''a V> { match self.it.next() { Some(b) => Some(&b.value), None => None } }');
-end;
-
-procedure PreludeChunk15(var b: TBuf);
-begin
   BufLn(b, '            fn size_hint(&self) -> (usize, Option<usize>) { self.it.size_hint() }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K, V> ExactSizeIterator for Values<''a, K, V> {}');
@@ -28546,6 +28688,10 @@ begin
   BufLn(b, '            type Output = HashSet<T, S>;');
   BufLn(b, '            fn bitor(self, rhs: &HashSet<T, S>) -> HashSet<T, S> { self.union(rhs).cloned().collect() }');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk16(var b: TBuf);
+begin
   BufLn(b, '        impl<''a, ''b, T: Hash + Eq + Clone, S: BuildHasher + Default> ::std::ops::BitAnd<&''b HashSet<T, S>> for &''a HashSet<T, S> {');
   BufLn(b, '            type Output = HashSet<T, S>;');
   BufLn(b, '            fn bitand(self, rhs: &HashSet<T, S>) -> HashSet<T, S> { self.intersection(rhs).cloned().collect() }');
@@ -28613,10 +28759,6 @@ begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn pop_first(&mut self) -> Option<(K, V)> {');
   BufLn(b, '                if self.v.len() == 0 { None } else { Some(self.v.remove(0)) }');
-end;
-
-procedure PreludeChunk16(var b: TBuf);
-begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn pop_last(&mut self) -> Option<(K, V)> { self.v.pop() }');
   BufLn(b, '        }');
@@ -28850,6 +28992,10 @@ begin
   BufLn(b, '                let mut d = f.debug_map();');
   BufLn(b, '                for e in self.v.iter() { d.entry(&e.0, &e.1); }');
   BufLn(b, '                d.finish()');
+end;
+
+procedure PreludeChunk17(var b: TBuf);
+begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '        impl<''a, K: Ord + Borrow<Q>, Q: ?Sized + Ord, V> ::std::ops::Index<&''a Q> for BTreeMap<K, V> {');
@@ -28917,10 +29063,6 @@ begin
   BufLn(b, '                let mut hi = lo;');
   BufLn(b, '                while hi < self.v.len() && r.before_hi(&self.v[hi]) { hi += 1; }');
   BufLn(b, '                Iter { it: self.v[lo..hi].iter() }');
-end;
-
-procedure PreludeChunk17(var b: TBuf);
-begin
   BufLn(b, '            }');
   BufLn(b, '            pub fn is_subset(&self, other: &BTreeSet<T>) -> bool {');
   BufLn(b, '                for x in self.iter() { if !other.contains(x) { return false; } }');
@@ -29154,6 +29296,10 @@ begin
   BufLn(b, '            fn next_back(&mut self) -> Option<&''a T> {');
   BufLn(b, '                if self.front >= self.back { return None; }');
   BufLn(b, '                self.back -= 1;');
+end;
+
+procedure PreludeChunk18(var b: TBuf);
+begin
   BufLn(b, '                self.dq.get(self.back)');
   BufLn(b, '            }');
   BufLn(b, '        }');
@@ -29221,10 +29367,6 @@ begin
   BufLn(b, '            fn from(d: VecDeque<T>) -> Vec<T> { let mut v = Vec::new(); for x in d { v.push(x); } v }');
   BufLn(b, '        }');
   BufLn(b, '        impl<T> Default for VecDeque<T> { fn default() -> VecDeque<T> { VecDeque::new() } }');
-end;
-
-procedure PreludeChunk18(var b: TBuf);
-begin
   BufLn(b, '        impl<T: Clone> Clone for VecDeque<T> {');
   BufLn(b, '            fn clone(&self) -> VecDeque<T> { let mut d = VecDeque::new(); for x in self.iter() { d.push_back(x.clone()); } d }');
   BufLn(b, '        }');
@@ -29458,6 +29600,10 @@ begin
   BufLn(b, '            ::std::mem::swap(&mut *self.borrow_mut(), &mut *other.borrow_mut());');
   BufLn(b, '        }');
   BufLn(b, '        pub fn take(&self) -> T where T: Default { self.replace(T::default()) }');
+end;
+
+procedure PreludeChunk19(var b: TBuf);
+begin
   BufLn(b, '        pub fn get_mut(&mut self) -> &mut T { self.value.get_mut() }');
   BufLn(b, '        pub fn as_ptr(&self) -> *mut T { self.value.get() }');
   BufLn(b, '    }');
@@ -29525,10 +29671,6 @@ begin
   BufLn(b, '            }');
   BufLn(b, '        }');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk19(var b: TBuf);
-begin
   BufLn(b, '');
   BufLn(b, '    pub struct OnceCell<T> { inner: UnsafeCell<Option<T>> }');
   BufLn(b, '    impl<T> OnceCell<T> {');
@@ -29762,6 +29904,10 @@ begin
   BufLn(b, '    impl<''a, T: ::std::fmt::Debug> ::std::fmt::Debug for MutexGuard<''a, T> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&**self, f) }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk20(var b: TBuf);
+begin
   BufLn(b, '    impl<''a, T: ::std::fmt::Display> ::std::fmt::Display for MutexGuard<''a, T> {');
   BufLn(b, '        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Display::fmt(&**self, f) }');
   BufLn(b, '    }');
@@ -29829,10 +29975,6 @@ begin
   BufLn(b, '        pub struct AtomicUsize { v: ::std::cell::Cell<usize> }');
   BufLn(b, '        impl AtomicUsize {');
   BufLn(b, '            pub const fn new(v: usize) -> AtomicUsize { AtomicUsize { v: ::std::cell::Cell::new(v) } }');
-end;
-
-procedure PreludeChunk20(var b: TBuf);
-begin
   BufLn(b, '            pub fn load(&self, o: Ordering) -> usize { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: usize, o: Ordering) { self.v.set(x); }');
   BufLn(b, '            pub fn swap(&self, x: usize, o: Ordering) -> usize { self.v.replace(x) }');
@@ -30066,6 +30208,10 @@ begin
   BufLn(b, '            pub fn get_mut(&mut self) -> &mut u16 { self.v.get_mut() }');
   BufLn(b, '        }');
   BufLn(b, '        impl Default for AtomicU16 { fn default() -> AtomicU16 { AtomicU16::new(0) } }');
+end;
+
+procedure PreludeChunk21(var b: TBuf);
+begin
   BufLn(b, '        impl From<u16> for AtomicU16 { fn from(x: u16) -> AtomicU16 { AtomicU16::new(x) } }');
   BufLn(b, '        impl ::std::fmt::Debug for AtomicU16 {');
   BufLn(b, '            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result { ::std::fmt::Debug::fmt(&self.v.get(), f) }');
@@ -30133,10 +30279,6 @@ begin
   BufLn(b, '        pub struct AtomicBool { v: ::std::cell::Cell<bool> }');
   BufLn(b, '        impl AtomicBool {');
   BufLn(b, '            pub const fn new(v: bool) -> AtomicBool { AtomicBool { v: ::std::cell::Cell::new(v) } }');
-end;
-
-procedure PreludeChunk21(var b: TBuf);
-begin
   BufLn(b, '            pub fn load(&self, o: Ordering) -> bool { self.v.get() }');
   BufLn(b, '            pub fn store(&self, x: bool, o: Ordering) { self.v.set(x); }');
   BufLn(b, '            pub fn swap(&self, x: bool, o: Ordering) -> bool { self.v.replace(x) }');
@@ -30370,6 +30512,10 @@ begin
   BufLn(b, '            match *self {');
   BufLn(b, '                ErrorKind::NotFound => "entity not found",');
   BufLn(b, '                ErrorKind::PermissionDenied => "permission denied",');
+end;
+
+procedure PreludeChunk22(var b: TBuf);
+begin
   BufLn(b, '                ErrorKind::ConnectionRefused => "connection refused",');
   BufLn(b, '                ErrorKind::ConnectionReset => "connection reset",');
   BufLn(b, '                ErrorKind::ConnectionAborted => "connection aborted",');
@@ -30437,10 +30583,6 @@ begin
   BufLn(b, '                Ok(s) => { buf.push_str(s.as_str()); Ok(n) }');
   BufLn(b, '                Err(_) => Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),');
   BufLn(b, '            }');
-end;
-
-procedure PreludeChunk22(var b: TBuf);
-begin
   BufLn(b, '        }');
   BufLn(b, '        fn bytes(self) -> Bytes<Self> where Self: Sized { Bytes { inner: self } }');
   BufLn(b, '    }');
@@ -30674,6 +30816,10 @@ begin
   BufLn(b, '        fn read(&mut self, buf: &mut [u8]) -> Result<usize> { self.inner.read(buf) }');
   BufLn(b, '    }');
   BufLn(b, '    impl<R: Read> BufRead for BufReader<R> {');
+end;
+
+procedure PreludeChunk23(var b: TBuf);
+begin
   BufLn(b, '        fn read_line(&mut self, buf: &mut String) -> Result<usize> {');
   BufLn(b, '            let mut bytes: Vec<u8> = Vec::new();');
   BufLn(b, '            let mut b = [0u8; 1];');
@@ -30741,10 +30887,6 @@ begin
   BufLn(b, '}');
   BufLn(b, '');
   BufLn(b, 'pub mod env {');
-end;
-
-procedure PreludeChunk23(var b: TBuf);
-begin
   BufLn(b, '    pub struct Args { v: ::std::vec::IntoIter<String> }');
   BufLn(b, '    pub fn args() -> Args {');
   BufLn(b, '        let mut out: Vec<String> = Vec::new();');
@@ -30978,6 +31120,10 @@ begin
   BufLn(b, '');
   BufLn(b, '    pub fn sleep(d: ::std::time::Duration) { __run_all(); }');
   BufLn(b, '    pub fn yield_now() { __run_one(); }');
+end;
+
+procedure PreludeChunk24(var b: TBuf);
+begin
   BufLn(b, '    pub fn available_parallelism() -> ::std::io::Result<usize> { Ok(4usize) }');
   BufLn(b, '');
   BufLn(b, '    pub struct Builder { name: Option<String> }');
@@ -31045,10 +31191,6 @@ begin
   BufLn(b, '        pub fn downcast_ref<T: Any>(&self) -> Option<&T> {');
   BufLn(b, '            if self.is::<T>() { unsafe { Some(&*(self as *const dyn Any as *const T)) } } else { None }');
   BufLn(b, '        }');
-end;
-
-procedure PreludeChunk24(var b: TBuf);
-begin
   BufLn(b, '        pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {');
   BufLn(b, '            if self.is::<T>() { unsafe { Some(&mut *(self as *mut dyn Any as *mut T)) } } else { None }');
   BufLn(b, '        }');
@@ -31282,6 +31424,10 @@ begin
   BufLn(b, 'impl LowerHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, false, "0x") } }');
   BufLn(b, 'impl UpperHex for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 16, true, "0x") } }');
   BufLn(b, 'impl Binary for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 2, false, "0b") } }');
+end;
+
+procedure PreludeChunk25(var b: TBuf);
+begin
   BufLn(b, 'impl Octal for i8 { fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result { fmt_u64_radix(f, *self as u8 as u64, true, 8, false, "0o") } }');
   BufLn(b, 'impl FromStr for i8 {');
   BufLn(b, '    type Err = ParseIntError;');
@@ -31349,10 +31495,6 @@ begin
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            if exp > 0 { base = match base.checked_mul(base) { Some(v) => v, None => return None }; }');
-end;
-
-procedure PreludeChunk25(var b: TBuf);
-begin
   BufLn(b, '        }');
   BufLn(b, '        Some(acc)');
   BufLn(b, '    }');
@@ -31586,6 +31728,10 @@ begin
   BufLn(b, '    pub fn checked_pow(self, mut exp: u32) -> Option<i16> {');
   BufLn(b, '        let mut base = self;');
   BufLn(b, '        let mut acc: i16 = 1;');
+end;
+
+procedure PreludeChunk26(var b: TBuf);
+begin
   BufLn(b, '        while exp > 0 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = match acc.checked_mul(base) { Some(v) => v, None => return None }; }');
   BufLn(b, '            exp = exp / 2;');
@@ -31653,10 +31799,6 @@ begin
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 2 { out[i] = ((self >> ((2 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
   BufLn(b, '        out');
-end;
-
-procedure PreludeChunk26(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn to_le_bytes(self) -> [u8; 2] {');
   BufLn(b, '        let mut out = [0u8; 2];');
@@ -31890,6 +32032,10 @@ begin
   BufLn(b, '        if neg { let lim = (i32::MAX as u64) + 1; if acc > lim { return Err(ParseIntError { kind: IntErrorKind::NegOverflow }); } if acc == lim { return Ok(i32::MIN); } Ok(0 - (acc as i32)) } else { if acc > (i32::MAX as u64) { return Err(ParseIntError { kind: IntErrorKind::PosOverflow }); } Ok(acc as i32) }');
   BufLn(b, '    }');
   BufLn(b, '    pub fn to_be_bytes(self) -> [u8; 4] {');
+end;
+
+procedure PreludeChunk27(var b: TBuf);
+begin
   BufLn(b, '        let mut out = [0u8; 4];');
   BufLn(b, '        let mut i = 0usize;');
   BufLn(b, '        while i < 4 { out[i] = ((self >> ((4 - 1 - i) * 8)) & 0xFF) as u8; i += 1; }');
@@ -31957,10 +32103,6 @@ begin
   BufLn(b, 'impl Div for i64 { type Output = i64; fn div(self, o: i64) -> i64 { self / o } }');
   BufLn(b, 'impl Rem for i64 { type Output = i64; fn rem(self, o: i64) -> i64 { self % o } }');
   BufLn(b, 'impl BitAnd for i64 { type Output = i64; fn bitand(self, o: i64) -> i64 { self & o } }');
-end;
-
-procedure PreludeChunk27(var b: TBuf);
-begin
   BufLn(b, 'impl BitOr for i64 { type Output = i64; fn bitor(self, o: i64) -> i64 { self | o } }');
   BufLn(b, 'impl BitXor for i64 { type Output = i64; fn bitxor(self, o: i64) -> i64 { self ^ o } }');
   BufLn(b, 'impl Not for i64 { type Output = i64; fn not(self) -> i64 { !self } }');
@@ -32194,6 +32336,10 @@ begin
   BufLn(b, '}');
   BufLn(b, 'impl Add for i128 { type Output = i128; fn add(self, o: i128) -> i128 { self + o } }');
   BufLn(b, 'impl Sub for i128 { type Output = i128; fn sub(self, o: i128) -> i128 { self - o } }');
+end;
+
+procedure PreludeChunk28(var b: TBuf);
+begin
   BufLn(b, 'impl Mul for i128 { type Output = i128; fn mul(self, o: i128) -> i128 { self * o } }');
   BufLn(b, 'impl Div for i128 { type Output = i128; fn div(self, o: i128) -> i128 { self / o } }');
   BufLn(b, 'impl Rem for i128 { type Output = i128; fn rem(self, o: i128) -> i128 { self % o } }');
@@ -32261,10 +32407,6 @@ begin
   BufLn(b, '    pub fn max_value() -> i128 { (!(1i128 << 127)) }');
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> i128 {');
   BufLn(b, '        let mut base = self;');
-end;
-
-procedure PreludeChunk28(var b: TBuf);
-begin
   BufLn(b, '        let mut acc: i128 = 1;');
   BufLn(b, '        while exp > 1 {');
   BufLn(b, '            if (exp & 1) == 1 { acc = acc * base; }');
@@ -32498,6 +32640,10 @@ begin
   BufLn(b, '    pub const MIN: isize = -9223372036854775808;');
   BufLn(b, '    pub const MAX: isize = 9223372036854775807;');
   BufLn(b, '    pub const BITS: u32 = 64;');
+end;
+
+procedure PreludeChunk29(var b: TBuf);
+begin
   BufLn(b, '    pub fn min_value() -> isize { -9223372036854775808 }');
   BufLn(b, '    pub fn max_value() -> isize { 9223372036854775807 }');
   BufLn(b, '    pub fn pow(self, mut exp: u32) -> isize {');
@@ -32565,10 +32711,6 @@ begin
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 64 - self.count_ones() }');
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
   BufLn(b, '    pub fn trailing_zeros(self) -> u32 { unsafe { ::std::intrinsics::cttz(self) } }');
-end;
-
-procedure PreludeChunk29(var b: TBuf);
-begin
   BufLn(b, '    pub fn leading_ones(self) -> u32 { (!self).leading_zeros() }');
   BufLn(b, '    pub fn trailing_ones(self) -> u32 { (!self).trailing_zeros() }');
   BufLn(b, '    pub fn swap_bytes(self) -> isize { unsafe { ::std::intrinsics::bswap(self) } }');
@@ -32802,6 +32944,10 @@ begin
   BufLn(b, '    pub fn saturating_pow(self, exp: u32) -> u8 {');
   BufLn(b, '        match self.checked_pow(exp) { Some(v) => v, None => if self < 0 && exp % 2 == 1 { 0 } else { 255 } }');
   BufLn(b, '    }');
+end;
+
+procedure PreludeChunk30(var b: TBuf);
+begin
   BufLn(b, '    pub fn count_ones(self) -> u32 { unsafe { ::std::intrinsics::ctpop(self) } }');
   BufLn(b, '    pub fn count_zeros(self) -> u32 { 8 - self.count_ones() }');
   BufLn(b, '    pub fn leading_zeros(self) -> u32 { unsafe { ::std::intrinsics::ctlz(self) } }');
@@ -32869,10 +33015,6 @@ begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 1]) -> u8 {');
   BufLn(b, '        let mut v: u8 = 0;');
-end;
-
-procedure PreludeChunk30(var b: TBuf);
-begin
   BufLn(b, '        let mut i = 1;');
   BufLn(b, '        while i > 0 { i -= 1; v = (v << 8) | (b[i] as u8); }');
   BufLn(b, '        v');
@@ -33106,6 +33248,10 @@ begin
   BufLn(b, '        v');
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_le_bytes(b: [u8; 2]) -> u16 {');
+end;
+
+procedure PreludeChunk31(var b: TBuf);
+begin
   BufLn(b, '        let mut v: u16 = 0;');
   BufLn(b, '        let mut i = 2;');
   BufLn(b, '        while i > 0 { i -= 1; v = (v << 8) | (b[i] as u16); }');
@@ -33173,10 +33319,6 @@ begin
   BufLn(b, 'impl AddAssign for u32 { fn add_assign(&mut self, o: u32) { *self = *self + o; } }');
   BufLn(b, 'impl SubAssign for u32 { fn sub_assign(&mut self, o: u32) { *self = *self - o; } }');
   BufLn(b, 'impl MulAssign for u32 { fn mul_assign(&mut self, o: u32) { *self = *self * o; } }');
-end;
-
-procedure PreludeChunk31(var b: TBuf);
-begin
   BufLn(b, 'impl DivAssign for u32 { fn div_assign(&mut self, o: u32) { *self = *self / o; } }');
   BufLn(b, 'impl RemAssign for u32 { fn rem_assign(&mut self, o: u32) { *self = *self % o; } }');
   BufLn(b, 'impl BitAndAssign for u32 { fn bitand_assign(&mut self, o: u32) { *self = *self & o; } }');
@@ -33410,6 +33552,10 @@ begin
   BufLn(b, 'impl<''a, ''b> Mul<&''b u64> for &''a u64 { type Output = u64; fn mul(self, o: &''b u64) -> u64 { *self * *o } }');
   BufLn(b, 'impl AddAssign for u64 { fn add_assign(&mut self, o: u64) { *self = *self + o; } }');
   BufLn(b, 'impl SubAssign for u64 { fn sub_assign(&mut self, o: u64) { *self = *self - o; } }');
+end;
+
+procedure PreludeChunk32(var b: TBuf);
+begin
   BufLn(b, 'impl MulAssign for u64 { fn mul_assign(&mut self, o: u64) { *self = *self * o; } }');
   BufLn(b, 'impl DivAssign for u64 { fn div_assign(&mut self, o: u64) { *self = *self / o; } }');
   BufLn(b, 'impl RemAssign for u64 { fn rem_assign(&mut self, o: u64) { *self = *self % o; } }');
@@ -33477,10 +33623,6 @@ begin
   BufLn(b, '            base = base.wrapping_mul(base);');
   BufLn(b, '        }');
   BufLn(b, '        acc');
-end;
-
-procedure PreludeChunk32(var b: TBuf);
-begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn overflowing_add(self, o: u64) -> (u64, bool) { unsafe { ::std::intrinsics::add_with_overflow(self, o) } }');
   BufLn(b, '    pub fn overflowing_sub(self, o: u64) -> (u64, bool) { unsafe { ::std::intrinsics::sub_with_overflow(self, o) } }');
@@ -33714,6 +33856,10 @@ begin
   BufLn(b, '            exp = exp / 2;');
   BufLn(b, '            base = base.wrapping_mul(base);');
   BufLn(b, '        }');
+end;
+
+procedure PreludeChunk33(var b: TBuf);
+begin
   BufLn(b, '        acc');
   BufLn(b, '    }');
   BufLn(b, '    pub fn overflowing_add(self, o: u128) -> (u128, bool) { unsafe { ::std::intrinsics::add_with_overflow(self, o) } }');
@@ -33781,10 +33927,6 @@ begin
   BufLn(b, '        while y < x { x = y; y = (x + self / x) / 2; }');
   BufLn(b, '        x');
   BufLn(b, '    }');
-end;
-
-procedure PreludeChunk33(var b: TBuf);
-begin
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<u128, ParseIntError> {');
   BufLn(b, '        let b = s.as_bytes();');
   BufLn(b, '        if b.len() == 0 { return Err(ParseIntError { kind: IntErrorKind::Empty }); }');
@@ -34018,6 +34160,10 @@ begin
   BufLn(b, '        let mut y = (x + 1) / 2;');
   BufLn(b, '        while y < x { x = y; y = (x + self / x) / 2; }');
   BufLn(b, '        x');
+end;
+
+procedure PreludeChunk34(var b: TBuf);
+begin
   BufLn(b, '    }');
   BufLn(b, '    pub fn from_str_radix(s: &str, radix: u32) -> Result<usize, ParseIntError> {');
   BufLn(b, '        let b = s.as_bytes();');
@@ -34085,10 +34231,6 @@ begin
   BufLn(b, '    fn le(&self, o: &f64) -> bool { *self <= *o }');
   BufLn(b, '    fn gt(&self, o: &f64) -> bool { *self > *o }');
   BufLn(b, '    fn ge(&self, o: &f64) -> bool { *self >= *o }');
-end;
-
-procedure PreludeChunk34(var b: TBuf);
-begin
   BufLn(b, '}');
   BufLn(b, 'impl Add for f64 { type Output = f64; fn add(self, o: f64) -> f64 { self + o } }');
   BufLn(b, 'impl Sub for f64 { type Output = f64; fn sub(self, o: f64) -> f64 { self - o } }');
@@ -34322,6 +34464,10 @@ begin
   BufLn(b, 'impl From<i8> for isize { fn from(x: i8) -> isize { x as isize } }');
   BufLn(b, 'impl TryFrom<i8> for u8 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u8, TryFromIntError> { if (x as i128) < (u8::MIN as i128) || (x as i128) > (u8::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u8) } } }');
   BufLn(b, 'impl TryFrom<i8> for u16 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u16, TryFromIntError> { if (x as i128) < (u16::MIN as i128) || (x as i128) > (u16::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u16) } } }');
+end;
+
+procedure PreludeChunk35(var b: TBuf);
+begin
   BufLn(b, 'impl TryFrom<i8> for u32 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u32, TryFromIntError> { if (x as i128) < (u32::MIN as i128) || (x as i128) > (u32::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u32) } } }');
   BufLn(b, 'impl TryFrom<i8> for u64 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u64, TryFromIntError> { if (x as i128) < (u64::MIN as i128) || (x as i128) > (u64::MAX as i128) { Err(TryFromIntError(())) } else { Ok(x as u64) } } }');
   BufLn(b, 'impl TryFrom<i8> for u128 { type Error = TryFromIntError; fn try_from(x: i8) -> Result2<u128, TryFromIntError> { if (x as i128) < 0 { Err(TryFromIntError(())) } else { Ok(x as u128) } } }');
@@ -34389,10 +34535,6 @@ begin
   BufLn(b, 'impl From<u8> for isize { fn from(x: u8) -> isize { x as isize } }');
   BufLn(b, 'impl From<u8> for u16 { fn from(x: u8) -> u16 { x as u16 } }');
   BufLn(b, 'impl From<u8> for u32 { fn from(x: u8) -> u32 { x as u32 } }');
-end;
-
-procedure PreludeChunk35(var b: TBuf);
-begin
   BufLn(b, 'impl From<u8> for u64 { fn from(x: u8) -> u64 { x as u64 } }');
   BufLn(b, 'impl From<u8> for u128 { fn from(x: u8) -> u128 { x as u128 } }');
   BufLn(b, 'impl From<u8> for usize { fn from(x: u8) -> usize { x as usize } }');
@@ -35966,6 +36108,381 @@ begin
     WriteErrLn('');
   end;
 end;
+{ ============================================================ }
+{ Affichage de la HIR (-Z unpretty=hir)                         }
+{ ============================================================ }
+
+Var
+  HpBuf: TBuf;
+  HpBody: Integer;
+
+function HpEscape(const s: string): string;
+var
+  i: Integer;
+  c: Char;
+begin
+  Result := '';
+  for i := 1 to Length(s) do
+  begin
+    c := s[i];
+    case c of
+      #10: Result := Result + '\n';
+      #13: Result := Result + '\r';
+      #9: Result := Result + '\t';
+      '"': Result := Result + '\"';
+      '\': Result := Result + '\\';
+    else
+      if Ord(c) < 32 then Result := Result + '\x' + Copy('0123456789abcdef', Ord(c) div 16 + 1, 1) + Copy('0123456789abcdef', Ord(c) mod 16 + 1, 1)
+      else Result := Result + c;
+    end;
+  end;
+end;
+
+function HpFloat(v: Double): string;
+var
+  s: string;
+  k: Integer;
+begin
+  Str(v:0:6, s);
+  k := Length(s);
+  while (k > 1) and (s[k] = '0') and (s[k - 1] <> '.') do Dec(k);
+  Result := Copy(s, 1, k);
+end;
+
+function HpPat(p: Integer): string; forward;
+function HpExpr(h, ind: Integer): string; forward;
+
+function HpTy(t: Integer): string;
+begin
+  Result := TyToStr(Zonk(t));
+end;
+
+function HpVarName(v: Integer): string;
+begin
+  if (v >= 0) and (v < Bodies[HpBody].nvars) then Result := Bodies[HpBody].vars[v].name
+  else Result := '_' + IntToStr(v);
+  if Result = '' then Result := '_t' + IntToStr(v);
+end;
+
+function HpTargs(const targs: TIntArr): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  if Length(targs) = 0 then Exit;
+  Result := '::<';
+  for i := 0 to Length(targs) - 1 do
+  begin
+    if i > 0 then Result := Result + ', ';
+    Result := Result + HpTy(targs[i]);
+  end;
+  Result := Result + '>';
+end;
+
+function HpDefPath(d: Integer): string;
+begin
+  if d < 0 then Result := '?' else Result := DefPathName(d);
+end;
+
+function HpPatList(const l: TIntArr): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 0 to Length(l) - 1 do
+  begin
+    if i > 0 then Result := Result + ', ';
+    Result := Result + HpPat(l[i]);
+  end;
+end;
+
+function HpPat(p: Integer): string;
+var
+  d: Integer;
+  nm: string;
+begin
+  if p < 0 then begin Result := '_'; Exit; end;
+  case Pats[p].k of
+    pkWild: Result := '_';
+    pkBind:
+      begin
+        Result := '';
+        if Pats[p].byRef = 1 then Result := 'ref ' else if Pats[p].byRef = 2 then Result := 'ref mut ';
+        if (Pats[p].v >= 0) and (Pats[p].v < Bodies[HpBody].nvars) and Bodies[HpBody].vars[Pats[p].v].mut and (Pats[p].byRef = 0) then
+          Result := Result + 'mut ';
+        Result := Result + HpVarName(Pats[p].v);
+        if Pats[p].a >= 0 then Result := Result + ' @ ' + HpPat(Pats[p].a);
+      end;
+    pkLit:
+      begin
+        if Pats[p].s <> '' then Result := '"' + HpEscape(Pats[p].s) + '"'
+        else Result := IntToStr(Pats[p].n);
+      end;
+    pkRange:
+      begin
+        if Pats[p].incl then Result := IntToStr(Pats[p].n) + '..=' + IntToStr(Pats[p].m)
+        else Result := IntToStr(Pats[p].n) + '..' + IntToStr(Pats[p].m);
+      end;
+    pkTuple: Result := '(' + HpPatList(Pats[p].l) + ')';
+    pkAdt:
+      begin
+        d := Pats[p].def;
+        nm := HpDefPath(d);
+        if Defs[d].kind = dkVariant then nm := DefPathName(Defs[d].parent) + '::' + Defs[d].name;
+        if Length(Pats[p].l) = 0 then Result := nm
+        else Result := nm + '(' + HpPatList(Pats[p].l) + ')';
+      end;
+    pkDeref: Result := '&' + HpPat(Pats[p].a);
+    pkOr: Result := HpPatList(Pats[p].l);
+    pkSlice:
+      begin
+        Result := '[' + HpPatList(Pats[p].l);
+        if Pats[p].a >= 0 then
+        begin
+          if Length(Pats[p].l) > 0 then Result := Result + ', ';
+          Result := Result + HpPat(Pats[p].a) + ' @ ..';
+        end;
+        if Length(Pats[p].l2) > 0 then
+        begin
+          if (Length(Pats[p].l) > 0) or (Pats[p].a >= 0) then Result := Result + ', ';
+          Result := Result + HpPatList(Pats[p].l2);
+        end;
+        Result := Result + ']';
+      end;
+    pkConst: Result := HpDefPath(Pats[p].def);
+  else
+    Result := '_';
+  end;
+end;
+
+function HpArgs(const l: TIntArr; ind: Integer): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 0 to Length(l) - 1 do
+  begin
+    if i > 0 then Result := Result + ', ';
+    Result := Result + HpExpr(l[i], ind);
+  end;
+end;
+
+function HpBlock(h, ind: Integer): string;
+var
+  i, s: Integer;
+  pad: string;
+begin
+  pad := Spaces((ind + 1) * 4);
+  Result := '{'#10;
+  for i := 0 to Length(Hirs[h].l) - 1 do
+  begin
+    s := Hirs[h].l[i];
+    if Hirs[s].k = hLet then
+    begin
+      Result := Result + pad + 'let ' + HpPat(Integer(Hirs[s].n)) + ': ' + HpTy(Pats[Integer(Hirs[s].n)].ty);
+      if Hirs[s].a <> 0 then Result := Result + ' = ' + HpExpr(Hirs[s].a, ind + 1);
+      if Hirs[s].b <> 0 then Result := Result + ' else ' + HpExpr(Hirs[s].b, ind + 1);
+      Result := Result + ';'#10;
+    end
+    else if Hirs[s].k = hExprStmt then
+      Result := Result + pad + HpExpr(Hirs[s].a, ind + 1) + ';'#10
+    else
+      Result := Result + pad + HpExpr(s, ind + 1) + ';'#10;
+  end;
+  if Hirs[h].a <> 0 then Result := Result + pad + HpExpr(Hirs[h].a, ind + 1) + #10;
+  Result := Result + Spaces(ind * 4) + '}';
+end;
+
+function HpExpr(h, ind: Integer): string;
+var
+  i, cid, d, t: Integer;
+  pad, op, s: string;
+  arm: Integer;
+begin
+  Result := '';
+  if h <= 0 then begin Result := '()'; Exit; end;
+  case Hirs[h].k of
+    hLitInt:
+      begin
+        if Hirs[h].big and (Tys[Shallow(Zonk(Hirs[h].ty))].k = tyInt) and (Tys[Shallow(Zonk(Hirs[h].ty))].n = 128) then
+          Result := Dec128Str(QWord(Hirs[h].n2), QWord(Hirs[h].n), (Tys[Shallow(Zonk(Hirs[h].ty))].f and 1) <> 0) + '_' + HpTy(Hirs[h].ty)
+        else if (Tys[Shallow(Zonk(Hirs[h].ty))].k = tyInt) and (Tys[Shallow(Zonk(Hirs[h].ty))].n = 64) and
+                ((Tys[Shallow(Zonk(Hirs[h].ty))].f and 1) = 0) then
+          Result := UIntToStr(QWord(Hirs[h].n)) + '_' + HpTy(Hirs[h].ty)
+        else
+          Result := IntToStr(Hirs[h].n) + '_' + HpTy(Hirs[h].ty);
+      end;
+    hLitFloat: Result := HpFloat(Hirs[h].fv) + '_' + HpTy(Hirs[h].ty);
+    hLitBool: if Hirs[h].n <> 0 then Result := 'true' else Result := 'false';
+    hLitChar: Result := '''' + Utf8Encode(Integer(Hirs[h].n)) + '''';
+    hLitStr: Result := '"' + HpEscape(Hirs[h].s) + '"';
+    hLitByteStr: Result := 'b"' + HpEscape(Hirs[h].s) + '"';
+    hLocal: Result := HpVarName(Integer(Hirs[h].n));
+    hUpvar: Result := 'upvar#' + IntToStr(Hirs[h].n);
+    hStatic: Result := HpDefPath(Hirs[h].def);
+    hFnRef: Result := HpDefPath(Hirs[h].def) + HpTargs(Hirs[h].targs);
+    hConstVal: Result := HpDefPath(Hirs[h].def);
+    hCall:
+      begin
+        Result := HpExpr(Hirs[h].a, ind) + '(' + HpArgs(Hirs[h].l, ind) + ')';
+      end;
+    hCallClosure: Result := '(' + HpExpr(Hirs[h].a, ind) + ')(' + HpArgs(Hirs[h].l, ind) + ')';
+    hField:
+      begin
+        t := Shallow(Zonk(Hirs[Hirs[h].a].ty));
+        Result := HpExpr(Hirs[h].a, ind) + '.' + MvFieldName(t, Integer(Hirs[h].n));
+      end;
+    hIndex: Result := HpExpr(Hirs[h].a, ind) + '[' + HpExpr(Hirs[h].b, ind) + ']';
+    hDeref: Result := '*' + HpExpr(Hirs[h].a, ind);
+    hAddr:
+      begin
+        case Hirs[h].n of
+          0: Result := '&' + HpExpr(Hirs[h].a, ind);
+          1: Result := '&mut ' + HpExpr(Hirs[h].a, ind);
+          2: Result := '&raw const ' + HpExpr(Hirs[h].a, ind);
+        else
+          Result := '&raw mut ' + HpExpr(Hirs[h].a, ind);
+        end;
+      end;
+    hCast: Result := '(' + HpExpr(Hirs[h].a, ind) + ' as ' + HpTy(Hirs[h].ty) + ')';
+    hUnary:
+      begin
+        if Hirs[h].n = 1 then Result := '(-' + HpExpr(Hirs[h].a, ind) + ')'
+        else Result := '(!' + HpExpr(Hirs[h].a, ind) + ')';
+      end;
+    hBinary: Result := '(' + HpExpr(Hirs[h].a, ind) + ' ' + Hirs[h].s + ' ' + HpExpr(Hirs[h].b, ind) + ')';
+    hAnd: Result := '(' + HpExpr(Hirs[h].a, ind) + ' && ' + HpExpr(Hirs[h].b, ind) + ')';
+    hOr: Result := '(' + HpExpr(Hirs[h].a, ind) + ' || ' + HpExpr(Hirs[h].b, ind) + ')';
+    hAssign: Result := HpExpr(Hirs[h].a, ind) + ' = ' + HpExpr(Hirs[h].b, ind);
+    hAssignOp: Result := HpExpr(Hirs[h].a, ind) + ' ' + Hirs[h].s + '= ' + HpExpr(Hirs[h].b, ind);
+    hIf:
+      begin
+        Result := 'if ' + HpExpr(Hirs[h].a, ind) + ' ' + HpExpr(Hirs[h].b, ind);
+        if Hirs[h].c <> 0 then Result := Result + ' else ' + HpExpr(Hirs[h].c, ind);
+      end;
+    hLoop: Result := '''l' + IntToStr(Hirs[h].n) + ': loop ' + HpExpr(Hirs[h].a, ind);
+    hBlockLabel: Result := '''l' + IntToStr(Hirs[h].n) + ': ' + HpExpr(Hirs[h].a, ind);
+    hBreak:
+      begin
+        Result := 'break ''l' + IntToStr(Hirs[h].n);
+        if Hirs[h].a <> 0 then Result := Result + ' ' + HpExpr(Hirs[h].a, ind);
+      end;
+    hContinue: Result := 'continue ''l' + IntToStr(Hirs[h].n);
+    hReturn:
+      begin
+        Result := 'return';
+        if Hirs[h].a <> 0 then Result := Result + ' ' + HpExpr(Hirs[h].a, ind);
+      end;
+    hBlock: Result := HpBlock(h, ind);
+    hLet:
+      begin
+        Result := 'let ' + HpPat(Integer(Hirs[h].n));
+        if Hirs[h].a <> 0 then Result := Result + ' = ' + HpExpr(Hirs[h].a, ind);
+      end;
+    hExprStmt: Result := HpExpr(Hirs[h].a, ind);
+    hLetCond: Result := 'let ' + HpPat(Integer(Hirs[h].n)) + ' = ' + HpExpr(Hirs[h].a, ind);
+    hMatch:
+      begin
+        pad := Spaces((ind + 1) * 4);
+        Result := 'match ' + HpExpr(Hirs[h].a, ind) + ' {'#10;
+        for i := 0 to Length(Hirs[h].l) - 1 do
+        begin
+          arm := Hirs[h].l[i];
+          Result := Result + pad + HpPat(Integer(Hirs[arm].n));
+          if Hirs[arm].a <> 0 then Result := Result + ' if ' + HpExpr(Hirs[arm].a, ind + 1);
+          Result := Result + ' => ' + HpExpr(Hirs[arm].b, ind + 1) + ','#10;
+        end;
+        Result := Result + Spaces(ind * 4) + '}';
+      end;
+    hArm: Result := HpPat(Integer(Hirs[h].n)) + ' => ' + HpExpr(Hirs[h].b, ind);
+    hAdt:
+      begin
+        d := Hirs[h].def;
+        s := HpDefPath(d);
+        if Defs[d].kind = dkVariant then s := DefPathName(Defs[d].parent) + '::' + Defs[d].name;
+        t := Shallow(Zonk(Hirs[h].ty));
+        if Length(Hirs[h].l) = 0 then Result := s
+        else
+        begin
+          Result := s + ' { ';
+          for i := 0 to Length(Hirs[h].l) - 1 do
+          begin
+            if i > 0 then Result := Result + ', ';
+            Result := Result + MvFieldName(t, i) + ': ' + HpExpr(Hirs[h].l[i], ind);
+          end;
+          if Hirs[h].a <> 0 then Result := Result + ', ..' + HpExpr(Hirs[h].a, ind);
+          Result := Result + ' }';
+        end;
+      end;
+    hTuple: Result := '(' + HpArgs(Hirs[h].l, ind) + ')';
+    hArray: Result := '[' + HpArgs(Hirs[h].l, ind) + ']';
+    hRepeat: Result := '[' + HpExpr(Hirs[h].a, ind) + '; ' + IntToStr(Hirs[h].n) + ']';
+    hClosure:
+      begin
+        cid := Integer(Hirs[h].n);
+        Result := '';
+        if Closures[cid].isMove then Result := 'move ';
+        Result := Result + '|..| /* captures: ' + HpArgs(Hirs[h].l, ind) + ' */ ';
+        d := HpBody;
+        HpBody := Closures[cid].bodyIdx;
+        Result := Result + HpExpr(Bodies[HpBody].root, ind);
+        HpBody := d;
+      end;
+    hUnreachable: Result := 'unreachable!()';
+    hCoerce:
+      begin
+        case Hirs[h].n of
+          1: op := 'never-to-any';
+          2: op := 'reborrow';
+          3: op := 'unsize';
+          4: op := 'fn-pointer';
+          5: op := 'dyn';
+        else
+          op := 'coerce';
+        end;
+        Result := '/* ' + op + ' -> ' + HpTy(Hirs[h].ty) + ' */ ' + HpExpr(Hirs[h].a, ind);
+      end;
+    hUnit: Result := '()';
+    hTemp: Result := '_tmp' + IntToStr(Hirs[h].n);
+  else
+    Result := '/* hir#' + IntToStr(Hirs[h].k) + ' */';
+  end;
+end;
+
+procedure HirDumpAll(var b: TBuf);
+var
+  i, j, v: Integer;
+  sig: string;
+  def: Integer;
+begin
+  for i := 0 to NBodies - 1 do
+  begin
+    def := Bodies[i].def;
+    if (def < 0) or (Defs[def].crate <> 0) or Bodies[i].isClosure or (Bodies[i].root <= 0) then Continue;
+    HpBody := i;
+    sig := 'fn ' + DefPathName(def);
+    if Length(Bodies[i].targs) > 0 then
+    begin
+      sig := sig + '::<';
+      for j := 0 to Length(Bodies[i].targs) - 1 do
+      begin
+        if j > 0 then sig := sig + ', ';
+        sig := sig + HpTy(Bodies[i].targs[j]);
+      end;
+      sig := sig + '>';
+    end;
+    sig := sig + '(';
+    for j := 0 to Length(Bodies[i].params) - 1 do
+    begin
+      v := Bodies[i].params[j];
+      if j > 0 then sig := sig + ', ';
+      sig := sig + HpVarName(v) + ': ' + HpTy(Bodies[i].vars[v].ty);
+    end;
+    sig := sig + ') -> ' + HpTy(Bodies[i].ret) + ' ';
+    BufLn(b, sig + HpExpr(Bodies[i].root, 0));
+    BufLn(b, '');
+  end;
+end;
 
 { ============================================================ }
 { PROGRAMME PRINCIPAL : options, pipeline, chaine d'outils      }
@@ -36359,7 +36876,7 @@ var
   langStart: Integer;
   kinds: string;
   doLink, doObj, doAsm, doLL, doMir: Boolean;
-  llcPath, ccPath, clangPath: string;
+  llcPath, ccPath, clangPath, optPath, optLL: string;
   tmpLL: string;
   first: Boolean;
 begin
@@ -36446,6 +36963,19 @@ begin
   end;
   FinishDiag;
   if Opt.crateType = 'bin' then LintGlobal;
+  if Opt.unpretty = 'hir' then
+  begin
+    BufInit(b);
+    HirDumpAll(b);
+    Write(BufStr(b));
+    Exit;
+  end;
+  if HasEmit('hir') then
+  begin
+    BufInit(b);
+    HirDumpAll(b);
+    WriteStringToFile(OutPath('.hir', True), BufStr(b));
+  end;
   if Opt.unpretty = 'mir' then
   begin
     BufInit(b);
@@ -36496,6 +37026,35 @@ begin
     end;
   end;
   clangPath := FindInPath('clang');
+  { optimisation du LLVM IR (opt) quand -O est demande ; sinon clang optimise lui-meme }
+  if Opt.optLevel > 0 then
+  begin
+    optPath := GetEnv('RUSTC_OPT');
+    if optPath = '' then optPath := FindInPath('opt');
+    if optPath = '' then
+      for i := 30 downto 14 do
+      begin
+        optPath := FindInPath('opt-' + IntToStr(i));
+        if optPath <> '' then Break;
+      end;
+    if optPath = '' then
+      for i := 30 downto 14 do
+      begin
+        if FileExists('/usr/lib/llvm-' + IntToStr(i) + '/bin/opt') then begin optPath := '/usr/lib/llvm-' + IntToStr(i) + '/bin/opt'; Break; end;
+      end;
+    if optPath <> '' then
+    begin
+      optLL := OutPath('.rustc.opt.ll', False);
+      rc := RunTool(optPath, '-O' + IntToStr(Opt.optLevel) + ' -S ' + QuoteArg(llPath) + ' -o ' + QuoteArg(optLL));
+      if rc = 0 then
+      begin
+        if tmpLL <> '' then DeleteFile(tmpLL);
+        llPath := optLL;
+        tmpLL := optLL;
+      end;
+    end
+    else if clangPath <> '' then llcPath := '';
+  end;
   ccPath := Opt.linker;
   if ccPath = '' then ccPath := GetEnv('RUSTC_LINKER');
   if ccPath = '' then ccPath := FindInPath('cc');
@@ -36507,7 +37066,7 @@ begin
     if llcPath <> '' then
       args := '-O' + IntToStr(Opt.optLevel) + ' -filetype=asm ' + QuoteArg(llPath) + ' -o ' + QuoteArg(asmPath)
     else if clangPath <> '' then
-      args := '-S -x ir -O' + IntToStr(Opt.optLevel) + ' ' + QuoteArg(llPath) + ' -o ' + QuoteArg(asmPath)
+      args := '-S -x ir -Wno-override-module -O' + IntToStr(Opt.optLevel) + ' ' + QuoteArg(llPath) + ' -o ' + QuoteArg(asmPath)
     else FatalMsg('could not find LLVM `llc` (or clang) in PATH');
     if llcPath <> '' then rc := RunTool(llcPath, args) else rc := RunTool(clangPath, args);
     if rc <> 0 then FatalMsg('LLVM code generation failed (exit code ' + IntToStr(rc) + ')');
@@ -36524,7 +37083,7 @@ begin
     end
     else if clangPath <> '' then
     begin
-      args := '-c -x ir -O' + IntToStr(Opt.optLevel) + ' -fPIC ' + QuoteArg(llPath) + ' -o ' + QuoteArg(objPath);
+      args := '-c -x ir -Wno-override-module -O' + IntToStr(Opt.optLevel) + ' -fPIC ' + QuoteArg(llPath) + ' -o ' + QuoteArg(objPath);
       rc := RunTool(clangPath, args);
     end
     else
