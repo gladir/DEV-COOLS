@@ -88,6 +88,7 @@ Type
 
 Var
   ErrCount, WarnCount: Integer;
+  UserFile: Integer = -1;
   FirstErrCode: string;
   LastWidth: Integer = 1;
   LastSnippet: Boolean = False;
@@ -437,6 +438,11 @@ begin
   while Length(Result) < w do Result := ' ' + Result;
 end;
 
+procedure WriteErr(const s: string);
+begin
+  Write(StdErr, s);
+end;
+
 procedure WriteErrLn(const s: string);
 begin
   WriteLn(StdErr, s);
@@ -504,6 +510,9 @@ Type
   end;
   TLabels = array of TLabel;
 
+Var
+  RenderArrowIdx: Integer = -1;
+
 procedure RenderLabels(const labs: TLabels);
 var
   head, ln, w, pad: string;
@@ -515,6 +524,7 @@ begin
   prim := 0;
   for i := 0 to Length(labs) - 1 do
     if labs[i].primary then begin prim := i; Break; end;
+  if (RenderArrowIdx >= 0) and (RenderArrowIdx < Length(labs)) then prim := RenderArrowIdx;
   if Length(labs) > 0 then
   begin
     width := 1;
@@ -669,9 +679,12 @@ begin
   if ErrCount > 0 then
   begin
     if ErrCount = 1 then
-      WriteErrLn('error: aborting due to 1 previous error')
+      WriteErr('error: aborting due to 1 previous error')
     else
-      WriteErrLn('error: aborting due to ' + IntToStr(ErrCount) + ' previous errors');
+      WriteErr('error: aborting due to ' + IntToStr(ErrCount) + ' previous errors');
+    if WarnCount = 1 then WriteErr('; 1 warning emitted')
+    else if WarnCount > 1 then WriteErr('; ' + IntToStr(WarnCount) + ' warnings emitted');
+    WriteErrLn('');
     WriteErrLn('');
     if FirstErrCode <> '' then
       WriteErrLn('For more information about this error, try `rustc --explain ' + FirstErrCode + '`.');
@@ -4710,6 +4723,7 @@ Type
     pub: Boolean;
     done: Boolean;
     node: Integer;
+    used: Boolean;
   end;
 
 Var
@@ -4717,6 +4731,8 @@ Var
   NDefs: Integer;
   ScopeMap: THashSI;
   Imports: array of TImport;
+  ImpOwn: THashSI;
+  TraitImpUsed: THashSI;
   NImports: Integer;
   StdRoot, UserRoot, PreludeMod: Integer;
   AllImpls: TIntArr;
@@ -4746,6 +4762,48 @@ end;
 function ScopeKey(m: Integer; ns: Char; const name: string): string;
 begin
   Result := IntToStr(m) + ns + name;
+end;
+
+{ chemin standard connu d'un nom de type courant (aide "consider importing") }
+function StdImportPath(const nm: string; var kind: string): string;
+begin
+  Result := '';
+  kind := 'struct';
+  if (nm = 'HashMap') or (nm = 'HashSet') or (nm = 'BTreeMap') or (nm = 'BTreeSet') or (nm = 'VecDeque') or
+     (nm = 'BinaryHeap') or (nm = 'LinkedList') then Result := 'std::collections::' + nm
+  else if nm = 'Rc' then Result := 'std::rc::Rc'
+  else if (nm = 'RefCell') or (nm = 'Cell') then Result := 'std::cell::' + nm
+  else if (nm = 'Arc') or (nm = 'Mutex') or (nm = 'RwLock') then Result := 'std::sync::' + nm
+  else if nm = 'Ordering' then begin Result := 'std::cmp::Ordering'; kind := 'enum'; end
+  else if nm = 'Duration' then Result := 'std::time::Duration'
+  else if nm = 'Instant' then Result := 'std::time::Instant'
+  else if nm = 'PhantomData' then Result := 'std::marker::PhantomData'
+  else if nm = 'Display' then begin Result := 'std::fmt::Display'; kind := 'trait'; end
+  else if nm = 'Debug' then begin Result := 'std::fmt::Debug'; kind := 'trait'; end
+  else if nm = 'Write' then begin Result := 'std::io::Write'; kind := 'trait'; end
+  else if nm = 'Read' then begin Result := 'std::io::Read'; kind := 'trait'; end
+  else if nm = 'FromStr' then begin Result := 'std::str::FromStr'; kind := 'trait'; end;
+end;
+
+procedure ImportHelp(const nm: string; lineWidth: Integer);
+var
+  p, kind, ln: string;
+  fl, i: Integer;
+begin
+  p := StdImportPath(nm, kind);
+  if p = '' then Exit;
+  fl := 1;
+  if UserFile >= 0 then
+    for i := 1 to 40 do
+    begin
+      ln := SourceLine(UserFile, i);
+      if (ln <> '') and (Copy(ln, 1, 2) <> '//') then begin fl := i; Break; end;
+    end;
+  WriteErrLn(Spaces(lineWidth) + ' |');
+  WriteErrLn('help: consider importing this ' + kind);
+  WriteErrLn(Spaces(lineWidth) + ' |');
+  WriteErrLn(PadL(IntToStr(fl), lineWidth) + ' + use ' + p + ';');
+  WriteErrLn(Spaces(lineWidth) + ' |');
 end;
 
 procedure DefSpanErr(code, msg: string; node: Integer; const lbl: string);
@@ -4786,7 +4844,12 @@ var
   i, r: Integer;
 begin
   Result := HFind(ScopeMap, ScopeKey(m, ns, name));
-  if Result >= 0 then Exit;
+  if Result >= 0 then
+  begin
+    i := HFind(ImpOwn, ScopeKey(m, ns, name));
+    if i >= 0 then Imports[i].used := True;
+    Exit;
+  end;
   if depth > 8 then Exit;
   for i := 0 to Length(Defs[m].globs) - 1 do
   begin
@@ -5177,6 +5240,7 @@ begin
           Imports[NImports].glob := (Nodes[it].f and fGlob) <> 0;
           Imports[NImports].pub := (Nodes[it].f and fPub) <> 0;
           Imports[NImports].done := False;
+          Imports[NImports].used := False;
           Imports[NImports].node := it;
           tn := Nodes[it].s2;
           if tn = '' then
@@ -5371,14 +5435,14 @@ begin
       d := ResolveSegs(Imports[i].mod_, segs, 'T', used);
       if (d >= 0) and (used = Length(segs)) then
       begin
-        if nm <> '_' then AddMember(Imports[i].mod_, 'T', nm, d)
+        if nm <> '_' then begin AddMember(Imports[i].mod_, 'T', nm, d); HPut(ImpOwn, ScopeKey(Imports[i].mod_, 'T', nm), i); end
         else if (Defs[d].kind = dkTrait) and (IIndexOf(Defs[Imports[i].mod_].trs, d) < 0) then IAdd(Defs[Imports[i].mod_].trs, d);
         found := True;
       end;
       d2 := ResolveSegs(Imports[i].mod_, segs, 'V', used);
       if (d2 >= 0) and (used = Length(segs)) then
       begin
-        if nm <> '_' then AddMember(Imports[i].mod_, 'V', nm, d2);
+        if nm <> '_' then begin AddMember(Imports[i].mod_, 'V', nm, d2); HPut(ImpOwn, ScopeKey(Imports[i].mod_, 'V', nm), i); end;
         found := True;
       end;
       if found then
@@ -7320,12 +7384,94 @@ begin
   Result := Length(Nodes[Defs[fn].node].l2);
 end;
 
+function PrimNameNode(t: Integer): string;
+begin
+  Result := '';
+  if (t > 0) and (Nodes[t].k = tPath) and (Length(Nodes[t].l) = 1) and (Length(Nodes[Nodes[t].l[0]].l) = 0) and
+     (PrimTy(Nodes[Nodes[t].l[0]].s) >= 0) then
+    Result := Nodes[Nodes[t].l[0]].s;
+end;
+
+function NodeText(n: Integer): string;
+var
+  i: Integer;
+begin
+  if (Nodes[n].line <= 0) and (Nodes[n].k = tPath) then
+  begin
+    Result := '';
+    for i := 0 to Length(Nodes[n].l) - 1 do
+    begin
+      if i > 0 then Result := Result + '::';
+      Result := Result + Nodes[Nodes[n].l[i]].s;
+    end;
+    Exit;
+  end;
+  Result := Copy(SourceLine(Nodes[n].fi, Nodes[n].line), Nodes[n].col, NodeLen(n));
+end;
+
+function SigText(fn, selfTy: Integer): string;
+var
+  i, p: Integer;
+  sx: string;
+begin
+  Result := 'fn(';
+  for i := 0 to Length(Nodes[fn].l2) - 1 do
+  begin
+    p := Nodes[fn].l2[i];
+    if i > 0 then Result := Result + ', ';
+    if Nodes[p].k = nSelfParam then
+    begin
+      sx := NodeText(selfTy);
+      if (Nodes[p].f and 1) <> 0 then
+      begin
+        if (Nodes[p].f and 2) <> 0 then Result := Result + '&mut ' + sx else Result := Result + '&' + sx;
+      end
+      else Result := Result + sx;
+    end
+    else Result := Result + NodeText(Nodes[p].b);
+  end;
+  Result := Result + ')';
+  if Nodes[fn].a <> 0 then Result := Result + ' -> ' + NodeText(Nodes[fn].a);
+end;
+
+procedure ReportE0053(impl, other, d, tn, in2: Integer; const what: string);
+var
+  labs: TLabels;
+  ln, a, b: string;
+  w: Integer;
+begin
+  a := NodeText(tn);
+  b := NodeText(in2);
+  SetLength(labs, 1);
+  labs[0].fi := Nodes[tn].fi; labs[0].line := Nodes[tn].line; labs[0].col := Nodes[tn].col; labs[0].len := NodeLen(tn);
+  labs[0].primary := True;
+  labs[0].text := 'expected `' + b + '`, found `' + a + '`';
+  ReportLabels(True, 'E0053', 'method `' + Defs[impl].name + '` has an incompatible type for trait', labs);
+  SetLength(labs, 1);
+  labs[0].fi := Nodes[in2].fi; labs[0].line := Nodes[in2].line; labs[0].col := Nodes[in2].col; labs[0].len := NodeLen(in2);
+  labs[0].primary := True;
+  labs[0].text := '';
+  w := Length(IntToStr(Nodes[tn].line));
+  if Length(IntToStr(Nodes[in2].line)) > w then w := Length(IntToStr(Nodes[in2].line));
+  WriteErrLn(Spaces(w) + ' |');
+  ReportSubLabels('note', 'type in trait', labs);
+  WriteErrLn(Spaces(w) + ' = note: expected signature `' + SigText(Defs[other].node, Nodes[Defs[d].node].a) + '`');
+  WriteErrLn(Spaces(w) + '            found signature `' + SigText(Defs[impl].node, Nodes[Defs[d].node].a) + '`');
+  ln := SourceLine(Nodes[tn].fi, Nodes[tn].line);
+  WriteErrLn('help: change the ' + what + ' type to match the trait');
+  WriteErrLn(Spaces(w) + ' |');
+  WriteErrLn(PadL(IntToStr(Nodes[tn].line), w) + ' - ' + ExpandTabs(ln));
+  WriteErrLn(PadL(IntToStr(Nodes[tn].line), w) + ' + ' + ExpandTabs(Copy(ln, 1, Nodes[tn].col - 1) + b + Copy(ln, Nodes[tn].col + NodeLen(tn), Length(ln))));
+  WriteErrLn(Spaces(w) + ' |');
+  WriteErrLn('');
+end;
+
 procedure CheckImplItems;
 var
   i, j, d, tr, it, impl, node, k, nl: Integer;
   missing: TStrArr;
   labs: TLabels;
-  names: string;
+  names, a1, b1: string;
   other: Integer;
 begin
   for i := 0 to Length(AllImpls) - 1 do
@@ -7406,6 +7552,26 @@ begin
                      ' parameter' + 's' + ' but the declaration in trait `' + Defs[tr].name + '::' + Defs[impl].name + '` has ' +
                      IntToStr(FnParamCount(other)), labs);
         WriteErrLn('');
+      end
+      else if (Defs[impl].kind = dkFn) and (Defs[tr].crate = 0) and (FnParamCount(impl) = FnParamCount(other)) then
+      begin
+        for k := 0 to FnParamCount(impl) - 1 do
+        begin
+          if (Nodes[Nodes[Defs[impl].node].l2[k]].k = nParam) and (Nodes[Nodes[Defs[other].node].l2[k]].k = nParam) then
+          begin
+            a1 := PrimNameNode(Nodes[Nodes[Defs[impl].node].l2[k]].b);
+            b1 := PrimNameNode(Nodes[Nodes[Defs[other].node].l2[k]].b);
+            if (a1 <> '') and (b1 <> '') and (a1 <> b1) then
+            begin
+              ReportE0053(impl, other, d, Nodes[Nodes[Defs[impl].node].l2[k]].b, Nodes[Nodes[Defs[other].node].l2[k]].b, 'parameter');
+              Break;
+            end;
+          end;
+        end;
+        a1 := PrimNameNode(Nodes[Defs[impl].node].a);
+        b1 := PrimNameNode(Nodes[Defs[other].node].a);
+        if (a1 <> '') and (b1 <> '') and (a1 <> b1) then
+          ReportE0053(impl, other, d, Nodes[Defs[impl].node].a, Nodes[Defs[other].node].a, 'return');
       end;
     end;
   end;
@@ -9159,9 +9325,18 @@ begin
   { non trouve }
   if n = 1 then
     ErrAt(p, 'E0425', 'cannot find value `' + name + '` in this scope', 'not found in this scope')
+  else if (segs[0] <> '') and (segs[0][1] in ['A'..'Z']) then
+  begin
+    if (Length(Nodes[p].l) > 0) and (Nodes[Nodes[p].l[0]].line > 0) then
+      Report(True, 'E0433', 'cannot find type `' + segs[0] + '` in this scope', Nodes[Nodes[p].l[0]].fi,
+             Nodes[Nodes[p].l[0]].line, Nodes[Nodes[p].l[0]].col, Length(segs[0]), 'use of undeclared type `' + segs[0] + '`')
+    else
+      ErrAt(p, 'E0433', 'cannot find type `' + segs[0] + '` in this scope', 'use of undeclared type `' + segs[0] + '`');
+    ImportHelp(segs[0], Length(IntToStr(Nodes[p].line)));
+  end
   else
-    ErrAt(p, 'E0433', 'failed to resolve: use of undeclared type or module `' + segs[0] + '`',
-          'use of undeclared type or module `' + segs[0] + '`');
+    ErrAt(p, 'E0433', 'failed to resolve: use of unresolved module or unlinked crate `' + segs[0] + '`',
+          'use of unresolved module or unlinked crate `' + segs[0] + '`');
   r.kind := vrNone;
   Result := True;
 end;
@@ -9821,6 +9996,12 @@ begin
     Result := HirAt(hUnit, TyErrT, n);
     Exit;
   end;
+  if (Tys[lt].k = tyAdt) and (Tys[lt].def = LangString) and (Tys[rt].k = tyRef) and
+     (Tys[Shallow(Tys[rt].args[0])].k <> tyStr) and (Tys[Shallow(Tys[rt].args[0])].k <> tyVar) then
+  begin
+    r := CoerceTo(r, TyStrRef, Nodes[n].b);
+    rt := StructResolve(Hirs[r].ty);
+  end;
   SetLength(targs, 2);
   targs[0] := lt;
   targs[1] := rt;
@@ -9831,11 +10012,12 @@ begin
     e := SelectImpl(tr, targs, i, args, False);
     if e = 0 then
     begin
-      ErrAt(n, 'E0369', 'cannot ' + OpMethodName(op) + ' `' + TyStrZ(rt) + '` ' +
-            'to `' + TyStrZ(lt) + '`', '');
       if (op = '+') then
         ErrAt(n, 'E0369', 'cannot add `' + TyStrZ(rt) + '` to `' + TyStrZ(lt) + '`', 'no implementation for `' +
-              TyStrZ(lt) + ' + ' + TyStrZ(rt) + '`');
+              TyStrZ(lt) + ' + ' + TyStrZ(rt) + '`')
+      else
+        ErrAt(n, 'E0369', 'cannot ' + OpMethodName(op) + ' `' + TyStrZ(rt) + '` ' +
+              'to `' + TyStrZ(lt) + '`', '');
       Result := HirAt(hUnit, TyErrT, n);
       Exit;
     end;
@@ -10057,6 +10239,12 @@ begin
     Exit;
   end;
   MakeMutPlace(l);
+  if (Tys[lt].k = tyAdt) and (Tys[lt].def = LangString) and (Tys[rt].k = tyRef) and
+     (Tys[Shallow(Tys[rt].args[0])].k <> tyStr) and (Tys[Shallow(Tys[rt].args[0])].k <> tyVar) then
+  begin
+    r := CoerceTo(r, TyStrRef, Nodes[n].b);
+    rt := StructResolve(Hirs[r].ty);
+  end;
   SetLength(targs, 2);
   targs[0] := lt;
   targs[1] := rt;
@@ -10653,6 +10841,7 @@ begin
     Exit;
   end;
   ProbeMethod(t, name, pr);
+  if pr.found and (pr.traitDef >= 0) then HPut(TraitImpUsed, IntToStr(pr.traitDef), 1);
   if not pr.found then
   begin
     if (Tys[t].k = tyVar) and (VarKind[Tys[t].n] = 0) then
@@ -11736,8 +11925,12 @@ begin
               if Nodes[Nodes[nd].l2[j]].s = Nodes[fnode].s then begin idx := j; Break; end;
             if idx < 0 then
             begin
-              ErrAt(fnode, 'E0026', 'variant `' + Defs[def].name + '` does not have a field named `' + Nodes[fnode].s + '`',
-                    'variant `' + Defs[def].name + '` does not have this field');
+              if Defs[def].kind = dkStruct then
+                ErrAt(fnode, 'E0026', 'struct `' + Defs[def].name + '` does not have a field named `' + Nodes[fnode].s + '`',
+                      'struct `' + Defs[def].name + '` does not have this field')
+              else
+                ErrAt(fnode, 'E0026', 'variant `' + Defs[def].name + '` does not have a field named `' + Nodes[fnode].s + '`',
+                      'variant `' + Defs[def].name + '` does not have this field');
               Continue;
             end;
             sub[idx] := CheckPat(Nodes[fnode].a, FieldTyOf(adt, def, idx), bm);
@@ -14808,7 +15001,7 @@ Type
   TBcLoan = record
     x: Integer;              { variable empruntee }
     path: string;            { chemin de champs "3.1" ('' = variable entiere) }
-    mut, tph, isCap, weak, explicit: Boolean;
+    mut, tph, isCap, weak, explicit, temp: Boolean;
     hid: Integer;
     fi, line, col, len: Integer;
   end;
@@ -14846,6 +15039,7 @@ Var
   BcLim, BcLimIn, BcDepth: TIntArr;
   BcUses: array of TIntArr;
   BcDefs: array of TIntArr;
+  BcAsg: array of TIntArr;
   BcDecl: TIntArr;
   BcDeclBlk: TIntArr;
   BcLoops: array of TBcLoop;
@@ -14864,6 +15058,7 @@ Var
   BcLCtx: array of TBcLoopCtx;
   BcNLCtx: Integer;
   BcLoanTouched: TIntArr;
+  BcVarClos: TIntArr;
 
 { ---- types portant des references ---- }
 
@@ -15043,6 +15238,7 @@ begin
         begin
           v := Integer(Hirs[Hirs[h].a].n);
           if (v >= 0) and (v < Length(BcDefs)) then IAdd(BcDefs[v], BcOrd[h]);
+          if (v >= 0) and (v < Length(BcAsg)) then IAdd(BcAsg[v], h);
         end;
       end;
     hIf:
@@ -15089,6 +15285,8 @@ begin
         BcNum(Hirs[h].b);
         BcNumPatVars(Integer(Hirs[h].n), True);
         BcSetOrd(h);
+        if (Hirs[h].a <> 0) and (Hirs[Hirs[h].a].k = hClosure) and (Pats[Integer(Hirs[h].n)].k = pkBind) and (Pats[Integer(Hirs[h].n)].v >= 0) then
+          BcVarClos[Pats[Integer(Hirs[h].n)].v] := Hirs[h].a;
         { definition de la variable par le let }
         if (Hirs[h].a <> 0) and (Pats[Integer(Hirs[h].n)].k = pkBind) and (Pats[Integer(Hirs[h].n)].v >= 0) then
           IAdd(BcDefs[Pats[Integer(Hirs[h].n)].v], BcOrd[h]);
@@ -15413,7 +15611,7 @@ begin
   Result := (lp = ap) or (Copy(ap, 1, Length(lp) + 1) = lp + '.') or (Copy(lp, 1, Length(ap) + 1) = ap + '.');
 end;
 
-procedure BcReportConflict(kind, l, acc, placeH, useH: Integer; viaCall: Boolean);
+procedure BcReportConflict(kind, l, acc, placeH, useH: Integer; viaCall, loopForm: Boolean);
 var
   labs: TLabels;
   vn: TVarInfo;
@@ -15429,6 +15627,14 @@ begin
   lm := BcLoans[l].mut;
   if viaCall then later := 'used by call' else later := 'used here';
   labs := nil;
+  if loopForm then
+  begin
+    BcLabH(labs, acc, True, '`' + nm + '` was mutably borrowed here in the previous iteration of the loop');
+    if useH >= 0 then BcLabH(labs, useH, False, 'first borrow used here, in later iteration of loop');
+    ReportLabels(True, 'E0499', 'cannot borrow `' + nm + '` as mutable more than once at a time', labs);
+    WriteErrLn('');
+    Exit;
+  end;
   case kind of
     akMut:
       if lm then
@@ -15482,7 +15688,7 @@ end;
 
 procedure BcCheck(const st: TBcState; kind, x: Integer; const path: string; acc, placeH: Integer);
 var
-  i, l, p, useH: Integer;
+  i, l, p, useH, lp, j, u: Integer;
   lm: Boolean;
 begin
   if (x < 0) or (acc <= 0) then Exit;
@@ -15491,13 +15697,33 @@ begin
   for i := 0 to Length(st.items) - 1 do
   begin
     l := st.items[i].l;
-    if (BcLoans[l].x <> x) or (BcLoans[l].hid = acc) then Continue;
+    if BcLoans[l].x <> x then Continue;
     if not BcOverlap(BcLoans[l].path, path, BcLoans[l].weak) then Continue;
     lm := BcLoans[l].mut;
+    if BcLoans[l].hid = acc then
+    begin
+      { emprunt de l'iteration precedente de la boucle }
+      if not (lm and (kind = akMut)) then Continue;
+      useH := BcUseAfter(st.items[i].h, p, BcInf);
+      if useH < 0 then Continue;
+      lp := BcLoopOf(p);
+      if lp >= 0 then
+      begin
+        u := BcInf;
+        for j := 0 to Length(BcUses[st.items[i].h]) - 1 do
+          if (BcOrd[BcUses[st.items[i].h][j]] >= BcLoops[lp].s) and (BcOrd[BcUses[st.items[i].h][j]] < u) then
+          begin
+            u := BcOrd[BcUses[st.items[i].h][j]];
+            useH := BcUses[st.items[i].h][j];
+          end;
+      end;
+      BcReportConflict(kind, l, acc, placeH, useH, False, True);
+      Exit;
+    end;
     if (not lm) and (kind in [akRead, akShared]) then Continue;
     useH := BcUseAfter(st.items[i].h, p, BcInf);
     if useH < 0 then Continue;
-    BcReportConflict(kind, l, acc, placeH, useH, False);
+    BcReportConflict(kind, l, acc, placeH, useH, False, False);
     Exit;
   end;
   for i := 0 to Length(BcPendL) - 1 do
@@ -15508,7 +15734,7 @@ begin
     lm := BcLoans[l].mut;
     if lm and BcLoans[l].tph and (kind in [akRead, akShared]) then lm := False;
     if (not lm) and (kind in [akRead, akShared]) then Continue;
-    BcReportConflict(kind, l, acc, placeH, BcPendC[i], True);
+    BcReportConflict(kind, l, acc, placeH, BcPendC[i], True, False);
     Exit;
   end;
 end;
@@ -15527,6 +15753,7 @@ begin
   begin
     l := st.items[i].l;
     x := BcLoans[l].x;
+    if x < 0 then Continue;
     if BcDeclBlk[x] <> h then Continue;
     if BcLoans[l].isCap then Continue;
     useH := BcUseAfter(st.items[i].h, p, BcBlkS[h]);
@@ -15669,7 +15896,7 @@ begin
     if vn.isParam then what := 'function parameter' else what := 'local variable';
     labs := nil;
     t := BcTailOf(h);
-    if BcLoans[l].explicit then
+    if BcLoans[l].explicit and (Tys[Shallow(Zonk(Hirs[t].ty))].k = tyRef) then
     begin
       BcLabLoan(labs, l, True, 'returns a reference to data owned by the current function');
       ReportLabels(True, 'E0515', 'cannot return reference to ' + what + ' `' + vn.name + '`', labs);
@@ -15686,6 +15913,7 @@ begin
 end;
 { ---- parcours ---- }
 
+procedure LintBodyVars(b: Integer); forward;
 function BcExpr(h: Integer; var st: TBcState): TIntArr; forward;
 function BcPlace(h, kind: Integer; var st: TBcState; acc, autoCall: Integer): TIntArr; forward;
 
@@ -15722,6 +15950,7 @@ begin
   BcLoans[l].isCap := False;
   BcLoans[l].weak := False;
   BcLoans[l].explicit := False;
+  BcLoans[l].temp := False;
   BcLoans[l].hid := acc;
   BcLoans[l].fi := Hirs[acc].fi;
   BcLoans[l].line := Hirs[acc].line;
@@ -15744,6 +15973,40 @@ begin
     end;
   end;
   Result := l;
+end;
+
+procedure BcReportTemp(l, letH, useH: Integer);
+var
+  labs: TLabels;
+  ln, ind, tx, sug1, sug2: string;
+  w, k, ca, cb2: Integer;
+begin
+  if BcQuiet > 0 then Exit;
+  if BcSeenKey('T' + IntToStr(l)) then Exit;
+  labs := nil;
+  BcLabLoan(labs, l, True, 'creates a temporary value which is freed while still in use');
+  if Hirs[letH].eline > 0 then
+    BcLab(labs, Hirs[letH].fi, Hirs[letH].eline, Hirs[letH].ecol - 1, 1, False, 'temporary value is freed at the end of this statement');
+  BcLabH(labs, useH, False, 'borrow later used here');
+  ReportLabels(True, 'E0716', 'temporary value dropped while borrowed', labs);
+  if (Hirs[letH].line = BcLoans[l].line) and (Hirs[letH].line = Hirs[letH].eline) then
+  begin
+    ln := SourceLine(BcLoans[l].fi, BcLoans[l].line);
+    k := 1;
+    while (k <= Length(ln)) and (ln[k] = ' ') do Inc(k);
+    ind := Copy(ln, 1, k - 1);
+    tx := Copy(ln, BcLoans[l].col, BcLoans[l].len);
+    sug1 := ind + 'let binding = ' + tx + ';';
+    sug2 := Copy(ln, 1, BcLoans[l].col - 1) + 'binding' + Copy(ln, BcLoans[l].col + BcLoans[l].len, Length(ln));
+    w := Length(IntToStr(BcLoans[l].line + 1));
+    WriteErrLn(Spaces(w) + ' |');
+    WriteErrLn('help: consider using a `let` binding to create a longer lived value');
+    WriteErrLn(Spaces(w) + ' |');
+    WriteErrLn(PadL(IntToStr(BcLoans[l].line), w) + ' ~ ' + sug1);
+    WriteErrLn(PadL(IntToStr(BcLoans[l].line + 1), w) + ' ~ ' + sug2);
+    WriteErrLn(Spaces(w) + ' |');
+  end;
+  WriteErrLn('');
 end;
 
 procedure BcReportMoveOut(h, baseH: Integer);
@@ -15864,7 +16127,7 @@ begin
       for i := 0 to Length(cb) - 1 do
       begin
         x := BcLoans[cb[i]].x;
-        if (BcLoans[cb[i]].path = '') and BcSameTy(Bodies[BcBody].vars[x].ty, Hirs[h].ty) then BcUnion(Result, BcHeld(st, x))
+        if (x >= 0) and (BcLoans[cb[i]].path = '') and BcSameTy(Bodies[BcBody].vars[x].ty, Hirs[h].ty) then BcUnion(Result, BcHeld(st, x))
         else BcAdd1(Result, cb[i]);
       end;
     end;
@@ -16130,6 +16393,75 @@ begin
     if src[i] <> cut then BcAdd1(res, src[i]);
 end;
 
+{ premiere utilisation mutable d'une capture dans le corps : retourne la capture (indice) et le noeud }
+function BcFirstMutUp(h: Integer; var site: Integer): Integer;
+var
+  i, r, cur: Integer;
+begin
+  Result := -1;
+  if h <= 0 then Exit;
+  case Hirs[h].k of
+    hClosure: Exit;
+    hAssign, hAssignOp, hAddr:
+      if (Hirs[h].k <> hAddr) or (Hirs[h].n = 1) then
+      begin
+        cur := Hirs[h].a;
+        while Hirs[cur].k in [hCoerce, hField, hIndex, hDeref] do cur := Hirs[cur].a;
+        if Hirs[cur].k = hUpvar then begin site := cur; Result := Integer(Hirs[cur].n); Exit; end;
+      end;
+  end;
+  r := BcFirstMutUp(Hirs[h].a, site);
+  if r >= 0 then begin Result := r; Exit; end;
+  r := BcFirstMutUp(Hirs[h].b, site);
+  if r >= 0 then begin Result := r; Exit; end;
+  r := BcFirstMutUp(Hirs[h].c, site);
+  if r >= 0 then begin Result := r; Exit; end;
+  for i := 0 to Length(Hirs[h].l) - 1 do
+  begin
+    r := BcFirstMutUp(Hirs[h].l[i], site);
+    if r >= 0 then begin Result := r; Exit; end;
+  end;
+end;
+
+procedure BcCheckClosureCall(h: Integer);
+var
+  arg, v, cid, idx, site, cv, w: Integer;
+  labs: TLabels;
+  vn: TVarInfo;
+  ln, sug: string;
+begin
+  arg := Hirs[h].a;
+  while Hirs[arg].k = hCoerce do arg := Hirs[arg].a;
+  if Hirs[arg].k <> hLocal then Exit;
+  v := Integer(Hirs[arg].n);
+  if (BcVarClos[v] < 0) or Bodies[BcBody].vars[v].mut then Exit;
+  cid := Integer(Hirs[BcVarClos[v]].n);
+  site := -1;
+  idx := BcFirstMutUp(Bodies[Closures[cid].bodyIdx].root, site);
+  if (idx < 0) or (site < 0) or (BcQuiet > 0) then Exit;
+  if BcSeenKey('Q' + IntToStr(v)) then Exit;
+  vn := Bodies[BcBody].vars[v];
+  cv := Integer(Hirs[Hirs[BcVarClos[v]].l[idx]].n);
+  labs := nil;
+  BcLabH(labs, site, False, 'calling `' + vn.name + '` requires mutable binding due to mutable borrow of `' +
+         Bodies[BcBody].vars[cv].name + '`');
+  BcLabH(labs, arg, True, 'cannot borrow as mutable');
+  ReportLabels(True, 'E0596', 'cannot borrow `' + vn.name + '` as mutable, as it is not declared as mutable', labs);
+  if (vn.node > 0) and (Nodes[vn.node].line > 0) then
+  begin
+    w := Length(IntToStr(Nodes[vn.node].line));
+    if Length(IntToStr(Hirs[arg].line)) > w then w := Length(IntToStr(Hirs[arg].line));
+    ln := ExpandTabs(SourceLine(Nodes[vn.node].fi, Nodes[vn.node].line));
+    WriteErrLn(Spaces(w) + ' |');
+    WriteErrLn('help: consider changing this to be mutable');
+    WriteErrLn(Spaces(w) + ' |');
+    sug := Copy(ln, 1, Nodes[vn.node].col - 1) + 'mut ' + Copy(ln, Nodes[vn.node].col, Length(ln));
+    WriteErrLn(PadL(IntToStr(Nodes[vn.node].line), w) + ' | ' + sug);
+    WriteErrLn(Spaces(w) + ' | ' + Spaces(Nodes[vn.node].col - 1) + '+++');
+  end;
+  WriteErrLn('');
+end;
+
 function BcExpr1(h: Integer; var st: TBcState): TIntArr;
 var
   i, j, k, v, cid, arg, def, mark, li, ls, w, pointee, pat, init, ac: Integer;
@@ -16142,7 +16474,7 @@ var
   nm: string;
   isRef: Boolean;
   cc, cl: Integer;
-  fl: TIntArr;
+  fl, vs: TIntArr;
 begin
   Result := nil;
   if (h <= 0) or st.dead then Exit;
@@ -16171,7 +16503,24 @@ begin
           else if Hirs[h].n = 1 then Result := BcPlace(Hirs[h].a, akMut, st, h, ac)
           else BcPlace(Hirs[h].a, akRead, st, h, -1);
         end
-        else Result := BcExpr(Hirs[h].a, st);
+        else
+        begin
+          Result := BcExpr(Hirs[h].a, st);
+          arg := Hirs[h].a;
+          if (Hirs[h].n < 2) and (Hirs[h].col = Hirs[arg].col) and (Hirs[h].line = Hirs[arg].line) and
+             (Hirs[arg].k in [hCall, hAdt, hTuple, hArray]) and (Hirs[arg].line > 0) and
+             (not IsCopyTy(Hirs[arg].ty)) and (Tys[Shallow(Zonk(Hirs[arg].ty))].k <> tyRef) and
+             (not BcIsSynth(ac)) then
+          begin
+            j := BcNewLoan(h, -2, '', Hirs[h].n = 1, -1);
+            BcLoans[j].temp := True;
+            BcLoans[j].fi := Hirs[arg].fi;
+            BcLoans[j].line := Hirs[arg].line;
+            BcLoans[j].col := Hirs[arg].col;
+            BcLoans[j].len := Hirs[arg].len;
+            BcAdd1(Result, j);
+          end;
+        end;
       end;
     hCoerce, hCast, hUnary:
       begin
@@ -16252,6 +16601,7 @@ begin
       end;
     hCallClosure:
       begin
+        BcCheckClosureCall(h);
         if IsPlaceHir(Hirs[h].a) then BcPlace(Hirs[h].a, akRead, st, Hirs[h].a, -1)
         else BcExpr(Hirs[h].a, st);
         SetLength(rs, Length(Hirs[h].l));
@@ -16423,7 +16773,23 @@ begin
                 if (IsPlaceHir(init) or (Hirs[init].k = hCoerce)) and (Pats[pat].k <> pkBind) and (not PatMoves(pat)) then
                   r := BcPlace(init, akRead, st, init, -1)
                 else r := BcExpr(init, st);
-                if not st.dead then BcBindPat(pat, r, st);
+                if not st.dead then
+                begin
+                  BcBindPat(pat, r, st);
+                  if not ((Hirs[init].k = hCall) and (Hirs[init].s = 'for')) then
+                  begin
+                    vs := nil;
+                    BcPatVars(pat, vs);
+                    for j := 0 to Length(r) - 1 do
+                      if BcLoans[r[j]].temp then
+                        for k := 0 to Length(vs) - 1 do
+                          if Copy(Bodies[BcBody].vars[vs[k]].name, 1, 2) <> '__' then
+                          begin
+                            li := BcUseAfter(vs[k], BcOrd[arg], BcInf);
+                            if li >= 0 then BcReportTemp(r[j], arg, li);
+                          end;
+                  end;
+                end;
               end;
             end
             else BcBindPat(pat, nil, st);
@@ -16497,6 +16863,20 @@ begin
   if (Result <> nil) and (h > 0) and (not BcTyHolds(Hirs[h].ty, 0)) then Result := nil;
 end;
 
+procedure BcDump(h, ind: Integer);
+var
+  i: Integer;
+begin
+  if h <= 0 then Exit;
+  WriteLn(StdErr, Spaces(ind * 2), h, ' k=', Hirs[h].k, ' n=', Hirs[h].n, ' s=', Hirs[h].s, ' ty=', TyToStr(Zonk(Hirs[h].ty)),
+          ' @', Hirs[h].line, ':', Hirs[h].col, '+', Hirs[h].len);
+  if Hirs[h].k = hClosure then Exit;
+  if (Hirs[h].a <> 0) and (Hirs[h].k <> hFnRef) then BcDump(Hirs[h].a, ind + 1);
+  if (Hirs[h].b <> 0) then BcDump(Hirs[h].b, ind + 1);
+  if (Hirs[h].c <> 0) then BcDump(Hirs[h].c, ind + 1);
+  for i := 0 to Length(Hirs[h].l) - 1 do BcDump(Hirs[h].l[i], ind + 1);
+end;
+
 procedure BorrowCheckBody(b: Integer);
 var
   st: TBcState;
@@ -16506,6 +16886,7 @@ begin
   if Defs[Bodies[b].def].crate <> 0 then Exit;
   BcBody := b;
   BcRoot := Bodies[b].root;
+  if GetEnv('RUSTC_DUMPHIR') <> '' then begin WriteLn(StdErr, '== body ', Defs[b].name); BcDump(BcRoot, 0); end;
   nv := Bodies[b].nvars;
   if Length(BcOrd) < NHirs then
   begin
@@ -16517,6 +16898,8 @@ begin
   end;
   SetLength(BcUses, 0);
   SetLength(BcDefs, 0);
+  SetLength(BcAsg, 0);
+  SetLength(BcAsg, nv);
   SetLength(BcUses, nv);
   SetLength(BcDefs, nv);
   SetLength(BcDecl, nv);
@@ -16537,12 +16920,330 @@ begin
   BcQuiet := 0;
   BcAuto := -1;
   BcNLCtx := 0;
+  SetLength(BcVarClos, 0);
+  SetLength(BcVarClos, nv);
+  for i := 0 to nv - 1 do BcVarClos[i] := -1;
   BcNum(BcRoot);
   st := BcEmpty;
   rc := BcExpr(BcRoot, st);
   if not st.dead then BcReturn(rc, BcRoot);
+  LintBodyVars(b);
   for i := 0 to Length(BcTouched) - 1 do BcOrd[BcTouched[i]] := -1;
   for i := 0 to Length(BcLoanTouched) - 1 do BcLoanAt[BcLoanTouched[i]] := -1;
+end;
+{ ============================================================ }
+{ Avertissements : variables inutilisees, `mut` inutile        }
+{ ============================================================ }
+
+Var
+  LintShown: TStrArr;
+  LintAllowAll: Boolean;
+  LintAllowFlags: string;
+  LintInit: Boolean;
+  LintMutated: array of Boolean;
+
+procedure LintSetup;
+var
+  txt: string;
+  p, q: Integer;
+begin
+  if LintInit then Exit;
+  LintInit := True;
+  LintAllowAll := False;
+  LintAllowFlags := '';
+  if (UserFile >= 0) and (Files[UserFile].text <> '') then
+  begin
+    txt := Files[UserFile].text;
+    p := 1;
+    while True do
+    begin
+      q := Pos('#![allow(', Copy(txt, p, Length(txt)));
+      if q = 0 then Break;
+      p := p + q + 8;
+      q := Pos(')', Copy(txt, p, Length(txt)));
+      if q = 0 then Break;
+      LintAllowFlags := LintAllowFlags + ',' + Copy(txt, p, q - 1);
+      p := p + q;
+    end;
+  end;
+end;
+
+{ le lint est-il autorise (crate entier) ? }
+function LintAllowed(const lint: string): Boolean;
+begin
+  LintSetup;
+  Result := LintAllowAll or (Pos('warnings', LintAllowFlags) > 0) or (Pos(lint, LintAllowFlags) > 0);
+  if (lint <> 'dead_code') and (Pos('unused', LintAllowFlags) > 0) then Result := True;
+end;
+
+procedure LintNote(const lint: string);
+var
+  i: Integer;
+begin
+  for i := 0 to Length(LintShown) - 1 do
+    if LintShown[i] = lint then Exit;
+  SAdd(LintShown, lint);
+  Note('`#[warn(' + lint + ')]` (part of `#[warn(unused)]`) on by default');
+end;
+
+procedure LintWarn(const lint, msg: string; const labs: TLabels; withNote: Boolean);
+begin
+  ReportLabels(False, '', msg, labs);
+  if withNote then LintNote(lint);
+  WriteErrLn('');
+end;
+
+{ mut explicite devant le nom : retourne vrai ; mcol = colonne de "mut", ncol = colonne du nom }
+function mut2str(m: Boolean): string;
+begin
+  if m then Result := 'mutable' else Result := 'shared';
+end;
+
+function LintMutSpan(v: Integer; var mcol, ncol: Integer): Boolean;
+var
+  vn: TVarInfo;
+  ln: string;
+  k: Integer;
+begin
+  Result := False;
+  vn := Bodies[BcBody].vars[v];
+  if (vn.node <= 0) or (Nodes[vn.node].line <= 0) then Exit;
+  ln := SourceLine(Nodes[vn.node].fi, Nodes[vn.node].line);
+  mcol := Nodes[vn.node].col;
+  ncol := mcol;
+  if Copy(ln, mcol, 4) = 'mut ' then
+  begin
+    k := mcol + 4;
+    while (k <= Length(ln)) and (ln[k] = ' ') do Inc(k);
+    ncol := k;
+    Result := True;
+  end
+  else if (mcol > 4) and (Copy(ln, mcol - 4, 4) = 'mut ') then
+  begin
+    mcol := mcol - 4;
+    Result := True;
+  end;
+end;
+
+procedure LintMark(h: Integer);
+var
+  cur, v: Integer;
+begin
+  cur := h;
+  while True do
+  begin
+    case Hirs[cur].k of
+      hCoerce, hField, hIndex: cur := Hirs[cur].a;
+      hDeref:
+        if Tys[Shallow(Zonk(Hirs[Hirs[cur].a].ty))].k = tyAdt then cur := Hirs[cur].a
+        else if (Hirs[Hirs[cur].a].k = hField) and (Tys[Shallow(Zonk(Hirs[Hirs[Hirs[cur].a].a].ty))].k = tyAdt) and
+                (Tys[Shallow(Zonk(Hirs[Hirs[Hirs[cur].a].a].ty))].def = LangBox) then cur := Hirs[Hirs[cur].a].a
+        else Exit;
+      hLocal:
+        begin
+          v := Integer(Hirs[cur].n);
+          if (v >= 0) and (v < Length(LintMutated)) then LintMutated[v] := True;
+          Exit;
+        end;
+    else
+      Exit;
+    end;
+  end;
+end;
+
+procedure LintScanMut(h: Integer);
+var
+  i, k, cid, cur, site: Integer;
+begin
+  if h <= 0 then Exit;
+  case Hirs[h].k of
+    hAssign, hAssignOp: LintMark(Hirs[h].a);
+    hAddr: if Hirs[h].n = 1 then LintMark(Hirs[h].a);
+    hCallClosure:
+      begin
+        cur := Hirs[h].a;
+        while Hirs[cur].k = hCoerce do cur := Hirs[cur].a;
+        if Hirs[cur].k = hLocal then
+        begin
+          if Tys[Shallow(Zonk(Hirs[cur].ty))].k = tyClosure then
+          begin
+            site := -1;
+            if BcFirstMutUp(Bodies[Closures[Tys[Shallow(Zonk(Hirs[cur].ty))].def].bodyIdx].root, site) >= 0 then LintMark(cur);
+          end
+          else LintMark(cur);
+        end;
+      end;
+    hClosure:
+      begin
+        cid := Integer(Hirs[h].n);
+        for k := 0 to Length(Hirs[h].l) - 1 do
+          if (Hirs[Hirs[h].l[k]].k = hLocal) and BcCapMut(Bodies[Closures[cid].bodyIdx].root, k) then
+            LintMark(Hirs[h].l[k]);
+        for i := 0 to Length(Hirs[h].l) - 1 do LintScanMut(Hirs[h].l[i]);
+        Exit;
+      end;
+  end;
+  LintScanMut(Hirs[h].a);
+  LintScanMut(Hirs[h].b);
+  LintScanMut(Hirs[h].c);
+  for i := 0 to Length(Hirs[h].l) - 1 do LintScanMut(Hirs[h].l[i]);
+end;
+
+
+{ static mut : references partagees / mutables (static_mut_refs) }
+var
+  LintStaticSeen: Boolean = False;
+
+procedure LintStaticRefs(h: Integer);
+var
+  i, cur, d, opH: Integer;
+  labs: TLabels;
+  mut, expl: Boolean;
+begin
+  if h <= 0 then Exit;
+  if (Hirs[h].k = hAddr) and (Hirs[h].n < 2) then
+  begin
+    cur := Hirs[h].a;
+    while Hirs[cur].k in [hCoerce, hField, hIndex] do cur := Hirs[cur].a;
+    if (Hirs[cur].k = hStatic) and (Hirs[cur].def >= 0) and (Defs[Hirs[cur].def].node > 0) and
+       ((Nodes[Defs[Hirs[cur].def].node].f and fMutStatic) <> 0) and (Hirs[h].line > 0) then
+    begin
+      mut := Hirs[h].n = 1;
+      opH := Hirs[h].a;
+      expl := (Hirs[h].col <> Hirs[opH].col) or (Hirs[h].line <> Hirs[opH].line);
+      labs := nil;
+      if expl then
+        BcLabH(labs, h, True, mut2str(mut) + ' reference to mutable static')
+      else
+        BcLabH(labs, opH, True, mut2str(mut) + ' reference to mutable static');
+      if not BcSeenKey('MS' + IntToStr(h)) then
+      begin
+        ReportLabels(False, '', 'creating a ' + mut2str(mut) + ' reference to mutable static', labs);
+        if mut then
+          Note('mutable references to mutable statics are dangerous; it''s undefined behavior if any other pointer to the static is used while the reference lives')
+        else
+          Note('shared references to mutable statics are dangerous; it''s undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives');
+        Note('for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>');
+        if not LintStaticSeen then
+        begin
+          LintStaticSeen := True;
+          Note('`#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default');
+        end;
+        WriteErrLn('');
+      end;
+    end;
+  end;
+  if Hirs[h].k = hClosure then Exit;
+  LintStaticRefs(Hirs[h].a);
+  LintStaticRefs(Hirs[h].b);
+  LintStaticRefs(Hirs[h].c);
+  for i := 0 to Length(Hirs[h].l) - 1 do LintStaticRefs(Hirs[h].l[i]);
+end;
+
+
+{ unused_must_use : `Result` ignore }
+procedure LintMustUse(h: Integer);
+var
+  i, e, t, w: Integer;
+  labs: TLabels;
+  ln: string;
+begin
+  if h <= 0 then Exit;
+  if Hirs[h].k = hExprStmt then
+  begin
+    e := Hirs[h].a;
+    t := Shallow(Zonk(Hirs[e].ty));
+    if (Tys[t].k = tyAdt) and (Tys[t].def = LangResult) and (Hirs[e].line > 0) and
+       (Hirs[e].k in [hCall, hCallClosure, hMatch, hBlock]) and (not BcSeenKey('MU' + IntToStr(e))) then
+    begin
+      labs := nil;
+      BcLabH(labs, e, True, '');
+      ReportLabels(False, '', 'unused `Result` that must be used', labs);
+      Note('this `Result` may be an `Err` variant, which should be handled');
+      LintNote('unused_must_use');
+      w := Length(IntToStr(Hirs[e].line));
+      ln := ExpandTabs(SourceLine(Hirs[e].fi, Hirs[e].line));
+      WriteErrLn('help: use `let _ = ...` to ignore the resulting value');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(PadL(IntToStr(Hirs[e].line), w) + ' | ' + Copy(ln, 1, Hirs[e].col - 1) + 'let _ = ' + Copy(ln, Hirs[e].col, Length(ln)));
+      WriteErrLn(Spaces(w) + ' | ' + Spaces(Hirs[e].col - 1) + '+++++++');
+      WriteErrLn('');
+    end;
+  end;
+  if Hirs[h].k = hClosure then Exit;
+  LintMustUse(Hirs[h].a);
+  LintMustUse(Hirs[h].b);
+  LintMustUse(Hirs[h].c);
+  for i := 0 to Length(Hirs[h].l) - 1 do LintMustUse(Hirs[h].l[i]);
+end;
+
+procedure LintBodyVars(b: Integer);
+var
+  v, i, mcol, ncol: Integer;
+  vn: TVarInfo;
+  labs: TLabels;
+  nm: string;
+  hasMut: Boolean;
+begin
+  if Defs[Bodies[b].def].crate <> 0 then Exit;
+  LintStaticRefs(Bodies[b].root);
+  if not LintAllowed('unused_must_use') then LintMustUse(Bodies[b].root);
+  if LintAllowed('unused_variables') and LintAllowed('unused_mut') then Exit;
+  SetLength(LintMutated, Bodies[b].nvars);
+  for v := 0 to Bodies[b].nvars - 1 do LintMutated[v] := False;
+  LintScanMut(Bodies[b].root);
+  for v := 0 to Bodies[b].nvars - 1 do
+  begin
+    vn := Bodies[b].vars[v];
+    nm := vn.name;
+    if (vn.node <= 0) or (nm = '') or (nm[1] = '_') or (nm = 'self') then Continue;
+    if Nodes[vn.node].line <= 0 then Continue;
+    if Length(BcUses[v]) = 0 then
+    begin
+      if LintAllowed('unused_variables') then Continue;
+
+      hasMut := LintMutSpan(v, mcol, ncol);
+      if Length(BcAsg[v]) > 0 then
+      begin
+        labs := nil;
+        if hasMut then BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, mcol, ncol + Length(nm) - mcol, True, '')
+        else BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, Nodes[vn.node].col, Length(nm), True, '');
+        ReportLabels(False, '', 'variable `' + nm + '` is assigned to, but never used', labs);
+        Note('consider using `_' + nm + '` instead');
+        WriteErrLn('');
+        for i := 0 to Length(BcAsg[v]) - 1 do
+        begin
+          labs := nil;
+          BcLabH(labs, BcAsg[v][i], True, '');
+          ReportLabels(False, '', 'value assigned to `' + nm + '` is never read', labs);
+          Help('maybe it is overwritten before being read?');
+          LintNote('unused_assignments');
+          WriteErrLn('');
+        end;
+      end
+      else
+      begin
+        labs := nil;
+        BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, Nodes[vn.node].col, Length(nm), True,
+              'help: if this is intentional, prefix it with an underscore: `_' + nm + '`');
+        LintWarn('unused_variables', 'unused variable: `' + nm + '`', labs, True);
+      end;
+      Continue;
+    end;
+    if vn.mut and (not LintMutated[v]) and (not LintAllowed('unused_mut')) and (Length(BcAsg[v]) = 0) and
+       (Copy(nm, 1, 2) <> '__') then
+    begin
+      if LintMutSpan(v, mcol, ncol) then
+      begin
+        labs := nil;
+        BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, mcol, ncol - mcol, False, 'help: remove this `mut`');
+        BcLab(labs, Nodes[vn.node].fi, Nodes[vn.node].line, ncol, Length(nm), True, '');
+        RenderArrowIdx := 0;
+        LintWarn('unused_mut', 'variable does not need to be mutable', labs, True);
+        RenderArrowIdx := -1;
+      end;
+    end;
+  end;
 end;
 
 { ============================================================ }
@@ -16693,7 +17394,7 @@ begin
   begin
     Hirs[i].ty := ZonkReveal(Hirs[i].ty);
     for j := 0 to Length(Hirs[i].targs) - 1 do Hirs[i].targs[j] := ZonkReveal(Hirs[i].targs[j]);
-    if (not reported) and (Hirs[i].k <> hCoerce) and HasVars(Hirs[i].ty) and (Hirs[i].line > 0) then
+    if (not reported) and (ErrCount = 0) and (Hirs[i].k <> hCoerce) and HasVars(Hirs[i].ty) and (Hirs[i].line > 0) then
     begin
       reported := True;
       Report(True, 'E0282', 'type annotations needed', Hirs[i].fi, Hirs[i].line, Hirs[i].col, Hirs[i].len,
@@ -17441,7 +18142,11 @@ begin
     Nodes[i].eline := Nodes[n].eline;
     Nodes[i].ecol := Nodes[n].ecol;
   end;
-  for i := 0 to Length(items) - 1 do IAdd(lst, items[i]);
+  for i := 0 to Length(items) - 1 do
+  begin
+    Nodes[items[i]].at := Nodes[items[i]].at + 'automatically_derived;';
+    IAdd(lst, items[i]);
+  end;
 end;
 
 { ============================================================ }
@@ -33876,6 +34581,528 @@ begin
   TokPos := startTok;
   Result := True;
 end;
+{ ============================================================ }
+{ Avertissements globaux : code mort, imports inutilises        }
+{ ============================================================ }
+
+Var
+  LgConstructed: THashSI;
+  LgFieldRead: THashSI;
+  LgTraitUsed: THashSI;
+  LgReachedDef: THashSI;
+  LgNames: THashSI;
+
+function LgIsDerivedDef(d: Integer): Boolean;
+var
+  p: Integer;
+begin
+  p := Defs[d].parent;
+  Result := (p >= 0) and (Defs[p].kind = dkImpl) and (Defs[p].node > 0) and (Pos('automatically_derived', Nodes[Defs[p].node].at) > 0) and
+            (Defs[p].implTrait >= 0) and ((Defs[Defs[p].implTrait].name = 'Debug') or (Defs[Defs[p].implTrait].name = 'Clone'));
+end;
+
+procedure LgMarkFieldPat(p: Integer);
+var
+  i: Integer;
+begin
+  if p < 0 then Exit;
+  case Pats[p].k of
+    pkBind: if Pats[p].a >= 0 then LgMarkFieldPat(Pats[p].a);
+    pkTuple, pkOr:
+      for i := 0 to Length(Pats[p].l) - 1 do LgMarkFieldPat(Pats[p].l[i]);
+    pkAdt:
+      for i := 0 to Length(Pats[p].l) - 1 do
+        if (Pats[p].l[i] >= 0) and (Pats[Pats[p].l[i]].k <> pkWild) then
+        begin
+          HPut(LgFieldRead, IntToStr(Pats[p].def) + ':' + IntToStr(i), 1);
+          LgMarkFieldPat(Pats[p].l[i]);
+        end;
+    pkDeref: LgMarkFieldPat(Pats[p].a);
+    pkSlice:
+      begin
+        for i := 0 to Length(Pats[p].l) - 1 do LgMarkFieldPat(Pats[p].l[i]);
+        for i := 0 to Length(Pats[p].l2) - 1 do LgMarkFieldPat(Pats[p].l2[i]);
+      end;
+  end;
+end;
+
+procedure LgScanHir(h: Integer; skipRead: Boolean; depth: Integer);
+var
+  i, d, t, tr: Integer;
+begin
+  if (h <= 0) or (depth > 400) then Exit;
+  case Hirs[h].k of
+    hAdt:
+      begin
+        d := Hirs[h].def;
+        if d >= 0 then
+        begin
+          HPut(LgConstructed, IntToStr(d), 1);
+          if Defs[d].kind = dkVariant then HPut(LgConstructed, 'v' + IntToStr(Defs[d].parent), 1);
+        end;
+      end;
+    hFnRef, hConstVal, hStatic:
+      begin
+        d := Hirs[h].def;
+        if d >= 0 then
+        begin
+          HPut(LgReachedDef, IntToStr(d), 1);
+          tr := Defs[d].parent;
+          if tr >= 0 then
+          begin
+            if Defs[tr].kind = dkTrait then HPut(LgTraitUsed, IntToStr(tr), 1)
+            else if (Defs[tr].kind = dkImpl) and (Defs[tr].implTrait >= 0) then HPut(LgTraitUsed, IntToStr(Defs[tr].implTrait), 1);
+          end;
+        end;
+      end;
+    hField:
+      if not skipRead then
+      begin
+        t := Shallow(Zonk(Hirs[Hirs[h].a].ty));
+        if Tys[t].k = tyAdt then HPut(LgFieldRead, IntToStr(Tys[t].def) + ':' + IntToStr(Hirs[h].n), 1);
+      end;
+    hLet: LgMarkFieldPat(Integer(Hirs[h].n));
+    hLetCond: LgMarkFieldPat(Integer(Hirs[h].n));
+    hArm: LgMarkFieldPat(Integer(Hirs[h].n));
+    hClosure:
+      begin
+        LgScanHir(Bodies[Closures[Integer(Hirs[h].n)].bodyIdx].root, False, depth + 1);
+      end;
+  end;
+  if Hirs[h].k = hAssign then
+  begin
+    LgScanHir(Hirs[h].b, False, depth + 1);
+    if Hirs[Hirs[h].a].k = hField then LgScanHir(Hirs[Hirs[h].a].a, False, depth + 1)
+    else LgScanHir(Hirs[h].a, False, depth + 1);
+    Exit;
+  end;
+  LgScanHir(Hirs[h].a, False, depth + 1);
+  LgScanHir(Hirs[h].b, False, depth + 1);
+  LgScanHir(Hirs[h].c, False, depth + 1);
+  for i := 0 to Length(Hirs[h].l) - 1 do LgScanHir(Hirs[h].l[i], False, depth + 1);
+end;
+
+{ ---- position d'un identifiant apres un mot-cle ---- }
+
+function LgNamePos(node: Integer; const kw, name: string; var line, col: Integer): Boolean;
+var
+  ln: string;
+  l, p, k: Integer;
+begin
+  Result := False;
+  for l := Nodes[node].line to Nodes[node].line + 6 do
+  begin
+    ln := SourceLine(Nodes[node].fi, l);
+    if l = Nodes[node].line then k := Nodes[node].col else k := 1;
+    p := Pos(kw + ' ' + name, Copy(ln, k, Length(ln)));
+    if p > 0 then
+    begin
+      line := l;
+      col := k + p - 1 + Length(kw) + 1;
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+procedure LgWarnName(node: Integer; const kw, name, msg, lint: string);
+var
+  labs: TLabels;
+  line, col: Integer;
+begin
+  if not LgNamePos(node, kw, name, line, col) then
+  begin
+    line := Nodes[node].line;
+    col := Nodes[node].col;
+  end;
+  labs := nil;
+  BcLab(labs, Nodes[node].fi, line, col, Length(name), True, '');
+  LintWarn(lint, msg, labs, True);
+end;
+
+function LgAllowedAttr(d: Integer): Boolean;
+begin
+  Result := (Pos('allow(dead_code', Nodes[Defs[d].node].at) > 0) or (Pos('allow(unused', Nodes[Defs[d].node].at) > 0);
+end;
+
+function LgJoin(const names: TStrArr): string;
+var
+  i, n: Integer;
+begin
+  Result := '';
+  n := Length(names);
+  for i := 0 to n - 1 do
+  begin
+    if i > 0 then
+    begin
+      if n = 2 then Result := Result + ' and '
+      else if i = n - 1 then Result := Result + ', and '
+      else Result := Result + ', ';
+    end;
+    Result := Result + '`' + names[i] + '`';
+  end;
+end;
+
+function IndexOfStr(const a: TStrArr; const x: string): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := 0 to Length(a) - 1 do
+    if a[i] = x then begin Result := i; Exit; end;
+end;
+
+function LgDeriveNote(d: Integer): string;
+var
+  dl, tr: string;
+  cnt, i: Integer;
+  parts: TStrArr;
+begin
+  Result := '';
+  dl := DeriveList(Nodes[Defs[d].node].at);
+  if dl = '' then Exit;
+  parts := nil;
+  tr := '';
+  for i := 1 to Length(dl) do
+    if dl[i] = ',' then begin if tr <> '' then SAdd(parts, tr); tr := ''; end
+    else tr := tr + dl[i];
+  if tr <> '' then SAdd(parts, tr);
+  { seuls Debug et Clone sont ignores par l'analyse (ordre alphabetique) }
+  tr := '';
+  cnt := 0;
+  if IndexOfStr(parts, 'Clone') >= 0 then begin Inc(cnt); tr := '`Clone`'; end;
+  if IndexOfStr(parts, 'Debug') >= 0 then
+  begin
+    Inc(cnt);
+    if tr <> '' then tr := tr + ' and ';
+    tr := tr + '`Debug`';
+  end;
+  if cnt = 0 then Exit;
+  if cnt = 1 then
+    Result := '`' + Defs[d].name + '` has a derived impl for the trait ' + tr + ', but this is intentionally ignored during dead code analysis'
+  else
+    Result := '`' + Defs[d].name + '` has derived impls for the traits ' + tr + ', but these are intentionally ignored during dead code analysis';
+end;
+
+{ ---- noms references dans le crate utilisateur ---- }
+
+procedure LgCollectNames;
+var
+  n, i, seg: Integer;
+begin
+  HInit(LgNames);
+  for n := 1 to NNodes - 1 do
+    if (Nodes[n].fi = UserFile) and (Nodes[n].k = tPath) then
+      for i := 0 to Length(Nodes[n].l) - 1 do
+      begin
+        seg := Nodes[n].l[i];
+        HPut(LgNames, Nodes[seg].s, HFind(LgNames, Nodes[seg].s) + 2);
+      end;
+end;
+
+function LgNameCount(const nm: string): Integer;
+begin
+  Result := HFind(LgNames, nm);
+  if Result < 0 then Result := 0 else Result := Result;
+end;
+
+{ champs jamais lus d'une structure (ou d'une variante) ; own = definition du champ-proprietaire }
+procedure LgFieldWarn(own, typeDef: Integer; fieldsNode: Integer; const ownerKw: string; ownerNode: Integer;
+                      const ownerName, kw: string);
+var
+  j, fld, line, col, nUnread, ty: Integer;
+  names: TStrArr;
+  labs: TLabels;
+  isTuple: Boolean;
+  derNote, ln, sug, nm: string;
+  w: Integer;
+  fl: Integer;
+begin
+  names := nil;
+  labs := nil;
+  nUnread := 0;
+  isTuple := False;
+  for j := 0 to Length(Nodes[fieldsNode].l2) - 1 do
+  begin
+    fld := Nodes[fieldsNode].l2[j];
+    nm := Nodes[fld].s;
+    if (nm <> '') and (nm[1] = '_') then Continue;
+    if HFind(LgFieldRead, IntToStr(own) + ':' + IntToStr(j)) >= 0 then Continue;
+    if nm = '' then
+    begin
+      nm := IntToStr(j);
+      isTuple := True;
+      ty := Nodes[fld].a;
+      if (ty <= 0) or (Nodes[ty].line <= 0) then ty := fld;
+      BcLab(labs, Nodes[ty].fi, Nodes[ty].line, Nodes[ty].col, NodeLen(ty), True, '');
+      fl := ty;
+    end
+    else
+    begin
+      BcLab(labs, Nodes[fld].fi, Nodes[fld].line, Nodes[fld].col, Length(nm), True, '');
+      fl := fld;
+    end;
+    SAdd(names, nm);
+    Inc(nUnread);
+  end;
+  if nUnread = 0 then Exit;
+  if LgNamePos(ownerNode, ownerKw, ownerName, line, col) then
+    BcLab(labs, Nodes[ownerNode].fi, line, col, Length(ownerName), False, 'field' + Copy('s', 1, Ord(nUnread > 1)) + ' in this ' + kw)
+  else if ownerKw = '' then
+    BcLab(labs, Nodes[ownerNode].fi, Nodes[ownerNode].line, Nodes[ownerNode].col, Length(ownerName), False,
+          'field' + Copy('s', 1, Ord(nUnread > 1)) + ' in this ' + kw);
+  if nUnread = 1 then
+    ReportLabels(False, '', 'field `' + names[0] + '` is never read', labs)
+  else
+    ReportLabels(False, '', 'fields ' + LgJoin(names) + ' are never read', labs);
+  derNote := LgDeriveNote(typeDef);
+  if derNote <> '' then Note(derNote);
+  LintNote('dead_code');
+  if isTuple and (nUnread = 1) then
+  begin
+    j := StrToIntDef(names[0], 0);
+    fld := Nodes[fieldsNode].l2[j];
+    ty := Nodes[fld].a;
+    if (ty > 0) and (Nodes[ty].line > 0) then
+    begin
+      ln := SourceLine(Nodes[ty].fi, Nodes[ty].line);
+      w := Length(IntToStr(Nodes[ty].line));
+      sug := Copy(ln, 1, Nodes[ty].col - 1) + '()' + Copy(ln, Nodes[ty].col + NodeLen(ty), Length(ln));
+      WriteErrLn('help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field');
+      WriteErrLn(Spaces(w) + ' |');
+      WriteErrLn(PadL(IntToStr(Nodes[ty].line), w) + ' - ' + ExpandTabs(ln));
+      WriteErrLn(PadL(IntToStr(Nodes[ty].line), w) + ' + ' + ExpandTabs(sug));
+      WriteErrLn(Spaces(w) + ' |');
+    end;
+  end;
+  WriteErrLn('');
+end;
+
+procedure LintImports;
+var
+  i, d, j, line, col: Integer;
+  labs: TLabels;
+  ln, p, nm: string;
+  segs: TStrArr;
+begin
+  if LintAllowed('unused_imports') then Exit;
+  for i := 0 to NImports - 1 do
+  begin
+    if (Defs[Imports[i].mod_].crate <> 0) or Imports[i].used or Imports[i].pub or Imports[i].glob or (not Imports[i].done) then Continue;
+    if Imports[i].alias = '_' then Continue;
+    if Nodes[Imports[i].node].fi <> UserFile then Continue;
+    segs := SplitPath(Imports[i].path);
+    if (Length(segs) > 0) and ((segs[Length(segs) - 1] = 'self')) then Continue;
+    d := ScopeLookup(Imports[i].mod_, 'T', Imports[i].alias, 0);
+    if d < 0 then d := ScopeLookup(Imports[i].mod_, 'V', Imports[i].alias, 0);
+    if d < 0 then Continue;
+    if (Defs[d].kind = dkTrait) and (Defs[d].crate = 1) and (HFind(TraitImpUsed, IntToStr(d)) >= 0) then Continue;
+    if (Defs[d].kind = dkTrait) and (Defs[d].crate <> 1) then Continue;
+    { remise a zero de l'indicateur d'usage causee par notre propre recherche }
+    Imports[i].used := False;
+    ln := SourceLine(Nodes[Imports[i].node].fi, Nodes[Imports[i].node].line);
+    line := Nodes[Imports[i].node].line;
+    p := Imports[i].path;
+    nm := Imports[i].alias;
+    col := Pos('use ' + p, ln);
+    labs := nil;
+    if col > 0 then
+    begin
+      col := col + 4;
+      BcLab(labs, Nodes[Imports[i].node].fi, line, col, Length(p), True, '');
+    end
+    else
+    begin
+      j := Nodes[Imports[i].node].col - 1;
+      col := 0;
+      while j >= 1 do
+      begin
+        if Copy(ln, j, Length(nm)) = nm then begin col := j; Break; end;
+        Dec(j);
+      end;
+      if col = 0 then Continue;
+      BcLab(labs, Nodes[Imports[i].node].fi, line, col, Length(nm), True, '');
+      p := nm;
+    end;
+    LintWarn('unused_imports', 'unused import: `' + p + '`', labs, True);
+  end;
+end;
+
+procedure LintGlobal;
+var
+  i, d, j, k, b, vd, fnd, fld, nUnread: Integer;
+  key: string;
+  labs: TLabels;
+  names: TStrArr;
+  line, col: Integer;
+  any: Boolean;
+  derNote: string;
+  reachedFn: Boolean;
+  kindWord, kw: string;
+  firstLine: Integer;
+  implNode: Integer;
+  par: Integer;
+begin
+  LintSetup;
+  HInit(LgConstructed);
+  HInit(LgFieldRead);
+  HInit(LgTraitUsed);
+  HInit(LgReachedDef);
+  LgCollectNames;
+  { parcours des corps atteints }
+  for i := 0 to NInsts - 1 do
+  begin
+    HPut(LgReachedDef, IntToStr(Insts[i].def), 1);
+    if Defs[Insts[i].def].crate <> 0 then Continue;
+    if Insts[i].kind <> ikFn then Continue;
+    if LgIsDerivedDef(Insts[i].def) then Continue;
+    b := HFind(BodyMap, Insts[i].key);
+    if b < 0 then Continue;
+    LgScanHir(Bodies[b].root, False, 0);
+  end;
+  LintImports;
+  if LintAllowed('dead_code') then Exit;
+  for d := 1 to NDefs - 1 do
+  begin
+    if (Defs[d].crate <> 0) or (Defs[d].node <= 0) or (Nodes[Defs[d].node].fi <> UserFile) then Continue;
+    case Defs[d].kind of
+      dkFn:
+        begin
+          if (Defs[d].name = 'main') or (not Defs[d].hasBody) or Defs[d].isExtern then Continue;
+          if Nodes[Defs[d].node].k <> nFn then Continue;
+          if LgAllowedAttr(d) then Continue;
+          par := Defs[d].parent;
+          if par >= 0 then
+          begin
+            if Defs[par].kind = dkTrait then Continue;
+            if (Defs[par].kind = dkImpl) and (Defs[par].implTrait >= 0) then Continue;
+            if Defs[par].kind = dkImpl then Continue;
+          end;
+          if HFind(LgReachedDef, IntToStr(d)) >= 0 then Continue;
+          if Nodes[Defs[d].node].line <= 0 then Continue;
+          LgWarnName(Defs[d].node, 'fn', Defs[d].name, 'function `' + Defs[d].name + '` is never used', 'dead_code');
+        end;
+      dkConst, dkStatic:
+        begin
+          if (Defs[d].name = '_') or LgAllowedAttr(d) then Continue;
+          if (Defs[d].parent >= 0) and (Defs[Defs[d].parent].kind in [dkImpl, dkTrait]) then Continue;
+          if LgNameCount(Defs[d].name) > 0 then Continue;
+          if Defs[d].kind = dkConst then
+            LgWarnName(Defs[d].node, 'const', Defs[d].name, 'constant `' + Defs[d].name + '` is never used', 'dead_code')
+          else
+            LgWarnName(Defs[d].node, 'static', Defs[d].name, 'static `' + Defs[d].name + '` is never used', 'dead_code');
+        end;
+      dkTrait:
+        begin
+          if LgAllowedAttr(d) then Continue;
+          if HFind(LgTraitUsed, IntToStr(d)) >= 0 then Continue;
+          if LgNameCount(Defs[d].name) > 0 then Continue;
+          LgWarnName(Defs[d].node, 'trait', Defs[d].name, 'trait `' + Defs[d].name + '` is never used', 'dead_code');
+        end;
+      dkTypeAlias:
+        begin
+          if (Defs[d].parent >= 0) and (Defs[Defs[d].parent].kind in [dkImpl, dkTrait]) then Continue;
+          if LgNameCount(Defs[d].name) > 0 then Continue;
+          LgWarnName(Defs[d].node, 'type', Defs[d].name, 'type alias `' + Defs[d].name + '` is never used', 'dead_code');
+        end;
+      dkStruct:
+        begin
+          if LgAllowedAttr(d) then Continue;
+          if HFind(LgConstructed, IntToStr(d)) < 0 then
+          begin
+            if Nodes[Defs[d].node].k <> nStruct then Continue;
+            if (Pos('PhantomData', Nodes[Defs[d].node].at) > 0) then Continue;
+            LgWarnName(Defs[d].node, 'struct', Defs[d].name, 'struct `' + Defs[d].name + '` is never constructed', 'dead_code');
+            Continue;
+          end;
+          { champs jamais lus }
+          LgFieldWarn(d, d, Defs[d].node, 'struct', Defs[d].node, Defs[d].name, 'struct');
+        end;
+      dkImpl:
+        begin
+          if (Defs[d].implTrait >= 0) or (Defs[d].node <= 0) or (Nodes[Defs[d].node].fi <> UserFile) then Continue;
+          if LgAllowedAttr(d) then Continue;
+    for k := 0 to 1 do
+  begin
+    names := nil;
+    labs := nil;
+    for j := 0 to Length(Defs[d].items) - 1 do
+    begin
+      fnd := Defs[d].items[j];
+      if (Defs[fnd].kind <> dkFn) or (not Defs[fnd].hasBody) or LgAllowedAttr(fnd) then Continue;
+      if (Ord(Defs[fnd].selfKind > 0) <> 1 - k) then Continue;
+      if HFind(LgReachedDef, IntToStr(fnd)) >= 0 then Continue;
+      if not LgNamePos(Defs[fnd].node, 'fn', Defs[fnd].name, line, col) then Continue;
+      SAdd(names, Defs[fnd].name);
+      BcLab(labs, Nodes[Defs[fnd].node].fi, line, col, Length(Defs[fnd].name), True, '');
+    end;
+    if Length(names) = 0 then Continue;
+    if k = 0 then kindWord := 'method' else kindWord := 'associated function';
+    implNode := Defs[d].node;
+    BcLab(labs, Nodes[implNode].fi, Nodes[implNode].line, Nodes[implNode].col, ImplHeaderLen(implNode), False,
+          kindWord + Copy('s', 1, Ord(Length(names) > 1)) + ' in this implementation');
+    if Length(names) = 1 then
+      ReportLabels(False, '', kindWord + ' `' + names[0] + '` is never used', labs)
+    else
+      ReportLabels(False, '', kindWord + 's ' + LgJoin(names) + ' are never used', labs);
+    LintNote('dead_code');
+    WriteErrLn('');
+  end;
+        end;
+      dkEnum:
+        begin
+          if LgAllowedAttr(d) then Continue;
+          if HFind(LgConstructed, 'v' + IntToStr(d)) < 0 then
+          begin
+            if LgNameCount(Defs[d].name) = 0 then
+            begin
+              LgWarnName(Defs[d].node, 'enum', Defs[d].name, 'enum `' + Defs[d].name + '` is never used', 'dead_code');
+              Continue;
+            end;
+          end;
+          names := nil;
+          labs := nil;
+          for j := 0 to Length(Defs[d].variants) - 1 do
+          begin
+            vd := Defs[d].variants[j];
+            if HFind(LgConstructed, IntToStr(vd)) >= 0 then Continue;
+            SAdd(names, Defs[vd].name);
+            BcLab(labs, Nodes[Defs[vd].node].fi, Nodes[Defs[vd].node].line, Nodes[Defs[vd].node].col, Length(Defs[vd].name), True, '');
+          end;
+          for j := 0 to Length(Defs[d].variants) - 1 do
+          begin
+            vd := Defs[d].variants[j];
+            if HFind(LgConstructed, IntToStr(vd)) >= 0 then
+              LgFieldWarn(vd, d, Defs[vd].node, '', Defs[vd].node, Defs[vd].name, 'variant');
+          end;
+          if Length(names) > 0 then
+          begin
+            if LgNamePos(Defs[d].node, 'enum', Defs[d].name, line, col) then
+              BcLab(labs, Nodes[Defs[d].node].fi, line, col, Length(Defs[d].name), False,
+                    'variant' + Copy('s', 1, Ord(Length(names) > 1)) + ' in this enum');
+            if Length(names) = 1 then
+              ReportLabels(False, '', 'variant `' + names[0] + '` is never constructed', labs)
+            else
+              ReportLabels(False, '', 'variants ' + LgJoin(names) + ' are never constructed', labs);
+            derNote := LgDeriveNote(d);
+            if derNote <> '' then Note(derNote);
+            LintNote('dead_code');
+            WriteErrLn('');
+          end;
+        end;
+    end;
+  end;
+end;
+
+procedure WarnSummary;
+begin
+  if (ErrCount = 0) and (WarnCount > 0) then
+  begin
+    if WarnCount = 1 then WriteErrLn('warning: 1 warning emitted')
+    else WriteErrLn('warning: ' + IntToStr(WarnCount) + ' warnings emitted');
+    WriteErrLn('');
+  end;
+end;
 
 { ============================================================ }
 { PROGRAMME PRINCIPAL : options, pipeline, chaine d'outils      }
@@ -34281,7 +35508,7 @@ begin
   OvfChecks := (Opt.overflow = 1) or ((Opt.overflow = -1) and (Opt.optLevel = 0));
   InitTypes;
   HInit(ScopeMap); HInit(MethodTraits); HInit(HeadMap); HInit(BodyMap); HInit(CopyCache); HInit(LayMap);
-  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache); HInit(MvSeen); HInit(BcSeen);
+  HInit(InstMap); HInit(SymNames); HInit(VtMap); HInit(DropCache); HInit(MvSeen); HInit(BcSeen); HInit(ImpOwn); HInit(TraitImpUsed);
   NDefs := 0;
   NewDef(0, '<none>', 0, -1);
   LoadStd;
@@ -34290,6 +35517,7 @@ begin
   if not ReadFileToString(Opt.input, txt) then
     FatalMsg('couldn''t read ' + Opt.input + ': No such file or directory (os error 2)');
   fi := AddSourceFile(Opt.input, txt);
+  UserFile := fi;
   SrcPathForLoc := Opt.input;
   CurCrate := 0;
   CrateNameStr := Opt.crateName;
@@ -34354,6 +35582,7 @@ begin
     Inc(i);
   end;
   FinishDiag;
+  if Opt.crateType = 'bin' then LintGlobal;
   if Opt.unpretty = 'mir' then
   begin
     BufInit(b);
@@ -34489,5 +35718,6 @@ begin
   if Opt.crateName = '' then Opt.crateName := SanitizeName(FileStem(Opt.input));
   CompileMain;
   FinishDiag;
+  WarnSummary;
   Halt(0);
 end.
