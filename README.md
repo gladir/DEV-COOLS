@@ -685,6 +685,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le transpilateur Java vers C#.</td>
 		</tr>
 		<tr>
+			<td><b>JAVAC.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Java complet qui produit des fichiers .class (bytecode de la machine virtuelle Java) a partir de fichiers source .java.</td>
+		</tr>
+		<tr>
 			<td><b>JAVAC86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Java (Java-Lite) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
@@ -707,6 +711,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>JSCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur JavaScript vers un executable Windows 32 bits (80386, objet COFF, editeur de liens PE32 interne, option -test).</td>
+		</tr>
+		<tr>
+			<td><b>JVM.PAS</b></td>
+			<td>Cette commande permet de lancer la machine virtuelle Java (clone de JVM) qui execute des fichiers .class (bytecode produit par JAVAC.PAS ou javac), avec une bibliotheque Java embarquee et un AWT/Swing minimal affiche en mode graphique.</td>
 		</tr>
 		<tr>
 			<td><b>KOTLIN86.PAS</b></td>
