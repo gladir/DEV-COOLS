@@ -194,6 +194,7 @@ public final class WM {
         if (modal != null) top = modal;
         int vk = 0;
         char kc = KeyEvent.CHAR_UNDEFINED;
+        boolean ctrl = false;
         if (code >= 256) {
             switch (code - 256) {
                 case 72: vk = KeyEvent.VK_UP; break; case 80: vk = KeyEvent.VK_DOWN; break; case 75: vk = KeyEvent.VK_LEFT; break; case 77: vk = KeyEvent.VK_RIGHT; break;
@@ -213,13 +214,16 @@ public final class WM {
             else if (ch >= '0' && ch <= '9') vk = ch;
             else if (ch == ',') vk = KeyEvent.VK_COMMA; else if (ch == '.') vk = KeyEvent.VK_PERIOD; else if (ch == '-') vk = KeyEvent.VK_MINUS; else if (ch == '/') vk = KeyEvent.VK_SLASH;
             else if (ch == '=') vk = KeyEvent.VK_EQUALS; else if (ch == ';') vk = KeyEvent.VK_SEMICOLON;
-            else if (ch < 32) { vk = ch + 64; kc = KeyEvent.CHAR_UNDEFINED; }
+            else if (ch < 32) { vk = ch + 64; kc = KeyEvent.CHAR_UNDEFINED; ctrl = true; }
         }
         Component target = focusOwner;
         if (target == null || target.getWindow() != top) target = top;
         long now = System.currentTimeMillis();
         int mods = (ch >= 'A' && ch <= 'Z') ? InputEvent.SHIFT_DOWN_MASK : 0;
-        if (code == 9 && target != top && !(target instanceof javax.swing.text.JTextComponent && ((javax.swing.text.JTextComponent) target).isMultiLine())) { nextFocus(target, 1); return; }
+        if (ctrl) mods |= InputEvent.CTRL_DOWN_MASK;
+        boolean tabOwned = false;
+        for (Component tc = target; tc != null; tc = tc.parent) if (tc.consumesTab()) { tabOwned = true; break; }
+        if (code == 9 && target != top && !tabOwned && !(target instanceof javax.swing.text.JTextComponent && ((javax.swing.text.JTextComponent) target).isMultiLine())) { nextFocus(target, 1); return; }
         KeyEvent pe = new KeyEvent(target, KeyEvent.KEY_PRESSED, now, mods, vk, kc);
         target.dispatchEvent(pe);
         if (!pe.isConsumed() && kc != KeyEvent.CHAR_UNDEFINED && (kc >= 32 || kc == '\n' || kc == '\b' || kc == '\t')) {
@@ -253,7 +257,7 @@ public final class WM {
         long now = System.currentTimeMillis();
         for (Object o : new ArrayList<>(timers)) ((javax.swing.Timer) o).tick(now);
         while (!queue.isEmpty()) { Runnable r = queue.remove(0); r.run(); }
-        if (dirty) { dirty = false; paintAll(); }
+        if (dirty) { dirty = false; paintAll(); dirty = false; }
         return windows.isEmpty() && queue.isEmpty() ? 0 : 1;
     }
     static void runModal(Window w) {

@@ -15,13 +15,41 @@ sans fichier d'inclusion. Elle execute les `.class` produits par `JAVAC.PAS` (ou
 - `TOOLS/` : scripts qui regenerent la section DONNEES (`split.py` decoupe les sources,
   `gen.py` encode les `.class`, `mk.sh` enchaine le tout).
 
+## Fonctionnalites
+
+- Reflexion complete (`Class`, `Method`, `Field`, `Constructor`, `Parameter`, `RecordComponent`,
+  `Modifier`, `Array`, types generiques via l'attribut `Signature`), annotations a l'execution
+  et `java.lang.reflect.Proxy`.
+- Serialisation d'objets au format du JDK (`ObjectOutputStream`/`ObjectInputStream`,
+  `Serializable`, `Externalizable`, `serialVersionUID`, lambdas serialisables).
+- Lecture des archives `.jar`/`.zip` (inflate en Pascal, `-cp x.jar`, `-cp lib/*`,
+  `-jar app.jar`), `java.util.zip`/`java.util.jar`, `ClassLoader`/`URLClassLoader`.
+- Swing : `JList` (modeles `ListModel`/`ListSelectionModel`, rendus de cellules),
+  `JScrollPane`/`JViewport`/`JScrollBar` (en-tetes, defilement, `Scrollable`), `JTable`
+  (`TableModel`, `DefaultTableModel`, `TableColumnModel`, `JTableHeader` avec
+  redimensionnement et deplacement de colonnes, rendus et editeurs de cellules, tri et
+  filtrage par `TableRowSorter`/`RowFilter`), `JTabbedPane` (4 positions, plusieurs rangees),
+  `JSplitPane` (divise glissante, `resizeWeight`, `oneTouchExpandable`) et `GridBagLayout`
+  (algorithme du JDK, resultats identiques). `java.beans.PropertyChangeSupport`
+  est present et les proprietes des composants notifient leurs ecouteurs.
+
+## Tests
+
+`TESTS/` contient des programmes dont la sortie est comparee a celle d'un vrai JDK 21
+(`Refl*`, `Serial*`, `Io1`, `Zip1`, `Loader1`, `Table1` : modeles, selection, tri, filtres et
+edition de JTable, `GridBag1` : positions calculees par GridBagLayout) et deux demonstrations
+graphiques (`SwingDemo1`, `SwingDemo2`).
+
 ## Limites
 
 - Free Pascal uniquement (Int64, chaines longues, tableaux dynamiques) ; Turbo Pascal 7 ne
   peut pas compiler le moteur.
-- Pas de reflexion complete (Method/Field/Constructor), d'annotations a l'execution, de
-  serialisation d'objets, ni de lecture des `.jar`.
 - Interpreteur seul : environ 15 a 20 fois plus lent qu'une JVM a compilation a la volee.
-- Police graphique 8x8 par defaut seulement ; AWT/Swing est une reimplementation minimale
-  (pas de JTable, GridBagLayout, JTabbedPane, JSplitPane).
+- Police graphique 8x8 par defaut seulement ; AWT/Swing est une reimplementation compacte
+  avec un seul aspect visuel (inspire de Metal/Ocean).
+- La souris ne transmet pas l'etat des touches Maj/Ctrl : les selections multiples se font
+  par glisser, au clavier (fleches, Ctrl+A) ou par programme.
+- Pas de `JTree`, de composants de texte riches (`JEditorPane`, `JTextPane`) ni d'alignement
+  sur la ligne de base dans `GridBagLayout` ; `JTabbedPane.SCROLL_TAB_LAYOUT` se comporte
+  comme `WRAP_TAB_LAYOUT`.
 - Les unites PtcGraph/PtcCrt demandent un affichage meme pour les programmes console.

@@ -92,7 +92,7 @@ public abstract class Component implements java.awt.image.ImageObserver, java.io
     public void setIgnoreRepaint(boolean b) { }
     public java.awt.image.BufferedImage createImage(int w, int h) { return new java.awt.image.BufferedImage(w, h, 1); }
     public Window getWindow() { Component c = this; while (c != null && !(c instanceof Window)) c = c.parent; return (Window) c; }
-    public Point getLocationOnScreen() { int px = 0, py = 0; Component c = this; while (c != null) { px += c.x; py += c.y; if (c instanceof Window w) { Insets in = w.getInsets(); px += in.left; py += in.top; } c = c.parent; } return new Point(px, py); }
+    public Point getLocationOnScreen() { int px = 0, py = 0; Component c = this; while (c != null) { px += c.x; py += c.y; c = c.parent; } return new Point(px, py); }
     public Point getLocationInWindow() { return getLocationOnScreen(); }
     public boolean contains(int px, int py) { return px >= 0 && py >= 0 && px < width && py < height; }
     public boolean contains(Point p) { return contains(p.x, p.y); }
@@ -127,6 +127,7 @@ public abstract class Component implements java.awt.image.ImageObserver, java.io
     public boolean wantsMouse() { return mouseListeners != null || motionListeners != null || wheelListeners != null; }
     public boolean wantsKeys() { return keyListeners != null; }
     public boolean focusTraversable() { return false; }
+    public boolean consumesTab() { return false; }
     protected void processMouseEvent(MouseEvent e) {
         if (mouseListeners != null) {
             for (MouseListener l : new ArrayList<>(mouseListeners)) {
