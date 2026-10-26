@@ -650,7 +650,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>GENAM.PAS</b></td>
-			<td>Cette commande permet de lancer un clone de l'assembleur Devpac GenAm (HiSoft) pour Commodore Amiga. Assembleur Motorola 68000/68010/68020 produisant des executables ou des objets linkables au format Hunk (genam -L source.s), avec les directives OPT A, C, D, L, M, O, O1, O2, P, S, T, W et X.</td>
+			<td>Cette commande permet de lancer un clone de l'assembleur Devpac GenAm (HiSoft) pour Commodore Amiga. Assembleur Motorola 68000 a 68060 avec coprocesseurs flottants 68881/68882 et MMU (68851, 68030, 68040), produisant des executables ou des objets linkables au format Hunk (genam -L source.s ; aide avec genam /?), avec les directives OPT A, C, D, L, M, O, O1, O2, P, S, T, W et X.</td>
 		</tr>
 		<tr>
 			<td><b>GEODUMP.PAS</b></td>

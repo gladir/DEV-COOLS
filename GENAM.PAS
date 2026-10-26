@@ -3,7 +3,9 @@
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Free Pascal 3.2)
   @description: Clone de Devpac GenAm (HiSoft) pour Commodore Amiga.
-                Assembleur Motorola 68000/68010/68020 produisant des fichiers
+                Assembleur Motorola 68000 a 68060, coprocesseurs flottants
+                68881/68882 et MMU (68851, 68030, 68040),
+                  produisant des fichiers
                 au format AmigaOS Hunk : executable (par defaut) ou objet
                 linkable (option -L ou OPT L+).
                 Syntaxe : genam [options] source.s
@@ -17,7 +19,7 @@
 {  2. Lexeur    : decoupage de ligne (etiquette, mnemonique, operandes)        }
 {  3. Expressions : evaluation avec relocation (section) et externes (XREF)    }
 {  4. Operandes : analyse des 14 modes 68000 + modes complets du 68020         }
-{  5. Encodage  : instructions 68000/68010/68020, directives Devpac            }
+{  5. Encodage  : instructions 68000-68040, FPU 68881/2, MMU, directives       }
 {  6. Passes    : assemblage multi-passes jusqu'a stabilisation des tailles    }
 {                 (branches .S/.W, optimisations O/O1/O2/A)                    }
 {  7. Sortie    : HUNK_HEADER (executable) ou HUNK_UNIT/HUNK_EXT (objet),      }
@@ -98,6 +100,9 @@ Const
  CPU_68000 = 0;
  CPU_68010 = 1;
  CPU_68020 = 2;
+ CPU_68030 = 3;
+ CPU_68040 = 4;
+ CPU_68060 = 5;
 
  { Genres d'operandes }
  OK_NONE = 0;
@@ -120,6 +125,11 @@ Const
  OK_LIST = 17;
  OK_CTRL = 18;
  OK_FULL = 19;  { 68020 : format d'extension complet (An/PC de base) }
+ OK_FPREG = 20; { registre FPn }
+ OK_FPLIST = 21; { liste de registres FP (FMOVEM) }
+ OK_FPCR = 22;  { registres de controle FPCR/FPSR/FPIAR (masque) }
+ OK_MMUREG = 23; { registre MMU (PMOVE) }
+ OK_CACHE = 24; { specificateur de cache (CINV/CPUSH) }
 
  { Masques de modes autorises }
  M_DN   = $0001;
@@ -256,6 +266,12 @@ Type
   hasPair:Boolean;
   pair:Longint;
   ctrl:Longint;
+  { coprocesseur flottant }
+  hasFloat:Boolean;
+  fval:Extended;
+  ftext:String[48];
+  hasK,kIsReg:Boolean;
+  kVal:Longint;
  End;
 
 Var
@@ -264,6 +280,8 @@ Var
  { Options }
  opt,optDef:TOpts;
  cpu:Integer;
+ fpuFlag,mmuFlag:Boolean;
+ gSpecial:Integer;   { 1 : noms de registres MMU, 2 : noms de caches }
  cmdOutName,cmdListName,srcName:String;
  cmdList,cmdQuiet:Boolean;
  incPath:Array[1..MAX_INCP] of String;
@@ -2285,6 +2303,7 @@ Var
 Begin
  Inc(LPOS);
  SkipSp;
+ If PeekCh='#' Then Inc(LPOS);
  op.hasBF:=True;
  If TryReg(r)Then Begin
   If r>7 Then ExprError(Tr('Registre de donnees attendu',
@@ -2296,6 +2315,15 @@ Begin
   op.bfOff:=v;
  End;
  SkipSp;
+ If PeekCh='}' Then Begin
+  { facteur K du format decimal compacte (k ou Dn entre accolades) }
+  Inc(LPOS);
+  op.hasBF:=False;
+  op.hasK:=True;
+  op.kIsReg:=op.bfOffReg;
+  op.kVal:=op.bfOff;
+  Exit;
+ End;
  If PeekCh=':' Then Inc(LPOS)
    Else ExprError(Tr('":" attendu dans le champ de bits',
    '":" expected in bit field'));
@@ -2311,6 +2339,175 @@ Begin
  End;
  SkipSp;
  If PeekCh='}' Then Inc(LPOS) Else ExprError(Tr('"}" attendu','"}" expected'));
+End;
+
+{ Litteral flottant : [+-]chiffres[.chiffres][e[+-]chiffres] }
+Function ScanFloat(Var e:Extended;Var txt:String):Boolean;
+Var
+ i,n,code:Longint;
+ s:String;
+ hasDig,hasDot,hasExp:Boolean;
+Begin
+ ScanFloat:=False;
+ i:=LPOS;
+ n:=Length(LP);
+ s:='';
+ hasDig:=False;
+ hasDot:=False;
+ hasExp:=False;
+ If(i<=n)and(LP[i] in ['+','-'])Then Begin
+  s:=LP[i];
+  Inc(i);
+ End;
+ While(i<=n)and IsDigit(LP[i])do Begin
+  s:=s+LP[i];
+  Inc(i);
+  hasDig:=True;
+ End;
+ If(i<n)and(LP[i]='.')and IsDigit(LP[i+1])Then Begin
+  hasDot:=True;
+  s:=s+'.';
+  Inc(i);
+  While(i<=n)and IsDigit(LP[i])do Begin
+   s:=s+LP[i];
+   Inc(i);
+   hasDig:=True;
+  End;
+ End;
+ If Not hasDig Then Exit;
+ If(i<=n)and(LP[i] in ['e','E'])Then Begin
+  If(i<n)and IsDigit(LP[i+1])Then Begin
+   hasExp:=True;
+   s:=s+'e';
+   Inc(i);
+  End Else If(i+1<n)and(LP[i+1] in ['+','-'])and IsDigit(LP[i+2])Then Begin
+   hasExp:=True;
+   s:=s+'e'+LP[i+1];
+   Inc(i,2);
+  End;
+  If hasExp Then
+   While(i<=n)and IsDigit(LP[i])do Begin
+    s:=s+LP[i];
+    Inc(i);
+   End;
+ End;
+ If Not(hasDot or hasExp)Then Exit;
+ Val(s,e,code);
+ If code<>0 Then Exit;
+ txt:=s;
+ LPOS:=i;
+ ScanFloat:=True;
+End;
+
+Function FPNum(Const u:String):Longint;
+Begin
+ FPNum:=-1;
+ If(Length(u)=3)and(u[1]='F')and(u[2]='P')and(u[3] in ['0'..'7'])Then
+  FPNum:=Ord(u[3])-48;
+End;
+
+Function FPCtrlBit(Const u:String):Longint;
+Begin
+ If u='FPCR' Then FPCtrlBit:=$1000 Else
+ If u='FPSR' Then FPCtrlBit:=$0800 Else
+ If u='FPIAR' Then FPCtrlBit:=$0400 Else FPCtrlBit:=0;
+End;
+
+Function MMURegCode(Const u:String):Longint;
+Begin
+ MMURegCode:=-1;
+ If u='TC' Then MMURegCode:=$4000 Else
+ If u='DRP' Then MMURegCode:=$4400 Else
+ If u='SRP' Then MMURegCode:=$4800 Else
+ If u='CRP' Then MMURegCode:=$4C00 Else
+ If u='CAL' Then MMURegCode:=$5000 Else
+ If u='VAL' Then MMURegCode:=$5400 Else
+ If u='SCC' Then MMURegCode:=$5800 Else
+ If u='AC' Then MMURegCode:=$5C00 Else
+ If u='PSR' Then MMURegCode:=$6000 Else
+ If u='PCSR' Then MMURegCode:=$6400 Else
+ If u='TT0' Then MMURegCode:=$0800 Else
+ If u='TT1' Then MMURegCode:=$0C00;
+End;
+
+Function CacheCode(Const u:String):Longint;
+Begin
+ CacheCode:=-1;
+ If u='NC' Then CacheCode:=0 Else
+ If u='DC' Then CacheCode:=1 Else
+ If u='IC' Then CacheCode:=2 Else
+ If u='BC' Then CacheCode:=3;
+End;
+
+{ Registres flottants et listes : FP0, FP0-FP3/FP5, FPCR/FPSR, FP1:FP2 }
+Function ParseFPSpec(Var op:TOp):Boolean;
+Var
+ id,u:String;
+ n,lo,hi,i,save,items,fpm,crm:Longint;
+ isRange:Boolean;
+Begin
+ ParseFPSpec:=False;
+ fpm:=0;
+ crm:=0;
+ items:=0;
+ isRange:=False;
+ n:=0;
+ While True do Begin
+  SkipSp;
+  id:=PeekIdent;
+  u:=UpStr(id);
+  If FPNum(u)>=0 Then Begin
+   n:=FPNum(u);
+   lo:=n;
+   hi:=n;
+   Inc(LPOS,Length(id));
+   If PeekCh='-' Then Begin
+    save:=LPOS;
+    Inc(LPOS);
+    SkipSp;
+    id:=PeekIdent;
+    If FPNum(UpStr(id))>=0 Then Begin
+     hi:=FPNum(UpStr(id));
+     Inc(LPOS,Length(id));
+     isRange:=True;
+    End Else LPOS:=save;
+   End;
+   If lo>hi Then Begin i:=lo;lo:=hi;hi:=i;End;
+   For i:=lo to hi do fpm:=fpm or (1 shl i);
+  End Else If FPCtrlBit(u)<>0 Then Begin
+   crm:=crm or FPCtrlBit(u);
+   Inc(LPOS,Length(id));
+  End Else Exit;
+  Inc(items);
+  If PeekCh='/' Then Inc(LPOS) Else Break;
+ End;
+ If(fpm<>0)and(crm<>0)Then Begin
+  ExprError(Tr('Melange de registres FP et de controle',
+    'Mixed FP and control registers'));
+  Exit;
+ End;
+ If crm<>0 Then Begin
+  op.kind:=OK_FPCR;
+  op.mask:=crm;
+ End Else If(items=1)and Not isRange Then Begin
+  op.kind:=OK_FPREG;
+  op.reg:=n;
+  If PeekCh=':' Then Begin
+   Inc(LPOS);
+   SkipSp;
+   id:=PeekIdent;
+   If FPNum(UpStr(id))>=0 Then Begin
+    op.hasPair:=True;
+    op.pair:=FPNum(UpStr(id));
+    Inc(LPOS,Length(id));
+   End Else ExprError(Tr('Registre FP attendu apres ":"',
+     'FP register expected after ":"'));
+  End;
+ End Else Begin
+  op.kind:=OK_FPLIST;
+  op.mask:=fpm;
+ End;
+ ParseFPSpec:=True;
 End;
 
 { Analyse un operande. Retourne False s'il n'y a plus d'operande. }
@@ -2334,6 +2531,11 @@ Begin
  exprErr:=False;
  If c='#' Then Begin
   Inc(LPOS);
+  If ScanFloat(op.fval,op.ftext)Then Begin
+   op.hasFloat:=True;
+   op.kind:=OK_IMM;
+   Exit;
+  End;
   Expr(op.val);
   op.kind:=OK_IMM;
   Exit;
@@ -2368,6 +2570,33 @@ Begin
   If u='SR' Then Begin Inc(LPOS,2);op.kind:=OK_SR;Exit;End;
   If u='CCR' Then Begin Inc(LPOS,3);op.kind:=OK_CCR;Exit;End;
   If u='USP' Then Begin Inc(LPOS,3);op.kind:=OK_USP;op.ctrl:=$800;Exit;End;
+  If(FPNum(u)>=0)or(FPCtrlBit(u)<>0)Then Begin
+   save:=LPOS;
+   If ParseFPSpec(op)Then Begin
+    If PeekCh='{' Then ParseBitfield(op);
+    Exit;
+   End;
+   LPOS:=save;
+   InitOp(op);
+  End;
+  If gSpecial=1 Then Begin
+   k:=MMURegCode(u);
+   If k>=0 Then Begin
+    Inc(LPOS,Length(id));
+    op.kind:=OK_MMUREG;
+    op.ctrl:=k;
+    Exit;
+   End;
+  End;
+  If gSpecial=2 Then Begin
+   k:=CacheCode(u);
+   If k>=0 Then Begin
+    Inc(LPOS,Length(id));
+    op.kind:=OK_CACHE;
+    op.ctrl:=k;
+    Exit;
+   End;
+  End;
   k:=CtrlRegCode(u);
   If k>=0 Then Begin
    Inc(LPOS,Length(id));
@@ -2683,6 +2912,186 @@ Begin
  Else If odn=4 Then EmitLongVal(op.od);
 End;
 
+{ ------------------------------------------------------------------------ }
+{ Conversion des valeurs flottantes (Single, Double, Extended, Packed)     }
+{ ------------------------------------------------------------------------ }
+
+Type
+ TByteBuf = Array[0..15] of Byte;
+
+{ Format packed decimal (12 octets) a partir du texte du litteral }
+Procedure PackedBytes(Const s0:String;Var b:TByteBuf);
+Var
+ s,ip,fp,ds:String;
+ neg,eneg:Boolean;
+ p,q,ex,code,pp,expn,k:Longint;
+ d:Array[0..16] of Longint;
+Begin
+ FillChar(b,SizeOf(b),0);
+ s:=s0;
+ neg:=False;
+ If(s<>'')and(s[1] in ['+','-'])Then Begin
+  neg:=(s[1]='-');
+  Delete(s,1,1);
+ End;
+ ex:=0;
+ p:=Pos('e',s);
+ If p>0 Then Begin
+  Val(Copy(s,p+1,10),ex,code);
+  s:=Copy(s,1,p-1);
+ End;
+ q:=Pos('.',s);
+ If q>0 Then Begin
+  ip:=Copy(s,1,q-1);
+  fp:=Copy(s,q+1,255);
+ End Else Begin
+  ip:=s;
+  fp:='';
+ End;
+ ds:=ip+fp;
+ pp:=Length(ip);
+ While(ds<>'')and(ds[1]='0')do Begin
+  Delete(ds,1,1);
+  Dec(pp);
+ End;
+ FillChar(d,SizeOf(d),0);
+ expn:=0;
+ If ds<>'' Then Begin
+  expn:=pp+ex-1;
+  For k:=0 to 16 do If k<Length(ds)Then d[k]:=Ord(ds[k+1])-48;
+ End Else neg:=neg;
+ eneg:=expn<0;
+ If eneg Then expn:=-expn;
+ If expn>999 Then Begin
+  Error(Tr('Exposant hors limites pour le format packed',
+    'Exponent out of range for packed format'));
+  expn:=0;
+ End;
+ b[0]:=(expn div 100);
+ If neg Then b[0]:=b[0] or $80;
+ If eneg Then b[0]:=b[0] or $40;
+ b[1]:=(((expn div 10)mod 10)shl 4)or(expn mod 10);
+ b[3]:=d[0];
+ For k:=0 to 7 do b[4+k]:=(d[1+2*k]shl 4)or d[2+2*k];
+End;
+
+Procedure ExtendedBytes(e:Extended;Var b:TByteBuf);
+Var
+ raw:Array[0..15] of Byte;
+ dd:Double;
+ i,e11,lo,hi,e15,mh,ml,szExt:Longint;
+ neg:Boolean;
+Begin
+ FillChar(b,SizeOf(b),0);
+ szExt:=SizeOf(Extended);
+ If szExt=10 Then Begin
+  FillChar(raw,SizeOf(raw),0);
+  Move(e,raw,10);
+  b[0]:=raw[9];
+  b[1]:=raw[8];
+  For i:=0 to 7 do b[4+i]:=raw[7-i];
+ End Else Begin
+  dd:=e;
+  FillChar(raw,SizeOf(raw),0);
+  Move(dd,raw,8);
+  lo:=raw[0]or(raw[1]shl 8)or(raw[2]shl 16)or(raw[3]shl 24);
+  hi:=raw[4]or(raw[5]shl 8)or(raw[6]shl 16)or(raw[7]shl 24);
+  neg:=(hi<0);
+  e11:=(hi shr 20)and $7FF;
+  If neg Then e11:=((hi and $7FFFFFFF)shr 20);
+  e15:=0;
+  mh:=0;
+  ml:=0;
+  If e11=$7FF Then e15:=$7FFF Else If e11<>0 Then Begin
+   e15:=e11-1023+16383;
+   mh:=Longint($80000000)or((hi and $FFFFF)shl 11)
+     or(Longint(Cardinal(lo)shr 21));
+   ml:=Longint(Cardinal(lo)shl 11);
+  End;
+  If neg Then e15:=e15 or $8000;
+  b[0]:=e15 shr 8;
+  b[1]:=e15 and $FF;
+  b[4]:=(mh shr 24)and $FF;
+  b[5]:=(mh shr 16)and $FF;
+  b[6]:=(mh shr 8)and $FF;
+  b[7]:=mh and $FF;
+  b[8]:=(ml shr 24)and $FF;
+  b[9]:=(ml shr 16)and $FF;
+  b[10]:=(ml shr 8)and $FF;
+  b[11]:=ml and $FF;
+ End;
+End;
+
+{ fmt : 8 = Single, 9 = Double, 10 = Extended, 11 = Packed }
+Procedure FloatBytes(fmt:Longint;e:Extended;Const txt:String;Var b:TByteBuf;
+                     Var n:Longint);
+Var
+ sg:Single;
+ db:Double;
+ raw:Array[0..15] of Byte;
+ i:Longint;
+Begin
+ FillChar(b,SizeOf(b),0);
+ n:=0;
+ Case fmt of
+  8:Begin
+   n:=4;
+   If(e>3.4028234e38)or(e<-3.4028234e38)Then Begin
+    Error(Tr('Valeur hors limites pour un flottant simple',
+      'Value out of range for single precision'));
+    Exit;
+   End;
+   sg:=e;
+   Move(sg,raw,4);
+   For i:=0 to 3 do b[i]:=raw[3-i];
+  End;
+  9:Begin
+   n:=8;
+   If(e>1.7976931348623157e308)or(e<-1.7976931348623157e308)Then Begin
+    Error(Tr('Valeur hors limites pour un flottant double',
+      'Value out of range for double precision'));
+    Exit;
+   End;
+   db:=e;
+   Move(db,raw,8);
+   For i:=0 to 7 do b[i]:=raw[7-i];
+  End;
+  10:Begin
+   n:=12;
+   ExtendedBytes(e,b);
+  End;
+  Else Begin
+   n:=12;
+   PackedBytes(txt,b);
+  End;
+ End;
+End;
+
+Procedure EmitFloatValue(fmt:Longint;e:Extended;Const txt:String);
+Var
+ b:TByteBuf;
+ n,i:Longint;
+Begin
+ FloatBytes(fmt,e,txt,b,n);
+ For i:=0 to n-1 do EmitB(b[i]);
+End;
+
+Procedure EmitFloatImm(Const op:TOp;fmt:Longint);
+Var
+ e:Extended;
+ t:String;
+Begin
+ If op.hasFloat Then Begin
+  e:=op.fval;
+  t:=op.ftext;
+ End Else Begin
+  NoReloc(op.val);
+  e:=op.val.v;
+  t:=IntStr(op.val.v);
+ End;
+ EmitFloatValue(fmt,e,t);
+End;
+
 { Mots d'extension d'un operande (apres le mot d'operation) }
 Procedure EmitEAExt(Var op:TOp;size:Longint);
 Var
@@ -2742,7 +3151,7 @@ Begin
      'Displacement out of range (16 bits)'));
    EmitW(d and $FFFF);
   End;
-  OK_IMM:EmitImmValue(op.val,size);
+  OK_IMM:If size>=8 Then EmitFloatImm(op,size) Else EmitImmValue(op.val,size);
  End;
 End;
 
@@ -2758,8 +3167,13 @@ Const
  C_EXT=25;   C_SWAP=26;  C_LINK=27;  C_UNLK=28;  C_TRAP=29;  C_STOP=30;
  C_RTD=31;   C_BKPT=32;  C_CTRL1=33; C_LEA=34;   C_CHK=35;   C_EXG=36;
  C_BCDX=37;  C_BF=38;    C_CAS=39;   C_CMP2=40;  C_PACK=41;  C_CMPM=42;
+ C_FPARITH=43; C_FMOVE=44; C_FMOVEM=45; C_FMOVECR=46; C_FSINCOS=47;
+ C_FTST=48; C_FNOP=49; C_FSAVE=50; C_FRESTORE=51; C_FBCC=52; C_FDBCC=53;
+ C_FSCC=54; C_FTRAPCC=55; C_PMOVE=56; C_PFLUSH=57; C_PLOAD=58; C_PTEST=59;
+ C_PBCC=60; C_PDBCC=61; C_PSCC=62; C_PTRAPCC=63; C_PSAVE=64;
+ C_PRESTORE=65; C_PVALID=66; C_CINV=67; C_MOVE16=68;
 
- NINSTR = 98;
+ NINSTR = 177;
 
 Type
  TInstr = Record
@@ -2868,7 +3282,86 @@ Const
   (n:'ST';cls:C_SCC;op:0;arg:0),
   (n:'SF';cls:C_SCC;op:0;arg:1),
   (n:'TRAPT';cls:C_TRAPCC;op:0;arg:0),
-  (n:'TRAPF';cls:C_TRAPCC;op:0;arg:1)
+  (n:'TRAPF';cls:C_TRAPCC;op:0;arg:1),
+  (n:'FINT';cls:C_FPARITH;op:$01;arg:1),
+  (n:'FSINH';cls:C_FPARITH;op:$02;arg:1),
+  (n:'FINTRZ';cls:C_FPARITH;op:$03;arg:1),
+  (n:'FSQRT';cls:C_FPARITH;op:$04;arg:1),
+  (n:'FLOGNP1';cls:C_FPARITH;op:$06;arg:1),
+  (n:'FETOXM1';cls:C_FPARITH;op:$08;arg:1),
+  (n:'FTANH';cls:C_FPARITH;op:$09;arg:1),
+  (n:'FATAN';cls:C_FPARITH;op:$0A;arg:1),
+  (n:'FASIN';cls:C_FPARITH;op:$0C;arg:1),
+  (n:'FATANH';cls:C_FPARITH;op:$0D;arg:1),
+  (n:'FSIN';cls:C_FPARITH;op:$0E;arg:1),
+  (n:'FTAN';cls:C_FPARITH;op:$0F;arg:1),
+  (n:'FETOX';cls:C_FPARITH;op:$10;arg:1),
+  (n:'FTWOTOX';cls:C_FPARITH;op:$11;arg:1),
+  (n:'FTENTOX';cls:C_FPARITH;op:$12;arg:1),
+  (n:'FLOGN';cls:C_FPARITH;op:$14;arg:1),
+  (n:'FLOG10';cls:C_FPARITH;op:$15;arg:1),
+  (n:'FLOG2';cls:C_FPARITH;op:$16;arg:1),
+  (n:'FABS';cls:C_FPARITH;op:$18;arg:1),
+  (n:'FCOSH';cls:C_FPARITH;op:$19;arg:1),
+  (n:'FNEG';cls:C_FPARITH;op:$1A;arg:1),
+  (n:'FACOS';cls:C_FPARITH;op:$1C;arg:1),
+  (n:'FCOS';cls:C_FPARITH;op:$1D;arg:1),
+  (n:'FGETEXP';cls:C_FPARITH;op:$1E;arg:1),
+  (n:'FGETMAN';cls:C_FPARITH;op:$1F;arg:1),
+  (n:'FSSQRT';cls:C_FPARITH;op:$41;arg:1),
+  (n:'FDSQRT';cls:C_FPARITH;op:$45;arg:1),
+  (n:'FSABS';cls:C_FPARITH;op:$58;arg:1),
+  (n:'FDABS';cls:C_FPARITH;op:$5C;arg:1),
+  (n:'FSNEG';cls:C_FPARITH;op:$5A;arg:1),
+  (n:'FDNEG';cls:C_FPARITH;op:$5E;arg:1),
+  (n:'FDIV';cls:C_FPARITH;op:$20;arg:0),
+  (n:'FMOD';cls:C_FPARITH;op:$21;arg:0),
+  (n:'FADD';cls:C_FPARITH;op:$22;arg:0),
+  (n:'FMUL';cls:C_FPARITH;op:$23;arg:0),
+  (n:'FSGLDIV';cls:C_FPARITH;op:$24;arg:0),
+  (n:'FREM';cls:C_FPARITH;op:$25;arg:0),
+  (n:'FSCALE';cls:C_FPARITH;op:$26;arg:0),
+  (n:'FSGLMUL';cls:C_FPARITH;op:$27;arg:0),
+  (n:'FSUB';cls:C_FPARITH;op:$28;arg:0),
+  (n:'FCMP';cls:C_FPARITH;op:$38;arg:0),
+  (n:'FSDIV';cls:C_FPARITH;op:$60;arg:0),
+  (n:'FDDIV';cls:C_FPARITH;op:$64;arg:0),
+  (n:'FSADD';cls:C_FPARITH;op:$62;arg:0),
+  (n:'FDADD';cls:C_FPARITH;op:$66;arg:0),
+  (n:'FSMUL';cls:C_FPARITH;op:$63;arg:0),
+  (n:'FDMUL';cls:C_FPARITH;op:$67;arg:0),
+  (n:'FSSUB';cls:C_FPARITH;op:$68;arg:0),
+  (n:'FDSUB';cls:C_FPARITH;op:$6C;arg:0),
+  (n:'FMOVE';cls:C_FMOVE;op:$00;arg:0),
+  (n:'FSMOVE';cls:C_FMOVE;op:$40;arg:0),
+  (n:'FDMOVE';cls:C_FMOVE;op:$44;arg:0),
+  (n:'FMOVEM';cls:C_FMOVEM;op:0;arg:0),
+  (n:'FMOVECR';cls:C_FMOVECR;op:0;arg:0),
+  (n:'FSINCOS';cls:C_FSINCOS;op:0;arg:0),
+  (n:'FTST';cls:C_FTST;op:0;arg:0),
+  (n:'FNOP';cls:C_FNOP;op:0;arg:0),
+  (n:'FSAVE';cls:C_FSAVE;op:$F300;arg:0),
+  (n:'FRESTORE';cls:C_FRESTORE;op:$F340;arg:0),
+  (n:'PMOVE';cls:C_PMOVE;op:0;arg:0),
+  (n:'PMOVEFD';cls:C_PMOVE;op:0;arg:1),
+  (n:'PFLUSH';cls:C_PFLUSH;op:0;arg:0),
+  (n:'PFLUSHA';cls:C_PFLUSH;op:0;arg:1),
+  (n:'PFLUSHN';cls:C_PFLUSH;op:0;arg:2),
+  (n:'PFLUSHAN';cls:C_PFLUSH;op:0;arg:3),
+  (n:'PLOADR';cls:C_PLOAD;op:0;arg:1),
+  (n:'PLOADW';cls:C_PLOAD;op:0;arg:0),
+  (n:'PTESTR';cls:C_PTEST;op:0;arg:1),
+  (n:'PTESTW';cls:C_PTEST;op:0;arg:0),
+  (n:'PSAVE';cls:C_PSAVE;op:$F100;arg:0),
+  (n:'PRESTORE';cls:C_PRESTORE;op:$F140;arg:0),
+  (n:'PVALID';cls:C_PVALID;op:0;arg:0),
+  (n:'CINVL';cls:C_CINV;op:$F408;arg:0),
+  (n:'CINVP';cls:C_CINV;op:$F410;arg:0),
+  (n:'CINVA';cls:C_CINV;op:$F418;arg:0),
+  (n:'CPUSHL';cls:C_CINV;op:$F428;arg:1),
+  (n:'CPUSHP';cls:C_CINV;op:$F430;arg:1),
+  (n:'CPUSHA';cls:C_CINV;op:$F438;arg:1),
+  (n:'MOVE16';cls:C_MOVE16;op:0;arg:0)
  );
 
  CCNames:Array[0..17] of String[2]=
@@ -2885,6 +3378,31 @@ Begin
   If i>=16 Then CCIndex:=i-12 Else CCIndex:=i;
   Exit;
  End;
+End;
+
+Const
+ FCCNames:Array[0..31] of String[5]=
+  ('F','EQ','OGT','OGE','OLT','OLE','OGL','OR','UN','UEQ','UGT','UGE','ULT',
+   'ULE','NE','T','SF','SEQ','GT','GE','LT','LE','GL','GLE','NGLE','NGL',
+   'NLE','NLT','NGE','NGT','SNE','ST');
+ PCCNames:Array[0..15] of String[3]=
+  ('BS','BC','LS','LC','SS','SC','AS','AC','WS','WC','IS','IC','GS','GC',
+   'CS','CC');
+
+Function FCCIndex(Const s:String):Longint;
+Var
+ i:Longint;
+Begin
+ FCCIndex:=-1;
+ For i:=0 to 31 do If FCCNames[i]=s Then Begin FCCIndex:=i;Exit;End;
+End;
+
+Function PCCIndex(Const s:String):Longint;
+Var
+ i:Longint;
+Begin
+ PCCIndex:=-1;
+ For i:=0 to 15 do If PCCNames[i]=s Then Begin PCCIndex:=i;Exit;End;
 End;
 
 { Recherche d'un mnemonique d'instruction. idx = index dans la table (0 pour
@@ -2921,6 +3439,44 @@ Begin
    c:=CCIndex(Copy(up,5,3));
    If c>=0 Then Begin cls:=C_TRAPCC;cc:=c;FindInstr:=True;Exit;End;
   End;
+  { coprocesseur flottant : FBcc, FDBcc, FScc, FTRAPcc }
+  If(up[1]='F')Then Begin
+   If Copy(up,1,2)='FB' Then Begin
+    c:=FCCIndex(Copy(up,3,5));
+    If c>=0 Then Begin cls:=C_FBCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+   If Copy(up,1,3)='FDB' Then Begin
+    c:=FCCIndex(Copy(up,4,5));
+    If c>=0 Then Begin cls:=C_FDBCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+   If Copy(up,1,5)='FTRAP' Then Begin
+    c:=FCCIndex(Copy(up,6,5));
+    If c>=0 Then Begin cls:=C_FTRAPCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+   If Copy(up,1,2)='FS' Then Begin
+    c:=FCCIndex(Copy(up,3,5));
+    If c>=0 Then Begin cls:=C_FSCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+  End;
+  { MMU : PBcc, PDBcc, PScc, PTRAPcc }
+  If(up[1]='P')Then Begin
+   If Copy(up,1,2)='PB' Then Begin
+    c:=PCCIndex(Copy(up,3,3));
+    If c>=0 Then Begin cls:=C_PBCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+   If Copy(up,1,3)='PDB' Then Begin
+    c:=PCCIndex(Copy(up,4,3));
+    If c>=0 Then Begin cls:=C_PDBCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+   If Copy(up,1,5)='PTRAP' Then Begin
+    c:=PCCIndex(Copy(up,6,3));
+    If c>=0 Then Begin cls:=C_PTRAPCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+   If Copy(up,1,2)='PS' Then Begin
+    c:=PCCIndex(Copy(up,3,3));
+    If c>=0 Then Begin cls:=C_PSCC;cc:=c;FindInstr:=True;Exit;End;
+   End;
+  End;
  End;
 End;
 
@@ -2939,7 +3495,10 @@ Begin
  If e='B' Then SzFromExt:=1 Else
  If e='W' Then SzFromExt:=2 Else
  If e='L' Then SzFromExt:=4 Else
- If e='S' Then SzFromExt:=8 Else SzFromExt:=-1;
+ If e='S' Then SzFromExt:=8 Else
+ If e='D' Then SzFromExt:=9 Else
+ If e='X' Then SzFromExt:=10 Else
+ If e='P' Then SzFromExt:=11 Else SzFromExt:=-1;
 End;
 
 { Taille effective ; mask : bit 1 = B, bit 2 = W, bit 4 = L }
@@ -4049,12 +4608,649 @@ Begin
  EmitImmValue(gOps[2].val,2);
 End;
 
+{ ------------------------------------------------------------------------ }
+{ Coprocesseur flottant 68881/68882                                        }
+{ ------------------------------------------------------------------------ }
+
+Function FpuOk:Boolean;
+Begin
+ FpuOk:=(cpu>=CPU_68020)or fpuFlag;
+ If Not((cpu>=CPU_68020)or fpuFlag)Then
+  Error(Tr('Instruction FPU : utilisez MC68881 ou MC68882',
+           'FPU instruction: use MC68881 or MC68882'));
+End;
+
+Function MmuOk:Boolean;
+Begin
+ MmuOk:=(cpu>=CPU_68020)or mmuFlag;
+ If Not((cpu>=CPU_68020)or mmuFlag)Then
+  Error(Tr('Instruction MMU : utilisez MC68851 ou MC68030',
+           'MMU instruction: use MC68851 or MC68030'));
+End;
+
+{ Code de format source/destination : L=0 S=1 X=2 P=3 W=4 D=5 B=6 ; -1
+  invalide }
+Function FpFmt(sz:Longint):Longint;
+Begin
+ Case sz of
+  0,10:FpFmt:=2;
+  4:FpFmt:=0;
+  8:FpFmt:=1;
+  11:FpFmt:=3;
+  2:FpFmt:=4;
+  9:FpFmt:=5;
+  1:FpFmt:=6;
+  Else Begin
+   Error(Tr('Taille invalide pour une instruction FPU',
+     'Invalid size for an FPU instruction'));
+   FpFmt:=2;
+  End;
+ End;
+End;
+
+Function FpSz(sz:Longint):Longint;
+Begin
+ If sz=0 Then FpSz:=10 Else FpSz:=sz;
+End;
+
+Function FpSrcModes(fmt:Longint):Longint;
+Begin
+ Case fmt of
+  0,1,4:FpSrcModes:=M_DATA or M_AN;
+  6:FpSrcModes:=M_DATA;
+  Else FpSrcModes:=M_DATA and Not M_DN;
+ End;
+End;
+
+Function FpDstModes(fmt:Longint):Longint;
+Begin
+ If fmt in [0,1,4,6]Then FpDstModes:=M_DATALT Else FpDstModes:=M_MEMALT;
+End;
+
+Procedure DoFArith(idx:Longint);
+Var
+ opm,fmt,ea,sz,srcReg:Longint;
+ mono:Boolean;
+Begin
+ If Not FpuOk Then Exit;
+ opm:=InstrTab[idx].op;
+ mono:=InstrTab[idx].arg=1;
+ If(gN<1)or(gN>2)or((gN=1)and Not mono)Then Begin
+  Error(Tr('Nombre d''operandes invalide','Invalid number of operands'));
+  Exit;
+ End;
+ If gN=1 Then Begin
+  If gOps[0].kind<>OK_FPREG Then Begin
+   Error(Tr('Registre FP destination requis',
+     'FP destination register required'));
+   Exit;
+  End;
+  gOps[1]:=gOps[0];
+ End;
+ If gOps[1].kind<>OK_FPREG Then Begin
+  Error(Tr('Registre FP destination requis',
+    'FP destination register required'));
+  Exit;
+ End;
+ If gOps[0].kind=OK_FPREG Then Begin
+  If(gSzRaw<>0)and(gSzRaw<>10)
+    Then Error(Tr('Taille X requise entre registres FP',
+    'Size X required between FP registers'));
+  srcReg:=gOps[0].reg;
+  EmitW($F200);
+  EmitW((srcReg shl 10)or(gOps[1].reg shl 7)or opm);
+  Exit;
+ End;
+ sz:=FpSz(gSzRaw);
+ fmt:=FpFmt(sz);
+ ea:=ResolveEA(gOps[0],FpSrcModes(fmt));
+ If ea<0 Then Exit;
+ EmitW($F200 or ea);
+ EmitW($4000 or (fmt shl 10)or(gOps[1].reg shl 7)or opm);
+ EmitEAExt(gOps[0],sz);
+End;
+
+Procedure DoFTst;
+Var
+ fmt,ea,sz:Longint;
+Begin
+ If Not FpuOk Then Exit;
+ If Not NeedOps(1)Then Exit;
+ If gOps[0].kind=OK_FPREG Then Begin
+  EmitW($F200);
+  EmitW((gOps[0].reg shl 10)or $3A);
+  Exit;
+ End;
+ sz:=FpSz(gSzRaw);
+ fmt:=FpFmt(sz);
+ ea:=ResolveEA(gOps[0],FpSrcModes(fmt));
+ If ea<0 Then Exit;
+ EmitW($F200 or ea);
+ EmitW($4000 or (fmt shl 10)or $3A);
+ EmitEAExt(gOps[0],sz);
+End;
+
+Procedure DoFSinCos;
+Var
+ fmt,ea,sz:Longint;
+Begin
+ If Not FpuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ If(gOps[1].kind<>OK_FPREG)or Not gOps[1].hasPair Then Begin
+  Error(Tr('FSINCOS <ea>,FPc:FPs attendu','FSINCOS <ea>,FPc:FPs expected'));
+  Exit;
+ End;
+ If gOps[0].kind=OK_FPREG Then Begin
+  EmitW($F200);
+  EmitW((gOps[0].reg shl 10)or(gOps[1].pair shl 7)or $30 or gOps[1].reg);
+  Exit;
+ End;
+ sz:=FpSz(gSzRaw);
+ fmt:=FpFmt(sz);
+ ea:=ResolveEA(gOps[0],FpSrcModes(fmt));
+ If ea<0 Then Exit;
+ EmitW($F200 or ea);
+ EmitW($4000 or (fmt shl 10)or(gOps[1].pair shl 7)or $30 or gOps[1].reg);
+ EmitEAExt(gOps[0],sz);
+End;
+
+Procedure DoFMovecr;
+Var
+ v:Longint;
+Begin
+ If Not FpuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ If(gOps[0].kind<>OK_IMM)or(gOps[1].kind<>OK_FPREG)Then Begin
+  Error(Tr('FMOVECR #offset,FPn attendu','FMOVECR #offset,FPn expected'));
+  Exit;
+ End;
+ NoReloc(gOps[0].val);
+ v:=gOps[0].val.v;
+ If(Not gOps[0].val.undef)and((v<0)or(v>127))Then Begin
+  Error(Tr('Offset FMOVECR hors limites (0..127)',
+    'FMOVECR offset out of range (0..127)'));
+  Exit;
+ End;
+ EmitW($F200);
+ EmitW($5C00 or (gOps[1].reg shl 7)or(v and $7F));
+End;
+
+Function ReverseMask8(m:Longint):Longint;
+Var
+ i,r:Longint;
+Begin
+ r:=0;
+ For i:=0 to 7 do If(m and (1 shl i))<>0 Then r:=r or (1 shl (7-i));
+ ReverseMask8:=r;
+End;
+
+Procedure DoFMove(idx:Longint);
+Var
+ opm,fmt,ea,sz,k,regsel:Longint;
+Begin
+ If Not FpuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ opm:=InstrTab[idx].op;
+ { registres de controle }
+ If gOps[0].kind=OK_FPCR Then Begin
+  ea:=ResolveEA(gOps[1],M_ALT);
+  If ea<0 Then Exit;
+  EmitW($F200 or ea);
+  EmitW($A000 or gOps[0].mask);
+  EmitEAExt(gOps[1],4);
+  Exit;
+ End;
+ If gOps[1].kind=OK_FPCR Then Begin
+  ea:=ResolveEA(gOps[0],M_ALL);
+  If ea<0 Then Exit;
+  EmitW($F200 or ea);
+  EmitW($8000 or gOps[1].mask);
+  EmitEAExt(gOps[0],4);
+  Exit;
+ End;
+ If gOps[1].kind=OK_FPREG Then Begin
+  If gOps[0].kind=OK_FPREG Then Begin
+   If(gSzRaw<>0)and(gSzRaw<>10)
+     Then Error(Tr('Taille X requise entre registres FP',
+     'Size X required between FP registers'));
+   EmitW($F200);
+   EmitW((gOps[0].reg shl 10)or(gOps[1].reg shl 7)or opm);
+   Exit;
+  End;
+  sz:=FpSz(gSzRaw);
+  fmt:=FpFmt(sz);
+  ea:=ResolveEA(gOps[0],FpSrcModes(fmt));
+  If ea<0 Then Exit;
+  EmitW($F200 or ea);
+  EmitW($4000 or (fmt shl 10)or(gOps[1].reg shl 7)or opm);
+  EmitEAExt(gOps[0],sz);
+  Exit;
+ End;
+ If gOps[0].kind=OK_FPREG Then Begin
+  sz:=FpSz(gSzRaw);
+  fmt:=FpFmt(sz);
+  ea:=ResolveEA(gOps[1],FpDstModes(fmt));
+  If ea<0 Then Exit;
+  k:=0;
+  If gOps[1].hasK Then Begin
+   If gOps[1].kIsReg Then Begin
+    fmt:=7;
+    k:=(gOps[1].kVal and 7)shl 4;
+   End Else k:=gOps[1].kVal and $7F;
+  End;
+  regsel:=gOps[0].reg;
+  EmitW($F200 or ea);
+  EmitW($6000 or (fmt shl 10)or(regsel shl 7)or k);
+  EmitEAExt(gOps[1],sz);
+  Exit;
+ End;
+ Error(Tr('Operandes FMOVE invalides','Invalid FMOVE operands'));
+End;
+
+Procedure DoFMovem;
+Var
+ ea,mode,lst,m:Longint;
+ toMem:Boolean;
+Begin
+ If Not FpuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ { registres de controle }
+ If(gOps[0].kind=OK_FPCR)or(gOps[1].kind=OK_FPCR)Then Begin
+  If gOps[0].kind=OK_FPCR Then Begin
+   ea:=ResolveEA(gOps[1],M_ALT);
+   If ea<0 Then Exit;
+   EmitW($F200 or ea);
+   EmitW($A000 or gOps[0].mask);
+   EmitEAExt(gOps[1],4);
+  End Else Begin
+   ea:=ResolveEA(gOps[0],M_ALL);
+   If ea<0 Then Exit;
+   EmitW($F200 or ea);
+   EmitW($8000 or gOps[1].mask);
+   EmitEAExt(gOps[0],4);
+  End;
+  Exit;
+ End;
+ toMem:=gOps[0].kind in [OK_FPREG,OK_FPLIST];
+ If(gOps[0].kind=OK_DN)Then toMem:=True;
+ If toMem Then Begin
+  If gOps[1].kind in [OK_FPREG,OK_FPLIST,OK_DN]Then Begin
+   Error(Tr('Operandes FMOVEM invalides','Invalid FMOVEM operands'));
+   Exit;
+  End;
+  ea:=ResolveEA(gOps[1],(M_CONTROL and Not (M_PCD or M_PCI))or M_PRE);
+  If ea<0 Then Exit;
+  If gOps[0].kind=OK_DN Then Begin
+   lst:=gOps[0].reg shl 4;
+   If gOps[1].kind=OK_PRE Then mode:=1 Else mode:=3;
+  End Else Begin
+   If gOps[0].kind=OK_FPREG Then m:=1 shl gOps[0].reg Else m:=gOps[0].mask;
+   If gOps[1].kind=OK_PRE Then Begin
+    mode:=0;
+    lst:=m;
+   End Else Begin
+    mode:=2;
+    lst:=ReverseMask8(m);
+   End;
+  End;
+  EmitW($F200 or ea);
+  EmitW($E000 or (mode shl 11)or lst);
+  EmitEAExt(gOps[1],4);
+ End Else Begin
+  If Not(gOps[1].kind in [OK_FPREG,OK_FPLIST,OK_DN])Then Begin
+   Error(Tr('Liste de registres FP attendue','FP register list expected'));
+   Exit;
+  End;
+  ea:=ResolveEA(gOps[0],M_CONTROL or M_POST);
+  If ea<0 Then Exit;
+  If gOps[1].kind=OK_DN Then Begin
+   lst:=gOps[1].reg shl 4;
+   mode:=3;
+  End Else Begin
+   If gOps[1].kind=OK_FPREG Then m:=1 shl gOps[1].reg Else m:=gOps[1].mask;
+   mode:=2;
+   lst:=ReverseMask8(m);
+  End;
+  EmitW($F200 or ea);
+  EmitW($C000 or (mode shl 11)or lst);
+  EmitEAExt(gOps[0],4);
+ End;
+End;
+
+{ Branchements conditionnels du coprocesseur : FBcc / PBcc }
+Procedure DoCpBranch(base,cc:Longint);
+Var
+ pcop,d:Longint;
+ isExt:Boolean;
+Begin
+ If Not NeedOps(1)Then Exit;
+ If gOps[0].kind<>OK_ABS Then Begin
+  Error(Tr('Cible de branchement invalide','Invalid branch target'));
+  Exit;
+ End;
+ pcop:=PC;
+ d:=TargetDisp(gOps[0].val,pcop+2,isExt);
+ If gSzRaw=4 Then Begin
+  EmitW(base or $40 or cc);
+  If isExt Then AddXRef(gOps[0].val.ext,pcop+2,EXT_REF32);
+  EmitL(d);
+  Exit;
+ End;
+ If(gSzRaw<>0)and(gSzRaw<>2)Then Begin
+  Error(Tr('Taille de branchement invalide','Invalid branch size'));
+  Exit;
+ End;
+ If(Not gOps[0].val.undef)and Not isExt and((d<-32768)or(d>32767))Then
+  Error(Tr('Branchement hors limites','Branch out of range'));
+ EmitW(base or cc);
+ If isExt Then AddXRef(gOps[0].val.ext,pcop+2,EXT_REF16);
+ EmitW(d and $FFFF);
+End;
+
+Procedure DoCpDbcc(base,cc:Longint);
+Var
+ pcop,d:Longint;
+ isExt:Boolean;
+Begin
+ If Not NeedOps(2)Then Exit;
+ If(gOps[0].kind<>OK_DN)or(gOps[1].kind<>OK_ABS)Then Begin
+  Error(Tr('Dn,etiquette attendus','Dn,label expected'));
+  Exit;
+ End;
+ pcop:=PC;
+ d:=TargetDisp(gOps[1].val,pcop+4,isExt);
+ EmitW(base or $48 or gOps[0].reg);
+ EmitW(cc);
+ If isExt Then AddXRef(gOps[1].val.ext,pcop+4,EXT_REF16)
+ Else If(Not gOps[1].val.undef)and((d<-32768)or(d>32767))Then
+  Error(Tr('Branchement hors limites','Branch out of range'));
+ EmitW(d and $FFFF);
+End;
+
+Procedure DoCpScc(base,cc:Longint);
+Var
+ ea:Longint;
+Begin
+ If Not NeedOps(1)Then Exit;
+ ea:=ResolveEA(gOps[0],M_DATALT);
+ If ea<0 Then Exit;
+ EmitW(base or $40 or ea);
+ EmitW(cc);
+ EmitEAExt(gOps[0],1);
+End;
+
+Procedure DoCpTrapcc(base,cc:Longint);
+Var
+ sz:Longint;
+Begin
+ If gN=0 Then Begin
+  EmitW(base or $78 or 4);
+  EmitW(cc);
+  Exit;
+ End;
+ If(gN<>1)or(gOps[0].kind<>OK_IMM)Then Begin
+  Error(Tr('Operande immediat attendu','Immediate operand expected'));
+  Exit;
+ End;
+ sz:=EffSz(2,6);
+ If sz=4 Then EmitW(base or $78 or 3) Else EmitW(base or $78 or 2);
+ EmitW(cc);
+ EmitImmValue(gOps[0].val,sz);
+End;
+
+Procedure DoCpSave(opc:Longint;restore:Boolean);
+Var
+ ea:Longint;
+Begin
+ If Not NeedOps(1)Then Exit;
+ If restore Then ea:=ResolveEA(gOps[0],M_CONTROL or M_POST)
+  Else ea:=ResolveEA(gOps[0],(M_CONTROL and Not (M_PCD or M_PCI))or M_PRE);
+ If ea<0 Then Exit;
+ EmitW(opc or ea);
+ EmitEAExt(gOps[0],4);
+End;
+
+{ ------------------------------------------------------------------------ }
+{ MMU : 68851 / 68030 et instructions 68040                                  }
+{ ------------------------------------------------------------------------ }
+
+{ Code de fonction : #n, Dn, SFC, DFC }
+Function FcCode(Const op:TOp):Longint;
+Begin
+ FcCode:=0;
+ Case op.kind of
+  OK_IMM:Begin
+   NoReloc(op.val);
+   FcCode:=$10 or (op.val.v and 15);
+  End;
+  OK_DN:FcCode:=$08 or op.reg;
+  OK_CTRL:If op.ctrl=0 Then FcCode:=0 Else If op.ctrl=1 Then FcCode:=1
+   Else Error(Tr('Code de fonction invalide','Invalid function code'));
+  Else Error(Tr('Code de fonction invalide','Invalid function code'));
+ End;
+End;
+
+Procedure DoPmove(idx:Longint);
+Var
+ ea,fd:Longint;
+Begin
+ If Not MmuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ fd:=0;
+ If InstrTab[idx].arg=1 Then fd:=$0100;
+ If gOps[1].kind=OK_MMUREG Then Begin
+  ea:=ResolveEA(gOps[0],M_ALL);
+  If ea<0 Then Exit;
+  EmitW($F000 or ea);
+  EmitW(gOps[1].ctrl or fd);
+  EmitEAExt(gOps[0],4);
+ End Else If gOps[0].kind=OK_MMUREG Then Begin
+  ea:=ResolveEA(gOps[1],M_ALT);
+  If ea<0 Then Exit;
+  EmitW($F000 or ea);
+  EmitW(gOps[0].ctrl or $0200 or fd);
+  EmitEAExt(gOps[1],4);
+ End Else Error(Tr('Registre MMU attendu','MMU register expected'));
+End;
+
+Procedure DoPflush(idx:Longint);
+Var
+ which,ea,mask:Longint;
+Begin
+ which:=InstrTab[idx].arg;
+ If cpu>=CPU_68040 Then Begin
+  { 68040 : PFLUSH (An), PFLUSHN (An), PFLUSHA, PFLUSHAN }
+  Case which of
+   1:Begin
+    If gN<>0 Then Warn(Tr('Operandes ignores','Operands ignored'));
+    EmitW($F518);
+   End;
+   3:Begin
+    If gN<>0 Then Warn(Tr('Operandes ignores','Operands ignored'));
+    EmitW($F510);
+   End;
+   Else Begin
+    If Not NeedOps(1)Then Exit;
+    If gOps[0].kind<>OK_IND Then Begin
+     Error(Tr('PFLUSH (An) attendu','PFLUSH (An) expected'));
+     Exit;
+    End;
+    If which=2 Then EmitW($F500 or gOps[0].reg) Else EmitW($F508
+      or gOps[0].reg);
+   End;
+  End;
+  Exit;
+ End;
+ If Not MmuOk Then Exit;
+ If which=1 Then Begin
+  EmitW($F000);
+  EmitW($2400);
+  Exit;
+ End;
+ If(gN<2)or(gN>3)Then Begin
+  Error(Tr('PFLUSH fc,#masque[,<ea>] attendu',
+    'PFLUSH fc,#mask[,<ea>] expected'));
+  Exit;
+ End;
+ If gOps[1].kind<>OK_IMM Then Begin
+  Error(Tr('Masque immediat attendu','Immediate mask expected'));
+  Exit;
+ End;
+ NoReloc(gOps[1].val);
+ mask:=gOps[1].val.v and 15;
+ If gN=2 Then Begin
+  EmitW($F000);
+  EmitW($3000 or (mask shl 5)or FcCode(gOps[0]));
+ End Else Begin
+  ea:=ResolveEA(gOps[2],M_CONTROL);
+  If ea<0 Then Exit;
+  EmitW($F000 or ea);
+  EmitW($3800 or (mask shl 5)or FcCode(gOps[0]));
+  EmitEAExt(gOps[2],4);
+ End;
+End;
+
+Procedure DoPload(idx:Longint);
+Var
+ ea:Longint;
+Begin
+ If Not MmuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ ea:=ResolveEA(gOps[1],M_CONTROL);
+ If ea<0 Then Exit;
+ EmitW($F000 or ea);
+ EmitW($2000 or (InstrTab[idx].arg shl 9)or FcCode(gOps[0]));
+ EmitEAExt(gOps[1],4);
+End;
+
+Procedure DoPtest(idx:Longint);
+Var
+ ea,rw,lvl,a,r:Longint;
+Begin
+ rw:=InstrTab[idx].arg;
+ If cpu>=CPU_68040 Then Begin
+  If Not NeedOps(1)Then Exit;
+  If gOps[0].kind<>OK_IND Then Begin
+   Error(Tr('PTEST (An) attendu','PTEST (An) expected'));
+   Exit;
+  End;
+  If rw=1 Then EmitW($F568 or gOps[0].reg) Else EmitW($F548 or gOps[0].reg);
+  Exit;
+ End;
+ If Not MmuOk Then Exit;
+ If(gN<3)or(gN>4)Then Begin
+  Error(Tr('PTEST fc,<ea>,#niveau[,An] attendu',
+    'PTEST fc,<ea>,#level[,An] expected'));
+  Exit;
+ End;
+ If gOps[2].kind<>OK_IMM Then Begin
+  Error(Tr('Niveau immediat attendu','Immediate level expected'));
+  Exit;
+ End;
+ NoReloc(gOps[2].val);
+ lvl:=gOps[2].val.v and 7;
+ a:=0;
+ r:=0;
+ If gN=4 Then Begin
+  If gOps[3].kind<>OK_AN Then Begin
+   Error(Tr('Registre d''adresse attendu','Address register expected'));
+   Exit;
+  End;
+  a:=1;
+  r:=gOps[3].reg;
+ End;
+ ea:=ResolveEA(gOps[1],M_CONTROL);
+ If ea<0 Then Exit;
+ EmitW($F000 or ea);
+ EmitW($8000 or (lvl shl 10)or(rw shl 9)or(a shl 8)or(r shl 5)
+   or FcCode(gOps[0]));
+ EmitEAExt(gOps[1],4);
+End;
+
+Procedure DoPvalid;
+Var
+ ea:Longint;
+Begin
+ If Not MmuOk Then Exit;
+ If Not NeedOps(2)Then Exit;
+ ea:=ResolveEA(gOps[1],M_CONTROL);
+ If ea<0 Then Exit;
+ EmitW($F000 or ea);
+ If gOps[0].kind=OK_AN Then EmitW($2C00 or gOps[0].reg)
+ Else If(gOps[0].kind=OK_MMUREG)and(gOps[0].ctrl=$5400)Then EmitW($2800)
+ Else Begin
+  Error(Tr('PVALID VAL ou An attendu','PVALID VAL or An expected'));
+  Exit;
+ End;
+ EmitEAExt(gOps[1],4);
+End;
+
+Procedure DoCinv(idx:Longint);
+Var
+ opc:Longint;
+Begin
+ If cpu<CPU_68040 Then Begin
+  Error(Tr('CINV/CPUSH requiert un 68040','CINV/CPUSH requires a 68040'));
+  Exit;
+ End;
+ opc:=InstrTab[idx].op;
+ If(opc and $18)=$18 Then Begin
+  If Not NeedOps(1)Then Exit;
+  If gOps[0].kind<>OK_CACHE Then Begin
+   Error(Tr('Specificateur de cache attendu (NC, DC, IC, BC)',
+     'Cache specifier expected (NC, DC, IC, BC)'));
+   Exit;
+  End;
+  EmitW(opc or (gOps[0].ctrl shl 6));
+ End Else Begin
+  If Not NeedOps(2)Then Exit;
+  If(gOps[0].kind<>OK_CACHE)or(gOps[1].kind<>OK_IND)Then Begin
+   Error(Tr('CINV cache,(An) attendu','CINV cache,(An) expected'));
+   Exit;
+  End;
+  EmitW(opc or (gOps[0].ctrl shl 6)or gOps[1].reg);
+ End;
+End;
+
+Procedure DoMove16;
+Var
+ a,b:Integer;
+Begin
+ If cpu<CPU_68040 Then Begin
+  Error(Tr('MOVE16 requiert un 68040','MOVE16 requires a 68040'));
+  Exit;
+ End;
+ If Not NeedOps(2)Then Exit;
+ a:=gOps[0].kind;
+ b:=gOps[1].kind;
+ If(a=OK_POST)and(b=OK_POST)Then Begin
+  EmitW($F620 or gOps[0].reg);
+  EmitW($8000 or (gOps[1].reg shl 12));
+ End Else If(a=OK_POST)and(b=OK_ABS)Then Begin
+  EmitW($F600 or gOps[0].reg);
+  EmitLongVal(gOps[1].val);
+ End Else If(a=OK_ABS)and(b=OK_POST)Then Begin
+  EmitW($F608 or gOps[1].reg);
+  EmitLongVal(gOps[0].val);
+ End Else If(a=OK_IND)and(b=OK_ABS)Then Begin
+  EmitW($F610 or gOps[0].reg);
+  EmitLongVal(gOps[1].val);
+ End Else If(a=OK_ABS)and(b=OK_IND)Then Begin
+  EmitW($F618 or gOps[1].reg);
+  EmitLongVal(gOps[0].val);
+ End Else Error(Tr('Operandes MOVE16 invalides','Invalid MOVE16 operands'));
+End;
+
 Procedure DoInstruction(cls,idx,cc:Longint;Const ext:String);
 Var
  sz,ea,v:Longint;
 Begin
  gSzRaw:=SzFromExt(ext);
+ gSpecial:=0;
+ If(cls=C_PMOVE)or(cls=C_PVALID)Then gSpecial:=1;
+ If cls=C_CINV Then gSpecial:=2;
  If cls=C_NOOP Then gN:=0 Else gN:=ParseOperands(gOps);
+ gSpecial:=0;
  If exprErr Then Exit;
  Case cls of
   C_NOOP:Begin
@@ -4218,6 +5414,37 @@ Begin
   C_CAS:DoCas;
   C_CMP2:DoCmp2(idx);
   C_PACK:DoPack(idx);
+  C_FPARITH:DoFArith(idx);
+  C_FMOVE:DoFMove(idx);
+  C_FMOVEM:DoFMovem;
+  C_FMOVECR:DoFMovecr;
+  C_FSINCOS:DoFSinCos;
+  C_FTST:DoFTst;
+  C_FNOP:Begin
+   If FpuOk Then Begin
+    EmitW($F280);
+    EmitW(0);
+   End;
+  End;
+  C_FSAVE:If FpuOk Then DoCpSave(InstrTab[idx].op,False);
+  C_FRESTORE:If FpuOk Then DoCpSave(InstrTab[idx].op,True);
+  C_FBCC:If FpuOk Then DoCpBranch($F280,cc);
+  C_FDBCC:If FpuOk Then DoCpDbcc($F200,cc);
+  C_FSCC:If FpuOk Then DoCpScc($F200,cc);
+  C_FTRAPCC:If FpuOk Then DoCpTrapcc($F200,cc);
+  C_PMOVE:DoPmove(idx);
+  C_PFLUSH:DoPflush(idx);
+  C_PLOAD:DoPload(idx);
+  C_PTEST:DoPtest(idx);
+  C_PBCC:If MmuOk Then DoCpBranch($F080,cc);
+  C_PDBCC:If MmuOk Then DoCpDbcc($F000,cc);
+  C_PSCC:If MmuOk Then DoCpScc($F000,cc);
+  C_PTRAPCC:If MmuOk Then DoCpTrapcc($F000,cc);
+  C_PSAVE:If MmuOk Then DoCpSave(InstrTab[idx].op,False);
+  C_PRESTORE:If MmuOk Then DoCpSave(InstrTab[idx].op,True);
+  C_PVALID:DoPvalid;
+  C_CINV:DoCinv(idx);
+  C_MOVE16:DoMove16;
   C_CMPM:Begin
    If Not NeedOps(2)Then Exit;
    sz:=EffSz(2,7);
@@ -4317,7 +5544,7 @@ Const
  D_OUTPUT=45; D_IGNORE=46; D_IF=47; D_ELSE=48; D_ENDC=49;
  D_IFD=50; D_IFND=51; D_IFC=52; D_IFNC=53; D_BLK=54;
 
- NDIRNAMES = 79;
+ NDIRNAMES = 83;
 
  DirNames:Array[1..NDIRNAMES] of String[8]=(
   'DC','DS','DCB','EVEN','CNOP','ORG','END','EQU','=','SET','EQUR','REG',
@@ -4328,7 +5555,7 @@ Const
   'MC68030','MC68040','IDNT','OUTPUT','FORMAT','NEAR','LISTCHAR','MASK2',
   'NOPAGE','IFEQ','IFNE','IFGT','IFGE','IFLT','IFLE','IF','ELSE','ENDC',
   'ENDIF','IFD','IFND','IFC','IFNC','BLK','CODE_C','CODE_F','DATA_C','DATA_F',
-  'BSS_C','BSS_F');
+  'BSS_C','BSS_F','MC68881','MC68882','MC68851','MC68060');
 
  DirIds:Array[1..NDIRNAMES] of Byte=(
   D_DC,D_DS,D_DCB,D_EVEN,D_CNOP,D_ORG,D_END,D_EQU,D_EQU,D_SET,D_EQUR,D_REG,
@@ -4339,7 +5566,7 @@ Const
   D_MC,D_MC,D_IDNT,D_OUTPUT,D_IGNORE,D_IGNORE,D_IGNORE,D_IGNORE,
   D_IGNORE,D_IF,D_IF,D_IF,D_IF,D_IF,D_IF,D_IF,D_ELSE,D_ENDC,
   D_ENDC,D_IFD,D_IFND,D_IFC,D_IFNC,D_BLK,D_CODE,D_CODE,D_DATA,D_DATA,
-  D_BSS,D_BSS);
+  D_BSS,D_BSS,D_MC,D_MC,D_MC,D_MC);
 
 Var
  unitName:String;
@@ -4398,7 +5625,11 @@ Begin
  If e='' Then SizeOfDirExt:=dflt Else
  If e='B' Then SizeOfDirExt:=1 Else
  If e='W' Then SizeOfDirExt:=2 Else
- If e='L' Then SizeOfDirExt:=4 Else Begin
+ If e='L' Then SizeOfDirExt:=4 Else
+ If e='S' Then SizeOfDirExt:=8 Else
+ If e='D' Then SizeOfDirExt:=9 Else
+ If e='X' Then SizeOfDirExt:=10 Else
+ If e='P' Then SizeOfDirExt:=11 Else Begin
   Error(Tr('Taille invalide pour cette directive',
     'Invalid size for this directive'));
   SizeOfDirExt:=dflt;
@@ -4443,12 +5674,57 @@ Begin
  End Else LPOS:=save;
 End;
 
+{ Nombre d'octets d'un element de donnees (formats flottants inclus) }
+Function DirByteSize(sz:Longint):Longint;
+Begin
+ Case sz of
+  8:DirByteSize:=4;
+  9:DirByteSize:=8;
+  10,11:DirByteSize:=12;
+  Else DirByteSize:=sz;
+ End;
+End;
+
+{ Un nombre flottant ou une constante entiere pour DC.S/D/X/P }
+Procedure ParseFloatItem(Var e:Extended;Var txt:String);
+Var
+ v:TVal;
+Begin
+ SkipSp;
+ If Not ScanFloat(e,txt)Then Begin
+  ExprFull(v);
+  If(v.sect<>-1)and Not v.undef Then
+   Error(Tr('Valeur relogeable non permise dans un flottant',
+     'Relocatable value not allowed in a float'));
+  e:=v.v;
+  txt:=IntStr(v.v);
+ End;
+End;
+
+Procedure DoDCFloat(sz:Longint);
+Var
+ e:Extended;
+ t:String;
+Begin
+ While True do Begin
+  ParseFloatItem(e,t);
+  If exprErr Then Exit;
+  EmitFloatValue(sz,e,t);
+  SkipSp;
+  If PeekCh=',' Then Inc(LPOS) Else Break;
+ End;
+End;
+
 Procedure DoDC(Const ext:String);
 Var
  sz:Longint;
  v:TVal;
 Begin
  sz:=SizeOfDirExt(ext,2);
+ If sz>=8 Then Begin
+  DoDCFloat(sz);
+  Exit;
+ End;
  While True do Begin
   SkipSp;
   If(sz=1)and TryStringItem Then Begin
@@ -4493,17 +5769,30 @@ Begin
   Error(Tr('Taille negative pour DS','Negative size for DS'));
   Exit;
  End;
- Reserve(n*sz);
+ Reserve(n*DirByteSize(sz));
 End;
 
 Procedure DoDCB(Const ext:String);
 Var
  sz,i:Longint;
  cnt,v:TVal;
+ fe:Extended;
+ ft:String;
 Begin
  sz:=SizeOfDirExt(ext,2);
  ExprAbsV(cnt);
  SkipSp;
+ fe:=0;
+ ft:='0';
+ If sz>=8 Then Begin
+  If PeekCh=',' Then Begin
+   Inc(LPOS);
+   ParseFloatItem(fe,ft);
+  End;
+  If exprErr Then Exit;
+  For i:=1 to cnt.v do EmitFloatValue(sz,fe,ft);
+  Exit;
+ End;
  If PeekCh=',' Then Begin
   Inc(LPOS);
   ExprFull(v);
@@ -5049,7 +6338,21 @@ Begin
   D_PRINTV:DoPrintv;
   D_MC:Begin
    If up='MC68000' Then cpu:=CPU_68000 Else
-   If up='MC68010' Then cpu:=CPU_68010 Else cpu:=CPU_68020;
+   If up='MC68010' Then cpu:=CPU_68010 Else
+   If up='MC68020' Then cpu:=CPU_68020 Else
+   If up='MC68030' Then Begin cpu:=CPU_68030;mmuFlag:=True;End Else
+   If up='MC68040' Then Begin
+    cpu:=CPU_68040;
+    fpuFlag:=True;
+    mmuFlag:=True;
+   End Else
+   If up='MC68060' Then Begin
+    cpu:=CPU_68060;
+    fpuFlag:=True;
+    mmuFlag:=True;
+   End Else
+   If(up='MC68881')or(up='MC68882')Then fpuFlag:=True Else
+   If up='MC68851' Then mmuFlag:=True;
   End;
   D_IDNT:Begin
    ParseTextArg(unitName,False);
@@ -5146,8 +6449,9 @@ Begin
     rsCnt:=m;
    End;
    Else Begin
-    If(d in [D_DC,D_DS,D_DCB,D_BLK])and((ext='W')or(ext='L')or(ext=''))Then
-      Begin
+    If(d in [D_DC,D_DS,D_DCB,D_BLK])and((ext='W')or(ext='L')or(ext='')
+      or(ext='S')or(ext='D')or(ext='X')or
+    (ext='P'))Then Begin
      AlignEven;
     End;
     If(lab<>'')and(d<>D_OFFSET)and(d<>D_SECTION)and(d<>D_CODE)and(d<>D_DATA)
@@ -5533,6 +6837,9 @@ Begin
  If caseInsSeen Then opt.c:=False;
  If(opt.c<>keyedC)or(opt.cn<>keyedCn)Then RekeySyms;
  cpu:=cpuDef;
+ fpuFlag:=cpuDef>=CPU_68040;
+ mmuFlag:=cpuDef>=CPU_68030;
+ gSpecial:=0;
  lastGlobal:='';
  rsCnt:=0;
  foCnt:=0;
@@ -5632,9 +6939,9 @@ End;
 Procedure ShowHelp;
 Begin
  If Language=1 Then Begin
-  WriteLn('GENAM : Devpac GenAm clone - 68000/68010/68020 Amiga assembler.');
+  WriteLn('GENAM : Devpac GenAm clone - 680x0, FPU, MMU Amiga assembler.');
   WriteLn;
-  WriteLn('Syntax : GENAM [options] source[.s]');
+  WriteLn('Syntax : GENAM [options] source[.s]         Help : GENAM /?');
   WriteLn;
   WriteLn('  -A          PC-relative optimisation of addresses (OPT A+)');
   WriteLn('  -C          case-insensitive labels (OPT C-)');
@@ -5650,14 +6957,17 @@ Begin
   WriteLn('  -T          type/size checking of values (OPT T+)');
   WriteLn('  -W          disable warnings (OPT W-)');
   WriteLn('  -X          export all labels as XDEF (OPT X+)');
-  WriteLn('  -68000 -68010 -68020   target processor (default 68000)');
+  WriteLn('  -680x0      target processor: 68000 (default) 68010 68020 68030');
+  WriteLn('              68040 68060, e.g. -68020');
   WriteLn('  -Q          quiet mode (no banner)');
   WriteLn;
   WriteLn('OPT directives: A C C<n> D L M O O1 O2 P S T W X (suffix + or -)');
+  WriteLn('Coprocessors: MC68881 / MC68882 (FPU), MC68851 (MMU);');
+  WriteLn('68030/68040 MMU enabled with -68030 / -68040.');
  End Else Begin
-  WriteLn('GENAM : Clone de Devpac GenAm - Assembleur 68000/68020 Amiga.');
+  WriteLn('GENAM : Clone de Devpac GenAm - Assembleur 680x0, FPU, MMU Amiga.');
   WriteLn;
-  WriteLn('Syntaxe : GENAM [options] source[.s]');
+  WriteLn('Syntaxe : GENAM [options] source[.s]        Aide : GENAM /?');
   WriteLn;
   WriteLn('  -A          optimisation PC-relative des adresses (OPT A+)');
   WriteLn('  -C          etiquettes insensibles a la casse (OPT C-)');
@@ -5673,10 +6983,13 @@ Begin
   WriteLn('  -T          verification du type/taille des valeurs (OPT T+)');
   WriteLn('  -W          desactive les avertissements (OPT W-)');
   WriteLn('  -X          exporte toutes les etiquettes en XDEF (OPT X+)');
-  WriteLn('  -68000 -68010 -68020   processeur cible (defaut 68000)');
+  WriteLn('  -680x0      processeur cible : 68000 (defaut) 68010 68020 68030');
+  WriteLn('              68040 68060, par exemple -68020');
   WriteLn('  -Q          mode silencieux (pas de banniere)');
   WriteLn;
   WriteLn('Directives OPT : A C C<n> D L M O O1 O2 P S T W X (suffixe + ou -)');
+  WriteLn('Coprocesseurs : MC68881 / MC68882 (FPU) et MC68851 (MMU) ;');
+  WriteLn('MMU 68030/68040 actives avec -68030 / -68040.');
  End;
 End;
 
@@ -5698,7 +7011,10 @@ Begin
   If p[1]='-' Then Begin
    If(Length(p)=6)and(p[2]='6')and(p[3]='8')Then Begin
     If Copy(p,2,5)='68000' Then cpuDef:=CPU_68000 Else
-    If Copy(p,2,5)='68010' Then cpuDef:=CPU_68010 Else cpuDef:=CPU_68020;
+    If Copy(p,2,5)='68010' Then cpuDef:=CPU_68010 Else
+    If Copy(p,2,5)='68030' Then cpuDef:=CPU_68030 Else
+    If Copy(p,2,5)='68040' Then cpuDef:=CPU_68040 Else
+    If Copy(p,2,5)='68060' Then cpuDef:=CPU_68060 Else cpuDef:=CPU_68020;
     Continue;
    End;
    If Length(p)<2 Then Continue;

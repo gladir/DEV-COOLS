@@ -2,7 +2,8 @@
     GENAM - Clone de Devpac GenAm (HiSoft) pour Commodore Amiga
 ==============================================================================
 
-GENAM.PAS est un assembleur Motorola 68000/68010/68020 ecrit en Turbo Pascal /
+GENAM.PAS est un assembleur Motorola 68000 a 68060 (avec coprocesseurs
+flottants 68881/68882 et MMU 68851/68030/68040) ecrit en Turbo Pascal /
 Free Pascal (unite DOS seulement). Il imite l'assembleur GenAm de Devpac et
 produit des fichiers au format AmigaOS Hunk :
 
@@ -31,7 +32,9 @@ Compilation : fpc GENAM.PAS
   -T           OPT T+  : verification stricte des valeurs
   -W           OPT W-  : supprime les avertissements
   -X           OPT X+  : exporte toutes les etiquettes (XDEF)
-  -68000 -68010 -68020   processeur cible (defaut 68000)
+  -68000 -68010 -68020 -68030 -68040 -68060   processeur cible (defaut 68000)
+  /?  ou  -h  ou  --help   affiche l'aide (en francais par defaut ;
+                           LANGUAGE=EN pour l'anglais)
   -Q           mode silencieux
 
 La langue des messages est le francais ; LANGUAGE=EN donne l'anglais.
@@ -81,7 +84,7 @@ Directives : DC DS DCB BLK EVEN CNOP ORG END EQU = SET EQUR REG
   RS SO FO RSRESET RSSET SECTION CODE DATA BSS (+ _C chip / _F fast)
   OFFSET XDEF PUBLIC XREF EXTERN INCLUDE INCDIR INCBIN MACRO ENDM MEXIT
   REPT ENDR OPT LIST NOLIST PAGE TTL SUBTTL SPC PLEN FAIL PRINTT PRINTV
-  MC68000 MC68010 MC68020 IDNT OUTPUT
+  MC68000 ... MC68060 MC68881 MC68882 MC68851 IDNT OUTPUT
   IFEQ IFNE IFGT IFGE IFLT IFLE IF IFD IFND IFC IFNC ELSE ENDC ENDIF
 
 Macros : parametres \1..\9, \@ (suffixe unique), \0 (taille), \<symbole>.
@@ -98,8 +101,27 @@ Les arguments contenant des virgules se placent entre < >.
           (BFTST ... BFINS), CAS, CMP2/CHK2, PACK/UNPK, TRAPcc, CHK.L,
           Bcc.L, modes (bd,An,Xn.s*echelle) et indirections memoire
           ([bd,An],Xn,od) / ([bd,An,Xn],od).
-  Non pris en charge : coprocesseurs (68881/68882, MMU), 68030/68040
-  specifiques.
+  68030/68040 : instructions MMU (voir ci-dessous), CINV, CPUSH, MOVE16.
+
+  Coprocesseur flottant 68881/68882 (actif des le 68020, ou apres MC68881 /
+  MC68882 pour un 68000/68010) :
+    FMOVE FMOVEM (registres FP et de controle FPCR/FPSR/FPIAR, listes, facteur K
+    {#k} / {Dn}) FMOVECR FSINCOS FTST FNOP FSAVE FRESTORE FBcc FDBcc FScc
+    FTRAPcc (les 32 conditions), toutes les fonctions monadiques (FABS FNEG
+    FSQRT FSIN FCOS FTAN FASIN FACOS FATAN FSINH FCOSH FTANH FATANH FETOX
+    FETOXM1 FTWOTOX FTENTOX FLOGN FLOGNP1 FLOG10 FLOG2 FINT FINTRZ FGETEXP
+    FGETMAN) et dyadiques (FADD FSUB FMUL FDIV FMOD FREM FSCALE FSGLDIV FSGLMUL
+    FCMP) ainsi que les variantes 68040 FSxxx / FDxxx (FSMOVE, FDADD...).
+    Formats .B .W .L .S .D .X .P ; litteraux flottants (1.5, -2.5e3) en
+    immediat (#1.5) et dans DC.S DC.D DC.X DC.P, DS.x et DCB.x.
+
+  MMU : 68851 / 68030 : PMOVE (TC SRP CRP DRP CAL VAL SCC AC PSR PCSR TT0 TT1),
+    PMOVEFD, PFLUSH, PFLUSHA, PLOADR/W, PTESTR/W, PVALID, PSAVE, PRESTORE,
+    PBcc, PDBcc, PScc, PTRAPcc.
+    68040 : PFLUSH (An), PFLUSHN, PFLUSHA, PFLUSHAN, PTESTR/W (An), CINVL/P/A,
+    CPUSHL/P/A, MOVE16.
+  Directives : MC68000 MC68010 MC68020 MC68030 MC68040 MC68060 MC68881
+  MC68882 MC68851.
 
 ==============================================================================
 5. FORMAT DE SORTIE
