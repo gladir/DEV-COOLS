@@ -6965,7 +6965,7 @@ Begin
   WriteLn('Coprocessors: MC68881 / MC68882 (FPU), MC68851 (MMU);');
   WriteLn('68030/68040 MMU enabled with -68030 / -68040.');
  End Else Begin
-  WriteLn('GENAM : Clone de Devpac GenAm - Assembleur 680x0, FPU, MMU Amiga.');
+  WriteLn('GENAM : Cette commande permet de lancer un clone de Devpac GenAm - Assembleur 680x0, FPU, MMU Amiga.');
   WriteLn;
   WriteLn('Syntaxe : GENAM [options] source[.s]        Aide : GENAM /?');
   WriteLn;
