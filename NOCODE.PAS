@@ -7510,12 +7510,13 @@ End;
   ============================================================ }
 Procedure Usage;
 Begin
- WriteLn('NOCODE ',NOCODE_VERSION,' - desassembleur / decompilateur C/C++ (clone de Snowman)');
+ WriteLn('NOCODE ',NOCODE_VERSION,' - Cette commande permet de lancer le '+
+         'desassembleur / decompilateur C/C++ (clone de Snowman).');
  WriteLn;
  WriteLn('Syntaxe : NOCODE [options] [--] fichier...');
  WriteLn;
  WriteLn('Options :');
- WriteLn('  --help, -h                  Affiche cette aide.');
+ WriteLn('  --help, -h, /?              Affiche cette aide.');
  WriteLn('  --verbose, -v               Affiche la progression sur la sortie d''erreur.');
  WriteLn('  --print-sections[=FILE]     Affiche les sections du fichier executable.');
  WriteLn('  --print-symbols[=FILE]      Extrait les symboles du programme.');
@@ -7564,6 +7565,7 @@ Begin
  While I<=ParamCount do Begin
   A:=ParamStr(I);
   Inc(I);
+  If(Not OnlyFiles)and(A='/?')Then Begin OptHelp:=True;Continue;End;
   If OnlyFiles or(A='')or(A[1]<>'-')or(A='-')Then Begin
    If NFiles<MAXFILES Then Begin Files[NFiles]:=A;Inc(NFiles);End;
    Continue;
