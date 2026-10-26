@@ -385,6 +385,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer l'interpréteur de langage de programmation BASIC.</td>
 		</tr>
 		<tr>
+			<td><b>BASIC09.PAS</b></td>
+			<td>Cette commande permet de lancer un clone du langage de programmation BASIC09 de Microware (OS-9). Il comprend un analyseur lexical et syntaxique, un compilateur I-code compatible BASIC09 (jetons d'origine), un « binder », un éditeur de procédures, la génération de modules binaires BASIC09 (commande PACK) et une machine virtuelle exécutant les I-codes (basic09 fichier.bas -r procédure).</td>
+		</tr>
+		<tr>
 			<td><b>BCPL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur BCPL pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
