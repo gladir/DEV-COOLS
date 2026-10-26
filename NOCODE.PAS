@@ -450,7 +450,7 @@ Begin
 End;
 
 Procedure PutSegBytes(S:LongInt;SegOfs:Int64;FileOfs:Int64;Count:Int64);
-Var I:Int64;
+Var I:LongInt;
 Begin
  If S<0 Then Exit;
  For I:=0 to Count-1 do Begin
