@@ -28758,6 +28758,5877 @@ begin
   else
     BufAdd(LLDecls, 'declare ' + s + ' @' + Insts[i].sym + '(' + ps + ')'#10);
 end;
+{ ============================================================ }
+{ Backend integre : encodeur x86-64                            }
+{ ============================================================ }
+
+Const
+  rAX = 0; rCX = 1; rDX = 2; rBX = 3; rSP = 4; rBP = 5; rSI = 6; rDI = 7;
+  r8 = 8; r9 = 9; r10 = 10; r11 = 11; r12 = 12; r13 = 13; r14 = 14; r15 = 15;
+  ccO = 0; ccNO = 1; ccB = 2; ccAE = 3; ccE = 4; ccNE = 5; ccBE = 6; ccA = 7;
+  ccS = 8; ccNS = 9; ccP = 10; ccNP = 11; ccL = 12; ccGE = 13; ccLE = 14; ccG =
+      15;
+  aAdd = 0; aOr = 1; aAdc = 2; aSbb = 3; aAnd = 4; aSub = 5; aXor = 6; aCmp = 7;
+  { natures de correction (fixups) }
+  fxRel = 1;      { rel32 vers l'adresse du symbole }
+  fxGot = 2;      { rel32 vers l'entree GOT du symbole importe }
+  fxAbs = 3;      { adresse absolue 64 bits }
+
+Type
+  TBxMem = record
+    base: Integer;     { registre ; -1 : relatif a RIP }
+    disp: Int64;
+    sym: Integer;
+    fk: Integer;       { fxRel ou fxGot }
+  end;
+
+  TBxFix = record
+    pos: Integer;      { offset du champ de 4 octets dans le code }
+    sym: Integer;
+    add: Int64;
+    kind: Integer;
+    tail: Integer;     { octets qui suivent le champ dans l'instruction }
+  end;
+
+Var
+  BxCode: array of Byte;
+  BxN: Integer;
+  BxFixes: array of TBxFix;
+  BxNFix: Integer;
+
+procedure BxCodeInit;
+begin
+  SetLength(BxCode, 1 shl 16);
+  BxN := 0;
+  SetLength(BxFixes, 1024);
+  BxNFix := 0;
+end;
+
+procedure Bx1(b: Integer);
+begin
+  if BxN >= Length(BxCode) then SetLength(BxCode, Length(BxCode) * 2);
+  BxCode[BxN] := Byte(b and $FF);
+  Inc(BxN);
+end;
+
+procedure Bx4(v: Int64);
+begin
+  Bx1(Integer(v and $FF));
+  Bx1(Integer((v shr 8) and $FF));
+  Bx1(Integer((v shr 16) and $FF));
+  Bx1(Integer((v shr 24) and $FF));
+end;
+
+procedure Bx8(v: Int64);
+begin
+  Bx4(v and $FFFFFFFF);
+  Bx4((v shr 32) and $FFFFFFFF);
+end;
+
+procedure BxPatch4(pos: Integer; v: Int64);
+begin
+  BxCode[pos] := Byte(v and $FF);
+  BxCode[pos + 1] := Byte((v shr 8) and $FF);
+  BxCode[pos + 2] := Byte((v shr 16) and $FF);
+  BxCode[pos + 3] := Byte((v shr 24) and $FF);
+end;
+
+procedure BxAddFix(sym: Integer; add: Int64; kind, tail: Integer);
+begin
+  if BxNFix >= Length(BxFixes) then SetLength(BxFixes, Length(BxFixes) * 2);
+  BxFixes[BxNFix].pos := BxN;
+  BxFixes[BxNFix].sym := sym;
+  BxFixes[BxNFix].add := add;
+  BxFixes[BxNFix].kind := kind;
+  BxFixes[BxNFix].tail := tail;
+  Inc(BxNFix);
+  Bx4(0);
+end;
+
+procedure BxAddFixAt(pos: Integer; sym: Integer; add: Int64; kind, tail:
+    Integer);
+begin
+  if BxNFix >= Length(BxFixes) then SetLength(BxFixes, Length(BxFixes) * 2);
+  BxFixes[BxNFix].pos := pos;
+  BxFixes[BxNFix].sym := sym;
+  BxFixes[BxNFix].add := add;
+  BxFixes[BxNFix].kind := kind;
+  BxFixes[BxNFix].tail := tail;
+  Inc(BxNFix);
+end;
+
+function MemB(base: Integer; disp: Int64): TBxMem;
+begin
+  Result.base := base;
+  Result.disp := disp;
+  Result.sym := -1;
+  Result.fk := 0;
+end;
+
+function MemSym(sym: Integer; add: Int64): TBxMem;
+begin
+  Result.base := -1;
+  Result.disp := add;
+  Result.sym := sym;
+  Result.fk := fxRel;
+end;
+
+{ prefixe optionnel, REX, code operation (1 a 3 octets) }
+procedure BxOpcode(pfx: Integer; w: Boolean; reg, rmBase, rmIndex: Integer;
+    force: Boolean; opc: Integer);
+var
+  rex: Integer;
+begin
+  if pfx <> 0 then Bx1(pfx);
+  rex := 0;
+  if w then rex := rex or 8;
+  if reg >= 8 then rex := rex or 4;
+  if rmIndex >= 8 then rex := rex or 2;
+  if rmBase >= 8 then rex := rex or 1;
+  if (rex <> 0) or force then Bx1($40 or rex);
+  if opc > $FFFF then Bx1((opc shr 16) and $FF);
+  if opc > $FF then Bx1((opc shr 8) and $FF);
+  Bx1(opc and $FF);
+end;
+
+{ reg, reg }
+procedure EncRR(pfx: Integer; w: Boolean; opc, reg, rm: Integer; force:
+    Boolean);
+begin
+  BxOpcode(pfx, w, reg, rm, 0, force, opc);
+  Bx1($C0 or ((reg and 7) shl 3) or (rm and 7));
+end;
+
+{ reg, [mem] ; tail : octets d'immediat qui suivent }
+procedure EncRM(pfx: Integer; w: Boolean; opc, reg: Integer; const m: TBxMem;
+    force: Boolean; tail: Integer);
+var
+  b, d: Integer;
+begin
+  if m.base < 0 then
+  begin
+    BxOpcode(pfx, w, reg, 0, 0, force, opc);
+    Bx1(((reg and 7) shl 3) or 5);
+    BxAddFix(m.sym, m.disp, m.fk, tail);
+    Exit;
+  end;
+  BxOpcode(pfx, w, reg, m.base, 0, force, opc);
+  b := m.base and 7;
+  if (m.disp = 0) and (b <> 5) then
+  begin
+    if b = 4 then begin Bx1(((reg and 7) shl 3) or 4); Bx1($24); end
+    else Bx1(((reg and 7) shl 3) or b);
+  end
+  else if (m.disp >= -128) and (m.disp <= 127) then
+  begin
+    d := Integer(m.disp);
+    if b = 4 then begin Bx1($40 or ((reg and 7) shl 3) or 4); Bx1($24); end
+    else Bx1($40 or ((reg and 7) shl 3) or b);
+    Bx1(d and $FF);
+  end
+  else
+  begin
+    if b = 4 then begin Bx1($80 or ((reg and 7) shl 3) or 4); Bx1($24); end
+    else Bx1($80 or ((reg and 7) shl 3) or b);
+    Bx4(m.disp);
+  end;
+end;
+
+{ ---- deplacements ---- }
+procedure MovRR(d, s: Integer);
+begin
+  if d <> s then EncRR(0, True, $89, s, d, False);
+end;
+
+procedure MovRR32(d, s: Integer);
+begin
+  EncRR(0, False, $89, s, d, False);
+end;
+
+procedure MovRI(d: Integer; v: Int64);
+begin
+  if v = 0 then EncRR(0, False, $31, d, d, False)
+  else if (v > 0) and (v <= $FFFFFFFF) then
+  begin
+    if d >= 8 then Bx1($41);
+    Bx1($B8 + (d and 7));
+    Bx4(v);
+  end
+  else if (v >= -$80000000) and (v < 0) then
+  begin
+    EncRR(0, True, $C7, 0, d, False);
+    Bx4(v);
+  end
+  else
+  begin
+    Bx1($48 or (d shr 3));
+    Bx1($B8 + (d and 7));
+    Bx8(v);
+  end;
+end;
+
+{ chargement avec extension par zero de sz octets (1, 2, 4, 8) }
+procedure MovRM(d: Integer; const m: TBxMem; sz: Integer);
+begin
+  case sz of
+    1: EncRM(0, False, $0FB6, d, m, False, 0);
+    2: EncRM(0, False, $0FB7, d, m, False, 0);
+    4: EncRM(0, False, $8B, d, m, False, 0);
+  else
+    EncRM(0, True, $8B, d, m, False, 0);
+  end;
+end;
+
+{ chargement avec extension de signe }
+procedure MovRMSx(d: Integer; const m: TBxMem; sz: Integer);
+begin
+  case sz of
+    1: EncRM(0, True, $0FBE, d, m, False, 0);
+    2: EncRM(0, True, $0FBF, d, m, False, 0);
+    4: EncRM(0, True, $63, d, m, False, 0);
+  else
+    EncRM(0, True, $8B, d, m, False, 0);
+  end;
+end;
+
+procedure MovMR(const m: TBxMem; s: Integer; sz: Integer);
+begin
+  case sz of
+    1: EncRM(0, False, $88, s, m, s >= 4, 0);
+    2: EncRM($66, False, $89, s, m, False, 0);
+    4: EncRM(0, False, $89, s, m, False, 0);
+  else
+    EncRM(0, True, $89, s, m, False, 0);
+  end;
+end;
+
+{ stockage d'un immediat 32 bits (etendu en signe pour sz = 8) ; ne pas utiliser
+    avec RIP }
+procedure MovMI(const m: TBxMem; v: Int64; sz: Integer);
+begin
+  case sz of
+    1: begin EncRM(0, False, $C6, 0, m, False, 1); Bx1(Integer(v and $FF)); end;
+    2: begin EncRM($66, False, $C7, 0, m, False, 2); Bx1(Integer(v and $FF));
+        Bx1(Integer((v shr 8) and $FF)); end;
+    4: begin EncRM(0, False, $C7, 0, m, False, 4); Bx4(v); end;
+  else
+    begin EncRM(0, True, $C7, 0, m, False, 4); Bx4(v); end;
+  end;
+end;
+
+procedure Lea(d: Integer; const m: TBxMem);
+begin
+  EncRM(0, True, $8D, d, m, False, 0);
+end;
+
+procedure MovsxdRR(d, s: Integer);
+begin
+  EncRR(0, True, $63, d, s, False);
+end;
+
+{ extension par zero d'un registre depuis sz octets }
+procedure ZextR(r: Integer; sz: Integer);
+begin
+  case sz of
+    1: EncRR(0, False, $0FB6, r, r, r >= 4);
+    2: EncRR(0, False, $0FB7, r, r, False);
+    4: EncRR(0, False, $8B, r, r, False);
+  end;
+end;
+
+procedure SextR(r: Integer; sz: Integer);
+begin
+  case sz of
+    1: EncRR(0, True, $0FBE, r, r, False);
+    2: EncRR(0, True, $0FBF, r, r, False);
+    4: EncRR(0, True, $63, r, r, False);
+  end;
+end;
+
+{ ---- arithmetique ---- }
+procedure AluRR(op, d, s: Integer; w: Boolean);
+begin
+  EncRR(0, w, op * 8 + 1, s, d, False);
+end;
+
+procedure AluRI(op, d: Integer; v: Int64; w: Boolean);
+begin
+  if (v >= -128) and (v <= 127) then
+  begin
+    EncRR(0, w, $83, op, d, False);
+    Bx1(Integer(v and $FF));
+  end
+  else
+  begin
+    EncRR(0, w, $81, op, d, False);
+    Bx4(v);
+  end;
+end;
+
+procedure AluRM(op, d: Integer; const m: TBxMem; w: Boolean);
+begin
+  EncRM(0, w, op * 8 + 3, d, m, False, 0);
+end;
+
+procedure AluMR(op: Integer; const m: TBxMem; s: Integer; w: Boolean);
+begin
+  EncRM(0, w, op * 8 + 1, s, m, False, 0);
+end;
+
+procedure TestRR(a, b: Integer; w: Boolean);
+begin
+  EncRR(0, w, $85, b, a, False);
+end;
+
+procedure ImulRR(d, s: Integer; w: Boolean);
+begin
+  EncRR(0, w, $0FAF, d, s, False);
+end;
+
+procedure ImulRRI(d, s: Integer; v: Int64; w: Boolean);
+begin
+  EncRR(0, w, $69, d, s, False);
+  Bx4(v);
+end;
+
+{ F7 /n : not(2) neg(3) mul(4) imul(5) div(6) idiv(7) }
+procedure GrpF7(n, r: Integer; w: Boolean);
+begin
+  EncRR(0, w, $F7, n, r, False);
+end;
+
+procedure Cqo;
+begin
+  Bx1($48); Bx1($99);
+end;
+
+procedure ShiftCL(n, r: Integer; w: Boolean);   { 4 shl, 5 shr, 7 sar }
+begin
+  EncRR(0, w, $D3, n, r, False);
+end;
+
+procedure ShiftI(n, r: Integer; cnt: Integer; w: Boolean);
+begin
+  EncRR(0, w, $C1, n, r, False);
+  Bx1(cnt);
+end;
+
+procedure ShldCL(d, s: Integer);
+begin
+  EncRR(0, True, $0FA5, s, d, False);
+end;
+
+procedure ShrdCL(d, s: Integer);
+begin
+  EncRR(0, True, $0FAD, s, d, False);
+end;
+
+procedure SetCC(cc, r: Integer);
+begin
+  EncRR(0, False, $0F90 + cc, 0, r, r >= 4);
+end;
+
+procedure CmovRR(cc, d, s: Integer; w: Boolean);
+begin
+  EncRR(0, w, $0F40 + cc, d, s, False);
+end;
+
+procedure BsrRR(d, s: Integer);
+begin
+  EncRR(0, True, $0FBD, d, s, False);
+end;
+
+procedure BsfRR(d, s: Integer);
+begin
+  EncRR(0, True, $0FBC, d, s, False);
+end;
+
+procedure PopcntRR(d, s: Integer);
+begin
+  EncRR($F3, True, $0FB8, d, s, False);
+end;
+
+procedure BswapR(r: Integer; w: Boolean);
+begin
+  if w or (r >= 8) then Bx1($40 or (Ord(w) * 8) or (r shr 3));
+  Bx1($0F);
+  Bx1($C8 + (r and 7));
+end;
+
+procedure PushR(r: Integer);
+begin
+  if r >= 8 then Bx1($41);
+  Bx1($50 + (r and 7));
+end;
+
+procedure PopR(r: Integer);
+begin
+  if r >= 8 then Bx1($41);
+  Bx1($58 + (r and 7));
+end;
+
+procedure Ret;
+begin
+  Bx1($C3);
+end;
+
+procedure Leave;
+begin
+  Bx1($C9);
+end;
+
+procedure Ud2;
+begin
+  Bx1($0F); Bx1($0B);
+end;
+
+procedure CallR(r: Integer);
+begin
+  EncRR(0, False, $FF, 2, r, False);
+end;
+
+procedure JmpR(r: Integer);
+begin
+  EncRR(0, False, $FF, 4, r, False);
+end;
+
+{ call [rip+got] }
+procedure CallGot(sym: Integer);
+begin
+  Bx1($FF); Bx1($15);
+  BxAddFix(sym, 0, fxGot, 0);
+end;
+
+procedure CallSym(sym: Integer);
+begin
+  Bx1($E8);
+  BxAddFix(sym, 0, fxRel, 0);
+end;
+
+{ ---- SSE ---- }
+procedure MovqXR(x, r: Integer);        { movq xmm, r64 }
+begin
+  EncRR($66, True, $0F6E, x, r, False);
+end;
+
+procedure MovdXR(x, r: Integer);        { movd xmm, r32 }
+begin
+  EncRR($66, False, $0F6E, x, r, False);
+end;
+
+procedure MovqRX(r, x: Integer);        { movq r64, xmm }
+begin
+  EncRR($66, True, $0F7E, x, r, False);
+end;
+
+procedure MovdRX(r, x: Integer);        { movd r32, xmm }
+begin
+  EncRR($66, False, $0F7E, x, r, False);
+end;
+
+{ operations arithmetiques scalaires : opc = 58 add, 59 mul, 5C sub, 5E div, 51
+    sqrt, 5A cvt }
+procedure SseRR(dbl: Boolean; opc, d, s: Integer);
+begin
+  if dbl then EncRR($F2, False, $0F00 + opc, d, s, False)
+  else EncRR($F3, False, $0F00 + opc, d, s, False);
+end;
+
+procedure UcomiRR(dbl: Boolean; a, b: Integer);
+begin
+  if dbl then EncRR($66, False, $0F2E, a, b, False)
+  else EncRR(0, False, $0F2E, a, b, False);
+end;
+
+{ cvtsi2sd/ss xmm, r64 }
+procedure CvtSi2F(dbl: Boolean; x, r: Integer);
+begin
+  if dbl then EncRR($F2, True, $0F2A, x, r, False)
+  else EncRR($F3, True, $0F2A, x, r, False);
+end;
+
+{ cvttsd2si / cvttss2si r64, xmm }
+procedure CvttF2Si(dbl: Boolean; r, x: Integer);
+begin
+  if dbl then EncRR($F2, True, $0F2C, r, x, False)
+  else EncRR($F3, True, $0F2C, r, x, False);
+end;
+
+{ ---- sauts ---- }
+function JmpRel32: Integer;     { retourne la position du champ a corriger }
+begin
+  Bx1($E9);
+  Result := BxN;
+  Bx4(0);
+end;
+
+function JccRel32(cc: Integer): Integer;
+begin
+  Bx1($0F);
+  Bx1($80 + cc);
+  Result := BxN;
+  Bx4(0);
+end;
+
+procedure PatchHere(pos: Integer);
+begin
+  BxPatch4(pos, BxN - (pos + 4));
+end;
+
+procedure PatchTo(pos, target: Integer);
+begin
+  BxPatch4(pos, target - (pos + 4));
+end;
+{ ============================================================ }
+{ Backend integre : types LLVM, symboles, globales, lecture    }
+{ ============================================================ }
+
+Const
+  ltVoid = 0; ltInt = 1; ltPtr = 2; ltFloat = 3; ltDouble = 4; ltStruct = 5;
+      ltArray = 6;
+  skUndef = 0; skFunc = 1; skData = 2; skImpF = 3; skImpD = 4;
+  secRo = 1; secData = 2; secBss = 3;
+  okNone = 0; okInt = 1; okVal = 2; okSym = 3;
+  vkNone = 0; vkSlot = 1; vkFrame = 2; vkSym = 3;
+
+Type
+  TInt64Arr = array of Int64;
+  TByteArr = array of Byte;
+
+  TBxTy = record
+    k: Integer;
+    bits: Integer;
+    size, align: Int64;
+    cnt: Int64;
+    elems: TIntArr;
+    offs: TInt64Arr;
+  end;
+
+  TBxSym = record
+    name: string;
+    kind: Integer;
+    sec: Integer;
+    off: Int64;
+    size, align: Int64;
+    got: Integer;
+    vararg: Boolean;
+    msabi: Boolean;
+    addr: Int64;
+  end;
+
+  TBxOp = record
+    k: Integer;
+    ty: Integer;
+    v, hi: Int64;
+    sym: Integer;
+    idx: Integer;
+  end;
+
+  TBxDRel = record
+    sec: Integer;
+    off: Int64;
+    sym: Integer;
+    add: Int64;
+  end;
+
+Var
+  BxTys: array of TBxTy;
+  BxNTys: Integer;
+  BxTyMap: THashSI;
+  BxIntTy: array[0..128] of Integer;
+  TyVoidI, TyPtrI, TyF32I, TyF64I, TyI1I, TyI8I, TyI16I, TyI32I, TyI64I,
+      TyI128I: Integer;
+  BxSyms: array of TBxSym;
+  BxNSyms: Integer;
+  BxSymMap: THashSI;
+  BxRo, BxDat: TByteArr;
+  BxRoN, BxDatN: Integer;
+  BxBss: Int64;
+  BxDRels: array of TBxDRel;
+  BxNDRel: Integer;
+  BxErr: string;
+  BxFailed: Boolean;
+  BxDebugFlag: Boolean;
+  BxWin: Boolean;
+  WinStubOff: Int64;
+  { module en cours de lecture }
+  MT: string;
+  MP: Integer;
+  { ligne courante }
+  LS: string;
+  LP: Integer;
+  LineNo: Integer;
+
+function WriteBytesToFile(const fn: string; var buf: TByteArr; n: Integer):
+    Boolean;
+var
+  f: file;
+  put: LongInt;
+begin
+  Assign(f, fn);
+  Rewrite(f, 1);
+  if IOResult <> 0 then begin Result := False; Exit; end;
+  if n > 0 then BlockWrite(f, buf[0], n, put);
+  Close(f);
+  Result := IOResult = 0;
+end;
+
+procedure BxFail(const s: string);
+begin
+  if not BxFailed then BxErr := s + ' [' + IntToStr(LP) + ': ' + Copy(LS, 1,
+      140) + ']';
+  BxFailed := True;
+end;
+
+{ ---- types ---- }
+function NewTy(k: Integer; bits: Integer; size, align: Int64): Integer;
+begin
+  if BxNTys >= Length(BxTys) then SetLength(BxTys, Length(BxTys) * 2 + 16);
+  BxTys[BxNTys].k := k;
+  BxTys[BxNTys].bits := bits;
+  BxTys[BxNTys].size := size;
+  BxTys[BxNTys].align := align;
+  BxTys[BxNTys].cnt := 0;
+  BxTys[BxNTys].elems := nil;
+  BxTys[BxNTys].offs := nil;
+  Result := BxNTys;
+  Inc(BxNTys);
+end;
+
+function IntTy(bits: Integer): Integer;
+var
+  sz, al: Int64;
+begin
+  if (bits < 1) or (bits > 128) then begin BxFail('type entier non supporte');
+      bits := 64; end;
+  if BxIntTy[bits] < 0 then
+  begin
+    if bits <= 8 then sz := 1
+    else if bits <= 16 then sz := 2
+    else if bits <= 32 then sz := 4
+    else if bits <= 64 then sz := 8
+    else sz := 16;
+    al := sz;
+    BxIntTy[bits] := NewTy(ltInt, bits, sz, al);
+  end;
+  Result := BxIntTy[bits];
+end;
+
+procedure TypesInit;
+var
+  i: Integer;
+begin
+  SetLength(BxTys, 64);
+  BxNTys := 0;
+  HInit(BxTyMap);
+  for i := 0 to 128 do BxIntTy[i] := -1;
+  TyVoidI := NewTy(ltVoid, 0, 0, 1);
+  TyPtrI := NewTy(ltPtr, 64, 8, 8);
+  TyF32I := NewTy(ltFloat, 32, 4, 4);
+  TyF64I := NewTy(ltDouble, 64, 8, 8);
+  TyI1I := IntTy(1);
+  TyI8I := IntTy(8);
+  TyI16I := IntTy(16);
+  TyI32I := IntTy(32);
+  TyI64I := IntTy(64);
+  TyI128I := IntTy(128);
+end;
+
+{ ---- curseur de ligne ---- }
+procedure SkipSp;
+begin
+  while (LP <= Length(LS)) and ((LS[LP] = ' ') or (LS[LP] = #9)) do Inc(LP);
+end;
+
+function AtEnd: Boolean;
+begin
+  SkipSp;
+  Result := LP > Length(LS);
+end;
+
+function CurCh: Char;
+begin
+  SkipSp;
+  if LP <= Length(LS) then Result := LS[LP] else Result := #0;
+end;
+
+function IsWordCh(c: Char): Boolean;
+begin
+  Result := ((c >= 'a') and (c <= 'z')) or ((c >= 'A') and (c <= 'Z')) or ((c >=
+      '0') and (c <= '9')) or
+            (c = '_') or (c = '.') or (c = '$') or (c = '-');
+end;
+
+{ mot : lettres, chiffres, _ . $ - }
+function ReadWord: string;
+var
+  st: Integer;
+begin
+  SkipSp;
+  st := LP;
+  while (LP <= Length(LS)) and IsWordCh(LS[LP]) do Inc(LP);
+  Result := Copy(LS, st, LP - st);
+end;
+
+function PeekWord: string;
+var
+  sv: Integer;
+begin
+  sv := LP;
+  Result := ReadWord;
+  LP := sv;
+end;
+
+function Accept(c: Char): Boolean;
+begin
+  SkipSp;
+  if (LP <= Length(LS)) and (LS[LP] = c) then begin Inc(LP); Result := True; end
+  else Result := False;
+end;
+
+procedure Expect(c: Char);
+begin
+  if not Accept(c) then BxFail('IR : `' + c + '` attendu dans `' + Copy(LS, 1,
+      100) + '`');
+end;
+
+function AcceptWord(const w: string): Boolean;
+var
+  sv: Integer;
+begin
+  sv := LP;
+  if ReadWord = w then Result := True
+  else begin LP := sv; Result := False; end;
+end;
+
+function BxHexVal(c: Char): Integer;
+begin
+  if (c >= '0') and (c <= '9') then Result := Ord(c) - 48
+  else if (c >= 'a') and (c <= 'f') then Result := Ord(c) - 87
+  else if (c >= 'A') and (c <= 'F') then Result := Ord(c) - 55
+  else Result := 0;
+end;
+
+{ nom precede de % ou @ : le caractere initial est deja consomme ; gere les
+    guillemets (\XX) }
+function ReadName: string;
+var
+  st: Integer;
+  r: string;
+begin
+  if (LP <= Length(LS)) and (LS[LP] = '"') then
+  begin
+    Inc(LP);
+    r := '';
+    while (LP <= Length(LS)) and (LS[LP] <> '"') do
+    begin
+      if (LS[LP] = '\') and (LP + 2 <= Length(LS)) and (LS[LP + 1] <> '\') then
+      begin
+        r := r + Chr(BxHexVal(LS[LP + 1]) * 16 + BxHexVal(LS[LP + 2]));
+        Inc(LP, 3);
+      end
+      else if (LS[LP] = '\') and (LP + 1 <= Length(LS)) then begin r := r + '\';
+          Inc(LP, 2); end
+      else begin r := r + LS[LP]; Inc(LP); end;
+    end;
+    Inc(LP);
+    Result := r;
+  end
+  else
+  begin
+    st := LP;
+    while (LP <= Length(LS)) and IsWordCh(LS[LP]) do Inc(LP);
+    Result := Copy(LS, st, LP - st);
+  end;
+end;
+
+function NextLine(var ln: string): Boolean;
+var
+  e: Integer;
+begin
+  if MP > Length(MT) then begin Result := False; Exit; end;
+  e := MP;
+  while (e <= Length(MT)) and (MT[e] <> #10) do Inc(e);
+  ln := Copy(MT, MP, e - MP);
+  MP := e + 1;
+  Inc(LineNo);
+  Result := True;
+end;
+
+{ ---- decimal : lecture d'un entier (eventuellement 128 bits) ---- }
+procedure ReadInt128(var lo, hi: Int64);
+var
+  neg: Boolean;
+  l0, l1, l2, l3: QWord;
+  t: QWord;
+  d: Integer;
+begin
+  SkipSp;
+  neg := False;
+  if (LP <= Length(LS)) and (LS[LP] = '-') then begin neg := True; Inc(LP); end;
+  l0 := 0; l1 := 0; l2 := 0; l3 := 0;
+  while (LP <= Length(LS)) and (LS[LP] >= '0') and (LS[LP] <= '9') do
+  begin
+    d := Ord(LS[LP]) - 48;
+    t := l0 * 10 + d; l0 := t and $FFFFFFFF; t := (t shr 32) + l1 * 10;
+    l1 := t and $FFFFFFFF;      t := (t shr 32) + l2 * 10;
+    l2 := t and $FFFFFFFF;      t := (t shr 32) + l3 * 10;
+    l3 := t and $FFFFFFFF;
+    Inc(LP);
+  end;
+  lo := Int64(l0 or (l1 shl 32));
+  hi := Int64(l2 or (l3 shl 32));
+  if neg then
+  begin
+    lo := not lo;
+    hi := not hi;
+    lo := lo + 1;
+    if lo = 0 then hi := hi + 1;
+  end;
+end;
+
+{ ---- analyse d'un type ---- }
+function ParseTy: Integer;
+var
+  w, key: string;
+  st, n, i: Integer;
+  el: TIntArr;
+  cnt: Int64;
+  elT, id: Integer;
+  off, al, sz: Int64;
+  hi: Int64;
+begin
+  SkipSp;
+  st := LP;
+  Result := TyVoidI;
+  if Accept('{') then
+  begin
+    SetLength(el, 0);
+    if not Accept('}') then
+    begin
+      repeat
+        n := ParseTy;
+        SetLength(el, Length(el) + 1);
+        el[Length(el) - 1] := n;
+      until not Accept(',');
+      Expect('}');
+    end;
+    key := Copy(LS, st, LP - st);
+    id := HFind(BxTyMap, key);
+    if id >= 0 then begin Result := id; Exit; end;
+    off := 0; al := 1;
+    id := NewTy(ltStruct, 0, 0, 1);
+    SetLength(BxTys[id].offs, Length(el));
+    for i := 0 to Length(el) - 1 do
+    begin
+      n := el[i];
+      sz := BxTys[n].size;
+      if BxTys[n].align > 0 then off := (off + BxTys[n].align - 1) div
+          BxTys[n].align * BxTys[n].align;
+      BxTys[id].offs[i] := off;
+      off := off + sz;
+      if BxTys[n].align > al then al := BxTys[n].align;
+    end;
+    BxTys[id].elems := el;
+    BxTys[id].align := al;
+    BxTys[id].size := (off + al - 1) div al * al;
+    HPut(BxTyMap, key, id);
+    Result := id;
+    Exit;
+  end;
+  if Accept('[') then
+  begin
+    ReadInt128(cnt, hi);
+    if not AcceptWord('x') then BxFail('IR : `x` attendu dans un type tableau');
+    elT := ParseTy;
+    Expect(']');
+    key := Copy(LS, st, LP - st);
+    id := HFind(BxTyMap, key);
+    if id >= 0 then begin Result := id; Exit; end;
+    id := NewTy(ltArray, 0, cnt * BxTys[elT].size, BxTys[elT].align);
+    BxTys[id].cnt := cnt;
+    SetLength(BxTys[id].elems, 1);
+    BxTys[id].elems[0] := elT;
+    HPut(BxTyMap, key, id);
+    Result := id;
+    Exit;
+  end;
+  w := ReadWord;
+  if w = 'void' then Result := TyVoidI
+  else if w = 'ptr' then Result := TyPtrI
+  else if w = 'float' then Result := TyF32I
+  else if w = 'double' then Result := TyF64I
+  else if (Length(w) > 1) and (w[1] = 'i') and (w[2] >= '0') and (w[2] <= '9')
+      then
+    Result := IntTy(StrToIntDef(Copy(w, 2, Length(w)), 64))
+  else
+  begin
+    BxFail('IR : type non supporte `' + w + '`');
+    Result := TyI64I;
+  end;
+end;
+
+function TySz(t: Integer): Int64;
+begin
+  Result := BxTys[t].size;
+end;
+
+function TyIsInt(t: Integer): Boolean;
+begin
+  Result := BxTys[t].k = ltInt;
+end;
+
+function TyIsFlt(t: Integer): Boolean;
+begin
+  Result := (BxTys[t].k = ltFloat) or (BxTys[t].k = ltDouble);
+end;
+
+function TyBitsOf(t: Integer): Integer;
+begin
+  case BxTys[t].k of
+    ltInt: Result := BxTys[t].bits;
+    ltPtr: Result := 64;
+    ltFloat: Result := 32;
+    ltDouble: Result := 64;
+  else
+    Result := Integer(BxTys[t].size * 8);
+  end;
+end;
+
+{ ---- symboles ---- }
+function SymFind(const name: string): Integer;
+begin
+  Result := HFind(BxSymMap, name);
+end;
+
+function SymGet(const name: string): Integer;
+begin
+  Result := HFind(BxSymMap, name);
+  if Result >= 0 then Exit;
+  if BxNSyms >= Length(BxSyms) then SetLength(BxSyms, Length(BxSyms) * 2 + 64);
+  BxSyms[BxNSyms].name := name;
+  BxSyms[BxNSyms].kind := skUndef;
+  BxSyms[BxNSyms].sec := 0;
+  BxSyms[BxNSyms].off := 0;
+  BxSyms[BxNSyms].size := 0;
+  BxSyms[BxNSyms].align := 1;
+  BxSyms[BxNSyms].got := -1;
+  BxSyms[BxNSyms].vararg := False;
+  BxSyms[BxNSyms].msabi := False;
+  BxSyms[BxNSyms].addr := 0;
+  HPut(BxSymMap, name, BxNSyms);
+  Result := BxNSyms;
+  Inc(BxNSyms);
+end;
+
+function SymIsImport(s: Integer): Boolean;
+begin
+  Result := (BxSyms[s].kind = skImpF) or (BxSyms[s].kind = skImpD) or
+      (BxSyms[s].kind = skUndef);
+end;
+
+{ ---- correspondance des symboles C pour Windows ---- }
+function WinMapName(const nm: string; var dll, iname: string): Boolean;
+const
+  K32 = '|ExitProcess|GetStdHandle|WriteFile|GetCommandLineA|SetConsoleOutpu' +
+      'tCP|FindFirstFileA|FindNextFileA|' +
+        'FindClose|QueryPerformanceCounter|QueryPerformanceFrequency|GetSyst' +
+            'emTimeAsFileTime|';
+  UCRT = '|malloc|free|calloc|realloc|memcmp|memcpy|memmove|memset|strlen|st' +
+      'rcmp|strncmp|getenv|exit|abort|' +
+         'strerror|strtod|strtof|atoi|sin|cos|tan|asin|acos|atan|atan2|sinh|' +
+             'cosh|tanh|exp|exp2|log|log2|log10|' +
+         'pow|cbrt|floor|ceil|trunc|round|rint|nearbyint|fmod|fma|fmin|fmax|' +
+             'sqrt|fabs|sinf|cosf|tanf|expf|' +
+         'exp2f|logf|log2f|log10f|powf|floorf|ceilf|truncf|roundf|rintf|near' +
+             'byintf|fmodf|fmaf|fminf|fmaxf|' +
+         'sqrtf|fabsf|_setmode|_write|_read|_close|__stdio_common_vsprintf|_' +
+             'open|_stat64|_fstat64|_fullpath|_errno|' +
+         'rename|_lseeki64|_getcwd|_chdir|_mkdir|_rmdir|_unlink|_isatty|_hyp' +
+             'ot|';
+begin
+  Result := True;
+  iname := nm;
+  dll := 'ucrtbase.dll';
+  if Pos('|' + nm + '|', K32) > 0 then begin dll := 'kernel32.dll'; Exit; end;
+  if Pos('|' + nm + '|', UCRT) > 0 then Exit;
+  if nm = 'write' then iname := '_write'
+  else if nm = 'read' then iname := '_read'
+  else if nm = 'close' then iname := '_close'
+  else if nm = 'hypot' then iname := '_hypot'
+  else if nm = 'getcwd' then iname := '_getcwd'
+  else if nm = 'chdir' then iname := '_chdir'
+  else if nm = 'rmdir' then iname := '_rmdir'
+  else if nm = 'unlink' then iname := '_unlink'
+  else if nm = 'isatty' then iname := '_isatty'
+  else if nm = 'lseek' then iname := '_lseeki64'
+  else if nm = 'mkdir' then iname := '_mkdir'
+  else Result := False;
+end;
+
+procedure MarkImportSym(s: Integer);
+var
+  dll, iname: string;
+begin
+  if BxSyms[s].kind <> skUndef then Exit;
+  if BxWin then
+  begin
+    if WinMapName(BxSyms[s].name, dll, iname) then BxSyms[s].kind := skImpF
+    else
+    begin
+      BxSyms[s].kind := skFunc;
+      BxSyms[s].off := WinStubOff;
+    end;
+  end
+  else BxSyms[s].kind := skImpF;
+end;
+
+{ ---- sections de donnees ---- }
+procedure DataByte(sec: Integer; b: Integer);
+begin
+  if sec = secRo then
+  begin
+    if BxRoN >= Length(BxRo) then SetLength(BxRo, Length(BxRo) * 2 + 4096);
+    BxRo[BxRoN] := Byte(b and $FF);
+    Inc(BxRoN);
+  end
+  else
+  begin
+    if BxDatN >= Length(BxDat) then SetLength(BxDat, Length(BxDat) * 2 + 4096);
+    BxDat[BxDatN] := Byte(b and $FF);
+    Inc(BxDatN);
+  end;
+end;
+
+function DataPos(sec: Integer): Int64;
+begin
+  if sec = secRo then Result := BxRoN
+  else if sec = secData then Result := BxDatN
+  else Result := BxBss;
+end;
+
+procedure DataAlign(sec: Integer; al: Int64);
+begin
+  if al < 1 then al := 1;
+  if sec = secBss then BxBss := (BxBss + al - 1) div al * al
+  else while (DataPos(sec) mod al) <> 0 do DataByte(sec, 0);
+end;
+
+procedure AddDRel(sec: Integer; off: Int64; sym: Integer; add: Int64);
+begin
+  if BxNDRel >= Length(BxDRels) then SetLength(BxDRels, Length(BxDRels) * 2 +
+      256);
+  BxDRels[BxNDRel].sec := sec;
+  BxDRels[BxNDRel].off := off;
+  BxDRels[BxNDRel].sym := sym;
+  BxDRels[BxNDRel].add := add;
+  Inc(BxNDRel);
+end;
+
+{ ---- initialisation d'une globale ---- }
+Var
+  GIBuf: TByteArr;
+  GIN: Integer;
+  GIRel: array of TBxDRel;
+  GINRel: Integer;
+
+procedure GIPut(b: Integer);
+begin
+  if GIN >= Length(GIBuf) then SetLength(GIBuf, Length(GIBuf) * 2 + 64);
+  GIBuf[GIN] := Byte(b and $FF);
+  Inc(GIN);
+end;
+
+procedure GIPutN(v: Int64; n: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to n - 1 do GIPut(Integer((v shr (8 * i)) and $FF));
+end;
+
+procedure GIAddRel(sym: Integer; add: Int64);
+begin
+  if GINRel >= Length(GIRel) then SetLength(GIRel, Length(GIRel) * 2 + 16);
+  GIRel[GINRel].sec := 0;
+  GIRel[GINRel].off := GIN;
+  GIRel[GINRel].sym := sym;
+  GIRel[GINRel].add := add;
+  Inc(GINRel);
+end;
+
+procedure GIPad(upto: Int64);
+begin
+  while GIN < upto do GIPut(0);
+end;
+
+{ valeur constante (pointeur ou entier) : retourne True si pointeur de symbole }
+procedure ParseConstVal(ty: Integer; var o: TBxOp); forward;
+
+procedure GIEmit(ty: Integer);
+var
+  w: string;
+  i, n, base: Integer;
+  o: TBxOp;
+  cnt: Int64;
+  sv, e: Integer;
+  b: Integer;
+begin
+  base := GIN;
+  SkipSp;
+  if LS[LP] = 'c' then
+  begin
+    Inc(LP);
+    if LS[LP] = '"' then Inc(LP);
+    while (LP <= Length(LS)) and (LS[LP] <> '"') do
+    begin
+      if (LS[LP] = '\') and (LP + 2 <= Length(LS)) then
+      begin
+        GIPut(BxHexVal(LS[LP + 1]) * 16 + BxHexVal(LS[LP + 2]));
+        Inc(LP, 3);
+      end
+      else begin GIPut(Ord(LS[LP])); Inc(LP); end;
+    end;
+    Inc(LP);
+    Exit;
+  end;
+  if LS[LP] = '[' then
+  begin
+    Inc(LP);
+    if not Accept(']') then
+    begin
+      repeat
+        i := ParseTy;
+        GIEmit(i);
+      until not Accept(',');
+      Expect(']');
+    end;
+    Exit;
+  end;
+  if LS[LP] = '{' then
+  begin
+    Inc(LP);
+    if not Accept('}') then
+    begin
+      repeat
+        i := ParseTy;
+        if BxTys[i].align > 1 then
+          while (GIN - base) mod BxTys[i].align <> 0 do GIPut(0);
+        GIEmit(i);
+      until not Accept(',');
+      Expect('}');
+    end;
+    GIPad(base + BxTys[ty].size);
+    Exit;
+  end;
+  sv := LP;
+  w := ReadWord;
+  if w = 'zeroinitializer' then
+  begin
+    for i := 1 to Integer(BxTys[ty].size) do GIPut(0);
+    Exit;
+  end;
+  LP := sv;
+  ParseConstVal(ty, o);
+  case o.k of
+    okSym:
+      begin
+        GIAddRel(o.sym, o.v);
+        GIPutN(0, 8);
+      end;
+  else
+    begin
+      if BxTys[ty].size > 8 then
+      begin
+        GIPutN(o.v, 8);
+        GIPutN(o.hi, Integer(BxTys[ty].size) - 8);
+      end
+      else GIPutN(o.v, Integer(BxTys[ty].size));
+    end;
+  end;
+end;
+
+{ ---- constantes ---- }
+function MaskBits(v: Int64; bits: Integer): Int64;
+begin
+  if bits >= 64 then Result := v
+  else Result := v and ((Int64(1) shl bits) - 1);
+end;
+
+procedure ParseConstVal(ty: Integer; var o: TBxOp);
+var
+  w, w2: string;
+  sv: Integer;
+  t2, t3: Integer;
+  lo, hi: Int64;
+  o2: TBxOp;
+  dv: Double;
+  sg: Single;
+  bits: Int64;
+  i: Integer;
+  fsz: Int64;
+begin
+  o.k := okInt;
+  o.ty := ty;
+  o.v := 0;
+  o.hi := 0;
+  o.sym := -1;
+  o.idx := -1;
+  SkipSp;
+  if LP > Length(LS) then begin BxFail('IR : valeur attendue'); Exit; end;
+  if LS[LP] = '@' then
+  begin
+    Inc(LP);
+    w := ReadName;
+    o.k := okSym;
+    o.sym := SymGet(w);
+    Exit;
+  end;
+  if LS[LP] = '%' then
+  begin
+    BxFail('IR : valeur locale dans une constante');
+    Exit;
+  end;
+  sv := LP;
+  w := ReadWord;
+  if (w = 'null') or (w = 'undef') or (w = 'poison') or (w = 'zeroinitializer')
+      or (w = 'false') then Exit;
+  if w = 'true' then begin o.v := 1; Exit; end;
+  if (w = 'inttoptr') or (w = 'ptrtoint') or (w = 'bitcast') or (w =
+      'getelementptr') or (w = 'addrspacecast') then
+  begin
+    Expect('(');
+    if w = 'getelementptr' then
+    begin
+      if AcceptWord('inbounds') then ;
+      if AcceptWord('nuw') then ;
+      t2 := ParseTy;
+      Expect(',');
+      t3 := ParseTy;
+      ParseConstVal(t3, o2);
+      o := o2;
+      o.ty := ty;
+      while Accept(',') do
+      begin
+        t3 := ParseTy;
+        ParseConstVal(t3, o2);
+        if (o.k = okSym) or (o.k = okInt) then o.v := o.v + o2.v *
+            BxTys[t2].size;
+      end;
+      Expect(')');
+      Exit;
+    end;
+    t2 := ParseTy;
+    ParseConstVal(t2, o2);
+    if not AcceptWord('to') then BxFail('IR : `to` attendu');
+    t3 := ParseTy;
+    Expect(')');
+    o := o2;
+    o.ty := ty;
+    if (o.k = okInt) and (BxTys[t3].k = ltInt) then o.v := MaskBits(o.v,
+        BxTys[t3].bits);
+    Exit;
+  end;
+  if (Length(w) > 2) and (w[1] = '0') and (w[2] = 'x') then
+  begin
+    bits := 0;
+    for i := 3 to Length(w) do bits := (bits shl 4) or BxHexVal(w[i]);
+    if BxTys[ty].k = ltFloat then
+    begin
+      Move(bits, dv, 8);
+      sg := dv;
+      lo := 0;
+      Move(sg, lo, 4);
+      o.v := lo and $FFFFFFFF;
+    end
+    else o.v := bits;
+    Exit;
+  end;
+  { entier decimal }
+  LP := sv;
+  if BxTys[ty].k = ltInt then
+  begin
+    ReadInt128(lo, hi);
+    if BxTys[ty].bits < 128 then
+    begin
+      o.v := MaskBits(lo, BxTys[ty].bits);
+      o.hi := 0;
+    end
+    else begin o.v := lo; o.hi := hi; end;
+    Exit;
+  end;
+  { flottant decimal : non emis par le compilateur }
+  BxFail('IR : constante non supportee `' + w + '`');
+end;
+
+{ ---- lecture d'une globale : @nom = ... }
+procedure ParseGlobal;
+var
+  name: string;
+  w: string;
+  isConst, isExt: Boolean;
+  ty, s, sec: Integer;
+  al: Int64;
+  allZero: Boolean;
+  i: Integer;
+  base: Int64;
+  r: Integer;
+  sz: Int64;
+begin
+  Inc(LP);
+  name := ReadName;
+  Expect('=');
+  isConst := False;
+  isExt := False;
+  while True do
+  begin
+    w := ReadWord;
+    if (w = 'private') or (w = 'internal') or (w = 'unnamed_addr') or (w =
+        'local_unnamed_addr') or
+       (w = 'dso_local') or (w = 'hidden') or (w = 'common') or (w = 'weak') or
+           (w = 'linkonce_odr') or
+       (w = 'external') or (w = 'thread_local') then
+    begin
+      if w = 'external' then isExt := True;
+    end
+    else if w = 'constant' then begin isConst := True; Break; end
+    else if w = 'global' then Break
+    else begin BxFail('IR : globale `' + w + '` non supportee'); Exit; end;
+  end;
+  s := SymGet(name);
+  ty := ParseTy;
+  if isExt then
+  begin
+    BxSyms[s].kind := skImpD;
+    Exit;
+  end;
+  GIN := 0;
+  GINRel := 0;
+  GIEmit(ty);
+  al := BxTys[ty].align;
+  if Accept(',') then ;
+  if AcceptWord('align') then
+  begin
+    al := StrToIntDef(ReadWord, 1);
+  end;
+  sz := BxTys[ty].size;
+  GIPad(sz);
+  allZero := GINRel = 0;
+  if allZero then
+    for i := 0 to GIN - 1 do
+      if GIBuf[i] <> 0 then begin allZero := False; Break; end;
+  if isConst then sec := secRo
+  else if allZero then sec := secBss
+  else sec := secData;
+  if al < 1 then al := 1;
+  DataAlign(sec, al);
+  base := DataPos(sec);
+  if sec = secBss then BxBss := BxBss + sz
+  else
+  begin
+    for i := 0 to GIN - 1 do DataByte(sec, GIBuf[i]);
+    for r := 0 to GINRel - 1 do AddDRel(sec, base + GIRel[r].off, GIRel[r].sym,
+        GIRel[r].add);
+  end;
+  BxSyms[s].kind := skData;
+  BxSyms[s].sec := sec;
+  BxSyms[s].off := base;
+  BxSyms[s].size := sz;
+  BxSyms[s].align := al;
+end;
+{ ============================================================ }
+{ Backend integre : generation de code d'une fonction         }
+{ ============================================================ }
+
+Type
+  TBxEh = record
+    ra, lp, fr: Int64;
+  end;
+
+  TJFix = record
+    pos, lbl: Integer;
+  end;
+
+  TEhPend = record
+    ra, lbl: Integer;
+  end;
+
+Var
+  { valeurs locales de la fonction }
+  FvK: TIntArr;
+  FvOff: TInt64Arr;
+  FvTy: TIntArr;
+  FvSym: TIntArr;
+  FvN: Integer;
+  FnVals: THashSI;
+  FnFr: Int64;
+  FnSubPos: Integer;
+  FnLbl: THashSI;
+  LblPos: TIntArr;
+  FnLblN: Integer;
+  JFix: array of TJFix;
+  JFixN: Integer;
+  EhPend: array of TEhPend;
+  EhPendN: Integer;
+  BxEh: array of TBxEh;
+  BxNEh: Integer;
+  FnName: string;
+  FnRetTy: Integer;
+  FnLpadSeen: Boolean;
+  CurDst: string;
+  SymExc, SymResume: Integer;
+  FnDone: Boolean;
+  NextLblName: string;
+  { reutilisation des emplacements temporaires }
+  PsNames: THashSI;
+  PsDefBlk, PsDefOrd, PsLastOrd, PsNUse, PsFwd, PsCross: TIntArr;
+  PsN: Integer;
+  FvPs: TIntArr;
+  FvFreed: TIntArr;
+  UsedVals: TIntArr;
+  UsedN: Integer;
+  DefdVal: Integer;
+  FreeSl: array[0..2] of TInt64Arr;
+  FreeN: array[0..2] of Integer;
+  FuseName: string;
+  FuseCC: Integer;
+
+{ ---- valeurs ---- }
+function NewVal(k: Integer; ty: Integer): Integer;
+begin
+  if FvN >= Length(FvK) then
+  begin
+    SetLength(FvK, Length(FvK) * 2 + 64);
+    SetLength(FvOff, Length(FvK));
+    SetLength(FvTy, Length(FvK));
+    SetLength(FvSym, Length(FvK));
+    SetLength(FvPs, Length(FvK));
+    SetLength(FvFreed, Length(FvK));
+  end;
+  FvPs[FvN] := -1;
+  FvFreed[FvN] := 0;
+  FvK[FvN] := k;
+  FvOff[FvN] := 0;
+  FvTy[FvN] := ty;
+  FvSym[FvN] := -1;
+  Result := FvN;
+  Inc(FvN);
+end;
+
+function AllocFrame(size, align: Int64): Int64;
+begin
+  if align < 8 then align := 8;
+  if align > 16 then align := 16;
+  FnFr := FnFr + size;
+  FnFr := (FnFr + align - 1) div align * align;
+  Result := FnFr;
+end;
+
+function SlotSize(ty: Integer): Int64;
+begin
+  Result := (BxTys[ty].size + 7) div 8 * 8;
+  if Result < 8 then Result := 8;
+end;
+
+function SlotAlign(ty: Integer): Int64;
+begin
+  if BxTys[ty].align > 8 then Result := 16 else Result := 8;
+end;
+
+procedure MakeSlot(v: Integer);
+begin
+  FvK[v] := vkSlot;
+  FvOff[v] := AllocFrame(SlotSize(FvTy[v]), SlotAlign(FvTy[v]));
+end;
+
+function SlotClass(ty: Integer): Integer;
+begin
+  Result := -1;
+  if (SlotSize(ty) = 8) then Result := 0
+  else if (SlotSize(ty) = 16) and (SlotAlign(ty) = 16) then Result := 1
+  else if SlotSize(ty) = 16 then Result := 2;
+end;
+
+function PsOf(const name: string): Integer;
+begin
+  Result := HFind(PsNames, name);
+end;
+
+function IsTempPs(ps: Integer): Boolean;
+begin
+  Result := (ps >= 0) and (PsDefBlk[ps] >= 0) and (PsFwd[ps] = 0) and
+      (PsCross[ps] = 0);
+end;
+
+procedure MakeTempSlot(v: Integer);
+var
+  c: Integer;
+begin
+  c := SlotClass(FvTy[v]);
+  if (c >= 0) and (FreeN[c] > 0) then
+  begin
+    Dec(FreeN[c]);
+    FvK[v] := vkSlot;
+    FvOff[v] := FreeSl[c][FreeN[c]];
+  end
+  else MakeSlot(v);
+end;
+
+procedure FreeTemp(v: Integer);
+var
+  c: Integer;
+begin
+  if (FvK[v] <> vkSlot) or (FvFreed[v] <> 0) then Exit;
+  c := SlotClass(FvTy[v]);
+  if c < 0 then Exit;
+  FvFreed[v] := 1;
+  if FreeN[c] >= Length(FreeSl[c]) then SetLength(FreeSl[c], Length(FreeSl[c]) *
+      2 + 16);
+  FreeSl[c][FreeN[c]] := FvOff[v];
+  Inc(FreeN[c]);
+end;
+
+{ reference a une valeur locale (peut etre une reference avant definition) }
+function RefVal(const name: string; ty: Integer): Integer;
+begin
+  Result := HFind(FnVals, name);
+  if Result < 0 then
+  begin
+    Result := NewVal(vkNone, ty);
+    HPut(FnVals, name, Result);
+    MakeSlot(Result);
+    FvPs[Result] := PsOf(name);
+  end;
+  if UsedN >= Length(UsedVals) then SetLength(UsedVals, Length(UsedVals) * 2 +
+      16);
+  UsedVals[UsedN] := Result;
+  Inc(UsedN);
+end;
+
+{ definition d'une valeur : reutilise l'emplacement d'une reference anticipee }
+function DefVal(const name: string; ty: Integer): Integer;
+begin
+  Result := HFind(FnVals, name);
+  if Result >= 0 then
+  begin
+    if (FvK[Result] = vkSlot) and (SlotSize(FvTy[Result]) >= SlotSize(ty)) then
+        begin FvTy[Result] := ty; Exit; end;
+    BxFail('IR : redefinition de %' + name);
+    Exit;
+  end;
+  Result := NewVal(vkSlot, ty);
+  HPut(FnVals, name, Result);
+  FvPs[Result] := PsOf(name);
+  if IsTempPs(FvPs[Result]) then MakeTempSlot(Result) else MakeSlot(Result);
+  DefdVal := Result;
+end;
+
+function VMem(v: Integer; add: Int64): TBxMem;
+begin
+  Result := MemB(rBP, add - FvOff[v]);
+end;
+
+{ ---- etiquettes ---- }
+function LblId(const name: string): Integer;
+begin
+  Result := HFind(FnLbl, name);
+  if Result >= 0 then Exit;
+  if FnLblN >= Length(LblPos) then SetLength(LblPos, Length(LblPos) * 2 + 32);
+  LblPos[FnLblN] := -1;
+  HPut(FnLbl, name, FnLblN);
+  Result := FnLblN;
+  Inc(FnLblN);
+end;
+
+procedure AddJFix(pos, lbl: Integer);
+begin
+  if JFixN >= Length(JFix) then SetLength(JFix, Length(JFix) * 2 + 64);
+  JFix[JFixN].pos := pos;
+  JFix[JFixN].lbl := lbl;
+  Inc(JFixN);
+end;
+
+procedure JmpTo(lbl: Integer);
+begin
+  AddJFix(JmpRel32, lbl);
+end;
+
+procedure JccTo(cc, lbl: Integer);
+begin
+  AddJFix(JccRel32(cc), lbl);
+end;
+
+{ ---- symboles : adresses ---- }
+procedure SymAddrTo(reg: Integer; sym: Integer; add: Int64);
+var
+  m: TBxMem;
+begin
+  if SymIsImport(sym) then
+  begin
+    m := MemSym(sym, 0);
+    m.fk := fxGot;
+    EncRM(0, True, $8B, reg, m, False, 0);
+    if add <> 0 then AluRI(aAdd, reg, add, True);
+  end
+  else Lea(reg, MemSym(sym, add));
+end;
+
+{ ---- operandes ---- }
+procedure SkipParamAttrs;
+var
+  w: string;
+  sv: Integer;
+begin
+  while True do
+  begin
+    sv := LP;
+    w := ReadWord;
+    if (w = 'noundef') or (w = 'zeroext') or (w = 'signext') or (w = 'nonnull')
+        or (w = 'noalias') or
+       (w = 'nocapture') or (w = 'readonly') or (w = 'writeonly') or (w =
+           'inreg') or (w = 'immarg') or
+       (w = 'returned') or (w = 'readnone') or (w = 'nofree') or (w = 'nest')
+           then
+      Continue
+    else if w = 'align' then
+    begin
+      ReadWord;
+      Continue;
+    end
+    else if (w = 'dereferenceable') or (w = 'dereferenceable_or_null') then
+    begin
+      if Accept('(') then begin ReadWord; Expect(')'); end;
+      Continue;
+    end;
+    LP := sv;
+    Break;
+  end;
+end;
+
+procedure ParseOperand(ty: Integer; var o: TBxOp);
+var
+  nm: string;
+begin
+  SkipSp;
+  if (LP <= Length(LS)) and (LS[LP] = '%') then
+  begin
+    Inc(LP);
+    nm := ReadName;
+    o.k := okVal;
+    o.ty := ty;
+    o.v := 0;
+    o.hi := 0;
+    o.sym := -1;
+    o.idx := RefVal(nm, ty);
+    Exit;
+  end;
+  ParseConstVal(ty, o);
+end;
+
+procedure ParseTypedOp(var o: TBxOp);
+var
+  ty: Integer;
+begin
+  ty := ParseTy;
+  SkipParamAttrs;
+  ParseOperand(ty, o);
+end;
+
+{ ---- chargement d'un operande (<= 64 bits) dans un registre ---- }
+procedure LoadOp(reg: Integer; const o: TBxOp);
+begin
+  case o.k of
+    okInt: MovRI(reg, o.v);
+    okSym: SymAddrTo(reg, o.sym, o.v);
+    okVal:
+      case FvK[o.idx] of
+        vkSlot: MovRM(reg, VMem(o.idx, 0), 8);
+        vkFrame: Lea(reg, VMem(o.idx, 0));
+        vkSym: SymAddrTo(reg, FvSym[o.idx], FvOff[o.idx]);
+      else
+        BxFail('IR : valeur locale non definie');
+      end;
+  else
+    MovRI(reg, 0);
+  end;
+end;
+
+{ operande 128 bits : (lo, hi) dans deux registres }
+procedure LoadOp128(rlo, rhi: Integer; const o: TBxOp);
+begin
+  case o.k of
+    okInt: begin MovRI(rlo, o.v); MovRI(rhi, o.hi); end;
+    okVal:
+      if FvK[o.idx] = vkSlot then
+      begin
+        MovRM(rlo, VMem(o.idx, 0), 8);
+        MovRM(rhi, VMem(o.idx, 8), 8);
+      end
+      else BxFail('IR : valeur 128 bits invalide');
+  else
+    begin MovRI(rlo, 0); MovRI(rhi, 0); end;
+  end;
+end;
+
+{ operande en memoire (pointeur) : retourne l'adresse sous forme de TBxMem ; sc
+    : registre de travail }
+function MemOf(const o: TBxOp; sc: Integer): TBxMem;
+begin
+  case o.k of
+    okSym:
+      if SymIsImport(o.sym) then
+      begin
+        SymAddrTo(sc, o.sym, 0);
+        Result := MemB(sc, o.v);
+      end
+      else Result := MemSym(o.sym, o.v);
+    okVal:
+      case FvK[o.idx] of
+        vkFrame: Result := VMem(o.idx, 0);
+        vkSym:
+          if SymIsImport(FvSym[o.idx]) then
+          begin
+            SymAddrTo(sc, FvSym[o.idx], 0);
+            Result := MemB(sc, FvOff[o.idx]);
+          end
+          else Result := MemSym(FvSym[o.idx], FvOff[o.idx]);
+      else
+        begin
+          LoadOp(sc, o);
+          Result := MemB(sc, 0);
+        end;
+      end;
+  else
+    begin
+      LoadOp(sc, o);
+      Result := MemB(sc, 0);
+    end;
+  end;
+end;
+
+function MemPlus(const m: TBxMem; add: Int64): TBxMem;
+begin
+  Result := m;
+  Result.disp := m.disp + add;
+end;
+
+{ ---- normalisation ---- }
+procedure NormReg(r: Integer; bits: Integer);
+begin
+  case bits of
+    64, 128: ;
+    32: ZextR(r, 4);
+    16: ZextR(r, 2);
+    8: ZextR(r, 1);
+  else
+    if bits < 32 then AluRI(aAnd, r, (Int64(1) shl bits) - 1, False)
+    else
+    begin
+      MovRI(r11, (Int64(1) shl bits) - 1);
+      AluRR(aAnd, r, r11, True);
+    end;
+  end;
+end;
+
+procedure SignReg(r: Integer; bits: Integer);
+begin
+  case bits of
+    64, 128: ;
+    32: SextR(r, 4);
+    16: SextR(r, 2);
+    8: SextR(r, 1);
+  else
+    ShiftI(4, r, 64 - bits, True);
+    ShiftI(7, r, 64 - bits, True);
+  end;
+end;
+
+function SignConst(v: Int64; bits: Integer): Int64;
+begin
+  if bits >= 64 then Result := v
+  else if (v and (Int64(1) shl (bits - 1))) <> 0 then Result := v or (not
+      ((Int64(1) shl bits) - 1))
+  else Result := v;
+end;
+
+{ ---- resultat ---- }
+procedure StoreDst(const name: string; ty: Integer; rlo: Integer);
+var
+  d: Integer;
+begin
+  if name = '' then Exit;
+  d := DefVal(name, ty);
+  MovMR(VMem(d, 0), rlo, 8);
+end;
+
+procedure StoreDst128(const name: string; ty: Integer; rlo, rhi: Integer);
+var
+  d: Integer;
+begin
+  if name = '' then Exit;
+  d := DefVal(name, ty);
+  MovMR(VMem(d, 0), rlo, 8);
+  MovMR(VMem(d, 8), rhi, 8);
+end;
+
+{ ---- operations 128 bits ---- }
+procedure Neg128(rlo, rhi: Integer);
+begin
+  GrpF7(3, rlo, True);
+  AluRI(aAdc, rhi, 0, True);
+  GrpF7(3, rhi, True);
+end;
+
+{ division 128 bits via l'aide __rt_udivmod128 ; a = rax:rdx, b = rcx:rsi ;
+    retourne q ou r dans rax:rdx }
+procedure Div128(isSigned, wantRem: Boolean);
+var
+  tmp: Int64;
+  s1, s2: Integer;
+  fixA, fixB, fixC: Integer;
+begin
+  tmp := AllocFrame(48, 16);
+  if isSigned then
+  begin
+    { signes : r8b = signe de a, r9b = signe de b }
+    MovRR(r8, rdx);
+    ShiftI(7, r8, 63, True);
+    MovRR(r9, rsi);
+    ShiftI(7, r9, 63, True);
+    TestRR(rdx, rdx, True);
+    fixA := JccRel32(ccNS);
+    Neg128(rax, rdx);
+    PatchHere(fixA);
+    TestRR(rsi, rsi, True);
+    fixB := JccRel32(ccNS);
+    Neg128(rcx, rsi);
+    PatchHere(fixB);
+    { conserver les signes dans la pile locale }
+    MovMR(MemB(rBP, -tmp + 32), r8, 8);
+    MovMR(MemB(rBP, -tmp + 40), r9, 8);
+  end;
+  { arguments : rdi = &q, rsi = &r, rdx = alo, rcx = ahi, r8 = blo, r9 = bhi }
+  MovRR(r10, rax);
+  MovRR(r11, rdx);
+  MovRR(r8, rcx);
+  MovRR(r9, rsi);
+  MovRR(rdx, r10);
+  MovRR(rcx, r11);
+  Lea(rdi, MemB(rBP, -tmp));
+  Lea(rsi, MemB(rBP, -tmp + 16));
+  CallSym(SymGet('__rt_udivmod128'));
+  if wantRem then
+  begin
+    MovRM(rax, MemB(rBP, -tmp + 16), 8);
+    MovRM(rdx, MemB(rBP, -tmp + 24), 8);
+  end
+  else
+  begin
+    MovRM(rax, MemB(rBP, -tmp), 8);
+    MovRM(rdx, MemB(rBP, -tmp + 8), 8);
+  end;
+  if isSigned then
+  begin
+    if wantRem then
+    begin
+      MovRM(r8, MemB(rBP, -tmp + 32), 8);
+      TestRR(r8, r8, True);
+    end
+    else
+    begin
+      MovRM(r8, MemB(rBP, -tmp + 32), 8);
+      MovRM(r9, MemB(rBP, -tmp + 40), 8);
+      AluRR(aXor, r8, r9, True);
+      TestRR(r8, r8, True);
+    end;
+    fixC := JccRel32(ccE);
+    Neg128(rax, rdx);
+    PatchHere(fixC);
+  end;
+end;
+
+function PeekNextLabel: string;
+var
+  p, e: Integer;
+begin
+  Result := '';
+  p := MP;
+  while p <= Length(MT) do
+  begin
+    e := p;
+    while (e <= Length(MT)) and (MT[e] <> #10) do Inc(e);
+    if e = p then begin p := e + 1; Continue; end;
+    if (MT[p] <> ' ') and (MT[p] <> #9) and (MT[p] <> ';') and (MT[e - 1] = ':')
+        then
+      Result := Copy(MT, p, e - 1 - p);
+    Exit;
+  end;
+end;
+
+
+function StartsW(const s, p: string): Boolean;
+begin
+  Result := (Length(s) >= Length(p)) and (Copy(s, 1, Length(p)) = p);
+end;
+
+
+
+{ la ligne suivante est-elle `br i1 %nm, ...` ? }
+function NextLineIsBrOn(const nm: string): Boolean;
+var
+  p: Integer;
+  pat: string;
+begin
+  Result := False;
+  p := MP;
+  if p > Length(MT) then Exit;
+  while (p <= Length(MT)) and ((MT[p] = ' ') or (MT[p] = #9)) do Inc(p);
+  pat := 'br i1 %' + nm + ',';
+  Result := Copy(MT, p, Length(pat)) = pat;
+end;
+{ ============================================================ }
+{ Backend integre : instructions                              }
+{ ============================================================ }
+
+Const
+  IntArgRegs: array[0..5] of Integer = (7, 6, 2, 1, 8, 9);
+
+Type
+  TBxArgs = array of TBxOp;
+
+procedure EmitCall(isSym: Boolean; sym: Integer; const callee: TBxOp; retTy:
+    Integer; var args: TBxArgs;
+                   nargs: Integer; vararg: Boolean; const dst: string; lpadLbl:
+                       Integer); forward;
+
+function DefValKind(const name: string; ty: Integer; k: Integer): Integer;
+begin
+  if HFind(FnVals, name) >= 0 then
+  begin
+    BxFail('IR : valeur `%' + name +
+        '` utilisee avant sa definition (adresse constante)');
+    Result := 0;
+    Exit;
+  end;
+  Result := NewVal(k, ty);
+  HPut(FnVals, name, Result);
+end;
+
+procedure SkipFlags;
+var
+  w: string;
+  sv: Integer;
+begin
+  while True do
+  begin
+    sv := LP;
+    w := ReadWord;
+    if (w = 'nuw') or (w = 'nsw') or (w = 'exact') or (w = 'disjoint') or (w =
+        'nneg') or (w = 'fast') or
+       (w = 'nnan') or (w = 'ninf') or (w = 'nsz') or (w = 'arcp') or (w =
+           'contract') or (w = 'afn') or
+       (w = 'reassoc') or (w = 'volatile') or (w = 'inbounds') or (w =
+           'samesign') or (w = 'nusw') then
+      Continue;
+    LP := sv;
+    Break;
+  end;
+end;
+
+{ ---- operations binaires entieres ---- }
+procedure GenBin128(const dst, opn: string; ty: Integer; const a, b: TBxOp);
+var
+  fx, fx2: Integer;
+begin
+  LoadOp128(rAX, rDX, a);
+  LoadOp128(rCX, rSI, b);
+  if opn = 'add' then begin AluRR(aAdd, rAX, rCX, True); AluRR(aAdc, rDX, rSI,
+      True); end
+  else if opn = 'sub' then begin AluRR(aSub, rAX, rCX, True); AluRR(aSbb, rDX,
+      rSI, True); end
+  else if opn = 'and' then begin AluRR(aAnd, rAX, rCX, True); AluRR(aAnd, rDX,
+      rSI, True); end
+  else if opn = 'or' then begin AluRR(aOr, rAX, rCX, True); AluRR(aOr, rDX, rSI,
+      True); end
+  else if opn = 'xor' then begin AluRR(aXor, rAX, rCX, True); AluRR(aXor, rDX,
+      rSI, True); end
+  else if opn = 'mul' then
+  begin
+    MovRR(r9, rAX);
+    MovRR(r8, rDX);
+    GrpF7(4, rCX, True);             { rdx:rax = a.lo * b.lo }
+    MovRR(r10, rDX);
+    MovRR(r11, r9);
+    ImulRR(r11, rSI, True);
+    AluRR(aAdd, r10, r11, True);
+    MovRR(r11, r8);
+    ImulRR(r11, rCX, True);
+    AluRR(aAdd, r10, r11, True);
+    MovRR(rDX, r10);
+  end
+  else if (opn = 'shl') or (opn = 'lshr') or (opn = 'ashr') then
+  begin
+    { decalage : cl = b.lo }
+    AluRI(aCmp, rCX, 64, False);
+    fx := JccRel32(ccAE);
+    if opn = 'shl' then begin ShldCL(rDX, rAX); ShiftCL(4, rAX, True); end
+    else begin ShrdCL(rAX, rDX); if opn = 'lshr' then ShiftCL(5, rDX, True) else
+        ShiftCL(7, rDX, True); end;
+    fx2 := JmpRel32;
+    PatchHere(fx);
+    if opn = 'shl' then begin MovRR(rDX, rAX); MovRI(rAX, 0); ShiftCL(4, rDX,
+        True); end
+    else
+    begin
+      MovRR(rAX, rDX);
+      if opn = 'lshr' then begin MovRI(rDX, 0); ShiftCL(5, rAX, True); end
+      else begin ShiftI(7, rDX, 63, True); ShiftCL(7, rAX, True); end;
+    end;
+    PatchHere(fx2);
+  end
+  else if opn = 'udiv' then Div128(False, False)
+  else if opn = 'urem' then Div128(False, True)
+  else if opn = 'sdiv' then Div128(True, False)
+  else if opn = 'srem' then Div128(True, True)
+  else BxFail('IR : operation 128 bits non supportee `' + opn + '`');
+  StoreDst128(dst, ty, rAX, rDX);
+end;
+
+procedure GenBin(const dst, opn: string; ty: Integer; const a, b: TBxOp);
+var
+  bits: Integer;
+  immOk: Boolean;
+  alu: Integer;
+begin
+  bits := TyBitsOf(ty);
+  if bits = 128 then begin GenBin128(dst, opn, ty, a, b); Exit; end;
+  LoadOp(rAX, a);
+  immOk := (b.k = okInt) and (b.v >= -$80000000) and (b.v <= $7FFFFFFF);
+  alu := -1;
+  if opn = 'add' then alu := aAdd
+  else if opn = 'sub' then alu := aSub
+  else if opn = 'and' then alu := aAnd
+  else if opn = 'or' then alu := aOr
+  else if opn = 'xor' then alu := aXor;
+  if alu >= 0 then
+  begin
+    if immOk then AluRI(alu, rAX, b.v, True)
+    else begin LoadOp(rCX, b); AluRR(alu, rAX, rCX, True); end;
+    if (alu = aAdd) or (alu = aSub) then NormReg(rAX, bits);
+  end
+  else if opn = 'mul' then
+  begin
+    if immOk then ImulRRI(rAX, rAX, b.v, True)
+    else begin LoadOp(rCX, b); ImulRR(rAX, rCX, True); end;
+    NormReg(rAX, bits);
+  end
+  else if opn = 'shl' then
+  begin
+    if b.k = okInt then ShiftI(4, rAX, Integer(b.v and 63), True)
+    else begin LoadOp(rCX, b); ShiftCL(4, rAX, True); end;
+    NormReg(rAX, bits);
+  end
+  else if opn = 'lshr' then
+  begin
+    if b.k = okInt then ShiftI(5, rAX, Integer(b.v and 63), True)
+    else begin LoadOp(rCX, b); ShiftCL(5, rAX, True); end;
+  end
+  else if opn = 'ashr' then
+  begin
+    SignReg(rAX, bits);
+    if b.k = okInt then ShiftI(7, rAX, Integer(b.v and 63), True)
+    else begin LoadOp(rCX, b); ShiftCL(7, rAX, True); end;
+    NormReg(rAX, bits);
+  end
+  else if (opn = 'udiv') or (opn = 'urem') then
+  begin
+    LoadOp(rCX, b);
+    MovRI(rDX, 0);
+    GrpF7(6, rCX, True);
+    if opn = 'urem' then MovRR(rAX, rDX);
+  end
+  else if (opn = 'sdiv') or (opn = 'srem') then
+  begin
+    LoadOp(rCX, b);
+    SignReg(rAX, bits);
+    SignReg(rCX, bits);
+    Cqo;
+    GrpF7(7, rCX, True);
+    if opn = 'srem' then MovRR(rAX, rDX);
+    NormReg(rAX, bits);
+  end
+  else BxFail('IR : operation non supportee `' + opn + '`');
+  StoreDst(dst, ty, rAX);
+end;
+
+{ ---- comparaisons ---- }
+procedure GenICmp(const dst, pred: string; ty: Integer; const a, b: TBxOp);
+var
+  bits, cc: Integer;
+  sg: Boolean;
+  immOk: Boolean;
+  bv: Int64;
+begin
+  bits := TyBitsOf(ty);
+  if BxTys[ty].k = ltPtr then bits := 64;
+  sg := (pred = 'slt') or (pred = 'sle') or (pred = 'sgt') or (pred = 'sge');
+  if pred = 'eq' then cc := ccE
+  else if pred = 'ne' then cc := ccNE
+  else if pred = 'ult' then cc := ccB
+  else if pred = 'ule' then cc := ccBE
+  else if pred = 'ugt' then cc := ccA
+  else if pred = 'uge' then cc := ccAE
+  else if pred = 'slt' then cc := ccL
+  else if pred = 'sle' then cc := ccLE
+  else if pred = 'sgt' then cc := ccG
+  else cc := ccGE;
+  if bits = 128 then
+  begin
+    LoadOp128(rAX, rDX, a);
+    LoadOp128(rCX, rSI, b);
+    if (pred = 'eq') or (pred = 'ne') then
+    begin
+      AluRR(aXor, rAX, rCX, True);
+      AluRR(aXor, rDX, rSI, True);
+      AluRR(aOr, rAX, rDX, True);
+    end
+    else
+    begin
+      if (pred = 'ugt') or (pred = 'ule') or (pred = 'sgt') or (pred = 'sle')
+          then
+      begin
+        { a > b <=> b < a : echanger }
+        MovRR(r8, rAX); MovRR(rAX, rCX); MovRR(rCX, r8);
+        MovRR(r8, rDX); MovRR(rDX, rSI); MovRR(rSI, r8);
+        if pred = 'ugt' then cc := ccB
+        else if pred = 'ule' then cc := ccAE
+        else if pred = 'sgt' then cc := ccL
+        else cc := ccGE;
+      end;
+      AluRR(aCmp, rAX, rCX, True);
+      MovRR(rAX, rDX);
+      AluRR(aSbb, rAX, rSI, True);
+    end;
+    SetCC(cc, rAX);
+    ZextR(rAX, 1);
+    StoreDst(dst, TyI1I, rAX);
+    Exit;
+  end;
+  LoadOp(rAX, a);
+  if sg then
+  begin
+    SignReg(rAX, bits);
+    if b.k = okInt then
+    begin
+      bv := SignConst(b.v, bits);
+      immOk := (bv >= -$80000000) and (bv <= $7FFFFFFF);
+      if immOk then AluRI(aCmp, rAX, bv, True)
+      else begin MovRI(rCX, bv); AluRR(aCmp, rAX, rCX, True); end;
+    end
+    else
+    begin
+      LoadOp(rCX, b);
+      SignReg(rCX, bits);
+      AluRR(aCmp, rAX, rCX, True);
+    end;
+  end
+  else
+  begin
+    if (b.k = okInt) and (b.v >= 0) and (b.v <= $7FFFFFFF) then AluRI(aCmp, rAX,
+        b.v, True)
+    else
+    begin
+      LoadOp(rCX, b);
+      AluRR(aCmp, rAX, rCX, True);
+    end;
+  end;
+  if (dst <> '') and IsTempPs(PsOf(dst)) and (PsNUse[PsOf(dst)] = 1) and
+      NextLineIsBrOn(dst) then
+  begin
+    FuseName := dst;
+    FuseCC := cc;
+    Exit;
+  end;
+  SetCC(cc, rAX);
+  ZextR(rAX, 1);
+  StoreDst(dst, TyI1I, rAX);
+end;
+
+procedure LoadFlt(x: Integer; const o: TBxOp; ty: Integer; sc: Integer);
+begin
+  LoadOp(sc, o);
+  if BxTys[ty].k = ltFloat then MovdXR(x, sc) else MovqXR(x, sc);
+end;
+
+procedure GenFBin(const dst, opn: string; ty: Integer; const a, b: TBxOp);
+var
+  dbl: Boolean;
+  opc: Integer;
+  s: Integer;
+  fa: TBxArgs;
+begin
+  dbl := BxTys[ty].k = ltDouble;
+  if opn = 'frem' then
+  begin
+    if dbl then s := SymGet('fmod') else s := SymGet('fmodf');
+    MarkImportSym(s);
+    SetLength(fa, 2);
+    fa[0] := a;
+    fa[1] := b;
+    fa[0].ty := ty;
+    fa[1].ty := ty;
+    EmitCall(True, s, a, ty, fa, 2, False, dst, -1);
+    Exit;
+  end;
+  if opn = 'fadd' then opc := $58
+  else if opn = 'fmul' then opc := $59
+  else if opn = 'fsub' then opc := $5C
+  else opc := $5E;
+  LoadFlt(0, a, ty, rAX);
+  LoadFlt(1, b, ty, rCX);
+  SseRR(dbl, opc, 0, 1);
+  if dbl then MovqRX(rAX, 0) else MovdRX(rAX, 0);
+  StoreDst(dst, ty, rAX);
+end;
+
+procedure GenFCmp(const dst, pred: string; ty: Integer; const a, b: TBxOp);
+var
+  dbl: Boolean;
+begin
+  dbl := BxTys[ty].k = ltDouble;
+  if pred = 'true' then begin MovRI(rAX, 1); StoreDst(dst, TyI1I, rAX); Exit;
+      end;
+  if pred = 'false' then begin MovRI(rAX, 0); StoreDst(dst, TyI1I, rAX); Exit;
+      end;
+  LoadFlt(0, a, ty, rAX);
+  LoadFlt(1, b, ty, rCX);
+  if (pred = 'olt') or (pred = 'ole') or (pred = 'ugt') or (pred = 'uge') then
+      UcomiRR(dbl, 1, 0)
+  else UcomiRR(dbl, 0, 1);
+  if pred = 'oeq' then begin SetCC(ccE, rAX); SetCC(ccNP, rCX); AluRR(aAnd, rAX,
+      rCX, False); end
+  else if pred = 'one' then begin SetCC(ccNE, rAX); SetCC(ccNP, rCX);
+      AluRR(aAnd, rAX, rCX, False); end
+  else if (pred = 'ogt') or (pred = 'olt') then SetCC(ccA, rAX)
+  else if (pred = 'oge') or (pred = 'ole') then SetCC(ccAE, rAX)
+  else if pred = 'ord' then SetCC(ccNP, rAX)
+  else if pred = 'uno' then SetCC(ccP, rAX)
+  else if pred = 'ueq' then SetCC(ccE, rAX)
+  else if (pred = 'ugt') or (pred = 'ult') then SetCC(ccB, rAX)
+  else if (pred = 'uge') or (pred = 'ule') then SetCC(ccBE, rAX)
+  else if pred = 'une' then begin SetCC(ccNE, rAX); SetCC(ccP, rCX); AluRR(aOr,
+      rAX, rCX, False); end
+  else BxFail('IR : fcmp `' + pred + '` non supporte');
+  ZextR(rAX, 1);
+  StoreDst(dst, TyI1I, rAX);
+end;
+
+{ ---- conversions ---- }
+procedure GenCast(const dst, opn: string; sty: Integer; const a: TBxOp; dty:
+    Integer);
+var
+  sb, db: Integer;
+  fx, fx2: Integer;
+  sdbl, ddbl: Boolean;
+  k: Integer;
+begin
+  sb := TyBitsOf(sty);
+  db := TyBitsOf(dty);
+  if opn = 'zext' then
+  begin
+    LoadOp(rAX, a);
+    if db = 128 then begin MovRI(rDX, 0); StoreDst128(dst, dty, rAX, rDX); end
+    else StoreDst(dst, dty, rAX);
+  end
+  else if opn = 'sext' then
+  begin
+    LoadOp(rAX, a);
+    SignReg(rAX, sb);
+    if db = 128 then
+    begin
+      MovRR(rDX, rAX);
+      ShiftI(7, rDX, 63, True);
+      StoreDst128(dst, dty, rAX, rDX);
+    end
+    else begin NormReg(rAX, db); StoreDst(dst, dty, rAX); end;
+  end
+  else if opn = 'trunc' then
+  begin
+    if sb = 128 then LoadOp128(rAX, rDX, a) else LoadOp(rAX, a);
+    NormReg(rAX, db);
+    StoreDst(dst, dty, rAX);
+  end
+  else if (opn = 'ptrtoint') or (opn = 'inttoptr') or (opn = 'bitcast') or (opn
+      = 'addrspacecast') then
+  begin
+    if (db = 128) or (sb = 128) then
+    begin
+      if sb = 128 then LoadOp128(rAX, rDX, a)
+      else begin LoadOp(rAX, a); MovRI(rDX, 0); end;
+      if db = 128 then StoreDst128(dst, dty, rAX, rDX) else StoreDst(dst, dty,
+          rAX);
+    end
+    else
+    begin
+      LoadOp(rAX, a);
+      if db < sb then NormReg(rAX, db);
+      StoreDst(dst, dty, rAX);
+    end;
+  end
+  else if opn = 'fptrunc' then
+  begin
+    LoadFlt(0, a, sty, rAX);
+    SseRR(True, $5A, 0, 0);
+    MovdRX(rAX, 0);
+    StoreDst(dst, dty, rAX);
+  end
+  else if opn = 'fpext' then
+  begin
+    LoadFlt(0, a, sty, rAX);
+    SseRR(False, $5A, 0, 0);
+    MovqRX(rAX, 0);
+    StoreDst(dst, dty, rAX);
+  end
+  else if (opn = 'sitofp') or (opn = 'uitofp') then
+  begin
+    ddbl := BxTys[dty].k = ltDouble;
+    if sb = 128 then begin
+        BxFail('IR : conversion i128 -> flottant non supportee'); Exit; end;
+    LoadOp(rAX, a);
+    if opn = 'sitofp' then
+    begin
+      SignReg(rAX, sb);
+      CvtSi2F(ddbl, 0, rAX);
+    end
+    else if sb < 64 then CvtSi2F(ddbl, 0, rAX)
+    else
+    begin
+      TestRR(rAX, rAX, True);
+      fx := JccRel32(ccS);
+      CvtSi2F(ddbl, 0, rAX);
+      fx2 := JmpRel32;
+      PatchHere(fx);
+      MovRR(rCX, rAX);
+      ShiftI(5, rCX, 1, True);
+      AluRI(aAnd, rAX, 1, False);
+      AluRR(aOr, rCX, rAX, True);
+      CvtSi2F(ddbl, 0, rCX);
+      SseRR(ddbl, $58, 0, 0);
+      PatchHere(fx2);
+    end;
+    if ddbl then MovqRX(rAX, 0) else MovdRX(rAX, 0);
+    StoreDst(dst, dty, rAX);
+  end
+  else if (opn = 'fptosi') or (opn = 'fptoui') then
+  begin
+    sdbl := BxTys[sty].k = ltDouble;
+    if db = 128 then begin
+        BxFail('IR : conversion flottant -> i128 non supportee'); Exit; end;
+    LoadFlt(0, a, sty, rAX);
+    if (opn = 'fptoui') and (db = 64) then
+    begin
+      { x >= 2^63 ? }
+      if sdbl then MovRI(rCX, Int64($43E0000000000000)) else MovRI(rCX,
+          $5F000000);
+      if sdbl then MovqXR(1, rCX) else MovdXR(1, rCX);
+      UcomiRR(sdbl, 0, 1);
+      fx := JccRel32(ccAE);
+      CvttF2Si(sdbl, rAX, 0);
+      fx2 := JmpRel32;
+      PatchHere(fx);
+      SseRR(sdbl, $5C, 0, 1);
+      CvttF2Si(sdbl, rAX, 0);
+      MovRI(rCX, Int64($8000000000000000));
+      AluRR(aXor, rAX, rCX, True);
+      PatchHere(fx2);
+    end
+    else
+    begin
+      CvttF2Si(sdbl, rAX, 0);
+      NormReg(rAX, db);
+    end;
+    StoreDst(dst, dty, rAX);
+  end
+  else BxFail('IR : conversion `' + opn + '` non supportee');
+  k := 0;
+  if k = 1 then ;
+end;
+{ ============================================================ }
+{ Backend integre : memoire, appels, branchements             }
+{ ============================================================ }
+
+Const
+  MinI64 = -9223372036854775807 - 1;
+
+procedure GenIntrinsic(const name: string; retTy: Integer; const args: TBxArgs;
+    nargs: Integer;
+                       const dst: string); forward;
+
+{ copie de n octets entre deux zones memoire (n constant) via rax ; sm, dm :
+    memoires (registres de travail rsi/rdi) }
+procedure CopyBytes(const dm, sm: TBxMem; n: Int64);
+var
+  o: Int64;
+begin
+  o := 0;
+  while n - o >= 8 do begin MovRM(rAX, MemPlus(sm, o), 8); MovMR(MemPlus(dm, o),
+      rAX, 8); o := o + 8; end;
+  if n - o >= 4 then begin MovRM(rAX, MemPlus(sm, o), 4); MovMR(MemPlus(dm, o),
+      rAX, 4); o := o + 4; end;
+  if n - o >= 2 then begin MovRM(rAX, MemPlus(sm, o), 2); MovMR(MemPlus(dm, o),
+      rAX, 2); o := o + 2; end;
+  if n - o >= 1 then begin MovRM(rAX, MemPlus(sm, o), 1); MovMR(MemPlus(dm, o),
+      rAX, 1); end;
+end;
+
+{ ---- load ---- }
+procedure GenLoad(const dst: string; ty: Integer; const p: TBxOp);
+var
+  m: TBxMem;
+  sz: Int64;
+  d: Integer;
+  dm: TBxMem;
+begin
+  sz := BxTys[ty].size;
+  m := MemOf(p, rCX);
+  if (BxTys[ty].k = ltInt) and (BxTys[ty].bits = 128) then
+  begin
+    MovRM(rAX, m, 8);
+    MovRM(rDX, MemPlus(m, 8), 8);
+    StoreDst128(dst, ty, rAX, rDX);
+  end
+  else if (BxTys[ty].k = ltStruct) or (BxTys[ty].k = ltArray) then
+  begin
+    d := DefVal(dst, ty);
+    dm := VMem(d, 0);
+    CopyBytes(dm, m, sz);
+  end
+  else
+  begin
+    if (sz <> 1) and (sz <> 2) and (sz <> 4) and (sz <> 8) then begin
+        BxFail('IR : taille de chargement non supportee'); Exit; end;
+    MovRM(rAX, m, Integer(sz));
+    StoreDst(dst, ty, rAX);
+  end;
+end;
+
+{ ---- store ---- }
+procedure GenStore(ty: Integer; const v, p: TBxOp);
+var
+  m, sm: TBxMem;
+  sz: Int64;
+begin
+  sz := BxTys[ty].size;
+  if (BxTys[ty].k = ltInt) and (BxTys[ty].bits = 128) then
+  begin
+    LoadOp128(rAX, rDX, v);
+    m := MemOf(p, rCX);
+    MovMR(m, rAX, 8);
+    MovMR(MemPlus(m, 8), rDX, 8);
+    Exit;
+  end;
+  if (BxTys[ty].k = ltStruct) or (BxTys[ty].k = ltArray) then
+  begin
+    m := MemOf(p, rCX);
+    if v.k = okVal then
+    begin
+      sm := VMem(v.idx, 0);
+      CopyBytes(m, sm, sz);
+    end
+    else
+    begin
+      MovRI(rAX, 0);
+      MovMR(m, rAX, 8);
+      if sz > 8 then MovMR(MemPlus(m, 8), rAX, 8);
+    end;
+    Exit;
+  end;
+  if (sz <> 1) and (sz <> 2) and (sz <> 4) and (sz <> 8) then begin
+      BxFail('IR : taille de rangement non supportee'); Exit; end;
+  if (v.k = okInt) and (v.v >= -$80000000) and (v.v <= $7FFFFFFF) and
+     not ((p.k = okSym) and not SymIsImport(p.sym)) and
+     not ((p.k = okVal) and (FvK[p.idx] = vkSym) and not
+         SymIsImport(FvSym[p.idx])) then
+  begin
+    m := MemOf(p, rCX);
+    MovMI(m, v.v, Integer(sz));
+    Exit;
+  end;
+  LoadOp(rAX, v);
+  m := MemOf(p, rCX);
+  MovMR(m, rAX, Integer(sz));
+end;
+
+{ ---- getelementptr ---- }
+procedure GenGep(const dst: string; const base: TBxOp; ty: Integer; var idx:
+    TBxArgs; nidx: Integer);
+var
+  cur: Integer;
+  i: Integer;
+  sc: Int64;
+  dyn: Boolean;
+  sz: Int64;
+  d: Integer;
+  esz: Int64;
+  ib: Integer;
+begin
+  sc := 0;
+  dyn := False;
+  for i := 0 to nidx - 1 do if idx[i].k <> okInt then dyn := True;
+  { partie constante et dynamique }
+  if not dyn then
+  begin
+    cur := ty;
+    for i := 0 to nidx - 1 do
+    begin
+      ib := TyBitsOf(idx[i].ty);
+      if i = 0 then sc := sc + SignConst(idx[i].v, ib) * BxTys[cur].size
+      else if BxTys[cur].k = ltStruct then
+      begin
+        sc := sc + BxTys[cur].offs[Integer(idx[i].v)];
+        cur := BxTys[cur].elems[Integer(idx[i].v)];
+      end
+      else if BxTys[cur].k = ltArray then
+      begin
+        cur := BxTys[cur].elems[0];
+        sc := sc + SignConst(idx[i].v, ib) * BxTys[cur].size;
+      end
+      else begin BxFail('IR : getelementptr non supporte'); Exit; end;
+    end;
+    { repliement des adresses constantes }
+    if (base.k = okVal) and (FvK[base.idx] = vkFrame) then
+    begin
+      d := DefValKind(dst, TyPtrI, vkFrame);
+      FvOff[d] := FvOff[base.idx] - sc;
+      Exit;
+    end;
+    if (base.k = okVal) and (FvK[base.idx] = vkSym) then
+    begin
+      d := DefValKind(dst, TyPtrI, vkSym);
+      FvSym[d] := FvSym[base.idx];
+      FvOff[d] := FvOff[base.idx] + sc;
+      Exit;
+    end;
+    if base.k = okSym then
+    begin
+      d := DefValKind(dst, TyPtrI, vkSym);
+      FvSym[d] := base.sym;
+      FvOff[d] := base.v + sc;
+      Exit;
+    end;
+    LoadOp(rAX, base);
+    if sc <> 0 then
+    begin
+      if (sc >= -$80000000) and (sc <= $7FFFFFFF) then Lea(rAX, MemB(rAX, sc))
+      else begin MovRI(rCX, sc); AluRR(aAdd, rAX, rCX, True); end;
+    end;
+    StoreDst(dst, TyPtrI, rAX);
+    Exit;
+  end;
+  { cas general }
+  LoadOp(rAX, base);
+  cur := ty;
+  for i := 0 to nidx - 1 do
+  begin
+    ib := TyBitsOf(idx[i].ty);
+    if (i = 0) or (BxTys[cur].k = ltArray) then
+    begin
+      if i = 0 then esz := BxTys[cur].size
+      else begin cur := BxTys[cur].elems[0]; esz := BxTys[cur].size; end;
+      if idx[i].k = okInt then
+      begin
+        sc := SignConst(idx[i].v, ib) * esz;
+        if sc <> 0 then begin MovRI(rCX, sc); AluRR(aAdd, rAX, rCX, True); end;
+      end
+      else
+      begin
+        LoadOp(rCX, idx[i]);
+        SignReg(rCX, ib);
+        if esz = 1 then
+        else if esz = 2 then ShiftI(4, rCX, 1, True)
+        else if esz = 4 then ShiftI(4, rCX, 2, True)
+        else if esz = 8 then ShiftI(4, rCX, 3, True)
+        else if esz = 16 then ShiftI(4, rCX, 4, True)
+        else ImulRRI(rCX, rCX, esz, True);
+        AluRR(aAdd, rAX, rCX, True);
+      end;
+    end
+    else if BxTys[cur].k = ltStruct then
+    begin
+      if idx[i].k <> okInt then begin
+          BxFail('IR : indice de structure variable'); Exit; end;
+      sc := BxTys[cur].offs[Integer(idx[i].v)];
+      cur := BxTys[cur].elems[Integer(idx[i].v)];
+      if sc <> 0 then Lea(rAX, MemB(rAX, sc));
+    end
+    else begin BxFail('IR : getelementptr non supporte'); Exit; end;
+  end;
+  StoreDst(dst, TyPtrI, rAX);
+  sz := 0;
+  if sz = 1 then ;
+end;
+
+{ ---- appels ---- }
+procedure BxParseArgs(var args: TBxArgs; var n: Integer);
+begin
+  n := 0;
+  Expect('(');
+  if not Accept(')') then
+  begin
+    repeat
+      if n >= Length(args) then SetLength(args, Length(args) * 2 + 8);
+      ParseTypedOp(args[n]);
+      Inc(n);
+    until not Accept(',');
+    Expect(')');
+  end;
+end;
+
+procedure StoreCallResult(const dst: string; retTy: Integer);
+var
+  bits: Integer;
+begin
+  if (dst = '') or (BxTys[retTy].k = ltVoid) then Exit;
+  case BxTys[retTy].k of
+    ltFloat: begin MovdRX(rAX, 0); StoreDst(dst, retTy, rAX); end;
+    ltDouble: begin MovqRX(rAX, 0); StoreDst(dst, retTy, rAX); end;
+    ltInt:
+      begin
+        bits := BxTys[retTy].bits;
+        if bits = 128 then StoreDst128(dst, retTy, rAX, rDX)
+        else begin NormReg(rAX, bits); StoreDst(dst, retTy, rAX); end;
+      end;
+    ltPtr: StoreDst(dst, retTy, rAX);
+  else
+    BxFail('IR : retour d''agregat non supporte');
+  end;
+end;
+
+{ appel selon l'ABI Windows x64 (importations et fonctions natives marquees) }
+procedure EmitCallWin(isSym: Boolean; sym: Integer; const callee: TBxOp; retTy:
+    Integer; var args: TBxArgs;
+                      nargs: Integer; vararg: Boolean; const dst: string;
+                          lpadLbl: Integer);
+const
+  WinRegs: array[0..3] of Integer = (1, 2, 8, 9);
+var
+  i, n4: Integer;
+  total: Int64;
+  ty: Integer;
+begin
+  for i := 0 to nargs - 1 do
+    if (BxTys[args[i].ty].k = ltInt) and (BxTys[args[i].ty].bits = 128) then
+    begin
+      BxFail('IR : argument 128 bits pour une fonction Windows non supporte');
+      Exit;
+    end
+    else if (BxTys[args[i].ty].k = ltStruct) or (BxTys[args[i].ty].k = ltArray)
+        then
+    begin
+      BxFail('IR : argument d''agregat non supporte');
+      Exit;
+    end;
+  total := 32;
+  if nargs > 4 then total := total + 8 * (nargs - 4);
+  total := (total + 15) div 16 * 16;
+  AluRI(aSub, rSP, total, True);
+  for i := 4 to nargs - 1 do
+  begin
+    LoadOp(rAX, args[i]);
+    MovMR(MemB(rSP, 32 + 8 * (i - 4)), rAX, 8);
+  end;
+  n4 := nargs;
+  if n4 > 4 then n4 := 4;
+  for i := 0 to n4 - 1 do
+  begin
+    ty := args[i].ty;
+    if (BxTys[ty].k = ltFloat) or (BxTys[ty].k = ltDouble) then
+    begin
+      LoadOp(rAX, args[i]);
+      if BxTys[ty].k = ltFloat then MovdXR(i, rAX) else MovqXR(i, rAX);
+      if vararg then MovRR(WinRegs[i], rAX);
+    end
+    else LoadOp(WinRegs[i], args[i]);
+  end;
+  if isSym then
+  begin
+    if SymIsImport(sym) then CallGot(sym) else CallSym(sym);
+  end
+  else
+  begin
+    LoadOp(r11, callee);
+    CallR(r11);
+  end;
+  if lpadLbl >= 0 then
+  begin
+    if EhPendN >= Length(EhPend) then SetLength(EhPend, Length(EhPend) * 2 +
+        16);
+    EhPend[EhPendN].ra := BxN;
+    EhPend[EhPendN].lbl := lpadLbl;
+    Inc(EhPendN);
+  end;
+  AluRI(aAdd, rSP, total, True);
+  StoreCallResult(dst, retTy);
+end;
+
+procedure EmitCall(isSym: Boolean; sym: Integer; const callee: TBxOp; retTy:
+    Integer; var args: TBxArgs;
+                   nargs: Integer; vararg: Boolean; const dst: string; lpadLbl:
+                       Integer);
+var
+  cls: array of Integer;     { -1 pile, 0 entier, 1 sse, 2 entier 128 }
+  reg: array of Integer;
+  i, nInt, nSse, stk, pad: Integer;
+  total: Int64;
+  k: Integer;
+  ty: Integer;
+  cnt: Integer;
+  sl: array of Integer;
+begin
+  if BxWin and isSym and (SymIsImport(sym) or BxSyms[sym].msabi) then
+  begin
+    EmitCallWin(isSym, sym, callee, retTy, args, nargs, vararg, dst, lpadLbl);
+    Exit;
+  end;
+  SetLength(cls, nargs);
+  SetLength(reg, nargs);
+  SetLength(sl, nargs);
+  nInt := 0;
+  nSse := 0;
+  stk := 0;
+  for i := 0 to nargs - 1 do
+  begin
+    ty := args[i].ty;
+    if (BxTys[ty].k = ltFloat) or (BxTys[ty].k = ltDouble) then
+    begin
+      if nSse < 8 then begin cls[i] := 1; reg[i] := nSse; Inc(nSse); end
+      else begin cls[i] := -1; sl[i] := stk; Inc(stk); end;
+    end
+    else if (BxTys[ty].k = ltInt) and (BxTys[ty].bits = 128) then
+    begin
+      if nInt + 2 <= 6 then begin cls[i] := 2; reg[i] := nInt; Inc(nInt, 2); end
+      else begin cls[i] := -2; sl[i] := stk; Inc(stk, 2); end;
+    end
+    else if (BxTys[ty].k = ltInt) or (BxTys[ty].k = ltPtr) then
+    begin
+      if nInt < 6 then begin cls[i] := 0; reg[i] := nInt; Inc(nInt); end
+      else begin cls[i] := -1; sl[i] := stk; Inc(stk); end;
+    end
+    else begin BxFail('IR : argument d''agregat non supporte'); Exit; end;
+  end;
+  pad := stk and 1;
+  total := (stk + pad) * 8;
+  if total > 0 then AluRI(aSub, rSP, total, True);
+  for i := 0 to nargs - 1 do
+    if cls[i] = -1 then
+    begin
+      LoadOp(rAX, args[i]);
+      MovMR(MemB(rSP, sl[i] * 8), rAX, 8);
+    end
+    else if cls[i] = -2 then
+    begin
+      LoadOp128(rAX, rDX, args[i]);
+      MovMR(MemB(rSP, sl[i] * 8), rAX, 8);
+      MovMR(MemB(rSP, sl[i] * 8 + 8), rDX, 8);
+    end;
+  for i := 0 to nargs - 1 do
+    case cls[i] of
+      0: LoadOp(IntArgRegs[reg[i]], args[i]);
+      2: LoadOp128(IntArgRegs[reg[i]], IntArgRegs[reg[i] + 1], args[i]);
+      1:
+        begin
+          LoadOp(rAX, args[i]);
+          if BxTys[args[i].ty].k = ltFloat then MovdXR(reg[i], rAX) else
+              MovqXR(reg[i], rAX);
+        end;
+    end;
+  if vararg then MovRI(rAX, nSse);
+  if isSym then
+  begin
+    if SymIsImport(sym) then CallGot(sym) else CallSym(sym);
+  end
+  else
+  begin
+    LoadOp(r11, callee);
+    CallR(r11);
+  end;
+  if lpadLbl >= 0 then
+  begin
+    if EhPendN >= Length(EhPend) then SetLength(EhPend, Length(EhPend) * 2 +
+        16);
+    EhPend[EhPendN].ra := BxN;
+    EhPend[EhPendN].lbl := lpadLbl;
+    Inc(EhPendN);
+  end;
+  if total > 0 then AluRI(aAdd, rSP, total, True);
+  StoreCallResult(dst, retTy);
+  cnt := 0;
+  k := 0;
+  if cnt + k = 1 then ;
+end;
+
+{ call / invoke }
+procedure GenCall(isInvoke: Boolean; const dst: string);
+var
+  retTy, fnTy, i: Integer;
+  callee: TBxOp;
+  args: TBxArgs;
+  nargs: Integer;
+  vararg: Boolean;
+  w, nm: string;
+  sv: Integer;
+  normLbl, unwLbl: Integer;
+  isSym: Boolean;
+  sym: Integer;
+  nextNorm: Boolean;
+begin
+  SetLength(args, 8);
+  vararg := False;
+  { attributs / convention }
+  while True do
+  begin
+    sv := LP;
+    w := ReadWord;
+    if (w = 'tail') or (w = 'notail') or (w = 'musttail') or (w = 'ccc') or (w =
+        'fastcc') or (w = 'coldcc') or
+       (w = 'fast') or (w = 'nnan') or (w = 'ninf') or (w = 'nsz') or (w =
+           'noundef') or (w = 'zeroext') or
+       (w = 'signext') or (w = 'nonnull') then Continue;
+    LP := sv;
+    Break;
+  end;
+  retTy := ParseTy;
+  { type de fonction explicite (variadique) }
+  if CurCh = '(' then
+  begin
+    Inc(LP);
+    if not Accept(')') then
+    begin
+      repeat
+        if CurCh = '.' then begin ReadWord; vararg := True; end
+        else begin fnTy := ParseTy; SkipParamAttrs; end;
+      until not Accept(',');
+      Expect(')');
+    end;
+  end;
+  SkipSp;
+  isSym := False;
+  sym := -1;
+  callee.k := okNone;
+  if CurCh = '@' then
+  begin
+    Inc(LP);
+    nm := ReadName;
+    sym := SymGet(nm);
+    isSym := True;
+  end
+  else if CurCh = '%' then
+  begin
+    Inc(LP);
+    nm := ReadName;
+    callee.k := okVal;
+    callee.ty := TyPtrI;
+    callee.v := 0;
+    callee.hi := 0;
+    callee.sym := -1;
+    callee.idx := RefVal(nm, TyPtrI);
+  end
+  else begin BxFail('IR : appel : destinataire invalide'); Exit; end;
+  BxParseArgs(args, nargs);
+  normLbl := -1;
+  unwLbl := -1;
+  if isInvoke then
+  begin
+    { ... to label %n unwind label %u }
+    while not AtEnd do
+    begin
+      w := ReadWord;
+      if w = 'to' then begin ReadWord; Expect('%'); normLbl := LblId(ReadName);
+          end
+      else if w = 'unwind' then begin ReadWord; Expect('%'); unwLbl :=
+          LblId(ReadName); end
+      else if w = '' then Inc(LP);
+    end;
+  end;
+  if isSym and (Copy(BxSyms[sym].name, 1, 5) = 'llvm.') then
+  begin
+    GenIntrinsic(BxSyms[sym].name, retTy, args, nargs, dst);
+  end
+  else
+  begin
+    if isSym then MarkImportSym(sym);
+    EmitCall(isSym, sym, callee, retTy, args, nargs, vararg, dst, unwLbl);
+  end;
+  if isInvoke then
+  begin
+    w := PeekNextLabel;
+    nextNorm := (w <> '') and (LblId(w) = normLbl);
+    if not nextNorm then JmpTo(normLbl);
+  end;
+  i := 0;
+  if i = 1 then ;
+end;
+{ ============================================================ }
+{ Backend integre : intrinseques binaires                      }
+{ ============================================================ }
+
+procedure GenBitIntr(const base: string; bits: Integer; retTy: Integer; const
+    args: TBxArgs; nargs: Integer;
+                     const dst: string);
+var
+  fx: Integer;
+  a3: TBxArgs;
+  nm3: string;
+begin
+  if StartsW(base, 'ctpop.') then
+  begin
+    if bits = 128 then
+    begin
+      LoadOp128(rAX, rDX, args[0]);
+      PopcntRR(rAX, rAX);
+      PopcntRR(rDX, rDX);
+      AluRR(aAdd, rAX, rDX, True);
+      MovRI(rDX, 0);
+      StoreDst128(dst, retTy, rAX, rDX);
+    end
+    else
+    begin
+      LoadOp(rAX, args[0]);
+      PopcntRR(rAX, rAX);
+      StoreDst(dst, retTy, rAX);
+    end;
+  end
+  else if StartsW(base, 'ctlz.') then
+  begin
+    MovRI(r8, -1);
+    if bits = 128 then
+    begin
+      LoadOp128(rAX, rDX, args[0]);
+      BsrRR(rCX, rDX);
+      CmovRR(ccE, rCX, r8, True);
+      MovRI(r9, 63);
+      AluRR(aSub, r9, rCX, True);
+      BsrRR(rCX, rAX);
+      CmovRR(ccE, rCX, r8, True);
+      MovRI(r10, 127);
+      AluRR(aSub, r10, rCX, True);
+      TestRR(rDX, rDX, True);
+      CmovRR(ccNE, r10, r9, True);
+      MovRR(rAX, r10);
+      MovRI(rDX, 0);
+      StoreDst128(dst, retTy, rAX, rDX);
+    end
+    else
+    begin
+      LoadOp(rAX, args[0]);
+      BsrRR(rDX, rAX);
+      CmovRR(ccE, rDX, r8, True);
+      MovRI(rAX, bits - 1);
+      AluRR(aSub, rAX, rDX, True);
+      StoreDst(dst, retTy, rAX);
+    end;
+  end
+  else if StartsW(base, 'cttz.') then
+  begin
+    if bits = 128 then
+    begin
+      LoadOp128(rAX, rDX, args[0]);
+      MovRI(r8, 64);
+      BsfRR(rCX, rAX);
+      CmovRR(ccE, rCX, r8, True);
+      MovRR(r9, rCX);
+      BsfRR(rCX, rDX);
+      CmovRR(ccE, rCX, r8, True);
+      AluRI(aAdd, rCX, 64, True);
+      TestRR(rAX, rAX, True);
+      CmovRR(ccNE, rCX, r9, True);
+      MovRR(rAX, rCX);
+      MovRI(rDX, 0);
+      StoreDst128(dst, retTy, rAX, rDX);
+    end
+    else
+    begin
+      LoadOp(rAX, args[0]);
+      MovRI(r8, bits);
+      BsfRR(rDX, rAX);
+      CmovRR(ccE, rDX, r8, True);
+      StoreDst(dst, retTy, rDX);
+    end;
+  end
+  else if StartsW(base, 'bswap.') then
+  begin
+    if bits = 128 then
+    begin
+      LoadOp128(rAX, rDX, args[0]);
+      BswapR(rAX, True);
+      BswapR(rDX, True);
+      StoreDst128(dst, retTy, rDX, rAX);
+    end
+    else
+    begin
+      LoadOp(rAX, args[0]);
+      if bits = 16 then begin BswapR(rAX, False); ShiftI(5, rAX, 16, False); end
+      else if bits = 32 then BswapR(rAX, False)
+      else BswapR(rAX, True);
+      StoreDst(dst, retTy, rAX);
+    end;
+  end
+  else if StartsW(base, 'bitreverse.') then
+  begin
+    if bits = 128 then
+    begin
+      LoadOp128(rAX, rDX, args[0]);
+      MovRR(rDI, rDX);
+      CallSym(SymGet('__rt_bitrev64'));
+      MovRR(r10, rAX);
+      LoadOp128(rAX, rDX, args[0]);
+      MovRR(rDI, rAX);
+      CallSym(SymGet('__rt_bitrev64'));
+      StoreDst128(dst, retTy, r10, rAX);
+    end
+    else
+    begin
+      LoadOp(rDI, args[0]);
+      CallSym(SymGet('__rt_bitrev64'));
+      if bits < 64 then ShiftI(5, rAX, 64 - bits, True);
+      StoreDst(dst, retTy, rAX);
+    end;
+  end
+  else if StartsW(base, 'fshl.') or StartsW(base, 'fshr.') then
+  begin
+    if bits = 128 then
+    begin
+      SetLength(a3, 3);
+      a3[0] := args[0]; a3[1] := args[1]; a3[2] := args[2];
+      if StartsW(base, 'fshl.') then nm3 := '__rt_fshl128' else nm3 :=
+          '__rt_fshr128';
+      EmitCall(True, SymGet(nm3), a3[0], retTy, a3, 3, False, dst, -1);
+      Exit;
+    end;
+    if bits = 64 then
+    begin
+      if StartsW(base, 'fshl.') then
+      begin
+        LoadOp(rAX, args[0]); LoadOp(rDX, args[1]); LoadOp(rCX, args[2]);
+        ShldCL(rAX, rDX);
+      end
+      else
+      begin
+        LoadOp(rAX, args[1]); LoadOp(rDX, args[0]); LoadOp(rCX, args[2]);
+        ShrdCL(rAX, rDX);
+      end;
+    end
+    else
+    begin
+      LoadOp(rAX, args[0]);
+      ShiftI(4, rAX, bits, True);
+      LoadOp(rDX, args[1]);
+      AluRR(aOr, rAX, rDX, True);
+      LoadOp(rCX, args[2]);
+      AluRI(aAnd, rCX, bits - 1, True);
+      if StartsW(base, 'fshl.') then
+      begin
+        ShiftCL(4, rAX, True);
+        ShiftI(5, rAX, bits, True);
+      end
+      else ShiftCL(5, rAX, True);
+      NormReg(rAX, bits);
+    end;
+    StoreDst(dst, retTy, rAX);
+  end;
+  fx := 0;
+  if fx = 1 then ;
+end;
+{ ============================================================ }
+{ Backend integre : intrinseques LLVM                         }
+{ ============================================================ }
+
+{ suffixe .iN en fin de nom }
+function NameBits(const nm: string): Integer;
+var
+  i: Integer;
+begin
+  i := Length(nm);
+  while (i > 0) and (nm[i] <> '.') do Dec(i);
+  if (i > 0) and (i < Length(nm)) and (nm[i + 1] = 'i') then Result :=
+      StrToIntDef(Copy(nm, i + 2, 10), 0)
+  else Result := 0;
+end;
+
+function NameIsFloat(const nm: string): Boolean;
+begin
+  Result := Copy(nm, Length(nm) - 4, 5) = 'float';
+end;
+
+function ImportFn(const nm: string): Integer;
+begin
+  Result := SymGet(nm);
+  MarkImportSym(Result);
+end;
+
+procedure StoreAggField(const dst: string; ty: Integer; field: Integer; rv:
+    Integer; first: Boolean);
+var
+  d: Integer;
+  et: Integer;
+begin
+  d := HFind(FnVals, dst);
+  if d < 0 then d := DefVal(dst, ty);
+  et := BxTys[ty].elems[field];
+  MovMR(VMem(d, BxTys[ty].offs[field]), rv, Integer(BxTys[et].size));
+end;
+
+procedure GenOverflow(const op: string; bits: Integer; retTy: Integer; const a,
+    b: TBxOp; const dst: string);
+var
+  cc, d: Integer;
+  uns, isMul, isSub: Boolean;
+  args: TBxArgs;
+  tmp: Int64;
+begin
+  uns := op[1] = 'u';
+  isSub := Copy(op, 2, 3) = 'sub';
+  isMul := Copy(op, 2, 3) = 'mul';
+  if dst = '' then Exit;
+  if bits = 128 then
+  begin
+    d := DefVal(dst, retTy);
+    if isMul then
+    begin
+      tmp := AllocFrame(16, 16);
+      LoadOp128(rSI, rDX, a);
+      LoadOp128(rCX, r8, b);
+      if uns then MovRI(r9, 0) else MovRI(r9, 1);
+      Lea(rDI, MemB(rBP, -tmp));
+      CallSym(SymGet('__rt_mulo128'));
+      MovMR(VMem(d, 16), rAX, 1);
+      MovRM(rAX, MemB(rBP, -tmp), 8);
+      MovRM(rDX, MemB(rBP, -tmp + 8), 8);
+      MovMR(VMem(d, 0), rAX, 8);
+      MovMR(VMem(d, 8), rDX, 8);
+      Exit;
+    end;
+    LoadOp128(rAX, rDX, a);
+    LoadOp128(rCX, rSI, b);
+    if isSub then begin AluRR(aSub, rAX, rCX, True); AluRR(aSbb, rDX, rSI,
+        True); end
+    else begin AluRR(aAdd, rAX, rCX, True); AluRR(aAdc, rDX, rSI, True); end;
+    if uns then SetCC(ccB, r8) else SetCC(ccO, r8);
+    MovMR(VMem(d, 0), rAX, 8);
+    MovMR(VMem(d, 8), rDX, 8);
+    MovMR(VMem(d, 16), r8, 1);
+    Exit;
+  end;
+  LoadOp(rAX, a);
+  LoadOp(rCX, b);
+  if bits = 64 then
+  begin
+    if isMul then
+    begin
+      if uns then begin GrpF7(4, rCX, True); SetCC(ccB, r8); end
+      else begin ImulRR(rAX, rCX, True); SetCC(ccO, r8); end;
+    end
+    else
+    begin
+      if isSub then AluRR(aSub, rAX, rCX, True) else AluRR(aAdd, rAX, rCX,
+          True);
+      if uns then SetCC(ccB, r8) else SetCC(ccO, r8);
+    end;
+  end
+  else
+  begin
+    if uns then
+    begin
+      if isSub then
+      begin
+        AluRR(aCmp, rAX, rCX, True);
+        SetCC(ccB, r8);
+        AluRR(aSub, rAX, rCX, True);
+        NormReg(rAX, bits);
+      end
+      else
+      begin
+        if isMul then ImulRR(rAX, rCX, True) else AluRR(aAdd, rAX, rCX, True);
+        MovRR(rDX, rAX);
+        NormReg(rAX, bits);
+        AluRR(aCmp, rDX, rAX, True);
+        SetCC(ccNE, r8);
+      end;
+    end
+    else
+    begin
+      SignReg(rAX, bits);
+      SignReg(rCX, bits);
+      if isMul then ImulRR(rAX, rCX, True)
+      else if isSub then AluRR(aSub, rAX, rCX, True)
+      else AluRR(aAdd, rAX, rCX, True);
+      MovRR(rDX, rAX);
+      SignReg(rDX, bits);
+      AluRR(aCmp, rDX, rAX, True);
+      SetCC(ccNE, r8);
+      NormReg(rAX, bits);
+    end;
+  end;
+  d := DefVal(dst, retTy);
+  MovMR(VMem(d, BxTys[retTy].offs[0]), rAX,
+      Integer(BxTys[BxTys[retTy].elems[0]].size));
+  MovMR(VMem(d, BxTys[retTy].offs[1]), r8, 1);
+  cc := 0;
+  if cc = 1 then ;
+end;
+
+procedure GenSat(const op: string; bits: Integer; retTy: Integer; const a, b:
+    TBxOp; const dst: string);
+var
+  uns, isSub: Boolean;
+  mx, mn: Int64;
+  fx: Integer;
+begin
+  uns := op[1] = 'u';
+  isSub := Copy(op, 2, 3) = 'sub';
+  if bits = 128 then begin BxFail('IR : saturation 128 bits non supportee');
+      Exit; end;
+  LoadOp(rAX, a);
+  LoadOp(rCX, b);
+  if bits = 64 then
+  begin
+    if uns then
+    begin
+      if isSub then
+      begin
+        MovRI(rDX, 0);
+        AluRR(aSub, rAX, rCX, True);
+        CmovRR(ccB, rAX, rDX, True);
+      end
+      else
+      begin
+        AluRR(aAdd, rAX, rCX, True);
+        MovRI(rDX, -1);
+        CmovRR(ccB, rAX, rDX, True);
+      end;
+    end
+    else
+    begin
+      MovRR(rDX, rAX);
+      if isSub then AluRR(aSub, rAX, rCX, True) else AluRR(aAdd, rAX, rCX,
+          True);
+      fx := JccRel32(ccNO);
+      ShiftI(7, rDX, 63, True);
+      MovRI(rAX, $7FFFFFFFFFFFFFFF);
+      AluRR(aXor, rAX, rDX, True);
+      PatchHere(fx);
+    end;
+  end
+  else
+  begin
+    if uns then
+    begin
+      mx := (Int64(1) shl bits) - 1;
+      if isSub then
+      begin
+        MovRI(rDX, 0);
+        AluRR(aSub, rAX, rCX, True);
+        CmovRR(ccB, rAX, rDX, True);
+      end
+      else
+      begin
+        AluRR(aAdd, rAX, rCX, True);
+        MovRI(rCX, mx);
+        AluRR(aCmp, rAX, rCX, True);
+        CmovRR(ccA, rAX, rCX, True);
+      end;
+    end
+    else
+    begin
+      SignReg(rAX, bits);
+      SignReg(rCX, bits);
+      if isSub then AluRR(aSub, rAX, rCX, True) else AluRR(aAdd, rAX, rCX,
+          True);
+      mx := (Int64(1) shl (bits - 1)) - 1;
+      mn := -(Int64(1) shl (bits - 1));
+      MovRI(rCX, mx);
+      AluRR(aCmp, rAX, rCX, True);
+      CmovRR(ccG, rAX, rCX, True);
+      MovRI(rCX, mn);
+      AluRR(aCmp, rAX, rCX, True);
+      CmovRR(ccL, rAX, rCX, True);
+      NormReg(rAX, bits);
+    end;
+  end;
+  StoreDst(dst, retTy, rAX);
+end;
+
+{ conversions flottant -> entier avec saturation }
+procedure GenFpSat(isSigned: Boolean; bits: Integer; sty: Integer; retTy:
+    Integer; const a: TBxOp; const dst: string);
+var
+  dbl: Boolean;
+  fxNan, fxLo, fxHi, fxEnd: Integer;
+  hiBits, loBits: Int64;
+  mx, mn: Int64;
+  fxs: array[0..3] of Integer;
+begin
+  dbl := BxTys[sty].k = ltDouble;
+  if bits > 64 then begin
+      BxFail('IR : saturation flottant -> 128 bits non supportee'); Exit; end;
+  LoadFlt(0, a, sty, rAX);
+  { NaN -> 0 }
+  UcomiRR(dbl, 0, 0);
+  fxNan := JccRel32(ccP);
+  { bornes : x >= hi -> max ; x <= lo -> min }
+  if isSigned then
+  begin
+    mx := (Int64(1) shl (bits - 1)) - 1;
+    if bits = 64 then mx := $7FFFFFFFFFFFFFFF;
+    mn := -mx - 1;
+  end
+  else
+  begin
+    if bits = 64 then mx := -1 else mx := (Int64(1) shl bits) - 1;
+    mn := 0;
+  end;
+  { constante hi = 2^(bits-1) (signe) ou 2^bits (non signe) en flottant }
+  if isSigned then
+  begin
+    if bits = 64 then hiBits := $43E0000000000000
+    else hiBits := Int64($3FF0000000000000) + (Int64(bits - 1) shl 52);
+  end
+  else
+  begin
+    if bits = 64 then hiBits := $43F0000000000000
+    else hiBits := Int64($3FF0000000000000) + (Int64(bits) shl 52);
+  end;
+  if dbl then MovRI(rCX, hiBits) else MovRI(rCX, ((hiBits shr 52) - 1023 + 127)
+      shl 23);
+  if dbl then MovqXR(1, rCX) else MovdXR(1, rCX);
+  UcomiRR(dbl, 0, 1);
+  fxHi := JccRel32(ccAE);
+  { borne basse }
+  if isSigned then
+  begin
+    if dbl then MovRI(rCX, hiBits or MinI64) else MovRI(rCX, (((hiBits shr 52) -
+        1023 + 127) shl 23) or $80000000);
+    if dbl then MovqXR(1, rCX) else MovdXR(1, rCX);
+    UcomiRR(dbl, 0, 1);
+    fxLo := JccRel32(ccBE);
+  end
+  else
+  begin
+    { x <= 0 -> 0 }
+    MovRI(rCX, 0);
+    if dbl then MovqXR(1, rCX) else MovdXR(1, rCX);
+    UcomiRR(dbl, 0, 1);
+    fxLo := JccRel32(ccBE);
+  end;
+  { conversion normale }
+  if (not isSigned) and (bits = 64) then
+  begin
+    { x < 2^64 : separer en deux }
+    if dbl then MovRI(rCX, Int64($43E0000000000000)) else MovRI(rCX, $5F000000);
+    if dbl then MovqXR(1, rCX) else MovdXR(1, rCX);
+    UcomiRR(dbl, 0, 1);
+    fxs[0] := JccRel32(ccAE);
+    CvttF2Si(dbl, rAX, 0);
+    fxs[1] := JmpRel32;
+    PatchHere(fxs[0]);
+    SseRR(dbl, $5C, 0, 1);
+    CvttF2Si(dbl, rAX, 0);
+    MovRI(rCX, MinI64);
+    AluRR(aXor, rAX, rCX, True);
+    PatchHere(fxs[1]);
+  end
+  else CvttF2Si(dbl, rAX, 0);
+  fxEnd := JmpRel32;
+  PatchHere(fxNan);
+  MovRI(rAX, 0);
+  fxs[2] := JmpRel32;
+  PatchHere(fxHi);
+  MovRI(rAX, mx);
+  fxs[3] := JmpRel32;
+  PatchHere(fxLo);
+  MovRI(rAX, mn);
+  PatchHere(fxEnd);
+  PatchHere(fxs[2]);
+  PatchHere(fxs[3]);
+  NormReg(rAX, bits);
+  StoreDst(dst, retTy, rAX);
+end;
+
+procedure GenIntrinsic(const name: string; retTy: Integer; const args: TBxArgs;
+    nargs: Integer;
+                       const dst: string);
+var
+  base, op: string;
+  bits, k: Integer;
+  a: TBxArgs;
+  dbl: Boolean;
+  n: Int64;
+  sym: Integer;
+  fx: Integer;
+  nm: string;
+  i: Integer;
+begin
+  base := Copy(name, 6, Length(name));
+  if StartsW(base, 'memcpy.') then
+  begin
+    if (args[2].k = okInt) and (args[2].v <= 256) then
+      CopyBytes(MemOf(args[0], rDI), MemOf(args[1], rSI), args[2].v)
+    else
+    begin
+      LoadOp(rDI, args[0]);
+      LoadOp(rSI, args[1]);
+      LoadOp(rCX, args[2]);
+      Bx1($F3); Bx1($A4);
+    end;
+  end
+  else if StartsW(base, 'memmove.') then
+  begin
+    SetLength(a, 3);
+    a[0] := args[0]; a[1] := args[1]; a[2] := args[2];
+    EmitCall(True, ImportFn('memmove'), a[0], TyPtrI, a, 3, False, '', -1);
+  end
+  else if StartsW(base, 'memset.') then
+  begin
+    LoadOp(rDI, args[0]);
+    LoadOp(rAX, args[1]);
+    LoadOp(rCX, args[2]);
+    Bx1($F3); Bx1($AA);
+  end
+  else if StartsW(base, 'lifetime.') or StartsW(base, 'assume') or StartsW(base,
+      'dbg.') or
+          StartsW(base, 'donothing') or StartsW(base, 'invariant.') then
+  else if StartsW(base, 'expect.') then
+  begin
+    if TyBitsOf(args[0].ty) = 128 then begin LoadOp128(rAX, rDX, args[0]);
+        StoreDst128(dst, retTy, rAX, rDX); end
+    else begin LoadOp(rAX, args[0]); StoreDst(dst, retTy, rAX); end;
+  end
+  else if StartsW(base, 'trap') or StartsW(base, 'debugtrap') then Ud2
+  else if StartsW(base, 'frameaddress') then
+  begin
+    MovRR(rAX, rBP);
+    StoreDst(dst, retTy, rAX);
+  end
+  else if Pos('.with.overflow.', base) > 0 then
+  begin
+    op := Copy(base, 1, 4);
+    GenOverflow(op, NameBits(name), retTy, args[0], args[1], dst);
+  end
+  else if (Pos('.sat.', base) > 0) and not StartsW(base, 'fptosi') and not
+      StartsW(base, 'fptoui') then
+  begin
+    op := Copy(base, 1, 4);
+    GenSat(op, NameBits(name), retTy, args[0], args[1], dst);
+  end
+  else if StartsW(base, 'fptosi.sat.') then GenFpSat(True, TyBitsOf(retTy),
+      args[0].ty, retTy, args[0], dst)
+  else if StartsW(base, 'fptoui.sat.') then GenFpSat(False, TyBitsOf(retTy),
+      args[0].ty, retTy, args[0], dst)
+  else if StartsW(base, 'sqrt.') then
+  begin
+    dbl := not NameIsFloat(name);
+    LoadFlt(0, args[0], args[0].ty, rAX);
+    SseRR(dbl, $51, 0, 0);
+    if dbl then MovqRX(rAX, 0) else MovdRX(rAX, 0);
+    StoreDst(dst, retTy, rAX);
+  end
+  else if StartsW(base, 'fabs.') then
+  begin
+    LoadOp(rAX, args[0]);
+    if NameIsFloat(name) then MovRI(rCX, $7FFFFFFF) else MovRI(rCX,
+        $7FFFFFFFFFFFFFFF);
+    AluRR(aAnd, rAX, rCX, True);
+    StoreDst(dst, retTy, rAX);
+  end
+  else if StartsW(base, 'copysign.') then
+  begin
+    LoadOp(rAX, args[0]);
+    LoadOp(rDX, args[1]);
+    if NameIsFloat(name) then begin MovRI(rCX, $7FFFFFFF); MovRI(rSI,
+        $80000000); end
+    else begin MovRI(rCX, $7FFFFFFFFFFFFFFF); MovRI(rSI, MinI64); end;
+    AluRR(aAnd, rAX, rCX, True);
+    AluRR(aAnd, rDX, rSI, True);
+    AluRR(aOr, rAX, rDX, True);
+    StoreDst(dst, retTy, rAX);
+  end
+  else if StartsW(base, 'powi.') then
+  begin
+    SetLength(a, 2);
+    a[0] := args[0]; a[1] := args[1];
+    if NameIsFloat(Copy(name, 1, Pos('.i32', name) - 1)) then nm := '__powisf2'
+        else nm := '__powidf2';
+    EmitCall(True, SymGet(nm), a[0], retTy, a, 2, False, dst, -1);
+  end
+  else if StartsW(base, 'ctpop.') or StartsW(base, 'ctlz.') or StartsW(base,
+      'cttz.') or StartsW(base, 'bswap.') or
+          StartsW(base, 'bitreverse.') or StartsW(base, 'fshl.') or
+              StartsW(base, 'fshr.') then
+    GenBitIntr(base, NameBits(name), retTy, args, nargs, dst)
+  else
+  begin
+    { fonctions mathematiques de libm }
+    k := Pos('.', base);
+    if k = 0 then begin BxFail('IR : intrinseque non supporte `' + name + '`');
+        Exit; end;
+    nm := Copy(base, 1, k - 1);
+    if (nm = 'sin') or (nm = 'cos') or (nm = 'exp') or (nm = 'exp2') or (nm =
+        'log') or (nm = 'log2') or
+       (nm = 'log10') or (nm = 'pow') or (nm = 'fma') or (nm = 'floor') or (nm =
+           'ceil') or (nm = 'trunc') or
+       (nm = 'round') or (nm = 'rint') or (nm = 'nearbyint') or (nm = 'minnum')
+           or (nm = 'maxnum') or
+       (nm = 'roundeven') then
+    begin
+      if nm = 'minnum' then nm := 'fmin' else if nm = 'maxnum' then nm :=
+          'fmax';
+      if NameIsFloat(name) then nm := nm + 'f';
+      SetLength(a, nargs);
+      for i := 0 to nargs - 1 do a[i] := args[i];
+      EmitCall(True, ImportFn(nm), a[0], retTy, a, nargs, False, dst, -1);
+    end
+    else BxFail('IR : intrinseque non supporte `' + name + '`');
+  end;
+  n := 0;
+  sym := 0;
+  fx := 0;
+  if n + sym + fx = 1 then ;
+  bits := 0;
+  if bits = 1 then ;
+end;
+{ ============================================================ }
+{ Backend integre : fonctions et instructions                  }
+{ ============================================================ }
+
+procedure GenSwitch;
+var
+  v, c: TBxOp;
+  def, lbl, ty: Integer;
+  nm, nxt: string;
+  ln: string;
+begin
+  ParseTypedOp(v);
+  if TyBitsOf(v.ty) = 128 then begin BxFail('IR : switch sur i128'); Exit; end;
+  Expect(',');
+  AcceptWord('label');
+  Expect('%');
+  def := LblId(ReadName);
+  Expect('[');
+  LoadOp(rAX, v);
+  while True do
+  begin
+    if AtEnd then
+    begin
+      if not NextLine(ln) then begin BxFail('IR : switch incomplet'); Exit; end;
+      LS := ln;
+      LP := 1;
+      Continue;
+    end;
+    if CurCh = ']' then begin Inc(LP); Break; end;
+    ty := ParseTy;
+    ParseConstVal(ty, c);
+    Expect(',');
+    AcceptWord('label');
+    Expect('%');
+    nm := ReadName;
+    lbl := LblId(nm);
+    if (c.v >= 0) and (c.v <= $7FFFFFFF) then AluRI(aCmp, rAX, c.v, True)
+    else begin MovRI(rCX, c.v); AluRR(aCmp, rAX, rCX, True); end;
+    JccTo(ccE, lbl);
+  end;
+  nxt := PeekNextLabel;
+  if (nxt = '') or (HFind(FnLbl, nxt) <> def) then JmpTo(def);
+end;
+
+procedure GenBr;
+var
+  c: TBxOp;
+  t, f: Integer;
+  nxt: string;
+  nl: Integer;
+  w: string;
+begin
+  nxt := PeekNextLabel;
+  if nxt <> '' then nl := LblId(nxt) else nl := -1;
+  if AcceptWord('label') then
+  begin
+    Expect('%');
+    t := LblId(ReadName);
+    if t <> nl then JmpTo(t);
+    Exit;
+  end;
+  if FuseName <> '' then
+  begin
+    SkipSp;
+    if Copy(LS, LP, 4 + Length(FuseName) + 1) = 'i1 %' + FuseName + ',' then
+    begin
+      LP := LP + 4 + Length(FuseName) + 1;
+      AcceptWord('label'); Expect('%'); t := LblId(ReadName);
+      Expect(',');
+      AcceptWord('label'); Expect('%'); f := LblId(ReadName);
+      FuseName := '';
+      if t = nl then JccTo(FuseCC xor 1, f)
+      else if f = nl then JccTo(FuseCC, t)
+      else begin JccTo(FuseCC, t); JmpTo(f); end;
+      Exit;
+    end;
+  end;
+  ParseTypedOp(c);
+  Expect(',');
+  AcceptWord('label'); Expect('%'); t := LblId(ReadName);
+  Expect(',');
+  AcceptWord('label'); Expect('%'); f := LblId(ReadName);
+  w := '';
+  if (c.k = okInt) then
+  begin
+    if c.v <> 0 then begin if t <> nl then JmpTo(t); end
+    else begin if f <> nl then JmpTo(f); end;
+    Exit;
+  end;
+  LoadOp(rAX, c);
+  TestRR(rAX, rAX, False);
+  if t = nl then JccTo(ccE, f)
+  else if f = nl then JccTo(ccNE, t)
+  else begin JccTo(ccNE, t); JmpTo(f); end;
+end;
+
+procedure GenRet;
+var
+  v: TBxOp;
+  ty: Integer;
+begin
+  if AcceptWord('void') then
+  begin
+    Leave; Ret;
+    Exit;
+  end;
+  ParseTypedOp(v);
+  ty := v.ty;
+  case BxTys[ty].k of
+    ltFloat: begin LoadOp(rAX, v); MovdXR(0, rAX); end;
+    ltDouble: begin LoadOp(rAX, v); MovqXR(0, rAX); end;
+    ltInt:
+      if BxTys[ty].bits = 128 then LoadOp128(rAX, rDX, v) else LoadOp(rAX, v);
+    ltPtr: LoadOp(rAX, v);
+  else
+    BxFail('IR : retour d''agregat non supporte');
+  end;
+  Leave; Ret;
+end;
+
+procedure GenInst;
+var
+  dst, w: string;
+  ty, sty, dty, i, n: Integer;
+  a, b, c, o: TBxOp;
+  idx: TBxArgs;
+  nidx: Integer;
+  d: Integer;
+  cnt: Int64;
+  al: Int64;
+  sz: Int64;
+  rlo, rhi: Integer;
+  bits: Integer;
+  ln: string;
+  m: TBxMem;
+begin
+  SkipSp;
+  dst := '';
+  if (LP <= Length(LS)) and (LS[LP] = '%') then
+  begin
+    Inc(LP);
+    dst := ReadName;
+    Expect('=');
+  end;
+  w := ReadWord;
+  if (w = 'tail') or (w = 'musttail') or (w = 'notail') then w := ReadWord;
+  if w = 'alloca' then
+  begin
+    ty := ParseTy;
+    cnt := 1;
+    al := BxTys[ty].align;
+    while Accept(',') do
+    begin
+      if PeekWord = 'align' then begin ReadWord; al := StrToIntDef(ReadWord, 8);
+          end
+      else if PeekWord = 'addrspace' then begin ReadWord; Expect('('); ReadWord;
+          Expect(')'); end
+      else
+      begin
+        ParseTypedOp(a);
+        if a.k <> okInt then begin BxFail('IR : alloca dynamique non supporte');
+            Exit; end;
+        cnt := a.v;
+      end;
+    end;
+    if al > 16 then begin BxFail('IR : alignement > 16 non supporte'); Exit;
+        end;
+    d := DefValKind(dst, TyPtrI, vkFrame);
+    FvOff[d] := AllocFrame(BxTys[ty].size * cnt, al);
+  end
+  else if w = 'load' then
+  begin
+    SkipFlags;
+    if AcceptWord('atomic') then ;
+    SkipFlags;
+    ty := ParseTy;
+    Expect(',');
+    ParseTypedOp(a);
+    GenLoad(dst, ty, a);
+  end
+  else if w = 'store' then
+  begin
+    SkipFlags;
+    if AcceptWord('atomic') then ;
+    SkipFlags;
+    ParseTypedOp(a);
+    Expect(',');
+    ParseTypedOp(b);
+    GenStore(a.ty, a, b);
+  end
+  else if w = 'getelementptr' then
+  begin
+    SkipFlags;
+    ty := ParseTy;
+    Expect(',');
+    ParseTypedOp(a);
+    SetLength(idx, 4);
+    nidx := 0;
+    while Accept(',') do
+    begin
+      if nidx >= Length(idx) then SetLength(idx, Length(idx) * 2);
+      ParseTypedOp(idx[nidx]);
+      Inc(nidx);
+    end;
+    GenGep(dst, a, ty, idx, nidx);
+  end
+  else if (w = 'add') or (w = 'sub') or (w = 'mul') or (w = 'udiv') or (w =
+      'sdiv') or (w = 'urem') or
+          (w = 'srem') or (w = 'shl') or (w = 'lshr') or (w = 'ashr') or (w =
+              'and') or (w = 'or') or
+          (w = 'xor') then
+  begin
+    SkipFlags;
+    ty := ParseTy;
+    ParseOperand(ty, a);
+    Expect(',');
+    ParseOperand(ty, b);
+    GenBin(dst, w, ty, a, b);
+  end
+  else if (w = 'fadd') or (w = 'fsub') or (w = 'fmul') or (w = 'fdiv') or (w =
+      'frem') then
+  begin
+    SkipFlags;
+    ty := ParseTy;
+    ParseOperand(ty, a);
+    Expect(',');
+    ParseOperand(ty, b);
+    GenFBin(dst, w, ty, a, b);
+  end
+  else if w = 'fneg' then
+  begin
+    SkipFlags;
+    ty := ParseTy;
+    ParseOperand(ty, a);
+    LoadOp(rAX, a);
+    if BxTys[ty].k = ltFloat then MovRI(rCX, $80000000) else MovRI(rCX, MinI64);
+    AluRR(aXor, rAX, rCX, True);
+    StoreDst(dst, ty, rAX);
+  end
+  else if w = 'icmp' then
+  begin
+    SkipFlags;
+    w := ReadWord;
+    ty := ParseTy;
+    ParseOperand(ty, a);
+    Expect(',');
+    ParseOperand(ty, b);
+    GenICmp(dst, w, ty, a, b);
+  end
+  else if w = 'fcmp' then
+  begin
+    SkipFlags;
+    w := ReadWord;
+    ty := ParseTy;
+    ParseOperand(ty, a);
+    Expect(',');
+    ParseOperand(ty, b);
+    GenFCmp(dst, w, ty, a, b);
+  end
+  else if (w = 'zext') or (w = 'sext') or (w = 'trunc') or (w = 'ptrtoint') or
+      (w = 'inttoptr') or
+          (w = 'bitcast') or (w = 'fptrunc') or (w = 'fpext') or (w = 'sitofp')
+              or (w = 'uitofp') or
+          (w = 'fptosi') or (w = 'fptoui') or (w = 'addrspacecast') then
+  begin
+    SkipFlags;
+    sty := ParseTy;
+    ParseOperand(sty, a);
+    if not AcceptWord('to') then BxFail('IR : `to` attendu');
+    dty := ParseTy;
+    GenCast(dst, w, sty, a, dty);
+  end
+  else if w = 'select' then
+  begin
+    SkipFlags;
+    ParseTypedOp(c);
+    Expect(',');
+    ParseTypedOp(a);
+    Expect(',');
+    ParseTypedOp(b);
+    ty := a.ty;
+    bits := TyBitsOf(ty);
+    if (BxTys[ty].k = ltStruct) or (BxTys[ty].k = ltArray) then begin
+        BxFail('IR : select d''agregat'); Exit; end;
+    if bits = 128 then
+    begin
+      LoadOp128(rAX, rDX, b);
+      LoadOp128(rCX, rSI, a);
+      LoadOp(r8, c);
+      TestRR(r8, r8, False);
+      CmovRR(ccNE, rAX, rCX, True);
+      CmovRR(ccNE, rDX, rSI, True);
+      StoreDst128(dst, ty, rAX, rDX);
+    end
+    else
+    begin
+      LoadOp(rAX, b);
+      LoadOp(rCX, a);
+      LoadOp(rDX, c);
+      TestRR(rDX, rDX, False);
+      CmovRR(ccNE, rAX, rCX, True);
+      StoreDst(dst, ty, rAX);
+    end;
+  end
+  else if w = 'extractvalue' then
+  begin
+    ParseTypedOp(a);
+    ty := a.ty;
+    sz := 0;
+    while Accept(',') do
+    begin
+      n := StrToIntDef(ReadWord, 0);
+      if BxTys[ty].k = ltStruct then
+      begin
+        sz := sz + BxTys[ty].offs[n];
+        ty := BxTys[ty].elems[n];
+      end
+      else if BxTys[ty].k = ltArray then
+      begin
+        ty := BxTys[ty].elems[0];
+        sz := sz + n * BxTys[ty].size;
+      end
+      else begin BxFail('IR : extractvalue invalide'); Exit; end;
+    end;
+    if a.k <> okVal then begin BxFail('IR : extractvalue sur constante'); Exit;
+        end;
+    m := VMem(a.idx, sz);
+    if (BxTys[ty].k = ltInt) and (BxTys[ty].bits = 128) then
+    begin
+      MovRM(rAX, m, 8);
+      MovRM(rDX, MemPlus(m, 8), 8);
+      StoreDst128(dst, ty, rAX, rDX);
+    end
+    else
+    begin
+      MovRM(rAX, m, Integer(BxTys[ty].size));
+      StoreDst(dst, ty, rAX);
+    end;
+  end
+  else if w = 'freeze' then
+  begin
+    ParseTypedOp(a);
+    if TyBitsOf(a.ty) = 128 then begin LoadOp128(rAX, rDX, a); StoreDst128(dst,
+        a.ty, rAX, rDX); end
+    else begin LoadOp(rAX, a); StoreDst(dst, a.ty, rAX); end;
+  end
+  else if w = 'call' then GenCall(False, dst)
+  else if w = 'invoke' then GenCall(True, dst)
+  else if w = 'ret' then GenRet
+  else if w = 'br' then GenBr
+  else if w = 'switch' then GenSwitch
+  else if w = 'unreachable' then Ud2
+  else if w = 'landingpad' then
+  begin
+    ty := ParseTy;
+    if PeekWord <> 'cleanup' then begin
+        BxFail('IR : landingpad avec catch/filter non supporte'); Exit; end;
+    ReadWord;
+    MovRM(rAX, MemSym(SymExc, 0), 8);
+    d := DefVal(dst, ty);
+    MovMR(VMem(d, 0), rAX, 8);
+    MovMI(VMem(d, 8), 0, 8);
+  end
+  else if w = 'resume' then
+  begin
+    MovRR(rDI, rBP);
+    CallSym(SymResume);
+    Ud2;
+  end
+  else BxFail('IR : instruction non supportee `' + w + '`');
+  n := 0;
+  if n = 1 then ;
+end;
+
+{ ---- analyse des durees de vie : valeurs temporaires locales a un bloc ---- }
+procedure PsNote(const nm: string; isDef: Boolean; blk, ord: Integer);
+var
+  id: Integer;
+begin
+  id := HFind(PsNames, nm);
+  if id < 0 then
+  begin
+    if PsN >= Length(PsDefBlk) then
+    begin
+      SetLength(PsDefBlk, PsN * 2 + 64);
+      SetLength(PsDefOrd, Length(PsDefBlk));
+      SetLength(PsLastOrd, Length(PsDefBlk));
+      SetLength(PsNUse, Length(PsDefBlk));
+      SetLength(PsFwd, Length(PsDefBlk));
+      SetLength(PsCross, Length(PsDefBlk));
+    end;
+    id := PsN;
+    Inc(PsN);
+    HPut(PsNames, nm, id);
+    PsDefBlk[id] := -1;
+    PsDefOrd[id] := -1;
+    PsLastOrd[id] := -1;
+    PsNUse[id] := 0;
+    PsFwd[id] := 0;
+    PsCross[id] := 0;
+  end;
+  if isDef then
+  begin
+    if (PsDefBlk[id] >= 0) or (PsNUse[id] > 0) then PsFwd[id] := 1;
+    PsDefBlk[id] := blk;
+    PsDefOrd[id] := ord;
+  end
+  else
+  begin
+    if PsDefBlk[id] < 0 then PsFwd[id] := 1
+    else if PsDefBlk[id] <> blk then PsCross[id] := 1
+    else if ord <= PsDefOrd[id] then PsFwd[id] := 1;
+    PsLastOrd[id] := ord;
+    Inc(PsNUse[id]);
+  end;
+end;
+
+procedure Prescan;
+var
+  p, e, i, j, blk, ord, n: Integer;
+  nm: string;
+  first: Boolean;
+  c: Char;
+begin
+  HInit(PsNames);
+  PsN := 0;
+  p := MP;
+  blk := 0;
+  ord := 0;
+  while p <= Length(MT) do
+  begin
+    e := p;
+    while (e <= Length(MT)) and (MT[e] <> #10) do Inc(e);
+    Inc(ord);
+    n := e - p;
+    if n = 1 then
+    begin
+      if MT[p] = '}' then Exit;
+    end;
+    if (n > 0) and (MT[p] <> ' ') and (MT[p] <> #9) and (MT[p] <> ';') and (MT[e
+        - 1] = ':') then Inc(blk)
+    else if (n > 0) and (MT[p] <> ';') then
+    begin
+      i := p;
+      first := True;
+      while i < e do
+      begin
+        c := MT[i];
+        if (c = '@') and (i + 1 < e) and (MT[i + 1] = '"') then
+        begin
+          i := i + 2;
+          while (i < e) and (MT[i] <> '"') do Inc(i);
+          Inc(i);
+        end
+        else if c = '%' then
+        begin
+          j := i + 1;
+          if (j < e) and (MT[j] = '"') then
+          begin
+            Inc(j);
+            while (j < e) and (MT[j] <> '"') do Inc(j);
+            nm := Copy(MT, i + 2, j - i - 2);
+            Inc(j);
+          end
+          else
+          begin
+            while (j < e) and IsWordCh(MT[j]) do Inc(j);
+            nm := Copy(MT, i + 1, j - i - 1);
+          end;
+          if first and (j + 1 < e) and (MT[j] = ' ') and (MT[j + 1] = '=') then
+              PsNote(nm, True, blk, ord)
+          else PsNote(nm, False, blk, ord);
+          first := False;
+          i := j;
+        end
+        else
+        begin
+          if (c <> ' ') and (c <> #9) then first := False;
+          Inc(i);
+        end;
+      end;
+    end;
+    p := e + 1;
+  end;
+end;
+
+{ ---- une fonction ---- }
+procedure GenFunction(const hdr: string);
+var
+  w, name: string;
+  sv: Integer;
+  ty, i, k, nInt, nSse, stk, d: Integer;
+  ptys: TIntArr;
+  pnames: TStrArr;
+  np: Integer;
+  sym: Integer;
+  ln: string;
+  frame: Int64;
+  t: Integer;
+  nm: string;
+begin
+  LS := hdr;
+  LP := 1;
+  ReadWord;
+  while True do
+  begin
+    sv := LP;
+    w := ReadWord;
+    if (w = 'private') or (w = 'internal') or (w = 'dso_local') or (w =
+        'hidden') or (w = 'protected') or
+       (w = 'external') or (w = 'linkonce_odr') or (w = 'weak') or (w = 'ccc')
+           or (w = 'fastcc') or
+       (w = 'noundef') or (w = 'zeroext') or (w = 'signext') or (w =
+           'unnamed_addr') or (w = 'local_unnamed_addr') then
+      Continue;
+    LP := sv;
+    Break;
+  end;
+  FnRetTy := ParseTy;
+  SkipParamAttrs;
+  Expect('@');
+  name := ReadName;
+  if name = 'main' then name := '__rs_main';
+  FnName := name;
+  sym := SymGet(name);
+  while (BxN and 15) <> 0 do Bx1($90);
+  BxSyms[sym].kind := skFunc;
+  BxSyms[sym].off := BxN;
+  { parametres }
+  SetLength(ptys, 0);
+  SetLength(pnames, 0);
+  np := 0;
+  Expect('(');
+  if not Accept(')') then
+  begin
+    repeat
+      ty := ParseTy;
+      SkipParamAttrs;
+      SetLength(ptys, np + 1);
+      SetLength(pnames, np + 1);
+      ptys[np] := ty;
+      if CurCh = '%' then begin Inc(LP); pnames[np] := ReadName; end
+      else pnames[np] := '';
+      Inc(np);
+    until not Accept(',');
+    Expect(')');
+  end;
+  { etat de la fonction }
+  FvN := 0;
+  HInit(FnVals);
+  HInit(FnLbl);
+  FnLblN := 0;
+  JFixN := 0;
+  EhPendN := 0;
+  FnFr := 0;
+  FuseName := '';
+  LineNo := 0;
+  UsedN := 0;
+  FreeN[0] := 0; FreeN[1] := 0; FreeN[2] := 0;
+  Prescan;
+  { prologue }
+  Bx1($55);
+  Bx1($48); Bx1($89); Bx1($E5);
+  if BxWin then
+  begin
+    { zone reservee : sub rsp, N  ou  appel de __chkstk }
+    FnSubPos := BxN;
+    for i := 1 to 14 do Bx1($90);
+  end
+  else
+  begin
+    Bx1($48); Bx1($81); Bx1($EC);
+    FnSubPos := BxN;
+    Bx4(0);
+  end;
+  { arguments }
+  nInt := 0;
+  nSse := 0;
+  stk := 0;
+  for i := 0 to np - 1 do
+  begin
+    ty := ptys[i];
+    if pnames[i] = '' then d := NewVal(vkSlot, ty) else d := DefVal(pnames[i],
+        ty);
+    if pnames[i] = '' then MakeSlot(d);
+    if (BxTys[ty].k = ltFloat) or (BxTys[ty].k = ltDouble) then
+    begin
+      if nSse < 8 then
+      begin
+        if BxTys[ty].k = ltFloat then MovdRX(rAX, nSse) else MovqRX(rAX, nSse);
+        MovMR(VMem(d, 0), rAX, 8);
+        Inc(nSse);
+      end
+      else
+      begin
+        MovRM(rAX, MemB(rBP, 16 + 8 * stk), 8);
+        MovMR(VMem(d, 0), rAX, 8);
+        Inc(stk);
+      end;
+    end
+    else if (BxTys[ty].k = ltInt) and (BxTys[ty].bits = 128) then
+    begin
+      if nInt + 2 <= 6 then
+      begin
+        MovMR(VMem(d, 0), IntArgRegs[nInt], 8);
+        MovMR(VMem(d, 8), IntArgRegs[nInt + 1], 8);
+        Inc(nInt, 2);
+      end
+      else
+      begin
+        MovRM(rAX, MemB(rBP, 16 + 8 * stk), 8);
+        MovMR(VMem(d, 0), rAX, 8);
+        MovRM(rAX, MemB(rBP, 16 + 8 * stk + 8), 8);
+        MovMR(VMem(d, 8), rAX, 8);
+        Inc(stk, 2);
+      end;
+    end
+    else if (BxTys[ty].k = ltInt) or (BxTys[ty].k = ltPtr) then
+    begin
+      if nInt < 6 then
+      begin
+        MovMR(VMem(d, 0), IntArgRegs[nInt], 8);
+        Inc(nInt);
+      end
+      else
+      begin
+        MovRM(rAX, MemB(rBP, 16 + 8 * stk), 8);
+        MovMR(VMem(d, 0), rAX, 8);
+        Inc(stk);
+      end;
+    end
+    else begin BxFail('IR : parametre d''agregat non supporte'); Exit; end;
+  end;
+  { corps }
+  while NextLine(ln) do
+  begin
+    if BxFailed then Break;
+    if ln = '}' then Break;
+    if ln = '' then Continue;
+    if (ln[1] = ';') then Continue;
+    if (ln[1] <> ' ') and (ln[1] <> #9) then
+    begin
+      { etiquette }
+      k := Pos(':', ln);
+      nm := Copy(ln, 1, k - 1);
+      if (Length(nm) > 1) and (nm[1] = '"') then nm := Copy(nm, 2, Length(nm) -
+          2);
+      k := LblId(nm);
+      LblPos[k] := BxN;
+      Continue;
+    end;
+    LS := ln;
+    LP := 1;
+    SkipSp;
+    if (LP <= Length(LS)) and (LS[LP] = ';') then Continue;
+    UsedN := 0;
+    DefdVal := -1;
+    k := LineNo;
+    GenInst;
+    { liberation des temporaires dont la derniere utilisation est cette ligne }
+    for i := 0 to UsedN - 1 do
+      if (FvPs[UsedVals[i]] >= 0) and IsTempPs(FvPs[UsedVals[i]]) and
+          (PsLastOrd[FvPs[UsedVals[i]]] = k) then
+        FreeTemp(UsedVals[i]);
+    if (DefdVal >= 0) and (FvPs[DefdVal] >= 0) and IsTempPs(FvPs[DefdVal]) and
+        (PsNUse[FvPs[DefdVal]] = 0) then
+      FreeTemp(DefdVal);
+  end;
+  if BxFailed then Exit;
+  { fin de fonction }
+  frame := (FnFr + 15) div 16 * 16;
+  if frame > $7FFFFFF0 then begin BxFail('IR : cadre de pile trop grand'); Exit;
+      end;
+  if BxWin then
+  begin
+    if frame < 4096 then
+    begin
+      BxCode[FnSubPos] := $48; BxCode[FnSubPos + 1] := $81; BxCode[FnSubPos + 2]
+          := $EC;
+      BxPatch4(FnSubPos + 3, frame);
+      BxCode[FnSubPos + 7] := $0F; BxCode[FnSubPos + 8] := $1F; BxCode[FnSubPos
+          + 9] := $80;
+      BxCode[FnSubPos + 10] := 0; BxCode[FnSubPos + 11] := 0; BxCode[FnSubPos +
+          12] := 0; BxCode[FnSubPos + 13] := 0;
+    end
+    else
+    begin
+      BxCode[FnSubPos] := $B8;
+      BxPatch4(FnSubPos + 1, frame);
+      BxCode[FnSubPos + 5] := $E8;
+      BxAddFixAt(FnSubPos + 6, SymGet('__chkstk'), 0, fxRel, 0);
+      BxCode[FnSubPos + 10] := $48; BxCode[FnSubPos + 11] := $29;
+          BxCode[FnSubPos + 12] := $C4;
+      BxCode[FnSubPos + 13] := $90;
+    end;
+  end
+  else BxPatch4(FnSubPos, frame);
+  for i := 0 to JFixN - 1 do
+  begin
+    t := LblPos[JFix[i].lbl];
+    if t < 0 then begin BxFail('IR : etiquette non definie dans ' + FnName);
+        Exit; end;
+    PatchTo(JFix[i].pos, t);
+  end;
+  for i := 0 to EhPendN - 1 do
+  begin
+    t := LblPos[EhPend[i].lbl];
+    if t < 0 then begin BxFail('IR : plot d''atterrissage non defini'); Exit;
+        end;
+    if BxNEh >= Length(BxEh) then SetLength(BxEh, Length(BxEh) * 2 + 64);
+    BxEh[BxNEh].ra := EhPend[i].ra;
+    BxEh[BxNEh].lp := t;
+    BxEh[BxNEh].fr := frame;
+    Inc(BxNEh);
+  end;
+end;
+{ genere par gen_rtir.py : ne pas modifier }
+
+procedure BxRuntimeIR(var b: TBuf);
+begin
+  BufLn(b, '@__rt_exc = internal global [8 x i8] zeroinitializer, align 8');
+  BufLn(b, '@__rt_stop = internal global [8 x i8] zeroinitializer, align 8');
+  BufLn(b, '@__rt_sarg = internal global [8 x i8] zeroinitializer, align 8');
+  BufLn(b, '@__rt_eh = internal global [8 x i8] zeroinitializer, align 8');
+  BufLn(b, 'declare void @__rt_jump(i64, i64, i64)');
+  BufLn(b, 'declare ptr @llvm.frameaddress.p0(i32)');
+  BufLn(b, 'declare void @exit(i32)');
+  BufLn(b, 'declare {i64, i1} @llvm.umul.with.overflow.i64(i64, i64)');
+  BufLn(b, 'declare {i64, i1} @llvm.uadd.with.overflow.i64(i64, i64)');
+  BufLn(b, 'declare i64 @llvm.bswap.i64(i64)');
+  BufLn(b, 'define i64 @_Unwind_GetCFA(ptr %ctx) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %v = load i64, ptr %ctx, align 8');
+  BufLn(b, '  ret i64 %v');
+  BufLn(b, '}');
+  BufLn(b, 'define void @__rt_unwind(i64 %fp0, i64 %ra0) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %fps = alloca i64, align 8');
+  BufLn(b, '  %ras = alloca i64, align 8');
+  BufLn(b, '  %is = alloca i64, align 8');
+  BufLn(b, '  %ctx = alloca [16 x i8], align 8');
+  BufLn(b, '  store i64 %fp0, ptr %fps, align 8');
+  BufLn(b, '  store i64 %ra0, ptr %ras, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'loop:');
+  BufLn(b, '  %fp = load i64, ptr %fps, align 8');
+  BufLn(b, '  %ra = load i64, ptr %ras, align 8');
+  BufLn(b, '  %z = icmp eq i64 %fp, 0');
+  BufLn(b, '  br i1 %z, label %eos, label %frame');
+  BufLn(b, 'frame:');
+  BufLn(b, '  %cfa = add i64 %fp, 16');
+  BufLn(b, '  store i64 %cfa, ptr %ctx, align 8');
+  BufLn(b, '  %stop = load ptr, ptr @__rt_stop, align 8');
+  BufLn(b, '  %ex = load ptr, ptr @__rt_exc, align 8');
+  BufLn(b, '  %sa = load ptr, ptr @__rt_sarg, align 8');
+  BufLn(b, '  %r = call i32 %stop(i32 1, i32 10, i64 0, ptr %ex, ptr %ctx, p' +
+      'tr %sa)');
+  BufLn(b, '  %n = load i64, ptr @__rt_eh, align 8');
+  BufLn(b, '  store i64 0, ptr %is, align 8');
+  BufLn(b, '  br label %scan');
+  BufLn(b, 'scan:');
+  BufLn(b, '  %i = load i64, ptr %is, align 8');
+  BufLn(b, '  %done = icmp uge i64 %i, %n');
+  BufLn(b, '  br i1 %done, label %next, label %chk');
+  BufLn(b, 'chk:');
+  BufLn(b, '  %off = mul i64 %i, 24');
+  BufLn(b, '  %off2 = add i64 %off, 8');
+  BufLn(b, '  %ep = getelementptr inbounds i8, ptr @__rt_eh, i64 %off2');
+  BufLn(b, '  %era = load i64, ptr %ep, align 8');
+  BufLn(b, '  %hit = icmp eq i64 %era, %ra');
+  BufLn(b, '  br i1 %hit, label %found, label %scan2');
+  BufLn(b, 'scan2:');
+  BufLn(b, '  %i2 = add i64 %i, 1');
+  BufLn(b, '  store i64 %i2, ptr %is, align 8');
+  BufLn(b, '  br label %scan');
+  BufLn(b, 'found:');
+  BufLn(b, '  %lpp = getelementptr inbounds i8, ptr %ep, i64 8');
+  BufLn(b, '  %lp = load i64, ptr %lpp, align 8');
+  BufLn(b, '  %frp = getelementptr inbounds i8, ptr %ep, i64 16');
+  BufLn(b, '  %fr = load i64, ptr %frp, align 8');
+  BufLn(b, '  %sp = sub i64 %fp, %fr');
+  BufLn(b, '  call void @__rt_jump(i64 %fp, i64 %sp, i64 %lp)');
+  BufLn(b, '  unreachable');
+  BufLn(b, 'next:');
+  BufLn(b, '  %fpp = inttoptr i64 %fp to ptr');
+  BufLn(b, '  %rpp = getelementptr inbounds i8, ptr %fpp, i64 8');
+  BufLn(b, '  %nra = load i64, ptr %rpp, align 8');
+  BufLn(b, '  %nfp = load i64, ptr %fpp, align 8');
+  BufLn(b, '  store i64 %nfp, ptr %fps, align 8');
+  BufLn(b, '  store i64 %nra, ptr %ras, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'eos:');
+  BufLn(b, '  %stop2 = load ptr, ptr @__rt_stop, align 8');
+  BufLn(b, '  %ex2 = load ptr, ptr @__rt_exc, align 8');
+  BufLn(b, '  %sa2 = load ptr, ptr @__rt_sarg, align 8');
+  BufLn(b, '  %r2 = call i32 %stop2(i32 1, i32 26, i64 0, ptr %ex2, ptr %ctx' +
+      ', ptr %sa2)');
+  BufLn(b, '  call void @exit(i32 101)');
+  BufLn(b, '  unreachable');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @_Unwind_ForcedUnwind(ptr %exc, ptr %stop, ptr %arg) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  store ptr %exc, ptr @__rt_exc, align 8');
+  BufLn(b, '  store ptr %stop, ptr @__rt_stop, align 8');
+  BufLn(b, '  store ptr %arg, ptr @__rt_sarg, align 8');
+  BufLn(b, '  %me = call ptr @llvm.frameaddress.p0(i32 0)');
+  BufLn(b, '  %fp = load i64, ptr %me, align 8');
+  BufLn(b, '  %rp = getelementptr inbounds i8, ptr %me, i64 8');
+  BufLn(b, '  %ra = load i64, ptr %rp, align 8');
+  BufLn(b, '  call void @__rt_unwind(i64 %fp, i64 %ra)');
+  BufLn(b, '  ret i32 5');
+  BufLn(b, '}');
+  BufLn(b, 'define void @__rt_resume_from(i64 %fp) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %p = inttoptr i64 %fp to ptr');
+  BufLn(b, '  %nfp = load i64, ptr %p, align 8');
+  BufLn(b, '  %rp = getelementptr inbounds i8, ptr %p, i64 8');
+  BufLn(b, '  %nra = load i64, ptr %rp, align 8');
+  BufLn(b, '  call void @__rt_unwind(i64 %nfp, i64 %nra)');
+  BufLn(b, '  unreachable');
+  BufLn(b, '}');
+  BufLn(b, 'define i64 @__rt_bitrev64(i64 %x0) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %a1 = and i64 %x0, 6148914691236517205');
+  BufLn(b, '  %a2 = shl i64 %a1, 1');
+  BufLn(b, '  %a3 = lshr i64 %x0, 1');
+  BufLn(b, '  %a4 = and i64 %a3, 6148914691236517205');
+  BufLn(b, '  %x1 = or i64 %a2, %a4');
+  BufLn(b, '  %b1 = and i64 %x1, 3689348814741910323');
+  BufLn(b, '  %b2 = shl i64 %b1, 2');
+  BufLn(b, '  %b3 = lshr i64 %x1, 2');
+  BufLn(b, '  %b4 = and i64 %b3, 3689348814741910323');
+  BufLn(b, '  %x2 = or i64 %b2, %b4');
+  BufLn(b, '  %c1 = and i64 %x2, 1085102592571150095');
+  BufLn(b, '  %c2 = shl i64 %c1, 4');
+  BufLn(b, '  %c3 = lshr i64 %x2, 4');
+  BufLn(b, '  %c4 = and i64 %c3, 1085102592571150095');
+  BufLn(b, '  %x3 = or i64 %c2, %c4');
+  BufLn(b, '  %r = call i64 @llvm.bswap.i64(i64 %x3)');
+  BufLn(b, '  ret i64 %r');
+  BufLn(b, '}');
+  BufLn(b, 'define void @__rt_udivmod128(ptr %q, ptr %r, i64 %alo, i64 %ahi,' +
+      ' i64 %blo, i64 %bhi) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %c1 = icmp eq i64 %bhi, 0');
+  BufLn(b, '  %c2 = icmp eq i64 %ahi, 0');
+  BufLn(b, '  %c = and i1 %c1, %c2');
+  BufLn(b, '  br i1 %c, label %fast, label %slow');
+  BufLn(b, 'fast:');
+  BufLn(b, '  %qq = udiv i64 %alo, %blo');
+  BufLn(b, '  %rr = urem i64 %alo, %blo');
+  BufLn(b, '  store i64 %qq, ptr %q, align 8');
+  BufLn(b, '  %q8 = getelementptr inbounds i8, ptr %q, i64 8');
+  BufLn(b, '  store i64 0, ptr %q8, align 8');
+  BufLn(b, '  store i64 %rr, ptr %r, align 8');
+  BufLn(b, '  %r8 = getelementptr inbounds i8, ptr %r, i64 8');
+  BufLn(b, '  store i64 0, ptr %r8, align 8');
+  BufLn(b, '  ret void');
+  BufLn(b, 'slow:');
+  BufLn(b, '  %rlo = alloca i64, align 8');
+  BufLn(b, '  %rhi = alloca i64, align 8');
+  BufLn(b, '  %qlo = alloca i64, align 8');
+  BufLn(b, '  %qhi = alloca i64, align 8');
+  BufLn(b, '  %i = alloca i64, align 8');
+  BufLn(b, '  store i64 0, ptr %rlo, align 8');
+  BufLn(b, '  store i64 0, ptr %rhi, align 8');
+  BufLn(b, '  store i64 0, ptr %qlo, align 8');
+  BufLn(b, '  store i64 0, ptr %qhi, align 8');
+  BufLn(b, '  store i64 127, ptr %i, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'loop:');
+  BufLn(b, '  %iv = load i64, ptr %i, align 8');
+  BufLn(b, '  %rl = load i64, ptr %rlo, align 8');
+  BufLn(b, '  %rh = load i64, ptr %rhi, align 8');
+  BufLn(b, '  %hs = shl i64 %rh, 1');
+  BufLn(b, '  %lc = lshr i64 %rl, 63');
+  BufLn(b, '  %rh1 = or i64 %hs, %lc');
+  BufLn(b, '  %rl1 = shl i64 %rl, 1');
+  BufLn(b, '  %big = icmp uge i64 %iv, 64');
+  BufLn(b, '  br label %gotbit');
+  BufLn(b, 'gotbit:');
+  BufLn(b, '  %bitp = alloca i64, align 8');
+  BufLn(b, '  br i1 %big, label %sb1, label %sb2');
+  BufLn(b, 'sb1:');
+  BufLn(b, '  %sh1b = sub i64 %iv, 64');
+  BufLn(b, '  %t1b = lshr i64 %ahi, %sh1b');
+  BufLn(b, '  %bit1b = and i64 %t1b, 1');
+  BufLn(b, '  store i64 %bit1b, ptr %bitp, align 8');
+  BufLn(b, '  br label %sbend');
+  BufLn(b, 'sb2:');
+  BufLn(b, '  %t2b = lshr i64 %alo, %iv');
+  BufLn(b, '  %bit2b = and i64 %t2b, 1');
+  BufLn(b, '  store i64 %bit2b, ptr %bitp, align 8');
+  BufLn(b, '  br label %sbend');
+  BufLn(b, 'sbend:');
+  BufLn(b, '  %bit = load i64, ptr %bitp, align 8');
+  BufLn(b, '  %rl2 = or i64 %rl1, %bit');
+  BufLn(b, '  ; r >= b ?');
+  BufLn(b, '  %gt = icmp ugt i64 %rh1, %bhi');
+  BufLn(b, '  %eq = icmp eq i64 %rh1, %bhi');
+  BufLn(b, '  %ge = icmp uge i64 %rl2, %blo');
+  BufLn(b, '  %eg = and i1 %eq, %ge');
+  BufLn(b, '  %ok = or i1 %gt, %eg');
+  BufLn(b, '  br i1 %ok, label %sub, label %nosub');
+  BufLn(b, 'sub:');
+  BufLn(b, '  %brw = icmp ult i64 %rl2, %blo');
+  BufLn(b, '  %brw64 = zext i1 %brw to i64');
+  BufLn(b, '  %rl3 = sub i64 %rl2, %blo');
+  BufLn(b, '  %rh2 = sub i64 %rh1, %bhi');
+  BufLn(b, '  %rh3 = sub i64 %rh2, %brw64');
+  BufLn(b, '  store i64 %rl3, ptr %rlo, align 8');
+  BufLn(b, '  store i64 %rh3, ptr %rhi, align 8');
+  BufLn(b, '  br i1 %big, label %qh, label %ql');
+  BufLn(b, 'qh:');
+  BufLn(b, '  %sh2 = sub i64 %iv, 64');
+  BufLn(b, '  %m1 = shl i64 1, %sh2');
+  BufLn(b, '  %qh0 = load i64, ptr %qhi, align 8');
+  BufLn(b, '  %qh1 = or i64 %qh0, %m1');
+  BufLn(b, '  store i64 %qh1, ptr %qhi, align 8');
+  BufLn(b, '  br label %cont');
+  BufLn(b, 'ql:');
+  BufLn(b, '  %m2 = shl i64 1, %iv');
+  BufLn(b, '  %ql0 = load i64, ptr %qlo, align 8');
+  BufLn(b, '  %ql1 = or i64 %ql0, %m2');
+  BufLn(b, '  store i64 %ql1, ptr %qlo, align 8');
+  BufLn(b, '  br label %cont');
+  BufLn(b, 'nosub:');
+  BufLn(b, '  store i64 %rl2, ptr %rlo, align 8');
+  BufLn(b, '  store i64 %rh1, ptr %rhi, align 8');
+  BufLn(b, '  br label %cont');
+  BufLn(b, 'cont:');
+  BufLn(b, '  %iz = icmp eq i64 %iv, 0');
+  BufLn(b, '  %in = sub i64 %iv, 1');
+  BufLn(b, '  store i64 %in, ptr %i, align 8');
+  BufLn(b, '  br i1 %iz, label %fin, label %loop');
+  BufLn(b, 'fin:');
+  BufLn(b, '  %fq0 = load i64, ptr %qlo, align 8');
+  BufLn(b, '  %fq1 = load i64, ptr %qhi, align 8');
+  BufLn(b, '  %fr0 = load i64, ptr %rlo, align 8');
+  BufLn(b, '  %fr1 = load i64, ptr %rhi, align 8');
+  BufLn(b, '  store i64 %fq0, ptr %q, align 8');
+  BufLn(b, '  %q8b = getelementptr inbounds i8, ptr %q, i64 8');
+  BufLn(b, '  store i64 %fq1, ptr %q8b, align 8');
+  BufLn(b, '  store i64 %fr0, ptr %r, align 8');
+  BufLn(b, '  %r8b = getelementptr inbounds i8, ptr %r, i64 8');
+  BufLn(b, '  store i64 %fr1, ptr %r8b, align 8');
+  BufLn(b, '  ret void');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @__rt_mulo128(ptr %out, i64 %alo, i64 %ahi, i64 %blo,' +
+      ' i64 %bhi, i64 %sg) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %isg = icmp ne i64 %sg, 0');
+  BufLn(b, '  %sa = ashr i64 %ahi, 63');
+  BufLn(b, '  %sb = ashr i64 %bhi, 63');
+  BufLn(b, '  %na0 = and i64 %sa, 1');
+  BufLn(b, '  %nb0 = and i64 %sb, 1');
+  BufLn(b, '  %nega = select i1 %isg, i64 %na0, i64 0');
+  BufLn(b, '  %negb = select i1 %isg, i64 %nb0, i64 0');
+  BufLn(b, '  %a128 = zext i64 %alo to i128');
+  BufLn(b, '  %ah128 = zext i64 %ahi to i128');
+  BufLn(b, '  %ahs = shl i128 %ah128, 64');
+  BufLn(b, '  %a = or i128 %ahs, %a128');
+  BufLn(b, '  %b128 = zext i64 %blo to i128');
+  BufLn(b, '  %bh128 = zext i64 %bhi to i128');
+  BufLn(b, '  %bhs = shl i128 %bh128, 64');
+  BufLn(b, '  %b = or i128 %bhs, %b128');
+  BufLn(b, '  %an = sub i128 0, %a');
+  BufLn(b, '  %bn = sub i128 0, %b');
+  BufLn(b, '  %ca = icmp ne i64 %nega, 0');
+  BufLn(b, '  %cb = icmp ne i64 %negb, 0');
+  BufLn(b, '  %ma = select i1 %ca, i128 %an, i128 %a');
+  BufLn(b, '  %mb = select i1 %cb, i128 %bn, i128 %b');
+  BufLn(b, '  %malo = trunc i128 %ma to i64');
+  BufLn(b, '  %mah128 = lshr i128 %ma, 64');
+  BufLn(b, '  %mahi = trunc i128 %mah128 to i64');
+  BufLn(b, '  %mblo = trunc i128 %mb to i64');
+  BufLn(b, '  %mbh128 = lshr i128 %mb, 64');
+  BufLn(b, '  %mbhi = trunc i128 %mbh128 to i64');
+  BufLn(b, '  %z1 = icmp ne i64 %mahi, 0');
+  BufLn(b, '  %z2 = icmp ne i64 %mbhi, 0');
+  BufLn(b, '  %both = and i1 %z1, %z2');
+  BufLn(b, '  %m0a = zext i64 %malo to i128');
+  BufLn(b, '  %m0b = zext i64 %mblo to i128');
+  BufLn(b, '  %p0 = mul i128 %m0a, %m0b');
+  BufLn(b, '  %m1a = zext i64 %malo to i128');
+  BufLn(b, '  %m1b = zext i64 %mbhi to i128');
+  BufLn(b, '  %p1 = mul i128 %m1a, %m1b');
+  BufLn(b, '  %m2a = zext i64 %mahi to i128');
+  BufLn(b, '  %m2b = zext i64 %mblo to i128');
+  BufLn(b, '  %p2 = mul i128 %m2a, %m2b');
+  BufLn(b, '  %p1h = lshr i128 %p1, 64');
+  BufLn(b, '  %p2h = lshr i128 %p2, 64');
+  BufLn(b, '  %o1 = icmp ne i128 %p1h, 0');
+  BufLn(b, '  %o2 = icmp ne i128 %p2h, 0');
+  BufLn(b, '  %p1l = trunc i128 %p1 to i64');
+  BufLn(b, '  %p2l = trunc i128 %p2 to i64');
+  BufLn(b, '  %p0lo = trunc i128 %p0 to i64');
+  BufLn(b, '  %p0h128 = lshr i128 %p0, 64');
+  BufLn(b, '  %p0hi = trunc i128 %p0h128 to i64');
+  BufLn(b, '  %s1 = call {i64, i1} @llvm.uadd.with.overflow.i64(i64 %p0hi, i' +
+      '64 %p1l)');
+  BufLn(b, '  %s1v = extractvalue {i64, i1} %s1, 0');
+  BufLn(b, '  %s1o = extractvalue {i64, i1} %s1, 1');
+  BufLn(b, '  %s2 = call {i64, i1} @llvm.uadd.with.overflow.i64(i64 %s1v, i6' +
+      '4 %p2l)');
+  BufLn(b, '  %s2v = extractvalue {i64, i1} %s2, 0');
+  BufLn(b, '  %s2o = extractvalue {i64, i1} %s2, 1');
+  BufLn(b, '  %ov0 = or i1 %both, %o1');
+  BufLn(b, '  %ov1 = or i1 %ov0, %o2');
+  BufLn(b, '  %ov2 = or i1 %ov1, %s1o');
+  BufLn(b, '  %ov3 = or i1 %ov2, %s2o');
+  BufLn(b, '  %rl = zext i64 %p0lo to i128');
+  BufLn(b, '  %rh = zext i64 %s2v to i128');
+  BufLn(b, '  %rhs = shl i128 %rh, 64');
+  BufLn(b, '  %mag = or i128 %rhs, %rl');
+  BufLn(b, '  %sgn = xor i64 %nega, %negb');
+  BufLn(b, '  %neg = icmp ne i64 %sgn, 0');
+  BufLn(b, '  %magn = sub i128 0, %mag');
+  BufLn(b, '  %res = select i1 %neg, i128 %magn, i128 %mag');
+  BufLn(b, '  %lim = shl i128 1, 127');
+  BufLn(b, '  %limm = sub i128 %lim, 1');
+  BufLn(b, '  %overpos = icmp ugt i128 %mag, %limm');
+  BufLn(b, '  %overneg = icmp ugt i128 %mag, %lim');
+  BufLn(b, '  %sovf = select i1 %neg, i1 %overneg, i1 %overpos');
+  BufLn(b, '  %sov = and i1 %isg, %sovf');
+  BufLn(b, '  %ovf = or i1 %ov3, %sov');
+  BufLn(b, '  store i128 %res, ptr %out, align 16');
+  BufLn(b, '  %r = zext i1 %ovf to i32');
+  BufLn(b, '  ret i32 %r');
+  BufLn(b, '}');
+  BufLn(b, 'define double @__powidf2(double %a0, i32 %b0) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %a = alloca double, align 8');
+  BufLn(b, '  %b = alloca i32, align 4');
+  BufLn(b, '  %r = alloca double, align 8');
+  BufLn(b, '  store double %a0, ptr %a, align 8');
+  BufLn(b, '  store i32 %b0, ptr %b, align 4');
+  BufLn(b, '  store double 0x3FF0000000000000, ptr %r, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'loop:');
+  BufLn(b, '  %bv = load i32, ptr %b, align 4');
+  BufLn(b, '  %bit = and i32 %bv, 1');
+  BufLn(b, '  %isodd = icmp ne i32 %bit, 0');
+  BufLn(b, '  br i1 %isodd, label %mul, label %nomul');
+  BufLn(b, 'mul:');
+  BufLn(b, '  %rv = load double, ptr %r, align 8');
+  BufLn(b, '  %av = load double, ptr %a, align 8');
+  BufLn(b, '  %rn = fmul double %rv, %av');
+  BufLn(b, '  store double %rn, ptr %r, align 8');
+  BufLn(b, '  br label %nomul');
+  BufLn(b, 'nomul:');
+  BufLn(b, '  %bv2 = load i32, ptr %b, align 4');
+  BufLn(b, '  %bh = sdiv i32 %bv2, 2');
+  BufLn(b, '  store i32 %bh, ptr %b, align 4');
+  BufLn(b, '  %iz = icmp eq i32 %bh, 0');
+  BufLn(b, '  br i1 %iz, label %done, label %sq');
+  BufLn(b, 'sq:');
+  BufLn(b, '  %av2 = load double, ptr %a, align 8');
+  BufLn(b, '  %asq = fmul double %av2, %av2');
+  BufLn(b, '  store double %asq, ptr %a, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'done:');
+  BufLn(b, '  %rf = load double, ptr %r, align 8');
+  BufLn(b, '  %recip = icmp slt i32 %b0, 0');
+  BufLn(b, '  %inv = fdiv double 0x3FF0000000000000, %rf');
+  BufLn(b, '  %res = select i1 %recip, double %inv, double %rf');
+  BufLn(b, '  ret double %res');
+  BufLn(b, '}');
+  BufLn(b, 'define float @__powisf2(float %a0, i32 %b0) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %a = alloca float, align 4');
+  BufLn(b, '  %b = alloca i32, align 4');
+  BufLn(b, '  %r = alloca float, align 4');
+  BufLn(b, '  store float %a0, ptr %a, align 4');
+  BufLn(b, '  store i32 %b0, ptr %b, align 4');
+  BufLn(b, '  store float 0x3FF0000000000000, ptr %r, align 4');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'loop:');
+  BufLn(b, '  %bv = load i32, ptr %b, align 4');
+  BufLn(b, '  %bit = and i32 %bv, 1');
+  BufLn(b, '  %isodd = icmp ne i32 %bit, 0');
+  BufLn(b, '  br i1 %isodd, label %mul, label %nomul');
+  BufLn(b, 'mul:');
+  BufLn(b, '  %rv = load float, ptr %r, align 4');
+  BufLn(b, '  %av = load float, ptr %a, align 4');
+  BufLn(b, '  %rn = fmul float %rv, %av');
+  BufLn(b, '  store float %rn, ptr %r, align 4');
+  BufLn(b, '  br label %nomul');
+  BufLn(b, 'nomul:');
+  BufLn(b, '  %bv2 = load i32, ptr %b, align 4');
+  BufLn(b, '  %bh = sdiv i32 %bv2, 2');
+  BufLn(b, '  store i32 %bh, ptr %b, align 4');
+  BufLn(b, '  %iz = icmp eq i32 %bh, 0');
+  BufLn(b, '  br i1 %iz, label %done, label %sq');
+  BufLn(b, 'sq:');
+  BufLn(b, '  %av2 = load float, ptr %a, align 4');
+  BufLn(b, '  %asq = fmul float %av2, %av2');
+  BufLn(b, '  store float %asq, ptr %a, align 4');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'done:');
+  BufLn(b, '  %rf = load float, ptr %r, align 4');
+  BufLn(b, '  %recip = icmp slt i32 %b0, 0');
+  BufLn(b, '  %inv = fdiv float 0x3FF0000000000000, %rf');
+  BufLn(b, '  %res = select i1 %recip, float %inv, float %rf');
+  BufLn(b, '  ret float %res');
+  BufLn(b, '}');
+  BufLn(b, 'define i128 @__rt_fshl128(i128 %a, i128 %b, i128 %s) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %m = and i128 %s, 127');
+  BufLn(b, '  %z = icmp eq i128 %m, 0');
+  BufLn(b, '  %l = shl i128 %a, %m');
+  BufLn(b, '  %inv = sub i128 128, %m');
+  BufLn(b, '  %r = lshr i128 %b, %inv');
+  BufLn(b, '  %o = or i128 %l, %r');
+  BufLn(b, '  %res = select i1 %z, i128 %a, i128 %o');
+  BufLn(b, '  ret i128 %res');
+  BufLn(b, '}');
+  BufLn(b, 'define i128 @__rt_fshr128(i128 %a, i128 %b, i128 %s) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %m = and i128 %s, 127');
+  BufLn(b, '  %z = icmp eq i128 %m, 0');
+  BufLn(b, '  %r = lshr i128 %b, %m');
+  BufLn(b, '  %inv = sub i128 128, %m');
+  BufLn(b, '  %l = shl i128 %a, %inv');
+  BufLn(b, '  %o = or i128 %l, %r');
+  BufLn(b, '  %res = select i1 %z, i128 %b, i128 %o');
+  BufLn(b, '  ret i128 %res');
+  BufLn(b, '}');
+end;
+
+procedure BxRuntimeIRWin(var b: TBuf);
+begin
+  BufLn(b, 'declare ptr @GetCommandLineA()');
+  BufLn(b, 'declare i64 @strlen(ptr)');
+  BufLn(b, 'declare ptr @malloc(i64)');
+  BufLn(b, 'declare i32 @_setmode(i32, i32)');
+  BufLn(b, 'declare i32 @SetConsoleOutputCP(i32)');
+  BufLn(b, 'declare i32 @__rs_main(i32, ptr)');
+  BufLn(b, 'define i32 @__win_start() {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %cl = call ptr @GetCommandLineA()');
+  BufLn(b, '  %len = call i64 @strlen(ptr %cl)');
+  BufLn(b, '  %len1 = add i64 %len, 2');
+  BufLn(b, '  %buf = call ptr @malloc(i64 %len1)');
+  BufLn(b, '  %half = lshr i64 %len, 1');
+  BufLn(b, '  %n8 = add i64 %half, 2');
+  BufLn(b, '  %bytes = mul i64 %n8, 8');
+  BufLn(b, '  %argv = call ptr @malloc(i64 %bytes)');
+  BufLn(b, '  %i = alloca i64, align 8');
+  BufLn(b, '  %o = alloca i64, align 8');
+  BufLn(b, '  %argc = alloca i64, align 8');
+  BufLn(b, '  %inq = alloca i64, align 8');
+  BufLn(b, '  %ina = alloca i64, align 8');
+  BufLn(b, '  store i64 0, ptr %i, align 8');
+  BufLn(b, '  store i64 0, ptr %o, align 8');
+  BufLn(b, '  store i64 0, ptr %argc, align 8');
+  BufLn(b, '  store i64 0, ptr %inq, align 8');
+  BufLn(b, '  store i64 0, ptr %ina, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'loop:');
+  BufLn(b, '  %iv = load i64, ptr %i, align 8');
+  BufLn(b, '  %done = icmp uge i64 %iv, %len');
+  BufLn(b, '  br i1 %done, label %fin, label %body');
+  BufLn(b, 'body:');
+  BufLn(b, '  %cp = getelementptr inbounds i8, ptr %cl, i64 %iv');
+  BufLn(b, '  %c = load i8, ptr %cp, align 1');
+  BufLn(b, '  %iv1 = add i64 %iv, 1');
+  BufLn(b, '  store i64 %iv1, ptr %i, align 8');
+  BufLn(b, '  %isq = icmp eq i8 %c, 34');
+  BufLn(b, '  br i1 %isq, label %quote, label %notq');
+  BufLn(b, 'quote:');
+  BufLn(b, '  %q0 = load i64, ptr %inq, align 8');
+  BufLn(b, '  %q1 = xor i64 %q0, 1');
+  BufLn(b, '  store i64 %q1, ptr %inq, align 8');
+  BufLn(b, '  %a0 = load i64, ptr %ina, align 8');
+  BufLn(b, '  %isnew = icmp eq i64 %a0, 0');
+  BufLn(b, '  br i1 %isnew, label %startq, label %loop');
+  BufLn(b, 'startq:');
+  BufLn(b, '  %ac0 = load i64, ptr %argc, align 8');
+  BufLn(b, '  %oq0 = load i64, ptr %o, align 8');
+  BufLn(b, '  %bq0 = getelementptr inbounds i8, ptr %buf, i64 %oq0');
+  BufLn(b, '  %avq0 = getelementptr inbounds ptr, ptr %argv, i64 %ac0');
+  BufLn(b, '  store ptr %bq0, ptr %avq0, align 8');
+  BufLn(b, '  %ac1 = add i64 %ac0, 1');
+  BufLn(b, '  store i64 %ac1, ptr %argc, align 8');
+  BufLn(b, '  store i64 1, ptr %ina, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'notq:');
+  BufLn(b, '  %isws1 = icmp eq i8 %c, 32');
+  BufLn(b, '  %isws2 = icmp eq i8 %c, 9');
+  BufLn(b, '  %isws = or i1 %isws1, %isws2');
+  BufLn(b, '  %q2 = load i64, ptr %inq, align 8');
+  BufLn(b, '  %notinq = icmp eq i64 %q2, 0');
+  BufLn(b, '  %sep = and i1 %isws, %notinq');
+  BufLn(b, '  br i1 %sep, label %sepb, label %chr');
+  BufLn(b, 'sepb:');
+  BufLn(b, '  %a1 = load i64, ptr %ina, align 8');
+  BufLn(b, '  %inarg = icmp ne i64 %a1, 0');
+  BufLn(b, '  br i1 %inarg, label %endarg, label %loop');
+  BufLn(b, 'endarg:');
+  BufLn(b, '  %o1 = load i64, ptr %o, align 8');
+  BufLn(b, '  %bp = getelementptr inbounds i8, ptr %buf, i64 %o1');
+  BufLn(b, '  store i8 0, ptr %bp, align 1');
+  BufLn(b, '  %o2 = add i64 %o1, 1');
+  BufLn(b, '  store i64 %o2, ptr %o, align 8');
+  BufLn(b, '  store i64 0, ptr %ina, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'chr:');
+  BufLn(b, '  %a2 = load i64, ptr %ina, align 8');
+  BufLn(b, '  %isnew2 = icmp eq i64 %a2, 0');
+  BufLn(b, '  br i1 %isnew2, label %startc, label %putc');
+  BufLn(b, 'startc:');
+  BufLn(b, '  %ac2 = load i64, ptr %argc, align 8');
+  BufLn(b, '  %oc0 = load i64, ptr %o, align 8');
+  BufLn(b, '  %bc0 = getelementptr inbounds i8, ptr %buf, i64 %oc0');
+  BufLn(b, '  %avc0 = getelementptr inbounds ptr, ptr %argv, i64 %ac2');
+  BufLn(b, '  store ptr %bc0, ptr %avc0, align 8');
+  BufLn(b, '  %ac3 = add i64 %ac2, 1');
+  BufLn(b, '  store i64 %ac3, ptr %argc, align 8');
+  BufLn(b, '  store i64 1, ptr %ina, align 8');
+  BufLn(b, '  br label %putc');
+  BufLn(b, 'putc:');
+  BufLn(b, '  %o3 = load i64, ptr %o, align 8');
+  BufLn(b, '  %bp2 = getelementptr inbounds i8, ptr %buf, i64 %o3');
+  BufLn(b, '  store i8 %c, ptr %bp2, align 1');
+  BufLn(b, '  %o4 = add i64 %o3, 1');
+  BufLn(b, '  store i64 %o4, ptr %o, align 8');
+  BufLn(b, '  br label %loop');
+  BufLn(b, 'fin:');
+  BufLn(b, '  %a3 = load i64, ptr %ina, align 8');
+  BufLn(b, '  %fina = icmp ne i64 %a3, 0');
+  BufLn(b, '  %o5 = load i64, ptr %o, align 8');
+  BufLn(b, '  %bp3 = getelementptr inbounds i8, ptr %buf, i64 %o5');
+  BufLn(b, '  store i8 0, ptr %bp3, align 1');
+  BufLn(b, '  %acf = load i64, ptr %argc, align 8');
+  BufLn(b, '  %avf = getelementptr inbounds ptr, ptr %argv, i64 %acf');
+  BufLn(b, '  store ptr null, ptr %avf, align 8');
+  BufLn(b, '  %cpr = call i32 @SetConsoleOutputCP(i32 65001)');
+  BufLn(b, '  %sm0 = call i32 @_setmode(i32 0, i32 32768)');
+  BufLn(b, '  %sm1 = call i32 @_setmode(i32 1, i32 32768)');
+  BufLn(b, '  %sm2 = call i32 @_setmode(i32 2, i32 32768)');
+  BufLn(b, '  %argc32 = trunc i64 %acf to i32');
+  BufLn(b, '  %rc = call i32 @__rs_main(i32 %argc32, ptr %argv)');
+  BufLn(b, '  ret i32 %rc');
+  BufLn(b, '}');
+  BufLn(b, 'declare i32 @_open(ptr, i32, i32)');
+  BufLn(b, 'declare i32 @_stat64(ptr, ptr)');
+  BufLn(b, 'declare i32 @_fstat64(i32, ptr)');
+  BufLn(b, 'declare ptr @_fullpath(ptr, ptr, i64)');
+  BufLn(b, 'declare ptr @_errno()');
+  BufLn(b, 'declare ptr @FindFirstFileA(ptr, ptr)');
+  BufLn(b, 'declare i32 @FindNextFileA(ptr, ptr)');
+  BufLn(b, 'declare i32 @FindClose(ptr)');
+  BufLn(b, 'declare i32 @QueryPerformanceCounter(ptr)');
+  BufLn(b, 'declare i32 @QueryPerformanceFrequency(ptr)');
+  BufLn(b, 'declare void @GetSystemTimeAsFileTime(ptr)');
+  BufLn(b, 'declare void @free(ptr)');
+  BufLn(b, 'declare ptr @memcpy(ptr, ptr, i64)');
+  BufLn(b, 'define ptr @__errno_location() {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %p = call ptr @_errno()');
+  BufLn(b, '  ret ptr %p');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @open(ptr %path, i32 %fl, i32 %mode) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %acc = and i32 %fl, 3');
+  BufLn(b, '  %c1 = and i32 %fl, 64');
+  BufLn(b, '  %c1z = icmp ne i32 %c1, 0');
+  BufLn(b, '  %cr = select i1 %c1z, i32 256, i32 0');
+  BufLn(b, '  %c2 = and i32 %fl, 128');
+  BufLn(b, '  %c2z = icmp ne i32 %c2, 0');
+  BufLn(b, '  %ex = select i1 %c2z, i32 1024, i32 0');
+  BufLn(b, '  %c3 = and i32 %fl, 512');
+  BufLn(b, '  %c3z = icmp ne i32 %c3, 0');
+  BufLn(b, '  %tr = select i1 %c3z, i32 512, i32 0');
+  BufLn(b, '  %c4 = and i32 %fl, 1024');
+  BufLn(b, '  %c4z = icmp ne i32 %c4, 0');
+  BufLn(b, '  %ap = select i1 %c4z, i32 8, i32 0');
+  BufLn(b, '  %f1 = or i32 %acc, %cr');
+  BufLn(b, '  %f2 = or i32 %f1, %ex');
+  BufLn(b, '  %f3 = or i32 %f2, %tr');
+  BufLn(b, '  %f4 = or i32 %f3, %ap');
+  BufLn(b, '  %f5 = or i32 %f4, 32768');
+  BufLn(b, '  %fd = call i32 @_open(ptr %path, i32 %f5, i32 438)');
+  BufLn(b, '  ret i32 %fd');
+  BufLn(b, '}');
+  BufLn(b, 'define void @__rt_stat_conv(ptr %tmp, ptr %out) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %mp = getelementptr inbounds i8, ptr %tmp, i64 6');
+  BufLn(b, '  %m16 = load i16, ptr %mp, align 2');
+  BufLn(b, '  %m32 = zext i16 %m16 to i32');
+  BufLn(b, '  %op = getelementptr inbounds i8, ptr %out, i64 24');
+  BufLn(b, '  store i32 %m32, ptr %op, align 4');
+  BufLn(b, '  %sp = getelementptr inbounds i8, ptr %tmp, i64 24');
+  BufLn(b, '  %sz = load i64, ptr %sp, align 8');
+  BufLn(b, '  %os = getelementptr inbounds i8, ptr %out, i64 48');
+  BufLn(b, '  store i64 %sz, ptr %os, align 8');
+  BufLn(b, '  %tp = getelementptr inbounds i8, ptr %tmp, i64 40');
+  BufLn(b, '  %mt = load i64, ptr %tp, align 8');
+  BufLn(b, '  %om = getelementptr inbounds i8, ptr %out, i64 88');
+  BufLn(b, '  store i64 %mt, ptr %om, align 8');
+  BufLn(b, '  ret void');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @stat(ptr %path, ptr %out) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %tmp = alloca [64 x i8], align 8');
+  BufLn(b, '  %r = call i32 @_stat64(ptr %path, ptr %tmp)');
+  BufLn(b, '  %ok = icmp eq i32 %r, 0');
+  BufLn(b, '  br i1 %ok, label %conv, label %fail');
+  BufLn(b, 'conv:');
+  BufLn(b, '  call void @__rt_stat_conv(ptr %tmp, ptr %out)');
+  BufLn(b, '  ret i32 0');
+  BufLn(b, 'fail:');
+  BufLn(b, '  ret i32 -1');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @fstat(i32 %fd, ptr %out) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %tmp = alloca [64 x i8], align 8');
+  BufLn(b, '  %r = call i32 @_fstat64(i32 %fd, ptr %tmp)');
+  BufLn(b, '  %ok = icmp eq i32 %r, 0');
+  BufLn(b, '  br i1 %ok, label %conv, label %fail');
+  BufLn(b, 'conv:');
+  BufLn(b, '  call void @__rt_stat_conv(ptr %tmp, ptr %out)');
+  BufLn(b, '  ret i32 0');
+  BufLn(b, 'fail:');
+  BufLn(b, '  ret i32 -1');
+  BufLn(b, '}');
+  BufLn(b, 'define ptr @realpath(ptr %path, ptr %out) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %r = call ptr @_fullpath(ptr %out, ptr %path, i64 4096)');
+  BufLn(b, '  ret ptr %r');
+  BufLn(b, '}');
+  BufLn(b, 'define ptr @opendir(ptr %path) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %len = call i64 @strlen(ptr %path)');
+  BufLn(b, '  %n1 = add i64 %len, 3');
+  BufLn(b, '  %pat = call ptr @malloc(i64 %n1)');
+  BufLn(b, '  %c = call ptr @memcpy(ptr %pat, ptr %path, i64 %len)');
+  BufLn(b, '  %e0 = getelementptr inbounds i8, ptr %pat, i64 %len');
+  BufLn(b, '  store i8 47, ptr %e0, align 1');
+  BufLn(b, '  %e1 = add i64 %len, 1');
+  BufLn(b, '  %e1p = getelementptr inbounds i8, ptr %pat, i64 %e1');
+  BufLn(b, '  store i8 42, ptr %e1p, align 1');
+  BufLn(b, '  %e2 = add i64 %len, 2');
+  BufLn(b, '  %e2p = getelementptr inbounds i8, ptr %pat, i64 %e2');
+  BufLn(b, '  store i8 0, ptr %e2p, align 1');
+  BufLn(b, '  %d = call ptr @malloc(i64 640)');
+  BufLn(b, '  %fd = getelementptr inbounds i8, ptr %d, i64 16');
+  BufLn(b, '  %h = call ptr @FindFirstFileA(ptr %pat, ptr %fd)');
+  BufLn(b, '  call void @free(ptr %pat)');
+  BufLn(b, '  %hi = ptrtoint ptr %h to i64');
+  BufLn(b, '  %bad = icmp eq i64 %hi, -1');
+  BufLn(b, '  br i1 %bad, label %fail, label %ok');
+  BufLn(b, 'fail:');
+  BufLn(b, '  call void @free(ptr %d)');
+  BufLn(b, '  %ep = call ptr @_errno()');
+  BufLn(b, '  store i32 2, ptr %ep, align 4');
+  BufLn(b, '  ret ptr null');
+  BufLn(b, 'ok:');
+  BufLn(b, '  store ptr %h, ptr %d, align 8');
+  BufLn(b, '  %sp = getelementptr inbounds i8, ptr %d, i64 8');
+  BufLn(b, '  store i64 0, ptr %sp, align 8');
+  BufLn(b, '  ret ptr %d');
+  BufLn(b, '}');
+  BufLn(b, 'define ptr @readdir(ptr %d) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %sp = getelementptr inbounds i8, ptr %d, i64 8');
+  BufLn(b, '  %st = load i64, ptr %sp, align 8');
+  BufLn(b, '  %fd = getelementptr inbounds i8, ptr %d, i64 16');
+  BufLn(b, '  %first = icmp eq i64 %st, 0');
+  BufLn(b, '  br i1 %first, label %have, label %next');
+  BufLn(b, 'next:');
+  BufLn(b, '  %done = icmp eq i64 %st, 2');
+  BufLn(b, '  br i1 %done, label %end, label %adv');
+  BufLn(b, 'adv:');
+  BufLn(b, '  %h = load ptr, ptr %d, align 8');
+  BufLn(b, '  %r = call i32 @FindNextFileA(ptr %h, ptr %fd)');
+  BufLn(b, '  %ok = icmp ne i32 %r, 0');
+  BufLn(b, '  br i1 %ok, label %have, label %fin');
+  BufLn(b, 'fin:');
+  BufLn(b, '  store i64 2, ptr %sp, align 8');
+  BufLn(b, '  br label %end');
+  BufLn(b, 'end:');
+  BufLn(b, '  ret ptr null');
+  BufLn(b, 'have:');
+  BufLn(b, '  store i64 1, ptr %sp, align 8');
+  BufLn(b, '  %de = getelementptr inbounds i8, ptr %d, i64 336');
+  BufLn(b, '  %attrp = load i32, ptr %fd, align 4');
+  BufLn(b, '  %isd = and i32 %attrp, 16');
+  BufLn(b, '  %isdn = icmp ne i32 %isd, 0');
+  BufLn(b, '  %ty = select i1 %isdn, i8 4, i8 8');
+  BufLn(b, '  %tp = getelementptr inbounds i8, ptr %de, i64 18');
+  BufLn(b, '  store i8 %ty, ptr %tp, align 1');
+  BufLn(b, '  %np = getelementptr inbounds i8, ptr %fd, i64 44');
+  BufLn(b, '  %nl = call i64 @strlen(ptr %np)');
+  BufLn(b, '  %nl1 = add i64 %nl, 1');
+  BufLn(b, '  %dn = getelementptr inbounds i8, ptr %de, i64 19');
+  BufLn(b, '  %cp = call ptr @memcpy(ptr %dn, ptr %np, i64 %nl1)');
+  BufLn(b, '  ret ptr %de');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @closedir(ptr %d) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %h = load ptr, ptr %d, align 8');
+  BufLn(b, '  %r = call i32 @FindClose(ptr %h)');
+  BufLn(b, '  call void @free(ptr %d)');
+  BufLn(b, '  ret i32 0');
+  BufLn(b, '}');
+  BufLn(b, 'define i32 @clock_gettime(i32 %clk, ptr %ts) {');
+  BufLn(b, 'entry:');
+  BufLn(b, '  %isreal = icmp eq i32 %clk, 0');
+  BufLn(b, '  br i1 %isreal, label %real, label %mono');
+  BufLn(b, 'real:');
+  BufLn(b, '  %ft = alloca i64, align 8');
+  BufLn(b, '  call void @GetSystemTimeAsFileTime(ptr %ft)');
+  BufLn(b, '  %f = load i64, ptr %ft, align 8');
+  BufLn(b, '  %u = sub i64 %f, 116444736000000000');
+  BufLn(b, '  %sec = udiv i64 %u, 10000000');
+  BufLn(b, '  %rem = urem i64 %u, 10000000');
+  BufLn(b, '  %ns = mul i64 %rem, 100');
+  BufLn(b, '  store i64 %sec, ptr %ts, align 8');
+  BufLn(b, '  %np = getelementptr inbounds i8, ptr %ts, i64 8');
+  BufLn(b, '  store i64 %ns, ptr %np, align 8');
+  BufLn(b, '  ret i32 0');
+  BufLn(b, 'mono:');
+  BufLn(b, '  %cnt = alloca i64, align 8');
+  BufLn(b, '  %frq = alloca i64, align 8');
+  BufLn(b, '  %r1 = call i32 @QueryPerformanceCounter(ptr %cnt)');
+  BufLn(b, '  %r2 = call i32 @QueryPerformanceFrequency(ptr %frq)');
+  BufLn(b, '  %c = load i64, ptr %cnt, align 8');
+  BufLn(b, '  %fq = load i64, ptr %frq, align 8');
+  BufLn(b, '  %s2 = udiv i64 %c, %fq');
+  BufLn(b, '  %r3 = urem i64 %c, %fq');
+  BufLn(b, '  %r4 = mul i64 %r3, 1000000000');
+  BufLn(b, '  %n2 = udiv i64 %r4, %fq');
+  BufLn(b, '  store i64 %s2, ptr %ts, align 8');
+  BufLn(b, '  %np2 = getelementptr inbounds i8, ptr %ts, i64 8');
+  BufLn(b, '  store i64 %n2, ptr %np2, align 8');
+  BufLn(b, '  ret i32 0');
+  BufLn(b, '}');
+end;
+
+{ ============================================================ }
+{ Backend integre : code natif de support, edition de liens   }
+{ ELF x86-64 dynamique (libc.so.6 / libm.so.6)                 }
+{ ============================================================ }
+
+Const
+  ElfBase = $400000;
+
+Var
+  BxDebug: Boolean;
+  OB: TByteArr;
+  ON_: Integer;
+
+procedure OPut1(b: Integer);
+begin
+  if ON_ >= Length(OB) then SetLength(OB, Length(OB) * 2 + 4096);
+  OB[ON_] := Byte(b and $FF);
+  Inc(ON_);
+end;
+
+procedure OPut2(v: Int64);
+begin
+  OPut1(Integer(v and $FF));
+  OPut1(Integer((v shr 8) and $FF));
+end;
+
+procedure OPut4(v: Int64);
+begin
+  OPut2(v and $FFFF);
+  OPut2((v shr 16) and $FFFF);
+end;
+
+procedure OPut8(v: Int64);
+begin
+  OPut4(v and $FFFFFFFF);
+  OPut4((v shr 32) and $FFFFFFFF);
+end;
+
+procedure OPutStr(const s: string);
+var
+  i: Integer;
+begin
+  for i := 1 to Length(s) do OPut1(Ord(s[i]));
+end;
+
+procedure OPadTo(n: Int64);
+begin
+  while ON_ < n do OPut1(0);
+end;
+
+function AlignUp64(v, a: Int64): Int64;
+begin
+  Result := (v + a - 1) div a * a;
+end;
+
+{ ---- fonctions natives ---- }
+procedure BeginNative(const name: string);
+var
+  s: Integer;
+begin
+  while (BxN and 15) <> 0 do Bx1($90);
+  s := SymGet(name);
+  BxSyms[s].kind := skFunc;
+  BxSyms[s].off := BxN;
+end;
+
+procedure BuiltinFuncsCommon;
+var
+  fx: Integer;
+begin
+  { _setjmp(buf) }
+  BeginNative('_setjmp');
+  MovMR(MemB(rDI, 0), rBX, 8);
+  MovMR(MemB(rDI, 8), rBP, 8);
+  MovMR(MemB(rDI, 16), r12, 8);
+  MovMR(MemB(rDI, 24), r13, 8);
+  MovMR(MemB(rDI, 32), r14, 8);
+  MovMR(MemB(rDI, 40), r15, 8);
+  Lea(rDX, MemB(rSP, 8));
+  MovMR(MemB(rDI, 48), rDX, 8);
+  MovRM(rDX, MemB(rSP, 0), 8);
+  MovMR(MemB(rDI, 56), rDX, 8);
+  MovRI(rAX, 0);
+  Ret;
+  { longjmp(buf, val) }
+  BeginNative('longjmp');
+  MovRR32(rAX, rSI);
+  TestRR(rAX, rAX, False);
+  fx := JccRel32(ccNE);
+  MovRI(rAX, 1);
+  PatchHere(fx);
+  MovRM(rBX, MemB(rDI, 0), 8);
+  MovRM(rBP, MemB(rDI, 8), 8);
+  MovRM(r12, MemB(rDI, 16), 8);
+  MovRM(r13, MemB(rDI, 24), 8);
+  MovRM(r14, MemB(rDI, 32), 8);
+  MovRM(r15, MemB(rDI, 40), 8);
+  MovRM(rSP, MemB(rDI, 48), 8);
+  EncRM(0, False, $FF, 4, MemB(rDI, 56), False, 0);
+  { __rt_jump(fp, sp, pc) }
+  BeginNative('__rt_jump');
+  MovRR(rBP, rDI);
+  MovRR(rSP, rSI);
+  JmpR(rDX);
+end;
+
+procedure BuiltinFuncsElf;
+var
+  s: Integer;
+begin
+  { _start }
+  BeginNative('_start');
+  MovRI(rBP, 0);
+  MovRR(r9, rDX);
+  PopR(rSI);
+  MovRR(rDX, rSP);
+  AluRI(aAnd, rSP, -16, True);
+  PushR(rAX);
+  PushR(rSP);
+  MovRI(r8, 0);
+  MovRI(rCX, 0);
+  Lea(rDI, MemSym(SymGet('main'), 0));
+  s := SymGet('__libc_start_main');
+  if BxSyms[s].kind = skUndef then BxSyms[s].kind := skImpF;
+  CallGot(s);
+  Bx1($F4);
+  { main : enveloppe C, marque la fin de la chaine des cadres }
+  BeginNative('main');
+  PushR(rBP);
+  Bx1($6A); Bx1($00);
+  MovRR(rBP, rSP);
+  AluRI(aSub, rSP, 8, True);
+  CallSym(SymGet('__rs_main'));
+  AluRI(aAdd, rSP, 16, True);
+  PopR(rBP);
+  Ret;
+end;
+
+{ ---- Windows x64 ---- }
+procedure BuiltinFuncsWin;
+var
+  s, fx, fx2: Integer;
+  fn: string;
+begin
+  { __chkstk : touche les pages de la pile ; rax = taille ; preserve rax }
+  BeginNative('__chkstk');
+  Lea(r10, MemB(rSP, 8));
+  MovRR(r11, rAX);
+  fx := BxN;
+  AluRI(aCmp, r11, 4096, True);
+  fx2 := JccRel32(ccBE);
+  AluRI(aSub, r10, 4096, True);
+  EncRM(0, True, $85, r10, MemB(r10, 0), False, 0);
+  AluRI(aSub, r11, 4096, True);
+  PatchTo(JmpRel32, fx);
+  PatchHere(fx2);
+  AluRR(aSub, r10, r11, True);
+  EncRM(0, True, $85, r10, MemB(r10, 0), False, 0);
+  Ret;
+  { __rt_unsupported : fonction C inexistante sous Windows }
+  BeginNative('__rt_unsupported');
+  WinStubOff := BxSyms[SymGet('__rt_unsupported')].off;
+  AluRI(aSub, rSP, 40, True);
+  MovRI(rCX, 120);
+  s := SymGet('ExitProcess');
+  MarkImportSym(s);
+  CallGot(s);
+  Ud2;
+  { snprintf(buf, n, fmt, ...) : ABI Windows, via __stdio_common_vsprintf }
+  BeginNative('snprintf');
+  BxSyms[SymGet('snprintf')].msabi := True;
+  AluRI(aSub, rSP, 56, True);
+  MovMR(MemB(rSP, 88), r9, 8);
+  Lea(rAX, MemB(rSP, 88));
+  MovMR(MemB(rSP, 40), rAX, 8);
+  MovMI(MemB(rSP, 32), 0, 8);
+  MovRR(r9, r8);
+  MovRR(r8, rDX);
+  MovRR(rDX, rCX);
+  MovRI(rCX, 2);
+  s := SymGet('__stdio_common_vsprintf');
+  MarkImportSym(s);
+  CallGot(s);
+  AluRI(aAdd, rSP, 56, True);
+  Ret;
+  { point d'entree }
+  BeginNative('mainCRTStartup');
+  PushR(rBP);
+  Bx1($6A); Bx1($00);
+  MovRR(rBP, rSP);
+  AluRI(aSub, rSP, 40, True);
+  CallSym(SymGet('__win_start'));
+  MovRR32(rCX, rAX);
+  s := SymGet('ExitProcess');
+  MarkImportSym(s);
+  CallGot(s);
+  Ud2;
+  fn := '';
+  if fn = 'x' then ;
+end;
+
+{ ---- lecture du module : passe 1 (globales, declarations, definitions) ---- }
+procedure Pass1;
+var
+  ln, ln2, nm: string;
+  k, s: Integer;
+begin
+  MP := 1;
+  while NextLine(ln) do
+  begin
+    if BxFailed then Exit;
+    if ln = '' then Continue;
+    if ln[1] = '@' then
+    begin
+      LS := ln;
+      LP := 1;
+      ParseGlobal;
+    end
+    else if StartsW(ln, 'declare ') then
+    begin
+      k := Pos('@', ln);
+      if k > 0 then
+      begin
+        LS := ln;
+        LP := k + 1;
+        nm := ReadName;
+        s := SymGet(nm);
+        if BxSyms[s].kind = skUndef then BxSyms[s].kind := skImpF;
+      end;
+    end
+    else if StartsW(ln, 'define ') then
+    begin
+      k := Pos('@', ln);
+      LS := ln;
+      LP := k + 1;
+      nm := ReadName;
+      if nm = 'main' then nm := '__rs_main';
+      s := SymGet(nm);
+      BxSyms[s].kind := skFunc;
+      while NextLine(ln2) do
+        if ln2 = '}' then Break;
+    end
+    else if (ln[1] = '%') then BxFail('IR : types nommes non supportes');
+  end;
+end;
+
+procedure Pass2;
+var
+  ln: string;
+begin
+  MP := 1;
+  while NextLine(ln) do
+  begin
+    if BxFailed then Exit;
+    if StartsW(ln, 'define ') then GenFunction(ln);
+  end;
+end;
+
+{ ---- edition de liens ---- }
+function SymAddr(s: Integer): Int64;
+begin
+  Result := BxSyms[s].addr;
+end;
+
+function ApplyLink(textVa, roVa, ehVa, datVa, bssVa, gotVa: Int64): Boolean;
+var
+  i, j: Integer;
+  v, p, tgt: Int64;
+begin
+  Result := False;
+  { adresses des symboles }
+  for i := 0 to BxNSyms - 1 do
+  begin
+    case BxSyms[i].kind of
+      skFunc: BxSyms[i].addr := textVa + BxSyms[i].off;
+      skData:
+        case BxSyms[i].sec of
+          secRo: BxSyms[i].addr := roVa + BxSyms[i].off;
+          secData: BxSyms[i].addr := datVa + BxSyms[i].off;
+        else
+          BxSyms[i].addr := bssVa + BxSyms[i].off;
+        end;
+    else
+      BxSyms[i].addr := 0;
+    end;
+    if BxSyms[i].name = '__rt_eh' then BxSyms[i].addr := ehVa;
+  end;
+  if GetEnv('RUSTC_BX_MAP') <> '' then
+    for i := 0 to BxNSyms - 1 do
+      if BxSyms[i].kind = skFunc then WriteErrLn(HexStr(BxSyms[i].addr, 8) + ' '
+          + BxSyms[i].name);
+  { corrections du code }
+  for i := 0 to BxNFix - 1 do
+  begin
+    if BxFixes[i].kind = fxGot then tgt := gotVa + 8 *
+        BxSyms[BxFixes[i].sym].got
+    else
+    begin
+      if SymIsImport(BxFixes[i].sym) then
+      begin
+        BxFail('IR : reference directe a un symbole importe `' +
+            BxSyms[BxFixes[i].sym].name + '`');
+        Exit;
+      end;
+      tgt := BxSyms[BxFixes[i].sym].addr;
+    end;
+    v := tgt + BxFixes[i].add - (textVa + BxFixes[i].pos + 4 + BxFixes[i].tail);
+    if (v < -$80000000) or (v > $7FFFFFFF) then begin
+        BxFail('IR : depassement de deplacement'); Exit; end;
+    BxPatch4(BxFixes[i].pos, v);
+  end;
+  { relocations des donnees }
+  for i := 0 to BxNDRel - 1 do
+  begin
+    v := BxSyms[BxDRels[i].sym].addr + BxDRels[i].add;
+    p := BxDRels[i].off;
+    for j := 0 to 7 do
+      if BxDRels[i].sec = secRo then BxRo[p + j] := Byte((v shr (8 * j)) and
+          $FF)
+      else BxDat[p + j] := Byte((v shr (8 * j)) and $FF);
+  end;
+  Result := True;
+end;
+
+function BuiltinLinkElf(const outPath: string): Boolean;
+var
+  i, j, nImp, nsyms: Integer;
+  imps: TIntArr;
+  gotIdx: TIntArr;
+  dynstr: string;
+  libcOff, libmOff: Integer;
+  nameOff: TIntArr;
+  hdrSize, interpOff, dynsymOff, dynstrOff, hashOff, relaOff, s0: Int64;
+  textOff, textVa, roOff, roVa, ehOff, roSize, dataOff, dataVa, dynOff, gotOff,
+      datSecOff, bssStart: Int64;
+  dataFile, dataMem: Int64;
+  gotVa: Int64;
+  interp: string;
+  st: Integer;
+  v: Int64;
+  p: Int64;
+  kind: Integer;
+  entry: Int64;
+  tgt: Int64;
+  r: Integer;
+  symOff, strOff, shstrOff, shOff, tailStart, nfun: Integer;
+  symstr, shstr: string;
+  fnames: TIntArr;
+  procedure SetGot(s: Integer);
+  begin
+    if BxSyms[s].got < 0 then
+    begin
+      BxSyms[s].got := nImp;
+      SetLength(imps, nImp + 1);
+      imps[nImp] := s;
+      Inc(nImp);
+    end;
+  end;
+begin
+  Result := False;
+  nImp := 0;
+  SetLength(imps, 0);
+  for i := 0 to BxNFix - 1 do
+    if BxFixes[i].kind = fxGot then SetGot(BxFixes[i].sym);
+  for i := 0 to BxNDRel - 1 do
+    if SymIsImport(BxDRels[i].sym) then
+    begin
+      BxFail('IR : adresse d''un symbole importe dans une donnee : `' +
+          BxSyms[BxDRels[i].sym].name + '`');
+      Exit;
+    end;
+  { table des chaines dynamiques }
+  dynstr := #0;
+  libcOff := Length(dynstr);
+  dynstr := dynstr + 'libc.so.6' + #0;
+  libmOff := Length(dynstr);
+  dynstr := dynstr + 'libm.so.6' + #0;
+  SetLength(nameOff, nImp);
+  for i := 0 to nImp - 1 do
+  begin
+    nameOff[i] := Length(dynstr);
+    dynstr := dynstr + BxSyms[imps[i]].name + #0;
+  end;
+  interp := '/lib64/ld-linux-x86-64.so.2' + #0;
+  nsyms := nImp + 1;
+  { geometrie }
+  hdrSize := 64 + 8 * 56;
+  interpOff := hdrSize;
+  dynsymOff := AlignUp64(interpOff + Length(interp), 8);
+  dynstrOff := dynsymOff + 24 * nsyms;
+  hashOff := AlignUp64(dynstrOff + Length(dynstr), 8);
+  relaOff := AlignUp64(hashOff + 4 * (3 + nsyms), 8);
+  s0 := relaOff + 24 * nImp;
+  textOff := AlignUp64(s0, 4096);
+  textVa := ElfBase + textOff;
+  roOff := AlignUp64(textOff + BxN, 4096);
+  roVa := ElfBase + roOff;
+  ehOff := AlignUp64(BxRoN, 8);
+  roSize := ehOff + 8 + 24 * BxNEh;
+  dataOff := AlignUp64(roOff + roSize, 4096);
+  dataVa := ElfBase + dataOff;
+  dynOff := dataOff;
+  gotOff := dynOff + 16 * 11;
+  datSecOff := AlignUp64(gotOff + 8 * nImp, 16);
+  bssStart := AlignUp64(datSecOff + BxDatN, 16);
+  dataFile := datSecOff + BxDatN - dataOff;
+  dataMem := bssStart - dataOff + BxBss;
+  gotVa := ElfBase + gotOff;
+  if not ApplyLink(textVa, roVa, roVa + ehOff, ElfBase + datSecOff, ElfBase +
+      bssStart, gotVa) then Exit;
+  { table des symboles (deboguage) }
+  shOff := 0;
+  nfun := 0;
+  symstr := #0;
+  SetLength(fnames, 0);
+  if BxDebug then
+  begin
+    for i := 0 to BxNSyms - 1 do
+      if BxSyms[i].kind = skFunc then
+      begin
+        SetLength(fnames, nfun + 1);
+        fnames[nfun] := Length(symstr);
+        symstr := symstr + BxSyms[i].name + #0;
+        Inc(nfun);
+      end;
+    shstr := #0 + '.text' + #0 + '.symtab' + #0 + '.strtab' + #0 + '.shstrtab' +
+        #0;
+    tailStart := AlignUp64(datSecOff + BxDatN, 8);
+    symOff := tailStart;
+    strOff := symOff + 24 * (nfun + 1);
+    shstrOff := strOff + Length(symstr);
+    shOff := AlignUp64(shstrOff + Length(shstr), 8);
+  end;
+  { ecriture }
+  SetLength(OB, 1 shl 20);
+  ON_ := 0;
+  { en-tete ELF }
+  OPut1($7F); OPut1(Ord('E')); OPut1(Ord('L')); OPut1(Ord('F'));
+  OPut1(2); OPut1(1); OPut1(1); OPut1(0);
+  OPut8(0);
+  OPut2(2);            { ET_EXEC }
+  OPut2(62);
+  OPut4(1);
+  entry := BxSyms[SymGet('_start')].addr;
+  OPut8(entry);
+  OPut8(64);           { phoff }
+  OPut8(shOff);        { shoff }
+  OPut4(0);
+  OPut2(64);
+  OPut2(56);
+  OPut2(8);
+  OPut2(64);
+  if BxDebug then begin OPut2(5); OPut2(4); end
+  else begin OPut2(0); OPut2(0); end;
+  { en-tetes de programme : type, flags, off, vaddr, paddr, filesz, memsz, align
+      }
+  OPut4(6); OPut4(4); OPut8(64); OPut8(ElfBase + 64); OPut8(ElfBase + 64);
+      OPut8(8 * 56); OPut8(8 * 56); OPut8(8);
+  OPut4(3); OPut4(4); OPut8(interpOff); OPut8(ElfBase + interpOff);
+      OPut8(ElfBase + interpOff);
+  OPut8(Length(interp)); OPut8(Length(interp)); OPut8(1);
+  OPut4(1); OPut4(4); OPut8(0); OPut8(ElfBase); OPut8(ElfBase); OPut8(s0);
+      OPut8(s0); OPut8(4096);
+  OPut4(1); OPut4(5); OPut8(textOff); OPut8(textVa); OPut8(textVa); OPut8(BxN);
+      OPut8(BxN); OPut8(4096);
+  OPut4(1); OPut4(4); OPut8(roOff); OPut8(roVa); OPut8(roVa); OPut8(roSize);
+      OPut8(roSize); OPut8(4096);
+  OPut4(1); OPut4(6); OPut8(dataOff); OPut8(dataVa); OPut8(dataVa);
+      OPut8(dataFile); OPut8(dataMem); OPut8(4096);
+  OPut4(2); OPut4(6); OPut8(dynOff); OPut8(dataVa); OPut8(dataVa); OPut8(16 *
+      11); OPut8(16 * 11); OPut8(8);
+  OPut4($6474E551); OPut4(6); OPut8(0); OPut8(0); OPut8(0); OPut8(0); OPut8(0);
+      OPut8(16);
+  { interp }
+  OPadTo(interpOff);
+  OPutStr(interp);
+  { dynsym }
+  OPadTo(dynsymOff);
+  OPut4(0); OPut1(0); OPut1(0); OPut2(0); OPut8(0); OPut8(0);
+  for i := 0 to nImp - 1 do
+  begin
+    OPut4(nameOff[i]);
+    if BxSyms[imps[i]].kind = skImpD then OPut1($11) else OPut1($12);
+    OPut1(0);
+    OPut2(0);
+    OPut8(0);
+    OPut8(0);
+  end;
+  { dynstr }
+  OPadTo(dynstrOff);
+  OPutStr(dynstr);
+  { hash : 1 seau, aucune chaine }
+  OPadTo(hashOff);
+  OPut4(1);
+  OPut4(nsyms);
+  OPut4(0);
+  for i := 0 to nsyms - 1 do OPut4(0);
+  { rela }
+  OPadTo(relaOff);
+  for i := 0 to nImp - 1 do
+  begin
+    OPut8(gotVa + 8 * i);
+    OPut8((Int64(i + 1) shl 32) or 6);
+    OPut8(0);
+  end;
+  OPadTo(s0);
+  { texte }
+  OPadTo(textOff);
+  for i := 0 to BxN - 1 do OPut1(BxCode[i]);
+  { donnees en lecture seule + table des plots d'atterrissage }
+  OPadTo(roOff);
+  for i := 0 to BxRoN - 1 do OPut1(BxRo[i]);
+  OPadTo(roOff + ehOff);
+  OPut8(BxNEh);
+  for i := 0 to BxNEh - 1 do
+  begin
+    OPut8(textVa + BxEh[i].ra);
+    OPut8(textVa + BxEh[i].lp);
+    OPut8(BxEh[i].fr);
+  end;
+  { donnees modifiables }
+  OPadTo(dataOff);
+  { dynamique }
+  OPut8(1); OPut8(libcOff);
+  OPut8(1); OPut8(libmOff);
+  OPut8(4); OPut8(ElfBase + hashOff);
+  OPut8(5); OPut8(ElfBase + dynstrOff);
+  OPut8(6); OPut8(ElfBase + dynsymOff);
+  OPut8(10); OPut8(Length(dynstr));
+  OPut8(11); OPut8(24);
+  OPut8(7); OPut8(ElfBase + relaOff);
+  OPut8(8); OPut8(24 * nImp);
+  OPut8(9); OPut8(24);
+  OPut8(0); OPut8(0);
+  OPadTo(gotOff);
+  for i := 0 to nImp - 1 do OPut8(0);
+  OPadTo(datSecOff);
+  for i := 0 to BxDatN - 1 do OPut1(BxDat[i]);
+  if BxDebug then
+  begin
+    OPadTo(symOff);
+    OPut4(0); OPut1(0); OPut1(0); OPut2(0); OPut8(0); OPut8(0);
+    j := 0;
+    for i := 0 to BxNSyms - 1 do
+      if BxSyms[i].kind = skFunc then
+      begin
+        OPut4(fnames[j]);
+        OPut1($12);
+        OPut1(0);
+        OPut2(1);
+        OPut8(BxSyms[i].addr);
+        OPut8(0);
+        Inc(j);
+      end;
+    OPutStr(symstr);
+    OPutStr(shstr);
+    OPadTo(shOff);
+    for i := 0 to 63 do OPut1(0);
+    { .text }
+    OPut4(1); OPut4(1); OPut8(6); OPut8(textVa); OPut8(textOff); OPut8(BxN);
+        OPut4(0); OPut4(0); OPut8(16); OPut8(0);
+    { .symtab }
+    OPut4(7); OPut4(2); OPut8(0); OPut8(0); OPut8(symOff); OPut8(24 * (nfun +
+        1)); OPut4(3); OPut4(1); OPut8(8); OPut8(24);
+    { .strtab }
+    OPut4(15); OPut4(3); OPut8(0); OPut8(0); OPut8(strOff);
+        OPut8(Length(symstr)); OPut4(0); OPut4(0); OPut8(1); OPut8(0);
+    { .shstrtab }
+    OPut4(23); OPut4(3); OPut8(0); OPut8(0); OPut8(shstrOff);
+        OPut8(Length(shstr)); OPut4(0); OPut4(0); OPut8(1); OPut8(0);
+  end;
+  { fichier }
+  st := 0;
+  r := 0;
+  if not WriteBytesToFile(outPath, OB, ON_) then
+  begin
+    BxFail('impossible d''ecrire ' + outPath);
+    Exit;
+  end;
+  if st + r = 1 then ;
+  kind := 0;
+  if kind = 1 then ;
+  Result := True;
+end;
+
+{ ---- PE32+ (Windows x64) ---- }
+function BuiltinLinkPE(const outPath: string): Boolean;
+const
+  ImageBase = $140000000;
+var
+  i, j, k, nImp, nDll: Integer;
+  imps: TIntArr;
+  dllOf: TIntArr;        { 0 kernel32, 1 ucrtbase }
+  dllNames: array[0..1] of string;
+  inames: TStrArr;
+  order: TIntArr;
+  nslots: Integer;
+  textRva, textRaw, textRawSz, rdRva, rdRaw, rdRawSz, rdSize, dtRva, dtRaw,
+      dtRawSz, dtSize, imgSize: Int64;
+  ehOff, impOff, iltOff, iatOff, hnOff, dnOff, descSz: Int64;
+  hnOffs: TInt64Arr;
+  dnOffs: array[0..1] of Int64;
+  iltPos, iatPos: array[0..1] of Int64;
+  cnt: array[0..1] of Integer;
+  gotVa: Int64;
+  dll, iname: string;
+  v: Int64;
+  roAll: TByteArr;
+  nr: Integer;
+  procedure SetGot(s: Integer);
+  var
+    d, nn: string;
+  begin
+    if BxSyms[s].got < 0 then
+    begin
+      BxSyms[s].got := nImp;
+      SetLength(imps, nImp + 1);
+      imps[nImp] := s;
+      Inc(nImp);
+    end;
+    d := ''; nn := '';
+  end;
+begin
+  Result := False;
+  nImp := 0;
+  SetLength(imps, 0);
+  for i := 0 to BxNFix - 1 do
+    if BxFixes[i].kind = fxGot then SetGot(BxFixes[i].sym);
+  for i := 0 to BxNDRel - 1 do
+    if SymIsImport(BxDRels[i].sym) then
+    begin
+      BxFail('IR : adresse d''un symbole importe dans une donnee : `' +
+          BxSyms[BxDRels[i].sym].name + '`');
+      Exit;
+    end;
+  dllNames[0] := 'kernel32.dll';
+  dllNames[1] := 'ucrtbase.dll';
+  SetLength(dllOf, nImp);
+  SetLength(inames, nImp);
+  cnt[0] := 0;
+  cnt[1] := 0;
+  for i := 0 to nImp - 1 do
+  begin
+    if not WinMapName(BxSyms[imps[i]].name, dll, iname) then begin dll :=
+        'ucrtbase.dll'; iname := BxSyms[imps[i]].name; end;
+    if dll = 'kernel32.dll' then dllOf[i] := 0 else dllOf[i] := 1;
+    inames[i] := iname;
+    Inc(cnt[dllOf[i]]);
+  end;
+  { ordre : kernel32 puis ucrtbase ; chaque groupe se termine par un emplacement
+      nul }
+  SetLength(order, nImp);
+  k := 0;
+  nslots := 0;
+  for j := 0 to 1 do
+  begin
+    iatPos[j] := nslots;
+    for i := 0 to nImp - 1 do
+      if dllOf[i] = j then
+      begin
+        order[k] := i;
+        BxSyms[imps[i]].got := nslots;
+        Inc(nslots);
+        Inc(k);
+      end;
+    Inc(nslots);
+  end;
+  nDll := 0;
+  for j := 0 to 1 do if cnt[j] > 0 then Inc(nDll);
+  { geometrie }
+  textRva := $1000;
+  textRaw := $400;
+  textRawSz := AlignUp64(BxN, $200);
+  rdRva := AlignUp64(textRva + BxN, $1000);
+  rdRaw := textRaw + textRawSz;
+  ehOff := AlignUp64(BxRoN, 8);
+  impOff := ehOff + 8 + 24 * BxNEh;
+  descSz := 20 * (nDll + 1);
+  iltOff := AlignUp64(impOff + descSz, 8);
+  iatOff := iltOff + 8 * nslots;
+  hnOff := iatOff + 8 * nslots;
+  SetLength(hnOffs, nImp);
+  v := hnOff;
+  for i := 0 to nImp - 1 do
+  begin
+    hnOffs[i] := v;
+    v := v + 2 + Length(inames[i]) + 1;
+    if (v and 1) <> 0 then Inc(v);
+  end;
+  dnOff := v;
+  for j := 0 to 1 do
+  begin
+    dnOffs[j] := v;
+    v := v + Length(dllNames[j]) + 1;
+  end;
+  rdSize := v;
+  rdRawSz := AlignUp64(rdSize, $200);
+  dtRva := AlignUp64(rdRva + rdSize, $1000);
+  dtRaw := rdRaw + rdRawSz;
+  dtSize := AlignUp64(BxDatN, 16) + BxBss;
+  if dtSize = 0 then dtSize := 16;
+  dtRawSz := AlignUp64(BxDatN, $200);
+  imgSize := AlignUp64(dtRva + dtSize, $1000);
+  gotVa := ImageBase + rdRva + iatOff;
+  if not ApplyLink(ImageBase + textRva, ImageBase + rdRva, ImageBase + rdRva +
+      ehOff, ImageBase + dtRva,
+                   ImageBase + dtRva + AlignUp64(BxDatN, 16), gotVa) then Exit;
+  { ecriture }
+  SetLength(OB, 1 shl 20);
+  ON_ := 0;
+  OPut1(Ord('M')); OPut1(Ord('Z'));
+  OPadTo($3C);
+  OPut4($80);
+  OPadTo($80);
+  OPut1(Ord('P')); OPut1(Ord('E')); OPut1(0); OPut1(0);
+  OPut2($8664);
+  OPut2(3);
+  OPut4(0); OPut4(0); OPut4(0);
+  OPut2(240);
+  OPut2($0022);
+  { en-tete optionnel }
+  OPut2($20B);
+  OPut1(14); OPut1(0);
+  OPut4(textRawSz);
+  OPut4(rdRawSz + dtRawSz);
+  OPut4(dtSize);
+  OPut4(BxSyms[SymGet('mainCRTStartup')].addr - ImageBase);
+  OPut4(textRva);
+  OPut8(ImageBase);
+  OPut4($1000);
+  OPut4($200);
+  OPut2(6); OPut2(0); OPut2(0); OPut2(0); OPut2(6); OPut2(0);
+  OPut4(0);
+  OPut4(imgSize);
+  OPut4($400);
+  OPut4(0);
+  OPut2(3);
+  OPut2($8100);
+  OPut8($2000000);
+  OPut8($10000);
+  OPut8($100000);
+  OPut8($1000);
+  OPut4(0);
+  OPut4(16);
+  for i := 0 to 15 do
+  begin
+    if i = 1 then begin OPut4(rdRva + impOff); OPut4(descSz); end
+    else if i = 12 then begin OPut4(rdRva + iatOff); OPut4(8 * nslots); end
+    else begin OPut4(0); OPut4(0); end;
+  end;
+  { sections }
+  OPutStr('.text'); OPut1(0); OPut1(0); OPut1(0);
+  OPut4(BxN); OPut4(textRva); OPut4(textRawSz); OPut4(textRaw); OPut4(0);
+      OPut4(0); OPut2(0); OPut2(0); OPut4($60000020);
+  OPutStr('.rdata'); OPut1(0); OPut1(0);
+  OPut4(rdSize); OPut4(rdRva); OPut4(rdRawSz); OPut4(rdRaw); OPut4(0); OPut4(0);
+      OPut2(0); OPut2(0); OPut4($40000040);
+  OPutStr('.data'); OPut1(0); OPut1(0); OPut1(0);
+  OPut4(dtSize); OPut4(dtRva); OPut4(dtRawSz); OPut4(dtRaw); OPut4(0); OPut4(0);
+      OPut2(0); OPut2(0); OPut4($C0000040);
+  { texte }
+  OPadTo(textRaw);
+  for i := 0 to BxN - 1 do OPut1(BxCode[i]);
+  { rdata }
+  OPadTo(rdRaw);
+  for i := 0 to BxRoN - 1 do OPut1(BxRo[i]);
+  OPadTo(rdRaw + ehOff);
+  OPut8(BxNEh);
+  for i := 0 to BxNEh - 1 do
+  begin
+    OPut8(ImageBase + textRva + BxEh[i].ra);
+    OPut8(ImageBase + textRva + BxEh[i].lp);
+    OPut8(BxEh[i].fr);
+  end;
+  OPadTo(rdRaw + impOff);
+  for j := 0 to 1 do
+    if cnt[j] > 0 then
+    begin
+      OPut4(rdRva + iltOff + 8 * iatPos[j]);
+      OPut4(0);
+      OPut4(0);
+      OPut4(rdRva + dnOffs[j]);
+      OPut4(rdRva + iatOff + 8 * iatPos[j]);
+    end;
+  for i := 0 to 4 do OPut4(0);
+  OPadTo(rdRaw + iltOff);
+  for k := 0 to 1 do
+  begin
+    for i := 0 to nImp - 1 do
+      if dllOf[i] = k then OPut8(rdRva + hnOffs[i]);
+    OPut8(0);
+  end;
+  OPadTo(rdRaw + iatOff);
+  for k := 0 to 1 do
+  begin
+    for i := 0 to nImp - 1 do
+      if dllOf[i] = k then OPut8(rdRva + hnOffs[i]);
+    OPut8(0);
+  end;
+  OPadTo(rdRaw + hnOff);
+  for i := 0 to nImp - 1 do
+  begin
+    OPadTo(rdRaw + hnOffs[i]);
+    OPut2(0);
+    OPutStr(inames[i]);
+    OPut1(0);
+  end;
+  for j := 0 to 1 do
+  begin
+    OPadTo(rdRaw + dnOffs[j]);
+    OPutStr(dllNames[j]);
+    OPut1(0);
+  end;
+  OPadTo(dtRaw);
+  for i := 0 to BxDatN - 1 do OPut1(BxDat[i]);
+  OPadTo(dtRaw + dtRawSz);
+  if not WriteBytesToFile(outPath, OB, ON_) then
+  begin
+    BxFail('impossible d''ecrire ' + outPath);
+    Exit;
+  end;
+  nr := 0;
+  if nr = 1 then ;
+  SetLength(roAll, 0);
+  Result := True;
+end;
+
+function BuiltinLink(const outPath: string): Boolean;
+begin
+  if BxWin then Result := BuiltinLinkPE(outPath) else Result :=
+      BuiltinLinkElf(outPath);
+end;
+
+{ ---- point d'entree du backend ---- }
+function BuiltinCompile(const modText: string; const outPath: string; var
+    errMsg: string; win: Boolean): Boolean;
+var
+  b: TBuf;
+  s: Integer;
+begin
+  Result := False;
+  BxFailed := False;
+  BxErr := '';
+  if GetEnv('RUSTC_BX_FAIL') <> '' then
+  begin
+    errMsg := 'echec force (RUSTC_BX_FAIL)';
+    Exit;
+  end;
+  BxCodeInit;
+  TypesInit;
+  SetLength(BxSyms, 256);
+  BxNSyms := 0;
+  HInit(BxSymMap);
+  SetLength(BxRo, 4096);
+  SetLength(BxDat, 4096);
+  BxRoN := 0;
+  BxDatN := 0;
+  BxBss := 0;
+  SetLength(BxDRels, 256);
+  BxNDRel := 0;
+  BxNEh := 0;
+  SetLength(BxEh, 64);
+  SetLength(FvK, 256); SetLength(FvOff, 256); SetLength(FvTy, 256);
+      SetLength(FvSym, 256);
+  SetLength(FvPs, 256); SetLength(FvFreed, 256);
+  SetLength(UsedVals, 64);
+  SetLength(FreeSl[0], 64); SetLength(FreeSl[1], 16); SetLength(FreeSl[2], 16);
+  SetLength(LblPos, 64);
+  SetLength(JFix, 256);
+  SetLength(EhPend, 16);
+  SetLength(GIBuf, 256);
+  SetLength(GIRel, 16);
+  BxDebug := (GetEnv('RUSTC_BX_DEBUG') <> '') or BxDebugFlag;
+  BxWin := win;
+  BuiltinFuncsCommon;
+  if win then BuiltinFuncsWin else BuiltinFuncsElf;
+  BufInit(b);
+  BxRuntimeIR(b);
+  if win then BxRuntimeIRWin(b);
+  MT := modText + #10 + BufStr(b);
+  Pass1;
+  if not BxFailed then
+  begin
+    SymExc := SymGet('__rt_exc');
+    SymResume := SymGet('__rt_resume_from');
+    Pass2;
+  end;
+  if not BxFailed then BuiltinLink(outPath);
+  if BxFailed then begin errMsg := BxErr; Exit; end;
+  s := 0;
+  if s = 1 then ;
+  Result := True;
+end;
 
 { ============================================================ }
 { Elements du langage (lang items) du noyau std                 }
@@ -52253,6 +58124,7 @@ Type
     panicAbort: Boolean;
     verbose: Boolean;
     llc: string;
+    llvm: string;            { '' : integre avec repli, 'builtin', 'external' }
   end;
 
 Var
@@ -52309,6 +58181,11 @@ begin
     UsageLine('    -C linker=PATH          Linker to use');
     UsageLine('    -C link-arg=ARG         Extra argument passed to the link' +
         'er');
+    UsageLine('    -C llvm=builtin|external');
+    UsageLine('                            Code generator: built-in x86-64 b' +
+        'ackend (default, falls back');
+    UsageLine('                            to external LLVM when needed) or ' +
+        'external llc/clang');
     UsageLine('    -Z unpretty=ast-tree|hir|mir');
     UsageLine('                            Print the compiler''s representat' +
         'ion of the input');
@@ -52320,6 +58197,7 @@ begin
     UsageLine('Environment variables:');
     UsageLine('    LANGUAGE=EN             Messages in English (French by de' +
         'fault)');
+    UsageLine('    RUSTC_LLVM=external     Same as -C llvm=external');
     UsageLine('    RUSTC_LLC, RUSTC_OPT, RUSTC_LINKER');
     UsageLine('                            Paths of llc, opt and of the link' +
         'er (cc)');
@@ -52369,6 +58247,11 @@ begin
     UsageLine('    -C linker=CHEMIN        Editeur de liens a utiliser');
     UsageLine('    -C link-arg=ARG         Argument supplementaire pour l''e' +
         'diteur de liens');
+    UsageLine('    -C llvm=builtin|external');
+    UsageLine('                            Generateur de code : backend x86-' +
+        '64 integre (par defaut, avec');
+    UsageLine('                            repli sur le LLVM externe si beso' +
+        'in) ou llc/clang externes');
     UsageLine('    -Z unpretty=ast-tree|hir|mir');
     UsageLine('                            Affiche la representation interne' +
         ' du programme');
@@ -52382,6 +58265,7 @@ begin
     UsageLine('Variables d''environnement :');
     UsageLine('    LANGUAGE=EN             Messages en anglais (francais par' +
         ' defaut)');
+    UsageLine('    RUSTC_LLVM=external     Equivalent a -C llvm=external');
     UsageLine('    RUSTC_LLC, RUSTC_OPT, RUSTC_LINKER');
     UsageLine('                            Chemins de llc, de opt et de l''e' +
         'diteur de liens (cc)');
@@ -52455,6 +58339,7 @@ var
     else if key = 'linker' then Opt.linker := val
     else if key = 'link-arg' then SAdd(Opt.linkArgs, val)
     else if key = 'link-args' then SAdd(Opt.linkArgs, val)
+    else if key = 'llvm' then Opt.llvm := val
     else if key = 'save-temps' then Opt.keepTemps := True;
   end;
 begin
@@ -52463,6 +58348,7 @@ begin
   Opt.overflow := -1;
   Opt.crateType := 'bin';
   Opt.edition := '2021';
+  Opt.llvm := GetEnv('RUSTC_LLVM');
   i := 1;
   while i <= n do
   begin
@@ -52484,6 +58370,8 @@ begin
     else if a = '--crate-type' then Opt.crateType := NextArg
     else if StartsWith(a, '--crate-type=') then Opt.crateType := Copy(a, 14,
         Length(a))
+    else if a = '--llvm' then Opt.llvm := NextArg
+    else if StartsWith(a, '--llvm=') then Opt.llvm := Copy(a, 8, Length(a))
     else if a = '--emit' then AddEmit(NextArg)
     else if StartsWith(a, '--emit=') then AddEmit(Copy(a, 8, Length(a)))
     else if a = '--edition' then Opt.edition := NextArg
@@ -52758,6 +58646,34 @@ begin
   Result := fi;
 end;
 
+{ cible Windows ? (option --target, sinon le systeme hote) }
+function WantWinTarget: Boolean;
+begin
+  if Opt.target <> '' then Result := Pos('windows', Opt.target) > 0
+  else
+{$IFDEF WINDOWS}
+    Result := True;
+{$ELSE}
+    Result := False;
+{$ENDIF}
+end;
+
+function WithExeExt(const fn: string; win: Boolean): string;
+var
+  i: Integer;
+  hasDot: Boolean;
+begin
+  Result := fn;
+  if not win then Exit;
+  hasDot := False;
+  for i := Length(fn) downto 1 do
+  begin
+    if (fn[i] = '/') or (fn[i] = '\') then Break;
+    if fn[i] = '.' then begin hasDot := True; Break; end;
+  end;
+  if not hasDot then Result := fn + '.exe';
+end;
+
 function CompileMain: Integer;
 var
   txt, mod_, ll, llPath, objPath, outExe, tool, args, asmPath, mirPath,
@@ -52775,7 +58691,8 @@ var
   kinds: string;
   doLink, doObj, doAsm, doLL, doMir: Boolean;
   llcPath, ccPath, clangPath, optPath, optLL: string;
-  tmpLL: string;
+  tmpLL, bxMsg: string;
+  bxLibsOk: Boolean;
   first: Boolean;
 begin
   Result := 0;
@@ -52925,6 +58842,36 @@ begin
     if tmpLL <> '' then DeleteFile(tmpLL);
     Exit;
   end;
+  { backend integre : LLVM IR -> x86-64 -> ELF }
+  bxLibsOk := (Length(Opt.linkArgs) = 0) and (Opt.linker = '');
+  for i := 0 to Length(Opt.libs) - 1 do
+    if (Opt.libs[i] <> 'c') and (Opt.libs[i] <> 'm') and (Opt.libs[i] <> 'dl')
+        and (Opt.libs[i] <> 'pthread') then
+      bxLibsOk := False;
+  if (Opt.llvm <> 'external') and doLink and not doObj and not doAsm and
+      bxLibsOk and
+     ((Opt.target = '') or (Pos('x86_64', Opt.target) = 1)) then
+  begin
+    if Opt.output <> '' then outExe := Opt.output
+    else if Opt.outDir <> '' then outExe := Opt.outDir + '/' + Opt.crateName
+    else outExe := Opt.crateName;
+    outExe := WithExeExt(outExe, WantWinTarget);
+    BxDebugFlag := Opt.debug;
+    if BuiltinCompile(ll, outExe, bxMsg, WantWinTarget) then
+    begin
+      if tmpLL <> '' then DeleteFile(tmpLL);
+      if not WantWinTarget then RunTool('/bin/chmod', '+x ' + QuoteArg(outExe));
+      Exit;
+    end;
+    if Opt.llvm = 'builtin' then
+      FatalMsg(Tr('backend LLVM integre : ', 'built-in LLVM backend: ') +
+          bxMsg);
+    WriteErrLn('warning: ' +
+        Tr('backend LLVM integre indisponible pour ce programme (',
+        'built-in LLVM backend unavailable for this program (') + bxMsg +
+               Tr(') ; utilisation du LLVM externe',
+                   ') ; using the external LLVM'));
+  end;
   { compilation LLVM -> objet / assembleur }
   llcPath := GetEnv('RUSTC_LLC');
   if llcPath = '' then llcPath := FindInPath('llc');
@@ -53046,6 +58993,9 @@ begin
   if tmpLL <> '' then DeleteFile(tmpLL);
 end;
 
+var
+  llText, llOut, llMsg: string;
+
 begin
   ErrCount := 0;
   ParseOptions;
@@ -53074,6 +59024,21 @@ begin
     Halt(0);
   end;
   if Opt.crateName = '' then Opt.crateName := SanitizeName(FileStem(Opt.input));
+  if (Length(Opt.input) > 3) and (Copy(Opt.input, Length(Opt.input) - 2, 3) =
+      '.ll') then
+  begin
+    { module LLVM IR en entree : generation de code seule }
+    if not ReadFileToString(Opt.input, llText) then
+        FatalMsg(Tr('impossible de lire ', 'couldn''t read ') + Opt.input);
+    if Opt.output <> '' then llOut := Opt.output else llOut := Opt.crateName;
+    BxDebugFlag := Opt.debug;
+    llOut := WithExeExt(llOut, WantWinTarget);
+    if not BuiltinCompile(llText, llOut, llMsg, WantWinTarget) then
+        FatalMsg(Tr('backend LLVM integre : ', 'built-in LLVM backend: ') +
+        llMsg);
+    if not WantWinTarget then RunTool('/bin/chmod', '+x ' + QuoteArg(llOut));
+    Halt(0);
+  end;
   CompileMain;
   FinishDiag;
   WarnSummary;
