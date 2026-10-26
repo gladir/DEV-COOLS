@@ -8398,15 +8398,18 @@ End;
 
 Procedure Usage;
 Begin
- WriteLn('BASIC09 [options] [file ...]');
- WriteLn('  -r spec   run procedure ''spec'' (name[(parameters)]) then exit');
- WriteLn('  -x cmd    execute the B: command ''cmd''');
- WriteLn('  -l        list the loaded procedures then exit');
- WriteLn('  -d        dump the binary structure (I-code, tables) then exit');
- WriteLn('  -p        pack the loaded procedures to <name>.mod then exit');
- WriteLn('  -q        no banner');
- WriteLn('  -h        this help');
- WriteLn('Files are I-code modules or source files (PROCEDURE ...).');
+ WriteLn('BASIC09 - Cette commande permet de lancer un clone du BASIC09.');
+ WriteLn;
+ WriteLn('Syntaxe : BASIC09 [options] [fichier ...]');
+ WriteLn;
+ WriteLn('  -r spec   Execute la procedure ''spec'' (nom[(parametres)]) puis quitte');
+ WriteLn('  -x cmd    Execute la commande B: ''cmd''');
+ WriteLn('  -l        Liste les procedures chargees puis quitte');
+ WriteLn('  -d        Vide la structure binaire (I-code, tables) puis quitte');
+ WriteLn('  -p        Compresse les procedures chargees vers <nom>.mod puis quitte');
+ WriteLn('  -q        Aucune banniere');
+ WriteLn('  -h, /?    Cette aide');
+ WriteLn('Les fichiers sont des modules I-code ou des fichiers source (PROCEDURE ...).');
 End;
 
 Var
