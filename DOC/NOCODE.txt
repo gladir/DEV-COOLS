@@ -1,0 +1,120 @@
+==============================================================================
+    NOCODE - Clone de Snowman (nocode) : desassembleur / decompilateur C/C++
+==============================================================================
+
+NOCODE.PAS est un clone, ecrit en Turbo Pascal / Free Pascal (unite DOS
+seulement, aucun fichier d'inclusion), du decompilateur natif Snowman
+(version ligne de commande "nocode").  A partir d'un executable x86, il peut :
+
+  - afficher les sections et les symboles du fichier ;
+  - desassembler le code (syntaxe Intel) ;
+  - exporter le graphe de flot de controle, la representation intermediaire
+    et les regions de l'analyse structurelle au format DOT (Graphviz) ;
+  - reconstruire un code source C/C++ lisible (if / else, while, do-while,
+    for(;;), switch, return, appels de fonctions avec leurs arguments).
+
+Compilation : fpc -Mtp NOCODE.PAS      (Free Pascal 3.2 ou plus recent)
+
+==============================================================================
+1. LIGNE DE COMMANDE
+==============================================================================
+
+  nocode [options] [--] fichier...
+
+  Parametre                    Description
+  ---------------------------  ---------------------------------------------
+  --help, -h                   Affiche l'aide.
+  --verbose, -v                Affiche la progression et les messages
+                               detailles sur la sortie d'erreur.
+  --print-sections[=FILE]      Affiche les sections du fichier executable.
+  --print-symbols[=FILE]       Extrait les symboles du programme.
+  --print-instructions[=FILE]  Extrait les instructions desassemblees.
+  --print-cfg[=FILE]           Exporte le graphe de flot de controle (DOT).
+  --print-ir[=FILE]            Exporte la representation intermediaire (DOT).
+  --print-regions[=FILE]       Exporte les regions identifiees par l'analyse
+                               structurelle (DOT).
+  --print-cxx[=FILE]           Produit le code C/C++ reconstruit.
+  --from[=ADDR]                Adresse de debut du desassemblage.
+  --to[=ADDR]                  Adresse de fin du desassemblage.
+  --                           Separe les options des fichiers a traiter.
+
+  - Sans =FILE, la sortie est la sortie standard.  Avec =FILE, le fichier est
+    cree (ou complete quand plusieurs fichiers sont traites).
+  - Sans aucune option --print-*, --print-cxx est utilise.
+  - ADDR est une adresse hexadecimale : 401000, 0x401000, $401000 ou 401000h.
+    --from=ADDR et --from ADDR sont acceptes (idem pour --to).
+  - --from / --to limitent les instructions affichees, les symboles affiches
+    et les fonctions reconstruites (une fonction est traitee si son adresse
+    d'entree est dans l'intervalle [from, to[).
+  - Plusieurs fichiers peuvent etre traites en une seule commande.
+  - Code de retour : 0 = succes, 1 = un fichier n'a pas pu etre traite,
+    2 = erreur de ligne de commande.
+
+Exemples :
+
+  nocode programme.exe                          code C sur l'ecran
+  nocode --print-cxx=sortie.c a.out
+  nocode --print-instructions --from=401000 --to=401100 a.out
+  nocode --print-cfg=cfg.dot --print-regions=reg.dot a.out
+  dot -Tpng cfg.dot -o cfg.png
+
+==============================================================================
+2. FORMATS ET PROCESSEURS SUPPORTES
+==============================================================================
+
+  Format                       Remarques
+  ---------------------------  ---------------------------------------------
+  ELF 32 bits (i386)           executables, bibliotheques .so, fichiers objet
+                               .o (principales relocations x86 appliquees),
+                               stubs PLT/GOT nommes
+  ELF 64 bits (x86-64)         idem
+  PE32 / PE32+ (Windows)       sections, exportations, importations (IAT)
+  DOS MZ (EXE 16 bits)         image chargee a l'adresse lineaire 0, appels
+                               et sauts lointains seg:off -> seg*16+off
+  DOS COM                      charge a l'adresse 0100h
+
+  Les modes 16, 32 et 64 bits sont decodes, y compris x87, MMX, SSE jusqu'a
+  SSE4.2, AES, BMI (longueur correcte), VEX (AVX/AVX2) et EVEX (longueur).
+  Les formats NE/LE/LX, Mach-O et les processeurs non x86 sont refuses avec
+  un message explicite.
+
+==============================================================================
+3. FONCTIONNEMENT
+==============================================================================
+
+  1. Chargement de l'image (sections, symboles, importations).
+  2. Decouverte des fonctions : point d'entree, symboles de fonctions,
+     exportations, cibles des CALL, adresses de code referencees depuis le
+     point d'entree (par exemple main passe a __libc_start_main), stubs PLT
+     nommes d'apres les relocations, et prologues reconnus dans les zones de
+     code non couvertes (endbr64, push ebp / mov ebp,esp).
+  3. Pour chaque fonction : blocs de base, graphe de flot de controle,
+     tables de saut des instructions switch (formats absolu et relatif).
+  4. Traduction en representation intermediaire : affectations, acces
+     memoire, appels, drapeaux (cmp/test/add/sub... recombines avec les
+     sauts conditionnels pour produire des conditions du type a < b).
+  5. Analyses : arguments des appels (pile, registres, signatures deduites
+     des fonctions deja analysees, table des fonctions systeme courantes),
+     normalisation des acces a la pile (local_XX, aN), vivacite des
+     registres, elimination du code mort, propagation d'expressions et de
+     copies.
+  6. Analyse structurelle : dominateurs, post-dominateurs, boucles
+     naturelles, regions if / if-else / while / do-while / boucle infinie /
+     switch ; les flots non structures restent des goto avec etiquettes.
+  7. Production du code C : declarations des variables, parametres, type de
+     retour (void, entier, double), declarations extern des symboles
+     externes.
+
+==============================================================================
+4. LIMITES CONNUES
+==============================================================================
+
+  - Les types sont deduits des tailles d'acces (int8_t .. int64_t, float,
+    double) ; il n'y a pas de reconstruction de structures ni de classes.
+  - Les registres partiels (al, ax, ah) sont des variables distinctes.
+  - Les instructions x87 et les instructions systeme sont conservees sous la
+    forme de commentaires /* ... */.
+  - Les fonctions variadiques (printf...) recoivent les arguments qui sont
+    definis dans le bloc avant l'appel.
+  - Le code C produit est destine a la lecture ; il ne se compile pas
+    toujours tel quel.

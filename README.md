@@ -797,6 +797,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet d'afficher la table des symboles d'un fichier objet, d'une bibliothèque statique ou d'un exécutable.</td>
 		</tr>
 		<tr>
+			<td><b>NOCODE.PAS</b></td>
+			<td>Cette commande permet de lancer un clone de Snowman (nocode), un désassembleur et décompilateur C/C++ pour les exécutables x86 (ELF 32/64 bits, PE32/PE32+, DOS MZ et COM). Elle affiche les sections (<code>--print-sections</code>), les symboles (<code>--print-symbols</code>) et les instructions (<code>--print-instructions</code>), exporte au format DOT le graphe de flot de contrôle (<code>--print-cfg</code>), la représentation intermédiaire (<code>--print-ir</code>) et les régions de l'analyse structurelle (<code>--print-regions</code>), et reconstruit le code C/C++ (<code>--print-cxx</code>) avec les options <code>--from</code> et <code>--to</code> pour limiter la plage d'adresses (nocode programme.exe ; aide avec nocode --help).</td>
+		</tr>
+		<tr>
 			<td><b>OBERON86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 8086.</td>
 		</td>
