@@ -1,0 +1,138 @@
+==============================================================================
+    GENAM - Clone de Devpac GenAm (HiSoft) pour Commodore Amiga
+==============================================================================
+
+GENAM.PAS est un assembleur Motorola 68000 a 68060 (avec coprocesseurs
+flottants 68881/68882 et MMU 68851/68030/68040) ecrit en Turbo Pascal /
+Free Pascal (unite DOS seulement). Il imite l'assembleur GenAm de Devpac et
+produit des fichiers au format AmigaOS Hunk :
+
+  genam source.s          executable AmigaOS (HUNK_HEADER)   -> source
+  genam -L source.s       objet linkable (HUNK_UNIT/HUNK_EXT) -> source.o
+
+Compilation : fpc GENAM.PAS
+
+==============================================================================
+1. LIGNE DE COMMANDE
+==============================================================================
+
+  genam [options] source[.s]
+
+  -A           OPT A+  : adresses absolues -> d16(PC) quand c'est possible
+  -C           OPT C-  : etiquettes insensibles a la casse
+  -D           OPT D+  : HUNK_SYMBOL et HUNK_DEBUG (lignes)
+  -E<s>[=<n>]  definit le symbole <s> (valeur <n>, defaut 1)
+  -I<repertoire>  repertoire de recherche des INCLUDE / INCBIN
+  -L           OPT L+  : code objet linkable (sinon executable)
+  -M           OPT M+  : expansion des macros dans le listing
+  -O           OPT O+  : toutes les optimisations (-O1, -O2 : partielles)
+  -o<fichier>  nom du fichier de sortie (ou  -o fichier)
+  -P[fichier]  genere un listing (fichier ou ecran)
+  -S           OPT S+  : table des symboles en fin de listing
+  -T           OPT T+  : verification stricte des valeurs
+  -W           OPT W-  : supprime les avertissements
+  -X           OPT X+  : exporte toutes les etiquettes (XDEF)
+  -68000 -68010 -68020 -68030 -68040 -68060   processeur cible (defaut 68000)
+  /?  ou  -h  ou  --help   affiche l'aide (en francais par defaut ;
+                           LANGUAGE=EN pour l'anglais)
+  -Q           mode silencieux
+
+La langue des messages est le francais ; LANGUAGE=EN donne l'anglais.
+Code de retour : 0 = succes, 10 = erreurs d'assemblage, 20 = erreur fatale.
+
+==============================================================================
+2. DIRECTIVES OPT  (suffixe + ou - ; separees par des virgules)
+==============================================================================
+
+  Option  Signification
+  ------  --------------------------------------------------------------
+  A+/-    Optimisation automatique des adressages PC-relative
+  C+/-    Etiquettes sensibles (+) / insensibles (-) a la casse
+  C<n>    Nombre de caracteres significatifs des etiquettes (C0 = tous)
+  D+/-    Informations de debogage
+  L+/-    Code linkable (+) / executable (-)
+  M+/-    Expansion des macros dans le listing
+  O+/-    Optimisations (active aussi O1 et O2)
+  O1+/-   Optimisation des branches (Bcc/BRA/BSR .W -> .S, JMP/JSR -> BRA/BSR)
+  O2+/-   Optimisation des adressages (An,d) : 0(An) -> (An)
+  P+/-    Verification du code independant de la position
+  S+/-    Table des symboles dans le listing
+  T+/-    Verification du type/taille des expressions (erreur au lieu
+          d'un avertissement)
+  W+/-    Avertissements
+  X+/-    Export des symboles (XDEF de toutes les etiquettes)
+
+Avec OPT O+ : MOVE.L #n,Dn -> MOVEQ, ADD/SUB #1..8 -> ADDQ/SUBQ,
+CMP #0 -> TST, adresses absolues courtes quand la valeur tient sur 16 bits.
+Les branches sont dimensionnees par passes successives (jamais plus de
+40) jusqu'a stabilisation des tailles.
+
+==============================================================================
+3. SYNTAXE
+==============================================================================
+
+  * ou ;                commentaire
+  etiquette[:]          colonne 1 (ou suivie de ':')
+  .local  ou  local$    etiquette locale (portee : jusqu'a la prochaine
+                        etiquette globale)
+  Nombres               123  $FF  %1010  @17  'ABCD'
+  Operateurs            + - * / // (ou \) << >> & ! | ^ ~ = <> < > <= >=
+  *                     compteur de position
+  NARG                  nombre d'arguments de la macro courante
+
+Directives : DC DS DCB BLK EVEN CNOP ORG END EQU = SET EQUR REG
+  RS SO FO RSRESET RSSET SECTION CODE DATA BSS (+ _C chip / _F fast)
+  OFFSET XDEF PUBLIC XREF EXTERN INCLUDE INCDIR INCBIN MACRO ENDM MEXIT
+  REPT ENDR OPT LIST NOLIST PAGE TTL SUBTTL SPC PLEN FAIL PRINTT PRINTV
+  MC68000 ... MC68060 MC68881 MC68882 MC68851 IDNT OUTPUT
+  IFEQ IFNE IFGT IFGE IFLT IFLE IF IFD IFND IFC IFNC ELSE ENDC ENDIF
+
+Macros : parametres \1..\9, \@ (suffixe unique), \0 (taille), \<symbole>.
+Les arguments contenant des virgules se placent entre < >.
+
+==============================================================================
+4. JEU D'INSTRUCTIONS
+==============================================================================
+
+  68000 : ensemble complet (ABCD ... UNLK), formes Bcc/DBcc/Scc, MOVEM,
+          MOVEP, MOVE USP/SR/CCR, ORI/ANDI/EORI vers CCR et SR.
+  68010 : MOVEC, MOVES, RTD, BKPT, MOVE from CCR.
+  68020 : EXTB, LINK.L, MULx.L / DIVx.L (Dh:Dl), DIVSL/DIVUL, champs de bits
+          (BFTST ... BFINS), CAS, CMP2/CHK2, PACK/UNPK, TRAPcc, CHK.L,
+          Bcc.L, modes (bd,An,Xn.s*echelle) et indirections memoire
+          ([bd,An],Xn,od) / ([bd,An,Xn],od).
+  68030/68040 : instructions MMU (voir ci-dessous), CINV, CPUSH, MOVE16.
+
+  Coprocesseur flottant 68881/68882 (actif des le 68020, ou apres MC68881 /
+  MC68882 pour un 68000/68010) :
+    FMOVE FMOVEM (registres FP et de controle FPCR/FPSR/FPIAR, listes, facteur K
+    {#k} / {Dn}) FMOVECR FSINCOS FTST FNOP FSAVE FRESTORE FBcc FDBcc FScc
+    FTRAPcc (les 32 conditions), toutes les fonctions monadiques (FABS FNEG
+    FSQRT FSIN FCOS FTAN FASIN FACOS FATAN FSINH FCOSH FTANH FATANH FETOX
+    FETOXM1 FTWOTOX FTENTOX FLOGN FLOGNP1 FLOG10 FLOG2 FINT FINTRZ FGETEXP
+    FGETMAN) et dyadiques (FADD FSUB FMUL FDIV FMOD FREM FSCALE FSGLDIV FSGLMUL
+    FCMP) ainsi que les variantes 68040 FSxxx / FDxxx (FSMOVE, FDADD...).
+    Formats .B .W .L .S .D .X .P ; litteraux flottants (1.5, -2.5e3) en
+    immediat (#1.5) et dans DC.S DC.D DC.X DC.P, DS.x et DCB.x.
+
+  MMU : 68851 / 68030 : PMOVE (TC SRP CRP DRP CAL VAL SCC AC PSR PCSR TT0 TT1),
+    PMOVEFD, PFLUSH, PFLUSHA, PLOADR/W, PTESTR/W, PVALID, PSAVE, PRESTORE,
+    PBcc, PDBcc, PScc, PTRAPcc.
+    68040 : PFLUSH (An), PFLUSHN, PFLUSHA, PFLUSHAN, PTESTR/W (An), CINVL/P/A,
+    CPUSHL/P/A, MOVE16.
+  Directives : MC68000 MC68010 MC68020 MC68030 MC68040 MC68060 MC68881
+  MC68882 MC68851.
+
+==============================================================================
+5. FORMAT DE SORTIE
+==============================================================================
+
+  Executable : HUNK_HEADER, puis pour chaque section HUNK_CODE/DATA/BSS,
+               HUNK_RELOC32, (HUNK_SYMBOL + HUNK_DEBUG avec OPT D+),
+               HUNK_END.
+  Objet      : HUNK_UNIT, HUNK_NAME, HUNK_CODE/DATA/BSS, HUNK_RELOC32,
+               HUNK_EXT (EXT_DEF, EXT_ABS, EXT_REF32, EXT_REF16),
+               HUNK_SYMBOL, HUNK_DEBUG, HUNK_END.
+  ORG        : sortie binaire brute (sans hunks), non linkable.
+
+  Voir aussi DOC/AMIGAHUNK_FORMAT.txt. Exemples : SAMPLES/GENAM/.
