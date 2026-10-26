@@ -2530,7 +2530,7 @@ Var
  SwIdxSz:Array[0..MAXSWREC-1] of Byte;
  SwCnt:Array[0..MAXSWREC-1] of LongInt;
  SwTab:Array[0..MAXSWREC-1,0..255] of Int64;
- Ring:Array[0..15] of LongInt;
+ Ring:Array[0..31] of LongInt;
  RingN:Integer;
  ThkSrc,ThkDst:Array[0..4095] of Int64;
  NThk:LongInt;
@@ -2800,7 +2800,7 @@ Begin
  BoundN:=-1;
  For I:=RingN-1 downto 0 do Begin
   Q:=@Ins^[Ring[I]];
-  If(Q^.Mn='cmp')and(Q^.N=2)and(Q^.Op[1].Kind=OK_IMM)and(Q^.Op[1].Disp>=0)and(Q^.Op[1].Disp<=255)Then Begin
+  If((Q^.Mn='cmp')or(Q^.Mn='sub'))and(Q^.N=2)and(Q^.Op[1].Kind=OK_IMM)and(Q^.Op[1].Disp>=0)and(Q^.Op[1].Disp<=255)Then Begin
    BoundN:=Q^.Op[1].Disp+1;Break;
   End;
  End;
@@ -3023,9 +3023,9 @@ Begin
    Mark^[X]:=FnStamp;
    FnIns^[NFnIns]:=X;Inc(NFnIns);
    P:=@Ins^[X];
-   If RingN>=16 Then Begin
-    For K:=0 to 14 do Ring[K]:=Ring[K+1];
-    RingN:=15;
+   If RingN>=32 Then Begin
+    For K:=0 to 30 do Ring[K]:=Ring[K+1];
+    RingN:=31;
    End;
    Ring[RingN]:=X;Inc(RingN);
    If not P^.Valid Then Break;
@@ -4273,6 +4273,8 @@ Var
  SpIn:Array[0..MAXBLK-1] of LongInt;
  SpSet:Array[0..MAXBLK-1] of Boolean;
  FnTail:Boolean;
+ AnyAddrTaken:Boolean;
+ FlagMat:Array[0..MAXSTMT-1] of Boolean;     { statements FLAGS a materialiser }
 
 Procedure BuildPreds;
 Var B,K,S,N:LongInt;
@@ -4353,6 +4355,56 @@ Begin
  Case St^[K].Kind of
   ST_STORE,ST_PUSH,ST_POP,ST_ASM,ST_TAIL:StmtWritesMem:=True;
   ST_ASSIGN,ST_EXPR:StmtWritesMem:=StmtHasCall(K);
+ End;
+End;
+
+{ acces memoire d'une expression : lectures de piles et lectures indirectes }
+Var
+ MiPtr:Boolean;
+ MiN:Integer;
+ MiOff:Array[0..7] of LongInt;
+ MiSz:Array[0..7] of Integer;
+
+Procedure MemInfoRec(E:LongInt);
+Begin
+ If E<0 Then Exit;
+ Case Ex^[E].Op of
+  EO_CONST,EO_VAR,EO_REG,EO_CC,EO_ADDRSLOT:;
+  EO_SLOT:Begin
+   If MiN<8 Then Begin MiOff[MiN]:=Ex^[E].V;MiSz[MiN]:=Ex^[E].Sz;Inc(MiN);End
+   Else MiPtr:=True;
+  End;
+  EO_MEM:Begin MiPtr:=True;MemInfoRec(Ex^[E].A);End;
+  EO_CALL:MiPtr:=True;
+  EO_TERN:Begin MemInfoRec(Ex^[E].A);MemInfoRec(Ex^[E].B);MemInfoRec(Ex^[E].C);End;
+  EO_INTR:MemInfoRec(Ex^[E].B);
+  EO_NEG,EO_NOT,EO_LNOT,EO_ZEXT,EO_SEXT,EO_TRUNC:MemInfoRec(Ex^[E].A);
+  Else Begin MemInfoRec(Ex^[E].A);MemInfoRec(Ex^[E].B);End;
+ End;
+End;
+
+{ le statement K peut-il modifier la memoire lue par l'expression E ? }
+Function MemHazard(E,K:LongInt):Boolean;
+Var I:Integer;D:LongInt;
+Begin
+ MemHazard:=False;
+ If E<0 Then Exit;
+ If not ExprHasMem(E)Then Exit;
+ If not StmtWritesMem(K)Then Exit;
+ MiPtr:=False;MiN:=0;
+ MemInfoRec(E);
+ Case St^[K].Kind of
+  ST_STORE:Begin
+   D:=St^[K].A;
+   If Ex^[D].Op=EO_SLOT Then Begin
+    If MiPtr Then Begin MemHazard:=True;Exit;End;
+    For I:=0 to MiN-1 do
+     If(MiOff[I]<Ex^[D].V+Ex^[D].Sz)and(Ex^[D].V<MiOff[I]+MiSz[I])Then Begin MemHazard:=True;Exit;End;
+   End
+   Else MemHazard:=MiPtr or AnyAddrTaken;
+  End;
+  ST_PUSH,ST_POP:MemHazard:=MiPtr;
+  Else MemHazard:=MiPtr or AnyAddrTaken;
  End;
 End;
 
@@ -4482,6 +4534,8 @@ Begin
      Else If(S.FK=FK_SUB)and(B>=0)Then CondFromFlags:=Rel(EO_UGE,MkBin(EO_ADD,R,B,Sz),B)
      Else If S.FK=FK_NEG Then CondFromFlags:=Rel(EO_EQ,R,Z);
     End;
+    6:If(S.FK=FK_SUB)and(B>=0)Then CondFromFlags:=Rel(EO_ULE,MkBin(EO_ADD,R,B,Sz),B);
+    7:If(S.FK=FK_SUB)and(B>=0)Then CondFromFlags:=Rel(EO_UGT,MkBin(EO_ADD,R,B,Sz),B);
    End;
   End;
   FK_FCMP:Begin
@@ -4509,25 +4563,36 @@ Var
  StoreAcc,Stop:Boolean;
  Uses_:Int64;
  Mem:Boolean;
+ Wr:Array[0..31] of LongInt;
+ NWr,WI:LongInt;
 Begin
- B:=Blk;P:=Pos;DefAcc:=0;StoreAcc:=False;Depth:=0;
+ B:=Blk;P:=Pos;DefAcc:=0;StoreAcc:=False;Depth:=0;NWr:=0;
  While Depth<10 do Begin
   For J:=P-1 downto SB0[B] do Begin
    Case St^[J].Kind of
     ST_NOP:;
     ST_FLAGS:Begin
      C:=CondFromFlags(St^[J],CC);
-     If C<0 Then Begin ResolveCC:=MkCC(CC);Exit;End;
+     If C<0 Then Begin FlagMat[J]:=True;ResolveCC:=MkCC(CC);Exit;End;
      Uses_:=ExprUses(St^[J].A)or ExprUses(St^[J].B);
-     Mem:=ExprHasMem(St^[J].A)or ExprHasMem(St^[J].B);
-     If((Uses_ and DefAcc)<>0)or(Mem and StoreAcc)Then Begin ResolveCC:=MkCC(CC);Exit;End;
+     Mem:=False;
+     If StoreAcc Then Begin
+      If NWr>=32 Then Mem:=True
+      Else
+       For WI:=0 to NWr-1 do
+        If MemHazard(St^[J].A,Wr[WI])or MemHazard(St^[J].B,Wr[WI])Then Mem:=True;
+     End;
+     If((Uses_ and DefAcc)<>0)or Mem Then Begin FlagMat[J]:=True;ResolveCC:=MkCC(CC);Exit;End;
      ResolveCC:=C;Exit;
     End;
     ST_ASM:Begin ResolveCC:=MkCC(CC);Exit;End;
     Else Begin
      If StmtHasCall(J)Then Begin ResolveCC:=MkCC(CC);Exit;End;
      DefAcc:=DefAcc or StmtDefMask(J);
-     If St^[J].Kind in[ST_STORE,ST_PUSH,ST_POP]Then StoreAcc:=True;
+     If St^[J].Kind in[ST_STORE,ST_PUSH,ST_POP]Then Begin
+      StoreAcc:=True;
+      If NWr<32 Then Begin Wr[NWr]:=J;Inc(NWr);End Else NWr:=32;
+     End;
     End;
    End;
   End;
@@ -4936,7 +5001,7 @@ Begin
      If St^[J].Kind=ST_NOP Then Continue;
      If(St^[J].Kind=ST_PUSH)Then Continue;
      If(StmtDefMask(J)and ExprUses(V))<>0 Then Conflict:=True;
-     If ExprHasMem(V)and StmtWritesMem(J)Then Conflict:=True;
+     If MemHazard(V,J)Then Conflict:=True;
     End;
     If Conflict Then Begin
      Inc(TmpCount);
@@ -4974,7 +5039,7 @@ Begin
      For J:=Q+1 to C-1 do Begin
       If St^[J].Kind=ST_NOP Then Continue;
       If(StmtDefMask(J)and ExprUses(V))<>0 Then Conflict:=True;
-      If ExprHasMem(V)and(St^[J].Kind<>ST_STORE)and StmtWritesMem(J)Then Conflict:=True;
+      If(St^[J].Kind<>ST_STORE)and MemHazard(V,J)Then Conflict:=True;
      End;
      If Conflict Then Begin
       Inc(TmpCount);
@@ -5114,11 +5179,13 @@ Begin
   End;
   EO_ADD:Begin
    If StackSlotOf(E,Sp,Slot)Then Begin
+    AnyAddrTaken:=True;
     NormE:=NewEx(EO_ADDRSLOT,T.Sz,0,0,0,Slot);Exit;
    End;
    Ch.Cst:=0;Ch.BaseSet:=False;Ch.Rest:=-1;Ch.BaseSlot:=0;
    Collect(E,Sp,Ch);
    If Ch.BaseSet and(Ch.Rest>=0)Then Begin
+    AnyAddrTaken:=True;
     N:=NewEx(EO_ADDRSLOT,PtrSz,0,0,0,Ch.BaseSlot+Ch.Cst);
     NormE:=MkBin(EO_ADD,N,Ch.Rest,PtrSz);
     Exit;
@@ -5385,8 +5452,10 @@ Begin
   End;
   If(StmtDefMask(J)and(Int64(1)shl R))<>0 Then Exit;
   If(StmtDefMask(J)and Uses_)<>0 Then Exit;
-  If HasMem and StmtWritesMem(J)Then Exit;
+  If HasMem and MemHazard(E,J)Then Exit;
   If HasCall and(StmtReadsMem(J)or StmtWritesMem(J)or StmtHasCall(J))Then Exit;
+  { l'appel deplace detruirait les registres volatils definis entre-temps }
+  If HasCall and((StmtDefMask(J)and VolMask)<>0)Then Exit;
   If HasCC and((St^[J].Kind=ST_FLAGS)or StmtHasCall(J))Then Exit;
  End;
 End;
@@ -5421,7 +5490,7 @@ Begin
     End;
     If(StmtDefMask(J)and Rd)<>0 Then Break;
     If(R2>=0)and((StmtDefMask(J)and(Int64(1)shl R2))<>0)Then Break;
-    If MemSrc and StmtWritesMem(J)Then Break;
+    If MemSrc and MemHazard(Src,J)Then Break;
    End;
   End;
  End;
@@ -5606,6 +5675,7 @@ Begin
  BuildPreds;
  EntryBlk:=FindBlock(FnEntry);
  If EntryBlk<0 Then EntryBlk:=0;
+ AnyAddrTaken:=False;
  ScanWidths;
  LiftFunction;
  MarkPrologue;
@@ -6535,6 +6605,7 @@ Begin
   EO_LNOT:ES:=Par('!'+ES(T.A,PR_UNARY),PR_UNARY,Ctx);
   EO_ZEXT:Begin
    If ExprSize(T.A)>=T.Sz Then ES:=ES(T.A,Ctx)
+   Else If(T.Sz=8)and(Ctx>0)Then ES:=Par('(uint64_t)'+UCast(T.A,ExprSize(T.A)),PR_UNARY,Ctx)
    Else ES:=Par(UCast(T.A,ExprSize(T.A)),PR_UNARY,Ctx);
   End;
   EO_SEXT,EO_TRUNC:ES:=Par('('+IT(T.Sz)+')'+ES(T.A,PR_UNARY),PR_UNARY,Ctx);
@@ -6669,7 +6740,55 @@ Begin
  Case St^[K].Kind of
   ST_ASSIGN,ST_STORE,ST_EXPR,ST_ASM:Printable:=True;
   ST_PUSH,ST_POP:Printable:=St^[K].FK=0;
+  ST_FLAGS:Printable:=FlagMat[K];
  End;
+End;
+
+{ materialisation des drapeaux : quand la condition ne peut pas etre exprimee
+  a partir des operandes au moment du saut }
+Function FlagsMatStr(K:LongInt):AnsiString;
+Var A,B,R,Z,Sz:LongInt;Res:AnsiString;
+ Zf,Sf,Cf,Of_:LongInt;
+ Function Rel(Op:Byte;X,Y:LongInt):LongInt;
+ Begin
+  Rel:=NewEx(Op,1,X,Y,0,0);
+ End;
+Begin
+ RawFlag(4);
+ A:=St^[K].A;B:=St^[K].B;Sz:=St^[K].Sz;
+ If Sz=0 Then Sz:=4;
+ Z:=MkConst(0,Sz);
+ Zf:=-1;Sf:=-1;Cf:=-1;Of_:=-1;
+ Case St^[K].FK of
+  FK_CMP:Begin
+   R:=MkBin(EO_SUB,A,B,Sz);
+   Zf:=Rel(EO_EQ,A,B);Sf:=Rel(EO_SLT,R,Z);Cf:=Rel(EO_ULT,A,B);
+   Of_:=Rel(EO_SLT,MkBin(EO_AND,MkBin(EO_XOR,A,B,Sz),MkBin(EO_XOR,A,R,Sz),Sz),Z);
+  End;
+  FK_TEST,FK_LOGIC:Begin
+   If(St^[K].FK=FK_TEST)and not SameExpr(A,B)Then R:=MkBin(EO_AND,A,B,Sz) Else R:=A;
+   Zf:=Rel(EO_EQ,R,Z);Sf:=Rel(EO_SLT,R,Z);Cf:=MkConst(0,1);Of_:=MkConst(0,1);
+  End;
+  FK_ADD,FK_SUB,FK_INC,FK_DEC,FK_NEG,FK_SHIFT:Begin
+   R:=A;
+   Zf:=Rel(EO_EQ,R,Z);Sf:=Rel(EO_SLT,R,Z);Of_:=MkConst(0,1);
+   If(St^[K].FK=FK_ADD)and(B>=0)Then Cf:=Rel(EO_ULT,R,B)
+   Else If(St^[K].FK=FK_SUB)and(B>=0)Then Cf:=Rel(EO_ULT,MkBin(EO_ADD,R,B,Sz),B)
+   Else If St^[K].FK=FK_NEG Then Cf:=Rel(EO_NE,R,Z);
+  End;
+  FK_FCMP:Begin
+   Zf:=Rel(EO_EQ,A,B);Cf:=Rel(EO_SLT,A,B);Sf:=MkConst(0,1);Of_:=MkConst(0,1);
+  End;
+  FK_BT:Cf:=Rel(EO_NE,MkBin(EO_AND,MkBin(EO_SHR,A,B,Sz),MkConst(1,Sz),Sz),Z);
+ End;
+ CtxPos:=K;
+ Res:='';
+ If Zf>=0 Then Res:=Res+'zf = '+ES(Zf,0)+'; ';
+ If Sf>=0 Then Res:=Res+'sf = '+ES(Sf,0)+'; ';
+ If Cf>=0 Then Res:=Res+'cf = '+ES(Cf,0)+'; ';
+ If Of_>=0 Then Res:=Res+'of = '+ES(Of_,0)+'; ';
+ If Res<>'' Then SetLength(Res,Length(Res)-1);
+ FlagsMatStr:=Res;
 End;
 
 Function StmtStr(K:LongInt;Ir:Boolean):AnsiString;
@@ -6683,6 +6802,7 @@ Begin
    StmtStr:=S;
   End;
   ST_FLAGS:Begin
+   If(not Ir)and FlagMat[K]Then Begin StmtStr:=FlagsMatStr(K);Exit;End;
    S:='flags = '+FlagsName(St^[K].FK)+'('+ES(St^[K].A,0);
    If St^[K].B>=0 Then S:=S+', '+ES(St^[K].B,0);
    StmtStr:=S+')';
@@ -7051,11 +7171,12 @@ Var
 Begin
  ComputeRetKind;
  ResetDecls;
+ If NSt>0 Then FillChar(FlagMat,NSt,False);
  Fn:=FuncNameAt(FnEntry);
  { passe 1 : collecte des variables ; passe 2 : sortie reelle }
- For Pass:=1 to 2 do Begin
-  Sink:=(Pass=1);
-  If Pass=2 Then Begin
+ For Pass:=1 to 3 do Begin
+  Sink:=(Pass<3);
+  If Pass=3 Then Begin
    { signature }
    FillChar(IsParam,SizeOf(IsParam),False);
    FillChar(SlotIsParam,SizeOf(SlotIsParam),False);
@@ -7112,7 +7233,7 @@ Begin
    If NDecl>0 Then PutLn(0,'');
   End;
   EmitList(FnRoot,1,False);
-  If Pass=2 Then PutLn(0,'}');
+  If Pass=3 Then PutLn(0,'}');
  End;
  Sink:=False;
 End;
