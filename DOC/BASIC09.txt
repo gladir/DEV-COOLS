@@ -1,0 +1,234 @@
+==============================================================================
+    BASIC09 - Clone de BASIC09 (Microware / Motorola) pour OS-9
+==============================================================================
+
+BASIC09.PAS est un clone complet du langage BASIC09 de Microware ecrit en
+Free Pascal (unites DOS et Crt seulement, aucun fichier d'inclusion). Il
+reprend l'architecture des sources d'origine (COMPIL, EXPRSN, BINDER, STMTS,
+CNVIO, COMAND et EDITOR) en quatre grands blocs :
+
+  1. Analyseur lexical et syntaxique : une ligne source est decoupee symbole
+     par symbole (INSYM), reconnue (instructions et grammaire) puis convertie
+     en I-code "non lie" en notation polonaise inversee.
+  2. Compilateur I-code compatible BASIC09 : jetons d'origine $00-$3F
+     (instructions), $40-$55 (jetons secondaires) et $80-$F9 (operandes,
+     fonctions, operateurs). Le "binder" resout les types, insere les
+     conversions FIX/FLOAT, alloue le stockage et resout les numeros de ligne
+     et les structures de controle.
+  3. Module binaire BASIC09 : module OS-9 de type/langage $22 (Subroutine,
+     I-code), attributs $81, en-tete $87CD, parite, CRC-24, zones I-code,
+     description (tableaux, chaines, enregistrements), table des symboles,
+     nom du module. Commande PACK, chargement de modules .MOD.
+  4. Machine virtuelle (RunB) : execute les I-codes lies sous DOS. Memoire
+     de donnees de 64 Ko, paquets de parametres (adresse,taille), pile
+     d'operandes, GOSUB, DATA/READ, ON ERROR, fichiers, PRINT USING, debogueur.
+
+Compilation : fpc BASIC09.PAS
+
+==============================================================================
+1. LIGNE DE COMMANDE
+==============================================================================
+
+  basic09 [options] [fichier ...]
+
+  Les fichiers sont charges dans l'espace de travail. Un fichier qui commence
+  par l'identificateur de module $87CD est un module compile (PACK) ; sinon
+  c'est un fichier source (liste de "PROCEDURE nom" suivies de leurs lignes,
+  tel que produit par la commande SAVE). L'extension .bas, .BAS, .mod ou
+  .MOD est ajoutee si le fichier n'existe pas tel quel.
+
+  -r spec    execute la procedure "spec" (nom[(parametres)]) puis quitte
+             sans l'option, la procedure active est lancee. Exemples :
+               basic09 hello.bas -r hello
+               basic09 primes.bas -r "primes(50)"
+  -x cmd     execute la commande de niveau B: "cmd" (peut etre repete)
+  -l         liste (LIST) les procedures chargees puis quitte
+  -d         affiche la structure binaire (I-code, description, symboles)
+  -p         empaquete (PACK) les procedures chargees en <nom>.mod puis quitte
+  -q         pas de banniere
+  -h         aide
+
+  Sans option -r/-x/-l/-d/-p, BASIC09 entre dans le mode interactif et
+  affiche l'invite "B:" apres le message "Ready".
+  Code de retour : 0 = succes, 1 = erreur de compilation ou d'execution.
+
+==============================================================================
+2. COMMANDES DU NIVEAU B:
+==============================================================================
+
+  Les commandes ne sont pas sensibles a la casse. Une ligne vide affiche le
+  repertoire des procedures (comme DIR). Une commande inconnue repond "What?".
+
+  DIR [fichier]        repertoire : nom, taille de la procedure, taille des
+                       donnees ; '-' = procedure compilee (module), '*' =
+                       procedure active, '?' = memoire de donnees juste.
+                       Termine par "nnnn free".
+  EDIT [nom]           editeur (voir plus bas) ; E est un synonyme.
+                       La procedure est creee si elle n'existe pas ;
+                       sans nom : la procedure active (sinon "Program").
+  LIST [procs] [fichier]   liste les procedures (avec decalages hexadecimaux,
+                       indentation structuree, "ERR" devant les lignes
+                       erronees). "*" = toutes les procedures.
+  SAVE [procs] [fichier]   sauve le source (sans decalages) ; defaut :
+                       <nom>.bas
+  LOAD fichier         charge un fichier source ou un module
+  RUN [nom][(param,..)]    execute une procedure ; les parametres sont des
+                       constantes ou des expressions. Si la procedure n'est
+                       pas dans l'espace de travail, le module <nom>.mod est
+                       charge.
+  KILL [procs]         supprime des procedures ("*" = toutes)
+  RENAME ancien,nouveau    renomme une procedure
+  PACK [procs] [fichier]   ecrit des modules BASIC09 (format $22) ; defaut :
+                       <nom>.mod. Les instructions DIM, PARAM, TYPE, TRON,
+                       TROFF, PAUSE, REM et les numeros de ligne inutilises
+                       sont supprimes, les noms de variables ne sont pas
+                       conserves.
+  DUMP [procs]         (extension) affiche la structure binaire d'un module
+  MEM [n]              taille de l'espace de travail (n = nouvelle taille)
+  CHD chemin           change le repertoire de donnees
+  CHX chemin           change le repertoire d'execution
+  $ commande           execute une commande du systeme
+  BYE                  quitte BASIC09
+
+  Le nom d'une redirection peut suivre la liste des procedures (LIST, SAVE,
+  PACK, DIR). Si le fichier existe, "Rewrite?:" demande confirmation.
+
+==============================================================================
+3. EDITEUR (commande EDIT)
+==============================================================================
+
+  Invite "E:". L'editeur travaille sur l'I-code non lie ; les lignes sont
+  recompilees a l'insertion. Chaque ligne est affichee avec un decalage
+  hexadecimal ; '*' marque la ligne courante, "ERR" une ligne erronee.
+
+  <ligne>      une ligne commencant par un espace est compilee et inseree
+               avant la ligne courante
+  <numero>     une ligne numerotee est inseree a sa place (remplace une ligne
+               de meme numero) ; le numero seul deplace le pointeur
+  (vide)       avance d'une ligne
+  +n  -n       avance / recule de n lignes ;  +*  fin,  -*  debut
+  L cible      liste (L = ligne courante, L* = tout, L5 = 5 lignes, L-3)
+  D cible      supprime (D, D*, D5, D-3)
+  S /texte/    cherche (S*/texte/ affiche toutes les lignes trouvees)
+  C /ancien/nouveau/   remplace (C* : toutes les occurrences)
+  R            renumerote depuis la ligne courante (debut 100, pas 10)
+  R*           renumerote toute la procedure ; R*n  ou  R*n,pas
+  Q            quitte l'editeur et lie la procedure
+
+==============================================================================
+4. LANGAGE
+==============================================================================
+
+  Types : BYTE, INTEGER (16 bits), REAL (5 octets : exposant + mantisse de
+  32 bits ; precision de 9 chiffres), BOOLEAN, STRING[n] (maximum 255),
+  tableaux (jusqu'a 3 dimensions), enregistrements (TYPE nom=champ:type; ..).
+
+  Instructions : PARAM TYPE DIM DATA STOP BYE TRON TROFF PAUSE DEG RAD
+    RETURN LET POKE IF THEN ELSE ENDIF FOR TO STEP NEXT WHILE DO ENDWHILE
+    REPEAT UNTIL LOOP ENDLOOP EXITIF ENDEXIT ON ERROR GOTO GOSUB RUN KILL
+    INPUT PRINT [USING] CHD CHX CREATE OPEN SEEK READ WRITE GET PUT CLOSE
+    RESTORE DELETE CHAIN SHELL BASE REM (* commentaire *) END
+
+  Fonctions : ADDR SIZE POS ERR MOD RND SUBSTR PI SIN COS TAN ASN ACS ATN
+    EXP LOG LOG10 SGN ABS SQRT SQR INT FIX FLOAT SQ PEEK LNOT LAND LOR LXOR
+    VAL LEN ASC TRUE FALSE EOF TRIM$ MID$ LEFT$ RIGHT$ CHR$ STR$ DATE$ TAB
+    NOT AND OR XOR ; operateurs + - * / ^ ** < > <= >= <> = ; litteraux
+    entiers, reels (1.5E10), hexadecimaux ($FF) et chaines ("...").
+
+  Particularites reprises de BASIC09 :
+   - un entier divise par un entier donne un entier (7/2 = 3) ; MOD(a,b)
+     est une fonction ;
+   - AND, OR, XOR, NOT s'appliquent aux booleens ; LAND, LOR, LXOR, LNOT aux
+     entiers ;
+   - DIM a(n) declare n elements (indices 1..n, ou 0..n-1 apres BASE 0) ;
+   - les variables non declarees sont REAL ; PRINT affiche un reel avec 9
+     chiffres au maximum ("100.", ".5", "1.0E+10") ;
+   - les parametres sont passes par reference (paquets adresse/taille) ;
+     une erreur non interceptee dans une procedure remonte vers l'appelant
+     qui possede un ON ERROR ;
+   - une erreur d'execution affiche la ligne fautive, le message "ERROR #nnn"
+     et ouvre le debogueur "D:" (sauf en mode ligne de commande).
+
+  PRINT USING "formats", valeurs : Rn.m (reel), In (entier), Hn (hexa), Sn
+  (chaine), B (booleen), En.m (exponentiel), avec les modificateurs < > ^
+  (justification a gauche, a droite, centree) et les repetitions (...).
+
+==============================================================================
+5. DEBOGUEUR (invite "D:")
+==============================================================================
+
+  Il s'ouvre sur PAUSE ou apres une erreur d'execution. Commandes :
+    (vide)   execute une instruction            STEP [n]  n instructions
+    CONT     poursuit l'execution               Q         abandonne
+    LIST     liste la procedure courante        STATE     pile des appels
+    DIR      repertoire                         $ cmd     commande systeme
+    PRINT expr, LET v=expr, TRON, TROFF, DEG, RAD   execution directe
+
+==============================================================================
+6. MODULE BINAIRE (PACK)
+==============================================================================
+
+  Offset  Contenu
+  ------  --------------------------------------------------------------
+  0000    $87CD identificateur de module OS-9
+  0002    taille du module (2 octets)
+  0004    decalage du nom (2 octets)
+  0006    type/langage $22 (I-code), attributs/revision $81
+  0008    parite de l'en-tete
+  0009    PGMB VARC SYMB DSCB PRCS DATA EXEC (2 octets chacun), STAT ($80)
+  ...     NAMS puis le nom (dernier caractere avec le bit 7)
+  ...     I-code lie, zone de description, nombre de symboles, table des
+          symboles, CRC-24 (polynome $800063, valeur initiale $FFFFFF)
+
+  Les jetons de l'I-code sont ceux d'origine (voir b09defs de Microware) :
+  T_GT=$D3 (+1 reel, +2 chaine), T_PLUS=$E7, T_FOR=$13, T_PRNT=$26, etc.
+  La commande DUMP (ou l'option -d) affiche cette structure en hexadecimal.
+
+==============================================================================
+7. CODES D'ERREUR
+==============================================================================
+
+  10 a 80 : erreurs BASIC09 (compilation et execution), par exemple
+    11 Excessive verbage      22 Illegal literal       32 Memory full
+    43 Unknown procedure      45 Divide by zero        50 Floating overflow
+    51 Line with compiler error   55 Subscript out of range
+    56 Parameter error        67 Illegal argument      69 Unmatched control
+  Erreurs OS-9 : 201 Bad path number, 211 End of file, 214 File not
+  accessible, 216 Path name not found, 218 Creating existing file, 231 Bad
+  module CRC, 242 Write protect, 248 Media full.
+
+==============================================================================
+8. DIFFERENCES AVEC L'ORIGINAL
+==============================================================================
+
+  - Les chemins OS-9 (/dd/..., /d0/...) sont convertis en chemins DOS.
+  - L'arithmetique reelle utilise le type Double puis arrondit a la mantisse
+    de 31 bits du format BASIC09 : le dernier chiffre peut differer de celui
+    d'un vrai BASIC09 sur certaines fonctions transcendantes.
+  - Les appels systeme specifiques d'OS-9 (graphiques, SS.xxx, procedures
+    externes comme tmode) ne sont pas disponibles ; RUN d'une procedure
+    inconnue donne l'erreur 43 ("Unknown procedure"), SHELL passe la commande
+    au systeme hote.
+  - PRINT USING : les formats hexadecimal et reel sont approximes.
+  - Ctrl-C n'ouvre pas le debogueur.
+
+==============================================================================
+9. EXEMPLES (SAMPLES/BASIC09)
+==============================================================================
+
+  hello.bas   premier programme            sieve.bas   crible d'Eratosthene
+  fibonac.bas procedures et parametres     sort.bas    tri a bulles
+  strings.bas fonctions de chaines         records.bas types enregistrement
+  fileio.bas  fichiers texte               usage.bas   PRINT USING, ON ERROR
+  primes.bas  procedure avec parametre : basic09 primes.bas -r "primes(50)"
+
+  Sequence typique :
+    basic09 sieve.bas -r sieve              execute
+    basic09 -x "LOAD fibonac.bas" -x "PACK fibonac,fib" -q
+    basic09 fibonac.mod -r fibonac          execute le module empaquete
+
+==============================================================================
+Sources de reference : sources assembleur de BASIC09 de Microware (depot
+markrvmurray/nitros9-languages : compil.asm, exprsn.asm, binder.asm, stmts.asm,
+cnvio.asm, comand.asm, editor, b09defs).
+==============================================================================
