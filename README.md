@@ -561,6 +561,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Delphi (Object Pascal) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>DEVPAC.PAS</b></td>
+			<td>Cette commande permet de lancer un clone graphique de l'environnement de développement Devpac (HiSoft) pour Atari ST et Commodore Amiga : bureau GEM avec menus déroulants (Desk, File, Search, Options, Program), éditeur de texte, assembleur macro GenST/GenAm 68000 (macros, conditionnels, REPT, INCLUDE, exécutable GEMDOS .PRG ou Amiga Hunk), désassembleur et moniteur/débogueur MonST/MonAm, ainsi qu'un émulateur Motorola 68000 intégré avec TOS simplifié (GEMDOS, BIOS, XBIOS, VDI et AES partiels) et AmigaOS simplifié (exec.library et dos.library). Les paramètres /ATARIST (défaut) et /AMIGA choisissent la machine cible. Les fichiers à éditer, assembler (/A), exécuter (/X) ou déboguer (/D) peuvent être indiqués sur la ligne de commande, et /B assemble sans interface graphique (devpac /? pour l'aide). La langue est choisie par la variable d'environnement LANGUAGE (EN pour l'anglais, GR pour l'allemand, français par défaut).</td>
+		</tr>
+		<tr>
 			<td><b>DIR.PAS</b></td>
 			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, HTML, PASCAL, SQL, XML,...</td>
 		</tr>
