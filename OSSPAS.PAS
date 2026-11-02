@@ -4503,6 +4503,8 @@ End;
 Procedure DoChain(Const Cmd0: String); Forward;
 Procedure GemDos; Forward;
 Procedure LineA(Op: Word); Forward;
+Function BiosEx: Boolean; Forward;
+Function XBiosEx: Boolean; Forward;
 Function TosToHost(Const S0: String): String; Forward;
 Procedure AesReset; Forward;
 Procedure AesSave; Forward;
@@ -5266,8 +5268,8 @@ Begin
       Else If (RD[0] And $FFFF)=$C8 Then AesCall(RD[1]);
      End;
   6: RtService;
-  13: Bios;
-  14: XBios;
+  13: If Not BiosEx Then Bios;
+  14: If Not XBiosEx Then XBios;
  Else
   EmuHalt:=True;EmuMsg:='TRAP #'+IntStr(N);
  End;
@@ -7510,29 +7512,17 @@ Begin
  End;
 End;
 
-Function RscRead(Const Nm: String): Integer;
-{ charge un fichier .RSC dans le pool ; retourne l'indice du bloc ou 0 }
-Var F: File; Sz,N: LongInt; A,B,O: LongInt; I,K,T: Integer; Fn: String;
-    Hd: Array[0..17] Of Word;
+Function RscFixMem(A,Sz: LongInt): Integer;
+{ relocalise en place une ressource deja presente en memoire (rsrc_load, rsrc_rcfix) ;
+  retourne l'indice du bloc ou 0 }
+Var B,O: LongInt; I,K,T: Integer;
  Function HW(Ix: Integer): LongInt;
  Begin HW:=RW(B+Ix*2); End;
 Begin
- RscRead:=0;
+ RscFixMem:=0;
  K:=0;
  For I:=1 To MAXRSC Do If (K=0) And (Not Rsc[I].Used) Then K:=I;
  If K=0 Then Exit;
- Fn:=ResolveFile(TosToHost(Nm));
- If Not FileExists(Fn) Then Exit;
- Assign(F,Fn);
- {$I-}Reset(F,1);{$I+}
- If IOResult<>0 Then Exit;
- Sz:=FileSize(F);
- A:=AesAlloc(Sz+4);
- If A=0 Then Begin Close(F);Exit;End;
- N:=0;
- BlockRead(F,VMem[A],Sz,N);
- Close(F);
- If N<36 Then Exit;
  B:=A;
  FillChar(Rsc[K],SizeOf(TRscInfo),0);
  With Rsc[K] Do Begin
@@ -7570,8 +7560,27 @@ Begin
    ObFix(O);
   End;
  End;
- If Hd[0]=0 Then ;
- RscRead:=K;
+ RscFixMem:=K;
+End;
+
+Function RscRead(Const Nm: String): Integer;
+{ charge un fichier .RSC dans le pool ; retourne l'indice du bloc ou 0 }
+Var F: File; Sz,N: LongInt; A: LongInt; Fn: String;
+Begin
+ RscRead:=0;
+ Fn:=ResolveFile(TosToHost(Nm));
+ If Not FileExists(Fn) Then Exit;
+ Assign(F,Fn);
+ {$I-}Reset(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ Sz:=FileSize(F);
+ A:=AesAlloc(Sz+4);
+ If A=0 Then Begin Close(F);Exit;End;
+ N:=0;
+ BlockRead(F,VMem[A],Sz,N);
+ Close(F);
+ If N<36 Then Exit;
+ RscRead:=RscFixMem(A,Sz);
 End;
 
 Function RscTree(Ix: LongInt): LongInt;
@@ -8466,6 +8475,62 @@ Begin
  If ProgMouse And (Not Headless) Then Begin HideMouse;ShowMouse;End;
 End;
 
+Var
+ ScrapPath: String;                       { presse-papiers (scrp_read / scrp_write) }
+ ShelDefCmd,ShelDefDir: String;           { shel_rdef / shel_wdef }
+ ObjSysV: Array[1..6,0..1] Of Integer;    { objc_sysvar }
+ AesSearchPos: Integer;
+ BvDisk,BvHard: LongInt;
+
+{ menu_popup : menu contextuel a partir d'un arbre ; retourne l'objet choisi ou -1 }
+Function AesPopup(Tr: LongInt; Mn,X0,Y0: Integer): Integer;
+Var Items: Array[1..40] Of Integer; N,I,J,W,H,X,Y,Sel: Integer; S: String; Sv: TSave; E: TEvent; Done: Boolean;
+    Tp,Sp: LongInt;
+ Function ItemText(O: Integer): String;
+ Begin
+  Tp:=OTyp(Tr,O);Sp:=OSpc(Tr,O);
+  If (Tp=28) Or (Tp=26) Then ItemText:=CStrAt(Sp)
+  Else If (Tp=21) Or (Tp=22) Or (Tp=29) Or (Tp=30) Then ItemText:=CStrAt(RL(Sp))
+  Else ItemText:='';
+ End;
+Begin
+ AesPopup:=-1;
+ N:=0;
+ I:=OHead(Tr,Mn);
+ While (I>0) And (I<>Mn) And (N<40) Do Begin Inc(N);Items[N]:=I;I:=ONext(Tr,I);End;
+ If N=0 Then Exit;
+ W:=OW(Tr,Mn);
+ For I:=1 To N Do If Length(ItemText(Items[I]))*8+8>W Then W:=Length(ItemText(Items[I]))*8+8;
+ H:=N*16;
+ X:=X0;Y:=Y0+OFS_Y;
+ If X+W+2>638 Then X:=638-W-2;
+ If X<0 Then X:=0;
+ If Y+H+2>SCR_H-2 Then Y:=SCR_H-2-H-2;
+ OutFlush(True);
+ HideMouse;
+ SaveBack(Sv,X-1,Y-1,X+W+4,Y+H+4);
+ Box(X+3,Y+3,X+W+3,Y+H+3,INK);
+ Box(X,Y,X+W,Y+H,PAPER);Frame(X,Y,X+W,Y+H);
+ For I:=1 To N Do Begin
+  S:=ItemText(Items[I]);
+  If (OSta(Tr,Items[I]) And 8)<>0 Then GreyText16(X+4,Y+(I-1)*16,S) Else PText16(X+4,Y+(I-1)*16,S);
+ End;
+ ShowMouse;
+ Done:=False;Sel:=-1;
+ Repeat
+  PollEvent(E);
+  If E.Kind=2 Then Begin
+   Done:=True;
+   If (E.X>=X) And (E.X<=X+W) And (E.Y>=Y) And (E.Y<Y+H) Then Begin
+    J:=(E.Y-Y) Div 16+1;
+    If (J>=1) And (J<=N) And ((OSta(Tr,Items[J]) And 8)=0) Then Sel:=Items[J];
+   End;
+  End Else If (E.Kind=1) And (E.Key=K_ESC) Then Done:=True;
+ Until Done Or QuitReq Or BreakReq;
+ HideMouse;RestoreBack(Sv);ShowMouse;
+ AesPopup:=Sel;
+End;
+
 Procedure AesCall(PB: LongInt);
 Var Ctl,Glob,IntIn,IntOut,AddrIn,AddrOut: LongInt; Op,I,J,K,H: Integer;
     A,B: LongInt; T: LongInt; S,S2,Mask,Dir,Nm: String; X1,Y1,W1,H1: Integer; R1,R2,R3: TRct; Ev: LongInt;
@@ -8824,8 +8889,12 @@ Begin
        End;
       End;
   { ---------------- scrp / fsel ---------------- }
-  80: Begin WB(AA(0),0);IO(0,1);End;
-  81: IO(0,1);
+  80: Begin
+       S:=ScrapPath;
+       For I:=1 To Length(S) Do WB(AA(0)+I-1,Ord(S[I]));
+       WB(AA(0)+Length(S),0);IO(0,1);
+      End;
+  81: Begin ScrapPath:=CStrAt(AA(0));IO(0,1);End;
   90,91: Begin
        S:=CStrAt(AA(0));S2:=CStrAt(AA(1));
        If Headless Then Begin
@@ -9002,6 +9071,92 @@ Begin
          For I:=1 To A Do PendTail:=PendTail+Chr(RB(AA(1)+I));
         End;
         IO(0,1);
+       End;
+  { ---------------- appl (suite) ---------------- }
+  16: Begin
+       { appl_bvset : unites disponibles pour le selecteur de fichiers }
+       BvDisk:=RW(IntIn) Or (LongInt(RW(IntIn+2)) Shl 16);
+       BvHard:=RW(IntIn+4) Or (LongInt(RW(IntIn+6)) Shl 16);
+       IO(0,1);
+      End;
+  17: IO(0,1);
+  18: Begin
+       { appl_search(mode,nom,type,id) : cette seule application }
+       If IW(0)=2 Then IO(0,0)
+       Else Begin
+        If IW(0)=0 Then AesSearchPos:=0;
+        If AesSearchPos=0 Then Begin
+         S:=CurPrgName;
+         If Pos('.',S)>0 Then S:=Copy(S,1,Pos('.',S)-1);
+         While Length(S)<8 Do S:=S+' ';
+         For I:=1 To 8 Do WB(AA(0)+I-1,Ord(S[I]));WB(AA(0)+8,0);
+         IO(0,1);IO(1,2);IO(2,0);AesSearchPos:=1;
+        End Else IO(0,0);
+       End;
+      End;
+  36: Begin
+       { menu_popup(me_menu,xpos,ypos,me_mdata) }
+       A:=AA(0);B:=AA(1);
+       I:=AesPopup(RL(A),SmallInt(RW(A+4)),IW(0),IW(1));
+       If RtTrace Then Begin WriteLn(ErrOutput,'popup A=$',HexStr(A,16),' B=$',HexStr(B,16),' res=',I);Flush(ErrOutput);End;
+       If I>=0 Then Begin
+        WL(B,RL(A));WW(B+4,RW(A+4));WW(B+6,Word(I));WW(B+8,0);WW(B+10,0);
+        IO(0,1);
+       End Else IO(0,0);
+      End;
+  37,38: IO(0,1);
+  39: IO(0,1);
+  48: Begin
+       { objc_sysvar(mode,quoi,val1,val2) }
+       K:=IW(1);
+       If (K<1) Or (K>6) Then IO(0,0)
+       Else Begin
+        If IW(0)=1 Then Begin ObjSysV[K,0]:=IW(2);ObjSysV[K,1]:=IW(3);End;
+        IO(0,1);IO(1,ObjSysV[K,0]);IO(2,ObjSysV[K,1]);
+       End;
+      End;
+  82: Begin ScrapPath:='';IO(0,1);End;
+  109: Begin
+        { wind_new : ferme et detruit toutes les fenetres }
+        For I:=1 To MAXGW Do
+         If GW[I].Used Then Begin
+          If GW[I].Open Then WinClose(I);
+          GW[I].Used:=False;
+         End;
+        IO(0,1);
+       End;
+  115: Begin
+        { rsrc_rcfix : ressource deja en memoire }
+        A:=AA(0);
+        If A=0 Then IO(0,0)
+        Else Begin
+         K:=RscFixMem(A,RW(A+34));
+         If K=0 Then IO(0,0) Else Begin RscCur:=K;IO(0,1);End;
+        End;
+       End;
+  126: Begin
+        S:=ShelDefCmd;For I:=1 To Length(S) Do WB(AA(0)+I-1,Ord(S[I]));WB(AA(0)+Length(S),0);
+        S:=ShelDefDir;For I:=1 To Length(S) Do WB(AA(1)+I-1,Ord(S[I]));WB(AA(1)+Length(S),0);
+        IO(0,1);
+       End;
+  127: Begin ShelDefCmd:=CStrAt(AA(0));ShelDefDir:=CStrAt(AA(1));IO(0,1);End;
+  130: Begin
+        { appl_getinfo(type) : renseignements sur l'AES }
+        IO(0,1);IO(1,0);IO(2,0);IO(3,0);IO(4,0);
+        Case IW(0) Of
+         0: Begin IO(1,10);IO(2,1);IO(3,0);End;
+         1: Begin IO(1,8);IO(2,1);IO(3,0);End;
+         2: IO(1,2);
+         3: IO(1,2);
+         4: Begin IO(2,1);IO(3,1);IO(4,1);End;
+         5: IO(4,1);
+         6: IO(1,13);
+         7: IO(1,1);
+         8: Begin IO(1,1);IO(2,1);IO(3,1);IO(4,1);End;
+         10,11: IO(1,$FFF);
+         9,12,13: ;
+        Else IO(0,0);
+        End;
        End;
   122,123: IO(0,1);
   124: Begin
@@ -9440,6 +9595,155 @@ Begin
        OFlood(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)));
        OutPending:=True;
       End;
+ End;
+End;
+{$ENDIF}
+{$IFDEF FPC}
+
+{ ====================================================================== }
+{   BIOS / XBIOS COMPLEMENTAIRES (appeles avant les fonctions de base)    }
+{ ====================================================================== }
+
+Const
+ BX_KBDV  = $1C000;        { table des vecteurs du clavier (9 longs) }
+ BX_IOREC = $1C040;        { trois structures IOREC de 14 octets (RS232, clavier, MIDI) }
+ BX_IOBUF = $1C100;        { tampons des IOREC (3 x 256 octets) }
+ BX_KEYT  = $1C400;        { 3 tables de 128 octets (normal, Maj, Verr.Maj) + 1 table vide }
+
+Var
+ BxInit: Boolean;
+ BxPal: Array[0..15] Of Integer;
+ BxGi: Array[0..15] Of Byte;
+ BxKbRate: Integer;
+ BxPrt: Integer;
+ BxRs: LongInt;
+
+Procedure BxSetup;
+Const Us1: String = #0#27'1234567890-=' + #8#9 + 'qwertyuiop[]' + #13#0 + 'asdfghjkl;''`' + #0'\' + 'zxcvbnm,./' + #0#0#0' ';
+      Us2: String = #0#27'!@#$%^&*()_+' + #8#9 + 'QWERTYUIOP{}' + #13#0 + 'ASDFGHJKL:"~' + #0'|' + 'ZXCVBNM<>?' + #0#0#0' ';
+Var I,K: Integer;
+Begin
+ BxInit:=True;
+ FillChar(VMem[BX_KBDV],$40,0);
+ For I:=0 To 8 Do WL(BX_KBDV+I*4,LA_RTS);
+ FillChar(VMem[BX_IOREC],$C0,0);
+ For I:=0 To 2 Do Begin
+  WL(BX_IOREC+I*14,BX_IOBUF+I*256);WW(BX_IOREC+I*14+4,256);
+  WW(BX_IOREC+I*14+10,64);WW(BX_IOREC+I*14+12,192);
+ End;
+ FillChar(VMem[BX_KEYT],$200,0);
+ For K:=1 To Length(Us1) Do Begin
+  WB(BX_KEYT+K,Ord(Us1[K]));WB(BX_KEYT+128+K,Ord(Us2[K]));
+  If (Us1[K]>='a') And (Us1[K]<='z') Then WB(BX_KEYT+256+K,Ord(Us2[K])) Else WB(BX_KEYT+256+K,Ord(Us1[K]));
+ End;
+ WB(BX_KEYT+$39,32);WB(BX_KEYT+128+$39,32);WB(BX_KEYT+256+$39,32);
+ For I:=0 To 15 Do BxPal[I]:=0;
+ BxPal[0]:=$777;
+ FillChar(BxGi,SizeOf(BxGi),0);
+ BxGi[7]:=$FF;BxGi[14]:=$FF;
+ BxKbRate:=$0F0F;BxPrt:=0;BxRs:=0;
+End;
+
+{ retourne True si la fonction BIOS est traitee ici }
+Function BiosEx: Boolean;
+Var Fn: Word; SP,A: LongInt; N: Word;
+Begin
+ BiosEx:=True;
+ SP:=RA[7];
+ Fn:=RW(SP);
+ If Not BxInit Then BxSetup;
+ Case Fn Of
+  0: Begin
+      { Getmpb : liste des blocs memoire }
+      A:=RL(SP+2);WL(A,0);WL(A+4,0);WL(A+8,0);RD[0]:=0;
+     End;
+  5: Begin
+      { Setexc(vecteur, nouvelle adresse) }
+      N:=RW(SP+2);
+      A:=RL(SP+4);
+      If N<$200 Then Begin
+       RD[0]:=RL(N*4);
+       If A<>-1 Then WL(N*4,A);
+      End Else RD[0]:=0;
+     End;
+  6: RD[0]:=20;                          { Tickcal : ms par tick }
+  8: RD[0]:=-1;                          { Bcostat : toujours pret }
+  11: Begin
+       { Kbshift : etat des touches Maj, Ctrl, Alt }
+       If RW(SP+2)=$FFFF Then RD[0]:=LastKbd And $F Else RD[0]:=LastKbd And $F;
+      End;
+ Else BiosEx:=False;
+ End;
+End;
+
+{ retourne True si la fonction XBIOS est traitee ici }
+Function XBiosEx: Boolean;
+Var Fn: Word; SP,A: LongInt; I,V: Integer; Y,Mo,D,Dw,Hh,Mi,Se,Hs: Word;
+Begin
+ XBiosEx:=True;
+ SP:=RA[7];
+ Fn:=RW(SP);
+ If Not BxInit Then BxSetup;
+ Case Fn Of
+  0: RD[0]:=0;                                   { Initmous }
+  6: Begin
+      { Setpalette }
+      A:=RL(SP+2);
+      For I:=0 To 15 Do BxPal[I]:=SmallInt(RW(A+I*2));
+      RD[0]:=0;
+     End;
+  7: Begin
+      { Setcolor(numero, couleur) : retourne l'ancienne }
+      I:=RW(SP+2) And 15;
+      RD[0]:=BxPal[I] And $FFFF;
+      V:=SmallInt(RW(SP+4));
+      If V>=0 Then BxPal[I]:=V And $777;
+     End;
+  14: Begin
+       { Iorec : pointeur sur la structure IOREC du peripherique }
+       I:=RW(SP+2);
+       If I>2 Then I:=0;
+       RD[0]:=BX_IOREC+I*14;
+      End;
+  15: Begin
+       { Rsconf : ancienne configuration (non utilisee) }
+       RD[0]:=BxRs;
+      End;
+  16: RD[0]:=BX_KEYT;                           { Keytbl (renvoie un pointeur sur la structure de 3 tables) }
+  22: RD[0]:=0;                                  { Settime }
+  23: Begin
+       { Gettime : date et heure au format DOS }
+       GetDate(Y,Mo,D,Dw);GetTime(Hh,Mi,Se,Hs);
+       RD[0]:=((LongInt(Y)-1980) Shl 25) Or (LongInt(Mo) Shl 21) Or (LongInt(D) Shl 16) Or
+              (LongInt(Hh) Shl 11) Or (LongInt(Mi) Shl 5) Or (LongInt(Se) Div 2);
+      End;
+  24: RD[0]:=0;                                  { Bioskeys }
+  26,27: RD[0]:=0;                               { Jdisint / Jenabint }
+  28: Begin
+       { Giaccess(donnee, registre) }
+       I:=RW(SP+4);
+       If (I And $80)<>0 Then Begin
+        BxGi[I And 15]:=RW(SP+2) And $FF;
+        RD[0]:=BxGi[I And 15];
+       End Else RD[0]:=BxGi[I And 15];
+      End;
+  29: Begin BxGi[14]:=BxGi[14] And (RW(SP+2) And $FF);RD[0]:=0;End;
+  30: Begin BxGi[14]:=BxGi[14] Or (RW(SP+2) And $FF);RD[0]:=0;End;
+  31: RD[0]:=0;                                  { Xbtimer }
+  32: RD[0]:=0;                                  { Dosound }
+  33: Begin
+       { Setprt }
+       RD[0]:=BxPrt;
+       If SmallInt(RW(SP+2))>=0 Then BxPrt:=RW(SP+2);
+      End;
+  34: RD[0]:=BX_KBDV;                            { Kbdvbase }
+  35: Begin
+       { Kbrate }
+       RD[0]:=BxKbRate;
+       If SmallInt(RW(SP+2))>=0 Then BxKbRate:=(RW(SP+2) And $FF) Shl 8 Or (RW(SP+4) And $FF);
+      End;
+  36: RD[0]:=0;                                  { Prtblk }
+ Else XBiosEx:=False;
  End;
 End;
 {$ENDIF}

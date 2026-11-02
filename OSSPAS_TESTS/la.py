@@ -67,9 +67,9 @@ def asm(src,name):
     if not os.path.exists(pp):
         raise SystemExit('assemblage en echec :\n'+r.stdout.decode('latin1'))
     return pp
-def runprg(pp,name,dump=None):
+def runprg(pp,name,dump=None,gem=False):
     class Q: pass
-    q=Q(); q.path=pp
+    q=Q(); q.path=pp; q.gem=gem
     return run(q,name,dump)
 def run(p,name='T',dump=None):
     s=_run(p,name,dump)
@@ -87,7 +87,7 @@ def _run(p,name,dump):
     env=dict(os.environ,DISPLAY=os.environ.get('DISPLAY',':99'))
     if EMU=='devpac':
         # emulateur integre a DEVPAC.PAS : /EMUL (sans interface), ecran initial vierge (/NOGEM)
-        cmd=[DEVPAC,'/NOGEM','/EMUL:'+path,'/TIME:20','/SCR:'+scr]
+        cmd=[DEVPAC]+([] if getattr(p,'gem',False) else ['/NOGEM'])+['/EMUL:'+path,'/TIME:20','/SCR:'+scr]
         if dump: cmd.append('/DUMP:'+dump+':'+WORK+'/%s.dmp'%name)
         subprocess.run(cmd,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=WORK,timeout=60)
         return Scr(open(scr,'rb').read())

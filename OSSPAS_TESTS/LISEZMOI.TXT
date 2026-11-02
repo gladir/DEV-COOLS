@@ -18,6 +18,8 @@ la_bitblt (A007), la_textblt + la_textblt_echelle (A008), la_lutin_copie_germe
 Les memes tests tournent sur l'emulateur de DEVPAC.PAS : export OSSPAS_EMU=devpac (utilise
 /EMUL:prog.prg /NOGEM /SCR: /DUMP: de DEVPAC.PAS, sans interface graphique).
 
+Appels AES, BIOS et XBIOS (emu_aes_bios.py) : meme principe, sur les deux emulateurs.
+
 Programmes assembleur reels (assembles par DEVPAC.PAS, en mode batch) :
   la_programme_asm_texte.py     chaines affichees avec TEXTBLT en lisant l'en-tete de police
                                 et la table des decalages, 12 lignes avec tous les effets
