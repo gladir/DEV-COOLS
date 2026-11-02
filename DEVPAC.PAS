@@ -11927,6 +11927,7 @@ Var
  DtaAddr     : LongInt;
  FHUsed      : Array[6..MAXFH] Of Boolean;
  FHs         : Array[6..MAXFH] Of File;
+ FScratch    : File;                { Fdelete / Frename : ne doit jamais reutiliser un fichier ouvert }
  DtaSR       : SearchRec;
  DtaActive   : Boolean;
  AmigaRun    : Boolean;
@@ -12071,10 +12072,13 @@ End;
   (sinon le dernier composant
   peut ne pas exister et garde la casse donnee). DirOk indique que le
     repertoire existe. }
-Function DosHost(Const S0: String; Var HostDir,Last: String): Boolean;
-Var V,H,C,R: String; P,At: Integer; Ok: Boolean;
+Function DosHost(Const S1: String; Var HostDir,Last: String): Boolean;
+Var V,H,C,R,S0: String; P,At: Integer; Ok: Boolean;
 Begin
  Ok:=True;
+ { les programmes Pascal (OSS) transmettent des noms completes par des blancs : ils sont ignores }
+ S0:=S1;
+ While (S0<>'') And (S0[Length(S0)]=' ') Do Dec(S0[0]);
  If DosIsHostAbs(S0) Then Begin
   P:=Length(S0);
   While (P>0) And (S0[P]<>'/') Do Dec(P);
@@ -12553,9 +12557,9 @@ Begin
        End;
   $41: Begin
         S:=TosPath(RdStr(PL(2),200));
-        Assign(FHs[6],S);
+        Assign(FScratch,S);
         {$I-}
-        Erase(FHs[6]);
+        Erase(FScratch);
         {$I+}
         If IOResult<>0 Then R:=-33 Else R:=0;
        End;
@@ -12627,9 +12631,9 @@ Begin
        End;
   $56: Begin
         S:=TosPath(RdStr(PL(4),200));
-        Assign(FHs[6],S);
+        Assign(FScratch,S);
         {$I-}
-        Rename(FHs[6],TosPath(RdStr(PL(8),200)));
+        Rename(FScratch,TosPath(RdStr(PL(8),200)));
         {$I+}
         If IOResult<>0 Then R:=-33 Else R:=0;
        End;
@@ -21166,9 +21170,9 @@ Begin
    -60: R:=2;
    -72: Begin
          S:=HostPath(RdStr(Rg[1],200));
-         Assign(FHs[6],S);
+         Assign(FScratch,S);
          {$I-}
-         Erase(FHs[6]);
+         Erase(FScratch);
          {$I+}
          If IOResult=0 Then R:=-1 Else R:=0;
         End;
