@@ -2717,6 +2717,9 @@ Type
   PXo,PYo,PWo,PHo : Integer;
   Parent : Integer;
   Hidden : Boolean;
+  ImgOff,MaskOff : LongInt;
+  ImgWB,ImgH,ImgX,ImgY : Integer;
+  IcX,IcY,IcW,IcH,TxX,TxY,TxW,TxH,IcCh : Integer;
  End;
 
  TGDlg = Record
@@ -2730,6 +2733,8 @@ Type
  TRct = Record X,Y,W,H: Integer; End;
 
 Var
+ ImgPool : Array[0..65535] Of Byte;
+ PoolN   : LongInt;
  GW      : Array[0..MAXGW] Of TGWin;
  ZW      : Array[1..MAXGW] Of Integer;
  ZN      : Integer;
@@ -3247,7 +3252,7 @@ Begin
 End;
 
 Procedure PaintObj(D,I: Integer);
-Var X,Y,W,H,TX,B,K: Integer; S,T: String; Inv: Boolean; O: TGObj;
+Var X,Y,W,H,TX,B,K,J: Integer; S,T: String; Inv: Boolean; O: TGObj;
 Begin
  O:=GDl[D].Ob[I];
  If O.Hidden Then Exit;
@@ -3294,6 +3299,31 @@ Begin
      Else PText(TX,Y+(H-7) Div 2,S);
     End;
    End;
+  23: Begin
+    If Inv Then Box(X,Y,X+W-1,Y+H-1,INK);
+    For K:=0 To O.ImgH-1 Do
+     For B:=0 To O.ImgWB*8-1 Do
+      If (ImgPool[O.ImgOff+K*O.ImgWB+(B Shr 3)] And (128 Shr (B And 7)))<>0 Then
+       If (B+O.ImgX<W) And (K+O.ImgY<H) Then PutPixel(X+O.ImgX+B,Y+O.ImgY+K,Ord(Not Inv)*INK+Ord(Inv)*PAPER);
+   End;
+  31: Begin
+    { icone : masque (fond blanc), donnees (noir), texte dessous }
+    Box(X,Y,X+W-1,Y+H-1,PAPER);
+    If Inv Then Box(X+O.IcX,Y+O.IcY,X+O.IcX+O.IcW-1,Y+O.IcY+O.IcH-1,INK);
+    B:=((O.IcW+15) Div 16)*2;
+    For K:=0 To O.IcH-1 Do
+     For J:=0 To O.IcW-1 Do Begin
+      If (ImgPool[O.MaskOff+K*B+(J Shr 3)] And (128 Shr (J And 7)))<>0 Then
+       PutPixel(X+O.IcX+J,Y+O.IcY+K,PAPER*Ord(Not Inv)+INK*Ord(Inv));
+      If (ImgPool[O.ImgOff+K*B+(J Shr 3)] And (128 Shr (J And 7)))<>0 Then
+       PutPixel(X+O.IcX+J,Y+O.IcY+K,INK*Ord(Not Inv)+PAPER*Ord(Inv));
+     End;
+    If S<>'' Then Begin
+     If Inv Then Box(X+O.TxX,Y+O.TxY,X+O.TxX+O.TxW-1,Y+O.TxY+O.TxH-1,INK);
+     TX:=X+O.TxX+(O.TxW-Length(S)*8) Div 2;
+     If Inv Then WText(TX,Y+O.TxY+(O.TxH-7) Div 2,S) Else PText(TX,Y+O.TxY+(O.TxH-7) Div 2,S);
+    End;
+   End;
   28: Begin
     If Inv Then Begin Box(X,Y,X+Length(S)*8,Y+15,INK);WText(X,Y+4,S);End
     Else PText(X,Y+4,S);
@@ -3306,8 +3336,18 @@ Begin
  ShowMouse;
 End;
 
+Procedure PaintKids(D,P: Integer);
+Var J: Integer;
+Begin
+ For J:=1 To GDl[D].N Do
+  If (GDl[D].Ob[J].Parent=P) And (J<>P) Then Begin
+   PaintObj(D,J);
+   PaintKids(D,J);
+  End;
+End;
+
 Procedure PaintDlg(D: Integer);
-Var I,X,Y,W,H: Integer;
+Var X,Y,W,H: Integer;
 Begin
  DlgRect(D,0,X,Y,W,H);
  HideMouse;
@@ -3316,7 +3356,20 @@ Begin
  Frame(X,Y+OFS_Y,X+W-1,Y+OFS_Y+H-1);
  Frame(X+1,Y+OFS_Y+1,X+W-2,Y+OFS_Y+H-2);
  ShowMouse;
- For I:=1 To GDl[D].N Do PaintObj(D,I);
+ PaintKids(D,0);
+End;
+
+Procedure RecalcHidden(D: Integer);
+Var I,J,G: Integer;
+Begin
+ For I:=1 To GDl[D].N Do Begin
+  GDl[D].Ob[I].Hidden:=False;
+  J:=I;G:=0;
+  While (J>0) And (G<=GDl[D].N) Do Begin
+   If (GDl[D].Ob[J].Flags And $80)<>0 Then GDl[D].Ob[I].Hidden:=True;
+   J:=GDl[D].Ob[J].Parent;Inc(G);
+  End;
+ End;
 End;
 
 Function ValidCh(V: Char; C: Char): Boolean;
@@ -3694,7 +3747,7 @@ Begin
  Close(F);
  RscSize:=N;
  If RscSize<36 Then Exit;
- RscOk:=True;LoadRsc:=True;
+ RscOk:=True;LoadRsc:=True;PoolN:=0;
 End;
 
 Function RscTreeOff(T: Integer): LongInt;
@@ -3790,6 +3843,31 @@ Begin
      GDl[D].Ob[I].Color:=RscW(Ted+20);
     End;
    26,28,32: GDl[D].Ob[I].Txt:=Copy(RscStr(Spec),1,60);
+   23: Begin
+     K:=RscW(Spec+4)*RscW(Spec+6);
+     If (K>0) And (PoolN+K<65000) Then Begin
+      GDl[D].Ob[I].ImgOff:=PoolN;GDl[D].Ob[I].ImgWB:=RscW(Spec+4);GDl[D].Ob[I].ImgH:=RscW(Spec+6);
+      GDl[D].Ob[I].ImgX:=RscW(Spec+8);GDl[D].Ob[I].ImgY:=RscW(Spec+10);
+      For J:=0 To K-1 Do ImgPool[PoolN+J]:=RscBuf^[RscL(Spec)+J];
+      PoolN:=PoolN+K;
+     End Else GDl[D].Ob[I].Hidden:=True;
+    End;
+   31: Begin
+     GDl[D].Ob[I].IcX:=RscW(Spec+18);GDl[D].Ob[I].IcY:=RscW(Spec+20);
+     GDl[D].Ob[I].IcW:=RscW(Spec+22);GDl[D].Ob[I].IcH:=RscW(Spec+24);
+     GDl[D].Ob[I].TxX:=RscW(Spec+26);GDl[D].Ob[I].TxY:=RscW(Spec+28);
+     GDl[D].Ob[I].TxW:=RscW(Spec+30);GDl[D].Ob[I].TxH:=RscW(Spec+32);
+     GDl[D].Ob[I].Txt:=Copy(RscStr(RscL(Spec+8)),1,60);
+     K:=((GDl[D].Ob[I].IcW+15) Div 16)*2*GDl[D].Ob[I].IcH;
+     If (K>0) And (PoolN+2*K<65000) Then Begin
+      GDl[D].Ob[I].MaskOff:=PoolN;
+      For J:=0 To K-1 Do ImgPool[PoolN+J]:=RscBuf^[RscL(Spec)+J];
+      PoolN:=PoolN+K;
+      GDl[D].Ob[I].ImgOff:=PoolN;
+      For J:=0 To K-1 Do ImgPool[PoolN+J]:=RscBuf^[RscL(Spec+4)+J];
+      PoolN:=PoolN+K;
+     End Else GDl[D].Ob[I].Hidden:=True;
+    End;
   End;
  End;
  GDl[D].PX:=GDl[D].Ob[0].PXo;GDl[D].PY:=GDl[D].Ob[0].PYo;
@@ -4164,7 +4242,7 @@ Begin
    End;
   S_OBJSETFLAGS: Begin
     C:=Pop32;B:=Pop32;A:=Pop32;
-    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then GDl[A].Ob[B].Flags:=C;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then Begin GDl[A].Ob[B].Flags:=C;RecalcHidden(A);End;
    End;
   S_OBJFLAGS: Begin
     B:=Pop32;A:=Pop32;
@@ -4194,7 +4272,7 @@ Begin
        GDl[A].Shown:=True;
       End;
       PaintDlg(A);
-     End Else If GDl[A].Shown Then PaintObj(A,B);
+     End Else If GDl[A].Shown Then Begin PaintObj(A,B);PaintKids(A,B);End;
     End;
    End;
   S_GETINFILE,S_GETOUTFILE: Begin
