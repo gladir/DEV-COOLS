@@ -47,6 +47,21 @@ class P:
         if not rels: tab=bytearray(struct.pack('>I',0))
         hdr=struct.pack('>HIIIIIIH',0x601A,len(img),0,0,0,0,0,0)
         return hdr+bytes(img)+bytes(tab)
+DEVPAC=os.path.abspath(os.environ.get('DEVPAC_BIN','./DEVPAC'))   # assembleur compile depuis DEVPAC.PAS
+def asm(src,name):
+    """assemble un source GenST (DEVPAC.PAS en mode batch) et retourne le chemin du .PRG"""
+    sp=WORK+'/%s.S'%name; pp=WORK+'/%s.PRG'%name
+    open(sp,'w').write(src)
+    if os.path.exists(pp): os.remove(pp)
+    r=subprocess.run([DEVPAC,'/B','/ATARIST',sp,'/OUT:'+pp],env=dict(os.environ,DISPLAY=os.environ.get('DISPLAY',':99')),
+                     stdin=subprocess.DEVNULL,capture_output=True,timeout=60,cwd=WORK)
+    if not os.path.exists(pp):
+        raise SystemExit('assemblage en echec :\n'+r.stdout.decode('latin1'))
+    return pp
+def runprg(pp,name,dump=None):
+    class Q: pass
+    q=Q(); q.path=pp
+    return run(q,name,dump)
 def run(p,name='T',dump=None):
     s=_run(p,name,dump)
     if dump:
@@ -55,7 +70,8 @@ def run(p,name='T',dump=None):
     return s
 def _run(p,name,dump):
     path=''+WORK+'/%s.PRG'%name
-    open(path,'wb').write(p.build())
+    if hasattr(p,'path'): path=p.path
+    else: open(path,'wb').write(p.build())
     env=dict(os.environ,DISPLAY=os.environ.get('DISPLAY',':99'),OSSDUMPSCR=''+WORK+'/%s.scr'%name,OSSTIMEOUT='15')
     if dump: env['OSSDUMP']=dump+':'+WORK+'/%s.dmp'%name
     try: os.remove(env['OSSDUMPSCR'])
