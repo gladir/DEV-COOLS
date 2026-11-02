@@ -239,6 +239,10 @@ Begin
  While U>0 Do Begin S:=Copy('0123456789ABCDEF',(U Mod Base)+1,1)+S;U:=U Div Base;End;
  HexStr:=S;
 End;
+Var
+ CurKind,CurHx,CurHy : Integer;
+ CurMask,CurData : Array[0..15] Of Word;
+
 { ====================================================================== }
 {                  GRAPHIQUE / SOURIS (squelette)                        }
 { ====================================================================== }
@@ -334,27 +338,49 @@ Var
  End;
 
  Procedure CursorDraw(X,Y: LongInt);
- Var Pt: Array[1..7] Of PointType;
+ Var Pt: Array[1..7] Of PointType; I,J: Integer; BX,BY: LongInt;
  Begin
-  If X>SCR_W-12 Then X:=SCR_W-12;
-  If Y>SCR_H-18 Then Y:=SCR_H-18;
+  If X>SCR_W-20 Then X:=SCR_W-20;
+  If Y>SCR_H-20 Then Y:=SCR_H-20;
   If X<0 Then X:=0;
   If Y<0 Then Y:=0;
   CursorErase;
-  CurSz:=ImageSize(X,Y,X+11,Y+17);
+  BX:=X-CurHx;BY:=Y-CurHy;
+  If BX<0 Then BX:=0;
+  If BY<0 Then BY:=0;
+  CurSz:=ImageSize(BX,BY,BX+19,BY+19);
   GetMem(CurBuf,CurSz);
-  GetImage(X,Y,X+11,Y+17,CurBuf^);
-  CurX:=X;CurY:=Y;CurSaved:=True;
-  Pt[1].X:=X;    Pt[1].Y:=Y;
-  Pt[2].X:=X;    Pt[2].Y:=Y+14;
-  Pt[3].X:=X+4;  Pt[3].Y:=Y+11;
-  Pt[4].X:=X+7;  Pt[4].Y:=Y+16;
-  Pt[5].X:=X+9;  Pt[5].Y:=Y+15;
-  Pt[6].X:=X+6;  Pt[6].Y:=Y+10;
-  Pt[7].X:=X+10; Pt[7].Y:=Y+10;
-  SetFillStyle(SolidFill,Black);
-  SetColor(White);
-  FillPoly(7,Pt);
+  GetImage(BX,BY,BX+19,BY+19,CurBuf^);
+  CurX:=BX;CurY:=BY;CurSaved:=True;
+  Case CurKind Of
+   1: For J:=0 To 15 Do For I:=0 To 15 Do Begin
+       If (CurMask[J] And ($8000 Shr I))<>0 Then PutPixel(BX+I,BY+J,15);
+       If (CurData[J] And ($8000 Shr I))<>0 Then PutPixel(BX+I,BY+J,0);
+      End;
+   2: Begin
+       SetColor(0);
+       Line(BX+8,BY+2,BX+8,BY+16);Line(BX+5,BY+2,BX+11,BY+2);Line(BX+5,BY+16,BX+11,BY+16);
+      End;
+   3: Begin
+       SetColor(0);
+       Line(BX+8,BY+1,BX+8,BY+17);Line(BX+1,BY+9,BX+15,BY+9);
+      End;
+   4: Begin
+       SetColor(0);
+       Rectangle(BX+3,BY+1,BX+13,BY+17);Line(BX+3,BY+1,BX+13,BY+17);Line(BX+13,BY+1,BX+3,BY+17);
+      End;
+  Else
+   Pt[1].X:=BX;    Pt[1].Y:=BY;
+   Pt[2].X:=BX;    Pt[2].Y:=BY+14;
+   Pt[3].X:=BX+4;  Pt[3].Y:=BY+11;
+   Pt[4].X:=BX+7;  Pt[4].Y:=BY+16;
+   Pt[5].X:=BX+9;  Pt[5].Y:=BY+15;
+   Pt[6].X:=BX+6;  Pt[6].Y:=BY+10;
+   Pt[7].X:=BX+10; Pt[7].Y:=BY+10;
+   SetFillStyle(SolidFill,Black);
+   SetColor(White);
+   FillPoly(7,Pt);
+  End;
  End;
 
  Procedure ShowMouse;
@@ -2633,6 +2659,1293 @@ Begin
      OPlot(X+(I-1)*8+X2,Y-8+Y2+1,TxtColV);
 End;
 
+
+{ ====================================================================== }
+{    AES / PASGEM INTEGRE : MENUS, FENETRES, DIALOGUES, EVENEMENTS       }
+{ ====================================================================== }
+
+Const
+ S_NEWMENU=140;S_DELMENU=141;S_ADDMTITLE=142;S_ADDMITEM=143;S_DRAWMENU=144;
+ S_ERASEMENU=145;S_MENUHI=146;S_MENUNORMAL=147;S_MENUCHECK=148;S_MENUENABLE=149;
+ S_MENUDISABLE=150;S_MENUTEXT=151;S_MENUREG=152;
+ S_NEWWIN=153;S_OPENWIN=154;S_CLOSEWIN=155;S_DELWIN=156;S_SETWSIZE=157;
+ S_SETWNAME=158;S_SETWINFO=159;S_BORDERRECT=160;S_WORKRECT=161;S_FIRSTRECT=162;
+ S_NEXTRECT=163;S_RECTINT=164;S_FRONTWIN=165;S_BRINGFRONT=166;S_SETWINDOW=167;
+ S_GETWINDOW=168;S_WINDGET=169;S_WINDSET=170;S_GETEVENT=171;
+ S_NEWDLG=172;S_DELDLG=173;S_ADDDITEM=174;S_DCOLOR=175;S_SETDTEXT=176;
+ S_SETDEDIT=177;S_OBJSETSTATE=178;S_OBJSTATE=179;S_OBJSETFLAGS=180;S_OBJFLAGS=181;
+ S_CENTERDLG=182;S_DODLG=183;S_GETDEDIT=184;S_REDODLG=185;S_ENDDLG=186;
+ S_SHOWDLG=187;S_GETINFILE=188;S_GETOUTFILE=189;S_SETMFORM=190;S_SETMOUSE2=191;
+ S_SHOWMOUSE=192;S_HIDEMOUSE=193;
+
+ GM_BAR  = 19;
+ MAXGW   = 7;
+ MAXGMN  = 3;
+ MAXGD   = 4;
+ MAXGO   = 32;
+ WM_REDRAW_ = 20;
+
+Type
+ TGWin = Record
+  Used,Open : Boolean;
+  Kind      : Integer;
+  Title,Info: String[80];
+  MX,MY,MW,MH : Integer;       { limites }
+  X,Y,W,H   : Integer;         { rectangle de bordure }
+  PX,PY,PW,PH : Integer;
+  HS,VS,HSz,VSz : Integer;
+ End;
+
+ TGMenu = Record
+  Used,Drawn : Boolean;
+  NT   : Integer;
+  TT   : Array[1..8] Of String[30];
+  TX   : Array[1..8] Of Integer;
+  NI   : Array[1..8] Of Integer;
+  IT   : Array[1..8,1..14] Of String[40];
+  IDn  : Array[1..8,1..14] Of Integer;
+  IC,ID: Array[1..8,1..14] Of Boolean;
+  Hi   : Integer;
+ End;
+
+ TGObj = Record
+  Typ,Flags,State : Integer;
+  X,Y,W,H,Border,Color : Integer;
+  Txt : String[60];
+  Templ,Valid : String[40];
+  Just : Integer;
+ End;
+
+ TGDlg = Record
+  Used,Shown : Boolean;
+  N  : Integer;
+  Ob : Array[0..MAXGO] Of TGObj;
+  PX,PY : Integer;
+  Sv : TSave;
+ End;
+
+ TRct = Record X,Y,W,H: Integer; End;
+
+Var
+ GW      : Array[0..MAXGW] Of TGWin;
+ ZW      : Array[1..MAXGW] Of Integer;
+ ZN      : Integer;
+ GMn     : Array[1..MAXGMN] Of TGMenu;
+ GDl     : Array[1..MAXGD] Of TGDlg;
+ MsgQ    : Array[1..16,0..7] Of Integer;
+ MsgN    : Integer;
+ CurWin  : Integer;
+ OrgX,OrgY : Integer;
+ RectL   : Array[1..80] Of TRct;
+ RectN,RectI : Integer;
+ ProgMouse : Boolean;
+ ActMenu : Integer;
+ LastClkCs : LongInt;
+ ClkCnt  : Integer;
+ NextItemId : Integer;
+
+Procedure GemCur(OnFlag: Boolean);
+Begin
+ ProgMouse:=OnFlag;
+ If Headless Then Exit;
+ If OnFlag Then Begin MouseLock:=0;ShowMouse;End
+ Else Begin HideMouse;MouseLock:=1;End;
+End;
+
+Procedure PutW(A: LongInt; V: LongInt);
+Begin
+ WW(A,Word(V And $FFFF));
+End;
+
+Function GetW(A: LongInt): LongInt;
+Begin
+ GetW:=SmallInt(RW(A));
+End;
+
+Function Max3(A,B: LongInt): LongInt;
+Begin
+ If A>B Then Max3:=A Else Max3:=B;
+End;
+
+Function Min3(A,B: LongInt): LongInt;
+Begin
+ If A<B Then Min3:=A Else Min3:=B;
+End;
+
+{ ------------------------- primitives sur l'ecran ST ------------------- }
+
+Var
+ SvClip : Boolean;
+ SvCX1,SvCY1,SvCX2,SvCY2 : LongInt;
+
+Procedure GBegin(CX,CY,CW,CH: Integer; UseClip: Boolean);
+Begin
+ SvClip:=ClipOn;SvCX1:=ClipX1;SvCY1:=ClipY1;SvCX2:=ClipX2;SvCY2:=ClipY2;
+ OXor:=False;
+ ClipOn:=UseClip;
+ If UseClip Then Begin ClipX1:=CX;ClipY1:=CY;ClipX2:=CX+CW-1;ClipY2:=CY+CH-1;End;
+ OutPending:=True;
+End;
+
+Procedure GEnd;
+Begin
+ ClipOn:=SvClip;ClipX1:=SvCX1;ClipY1:=SvCY1;ClipX2:=SvCX2;ClipY2:=SvCY2;
+ OutPending:=True;
+End;
+
+Procedure GFill(X,Y,W,H: Integer; C: Byte);
+Var I,J: Integer;
+Begin
+ For J:=Y To Y+H-1 Do
+  For I:=X To X+W-1 Do OPlot(I,J,C);
+End;
+
+Procedure GHatch(X,Y,W,H: Integer);
+Var I,J: Integer;
+Begin
+ For J:=Y To Y+H-1 Do
+  For I:=X To X+W-1 Do OPlot(I,J,(I+J) And 1);
+End;
+
+Procedure GBox(X,Y,W,H: Integer);
+Var I: Integer;
+Begin
+ For I:=X To X+W-1 Do Begin OPlot(I,Y,1);OPlot(I,Y+H-1,1);End;
+ For I:=Y To Y+H-1 Do Begin OPlot(X,I,1);OPlot(X+W-1,I,1);End;
+End;
+
+Procedure GTextC(X,Y: Integer; Const S: String; Inv: Boolean);
+{ texte dont le haut est en Y }
+Var Sv: Integer;
+Begin
+ Sv:=TxtColV;
+ If Inv Then TxtColV:=0 Else TxtColV:=1;
+ GText(X,Y+7,S);
+ TxtColV:=Sv;
+End;
+
+Procedure GFlush;
+Begin
+ OutPending:=True;
+ OutFlush(True);
+ If ProgMouse And (Not Headless) Then Begin MouseLock:=0;ShowMouse;End;
+End;
+
+{ ------------------------------ fenetres ------------------------------- }
+
+Function HasTitle(I: Integer): Boolean;
+Begin
+ HasTitle:=(GW[I].Kind And $E)<>0;
+End;
+
+Procedure WinWork(I: Integer; Var X,Y,W,H: Integer);
+Begin
+ X:=GW[I].X+1;Y:=GW[I].Y+1;
+ If (GW[I].Kind And $E)<>0 Then Y:=Y+19;
+ If (GW[I].Kind And $10)<>0 Then Y:=Y+19;
+ W:=GW[I].W-2;
+ H:=GW[I].H-(Y-GW[I].Y)-1;
+ If (GW[I].Kind And $1C0)<>0 Then W:=W-18;
+ If (GW[I].Kind And $E00)<>0 Then H:=H-18;
+ If W<0 Then W:=0;
+ If H<0 Then H:=0;
+End;
+
+Procedure DeskRect(Var X,Y,W,H: Integer);
+Begin
+ X:=0;Y:=GM_BAR;W:=640;H:=400-GM_BAR;
+End;
+
+Function Isect(A,B: TRct; Var R: TRct): Boolean;
+Var X1,Y1,X2,Y2: Integer;
+Begin
+ X1:=Max3(A.X,B.X);Y1:=Max3(A.Y,B.Y);
+ X2:=Min3(A.X+A.W,B.X+B.W);Y2:=Min3(A.Y+A.H,B.Y+B.H);
+ R.X:=X1;R.Y:=Y1;R.W:=X2-X1;R.H:=Y2-Y1;
+ Isect:=(R.W>0) And (R.H>0);
+End;
+
+Function WinBorder(I: Integer): TRct;
+Var R: TRct;
+Begin
+ R.X:=GW[I].X;R.Y:=GW[I].Y;R.W:=GW[I].W;R.H:=GW[I].H;
+ WinBorder:=R;
+End;
+
+Function TopWin: Integer;
+Begin
+ If ZN>0 Then TopWin:=ZW[ZN] Else TopWin:=-1;
+End;
+
+Procedure PushMsg(T,H,A,B,C,D: Integer);
+Begin
+ If MsgN>=16 Then Exit;
+ Inc(MsgN);
+ MsgQ[MsgN,0]:=T;MsgQ[MsgN,1]:=1;MsgQ[MsgN,2]:=0;MsgQ[MsgN,3]:=H;
+ MsgQ[MsgN,4]:=A;MsgQ[MsgN,5]:=B;MsgQ[MsgN,6]:=C;MsgQ[MsgN,7]:=D;
+End;
+
+Procedure DrawWinFrame(I: Integer);
+Var X,Y,W,H,WX,WY,WW2,WH,TX,K,TL,TH: Integer; Top: Boolean; S: String;
+Begin
+ X:=GW[I].X;Y:=GW[I].Y;W:=GW[I].W;H:=GW[I].H;
+ Top:=(TopWin=I);
+ GFill(X,Y,W,H,0);
+ GBox(X,Y,W,H);
+ K:=GW[I].Kind;
+ If (K And $E)<>0 Then Begin
+  For TX:=X To X+W-1 Do OPlot(TX,Y+19,1);
+  If Top Then
+   For TX:=Y+3 To Y+15 Do
+    If Odd(TX) Then For WX:=X+20 To X+W-21 Do OPlot(WX,TX,1);
+  S:=GW[I].Title;
+  If Length(S)*8+8>W-40 Then S:=Copy(S,1,(W-48) Div 8);
+  WX:=X+(W-Length(S)*8) Div 2;
+  GFill(WX-4,Y+2,Length(S)*8+8,16,0);
+  GTextC(WX,Y+6,S,False);
+  If (K And 2)<>0 Then Begin
+   GFill(X+1,Y+1,18,18,0);GBox(X+1,Y+1,18,18);GBox(X+5,Y+5,10,10);
+  End;
+  If (K And 4)<>0 Then Begin
+   GFill(X+W-19,Y+1,18,18,0);GBox(X+W-19,Y+1,18,18);GBox(X+W-15,Y+5,10,10);GBox(X+W-12,Y+8,4,4);
+  End;
+ End;
+ If (K And $10)<>0 Then Begin
+  WY:=Y+1;If (K And $E)<>0 Then WY:=WY+19;
+  For TX:=X To X+W-1 Do OPlot(TX,WY+18,1);
+  GTextC(X+6,WY+6,Copy(GW[I].Info,1,(W-12) Div 8),False);
+ End;
+ WinWork(I,WX,WY,WW2,WH);
+ If (K And $1C0)<>0 Then Begin
+  { barre verticale }
+  TX:=X+W-19;
+  For TL:=WY-1 To WY+WH+((K And $E00) Div $E00)*18 Do OPlot(TX,TL,1);
+  If (K And $40)<>0 Then Begin GBox(TX,WY,19,18);GTextC(TX+5,WY+5,#24,False);End;
+  If (K And $80)<>0 Then Begin GBox(TX,WY+WH-18,19,18);GTextC(TX+5,WY+WH-13,#25,False);End;
+  If (K And $100)<>0 Then Begin
+   TL:=WY+18;TH:=WH-36;
+   If TH>8 Then Begin
+    GHatch(TX+1,TL,17,TH);
+    If GW[I].VSz<=0 Then GW[I].VSz:=1000;
+    K:=Max3(8,TH*GW[I].VSz Div 1000);
+    GFill(TX+1,TL+(TH-K)*GW[I].VS Div 1000,17,K,0);
+    GBox(TX+1,TL+(TH-K)*GW[I].VS Div 1000,17,K);
+   End;
+  End;
+  K:=GW[I].Kind;
+ End;
+ If (K And $E00)<>0 Then Begin
+  TL:=WY+WH;
+  For TX:=WX To WX+WW2+((K And $1C0) Div $1C0)*18 Do OPlot(TX,TL,1);
+  If (K And $200)<>0 Then Begin GBox(WX,TL,18,19);GTextC(WX+5,TL+6,#27,False);End;
+  If (K And $400)<>0 Then Begin GBox(WX+WW2-18,TL,18,19);GTextC(WX+WW2-13,TL+6,#26,False);End;
+  If (K And $800)<>0 Then Begin
+   TH:=WW2-36;
+   If TH>8 Then Begin
+    GHatch(WX+18,TL+1,TH,17);
+    If GW[I].HSz<=0 Then GW[I].HSz:=1000;
+    K:=Max3(8,TH*GW[I].HSz Div 1000);
+    GFill(WX+18+(TH-K)*GW[I].HS Div 1000,TL+1,K,17,0);
+    GBox(WX+18+(TH-K)*GW[I].HS Div 1000,TL+1,K,17);
+   End;
+  End;
+  K:=GW[I].Kind;
+ End;
+ If (K And $20)<>0 Then Begin
+  GFill(X+W-19,Y+H-19,18,18,0);GBox(X+W-19,Y+H-19,19,19);GBox(X+W-14,Y+H-14,9,9);
+ End;
+ { zone de travail blanche }
+ GFill(WX,WY,WW2,WH,0);
+End;
+
+Procedure GemRefresh(RX,RY,RW,RH: Integer; Msgs: Boolean);
+{ redessine le bureau, la barre de menus et les fenetres dans le rectangle donne }
+Var I,K: Integer; D,R,Q,S: TRct; DX,DY,DW,DH: Integer;
+Begin
+ D.X:=RX;D.Y:=RY;D.W:=RW;D.H:=RH;
+ S.X:=0;S.Y:=0;S.W:=640;S.H:=400;
+ If Not Isect(D,S,R) Then Exit;
+ GBegin(R.X,R.Y,R.W,R.H,True);
+ DeskRect(DX,DY,DW,DH);
+ GHatch(R.X,Max3(R.Y,GM_BAR),R.W,Max3(0,R.Y+R.H-Max3(R.Y,GM_BAR)));
+ { barre de menus }
+ If R.Y<GM_BAR Then Begin
+  GFill(0,0,640,GM_BAR-1,0);
+  For I:=0 To 639 Do OPlot(I,GM_BAR-1,1);
+  If (ActMenu>0) And GMn[ActMenu].Drawn Then Begin
+   For K:=1 To GMn[ActMenu].NT Do Begin
+    If GMn[ActMenu].Hi=K+2 Then Begin
+     GFill(GMn[ActMenu].TX[K],0,Length(GMn[ActMenu].TT[K])*8,GM_BAR-1,1);
+     GTextC(GMn[ActMenu].TX[K],5,GMn[ActMenu].TT[K],True);
+    End Else GTextC(GMn[ActMenu].TX[K],5,GMn[ActMenu].TT[K],False);
+   End;
+  End;
+ End;
+ For K:=1 To ZN Do Begin
+  I:=ZW[K];
+  If GW[I].Open Then Begin
+   Q:=WinBorder(I);
+   If Isect(R,Q,S) Then Begin
+    DrawWinFrame(I);
+    If Msgs Then PushMsg(WM_REDRAW_,I,S.X,S.Y,S.W,S.H);
+   End;
+  End;
+ End;
+ GEnd;
+ GFlush;
+End;
+
+Procedure GemBarRedraw;
+Begin
+ GemRefresh(0,0,640,GM_BAR,False);
+End;
+
+Function NewGWin: Integer;
+Var I: Integer;
+Begin
+ NewGWin:=-1;
+ For I:=1 To MAXGW Do If Not GW[I].Used Then Begin
+  FillChar(GW[I],SizeOf(TGWin),0);
+  GW[I].Used:=True;
+  NewGWin:=I;Exit;
+ End;
+End;
+
+Procedure ZRemove(I: Integer);
+Var J,K: Integer;
+Begin
+ K:=0;
+ For J:=1 To ZN Do If ZW[J]=I Then K:=J;
+ If K=0 Then Exit;
+ For J:=K To ZN-1 Do ZW[J]:=ZW[J+1];
+ Dec(ZN);
+End;
+
+Procedure ZToTop(I: Integer);
+Begin
+ ZRemove(I);
+ If ZN<MAXGW Then Begin Inc(ZN);ZW[ZN]:=I;End;
+End;
+
+Procedure WinOpen(I,X,Y,W,H: Integer);
+Var DX,DY,DW,DH: Integer;
+Begin
+ DeskRect(DX,DY,DW,DH);
+ If (W<=0) Or (H<=0) Then Begin
+  GW[I].X:=0;GW[I].Y:=DY;GW[I].W:=DW;GW[I].H:=DH;
+ End Else Begin
+  GW[I].X:=X;GW[I].Y:=Y;GW[I].W:=W;GW[I].H:=H;
+ End;
+ GW[I].PX:=GW[I].X;GW[I].PY:=GW[I].Y;GW[I].PW:=GW[I].W;GW[I].PH:=GW[I].H;
+ GW[I].Open:=True;
+ ZToTop(I);
+ GemRefresh(GW[I].X,GW[I].Y,GW[I].W+2,GW[I].H+2,True);
+End;
+
+Procedure WinClose(I: Integer);
+Var Q: TRct;
+Begin
+ If Not GW[I].Open Then Exit;
+ Q:=WinBorder(I);
+ GW[I].Open:=False;
+ ZRemove(I);
+ If CurWin=I Then Begin CurWin:=0;OrgX:=0;OrgY:=0;End;
+ GemRefresh(Q.X,Q.Y,Q.W+2,Q.H+2,True);
+End;
+
+Procedure WinSetSize(I,X,Y,W,H: Integer);
+Var Q,N: TRct; U: TRct;
+Begin
+ If Not GW[I].Open Then Exit;
+ Q:=WinBorder(I);
+ GW[I].PX:=Q.X;GW[I].PY:=Q.Y;GW[I].PW:=Q.W;GW[I].PH:=Q.H;
+ If W<60 Then W:=60;
+ If H<40 Then H:=40;
+ GW[I].X:=X;GW[I].Y:=Y;GW[I].W:=W;GW[I].H:=H;
+ N:=WinBorder(I);
+ U.X:=Min3(Q.X,N.X);U.Y:=Min3(Q.Y,N.Y);
+ U.W:=Max3(Q.X+Q.W,N.X+N.W)-U.X+2;U.H:=Max3(Q.Y+Q.H,N.Y+N.H)-U.Y+2;
+ GemRefresh(U.X,U.Y,U.W,U.H,True);
+End;
+
+Procedure WinToFront(I: Integer);
+Begin
+ If Not GW[I].Open Then Exit;
+ If TopWin=I Then Exit;
+ ZToTop(I);
+ GemRefresh(GW[I].X,GW[I].Y,GW[I].W+2,GW[I].H+2,True);
+End;
+
+{ liste des rectangles visibles de la zone de travail }
+Procedure RectSub(Var N: Integer; B: TRct);
+Var Old: Array[1..80] Of TRct; M,I: Integer; A,R: TRct; T: TRct;
+Begin
+ M:=N;N:=0;
+ For I:=1 To M Do Old[I]:=RectL[I];
+ For I:=1 To M Do Begin
+  A:=Old[I];
+  If Not Isect(A,B,R) Then Begin
+   If N<80 Then Begin Inc(N);RectL[N]:=A;End;
+  End Else Begin
+   If R.Y>A.Y Then Begin T.X:=A.X;T.Y:=A.Y;T.W:=A.W;T.H:=R.Y-A.Y;If N<80 Then Begin Inc(N);RectL[N]:=T;End;End;
+   If R.Y+R.H<A.Y+A.H Then Begin T.X:=A.X;T.Y:=R.Y+R.H;T.W:=A.W;T.H:=A.Y+A.H-R.Y-R.H;If N<80 Then Begin Inc(N);RectL[N]:=T;End;End;
+   If R.X>A.X Then Begin T.X:=A.X;T.Y:=R.Y;T.W:=R.X-A.X;T.H:=R.H;If N<80 Then Begin Inc(N);RectL[N]:=T;End;End;
+   If R.X+R.W<A.X+A.W Then Begin T.X:=R.X+R.W;T.Y:=R.Y;T.W:=A.X+A.W-R.X-R.W;T.H:=R.H;If N<80 Then Begin Inc(N);RectL[N]:=T;End;End;
+  End;
+ End;
+End;
+
+Procedure BuildRects(I: Integer);
+Var X,Y,W,H,K,J: Integer; D,S,R: TRct; Found: Boolean;
+Begin
+ RectN:=0;RectI:=0;
+ If I<=0 Then Begin
+  DeskRect(X,Y,W,H);
+ End Else Begin
+  If Not GW[I].Open Then Exit;
+  WinWork(I,X,Y,W,H);
+ End;
+ D.X:=X;D.Y:=Y;D.W:=W;D.H:=H;
+ S.X:=0;S.Y:=GM_BAR;S.W:=640;S.H:=400-GM_BAR;
+ If Not Isect(D,S,R) Then Exit;
+ RectN:=1;RectL[1]:=R;
+ Found:=(I<=0);
+ For K:=1 To ZN Do Begin
+  J:=ZW[K];
+  If J=I Then Found:=True
+  Else If Found And GW[J].Open Then RectSub(RectN,WinBorder(J));
+ End;
+End;
+
+Procedure RectOut(A1,A2,A3,A4: LongInt);
+Begin
+ If RectI<RectN Then Begin
+  Inc(RectI);
+  PutW(A1,RectL[RectI].X);PutW(A2,RectL[RectI].Y);PutW(A3,RectL[RectI].W);PutW(A4,RectL[RectI].H);
+ End Else Begin
+  PutW(A1,0);PutW(A2,0);PutW(A3,0);PutW(A4,0);
+ End;
+End;
+
+{ ------------------------------- menus --------------------------------- }
+
+Procedure MenuLayout(H: Integer);
+Var K,X: Integer;
+Begin
+ X:=8;
+ For K:=1 To GMn[H].NT Do Begin
+  GMn[H].TX[K]:=X;
+  X:=X+Length(GMn[H].TT[K])*8;
+ End;
+End;
+
+Function MenuTitleAt(H,MXp: Integer): Integer;
+Var K: Integer;
+Begin
+ MenuTitleAt:=0;
+ For K:=1 To GMn[H].NT Do
+  If (MXp>=GMn[H].TX[K]) And (MXp<GMn[H].TX[K]+Length(GMn[H].TT[K])*8) Then MenuTitleAt:=K;
+End;
+
+Function DropWidth(H,T: Integer): Integer;
+Var I,W: Integer;
+Begin
+ W:=0;
+ For I:=1 To GMn[H].NI[T] Do If Length(GMn[H].IT[T,I])>W Then W:=Length(GMn[H].IT[T,I]);
+ DropWidth:=W*8+24;
+End;
+
+Function Trim2(Const S: String): String;
+Begin
+ Trim2:=TrimStr(S);
+End;
+
+Procedure DrawDrop(H,T,Hi: Integer);
+Var X1,Y1,X2,Y2,I,Y: Integer; S: String;
+Begin
+ X1:=GMn[H].TX[T];
+ If X1+DropWidth(H,T)>636 Then X1:=636-DropWidth(H,T);
+ Y1:=OFS_Y+GM_BAR-1;X2:=X1+DropWidth(H,T);Y2:=Y1+GMn[H].NI[T]*16+4;
+ HideMouse;
+ Box(X1+3,Y1+3,X2+3,Y2+3,INK);
+ Box(X1,Y1,X2,Y2,PAPER);Frame(X1,Y1,X2,Y2);
+ For I:=1 To GMn[H].NI[T] Do Begin
+  Y:=Y1+2+(I-1)*16;
+  S:=GMn[H].IT[T,I];
+  If (S<>'') And (Trim2(S)='-') Then Begin
+   SetLineStyle(UserBitLn,$AAAA,1);SetColor(INK);Line(X1+2,Y+8,X2-2,Y+8);SetLineStyle(SolidLn,0,1);
+  End Else Begin
+   If (I=Hi) And (Not GMn[H].ID[T,I]) Then Begin
+    Box(X1+1,Y,X2-1,Y+15,INK);WText(X1+16,Y+4,S);
+    If GMn[H].IC[T,I] Then WText(X1+4,Y+4,#251);
+   End Else Begin
+    If GMn[H].ID[T,I] Then GreyText(X1+16,Y+4,S) Else PText(X1+16,Y+4,S);
+    If GMn[H].IC[T,I] Then PText(X1+4,Y+4,#251);
+   End;
+  End;
+ End;
+ ShowMouse;
+End;
+
+{ menu deroulant modal ; retourne True si un article est choisi }
+Function GemMenuModal(H: Integer; Var RT,RI: Integer): Boolean;
+Var Sv: TSave; E: TEvent; T,CT,I,Hi,MXp,MYp,X1,Y1,X2,Y2: Integer; Done,Pick: Boolean; Moved: Boolean;
+Begin
+ GemMenuModal:=False;RT:=0;RI:=0;
+ OutFlush(True);
+ HideMouse;
+ SaveBack(Sv,0,OFS_Y,639,Min3(SCR_H-1,OFS_Y+GM_BAR+14*16+10));
+ ShowMouse;
+ CT:=0;Hi:=0;Done:=False;Pick:=False;
+ Repeat
+  PollEvent(E);
+  MXp:=E.X;MYp:=E.Y-OFS_Y;
+  T:=0;
+  If (MYp>=0) And (MYp<GM_BAR) Then T:=MenuTitleAt(H,MXp);
+  If (T<>0) And (T<>CT) Then Begin
+   HideMouse;RestoreBack(Sv);SaveBack(Sv,0,OFS_Y,639,Min3(SCR_H-1,OFS_Y+GM_BAR+14*16+10));
+   CT:=T;Hi:=0;
+   Box(GMn[H].TX[T],OFS_Y,GMn[H].TX[T]+Length(GMn[H].TT[T])*8-1,OFS_Y+GM_BAR-2,INK);
+   WText(GMn[H].TX[T],OFS_Y+5,GMn[H].TT[T]);
+   DrawDrop(H,T,0);
+  End;
+  If CT<>0 Then Begin
+   X1:=GMn[H].TX[CT];
+   If X1+DropWidth(H,CT)>636 Then X1:=636-DropWidth(H,CT);
+   X2:=X1+DropWidth(H,CT);Y1:=GM_BAR-1;Y2:=Y1+GMn[H].NI[CT]*16+4;
+   I:=0;
+   If (MXp>=X1) And (MXp<=X2) And (MYp>=Y1+2) And (MYp<Y2-2) Then I:=(MYp-Y1-2) Div 16+1;
+   If (I>GMn[H].NI[CT]) Then I:=0;
+   If (I<>0) And (GMn[H].ID[CT,I] Or (Trim2(GMn[H].IT[CT,I])='-')) Then I:=0;
+   If I<>Hi Then Begin Hi:=I;DrawDrop(H,CT,Hi);End;
+   If (E.Kind=2) Or (E.Kind=3) Then Begin
+    If Hi<>0 Then Begin Pick:=True;Done:=True;End
+    Else If (T=0) And (E.Kind=2) Then Done:=True;
+   End;
+   If (T=0) And (Hi=0) And (E.Kind=4) Then
+    If Not ((MXp>=X1-4) And (MXp<=X2+4) And (MYp>=0) And (MYp<=Y2+4)) Then Done:=True;
+  End Else If (E.Kind=2) Or ((E.Kind=4) And ((MYp>=GM_BAR))) Then Done:=True;
+ Until Done;
+ HideMouse;RestoreBack(Sv);ShowMouse;
+ If Pick Then Begin
+  RT:=CT+2;RI:=GMn[H].IDn[CT,Hi];
+  GemMenuModal:=True;
+ End;
+End;
+
+{ ------------------------------ dialogues ------------------------------ }
+
+Function DlgRect(D,I: Integer; Var X,Y,W,H: Integer): Boolean;
+Begin
+ X:=GDl[D].PX+GDl[D].Ob[I].X*8;Y:=GDl[D].PY+GDl[D].Ob[I].Y*16;
+ W:=GDl[D].Ob[I].W*8;H:=GDl[D].Ob[I].H*16;
+ If I=0 Then Begin X:=GDl[D].PX;Y:=GDl[D].PY;End;
+ DlgRect:=True;
+End;
+
+Procedure PaintObj(D,I: Integer);
+Var X,Y,W,H,TX,B,K: Integer; S,T: String; Inv: Boolean; O: TGObj;
+Begin
+ O:=GDl[D].Ob[I];
+ DlgRect(D,I,X,Y,W,H);
+ Y:=Y+OFS_Y;
+ Inv:=(O.State And 1)<>0;
+ S:=O.Txt;
+ If ((O.Typ=29) Or (O.Typ=30)) And (O.Templ<>'') Then Begin
+  T:='';K:=0;
+  For B:=1 To Length(O.Templ) Do
+   If O.Templ[B]='_' Then Begin
+    Inc(K);
+    If K<=Length(O.Txt) Then T:=T+O.Txt[K] Else T:='' + T + '_';
+   End Else T:=T+O.Templ[B];
+  S:=T;
+ End;
+ HideMouse;
+ Case O.Typ Of
+  20,22,25,26,30,29,21: Begin
+    If (O.Typ=21) Or (O.Typ=29) Then Box(X,Y,X+W-1,Y+H-1,PAPER);
+    If (O.Typ=20) Or (O.Typ=22) Or (O.Typ=25) Or (O.Typ=26) Or (O.Typ=30) Then Begin
+     If Inv Then Box(X,Y,X+W-1,Y+H-1,INK) Else Box(X,Y,X+W-1,Y+H-1,PAPER);
+     If O.Typ=26 Then Begin
+      Frame(X,Y,X+W-1,Y+H-1);
+      If (O.Flags And 2)<>0 Then Begin Frame(X-1,Y-1,X+W,Y+H);Frame(X-2,Y-2,X+W+1,Y+H+1);End;
+      If (O.Border>1) Or (O.Border<-1) Then Frame(X+1,Y+1,X+W-2,Y+H-2);
+     End Else If O.Border<>0 Then Begin
+      B:=Abs(O.Border);
+      For K:=0 To B-1 Do
+       If O.Border>0 Then Frame(X+K,Y+K,X+W-1-K,Y+H-1-K) Else Frame(X-1-K,Y-1-K,X+W+K,Y+H+K);
+     End;
+    End;
+    If S<>'' Then Begin
+     TX:=X+2;
+     If (O.Just=2) Or (O.Typ=26) Then TX:=X+(W-Length(S)*8) Div 2
+     Else If O.Just=1 Then TX:=X+W-Length(S)*8-2;
+     If Inv Then WText(TX,Y+(H-7) Div 2,S)
+     Else If (O.State And 8)<>0 Then GreyText(TX,Y+(H-7) Div 2,S)
+     Else PText(TX,Y+(H-7) Div 2,S);
+    End;
+   End;
+  28: Begin
+    If Inv Then Begin Box(X,Y,X+Length(S)*8,Y+15,INK);WText(X,Y+4,S);End
+    Else PText(X,Y+4,S);
+   End;
+ End;
+ ShowMouse;
+End;
+
+Procedure PaintDlg(D: Integer);
+Var I,X,Y,W,H: Integer;
+Begin
+ DlgRect(D,0,X,Y,W,H);
+ HideMouse;
+ Box(X+4,Y+OFS_Y+4,X+W+4,Y+OFS_Y+H+4,INK);
+ Box(X,Y+OFS_Y,X+W-1,Y+OFS_Y+H-1,PAPER);
+ Frame(X,Y+OFS_Y,X+W-1,Y+OFS_Y+H-1);
+ Frame(X+1,Y+OFS_Y+1,X+W-2,Y+OFS_Y+H-2);
+ ShowMouse;
+ For I:=1 To GDl[D].N Do PaintObj(D,I);
+End;
+
+Function ValidCh(V: Char; C: Char): Boolean;
+Begin
+ Case V Of
+  '9': ValidCh:=(C>='0') And (C<='9');
+  'A': ValidCh:=((C>='A') And (C<='Z')) Or (C=' ');
+  'a': ValidCh:=((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or (C=' ');
+  'N': ValidCh:=((C>='0') And (C<='9')) Or ((C>='A') And (C<='Z')) Or (C=' ');
+  'n': ValidCh:=((C>='0') And (C<='9')) Or ((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or (C=' ');
+ Else ValidCh:=C>=' ';
+ End;
+End;
+
+Function DlgRun(D,Start: Integer): Integer;
+Var E: TEvent; Done: Boolean; Fc,I,J,Hit,X,Y,W,H,R,Dbl: Integer; Sv: TSave; Own: Boolean; Ch: Char;
+    Prev: Integer;
+ Function NextEdit(From,Dir: Integer): Integer;
+ Var K,N: Integer;
+ Begin
+  NextEdit:=From;K:=From;
+  For N:=1 To GDl[D].N Do Begin
+   K:=K+Dir;
+   If K>GDl[D].N Then K:=1;
+   If K<1 Then K:=GDl[D].N;
+   If (GDl[D].Ob[K].Flags And 8)<>0 Then Begin NextEdit:=K;Exit;End;
+  End;
+ End;
+Begin
+ OutFlush(True);
+ GemCur(True);
+ Own:=Not GDl[D].Shown;
+ DlgRect(D,0,X,Y,W,H);
+ If Own Then Begin
+  HideMouse;
+  SaveBack(GDl[D].Sv,X,Y+OFS_Y,X+W+5,Y+OFS_Y+H+5);
+  ShowMouse;
+  GDl[D].Shown:=True;
+  PaintDlg(D);
+ End;
+ Fc:=0;
+ If (Start>0) And (Start<=GDl[D].N) And ((GDl[D].Ob[Start].Flags And 8)<>0) Then Fc:=Start
+ Else Fc:=NextEdit(0,1);
+ If Fc>0 Then Begin
+  If (GDl[D].Ob[Fc].Txt='') And (Start=Fc) Then Begin End;
+ End;
+ Done:=False;R:=0;Dbl:=0;
+ Repeat
+  PollEvent(E);
+  If E.Kind=1 Then Begin
+   Case E.Key Of
+    K_ENTER: Begin
+      For I:=1 To GDl[D].N Do If ((GDl[D].Ob[I].Flags And 2)<>0) And (R=0) Then R:=I;
+      If R<>0 Then Begin GDl[D].Ob[R].State:=GDl[D].Ob[R].State Or 1;PaintObj(D,R);Done:=True;End;
+     End;
+    K_TAB,K_DOWN: If Fc>0 Then Fc:=NextEdit(Fc,1);
+    K_UP: If Fc>0 Then Fc:=NextEdit(Fc,-1);
+    K_BKSP: If (Fc>0) And (Length(GDl[D].Ob[Fc].Txt)>0) Then Begin
+      GDl[D].Ob[Fc].Txt[0]:=Chr(Length(GDl[D].Ob[Fc].Txt)-1);PaintObj(D,Fc);
+     End;
+   Else
+    If (Fc>0) And (E.Key>=32) And (E.Key<256) Then Begin
+     Ch:=Chr(E.Key);
+     J:=0;
+     For I:=1 To Length(GDl[D].Ob[Fc].Templ) Do If GDl[D].Ob[Fc].Templ[I]='_' Then Inc(J);
+     If J=0 Then J:=GDl[D].Ob[Fc].W;
+     I:=Length(GDl[D].Ob[Fc].Txt)+1;
+     If (I<=J) And ((GDl[D].Ob[Fc].Valid='') Or (I>Length(GDl[D].Ob[Fc].Valid)) Or ValidCh(GDl[D].Ob[Fc].Valid[I],Ch)) Then Begin
+      GDl[D].Ob[Fc].Txt:=GDl[D].Ob[Fc].Txt+Ch;PaintObj(D,Fc);
+     End;
+    End;
+   End;
+  End Else If E.Kind=2 Then Begin
+   Hit:=0;
+   For I:=1 To GDl[D].N Do Begin
+    DlgRect(D,I,X,Y,W,H);
+    If GDl[D].Ob[I].Typ=28 Then W:=Length(GDl[D].Ob[I].Txt)*8;
+    If GDl[D].Ob[I].Typ=28 Then H:=16;
+    If InBox(E.X,E.Y-OFS_Y,X,Y,X+W-1,Y+H-1) Then Hit:=I;
+   End;
+   If Hit<>0 Then Begin
+    I:=Hit;
+    If (GDl[D].Ob[I].Flags And 8)<>0 Then Begin Fc:=I;End;
+    If ((GDl[D].Ob[I].Flags And 1)<>0) And ((GDl[D].Ob[I].State And 8)=0) Then Begin
+     If (GDl[D].Ob[I].Flags And $10)<>0 Then Begin
+      For J:=1 To GDl[D].N Do
+       If ((GDl[D].Ob[J].Flags And $10)<>0) And ((GDl[D].Ob[J].State And 1)<>0) Then Begin
+        GDl[D].Ob[J].State:=GDl[D].Ob[J].State And (Not 1);PaintObj(D,J);
+       End;
+      GDl[D].Ob[I].State:=GDl[D].Ob[I].State Or 1;PaintObj(D,I);
+     End Else If (GDl[D].Ob[I].Flags And 4)=0 Then Begin
+      GDl[D].Ob[I].State:=GDl[D].Ob[I].State Xor 1;PaintObj(D,I);
+     End Else Begin
+      GDl[D].Ob[I].State:=GDl[D].Ob[I].State Or 1;PaintObj(D,I);
+     End;
+    End;
+    If (GDl[D].Ob[I].Flags And ($4 Or $40))<>0 Then Begin
+     { double clic ? }
+     If NowCs-LastClkCs<40 Then Dbl:=$8000 Else Dbl:=0;
+     LastClkCs:=NowCs;
+     R:=I;Done:=True;
+     Repeat GetMouseState(MX,MY,MB);Delay(5);Until (MB And 3)=0;
+    End;
+   End;
+  End;
+ Until Done Or QuitReq;
+ If Own Then Begin
+  HideMouse;RestoreBack(GDl[D].Sv);ShowMouse;GDl[D].Shown:=False;
+ End;
+ DlgRun:=R Or Dbl;
+End;
+
+{ ------------------------------ evenements ----------------------------- }
+
+Function HitWin(MXp,MYp: Integer): Integer;
+Var K: Integer;
+Begin
+ HitWin:=0;
+ For K:=ZN DownTo 1 Do
+  If GW[ZW[K]].Open Then
+   If InBox(MXp,MYp,GW[ZW[K]].X,GW[ZW[K]].Y,GW[ZW[K]].X+GW[ZW[K]].W-1,GW[ZW[K]].Y+GW[ZW[K]].H-1) Then Begin
+    HitWin:=ZW[K];Exit;
+   End;
+End;
+
+Procedure RubberXor(X,Y,W,H: Integer);
+Var I: Integer;
+Begin
+ OXor:=True;
+ For I:=X To X+W-1 Do Begin OPlot(I,Y,1);OPlot(I,Y+H-1,1);End;
+ For I:=Y+1 To Y+H-2 Do Begin OPlot(X,I,1);OPlot(X+W-1,I,1);End;
+ OXor:=False;
+End;
+
+{ glisse un rectangle : Mode 0 deplacement, 1 changement de taille }
+Procedure RubberDrag(I,Mode: Integer; Var NX,NY,NW,NH: Integer);
+Var X0,Y0,CX,CY,DX,DY: Integer; Mx0,My0: LongInt;
+Begin
+ GetMouseState(MX,MY,MB);
+ Mx0:=MX;My0:=MY;
+ NX:=GW[I].X;NY:=GW[I].Y;NW:=GW[I].W;NH:=GW[I].H;
+ X0:=NX;Y0:=NY;
+ GBegin(0,0,640,400,False);
+ RubberXor(NX,NY,NW,NH);GFlush;
+ While (MB And 3)<>0 Do Begin
+  GetMouseState(MX,MY,MB);
+  DX:=MX-Mx0;DY:=MY-My0;
+  CX:=NX;CY:=NY;
+  If Mode=0 Then Begin
+   NX:=X0+DX;NY:=Y0+DY;
+   If NY<GM_BAR Then NY:=GM_BAR;
+  End Else Begin
+   NW:=GW[I].W+DX;NH:=GW[I].H+DY;
+   If NW<60 Then NW:=60;
+   If NH<40 Then NH:=40;
+   If NW>GW[I].MW Then NW:=GW[I].MW;
+   If NH>GW[I].MH Then NH:=GW[I].MH;
+  End;
+  If (CX<>NX) Or (CY<>NY) Or (Mode=1) Then Begin
+   GBegin(0,0,640,400,False);
+   RubberXor(CX,CY,GW[I].W+DX*Mode,GW[I].H+DY*Mode);
+   RubberXor(NX,NY,NW,NH);
+   GEnd;GFlush;
+  End;
+  Delay(15);
+ End;
+ GBegin(0,0,640,400,False);
+ RubberXor(NX,NY,NW,NH);
+ GEnd;
+ GFlush;
+End;
+
+Function WinClick(MXp,MYp: Integer): Boolean;
+{ gere un clic dans une fenetre ; True si le clic a ete consomme }
+Var H,K,X,Y,W,Hh,WX,WY,WW2,WH,NX,NY,NW,NH,Pos,TL,TH: Integer; Kd: Integer;
+Begin
+ WinClick:=False;
+ H:=HitWin(MXp,MYp);
+ If H=0 Then Exit;
+ If TopWin<>H Then Begin PushMsg(21,H,0,0,0,0);WinClick:=True;Exit;End;
+ Kd:=GW[H].Kind;
+ X:=GW[H].X;Y:=GW[H].Y;W:=GW[H].W;Hh:=GW[H].H;
+ WinWork(H,WX,WY,WW2,WH);
+ If InBox(MXp,MYp,WX,WY,WX+WW2-1,WY+WH-1) Then Exit;    { zone de travail : evenement bouton }
+ WinClick:=True;
+ If (Kd And $E)<>0 Then
+  If (MYp>=Y) And (MYp<Y+19) Then Begin
+   If ((Kd And 2)<>0) And (MXp<X+19) Then Begin
+    Repeat GetMouseState(MX,MY,MB);Delay(5);Until (MB And 3)=0;
+    PushMsg(22,H,0,0,0,0);Exit;
+   End;
+   If ((Kd And 4)<>0) And (MXp>=X+W-19) Then Begin
+    Repeat GetMouseState(MX,MY,MB);Delay(5);Until (MB And 3)=0;
+    PushMsg(23,H,0,0,0,0);Exit;
+   End;
+   If (Kd And 8)<>0 Then Begin
+    RubberDrag(H,0,NX,NY,NW,NH);
+    PushMsg(28,H,NX,NY,NW,NH);
+   End;
+   Exit;
+  End;
+ If ((Kd And $20)<>0) And (MXp>=X+W-19) And (MYp>=Y+Hh-19) Then Begin
+  RubberDrag(H,1,NX,NY,NW,NH);
+  PushMsg(27,H,NX,NY,NW,NH);
+  Exit;
+ End;
+ { barre verticale }
+ If ((Kd And $1C0)<>0) And (MXp>=X+W-19) Then Begin
+  If ((Kd And $40)<>0) And (MYp<WY+18) Then PushMsg(24,H,2,0,0,0)
+  Else If ((Kd And $80)<>0) And (MYp>=WY+WH-18) And (MYp<WY+WH) Then PushMsg(24,H,3,0,0,0)
+  Else If (Kd And $100)<>0 Then Begin
+   TL:=WY+18;TH:=WH-36;
+   Pos:=1;
+   If TH>0 Then Pos:=Max3(1,Min3(1000,(MYp-TL)*1000 Div TH));
+   PushMsg(26,H,Pos,0,0,0);
+  End;
+  Repeat GetMouseState(MX,MY,MB);Delay(5);Until (MB And 3)=0;
+  Exit;
+ End;
+ If ((Kd And $E00)<>0) And (MYp>=WY+WH) Then Begin
+  If ((Kd And $200)<>0) And (MXp<WX+18) Then PushMsg(24,H,6,0,0,0)
+  Else If ((Kd And $400)<>0) And (MXp>=WX+WW2-18) Then PushMsg(24,H,7,0,0,0)
+  Else If (Kd And $800)<>0 Then Begin
+   TL:=WX+18;TH:=WW2-36;Pos:=1;
+   If TH>0 Then Pos:=Max3(1,Min3(1000,(MXp-TL)*1000 Div TH));
+   PushMsg(25,H,Pos,0,0,0);
+  End;
+  Repeat GetMouseState(MX,MY,MB);Delay(5);Until (MB And 3)=0;
+ End;
+End;
+
+Function GemEvent(Mask,BMask,BState,NClk: LongInt; Ticks: LongInt; R1f: Boolean; R1x,R1y,R1w,R1h: LongInt;
+                  R2f: Boolean; R2x,R2y,R2w,R2h: LongInt;
+                  PMsg,PKey,PBst,PBcnt,PMx,PMy,PKbd: LongInt): LongInt;
+Var Ret,I,Cnt,T,Ti: Integer; E: TEvent; T0: LongInt; Kc: LongInt; MXp,MYp: LongInt; Ins1,Ins2: Boolean;
+    LastIn1,LastIn2: Boolean; Picked: Boolean; RT,RI: Integer; Bs: LongInt;
+Begin
+ Ret:=0;T0:=NowCs;Cnt:=0;
+ GemCur(True);
+ GetMouseState(MX,MY,MB);
+ LastIn1:=InBox(MX,MY-OFS_Y,R1x,R1y,R1x+R1w-1,R1y+R1h-1);
+ LastIn2:=InBox(MX,MY-OFS_Y,R2x,R2y,R2x+R2w-1,R2y+R2h-1);
+ Bs:=MB And 3;
+ Repeat
+  If ((Mask And 16)<>0) And (MsgN>0) Then Begin
+   For I:=0 To 7 Do PutW(PMsg+I*2,MsgQ[1,I]);
+   For I:=8 To 15 Do PutW(PMsg+I*2,0);
+   For I:=2 To MsgN Do MsgQ[I-1]:=MsgQ[I];
+   Dec(MsgN);
+   Ret:=Ret Or 16;
+  End;
+  PollEvent(E);
+  MXp:=E.X;MYp:=E.Y-OFS_Y;
+  Case E.Kind Of
+   1: If (Mask And 1)<>0 Then Begin
+       If E.Key>=256 Then Kc:=(LongInt(E.Key-256) Shl 8) Else Kc:=E.Key;
+       If (E.Key<256) And (E.Key>=32) Then Kc:=E.Key;
+       If E.Key=K_ENTER Then Kc:=$1C0D;
+       If E.Key=K_BKSP Then Kc:=$0E08;
+       If E.Key=K_ESC Then Kc:=$011B;
+       PutW(PKey,Kc);Ret:=Ret Or 1;
+      End;
+   2: Begin
+       If (MYp>=0) And (MYp<GM_BAR) And (ActMenu>0) And GMn[ActMenu].Drawn Then Begin
+        If GemMenuModal(ActMenu,RT,RI) Then Begin
+         GMn[ActMenu].Hi:=RT;GemBarRedraw;PushMsg(10,RT,RI,0,0,0);
+        End;
+       End Else If Not WinClick(MXp,MYp) Then Begin
+        If (Mask And 2)<>0 Then Begin
+         If NowCs-LastClkCs<40 Then Inc(Cnt) Else Cnt:=1;
+         LastClkCs:=NowCs;
+         If ((BState And BMask And 3)<>0) And (Cnt>=NClk) Then Begin
+          Ret:=Ret Or 2;Bs:=E.B And 3;
+         End;
+        End;
+       End;
+      End;
+   3: If ((Mask And 2)<>0) And ((BState And BMask And 3)=0) And ((BMask And 3)<>0) Then Begin
+       Ret:=Ret Or 2;Bs:=0;Cnt:=1;
+      End;
+   4: If (MYp>=0) And (MYp<GM_BAR) And (ActMenu>0) And GMn[ActMenu].Drawn And ((E.B And 3)=0) Then Begin
+       If MenuTitleAt(ActMenu,MXp)<>0 Then Begin
+        If GemMenuModal(ActMenu,RT,RI) Then Begin
+         GMn[ActMenu].Hi:=RT;GemBarRedraw;PushMsg(10,RT,RI,0,0,0);
+        End;
+       End;
+      End;
+  End;
+  If ((Mask And 4)<>0) Then Begin
+   Ins1:=InBox(MXp,MYp,R1x,R1y,R1x+R1w-1,R1y+R1h-1);
+   If (Ins1<>LastIn1) And (Ins1<>R1f) Then Ret:=Ret Or 4;
+   LastIn1:=Ins1;
+  End;
+  If ((Mask And 8)<>0) Then Begin
+   Ins2:=InBox(MXp,MYp,R2x,R2y,R2x+R2w-1,R2y+R2h-1);
+   If (Ins2<>LastIn2) And (Ins2<>R2f) Then Ret:=Ret Or 8;
+   LastIn2:=Ins2;
+  End;
+  If (Mask And 32)<>0 Then
+   If (NowCs-T0)*10>=Ticks Then Ret:=Ret Or 32;
+  If MsgN>0 Then OutFlush(False);
+  If (Ret=0) And (E.Kind=0) Then Begin OutFlush(False);Delay(3);End;
+ Until (Ret<>0) Or QuitReq Or BreakReq;
+ GetMouseState(MX,MY,MB);
+ PutW(PBst,MB And 3);PutW(PBcnt,Cnt);PutW(PMx,MX);PutW(PMy,MY-OFS_Y);
+ If (MB And 2)<>0 Then PutW(PKbd,1) Else PutW(PKbd,0);
+ If (Mask And 1)=0 Then PutW(PKey,0);
+ GemEvent:=Ret;
+End;
+
+{ ------------------------- point d'entree des services ----------------- }
+
+Function CopyPStr(A: LongInt): String;
+Begin
+ CopyPStr:=GetPS(A);
+End;
+
+Procedure ClearGem;
+Var I: Integer;
+Begin
+ FillChar(GW,SizeOf(GW),0);
+ FillChar(GMn,SizeOf(GMn),0);
+ For I:=1 To MAXGD Do GDl[I].Used:=False;
+ ZN:=0;MsgN:=0;CurWin:=0;OrgX:=0;OrgY:=0;ActMenu:=0;NextItemId:=20;
+ RectN:=0;RectI:=0;LastClkCs:=0;
+End;
+
+Function GemService(Sv: Integer): Boolean;
+Var A,B,C,D,E,F,G,H,I,J,K: LongInt; S: String; Ok: Boolean; RT,RI: Integer; Av: Array[1..22] Of LongInt;
+    X1,Y1,W1,H1: Integer; R1,R2,R3: TRct; PS,PN: String;
+Begin
+ GemService:=True;
+ Case Sv Of
+  S_NEWMENU: Begin
+    B:=Pop32;A:=Pop32;
+    I:=0;
+    For J:=1 To MAXGMN Do If (Not GMn[J].Used) And (I=0) Then I:=J;
+    If I=0 Then RD[0]:=0 Else Begin
+     FillChar(GMn[I],SizeOf(TGMenu),0);
+     GMn[I].Used:=True;GMn[I].NT:=1;GMn[I].TT[1]:=' Desk ';GMn[I].Hi:=0;
+     GMn[I].NI[1]:=1;GMn[I].IT[1,1]:=GetPS(B);GMn[I].IDn[1,1]:=10;
+     RD[0]:=I;
+    End;
+   End;
+  S_DELMENU: Begin A:=Pop32;If (A>=1) And (A<=MAXGMN) Then Begin GMn[A].Used:=False;If ActMenu=A Then ActMenu:=0;End;End;
+  S_ADDMTITLE: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) And (GMn[A].NT<8) Then Begin
+     Inc(GMn[A].NT);GMn[A].TT[GMn[A].NT]:=GetPS(B);RD[0]:=GMn[A].NT+2;
+    End Else RD[0]:=-1;
+   End;
+  S_ADDMITEM: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) And (B>=3) And (B-2<=GMn[A].NT) And (GMn[A].NI[B-2]<14) Then Begin
+     Inc(GMn[A].NI[B-2]);
+     GMn[A].IT[B-2,GMn[A].NI[B-2]]:=GetPS(C);
+     GMn[A].IDn[B-2,GMn[A].NI[B-2]]:=NextItemId;
+     RD[0]:=NextItemId;Inc(NextItemId);
+    End Else RD[0]:=-1;
+   End;
+  S_DRAWMENU: Begin
+    A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) Then Begin
+     MenuLayout(A);GMn[A].Drawn:=True;ActMenu:=A;
+     GemBarRedraw;
+    End;
+   End;
+  S_ERASEMENU: Begin
+    A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) Then Begin GMn[A].Drawn:=False;If ActMenu=A Then ActMenu:=0;GemBarRedraw;End;
+   End;
+  S_MENUHI,S_MENUNORMAL: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) Then Begin
+     If Sv=S_MENUHI Then GMn[A].Hi:=B Else GMn[A].Hi:=0;
+     GemBarRedraw;
+    End;
+   End;
+  S_MENUCHECK: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) Then
+     For I:=1 To GMn[A].NT Do For J:=1 To GMn[A].NI[I] Do If GMn[A].IDn[I,J]=B Then GMn[A].IC[I,J]:=(C<>0);
+   End;
+  S_MENUENABLE,S_MENUDISABLE: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) Then
+     For I:=1 To GMn[A].NT Do For J:=1 To GMn[A].NI[I] Do If GMn[A].IDn[I,J]=B Then GMn[A].ID[I,J]:=(Sv=S_MENUDISABLE);
+   End;
+  S_MENUTEXT: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGMN) Then
+     For I:=1 To GMn[A].NT Do For J:=1 To GMn[A].NI[I] Do If GMn[A].IDn[I,J]=B Then GMn[A].IT[I,J]:=GetPS(C);
+   End;
+  S_MENUREG: Begin B:=Pop32;A:=Pop32;RD[0]:=A;End;
+  S_NEWWIN: Begin
+    H:=Pop32;G:=Pop32;F:=Pop32;E:=Pop32;B:=Pop32;A:=Pop32;
+    I:=NewGWin;
+    If I<0 Then RD[0]:=-1 Else Begin
+     GW[I].Kind:=A;GW[I].Title:=GetPS(B);
+     DeskRect(X1,Y1,W1,H1);
+     If (G<=0) Or (H<=0) Then Begin GW[I].MX:=0;GW[I].MY:=Y1;GW[I].MW:=W1;GW[I].MH:=H1;End
+     Else Begin GW[I].MX:=E;GW[I].MY:=F;GW[I].MW:=G;GW[I].MH:=H;End;
+     GW[I].HS:=0;GW[I].VS:=0;GW[I].HSz:=1000;GW[I].VSz:=1000;
+     RD[0]:=I;
+    End;
+   End;
+  S_OPENWIN: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGW) And GW[A].Used Then Begin
+     If (D<=0) Or (E<=0) Then Begin
+      If GW[A].MW<640 Then Begin B:=GW[A].MX+20;C:=GW[A].MY+10;D:=GW[A].MW-40;E:=GW[A].MH-20;End
+      Else Begin B:=0;C:=0;D:=0;E:=0;End;
+     End;
+     WinOpen(A,B,C,D,E);
+    End;
+   End;
+  S_CLOSEWIN: Begin A:=Pop32;If (A>=1) And (A<=MAXGW) Then WinClose(A);End;
+  S_DELWIN: Begin A:=Pop32;If (A>=1) And (A<=MAXGW) Then Begin If GW[A].Open Then WinClose(A);GW[A].Used:=False;End;End;
+  S_SETWSIZE: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGW) Then WinSetSize(A,B,C,D,E);
+   End;
+  S_SETWNAME: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGW) And GW[A].Used Then Begin
+     GW[A].Title:=GetPS(B);
+     If GW[A].Open Then GemRefresh(GW[A].X,GW[A].Y,GW[A].W,20,False);
+    End;
+   End;
+  S_SETWINFO: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGW) And GW[A].Used Then Begin
+     GW[A].Info:=GetPS(B);
+     If GW[A].Open Then GemRefresh(GW[A].X,GW[A].Y,GW[A].W,GW[A].H,False);
+    End;
+   End;
+  S_BORDERRECT,S_WORKRECT: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A<=0) Or (A>MAXGW) Then Begin
+     DeskRect(X1,Y1,W1,H1);
+     If Sv=S_BORDERRECT Then Begin X1:=0;Y1:=0;W1:=640;H1:=400;End;
+    End Else If Sv=S_BORDERRECT Then Begin X1:=GW[A].X;Y1:=GW[A].Y;W1:=GW[A].W;H1:=GW[A].H;End
+    Else WinWork(A,X1,Y1,W1,H1);
+    PutW(B,X1);PutW(C,Y1);PutW(D,W1);PutW(E,H1);
+   End;
+  S_FIRSTRECT: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    BuildRects(A);RectOut(B,C,D,E);
+   End;
+  S_NEXTRECT: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    RectOut(B,C,D,E);
+   End;
+  S_RECTINT: Begin
+    H:=Pop32;G:=Pop32;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    R1.X:=A;R1.Y:=B;R1.W:=C;R1.H:=D;
+    R2.X:=GetW(E);R2.Y:=GetW(F);R2.W:=GetW(G);R2.H:=GetW(H);
+    If Isect(R1,R2,R3) Then Begin
+     PutW(E,R3.X);PutW(F,R3.Y);PutW(G,R3.W);PutW(H,R3.H);RD[0]:=1;
+    End Else Begin
+     PutW(E,R3.X);PutW(F,R3.Y);PutW(G,0);PutW(H,0);RD[0]:=0;
+    End;
+   End;
+  S_FRONTWIN: RD[0]:=TopWin;
+  S_BRINGFRONT: Begin A:=Pop32;If (A>=1) And (A<=MAXGW) Then WinToFront(A);End;
+  S_SETWINDOW: Begin
+    A:=Pop32;
+    If (A>=1) And (A<=MAXGW) And GW[A].Used Then Begin
+     CurWin:=A;WinWork(A,X1,Y1,W1,H1);OrgX:=X1;OrgY:=Y1;
+    End Else Begin CurWin:=0;OrgX:=0;OrgY:=0;End;
+   End;
+  S_GETWINDOW: RD[0]:=CurWin;
+  S_WINDGET: Begin
+    G:=Pop32;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    X1:=0;Y1:=0;W1:=0;H1:=0;
+    If (A>=1) And (A<=MAXGW) And GW[A].Used Then Begin
+     Case B Of
+      4: WinWork(A,X1,Y1,W1,H1);
+      5: Begin X1:=GW[A].X;Y1:=GW[A].Y;W1:=GW[A].W;H1:=GW[A].H;End;
+      6: Begin X1:=GW[A].PX;Y1:=GW[A].PY;W1:=GW[A].PW;H1:=GW[A].PH;End;
+      7: Begin X1:=GW[A].MX;Y1:=GW[A].MY;W1:=GW[A].MW;H1:=GW[A].MH;End;
+      8: X1:=GW[A].HS;
+      9: X1:=GW[A].VS;
+      15: X1:=GW[A].HSz;
+      16: X1:=GW[A].VSz;
+      10: X1:=TopWin;
+     End;
+    End Else If B=4 Then DeskRect(X1,Y1,W1,H1);
+    PutW(C,X1);PutW(D,Y1);PutW(E,W1);PutW(F,H1);
+   End;
+  S_WINDSET: Begin
+    G:=Pop32;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGW) And GW[A].Used Then Begin
+     Case B Of
+      5: WinSetSize(A,C,D,E,F);
+      8: Begin GW[A].HS:=C;If GW[A].Open Then GemRefresh(GW[A].X,GW[A].Y,GW[A].W,GW[A].H,False);End;
+      9: Begin GW[A].VS:=C;If GW[A].Open Then GemRefresh(GW[A].X,GW[A].Y,GW[A].W,GW[A].H,False);End;
+      15: Begin GW[A].HSz:=C;If GW[A].Open Then GemRefresh(GW[A].X,GW[A].Y,GW[A].W,GW[A].H,False);End;
+      16: Begin GW[A].VSz:=C;If GW[A].Open Then GemRefresh(GW[A].X,GW[A].Y,GW[A].W,GW[A].H,False);End;
+      10: WinToFront(A);
+     End;
+    End;
+   End;
+  S_GETEVENT: Begin
+    For I:=22 DownTo 1 Do Av[I]:=Pop32;
+    RD[0]:=GemEvent(Av[1],Av[2],Av[3],Av[4],Av[5],Av[6]<>0,Av[7],Av[8],Av[9],Av[10],
+                    Av[11]<>0,Av[12],Av[13],Av[14],Av[15],Av[16],Av[17],Av[18],Av[19],Av[20],Av[21],Av[22]);
+   End;
+  S_NEWDLG: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    I:=0;
+    For J:=1 To MAXGD Do If (Not GDl[J].Used) And (I=0) Then I:=J;
+    If I=0 Then RD[0]:=0 Else Begin
+     FillChar(GDl[I],SizeOf(TGDlg),0);
+     GDl[I].Used:=True;GDl[I].N:=0;
+     GDl[I].Ob[0].Typ:=20;GDl[I].Ob[0].X:=B;GDl[I].Ob[0].Y:=C;GDl[I].Ob[0].W:=D;GDl[I].Ob[0].H:=E;
+     GDl[I].PX:=B*8;GDl[I].PY:=C*16;
+     RD[0]:=I;
+    End;
+   End;
+  S_DELDLG,S_ENDDLG: Begin
+    A:=Pop32;
+    If (A>=1) And (A<=MAXGD) Then Begin
+     If GDl[A].Shown Then Begin HideMouse;RestoreBack(GDl[A].Sv);ShowMouse;GDl[A].Shown:=False;End;
+     If Sv=S_DELDLG Then GDl[A].Used:=False;
+    End;
+   End;
+  S_ADDDITEM: Begin
+    I:=Pop32;H:=Pop32;G:=Pop32;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    { dlg,type,flags,x,y,w,h,border,color : A..I dans l'ordre inverse }
+    If (A>=1) And (A<=MAXGD) And (GDl[A].N<MAXGO) Then Begin
+     Inc(GDl[A].N);
+     J:=GDl[A].N;
+     FillChar(GDl[A].Ob[J],SizeOf(TGObj),0);
+     GDl[A].Ob[J].Typ:=B;GDl[A].Ob[J].Flags:=C;GDl[A].Ob[J].X:=D;GDl[A].Ob[J].Y:=E;
+     GDl[A].Ob[J].W:=F;GDl[A].Ob[J].H:=G;GDl[A].Ob[J].Border:=SmallInt(H);GDl[A].Ob[J].Color:=I;
+     If (B=26) And (GDl[A].Ob[J].H=0) Then GDl[A].Ob[J].H:=1;
+     RD[0]:=J;
+    End Else RD[0]:=-1;
+   End;
+  S_DCOLOR: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If C<>0 Then C:=1;
+    RD[0]:=((A And 15) Shl 12) Or ((B And 15) Shl 8) Or (C Shl 7) Or ((D And 7) Shl 4) Or (E And 15);
+   End;
+  S_SETDTEXT: Begin
+    E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then Begin
+     GDl[A].Ob[B].Txt:=GetPS(C);GDl[A].Ob[B].Just:=E;
+    End;
+   End;
+  S_SETDEDIT: Begin
+    G:=Pop32;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    { dlg,item,template,valid,initial,font,just }
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then Begin
+     GDl[A].Ob[B].Templ:=GetPS(C);GDl[A].Ob[B].Valid:=GetPS(D);GDl[A].Ob[B].Txt:=GetPS(E);
+     GDl[A].Ob[B].Just:=G;
+     GDl[A].Ob[B].Flags:=GDl[A].Ob[B].Flags Or 8;
+    End;
+   End;
+  S_OBJSETSTATE: Begin
+    D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then Begin
+     GDl[A].Ob[B].State:=C;
+     If (D<>0) And GDl[A].Shown And (B>0) Then PaintObj(A,B);
+    End;
+   End;
+  S_OBJSTATE: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then RD[0]:=GDl[A].Ob[B].State Else RD[0]:=0;
+   End;
+  S_OBJSETFLAGS: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then GDl[A].Ob[B].Flags:=C;
+   End;
+  S_OBJFLAGS: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then RD[0]:=GDl[A].Ob[B].Flags Else RD[0]:=0;
+   End;
+  S_CENTERDLG: Begin
+    A:=Pop32;
+    If (A>=1) And (A<=MAXGD) Then Begin
+     GDl[A].PX:=(640-GDl[A].Ob[0].W*8) Div 2;GDl[A].PY:=(400-GDl[A].Ob[0].H*16) Div 2;
+    End;
+   End;
+  S_DODLG,S_REDODLG: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) Then RD[0]:=DlgRun(A,B) Else RD[0]:=0;
+   End;
+  S_GETDEDIT: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) And (B>=0) And (B<=GDl[A].N) Then PutPS(C,GDl[A].Ob[B].Txt,255) Else PutPS(C,'',255);
+   End;
+  S_SHOWDLG: Begin
+    B:=Pop32;A:=Pop32;
+    If (A>=1) And (A<=MAXGD) Then Begin
+     If B<=0 Then Begin
+      If Not GDl[A].Shown Then Begin
+       OutFlush(True);
+       HideMouse;SaveBack(GDl[A].Sv,GDl[A].PX,GDl[A].PY+OFS_Y,GDl[A].PX+GDl[A].Ob[0].W*8+5,GDl[A].PY+OFS_Y+GDl[A].Ob[0].H*16+5);ShowMouse;
+       GDl[A].Shown:=True;
+      End;
+      PaintDlg(A);
+     End Else If GDl[A].Shown Then PaintObj(A,B);
+    End;
+   End;
+  S_GETINFILE,S_GETOUTFILE: Begin
+    B:=Pop32;A:=Pop32;
+    OutFlush(True);GemCur(True);
+    If Sv=S_GETINFILE Then PN:=GetPS(B) Else PN:=GetPS(B);
+    Ok:=FileSelect(T3('Select file','Choisir fichier','Datei waehlen'),'*.*',PN);
+    If Ok Then Begin
+     If Sv=S_GETINFILE Then Begin
+      PS:=Copy(PN,1,Length(PN)-Length(ShortName(PN)));
+      PutPS(A,PS,80);PutPS(B,ShortName(PN),80);
+     End Else PutPS(B,PN,80);
+     RD[0]:=1;
+    End Else RD[0]:=0;
+   End;
+  S_SETMFORM: Begin
+    A:=Pop32;
+    CurHx:=GetW(A);CurHy:=GetW(A+2);CurKind:=1;
+    For I:=0 To 15 Do Begin CurMask[I]:=RW(A+10+I*2);CurData[I]:=RW(A+42+I*2);End;
+    If ProgMouse And (Not Headless) Then Begin HideMouse;ShowMouse;End;
+   End;
+  S_SETMOUSE2: Begin
+    A:=Pop32;
+    CurHx:=0;CurHy:=0;
+    Case A Of
+     1: Begin CurKind:=2;CurHx:=8;CurHy:=9;End;
+     2: Begin CurKind:=4;CurHx:=8;CurHy:=9;End;
+     5,6,7: Begin CurKind:=3;CurHx:=8;CurHy:=9;End;
+    Else CurKind:=0;
+    End;
+    If ProgMouse And (Not Headless) Then Begin HideMouse;ShowMouse;End;
+   End;
+  S_SHOWMOUSE: GemCur(True);
+  S_HIDEMOUSE: GemCur(False);
+ Else
+  GemService:=False;
+ End;
+End;
 { ------------------------------ services ------------------------------ }
 
 Procedure RtService;
@@ -2906,55 +4219,56 @@ Begin
    End;
   S_INITGEM: Begin
     GemMode:=True;GemUsed:=True;
+    ClearGem;
     OutClear;OutToMem;
     FilCol:=1;FilSty:=1;FilIdx:=1;LinCol:=1;TxtColV:=1;DrawModeV:=1;
     PenX:=0;PenY:=0;
+    GemRefresh(0,0,640,400,False);
     RD[0]:=1;
    End;
   S_EXITGEM: GemMode:=False;
   S_ALERT: Begin
     B:=Pop32;A:=Pop32;
     OutFlush(True);
-    Dec(MouseLock);
+    GemCur(True);
     RD[0]:=AesAlert(GetPS(A),B);
-    Inc(MouseLock);
-    HideMouse;
+    GemCur(ProgMouse);
    End;
   S_LINE: Begin
     GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
-    OLine(A,B,C,D,LineInk);OXor:=False;PenX:=C;PenY:=D;
+    A:=A+OrgX;B:=B+OrgY;C:=C+OrgX;D:=D+OrgY;OLine(A,B,C,D,LineInk);OXor:=False;PenX:=C;PenY:=D;
     OutPending:=True;
    End;
-  S_MOVETO: Begin PenY:=Pop32;PenX:=Pop32;End;
+  S_MOVETO: Begin PenY:=Pop32+OrgY;PenX:=Pop32+OrgX;End;
   S_LINETO: Begin
-    GfxPrep;B:=Pop32;A:=Pop32;
+    GfxPrep;B:=Pop32+OrgY;A:=Pop32+OrgX;
     OLine(PenX,PenY,A,B,LineInk);OXor:=False;PenX:=A;PenY:=B;
     OutPending:=True;
    End;
-  S_PLOT: Begin GfxPrep;B:=Pop32;A:=Pop32;OPlot(A,B,LineInk);OXor:=False;PenX:=A;PenY:=B;End;
-  S_PRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;GRect(A,B,C,D,True);OXor:=False;OutPending:=True;End;
-  S_FRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;GRect(A,B,C,D,False);OXor:=False;OutPending:=True;End;
-  S_PRRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;GRect(A,B,C,D,True);OXor:=False;OutPending:=True;End;
-  S_FRRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;GRect(A,B,C,D,False);OXor:=False;OutPending:=True;End;
-  S_DRAWSTR: Begin GfxPrep;C:=Pop32;B:=Pop32;A:=Pop32;GText(A,B,GetPS(C));OXor:=False;OutPending:=True;End;
+  S_PLOT: Begin GfxPrep;B:=Pop32+OrgY;A:=Pop32+OrgX;OPlot(A,B,LineInk);OXor:=False;PenX:=A;PenY:=B;End;
+  S_PRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;A:=A+OrgX;B:=B+OrgY;GRect(A,B,C,D,True);OXor:=False;OutPending:=True;End;
+  S_FRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;A:=A+OrgX;B:=B+OrgY;GRect(A,B,C,D,False);OXor:=False;OutPending:=True;End;
+  S_PRRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;A:=A+OrgX;B:=B+OrgY;GRect(A,B,C,D,True);OXor:=False;OutPending:=True;End;
+  S_FRRECT: Begin GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;A:=A+OrgX;B:=B+OrgY;GRect(A,B,C,D,False);OXor:=False;OutPending:=True;End;
+  S_DRAWSTR: Begin GfxPrep;C:=Pop32;B:=Pop32;A:=Pop32;A:=A+OrgX;B:=B+OrgY;GText(A,B,GetPS(C));OXor:=False;OutPending:=True;End;
   S_LINECOL: Begin A:=Pop32;LinCol:=A;End;
   S_PAINTCOL: Begin A:=Pop32;FilCol:=A;End;
   S_TEXTCOL: Begin A:=Pop32;If A=0 Then TxtColV:=0 Else TxtColV:=1;End;
   S_POVAL: Begin
     GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
-    OPie(A,B,C,D,0,3600);OXor:=False;OutPending:=True;
+    A:=A+OrgX;B:=B+OrgY;OPie(A,B,C,D,0,3600);OXor:=False;OutPending:=True;
    End;
   S_FOVAL: Begin
     GfxPrep;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
-    OArc(A,B,C,D,0,3600);OXor:=False;OutPending:=True;
+    A:=A+OrgX;B:=B+OrgY;OArc(A,B,C,D,0,3600);OXor:=False;OutPending:=True;
    End;
   S_PARC: Begin
     GfxPrep;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
-    OPie(A,B,C,D,E,F);OXor:=False;OutPending:=True;
+    A:=A+OrgX;B:=B+OrgY;OPie(A,B,C,D,E,F);OXor:=False;OutPending:=True;
    End;
   S_FARC: Begin
     GfxPrep;F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;
-    OArc(A,B,C,D,E,F);OXor:=False;OutPending:=True;
+    A:=A+OrgX;B:=B+OrgY;OArc(A,B,C,D,E,F);OXor:=False;OutPending:=True;
    End;
   S_PSTYLE: Begin A:=Pop32;If A<=0 Then FilSty:=0 Else Begin FilSty:=1;End;End;
   S_PAINTOUT: Begin A:=Pop32;End;
@@ -2997,7 +4311,7 @@ Begin
     WW(A,MX And $FFFF);WW(A+2,(MY-OFS_Y) And $FFFF);WW(A+4,MB And 3);
    End;
  Else
-  RtFail(100+Sv);
+  If Not GemService(Sv) Then RtFail(100+Sv);
  End;
 End;
 
@@ -7132,11 +8446,11 @@ Begin
  AddHost('TEXT_HEIGHT',S_TEXTHT,'I',' ');
  AddHost('TEXT_STYLE',S_TEXTSTY,'I',' ');
  AddHost('SET_CLIP',S_SETCLIP,'IIII',' ');
- AddHost('SET_MOUSE',S_SETMOUSE,'I',' ');
- AddHost('SHOW_MOUSE',S_SHOWM,'',' ');
- AddHost('HIDE_MOUSE',S_HIDEM,'',' ');
- AddHost('INIT_MOUSE',S_SHOWM,'',' ');
- AddHost('BEGIN_MOUSE',S_SHOWM,'',' ');
+ AddHost('SET_MOUSE',S_SETMOUSE2,'I',' ');
+ AddHost('SHOW_MOUSE',S_SHOWMOUSE,'',' ');
+ AddHost('HIDE_MOUSE',S_HIDEMOUSE,'',' ');
+ AddHost('INIT_MOUSE',S_SHOWMOUSE,'',' ');
+ AddHost('BEGIN_MOUSE',S_SHOWMOUSE,'',' ');
  AddHost('END_MOUSE',S_SHOWM,'',' ');
  AddHost('CLEAR_SCREEN',S_CLRSCR,'',' ');
  AddHost('GET_KEY',S_GETKEY,'','I');
@@ -7147,6 +8461,34 @@ Begin
  AddHostT('SYS_FONT_SIZE',S_SYSFONT,'IIII',' ');
  AddHostT('BEGIN_UPDATE',S_SHOWM,'',' ');
  AddHostT('END_UPDATE',S_SHOWM,'',' ');
+ { AES / PASGEM }
+ AddHostT('NEW_MENU',S_NEWMENU,'IS','I');AddHostT('DELETE_MENU',S_DELMENU,'I',' ');
+ AddHostT('ADD_MTITLE',S_ADDMTITLE,'IS','I');AddHostT('ADD_MITEM',S_ADDMITEM,'IIS','I');
+ AddHostT('DRAW_MENU',S_DRAWMENU,'I',' ');AddHostT('ERASE_MENU',S_ERASEMENU,'I',' ');
+ AddHostT('MENU_HILIGHT',S_MENUHI,'II',' ');AddHostT('MENU_NORMAL',S_MENUNORMAL,'II',' ');
+ AddHostT('MENU_CHECK',S_MENUCHECK,'III',' ');AddHostT('MENU_ENABLE',S_MENUENABLE,'II',' ');
+ AddHostT('MENU_DISABLE',S_MENUDISABLE,'II',' ');AddHostT('MENU_TEXT',S_MENUTEXT,'IIS',' ');
+ AddHostT('MENU_REGISTER',S_MENUREG,'IS','I');
+ AddHostT('NEW_WINDOW',S_NEWWIN,'ISIIII','I');AddHostT('OPEN_WINDOW',S_OPENWIN,'IIIII',' ');
+ AddHostT('CLOSE_WINDOW',S_CLOSEWIN,'I',' ');AddHostT('DELETE_WINDOW',S_DELWIN,'I',' ');
+ AddHostT('SET_WSIZE',S_SETWSIZE,'IIIII',' ');AddHostT('SET_WNAME',S_SETWNAME,'IS',' ');
+ AddHostT('SET_WINFO',S_SETWINFO,'IS',' ');AddHostT('BORDER_RECT',S_BORDERRECT,'IIIII',' ');
+ AddHostT('WORK_RECT',S_WORKRECT,'IIIII',' ');AddHostT('FIRST_RECT',S_FIRSTRECT,'IIIII',' ');
+ AddHostT('NEXT_RECT',S_NEXTRECT,'IIIII',' ');AddHostT('RECT_INTERSECT',S_RECTINT,'IIIIIIII','B');
+ AddHostT('FRONT_WINDOW',S_FRONTWIN,'','I');AddHostT('BRING_TO_FRONT',S_BRINGFRONT,'I',' ');
+ AddHostT('SET_WINDOW',S_SETWINDOW,'I',' ');AddHostT('GET_WINDOW',S_GETWINDOW,'','I');
+ AddHostT('WIND_GET',S_WINDGET,'IIIIII',' ');AddHostT('WIND_SET',S_WINDSET,'IIIIII',' ');
+ AddHostT('GET_EVENT',S_GETEVENT,'IIIIIIIIIIIIIIIIIIIIII','I');
+ AddHostT('NEW_DIALOG',S_NEWDLG,'IIIII','I');AddHostT('DELETE_DIALOG',S_DELDLG,'I',' ');
+ AddHostT('ADD_DITEM',S_ADDDITEM,'IIIIIIIII','I');AddHostT('D_COLOR',S_DCOLOR,'IIIII','I');
+ AddHostT('SET_DTEXT',S_SETDTEXT,'IISII',' ');AddHostT('SET_DEDIT',S_SETDEDIT,'IISSSII',' ');
+ AddHostT('OBJ_SETSTATE',S_OBJSETSTATE,'IIII',' ');AddHostT('OBJ_STATE',S_OBJSTATE,'II','I');
+ AddHostT('OBJ_SETFLAGS',S_OBJSETFLAGS,'III',' ');AddHostT('OBJ_FLAGS',S_OBJFLAGS,'II','I');
+ AddHostT('CENTER_DIALOG',S_CENTERDLG,'I',' ');AddHostT('DO_DIALOG',S_DODLG,'II','I');
+ AddHostT('GET_DEDIT',S_GETDEDIT,'IIS',' ');AddHostT('REDO_DIALOG',S_REDODLG,'II','I');
+ AddHostT('END_DIALOG',S_ENDDLG,'I',' ');AddHostT('SHOW_DIALOG',S_SHOWDLG,'II',' ');
+ AddHostT('GET_IN_FILE',S_GETINFILE,'II','B');AddHostT('GET_OUT_FILE',S_GETOUTFILE,'SI','B');
+ AddHostT('SET_MFORM',S_SETMFORM,'I',' ');
  { bibliotheque auxiliaire (AUXSUBS.PAS) }
  AddHostT('PEEK',S_PEEKB,'I','I');
  AddHostT('WPEEK',S_PEEKW,'I','I');
