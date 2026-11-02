@@ -1,39 +1,42 @@
 # DEVPAC.PAS : état de conformité avec le manuel de Devpac 3
 
 Les trois fichiers `ECARTS-*.md` de ce dossier sont les rapports d'écarts rédigés AVANT les corrections
-(comparaison du manuel Devpac 3, OCR de `Devpac_v3_Manual.pdf`, avec le code). Ce fichier résume ce qui a
-été corrigé ensuite et ce qui reste à faire. Les rapports d'écarts restent la liste de référence du reste à faire.
+(comparaison du manuel Devpac 3, OCR de `Devpac_v3_Manual.pdf`, avec le code). Ce fichier résume l'état actuel.
+`FORMAT-LINE-HCLN.md` décrit le format des informations de ligne écrites par OPT LINE / OPT HCLN.
 
-## Éditeur (menus, touches, fichiers, préférences)
-Fait : touches Alt-lettre du manuel ; touches de bloc F1-F5, Shift-F4, Shift-F5 ; presse-papiers (Delete Block = Cut) ;
-commandes Ctrl du manuel et WordStar ; ligne d'état avec les messages exacts et bip ; Find/Find Previous/Replace/
-Replace All depuis le curseur ; menus Desk/File/Edit/Block/Search/Options/Tools/Program avec sous-menus et raccourcis ;
-Check, Previous error, erreurs recalées pendant l'édition ; File : New/Load/Insert/Revert/Close/Save As/Save/Delete File/
-Change Directory, dialogue de sortie ; préférences complètes ; signets ; `HISOFTED.INF` ; widgets (cases à cocher,
-pop-up, Alt-lettre sur les boutons) ; table ASCII, Help, About ; double-clic, glissière, marge.
-Reste à faire : plusieurs fenêtres (jusqu'à 7) et Arrange/Cycle ; menu Tools à 20 outils configurables ; Fonts ;
-listes Add/Remove ; Output Symbols ; plusieurs fichiers en ligne de commande.
-Limite technique : `ReadKey` (PtcCrt) ne donne pas l'état de Maj ; Shift-Alt-S, Shift-Alt-J, Shift-flèches et Shift-Ins
-sont remplacés (F8 = Save, Alt-U = erreur suivante, Alt-F1..F8 / Ctrl-F1..F8 = signets, Alt-C = table ASCII).
+## Éditeur
+Fait : 7 fenêtres GEM (un tampon par fenêtre, Alt-1..7, Cycle, Close, Arrange Overlap/Tile/Vertical, plusieurs fichiers
+en ligne de commande, INCLUDE lus depuis les fenêtres ouvertes) ; menus Desk/File/Edit/Block/Search/Options/Tools/Program
+avec sous-menus ; Alt-lettre, Ctrl/WordStar, blocs F1-F5 ; touches Maj/Ctrl/Alt lues directement (Shift-Alt-S, Shift-flèches,
+Ctrl-chiffre...) ; menu Tools à 20 outils configurables, Run Other, Run with Shell, Environment, Resident ; Fonts (Ctrl-G) ;
+listes Add/Remove (double-clic, glisser) ; dialogues d'assemblage Control/Listing/Options/Optimisations ; Output Symbols ;
+Debugger options (MON.INF) ; préférences, signets, `HISOFTED.INF` ; double-clic/glisser par mot ; souris sans clic perdu.
+Reste à faire : Shift-Shift pour interrompre un assemblage ; police TOS 8x8 pour la console émulée ; raccourcis Alt-pavé
+des outils 15 à 20 ; réglages mémorisés sans effet (Low memory assembly, tampon, résident).
+Réserve : sous un vrai Turbo Pascal 7, `TMemFileHook` (type procédural) et le tampon complet par fenêtre n'ont pas été testés.
 
 ## Assembleur GenST
-Fait : plus de perte silencieuse (DC sans limite, 40000 lignes et relocations) ; avertissements de l'annexe B et codes
-retour 0/5/10/20 ; options de ligne de commande GEN (-B -C -E -H -I -L -O -P -Q -S -T -V -W -Z, +OPT) ; /DEF: ;
-ELSEIF, IIF, EQUR, CARGS, RADIX, INCDIR, RORG, MACHINE, EQUENV ; labels @nom, 1$, indentés avec ':' ; OFFSET ;
-précédence des opérateurs du manuel ; branches arrière sans taille = mot ; macros (<...>, \#, \?, \<sym>, \\, 35 paramètres,
-continuation &) ; OPT complet avec « invalid option » ; directives de listing appliquées ; OUTPUT .ext ; COMMENT HEAD= ;
-sortie S-records ; 68020 (index à échelle, link.l, mul/div 32 bits) avec OPT P=68020 ; messages d'erreur de l'annexe B.
-Reste à faire : formats GST, DRI et Lattice (refusés par « linker format restriction ») ; 68881/FPU/MMU ; LINE/HCLN
-(débogage source) ; optimisations O2-O6, O8-O12 et leurs avertissements ; EXTB/RTD/BKPT/MOVEC ; modes 68020 mémoire
-indirecte ; erreur « forward reference » pour EQU.
-Changement de comportement : `-B -L -S -O` avec un seul tiret prennent le sens GEN ; les anciens sens restent avec `/B /L /S /O`.
+Fait : voir le détail de la phase 1 (avertissements/codes retour, options GEN, directives, macros, OPT...) ; en plus :
+LINE/HCLN/XDEBUG ; AsmOutputSymbols et fichiers `.GS` (format propre au projet, le manuel ne le spécifie pas) ; formats
+DRI (L2) et Lattice (L7) avec XDEF/XREF/MODULE ; S-records ; 68010/20/30/40 complets (modes mémoire indirecte, bitfields,
+CAS, PACK, MOVE16, CINV...) ; 68881/68882 complet ; MMU 68851/68030/68040 ; constantes et directives flottantes
+(DC/DS/DCB.S/D/X/P, FEQU, FOPT) vérifiées contre GNU as ; optimisations O1 à O12 avec comptes rendus ; 15 messages de
+l'annexe B qui n'avaient aucun chemin d'émission en ont un.
+Reste à faire : **format GST (L1)** : refusé par « linker format restriction ». Sa structure (SROFF, flux d'octets avec
+échappement $FB) n'est dans aucun des manuels fournis ; la spécification est dans le manuel du linker GST (QLINK) et sur
+rg.atari.org, que cette session ne pouvait pas joindre. À reprendre quand ces sites sont autorisés ou si la spécification
+est ajoutée au dépôt. Aussi : FOPT ROUND/PREC sans effet ; conversion packed arrondie au-delà de 17 chiffres ; pas de test
+sur hôte big-endian ; messages impossibles à déclencher : `assembly interrupted`, `repeated include file`, `invalid printer parameter`.
+Les formats DRI et Lattice ont été validés avec un décodeur et un éditeur de liens écrits pour le projet, d'après les
+spécifications publiques, sans linker réel.
 
 ## Moniteur Mon
-Fait : réécriture en écran à fenêtres (registres, désassemblage, mémoire, source), commandes Alt-/Ctrl-/lettres du manuel,
-dialogues Mon, expressions (7 niveaux de priorité), points d'arrêt (simple, stop, count, permanent, conditionnel),
-historique, recherche, chargement/sauvegarde ; bugs corrigés (step over, reprise après exception, PC fautif) ;
-le tutoriel du chapitre 1 du manuel se joue entièrement.
-Reste à faire : débogage source (dépend de LINE/HCLN) ; gestionnaire d'exception installé par le programme ;
-références croisées de la commande P ; Run Slowly ; Shift+flèches (limite PtcCrt, remplacé par PgUp/PgDn, < et >) ;
-traduction allemande des nouveaux dialogues.
-Hors périmètre de l'émulateur : AMON, ROM, NOTRACE, Follow traps, modes couleur, FPU, 68020+.
+Fait : écran à fenêtres, commandes et expressions du manuel, points d'arrêt de tous les types, historique, recherche ;
+exceptions 68000 avec gestionnaires installés par le programme (cadres de pile, RTE, interception par Mon) ; références
+croisées de P (labels Lxxxxxx) ; Run Slowly, Screen timer ; textes allemands ; désassembleur 68010/20/30/40/68881 ;
+Ctrl-Haut/Bas et Alt-Haut/Bas ; débogage source (fenêtre Source avec infos LINE/HCLN, pas à pas par ligne, points d'arrêt
+sur ligne, opérateurs # et ?, recherche, bascule source/désassemblage).
+Reste à faire : désassembleur MMU (PMOVE, PTEST... affichés en dc.w) ; interruptions matérielles ; hook utilisateur sur
+TRAP #1/#2/#13/#14 ; pas par ligne avec plusieurs instructions sur la même ligne (macros) ; message quand le source est
+introuvable.
+Hors périmètre de l'émulateur : AMON, ROM, NOTRACE, Follow traps pour les TRAP émulés, modes couleur, FPU et 68020+ à l'exécution.
