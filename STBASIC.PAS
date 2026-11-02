@@ -2210,24 +2210,73 @@ Begin
   2: ErrFR:='Quelque chose cloche';
   3: ErrFR:='RETURN n'#130'cessite un GOSUB correspondant';
   4: ErrFR:='READ a manqu'#130' de donn'#130'es';
+  5: ErrFR:='Appel de fonction non permis';
   6: ErrFR:='Nombre trop grand';
   7: ErrFR:='M'#130'moire insuffisante';
   8: ErrFR:='Une instruction ou une commande r'#130'f'#130'rence une ligne inexistante';
   9: ErrFR:='L''indice d'#130'signe un '#130'l'#130'ment hors du tableau';
   10: ErrFR:='Vous avez d'#130'fini un tableau plus d''une fois';
   11: ErrFR:='Division par z'#130'ro impossible';
+  12: ErrFR:='Instruction ill'#130'gale en mode direct';
   13: ErrFR:='Les types de valeurs ne correspondent pas';
+  14: ErrFR:='Erreur ind'#130'finie';
+  15: ErrFR:='Les cha'#140'nes ne peuvent d'#130'passer 255 caract'#138'res';
+  16: ErrFR:='Expression trop longue ou trop complexe';
   17: ErrFR:='CONT ne fonctionne qu''en mode Break';
+  18: ErrFR:='La fonction n'#130'cessite une d'#130'finition pr'#130'alable avec DEF FN';
+  19: ErrFR:='Erreur ind'#130'finie';
+  20: ErrFR:='RESUME trouv'#130' avant l''entr'#130'e dans la routine d''erreur';
+  21: ErrFR:='Erreur ind'#130'finie';
+  22: ErrFR:='L''expression a un op'#130'rateur sans op'#130'rande suivant';
+  23: ErrFR:='Ligne de programme trop longue';
+  30: ErrFR:='Num'#130'ro de fen'#136'tre invalide';
   31: ErrFR:='Argument hors limites';
+  32: ErrFR:='Commande non ex'#130'cutable depuis l'''#130'diteur';
+  33: ErrFR:='La ligne est trop complexe';
+  50: ErrFR:='L''instruction FIELD a caus'#130' un d'#130'passement';
+  51: ErrFR:='Num'#130'ro de p'#130'riph'#130'rique invalide';
   52: ErrFR:='Num'#130'ro de fichier ou nom de fichier invalide';
   53: ErrFR:='Fichier introuvable sur l''unit'#130' sp'#130'cifi'#130'e';
+  54: ErrFR:='Mode de fichier invalide';
   55: ErrFR:='Vous ne pouvez pas faire OPEN ou KILL sur un fichier ouvert';
+  56: ErrFR:='Erreur ind'#130'finie';
+  57: ErrFR:='Erreur d''entr'#130'e/sortie disque';
   58: ErrFR:='Le fichier existe';
+  61: ErrFR:='Disque plein';
   62: ErrFR:='Vous avez atteint la fin du fichier';
+  63: ErrFR:='Le num'#130'ro d''enregistrement de PUT ou GET d'#130'passe 32767 ou vaut z'#130'ro';
   64: ErrFR:='Nom de fichier invalide';
+  65: ErrFR:='Caract'#138're invalide dans le fichier programme';
+  66: ErrFR:='Le fichier programme contient une instruction sans num'#130'ro de ligne';
   99: ErrFR:='-- Break --';
+  100: ErrFR:='Erreur ind'#130'finie';
+  101: ErrFR:='Le programme a trop de lignes';
+  102: ErrFR:='L''instruction ON est hors limites';
+  103: ErrFR:='Num'#130'ro de ligne invalide';
+  104: ErrFR:='Une variable est requise';
+  105: ErrFR:='Erreur ind'#130'finie';
+  106: ErrFR:='Le num'#130'ro de ligne n''existe pas';
+  107: ErrFR:='Nombre trop grand pour un entier';
+  108: ErrFR:='Donn'#130'es d''entr'#130'e invalides, recommencez la saisie depuis le premier '#130'l'#130'ment';
   109: ErrFR:='Stop';
   110: ErrFR:='Appels de sous-programmes imbriqu'#130's trop profond'#130'ment';
+  111: ErrFR:='Fichier BLOAD invalide';
+  202: ErrFR:='Commande non permise ici';
+  203: ErrFR:='Un num'#130'ro de ligne est requis';
+  204: ErrFR:='FOR n'#130'cessite un NEXT ou un WHILE correspondant';
+  205: ErrFR:='NEXT n'#130'cessite un FOR ou un WEND correspondant';
+  206: ErrFR:='Une virgule est attendue';
+  207: ErrFR:='Une parenth'#138'se est attendue';
+  208: ErrFR:='Option Base doit valoir 0 ou 1';
+  209: ErrFR:='Une fin d''instruction est attendue';
+  210: ErrFR:='Trop d''arguments dans la liste';
+  211: ErrFR:='Non utilis'#130;
+  212: ErrFR:='Impossible de red'#130'finir la ou les variables';
+  213: ErrFR:='Fonction d'#130'finie plus d''une fois';
+  214: ErrFR:='Vous essayez de sauter dans une boucle';
+  221: ErrFR:='Erreur syst'#138'me #X, veuillez red'#130'marrer';
+  222: ErrFR:='Programme non lanc'#130;
+  223: ErrFR:='Trop de boucles FOR';
  Else ErrFR:=ErrEN(C);
  End;
 End;
@@ -2238,14 +2287,73 @@ Begin
   2: ErrDE:='Etwas stimmt nicht';
   3: ErrDE:='RETURN braucht ein passendes GOSUB';
   4: ErrDE:='READ hat keine Daten mehr';
+  5: ErrDE:='Funktionsaufruf nicht erlaubt';
   6: ErrDE:='Zahl zu gross';
   7: ErrDE:='Nicht genug Speicher';
-  9: ErrDE:='Index ausserhalb des Feldes';
+  8: ErrDE:='Ein Befehl bezieht sich auf eine nicht vorhandene Zeile';
+  9: ErrDE:='Index verweist auf ein Element ausserhalb des Feldes';
+  10: ErrDE:='Ein Feld wurde mehrfach dimensioniert';
   11: ErrDE:='Division durch Null ist nicht moeglich';
+  12: ErrDE:='Anweisung im Direktmodus nicht erlaubt';
   13: ErrDE:='Wertetypen passen nicht zusammen';
+  14: ErrDE:='Undefinierter Fehler';
+  15: ErrDE:='Zeichenketten duerfen nicht laenger als 255 Zeichen sein';
+  16: ErrDE:='Ausdruck ist zu lang oder zu komplex';
+  17: ErrDE:='CONT funktioniert nur im Break-Modus';
+  18: ErrDE:='Funktion braucht vorher eine Definition mit DEF FN';
+  19: ErrDE:='Undefinierter Fehler';
+  20: ErrDE:='RESUME vor Betreten der Fehlerroutine gefunden';
+  21: ErrDE:='Undefinierter Fehler';
+  22: ErrDE:='Ausdruck hat einen Operator ohne folgenden Operanden';
+  23: ErrDE:='Programmzeile ist zu lang';
+  30: ErrDE:='Fensternummer ungueltig';
+  31: ErrDE:='Argument ausserhalb des Bereichs';
+  32: ErrDE:='Befehl kann nicht aus dem Editor ausgefuehrt werden';
+  33: ErrDE:='Zeile ist zu komplex';
+  50: ErrDE:='FIELD-Anweisung verursachte einen Ueberlauf';
+  51: ErrDE:='Geraetenummer ungueltig';
+  52: ErrDE:='Dateinummer oder Dateiname ungueltig';
   53: ErrDE:='Datei auf dem angegebenen Laufwerk nicht gefunden';
+  54: ErrDE:='Dateimodus ist ungueltig';
+  55: ErrDE:='Eine offene Datei kann nicht mit OPEN oder KILL bearbeitet werden';
+  56: ErrDE:='Undefinierter Fehler';
+  57: ErrDE:='Ein-/Ausgabefehler auf der Diskette';
   58: ErrDE:='Datei existiert';
+  61: ErrDE:='Diskette ist voll';
   62: ErrDE:='Dateiende erreicht';
+  63: ErrDE:='Satznummer bei PUT oder GET ist groesser als 32767 oder Null';
+  64: ErrDE:='Ungueltiger Dateiname';
+  65: ErrDE:='Ungueltiges Zeichen in der Programmdatei';
+  66: ErrDE:='Programmdatei enthaelt eine Anweisung ohne Zeilennummer';
+  99: ErrDE:='-- Break --';
+  100: ErrDE:='Undefinierter Fehler';
+  101: ErrDE:='Programm hat zu viele Zeilen';
+  102: ErrDE:='ON-Anweisung ausserhalb des Bereichs';
+  103: ErrDE:='Ungueltige Zeilennummer';
+  104: ErrDE:='Eine Variable ist erforderlich';
+  105: ErrDE:='Undefinierter Fehler';
+  106: ErrDE:='Zeilennummer existiert nicht';
+  107: ErrDE:='Zahl zu gross fuer eine Ganzzahl';
+  108: ErrDE:='Eingabedaten ungueltig, Eingabe ab dem ersten Element wiederholen';
+  109: ErrDE:='Stop';
+  110: ErrDE:='Unterprogrammaufrufe sind zu tief verschachtelt';
+  111: ErrDE:='Ungueltige BLOAD-Datei';
+  202: ErrDE:='Befehl hier nicht erlaubt';
+  203: ErrDE:='Zeilennummer erforderlich';
+  204: ErrDE:='FOR braucht ein passendes NEXT oder WHILE';
+  205: ErrDE:='NEXT braucht ein passendes FOR oder WEND';
+  206: ErrDE:='Ein Komma wird erwartet';
+  207: ErrDE:='Eine Klammer wird erwartet';
+  208: ErrDE:='Option Base muss 0 oder 1 sein';
+  209: ErrDE:='Ende der Anweisung wird erwartet';
+  210: ErrDE:='Zu viele Argumente in der Liste';
+  211: ErrDE:='Nicht benutzt';
+  212: ErrDE:='Variable(n) koennen nicht neu definiert werden';
+  213: ErrDE:='Funktion mehrfach definiert';
+  214: ErrDE:='Sprung in eine Schleife nicht moeglich';
+  221: ErrDE:='Systemfehler #X, bitte neu starten';
+  222: ErrDE:='Programm nicht gestartet';
+  223: ErrDE:='Zu viele FOR-Schleifen';
  Else ErrDE:=ErrEN(C);
  End;
 End;
@@ -2353,7 +2461,9 @@ End;
 
 Procedure Expect(C: Char);
 Begin
- If Not Accept(C) Then Fail(2);
+ If Not Accept(C) Then Begin
+  If C=')' Then Fail(207) Else If C=',' Then Fail(206) Else Fail(2);
+ End;
 End;
 
 Function AtStmtEnd: Boolean;
@@ -2660,7 +2770,7 @@ Begin
  R:=X.N;
  If V^.Typ=1 Then Begin
   R:=Int(R+0.5*(1-2*Ord(R<0)));
-  If (R>32767) Or (R<-32768) Then Begin Fail(6);Exit;End;
+  If (R>32767) Or (R<-32768) Then Begin Fail(107);Exit;End;
  End;
  If V^.IsArr Then PRealArr(V^.Data)^[Flat]:=R Else V^.N:=R;
 End;
@@ -2672,6 +2782,7 @@ Var
  FnPar  : Array[1..20,1..4] Of String[34];
  FnNPar : Array[1..20] Of Integer;
  FnBody : Array[1..20] Of PString;
+ FnLn   : Array[1..20] Of Integer;
  FnCnt  : Integer;
 
 Function FindFn(Const W: String): Integer;
@@ -2859,7 +2970,7 @@ Begin
  End
  Else If W='CINT' Then Begin
   Need(1);X:=NumOf(A[1]);
-  If (X>32767.5) Or (X<-32768.5) Then Fail(6) Else R.N:=Int(X+0.5*(1-2*Ord(X<0)));
+  If (X>32767.5) Or (X<-32768.5) Then Fail(107) Else R.N:=Int(X+0.5*(1-2*Ord(X<0)));
  End
  Else If W='COS' Then Begin Need(1);R.N:=Cos(NumOf(A[1]));End
  Else If W='CVI' Then Begin
@@ -3017,7 +3128,7 @@ Begin
  End
  Else If W='MKI$' Then Begin
   Need(1);L:=ToLong(NumOf(A[1]));
-  If (L>32767) Or (L<-32768) Then Fail(6)
+  If (L>32767) Or (L<-32768) Then Fail(107)
   Else Begin L:=L And $FFFF;MkStr(R,Chr(L And 255)+Chr(L Shr 8));End;
  End
  Else If W='MKS$' Then Begin
@@ -3195,6 +3306,9 @@ Begin
    R:=EvalExpr;
    Src:=St;P:=Sp;
    For I:=1 To NA Do SetVarVal(PV[I],0,Saved[I]);
+  End Else If (Copy(W,1,2)='FN') And (Length(W)>2) And (FindFn(W)=0) And (Not IsFunc(W))
+     And (Not IsNoArgFunc(W)) And (W[3]<>'$') And (W[3]<>'%') And (W[3]<>'!') Then Begin
+   Fail(18);
   End Else If (Cur='(') And IsFunc(W) Then Begin
    R:=EvalFunc(W);
   End Else If (Cur<>'(') And IsNoArgFunc(W) Then Begin
@@ -3219,7 +3333,10 @@ Begin
     If Q^.IsArr Then Fail(13) Else R:=GetVarVal(Q,0);
    End;
   End;
- End Else Fail(2);
+ End Else Begin
+  If (P>Length(Src)) Or (Cur=':') Or (Cur=')') Or (Cur=',') Or (Cur=';') Or (Cur='''')
+   Then Fail(22) Else Fail(2);
+ End;
  EvalPrimary:=R;
 End;
 
@@ -3313,8 +3430,8 @@ Begin
       B:=EvalLevel(9);
       If C='+' Then Begin
        If A.IsStr And B.IsStr Then Begin
-        T:=A.S+B.S;
-        If Length(T)>255 Then Begin Fail(15);T:=Copy(T,1,255);End;
+        If Length(A.S)+Length(B.S)>255 Then Begin Fail(15);T:=A.S;End
+        Else T:=A.S+B.S;
         MkStr(A,T);
        End Else Begin
         X:=NumOf(A)+NumOf(B);
@@ -3808,7 +3925,10 @@ Var W: String; Ix: TIdx; N: Integer; V: TVal;
 Begin
  ParseLValue:=False;
  SkipSp;
- If Not IsAlpha(Cur) Then Begin Fail(2);Exit;End;
+ If Not IsAlpha(Cur) Then Begin
+  If IsDigit(Cur) Or (Cur='"') Or (Cur='.') Then Fail(104) Else Fail(2);
+  Exit;
+ End;
  W:=ReadWord;
  Q:=FindVar(W,True);
  Flat:=0;
@@ -4586,6 +4706,7 @@ Begin
  End;
  V:=EvalExpr;
  N:=ToLong(NumOf(V));
+ If (ErrCode=0) And ((N<0) Or (N>255)) Then Begin Fail(102);Exit;End;
  W:=ReadWord;
  If W='GOTO' Then IsSub:=False Else If W='GOSUB' Then IsSub:=True
  Else Begin Fail(2);Exit;End;
@@ -4804,7 +4925,8 @@ Var N: Integer;
 Begin
  ParseNums(1);
  If ErrCode<>0 Then Exit;
- If (GN<1) Or (Not GH[1]) Or (GA[1]<0) Or (GA[1]>3) Then Begin Fail(31);Exit;End;
+ If (GN<1) Or (Not GH[1]) Then Begin Fail(31);Exit;End;
+ If (GA[1]<0) Or (GA[1]>3) Then Begin Fail(30);Exit;End;
  N:=GA[1];
  If W='CLEARW' Then Begin
   Case N Of
@@ -4927,7 +5049,11 @@ Begin
  If F=0 Then Begin
   If FnCnt>=20 Then Begin Fail(7);Exit;End;
   Inc(FnCnt);F:=FnCnt;
- End Else FreeStr(FnBody[F]);
+ End Else Begin
+  If (PCLine<>0) And (FnLn[F]<>PCLine) Then Begin Fail(213);Exit;End;
+  FreeStr(FnBody[F]);
+ End;
+ FnLn[F]:=PCLine;
  FnName[F]:=W;FnNPar[F]:=0;
  SkipSp;
  If Cur='(' Then Begin
@@ -5536,7 +5662,10 @@ Begin
     Else If Cur=':' Then Inc(P)
     Else If Cur='''' Then Done:=True
     Else If PeekWord='ELSE' Then Begin P:=Length(Src)+1;Done:=True;End
-    Else Begin Fail(2);Done:=True;End;
+    Else Begin
+     If IsDigit(Cur) Or IsAlpha(Cur) Or (Cur='"') Or (Cur='.') Then Fail(209) Else Fail(2);
+     Done:=True;
+    End;
    End;
   End;
  Until Done;
@@ -5550,7 +5679,7 @@ Begin
  M:=ErrText(ErrCode);
  If Ln>0 Then M:=M+T3(' at line ',' '#133' la ligne ',' in Zeile ')+IntStr(LNum[Ln]);
  ConAdd(M);
- If ErrCode=2 Then Begin
+ If (ErrCode=2) Or (ErrCode=22) Or (ErrCode=104) Or ((ErrCode>=206) And (ErrCode<=209)) Then Begin
   If Ln>0 Then S:=LineStr(Ln)
   Else S:=Src;
   If Ln>0 Then ConAdd(S) Else ConAdd(S);
@@ -8216,10 +8345,10 @@ Begin
   If InQ Then Bad(ErrText(2)+' ("")');
   If Par<>0 Then Bad(ErrText(2)+' ()');
  End;
- If FORS>0 Then Begin ConAdd(ErrText(26));Inc(Errs);End;
- If FORS<0 Then Begin ConAdd(ErrText(1));Inc(Errs);End;
- If Whiles>0 Then Begin ConAdd(ErrText(29));Inc(Errs);End;
- If Whiles<0 Then Begin ConAdd(ErrText(30));Inc(Errs);End;
+ If FORS>0 Then Begin ConAdd(ErrText(204));Inc(Errs);End;
+ If FORS<0 Then Begin ConAdd(ErrText(205));Inc(Errs);End;
+ If Whiles>0 Then Begin ConAdd(ErrText(204));Inc(Errs);End;
+ If Whiles<0 Then Begin ConAdd(ErrText(205));Inc(Errs);End;
  CheckProgram:=Errs;
 End;
 
