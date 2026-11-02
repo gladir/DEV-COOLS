@@ -1076,7 +1076,7 @@ Begin
  Base:=LongInt(Row)*16*OUT_RB+Col;
  For Y:=0 To 15 Do Begin
   B:=0;
-  If (Y>=4) And (Y<12) And (TxtCol<>0) Then B:=Font8[Ord(Ch),Y-4];
+  If TxtCol<>0 Then B:=Font8[Ord(Ch),Y Shr 1];
   OutBuf^[Base+LongInt(Y)*OUT_RB]:=B;
  End;
  If OutLive And (Not OutPending) Then
@@ -1981,7 +1981,7 @@ Begin
   5: RD[0]:=0;
   8: RD[0]:=0;
   11: RD[0]:=0;
-  10: RD[0]:=0;
+  10: RD[0]:=5;
   9: RD[0]:=0;
   7: RD[0]:=0;
  Else RD[0]:=0;
@@ -2018,11 +2018,113 @@ End;
 
 { ---------------------------- VDI et AES -------------------------------- }
 
+{ texte 8x16 (lignes de la police 8x8 doublees) sur l'ecran hote }
+Procedure AText16(X,Y: Integer; Const S: String; Col: Integer);
+Var I,X2,Y2: Integer;
+Begin
+ For I:=1 To Length(S) Do
+  For Y2:=0 To 15 Do
+   For X2:=0 To 7 Do
+    If (Font8[Ord(S[I]),Y2 Shr 1] And (128 Shr X2))<>0 Then
+     PutPixel(X+(I-1)*8+X2,Y+Y2,Col);
+End;
+
+{ icone de form_alert : 1 = triangle !, 2 = cercle ?, 3 = octogone X (comme sur l'ST) }
+Procedure AlertIcon(X,Y,Ic: Integer);
+Var I: Integer;
+Begin
+ SetColor(INK);
+ Case Ic Of
+  1: Begin
+      For I:=0 To 2 Do Begin
+       Line(X+16,Y+2+I,X+2,Y+30+I);Line(X+16,Y+2+I,X+30,Y+30+I);
+      End;
+      Line(X+2,Y+30,X+30,Y+30);Line(X+2,Y+31,X+30,Y+31);
+      AText16(X+12,Y+12,'!',INK);
+     End;
+  2: Begin
+      Circle(X+16,Y+16,15);Circle(X+16,Y+16,14);
+      AText16(X+12,Y+8,'?',INK);
+     End;
+  3: Begin
+      For I:=0 To 32 Do Begin
+       If I<10 Then Line(X+10-I,Y+I,X+22+I,Y+I)
+       Else If I>22 Then Line(X+I-22,Y+I,X+54-I,Y+I)
+       Else Line(X,Y+I,X+32,Y+I);
+      End;
+      AText16(X+12,Y+8,'X',PAPER);
+     End;
+ End;
+End;
+
+{ form_alert : [icone][lignes|...][boutons|...], texte 8x16, icone a gauche }
+Function AesAlertBox(Ic: Integer; Const Txt,Btns: String; Def: Integer): Integer;
+Var Lines: Array[1..8] Of String[60]; BT: Array[1..4] Of String[16];
+    N,NB,I,W,H,X0,Y0,TX,BW,BX0,BY,P,R: Integer; S: String; E: TEvent; Done: Boolean; Sv: TSave;
+Begin
+ N:=0;S:=Txt;
+ While (S<>'') And (N<8) Do Begin
+  P:=Pos('|',S);Inc(N);
+  If P=0 Then Begin Lines[N]:=Copy(S,1,60);S:='';End Else Begin Lines[N]:=Copy(S,1,P-1);Delete(S,1,P);End;
+ End;
+ NB:=0;S:=Btns;
+ While (S<>'') And (NB<4) Do Begin
+  P:=Pos('|',S);Inc(NB);
+  If P=0 Then Begin BT[NB]:=Copy(S,1,16);S:='';End Else Begin BT[NB]:=Copy(S,1,P-1);Delete(S,1,P);End;
+ End;
+ If NB=0 Then Begin NB:=1;BT[1]:='OK';End;
+ BW:=0;
+ For I:=1 To NB Do If Length(BT[I])*8+16>BW Then BW:=Length(BT[I])*8+16;
+ W:=0;
+ For I:=1 To N Do If Length(Lines[I])*8>W Then W:=Length(Lines[I])*8;
+ If Ic>0 Then TX:=64 Else TX:=16;
+ W:=TX+W+16;
+ If NB*(BW+16)+16>W Then W:=NB*(BW+16)+16;
+ H:=N*16+16+8+24+24;
+ If N*16<32 Then H:=32+16+8+24+24;
+ X0:=(SCR_W-W) Div 2;Y0:=(SCR_H-H) Div 2;
+ HideMouse;
+ SaveBack(Sv,X0-2,Y0-2,X0+W+6,Y0+H+6);
+ Box(X0+4,Y0+4,X0+W+3,Y0+H+3,INK);
+ Box(X0,Y0,X0+W-1,Y0+H-1,PAPER);
+ Frame(X0,Y0,X0+W-1,Y0+H-1);Frame(X0+1,Y0+1,X0+W-2,Y0+H-2);Frame(X0+2,Y0+2,X0+W-3,Y0+H-3);
+ Frame(X0+4,Y0+4,X0+W-5,Y0+H-5);
+ If Ic>0 Then AlertIcon(X0+16,Y0+16,Ic);
+ For I:=1 To N Do AText16(X0+TX,Y0+16+(I-1)*16,Lines[I],INK);
+ BX0:=X0+(W-NB*(BW+16)+16) Div 2;
+ BY:=Y0+H-40;
+ For I:=1 To NB Do Begin
+  Frame(BX0+(I-1)*(BW+16),BY,BX0+(I-1)*(BW+16)+BW-1,BY+21);
+  If I=Def Then Begin
+   Frame(BX0+(I-1)*(BW+16)-1,BY-1,BX0+(I-1)*(BW+16)+BW,BY+22);
+   Frame(BX0+(I-1)*(BW+16)-2,BY-2,BX0+(I-1)*(BW+16)+BW+1,BY+23);
+  End;
+  AText16(BX0+(I-1)*(BW+16)+(BW-Length(BT[I])*8) Div 2,BY+3,BT[I],INK);
+ End;
+ ShowMouse;
+ Done:=False;R:=Def;
+ If (R<1) Or (R>NB) Then R:=1;
+ Repeat
+  PollEvent(E);
+  If E.Kind=1 Then Begin
+   If E.Key=K_ENTER Then Begin R:=Def;If (R<1) Or (R>NB) Then R:=1;Done:=True;End;
+  End Else If E.Kind=2 Then Begin
+   For I:=1 To NB Do
+    If InBox(E.X,E.Y,BX0+(I-1)*(BW+16),BY,BX0+(I-1)*(BW+16)+BW,BY+21) Then Begin R:=I;Done:=True;End;
+  End;
+ Until Done;
+ HideMouse;
+ RestoreBack(Sv);
+ ShowMouse;
+ AesAlertBox:=R;
+End;
+
 Function AesAlert(Const S: String; Def: Integer): Integer;
-Var P1,P2: Integer; Lines,Btns,T: String; R: Integer;
+Var P1,P2: Integer; Lines,Btns,T: String; R,Ic: Integer;
 Begin
  { format : [icone][ligne|ligne][bouton|bouton] }
- Lines:='';Btns:='';
+ Lines:='';Btns:='';Ic:=0;
+ If (Length(S)>=2) And (S[1]='[') And (S[2]>='0') And (S[2]<='9') Then Ic:=Ord(S[2])-48;
  P1:=Pos('][',S);
  If P1>0 Then Begin
   T:=Copy(S,P1+2,255);
@@ -2036,7 +2138,7 @@ Begin
   R:=Def;
   If (R<1) Or (R>3) Then R:=1;
   WriteLn('[ALERT] ',Lines,' [',Btns,'] -> ',R);
- End Else R:=AlertBox(Lines,Btns);
+ End Else R:=AesAlertBox(Ic,Lines,Btns,Def);
  AesAlert:=R;
 End;
 
@@ -2824,14 +2926,49 @@ Begin
  For I:=Y To Y+H-1 Do Begin OPlot(X,I,1);OPlot(X+W-1,I,1);End;
 End;
 
-Procedure GTextC(X,Y: Integer; Const S: String; Inv: Boolean);
-{ texte dont le haut est en Y }
-Var Sv: Integer;
+{ texte 8x16 (lignes de la police 8x8 doublees) dans le tampon de l'ecran, haut du glyphe en Y }
+Procedure GText16(X,Y: LongInt; Const S: String; Col: Integer);
+Var I,X2,Y2: Integer;
 Begin
- Sv:=TxtColV;
- If Inv Then TxtColV:=0 Else TxtColV:=1;
- GText(X,Y+7,S);
- TxtColV:=Sv;
+ For I:=1 To Length(S) Do
+  For Y2:=0 To 15 Do
+   For X2:=0 To 7 Do
+    If (Font8[Ord(S[I]),Y2 Shr 1] And (128 Shr X2))<>0 Then
+     OPlot(X+(I-1)*8+X2,Y+Y2,Col);
+End;
+
+Procedure GTextC(X,Y: Integer; Const S: String; Inv: Boolean);
+{ texte 8x16 centre sur la meme ligne qu'un texte 8x8 dont le haut serait en Y }
+Begin
+ If Inv Then GText16(X,Y-4,S,0) Else GText16(X,Y-4,S,1);
+End;
+
+{ memes textes 8x16 sur l'ecran hote (menus deroulants, objets de la bibliotheque hote) }
+Procedure HText16(X,Y: Integer; Const S: String; Col: Integer);
+Var I,X2,Y2: Integer;
+Begin
+ For I:=1 To Length(S) Do
+  For Y2:=0 To 15 Do
+   For X2:=0 To 7 Do
+    If (Font8[Ord(S[I]),Y2 Shr 1] And (128 Shr X2))<>0 Then
+     PutPixel(X+(I-1)*8+X2,Y+Y2,Col);
+End;
+
+Procedure PText16(X,Y: Integer; Const S: String);
+Begin HText16(X,Y,S,INK); End;
+
+Procedure WText16(X,Y: Integer; Const S: String);
+Begin HText16(X,Y,S,PAPER); End;
+
+Procedure GreyText16(X,Y: Integer; Const S: String);
+Var I,J,W: Integer;
+Begin
+ PText16(X,Y,S);
+ W:=Length(S)*8;
+ For J:=0 To 15 Do
+  For I:=0 To W-1 Do
+   If Odd(I+J) Then
+    If GetPixel(X+I,Y+J)=INK Then PutPixel(X+I,Y+J,PAPER);
 End;
 
 Procedure GFlush;
@@ -3201,11 +3338,11 @@ Begin
    SetLineStyle(UserBitLn,$AAAA,1);SetColor(INK);Line(X1+2,Y+8,X2-2,Y+8);SetLineStyle(SolidLn,0,1);
   End Else Begin
    If (I=Hi) And (Not GMn[H].ID[T,I]) Then Begin
-    Box(X1+1,Y,X2-1,Y+15,INK);WText(X1+16,Y+4,S);
-    If GMn[H].IC[T,I] Then WText(X1+4,Y+4,#251);
+    Box(X1+1,Y,X2-1,Y+15,INK);WText16(X1+16,Y,S);
+    If GMn[H].IC[T,I] Then WText16(X1+4,Y,#251);
    End Else Begin
-    If GMn[H].ID[T,I] Then GreyText(X1+16,Y+4,S) Else PText(X1+16,Y+4,S);
-    If GMn[H].IC[T,I] Then PText(X1+4,Y+4,#251);
+    If GMn[H].ID[T,I] Then GreyText16(X1+16,Y,S) Else PText16(X1+16,Y,S);
+    If GMn[H].IC[T,I] Then PText16(X1+4,Y,#251);
    End;
   End;
  End;
@@ -3231,7 +3368,7 @@ Begin
    HideMouse;RestoreBack(Sv);SaveBack(Sv,0,OFS_Y,639,Min3(SCR_H-1,OFS_Y+GM_BAR+MAXMI*16+10));
    CT:=T;Hi:=0;
    Box(GMn[H].TX[T],OFS_Y,GMn[H].TX[T]+Length(GMn[H].TT[T])*8-1,OFS_Y+GM_BAR-2,INK);
-   WText(GMn[H].TX[T],OFS_Y+5,GMn[H].TT[T]);
+   WText16(GMn[H].TX[T],OFS_Y+1,GMn[H].TT[T]);
    DrawDrop(H,T,0);
   End;
   If CT<>0 Then Begin
@@ -3311,9 +3448,9 @@ Begin
      TX:=X+2;
      If (O.Just=2) Or (O.Typ=26) Then TX:=X+(W-Length(S)*8) Div 2
      Else If O.Just=1 Then TX:=X+W-Length(S)*8-2;
-     If Inv Then WText(TX,Y+(H-7) Div 2,S)
-     Else If (O.State And 8)<>0 Then GreyText(TX,Y+(H-7) Div 2,S)
-     Else PText(TX,Y+(H-7) Div 2,S);
+     If Inv Then WText16(TX,Y+(H-16) Div 2,S)
+     Else If (O.State And 8)<>0 Then GreyText16(TX,Y+(H-16) Div 2,S)
+     Else PText16(TX,Y+(H-16) Div 2,S);
     End;
    End;
   23: Begin
@@ -3338,12 +3475,12 @@ Begin
     If S<>'' Then Begin
      If Inv Then Box(X+O.TxX,Y+O.TxY,X+O.TxX+O.TxW-1,Y+O.TxY+O.TxH-1,INK);
      TX:=X+O.TxX+(O.TxW-Length(S)*8) Div 2;
-     If Inv Then WText(TX,Y+O.TxY+(O.TxH-7) Div 2,S) Else PText(TX,Y+O.TxY+(O.TxH-7) Div 2,S);
+     If Inv Then WText16(TX,Y+O.TxY+(O.TxH-16) Div 2,S) Else PText16(TX,Y+O.TxY+(O.TxH-16) Div 2,S);
     End;
    End;
   28: Begin
-    If Inv Then Begin Box(X,Y,X+Length(S)*8,Y+15,INK);WText(X,Y+4,S);End
-    Else PText(X,Y+4,S);
+    If Inv Then Begin Box(X,Y,X+Length(S)*8,Y+15,INK);WText16(X,Y,S);End
+    Else PText16(X,Y,S);
    End;
  End;
  If ((O.State And 4)<>0) And (O.Typ<>28) Then Begin
@@ -6413,7 +6550,7 @@ End;
 
 Const
  VD_MAX = 8;
- V_BIG_ASC = 11;               { ligne de base dans la cellule 8x16 }
+ V_BIG_ASC = 13;               { ligne de base dans la cellule 8x16 }
  V_SML_ASC = 7;                { ligne de base dans la cellule 8x8 }
 
 Type
@@ -6727,7 +6864,8 @@ Function GlyphBit(Ch: Byte; R,X: Integer; Big: Boolean; Eff: Integer): Boolean;
  Begin
   Raw:=False;
   If (XX<0) Or (XX>7) Then Exit;
-  If Big Then G:=RR-4 Else G:=RR;
+  If RR<0 Then Exit;
+  If Big Then G:=RR Div 2 Else G:=RR;      { 8x16 : lignes de la police 8x8 doublees }
   If (G<0) Or (G>7) Then Exit;
   Raw:=((Font8[Ch,G] Shr (7-XX)) And 1)<>0;
  End;
