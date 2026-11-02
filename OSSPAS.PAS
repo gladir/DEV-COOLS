@@ -5810,7 +5810,7 @@ Begin
  PrgLoad:=RPC;
  RunCore:=True;
  EmuHalt:=False;EmuBrk:=False;EmuCode:=0;EmuMsg:='';EmuSuper:=False;
- EmuSeed:=NowCs;RtSeed:=NowCs;VtState:=0;VtRev:=False;AesNext:=0;IoCheckOn:=True;IoRes:=0;ChainReq:='';
+ EmuSeed:=NowCs;RtSeed:=NowCs;VtState:=0;VtRev:=False;AesNext:=0;IoCheckOn:=True;IoRes:=0;ChainReq:='';RtTrace:=(GetEnv('OSSTRACE')<>'');
  For I:=6 To 25 Do EmuFUsed[I]:=False;
  OutSel:=0;InSel:=0;ConBuf:='';ConPos:=1;TmpIdx:=0;SetIdx:=0;GemMode:=False;GemUsed:=False;
  OXor:=False;DrawModeV:=1;TxtColV:=1;FilCol:=1;FilSty:=1;FilIdx:=1;LinCol:=1;
@@ -6431,6 +6431,7 @@ Type
   Ref  : Boolean;
   Off  : LongInt;       { decalage sur la pile (par rapport a A6) }
   Slot : Integer;
+  Proc : Integer;       { > 0 : parametre procedural, symbole modele de la signature }
  End;
 
  TSym = Record
@@ -6451,6 +6452,7 @@ Type
   DirN  : Integer;
   Lab   : Integer;        { etiquette du point d'entree }
   Res   : Integer;        { variable resultat (fonction) }
+  Tpl   : Integer;        { > 0 : parametre procedural, symbole modele }
  End;
 
  TAddr = Record
@@ -6983,7 +6985,7 @@ End;
 Const
  N_INT=1;N_REAL=2;N_STR=3;N_CHR=4;N_NIL=5;N_VAR=6;N_FIELD=7;N_INDEX=8;N_SIDX=9;
  N_DEREF=10;N_FUNC=11;N_STD=12;N_UN=13;N_BIN=14;N_CONV=15;N_SET=16;N_RNG=17;
- N_WITH=18;N_STDFILE=19;N_FBUF=20;
+ N_WITH=18;N_STDFILE=19;N_FBUF=20;N_PROCREF=21;
  B_ADD=1;B_SUB=2;B_MUL=3;B_DIV=4;B_MOD=5;B_RDIV=6;B_AND=7;B_OR=8;B_EQ=9;B_NE=10;
  B_LT=11;B_GT=12;B_LE=13;B_GE=14;B_IN=15;
  F_ABS=1;F_SQR=2;F_SQRT=3;F_SIN=4;F_COS=5;F_ATAN=6;F_LN=7;F_EXP=8;F_TRUNC=9;
@@ -7016,6 +7018,7 @@ Var
  HRes : Array[1..NHOSTMAX] Of Char;
  HNm  : Array[1..NHOSTMAX] Of String[24];
  HostN: Integer;
+ GCVia : Integer;        { variable procedurale appelee par le GenCall suivant }
 
 Function NewNd(Op: Byte; T: Integer): Integer;
 Begin
@@ -7411,7 +7414,7 @@ Begin
    End;
   N_STR: Begin AbsLab($41F9,Nd[N].V);E16($2008);End;
   N_VAR,N_FIELD,N_INDEX,N_SIDX,N_DEREF,N_WITH,N_FBUF: LoadNode(N);
-  N_FUNC: GenCall(Nd[N].Sym,Nd[N].A);
+  N_FUNC: Begin GCVia:=Nd[N].V;GenCall(Nd[N].Sym,Nd[N].A);End;
   N_STD: GenStdFunc(N);
   N_UN: Begin
     Expr(Nd[N].A);
@@ -7598,6 +7601,42 @@ Begin
  PSelectors:=N;
 End;
 
+{ le sous-programme S a-t-il la forme (signature) du modele T ? }
+Function SigMatch(T,S: Integer): Boolean;
+Var I: Integer; A,B: TParm;
+Begin
+ SigMatch:=False;
+ If Sy[T].K<>Sy[S].K Then Exit;
+ If Sy[T].PCnt<>Sy[S].PCnt Then Exit;
+ If (Sy[T].K=SK_FUNC) And (Not SameTy(Sy[T].Ty,Sy[S].Ty)) Then Exit;
+ For I:=1 To Sy[T].PCnt Do Begin
+  A:=Pm[Sy[T].PFirst+I-1];B:=Pm[Sy[S].PFirst+I-1];
+  If A.Ref<>B.Ref Then Exit;
+  If (A.Proc<>0)<>(B.Proc<>0) Then Exit;
+  If (A.Proc=0) And (Not SameTy(A.Ty,B.Ty)) Then Exit;
+ End;
+ SigMatch:=True;
+End;
+
+{ argument effectif pour un parametre procedural : nom d'un sous-programme }
+Function PProcArg(Tpl: Integer): Integer;
+Var S,N: Integer;
+Begin
+ N:=NewNd(N_PROCREF,TY_VOID);
+ PProcArg:=N;
+ If Tok<>T_ID Then Begin Err(1);Exit;End;
+ S:=FindSym(TokS);
+ If S=0 Then Begin Err(3);NextTok;Exit;End;
+ NextTok;
+ If ((Sy[S].K=SK_PROC) Or (Sy[S].K=SK_FUNC)) And (Sy[S].Dir In [0,4]) Then Begin
+  If Not SigMatch(Tpl,S) Then Err(5);
+  Nd[N].Sym:=S;
+ End Else If (Sy[S].K=SK_VAR) And (Sy[S].Tpl<>0) Then Begin
+  If Not SigMatch(Tpl,Sy[S].Tpl) Then Err(5);
+  Nd[N].Sym:=S;
+ End Else Err(5);
+End;
+
 { analyse des arguments d'un appel de sous-programme utilisateur }
 Function PArgs(S: Integer): Integer;
 Var P,First,Last,E,I,Cnt: Integer; Pr: TParm;
@@ -7609,8 +7648,9 @@ Begin
   NextTok;
   For I:=1 To Cnt Do Begin
    Pr:=Pm[Sy[S].PFirst+I-1];
-   E:=PExpr;
-   If Pr.Ref Then Begin
+   If Pr.Proc<>0 Then E:=PProcArg(Pr.Proc) Else E:=PExpr;
+   If Pr.Proc<>0 Then Begin End
+   Else If Pr.Ref Then Begin
     If Not IsLval(E) Then Err(12)
     Else If Not (SameTy(Pr.Ty,Nd[E].Ty) Or (Ty[Pr.Ty].K=TK_STR) And (Ty[Nd[E].Ty].K=TK_STR)) Then Err(5)
     Else If (Ty[Pr.Ty].K=TK_ARR) And (Ty[Nd[E].Ty].K<>TK_ARR) Then Err(5);
@@ -7692,6 +7732,13 @@ Begin
        PFactorX:=N;
       End;
      SK_VAR: Begin
+       If Sy[S].Tpl<>0 Then Begin
+        { appel d'une fonction recue en parametre }
+        If Sy[Sy[S].Tpl].K<>SK_FUNC Then Begin Err(43);PFactorX:=MkInt(0,TY_INT);Exit;End;
+        N:=NewNd(N_FUNC,Sy[Sy[S].Tpl].Ty);Nd[N].Sym:=Sy[S].Tpl;Nd[N].V:=S;Nd[N].A:=PArgs(Sy[S].Tpl);
+        PFactorX:=PSelectors(N);
+        Exit;
+       End;
        N:=NewNd(N_VAR,Sy[S].Ty);Nd[N].Sym:=S;
        PFactorX:=PSelectors(N);
       End;
@@ -7967,10 +8014,28 @@ Begin
  Else Begin StaticTo(Hops);E16($2F08);End;
 End;
 
+{ empile (adresse de code, lien statique) d'un sous-programme passe en parametre }
+Procedure PushProcArg(N: Integer);
+Var S: Integer; Ad: TAddr;
+Begin
+ S:=Nd[N].Sym;
+ If S=0 Then Begin LoadImm(0);PushD0;PushD0;Exit;End;
+ If Sy[S].K=SK_VAR Then Begin
+  { transmission d'un parametre procedural a un autre sous-programme }
+  Ad:=VarAddr(S);LeaA0(Ad);
+  E16($2F28);E16(4);                    { MOVE.L 4(A0),-(A7) : adresse }
+  E16($2F10);                           { MOVE.L (A0),-(A7)  : lien statique }
+ End Else Begin
+  AbsLab($4879,Sy[S].Lab);              { PEA adresse }
+  PushStaticLink(S);
+ End;
+End;
+
 Procedure GenCall(Sym: Integer; Args: Integer);
 Var P,I,Cnt: Integer; A: Integer; Pr: TParm; Arr: Array[1..40] Of Integer; Tot: LongInt; Sz: Integer;
-    Tp: Integer;
+    Tp: Integer; Via: Integer; Ad: TAddr;
 Begin
+ Via:=GCVia;GCVia:=0;
  Cnt:=Sy[Sym].PCnt;
  A:=Args;
  For I:=1 To Cnt Do Begin
@@ -8021,7 +8086,9 @@ Begin
  Tot:=0;
  For I:=1 To Cnt Do Begin
   Pr:=Pm[Sy[Sym].PFirst+I-1];
-  If Pr.Ref Then Begin
+  If Pr.Proc<>0 Then Begin
+   PushProcArg(Arr[I]);
+  End Else If Pr.Ref Then Begin
    AddrToA0(Arr[I]);PushA0;
   End Else If IsAgg(Pr.Ty) Or (Ty[Pr.Ty].K=TK_ARR) Or (Ty[Pr.Ty].K=TK_REC) Then Begin
    AddrToA0(Arr[I]);PushA0;
@@ -8030,6 +8097,15 @@ Begin
   End Else Begin
    Expr(Arr[I]);PushD0;
   End;
+ End;
+ If Via<>0 Then Begin
+  { appel indirect par une variable procedurale : (lien statique, adresse) }
+  Ad:=VarAddr(Via);LeaA0(Ad);
+  E16($2F10);                           { MOVE.L (A0),-(A7) : lien statique }
+  E16($2068);E16(4);                    { MOVEA.L 4(A0),A0 : adresse }
+  E16($4E90);                           { JSR (A0) }
+  AdjSP(Sy[Sym].PSize+4);
+  Exit;
  End;
  PushStaticLink(Sym);
  AbsLab($4EB9,Sy[Sym].Lab);
@@ -8742,6 +8818,14 @@ Begin
    Exit;
   End;
   Case Sy[S].K Of
+   SK_VAR: If Sy[S].Tpl<>0 Then Begin
+     { appel d'une procedure/fonction recue en parametre }
+     NextTok;
+     Args:=PArgs(Sy[S].Tpl);
+     GCVia:=S;
+     GenCall(Sy[S].Tpl,Args);
+     Exit;
+    End;
    SK_PROC,SK_FUNC: Begin
      F:=0;
      If Sy[S].K=SK_FUNC Then F:=IsFuncName(Nm);
@@ -9075,6 +9159,78 @@ End;
 
 Procedure PDecls; Forward;
 
+Procedure PProcHeader(Var Tpl: Integer; Var PNm: String); Forward;
+
+{ liste de parametres formels "( ... )" : Tok = '(' ; les parametres sont ajoutes
+  de facon contigue dans Pm (les modeles des parametres procéduraux d'abord) }
+Procedure PParamList(Var First,Cnt: Integer; Var PSz: LongInt);
+Var LP: Array[1..40] Of TParm; LN,NN,K,PT,Tpl: Integer; Ref: Boolean;
+    Names: Array[1..20] Of String[40]; PNm: String;
+Begin
+ LN:=0;PSz:=0;
+ NextTok;
+ While (Tok<>T_RP) And (Tok<>T_EOF) And (Not CHalt) Do Begin
+  If (Tok=K_PROCEDURE) Or (Tok=K_FUNCTION) Then Begin
+   { parametre procedural ou fonctionnel }
+   PProcHeader(Tpl,PNm);
+   If LN>=40 Then Begin Err(41);Break;End;
+   Inc(LN);
+   LP[LN].Name:=PNm;LP[LN].Ty:=TY_VOID;LP[LN].Ref:=False;LP[LN].Slot:=8;LP[LN].Proc:=Tpl;
+   LP[LN].Off:=0;
+   PSz:=PSz+8;
+  End Else Begin
+   Ref:=False;
+   If Tok=K_VAR Then Begin Ref:=True;NextTok;End;
+   NN:=0;
+   Repeat
+    If Tok<>T_ID Then Begin Err(1);Break;End;
+    If NN<20 Then Begin Inc(NN);Names[NN]:=TokS;End;
+    NextTok;
+    If Tok=T_COMMA Then NextTok Else Break;
+   Until CHalt;
+   Skip(T_COLON);
+   PType(PT);
+   For K:=1 To NN Do Begin
+    If LN>=40 Then Begin Err(41);Break;End;
+    Inc(LN);
+    LP[LN].Name:=Names[K];LP[LN].Ty:=PT;LP[LN].Ref:=Ref;LP[LN].Proc:=0;LP[LN].Off:=0;
+    If (Not Ref) And (Ty[PT].K=TK_REAL) Then LP[LN].Slot:=8 Else LP[LN].Slot:=4;
+    PSz:=PSz+LP[LN].Slot;
+   End;
+  End;
+  If Tok=T_SEMI Then NextTok Else Break;
+ End;
+ Skip(T_RP);
+ { copie contigue dans Pm }
+ First:=PmN+1;Cnt:=LN;
+ For K:=1 To LN Do Begin
+  If PmN>=MAXPARM Then Begin Err(41);Break;End;
+  Inc(PmN);Pm[PmN]:=LP[K];
+ End;
+End;
+
+{ en-tete d'un parametre procedural : PROCEDURE p(...) ou FUNCTION f(...) : type }
+Procedure PProcHeader(Var Tpl: Integer; Var PNm: String);
+Var IsF: Boolean; S,First,Cnt: Integer; PSz: LongInt; T: Integer;
+Begin
+ IsF:=(Tok=K_FUNCTION);
+ NextTok;
+ PNm:='';
+ If Tok=T_ID Then Begin PNm:=TokS;NextTok;End Else Err(1);
+ If IsF Then S:=AddSym('',SK_FUNC,TY_VOID) Else S:=AddSym('',SK_PROC,TY_VOID);
+ Sy[S].Name:='';
+ First:=PmN+1;Cnt:=0;PSz:=0;
+ If Tok=T_LP Then PParamList(First,Cnt,PSz);
+ Sy[S].PFirst:=First;Sy[S].PCnt:=Cnt;Sy[S].PSize:=PSz;
+ If IsF Then Begin
+  Skip(T_COLON);
+  PType(T);
+  If IsAgg(T) And (Ty[T].K<>TK_STR) Then Err(35);
+  Sy[S].Ty:=T;
+ End;
+ Tpl:=S;
+End;
+
 Procedure PProcDecl;
 Var IsF,Ref: Boolean; Nm: String; S,I,K,Cnt,First,NN,T,PT,LinkPos: Integer;
     Names: Array[1..20] Of String[40]; SavedSyN,SavedBase,SavedRN: Integer; OldLoc,PSz,Off,V: LongInt;
@@ -9096,31 +9252,7 @@ Begin
   If IsF Then S:=AddSym(Nm,SK_FUNC,TY_VOID) Else S:=AddSym(Nm,SK_PROC,TY_VOID);
   Sy[S].Lab:=NewLab;LabNm[Sy[S].Lab]:=Copy(Nm,1,24);
   First:=PmN+1;Cnt:=0;PSz:=0;
-  If Tok=T_LP Then Begin
-   NextTok;
-   While (Tok<>T_RP) And (Tok<>T_EOF) And (Not CHalt) Do Begin
-    Ref:=False;
-    If Tok=K_VAR Then Begin Ref:=True;NextTok;End;
-    NN:=0;
-    Repeat
-     If Tok<>T_ID Then Begin Err(1);Break;End;
-     If NN<20 Then Begin Inc(NN);Names[NN]:=TokS;End;
-     NextTok;
-     If Tok=T_COMMA Then NextTok Else Break;
-    Until CHalt;
-    Skip(T_COLON);
-    PType(PT);
-    For K:=1 To NN Do Begin
-     If PmN>=MAXPARM Then Begin Err(41);Break;End;
-     Inc(PmN);Inc(Cnt);
-     Pm[PmN].Name:=Names[K];Pm[PmN].Ty:=PT;Pm[PmN].Ref:=Ref;
-     If (Not Ref) And (Ty[PT].K=TK_REAL) Then Pm[PmN].Slot:=8 Else Pm[PmN].Slot:=4;
-     PSz:=PSz+Pm[PmN].Slot;
-    End;
-    If Tok=T_SEMI Then NextTok Else Break;
-   End;
-   Skip(T_RP);
-  End;
+  If Tok=T_LP Then PParamList(First,Cnt,PSz);
   Sy[S].PFirst:=First;Sy[S].PCnt:=Cnt;Sy[S].PSize:=PSz;
   If IsF Then Begin
    Skip(T_COLON);
@@ -9165,7 +9297,8 @@ Begin
   Off:=Off-Pr.Slot;
   Ps:=AddSym(Pr.Name,SK_VAR,Pr.Ty);
   Sy[Ps].Off:=Off;
-  If Pr.Ref Then Sy[Ps].Ref:=True
+  If Pr.Proc<>0 Then Sy[Ps].Tpl:=Pr.Proc
+  Else If Pr.Ref Then Sy[Ps].Ref:=True
   Else If IsAgg(Pr.Ty) Or (Ty[Pr.Ty].K=TK_ARR) Or (Ty[Pr.Ty].K=TK_REC) Then Begin
    Sl:=AllocVar(Ty[Pr.Ty].Size);
    If NCp<30 Then Begin Inc(NCp);CpSlot[NCp]:=Off;CpLoc[NCp]:=Sl;CpSize[NCp]:=Ty[Pr.Ty].Size;End;
