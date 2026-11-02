@@ -7640,13 +7640,16 @@ Begin
  If Row>ScrDirtyHi Then ScrDirtyHi:=Row;
 End;
 
+Function HwRd8(A: LongInt): Byte; Forward;     { ROM / registres materiels ST : voir p20 }
+
 Function Rd8(A: LongInt): Byte;
 Var P: ^Byte;
 Begin
  A:=A And $FFFFFF;
  If A>=MemSize Then Begin
-  If A<$FF0000 Then Begin BusErr:=True;BusAddr:=A;End;
-  Rd8:=0;Exit;
+  If A<$FC0000 Then Begin BusErr:=True;BusAddr:=A;Rd8:=0;End
+  Else Rd8:=HwRd8(A);
+  Exit;
  End;
  {$IFDEF FPC}
  P:=PageTab[A Shr 12];
@@ -7657,12 +7660,15 @@ Begin
  Rd8:=P^;
 End;
 
+Procedure HwWr8(A: LongInt; V: Byte); Forward;     { registres materiels ST (ecriture) : voir p20 }
+
 Procedure Wr8(A: LongInt; V: Byte);
 Var P: ^Byte;
 Begin
  A:=A And $FFFFFF;
  If A>=MemSize Then Begin
-  If A<$FF0000 Then Begin BusErr:=True;BusAddr:=A;End;
+  If A<$FF0000 Then Begin BusErr:=True;BusAddr:=A;End
+  Else If A>=$FF8000 Then HwWr8(A,V);
   Exit;
  End;
  {$IFDEF FPC}
@@ -9981,9 +9987,18 @@ Begin
 End;
 
 { Lit le clavier hote et alimente la file de touches ST }
+{ horloges systeme TOS : _hz_200 ($4BA), _vbclock ($462), _frclock ($466) }
+Procedure TickSysVars;
+Var T: LongInt;
+Begin
+ T:=MsNow Div 5;
+ Wr32($4BA,T);Wr32($462,T Div 4);Wr32($466,T Div 4);
+End;
+
 Procedure PollKeys;
 Var Ch: Char; K: Word; Scan,Asc: Integer;
 Begin
+ TickSysVars;
  SoundTick;
  IkDrain;
  If BatchMode Then Begin
@@ -10528,7 +10543,8 @@ Const
 Var
  HitPa,HeapLo,HeapHi : LongInt;
  PexBp : LongInt;            { base page du fils Pexec en cours }
- MBase,MSize : Array[1..64] Of LongInt;
+ MBase,MSize,MOwn : Array[1..64] Of LongInt;   { blocs Malloc : adresse, taille, proprietaire (page de base) }
+ CurOwn      : LongInt;           { page de base du processus en cours (0 = programme principal) }
  MCnt        : Integer;
  DtaAddr     : LongInt;
  FHUsed      : Array[6..MAXFH] Of Boolean;
@@ -10541,6 +10557,9 @@ Var
  RandSeed68  : LongInt;
  ProgName    : String;
  ProgCmd     : String;
+ DosTrace    : Boolean;
+ DosUserSP   : LongInt;        { pile utilisateur memorisee par Super(pile) }
+ VdiTrace    : Boolean;        { DEVPAC_TRACE=2 : trace detaillee VDI/objets }
 
 Function HostPath(Const S0: String): String;
 Var S: String; I: Integer;
@@ -10558,6 +10577,258 @@ Begin
  {$ENDIF}
  {$ENDIF}
  HostPath:=S;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Systeme de fichiers virtuel GEMDOS : la racine du lecteur est le        }
+{ dossier hote courant au lancement de l'emulation (jamais la racine de   }
+{ l'hote) ; les noms sont insensibles a la casse (comme sur disque ST).   }
+{ ---------------------------------------------------------------------- }
+Const
+ DOS_MAXSRCH = 16;
+ DOS_MAXENT  = 400;
+ {$IFDEF FPC}
+ {$IFDEF UNIX}
+ HSEP = '/';
+ {$ELSE}
+ HSEP = '\';
+ {$ENDIF}
+ {$ELSE}
+ HSEP = '\';
+ {$ENDIF}
+
+Type
+ TDosEnt = Record Nm: String[12]; At: Byte; Sz: LongInt; Tm: LongInt; End;
+ TDosSrch = Record N: Integer; Ent: Array[1..DOS_MAXENT] Of TDosEnt; End;
+ PDosSrch = ^TDosSrch;
+
+Var
+ DosRoot : String;         { dossier hote de la racine, separateur final }
+ DosCur  : String;         { repertoire courant virtuel : A\B (vide = racine) }
+ DosDrv  : Integer;        { lecteur courant : 0=A ... 2=C }
+ DosSrch : Array[0..DOS_MAXSRCH-1] Of PDosSrch;
+ DosSrchNext : Integer;
+
+{ la racine est le dossier hote courant (il peut etre change par le lanceur : « dossier d'execution ») }
+Function DosRootNow: String;
+Var S: String;
+Begin
+ GetDir(0,S);
+ If (S<>'') And (S[Length(S)]<>HSEP) Then S:=S+HSEP;
+ DosRoot:=S;
+ DosRootNow:=S;
+End;
+
+Procedure DosInit;
+Begin
+ DosRootNow;DosCur:='';DosDrv:=2;
+ DosSrchNext:=0;
+End;
+
+{ chemin TOS -> composants normalises (casse conservee) : A\B\C ; Abs=True si lecteur/'\' initial }
+Function DosVirt(Const S0: String): String;
+Var S,Base,Cur,Res: String; I: Integer;
+ Procedure Flush1;
+ Var P: Integer;
+ Begin
+  If Cur='' Then Exit;
+  If Cur='.' Then Begin Cur:='';Exit;End;
+  If Cur='..' Then Begin
+   P:=Length(Res);
+   While (P>0) And (Res[P]<>'\') Do Dec(P);
+   If P>0 Then Res:=Copy(Res,1,P-1) Else Res:='';
+   Cur:='';Exit;
+  End;
+  If Res<>'' Then Res:=Res+'\';
+  Res:=Res+Cur;Cur:='';
+ End;
+Begin
+ S:=S0;
+ If (Length(S)>=2) And (S[2]=':') Then S:=Copy(S,3,255);
+ If (S<>'') And ((S[1]='\') Or (S[1]='/')) Then Res:=''
+ Else Res:=DosCur;
+ Cur:='';
+ For I:=1 To Length(S) Do
+  If (S[I]='\') Or (S[I]='/') Then Flush1 Else Cur:=Cur+S[I];
+ Flush1;
+ DosVirt:=Res;
+End;
+
+Function DosIsHostAbs(Const S: String): Boolean;
+Begin
+ {$IFDEF FPC}
+ {$IFDEF UNIX}
+ DosIsHostAbs:=(S<>'') And (S[1]='/');
+ {$ELSE}
+ DosIsHostAbs:=False;
+ {$ENDIF}
+ {$ELSE}
+ DosIsHostAbs:=False;
+ {$ENDIF}
+End;
+
+{ cherche Nm (insensible a la casse) dans le dossier hote Dir ; renvoie le nom reel et l'attribut }
+Function DosLookup(Const Dir,Nm: String; Var Real_: String; Var At: Integer): Boolean;
+Var SR: SearchRec; U: String; Found: Boolean;
+Begin
+ Found:=False;
+ U:=Upper(Nm);
+ FindFirst(Dir+'*',AnyFile,SR);
+ While DosError=0 Do Begin
+  If Upper(SR.Name)=U Then Begin Real_:=SR.Name;At:=SR.Attr;Found:=True;Break;End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ DosLookup:=Found;
+End;
+
+{ chemin TOS -> chemin hote ; Dir=True : tout le chemin est un repertoire (sinon le dernier composant
+  peut ne pas exister et garde la casse donnee). DirOk indique que le repertoire existe. }
+Function DosHost(Const S0: String; Var HostDir,Last: String): Boolean;
+Var V,H,C,R: String; P,At: Integer; Ok: Boolean;
+Begin
+ Ok:=True;
+ If DosIsHostAbs(S0) Then Begin
+  P:=Length(S0);
+  While (P>0) And (S0[P]<>'/') Do Dec(P);
+  HostDir:=Copy(S0,1,P);Last:=Copy(S0,P+1,255);
+  DosHost:=True;Exit;
+ End;
+ V:=DosVirt(S0);
+ { dernier composant }
+ P:=Length(V);
+ While (P>0) And (V[P]<>'\') Do Dec(P);
+ Last:=Copy(V,P+1,255);
+ V:=Copy(V,1,P);               { avec '\' final }
+ H:=DosRootNow;
+ While (V<>'') Do Begin
+  P:=Pos('\',V);
+  C:=Copy(V,1,P-1);V:=Copy(V,P+1,255);
+  If DosLookup(H,C,R,At) And ((At And Directory)<>0) Then H:=H+R+HSEP
+  Else Begin H:=H+C+HSEP;Ok:=False;End;
+ End;
+ HostDir:=H;
+ DosHost:=Ok;
+End;
+
+{ nom hote complet (le dernier composant est cherche sans tenir compte de la casse) }
+Function TosPath(Const S0: String): String;
+Var H,L,R: String; At: Integer;
+Begin
+ If (S0='') Or (S0='.') Then Begin DosHost('.',H,L);TosPath:=H+L;Exit;End;
+ If DosHost(S0,H,L) Then Begin
+  If (L<>'') And DosLookup(H,L,R,At) Then L:=R;
+ End;
+ TosPath:=H+L;
+End;
+
+Function DosIsDir(Const S: String): Boolean;
+Var H,L,R: String; At: Integer;
+Begin
+ DosIsDir:=False;
+ If Not DosHost(S,H,L) Then Exit;
+ If L='' Then Begin DosIsDir:=True;Exit;End;
+ If DosLookup(H,L,R,At) Then DosIsDir:=(At And Directory)<>0;
+End;
+
+{ jokers TOS : * et ? sur le nom et l'extension separement }
+Function DosWild(Const Pt,Nm: String): Boolean;
+ Function M(Const P,N: String; I,J: Integer): Boolean;
+ Begin
+  If I>Length(P) Then M:=J>Length(N)
+  Else If P[I]='*' Then Begin
+   M:=M(P,N,I+1,J) Or ((J<=Length(N)) And M(P,N,I,J+1));
+  End Else If J>Length(N) Then M:=False
+  Else If (P[I]='?') Or (P[I]=N[J]) Then M:=M(P,N,I+1,J+1)
+  Else M:=False;
+ End;
+Var PB,PE,NB,NE,P0,N0: String; I: Integer;
+Begin
+ P0:=Upper(Pt);N0:=Upper(Nm);
+ I:=Pos('.',P0);
+ If I>0 Then Begin PB:=Copy(P0,1,I-1);PE:=Copy(P0,I+1,20);End Else Begin PB:=P0;PE:='*';End;
+ I:=Pos('.',N0);
+ If (I>0) And (N0<>'.') And (N0<>'..') Then Begin NB:=Copy(N0,1,I-1);NE:=Copy(N0,I+1,20);End Else Begin NB:=N0;NE:='';End;
+ DosWild:=M(PB,NB,1,1) And M(PE,NE,1,1);
+End;
+
+{ nom hote acceptable comme nom 8.3 TOS ? }
+Function DosName83(Const N: String): Boolean;
+Var P: Integer;
+Begin
+ DosName83:=False;
+ If (N='.') Or (N='..') Then Begin DosName83:=True;Exit;End;
+ If (N='') Or (N[1]='.') Then Exit;
+ P:=Pos('.',N);
+ If P=0 Then Begin DosName83:=Length(N)<=8;Exit;End;
+ If (P>9) Or (Length(N)-P>3) Or (Pos('.',Copy(N,P+1,20))>0) Then Exit;
+ DosName83:=True;
+End;
+
+Function DosSrchSlot: Integer;
+Var K: Integer;
+Begin
+ K:=DosSrchNext;
+ DosSrchNext:=(DosSrchNext+1) Mod DOS_MAXSRCH;
+ If DosSrch[K]=Nil Then New(DosSrch[K]);
+ DosSrchSlot:=K;
+End;
+
+{ Fsfirst : remplit la recherche ; retourne le numero de slot ou -1 }
+Function DosSearch(Const Spec: String; Attr: Integer): Integer;
+Var H,L: String; SR: SearchRec; K,I,J: Integer; D: PDosSrch; E: TDosEnt; N: String; Ok,InRoot: Boolean;
+    V: String;
+Begin
+ DosSearch:=-1;
+ If Not DosHost(Spec,H,L) Then Exit;
+ V:=DosVirt(Spec);
+ InRoot:=Pos('\',V)=0;
+ K:=DosSrchSlot;D:=DosSrch[K];D^.N:=0;
+ FindFirst(H+'*',AnyFile,SR);
+ While (DosError=0) And (D^.N<DOS_MAXENT) Do Begin
+  N:=Upper(SR.Name);
+  Ok:=DosName83(N) And DosWild(L,N);
+  If Ok And InRoot And ((N='.') Or (N='..')) Then Ok:=False;
+  If Ok Then Begin
+   E.At:=SR.Attr And $37;
+   If (SR.Attr And Directory)<>0 Then E.At:=E.At Or $10 Else E.At:=E.At Or $20;
+   E.At:=E.At And $3F;
+   If (N='.') Or (N='..') Then E.At:=$10;
+   { attributs demandes : cachee/systeme/repertoire seulement sur demande }
+   If ((E.At And $16) And Not Attr)<>0 Then Ok:=False;
+   If (Attr=8) Then Ok:=False;
+   If Ok Then Begin
+    E.Nm:=N;E.Sz:=SR.Size;E.Tm:=SR.Time;
+    If (SR.Attr And Directory)<>0 Then E.Sz:=0;
+    Inc(D^.N);D^.Ent[D^.N]:=E;
+   End;
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ { tri alphabetique (noms), '.' et '..' en tete }
+ For I:=2 To D^.N Do Begin
+  E:=D^.Ent[I];J:=I-1;
+  While (J>=1) And (D^.Ent[J].Nm>E.Nm) Do Begin D^.Ent[J+1]:=D^.Ent[J];Dec(J);End;
+  D^.Ent[J+1]:=E;
+ End;
+ If D^.N=0 Then DosSearch:=-1 Else DosSearch:=K;
+End;
+
+{ Dgetpath : repertoire courant virtuel, en majuscules, avec '\' initial (vide a la racine) }
+Function DosCurPath: String;
+Begin
+ If DosCur='' Then DosCurPath:='' Else DosCurPath:='\'+Upper(DosCur);
+End;
+
+{ chemin TOS complet (avec lecteur) a partir d'un repertoire virtuel }
+Function DosDriveLetter: Char;
+Begin
+ DosDriveLetter:=Chr(65+DosDrv);
 End;
 
 Procedure CloseAllFiles;
@@ -10620,7 +10891,7 @@ Begin
  If (N<=0) Or (MCnt>=64) Then Begin DoMalloc:=0;Exit;End;
  A:=HeapFindGap(N);
  If A<>0 Then Begin
-  Inc(MCnt);MBase[MCnt]:=A;MSize[MCnt]:=N;
+  Inc(MCnt);MBase[MCnt]:=A;MSize[MCnt]:=N;MOwn[MCnt]:=CurOwn;
  End;
  DoMalloc:=A;
 End;
@@ -10631,10 +10902,23 @@ Begin
  DoMfree:=-40;
  For I:=1 To MCnt Do
   If MBase[I]=A Then Begin
-   For J:=I To MCnt-1 Do Begin MBase[J]:=MBase[J+1];MSize[J]:=MSize[J+1];End;
+   For J:=I To MCnt-1 Do Begin MBase[J]:=MBase[J+1];MSize[J]:=MSize[J+1];MOwn[J]:=MOwn[J+1];End;
    Dec(MCnt);
    DoMfree:=0;Exit;
   End;
+End;
+
+{ libere tous les blocs appartenant au processus de page de base Bp (fin d'un fils) }
+Procedure FreeOwned(Bp: LongInt);
+Var I,J: Integer;
+Begin
+ I:=1;
+ While I<=MCnt Do Begin
+  If MOwn[I]=Bp Then Begin
+   For J:=I To MCnt-1 Do Begin MBase[J]:=MBase[J+1];MSize[J]:=MSize[J+1];MOwn[J]:=MOwn[J+1];End;
+   Dec(MCnt);
+  End Else Inc(I);
+ End;
 End;
 
 { ---------------------------------------------------------------------- }
@@ -10655,17 +10939,15 @@ Procedure KeyToStr;
 Begin
 End;
 
-Procedure FillDta;
-Var N: String; I: Integer; T: LongInt;
+Procedure FillDtaEnt(Const E: TDosEnt);
+Var I: Integer;
 Begin
- N:=Upper(DtaSR.Name);
- Wr8(DtaAddr+21,DtaSR.Attr And $FF);
- T:=DtaSR.Time;
- Wr16(DtaAddr+22,T And $FFFF);
- Wr16(DtaAddr+24,ShrL(T,16) And $FFFF);
- Wr32(DtaAddr+26,DtaSR.Size);
+ Wr8(DtaAddr+21,E.At And $FF);
+ Wr16(DtaAddr+22,E.Tm And $FFFF);
+ Wr16(DtaAddr+24,ShrL(E.Tm,16) And $FFFF);
+ Wr32(DtaAddr+26,E.Sz);
  For I:=0 To 13 Do Wr8(DtaAddr+30+I,0);
- For I:=1 To Length(N) Do If I<=13 Then Wr8(DtaAddr+29+I,Ord(N[I]));
+ For I:=1 To Length(E.Nm) Do If I<=13 Then Wr8(DtaAddr+29+I,Ord(E.Nm[I]));
 End;
 
 Function ConLineInput(Buf: LongInt): LongInt;
@@ -10696,6 +10978,7 @@ Var Fn: LongInt; R: LongInt; H: Integer; I,N: LongInt; S: String; K: LongInt; Bu
 Begin
  Fn:=PW(0);
  R:=0;
+ If DosTrace Then Begin WriteLn(ConOut,'GEMDOS $',Hex2(Fn),' ',Hex8(PL(2)),' ',Hex8(PL(6)),' ',Hex8(PL(10)),' pc=',Hex8(PC),' sp=',Hex8(Rg[15]));Flush(ConOut);End;
  Case Fn Of
   $00: Begin StopReason:=STOP_EXIT;ExitCode:=0;End;
   $4C: Begin StopReason:=STOP_EXIT;ExitCode:=SExt(PW(2),2);End;
@@ -10723,12 +11006,12 @@ Begin
        End;
   $0A: R:=ConLineInput(PL(2));
   $0B: Begin PollKeys;If KQEmpty Then R:=0 Else R:=-1;End;
-  $0E: R:=4;
+  $0E: Begin DosDrv:=PW(2) And 15;R:=4;End;
   $10: R:=-1;
   $11: R:=-1;
   $12: Begin If AuxAvail Then R:=-1 Else R:=0;End;
   $13: R:=-1;
-  $19: R:=2;
+  $19: R:=DosDrv;
   $1A: DtaAddr:=PL(2);
   $20: Begin
         A:=PL(2);
@@ -10740,8 +11023,15 @@ Begin
          End Else R:=Rg[15];
         End Else If A=1 Then Begin
          If (SRv And SR_S)<>0 Then R:=-1 Else R:=0;
+        End Else If (SRv And SR_S)=0 Then Begin
+         { mode utilisateur -> superviseur avec une nouvelle pile superviseur (ex. MonST) }
+         DosUserSP:=Rg[15];R:=SSPv;
+         SRv:=SRv Or SR_S;
+         Rg[15]:=A;SSPv:=A;
         End Else Begin
+         { superviseur -> utilisateur : on restitue la pile utilisateur si elle avait ete changee }
          SRv:=SRv And (Not SR_S);
+         If DosUserSP<>0 Then Begin Rg[15]:=DosUserSP;DosUserSP:=0;End;
          R:=0;
         End;
        End;
@@ -10761,9 +11051,26 @@ Begin
         A:=PL(2);
         Wr32(A,10000);Wr32(A+4,20000);Wr32(A+8,512);Wr32(A+12,2);
        End;
-  $39,$3A,$3B: R:=0;
+  $39: Begin
+        S:=TosPath(RdStr(PL(2),200));
+        {$I-}
+        MkDir(S);
+        {$I+}
+        If IOResult<>0 Then R:=-36 Else R:=0;
+       End;
+  $3A: Begin
+        S:=TosPath(RdStr(PL(2),200));
+        {$I-}
+        RmDir(S);
+        {$I+}
+        If IOResult<>0 Then R:=-36 Else R:=0;
+       End;
+  $3B: Begin
+        S:=RdStr(PL(2),200);
+        If DosIsDir(S) Then DosCur:=Upper(DosVirt(S)) Else R:=-34;
+       End;
   $3C,$3D: Begin
-        S:=HostPath(RdStr(PL(2),200));
+        S:=TosPath(RdStr(PL(2),200));
         H:=AllocFH;
         If H=0 Then R:=-35
         Else Begin
@@ -10845,7 +11152,7 @@ Begin
         End Else R:=-37;
        End;
   $41: Begin
-        S:=HostPath(RdStr(PL(2),200));
+        S:=TosPath(RdStr(PL(2),200));
         Assign(FHs[6],S);
         {$I-}
         Erase(FHs[6]);
@@ -10867,47 +11174,87 @@ Begin
          If IOResult<>0 Then R:=-64 Else R:=Fp;
         End Else R:=-37;
        End;
-  $43: R:=0;
+  $43: Begin
+        S:=RdStr(PL(2),200);
+        If DosIsDir(S) Then R:=$10
+        Else Begin
+         I:=DosSearch(S,$17);
+         If I<0 Then R:=-33 Else R:=DosSrch[I]^.Ent[1].At And $27;
+        End;
+       End;
   $45: R:=-36;
   $47: Begin
-        A:=PL(2);Wr8(A,Ord('\'));Wr8(A+1,0);
+        A:=PL(2);S:=DosCurPath;
+        For I:=1 To Length(S) Do Wr8(A+I-1,Ord(S[I]));
+        Wr8(A+Length(S),0);
        End;
   $48: R:=DoMalloc(PL(2));
   $49: R:=DoMfree(PL(2));
   $4A: Begin
-        A:=PL(6);N:=PL(8);
-        If (A=BP_ADDR) Or (A=PexBp) Then Begin
+        A:=PL(4);N:=PL(8);
+        R:=-40;
+        { bloc obtenu par Malloc / Pexec(5) : on le reduit }
+        For I:=1 To MCnt Do
+         If MBase[I]=A Then Begin
+          If (N>=0) And (N<MSize[I]) Then MSize[I]:=(N+1) And (Not 1);
+          R:=0;
+         End;
+        If (R<>0) And ((A=BP_ADDR) Or (A=PexBp)) Then Begin
          HeapLo:=A+((N+1) And (Not 1));
          If HeapLo>HeapHi Then HeapLo:=HeapHi;
+         R:=0;
         End;
-        R:=0;
        End;
   $4B: R:=DoPexec(PW(2),PL(4),PL(8),PL(12));
   $4E: Begin
-        S:=HostPath(RdStr(PL(2),200));
-        If DtaActive Then Begin
-         {$IFDEF FPC}
-         FindClose(DtaSR);
-         {$ENDIF}
+        I:=DosSearch(RdStr(PL(2),200),PW(6));
+        If I<0 Then R:=-33
+        Else Begin
+         Wr16(DtaAddr,$4000+I);Wr16(DtaAddr+2,1);
+         FillDtaEnt(DosSrch[I]^.Ent[1]);R:=0;
         End;
-        FindFirst(S,AnyFile,DtaSR);
-        If DosError=0 Then Begin DtaActive:=True;FillDta;R:=0;End
-        Else Begin DtaActive:=False;R:=-33;End;
        End;
   $4F: Begin
-        If Not DtaActive Then R:=-33
+        I:=Rd16(DtaAddr)-$4000;
+        If (I<0) Or (I>=DOS_MAXSRCH) Or (DosSrch[I]=Nil) Then R:=-33
         Else Begin
-         FindNext(DtaSR);
-         If DosError=0 Then Begin FillDta;R:=0;End Else Begin R:=-33;DtaActive:=False;End;
+         N:=Rd16(DtaAddr+2)+1;
+         If N>DosSrch[I]^.N Then R:=-47
+         Else Begin
+          Wr16(DtaAddr+2,N);FillDtaEnt(DosSrch[I]^.Ent[N]);R:=0;
+         End;
         End;
        End;
-  $56: R:=0;
-  $57: R:=0;
+  $56: Begin
+        S:=TosPath(RdStr(PL(4),200));
+        Assign(FHs[6],S);
+        {$I-}
+        Rename(FHs[6],TosPath(RdStr(PL(8),200)));
+        {$I+}
+        If IOResult<>0 Then R:=-33 Else R:=0;
+       End;
+  $57: Begin
+        H:=PW(6);
+        If (PW(8)=0) And (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
+         {$I-}
+         GetFTime(FHs[H],Fp);
+         {$I+}
+         If IOResult<>0 Then Fp:=0;
+         Wr16(PL(2),Fp And $FFFF);Wr16(PL(2)+2,ShrL(Fp,16) And $FFFF);
+        End Else If (PW(8)<>0) And (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
+         Fp:=Rd16(PL(2)) Or (LongInt(Rd16(PL(2)+2)) Shl 16);
+         {$I-}
+         SetFTime(FHs[H],Fp);
+         {$I+}
+         If IOResult<>0 Then Begin End;
+        End Else R:=-37;
+       End;
  Else Begin
    UnknownCall:='GEMDOS $'+Hex2(Fn);
    R:=-32;
   End;
  End;
+ If DosTrace And Not ((Fn=$02) Or (Fn=$09) Or (Fn=$06) Or (Fn=$07)) Then Begin WriteLn(ConOut,'   -> ',R,' ($',Hex8(R),')');Flush(ConOut);End;
  Rg[0]:=R;
 End;
 
@@ -11302,12 +11649,99 @@ Begin
  MouseVecUser:=0;
 End;
 
+
+{ ---------------------------------------------------------------------- }
+{ Zone systeme TOS : ROM (en-tete OS) et registres materiels (lecture)     }
+{ ---------------------------------------------------------------------- }
+Const
+ OS_ROM = $FC0000;      { TOS 1.0 : ROM en $FC0000 }
+
+Function HwRd8(A: LongInt): Byte;
+Var I: Integer; V: Word;
+Begin
+ HwRd8:=0;
+ If (A>=OS_ROM) And (A<OS_ROM+$40) Then Begin
+  { en-tete du systeme (os_base) }
+  Case A-OS_ROM Of
+   0: HwRd8:=$60;  1: HwRd8:=$1E;           { bra.s }
+   2: HwRd8:=$01;  3: HwRd8:=$00;           { os_version : TOS 1.00 }
+   4: HwRd8:=$00;  5: HwRd8:=$FC;  6: HwRd8:=$00;  7: HwRd8:=$20;   { reseth }
+   8: HwRd8:=$00;  9: HwRd8:=$FC;  10: HwRd8:=$00; 11: HwRd8:=$00;  { os_beg }
+   12: HwRd8:=$00; 13: HwRd8:=$FF; 14: HwRd8:=$00; 15: HwRd8:=$00;  { os_end }
+   20: HwRd8:=$87; 21: HwRd8:=$65; 22: HwRd8:=$43; 23: HwRd8:=$21;  { os_magic }
+   24: HwRd8:=$11; 25: HwRd8:=$20; 26: HwRd8:=$19; 27: HwRd8:=$85;  { os_date : 20/11/1985 }
+   29: HwRd8:=$01;                          { os_conf : PAL / Royaume-Uni }
+   30: HwRd8:=$0A; 31: HwRd8:=$74;          { os_dosdate }
+  End;
+  Exit;
+ End;
+ Case A Of
+  $FF8201: HwRd8:=(ScrBase Shr 16) And $FF;       { base video }
+  $FF8203: HwRd8:=(ScrBase Shr 8) And $FF;
+  $FF8205: HwRd8:=(ScrBase Shr 16) And $FF;       { compteur video }
+  $FF8207: HwRd8:=(ScrBase Shr 8) And $FF;
+  $FF8209: HwRd8:=ScrBase And $FF;
+  $FF820A: HwRd8:=2;                              { synchro 50 Hz }
+  $FF8260: HwRd8:=2;                              { resolution : monochrome }
+  $FFFA01: HwRd8:=$7F;                            { MFP gpip : bit 7 a 0 = moniteur monochrome }
+  $FFFC00: HwRd8:=2;                              { ACIA clavier : emetteur libre }
+  $FFFC02: HwRd8:=0;
+ Else
+  If (A>=$FF8240) And (A<$FF8260) Then Begin
+   I:=(A-$FF8240) Shr 1;V:=Palette68[I];
+   If Odd(A) Then HwRd8:=V And $FF Else HwRd8:=V Shr 8;
+  End;
+ End;
+End;
+
+
+{ Ecriture dans les registres materiels : base video (le debogueur MonST change d'ecran) }
+Var HwVidHi,HwVidMid: Integer;
+
+Procedure HwWr8(A: LongInt; V: Byte);
+Var NB: LongInt;
+Begin
+ If (A=$FF8201) Or (A=$FF8203) Then Begin
+  If A=$FF8201 Then HwVidHi:=V Else HwVidMid:=V;
+  NB:=(LongInt(HwVidHi) Shl 16) Or (LongInt(HwVidMid) Shl 8);
+  If (NB<>ScrBase) And (NB+SCR_BYTES<=MemSize) And (NB>=$1000) Then Begin
+   ScrBase:=NB;
+   ScrDirtyLo:=0;ScrDirtyHi:=399;
+   FillChar(ScrShadow,SizeOf(ScrShadow),$FF);
+  End;
+ End;
+End;
+
+{ Variables systeme de la page basse (TOS 1.0) }
+Procedure SysVarsInit;
+Begin
+ Wr32(0,$0006E000);Wr32(4,OS_ROM+$20);
+ Wr32($420,$752019F3);Wr32($43A,$237698AA);Wr32($51A,$5555AAAA);   { memvalid, memval2, memval3 }
+ Wr32($426,0);Wr32($42A,0);
+ Wr32($42E,MemSize);                      { phystop }
+ Wr32($432,BP_ADDR);Wr32($436,HitPa);     { _membot, _memtop }
+ Wr8($44C,2);                             { sshiftmd : haute resolution }
+ Wr32($44E,ScrBase);                      { _v_bas_ad }
+ Wr16($446,2);                            { _bootdev : C: }
+ Wr16($454,1);                            { nvbls }
+ Wr16($4A6,2);                            { _nflops }
+ Wr32($4C2,4);                            { _drvbits }
+ Wr32($4F2,OS_ROM);                       { _sysbase }
+ Wr32($4F6,OS_ROM);                       { _shell_p (approx.) }
+ Wr32($4FA,OS_ROM+$40000);                { _end_os }
+ Wr32($4FE,OS_ROM);                       { _exec_os }
+ Wr16($484,7);                            { conterm }
+ Wr32($4BA,0);Wr32($462,0);Wr32($466,0);
+ HwVidHi:=(ScrBase Shr 16) And $FF;HwVidMid:=(ScrBase Shr 8) And $FF;
+End;
+
 Procedure Bios;
 Var Fn: LongInt; R,K,Cnt,Rec: LongInt; Dev,I: Integer; B: Byte; Sec: Integer; Bp,Boot: LongInt;
     Bps,Spc,Res,Nfat,Nroot,Tot,Spf,Rdlen,Datrec,Ncl: LongInt; Tmp: Array[0..31] Of Byte;
 Begin
  Fn:=PW(0);
  R:=0;
+ If DosTrace Then Begin WriteLn(ConOut,'BIOS ',Fn,' ',Hex8(PL(2)),' ',Hex8(PL(6)));Flush(ConOut);End;
  Case Fn Of
   0: Begin
       K:=PL(2);
@@ -11407,6 +11841,7 @@ Var Fn: LongInt; R,A,B,L: LongInt; Hh,Mi,Se,Hs,Y,Mo,D,Dw: Word; Dev,Sec,Trk,Sd,C
 Begin
  Fn:=PW(0);
  R:=0;
+ If DosTrace Then Begin WriteLn(ConOut,'XBIOS ',Fn,' ',Hex8(PL(2)),' ',Hex8(PL(6)));Flush(ConOut);End;
  Case Fn Of
   0: Begin
       { Initmous(type,param,vecteur) }
@@ -13731,40 +14166,46 @@ End;
 Function TextWidthPx(Const S: String): Integer;
 Var W: Integer;
 Begin
- W:=Length(S)*CellW(VP^.TxtCell);
- If (VP^.TxtEff And 1)<>0 Then W:=W+Length(S);
+ W:=Length(S)*CellW(VP^.TxtCell);    { le gras epaissit le trait dans la cellule : l'avance reste celle de la police }
  TextWidthPx:=W;
 End;
 
-Procedure DrawGlyph(OX,OY: Integer; Ch: Integer; Rot: Integer; RX,RY: Integer);
-Var Gx,Gy,Cw,Ch2,DX,DY,TX,TY,Sh: Integer; On_,Col: Boolean; Bl: Integer;
+Procedure DrawGlyph(OX,OY: Integer; Ch: Integer; Rot: Integer; RX,RY: Integer; Pass: Integer);
+Var Gx,Gy,Cw,Ch2,DX,DY,TX,TY,Sh,Sx,X0,X1: Integer; On_,Col: Boolean; Bl: Integer;
 Begin
  Cw:=CellW(VP^.TxtCell);Ch2:=VP^.TxtCell;
  If Ch2<6 Then Ch2:=6;
  Col:=ColBit(VP^.TxtCol);
  Bl:=BaseLine(Ch2);
  For Gy:=0 To Ch2-1 Do Begin
+  { italique : la ligne du haut reste en place, les lignes du bas glissent vers la gauche (jusqu'a
+    -7 pixels pour la police 8x16, comme le parallelogramme que 1st Word efface avant de tracer) ;
+    la partie qui sort de la cellule (Pass=1) est tracee sans effacer la lettre voisine }
   Sh:=0;
-  If (VP^.TxtEff And 4)<>0 Then Sh:=(Ch2-1-Gy) Div 4;
-  For Gx:=0 To Cw-1 Do Begin
-   On_:=GlyphPix(Ch2,Ch,Gx,Gy);
+  If (VP^.TxtEff And 4)<>0 Then Sh:=-(Gy Div 2);
+  If Pass=0 Then Begin X0:=0;X1:=Cw-1;End Else Begin X0:=Sh;X1:=-1;End;
+  For Gx:=X0 To X1 Do Begin
+   Sx:=Gx-Sh;
+   On_:=GlyphPix(Ch2,Ch,Sx,Gy);
    If (VP^.TxtEff And 1)<>0 Then
-    On_:=On_ Or GlyphPix(Ch2,Ch,Gx-1,Gy);
+    On_:=On_ Or GlyphPix(Ch2,Ch,Sx-1,Gy);
+   If (VP^.TxtEff And 16)<>0 Then Begin
+    { contour : on ne garde que l'anneau autour de la lettre }
+    If On_ Then On_:=False
+    Else On_:=GlyphPix(Ch2,Ch,Sx-1,Gy) Or GlyphPix(Ch2,Ch,Sx+1,Gy) Or
+              GlyphPix(Ch2,Ch,Sx,Gy-1) Or GlyphPix(Ch2,Ch,Sx,Gy+1);
+   End;
    If (VP^.TxtEff And 2)<>0 Then
     If On_ And (((OX+Gx+OY+Gy) And 1)=1) Then On_:=False;
    If (VP^.TxtEff And 8)<>0 Then If Gy=Bl+1 Then On_:=True;
-   If ((VP^.TxtEff And 16)<>0) And Not On_ Then Begin
-    If GlyphPix(Ch2,Ch,Gx-1,Gy) Or GlyphPix(Ch2,Ch,Gx+1,Gy) Or
-       GlyphPix(Ch2,Ch,Gx,Gy-1) Or GlyphPix(Ch2,Ch,Gx,Gy+1) Then On_:=True;
-   End;
-   DX:=OX+Gx+Sh-RX;DY:=OY+Gy-RY;
+   DX:=OX+Gx-RX;DY:=OY+Gy-RY;
    Case Rot Of
     1: Begin TX:=DY;TY:=-DX;End;
     2: Begin TX:=-DX;TY:=-DY;End;
     3: Begin TX:=-DY;TY:=DX;End;
    Else Begin TX:=DX;TY:=DY;End;
    End;
-   If (VP^.WrMode=WM_REPL) Then PlotPat(RX+TX,RY+TY,On_,Col)
+   If (VP^.WrMode=WM_REPL) And (Pass=0) Then PlotPat(RX+TX,RY+TY,On_,Col)
    Else If On_ Then PlotPat(RX+TX,RY+TY,True,Col);
   End;
  End;
@@ -13776,7 +14217,7 @@ Begin
  Cw:=CellW(VP^.TxtCell);Ch:=VP^.TxtCell;
  If Ch<6 Then Ch:=6;
  Bl:=BaseLine(Ch);
- Adv:=Cw;If (VP^.TxtEff And 1)<>0 Then Inc(Adv);
+ Adv:=Cw;
  W:=TextWidthPx(S);
  Rot:=((VP^.TxtRot+450) Div 900) And 3;
  OX:=X;
@@ -13793,7 +14234,10 @@ Begin
  Else OY:=Y;
  End;
  For I:=1 To Length(S) Do
-  DrawGlyph(OX+(I-1)*Adv,OY,Ord(S[I]),Rot,X,Y);
+  DrawGlyph(OX+(I-1)*Adv,OY,Ord(S[I]),Rot,X,Y,0);
+ If (VP^.TxtEff And 4)<>0 Then
+  For I:=1 To Length(S) Do
+   DrawGlyph(OX+(I-1)*Adv,OY,Ord(S[I]),Rot,X,Y,1);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -13946,8 +14390,7 @@ End;
 Procedure SetCellFromHeight(H: Integer);
 Begin
  If H>=11 Then Begin VP^.TxtCell:=16;TxtOutW:=8;TxtOutH:=13;TxtOutCW:=8;TxtOutCH:=16;End
- Else If H>=7 Then Begin VP^.TxtCell:=8;TxtOutW:=8;TxtOutH:=7;TxtOutCW:=8;TxtOutCH:=8;End
- Else Begin VP^.TxtCell:=6;TxtOutW:=6;TxtOutH:=5;TxtOutCW:=6;TxtOutCH:=6;End;
+ Else Begin VP^.TxtCell:=8;TxtOutW:=8;TxtOutH:=7;TxtOutCW:=8;TxtOutCH:=8;End;   { ST mono : seulement les polices 8x16 et 8x8 }
 End;
 
 Procedure VdiOpenInfo(Io,Po: LongInt);
@@ -14007,9 +14450,11 @@ Begin
  Ctl:=Rd32(Pb);Ii:=Rd32(Pb+4);Pi:=Rd32(Pb+8);Io:=Rd32(Pb+12);Po:=Rd32(Pb+16);
  Op:=Rd16(Ctl);N:=Rd16(Ctl+2);NI:=Rd16(Ctl+6);Sub:=Rd16(Ctl+10);H:=Rd16(Ctl+12);
  RetP(0);RetI(0);
- If AesTrace Then Begin
-  Write(ConOut,'VDI ',Op,' sub=',Sub,' h=',H,' n=',N,' ni=',NI,' pts=');
-  For I:=0 To 5 Do Write(ConOut,SExt(Rd16(Pi+I*2),2),' ');
+ If AesTrace And VdiTrace Then Begin
+  Write(ConOut,'VDI ',Op,' sub=',Sub,' h=',H,' n=',N,' ni=',NI,' in=');
+  For I:=0 To Min2(NI,3)-1 Do Write(ConOut,SExt(Rd16(Ii+I*2),2),' ');
+  Write(ConOut,' pts=');
+  For I:=0 To Min2(N*2,12)-1 Do Write(ConOut,SExt(Rd16(Pi+I*2),2),' ');
   WriteLn(ConOut);Flush(ConOut);
  End;
  If Op=1 Then Begin
@@ -14080,6 +14525,7 @@ Begin
       For I:=0 To NI-1 Do Begin
        If Length(S)<250 Then S:=S+Chr(Rd16(Ii+I*2) And $FF);
       End;
+      If AesTrace And VdiTrace Then Begin WriteLn(ConOut,'  gtext [',S,'] at ',PtsX(Pi,0),',',PtsY(Pi,0),' cell=',VP^.TxtCell,' eff=',VP^.TxtEff,' font=',VP^.TxtFont,' hal=',VP^.TxtHAl,' val=',VP^.TxtVAl,' wm=',VP^.WrMode,' clip=',CX1,',',CY1,',',CX2,',',CY2);Flush(ConOut);End;
       VGText(PtsX(Pi,0),PtsY(Pi,0),S);
      End;
   9: Begin
@@ -14124,7 +14570,7 @@ Begin
             End Else VGText(X1,Y1,S);
            End;
       End;
-  12: Begin SetCellFromHeight(PtsY(Pi,1));ReturnText;End;
+  12: Begin SetCellFromHeight(PtsY(Pi,0));ReturnText;End;
   13: Begin V:=IntIn(0);V:=((V+450) Div 900)*900;V:=V Mod 3600;If V<0 Then V:=0;VP^.TxtRot:=V;SetOut(0,V);RetI(1);End;
   14: Begin SetOut(0,IntIn(0));RetI(1);End;
   15: Begin VP^.LineType:=Clamp(IntIn(0),1,7);SetOut(0,VP^.LineType);RetI(1);End;
@@ -14227,7 +14673,7 @@ Begin
   106: Begin VP^.TxtEff:=IntIn(0) And 63;SetOut(0,VP^.TxtEff);RetI(1);End;
   107: Begin
         V:=IntIn(0);
-        If V>=10 Then SetCellFromHeight(16) Else If V>=9 Then SetCellFromHeight(8) Else SetCellFromHeight(6);
+        If V>=10 Then SetCellFromHeight(16) Else SetCellFromHeight(8);
         SetOut(0,V);RetI(1);ReturnText;
        End;
   108: Begin VP^.LineEnd0:=IntIn(0);VP^.LineEnd1:=IntIn(1);SetOut(0,VP^.LineEnd0);SetOut(1,VP^.LineEnd1);RetI(2);End;
@@ -14632,7 +15078,18 @@ Begin
    End;
   G_STRING,G_TITLE: Begin
     S:=RdStr(Sp,120);
-    OFill(AX,AY,AX+W-1,AY+H-1,0,0);
+    { le fond blanc ne doit pas ecraser le cadre interieur du parent (chaines pleine largeur) }
+    Th:=0;Pr:=OParent(T,I);
+    If (Ty=G_STRING) And (Pr>=0) Then Begin
+     K:=OType(T,Pr);
+     If (K=G_BOX) Or (K=G_BOXCHAR) Then Th:=SExt((OSpec(T,Pr) Shr 16) And $FF,1);
+     If Th<0 Then Th:=0;
+    End;
+    If Th>0 Then Begin
+     Rx:=AX-OX(T,I);   { origine absolue du parent }
+     K:=AY-OY(T,I);
+     OFill(Max2(AX,Rx+Th),Max2(AY,K+Th),Min2(AX+W-1,Rx+OW(T,Pr)-1-Th),Min2(AY+H-1,K+OH(T,Pr)-1-Th),0,0);
+    End Else OFill(AX,AY,AX+W-1,AY+H-1,0,0);
     OText(AX,AY+(H-16) Div 2,S,16,1,False);
    End;
   G_BUTTON: Begin
@@ -14924,7 +15381,8 @@ Begin
       Asc:=Key And $FF;Scan:=(Key Shr 8) And $FF;
       If Idx>Length(S) Then Idx:=Length(S);
       Ok:=False;
-      If (Asc=8) Or (Asc=127) Then Begin
+      If Asc=27 Then Begin S:='';Idx:=0;Ok:=True;End   { Esc efface le champ (GEM) }
+      Else If (Asc=8) Or (Asc=127) Then Begin
        If (Asc=8) And (Idx>0) Then Begin Delete(S,Idx,1);Dec(Idx);Ok:=True;End
        Else If (Asc=127) And (Idx<Length(S)) Then Begin Delete(S,Idx+1,1);Ok:=True;End;
       End Else If (Asc=0) And (Scan=$4B) Then Begin If Idx>0 Then Dec(Idx);Ok:=True;End
@@ -15014,7 +15472,7 @@ Var P: Pointer; Len,B,I,J,Nobs,Nted,Nib,Nbb,Nstr,Nimg,Ntree,Oobj,Oted,Oib,Obb,Of
     A: LongInt; Ty: Integer; F: String;
 Begin
  RscLoad:=False;
- F:=HostPath(Name);
+ F:=TosPath(Name);
  If Not ReadFileBytes(F,P,Len) Then Begin
   F:=HostPath(PathOf(ProgName)+ShortName(Name));
   If Not ReadFileBytes(F,P,Len) Then Exit;
@@ -15281,6 +15739,7 @@ Var K,I: Integer;
 Begin
  PopMsg:=False;
  If Procs[P].QN<=0 Then Exit;
+ If AesTrace Then Begin Write(ConOut,'  MSG to ',P,':');For I:=0 To 7 Do Write(ConOut,' ',Procs[P].Q[1,I]);WriteLn(ConOut);Flush(ConOut);End;
  For I:=0 To 7 Do Wr16(Buf+I*2,Procs[P].Q[1,I] And $FFFF);
  For K:=1 To Procs[P].QN-1 Do Procs[P].Q[K]:=Procs[P].Q[K+1];
  Dec(Procs[P].QN);
@@ -15471,6 +15930,7 @@ Begin
   AFill(X1+1,I,X2-1,I+WINFO_H-2,0,0);
   If W^.Info<>0 Then Begin
    S:=RdStr(W^.Info,100);
+   If AesTrace And VdiTrace Then Begin WriteLn(ConOut,'  info line [',S,']');Flush(ConOut);End;
    OText(X1+6,I+(WINFO_H-8) Div 2-1,Copy(S,1,(R.W-12) Div 8),8,1,False);
   End;
   FastSpan(I+WINFO_H-1,X1,X2,True,False);
@@ -15527,6 +15987,26 @@ Begin
    ABox(X1+4,Y1+4,X1+WSCROLL-4,Y1+WSCROLL-4);
   End;
  End;
+End;
+
+{ Redessine seulement le cadre de la fenetre H (titre, info, barres) dans ses zones visibles :
+  ni le bureau ni la zone de travail ne sont touches (wind_set des curseurs, titre...) }
+Procedure RedrawFrame(H: Integer);
+Var I,N,SvN,SvPos: Integer; L,Sv: Array[1..64] Of TRect;
+Begin
+ { l'application peut etre en train de parcourir la liste (wind_get FIRST/NEXTXYWH) : on la preserve }
+ SvN:=RectN;SvPos:=RectPos;
+ For I:=1 To SvN Do Sv[I]:=RectList[I];
+ VisibleRects(H,Wins[H].R);
+ N:=RectN;
+ For I:=1 To N Do L[I]:=RectList[I];
+ RectN:=SvN;RectPos:=SvPos;
+ For I:=1 To SvN Do RectList[I]:=Sv[I];
+ For I:=1 To N Do Begin
+  OSetup;SetClip(L[I].X,L[I].Y,L[I].X+L[I].W-1,L[I].Y+L[I].H-1);
+  DrawWinFrame(H);
+ End;
+ SetClip(0,0,SW-1,SH-1);
 End;
 
 { Fond du bureau }
@@ -15752,8 +16232,7 @@ End;
 Procedure SyncSysVars;
 Var T: LongInt;
 Begin
- T:=MsNow Div 5;
- Wr32($4BA,T);Wr32($462,T Div 4);
+ TickSysVars;
 End;
 
 { ---------------------------------------------------------------------- }
@@ -16816,30 +17295,214 @@ End;
 { Selecteur de fichiers                                                    }
 { ---------------------------------------------------------------------- }
 
+{ Selecteur d'objets GEM : travaille dans l'espace de noms TOS (lecteur C:\...) }
+Procedure FselScan(Const Dir,Mask: String);
+Var I,J,K: Integer; D: PDosSrch; T: String[40]; Nd: Integer;
+Begin
+ FSN:=0;
+ If Pos('\',DosVirt(Dir))>0 Then Begin Inc(FSN);FSList[FSN]:='\..';End
+ Else If DosVirt(Dir)<>'' Then Begin Inc(FSN);FSList[FSN]:='\..';End;
+ K:=DosSearch(Dir+'\*.*',$10);
+ If K>=0 Then Begin
+  D:=DosSrch[K];
+  For I:=1 To D^.N Do
+   If ((D^.Ent[I].At And $10)<>0) And (D^.Ent[I].Nm<>'.') And (D^.Ent[I].Nm<>'..') And (FSN<FS_MAX) Then Begin
+    Inc(FSN);FSList[FSN]:='\'+D^.Ent[I].Nm;
+   End;
+ End;
+ Nd:=FSN;
+ K:=DosSearch(Dir+'\'+Mask,0);
+ If K>=0 Then Begin
+  D:=DosSrch[K];
+  For I:=1 To D^.N Do
+   If ((D^.Ent[I].At And $10)=0) And (FSN<FS_MAX) Then Begin
+    Inc(FSN);FSList[FSN]:=D^.Ent[I].Nm;
+   End;
+ End;
+End;
+
+{ Dir : chemin TOS sans '\' final (ex. C:\DOCS), Msk : masque, Sel : nom choisi }
+Function DosFileSel(Const Title: String; Var Dr,Dir,Msk,Sel: String): Boolean;
+Var Top,Cur,I,X0,Y0,LX,LY,LW,Row,Foc,Nd,P: Integer; E: TEvent; Done,Ok,Redraw,Drag: Boolean;
+    K,DblT: LongInt; LastIdx: Integer; V: String;
+ Function DirStr: String;
+ Begin
+  V:=DosVirt(Dir);
+  If V='' Then DirStr:=Dr+':\' Else DirStr:=Dr+':\'+Upper(V)+'\';
+ End;
+ Procedure Rescan;
+ Begin
+  FselScan(Dir,Msk);Top:=1;Cur:=0;
+  Nd:=0;
+  While (Nd<FSN) And (FSList[Nd+1][1]='\') Do Inc(Nd);
+ End;
+ Procedure Enter(Const D: String);
+ Begin
+  If D='\..' Then Dir:='\'+DosVirt(Dir+'\..') Else Dir:='\'+DosVirt(Dir+'\'+Copy(D,2,40));
+  Sel:='';Rescan;
+ End;
+ Function ThumbH: Integer;
+ Var Tr,H: Integer;
+ Begin
+  Tr:=FS_ROWS*16-32-1;
+  If FSN<=FS_ROWS Then ThumbH:=Tr
+  Else Begin H:=(Tr*FS_ROWS) Div FSN;If H<12 Then H:=12;ThumbH:=H;End;
+ End;
+ Function ThumbTop: Integer;
+ Var Tr: Integer;
+ Begin
+  Tr:=FS_ROWS*16-32-1;
+  If FSN<=FS_ROWS Then ThumbTop:=0 Else ThumbTop:=((Top-1)*(Tr-ThumbH)) Div (FSN-FS_ROWS);
+ End;
+ Procedure DrawFS;
+ Var R,Idx,Y,Tt,Th: Integer; S: String;
+ Begin
+  HideMouse;
+  GemFrame(X0,Y0,X0+16+62*8-1,Y0+16+19*16-1);
+  PText(X0+16,Y0+10,Title);
+  PText(X0+16,Y0+30,T3('Directory: ','Repertoire : ','Verzeichnis: ')+Copy(DirStr+Msk,1,48));
+  LX:=X0+16;LY:=Y0+54;LW:=50*8;
+  Box(LX,LY,LX+LW,LY+FS_ROWS*16+2,PAPER);
+  Frame(LX,LY,LX+LW,LY+FS_ROWS*16+2);
+  For R:=0 To FS_ROWS-1 Do Begin
+   Idx:=Top+R;
+   If Idx<=FSN Then Begin
+    Y:=LY+2+R*16;
+    S:=FSList[Idx];
+    If Idx=Cur Then Begin
+     Box(LX+1,Y,LX+LW-1,Y+15,INK);
+     WText(LX+8,Y+4,S);
+    End Else PText(LX+8,Y+4,S);
+   End;
+  End;
+  ArrowBox(LX+LW+8,LY,LX+LW+8+16,LY+16,1);
+  ArrowBox(LX+LW+8,LY+FS_ROWS*16-14,LX+LW+8+16,LY+FS_ROWS*16+2,2);
+  Box(LX+LW+8,LY+17,LX+LW+8+16,LY+FS_ROWS*16-15,PAPER);
+  PatBar(LX+LW+8,LY+17,LX+LW+8+16,LY+FS_ROWS*16-15,PatGrey);
+  Frame(LX+LW+8,LY+17,LX+LW+8+16,LY+FS_ROWS*16-15);
+  Th:=ThumbH;Tt:=LY+17+ThumbTop;
+  Box(LX+LW+8,Tt,LX+LW+8+16,Tt+Th,PAPER);
+  Frame(LX+LW+8,Tt,LX+LW+8+16,Tt+Th);
+  PText(LX,LY+FS_ROWS*16+14,T3('Selection: ','Selection : ','Auswahl: '));
+  S:=Sel;
+  PText(LX+88,LY+FS_ROWS*16+14,S);
+  If Foc=1 Then PText(LX+88+Length(S)*8,LY+FS_ROWS*16+14,'_')
+  Else Begin SetColor(INK);Line(LX+88+Length(S)*8,LY+FS_ROWS*16+23,LX+88+24*8,LY+FS_ROWS*16+23);End;
+  GButton(LX+16,LY+FS_ROWS*16+36,LX+16+80,LY+FS_ROWS*16+56,'OK',True,False);
+  GButton(LX+16+100,LY+FS_ROWS*16+36,LX+16+100+80,LY+FS_ROWS*16+56,T3('Cancel','Annuler','Abbruch'),False,False);
+  ShowMouse;
+ End;
+ Procedure Accept;
+ Var Q: Integer; N2: String;
+ Begin
+  If (Pos('*',Sel)>0) Or (Pos('?',Sel)>0) Then Begin Msk:=Sel;Sel:='';Rescan;Exit;End;
+  If Sel='' Then Exit;
+  Q:=Length(Sel);
+  While (Q>0) And (Sel[Q]<>'\') And (Sel[Q]<>':') Do Dec(Q);
+  If Q>0 Then Begin
+   N2:=Copy(Sel,1,Q);
+   If (Length(N2)>=2) And (N2[2]=':') Then Dr:=Upcase(N2[1]);
+   If DosIsDir(N2) Then Dir:='\'+DosVirt(N2) Else Begin Sel:='';Exit;End;
+   Sel:=Copy(Sel,Q+1,40);
+   Rescan;
+   If Sel='' Then Exit;
+  End;
+  Ok:=True;Done:=True;
+ End;
+Begin
+ DosFileSel:=False;
+ X0:=(SCR_W-(16+62*8)) Div 2;Y0:=(SCR_H-(16+19*16)) Div 2;
+ Rescan;
+ Foc:=1;Done:=False;Ok:=False;LastIdx:=0;DblT:=0;Drag:=False;
+ DrawFS;
+ Repeat
+  PollEvent(E);
+  Redraw:=False;
+  If E.Kind=1 Then Begin
+   Case E.Key Of
+    K_ENTER: Begin
+              If (Cur>0) And (Sel='') Then Sel:=FSList[Cur];
+              If (Sel<>'') And (Sel[1]='\') Then Begin Enter(Sel);Redraw:=True;End
+              Else Begin Accept;Redraw:=True;End;
+             End;
+    K_ESC,256+46: Done:=True;
+    K_UP: If Cur>1 Then Begin Dec(Cur);Sel:=FSList[Cur];Redraw:=True;End
+          Else If Cur=0 Then If FSN>0 Then Begin Cur:=1;Sel:=FSList[1];Redraw:=True;End;
+    K_DOWN: If Cur<FSN Then Begin Inc(Cur);Sel:=FSList[Cur];Redraw:=True;End;
+    K_PGUP: Begin Cur:=Max2(1,Cur-FS_ROWS);If FSN>0 Then Sel:=FSList[Cur];Redraw:=True;End;
+    K_PGDN: Begin Cur:=Min2(FSN,Cur+FS_ROWS);If FSN>0 Then Sel:=FSList[Cur];Redraw:=True;End;
+    K_BKSP: If Length(Sel)>0 Then Begin Dec(Sel[0]);Cur:=0;Redraw:=True;End;
+    32..255: If E.Key<>K_DEL Then Begin
+              If Length(Sel)<40 Then Begin Sel:=Sel+Upcase(Chr(E.Key));Cur:=0;Redraw:=True;End;
+             End;
+   End;
+   If (Cur>0) And (Cur<Top) Then Top:=Cur;
+   If (Cur>=Top+FS_ROWS) Then Top:=Cur-FS_ROWS+1;
+  End Else If E.Kind=3 Then Drag:=False
+  Else If (E.Kind=4) And Drag Then Begin
+   If FSN>FS_ROWS Then Begin
+    I:=1+((E.Y-LY-17-ThumbH Div 2)*(FSN-FS_ROWS)) Div (FS_ROWS*16-32-1-ThumbH);
+    Top:=Clamp(I,1,FSN-FS_ROWS+1);Redraw:=True;
+   End;
+  End Else If E.Kind=2 Then Begin
+   LX:=X0+16;LY:=Y0+54;LW:=50*8;
+   If InBox(E.X,E.Y,LX,LY,LX+LW,LY+FS_ROWS*16+2) Then Begin
+    Row:=(E.Y-LY-2) Div 16;
+    I:=Top+Row;
+    If (I>=1) And (I<=FSN) Then Begin
+     K:=TickCount;
+     If (I=LastIdx) And (K-DblT<40) Then Begin
+      Sel:=FSList[I];
+      If Sel[1]='\' Then Enter(Sel) Else Accept;
+     End Else Begin Cur:=I;Sel:=FSList[I];End;
+     LastIdx:=I;DblT:=K;
+     Redraw:=True;
+    End;
+   End Else If InBox(E.X,E.Y,LX+LW+8,LY,LX+LW+24,LY+16) Then Begin
+    If Top>1 Then Dec(Top);Redraw:=True;
+   End Else If InBox(E.X,E.Y,LX+LW+8,LY+FS_ROWS*16-14,LX+LW+24,LY+FS_ROWS*16+2) Then Begin
+    If Top+FS_ROWS<=FSN Then Inc(Top);Redraw:=True;
+   End Else If InBox(E.X,E.Y,LX+LW+8,LY+17,LX+LW+24,LY+FS_ROWS*16-15) Then Begin
+    If (E.Y>=LY+17+ThumbTop) And (E.Y<=LY+17+ThumbTop+ThumbH) Then Drag:=True
+    Else If E.Y<LY+17+ThumbTop Then Top:=Max2(1,Top-FS_ROWS)
+    Else Top:=Max2(1,Min2(FSN-FS_ROWS+1,Top+FS_ROWS));
+    Redraw:=True;
+   End Else If InBox(E.X,E.Y,LX+16,LY+FS_ROWS*16+36,LX+16+80,LY+FS_ROWS*16+56) Then Begin Accept;Redraw:=True;End
+   Else If InBox(E.X,E.Y,LX+16+100,LY+FS_ROWS*16+36,LX+16+180,LY+FS_ROWS*16+56) Then Done:=True;
+  End;
+  If Redraw And Not Done Then DrawFS;
+ Until Done;
+ DosFileSel:=Ok;
+ NeedDraw:=True;
+End;
+
 Function AesFsel(PathAddr,FileAddr: LongInt; Const Title: String): Boolean;
-Var Path,Sel,Mask,Dir: String; I,P: Integer; Full: String; Ok: Boolean;
+Var Path,Sel,Mask,Dir,Spec,Dr: String; P: Integer; Ok_: Boolean;
 Begin
  AesFsel:=False;
+ If BatchMode Then Exit;
  Path:=RdStr(PathAddr,120);
- Sel:=RdStr(FileAddr,14);
+ Sel:=Upper(RdStr(FileAddr,14));
+ If AesTrace Then Begin WriteLn(ConOut,'  fsel_input path=[',Path,'] sel=[',Sel,']');Flush(ConOut);End;
  P:=Length(Path);
  While (P>0) And (Path[P]<>'\') And (Path[P]<>'/') And (Path[P]<>':') Do Dec(P);
- Dir:=Copy(Path,1,P);Mask:=Copy(Path,P+1,40);
+ Dir:=Copy(Path,1,P);Mask:=Upper(Copy(Path,P+1,40));
  If Mask='' Then Mask:='*.*';
- If BatchMode Then Exit;
- Full:=HostPath(Dir)+Sel;
- If (Dir='') Or (Length(Dir)<=3) Then Full:=Sel;
- HideMouse;
- Ok:=FileSelect(Title,Mask,Full);
+ Dr:=DosDriveLetter;
+ If (Length(Dir)>=2) And (Dir[2]=':') Then Begin Dr:=Upcase(Dir[1]);Dir:=Copy(Dir,3,120);End;
+ If (Dir<>'') And ((Dir[Length(Dir)]='\') Or (Dir[Length(Dir)]='/')) Then Dec(Dir[0]);
+ If Dir='' Then Dir:=DosCurPath;
+ If Not DosIsDir(Dir+'\') Then Dir:='';
+ Dir:='\'+DosVirt(Dir+'\');
  BlitScreen(True);
- If Ok Then Begin
-  P:=Length(Full);
-  While (P>0) And (Full[P]<>'\') And (Full[P]<>'/') Do Dec(P);
-  If P>0 Then Begin
-   Dir:=Copy(Full,1,P);
-   WrStr(PathAddr,Dir+Mask);
-  End;
-  WrStr(FileAddr,Upper(Copy(Full,P+1,12)));
+ HideMouse;
+ Ok_:=DosFileSel(Title,Dr,Dir,Mask,Sel);
+ BlitScreen(True);
+ If Ok_ Then Begin
+  Spec:=Dr+':'+Dir;
+  If Spec[Length(Spec)]<>'\' Then Spec:=Spec+'\';
+  WrStr(PathAddr,Spec+Mask);
+  WrStr(FileAddr,Sel);
   AesFsel:=True;
  End;
 End;
@@ -17145,6 +17808,11 @@ Var W: ^TWin; R: TRect; I: Integer;
  End;
 Begin
  Wr16(Io,1);
+ { WF_TOP : le numero de fenetre passe est ignore (les applications passent n'importe quoi) }
+ If Fld=10 Then Begin
+  Wr16(Io+2,TopWin);If TopWin>0 Then Wr16(Io+4,Wins[TopWin].Owner) Else Wr16(Io+4,0);
+  Exit;
+ End;
  If (H<0) Or (H>=MAXWIN) Then Begin Wr16(Io,0);Exit;End;
  W:=@Wins[H];
  If H=0 Then Begin
@@ -17205,8 +17873,8 @@ Begin
  W:=@Wins[H];
  Case Fld Of
   1: Begin W^.Kind:=I(2) And $FFF;End;
-  2: Begin W^.Name:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);If W^.Open Then Repaint(W^.R,False);End;
-  3: Begin W^.Info:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);If W^.Open Then Repaint(W^.R,False);End;
+  2: Begin W^.Name:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);If W^.Open Then RedrawFrame(H);End;
+  3: Begin W^.Info:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);If AesTrace Then Begin WriteLn(ConOut,'  wind_set INFO [',RdStr(W^.Info,100),']');Flush(ConOut);End;If W^.Open Then RedrawFrame(H);End;
   5: Begin
       R:=RectMake(I(2),I(3),I(4),I(5));
       If R.W<80 Then R.W:=80;If R.H<60 Then R.H:=60;
@@ -17214,11 +17882,11 @@ Begin
       WinSetRect(H,R);
      End;
   7: W^.Full:=RectMake(I(2),I(3),I(4),I(5));
-  8: Begin W^.HSl:=Clamp(I(2),0,1000);If W^.Open Then Repaint(W^.R,False);End;
-  9: Begin W^.VSl:=Clamp(I(2),0,1000);If W^.Open Then Repaint(W^.R,False);End;
+  8: Begin W^.HSl:=Clamp(I(2),0,1000);If W^.Open Then RedrawFrame(H);End;
+  9: Begin W^.VSl:=Clamp(I(2),0,1000);If W^.Open Then RedrawFrame(H);End;
   10: WinTop(H);
-  15: Begin W^.HSz:=I(2);If W^.Open Then Repaint(W^.R,False);End;
-  16: Begin W^.VSz:=I(2);If W^.Open Then Repaint(W^.R,False);End;
+  15: Begin W^.HSz:=I(2);If W^.Open Then RedrawFrame(H);End;
+  16: Begin W^.VSz:=I(2);If W^.Open Then RedrawFrame(H);End;
  End;
 End;
 
@@ -17321,7 +17989,8 @@ Begin
  If AesTrace Then Begin
   Write(ConOut,'AES ',Op,' [');
   For I:=0 To 7 Do Write(ConOut,SExt(Rd16(Ii+I*2),2),' ');
-  WriteLn(ConOut,'] a0=',Hex8(Rd32(Ai)));Flush(ConOut);
+  WriteLn(ConOut,'] a0=',Hex8(Rd32(Ai)),' pc=',Hex8(PC));
+  Flush(ConOut);
  End;
  Case Op Of
   10: Begin
@@ -17567,6 +18236,13 @@ Begin
   40: Begin ObjAdd(AI_(0),IV(0),IV(1));OV(0,1);End;
   41: Begin ObjDelete(AI_(0),IV(0));OV(0,1);End;
   42: Begin
+       If AesTrace And VdiTrace Then Begin
+        For I:=0 To 40 Do Begin
+         WriteLn(ConOut,'  obj ',I,' nx=',OA(AI_(0),I)-AI_(0),' ty=',OType(AI_(0),I),' fl=',OFlags(AI_(0),I),' st=',OState(AI_(0),I),' sp=',Hex8(OSpec(AI_(0),I)),' ',OX(AI_(0),I),',',OY(AI_(0),I),' ',OW(AI_(0),I),'x',OH(AI_(0),I),' nxt=',ONext(AI_(0),I),' hd=',OHead(AI_(0),I),' tl=',OTail(AI_(0),I));
+         If (OFlags(AI_(0),I) And 32)<>0 Then Break;
+        End;
+        Flush(ConOut);
+       End;
        ObjDraw(AI_(0),IV(0),IV(1),IV(2),IV(3),IV(4),IV(5));
        OV(0,1);
       End;
@@ -17678,7 +18354,7 @@ Begin
        OV(0,1);
       End;
   90,91: Begin
-       S:='File selector';
+       S:=T3('Item Selector','Selecteur d''objets','Objektauswahl');
        If Op=91 Then S:=RdStr(AI_(2),40);
        If AesFsel(AI_(0),AI_(1),S) Then Begin OV(0,1);OV(1,1);End Else Begin OV(0,1);OV(1,0);End;
       End;
@@ -17710,6 +18386,7 @@ Begin
   { ---- ressources ---- }
   110: Begin
         S:=RdStr(AI_(0),100);
+        If AesTrace Then Begin WriteLn(ConOut,'rsrc_load [',S,'] ',Hex8(AI_(0)));Flush(ConOut);End;
         If RscLoad(S) Then Begin
          OV(0,1);
          Wr32(Glb+10,RscBase+Rd16(RscBase+18));
@@ -17792,7 +18469,7 @@ Begin
        End;
   124: Begin
         S:=RdStr(AI_(0),128);
-        If FileExists(HostPath(S)) Or FileExists(HostPath(ShortName(S))) Then OV(0,1) Else OV(0,0);
+        If FileExists(TosPath(S)) Or FileExists(TosPath(ShortName(S))) Or FileExists(HostPath(S)) Then OV(0,1) Else OV(0,0);
        End;
   125: Begin
         { shel_envrn(ppath,psrch) }
@@ -17908,6 +18585,53 @@ Const
  LA_INTIN  = LINEA_VARS+$400;
  LA_CONTRL = LINEA_VARS+$440;
 
+{ Polices systeme au format TOS (en-tete de 88 octets + forme), pour Line-A $A000 : tableau de
+  3 pointeurs (6x6, 8x8, 8x16) retourne en A1.  Les glyphes viennent de la table Font8. }
+Const
+ LA_FONTS = $9000;          { tableau de pointeurs }
+ LA_FH    = $9010;          { 3 en-tetes de 88 octets }
+ LA_F8DAT = $9200;          { forme 8x8  : 256 x 8  octets }
+ LA_F16DAT= $9C00;          { forme 8x16 : 256 x 16 octets }
+
+Procedure LineAFontHeader(A: LongInt; Id,Pt: Integer; Const Nm: String; Top,Asc,Half,Desc,Bot,CellH: Integer; Dat: LongInt);
+Var I: Integer;
+Begin
+ For I:=0 To 87 Do Wr8(A+I,0);
+ Wr16(A,Id);Wr16(A+2,Pt);
+ For I:=1 To Length(Nm) Do If I<=31 Then Wr8(A+3+I,Ord(Nm[I]));
+ Wr16(A+36,0);Wr16(A+38,255);
+ Wr16(A+40,Top);Wr16(A+42,Asc);Wr16(A+44,Half);Wr16(A+46,Desc);Wr16(A+48,Bot);
+ Wr16(A+50,8);Wr16(A+52,8);
+ Wr16(A+58,1);Wr16(A+60,1);
+ Wr16(A+62,$5555);Wr16(A+64,$5555);
+ Wr16(A+66,$0001 Or $0008);        { police systeme, a chasse fixe }
+ Wr32(A+68,0);Wr32(A+72,LA_F8DAT-$200+0);  { off_table : renseignee plus bas }
+ Wr32(A+76,Dat);Wr16(A+80,256);Wr16(A+82,CellH);Wr32(A+84,0);
+End;
+
+Procedure LineAFonts;
+Var C,R: Integer; B: Byte;
+Begin
+ CheckFonts;
+ For C:=0 To 255 Do
+  For R:=0 To 7 Do Begin
+   B:=Font8[C,R];
+   Wr8(LA_F8DAT+LongInt(R)*256+C,B);
+   Wr8(LA_F16DAT+LongInt(R*2)*256+C,B);
+   Wr8(LA_F16DAT+LongInt(R*2+1)*256+C,B);
+  End;
+ { table des decalages : caractere c a l'abscisse 8*c (257 mots) }
+ For C:=0 To 256 Do Wr16(LA_FONTS+$800+C*2,C*8);
+ LineAFontHeader(LA_FH,1,4,'6x6 system font',5,5,3,1,1,8,LA_F8DAT);
+ LineAFontHeader(LA_FH+88,1,9,'8x8 system font',6,6,4,1,1,8,LA_F8DAT);
+ LineAFontHeader(LA_FH+176,1,10,'8x16 system font',12,12,8,3,3,16,LA_F16DAT);
+ For C:=0 To 2 Do Begin
+  Wr32(LA_FH+C*88+72,LA_FONTS+$800);
+  Wr32(LA_FONTS+C*4,LA_FH+C*88);
+ End;
+ Wr32(LA_FH+84,LA_FH+88);Wr32(LA_FH+88+84,LA_FH+176);
+End;
+
 Procedure LineAInit;
 Var I: Integer;
 Begin
@@ -17918,7 +18642,8 @@ Begin
  Wr16(LINEA_VARS+24,1);Wr16(LINEA_VARS+34,$FFFF);Wr16(LINEA_VARS+36,0);
  Wr16(LINEA_VARS+56,0);Wr16(LINEA_VARS+58,0);Wr16(LINEA_VARS+60,639);Wr16(LINEA_VARS+62,399);
  Rg[0]:=LINEA_VARS;Rg[8]:=LINEA_VARS;
- Rg[9]:=LINEA_VARS+$100;Rg[10]:=LINEA_VARS+$200;
+ LineAFonts;
+ Rg[9]:=LA_FONTS;Rg[10]:=LINEA_VARS+$200;
 End;
 
 Procedure DoLineA(Op: LongInt);
@@ -17927,6 +18652,7 @@ Var F: Integer; X1,Y1,X2,Y2,Col,Y,Wm: Integer; Bc: LongInt; Src,Dst: TMfdb; A,Pa
 Begin
  If (ExcHandler(10)<>0) And Not AmigaRun Then Begin RaiseExc(10);Exit;End;   { vecteur 10 installe par le programme }
  F:=Op And $FFF;
+ If DosTrace Then Begin WriteLn(ConOut,'LINEA ',F,' pc=',Hex8(CurOpPC));Flush(ConOut);End;
  SelVdi(0);
  If F>0 Then CheckFonts;
  X1:=SExt(Rd16(LINEA_VARS+38),2);Y1:=SExt(Rd16(LINEA_VARS+40),2);
@@ -18117,15 +18843,19 @@ Begin
  ScrBase:=(MemSize-SCR_BYTES) And $FFFF00;DrawBase:=ScrBase;
  HitPa:=(ScrBase-$1000) And $FFFF00;
  HeapLo:=BP_ADDR+$100;HeapHi:=HitPa-$4000;
- MCnt:=0;DtaAddr:=BP_ADDR+$80;DtaActive:=False;
+ MCnt:=0;CurOwn:=0;DosUserSP:=0;DtaAddr:=BP_ADDR+$80;DtaActive:=False;
  CloseAllFiles;
  ConRow:=0;ConCol:=0;ConRev:=False;ConWrap:=True;ConCurOn:=True;ConState:=0;
  KQHead:=0;KQTail:=0;UserBreak:=False;
  NBps:=0;DbgN:=0;UnknownCall:='';
  AmigaRun:=False;
+ DosTrace:=GetEnv('DEVPAC_TRACE')<>'';
+ VdiTrace:=GetEnv('DEVPAC_TRACE')='2';
+ DosInit;
  GemReset;
  DevInitAll;EnvInit;
  SysTablesInit;
+ SysVarsInit;
  UserCursor:=False;RecActive:=False;
  ScrDirtyLo:=0;ScrDirtyHi:=399;
  { stub de sortie : clr.w -(sp) ; trap #1 }
@@ -18366,7 +19096,7 @@ End;
 { Pexec GEMDOS : charge et execute un programme fils }
 Function DoPexec(Mode: Integer; NameP,CmdP,EnvP: LongInt): LongInt;
 Var Nm,Cmd: String; P: Pointer; Len,Bp,TB,EndA,TSz,Top,SvHeap,Code: LongInt; Ok: Boolean;
-    SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp,SvPexBp: LongInt; I: Integer; SvProc: Integer;
+    SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp,SvPexBp,SvOwn: LongInt; I: Integer; SvProc: Integer;
  Procedure RunChild(B: LongInt; Const ChName,ChCmd: String);
  Var N: LongInt; Gs: TGemSave;
  Begin
@@ -18381,7 +19111,8 @@ Var Nm,Cmd: String; P: Pointer; Len,Bp,TB,EndA,TSz,Top,SvHeap,Code: LongInt; Ok:
   While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
    RunCpu(20000);
    If StopReason=STOP_YIELD Then GemDispatch;
-   PollKeys;
+   PollInput;
+   If Not BatchMode Then BlitScreen(False);
    If UserBreak Then StopReason:=STOP_USER;
   End;
   If StopReason=STOP_EXIT Then Code:=ExitCode Else Code:=-1;
@@ -18396,36 +19127,55 @@ Begin
  Case Mode Of
   0,3,5: Begin
     If Mode=5 Then Begin
-     Bp:=DoMalloc(256);
+     { cree une page de base : le fils recoit toute la memoire libre (a reduire par Mshrink) }
+     Top:=DoMalloc(-1);
+     If Top<$400 Then Begin DoPexec:=-39;Exit;End;
+     Bp:=DoMalloc(Top);
      If Bp=0 Then Begin DoPexec:=-39;Exit;End;
      For I:=0 To 255 Do Wr8(Bp+I,0);
-     Wr32(Bp,Bp);Wr32(Bp+36,BP_ADDR);
+     Wr32(Bp,Bp);Wr32(Bp+4,Bp+Top);Wr32(Bp+8,Bp+$100);Wr32(Bp+36,BP_ADDR);Wr32(Bp+44,ENV_BLK);
+     Wr32(Bp+32,Bp+$80);
+     If CmdP<>0 Then Begin
+      For I:=0 To Rd8(CmdP) Do Wr8(Bp+$80+I,Rd8(CmdP+I));
+     End;
      DoPexec:=Bp;Exit;
     End;
-    Nm:=HostPath(RdStr(NameP,200));
+    Nm:=TosPath(RdStr(NameP,200));
     If CmdP<>0 Then Cmd:=RdStr(CmdP+1,Rd8(CmdP)) Else Cmd:='';
     If Not ReadFileBytes(Nm,P,Len) Then Exit;
-    Bp:=(HeapLo+255) And Not 255;
-    SvHeap:=HeapLo;
+    { comme TOS : le fils recoit le plus grand bloc libre (TPA) et doit le restituer par Mshrink }
+    Top:=DoMalloc(-1);
+    If (Top<Len+$1000) Or (Top<$2000) Then Begin
+     If P<>Nil Then FreeMem(P,Len);
+     DoPexec:=-39;Exit;
+    End;
+    Bp:=DoMalloc(Top);
+    If Bp=0 Then Begin
+     If P<>Nil Then FreeMem(P,Len);
+     DoPexec:=-39;Exit;
+    End;
     Ok:=LoadPRGImage(P,Len,Cmd,Bp,False,TB,EndA,TSz);
     If P<>Nil Then FreeMem(P,Len);
-    If Not Ok Then Begin DoPexec:=-66;Exit;End;
-    { comme TOS : le fils recoit toute la memoire libre (TPA) et doit la restituer par Mshrink }
-    Top:=HeapHi And Not 255;
-    If Top<EndA+$1000 Then Top:=(EndA+$1000+255) And Not 255;
-    Wr32(Bp+4,Top);
-    HeapLo:=Top;
+    If (Not Ok) Or (EndA+$400>Bp+Top) Then Begin DoMfree(Bp);DoPexec:=-66;Exit;End;
+    Wr32(Bp+4,Bp+Top);
     If Mode=3 Then Begin DoPexec:=Bp;Exit;End;
     SvPexBp:=PexBp;PexBp:=Bp;
+    SvOwn:=CurOwn;CurOwn:=Bp;
     RunChild(Bp,Nm,Cmd);
+    CurOwn:=SvOwn;
     PexBp:=SvPexBp;
-    HeapLo:=SvHeap;
+    FreeOwned(Bp);DoMfree(Bp);
     DoPexec:=Code;
    End;
   4,6: Begin
     Bp:=CmdP;
     SvHeap:=HeapLo;
+    SvPexBp:=PexBp;PexBp:=Bp;
+    SvOwn:=CurOwn;CurOwn:=Bp;
     RunChild(Bp,'',RdStr(Bp+$81,Rd8(Bp+$80)));
+    CurOwn:=SvOwn;
+    PexBp:=SvPexBp;
+    FreeOwned(Bp);
     If Mode=6 Then HeapLo:=SvHeap;
     DoPexec:=Code;
    End;
