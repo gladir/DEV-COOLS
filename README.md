@@ -828,6 +828,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet d'analyser des fichiers objets, bibliothèques et exécutables afin d'afficher leurs entêtes, sections, symboles et code désassemblé.</td>
 		</tr>
 		<tr>
+			<td><b>OSSPAS.PAS</b></td>
+			<td>Cette commande permet de lancer un clone graphique de OSS Personal Pascal 2.05 (Pascal pour Atari ST) : gestionnaire avec bureau GEM et menus déroulants (Desk, File, Options, Special), boîtes de dialogue Compiler Options, Locate Programs, éditeur plein écran à trois espaces fichiers (menus File, Block, Find, Mark, Options), compilateur Pascal (dialecte Personal Pascal : Integer 16 bits, Long_Integer, Real, STRING, LOOP/EXIT IF, OTHERWISE, GEMDOS/BIOS/XBIOS, bibliothèque GEM intégrée) produisant du code natif Motorola 68000 (.O), éditeur de liens générant des programmes GEMDOS (.PRG, .TOS ou .ACC) et émulateur Atari ST intégré (68000, TOS) pour exécuter les programmes (osspas /E fichier.pas /C fichier.pas /L fichier.o /R fichier.prg /B ; aide avec osspas /?). La langue est choisie par la variable d'environnement LANGUAGE (EN pour l'anglais, GR pour l'allemand, français par défaut).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2ADA.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Ada (.adb).</td>
 		</tr>

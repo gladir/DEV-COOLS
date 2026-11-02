@@ -5690,7 +5690,7 @@ Begin
     Expr(A);PushD0;Expr(B);PushD0;Svc(S_SPOS);
    End;
   F_EOF,F_EOLN: Begin
-    If A=0 Then LoadImm(0) Else Expr(A);
+    If (A=0) Or (Nd[A].Op=N_STDFILE) Then LoadImm(0) Else Begin AddrToA0(A);E16($2008);End;
     PushD0;
     If Id=F_EOF Then Svc(S_EOF) Else Svc(S_EOLN);
    End;
@@ -6306,7 +6306,7 @@ Begin
       NextTok;
       N:=NewNd(N_VAR,Sy[F].Ty);Nd[N].Sym:=Sy[F].Res;
       R:=PExpr;R:=Coerce(R,Sy[F].Ty);
-      If Not IsAgg(Sy[F].Ty) Then GenAssign(N,R) Else Err(35);
+      If (Not IsAgg(Sy[F].Ty)) Or (Ty[Sy[F].Ty].K=TK_STR) Then GenAssign(N,R) Else Err(35);
       Exit;
      End;
      Args:=PArgs(S);
@@ -8182,14 +8182,16 @@ Begin
  End Else Inc(B^.Col,N);
 End;
 
-Procedure EdGotoLine(N: Integer);
+Procedure EdGotoLine(Ln: Integer);
+Var B: ^TEdBuf;
 Begin
- With Eb[EbCur] Do Begin
-  If N<1 Then N:=1;
-  If N>Eb[EbCur].N Then N:=Eb[EbCur].N;
-  Row:=N;
-  Top:=N-(ED_ROWS Div 2);If Top<1 Then Top:=1;
- End;
+ B:=@Eb[EbCur];
+ If Ln<1 Then Ln:=1;
+ If Ln>B^.N Then Ln:=B^.N;
+ B^.Row:=Ln;
+ B^.Col:=1;
+ B^.Top:=Ln-(ED_ROWS Div 2);
+ If B^.Top<1 Then B^.Top:=1;
 End;
 
 Function EdPos(Const Pat,S: String; From: Integer): Integer;
@@ -8286,6 +8288,7 @@ Begin
   End;
   {$IFDEF FPC}
   Free:=DiskFree(Dr) Div 1024;
+  If (Free<=0) And (Dr=1) Then Free:=DiskFree(0) Div 1024;
   Mem:=GetFPCHeapStatus.CurrHeapFree Div 1024;
   {$ELSE}
   Free:=DiskFree(Dr) Div 1024;
@@ -9106,9 +9109,6 @@ Begin
   S:=ParamStr(I);U:=Upper(S);
   If (U='/?') Or (U='-?') Or (U='-H') Or (U='/H') Or (U='--HELP') Then Begin
    ShowHelp;
-   {$IFDEF FPC}
-   WriteLn;WriteLn('[ press a key ]');ReadKey;
-   {$ENDIF}
    Halt(0);
   End Else If (U='/E') Or (U='-E') Then Act:='E'
   Else If (U='/C') Or (U='-C') Then Act:='C'
