@@ -9,7 +9,7 @@
 Program STBASIC;
 
 {$IFNDEF FPC}
- {$M 32768,0,655360}
+ {$M 65520,0,655360}
 {$ENDIF}
 
 Uses {$IFDEF FPC}
@@ -218,6 +218,7 @@ Var S: String; A: Real; E,D,I: Integer; M: Real;
 Begin
  If R=0 Then Begin NumStr:='0';Exit;End;
  A:=Abs(R);
+ If A>1.7E38 Then Begin NumStr:='Overflow';Exit;End;
  If (A>=1E7) Or (A<1E-4) Then Begin
   E:=Trunc(Ln(A)/Ln(10));
   If A<1 Then Dec(E);
@@ -1046,9 +1047,10 @@ Procedure FsScan(Const Dir,Mask: String);
 Var SR: SearchRec; I,J: Integer; T: String[14]; TD: Boolean;
 Begin
  FsN:=0;
+ If Length(Dir)>1 Then Begin FsN:=1;FsItem[1]:='..';FsDir[1]:=True;End;
  FindFirst(Dir+'*',Directory,SR);
  While (DosError=0) And (FsN<299) Do Begin
-  If ((SR.Attr And Directory)<>0) And (SR.Name<>'.') Then Begin
+  If ((SR.Attr And Directory)<>0) And (SR.Name<>'.') And (SR.Name<>'..') Then Begin
    Inc(FsN);FsItem[FsN]:=Copy(SR.Name,1,14);FsDir[FsN]:=True;
   End;
   FindNext(SR);
@@ -1098,7 +1100,7 @@ Var X1,Y1,X2,Y2,I,Top,Cur,LX,LY,LW: Integer; E: TEvent; Done,Ok,Redraw: Boolean;
 Begin
  Dir:=CurDirStr;Msk:=Mask;SelS:=Sel;
  Rescan;
- X1:=(SCR_W-360) Div 2;X2:=X1+360;Y1:=(SCR_H-300) Div 2;Y2:=Y1+300;
+ X1:=(SCR_W-360) Div 2;X2:=X1+360;Y1:=(SCR_H-262) Div 2;Y2:=Y1+262;
  LX:=X1+24;LY:=Y1+86;LW:=240;
  Done:=False;Ok:=False;Redraw:=True;LastClk:=0;LastIdx:=0;Fld:=2;
  HideMouse;
@@ -2625,7 +2627,9 @@ Begin
  If (S[1]='.') Then S:='0'+S;
  If (S[1]='-') And (S[2]='.') Then Insert('0',S,2);
  Val(S,V,C);
- If C=0 Then ValStr:=V;
+ If C=0 Then Begin
+  If (V>1.7E38) Or (V<-1.7E38) Then Fail(6) Else ValStr:=V;
+ End;
 End;
 
 Var
@@ -2809,11 +2813,11 @@ Begin
  Else If W='MKS$' Then Begin
   Need(1);
   {$IFDEF FPC}S4:=NumOf(A[1]);{$ELSE}S4:=Round(NumOf(A[1])*100);{$ENDIF}
-  SetLength(S,4);Move(S4,S[1],4);MkStr(R,S);
+  S[0]:=#4;Move(S4,S[1],4);MkStr(R,S);
  End
  Else If W='MKD$' Then Begin
   Need(1);D8:=NumOf(A[1]);
-  SetLength(S,8);FillChar(S[1],8,0);Move(D8,S[1],SizeOf(D8));MkStr(R,S);
+  S[0]:=#8;FillChar(S[1],8,0);Move(D8,S[1],SizeOf(D8));MkStr(R,S);
  End
  Else If W='PEEK' Then Begin
   Need(1);L:=ToLong(NumOf(A[1]));
@@ -3386,10 +3390,11 @@ End;
 Function UsingFormat(Const Fmt: String; Var V: TVal; Var FP: Integer): String;
 { formate un element selon le gabarit Fmt a partir de FP ; litteraux copies }
 Var R: String; C: Char; I,Pre,Dcm,W: Integer; Pt,Comma,Plus,Trail: Boolean; S: String;
-    X: Real;
+    X: Real; Wrapped: Boolean;
 Begin
- R:='';
- While FP<=Length(Fmt) Do Begin
+ R:='';Wrapped:=False;
+ While (FP<=Length(Fmt)) Or (Not Wrapped) Do Begin
+  If FP>Length(Fmt) Then Begin FP:=1;Wrapped:=True;End;
   C:=Fmt[FP];
   If (C='!') Or (C='&') Or (C='\') Or (C='#') Or ((C='+') And (FP<Length(Fmt)) And
      ((Fmt[FP+1]='#') Or (Fmt[FP+1]='.'))) Or (C='.') Then Begin
@@ -4221,6 +4226,28 @@ Begin
  P:=Length(Src)+1;
 End;
 
+{ cherche dans Src (a partir de P) le mot Close1 correspondant ; P est place apres }
+Function ScanSrc(Const Open1,Close1: String): Boolean;
+Var Q,K,Depth: Integer; W: String; InQ: Boolean;
+Begin
+ ScanSrc:=False;
+ Depth:=0;InQ:=False;Q:=P;
+ While Q<=Length(Src) Do Begin
+  If Src[Q]='"' Then Begin InQ:=Not InQ;Inc(Q);End
+  Else If InQ Then Inc(Q)
+  Else If IsAlpha(Src[Q]) And ((Q=1) Or (Not IsIdCh(Src[Q-1]))) Then Begin
+   W:='';K:=Q;
+   While (K<=Length(Src)) And IsIdCh(Src[K]) Do Begin W:=W+UpCase(Src[K]);Inc(K);End;
+   If W=Open1 Then Inc(Depth)
+   Else If W=Close1 Then Begin
+    If Depth=0 Then Begin P:=K;ScanSrc:=True;Exit;End;
+    Dec(Depth);
+   End;
+   Q:=K;
+  End Else Inc(Q);
+ End;
+End;
+
 { ------------------------ instructions de flux ------------------------- }
 
 Procedure DoGoto(IsSub: Boolean);
@@ -4339,8 +4366,8 @@ Begin
   If ErrCode<>0 Then Exit;
   If ((FS[FSP].Stp>=0) And (Q^.N<=FS[FSP].Lim)) Or
      ((FS[FSP].Stp<0) And (Q^.N>=FS[FSP].Lim)) Then Begin
-   JumpF:=True;JLine:=FS[FSP].Ln;JPos:=FS[FSP].Ps;
-   If JLine=0 Then Begin JumpF:=False;End;
+   If FS[FSP].Ln=0 Then Begin P:=FS[FSP].Ps;IfCont:=True;End
+   Else Begin JumpF:=True;JLine:=FS[FSP].Ln;JPos:=FS[FSP].Ps;End;
    Exit;
   End;
   Dec(FSP);
@@ -4360,7 +4387,10 @@ Begin
   Inc(WSP);WS[WSP].Ln:=PCLine;WS[WSP].Ps:=StmtStart;
  End Else Begin
   If (WSP>0) And (WS[WSP].Ln=PCLine) And (WS[WSP].Ps=StmtStart) Then Dec(WSP);
-  If PCLine=0 Then Begin Fail(29);Exit;End;
+  If PCLine=0 Then Begin
+   If Not ScanSrc('WHILE','WEND') Then Fail(29);
+   Exit;
+  End;
   If ScanFwd(PCLine,P,'WHILE','WEND',RL,RP) Then Begin
    JumpF:=True;JLine:=RL;JPos:=RP;
   End Else Fail(29);
@@ -4731,7 +4761,7 @@ Begin
  If W='' Then Begin Fail(2);Exit;End;
  { etiquette }
  If (P<=Length(Src)) And (Src[P]=':') And (Not IsReserved(W)) Then Begin
-  Inc(P);Exit;
+  Inc(P);IfCont:=True;Exit;
  End;
  { affectation simple }
  If Cur=' ' Then Begin SkipSp;End;
@@ -4760,6 +4790,7 @@ Begin
  Else If W='WHILE' Then DoWhile
  Else If W='WEND' Then Begin
   If WSP=0 Then Fail(30)
+  Else If WS[WSP].Ln=0 Then Begin P:=WS[WSP].Ps;IfCont:=True;End
   Else Begin JumpF:=True;JLine:=WS[WSP].Ln;JPos:=WS[WSP].Ps;End;
  End
  Else If W='LET' Then Begin
@@ -5061,11 +5092,21 @@ End;
 
 { ------------------------- boucle d'execution -------------------------- }
 
+Var
+ TronIdx : Integer;
+
 Procedure LineStartHook(Ln: Integer);
+Var T: String;
 Begin
  If (Ln>=1) And (Ln<=LCnt) Then Begin
   If TronOn And (LNum[Ln]>=TrLo) And (LNum[Ln]<=TrHi) Then Begin
-   ConAdd('['+IntStr(LNum[Ln])+']');UIDirty:=True;
+   T:='['+IntStr(LNum[Ln])+']';
+   If (ConN>0) And (TronIdx=ConN) And (Length(ConL[ConN]^)+Length(T)<=72) Then Begin
+    T:=ConL[ConN]^+T;
+    FreeStr(ConL[ConN]);
+    ConL[ConN]:=NewStr(T);
+   End Else Begin ConAdd(T);TronIdx:=ConN;End;
+   UIDirty:=True;
   End;
   If TraceOn And (LNum[Ln]>=TrLo) And (LNum[Ln]<=TrHi) Then Begin
    ConAdd(LineStr(Ln));UIDirty:=True;
@@ -5081,7 +5122,8 @@ Begin
   If (PCLine<1) Or (PCLine>LCnt) Then EndF:=True
   Else Begin
    If PCPos=1 Then LineStartHook(PCLine);
-   If (Not BreakReq) And (Not QuitReq) Then Begin
+   If BreakReq Then Begin ResLine:=PCLine;ResPos:=PCPos;End
+   Else If Not QuitReq Then Begin
     Src:=LTxt[PCLine]^;P:=PCPos;
     NextLn:=PCLine+1;
     JumpF:=False;
@@ -5166,7 +5208,9 @@ Begin
  Src:=T;P:=1;
  PCLine:=0;PCPos:=1;JumpF:=False;EndF:=False;BreakReq:=False;LastRunMsg:='';
  StmtStart:=1;
+ HideMouse;Inc(MouseLock);
  ExecStmts;
+ Dec(MouseLock);ShowMouse;
  If ErrCode<>0 Then Begin ShowRunError(0);ErrCode:=0;StepMode:=False;End
  Else If JumpF Then Begin
   JumpF:=False;
@@ -7529,7 +7573,7 @@ Var I,Q,K,Errs,Depth: Integer; T,W,Prev: String; InQ: Boolean; Par: Integer;
   Inc(Errs);
  End;
  Function TargetOk(Var Pos: Integer): Boolean;
- Var W2: String; N2: LongInt;
+ Var W2: String; N2: LongInt; Pos0: Integer;
  Begin
   TargetOk:=True;
   While (Pos<=Length(T)) And (T[Pos]=' ') Do Inc(Pos);
@@ -7541,12 +7585,11 @@ Var I,Q,K,Errs,Depth: Integer; T,W,Prev: String; InQ: Boolean; Par: Integer;
    End;
    If LineIdxExact(N2)=0 Then Begin TargetOk:=False;Bad(ErrText(8)+' '+IntStr(N2));End;
   End Else If (Pos<=Length(T)) And IsAlpha(T[Pos]) Then Begin
-   W2:='';
+   W2:='';Pos0:=Pos;
    While (Pos<=Length(T)) And IsIdCh(T[Pos]) Do Begin W2:=W2+UpCase(T[Pos]);Inc(Pos);End;
    If (Pos<=Length(T)) And ((T[Pos]='$') Or (T[Pos]='%') Or (T[Pos]='!')) Then Inc(Pos);
-   If FindLabel(W2)=0 Then Begin
-    If Not IsReserved(W2) Then Begin TargetOk:=False;Bad(ErrText(8)+' '+W2);End;
-   End;
+   If IsReserved(W2) Then Pos:=Pos0
+   Else If FindLabel(W2)=0 Then Begin TargetOk:=False;Bad(ErrText(8)+' '+W2);End;
   End;
  End;
 Begin
