@@ -895,9 +895,11 @@ End;
 Function AlertBox(Const Txt,Btns: String): Integer;
 Var Lines: Array[1..12] Of String[60]; BT: Array[1..4] Of String[16];
     N,NB,I,W,H,X1,Y1,X2,Y2,P,BW,BX0,BY: Integer; S: String; E: TEvent;
-    Done: Boolean; Sv: TSave; R: Integer;
+    Done: Boolean; Sv: TSave; R: Integer; Left: Boolean;
 Begin
  N:=0;S:=Txt;
+ Left:=(S<>'') And (S[1]='~');
+ If Left Then Delete(S,1,1);
  While (S<>'') And (N<12) Do Begin
   P:=Pos('|',S);
   Inc(N);
@@ -922,7 +924,8 @@ Begin
  SaveBack(Sv,X1,Y1,X2+4,Y2+4);
  GemBox(X1,Y1,X2,Y2);
  For I:=1 To N Do
-  PText((X1+X2-TextW(Lines[I])) Div 2,Y1+22+(I-1)*16,Lines[I]);
+  If Left Then PText(X1+24,Y1+22+(I-1)*16,Lines[I])
+  Else PText((X1+X2-TextW(Lines[I])) Div 2,Y1+22+(I-1)*16,Lines[I]);
  BW:=72;
  BX0:=(X1+X2-(NB*BW+(NB-1)*16)) Div 2;
  BY:=Y2-40;
@@ -5172,14 +5175,1467 @@ Begin
  UIDirty:=True;
 End;
 
-{ STUB EMULATEUR (temporaire) }
+
+{ ====================================================================== }
+{          EMULATEUR ATARI ST INTEGRE : MOTOROLA 68000 + TOS             }
+{ ====================================================================== }
+
+{$IFDEF FPC}
+
+Const
+ M_BASEPAGE = $20000;
+ M_TOP      = $E0000;
+ M_SCREEN   = $F8000;
+ M_STUB     = $400;
+ M_ENV      = $2F000;
+ M_LINEA    = $1F000;
+ FLG_X = 16;
+ FLG_N = 8;
+ FLG_Z = 4;
+ FLG_V = 2;
+ FLG_C = 1;
+
+Type
+ TEA = Record
+  Kind : Byte;      { 0 Dn, 1 An, 2 memoire, 3 immediat }
+  N    : LongInt;
+ End;
+
+Var
+ RD,RA   : Array[0..7] Of LongInt;
+ RPC     : LongInt;
+ RSR     : Word;
+ RUSP    : LongInt;
+ EmuHalt : Boolean;
+ EmuCode : Integer;
+ EmuMsg  : String;
+ EmuBrk  : Boolean;
+ EmuHeap : LongInt;
+ EmuDta  : LongInt;
+ EmuOpc  : Word;
+ EmuOpPC : LongInt;
+ EmuSteps: LongInt;
+ EmuSuper: Boolean;
+ EmuSeed : LongInt;
+ EmuTrapDepth : Integer;
+ ScrShadow : Array[0..31999] Of Byte;
+ VtState : Integer;
+ VtRow   : Integer;
+ VtRev   : Boolean;
+ EmuFile : Array[6..25] Of File;
+ EmuFUsed: Array[6..25] Of Boolean;
+ EmuSF   : SearchRec;
+ EmuSFOk : Boolean;
+ VdiFillCol,VdiFillSty,VdiFillIdx,VdiLineCol,VdiTxtCol : Integer;
+ AesNext : Integer;
+
+{ -------------------------- acces memoire ------------------------------ }
+
+Function RB(A: LongInt): Byte;
+Begin
+ A:=A And $FFFFFF;
+ If A<VMEM_SIZE Then RB:=VMem[A] Else RB:=0;
+End;
+
+Function RW(A: LongInt): Word;
+Begin
+ RW:=(Word(RB(A)) Shl 8) Or RB(A+1);
+End;
+
+Function RL(A: LongInt): LongInt;
+Begin
+ RL:=LongInt((Cardinal(RW(A)) Shl 16) Or RW(A+2));
+End;
+
+Procedure WB(A: LongInt; V: Byte);
+Begin
+ A:=A And $FFFFFF;
+ If A<VMEM_SIZE Then VMem[A]:=V;
+End;
+
+Procedure WW(A: LongInt; V: Word);
+Begin
+ WB(A,V Shr 8);WB(A+1,V And $FF);
+End;
+
+Procedure WL(A: LongInt; V: LongInt);
+Begin
+ WW(A,Word(Cardinal(V) Shr 16));WW(A+2,Word(V And $FFFF));
+End;
+
+Function SzMask(Sz: Integer): Int64;
+Begin
+ Case Sz Of
+  1: SzMask:=$FF;
+  2: SzMask:=$FFFF;
+ Else SzMask:=$FFFFFFFF;
+ End;
+End;
+
+Function SzMsb(Sz: Integer): Int64;
+Begin
+ Case Sz Of
+  1: SzMsb:=$80;
+  2: SzMsb:=$8000;
+ Else SzMsb:=$80000000;
+ End;
+End;
+
+Function SxV(V: LongInt; Sz: Integer): LongInt;
+Begin
+ Case Sz Of
+  1: SxV:=ShortInt(V And $FF);
+  2: SxV:=SmallInt(V And $FFFF);
+ Else SxV:=V;
+ End;
+End;
+
+Function MskV(V: LongInt; Sz: Integer): LongInt;
+Begin
+ Case Sz Of
+  1: MskV:=V And $FF;
+  2: MskV:=V And $FFFF;
+ Else MskV:=V;
+ End;
+End;
+
+Procedure SetF(M: Word; C: Boolean);
+Begin
+ If C Then RSR:=RSR Or M Else RSR:=RSR And (Not M);
+End;
+
+Function GetF(M: Word): Boolean;
+Begin
+ GetF:=(RSR And M)<>0;
+End;
+
+Function Fetch16: LongInt;
+Begin
+ Fetch16:=SmallInt(RW(RPC));
+ RPC:=RPC+2;
+End;
+
+Function Fetch32: LongInt;
+Begin
+ Fetch32:=RL(RPC);
+ RPC:=RPC+4;
+End;
+
+Procedure Push32(V: LongInt);
+Begin
+ RA[7]:=RA[7]-4;WL(RA[7],V);
+End;
+
+Procedure Push16(V: Word);
+Begin
+ RA[7]:=RA[7]-2;WW(RA[7],V);
+End;
+
+Function Pop32: LongInt;
+Begin
+ Pop32:=RL(RA[7]);RA[7]:=RA[7]+4;
+End;
+
+Function Pop16: Word;
+Begin
+ Pop16:=RW(RA[7]);RA[7]:=RA[7]+2;
+End;
+
+{ ------------------------- adresses effectives -------------------------- }
+
+Procedure GetEA(Mode,Reg,Sz: Integer; Var E: TEA);
+Var Ext: LongInt; Ix: LongInt; Base: LongInt; Inc2: Integer;
+ Function IndexVal(B: LongInt; X: LongInt): LongInt;
+ Var R: LongInt; D8: LongInt;
+ Begin
+  If (X And $8000)<>0 Then R:=RA[(X Shr 12) And 7] Else R:=RD[(X Shr 12) And 7];
+  If (X And $800)=0 Then R:=SmallInt(R And $FFFF);
+  D8:=ShortInt(X And $FF);
+  IndexVal:=B+R+D8;
+ End;
+Begin
+ E.N:=0;E.Kind:=2;
+ Case Mode Of
+  0: Begin E.Kind:=0;E.N:=Reg;End;
+  1: Begin E.Kind:=1;E.N:=Reg;End;
+  2: E.N:=RA[Reg];
+  3: Begin
+      E.N:=RA[Reg];
+      Inc2:=Sz;
+      If (Reg=7) And (Sz=1) Then Inc2:=2;
+      RA[Reg]:=RA[Reg]+Inc2;
+     End;
+  4: Begin
+      Inc2:=Sz;
+      If (Reg=7) And (Sz=1) Then Inc2:=2;
+      RA[Reg]:=RA[Reg]-Inc2;
+      E.N:=RA[Reg];
+     End;
+  5: Begin Ext:=Fetch16;E.N:=RA[Reg]+Ext;End;
+  6: Begin Ext:=Fetch16;E.N:=IndexVal(RA[Reg],Ext);End;
+  7: Case Reg Of
+      0: Begin E.N:=Fetch16;End;
+      1: Begin E.N:=Fetch32;End;
+      2: Begin Base:=RPC;Ext:=Fetch16;E.N:=Base+Ext;End;
+      3: Begin Base:=RPC;Ext:=Fetch16;E.N:=IndexVal(Base,Ext);End;
+      4: Begin
+          E.Kind:=3;
+          If Sz=4 Then E.N:=Fetch32
+          Else Begin E.N:=Fetch16;If Sz=1 Then E.N:=E.N And $FF;End;
+         End;
+     Else EmuHalt:=True;
+     End;
+ End;
+End;
+
+Function LdEA(Var E: TEA; Sz: Integer): LongInt;
+Begin
+ Case E.Kind Of
+  0: LdEA:=MskV(RD[E.N],Sz);
+  1: LdEA:=MskV(RA[E.N],Sz);
+  2: Case Sz Of
+      1: LdEA:=RB(E.N);
+      2: LdEA:=RW(E.N);
+     Else LdEA:=RL(E.N);
+     End;
+ Else LdEA:=MskV(E.N,Sz);
+ End;
+End;
+
+Procedure StEA(Var E: TEA; Sz: Integer; V: LongInt);
+Begin
+ Case E.Kind Of
+  0: Case Sz Of
+      1: RD[E.N]:=(RD[E.N] And LongInt($FFFFFF00)) Or (V And $FF);
+      2: RD[E.N]:=(RD[E.N] And LongInt($FFFF0000)) Or (V And $FFFF);
+     Else RD[E.N]:=V;
+     End;
+  1: RA[E.N]:=V;
+  2: Case Sz Of
+      1: WB(E.N,V And $FF);
+      2: WW(E.N,V And $FFFF);
+     Else WL(E.N,V);
+     End;
+ End;
+End;
+
+{ ------------------------------- ALU ----------------------------------- }
+
+Procedure FlagsNZ(R: LongInt; Sz: Integer);
+Begin
+ SetF(FLG_N,(Int64(R) And SzMsb(Sz))<>0);
+ SetF(FLG_Z,(Int64(R) And SzMask(Sz))=0);
+ SetF(FLG_V,False);SetF(FLG_C,False);
+End;
+
+Function AluAdd(S,Dd: LongInt; Sz: Integer; Cin: Integer; Chain,SetX: Boolean): LongInt;
+Var M,Mb,Ss,Dm,R,Res: Int64;
+Begin
+ M:=SzMask(Sz);Mb:=SzMsb(Sz);
+ Ss:=Int64(S) And M;Dm:=Int64(Dd) And M;
+ R:=Ss+Dm+Cin;Res:=R And M;
+ SetF(FLG_C,R>M);
+ If SetX Then SetF(FLG_X,R>M);
+ SetF(FLG_N,(Res And Mb)<>0);
+ If Chain Then Begin If Res<>0 Then SetF(FLG_Z,False);End Else SetF(FLG_Z,Res=0);
+ SetF(FLG_V,((Not (Ss Xor Dm)) And (Dm Xor Res) And Mb)<>0);
+ AluAdd:=LongInt(Res And $FFFFFFFF);
+End;
+
+Function AluSub(S,Dd: LongInt; Sz: Integer; Cin: Integer; Chain,SetX: Boolean): LongInt;
+Var M,Mb,Ss,Dm,R,Res: Int64;
+Begin
+ M:=SzMask(Sz);Mb:=SzMsb(Sz);
+ Ss:=Int64(S) And M;Dm:=Int64(Dd) And M;
+ R:=Dm-Ss-Cin;Res:=R And M;
+ SetF(FLG_C,R<0);
+ If SetX Then SetF(FLG_X,R<0);
+ SetF(FLG_N,(Res And Mb)<>0);
+ If Chain Then Begin If Res<>0 Then SetF(FLG_Z,False);End Else SetF(FLG_Z,Res=0);
+ SetF(FLG_V,((Ss Xor Dm) And (Dm Xor Res) And Mb)<>0);
+ AluSub:=LongInt(Res And $FFFFFFFF);
+End;
+
+Function CondOk(CC: Integer): Boolean;
+Var N,Z,V,C: Boolean;
+Begin
+ N:=GetF(FLG_N);Z:=GetF(FLG_Z);V:=GetF(FLG_V);C:=GetF(FLG_C);
+ Case CC Of
+  0: CondOk:=True;
+  1: CondOk:=False;
+  2: CondOk:=(Not C) And (Not Z);
+  3: CondOk:=C Or Z;
+  4: CondOk:=Not C;
+  5: CondOk:=C;
+  6: CondOk:=Not Z;
+  7: CondOk:=Z;
+  8: CondOk:=Not V;
+  9: CondOk:=V;
+  10: CondOk:=Not N;
+  11: CondOk:=N;
+  12: CondOk:=N=V;
+  13: CondOk:=N<>V;
+  14: CondOk:=(Not Z) And (N=V);
+ Else CondOk:=Z Or (N<>V);
+ End;
+End;
+
+Procedure SetSR(V: Word);
+Var Was: Boolean;
+Begin
+ Was:=(RSR And $2000)<>0;
+ RSR:=V And $F71F;
+ If Was And ((RSR And $2000)=0) Then Begin RUSP:=RUSP;End;
+End;
+
+{ ------------------------------ ecran --------------------------------- }
+
+Procedure OutToMem;
+{ recopie le tampon OUTPUT dans la memoire ecran de l'ST }
+Var I: Integer;
+Begin
+ For I:=0 To 31999 Do Begin
+  VMem[M_SCREEN+I]:=OutBuf^[I];
+  ScrShadow[I]:=OutBuf^[I];
+ End;
+End;
+
+Procedure MemToOut;
+Var I: Integer; Chg: Boolean;
+Begin
+ Chg:=False;
+ For I:=0 To 31999 Do
+  If VMem[M_SCREEN+I]<>ScrShadow[I] Then Begin
+   ScrShadow[I]:=VMem[M_SCREEN+I];
+   OutBuf^[I]:=ScrShadow[I];
+   Chg:=True;
+  End;
+ If Chg Then Begin OutPending:=True;OutFlush(True);End;
+End;
+
+{ Sortie texte VT52 }
+Procedure VtOut(Ch: Char);
+Var C: Integer;
+Begin
+ Case VtState Of
+  1: Begin
+      VtState:=0;
+      Case Ch Of
+       'E': Begin OutClear;End;
+       'H': OutGotoXY(0,0);
+       'A': If OCY>0 Then Dec(OCY);
+       'B': If OCY<OUT_ROWS-1 Then Inc(OCY);
+       'C': If OCX<OUT_COLS-1 Then Inc(OCX);
+       'D': If OCX>0 Then Dec(OCX);
+       'J': Begin
+             For C:=OCX To OUT_COLS-1 Do OGlyph(C,OCY,' ');
+             For C:=OCY+1 To OUT_ROWS-1 Do Begin
+              FillChar(OutBuf^[LongInt(C)*16*OUT_RB],16*OUT_RB,0);
+             End;
+             If OutLive Then OutPending:=True;
+            End;
+       'K': For C:=OCX To OUT_COLS-1 Do OGlyph(C,OCY,' ');
+       'L': ;
+       'M': ;
+       'Y': VtState:=2;
+       'p': VtRev:=True;
+       'q': VtRev:=False;
+       'e','f','v','w': ;
+       'b','c': VtState:=5;
+      End;
+     End;
+  2: Begin VtRow:=Ord(Ch)-32;VtState:=3;End;
+  3: Begin OutGotoXY(Ord(Ch)-32,VtRow);VtState:=0;End;
+  5: VtState:=0;
+ Else
+  If Ch=#27 Then VtState:=1
+  Else OutCh(Ch);
+ End;
+End;
+
+Procedure VtStr(Const S: String);
+Var I: Integer;
+Begin
+ For I:=1 To Length(S) Do VtOut(S[I]);
+End;
+
+{ ------------------------------ GEMDOS --------------------------------- }
+
+Function EmuStr(A: LongInt): String;
+Var S: String; C: Byte;
+Begin
+ S:='';
+ C:=RB(A);
+ While (C<>0) And (Length(S)<250) Do Begin S:=S+Chr(C);Inc(A);C:=RB(A);End;
+ EmuStr:=S;
+End;
+
+Procedure PutStr(A: LongInt; Const S: String);
+Var I: Integer;
+Begin
+ For I:=1 To Length(S) Do WB(A+I-1,Ord(S[I]));
+ WB(A+Length(S),0);
+End;
+
+Function EmuKey: LongInt;
+Var K: Integer;
+Begin
+ K:=GetKeyWait;
+ If BreakReq Then Begin EmuBrk:=True;EmuKey:=0;Exit;End;
+ If K>=256 Then EmuKey:=(LongInt(K-256) Shl 16)
+ Else EmuKey:=(LongInt(K) Shl 16) Or K;
+ If K=K_ENTER Then EmuKey:=($1C Shl 16) Or 13;
+End;
+
+Function HandleFile: Integer;
+Var I: Integer;
+Begin
+ HandleFile:=-1;
+ For I:=6 To 25 Do If Not EmuFUsed[I] Then Begin HandleFile:=I;Exit;End;
+End;
+
+Procedure FillDta(Const SR: SearchRec);
+Var D: LongInt; Nm: String;
+Begin
+ D:=EmuDta;
+ FillChar(VMem[D],44,0);
+ WB(D+21,SR.Attr And $FF);
+ WL(D+26,SR.Size);
+ Nm:=Upper(SR.Name);
+ PutStr(D+30,Copy(Nm,1,13));
+End;
+
+Procedure GemDos;
+Var Fn: Word; SP: LongInt; H,R: Integer; S: String; A,Cnt,Len: LongInt; Buf: Pointer;
+    Mode: Integer; Done: Longint; Pos2: LongInt;
+Begin
+ SP:=RA[7];
+ If (RSR And $2000)=0 Then SP:=RA[7] Else SP:=RA[7];
+ Fn:=RW(SP);
+ Case Fn Of
+  0: Begin EmuHalt:=True;EmuCode:=0;End;
+  1: RD[0]:=EmuKey;
+  2: Begin VtOut(Chr(RW(SP+2) And $FF));OutToMem;End;
+  3,4,5: RD[0]:=0;
+  6: If RW(SP+2)=$FF Then Begin
+      If KeyPressed Or (KeyQ<>'') Then RD[0]:=EmuKey Else RD[0]:=0;
+     End Else Begin VtOut(Chr(RW(SP+2) And $FF));RD[0]:=0;End;
+  7,8: RD[0]:=EmuKey;
+  9: Begin
+      S:=EmuStr(RL(SP+2));
+      VtStr(S);OutToMem;
+      RD[0]:=0;
+     End;
+  10: Begin
+       A:=RL(SP+2);
+       If ReadOutLine(S,Min2(RB(A),250)) Then Begin
+        WB(A+1,Length(S));
+        PutStr(A+2,S);
+        RD[0]:=Length(S);
+       End Else EmuBrk:=True;
+      End;
+  11: If KeyPressed Or (KeyQ<>'') Then RD[0]:=-1 Else RD[0]:=0;
+  14: RD[0]:=2;
+  25: RD[0]:=2;
+  32: Begin
+       { Super : bascule en superviseur }
+       A:=RL(SP+2);
+       If A=1 Then Begin If EmuSuper Then RD[0]:=-1 Else RD[0]:=0;End
+       Else Begin EmuSuper:=Not EmuSuper;RD[0]:=RA[7];End;
+      End;
+  26: Begin EmuDta:=RL(SP+2);End;
+  47: RD[0]:=EmuDta;
+  42: RD[0]:=(2026-1980) Shl 9 Or (11 Shl 5) Or 2;
+  44: RD[0]:=(12 Shl 11);
+  72: Begin
+       Cnt:=RL(SP+2);
+       If Cnt=-1 Then RD[0]:=M_TOP-$10000-EmuHeap
+       Else Begin
+        Cnt:=(Cnt+3) And (Not 3);
+        If EmuHeap+Cnt>M_TOP-$10000 Then RD[0]:=0
+        Else Begin RD[0]:=EmuHeap;FillChar(VMem[EmuHeap],Cnt,0);EmuHeap:=EmuHeap+Cnt;End;
+       End;
+      End;
+  73: RD[0]:=0;
+  74: RD[0]:=0;
+  71: Begin PutStr(RL(SP+4),'\');RD[0]:=0;End;
+  60: Begin
+       S:=EmuStr(RL(SP+2));
+       H:=HandleFile;
+       If H<0 Then RD[0]:=-35
+       Else Begin
+        Assign(EmuFile[H],S);
+        {$I-}Rewrite(EmuFile[H],1);{$I+}
+        If IOResult<>0 Then RD[0]:=-36 Else Begin EmuFUsed[H]:=True;RD[0]:=H;End;
+       End;
+      End;
+  61: Begin
+       S:=ResolveFile(EmuStr(RL(SP+2)));
+       Mode:=RW(SP+6);
+       H:=HandleFile;
+       If H<0 Then RD[0]:=-35
+       Else If Not FileExists(S) Then RD[0]:=-33
+       Else Begin
+        Assign(EmuFile[H],S);
+        {$I-}Reset(EmuFile[H],1);{$I+}
+        If IOResult<>0 Then RD[0]:=-36 Else Begin EmuFUsed[H]:=True;RD[0]:=H;End;
+       End;
+      End;
+  62: Begin
+       H:=RW(SP+2);
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        {$I-}Close(EmuFile[H]);{$I+}
+        If IOResult<>0 Then ;
+        EmuFUsed[H]:=False;RD[0]:=0;
+       End Else RD[0]:=-37;
+      End;
+  63: Begin
+       H:=RW(SP+2);Cnt:=RL(SP+4);A:=RL(SP+8);
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        If Cnt>VMEM_SIZE-A Then Cnt:=VMEM_SIZE-A;
+        If Cnt<0 Then Cnt:=0;
+        Done:=0;
+        {$I-}BlockRead(EmuFile[H],VMem[A],Cnt,Done);{$I+}
+        If IOResult<>0 Then RD[0]:=-12 Else RD[0]:=Done;
+       End Else If H=0 Then RD[0]:=0 Else RD[0]:=-37;
+      End;
+  64: Begin
+       H:=RW(SP+2);Cnt:=RL(SP+4);A:=RL(SP+8);
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        Done:=0;
+        {$I-}BlockWrite(EmuFile[H],VMem[A],Cnt,Done);{$I+}
+        If IOResult<>0 Then RD[0]:=-12 Else RD[0]:=Done;
+       End Else If (H=1) Or (H=2) Then Begin
+        For Len:=0 To Cnt-1 Do VtOut(Chr(RB(A+Len)));
+        OutToMem;RD[0]:=Cnt;
+       End Else RD[0]:=-37;
+      End;
+  65: Begin
+       S:=ResolveFile(EmuStr(RL(SP+2)));
+       If Not FileExists(S) Then RD[0]:=-33
+       Else Begin Assign(EmuFile[25],S);{$I-}Erase(EmuFile[25]);{$I+}If IOResult<>0 Then RD[0]:=-36 Else RD[0]:=0;End;
+      End;
+  66: Begin
+       Pos2:=RL(SP+2);Mode:=RW(SP+8);H:=RW(SP+6);
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        If Mode=1 Then Pos2:=Pos2+FilePos(EmuFile[H])
+        Else If Mode=2 Then Pos2:=Pos2+FileSize(EmuFile[H]);
+        {$I-}Seek(EmuFile[H],Pos2);{$I+}
+        If IOResult<>0 Then RD[0]:=-64 Else RD[0]:=Pos2;
+       End Else RD[0]:=-37;
+      End;
+  78: Begin
+       S:=EmuStr(RL(SP+2));
+       {$I-}FindFirst(S,AnyFile-Directory,EmuSF);{$I+}
+       If DosError=0 Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
+      End;
+  79: Begin
+       FindNext(EmuSF);
+       If DosError=0 Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
+      End;
+  76: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+2));End;
+  49: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+6));End;
+  48: RD[0]:=$1500;
+  45: RD[0]:=0;
+ Else
+  RD[0]:=-32;
+ End;
+End;
+
+Procedure Bios;
+Var Fn: Word; SP: LongInt;
+Begin
+ SP:=RA[7];
+ Fn:=RW(SP);
+ Case Fn Of
+  0: RD[0]:=0;
+  1: If KeyPressed Or (KeyQ<>'') Then RD[0]:=-1 Else RD[0]:=0;
+  2: RD[0]:=EmuKey;
+  3: Begin
+      If RW(SP+2)=2 Then Begin VtOut(Chr(RW(SP+4) And $FF));OutToMem;End;
+      RD[0]:=0;
+     End;
+  4: RD[0]:=0;
+  5: RD[0]:=0;
+  8: RD[0]:=0;
+  11: RD[0]:=0;
+  10: RD[0]:=0;
+  9: RD[0]:=0;
+  7: RD[0]:=0;
+ Else RD[0]:=0;
+ End;
+End;
+
+Procedure XBios;
+Var Fn: Word; SP: LongInt;
+Begin
+ SP:=RA[7];
+ Fn:=RW(SP);
+ Case Fn Of
+  2,3: RD[0]:=M_SCREEN;
+  4: RD[0]:=2;
+  5: RD[0]:=0;
+  14: RD[0]:=0;
+  17: Begin
+       EmuSeed:=EmuSeed*1103515245+12345;
+       RD[0]:=(EmuSeed Shr 8) And $FFFFFF;
+      End;
+  21: RD[0]:=0;
+  23: RD[0]:=(2026-1980) Shl 25 Or (11 Shl 21) Or (2 Shl 16);
+  25: RD[0]:=0;
+  37: Delay(10);
+  38: Begin
+       { Supexec }
+       Push32(RPC);RPC:=RL(SP+2);
+       RD[0]:=0;
+      End;
+  64: RD[0]:=0;
+ Else RD[0]:=0;
+ End;
+End;
+
+{ ---------------------------- VDI et AES -------------------------------- }
+
+Procedure VdiCall(PB: LongInt);
+Var Contrl,Intin,Ptsin,Intout,Ptsout: LongInt; Op,N,I,Sub: Integer; X1,Y1,X2,Y2,R: Integer; S: String;
+    SavC,SavS: Integer;
+ Procedure IO(I: Integer; V: Integer);
+ Begin WW(Intout+I*2,Word(V));End;
+Begin
+ Contrl:=RL(PB);Intin:=RL(PB+4);Ptsin:=RL(PB+8);Intout:=RL(PB+12);Ptsout:=RL(PB+16);
+ Op:=SmallInt(RW(Contrl));N:=SmallInt(RW(Contrl+2));
+ Sub:=SmallInt(RW(Contrl+10));
+ WW(Contrl+8,0);
+ SavC:=FilCol;SavS:=FilSty;
+ Case Op Of
+  1,100: Begin
+          For I:=0 To 44 Do IO(I,0);
+          IO(0,639);IO(1,399);IO(2,1);IO(3,372);IO(4,372);IO(13,2);IO(35,1);
+          WW(Contrl+12,1);
+         End;
+  2,101: ;
+  3: Begin OutClear;OutToMem;End;
+  6: Begin
+      For I:=0 To N-2 Do
+       OLine(SmallInt(RW(Ptsin+I*4)),SmallInt(RW(Ptsin+I*4+2)),
+             SmallInt(RW(Ptsin+I*4+4)),SmallInt(RW(Ptsin+I*4+6)),LineInk);
+     End;
+  7: For I:=0 To N-1 Do OPlot(SmallInt(RW(Ptsin+I*4)),SmallInt(RW(Ptsin+I*4+2)),1);
+  8: Begin
+      X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
+      For I:=0 To N-1 Do Begin
+       { texte graphique : cellule de 8x8 alignee sur la ligne de base }
+       For Y2:=0 To 7 Do
+        For X2:=0 To 7 Do
+         If (Font8[RW(Intin+I*2) And $FF,Y2] And (128 Shr X2))<>0 Then
+          OPlot(X1+I*8+X2,Y1-8+Y2+1,1);
+      End;
+     End;
+  9: Begin
+      For I:=0 To N-1 Do Begin PX[I]:=SmallInt(RW(Ptsin+I*4));PY[I]:=SmallInt(RW(Ptsin+I*4+2));End;
+      FilCol:=VdiFillCol;FilSty:=VdiFillSty;FilIdx:=VdiFillIdx;
+      OFillPoly(N);
+      FilCol:=SavC;FilSty:=SavS;
+     End;
+  11: Begin
+       X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
+       X2:=SmallInt(RW(Ptsin+4));Y2:=SmallInt(RW(Ptsin+6));
+       FilCol:=VdiFillCol;FilSty:=VdiFillSty;FilIdx:=VdiFillIdx;
+       Case Sub Of
+        1: Begin
+            PX[0]:=X1;PY[0]:=Y1;PX[1]:=X2+1;PY[1]:=Y1;PX[2]:=X2+1;PY[2]:=Y2+1;PX[3]:=X1;PY[3]:=Y2+1;
+            OFillPoly(4);
+           End;
+        4: OPie(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),0,3600);
+        5: OPie(X1,Y1,SmallInt(RW(Ptsin+4)),SmallInt(RW(Ptsin+6)),0,3600);
+        2: OArc(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),SmallInt(RW(Intin)),SmallInt(RW(Intin+2)));
+        3: OPie(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),SmallInt(RW(Intin)),SmallInt(RW(Intin+2)));
+       End;
+       FilCol:=SavC;FilSty:=SavS;
+      End;
+  23: Begin
+       VdiFillSty:=SmallInt(RW(Intin));IO(0,VdiFillSty);
+       If VdiFillSty=0 Then VdiFillSty:=0;
+      End;
+  24: Begin VdiFillIdx:=SmallInt(RW(Intin));IO(0,VdiFillIdx);End;
+  25: Begin VdiFillCol:=SmallInt(RW(Intin));IO(0,VdiFillCol);End;
+  17: Begin VdiLineCol:=SmallInt(RW(Intin));LinCol:=VdiLineCol;IO(0,VdiLineCol);End;
+  22: Begin VdiTxtCol:=SmallInt(RW(Intin));IO(0,VdiTxtCol);End;
+  124: Begin IO(0,0);WW(Ptsout,MX And $FFFF);WW(Ptsout+2,MY And $FFFF);End;
+ Else
+  IO(0,0);
+ End;
+ OutToMem;
+End;
+
+Function AesAlert(Const S: String; Def: Integer): Integer;
+Var P1,P2,P3: Integer; Lines,Btns,T: String; R: Integer;
+Begin
+ { format : [icone][ligne|ligne][bouton|bouton] }
+ Lines:='';Btns:='';
+ P1:=Pos('][',S);
+ If P1>0 Then Begin
+  T:=Copy(S,P1+2,255);
+  P2:=Pos('][',T);
+  If P2>0 Then Begin Lines:=Copy(T,1,P2-1);Btns:=Copy(T,P2+2,255);End;
+  If (Btns<>'') And (Btns[Length(Btns)]=']') Then Delete(Btns,Length(Btns),1);
+ End;
+ If Btns='' Then Btns:='OK';
+ R:=AlertBox(Lines,Btns);
+ AesAlert:=R;
+End;
+
+Procedure AesCall(PB: LongInt);
+Var Ctl,Glob,IntIn,IntOut,AddrIn,AddrOut: LongInt; Op: Integer;
+ Procedure IO(I: Integer; V: Integer);
+ Begin WW(IntOut+I*2,Word(V));End;
+Begin
+ Ctl:=RL(PB);Glob:=RL(PB+4);IntIn:=RL(PB+8);IntOut:=RL(PB+12);AddrIn:=RL(PB+16);AddrOut:=RL(PB+20);
+ Op:=SmallInt(RW(Ctl));
+ IO(0,1);
+ Case Op Of
+  10: Begin
+       Inc(AesNext);
+       IO(0,AesNext);
+       WW(Glob,$0120);WW(Glob+2,1);WW(Glob+4,AesNext);
+      End;
+  19: IO(0,1);
+  77: Begin IO(0,1);IO(1,8);IO(2,16);IO(3,8);IO(4,16);End;
+  78: IO(0,1);
+  107: IO(0,1);
+  52: IO(0,AesAlert(EmuStr(RL(AddrIn)),SmallInt(RW(IntIn))));
+  20: Begin
+       IO(0,0);
+       { evnt_keybd }
+       RD[0]:=0;
+       IO(0,Integer(EmuKey And $FFFF));
+      End;
+  21: Begin
+       { evnt_button : attend un clic }
+       While (MB And 3)=0 Do Begin
+        GetMouseState(MX,MY,MB);
+        If KeyPressed Then Begin PollKeys;End;
+        If BreakReq Then Begin EmuBrk:=True;MB:=1;End;
+        Delay(5);
+       End;
+       IO(0,1);IO(1,1);IO(2,MX);IO(3,MY);IO(4,0);
+      End;
+  23,24: Begin Delay(20);IO(0,1);End;
+  25: Begin
+       GetMouseState(MX,MY,MB);
+       IO(0,32);IO(1,MX);IO(2,MY);IO(3,0);IO(4,0);IO(5,0);IO(6,0);
+       Delay(20);
+      End;
+  30: IO(0,1);
+  100: IO(0,1);
+  101,102,103,105: IO(0,1);
+  104: Begin IO(0,1);IO(1,0);IO(2,MENU_H);IO(3,640);IO(4,400);End;
+  110: IO(0,0);
+ Else IO(0,0);
+ End;
+End;
+
+{ -------------------------------- TRAP --------------------------------- }
+
+Procedure DoTrapN(N: Integer);
+Begin
+ Case N Of
+  1: Begin
+      GemDos;
+     End;
+  2: Begin
+      If (RD[0] And $FFFF)=$73 Then VdiCall(RD[1])
+      Else If (RD[0] And $FFFF)=$C8 Then AesCall(RD[1]);
+     End;
+  13: Bios;
+  14: XBios;
+ Else
+  EmuHalt:=True;EmuMsg:='TRAP #'+IntStr(N);
+ End;
+End;
+
+{ ------------------------- decodage des instructions --------------------- }
+
+Procedure IllegalOp;
+Begin
+ If EmuMsg='' Then EmuMsg:=T3('Illegal instruction at $','Instruction ill'#130'gale '#133' $','Unerlaubter Befehl bei $')+
+   HexStr(EmuOpPC,16)+' ('+HexStr(EmuOpc,16)+')';
+ EmuHalt:=True;EmuCode:=-1;
+End;
+
+Function ShiftOp(Kind: Integer; Left: Boolean; V: LongInt; Cnt: Integer; Sz: Integer): LongInt;
+{ Kind : 0 AS, 1 LS, 2 ROX, 3 RO }
+Var M,Mb,X,Val1,Cc,Prev: Int64; I: Integer; Cy,Xc: Boolean; Sgn: Boolean;
+Begin
+ M:=SzMask(Sz);Mb:=SzMsb(Sz);
+ Val1:=Int64(V) And M;
+ Cy:=False;Xc:=GetF(FLG_X);
+ SetF(FLG_V,False);
+ For I:=1 To Cnt Do Begin
+  If Left Then Begin
+   Cy:=(Val1 And Mb)<>0;
+   Case Kind Of
+    0: Begin
+        If (((Val1 Shl 1) Xor Val1) And Mb)<>0 Then SetF(FLG_V,True);
+        Val1:=(Val1 Shl 1) And M;
+       End;
+    1: Val1:=(Val1 Shl 1) And M;
+    2: Begin
+        Val1:=((Val1 Shl 1) And M) Or Ord(Xc);Xc:=Cy;
+       End;
+    3: Val1:=((Val1 Shl 1) And M) Or Ord(Cy);
+   End;
+   If Kind<>3 Then Xc:=Xc And (Kind=2) Or (Kind<>2) And Cy;
+  End Else Begin
+   Cy:=(Val1 And 1)<>0;
+   Case Kind Of
+    0: Begin Sgn:=(Val1 And Mb)<>0;Val1:=Val1 Shr 1;If Sgn Then Val1:=Val1 Or Mb;End;
+    1: Val1:=Val1 Shr 1;
+    2: Begin Val1:=(Val1 Shr 1) Or (Ord(Xc)*Mb);Xc:=Cy;End;
+    3: Val1:=(Val1 Shr 1) Or (Ord(Cy)*Mb);
+   End;
+   If Kind<>3 Then Xc:=Xc And (Kind=2) Or (Kind<>2) And Cy;
+  End;
+ End;
+ If Cnt>0 Then Begin
+  SetF(FLG_C,Cy);
+  If Kind<>3 Then SetF(FLG_X,Xc);
+  If Kind=2 Then SetF(FLG_C,Xc);
+ End Else Begin
+  SetF(FLG_C,False);
+  If Kind=2 Then SetF(FLG_C,GetF(FLG_X));
+ End;
+ SetF(FLG_N,(Val1 And Mb)<>0);
+ SetF(FLG_Z,Val1=0);
+ ShiftOp:=LongInt(Val1 And $FFFFFFFF);
+End;
+
+Procedure ExecMovem(Op: Word);
+Var Mask: Word; Sz,Mode,Reg,I: Integer; E: TEA; A: LongInt; ToReg: Boolean;
+    V: LongInt;
+Begin
+ ToReg:=(Op And $400)<>0;
+ If (Op And $40)<>0 Then Sz:=4 Else Sz:=2;
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ Mask:=Word(Fetch16);
+ If (Mode=4) And (Not ToReg) Then Begin
+  A:=RA[Reg];
+  For I:=0 To 15 Do
+   If (Mask And (1 Shl I))<>0 Then Begin
+    A:=A-Sz;
+    If I<8 Then V:=RA[7-I] Else V:=RD[15-I];
+    If Sz=4 Then WL(A,V) Else WW(A,V And $FFFF);
+   End;
+  RA[Reg]:=A;
+  Exit;
+ End;
+ GetEA(Mode,Reg,Sz,E);
+ If (Mode=3) Then A:=RA[Reg]-Sz Else A:=E.N;
+ If Mode=3 Then A:=E.N;
+ If ToReg Then Begin
+  For I:=0 To 15 Do
+   If (Mask And (1 Shl I))<>0 Then Begin
+    If Sz=4 Then V:=RL(A) Else V:=SmallInt(RW(A));
+    If I<8 Then RD[I]:=V Else RA[I-8]:=V;
+    A:=A+Sz;
+   End;
+  If Mode=3 Then RA[Reg]:=A;
+ End Else Begin
+  For I:=0 To 15 Do
+   If (Mask And (1 Shl I))<>0 Then Begin
+    If I<8 Then V:=RD[I] Else V:=RA[I-8];
+    If Sz=4 Then WL(A,V) Else WW(A,V And $FFFF);
+    A:=A+Sz;
+   End;
+ End;
+End;
+
+Procedure ExecBit(Op: Word; Dyn: Boolean);
+Var Bit,Mode,Reg,Sz,Kind: Integer; E: TEA; V,M: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ Kind:=(Op Shr 6) And 3;
+ If Dyn Then Bit:=RD[(Op Shr 9) And 7] Else Bit:=Fetch16 And $FF;
+ GetEA(Mode,Reg,1,E);
+ If E.Kind=0 Then Begin Sz:=4;Bit:=Bit And 31;End Else Begin Sz:=1;Bit:=Bit And 7;End;
+ V:=LdEA(E,Sz);
+ If E.Kind=0 Then V:=RD[E.N];
+ M:=LongInt(Cardinal(1) Shl Bit);
+ SetF(FLG_Z,(V And M)=0);
+ Case Kind Of
+  1: V:=V Xor M;
+  2: V:=V And (Not M);
+  3: V:=V Or M;
+ End;
+ If Kind<>0 Then StEA(E,Sz,V);
+End;
+
+Procedure Step;
+Var Op: Word; Grp,Mode,Reg,Sz,Dn,I,K: Integer; E,E2: TEA; S,Dv,R: LongInt;
+    Ext: LongInt; A: LongInt; Cond: Boolean; Cnt: Integer; Q,Rm: Int64; DDiv: Int64;
+    Dd: Int64;
+Begin
+ EmuOpPC:=RPC;
+ Op:=RW(RPC);EmuOpc:=Op;
+ RPC:=RPC+2;
+ Grp:=Op Shr 12;
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Dn:=(Op Shr 9) And 7;
+ Case Grp Of
+  0: Begin
+      If (Op And $138)=$108 Then Begin
+       { MOVEP }
+       Ext:=Fetch16;A:=RA[Reg]+Ext;
+       If (Op And $80)<>0 Then Begin
+        If (Op And $40)<>0 Then Begin
+         WB(A,(RD[Dn] Shr 24) And $FF);WB(A+2,(RD[Dn] Shr 16) And $FF);
+         WB(A+4,(RD[Dn] Shr 8) And $FF);WB(A+6,RD[Dn] And $FF);
+        End Else Begin WB(A,(RD[Dn] Shr 8) And $FF);WB(A+2,RD[Dn] And $FF);End;
+       End Else Begin
+        If (Op And $40)<>0 Then
+         RD[Dn]:=(RB(A) Shl 24) Or (RB(A+2) Shl 16) Or (RB(A+4) Shl 8) Or RB(A+6)
+        Else RD[Dn]:=(RD[Dn] And LongInt($FFFF0000)) Or (RB(A) Shl 8) Or RB(A+2);
+       End;
+      End Else If (Op And $100)<>0 Then ExecBit(Op,True)
+      Else Case (Op Shr 9) And 7 Of
+       4: ExecBit(Op,False);
+       0,1,2,3,5,6: Begin
+           Sz:=1 Shl ((Op Shr 6) And 3);
+           If Sz>4 Then Begin IllegalOp;Exit;End;
+           { ORI/ANDI/SUBI/ADDI/EORI/CMPI }
+           If (Mode=7) And (Reg=4) Then Begin
+            { vers CCR / SR }
+            Ext:=Fetch16;
+            Case (Op Shr 9) And 7 Of
+             0: If Sz=1 Then RSR:=RSR Or (Ext And $1F) Else RSR:=RSR Or (Ext And $F71F);
+             1: If Sz=1 Then RSR:=RSR And (Word(Ext) Or $FF00) Else RSR:=RSR And Word(Ext);
+             5: If Sz=1 Then RSR:=RSR Xor (Ext And $1F) Else RSR:=RSR Xor (Ext And $F71F);
+            End;
+           End Else Begin
+            If Sz=4 Then S:=Fetch32 Else Begin S:=Fetch16;S:=MskV(S,Sz);End;
+            GetEA(Mode,Reg,Sz,E);
+            Dv:=LdEA(E,Sz);
+            Case (Op Shr 9) And 7 Of
+             0: Begin R:=Dv Or S;FlagsNZ(R,Sz);StEA(E,Sz,R);End;
+             1: Begin R:=Dv And S;FlagsNZ(R,Sz);StEA(E,Sz,R);End;
+             2: Begin R:=AluSub(S,Dv,Sz,0,False,True);StEA(E,Sz,R);End;
+             3: Begin R:=AluAdd(S,Dv,Sz,0,False,True);StEA(E,Sz,R);End;
+             5: Begin R:=Dv Xor S;FlagsNZ(R,Sz);StEA(E,Sz,R);End;
+             6: R:=AluSub(S,Dv,Sz,0,False,False);
+            End;
+           End;
+          End;
+      Else IllegalOp;
+      End;
+     End;
+  1,2,3: Begin
+      Case Grp Of 1: Sz:=1; 2: Sz:=4; Else Sz:=2; End;
+      GetEA(Mode,Reg,Sz,E);
+      S:=LdEA(E,Sz);
+      If ((Op Shr 6) And 7)=1 Then Begin
+       { MOVEA }
+       If Sz=2 Then S:=SmallInt(S And $FFFF);
+       RA[Dn]:=S;
+      End Else Begin
+       GetEA((Op Shr 6) And 7,Dn,Sz,E2);
+       StEA(E2,Sz,S);
+       FlagsNZ(S,Sz);
+      End;
+     End;
+  4: Begin
+      If (Op And $FF00)=$4E00 Then Begin
+       Case Op Of
+        $4E70: ;
+        $4E71: ;
+        $4E72: Begin Ext:=Fetch16;EmuHalt:=True;EmuCode:=0;End;
+        $4E73: Begin RSR:=Pop16;RPC:=Pop32;End;
+        $4E75: RPC:=Pop32;
+        $4E77: Begin RSR:=(RSR And $FFE0) Or (Pop16 And $1F);RPC:=Pop32;End;
+        $4E76: If GetF(FLG_V) Then IllegalOp;
+       Else
+        If (Op And $FFF0)=$4E40 Then DoTrapN(Op And 15)
+        Else If (Op And $FFF8)=$4E50 Then Begin
+         { LINK }
+         Ext:=Fetch16;
+         Push32(RA[Reg]);RA[Reg]:=RA[7];RA[7]:=RA[7]+Ext;
+        End Else If (Op And $FFF8)=$4E58 Then Begin
+         RA[7]:=RA[Reg];RA[Reg]:=Pop32;
+        End Else If (Op And $FFF8)=$4E60 Then RUSP:=RA[Reg]
+        Else If (Op And $FFF8)=$4E68 Then RA[Reg]:=RUSP
+        Else If (Op And $FFC0)=$4E80 Then Begin
+         GetEA(Mode,Reg,4,E);Push32(RPC);RPC:=E.N;
+        End Else If (Op And $FFC0)=$4EC0 Then Begin
+         GetEA(Mode,Reg,4,E);RPC:=E.N;
+        End Else IllegalOp;
+       End;
+      End Else If (Op And $F1C0)=$41C0 Then Begin
+       GetEA(Mode,Reg,4,E);RA[Dn]:=E.N;
+      End Else If (Op And $F1C0)=$4180 Then Begin
+       GetEA(Mode,Reg,2,E);
+       S:=SmallInt(LdEA(E,2));Dv:=SmallInt(RD[Dn] And $FFFF);
+       If Dv<0 Then Begin SetF(FLG_N,True);EmuHalt:=True;EmuMsg:='CHK';End
+       Else If Dv>S Then Begin SetF(FLG_N,False);EmuHalt:=True;EmuMsg:='CHK';End;
+      End Else If (Op And $FB80)=$4880 Then Begin
+       If Mode=0 Then Begin
+        { EXT }
+        If (Op And $40)<>0 Then Begin RD[Reg]:=SmallInt(RD[Reg] And $FFFF);FlagsNZ(RD[Reg],4);End
+        Else Begin
+         RD[Reg]:=(RD[Reg] And LongInt($FFFF0000)) Or (Word(ShortInt(RD[Reg] And $FF)));
+         FlagsNZ(RD[Reg],2);
+        End;
+       End Else ExecMovem(Op);
+      End Else If (Op And $FF00)=$4800 Then Begin
+       { MOVEM / PEA / SWAP / NBCD }
+       If (Op And $FFF8)=$4840 Then Begin
+        RD[Reg]:=LongInt((Cardinal(RD[Reg]) Shl 16) Or (Cardinal(RD[Reg]) Shr 16));
+        FlagsNZ(RD[Reg],4);
+       End Else If (Op And $FFC0)=$4840 Then Begin
+        GetEA(Mode,Reg,4,E);Push32(E.N);
+       End Else If (Op And $FFC0)=$4800 Then Begin
+        { NBCD }
+        GetEA(Mode,Reg,1,E);S:=LdEA(E,1);
+        R:=0-S-Ord(GetF(FLG_X));
+        If ((0-(S And $F)-Ord(GetF(FLG_X))) And $10)<>0 Then R:=R-6;
+        SetF(FLG_C,(S<>0) Or GetF(FLG_X));SetF(FLG_X,GetF(FLG_C));
+        R:=R And $FF;If R<>0 Then SetF(FLG_Z,False);
+        StEA(E,1,R);
+       End Else IllegalOp;
+      End Else If (Op And $FF00)=$4A00 Then Begin
+       If (Op And $FFC0)=$4AC0 Then Begin
+        { TAS }
+        GetEA(Mode,Reg,1,E);S:=LdEA(E,1);FlagsNZ(S,1);StEA(E,1,S Or $80);
+       End Else Begin
+        Sz:=1 Shl ((Op Shr 6) And 3);GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);FlagsNZ(S,Sz);
+       End;
+      End Else If ((Op Shr 8) And $F) In [0,2,4,6] Then Begin
+       Case (Op Shr 8) And $F Of
+        0: Begin
+            Sz:=1 Shl ((Op Shr 6) And 3);
+            If Sz>4 Then Begin
+             { MOVE from SR }
+             GetEA(Mode,Reg,2,E);StEA(E,2,RSR);
+            End Else Begin
+             GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);
+             R:=AluSub(S,0,Sz,Ord(GetF(FLG_X)),True,True);StEA(E,Sz,R);
+            End;
+           End;
+        2: Begin
+            Sz:=1 Shl ((Op Shr 6) And 3);
+            If Sz>4 Then Begin
+             { MOVE from CCR }
+             GetEA(Mode,Reg,2,E);StEA(E,2,RSR And $1F);
+            End Else Begin
+             GetEA(Mode,Reg,Sz,E);LdEA(E,Sz);StEA(E,Sz,0);
+             SetF(FLG_N,False);SetF(FLG_Z,True);SetF(FLG_V,False);SetF(FLG_C,False);
+            End;
+           End;
+        4: Begin
+            Sz:=1 Shl ((Op Shr 6) And 3);
+            If Sz>4 Then Begin
+             { MOVE to CCR }
+             GetEA(Mode,Reg,2,E);S:=LdEA(E,2);RSR:=(RSR And $FF00) Or (S And $1F);
+            End Else Begin
+             GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);
+             R:=AluSub(S,0,Sz,0,False,True);StEA(E,Sz,R);
+            End;
+           End;
+        6: Begin
+            Sz:=1 Shl ((Op Shr 6) And 3);
+            If Sz>4 Then Begin
+             GetEA(Mode,Reg,2,E);S:=LdEA(E,2);RSR:=S And $F71F;
+            End Else Begin
+             GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);R:=Not S;FlagsNZ(R,Sz);StEA(E,Sz,R);
+            End;
+           End;
+       Else IllegalOp;
+       End;
+      End Else IllegalOp;
+     End;
+  5: Begin
+      If ((Op Shr 6) And 3)=3 Then Begin
+       If Mode=1 Then Begin
+        { DBcc }
+        Ext:=Fetch16;
+        If Not CondOk((Op Shr 8) And $F) Then Begin
+         I:=SmallInt((RD[Reg] And $FFFF)-1);
+         RD[Reg]:=(RD[Reg] And LongInt($FFFF0000)) Or (I And $FFFF);
+         If I<>-1 Then RPC:=EmuOpPC+2+Ext;
+        End;
+       End Else Begin
+        { Scc }
+        GetEA(Mode,Reg,1,E);
+        If CondOk((Op Shr 8) And $F) Then StEA(E,1,$FF) Else StEA(E,1,0);
+       End;
+      End Else Begin
+       Sz:=1 Shl ((Op Shr 6) And 3);
+       K:=Dn;If K=0 Then K:=8;
+       GetEA(Mode,Reg,Sz,E);
+       If E.Kind=1 Then Begin
+        If (Op And $100)<>0 Then RA[E.N]:=RA[E.N]-K Else RA[E.N]:=RA[E.N]+K;
+       End Else Begin
+        S:=LdEA(E,Sz);
+        If (Op And $100)<>0 Then R:=AluSub(K,S,Sz,0,False,True)
+        Else R:=AluAdd(K,S,Sz,0,False,True);
+        StEA(E,Sz,R);
+       End;
+      End;
+     End;
+  6: Begin
+      Cond:=False;
+      Ext:=ShortInt(Op And $FF);
+      If (Op And $FF)=0 Then Ext:=Fetch16
+      Else If (Op And $FF)=$FF Then Ext:=Fetch32;
+      K:=(Op Shr 8) And $F;
+      If K=1 Then Begin Push32(RPC);RPC:=EmuOpPC+2+Ext;End
+      Else If CondOk(K) Then RPC:=EmuOpPC+2+Ext;
+     End;
+  7: Begin
+      If (Op And $100)<>0 Then IllegalOp
+      Else Begin RD[Dn]:=ShortInt(Op And $FF);FlagsNZ(RD[Dn],4);End;
+     End;
+  8: Begin
+      If ((Op Shr 6) And 7)=3 Then Begin
+       { DIVU }
+       GetEA(Mode,Reg,2,E);S:=LdEA(E,2) And $FFFF;
+       If S=0 Then Begin EmuHalt:=True;EmuMsg:=ErrText(11);EmuCode:=-1;End
+       Else Begin
+        Dd:=Int64(RD[Dn]) And $FFFFFFFF;
+        Q:=Dd Div S;Rm:=Dd Mod S;
+        If Q>$FFFF Then Begin SetF(FLG_V,True);SetF(FLG_C,False);End
+        Else Begin
+         RD[Dn]:=LongInt((Rm Shl 16) Or Q);
+         SetF(FLG_N,(Q And $8000)<>0);SetF(FLG_Z,Q=0);SetF(FLG_V,False);SetF(FLG_C,False);
+        End;
+       End;
+      End Else If ((Op Shr 6) And 7)=7 Then Begin
+       { DIVS }
+       GetEA(Mode,Reg,2,E);S:=SmallInt(LdEA(E,2));
+       If S=0 Then Begin EmuHalt:=True;EmuMsg:=ErrText(11);EmuCode:=-1;End
+       Else Begin
+        Dd:=RD[Dn];
+        Q:=Dd Div S;Rm:=Dd Mod S;
+        If (Q>32767) Or (Q<-32768) Then Begin SetF(FLG_V,True);SetF(FLG_C,False);End
+        Else Begin
+         RD[Dn]:=LongInt(((Rm And $FFFF) Shl 16) Or (Q And $FFFF));
+         SetF(FLG_N,Q<0);SetF(FLG_Z,Q=0);SetF(FLG_V,False);SetF(FLG_C,False);
+        End;
+       End;
+      End Else If (Op And $1F0)=$100 Then Begin
+       { SBCD }
+       If (Op And 8)<>0 Then Begin
+        RA[Reg]:=RA[Reg]-1;RA[Dn]:=RA[Dn]-1;S:=RB(RA[Reg]);Dv:=RB(RA[Dn]);
+       End Else Begin S:=RD[Reg] And $FF;Dv:=RD[Dn] And $FF;End;
+       R:=(Dv And $F)-(S And $F)-Ord(GetF(FLG_X));
+       If R<0 Then R:=R-6;
+       R:=R+(Dv And $F0)-(S And $F0);
+       SetF(FLG_C,R<0);If R<0 Then R:=R-$60;
+       SetF(FLG_X,GetF(FLG_C));R:=R And $FF;If R<>0 Then SetF(FLG_Z,False);
+       If (Op And 8)<>0 Then WB(RA[Dn],R) Else RD[Dn]:=(RD[Dn] And LongInt($FFFFFF00)) Or R;
+      End Else Begin
+       Sz:=1 Shl ((Op Shr 6) And 3);
+       GetEA(Mode,Reg,Sz,E);
+       If (Op And $100)<>0 Then Begin
+        S:=RD[Dn];Dv:=LdEA(E,Sz);R:=Dv Or S;FlagsNZ(R,Sz);StEA(E,Sz,R);
+       End Else Begin
+        S:=LdEA(E,Sz);Dv:=RD[Dn];R:=Dv Or S;FlagsNZ(R,Sz);
+        E2.Kind:=0;E2.N:=Dn;StEA(E2,Sz,R);
+       End;
+      End;
+     End;
+  9,13: Begin
+      { SUB / ADD }
+      If ((Op Shr 6) And 3)=3 Then Begin
+       { SUBA / ADDA }
+       If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
+       GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);
+       If Sz=2 Then S:=SmallInt(S And $FFFF);
+       If Grp=9 Then RA[Dn]:=RA[Dn]-S Else RA[Dn]:=RA[Dn]+S;
+      End Else Begin
+       Sz:=1 Shl ((Op Shr 6) And 3);
+       If ((Op And $130)=$100) Then Begin
+        { SUBX / ADDX }
+        If (Op And 8)<>0 Then Begin
+         RA[Reg]:=RA[Reg]-Sz;RA[Dn]:=RA[Dn]-Sz;
+         E.Kind:=2;E.N:=RA[Reg];E2.Kind:=2;E2.N:=RA[Dn];
+        End Else Begin E.Kind:=0;E.N:=Reg;E2.Kind:=0;E2.N:=Dn;End;
+        S:=LdEA(E,Sz);Dv:=LdEA(E2,Sz);
+        If Grp=9 Then R:=AluSub(S,Dv,Sz,Ord(GetF(FLG_X)),True,True)
+        Else R:=AluAdd(S,Dv,Sz,Ord(GetF(FLG_X)),True,True);
+        StEA(E2,Sz,R);
+       End Else Begin
+        GetEA(Mode,Reg,Sz,E);
+        If (Op And $100)<>0 Then Begin
+         S:=RD[Dn];Dv:=LdEA(E,Sz);
+         If Grp=9 Then R:=AluSub(S,Dv,Sz,0,False,True) Else R:=AluAdd(S,Dv,Sz,0,False,True);
+         StEA(E,Sz,R);
+        End Else Begin
+         S:=LdEA(E,Sz);Dv:=MskV(RD[Dn],Sz);
+         If Grp=9 Then R:=AluSub(S,Dv,Sz,0,False,True) Else R:=AluAdd(S,Dv,Sz,0,False,True);
+         E2.Kind:=0;E2.N:=Dn;StEA(E2,Sz,R);
+        End;
+       End;
+      End;
+     End;
+  10: Begin
+      { ligne A : on ignore (retour des pointeurs LineA pour $A000) }
+      If Op=$A000 Then Begin RD[0]:=M_LINEA;RA[0]:=M_LINEA;End;
+     End;
+  11: Begin
+      If ((Op Shr 6) And 3)=3 Then Begin
+       If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
+       GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);
+       If Sz=2 Then S:=SmallInt(S And $FFFF);
+       R:=AluSub(S,RA[Dn],4,0,False,False);
+      End Else Begin
+       Sz:=1 Shl ((Op Shr 6) And 3);
+       If ((Op And $138)=$108) Then Begin
+        { CMPM }
+        GetEA(3,Reg,Sz,E);GetEA(3,Dn,Sz,E2);
+        S:=LdEA(E,Sz);Dv:=LdEA(E2,Sz);
+        R:=AluSub(S,Dv,Sz,0,False,False);
+       End Else If (Op And $100)<>0 Then Begin
+        { EOR }
+        GetEA(Mode,Reg,Sz,E);S:=RD[Dn];Dv:=LdEA(E,Sz);
+        R:=Dv Xor S;FlagsNZ(R,Sz);StEA(E,Sz,R);
+       End Else Begin
+        GetEA(Mode,Reg,Sz,E);S:=LdEA(E,Sz);Dv:=MskV(RD[Dn],Sz);
+        R:=AluSub(S,Dv,Sz,0,False,False);
+       End;
+      End;
+     End;
+  12: Begin
+      If ((Op Shr 6) And 7)=3 Then Begin
+       GetEA(Mode,Reg,2,E);S:=LdEA(E,2) And $FFFF;
+       RD[Dn]:=LongInt((Cardinal(RD[Dn]) And $FFFF)*Cardinal(S));
+       FlagsNZ(RD[Dn],4);
+      End Else If ((Op Shr 6) And 7)=7 Then Begin
+       GetEA(Mode,Reg,2,E);S:=SmallInt(LdEA(E,2));
+       RD[Dn]:=SmallInt(RD[Dn] And $FFFF)*S;
+       FlagsNZ(RD[Dn],4);
+      End Else If (Op And $1F0)=$100 Then Begin
+       { ABCD }
+       If (Op And 8)<>0 Then Begin
+        RA[Reg]:=RA[Reg]-1;RA[Dn]:=RA[Dn]-1;S:=RB(RA[Reg]);Dv:=RB(RA[Dn]);
+       End Else Begin S:=RD[Reg] And $FF;Dv:=RD[Dn] And $FF;End;
+       R:=(Dv And $F)+(S And $F)+Ord(GetF(FLG_X));
+       If R>9 Then R:=R+6;
+       R:=R+(Dv And $F0)+(S And $F0);
+       SetF(FLG_C,R>$99);If R>$99 Then R:=R+$60;
+       SetF(FLG_X,GetF(FLG_C));R:=R And $FF;If R<>0 Then SetF(FLG_Z,False);
+       If (Op And 8)<>0 Then WB(RA[Dn],R) Else RD[Dn]:=(RD[Dn] And LongInt($FFFFFF00)) Or R;
+      End Else If (Op And $130)=$100 Then Begin
+       { EXG }
+       Case (Op Shr 3) And $1F Of
+        8: Begin S:=RD[Dn];RD[Dn]:=RD[Reg];RD[Reg]:=S;End;
+        9: Begin S:=RA[Dn];RA[Dn]:=RA[Reg];RA[Reg]:=S;End;
+        17: Begin S:=RD[Dn];RD[Dn]:=RA[Reg];RA[Reg]:=S;End;
+       Else IllegalOp;
+       End;
+      End Else Begin
+       Sz:=1 Shl ((Op Shr 6) And 3);
+       GetEA(Mode,Reg,Sz,E);
+       If (Op And $100)<>0 Then Begin
+        S:=RD[Dn];Dv:=LdEA(E,Sz);R:=Dv And S;FlagsNZ(R,Sz);StEA(E,Sz,R);
+       End Else Begin
+        S:=LdEA(E,Sz);Dv:=RD[Dn];R:=Dv And S;FlagsNZ(R,Sz);
+        E2.Kind:=0;E2.N:=Dn;StEA(E2,Sz,R);
+       End;
+      End;
+     End;
+  14: Begin
+      If ((Op Shr 6) And 3)=3 Then Begin
+       { decalage memoire d'un bit }
+       GetEA(Mode,Reg,2,E);S:=LdEA(E,2);
+       R:=ShiftOp((Op Shr 9) And 3,(Op And $100)<>0,S,1,2);
+       StEA(E,2,R);
+      End Else Begin
+       Sz:=1 Shl ((Op Shr 6) And 3);
+       If (Op And $20)<>0 Then Cnt:=RD[Dn] And 63 Else Begin Cnt:=Dn;If Cnt=0 Then Cnt:=8;End;
+       K:=(Op Shr 3) And 3;
+       E.Kind:=0;E.N:=Reg;
+       S:=LdEA(E,Sz);
+       R:=ShiftOp(K,(Op And $100)<>0,S,Cnt,Sz);
+       StEA(E,Sz,R);
+      End;
+     End;
+ Else IllegalOp;
+ End;
+End;
+
+{ ----------------------------- chargeur PRG ----------------------------- }
+
+Function LoadPRG(Const Name: String; Const Tail: String): Boolean;
+Var F: File; Hdr: Array[0..27] Of Byte; Tl,Dl,Bl,Sl: LongInt; Base,Load,I,Off: LongInt;
+    Buf: Array[0..4095] Of Byte; N: Word; Got: LongInt; Cmd: String; B: Byte; Fx: LongInt;
+    Rd2: LongInt;
+ Function HL(O: Integer): LongInt;
+ Begin
+  HL:=LongInt((Cardinal(Hdr[O]) Shl 24) Or (Cardinal(Hdr[O+1]) Shl 16) Or
+              (Cardinal(Hdr[O+2]) Shl 8) Or Hdr[O+3]);
+ End;
+Begin
+ LoadPRG:=False;
+ Cmd:=ResolveFile(Name);
+ If Not FileExists(Cmd) Then Exit;
+ Assign(F,Cmd);
+ {$I-}Reset(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ BlockRead(F,Hdr,28,N);
+ If (N<28) Or (Hdr[0]<>$60) Or (Hdr[1]<>$1A) Then Begin Close(F);Exit;End;
+ Tl:=HL(2);Dl:=HL(6);Bl:=HL(10);Sl:=HL(14);
+ Base:=M_BASEPAGE;Load:=Base+$100;
+ If Load+Tl+Dl+Bl>M_TOP-$20000 Then Begin Close(F);Exit;End;
+ FillChar(VMem[Base],$100,0);
+ FillChar(VMem[Load],Tl+Dl+Bl,0);
+ { texte + donnees }
+ Got:=0;
+ While Got<Tl+Dl Do Begin
+  I:=Tl+Dl-Got;If I>4096 Then I:=4096;
+  BlockRead(F,Buf,I,N);
+  If N=0 Then Begin Got:=Tl+Dl;End
+  Else Begin Move(Buf[0],VMem[Load+Got],N);Got:=Got+N;End;
+ End;
+ { relocation }
+ Seek(F,28+Tl+Dl+Sl);
+ BlockRead(F,Hdr,4,N);
+ If N=4 Then Begin
+  Fx:=HL(0);
+  If Fx<>0 Then Begin
+   Off:=Fx;
+   WL(Load+Off,RL(Load+Off)+Load);
+   Repeat
+    BlockRead(F,B,1,N);
+    If N=0 Then B:=0;
+    If B=1 Then Off:=Off+254
+    Else If B<>0 Then Begin Off:=Off+B;WL(Load+Off,RL(Load+Off)+Load);End;
+   Until B=0;
+  End;
+ End;
+ Close(F);
+ { page de base }
+ WL(Base+0,Base);WL(Base+4,M_TOP);
+ WL(Base+8,Load);WL(Base+12,Tl);
+ WL(Base+16,Load+Tl);WL(Base+20,Dl);
+ WL(Base+24,Load+Tl+Dl);WL(Base+28,Bl);
+ WL(Base+32,Base+$80);WL(Base+44,M_ENV);
+ WB(M_ENV,0);WB(M_ENV+1,0);
+ WB(Base+$80,Length(Tail));
+ For I:=1 To Length(Tail) Do WB(Base+$80+I,Ord(Tail[I]));
+ WB(Base+$80+Length(Tail)+1,0);
+ EmuDta:=Base+$80;
+ EmuHeap:=Load+Tl+Dl+Bl+$1000;
+ EmuHeap:=(EmuHeap+3) And (Not 3);
+ { code de terminaison : move.w #0,-(sp) ; trap #1 }
+ WW(M_STUB,$3F3C);WW(M_STUB+2,0);WW(M_STUB+4,$4E41);
+ For I:=0 To 7 Do Begin RD[I]:=0;RA[I]:=0;End;
+ RA[7]:=M_TOP-$100;
+ Push32(Base);
+ Push32(M_STUB);
+ RA[0]:=0;
+ RPC:=Load;
+ RSR:=$0000;
+ LoadPRG:=True;
+End;
+
+Procedure EmuLoop;
+Var K: Integer;
+Begin
+ EmuSteps:=0;
+ While (Not EmuHalt) And (Not EmuBrk) And (Not QuitReq) Do Begin
+  Step;
+  Inc(EmuSteps);
+  If (EmuSteps And $3FFF)=0 Then Begin
+   MemToOut;
+   PollKeys;
+   RunPoll;
+   If BreakReq Then EmuBrk:=True;
+  End;
+ End;
+ MemToOut;
+End;
+
+Procedure EmuPrepare;
+Var I: Integer;
+Begin
+ EmuHalt:=False;EmuBrk:=False;EmuCode:=0;EmuMsg:='';EmuSuper:=False;
+ EmuSeed:=NowCs;VtState:=0;VtRev:=False;AesNext:=0;
+ For I:=6 To 25 Do EmuFUsed[I]:=False;
+ VdiFillCol:=1;VdiFillSty:=0;VdiFillIdx:=1;VdiLineCol:=1;VdiTxtCol:=1;
+ FillChar(VMem[M_LINEA],256,0);
+ WW(M_LINEA+2,2);WW(M_LINEA+12,80);WW(M_LINEA-12,640);WW(M_LINEA-4,400);
+ Win[W_OUT].Open:=True;
+ If Not Win[W_OUT].Full Then ToggleFull(W_OUT);
+ BringToFront(W_OUT);
+ OutClear;
+ OutToMem;
+End;
+
+Procedure EmuFinish;
+Var I: Integer;
+Begin
+ For I:=6 To 25 Do If EmuFUsed[I] Then Begin {$I-}Close(EmuFile[I]);{$I+}If IOResult<>0 Then ;EmuFUsed[I]:=False;End;
+ OutFlush(True);
+End;
+
+Function EmuRunPRG(Const Name: String): Boolean;
+Var Tail: String; I: Integer;
+Begin
+ EmuRunPRG:=False;
+ Tail:='';
+ If Not LoadPRG(Name,Tail) Then Exit;
+ EmuRunPRG:=True;
+ HideMouse;Inc(MouseLock);
+ RunningProg:=True;BreakReq:=False;
+ EmuPrepare;
+ OutUpdateLive;
+ DrawDesktop;
+ EmuLoop;
+ EmuFinish;
+ Dec(MouseLock);
+ RunningProg:=False;
+ NoSound;
+ If EmuMsg<>'' Then ConAdd(EmuMsg)
+ Else If EmuBrk Then ConAdd(T3('- Break -','- Break -','- Break -'))
+ Else ConAdd(ShortName(Name)+T3(' ended, code ',' termin'#130', code ',' beendet, Code ')+IntStr(EmuCode));
+ BreakReq:=False;
+ BringToFront(W_CMD);
+ UIDirty:=True;
+ DrawDesktop;
+End;
+
+Procedure EmuCallAddr(Addr: LongInt; N: Integer; Var Args: TArgs);
+Var I: Integer;
+Begin
+ If (Addr<=0) Or (Addr>=VMEM_SIZE) Then Begin Fail(5);Exit;End;
+ EmuPrepare;
+ For I:=0 To 7 Do Begin RD[I]:=0;RA[I]:=0;End;
+ RA[7]:=M_TOP-$100;
+ For I:=N DownTo 1 Do If Args[I].IsStr Then Push32(0) Else Push32(Round(Args[I].N));
+ Push16(N);
+ WW(M_STUB,$4E72);WW(M_STUB+2,0);
+ Push32(M_STUB);
+ RPC:=Addr;RSR:=0;
+ HideMouse;Inc(MouseLock);
+ EmuLoop;
+ EmuFinish;
+ Dec(MouseLock);
+ If EmuMsg<>'' Then Begin ConAdd(EmuMsg);Fail(5);End;
+ Win[W_OUT].Open:=True;
+End;
+
+{$ELSE}
+
 Procedure EmuCallAddr(Addr: LongInt; N: Integer; Var Args: TArgs);
 Begin
+ Fail(5);
 End;
+
 Function EmuRunPRG(Const Name: String): Boolean;
 Begin
  EmuRunPRG:=False;
 End;
+
+{$ENDIF}
+
 
 { ====================================================================== }
 {          INTERFACE : CONTENU DES FENETRES, EDITEUR, COMMANDES          }
@@ -5655,7 +7111,7 @@ End;
 
 Procedure EdHelp;
 Begin
- AlertBox('F1  '+T3('Insert Space','Ins'#130'rer espace','Leerzeichen')+'      F2  '+
+ AlertBox('~F1  '+T3('Insert Space','Ins'#130'rer espace','Leerzeichen')+'      F2  '+
   T3('Delete Char','Suppr. caract.','Zeichen loeschen')+'|'+
   'F3  '+T3('Insert Line','Ins'#130'rer ligne','Zeile einfuegen')+'       F4  '+
   T3('Remove Line','Retirer ligne','Zeile entfernen')+'|'+
