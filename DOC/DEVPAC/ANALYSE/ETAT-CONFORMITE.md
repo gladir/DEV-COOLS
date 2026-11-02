@@ -22,10 +22,15 @@ DRI (L2) et Lattice (L7) avec XDEF/XREF/MODULE ; S-records ; 68010/20/30/40 comp
 CAS, PACK, MOVE16, CINV...) ; 68881/68882 complet ; MMU 68851/68030/68040 ; constantes et directives flottantes
 (DC/DS/DCB.S/D/X/P, FEQU, FOPT) vérifiées contre GNU as ; optimisations O1 à O12 avec comptes rendus ; 15 messages de
 l'annexe B qui n'avaient aucun chemin d'émission en ont un.
-Reste à faire : **format GST (L1)** : refusé par « linker format restriction ». Sa structure (SROFF, flux d'octets avec
-échappement $FB) n'est dans aucun des manuels fournis ; la spécification est dans le manuel du linker GST (QLINK) et sur
-rg.atari.org, que cette session ne pouvait pas joindre. À reprendre quand ces sites sont autorisés ou si la spécification
-est ajoutée au dépôt. Aussi : FOPT ROUND/PREC sans effet ; conversion packed arrondie au-delà de 17 chiffres ; pas de test
+Format GST (L1, `OPT GST`, `+GST`, `-L1`, extension `.BIN`) : écrit d'après l'appendice B du manuel du linker QL
+(format SROFF, fourni dans le dépôt de travail) : SOURCE, COMMENT, DEFINE, XDEF, XREF multi-termes, SECTION, ORG, OFFSET, END,
+MODULE (plusieurs modules par fichier = bibliothèque). Validé : l'exemple B.2.5 du manuel est reproduit octet par octet,
+un décodeur et un éditeur de liens écrits d'après la spécification relient deux modules et une bibliothèque en une image identique à l'assemblage
+mono-fichier. Limites : seulement trois sections (TEXT, DATA, BSS) et pas de COMMON ; un seul import par expression, pas d'import
+en octet ; symboles tronqués à 32 caractères ; les extensions « non officielles » de Devpac pour les bibliothèques et le sens exact
+de XDEBUG pour GST ne sont pas documentés ; pas de bits signé/non signé dans la règle de troncature ; aucun test avec LinkST réel ni avec de vrais `.BIN` Devpac.
+Coquille du manuel QL : l'exemple imprime `FB 02` devant « SECTION », la syntaxe documentée est `FB 04` ; c'est `FB 04` qui est écrit.
+Reste à faire : FOPT ROUND/PREC sans effet ; conversion packed arrondie au-delà de 17 chiffres ; pas de test
 sur hôte big-endian ; messages impossibles à déclencher : `assembly interrupted`, `repeated include file`, `invalid printer parameter`.
 Les formats DRI et Lattice ont été validés avec un décodeur et un éditeur de liens écrits pour le projet, d'après les
 spécifications publiques, sans linker réel.

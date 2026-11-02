@@ -887,6 +887,7 @@ Type
   S : Integer;
   U : Boolean;
   X : LongInt;           { index d'import (XREF) ou 0 }
+  NS: Integer;           { GST : section soustraite (-1 aucune) }
  End;
 
  TAsmOpts = Record
@@ -980,6 +981,16 @@ Var
  XdefN       : Integer;
  XdefNames   : Array[1..2000] Of String[80];
  ModName     : String;
+ ModIdx      : Integer;      { GST : numero du module courant (0 = premier) }
+ GstSecName  : Array[0..2] Of String[40];
+ GstSecCust  : Array[0..2] Of Boolean;
+ GstGapN     : Integer;      { RORG GST : trous sans donnees }
+ GstGapSec   : Array[1..200] Of Integer;
+ GstGapPos,GstGapEnd : Array[1..200] Of LongInt;
+ GstOrgN     : Integer;      { ORG multiples en mode absolu }
+ GstOrgPos,GstOrgAddr : Array[1..200] Of LongInt;
+ GstCmtN     : Integer;
+ GstCmt      : Array[1..40] Of String[80];
  RelocN      : LongInt;
  RelocCap    : LongInt;
  Decs        : PByteArr;
@@ -1134,7 +1145,7 @@ Function KeyOf(Const S: String): String;
 Var K: String;
 Begin
  K:=S;
- If (Length(K)>AO.SymLen) And (Pos('~',K)=0) Then K:=Copy(K,1,AO.SymLen);
+ If (Length(K)>AO.SymLen) And (Pos('~',K)=0) And (Pos('^',K)=0) Then K:=Copy(K,1,AO.SymLen);
  If OptCase Then KeyOf:=K Else KeyOf:=Upper(K);
 End;
 
@@ -1162,16 +1173,35 @@ Begin
  FeqVal[K]:=V;
 End;
 
+Function LookupSym(Const K: String): PSym;
+Var P: PSym;
+Begin
+ P:=Hash[HashOf(K)];
+ While P<>Nil Do Begin
+  If P^.Name=K Then Begin LookupSym:=P;Exit;End;
+  P:=P^.Next;
+ End;
+ LookupSym:=Nil;
+End;
+
+{ cle d'un symbole relatif du module courant (GST : un espace de noms par MODULE) }
+Function ModKey(Const Name: String): String;
+Var K: String;
+Begin
+ K:=KeyOf(Name);
+ If (ModIdx>0) And (Pos('^',K)=0) Then K:=K+'^'+IntStr(ModIdx);
+ ModKey:=K;
+End;
+
 Function FindSym(Const Name: String): PSym;
 Var P: PSym; K: String;
 Begin
  K:=KeyOf(Name);
- P:=Hash[HashOf(K)];
- While P<>Nil Do Begin
-  If P^.Name=K Then Begin FindSym:=P;Exit;End;
-  P:=P^.Next;
+ If (ModIdx>0) And (Pos('^',K)=0) Then Begin
+  P:=LookupSym(K+'^'+IntStr(ModIdx));
+  If P<>Nil Then Begin FindSym:=P;Exit;End;
  End;
- FindSym:=Nil;
+ FindSym:=LookupSym(K);
 End;
 
 Function AddSym(Const Name: String): PSym;
@@ -1299,7 +1329,7 @@ Begin
 End;
 
 { Mot long, avec relocation eventuelle (RSect >= 0) }
-Procedure EmitLong(L: LongInt; RSect: Integer);
+Procedure EmitLong(L: LongInt; RSect: LongInt);
 Begin
  If (RSect>=0) And Not AbsMode And (AsmPassNo=2) And (CurSect<>SEC_BSS) Then Begin
   If RelocN>=RelocCap Then GrowRelocs;
@@ -1313,9 +1343,9 @@ Begin
 End;
 
 { Mot (16 bits) avec relocation d'import (Rel >= RELIMP) }
-Procedure EmitWordRel(W: LongInt; Rel: Integer);
+Procedure EmitWordRel(W: LongInt; Rel: LongInt);
 Begin
- If (Rel>=RELIMP) And Not AbsMode And (AsmPassNo=2) And (CurSect<>SEC_BSS) And Not OffMode Then Begin
+ If ((Rel>=RELIMP) Or (Rel<=-10)) And Not AbsMode And (AsmPassNo=2) And (CurSect<>SEC_BSS) And Not OffMode Then Begin
   If RelocN>=RelocCap Then GrowRelocs;
   Inc(RelocN);
   RelocPos^[RelocN]:=SecLen[CurSect];
@@ -1385,7 +1415,7 @@ End;
 Function MkTV(V: LongInt; S: Integer; U: Boolean): TTV;
 Var R: TTV;
 Begin
- R.V:=V;R.S:=S;R.U:=U;R.X:=0;
+ R.V:=V;R.S:=S;R.U:=U;R.X:=0;R.NS:=-1;
  MkTV:=R;
 End;
 
@@ -1650,6 +1680,10 @@ Begin
           If (A.S>=0) And (B.S>=0) Then TypeErr
           Else If B.S>=0 Then A.S:=B.S;
           A.V:=A.V+B.V;
+         End Else If (AO.Fmt=1) And (A.NS<0) And (B.NS<0) And (B.X=0) And (B.S>=0) And
+                     ((A.X>0) Or ((A.S>=0) And (A.S<>B.S))) Then Begin
+          { GST : (import ou relatif) - relatif d'une autre section : relogement a deux termes }
+          A.V:=A.V-B.V;A.NS:=B.S;
          End Else Begin
           If (A.S>=0) And (B.S>=0) Then Begin
            If A.S<>B.S Then Begin
@@ -1748,6 +1782,7 @@ Type
   HasX : Boolean;
   Scale: Integer;       { echelle de l'index (1,2,4,8) }
   X    : LongInt;       { index d'import (XREF) ou 0 }
+  NS   : Integer;       { GST : section soustraite }
   FB,FIx,FSc,FMem,FBdSz,FOdSz,FBdS,FOdS : Integer;   { mode 68020 complet }
   FSup,FIxL,FHasBd,FHasOd,FBdU,FOdU : Boolean;
   FBdV,FOdV : LongInt;
@@ -1768,7 +1803,7 @@ Var
  OpW      : LongInt;     { mot d'operation }
  XW       : Array[1..16] Of LongInt;
  XLg      : Array[1..16] Of Boolean;
- XRl      : Array[1..16] Of Integer;
+ XRl      : Array[1..16] Of LongInt;
  XN       : Integer;
  XWords   : Integer;
  BadInstr : Boolean;
@@ -1900,13 +1935,14 @@ Begin
 End;
 
 Var LastX : LongInt;
+ LastNS : Integer;
 
 Function EvalOpnd(Const S: String; Var V: LongInt; Var Sc: Integer; Var U: Boolean): Boolean;
 Var R: TTV;
 Begin
  If S='' Then Begin V:=0;Sc:=SEC_ABS;U:=False;EvalOpnd:=True;Exit;End;
  If EvalStr(S,R) Then Begin
-  V:=R.V;Sc:=R.S;U:=R.U;LastX:=R.X;
+  V:=R.V;Sc:=R.S;U:=R.U;LastX:=R.X;LastNS:=R.NS;
   EvalOpnd:=True;
  End Else Begin
   V:=0;Sc:=SEC_ABS;U:=True;
@@ -2133,12 +2169,12 @@ End;
  Procedure ParseOp(Const S0: String; Var O: TOp);
 Var P,Q,Off,Wd: LongInt; B,F,A1,A2: String; Sc: Integer; U: Boolean; Dof,Dwf: Boolean; R1: Integer;
 Begin
- LastX:=0;
+ LastX:=0;LastNS:=-1;
  P:=Pos('{',S0);
  B:=S0;F:='';
  If (P>1) And (S0[Length(S0)]='}') Then Begin B:=Copy(S0,1,P-1);F:=Copy(S0,P+1,Length(S0)-P-1);End;
  ParseOp0(B,O);
- O.X:=LastX;
+ O.X:=LastX;O.NS:=LastNS;
  O.HasBF:=False;O.BF:=0;O.HasK:=False;
  If F<>'' Then Begin
   Q:=Pos(':',F);
@@ -2171,7 +2207,7 @@ End;
 { Mots d'extension                                                        }
 { ---------------------------------------------------------------------- }
 
-Procedure PutX(V: LongInt; IsLong: Boolean; Rel: Integer);
+Procedure PutX(V: LongInt; IsLong: Boolean; Rel: LongInt);
 Begin
  If XN<16 Then Begin
   Inc(XN);
@@ -2189,9 +2225,12 @@ End;
 
 { Valeur immediate selon la taille }
 { code de relocation : import (kind 0 long, 1 mot absolu, 2 mot relatif PC) ou Def }
-Function ImpRel(Var O: TOp; Kind,Def: Integer): Integer;
+Function ImpRel(Var O: TOp; Kind,Def: LongInt): LongInt;
+Var R: LongInt;
 Begin
- If O.X>0 Then ImpRel:=RELIMP+O.X*4+Kind Else ImpRel:=Def;
+ If O.X>0 Then R:=RELIMP+O.X*4+Kind Else R:=Def;
+ If (O.NS>=0) And (R>=0) Then R:=R+LongInt(O.NS+1)*100000;
+ ImpRel:=R;
 End;
 
 Procedure PutImm(Var O: TOp; Sz: Integer);
@@ -2465,11 +2504,14 @@ Begin
             If O.X>0 Then Disp:=O.V;
             If (AsmPassNo=2) And ((AO.Fmt=2) Or (AO.Fmt=7)) And (O.S>=0) And (O.S<>CurSect) Then
              Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
+            If (AO.Fmt=1) And (O.X=0) And (O.S>=0) And (O.S<>CurSect) And Not AbsMode Then Disp:=O.V;
             If O.K=OK_PCD Then Begin
              If (AsmPassNo=2) And Not O.U Then
               If (Disp<-32768) Or (Disp>32767) Then
                Err3('data too large','Deplacement hors limites','Abstand ausserhalb des Bereichs');
-             PutX(Disp And $FFFF,False,ImpRel(O,2,-1));
+             If (AO.Fmt=1) And (O.X=0) And (O.S>=0) And (O.S<>CurSect) And Not AbsMode Then
+              PutX(O.V And $FFFF,False,-10-O.S)
+             Else PutX(Disp And $FFFF,False,ImpRel(O,2,-1));
              EncEA:=58;
             End Else Begin
              If (AsmPassNo=2) And Not O.U Then
@@ -2496,7 +2538,7 @@ Begin
  EmitWord(OpW And $FFFF);
  For I:=1 To XN Do Begin
   If XLg[I] Then EmitLong(XW[I],XRl[I])
-  Else If XRl[I]>=RELIMP Then EmitWordRel(XW[I],XRl[I])
+  Else If (XRl[I]>=RELIMP) Or (XRl[I]<=-10) Then EmitWordRel(XW[I],XRl[I])
   Else EmitWord(XW[I]);
  End;
 End;
@@ -3006,11 +3048,12 @@ Begin
  Tgt:=ImgOf(Ops[1].V,Ops[1].S);
  At:=InstrPC+2;
  Disp:=Tgt-At;
- If Ops[1].X>0 Then Begin
-  { branche vers un import : toujours un mot, le deplacement est l'addenda }
+ If (Ops[1].X>0) Or ((AO.Fmt=1) And (Ops[1].S>=0) And (Ops[1].S<>CurSect) And Not AbsMode) Then Begin
+  { branche vers un import ou (GST) une autre section : toujours un mot, le deplacement est l'addenda }
   If (LnSz=1) Or (LnSz=8) Then Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
   OpW:=$6000 Or (CC Shl 8);
-  PutX(Ops[1].V And $FFFF,False,ImpRel(Ops[1],2,-1));
+  If Ops[1].X>0 Then PutX(Ops[1].V And $FFFF,False,ImpRel(Ops[1],2,-1))
+  Else PutX(Ops[1].V And $FFFF,False,-10-Ops[1].S);
   Exit;
  End;
  Sz:=LnSz;
@@ -4680,10 +4723,13 @@ Var
  IncSeen    : Array[1..200] Of String[120];
  IncSeenN   : Integer;
 
+Procedure GstNewModule(Const N: String); Forward;
+
 Procedure DefSym(Const NameIn: String; V: LongInt; Sc: Integer; Kind: Byte);
 Var P: PSym; Name: String;
 Begin
  Name:=LocalName(NameIn);
+ If (ModIdx>0) And (Sc>=0) Then Name:=ModKey(Name);
  P:=FindSym(Name);
  If P=Nil Then Begin
   If (AsmPassNo=2) And (Kind<>1) Then Err3('additional symbol on pass 2','Symbole supplementaire en passe 2','Zusaetzliches Symbol in Pass 2');
@@ -5096,7 +5142,10 @@ Begin
        If (R.S>=0) And (R.X=0) Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
        If R.X>0 Then EmitWordRel(R.V And $FFFF,RELIMP+R.X*4+1) Else EmitWord(R.V And $FFFF);
       End;
-  Else If R.X>0 Then EmitLong(R.V,RELIMP+R.X*4)
+  Else If R.X>0 Then Begin
+   If R.NS>=0 Then EmitLong(R.V,RELIMP+R.X*4+LongInt(R.NS+1)*100000) Else EmitLong(R.V,RELIMP+R.X*4);
+  End
+  Else If (R.NS>=0) And (R.S>=0) Then EmitLong(R.V,R.S+LongInt(R.NS+1)*100000)
   Else EmitLong(ImgOf(R.V,R.S),R.S);
   End;
  End;
@@ -5340,7 +5389,7 @@ Begin
  If CodeGenerated Then Begin
   Err3('option must be at start','L''option doit etre au debut','Option muss am Anfang stehen');Exit;
  End;
- If (F<>0) And (F<>6) And (F<>2) And (F<>7) Then Begin
+ If (F<>0) And (F<>6) And (F<>2) And (F<>7) And (F<>1) Then Begin
   Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
   Exit;
  End;
@@ -5488,11 +5537,37 @@ Begin
  End;
 End;
 
+{ GST : noms de sections libres (limites : deux sections nommees TEXT/DATA + BSS) }
+Procedure GstSection(Const Op,N0: String);
+Var N: String; S: Integer;
+Begin
+ N:=TrimS(N0);
+ If (Op='TEXT') Or (Op='CODE') Or ((Op='SECTION') And ((Upper(N)='TEXT') Or (Upper(N)='CODE'))) Then Begin
+  S:=0;If Op<>'SECTION' Then N:=Op;
+  If Not GstSecCust[0] Then Begin GstSecName[0]:=Upper(N);GstSecCust[0]:=True;End;
+  CurSect:=0;Exit;
+ End;
+ If (Op='DATA') Or ((Op='SECTION') And (Upper(N)='DATA')) Then Begin
+  If Not GstSecCust[1] Then Begin GstSecName[1]:='DATA';GstSecCust[1]:=True;End;
+  CurSect:=1;Exit;
+ End;
+ If (Op='BSS') Or ((Op='SECTION') And (Upper(N)='BSS')) Then Begin CurSect:=2;Exit;End;
+ If N='' Then Begin Err3('invalid section specified','Section invalide','Ungueltige Sektion');Exit;End;
+ N:=Copy(Upper(N),1,32);
+ For S:=0 To 1 Do
+  If GstSecCust[S] And (GstSecName[S]=N) Then Begin CurSect:=S;Exit;End;
+ For S:=0 To 1 Do
+  If Not GstSecCust[S] Then Begin GstSecName[S]:=N;GstSecCust[S]:=True;CurSect:=S;Exit;End;
+ Err3('invalid section name, TEXT assumed','Nom de section invalide, TEXT suppose','Ungueltiger Sektionsname, TEXT angenommen');
+ CurSect:=SEC_TEXT;
+End;
+
 Procedure DirSection(Const Op,Args: String);
 Var N,T: String; P: Integer;
 Begin
  If AbsMode Then Exit;
  OffMode:=False;
+ If (AO.Fmt=1) And (Pos(',',Args)=0) Then Begin GstSection(Op,Args);Exit;End;
  If (Op='TEXT') Or (Op='CODE') Then CurSect:=SEC_TEXT
  Else If Op='DATA' Then CurSect:=SEC_DATA
  Else If Op='BSS' Then CurSect:=SEC_BSS
@@ -5644,6 +5719,11 @@ Begin
   If Not EvalStr(Args,R) Then R.V:=0;
   If Not AbsMode And Not OffMode And (SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) Then Begin
    AbsMode:=True;OrgAddr:=R.V;
+   If AO.Fmt=1 Then Begin GstOrgN:=1;GstOrgPos[1]:=0;GstOrgAddr[1]:=R.V;End;
+  End Else If AbsMode And (AO.Fmt=1) Then Begin
+   { GST : le ORG est transmis a l'editeur de liens }
+   If GstOrgN<200 Then Begin Inc(GstOrgN);GstOrgPos[GstOrgN]:=SecLen[0];GstOrgAddr[GstOrgN]:=R.V;End;
+   OrgAddr:=R.V-SecLen[0];
   End Else If AbsMode Then Begin
    If R.V>=CurPC Then ReserveBytes(R.V-CurPC)
    Else Err3('ORG/RORG not allowed','ORG recule','ORG geht rueckwaerts');
@@ -5658,7 +5738,14 @@ Begin
    K:=0;
    If AbsMode Then V:=R.V-CurPC Else V:=R.V-SecLen[CurSect];
    If V<0 Then Err3('ORG/RORG not allowed','RORG recule','RORG geht rueckwaerts')
-   Else ReserveBytes(V);
+   Else Begin
+    If (AO.Fmt=1) And (V>0) And (GstGapN<200) Then Begin
+     { GST : pas de remplissage, directive OFFSET vers l'editeur de liens }
+     Inc(GstGapN);GstGapSec[GstGapN]:=CurSect;GstGapPos[GstGapN]:=SecLen[CurSect];GstGapEnd[GstGapN]:=SecLen[CurSect]+V;
+     If AbsMode Then Begin GstGapSec[GstGapN]:=0;GstGapPos[GstGapN]:=SecLen[0];GstGapEnd[GstGapN]:=SecLen[0]+V;End;
+    End;
+    ReserveBytes(V);
+   End;
   End;
   Exit;
  End;
@@ -5782,7 +5869,8 @@ Begin
   If (AO.Fmt=0) Or (AO.Fmt=6) Then
    Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt')
   Else Begin
-   ModName:=Copy(StrOperand(Args),1,32);
+   If AO.Fmt=1 Then GstNewModule(Copy(StrOperand(Args),1,32))
+   Else ModName:=Copy(StrOperand(Args),1,32);
    For K:=1 To ModN Do If ModNames[K]=Upper(ModName) Then Err3('duplicate MODULE name','Nom de MODULE en double','Doppelter MODULE-Name');
    If ModN<64 Then Begin Inc(ModN);ModNames[ModN]:=Copy(Upper(ModName),1,40);End;
   End;
@@ -5808,14 +5896,16 @@ Begin
   Pp:=1;
   While NextOperand(Args,Pp,S2) Do Begin
    If S2='' Then Continue;
-   Sy:=FindSym(LocalName(S2));
+   Sy:=LookupSym(ModKey(LocalName(S2)));
+   If (Sy=Nil) And (ModIdx>0) Then Begin Sy:=FindSym(LocalName(S2));If (Sy<>Nil) And (Sy^.Kind=3) Then Sy:=Nil;End;
    If (Sy<>Nil) And Sy^.Defd And (Sy^.Pas=PassSerial) Then Begin
     If Sy^.Kind<>3 Then Err3('cannot import symbol','Symbole non importable','Symbol nicht importierbar');
     Continue;
    End;
    If ImpN>=2000 Then Begin Err3('out of memory','Trop d''imports','Zu viele Importe');Continue;End;
-   If Sy=Nil Then Sy:=AddSym(LocalName(S2));
+   If Sy=Nil Then Sy:=AddSym(ModKey(LocalName(S2)));
    Inc(ImpN);ImpNames[ImpN]:=Copy(Sy^.Name,1,80);
+   If Pos('^',ImpNames[ImpN])>0 Then ImpNames[ImpN]:=Copy(ImpNames[ImpN],1,Pos('^',ImpNames[ImpN])-1);
    Sy^.Value:=ImpN;Sy^.Kind:=3;Sy^.Defd:=True;Sy^.Pas:=PassSerial;
    If Sz=4 Then Sy^.Sect:=SEC_ABS Else Sy^.Sect:=SEC_EXT;
   End;
@@ -5884,6 +5974,8 @@ Begin
   S2:=TrimS(Args);
   If Copy(S2,1,5)='HEAD=' Then Begin
    If EvalStr(Copy(S2,6,200),R) Then Begin HeadFlags:=R.V;HeadSet:=True;End;
+  End Else If (AO.Fmt=1) And (GstCmtN<40) And (S2<>'') Then Begin
+   Inc(GstCmtN);GstCmt[GstCmtN]:=Copy(StrOperand(Args),1,80);
   End;
   Exit;
  End;
@@ -6267,7 +6359,7 @@ Begin
  RelocN:=0;DecIdx:=0;CondTop:=0;CondActive:=True;SrcTop:=0;
  FreeMacros;
  EndFlag:=False;CurRS:=0;LastGlobal:='';MacUniq:=0;LastErrLine:=0;LastWarnLine:=0;
- NumRadix:=10;EqurN:=0;FeqN:=0;ModN:=0;ErrOvr:='';IncSeenN:=0;GsSeenN:=0;GsInclN:=0;OptCount:=0;OptSaved:=0;ImpN:=0;XdefN:=0;ModName:='';IncDirN:=0;HeadSet:=False;HeadFlags:=0;
+ NumRadix:=10;EqurN:=0;FeqN:=0;ModN:=0;ModIdx:=0;GstGapN:=0;GstOrgN:=0;GstCmtN:=0;GstSecName[0]:='TEXT';GstSecName[1]:='DATA';GstSecName[2]:='BSS';GstSecCust[0]:=False;GstSecCust[1]:=False;GstSecCust[2]:=False;ErrOvr:='';IncSeenN:=0;GsSeenN:=0;GsInclN:=0;OptCount:=0;OptSaved:=0;ImpN:=0;XdefN:=0;ModName:='';IncDirN:=0;HeadSet:=False;HeadFlags:=0;
  AO:=AO0;
  LnRecReset;
  OptDebug:=OptDebug0;OptOptimize:=OptOptimize0;OptCase:=OptCase0;OptWarnings:=OptWarnings0;
@@ -6313,7 +6405,7 @@ End;
 
 Procedure ComputeBases;
 Begin
- If AmigaMode Or AbsMode Or (AO.Fmt=2) Or (AO.Fmt=7) Then Begin
+ If AmigaMode Or AbsMode Or (AO.Fmt=1) Or (AO.Fmt=2) Or (AO.Fmt=7) Then Begin
   SecBase[0]:=0;SecBase[1]:=0;SecBase[2]:=0;
  End Else Begin
   SecBase[0]:=0;
@@ -7034,6 +7126,231 @@ Begin
  WriteLattice:=True;
 End;
 
+{ ---------------------------------------------------------------------- }
+{ Format GST (SROFF, Sinclair relocatable binary) : OPT GST, -L1, .BIN       }
+{ Specification : annexe B du manuel du linker QL (SROFF_ocr.txt)          }
+{ ---------------------------------------------------------------------- }
+
+Var
+ GstBuf : PByteArr;
+ GstLen,GstCap : LongInt;
+
+Procedure GAdd(B: Byte);
+Var N: PByteArr;
+Begin
+ If GstBuf=Nil Then Begin GstCap:=65536;GetMem(GstBuf,GstCap);GstLen:=0;End;
+ If GstLen>=GstCap Then Begin
+  GetMem(N,GstCap*2);Move(GstBuf^,N^,GstLen);FreeMem(GstBuf,GstCap);GstBuf:=N;GstCap:=GstCap*2;
+ End;
+ GstBuf^[GstLen]:=B;Inc(GstLen);
+End;
+
+Procedure GWord(V: LongInt);
+Begin
+ GAdd((V Shr 8) And $FF);GAdd(V And $FF);
+End;
+
+Procedure GLong(V: LongInt);
+Begin
+ GAdd(ShrL(V,24) And $FF);GAdd(ShrL(V,16) And $FF);GAdd(ShrL(V,8) And $FF);GAdd(V And $FF);
+End;
+
+Procedure GStr(Const S: String);
+Var I: Integer;
+Begin
+ GAdd(Length(S));
+ For I:=1 To Length(S) Do GAdd(Ord(S[I]));
+End;
+
+Procedure GDir(N: Byte);
+Begin
+ GAdd($FB);GAdd(N);
+End;
+
+{ nom de symbole GST : sans suffixe de module, 32 caracteres au plus }
+Function GstName(Const N: String): String;
+Var K: Integer; S: String;
+Begin
+ S:=N;K:=Pos('^',S);
+ If K>0 Then S:=Copy(S,1,K-1);
+ GstName:=Copy(S,1,32);
+End;
+
+Function SymInModule(P: PSym): Boolean;
+Var K: Integer;
+Begin
+ K:=Pos('^',P^.Name);
+ If ModIdx=0 Then SymInModule:=K=0
+ Else SymInModule:=(K>0) And (Copy(P^.Name,K+1,10)=IntStr(ModIdx));
+End;
+
+{ ecrit le module courant dans le tampon GST }
+Procedure GstFlushModule;
+Var Used: Array[0..2] Of Boolean; SecId: Array[0..2] Of LongInt; S,Nx: Integer; I,J,K,H,Pos0: LongInt;
+    P: PSym; Idx: PLongArr; Gap,T,Cnt: LongInt; Nm: String; Dst,D,NS,X,Kk: LongInt; Sz: Integer; Rule: Integer;
+    Term: LongInt; Done: Boolean; Rel: Array[0..0] Of Integer; OrgI,GapI: Integer; Ok: Boolean;
+
+ Function RelIdx(Sec: Integer): LongInt;
+ Begin
+  RelIdx:=0;
+ End;
+
+ Procedure MarkUsed(D: LongInt);
+ Begin
+  If (D>=0) And (D<=2) Then Used[D]:=True;
+ End;
+
+Begin
+ If ModName='' Then ModName:=Upper(ShortName(ChangeExt(AsmFileName,'X')));
+ If Copy(ModName,Length(ModName)-1,2)='.X' Then ModName:=Copy(ModName,1,Length(ModName)-2);
+ GDir(1);GStr(Copy(ModName,1,80));
+ For I:=1 To GstCmtN Do Begin GDir(2);GStr(GstCmt[I]);End;
+ { sections utilisees }
+ For S:=0 To 2 Do Used[S]:=SecLen[S]>0;
+ If AbsMode Then Begin Used[0]:=False;End;
+ For K:=1 To XdefN Do Begin
+  P:=FindSym(XdefNames[K]);
+  If (P<>Nil) And P^.Defd And (P^.Kind=0) And (P^.Sect>=0) Then Used[P^.Sect]:=True;
+ End;
+ For I:=1 To RelocN Do Begin
+  Dst:=RelocDst^[I];
+  If Dst<=-10 Then MarkUsed(-10-Dst)
+  Else Begin
+   NS:=Dst Div 100000;D:=Dst Mod 100000;
+   If NS>0 Then MarkUsed(NS-1);
+   If D<RELIMP Then MarkUsed(D);
+  End;
+ End;
+ If OptDebug Then
+  For H:=0 To HASHSZ-1 Do Begin
+   P:=Hash[H];
+   While P<>Nil Do Begin
+    If P^.Defd And (P^.Kind=0) And (P^.Sect>=0) And (Pos('~',P^.Name)=0) And SymInModule(P) Then Used[P^.Sect]:=True;
+    P:=P^.Next;
+   End;
+  End;
+ Nx:=0;
+ For S:=0 To 2 Do
+  If Used[S] Then Begin
+   Inc(Nx);SecId[S]:=$10000-Nx;
+   GDir($10);GWord(SecId[S]);GStr(GstSecName[S]);
+  End;
+ { XDEF }
+ For K:=1 To XdefN Do Begin
+  P:=FindSym(XdefNames[K]);
+  If (P<>Nil) And P^.Defd And (P^.Kind=0) Then Begin
+   GDir(6);GStr(GstName(XdefNames[K]));GLong(P^.Value);
+   If P^.Sect<0 Then GWord(0) Else GWord(SecId[P^.Sect]);
+  End;
+ End;
+ If OptDebug Then
+  For H:=0 To HASHSZ-1 Do Begin
+   P:=Hash[H];
+   While P<>Nil Do Begin
+    If P^.Defd And (P^.Kind=0) And (P^.Sect>=0) And (Pos('~',P^.Name)=0) And SymInModule(P) Then Begin
+     Ok:=True;
+     For K:=1 To XdefN Do If FindSym(XdefNames[K])=P Then Ok:=False;
+     If Ok Then Begin GDir(6);GStr(GstName(P^.Name));GLong(P^.Value);GWord(SecId[P^.Sect]);End;
+    End;
+    P:=P^.Next;
+   End;
+  End;
+ { symboles importes : identifiants positifs }
+ For I:=1 To ImpN Do Begin GDir($10);GWord(I);GStr(GstName(ImpNames[I]));End;
+ { corps : une passe par section }
+ For S:=0 To 2 Do Begin
+  If (S=0) And AbsMode Then Begin
+   { ORG : adresses absolues }
+  End Else If Not Used[S] Then Continue
+  Else Begin GDir(4);GWord(SecId[S]);End;
+  If S=2 Then Begin
+   If SecLen[2]>0 Then Begin GDir(5);GLong(SecLen[2]-1);GAdd(0);End;
+   Continue;
+  End;
+  { reloc de cette section, tries par position }
+  GetMem(Idx,(RelocN+2)*4);Cnt:=0;
+  For I:=1 To RelocN Do If RelocSrc^[I]=S Then Begin Inc(Cnt);Idx^[Cnt]:=I;End;
+  Gap:=Cnt Div 2;
+  While Gap>0 Do Begin
+   For I:=Gap+1 To Cnt Do Begin
+    T:=Idx^[I];J:=I;
+    While (J>Gap) And (RelocPos^[Idx^[J-Gap]]>RelocPos^[T]) Do Begin Idx^[J]:=Idx^[J-Gap];J:=J-Gap;End;
+    Idx^[J]:=T;
+   End;
+   Gap:=Gap Div 2;
+  End;
+  Pos0:=0;K:=1;OrgI:=1;
+  While Pos0<SecLen[S] Do Begin
+   If AbsMode And (S=0) Then
+    While (OrgI<=GstOrgN) And (GstOrgPos[OrgI]=Pos0) Do Begin GDir(3);GLong(GstOrgAddr[OrgI]);Inc(OrgI);End;
+   Done:=False;
+   For GapI:=1 To GstGapN Do
+    If (Not Done) And (GstGapSec[GapI]=S) And (GstGapPos[GapI]=Pos0) Then Begin
+     GDir(5);GLong(GstGapEnd[GapI]);Pos0:=GstGapEnd[GapI];Done:=True;
+    End;
+   If Done Then Continue;
+   While (K<=Cnt) And (RelocPos^[Idx^[K]]<Pos0) Do Inc(K);
+   If (K<=Cnt) And (RelocPos^[Idx^[K]]=Pos0) Then Begin
+    Dst:=RelocDst^[Idx^[K]];Inc(K);
+    NS:=0;
+    If Dst<=-10 Then Begin Sz:=2;Rule:=$2A;D:=-10-Dst;X:=0;End
+    Else Begin
+     NS:=Dst Div 100000;D:=Dst Mod 100000;
+     If D>=RELIMP Then Begin
+      X:=(D-RELIMP) Div 4;Kk:=(D-RELIMP) Mod 4;
+      If Kk=0 Then Begin Sz:=4;Rule:=4;End Else If Kk=1 Then Begin Sz:=2;Rule:=2;End Else Begin Sz:=2;Rule:=$2A;End;
+     End Else Begin Sz:=4;Rule:=4;X:=0;End;
+    End;
+    If Sz=4 Then Term:=(LongInt(SecGet(S,Pos0)) Shl 24) Or (LongInt(SecGet(S,Pos0+1)) Shl 16) Or (LongInt(SecGet(S,Pos0+2)) Shl 8) Or SecGet(S,Pos0+3)
+    Else Begin
+     Term:=(LongInt(SecGet(S,Pos0)) Shl 8) Or SecGet(S,Pos0+1);
+     If Term>=32768 Then Term:=Term-65536;
+    End;
+    GDir(7);GLong(Term);GAdd(Rule);
+    GAdd($2B);
+    If (Dst<=-10) Or (D<RELIMP) Then GWord(SecId[D]) Else GWord(X);
+    If NS>0 Then Begin GAdd($2D);GWord(SecId[NS-1]);End;
+    GAdd($FB);
+    Inc(Pos0,Sz);
+   End Else Begin
+    GAdd(SecGet(S,Pos0));
+    If SecGet(S,Pos0)=$FB Then GAdd($FB);
+    Inc(Pos0);
+   End;
+  End;
+  FreeMem(Idx,(RelocN+2)*4);
+ End;
+ GDir($13);
+End;
+
+{ nouveau module (MODULE) : ecrit le module courant s'il n'est pas vide, puis repart a zero }
+Procedure GstNewModule(Const N: String);
+Var Empty: Boolean;
+Begin
+ Empty:=(SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) And (XdefN=0) And (ImpN=0) And (GstCmtN=0);
+ If Empty Then Begin ModName:=N;Exit;End;
+ If AsmPassNo=2 Then GstFlushModule;
+ FreeSections;
+ SecLen[0]:=0;SecLen[1]:=0;SecLen[2]:=0;
+ CurSect:=SEC_TEXT;AbsMode:=False;OffMode:=False;OffPC:=0;
+ RelocN:=0;ImpN:=0;XdefN:=0;GstGapN:=0;GstOrgN:=0;GstCmtN:=0;
+ GstSecName[0]:='TEXT';GstSecName[1]:='DATA';GstSecName[2]:='BSS';
+ GstSecCust[0]:=False;GstSecCust[1]:=False;GstSecCust[2]:=False;
+ LastGlobal:='';
+ Inc(ModIdx);
+ ModName:=N;
+End;
+
+Function WriteGst(Const Name: String): Boolean;
+Var I: LongInt;
+Begin
+ WriteGst:=False;
+ If Not OpenOut(Name) Then Exit;
+ For I:=0 To GstLen-1 Do OutByte(GstBuf^[I]);
+ CloseOut;
+ WriteGst:=True;
+End;
+
 Function StripExt(Const N: String): String;
 Var S: String;
 Begin
@@ -7112,7 +7429,7 @@ Begin
   Err3('line malformed','Ligne trop longue (255 caracteres maximum)','Zeile zu lang');
   LongLines:=0;
  End;
- If (AO0.Fmt<>0) And (AO0.Fmt<>6) And (AO0.Fmt<>2) And (AO0.Fmt<>7) Then Begin
+ If (AO0.Fmt<>0) And (AO0.Fmt<>6) And (AO0.Fmt<>2) And (AO0.Fmt<>7) And (AO0.Fmt<>1) Then Begin
   AsmPassNo:=2;LnText:='';
   Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
   AsmFatal:=True;
@@ -7159,6 +7476,7 @@ Begin
  If Not AsmFatal And Not SkipPass2 Then Begin
   LogLine('Pass 2');
   FreeSections;
+  GstLen:=0;
   RunPass(Lines,Count);
   If ListOn Then Begin
    If (AO.Symtab Or OptSymbols) And (ListCnt>=0) Then PrintSymbols;
@@ -7202,12 +7520,16 @@ Begin
      Else OutPathFinal:=OutFileName;
     End
     Else If AO.Fmt=6 Then OutPathFinal:=ChangeExt(Name,'MX')
+    Else If AO.Fmt=1 Then OutPathFinal:=ChangeExt(Name,'BIN')
     Else If (AO.Fmt=2) Or (AO.Fmt=7) Then OutPathFinal:=ChangeExt(Name,'O')
     Else If AbsMode Then OutPathFinal:=ChangeExt(Name,'BIN')
     Else If AmigaMode Then OutPathFinal:=StripExt(Name)
     Else OutPathFinal:=ChangeExt(Name,'PRG');
    End;
-   If AO.Fmt=2 Then Begin
+   If AO.Fmt=1 Then Begin
+    GstFlushModule;
+    If WriteGst(OutPathFinal) Then HaveOutput:=True;
+   End Else If AO.Fmt=2 Then Begin
     If WriteDRI(OutPathFinal) Then HaveOutput:=True;
    End Else If AO.Fmt=7 Then Begin
     If WriteLattice(OutPathFinal) Then HaveOutput:=True;
@@ -25284,7 +25606,7 @@ Begin
  WriteLn(ConOut,'  -Esym=expr,sym2  '+T3('define symbols (value 1 if =expr omitted)','definit des symboles (valeur 1 sans =expr)','Symbole definieren (Wert 1 ohne =expr)'));
  WriteLn(ConOut,'  -Hfile      '+T3('pre-assembled header files (accepted, not used)','fichiers d''en-tete pre-assembles (acceptes, non utilises)','vorassemblierte Header (akzeptiert, nicht benutzt)'));
  WriteLn(ConOut,'  -Ipath      '+T3('include directory','repertoire des INCLUDE','Include-Verzeichnis'));
- WriteLn(ConOut,'  -L[n]       '+T3('output format: -L GST, -L2 DRI, -L6 S-records (supported), -L7 Lattice','format de sortie : -L GST, -L2 DRI, -L6 S-records (gere), -L7 Lattice','Ausgabeformat: -L GST, -L2 DRI, -L6 S-Records (unterstuetzt), -L7 Lattice'));
+ WriteLn(ConOut,'  -L[n]       '+T3('output format: -L1 GST, -L2 DRI, -L6 S-records, -L7 Lattice (all supported)','format de sortie : -L1 GST, -L2 DRI, -L6 S-records, -L7 Lattice (tous geres)','Ausgabeformat: -L1 GST, -L2 DRI, -L6 S-Records, -L7 Lattice (alle unterstuetzt)'));
  WriteLn(ConOut,'  -Ofile      '+T3('output file name','nom du fichier de sortie','Name der Ausgabedatei'));
  WriteLn(ConOut,'  -Pfile      '+T3('listing file name (default source.LST)','nom du listing (defaut source.LST)','Listing-Datei (Standard Quelle.LST)'));
  WriteLn(ConOut,'  -Q  -S  -Tn -Z  '+T3('pause at end, symbol table in listing, tab size, pass 1 listing','pause a la fin, table des symboles au listing, tabulation, listing passe 1','Pause am Ende, Symboltabelle im Listing, Tabulator, Listing Pass 1'));
