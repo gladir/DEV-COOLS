@@ -802,7 +802,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>NOCODE.PAS</b></td>
-			<td>Cette commande permet de lancer un clone de Snowman (nocode), un désassembleur et décompilateur C/C++ pour les exécutables x86 (ELF 32/64 bits, PE32/PE32+, DOS MZ et COM). Elle affiche les sections (<code>--print-sections</code>), les symboles (<code>--print-symbols</code>) et les instructions (<code>--print-instructions</code>), exporte au format DOT le graphe de flot de contrôle (<code>--print-cfg</code>), la représentation intermédiaire (<code>--print-ir</code>) et les régions de l'analyse structurelle (<code>--print-regions</code>), et reconstruit le code C/C++ (<code>--print-cxx</code>) avec les options <code>--from</code> et <code>--to</code> pour limiter la plage d'adresses (nocode programme.exe ; aide avec nocode --help).</td>
+			<td>Cette commande permet de lancer un clone de Snowman (nocode), un désassembleur et décompilateur C/C++ pour les exécutables x86 (ELF 32/64 bits, PE32/PE32+, DOS MZ et COM).</td>
 		</tr>
 		<tr>
 			<td><b>OBERON86.PAS</b></td>
@@ -943,7 +943,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>PYTHON3.PAS</b></td>
-			<td>Cette commande est un clone de la commande python3 (Python 3.8) : elle compile le code Python en bytecode compatible CPython 3.8, l'exécute dans une machine virtuelle Python et offre le mode interactif ainsi que toutes les options de la ligne de commande (-c, -m, -i, -O, -W, -X, -x, -E, -I, -s, -S, -u, -v, -b, -B, -d, -q, -V, -h, ...). La bibliothèque standard (os, re, io, json, datetime, subprocess, asyncio, unittest, ...) est incluse dans l'exécutable.</td>
+			<td>Cette commande est un clone de la commande python3 (Python 3.8).</td>
 		</tr>
 		<tr>
 			<td><b>QPUDEP.PAS</b></td>
