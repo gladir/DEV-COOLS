@@ -6510,14 +6510,14 @@ Begin
      End;
   9: Begin
       For I:=0 To N-1 Do Begin PX[I]:=SmallInt(RW(Ptsin+I*4));PY[I]:=SmallInt(RW(Ptsin+I*4+2));End;
-      
+
       OFillPoly(N);
       FilCol:=SavC;FilSty:=SavS;
      End;
   11: Begin
        X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
        X2:=SmallInt(RW(Ptsin+4));Y2:=SmallInt(RW(Ptsin+6));
-       
+
        Case Sub Of
         1: Begin
             PX[0]:=X1;PY[0]:=Y1;PX[1]:=X2+1;PY[1]:=Y1;PX[2]:=X2+1;PY[2]:=Y2+1;PX[3]:=X1;PY[3]:=Y2+1;
@@ -7977,8 +7977,10 @@ End;
 
 Procedure About;
 Begin
- AlertBox('Atari ST Basic|Copyright (c) 1985|Atari Corp.|All Rights Reserved|'+
-  '|'+T3('(clone by Gladir.com, 2026)','(clone de Gladir.com, 2026)','(Klon von Gladir.com, 2026)'),'OK');
+ AlertBox('Atari ST Basic|Version clone de 1985|'+
+  '|'+T3('(clone by Sylvain Maltais, 2026)',
+  '(clone de Sylvain Maltais, 2026)',
+  '(Klon von Sylvain Maltais, 2026)'),'OK');
 End;
 
 Procedure TraceDlg(Kind: Integer);
