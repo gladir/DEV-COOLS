@@ -45,3 +45,12 @@ Reste à faire : désassembleur MMU (PMOVE, PTEST... affichés en dc.w) ; interr
 TRAP #1/#2/#13/#14 ; pas par ligne avec plusieurs instructions sur la même ligne (macros) ; message quand le source est
 introuvable.
 Hors périmètre de l'émulateur : AMON, ROM, NOTRACE, Follow traps pour les TRAP émulés, modes couleur, FPU et 68020+ à l'exécution.
+
+## Validation contre les programmes Atari réels (fournis par l'utilisateur)
+- **GenST 2.23 réel (GENST2.TTP)** exécuté dans l'émulateur sert de référence : les 1601 sources de test et environ 800 cas écrits pour
+  l'occasion donnent les mêmes messages, numéros de ligne, codes retour et octets de sortie ; listings, format de la table de symboles
+  DRI, écriture GST et option `OPT E-` (adresses impaires) alignés sur le réel. Évolutions du manuel v3 gardées volontairement (opérateurs
+  de comparaison, RADIX, O8-O12, -l6/-l7...). Écarts du clone gardés : hexadécimal `0x`, `macro nom`, sections Amiga.
+- **1st Word 1.01, GENST2.PRG, MONST2.PRG, 1ST_PRNT.PRG** s'exécutent dans l'émulateur GEM (voir le rapport de session). Limites : police
+  CP437 de l'hôte au lieu des glyphes ST, pas de permutation d'écran pendant l'exécution sous MonST, sélecteur de fichiers dessiné par l'hôte.
+Les binaires de ces programmes ne sont pas dans le dépôt.

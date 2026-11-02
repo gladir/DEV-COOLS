@@ -854,6 +854,8 @@ Type
 
  TMacro = Record
   Name  : String[63];
+  Raw   : String[63];
+  EndTxt: String[60];
   PNames: String[100];
   Body  : PLineArr;
   Count : Integer;
@@ -960,6 +962,8 @@ Var
  Conds       : Array[1..MAXCOND] Of TCond;
  CondTop     : Integer;
  CondActive  : Boolean;
+ LnStartSect : Integer;
+ CondLn      : Array[1..MAXCOND] Of LongInt;
  MacUniq     : LongInt;
  LastGlobal  : String[255];
 
@@ -1026,7 +1030,7 @@ Begin
  If AsmLogN<MAXLOG Then Begin
   Inc(AsmLogN);
   GetMem(P,Length(S)+1);
-  P^:=S;
+  Move(S[0],P^[0],Length(S)+1);
   AsmLog[AsmLogN]:=P;
  End;
  If BatchMode Then WriteLn(ConOut,S);
@@ -1043,7 +1047,7 @@ Function NewStr(Const S: String): PString;
 Var P: PString;
 Begin
  GetMem(P,Length(S)+1);
- P^:=S;
+ Move(S[0],P^[0],Length(S)+1);
  NewStr:=P;
 End;
 
@@ -1060,9 +1064,20 @@ Var
  LastWarnLine : LongInt;
  LastWarnTxt  : String[80];
 
+Var NoListMsg,ListOnlyPass,LnHadMsg: Boolean;
+
+Procedure ListOut(Const Ln: String); Forward;
+Function ListEnabled: Boolean; Forward;
+
 Procedure AddMsg(IsWarn: Boolean; Const S: String);
 Var I: Integer; T: String;
 Begin
+ If ListEnabled And (AsmPassNo=2) And Not NoListMsg Then Begin
+  If IsWarn Then T:='Warning ' Else T:='Error ';
+  ListOut(T+S+' at line '+IntStr(CurLineNo)+' in file '+CurSrcName);
+  LnHadMsg:=True;
+ End;
+ If ListOnlyPass Then Exit;
  If AsmErrors<32000 Then Inc(AsmErrors);
  If IsWarn Then Begin If AsmWarns<32000 Then Inc(AsmWarns);End
  Else If AsmErrCnt<32000 Then Inc(AsmErrCnt);
@@ -1087,9 +1102,30 @@ Begin
  End;
 End;
 
+{ erreurs detectees des la passe 1 par le vrai GenST (syntaxe) : arret apres la passe 1 }
+Function P1Msg(Const S: String): Boolean;
+Begin
+ P1Msg:=(S='instruction not recognised') Or (S='comma expected') Or (S='garbage following instruction') Or
+  (S='expression mismatch') Or (S='addressing mode not recognised') Or (S='symbol defined twice') Or
+  (S='spurious ENDC') Or (S='spurious ENDM or MEXIT') Or (S='spurious ENDR') Or (S='addressing mode not allowed') Or
+  (S='missing quote') Or (S='DCB or DS count must not be negative') Or (S='symbol expected') Or (S='invalid option') Or
+  (S='invalid section name, TEXT assumed') Or (S='missing close bracket') Or (S='invalid size') Or
+  (S='invalid FORMAT parameter') Or (S='local not allowed') Or (S='misuse of label') Or
+  (S='data register expected') Or (S='address register expected') Or (S='immediate data expected') Or
+  (S='number too large') Or (S='invalid number') Or (S='odd address') Or (S='cannot nest repeat loops') Or (S='user error');
+End;
+
 Procedure Err3(Const En,Fr,De: String);
 Begin
+ If AsmPassNo=1 Then Begin
+  If (Pass1Idx<>0) Or Not P1Msg(En) Then Exit;
+  If (CurLineNo=LastErrLine) And (CurSrcName=AsmFileName) Then Exit;
+  LastErrLine:=CurLineNo;
+  If ErrOvr<>'' Then AddMsg(False,ErrOvr) Else AddMsg(False,T3(En,Fr,De));
+  Exit;
+ End;
  If AsmPassNo<>2 Then Exit;
+ If ListOnlyPass And Not P1Msg(En) Then Exit;
  If (CurLineNo=LastErrLine) And (CurSrcName=AsmFileName) Then Exit;
  LastErrLine:=CurLineNo;
  If ErrOvr<>'' Then AddMsg(False,ErrOvr) Else AddMsg(False,T3(En,Fr,De));
@@ -1107,7 +1143,9 @@ Begin
  Sv:=AsmPassNo;
  AsmPassNo:=2;
  LastErrLine:=0;
+ NoListMsg:=True;
  Err3(En,Fr,De);
+ NoListMsg:=False;
  AsmPassNo:=Sv;
  AsmFatal:=True;
 End;
@@ -1117,6 +1155,8 @@ Var S: String;
 Begin
  If Not OptWarnings Then Exit;
  If AsmPassNo<>2 Then Exit;
+ If ListOnlyPass Then Exit;
+ If AO.NoType And (En='relative cannot be relocated') Then Exit;
  S:=T3(En,Fr,De);
  If (CurLineNo=LastWarnLine) And (LastWarnTxt=Copy(S,1,80)) Then Exit;
  LastWarnLine:=CurLineNo;LastWarnTxt:=Copy(S,1,80);
@@ -1458,7 +1498,7 @@ Begin
  R:=MkTV(0,SEC_ABS,False);
  SkipSp;
  If EP>Length(ES) Then Begin
-  ExprError3('Operand expected','Operande attendue','Operand erwartet');
+  ExprError3('expression mismatch','Operande attendue','Operand erwartet');
   ExprPrimary:=R;Exit;
  End;
  C:=ES[EP];
@@ -1470,6 +1510,7 @@ Begin
  End;
  If C='(' Then Begin
   Inc(EP);
+  If (EP<=Length(ES)) And (ES[EP]=')') Then ExprError3('XREFs not allowed within brackets','XREF interdit entre parentheses','XREF in Klammern nicht erlaubt');
   R:=ExprLevel(0);
   SkipSp;
   If (EP<=Length(ES)) And (ES[EP]=')') Then Inc(EP)
@@ -1484,8 +1525,7 @@ Begin
    R.V:=V;
   End Else Begin
    Inc(EP);
-   R.V:=CurPC;
-   If Not AbsMode And Not OffMode Then R.S:=CurSect;
+   ExprError3('invalid number','Nombre invalide','Ungueltige Zahl');
   End;
  End
  Else If C='%' Then Begin
@@ -1532,6 +1572,7 @@ Begin
    End;
   End;
   If Not Closed Then ExprError3('missing quote','Apostrophe manquante','Anfuehrungszeichen fehlt');
+  If Cnt>4 Then ExprError3('number too large','Nombre trop grand','Zahl zu gross');
   R.V:=V;
  End
  Else If C='*' Then Begin
@@ -1581,15 +1622,23 @@ Begin
  SkipSp;
  If EP<=Length(ES) Then Begin
   If ES[EP]='-' Then Begin
-   Inc(EP);R:=ExprUnary();
+   Inc(EP);
+   If (EP<=Length(ES)) And (ES[EP] In ['-','+','~']) Then ExprError3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
+   R:=ExprUnary();
    R.V:=-R.V;
    If R.X>0 Then Begin R.X:=0;ExprError3('illegal type combination','Combinaison de types illegale','Illegale Typkombination');End;
    If R.S>=0 Then Begin R.S:=SEC_ABS;TypeErr;End;
    ExprUnary:=R;Exit;
   End;
-  If ES[EP]='+' Then Begin Inc(EP);ExprUnary:=ExprUnary();Exit;End;
+  If ES[EP]='+' Then Begin
+   Inc(EP);
+   If (EP<=Length(ES)) And (ES[EP] In ['-','+','~']) Then ExprError3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
+   ExprUnary:=ExprUnary();Exit;
+  End;
   If ES[EP]='~' Then Begin
-   Inc(EP);R:=ExprUnary();
+   Inc(EP);
+   If (EP<=Length(ES)) And (ES[EP]='~') Then ExprError3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
+   R:=ExprUnary();
    R.V:=Not R.V;
    If R.S>=0 Then Begin R.S:=SEC_ABS;TypeErr;End;
    ExprUnary:=R;Exit;
@@ -1631,7 +1680,7 @@ Begin
        Else If C='-' Then Begin Op:=2;Inc(EP);End;
     2: If C='*' Then Begin Op:=1;Inc(EP);End
        Else If C='/' Then Begin Op:=2;Inc(EP);End
-       Else If (C='%') Then Begin Op:=3;Inc(EP);End;
+       Else If (C='%') Then ExprError3('invalid number','Nombre invalide','Ungueltige Zahl');
     3: If C='&' Then Begin Op:=1;Inc(EP);End
        Else If (C='|') Or ((C='!') And (D<>'=')) Then Begin Op:=2;Inc(EP);End
        Else If C='^' Then Begin Op:=3;Inc(EP);End;
@@ -1671,7 +1720,8 @@ Begin
         End;
      4: Begin
          If (A.S>=0) Or (B.S>=0) Then TypeErr;
-         If Op=1 Then A.V:=A.V Shl (B.V And 63)
+         If (B.V And 63)>=32 Then A.V:=0
+         Else If Op=1 Then A.V:=A.V Shl (B.V And 63)
          Else A.V:=ShrL(A.V,B.V And 63);
          A.S:=SEC_ABS;
         End;
@@ -1687,7 +1737,10 @@ Begin
          End Else Begin
           If (A.S>=0) And (B.S>=0) Then Begin
            If A.S<>B.S Then Begin
-            If Not (A.U Or B.U) Then TypeErr;
+            If (AO.Fmt=0) And Not AbsMode Then Begin
+             { le vrai GenST : difference d'adresses finales de deux sections }
+             A.V:=ImgOf(A.V,A.S);B.V:=ImgOf(B.V,B.S);
+            End Else If Not (A.U Or B.U) Then TypeErr;
            End;
            A.S:=SEC_ABS;
           End Else If (A.S<0) And (B.S>=0) Then TypeErr;
@@ -1723,7 +1776,7 @@ Begin
  ExprErrMsg:='';UndefName:='';
  R:=ExprLevel(0);
  If (ExprErrMsg='') And R.U And (AsmPassNo=2) And (UndefName<>'') Then Begin
-  Err3('undefined symbol: '+UndefName,'Symbole non defini : '+UndefName,
+  Err3('undefined symbol','Symbole non defini : '+UndefName,
        'Undefiniertes Symbol: '+UndefName);
   EvalAt:=False;Exit;
  End;
@@ -1742,7 +1795,8 @@ Begin
  If Not EvalAt(R) Then Begin EvalStr:=False;Exit;End;
  SkipSp;
  If EP<=Length(ES) Then Begin
-  Err3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
+  If IsIdChar(ES[EP]) Then Err3('garbage following instruction','Trop d''operandes','Zu viele Operanden')
+  Else Err3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
   EvalStr:=False;Exit;
  End;
  EvalStr:=True;
@@ -1876,11 +1930,13 @@ Begin
  SplitTop:=N;
 End;
 
+Var RegListRev: Boolean;
+
 Function ParseRegList(Const U: String; Var Mask: LongInt): Boolean;
 Var I,A,B,R1,R2,K: Integer; Tok: String; C: Char;
 Begin
  ParseRegList:=False;
- Mask:=0;
+ Mask:=0;RegListRev:=False;
  If (Pos('-',U)=0) And (Pos('/',U)=0) Then Exit;
  I:=1;
  While I<=Length(U) Do Begin
@@ -1895,7 +1951,7 @@ Begin
    R2:=RegOf(Tok);
    If (R2<0) Or (R2>15) Then Exit;
   End;
-  If R2<R1 Then Begin K:=R1;R1:=R2;R2:=K;End;
+  If R2<R1 Then Begin K:=R1;R1:=R2;R2:=K;RegListRev:=True;End;
   For K:=R1 To R2 Do Mask:=Mask Or (LongInt(1) Shl K);
   If (I<=Length(U)) And (U[I]='/') Then Inc(I);
  End;
@@ -1918,7 +1974,7 @@ Begin
   If T='1' Then Sc:=1 Else If T='2' Then Sc:=2 Else If T='4' Then Sc:=4 Else If T='8' Then Sc:=8
   Else Begin Err3('invalid index scale','Echelle d''index invalide','Ungueltiger Indexfaktor');Exit;End;
   If (Sc<>1) And (AO.Proc<68020) Then Begin
-   Err3('invalid 68020 addressing mode','Mode d''adressage 68020 invalide','Ungueltiger 68020-Adressmodus');Exit;
+   Err3('missing close bracket','Mode d''adressage 68020 invalide','Ungueltiger 68020-Adressmodus');Exit;
   End;
  End;
  P:=Pos('.',S);
@@ -2027,6 +2083,12 @@ Begin
  End;
 End;
 
+Procedure ChkPcAbs(Var O: TOp);
+Begin
+ If (AsmPassNo=2) And Not AbsMode And Not O.U And (O.S<0) And (O.X=0) Then
+  Err3('absolute not allowed','Absolu interdit','Absolut nicht erlaubt');
+End;
+
 Procedure ParseOp0(Const S0: String; Var O: TOp);
 Var S,U,Pre,Inn,Suf: String; R,P,D,I,L,N: Integer; Items: Array[0..3] Of String;
     Post,IsReg: Boolean; Sy: PSym; M: LongInt; XL: Boolean; Ok: Boolean;
@@ -2035,7 +2097,7 @@ Begin
  O.S:=SEC_ABS;O.Scale:=1;
  S:=TrimS(S0);
  If S='' Then Begin
-  Err3('Operand expected','Operande attendue','Operand erwartet');
+  Err3('expression mismatch','Operande attendue','Operand erwartet');
   BadInstr:=True;Exit;
  End;
  U:=Upper(S);
@@ -2074,7 +2136,11 @@ Begin
    O.K:=OK_PAIR;O.R:=R;O.XR:=D;Exit;
   End;
  End;
- If ParseRegList(U,M) Then Begin O.K:=OK_LIST;O.Mask:=M;Exit;End;
+ If ParseRegList(U,M) Then Begin
+  O.K:=OK_LIST;O.Mask:=M;
+  If RegListRev Then Begin Err3('invalid register list','Liste de registres incorrecte','Falsche Registerliste');BadInstr:=True;End;
+  Exit;
+ End;
  { symbole de liste de registres (REG) }
  If IsIdStart(S[1]) Then Begin
   Sy:=FindSym(LocalName(S));
@@ -2115,9 +2181,11 @@ Begin
      If R=23 Then Begin
       O.K:=OK_PCD;
       EvalOpnd(Pre,O.V,O.S,O.U);
+      ChkPcAbs(O);
      End Else Begin
       O.R:=R-8;
-      If (Post Or (Pre='-')) And (Pre<>'-') And (Pre<>'') Then Ok:=False;
+      If Post And (Pre='-') Then Begin Err3('garbage following instruction','Trop d''operandes','Zu viele Operanden');BadInstr:=True;Exit;End;
+      If Post And (Pre<>'') Then Begin Err3('comma expected','Virgule attendue','Komma erwartet');BadInstr:=True;Exit;End;
       If Post Then O.K:=OK_POST
       Else If Pre='-' Then O.K:=OK_PRE
       Else If Pre='' Then O.K:=OK_IND
@@ -2134,6 +2202,7 @@ Begin
       If R=23 Then O.K:=OK_PCI Else Begin O.K:=OK_IDX;O.R:=R-8;End;
       If Not ParseIndexReg(Items[1],O.XR,O.XL,O.Scale) Then Ok:=False;
       EvalOpnd(Pre,O.V,O.S,O.U);
+      If R=23 Then ChkPcAbs(O);
      End Else Begin
       { (d,An) ou (d,An,Xn) }
       EvalOpnd(Items[0],O.V,O.S,O.U);
@@ -2154,6 +2223,18 @@ Begin
     Exit;
    End;
   End;
+ End;
+ { parentheses non equilibrees : mode non reconnu }
+ If S[1]='(' Then Begin
+  D:=0;
+  For I:=1 To Length(S) Do Begin If S[I]='(' Then Inc(D) Else If S[I]=')' Then Dec(D);End;
+  If D>0 Then Begin
+   If S='(' Then Err3('XREFs not allowed within brackets','XREF interdit entre parentheses','XREF in Klammern nicht erlaubt')
+   Else If (Pos(',',S)=0) Or (S[Length(S)]=',') Then Err3('addressing mode not recognised','Mode d''adressage non reconnu','Adressmodus nicht erkannt')
+   Else Err3('missing close bracket','Parenthese fermante manquante','Schliessende Klammer fehlt');
+   BadInstr:=True;Exit;
+  End;
+  If D<0 Then Begin Err3('addressing mode not recognised','Mode d''adressage non reconnu','Adressmodus nicht erkannt');BadInstr:=True;Exit;End;
  End;
  { absolu : adr[.W|.L] }
  L:=Length(S);
@@ -2243,12 +2324,12 @@ Begin
       PutX(O.V And $FF,False,-1);
      End;
   2: Begin
-      CheckRange(O.V,O.U,-32768,65535);
-      If (O.S>=0) And (O.X=0) Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
+      CheckRange(O.V,O.U,-65536,65535);
+      If (O.S>=0) Or (O.X>0) Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
       PutX(O.V And $FFFF,False,ImpRel(O,1,-1));
      End;
  Else Begin
-  If AO.ChkPC And (O.S>=0) Then Err3('addressing mode not allowed','Mode non permis','Adressmodus nicht erlaubt');
+  If AO.ChkPC And (O.S>=0) Then Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
   PutX(ImgOf(O.V,O.S),True,ImpRel(O,0,O.S));
  End;
  End;
@@ -2266,7 +2347,7 @@ Function OptDecide(Cond: Boolean): Boolean;
 Begin
  Inc(DecIdx);
  If DecIdx>=DECCAP Then DecIdx:=DECCAP-1;
- If AsmPassNo=1 Then Decs^[DecIdx]:=Ord(Cond);
+ If (AsmPassNo=1) And (Pass1Idx=0) Then Decs^[DecIdx]:=Ord(Cond);
  OptDecide:=Decs^[DecIdx]=1;
 End;
 
@@ -2296,8 +2377,8 @@ Procedure CheckOddAbs(Var O: TOp; Sz: Integer);
 Var V: LongInt;
 Begin
  { seuls les symboles relatifs (etiquettes) sont controles : un absolu impair (EQU) est legal a l'assemblage }
- If Not AO.EvenChk Or EvenSkip Or O.U Or (Sz<2) Or (O.S<0) Then Exit;
- If (AsmPassNo<>2) Then Exit;
+ If Not AO.EvenChk Or EvenSkip Or O.U Or (Sz<2) Then Exit;
+ If (AsmPassNo<>2) And (O.S>=0) Then Exit;
  V:=ImgOf(O.V,O.S);
  If Odd(V) Then Err3('odd address','Adresse impaire','Ungerade Adresse');
 End;
@@ -2486,13 +2567,13 @@ Begin
           End;
   OK_ABSW: Begin
             CheckRange(O.V,O.U,-32768,32767);
-            If AO.ChkPC And (O.S>=0) Then Err3('addressing mode not allowed','Mode non permis','Adressmodus nicht erlaubt');
+            If AO.ChkPC And (O.S>=0) Then Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
             CheckOddAbs(O,Sz);
             PutX(O.V And $FFFF,False,ImpRel(O,1,-1));
             EncEA:=56;
            End;
   OK_ABSL: Begin
-            If AO.ChkPC And (O.S>=0) Then Err3('addressing mode not allowed','Mode non permis','Adressmodus nicht erlaubt');
+            If AO.ChkPC And (O.S>=0) Then Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
             CheckOddAbs(O,Sz);
             PutX(ImgOf(O.V,O.S),True,ImpRel(O,0,O.S));
             EncEA:=57;
@@ -2503,7 +2584,7 @@ Begin
             Disp:=Tgt-At;
             If O.X>0 Then Disp:=O.V;
             If (AsmPassNo=2) And ((AO.Fmt=2) Or (AO.Fmt=7)) And (O.S>=0) And (O.S<>CurSect) Then
-             Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
+             Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
             If (AO.Fmt=1) And (O.X=0) And (O.S>=0) And (O.S<>CurSect) And Not AbsMode Then Disp:=O.V;
             If O.K=OK_PCD Then Begin
              If (AsmPassNo=2) And Not O.U Then
@@ -2562,7 +2643,7 @@ Begin
  NeedOps:=True;
  If NOps<>N Then Begin
   If (NOps=1) And (N=2) Then Err3('comma expected','Virgule attendue','Komma erwartet')
-  Else If NOps<N Then Err3('Operand expected','Operande attendue','Operand erwartet')
+  Else If NOps<N Then Err3('expression mismatch','Operande attendue','Operand erwartet')
   Else Err3('garbage following instruction','Trop d''operandes','Zu viele Operanden');
   BadInstr:=True;
   NeedOps:=False;
@@ -2588,7 +2669,7 @@ End;
 
 Procedure BadSizeAn;
 Begin
- Err3('invalid opcode size for data/address register','Taille invalide pour registre de donnees/adresse','Ungueltige Operandengroesse fuer Daten-/Adressregister');
+ Err3('invalid size','Taille illegale','Illegale Groesse');
  BadInstr:=True;
 End;
 
@@ -2643,6 +2724,7 @@ Begin
  If Sized Then Begin
   Sz:=DefSize(LnSz,2);
   If M='TST' Then Begin Allowed:=MA_DALT;If AO.Proc>=68020 Then Allowed:=MA_ALL;End;
+  If (M='TST') And (Sz=1) And (Ops[1].K=OK_AN) Then Begin BadSizeAn;Exit;End;
   E:=EncEA(Ops[1],Sz,Allowed);
   If E<0 Then Exit;
   If (Sz=1) And (Ops[1].K=OK_AN) Then BadSizeAn;
@@ -2683,7 +2765,9 @@ Procedure GMul32(Const M: String);
 Var E: Integer; Ext: LongInt; Sg,Dv: Boolean;
 Begin
  If AO.Proc<68020 Then Begin
-  Err3('wrong processor','Mauvais processeur','Falscher Prozessor');BadInstr:=True;Exit;
+  If LnSz=4 Then Err3('invalid size','Taille illegale','Illegale Groesse')
+  Else Err3('wrong processor','Mauvais processeur','Falscher Prozessor');
+  BadInstr:=True;Exit;
  End;
  Sg:=(M='MULS') Or (M='DIVS') Or (M='DIVSL');
  Dv:=(M='DIVU') Or (M='DIVS') Or (M='DIVUL') Or (M='DIVSL');
@@ -2741,7 +2825,7 @@ Begin
    Sz:=DefSize(LnSz,2);
    If Sz=1 Then Begin BadSizeAn;Exit;End;
    If (Ops[1].K=OK_IMM) And ((M='ADD') Or (M='SUB') Or (M='ADDA') Or (M='SUBA')) Then Begin
-    If AO.Opt[5] Then
+    If AO.Opt[5] And ((M='ADD') Or (M='SUB')) Then
      If OptDecide(KnownAbs(Ops[1],1,8)) Then Begin
       If (M='ADD') Or (M='ADDA') Then OpW:=$5008 Else OpW:=$5108;
       OpW:=OpW Or (SzBits(Sz) Shl 6) Or ((Ops[1].V And 7) Shl 9) Or Ops[2].R;
@@ -2772,6 +2856,7 @@ Begin
     OpW:=Base Or ((Ops[1].V And 7) Shl 9) Or (SzBits(Sz) Shl 6) Or E;
     OptStat(2);WarnOpt(5,'quick form used');Exit;
    End;
+  If (M='CMP') And (Ops[1].K=OK_IMM) And (Ops[2].K=OK_DN) Then Imm:=False; { le vrai GenST garde CMP #imm,Dn }
   If Imm Then Begin
    If Ops[1].K<>OK_IMM Then Begin BadMode;Exit;End;
    ImmBase(M,IB);
@@ -2817,6 +2902,7 @@ Begin
   If Ops[1].K<>OK_IMM Then Begin BadMode;Exit;End;
   If AO.AllowZero And (Ops[1].V=0) And Not Ops[1].U Then Begin End
   Else CheckRange(Ops[1].V,Ops[1].U,1,8);
+  If (Ops[1].S>=0) And Not Ops[1].U And (Ops[1].X=0) Then Err3('absolute not allowed','Absolu interdit','Absolut nicht erlaubt');
   Q:=Ops[1].V And 7;
   E:=EncEA(Ops[2],Sz,MA_ALT);
   If E<0 Then Exit;
@@ -2923,6 +3009,7 @@ Begin
   If Not NeedOps(2) Then Exit;
   If (Ops[1].K<>OK_IMM) Or (Ops[2].K<>OK_DN) Then Begin BadMode;Exit;End;
   CheckRange(Ops[1].V,Ops[1].U,-128,255);
+  If (Ops[1].S>=0) And Not Ops[1].U And (Ops[1].X=0) Then Err3('relative not allowed','Relatif interdit','Relativ nicht erlaubt');
   If (Ops[1].V>=128) And (Ops[1].V<=255) And (LnSz<>4) And Not Ops[1].U Then
    Warn3('sign extended operand','Operande etendu avec signe','Operand vorzeichenerweitert');
   OpW:=$7000 Or (Ops[2].R Shl 9) Or (Ops[1].V And $FF);
@@ -3065,7 +3152,7 @@ Begin
  If Sz=4 Then Begin
   If (AO.Proc>=68020) And Not AO.OldBra Then Lng:=True
   Else Begin
-   If Explicit Then Warn3('-L converted to .W','-L converti en .W','-L in .W umgewandelt');
+   If Explicit Then Warn3('size should be .W','La taille devrait etre .W','Groesse sollte .W sein');
    Sz:=2;
   End;
  End;
@@ -3089,11 +3176,11 @@ Begin
   Short:=Decs^[DecIdx]=1;
   If AsmPassNo=2 Then Begin
    If Short And AO.Opt[1] And (Disp<0) Then Begin OptStat(2);WarnOpt(1,'branch made short');End;
-   If (Not Short) And AO.Opt[6] And Not Ops[1].U And (Disp>0) And (Disp<=127) Then WarnOpt(6,'branch could be short');
+   If (Not Short) And AO.Opt[6] And AO.Opt[1] And Not Ops[1].U And (Disp>0) And (Disp<=127) Then WarnOpt(6,'branch could be short');
   End;
  End;
  If (AsmPassNo=2) And ((AO.Fmt=2) Or (AO.Fmt=7)) And (Ops[1].S>=0) And (Ops[1].S<>CurSect) Then
-  Err3('relocation not allowed','Relocation interdite','Relokation nicht erlaubt');
+  Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
  If AsmPassNo=2 Then Begin
   If Not Ops[1].U And Odd(Tgt) Then Err3('odd address','Adresse impaire','Ungerade Adresse');
  End;
@@ -3158,6 +3245,7 @@ Begin
   If Ops[1].K<>OK_AN Then Begin BadErr('address register expected','Registre d''adresse attendu','Adressregister erwartet');Exit;End;
   OpW:=$4E58 Or Ops[1].R;
  End Else If M='SWAP' Then Begin
+  If NOps=0 Then Begin BadErr('data register expected','Registre de donnees attendu','Datenregister erwartet');Exit;End;
   If Not NeedOps(1) Then Exit;
   If Ops[1].K<>OK_DN Then Begin BadErr('data register expected','Registre de donnees attendu','Datenregister erwartet');Exit;End;
   OpW:=$4840 Or Ops[1].R;
@@ -3172,7 +3260,7 @@ Begin
   If (Ops[1].K=OK_DN) And (Ops[2].K=OK_DN) Then
    OpW:=$C140 Or (Ops[1].R Shl 9) Or Ops[2].R
   Else If (Ops[1].K=OK_AN) And (Ops[2].K=OK_AN) Then
-   OpW:=$C148 Or (Ops[1].R Shl 9) Or Ops[2].R
+   OpW:=$C148 Or (Ops[2].R Shl 9) Or Ops[1].R
   Else If (Ops[1].K=OK_DN) And (Ops[2].K=OK_AN) Then
    OpW:=$C188 Or (Ops[1].R Shl 9) Or Ops[2].R
   Else If (Ops[1].K=OK_AN) And (Ops[2].K=OK_DN) Then
@@ -3182,6 +3270,7 @@ Begin
   If Not NeedOps(1) Then Exit;
   If Ops[1].K<>OK_IMM Then Begin BadErr('immediate data expected','Donnee immediate attendue','Direkter Wert erwartet');Exit;End;
   CheckRange(Ops[1].V,Ops[1].U,0,15);
+  If (Ops[1].S>=0) And Not Ops[1].U And (Ops[1].X=0) Then Err3('relative not allowed','Relatif interdit','Relativ nicht erlaubt');
   OpW:=$4E40 Or (Ops[1].V And 15);
  End Else If M='STOP' Then Begin
   If Not NeedOps(1) Then Exit;
@@ -4176,24 +4265,20 @@ Function SizeMask(Const M: String): Integer;
 Begin
  SizeMask:=15;
  If IsFpMnemonic(M) Or IsMmuMnemonic(M) Then Begin SizeMask:=127;Exit;End;
- If (M='NOP') Or (M='RTS') Or (M='RTE') Or (M='RTR') Or (M='RESET') Or (M='TRAPV') Or
-    (M='ILLEGAL') Or (M='UNLK') Or (M='TRAP') Or (M='STOP') Then SizeMask:=0
- Else If (M='JMP') Or (M='JSR') Then SizeMask:=4
- Else If (M='LEA') Or (M='PEA') Or (M='MOVEQ') Or (M='EXG') Then SizeMask:=4
- Else If (M='ADDA') Or (M='SUBA') Or (M='CMPA') Or (M='MOVEA') Or (M='MOVEM') Or
-         (M='MOVEP') Or (M='EXT') Or (M='LINK') Or (M='CHK') Then SizeMask:=6
+ { table relevee sur le vrai GenST 2.23 : B=1 W=2 L=4 S=8 }
+ If (M='STOP') Or (M='TRAP') Or (M='JMP') Or (M='JSR') Or (M='UNLK') Then SizeMask:=0
+ Else If M='LINK' Then Begin If AO.Proc>=68020 Then SizeMask:=4 Else SizeMask:=0;End
+ Else If (M='PEA') Or (M='LEA') Or (M='EXG') Or (M='EXTB') Then SizeMask:=4
+ Else If (M='ADDA') Or (M='SUBA') Or (M='CMPA') Or (M='MOVEA') Or (M='MOVEM') Or (M='MOVEP') Or (M='EXT') Then SizeMask:=6
  Else If M='SWAP' Then SizeMask:=2
- Else If M='EXTB' Then SizeMask:=4
- Else If (M='MOVEC') Or (M='RTD') Or (M='BKPT') Or (M='MOVE16') Then SizeMask:=15
- Else If (Length(M)>=5) And (Copy(M,1,4)='TRAP') And (M<>'TRAPV') And (M<>'TRAP') Then SizeMask:=6
- Else If (M='MULU') Or (M='MULS') Or (M='DIVU') Or (M='DIVS') Then SizeMask:=6
+ Else If (M='MULU') Or (M='MULS') Or (M='DIVU') Or (M='DIVS') Or (M='CHK') Then SizeMask:=6
  Else If (M='DIVUL') Or (M='DIVSL') Then SizeMask:=4
- Else If (M='NBCD') Or (M='TAS') Or (M='ABCD') Or (M='SBCD') Then SizeMask:=1
- Else If (M='BTST') Or (M='BCHG') Or (M='BCLR') Or (M='BSET') Then SizeMask:=5
+ Else If (M='NBCD') Or (M='TAS') Or (M='ABCD') Or (M='SBCD') Then SizeMask:=9
+ Else If (M='BTST') Or (M='BCHG') Or (M='BCLR') Or (M='BSET') Then SizeMask:=4
  Else If (M='DBRA') Or ((Length(M)>=3) And (Length(M)<=4) And (Copy(M,1,2)='DB') And (CondCode(Copy(M,3,2))>=0)) Then SizeMask:=2
  Else If (Length(M)>=2) And (Length(M)<=3) And (M[1]='S') And (M<>'SUB') And (M<>'STOP') And (M<>'SWAP') And
-         (M<>'SBCD') And (CondCode(Copy(M,2,2))>=0) Then SizeMask:=1
- Else If (M='ASL') Or (M='ASR') Or (M='LSL') Or (M='LSR') Or (M='ROL') Or (M='ROR') Or (M='ROXL') Or (M='ROXR') Then SizeMask:=7;
+         (M<>'SBCD') And (CondCode(Copy(M,2,2))>=0) Then SizeMask:=9
+ Else If (Length(M)>=5) And (Copy(M,1,4)='TRAP') And (M<>'TRAPV') And (M<>'TRAP') Then SizeMask:=6;
 End;
 
 { OPT CHKIMM : un absolu a la place d'un immediat ? }
@@ -4264,7 +4349,8 @@ Begin
  If Not IsMnemonic(M) Then Begin AsmInstruction:=False;Exit;End;
  BadInstr:=False;XN:=0;XWords:=0;OpW:=0;
  NOps:=0;FPParse:=IsFpMnemonic(M);
- EvenSkip:=(M='LEA') Or (M='PEA') Or (M='JMP') Or (M='JSR');
+ If (M='NOP') Or (M='RTS') Or (M='RTE') Or (M='RTR') Or (M='RESET') Or (M='TRAPV') Or (M='ILLEGAL') Then LnArgs:='';
+ EvenSkip:=(M='LEA') Or (M='PEA');
  If LnArgs<>'' Then Begin
   N:=SplitTop(LnArgs,Parts,5);
   If N>4 Then Begin
@@ -4435,7 +4521,8 @@ End;
 Procedure PushSrc(K: Integer; Lines: PLineArr; Count: LongInt; Const Name: String; Own: Boolean);
 Begin
  If SrcTop>=MAXSRC Then Begin
-  Err3('Includes nested too deeply','Imbrications trop profondes','Zu tiefe Verschachtelung');
+  If K=1 Then FatalErr3('INTERNAL:macro memory','INTERNAL:macro memory','INTERNAL:macro memory')
+  Else Err3('Includes nested too deeply','Imbrications trop profondes','Zu tiefe Verschachtelung');
   Exit;
  End;
  Inc(SrcTop);
@@ -4561,6 +4648,9 @@ Begin
  SubstMacro:=Copy(R,1,255);
 End;
 
+Procedure ListMacEnd(Const Tx: String); Forward;
+Var LastEndTxt: String[60];
+
 Function NextLine(Var S: String): Boolean;
 Begin
  NextLine:=False;
@@ -4569,7 +4659,10 @@ Begin
    If (Srcs[SrcTop].Kind=2) And (Srcs[SrcTop].Reps>1) Then Begin
     Dec(Srcs[SrcTop].Reps);
     Srcs[SrcTop].Pos:=1;
-   End Else PopSrc;
+   End Else Begin
+    If (Srcs[SrcTop].Kind=1) And (Srcs[SrcTop].MacIdx>0) Then ListMacEnd(Macros[Srcs[SrcTop].MacIdx].EndTxt);
+    PopSrc;
+   End;
   End Else Begin
    S:=Srcs[SrcTop].Lines^[Srcs[SrcTop].Pos]^;
    Inc(Srcs[SrcTop].Pos);
@@ -4623,8 +4716,15 @@ End;
 
 Function FindMacro(Const Name: String): Integer; Forward;
 
+{ noms de directives : une macro de meme nom est ignoree (comme dans le vrai GenST) }
+Function IsDirName(Const Op: String): Boolean;
+Begin
+ IsDirName:=Pos(' '+Op+' ',' DC DS DCB EVEN CNOP ORG OFFSET SECTION TEXT DATA BSS EQU SET = EQUR REG RS RSSET RSRESET FAIL END INCLUDE INCBIN LIST NOLIST PAGE SPC TTL SUBTTL PLEN LLEN FORMAT OPT OUTPUT COMMENT XDEF XREF MACRO ENDM MEXIT REPT ENDR IFEQ IFNE IFGT IFGE IFLT IFLE IFC IFNC IFD IFND ENDC ELSE ELSEIF IIF MODULE IDNT CARGS FEQU FOPT ')>0;
+End;
+
+
 Procedure SplitLine(Const S: String; Var Lbl,Op,Suf,Args: String);
-Var I,D: Integer; Q: Char; Tk: String; IsMac: Boolean;
+Var I,D: Integer; Q: Char; Tk,RawOp: String; IsMac: Boolean;
 Begin
  Lbl:='';Op:='';Suf:='';Args:='';
  I:=1;
@@ -4659,8 +4759,13 @@ Begin
  If (D>1) And (Tk[1]<>'.') Then Begin
   Op:=Upper(Copy(Tk,1,D-1));
   Suf:=Upper(Copy(Tk,D+1,10));
- End Else Op:=Upper(Tk);
- IsMac:=(MacCount>0) And (FindMacro(Op)<>0);
+  RawOp:=Copy(Tk,1,D-1);
+ End Else Begin Op:=Upper(Tk);RawOp:=Tk;End;
+ If OptCase And (MacCount>0) Then Begin
+  D:=FindMacro(Op);
+  If (D<>0) And (Macros[D].Raw<>RawOp) Then Op:=Op+'#';
+ End;
+ IsMac:=(MacCount>0) And (FindMacro(Op)<>0) And Not IsDirName(Op);
  While (I<=Length(S)) And ((S[I]=' ') Or (S[I]=#9)) Do Inc(I);
  { champ des operandes }
  Q:=#0;D:=0;
@@ -4685,15 +4790,8 @@ Begin
          End Else Begin Args:=Args+S[I];Inc(I);End;
     ';': If D<=0 Then Break Else Begin Args:=Args+S[I];Inc(I);End;
     ' ',#9: Begin
-             If (D>0) Or ((Args<>'') And (Args[Length(Args)]=',')) Then Begin
-              Inc(I);
-             End Else Begin
-              D:=I;
-              While (D<=Length(S)) And ((S[D]=' ') Or (S[D]=#9)) Do Inc(D);
-              If (D<=Length(S)) And (S[D]=',') Then I:=D
-              Else Break;
-              D:=0;
-             End;
+             If (Args<>'') And (Args[Length(Args)]=',') And (((Op='DC')) Or IsMac) Then Inc(I)
+             Else Break;
             End;
    Else Begin Args:=Args+S[I];Inc(I);End;
    End;
@@ -4712,6 +4810,8 @@ Var
  HeadSet    : Boolean;
  { listing }
  ListCnt    : Integer;       { compteur LIST +/- }
+ ListSkip,ListIsEqu,ListMacMark,ListAfter,ListNoData,ListDone : Boolean;
+ ListEquVal : LongInt;
  ListPLen,ListLLen,ListPage,ListLineNo,ListSpc : Integer;
  ListQ      : Array[1..8] Of String[255];
  ListQN     : Integer;
@@ -4736,13 +4836,13 @@ Begin
   P:=AddSym(Name);
  End Else If P^.Defd And (P^.Pas=PassSerial) Then Begin
   If (Kind<>1) Or (P^.Kind<>1) Then Begin
-   Err3('symbol defined twice: '+NameIn,'Symbole deja defini : '+NameIn,
+   Err3('symbol defined twice','Symbole deja defini : '+NameIn,
         'Symbol bereits definiert: '+NameIn);
    Exit;
   End;
  End Else If (AsmPassNo=2) And P^.Defd And (Kind=0) And (P^.Kind=0) Then Begin
   If (P^.Value<>V) Or (P^.Sect<>Sc) Then
-   Err3('phasing error: '+NameIn,'Erreur de phase : '+NameIn,'Phasenfehler: '+NameIn);
+   Err3('phasing error','Erreur de phase : '+NameIn,'Phasenfehler: '+NameIn);
  End;
  P^.Value:=V;P^.Sect:=Sc;P^.Kind:=Kind;P^.Defd:=True;P^.Pas:=PassSerial;
 End;
@@ -4750,9 +4850,6 @@ End;
 Procedure DefLabel(Const Name: String);
 Var Sc: Integer;
 Begin
- If (RegOf(Upper(Name))>=0) Or (Upper(Name)='CCR') Or (Upper(Name)='SR') Or (Upper(Name)='USP') Then Begin
-  Err3('misuse of label','Mauvaise utilisation d''etiquette','Falsche Verwendung des Labels');Exit;
- End;
  If IsLocalName(Name) And (LastGlobal='') Then Begin
   Err3('local not allowed','Etiquette locale non permise','Lokales Label nicht erlaubt');Exit;
  End;
@@ -4778,6 +4875,7 @@ Begin
   Exit;
  End;
  Inc(CondTop);
+ CondLn[CondTop]:=CurLineNo;
  Conds[CondTop].Parent:=CondActive;
  Conds[CondTop].Active:=CondActive And Test;
  Conds[CondTop].Taken:=Conds[CondTop].Active;
@@ -4819,14 +4917,20 @@ Begin
   Exit;
  End;
  If (Op='IFEQ') Or (Op='IFNE') Or (Op='IFGT') Or (Op='IFGE') Or (Op='IFLT') Or
-    (Op='IFLE') Or (Op='IF') Then Begin
+    (Op='IFLE') Then Begin
   Test:=False;
   If CondActive Then Begin
    ErrOvr:='invalid IF expression, ignored';
-   If Not EvalStr(Args,R) Then R.V:=0;
+   FwdRef:=False;
+   If Not EvalStr(Args,R) Then Begin ErrOvr:='';Exit;End;
    ErrOvr:='';
+   ListIsEqu:=True;ListEquVal:=R.V;
+   If FwdRef Then Begin
+    Err3('absolute expression MUST evaluate','L''expression absolue doit etre evaluable','Absoluter Ausdruck muss auswertbar sein');
+    Exit;
+   End;
    If Op='IFEQ' Then Test:=R.V=0
-   Else If (Op='IFNE') Or (Op='IF') Then Test:=R.V<>0
+   Else If Op='IFNE' Then Test:=R.V<>0
    Else If Op='IFGT' Then Test:=R.V>0
    Else If Op='IFGE' Then Test:=R.V>=0
    Else If Op='IFLT' Then Test:=R.V<0
@@ -4852,7 +4956,13 @@ Begin
   Test:=False;
   If CondActive Then Begin
    N:=SplitTop(Args,Parts,4);
-   If N=2 Then Test:=StrOperand(Parts[0])=StrOperand(Parts[1]);
+   If N=2 Then Begin
+    If (Parts[0]='') Or (Parts[1]='') Or Not (Parts[0][1] In ['''','"']) Or Not (Parts[1][1] In ['''','"']) Then Begin
+     Err3('missing quote','Apostrophe manquante','Anfuehrungszeichen fehlt');
+     Exit;
+    End;
+    Test:=StrOperand(Parts[0])=StrOperand(Parts[1]);
+   End;
    If Op='IFNC' Then Test:=Not Test;
   End;
   CondPush(Test);
@@ -4870,26 +4980,26 @@ Var TmpBody : PLineArr;
 Procedure ListLine(Const S: String); Forward;
 
 Function CollectBody(Const OpStart,OpEnd: String; Var Cnt: Integer): PLineArr;
-Var S,L,O,Sf,A: String; Depth,I: Integer; Res: PLineArr; Done: Boolean;
+Var S,L,O,Sf,A: String; Depth,I: Integer; Res: PLineArr; Done: Boolean; StartLn: LongInt;
 Begin
- Cnt:=0;Depth:=0;Done:=False;
+ Cnt:=0;Depth:=0;Done:=False;StartLn:=CurLineNo;
  While Not Done Do Begin
   If Not NextLine(S) Then Begin
-   Err3('source expired prematurely','Fin de fichier inattendue dans '+OpStart,
+   CurLineNo:=StartLn;
+   FatalErr3('source expired prematurely','Fin de fichier inattendue dans '+OpStart,
         'Unerwartetes Dateiende in '+OpStart);
    Break;
   End;
   SplitLine(S,L,O,Sf,A);
-  If (OpStart='MACRO') And ListWanted Then Begin LnStartLen:=SecLen[CurSect];ListLine(S);End;
+  If ((OpStart='MACRO') Or (OpStart='REPT')) And ListWanted Then Begin LnStartLen:=SecLen[CurSect];ListLine(S);End;
   If O=OpStart Then Begin
-   Inc(Depth);
-   If OpStart='REPT' Then Err3('cannot nest repeat loops','REPT imbriques interdits','Verschachtelte REPT nicht erlaubt');
+   If OpStart<>'REPT' Then Inc(Depth);
    If OpStart='MACRO' Then
     Err3('cannot nest MACRO definitions or define in REPTs','Macros imbriquees interdites','Verschachtelte Makros nicht erlaubt');
   End Else If (OpStart='REPT') And (O='MACRO') Then
    Err3('cannot nest MACRO definitions or define in REPTs','Macro dans REPT interdite','Makro in REPT nicht erlaubt')
   Else If O=OpEnd Then Begin
-   If Depth=0 Then Begin Done:=True;Continue;End;
+   If Depth=0 Then Begin Done:=True;LastEndTxt:=Copy(S,1,60);Continue;End;
    Dec(Depth);
   End;
   If Cnt<MAXLN Then Begin Inc(Cnt);TmpBody^[Cnt]:=NewStr(S);End
@@ -4920,10 +5030,15 @@ End;
 Procedure DefineMacro(Const Name,PNames,Suf: String);
 Var Cnt: Integer; B: PLineArr; I: Integer;
 Begin
- B:=CollectBody('MACRO','ENDM',Cnt);
  If Name='' Then Begin
-  Err3('symbol expected','Nom de macro manquant','Makroname fehlt');
- End Else If MacCount>=MAXMAC Then Err3('out of memory','Trop de macros','Zu viele Makros')
+  Err3('symbol expected','Nom de macro manquant','Makroname fehlt');Exit;
+ End;
+ If FindMacro(Upper(Name))<>0 Then Begin
+  { le vrai GenST signale l'erreur sur la ligne MACRO et ne saute pas le corps }
+  Err3('symbol defined twice','Macro deja definie','Makro bereits definiert');Exit;
+ End;
+ B:=CollectBody('MACRO','ENDM',Cnt);
+ If MacCount>=MAXMAC Then Err3('out of memory','Trop de macros','Zu viele Makros')
  Else Begin
   I:=FindMacro(Upper(Name));
   If I<>0 Then Begin
@@ -4931,6 +5046,8 @@ Begin
   End Else Begin
    Inc(MacCount);
    Macros[MacCount].Name:=Copy(Upper(Name),1,63);
+   Macros[MacCount].Raw:=Copy(Name,1,63);
+   Macros[MacCount].EndTxt:=LastEndTxt;
    Macros[MacCount].PNames:=Copy(PNames,1,100);
    Macros[MacCount].Body:=B;
    Macros[MacCount].Count:=Cnt;
@@ -5105,7 +5222,7 @@ Begin
  If Sz=0 Then Sz:=2;
  If Sz=8 Then Sz:=1;
  If TrimS(Args)='' Then Begin
-  Err3('Operand expected','Operande attendue','Operand erwartet');Exit;
+  Err3('expression mismatch','Operande attendue','Operand erwartet');Exit;
  End;
  P:=1;
  While NextOperand(Args,P,S) Do Begin
@@ -5138,9 +5255,12 @@ Begin
        EmitByte(R.V And $FF);
       End;
    2: Begin
-       CheckRange(R.V,R.U,-32768,65535);
+       CheckRange(R.V,R.U,-65536,65535);
        If (R.S>=0) And (R.X=0) Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
-       If R.X>0 Then EmitWordRel(R.V And $FFFF,RELIMP+R.X*4+1) Else EmitWord(R.V And $FFFF);
+       If R.X>0 Then Begin
+        If R.NS>=0 Then EmitWordRel(R.V And $FFFF,RELIMP+R.X*4+1+LongInt(R.NS+1)*100000)
+        Else EmitWordRel(R.V And $FFFF,RELIMP+R.X*4+1);
+       End Else EmitWord(R.V And $FFFF);
       End;
   Else If R.X>0 Then Begin
    If R.NS>=0 Then EmitLong(R.V,RELIMP+R.X*4+LongInt(R.NS+1)*100000) Else EmitLong(R.V,RELIMP+R.X*4);
@@ -5297,7 +5417,7 @@ Begin
  Reset(T);
  {$I+}
  If IOResult<>0 Then Begin
-  Err3('invalid pre-assembled file: '+Fn,'Fichier pre-assemble invalide : '+Fn,'Ungueltige vorassemblierte Datei: '+Fn);Exit;
+  Err3('invalid pre-assembled file','Fichier pre-assemble invalide : '+Fn,'Ungueltige vorassemblierte Datei: '+Fn);Exit;
  End;
  Ok:=False;InMac:=False;Cnt:=0;
  If Not Eof(T) Then Begin ReadLn(T,L);Ok:=Copy(L,1,12)='DEVPAC-GS 1';End;
@@ -5346,7 +5466,7 @@ Begin
  End;
  Close(T);
  If Not Ok Or InMac Then
-  Err3('invalid pre-assembled file: '+Fn,'Fichier pre-assemble invalide : '+Fn,'Ungueltige vorassemblierte Datei: '+Fn);
+  Err3('invalid pre-assembled file','Fichier pre-assemble invalide : '+Fn,'Ungueltige vorassemblierte Datei: '+Fn);
 End;
 
 { -H / liste « Pre-assembled includes » : charge les .GS au debut de chaque passe }
@@ -5358,7 +5478,7 @@ Begin
   If S='' Then Continue;
   Full:=FindInclude(S);
   If (Full='') And (Pos('.',S)=0) Then Full:=FindInclude(S+'.GS');
-  If Full='' Then FatalErr3('file not found: '+S,'Fichier introuvable : '+S,'Datei nicht gefunden: '+S)
+  If Full='' Then FatalErr3('file not found','Fichier introuvable : '+S,'Datei nicht gefunden: '+S)
   Else Begin LoadGS(Full);GsAddSeen(S);End;
  End;
 End;
@@ -5371,7 +5491,6 @@ Procedure SetAllOpt(On: Boolean);
 Var K: Integer;
 Begin
  For K:=1 To 12 Do AO.Opt[K]:=On;
- OptOptimize:=On;
 End;
 
 Function CodeGenerated: Boolean;
@@ -5450,7 +5569,7 @@ Begin
  End;
  If (T='W') Or (T='WARN') Then Begin OptWarnings:=On;Exit;End;
  If T='NOWARN' Then Begin OptWarnings:=False;Exit;End;
- If T='L' Then Exit;
+ If T='L' Then Begin If On Then SetFormat(1) Else SetFormat(0);Exit;End;
  If (T[1]='L') And (Length(T)=2) And (T[2]>='0') And (T[2]<='9') Then Begin
   C:=Ord(T[2])-48;
   If (C=0) Or (C=1) Or (C=2) Or (C=6) Or (C=7) Then SetFormat(C) Else BadOption;
@@ -5527,17 +5646,88 @@ Begin
 End;
 
 Procedure DirOpt(Const Args: String);
-Var P: Integer; S: String;
+Var P: Integer; S: String; First: Boolean;
 Begin
- P:=1;
+ P:=1;First:=True;
  While NextOperand(Args,P,S) Do Begin
   S:=Upper(S);
-  If S='' Then Continue;
+  If S='' Then Begin
+   If First And (Args<>'') Then BadOption;
+   First:=False;Continue;
+  End;
+  First:=False;
   OptOne(S);
  End;
 End;
 
 { GST : noms de sections libres (limites : deux sections nommees TEXT/DATA + BSS) }
+{ GST : evenements dans l'ordre de la source (comme le vrai GenST) }
+Const GEVMAX = 6000;
+Var
+ GEvN       : Integer;
+ GEvK       : Array[1..GEVMAX] Of Byte;     { 0 octets, 1 XDEF, 2 section, 3 commentaire }
+ GEvS       : Array[1..GEVMAX] Of Integer;
+ GEvA,GEvB  : Array[1..GEVMAX] Of LongInt;
+ GEvTxt     : Array[1..40] Of String[80];
+ GEvTxtN    : Integer;
+ GSpanSect  : Integer;
+ GSpanStart : LongInt;
+ GXdefDone  : Array[1..2000] Of Boolean;
+ LstSecId   : Array[0..2] Of Integer;
+ LstSecN    : Integer;
+
+Procedure GEvPush(K: Byte; S: Integer; A,B: LongInt);
+Begin
+ If GEvN<GEVMAX Then Begin Inc(GEvN);GEvK[GEvN]:=K;GEvS[GEvN]:=S;GEvA[GEvN]:=A;GEvB[GEvN]:=B;End;
+End;
+
+Procedure GSpanClose;
+Var L: LongInt;
+Begin
+ L:=SecLen[GSpanSect];
+ If L>GSpanStart Then GEvPush(0,GSpanSect,GSpanStart,L);
+ GSpanStart:=L;
+End;
+
+Procedure GEvReset;
+Begin
+ GEvN:=0;GEvTxtN:=0;GSpanSect:=0;GSpanStart:=0;
+ FillChar(GXdefDone,SizeOf(GXdefDone),0);
+ FillChar(LstSecId,SizeOf(LstSecId),0);LstSecN:=1;LstSecId[0]:=1;
+End;
+
+{ numero de section GST pour le listing (ordre de premiere utilisation) }
+Function GstListId(S: Integer): Integer;
+Begin
+ If (S<0) Or (S>2) Then Begin GstListId:=1;Exit;End;
+ If LstSecId[S]=0 Then Begin Inc(LstSecN);LstSecId[S]:=LstSecN;End;
+ GstListId:=LstSecId[S];
+End;
+
+Procedure GEvSection;
+Begin
+ GSpanClose;
+ GEvPush(2,CurSect,0,0);
+ If AbsMode Then GSpanSect:=0 Else GSpanSect:=CurSect;
+ GSpanStart:=SecLen[GSpanSect];
+End;
+
+Procedure GEvXdef(K: Integer);
+Begin
+ If (K<1) Or (K>2000) Or GXdefDone[K] Then Exit;
+ GXdefDone[K]:=True;
+ GSpanClose;
+ GEvPush(1,K,0,0);
+End;
+
+Procedure GEvCmt(Const T: String);
+Begin
+ If GEvTxtN>=40 Then Exit;
+ GSpanClose;
+ Inc(GEvTxtN);GEvTxt[GEvTxtN]:=Copy(T,1,80);
+ GEvPush(3,GEvTxtN,0,0);
+End;
+
 Procedure GstSection(Const Op,N0: String);
 Var N: String; S: Integer;
 Begin
@@ -5567,6 +5757,7 @@ Var N,T: String; P: Integer;
 Begin
  If AbsMode Then Exit;
  OffMode:=False;
+ LastGlobal:='';
  If (AO.Fmt=1) And (Pos(',',Args)=0) Then Begin GstSection(Op,Args);Exit;End;
  If (Op='TEXT') Or (Op='CODE') Then CurSect:=SEC_TEXT
  Else If Op='DATA' Then CurSect:=SEC_DATA
@@ -5678,7 +5869,12 @@ Begin
  If Sz=0 Then SzB:=2 Else If Sz=8 Then SzB:=1 Else SzB:=Sz;
  If Op='DC' Then Begin DirDC(Sz,Args);Exit;End;
  If Op='DS' Then Begin
+  FwdRef:=False;
   If Not EvalStr(Args,R) Then R.V:=0;
+  If FwdRef Then Begin
+   Err3('absolute expression MUST evaluate','L''expression absolue doit etre evaluable','Absoluter Ausdruck muss auswertbar sein');
+   Exit;
+  End;
   If R.S>=0 Then Err3('relative not allowed','Relatif interdit','Relativ nicht erlaubt');
   If R.X>0 Then Err3('imported label not allowed','Etiquette importee interdite','Importiertes Label nicht erlaubt');
   If R.V<0 Then Begin
@@ -5689,8 +5885,13 @@ Begin
  End;
  If Op='DCB' Then Begin
   N:=SplitTop(Args,Parts,4);
-  If (N<1) Or (N>2) Then Begin Err3('Operand expected','Operande attendue','Operand erwartet');Exit;End;
+  If (N<1) Or (N>2) Then Begin Err3('expression mismatch','Operande attendue','Operand erwartet');Exit;End;
+  FwdRef:=False;
   If Not EvalStr(Parts[0],R) Then R.V:=0;
+  If FwdRef Then Begin
+   Err3('absolute expression MUST evaluate','L''expression absolue doit etre evaluable','Absoluter Ausdruck muss auswertbar sein');
+   Exit;
+  End;
   K:=R.V;
   If R.V<0 Then Begin
    Err3('DCB or DS count must not be negative','DCB/DS negatif','DCB/DS negativ');K:=0;
@@ -5707,26 +5908,28 @@ Begin
  If Op='EVEN' Then Begin EvenPC;Exit;End;
  If Op='CNOP' Then Begin
   N:=SplitTop(Args,Parts,4);
-  If N<>2 Then Begin Err3('Operand expected','Operande attendue','Operand erwartet');Exit;End;
+  If N<>2 Then Begin Err3('expression mismatch','Operande attendue','Operand erwartet');Exit;End;
   If Not EvalStr(Parts[0],R) Then R.V:=0;
   V:=R.V;
   If Not EvalStr(Parts[1],R) Then R.V:=1;
   If R.V<=0 Then R.V:=1;
-  While (CurPC Mod R.V)<>(V Mod R.V) Do ReserveBytes(1);
+  { le vrai GenST : alignement d'abord, puis ajout du decalage }
+  N:=((CurPC+R.V-1) Div R.V)*R.V+V;
+  While CurPC<N Do ReserveBytes(1);
   Exit;
  End;
  If Op='ORG' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
-  If Not AbsMode And Not OffMode And (SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) Then Begin
-   AbsMode:=True;OrgAddr:=R.V;
+  If Not AbsMode And Not OffMode And (SecLen[1]=0) And (SecLen[2]=0) Then Begin
+   AbsMode:=True;OrgAddr:=R.V-SecLen[0];
    If AO.Fmt=1 Then Begin GstOrgN:=1;GstOrgPos[1]:=0;GstOrgAddr[1]:=R.V;End;
   End Else If AbsMode And (AO.Fmt=1) Then Begin
    { GST : le ORG est transmis a l'editeur de liens }
    If GstOrgN<200 Then Begin Inc(GstOrgN);GstOrgPos[GstOrgN]:=SecLen[0];GstOrgAddr[GstOrgN]:=R.V;End;
    OrgAddr:=R.V-SecLen[0];
   End Else If AbsMode Then Begin
-   If R.V>=CurPC Then ReserveBytes(R.V-CurPC)
-   Else Err3('ORG/RORG not allowed','ORG recule','ORG geht rueckwaerts');
+   { le vrai GenST ne remplit pas : le compteur change simplement }
+   OrgAddr:=R.V-SecLen[0];
   End Else Err3('ORG/RORG not allowed','ORG doit etre la premiere instruction',
                 'ORG muss die erste Anweisung sein');
   Exit;
@@ -5758,7 +5961,7 @@ Begin
   End Else Err3('ORG/RORG not allowed','OFFSET interdit apres ORG','OFFSET nach ORG nicht erlaubt');
   Exit;
  End;
- If (Op='SECTION') Or (Op='TEXT') Or (Op='DATA') Or (Op='BSS') Or (Op='CODE') Then Begin
+ If (Op='SECTION') Or (Op='TEXT') Or (Op='DATA') Or (Op='BSS') Then Begin
   DirSection(Op,Args);Exit;
  End;
  If (Op='EQU') Or (Op='=') Or (Op='SET') Then Begin
@@ -5767,7 +5970,8 @@ Begin
   If IsLocalName(Lbl) Then Begin Err3('local not allowed','Etiquette locale non permise','Lokales Label nicht erlaubt');Exit;End;
   If Not EvalStr(Args,R) Then Begin R.V:=0;R.S:=SEC_ABS;End
   Else If R.X>0 Then Begin Err3('imported label not allowed','Etiquette importee interdite','Importiertes Label nicht erlaubt');R.V:=0;R.S:=SEC_ABS;End
-  Else If FwdRef And (Op<>'SET') Then Err3('forward reference','Reference en avant','Vorwaertsreferenz');
+  Else If FwdRef And (Op<>'SET') Then Begin Err3('forward reference','Reference en avant','Vorwaertsreferenz');Exit;End;
+  ListIsEqu:=True;ListEquVal:=R.V;
   If Op='SET' Then DefSym(Lbl,R.V,R.S,1) Else DefSym(Lbl,R.V,R.S,0);
   Exit;
  End;
@@ -5781,6 +5985,8 @@ Begin
   If N>EqurN Then Begin
    If EqurN>=64 Then Begin Err3('out of memory','Trop de synonymes','Zu viele Synonyme');Exit;End;
    Inc(EqurN);
+  End Else If (AsmPassNo=1) And (Pass1Idx=0) Then Begin
+   Err3('symbol defined twice','Symbole deja defini','Symbol bereits definiert');Exit;
   End;
   EqurName[N]:=Copy(S2,1,40);EqurReg[N]:=K;
   Exit;
@@ -5838,6 +6044,7 @@ Begin
  If Op='RS' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
   If SzB>1 Then If Odd(CurRS) Then Inc(CurRS);
+  ListIsEqu:=True;ListEquVal:=CurRS;
   If Lbl<>'' Then DefSym(Lbl,CurRS,SEC_ABS,0);
   CurRS:=CurRS+R.V*SzB;
   Exit;
@@ -5885,6 +6092,7 @@ Begin
      K:=1;
      While (K<=XdefN) And (XdefNames[K]<>KeyOf(LocalName(S2))) Do Inc(K);
      If K>XdefN Then Begin Inc(XdefN);XdefNames[XdefN]:=Copy(KeyOf(LocalName(S2)),1,80);End;
+     If (AsmPassNo=2) And (AO.Fmt=1) Then GEvXdef(K);
     End;
   End;
   Exit;
@@ -5922,6 +6130,7 @@ Begin
  If (Op='INCLUDE') Or (Op='INCBIN') Then Begin
   FN:=StrOperand(Args);
   If (FN<>'') And (FN[1]='<') Then FN:=Copy(FN,2,Length(FN)-2);
+  If FN='' Then Exit;
   If (Op='INCLUDE') And GsIsSeen(FN) Then Exit;
   Full:=FindInclude(FN);
   If Op='INCLUDE' Then Begin
@@ -5935,7 +6144,8 @@ Begin
    End;
   End;
   If Full='' Then Begin
-   FatalErr3('file not found: '+FN,'Fichier introuvable : '+FN,'Datei nicht gefunden: '+FN);
+   If Op='INCLUDE' Then FatalErr3('file not found','Fichier introuvable : '+FN,'Datei nicht gefunden: '+FN)
+   Else Err3('file not found','Fichier introuvable : '+FN,'Datei nicht gefunden: '+FN);
    Exit;
   End;
   If Op='INCLUDE' Then Begin
@@ -5950,13 +6160,13 @@ Begin
      Err3('line malformed','Ligne trop longue','Zeile zu lang');LongLines:=0;
     End;
     PushSrc(0,Lines,Cnt,Full,True);
-   End Else FatalErr3('include file read error: '+FN,'Erreur de lecture : '+FN,'Lesefehler: '+FN);
+   End Else FatalErr3('include file read error','Erreur de lecture : '+FN,'Lesefehler: '+FN);
   End Else Begin
    EvenPC;
    If ReadFileBytes(Full,P,Len) Then Begin
     For I:=0 To Len-1 Do EmitByte(PByteAt(P,I));
     If P<>Nil Then FreeMem(P,Len);
-   End Else FatalErr3('include file read error: '+FN,'Erreur de lecture : '+FN,'Lesefehler: '+FN);
+   End Else FatalErr3('include file read error','Erreur de lecture : '+FN,'Lesefehler: '+FN);
   End;
   Exit;
  End;
@@ -5967,15 +6177,16 @@ Begin
  If Op='OPT' Then Begin DirOpt(Args);Exit;End;
  If Op='END' Then Begin EndFlag:=True;Exit;End;
  If Op='OUTPUT' Then Begin
-  OutFileName:=StrOperand(Args);
+  If OutFileName='' Then OutFileName:=StrOperand(Args);
   Exit;
  End;
  If Op='COMMENT' Then Begin
   S2:=TrimS(Args);
-  If Copy(S2,1,5)='HEAD=' Then Begin
+  If (Copy(S2,1,5)='HEAD=') And (AO.Fmt<>1) Then Begin
    If EvalStr(Copy(S2,6,200),R) Then Begin HeadFlags:=R.V;HeadSet:=True;End;
   End Else If (AO.Fmt=1) And (GstCmtN<40) And (S2<>'') Then Begin
    Inc(GstCmtN);GstCmt[GstCmtN]:=Copy(StrOperand(Args),1,80);
+   If AsmPassNo=2 Then GEvCmt(TrimS(Args));
   End;
   Exit;
  End;
@@ -5993,12 +6204,24 @@ Begin
   Exit;
  End;
  If Op='REPT' Then Begin
+  K:=SrcTop;
+  While (K>0) And (Srcs[K].Kind<>2) Do Dec(K);
+  If K>0 Then Begin
+   LastErrLine:=0;
+   Err3('cannot nest repeat loops','REPT imbriques interdits','Verschachtelte REPT nicht erlaubt');
+   Exit;
+  End;
   FwdRef:=False;
   If Not EvalStr(Args,R) Then R.V:=0;
   If R.S>=0 Then Err3('relative not allowed','Relatif interdit','Relativ nicht erlaubt');
   If R.X>0 Then Err3('imported label not allowed','Etiquette importee interdite','Importiertes Label nicht erlaubt')
-  Else If FwdRef Then Err3('absolute expression MUST evaluate','L''expression absolue doit etre evaluable','Absoluter Ausdruck muss auswertbar sein');
+  Else If FwdRef Then Begin
+   Err3('absolute expression MUST evaluate','L''expression absolue doit etre evaluable','Absoluter Ausdruck muss auswertbar sein');
+   Exit;
+  End;
+  If ListWanted Then ListLine(LnText);
   Lines:=CollectBody('REPT','ENDR',Cnt2);
+  ListDone:=True;
   If (R.V>0) And (Cnt2>0) Then Begin
    PushSrc(2,Lines,Cnt2,'REPT',True);
    Srcs[SrcTop].Reps:=R.V;
@@ -6097,8 +6320,13 @@ Begin
  ListLineNo:=4;
 End;
 
+Function ListEnabled: Boolean;
+Begin
+ ListEnabled:=ListOn And (ListCnt>=0);
+End;
+
 Procedure ListOut(Const Ln: String);
-Var K: Integer;
+Var K: Integer; Rest: String;
 Begin
  If (ListPage=0) And ListHold And (ListQN<8) Then Begin
   Inc(ListQN);ListQ[ListQN]:=Ln;Exit;
@@ -6109,41 +6337,72 @@ Begin
   Inc(ListLineNo);
  End;
  ListQN:=0;
- WriteLn(ListF,Copy(Ln,1,ListLLen));
- Inc(ListLineNo);
+ { une ligne trop longue se poursuit sur la ligne suivante, comme dans le vrai GenST }
+ Rest:=Ln;
+ Repeat
+  WriteLn(ListF,Copy(Rest,1,ListLLen));
+  Inc(ListLineNo);
+  Delete(Rest,1,ListLLen);
+ Until Rest='';
 End;
 
 Procedure ListLine(Const S: String);
-Var Ln,B,Adr: String; I: Integer; Sect: Integer; N,Done: LongInt; MaxB: Integer; First: Boolean;
+Var Ln,B,Scs: String; I: Integer; Sect: Integer; N: LongInt; MaxB: Integer; Sc: Char; Sep: Char; V: LongInt;
 Begin
  If Not ListOn Then Exit;
  If ListCnt<0 Then Exit;
+ For I:=1 To SrcTop Do If Srcs[I].Kind=2 Then Exit;
+ If ListOnlyPass And Not LnHadMsg Then Exit;
+ If ListSkip Then Begin
+  While ListSpc>0 Do Begin ListOut('');Dec(ListSpc);End;
+  Exit;
+ End;
+ If ListDone Then Exit;
  Sect:=CurSect;If AbsMode Then Sect:=0;
+ If CurSect<>LnStartSect Then Sect:=LnStartSect;
  If ListLLen<80 Then MaxB:=6 Else MaxB:=20;
  N:=SecLen[Sect]-LnStartLen;
- If OffMode Or (Sect=SEC_BSS) Or (N<0) Then N:=0;
- Done:=0;First:=True;
- Repeat
-  Ln:='';
-  If ListFmt[0] Then Begin
-   If First Then Ln:=PadL(IntStr(CurLineNo),5)+' ' Else Ln:='      ';
-  End;
-  If ListFmt[1] Then Begin
-   Adr:=Hex6(LnAddr+Done)+' ';
-   Ln:=Ln+Adr;
-  End;
-  If ListFmt[2] Then Begin
-   B:='';
-   For I:=0 To MaxB-1 Do
-    If Done+I<N Then B:=B+Hex2(SecGet(Sect,LnStartLen+Done+I));
-   Ln:=Ln+PadR(B,MaxB*2+1);
-  End;
-  If First Then Ln:=Ln+ExpandTabs(S,OptTabSize);
-  ListOut(Ln);
-  Done:=Done+MaxB;
-  First:=False;
- Until Done>=N;
+ If OffMode Or (Sect=SEC_BSS) Or (N<0) Or ListNoData Then N:=0;
+ If N>MaxB Then N:=MaxB;
+ Case CurSect Of
+  0: Sc:='T';
+  1: Sc:='D';
+ Else Sc:='B';
+ End;
+ If AbsMode Then Sc:='T';
+ If OffMode Then Sc:='O';
+ If ListMacMark Then Sep:='+' Else Sep:=' ';
+ Scs:=Sc+'  ';
+ If AO.Fmt=1 Then Begin
+  If AbsMode Then Scs:=Upper(HexN($10000-GstListId(0),2))+'.'
+  Else Scs:=Upper(HexN($10000-GstListId(CurSect),2))+'.';
+ End;
+ Ln:='';
+ If ListFmt[0] Then Ln:=PadL(IntStr(CurLineNo),5)+' ';
+ If ListFmt[1] Then Begin
+  If ListIsEqu Then Ln:=Ln+'  ='+Hex8(ListEquVal)+Sep
+  Else If ListAfter Or ((CurSect<>LnStartSect) And Not AbsMode) Then Ln:=Ln+Scs+Hex8(CurPC)+Sep
+  Else Ln:=Ln+Scs+Hex8(LnAddr)+Sep;
+ End;
+ If ListFmt[2] Then Begin
+  B:='';
+  For I:=0 To N-1 Do B:=B+Hex2(SecGet(Sect,LnStartLen+I));
+  Ln:=Ln+PadR(B,MaxB*2+1);
+ End;
+ Ln:=Ln+ExpandTabs(S,OptTabSize);
+ ListOut(Ln);
  While ListSpc>0 Do Begin ListOut('');Dec(ListSpc);End;
+End;
+
+Procedure ListMacEnd(Const Tx: String);
+Begin
+ If Not (ListWanted And AO.Mex) Then Exit;
+ LnStartSect:=CurSect;
+ LnStartLen:=SecLen[CurSect];
+ If AbsMode Then LnStartLen:=SecLen[0];
+ LnAddr:=CurPC;
+ ListIsEqu:=False;ListSkip:=False;ListMacMark:=False;
+ ListLine(Tx);
 End;
 
 Function InMacroExp: Boolean;
@@ -6199,7 +6458,6 @@ Var
  LnRecLine,LnRecAddr,LnRecFile : PLongArr;
  LnFiles : Array[1..64] Of String[120];
  LnFileN : Integer;
- LnStartSect : Integer;
 
 Procedure LnRecReset;
 Begin
@@ -6236,13 +6494,20 @@ Begin
  LnRecFile^[LnRecN]:=Fi;
 End;
 
-Procedure ProcessLine(Const S: String);
+Procedure ProcessLine(Const S: String); Forward;
+
+Procedure ProcessLine0(Const S: String);
 Var Lbl,Op,Suf,Args,Ex,Rest: String; Sz,M: Integer; Even,IsInstr,WasMac: Boolean; R: TTV;
 Begin
  LnText:=S;
  LnStartSect:=CurSect;
+ ListIsEqu:=False;ListSkip:=False;ListMacMark:=False;ListAfter:=False;ListNoData:=False;ListDone:=False;LnHadMsg:=False;
  WasMac:=InMacroExp;
  SplitLine(S,Lbl,Op,Suf,Args);
+ ListSkip:=(Op='LIST') Or (Op='NOLIST') Or (Op='TTL') Or (Op='SUBTTL') Or (Op='SPC') Or (Op='PAGE') Or (Op='PLEN') Or (Op='LLEN');
+ ListMacMark:=WasMac And AO.Mex;
+ ListAfter:=(Op='EVEN') Or (Op='ORG') Or (Op='OFFSET') Or (Op='SECTION') Or (Op='TEXT') Or (Op='DATA') Or (Op='BSS') Or (Op='ALIGN') Or (Op='RORG');
+ ListNoData:=(Op='DS') Or (Op='DCB') Or (Op='EVEN');
  ListHold:=(Op='TTL') Or (Op='SUBTTL') Or (Op='PLEN') Or (Op='LLEN') Or (Op='FORMAT');
  LnStartLen:=SecLen[CurSect];
  If AbsMode Then LnStartLen:=SecLen[0];
@@ -6253,7 +6518,10 @@ Begin
   If ListWanted And (Not WasMac Or AO.Mex) Then ListLine(S);
   Exit;
  End;
- If Not CondActive Then Exit;
+ If Not CondActive Then Begin
+  If ListWanted And (Not WasMac Or AO.Mex) Then Begin ListSkip:=False;ListLine(S);End;
+  Exit;
+ End;
  If Op='' Then Begin
   If Lbl<>'' Then DefLabel(Lbl);
   If ListWanted And (Not WasMac Or AO.Mex) Then ListLine(S);
@@ -6261,7 +6529,7 @@ Begin
  End;
  If (Op='IIF') And (FindMacro('IIF')=0) Then Begin
   IIFParts(S,Ex,Rest);
-  If Ex='' Then Begin Err3('Operand expected','Operande attendue','Operand erwartet');Exit;End;
+  If Ex='' Then Begin Err3('expression mismatch','Operande attendue','Operand erwartet');Exit;End;
   If Not EvalStr(Ex,R) Then R.V:=0;
   If R.V<>0 Then ProcessLine(Lbl+' '+Rest)
   Else If Lbl<>'' Then ProcessLine(Lbl);
@@ -6289,6 +6557,8 @@ Begin
   Exit;
  End;
  M:=FindMacro(Op);
+ { une macro ne remplace pas une directive (GenST 2.23 ignore aussi les macros de nom d'instruction ; ici elles restent prioritaires : SAMPLES/DEVPAC/shelscrp.s) }
+ If (M<>0) And IsDirName(Op) Then M:=0;
  If IsValueDirective(Op) And (M=0) Then Begin
   Directive(Lbl,Op,Args,Sz);
   If ListWanted And (Not WasMac Or AO.Mex) Then ListLine(S);
@@ -6310,18 +6580,23 @@ Begin
  If M<>0 Then CallMacro(M,Args,Suf)
  Else If Directive(Lbl,Op,Args,Sz) Then
  Else If Not AsmInstruction(Op) Then
-  Begin
-   If AsmPassNo=1 Then Begin
-    If Pass1Idx=0 Then Begin
-     AsmPassNo:=2;LastErrLine:=0;
-     Err3('instruction not recognised: '+Op,'Code operation inconnu : '+Op,'Unbekannter Befehl: '+Op);
-     AsmPassNo:=1;SkipPass2:=True;
-    End;
-   End Else
-   Err3('instruction not recognised: '+Op,'Code operation inconnu : '+Op,'Unbekannter Befehl: '+Op);
-  End;
+  Err3('instruction not recognised','Code operation inconnu : '+Op,'Unbekannter Befehl: '+Op);
  If AsmPassNo=2 Then RecLineInfo;
- If ListWanted And (Not WasMac Or AO.Mex) Then ListLine(S);
+ If ListWanted And (Not WasMac Or AO.Mex) And ((M=0) Or AO.Mex) Then Begin
+  If M<>0 Then ListMacMark:=True;
+  ListLine(S);
+ End;
+End;
+
+Procedure ProcessLine(Const S: String);
+Var L,O,Sf,A: String;
+Begin
+ ProcessLine0(S);
+ If (AsmPassNo=2) And (AO.Fmt=1) And Not AbsMode Then Begin
+  SplitLine(S,L,O,Sf,A);
+  If (O='SECTION') Or (O='TEXT') Or (O='DATA') Or (O='BSS') Or (O='CODE') Then
+   If CondActive Then GEvSection;
+ End;
 End;
 
 { ---------------------------------------------------------------------- }
@@ -6382,8 +6657,14 @@ Begin
   ProcessLine(S);
  End;
  While SrcTop>0 Do PopSrc;
- If (AsmPassNo=2) And (CondTop>0) Then Begin
-  CurLineNo:=Count;CurSrcName:=AsmFileName;LnText:='';
+ If (CondTop>0) And Not CondActive And (Not AsmFatal) Then Begin
+  { IF inactif jamais ferme : erreur fatale du vrai GenST }
+  CurLineNo:=CondLn[1];CurSrcName:=AsmFileName;LnText:='';
+  FatalErr3('source expired prematurely','Fin de fichier inattendue','Unerwartetes Dateiende');
+ End Else If (AsmPassNo=2) And (CondTop>0) Then Begin
+  CurLineNo:=CondLn[1];CurSrcName:=AsmFileName;LnText:='';
+  Err3('missing ENDC','ENDC manquant','ENDC fehlt');
+  LastErrLine:=0;
   Err3('missing ENDC','ENDC manquant','ENDC fehlt');
  End;
 End;
@@ -6474,30 +6755,88 @@ Begin
  If P^.Kind<>0 Then Exit;
  If P^.Sect<0 Then Exit;
  If Pos('~',P^.Name)>0 Then Exit;
- T:=$8000;
+ { le vrai GenST : tous les symboles sont definis+globaux ($A000), valeur relative a la section }
+ T:=$A000;
  Case P^.Sect Of
   0: T:=T Or $0200;
   1: T:=T Or $0400;
   2: T:=T Or $0100;
  End;
- V:=P^.Value+SecBase[P^.Sect];
+ If AbsMode Then V:=P^.Value+SecBase[P^.Sect] Else V:=P^.Value;
  SymTypeOf:=True;
 End;
 
-Function PrgSymbolBytes: LongInt;
-Var I: Integer; P: PSym; N: LongInt; T: Word; V: LongInt;
+Type
+ TSymPtrArr = Array[0..30000] Of PSym;
+ PSymPtrArr = ^TSymPtrArr;
+
+Var
+ PrgSyms : PSymPtrArr;
+ PrgSymN : LongInt;
+
+{ liste triee (longueur du nom puis ordre ASCII) comme le vrai GenST }
+Var PrgSymCap: LongInt;
+
+Procedure AllocSymPtrs;
+Var H: Integer; P: PSym; N: LongInt;
 Begin
  N:=0;
- For I:=0 To HASHSZ-1 Do Begin
-  P:=Hash[I];
+ For H:=0 To HASHSZ-1 Do Begin
+  P:=Hash[H];
+  While P<>Nil Do Begin Inc(N);P:=P^.Next;End;
+ End;
+ PrgSymCap:=N+2;
+ GetMem(PrgSyms,PrgSymCap*SizeOf(PSym));
+End;
+
+Procedure FreeSymPtrs;
+Begin
+ If PrgSyms<>Nil Then FreeMem(PrgSyms,PrgSymCap*SizeOf(PSym));
+ PrgSyms:=Nil;
+End;
+
+Procedure SortSymPtrs;
+Var X: PSym; Gap,I,J: LongInt; Lt: Boolean;
+Begin
+ Gap:=PrgSymN Div 2;
+ While Gap>0 Do Begin
+  For I:=Gap To PrgSymN-1 Do Begin
+   X:=PrgSyms^[I];J:=I;
+   Repeat
+    If J<Gap Then Lt:=False
+    Else If Length(PrgSyms^[J-Gap]^.Name)<>Length(X^.Name) Then Lt:=Length(PrgSyms^[J-Gap]^.Name)>Length(X^.Name)
+    Else Lt:=PrgSyms^[J-Gap]^.Name>X^.Name;
+    If Lt Then Begin PrgSyms^[J]:=PrgSyms^[J-Gap];J:=J-Gap;End;
+   Until Not Lt;
+   PrgSyms^[J]:=X;
+  End;
+  Gap:=Gap Div 2;
+ End;
+End;
+
+Procedure CollectPrgSyms;
+Var H: Integer; P: PSym; T: Word; V: LongInt;
+Begin
+ PrgSymN:=0;
+ AllocSymPtrs;
+ For H:=0 To HASHSZ-1 Do Begin
+  P:=Hash[H];
   While P<>Nil Do Begin
-   If SymTypeOf(P,T,V) Then Begin
-    Inc(N);
-    If AO.XDebug And (Length(P^.Name)>8) Then Inc(N);
+   If (PrgSymN<PrgSymCap) And SymTypeOf(P,T,V) Then Begin
+    PrgSyms^[PrgSymN]:=P;Inc(PrgSymN);
    End;
    P:=P^.Next;
   End;
  End;
+ SortSymPtrs;
+End;
+
+Function PrgSymbolBytes: LongInt;
+Var I: Integer; N: LongInt;
+Begin
+ N:=PrgSymN;
+ If AO.XDebug Then
+  For I:=0 To PrgSymN-1 Do If Length(PrgSyms^[I]^.Name)>8 Then Inc(N);
  PrgSymbolBytes:=N*14;
 End;
 
@@ -6637,31 +6976,31 @@ Var TS,DS,BS,SS,I,J: LongInt; P: PSym; H: Integer; T: Word; V: LongInt;
 Begin
  WritePRG:=False;
  If Not OpenOut(Name) Then Exit;
- TS:=EvenUp(SecLen[0]);DS:=EvenUp(SecLen[1]);BS:=SecLen[2];
- If OptDebug Then SS:=PrgSymbolBytes Else SS:=0;
+ TS:=EvenUp(SecLen[0]);DS:=EvenUp(SecLen[1]);BS:=EvenUp(SecLen[2]);
+ PrgSymN:=0;PrgSyms:=Nil;
+ If OptDebug Then Begin CollectPrgSyms;SS:=PrgSymbolBytes;End Else SS:=0;
  OutWord($601A);OutLong(TS);OutLong(DS);OutLong(BS);OutLong(SS);
  OutLong(0);
  If HeadSet Then OutLong(HeadFlags) Else OutLong(0);
  OutWord(0);
  For I:=0 To TS-1 Do OutByte(SecGet(0,I));
  For I:=0 To DS-1 Do OutByte(SecGet(1,I));
- If OptDebug Then
-  For H:=0 To HASHSZ-1 Do Begin
-   P:=Hash[H];
-   While P<>Nil Do Begin
-    If SymTypeOf(P,T,V) Then Begin
-     Nm:=P^.Name;
-     If Not AO.XDebug Then Nm:=Copy(Nm,1,8);
-     If Length(Nm)>8 Then T:=T Or $0048;
-     For J:=1 To 8 Do If J<=Length(Nm) Then OutByte(Ord(Nm[J])) Else OutByte(0);
-     OutWord(T);OutLong(V);
-     If Length(Nm)>8 Then Begin
-      For J:=9 To 22 Do If J<=Length(Nm) Then OutByte(Ord(Nm[J])) Else OutByte(0);
-     End;
+ If OptDebug Then Begin
+  For H:=0 To PrgSymN-1 Do Begin
+   P:=PrgSyms^[H];
+   If SymTypeOf(P,T,V) Then Begin
+    Nm:=P^.Name;
+    If Not AO.XDebug Then Nm:=Copy(Nm,1,8);
+    If Length(Nm)>8 Then T:=T Or $0048;
+    For J:=1 To 8 Do If J<=Length(Nm) Then OutByte(Ord(Nm[J])) Else OutByte(0);
+    OutWord(T);OutLong(V);
+    If Length(Nm)>8 Then Begin
+     For J:=9 To 22 Do If J<=Length(Nm) Then OutByte(Ord(Nm[J])) Else OutByte(0);
     End;
-    P:=P^.Next;
    End;
   End;
+  FreeSymPtrs;PrgSyms:=Nil;
+ End;
  { table de relocation }
  GetMem(RO,(RelocN+2)*4);
  For I:=1 To RelocN Do Begin
@@ -6838,38 +7177,60 @@ Type
 
 Procedure PrintSymbols;
 Var Arr: PSymArr; N,I,J,Gap: LongInt; P: PSym; T: PSym; H: Integer;
-    Sc: String;
+    Sc,Md: String; Gst: Boolean;
 Begin
- GetMem(Arr,(SymCount+2)*SizeOf(PSym));
+ AllocSymPtrs;
  N:=0;
  For H:=0 To HASHSZ-1 Do Begin
   P:=Hash[H];
   While P<>Nil Do Begin
-   If P^.Defd And (P^.Kind<>2) Then Begin Inc(N);Arr^[N]:=P;End;
+   If P^.Defd And (P^.Kind<>2) And (Pos('~',P^.Name)=0) And (N<PrgSymCap-1) Then Begin PrgSyms^[N]:=P;Inc(N);End;
    P:=P^.Next;
   End;
  End;
  Gap:=N Div 2;
  While Gap>0 Do Begin
-  For I:=Gap+1 To N Do Begin
-   T:=Arr^[I];J:=I;
-   While (J>Gap) And (Arr^[J-Gap]^.Name>T^.Name) Do Begin Arr^[J]:=Arr^[J-Gap];J:=J-Gap;End;
-   Arr^[J]:=T;
+  For I:=Gap To N-1 Do Begin
+   T:=PrgSyms^[I];J:=I;
+   While (J>=Gap) And (PrgSyms^[J-Gap]^.Name>T^.Name) Do Begin PrgSyms^[J]:=PrgSyms^[J-Gap];J:=J-Gap;End;
+   PrgSyms^[J]:=T;
   End;
   Gap:=Gap Div 2;
  End;
+ Gst:=AO.Fmt=1;
+ { format du vrai GenST : symboles absolus, puis symboles relogeables du module }
  ListOut('');
- ListOut(T3('Symbol table','Table des symboles','Symboltabelle'));
- For I:=1 To N Do Begin
-  Case Arr^[I]^.Sect Of
-   0: Sc:='TEXT';
-   1: Sc:='DATA';
-   2: Sc:='BSS ';
-  Else Sc:='ABS ';
+ ListOut(#9+'GLOBAL SYMBOLS');
+ ListOut('');
+ For I:=0 To N-1 Do
+  If PrgSyms^[I]^.Sect<0 Then ListOut(Hex8(PrgSyms^[I]^.Value)+'     A  '+PrgSyms^[I]^.Name);
+ ListOut('');
+ If (AO.Fmt=1) Or (AO.Fmt=2) Then Begin
+  If ModName='' Then Md:='ANON_MODULE' Else Md:=Upper(ModName);
+  Md:=Md+#9;
+ End Else Md:='';
+ ListOut(#9+'MODULE '+Md);
+ ListOut('');
+ For I:=0 To N-1 Do
+  If PrgSyms^[I]^.Sect>=0 Then Begin
+   If Gst Then Begin
+    Case PrgSyms^[I]^.Sect Of
+     0: Sc:='FF.R';
+     1: Sc:='FE.R';
+    Else Sc:='FD.R';
+    End;
+   End Else Begin
+    Case PrgSyms^[I]^.Sect Of
+     0: Sc:='T  R';
+     1: Sc:='D  R';
+    Else Sc:='B  R';
+    End;
+   End;
+   ListOut(Hex8(PrgSyms^[I]^.Value)+'  '+Sc+'  '+PrgSyms^[I]^.Name);
   End;
-  ListOut(PadR(Arr^[I]^.Name,40)+' '+Hex8(Arr^[I]^.Value)+' '+Sc);
- End;
- FreeMem(Arr,(SymCount+2)*SizeOf(PSym));
+ ListOut('');
+ Write(ListF,#12);
+ FreeSymPtrs;
 End;
 
 { Ecrit un fichier de symboles pre-assemble (.GS) : symboles absolus, listes REG, macros }
@@ -6970,19 +7331,24 @@ Begin
  For I:=0 To TS-1 Do OutByte(SecGet(0,I));
  For I:=0 To DS-1 Do OutByte(SecGet(1,I));
  { symboles : imports d'abord (index = numero d'import-1), puis exports, puis locaux }
- For I:=1 To ImpN Do Begin OutName8(ImpNames[I]);OutWord($0800);OutLong(0);End;
+ For I:=1 To ImpN Do Begin OutName8(ImpNames[I]);OutWord($8800);OutLong(0);End;
+ PrgSymN:=0;AllocSymPtrs;
  For H:=0 To HASHSZ-1 Do Begin
   P:=Hash[H];
   While P<>Nil Do Begin
-   If IsExp(P) Or IsLoc(P) Then Begin
-    If P^.Sect<0 Then Fl:=$E000
-    Else If IsExp(P) Then Fl:=$A000 Or SecFlag(P^.Sect)
-    Else Fl:=$8000 Or SecFlag(P^.Sect);
-    OutName8(P^.Name);OutWord(Fl);OutLong(P^.Value);
-   End;
+   If (IsExp(P) Or IsLoc(P)) And (PrgSymN<PrgSymCap) Then Begin PrgSyms^[PrgSymN]:=P;Inc(PrgSymN);End;
    P:=P^.Next;
   End;
  End;
+ SortSymPtrs;
+ For H:=0 To PrgSymN-1 Do Begin
+  P:=PrgSyms^[H];
+  If P^.Sect<0 Then Fl:=$E000
+  Else If IsExp(P) Then Fl:=$A000 Or SecFlag(P^.Sect)
+  Else Fl:=$8000 Or SecFlag(P^.Sect);
+  OutName8(P^.Name);OutWord(Fl);OutLong(P^.Value);
+ End;
+ FreeSymPtrs;PrgSyms:=Nil;
  { relocation : un mot par mot de TEXT puis de DATA }
  GetMem(TR,TS+4);GetMem(DR,DS+4);
  FillChar(TR^,TS+4,0);FillChar(DR^,DS+4,0);
@@ -7173,7 +7539,7 @@ Var K: Integer; S: String;
 Begin
  S:=N;K:=Pos('^',S);
  If K>0 Then S:=Copy(S,1,K-1);
- GstName:=Copy(S,1,32);
+ GstName:=Copy(S,1,80);
 End;
 
 Function SymInModule(P: PSym): Boolean;
@@ -7184,141 +7550,172 @@ Begin
  Else SymInModule:=(K>0) And (Copy(P^.Name,K+1,10)=IntStr(ModIdx));
 End;
 
-{ ecrit le module courant dans le tampon GST }
+{ ecrit le module courant dans le tampon GST : evenements dans l'ordre de la source }
 Procedure GstFlushModule;
-Var Used: Array[0..2] Of Boolean; SecId: Array[0..2] Of LongInt; S,Nx: Integer; I,J,K,H,Pos0: LongInt;
-    P: PSym; Idx: PLongArr; Gap,T,Cnt: LongInt; Nm: String; Dst,D,NS,X,Kk: LongInt; Sz: Integer; Rule: Integer;
-    Term: LongInt; Done: Boolean; Rel: Array[0..0] Of Integer; OrgI,GapI: Integer; Ok: Boolean;
+Var SecId: Array[0..2] Of LongInt; Have: Array[0..2] Of Boolean; Ord3: Array[1..3] Of Integer; NId: Integer;
+    E,I,J,K,H,Pos0,Cnt,T,Gap,Pe: LongInt; P: PSym; Nm: String;
+    Dst,D,NS,X,Kk: LongInt; Sz: Integer; Rule: Integer; Term: LongInt; Done: Boolean; OrgI,S: Integer; Ok: Boolean;
+    Idx: Array[0..2] Of PLongArr; ICnt: Array[0..2] Of LongInt; Cur: Array[0..2] Of LongInt;
+    ImpOrd: Array[1..2001] Of Integer;
 
- Function RelIdx(Sec: Integer): LongInt;
+ Procedure Assign(Sc: Integer);
  Begin
-  RelIdx:=0;
+  If (Sc<0) Or (Sc>2) Then Exit;
+  If Not Have[Sc] Then Begin
+   Have[Sc]:=True;Inc(NId);SecId[Sc]:=$10000-NId;Ord3[NId]:=Sc;
+  End;
  End;
 
- Procedure MarkUsed(D: LongInt);
+ Procedure EmitSpan(Sc: Integer; A,B: LongInt);
+ Var GapI: Integer;
  Begin
-  If (D>=0) And (D<=2) Then Used[D]:=True;
- End;
-
-Begin
- If ModName='' Then ModName:=Upper(ShortName(ChangeExt(AsmFileName,'X')));
- If Copy(ModName,Length(ModName)-1,2)='.X' Then ModName:=Copy(ModName,1,Length(ModName)-2);
- GDir(1);GStr(Copy(ModName,1,80));
- For I:=1 To GstCmtN Do Begin GDir(2);GStr(GstCmt[I]);End;
- { sections utilisees }
- For S:=0 To 2 Do Used[S]:=SecLen[S]>0;
- If AbsMode Then Begin Used[0]:=False;End;
- For K:=1 To XdefN Do Begin
-  P:=FindSym(XdefNames[K]);
-  If (P<>Nil) And P^.Defd And (P^.Kind=0) And (P^.Sect>=0) Then Used[P^.Sect]:=True;
- End;
- For I:=1 To RelocN Do Begin
-  Dst:=RelocDst^[I];
-  If Dst<=-10 Then MarkUsed(-10-Dst)
-  Else Begin
-   NS:=Dst Div 100000;D:=Dst Mod 100000;
-   If NS>0 Then MarkUsed(NS-1);
-   If D<RELIMP Then MarkUsed(D);
+  Pos0:=A;
+  If Sc=2 Then Begin
+   While Pos0<B Do Begin GAdd(0);Inc(Pos0);End;
+   Exit;
   End;
- End;
- If OptDebug Then
-  For H:=0 To HASHSZ-1 Do Begin
-   P:=Hash[H];
-   While P<>Nil Do Begin
-    If P^.Defd And (P^.Kind=0) And (P^.Sect>=0) And (Pos('~',P^.Name)=0) And SymInModule(P) Then Used[P^.Sect]:=True;
-    P:=P^.Next;
-   End;
-  End;
- Nx:=0;
- For S:=0 To 2 Do
-  If Used[S] Then Begin
-   Inc(Nx);SecId[S]:=$10000-Nx;
-   GDir($10);GWord(SecId[S]);GStr(GstSecName[S]);
-  End;
- { XDEF }
- For K:=1 To XdefN Do Begin
-  P:=FindSym(XdefNames[K]);
-  If (P<>Nil) And P^.Defd And (P^.Kind=0) Then Begin
-   GDir(6);GStr(GstName(XdefNames[K]));GLong(P^.Value);
-   If P^.Sect<0 Then GWord(0) Else GWord(SecId[P^.Sect]);
-  End;
- End;
- If OptDebug Then
-  For H:=0 To HASHSZ-1 Do Begin
-   P:=Hash[H];
-   While P<>Nil Do Begin
-    If P^.Defd And (P^.Kind=0) And (P^.Sect>=0) And (Pos('~',P^.Name)=0) And SymInModule(P) Then Begin
-     Ok:=True;
-     For K:=1 To XdefN Do If FindSym(XdefNames[K])=P Then Ok:=False;
-     If Ok Then Begin GDir(6);GStr(GstName(P^.Name));GLong(P^.Value);GWord(SecId[P^.Sect]);End;
-    End;
-    P:=P^.Next;
-   End;
-  End;
- { symboles importes : identifiants positifs }
- For I:=1 To ImpN Do Begin GDir($10);GWord(I);GStr(GstName(ImpNames[I]));End;
- { corps : une passe par section }
- For S:=0 To 2 Do Begin
-  If (S=0) And AbsMode Then Begin
-   { ORG : adresses absolues }
-  End Else If Not Used[S] Then Continue
-  Else Begin GDir(4);GWord(SecId[S]);End;
-  If S=2 Then Begin
-   If SecLen[2]>0 Then Begin GDir(5);GLong(SecLen[2]-1);GAdd(0);End;
-   Continue;
-  End;
-  { reloc de cette section, tries par position }
-  GetMem(Idx,(RelocN+2)*4);Cnt:=0;
-  For I:=1 To RelocN Do If RelocSrc^[I]=S Then Begin Inc(Cnt);Idx^[Cnt]:=I;End;
-  Gap:=Cnt Div 2;
-  While Gap>0 Do Begin
-   For I:=Gap+1 To Cnt Do Begin
-    T:=Idx^[I];J:=I;
-    While (J>Gap) And (RelocPos^[Idx^[J-Gap]]>RelocPos^[T]) Do Begin Idx^[J]:=Idx^[J-Gap];J:=J-Gap;End;
-    Idx^[J]:=T;
-   End;
-   Gap:=Gap Div 2;
-  End;
-  Pos0:=0;K:=1;OrgI:=1;
-  While Pos0<SecLen[S] Do Begin
-   If AbsMode And (S=0) Then
+  While Pos0<B Do Begin
+   If AbsMode And (Sc=0) Then
     While (OrgI<=GstOrgN) And (GstOrgPos[OrgI]=Pos0) Do Begin GDir(3);GLong(GstOrgAddr[OrgI]);Inc(OrgI);End;
    Done:=False;
    For GapI:=1 To GstGapN Do
-    If (Not Done) And (GstGapSec[GapI]=S) And (GstGapPos[GapI]=Pos0) Then Begin
+    If (Not Done) And (GstGapSec[GapI]=Sc) And (GstGapPos[GapI]=Pos0) Then Begin
      GDir(5);GLong(GstGapEnd[GapI]);Pos0:=GstGapEnd[GapI];Done:=True;
     End;
    If Done Then Continue;
-   While (K<=Cnt) And (RelocPos^[Idx^[K]]<Pos0) Do Inc(K);
-   If (K<=Cnt) And (RelocPos^[Idx^[K]]=Pos0) Then Begin
-    Dst:=RelocDst^[Idx^[K]];Inc(K);
+   While (Cur[Sc]<=ICnt[Sc]) And (RelocPos^[Idx[Sc]^[Cur[Sc]]]<Pos0) Do Inc(Cur[Sc]);
+   If (Cur[Sc]<=ICnt[Sc]) And (RelocPos^[Idx[Sc]^[Cur[Sc]]]=Pos0) Then Begin
+    Dst:=RelocDst^[Idx[Sc]^[Cur[Sc]]];Inc(Cur[Sc]);
     NS:=0;
     If Dst<=-10 Then Begin Sz:=2;Rule:=$2A;D:=-10-Dst;X:=0;End
     Else Begin
      NS:=Dst Div 100000;D:=Dst Mod 100000;
      If D>=RELIMP Then Begin
       X:=(D-RELIMP) Div 4;Kk:=(D-RELIMP) Mod 4;
-      If Kk=0 Then Begin Sz:=4;Rule:=4;End Else If Kk=1 Then Begin Sz:=2;Rule:=2;End Else Begin Sz:=2;Rule:=$2A;End;
-     End Else Begin Sz:=4;Rule:=4;X:=0;End;
+      If Kk=0 Then Begin Sz:=4;If NS>0 Then Rule:=$14 Else Rule:=$54;End
+      Else If Kk=1 Then Begin Sz:=2;Rule:=2;End Else Begin Sz:=2;Rule:=$2A;End;
+     End Else Begin Sz:=4;If NS>0 Then Rule:=$14 Else Rule:=$54;X:=0;End;
     End;
-    If Sz=4 Then Term:=(LongInt(SecGet(S,Pos0)) Shl 24) Or (LongInt(SecGet(S,Pos0+1)) Shl 16) Or (LongInt(SecGet(S,Pos0+2)) Shl 8) Or SecGet(S,Pos0+3)
+    If Sz=4 Then Term:=(LongInt(SecGet(Sc,Pos0)) Shl 24) Or (LongInt(SecGet(Sc,Pos0+1)) Shl 16) Or (LongInt(SecGet(Sc,Pos0+2)) Shl 8) Or SecGet(Sc,Pos0+3)
     Else Begin
-     Term:=(LongInt(SecGet(S,Pos0)) Shl 8) Or SecGet(S,Pos0+1);
+     Term:=(LongInt(SecGet(Sc,Pos0)) Shl 8) Or SecGet(Sc,Pos0+1);
      If Term>=32768 Then Term:=Term-65536;
     End;
     GDir(7);GLong(Term);GAdd(Rule);
+    If (NS>0) And (Dst>-10) And (D>=RELIMP) Then Begin GAdd($2D);GWord(SecId[NS-1]);End;
     GAdd($2B);
     If (Dst<=-10) Or (D<RELIMP) Then GWord(SecId[D]) Else GWord(X);
-    If NS>0 Then Begin GAdd($2D);GWord(SecId[NS-1]);End;
+    If (NS>0) And ((Dst<=-10) Or (D<RELIMP)) Then Begin GAdd($2D);GWord(SecId[NS-1]);End;
     GAdd($FB);
     Inc(Pos0,Sz);
    End Else Begin
-    GAdd(SecGet(S,Pos0));
-    If SecGet(S,Pos0)=$FB Then GAdd($FB);
+    GAdd(SecGet(Sc,Pos0));
+    If SecGet(Sc,Pos0)=$FB Then GAdd($FB);
     Inc(Pos0);
    End;
   End;
-  FreeMem(Idx,(RelocN+2)*4);
+ End;
+
+Begin
+ GSpanClose;
+ { module vide : rien n'est ecrit }
+ If (GEvN=0) And (ImpN=0) And (SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) Then Exit;
+ If ModName='' Then Nm:='ANON_MODULE' Else Nm:=Upper(ModName);
+ If Copy(Nm,Length(Nm)-1,2)='.X' Then Nm:=Copy(Nm,1,Length(Nm)-2);
+ GDir(1);GStr(Copy(Nm,1,80));
+ { identifiants de sections : dans l'ordre de premiere utilisation, TEXT d'abord }
+ For S:=0 To 2 Do Have[S]:=False;
+ NId:=0;
+ Assign(0);
+ For E:=1 To GEvN Do If GEvK[E]=2 Then Assign(GEvS[E]);
+ For E:=1 To GEvN Do If GEvK[E]=0 Then Assign(GEvS[E]);
+ For K:=1 To XdefN Do Begin
+  P:=FindSym(XdefNames[K]);
+  If (P<>Nil) And P^.Defd And (P^.Kind=0) And (P^.Sect>=0) Then Assign(P^.Sect);
+ End;
+ For I:=1 To RelocN Do Begin
+  Dst:=RelocDst^[I];
+  If Dst<=-10 Then Assign(-10-Dst)
+  Else Begin
+   NS:=Dst Div 100000;D:=Dst Mod 100000;
+   If NS>0 Then Assign(NS-1);
+   If D<RELIMP Then Assign(D);
+  End;
+ End;
+ If OptDebug Then
+  For H:=0 To HASHSZ-1 Do Begin
+   P:=Hash[H];
+   While P<>Nil Do Begin
+    If P^.Defd And (P^.Kind=0) And (P^.Sect>=0) And (Pos('~',P^.Name)=0) And SymInModule(P) Then Assign(P^.Sect);
+    P:=P^.Next;
+   End;
+  End;
+ For K:=1 To NId Do Begin
+  GDir($10);GWord(SecId[Ord3[K]]);GStr(GstSecName[Ord3[K]]);
+ End;
+ { symboles importes : identifiants positifs }
+ Cnt:=0;
+ For I:=1 To ImpN Do Begin
+  { ordre : longueur du nom puis ordre ASCII (comme le vrai GenST) }
+  J:=0;
+  For K:=1 To ImpN Do
+   If (Length(GstName(ImpNames[K]))<Length(GstName(ImpNames[I]))) Or
+      ((Length(GstName(ImpNames[K]))=Length(GstName(ImpNames[I]))) And (GstName(ImpNames[K])<GstName(ImpNames[I]))) Or
+      ((GstName(ImpNames[K])=GstName(ImpNames[I])) And (K<I)) Then Inc(J);
+  ImpOrd[J+1]:=I;
+ End;
+ For I:=1 To ImpN Do Begin GDir($10);GWord(ImpOrd[I]);GStr(GstName(ImpNames[ImpOrd[I]]));End;
+ { index des relogements par section, tries par position }
+ For S:=0 To 2 Do Begin
+  GetMem(Idx[S],(RelocN+2)*4);ICnt[S]:=0;Cur[S]:=1;
+  For I:=1 To RelocN Do If RelocSrc^[I]=S Then Begin Inc(ICnt[S]);Idx[S]^[ICnt[S]]:=I;End;
+  Gap:=ICnt[S] Div 2;
+  While Gap>0 Do Begin
+   For I:=Gap+1 To ICnt[S] Do Begin
+    T:=Idx[S]^[I];J:=I;
+    While (J>Gap) And (RelocPos^[Idx[S]^[J-Gap]]>RelocPos^[T]) Do Begin Idx[S]^[J]:=Idx[S]^[J-Gap];J:=J-Gap;End;
+    Idx[S]^[J]:=T;
+   End;
+   Gap:=Gap Div 2;
+  End;
+ End;
+ OrgI:=1;
+ GDir(4);GWord(SecId[0]);
+ For E:=1 To GEvN Do Begin
+  Case GEvK[E] Of
+   0: EmitSpan(GEvS[E],GEvA[E],GEvB[E]);
+   1: Begin
+       P:=FindSym(XdefNames[GEvS[E]]);
+       If (P<>Nil) And P^.Defd And (P^.Kind=0) Then Begin
+        GDir(6);GStr(GstName(XdefNames[GEvS[E]]));GLong(P^.Value);
+        If P^.Sect<0 Then GWord(0) Else GWord(SecId[P^.Sect]);
+       End;
+      End;
+   2: Begin GDir(4);GWord(SecId[GEvS[E]]);End;
+   3: Begin GDir(2);GStr(GEvTxt[GEvS[E]]);End;
+  End;
+ End;
+ For S:=0 To 2 Do FreeMem(Idx[S],(RelocN+2)*4);
+ { OPT D : symboles non exportes, en fin de module, tries (longueur, nom) }
+ If OptDebug Then Begin
+  PrgSymN:=0;AllocSymPtrs;
+  For H:=0 To HASHSZ-1 Do Begin
+   P:=Hash[H];
+   While P<>Nil Do Begin
+    If P^.Defd And (P^.Kind=0) And (P^.Sect>=0) And (Pos('~',P^.Name)=0) And SymInModule(P) And (PrgSymN<PrgSymCap) Then Begin
+     Ok:=True;
+     For K:=1 To XdefN Do If FindSym(XdefNames[K])=P Then Ok:=False;
+     If Ok Then Begin PrgSyms^[PrgSymN]:=P;Inc(PrgSymN);End;
+    End;
+    P:=P^.Next;
+   End;
+  End;
+  SortSymPtrs;
+  For K:=0 To PrgSymN-1 Do Begin
+   P:=PrgSyms^[K];
+   GDir(6);GStr(GstName(P^.Name));GLong(P^.Value);GWord(SecId[P^.Sect]);
+  End;
+  FreeSymPtrs;
  End;
  GDir($13);
 End;
@@ -7330,6 +7727,7 @@ Begin
  Empty:=(SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) And (XdefN=0) And (ImpN=0) And (GstCmtN=0);
  If Empty Then Begin ModName:=N;Exit;End;
  If AsmPassNo=2 Then GstFlushModule;
+ GEvReset;
  FreeSections;
  SecLen[0]:=0;SecLen[1]:=0;SecLen[2]:=0;
  CurSect:=SEC_TEXT;AbsMode:=False;OffMode:=False;OffPC:=0;
@@ -7366,7 +7764,8 @@ Procedure DefaultAsmOpts(Var O: TAsmOpts);
 Var K: Integer;
 Begin
  FillChar(O,SizeOf(O),0);
- O.SymLen:=127;O.EvenChk:=True;O.Proc:=68000;O.FpId:=1;
+ O.SymLen:=127;O.EvenChk:=True;O.Proc:=68000;O.FpId:=1;O.ChkBit:=1;
+ For K:=0 To 12 Do O.OW[K]:=True;
 End;
 
 Procedure InitAsmTables;
@@ -7405,7 +7804,7 @@ End;
 
 { Assemble Lines[1..Count] ; True si aucune erreur }
 Function AssembleSource(Const Name: String; Lines: PLineArr; Count: LongInt): Boolean;
-Var Prev,Cur: LongInt; N: Integer; Ext,Expl: String; L: LongInt;
+Var Prev,Cur: LongInt; N: Integer; Ext,Expl: String; L: LongInt; WriteIt: Boolean;
 Begin
  AssembleSource:=False;
  LogClear;
@@ -7464,6 +7863,7 @@ Begin
   AsmPassNo:=1;Pass1Idx:=N;
   If N=0 Then LogLine('Pass 1') ;
   RunPass(Lines,Count);
+  If (N=0) And (AsmErrCnt>0) Then SkipPass2:=True;
   ComputeBases;
   Cur:=SymChecksum;
   Inc(N);
@@ -7477,10 +7877,18 @@ Begin
   LogLine('Pass 2');
   FreeSections;
   GstLen:=0;
+  GEvReset;
   RunPass(Lines,Count);
   If ListOn Then Begin
    If (AO.Symtab Or OptSymbols) And (ListCnt>=0) Then PrintSymbols;
   End;
+ End Else If SkipPass2 And ListOn And Not AsmFatal Then Begin
+  { erreurs de syntaxe : le vrai GenST produit tout de meme le listing }
+  ListOnlyPass:=True;
+  FreeSections;
+  GstLen:=0;
+  RunPass(Lines,Count);
+  ListOnlyPass:=False;
  End;
  If ListOn Then Begin Flush(ListF);Close(ListF);ListOn:=False;End;
  LogLine('');
@@ -7500,8 +7908,11 @@ Begin
   LnText:='';CurLineNo:=0;AsmPassNo:=2;
   Err3('cannot export symbol','Un fichier pre-assemble ne doit pas generer de code','Vorassemblierte Datei darf keinen Code erzeugen');
  End;
- If AsmErrCnt=0 Then Begin
-  LogLine(T3('No errors','Aucune erreur','Keine Fehler'));
+ { le vrai GenST ecrit le fichier de sortie meme si la passe 2 a signale des erreurs }
+ WriteIt:=(AsmErrCnt=0) Or (OptToDisk And Not SkipPass2 And Not AsmFatal And Not NoBinary And Not OptCheckOnly And (GsOutName='') And Not AO.Gensym);
+ If WriteIt Then Begin
+  If AsmErrCnt=0 Then LogLine(T3('No errors','Aucune erreur','Keine Fehler'))
+  Else LogLine(IntStr(AsmErrCnt)+T3(' error(s)',' erreur(s)',' Fehler'));
   { fichier de sortie }
   If (GsOutName<>'') Or AO.Gensym Then Begin
    If GsOutName<>'' Then OutPathFinal:=GsOutName Else OutPathFinal:=ChangeExt(Name,'GS');
@@ -7522,7 +7933,6 @@ Begin
     Else If AO.Fmt=6 Then OutPathFinal:=ChangeExt(Name,'MX')
     Else If AO.Fmt=1 Then OutPathFinal:=ChangeExt(Name,'BIN')
     Else If (AO.Fmt=2) Or (AO.Fmt=7) Then OutPathFinal:=ChangeExt(Name,'O')
-    Else If AbsMode Then OutPathFinal:=ChangeExt(Name,'BIN')
     Else If AmigaMode Then OutPathFinal:=StripExt(Name)
     Else OutPathFinal:=ChangeExt(Name,'PRG');
    End;
@@ -7535,8 +7945,6 @@ Begin
     If WriteLattice(OutPathFinal) Then HaveOutput:=True;
    End Else If AO.Fmt=6 Then Begin
     If WriteSrec(OutPathFinal) Then HaveOutput:=True;
-   End Else If AbsMode Then Begin
-    If WriteBin(OutPathFinal) Then HaveOutput:=True;
    End Else If AmigaMode Then Begin
     If WriteHunk(OutPathFinal) Then HaveOutput:=True;
    End Else Begin
@@ -26388,7 +26796,7 @@ Begin
  If A[1]<>'-' Then Exit;
  C:=UpCase(A[2]);
  If (C='H') And (Length(A)=2) Then Exit;
- IsGenOpt:=C In ['B','C','E','I','L','O','P','Q','S','T','V','W','Z','H'];
+ IsGenOpt:=C In ['B','C','D','E','I','L','M','O','P','Q','S','T','V','W','X','Z','H'];
 End;
 
 Function IsOption(Const A: String): Boolean;
@@ -26500,9 +26908,9 @@ Begin
 End;
 
 Procedure ParseCommandLine;
-Var I: Integer; A,U: String; HelpWanted,Used: Boolean;
+Var I: Integer; A,U: String; HelpWanted,Used,BadCmd: Boolean;
 Begin
- HelpWanted:=False;NQueue:=0;StartAction:=' ';NPre:=0;
+ BadCmd:=False;HelpWanted:=False;NQueue:=0;StartAction:=' ';NPre:=0;
  CmdOpts:='';CmdSyms:='';CmdHeaders:='';NoBinary:=False;OptFormatSel:=0;OptIncList:='';
  GenMode:=False;PauseEnd:=False;
  I:=0;
@@ -26518,7 +26926,7 @@ Begin
    If (U='?') Or (U='H') Or (U='HELP') Then HelpWanted:=True
    Else If U='ATARIST' Then AmigaMode:=False
    Else If U='AMIGA' Then AmigaMode:=True
-   Else If U='A' Then StartAction:='A'
+   Else If U='A' Then Begin If A[1]='-' Then BadCmd:=True Else StartAction:='A';End
    Else If U='X' Then StartAction:='X'
    Else If U='D' Then StartAction:='D'
    Else If U='M' Then StartAction:='M'
@@ -26537,9 +26945,15 @@ Begin
     If NPre<10 Then Begin Inc(NPre);PreDefs[NPre]:=Copy(A,Pos(':',A)+1,80);End;
     AddCmdSym(Copy(A,Pos(':',A)+1,80));
    End;
-  End Else If NQueue<20 Then Begin
+  End Else If (Length(A)>1) And (A[1]='-') Then BadCmd:=True
+  Else If NQueue<20 Then Begin
    Inc(NQueue);FileQueue[NQueue]:=A;
   End;
+ End;
+ If BadCmd Then Begin
+  WriteLn(ConOut,'Invalid command line - see manual');
+  Flush(ConOut);
+  If OldRc Then Halt(2) Else Halt(100);
  End;
  { une ligne de commande de style GEN : assemblage sans interface graphique }
  If GenMode And (StartAction=' ') Then BatchMode:=True;
