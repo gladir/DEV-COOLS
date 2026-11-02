@@ -1885,16 +1885,20 @@ Begin
  For I:=6 To 25 Do If Not EmuFUsed[I] Then Begin HandleFile:=I;Exit;End;
 End;
 
+
 Procedure FillDta(Const SR: SearchRec);
 Var D: LongInt; Nm: String;
 Begin
  D:=EmuDta;
  FillChar(VMem[D],44,0);
  WB(D+21,SR.Attr And $FF);
+ WW(D+22,Word(SR.Time And $FFFF));
+ WW(D+24,Word((SR.Time Shr 16) And $FFFF));
  WL(D+26,SR.Size);
  Nm:=Upper(SR.Name);
  PutStr(D+30,Copy(Nm,1,13));
 End;
+
 
 Procedure GemDos;
 Var Fn: Word; SP: LongInt; H,R: Integer; S: String; A,Cnt,Len: LongInt; Buf: Pointer;
@@ -2304,6 +2308,7 @@ Var
  PrgLoad  : LongInt;
  PrgText  : LongInt;
  RtTrace  : Boolean;
+ Psg      : Array[0..15] Of Byte;
 
 Function RtErrText(C: Integer): String;
 Begin
@@ -2841,6 +2846,16 @@ End;
 
 { ------------------------------ fenetres ------------------------------- }
 
+Function HasV(K: Integer): Boolean;
+Begin
+ HasV:=(K And ($1C0 Or $20))<>0;
+End;
+
+Function HasH(K: Integer): Boolean;
+Begin
+ HasH:=(K And ($E00 Or $20))<>0;
+End;
+
 Function HasTitle(I: Integer): Boolean;
 Begin
  HasTitle:=(GW[I].Kind And $E)<>0;
@@ -2853,8 +2868,8 @@ Begin
  If (GW[I].Kind And $10)<>0 Then Y:=Y+19;
  W:=GW[I].W-2;
  H:=GW[I].H-(Y-GW[I].Y)-1;
- If (GW[I].Kind And $1C0)<>0 Then W:=W-18;
- If (GW[I].Kind And $E00)<>0 Then H:=H-18;
+ If HasV(GW[I].Kind) Then W:=W-18;
+ If HasH(GW[I].Kind) Then H:=H-18;
  If W<0 Then W:=0;
  If H<0 Then H:=0;
 End;
@@ -2924,10 +2939,10 @@ Begin
   GTextC(X+6,WY+6,Copy(GW[I].Info,1,(W-12) Div 8),False);
  End;
  WinWork(I,WX,WY,WW2,WH);
- If (K And $1C0)<>0 Then Begin
+ If HasV(K) Then Begin
   { barre verticale }
   TX:=X+W-19;
-  For TL:=WY-1 To WY+WH+((K And $E00) Div $E00)*18 Do OPlot(TX,TL,1);
+  For TL:=WY-1 To WY+WH+Ord(HasH(K))*18 Do OPlot(TX,TL,1);
   If (K And $40)<>0 Then Begin GBox(TX,WY,19,18);GTextC(TX+5,WY+5,#24,False);End;
   If (K And $80)<>0 Then Begin GBox(TX,WY+WH-18,19,18);GTextC(TX+5,WY+WH-13,#25,False);End;
   If (K And $100)<>0 Then Begin
@@ -2942,9 +2957,9 @@ Begin
   End;
   K:=GW[I].Kind;
  End;
- If (K And $E00)<>0 Then Begin
+ If HasH(K) Then Begin
   TL:=WY+WH;
-  For TX:=WX To WX+WW2+((K And $1C0) Div $1C0)*18 Do OPlot(TX,TL,1);
+  For TX:=WX To WX+WW2+Ord(HasV(K))*18 Do OPlot(TX,TL,1);
   If (K And $200)<>0 Then Begin GBox(WX,TL,18,19);GTextC(WX+5,TL+6,#27,False);End;
   If (K And $400)<>0 Then Begin GBox(WX+WW2-18,TL,18,19);GTextC(WX+WW2-13,TL+6,#26,False);End;
   If (K And $800)<>0 Then Begin
@@ -3578,7 +3593,7 @@ Begin
   Exit;
  End;
  { barre verticale }
- If ((Kd And $1C0)<>0) And (MXp>=X+W-19) Then Begin
+ If HasV(Kd) And (MXp>=X+W-19) Then Begin
   If ((Kd And $40)<>0) And (MYp<WY+18) Then PushMsg(24,H,2,0,0,0)
   Else If ((Kd And $80)<>0) And (MYp>=WY+WH-18) And (MYp<WY+WH) Then PushMsg(24,H,3,0,0,0)
   Else If (Kd And $100)<>0 Then Begin
@@ -3590,7 +3605,7 @@ Begin
   Repeat GetMouseState(MX,MY,MB);Delay(5);Until (MB And 3)=0;
   Exit;
  End;
- If ((Kd And $E00)<>0) And (MYp>=WY+WH) Then Begin
+ If HasH(Kd) And (MYp>=WY+WH) Then Begin
   If ((Kd And $200)<>0) And (MXp<WX+18) Then PushMsg(24,H,6,0,0,0)
   Else If ((Kd And $400)<>0) And (MXp>=WX+WW2-18) Then PushMsg(24,H,7,0,0,0)
   Else If (Kd And $800)<>0 Then Begin
@@ -4687,6 +4702,19 @@ End;
 
 { -------------------------------- TRAP --------------------------------- }
 
+Procedure PsgUpdate;
+Var Per: LongInt; F: LongInt;
+Begin
+ If Headless Then Exit;
+ Per:=Psg[0]+(Psg[1] And 15)*256;
+ If (Per>0) And ((Psg[8] And 15)>0) And ((Psg[7] And 1)=0) Then Begin
+  F:=125000 Div Per;
+  If F<20 Then F:=20;
+  If F>10000 Then F:=10000;
+  Sound(F);
+ End Else NoSound;
+End;
+
 Procedure SetScreenCmd(L,P: LongInt);
 Begin
  If (L>0) And (L<VMEM_SIZE-32000) Then ScrLog:=L;
@@ -4704,6 +4732,15 @@ Begin
    2: Begin RD[0]:=ScrPhys;Exit;End;
    3: Begin RD[0]:=ScrLog;Exit;End;
    5: Begin SetScreenCmd(RL(RA[7]+2),RL(RA[7]+6));RD[0]:=0;Exit;End;
+   28: Begin
+        { giaccess(data,reg) : generateur sonore YM2149 }
+        If (RW(RA[7]+4) And $80)<>0 Then Begin
+         Psg[RW(RA[7]+4) And 15]:=RW(RA[7]+2) And $FF;
+         PsgUpdate;
+         RD[0]:=Psg[RW(RA[7]+4) And 15];
+        End Else RD[0]:=Psg[RW(RA[7]+4) And 15];
+        Exit;
+       End;
   End;
  End;
  Case N Of
@@ -5475,6 +5512,15 @@ Var
  CGoEdit : Boolean;          { l'utilisateur veut aller dans l'editeur }
  ListHook: Boolean;
  SrcFileName : String;
+ ModuleMode,ExportOn : Boolean;
+ ExpName : Array[1..60] Of String[8];
+ ExpLab  : Array[1..60] Of Integer;
+ ExpN    : Integer;
+ ExtName : Array[1..60] Of String[8];
+ ExtFirst,ExtCnt : Array[1..60] Of Integer;
+ ExtN    : Integer;
+ ExtPos  : Array[1..3000] Of LongInt;
+ ExtPosN : Integer;
 
 Function CompilerErrorHook(Line,Col,Num: Integer; Const Msg: String): Integer; Forward;
 Procedure CompilerListHook(Ln: Integer; Const S: String); Forward;
@@ -5721,6 +5767,8 @@ Begin
     'C': Opt.ClearVars:=On;
     'D': Opt.FullDebug:=On;
     'A': If On Then Opt.ProgType:=2;
+    'M': ModuleMode:=On;
+    'E': ExportOn:=On;
     'S','U': Begin
       N:=0;
       While (I<Length(S)) And (S[I+1]>='0') And (S[I+1]<='9') Do Begin N:=N*10+Ord(S[I+1])-48;Inc(I);End;
@@ -5896,6 +5944,7 @@ Begin
  CurLn:=0;CurTxt:='';CurPos:=1;InInc:=False;IncI:=0;
  TokLine:=1;TokCol:=1;PrevLine:=1;PrevCol:=1;
  CErrN:=0;CHalt:=False;CGoEdit:=False;
+ ModuleMode:=False;ExportOn:=False;ExpN:=0;ExtN:=0;ExtPosN:=0;
  Opt:=Conf;
 End;
 
@@ -6931,7 +6980,7 @@ Begin
     A.M:=2;A.D:=0;LdReal(A);
    End;
   N_STR: Begin AbsLab($41F9,Nd[N].V);E16($2008);End;
-  N_VAR,N_FIELD,N_INDEX,N_SIDX,N_DEREF,N_WITH: LoadNode(N);
+  N_VAR,N_FIELD,N_INDEX,N_SIDX,N_DEREF,N_WITH,N_FBUF: LoadNode(N);
   N_FUNC: GenCall(Nd[N].Sym,Nd[N].A);
   N_STD: GenStdFunc(N);
   N_UN: Begin
@@ -8648,6 +8697,7 @@ Begin
  PDecls;
  { prologue }
  Place(Sy[S].Lab);
+ If ExportOn And (CurLvl=2) And (ExpN<60) Then Begin Inc(ExpN);ExpName[ExpN]:=Copy(Nm,1,8);ExpLab[ExpN]:=Sy[S].Lab;End;
  If Opt.FullDebug And (SymCnt<400) Then Begin Inc(SymCnt);SymNames[SymCnt]:=Copy(Nm,1,8);SymAddrLab[SymCnt]:=Sy[S].Lab;End;
  E16($4E56);LinkPos:=CP;E16(0);
  If Opt.StackChk Then Begin
@@ -8917,7 +8967,7 @@ Begin
 End;
 
 Function ProgramBody: Boolean;
-Var S: Integer; EndLab: Integer; StartPos: LongInt;
+Var S,I: Integer; EndLab: Integer; StartPos: LongInt;
 Begin
  ProgramBody:=False;
  NextTok;
@@ -8957,6 +9007,13 @@ Begin
  { routines externes non disponibles : appel -> erreur d'execution explicite }
  For S:=1 To LabN Do
   If LabExt[S] And (LabPos[S]<0) Then Begin
+   If ExtN<60 Then Begin
+    Inc(ExtN);ExtName[ExtN]:=Copy(LabNm[S],1,8);ExtFirst[ExtN]:=ExtPosN+1;ExtCnt[ExtN]:=0;
+    For I:=1 To FixN Do
+     If (Fix[I].Kind=1) And (Fix[I].Lab=S) And (ExtPosN<3000) Then Begin
+      Inc(ExtPosN);ExtPos[ExtPosN]:=Fix[I].Pos;Inc(ExtCnt[ExtN]);
+     End;
+   End;
    Place(S);
    AbsLab($41F9,LitStr(LabNm[S]));
    PushA0;Svc(S_NOEXT);E16($4E75);
@@ -8970,6 +9027,7 @@ End;
 Var
  ObjFlags : LongInt;
  OutProgType : Integer;
+ OutModule : Boolean;
 
 Procedure PutL(Var F: File; V: LongInt);
 Var B: Array[0..3] Of Byte;
@@ -9000,7 +9058,8 @@ Begin
  PatchFixKind2;
  ResolveFixes;
  If CHalt Or (CErrN>0) Then Exit;
- ObjFlags:=Opt.ProgType;OutProgType:=Opt.ProgType;
+ ObjFlags:=Opt.ProgType;OutProgType:=Opt.ProgType;OutModule:=ModuleMode;
+ If ModuleMode Then ObjFlags:=ObjFlags Or $200;
  If Conf.FullDebug Or Opt.FullDebug Then ObjFlags:=ObjFlags Or $100;
  Assign(F,Name);
  {$I-}Rewrite(F,1);{$I+}
@@ -9016,6 +9075,20 @@ Begin
   For J:=1 To Length(S) Do If J<=8 Then Nm[J-1]:=S[J];
   BlockWrite(F,Nm,8);
   PutL(F,LabPos[SymAddrLab[I]]);
+ End;
+ { symboles exportes et references externes (compilation modulaire) }
+ PutL(F,ExpN);
+ For I:=1 To ExpN Do Begin
+  FillChar(Nm,8,0);
+  For J:=1 To Length(ExpName[I]) Do If J<=8 Then Nm[J-1]:=ExpName[I][J];
+  BlockWrite(F,Nm,8);PutL(F,LabPos[ExpLab[I]]);
+ End;
+ PutL(F,ExtN);
+ For I:=1 To ExtN Do Begin
+  FillChar(Nm,8,0);
+  For J:=1 To Length(ExtName[I]) Do If J<=8 Then Nm[J-1]:=ExtName[I][J];
+  BlockWrite(F,Nm,8);PutL(F,ExtCnt[I]);
+  For J:=ExtFirst[I] To ExtFirst[I]+ExtCnt[I]-1 Do PutL(F,ExtPos[J]);
  End;
  Close(F);
  WriteObject:=True;
@@ -9043,65 +9116,187 @@ Begin
 End;
 
 { ------------------------- editeur de liens --------------------------- }
-{ Lit un fichier .O et produit un programme GEMDOS (.PRG / .TOS / .ACC) en
-  y associant la bibliotheque d'execution (PASLIB / PASGEM) integree. }
+{ Lit un ou plusieurs fichiers .O (programme + modules) et produit un
+  programme GEMDOS (.PRG / .TOS / .ACC) en y associant la bibliotheque
+  d'execution (PASLIB / PASGEM) integree. Les references externes d'un
+  fichier sont resolues avec les symboles exportes ({$E+}) des autres. }
 
-Function LinkObject(Const ObjName,PrgName: String; Var Msg: String): Boolean;
-Var F,G: File; Hdr: Array[0..3] Of Char; Fl,Tl,Bl,NRel,NSym: LongInt; I: Integer; Buf: PByteArr;
-    Rl: Array[1..MAXREL] Of LongInt; N: Word; Last,D,V: LongInt; B: Byte; Hd: Array[0..27] Of Byte;
-    Nm: Array[0..7] Of Char; Ad: LongInt; Sl: LongInt; Ent: Array[0..13] Of Byte; Stat: Word;
- Procedure W32(V: LongInt);
- Begin PutL(G,V);End;
+Const MAXLO = 5;
+
+Type
+ TLObj = Record
+  Fl,Tl,Bl : LongInt;
+  Buf  : PByteArr;
+  NRel : Integer;
+  Rl   : Array[1..MAXREL] Of LongInt;
+  NSym : Integer;
+  SN   : Array[1..400] Of String[8];
+  SA   : Array[1..400] Of LongInt;
+  NExp : Integer;
+  EN   : Array[1..60] Of String[8];
+  EO   : Array[1..60] Of LongInt;
+  NExt : Integer;
+  XN   : Array[1..60] Of String[8];
+  XF,XC: Array[1..60] Of Integer;
+  XP   : Array[1..3000] Of LongInt;
+  Base : LongInt;
+ End;
+
+Var
+ LO : Array[1..MAXLO] Of TLObj;
+
+Function ReadNm8(Var F: File): String;
+Var Nm: Array[0..7] Of Char; N: Word; S: String; I: Integer;
 Begin
- LinkObject:=False;Msg:='';
- Assign(F,ObjName);
+ BlockRead(F,Nm,8,N);
+ S:='';
+ For I:=0 To 7 Do If Nm[I]<>#0 Then S:=S+Nm[I];
+ ReadNm8:=S;
+End;
+
+Function ReadObj(Const Name: String; K: Integer; Var Msg: String): Boolean;
+Var F: File; Hdr: Array[0..3] Of Char; N: Word; NR,NS,I,J,C: LongInt; V: LongInt;
+Begin
+ ReadObj:=False;
+ Assign(F,ResolveFile(Name));
  {$I-}Reset(F,1);{$I+}
- If IOResult<>0 Then Begin Msg:=T3('Cannot open ','Impossible d''ouvrir ','Kann nicht oeffnen ')+ObjName;Exit;End;
+ If IOResult<>0 Then Begin Msg:=T3('Cannot open ','Impossible d''ouvrir ','Kann nicht oeffnen ')+Name;Exit;End;
  BlockRead(F,Hdr,4,N);
  If (N<4) Or (Hdr[0]<>'P') Or (Hdr[1]<>'P') Or (Hdr[2]<>'O') Then Begin
-  Close(F);Msg:=T3('Not an object file: ','Fichier objet invalide : ','Kein Objektfile: ')+ObjName;Exit;
+  Close(F);Msg:=T3('Not an object file: ','Fichier objet invalide : ','Kein Objektfile: ')+Name;Exit;
  End;
- GetL(F,Fl);GetL(F,Tl);GetL(F,Bl);GetL(F,NRel);GetL(F,NSym);
- If (Tl<=0) Or (Tl>CODEMAX) Or (NRel>MAXREL) Or (NSym>400) Then Begin Close(F);Msg:='Bad object';Exit;End;
- GetMem(Buf,CODEMAX);
- BlockRead(F,Buf^,Tl,N);
- For I:=1 To NRel Do GetL(F,Rl[I]);
+ GetL(F,LO[K].Fl);GetL(F,LO[K].Tl);GetL(F,LO[K].Bl);GetL(F,NR);GetL(F,NS);
+ If (LO[K].Tl<=0) Or (LO[K].Tl>CODEMAX) Or (NR>MAXREL) Or (NS>400) Then Begin Close(F);Msg:='Bad object';Exit;End;
+ GetMem(LO[K].Buf,CODEMAX);
+ BlockRead(F,LO[K].Buf^,LO[K].Tl,N);
+ LO[K].NRel:=NR;
+ For I:=1 To NR Do GetL(F,LO[K].Rl[I]);
+ LO[K].NSym:=NS;
+ For I:=1 To NS Do Begin LO[K].SN[I]:=ReadNm8(F);GetL(F,LO[K].SA[I]);End;
+ LO[K].NExp:=0;LO[K].NExt:=0;
+ If GetL(F,C) Then Begin
+  LO[K].NExp:=C;
+  For I:=1 To C Do Begin LO[K].EN[I]:=ReadNm8(F);GetL(F,LO[K].EO[I]);End;
+  GetL(F,C);
+  LO[K].NExt:=C;
+  J:=0;
+  For I:=1 To C Do Begin
+   LO[K].XN[I]:=ReadNm8(F);GetL(F,V);
+   LO[K].XF[I]:=J+1;LO[K].XC[I]:=V;
+   While V>0 Do Begin Inc(J);GetL(F,LO[K].XP[J]);Dec(V);End;
+  End;
+ End;
+ Close(F);
+ ReadObj:=True;
+End;
+
+Function LinkObject(Const ObjName,PrgName,Extra: String; Var Msg: String): Boolean;
+Var G: File; NObj,K,I,J,M,P: Integer; Cat: PByteArr; Tot,BlMax,Last,D,Ad: LongInt; B: Byte; Hd: Array[0..1] Of Byte;
+    Stat: Word; Ent: Array[0..13] Of Byte; Nm,L: String; NS: Integer; Bn: String;
+    Names: Array[1..MAXLO] Of String[80]; RAll: Array[1..MAXREL] Of LongInt; NR: Integer; Found: Boolean;
+    SyN: Array[1..400] Of String[8]; SyA: Array[1..400] Of LongInt;
+ Procedure W32(V: LongInt);
+ Begin PutL(G,V);End;
+ Function Stem(Const S0: String): String;
+ Var T: String; Q: Integer;
+ Begin
+  T:=Upper(ShortName(S0));
+  Q:=Pos('.',T);
+  If Q>0 Then T:=Copy(T,1,Q-1);
+  Stem:=T;
+ End;
+Begin
+ LinkObject:=False;Msg:='';
+ NObj:=1;Names[1]:=ObjName;
+ L:=Extra;
+ While (L<>'') And (NObj<MAXLO) Do Begin
+  P:=Pos(',',L);
+  If P=0 Then Begin Nm:=TrimStr(L);L:='';End Else Begin Nm:=TrimStr(Copy(L,1,P-1));L:=Copy(L,P+1,200);End;
+  If Nm<>'' Then Begin
+   If Pos('.',ShortName(Nm))=0 Then Nm:=Nm+'.O';
+   If Stem(Nm)<>Stem(ObjName) Then Begin Inc(NObj);Names[NObj]:=Nm;End;
+  End;
+ End;
+ For K:=1 To NObj Do LO[K].Buf:=Nil;
+ For K:=1 To NObj Do
+  If Not ReadObj(Names[K],K,Msg) Then Begin
+   For I:=1 To NObj Do If LO[I].Buf<>Nil Then FreeMem(LO[I].Buf,CODEMAX);
+   Exit;
+  End;
+ { assemblage }
+ GetMem(Cat,CODEMAX);
+ Tot:=0;BlMax:=0;
+ For K:=1 To NObj Do Begin
+  LO[K].Base:=Tot;
+  If Tot+LO[K].Tl>CODEMAX Then Begin Msg:=ErrMsg(26);FreeMem(Cat,CODEMAX);Exit;End;
+  Move(LO[K].Buf^,Cat^[Tot],LO[K].Tl);
+  Tot:=Tot+LO[K].Tl;
+  If Odd(Tot) Then Begin Cat^[Tot]:=0;Inc(Tot);End;
+  If LO[K].Bl>BlMax Then BlMax:=LO[K].Bl;
+ End;
+ { decalage des adresses absolues des modules }
+ For K:=2 To NObj Do
+  For I:=1 To LO[K].NRel Do Begin
+   P:=LO[K].Base+LO[K].Rl[I];
+   Ad:=(LongInt(Cat^[P]) Shl 24) Or (LongInt(Cat^[P+1]) Shl 16) Or (LongInt(Cat^[P+2]) Shl 8) Or Cat^[P+3];
+   Ad:=Ad+LO[K].Base;
+   Cat^[P]:=(Ad Shr 24) And $FF;Cat^[P+1]:=(Ad Shr 16) And $FF;Cat^[P+2]:=(Ad Shr 8) And $FF;Cat^[P+3]:=Ad And $FF;
+  End;
+ { resolution des references externes }
+ For K:=1 To NObj Do
+  For I:=1 To LO[K].NExt Do Begin
+   Found:=False;Ad:=0;
+   For M:=1 To NObj Do
+    If M<>K Then
+     For J:=1 To LO[M].NExp Do
+      If (Not Found) And (LO[M].EN[J]=LO[K].XN[I]) Then Begin Found:=True;Ad:=LO[M].Base+LO[M].EO[J];End;
+   If Found Then
+    For J:=LO[K].XF[I] To LO[K].XF[I]+LO[K].XC[I]-1 Do Begin
+     P:=LO[K].Base+LO[K].XP[J];
+     Cat^[P]:=(Ad Shr 24) And $FF;Cat^[P+1]:=(Ad Shr 16) And $FF;Cat^[P+2]:=(Ad Shr 8) And $FF;Cat^[P+3]:=Ad And $FF;
+    End;
+  End;
+ NR:=0;
+ For K:=1 To NObj Do
+  For I:=1 To LO[K].NRel Do If NR<MAXREL Then Begin Inc(NR);RAll[NR]:=LO[K].Base+LO[K].Rl[I];End;
+ NS:=0;
+ For K:=1 To NObj Do
+  For I:=1 To LO[K].NSym Do If NS<400 Then Begin Inc(NS);SyN[NS]:=LO[K].SN[I];SyA[NS]:=LO[K].Base+LO[K].SA[I];End;
  Assign(G,PrgName);
  {$I-}Rewrite(G,1);{$I+}
- If IOResult<>0 Then Begin Close(F);FreeMem(Buf,CODEMAX);Msg:=T3('Cannot create ','Impossible de cr'#130'er ','Kann nicht erzeugen ')+PrgName;Exit;End;
- { en-tete GEMDOS }
- FillChar(Hd,28,0);
+ If IOResult<>0 Then Begin
+  For I:=1 To NObj Do FreeMem(LO[I].Buf,CODEMAX);
+  FreeMem(Cat,CODEMAX);
+  Msg:=T3('Cannot create ','Impossible de cr'#130'er ','Kann nicht erzeugen ')+PrgName;Exit;
+ End;
  Hd[0]:=$60;Hd[1]:=$1A;
- BlockWrite(G,Hd[0],2);
- W32(Tl);W32(0);W32(Bl+4096);W32(NSym*14);W32(0);
- W32(Fl And $100);         { drapeaux du programme : bit 8 = mode debug }
+ BlockWrite(G,Hd,2);
+ W32(Tot);W32(0);W32(BlMax+4096);W32(NS*14);W32(0);
+ W32(LO[1].Fl And $100);
  Stat:=0;BlockWrite(G,Stat,2);
- BlockWrite(G,Buf^,Tl);
- { table des symboles (format DRI, 14 octets) }
- For I:=1 To NSym Do Begin
-  BlockRead(F,Nm,8,N);GetL(F,Ad);
+ BlockWrite(G,Cat^,Tot);
+ For I:=1 To NS Do Begin
   FillChar(Ent,14,0);
-  Move(Nm,Ent[0],8);
+  For J:=1 To Length(SyN[I]) Do Ent[J-1]:=Ord(SyN[I][J]);
   Ent[8]:=$02;Ent[9]:=$00;
-  Ent[10]:=(Ad Shr 24) And $FF;Ent[11]:=(Ad Shr 16) And $FF;Ent[12]:=(Ad Shr 8) And $FF;Ent[13]:=Ad And $FF;
+  Ent[10]:=(SyA[I] Shr 24) And $FF;Ent[11]:=(SyA[I] Shr 16) And $FF;Ent[12]:=(SyA[I] Shr 8) And $FF;Ent[13]:=SyA[I] And $FF;
   BlockWrite(G,Ent,14);
  End;
- { table de relocation }
- If NRel=0 Then W32(0)
+ If NR=0 Then W32(0)
  Else Begin
-  Last:=Rl[1];W32(Last);
-  For I:=2 To NRel Do Begin
-   D:=Rl[I]-Last;Last:=Rl[I];
+  Last:=RAll[1];W32(Last);
+  For I:=2 To NR Do Begin
+   D:=RAll[I]-Last;Last:=RAll[I];
    While D>254 Do Begin B:=1;BlockWrite(G,B,1);D:=D-254;End;
    B:=D;BlockWrite(G,B,1);
   End;
   B:=0;BlockWrite(G,B,1);
  End;
- Close(F);Close(G);
- FreeMem(Buf,CODEMAX);
+ Close(G);
+ For I:=1 To NObj Do FreeMem(LO[I].Buf,CODEMAX);
+ FreeMem(Cat,CODEMAX);
  LinkObject:=True;
 End;
-
 
 { ====================================================================== }
 {          INTERFACE : ETAT DE L'APPLICATION ET MENUS DEROULANTS         }
@@ -10687,7 +10882,7 @@ Begin
   ShowLinker(ShortName(Prg),Lib,True);
   Delay(500);
  End Else If Not Quiet Then WriteLn(T3('Linking ','Liaison de ','Linke ')+Obj+' -> '+Prg);
- Ok:=LinkObject(Obj,Prg,Msg);
+ Ok:=LinkObject(Obj,Prg,LinkExtra,Msg);
  If Not Headless Then Begin
   ShowLinker('','',False);
   If Not Ok Then MsgBox(Msg);
@@ -10717,7 +10912,7 @@ Begin
  If Not Headless Then RefreshAll;
  If Ok Then Begin
   DoCompileFile:=0;
-  If Conf.ChainLink Then Begin
+  If Conf.ChainLink And (Not OutModule) Then Begin
    If Not DoLinkObj(Obj,OutProgType,False) Then DoCompileFile:=1;
   End;
  End Else Begin
@@ -11044,6 +11239,7 @@ Begin
    WriteLn('  /B            batch mode: no desktop, console messages, exit code 0/1');
    WriteLn('  /GEM /TOS /ACC  program type    /D debug on   /ND debug off');
    WriteLn('  /LIST         print listing     /I:file load options (.INF)');
+   WriteLn('  /M:mod1,mod2  additional link files (modules compiled with {$M+,E+})');
    WriteLn('  /LANG:EN|FR|GR  language (else environment variable LANGUAGE)');
    WriteLn;
    WriteLn('Example: OSSPAS /GEM /C CUBE.PAS /R CUBE.PRG');
@@ -11104,6 +11300,7 @@ Begin
   Else If (U='/D') Then Conf.FullDebug:=True
   Else If (U='/ND') Then Conf.FullDebug:=False
   Else If (U='/LIST') Then Conf.PrintList:=True
+  Else If (Copy(U,1,3)='/M:') Then LinkExtra:=Copy(S,4,60)
   Else If (Copy(U,1,3)='/I:') Then Begin
    If Not LoadOptions(Copy(S,4,80)) Then WriteLn(T3('Cannot load ','Chargement impossible : ','Kann nicht laden: ')+Copy(S,4,80));
   End Else If (Copy(U,1,6)='/LANG:') Then Begin
