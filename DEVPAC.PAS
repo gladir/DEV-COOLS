@@ -21,9 +21,24 @@
     - desassembleur et moniteur/debogueur MonST/MonAm (registres,
       desassemblage, memoire, points d'arret, execution pas a pas),
     - emulateur Motorola 68000 integre avec un TOS simplifie
-      (GEMDOS/BIOS/XBIOS, terminal VT52, ecran monochrome 640x400,
-      un sous-ensemble de VDI/AES) et un AmigaOS simplifie
-      (exec.library / dos.library).
+      (GEMDOS dont Pexec, BIOS, XBIOS, Line-A, terminal VT52, ecran
+      monochrome 640x400) et un GEM complet reimplemente :
+        * VDI : stations virtuelles, attributs, lignes, polylignes,
+          marqueurs, polygones, arcs, ellipses, secteurs, rectangles
+          arrondis, remplissage (motifs, hachures, motifs utilisateur,
+          remplissage par germe), texte (tailles, effets, rotation,
+          alignement), copies raster (vro/vrt_cpyfm), requetes,
+          sequences d'echappement du curseur ;
+        * AES : applications, evenements (clavier, souris, rectangles,
+          messages, minuterie, double-clic), barre de menus deroulants,
+          gestionnaire de fenetres (cadres, ascenseurs, deplacement,
+          taille, listes de rectangles, redessins WM_REDRAW), objets
+          (tous les types, edition de champs, icones, images, routines
+          utilisateur), formulaires (form_do, form_alert, form_dial),
+          fichiers ressources .RSC (rsrc_load, rsrc_gaddr...), graf_*,
+          selecteur de fichiers, shell, presse-papiers ;
+        * accessoires de bureau (*.ACC) en multitache cooperatif ;
+      ainsi qu'un AmigaOS simplifie (exec.library / dos.library).
 
   Langue : francais par defaut ; LANGUAGE=EN pour l'anglais ;
            LANGUAGE=GR pour l'allemand.
@@ -405,6 +420,9 @@ Var
  { Sous PtcMouse le curseur est invisible : fleche logicielle avec
    sauvegarde de l'arriere-plan }
  Var
+  CurMask,CurData : Array[0..15] Of Word;
+  CurHotX,CurHotY : Integer;
+  CurMX,CurMY : LongInt;
   CurSaved,CurShown : Boolean;
   CurBuf : Pointer;
   CurSz  : LongInt;
@@ -425,27 +443,25 @@ Var
  End;
 
  Procedure CursorDraw(X,Y: LongInt);
- Var Pt: Array[1..7] Of PointType;
+ Var R,C: Integer; Bx,By: LongInt;
  Begin
-  If X>SCR_W-12 Then X:=SCR_W-12;
-  If Y>SCR_H-18 Then Y:=SCR_H-18;
-  If X<0 Then X:=0;
-  If Y<0 Then Y:=0;
+  CurMX:=X;CurMY:=Y;
+  Bx:=X-CurHotX;By:=Y-CurHotY;
+  If Bx>SCR_W-16 Then Bx:=SCR_W-16;
+  If By>SCR_H-16 Then By:=SCR_H-16;
+  If Bx<0 Then Bx:=0;
+  If By<0 Then By:=0;
   CursorErase;
-  CurSz:=ImageSize(X,Y,X+11,Y+17);
+  CurSz:=ImageSize(Bx,By,Bx+15,By+15);
   GetMem(CurBuf,CurSz);
-  GetImage(X,Y,X+11,Y+17,CurBuf^);
-  CurX:=X;CurY:=Y;CurSaved:=True;
-  Pt[1].X:=X;    Pt[1].Y:=Y;
-  Pt[2].X:=X;    Pt[2].Y:=Y+14;
-  Pt[3].X:=X+4;  Pt[3].Y:=Y+11;
-  Pt[4].X:=X+7;  Pt[4].Y:=Y+16;
-  Pt[5].X:=X+9;  Pt[5].Y:=Y+15;
-  Pt[6].X:=X+6;  Pt[6].Y:=Y+10;
-  Pt[7].X:=X+10; Pt[7].Y:=Y+10;
-  SetFillStyle(SolidFill,Black);
-  SetColor(White);
-  FillPoly(7,Pt);
+  GetImage(Bx,By,Bx+15,By+15,CurBuf^);
+  CurX:=Bx;CurY:=By;CurSaved:=True;
+  For R:=0 To 15 Do
+   For C:=0 To 15 Do
+    If (CurMask[R] And ($8000 Shr C))<>0 Then Begin
+     If (CurData[R] And ($8000 Shr C))<>0 Then PutPixel(Bx+C,By+R,Black)
+     Else PutPixel(Bx+C,By+R,White);
+    End;
  End;
 
  Procedure ShowMouse;
@@ -569,7 +585,7 @@ Begin
  Else If ((MB And 3)=0) And ((LastB And 3)<>0) Then E.Kind:=3
  Else If (MX<>PrevMX) Or (MY<>PrevMY) Then E.Kind:=4;
  {$IFDEF FPC}
- If (E.Kind<>0) And CurShown And ((MX<>CurX) Or (MY<>CurY)) Then
+ If (E.Kind<>0) And CurShown And ((MX<>CurMX) Or (MY<>CurMY)) Then
   CursorDraw(MX,MY);
  {$ENDIF}
  If E.Kind=0 Then Begin
@@ -2752,6 +2768,13 @@ Begin
   Else If Copy(N,1,3)='BSS' Then CurSect:=SEC_BSS
   Else CurSect:=SEC_TEXT;
  End;
+End;
+
+Procedure PByteSet(P: Pointer; I: LongInt; V: Byte);
+Var Q: ^Byte;
+Begin
+ Q:=PtrAdd(P,I);
+ Q^:=V;
 End;
 
 Function PByteAt(P: Pointer; I: LongInt): Byte;
@@ -5046,6 +5069,7 @@ Var
  EmuVisible: Boolean;
  IdleBlit  : Boolean;
  MonActive : Boolean;           { le moniteur est affiche }
+ MouseHidden : Integer;         { compteur v_hide_c / graf_mouse M_OFF }
 
 { Construit la table des glyphes 8x8 a partir de la police BGI }
 Procedure BuildFont;
@@ -5278,7 +5302,7 @@ Begin
     End;
    End;
   End;
-  ShowMouse;
+  If MouseHidden<=0 Then ShowMouse;
  End;
  ScrDirtyLo:=400;ScrDirtyHi:=-1;
 End;
@@ -5554,6 +5578,8 @@ Begin
  ConLineInput:=Len;
 End;
 
+Function DoPexec(Mode: Integer; NameP,CmdP,EnvP: LongInt): LongInt; Forward;
+
 Procedure Gemdos;
 Var Fn: LongInt; R: LongInt; H: Integer; I,N: LongInt; S: String; K: LongInt; Buf: Array[0..4095] Of Byte;
     Cnt,Got,A,Off: LongInt; Y,Mo,D,Dw,Hh,Mi,Se,Hs: Word; Fp: LongInt;
@@ -5742,7 +5768,7 @@ Begin
         End;
         R:=0;
        End;
-  $4B: R:=-33;
+  $4B: R:=DoPexec(PW(2),PL(4),PL(8),PL(12));
   $4E: Begin
         S:=HostPath(RdStr(PL(2),200));
         If DtaActive Then Begin
@@ -5840,552 +5866,6 @@ Begin
  Else R:=0;
  End;
  Rg[0]:=R;
-End;
-
-{ ---------------------------------------------------------------------- }
-{ VDI                                                                      }
-{ ---------------------------------------------------------------------- }
-
-Procedure VdiFillRect(X1,Y1,X2,Y2: Integer);
-Var X,Y: Integer; V: Boolean;
-Begin
- If X2<X1 Then Begin X:=X1;X1:=X2;X2:=X;End;
- If Y2<Y1 Then Begin Y:=Y1;Y1:=Y2;Y2:=Y;End;
- If VdiFillInt=0 Then Begin
-  BLine(X1,Y1,X2,Y1,VdiLineCol<>0);BLine(X1,Y2,X2,Y2,VdiLineCol<>0);
-  BLine(X1,Y1,X1,Y2,VdiLineCol<>0);BLine(X2,Y1,X2,Y2,VdiLineCol<>0);
-  Exit;
- End;
- For Y:=Y1 To Y2 Do
-  For X:=X1 To X2 Do Begin
-   Case VdiFillInt Of
-    1: V:=VdiFillCol<>0;
-    2,3,4: Begin
-            If VdiFillStyle<=2 Then V:=Odd(X+Y) And (VdiFillCol<>0)
-            Else If VdiFillStyle<=4 Then V:=((X And 1)=0) And ((Y And 1)=0) And (VdiFillCol<>0)
-            Else V:=((X+Y) Mod 4=0) And (VdiFillCol<>0);
-           End;
-   Else V:=VdiFillCol<>0;
-   End;
-   BPix(X,Y,V);
-  End;
-End;
-
-Procedure VdiEllipse(CX,CY,RX,RY: Integer; Fill: Boolean);
-Var Y,X,W: Integer; T: LongInt;
-Begin
- If RY<=0 Then RY:=1;
- If RX<=0 Then RX:=1;
- For Y:=-RY To RY Do Begin
-  T:=LongInt(RX)*RX*(LongInt(RY)*RY-LongInt(Y)*Y) Div (LongInt(RY)*RY);
-  W:=0;
-  While LongInt(W+1)*(W+1)<=T Do Inc(W);
-  If Fill Then Begin For X:=-W To W Do BPix(CX+X,CY+Y,VdiFillCol<>0);End
-  Else Begin BPix(CX-W,CY+Y,True);BPix(CX+W,CY+Y,True);End;
- End;
-End;
-
-Procedure Vdi(Pb: LongInt);
-Var Ctl,Ii,Pi,Io,Po: LongInt; Op,Sub,N,I: Integer; S: String; X1,Y1,X2,Y2: Integer;
-Begin
- Ctl:=Rd32(Pb);Ii:=Rd32(Pb+4);Pi:=Rd32(Pb+8);Io:=Rd32(Pb+12);Po:=Rd32(Pb+16);
- Op:=Rd16(Ctl);Sub:=Rd16(Ctl+10);N:=Rd16(Ctl+2);
- Wr16(Ctl+4,0);Wr16(Ctl+8,0);
- Case Op Of
-  1,100: Begin
-          Wr16(Ctl+12,1);
-          For I:=0 To 44 Do Wr16(Io+I*2,0);
-          Wr16(Io,639);Wr16(Io+2,399);
-          Wr16(Io+26,2);
-          Wr16(Ctl+8,45);
-          For I:=0 To 11 Do Wr16(Po+I*2,0);
-          Wr16(Ctl+4,6);
-          VdiLineCol:=1;VdiFillInt:=0;VdiFillCol:=1;VdiTextCol:=1;
-         End;
-  3: BRect(0,0,639,399,False);
-  6: Begin
-      For I:=0 To N-2 Do
-       BLine(SExt(Rd16(Pi+I*4),2),SExt(Rd16(Pi+I*4+2),2),
-             SExt(Rd16(Pi+I*4+4),2),SExt(Rd16(Pi+I*4+6),2),VdiLineCol<>0);
-     End;
-  8: Begin
-      S:='';
-      For I:=0 To Rd16(Ctl+6)-1 Do S:=S+Chr(Rd16(Ii+I*2) And $FF);
-      BText(SExt(Rd16(Pi),2),SExt(Rd16(Pi+2),2)-12,S,False);
-     End;
-  9: Begin
-      For I:=0 To N-1 Do
-       BLine(SExt(Rd16(Pi+I*4),2),SExt(Rd16(Pi+I*4+2),2),
-             SExt(Rd16(Pi+((I+1) Mod N)*4),2),SExt(Rd16(Pi+((I+1) Mod N)*4+2),2),VdiLineCol<>0);
-     End;
-  11: Begin
-       Case Sub Of
-        1: VdiFillRect(SExt(Rd16(Pi),2),SExt(Rd16(Pi+2),2),SExt(Rd16(Pi+4),2),SExt(Rd16(Pi+6),2));
-        4: VdiEllipse(SExt(Rd16(Pi),2),SExt(Rd16(Pi+2),2),SExt(Rd16(Pi+8),2),SExt(Rd16(Pi+8),2),VdiFillInt<>0);
-        5: VdiEllipse(SExt(Rd16(Pi),2),SExt(Rd16(Pi+2),2),SExt(Rd16(Pi+4),2),SExt(Rd16(Pi+6),2),VdiFillInt<>0);
-        8: Begin
-            X1:=SExt(Rd16(Pi),2);Y1:=SExt(Rd16(Pi+2),2);X2:=SExt(Rd16(Pi+4),2);Y2:=SExt(Rd16(Pi+6),2);
-            BLine(X1,Y1,X2,Y1,True);BLine(X1,Y2,X2,Y2,True);BLine(X1,Y1,X1,Y2,True);BLine(X2,Y1,X2,Y2,True);
-           End;
-       End;
-      End;
-  17: Begin VdiLineCol:=Rd16(Ii);Wr16(Io,VdiLineCol);Wr16(Ctl+8,1);End;
-  22: Begin VdiTextCol:=Rd16(Ii);Wr16(Io,VdiTextCol);Wr16(Ctl+8,1);End;
-  23: Begin VdiFillInt:=Rd16(Ii);Wr16(Io,VdiFillInt);Wr16(Ctl+8,1);End;
-  24: Begin VdiFillStyle:=Rd16(Ii);Wr16(Io,VdiFillStyle);Wr16(Ctl+8,1);End;
-  25: Begin VdiFillCol:=Rd16(Ii);Wr16(Io,VdiFillCol);Wr16(Ctl+8,1);End;
-  12: Begin Wr16(Po,8);Wr16(Po+2,16);Wr16(Po+4,8);Wr16(Po+6,16);Wr16(Ctl+4,2);End;
-  35,36: Begin Wr16(Io,0);Wr16(Ctl+8,1);End;
-  102: Begin
-        For I:=0 To 44 Do Wr16(Io+I*2,0);
-        Wr16(Io,2);Wr16(Io+2,1);Wr16(Ctl+8,45);
-       End;
- End;
-End;
-
-{ ---------------------------------------------------------------------- }
-{ AES                                                                      }
-{ ---------------------------------------------------------------------- }
-
-Procedure AesAlert(Const Txt: String);
-Var Lines: Array[1..6] Of String; NL,I,J,W,X1,Y1,H: Integer; Cur,Btn: String; P: Integer; Part: Integer;
-Begin
- NL:=0;Cur:='';Btn:='OK';Part:=0;
- { format : [n][ligne|ligne][bouton|bouton] }
- I:=1;
- While I<=Length(Txt) Do Begin
-  If Txt[I]='[' Then Begin
-   Inc(Part);Cur:='';Inc(I);
-   While (I<=Length(Txt)) And (Txt[I]<>']') Do Begin Cur:=Cur+Txt[I];Inc(I);End;
-   If Part=2 Then Begin
-    While (Cur<>'') And (NL<6) Do Begin
-     P:=Pos('|',Cur);
-     Inc(NL);
-     If P=0 Then Begin Lines[NL]:=Cur;Cur:='';End
-     Else Begin Lines[NL]:=Copy(Cur,1,P-1);Delete(Cur,1,P);End;
-    End;
-   End Else If Part=3 Then Begin
-    P:=Pos('|',Cur);
-    If P>0 Then Cur:=Copy(Cur,1,P-1);
-    Btn:=Cur;
-   End;
-  End;
-  Inc(I);
- End;
- W:=Length(Btn)*8+32;
- For I:=1 To NL Do If Length(Lines[I])*8+48>W Then W:=Length(Lines[I])*8+48;
- H:=NL*16+64;
- X1:=(640-W) Div 2;Y1:=(400-H) Div 2;
- BRect(X1+4,Y1+4,X1+W+4,Y1+H+4,True);
- BRect(X1,Y1,X1+W,Y1+H,False);
- BLine(X1,Y1,X1+W,Y1,True);BLine(X1,Y1+H,X1+W,Y1+H,True);
- BLine(X1,Y1,X1,Y1+H,True);BLine(X1+W,Y1,X1+W,Y1+H,True);
- BLine(X1+2,Y1+2,X1+W-2,Y1+2,True);BLine(X1+2,Y1+H-2,X1+W-2,Y1+H-2,True);
- BLine(X1+2,Y1+2,X1+2,Y1+H-2,True);BLine(X1+W-2,Y1+2,X1+W-2,Y1+H-2,True);
- For I:=1 To NL Do BText(X1+24,Y1+12+(I-1)*16,Lines[I],False);
- J:=(W-(Length(Btn)*8+16)) Div 2;
- BRect(X1+J,Y1+H-36,X1+J+Length(Btn)*8+16,Y1+H-12,True);
- BText(X1+J+8,Y1+H-32,Btn,True);
- If Not BatchMode Then BlitScreen(False);
-End;
-
-Procedure Aes(Pb: LongInt);
-Var Ctl,Glb,Ii,Io,Ai,Ao: LongInt; Op,I: Integer; K: LongInt; Fl: LongInt; Tm: LongInt;
-Begin
- Ctl:=Rd32(Pb);Glb:=Rd32(Pb+4);Ii:=Rd32(Pb+8);Io:=Rd32(Pb+12);Ai:=Rd32(Pb+16);Ao:=Rd32(Pb+20);
- Op:=Rd16(Ctl);
- Wr16(Io,1);
- Case Op Of
-  10: Begin
-       Wr16(Glb,$0140);Wr16(Glb+2,1);Wr16(Glb+4,1);Wr16(Io,1);
-      End;
-  19: Wr16(Io,1);
-  21: Begin K:=WaitKeyEmu;Wr16(Io,((K Shr 16) And $FF) Shl 8 Or (K And $FF));End;
-  22: Begin WaitKeyEmu;Wr16(Io,1);Wr16(Io+2,1);Wr16(Io+4,0);Wr16(Io+6,0);Wr16(Io+8,0);End;
-  23: Begin
-       WaitKeyEmu;
-       For I:=0 To 7 Do Wr16(Rd32(Ai)+I*2,0);
-       Wr16(Rd32(Ai),22);
-       Wr16(Io,1);
-      End;
-  25: Begin
-       Fl:=Rd16(Ii);
-       For I:=1 To 15 Do Wr16(Io+I*2,0);
-       If (Fl And 1)<>0 Then Begin
-        K:=WaitKeyEmu;
-        Wr16(Io,1);Wr16(Io+10,((K Shr 16) And $FF) Shl 8 Or (K And $FF));
-       End Else If (Fl And 16)<>0 Then Begin
-        WaitKeyEmu;
-        For I:=0 To 7 Do Wr16(Rd32(Ai)+I*2,0);
-        Wr16(Rd32(Ai),22);
-        Wr16(Io,16);
-       End Else If (Fl And 32)<>0 Then Begin
-        Tm:=Rd16(Ii+28) Or (LongInt(Rd16(Ii+30)) Shl 16);
-        If Tm>0 Then Delay(Tm);
-        Wr16(Io,32);
-       End Else Wr16(Io,1);
-      End;
-  30: Wr16(Io,1);
-  35: Wr16(Io,1);
-  52: Begin AesAlert(RdStr(Rd32(Ai),250));WaitKeyEmu;Wr16(Io,1);End;
-  77: Begin
-       Wr16(Io,1);Wr16(Io+2,8);Wr16(Io+4,16);Wr16(Io+6,8);Wr16(Io+8,16);
-      End;
-  78,79,104,105,107,110,111,112: Wr16(Io,0);
-  100: Wr16(Io,1);
- End;
-End;
-
-{ ---------------------------------------------------------------------- }
-{ Interruptions de l'emulateur                                            }
-{ ---------------------------------------------------------------------- }
-
-Procedure DoTrap(N: Integer);
-Begin
- If AmigaRun And (N<>1) Then Begin
-  RaiseExc(32+N);Exit;
- End;
- Case N Of
-  1: Gemdos;
-  2: Begin
-      If Not Emu_GEM Then Halt68('GEM is not available (Run with GEM is off)')
-      Else If Rg[0]=$73 Then Vdi(Rg[1])
-      Else If (Rg[0] And $FFFF)=$C8 Then Aes(Rg[1]);
-     End;
-  13: Bios;
-  14: Xbios;
- Else RaiseExc(32+N);
- End;
-End;
-
-Procedure DoLineA(Op: LongInt);
-Begin
- If Op=$A000 Then Begin
-  Rg[0]:=LINEA_VARS;Rg[8]:=LINEA_VARS;
-  Rg[9]:=LINEA_VARS+$100;Rg[10]:=LINEA_VARS+$200;
- End;
-End;
-
-{ ---------------------------------------------------------------------- }
-{ AmigaOS simplifie : exec.library, dos.library                           }
-{ ---------------------------------------------------------------------- }
-
-Procedure AmigaCall(Base: LongInt; Off: LongInt);
-Var Lib: Integer; R,A,N: LongInt; S: String; I: LongInt; Buf: Array[0..4095] Of Byte; Got: LongInt; H: Integer;
-Begin
- R:=0;
- If Base=EXECBASE Then Begin
-  Case Off Of
-   -552: Begin
-          S:=Upper(RdStr(Rg[9],40));
-          If S='DOS.LIBRARY' Then R:=DOSBASE
-          Else If S='INTUITION.LIBRARY' Then R:=INTUIBASE
-          Else If S='GRAPHICS.LIBRARY' Then R:=GFXBASE
-          Else R:=0;
-         End;
-   -198: Begin
-          R:=DoMalloc(Rg[0]);
-          If (R<>0) And ((Rg[1] And $10000)<>0) Then
-           For I:=0 To Rg[0]-1 Do Wr8(R+I,0);
-         End;
-   -684: R:=DoMalloc(Rg[0]);
-   -210: Begin DoMfree(Rg[9]);End;
-   -690: Begin DoMfree(Rg[9]);End;
-   -294: R:=$2800;
-  Else R:=0;
-  End;
- End Else If Base=DOSBASE Then Begin
-  Case Off Of
-   -30: Begin
-         S:=HostPath(RdStr(Rg[1],200));
-         H:=AllocFH;
-         If H=0 Then R:=0
-         Else Begin
-          Assign(FHs[H],S);
-          {$I-}
-          If Rg[2]=1006 Then Rewrite(FHs[H],1) Else Begin FileMode:=0;Reset(FHs[H],1);End;
-          {$I+}
-          If IOResult<>0 Then R:=0 Else Begin FHUsed[H]:=True;R:=H;End;
-         End;
-        End;
-   -36: Begin
-         H:=Rg[1];
-         If (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
-          {$I-}
-          Close(FHs[H]);
-          {$I+}
-          If IOResult=0 Then Begin End;
-          FHUsed[H]:=False;R:=-1;
-         End;
-        End;
-   -42: Begin
-         H:=Rg[1];N:=Rg[3];A:=Rg[2];
-         If H=1 Then Begin
-          R:=0;
-          While R<N Do Begin
-           Got:=WaitKeyEmu;
-           If UserBreak Then Break;
-           Wr8(A+R,Got And $FF);Inc(R);ConPut(Got And $FF);
-           If (Got And $FF)=13 Then Begin ConPut(10);Break;End;
-          End;
-         End Else If (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
-          If N>4096 Then N:=4096;
-          {$I-}
-          BlockRead(FHs[H],Buf,N,Got);
-          {$I+}
-          If IOResult<>0 Then Got:=0;
-          For I:=0 To Got-1 Do Wr8(A+I,Buf[I]);
-          R:=Got;
-         End Else R:=-1;
-        End;
-   -48: Begin
-         H:=Rg[1];N:=Rg[3];A:=Rg[2];
-         If (H=1) Or (H=2) Then Begin
-          For I:=0 To N-1 Do ConPut(Rd8(A+I));
-          R:=N;
-         End Else If (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
-          If N>4096 Then N:=4096;
-          For I:=0 To N-1 Do Buf[I]:=Rd8(A+I);
-          {$I-}
-          BlockWrite(FHs[H],Buf,N,Got);
-          {$I+}
-          If IOResult<>0 Then Got:=0;
-          R:=Got;
-         End Else R:=-1;
-        End;
-   -54: R:=1;
-   -60: R:=2;
-   -72: Begin
-         S:=HostPath(RdStr(Rg[1],200));
-         Assign(FHs[6],S);
-         {$I-}
-         Erase(FHs[6]);
-         {$I+}
-         If IOResult=0 Then R:=-1 Else R:=0;
-        End;
-   -144: Begin StopReason:=STOP_EXIT;ExitCode:=Rg[1];End;
-   -198: Delay(Rg[1]*20);
-   -948: Begin
-          A:=Rg[1];N:=0;
-          While (Rd8(A+N)<>0) And (N<30000) Do Begin ConPut(Rd8(A+N));Inc(N);End;
-         End;
-  Else R:=0;
-  End;
- End;
- Rg[0]:=R;
-End;
-
-Procedure HleLibCheck;
-Begin
- If Not AmigaRun Then Exit;
- If (PC<AMIGA_LO) Or (PC>=AMIGA_HI) Then Exit;
- If (PC>=EXECBASE-1024) And (PC<EXECBASE) Then AmigaCall(EXECBASE,PC-EXECBASE)
- Else If (PC>=DOSBASE-1024) And (PC<DOSBASE) Then AmigaCall(DOSBASE,PC-DOSBASE)
- Else Rg[0]:=0;
- PC:=PopL;
-End;
-
-{ ---------------------------------------------------------------------- }
-{ Chargement des programmes                                               }
-{ ---------------------------------------------------------------------- }
-
-Procedure EmuReset;
-Var I: Integer;
-Begin
- CpuReset;
- SingleStack:=True;
- ClearMemory;
- ScrBase:=(MemSize-SCR_BYTES) And $FFFF00;
- HitPa:=(ScrBase-$1000) And $FFFF00;
- HeapLo:=BP_ADDR+$100;HeapHi:=HitPa-$4000;
- MCnt:=0;DtaAddr:=BP_ADDR+$80;DtaActive:=False;
- CloseAllFiles;
- ConRow:=0;ConCol:=0;ConRev:=False;ConWrap:=True;ConCurOn:=True;ConState:=0;
- KQHead:=0;KQTail:=0;UserBreak:=False;
- NBps:=0;DbgN:=0;UnknownCall:='';
- VdiLineCol:=1;VdiFillInt:=0;VdiFillCol:=1;VdiTextCol:=1;VdiFillStyle:=1;
- AmigaRun:=False;
- ScrDirtyLo:=0;ScrDirtyHi:=399;
- { stub de sortie : clr.w -(sp) ; trap #1 }
- Wr16(STUB_EXIT,$4267);Wr16(STUB_EXIT+2,$4E41);
- { stub Supexec : andi #$DFFF,sr ; rts }
- Wr16(STUB_USER,$027C);Wr16(STUB_USER+2,$DFFF);Wr16(STUB_USER+4,$4E75);
- FillChar(ScrShadow,SizeOf(ScrShadow),$FF);
-End;
-
-Function ReadAll(Const Name: String; Var P: Pointer; Var Len: LongInt): Boolean;
-Begin
- ReadAll:=ReadFileBytes(Name,P,Len);
-End;
-
-Function BufB(P: Pointer; I: LongInt): LongInt;
-Begin
- BufB:=PByteAt(P,I);
-End;
-
-Function BufL(P: Pointer; I: LongInt): LongInt;
-Begin
- BufL:=(BufB(P,I) Shl 24) Or (BufB(P,I+1) Shl 16) Or (BufB(P,I+2) Shl 8) Or BufB(P,I+3);
-End;
-
-Function BufW(P: Pointer; I: LongInt): LongInt;
-Begin
- BufW:=(BufB(P,I) Shl 8) Or BufB(P,I+1);
-End;
-
-Function LoadPRG(P: Pointer; Len: LongInt; Const CmdLine: String): Boolean;
-Var TS,DS,BS,SS,TB,I,Off,Nm: LongInt; B: LongInt; Cur,Sym: LongInt; Typ: LongInt;
-    Name: String; J: Integer; Sp: LongInt;
-Begin
- LoadPRG:=False;
- If (Len<28) Or (BufW(P,0)<>$601A) Then Exit;
- TS:=BufL(P,2);DS:=BufL(P,6);BS:=BufL(P,10);SS:=BufL(P,14);
- TB:=BP_ADDR+$100;
- If TB+TS+DS+BS>HeapHi Then Exit;
- For I:=0 To TS+DS-1 Do Wr8(TB+I,BufB(P,28+I));
- For I:=0 To BS-1 Do Wr8(TB+TS+DS+I,0);
- { relocation }
- Off:=28+TS+DS+SS;
- If Off+4<=Len Then Begin
-  Cur:=BufL(P,Off);Inc(Off,4);
-  If Cur<>0 Then Begin
-   Wr32(TB+Cur,Rd32(TB+Cur)+TB);
-   While Off<Len Do Begin
-    B:=BufB(P,Off);Inc(Off);
-    If B=0 Then Break;
-    If B=1 Then Cur:=Cur+254
-    Else Begin Cur:=Cur+B;Wr32(TB+Cur,Rd32(TB+Cur)+TB);End;
-   End;
-  End;
- End;
- { symboles }
- DbgN:=0;
- Sym:=28+TS+DS;
- While (SS>=14) And (Sym+14<=28+TS+DS+SS) Do Begin
-  Name:='';
-  For J:=0 To 7 Do If BufB(P,Sym+J)<>0 Then Name:=Name+Chr(BufB(P,Sym+J));
-  Typ:=BufW(P,Sym+8);
-  If (Typ And $0048)=$0048 Then Begin
-   For J:=0 To 13 Do If BufB(P,Sym+14+J)<>0 Then Name:=Name+Chr(BufB(P,Sym+14+J));
-   DbgAdd(Name,BufL(P,Sym+10)+TB);
-   Inc(Sym,28);
-  End Else Begin
-   If (Typ And $8000)<>0 Then DbgAdd(Name,BufL(P,Sym+10)+TB);
-   Inc(Sym,14);
-  End;
- End;
- { page de base }
- Wr32(BP_ADDR,BP_ADDR);Wr32(BP_ADDR+4,HitPa);
- Wr32(BP_ADDR+8,TB);Wr32(BP_ADDR+12,TS);
- Wr32(BP_ADDR+16,TB+TS);Wr32(BP_ADDR+20,DS);
- Wr32(BP_ADDR+24,TB+TS+DS);Wr32(BP_ADDR+28,BS);
- Wr32(BP_ADDR+32,BP_ADDR+$80);Wr32(BP_ADDR+36,0);Wr32(BP_ADDR+44,BP_ADDR+$F0);
- Wr8(BP_ADDR+$80,Length(CmdLine));
- For J:=1 To Length(CmdLine) Do Wr8(BP_ADDR+$80+J,Ord(CmdLine[J]));
- Wr8(BP_ADDR+$F0,0);
- HeapLo:=TB+TS+DS+BS;
- If Odd(HeapLo) Then Inc(HeapLo);
- { etat du processeur }
- Sp:=HitPa-8;
- Wr32(Sp,STUB_EXIT);Wr32(Sp+4,BP_ADDR);
- Rg[15]:=Sp;USPv:=Sp;SSPv:=$7000;
- PC:=TB;SRv:=0;
- LoadPRG:=True;
-End;
-
-Function LoadHunk(P: Pointer; Len: LongInt; Const CmdLine: String): Boolean;
-Var Pos,NH,First,Last,I,Cur,T,Sz,N,Dst,Base,Nm: LongInt; HAddr,HSize: Array[0..15] Of LongInt;
-    J: Integer; Name: String; Sp,Val: LongInt;
- Function NextL: LongInt;
- Begin
-  If Pos+4>Len Then NextL:=0 Else NextL:=BufL(P,Pos);
-  Inc(Pos,4);
- End;
-Begin
- LoadHunk:=False;
- Pos:=0;
- If BufL(P,0)<>$3F3 Then Exit;
- Inc(Pos,4);
- While True Do Begin
-  N:=NextL;
-  If N=0 Then Break;
-  Inc(Pos,N*4);
- End;
- NH:=NextL;First:=NextL;Last:=NextL;
- If (NH>16) Or (NH<=0) Then Exit;
- Base:=$20000;
- For I:=0 To Last-First Do Begin
-  HSize[I]:=(NextL And $3FFFFFFF)*4;
-  HAddr[I]:=Base;
-  Base:=Base+HSize[I]+16;
-  For J:=0 To HSize[I]-1 Do Wr8(HAddr[I]+J,0);
- End;
- If Base>HeapHi Then Exit;
- Cur:=0;DbgN:=0;
- While Pos<Len Do Begin
-  T:=NextL And $3FFFFFFF;
-  Case T Of
-   $3E9,$3EA: Begin
-               Sz:=NextL*4;
-               For J:=0 To Sz-1 Do Wr8(HAddr[Cur]+J,BufB(P,Pos+J));
-               Inc(Pos,Sz);
-              End;
-   $3EB: NextL;
-   $3EC: Begin
-          While True Do Begin
-           N:=NextL;
-           If N=0 Then Break;
-           Dst:=NextL;
-           For J:=1 To N Do Begin
-            Sz:=NextL;
-            Wr32(HAddr[Cur]+Sz,Rd32(HAddr[Cur]+Sz)+HAddr[Dst]);
-           End;
-          End;
-         End;
-   $3F0: Begin
-          While True Do Begin
-           N:=NextL And $FFFFFF;
-           If N=0 Then Break;
-           Name:='';
-           For J:=0 To N*4-1 Do If BufB(P,Pos+J)<>0 Then Name:=Name+Chr(BufB(P,Pos+J));
-           Inc(Pos,N*4);
-           Val:=NextL;
-           DbgAdd(Name,HAddr[Cur]+Val);
-          End;
-         End;
-   $3F1: Begin Sz:=NextL*4;Inc(Pos,Sz);End;
-   $3F2: Begin Inc(Cur);If Cur>Last-First Then Break;End;
-  Else Break;
-  End;
- End;
- HeapLo:=Base;
- AmigaRun:=True;
- Wr32(4,EXECBASE);
- Wr32(BP_ADDR+$80,0);
- For J:=1 To Length(CmdLine) Do Wr8(BP_ADDR+$80+J-1,Ord(CmdLine[J]));
- Sp:=HitPa-8;
- Wr32(Sp,STUB_EXIT);
- Wr16(STUB_EXIT,$3F00);Wr16(STUB_EXIT+2,$3F3C);Wr16(STUB_EXIT+4,$004C);Wr16(STUB_EXIT+6,$4E41);
- Rg[15]:=Sp;USPv:=Sp;SSPv:=$7000;
- Rg[0]:=Length(CmdLine);Rg[8]:=BP_ADDR+$80;Rg[14]:=EXECBASE;
- PC:=HAddr[0];SRv:=0;
- LoadHunk:=True;
-End;
-
-{ Charge un executable ST (.PRG) ou Amiga (Hunk) ; reinitialise l'emulateur }
-Function LoadProgram(Const Name,CmdLine: String; GemOn: Boolean): Boolean;
-Var P: Pointer; Len: LongInt; Ok: Boolean;
-Begin
- LoadProgram:=False;
- If Not ReadAll(Name,P,Len) Then Exit;
- EmuReset;
- Emu_GEM:=GemOn;
- ProgName:=Name;ProgCmd:=CmdLine;
- If BufW(P,0)=$601A Then Ok:=LoadPRG(P,Len,CmdLine)
- Else If BufL(P,0)=$3F3 Then Ok:=LoadHunk(P,Len,CmdLine)
- Else Ok:=False;
- If P<>Nil Then FreeMem(P,Len);
- LoadProgram:=Ok;
 End;
 
 { ====================================================================== }
@@ -7275,6 +6755,4349 @@ Begin
  End;
 End;
 
+Function ReadAll(Const Name: String; Var P: Pointer; Var Len: LongInt): Boolean;
+Begin
+ ReadAll:=ReadFileBytes(Name,P,Len);
+End;
+
+Function BufB(P: Pointer; I: LongInt): LongInt;
+Begin
+ BufB:=PByteAt(P,I);
+End;
+
+Function BufL(P: Pointer; I: LongInt): LongInt;
+Begin
+ BufL:=(BufB(P,I) Shl 24) Or (BufB(P,I+1) Shl 16) Or (BufB(P,I+2) Shl 8) Or BufB(P,I+3);
+End;
+
+Function BufW(P: Pointer; I: LongInt): LongInt;
+Begin
+ BufW:=(BufB(P,I) Shl 8) Or BufB(P,I+1);
+End;
+
+
+{ ====================================================================== }
+{                  GEM : VDI (Virtual Device Interface)                  }
+{ ====================================================================== }
+
+Const
+ MAXVWK  = 16;
+ SW      = 640;
+ SH      = 400;
+ WM_REPL = 1;  WM_TRANS = 2;  WM_XOR = 3;  WM_RTRANS = 4;
+
+Type
+ TVdi = Record
+  Used     : Boolean;
+  Owner    : Integer;
+  WrMode   : Integer;
+  LineType,LineCol,LineWidth,LineEnd0,LineEnd1 : Integer;
+  LineUd   : Word;
+  MarkType,MarkCol,MarkH : Integer;
+  TxtFont,TxtCol,TxtRot,TxtEff,TxtHAl,TxtVAl,TxtCell : Integer;
+  FillInt,FillSty,FillCol,FillPer : Integer;
+  UdPat    : Array[0..15] Of Word;
+  ClipOn   : Boolean;
+  Cx1,Cy1,Cx2,Cy2 : Integer;
+ End;
+ TPoly = Array[0..255] Of Integer;     { x0,y0,x1,y1,... }
+
+Var
+ Vd      : Array[0..MAXVWK] Of TVdi;
+ VP      : ^TVdi;
+ VCur    : Integer;
+ CX1,CY1,CX2,CY2 : Integer;          { fenetre de clipping effective }
+ GMouseX,GMouseY,GMouseB : LongInt;
+ BayerM  : Array[0..3,0..3] Of Byte;
+ BayerCnt: Array[1..8] Of Byte;
+ PX,PY   : TPoly;                    { sommets pour les polygones }
+ LinePhase : Integer;
+ AesTrace  : Boolean;
+
+Procedure VdiInitTables;
+Const B : Array[0..15] Of Byte = (0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
+      C : Array[1..8] Of Byte = (1,2,4,6,8,10,12,14);
+Var I: Integer;
+Begin
+ For I:=0 To 15 Do BayerM[I Div 4,I Mod 4]:=B[I];
+ For I:=1 To 8 Do BayerCnt[I]:=C[I];
+End;
+
+Procedure VdiDefaults(Var V: TVdi);
+Var I: Integer;
+Begin
+ V.WrMode:=WM_REPL;
+ V.LineType:=1;V.LineCol:=1;V.LineWidth:=1;V.LineEnd0:=0;V.LineEnd1:=0;V.LineUd:=$FFFF;
+ V.MarkType:=3;V.MarkCol:=1;V.MarkH:=8;
+ V.TxtFont:=1;V.TxtCol:=1;V.TxtRot:=0;V.TxtEff:=0;V.TxtHAl:=0;V.TxtVAl:=0;V.TxtCell:=16;
+ V.FillInt:=0;V.FillSty:=1;V.FillCol:=1;V.FillPer:=1;
+ For I:=0 To 15 Do V.UdPat[I]:=$AAAA;
+ V.ClipOn:=False;V.Cx1:=0;V.Cy1:=0;V.Cx2:=SW-1;V.Cy2:=SH-1;
+End;
+
+Procedure SelVdi(H: Integer);
+Begin
+ If (H<0) Or (H>MAXVWK) Or Not Vd[H].Used Then H:=1;
+ If Not Vd[H].Used Then H:=0;
+ VCur:=H;VP:=@Vd[H];
+ If VP^.ClipOn Then Begin
+  CX1:=Max2(0,VP^.Cx1);CY1:=Max2(0,VP^.Cy1);CX2:=Min2(SW-1,VP^.Cx2);CY2:=Min2(SH-1,VP^.Cy2);
+ End Else Begin CX1:=0;CY1:=0;CX2:=SW-1;CY2:=SH-1;End;
+End;
+
+Procedure SetClip(X1,Y1,X2,Y2: Integer);
+Begin
+ CX1:=Max2(0,X1);CY1:=Max2(0,Y1);CX2:=Min2(SW-1,X2);CY2:=Min2(SH-1,Y2);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Pixels et segments                                                       }
+{ ---------------------------------------------------------------------- }
+
+Procedure PlotPat(X,Y: Integer; PatBit,Col: Boolean);
+Begin
+ If (X<CX1) Or (X>CX2) Or (Y<CY1) Or (Y>CY2) Then Exit;
+ Case VP^.WrMode Of
+  WM_REPL: If PatBit Then BPix(X,Y,Col) Else BPix(X,Y,False);
+  WM_TRANS: If PatBit Then BPix(X,Y,Col);
+  WM_XOR: If PatBit Then BPix(X,Y,Not BGet(X,Y));
+  WM_RTRANS: If Not PatBit Then BPix(X,Y,Col);
+ End;
+End;
+
+Procedure PlotSolid(X,Y: Integer; Col: Boolean);
+Begin
+ PlotPat(X,Y,True,Col);
+End;
+
+Procedure FastSpan(Y,X1,X2: Integer; Col: Boolean; Xor_: Boolean);
+Var XB1,XB2,XB: Integer; M1,M2,B: Byte; A: LongInt;
+Begin
+ If X1<CX1 Then X1:=CX1;
+ If X2>CX2 Then X2:=CX2;
+ If (X1>X2) Or (Y<CY1) Or (Y>CY2) Then Exit;
+ A:=ScrBase+LongInt(Y)*80;
+ XB1:=X1 Shr 3;XB2:=X2 Shr 3;
+ M1:=$FF Shr (X1 And 7);
+ M2:=$FF Shl (7-(X2 And 7));
+ If XB1=XB2 Then Begin
+  M1:=M1 And M2;
+  B:=Rd8(A+XB1);
+  If Xor_ Then B:=B Xor M1 Else If Col Then B:=B Or M1 Else B:=B And Not M1;
+  Wr8(A+XB1,B);
+ End Else Begin
+  B:=Rd8(A+XB1);
+  If Xor_ Then B:=B Xor M1 Else If Col Then B:=B Or M1 Else B:=B And Not M1;
+  Wr8(A+XB1,B);
+  For XB:=XB1+1 To XB2-1 Do Begin
+   If Xor_ Then Wr8(A+XB,Rd8(A+XB) Xor $FF) Else If Col Then Wr8(A+XB,$FF) Else Wr8(A+XB,0);
+  End;
+  B:=Rd8(A+XB2);
+  If Xor_ Then B:=B Xor M2 Else If Col Then B:=B Or M2 Else B:=B And Not M2;
+  Wr8(A+XB2,B);
+ End;
+End;
+
+Function ColBit(C: Integer): Boolean;
+Begin
+ ColBit:=C<>0;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Motifs de remplissage                                                    }
+{ ---------------------------------------------------------------------- }
+
+Function PatPix(Sty,X,Y: Integer): Boolean;
+Var R: Boolean; A,B: Integer;
+Begin
+ X:=X And 15;Y:=Y And 15;
+ Case Sty Of
+  1..8: R:=BayerM[Y And 3,X And 3]<BayerCnt[Sty];
+  9: R:=((Y And 7)=0) Or (((X+(((Y Shr 3) And 1)*8)) And 15)=0);
+  10: R:=((Y And 3)=0) Or (((X+(((Y Shr 2) And 1)*4)) And 7)=0);
+  11: R:=((X+Y) And 7)=0;
+  12: R:=((X+Y) And 3)=0;
+  13: R:=((X-Y) And 7)=0;
+  14: R:=((X-Y) And 3)=0;
+  15: R:=((Y And 3)=0) Or ((X And 3)=0);
+  16: R:=((X And 7)=0) Or ((Y And 7)=0);
+  17: R:=(((X Shr 1)+(Y Shr 1)) And 1)=0;
+  18: R:=(((X Shr 2)+(Y Shr 2)) And 1)=0;
+  19: Begin A:=Abs((X And 7)-4);B:=Abs((Y And 7)-4);R:=A+B<=3;End;
+  20: Begin A:=(X+(((Y Shr 2) And 1)*4)) And 7;R:=(A<4) Xor ((Y And 3)>=2);End;
+  21: R:=((X+Y) And 3)<2;
+  22: R:=BayerM[Y And 3,X And 3]<13;
+  23: R:=BayerM[Y And 3,X And 3]<14;
+  24: R:=BayerM[Y And 3,X And 3]<15;
+ Else R:=True;
+ End;
+ PatPix:=R;
+End;
+
+Function HatchPix(Sty,X,Y: Integer): Boolean;
+Var R: Boolean;
+Begin
+ X:=X And 15;Y:=Y And 15;
+ Case Sty Of
+  1: R:=((X+Y) And 7)=0;
+  2: R:=((X+Y) And 3)=0;
+  3: R:=((X-Y) And 7)=0;
+  4: R:=((X-Y) And 3)=0;
+  5: R:=(Y And 7)=0;
+  6: R:=(Y And 3)=0;
+  7: R:=(X And 7)=0;
+  8: R:=(X And 3)=0;
+  9: R:=((X And 7)=0) Or ((Y And 7)=0);
+  10: R:=((X And 3)=0) Or ((Y And 3)=0);
+  11: R:=(((X+Y) And 7)=0) Or (((X-Y) And 7)=0);
+ Else R:=(((X+Y) And 3)=0) Or (((X-Y) And 3)=0);
+ End;
+ HatchPix:=R;
+End;
+
+Function FillBit(X,Y: Integer): Boolean;
+Begin
+ Case VP^.FillInt Of
+  0: FillBit:=False;
+  1: FillBit:=True;
+  2: FillBit:=PatPix(Clamp(VP^.FillSty,1,24),X,Y);
+  3: FillBit:=HatchPix(Clamp(VP^.FillSty,1,12),X,Y);
+  4: FillBit:=(VP^.UdPat[Y And 15] And ($8000 Shr (X And 15)))<>0;
+ Else FillBit:=True;
+ End;
+End;
+
+Procedure FillSpanPat(Y,X1,X2: Integer);
+Var X: Integer; Col: Boolean;
+Begin
+ Col:=ColBit(VP^.FillCol);
+ If (VP^.FillInt=1) And (VP^.WrMode=WM_REPL) Then Begin FastSpan(Y,X1,X2,Col,False);Exit;End;
+ If (VP^.FillInt=1) And (VP^.WrMode=WM_XOR) Then Begin FastSpan(Y,X1,X2,Col,True);Exit;End;
+ If (VP^.FillInt=0) And (VP^.WrMode=WM_REPL) Then Begin FastSpan(Y,X1,X2,False,False);Exit;End;
+ For X:=X1 To X2 Do PlotPat(X,Y,FillBit(X,Y),Col);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Lignes                                                                   }
+{ ---------------------------------------------------------------------- }
+
+Function LineStyleWord: Word;
+Begin
+ Case VP^.LineType Of
+  1: LineStyleWord:=$FFFF;
+  2: LineStyleWord:=$FFF0;
+  3: LineStyleWord:=$C0C0;
+  4: LineStyleWord:=$FF18;
+  5: LineStyleWord:=$FF00;
+  6: LineStyleWord:=$F191;
+ Else LineStyleWord:=VP^.LineUd;
+ End;
+End;
+
+Procedure PolyFillPts(N: Integer; Var XS,YS: TPoly; UseFillAttr: Boolean); Forward;
+
+Procedure ThinLine(X1,Y1,X2,Y2: Integer; Mask: Word; Col: Boolean);
+Var DX,DY,SX,SY,Err,E2: Integer;
+Begin
+ DX:=Abs(X2-X1);DY:=-Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ Err:=DX+DY;
+ While True Do Begin
+  PlotPat(X1,Y1,(Mask And ($8000 Shr (LinePhase And 15)))<>0,Col);
+  Inc(LinePhase);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*Err;
+  If E2>=DY Then Begin Err:=Err+DY;X1:=X1+SX;End;
+  If E2<=DX Then Begin Err:=Err+DX;Y1:=Y1+SY;End;
+ End;
+End;
+
+Procedure DiscFill(CXx,CYy,R: Integer; Col: Boolean);
+Var Y,W: Integer;
+Begin
+ For Y:=-R To R Do Begin
+  W:=Trunc(Sqrt(R*R-Y*Y)+0.5);
+  FastSpan(CYy+Y,CXx-W,CXx+W,Col,False);
+ End;
+End;
+
+Procedure VLine(X1,Y1,X2,Y2: Integer);
+Var W: Integer; Col: Boolean; DXf,DYf,L,NX,NY: Real; QX,QY: TPoly; Sv,SvC,SvW: Integer;
+Begin
+ W:=VP^.LineWidth;Col:=ColBit(VP^.LineCol);
+ If W<=1 Then Begin
+  ThinLine(X1,Y1,X2,Y2,LineStyleWord,Col);
+  Exit;
+ End;
+ DXf:=X2-X1;DYf:=Y2-Y1;
+ L:=Sqrt(DXf*DXf+DYf*DYf);
+ If L=0 Then Begin DiscFill(X1,Y1,W Div 2,Col);Exit;End;
+ NX:=-DYf/L*(W/2);NY:=DXf/L*(W/2);
+ QX[0]:=Round(X1+NX);QY[0]:=Round(Y1+NY);
+ QX[1]:=Round(X2+NX);QY[1]:=Round(Y2+NY);
+ QX[2]:=Round(X2-NX);QY[2]:=Round(Y2-NY);
+ QX[3]:=Round(X1-NX);QY[3]:=Round(Y1-NY);
+ Sv:=VP^.FillInt;SvC:=VP^.FillCol;
+ VP^.FillInt:=1;VP^.FillCol:=VP^.LineCol;
+ PolyFillPts(4,QX,QY,False);
+ VP^.FillInt:=Sv;VP^.FillCol:=SvC;
+ If VP^.LineEnd0=2 Then DiscFill(X1,Y1,W Div 2,Col);
+ If VP^.LineEnd1=2 Then DiscFill(X2,Y2,W Div 2,Col);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Polygones remplis (parite)                                               }
+{ ---------------------------------------------------------------------- }
+
+Procedure PolyFillPts(N: Integer; Var XS,YS: TPoly; UseFillAttr: Boolean);
+Var Y,MinY,MaxY,I,J,K,Cnt: Integer; Xi: Array[0..127] Of Integer; X1,Y1,X2,Y2,T: Integer;
+Begin
+ If N<3 Then Exit;
+ MinY:=YS[0];MaxY:=YS[0];
+ For I:=1 To N-1 Do Begin
+  If YS[I]<MinY Then MinY:=YS[I];
+  If YS[I]>MaxY Then MaxY:=YS[I];
+ End;
+ If MinY<CY1 Then MinY:=CY1;
+ If MaxY>CY2 Then MaxY:=CY2;
+ For Y:=MinY To MaxY Do Begin
+  Cnt:=0;
+  For I:=0 To N-1 Do Begin
+   J:=(I+1) Mod N;
+   X1:=XS[I];Y1:=YS[I];X2:=XS[J];Y2:=YS[J];
+   If Y1=Y2 Then Continue;
+   If Y1>Y2 Then Begin T:=X1;X1:=X2;X2:=T;T:=Y1;Y1:=Y2;Y2:=T;End;
+   If (Y>=Y1) And (Y<Y2) And (Cnt<127) Then Begin
+    Xi[Cnt]:=X1+Integer(LongInt(Y-Y1)*(X2-X1) Div (Y2-Y1));
+    Inc(Cnt);
+   End;
+  End;
+  For I:=1 To Cnt-1 Do Begin
+   T:=Xi[I];K:=I-1;
+   While (K>=0) And (Xi[K]>T) Do Begin Xi[K+1]:=Xi[K];Dec(K);End;
+   Xi[K+1]:=T;
+  End;
+  I:=0;
+  While I+1<Cnt Do Begin
+   FillSpanPat(Y,Xi[I],Xi[I+1]);
+   Inc(I,2);
+  End;
+ End;
+End;
+
+Procedure PolyOutline(N: Integer; Var XS,YS: TPoly; Closed: Boolean);
+Var I: Integer;
+Begin
+ LinePhase:=0;
+ For I:=0 To N-2 Do VLine(XS[I],YS[I],XS[I+1],YS[I+1]);
+ If Closed And (N>2) Then VLine(XS[N-1],YS[N-1],XS[0],YS[0]);
+End;
+
+Procedure FillPolyAttr(N: Integer; Var XS,YS: TPoly);
+Var SvW,SvC,SvT: Integer;
+Begin
+ PolyFillPts(N,XS,YS,True);
+ If VP^.FillPer<>0 Then Begin
+  SvW:=VP^.LineWidth;SvC:=VP^.LineCol;SvT:=VP^.LineType;
+  VP^.LineWidth:=1;VP^.LineCol:=1;VP^.LineType:=1;
+  PolyOutline(N,XS,YS,True);
+  VP^.LineWidth:=SvW;VP^.LineCol:=SvC;VP^.LineType:=SvT;
+ End;
+End;
+
+Procedure VBar(X1,Y1,X2,Y2: Integer);
+Var Y,T: Integer; SvW,SvC,SvT: Integer;
+Begin
+ If X2<X1 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ If Y2<Y1 Then Begin T:=Y1;Y1:=Y2;Y2:=T;End;
+ For Y:=Max2(Y1,CY1) To Min2(Y2,CY2) Do FillSpanPat(Y,X1,X2);
+ If VP^.FillPer<>0 Then Begin
+  SvW:=VP^.LineWidth;SvC:=VP^.LineCol;SvT:=VP^.LineType;
+  VP^.LineWidth:=1;VP^.LineCol:=1;VP^.LineType:=1;
+  LinePhase:=0;
+  VLine(X1,Y1,X2,Y1);VLine(X2,Y1,X2,Y2);VLine(X2,Y2,X1,Y2);VLine(X1,Y2,X1,Y1);
+  VP^.LineWidth:=SvW;VP^.LineCol:=SvC;VP^.LineType:=SvT;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Arcs, ellipses, rectangles arrondis                                      }
+{ ---------------------------------------------------------------------- }
+
+Function ArcPoints(CXx,CYy,RX,RY,A0,A1: Integer; Var XS,YS: TPoly; Start: Integer): Integer;
+Var N,I,Steps: Integer; A,Span: Real;
+Begin
+ Span:=(A1-A0)/10.0;
+ If Span<=0 Then Span:=Span+360;
+ Steps:=Round((Abs(RX)+Abs(RY))*Span/360.0/1.5);
+ If Steps<4 Then Steps:=4;
+ If Steps>120 Then Steps:=120;
+ N:=Start;
+ For I:=0 To Steps Do Begin
+  If N>250 Then Break;
+  A:=(A0/10.0+Span*I/Steps)*Pi/180.0;
+  XS[N]:=CXx+Round(RX*Cos(A));
+  YS[N]:=CYy-Round(RY*Sin(A));
+  Inc(N);
+ End;
+ ArcPoints:=N;
+End;
+
+Procedure VArc(CXx,CYy,RX,RY,A0,A1: Integer; Mode: Integer);
+Var N: Integer;
+Begin
+ If RX<=0 Then RX:=1;
+ If RY<=0 Then RY:=1;
+ Case Mode Of
+  0: Begin N:=ArcPoints(CXx,CYy,RX,RY,A0,A1,PX,PY,0);PolyOutline(N,PX,PY,False);End;
+  1: Begin
+      N:=ArcPoints(CXx,CYy,RX,RY,A0,A1,PX,PY,0);
+      PX[N]:=CXx;PY[N]:=CYy;Inc(N);
+      FillPolyAttr(N,PX,PY);
+     End;
+ Else Begin
+   N:=ArcPoints(CXx,CYy,RX,RY,0,3600,PX,PY,0);
+   Dec(N);
+   FillPolyAttr(N,PX,PY);
+  End;
+ End;
+End;
+
+Procedure VRoundRect(X1,Y1,X2,Y2: Integer; Fill: Boolean);
+Var R,N,T: Integer;
+Begin
+ If X2<X1 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ If Y2<Y1 Then Begin T:=Y1;Y1:=Y2;Y2:=T;End;
+ R:=Min2(X2-X1,Y2-Y1) Div 4;
+ If R<2 Then R:=2;
+ N:=0;
+ N:=ArcPoints(X2-R,Y1+R,R,R,0,900,PX,PY,N);
+ N:=ArcPoints(X1+R,Y1+R,R,R,900,1800,PX,PY,N);
+ N:=ArcPoints(X1+R,Y2-R,R,R,1800,2700,PX,PY,N);
+ N:=ArcPoints(X2-R,Y2-R,R,R,2700,3600,PX,PY,N);
+ If Fill Then FillPolyAttr(N,PX,PY) Else PolyOutline(N,PX,PY,True);
+End;
+
+Procedure VMarker(X,Y: Integer);
+Var H,I: Integer; Col: Boolean; SvW,SvT,SvC: Integer;
+Begin
+ H:=Max2(1,VP^.MarkH Div 2);
+ Col:=ColBit(VP^.MarkCol);
+ SvW:=VP^.LineWidth;SvT:=VP^.LineType;SvC:=VP^.LineCol;
+ VP^.LineWidth:=1;VP^.LineType:=1;VP^.LineCol:=VP^.MarkCol;
+ LinePhase:=0;
+ Case VP^.MarkType Of
+  1: PlotSolid(X,Y,Col);
+  2: Begin VLine(X-H,Y,X+H,Y);VLine(X,Y-H,X,Y+H);End;
+  3: Begin VLine(X-H,Y,X+H,Y);VLine(X,Y-H,X,Y+H);VLine(X-H,Y-H,X+H,Y+H);VLine(X-H,Y+H,X+H,Y-H);End;
+  4: Begin VLine(X-H,Y-H,X+H,Y-H);VLine(X+H,Y-H,X+H,Y+H);VLine(X+H,Y+H,X-H,Y+H);VLine(X-H,Y+H,X-H,Y-H);End;
+  5: Begin VLine(X-H,Y-H,X+H,Y+H);VLine(X-H,Y+H,X+H,Y-H);End;
+  6: Begin VLine(X,Y-H,X+H,Y);VLine(X+H,Y,X,Y+H);VLine(X,Y+H,X-H,Y);VLine(X-H,Y,X,Y-H);End;
+ Else Begin
+   For I:=-1 To 1 Do PlotSolid(X+I,Y,Col);
+   PlotSolid(X,Y-1,Col);PlotSolid(X,Y+1,Col);
+  End;
+ End;
+ VP^.LineWidth:=SvW;VP^.LineType:=SvT;VP^.LineCol:=SvC;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Texte                                                                    }
+{ ---------------------------------------------------------------------- }
+
+Function CellW(Cell: Integer): Integer;
+Begin
+ If Cell<=6 Then CellW:=6 Else CellW:=8;
+End;
+
+Function GlyphPix(Cell: Integer; Ch,Gx,Gy: Integer): Boolean;
+Var Row,Col: Integer;
+Begin
+ GlyphPix:=False;
+ If (Gx<0) Or (Gy<0) Then Exit;
+ If Cell<=6 Then Begin
+  If (Gx>5) Or (Gy>5) Then Exit;
+  Row:=Gy*8 Div 6;Col:=Gx*8 Div 6;
+ End Else If Cell<=8 Then Begin
+  If (Gx>7) Or (Gy>7) Then Exit;
+  Row:=Gy;Col:=Gx;
+ End Else Begin
+  If (Gx>7) Or (Gy>15) Then Exit;
+  Row:=Gy Shr 1;Col:=Gx;
+ End;
+ GlyphPix:=(Font8[Ch And 255,Row] And (128 Shr Col))<>0;
+End;
+
+Function BaseLine(Cell: Integer): Integer;
+Begin
+ If Cell<=6 Then BaseLine:=5 Else If Cell<=8 Then BaseLine:=6 Else BaseLine:=12;
+End;
+
+Function TextWidthPx(Const S: String): Integer;
+Var W: Integer;
+Begin
+ W:=Length(S)*CellW(VP^.TxtCell);
+ If (VP^.TxtEff And 1)<>0 Then W:=W+Length(S);
+ TextWidthPx:=W;
+End;
+
+Procedure DrawGlyph(OX,OY: Integer; Ch: Integer; Rot: Integer; RX,RY: Integer);
+Var Gx,Gy,Cw,Ch2,DX,DY,TX,TY,Sh: Integer; On_,Col: Boolean; Bl: Integer;
+Begin
+ Cw:=CellW(VP^.TxtCell);Ch2:=VP^.TxtCell;
+ If Ch2<6 Then Ch2:=6;
+ Col:=ColBit(VP^.TxtCol);
+ Bl:=BaseLine(Ch2);
+ For Gy:=0 To Ch2-1 Do Begin
+  Sh:=0;
+  If (VP^.TxtEff And 4)<>0 Then Sh:=(Ch2-1-Gy) Div 4;
+  For Gx:=0 To Cw-1 Do Begin
+   On_:=GlyphPix(Ch2,Ch,Gx,Gy);
+   If (VP^.TxtEff And 1)<>0 Then
+    On_:=On_ Or GlyphPix(Ch2,Ch,Gx-1,Gy);
+   If (VP^.TxtEff And 2)<>0 Then
+    If On_ And (((OX+Gx+OY+Gy) And 1)=1) Then On_:=False;
+   If (VP^.TxtEff And 8)<>0 Then If Gy=Bl+1 Then On_:=True;
+   If ((VP^.TxtEff And 16)<>0) And Not On_ Then Begin
+    If GlyphPix(Ch2,Ch,Gx-1,Gy) Or GlyphPix(Ch2,Ch,Gx+1,Gy) Or
+       GlyphPix(Ch2,Ch,Gx,Gy-1) Or GlyphPix(Ch2,Ch,Gx,Gy+1) Then On_:=True;
+   End;
+   DX:=OX+Gx+Sh-RX;DY:=OY+Gy-RY;
+   Case Rot Of
+    1: Begin TX:=DY;TY:=-DX;End;
+    2: Begin TX:=-DX;TY:=-DY;End;
+    3: Begin TX:=-DY;TY:=DX;End;
+   Else Begin TX:=DX;TY:=DY;End;
+   End;
+   If (VP^.WrMode=WM_REPL) Then PlotPat(RX+TX,RY+TY,On_,Col)
+   Else If On_ Then PlotPat(RX+TX,RY+TY,True,Col);
+  End;
+ End;
+End;
+
+Procedure VGText(X,Y: Integer; Const S: String);
+Var I,Cw,Ch,W,Rot,OX,OY,Bl,Adv: Integer;
+Begin
+ Cw:=CellW(VP^.TxtCell);Ch:=VP^.TxtCell;
+ If Ch<6 Then Ch:=6;
+ Bl:=BaseLine(Ch);
+ Adv:=Cw;If (VP^.TxtEff And 1)<>0 Then Inc(Adv);
+ W:=TextWidthPx(S);
+ Rot:=((VP^.TxtRot+450) Div 900) And 3;
+ OX:=X;
+ Case VP^.TxtHAl Of
+  1: OX:=X-W Div 2;
+  2: OX:=X-W;
+ End;
+ Case VP^.TxtVAl Of
+  0: OY:=Y-Bl;
+  1: OY:=Y-Bl+(Bl Div 2);
+  2: OY:=Y;
+  3: OY:=Y-(Ch-1);
+  4: OY:=Y-(Bl+1);
+ Else OY:=Y;
+ End;
+ For I:=1 To Length(S) Do
+  DrawGlyph(OX+(I-1)*Adv,OY,Ord(S[I]),Rot,X,Y);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Copies raster                                                            }
+{ ---------------------------------------------------------------------- }
+
+Type
+ TMfdb = Record
+  Addr  : LongInt;
+  W,H,WW,Stand,Planes : Integer;
+ End;
+
+Procedure ReadMfdb(P: LongInt; Var M: TMfdb);
+Begin
+ If P=0 Then Begin
+  M.Addr:=0;M.W:=SW;M.H:=SH;M.WW:=40;M.Stand:=0;M.Planes:=1;Exit;
+ End;
+ M.Addr:=Rd32(P);M.W:=SExt(Rd16(P+4),2);M.H:=SExt(Rd16(P+6),2);
+ M.WW:=SExt(Rd16(P+8),2);M.Stand:=Rd16(P+10);M.Planes:=SExt(Rd16(P+12),2);
+ If M.Planes<1 Then M.Planes:=1;
+End;
+
+Function MBit(Const M: TMfdb; X,Y: Integer): Boolean;
+Var A: LongInt;
+Begin
+ If M.Addr=0 Then MBit:=BGet(X,Y)
+ Else Begin
+  A:=M.Addr+LongInt(Y)*M.WW*2*M.Planes+(X Shr 3);
+  MBit:=(Rd8(A) And (128 Shr (X And 7)))<>0;
+ End;
+End;
+
+Procedure MPut(Const M: TMfdb; X,Y: Integer; V: Boolean);
+Var A: LongInt; B: Byte;
+Begin
+ If M.Addr=0 Then Begin
+  If (X>=CX1) And (X<=CX2) And (Y>=CY1) And (Y<=CY2) Then BPix(X,Y,V);
+ End Else Begin
+  A:=M.Addr+LongInt(Y)*M.WW*2*M.Planes+(X Shr 3);
+  B:=Rd8(A);
+  If V Then B:=B Or (128 Shr (X And 7)) Else B:=B And Not (128 Shr (X And 7));
+  Wr8(A,B);
+ End;
+End;
+
+Function RopBit(Mode: Integer; S,D: Boolean): Boolean;
+Begin
+ Case Mode Of
+  0: RopBit:=False;
+  1: RopBit:=S And D;
+  2: RopBit:=S And Not D;
+  3: RopBit:=S;
+  4: RopBit:=Not S And D;
+  5: RopBit:=D;
+  6: RopBit:=S Xor D;
+  7: RopBit:=S Or D;
+  8: RopBit:=Not (S Or D);
+  9: RopBit:=Not (S Xor D);
+  10: RopBit:=Not D;
+  11: RopBit:=S Or Not D;
+  12: RopBit:=Not S;
+  13: RopBit:=Not S Or D;
+  14: RopBit:=Not (S And D);
+ Else RopBit:=True;
+ End;
+End;
+
+Procedure CopyRaster(Const Src,Dst: TMfdb; SX1,SY1,SX2,SY2,DX1,DY1: Integer; Mode: Integer;
+                     Trans: Boolean; Fg,Bg: Integer);
+Var W,H,X,Y,X0,X1_,XS,Y0,Y1_,YS: Integer; S,D,R: Boolean;
+Begin
+ If SX2<SX1 Then Begin X:=SX1;SX1:=SX2;SX2:=X;End;
+ If SY2<SY1 Then Begin Y:=SY1;SY1:=SY2;SY2:=Y;End;
+ W:=SX2-SX1+1;H:=SY2-SY1+1;
+ If (W<=0) Or (H<=0) Then Exit;
+ If (DY1>SY1) And (Src.Addr=Dst.Addr) Then Begin Y0:=H-1;Y1_:=0;YS:=-1;End
+ Else Begin Y0:=0;Y1_:=H-1;YS:=1;End;
+ If (DX1>SX1) And (Src.Addr=Dst.Addr) Then Begin X0:=W-1;X1_:=0;XS:=-1;End
+ Else Begin X0:=0;X1_:=W-1;XS:=1;End;
+ Y:=Y0;
+ While True Do Begin
+  X:=X0;
+  While True Do Begin
+   S:=MBit(Src,SX1+X,SY1+Y);
+   D:=MBit(Dst,DX1+X,DY1+Y);
+   If Trans Then Begin
+    Case Mode Of
+     1: If S Then R:=ColBit(Fg) Else R:=ColBit(Bg);
+     2: If S Then R:=ColBit(Fg) Else R:=D;
+     3: If S Then R:=Not D Else R:=D;
+     4: If S Then R:=D Else R:=ColBit(Fg);
+    Else R:=S;
+    End;
+    MPut(Dst,DX1+X,DY1+Y,R);
+   End Else MPut(Dst,DX1+X,DY1+Y,RopBit(Mode,S,D));
+   If X=X1_ Then Break;
+   X:=X+XS;
+  End;
+  If Y=Y1_ Then Break;
+  Y:=Y+YS;
+ End;
+End;
+
+Procedure FloodFill(X,Y: Integer; Border: Integer);
+Var Stack: Array[0..511,0..1] Of Integer; SP: Integer; L,R,I,XX: Integer; Seed: Boolean;
+ Function Stop(Xp,Yp: Integer): Boolean;
+ Begin
+  If Border>=0 Then Stop:=BGet(Xp,Yp)=ColBit(Border) Else Stop:=BGet(Xp,Yp)<>Seed;
+ End;
+Begin
+ Seed:=BGet(X,Y);
+ If (X<CX1) Or (X>CX2) Or (Y<CY1) Or (Y>CY2) Then Exit;
+ If Border>=0 Then If BGet(X,Y)=ColBit(Border) Then Exit;
+ SP:=0;Stack[0,0]:=X;Stack[0,1]:=Y;SP:=1;
+ While SP>0 Do Begin
+  Dec(SP);XX:=Stack[SP,0];Y:=Stack[SP,1];
+  If (Y<CY1) Or (Y>CY2) Then Continue;
+  If Stop(XX,Y) Then Continue;
+  If (Border<0) And (VP^.FillInt=1) And (Seed=ColBit(VP^.FillCol)) Then Continue;
+  L:=XX;R:=XX;
+  While (L>CX1) And Not Stop(L-1,Y) Do Dec(L);
+  While (R<CX2) And Not Stop(R+1,Y) Do Inc(R);
+  FillSpanPat(Y,L,R);
+  For I:=L To R Do Begin
+   If SP>=510 Then Break;
+   If (Y>CY1) And Not Stop(I,Y-1) And ((I=L) Or Stop(I-1,Y-1)) Then Begin Stack[SP,0]:=I;Stack[SP,1]:=Y-1;Inc(SP);End;
+   If (Y<CY2) And Not Stop(I,Y+1) And ((I=L) Or Stop(I-1,Y+1)) Then Begin Stack[SP,0]:=I;Stack[SP,1]:=Y+1;Inc(SP);End;
+  End;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Dispatcher VDI (TRAP #2, D0 = $73)                                      }
+{ ---------------------------------------------------------------------- }
+
+Var
+ VdiMouseVec : Array[0..3] Of LongInt;
+ TxtOutW,TxtOutH,TxtOutCW,TxtOutCH : Integer;
+
+Function PtsX(Pi: LongInt; I: Integer): Integer;
+Begin
+ PtsX:=SExt(Rd16(Pi+I*4),2);
+End;
+
+Function PtsY(Pi: LongInt; I: Integer): Integer;
+Begin
+ PtsY:=SExt(Rd16(Pi+I*4+2),2);
+End;
+
+Procedure SetCellFromHeight(H: Integer);
+Begin
+ If H>=11 Then Begin VP^.TxtCell:=16;TxtOutW:=8;TxtOutH:=13;TxtOutCW:=8;TxtOutCH:=16;End
+ Else If H>=7 Then Begin VP^.TxtCell:=8;TxtOutW:=8;TxtOutH:=7;TxtOutCW:=8;TxtOutCH:=8;End
+ Else Begin VP^.TxtCell:=6;TxtOutW:=6;TxtOutH:=5;TxtOutCW:=6;TxtOutCH:=6;End;
+End;
+
+Procedure VdiOpenInfo(Io,Po: LongInt);
+Var I: Integer;
+Const Ii : Array[0..44] Of Integer =
+ (639,399,0,372,372,3,7,0,6,0,1,24,12,2,10,1,2,3,4,5,6,7,8,9,10,
+  1,2,3,4,5,6,7,8,9,10, 1,1,1,0,2,2,1,1,1,2);
+Begin
+ For I:=0 To 44 Do Wr16(Io+I*2,Ii[I]);
+ Wr16(Io+26,2);
+ { po : tailles min/max }
+ Wr16(Po,4);Wr16(Po+2,4);Wr16(Po+4,8);Wr16(Po+6,16);
+ Wr16(Po+8,1);Wr16(Po+10,0);Wr16(Po+12,40);Wr16(Po+14,0);
+ Wr16(Po+16,8);Wr16(Po+18,8);Wr16(Po+20,24);Wr16(Po+22,24);
+End;
+
+Procedure CheckFonts;
+Begin
+ If Not FontReady Then Begin
+  { en mode batch : police vide }
+  FillChar(Font8,SizeOf(Font8),0);
+  FontReady:=True;
+ End;
+End;
+
+Procedure Vdi(Pb: LongInt);
+Var Ctl,Ii,Pi,Io,Po: LongInt; Op,Sub,N,NI,H,I,J: Integer; S: String;
+    X1,Y1,X2,Y2,V: Integer; Src,Dst: TMfdb; Mode: Integer; Hn: Integer;
+    SvVP: Integer;
+ Procedure RetI(Cnt: Integer);
+ Begin
+  Wr16(Ctl+8,Cnt);
+ End;
+ Procedure RetP(Cnt: Integer);
+ Begin
+  Wr16(Ctl+4,Cnt);
+ End;
+ Function IntIn(K: Integer): Integer;
+ Begin
+  IntIn:=SExt(Rd16(Ii+K*2),2);
+ End;
+ Procedure SetOut(K,Vv: Integer);
+ Begin
+  Wr16(Io+K*2,Vv And $FFFF);
+ End;
+ Procedure SetPts(K,Vv: Integer);
+ Begin
+  Wr16(Po+K*2,Vv And $FFFF);
+ End;
+ Procedure ReturnText;
+ Begin
+  SetPts(0,TxtOutW);SetPts(1,TxtOutH);SetPts(2,TxtOutCW);SetPts(3,TxtOutCH);
+  RetP(2);
+ End;
+Begin
+ CheckFonts;
+ Ctl:=Rd32(Pb);Ii:=Rd32(Pb+4);Pi:=Rd32(Pb+8);Io:=Rd32(Pb+12);Po:=Rd32(Pb+16);
+ Op:=Rd16(Ctl);N:=Rd16(Ctl+2);NI:=Rd16(Ctl+6);Sub:=Rd16(Ctl+10);H:=Rd16(Ctl+12);
+ RetP(0);RetI(0);
+ If AesTrace Then Begin
+  Write(ConOut,'VDI ',Op,' sub=',Sub,' h=',H,' n=',N,' ni=',NI,' pts=');
+  For I:=0 To 5 Do Write(ConOut,SExt(Rd16(Pi+I*2),2),' ');
+  WriteLn(ConOut);Flush(ConOut);
+ End;
+ If Op=1 Then Begin
+  { v_opnwk : station physique }
+  Vd[1].Used:=True;VdiDefaults(Vd[1]);
+  Wr16(Ctl+12,1);
+  VdiOpenInfo(Io,Po);RetI(45);RetP(6);
+  Exit;
+ End;
+ If Op=100 Then Begin
+  Hn:=0;
+  For I:=2 To MAXVWK Do If Not Vd[I].Used Then Begin Hn:=I;Break;End;
+  If Hn=0 Then Begin Wr16(Ctl+12,0);Exit;End;
+  Vd[Hn].Used:=True;VdiDefaults(Vd[Hn]);
+  If NI>=2 Then Begin
+   Vd[Hn].LineType:=Clamp(IntIn(1),1,7);Vd[Hn].LineCol:=IntIn(2);
+   Vd[Hn].MarkType:=Clamp(IntIn(3),1,6);Vd[Hn].MarkCol:=IntIn(4);
+   Vd[Hn].TxtFont:=IntIn(5);Vd[Hn].TxtCol:=IntIn(6);
+   Vd[Hn].FillInt:=Clamp(IntIn(7),0,4);Vd[Hn].FillSty:=IntIn(8);Vd[Hn].FillCol:=IntIn(9);
+  End;
+  Wr16(Ctl+12,Hn);
+  VdiOpenInfo(Io,Po);RetI(45);RetP(6);
+  Exit;
+ End;
+ SelVdi(H);
+ Case Op Of
+  2: Begin If (H>=1) And (H<=MAXVWK) Then Vd[H].Used:=False;End;
+  101: Begin If (H>=2) And (H<=MAXVWK) Then Vd[H].Used:=False;End;
+  3: Begin
+      SetClip(0,0,SW-1,SH-1);
+      BRect(0,0,SW-1,SH-1,False);
+      ConRow:=0;ConCol:=0;
+      SelVdi(H);
+     End;
+  4: Begin End;
+  5: Case Sub Of
+      1: Begin SetOut(0,CON_ROWS);SetOut(1,CON_COLS);RetI(2);End;
+      2: Begin End;
+      3: Begin ConClear;End;
+      4: If ConRow>0 Then Dec(ConRow);
+      5: If ConRow<CON_ROWS-1 Then Inc(ConRow);
+      6: If ConCol<CON_COLS-1 Then Inc(ConCol);
+      7: If ConCol>0 Then Dec(ConCol);
+      8: Begin ConRow:=0;ConCol:=0;End;
+      9: Begin ConPut(27);ConPut(Ord('J'));End;
+      10: Begin ConPut(27);ConPut(Ord('K'));End;
+      11: Begin
+           ConRow:=Clamp(IntIn(0)-1,0,CON_ROWS-1);ConCol:=Clamp(IntIn(1)-1,0,CON_COLS-1);
+          End;
+      12: For I:=0 To NI-1 Do ConPut(IntIn(I) And $FF);
+      13: ConRev:=True;
+      14: ConRev:=False;
+      15: Begin SetOut(0,ConRow+1);SetOut(1,ConCol+1);RetI(2);End;
+      16: Begin SetOut(0,1);RetI(1);End;
+      18: Begin End;
+      19: Begin End;
+     End;
+  6: Begin
+      For I:=0 To N-1 Do Begin PX[I]:=PtsX(Pi,I);PY[I]:=PtsY(Pi,I);End;
+      LinePhase:=0;
+      If VP^.LineWidth>1 Then Begin
+       For I:=0 To N-2 Do VLine(PX[I],PY[I],PX[I+1],PY[I+1]);
+      End Else PolyOutline(N,PX,PY,False);
+     End;
+  7: For I:=0 To N-1 Do VMarker(PtsX(Pi,I),PtsY(Pi,I));
+  8: Begin
+      S:='';
+      For I:=0 To NI-1 Do Begin
+       If Length(S)<250 Then S:=S+Chr(Rd16(Ii+I*2) And $FF);
+      End;
+      VGText(PtsX(Pi,0),PtsY(Pi,0),S);
+     End;
+  9: Begin
+      If N>250 Then N:=250;
+      For I:=0 To N-1 Do Begin PX[I]:=PtsX(Pi,I);PY[I]:=PtsY(Pi,I);End;
+      FillPolyAttr(N,PX,PY);
+     End;
+  10: Begin
+       X1:=PtsX(Pi,0);Y1:=PtsY(Pi,0);X2:=PtsX(Pi,1);Y2:=PtsY(Pi,1);
+       N:=SExt(Rd16(Ctl+14),2);   { longueur de ligne }
+       J:=SExt(Rd16(Ctl+18),2);   { nombre de lignes }
+       If (N>0) And (J>0) Then
+        For I:=0 To N*J-1 Do Begin
+         V:=SExt(Rd16(Ii+I*2),2);
+         If V<>0 Then
+          Begin
+           PlotSolid(X1+(I Mod N)*(X2-X1+1) Div N,Y1+(I Div N)*(Y2-Y1+1) Div J,True);
+          End;
+        End;
+      End;
+  11: Case Sub Of
+       1: VBar(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1));
+       2: VArc(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,3),PtsX(Pi,3),IntIn(0),IntIn(1),0);
+       3: VArc(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,3),PtsX(Pi,3),IntIn(0),IntIn(1),1);
+       4: VArc(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,2),PtsX(Pi,2),0,3600,2);
+       5: VArc(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),0,3600,2);
+       6: VArc(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),IntIn(0),IntIn(1),0);
+       7: VArc(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),IntIn(0),IntIn(1),1);
+       8: VRoundRect(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),False);
+       9: VRoundRect(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),True);
+       10: Begin
+            S:='';
+            For I:=2 To NI-1 Do If Length(S)<250 Then S:=S+Chr(Rd16(Ii+I*2) And $FF);
+            X1:=PtsX(Pi,0);Y1:=PtsY(Pi,0);N:=PtsX(Pi,1);
+            If Length(S)>1 Then Begin
+             J:=TextWidthPx(S);
+             If (IntIn(1)<>0) And (N>J) Then Begin
+              For I:=1 To Length(S) Do Begin
+               VGText(X1+(I-1)*N Div Length(S),Y1,S[I]);
+              End;
+             End Else VGText(X1,Y1,S);
+            End Else VGText(X1,Y1,S);
+           End;
+      End;
+  12: Begin SetCellFromHeight(PtsY(Pi,1));ReturnText;End;
+  13: Begin V:=IntIn(0);V:=((V+450) Div 900)*900;V:=V Mod 3600;If V<0 Then V:=0;VP^.TxtRot:=V;SetOut(0,V);RetI(1);End;
+  14: Begin SetOut(0,IntIn(0));RetI(1);End;
+  15: Begin VP^.LineType:=Clamp(IntIn(0),1,7);SetOut(0,VP^.LineType);RetI(1);End;
+  16: Begin
+       V:=PtsX(Pi,0);If V<1 Then V:=1;If Not Odd(V) Then Dec(V,0);
+       If V>39 Then V:=39;
+       VP^.LineWidth:=V;SetPts(0,V);SetPts(1,0);RetP(1);
+      End;
+  17: Begin VP^.LineCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  18: Begin VP^.MarkType:=Clamp(IntIn(0),1,6);SetOut(0,VP^.MarkType);RetI(1);End;
+  19: Begin VP^.MarkH:=Max2(1,PtsY(Pi,1));SetPts(0,VP^.MarkH);SetPts(1,VP^.MarkH);RetP(1);End;
+  20: Begin VP^.MarkCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  21: Begin VP^.TxtFont:=IntIn(0);SetOut(0,1);RetI(1);End;
+  22: Begin VP^.TxtCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  23: Begin VP^.FillInt:=Clamp(IntIn(0),0,4);SetOut(0,VP^.FillInt);RetI(1);End;
+  24: Begin VP^.FillSty:=IntIn(0);SetOut(0,VP^.FillSty);RetI(1);End;
+  25: Begin VP^.FillCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  26: Begin
+       V:=IntIn(0);SetOut(0,V);
+       If V=0 Then Begin SetOut(1,1000);SetOut(2,1000);SetOut(3,1000);End
+       Else Begin SetOut(1,0);SetOut(2,0);SetOut(3,0);End;
+       RetI(4);
+      End;
+  28: Begin
+       SetPts(0,GMouseX);SetPts(1,GMouseY);RetP(1);SetOut(0,GMouseB);RetI(1);
+      End;
+  29: Begin SetOut(0,0);SetOut(1,0);RetI(2);End;
+  30: Begin SetOut(0,1);RetI(1);End;
+  31: RetI(0);
+  32: Begin
+       V:=IntIn(0);If (V<1) Or (V>4) Then V:=1;VP^.WrMode:=V;SetOut(0,V);RetI(1);
+      End;
+  33: Begin SetOut(0,IntIn(1));RetI(1);End;
+  35: Begin
+       SetOut(0,VP^.LineType);SetOut(1,VP^.LineCol);SetOut(2,VP^.WrMode);
+       SetOut(3,VP^.LineEnd0);SetOut(4,VP^.LineEnd1);RetI(5);
+       SetPts(0,VP^.LineWidth);SetPts(1,0);RetP(1);
+      End;
+  36: Begin
+       SetOut(0,VP^.MarkType);SetOut(1,VP^.MarkCol);SetOut(2,VP^.WrMode);RetI(3);
+       SetPts(0,VP^.MarkH);SetPts(1,VP^.MarkH);RetP(1);
+      End;
+  37: Begin
+       SetOut(0,VP^.FillInt);SetOut(1,VP^.FillCol);SetOut(2,VP^.FillSty);
+       SetOut(3,VP^.WrMode);SetOut(4,VP^.FillPer);RetI(5);
+      End;
+  38: Begin
+       SetOut(0,VP^.TxtFont);SetOut(1,VP^.TxtCol);SetOut(2,VP^.TxtRot);
+       SetOut(3,VP^.TxtHAl);SetOut(4,VP^.TxtVAl);SetOut(5,VP^.WrMode);RetI(6);
+       SetCellFromHeight(VP^.TxtCell);ReturnText;
+      End;
+  39: Begin
+       VP^.TxtHAl:=Clamp(IntIn(0),0,2);VP^.TxtVAl:=Clamp(IntIn(1),0,5);
+       SetOut(0,VP^.TxtHAl);SetOut(1,VP^.TxtVAl);RetI(2);
+      End;
+  102: Begin
+        If IntIn(0)=0 Then Begin VdiOpenInfo(Io,Po);RetI(45);RetP(6);End
+        Else Begin
+         For I:=0 To 44 Do SetOut(I,0);
+         SetOut(0,1);SetOut(1,2);SetOut(2,63);SetOut(3,0);SetOut(4,1);SetOut(5,0);
+         SetOut(6,2000);SetOut(7,1);SetOut(8,1);SetOut(9,4);SetOut(10,1);SetOut(11,1);
+         SetOut(14,128);SetOut(15,-1);SetOut(16,2);
+         For I:=0 To 11 Do SetPts(I,0);
+         RetI(45);RetP(6);
+        End;
+       End;
+  103: Begin
+        FloodFill(PtsX(Pi,0),PtsY(Pi,0),IntIn(0));
+       End;
+  104: Begin VP^.FillPer:=Ord(IntIn(0)<>0);SetOut(0,VP^.FillPer);RetI(1);End;
+  105: Begin
+        V:=Ord(BGet(PtsX(Pi,0),PtsY(Pi,0)));SetOut(0,V);SetOut(1,V);RetI(2);
+       End;
+  106: Begin VP^.TxtEff:=IntIn(0) And 63;SetOut(0,VP^.TxtEff);RetI(1);End;
+  107: Begin
+        V:=IntIn(0);
+        If V>=10 Then SetCellFromHeight(16) Else If V>=9 Then SetCellFromHeight(8) Else SetCellFromHeight(6);
+        SetOut(0,V);RetI(1);ReturnText;
+       End;
+  108: Begin VP^.LineEnd0:=IntIn(0);VP^.LineEnd1:=IntIn(1);SetOut(0,VP^.LineEnd0);SetOut(1,VP^.LineEnd1);RetI(2);End;
+  109,121: Begin
+        ReadMfdb(Rd32(Ctl+14),Src);ReadMfdb(Rd32(Ctl+18),Dst);
+        If Op=109 Then Begin
+         Mode:=IntIn(0);
+         CopyRaster(Src,Dst,PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),PtsX(Pi,2),PtsY(Pi,2),Mode,False,1,0);
+        End Else
+         CopyRaster(Src,Dst,PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1),PtsX(Pi,2),PtsY(Pi,2),
+                    Clamp(IntIn(0),1,4),True,IntIn(1),IntIn(2));
+       End;
+  110: Begin
+        ReadMfdb(Rd32(Ctl+14),Src);ReadMfdb(Rd32(Ctl+18),Dst);
+        If (Src.Addr<>0) And (Dst.Addr<>0) And (Src.Addr<>Dst.Addr) Then
+         For I:=0 To Src.WW*2*Src.H*Src.Planes-1 Do Wr8(Dst.Addr+I,Rd8(Src.Addr+I));
+        Wr16(Rd32(Ctl+18)+10,Ord(Rd16(Rd32(Ctl+14)+10)=0));
+       End;
+  112: For I:=0 To 15 Do VP^.UdPat[I]:=Rd16(Ii+I*2);
+  113: VP^.LineUd:=Rd16(Ii);
+  114: Begin
+        I:=VP^.FillPer;VP^.FillPer:=0;
+        VBar(PtsX(Pi,0),PtsY(Pi,0),PtsX(Pi,1),PtsY(Pi,1));
+        VP^.FillPer:=I;
+       End;
+  116: Begin
+        S:='';
+        For I:=0 To NI-1 Do S:=S+Chr(Rd16(Ii+I*2) And $FF);
+        J:=TextWidthPx(S);
+        If VP^.TxtCell<6 Then VP^.TxtCell:=6;
+        SetPts(0,0);SetPts(1,VP^.TxtCell);SetPts(2,J);SetPts(3,VP^.TxtCell);
+        SetPts(4,J);SetPts(5,0);SetPts(6,0);SetPts(7,0);RetP(4);
+       End;
+  117: Begin
+        SetPts(0,CellW(VP^.TxtCell));SetPts(1,0);SetPts(2,0);SetPts(3,0);SetPts(4,0);SetPts(5,0);RetP(3);
+        SetOut(0,IntIn(0));RetI(1);
+       End;
+  118: Begin Wr32(Ctl+18,0);End;
+  119: Begin SetOut(0,0);RetI(1);End;
+  120: Begin End;
+  122: Begin
+        If IntIn(0)<>0 Then MouseHidden:=0 Else If MouseHidden>0 Then Dec(MouseHidden);
+       End;
+  123: Inc(MouseHidden);
+  124: Begin SetOut(0,GMouseB);RetI(1);SetPts(0,GMouseX);SetPts(1,GMouseY);RetP(1);End;
+  125,126,127: Begin
+        I:=Op-125;Wr32(Ctl+18,VdiMouseVec[I]);VdiMouseVec[I]:=Rd32(Ctl+14);
+       End;
+  128: Begin SetOut(0,0);RetI(1);End;
+  129: Begin
+        VP^.ClipOn:=IntIn(0)<>0;
+        VP^.Cx1:=PtsX(Pi,0);VP^.Cy1:=PtsY(Pi,0);VP^.Cx2:=PtsX(Pi,1);VP^.Cy2:=PtsY(Pi,1);
+        SetOut(0,0);
+       End;
+  130: Begin
+        SetOut(0,1);
+        S:='Atari System Font';
+        For I:=1 To 32 Do If I<=Length(S) Then SetOut(I,Ord(S[I])) Else SetOut(I,0);
+        SetOut(33,0);RetI(34);
+       End;
+  131: Begin
+        If VP^.TxtCell<6 Then VP^.TxtCell:=6;
+        SetOut(0,32);SetOut(1,255);RetI(2);
+        I:=BaseLine(VP^.TxtCell);
+        SetPts(0,CellW(VP^.TxtCell));SetPts(1,VP^.TxtCell-1-I);SetPts(2,CellW(VP^.TxtCell));SetPts(3,0);
+        SetPts(4,0);SetPts(5,VP^.TxtCell-1-I);SetPts(6,0);SetPts(7,I Div 2);SetPts(8,0);SetPts(9,I);
+        RetP(5);
+       End;
+ End;
+End;
+
+{ ====================================================================== }
+{                  GEM : OBJETS, RESSOURCES ET EDITION                   }
+{ ====================================================================== }
+
+Const
+ G_BOX=20; G_TEXT=21; G_BOXTEXT=22; G_IMAGE=23; G_USERDEF=24; G_IBOX=25;
+ G_BUTTON=26; G_BOXCHAR=27; G_STRING=28; G_FTEXT=29; G_FBOXTEXT=30; G_ICON=31;
+ G_TITLE=32;
+ OF_SELECTABLE=1; OF_DEFAULT=2; OF_EXIT=4; OF_EDITABLE=8; OF_RBUTTON=16;
+ OF_LASTOB=32; OF_TOUCHEXIT=64; OF_HIDETREE=128; OF_INDIRECT=256;
+ OS_SELECTED=1; OS_CROSSED=2; OS_CHECKED=4; OS_DISABLED=8; OS_OUTLINED=16;
+ OS_SHADOWED=32;
+ STUB_RET = $0430;
+
+Type
+ TScrSave = Record
+  P : Pointer;
+  XB1,XB2,Y1,Y2 : Integer;
+  Sz : LongInt;
+ End;
+
+Var
+ ObjDepthGuard : Integer;
+ EditObj,EditIdx : Integer;
+ EditTree : LongInt;
+
+{ ---------------------------------------------------------------------- }
+{ Acces aux arbres d'objets                                                 }
+{ ---------------------------------------------------------------------- }
+
+Function OA(T: LongInt; I: Integer): LongInt;
+Begin
+ OA:=T+LongInt(I)*24;
+End;
+
+Function ONext(T: LongInt; I: Integer): Integer;
+Begin
+ ONext:=SExt(Rd16(OA(T,I)),2);
+End;
+
+Function OHead(T: LongInt; I: Integer): Integer;
+Begin
+ OHead:=SExt(Rd16(OA(T,I)+2),2);
+End;
+
+Function OTail(T: LongInt; I: Integer): Integer;
+Begin
+ OTail:=SExt(Rd16(OA(T,I)+4),2);
+End;
+
+Function OType(T: LongInt; I: Integer): Integer;
+Begin
+ OType:=Rd16(OA(T,I)+6) And $FF;
+End;
+
+Function OFlags(T: LongInt; I: Integer): Integer;
+Begin
+ OFlags:=Rd16(OA(T,I)+8);
+End;
+
+Function OState(T: LongInt; I: Integer): Integer;
+Begin
+ OState:=Rd16(OA(T,I)+10);
+End;
+
+Function OSpec(T: LongInt; I: Integer): LongInt;
+Begin
+ OSpec:=Rd32(OA(T,I)+12);
+End;
+
+Function OX(T: LongInt; I: Integer): Integer;
+Begin
+ OX:=SExt(Rd16(OA(T,I)+16),2);
+End;
+
+Function OY(T: LongInt; I: Integer): Integer;
+Begin
+ OY:=SExt(Rd16(OA(T,I)+18),2);
+End;
+
+Function OW(T: LongInt; I: Integer): Integer;
+Begin
+ OW:=SExt(Rd16(OA(T,I)+20),2);
+End;
+
+Function OH(T: LongInt; I: Integer): Integer;
+Begin
+ OH:=SExt(Rd16(OA(T,I)+22),2);
+End;
+
+Procedure SetOState(T: LongInt; I,V: Integer);
+Begin
+ Wr16(OA(T,I)+10,V And $FFFF);
+End;
+
+Procedure SetOFlags(T: LongInt; I,V: Integer);
+Begin
+ Wr16(OA(T,I)+8,V And $FFFF);
+End;
+
+Function OParent(T: LongInt; I: Integer): Integer;
+Var Cur,Nx,Guard: Integer;
+Begin
+ OParent:=-1;
+ If I<=0 Then Exit;
+ Cur:=I;Guard:=0;
+ While Guard<2000 Do Begin
+  Nx:=ONext(T,Cur);
+  If Nx<0 Then Exit;
+  If OTail(T,Nx)=Cur Then Begin OParent:=Nx;Exit;End;
+  Cur:=Nx;Inc(Guard);
+ End;
+End;
+
+Procedure ObjOffset(T: LongInt; I: Integer; Var X,Y: Integer);
+Var Cur,Guard: Integer;
+Begin
+ X:=0;Y:=0;Cur:=I;Guard:=0;
+ While (Cur>=0) And (Guard<64) Do Begin
+  X:=X+OX(T,Cur);Y:=Y+OY(T,Cur);
+  Cur:=OParent(T,Cur);
+  Inc(Guard);
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Sauvegarde / restauration de zones de l'ecran                            }
+{ ---------------------------------------------------------------------- }
+
+Procedure ScrSave(X1,Y1,X2,Y2: Integer; Var S: TScrSave);
+Var Y,XB: Integer; Q: LongInt;
+Begin
+ If X1<0 Then X1:=0;If Y1<0 Then Y1:=0;
+ If X2>SW-1 Then X2:=SW-1;If Y2>SH-1 Then Y2:=SH-1;
+ S.XB1:=X1 Shr 3;S.XB2:=X2 Shr 3;S.Y1:=Y1;S.Y2:=Y2;
+ S.Sz:=LongInt(S.XB2-S.XB1+1)*(Y2-Y1+1);
+ If S.Sz<=0 Then Begin S.P:=Nil;S.Sz:=0;Exit;End;
+ GetMem(S.P,S.Sz);
+ Q:=0;
+ For Y:=Y1 To Y2 Do
+  For XB:=S.XB1 To S.XB2 Do Begin
+   PByteSet(S.P,Q,Rd8(ScrBase+LongInt(Y)*80+XB));Inc(Q);
+  End;
+End;
+
+Procedure ScrRestore(Var S: TScrSave);
+Var Y,XB: Integer; Q: LongInt;
+Begin
+ If S.P=Nil Then Exit;
+ Q:=0;
+ For Y:=S.Y1 To S.Y2 Do
+  For XB:=S.XB1 To S.XB2 Do Begin
+   Wr8(ScrBase+LongInt(Y)*80+XB,PByteAt(S.P,Q));Inc(Q);
+  End;
+ FreeMem(S.P,S.Sz);S.P:=Nil;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Appel d'une routine du programme invite                                  }
+{ ---------------------------------------------------------------------- }
+
+Function CallGuest(Addr,Arg: LongInt): LongInt;
+Var SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp: LongInt; N: LongInt; SvStop: Integer;
+Begin
+ Move(Rg,SvRg,SizeOf(Rg));
+ SvPC:=PC;SvSR:=SRv;SvUSP:=USPv;SvSSP:=SSPv;SvOp:=CurOpPC;SvStop:=StopReason;
+ Rg[15]:=Rg[15]-64;
+ PushL(Arg);
+ PushL(STUB_RET);
+ PC:=Addr;
+ N:=0;
+ StopReason:=STOP_NONE;
+ While (PC<>STUB_RET) And (StopReason=STOP_NONE) And (N<2000000) Do Begin
+  Step;Inc(N);
+ End;
+ CallGuest:=Rg[0];
+ If StopReason=STOP_NONE Then Begin
+  Move(SvRg,Rg,SizeOf(Rg));
+  PC:=SvPC;SRv:=SvSR;USPv:=SvUSP;SSPv:=SvSSP;CurOpPC:=SvOp;
+  StopReason:=SvStop;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Dessin d'un objet                                                        }
+{ ---------------------------------------------------------------------- }
+
+Procedure OSetup;
+Begin
+ SelVdi(0);
+ VP^.WrMode:=WM_REPL;VP^.FillPer:=0;VP^.LineWidth:=1;VP^.LineType:=1;VP^.LineCol:=1;
+ VP^.TxtEff:=0;VP^.TxtRot:=0;VP^.TxtHAl:=0;VP^.TxtVAl:=0;
+End;
+
+Procedure OFill(X1,Y1,X2,Y2: Integer; Pat: Integer; ColIdx: Integer);
+Begin
+ If Pat=0 Then Begin VP^.FillInt:=0;VP^.FillCol:=0;End
+ Else If Pat=7 Then Begin VP^.FillInt:=1;VP^.FillCol:=ColIdx;End
+ Else Begin VP^.FillInt:=2;VP^.FillSty:=Pat;VP^.FillCol:=ColIdx;End;
+ VBar(X1,Y1,X2,Y2);
+End;
+
+Procedure OFrameRect(X1,Y1,X2,Y2: Integer; Col: Integer);
+Var C: Boolean;
+Begin
+ C:=ColBit(Col);
+ FastSpan(Y1,X1,X2,C,False);FastSpan(Y2,X1,X2,C,False);
+ If Y2>Y1+1 Then Begin
+  VP^.FillInt:=1;VP^.FillCol:=Col;
+  VBar(X1,Y1+1,X1,Y2-1);VBar(X2,Y1+1,X2,Y2-1);
+ End;
+End;
+
+Procedure OBorder(X,Y,W,H,Th,Col: Integer);
+Var I,A: Integer;
+Begin
+ If Th=0 Then Exit;
+ A:=Abs(Th);
+ For I:=0 To A-1 Do Begin
+  If Th>0 Then OFrameRect(X+I,Y+I,X+W-1-I,Y+H-1-I,Col)
+  Else OFrameRect(X-1-I,Y-1-I,X+W+I,Y+H+I,Col);
+ End;
+End;
+
+Procedure OText(X,Y: Integer; Const S: String; Cell: Integer; ColIdx: Integer; Repl: Boolean);
+Begin
+ VP^.TxtCell:=Cell;VP^.TxtCol:=ColIdx;
+ If Repl Then VP^.WrMode:=WM_REPL Else VP^.WrMode:=WM_TRANS;
+ VP^.TxtHAl:=0;VP^.TxtVAl:=5;
+ VGText(X,Y,S);
+ VP^.WrMode:=WM_REPL;VP^.TxtVAl:=0;
+End;
+
+Function CellOfFont(F: Integer): Integer;
+Begin
+ If F=5 Then CellOfFont:=8 Else CellOfFont:=16;
+End;
+
+{ Construit la chaine affichee d'un champ editable (modele + saisie) }
+Function FtextDisplay(Const Tmpl,Txt: String): String;
+Var R: String; I,K: Integer;
+Begin
+ R:='';K:=1;
+ For I:=1 To Length(Tmpl) Do Begin
+  If Tmpl[I]='_' Then Begin
+   If K<=Length(Txt) Then Begin R:=R+Txt[K];Inc(K);End Else R:=R+'_';
+  End Else R:=R+Tmpl[I];
+ End;
+ FtextDisplay:=R;
+End;
+
+Procedure ObjDrawOne(T: LongInt; I: Integer; AX,AY: Integer; Const ClipX1,ClipY1,ClipX2,ClipY2: Integer);
+Var Ty,St,Fl,W,H,Th,Cw,Ch,Fi,Pat,Ic,Bc,Tc,Just,Fnt,Cell: Integer; Sp,Ted,Pr: LongInt;
+    Col: Word; S,Tm: String; Ch1: Char; TXx,TYy,Rx,K,J,XX,YY: Integer; Repl: Boolean;
+    Ib: LongInt; Wb,Hl,Wi,Hi,Xi,Yi,Bx,By: Integer; PrevSt: Integer; Rv: LongInt; Tw: Integer;
+    Pb: LongInt;
+Begin
+ OSetup;
+ SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+ Ty:=OType(T,I);St:=OState(T,I);Fl:=OFlags(T,I);
+ W:=OW(T,I);H:=OH(T,I);Sp:=OSpec(T,I);
+ If (Fl And OF_INDIRECT)<>0 Then Sp:=Rd32(Sp);
+ { ombre }
+ If (St And OS_SHADOWED)<>0 Then Begin
+  Th:=SExt((Sp Shr 16) And $FF,1);
+  If (Ty=G_BOXTEXT) Or (Ty=G_FBOXTEXT) Then Th:=SExt(Rd16(Sp+22),2);
+  K:=Max2(2,Abs(Th)*2);
+  If Th<0 Then Begin AX:=AX;End;
+  OFill(AX+K,AY+H,AX+W-1+K,AY+H+K-1,7,1);
+  OFill(AX+W,AY+K,AX+W+K-1,AY+H-1,7,1);
+ End;
+ If (St And OS_OUTLINED)<>0 Then Begin
+  OFill(AX-3,AY-3,AX+W+2,AY+H+2,0,0);
+  OFrameRect(AX-3,AY-3,AX+W+2,AY+H+2,1);
+ End;
+ Case Ty Of
+  G_BOX,G_IBOX,G_BOXCHAR: Begin
+    Col:=Sp And $FFFF;Th:=SExt((Sp Shr 16) And $FF,1);
+    Ic:=Col And 15;Pat:=(Col Shr 4) And 7;Tc:=(Col Shr 8) And 15;Bc:=(Col Shr 12) And 15;
+    If Ty<>G_IBOX Then Begin
+     If Th>=0 Then OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic)
+     Else OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic);
+    End;
+    OBorder(AX,AY,W,H,Th,Bc);
+    If Ty=G_BOXCHAR Then Begin
+     Ch1:=Chr((Sp Shr 24) And $FF);
+     Repl:=(Col And $80)<>0;
+     OText(AX+(W-8) Div 2,AY+(H-16) Div 2,Ch1,16,Tc,False);
+    End;
+   End;
+  G_TEXT,G_FTEXT,G_BOXTEXT,G_FBOXTEXT: Begin
+    Ted:=Sp;
+    Col:=Rd16(Ted+18);Fnt:=Rd16(Ted+12);Just:=Rd16(Ted+16);Th:=SExt(Rd16(Ted+22),2);
+    Ic:=Col And 15;Pat:=(Col Shr 4) And 7;Tc:=(Col Shr 8) And 15;Bc:=(Col Shr 12) And 15;
+    Repl:=(Col And $80)<>0;
+    Cell:=CellOfFont(Fnt);
+    If (Ty=G_BOXTEXT) Or (Ty=G_FBOXTEXT) Then Begin
+     OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic);
+     OBorder(AX,AY,W,H,Th,Bc);
+    End Else If Repl Then OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic);
+    S:=RdStr(Rd32(Ted),120);
+    If (Ty=G_FTEXT) Or (Ty=G_FBOXTEXT) Then S:=FtextDisplay(RdStr(Rd32(Ted+4),120),S);
+    Tw:=Length(S)*8;
+    Case Just Of
+     1: TXx:=AX+W-Tw;
+     2: TXx:=AX+(W-Tw) Div 2;
+    Else TXx:=AX;
+    End;
+    TYy:=AY+(H-Cell) Div 2;
+    OText(TXx,TYy,S,Cell,Tc,False);
+   End;
+  G_STRING,G_TITLE: Begin
+    S:=RdStr(Sp,120);
+    OFill(AX,AY,AX+W-1,AY+H-1,0,0);
+    OText(AX,AY+(H-16) Div 2,S,16,1,False);
+   End;
+  G_BUTTON: Begin
+    S:=RdStr(Sp,120);
+    Th:=1;
+    If (Fl And OF_EXIT)<>0 Then Th:=2;
+    If (Fl And OF_DEFAULT)<>0 Then Th:=3;
+    OFill(AX,AY,AX+W-1,AY+H-1,0,0);
+    OBorder(AX,AY,W,H,Th,1);
+    OText(AX+(W-Length(S)*8) Div 2,AY+(H-16) Div 2,S,16,1,False);
+   End;
+  G_IMAGE: Begin
+    Pb:=Sp;
+    Wb:=Rd16(Pb+4);Hl:=Rd16(Pb+6);Col:=Rd16(Pb+12);
+    Ic:=Col And 15;
+    For YY:=0 To Hl-1 Do
+     For XX:=0 To Wb*8-1 Do Begin
+      If (Rd8(Rd32(Pb)+LongInt(YY)*Wb+(XX Shr 3)) And (128 Shr (XX And 7)))<>0 Then
+       PlotSolid(AX+XX,AY+YY,ColBit(Ic))
+      Else PlotSolid(AX+XX,AY+YY,False);
+     End;
+   End;
+  G_ICON: Begin
+    Ib:=Sp;
+    Wi:=SExt(Rd16(Ib+22),2);Hi:=SExt(Rd16(Ib+24),2);
+    Xi:=SExt(Rd16(Ib+18),2);Yi:=SExt(Rd16(Ib+20),2);
+    For YY:=0 To Hi-1 Do
+     For XX:=0 To Wi-1 Do Begin
+      K:=((Wi+15) Div 16)*2;
+      If (Rd8(Rd32(Ib)+LongInt(YY)*K+(XX Shr 3)) And (128 Shr (XX And 7)))<>0 Then Begin
+       If (Rd8(Rd32(Ib+4)+LongInt(YY)*K+(XX Shr 3)) And (128 Shr (XX And 7)))<>0 Then
+        PlotSolid(AX+Xi+XX,AY+Yi+YY,True)
+       Else PlotSolid(AX+Xi+XX,AY+Yi+YY,False);
+      End;
+     End;
+    S:=RdStr(Rd32(Ib+8),40);
+    Tw:=SExt(Rd16(Ib+30),2);
+    OFill(AX+SExt(Rd16(Ib+26),2),AY+SExt(Rd16(Ib+28),2),AX+SExt(Rd16(Ib+26),2)+Tw-1,
+          AY+SExt(Rd16(Ib+28),2)+SExt(Rd16(Ib+32),2)-1,0,0);
+    OText(AX+SExt(Rd16(Ib+26),2)+(Tw-Length(S)*8) Div 2,AY+SExt(Rd16(Ib+28),2),S,8,1,False);
+    If Rd16(Ib+12)<>0 Then
+     OText(AX+SExt(Rd16(Ib+14),2),AY+SExt(Rd16(Ib+16),2),Chr(Rd16(Ib+12) And $FF),8,1,False);
+    OSetup;SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+    If (St And OS_SELECTED)<>0 Then Begin
+     { icone et texte inverses, sans le reste de l'objet }
+     VP^.FillInt:=1;VP^.WrMode:=WM_XOR;VP^.FillCol:=1;
+     VBar(AX+Xi,AY+Yi,AX+Xi+Wi-1,AY+Yi+Hi-1);
+     VBar(AX+SExt(Rd16(Ib+26),2),AY+SExt(Rd16(Ib+28),2),AX+SExt(Rd16(Ib+26),2)+Tw-1,
+          AY+SExt(Rd16(Ib+28),2)+SExt(Rd16(Ib+32),2)-1);
+     VP^.WrMode:=WM_REPL;
+     St:=St And Not OS_SELECTED;
+    End;
+   End;
+  G_USERDEF: Begin
+    PrevSt:=St;
+    Pb:=$0800;
+    Wr32(Pb,T);Wr16(Pb+4,I);Wr16(Pb+6,St);Wr16(Pb+8,St);
+    Wr16(Pb+10,AX);Wr16(Pb+12,AY);Wr16(Pb+14,W);Wr16(Pb+16,H);
+    Wr16(Pb+18,ClipX1);Wr16(Pb+20,ClipY1);Wr16(Pb+22,ClipX2-ClipX1+1);Wr16(Pb+24,ClipY2-ClipY1+1);
+    Wr32(Pb+26,Rd32(Sp+4));
+    Rv:=CallGuest(Rd32(Sp),Pb);
+    OSetup;SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+    St:=Rv And $FFFF;
+   End;
+ End;
+ { etats }
+ OSetup;SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+ If (St And OS_CROSSED)<>0 Then Begin
+  VP^.LineCol:=1;LinePhase:=0;
+  VLine(AX,AY,AX+W-1,AY+H-1);VLine(AX,AY+H-1,AX+W-1,AY);
+ End;
+ If (St And OS_CHECKED)<>0 Then OText(AX+2,AY+(H-16) Div 2,#251,16,1,False);
+ If (St And OS_SELECTED)<>0 Then Begin
+  VP^.FillInt:=1;VP^.WrMode:=WM_XOR;VP^.FillCol:=1;
+  VBar(AX,AY,AX+W-1,AY+H-1);
+  VP^.WrMode:=WM_REPL;
+ End;
+ If (St And OS_DISABLED)<>0 Then Begin
+  For YY:=AY To AY+H-1 Do
+   For XX:=AX To AX+W-1 Do
+    If Odd(XX+YY) Then PlotPat(XX,YY,True,False);
+ End;
+End;
+
+{ Dessine l'arbre a partir de I jusqu'a la profondeur Depth }
+Procedure ObjDrawRec(T: LongInt; I: Integer; Depth: Integer; AX,AY: Integer;
+                     CX1_,CY1_,CX2_,CY2_: Integer);
+Var C: Integer; Guard: Integer;
+Begin
+ If (OFlags(T,I) And OF_HIDETREE)<>0 Then Exit;
+ ObjDrawOne(T,I,AX,AY,CX1_,CY1_,CX2_,CY2_);
+ If Depth>0 Then Begin
+  C:=OHead(T,I);Guard:=0;
+  If C>=0 Then
+   While (C>=0) And (C<>I) And (Guard<2000) Do Begin
+    ObjDrawRec(T,C,Depth-1,AX+OX(T,C),AY+OY(T,C),CX1_,CY1_,CX2_,CY2_);
+    If C=OTail(T,I) Then Break;
+    C:=ONext(T,C);Inc(Guard);
+   End;
+ End;
+End;
+
+Procedure ObjDraw(T: LongInt; Start,Depth: Integer; Cx,Cy,Cw,Ch: Integer);
+Var X,Y: Integer; Sv: Integer;
+Begin
+ ObjOffset(T,Start,X,Y);
+ If (Cw<=0) Or (Ch<=0) Then Begin Cx:=0;Cy:=0;Cw:=SW;Ch:=SH;End;
+ ObjDrawRec(T,Start,Depth,X,Y,Cx,Cy,Cx+Cw-1,Cy+Ch-1);
+ SetClip(0,0,SW-1,SH-1);
+End;
+
+{ Recherche de l'objet sous (MXx,MYy) }
+Function ObjFindRec(T: LongInt; I,Depth,AX,AY,MXx,MYy: Integer): Integer;
+Var C,R,Guard: Integer; Hit: Integer;
+Begin
+ ObjFindRec:=-1;
+ If (OFlags(T,I) And OF_HIDETREE)<>0 Then Exit;
+ Hit:=-1;
+ If (MXx>=AX) And (MXx<AX+OW(T,I)) And (MYy>=AY) And (MYy<AY+OH(T,I)) Then Hit:=I
+ Else If (OState(T,I) And OS_SHADOWED)=0 Then Begin
+  If Not ((OType(T,I)=G_IBOX) Or (OType(T,I)=G_BOX)) Then Exit;
+ End;
+ If Depth>0 Then Begin
+  C:=OHead(T,I);Guard:=0;
+  While (C>=0) And (C<>I) And (Guard<2000) Do Begin
+   R:=ObjFindRec(T,C,Depth-1,AX+OX(T,C),AY+OY(T,C),MXx,MYy);
+   If R>=0 Then Hit:=R;
+   If C=OTail(T,I) Then Break;
+   C:=ONext(T,C);Inc(Guard);
+  End;
+ End;
+ ObjFindRec:=Hit;
+End;
+
+Function ObjFind(T: LongInt; Start,Depth: Integer; MXx,MYy: Integer): Integer;
+Var X,Y: Integer;
+Begin
+ ObjOffset(T,Start,X,Y);
+ ObjFind:=ObjFindRec(T,Start,Depth,X,Y,MXx,MYy);
+End;
+
+{ Redessine un seul objet (pour les changements d'etat) }
+Procedure ObjRedraw(T: LongInt; I: Integer);
+Var X,Y: Integer;
+Begin
+ ObjOffset(T,I,X,Y);
+ ObjDrawRec(T,I,0,X,Y,X-4,Y-4,X+OW(T,I)+8,Y+OH(T,I)+8);
+ SetClip(0,0,SW-1,SH-1);
+End;
+
+{ Ajoute / retire / reordonne }
+Procedure ObjAdd(T: LongInt; Parent,Child: Integer);
+Var Last: Integer;
+Begin
+ Last:=OTail(T,Parent);
+ If OHead(T,Parent)<0 Then Begin
+  Wr16(OA(T,Parent)+2,Child);Wr16(OA(T,Parent)+4,Child);
+  Wr16(OA(T,Child),Parent);
+ End Else Begin
+  Wr16(OA(T,Last),Child);
+  Wr16(OA(T,Parent)+4,Child);
+  Wr16(OA(T,Child),Parent);
+ End;
+End;
+
+Procedure ObjDelete(T: LongInt; Obj: Integer);
+Var P,C,Prev: Integer;
+Begin
+ P:=OParent(T,Obj);
+ If P<0 Then Exit;
+ If OHead(T,P)=Obj Then Begin
+  If OTail(T,P)=Obj Then Begin
+   Wr16(OA(T,P)+2,$FFFF);Wr16(OA(T,P)+4,$FFFF);
+  End Else Wr16(OA(T,P)+2,ONext(T,Obj));
+ End Else Begin
+  Prev:=OHead(T,P);
+  While ONext(T,Prev)<>Obj Do Prev:=ONext(T,Prev);
+  Wr16(OA(T,Prev),ONext(T,Obj));
+  If OTail(T,P)=Obj Then Wr16(OA(T,P)+4,Prev);
+ End;
+ Wr16(OA(T,Obj),$FFFF);
+End;
+
+Procedure ObjOrder(T: LongInt; Obj,Pos: Integer);
+Var P,C,N,I,Prev: Integer; Idx: Array[0..63] Of Integer;
+Begin
+ P:=OParent(T,Obj);
+ If P<0 Then Exit;
+ ObjDelete(T,Obj);
+ N:=0;C:=OHead(T,P);
+ While (C>=0) And (C<>P) And (N<62) Do Begin
+  Idx[N]:=C;Inc(N);
+  If C=OTail(T,P) Then Break;
+  C:=ONext(T,C);
+ End;
+ If (Pos<0) Or (Pos>N) Then Pos:=N;
+ { reconstruit la liste des enfants }
+ For I:=N Downto Pos+1 Do Idx[I]:=Idx[I-1];
+ Idx[Pos]:=Obj;Inc(N);
+ Wr16(OA(T,P)+2,Idx[0]);Wr16(OA(T,P)+4,Idx[N-1]);
+ For I:=0 To N-2 Do Wr16(OA(T,Idx[I]),Idx[I+1]);
+ Wr16(OA(T,Idx[N-1]),P);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Edition de champs de texte                                               }
+{ ---------------------------------------------------------------------- }
+
+Function ValidChar(V: Char; Ch: Char): Boolean;
+Begin
+ ValidChar:=False;
+ Case V Of
+  '9': ValidChar:=(Ch>='0') And (Ch<='9');
+  'a': ValidChar:=((Ch>='a') And (Ch<='z')) Or ((Ch>='A') And (Ch<='Z')) Or (Ch=' ');
+  'A': ValidChar:=((Ch>='A') And (Ch<='Z')) Or (Ch=' ');
+  'n': ValidChar:=((Ch>='a') And (Ch<='z')) Or ((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or (Ch=' ');
+  'N': ValidChar:=((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or (Ch=' ');
+  'F': ValidChar:=((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or (Ch='?') Or (Ch='*') Or (Ch=':') Or (Ch='.') Or (Ch='_');
+  'f': ValidChar:=(Ch>' ') And (Ch<>'\') And (Ch<>'/');
+  'P': ValidChar:=((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or (Ch='\') Or (Ch=':') Or (Ch='.') Or (Ch='_') Or (Ch='?') Or (Ch='*');
+  'p': ValidChar:=(Ch>=' ');
+  'X': ValidChar:=Ch>=' ';
+ Else ValidChar:=Ch>=' ';
+ End;
+End;
+
+{ Position en pixels du curseur d'edition (dans le champ) }
+Function EditCursorX(T: LongInt; Obj,Idx: Integer): Integer;
+Var Ted: LongInt; Tm: String; I,K: Integer; X,Y: Integer; Just,W,Tw,TX: Integer; S: String;
+Begin
+ Ted:=OSpec(T,Obj);
+ Tm:=RdStr(Rd32(Ted+4),120);
+ S:=FtextDisplay(Tm,RdStr(Rd32(Ted),120));
+ ObjOffset(T,Obj,X,Y);
+ W:=OW(T,Obj);Tw:=Length(S)*8;Just:=Rd16(Ted+16);
+ Case Just Of
+  1: TX:=X+W-Tw;
+  2: TX:=X+(W-Tw) Div 2;
+ Else TX:=X;
+ End;
+ K:=0;
+ For I:=1 To Length(Tm) Do Begin
+  If Tm[I]='_' Then Begin
+   If K=Idx Then Begin EditCursorX:=TX+(I-1)*8;Exit;End;
+   Inc(K);
+  End;
+ End;
+ EditCursorX:=TX+Length(Tm)*8;
+End;
+
+Procedure EditDrawCursor(T: LongInt; Obj,Idx: Integer);
+Var X,Y,CXp: Integer;
+Begin
+ ObjOffset(T,Obj,X,Y);
+ CXp:=EditCursorX(T,Obj,Idx);
+ OSetup;SetClip(0,0,SW-1,SH-1);
+ VP^.WrMode:=WM_XOR;
+ VP^.FillInt:=1;VP^.FillCol:=1;
+ VBar(CXp,Y+(OH(T,Obj)-16) Div 2,CXp,Y+(OH(T,Obj)-16) Div 2+15);
+ VP^.WrMode:=WM_REPL;
+End;
+
+Function EditTextLen(T: LongInt; Obj: Integer): Integer;
+Var Ted: LongInt; Tm: String; I,K: Integer;
+Begin
+ Ted:=OSpec(T,Obj);
+ Tm:=RdStr(Rd32(Ted+4),120);K:=0;
+ For I:=1 To Length(Tm) Do If Tm[I]='_' Then Inc(K);
+ EditTextLen:=K;
+End;
+
+{ objc_edit : Kind 0 INIT, 1 CHAR, 2 INIT(pas de curseur), 3 END }
+Function ObjEdit(T: LongInt; Obj: Integer; Key: LongInt; Var Idx: Integer; Kind: Integer): Integer;
+Var Ted,Txt,Vp: LongInt; S,Vl: String; Mx: Integer; Ch: Char; Scan,Asc: Integer; Ok: Boolean;
+Begin
+ ObjEdit:=1;
+ Ted:=OSpec(T,Obj);
+ Txt:=Rd32(Ted);Vp:=Rd32(Ted+8);
+ S:=RdStr(Txt,120);Vl:=RdStr(Vp,120);
+ Mx:=EditTextLen(T,Obj);
+ Case Kind Of
+  0,2: Begin
+        Idx:=Length(S);
+        ObjRedraw(T,Obj);
+        If Kind=0 Then EditDrawCursor(T,Obj,Idx);
+       End;
+  3: Begin ObjRedraw(T,Obj);End;
+  1: Begin
+      Asc:=Key And $FF;Scan:=(Key Shr 8) And $FF;
+      If Idx>Length(S) Then Idx:=Length(S);
+      Ok:=False;
+      If (Asc=8) Or (Asc=127) Then Begin
+       If (Asc=8) And (Idx>0) Then Begin Delete(S,Idx,1);Dec(Idx);Ok:=True;End
+       Else If (Asc=127) And (Idx<Length(S)) Then Begin Delete(S,Idx+1,1);Ok:=True;End;
+      End Else If (Asc=0) And (Scan=$4B) Then Begin If Idx>0 Then Dec(Idx);Ok:=True;End
+      Else If (Asc=0) And (Scan=$4D) Then Begin If Idx<Length(S) Then Inc(Idx);Ok:=True;End
+      Else If (Asc=0) And (Scan=$47) Then Begin Idx:=0;Ok:=True;End
+      Else If (Asc=0) And (Scan=$4F) Then Begin Idx:=Length(S);Ok:=True;End
+      Else If Asc>=32 Then Begin
+       Ch:=Chr(Asc);
+       If Length(S)<Mx Then Begin
+        If Idx<Length(Vl) Then Begin
+         If ValidChar(Vl[Idx+1],Ch) Then Begin
+          If (Vl[Idx+1]='A') Or (Vl[Idx+1]='N') Then Ch:=UpCase(Ch);
+          Insert(Ch,S,Idx+1);Inc(Idx);Ok:=True;
+         End;
+        End Else If Length(Vl)>0 Then Begin
+         If ValidChar(Vl[Length(Vl)],Ch) Then Begin Insert(Ch,S,Idx+1);Inc(Idx);Ok:=True;End;
+        End Else Begin Insert(Ch,S,Idx+1);Inc(Idx);Ok:=True;End;
+       End;
+      End;
+      If Ok Then Begin
+       WrStr(Txt,S);
+       ObjRedraw(T,Obj);
+       EditDrawCursor(T,Obj,Idx);
+      End Else ObjEdit:=0;
+     End;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Fichiers ressources (.RSC)                                               }
+{ ---------------------------------------------------------------------- }
+
+Var
+ RscBase    : LongInt;
+ RscSize    : LongInt;
+ RscLoaded  : Boolean;
+
+Procedure ObjFix(T: LongInt; I: Integer);
+Var A: LongInt; V: Integer;
+ Function Fx(V,Cell: Integer): Integer;
+ Begin
+  Fx:=(V And $FF)*Cell+SExt(ShrL(V,8) And $FF,1);
+ End;
+Begin
+ A:=OA(T,I);
+ Wr16(A+16,Fx(Rd16(A+16),8));Wr16(A+18,Fx(Rd16(A+18),16));
+ Wr16(A+20,Fx(Rd16(A+20),8));Wr16(A+22,Fx(Rd16(A+22),16));
+End;
+
+Function RscLoad(Const Name: String): Boolean;
+Var P: Pointer; Len,B,I,J,Nobs,Nted,Nib,Nbb,Nstr,Nimg,Ntree,Oobj,Oted,Oib,Obb,Ofrs,Ofri,Otri: LongInt;
+    A: LongInt; Ty: Integer; F: String;
+Begin
+ RscLoad:=False;
+ F:=HostPath(Name);
+ If Not ReadFileBytes(F,P,Len) Then Begin
+  F:=HostPath(PathOf(ProgName)+ShortName(Name));
+  If Not ReadFileBytes(F,P,Len) Then Exit;
+ End;
+ If Len<36 Then Begin FreeMem(P,Len);Exit;End;
+ Oobj:=BufW(P,2);Oted:=BufW(P,4);Oib:=BufW(P,6);Obb:=BufW(P,8);Ofrs:=BufW(P,10);
+ Ofri:=BufW(P,16);Otri:=BufW(P,18);
+ Nobs:=BufW(P,20);Ntree:=BufW(P,22);Nted:=BufW(P,24);Nib:=BufW(P,26);Nbb:=BufW(P,28);
+ Nstr:=BufW(P,30);Nimg:=BufW(P,32);
+ RscSize:=BufW(P,34);
+ If RscSize<Len Then RscSize:=Len;
+ B:=DoMalloc(RscSize+16);
+ If B=0 Then Begin FreeMem(P,Len);Exit;End;
+ For I:=0 To Len-1 Do Wr8(B+I,BufB(P,I));
+ FreeMem(P,Len);
+ RscBase:=B;RscLoaded:=True;
+ { objets }
+ For I:=0 To Nobs-1 Do Begin
+  A:=B+Oobj+I*24;
+  Ty:=Rd16(A+6) And $FF;
+  If (Ty<>G_BOX) And (Ty<>G_IBOX) And (Ty<>G_BOXCHAR) Then Wr32(A+12,Rd32(A+12)+B);
+ End;
+ For I:=0 To Nted-1 Do Begin
+  A:=B+Oted+I*28;
+  Wr32(A,Rd32(A)+B);Wr32(A+4,Rd32(A+4)+B);Wr32(A+8,Rd32(A+8)+B);
+ End;
+ For I:=0 To Nib-1 Do Begin
+  A:=B+Oib+I*34;
+  Wr32(A,Rd32(A)+B);Wr32(A+4,Rd32(A+4)+B);Wr32(A+8,Rd32(A+8)+B);
+ End;
+ For I:=0 To Nbb-1 Do Begin
+  A:=B+Obb+I*14;
+  Wr32(A,Rd32(A)+B);
+ End;
+ For I:=0 To Nstr-1 Do Wr32(B+Ofrs+I*4,Rd32(B+Ofrs+I*4)+B);
+ For I:=0 To Nimg-1 Do Wr32(B+Ofri+I*4,Rd32(B+Ofri+I*4)+B);
+ For I:=0 To Ntree-1 Do Wr32(B+Otri+I*4,Rd32(B+Otri+I*4)+B);
+ For I:=0 To Nobs-1 Do ObjFix(B+Oobj,I);
+ { l'arbre i : l'objet 0 de chaque arbre est dans la table }
+ RscLoad:=True;
+End;
+
+Function RscGaddr(Ty,Idx: Integer; Var Addr: LongInt): Boolean;
+Var B,Oobj,Oted,Oib,Obb,Ofrs,Ofri,Otri: LongInt;
+Begin
+ RscGaddr:=False;
+ If Not RscLoaded Then Exit;
+ B:=RscBase;
+ Oobj:=Rd16(B+2);Oted:=Rd16(B+4);Oib:=Rd16(B+6);Obb:=Rd16(B+8);Ofrs:=Rd16(B+10);
+ Ofri:=Rd16(B+16);Otri:=Rd16(B+18);
+ Case Ty Of
+  0: If Idx<Rd16(B+22) Then Begin Addr:=Rd32(B+Otri+Idx*4);RscGaddr:=True;End;
+  1: If Idx<Rd16(B+20) Then Begin Addr:=B+Oobj+Idx*24;RscGaddr:=True;End;
+  2: If Idx<Rd16(B+24) Then Begin Addr:=B+Oted+Idx*28;RscGaddr:=True;End;
+  3: If Idx<Rd16(B+26) Then Begin Addr:=B+Oib+Idx*34;RscGaddr:=True;End;
+  4: If Idx<Rd16(B+28) Then Begin Addr:=B+Obb+Idx*14;RscGaddr:=True;End;
+  5,15: If Idx<Rd16(B+30) Then Begin Addr:=Rd32(B+Ofrs+Idx*4);RscGaddr:=True;End;
+  6,16: If Idx<Rd16(B+32) Then Begin Addr:=Rd32(B+Ofri+Idx*4);RscGaddr:=True;End;
+ End;
+End;
+
+{ ====================================================================== }
+{          GEM : AES (Application Environment Services) - ETAT          }
+{ ====================================================================== }
+
+Const
+ MAXPROC = 8;
+ MAXWIN  = 8;
+ NAME_=1; CLOSER_=2; FULLER_=4; MOVER_=8; INFO_=16; SIZER_=32; UPARROW_=64;
+ DNARROW_=128; VSLIDE_=256; LFARROW_=512; RTARROW_=1024; HSLIDE_=2048;
+ WTITLE_H = 19;
+ WINFO_H  = 18;
+ WSCROLL  = 18;
+ MN_SELECTED=10; WM_REDRAW=20; WM_TOPPED=21; WM_CLOSED=22; WM_FULLED=23;
+ WM_ARROWED=24; WM_HSLID=25; WM_VSLID=26; WM_SIZED=27; WM_MOVED=28;
+ WM_NEWTOP=29; AC_OPEN=40; AC_CLOSE=41;
+ STOP_YIELD = 7;
+
+Type
+ TRect = Record X,Y,W,H: Integer; End;
+ TWin = Record
+  Used,Open : Boolean;
+  Kind,Owner : Integer;
+  Name,Info : LongInt;
+  R,Prev,Full : TRect;
+  HSl,VSl,HSz,VSz : Integer;
+  RectIdx : Integer;
+ End;
+ TProc = Record
+  Used,Blocked,IsAcc,Started : Boolean;
+  Name : String[9];
+  ApId : Integer;
+  Rgs  : Array[0..15] Of LongInt;
+  PCs,SRs,USPs,SSPs : LongInt;
+  BpAddr : LongInt;
+  { evenement en attente }
+  WFlags,WClicks,WMask,WState : Integer;
+  WM1F,WM2F : Integer;
+  WM1,WM2 : TRect;
+  WDeadline : LongInt;
+  WIo,WAi,WCtl : LongInt;
+  WOp : Integer;
+  Q : Array[1..16,0..7] Of Integer;
+  QN : Integer;
+  MenuId : Integer;
+ End;
+
+Var
+ Wins    : Array[0..MAXWIN] Of TWin;
+ WZ      : Array[1..MAXWIN] Of Integer;
+ NWZ     : Integer;
+ Procs   : Array[0..MAXPROC-1] Of TProc;
+ CurProc : Integer;
+ MainProc: Integer;
+ AesActive : Boolean;
+ { barre de menus }
+ MenuTree   : LongInt;
+ MenuOwner  : Integer;
+ MenuH      : Integer;
+ MenuBar    : Integer;
+ AccSlots   : Array[0..5] Of Integer;
+ AccProc    : Array[0..5] Of Integer;
+ AccStr     : Array[0..5] Of LongInt;
+ { bureau }
+ DeskTree   : LongInt;
+ DeskStart  : Integer;
+ { souris et clavier }
+ PrevB      : LongInt;
+ BtnLastTime,BtnClickCnt : LongInt;
+ ClickCount : Integer;
+ DClickSpeed: Integer;
+ UpdateLevel,MCtrlLevel : Integer;
+ MCtrlOwner : Integer;
+ ButtonTaken : Boolean;      { le clic courant a ete consomme par le gestionnaire }
+ EvtBtnDown  : Boolean;
+ KShift      : Integer;
+ RectList    : Array[1..64] Of TRect;
+ RectN,RectPos : Integer;
+ CurShape    : Integer;
+ ScrapDir    : String;
+ GemHandle   : Integer;
+ ShelNext    : String;
+ ShelTail    : String;
+ AccNames    : Array[1..6] Of String[40];
+
+Function MsNow: LongInt;
+Var H,M,S,Hs: Word;
+Begin
+ GetTime(H,M,S,Hs);
+ MsNow:=((LongInt(H)*60+M)*60+S)*1000+LongInt(Hs)*10;
+End;
+
+Function RectMake(X,Y,W,H: Integer): TRect;
+Var R: TRect;
+Begin
+ R.X:=X;R.Y:=Y;R.W:=W;R.H:=H;
+ RectMake:=R;
+End;
+
+Function RectInter(A,B: TRect; Var R: TRect): Boolean;
+Var X1,Y1,X2,Y2: Integer;
+Begin
+ X1:=Max2(A.X,B.X);Y1:=Max2(A.Y,B.Y);
+ X2:=Min2(A.X+A.W,B.X+B.W);Y2:=Min2(A.Y+A.H,B.Y+B.H);
+ R:=RectMake(X1,Y1,X2-X1,Y2-Y1);
+ RectInter:=(X2>X1) And (Y2>Y1);
+End;
+
+Function InRect(X,Y: Integer; Const R: TRect): Boolean;
+Begin
+ InRect:=(X>=R.X) And (X<R.X+R.W) And (Y>=R.Y) And (Y<R.Y+R.H);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Formes du curseur de la souris                                           }
+{ ---------------------------------------------------------------------- }
+
+Const
+ CurShapes : Array[0..7,0..15] Of String[16] = (
+  { 0 fleche }
+  ('X...............','XX..............','XoX.............','XooX............','XoooX...........',
+   'XooooX..........','XoooooX.........','XooooooX........','XoooooooX.......','XooooXXXXX......',
+   'XooXooX.........','XoX.XooX........','XX..XooX........','X....XooX.......','.....XooX.......',
+   '......XX........'),
+  { 1 curseur de texte }
+  ('................','..XXX.XXX.......','....XoX.........','....XoX.........','....XoX.........',
+   '....XoX.........','....XoX.........','....XoX.........','....XoX.........','....XoX.........',
+   '....XoX.........','....XoX.........','....XoX.........','..XXX.XXX.......','................',
+   '................'),
+  { 2 abeille / sablier }
+  ('..XXXXXXXXXX....','..XooooooooX....','...XoooooooX....','....XooooooX....','.....XooooX.....',
+   '......XooX......','.......XX.......','......XooX......','.....XooooX.....','....XooooooX....',
+   '...XoooooooX....','..XooooooooX....','..XXXXXXXXXX....','................','................',
+   '................'),
+  { 3 main pointant }
+  ('.....XX.........','....XooX........','....XooX........','....XooX........','....XooXXX......',
+   '....XooXooXXX...','.XX.XooXooXooX..','XooXXooooooooX..','XooooooooooooX..','.XooooooooooooX.',
+   '..XoooooooooooX.','..XoooooooooooX.','...XooooooooooX.','...XXooooooooX..','....XXooooooX...',
+   '.....XXXXXXXX...'),
+  { 4 main plate }
+  ('......XX........','..XX.XooXXX.....','.XooXXooXooXX...','.XooXXooXooXooX.','..XooXooXooXooX.',
+   '..XooXooXooXooX.','XXXooooooooooooX','XooXooooooooooX.','XooooooooooooX..','.XoooooooooooX..',
+   '..XooooooooooX..','..XooooooooooX..','...XooooooooX...','....XooooooX....','....XXXXXXXX....',
+   '................'),
+  { 5 croix fine }
+  ('.......XX.......','.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+   '.......XX.......','.......XX.......','XXXXXX.....XXXXX','XXXXXX.....XXXXX','.......XX.......',
+   '.......XX.......','.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+   '.......XX.......'),
+  { 6 croix epaisse }
+  ('.......XX.......','.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+   '.......XX.......','.......XX.......','XXXXXXXXXXXXXXXX','XXXXXXXXXXXXXXXX','.......XX.......',
+   '.......XX.......','.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+   '.......XX.......'),
+  { 7 croix evidee }
+  ('......XooX......','......XooX......','......XooX......','......XooX......','......XooX......',
+   '......XooX......','XXXXXXXooXXXXXXX','XooooooooooooooX','XooooooooooooooX','XXXXXXXooXXXXXXX',
+   '......XooX......','......XooX......','......XooX......','......XooX......','......XooX......',
+   '......XooX......'));
+ CurHot : Array[0..7,0..1] Of Byte = ((0,0),(5,7),(7,6),(7,0),(7,0),(7,7),(7,7),(7,7));
+
+Procedure SetMouseShape(N: Integer);
+Var Y,X: Integer; M,D: Word; C: Char;
+Begin
+ If (N<0) Or (N>7) Then N:=0;
+ CurShape:=N;
+ For Y:=0 To 15 Do Begin
+  M:=0;D:=0;
+  For X:=0 To 15 Do Begin
+   C:=CurShapes[N,Y][X+1];
+   If (C='X') Or (C='o') Then M:=M Or ($8000 Shr X);
+   If C='X' Then D:=D Or ($8000 Shr X);
+  End;
+  CurMask[Y]:=M;CurData[Y]:=D;
+ End;
+ CurHotX:=CurHot[N,0];CurHotY:=CurHot[N,1];
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Messages                                                                 }
+{ ---------------------------------------------------------------------- }
+
+Procedure PostMsg(P: Integer; M0,M3,M4,M5,M6,M7: Integer; Sender: Integer);
+Var K: Integer;
+Begin
+ If (P<0) Or (P>=MAXPROC) Or Not Procs[P].Used Then Exit;
+ { fusion des redessins identiques }
+ If Procs[P].QN>=16 Then Begin
+  For K:=1 To 15 Do Procs[P].Q[K]:=Procs[P].Q[K+1];
+  Procs[P].QN:=15;
+ End;
+ Inc(Procs[P].QN);
+ K:=Procs[P].QN;
+ Procs[P].Q[K,0]:=M0;Procs[P].Q[K,1]:=Sender;Procs[P].Q[K,2]:=0;
+ Procs[P].Q[K,3]:=M3;Procs[P].Q[K,4]:=M4;Procs[P].Q[K,5]:=M5;
+ Procs[P].Q[K,6]:=M6;Procs[P].Q[K,7]:=M7;
+End;
+
+Function PopMsg(P: Integer; Buf: LongInt): Boolean;
+Var K,I: Integer;
+Begin
+ PopMsg:=False;
+ If Procs[P].QN<=0 Then Exit;
+ For I:=0 To 7 Do Wr16(Buf+I*2,Procs[P].Q[1,I] And $FFFF);
+ For K:=1 To Procs[P].QN-1 Do Procs[P].Q[K]:=Procs[P].Q[K+1];
+ Dec(Procs[P].QN);
+ PopMsg:=True;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Fenetres : geometrie                                                     }
+{ ---------------------------------------------------------------------- }
+
+Function HasTitle(K: Integer): Boolean;
+Begin
+ HasTitle:=(K And (NAME_ Or CLOSER_ Or FULLER_ Or MOVER_))<>0;
+End;
+
+Function HasVBar(K: Integer): Boolean;
+Begin
+ HasVBar:=(K And (UPARROW_ Or DNARROW_ Or VSLIDE_))<>0;
+End;
+
+Function HasHBar(K: Integer): Boolean;
+Begin
+ HasHBar:=(K And (LFARROW_ Or RTARROW_ Or HSLIDE_))<>0;
+End;
+
+{ zone de travail depuis la zone exterieure }
+Function WorkOf(K: Integer; Const O: TRect): TRect;
+Var R: TRect; T: Integer;
+Begin
+ T:=0;
+ If HasTitle(K) Then T:=T+WTITLE_H;
+ If (K And INFO_)<>0 Then T:=T+WINFO_H;
+ R.X:=O.X+1;R.Y:=O.Y+1+T;
+ R.W:=O.W-2;R.H:=O.H-2-T;
+ If HasVBar(K) Then R.W:=R.W-WSCROLL;
+ If HasHBar(K) Then R.H:=R.H-WSCROLL;
+ WorkOf:=R;
+End;
+
+Function OuterOf(K: Integer; Const W: TRect): TRect;
+Var R: TRect; T: Integer;
+Begin
+ T:=0;
+ If HasTitle(K) Then T:=T+WTITLE_H;
+ If (K And INFO_)<>0 Then T:=T+WINFO_H;
+ R.X:=W.X-1;R.Y:=W.Y-1-T;
+ R.W:=W.W+2;R.H:=W.H+2+T;
+ If HasVBar(K) Then R.W:=R.W+WSCROLL;
+ If HasHBar(K) Then R.H:=R.H+WSCROLL;
+ OuterOf:=R;
+End;
+
+Function WinWork(H: Integer): TRect;
+Begin
+ WinWork:=WorkOf(Wins[H].Kind,Wins[H].R);
+End;
+
+Function ZPos(H: Integer): Integer;
+Var I: Integer;
+Begin
+ ZPos:=0;
+ For I:=1 To NWZ Do If WZ[I]=H Then Begin ZPos:=I;Exit;End;
+End;
+
+Procedure ZRemove(H: Integer);
+Var I,P: Integer;
+Begin
+ P:=ZPos(H);
+ If P=0 Then Exit;
+ For I:=P To NWZ-1 Do WZ[I]:=WZ[I+1];
+ Dec(NWZ);
+End;
+
+Procedure ZToTop(H: Integer);
+Var I: Integer;
+Begin
+ ZRemove(H);
+ For I:=NWZ Downto 1 Do WZ[I+1]:=WZ[I];
+ WZ[1]:=H;Inc(NWZ);
+End;
+
+Function TopWin: Integer;
+Begin
+ If NWZ>0 Then TopWin:=WZ[1] Else TopWin:=0;
+End;
+
+{ Liste des rectangles visibles d'une zone de la fenetre H (non masquee par
+  les fenetres du dessus) }
+Procedure VisibleRects(H: Integer; Const Area: TRect);
+Var I,K,Z,Cnt: Integer; Cur: Array[1..64] Of TRect; N,M: Integer; B,A,P: TRect; Tmp: Array[1..64] Of TRect;
+ Procedure Add(Const R: TRect);
+ Begin
+  If (R.W>0) And (R.H>0) And (M<64) Then Begin Inc(M);Tmp[M]:=R;End;
+ End;
+Begin
+ RectN:=0;RectPos:=1;
+ Z:=ZPos(H);
+ N:=1;Cur[1]:=Area;
+ { le bureau (H=0) est sous toutes les fenetres }
+ If Z=0 Then Z:=NWZ+1;
+ For I:=1 To Z-1 Do Begin
+  B:=Wins[WZ[I]].R;
+  If Not Wins[WZ[I]].Open Then Continue;
+  M:=0;
+  For K:=1 To N Do Begin
+   A:=Cur[K];
+   If Not RectInter(A,B,P) Then Begin Add(A);Continue;End;
+   { decoupe A \ B }
+   Add(RectMake(A.X,A.Y,A.W,P.Y-A.Y));
+   Add(RectMake(A.X,P.Y+P.H,A.W,A.Y+A.H-(P.Y+P.H)));
+   Add(RectMake(A.X,P.Y,P.X-A.X,P.H));
+   Add(RectMake(P.X+P.W,P.Y,A.X+A.W-(P.X+P.W),P.H));
+  End;
+  N:=M;
+  For K:=1 To N Do Cur[K]:=Tmp[K];
+ End;
+ For K:=1 To N Do If RectN<64 Then Begin Inc(RectN);RectList[RectN]:=Cur[K];End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Dessin des fenetres                                                      }
+{ ---------------------------------------------------------------------- }
+
+Procedure AFill(X1,Y1,X2,Y2: Integer; Pat,Col: Integer);
+Begin
+ OSetup;OFill(X1,Y1,X2,Y2,Pat,Col);
+End;
+
+Procedure ABox(X1,Y1,X2,Y2: Integer);
+Begin
+ OSetup;OFrameRect(X1,Y1,X2,Y2,1);
+End;
+
+Procedure AArrow(X,Y,W,H,Dir: Integer);
+Var CXp,CYp,I: Integer;
+Begin
+ AFill(X,Y,X+W-1,Y+H-1,0,0);ABox(X,Y,X+W-1,Y+H-1);
+ CXp:=X+W Div 2;CYp:=Y+H Div 2;
+ OSetup;
+ For I:=0 To 4 Do Begin
+  Case Dir Of
+   0: FastSpan(CYp-3+I,CXp-I,CXp+I,True,False);
+   1: FastSpan(CYp+3-I,CXp-I,CXp+I,True,False);
+   2: Begin VP^.FillInt:=1;VP^.FillCol:=1;VBar(CXp-3+I,CYp-I,CXp-3+I,CYp+I);End;
+  Else Begin VP^.FillInt:=1;VP^.FillCol:=1;VBar(CXp+3-I,CYp-I,CXp+3-I,CYp+I);End;
+  End;
+ End;
+End;
+
+Procedure DrawWinFrame(H: Integer);
+Var W: ^TWin; R,Wk: TRect; K,X1,Y1,X2,Y2,I,TX,Tw: Integer; S: String; Top: Boolean;
+    TrackLen,SlLen,SlPos: Integer;
+Begin
+ W:=@Wins[H];
+ R:=W^.R;K:=W^.Kind;Wk:=WorkOf(K,R);Top:=(TopWin=H);
+ OSetup;
+ X1:=R.X;Y1:=R.Y;X2:=R.X+R.W-1;Y2:=R.Y+R.H-1;
+ ABox(X1,Y1,X2,Y2);
+ If HasTitle(K) Then Begin
+  AFill(X1+1,Y1+1,X2-1,Y1+WTITLE_H-1,0,0);
+  If Top Then Begin
+   OSetup;
+   For I:=0 To WTITLE_H-4 Do If Odd(I) Then FastSpan(Y1+2+I,X1+2,X2-2,True,False);
+  End;
+  FastSpan(Y1+WTITLE_H,X1,X2,True,False);
+  TX:=X1+1;
+  If (K And CLOSER_)<>0 Then Begin
+   AFill(X1+1,Y1+1,X1+WSCROLL-1,Y1+WTITLE_H-1,0,0);ABox(X1+1,Y1+1,X1+WSCROLL-1,Y1+WTITLE_H-1);
+   ABox(X1+5,Y1+5,X1+WSCROLL-5,Y1+WTITLE_H-5);
+   TX:=X1+WSCROLL;
+  End;
+  Tw:=X2-1;
+  If (K And FULLER_)<>0 Then Begin
+   AFill(X2-WSCROLL+1,Y1+1,X2-1,Y1+WTITLE_H-1,0,0);ABox(X2-WSCROLL+1,Y1+1,X2-1,Y1+WTITLE_H-1);
+   ABox(X2-WSCROLL+5,Y1+5,X2-5,Y1+WTITLE_H-5);
+   Tw:=X2-WSCROLL;
+  End;
+  If W^.Name<>0 Then Begin
+   S:=RdStr(W^.Name,80);
+   If Length(S)*8+8>Tw-TX Then S:=Copy(S,1,(Tw-TX-8) Div 8);
+   I:=TX+(Tw-TX-Length(S)*8) Div 2;
+   AFill(I-4,Y1+1,I+Length(S)*8+3,Y1+WTITLE_H-1,0,0);
+   OText(I,Y1+(WTITLE_H-8) Div 2+1,S,8,1,False);
+  End;
+ End;
+ If (K And INFO_)<>0 Then Begin
+  I:=Y1+1+(Ord(HasTitle(K))*WTITLE_H);
+  AFill(X1+1,I,X2-1,I+WINFO_H-2,0,0);
+  If W^.Info<>0 Then Begin
+   S:=RdStr(W^.Info,100);
+   OText(X1+6,I+(WINFO_H-8) Div 2-1,Copy(S,1,(R.W-12) Div 8),8,1,False);
+  End;
+  FastSpan(I+WINFO_H-1,X1,X2,True,False);
+ End;
+ { barres de defilement }
+ If HasVBar(K) Then Begin
+  X1:=Wk.X+Wk.W;
+  AFill(X1,Wk.Y,X1+WSCROLL-1,Wk.Y+Wk.H+Ord(HasHBar(K))*WSCROLL-1,0,0);
+  OSetup;VP^.FillInt:=1;VP^.FillCol:=1;VBar(X1,Wk.Y,X1,Wk.Y+Wk.H-1+Ord(HasHBar(K))*WSCROLL);
+  Y1:=Wk.Y;Y2:=Wk.Y+Wk.H-1;
+  If (K And UPARROW_)<>0 Then Begin AArrow(X1+1,Y1,WSCROLL-1,WSCROLL,0);Y1:=Y1+WSCROLL;End;
+  If (K And DNARROW_)<>0 Then Begin AArrow(X1+1,Y2-WSCROLL+1,WSCROLL-1,WSCROLL,1);Y2:=Y2-WSCROLL;End;
+  If (K And VSLIDE_)<>0 Then Begin
+   OSetup;
+   For I:=Y1 To Y2 Do FastSpan(I,X1+1,X1+WSCROLL-1,False,False);
+   For I:=Y1 To Y2 Do If Odd(I) Then Begin
+    FastSpan(I,X1+1,X1+WSCROLL-1,True,False);
+    FastSpan(I,X1+1,X1+WSCROLL-1,False,False);
+   End;
+   For I:=Y1 To Y2 Do Begin
+    OSetup;
+    VP^.FillInt:=2;VP^.FillSty:=4;VP^.FillCol:=1;VBar(X1+1,I,X1+WSCROLL-1,I);
+   End;
+   TrackLen:=Y2-Y1+1;
+   If W^.VSz<=0 Then SlLen:=TrackLen Else SlLen:=Max2(WSCROLL,TrackLen*W^.VSz Div 1000);
+   SlPos:=(TrackLen-SlLen)*Clamp(W^.VSl,0,1000) Div 1000;
+   AFill(X1+1,Y1+SlPos,X1+WSCROLL-1,Y1+SlPos+SlLen-1,0,0);
+   ABox(X1+1,Y1+SlPos,X1+WSCROLL-1,Y1+SlPos+SlLen-1);
+  End;
+ End;
+ If HasHBar(K) Then Begin
+  Y1:=Wk.Y+Wk.H;
+  AFill(Wk.X,Y1,Wk.X+Wk.W-1,Y1+WSCROLL-1,0,0);
+  OSetup;VP^.FillInt:=1;VP^.FillCol:=1;VBar(Wk.X,Y1,Wk.X+Wk.W-1,Y1);
+  X1:=Wk.X;X2:=Wk.X+Wk.W-1;
+  If (K And LFARROW_)<>0 Then Begin AArrow(X1,Y1+1,WSCROLL,WSCROLL-1,2);X1:=X1+WSCROLL;End;
+  If (K And RTARROW_)<>0 Then Begin AArrow(X2-WSCROLL+1,Y1+1,WSCROLL,WSCROLL-1,3);X2:=X2-WSCROLL;End;
+  If (K And HSLIDE_)<>0 Then Begin
+   OSetup;
+   For I:=X1 To X2 Do Begin
+    VP^.FillInt:=2;VP^.FillSty:=4;VP^.FillCol:=1;VBar(I,Y1+1,I,Y1+WSCROLL-1);
+   End;
+   TrackLen:=X2-X1+1;
+   If W^.HSz<=0 Then SlLen:=TrackLen Else SlLen:=Max2(WSCROLL,TrackLen*W^.HSz Div 1000);
+   SlPos:=(TrackLen-SlLen)*Clamp(W^.HSl,0,1000) Div 1000;
+   AFill(X1+SlPos,Y1+1,X1+SlPos+SlLen-1,Y1+WSCROLL-1,0,0);
+   ABox(X1+SlPos,Y1+1,X1+SlPos+SlLen-1,Y1+WSCROLL-1);
+  End;
+ End;
+ If ((K And SIZER_)<>0) Then Begin
+  X1:=Wk.X+Wk.W;Y1:=Wk.Y+Wk.H;
+  If HasVBar(K) And HasHBar(K) Then Begin
+   AFill(X1,Y1,X1+WSCROLL-1,Y1+WSCROLL-1,0,0);ABox(X1,Y1,X1+WSCROLL-1,Y1+WSCROLL-1);
+   ABox(X1+4,Y1+4,X1+WSCROLL-4,Y1+WSCROLL-4);
+  End;
+ End;
+End;
+
+{ Fond du bureau }
+Procedure DrawDesktopRect(X1,Y1,X2,Y2: Integer);
+Var X,Y: Integer;
+Begin
+ OSetup;
+ SetClip(X1,Y1,X2,Y2);
+ If DeskTree<>0 Then Begin
+  ObjDrawRec(DeskTree,DeskStart,8,OX(DeskTree,DeskStart),OY(DeskTree,DeskStart),X1,Y1,X2,Y2);
+  OSetup;
+ End Else Begin
+  For Y:=Y1 To Y2 Do
+   For X:=X1 To X2 Do BPix(X,Y,Odd(X+Y) Or (Not Odd(X+Y) And False));
+ End;
+ SetClip(0,0,SW-1,SH-1);
+End;
+
+Procedure DrawMenuBarNow; Forward;
+
+{ Redessine une zone : bureau, cadres des fenetres, barre de menus.
+  SendRedraw : avertit les applications (contenu des fenetres) }
+Procedure Repaint(R: TRect; SendRedraw: Boolean);
+Var I,H: Integer; A,P: TRect; Wk: TRect;
+Begin
+ If Not RectInter(R,RectMake(0,0,SW,SH),A) Then Exit;
+ If A.Y<MenuH Then Begin
+  DrawMenuBarNow;
+  If A.Y+A.H<=MenuH Then Begin SetClip(0,0,SW-1,SH-1);Exit;End;
+  A.H:=A.H-(MenuH-A.Y);A.Y:=MenuH;
+ End;
+ DrawDesktopRect(A.X,A.Y,A.X+A.W-1,A.Y+A.H-1);
+ For I:=NWZ Downto 1 Do Begin
+  H:=WZ[I];
+  If Not Wins[H].Open Then Continue;
+  If RectInter(A,Wins[H].R,P) Then Begin
+   OSetup;SetClip(P.X,P.Y,P.X+P.W-1,P.Y+P.H-1);
+   { efface le cadre sous la zone de travail ? non : la zone de travail est
+     redessinee par l'application (WM_REDRAW) apres un fond blanc }
+   DrawWinFrame(H);
+   Wk:=WinWork(H);
+   If RectInter(P,Wk,Wk) Then Begin
+    If SendRedraw Then Begin
+     OSetup;SetClip(P.X,P.Y,P.X+P.W-1,P.Y+P.H-1);
+     OFill(Wk.X,Wk.Y,Wk.X+Wk.W-1,Wk.Y+Wk.H-1,0,0);
+     PostMsg(Wins[H].Owner,WM_REDRAW,H,Wk.X,Wk.Y,Wk.W,Wk.H,0);
+    End;
+   End;
+  End;
+ End;
+ SetClip(0,0,SW-1,SH-1);
+End;
+
+Procedure RepaintAll;
+Begin
+ Repaint(RectMake(0,0,SW,SH),True);
+End;
+
+{ ====================================================================== }
+{          GEM : AES - ENTREES, MENUS, FENETRES, FORMULAIRES             }
+{ ====================================================================== }
+
+Var
+ ModalLevel : Integer;
+ NoBlit     : Boolean;
+
+{ Lit clavier et souris hotes ; met a jour l'etat GEM }
+Procedure PollInput;
+Var NX,NY,NB: LongInt; T: LongInt;
+Begin
+ PollKeys;
+ If BatchMode Or Not GfxOn Then Exit;
+ GetMouseState(NX,NY,NB);
+ MX:=NX;MY:=NY;MB:=NB;
+ {$IFDEF FPC}
+ If CurShown And ((MX<>CurMX) Or (MY<>CurMY)) Then CursorDraw(MX,MY);
+ {$ENDIF}
+ GMouseX:=Clamp(NX,0,SW-1);GMouseY:=Clamp(NY-EMU_Y0,0,SH-1);
+ GMouseB:=NB And 3;
+ If (GMouseB And 1)<>0 Then Begin
+  If (PrevB And 1)=0 Then Begin
+   T:=MsNow;
+   If (T-BtnLastTime>=0) And (T-BtnLastTime<LongInt(DClickSpeed)*80) Then Inc(ClickCount)
+   Else ClickCount:=1;
+   BtnLastTime:=T;
+  End;
+ End;
+ PrevB:=GMouseB;
+End;
+
+Procedure GemIdle;
+Begin
+ PollInput;
+ If Not BatchMode Then Begin
+  If Not NoBlit Then BlitScreen(False);
+  Delay(1);
+ End;
+End;
+
+Procedure WaitButtonRelease;
+Begin
+ Repeat GemIdle;Until ((GMouseB And 3)=0) Or UserBreak;
+End;
+
+Procedure SyncSysVars;
+Var T: LongInt;
+Begin
+ T:=MsNow Div 5;
+ Wr32($4BA,T);Wr32($462,T Div 4);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Barre de menus                                                            }
+{ ---------------------------------------------------------------------- }
+
+Procedure DrawMenuBarNow;
+Var Sv: Integer;
+Begin
+ OSetup;SetClip(0,0,SW-1,MenuH);
+ OFill(0,0,SW-1,MenuH-1,0,0);
+ FastSpan(MenuH-1,0,SW-1,True,False);
+ If MenuTree<>0 Then Begin
+  ObjDrawRec(MenuTree,MenuBar,4,OX(MenuTree,MenuBar)+OX(MenuTree,0),OY(MenuTree,MenuBar)+OY(MenuTree,0),
+             0,0,SW-1,MenuH-1);
+  OSetup;FastSpan(MenuH-1,0,SW-1,True,False);
+ End;
+ SetClip(0,0,SW-1,SH-1);
+End;
+
+Function TitleIndexOf(T: LongInt; Title: Integer): Integer;
+Var P,C,K: Integer;
+Begin
+ P:=OParent(T,Title);K:=0;C:=OHead(T,P);
+ While C>=0 Do Begin
+  If C=Title Then Begin TitleIndexOf:=K;Exit;End;
+  Inc(K);
+  If C=OTail(T,P) Then Break;
+  C:=ONext(T,C);
+ End;
+ TitleIndexOf:=0;
+End;
+
+Function NthChild(T: LongInt; Parent,N: Integer): Integer;
+Var C,K: Integer;
+Begin
+ NthChild:=-1;
+ C:=OHead(T,Parent);K:=0;
+ While C>=0 Do Begin
+  If K=N Then Begin NthChild:=C;Exit;End;
+  Inc(K);
+  If C=OTail(T,Parent) Then Break;
+  C:=ONext(T,C);
+ End;
+End;
+
+Function ItemSelectable(T: LongInt; I: Integer): Boolean;
+Var S: String;
+Begin
+ ItemSelectable:=False;
+ If OType(T,I)<>G_STRING Then Exit;
+ If (OState(T,I) And OS_DISABLED)<>0 Then Exit;
+ S:=RdStr(OSpec(T,I),4);
+ If (S<>'') And (S[1]='-') Then Exit;
+ If TrimS(S)='' Then Exit;
+ ItemSelectable:=True;
+End;
+
+{ Cherche l'index d'accessoire correspondant a un element du menu Desk }
+Function AccOfItem(Item: Integer; Var Slot: Integer): Integer;
+Var K: Integer;
+Begin
+ AccOfItem:=-1;
+ For K:=0 To 5 Do
+  If AccSlots[K]=Item Then Begin Slot:=K;AccOfItem:=K;Exit;End;
+End;
+
+Function MouseOnTitle: Boolean;
+Var I: Integer;
+Begin
+ MouseOnTitle:=False;
+ If (MenuTree=0) Or (GMouseY>=MenuH) Then Exit;
+ I:=ObjFind(MenuTree,MenuBar,4,GMouseX,GMouseY);
+ MouseOnTitle:=(I>=0) And (OType(MenuTree,I)=G_TITLE);
+End;
+
+Procedure MenuTrack;
+Var Active,Box,Item,T,I,Screen,Prev: Integer; Sv: TScrSave; Saved,Done,Selected,InBar,InBox,WasDown: Boolean;
+    BoxR: TRect; MXp,MYp: Integer; X,Y: Integer; Target: Integer; Slot,Ac: Integer;
+ Procedure CloseBox;
+ Begin
+  If Saved Then Begin ScrRestore(Sv);Saved:=False;End;
+  If Item>=0 Then Begin SetOState(MenuTree,Item,OState(MenuTree,Item) And Not OS_SELECTED);Item:=-1;End;
+ End;
+ Procedure OpenBox(Tt: Integer);
+ Var K: Integer; Bx: Integer;
+ Begin
+  Active:=Tt;
+  SetOState(MenuTree,Tt,OState(MenuTree,Tt) Or OS_SELECTED);
+  ObjRedraw(MenuTree,Tt);
+  Screen:=ONext(MenuTree,MenuBar);
+  K:=TitleIndexOf(MenuTree,Tt);
+  Box:=NthChild(MenuTree,Screen,K);
+  If Box>=0 Then Begin
+   ObjOffset(MenuTree,Box,X,Y);
+   BoxR:=RectMake(X,Y,OW(MenuTree,Box),OH(MenuTree,Box));
+   ScrSave(X-2,Y-2,X+BoxR.W+4,Y+BoxR.H+4,Sv);Saved:=True;
+   ObjDrawRec(MenuTree,Box,8,X,Y,X-2,Y-2,X+BoxR.W+4,Y+BoxR.H+4);
+   OSetup;OFrameRect(X,Y,X+BoxR.W-1,Y+BoxR.H-1,1);
+   OFill(X+3,Y+BoxR.H,X+BoxR.W+2,Y+BoxR.H+2,7,1);
+   OFill(X+BoxR.W,Y+3,X+BoxR.W+2,Y+BoxR.H-1,7,1);
+   SetClip(0,0,SW-1,SH-1);
+  End;
+ End;
+Begin
+ If MenuTree=0 Then Exit;
+ Active:=-1;Box:=-1;Item:=-1;Saved:=False;Done:=False;Selected:=False;
+ WasDown:=(GMouseB And 1)<>0;
+ Repeat
+  PollInput;
+  MXp:=GMouseX;MYp:=GMouseY;
+  InBar:=MYp<MenuH;
+  T:=-1;
+  If InBar Then Begin
+   I:=ObjFind(MenuTree,MenuBar,4,MXp,MYp);
+   If (I>=0) And (OType(MenuTree,I)=G_TITLE) Then T:=I;
+  End;
+  If (T>=0) And (T<>Active) Then Begin
+   If Active>=0 Then Begin
+    CloseBox;
+    SetOState(MenuTree,Active,OState(MenuTree,Active) And Not OS_SELECTED);
+    ObjRedraw(MenuTree,Active);
+   End;
+   OpenBox(T);
+  End;
+  InBox:=False;Prev:=Item;
+  If (Active>=0) And (Box>=0) Then Begin
+   InBox:=InRect(MXp,MYp,BoxR);
+   If InBox Then Begin
+    I:=ObjFind(MenuTree,Box,1,MXp,MYp);
+    If (I<=0) Or (I=Box) Or Not ItemSelectable(MenuTree,I) Then I:=-1;
+   End Else I:=-1;
+   If I<>Item Then Begin
+    If Item>=0 Then Begin
+     SetOState(MenuTree,Item,OState(MenuTree,Item) And Not OS_SELECTED);ObjRedraw(MenuTree,Item);
+    End;
+    Item:=I;
+    If Item>=0 Then Begin
+     SetOState(MenuTree,Item,OState(MenuTree,Item) Or OS_SELECTED);ObjRedraw(MenuTree,Item);
+    End;
+   End;
+  End;
+  If Item>=0 Then Begin
+   If ((GMouseB And 1)<>0) And Not WasDown Then Begin Selected:=True;Done:=True;End;
+   If ((GMouseB And 1)=0) And WasDown Then Begin Selected:=True;Done:=True;End;
+  End;
+  WasDown:=(GMouseB And 1)<>0;
+  If (Not InBar) And (Not InBox) Then Done:=True;
+  If (Active<0) And (Not InBar Or (T<0)) Then Done:=True;
+  If Not NoBlit Then BlitScreen(False);
+  If Not Done Then Delay(1);
+ Until Done Or UserBreak;
+ Target:=Item;
+ If Saved Then Begin ScrRestore(Sv);Saved:=False;End;
+ If Selected And (Item>=0) Then Begin
+  { le menu Desk : elements d'accessoires }
+  Ac:=-1;
+  If TitleIndexOf(MenuTree,Active)=0 Then Ac:=AccOfItem(Item,Slot);
+  SetOState(MenuTree,Item,OState(MenuTree,Item) And Not OS_SELECTED);
+  If Ac>=0 Then Begin
+   SetOState(MenuTree,Active,OState(MenuTree,Active) And Not OS_SELECTED);
+   ObjRedraw(MenuTree,Active);
+   PostMsg(AccProc[Ac],AC_OPEN,0,Procs[AccProc[Ac]].MenuId,0,0,0,0);
+  End Else
+   PostMsg(MenuOwner,MN_SELECTED,Active,Item,MenuTree Shr 16,MenuTree And $FFFF,Box,0);
+  ButtonTaken:=True;
+ End Else If Active>=0 Then Begin
+  SetOState(MenuTree,Active,OState(MenuTree,Active) And Not OS_SELECTED);
+  ObjRedraw(MenuTree,Active);
+ End;
+ If Item>=0 Then Begin End;
+ SetClip(0,0,SW-1,SH-1);
+ DrawMenuBarNow;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Rectangles elastiques et deplacements                                    }
+{ ---------------------------------------------------------------------- }
+
+Procedure XorFrame(X,Y,W,H: Integer);
+Begin
+ OSetup;SetClip(0,0,SW-1,SH-1);
+ VP^.WrMode:=WM_XOR;VP^.FillInt:=1;VP^.FillCol:=1;
+ If (W<2) Or (H<2) Then Exit;
+ VBar(X,Y,X+W-1,Y);VBar(X,Y+H-1,X+W-1,Y+H-1);
+ If H>2 Then Begin VBar(X,Y+1,X,Y+H-2);VBar(X+W-1,Y+1,X+W-1,Y+H-2);End;
+ VP^.WrMode:=WM_REPL;
+End;
+
+{ Deplace un rectangle jusqu'au relachement du bouton }
+Procedure DragBox(W,H,SX,SY: Integer; Const Bound: TRect; Var RX,RY: Integer);
+Var OXx,OYy,NXx,NYy,DX,DY: Integer; Drawn: Boolean;
+Begin
+ DX:=GMouseX-SX;DY:=GMouseY-SY;
+ OXx:=SX;OYy:=SY;
+ XorFrame(OXx,OYy,W,H);Drawn:=True;
+ While ((GMouseB And 1)<>0) And Not UserBreak Do Begin
+  GemIdle;
+  NXx:=Clamp(GMouseX-DX,Bound.X,Max2(Bound.X,Bound.X+Bound.W-W));
+  NYy:=Clamp(GMouseY-DY,Bound.Y,Max2(Bound.Y,Bound.Y+Bound.H-H));
+  If (NXx<>OXx) Or (NYy<>OYy) Then Begin
+   XorFrame(OXx,OYy,W,H);
+   OXx:=NXx;OYy:=NYy;
+   XorFrame(OXx,OYy,W,H);
+  End;
+ End;
+ XorFrame(OXx,OYy,W,H);
+ RX:=OXx;RY:=OYy;
+End;
+
+Procedure RubberBox(X,Y,MinW,MinH: Integer; Var RW,RH: Integer);
+Var NW,NH,OW_,OH_: Integer;
+Begin
+ OW_:=Max2(MinW,1);OH_:=Max2(MinH,1);
+ XorFrame(X,Y,OW_,OH_);
+ While ((GMouseB And 1)<>0) And Not UserBreak Do Begin
+  GemIdle;
+  NW:=Max2(MinW,GMouseX-X+1);NH:=Max2(MinH,GMouseY-Y+1);
+  If (NW<>OW_) Or (NH<>OH_) Then Begin
+   XorFrame(X,Y,OW_,OH_);OW_:=NW;OH_:=NH;XorFrame(X,Y,OW_,OH_);
+  End;
+ End;
+ XorFrame(X,Y,OW_,OH_);
+ RW:=OW_;RH:=OH_;
+End;
+
+Procedure GrowShrink(Const A,B: TRect);
+Var I: Integer; R: TRect;
+Begin
+ For I:=1 To 6 Do Begin
+  R.X:=A.X+(B.X-A.X)*I Div 6;R.Y:=A.Y+(B.Y-A.Y)*I Div 6;
+  R.W:=A.W+(B.W-A.W)*I Div 6;R.H:=A.H+(B.H-A.H)*I Div 6;
+  XorFrame(R.X,R.Y,R.W,R.H);
+  If Not BatchMode Then Begin BlitScreen(False);Delay(8);End;
+  XorFrame(R.X,R.Y,R.W,R.H);
+ End;
+ If Not BatchMode Then BlitScreen(False);
+End;
+
+{ Surveille un objet pendant que le bouton est enfonce }
+Function WatchBox(T: LongInt; Obj,InSt,OutSt: Integer): Boolean;
+Var Inside,Was: Boolean; X,Y: Integer;
+Begin
+ ObjOffset(T,Obj,X,Y);
+ Was:=True;
+ SetOState(T,Obj,InSt);ObjRedraw(T,Obj);
+ While ((GMouseB And 1)<>0) And Not UserBreak Do Begin
+  GemIdle;
+  Inside:=InRect(GMouseX,GMouseY,RectMake(X,Y,OW(T,Obj),OH(T,Obj)));
+  If Inside<>Was Then Begin
+   If Inside Then SetOState(T,Obj,InSt) Else SetOState(T,Obj,OutSt);
+   ObjRedraw(T,Obj);
+   Was:=Inside;
+  End;
+ End;
+ WatchBox:=Was;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Fenetres : operations                                                    }
+{ ---------------------------------------------------------------------- }
+
+Function WinCreate(Kind: Integer; Const Full: TRect): Integer;
+Var H: Integer;
+Begin
+ WinCreate:=-1;
+ For H:=1 To MAXWIN-1 Do
+  If Not Wins[H].Used Then Begin
+   FillChar(Wins[H],SizeOf(TWin),0);
+   Wins[H].Used:=True;Wins[H].Kind:=Kind;Wins[H].Owner:=CurProc;
+   Wins[H].Full:=Full;Wins[H].R:=Full;Wins[H].Prev:=Full;
+   Wins[H].HSl:=0;Wins[H].VSl:=0;Wins[H].HSz:=-1;Wins[H].VSz:=-1;
+   WinCreate:=H;
+   Exit;
+  End;
+End;
+
+Procedure WinOpen(H: Integer; R: TRect);
+Begin
+ If (H<1) Or (H>=MAXWIN) Or Not Wins[H].Used Or Wins[H].Open Then Exit;
+ If R.X<0 Then R.X:=0;If R.Y<MenuH Then R.Y:=MenuH;
+ If R.X+R.W>SW Then R.W:=SW-R.X;
+ If R.Y+R.H>SH Then R.H:=SH-R.Y;
+ Wins[H].R:=R;Wins[H].Prev:=R;Wins[H].Open:=True;
+ ZToTop(H);
+ GrowShrink(RectMake(R.X+R.W Div 2,R.Y+R.H Div 2,2,2),R);
+ Repaint(R,True);
+End;
+
+Procedure WinClose(H: Integer);
+Var R: TRect;
+Begin
+ If (H<1) Or (H>=MAXWIN) Or Not Wins[H].Open Then Exit;
+ R:=Wins[H].R;
+ GrowShrink(R,RectMake(R.X+R.W Div 2,R.Y+R.H Div 2,2,2));
+ Wins[H].Open:=False;
+ ZRemove(H);
+ Repaint(R,True);
+End;
+
+Procedure WinDelete(H: Integer);
+Begin
+ If (H<1) Or (H>=MAXWIN) Then Exit;
+ If Wins[H].Open Then WinClose(H);
+ Wins[H].Used:=False;
+End;
+
+Procedure WinSetRect(H: Integer; R: TRect);
+Var Old,U: TRect; Sz: Boolean;
+Begin
+ If (H<1) Or (H>=MAXWIN) Or Not Wins[H].Used Then Exit;
+ Old:=Wins[H].R;
+ Wins[H].Prev:=Old;
+ Wins[H].R:=R;
+ If Wins[H].Open Then Begin
+  { zone anciennement couverte, non recouverte par la nouvelle : redessin
+    complet ; la fenetre elle-meme : redessinee avec contenu }
+  Repaint(Old,True);
+  Repaint(R,True);
+ End;
+End;
+
+Procedure WinTop(H: Integer);
+Var OldTop: Integer;
+Begin
+ If (H<1) Or (H>=MAXWIN) Or Not Wins[H].Open Then Exit;
+ If TopWin=H Then Exit;
+ ZToTop(H);
+ Repaint(Wins[H].R,True);
+End;
+
+Function WinFind(X,Y: Integer): Integer;
+Var I,H: Integer;
+Begin
+ WinFind:=0;
+ For I:=1 To NWZ Do Begin
+  H:=WZ[I];
+  If Wins[H].Open And InRect(X,Y,Wins[H].R) Then Begin WinFind:=H;Exit;End;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Gestionnaire d'ecran : clics sur les cadres des fenetres                 }
+{ ---------------------------------------------------------------------- }
+
+{ Bouton de fenetre : inverse tant que le bouton est enfonce ; True si relache dedans }
+Function WatchBoxRect(X,Y,W,H: Integer): Boolean;
+Var Inside,Was: Boolean;
+Begin
+ Was:=True;
+ OSetup;SetClip(0,0,SW-1,SH-1);VP^.FillInt:=1;VP^.FillCol:=1;VP^.WrMode:=WM_XOR;
+ VBar(X,Y,X+W-1,Y+H-1);
+ While ((GMouseB And 1)<>0) And Not UserBreak Do Begin
+  GemIdle;
+  Inside:=InRect(GMouseX,GMouseY,RectMake(X,Y,W,H));
+  If Inside<>Was Then Begin
+   OSetup;VP^.FillInt:=1;VP^.FillCol:=1;VP^.WrMode:=WM_XOR;
+   VBar(X,Y,X+W-1,Y+H-1);Was:=Inside;
+  End;
+ End;
+ If Was Then Begin OSetup;VP^.FillInt:=1;VP^.FillCol:=1;VP^.WrMode:=WM_XOR;VBar(X,Y,X+W-1,Y+H-1);End;
+ OSetup;
+ WatchBoxRect:=Was;
+End;
+
+Procedure SliderMsg(H: Integer; Vert: Boolean);
+Var W: ^TWin; Wk: TRect; K,X1,Y1,X2,Y2,Track,SlLen,SlPos,Pos0,Off,Sz: Integer; Pos: LongInt; Start: Integer;
+    Done: Boolean; DX,DY: Integer; NewPos: Integer;
+Begin
+ W:=@Wins[H];Wk:=WinWork(H);K:=W^.Kind;
+ If Vert Then Begin
+  Y1:=Wk.Y;Y2:=Wk.Y+Wk.H-1;
+  If (K And UPARROW_)<>0 Then Y1:=Y1+WSCROLL;
+  If (K And DNARROW_)<>0 Then Y2:=Y2-WSCROLL;
+  Track:=Y2-Y1+1;
+  If W^.VSz<=0 Then SlLen:=Track Else SlLen:=Max2(WSCROLL,Track*W^.VSz Div 1000);
+  SlPos:=(Track-SlLen)*Clamp(W^.VSl,0,1000) Div 1000;
+  Off:=GMouseY-(Y1+SlPos);
+  Start:=GMouseY;
+ End Else Begin
+  X1:=Wk.X;X2:=Wk.X+Wk.W-1;
+  If (K And LFARROW_)<>0 Then X1:=X1+WSCROLL;
+  If (K And RTARROW_)<>0 Then X2:=X2-WSCROLL;
+  Track:=X2-X1+1;
+  If W^.HSz<=0 Then SlLen:=Track Else SlLen:=Max2(WSCROLL,Track*W^.HSz Div 1000);
+  SlPos:=(Track-SlLen)*Clamp(W^.HSl,0,1000) Div 1000;
+  Off:=GMouseX-(X1+SlPos);
+ End;
+ While ((GMouseB And 1)<>0) And Not UserBreak Do GemIdle;
+ If Vert Then Begin
+  Pos:=GMouseY-Off-Y1;
+  If Track-SlLen>0 Then NewPos:=Clamp(Pos*1000 Div (Track-SlLen),0,1000) Else NewPos:=0;
+  PostMsg(W^.Owner,WM_VSLID,H,NewPos,0,0,0,0);
+ End Else Begin
+  Pos:=GMouseX-Off-X1;
+  If Track-SlLen>0 Then NewPos:=Clamp(Pos*1000 Div (Track-SlLen),0,1000) Else NewPos:=0;
+  PostMsg(W^.Owner,WM_HSLID,H,NewPos,0,0,0,0);
+ End;
+End;
+
+{ Traite un appui sur le bouton gauche ; retourne True si le clic est consomme }
+Function ScreenManagerClick: Boolean;
+Var H,K,Z: Integer; W: ^TWin; R,Wk: TRect; X,Y,NX,NY,NW,NH,RW,RH: Integer; Bound: TRect; Ok: Boolean;
+    X1,Y1,X2,Y2,Arrow,Own: Integer; SlLen,Track,SlPos: Integer;
+Begin
+ ScreenManagerClick:=False;
+ X:=GMouseX;Y:=GMouseY;
+ If (MenuTree<>0) And (Y<MenuH) Then Begin
+  ScreenManagerClick:=True;Exit;
+ End;
+ H:=WinFind(X,Y);
+ If H=0 Then Exit;
+ W:=@Wins[H];K:=W^.Kind;R:=W^.R;Wk:=WinWork(H);
+ Own:=W^.Owner;
+ If InRect(X,Y,Wk) Then Begin
+  If TopWin<>H Then Begin
+   PostMsg(Own,WM_TOPPED,H,0,0,0,0,0);
+   ScreenManagerClick:=True;
+  End;
+  Exit;
+ End;
+ ScreenManagerClick:=True;
+ If TopWin<>H Then Begin PostMsg(Own,WM_TOPPED,H,0,0,0,0,0);Exit;End;
+ { barre de titre }
+ If HasTitle(K) And (Y<R.Y+WTITLE_H) Then Begin
+  If ((K And CLOSER_)<>0) And (X<R.X+WSCROLL) Then Begin
+   Ok:=WatchBoxRect(R.X+1,R.Y+1,WSCROLL-1,WTITLE_H-1);
+   If Ok Then PostMsg(Own,WM_CLOSED,H,0,0,0,0,0);
+   Exit;
+  End;
+  If ((K And FULLER_)<>0) And (X>=R.X+R.W-WSCROLL) Then Begin
+   Ok:=WatchBoxRect(R.X+R.W-WSCROLL+1,R.Y+1,WSCROLL-1,WTITLE_H-1);
+   If Ok Then PostMsg(Own,WM_FULLED,H,0,0,0,0,0);
+   Exit;
+  End;
+  If (K And MOVER_)<>0 Then Begin
+   Bound:=RectMake(0,MenuH,SW,SH-MenuH);
+   DragBox(R.W,R.H,R.X,R.Y,RectMake(-R.W+40,MenuH,SW+R.W-80,SH),NX,NY);
+   If (NX<>R.X) Or (NY<>R.Y) Then PostMsg(Own,WM_MOVED,H,NX,NY,R.W,R.H,0);
+  End;
+  Exit;
+ End;
+ { barres de defilement }
+ If HasVBar(K) And (X>=Wk.X+Wk.W) And (X<Wk.X+Wk.W+WSCROLL) And (Y>=Wk.Y) And (Y<Wk.Y+Wk.H) Then Begin
+  Y1:=Wk.Y;Y2:=Wk.Y+Wk.H-1;
+  If ((K And UPARROW_)<>0) And (Y<Y1+WSCROLL) Then Begin
+   Ok:=WatchBoxRect(Wk.X+Wk.W+1,Wk.Y,WSCROLL-1,WSCROLL);
+   If Ok Then PostMsg(Own,WM_ARROWED,H,2,0,0,0,0);Exit;
+  End;
+  If ((K And DNARROW_)<>0) And (Y>Y2-WSCROLL) Then Begin
+   Ok:=WatchBoxRect(Wk.X+Wk.W+1,Y2-WSCROLL+1,WSCROLL-1,WSCROLL);
+   If Ok Then PostMsg(Own,WM_ARROWED,H,3,0,0,0,0);Exit;
+  End;
+  If (K And UPARROW_)<>0 Then Y1:=Y1+WSCROLL;
+  If (K And DNARROW_)<>0 Then Y2:=Y2-WSCROLL;
+  If (K And VSLIDE_)<>0 Then Begin
+   Track:=Y2-Y1+1;
+   If W^.VSz<=0 Then SlLen:=Track Else SlLen:=Max2(WSCROLL,Track*W^.VSz Div 1000);
+   SlPos:=(Track-SlLen)*Clamp(W^.VSl,0,1000) Div 1000;
+   If (Y>=Y1+SlPos) And (Y<Y1+SlPos+SlLen) Then SliderMsg(H,True)
+   Else If Y<Y1+SlPos Then PostMsg(Own,WM_ARROWED,H,0,0,0,0,0)
+   Else PostMsg(Own,WM_ARROWED,H,1,0,0,0,0);
+   WaitButtonRelease;
+  End;
+  Exit;
+ End;
+ If HasHBar(K) And (Y>=Wk.Y+Wk.H) And (Y<Wk.Y+Wk.H+WSCROLL) And (X>=Wk.X) And (X<Wk.X+Wk.W) Then Begin
+  X1:=Wk.X;X2:=Wk.X+Wk.W-1;
+  If ((K And LFARROW_)<>0) And (X<X1+WSCROLL) Then Begin
+   Ok:=WatchBoxRect(Wk.X,Wk.Y+Wk.H+1,WSCROLL,WSCROLL-1);
+   If Ok Then PostMsg(Own,WM_ARROWED,H,6,0,0,0,0);Exit;
+  End;
+  If ((K And RTARROW_)<>0) And (X>X2-WSCROLL) Then Begin
+   Ok:=WatchBoxRect(X2-WSCROLL+1,Wk.Y+Wk.H+1,WSCROLL,WSCROLL-1);
+   If Ok Then PostMsg(Own,WM_ARROWED,H,7,0,0,0,0);Exit;
+  End;
+  If (K And LFARROW_)<>0 Then X1:=X1+WSCROLL;
+  If (K And RTARROW_)<>0 Then X2:=X2-WSCROLL;
+  If (K And HSLIDE_)<>0 Then Begin
+   Track:=X2-X1+1;
+   If W^.HSz<=0 Then SlLen:=Track Else SlLen:=Max2(WSCROLL,Track*W^.HSz Div 1000);
+   SlPos:=(Track-SlLen)*Clamp(W^.HSl,0,1000) Div 1000;
+   If (X>=X1+SlPos) And (X<X1+SlPos+SlLen) Then SliderMsg(H,False)
+   Else If X<X1+SlPos Then PostMsg(Own,WM_ARROWED,H,4,0,0,0,0)
+   Else PostMsg(Own,WM_ARROWED,H,5,0,0,0,0);
+   WaitButtonRelease;
+  End;
+  Exit;
+ End;
+ { coin de redimensionnement }
+ If ((K And SIZER_)<>0) And (X>=R.X+R.W-WSCROLL) And (Y>=R.Y+R.H-WSCROLL) Then Begin
+  RubberBox(R.X,R.Y,80,60,RW,RH);
+  If (RW<>R.W) Or (RH<>R.H) Then PostMsg(Own,WM_SIZED,H,R.X,R.Y,RW,RH,0);
+ End;
+End;
+
+{ ====================================================================== }
+{                  GEM : AES - FORMULAIRES ET API                        }
+{ ====================================================================== }
+
+{ ---------------------------------------------------------------------- }
+{ form_alert                                                               }
+{ ---------------------------------------------------------------------- }
+
+Procedure DrawAlertIcon(X,Y,Ic: Integer);
+Var I: Integer;
+Begin
+ OSetup;SetClip(0,0,SW-1,SH-1);
+ Case Ic Of
+  1: Begin
+      For I:=0 To 28 Do FastSpan(Y+2+I,X+16-I Div 2,X+16+I Div 2,False,False);
+      LinePhase:=0;VP^.LineCol:=1;VP^.LineWidth:=2;
+      VLine(X+16,Y+2,X+2,Y+30);VLine(X+16,Y+2,X+30,Y+30);VLine(X+2,Y+30,X+30,Y+30);
+      VP^.LineWidth:=1;
+      OText(X+12,Y+14,'!',16,1,False);
+     End;
+  2: Begin
+      VP^.FillInt:=0;VP^.FillPer:=1;VArc(X+16,Y+16,15,15,0,3600,2);VP^.FillPer:=0;
+      OText(X+12,Y+8,'?',16,1,False);
+     End;
+  3: Begin
+      VP^.FillInt:=1;VP^.FillCol:=1;
+      PX[0]:=X+10;PY[0]:=Y;PX[1]:=X+22;PY[1]:=Y;PX[2]:=X+32;PY[2]:=Y+10;PX[3]:=X+32;PY[3]:=Y+22;
+      PX[4]:=X+22;PY[4]:=Y+32;PX[5]:=X+10;PY[5]:=Y+32;PX[6]:=X;PY[6]:=Y+22;PX[7]:=X;PY[7]:=Y+10;
+      PolyFillPts(8,PX,PY,True);
+      OText(X+12,Y+8,'X',16,0,False);
+     End;
+ End;
+End;
+
+Function FormAlert(Def: Integer; Const Txt: String): Integer;
+Var Lines: Array[1..6] Of String; Btns: Array[1..4] Of String; NL,NB,I,P,Ic,W,H,X0,Y0,BW,TX,BX,Sel,Res: Integer;
+    S,Cur: String; Part: Integer; Sv: TScrSave; Done: Boolean; K: LongInt; PrevDown: Boolean;
+    Rc: Array[1..4] Of TRect; Mx,My: Integer;
+Begin
+ NL:=0;NB:=0;Ic:=0;Part:=0;
+ I:=1;
+ While I<=Length(Txt) Do Begin
+  If Txt[I]='[' Then Begin
+   Inc(Part);Cur:='';Inc(I);
+   While (I<=Length(Txt)) And (Txt[I]<>']') Do Begin Cur:=Cur+Txt[I];Inc(I);End;
+   Case Part Of
+    1: Ic:=ToInt(Cur);
+    2: While (Cur<>'') And (NL<6) Do Begin
+        P:=Pos('|',Cur);Inc(NL);
+        If P=0 Then Begin Lines[NL]:=Cur;Cur:='';End Else Begin Lines[NL]:=Copy(Cur,1,P-1);Delete(Cur,1,P);End;
+       End;
+    3: While (Cur<>'') And (NB<4) Do Begin
+        P:=Pos('|',Cur);Inc(NB);
+        If P=0 Then Begin Btns[NB]:=Cur;Cur:='';End Else Begin Btns[NB]:=Copy(Cur,1,P-1);Delete(Cur,1,P);End;
+       End;
+   End;
+  End;
+  Inc(I);
+ End;
+ If NB=0 Then Begin NB:=1;Btns[1]:='OK';End;
+ BW:=0;
+ For I:=1 To NB Do If Length(Btns[I])*8+16>BW Then BW:=Length(Btns[I])*8+16;
+ W:=0;
+ For I:=1 To NL Do If Length(Lines[I])*8>W Then W:=Length(Lines[I])*8;
+ If Ic>0 Then TX:=64 Else TX:=16;
+ W:=TX+W+16;
+ If NB*(BW+16)+16>W Then W:=NB*(BW+16)+16;
+ H:=Max2(NL*16,32)+16+8+24+24;
+ X0:=(SW-W) Div 2;Y0:=(SH-H) Div 2;
+ ScrSave(X0-2,Y0-2,X0+W+6,Y0+H+6,Sv);
+ OSetup;SetClip(0,0,SW-1,SH-1);
+ OFill(X0+4,Y0+4,X0+W+3,Y0+H+3,7,1);
+ OFill(X0,Y0,X0+W-1,Y0+H-1,0,0);
+ OBorder(X0,Y0,W,H,3,1);OBorder(X0+4,Y0+4,W-8,H-8,1,1);
+ If Ic>0 Then DrawAlertIcon(X0+16,Y0+16,Ic);
+ For I:=1 To NL Do OText(X0+TX,Y0+16+(I-1)*16,Lines[I],16,1,False);
+ BX:=X0+(W-NB*(BW+16)+16) Div 2;
+ If Def<1 Then Def:=0;
+ For I:=1 To NB Do Begin
+  Rc[I]:=RectMake(BX+(I-1)*(BW+16),Y0+H-40,BW,22);
+ End;
+ Sel:=Def;
+ Done:=False;Res:=Max2(1,Def);
+ For I:=1 To NB Do Begin
+  OSetup;SetClip(0,0,SW-1,SH-1);
+  OFill(Rc[I].X,Rc[I].Y,Rc[I].X+Rc[I].W-1,Rc[I].Y+Rc[I].H-1,0,0);
+  If I=Def Then OBorder(Rc[I].X,Rc[I].Y,Rc[I].W,Rc[I].H,3,1) Else OBorder(Rc[I].X,Rc[I].Y,Rc[I].W,Rc[I].H,1,1);
+  OText(Rc[I].X+(BW-Length(Btns[I])*8) Div 2,Rc[I].Y+3,Btns[I],16,1,False);
+ End;
+ If Not BatchMode Then BlitScreen(False);
+ If BatchMode Then Begin Done:=True;Res:=Max2(1,Def);End;
+ PrevDown:=True;
+ Inc(ModalLevel);
+ While Not Done And Not UserBreak Do Begin
+  GemIdle;
+  If Not KQEmpty Then Begin
+   K:=KQPop;
+   If (K And $FF)=13 Then Begin Res:=Max2(1,Def);Done:=True;End;
+  End;
+  If ((GMouseB And 1)<>0) And Not PrevDown Then Begin
+   For I:=1 To NB Do
+    If InRect(GMouseX,GMouseY,Rc[I]) Then Begin
+     OSetup;VP^.FillInt:=1;VP^.FillCol:=1;VP^.WrMode:=WM_XOR;
+     VBar(Rc[I].X,Rc[I].Y,Rc[I].X+Rc[I].W-1,Rc[I].Y+Rc[I].H-1);
+     OSetup;
+     If Not BatchMode Then BlitScreen(False);
+     WaitButtonRelease;
+     Res:=I;Done:=True;
+    End;
+  End;
+  PrevDown:=(GMouseB And 1)<>0;
+ End;
+ Dec(ModalLevel);
+ ScrRestore(Sv);
+ If Not BatchMode Then BlitScreen(False);
+ FormAlert:=Res;
+End;
+
+Function FormErrorText(N: Integer): String;
+Begin
+ Case N Of
+  2,18: FormErrorText:='[1][This application cannot find the|folder or file you tried to access.][ OK ]';
+  3: FormErrorText:='[1][This application cannot find the|folder you tried to access.][ OK ]';
+  4: FormErrorText:='[1][This application has run out of|file handles.][ OK ]';
+  5: FormErrorText:='[1][You cannot access this item.][ OK ]';
+  8: FormErrorText:='[1][There is not enough memory to|run this application.][ OK ]';
+  15: FormErrorText:='[1][The drive you specified does not|exist.][ OK ]';
+ Else FormErrorText:='[3][An error occurred (TOS error '+IntStr(N)+').][ OK ]';
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ form_do                                                                  }
+{ ---------------------------------------------------------------------- }
+
+Function NextEditable(T: LongInt; Cur,Dir: Integer): Integer;
+Var I,Cnt,N: Integer;
+Begin
+ NextEditable:=-1;
+ N:=0;
+ Repeat
+  Inc(N);If N>2000 Then Exit;
+  Cur:=Cur+Dir;
+  If (Cur<0) Then Cur:=0;
+  If (Cur>=0) And ((OFlags(T,Cur) And OF_EDITABLE)<>0) And ((OFlags(T,Cur) And OF_HIDETREE)=0) Then Begin
+   NextEditable:=Cur;Exit;
+  End;
+  If (Dir>0) And ((OFlags(T,Cur) And OF_LASTOB)<>0) Then Begin
+   { reprend au debut }
+   Cur:=-1;
+   If N>1 Then Begin
+    For I:=0 To 2000 Do Begin
+     If ((OFlags(T,I) And OF_EDITABLE)<>0) Then Begin NextEditable:=I;Exit;End;
+     If (OFlags(T,I) And OF_LASTOB)<>0 Then Break;
+    End;
+    Exit;
+   End;
+  End;
+  If (Dir<0) And (Cur=0) Then Begin
+   For I:=0 To 2000 Do Begin
+    If ((OFlags(T,I) And OF_EDITABLE)<>0) Then NextEditable:=I;
+    If (OFlags(T,I) And OF_LASTOB)<>0 Then Break;
+   End;
+   Exit;
+  End;
+ Until False;
+End;
+
+Function FormDo(T: LongInt; Start: Integer): Integer;
+Var Cur,Idx,Obj,I,Ex,P,Def,Nx: Integer; K: LongInt; Fl,St: Integer; Done: Boolean; PrevDown: Boolean;
+    X,Y: Integer; Res: Integer; Cl: Integer; Sib: Integer; Sel,Inside: Boolean; Mx: Integer;
+    CharX,Tmplpos: Integer;
+Begin
+ Inc(ModalLevel);
+ Def:=-1;
+ For I:=0 To 2000 Do Begin
+  If ((OFlags(T,I) And OF_DEFAULT)<>0) And (Def<0) Then Def:=I;
+  If (OFlags(T,I) And OF_LASTOB)<>0 Then Break;
+ End;
+ Cur:=-1;
+ If (Start>0) And ((OFlags(T,Start) And OF_EDITABLE)<>0) Then Cur:=Start
+ Else Cur:=NextEditable(T,0,1);
+ If (Cur=0) Then Cur:=-1;
+ If Cur>0 Then ObjEdit(T,Cur,0,Idx,0);
+ Done:=False;Res:=0;PrevDown:=True;
+ If BatchMode Then Begin
+  If Def>0 Then Res:=Def Else Res:=0;
+  Done:=True;
+ End;
+ While Not Done And Not UserBreak Do Begin
+  GemIdle;
+  If Not KQEmpty Then Begin
+   K:=KQPop;
+   If ((K And $FF)=13) And (Def>0) Then Begin
+    Res:=Def;
+    SetOState(T,Res,OState(T,Res) Or OS_SELECTED);ObjRedraw(T,Res);
+    Done:=True;
+   End Else If (K And $FF)=9 Then Begin
+    If Cur>0 Then Begin
+     ObjEdit(T,Cur,0,Idx,3);
+     Nx:=NextEditable(T,Cur,1);If Nx>0 Then Cur:=Nx;
+     ObjEdit(T,Cur,0,Idx,0);
+    End;
+   End Else If ((K Shr 16) And $FF=$50) And ((K And $FF)=0) And (Cur>0) Then Begin
+    ObjEdit(T,Cur,0,Idx,3);Nx:=NextEditable(T,Cur,1);If Nx>0 Then Cur:=Nx;ObjEdit(T,Cur,0,Idx,0);
+   End Else If ((K Shr 16) And $FF=$48) And ((K And $FF)=0) And (Cur>0) Then Begin
+    ObjEdit(T,Cur,0,Idx,3);Nx:=NextEditable(T,Cur,-1);If Nx>0 Then Cur:=Nx;ObjEdit(T,Cur,0,Idx,0);
+   End Else If Cur>0 Then
+    ObjEdit(T,Cur,((K Shr 16) And $FF) Shl 8 Or (K And $FF),Idx,1);
+  End;
+  If ((GMouseB And 1)<>0) And Not PrevDown Then Begin
+   Obj:=ObjFind(T,0,8,GMouseX,GMouseY);
+   If (Obj>0) And ((OState(T,Obj) And OS_DISABLED)=0) Then Begin
+    Fl:=OFlags(T,Obj);Cl:=ClickCount;
+    If ((Fl And OF_EDITABLE)<>0) And (Obj<>Cur) And ((Fl And (OF_SELECTABLE Or OF_EXIT Or OF_TOUCHEXIT))=0) Then Begin
+     If Cur>0 Then ObjEdit(T,Cur,0,Idx,3);
+     Cur:=Obj;ObjEdit(T,Cur,0,Idx,0);
+    End Else If (Fl And OF_EDITABLE)<>0 Then Begin
+     { position du curseur d'apres le clic }
+     If Cur>0 Then ObjEdit(T,Cur,0,Idx,3);
+     Cur:=Obj;ObjEdit(T,Cur,0,Idx,0);
+     ObjOffset(T,Obj,X,Y);
+     Idx:=Clamp((GMouseX-EditCursorX(T,Obj,0)) Div 8,0,Idx);
+     ObjRedraw(T,Obj);EditDrawCursor(T,Obj,Idx);
+    End;
+    If (Fl And OF_SELECTABLE)<>0 Then Begin
+     If (Fl And OF_RBUTTON)<>0 Then Begin
+      If (OState(T,Obj) And OS_SELECTED)=0 Then Begin
+       P:=OParent(T,Obj);
+       If P>=0 Then Begin
+        Sib:=OHead(T,P);
+        While Sib>=0 Do Begin
+         If (Sib<>Obj) And ((OFlags(T,Sib) And OF_RBUTTON)<>0) And ((OState(T,Sib) And OS_SELECTED)<>0) Then Begin
+          SetOState(T,Sib,OState(T,Sib) And Not OS_SELECTED);ObjRedraw(T,Sib);
+         End;
+         If Sib=OTail(T,P) Then Break;
+         Sib:=ONext(T,Sib);
+        End;
+       End;
+       SetOState(T,Obj,OState(T,Obj) Or OS_SELECTED);ObjRedraw(T,Obj);
+      End;
+      If Not BatchMode Then BlitScreen(False);
+      WaitButtonRelease;
+     End Else Begin
+      St:=OState(T,Obj);
+      If (Fl And OF_TOUCHEXIT)<>0 Then Begin
+       SetOState(T,Obj,St Xor OS_SELECTED);ObjRedraw(T,Obj);
+      End Else Begin
+       Inside:=WatchBox(T,Obj,St Xor OS_SELECTED,St);
+       If Not Inside Then SetOState(T,Obj,St) Else SetOState(T,Obj,St Xor OS_SELECTED);
+       ObjRedraw(T,Obj);
+      End;
+     End;
+    End;
+    If ((Fl And OF_EXIT)<>0) Or ((Fl And OF_TOUCHEXIT)<>0) Then Begin
+     If ((Fl And OF_SELECTABLE)=0) Or ((OState(T,Obj) And OS_SELECTED)<>0) Or ((Fl And OF_TOUCHEXIT)<>0) Then Begin
+      Res:=Obj;If Cl>=2 Then Res:=Res Or $8000;
+      Done:=True;
+     End;
+    End;
+   End;
+  End;
+  PrevDown:=(GMouseB And 1)<>0;
+ End;
+ If Cur>0 Then ObjEdit(T,Cur,0,Idx,3);
+ Dec(ModalLevel);
+ FormDo:=Res;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Selecteur de fichiers                                                    }
+{ ---------------------------------------------------------------------- }
+
+Function AesFsel(PathAddr,FileAddr: LongInt; Const Title: String): Boolean;
+Var Path,Sel,Mask,Dir: String; I,P: Integer; Full: String; Ok: Boolean;
+Begin
+ AesFsel:=False;
+ Path:=RdStr(PathAddr,120);
+ Sel:=RdStr(FileAddr,14);
+ P:=Length(Path);
+ While (P>0) And (Path[P]<>'\') And (Path[P]<>'/') And (Path[P]<>':') Do Dec(P);
+ Dir:=Copy(Path,1,P);Mask:=Copy(Path,P+1,40);
+ If Mask='' Then Mask:='*.*';
+ If BatchMode Then Exit;
+ Full:=HostPath(Dir)+Sel;
+ If (Dir='') Or (Length(Dir)<=3) Then Full:=Sel;
+ HideMouse;
+ Ok:=FileSelect(Title,Mask,Full);
+ BlitScreen(True);
+ If Ok Then Begin
+  P:=Length(Full);
+  While (P>0) And (Full[P]<>'\') And (Full[P]<>'/') Do Dec(P);
+  If P>0 Then Begin
+   Dir:=Copy(Full,1,P);
+   WrStr(PathAddr,Dir+Mask);
+  End;
+  WrStr(FileAddr,Upper(Copy(Full,P+1,12)));
+  AesFsel:=True;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Gestion des processus et de l'ordonnancement                             }
+{ ---------------------------------------------------------------------- }
+
+Procedure SaveCtx(P: Integer);
+Begin
+ Move(Rg,Procs[P].Rgs,SizeOf(Rg));
+ Procs[P].PCs:=PC;Procs[P].SRs:=SRv;Procs[P].USPs:=USPv;Procs[P].SSPs:=SSPv;
+End;
+
+Procedure LoadCtx(P: Integer);
+Begin
+ Move(Procs[P].Rgs,Rg,SizeOf(Rg));
+ PC:=Procs[P].PCs;SRv:=Procs[P].SRs;USPv:=Procs[P].USPs;SSPv:=Procs[P].SSPs;
+End;
+
+Function ProcApName(Const Name: String): String;
+Var S: String; P: Integer;
+Begin
+ S:=Upper(ShortName(Name));
+ P:=Pos('.',S);
+ If P>0 Then S:=Copy(S,1,P-1);
+ ProcApName:=Copy(S,1,8);
+End;
+
+Function NewProc(Const Name: String; IsAcc: Boolean): Integer;
+Var I: Integer;
+Begin
+ NewProc:=-1;
+ For I:=0 To MAXPROC-1 Do
+  If Not Procs[I].Used Then Begin
+   FillChar(Procs[I],SizeOf(TProc),0);
+   Procs[I].Used:=True;Procs[I].IsAcc:=IsAcc;Procs[I].ApId:=I;
+   Procs[I].Name:=ProcApName(Name);Procs[I].MenuId:=-1;
+   NewProc:=I;Exit;
+  End;
+End;
+
+Procedure GemReset;
+Var I: Integer;
+Begin
+ FillChar(Wins,SizeOf(Wins),0);NWZ:=0;
+ FillChar(Procs,SizeOf(Procs),0);
+ CurProc:=0;MainProc:=0;
+ MenuTree:=0;MenuOwner:=0;MenuH:=19;MenuBar:=1;DeskTree:=0;DeskStart:=0;
+ For I:=0 To 5 Do Begin AccSlots[I]:=-1;AccProc[I]:=-1;AccStr[I]:=0;End;
+ UpdateLevel:=0;MCtrlLevel:=0;MCtrlOwner:=-1;ModalLevel:=0;
+ ClickCount:=0;DClickSpeed:=3;PrevB:=0;ButtonTaken:=False;MouseHidden:=0;
+ BtnLastTime:=0;RscLoaded:=False;
+ VdiInitTables;
+ FillChar(Vd,SizeOf(Vd),0);
+ Vd[0].Used:=True;VdiDefaults(Vd[0]);
+ Vd[1].Used:=True;VdiDefaults(Vd[1]);
+ SelVdi(0);
+ SetMouseShape(0);
+ ScrapDir:='C:\CLIPBRD';
+ ShelNext:='';ShelTail:='';
+ AesActive:=True;NoBlit:=False;
+End;
+
+{ Installe les noms des accessoires dans le menu Desk de l'arbre }
+Procedure InstallAccItems(T: LongInt);
+Var Screen,Box,N,K,I,C: Integer; Items: Array[0..63] Of Integer;
+Begin
+ For K:=0 To 5 Do AccSlots[K]:=-1;
+ Screen:=ONext(T,OHead(T,0));
+ If Screen<0 Then Exit;
+ Box:=OHead(T,Screen);
+ If Box<0 Then Exit;
+ N:=0;C:=OHead(T,Box);
+ While (C>=0) And (N<63) Do Begin
+  Items[N]:=C;Inc(N);
+  If C=OTail(T,Box) Then Break;
+  C:=ONext(T,C);
+ End;
+ If N<6 Then Exit;
+ For K:=0 To 5 Do Begin
+  I:=Items[N-6+K];
+  AccSlots[K]:=I;
+  If AccStr[K]<>0 Then Begin
+   Wr32(OA(T,I)+12,AccStr[K]);
+   SetOState(T,I,OState(T,I) And Not OS_DISABLED);
+  End;
+ End;
+End;
+
+Function RegisterAcc(P: Integer; Const Name: String): Integer;
+Var K: Integer; A: LongInt;
+Begin
+ RegisterAcc:=-1;
+ For K:=0 To 5 Do
+  If AccProc[K]<0 Then Begin
+   A:=DoMalloc(Length(Name)+2);
+   If A=0 Then Exit;
+   WrStr(A,Name);
+   AccStr[K]:=A;AccProc[K]:=P;
+   If (MenuTree<>0) And (AccSlots[K]>=0) Then Begin
+    Wr32(OA(MenuTree,AccSlots[K])+12,A);
+    SetOState(MenuTree,AccSlots[K],OState(MenuTree,AccSlots[K]) And Not OS_DISABLED);
+    RegisterAcc:=AccSlots[K];
+   End Else RegisterAcc:=K;
+   Procs[P].MenuId:=K;
+   Exit;
+  End;
+End;
+
+{ ====================================================================== }
+{                  GEM : AES - EVENEMENTS ET DISPATCHER                  }
+{ ====================================================================== }
+
+Var
+ PrevDbgX,PrevDbgY : LongInt;
+ LastRun    : Integer;
+ PressTime  : LongInt;
+ PressPending : Boolean;
+ SmPrevDown : Boolean;
+
+Function KeyOwnerWants(P: Integer): Boolean;
+Begin
+ KeyOwnerWants:=Procs[P].Used And Procs[P].Blocked And ((Procs[P].WFlags And 1)<>0);
+End;
+
+{ processus qui recoit les touches }
+Function KeyOwner: Integer;
+Var H,I: Integer;
+Begin
+ KeyOwner:=-1;
+ H:=TopWin;
+ If (H>0) And KeyOwnerWants(Wins[H].Owner) Then Begin KeyOwner:=Wins[H].Owner;Exit;End;
+ If KeyOwnerWants(MainProc) Then Begin KeyOwner:=MainProc;Exit;End;
+ For I:=0 To MAXPROC-1 Do If KeyOwnerWants(I) Then Begin KeyOwner:=I;Exit;End;
+End;
+
+Function ClickOwner: Integer;
+Var H: Integer;
+Begin
+ H:=WinFind(GMouseX,GMouseY);
+ If H=0 Then ClickOwner:=MainProc Else ClickOwner:=Wins[H].Owner;
+End;
+
+{ Ecrit les sorties d'un evenement termine ; True si l'attente est satisfaite }
+Function TryComplete(P: Integer): Boolean;
+Var Pr: ^TProc; Fl,Got,Cl: Integer; Io,Ai: LongInt; K: LongInt; Inside: Boolean; Now: LongInt;
+    KeyV,Btn: Integer; Kb: Boolean;
+ Procedure Out(I,V: Integer);
+ Begin
+  Wr16(Pr^.WIo+I*2,V And $FFFF);
+ End;
+Begin
+ TryComplete:=False;
+ Pr:=@Procs[P];
+ Fl:=Pr^.WFlags;Got:=0;Io:=Pr^.WIo;Ai:=Pr^.WAi;
+ KeyV:=0;Cl:=0;Btn:=GMouseB;
+ If BatchMode Then Begin
+  { pas d'interaction : on envoie un message de fermeture }
+  If (Fl And 1)<>0 Then Begin Got:=Got Or 1;KeyV:=27;End;
+  If (Fl And 16)<>0 Then Begin
+   Procs[P].QN:=0;PostMsg(P,WM_CLOSED,0,0,0,0,0,0);
+   PopMsg(P,Rd32(Ai));Got:=Got Or 16;
+  End;
+  If (Fl And 32)<>0 Then Got:=Got Or 32;
+  If Got=0 Then Got:=Fl;
+ End Else Begin
+  If ((Fl And 1)<>0) And (KeyOwner=P) And Not KQEmpty Then Begin
+   K:=KQPop;KeyV:=(((K Shr 16) And $FF) Shl 8) Or (K And $FF);Got:=Got Or 1;
+  End;
+  If (Fl And 2)<>0 Then Begin
+   If Not ButtonTaken And (ClickOwner=P) Then Begin
+    If (GMouseB And Pr^.WMask)=Pr^.WState Then Begin
+     If Pr^.WClicks<=1 Then Begin Got:=Got Or 2;Cl:=Max2(1,ClickCount);End
+     Else Begin
+      If ClickCount>=Pr^.WClicks Then Begin Got:=Got Or 2;Cl:=ClickCount;End
+      Else If (MsNow-BtnLastTime>LongInt(DClickSpeed)*80) Or ((GMouseB And Pr^.WMask)<>Pr^.WState) Then Begin
+       Got:=Got Or 2;Cl:=ClickCount;
+      End;
+     End;
+    End;
+   End;
+  End;
+  If (Fl And 4)<>0 Then Begin
+   Inside:=InRect(GMouseX,GMouseY,Pr^.WM1);
+   If Inside=(Pr^.WM1F=0) Then Got:=Got Or 4;
+  End;
+  If (Fl And 8)<>0 Then Begin
+   Inside:=InRect(GMouseX,GMouseY,Pr^.WM2);
+   If Inside=(Pr^.WM2F=0) Then Got:=Got Or 8;
+  End;
+  If ((Fl And 16)<>0) And (Pr^.QN>0) Then Begin
+   PopMsg(P,Rd32(Ai));Got:=Got Or 16;
+  End;
+  If ((Fl And 32)<>0) And (MsNow-Pr^.WDeadline>=0) Then Got:=Got Or 32;
+ End;
+ If Got=0 Then Exit;
+ TryComplete:=True;
+ Case Pr^.WOp Of
+  20: Out(0,KeyV);
+  21: Begin Out(0,Cl);Out(1,GMouseX);Out(2,GMouseY);Out(3,Btn);Out(4,0);End;
+  22: Begin Out(0,1);Out(1,GMouseX);Out(2,GMouseY);Out(3,Btn);Out(4,0);End;
+  23,11: Out(0,1);
+  24: Out(0,1);
+  26: Out(0,DClickSpeed);
+ Else Begin
+   Out(0,Got);Out(1,GMouseX);Out(2,GMouseY);Out(3,Btn);Out(4,0);Out(5,KeyV);Out(6,Cl);
+  End;
+ End;
+End;
+
+Procedure ScreenManager;
+Var Down: Boolean;
+Begin
+ If BatchMode Then Exit;
+ If AesTrace And ((GMouseX<>PrevDbgX) Or (GMouseY<>PrevDbgY)) Then Begin
+  PrevDbgX:=GMouseX;PrevDbgY:=GMouseY;
+  WriteLn(ConOut,'MOUSE ',GMouseX,' ',GMouseY,' b=',GMouseB,' menuH=',MenuH,' tree=',Hex8(MenuTree),' title=',MouseOnTitle);Flush(ConOut);
+ End;
+ Down:=(GMouseB And 1)<>0;
+ If Not Down Then ButtonTaken:=False;
+ If (MCtrlLevel>0) Or (ModalLevel>0) Then Begin SmPrevDown:=Down;Exit;End;
+ If MouseOnTitle And (GMouseB=0) And (Not ButtonTaken) Then Begin
+  MenuTrack;
+  SmPrevDown:=(GMouseB And 1)<>0;Exit;
+ End;
+ If MouseOnTitle And Down And Not SmPrevDown Then Begin
+  MenuTrack;SmPrevDown:=(GMouseB And 1)<>0;Exit;
+ End;
+ If Down And Not SmPrevDown And Not ButtonTaken Then Begin
+  If ScreenManagerClick Then ButtonTaken:=True;
+ End;
+ SmPrevDown:=Down;
+End;
+
+Procedure ResumeProc(P: Integer);
+Begin
+ If P<>CurProc Then LoadCtx(P);
+ CurProc:=P;
+ Procs[P].Blocked:=False;
+ LastRun:=P;
+End;
+
+{ Appele quand le programme courant bloque : traite les entrees jusqu'a ce
+  qu'un processus puisse reprendre }
+Procedure GemDispatch;
+Var N,P: Integer; Done: Boolean;
+Begin
+ Done:=False;
+ Repeat
+  PollInput;
+  SyncSysVars;
+  ScreenManager;
+  For N:=1 To MAXPROC Do Begin
+   P:=(LastRun+N) Mod MAXPROC;
+   If Procs[P].Used And Procs[P].Blocked Then
+    If TryComplete(P) Then Begin
+     ResumeProc(P);Done:=True;Break;
+    End;
+  End;
+  If Not Done Then Begin
+   If Not BatchMode Then Begin BlitScreen(False);Delay(1);End;
+  End;
+ Until Done Or UserBreak;
+ If Done Then StopReason:=STOP_NONE
+ Else If UserBreak Then StopReason:=STOP_USER;
+End;
+
+Procedure BlockProc(Op,Flags: Integer; Io,Ai,Ctl: LongInt);
+Begin
+ With Procs[CurProc] Do Begin
+  WOp:=Op;WFlags:=Flags;WIo:=Io;WAi:=Ai;WCtl:=Ctl;Blocked:=True;
+ End;
+ SaveCtx(CurProc);
+ StopReason:=STOP_YIELD;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Dispatcher AES (TRAP #2, D0 = $C8)                                       }
+{ ---------------------------------------------------------------------- }
+
+Procedure WindGet(H,Fld: Integer; Io: LongInt);
+Var W: ^TWin; R: TRect; I: Integer;
+ Procedure SetR(Const Rr: TRect);
+ Begin
+  Wr16(Io+2,Rr.X);Wr16(Io+4,Rr.Y);Wr16(Io+6,Rr.W);Wr16(Io+8,Rr.H);
+ End;
+Begin
+ Wr16(Io,1);
+ If (H<0) Or (H>=MAXWIN) Then Begin Wr16(Io,0);Exit;End;
+ W:=@Wins[H];
+ If H=0 Then Begin
+  Case Fld Of
+   4,5,7,17: SetR(RectMake(0,MenuH,SW,SH-MenuH));
+   10: Begin Wr16(Io+2,TopWin);If TopWin>0 Then Wr16(Io+4,Wins[TopWin].Owner) Else Wr16(Io+4,0);End;
+   14: Begin Wr16(Io+2,DeskTree Shr 16);Wr16(Io+4,DeskTree And $FFFF);Wr16(Io+6,DeskStart);End;
+  End;
+  If Fld=11 Then Begin
+   VisibleRects(0,RectMake(0,MenuH,SW,SH-MenuH));
+   If RectN>0 Then Begin SetR(RectList[1]);RectPos:=2;End Else Begin SetR(RectMake(0,0,0,0));End;
+  End Else If Fld=12 Then Begin
+   If RectPos<=RectN Then Begin SetR(RectList[RectPos]);Inc(RectPos);End Else SetR(RectMake(0,0,0,0));
+  End;
+  Exit;
+ End;
+ If Not W^.Used Then Begin Wr16(Io,0);Exit;End;
+ Case Fld Of
+  1: Wr16(Io+2,W^.Kind);
+  2: Begin Wr16(Io+2,W^.Name Shr 16);Wr16(Io+4,W^.Name And $FFFF);End;
+  3: Begin Wr16(Io+2,W^.Info Shr 16);Wr16(Io+4,W^.Info And $FFFF);End;
+  4: SetR(WinWork(H));
+  5: SetR(W^.R);
+  6: SetR(W^.Prev);
+  7: SetR(W^.Full);
+  8: Wr16(Io+2,W^.HSl);
+  9: Wr16(Io+2,W^.VSl);
+  10: Begin Wr16(Io+2,TopWin);If TopWin>0 Then Wr16(Io+4,Wins[TopWin].Owner);End;
+  11: Begin
+       R:=WinWork(H);
+       VisibleRects(H,R);
+       If RectN>0 Then Begin SetR(RectList[1]);RectPos:=2;End Else SetR(RectMake(0,0,0,0));
+      End;
+  12: Begin
+       If RectPos<=RectN Then Begin SetR(RectList[RectPos]);Inc(RectPos);End Else SetR(RectMake(0,0,0,0));
+      End;
+  15: Wr16(Io+2,W^.HSz);
+  16: Wr16(Io+2,W^.VSz);
+  17: SetR(RectMake(0,MenuH,SW,SH-MenuH));
+ End;
+End;
+
+Procedure WindSet(H,Fld: Integer; Ii: LongInt);
+Var W: ^TWin; R: TRect; V: Integer;
+ Function I(K: Integer): Integer;
+ Begin
+  I:=SExt(Rd16(Ii+K*2),2);
+ End;
+Begin
+ If H=0 Then Begin
+  If Fld=14 Then Begin
+   DeskTree:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);DeskStart:=I(4);
+   If DeskTree<>0 Then Repaint(RectMake(0,MenuH,SW,SH-MenuH),True);
+  End;
+  Exit;
+ End;
+ If (H<0) Or (H>=MAXWIN) Or Not Wins[H].Used Then Exit;
+ W:=@Wins[H];
+ Case Fld Of
+  1: Begin W^.Kind:=I(2) And $FFF;End;
+  2: Begin W^.Name:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);If W^.Open Then Repaint(W^.R,False);End;
+  3: Begin W^.Info:=(LongInt(Rd16(Ii+4)) Shl 16) Or Rd16(Ii+6);If W^.Open Then Repaint(W^.R,False);End;
+  5: Begin
+      R:=RectMake(I(2),I(3),I(4),I(5));
+      If R.W<80 Then R.W:=80;If R.H<60 Then R.H:=60;
+      If R.Y<MenuH Then R.Y:=MenuH;
+      WinSetRect(H,R);
+     End;
+  7: W^.Full:=RectMake(I(2),I(3),I(4),I(5));
+  8: Begin W^.HSl:=Clamp(I(2),0,1000);If W^.Open Then Repaint(W^.R,False);End;
+  9: Begin W^.VSl:=Clamp(I(2),0,1000);If W^.Open Then Repaint(W^.R,False);End;
+  10: WinTop(H);
+  15: Begin W^.HSz:=I(2);If W^.Open Then Repaint(W^.R,False);End;
+  16: Begin W^.VSz:=I(2);If W^.Open Then Repaint(W^.R,False);End;
+ End;
+End;
+
+Function NProcsUsed: Integer;
+Var I,N: Integer;
+Begin
+ N:=0;
+ For I:=0 To MAXPROC-1 Do If Procs[I].Used Then Inc(N);
+ NProcsUsed:=N;
+End;
+
+Procedure Aes(Pb: LongInt);
+Var Ctl,Glb,Ii,Io,Ai,Ao: LongInt; Op,I,J,K,H: Integer; S: String; T: LongInt; R,R2: TRect;
+    A,B: LongInt; Fl,Cl,Mk,St: Integer; Dm: Integer; X,Y,W,Hh: Integer;
+ Function IV(N: Integer): Integer;
+ Begin
+  IV:=SExt(Rd16(Ii+N*2),2);
+ End;
+ Function AI_(N: Integer): LongInt;
+ Begin
+  AI_:=Rd32(Ai+N*4);
+ End;
+ Procedure OV(N,V: Integer);
+ Begin
+  Wr16(Io+N*2,V And $FFFF);
+ End;
+ Procedure Wait(Flags: Integer);
+ Begin
+  BlockProc(Op,Flags,Io,Ai,Ctl);
+  With Procs[CurProc] Do Begin
+   WClicks:=0;WMask:=0;WState:=0;WM1F:=0;WM2F:=0;
+  End;
+ End;
+Begin
+ Ctl:=Rd32(Pb);Glb:=Rd32(Pb+4);Ii:=Rd32(Pb+8);Io:=Rd32(Pb+12);Ai:=Rd32(Pb+16);Ao:=Rd32(Pb+20);
+ Op:=Rd16(Ctl);
+ OV(0,1);
+ If AesTrace Then Begin
+  Write(ConOut,'AES ',Op,' [');
+  For I:=0 To 7 Do Write(ConOut,SExt(Rd16(Ii+I*2),2),' ');
+  WriteLn(ConOut,'] a0=',Hex8(Rd32(Ai)));Flush(ConOut);
+ End;
+ Case Op Of
+  10: Begin
+       If Not Procs[CurProc].Used Then Begin
+        K:=NewProc(ProgName,False);If K>=0 Then CurProc:=K;
+       End;
+       Wr16(Glb,$0140);
+       If NProcsUsed>1 Then Wr16(Glb+2,$FFFF) Else Wr16(Glb+2,1);
+       Wr16(Glb+4,CurProc);Wr32(Glb+6,0);
+       Wr32(Glb+10,0);Wr32(Glb+14,0);
+       OV(0,CurProc);
+       If Procs[CurProc].Name='' Then Procs[CurProc].Name:=ProcApName(ProgName);
+      End;
+  11: Begin
+       If Procs[CurProc].QN>0 Then Begin PopMsg(CurProc,AI_(0));OV(0,1);End
+       Else Wait(16);
+      End;
+  12: Begin
+       K:=IV(0);
+       If (K>=0) And (K<MAXPROC) And Procs[K].Used Then Begin
+        A:=AI_(0);
+        PostMsg(K,Rd16(A),Rd16(A+6),Rd16(A+8),Rd16(A+10),Rd16(A+12),Rd16(A+14),CurProc);
+        For I:=0 To 7 Do Procs[K].Q[Procs[K].QN,I]:=SExt(Rd16(A+I*2),2);
+        OV(0,1);
+       End Else OV(0,0);
+      End;
+  13: Begin
+       S:=Upper(TrimS(RdStr(AI_(0),9)));
+       OV(0,-1);
+       For I:=0 To MAXPROC-1 Do
+        If Procs[I].Used And (Upper(Procs[I].Name)=S) Then OV(0,I);
+      End;
+  14,15: OV(0,0);
+  19: OV(0,1);
+  20: Wait(1);
+  21: Begin
+       Wait(2);
+       Procs[CurProc].WClicks:=IV(0);Procs[CurProc].WMask:=IV(1);Procs[CurProc].WState:=IV(2);
+      End;
+  22: Begin
+       Wait(Ord(IV(0)=0)*4+Ord(IV(0)<>0)*4);
+       Procs[CurProc].WM1F:=IV(0);Procs[CurProc].WM1:=RectMake(IV(1),IV(2),IV(3),IV(4));
+      End;
+  23: Wait(16);
+  24: Begin
+       Wait(32);
+       Procs[CurProc].WDeadline:=MsNow+((LongInt(Rd16(Ii+2)) Shl 16) Or Rd16(Ii));
+      End;
+  25: Begin
+       Fl:=IV(0);
+       Wait(Fl And $3F);
+       With Procs[CurProc] Do Begin
+        WClicks:=IV(1);WMask:=IV(2);WState:=IV(3);
+        WM1F:=IV(4);WM1:=RectMake(IV(5),IV(6),IV(7),IV(8));
+        WM2F:=IV(9);WM2:=RectMake(IV(10),IV(11),IV(12),IV(13));
+        WDeadline:=MsNow+((LongInt(Rd16(Ii+30)) Shl 16) Or Rd16(Ii+28));
+       End;
+      End;
+  26: Begin
+       If IV(1)<>0 Then DClickSpeed:=Clamp(IV(0),0,4);
+       OV(0,DClickSpeed);
+      End;
+  { ---- menus ---- }
+  30: Begin
+       T:=AI_(0);
+       Case IV(0) Of
+        0: Begin
+            If MenuTree<>0 Then Begin MenuTree:=0;Repaint(RectMake(0,0,SW,MenuH),True);End;
+            OV(0,1);
+           End;
+        1: Begin
+            MenuTree:=T;MenuOwner:=CurProc;MenuBar:=OHead(T,0);
+            I:=OY(T,MenuBar)+OH(T,MenuBar)+OY(T,0);
+            MenuH:=Max2(19,I+1);
+            InstallAccItems(T);
+            Repaint(RectMake(0,0,SW,SH),True);
+            OV(0,1);
+           End;
+       Else OV(0,MenuOwner);
+       End;
+      End;
+  31: Begin
+       T:=AI_(0);I:=IV(0);
+       If IV(1)<>0 Then SetOState(T,I,OState(T,I) Or OS_CHECKED) Else SetOState(T,I,OState(T,I) And Not OS_CHECKED);
+       OV(0,1);
+      End;
+  32: Begin
+       T:=AI_(0);I:=IV(0);
+       If IV(1)<>0 Then SetOState(T,I,OState(T,I) And Not OS_DISABLED) Else SetOState(T,I,OState(T,I) Or OS_DISABLED);
+       OV(0,1);
+      End;
+  33: Begin
+       T:=AI_(0);I:=IV(0);
+       If IV(1)<>0 Then SetOState(T,I,OState(T,I) And Not OS_SELECTED) Else SetOState(T,I,OState(T,I) Or OS_SELECTED);
+       If T=MenuTree Then Begin DrawMenuBarNow;If Not BatchMode Then BlitScreen(False);End;
+       OV(0,1);
+      End;
+  34: Begin
+       T:=AI_(0);I:=IV(0);
+       S:=RdStr(AI_(1),60);
+       A:=Rd32(OA(T,I)+12);
+       WrStr(A,S);
+       OV(0,1);
+      End;
+  35: Begin
+       S:=RdStr(AI_(0),40);
+       OV(0,RegisterAcc(IV(0),S));
+      End;
+  36: OV(0,1);
+  { ---- objets ---- }
+  40: Begin ObjAdd(AI_(0),IV(0),IV(1));OV(0,1);End;
+  41: Begin ObjDelete(AI_(0),IV(0));OV(0,1);End;
+  42: Begin
+       ObjDraw(AI_(0),IV(0),IV(1),IV(2),IV(3),IV(4),IV(5));
+       OV(0,1);
+      End;
+  43: OV(0,ObjFind(AI_(0),IV(0),IV(1),IV(2),IV(3)));
+  44: Begin ObjOffset(AI_(0),IV(0),X,Y);OV(0,1);OV(1,X);OV(2,Y);End;
+  45: Begin ObjOrder(AI_(0),IV(0),IV(1));OV(0,1);End;
+  46: Begin
+       K:=IV(2);
+       OV(0,ObjEdit(AI_(0),IV(0),IV(1),K,IV(3)));
+       OV(1,K);
+      End;
+  47: Begin
+       T:=AI_(0);I:=IV(0);
+       SetOState(T,I,IV(6));
+       If IV(7)<>0 Then Begin
+        ObjOffset(T,I,X,Y);
+        SetClip(IV(2),IV(3),IV(2)+IV(4)-1,IV(3)+IV(5)-1);
+        ObjDrawRec(T,I,0,X,Y,IV(2),IV(3),IV(2)+IV(4)-1,IV(3)+IV(5)-1);
+        SetClip(0,0,SW-1,SH-1);
+       End;
+       OV(0,1);
+      End;
+  { ---- formulaires ---- }
+  50: OV(0,FormDo(AI_(0),IV(0)));
+  51: Begin
+       Case IV(0) Of
+        0: Begin End;
+        1: GrowShrink(RectMake(IV(1),IV(2),IV(3),IV(4)),RectMake(IV(5),IV(6),IV(7),IV(8)));
+        2: GrowShrink(RectMake(IV(5),IV(6),IV(7),IV(8)),RectMake(IV(1),IV(2),IV(3),IV(4)));
+        3: Repaint(RectMake(IV(5)-4,IV(6)-4,IV(7)+10,IV(8)+10),True);
+       End;
+       OV(0,1);
+      End;
+  52: OV(0,FormAlert(IV(0),RdStr(AI_(0),250)));
+  53: OV(0,FormAlert(1,FormErrorText(IV(0))));
+  54: Begin
+       T:=AI_(0);
+       W:=OW(T,0);Hh:=OH(T,0);
+       X:=(SW-W) Div 2;Y:=MenuH+(SH-MenuH-Hh) Div 2;
+       Wr16(OA(T,0)+16,X);Wr16(OA(T,0)+18,Y);
+       OV(0,1);OV(1,X-4);OV(2,Y-4);OV(3,W+8);OV(4,Hh+8);
+      End;
+  55: Begin OV(0,1);OV(1,IV(1));OV(2,IV(2));End;
+  56: Begin OV(0,1);OV(1,IV(1));End;
+  { ---- graf ---- }
+  70: Begin
+       RubberBox(IV(0),IV(1),IV(2),IV(3),W,Hh);
+       OV(0,1);OV(1,W);OV(2,Hh);
+      End;
+  71: Begin
+       R:=RectMake(IV(4),IV(5),IV(6),IV(7));
+       DragBox(IV(0),IV(1),IV(2),IV(3),R,X,Y);
+       OV(0,1);OV(1,X);OV(2,Y);
+      End;
+  72: Begin GrowShrink(RectMake(IV(0),IV(1),IV(2),IV(3)),RectMake(IV(4),IV(5),IV(2),IV(3)));OV(0,1);End;
+  73: Begin GrowShrink(RectMake(IV(0),IV(1),IV(2),IV(3)),RectMake(IV(4),IV(5),IV(6),IV(7)));OV(0,1);End;
+  74: Begin GrowShrink(RectMake(IV(4),IV(5),IV(6),IV(7)),RectMake(IV(0),IV(1),IV(2),IV(3)));OV(0,1);End;
+  75: Begin
+       T:=AI_(0);
+       If WatchBox(T,IV(1),IV(2),IV(3)) Then OV(0,1) Else OV(0,0);
+      End;
+  76: Begin
+       T:=AI_(0);
+       ObjOffset(T,IV(0),X,Y);
+       A:=0;
+       While ((GMouseB And 1)<>0) And Not UserBreak Do GemIdle;
+       OV(0,500);
+      End;
+  77: Begin OV(0,1);OV(1,8);OV(2,16);OV(3,8);OV(4,16);End;
+  78: Begin
+       K:=IV(0);
+       Case K Of
+        256: Begin Inc(MouseHidden);End;
+        257: Begin If MouseHidden>0 Then Dec(MouseHidden);End;
+        255: Begin
+              A:=AI_(0);
+              CurHotX:=Clamp(SExt(Rd16(A),2),0,15);CurHotY:=Clamp(SExt(Rd16(A+2),2),0,15);
+              For I:=0 To 15 Do Begin
+               CurMask[I]:=Rd16(A+10+I*2);CurData[I]:=Rd16(A+42+I*2);
+              End;
+             End;
+       Else SetMouseShape(K);
+       End;
+       {$IFDEF FPC}
+       If GfxOn Then Begin If MouseHidden>0 Then HideMouse Else CursorDraw(MX,MY);End;
+       {$ENDIF}
+       OV(0,1);
+      End;
+  79: Begin OV(0,1);OV(1,GMouseX);OV(2,GMouseY);OV(3,GMouseB);OV(4,0);End;
+  80: Begin
+       OV(0,0);
+      End;
+  81: OV(0,1);
+  90,91: Begin
+       S:='File selector';
+       If Op=91 Then S:=RdStr(AI_(2),40);
+       If AesFsel(AI_(0),AI_(1),S) Then Begin OV(0,1);OV(1,1);End Else Begin OV(0,1);OV(1,0);End;
+      End;
+  { ---- fenetres ---- }
+  100: Begin
+        OV(0,WinCreate(IV(0),RectMake(IV(1),IV(2),IV(3),IV(4))));
+       End;
+  101: Begin WinOpen(IV(0),RectMake(IV(1),IV(2),IV(3),IV(4)));OV(0,1);End;
+  102: Begin WinClose(IV(0));OV(0,1);End;
+  103: Begin WinDelete(IV(0));OV(0,1);End;
+  104: WindGet(IV(0),IV(1),Io);
+  105: Begin WindSet(IV(0),IV(1),Ii);OV(0,1);End;
+  106: OV(0,WinFind(IV(0),IV(1)));
+  107: Begin
+        Case IV(0) Of
+         1: Inc(UpdateLevel);
+         0: If UpdateLevel>0 Then Dec(UpdateLevel);
+         3: Begin Inc(MCtrlLevel);MCtrlOwner:=CurProc;End;
+         2: If MCtrlLevel>0 Then Dec(MCtrlLevel);
+        End;
+        OV(0,1);
+       End;
+  108: Begin
+        If IV(0)=0 Then R:=OuterOf(IV(1),RectMake(IV(2),IV(3),IV(4),IV(5)))
+        Else R:=WorkOf(IV(1),RectMake(IV(2),IV(3),IV(4),IV(5)));
+        OV(0,1);OV(1,R.X);OV(2,R.Y);OV(3,R.W);OV(4,R.H);
+       End;
+  109: OV(0,1);
+  { ---- ressources ---- }
+  110: Begin
+        S:=RdStr(AI_(0),100);
+        If RscLoad(S) Then Begin
+         OV(0,1);
+         Wr32(Glb+10,RscBase+Rd16(RscBase+18));
+        End Else OV(0,0);
+       End;
+  111: Begin
+        If RscLoaded Then DoMfree(RscBase);RscLoaded:=False;OV(0,1);
+       End;
+  112: Begin
+        If RscGaddr(IV(0),IV(1),A) Then Begin Wr32(Ao,A);OV(0,1);End Else Begin Wr32(Ao,0);OV(0,0);End;
+       End;
+  113: Begin
+        A:=AI_(0);
+        If RscLoaded Then Begin
+         Case IV(0) Of
+          0: Wr32(RscBase+Rd16(RscBase+18)+IV(1)*4,A);
+          5,15: Wr32(Rd16(RscBase+10)+RscBase+IV(1)*4,A);
+         End;
+        End;
+        OV(0,1);
+       End;
+  114: Begin ObjFix(AI_(0),IV(0));OV(0,1);End;
+  { ---- shell ---- }
+  120: Begin
+        WrStr(AI_(0),ShortName(ProgName));
+        WrStr(AI_(1),Chr(Length(ProgCmd))+ProgCmd);
+        OV(0,1);
+       End;
+  121: Begin
+        ShelNext:=RdStr(AI_(0),128);ShelTail:=RdStr(AI_(1),128);
+        OV(0,1);
+       End;
+  122,123: OV(0,1);
+  124: Begin
+        S:=RdStr(AI_(0),128);
+        If FileExists(HostPath(S)) Or FileExists(HostPath(ShortName(S))) Then OV(0,1) Else OV(0,0);
+       End;
+  125: Begin Wr32(AI_(0),0);OV(0,1);End;
+  126,127: OV(0,1);
+ Else OV(0,0);
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Interruptions de l'emulateur                                            }
+{ ---------------------------------------------------------------------- }
+
+Procedure DoTrap(N: Integer);
+Begin
+ If AmigaRun And (N<>1) Then Begin
+  RaiseExc(32+N);Exit;
+ End;
+ Case N Of
+  1: Gemdos;
+  2: Begin
+      If Not Emu_GEM Then Halt68('GEM is not available (Run with GEM is off)')
+      Else If (Rg[0] And $FFFF)=$73 Then Vdi(Rg[1])
+      Else If (Rg[0] And $FFFF)=$C8 Then Aes(Rg[1]);
+     End;
+  13: Bios;
+  14: Xbios;
+ Else RaiseExc(32+N);
+ End;
+End;
+
+Const
+ LA_PTSIN  = LINEA_VARS+$300;
+ LA_INTIN  = LINEA_VARS+$400;
+ LA_CONTRL = LINEA_VARS+$440;
+
+Procedure LineAInit;
+Var I: Integer;
+Begin
+ For I:=0 To 130 Do Wr8(LINEA_VARS+I,0);
+ Wr16(LINEA_VARS,1);Wr16(LINEA_VARS+2,80);
+ Wr32(LINEA_VARS+4,LA_CONTRL);Wr32(LINEA_VARS+8,LA_INTIN);Wr32(LINEA_VARS+12,LA_PTSIN);
+ Wr32(LINEA_VARS+16,LA_INTIN+$40);Wr32(LINEA_VARS+20,LA_PTSIN+$40);
+ Wr16(LINEA_VARS+24,1);Wr16(LINEA_VARS+34,$FFFF);Wr16(LINEA_VARS+36,0);
+ Wr16(LINEA_VARS+56,0);Wr16(LINEA_VARS+58,0);Wr16(LINEA_VARS+60,639);Wr16(LINEA_VARS+62,399);
+ Rg[0]:=LINEA_VARS;Rg[8]:=LINEA_VARS;
+ Rg[9]:=LINEA_VARS+$100;Rg[10]:=LINEA_VARS+$200;
+End;
+
+Procedure DoLineA(Op: LongInt);
+Var F: Integer; X1,Y1,X2,Y2,Col,Y,Wm: Integer; Bc: LongInt; Src,Dst: TMfdb; A,Pa: LongInt;
+    W,H,Mode,XX,YY: Integer; Sb,Db: Boolean; Ot: Integer;
+Begin
+ F:=Op And $FFF;
+ SelVdi(0);
+ If F>0 Then CheckFonts;
+ X1:=SExt(Rd16(LINEA_VARS+38),2);Y1:=SExt(Rd16(LINEA_VARS+40),2);
+ X2:=SExt(Rd16(LINEA_VARS+42),2);Y2:=SExt(Rd16(LINEA_VARS+44),2);
+ Col:=Rd16(LINEA_VARS+24) And 1;
+ Wm:=Rd16(LINEA_VARS+36);
+ If Wm=0 Then VP^.WrMode:=WM_REPL Else If Wm=2 Then VP^.WrMode:=WM_XOR Else VP^.WrMode:=WM_TRANS;
+ VP^.LineCol:=Col;VP^.LineWidth:=1;VP^.LineType:=7;VP^.LineUd:=Rd16(LINEA_VARS+34);
+ VP^.FillInt:=1;VP^.FillCol:=Col;VP^.FillPer:=0;
+ SetClip(0,0,SW-1,SH-1);
+ If Rd16(LINEA_VARS+54)<>0 Then
+  SetClip(SExt(Rd16(LINEA_VARS+56),2),SExt(Rd16(LINEA_VARS+58),2),SExt(Rd16(LINEA_VARS+60),2),SExt(Rd16(LINEA_VARS+62),2));
+ Case F Of
+  0: LineAInit;
+  1: Begin
+      X1:=SExt(Rd16(Rd32(LINEA_VARS+12)),2);Y1:=SExt(Rd16(Rd32(LINEA_VARS+12)+2),2);
+      PlotPat(X1,Y1,True,ColBit(Rd16(Rd32(LINEA_VARS+8))));
+     End;
+  2: Begin
+      X1:=SExt(Rd16(Rd32(LINEA_VARS+12)),2);Y1:=SExt(Rd16(Rd32(LINEA_VARS+12)+2),2);
+      Rg[0]:=Ord(BGet(X1,Y1));
+     End;
+  3: Begin LinePhase:=0;VLine(X1,Y1,X2,Y2);End;
+  4: Begin LinePhase:=0;VLine(X1,Y1,X2,Y1);End;
+  5: Begin
+      If Rd32(LINEA_VARS+46)<>0 Then Begin
+       VP^.FillInt:=4;
+       For Y:=0 To 15 Do VP^.UdPat[Y]:=Rd16(Rd32(LINEA_VARS+46)+(Y And ((Rd16(LINEA_VARS+50)+1)*0+15))*2);
+      End;
+      For Y:=Y1 To Y2 Do FillSpanPat(Y,X1,X2);
+     End;
+  7: Begin
+      A:=Rg[14];
+      W:=Rd16(A)+0;H:=SExt(Rd16(A+2),2);
+      Src.Addr:=Rd32(A+18);Src.WW:=SExt(Rd16(A+22),2) Div 2;Src.Planes:=1;
+      Dst.Addr:=Rd32(A+32);Dst.WW:=SExt(Rd16(A+36),2) Div 2;Dst.Planes:=1;
+      Ot:=Rd8(A+10);
+      If Src.Addr=0 Then Src.Addr:=0;
+      For YY:=0 To H-1 Do
+       For XX:=0 To W-1 Do Begin
+        Sb:=MBit(Src,SExt(Rd16(A+14),2)+XX,SExt(Rd16(A+16),2)+YY);
+        Db:=MBit(Dst,SExt(Rd16(A+28),2)+XX,SExt(Rd16(A+30),2)+YY);
+        MPut(Dst,SExt(Rd16(A+28),2)+XX,SExt(Rd16(A+30),2)+YY,RopBit(Rd8(A+10+(Ord(Sb)*2) And 3) And 15,Sb,Db));
+       End;
+     End;
+  9: Begin MouseHidden:=Max2(0,MouseHidden-1);End;
+  10: Inc(MouseHidden);
+  11: Begin
+       A:=Rg[8];
+       CurHotX:=Clamp(SExt(Rd16(A),2),0,15);CurHotY:=Clamp(SExt(Rd16(A+2),2),0,15);
+       For Y:=0 To 15 Do Begin CurMask[Y]:=Rd16(A+10+Y*2);CurData[Y]:=Rd16(A+42+Y*2);End;
+      End;
+  12,13: Begin End;
+ End;
+ SetClip(0,0,SW-1,SH-1);
+ VP^.WrMode:=WM_REPL;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ AmigaOS simplifie : exec.library, dos.library                           }
+{ ---------------------------------------------------------------------- }
+
+Procedure AmigaCall(Base: LongInt; Off: LongInt);
+Var Lib: Integer; R,A,N: LongInt; S: String; I: LongInt; Buf: Array[0..4095] Of Byte; Got: LongInt; H: Integer;
+Begin
+ R:=0;
+ If Base=EXECBASE Then Begin
+  Case Off Of
+   -552: Begin
+          S:=Upper(RdStr(Rg[9],40));
+          If S='DOS.LIBRARY' Then R:=DOSBASE
+          Else If S='INTUITION.LIBRARY' Then R:=INTUIBASE
+          Else If S='GRAPHICS.LIBRARY' Then R:=GFXBASE
+          Else R:=0;
+         End;
+   -198: Begin
+          R:=DoMalloc(Rg[0]);
+          If (R<>0) And ((Rg[1] And $10000)<>0) Then
+           For I:=0 To Rg[0]-1 Do Wr8(R+I,0);
+         End;
+   -684: R:=DoMalloc(Rg[0]);
+   -210: Begin DoMfree(Rg[9]);End;
+   -690: Begin DoMfree(Rg[9]);End;
+   -294: R:=$2800;
+  Else R:=0;
+  End;
+ End Else If Base=DOSBASE Then Begin
+  Case Off Of
+   -30: Begin
+         S:=HostPath(RdStr(Rg[1],200));
+         H:=AllocFH;
+         If H=0 Then R:=0
+         Else Begin
+          Assign(FHs[H],S);
+          {$I-}
+          If Rg[2]=1006 Then Rewrite(FHs[H],1) Else Begin FileMode:=0;Reset(FHs[H],1);End;
+          {$I+}
+          If IOResult<>0 Then R:=0 Else Begin FHUsed[H]:=True;R:=H;End;
+         End;
+        End;
+   -36: Begin
+         H:=Rg[1];
+         If (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
+          {$I-}
+          Close(FHs[H]);
+          {$I+}
+          If IOResult=0 Then Begin End;
+          FHUsed[H]:=False;R:=-1;
+         End;
+        End;
+   -42: Begin
+         H:=Rg[1];N:=Rg[3];A:=Rg[2];
+         If H=1 Then Begin
+          R:=0;
+          While R<N Do Begin
+           Got:=WaitKeyEmu;
+           If UserBreak Then Break;
+           Wr8(A+R,Got And $FF);Inc(R);ConPut(Got And $FF);
+           If (Got And $FF)=13 Then Begin ConPut(10);Break;End;
+          End;
+         End Else If (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
+          If N>4096 Then N:=4096;
+          {$I-}
+          BlockRead(FHs[H],Buf,N,Got);
+          {$I+}
+          If IOResult<>0 Then Got:=0;
+          For I:=0 To Got-1 Do Wr8(A+I,Buf[I]);
+          R:=Got;
+         End Else R:=-1;
+        End;
+   -48: Begin
+         H:=Rg[1];N:=Rg[3];A:=Rg[2];
+         If (H=1) Or (H=2) Then Begin
+          For I:=0 To N-1 Do ConPut(Rd8(A+I));
+          R:=N;
+         End Else If (H>=6) And (H<=MAXFH) And FHUsed[H] Then Begin
+          If N>4096 Then N:=4096;
+          For I:=0 To N-1 Do Buf[I]:=Rd8(A+I);
+          {$I-}
+          BlockWrite(FHs[H],Buf,N,Got);
+          {$I+}
+          If IOResult<>0 Then Got:=0;
+          R:=Got;
+         End Else R:=-1;
+        End;
+   -54: R:=1;
+   -60: R:=2;
+   -72: Begin
+         S:=HostPath(RdStr(Rg[1],200));
+         Assign(FHs[6],S);
+         {$I-}
+         Erase(FHs[6]);
+         {$I+}
+         If IOResult=0 Then R:=-1 Else R:=0;
+        End;
+   -144: Begin StopReason:=STOP_EXIT;ExitCode:=Rg[1];End;
+   -198: Delay(Rg[1]*20);
+   -948: Begin
+          A:=Rg[1];N:=0;
+          While (Rd8(A+N)<>0) And (N<30000) Do Begin ConPut(Rd8(A+N));Inc(N);End;
+         End;
+  Else R:=0;
+  End;
+ End;
+ Rg[0]:=R;
+End;
+
+Procedure HleLibCheck;
+Begin
+ If Not AmigaRun Then Exit;
+ If (PC<AMIGA_LO) Or (PC>=AMIGA_HI) Then Exit;
+ If (PC>=EXECBASE-1024) And (PC<EXECBASE) Then AmigaCall(EXECBASE,PC-EXECBASE)
+ Else If (PC>=DOSBASE-1024) And (PC<DOSBASE) Then AmigaCall(DOSBASE,PC-DOSBASE)
+ Else Rg[0]:=0;
+ PC:=PopL;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Chargement des programmes                                               }
+{ ---------------------------------------------------------------------- }
+
+Procedure EmuReset;
+Var I: Integer;
+Begin
+ CpuReset;
+ SingleStack:=True;
+ ClearMemory;
+ ScrBase:=(MemSize-SCR_BYTES) And $FFFF00;
+ HitPa:=(ScrBase-$1000) And $FFFF00;
+ HeapLo:=BP_ADDR+$100;HeapHi:=HitPa-$4000;
+ MCnt:=0;DtaAddr:=BP_ADDR+$80;DtaActive:=False;
+ CloseAllFiles;
+ ConRow:=0;ConCol:=0;ConRev:=False;ConWrap:=True;ConCurOn:=True;ConState:=0;
+ KQHead:=0;KQTail:=0;UserBreak:=False;
+ NBps:=0;DbgN:=0;UnknownCall:='';
+ AmigaRun:=False;
+ GemReset;
+ ScrDirtyLo:=0;ScrDirtyHi:=399;
+ { stub de sortie : clr.w -(sp) ; trap #1 }
+ Wr16(STUB_EXIT,$4267);Wr16(STUB_EXIT+2,$4E41);
+ { stub Supexec : andi #$DFFF,sr ; rts }
+ Wr16(STUB_USER,$027C);Wr16(STUB_USER+2,$DFFF);Wr16(STUB_USER+4,$4E75);
+ FillChar(ScrShadow,SizeOf(ScrShadow),$FF);
+End;
+
+{ Charge une image PRG dans la page de base Bp ; TB = debut du texte, EndA = fin du BSS }
+Function LoadPRGImage(P: Pointer; Len: LongInt; Const CmdLine: String; Bp: LongInt;
+                      WantSyms: Boolean; Var TB,EndA,TextSz: LongInt): Boolean;
+Var TS,DS,BS,SS,I,Off,Cur,Sym,Typ,B: LongInt; Name: String; J: Integer;
+Begin
+ LoadPRGImage:=False;
+ If (Len<28) Or (BufW(P,0)<>$601A) Then Exit;
+ TS:=BufL(P,2);DS:=BufL(P,6);BS:=BufL(P,10);SS:=BufL(P,14);
+ TB:=Bp+$100;
+ EndA:=TB+TS+DS+BS;
+ If EndA>HeapHi Then Exit;
+ TextSz:=TS+DS;
+ For I:=0 To TS+DS-1 Do Wr8(TB+I,BufB(P,28+I));
+ For I:=0 To BS-1 Do Wr8(TB+TS+DS+I,0);
+ Off:=28+TS+DS+SS;
+ If Off+4<=Len Then Begin
+  Cur:=BufL(P,Off);Inc(Off,4);
+  If Cur<>0 Then Begin
+   Wr32(TB+Cur,Rd32(TB+Cur)+TB);
+   While Off<Len Do Begin
+    B:=BufB(P,Off);Inc(Off);
+    If B=0 Then Break;
+    If B=1 Then Cur:=Cur+254
+    Else Begin Cur:=Cur+B;Wr32(TB+Cur,Rd32(TB+Cur)+TB);End;
+   End;
+  End;
+ End;
+ If WantSyms Then Begin
+  DbgN:=0;
+  Sym:=28+TS+DS;
+  While (SS>=14) And (Sym+14<=28+TS+DS+SS) Do Begin
+   Name:='';
+   For J:=0 To 7 Do If BufB(P,Sym+J)<>0 Then Name:=Name+Chr(BufB(P,Sym+J));
+   Typ:=BufW(P,Sym+8);
+   If (Typ And $0048)=$0048 Then Begin
+    For J:=0 To 13 Do If BufB(P,Sym+14+J)<>0 Then Name:=Name+Chr(BufB(P,Sym+14+J));
+    DbgAdd(Name,BufL(P,Sym+10)+TB);
+    Inc(Sym,28);
+   End Else Begin
+    If (Typ And $8000)<>0 Then DbgAdd(Name,BufL(P,Sym+10)+TB);
+    Inc(Sym,14);
+   End;
+  End;
+ End;
+ For I:=0 TO 255 Do Wr8(Bp+I,0);
+ Wr32(Bp,Bp);Wr32(Bp+4,EndA);
+ Wr32(Bp+8,TB);Wr32(Bp+12,TS);
+ Wr32(Bp+16,TB+TS);Wr32(Bp+20,DS);
+ Wr32(Bp+24,TB+TS+DS);Wr32(Bp+28,BS);
+ Wr32(Bp+32,Bp+$80);Wr32(Bp+36,BP_ADDR);Wr32(Bp+44,Bp+$F0);
+ Wr8(Bp+$80,Length(CmdLine));
+ For J:=1 To Length(CmdLine) Do Wr8(Bp+$80+J,Ord(CmdLine[J]));
+ Wr8(Bp+$F0,0);
+ LoadPRGImage:=True;
+End;
+
+Function LoadPRG(P: Pointer; Len: LongInt; Const CmdLine: String): Boolean;
+Var TB,EndA,TSz,Sp: LongInt;
+Begin
+ LoadPRG:=False;
+ If Not LoadPRGImage(P,Len,CmdLine,BP_ADDR,True,TB,EndA,TSz) Then Exit;
+ Wr32(BP_ADDR+4,HitPa);
+ HeapLo:=EndA;
+ If Odd(HeapLo) Then Inc(HeapLo);
+ Sp:=HitPa-8;
+ Wr32(Sp,STUB_EXIT);Wr32(Sp+4,BP_ADDR);
+ Rg[15]:=Sp;USPv:=Sp;SSPv:=$7000;
+ PC:=TB;SRv:=0;
+ LoadPRG:=True;
+End;
+
+Var
+ OptAccs : Boolean;
+
+Procedure LoadOneAcc(Const F: String);
+Var P: Pointer; Len,Bp,TB,EndA,TSz,Top: LongInt; K: Integer; Ok: Boolean;
+Begin
+ If Not ReadFileBytes(F,P,Len) Then Exit;
+ Bp:=(HeapLo+255) And Not 255;
+ Ok:=LoadPRGImage(P,Len,'',Bp,False,TB,EndA,TSz);
+ If P<>Nil Then FreeMem(P,Len);
+ If Not Ok Then Exit;
+ Top:=(EndA+$2000+255) And Not 255;
+ If Top>=HeapHi Then Exit;
+ K:=NewProc(F,True);
+ If K<0 Then Exit;
+ HeapLo:=Top;
+ Wr32(Bp+4,Top);
+ FillChar(Procs[K].Rgs,SizeOf(Procs[K].Rgs),0);
+ Wr32(Top-8,STUB_EXIT);Wr32(Top-4,Bp);
+ Procs[K].Rgs[15]:=Top-8;Procs[K].USPs:=Top-8;Procs[K].SSPs:=$7000;
+ Procs[K].PCs:=TB;Procs[K].SRs:=0;Procs[K].BpAddr:=Bp;Procs[K].Started:=False;
+End;
+
+Procedure LoadAccessories;
+Var SR: SearchRec; D1,D2: String; Seen: String;
+ Procedure Scan(Const Dir: String);
+ Begin
+  FindFirst(Dir+'*.ACC',AnyFile,SR);
+  While DosError=0 Do Begin
+   If Pos('|'+Upper(SR.Name)+'|',Seen)=0 Then Begin
+    Seen:=Seen+'|'+Upper(SR.Name)+'|';
+    LoadOneAcc(Dir+SR.Name);
+   End;
+   FindNext(SR);
+  End;
+  {$IFDEF FPC}
+  FindClose(SR);
+  {$ENDIF}
+  {$IFDEF UNIX}
+  FindFirst(Dir+'*.acc',AnyFile,SR);
+  While DosError=0 Do Begin
+   If Pos('|'+Upper(SR.Name)+'|',Seen)=0 Then Begin
+    Seen:=Seen+'|'+Upper(SR.Name)+'|';
+    LoadOneAcc(Dir+SR.Name);
+   End;
+   FindNext(SR);
+  End;
+  FindClose(SR);
+  {$ENDIF}
+ End;
+Begin
+ Seen:='';
+ D1:=PathOf(ProgName);
+ Scan(D1);
+ If D1<>'' Then Scan('');
+End;
+
+{ Demarre les accessoires : chacun s'execute jusqu'a son premier evenement }
+Procedure GemBoot;
+Var K: Integer; N: LongInt;
+Begin
+ RepaintAll;
+ If Not BatchMode Then BlitScreen(True);
+ SaveCtx(MainProc);
+ For K:=0 To MAXPROC-1 Do
+  If Procs[K].Used And Procs[K].IsAcc And Not Procs[K].Started Then Begin
+   LoadCtx(K);CurProc:=K;Procs[K].Started:=True;
+   StopReason:=STOP_NONE;N:=0;
+   While (StopReason=STOP_NONE) And (N<200) Do Begin RunCpu(100000);Inc(N);End;
+   If StopReason<>STOP_YIELD Then Begin Procs[K].Used:=False;End;
+   StopReason:=STOP_NONE;
+  End;
+ LoadCtx(MainProc);CurProc:=MainProc;
+ StopReason:=STOP_NONE;
+ If Not BatchMode Then BlitScreen(False);
+End;
+
+Function LoadHunk(P: Pointer; Len: LongInt; Const CmdLine: String): Boolean;
+Var Pos,NH,First,Last,I,Cur,T,Sz,N,Dst,Base,Nm: LongInt; HAddr,HSize: Array[0..15] Of LongInt;
+    J: Integer; Name: String; Sp,Val: LongInt;
+ Function NextL: LongInt;
+ Begin
+  If Pos+4>Len Then NextL:=0 Else NextL:=BufL(P,Pos);
+  Inc(Pos,4);
+ End;
+Begin
+ LoadHunk:=False;
+ Pos:=0;
+ If BufL(P,0)<>$3F3 Then Exit;
+ Inc(Pos,4);
+ While True Do Begin
+  N:=NextL;
+  If N=0 Then Break;
+  Inc(Pos,N*4);
+ End;
+ NH:=NextL;First:=NextL;Last:=NextL;
+ If (NH>16) Or (NH<=0) Then Exit;
+ Base:=$20000;
+ For I:=0 To Last-First Do Begin
+  HSize[I]:=(NextL And $3FFFFFFF)*4;
+  HAddr[I]:=Base;
+  Base:=Base+HSize[I]+16;
+  For J:=0 To HSize[I]-1 Do Wr8(HAddr[I]+J,0);
+ End;
+ If Base>HeapHi Then Exit;
+ Cur:=0;DbgN:=0;
+ While Pos<Len Do Begin
+  T:=NextL And $3FFFFFFF;
+  Case T Of
+   $3E9,$3EA: Begin
+               Sz:=NextL*4;
+               For J:=0 To Sz-1 Do Wr8(HAddr[Cur]+J,BufB(P,Pos+J));
+               Inc(Pos,Sz);
+              End;
+   $3EB: NextL;
+   $3EC: Begin
+          While True Do Begin
+           N:=NextL;
+           If N=0 Then Break;
+           Dst:=NextL;
+           For J:=1 To N Do Begin
+            Sz:=NextL;
+            Wr32(HAddr[Cur]+Sz,Rd32(HAddr[Cur]+Sz)+HAddr[Dst]);
+           End;
+          End;
+         End;
+   $3F0: Begin
+          While True Do Begin
+           N:=NextL And $FFFFFF;
+           If N=0 Then Break;
+           Name:='';
+           For J:=0 To N*4-1 Do If BufB(P,Pos+J)<>0 Then Name:=Name+Chr(BufB(P,Pos+J));
+           Inc(Pos,N*4);
+           Val:=NextL;
+           DbgAdd(Name,HAddr[Cur]+Val);
+          End;
+         End;
+   $3F1: Begin Sz:=NextL*4;Inc(Pos,Sz);End;
+   $3F2: Begin Inc(Cur);If Cur>Last-First Then Break;End;
+  Else Break;
+  End;
+ End;
+ HeapLo:=Base;
+ AmigaRun:=True;
+ Wr32(4,EXECBASE);
+ Wr32(BP_ADDR+$80,0);
+ For J:=1 To Length(CmdLine) Do Wr8(BP_ADDR+$80+J-1,Ord(CmdLine[J]));
+ Sp:=HitPa-8;
+ Wr32(Sp,STUB_EXIT);
+ Wr16(STUB_EXIT,$3F00);Wr16(STUB_EXIT+2,$3F3C);Wr16(STUB_EXIT+4,$004C);Wr16(STUB_EXIT+6,$4E41);
+ Rg[15]:=Sp;USPv:=Sp;SSPv:=$7000;
+ Rg[0]:=Length(CmdLine);Rg[8]:=BP_ADDR+$80;Rg[14]:=EXECBASE;
+ PC:=HAddr[0];SRv:=0;
+ LoadHunk:=True;
+End;
+
+
+{ Pexec GEMDOS : charge et execute un programme fils }
+Function DoPexec(Mode: Integer; NameP,CmdP,EnvP: LongInt): LongInt;
+Var Nm,Cmd: String; P: Pointer; Len,Bp,TB,EndA,TSz,Top,SvHeap,Code: LongInt; Ok: Boolean;
+    SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp: LongInt; I: Integer; SvProc: Integer;
+ Procedure RunChild(B: LongInt);
+ Var N: LongInt;
+ Begin
+  Move(Rg,SvRg,SizeOf(Rg));
+  SvPC:=PC;SvSR:=SRv;SvUSP:=USPv;SvSSP:=SSPv;SvOp:=CurOpPC;SvProc:=CurProc;
+  FillChar(Rg,SizeOf(Rg),0);
+  Top:=Rd32(B+4);
+  Rg[15]:=Top-8;Wr32(Top-8,STUB_EXIT);Wr32(Top-4,B);
+  PC:=Rd32(B+8);SRv:=0;
+  StopReason:=STOP_NONE;
+  While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
+   RunCpu(20000);
+   If StopReason=STOP_YIELD Then GemDispatch;
+   PollKeys;
+   If UserBreak Then StopReason:=STOP_USER;
+  End;
+  If StopReason=STOP_EXIT Then Code:=ExitCode Else Code:=-1;
+  Move(SvRg,Rg,SizeOf(Rg));
+  PC:=SvPC;SRv:=SvSR;USPv:=SvUSP;SSPv:=SvSSP;CurOpPC:=SvOp;CurProc:=SvProc;
+  StopReason:=STOP_NONE;UserBreak:=False;
+ End;
+Begin
+ DoPexec:=-33;
+ Case Mode Of
+  0,3,5: Begin
+    If Mode=5 Then Begin
+     Bp:=DoMalloc(256);
+     If Bp=0 Then Begin DoPexec:=-39;Exit;End;
+     For I:=0 To 255 Do Wr8(Bp+I,0);
+     Wr32(Bp,Bp);Wr32(Bp+36,BP_ADDR);
+     DoPexec:=Bp;Exit;
+    End;
+    Nm:=HostPath(RdStr(NameP,200));
+    If CmdP<>0 Then Cmd:=RdStr(CmdP+1,Rd8(CmdP)) Else Cmd:='';
+    If Not ReadFileBytes(Nm,P,Len) Then Exit;
+    Bp:=(HeapLo+255) And Not 255;
+    SvHeap:=HeapLo;
+    Ok:=LoadPRGImage(P,Len,Cmd,Bp,False,TB,EndA,TSz);
+    If P<>Nil Then FreeMem(P,Len);
+    If Not Ok Then Begin DoPexec:=-66;Exit;End;
+    Top:=(EndA+$1000+255) And Not 255;
+    Wr32(Bp+4,Top);
+    HeapLo:=Top;
+    If Mode=3 Then Begin DoPexec:=Bp;Exit;End;
+    RunChild(Bp);
+    HeapLo:=SvHeap;
+    DoPexec:=Code;
+   End;
+  4,6: Begin
+    Bp:=CmdP;
+    SvHeap:=HeapLo;
+    RunChild(Bp);
+    If Mode=6 Then HeapLo:=SvHeap;
+    DoPexec:=Code;
+   End;
+ End;
+End;
+
+{ Charge un executable ST (.PRG) ou Amiga (Hunk) ; reinitialise l'emulateur }
+Function LoadProgram(Const Name,CmdLine: String; GemOn: Boolean): Boolean;
+Var P: Pointer; Len: LongInt; Ok: Boolean; K: Integer;
+Begin
+ LoadProgram:=False;
+ If Not ReadAll(Name,P,Len) Then Exit;
+ EmuReset;
+ Emu_GEM:=GemOn;
+ ProgName:=Name;ProgCmd:=CmdLine;
+ If BufW(P,0)=$601A Then Ok:=LoadPRG(P,Len,CmdLine)
+ Else If BufL(P,0)=$3F3 Then Ok:=LoadHunk(P,Len,CmdLine)
+ Else Ok:=False;
+ If P<>Nil Then FreeMem(P,Len);
+ If Ok Then Begin
+  K:=NewProc(Name,False);
+  If K>=0 Then Begin MainProc:=K;CurProc:=K;Procs[K].Started:=True;End;
+  If GemOn And OptAccs And Not AmigaRun Then LoadAccessories;
+ End;
+ LoadProgram:=Ok;
+End;
+
 { ====================================================================== }
 {                          EDITEUR DE TEXTE                              }
 { ====================================================================== }
@@ -8002,6 +11825,7 @@ Begin
  WriteLn(T,'OPTIMIZE=',Ord(OptOptimize));
  WriteLn(T,'CASE=',Ord(OptCase));
  WriteLn(T,'RUNGEM=',Ord(OptRunGem));
+ WriteLn(T,'ACC=',Ord(OptAccs));
  WriteLn(T,'INCPATH=',OptIncPath);
  Close(T);
 End;
@@ -8031,7 +11855,8 @@ Begin
    Else If K='LISTING' Then OptListing:=ToInt(V)=1
    Else If K='OPTIMIZE' Then OptOptimize:=ToInt(V)=1
    Else If K='CASE' Then OptCase:=ToInt(V)=1
-   Else If K='RUNGEM' Then OptRunGem:=ToInt(V)=1
+ Else If K='RUNGEM' Then OptRunGem:=ToInt(V)=1
+   Else If K='ACC' Then OptAccs:=ToInt(V)=1
    Else If K='INCPATH' Then OptIncPath:=V;
   End;
  End;
@@ -8383,6 +12208,14 @@ Begin
  End;
 End;
 
+Procedure MonYield;
+Begin
+ EmuVisible:=True;
+ BlitScreen(True);
+ GemDispatch;
+ EmuVisible:=False;
+End;
+
 Procedure MonTraceN(N: LongInt);
 Var I: LongInt;
 Begin
@@ -8393,6 +12226,7 @@ Begin
  StopReason:=STOP_NONE;
  For I:=1 To N Do Begin
   Step;
+  If StopReason=STOP_YIELD Then MonYield;
   If StopReason<>STOP_NONE Then Break;
  End;
  If StopReason<>STOP_NONE Then ReportStop;
@@ -8411,11 +12245,13 @@ Begin
  BlitScreen(True);
  UserBreak:=False;
  Step;
+ If StopReason=STOP_YIELD Then GemDispatch;
  While (StopReason=STOP_NONE) And Not UserBreak Do Begin
   If (Target<>-1) And (PC=Target) Then Break;
   RunCpu(20000);
+  If StopReason=STOP_YIELD Then GemDispatch;
   If (Target<>-1) And (PC=Target) Then Break;
-  PollKeys;
+  PollInput;
   BlitScreen(False);
  End;
  If UserBreak Then StopReason:=STOP_USER;
@@ -8734,23 +12570,34 @@ End;
 
 { Execute un programme dans l'emulateur avec affichage graphique }
 Procedure RunProgramGUI(Const Name,Cmd: String);
-Var Msg: String; I: LongInt;
+Var Msg,Cur,Nxt: String; I: LongInt;
 Begin
- If Not LoadProgram(Name,Cmd,OptRunGem) Then Begin
-  Alert1(3,T3('Cannot load the program|','Impossible de charger le programme|','Programm nicht ladbar|')+ShortName(Name));
-  Exit;
- End;
- HideMouse;
- MonActive:=False;EmuVisible:=True;
- ConClear;
- BlitScreen(True);
- UserBreak:=False;
- While (StopReason=STOP_NONE) And Not UserBreak Do Begin
-  RunCpu(30000);
-  PollKeys;
-  BlitScreen(False);
- End;
- If UserBreak Then Begin StopReason:=STOP_USER;StopMsg:='^C';End;
+ Cur:=Name;
+ Repeat
+  If Not LoadProgram(Cur,Cmd,OptRunGem) Then Begin
+   Alert1(3,T3('Cannot load the program|','Impossible de charger le programme|','Programm nicht ladbar|')+ShortName(Cur));
+   Exit;
+  End;
+  HideMouse;
+  MonActive:=False;EmuVisible:=True;
+  ConClear;
+  BlitScreen(True);
+  UserBreak:=False;
+  ShelNext:='';
+  If Emu_GEM Then GemBoot;
+  While ((StopReason=STOP_NONE) Or (StopReason=STOP_YIELD)) And Not UserBreak Do Begin
+   RunCpu(30000);
+   If StopReason=STOP_YIELD Then GemDispatch;
+   PollInput;
+   BlitScreen(False);
+  End;
+  If UserBreak Then Begin StopReason:=STOP_USER;StopMsg:='^C';End;
+  Nxt:=ShelNext;
+  If (Nxt<>'') And (StopReason=STOP_EXIT) Then Begin
+   CloseAllFiles;
+   Cur:=Nxt;
+  End Else Nxt:='';
+ Until Nxt='';
  Case StopReason Of
   STOP_EXIT: Msg:=T3('Program terminated, exit code ','Programme termine, code ','Programm beendet, Code ')+IntStr(ExitCode);
   STOP_FAULT: Msg:=StopMsg;
@@ -8760,11 +12607,13 @@ Begin
  End;
  If UnknownCall<>'' Then Msg:=Msg+' ['+UnknownCall+']';
  If Msg<>'' Then Begin
+  MouseHidden:=0;
   BText(0,384,PadR(' '+Msg+' - '+T3('press a key','appuyez sur une touche','Taste druecken'),80),True);
   BlitScreen(False);
  End;
  KQHead:=0;KQTail:=0;UserBreak:=False;
- StopReason:=StopReason;
+ MouseHidden:=0;
+ SetMouseShape(0);
  ShowMouse;
  WaitAnyKey;
  EmuVisible:=False;
@@ -8961,6 +12810,26 @@ Begin
    T3('Emulated RAM: ','RAM emulee   : ','Emul. RAM : ')+IntStr(MemSize Div 1024)+' KB');
 End;
 
+Procedure RunOptionsDlg;
+Var R: Integer;
+Begin
+ DlgReset(46,9);
+ DlgLabel(2,0,T3('Run / debug options','Options d''execution / debogage','Start- / Debug-Optionen'));
+ DlgLabel(2,2,T3('GEM        :','GEM         :','GEM         :'));
+ DlgRadio(16,2,T3('Yes|No','Oui|Non','Ja|Nein'),2-Ord(OptRunGem));
+ DlgLabel(2,3,T3('Accessories:','Accessoires :','Accessories :'));
+ DlgRadio(16,3,T3('Yes|No','Oui|Non','Ja|Nein'),2-Ord(OptAccs));
+ DlgLabel(2,4,'           '+T3('(*.ACC from the program folder)','(*.ACC du dossier du programme)','(*.ACC aus dem Programmordner)'));
+ DlgButton(2,6,10,T3('Cancel','Annuler','Abbruch'),0,False);
+ DlgButton(14,6,10,T3('Save','Sauver','Sichern'),2,False);
+ DlgButton(26,6,10,'OK',1,True);
+ R:=DlgRun;
+ If R=0 Then Exit;
+ OptRunGem:=DI[3].Sel=1;
+ OptAccs:=DI[5].Sel=1;
+ If R=2 Then SavePrefs;
+End;
+
 Procedure DoMenu(M,I: Integer);
 Begin
  Case M Of
@@ -8997,7 +12866,7 @@ Begin
   4: Case I Of
       1: EditorPrefsDlg;
       2: AsmOptionsDlg;
-      3: Alert1(1,T3('Debugger options:|Set "Load '+MonName+'" in Editor preferences','Options du debogueur :|Voir "Charger '+MonName+'" dans Preferences editeur','Debugger-Optionen:|Siehe "Lade '+MonName+'" in Editor-Einstellungen'));
+      3: RunOptionsDlg;
       5: SavePrefs;
       6: LoadPrefs;
      End;
@@ -9312,7 +13181,11 @@ Begin
   Else If StartAction='X' Then Begin
    If LoadProgram(OutPathFinal,'',OptRunGem) Then Begin
     EmuVisible:=False;MonActive:=False;
-    While StopReason=STOP_NONE Do RunCpu(100000);
+    If Emu_GEM Then GemBoot;
+    While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
+     RunCpu(100000);
+     If StopReason=STOP_YIELD Then GemDispatch;
+    End;
     WriteLn(ConOut);
     If StopReason=STOP_EXIT Then Rc:=ExitCode And $FF
     Else Begin
@@ -9338,7 +13211,7 @@ Begin
  FillChar(FHUsed,SizeOf(FHUsed),0);
  InitAsmTables;
  PrefDefaults;
- OptRunGem:=True;
+ OptRunGem:=True;OptAccs:=True;
  RunOther:='';RunOtherArg:='';
  FindStr:='';ReplStr:='';FindCase:=False;
  MenuOpen:=0;MenuHi:=0;
@@ -9380,6 +13253,7 @@ BEGIN
  Assign(ConOut,'');Rewrite(ConOut);
  Assign(ConIn,'');Reset(ConIn);
  AmigaMode:=False;BatchMode:=False;
+ AesTrace:=GetEnv('DEVPAC_TRACE')<>'';
  InitApp;
  ParseCommandLine;
  LoadPrefs;
