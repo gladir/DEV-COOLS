@@ -17,7 +17,7 @@ for i in range(10):
 # lire (x=10..14,y=5)
 for i in range(10):
     p.mlp(12,pts+4*i); p.op(2); p.w(0x3B40); p.w(0x100+2*i)
-s=run(p,'px',dump='1F100:20')
+s=run(p,'px',dump='%X:20'%(LAVARS+0x100))
 check('A001 pixels poses',all(s.px(10+i,5)==1 for i in range(8)) and s.px(18,5)==0 and s.px(19,5)==0,s.art(8,3,14,5))
 got=struct.unpack('>10H',s.dump)
 check('A002 lit les pixels',list(got)==[1]*8+[0,0],got)

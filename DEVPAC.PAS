@@ -10921,6 +10921,140 @@ Var
  MouseHidden : Integer;         { compteur v_hide_c / graf_mouse M_OFF }
 
 { Construit la table des glyphes 8x8 a partir de la police BGI }
+{ Police 8x8 integree (celle de la police BGI) : sert en mode batch (/EMUL, /B)
+  ou BuildFont ne peut pas la relever a l'ecran }
+Const
+ Font8Emb : Array[0..255,0..7] Of Byte = (
+  ($00,$00,$00,$00,$00,$00,$00,$00),($7E,$81,$A5,$81,$BD,$99,$81,$7E),
+  ($7E,$FF,$DB,$FF,$C3,$E7,$FF,$7E),($6C,$FE,$FE,$FE,$7C,$38,$10,$00),
+  ($10,$38,$7C,$FE,$7C,$38,$10,$00),($38,$7C,$38,$FE,$FE,$7C,$38,$7C),
+  ($10,$10,$38,$7C,$FE,$7C,$38,$7C),($00,$00,$18,$3C,$3C,$18,$00,$00),
+  ($FF,$FF,$E7,$C3,$C3,$E7,$FF,$FF),($00,$3C,$66,$42,$42,$66,$3C,$00),
+  ($FF,$C3,$99,$BD,$BD,$99,$C3,$FF),($0F,$07,$0F,$7D,$CC,$CC,$CC,$78),
+  ($3C,$66,$66,$66,$3C,$18,$7E,$18),($3F,$33,$3F,$30,$30,$70,$F0,$E0),
+  ($7F,$63,$7F,$63,$63,$67,$E6,$C0),($99,$5A,$3C,$E7,$E7,$3C,$5A,$99),
+  ($80,$E0,$F8,$FE,$F8,$E0,$80,$00),($02,$0E,$3E,$FE,$3E,$0E,$02,$00),
+  ($18,$3C,$7E,$18,$18,$7E,$3C,$18),($66,$66,$66,$66,$66,$00,$66,$00),
+  ($7F,$DB,$DB,$7B,$1B,$1B,$1B,$00),($3E,$63,$38,$6C,$6C,$38,$CC,$78),
+  ($00,$00,$00,$00,$7E,$7E,$7E,$00),($18,$3C,$7E,$18,$7E,$3C,$18,$FF),
+  ($18,$3C,$7E,$18,$18,$18,$18,$00),($18,$18,$18,$18,$7E,$3C,$18,$00),
+  ($00,$18,$0C,$FE,$0C,$18,$00,$00),($00,$30,$60,$FE,$60,$30,$00,$00),
+  ($00,$00,$C0,$C0,$C0,$FE,$00,$00),($00,$24,$66,$FF,$66,$24,$00,$00),
+  ($00,$18,$3C,$7E,$FF,$FF,$00,$00),($00,$FF,$FF,$7E,$3C,$18,$00,$00),
+  ($00,$00,$00,$00,$00,$00,$00,$00),($30,$78,$78,$78,$30,$00,$30,$00),
+  ($6C,$6C,$6C,$00,$00,$00,$00,$00),($6C,$6C,$FE,$6C,$FE,$6C,$6C,$00),
+  ($30,$7C,$C0,$78,$0C,$F8,$30,$00),($00,$C6,$CC,$18,$30,$66,$C6,$00),
+  ($38,$6C,$38,$76,$DC,$CC,$76,$00),($60,$60,$C0,$00,$00,$00,$00,$00),
+  ($18,$30,$60,$60,$60,$30,$18,$00),($60,$30,$18,$18,$18,$30,$60,$00),
+  ($00,$66,$3C,$FF,$3C,$66,$00,$00),($00,$30,$30,$FC,$30,$30,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$60),($00,$00,$00,$FC,$00,$00,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$00),($06,$0C,$18,$30,$60,$C0,$80,$00),
+  ($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),($30,$70,$30,$30,$30,$30,$FC,$00),
+  ($78,$CC,$0C,$38,$60,$CC,$FC,$00),($78,$CC,$0C,$38,$0C,$CC,$78,$00),
+  ($1C,$3C,$6C,$CC,$FE,$0C,$1E,$00),($FC,$C0,$F8,$0C,$0C,$CC,$78,$00),
+  ($38,$60,$C0,$F8,$CC,$CC,$78,$00),($FC,$CC,$0C,$18,$30,$30,$30,$00),
+  ($78,$CC,$CC,$78,$CC,$CC,$78,$00),($78,$CC,$CC,$7C,$0C,$18,$70,$00),
+  ($00,$30,$30,$00,$00,$30,$30,$00),($00,$30,$30,$00,$00,$30,$30,$60),
+  ($18,$30,$60,$C0,$60,$30,$18,$00),($00,$00,$FC,$00,$00,$FC,$00,$00),
+  ($60,$30,$18,$0C,$18,$30,$60,$00),($78,$CC,$0C,$18,$30,$00,$30,$00),
+  ($7C,$C6,$DE,$DE,$DE,$C0,$78,$00),($38,$6C,$C6,$C6,$FE,$C6,$C6,$00),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$FC,$00),($7C,$C6,$C6,$C0,$C0,$C6,$7C,$00),
+  ($F8,$CC,$C6,$C6,$C6,$CC,$F8,$00),($FE,$C0,$C0,$FC,$C0,$C0,$FE,$00),
+  ($FE,$C0,$C0,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C0,$CE,$C6,$C6,$7E,$00),
+  ($C6,$C6,$C6,$FE,$C6,$C6,$C6,$00),($78,$30,$30,$30,$30,$30,$78,$00),
+  ($1E,$06,$06,$06,$C6,$C6,$7C,$00),($C6,$CC,$D8,$F0,$D8,$CC,$C6,$00),
+  ($C0,$C0,$C0,$C0,$C0,$C0,$FE,$00),($C6,$EE,$FE,$D6,$C6,$C6,$C6,$00),
+  ($C6,$E6,$F6,$DE,$CE,$C6,$C6,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($FC,$C6,$C6,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$06),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$C6,$00),($78,$CC,$60,$30,$18,$CC,$78,$00),
+  ($FC,$30,$30,$30,$30,$30,$30,$00),($C6,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($C6,$C6,$C6,$C6,$C6,$6C,$38,$00),($C6,$C6,$C6,$D6,$FE,$EE,$C6,$00),
+  ($C6,$C6,$6C,$38,$6C,$C6,$C6,$00),($C3,$C3,$66,$3C,$18,$18,$18,$00),
+  ($FE,$0C,$18,$30,$60,$C0,$FE,$00),($3C,$30,$30,$30,$30,$30,$3C,$00),
+  ($C0,$60,$30,$18,$0C,$06,$03,$00),($3C,$0C,$0C,$0C,$0C,$0C,$3C,$00),
+  ($00,$38,$6C,$C6,$00,$00,$00,$00),($00,$00,$00,$00,$00,$00,$00,$FF),
+  ($30,$30,$18,$00,$00,$00,$00,$00),($00,$00,$7C,$06,$7E,$C6,$7E,$00),
+  ($C0,$C0,$FC,$C6,$C6,$E6,$DC,$00),($00,$00,$7C,$C6,$C0,$C0,$7E,$00),
+  ($06,$06,$7E,$C6,$C6,$CE,$76,$00),($00,$00,$7C,$C6,$FE,$C0,$7E,$00),
+  ($1E,$30,$7C,$30,$30,$30,$30,$00),($00,$00,$7E,$C6,$CE,$76,$06,$7C),
+  ($C0,$C0,$FC,$C6,$C6,$C6,$C6,$00),($18,$00,$38,$18,$18,$18,$3C,$00),
+  ($18,$00,$38,$18,$18,$18,$18,$F0),($C0,$C0,$CC,$D8,$F0,$D8,$CC,$00),
+  ($38,$18,$18,$18,$18,$18,$3C,$00),($00,$00,$CC,$FE,$D6,$C6,$C6,$00),
+  ($00,$00,$FC,$C6,$C6,$C6,$C6,$00),($00,$00,$7C,$C6,$C6,$C6,$7C,$00),
+  ($00,$00,$FC,$C6,$C6,$E6,$DC,$C0),($00,$00,$7E,$C6,$C6,$CE,$76,$06),
+  ($00,$00,$6E,$70,$60,$60,$60,$00),($00,$00,$7C,$C0,$7C,$06,$FC,$00),
+  ($30,$30,$7C,$30,$30,$30,$1C,$00),($00,$00,$C6,$C6,$C6,$C6,$7E,$00),
+  ($00,$00,$C6,$C6,$C6,$6C,$38,$00),($00,$00,$C6,$C6,$D6,$FE,$6C,$00),
+  ($00,$00,$C6,$6C,$38,$6C,$C6,$00),($00,$00,$C6,$C6,$CE,$76,$06,$7C),
+  ($00,$00,$FC,$18,$30,$60,$FC,$00),($1C,$30,$30,$E0,$30,$30,$1C,$00),
+  ($18,$18,$18,$00,$18,$18,$18,$00),($E0,$30,$30,$1C,$30,$30,$E0,$00),
+  ($76,$DC,$00,$00,$00,$00,$00,$00),($00,$10,$38,$6C,$C6,$C6,$FE,$00),
+  ($78,$CC,$C0,$CC,$78,$18,$0C,$78),($00,$CC,$00,$CC,$CC,$CC,$7E,$00),
+  ($1C,$00,$78,$CC,$FC,$C0,$78,$00),($7E,$C3,$3C,$06,$3E,$66,$3F,$00),
+  ($CC,$00,$78,$0C,$7C,$CC,$7E,$00),($E0,$00,$78,$0C,$7C,$CC,$7E,$00),
+  ($30,$30,$78,$0C,$7C,$CC,$7E,$00),($00,$00,$78,$C0,$C0,$78,$0C,$38),
+  ($7E,$C3,$3C,$66,$7E,$60,$3C,$00),($CC,$00,$78,$CC,$FC,$C0,$78,$00),
+  ($E0,$00,$78,$CC,$FC,$C0,$78,$00),($CC,$00,$70,$30,$30,$30,$78,$00),
+  ($7C,$C6,$38,$18,$18,$18,$3C,$00),($E0,$00,$70,$30,$30,$30,$78,$00),
+  ($C6,$38,$6C,$C6,$FE,$C6,$C6,$00),($30,$30,$00,$78,$CC,$FC,$CC,$00),
+  ($1C,$00,$FC,$60,$78,$60,$FC,$00),($00,$00,$7F,$0C,$7F,$CC,$7F,$00),
+  ($3E,$6C,$CC,$FE,$CC,$CC,$CE,$00),($78,$CC,$00,$78,$CC,$CC,$78,$00),
+  ($00,$CC,$00,$78,$CC,$CC,$78,$00),($00,$E0,$00,$78,$CC,$CC,$78,$00),
+  ($78,$CC,$00,$CC,$CC,$CC,$7E,$00),($00,$E0,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$CC,$00,$CC,$CC,$7C,$0C,$F8),($C3,$18,$3C,$66,$66,$3C,$18,$00),
+  ($CC,$00,$CC,$CC,$CC,$CC,$78,$00),($18,$18,$7E,$C0,$C0,$7E,$18,$18),
+  ($38,$6C,$64,$F0,$60,$E6,$FC,$00),($CC,$CC,$78,$FC,$30,$FC,$30,$30),
+  ($F8,$CC,$CC,$FA,$C6,$CF,$C6,$C7),($0E,$1B,$18,$3C,$18,$18,$D8,$70),
+  ($1C,$00,$78,$0C,$7C,$CC,$7E,$00),($38,$00,$70,$30,$30,$30,$78,$00),
+  ($00,$1C,$00,$78,$CC,$CC,$78,$00),($00,$1C,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$F8,$00,$F8,$CC,$CC,$CC,$00),($FC,$00,$CC,$EC,$FC,$DC,$CC,$00),
+  ($3C,$6C,$6C,$3E,$00,$7E,$00,$00),($38,$6C,$6C,$38,$00,$7C,$00,$00),
+  ($30,$00,$30,$60,$C0,$CC,$78,$00),($00,$00,$00,$FC,$C0,$C0,$00,$00),
+  ($00,$00,$00,$FC,$0C,$0C,$00,$00),($C3,$C6,$CC,$DE,$33,$66,$CC,$0F),
+  ($C3,$C6,$CC,$DB,$37,$6F,$CF,$03),($18,$18,$00,$18,$18,$18,$18,$00),
+  ($00,$33,$66,$CC,$66,$33,$00,$00),($00,$CC,$66,$33,$66,$CC,$00,$00),
+  ($22,$88,$22,$88,$22,$88,$22,$88),($55,$AA,$55,$AA,$55,$AA,$55,$AA),
+  ($DB,$77,$DB,$EE,$DB,$77,$DB,$EE),($18,$18,$18,$18,$18,$18,$18,$18),
+  ($18,$18,$18,$18,$F8,$18,$18,$18),($18,$18,$F8,$18,$F8,$18,$18,$18),
+  ($36,$36,$36,$36,$F6,$36,$36,$36),($00,$00,$00,$00,$FE,$36,$36,$36),
+  ($00,$00,$F8,$18,$F8,$18,$18,$18),($36,$36,$F6,$06,$F6,$36,$36,$36),
+  ($36,$36,$36,$36,$36,$36,$36,$36),($00,$00,$FE,$06,$F6,$36,$36,$36),
+  ($36,$36,$F6,$06,$FE,$00,$00,$00),($36,$36,$36,$36,$FE,$00,$00,$00),
+  ($18,$18,$F8,$18,$F8,$00,$00,$00),($00,$00,$00,$00,$F8,$18,$18,$18),
+  ($18,$18,$18,$18,$1F,$00,$00,$00),($18,$18,$18,$18,$FF,$00,$00,$00),
+  ($00,$00,$00,$00,$FF,$18,$18,$18),($18,$18,$18,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$00,$00,$00),($18,$18,$18,$18,$FF,$18,$18,$18),
+  ($18,$18,$1F,$18,$1F,$18,$18,$18),($36,$36,$36,$36,$37,$36,$36,$36),
+  ($36,$36,$37,$30,$3F,$00,$00,$00),($00,$00,$3F,$30,$37,$36,$36,$36),
+  ($36,$36,$F7,$00,$FF,$00,$00,$00),($00,$00,$FF,$00,$F7,$36,$36,$36),
+  ($36,$36,$37,$30,$37,$36,$36,$36),($00,$00,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$F7,$00,$F7,$36,$36,$36),($18,$18,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$36,$36,$FF,$00,$00,$00),($00,$00,$FF,$00,$FF,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$36,$36,$36),($36,$36,$36,$36,$3F,$00,$00,$00),
+  ($18,$18,$1F,$18,$1F,$00,$00,$00),($00,$00,$1F,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$3F,$36,$36,$36),($36,$36,$36,$36,$FF,$36,$36,$36),
+  ($18,$18,$FF,$18,$FF,$18,$18,$18),($18,$18,$18,$18,$F8,$00,$00,$00),
+  ($00,$00,$00,$00,$1F,$18,$18,$18),($FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF),
+  ($00,$00,$00,$00,$FF,$FF,$FF,$FF),($F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0),
+  ($0F,$0F,$0F,$0F,$0F,$0F,$0F,$0F),($FF,$FF,$FF,$FF,$00,$00,$00,$00),
+  ($00,$00,$76,$DC,$C8,$DC,$76,$00),($00,$78,$CC,$F8,$CC,$F8,$C0,$C0),
+  ($00,$FC,$CC,$C0,$C0,$C0,$C0,$00),($00,$FE,$6C,$6C,$6C,$6C,$6C,$00),
+  ($FC,$CC,$60,$30,$60,$CC,$FC,$00),($00,$00,$7E,$D8,$D8,$D8,$70,$00),
+  ($00,$66,$66,$66,$66,$7C,$60,$C0),($00,$76,$DC,$18,$18,$18,$18,$00),
+  ($FC,$30,$78,$CC,$CC,$78,$30,$FC),($38,$6C,$C6,$FE,$C6,$6C,$38,$00),
+  ($38,$6C,$C6,$C6,$6C,$6C,$EE,$00),($1C,$30,$18,$7C,$CC,$CC,$78,$00),
+  ($00,$00,$7E,$DB,$DB,$7E,$00,$00),($06,$0C,$7E,$DB,$DB,$7E,$60,$C0),
+  ($38,$60,$C0,$F8,$C0,$60,$38,$00),($78,$CC,$CC,$CC,$CC,$CC,$CC,$00),
+  ($00,$FC,$00,$FC,$00,$FC,$00,$00),($30,$30,$FC,$30,$30,$00,$FC,$00),
+  ($60,$30,$18,$30,$60,$00,$FC,$00),($18,$30,$60,$30,$18,$00,$FC,$00),
+  ($0E,$1B,$1B,$18,$18,$18,$18,$18),($18,$18,$18,$18,$18,$D8,$D8,$70),
+  ($30,$30,$00,$FC,$00,$30,$30,$00),($00,$76,$DC,$00,$76,$DC,$00,$00),
+  ($38,$6C,$6C,$38,$00,$00,$00,$00),($00,$00,$00,$18,$18,$00,$00,$00),
+  ($00,$00,$00,$00,$18,$00,$00,$00),($0F,$0C,$0C,$0C,$EC,$6C,$3C,$1C),
+  ($78,$6C,$6C,$6C,$6C,$00,$00,$00),($70,$18,$30,$60,$78,$00,$00,$00),
+  ($00,$00,$3C,$3C,$3C,$3C,$00,$00),($00,$00,$00,$00,$00,$00,$00,$00)
+ );
+
 Procedure BuildFont;
 Var C,X,Y: Integer;
 Begin
@@ -16003,8 +16137,8 @@ End;
 Procedure CheckFonts;
 Begin
  If Not FontReady Then Begin
-  { en mode batch : police vide }
-  FillChar(Font8,SizeOf(Font8),0);
+  { en mode batch : police integree }
+  Move(Font8Emb,Font8,SizeOf(Font8));
   FontReady:=True;
  End;
 End;
@@ -20528,6 +20662,7 @@ Procedure LineAInit;
 Var I: Integer;
 Begin
  For I:=0 To 130 Do Wr8(LINEA_VARS+I,0);
+ For I:=1 To $2F Do Wr8(LINEA_VARS-I,0);
  Wr16(LINEA_VARS,1);Wr16(LINEA_VARS+2,80);
  Wr32(LINEA_VARS+4,LA_CONTRL);Wr32(LINEA_VARS+8,LA_INTIN);Wr32(LINEA_VARS+12,
    LA_PTSIN);
@@ -20535,84 +20670,405 @@ Begin
  Wr16(LINEA_VARS+24,1);Wr16(LINEA_VARS+34,$FFFF);Wr16(LINEA_VARS+36,0);
  Wr16(LINEA_VARS+56,0);Wr16(LINEA_VARS+58,0);Wr16(LINEA_VARS+60,
    639);Wr16(LINEA_VARS+62,399);
- Rg[0]:=LINEA_VARS;Rg[8]:=LINEA_VARS;
  LineAFonts;
+ { police courante : 8x16 ; texte : premier plan 1, fond 0 }
+ Wr32(LINEA_VARS+84,LA_F16DAT);Wr16(LINEA_VARS+88,256);
+ Wr16(LINEA_VARS+106,1);Wr16(LINEA_VARS+114,0);
+ { variables a decalage negatif (V_CEL_HT ... BYTES_LIN) }
+ Wr16(LINEA_VARS-$2E,16);Wr16(LINEA_VARS-$2C,79);Wr16(LINEA_VARS-$2A,24);Wr16(LINEA_VARS-$28,1280);
+ Wr16(LINEA_VARS-$26,0);Wr16(LINEA_VARS-$24,1);Wr32(LINEA_VARS-$22,DrawBase);
+ Wr32(LINEA_VARS-$16,LA_F16DAT);Wr16(LINEA_VARS-$12,255);Wr16(LINEA_VARS-$10,0);Wr16(LINEA_VARS-$E,256);
+ Wr16(LINEA_VARS-$C,640);Wr32(LINEA_VARS-$A,LA_FONTS+$800);Wr16(LINEA_VARS-4,400);Wr16(LINEA_VARS-2,80);
+ Rg[0]:=LINEA_VARS;Rg[8]:=LINEA_VARS;
  Rg[9]:=LA_FONTS;Rg[10]:=LINEA_VARS+$200;
 End;
 
-Procedure DoLineA(Op: LongInt);
-Var F: Integer; X1,Y1,X2,Y2,Col,Y,Wm: Integer; Bc: LongInt; Src,Dst: TMfdb;
-  A,Pa: LongInt;
-    W,H,Mode,XX,YY: Integer; Sb,Db: Boolean; Ot: Integer;
+{ ---------------------------------------------------------------------- }
+{ Ligne A : primitives (pixel, ligne, rectangle, polygone, BITBLT, TEXTBLT   }
+{ avec tous les effets, lutins, copie raster, remplissage par germe)        }
+{ ---------------------------------------------------------------------- }
+
+Var LaXor: Boolean;
+
+Procedure LaOPlot(X,Y: LongInt; C: Integer);
 Begin
- If (ExcHandler(10)<>0) And Not AmigaRun Then Begin RaiseExc(10);Exit;End;   {
-   vecteur 10 installe par le programme }
+ If (X<0) Or (X>=640) Or (Y<0) Or (Y>=400) Then Exit;
+ If LaXor Then Begin If C<>0 Then BPix(X,Y,Not BGet(X,Y));End
+ Else BPix(X,Y,C<>0);
+End;
+
+Function LaOGet(X,Y: LongInt): Integer;
+Begin
+ LaOGet:=Ord(BGet(X,Y));
+End;
+
+Function LaRop(Op,S,D: LongInt): LongInt;
+Begin
+ LaRop:=Ord(RopBit(Op,S<>0,D<>0));
+End;
+
+Function LaW(Off: Integer): Integer;
+Begin LaW:=SmallInt(Rd16(LINEA_VARS+Off)); End;
+
+Function LaClip(X,Y: LongInt): Boolean;
+{ True si le point est visible (rectangle d'ecran et fenetre de clipping) }
+Begin
+ LaClip:=False;
+ If (X<0) Or (Y<0) Or (X>639) Or (Y>399) Then Exit;
+ If LaW(54)<>0 Then
+  If (X<LaW(56)) Or (Y<LaW(58)) Or (X>LaW(60)) Or (Y>LaW(62)) Then Exit;
+ LaClip:=True;
+End;
+
+{ pixel selon le mode d'ecriture (0 remplace, 1 transparent, 2 xor, 3 transparent inverse) ;
+  Fg : le pixel fait partie du motif ; Col : couleur du premier plan }
+Procedure LaPix(X,Y: LongInt; Fg: Boolean; Col: Integer);
+Var C: Byte;
+Begin
+ If Not LaClip(X,Y) Then Exit;
+ If (Col And 1)<>0 Then C:=1 Else C:=0;
+ Case LaW(36) Of
+  1: If Fg Then LaOPlot(X,Y,C);
+  2: If Fg And (C<>0) Then Begin LaXor:=True;LaOPlot(X,Y,1);LaXor:=False;End;
+  3: If Not Fg Then LaOPlot(X,Y,C);
+ Else
+  If Fg Then LaOPlot(X,Y,C) Else LaOPlot(X,Y,0);
+ End;
+End;
+
+Procedure LaPut(X,Y: LongInt; C: Integer);
+Begin
+ LaPix(X,Y,True,C);
+End;
+
+{ bit du motif de remplissage en (X,Y) }
+Function LaPat(X,Y: LongInt): Boolean;
+Var P: LongInt; W: Word; M: Integer;
+Begin
+ P:=Rd32(LINEA_VARS+46);
+ If P=0 Then Begin LaPat:=True;Exit;End;
+ M:=LaW(50);
+ W:=Rd16(P+2*(Y And M));
+ LaPat:=((W Shr (15-(X And 15))) And 1)<>0;
+End;
+
+Procedure LaHLine(X1,X2,Y: LongInt);
+Var X,T: LongInt;
+Begin
+ If X1>X2 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ For X:=X1 To X2 Do LaPix(X,Y,LaPat(X,Y),LaW(24));
+End;
+
+Procedure LaLine(X1,Y1,X2,Y2: LongInt);
+Var DX,DY,SX,SY,Err,E2,N: LongInt; Mask: Word;
+Begin
+ Mask:=Word(LaW(34));
+ DX:=Abs(X2-X1);DY:=Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ Err:=DX-DY;N:=0;
+ Repeat
+  LaPix(X1,Y1,((Mask Shr (15-(N And 15))) And 1)<>0,LaW(24));
+  Inc(N);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*Err;
+  If E2>-DY Then Begin Err:=Err-DY;X1:=X1+SX;End;
+  If E2<DX Then Begin Err:=Err+DX;Y1:=Y1+SY;End;
+ Until False;
+End;
+
+Procedure LaSpriteMouse(Form: LongInt);
+Var I: Integer;
+Begin
+ CurHotX:=Clamp(SExt(Rd16(Form),2),0,15);CurHotY:=Clamp(SExt(Rd16(Form+2),2),0,15);
+ For I:=0 To 15 Do Begin CurMask[I]:=Rd16(Form+10+I*2);CurData[I]:=Rd16(Form+42+I*2);End;
+End;
+
+{ TEXTBLT : un caractere de la forme de police vers l'ecran avec tous les effets
+  (gras, clair, italique, souligne, contour, ombre), l'echelle et la rotation }
+Procedure LaTextBlt;
+Const OFSX = 40; MAXC = 160;
+Var Fb,Fw: LongInt; SX,SY,DX,DY,W,H,I,J,K,R,C,Sty,Wt,Lm,Sk,Ro,Lo,Fg,Bg,Up,Mode: Integer;
+    G1,G2: Array[0..95,0..MAXC-1] Of Byte;       { lignes x colonnes (decalage OFSX) }
+    Wn: Integer; Mk: Word; Sh,Cnt,Dir,Yd,Xd,Kx,Ky,Ry: Integer; Inc_,AccX,AccY: LongInt; B: Byte;
+    DstW,DstH,ExL,ExR: Integer;
+ Function Src(Jj,Ii: Integer): Byte;
+ Begin
+  If (Ii<0) Or (Ii>=W) Or (Jj<0) Or (Jj>=H) Then Begin Src:=0;Exit;End;
+  Src:=Ord((Rd8(Fb+(SY+Jj)*Fw+((SX+Ii) Shr 3)) And (128 Shr ((SX+Ii) And 7)))<>0);
+ End;
+ Procedure Emit(Xo,Yo: Integer; V: Byte);
+ { ecrit le point (colonne Xo, ligne Yo) du glyphe compose, en tenant compte de la rotation }
+ Var PxX,PxY: Integer;
+ Begin
+  Case LaW(104) Of
+   900: Begin PxX:=DX+Yo;PxY:=DY-Xo;End;
+   1800: Begin PxX:=DX-Xo;PxY:=DY-Yo;End;
+   2700: Begin PxX:=DX-Yo;PxY:=DY+Xo;End;
+  Else Begin PxX:=DX+Xo;PxY:=DY+Yo;End;
+  End;
+  If Not LaClip(PxX,PxY) Then Exit;
+  Case LaW(36) Of
+   1: If V<>0 Then LaOPlot(PxX,PxY,Fg And 1);
+   2: If (V<>0) And ((Fg And 1)<>0) Then Begin LaXor:=True;LaOPlot(PxX,PxY,1);LaXor:=False;End;
+   3: If V=0 Then LaOPlot(PxX,PxY,Fg And 1);
+  Else
+   If V<>0 Then LaOPlot(PxX,PxY,Fg And 1) Else LaOPlot(PxX,PxY,Bg And 1);
+  End;
+ End;
+Begin
+ Fb:=Rd32(LINEA_VARS+84);Fw:=LaW(88);
+ SX:=LaW(72);SY:=LaW(74);DX:=LaW(76);DY:=LaW(78);W:=LaW(80);H:=LaW(82);
+ Sty:=LaW(90);Wt:=LaW(96);Lm:=LaW(92);Sk:=LaW(94);Ro:=LaW(98);Lo:=LaW(100);
+ Fg:=LaW(106);Bg:=LaW(114);
+ If (W<=0) Or (H<=0) Or (W>64) Or (H>64) Then Exit;
+ FillChar(G1,SizeOf(G1),0);FillChar(G2,SizeOf(G2),0);
+ { etendue de la cellule : -LOFF .. largeur + epaisseur + ROFF (+1 de chaque cote pour le contour, +1 a droite pour l'ombre) }
+ If (Sty And 1)=0 Then Wt:=0;
+ If Ro<0 Then Ro:=0;
+ If Lo<0 Then Lo:=0;
+ ExL:=-Lo;ExR:=W+Wt+Ro;
+ If (Sty And 16)<>0 Then Begin Dec(ExL);Inc(ExR);End;
+ If (Sty And 32)<>0 Then Inc(ExR);
+ If ExL<-OFSX+1 Then ExL:=-OFSX+1;
+ If ExR>MAXC-OFSX-1 Then ExR:=MAXC-OFSX-1;
+ { 1. glyphe source }
+ For J:=0 To H-1 Do For I:=0 To W-1 Do G1[J,I+OFSX]:=Src(J,I);
+ { 2. gras : chaque point est repete sur Wt colonnes a sa droite }
+ If (Sty And 1)<>0 Then Begin
+  If Wt<0 Then Wt:=0;
+  For J:=0 To H-1 Do
+   For I:=0 To MAXC-1 Do
+    If G1[J,I]<>0 Then
+     For K:=0 To Wt Do If I+K<MAXC Then G2[J,I+K]:=1;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 3. clair : masque tourne d'un bit a chaque ligne }
+ If (Sty And 2)<>0 Then Begin
+  Mk:=Word(Lm);
+  For J:=0 To H-1 Do Begin
+   For I:=0 To MAXC-1 Do
+    If ((Mk Shr (15-((I-OFSX+16000) And 15))) And 1)=0 Then G1[J,I]:=0;
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+ End;
+ { 4. italique : decalage par ligne, de Ro au sommet vers -Lo en bas }
+ If (Sty And 4)<>0 Then Begin
+  Mk:=Word(Sk);Sh:=Ro;
+  For J:=0 To H-1 Do Begin
+   For I:=0 To MAXC-1 Do
+    If G1[J,I]<>0 Then Begin
+     K:=I+Sh;
+     If (K>=0) And (K<MAXC) Then G2[J,K]:=1;
+    End;
+   If (Mk And $8000)<>0 Then Dec(Sh);
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 5. contour : bord du glyphe seulement }
+ If (Sty And 16)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=1 To MAXC-2 Do
+    If G1[J,I]=0 Then Begin
+     Cnt:=0;
+     For R:=-1 To 1 Do For C:=-1 To 1 Do
+      If (J+R>=0) And (J+R<H) And (G1[J+R,I+C]<>0) Then Cnt:=1;
+     G2[J,I]:=Cnt;
+    End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 6. ombre : copie decalee d'un point, en trame }
+ If (Sty And 32)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=0 To MAXC-1 Do Begin
+    G2[J,I]:=G1[J,I];
+    If (J>0) And (I>0) And (G1[J-1,I-1]<>0) And (G1[J,I]=0) And (((I+J) And 1)=0) Then G2[J,I]:=1;
+   End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 7. souligne : derniere ligne }
+ If (Sty And 8)<>0 Then For I:=0 To MAXC-1 Do If (I>=OFSX-Lo) And (I<OFSX+W+Wt+Ro) Then G1[H-1,I]:=1;
+ { 8. ecriture avec echelle (accumulateur DDA) }
+ DstH:=0;
+ If LaW(102)=0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=ExL To ExR-1 Do Emit(I,J,G1[J,I+OFSX]);
+ End Else Begin
+  Dir:=LaW(68);Inc_:=LaW(66) And $FFFF;
+  Yd:=0;AccY:=LaW(64) And $FFFF;
+  For J:=0 To H-1 Do Begin
+   AccY:=AccY+Inc_;
+   If AccY>65535 Then Begin AccY:=AccY-65536;Ky:=1;End Else Ky:=0;
+   If Dir=0 Then Ky:=1+Ky Else Ky:=1-Ky;
+   For Ry:=1 To Ky Do Begin
+    Xd:=ExL;AccX:=LaW(64) And $FFFF;
+    For I:=ExL To ExR-1 Do Begin
+     B:=G1[J,I+OFSX];
+     AccX:=AccX+Inc_;
+     If AccX>65535 Then Begin AccX:=AccX-65536;Kx:=1;End Else Kx:=0;
+     If Dir=0 Then Kx:=1+Kx Else Kx:=1-Kx;
+     For R:=1 To Kx Do Begin Emit(Xd,Yd,B);Inc(Xd);End;
+    End;
+    Inc(Yd);
+   End;
+  End;
+ End;
+ 
+End;
+
+Procedure LaDispatch(Fn: Integer);
+Var X1,Y1,X2,Y2,X,Y,I,J,K,N: LongInt; Pt,Pn,Ct: LongInt; Col: Integer; B: LongInt;
+    W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt; Fg,Bg: Integer;
+    XI: Array[0..63] Of LongInt; Cnt: Integer; Mf1,Mf2,Fb,Fw: LongInt; Sv: Integer;
+    SrcM,DstM: TMfdb; Sa,Sb,Sl: LongInt; Fm: LongInt; Mk,Dt: Word; PA,PNL,PMK: LongInt;
+ Function SrcBit(Frm,Nxw,Nxl,PX,PY: LongInt): Integer;
+ Var A: LongInt;
+ Begin
+  A:=Frm+PY*Nxl+(PX Shr 4)*Nxw+((PX And 15) Shr 3);
+  SrcBit:=Ord((Rd8(A) And (128 Shr (PX And 7)))<>0);
+ End;
+ Procedure PutBit(Frm,Nxw,Nxl,PX,PY: LongInt; V: Integer);
+ Var A: LongInt;
+ Begin
+  A:=Frm+PY*Nxl+(PX Shr 4)*Nxw+((PX And 15) Shr 3);
+  If V<>0 Then Wr8(A,Rd8(A) Or (128 Shr (PX And 7))) Else Wr8(A,Rd8(A) And (Not (128 Shr (PX And 7))));
+ End;
+Begin
+ Case Fn Of
+  0: LineAInit;
+  1: Begin
+      Pt:=Rd32(LINEA_VARS+12);Pn:=Rd32(LINEA_VARS+8);
+      LaPix(SmallInt(Rd16(Pt)),SmallInt(Rd16(Pt+2)),True,SmallInt(Rd16(Pn)));
+     End;
+  2: Begin
+      Pt:=Rd32(LINEA_VARS+12);
+      Rg[0]:=LaOGet(SmallInt(Rd16(Pt)),SmallInt(Rd16(Pt+2)));
+     End;
+  3: LaLine(LaW(38),LaW(40),LaW(42),LaW(44));
+  4: LaHLine(LaW(38),LaW(42),LaW(40));
+  5: Begin
+      Y1:=LaW(40);Y2:=LaW(44);
+      If Y1>Y2 Then Begin Y:=Y1;Y1:=Y2;Y2:=Y;End;
+      For Y:=Y1 To Y2 Do LaHLine(LaW(38),LaW(42),Y);
+     End;
+  6: Begin
+      { une ligne de balayage (Y1) d'un polygone : points dans PTSIN }
+      Ct:=Rd32(LINEA_VARS+4);Pt:=Rd32(LINEA_VARS+12);
+      Cnt:=SmallInt(Rd16(Ct+2));
+      If Cnt>60 Then Cnt:=60;
+      Y:=LaW(40);N:=0;
+      For I:=0 To Cnt-1 Do Begin
+       J:=I+1;If J>=Cnt Then J:=0;
+       X1:=SmallInt(Rd16(Pt+I*4));Y1:=SmallInt(Rd16(Pt+I*4+2));
+       X2:=SmallInt(Rd16(Pt+J*4));Y2:=SmallInt(Rd16(Pt+J*4+2));
+       If ((Y1<=Y) And (Y2>Y)) Or ((Y2<=Y) And (Y1>Y)) Then Begin
+        If N<63 Then Begin XI[N]:=Round(X1+(Y-Y1)*(X2-X1)/(Y2-Y1));Inc(N);End;
+       End;
+      End;
+      For I:=1 To N-1 Do Begin
+       K:=XI[I];J:=I-1;
+       While (J>=0) And (XI[J]>K) Do Begin XI[J+1]:=XI[J];Dec(J);End;
+       XI[J+1]:=K;
+      End;
+      I:=0;
+      While I+1<N Do Begin LaHLine(XI[I],XI[I+1],Y);Inc(I,2);End;
+     End;
+  7: Begin
+      { BITBLT : bloc de parametres en A6 (un plan) }
+      B:=Rg[14];
+      W:=SmallInt(Rd16(B));H:=SmallInt(Rd16(B+2));
+      Fg:=SmallInt(Rd16(B+6)) And 1;Bg:=SmallInt(Rd16(B+8)) And 1;
+      SX:=SmallInt(Rd16(B+14));SY:=SmallInt(Rd16(B+16));SF:=Rd32(B+18);SNW:=SmallInt(Rd16(B+22));SNL:=SmallInt(Rd16(B+24));
+      DX:=SmallInt(Rd16(B+28));DY:=SmallInt(Rd16(B+30));DF:=Rd32(B+32);DNW:=SmallInt(Rd16(B+36));DNL:=SmallInt(Rd16(B+38));
+      Opr:=Rd8(B+10+(Fg Shl 1)+Bg);
+      { demi-teinte : la source est combinee (ET) au motif }
+      PA:=Rd32(B+42);PNL:=SmallInt(Rd16(B+46));PMK:=Rd16(B+50);
+      { sens de copie choisi pour que le recouvrement ne detruise pas la source :
+        lignes en sens inverse si on descend, colonnes en sens inverse si on va a droite sur la meme ligne }
+      For K:=0 To H-1 Do Begin
+       If DY>SY Then J:=H-1-K Else J:=K;
+       For N:=0 To W-1 Do Begin
+        If (DY=SY) And (DX>SX) Then I:=W-1-N Else I:=N;
+        S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
+        If PA<>0 Then S:=S And ((Rd16(PA+PNL*((DY+J) And PMK)) Shr (15-((DX+I) And 15))) And 1);
+        PutBit(DF,DNW,DNL,DX+I,DY+J,LaRop(Opr,S,D));
+       End;
+      End;
+      
+     End;
+  8: LaTextBlt;
+  9: MouseHidden:=Max2(0,MouseHidden-1);
+  10: Inc(MouseHidden);
+  11: Begin
+       { transformation du curseur de souris : formulaire dans INTIN }
+       LaSpriteMouse(Rd32(LINEA_VARS+8));
+      End;
+  12: Begin
+       { efface un lutin : tampon en A2 (x, y, nombre de lignes, fond) }
+       Sa:=Rg[10];
+       If Rd16(Sa+4)<>0 Then Begin
+        X:=SmallInt(Rd16(Sa));Y:=SmallInt(Rd16(Sa+2));N:=Rd16(Sa+4);
+        For J:=0 To N-1 Do
+         For I:=0 To 15 Do
+          If LaClip(X+I,Y+J) Then LaOPlot(X+I,Y+J,(Rd16(Sa+6+J*2) Shr (15-I)) And 1);
+        Wr16(Sa+4,0);
+        
+       End;
+      End;
+  13: Begin
+       { dessine un lutin : D0=x, D1=y, A0=formulaire, A2=tampon de sauvegarde }
+       Fm:=Rg[8];Sa:=Rg[10];
+       X:=SmallInt(Rg[0] And $FFFF)-SmallInt(Rd16(Fm));Y:=SmallInt(Rg[1] And $FFFF)-SmallInt(Rd16(Fm+2));
+       { +6 : couleur du masque (fond), +8 : couleur des donnees (premier plan) }
+       Bg:=SmallInt(Rd16(Fm+6)) And 1;Fg:=SmallInt(Rd16(Fm+8)) And 1;
+       Wr16(Sa,X);Wr16(Sa+2,Y);Wr16(Sa+4,16);
+       For J:=0 To 15 Do Begin
+        Mk:=0;
+        For I:=0 To 15 Do If LaClip(X+I,Y+J) Then Mk:=Mk Or (Word(LaOGet(X+I,Y+J)) Shl (15-I));
+        Wr16(Sa+6+J*2,Mk);
+       End;
+       For J:=0 To 15 Do Begin
+        Mk:=Rd16(Fm+10+J*4);Dt:=Rd16(Fm+12+J*4);
+        For I:=0 To 15 Do
+         If ((Mk Shr (15-I)) And 1)<>0 Then
+          If LaClip(X+I,Y+J) Then Begin
+           If ((Dt Shr (15-I)) And 1)<>0 Then LaOPlot(X+I,Y+J,Fg) Else LaOPlot(X+I,Y+J,Bg);
+          End;
+       End;
+       
+      End;
+  14: Begin
+       { copie de formulaire raster (comme vro_cpyfm / vrt_cpyfm) }
+       Ct:=Rd32(LINEA_VARS+4);Pn:=Rd32(LINEA_VARS+8);Pt:=Rd32(LINEA_VARS+12);
+       ReadMfdb(Rd32(Ct+14),SrcM);ReadMfdb(Rd32(Ct+18),DstM);
+       SetClip(0,0,SW-1,SH-1);
+       If LaW(54)<>0 Then SetClip(LaW(56),LaW(58),LaW(60),LaW(62));
+       CopyRaster(SrcM,DstM,SExt(Rd16(Pt),2),SExt(Rd16(Pt+2),2),SExt(Rd16(Pt+4),2),SExt(Rd16(Pt+6),2),
+         SExt(Rd16(Pt+8),2),SExt(Rd16(Pt+10),2),SExt(Rd16(Pn),2),LaW(116)<>0,LaW(106),LaW(114));
+      End;
+  15: Begin
+       { remplissage par germe : point dans PTSIN }
+       Pt:=Rd32(LINEA_VARS+12);
+       VP^.FillInt:=1;VP^.FillCol:=LaW(24) And 1;VP^.FillPer:=0;
+       SetClip(0,0,SW-1,SH-1);
+       If LaW(54)<>0 Then SetClip(LaW(56),LaW(58),LaW(60),LaW(62));
+       FloodFill(SExt(Rd16(Pt),2),SExt(Rd16(Pt+2),2),-1);
+      End;
+ End;
+End;
+
+Procedure DoLineA(Op: LongInt);
+Var F: Integer; Col: Integer;
+Begin
+ If (ExcHandler(10)<>0) And Not AmigaRun Then Begin RaiseExc(10);Exit;End;   { vecteur 10 installe par le programme }
  F:=Op And $FFF;
  If DosTrace Then Begin
    WriteLn(ConOut,'LINEA ',F,' pc=',Hex8(CurOpPC));Flush(ConOut);End;
  SelVdi(0);
  If F>0 Then CheckFonts;
- X1:=SExt(Rd16(LINEA_VARS+38),2);Y1:=SExt(Rd16(LINEA_VARS+40),2);
- X2:=SExt(Rd16(LINEA_VARS+42),2);Y2:=SExt(Rd16(LINEA_VARS+44),2);
- Col:=Rd16(LINEA_VARS+24) And 1;
- Wm:=Rd16(LINEA_VARS+36);
- If Wm=0 Then VP^.WrMode:=WM_REPL Else If Wm=2 Then VP^.WrMode:=WM_XOR Else
-   VP^.WrMode:=WM_TRANS;
- VP^.LineCol:=Col;VP^.LineWidth:=1;VP^.LineType:=7;VP^.LineUd:=Rd16(LINEA_VARS+
-   34);
- VP^.FillInt:=1;VP^.FillCol:=Col;VP^.FillPer:=0;
- SetClip(0,0,SW-1,SH-1);
- If Rd16(LINEA_VARS+54)<>0 Then
-  SetClip(SExt(Rd16(LINEA_VARS+56),2),SExt(Rd16(LINEA_VARS+58),2),
-    SExt(Rd16(LINEA_VARS+60),2),SExt(Rd16(LINEA_VARS+62),2));
- Case F Of
-  0: LineAInit;
-  1: Begin
-      X1:=SExt(Rd16(Rd32(LINEA_VARS+12)),2);Y1:=SExt(Rd16(Rd32(LINEA_VARS+12)+
-        2),2);
-      PlotPat(X1,Y1,True,ColBit(Rd16(Rd32(LINEA_VARS+8))));
-     End;
-  2: Begin
-      X1:=SExt(Rd16(Rd32(LINEA_VARS+12)),2);Y1:=SExt(Rd16(Rd32(LINEA_VARS+12)+
-        2),2);
-      Rg[0]:=Ord(BGet(X1,Y1));
-     End;
-  3: Begin LinePhase:=0;VLine(X1,Y1,X2,Y2);End;
-  4: Begin LinePhase:=0;VLine(X1,Y1,X2,Y1);End;
-  5: Begin
-      If Rd32(LINEA_VARS+46)<>0 Then Begin
-       VP^.FillInt:=4;
-       For Y:=0 To 15 Do VP^.UdPat[Y]:=Rd16(Rd32(LINEA_VARS+46)+(Y And
-         ((Rd16(LINEA_VARS+50)+1)*0+15))*2);
-      End;
-      For Y:=Y1 To Y2 Do FillSpanPat(Y,X1,X2);
-     End;
-  7: Begin
-      A:=Rg[14];
-      W:=Rd16(A)+0;H:=SExt(Rd16(A+2),2);
-      Src.Addr:=Rd32(A+18);Src.WW:=SExt(Rd16(A+22),2) Div 2;Src.Planes:=1;
-      Dst.Addr:=Rd32(A+32);Dst.WW:=SExt(Rd16(A+36),2) Div 2;Dst.Planes:=1;
-      Ot:=Rd8(A+10);
-      If Src.Addr=0 Then Src.Addr:=0;
-      For YY:=0 To H-1 Do
-       For XX:=0 To W-1 Do Begin
-        Sb:=MBit(Src,SExt(Rd16(A+14),2)+XX,SExt(Rd16(A+16),2)+YY);
-        Db:=MBit(Dst,SExt(Rd16(A+28),2)+XX,SExt(Rd16(A+30),2)+YY);
-        MPut(Dst,SExt(Rd16(A+28),2)+XX,SExt(Rd16(A+30),2)+YY,RopBit(Rd8(A+10+
-          (Ord(Sb)*2) And 3) And 15,Sb,Db));
-       End;
-     End;
-  9: Begin MouseHidden:=Max2(0,MouseHidden-1);End;
-  10: Inc(MouseHidden);
-  11: Begin
-       A:=Rg[8];
-       CurHotX:=Clamp(SExt(Rd16(A),2),0,15);CurHotY:=Clamp(SExt(Rd16(A+2),2),0,
-         15);
-       For Y:=0 To 15 Do Begin
-         CurMask[Y]:=Rd16(A+10+Y*2);CurData[Y]:=Rd16(A+42+Y*2);End;
-      End;
-  12,13: Begin End;
- End;
+ LaXor:=False;
+ LaDispatch(F);
  SetClip(0,0,SW-1,SH-1);
  VP^.WrMode:=WM_REPL;
 End;
@@ -26649,7 +27105,12 @@ Var
  RunOtherArg: String;
  FileQueue  : Array[1..20] Of String[120];
  NQueue     : Integer;
- StartAction: Char;            { ' ', 'A', 'X', 'D', 'M' }
+ StartAction: Char;            { ' ', 'A', 'X', 'D', 'M', 'E' }
+ EmulPrg    : String;          { /EMUL:prg : programme a executer dans l'emulateur }
+ EmulTail   : String;          { ligne de commande transmise au programme }
+ EmulScr    : String;          { /SCR:fichier : copie de l'ecran logique a la fin }
+ EmulDump   : String;          { /DUMP:adresse:longueur:fichier }
+ EmulTime   : LongInt;          { /TIME:secondes : duree maximale (0 = illimitee) }
  PreDefs    : Array[1..10] Of String[80];
  NPre       : Integer;
  LastAsmOk  : Boolean;
@@ -28840,6 +29301,15 @@ Begin
  WriteLn(ConOut,'  /B          '+T3('batch mode (no graphics): assemble, with'+
    ' /X run it','mode batch (sans graphisme) : assemble, '+'avec /X execute',
    'Batch-Modus (ohne Grafik): assemblieren,'+' mit /X starten'));
+ WriteLn(ConOut,'  /EMUL:prg   '+T3('run a .PRG in the built-in emulator (no graphics; the remaining'+
+   ' arguments form its command line)','execute un .PRG dans l''emulateur integre (sans graphisme ; les autres'+
+   ' arguments forment sa ligne de commande)','ein .PRG im eingebauten Emulator starten (ohne Grafik)'));
+ WriteLn(ConOut,'  /SCR:file   '+T3('with /EMUL: write the 32000-byte logical screen at the end',
+   'avec /EMUL: ecrit l''ecran logique (32000 octets) a la fin','mit /EMUL: logischen Bildschirm schreiben'));
+ WriteLn(ConOut,'  /DUMP:a:n:f '+T3('with /EMUL: write n bytes of memory at hex address a to file f',
+   'avec /EMUL: ecrit n octets de memoire a l''adresse hexa a dans le fichier f','mit /EMUL: Speicher in Datei schreiben'));
+ WriteLn(ConOut,'  /TIME:s     '+T3('with /EMUL: maximum run time in seconds (default 60)',
+   'avec /EMUL: duree maximale en secondes (defaut 60)','mit /EMUL: maximale Laufzeit in Sekunden'));
  WriteLn(ConOut,'  /L          '+T3('produce a listing file (.LST)',
    'produit un fichier de listing (.LST)','Listing-Datei (.LST) erzeugen'));
  WriteLn(ConOut,'  /S          '+T3('include the symbol table (debug) in the '+
@@ -28960,7 +29430,9 @@ Begin
   (U='X') Or (U='D') Or (U='M') Or (U='B') Or (U='L') Or (U='S') Or (U='O') Or
   (U='NODISK') Or (U='NOGEM') Or (U='OLDRC') Or (Copy(U,1,4)='OUT:') Or
     (Copy(U,1,4)='INC:') Or
-  (Copy(U,1,4)='DEF:') Or ((Copy(U,1,2)='FL') And (Length(U)>=5) And
+  (Copy(U,1,4)='DEF:') Or (U='EMUL') Or (Copy(U,1,5)='EMUL:') Or
+  (Copy(U,1,4)='SCR:') Or (Copy(U,1,5)='DUMP:') Or (Copy(U,1,5)='TIME:') Or
+  ((Copy(U,1,2)='FL') And (Length(U)>=5) And
     (U[3]>='A') And (U[3]<='D') And (U[4]=':'));
 End;
 
@@ -29066,6 +29538,7 @@ Procedure ParseCommandLine;
 Var I: Integer; A,U: String; HelpWanted,Used,BadCmd: Boolean;
 Begin
  BadCmd:=False;HelpWanted:=False;NQueue:=0;StartAction:=' ';NPre:=0;
+ EmulPrg:='';EmulScr:='';EmulDump:='';EmulTime:=60;
  CmdOpts:='';CmdSyms:='';CmdHeaders:='';NoBinary:=False;OptFormatSel:=0;
    OptIncList:='';
  GenMode:=False;PauseEnd:=False;
@@ -29085,6 +29558,16 @@ Begin
    Else If U='A' Then Begin If A[1]='-' Then BadCmd:=True Else
      StartAction:='A';End
    Else If U='X' Then StartAction:='X'
+   Else If Copy(U,1,4)='EMUL' Then Begin
+    { /EMUL:prog.prg ou /EMUL prog.prg : execute un programme dans l'emulateur
+      integre, sans interface graphique }
+    If Copy(U,1,5)='EMUL:' Then EmulPrg:=Copy(A,Pos(':',A)+1,200)
+    Else If (U='EMUL') And (I<ParamCount) Then Begin Inc(I);EmulPrg:=ParamStr(I);End;
+    If EmulPrg<>'' Then Begin StartAction:='E';BatchMode:=True;End;
+   End
+   Else If Copy(U,1,4)='SCR:' Then EmulScr:=Copy(A,Pos(':',A)+1,200)
+   Else If Copy(U,1,5)='DUMP:' Then EmulDump:=Copy(A,Pos(':',A)+1,300)
+   Else If Copy(U,1,5)='TIME:' Then EmulTime:=ToInt(Copy(A,Pos(':',A)+1,20))
    Else If U='D' Then StartAction:='D'
    Else If U='M' Then StartAction:='M'
    Else If U='B' Then BatchMode:=True
@@ -29127,10 +29610,88 @@ End;
     erreur fatale,
   100 echec d'initialisation (aucun fichier source) ; /OLDRC : anciens codes
     0/1/2/3. }
+{ ecrit une zone de memoire dans un fichier (/SCR et /DUMP) }
+Procedure EmulDumpMem(Addr,Len: LongInt; Const Fn: String);
+Var F: File; Buf: Array[0..4095] Of Byte; N,K,I: LongInt;
+Begin
+ If (Addr<0) Or (Len<=0) Or (Addr+Len>MemSize) Then Exit;
+ Assign(F,Fn);
+ {$I-}Rewrite(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ K:=0;
+ While K<Len Do Begin
+  N:=Len-K;If N>4096 Then N:=4096;
+  For I:=0 To N-1 Do Buf[I]:=Rd8(Addr+K+I);
+  BlockWrite(F,Buf,N);
+  Inc(K,N);
+ End;
+ Close(F);
+End;
+
+Procedure EmulDumps;
+Var P1,P2,Ad,Ln,Cd: LongInt; A,L,Fn: String;
+Begin
+ If EmulScr<>'' Then EmulDumpMem(ScrBase,SCR_BYTES,EmulScr);
+ If EmulDump<>'' Then Begin
+  P1:=Pos(':',EmulDump);
+  If P1>0 Then Begin
+   A:=Copy(EmulDump,1,P1-1);Fn:=Copy(EmulDump,P1+1,300);
+   P2:=Pos(':',Fn);
+   If P2>0 Then Begin
+    L:=Copy(Fn,1,P2-1);Fn:=Copy(Fn,P2+1,300);
+    Ad:=0;
+    For Cd:=1 To Length(A) Do Ad:=Ad*16+Pos(UpCase(A[Cd]),'0123456789ABCDEF')-1;
+    Val(L,Ln,Cd);
+    EmulDumpMem(Ad,Ln,Fn);
+   End;
+  End;
+ End;
+End;
+
+{ execute un programme dans l'emulateur, sans interface graphique ; retourne le
+  code de sortie (3 si le programme ne peut pas etre charge ou plante) }
+Function BatchEmulate(Const Name,Tail: String): Integer;
+Var Rc: Integer; H0,M0,S0,C0,H1,M1,S1,C1: Word; T0,T1: LongInt; Timeout: Boolean;
+Begin
+ Rc:=0;
+ If LoadProgram(Name,Tail,OptRunGem) Then Begin
+  EmuVisible:=False;MonActive:=False;
+  If Emu_GEM Then GemBoot;
+  GetTime(H0,M0,S0,C0);T0:=LongInt(H0)*3600+M0*60+S0;
+  Timeout:=False;
+  While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
+   RunCpu(100000);
+   If StopReason=STOP_YIELD Then GemDispatch;
+   If EmulTime>0 Then Begin
+    GetTime(H1,M1,S1,C1);T1:=LongInt(H1)*3600+M1*60+S1;
+    If T1<T0 Then T1:=T1+86400;
+    If T1-T0>=EmulTime Then Begin Timeout:=True;Break;End;
+   End;
+  End;
+  WriteLn(ConOut);
+  If Timeout Then Begin WriteLn(ConOut,'Timeout');Rc:=4;End
+  Else If StopReason=STOP_EXIT Then Rc:=ExitCode And $FF
+  Else Begin WriteLn(ConOut,StopMsg);Rc:=3;End;
+  If UnknownCall<>'' Then WriteLn(ConOut,'[',UnknownCall,']');
+  EmulDumps;
+ End Else Begin WriteLn(ConOut,'Cannot load ',Name);Rc:=3;End;
+ BatchEmulate:=Rc;
+End;
+
 Function BatchRun: Integer;
 Var Arr: PLineArr; Cnt: LongInt; I: Integer; Rc,R1: Integer; Name,Src: String;
 Begin
  Rc:=0;
+ If StartAction='E' Then Begin
+  InitMemory(ST_MEMKB);
+  EmulTail:='';
+  For I:=1 To NQueue Do Begin
+   If I>1 Then EmulTail:=EmulTail+' ';
+   EmulTail:=EmulTail+FileQueue[I];
+  End;
+  BatchRun:=BatchEmulate(EmulPrg,EmulTail);
+  Exit;
+ End;
  If NQueue=0 Then Begin
   WriteLn(ConOut,T3('No source file specified (DEVPAC /? for '+'help)',
     'Aucun fichier source indique (DEVPAC /? '+'pour l''aide)',
@@ -29159,20 +29720,7 @@ Begin
   End Else Begin
    If (AsmWarns>0) And Not OldRc And (Rc<5) Then Rc:=5;
    If StartAction='X' Then Begin
-    If LoadProgram(OutPathFinal,'',OptRunGem) Then Begin
-     EmuVisible:=False;MonActive:=False;
-     If Emu_GEM Then GemBoot;
-     While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
-      RunCpu(100000);
-      If StopReason=STOP_YIELD Then GemDispatch;
-     End;
-     WriteLn(ConOut);
-     If StopReason=STOP_EXIT Then Rc:=ExitCode And $FF
-     Else Begin
-      WriteLn(ConOut,StopMsg);Rc:=3;
-     End;
-     If UnknownCall<>'' Then WriteLn(ConOut,'[',UnknownCall,']');
-    End Else Begin WriteLn(ConOut,'Cannot load ',OutPathFinal);Rc:=3;End;
+    Rc:=BatchEmulate(OutPathFinal,'');
    End;
   End;
   CleanTemp;

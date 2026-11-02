@@ -64,6 +64,7 @@ p.data[ctl:ctl+40]=bytes(14)+bytes(4)+bytes(4)+bytes(18)
 p.dfix.append((ctl+14,mf)); p.dfix.append((ctl+18,mf+20))
 intin=p.d(struct.pack('>H',3))            # mode copie
 ptsin=p.d(struct.pack('>hhhhhhhh',0,0,31,7,200,100,231,107))
+p.a0(mf+20); p.w(0x216D); p.w(0xFFDE); p.w(0)      # MFDB destination : adresse de l'ecran (V_BAS_AD)
 p.mlp(4,ctl); p.mlp(8,intin); p.mlp(12,ptsin); p.op(14)
 s=run(p,'cp')
 ok=all(s.px(200+i,100+j)==(img[j*4+(i>>3)]>>(7-(i&7)))&1 for i in range(32) for j in range(8))

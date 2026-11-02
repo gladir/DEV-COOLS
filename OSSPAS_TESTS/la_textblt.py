@@ -5,13 +5,14 @@ def check(n,c,info=''):
     print(('ok   ' if c else 'FAIL ')+n+(' '+str(info) if (info and not c) else ''))
     if not c: FAIL.append(n)
 # police systeme 8x16 telle que la voit un programme (lignes de 256 octets)
-p=P(); s=run(p,'fnt',dump='19800:4096'); FONT=s.dump
+p=P(); s=run(p,'fnt',dump='%X:4096'%FONTADDR); FONT=s.dump
+assert sum(FONT[65:66])>0 and any(FONT[r*256+65] for r in range(16)), 'police vide : le test serait sans valeur'
 def glyph(c): return [[(FONT[r*256+c]>>(7-i))&1 for i in range(8)] for r in range(16)]
 def tb(p,c,x,y,style=0,wmode=0,fg=1,bg=0,**kw):
     p.mw(36,wmode); p.mw(54,kw.get('clip',0))
     if 'clipbox' in kw:
         a,b,c2,d=kw['clipbox']; p.mw(56,a);p.mw(58,b);p.mw(60,c2);p.mw(62,d)
-    p.ml(84,0x19800); p.mw(88,256)
+    p.fontform()
     p.mw(72,c*8); p.mw(74,0); p.mw(76,x); p.mw(78,y); p.mw(80,8); p.mw(82,16)
     p.mw(90,style); p.mw(92,kw.get('lite',0x5555)); p.mw(94,kw.get('skew',0x5555)); p.mw(96,kw.get('wt',1))
     p.mw(98,kw.get('roff',0)); p.mw(100,kw.get('loff',0)); p.mw(102,kw.get('scale',0)); p.mw(104,kw.get('chup',0))

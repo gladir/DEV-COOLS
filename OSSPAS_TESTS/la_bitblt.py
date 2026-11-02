@@ -24,7 +24,10 @@ def blk(p,w,h,fg,bg,ops,sx,sy,sform,snw,snl,dx,dy,dform,dnw,dnl,paddr=0,pnl=2,pm
     if paddr: p.dfix.append((off+42,paddr)); 
     blkb[46:50]=struct.pack('>hh',pnl,0); blkb[50:52]=struct.pack('>H',pmask)
     p.data[off:off+58]=blkb
-    p.a6(off); p.op(7)
+    p.a6(off)
+    if sform[0]=='scr': p.scr_ptr(18)
+    if dform[0]=='scr': p.scr_ptr(32)
+    p.op(7)
     return off
 # --- 16 operations logiques ---------------------------------------------------
 p=P()

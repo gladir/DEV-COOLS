@@ -8919,12 +8919,11 @@ Begin
   For R:=0 To 15 Do WB(LA_DAT16+R*256+C,Font8[C,R Div 2]);
   For R:=0 To 7 Do WB(LA_DAT8+R*256+C,Font8[C,R]);
  End;
- For I:=0 To 257 Do Begin
-  WW(LA_OFF+I*2,I*8);WW(LA_OFF+$200+I*2,I*8);WW(LA_OFF+$400+I*2,I*8);
- End;
+ { table des decalages commune aux trois polices : 257 mots, le caractere c commence a la colonne 8*c }
+ For I:=0 To 256 Do WW(LA_OFF+I*2,I*8);
  LaFontHeader(LA_HDR,1,10,16,12,8,3,LA_OFF,LA_DAT16,'System font');
- LaFontHeader(LA_HDR+88,1,9,8,6,4,1,LA_OFF+$200,LA_DAT8,'System font');
- LaFontHeader(LA_HDR+176,1,8,8,6,4,1,LA_OFF+$400,LA_DAT8,'System font');
+ LaFontHeader(LA_HDR+88,1,9,8,6,4,1,LA_OFF,LA_DAT8,'System font');
+ LaFontHeader(LA_HDR+176,1,8,8,6,4,1,LA_OFF,LA_DAT8,'System font');
  WL(LA_PTRS,LA_HDR+176);WL(LA_PTRS+4,LA_HDR+88);WL(LA_PTRS+8,LA_HDR);WL(LA_PTRS+12,0);
  WW(LA_RTS,$4E75);
  For I:=0 To 15 Do WL(LA_FUNC+I*4,LA_RTS);
