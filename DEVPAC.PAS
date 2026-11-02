@@ -10065,6 +10065,8 @@ Begin
 End;
 
 { Execute au plus Max instructions ; s'arrete sur un point d'arret }
+Procedure IrqCheck; Forward;     { interruptions MFP / VBL livrees aux gestionnaires installes par le programme (p20) }
+
 Procedure RunCpu(Max: LongInt);
 Var N: LongInt;
 Begin
@@ -10072,6 +10074,7 @@ Begin
  While (StopReason=STOP_NONE) And (N<Max) Do Begin
   Step;
   Inc(N);
+  If (N And 511)=0 Then IrqCheck;
   If (StopReason=STOP_NONE) And (NBps>0) And IsBreakpoint(PC) Then Begin
    StopReason:=STOP_BREAK;
    StopMsg:='Breakpoint';
@@ -10311,11 +10314,14 @@ End;
 { Presentation de l'ecran emule                                           }
 { ---------------------------------------------------------------------- }
 
+Var ScrForceFull : Boolean;     { base video changee : prochain affichage complet (efface l'ancien ecran) }
+
 Procedure BlitScreen(Full: Boolean);
 Var Y,XB,Bit: Integer; A: LongInt; B,O: Byte; Lo,Hi: Integer;
 Begin
  If BatchMode Or Not GfxOn Then Exit;
  If MonActive And Not EmuVisible And Not Full Then Exit;
+ If ScrForceFull Then Begin Full:=True;ScrForceFull:=False;End;
  If Full Then Begin
   Box(0,0,SCR_W-1,SCR_H-1,Black);
   FillChar(ScrShadow,SizeOf(ScrShadow),$FF);
@@ -10437,9 +10443,12 @@ Begin
  End;
 End;
 
+Procedure IrqNested; Forward;    { p20 : interruptions pendant une attente bloquante du systeme }
+
 Procedure EmuIdle;
 Begin
  PollKeys;
+ IrqNested;
  If Not BatchMode Then Begin
   BlitScreen(False);
   Delay(2);
@@ -11662,7 +11671,7 @@ Begin
    R:=-32;
   End;
  End;
- If DosTrace And Not ((Fn=$02) Or (Fn=$09) Or (Fn=$06) Or (Fn=$07)) Then Begin WriteLn(ConOut,'   -> ',R,' ($',Hex8(R),')');Flush(ConOut);End;
+ If DosTrace And Not ((Fn=$02) Or (Fn=$09) Or (Fn=$06) Or (Fn=$0B)) Then Begin WriteLn(ConOut,'   -> ',R,' ($',Hex8(R),')');Flush(ConOut);End;
  Rg[0]:=R;
 End;
 
@@ -12105,17 +12114,19 @@ End;
 
 { Ecriture dans les registres materiels : base video (le debogueur MonST change d'ecran) }
 Var HwVidHi,HwVidMid: Integer;
+ IrqLastC,IrqLastV: LongInt;
 
 Procedure HwWr8(A: LongInt; V: Byte);
 Var NB: LongInt;
 Begin
+ If DosTrace And (A>=$FF8000) And (A<$FF8300) Then Begin WriteLn(ConOut,'HWWR ',Hex8(A),' <- ',Hex2(V),' pc=',Hex8(CurOpPC),' scrbase=',Hex8(ScrBase),' drawbase=',Hex8(DrawBase));Flush(ConOut);End;
  If (A=$FF8201) Or (A=$FF8203) Then Begin
   If A=$FF8201 Then HwVidHi:=V Else HwVidMid:=V;
   NB:=(LongInt(HwVidHi) Shl 16) Or (LongInt(HwVidMid) Shl 8);
   If (NB<>ScrBase) And (NB+SCR_BYTES<=MemSize) And (NB>=$1000) Then Begin
    ScrBase:=NB;
    ScrDirtyLo:=0;ScrDirtyHi:=399;
-   FillChar(ScrShadow,SizeOf(ScrShadow),$FF);
+   ScrForceFull:=True;
   End;
  End;
 End;
@@ -12140,8 +12151,75 @@ Begin
  Wr32($4FE,OS_ROM);                       { _exec_os }
  Wr16($484,7);                            { conterm }
  Wr32($4BA,0);Wr32($462,0);Wr32($466,0);
+ IrqLastC:=MsNow Div 5;IrqLastV:=MsNow Div 20;
+ Wr16($0452,$4E73);Wr32(69*4,$0452);Wr32(28*4,$0452);   { Timer C et VBL : RTE par defaut (chainage des gestionnaires) }
  HwVidHi:=(ScrBase Shr 16) And $FF;HwVidMid:=(ScrBase Shr 8) And $FF;
 End;
+
+{ ---------------------------------------------------------------------- }
+{ Interruptions : Timer C (200 Hz, vecteur 69, niveau 6) et VBL (vecteur   }
+{ 28, niveau 4), livrees seulement si le programme a installe un          }
+{ gestionnaire (Setexc ou ecriture directe) ; MonST s'en sert pour la     }
+{ commutation d'ecran temporisee.                                         }
+{ ---------------------------------------------------------------------- }
+Const IRQ_RET = $0450;
+      IRQ_RTE = $0452;     { gestionnaire par defaut : RTE }
+
+{ Choisit l'interruption due : retourne le vecteur (0 si aucune) et son niveau }
+Function IrqDue(Var Lvl: Integer): Integer;
+Var T: LongInt; Mk: Integer;
+Begin
+ IrqDue:=0;
+ If (Rd32(69*4)=IRQ_RTE) And (Rd32(28*4)=IRQ_RTE) Then Exit;
+ Mk:=(SRv Shr 8) And 7;
+ T:=MsNow Div 5;
+ If (T<>IrqLastC) And (ExcHandler(69)<>0) And (Rd32(69*4)<>IRQ_RTE) Then Begin
+  If Mk<6 Then Begin IrqLastC:=T;IrqDue:=69;Lvl:=6;Exit;End;
+ End;
+ If ((T Div 4)<>IrqLastV) And (ExcHandler(28)<>0) And (Rd32(28*4)<>IRQ_RTE) Then Begin
+  If Mk<4 Then Begin IrqLastV:=T Div 4;IrqDue:=28;Lvl:=4;End;
+ End;
+End;
+
+Var IrqCnt: Integer;
+
+Procedure IrqCheck;
+Var V,L: Integer;
+Begin
+ Inc(IrqCnt);
+ If (IrqCnt And 7)=0 Then TickSysVars;       { _frclock/_hz_200 evoluent meme si le programme boucle sans appel systeme }
+ If (StopReason<>STOP_NONE) Or (PendVec>=0) Then Exit;
+ L:=0;V:=IrqDue(L);
+ If V=0 Then Exit;
+ TakeExc(V,PC,ExcHandler(V),False,0,0);
+ SetSR((SRv And $F8FF) Or (LongInt(L) Shl 8));
+End;
+
+{ Pendant qu'une fonction systeme native attend (Cconin...), le processeur ne tourne pas :
+  on execute le gestionnaire d'interruption "en passant" puis on restaure l'etat }
+Procedure IrqNested;
+Var V,L,N: Integer; SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp: LongInt; SvExc: Boolean; SvStop: Integer;
+Begin
+ If ((StopReason<>STOP_NONE) And (StopReason<>7)) Or (PendVec>=0) Then Exit;
+ L:=0;V:=IrqDue(L);
+ If V=0 Then Exit;
+ Move(Rg,SvRg,SizeOf(Rg));
+ SvPC:=PC;SvSR:=SRv;SvUSP:=USPv;SvSSP:=SSPv;SvOp:=CurOpPC;SvExc:=ExcTaken;SvStop:=StopReason;StopReason:=STOP_NONE;
+ If DosTrace Then Begin WriteLn(ConOut,'IRQ nested start pc=',Hex8(PC),' sr=',Hex4(SRv),' sp=',Hex8(Rg[15]),' h=',Hex8(ExcHandler(V)));Flush(ConOut);End;
+ TakeExc(V,IRQ_RET,ExcHandler(V),False,0,0);
+ SetSR((SRv And $F8FF) Or (LongInt(L) Shl 8));
+ N:=0;
+ While (PC<>IRQ_RET) And (StopReason=STOP_NONE) And (N<400000) Do Begin
+  Step;Inc(N);
+  If (N And 255)=0 Then TickSysVars;
+ End;
+ If StopReason=STOP_NONE Then Begin
+  Move(SvRg,Rg,SizeOf(Rg));
+  PC:=SvPC;SRv:=SvSR;USPv:=SvUSP;SSPv:=SvSSP;CurOpPC:=SvOp;ExcTaken:=SvExc;StopReason:=SvStop;
+ End;
+ If DosTrace Then Begin WriteLn(ConOut,'IRQ nested vec ',V,' steps ',N,' stop=',StopReason,' pc=',Hex8(PC));Flush(ConOut);End;
+End;
+
 
 Procedure Bios;
 Var Fn: LongInt; R,K,Cnt,Rec: LongInt; Dev,I: Integer; B: Byte; Sec: Integer; Bp,Boot: LongInt;
@@ -12287,7 +12365,7 @@ Begin
       If B<>-1 Then Begin
        ScrBase:=B;
        ScrDirtyLo:=0;ScrDirtyHi:=399;
-       FillChar(ScrShadow,SizeOf(ScrShadow),$FF);
+       ScrForceFull:=True;
       End;
      End;
   6: Begin
@@ -16626,6 +16704,7 @@ End;
 Procedure GemIdle;
 Begin
  PollInput;
+ IrqNested;      { le processeur ne tourne pas pendant une attente AES : on livre les interruptions (MonST) }
  If Not BatchMode Then Begin
   If Not NoBlit Then BlitScreen(False);
   Delay(1);
@@ -18188,6 +18267,7 @@ Begin
     End;
   End;
   If Not Done Then Begin
+   IrqNested;     { interruptions (MonST : commutation d'ecran temporisee) pendant l'attente }
    If Not BatchMode Then Begin BlitScreen(False);Delay(1);End;
   End;
  Until Done Or UserBreak;
