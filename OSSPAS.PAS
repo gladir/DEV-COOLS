@@ -1440,11 +1440,32 @@ End;
 { ----------------------- LValue (variable ou element) ------------------- }
 
 Function ResolveFile(Const N: String): String;
+{ cherche un fichier sans tenir compte de la casse (comme TOS) }
+Var Dir,Base,D2: String; I,P: Integer; SR: SearchRec; Found: Boolean;
 Begin
- If FileExists(N) Then ResolveFile:=N
- Else If FileExists(Upper(N)) Then ResolveFile:=Upper(N)
- Else If FileExists(LowerStr(N)) Then ResolveFile:=LowerStr(N)
- Else ResolveFile:=N;
+ If FileExists(N) Then Begin ResolveFile:=N;Exit;End;
+ If FileExists(Upper(N)) Then Begin ResolveFile:=Upper(N);Exit;End;
+ If FileExists(LowerStr(N)) Then Begin ResolveFile:=LowerStr(N);Exit;End;
+ P:=0;
+ For I:=1 To Length(N) Do If N[I]='/' Then P:=I;
+ If P>0 Then Begin Dir:=Copy(N,1,P);Base:=Copy(N,P+1,255);D2:=Copy(N,1,P-1);End
+ Else Begin Dir:='';Base:=N;D2:='';End;
+ If (Base='') Or (Base='.') Or (Base='..') Then Begin ResolveFile:=N;Exit;End;
+ If (D2<>'') And (D2<>N) Then Begin
+  { composant de repertoire : resolution recursive }
+  D2:=ResolveFile(D2);
+  Dir:=D2+'/';
+ End;
+ Found:=False;
+ {$I-}
+ FindFirst(Dir+'*',AnyFile,SR);
+ While DosError=0 Do Begin
+  If Upper(SR.Name)=Upper(Base) Then Begin Found:=True;Base:=SR.Name;Break;End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+ {$I+}
+ If Found Then ResolveFile:=Dir+Base Else ResolveFile:=N;
 End;
 
 { ====================================================================== }
@@ -1945,143 +1966,6 @@ Begin
 End;
 
 
-Procedure GemDos;
-Var Fn: Word; SP: LongInt; H,R: Integer; S: String; A,Cnt,Len: LongInt; Buf: Pointer;
-    Mode: Integer; Done: Longint; Pos2: LongInt;
-Begin
- SP:=RA[7];
- If (RSR And $2000)=0 Then SP:=RA[7] Else SP:=RA[7];
- Fn:=RW(SP);
- Case Fn Of
-  0: Begin EmuHalt:=True;EmuCode:=0;End;
-  1: RD[0]:=EmuKey;
-  2: Begin VtOut(Chr(RW(SP+2) And $FF));OutToMem;End;
-  3,4,5: RD[0]:=0;
-  6: If RW(SP+2)=$FF Then Begin
-      If KeyPressed Or (KeyQ<>'') Then RD[0]:=EmuKey Else RD[0]:=0;
-     End Else Begin VtOut(Chr(RW(SP+2) And $FF));RD[0]:=0;End;
-  7,8: RD[0]:=EmuKey;
-  9: Begin
-      S:=EmuStr(RL(SP+2));
-      VtStr(S);OutToMem;
-      RD[0]:=0;
-     End;
-  10: Begin
-       A:=RL(SP+2);
-       If ReadOutLine(S,Min2(RB(A),250),False) Then Begin
-        WB(A+1,Length(S));
-        PutStr(A+2,S);
-        RD[0]:=Length(S);
-       End Else EmuBrk:=True;
-      End;
-  11: If KeyPressed Or (KeyQ<>'') Then RD[0]:=-1 Else RD[0]:=0;
-  14: RD[0]:=2;
-  25: RD[0]:=2;
-  32: Begin
-       { Super : bascule en superviseur }
-       A:=RL(SP+2);
-       If A=1 Then Begin If EmuSuper Then RD[0]:=-1 Else RD[0]:=0;End
-       Else Begin EmuSuper:=Not EmuSuper;RD[0]:=RA[7];End;
-      End;
-  26: Begin EmuDta:=RL(SP+2);End;
-  47: RD[0]:=EmuDta;
-  42: RD[0]:=(2026-1980) Shl 9 Or (11 Shl 5) Or 2;
-  44: RD[0]:=(12 Shl 11);
-  72: Begin
-       Cnt:=RL(SP+2);
-       If Cnt=-1 Then RD[0]:=M_TOP-$10000-EmuHeap
-       Else Begin
-        Cnt:=(Cnt+3) And (Not 3);
-        If EmuHeap+Cnt>M_TOP-$10000 Then RD[0]:=0
-        Else Begin RD[0]:=EmuHeap;FillChar(VMem[EmuHeap],Cnt,0);EmuHeap:=EmuHeap+Cnt;End;
-       End;
-      End;
-  73: RD[0]:=0;
-  74: RD[0]:=0;
-  71: Begin PutStr(RL(SP+4),'\');RD[0]:=0;End;
-  60: Begin
-       S:=EmuStr(RL(SP+2));
-       H:=HandleFile;
-       If H<0 Then RD[0]:=-35
-       Else Begin
-        Assign(EmuFile[H],S);
-        {$I-}Rewrite(EmuFile[H],1);{$I+}
-        If IOResult<>0 Then RD[0]:=-36 Else Begin EmuFUsed[H]:=True;RD[0]:=H;End;
-       End;
-      End;
-  61: Begin
-       S:=ResolveFile(EmuStr(RL(SP+2)));
-       Mode:=RW(SP+6);
-       H:=HandleFile;
-       If H<0 Then RD[0]:=-35
-       Else If Not FileExists(S) Then RD[0]:=-33
-       Else Begin
-        Assign(EmuFile[H],S);
-        {$I-}Reset(EmuFile[H],1);{$I+}
-        If IOResult<>0 Then RD[0]:=-36 Else Begin EmuFUsed[H]:=True;RD[0]:=H;End;
-       End;
-      End;
-  62: Begin
-       H:=RW(SP+2);
-       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
-        {$I-}Close(EmuFile[H]);{$I+}
-        If IOResult<>0 Then ;
-        EmuFUsed[H]:=False;RD[0]:=0;
-       End Else RD[0]:=-37;
-      End;
-  63: Begin
-       H:=RW(SP+2);Cnt:=RL(SP+4);A:=RL(SP+8);
-       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
-        If Cnt>VMEM_SIZE-A Then Cnt:=VMEM_SIZE-A;
-        If Cnt<0 Then Cnt:=0;
-        Done:=0;
-        {$I-}BlockRead(EmuFile[H],VMem[A],Cnt,Done);{$I+}
-        If IOResult<>0 Then RD[0]:=-12 Else RD[0]:=Done;
-       End Else If H=0 Then RD[0]:=0 Else RD[0]:=-37;
-      End;
-  64: Begin
-       H:=RW(SP+2);Cnt:=RL(SP+4);A:=RL(SP+8);
-       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
-        Done:=0;
-        {$I-}BlockWrite(EmuFile[H],VMem[A],Cnt,Done);{$I+}
-        If IOResult<>0 Then RD[0]:=-12 Else RD[0]:=Done;
-       End Else If (H=1) Or (H=2) Then Begin
-        For Len:=0 To Cnt-1 Do VtOut(Chr(RB(A+Len)));
-        OutToMem;RD[0]:=Cnt;
-       End Else RD[0]:=-37;
-      End;
-  65: Begin
-       S:=ResolveFile(EmuStr(RL(SP+2)));
-       If Not FileExists(S) Then RD[0]:=-33
-       Else Begin Assign(EmuFile[25],S);{$I-}Erase(EmuFile[25]);{$I+}If IOResult<>0 Then RD[0]:=-36 Else RD[0]:=0;End;
-      End;
-  66: Begin
-       Pos2:=RL(SP+2);Mode:=RW(SP+8);H:=RW(SP+6);
-       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
-        If Mode=1 Then Pos2:=Pos2+FilePos(EmuFile[H])
-        Else If Mode=2 Then Pos2:=Pos2+FileSize(EmuFile[H]);
-        {$I-}Seek(EmuFile[H],Pos2);{$I+}
-        If IOResult<>0 Then RD[0]:=-64 Else RD[0]:=Pos2;
-       End Else RD[0]:=-37;
-      End;
-  78: Begin
-       S:=EmuStr(RL(SP+2));
-       {$I-}FindFirst(S,AnyFile-Directory,EmuSF);{$I+}
-       If DosError=0 Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
-      End;
-  79: Begin
-       FindNext(EmuSF);
-       If DosError=0 Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
-      End;
-  76: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+2));End;
-  49: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+6));End;
-  48: RD[0]:=$1500;
-  45: RD[0]:=0;
- Else
-  RD[0]:=-32;
- End;
-End;
-
 Procedure Bios;
 Var Fn: Word; SP: LongInt;
 Begin
@@ -2136,80 +2020,8 @@ End;
 
 { ---------------------------- VDI et AES -------------------------------- }
 
-Procedure VdiCall(PB: LongInt);
-Var Contrl,Intin,Ptsin,Intout,Ptsout: LongInt; Op,N,I,Sub: Integer; X1,Y1,X2,Y2,R: Integer; S: String;
-    SavC,SavS: Integer;
- Procedure IO(I: Integer; V: Integer);
- Begin WW(Intout+I*2,Word(V));End;
-Begin
- Contrl:=RL(PB);Intin:=RL(PB+4);Ptsin:=RL(PB+8);Intout:=RL(PB+12);Ptsout:=RL(PB+16);
- Op:=SmallInt(RW(Contrl));N:=SmallInt(RW(Contrl+2));
- Sub:=SmallInt(RW(Contrl+10));
- WW(Contrl+8,0);
- SavC:=FilCol;SavS:=FilSty;
- Case Op Of
-  1,100: Begin
-          For I:=0 To 44 Do IO(I,0);
-          IO(0,639);IO(1,399);IO(2,1);IO(3,372);IO(4,372);IO(13,2);IO(35,1);
-          WW(Contrl+12,1);
-         End;
-  2,101: ;
-  3: Begin OutClear;OutToMem;End;
-  6: Begin
-      For I:=0 To N-2 Do
-       OLine(SmallInt(RW(Ptsin+I*4)),SmallInt(RW(Ptsin+I*4+2)),
-             SmallInt(RW(Ptsin+I*4+4)),SmallInt(RW(Ptsin+I*4+6)),LineInk);
-     End;
-  7: For I:=0 To N-1 Do OPlot(SmallInt(RW(Ptsin+I*4)),SmallInt(RW(Ptsin+I*4+2)),1);
-  8: Begin
-      X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
-      For I:=0 To N-1 Do Begin
-       { texte graphique : cellule de 8x8 alignee sur la ligne de base }
-       For Y2:=0 To 7 Do
-        For X2:=0 To 7 Do
-         If (Font8[RW(Intin+I*2) And $FF,Y2] And (128 Shr X2))<>0 Then
-          OPlot(X1+I*8+X2,Y1-8+Y2+1,1);
-      End;
-     End;
-  9: Begin
-      For I:=0 To N-1 Do Begin PX[I]:=SmallInt(RW(Ptsin+I*4));PY[I]:=SmallInt(RW(Ptsin+I*4+2));End;
-
-      OFillPoly(N);
-      FilCol:=SavC;FilSty:=SavS;
-     End;
-  11: Begin
-       X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
-       X2:=SmallInt(RW(Ptsin+4));Y2:=SmallInt(RW(Ptsin+6));
-
-       Case Sub Of
-        1: Begin
-            PX[0]:=X1;PY[0]:=Y1;PX[1]:=X2+1;PY[1]:=Y1;PX[2]:=X2+1;PY[2]:=Y2+1;PX[3]:=X1;PY[3]:=Y2+1;
-            OFillPoly(4);
-           End;
-        4: OPie(X1,Y1,SmallInt(RW(Ptsin+8)),SmallInt(RW(Ptsin+8)),0,3600);
-        5: OPie(X1,Y1,SmallInt(RW(Ptsin+4)),SmallInt(RW(Ptsin+6)),0,3600);
-        2: OArc(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),SmallInt(RW(Intin)),SmallInt(RW(Intin+2)));
-        3: OPie(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),SmallInt(RW(Intin)),SmallInt(RW(Intin+2)));
-       End;
-       FilCol:=SavC;FilSty:=SavS;
-      End;
-  23: Begin
-       FilSty:=SmallInt(RW(Intin));IO(0,FilSty);
-       If FilSty=0 Then FilSty:=0;
-      End;
-  24: Begin FilIdx:=SmallInt(RW(Intin));IO(0,FilIdx);End;
-  25: Begin FilCol:=SmallInt(RW(Intin));IO(0,FilCol);End;
-  17: Begin LinCol:=SmallInt(RW(Intin));LinCol:=LinCol;IO(0,LinCol);End;
-  22: Begin VdiTxtCol:=SmallInt(RW(Intin));IO(0,VdiTxtCol);End;
-  124: Begin IO(0,0);WW(Ptsout,MX And $FFFF);WW(Ptsout+2,MY And $FFFF);End;
- Else
-  IO(0,0);
- End;
- If EmuActive Then OutToMem;
-End;
-
 Function AesAlert(Const S: String; Def: Integer): Integer;
-Var P1,P2,P3: Integer; Lines,Btns,T: String; R: Integer;
+Var P1,P2: Integer; Lines,Btns,T: String; R: Integer;
 Begin
  { format : [icone][ligne|ligne][bouton|bouton] }
  Lines:='';Btns:='';
@@ -2221,62 +2033,13 @@ Begin
   If (Btns<>'') And (Btns[Length(Btns)]=']') Then Delete(Btns,Length(Btns),1);
  End;
  If Btns='' Then Btns:='OK';
- R:=AlertBox(Lines,Btns);
+ If Headless Then Begin
+  { mode batch : l'alerte est affichee en texte, le bouton par defaut est choisi }
+  R:=Def;
+  If (R<1) Or (R>3) Then R:=1;
+  WriteLn('[ALERT] ',Lines,' [',Btns,'] -> ',R);
+ End Else R:=AlertBox(Lines,Btns);
  AesAlert:=R;
-End;
-
-Procedure AesCall(PB: LongInt);
-Var Ctl,Glob,IntIn,IntOut,AddrIn,AddrOut: LongInt; Op: Integer;
- Procedure IO(I: Integer; V: Integer);
- Begin WW(IntOut+I*2,Word(V));End;
-Begin
- Ctl:=RL(PB);Glob:=RL(PB+4);IntIn:=RL(PB+8);IntOut:=RL(PB+12);AddrIn:=RL(PB+16);AddrOut:=RL(PB+20);
- Op:=SmallInt(RW(Ctl));
- IO(0,1);
- Case Op Of
-  10: Begin
-       Inc(AesNext);
-       IO(0,AesNext);
-       WW(Glob,$0120);WW(Glob+2,1);WW(Glob+4,AesNext);
-      End;
-  19: IO(0,1);
-  77: Begin IO(0,1);IO(1,8);IO(2,16);IO(3,8);IO(4,16);End;
-  78: IO(0,1);
-  107: IO(0,1);
-  52: IO(0,AesAlert(EmuStr(RL(AddrIn)),SmallInt(RW(IntIn))));
-  20: Begin
-       IO(0,0);
-       { evnt_keybd }
-       RD[0]:=0;
-       IO(0,Integer(EmuKey And $FFFF));
-      End;
-  21: Begin
-       { evnt_button : attend un clic }
-       While (MB And 3)=0 Do Begin
-        GetMouseState(MX,MY,MB);
-        If KeyPressed Then Begin PollKeys;End;
-        If BreakReq Then Begin EmuBrk:=True;MB:=1;End;
-        Delay(5);
-       End;
-       IO(0,1);IO(1,1);IO(2,MX);IO(3,MY);IO(4,0);
-      End;
-  23,24: Begin Delay(20);IO(0,1);End;
-  25: Begin
-       GetMouseState(MX,MY,MB);
-       IO(0,32);IO(1,MX);IO(2,MY);IO(3,0);IO(4,0);IO(5,0);IO(6,0);
-       Delay(20);
-      End;
-  30: IO(0,1);
-  100: IO(0,1);
-  101,102,103,105: IO(0,1);
-  104: Begin IO(0,1);IO(1,0);IO(2,MENU_H);IO(3,640);IO(4,400);End;
-  79: Begin
-       GetMouseState(MX,MY,MB);
-       IO(0,1);IO(1,MX);IO(2,MY);IO(3,MB And 3);IO(4,0);
-      End;
-  110: IO(0,0);
- Else IO(0,0);
- End;
 End;
 
 { ====================================================================== }
@@ -3625,6 +3388,14 @@ Var E: TEvent; Done: Boolean; Fc,I,J,Hit,X,Y,W,H,R,Dbl: Integer; Sv: TSave; Own:
   End;
  End;
 Begin
+ If Headless Then Begin
+  { mode batch : on valide le bouton par defaut (sinon le premier bouton de sortie) }
+  Hit:=0;
+  For I:=1 To GDl[D].N Do If (Hit=0) And ((GDl[D].Ob[I].Flags And 6)=6) Then Hit:=I;
+  For I:=1 To GDl[D].N Do If (Hit=0) And ((GDl[D].Ob[I].Flags And 4)<>0) Then Hit:=I;
+  WriteLn('[DIALOG] -> ',Hit);
+  DlgRun:=Hit;Exit;
+ End;
  OutFlush(True);
  GemCur(True);
  Own:=Not GDl[D].Shown;
@@ -3828,6 +3599,8 @@ Begin
  End;
 End;
 
+Var HeadIdle: LongInt;
+
 Function GemEvent(Mask,BMask,BState,NClk: LongInt; Ticks: LongInt; R1f: Boolean; R1x,R1y,R1w,R1h: LongInt;
                   R2f: Boolean; R2x,R2y,R2w,R2h: LongInt;
                   PMsg,PKey,PBst,PBcnt,PMx,PMy,PKbd: LongInt): LongInt;
@@ -3835,6 +3608,25 @@ Var Ret,I,Cnt,T,Ti: Integer; E: TEvent; T0: LongInt; Kc: LongInt; MXp,MYp: LongI
     LastIn1,LastIn2: Boolean; Picked: Boolean; RT,RI: Integer; Bs: LongInt;
 Begin
  Ret:=0;T0:=NowCs;Cnt:=0;
+ If Headless Then Begin
+  { mode batch : pas de souris ni de clavier ; seuls les messages en attente et le
+    minuteur peuvent reveiller le programme }
+  For I:=0 To 7 Do PutW(PMsg+I*2,0);
+  PutW(PKey,0);PutW(PBst,0);PutW(PBcnt,0);PutW(PMx,0);PutW(PMy,0);PutW(PKbd,0);
+  If ((Mask And 16)<>0) And (MsgN>0) Then Begin
+   For I:=0 To 7 Do PutW(PMsg+I*2,MsgQ[1,I]);
+   For I:=2 To MsgN Do MsgQ[I-1]:=MsgQ[I];
+   Dec(MsgN);
+   GemEvent:=16;Exit;
+  End;
+  Inc(HeadIdle);
+  If ((Mask And 32)<>0) And (HeadIdle<20000) Then Begin GemEvent:=32;Exit;End;
+  EmuMsg:=T3('Batch mode: the program waits for a mouse or keyboard event',
+             'Mode batch : le programme attend un '#130'v'#130'nement souris ou clavier',
+             'Batch-Modus: das Programm wartet auf ein Maus- oder Tastaturereignis');
+  EmuHalt:=True;EmuCode:=-1;
+  GemEvent:=0;Exit;
+ End;
  GemCur(True);
  GetMouseState(MX,MY,MB);
  LastIn1:=InBox(MX,MY-OFS_Y,R1x,R1y,R1x+R1w-1,R1y+R1h-1);
@@ -4490,7 +4282,8 @@ Begin
    End;
   S_SHOWDLG: Begin
     B:=Pop32;A:=Pop32;
-    If (A>=1) And (A<=MAXGD) Then Begin
+    If Headless Then Begin End
+    Else If (A>=1) And (A<=MAXGD) Then Begin
      If B<=0 Then Begin
       If Not GDl[A].Shown Then Begin
        OutFlush(True);
@@ -4505,6 +4298,9 @@ Begin
     B:=Pop32;A:=Pop32;
     OutFlush(True);GemCur(True);
     If Sv=S_GETINFILE Then PN:=GetPS(B) Else PN:=GetPS(B);
+    If Headless Then Begin
+     WriteLn('[FILE SELECTOR] cancelled in batch mode');Ok:=False;
+    End Else
     Ok:=FileSelect(T3('Select file','Choisir fichier','Datei waehlen'),'*.*',PN);
     If Ok Then Begin
      If Sv=S_GETINFILE Then Begin
@@ -4540,6 +4336,9 @@ End;
 { ------------------------------ services ------------------------------ }
 
 Procedure DoChain(Const Cmd0: String); Forward;
+Procedure GemDos; Forward;
+Procedure VdiCall(PB: LongInt); Forward;
+Procedure AesCall(PB: LongInt); Forward;
 
 { ---------------- aides pour les services divers (CHAIN, OPTION...) ---------------- }
 
@@ -4666,7 +4465,7 @@ Var Sv: Word; A,B,C,D,E,F: LongInt; X,Y: Double; S,S2: String; I: Integer; M: In
  End;
 Begin
  Sv:=RD[0] And $FFFF;
- If RtTrace Then WriteLn(ErrOutput,'SVC ',Sv,' SP=',HexStr(RA[7],16),' [',HexStr(RL(RA[7]),16),',',HexStr(RL(RA[7]+4),16),']');
+ If RtTrace Then Begin WriteLn(ErrOutput,'SVC ',Sv,' SP=',HexStr(RA[7],16),' [',HexStr(RL(RA[7]),16),',',HexStr(RL(RA[7]+4),16),']');Flush(ErrOutput);End;
  Case Sv Of
   S_MULL: Begin B:=Pop32;A:=Pop32;M:=Int64(A)*Int64(B);RD[0]:=LongInt(M And $FFFFFFFF);End;
   S_DIVL: Begin B:=Pop32;A:=Pop32;If B=0 Then RtFail(2) Else RD[0]:=A Div B;End;
@@ -5888,6 +5687,7 @@ End;
 
 
 Var
+ BatchT0,BatchMax : LongInt;     { mode batch : limite de duree d'execution (centiemes de s) }
  ChainDepth : Integer;        { imbrication des Chain en cours }
  ProgStackHigh : LongInt;      { sommet de la zone pile+tas du programme ($S/$U) }
  PhysShadow : Array[0..31999] Of Byte;
@@ -5899,8 +5699,12 @@ Procedure EmuLoop;
 Var I: Integer;
 Begin
  EmuSteps:=0;
+ If ChainDepth=0 Then Begin
+  BatchT0:=NowCs;BatchMax:=6000;
+  If GetEnv('OSSTIMEOUT')<>'' Then Begin Val(GetEnv('OSSTIMEOUT'),BatchMax,I);BatchMax:=BatchMax*100;End;
+ End;
  While (Not EmuHalt) And (Not EmuBrk) And (Not QuitReq) Do Begin
-  If RtTrace And (GetEnv('OSSSTEP')<>'') Then WriteLn(ErrOutput,'PC=',HexStr(RPC-PrgLoad,16),' OP=',HexStr(RW(RPC),16),' D0=',HexStr(RD[0],16),' D1=',HexStr(RD[1],16),' SP=',HexStr(RA[7],16));
+  If RtTrace And (GetEnv('OSSSTEP')<>'') Then Begin WriteLn(ErrOutput,'PC=',HexStr(RPC-PrgLoad,16),' OP=',HexStr(RW(RPC),16),' D0=',HexStr(RD[0],16),' D1=',HexStr(RD[1],16),' SP=',HexStr(RA[7],16));Flush(ErrOutput);End;
   Step;
   Inc(EmuSteps);
   If (EmuSteps And $3FFF)=0 Then Begin
@@ -5913,6 +5717,10 @@ Begin
    PollKeys;
    OutFlush(False);
    If BreakReq Then EmuBrk:=True;
+   If Headless And (BatchMax>0) And (NowCs-BatchT0>BatchMax) And (NowCs>=BatchT0) Then Begin
+    EmuMsg:=T3('Batch mode: time limit reached (OSSTIMEOUT)','Mode batch : dur'#130'e maximale atteinte (OSSTIMEOUT)','Batch-Modus: Zeitlimit erreicht (OSSTIMEOUT)');
+    EmuHalt:=True;EmuCode:=-1;
+   End;
   End;
  End;
  If EmuScreen And (Not ScrCustom) Then MemToOut;
@@ -5998,9 +5806,11 @@ End;
   memoire, registres, fichiers ouverts, curseur...). Comme sur TOS, l'ecran
   n'est pas restaure et le programme fils ne dispose que de la memoire laissee
   libre par {$S} / {$U} du programme appelant. }
-Procedure DoChain(Const Cmd0: String);
-Var Cm,Nm,Tl: String; I: Integer; F: File; Hd: Array[0..27] Of Byte; N: Word;
-    Need,Left,SK: LongInt;
+{ execute un programme enfant dans l'emulateur puis restaure completement l'etat du
+  programme appelant (CHAIN, Pexec) ; retourne False si le fichier est illisible ;
+  Code = code de sortie, Mess = message d'erreur d'execution eventuel }
+Function NestedRun(Const Nm,Tl: String; Var Code: Integer; Var Mess: String): Boolean;
+Var I: Integer;
     SvMem: PByteArr;
     SvRD,SvRA: Array[0..7] Of LongInt;
     SvPC,SvUSP,SvHeap,SvDta,SvSeed,SvStk,SvLog,SvPhys,SvPenX,SvPenY,SvLoad,SvText: LongInt;
@@ -6008,7 +5818,7 @@ Var Cm,Nm,Tl: String; I: Integer; F: File; Hd: Array[0..27] Of Byte; N: Word;
     SvSuper,SvCustom,SvClip,SvGem,SvGemUsed,SvScreen,SvActive,SvIoChk,SvXor,SvRev: Boolean;
     SvOut,SvIn,SvCPos,SvIoRes,SvDbgN,SvTmp,SvSet,SvDm,SvTc,SvFc,SvFs,SvFi,SvLc,SvTs,SvVt: Integer;
     SvCon: String;
-    SvCx1,SvCy1,SvCx2,SvCy2,SvOc,SvOr: LongInt;
+    SvCx1,SvCy1,SvCx2,SvCy2: LongInt;
     SvPF: Array[1..MAXFILES] Of TPFile;
     SvEF: Array[6..25] Of File;
     SvEFU: Array[6..25] Of Boolean;
@@ -6016,7 +5826,69 @@ Var Cm,Nm,Tl: String; I: Integer; F: File; Hd: Array[0..27] Of Byte; N: Word;
     SvDbgAd: Array[1..400] Of LongInt;
     SvDebug: Boolean;
     SvMsg: String; SvCode: Integer;
-    Ok,Aborted: Boolean; Mess: String;
+    Ok,Aborted: Boolean;
+Begin
+ { sauvegarde de l'etat du programme appelant }
+ If EmuScreen And (Not ScrCustom) Then MemToOut;
+ GetMem(SvMem,VMEM_SIZE);
+ Move(VMem[0],SvMem^,VMEM_SIZE);
+ SvRD:=RD;SvRA:=RA;SvPC:=RPC;SvSR:=RSR;SvUSP:=RUSP;SvHeap:=EmuHeap;SvDta:=EmuDta;
+ SvSuper:=EmuSuper;SvSeed:=EmuSeed;SvStk:=ProgStackHigh;SvLog:=ScrLog;SvPhys:=ScrPhys;
+ SvCustom:=ScrCustom;SvClip:=ClipOn;SvCx1:=ClipX1;SvCy1:=ClipY1;SvCx2:=ClipX2;SvCy2:=ClipY2;
+ SvGem:=GemMode;SvGemUsed:=GemUsed;SvScreen:=EmuScreen;SvActive:=EmuActive;SvIoChk:=IoCheckOn;
+ SvXor:=OXor;SvRev:=VtRev;SvPenX:=PenX;SvPenY:=PenY;SvLoad:=PrgLoad;SvText:=PrgText;
+ SvOut:=OutSel;SvIn:=InSel;SvCon:=ConBuf;SvCPos:=ConPos;SvIoRes:=IoRes;SvDbgN:=DbgCount;
+ SvTmp:=TmpIdx;SvSet:=SetIdx;SvDm:=DrawModeV;SvTc:=TxtColV;SvFc:=FilCol;SvFs:=FilSty;
+ SvFi:=FilIdx;SvLc:=LinCol;SvTs:=TxtSize;SvVt:=VtState;
+ SvDbgNm:=DbgNames;SvDbgAd:=DbgAddrs;SvDebug:=PrgDebug;SvMsg:=EmuMsg;SvCode:=EmuCode;
+ SvPF:=PFiles;SvEF:=EmuFile;SvEFU:=EmuFUsed;
+ { le programme fils part sans fichier ouvert (ceux du parent restent ouverts) }
+ For I:=1 To MAXFILES Do PFiles[I].Used:=False;
+ For I:=6 To 25 Do EmuFUsed[I]:=False;
+ Inc(ChainDepth);
+ Ok:=RunCore(Nm,Tl);
+ Dec(ChainDepth);
+ Aborted:=RunAborted;
+ Code:=RunCodeV;
+ If Ok Then Mess:=RunMsg Else Mess:=T3('Cannot chain to ','Impossible d''encha'#140'ner vers ','Verkettung nicht moeglich: ')+Nm;
+ { l'ecran reste tel que le fils l'a laisse (comme sur TOS) }
+ If Mess<>'' Then Begin
+  For I:=1 To Length(Mess) Do VtOut(Mess[I]);
+  VtOut(#13);VtOut(#10);
+ End;
+ OutFlush(True);
+ { restauration du programme appelant }
+ Move(SvMem^,VMem[0],VMEM_SIZE);
+ FreeMem(SvMem,VMEM_SIZE);
+ RD:=SvRD;RA:=SvRA;RPC:=SvPC;RSR:=SvSR;RUSP:=SvUSP;EmuHeap:=SvHeap;EmuDta:=SvDta;
+ EmuSuper:=SvSuper;EmuSeed:=SvSeed;ProgStackHigh:=SvStk;
+ ClipOn:=SvClip;ClipX1:=SvCx1;ClipY1:=SvCy1;ClipX2:=SvCx2;ClipY2:=SvCy2;
+ GemMode:=SvGem;GemUsed:=SvGemUsed;EmuScreen:=SvScreen;EmuActive:=SvActive;IoCheckOn:=SvIoChk;
+ OXor:=SvXor;VtRev:=SvRev;PenX:=SvPenX;PenY:=SvPenY;PrgLoad:=SvLoad;PrgText:=SvText;
+ OutSel:=SvOut;InSel:=SvIn;ConBuf:=SvCon;ConPos:=SvCPos;DbgCount:=SvDbgN;
+ TmpIdx:=SvTmp;SetIdx:=SvSet;DrawModeV:=SvDm;TxtColV:=SvTc;FilCol:=SvFc;FilSty:=SvFs;
+ FilIdx:=SvFi;LinCol:=SvLc;TxtSize:=SvTs;VtState:=SvVt;
+ DbgNames:=SvDbgNm;DbgAddrs:=SvDbgAd;PrgDebug:=SvDebug;
+ { fichiers du fils : refermes ; fichiers du parent : retablis }
+ CloseAllPFiles;
+ For I:=6 To 25 Do If EmuFUsed[I] Then Begin {$I-}Close(EmuFile[I]);{$I+}If IOResult<>0 Then ;End;
+ PFiles:=SvPF;EmuFile:=SvEF;EmuFUsed:=SvEFU;
+ EmuMsg:=SvMsg;EmuCode:=SvCode;EmuHalt:=False;EmuBrk:=Aborted;
+ { ecran : on garde l'image laissee par le fils }
+ SetScreenCmd(SvLog,SvPhys);
+ If Not SvCustom Then OutToMem;
+ OutPending:=True;
+ BreakReq:=False;
+ IoRes:=SvIoRes;
+ NestedRun:=Ok;
+End;
+
+{ CHAIN : execute le programme de la ligne de commande puis REPREND le programme
+  appelant la ou il en etait. Comme sur TOS, l'ecran n'est pas restaure et le
+  programme fils ne dispose que de la memoire laissee libre par {$S} / {$U}. }
+Procedure DoChain(Const Cmd0: String);
+Var Cm,Nm,Tl,Mess: String; I,Code: Integer; F: File; Hd: Array[0..27] Of Byte; N: Word;
+    Need,Left,SK: LongInt;
 Begin
  IoRes:=0;
  Cm:=TrimStr(Cmd0);
@@ -6051,57 +5923,7 @@ Begin
   End;
   Exit;
  End;
- { sauvegarde de l'etat du programme appelant }
- If EmuScreen And (Not ScrCustom) Then MemToOut;
- GetMem(SvMem,VMEM_SIZE);
- Move(VMem[0],SvMem^,VMEM_SIZE);
- SvRD:=RD;SvRA:=RA;SvPC:=RPC;SvSR:=RSR;SvUSP:=RUSP;SvHeap:=EmuHeap;SvDta:=EmuDta;
- SvSuper:=EmuSuper;SvSeed:=EmuSeed;SvStk:=ProgStackHigh;SvLog:=ScrLog;SvPhys:=ScrPhys;
- SvCustom:=ScrCustom;SvClip:=ClipOn;SvCx1:=ClipX1;SvCy1:=ClipY1;SvCx2:=ClipX2;SvCy2:=ClipY2;
- SvGem:=GemMode;SvGemUsed:=GemUsed;SvScreen:=EmuScreen;SvActive:=EmuActive;SvIoChk:=IoCheckOn;
- SvXor:=OXor;SvRev:=VtRev;SvPenX:=PenX;SvPenY:=PenY;SvLoad:=PrgLoad;SvText:=PrgText;
- SvOut:=OutSel;SvIn:=InSel;SvCon:=ConBuf;SvCPos:=ConPos;SvIoRes:=IoRes;SvDbgN:=DbgCount;
- SvTmp:=TmpIdx;SvSet:=SetIdx;SvDm:=DrawModeV;SvTc:=TxtColV;SvFc:=FilCol;SvFs:=FilSty;
- SvFi:=FilIdx;SvLc:=LinCol;SvTs:=TxtSize;SvVt:=VtState;SvOc:=OCX;SvOr:=OCY;
- SvDbgNm:=DbgNames;SvDbgAd:=DbgAddrs;SvDebug:=PrgDebug;SvMsg:=EmuMsg;SvCode:=EmuCode;
- SvPF:=PFiles;SvEF:=EmuFile;SvEFU:=EmuFUsed;
- { le programme fils part sans fichier ouvert (ceux du parent restent ouverts) }
- For I:=1 To MAXFILES Do PFiles[I].Used:=False;
- For I:=6 To 25 Do EmuFUsed[I]:=False;
- Inc(ChainDepth);
- Ok:=RunCore(Nm,Tl);
- Dec(ChainDepth);
- Aborted:=RunAborted;
- If Ok Then Mess:=RunMsg Else Mess:=T3('Cannot chain to ','Impossible d''encha'#140'ner vers ','Verkettung nicht moeglich: ')+Nm;
- { l'ecran reste tel que le fils l'a laisse (comme sur TOS) }
- If Mess<>'' Then Begin
-  For I:=1 To Length(Mess) Do VtOut(Mess[I]);
-  VtOut(#13);VtOut(#10);
- End;
- OutFlush(True);
- { restauration du programme appelant }
- Move(SvMem^,VMem[0],VMEM_SIZE);
- FreeMem(SvMem,VMEM_SIZE);
- RD:=SvRD;RA:=SvRA;RPC:=SvPC;RSR:=SvSR;RUSP:=SvUSP;EmuHeap:=SvHeap;EmuDta:=SvDta;
- EmuSuper:=SvSuper;EmuSeed:=SvSeed;ProgStackHigh:=SvStk;
- ClipOn:=SvClip;ClipX1:=SvCx1;ClipY1:=SvCy1;ClipX2:=SvCx2;ClipY2:=SvCy2;
- GemMode:=SvGem;GemUsed:=SvGemUsed;EmuScreen:=SvScreen;EmuActive:=SvActive;IoCheckOn:=SvIoChk;
- OXor:=SvXor;VtRev:=SvRev;PenX:=SvPenX;PenY:=SvPenY;PrgLoad:=SvLoad;PrgText:=SvText;
- OutSel:=SvOut;InSel:=SvIn;ConBuf:=SvCon;ConPos:=SvCPos;DbgCount:=SvDbgN;
- TmpIdx:=SvTmp;SetIdx:=SvSet;DrawModeV:=SvDm;TxtColV:=SvTc;FilCol:=SvFc;FilSty:=SvFs;
- FilIdx:=SvFi;LinCol:=SvLc;TxtSize:=SvTs;VtState:=SvVt;
- DbgNames:=SvDbgNm;DbgAddrs:=SvDbgAd;PrgDebug:=SvDebug;
- { fichiers du fils : refermes ; fichiers du parent : retablis }
- CloseAllPFiles;
- For I:=6 To 25 Do If EmuFUsed[I] Then Begin {$I-}Close(EmuFile[I]);{$I+}If IOResult<>0 Then ;End;
- PFiles:=SvPF;EmuFile:=SvEF;EmuFUsed:=SvEFU;
- EmuMsg:=SvMsg;EmuCode:=SvCode;EmuHalt:=False;EmuBrk:=Aborted;
- { ecran : on garde l'image laissee par le fils }
- SetScreenCmd(SvLog,SvPhys);
- If Not SvCustom Then OutToMem;
- OutPending:=True;
- BreakReq:=False;
- IoRes:=SvIoRes;
+ NestedRun(Nm,Tl,Code,Mess);
 End;
 
 {$ELSE}
@@ -6111,6 +5933,523 @@ Begin
  RunCore:=False;
 End;
 
+{$ENDIF}
+{$IFDEF FPC}
+{ ====================================================================== }
+{                  GEMDOS EMULE (fichiers, memoire, Pexec)               }
+{ ====================================================================== }
+
+Var
+ Redir    : Array[0..5] Of Integer;     { handle standard -> handle fichier (>=6), -1 console }
+ EmuCwd   : String;
+ SfDir    : String;
+ SfPat    : String;
+ SfAttr   : Integer;
+ Allocs   : Array[1..32] Of Record A,S: LongInt; End;
+ AllocN   : Integer;
+
+{ nom TOS -> nom de fichier hote : lettre de lecteur retiree, \ devient /, la racine
+  du lecteur est le repertoire de travail }
+Function TosToHost(Const S0: String): String;
+Var S: String; I: Integer;
+Begin
+ S:=S0;
+ While (Length(S)>0) And (S[Length(S)]=' ') Do Delete(S,Length(S),1);
+ While (Length(S)>0) And (S[1]=' ') Do Delete(S,1,1);
+ If (Length(S)>=2) And (S[2]=':') And (UpCase(S[1]) In ['A'..'Z']) Then Delete(S,1,2);
+ For I:=1 To Length(S) Do If S[I]='\' Then S[I]:='/';
+ While (Length(S)>0) And (S[1]='/') Do Delete(S,1,1);
+ If S='' Then S:='.';
+ TosToHost:=S;
+End;
+
+{ nom de fichier a creer : repertoire resolu sans tenir compte de la casse, nom en
+  majuscules comme sur TOS (sauf si le fichier existe deja) }
+Function CreateName(Const S0: String): String;
+Var S,Dir,Base: String; I,P: Integer;
+Begin
+ S:=TosToHost(S0);
+ P:=0;
+ For I:=1 To Length(S) Do If S[I]='/' Then P:=I;
+ If P>0 Then Begin Dir:=Copy(S,1,P);Base:=Copy(S,P+1,100);End Else Begin Dir:='';Base:=S;End;
+ If FileExists(ResolveFile(S)) Then CreateName:=ResolveFile(S)
+ Else If Dir<>'' Then CreateName:=ResolveFile(Copy(Dir,1,Length(Dir)-1))+'/'+Upper(Base)
+ Else CreateName:=Upper(Base);
+End;
+
+Function TosMatch(Const Pat,Nm: String): Boolean;
+ Function M(P,N: Integer): Boolean;
+ Begin
+  While P<=Length(Pat) Do Begin
+   If Pat[P]='*' Then Begin
+    While P<=Length(Pat) Do Begin
+     If Pat[P]<>'*' Then Break;
+     Inc(P);
+    End;
+    If P>Length(Pat) Then Begin M:=True;Exit;End;
+    While N<=Length(Nm)+1 Do Begin
+     If M(P,N) Then Begin M:=True;Exit;End;
+     Inc(N);
+    End;
+    M:=False;Exit;
+   End Else If N>Length(Nm) Then Begin M:=False;Exit;End
+   Else If (Pat[P]<>'?') And (Pat[P]<>Nm[N]) Then Begin M:=False;Exit;End;
+   Inc(P);Inc(N);
+  End;
+  M:=(N>Length(Nm));
+ End;
+Begin
+ If Pat='*.*' Then Begin TosMatch:=True;Exit;End;
+ TosMatch:=M(1,1);
+End;
+
+Function NextMatch(First: Boolean): Boolean;
+Begin
+ NextMatch:=False;
+ If First Then Begin
+  {$I-}FindFirst(SfDir+'*',AnyFile,EmuSF);{$I+}
+ End Else Begin
+  {$I-}FindNext(EmuSF);{$I+}
+ End;
+ While DosError=0 Do Begin
+  If TosMatch(SfPat,Upper(EmuSF.Name)) And
+     (((EmuSF.Attr And Directory)=0) Or ((SfAttr And $10)<>0)) And (EmuSF.Name<>'.') And (EmuSF.Name<>'..') Then Begin
+   NextMatch:=True;Exit;
+  End;
+  {$I-}FindNext(EmuSF);{$I+}
+ End;
+End;
+
+Procedure StdIn(A,Cnt: LongInt;Var Got: LongInt);
+Var Ch: Integer;
+Begin
+ Got:=0;
+ If ConPos>Length(ConBuf) Then ConFetch;
+ While (Got<Cnt) And (ConPos<=Length(ConBuf)) Do Begin
+  WB(A+Got,Ord(ConBuf[ConPos]));Inc(Got);
+  If ConBuf[ConPos]=#13 Then Begin
+   If Got<Cnt Then Begin WB(A+Got,10);Inc(Got);End;
+  End;
+  Inc(ConPos);
+ End;
+ Ch:=0;
+End;
+
+Procedure PutDtaName(Const S: String);
+Begin
+ PutStr(EmuDta+30,Copy(Upper(S),1,13));
+End;
+
+Procedure GemDos;
+Var Fn: Word; SP: LongInt; H,R,I,Code: Integer; S,S2,Mess,Tl: String; A,Cnt,Len,Pos2,Done: LongInt; Mode: Integer;
+    FH: File; At: Word; T: LongInt; Y,Mo,D,Dw,Hh,Mi,Sc,S100: Word; Ss: Int64; Yy,Mm,Dd: LongInt;
+ Procedure Cons(A,Cnt: LongInt);
+ Var K: LongInt;
+ Begin
+  For K:=0 To Cnt-1 Do VtOut(Chr(RB(A+K)));
+  OutToMem;
+ End;
+ Function OpenFile(Const Nm: String; Md: Integer): Integer;
+ Var HH: Integer; Sx: String;
+ Begin
+  HH:=HandleFile;
+  If HH<0 Then Begin OpenFile:=-35;Exit;End;
+  Sx:=ResolveFile(TosToHost(Nm));
+  If Not FileExists(Sx) Then Begin OpenFile:=-33;Exit;End;
+  Assign(EmuFile[HH],Sx);
+  If Md=0 Then FileMode:=0 Else FileMode:=2;
+  {$I-}Reset(EmuFile[HH],1);{$I+}
+  FileMode:=2;
+  If IOResult<>0 Then Begin OpenFile:=-36;Exit;End;
+  EmuFUsed[HH]:=True;OpenFile:=HH;
+ End;
+Begin
+ SP:=RA[7];
+ Fn:=RW(SP);
+ If RtTrace Then Begin WriteLn(ErrOutput,'GEMDOS ',Fn);Flush(ErrOutput);End;
+ Case Fn Of
+  0: Begin EmuHalt:=True;EmuCode:=0;End;
+  1: RD[0]:=EmuKey;
+  2: Begin VtOut(Chr(RW(SP+2) And $FF));OutToMem;End;
+  3: RD[0]:=0;
+  4,5: RD[0]:=0;
+  6: If RW(SP+2)=$FF Then Begin
+      If KeyPressed Or (KeyQ<>'') Then RD[0]:=EmuKey Else RD[0]:=0;
+     End Else Begin VtOut(Chr(RW(SP+2) And $FF));OutToMem;RD[0]:=0;End;
+  7,8: RD[0]:=EmuKey;
+  9: Begin
+      S:=EmuStr(RL(SP+2));
+      VtStr(S);OutToMem;
+      RD[0]:=0;
+     End;
+  10: Begin
+       A:=RL(SP+2);
+       If Headless Then Begin
+        If ConPos>Length(ConBuf) Then ConFetch;
+        S:=Copy(ConBuf,ConPos,Length(ConBuf)-ConPos);ConPos:=Length(ConBuf)+1;
+        S:=Copy(S,1,RB(A));
+        WB(A+1,Length(S));PutStr(A+2,S);RD[0]:=Length(S);
+       End Else If ReadOutLine(S,Min2(RB(A),250),False) Then Begin
+        WB(A+1,Length(S));
+        PutStr(A+2,S);
+        RD[0]:=Length(S);
+       End Else EmuBrk:=True;
+      End;
+  11: If KeyPressed Or (KeyQ<>'') Then RD[0]:=-1 Else RD[0]:=0;
+  14: RD[0]:=4;
+  16,19: RD[0]:=-1;
+  17: RD[0]:=-1;
+  18: RD[0]:=0;
+  25: RD[0]:=2;
+  26: EmuDta:=RL(SP+2);
+  32: Begin
+       A:=RL(SP+2);
+       If A=1 Then Begin If EmuSuper Then RD[0]:=-1 Else RD[0]:=0;End
+       Else Begin EmuSuper:=Not EmuSuper;RD[0]:=RA[7];End;
+      End;
+  42: Begin
+       Ss:=StNowSecs;CivilFromDays(Ss Div 86400,Yy,Mm,Dd);
+       RD[0]:=((Yy-1980) Shl 9) Or (Mm Shl 5) Or Dd;
+      End;
+  43: Begin
+       T:=RW(SP+2);
+       Yy:=1980+(T Shr 9);Mm:=(T Shr 5) And 15;Dd:=T And 31;
+       If (Mm<1) Or (Mm>12) Or (Dd<1) Then RD[0]:=-13
+       Else Begin
+        ClockAdj:=Int64(DaysFromCivil(Yy,Mm,Dd))*86400+(StNowSecs Mod 86400)-HostNowSecs;
+        RD[0]:=0;
+       End;
+      End;
+  44: Begin
+       Ss:=StNowSecs Mod 86400;
+       RD[0]:=((Ss Div 3600) Shl 11) Or (((Ss Div 60) Mod 60) Shl 5) Or ((Ss Mod 60) Div 2);
+      End;
+  45: Begin
+       T:=RW(SP+2);
+       Ss:=(StNowSecs Div 86400)*86400+(T Shr 11)*3600+((T Shr 5) And 63)*60+(T And 31)*2;
+       ClockAdj:=Ss-HostNowSecs;
+       RD[0]:=0;
+      End;
+  47: RD[0]:=EmuDta;
+  48: RD[0]:=$1500;
+  49: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+2));End;
+  54: Begin
+       A:=RL(SP+2);
+       WL(A,20000);WL(A+4,40000);WL(A+8,512);WL(A+12,2);RD[0]:=0;
+      End;
+  57: Begin
+       {$I-}MkDir(CreateName(EmuStr(RL(SP+2))));{$I+}
+       If IOResult<>0 Then RD[0]:=-36 Else RD[0]:=0;
+      End;
+  58: Begin
+       {$I-}RmDir(ResolveFile(TosToHost(EmuStr(RL(SP+2)))));{$I+}
+       If IOResult<>0 Then RD[0]:=-36 Else RD[0]:=0;
+      End;
+  59: Begin EmuCwd:=EmuStr(RL(SP+2));RD[0]:=0;End;
+  60: Begin
+       S:=EmuStr(RL(SP+2));
+       H:=HandleFile;
+       If H<0 Then RD[0]:=-35
+       Else Begin
+        Assign(EmuFile[H],CreateName(S));
+        {$I-}Rewrite(EmuFile[H],1);{$I+}
+        If IOResult<>0 Then RD[0]:=-36 Else Begin EmuFUsed[H]:=True;RD[0]:=H;End;
+       End;
+      End;
+  61: RD[0]:=OpenFile(EmuStr(RL(SP+2)),RW(SP+6) And 3);
+  62: Begin
+       H:=RW(SP+2);
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        {$I-}Close(EmuFile[H]);{$I+}
+        If IOResult<>0 Then ;
+        EmuFUsed[H]:=False;RD[0]:=0;
+        For I:=0 To 5 Do If Redir[I]=H Then Redir[I]:=-1;
+       End Else If H<6 Then RD[0]:=0 Else RD[0]:=-37;
+      End;
+  63: Begin
+       H:=SmallInt(RW(SP+2));Cnt:=RL(SP+4);A:=RL(SP+8);
+       If (H>=0) And (H<=5) And (Redir[H]>=6) Then H:=Redir[H];
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        If Cnt>VMEM_SIZE-A Then Cnt:=VMEM_SIZE-A;
+        If Cnt<0 Then Cnt:=0;
+        Done:=0;
+        {$I-}BlockRead(EmuFile[H],VMem[A],Cnt,Done);{$I+}
+        If IOResult<>0 Then RD[0]:=-12 Else RD[0]:=Done;
+       End Else If H=0 Then Begin StdIn(A,Cnt,Done);RD[0]:=Done;End
+       Else RD[0]:=-37;
+      End;
+  64: Begin
+       H:=SmallInt(RW(SP+2));Cnt:=RL(SP+4);A:=RL(SP+8);
+       If (H>=0) And (H<=5) And (Redir[H]>=6) Then H:=Redir[H];
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        Done:=0;
+        {$I-}BlockWrite(EmuFile[H],VMem[A],Cnt,Done);{$I+}
+        If IOResult<>0 Then RD[0]:=-12 Else RD[0]:=Done;
+       End Else If (H=1) Or (H=2) Or (H<0) Then Begin
+        Cons(A,Cnt);RD[0]:=Cnt;
+       End Else If (H=3) Or (H=4) Or (H=5) Then RD[0]:=Cnt
+       Else RD[0]:=-37;
+      End;
+  65: Begin
+       S:=ResolveFile(TosToHost(EmuStr(RL(SP+2))));
+       If Not FileExists(S) Then RD[0]:=-33
+       Else Begin Assign(FH,S);{$I-}Erase(FH);{$I+}If IOResult<>0 Then RD[0]:=-36 Else RD[0]:=0;End;
+      End;
+  66: Begin
+       Pos2:=RL(SP+2);Mode:=RW(SP+8);H:=RW(SP+6);
+       If (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        If Mode=1 Then Pos2:=Pos2+FilePos(EmuFile[H])
+        Else If Mode=2 Then Pos2:=Pos2+FileSize(EmuFile[H]);
+        If Pos2<0 Then Pos2:=0;
+        {$I-}Seek(EmuFile[H],Pos2);{$I+}
+        If IOResult<>0 Then RD[0]:=-64 Else RD[0]:=Pos2;
+       End Else RD[0]:=-37;
+      End;
+  67: Begin
+       S:=ResolveFile(TosToHost(EmuStr(RL(SP+2))));
+       If Not FileExists(S) Then Begin
+        {$I-}FindFirst(S,Directory,EmuSF);{$I+}
+        If DosError=0 Then RD[0]:=$10 Else RD[0]:=-33;
+       End Else Begin
+        Assign(FH,S);At:=0;
+        {$I-}GetFAttr(FH,At);{$I+}
+        If IOResult<>0 Then At:=0;
+        RD[0]:=At And $27;
+       End;
+      End;
+  69: Begin
+       H:=RW(SP+2);
+       If H<=5 Then RD[0]:=100+H Else RD[0]:=H;
+      End;
+  70: Begin
+       { Fforce(standard, remplacant) : redirection des entrees/sorties }
+       H:=RW(SP+2);I:=RW(SP+4);
+       If (H>=0) And (H<=5) Then Begin
+        If I>=100 Then Redir[H]:=-1 Else If I>=6 Then Redir[H]:=I Else Redir[H]:=-1;
+       End;
+       RD[0]:=0;
+      End;
+  71: Begin PutStr(RL(SP+2),EmuCwd);RD[0]:=0;End;
+  72: Begin
+       Cnt:=RL(SP+2);
+       If Cnt=-1 Then RD[0]:=RA[7]-512-EmuHeap
+       Else Begin
+        Cnt:=(Cnt+3) And (Not 3);
+        If (Cnt<0) Or (EmuHeap+Cnt+512>RA[7]) Then RD[0]:=0
+        Else Begin
+         RD[0]:=EmuHeap;FillChar(VMem[EmuHeap],Cnt,0);
+         If AllocN<32 Then Begin Inc(AllocN);Allocs[AllocN].A:=EmuHeap;Allocs[AllocN].S:=Cnt;End;
+         EmuHeap:=EmuHeap+Cnt;
+        End;
+       End;
+      End;
+  73: Begin
+       A:=RL(SP+2);
+       If (AllocN>0) And (Allocs[AllocN].A=A) Then Begin EmuHeap:=A;Dec(AllocN);End;
+       RD[0]:=0;
+      End;
+  74: RD[0]:=0;
+  75: Begin
+       { Pexec : seul le mode 0 (charger et lancer) est gere }
+       Mode:=RW(SP+2);
+       If Mode=0 Then Begin
+        S:=EmuStr(RL(SP+4));
+        A:=RL(SP+8);
+        Tl:='';
+        For I:=1 To RB(A) Do If I<=125 Then Tl:=Tl+Chr(RB(A+I));
+        If ChainDepth>=6 Then RD[0]:=-39
+        Else If NestedRun(S,Tl,Code,Mess) Then RD[0]:=Code Else RD[0]:=-33;
+       End Else RD[0]:=-32;
+      End;
+  76: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+2));End;
+  78: Begin
+       S:=TosToHost(EmuStr(RL(SP+2)));
+       SfAttr:=RW(SP+6);
+       I:=0;
+       For H:=1 To Length(S) Do If S[H]='/' Then I:=H;
+       If I>0 Then Begin SfDir:=ResolveFile(Copy(S,1,I-1))+'/';SfPat:=Upper(Copy(S,I+1,100));End
+       Else Begin SfDir:='';SfPat:=Upper(S);End;
+       If NextMatch(True) Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
+      End;
+  79: Begin
+       If NextMatch(False) Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
+      End;
+  86: Begin
+       S:=ResolveFile(TosToHost(EmuStr(RL(SP+4))));
+       S2:=CreateName(EmuStr(RL(SP+8)));
+       If Not FileExists(S) Then RD[0]:=-33
+       Else Begin
+        Assign(FH,S);
+        {$I-}Rename(FH,S2);{$I+}
+        If IOResult<>0 Then RD[0]:=-36 Else RD[0]:=0;
+       End;
+      End;
+  87: Begin
+       A:=RL(SP+2);H:=RW(SP+6);
+       If (RW(SP+8)=0) And (H>=6) And (H<=25) And EmuFUsed[H] Then Begin
+        T:=0;
+        {$I-}GetFTime(EmuFile[H],T);{$I+}
+        If IOResult<>0 Then T:=0;
+        WW(A,T And $FFFF);WW(A+2,(T Shr 16) And $FFFF);
+       End;
+       RD[0]:=0;
+      End;
+ Else
+  If RtTrace Then Begin WriteLn(ErrOutput,'GEMDOS non implemente : ',Fn);Flush(ErrOutput);End;
+  RD[0]:=-32;
+ End;
+End;
+
+{$ENDIF}
+{$IFDEF FPC}
+{ ----------------------------- VDI / AES emules ----------------------------- }
+
+Procedure VdiCall(PB: LongInt);
+Var Contrl,Intin,Ptsin,Intout,Ptsout: LongInt; Op,N,I,Sub: Integer; X1,Y1,X2,Y2,R: Integer; S: String;
+    SavC,SavS: Integer;
+ Procedure IO(I: Integer; V: Integer);
+ Begin WW(Intout+I*2,Word(V));End;
+Begin
+ Contrl:=RL(PB);Intin:=RL(PB+4);Ptsin:=RL(PB+8);Intout:=RL(PB+12);Ptsout:=RL(PB+16);
+ Op:=SmallInt(RW(Contrl));N:=SmallInt(RW(Contrl+2));
+ If RtTrace Then Begin WriteLn(ErrOutput,'VDI ',Op,' sub=',SmallInt(RW(Contrl+10)),' nin=',N,' nint=',SmallInt(RW(Contrl+6)));Flush(ErrOutput);End;
+ Sub:=SmallInt(RW(Contrl+10));
+ WW(Contrl+8,0);
+ SavC:=FilCol;SavS:=FilSty;
+ Case Op Of
+  1,100: Begin
+          For I:=0 To 44 Do IO(I,0);
+          IO(0,639);IO(1,399);IO(2,1);IO(3,372);IO(4,372);IO(13,2);IO(35,1);
+          WW(Contrl+12,1);
+         End;
+  2,101: ;
+  3: Begin OutClear;OutToMem;End;
+  6: Begin
+      For I:=0 To N-2 Do
+       OLine(SmallInt(RW(Ptsin+I*4)),SmallInt(RW(Ptsin+I*4+2)),
+             SmallInt(RW(Ptsin+I*4+4)),SmallInt(RW(Ptsin+I*4+6)),LineInk);
+     End;
+  7: For I:=0 To N-1 Do OPlot(SmallInt(RW(Ptsin+I*4)),SmallInt(RW(Ptsin+I*4+2)),1);
+  8: Begin
+      X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
+      For I:=0 To SmallInt(RW(Contrl+6))-1 Do Begin
+       { texte graphique : cellule de 8x8 alignee sur la ligne de base }
+       For Y2:=0 To 7 Do
+        For X2:=0 To 7 Do
+         If (Font8[RW(Intin+I*2) And $FF,Y2] And (128 Shr X2))<>0 Then
+          OPlot(X1+I*8+X2,Y1-8+Y2+1,1);
+      End;
+     End;
+  9: Begin
+      For I:=0 To N-1 Do Begin PX[I]:=SmallInt(RW(Ptsin+I*4));PY[I]:=SmallInt(RW(Ptsin+I*4+2));End;
+
+      OFillPoly(N);
+      FilCol:=SavC;FilSty:=SavS;
+     End;
+  11: Begin
+       X1:=SmallInt(RW(Ptsin));Y1:=SmallInt(RW(Ptsin+2));
+       X2:=SmallInt(RW(Ptsin+4));Y2:=SmallInt(RW(Ptsin+6));
+
+       Case Sub Of
+        1: Begin
+            PX[0]:=X1;PY[0]:=Y1;PX[1]:=X2+1;PY[1]:=Y1;PX[2]:=X2+1;PY[2]:=Y2+1;PX[3]:=X1;PY[3]:=Y2+1;
+            OFillPoly(4);
+           End;
+        4: OPie(X1,Y1,SmallInt(RW(Ptsin+8)),SmallInt(RW(Ptsin+8)),0,3600);
+        5: OPie(X1,Y1,SmallInt(RW(Ptsin+4)),SmallInt(RW(Ptsin+6)),0,3600);
+        2: OArc(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),SmallInt(RW(Intin)),SmallInt(RW(Intin+2)));
+        3: OPie(X1,Y1,SmallInt(RW(Ptsin+12)),SmallInt(RW(Ptsin+12)),SmallInt(RW(Intin)),SmallInt(RW(Intin+2)));
+       End;
+       FilCol:=SavC;FilSty:=SavS;
+      End;
+  23: Begin
+       FilSty:=SmallInt(RW(Intin));IO(0,FilSty);
+       If FilSty=0 Then FilSty:=0;
+      End;
+  24: Begin FilIdx:=SmallInt(RW(Intin));IO(0,FilIdx);End;
+  25: Begin FilCol:=SmallInt(RW(Intin));IO(0,FilCol);End;
+  17: Begin LinCol:=SmallInt(RW(Intin));LinCol:=LinCol;IO(0,LinCol);End;
+  22: Begin VdiTxtCol:=SmallInt(RW(Intin));IO(0,VdiTxtCol);End;
+  124: Begin IO(0,0);WW(Ptsout,MX And $FFFF);WW(Ptsout+2,MY And $FFFF);End;
+ Else
+  If RtTrace Then Begin WriteLn(ErrOutput,'VDI non implemente : ',Op);Flush(ErrOutput);End;
+  IO(0,0);
+ End;
+ If EmuActive Then OutToMem;
+End;
+
+
+Var HeadIdleA: LongInt;
+
+Procedure AesCall(PB: LongInt);
+Var Ctl,Glob,IntIn,IntOut,AddrIn,AddrOut: LongInt; Op: Integer;
+ Procedure IO(I: Integer; V: Integer);
+ Begin WW(IntOut+I*2,Word(V));End;
+Begin
+ Ctl:=RL(PB);Glob:=RL(PB+4);IntIn:=RL(PB+8);IntOut:=RL(PB+12);AddrIn:=RL(PB+16);AddrOut:=RL(PB+20);
+ Op:=SmallInt(RW(Ctl));
+ If Headless And ((Op=21) Or (Op=25) Or (Op=79) Or (Op=20)) Then Begin
+  { mode batch : pas de souris ni de clavier ; seul le minuteur d'evnt_multi repond }
+  IO(0,1);
+  Inc(HeadIdleA);
+  If (Op=25) And ((SmallInt(RW(IntIn)) And 32)<>0) And (HeadIdleA<20000) Then Begin
+   IO(0,32);IO(1,0);IO(2,0);IO(3,0);IO(4,0);IO(5,0);IO(6,0);Exit;
+  End;
+  EmuMsg:=T3('Batch mode: the program waits for a mouse or keyboard event',
+             'Mode batch : le programme attend un '#130'v'#130'nement souris ou clavier',
+             'Batch-Modus: das Programm wartet auf ein Maus- oder Tastaturereignis');
+  EmuHalt:=True;EmuCode:=-1;
+  Exit;
+ End;
+ If RtTrace Then Begin WriteLn(ErrOutput,'AES ',Op);Flush(ErrOutput);End;
+ IO(0,1);
+ Case Op Of
+  10: Begin
+       Inc(AesNext);
+       IO(0,AesNext);
+       WW(Glob,$0120);WW(Glob+2,1);WW(Glob+4,AesNext);
+      End;
+  19: IO(0,1);
+  77: Begin IO(0,1);IO(1,8);IO(2,16);IO(3,8);IO(4,16);End;
+  78: IO(0,1);
+  107: IO(0,1);
+  52: IO(0,AesAlert(EmuStr(RL(AddrIn)),SmallInt(RW(IntIn))));
+  20: Begin
+       IO(0,0);
+       { evnt_keybd }
+       RD[0]:=0;
+       IO(0,Integer(EmuKey And $FFFF));
+      End;
+  21: Begin
+       { evnt_button : attend un clic }
+       While (MB And 3)=0 Do Begin
+        GetMouseState(MX,MY,MB);
+        If KeyPressed Then Begin PollKeys;End;
+        If BreakReq Then Begin EmuBrk:=True;MB:=1;End;
+        Delay(5);
+       End;
+       IO(0,1);IO(1,1);IO(2,MX);IO(3,MY);IO(4,0);
+      End;
+  23,24: Begin Delay(20);IO(0,1);End;
+  25: Begin
+       GetMouseState(MX,MY,MB);
+       IO(0,32);IO(1,MX);IO(2,MY);IO(3,0);IO(4,0);IO(5,0);IO(6,0);
+       Delay(20);
+      End;
+  30: IO(0,1);
+  100: IO(0,1);
+  101,102,103,105: IO(0,1);
+  104: Begin IO(0,1);IO(1,0);IO(2,MENU_H);IO(3,640);IO(4,400);End;
+  79: Begin
+       GetMouseState(MX,MY,MB);
+       IO(0,1);IO(1,MX);IO(2,MY);IO(3,MB And 3);IO(4,0);
+      End;
+  110: IO(0,0);
+ Else
+  If RtTrace Then Begin WriteLn(ErrOutput,'AES non implemente : ',Op);Flush(ErrOutput);End;
+  IO(0,0);
+ End;
+End;
 {$ENDIF}
 
 { ====================================================================== }
