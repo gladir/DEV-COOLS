@@ -2732,8 +2732,27 @@ Var
  ClkCnt  : Integer;
  NextItemId : Integer;
 
+Var LastKbd: Integer;          { etat Maj(1,2) Ctrl(4) Alt(8) deduit de la derniere touche }
 Var AesKeyScan: Boolean;      { programme AES reel : touches avec code de balayage }
 Function KeyToAes(K: Integer): LongInt; Forward;
+
+Function KbdOfKey(K: Integer): Integer;
+{ les touches modificatrices ne sont pas visibles directement : on les deduit du code reçu
+  (Ctrl+lettre donne 1..26, Alt+lettre donne un code etendu de lettre, etc.) }
+Var Sc: Integer;
+Begin
+ KbdOfKey:=0;
+ If K<256 Then Begin
+  If (K>=1) And (K<=26) And (K<>8) And (K<>9) And (K<>10) And (K<>13) Then KbdOfKey:=4
+  Else If (K>=65) And (K<=90) Then KbdOfKey:=1;
+ End Else Begin
+  Sc:=K-256;
+  If ((Sc>=16) And (Sc<=25)) Or ((Sc>=30) And (Sc<=38)) Or ((Sc>=44) And (Sc<=50)) Or
+     ((Sc>=120) And (Sc<=131)) Or ((Sc>=104) And (Sc<=113)) Then KbdOfKey:=8
+  Else If (Sc>=84) And (Sc<=93) Then KbdOfKey:=1
+  Else If ((Sc>=94) And (Sc<=103)) Or ((Sc>=115) And (Sc<=119)) Then KbdOfKey:=4;
+ End;
+End;
 
 Procedure GemCur(OnFlag: Boolean);
 Begin
@@ -3616,7 +3635,7 @@ Function GemEvent(Mask,BMask,BState,NClk: LongInt; Ticks: LongInt; R1f: Boolean;
 Var Ret,I,Cnt,T,Ti: Integer; E: TEvent; T0: LongInt; Kc: LongInt; MXp,MYp: LongInt; Ins1,Ins2: Boolean;
     LastIn1,LastIn2: Boolean; Picked: Boolean; RT,RI: Integer; Bs: LongInt;
 Begin
- Ret:=0;T0:=NowCs;Cnt:=0;
+ Ret:=0;T0:=NowCs;Cnt:=0;LastKbd:=0;
  If Headless Then Begin
   { mode batch : pas de souris ni de clavier ; seuls les messages en attente et le
     minuteur peuvent reveiller le programme }
@@ -3643,7 +3662,6 @@ Begin
  Repeat
   If ((Mask And 16)<>0) And (MsgN>0) Then Begin
    For I:=0 To 7 Do PutW(PMsg+I*2,MsgQ[1,I]);
-   For I:=8 To 15 Do PutW(PMsg+I*2,0);
    For I:=2 To MsgN Do MsgQ[I-1]:=MsgQ[I];
    Dec(MsgN);
    Ret:=Ret Or 16;
@@ -3658,6 +3676,7 @@ Begin
        If E.Key=K_BKSP Then Kc:=$0E08;
        If E.Key=K_ESC Then Kc:=$011B;
        If AesKeyScan Then Kc:=KeyToAes(E.Key);
+       LastKbd:=KbdOfKey(E.Key);
        PutW(PKey,Kc);Ret:=Ret Or 1;
       End;
    2: Begin
@@ -3707,7 +3726,7 @@ Begin
  Until (Ret<>0) Or QuitReq Or BreakReq;
  GetMouseState(MX,MY,MB);
  PutW(PBst,MB And 3);PutW(PBcnt,Cnt);PutW(PMx,MX);PutW(PMy,MY-OFS_Y);
- If (MB And 2)<>0 Then PutW(PKbd,1) Else PutW(PKbd,0);
+ PutW(PKbd,LastKbd);
  If (Mask And 1)=0 Then PutW(PKey,0);
  GemEvent:=Ret;
 End;
@@ -5086,6 +5105,7 @@ End;
 
 Procedure DoTrapN(N: Integer);
 Begin
+ If RtTrace And ((N=13) Or (N=14)) Then Begin WriteLn(ErrOutput,'TRAP #',N,' fn=',RW(RA[7]));Flush(ErrOutput);End;
  If N=14 Then Begin
   Case RW(RA[7]) Of
    2: Begin RD[0]:=ScrPhys;Exit;End;
@@ -7163,6 +7183,7 @@ End;
 Const
  AES_POOL     = $E8000;
  AES_POOL_END = $F7F00;
+ AES_SCR      = $F7F00;       { 128 octets de travail pour les evenements }
  MAXRSC       = 4;
 
 Type
@@ -7188,6 +7209,27 @@ Begin
   FillChar(VMem[AesPoolTop],Sz,0);
   AesPoolTop:=AesPoolTop+Sz;
  End;
+End;
+
+{ appel d'un sous-programme 68000 du programme depuis l'AES (G_PROGDEF) : l'argument
+  est empile, la routine est executee jusqu'a son RTS, les registres sont restaures }
+Const
+ RET_ADDR = $412;      { adresse de retour fictive (jamais executee) }
+
+Function CallEmu(Addr,Arg: LongInt): LongInt;
+Var SvRD,SvRA: Array[0..7] Of LongInt; SvPC: LongInt; SvSR: Word; SvOpc: Word; SvOpPC,SvSteps: LongInt;
+    SvHalt: Boolean; N: LongInt;
+Begin
+ SvRD:=RD;SvRA:=RA;SvPC:=RPC;SvSR:=RSR;SvOpc:=EmuOpc;SvOpPC:=EmuOpPC;SvSteps:=EmuSteps;SvHalt:=EmuHalt;
+ Push32(Arg);Push32(RET_ADDR);
+ RPC:=Addr;
+ N:=0;
+ While (RPC<>RET_ADDR) And (Not EmuHalt) And (Not EmuBrk) And (N<20000000) Do Begin
+  Step;Inc(N);
+ End;
+ CallEmu:=SmallInt(RD[0] And $FFFF);
+ RD:=SvRD;RA:=SvRA;RPC:=SvPC;RSR:=SvSR;EmuOpc:=SvOpc;EmuOpPC:=SvOpPC;EmuSteps:=SvSteps;
+ If EmuHalt And Not SvHalt Then ;
 End;
 
 { ------------------------------ acces objets --------------------------- }
@@ -7514,6 +7556,7 @@ Begin
   21,22,29,30: Begin
     Ted:=Spec;
     Col:=RW(Ted+18);Thick:=SmallInt(RW(Ted+22));Just:=RW(Ted+16);Font:=RW(Ted+12);
+    If Thick>128 Then Thick:=Thick-256;       { epaisseur negative codee sur un octet }
     FCol:=(Col Shr 12) And 15;TCol:=(Col Shr 8) And 15;
     Opaq:=((Col Shr 7) And 1)<>0;Pat:=(Col Shr 4) And 7;ICol:=Col And 15;
    End;
@@ -7523,6 +7566,17 @@ Begin
    End;
  End;
  Big:=Font<>5;
+ { objet defini par le programme : APPLBLK (code, parametre) ; la routine recoit un PARMBLK }
+ If Typ=24 Then Begin
+  Ic:=AES_SCR+$40;
+  WL(Ic,T);WW(Ic+4,N);WW(Ic+6,St);WW(Ic+8,St);
+  WW(Ic+10,X);WW(Ic+12,Y);WW(Ic+14,W);WW(Ic+16,H);
+  If ClipOn Then Begin WW(Ic+18,ClipX1);WW(Ic+20,ClipY1);WW(Ic+22,ClipX2-ClipX1+1);WW(Ic+24,ClipY2-ClipY1+1);End
+  Else Begin WW(Ic+18,0);WW(Ic+20,0);WW(Ic+22,640);WW(Ic+24,400);End;
+  WL(Ic+26,RL(Spec+4));
+  If RL(Spec)<>0 Then St:=CallEmu(RL(Spec),Ic);
+  ScrDirty:=True;
+ End;
  { ombre }
  If (St And 32)<>0 Then Begin
   Sh:=Abs(Thick)*2;If Sh<3 Then Sh:=3;
@@ -7552,6 +7606,7 @@ Begin
      2: TX:=X+(W-Wi) Div 2;
     Else TX:=X;
     End;
+    If Wi>W Then TX:=X;      { texte plus large que la boite : cadre a gauche }
     TY:=Y+(H-Hi) Div 2;
     If (Typ=22) Or (Typ=30) Then If Thick<0 Then Begin End;
     AText(TX,TY,S,Big,TCol,True);
@@ -7811,6 +7866,7 @@ Begin
   2: TX:=AX+(OW(T,N)-Wi) Div 2;
  Else TX:=AX;
  End;
+ If Wi>OW(T,N) Then TX:=AX;
  { position du (Idx+1)-ieme '_' }
  Slot:=0;P:=Length(Tm);
  For I:=1 To Length(Tm) Do
@@ -7935,6 +7991,7 @@ Var Sc: Integer; C: Char;
 Begin
  If K>=256 Then Begin KeyToAes:=LongInt(K-256) Shl 8;Exit;End;
  Sc:=0;C:=UpCase(Chr(K));
+ If (K>=1) And (K<=26) And (K<>8) And (K<>9) And (K<>13) Then C:=Chr(64+K);
  Case K Of
   13: Begin KeyToAes:=$1C0D;Exit;End;
   8: Begin KeyToAes:=$0E08;Exit;End;
@@ -8297,7 +8354,7 @@ Begin
        IO(0,0);
        If Headless Then HeadlessWait(1)
        Else Begin
-        Multi(1,0,0,0,0,False,0,0,0,0,False,0,0,0,0,IntOut+20);
+        Multi(1,0,0,0,0,False,0,0,0,0,False,0,0,0,0,AES_SCR);
         IO(0,RW(IntOut+10));
        End;
       End;
@@ -8305,7 +8362,7 @@ Begin
        { evnt_button : clics, masque, etat }
        If Headless Then HeadlessWait(2)
        Else Begin
-        Ev:=Multi(2,IW(1),IW(2),IW(0),0,False,0,0,0,0,False,0,0,0,0,IntOut+20);
+        Ev:=Multi(2,IW(1),IW(2),IW(0),0,False,0,0,0,0,False,0,0,0,0,AES_SCR);
         I:=RW(IntOut+12);
         IO(0,I);IO(1,RW(IntOut+2));IO(2,RW(IntOut+4));IO(3,RW(IntOut+6));IO(4,RW(IntOut+8));
        End;
@@ -8314,7 +8371,7 @@ Begin
        { evnt_mouse : drapeau, rectangle }
        If Headless Then HeadlessWait(4)
        Else Begin
-        Ev:=Multi(4,0,0,0,0,IW(0)<>0,IW(1),IW(2),IW(3),IW(4),False,0,0,0,0,IntOut+20);
+        Ev:=Multi(4,0,0,0,0,IW(0)<>0,IW(1),IW(2),IW(3),IW(4),False,0,0,0,0,AES_SCR);
         IO(0,1);
        End;
       End;
@@ -8328,7 +8385,7 @@ Begin
   24: Begin
        If Headless Then HeadlessWait(32)
        Else Begin
-        Ev:=Multi(32,0,0,0,(IW(0) And $FFFF)+LongInt(IW(1)) Shl 16,False,0,0,0,0,False,0,0,0,0,IntOut+20);
+        Ev:=Multi(32,0,0,0,(IW(0) And $FFFF)+LongInt(IW(1)) Shl 16,False,0,0,0,0,False,0,0,0,0,AES_SCR);
         IO(0,1);
        End;
       End;
@@ -8339,6 +8396,7 @@ Begin
         Ev:=Multi(Ev And $3F,IW(2),IW(3),IW(1),(LongInt(IW(14)) And $FFFF)+LongInt(IW(15)) Shl 16,IW(4)<>0,IW(5),IW(6),IW(7),IW(8),
                   IW(9)<>0,IW(10),IW(11),IW(12),IW(13),AA(0));
         IO(0,Ev);
+        If RtTrace Then Begin WriteLn(ErrOutput,'   evnt_multi ->',Ev,' key=$',HexStr(RW(IntOut+10),16),' kbd=',SmallInt(RW(IntOut+8)));Flush(ErrOutput);End;
        End;
       End;
   26: IO(0,1);
@@ -8441,7 +8499,10 @@ Begin
         I:=0;
         Repeat
          WriteLn(ErrOutput,' ob ',I,' nx=',ONext(T,I),' hd=',OHead(T,I),' tl=',OTail(T,I),' typ=',OTyp(T,I),' fl=$',HexStr(OFlg(T,I),4),
-                 ' st=$',HexStr(OSta(T,I),4),' x=',OX(T,I),' y=',OY(T,I),' w=',OW(T,I),' h=',OH(T,I));
+                 ' st=$',HexStr(OSta(T,I),4),' spec=$',HexStr(OSpc(T,I),16),' x=',OX(T,I),' y=',OY(T,I),' w=',OW(T,I),' h=',OH(T,I));
+         If OTyp(T,I) In [21,22,29,30] Then
+          WriteLn(ErrOutput,'    TED thick=',SmallInt(RW(OSpc(T,I)+22)),' just=',RW(OSpc(T,I)+16),' font=',RW(OSpc(T,I)+12),' col=$',HexStr(RW(OSpc(T,I)+18),16),
+                  ' txt="',CStrAt(RL(OSpc(T,I))),'" tmpl="',CStrAt(RL(OSpc(T,I)+4)),'"');
          Inc(I);
         Until (OFlg(T,I-1) And 32<>0) Or (I>40);
         Flush(ErrOutput);
@@ -8585,7 +8646,7 @@ Begin
        If Headless Then Begin IO(1,0);IO(2,0);IO(3,0);IO(4,0);End
        Else Begin
         GetMouseState(MX,MY,MB);
-        IO(1,MX);IO(2,MY-OFS_Y);IO(3,MB And 3);IO(4,0);
+        IO(1,MX);IO(2,MY-OFS_Y);IO(3,MB And 3);IO(4,LastKbd);
        End;
       End;
   { ---------------- scrp / fsel ---------------- }
@@ -8844,101 +8905,260 @@ Begin
  WW(M_LINEA-$C,640);WL(M_LINEA-$A,LA_OFF);WW(M_LINEA-4,400);WW(M_LINEA-2,80);
 End;
 
-Procedure LaPut(X,Y: LongInt; C: Integer);
-Var Sv: Boolean;
+{ ------------------------- primitives de la ligne A -------------------- }
+
+Function LaW(Off: Integer): Integer;
+Begin LaW:=SmallInt(RW(M_LINEA+Off)); End;
+
+Function LaClip(X,Y: LongInt): Boolean;
+{ True si le point est visible (rectangle d'ecran et fenetre de clipping) }
 Begin
- If C<>0 Then C:=1;
- Case SmallInt(RW(M_LINEA+36)) Of
-  3: If C<>0 Then Begin OXor:=True;OPlot(X,Y,1);OXor:=False;End;
-  2: If C<>0 Then OPlot(X,Y,1);
- Else OPlot(X,Y,C);
+ LaClip:=False;
+ If (X<0) Or (Y<0) Or (X>639) Or (Y>399) Then Exit;
+ If LaW(54)<>0 Then
+  If (X<LaW(56)) Or (Y<LaW(58)) Or (X>LaW(60)) Or (Y>LaW(62)) Then Exit;
+ LaClip:=True;
+End;
+
+{ pixel selon le mode d'ecriture (0 remplace, 1 transparent, 2 xor, 3 transparent inverse) ;
+  Fg : le pixel fait partie du motif ; Col : couleur du premier plan }
+Procedure LaPix(X,Y: LongInt; Fg: Boolean; Col: Integer);
+Var C: Byte;
+Begin
+ If Not LaClip(X,Y) Then Exit;
+ If (Col And 1)<>0 Then C:=1 Else C:=0;
+ Case LaW(36) Of
+  1: If Fg Then OPlot(X,Y,C);
+  2: If Fg And (C<>0) Then Begin OXor:=True;OPlot(X,Y,1);OXor:=False;End;
+  3: If Not Fg Then OPlot(X,Y,C);
+ Else
+  If Fg Then OPlot(X,Y,C) Else OPlot(X,Y,0);
  End;
- Sv:=False;
+End;
+
+Procedure LaPut(X,Y: LongInt; C: Integer);
+Begin
+ LaPix(X,Y,True,C);
+End;
+
+{ bit du motif de remplissage en (X,Y) }
+Function LaPat(X,Y: LongInt): Boolean;
+Var P: LongInt; W: Word; M: Integer;
+Begin
+ P:=RL(M_LINEA+46);
+ If P=0 Then Begin LaPat:=True;Exit;End;
+ M:=LaW(50);
+ W:=RW(P+2*(Y And M));
+ LaPat:=((W Shr (15-(X And 15))) And 1)<>0;
+End;
+
+Procedure LaHLine(X1,X2,Y: LongInt);
+Var X,T: LongInt;
+Begin
+ If X1>X2 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ For X:=X1 To X2 Do LaPix(X,Y,LaPat(X,Y),LaW(24));
+End;
+
+Procedure LaLine(X1,Y1,X2,Y2: LongInt);
+Var DX,DY,SX,SY,Err,E2,N: LongInt; Mask: Word;
+Begin
+ Mask:=Word(LaW(34));
+ DX:=Abs(X2-X1);DY:=Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ Err:=DX-DY;N:=0;
+ Repeat
+  LaPix(X1,Y1,((Mask Shr (15-(N And 15))) And 1)<>0,LaW(24));
+  Inc(N);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*Err;
+  If E2>-DY Then Begin Err:=Err-DY;X1:=X1+SX;End;
+  If E2<DX Then Begin Err:=Err+DX;Y1:=Y1+SY;End;
+ Until False;
+End;
+
+Procedure LaSpriteMouse(Form: LongInt);
+Var I: Integer;
+Begin
+ CurHx:=SmallInt(RW(Form));CurHy:=SmallInt(RW(Form+2));CurKind:=1;
+ For I:=0 To 15 Do Begin CurMask[I]:=RW(Form+10+I*2);CurData[I]:=RW(Form+42+I*2);End;
+ If ProgMouse And (Not Headless) Then Begin HideMouse;ShowMouse;End;
 End;
 
 Procedure LineA(Op: Word);
-Var Fn: Integer; X1,Y1,X2,Y2,X,Y,I,J: LongInt; Pt,Pn: LongInt; Col: Integer; B: LongInt;
-    W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt;
+Var Fn: Integer; X1,Y1,X2,Y2,X,Y,I,J,K,N: LongInt; Pt,Pn,Ct: LongInt; Col: Integer; B: LongInt;
+    W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt; Fg,Bg: Integer;
+    XI: Array[0..63] Of LongInt; Cnt: Integer; Mf1,Mf2,Fb,Fw: LongInt; Sv: Integer;
+    Sa,Sb,Sl: LongInt; Fm: LongInt; Mk,Dt: Word;
+ Function SrcBit(Frm,Nxw,Nxl,PX,PY: LongInt): Integer;
+ Var A: LongInt;
+ Begin
+  A:=Frm+PY*Nxl+(PX Shr 4)*Nxw+((PX And 15) Shr 3);
+  SrcBit:=Ord((RB(A) And (128 Shr (PX And 7)))<>0);
+ End;
+ Procedure PutBit(Frm,Nxw,Nxl,PX,PY: LongInt; V: Integer);
+ Var A: LongInt;
+ Begin
+  A:=Frm+PY*Nxl+(PX Shr 4)*Nxw+((PX And 15) Shr 3);
+  If V<>0 Then WB(A,RB(A) Or (128 Shr (PX And 7))) Else WB(A,RB(A) And (Not (128 Shr (PX And 7))));
+ End;
 Begin
  If Not LaInit Then LaSetup;
  Fn:=Op And $FFF;
- If RtTrace Then Begin WriteLn(ErrOutput,'LINE-A $',HexStr(Op,4));Flush(ErrOutput);End;
+ If RtTrace Then Begin WriteLn(ErrOutput,'LINE-A $A',Fn);Flush(ErrOutput);End;
  Case Fn Of
   0: Begin
       RD[0]:=M_LINEA;RA[0]:=M_LINEA;RA[1]:=LA_PTRS;RA[2]:=LA_FUNC;
      End;
   1: Begin
       Pt:=RL(M_LINEA+12);Pn:=RL(M_LINEA+8);
-      LaPut(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)),SmallInt(RW(Pn)));
+      LaPix(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)),True,SmallInt(RW(Pn)));
      End;
   2: Begin
       Pt:=RL(M_LINEA+12);
       RD[0]:=OGet(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)));
      End;
-  3: Begin
-      X1:=SmallInt(RW(M_LINEA+38));Y1:=SmallInt(RW(M_LINEA+40));X2:=SmallInt(RW(M_LINEA+42));Y2:=SmallInt(RW(M_LINEA+44));
-      Col:=SmallInt(RW(M_LINEA+24));
-      Case SmallInt(RW(M_LINEA+36)) Of
-       3: OXor:=True;
-      End;
-      If SmallInt(RW(M_LINEA+36))=2 Then Begin If Col<>0 Then OLine(X1,Y1,X2,Y2,1);End
-      Else OLine(X1,Y1,X2,Y2,Ord(Col<>0));
-      OXor:=False;
-     End;
-  4: Begin
-      X1:=SmallInt(RW(M_LINEA+38));Y1:=SmallInt(RW(M_LINEA+40));X2:=SmallInt(RW(M_LINEA+42));
-      Col:=SmallInt(RW(M_LINEA+24));
-      For X:=X1 To X2 Do LaPut(X,Y1,Col);
-     End;
+  3: LaLine(LaW(38),LaW(40),LaW(42),LaW(44));
+  4: LaHLine(LaW(38),LaW(42),LaW(40));
   5: Begin
-      X1:=SmallInt(RW(M_LINEA+38));Y1:=SmallInt(RW(M_LINEA+40));X2:=SmallInt(RW(M_LINEA+42));Y2:=SmallInt(RW(M_LINEA+44));
-      Col:=SmallInt(RW(M_LINEA+24));
-      For Y:=Y1 To Y2 Do
-       For X:=X1 To X2 Do LaPut(X,Y,Col);
+      Y1:=LaW(40);Y2:=LaW(44);
+      If Y1>Y2 Then Begin Y:=Y1;Y1:=Y2;Y2:=Y;End;
+      For Y:=Y1 To Y2 Do LaHLine(LaW(38),LaW(42),Y);
+     End;
+  6: Begin
+      { une ligne de balayage (Y1) d'un polygone : points dans PTSIN }
+      Ct:=RL(M_LINEA+4);Pt:=RL(M_LINEA+12);
+      Cnt:=SmallInt(RW(Ct+2));
+      If Cnt>60 Then Cnt:=60;
+      Y:=LaW(40);N:=0;
+      For I:=0 To Cnt-1 Do Begin
+       J:=I+1;If J>=Cnt Then J:=0;
+       X1:=SmallInt(RW(Pt+I*4));Y1:=SmallInt(RW(Pt+I*4+2));
+       X2:=SmallInt(RW(Pt+J*4));Y2:=SmallInt(RW(Pt+J*4+2));
+       If ((Y1<=Y) And (Y2>Y)) Or ((Y2<=Y) And (Y1>Y)) Then Begin
+        If N<63 Then Begin XI[N]:=Round(X1+(Y-Y1)*(X2-X1)/(Y2-Y1));Inc(N);End;
+       End;
+      End;
+      For I:=1 To N-1 Do Begin
+       K:=XI[I];J:=I-1;
+       While (J>=0) And (XI[J]>K) Do Begin XI[J+1]:=XI[J];Dec(J);End;
+       XI[J+1]:=K;
+      End;
+      I:=0;
+      While I+1<N Do Begin LaHLine(XI[I],XI[I+1],Y);Inc(I,2);End;
      End;
   7: Begin
-      { BITBLT : bloc de parametres en A6 }
+      { BITBLT : bloc de parametres en A6 (un plan) }
       B:=RA[6];
       W:=SmallInt(RW(B));H:=SmallInt(RW(B+2));
+      Fg:=SmallInt(RW(B+6)) And 1;Bg:=SmallInt(RW(B+8)) And 1;
       SX:=SmallInt(RW(B+14));SY:=SmallInt(RW(B+16));SF:=RL(B+18);SNW:=SmallInt(RW(B+22));SNL:=SmallInt(RW(B+24));
       DX:=SmallInt(RW(B+28));DY:=SmallInt(RW(B+30));DF:=RL(B+32);DNW:=SmallInt(RW(B+36));DNL:=SmallInt(RW(B+38));
-      Opr:=RB(B+10);
+      Opr:=RB(B+10+(Fg Shl 1)+Bg);
       If (DX>SX) Or ((DX=SX) And (DY>SY)) Then Begin
        For J:=H-1 DownTo 0 Do
         For I:=W-1 DownTo 0 Do Begin
-         X:=SX+I;Y:=SY+J;
-         S:=Ord((RB(SF+Y*SNL+(X Shr 4)*SNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
-         X:=DX+I;Y:=DY+J;
-         D:=Ord((RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
-         R:=VRop(Opr,S,D);
-         If R<>D Then Begin
-          If R<>0 Then WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) Or (128 Shr (X And 7)))
-          Else WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (Not (128 Shr (X And 7))));
-         End;
+         S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
+         PutBit(DF,DNW,DNL,DX+I,DY+J,VRop(Opr,S,D));
         End;
       End Else Begin
        For J:=0 To H-1 Do
         For I:=0 To W-1 Do Begin
-         X:=SX+I;Y:=SY+J;
-         S:=Ord((RB(SF+Y*SNL+(X Shr 4)*SNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
-         X:=DX+I;Y:=DY+J;
-         D:=Ord((RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
-         R:=VRop(Opr,S,D);
-         If R<>D Then Begin
-          If R<>0 Then WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) Or (128 Shr (X And 7)))
-          Else WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (Not (128 Shr (X And 7))));
-         End;
+         S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
+         PutBit(DF,DNW,DNL,DX+I,DY+J,VRop(Opr,S,D));
         End;
       End;
-      { l'ecran est ecrit directement en memoire : a reporter dans le tampon }
-      If DF=M_SCREEN Then OutPending:=True;
+      OutPending:=True;
+     End;
+  8: Begin
+      { TEXTBLT : un caractere de la forme de police vers l'ecran }
+      Fb:=RL(M_LINEA+84);Fw:=LaW(88);
+      SX:=LaW(72);SY:=LaW(74);DX:=LaW(76);DY:=LaW(78);W:=LaW(80);H:=LaW(82);
+      Fg:=LaW(106);Bg:=LaW(114);
+      Sv:=LaW(90);
+      Sl:=LaW(96);
+      For J:=0 To H-1 Do
+       For I:=0 To W-1 Do Begin
+        S:=Ord((RB(Fb+(SY+J)*Fw+((SX+I) Shr 3)) And (128 Shr ((SX+I) And 7)))<>0);
+        If (Sv And 1)<>0 Then
+         If (I>0) And (I<=Sl) Then
+          If (RB(Fb+(SY+J)*Fw+((SX+I-1) Shr 3)) And (128 Shr ((SX+I-1) And 7)))<>0 Then S:=1;
+        If (Sv And 8)<>0 Then If J=H-1 Then S:=1;
+        If LaClip(DX+I,DY+J) Then
+         Case LaW(36) Of
+          1: If S<>0 Then OPlot(DX+I,DY+J,Ord((Fg And 1)<>0));
+          2: If (S<>0) And ((Fg And 1)<>0) Then Begin OXor:=True;OPlot(DX+I,DY+J,1);OXor:=False;End;
+          3: If S=0 Then OPlot(DX+I,DY+J,Ord((Fg And 1)<>0));
+         Else
+          If S<>0 Then OPlot(DX+I,DY+J,Ord((Fg And 1)<>0)) Else OPlot(DX+I,DY+J,Ord((Bg And 1)<>0));
+         End;
+       End;
+      OutPending:=True;
      End;
   9: GemCur(True);
   10: GemCur(False);
+  11: Begin
+       { transformation du curseur de souris : formulaire dans INTIN }
+       LaSpriteMouse(RL(M_LINEA+8));
+      End;
+  12: Begin
+       { efface un lutin : tampon en A2 (x, y, nombre de lignes, fond) }
+       Sa:=RA[2];
+       If RW(Sa+4)<>0 Then Begin
+        X:=SmallInt(RW(Sa));Y:=SmallInt(RW(Sa+2));N:=RW(Sa+4);
+        For J:=0 To N-1 Do
+         For I:=0 To 15 Do
+          If LaClip(X+I,Y+J) Then OPlot(X+I,Y+J,(RW(Sa+6+J*2) Shr (15-I)) And 1);
+        WW(Sa+4,0);
+        OutPending:=True;
+       End;
+      End;
+  13: Begin
+       { dessine un lutin : D0=x, D1=y, A0=formulaire, A2=tampon de sauvegarde }
+       Fm:=RA[0];Sa:=RA[2];
+       X:=SmallInt(RD[0] And $FFFF)-SmallInt(RW(Fm));Y:=SmallInt(RD[1] And $FFFF)-SmallInt(RW(Fm+2));
+       Fg:=SmallInt(RW(Fm+6)) And 1;Bg:=SmallInt(RW(Fm+8)) And 1;
+       WW(Sa,X);WW(Sa+2,Y);WW(Sa+4,16);
+       For J:=0 To 15 Do Begin
+        Mk:=0;
+        For I:=0 To 15 Do If LaClip(X+I,Y+J) Then Mk:=Mk Or (Word(OGet(X+I,Y+J)) Shl (15-I));
+        WW(Sa+6+J*2,Mk);
+       End;
+       For J:=0 To 15 Do Begin
+        Mk:=RW(Fm+10+J*4);Dt:=RW(Fm+12+J*4);
+        For I:=0 To 15 Do
+         If ((Mk Shr (15-I)) And 1)<>0 Then
+          If LaClip(X+I,Y+J) Then Begin
+           If ((Dt Shr (15-I)) And 1)<>0 Then OPlot(X+I,Y+J,Fg) Else OPlot(X+I,Y+J,Bg);
+          End;
+       End;
+       OutPending:=True;
+      End;
+  14: Begin
+       { copie de formulaire raster (comme vro_cpyfm / vrt_cpyfm) }
+       Ct:=RL(M_LINEA+4);Pn:=RL(M_LINEA+8);Pt:=RL(M_LINEA+12);
+       Mf1:=RL(Ct+14);Mf2:=RL(Ct+18);
+       Sv:=VdCur;VdCur:=0;
+       Vd[0].ClipOn:=(LaW(54)<>0);Vd[0].CX1:=LaW(56);Vd[0].CY1:=LaW(58);Vd[0].CX2:=LaW(60);Vd[0].CY2:=LaW(62);
+       If LaW(116)<>0 Then
+        VCpyFmT(SmallInt(RW(Pn)),Mf1,Mf2,SmallInt(RW(Pt)),SmallInt(RW(Pt+2)),SmallInt(RW(Pt+4)),SmallInt(RW(Pt+6)),
+                SmallInt(RW(Pt+8)),SmallInt(RW(Pt+10)),LaW(106),LaW(114))
+       Else
+        VCpyFm(SmallInt(RW(Pn)),Mf1,Mf2,SmallInt(RW(Pt)),SmallInt(RW(Pt+2)),SmallInt(RW(Pt+4)),SmallInt(RW(Pt+6)),
+               SmallInt(RW(Pt+8)),SmallInt(RW(Pt+10)));
+       VdCur:=Sv;
+       OutPending:=True;
+      End;
+  15: Begin
+       { remplissage par germe : point dans PTSIN }
+       Pt:=RL(M_LINEA+12);
+       FilSty:=1;FilCol:=LaW(24) And 1;FilIdx:=1;
+       If FilCol<>0 Then FilCol:=1;
+       OFlood(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)));
+       OutPending:=True;
+      End;
  End;
 End;
-
-
 {$ENDIF}
 
 { ====================================================================== }
