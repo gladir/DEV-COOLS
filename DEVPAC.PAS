@@ -41,7 +41,9 @@
           independants (menu_popup, avec defilement) et sous-menus
           attaches (menu_attach),
           enregistrement et relecture d'evenements (appl_trecord/tplay),
-          graf_slidebox, routines utilisateur vex_motv/butv/curv/timv ;
+          graf_slidebox, routines utilisateur vex_motv/butv/curv/timv,
+          appl_yield/search/bvset/getinfo, objc_sysvar, rsrc_rcfix,
+          form_keybd/form_button, vq_cellarray, vsc_form, vqin_mode ;
         * accessoires de bureau (fichiers .ACC) en multitache cooperatif ;
         * fils lances par Pexec : chacun a son propre contexte AES (ap_id,
           menus, fenetres, ressources), nettoye et restitue a sa fin ;
@@ -7943,11 +7945,27 @@ Var
  LinePhase : Integer;
  AesTrace  : Boolean;
  VdiOwnerProc : Integer;
+ VdiInMd   : Array[1..4] Of Integer;
  { routines utilisateur vex_* }
  VexTim,VexBut,VexMot,VexCur : LongInt;
  VexTimLast  : LongInt;
  InVex       : Boolean;
  KbdPrevX,KbdPrevY,KbdPrevB : LongInt;
+
+{ Installe une forme de curseur de souris definie par un bloc MFORM en memoire
+  invite : x et y du point chaud, plans, couleurs, 16 mots de masque, 16 de dessin
+  (graf_mouse 255 et vsc_form) }
+Procedure ApplyMouseForm(A: LongInt);
+Var I: Integer;
+Begin
+ CurHotX:=Clamp(SExt(Rd16(A),2),0,15);CurHotY:=Clamp(SExt(Rd16(A+2),2),0,15);
+ For I:=0 To 15 Do Begin
+  CurMask[I]:=Rd16(A+10+I*2);CurData[I]:=Rd16(A+42+I*2);
+ End;
+ {$IFDEF FPC}
+ If GfxOn Then Begin If MouseHidden>0 Then HideMouse Else CursorDraw(MX,MY);End;
+ {$ENDIF}
+End;
 
 Procedure VdiInitTables;
 Const B : Array[0..15] Of Byte = (0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
@@ -7956,6 +7974,7 @@ Var I: Integer;
 Begin
  For I:=0 To 15 Do BayerM[I Div 4,I Mod 4]:=B[I];
  For I:=1 To 8 Do BayerCnt[I]:=C[I];
+ For I:=1 To 4 Do VdiInMd[I]:=1;
 End;
 
 Procedure VdiDefaults(Var V: TVdi);
@@ -8798,7 +8817,33 @@ Begin
   32: Begin
        V:=IntIn(0);If (V<1) Or (V>4) Then V:=1;VP^.WrMode:=V;SetOut(0,V);RetI(1);
       End;
-  33: Begin SetOut(0,IntIn(1));RetI(1);End;
+  27: Begin
+       { vq_cellarray : echantillonne l'ecran sur une grille }
+       X1:=PtsX(Pi,0);Y1:=PtsY(Pi,0);X2:=PtsX(Pi,1);Y2:=PtsY(Pi,1);
+       If X2<X1 Then Begin V:=X1;X1:=X2;X2:=V;End;
+       If Y2<Y1 Then Begin V:=Y1;Y1:=Y2;Y2:=V;End;
+       I:=Clamp(IntIn(0),1,64);J:=Clamp(IntIn(1),1,64);
+       For Mode:=0 To J-1 Do
+        For Hn:=0 To I-1 Do
+         SetOut(3+Mode*I+Hn,Ord(BGet(X1+((Hn*2+1)*(X2-X1+1)) Div (2*I),Y1+((Mode*2+1)*(Y2-Y1+1)) Div (2*J))));
+       SetOut(0,I);SetOut(1,J);SetOut(2,0);
+       RetI(3+I*J);
+      End;
+  33: Begin
+       V:=IntIn(0);
+       If (V>=1) And (V<=4) Then VdiInMd[V]:=Clamp(IntIn(1),1,2);
+       SetOut(0,IntIn(1));RetI(1);
+      End;
+  111: Begin
+        { vsc_form : forme du curseur de la souris }
+        ApplyMouseForm(Ii);
+       End;
+  115: Begin
+        { vqin_mode : mode d'entree courant du peripherique }
+        V:=IntIn(0);
+        If (V>=1) And (V<=4) Then SetOut(0,VdiInMd[V]) Else SetOut(0,1);
+        RetI(1);
+       End;
   35: Begin
        SetOut(0,VP^.LineType);SetOut(1,VP^.LineCol);SetOut(2,VP^.WrMode);
        SetOut(3,VP^.LineEnd0);SetOut(4,VP^.LineEnd1);RetI(5);
@@ -8917,9 +8962,14 @@ Begin
         SetPts(4,0);SetPts(5,VP^.TxtCell-1-I);SetPts(6,0);SetPts(7,I Div 2);SetPts(8,0);SetPts(9,I);
         RetP(5);
        End;
+ Else Begin
+   { code VDI inconnu (le code 34 n'est pas une fonction VDI documentee) : sans
+     sortie, signale dans le moniteur }
+   Str(Op,S);UnknownCall:='VDI '+S;
+   If AesTrace Then Begin WriteLn(ConOut,'VDI unsupported opcode ',Op);Flush(ConOut);End;
+  End;
  End;
 End;
-
 { ====================================================================== }
 {                  GEM : OBJETS, RESSOURCES ET EDITION                   }
 { ====================================================================== }
@@ -9571,6 +9621,7 @@ Var
  RscBase    : LongInt;
  RscSize    : LongInt;
  RscLoaded  : Boolean;
+ RscOwned   : Boolean;
 
 Procedure ObjFix(T: LongInt; I: Integer);
 Var A: LongInt; V: Integer;
@@ -9582,6 +9633,40 @@ Begin
  A:=OA(T,I);
  Wr16(A+16,Fx(Rd16(A+16),8));Wr16(A+18,Fx(Rd16(A+18),16));
  Wr16(A+20,Fx(Rd16(A+20),8));Wr16(A+22,Fx(Rd16(A+22),16));
+End;
+
+{ Relocalise un fichier ressource charge en memoire invite a l'adresse B :
+  les decalages deviennent des adresses et les coordonnees des pixels }
+Procedure RscFixup(B: LongInt);
+Var Nobs,Nted,Nib,Nbb,Nstr,Nimg,Ntree,Oobj,Oted,Oib,Obb,Ofrs,Ofri,Otri: LongInt;
+    A: LongInt; Ty,I: Integer;
+Begin
+ Oobj:=Rd16(B+2);Oted:=Rd16(B+4);Oib:=Rd16(B+6);Obb:=Rd16(B+8);Ofrs:=Rd16(B+10);
+ Ofri:=Rd16(B+16);Otri:=Rd16(B+18);
+ Nobs:=Rd16(B+20);Ntree:=Rd16(B+22);Nted:=Rd16(B+24);Nib:=Rd16(B+26);Nbb:=Rd16(B+28);
+ Nstr:=Rd16(B+30);Nimg:=Rd16(B+32);
+ { objets }
+ For I:=0 To Nobs-1 Do Begin
+  A:=B+Oobj+I*24;
+  Ty:=Rd16(A+6) And $FF;
+  If (Ty<>G_BOX) And (Ty<>G_IBOX) And (Ty<>G_BOXCHAR) Then Wr32(A+12,Rd32(A+12)+B);
+ End;
+ For I:=0 To Nted-1 Do Begin
+  A:=B+Oted+I*28;
+  Wr32(A,Rd32(A)+B);Wr32(A+4,Rd32(A+4)+B);Wr32(A+8,Rd32(A+8)+B);
+ End;
+ For I:=0 To Nib-1 Do Begin
+  A:=B+Oib+I*34;
+  Wr32(A,Rd32(A)+B);Wr32(A+4,Rd32(A+4)+B);Wr32(A+8,Rd32(A+8)+B);
+ End;
+ For I:=0 To Nbb-1 Do Begin
+  A:=B+Obb+I*14;
+  Wr32(A,Rd32(A)+B);
+ End;
+ For I:=0 To Nstr-1 Do Wr32(B+Ofrs+I*4,Rd32(B+Ofrs+I*4)+B);
+ For I:=0 To Nimg-1 Do Wr32(B+Ofri+I*4,Rd32(B+Ofri+I*4)+B);
+ For I:=0 To Ntree-1 Do Wr32(B+Otri+I*4,Rd32(B+Otri+I*4)+B);
+ For I:=0 To Nobs-1 Do ObjFix(B+Oobj,I);
 End;
 
 Function RscLoad(Const Name: String): Boolean;
@@ -9606,28 +9691,8 @@ Begin
  For I:=0 To Len-1 Do Wr8(B+I,BufB(P,I));
  FreeMem(P,Len);
  RscBase:=B;RscLoaded:=True;
- { objets }
- For I:=0 To Nobs-1 Do Begin
-  A:=B+Oobj+I*24;
-  Ty:=Rd16(A+6) And $FF;
-  If (Ty<>G_BOX) And (Ty<>G_IBOX) And (Ty<>G_BOXCHAR) Then Wr32(A+12,Rd32(A+12)+B);
- End;
- For I:=0 To Nted-1 Do Begin
-  A:=B+Oted+I*28;
-  Wr32(A,Rd32(A)+B);Wr32(A+4,Rd32(A+4)+B);Wr32(A+8,Rd32(A+8)+B);
- End;
- For I:=0 To Nib-1 Do Begin
-  A:=B+Oib+I*34;
-  Wr32(A,Rd32(A)+B);Wr32(A+4,Rd32(A+4)+B);Wr32(A+8,Rd32(A+8)+B);
- End;
- For I:=0 To Nbb-1 Do Begin
-  A:=B+Obb+I*14;
-  Wr32(A,Rd32(A)+B);
- End;
- For I:=0 To Nstr-1 Do Wr32(B+Ofrs+I*4,Rd32(B+Ofrs+I*4)+B);
- For I:=0 To Nimg-1 Do Wr32(B+Ofri+I*4,Rd32(B+Ofri+I*4)+B);
- For I:=0 To Ntree-1 Do Wr32(B+Otri+I*4,Rd32(B+Otri+I*4)+B);
- For I:=0 To Nobs-1 Do ObjFix(B+Oobj,I);
+ RscOwned:=True;
+ RscFixup(B);
  { l'arbre i : l'objet 0 de chaque arbre est dans la table }
  RscLoad:=True;
 End;
@@ -9758,6 +9823,9 @@ Var
  PopSel      : Integer;
  SynthX,SynthY,SynthB : LongInt;
  GemHandle   : Integer;
+ BvDisk,BvHard : LongInt;
+ SearchPos   : Integer;
+ ObjSysV     : Array[1..6,0..1] Of Integer;
  ShelNext    : String;
  ShelTail    : String;
  AccNames    : Array[1..6] Of String[40];
@@ -11263,17 +11331,97 @@ Begin
  Until False;
 End;
 
-Function FormDo(T: LongInt; Start: Integer): Integer;
-Var Cur,Idx,Obj,I,Ex,P,Def,Nx: Integer; K: LongInt; Fl,St: Integer; Done: Boolean; PrevDown: Boolean;
-    X,Y: Integer; Res: Integer; Cl: Integer; Sib: Integer; Sel,Inside: Boolean; Mx: Integer;
-    CharX,Tmplpos: Integer;
+{ Objet par defaut (OF_DEFAULT) d'un arbre, -1 s'il n'y en a pas }
+Function DefaultObj(T: LongInt): Integer;
+Var I: Integer;
 Begin
- Inc(ModalLevel);
- Def:=-1;
+ DefaultObj:=-1;
  For I:=0 To 2000 Do Begin
-  If ((OFlags(T,I) And OF_DEFAULT)<>0) And (Def<0) Then Def:=I;
+  If ((OFlags(T,I) And OF_DEFAULT)<>0) And ((OFlags(T,I) And OF_HIDETREE)=0) Then Begin DefaultObj:=I;Exit;End;
   If (OFlags(T,I) And OF_LASTOB)<>0 Then Break;
  End;
+End;
+
+{ form_keybd : traite une touche (scan*256+ascii) dans un formulaire.
+  Renvoie 1 pour continuer, 0 si un objet de sortie a ete declenche (Return sur
+  l'objet par defaut).  NewObj : nouvel objet d'edition (ou objet de sortie) ;
+  KeyOut : touche restant a traiter (0 si consommee) }
+Function FormKeybd(T: LongInt; Edit: Integer; Key: LongInt; Var NewObj: Integer; Var KeyOut: LongInt): Integer;
+Var Asc,Scan,Def,Nx: Integer;
+Begin
+ Asc:=Key And $FF;Scan:=(Key Shr 8) And $FF;
+ NewObj:=Edit;KeyOut:=Key;FormKeybd:=1;
+ If (Asc=13) Or (Scan=$1C) Or (Scan=$72) Then Begin
+  Def:=DefaultObj(T);
+  If (Def>0) And ((OState(T,Def) And OS_DISABLED)=0) Then Begin
+   SetOState(T,Def,OState(T,Def) Or OS_SELECTED);ObjRedraw(T,Def);
+   NewObj:=Def;KeyOut:=0;FormKeybd:=0;
+  End;
+  Exit;
+ End;
+ If (Asc=9) Or ((Asc=0) And (Scan=$50)) Then Begin
+  Nx:=NextEditable(T,Edit,1);
+  If Nx>0 Then NewObj:=Nx;
+  KeyOut:=0;Exit;
+ End;
+ If (Asc=0) And (Scan=$48) Then Begin
+  Nx:=NextEditable(T,Edit,-1);
+  If Nx>0 Then NewObj:=Nx;
+  KeyOut:=0;Exit;
+ End;
+End;
+
+{ form_button : traite un clic sur l'objet Obj d'un formulaire (boutons radio,
+  cases, objets de sortie).  Renvoie 1 pour continuer, 0 si un objet de sortie
+  est declenche ; NextObj : objet (bit 15 = double-clic) }
+Function FormButton(T: LongInt; Obj,Clicks: Integer; Var NextObj: Integer): Integer;
+Var Fl,St,P,Sib: Integer; Inside: Boolean;
+Begin
+ FormButton:=1;NextObj:=Obj;
+ If (Obj<=0) Or ((OState(T,Obj) And OS_DISABLED)<>0) Or ((OFlags(T,Obj) And OF_HIDETREE)<>0) Then Exit;
+ Fl:=OFlags(T,Obj);
+ If (Fl And OF_SELECTABLE)<>0 Then Begin
+  If (Fl And OF_RBUTTON)<>0 Then Begin
+   If (OState(T,Obj) And OS_SELECTED)=0 Then Begin
+    P:=OParent(T,Obj);
+    If P>=0 Then Begin
+     Sib:=OHead(T,P);
+     While Sib>=0 Do Begin
+      If (Sib<>Obj) And ((OFlags(T,Sib) And OF_RBUTTON)<>0) And ((OState(T,Sib) And OS_SELECTED)<>0) Then Begin
+       SetOState(T,Sib,OState(T,Sib) And Not OS_SELECTED);ObjRedraw(T,Sib);
+      End;
+      If Sib=OTail(T,P) Then Break;
+      Sib:=ONext(T,Sib);
+     End;
+    End;
+    SetOState(T,Obj,OState(T,Obj) Or OS_SELECTED);ObjRedraw(T,Obj);
+   End;
+   If Not BatchMode Then BlitScreen(False);
+   WaitButtonRelease;
+  End Else Begin
+   St:=OState(T,Obj);
+   If (Fl And OF_TOUCHEXIT)<>0 Then Begin
+    SetOState(T,Obj,St Xor OS_SELECTED);ObjRedraw(T,Obj);
+   End Else Begin
+    Inside:=WatchBox(T,Obj,St Xor OS_SELECTED,St);
+    If Not Inside Then SetOState(T,Obj,St) Else SetOState(T,Obj,St Xor OS_SELECTED);
+    ObjRedraw(T,Obj);
+   End;
+  End;
+ End;
+ If ((Fl And OF_EXIT)<>0) Or ((Fl And OF_TOUCHEXIT)<>0) Then Begin
+  If ((Fl And OF_SELECTABLE)=0) Or ((OState(T,Obj) And OS_SELECTED)<>0) Or ((Fl And OF_TOUCHEXIT)<>0) Then Begin
+   If Clicks>=2 Then NextObj:=Obj Or $8000;
+   FormButton:=0;
+  End;
+ End;
+End;
+
+Function FormDo(T: LongInt; Start: Integer): Integer;
+Var Cur,Idx,Obj,Res,Nx,Cont: Integer; K,Ko: LongInt; Fl: Integer; Done: Boolean; PrevDown: Boolean;
+    X,Y: Integer;
+Begin
+ Inc(ModalLevel);
  Cur:=-1;
  If (Start>0) And ((OFlags(T,Start) And OF_EDITABLE)<>0) Then Cur:=Start
  Else Cur:=NextEditable(T,0,1);
@@ -11281,80 +11429,40 @@ Begin
  If Cur>0 Then ObjEdit(T,Cur,0,Idx,0);
  Done:=False;Res:=0;PrevDown:=True;
  If BatchMode Then Begin
-  If Def>0 Then Res:=Def Else Res:=0;
+  Res:=DefaultObj(T);If Res<0 Then Res:=0;
   Done:=True;
  End;
  While Not Done And Not UserBreak Do Begin
   GemIdle;
   If Not KQEmpty Then Begin
    K:=KQPop;
-   If ((K And $FF)=13) And (Def>0) Then Begin
-    Res:=Def;
-    SetOState(T,Res,OState(T,Res) Or OS_SELECTED);ObjRedraw(T,Res);
-    Done:=True;
-   End Else If (K And $FF)=9 Then Begin
-    If Cur>0 Then Begin
-     ObjEdit(T,Cur,0,Idx,3);
-     Nx:=NextEditable(T,Cur,1);If Nx>0 Then Cur:=Nx;
-     ObjEdit(T,Cur,0,Idx,0);
+   K:=(((K Shr 16) And $FF) Shl 8) Or (K And $FF);
+   Cont:=FormKeybd(T,Cur,K,Nx,Ko);
+   If Cont=0 Then Begin Res:=Nx;Done:=True;End
+   Else Begin
+    If (Nx<>Cur) And (Nx>0) Then Begin
+     If Cur>0 Then ObjEdit(T,Cur,0,Idx,3);
+     Cur:=Nx;ObjEdit(T,Cur,0,Idx,0);
     End;
-   End Else If ((K Shr 16) And $FF=$50) And ((K And $FF)=0) And (Cur>0) Then Begin
-    ObjEdit(T,Cur,0,Idx,3);Nx:=NextEditable(T,Cur,1);If Nx>0 Then Cur:=Nx;ObjEdit(T,Cur,0,Idx,0);
-   End Else If ((K Shr 16) And $FF=$48) And ((K And $FF)=0) And (Cur>0) Then Begin
-    ObjEdit(T,Cur,0,Idx,3);Nx:=NextEditable(T,Cur,-1);If Nx>0 Then Cur:=Nx;ObjEdit(T,Cur,0,Idx,0);
-   End Else If Cur>0 Then
-    ObjEdit(T,Cur,((K Shr 16) And $FF) Shl 8 Or (K And $FF),Idx,1);
+    If (Ko<>0) And (Cur>0) Then ObjEdit(T,Cur,Ko,Idx,1);
+   End;
   End;
   If ((GMouseB And 1)<>0) And Not PrevDown Then Begin
    Obj:=ObjFind(T,0,8,GMouseX,GMouseY);
    If (Obj>0) And ((OState(T,Obj) And OS_DISABLED)=0) Then Begin
-    Fl:=OFlags(T,Obj);Cl:=ClickCount;
-    If ((Fl And OF_EDITABLE)<>0) And (Obj<>Cur) And ((Fl And (OF_SELECTABLE Or OF_EXIT Or OF_TOUCHEXIT))=0) Then Begin
+    Fl:=OFlags(T,Obj);
+    If (Fl And OF_EDITABLE)<>0 Then Begin
+     { le curseur d'edition suit le clic }
      If Cur>0 Then ObjEdit(T,Cur,0,Idx,3);
      Cur:=Obj;ObjEdit(T,Cur,0,Idx,0);
-    End Else If (Fl And OF_EDITABLE)<>0 Then Begin
-     { position du curseur d'apres le clic }
-     If Cur>0 Then ObjEdit(T,Cur,0,Idx,3);
-     Cur:=Obj;ObjEdit(T,Cur,0,Idx,0);
-     ObjOffset(T,Obj,X,Y);
-     Idx:=Clamp((GMouseX-EditCursorX(T,Obj,0)) Div 8,0,Idx);
-     ObjRedraw(T,Obj);EditDrawCursor(T,Obj,Idx);
-    End;
-    If (Fl And OF_SELECTABLE)<>0 Then Begin
-     If (Fl And OF_RBUTTON)<>0 Then Begin
-      If (OState(T,Obj) And OS_SELECTED)=0 Then Begin
-       P:=OParent(T,Obj);
-       If P>=0 Then Begin
-        Sib:=OHead(T,P);
-        While Sib>=0 Do Begin
-         If (Sib<>Obj) And ((OFlags(T,Sib) And OF_RBUTTON)<>0) And ((OState(T,Sib) And OS_SELECTED)<>0) Then Begin
-          SetOState(T,Sib,OState(T,Sib) And Not OS_SELECTED);ObjRedraw(T,Sib);
-         End;
-         If Sib=OTail(T,P) Then Break;
-         Sib:=ONext(T,Sib);
-        End;
-       End;
-       SetOState(T,Obj,OState(T,Obj) Or OS_SELECTED);ObjRedraw(T,Obj);
-      End;
-      If Not BatchMode Then BlitScreen(False);
-      WaitButtonRelease;
-     End Else Begin
-      St:=OState(T,Obj);
-      If (Fl And OF_TOUCHEXIT)<>0 Then Begin
-       SetOState(T,Obj,St Xor OS_SELECTED);ObjRedraw(T,Obj);
-      End Else Begin
-       Inside:=WatchBox(T,Obj,St Xor OS_SELECTED,St);
-       If Not Inside Then SetOState(T,Obj,St) Else SetOState(T,Obj,St Xor OS_SELECTED);
-       ObjRedraw(T,Obj);
-      End;
+     If (Fl And (OF_SELECTABLE Or OF_EXIT Or OF_TOUCHEXIT))=0 Then Begin
+      ObjOffset(T,Obj,X,Y);
+      Idx:=Clamp((GMouseX-EditCursorX(T,Obj,0)) Div 8,0,Idx);
+      ObjRedraw(T,Obj);EditDrawCursor(T,Obj,Idx);
      End;
     End;
-    If ((Fl And OF_EXIT)<>0) Or ((Fl And OF_TOUCHEXIT)<>0) Then Begin
-     If ((Fl And OF_SELECTABLE)=0) Or ((OState(T,Obj) And OS_SELECTED)<>0) Or ((Fl And OF_TOUCHEXIT)<>0) Then Begin
-      Res:=Obj;If Cl>=2 Then Res:=Res Or $8000;
-      Done:=True;
-     End;
-    End;
+    Cont:=FormButton(T,Obj,ClickCount,Nx);
+    If Cont=0 Then Begin Res:=Nx;Done:=True;End;
    End;
   End;
   PrevDown:=(GMouseB And 1)<>0;
@@ -11452,6 +11560,9 @@ Begin
  SelVdi(0);
  SetMouseShape(0);
  ScrapDir:='C:\CLIPBRD';ScrapSet:=True;
+ BvDisk:=3;BvHard:=0;SearchPos:=-1;RscOwned:=False;
+ For I:=1 To 6 Do Begin ObjSysV[I,0]:=0;ObjSysV[I,1]:=0;End;
+ ObjSysV[6,0]:=1;ObjSysV[6,1]:=1;
  VexTim:=STUB_RTS;VexBut:=STUB_RTS;VexMot:=STUB_RTS;VexCur:=STUB_RTS;VexTimLast:=0;InVex:=False;
  KbdPrevX:=-1;KbdPrevY:=-1;KbdPrevB:=0;
  RecActive:=False;RecMem:=0;PlayMem:=0;SynthMouse:=False;SynthRel:=False;PlayWait:=False;
@@ -11563,6 +11674,7 @@ Begin
   If (Fl And 32)<>0 Then Got:=Got Or 32;
   If (Fl And 64)<>0 Then Got:=Got Or 64;
   If (Fl And 128)<>0 Then Got:=Got Or 128;
+  If (Fl And 256)<>0 Then Got:=Got Or 256;
   If Got=0 Then Got:=Fl;
  End Else Begin
   If ((Fl And 1)<>0) And (KeyOwner=P) And Not KQEmpty Then Begin
@@ -11595,6 +11707,7 @@ Begin
   If ((Fl And 32)<>0) And (MsNow-Pr^.WDeadline>=0) Then Got:=Got Or 32;
   If ((Fl And 64)<>0) And Not RecActive Then Got:=Got Or 64;
   If ((Fl And 128)<>0) And (PlayMem=0) Then Got:=Got Or 128;
+  If (Fl And 256)<>0 Then Got:=Got Or 256;
  End;
  If Got=0 Then Exit;
  TryComplete:=True;
@@ -11606,6 +11719,7 @@ Begin
   24: Out(0,1);
   26: Out(0,DClickSpeed);
   14: Out(0,1);
+  17: Out(0,1);
   15: Begin Out(0,RecPos);RecActive:=False;RecMem:=0;End;
  Else Begin
    Out(0,Got);Out(1,GMouseX);Out(2,GMouseY);Out(3,Btn);Out(4,0);Out(5,KeyV);Out(6,Cl);
@@ -11926,6 +12040,33 @@ Begin
         Wait(64);
        End;
       End;
+  16: Begin
+       { appl_bvset : unites disponibles pour le selecteur de fichiers }
+       BvDisk:=Rd16(Ii) Or (LongInt(Rd16(Ii+2)) Shl 16);
+       BvHard:=Rd16(Ii+4) Or (LongInt(Rd16(Ii+6)) Shl 16);
+       OV(0,1);
+      End;
+  17: Wait(256);
+  18: Begin
+       { appl_search(mode,nom,type,id) : parcourt les applications }
+       K:=IV(0);
+       If K=2 Then Begin OV(0,0);End
+       Else Begin
+        If K=0 Then SearchPos:=-1;
+        J:=-1;
+        For I:=SearchPos+1 To MAXPROC-1 Do
+         If Procs[I].Used And (J<0) Then J:=I;
+        If J<0 Then Begin SearchPos:=-1;OV(0,0);End
+        Else Begin
+         SearchPos:=J;
+         S:=Procs[J].Name;
+         While Length(S)<8 Do S:=S+' ';
+         WrStr(AI_(0),S);
+         If Procs[J].IsAcc Then OV(1,4) Else OV(1,2);
+         OV(2,J);OV(0,1);
+        End;
+       End;
+      End;
   19: OV(0,1);
   20: Wait(1);
   21: Begin
@@ -12109,6 +12250,15 @@ Begin
        OV(0,1);
       End;
   { ---- formulaires ---- }
+  48: Begin
+       { objc_sysvar(mode,quoi,val1,val2) }
+       K:=IV(1);
+       If (K<1) Or (K>6) Then OV(0,0)
+       Else Begin
+        If IV(0)=1 Then Begin ObjSysV[K,0]:=IV(2);ObjSysV[K,1]:=IV(3);End;
+        OV(0,1);OV(1,ObjSysV[K,0]);OV(2,ObjSysV[K,1]);
+       End;
+      End;
   50: OV(0,FormDo(AI_(0),IV(0)));
   51: Begin
        Case IV(0) Of
@@ -12128,8 +12278,16 @@ Begin
        Wr16(OA(T,0)+16,X);Wr16(OA(T,0)+18,Y);
        OV(0,1);OV(1,X-4);OV(2,Y-4);OV(3,W+8);OV(4,Hh+8);
       End;
-  55: Begin OV(0,1);OV(1,IV(1));OV(2,IV(2));End;
-  56: Begin OV(0,1);OV(1,IV(1));End;
+  55: Begin
+       { form_keybd(arbre,objet,touche,suivant) }
+       Fl:=FormKeybd(AI_(0),IV(0),LongInt(IV(1)) And $FFFF,I,T);
+       OV(0,Fl);OV(1,I);OV(2,T And $FFFF);
+      End;
+  56: Begin
+       { form_button(arbre,objet,clics) }
+       Fl:=FormButton(AI_(0),IV(0),IV(1),I);
+       OV(0,Fl);OV(1,I);
+      End;
   { ---- graf ---- }
   70: Begin
        RubberBox(IV(0),IV(1),IV(2),IV(3),W,Hh);
@@ -12154,13 +12312,7 @@ Begin
        Case K Of
         256: Begin Inc(MouseHidden);End;
         257: Begin If MouseHidden>0 Then Dec(MouseHidden);End;
-        255: Begin
-              A:=AI_(0);
-              CurHotX:=Clamp(SExt(Rd16(A),2),0,15);CurHotY:=Clamp(SExt(Rd16(A+2),2),0,15);
-              For I:=0 To 15 Do Begin
-               CurMask[I]:=Rd16(A+10+I*2);CurData[I]:=Rd16(A+42+I*2);
-              End;
-             End;
+        255: ApplyMouseForm(AI_(0));
        Else SetMouseShape(K);
        End;
        {$IFDEF FPC}
@@ -12224,7 +12376,8 @@ Begin
         End Else OV(0,0);
        End;
   111: Begin
-        If RscLoaded Then DoMfree(RscBase);RscLoaded:=False;OV(0,1);
+        If RscLoaded And RscOwned Then DoMfree(RscBase);
+        RscLoaded:=False;RscOwned:=False;OV(0,1);
        End;
   112: Begin
         If RscGaddr(IV(0),IV(1),A) Then Begin Wr32(Ao,A);OV(0,1);End Else Begin Wr32(Ao,0);OV(0,0);End;
@@ -12240,7 +12393,41 @@ Begin
         OV(0,1);
        End;
   114: Begin ObjFix(AI_(0),IV(0));OV(0,1);End;
+  115: Begin
+        { rsrc_rcfix : ressource deja en memoire }
+        A:=AI_(0);
+        If A=0 Then OV(0,0)
+        Else Begin
+         RscFixup(A);
+         RscBase:=A;RscLoaded:=True;RscOwned:=False;
+         Wr32(Glb+10,A+Rd16(A+18));
+         OV(0,1);
+        End;
+       End;
   { ---- shell ---- }
+  130: Begin
+        { appl_getinfo(type) : renseignements sur l'AES }
+        OV(0,1);OV(1,0);OV(2,0);OV(3,0);OV(4,0);
+        Case IV(0) Of
+         0: Begin OV(1,10);OV(2,1);OV(3,0);End;       { grande police : 10 points, systeme }
+         1: Begin OV(1,8);OV(2,1);OV(3,0);End;        { petite police : 8 points }
+         2: Begin OV(1,2);OV(2,0);OV(3,0);End;        { nombre de couleurs }
+         3: Begin
+             If Lang=0 Then OV(1,0) Else If Lang=2 Then OV(1,1) Else OV(1,2);
+            End;
+         4: Begin OV(1,0);OV(2,1);OV(3,1);OV(4,1);End; { coop., appl_find, appl_search, rsrc_rcfix }
+         5: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,1);End; { shel_rdef/wdef }
+         6: OV(1,13);                                  { dernier type connu }
+         7: Begin OV(1,1);OV(2,0);OV(3,0);OV(4,0);End; { formes de souris utilisateur }
+         8: Begin OV(1,1);OV(2,1);OV(3,1);OV(4,1);End; { popup, attach, istart, settings }
+         9: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,0);End;
+         10: Begin OV(1,$FFF);OV(2,0);OV(3,0);OV(4,0);End;
+         11: Begin OV(1,$FFF);OV(2,0);OV(3,0);OV(4,0);End;
+         12: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,0);End; { pas d'objets 3D }
+         13: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,0);End;
+        Else OV(0,0);
+        End;
+       End;
   120: Begin
         WrStr(AI_(0),ShortName(ProgName));
         WrStr(AI_(1),Chr(Length(ProgCmd))+ProgCmd);
@@ -12295,7 +12482,7 @@ Type
   MTree,DTree : LongInt;
   MOwner,MBar,MH,DStart : Integer;
   Rsc  : LongInt;
-  RscOk : Boolean;
+  RscOk,RscOwn : Boolean;
   PName,PCmd : String;
   Child : Integer;
  End;
@@ -12307,7 +12494,7 @@ Procedure GemChildEnter(Var S: TGemSave; Const Name,Cmd: String);
 Var K: Integer;
 Begin
  S.Proc:=CurProc;S.MTree:=MenuTree;S.DTree:=DeskTree;S.MOwner:=MenuOwner;S.MBar:=MenuBar;
- S.MH:=MenuH;S.DStart:=DeskStart;S.Rsc:=RscBase;S.RscOk:=RscLoaded;S.PName:=ProgName;S.PCmd:=ProgCmd;
+ S.MH:=MenuH;S.DStart:=DeskStart;S.Rsc:=RscBase;S.RscOk:=RscLoaded;S.RscOwn:=RscOwned;S.PName:=ProgName;S.PCmd:=ProgCmd;
  S.Child:=-1;
  If Name<>'' Then ProgName:=Name;
  ProgCmd:=Cmd;
@@ -12345,9 +12532,9 @@ Begin
   If LastRun=K Then LastRun:=S.Proc;
  End;
  If RscLoaded Then Begin
-  If RscBase<>S.Rsc Then DoMfree(RscBase);
+  If (RscBase<>S.Rsc) And RscOwned Then DoMfree(RscBase);
  End;
- RscBase:=S.Rsc;RscLoaded:=S.RscOk;
+ RscBase:=S.Rsc;RscLoaded:=S.RscOk;RscOwned:=S.RscOwn;
  CurProc:=S.Proc;
  MenuTree:=S.MTree;DeskTree:=S.DTree;MenuOwner:=S.MOwner;MenuBar:=S.MBar;MenuH:=S.MH;DeskStart:=S.DStart;
  ProgName:=S.PName;ProgCmd:=S.PCmd;
