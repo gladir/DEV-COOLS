@@ -1528,7 +1528,7 @@ Var
 Function RB(A: LongInt): Byte;
 Begin
  A:=A And $FFFFFF;
- If A<VMEM_SIZE Then RB:=VMem[A] Else RB:=0;
+ If A<VMEM_SIZE Then RB:=VMem[A] Else If A=$FF8260 Then RB:=2 Else RB:=0;
 End;
 
 Function RW(A: LongInt): Word;
@@ -1784,28 +1784,25 @@ End;
 
 { ------------------------------ ecran --------------------------------- }
 
+
 Procedure OutToMem;
-{ recopie le tampon OUTPUT dans la memoire ecran de l'ST }
-Var I: Integer;
+{ l'ecran logique de l'ST est la memoire emulee elle-meme : il n'y a rien a recopier,
+  on demande seulement le rafraichissement de l'affichage }
 Begin
- For I:=0 To 31999 Do Begin
-  VMem[M_SCREEN+I]:=OutBuf^[I];
-  ScrShadow[I]:=OutBuf^[I];
- End;
+ OutPending:=True;
 End;
 
 Procedure MemToOut;
-Var I: Integer; Chg: Boolean;
+{ detecte les modifications que le programme a faites directement dans la memoire ecran }
+Var I: Integer; Chg: Boolean; P: PByteArr;
 Begin
  Chg:=False;
+ P:=PByteArr(@VMem[M_SCREEN]);
  For I:=0 To 31999 Do
-  If VMem[M_SCREEN+I]<>ScrShadow[I] Then Begin
-   ScrShadow[I]:=VMem[M_SCREEN+I];
-   OutBuf^[I]:=ScrShadow[I];
-   Chg:=True;
-  End;
+  If P^[I]<>ScrShadow[I] Then Begin ScrShadow[I]:=P^[I];Chg:=True;End;
  If Chg Then Begin OutPending:=True;OutFlush(True);End;
 End;
+
 
 { Sortie texte VT52 }
 
@@ -4349,6 +4346,7 @@ End;
 
 Procedure DoChain(Const Cmd0: String); Forward;
 Procedure GemDos; Forward;
+Procedure LineA(Op: Word); Forward;
 Function TosToHost(Const S0: String): String; Forward;
 Procedure AesReset; Forward;
 Procedure AesSave; Forward;
@@ -5080,8 +5078,8 @@ Procedure SetScreenCmd(L,P: LongInt);
 Begin
  If (L>0) And (L<VMEM_SIZE-32000) Then ScrLog:=L;
  If (P>0) And (P<VMEM_SIZE-32000) Then ScrPhys:=P;
- If ScrLog=M_SCREEN Then OutBuf:=OrigBuf Else OutBuf:=PByteArr(@VMem[ScrLog]);
- If ScrPhys=M_SCREEN Then DispBuf:=OrigBuf Else DispBuf:=PByteArr(@VMem[ScrPhys]);
+ OutBuf:=PByteArr(@VMem[ScrLog]);
+ DispBuf:=PByteArr(@VMem[ScrPhys]);
  ScrCustom:=(ScrLog<>M_SCREEN) Or (ScrPhys<>M_SCREEN);
  OutPending:=True;
 End;
@@ -5541,9 +5539,9 @@ Begin
       End;
      End;
   10: Begin
-      { ligne A : on ignore (retour des pointeurs LineA pour $A000) }
-      If Op=$A000 Then Begin RD[0]:=M_LINEA;RA[0]:=M_LINEA;End;
-     End;
+  { ligne A : variables, polices et primitives }
+  LineA(Op);
+ End;
   11: Begin
       If ((Op Shr 6) And 3)=3 Then Begin
        If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
@@ -5727,10 +5725,7 @@ Begin
   Step;
   Inc(EmuSteps);
   If (EmuSteps And $3FFF)=0 Then Begin
-   If EmuScreen And (Not ScrCustom) Then Begin
-    MemToOut;
-    If ScrDirty Then Begin OutToMem;ScrDirty:=False;End;
-   End;
+   If EmuScreen And (Not ScrCustom) Then MemToOut;
    If ScrCustom Then Begin
     For I:=0 To 31999 Do If DispBuf^[I]<>PhysShadow[I] Then Begin
      Move(DispBuf^,PhysShadow,32000);OutPending:=True;Break;
@@ -5810,12 +5805,19 @@ Begin
  ScrLog:=M_SCREEN;ScrPhys:=M_SCREEN;ScrCustom:=False;ClipOn:=False;
  OutBuf:=OrigBuf;DispBuf:=OrigBuf;
  If ChainDepth=0 Then OutClear;     { un programme enchaine garde l'ecran }
- OutToMem;
+ { l'ecran logique devient la memoire video emulee }
+ Move(OrigBuf^,VMem[M_SCREEN],32000);
+ Move(OrigBuf^,ScrShadow,32000);
+ OutBuf:=PByteArr(@VMem[M_SCREEN]);DispBuf:=OutBuf;
+ OutPending:=True;
  EmuScreen:=Not Headless;EmuActive:=True;
  BreakReq:=False;
  EmuLoop;
  EmuScreen:=False;
+ If ScrLog<>M_SCREEN Then Move(VMem[ScrLog],VMem[M_SCREEN],32000);
+ Move(VMem[M_SCREEN],OrigBuf^,32000);
  ScrLog:=M_SCREEN;ScrPhys:=M_SCREEN;ScrCustom:=False;OutBuf:=OrigBuf;DispBuf:=OrigBuf;ClipOn:=False;
+ OutPending:=True;
  CloseAllPFiles;
  For I:=6 To 25 Do If EmuFUsed[I] Then Begin {$I-}Close(EmuFile[I]);{$I+}If IOResult<>0 Then ;EmuFUsed[I]:=False;End;
  OutFlush(True);
@@ -5858,7 +5860,6 @@ Var I: Integer;
     Ok,Aborted: Boolean;
 Begin
  { sauvegarde de l'etat du programme appelant }
- If EmuScreen And (Not ScrCustom) Then MemToOut;
  GetMem(SvMem,VMEM_SIZE);
  Move(VMem[0],SvMem^,VMEM_SIZE);
  SvRD:=RD;SvRA:=RA;SvPC:=RPC;SvSR:=RSR;SvUSP:=RUSP;SvHeap:=EmuHeap;SvDta:=EmuDta;
@@ -5891,6 +5892,8 @@ Begin
  { restauration du programme appelant }
  Move(SvMem^,VMem[0],VMEM_SIZE);
  FreeMem(SvMem,VMEM_SIZE);
+ { l'ecran reste celui du fils : on le remet dans la memoire video }
+ Move(OrigBuf^,VMem[M_SCREEN],32000);
  RD:=SvRD;RA:=SvRA;RPC:=SvPC;RSR:=SvSR;RUSP:=SvUSP;EmuHeap:=SvHeap;EmuDta:=SvDta;
  EmuSuper:=SvSuper;EmuSeed:=SvSeed;ProgStackHigh:=SvStk;
  ClipOn:=SvClip;ClipX1:=SvCx1;ClipY1:=SvCy1;ClipX2:=SvCx2;ClipY2:=SvCy2;
@@ -5907,7 +5910,7 @@ Begin
  EmuMsg:=SvMsg;EmuCode:=SvCode;EmuHalt:=False;EmuBrk:=Aborted;
  { ecran : on garde l'image laissee par le fils }
  SetScreenCmd(SvLog,SvPhys);
- If Not SvCustom Then OutToMem;
+ If Not SvCustom Then Move(VMem[M_SCREEN],ScrShadow,32000);
  OutPending:=True;
  BreakReq:=False;
  IoRes:=SvIoRes;
@@ -6262,34 +6265,45 @@ Begin
       End;
   71: Begin PutStr(RL(SP+2),EmuCwd);RD[0]:=0;End;
   72: Begin
+       { Malloc : memoire libre au dessus du bloc du programme, sous la pile du systeme }
        Cnt:=RL(SP+2);
-       If Cnt=-1 Then RD[0]:=RA[7]-512-EmuHeap
+       If Cnt=-1 Then RD[0]:=M_TOP-$4000-EmuHeap
        Else Begin
         Cnt:=(Cnt+3) And (Not 3);
-        If (Cnt<0) Or (EmuHeap+Cnt+512>RA[7]) Then RD[0]:=0
+        If (Cnt<0) Or (EmuHeap+Cnt>M_TOP-$4000) Then RD[0]:=0
         Else Begin
          RD[0]:=EmuHeap;FillChar(VMem[EmuHeap],Cnt,0);
          If AllocN<32 Then Begin Inc(AllocN);Allocs[AllocN].A:=EmuHeap;Allocs[AllocN].S:=Cnt;End;
          EmuHeap:=EmuHeap+Cnt;
         End;
        End;
+       If RtTrace Then Begin WriteLn(ErrOutput,'Malloc(',RL(SP+2),') -> ',RD[0],' heap=',EmuHeap);Flush(ErrOutput);End;
       End;
   73: Begin
        A:=RL(SP+2);
        If (AllocN>0) And (Allocs[AllocN].A=A) Then Begin EmuHeap:=A;Dec(AllocN);End;
        RD[0]:=0;
       End;
-  74: RD[0]:=0;
+  74: Begin
+       { Mshrink(0, bloc, taille) : la memoire au dela du bloc conserve devient disponible pour Malloc }
+       A:=RL(SP+4)+RL(SP+8);
+       If (RL(SP+4)=M_BASEPAGE) And (A>EmuHeap) And (A<M_TOP) Then EmuHeap:=(A+3) And (Not 3);
+       RD[0]:=0;
+      End;
   75: Begin
        { Pexec : seul le mode 0 (charger et lancer) est gere }
        Mode:=RW(SP+2);
        If Mode=0 Then Begin
-        S:=EmuStr(RL(SP+4));
+        S:=TosToHost(EmuStr(RL(SP+4)));
         A:=RL(SP+8);
         Tl:='';
         For I:=1 To RB(A) Do If I<=125 Then Tl:=Tl+Chr(RB(A+I));
+        If RtTrace Then Begin WriteLn(ErrOutput,'Pexec "',S,'" tail="',Tl,'"');Flush(ErrOutput);End;
         If ChainDepth>=6 Then RD[0]:=-39
-        Else If NestedRun(S,Tl,Code,Mess) Then RD[0]:=Code Else RD[0]:=-33;
+        Else If NestedRun(S,Tl,Code,Mess) Then Begin
+         RD[0]:=Code;
+         If RtTrace Then Begin WriteLn(ErrOutput,'Pexec termine code=',Code,' msg=',Mess);Flush(ErrOutput);End;
+        End Else RD[0]:=-33;
        End Else RD[0]:=-32;
       End;
   76: Begin EmuHalt:=True;EmuCode:=SmallInt(RW(SP+2));End;
@@ -6330,6 +6344,7 @@ Begin
   RD[0]:=-32;
  End;
 End;
+
 
 {$ENDIF}
 {$IFDEF FPC}
@@ -6875,7 +6890,6 @@ Begin
  WW(VCtl+8,0);WW(VCtl+4,0);
  ClipOn:=Vd[H].ClipOn;ClipX1:=Vd[H].CX1;ClipY1:=Vd[H].CY1;ClipX2:=Vd[H].CX2;ClipY2:=Vd[H].CY2;
  OXor:=False;
- If EmuScreen And (Not ScrCustom) And ScrDirty=False Then MemToOut;
  Case Op Of
   1,100: Begin
           VdDefaults(H);
@@ -7055,6 +7069,12 @@ Begin
   108: Begin Vd[H].LnB:=VW(0);Vd[H].LnE:=VW(1);End;
   109: Begin
         Mf1:=RL(VCtl+14);Mf2:=RL(VCtl+18);
+        If RtTrace Then Begin
+         WriteLn(ErrOutput,'  vro_cpyfm mode=',VW(0),' src=',Mf1,' dst=',Mf2,' rect ',VP(0),',',VP(1),',',VP(2),',',VP(3),' -> ',VP(4),',',VP(5),',',VP(6),',',VP(7));
+         If Mf1<>0 Then WriteLn(ErrOutput,'   srcMFDB addr=',RL(Mf1),' w=',SmallInt(RW(Mf1+4)),' h=',SmallInt(RW(Mf1+6)),' wdw=',SmallInt(RW(Mf1+8)),' planes=',SmallInt(RW(Mf1+12)));
+         If Mf2<>0 Then WriteLn(ErrOutput,'   dstMFDB addr=',RL(Mf2),' w=',SmallInt(RW(Mf2+4)),' h=',SmallInt(RW(Mf2+6)),' wdw=',SmallInt(RW(Mf2+8)),' planes=',SmallInt(RW(Mf2+12)));
+         Flush(ErrOutput);
+        End;
         VCpyFm(VW(0),Mf1,Mf2,VP(0),VP(1),VP(2),VP(3),VP(4),VP(5));
        End;
   110: Begin
@@ -8249,7 +8269,11 @@ Var Ctl,Glob,IntIn,IntOut,AddrIn,AddrOut: LongInt; Op,I,J,K,H: Integer;
 Begin
  Ctl:=RL(PB);Glob:=RL(PB+4);IntIn:=RL(PB+8);IntOut:=RL(PB+12);AddrIn:=RL(PB+16);AddrOut:=RL(PB+20);
  Op:=SmallInt(RW(Ctl));
- If RtTrace Then Begin WriteLn(ErrOutput,'AES ',Op);Flush(ErrOutput);End;
+ If RtTrace Then Begin
+  Write(ErrOutput,'AES ',Op,' in:');
+  For I:=0 To Min3(SmallInt(RW(Ctl+2)),10)-1 Do Write(ErrOutput,' ',SmallInt(RW(IntIn+I*2)));
+  WriteLn(ErrOutput);Flush(ErrOutput);
+ End;
  IO(0,1);
  VdCur:=0;
  Case Op Of
@@ -8410,7 +8434,20 @@ Begin
        IO(0,1);
       End;
   { ---------------- form ---------------- }
-  50: IO(0,FormDo(AA(0),IW(0)));
+  50: Begin
+       If RtTrace Then Begin
+        T:=AA(0);
+        WriteLn(ErrOutput,'form_do tree=$',HexStr(T,8));
+        I:=0;
+        Repeat
+         WriteLn(ErrOutput,' ob ',I,' nx=',ONext(T,I),' hd=',OHead(T,I),' tl=',OTail(T,I),' typ=',OTyp(T,I),' fl=$',HexStr(OFlg(T,I),4),
+                 ' st=$',HexStr(OSta(T,I),4),' x=',OX(T,I),' y=',OY(T,I),' w=',OW(T,I),' h=',OH(T,I));
+         Inc(I);
+        Until (OFlg(T,I-1) And 32<>0) Or (I>40);
+        Flush(ErrOutput);
+       End;
+       IO(0,FormDo(AA(0),IW(0)));
+      End;
   51: Begin
        { form_dial : 0 debut, 1 agrandissement, 2 reduction, 3 fin }
        If IW(0)=3 Then GemRefresh(IW(5),IW(6),IW(7)+8,IW(8)+8,True);
@@ -8642,6 +8679,7 @@ Begin
          If (J=11) Or (J=12) Then Begin If J=12 Then Begin W1:=0;H1:=0;End;End;
         End;
         IO(1,X1);IO(2,Y1);IO(3,W1);IO(4,H1);
+        If RtTrace Then Begin WriteLn(ErrOutput,'   wind_get(',I,',',J,') ->',X1,',',Y1,',',W1,',',H1);Flush(ErrOutput);End;
        End;
   105: Begin
         I:=IW(0);J:=IW(1);
@@ -8742,6 +8780,165 @@ Begin
  End;
  SvC:=False;Dir:='';Nm:='';R3.X:=0;
 End;
+{$ENDIF}
+{$IFDEF FPC}
+
+{ ====================================================================== }
+{              LIGNE A : VARIABLES, POLICES SYSTEME, PRIMITIVES          }
+{ ====================================================================== }
+
+Const
+ LA_HDR   = $19000;       { 3 en-tetes de police de 88 octets }
+ LA_OFF   = $19200;       { tables des decalages }
+ LA_DAT16 = $19800;       { police 8x16 : 16 lignes de 256 octets }
+ LA_DAT8  = $1A800;       { police 8x8 : 8 lignes de 256 octets }
+ LA_PTRS  = $1B800;       { tableau des pointeurs de polices }
+ LA_FUNC  = $1B840;       { tableau des routines (pointent sur un RTS) }
+ LA_RTS   = $1B8C0;
+
+Var
+ LaInit : Boolean;
+
+Procedure LaFontHeader(Hd: LongInt; Id,Pt,Hei,Asc,Half,Desc: Integer; Off,Dat: LongInt; Name: String);
+Var I: Integer;
+Begin
+ FillChar(VMem[Hd],88,0);
+ WW(Hd,Id);WW(Hd+2,Pt);
+ For I:=1 To Length(Name) Do WB(Hd+3+I-1+1,Ord(Name[I]));
+ WW(Hd+36,0);WW(Hd+38,255);
+ WW(Hd+40,Asc);WW(Hd+42,Asc);WW(Hd+44,Half);WW(Hd+46,Desc);WW(Hd+48,Desc);
+ WW(Hd+50,8);WW(Hd+52,8);WW(Hd+54,0);WW(Hd+56,0);
+ WW(Hd+58,1);WW(Hd+60,1);WW(Hd+62,$5555);WW(Hd+64,$5555);WW(Hd+66,13);
+ WL(Hd+68,0);WL(Hd+72,Off);WL(Hd+76,Dat);
+ WW(Hd+80,256);WW(Hd+82,Hei);WL(Hd+84,0);
+End;
+
+Procedure LaSetup;
+Var C,R,I: Integer;
+Begin
+ LaInit:=True;
+ { donnees des polices (lignes de 256 octets : un octet par caractere) }
+ For C:=0 To 255 Do Begin
+  For R:=0 To 15 Do WB(LA_DAT16+R*256+C,Font8[C,R Div 2]);
+  For R:=0 To 7 Do WB(LA_DAT8+R*256+C,Font8[C,R]);
+ End;
+ For I:=0 To 257 Do Begin
+  WW(LA_OFF+I*2,I*8);WW(LA_OFF+$200+I*2,I*8);WW(LA_OFF+$400+I*2,I*8);
+ End;
+ LaFontHeader(LA_HDR,1,10,16,12,8,3,LA_OFF,LA_DAT16,'System font');
+ LaFontHeader(LA_HDR+88,1,9,8,6,4,1,LA_OFF+$200,LA_DAT8,'System font');
+ LaFontHeader(LA_HDR+176,1,8,8,6,4,1,LA_OFF+$400,LA_DAT8,'System font');
+ WL(LA_PTRS,LA_HDR+176);WL(LA_PTRS+4,LA_HDR+88);WL(LA_PTRS+8,LA_HDR);WL(LA_PTRS+12,0);
+ WW(LA_RTS,$4E75);
+ For I:=0 To 15 Do WL(LA_FUNC+I*4,LA_RTS);
+ { variables : positives puis negatives par rapport a A0 }
+ FillChar(VMem[M_LINEA-$300],$400,0);
+ WW(M_LINEA,1);WW(M_LINEA+2,80);
+ WW(M_LINEA+36,1);
+ WW(M_LINEA+56,0);WW(M_LINEA+58,0);WW(M_LINEA+60,639);WW(M_LINEA+62,399);
+ WL(M_LINEA+84,LA_HDR);WW(M_LINEA+88,256);
+ WW(M_LINEA+106,1);WW(M_LINEA+114,0);
+ WW(M_LINEA-$2E,16);WW(M_LINEA-$2C,79);WW(M_LINEA-$2A,24);WW(M_LINEA-$28,1280);
+ WW(M_LINEA-$26,0);WW(M_LINEA-$24,1);WL(M_LINEA-$22,M_SCREEN);
+ WL(M_LINEA-$16,LA_DAT16);WW(M_LINEA-$12,255);WW(M_LINEA-$10,0);WW(M_LINEA-$E,256);
+ WW(M_LINEA-$C,640);WL(M_LINEA-$A,LA_OFF);WW(M_LINEA-4,400);WW(M_LINEA-2,80);
+End;
+
+Procedure LaPut(X,Y: LongInt; C: Integer);
+Var Sv: Boolean;
+Begin
+ If C<>0 Then C:=1;
+ Case SmallInt(RW(M_LINEA+36)) Of
+  3: If C<>0 Then Begin OXor:=True;OPlot(X,Y,1);OXor:=False;End;
+  2: If C<>0 Then OPlot(X,Y,1);
+ Else OPlot(X,Y,C);
+ End;
+ Sv:=False;
+End;
+
+Procedure LineA(Op: Word);
+Var Fn: Integer; X1,Y1,X2,Y2,X,Y,I,J: LongInt; Pt,Pn: LongInt; Col: Integer; B: LongInt;
+    W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt;
+Begin
+ If Not LaInit Then LaSetup;
+ Fn:=Op And $FFF;
+ If RtTrace Then Begin WriteLn(ErrOutput,'LINE-A $',HexStr(Op,4));Flush(ErrOutput);End;
+ Case Fn Of
+  0: Begin
+      RD[0]:=M_LINEA;RA[0]:=M_LINEA;RA[1]:=LA_PTRS;RA[2]:=LA_FUNC;
+     End;
+  1: Begin
+      Pt:=RL(M_LINEA+12);Pn:=RL(M_LINEA+8);
+      LaPut(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)),SmallInt(RW(Pn)));
+     End;
+  2: Begin
+      Pt:=RL(M_LINEA+12);
+      RD[0]:=OGet(SmallInt(RW(Pt)),SmallInt(RW(Pt+2)));
+     End;
+  3: Begin
+      X1:=SmallInt(RW(M_LINEA+38));Y1:=SmallInt(RW(M_LINEA+40));X2:=SmallInt(RW(M_LINEA+42));Y2:=SmallInt(RW(M_LINEA+44));
+      Col:=SmallInt(RW(M_LINEA+24));
+      Case SmallInt(RW(M_LINEA+36)) Of
+       3: OXor:=True;
+      End;
+      If SmallInt(RW(M_LINEA+36))=2 Then Begin If Col<>0 Then OLine(X1,Y1,X2,Y2,1);End
+      Else OLine(X1,Y1,X2,Y2,Ord(Col<>0));
+      OXor:=False;
+     End;
+  4: Begin
+      X1:=SmallInt(RW(M_LINEA+38));Y1:=SmallInt(RW(M_LINEA+40));X2:=SmallInt(RW(M_LINEA+42));
+      Col:=SmallInt(RW(M_LINEA+24));
+      For X:=X1 To X2 Do LaPut(X,Y1,Col);
+     End;
+  5: Begin
+      X1:=SmallInt(RW(M_LINEA+38));Y1:=SmallInt(RW(M_LINEA+40));X2:=SmallInt(RW(M_LINEA+42));Y2:=SmallInt(RW(M_LINEA+44));
+      Col:=SmallInt(RW(M_LINEA+24));
+      For Y:=Y1 To Y2 Do
+       For X:=X1 To X2 Do LaPut(X,Y,Col);
+     End;
+  7: Begin
+      { BITBLT : bloc de parametres en A6 }
+      B:=RA[6];
+      W:=SmallInt(RW(B));H:=SmallInt(RW(B+2));
+      SX:=SmallInt(RW(B+14));SY:=SmallInt(RW(B+16));SF:=RL(B+18);SNW:=SmallInt(RW(B+22));SNL:=SmallInt(RW(B+24));
+      DX:=SmallInt(RW(B+28));DY:=SmallInt(RW(B+30));DF:=RL(B+32);DNW:=SmallInt(RW(B+36));DNL:=SmallInt(RW(B+38));
+      Opr:=RB(B+10);
+      If (DX>SX) Or ((DX=SX) And (DY>SY)) Then Begin
+       For J:=H-1 DownTo 0 Do
+        For I:=W-1 DownTo 0 Do Begin
+         X:=SX+I;Y:=SY+J;
+         S:=Ord((RB(SF+Y*SNL+(X Shr 4)*SNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
+         X:=DX+I;Y:=DY+J;
+         D:=Ord((RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
+         R:=VRop(Opr,S,D);
+         If R<>D Then Begin
+          If R<>0 Then WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) Or (128 Shr (X And 7)))
+          Else WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (Not (128 Shr (X And 7))));
+         End;
+        End;
+      End Else Begin
+       For J:=0 To H-1 Do
+        For I:=0 To W-1 Do Begin
+         X:=SX+I;Y:=SY+J;
+         S:=Ord((RB(SF+Y*SNL+(X Shr 4)*SNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
+         X:=DX+I;Y:=DY+J;
+         D:=Ord((RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (128 Shr (X And 7)))<>0);
+         R:=VRop(Opr,S,D);
+         If R<>D Then Begin
+          If R<>0 Then WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) Or (128 Shr (X And 7)))
+          Else WB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3),RB(DF+Y*DNL+(X Shr 4)*DNW+((X And 15) Shr 3)) And (Not (128 Shr (X And 7))));
+         End;
+        End;
+      End;
+      { l'ecran est ecrit directement en memoire : a reporter dans le tampon }
+      If DF=M_SCREEN Then OutPending:=True;
+     End;
+  9: GemCur(True);
+  10: GemCur(False);
+ End;
+End;
+
+
 {$ENDIF}
 
 { ====================================================================== }
