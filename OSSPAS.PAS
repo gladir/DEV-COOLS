@@ -2323,6 +2323,7 @@ Const
  M_FBUF = $E4000;    { tampons des fichiers types (256 octets par fichier) }
  M_DBG  = $500;       { numero de ligne courant (mode debug) }
  M_DBGP = $502;       { reserve }
+ M_HEAPLIM = $506;    { limite basse de la pile : sommet du tas + marge ($T) }
 
  MAXFILES = 16;
 
@@ -2378,6 +2379,7 @@ Begin
   7: RtErrText:=T3('Out of memory','M'#130'moire insuffisante','Speicher erschoepft');
   8: RtErrText:=T3('Bad input value','Valeur d''entr'#130'e incorrecte','Falsche Eingabe');
   9: RtErrText:=T3('Set overflow','D'#130'passement d''ensemble','Mengenueberlauf');
+ 10: RtErrText:=T3('Real overflow','D'#130'passement de r'#130'el','Real-Ueberlauf');
  Else RtErrText:=T3('Run-time error ','Erreur d''ex'#130'cution ','Laufzeitfehler ')+IntStr(C);
  End;
 End;
@@ -2444,66 +2446,206 @@ Begin
  FillChar(VMem[M_SETT+SetIdx*32],32,0);
 End;
 
-{ ------------------------------ reels --------------------------------- }
+{ ------------------------------ reels ---------------------------------- }
+{ Real de Personal Pascal : flottant DECIMAL (BCD), mantisse de 11 chiffres,
+  exposant -38..38. Format memoire sur 8 octets (poids fort d'abord) :
+    octets 0-3 : chiffres 1 a 8 (BCD)         -> D0.L
+    octet  4   : chiffres 9 et 10 (BCD)       -> D1.W, octet fort
+    octet  5   : chiffre 11 (quartet fort) et signe (8 = negatif)
+    octets 6-7 : facteur d'echelle, entier signe 16 bits
+  valeur = d1.d2d3...d11 x 10^echelle ; une mantisse nulle vaut 0.
+  Les calculs sont faits en flottant binaire hote puis arrondis a 11 chiffres
+  decimaux a chaque stockage : 0.1+0.2 vaut exactement 0.3. }
+
+Const
+ REAL_MAXM = 100000000000;    (* 10^11 *)
+ REAL_MINM = 10000000000;     (* 10^10 *)
+
+Var
+ Pw10   : Array[-100..100] Of Extended;
+ Pw10Ok : Boolean;
+
+Procedure InitPw10;
+Var K: Integer;
+Begin
+ Pw10[0]:=1;
+ For K:=1 To 100 Do Pw10[K]:=Pw10[K-1]*10;
+ For K:=1 To 100 Do Pw10[-K]:=1/Pw10[K];
+ Pw10Ok:=True;
+End;
+
+{ chiffres decimaux de X : X = (+/-) M x 10^(E-10), 10^10 <= M < 10^11.
+  Retourne False si X vaut 0 (ou sous 1e-39 : sous-passement). E peut depasser
+  38 : debordement, a tester par l'appelant. }
+Function DecDigits(X: Double; Var Neg: Boolean; Var M: Int64; Var E: Integer): Boolean;
+Var Ax,T: Extended; K: Integer;
+Begin
+ If Not Pw10Ok Then InitPw10;
+ DecDigits:=False;M:=0;E:=0;Neg:=(X<0);
+ Ax:=Abs(X);
+ If Ax<1E-40 Then Exit;
+ If Ax>=1E+60 Then Begin M:=REAL_MINM;E:=60;DecDigits:=True;Exit;End;
+ E:=Round(Ln(Ax)/2.302585092994046);
+ If E>59 Then E:=59;
+ If E<-39 Then E:=-39;
+ For K:=1 To 4 Do Begin
+  T:=Ax/Pw10[E-10];
+  M:=Round(T);
+  If M>=REAL_MAXM Then Inc(E)
+  Else If M<REAL_MINM Then Dec(E)
+  Else Break;
+ End;
+ If M>=REAL_MAXM Then Begin M:=REAL_MINM;Inc(E);End;
+ If M<REAL_MINM Then M:=REAL_MINM;
+ DecDigits:=True;
+End;
+
+Function BcdOf(V: LongInt; N: Integer): Int64;
+{ N chiffres decimaux de V en BCD }
+Var R: Int64; I: Integer;
+Begin
+ R:=0;
+ For I:=0 To N-1 Do Begin R:=R Or (Int64(V Mod 10) Shl (4*I));V:=V Div 10;End;
+ BcdOf:=R;
+End;
+
+{ 0 : ok ; 1 : debordement (|X| > 1e38) ; sous-passement : 0 }
+Function EncodeReal(X: Double; Var Bits: Int64): Integer;
+Var Neg: Boolean; M: Int64; E: Integer; Hi8,Lo3: LongInt; Sg: Int64;
+Begin
+ Bits:=0;EncodeReal:=0;
+ If Not DecDigits(X,Neg,M,E) Then Exit;
+ If E>38 Then Begin EncodeReal:=1;Exit;End;
+ If E<-38 Then Exit;
+ Hi8:=M Div 1000;Lo3:=M Mod 1000;
+ If Neg Then Sg:=8 Else Sg:=0;
+ Bits:=(BcdOf(Hi8,8) Shl 32) Or (BcdOf(Lo3 Div 10,2) Shl 24) Or (Int64(Lo3 Mod 10) Shl 20)
+       Or (Sg Shl 16) Or Int64(E And $FFFF);
+End;
+
+Function DecodeReal(Bits: Int64): Double;
+Var I,E: Integer; M: Int64; Nb: Int64; V: Extended;
+Begin
+ If Not Pw10Ok Then InitPw10;
+ M:=0;
+ For I:=15 DownTo 8 Do Begin
+  Nb:=(Bits Shr (4*I)) And 15;
+  If Nb>9 Then Nb:=9;
+  M:=M*10+Nb;
+ End;
+ For I:=7 DownTo 6 Do Begin
+  Nb:=(Bits Shr (4*I)) And 15;
+  If Nb>9 Then Nb:=9;
+  M:=M*10+Nb;
+ End;
+ Nb:=(Bits Shr 20) And 15;
+ If Nb>9 Then Nb:=9;
+ M:=M*10+Nb;                          { M : 11 chiffres }
+ If M=0 Then Begin DecodeReal:=0;Exit;End;
+ E:=SmallInt(Bits And $FFFF);
+ If E>60 Then E:=60;
+ If E<-60 Then E:=-60;
+ V:=Extended(M)*Pw10[E-10];
+ If ((Bits Shr 16) And 8)<>0 Then V:=-V;
+ DecodeReal:=V;
+End;
 
 Function PopR: Double;
-Var Hi,Lo: LongInt; I: Int64; D: Double;
+Var Hi,Lo: LongInt; I: Int64;
 Begin
  Hi:=Pop32;Lo:=Pop32;
  I:=(Int64(Hi) Shl 32) Or Int64(Cardinal(Lo));
- Move(I,D,8);
- PopR:=D;
+ PopR:=DecodeReal(I);
 End;
 
 Procedure RetR(D: Double);
 Var I: Int64;
 Begin
- Move(D,I,8);
+ If EncodeReal(D,I)<>0 Then Begin RtFail(10);I:=0;End;
  RD[0]:=LongInt(Cardinal(I Shr 32));
  RD[1]:=LongInt(Cardinal(I And $FFFFFFFF));
 End;
 
 Function ReadRealMem(A: LongInt): Double;
-Var Hi,Lo: LongInt; I: Int64; D: Double;
+Var Hi,Lo: LongInt; I: Int64;
 Begin
  Hi:=RL(A);Lo:=RL(A+4);
  I:=(Int64(Hi) Shl 32) Or Int64(Cardinal(Lo));
- Move(I,D,8);
- ReadRealMem:=D;
+ ReadRealMem:=DecodeReal(I);
 End;
 
 Procedure WriteRealMem(A: LongInt; D: Double);
 Var I: Int64;
 Begin
- Move(D,I,8);
+ If EncodeReal(D,I)<>0 Then Begin RtFail(10);I:=0;End;
  WL(A,LongInt(Cardinal(I Shr 32)));
  WL(A+4,LongInt(Cardinal(I And $FFFFFFFF)));
 End;
 
-Function FmtReal(X: Double; W,D: LongInt): String;
-Var S,M: String; E,I: LongInt; V: Double; Neg: Boolean;
+Function IncDecStr(Const S: String): String;
+{ ajoute 1 a une chaine de chiffres decimaux }
+Var R: String; I: Integer;
 Begin
+ R:=S;I:=Length(R);
+ While I>=1 Do Begin
+  If R[I]='9' Then Begin R[I]:='0';Dec(I);End
+  Else Begin R[I]:=Chr(Ord(R[I])+1);IncDecStr:=R;Exit;End;
+ End;
+ IncDecStr:='1'+R;
+End;
+
+Function FmtReal(X: Double; W,D: LongInt): String;
+{ D>=0 : format fixe W:D ; D<0 : notation E (7.33124E+06) }
+Var S,Dg,Ip,Fp,Z: String; Neg,Nz: Boolean; M: Int64; E,I: Integer;
+Begin
+ If DecDigits(X,Neg,M,E) Then Str(M,Dg) Else Begin Dg:='00000000000';E:=0;Neg:=False;End;
  If D>=0 Then Begin
   If D>20 Then D:=20;
   If W<0 Then W:=0;
-  Str(X:W:D,S);
+  If E>=0 Then Begin
+   Ip:=Copy(Dg,1,E+1);Fp:=Copy(Dg,E+2,40);
+   While Length(Ip)<E+1 Do Ip:=Ip+'0';
+  End Else Begin
+   Ip:='0';Z:='';
+   For I:=1 To -E-1 Do Z:=Z+'0';
+   Fp:=Z+Dg;
+  End;
+  { arrondi decimal a D chiffres (demi vers le haut) }
+  If Length(Fp)>D Then Begin
+   Nz:=(Fp[D+1]>='5');
+   Fp:=Copy(Fp,1,D);
+  End Else Begin
+   Nz:=False;
+   While Length(Fp)<D Do Fp:=Fp+'0';
+  End;
+  If Nz Then Begin
+   Z:=IncDecStr(Ip+Fp);
+   If D>0 Then Begin Ip:=Copy(Z,1,Length(Z)-D);Fp:=Copy(Z,Length(Z)-D+1,D);End
+   Else Begin Ip:=Z;Fp:='';End;
+  End;
+  S:=Ip;
+  If D>0 Then S:=S+'.'+Fp;
+  Nz:=False;
+  For I:=1 To Length(Ip) Do If Ip[I]<>'0' Then Nz:=True;
+  For I:=1 To Length(Fp) Do If Fp[I]<>'0' Then Nz:=True;
+  If Neg And Nz Then S:='-'+S;
+  While Length(S)<W Do S:=' '+S;
  End Else Begin
-  { notation E par defaut : 7.33124E+06 }
-  Neg:=X<0;V:=Abs(X);E:=0;
-  If V=0 Then Begin S:='0.00000E+00';End
+  { notation E par defaut : 7.33124E+06 (6 chiffres significatifs) }
+  If Dg='00000000000' Then S:='0.00000E+00'
   Else Begin
-   While V>=10 Do Begin V:=V/10;Inc(E);End;
-   While V<1 Do Begin V:=V*10;Dec(E);End;
-   Str(V:0:5,M);
-   If Copy(M,1,2)='10' Then Begin Str(1.0:0:5,M);Inc(E);End;
-   If E<0 Then S:=M+'E-' Else S:=M+'E+';
+   Fp:=Copy(Dg,1,6);
+   If Dg[7]>='5' Then Begin
+    Fp:=IncDecStr(Fp);
+    If Length(Fp)>6 Then Begin Fp:=Copy(Fp,1,6);Inc(E);End;
+   End;
+   S:=Fp[1]+'.'+Copy(Fp,2,5);
+   If E<0 Then S:=S+'E-' Else S:=S+'E+';
    If Abs(E)<10 Then S:=S+'0';
    S:=S+IntStr(Abs(E));
    If Neg Then S:='-'+S;
   End;
-  If (W>0) And (Length(S)<W) Then Begin
-   While Length(S)<W Do S:=' '+S;
-  End;
+  While Length(S)<W Do S:=' '+S;
  End;
  FmtReal:=S;
 End;
@@ -4397,6 +4539,8 @@ Begin
 End;
 { ------------------------------ services ------------------------------ }
 
+Procedure DoChain(Const Cmd0: String); Forward;
+
 { ---------------- aides pour les services divers (CHAIN, OPTION...) ---------------- }
 
 Function CmdTail: String;
@@ -4537,7 +4681,7 @@ Begin
   S_RCMP: Begin Y:=PopR;X:=PopR;If X<Y Then RD[0]:=-1 Else If X>Y Then RD[0]:=1 Else RD[0]:=0;End;
   S_ITOR: Begin A:=Pop32;RetR(A);End;
   S_RTRUNC: Begin X:=PopR;If Abs(X)>2147483647.0 Then Begin RtFail(1);RD[0]:=0;End Else RD[0]:=Trunc(X);End;
-  S_RROUND: Begin X:=PopR;If Abs(X)>2147483647.0 Then Begin RtFail(1);RD[0]:=0;End Else RD[0]:=Round(X);End;
+  S_RROUND: Begin X:=PopR;If Abs(X)>2147483647.0 Then Begin RtFail(1);RD[0]:=0;End Else If X>=0 Then RD[0]:=Trunc(X+0.5) Else RD[0]:=-Trunc(-X+0.5);End;
   S_RABS: Begin X:=PopR;RetR(Abs(X));End;
   S_RSQR: Begin X:=PopR;RetR(X*X);End;
   S_RSQRT: Begin X:=PopR;If X<0 Then Begin RtFail(1);RetR(0);End Else RetR(Sqrt(X));End;
@@ -4623,7 +4767,7 @@ Begin
    End;
   S_NEW: Begin
     A:=Pop32;A:=(A+3) And (Not 3);
-    If EmuHeap+A>M_TOP-$10000 Then Begin RtFail(7);RD[0]:=0;End
+    If EmuHeap+A+512>RA[7] Then Begin RtFail(7);RD[0]:=0;End
     Else Begin RD[0]:=EmuHeap;FillChar(VMem[EmuHeap],A,0);EmuHeap:=EmuHeap+A;End;
    End;
   S_MARK: RD[0]:=EmuHeap;
@@ -4929,9 +5073,7 @@ Begin
    End;
   S_CHAIN: Begin
     A:=Pop32;
-    ChainReq:=GetPS(A);
-    If ChainReq='' Then ChainReq:=' ';
-    EmuHalt:=True;EmuCode:=0;
+    DoChain(GetPS(A));
    End;
   S_BASEPAGE: Begin A:=Pop32;WL(A,M_BASEPAGE);End;
   S_OPTION: Begin
@@ -5159,6 +5301,7 @@ Begin
  Else
   EmuHalt:=True;EmuMsg:='TRAP #'+IntStr(N);
  End;
+ WL(M_HEAPLIM,EmuHeap+512);
 End;
 
 { ------------------------- decodage des instructions --------------------- }
@@ -5745,6 +5888,8 @@ End;
 
 
 Var
+ ChainDepth : Integer;        { imbrication des Chain en cours }
+ ProgStackHigh : LongInt;      { sommet de la zone pile+tas du programme ($S/$U) }
  PhysShadow : Array[0..31999] Of Byte;
  RunMsg   : String;
  RunCodeV : Integer;
@@ -5777,7 +5922,7 @@ End;
   si le fichier ne peut pas etre charge }
 Function RunCore(Const Name: String; Const Tail: String): Boolean;
 Var F: File; Hd: Array[0..27] Of Byte; N: Word; Tl,Dl,Sl,Fx: LongInt; I: Integer;
-    Ent: Array[0..13] Of Byte; Nm: String; Ad: LongInt; Cm: String;
+    Ent: Array[0..13] Of Byte; Nm: String; Ad: LongInt; SKb,UKb,SH,OldSP: LongInt;
 Begin
  RunCore:=False;
  RunMsg:='';RunCodeV:=0;
@@ -5808,6 +5953,20 @@ Begin
  Close(F);
  If Not LoadPRG(Name,Tail) Then Exit;
  PrgLoad:=RPC;
+ { $S / $U : zone pile+tas du programme (champ reserve de l'en-tete) }
+ SKb:=(Hd[18] Shl 8) Or Hd[19];UKb:=(Hd[20] Shl 8) Or Hd[21];
+ If (SKb>0) Or (UKb>0) Or (Hd[18]+Hd[19]+Hd[20]+Hd[21]>0) Then Begin
+  If SKb>0 Then SH:=EmuHeap+SKb*1024 Else SH:=M_TOP-UKb*1024;
+  If SH>M_TOP Then SH:=M_TOP;
+  If SH<EmuHeap+1024 Then SH:=EmuHeap+1024;
+  SH:=SH And (Not 3);
+ End Else SH:=M_TOP;
+ OldSP:=RA[7];
+ RA[7]:=SH-$40;
+ Push32(RL(OldSP+4));Push32(RL(OldSP));
+ WL(M_BASEPAGE+4,SH);
+ WL(M_HEAPLIM,EmuHeap+512);
+ ProgStackHigh:=SH;
  RunCore:=True;
  EmuHalt:=False;EmuBrk:=False;EmuCode:=0;EmuMsg:='';EmuSuper:=False;
  EmuSeed:=NowCs;RtSeed:=NowCs;VtState:=0;VtRev:=False;AesNext:=0;IoCheckOn:=True;IoRes:=0;ChainReq:='';RtTrace:=(GetEnv('OSSTRACE')<>'');
@@ -5819,7 +5978,7 @@ Begin
  WW(M_DBG,0);
  ScrLog:=M_SCREEN;ScrPhys:=M_SCREEN;ScrCustom:=False;ClipOn:=False;
  OutBuf:=OrigBuf;DispBuf:=OrigBuf;
- OutClear;
+ If ChainDepth=0 Then OutClear;     { un programme enchaine garde l'ecran }
  OutToMem;
  EmuScreen:=Not Headless;EmuActive:=True;
  BreakReq:=False;
@@ -5832,17 +5991,117 @@ Begin
  EmuActive:=False;
  RunMsg:=EmuMsg;RunCodeV:=EmuCode;RunAborted:=EmuBrk;
  If Headless Then WriteLn;
- If (ChainReq<>'') And (Not EmuBrk) And (EmuMsg='') Then Begin
-  { CHAIN : lance le programme suivant de la ligne de commande }
-  Cm:=TrimStr(ChainReq);ChainReq:='';
-  I:=Pos(' ',Cm);
-  If I=0 Then Begin Nm:=Cm;Cm:='';End Else Begin Nm:=Copy(Cm,1,I-1);Cm:=TrimStr(Copy(Cm,I+1,255));End;
-  If Pos('.',ShortName(Nm))=0 Then Nm:=Nm+'.PRG';
-  If Cm<>'' Then Cm:=' '+Cm;
-  If Not RunCore(Nm,Cm) Then Begin
-   RunMsg:=T3('Cannot chain to ','Impossible d''enchainer vers ','Verkettung nicht moeglich: ')+Nm;RunCodeV:=-33;
-  End;
+End;
+
+{ CHAIN : execute le programme de la ligne de commande puis REPREND le programme
+  appelant la ou il en etait (l'etat complet de l'emulateur est sauvegarde :
+  memoire, registres, fichiers ouverts, curseur...). Comme sur TOS, l'ecran
+  n'est pas restaure et le programme fils ne dispose que de la memoire laissee
+  libre par {$S} / {$U} du programme appelant. }
+Procedure DoChain(Const Cmd0: String);
+Var Cm,Nm,Tl: String; I: Integer; F: File; Hd: Array[0..27] Of Byte; N: Word;
+    Need,Left,SK: LongInt;
+    SvMem: PByteArr;
+    SvRD,SvRA: Array[0..7] Of LongInt;
+    SvPC,SvUSP,SvHeap,SvDta,SvSeed,SvStk,SvLog,SvPhys,SvPenX,SvPenY,SvLoad,SvText: LongInt;
+    SvSR: Word;
+    SvSuper,SvCustom,SvClip,SvGem,SvGemUsed,SvScreen,SvActive,SvIoChk,SvXor,SvRev: Boolean;
+    SvOut,SvIn,SvCPos,SvIoRes,SvDbgN,SvTmp,SvSet,SvDm,SvTc,SvFc,SvFs,SvFi,SvLc,SvTs,SvVt: Integer;
+    SvCon: String;
+    SvCx1,SvCy1,SvCx2,SvCy2,SvOc,SvOr: LongInt;
+    SvPF: Array[1..MAXFILES] Of TPFile;
+    SvEF: Array[6..25] Of File;
+    SvEFU: Array[6..25] Of Boolean;
+    SvDbgNm: Array[1..400] Of String[12];
+    SvDbgAd: Array[1..400] Of LongInt;
+    SvDebug: Boolean;
+    SvMsg: String; SvCode: Integer;
+    Ok,Aborted: Boolean; Mess: String;
+Begin
+ IoRes:=0;
+ Cm:=TrimStr(Cmd0);
+ I:=Pos(' ',Cm);
+ If I=0 Then Begin Nm:=Cm;Tl:='';End Else Begin Nm:=Copy(Cm,1,I-1);Tl:=TrimStr(Copy(Cm,I+1,255));End;
+ If Tl<>'' Then Tl:=' '+Tl;
+ If Nm='' Then Begin IoFail(0,-33);Exit;End;
+ If Pos('.',ShortName(Nm))=0 Then Begin
+  If FileExists(ResolveFile(Nm+'.PRG')) Then Nm:=Nm+'.PRG' Else Nm:=Nm+'.TOS';
  End;
+ If (Not FileExists(ResolveFile(Nm))) Or (ChainDepth>=6) Then Begin IoFail(0,-33);Exit;End;
+ { memoire necessaire au programme fils / memoire laissee par le parent }
+ Assign(F,ResolveFile(Nm));
+ {$I-}Reset(F,1);{$I+}
+ If IOResult<>0 Then Begin IoFail(0,-33);Exit;End;
+ BlockRead(F,Hd,28,N);
+ Close(F);
+ If (N<28) Or (Hd[0]<>$60) Or (Hd[1]<>$1A) Then Begin IoFail(0,-66);Exit;End;
+ SK:=(LongInt(Hd[18]) Shl 8) Or Hd[19];
+ Need:=((LongInt(Hd[2]) Shl 24) Or (LongInt(Hd[3]) Shl 16) Or (LongInt(Hd[4]) Shl 8) Or Hd[5])
+      +((LongInt(Hd[6]) Shl 24) Or (LongInt(Hd[7]) Shl 16) Or (LongInt(Hd[8]) Shl 8) Or Hd[9])
+      +((LongInt(Hd[10]) Shl 24) Or (LongInt(Hd[11]) Shl 16) Or (LongInt(Hd[12]) Shl 8) Or Hd[13])+$100;
+ If SK>0 Then Need:=Need+SK*1024 Else Need:=Need+16384;
+ Left:=M_TOP-ProgStackHigh;
+ If Left<Need Then Begin
+  IoRes:=-39;
+  If IoCheckOn Then Begin
+   RtFail(7);
+   EmuMsg:=T3('Chain: not enough memory left for the chained program (use {$S} or {$U})',
+              'Chain : pas assez de m'#130'moire pour le programme encha'#140'n'#130' (utiliser {$S} ou {$U})',
+              'Chain: zu wenig Speicher fuer das Programm ({$S} oder {$U} verwenden)');
+  End;
+  Exit;
+ End;
+ { sauvegarde de l'etat du programme appelant }
+ If EmuScreen And (Not ScrCustom) Then MemToOut;
+ GetMem(SvMem,VMEM_SIZE);
+ Move(VMem[0],SvMem^,VMEM_SIZE);
+ SvRD:=RD;SvRA:=RA;SvPC:=RPC;SvSR:=RSR;SvUSP:=RUSP;SvHeap:=EmuHeap;SvDta:=EmuDta;
+ SvSuper:=EmuSuper;SvSeed:=EmuSeed;SvStk:=ProgStackHigh;SvLog:=ScrLog;SvPhys:=ScrPhys;
+ SvCustom:=ScrCustom;SvClip:=ClipOn;SvCx1:=ClipX1;SvCy1:=ClipY1;SvCx2:=ClipX2;SvCy2:=ClipY2;
+ SvGem:=GemMode;SvGemUsed:=GemUsed;SvScreen:=EmuScreen;SvActive:=EmuActive;SvIoChk:=IoCheckOn;
+ SvXor:=OXor;SvRev:=VtRev;SvPenX:=PenX;SvPenY:=PenY;SvLoad:=PrgLoad;SvText:=PrgText;
+ SvOut:=OutSel;SvIn:=InSel;SvCon:=ConBuf;SvCPos:=ConPos;SvIoRes:=IoRes;SvDbgN:=DbgCount;
+ SvTmp:=TmpIdx;SvSet:=SetIdx;SvDm:=DrawModeV;SvTc:=TxtColV;SvFc:=FilCol;SvFs:=FilSty;
+ SvFi:=FilIdx;SvLc:=LinCol;SvTs:=TxtSize;SvVt:=VtState;SvOc:=OCX;SvOr:=OCY;
+ SvDbgNm:=DbgNames;SvDbgAd:=DbgAddrs;SvDebug:=PrgDebug;SvMsg:=EmuMsg;SvCode:=EmuCode;
+ SvPF:=PFiles;SvEF:=EmuFile;SvEFU:=EmuFUsed;
+ { le programme fils part sans fichier ouvert (ceux du parent restent ouverts) }
+ For I:=1 To MAXFILES Do PFiles[I].Used:=False;
+ For I:=6 To 25 Do EmuFUsed[I]:=False;
+ Inc(ChainDepth);
+ Ok:=RunCore(Nm,Tl);
+ Dec(ChainDepth);
+ Aborted:=RunAborted;
+ If Ok Then Mess:=RunMsg Else Mess:=T3('Cannot chain to ','Impossible d''encha'#140'ner vers ','Verkettung nicht moeglich: ')+Nm;
+ { l'ecran reste tel que le fils l'a laisse (comme sur TOS) }
+ If Mess<>'' Then Begin
+  For I:=1 To Length(Mess) Do VtOut(Mess[I]);
+  VtOut(#13);VtOut(#10);
+ End;
+ OutFlush(True);
+ { restauration du programme appelant }
+ Move(SvMem^,VMem[0],VMEM_SIZE);
+ FreeMem(SvMem,VMEM_SIZE);
+ RD:=SvRD;RA:=SvRA;RPC:=SvPC;RSR:=SvSR;RUSP:=SvUSP;EmuHeap:=SvHeap;EmuDta:=SvDta;
+ EmuSuper:=SvSuper;EmuSeed:=SvSeed;ProgStackHigh:=SvStk;
+ ClipOn:=SvClip;ClipX1:=SvCx1;ClipY1:=SvCy1;ClipX2:=SvCx2;ClipY2:=SvCy2;
+ GemMode:=SvGem;GemUsed:=SvGemUsed;EmuScreen:=SvScreen;EmuActive:=SvActive;IoCheckOn:=SvIoChk;
+ OXor:=SvXor;VtRev:=SvRev;PenX:=SvPenX;PenY:=SvPenY;PrgLoad:=SvLoad;PrgText:=SvText;
+ OutSel:=SvOut;InSel:=SvIn;ConBuf:=SvCon;ConPos:=SvCPos;DbgCount:=SvDbgN;
+ TmpIdx:=SvTmp;SetIdx:=SvSet;DrawModeV:=SvDm;TxtColV:=SvTc;FilCol:=SvFc;FilSty:=SvFs;
+ FilIdx:=SvFi;LinCol:=SvLc;TxtSize:=SvTs;VtState:=SvVt;
+ DbgNames:=SvDbgNm;DbgAddrs:=SvDbgAd;PrgDebug:=SvDebug;
+ { fichiers du fils : refermes ; fichiers du parent : retablis }
+ CloseAllPFiles;
+ For I:=6 To 25 Do If EmuFUsed[I] Then Begin {$I-}Close(EmuFile[I]);{$I+}If IOResult<>0 Then ;End;
+ PFiles:=SvPF;EmuFile:=SvEF;EmuFUsed:=SvEFU;
+ EmuMsg:=SvMsg;EmuCode:=SvCode;EmuHalt:=False;EmuBrk:=Aborted;
+ { ecran : on garde l'image laissee par le fils }
+ SetScreenCmd(SvLog,SvPhys);
+ If Not SvCustom Then OutToMem;
+ OutPending:=True;
+ BreakReq:=False;
+ IoRes:=SvIoRes;
 End;
 
 {$ELSE}
@@ -5905,6 +6164,7 @@ Type
 Var
  Conf    : TCompOpts;       { options (boite de dialogue) }
  Opt     : TCompOpts;       { options actives pendant la compilation (directives) }
+ SpaceS,SpaceU : Integer;     (* directives S et U (Ko), -1 : absente *)
  LongIntOn : Boolean;       (* directive L+ : INTEGER devient LONG_INTEGER *)
  SrcL    : Array[1..MAXSRC] Of PString;
  SrcN    : Integer;
@@ -6186,9 +6446,15 @@ Begin
     'M': ModuleMode:=On;
     'L': LongIntOn:=On;
     'E': ExportOn:=On;
+    'T': Opt.StackChk:=On;
     'S','U': Begin
       N:=0;
       While (I<Length(S)) And (S[I+1]>='0') And (S[I+1]<='9') Do Begin N:=N*10+Ord(S[I+1])-48;Inc(I);End;
+      If C='S' Then Begin
+       If SpaceU>=0 Then Err(40) Else SpaceS:=N;
+      End Else Begin
+       If SpaceS>=0 Then Err(40) Else SpaceU:=N;
+      End;
      End;
    End;
   End;
@@ -6361,7 +6627,7 @@ Begin
  CurLn:=0;CurTxt:='';CurPos:=1;InInc:=False;IncI:=0;
  TokLine:=1;TokCol:=1;PrevLine:=1;PrevCol:=1;
  CErrN:=0;CHalt:=False;CGoEdit:=False;
- ModuleMode:=False;ExportOn:=False;ExpN:=0;ExtN:=0;ExtPosN:=0;LongIntOn:=False;
+ ModuleMode:=False;ExportOn:=False;ExpN:=0;ExtN:=0;ExtPosN:=0;LongIntOn:=False;SpaceS:=-1;SpaceU:=-1;
  Opt:=Conf;
 End;
 
@@ -6930,7 +7196,7 @@ Begin
  E16($2000 Or (ARegOf(A) Shl 9) Or (5 Shl 6));E16(ADisp(A));
  B:=A;B.D:=B.D+4;
  Normalize(B);
- E16($2200 Or (ARegOf(B) Shl 9) Or (5 Shl 6) Or 1);E16(ADisp(B));
+ E16($2001 Or (ARegOf(B) Shl 9) Or (5 Shl 6));E16(ADisp(B));
 End;
 
 Procedure PushReal;
@@ -7874,7 +8140,10 @@ Begin
   F_TRUNC,F_ROUND: Begin
     OneArg;
     A:=ToReal(A);
-    If Nm='SHORT_TRUNC' Then K:=TY_INT Else K:=TY_LONG;
+    { TRUNC / ROUND : Short_Integer, sauf avec la directive L+ }
+    If (Nm='SHORT_TRUNC') Or (Nm='SHORT_ROUND') Then K:=TY_INT
+    Else If (Nm='LONG_TRUNC') Or (Nm='LONG_ROUND') Then K:=TY_LONG
+    Else If LongIntOn Then K:=TY_LONG Else K:=TY_INT;
     N:=NewNd(N_STD,K);Nd[N].V:=Id;Nd[N].A:=A;PStdFunc:=N;
    End;
   F_ODD: Begin
@@ -9319,7 +9588,7 @@ Begin
  If Opt.FullDebug And (SymCnt<400) Then Begin Inc(SymCnt);SymNames[SymCnt]:=Copy(Nm,1,8);SymAddrLab[SymCnt]:=Sy[S].Lab;End;
  E16($4E56);LinkPos:=CP;E16(0);
  If Opt.StackChk Then Begin
-  E16($BFFC);E32($D1000);P2:=BccS(2);ErrStub(5);PatchS(P2);
+  E16($BFF8);E16($0506);P2:=BccS(2);ErrStub(5);PatchS(P2);
  End;
  If Opt.ClearVars Then Begin
   E16($41EE);ClrPos1:=CP;E16(0);          { LEA -n(A6),A0 }
@@ -9614,7 +9883,7 @@ Begin
    For J:=1 To Length(S) Do E8(Ord(S[J]));
    If Odd(CP) Then E8(0);
   End Else Begin
-   D:=Lits[I].R;Move(D,B,8);
+   If EncodeReal(Lits[I].R,B)<>0 Then Begin Err(18);B:=0;End;
    E32(LongInt(Cardinal(B Shr 32)));E32(LongInt(Cardinal(B And $FFFFFFFF)));
   End;
  End;
@@ -9715,6 +9984,14 @@ Begin
  ObjFlags:=Opt.ProgType;OutProgType:=Opt.ProgType;OutModule:=ModuleMode;
  If ModuleMode Then ObjFlags:=ObjFlags Or $200;
  If Conf.FullDebug Or Opt.FullDebug Then ObjFlags:=ObjFlags Or $100;
+ If SpaceS>=0 Then Begin
+  If SpaceS>1022 Then SpaceS:=1022;
+  ObjFlags:=ObjFlags Or (LongInt(SpaceS+1) Shl 12);
+ End;
+ If SpaceU>=0 Then Begin
+  If SpaceU>510 Then SpaceU:=510;
+  ObjFlags:=ObjFlags Or (LongInt(SpaceU+1) Shl 22);
+ End;
  Assign(F,Name);
  {$I-}Rewrite(F,1);{$I+}
  If IOResult<>0 Then Exit;
@@ -9848,7 +10125,7 @@ Function LinkObject(Const ObjName,PrgName,Extra: String; Var Msg: String): Boole
 Var G: File; NObj,K,I,J,M,P: Integer; Cat: PByteArr; Tot,BlMax,Last,D,Ad: LongInt; B: Byte; Hd: Array[0..1] Of Byte;
     Stat: Word; Ent: Array[0..13] Of Byte; Nm,L: String; NS: Integer; Bn: String;
     Names: Array[1..MAXLO] Of String[80]; RAll: Array[1..MAXREL] Of LongInt; NR: Integer; Found: Boolean;
-    SyN: Array[1..400] Of String[8]; SyA: Array[1..400] Of LongInt;
+    SyN: Array[1..400] Of String[8]; SyA: Array[1..400] Of LongInt; SKb,UKb: LongInt;
  Procedure W32(V: LongInt);
  Begin PutL(G,V);End;
  Function Stem(Const S0: String): String;
@@ -9925,7 +10202,14 @@ Begin
  End;
  Hd[0]:=$60;Hd[1]:=$1A;
  BlockWrite(G,Hd,2);
- W32(Tot);W32(0);W32(BlMax+4096);W32(NS*14);W32(0);
+ W32(Tot);W32(0);W32(BlMax+4096);W32(NS*14);
+ { champ reserve : taille pile+tas ($S, Ko) en mot fort, memoire laissee ($U, Ko) en mot faible }
+ SKb:=(LO[1].Fl Shr 12) And $3FF;UKb:=(LO[1].Fl Shr 22) And $1FF;
+ If SKb>0 Then Begin Dec(SKb);If SKb=0 Then SKb:=1;UKb:=0;End
+ Else Begin
+  If UKb>0 Then Dec(UKb) Else If (LO[1].Fl And 3)=1 Then UKb:=0 Else UKb:=10;
+ End;
+ W32((LongInt(SKb) Shl 16) Or UKb);
  W32(LO[1].Fl And $100);
  Stat:=0;BlockWrite(G,Stat,2);
  BlockWrite(G,Cat^,Tot);
