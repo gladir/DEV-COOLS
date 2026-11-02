@@ -1054,6 +1054,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer un clone SQL Server en ligne de commande. Lit directement dans un fichier «.MDF».</td>
 		</tr>
 		<tr>
+			<td><b>STBASIC.PAS</b></td>
+			<td>Cette commande permet de lancer un clone graphique du bureau et de l'interpreteur ST BASIC de l'Atari ST (fenetres LIST, OUTPUT, COMMAND et EDIT, menus Desk, File, Run, Edit et Debug, graphiques CIRCLE, ELLIPSE, LINEF, FILL, fichiers sequentiels et a acces aleatoire) avec un emulateur Atari ST (Motorola 68000, GEMDOS, BIOS, XBIOS) integre pour executer des programmes «.PRG» (stbasic fichier.bas /E /R /C /X fichier.prg /Q ; aide avec stbasic /?).</td>
+		</tr>
+		<tr>
 			<td><b>SWIFT86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Swift pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
