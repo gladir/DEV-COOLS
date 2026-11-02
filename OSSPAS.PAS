@@ -5763,6 +5763,41 @@ Begin
  If EmuScreen And (Not ScrCustom) Then MemToOut;
 End;
 
+{ mise au point : OSSDUMPSCR=fichier ecrit l'ecran (32000 octets) a la fin du programme,
+  OSSDUMP=adresse_hex:longueur:fichier ecrit une zone de memoire }
+Procedure DumpMem(Addr,Len: LongInt; Const Fn: String);
+Var F: File;
+Begin
+ If (Addr<0) Or (Len<=0) Or (Addr+Len>VMEM_SIZE) Then Exit;
+ Assign(F,Fn);
+ {$I-}Rewrite(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ BlockWrite(F,VMem[Addr],Len);
+ Close(F);
+End;
+
+Procedure DebugDumps;
+Var S,A,L,Fn: String; P1,P2,Ad,Ln,Cd: LongInt;
+Begin
+ S:=GetEnv('OSSDUMPSCR');
+ If S<>'' Then DumpMem(M_SCREEN,32000,S);
+ S:=GetEnv('OSSDUMP');
+ If S<>'' Then Begin
+  P1:=Pos(':',S);
+  If P1>0 Then Begin
+   A:=Copy(S,1,P1-1);Fn:=Copy(S,P1+1,200);
+   P2:=Pos(':',Fn);
+   If P2>0 Then Begin
+    L:=Copy(Fn,1,P2-1);Fn:=Copy(Fn,P2+1,200);
+    Ad:=0;
+    For Cd:=1 To Length(A) Do Ad:=Ad*16+Pos(UpCase(A[Cd]),'0123456789ABCDEF')-1;
+    Val(L,Ln,Cd);
+    DumpMem(Ad,Ln,Fn);
+   End;
+  End;
+ End;
+End;
+
 { charge et execute un programme GEMDOS dans l'emulateur ; retourne False
   si le fichier ne peut pas etre charge }
 Function RunCore(Const Name: String; Const Tail: String): Boolean;
@@ -5834,6 +5869,7 @@ Begin
  BreakReq:=False;
  EmuLoop;
  EmuScreen:=False;
+ If ChainDepth=0 Then DebugDumps;
  If ScrLog<>M_SCREEN Then Move(VMem[ScrLog],VMem[M_SCREEN],32000);
  Move(VMem[M_SCREEN],OrigBuf^,32000);
  ScrLog:=M_SCREEN;ScrPhys:=M_SCREEN;ScrCustom:=False;OutBuf:=OrigBuf;DispBuf:=OrigBuf;ClipOn:=False;
@@ -8985,11 +9021,144 @@ Begin
  If ProgMouse And (Not Headless) Then Begin HideMouse;ShowMouse;End;
 End;
 
+{ TEXTBLT : un caractere de la forme de police vers l'ecran avec tous les effets
+  (gras, clair, italique, souligne, contour, ombre), l'echelle et la rotation }
+Procedure LaTextBlt;
+Const OFSX = 40; MAXC = 160;
+Var Fb,Fw: LongInt; SX,SY,DX,DY,W,H,I,J,K,R,C,Sty,Wt,Lm,Sk,Ro,Lo,Fg,Bg,Up,Mode: Integer;
+    G1,G2: Array[0..95,0..MAXC-1] Of Byte;       { lignes x colonnes (decalage OFSX) }
+    Wn: Integer; Mk: Word; Sh,Cnt,Dir,Yd,Xd,Kx,Ky,Ry: Integer; Inc_,AccX,AccY: LongInt; B: Byte;
+    DstW,DstH,ExL,ExR: Integer;
+ Function Src(Jj,Ii: Integer): Byte;
+ Begin
+  If (Ii<0) Or (Ii>=W) Or (Jj<0) Or (Jj>=H) Then Begin Src:=0;Exit;End;
+  Src:=Ord((RB(Fb+(SY+Jj)*Fw+((SX+Ii) Shr 3)) And (128 Shr ((SX+Ii) And 7)))<>0);
+ End;
+ Procedure Emit(Xo,Yo: Integer; V: Byte);
+ { ecrit le point (colonne Xo, ligne Yo) du glyphe compose, en tenant compte de la rotation }
+ Var PxX,PxY: Integer;
+ Begin
+  Case LaW(104) Of
+   900: Begin PxX:=DX+Yo;PxY:=DY-Xo;End;
+   1800: Begin PxX:=DX-Xo;PxY:=DY-Yo;End;
+   2700: Begin PxX:=DX-Yo;PxY:=DY+Xo;End;
+  Else Begin PxX:=DX+Xo;PxY:=DY+Yo;End;
+  End;
+  If Not LaClip(PxX,PxY) Then Exit;
+  Case LaW(36) Of
+   1: If V<>0 Then OPlot(PxX,PxY,Fg And 1);
+   2: If (V<>0) And ((Fg And 1)<>0) Then Begin OXor:=True;OPlot(PxX,PxY,1);OXor:=False;End;
+   3: If V=0 Then OPlot(PxX,PxY,Fg And 1);
+  Else
+   If V<>0 Then OPlot(PxX,PxY,Fg And 1) Else OPlot(PxX,PxY,Bg And 1);
+  End;
+ End;
+Begin
+ Fb:=RL(M_LINEA+84);Fw:=LaW(88);
+ SX:=LaW(72);SY:=LaW(74);DX:=LaW(76);DY:=LaW(78);W:=LaW(80);H:=LaW(82);
+ Sty:=LaW(90);Wt:=LaW(96);Lm:=LaW(92);Sk:=LaW(94);Ro:=LaW(98);Lo:=LaW(100);
+ Fg:=LaW(106);Bg:=LaW(114);
+ If (W<=0) Or (H<=0) Or (W>64) Or (H>64) Then Exit;
+ FillChar(G1,SizeOf(G1),0);FillChar(G2,SizeOf(G2),0);
+ { etendue de la cellule : -LOFF .. largeur + epaisseur + ROFF (+1 de chaque cote pour le contour, +1 a droite pour l'ombre) }
+ If (Sty And 1)=0 Then Wt:=0;
+ If Ro<0 Then Ro:=0;
+ If Lo<0 Then Lo:=0;
+ ExL:=-Lo;ExR:=W+Wt+Ro;
+ If (Sty And 16)<>0 Then Begin Dec(ExL);Inc(ExR);End;
+ If (Sty And 32)<>0 Then Inc(ExR);
+ If ExL<-OFSX+1 Then ExL:=-OFSX+1;
+ If ExR>MAXC-OFSX-1 Then ExR:=MAXC-OFSX-1;
+ { 1. glyphe source }
+ For J:=0 To H-1 Do For I:=0 To W-1 Do G1[J,I+OFSX]:=Src(J,I);
+ { 2. gras : chaque point est repete sur Wt colonnes a sa droite }
+ If (Sty And 1)<>0 Then Begin
+  If Wt<0 Then Wt:=0;
+  For J:=0 To H-1 Do
+   For I:=0 To MAXC-1 Do
+    If G1[J,I]<>0 Then
+     For K:=0 To Wt Do If I+K<MAXC Then G2[J,I+K]:=1;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 3. clair : masque tourne d'un bit a chaque ligne }
+ If (Sty And 2)<>0 Then Begin
+  Mk:=Word(Lm);
+  For J:=0 To H-1 Do Begin
+   For I:=0 To MAXC-1 Do
+    If ((Mk Shr (15-((I-OFSX+16000) And 15))) And 1)=0 Then G1[J,I]:=0;
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+ End;
+ { 4. italique : decalage par ligne, de Ro au sommet vers -Lo en bas }
+ If (Sty And 4)<>0 Then Begin
+  Mk:=Word(Sk);Sh:=Ro;
+  For J:=0 To H-1 Do Begin
+   For I:=0 To MAXC-1 Do
+    If G1[J,I]<>0 Then Begin
+     K:=I+Sh;
+     If (K>=0) And (K<MAXC) Then G2[J,K]:=1;
+    End;
+   If (Mk And $8000)<>0 Then Dec(Sh);
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 5. contour : bord du glyphe seulement }
+ If (Sty And 16)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=1 To MAXC-2 Do
+    If G1[J,I]=0 Then Begin
+     Cnt:=0;
+     For R:=-1 To 1 Do For C:=-1 To 1 Do
+      If (J+R>=0) And (J+R<H) And (G1[J+R,I+C]<>0) Then Cnt:=1;
+     G2[J,I]:=Cnt;
+    End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 6. ombre : copie decalee d'un point, en trame }
+ If (Sty And 32)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=0 To MAXC-1 Do Begin
+    G2[J,I]:=G1[J,I];
+    If (J>0) And (I>0) And (G1[J-1,I-1]<>0) And (G1[J,I]=0) And (((I+J) And 1)=0) Then G2[J,I]:=1;
+   End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 7. souligne : derniere ligne }
+ If (Sty And 8)<>0 Then For I:=0 To MAXC-1 Do If (I>=OFSX-Lo) And (I<OFSX+W+Wt+Ro) Then G1[H-1,I]:=1;
+ { 8. ecriture avec echelle (accumulateur DDA) }
+ DstH:=0;
+ If LaW(102)=0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=ExL To ExR-1 Do Emit(I,J,G1[J,I+OFSX]);
+ End Else Begin
+  Dir:=LaW(68);Inc_:=LaW(66) And $FFFF;
+  Yd:=0;AccY:=LaW(64) And $FFFF;
+  For J:=0 To H-1 Do Begin
+   AccY:=AccY+Inc_;
+   If AccY>65535 Then Begin AccY:=AccY-65536;Ky:=1;End Else Ky:=0;
+   If Dir=0 Then Ky:=1+Ky Else Ky:=1-Ky;
+   For Ry:=1 To Ky Do Begin
+    Xd:=ExL;AccX:=LaW(64) And $FFFF;
+    For I:=ExL To ExR-1 Do Begin
+     B:=G1[J,I+OFSX];
+     AccX:=AccX+Inc_;
+     If AccX>65535 Then Begin AccX:=AccX-65536;Kx:=1;End Else Kx:=0;
+     If Dir=0 Then Kx:=1+Kx Else Kx:=1-Kx;
+     For R:=1 To Kx Do Begin Emit(Xd,Yd,B);Inc(Xd);End;
+    End;
+    Inc(Yd);
+   End;
+  End;
+ End;
+ OutPending:=True;
+End;
+
 Procedure LineA(Op: Word);
 Var Fn: Integer; X1,Y1,X2,Y2,X,Y,I,J,K,N: LongInt; Pt,Pn,Ct: LongInt; Col: Integer; B: LongInt;
     W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt; Fg,Bg: Integer;
     XI: Array[0..63] Of LongInt; Cnt: Integer; Mf1,Mf2,Fb,Fw: LongInt; Sv: Integer;
-    Sa,Sb,Sl: LongInt; Fm: LongInt; Mk,Dt: Word;
+    Sa,Sb,Sl: LongInt; Fm: LongInt; Mk,Dt: Word; PA,PNL,PMK: LongInt;
  Function SrcBit(Frm,Nxw,Nxl,PX,PY: LongInt): Integer;
  Var A: LongInt;
  Begin
@@ -9055,46 +9224,22 @@ Begin
       SX:=SmallInt(RW(B+14));SY:=SmallInt(RW(B+16));SF:=RL(B+18);SNW:=SmallInt(RW(B+22));SNL:=SmallInt(RW(B+24));
       DX:=SmallInt(RW(B+28));DY:=SmallInt(RW(B+30));DF:=RL(B+32);DNW:=SmallInt(RW(B+36));DNL:=SmallInt(RW(B+38));
       Opr:=RB(B+10+(Fg Shl 1)+Bg);
-      If (DX>SX) Or ((DX=SX) And (DY>SY)) Then Begin
-       For J:=H-1 DownTo 0 Do
-        For I:=W-1 DownTo 0 Do Begin
-         S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
-         PutBit(DF,DNW,DNL,DX+I,DY+J,VRop(Opr,S,D));
-        End;
-      End Else Begin
-       For J:=0 To H-1 Do
-        For I:=0 To W-1 Do Begin
-         S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
-         PutBit(DF,DNW,DNL,DX+I,DY+J,VRop(Opr,S,D));
-        End;
+      { demi-teinte : la source est combinee (ET) au motif }
+      PA:=RL(B+42);PNL:=SmallInt(RW(B+46));PMK:=RW(B+50);
+      { sens de copie choisi pour que le recouvrement ne detruise pas la source :
+        lignes en sens inverse si on descend, colonnes en sens inverse si on va a droite sur la meme ligne }
+      For K:=0 To H-1 Do Begin
+       If DY>SY Then J:=H-1-K Else J:=K;
+       For N:=0 To W-1 Do Begin
+        If (DY=SY) And (DX>SX) Then I:=W-1-N Else I:=N;
+        S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
+        If PA<>0 Then S:=S And ((RW(PA+PNL*((DY+J) And PMK)) Shr (15-((DX+I) And 15))) And 1);
+        PutBit(DF,DNW,DNL,DX+I,DY+J,VRop(Opr,S,D));
+       End;
       End;
       OutPending:=True;
      End;
-  8: Begin
-      { TEXTBLT : un caractere de la forme de police vers l'ecran }
-      Fb:=RL(M_LINEA+84);Fw:=LaW(88);
-      SX:=LaW(72);SY:=LaW(74);DX:=LaW(76);DY:=LaW(78);W:=LaW(80);H:=LaW(82);
-      Fg:=LaW(106);Bg:=LaW(114);
-      Sv:=LaW(90);
-      Sl:=LaW(96);
-      For J:=0 To H-1 Do
-       For I:=0 To W-1 Do Begin
-        S:=Ord((RB(Fb+(SY+J)*Fw+((SX+I) Shr 3)) And (128 Shr ((SX+I) And 7)))<>0);
-        If (Sv And 1)<>0 Then
-         If (I>0) And (I<=Sl) Then
-          If (RB(Fb+(SY+J)*Fw+((SX+I-1) Shr 3)) And (128 Shr ((SX+I-1) And 7)))<>0 Then S:=1;
-        If (Sv And 8)<>0 Then If J=H-1 Then S:=1;
-        If LaClip(DX+I,DY+J) Then
-         Case LaW(36) Of
-          1: If S<>0 Then OPlot(DX+I,DY+J,Ord((Fg And 1)<>0));
-          2: If (S<>0) And ((Fg And 1)<>0) Then Begin OXor:=True;OPlot(DX+I,DY+J,1);OXor:=False;End;
-          3: If S=0 Then OPlot(DX+I,DY+J,Ord((Fg And 1)<>0));
-         Else
-          If S<>0 Then OPlot(DX+I,DY+J,Ord((Fg And 1)<>0)) Else OPlot(DX+I,DY+J,Ord((Bg And 1)<>0));
-         End;
-       End;
-      OutPending:=True;
-     End;
+  8: LaTextBlt;
   9: GemCur(True);
   10: GemCur(False);
   11: Begin
@@ -9117,7 +9262,8 @@ Begin
        { dessine un lutin : D0=x, D1=y, A0=formulaire, A2=tampon de sauvegarde }
        Fm:=RA[0];Sa:=RA[2];
        X:=SmallInt(RD[0] And $FFFF)-SmallInt(RW(Fm));Y:=SmallInt(RD[1] And $FFFF)-SmallInt(RW(Fm+2));
-       Fg:=SmallInt(RW(Fm+6)) And 1;Bg:=SmallInt(RW(Fm+8)) And 1;
+       { +6 : couleur du masque (fond), +8 : couleur des donnees (premier plan) }
+       Bg:=SmallInt(RW(Fm+6)) And 1;Fg:=SmallInt(RW(Fm+8)) And 1;
        WW(Sa,X);WW(Sa+2,Y);WW(Sa+4,16);
        For J:=0 To 15 Do Begin
         Mk:=0;
