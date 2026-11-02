@@ -10527,6 +10527,7 @@ Const
 
 Var
  HitPa,HeapLo,HeapHi : LongInt;
+ PexBp : LongInt;            { base page du fils Pexec en cours }
  MBase,MSize : Array[1..64] Of LongInt;
  MCnt        : Integer;
  DtaAddr     : LongInt;
@@ -10875,8 +10876,8 @@ Begin
   $49: R:=DoMfree(PL(2));
   $4A: Begin
         A:=PL(6);N:=PL(8);
-        If A=BP_ADDR Then Begin
-         HeapLo:=BP_ADDR+((N+1) And (Not 1));
+        If (A=BP_ADDR) Or (A=PexBp) Then Begin
+         HeapLo:=A+((N+1) And (Not 1));
          If HeapLo>HeapHi Then HeapLo:=HeapHi;
         End;
         R:=0;
@@ -18365,7 +18366,7 @@ End;
 { Pexec GEMDOS : charge et execute un programme fils }
 Function DoPexec(Mode: Integer; NameP,CmdP,EnvP: LongInt): LongInt;
 Var Nm,Cmd: String; P: Pointer; Len,Bp,TB,EndA,TSz,Top,SvHeap,Code: LongInt; Ok: Boolean;
-    SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp: LongInt; I: Integer; SvProc: Integer;
+    SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp,SvPexBp: LongInt; I: Integer; SvProc: Integer;
  Procedure RunChild(B: LongInt; Const ChName,ChCmd: String);
  Var N: LongInt; Gs: TGemSave;
  Begin
@@ -18409,11 +18410,15 @@ Begin
     Ok:=LoadPRGImage(P,Len,Cmd,Bp,False,TB,EndA,TSz);
     If P<>Nil Then FreeMem(P,Len);
     If Not Ok Then Begin DoPexec:=-66;Exit;End;
-    Top:=(EndA+$1000+255) And Not 255;
+    { comme TOS : le fils recoit toute la memoire libre (TPA) et doit la restituer par Mshrink }
+    Top:=HeapHi And Not 255;
+    If Top<EndA+$1000 Then Top:=(EndA+$1000+255) And Not 255;
     Wr32(Bp+4,Top);
     HeapLo:=Top;
     If Mode=3 Then Begin DoPexec:=Bp;Exit;End;
+    SvPexBp:=PexBp;PexBp:=Bp;
     RunChild(Bp,Nm,Cmd);
+    PexBp:=SvPexBp;
     HeapLo:=SvHeap;
     DoPexec:=Code;
    End;
