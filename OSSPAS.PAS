@@ -2676,13 +2676,13 @@ Const
  S_SETDEDIT=177;S_OBJSETSTATE=178;S_OBJSTATE=179;S_OBJSETFLAGS=180;S_OBJFLAGS=181;
  S_CENTERDLG=182;S_DODLG=183;S_GETDEDIT=184;S_REDODLG=185;S_ENDDLG=186;
  S_SHOWDLG=187;S_GETINFILE=188;S_GETOUTFILE=189;S_SETMFORM=190;S_SETMOUSE2=191;
- S_SHOWMOUSE=192;S_HIDEMOUSE=193;
+ S_SHOWMOUSE=192;S_HIDEMOUSE=193;S_LOADRSC=194;S_FINDMENU=195;S_FINDDLG=196;S_FINDALERT=197;S_FREERSC=198;
 
  GM_BAR  = 19;
  MAXGW   = 7;
- MAXGMN  = 3;
+ MAXGMN  = 4;
  MAXGD   = 4;
- MAXGO   = 32;
+ MAXGO   = 64;
  WM_REDRAW_ = 20;
 
 Type
@@ -2714,6 +2714,9 @@ Type
   Txt : String[60];
   Templ,Valid : String[40];
   Just : Integer;
+  PXo,PYo,PWo,PHo : Integer;
+  Parent : Integer;
+  Hidden : Boolean;
  End;
 
  TGDlg = Record
@@ -3237,8 +3240,8 @@ End;
 
 Function DlgRect(D,I: Integer; Var X,Y,W,H: Integer): Boolean;
 Begin
- X:=GDl[D].PX+GDl[D].Ob[I].X*8;Y:=GDl[D].PY+GDl[D].Ob[I].Y*16;
- W:=GDl[D].Ob[I].W*8;H:=GDl[D].Ob[I].H*16;
+ X:=GDl[D].PX+GDl[D].Ob[I].PXo;Y:=GDl[D].PY+GDl[D].Ob[I].PYo;
+ W:=GDl[D].Ob[I].PWo;H:=GDl[D].Ob[I].PHo;
  If I=0 Then Begin X:=GDl[D].PX;Y:=GDl[D].PY;End;
  DlgRect:=True;
 End;
@@ -3247,6 +3250,7 @@ Procedure PaintObj(D,I: Integer);
 Var X,Y,W,H,TX,B,K: Integer; S,T: String; Inv: Boolean; O: TGObj;
 Begin
  O:=GDl[D].Ob[I];
+ If O.Hidden Then Exit;
  DlgRect(D,I,X,Y,W,H);
  Y:=Y+OFS_Y;
  Inv:=(O.State And 1)<>0;
@@ -3265,7 +3269,12 @@ Begin
   20,22,25,26,30,29,21: Begin
     If (O.Typ=21) Or (O.Typ=29) Then Box(X,Y,X+W-1,Y+H-1,PAPER);
     If (O.Typ=20) Or (O.Typ=22) Or (O.Typ=25) Or (O.Typ=26) Or (O.Typ=30) Then Begin
-     If Inv Then Box(X,Y,X+W-1,Y+H-1,INK) Else Box(X,Y,X+W-1,Y+H-1,PAPER);
+     If O.Typ<>25 Then Begin
+      If Inv Then Box(X,Y,X+W-1,Y+H-1,INK)
+      Else If (O.Typ=20) And (O.Color<>0) And (((O.Color Shr 4) And 7)=7) And ((O.Color And 15)<>0) Then Box(X,Y,X+W-1,Y+H-1,INK)
+      Else Box(X,Y,X+W-1,Y+H-1,PAPER);
+     End;
+     If (O.Typ=20) And (O.Border=0) And (I=0) Then Begin End;
      If O.Typ=26 Then Begin
       Frame(X,Y,X+W-1,Y+H-1);
       If (O.Flags And 2)<>0 Then Begin Frame(X-1,Y-1,X+W,Y+H);Frame(X-2,Y-2,X+W+1,Y+H+1);End;
@@ -3289,6 +3298,10 @@ Begin
     If Inv Then Begin Box(X,Y,X+Length(S)*8,Y+15,INK);WText(X,Y+4,S);End
     Else PText(X,Y+4,S);
    End;
+ End;
+ If ((O.State And 4)<>0) And (O.Typ<>28) Then Begin
+  SetColor(Ord(Inv));
+  Line(X+1,Y+8,X+5,Y+13);Line(X+2,Y+8,X+5,Y+12);Line(X+5,Y+13,X+13,Y+1);Line(X+5,Y+12,X+12,Y+1);
  End;
  ShowMouse;
 End;
@@ -3382,7 +3395,7 @@ Begin
     DlgRect(D,I,X,Y,W,H);
     If GDl[D].Ob[I].Typ=28 Then W:=Length(GDl[D].Ob[I].Txt)*8;
     If GDl[D].Ob[I].Typ=28 Then H:=16;
-    If InBox(E.X,E.Y-OFS_Y,X,Y,X+W-1,Y+H-1) Then Hit:=I;
+    If (Not GDl[D].Ob[I].Hidden) And InBox(E.X,E.Y-OFS_Y,X,Y,X+W-1,Y+H-1) Then Hit:=I;
    End;
    If Hit<>0 Then Begin
     I:=Hit;
@@ -3390,7 +3403,8 @@ Begin
     If ((GDl[D].Ob[I].Flags And 1)<>0) And ((GDl[D].Ob[I].State And 8)=0) Then Begin
      If (GDl[D].Ob[I].Flags And $10)<>0 Then Begin
       For J:=1 To GDl[D].N Do
-       If ((GDl[D].Ob[J].Flags And $10)<>0) And ((GDl[D].Ob[J].State And 1)<>0) Then Begin
+       If ((GDl[D].Ob[J].Flags And $10)<>0) And ((GDl[D].Ob[J].State And 1)<>0) And
+          (GDl[D].Ob[J].Parent=GDl[D].Ob[I].Parent) Then Begin
         GDl[D].Ob[J].State:=GDl[D].Ob[J].State And (Not 1);PaintObj(D,J);
        End;
       GDl[D].Ob[I].State:=GDl[D].Ob[I].State Or 1;PaintObj(D,I);
@@ -3569,7 +3583,9 @@ Begin
    2: Begin
        If (MYp>=0) And (MYp<GM_BAR) And (ActMenu>0) And GMn[ActMenu].Drawn Then Begin
         If GemMenuModal(ActMenu,RT,RI) Then Begin
-         GMn[ActMenu].Hi:=RT;GemBarRedraw;PushMsg(10,RT,RI,0,0,0);
+         If RI>=9999 Then Begin EmuBrk:=True;BreakReq:=True;End
+         Else If RI>=1000 Then PushMsg(40,0,RI,0,0,0)
+         Else Begin GMn[ActMenu].Hi:=RT;GemBarRedraw;PushMsg(10,RT,RI,0,0,0);End;
         End;
        End Else If Not WinClick(MXp,MYp) Then Begin
         If (Mask And 2)<>0 Then Begin
@@ -3587,7 +3603,9 @@ Begin
    4: If (MYp>=0) And (MYp<GM_BAR) And (ActMenu>0) And GMn[ActMenu].Drawn And ((E.B And 3)=0) Then Begin
        If MenuTitleAt(ActMenu,MXp)<>0 Then Begin
         If GemMenuModal(ActMenu,RT,RI) Then Begin
-         GMn[ActMenu].Hi:=RT;GemBarRedraw;PushMsg(10,RT,RI,0,0,0);
+         If RI>=9999 Then Begin EmuBrk:=True;BreakReq:=True;End
+         Else If RI>=1000 Then PushMsg(40,0,RI,0,0,0)
+         Else Begin GMn[ActMenu].Hi:=RT;GemBarRedraw;PushMsg(10,RT,RI,0,0,0);End;
         End;
        End;
       End;
@@ -3614,6 +3632,257 @@ Begin
  GemEvent:=Ret;
 End;
 
+
+{ ------------------- ressources GEM (.RSC) et accessoires --------------- }
+
+Const MAXACC = 6;
+
+Var
+ RscBuf  : PByteArr;
+ RscSize : LongInt;
+ RscOk   : Boolean;
+ AccN    : Integer;
+ AccName : Array[1..MAXACC] Of String[40];
+
+Function RscW(O: LongInt): LongInt;
+Begin
+ If (O<0) Or (O+1>=RscSize) Then RscW:=0 Else RscW:=(LongInt(RscBuf^[O]) Shl 8) Or RscBuf^[O+1];
+End;
+
+Function RscSW(O: LongInt): LongInt;
+Var V: LongInt;
+Begin
+ V:=RscW(O);
+ If V>32767 Then V:=V-65536;
+ RscSW:=V;
+End;
+
+Function RscL(O: LongInt): LongInt;
+Begin
+ RscL:=(RscW(O) Shl 16) Or RscW(O+2);
+End;
+
+Function RscStr(O: LongInt): String;
+Var S: String;
+Begin
+ S:='';
+ If (O>0) And (O<RscSize) Then
+  While (O<RscSize) And (RscBuf^[O]<>0) And (Length(S)<200) Do Begin S:=S+Chr(RscBuf^[O]);Inc(O);End;
+ RscStr:=S;
+End;
+
+Function RscFix(V: LongInt; Cell: Integer): Integer;
+Var Hi: Integer;
+Begin
+ Hi:=(V Shr 8) And 255;
+ If Hi>127 Then Hi:=Hi-256;
+ RscFix:=(V And 255)*Cell+Hi;
+End;
+
+Function LoadRsc(Const Nm: String): Boolean;
+Var F: File; N: Word; Fn: String;
+Begin
+ LoadRsc:=False;RscOk:=False;
+ Fn:=ResolveFile(Nm);
+ If Not FileExists(Fn) Then Exit;
+ Assign(F,Fn);
+ {$I-}Reset(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ If FileSize(F)>65500 Then Begin Close(F);Exit;End;
+ If RscBuf=Nil Then GetMem(RscBuf,65536);
+ BlockRead(F,RscBuf^,65500,N);
+ Close(F);
+ RscSize:=N;
+ If RscSize<36 Then Exit;
+ RscOk:=True;LoadRsc:=True;
+End;
+
+Function RscTreeOff(T: Integer): LongInt;
+Begin
+ If (Not RscOk) Or (T<0) Or (T>=RscW(22)) Then RscTreeOff:=0
+ Else RscTreeOff:=RscL(RscW(18)+4*T);
+End;
+
+Function RscTreeCount(T: Integer): Integer;
+Var TO_,Lim,O: LongInt; I: Integer;
+Begin
+ TO_:=RscTreeOff(T);
+ Lim:=RscW(4);
+ If Lim<=TO_ Then Lim:=RscSize;
+ For I:=0 To RscW(22)-1 Do Begin
+  O:=RscL(RscW(18)+4*I);
+  If (O>TO_) And (O<Lim) Then Lim:=O;
+ End;
+ If (RscW(10)>TO_) And (RscW(10)<Lim) Then Lim:=RscW(10);
+ RscTreeCount:=Min3(MAXGO+1,(Lim-TO_) Div 24);
+End;
+
+Function RscDialog(T: Integer): Integer;
+Var D,I,J,G,N,C: Integer; TO_,Off: LongInt; Nx,Hd,Par: Array[0..MAXGO] Of Integer; Fl: LongInt;
+    Reach: Array[0..MAXGO] Of Boolean; Q: Array[0..MAXGO] Of Integer; QH,QT: Integer;
+    AX,AY: Integer; Ted: LongInt; S: String; K: Integer; Spec: LongInt;
+Begin
+ RscDialog:=0;
+ TO_:=RscTreeOff(T);
+ If TO_=0 Then Exit;
+ D:=0;
+ For I:=1 To MAXGD Do If (Not GDl[I].Used) And (D=0) Then D:=I;
+ If D=0 Then Exit;
+ N:=RscTreeCount(T);
+ If N<1 Then Exit;
+ For I:=0 To N-1 Do Begin
+  Off:=TO_+24*I;
+  Nx[I]:=RscSW(Off);Hd[I]:=RscSW(Off+2);Par[I]:=-1;Reach[I]:=False;
+ End;
+ FillChar(GDl[D],SizeOf(TGDlg),0);
+ GDl[D].Used:=True;
+ QH:=0;QT:=1;Q[0]:=0;Reach[0]:=True;
+ While QH<QT Do Begin
+  I:=Q[QH];Inc(QH);
+  If Hd[I]>=0 Then Begin
+   C:=Hd[I];G:=0;
+   While (C>=0) And (C<N) And (C<>I) And (G<=N) Do Begin
+    If Not Reach[C] Then Begin Reach[C]:=True;Par[C]:=I;If QT<=MAXGO Then Begin Q[QT]:=C;Inc(QT);End;End;
+    C:=Nx[C];Inc(G);
+   End;
+  End;
+ End;
+ GDl[D].N:=N-1;
+ For I:=0 To N-1 Do Begin
+  Off:=TO_+24*I;
+  Spec:=RscL(Off+12);
+  GDl[D].Ob[I].Typ:=RscW(Off+6) And 255;
+  GDl[D].Ob[I].Flags:=RscW(Off+8);
+  GDl[D].Ob[I].State:=RscW(Off+10);
+  AX:=0;AY:=0;J:=I;G:=0;
+  While (J>0) And (G<=N) Do Begin
+   AX:=AX+RscFix(RscW(TO_+24*J+16),8);AY:=AY+RscFix(RscW(TO_+24*J+18),16);
+   J:=Par[J];Inc(G);
+  End;
+  GDl[D].Ob[I].PXo:=AX;GDl[D].Ob[I].PYo:=AY;
+  GDl[D].Ob[I].PWo:=RscFix(RscW(Off+20),8);GDl[D].Ob[I].PHo:=RscFix(RscW(Off+22),16);
+  If Par[I]>=0 Then GDl[D].Ob[I].Parent:=Par[I] Else GDl[D].Ob[I].Parent:=0;
+  If Not Reach[I] Then GDl[D].Ob[I].Hidden:=True;
+  J:=I;G:=0;
+  While (J>=0) And (G<=N) Do Begin
+   If (RscW(TO_+24*J+8) And $80)<>0 Then GDl[D].Ob[I].Hidden:=True;
+   J:=Par[J];Inc(G);
+  End;
+  Case GDl[D].Ob[I].Typ Of
+   20,25,27: Begin
+     GDl[D].Ob[I].Border:=ShortInt((Spec Shr 16) And 255);
+     GDl[D].Ob[I].Color:=Spec And $FFFF;
+     If GDl[D].Ob[I].Typ=27 Then GDl[D].Ob[I].Txt:=Chr((Spec Shr 24) And 255);
+    End;
+   21,22,29,30: Begin
+     Ted:=Spec;
+     S:=RscStr(RscL(Ted));
+     K:=0;
+     For J:=1 To Length(S) Do If (S[J]<>'_') And (S[J]<>'@') Then K:=1;
+     If (GDl[D].Ob[I].Flags And 8)<>0 Then Begin If K=0 Then S:='';End
+     Else If S='@' Then S:='';
+     GDl[D].Ob[I].Txt:=Copy(S,1,60);
+     GDl[D].Ob[I].Templ:=Copy(RscStr(RscL(Ted+4)),1,40);
+     GDl[D].Ob[I].Valid:=Copy(RscStr(RscL(Ted+8)),1,40);
+     GDl[D].Ob[I].Just:=RscW(Ted+18);
+     If GDl[D].Ob[I].Just>2 Then GDl[D].Ob[I].Just:=0;
+     GDl[D].Ob[I].Border:=RscSW(Ted+24);
+     GDl[D].Ob[I].Color:=RscW(Ted+20);
+    End;
+   26,28,32: GDl[D].Ob[I].Txt:=Copy(RscStr(Spec),1,60);
+  End;
+ End;
+ GDl[D].PX:=GDl[D].Ob[0].PXo;GDl[D].PY:=GDl[D].Ob[0].PYo;
+ GDl[D].Ob[0].PXo:=0;GDl[D].Ob[0].PYo:=0;
+ RscDialog:=D;
+End;
+
+Procedure SyncAcc(H: Integer);
+Var NI,K: Integer;
+Begin
+ NI:=GMn[H].NI[1];
+ While (NI>0) And ((GMn[H].IDn[1,NI]>=1000) Or (GMn[H].IDn[1,NI]=8998) Or (GMn[H].IDn[1,NI]=8999)) Do Dec(NI);
+ If (AccN>0) And (NI<12) Then Begin
+  Inc(NI);GMn[H].IT[1,NI]:='-';GMn[H].IDn[1,NI]:=8999;GMn[H].ID[1,NI]:=True;GMn[H].IC[1,NI]:=False;
+  For K:=1 To AccN Do If NI<14 Then Begin
+   Inc(NI);GMn[H].IT[1,NI]:=AccName[K];GMn[H].IDn[1,NI]:=1000+K;GMn[H].ID[1,NI]:=False;GMn[H].IC[1,NI]:=False;
+  End;
+ End;
+ If (H=MAXGMN) And (NI<12) Then Begin
+  Inc(NI);GMn[H].IT[1,NI]:='-';GMn[H].IDn[1,NI]:=8998;GMn[H].ID[1,NI]:=True;GMn[H].IC[1,NI]:=False;
+  Inc(NI);GMn[H].IT[1,NI]:=T3('  Quit emulation','  Quitter l''emulation','  Emulation beenden');
+  GMn[H].IDn[1,NI]:=9999;GMn[H].ID[1,NI]:=False;GMn[H].IC[1,NI]:=False;
+ End;
+ GMn[H].NI[1]:=NI;
+End;
+
+Procedure SysMenuOn;
+Var H: Integer;
+Begin
+ H:=MAXGMN;
+ FillChar(GMn[H],SizeOf(TGMenu),0);
+ GMn[H].Used:=True;GMn[H].NT:=1;GMn[H].TT[1]:=' Desk ';
+ GMn[H].NI[1]:=1;GMn[H].IT[1,1]:=T3('  Atari ST desktop','  Bureau Atari ST','  Atari-ST-Desktop');
+ GMn[H].IDn[1,1]:=10;GMn[H].ID[1,1]:=True;
+ SyncAcc(H);
+ MenuLayout(H);
+ GMn[H].Drawn:=True;ActMenu:=H;
+ GemBarRedraw;
+End;
+
+Procedure MenuBackToSys;
+Begin
+ ActMenu:=0;
+ If AccN>0 Then SysMenuOn Else GemBarRedraw;
+End;
+
+Function RscMenu(T: Integer): Integer;
+Var H,I,K,Bar,Tit,Scr,B,C,G,It: Integer; TO_,Off: LongInt; S: String;
+ Function Nx(O: Integer): Integer;
+ Begin Nx:=RscSW(TO_+24*O); End;
+ Function Hd(O: Integer): Integer;
+ Begin Hd:=RscSW(TO_+24*O+2); End;
+Begin
+ RscMenu:=0;
+ TO_:=RscTreeOff(T);
+ If TO_=0 Then Exit;
+ H:=0;
+ For I:=1 To MAXGMN-1 Do If (Not GMn[I].Used) And (H=0) Then H:=I;
+ If H=0 Then Exit;
+ FillChar(GMn[H],SizeOf(TGMenu),0);
+ GMn[H].Used:=True;
+ Bar:=Hd(0);Tit:=Hd(Bar);Scr:=Nx(Bar);
+ { titres }
+ C:=Hd(Tit);G:=0;
+ While (C>=0) And (C<>Tit) And (G<8) Do Begin
+  Inc(G);
+  GMn[H].TT[G]:=Copy(RscStr(RscL(TO_+24*C+12)),1,30);
+  C:=Nx(C);
+ End;
+ GMn[H].NT:=G;
+ { menus deroulants }
+ B:=Hd(Scr);K:=0;
+ While (B>=0) And (B<>Scr) And (K<G) Do Begin
+  Inc(K);
+  It:=Hd(B);
+  While (It>=0) And (It<>B) And (GMn[H].NI[K]<14) Do Begin
+   S:=RscStr(RscL(TO_+24*It+12));
+   If Pos('Desk Accessory',S)=0 Then Begin
+    Inc(GMn[H].NI[K]);
+    If (RscW(TO_+24*It+10) And 8)<>0 Then Begin
+     If (S<>'') And (S[1]='-') Then GMn[H].IT[K,GMn[H].NI[K]]:='-'
+     Else Begin GMn[H].IT[K,GMn[H].NI[K]]:=Copy(S,1,40);GMn[H].ID[K,GMn[H].NI[K]]:=True;End;
+    End Else GMn[H].IT[K,GMn[H].NI[K]]:=Copy(S,1,40);
+    If (RscW(TO_+24*It+10) And 4)<>0 Then GMn[H].IC[K,GMn[H].NI[K]]:=True;
+    GMn[H].IDn[K,GMn[H].NI[K]]:=It;
+   End;
+   It:=Nx(It);
+  End;
+  B:=Nx(B);
+ End;
+ RscMenu:=H;
+End;
+
 { ------------------------- point d'entree des services ----------------- }
 
 Function CopyPStr(A: LongInt): String;
@@ -3627,7 +3896,7 @@ Begin
  FillChar(GW,SizeOf(GW),0);
  FillChar(GMn,SizeOf(GMn),0);
  For I:=1 To MAXGD Do GDl[I].Used:=False;
- ZN:=0;MsgN:=0;CurWin:=0;OrgX:=0;OrgY:=0;ActMenu:=0;NextItemId:=20;
+ AccN:=0;ZN:=0;MsgN:=0;CurWin:=0;OrgX:=0;OrgY:=0;ActMenu:=0;NextItemId:=20;
  RectN:=0;RectI:=0;LastClkCs:=0;
 End;
 
@@ -3640,7 +3909,7 @@ Begin
   S_NEWMENU: Begin
     B:=Pop32;A:=Pop32;
     I:=0;
-    For J:=1 To MAXGMN Do If (Not GMn[J].Used) And (I=0) Then I:=J;
+    For J:=1 To MAXGMN-1 Do If (Not GMn[J].Used) And (I=0) Then I:=J;
     If I=0 Then RD[0]:=0 Else Begin
      FillChar(GMn[I],SizeOf(TGMenu),0);
      GMn[I].Used:=True;GMn[I].NT:=1;GMn[I].TT[1]:=' Desk ';GMn[I].Hi:=0;
@@ -3648,7 +3917,7 @@ Begin
      RD[0]:=I;
     End;
    End;
-  S_DELMENU: Begin A:=Pop32;If (A>=1) And (A<=MAXGMN) Then Begin GMn[A].Used:=False;If ActMenu=A Then ActMenu:=0;End;End;
+  S_DELMENU: Begin A:=Pop32;If (A>=1) And (A<MAXGMN) Then Begin GMn[A].Used:=False;If ActMenu=A Then MenuBackToSys;End;End;
   S_ADDMTITLE: Begin
     B:=Pop32;A:=Pop32;
     If (A>=1) And (A<=MAXGMN) And (GMn[A].NT<8) Then Begin
@@ -3667,13 +3936,13 @@ Begin
   S_DRAWMENU: Begin
     A:=Pop32;
     If (A>=1) And (A<=MAXGMN) Then Begin
-     MenuLayout(A);GMn[A].Drawn:=True;ActMenu:=A;
+     SyncAcc(A);MenuLayout(A);GMn[A].Drawn:=True;ActMenu:=A;
      GemBarRedraw;
     End;
    End;
   S_ERASEMENU: Begin
     A:=Pop32;
-    If (A>=1) And (A<=MAXGMN) Then Begin GMn[A].Drawn:=False;If ActMenu=A Then ActMenu:=0;GemBarRedraw;End;
+    If (A>=1) And (A<MAXGMN) Then Begin GMn[A].Drawn:=False;If ActMenu=A Then MenuBackToSys Else GemBarRedraw;End;
    End;
   S_MENUHI,S_MENUNORMAL: Begin
     B:=Pop32;A:=Pop32;
@@ -3697,7 +3966,22 @@ Begin
     If (A>=1) And (A<=MAXGMN) Then
      For I:=1 To GMn[A].NT Do For J:=1 To GMn[A].NI[I] Do If GMn[A].IDn[I,J]=B Then GMn[A].IT[I,J]:=GetPS(C);
    End;
-  S_MENUREG: Begin B:=Pop32;A:=Pop32;RD[0]:=A;End;
+  S_MENUREG: Begin
+    B:=Pop32;A:=Pop32;
+    If AccN<MAXACC Then Begin
+     Inc(AccN);AccName[AccN]:=Copy(GetPS(B),1,40);RD[0]:=1000+AccN;
+     If ActMenu=0 Then SysMenuOn
+     Else Begin SyncAcc(ActMenu);MenuLayout(ActMenu);GemBarRedraw;End;
+    End Else RD[0]:=-1;
+   End;
+  S_LOADRSC: Begin A:=Pop32;If LoadRsc(GetPS(A)) Then RD[0]:=1 Else RD[0]:=0;End;
+  S_FREERSC: RscOk:=False;
+  S_FINDMENU: Begin B:=Pop32;A:=Pop32;WL(B,RscMenu(A));End;
+  S_FINDDLG: Begin B:=Pop32;A:=Pop32;WL(B,RscDialog(A));End;
+  S_FINDALERT: Begin
+    B:=Pop32;A:=Pop32;
+    If RscOk And (A>=0) And (A<RscW(30)) Then PutPS(B,RscStr(RscL(RscW(10)+4*A)),255) Else PutPS(B,'',255);
+   End;
   S_NEWWIN: Begin
     H:=Pop32;G:=Pop32;F:=Pop32;E:=Pop32;B:=Pop32;A:=Pop32;
     I:=NewGWin;
@@ -3820,6 +4104,7 @@ Begin
      FillChar(GDl[I],SizeOf(TGDlg),0);
      GDl[I].Used:=True;GDl[I].N:=0;
      GDl[I].Ob[0].Typ:=20;GDl[I].Ob[0].X:=B;GDl[I].Ob[0].Y:=C;GDl[I].Ob[0].W:=D;GDl[I].Ob[0].H:=E;
+     GDl[I].Ob[0].PWo:=D*8;GDl[I].Ob[0].PHo:=E*16;
      GDl[I].PX:=B*8;GDl[I].PY:=C*16;
      RD[0]:=I;
     End;
@@ -3841,6 +4126,8 @@ Begin
      GDl[A].Ob[J].Typ:=B;GDl[A].Ob[J].Flags:=C;GDl[A].Ob[J].X:=D;GDl[A].Ob[J].Y:=E;
      GDl[A].Ob[J].W:=F;GDl[A].Ob[J].H:=G;GDl[A].Ob[J].Border:=SmallInt(H);GDl[A].Ob[J].Color:=I;
      If (B=26) And (GDl[A].Ob[J].H=0) Then GDl[A].Ob[J].H:=1;
+     GDl[A].Ob[J].PXo:=D*8;GDl[A].Ob[J].PYo:=E*16;GDl[A].Ob[J].PWo:=F*8;GDl[A].Ob[J].PHo:=G*16;
+     GDl[A].Ob[J].Parent:=0;
      RD[0]:=J;
     End Else RD[0]:=-1;
    End;
@@ -3886,7 +4173,7 @@ Begin
   S_CENTERDLG: Begin
     A:=Pop32;
     If (A>=1) And (A<=MAXGD) Then Begin
-     GDl[A].PX:=(640-GDl[A].Ob[0].W*8) Div 2;GDl[A].PY:=(400-GDl[A].Ob[0].H*16) Div 2;
+     GDl[A].PX:=(640-GDl[A].Ob[0].PWo) Div 2;GDl[A].PY:=(400-GDl[A].Ob[0].PHo) Div 2;
     End;
    End;
   S_DODLG,S_REDODLG: Begin
@@ -3903,7 +4190,7 @@ Begin
      If B<=0 Then Begin
       If Not GDl[A].Shown Then Begin
        OutFlush(True);
-       HideMouse;SaveBack(GDl[A].Sv,GDl[A].PX,GDl[A].PY+OFS_Y,GDl[A].PX+GDl[A].Ob[0].W*8+5,GDl[A].PY+OFS_Y+GDl[A].Ob[0].H*16+5);ShowMouse;
+       HideMouse;SaveBack(GDl[A].Sv,GDl[A].PX,GDl[A].PY+OFS_Y,GDl[A].PX+GDl[A].Ob[0].PWo+5,GDl[A].PY+OFS_Y+GDl[A].Ob[0].PHo+5);ShowMouse;
        GDl[A].Shown:=True;
       End;
       PaintDlg(A);
@@ -5355,6 +5642,7 @@ Begin
     'P': Opt.StackChk:=On;
     'C': Opt.ClearVars:=On;
     'D': Opt.FullDebug:=On;
+    'A': If On Then Opt.ProgType:=2;
     'S','U': Begin
       N:=0;
       While (I<Length(S)) And (S[I+1]>='0') And (S[I+1]<='9') Do Begin N:=N*10+Ord(S[I+1])-48;Inc(I);End;
@@ -8489,6 +8777,9 @@ Begin
  AddHostT('END_DIALOG',S_ENDDLG,'I',' ');AddHostT('SHOW_DIALOG',S_SHOWDLG,'II',' ');
  AddHostT('GET_IN_FILE',S_GETINFILE,'II','B');AddHostT('GET_OUT_FILE',S_GETOUTFILE,'SI','B');
  AddHostT('SET_MFORM',S_SETMFORM,'I',' ');
+ AddHostT('LOAD_RESOURCE',S_LOADRSC,'S','B');AddHostT('FREE_RESOURCE',S_FREERSC,'',' ');
+ AddHostT('FIND_MENU',S_FINDMENU,'II',' ');AddHostT('FIND_DIALOG',S_FINDDLG,'II',' ');
+ AddHostT('FIND_ALERT',S_FINDALERT,'II',' ');
  { bibliotheque auxiliaire (AUXSUBS.PAS) }
  AddHostT('PEEK',S_PEEKB,'I','I');
  AddHostT('WPEEK',S_PEEKW,'I','I');
@@ -8600,6 +8891,7 @@ End;
 
 Var
  ObjFlags : LongInt;
+ OutProgType : Integer;
 
 Procedure PutL(Var F: File; V: LongInt);
 Var B: Array[0..3] Of Byte;
@@ -8630,7 +8922,7 @@ Begin
  PatchFixKind2;
  ResolveFixes;
  If CHalt Or (CErrN>0) Then Exit;
- ObjFlags:=Opt.ProgType;
+ ObjFlags:=Opt.ProgType;OutProgType:=Opt.ProgType;
  If Conf.FullDebug Or Opt.FullDebug Then ObjFlags:=ObjFlags Or $100;
  Assign(F,Name);
  {$I-}Rewrite(F,1);{$I+}
@@ -10348,7 +10640,7 @@ Begin
  If Ok Then Begin
   DoCompileFile:=0;
   If Conf.ChainLink Then Begin
-   If Not DoLinkObj(Obj,Conf.ProgType,False) Then DoCompileFile:=1;
+   If Not DoLinkObj(Obj,OutProgType,False) Then DoCompileFile:=1;
   End;
  End Else Begin
   If Headless Then Begin
