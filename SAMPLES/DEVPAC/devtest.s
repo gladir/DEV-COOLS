@@ -1,8 +1,9 @@
 * DEVTEST.S - peripheriques emules : imprimante, serie, MIDI, disquettes
 *
 * Preparation (dans le dossier de travail) :
-*   - une image de disquette 720 Ko vide :  dd if=/dev/zero of=DISKA.ST bs=512 count=1440
-*     (ou n'importe quelle image, avec  DEVPAC /FLA:image.st)
+*   - disquette : rien a faire. Sans DISKA.ST, A: est une disquette vierge
+*     720 Ko et le fichier DISKA.ST est cree a la premiere ecriture
+*     (ou utiliser une image existante avec  DEVPAC /FLA:image.st)
 *   - AUX.IN  (octets lus sur la serie, par ex. xyz) et MIDI.IN (premier octet $90)
 * Execution :  DEVPAC /B /X DEVTEST.S      -> affiche  DEVPAC DEVICE TEST ALL OK
 * Les sorties du programme sont ecrites dans PRINTER.OUT, AUX.OUT et MIDI.OUT.

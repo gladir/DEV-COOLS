@@ -38,16 +38,23 @@
           fichiers ressources .RSC (rsrc_load, rsrc_gaddr...), graf_*,
           selecteur de fichiers, shell (shel_get/put, envrn, rdef/wdef),
           presse-papiers (scrp_read/write/clear), menus deroulants
-          independants (menu_popup) et sous-menus attaches (menu_attach),
+          independants (menu_popup, avec defilement) et sous-menus
+          attaches (menu_attach),
           enregistrement et relecture d'evenements (appl_trecord/tplay),
           graf_slidebox, routines utilisateur vex_motv/butv/curv/timv ;
         * accessoires de bureau (fichiers .ACC) en multitache cooperatif ;
         * fils lances par Pexec : chacun a son propre contexte AES (ap_id,
           menus, fenetres, ressources), nettoye et restitue a sa fin ;
         * peripheriques : lecteurs de disquettes A:..D: sur des images .ST
-          (Floprd, Flopwr, Flopfmt, Rwabs, Getbpb, Protobt...), port serie
+          (Floprd, Flopwr, Flopfmt, Rwabs, Getbpb, Protobt...) ; sans
+          image, A: est une disquette vierge formatee dont le fichier
+          DISKA.ST n'est cree qu'a la premiere ecriture ; port serie
           (AUX.IN / AUX.OUT), MIDI (MIDI.IN / MIDI.OUT), imprimante
-          (PRINTER.OUT), tables clavier, Iorec, Rsconf, Giaccess, Random ;
+          (PRINTER.OUT), clavier intelligent (Ikbdws : modes souris
+          relatif / absolu / touches, horloge, Initmous), generateur
+          sonore YM2149 (Dosound, Giaccess, cloche VT52 ; sortie par
+          Beep de kernel32 sous Windows, Sound/NoSound ailleurs),
+          tables clavier, Iorec, Rsconf, Random ;
       ainsi qu'un AmigaOS simplifie (exec.library / dos.library).
 
   Langue : francais par defaut ; LANGUAGE=EN pour l'anglais ;
@@ -5208,6 +5215,8 @@ Begin
 End;
 
 { Ecrit un octet sur la console ST (interprete les sequences VT52) }
+Procedure SoundBell; Forward;
+
 Procedure ConPut(B: Byte);
 Begin
  If BatchMode Then Begin
@@ -5269,7 +5278,7 @@ Begin
    10: Begin If ConRow>=CON_ROWS-1 Then ConScroll Else Inc(ConRow);End;
    8: If ConCol>0 Then Dec(ConCol);
    9: Begin ConCol:=(ConCol+8) And Not 7;If ConCol>=CON_COLS Then ConNewLine;End;
-   7: Begin End;
+   7: SoundBell;
   Else
    If B>=32 Then Begin
     ConGlyph(ConRow,ConCol,B,ConRev);
@@ -5349,6 +5358,8 @@ Begin
 End;
 
 Procedure RecEvent(Kind: Integer; Data: LongInt); Forward;
+Procedure SoundTick; Forward;
+Procedure IkDrain; Forward;
 
 Procedure KQPush(V: LongInt);
 Begin
@@ -5377,6 +5388,8 @@ End;
 Procedure PollKeys;
 Var Ch: Char; K: Word; Scan,Asc: Integer;
 Begin
+ SoundTick;
+ IkDrain;
  If BatchMode Then Begin
   If Not Eof(ConIn) Then Begin
    Read(ConIn,Ch);
@@ -5451,7 +5464,7 @@ Const
 
 Type
  TFlp = Record
-  On,Changed,RO : Boolean;
+  On,Changed,RO,Virt : Boolean;
   Name : String[80];
   Size : LongInt;
   Spt,Sides,Tracks : Integer;
@@ -5469,9 +5482,159 @@ Var
  RsConfig : Array[0..5] Of LongInt;
  PrtConfig,KbRate,CurBlinkRate,FlpRate : LongInt;
  TimeOffsetSec : LongInt;
- DosoundPtr : LongInt;
+
+ { generateur sonore YM2149 / Dosound }
+ SndPos,SndWait,SndLast,SndFreq : LongInt;
+ SndTemp,SndSlReg,SndSlInc,SndSlEnd : Integer;
+ SndSlide : Boolean;
+ SndLogOpen,SndLogTried : Boolean;
+ SndLog : Text;
  MfpEnable : LongInt;
  XbVec : Array[0..31] Of LongInt;
+
+{ ---------------------------------------------------------------------- }
+{ Son : la sortie utilise l'API Windows (Beep de kernel32, declaree ici sans  }
+{ unite) ; ailleurs, Sound / NoSound de l'unite Crt                          }
+{ ---------------------------------------------------------------------- }
+
+{$IFDEF WINDOWS}
+Function WinBeep(Freq,Dur: LongWord): LongInt; StdCall; External 'kernel32.dll' Name 'Beep';
+{$ENDIF}
+
+Procedure SoundOut(Freq: LongInt; Ms: Integer);
+Begin
+ If BatchMode Then Exit;
+ {$IFDEF WINDOWS}
+ If Freq>0 Then Begin
+  If Freq<37 Then Freq:=37;
+  If Freq>32767 Then Freq:=32767;
+  If WinBeep(Freq,Ms)=0 Then Begin End;
+ End;
+ {$ELSE}
+ If Freq>0 Then Sound(Freq) Else NoSound;
+ {$ENDIF}
+End;
+
+Procedure SoundBell;
+Begin
+ If BatchMode Then Exit;
+ {$IFDEF WINDOWS}
+ SoundOut(880,80);
+ {$ELSE}
+ SoundOut(880,80);Delay(80);SoundOut(0,0);
+ {$ENDIF}
+End;
+
+{ trace des notes jouees si la variable DEVPAC_SNDLOG nomme un fichier }
+Procedure SndLogNote(F: LongInt);
+Begin
+ If Not SndLogTried Then Begin
+  SndLogTried:=True;
+  If GetEnv('DEVPAC_SNDLOG')<>'' Then Begin
+   Assign(SndLog,GetEnv('DEVPAC_SNDLOG'));
+   {$I-}
+   Rewrite(SndLog);
+   {$I+}
+   SndLogOpen:=IOResult=0;
+  End;
+ End;
+ If SndLogOpen Then Begin
+  WriteLn(SndLog,F);
+  Flush(SndLog);
+ End;
+End;
+
+{ frequence jouee d'apres les registres du YM2149 (la voie la plus forte) }
+Function SndRegsFreq: LongInt;
+Var C,Vol,Best: Integer; F: LongInt; Per: LongInt;
+Begin
+ F:=0;Best:=0;
+ For C:=0 To 2 Do Begin
+  Vol:=GiRegs[8+C] And $1F;
+  If (Vol>Best) Then Begin
+   If (GiRegs[7] And (1 Shl C))=0 Then Begin
+    Per:=GiRegs[C*2]+LongInt(GiRegs[C*2+1] And 15)*256;
+    If Per<1 Then Per:=1;
+    F:=125000 Div Per;Best:=Vol;
+   End Else If (GiRegs[7] And (8 Shl C))=0 Then Begin
+    { bruit : approxime par une note aigue }
+    Per:=GiRegs[6] And 31;
+    If Per<1 Then Per:=1;
+    F:=125000 Div (Per*8);Best:=Vol;
+   End;
+  End;
+ End;
+ SndRegsFreq:=F;
+End;
+
+Procedure SoundOff;
+Begin
+ SoundOut(0,0);
+ SndFreq:=0;SndPos:=0;SndSlide:=False;
+End;
+
+Procedure DosoundStart(P: LongInt);
+Begin
+ SndPos:=P;SndWait:=0;SndSlide:=False;SndTemp:=0;
+End;
+
+{ un pas (1/50 s) du sequenceur Dosound }
+Procedure SndStep;
+Var C,N,Guard,V: Integer;
+ Function Nxt: Integer;
+ Begin
+  Nxt:=Rd8(SndPos);Inc(SndPos);
+ End;
+Begin
+ If SndSlide Then Begin
+  V:=GiRegs[SndSlReg And 15]+SndSlInc;
+  GiRegs[SndSlReg And 15]:=V And $FF;
+  If ((SndSlInc>0) And (V>=SndSlEnd)) Or ((SndSlInc<=0) And (V<=SndSlEnd)) Then Begin
+   GiRegs[SndSlReg And 15]:=SndSlEnd And $FF;SndSlide:=False;
+  End;
+  Exit;
+ End;
+ If SndWait>0 Then Begin Dec(SndWait);If SndWait>0 Then Exit;End;
+ Guard:=0;
+ While (SndPos<>0) And (Guard<256) Do Begin
+  Inc(Guard);
+  C:=Nxt;
+  If C<=15 Then GiRegs[C]:=Nxt And $FF
+  Else If C=$80 Then SndTemp:=Nxt
+  Else If C=$81 Then Begin
+   SndSlReg:=Nxt;SndSlInc:=Nxt;If SndSlInc>127 Then SndSlInc:=SndSlInc-256;
+   SndSlEnd:=Nxt;
+   GiRegs[SndSlReg And 15]:=SndTemp And $FF;
+   SndSlide:=True;Exit;
+  End Else If C>=$82 Then Begin
+   N:=Nxt;
+   If N=0 Then Begin SndPos:=0;GiRegs[8]:=0;GiRegs[9]:=0;GiRegs[10]:=0;End
+   Else Begin SndWait:=N;Exit;End;
+  End;
+ End;
+End;
+
+{ appele souvent : avance le sequenceur a 50 Hz et pilote le haut-parleur }
+Procedure SoundTick;
+Var T,F: LongInt;
+Begin
+ T:=MsNow;
+ If T-SndLast<20 Then Exit;
+ If T-SndLast>200 Then SndLast:=T-20;
+ SndLast:=SndLast+20;
+ If (SndPos<>0) Or SndSlide Then SndStep;
+ F:=SndRegsFreq;
+ If F<>SndFreq Then Begin
+  SndLogNote(F);
+  {$IFNDEF WINDOWS}
+  SoundOut(F,20);
+  {$ENDIF}
+  SndFreq:=F;
+ End;
+ {$IFDEF WINDOWS}
+ If F>0 Then SoundOut(F,20);
+ {$ENDIF}
+End;
 
 Procedure DevOut(Var F: File; Var Opened: Boolean; Const Name: String; B: Byte);
 Var Bb: Byte;
@@ -5569,6 +5732,7 @@ End;
 
 Procedure DevCloseAll;
 Begin
+ SoundOff;
  {$I-}
  If AuxOutOpen Then Close(AuxOutF);
  If MidiOutOpen Then Close(MidiOutF);
@@ -5588,12 +5752,67 @@ End;
 Procedure FlpClose(D: Integer);
 Begin
  If Flp[D].On Then Begin
-  {$I-}
-  Close(Flp[D].F);
-  {$I+}
-  If IOResult<>0 Then Begin End;
-  Flp[D].On:=False;
+  If Not Flp[D].Virt Then Begin
+   {$I-}
+   Close(Flp[D].F);
+   {$I+}
+   If IOResult<>0 Then Begin End;
+  End;
+  Flp[D].On:=False;Flp[D].Virt:=False;
  End;
+End;
+
+{ Disquette vierge formatee 720 Ko (9 secteurs, 2 faces, 80 pistes) }
+Type TSec = Array[0..511] Of Byte;
+
+Procedure BlankSector(Lsn: LongInt; Var B: TSec);
+Const Oem : String[6] = 'DEVPAC';
+Var I: Integer;
+Begin
+ FillChar(B,SizeOf(B),0);
+ If Lsn=0 Then Begin
+  B[0]:=$60;B[1]:=$1C;
+  For I:=1 To 6 Do B[1+I]:=Ord(Oem[I]);
+  B[11]:=0;B[12]:=2;B[13]:=2;B[14]:=1;B[15]:=0;B[16]:=2;B[17]:=112;B[18]:=0;
+  B[19]:=$A0;B[20]:=$05;B[21]:=$F9;B[22]:=5;B[23]:=0;B[24]:=9;B[25]:=0;B[26]:=2;B[27]:=0;
+ End Else If (Lsn=1) Or (Lsn=6) Then Begin
+  B[0]:=$F9;B[1]:=$FF;B[2]:=$FF;
+ End;
+End;
+
+{ Monte une disquette vierge : aucun fichier n'existe tant qu'on n'y ecrit pas }
+Procedure FlpMountBlank(D: Integer; Const Name: String);
+Begin
+ FlpClose(D);
+ Flp[D].On:=True;Flp[D].Virt:=True;Flp[D].RO:=False;Flp[D].Changed:=True;
+ Flp[D].Name:=Name;Flp[D].Size:=737280;Flp[D].Spt:=9;Flp[D].Sides:=2;Flp[D].Tracks:=80;
+End;
+
+{ Cree le fichier image d'une disquette vierge lors de la premiere ecriture }
+Function FlpMaterialize(D: Integer): Boolean;
+Var B: TSec; L: LongInt; Got: LongInt;
+Begin
+ FlpMaterialize:=False;
+ Assign(Flp[D].F,Flp[D].Name);
+ {$I-}
+ Rewrite(Flp[D].F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ For L:=0 To 1439 Do Begin
+  BlankSector(L,B);
+  {$I-}
+  BlockWrite(Flp[D].F,B,512,Got);
+  {$I+}
+  If IOResult<>0 Then Begin Close(Flp[D].F);Exit;End;
+ End;
+ {$I-}
+ Close(Flp[D].F);
+ FileMode:=2;
+ Reset(Flp[D].F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Flp[D].Virt:=False;
+ FlpMaterialize:=True;
 End;
 
 Function FlpMount(D: Integer; Const Name: String): Boolean;
@@ -5614,7 +5833,7 @@ Begin
  End;
  {$I+}
  If IOResult<>0 Then Exit;
- Flp[D].On:=True;Flp[D].Changed:=True;Flp[D].Name:=Name;
+ Flp[D].On:=True;Flp[D].Virt:=False;Flp[D].Changed:=True;Flp[D].Name:=Name;
  Flp[D].Size:=FileSize(Flp[D].F);
  FillChar(B,SizeOf(B),0);
  {$I-}
@@ -5636,12 +5855,23 @@ End;
 
 { Lit / ecrit Count secteurs a partir du secteur logique Lsn }
 Function FlpRW(D: Integer; Lsn,Count: LongInt; Buf: LongInt; Wr: Boolean): Integer;
-Var I,J: LongInt; Tmp: Array[0..511] Of Byte; Got: LongInt;
+Var I,J: LongInt; Tmp: TSec; Got: LongInt;
 Begin
  FlpRW:=E_NOTRDY;
  If (D<0) Or (D>3) Or Not Flp[D].On Then Exit;
  If Wr And Flp[D].RO Then Begin FlpRW:=E_WRPRO;Exit;End;
  If (Lsn<0) Or ((Lsn+Count)*512>Flp[D].Size) Then Begin FlpRW:=E_RNF;Exit;End;
+ If Flp[D].Virt Then Begin
+  If Wr Then Begin
+   If Not FlpMaterialize(D) Then Begin FlpRW:=E_WRITF;Exit;End;
+  End Else Begin
+   For I:=0 To Count-1 Do Begin
+    BlankSector(Lsn+I,Tmp);
+    For J:=0 To 511 Do Wr8(Buf+I*512+J,Tmp[J]);
+   End;
+   FlpRW:=E_OK;Exit;
+  End;
+ End;
  For I:=0 To Count-1 Do Begin
   {$I-}
   Seek(Flp[D].F,(Lsn+I)*512);
@@ -5669,13 +5899,15 @@ Begin
  PrtConfig:=0;KbRate:=$0F0F;CurBlinkRate:=30;
  FillChar(RsConfig,SizeOf(RsConfig),0);
  FillChar(XbVec,SizeOf(XbVec),0);
- DosoundPtr:=0;MfpEnable:=0;FlpRate:=2;
+ SndPos:=0;MfpEnable:=0;FlpRate:=2;
  For I:=0 To 3 Do Begin
   If FlpImage[I]<>'' Then Begin
-   If FileExists(FlpImage[I]) Then FlpMount(I,FlpImage[I]);
+   If FileExists(FlpImage[I]) Then FlpMount(I,FlpImage[I])
+   Else FlpMountBlank(I,FlpImage[I]);
   End Else Begin
    If FileExists('DISK'+Chr(65+I)+'.ST') Then FlpMount(I,'DISK'+Chr(65+I)+'.ST')
-   Else If FileExists('disk'+Chr(97+I)+'.st') Then FlpMount(I,'disk'+Chr(97+I)+'.st');
+   Else If FileExists('disk'+Chr(97+I)+'.st') Then FlpMount(I,'disk'+Chr(97+I)+'.st')
+   Else If I=0 Then FlpMountBlank(0,'DISKA.ST');
   End;
  End;
 End;
@@ -6133,18 +6365,6 @@ Begin
  Wr32(KT_PTRS,KT_UNSH);Wr32(KT_PTRS+4,KT_SHIFT);Wr32(KT_PTRS+8,KT_CAPS);
 End;
 
-{ Initialise les structures systeme (vecteurs clavier, tables de touches) }
-Procedure SysTablesInit;
-Var I: Integer;
-Begin
- Wr16(STUB_RTS,$4E75);
- KeyTables;
- For I:=0 To 8 Do Wr32(KBDVECS+I*4,STUB_RTS);
- Wr32(ZERO_WORD,0);
- IorecInit:=False;
- MouseVecUser:=0;
-End;
-
 { Date et heure GEMDOS en secondes depuis un instant de reference }
 Function PackedToSec(P: LongInt; Var Y,Mo,D,H,Mi,S: Integer): Boolean;
 Begin
@@ -6250,6 +6470,237 @@ Begin
  S:=GetEnv('LANGUAGE');
  If S<>'' Then Add('LANGUAGE='+S);
  Wr8(A,0);Wr8(A+1,0);
+End;
+
+{ ====================================================================== }
+{              CLAVIER INTELLIGENT (IKBD) : COMMANDES ET PAQUETS           }
+{ ====================================================================== }
+
+Const
+ IKBD_PKT = $8340;
+ IK_STAT = 12; IK_MOUSE = 16; IK_CLOCK = 20; IK_JOY = 24;
+
+Var
+ IkMouseOn,IkPaused,IkYBottom,IkClockSet : Boolean;
+ IkMouseMode : Integer;          { 1 relatif, 2 absolu, 3 touches du curseur }
+ IkBtnAct : Integer;
+ IkThrX,IkThrY,IkScX,IkScY,IkKeyDx,IkKeyDy : Integer;
+ IkXMax,IkYMax : Integer;
+ IkAbsX,IkAbsY,IkAccX,IkAccY,IkLastX,IkLastY : LongInt;
+ IkJoyMode : Integer;
+ IkClockPacked,IkClockBase : LongInt;
+ IkRam : Array[0..127] Of Byte;
+ IkBuf : Array[0..127] Of Byte;
+ IkN : Integer;
+ IkTmp : Array[0..15] Of Byte;
+ IkQN : Integer;
+ IkQVec,IkQLen : Array[0..15] Of Integer;
+ IkQPkt : Array[0..15,0..15] Of Byte;
+
+Procedure IkQueue(Vec,Len: Integer);
+Begin
+ If IkQN>=16 Then Exit;
+ IkQVec[IkQN]:=Vec;IkQLen[IkQN]:=Len;
+ Move(IkTmp,IkQPkt[IkQN],16);
+ Inc(IkQN);
+End;
+
+Procedure IkReset;
+Begin
+ IkMouseOn:=True;IkPaused:=False;IkYBottom:=False;IkMouseMode:=1;IkBtnAct:=0;
+ IkThrX:=1;IkThrY:=1;IkScX:=1;IkScY:=1;IkKeyDx:=1;IkKeyDy:=1;
+ IkXMax:=639;IkYMax:=399;IkAbsX:=0;IkAbsY:=0;IkAccX:=0;IkAccY:=0;IkJoyMode:=0;IkN:=0;
+End;
+
+Function BcdToI(B: Integer): Integer;
+Begin
+ BcdToI:=((B Shr 4) And 15)*10+(B And 15);
+End;
+
+Function IToBcd(V: Integer): Integer;
+Begin
+ IToBcd:=((V Div 10) Shl 4) Or (V Mod 10);
+End;
+
+Procedure IkSendAbs(Flags: Integer);
+Begin
+ IkTmp[0]:=$F7;IkTmp[1]:=Flags And $FF;
+ IkTmp[2]:=(IkAbsX Shr 8) And $FF;IkTmp[3]:=IkAbsX And $FF;
+ IkTmp[4]:=(IkAbsY Shr 8) And $FF;IkTmp[5]:=IkAbsY And $FF;
+ IkQueue(IK_MOUSE,6);
+End;
+
+{ Evenement souris vu par le clavier intelligent : position et boutons ecran
+  (bit 0 gauche, bit 1 droit) avant / apres }
+Procedure IkMouseEvent(AX,AY,NewB,OldB: LongInt);
+Var Dx,Dy,Bt,Cx,Cy,Fl,P: Integer;
+Begin
+ Dx:=AX-IkLastX;Dy:=AY-IkLastY;IkLastX:=AX;IkLastY:=AY;
+ If (Not IkMouseOn) Or IkPaused Then Exit;
+ { bit 0 = bouton droit, bit 1 = bouton gauche dans les paquets IKBD }
+ Bt:=((NewB And 1) Shl 1) Or ((NewB And 2) Shr 1);
+ Case IkMouseMode Of
+  1: Begin
+      IkAccX:=IkAccX+Dx;IkAccY:=IkAccY+Dy;
+      While (NewB<>OldB) Or (Abs(IkAccX)>=IkThrX) Or (Abs(IkAccY)>=IkThrY) Do Begin
+       Cx:=Clamp(IkAccX,-128,127);Cy:=Clamp(IkAccY,-128,127);
+       If (Abs(IkAccX)<IkThrX) And (Abs(IkAccY)<IkThrY) Then Begin Cx:=0;Cy:=0;End;
+       IkTmp[0]:=$F8 Or Bt;IkTmp[1]:=Cx And $FF;IkTmp[2]:=Cy And $FF;
+       IkQueue(IK_MOUSE,3);
+       IkAccX:=IkAccX-Cx;IkAccY:=IkAccY-Cy;OldB:=NewB;
+       If (Abs(IkAccX)<IkThrX) And (Abs(IkAccY)<IkThrY) Then Break;
+      End;
+     End;
+  2: Begin
+      IkAbsX:=Clamp(AX Div Max2(IkScX,1),0,IkXMax);
+      If IkYBottom Then IkAbsY:=Clamp((399-AY) Div Max2(IkScY,1),0,IkYMax)
+      Else IkAbsY:=Clamp(AY Div Max2(IkScY,1),0,IkYMax);
+      If NewB<>OldB Then Begin
+       Fl:=0;
+       P:=((OldB And 1) Shl 1) Or ((OldB And 2) Shr 1);
+       If ((Bt And 1)<>0) And ((P And 1)=0) And ((IkBtnAct And 1)<>0) Then Fl:=Fl Or 1;
+       If ((Bt And 1)=0) And ((P And 1)<>0) And ((IkBtnAct And 2)<>0) Then Fl:=Fl Or 2;
+       If ((Bt And 2)<>0) And ((P And 2)=0) And ((IkBtnAct And 1)<>0) Then Fl:=Fl Or 4;
+       If ((Bt And 2)=0) And ((P And 2)<>0) And ((IkBtnAct And 2)<>0) Then Fl:=Fl Or 8;
+       If Fl<>0 Then IkSendAbs(Fl);
+      End;
+     End;
+  3: Begin
+      IkAccX:=IkAccX+Dx;IkAccY:=IkAccY+Dy;
+      While IkAccX>=IkKeyDx Do Begin KQPush(LongInt(77) Shl 16);IkAccX:=IkAccX-IkKeyDx;End;
+      While IkAccX<=-IkKeyDx Do Begin KQPush(LongInt(75) Shl 16);IkAccX:=IkAccX+IkKeyDx;End;
+      While IkAccY>=IkKeyDy Do Begin KQPush(LongInt(80) Shl 16);IkAccY:=IkAccY-IkKeyDy;End;
+      While IkAccY<=-IkKeyDy Do Begin KQPush(LongInt(72) Shl 16);IkAccY:=IkAccY+IkKeyDy;End;
+     End;
+ End;
+End;
+
+Procedure IkStatus(Cmd,B1,B2,B3,B4,B5,B6: Integer);
+Begin
+ FillChar(IkTmp,SizeOf(IkTmp),0);
+ IkTmp[0]:=$F6;IkTmp[1]:=Cmd;IkTmp[2]:=B1;IkTmp[3]:=B2;IkTmp[4]:=B3;IkTmp[5]:=B4;IkTmp[6]:=B5;IkTmp[7]:=B6;
+ IkQueue(IK_STAT,8);
+End;
+
+{ Execute une commande complete }
+Procedure IkExec(Len: Integer);
+Var C,Y,Mo,D,H,Mi,S,I,A,N: Integer; P: LongInt; Yw,Mow,Dw,Dow: Word;
+Begin
+ C:=IkBuf[0];
+ Case C Of
+  $80: If IkBuf[1]=1 Then IkReset;
+  $07: IkBtnAct:=IkBuf[1];
+  $08: Begin IkMouseMode:=1;IkAccX:=0;IkAccY:=0;End;
+  $09: Begin
+        IkMouseMode:=2;IkXMax:=IkBuf[1]*256+IkBuf[2];IkYMax:=IkBuf[3]*256+IkBuf[4];
+        IkAbsX:=Clamp(IkLastX,0,IkXMax);IkAbsY:=Clamp(IkLastY,0,IkYMax);
+       End;
+  $0A: Begin IkMouseMode:=3;IkKeyDx:=Max2(IkBuf[1],1);IkKeyDy:=Max2(IkBuf[2],1);IkAccX:=0;IkAccY:=0;End;
+  $0B: Begin IkThrX:=Max2(IkBuf[1],1);IkThrY:=Max2(IkBuf[2],1);End;
+  $0C: Begin IkScX:=Max2(IkBuf[1],1);IkScY:=Max2(IkBuf[2],1);End;
+  $0D: Begin
+        IkAbsX:=Clamp(IkLastX Div Max2(IkScX,1),0,IkXMax);
+        If IkYBottom Then IkAbsY:=Clamp((399-IkLastY) Div Max2(IkScY,1),0,IkYMax)
+        Else IkAbsY:=Clamp(IkLastY Div Max2(IkScY,1),0,IkYMax);
+        IkSendAbs(0);
+       End;
+  $0E: Begin IkAbsX:=Clamp(IkBuf[2]*256+IkBuf[3],0,IkXMax);IkAbsY:=Clamp(IkBuf[4]*256+IkBuf[5],0,IkYMax);End;
+  $0F: IkYBottom:=True;
+  $10: IkYBottom:=False;
+  $11: Begin IkPaused:=False;IkMouseOn:=True;End;
+  $12: IkMouseOn:=False;
+  $13: IkPaused:=True;
+  $14: IkJoyMode:=0;
+  $15: IkJoyMode:=1;
+  $16: Begin
+        { interrogation des manettes : aucune manette n'est branchee }
+        IkTmp[0]:=$FD;IkTmp[1]:=0;IkTmp[2]:=0;IkQueue(IK_JOY,3);
+       End;
+  $17: IkJoyMode:=2;
+  $18: IkJoyMode:=3;
+  $19: IkJoyMode:=4;
+  $1A: IkJoyMode:=5;
+  $1B: Begin
+        Y:=BcdToI(IkBuf[1]);If Y<80 Then Y:=Y+2000 Else Y:=Y+1900;
+        Mo:=BcdToI(IkBuf[2]);D:=BcdToI(IkBuf[3]);H:=BcdToI(IkBuf[4]);Mi:=BcdToI(IkBuf[5]);S:=BcdToI(IkBuf[6]);
+        If (Mo<1) Or (Mo>12) Then Mo:=1;If (D<1) Or (D>31) Then D:=1;
+        IkClockPacked:=(LongInt((Y-1980) Shl 9 Or (Mo Shl 5) Or D) Shl 16) Or LongInt((H Shl 11) Or (Mi Shl 5) Or (S Div 2));
+        IkClockBase:=MsNow Div 1000;IkClockSet:=True;
+       End;
+  $1C: Begin
+        If IkClockSet Then P:=PackedAdd(IkClockPacked,(MsNow Div 1000)-IkClockBase) Else P:=HostPacked;
+        PackedToSec(P,Y,Mo,D,H,Mi,S);
+        IkTmp[0]:=$FC;IkTmp[1]:=IToBcd(Y Mod 100);IkTmp[2]:=IToBcd(Mo);IkTmp[3]:=IToBcd(D);
+        IkTmp[4]:=IToBcd(H);IkTmp[5]:=IToBcd(Mi);IkTmp[6]:=IToBcd(S);
+        IkQueue(IK_CLOCK,7);
+       End;
+  $20: Begin
+        A:=IkBuf[1]*256+IkBuf[2];N:=IkBuf[3];
+        For I:=0 To N-1 Do
+         If (A+I>=$80) And (A+I<=$FF) Then IkRam[A+I-$80]:=IkBuf[4+I];
+       End;
+  $21: Begin
+        A:=IkBuf[1]*256+IkBuf[2];
+        FillChar(IkTmp,SizeOf(IkTmp),0);
+        IkTmp[0]:=$F6;IkTmp[1]:=$20;
+        For I:=0 To 5 Do If (A+I>=$80) And (A+I<=$FF) Then IkTmp[2+I]:=IkRam[A+I-$80];
+        IkQueue(IK_STAT,8);
+       End;
+  $22: Begin End;
+  { demandes d'etat }
+  $87: IkStatus($07,IkBtnAct,0,0,0,0,0);
+  $88: IkStatus($08,0,0,0,0,0,0);
+  $89: IkStatus($09,IkXMax Shr 8,IkXMax And $FF,IkYMax Shr 8,IkYMax And $FF,0,0);
+  $8A: IkStatus($0A,IkKeyDx,IkKeyDy,0,0,0,0);
+  $8B: IkStatus($0B,IkThrX,IkThrY,0,0,0,0);
+  $8C: IkStatus($0C,IkScX,IkScY,0,0,0,0);
+  $8F: If IkYBottom Then IkStatus($0F,0,0,0,0,0,0);
+  $90: If Not IkYBottom Then IkStatus($10,0,0,0,0,0,0);
+  $92: If IkMouseOn Then IkStatus($00,0,0,0,0,0,0) Else IkStatus($12,0,0,0,0,0,0);
+  $94: IkStatus($14,0,0,0,0,0,0);
+  $95: IkStatus($15,0,0,0,0,0,0);
+  $99: IkStatus($19,0,0,0,0,0,0);
+  $9A: IkStatus($1A,0,0,0,0,0,0);
+ End;
+End;
+
+{ Longueur d'une commande IKBD d'apres son premier octet }
+Function IkCmdLen(C: Integer): Integer;
+Begin
+ Case C Of
+  $80,$07,$17: IkCmdLen:=2;
+  $09: IkCmdLen:=5;
+  $0A,$0B,$0C,$21,$22: IkCmdLen:=3;
+  $0E: IkCmdLen:=6;
+  $19,$1B: IkCmdLen:=7;
+  $20: IkCmdLen:=4;
+ Else IkCmdLen:=1;
+ End;
+End;
+
+Procedure IkByte(B: Integer);
+Var L: Integer;
+Begin
+ If IkN<128 Then Begin IkBuf[IkN]:=B;Inc(IkN);End;
+ L:=IkCmdLen(IkBuf[0]);
+ If (IkBuf[0]=$20) And (IkN>=4) Then L:=4+IkBuf[3];
+ If IkN>=L Then Begin
+  IkExec(L);
+  IkN:=0;
+ End;
+End;
+
+{ Initialise les structures systeme (vecteurs clavier, tables de touches) }
+Procedure SysTablesInit;
+Var I: Integer;
+Begin
+ Wr16(STUB_RTS,$4E75);
+ KeyTables;
+ For I:=0 To 8 Do Wr32(KBDVECS+I*4,STUB_RTS);
+ IkReset;IkQN:=0;IkClockSet:=False;
+ Wr32(ZERO_WORD,0);
+ IorecInit:=False;
+ MouseVecUser:=0;
 End;
 
 Procedure Bios;
@@ -6359,8 +6810,30 @@ Begin
  R:=0;
  Case Fn Of
   0: Begin
+      { Initmous(type,param,vecteur) }
       MouseVecUser:=PL(8);
       If MouseVecUser<>0 Then Wr32(KBDVECS+16,MouseVecUser) Else Wr32(KBDVECS+16,STUB_RTS);
+      A:=PL(4);
+      Case PW(2) Of
+       0: IkMouseOn:=False;
+       1: Begin
+           IkMouseOn:=True;IkPaused:=False;IkMouseMode:=1;IkAccX:=0;IkAccY:=0;
+           If A<>0 Then Begin
+            IkBtnAct:=Rd8(A+1);IkThrX:=Max2(Rd8(A+2),1);IkThrY:=Max2(Rd8(A+3),1);
+           End;
+          End;
+       2: Begin
+           IkMouseOn:=True;IkPaused:=False;IkMouseMode:=2;
+           If A<>0 Then Begin
+            IkBtnAct:=Rd8(A+1);IkXMax:=Rd16(A+2);IkYMax:=Rd16(A+4);
+            IkAbsX:=Clamp(Rd16(A+6),0,IkXMax);IkAbsY:=Clamp(Rd16(A+8),0,IkYMax);
+           End;
+          End;
+       4: Begin
+           IkMouseOn:=True;IkPaused:=False;IkMouseMode:=3;IkAccX:=0;IkAccY:=0;
+           If A<>0 Then Begin IkKeyDx:=Max2(Rd8(A+2),1);IkKeyDy:=Max2(Rd8(A+3),1);End;
+          End;
+      End;
      End;
   1: R:=0;
   2: R:=ScrBase;
@@ -6478,7 +6951,9 @@ Begin
       End;
   24: KeyTables;
   25: Begin
-       { Ikbdws : commandes du clavier intelligent (ignorees) }
+       { Ikbdws : commandes du clavier intelligent }
+       Cnt:=PW(2)+1;A:=PL(4);
+       For I:=0 To Cnt-1 Do IkByte(Rd8(A+I));
       End;
   26: Begin MfpEnable:=MfpEnable And Not (LongInt(1) Shl (PW(2) And 31));End;
   27: Begin MfpEnable:=MfpEnable Or (LongInt(1) Shl (PW(2) And 31));End;
@@ -6494,7 +6969,11 @@ Begin
        XbVec[16+I]:=PL(8);
        Wr32($134+I*4,PL(8));
       End;
-  32: Begin R:=DosoundPtr;DosoundPtr:=PL(2);End;
+  32: Begin
+       { Dosound : lance (ou arrete) une sequence YM2149 ; renvoie la position courante }
+       R:=SndPos;
+       If PL(2)=0 Then SoundOff Else If PL(2)<>-1 Then DosoundStart(PL(2));
+      End;
   33: Begin R:=PrtConfig;If SExt(PW(2),2)>=0 Then PrtConfig:=PW(2);End;
   34: R:=KBDVECS;
   35: Begin
@@ -9717,6 +10196,25 @@ Begin
  InVex:=False;
 End;
 
+{ Livre au programme invite les paquets du clavier intelligent en attente }
+Procedure IkDrain;
+Var K,L: Integer; V,O0,O1: LongInt;
+Begin
+ While (IkQN>0) And Not InVex Do Begin
+  For K:=0 To 15 Do Wr8(IKBD_PKT+K,IkQPkt[0,K]);
+  V:=Rd32(KBDVECS+IkQVec[0]);
+  For L:=1 To IkQN-1 Do Begin
+   IkQVec[L-1]:=IkQVec[L];IkQLen[L-1]:=IkQLen[L];Move(IkQPkt[L],IkQPkt[L-1],16);
+  End;
+  Dec(IkQN);
+  If (V<>0) And (V<>STUB_RTS) Then Begin
+   InVex:=True;
+   CallGuestEx(V,0,0,0,IKBD_PKT,O0,O1);
+   InVex:=False;
+  End;
+ End;
+End;
+
 { Enregistrement d'evenements (appl_trecord) : 0 minuterie, 1 bouton, 2 souris, 3 clavier }
 Procedure RecEvent(Kind: Integer; Data: LongInt);
 Var T: LongInt;
@@ -9771,7 +10269,7 @@ End;
 
 { Lit clavier et souris hotes ; met a jour l'etat GEM }
 Procedure PollInput;
-Var NX,NY,NB,T,O0,O1: LongInt; Moved,BtnChg: Boolean; Bt,Dx,Dy: LongInt;
+Var NX,NY,NB,T,O0,O1: LongInt; Moved,BtnChg: Boolean;
 Begin
  PollKeys;
  PlayStep;
@@ -9801,14 +10299,10 @@ Begin
   End;
   If UserCursor Then VexCall(VexCur,GMouseX,GMouseY,O0,O1);
  End;
- { paquet du vecteur souris du clavier intelligent (Initmous) }
- If (Moved Or BtnChg) And (MouseVecUser<>0) And Not InVex Then Begin
-  Bt:=((GMouseB And 1) Shl 1) Or ((GMouseB And 2) Shr 1);
-  Dx:=Clamp(GMouseX-KbdPrevX,-128,127);Dy:=Clamp(GMouseY-KbdPrevY,-128,127);
-  Wr8(MOUSE_PKT,$F8 Or Bt);Wr8(MOUSE_PKT+1,Dx And $FF);Wr8(MOUSE_PKT+2,Dy And $FF);
-  InVex:=True;
-  CallGuestEx(MouseVecUser,0,0,0,MOUSE_PKT,O0,O1);
-  InVex:=False;
+ { clavier intelligent : paquets souris selon le mode (Initmous, Ikbdws) }
+ If Moved Or BtnChg Then Begin
+  IkMouseEvent(GMouseX,GMouseY,GMouseB,KbdPrevB);
+  IkDrain;
  End;
  { appl_trecord }
  If RecActive Then Begin
@@ -9934,6 +10428,7 @@ End;
 
 Var
  PopTree,PopMenuIdx : LongInt;
+ PopScroll : Integer;
 
 Function FindAttach(T: LongInt; Item: Integer): Integer;
 Var K: Integer;
@@ -9952,11 +10447,14 @@ Begin
 End;
 
 { Affiche le menu Menu de l'arbre T en (X,Y) ; True si un element est choisi.
-  Hover : la souris sortant du menu l'annule (sous-menus de la barre) }
+  Hover : la souris sortant du menu l'annule (sous-menus de la barre).
+  PopScroll (entree) <> 0 : le menu defile s'il a plus d'elements que
+  MenuSet[4] (hauteur) ; en sortie PopScroll = premier element visible. }
 Function PopupMenu(T: LongInt; Menu,X0,Y0: Integer; Var Item: Integer; Hover: Boolean): Boolean;
-Var Sv: TScrSave; BoxR: TRect; W,H,X,Y,Ax,Ay,OldX,OldY,Cur,I,K,Sc: Integer;
-    Done,Sel,WasDown,Pressed,Opened,SubDone: Boolean; Kq: LongInt; HoverT: LongInt; SubItem: Integer;
-    ItY,LMx,LMy: Integer;
+Var Sv: TScrSave; BoxR,TopRow,BotRow: TRect; W,H,H0,X,Y,Ax,Ay,OldX,OldY,Cur,I,K,Sc: Integer;
+    Done,Sel,WasDown,Pressed,Opened,SubDone,Scroll: Boolean; Kq: LongInt; HoverT,ScrT: LongInt; SubItem: Integer;
+    ItY,LMx,LMy: Integer; N,V,F,Rh,ScrollReq,ScrDelay: Integer;
+    Ch,SaveY,SaveFl: Array[0..255] Of Integer;
  Procedure Light(I: Integer; On_: Boolean);
  Begin
   If I<0 Then Exit;
@@ -9964,39 +10462,108 @@ Var Sv: TScrSave; BoxR: TRect; W,H,X,Y,Ax,Ay,OldX,OldY,Cur,I,K,Sc: Integer;
   Else SetOState(T,I,OState(T,I) And Not OS_SELECTED);
   ObjRedraw(T,I);
  End;
- Procedure Nav(Dir: Integer);
- Var L: Array[0..63] Of Integer; N,P,C: Integer;
+ Function IdxOf(C: Integer): Integer;
+ Var J: Integer;
  Begin
-  N:=0;P:=-1;C:=OHead(T,Menu);
-  While (C>=0) And (N<64) Do Begin
-   If ItemSelectable(T,C) Then Begin
-    If C=Cur Then P:=N;
-    L[N]:=C;Inc(N);
-   End;
-   If C=OTail(T,Menu) Then Break;
-   C:=ONext(T,C);
+  IdxOf:=-1;
+  For J:=0 To N-1 Do If Ch[J]=C Then Begin IdxOf:=J;Exit;End;
+ End;
+ { positions et visibilite des elements selon le premier element visible F }
+ Procedure Layout;
+ Var J: Integer;
+ Begin
+  If Not Scroll Then Exit;
+  For J:=0 To N-1 Do Begin
+   If (J>=F) And (J<F+V) Then Begin
+    Wr16(OA(T,Ch[J])+18,((J-F+1)*Rh) And $FFFF);
+    Wr16(OA(T,Ch[J])+8,SaveFl[J] And Not OF_HIDETREE);
+   End Else Wr16(OA(T,Ch[J])+8,SaveFl[J] Or OF_HIDETREE);
   End;
-  If N=0 Then Exit;
-  If P<0 Then Begin If Dir>0 Then P:=0 Else P:=N-1;End
-  Else P:=(P+Dir+N) Mod N;
-  Light(Cur,False);Cur:=L[P];Light(Cur,True);HoverT:=MsNow;
+ End;
+ Procedure Arrow(Const R: TRect; Up: Boolean);
+ Var J,Cx,Cy: Integer;
+ Begin
+  Cx:=R.X+R.W Div 2;Cy:=R.Y+R.H Div 2;
+  For J:=0 To 4 Do
+   If Up Then OFill(Cx-J,Cy-3+J,Cx+J,Cy-3+J,7,1)
+   Else OFill(Cx-J,Cy+3-J,Cx+J,Cy+3-J,7,1);
+ End;
+ Procedure Render;
+ Begin
+  Layout;
+  ObjDrawRec(T,Menu,8,X,Y,X-2,Y-2,X+W+4,Y+H+4);
+  OSetup;
+  If Scroll Then Begin
+   If F>0 Then Arrow(TopRow,True);
+   If F<N-V Then Arrow(BotRow,False);
+  End;
+  OFrameRect(X,Y,X+W-1,Y+H-1,1);
+  OFill(X+3,Y+H,X+W+2,Y+H+2,7,1);
+  OFill(X+W,Y+3,X+W+2,Y+H-1,7,1);
+  SetClip(0,0,SW-1,SH-1);
+ End;
+ Procedure ScrollTo(NewF: Integer);
+ Begin
+  NewF:=Clamp(NewF,0,Max2(0,N-V));
+  If NewF=F Then Exit;
+  If Cur>=0 Then Begin SetOState(T,Cur,OState(T,Cur) And Not OS_SELECTED);Cur:=-1;End;
+  F:=NewF;ScrT:=MsNow;LMx:=-1;
+  Render;
+ End;
+ Procedure Nav(Dir: Integer);
+ Var L: Array[0..255] Of Integer; M,P,C,Idx: Integer;
+ Begin
+  M:=0;P:=-1;
+  For C:=0 To N-1 Do
+   If ItemSelectable(T,Ch[C]) Then Begin
+    If Ch[C]=Cur Then P:=M;
+    L[M]:=Ch[C];Inc(M);
+   End;
+  If M=0 Then Exit;
+  If P<0 Then Begin If Dir>0 Then P:=0 Else P:=M-1;End
+  Else P:=(P+Dir+M) Mod M;
+  If Cur>=0 Then Light(Cur,False);
+  Cur:=L[P];
+  If Scroll Then Begin
+   Idx:=IdxOf(Cur);
+   If Idx<F Then Begin F:=Idx;Render;End
+   Else If Idx>=F+V Then Begin F:=Idx-V+1;Render;End;
+  End;
+  Light(Cur,True);HoverT:=MsNow;
  End;
 Begin
  PopupMenu:=False;PopSel:=-1;SubDone:=False;LMx:=-1;LMy:=-1;PopTree:=T;PopMenuIdx:=Menu;
- W:=OW(T,Menu);H:=OH(T,Menu);
+ ScrollReq:=PopScroll;PopScroll:=0;
+ { liste des elements }
+ N:=0;K:=OHead(T,Menu);
+ While (K>=0) And (N<256) Do Begin
+  Ch[N]:=K;SaveY[N]:=SExt(Rd16(OA(T,K)+18),2);SaveFl[N]:=Rd16(OA(T,K)+8);Inc(N);
+  If K=OTail(T,Menu) Then Break;
+  K:=ONext(T,K);
+ End;
+ W:=OW(T,Menu);H0:=OH(T,Menu);H:=H0;
+ Scroll:=False;V:=N;F:=0;Rh:=0;
+ If N>0 Then Rh:=OH(T,Ch[0]);
+ If (ScrollReq<>0) And (Rh>0) Then Begin
+  V:=Min2(Clamp(MenuSet[4],3,64),((SH-MenuH-8) Div Rh)-2);
+  If V<3 Then V:=3;
+  If N>V Then Begin
+   Scroll:=True;H:=(V+2)*Rh;
+   If Item>0 Then Begin K:=IdxOf(Item);If K>=0 Then F:=Clamp(K-V Div 2,0,N-V);End;
+  End;
+ End;
+ ScrDelay:=MenuSet[3];If ScrDelay<=0 Then ScrDelay:=50;
  X:=Clamp(X0,0,Max2(0,SW-W-4));Y:=Clamp(Y0,MenuH,Max2(MenuH,SH-H-4));
  OldX:=SExt(Rd16(OA(T,Menu)+16),2);OldY:=SExt(Rd16(OA(T,Menu)+18),2);
  ObjOffset(T,Menu,Ax,Ay);
  Wr16(OA(T,Menu)+16,(OldX+X-Ax) And $FFFF);Wr16(OA(T,Menu)+18,(OldY+Y-Ay) And $FFFF);
+ If Scroll Then Wr16(OA(T,Menu)+22,H And $FFFF);
  BoxR:=RectMake(X,Y,W,H);
+ TopRow:=RectMake(X,Y,W,Rh);BotRow:=RectMake(X,Y+H-Rh,W,Rh);
  ScrSave(X-2,Y-2,X+W+4,Y+H+4,Sv);
- ObjDrawRec(T,Menu,8,X,Y,X-2,Y-2,X+W+4,Y+H+4);
- OSetup;OFrameRect(X,Y,X+W-1,Y+H-1,1);
- OFill(X+3,Y+H,X+W+2,Y+H+2,7,1);
- OFill(X+W,Y+3,X+W+2,Y+H-1,7,1);
- SetClip(0,0,SW-1,SH-1);
- Cur:=-1;Done:=False;Sel:=False;WasDown:=(GMouseB And 1)<>0;Opened:=False;HoverT:=MsNow;
- If Item>0 Then Begin Cur:=Item;Light(Cur,True);End;
+ Render;
+ Cur:=-1;Done:=False;Sel:=False;WasDown:=(GMouseB And 1)<>0;Opened:=False;HoverT:=MsNow;ScrT:=MsNow;
+ If (Item>0) And (Not Scroll Or ((IdxOf(Item)>=F) And (IdxOf(Item)<F+V))) Then Begin Cur:=Item;Light(Cur,True);End;
  Repeat
   PollInput;
   I:=-1;
@@ -10010,6 +10577,11 @@ Begin
     Light(Cur,False);Cur:=I;Light(Cur,True);HoverT:=MsNow;
    End;
   End;
+  { defilement : la souris sur la fleche haute ou basse }
+  If Scroll And (MsNow-ScrT>=ScrDelay) Then Begin
+   If InRect(GMouseX,GMouseY,TopRow) And (F>0) Then ScrollTo(F-1)
+   Else If InRect(GMouseX,GMouseY,BotRow) And (F<N-V) Then ScrollTo(F+1);
+  End;
   { clavier }
   While Not KQEmpty Do Begin
    Kq:=KQPop;Sc:=(Kq Shr 16) And $FF;
@@ -10018,6 +10590,8 @@ Begin
     28,114: If Cur>=0 Then Begin Sel:=True;Done:=True;End;
     72: Nav(-1);
     80: Nav(1);
+    73: If Scroll Then ScrollTo(F-V);
+    81: If Scroll Then ScrollTo(F+V);
    End;
   End;
   Pressed:=(GMouseB And 1)<>0;
@@ -10045,11 +10619,19 @@ Begin
  Until Done Or UserBreak;
  If Cur>=0 Then SetOState(T,Cur,OState(T,Cur) And Not OS_SELECTED);
  ScrRestore(Sv);
+ { remet l'arbre dans son etat d'origine }
+ If Scroll Then Begin
+  For K:=0 To N-1 Do Begin
+   Wr16(OA(T,Ch[K])+18,SaveY[K] And $FFFF);Wr16(OA(T,Ch[K])+8,SaveFl[K]);
+  End;
+  Wr16(OA(T,Menu)+22,H0 And $FFFF);
+ End;
  Wr16(OA(T,Menu)+16,OldX And $FFFF);Wr16(OA(T,Menu)+18,OldY And $FFFF);
  If Sel And (Cur>=0) Then Begin
   If Not SubDone Then Begin PopTree:=T;PopSel:=Cur;PopMenuIdx:=Menu;End;
   Item:=PopSel;PopupMenu:=True;
  End Else Begin Item:=-1;End;
+ PopScroll:=F;
  If Sel Then Begin While ((GMouseB And 1)<>0) And Not UserBreak Do GemIdle;End;
 End;
 
@@ -10125,7 +10707,7 @@ Begin
    Ak:=FindAttach(MenuTree,Item);
    If (Ak>0) And ((MsNow-HoverT>=MenuSet[0]) Or (((GMouseB And 1)<>0) And Not WasDown)) Then Begin
     ObjOffset(MenuTree,Item,Ix,Iy);
-    SubItem:=AttachSubItem[Ak];
+    SubItem:=AttachSubItem[Ak];PopScroll:=0;
     If PopupMenu(AttachSub[Ak],AttachBox[Ak],BoxR.X+BoxR.W-3,Iy,SubItem,True) Then Begin
      SubSel:=True;Selected:=True;Done:=True;
     End Else Begin HoverT:=MsNow;WasDown:=(GMouseB And 1)<>0;End;
@@ -11425,11 +12007,12 @@ Begin
         A:=AI_(0);B:=AI_(1);
         T:=Rd32(A);I:=SExt(Rd16(A+4),2);K:=SExt(Rd16(A+6),2);
         If K<=0 Then Begin J:=IStartFind(T,I);If J>0 Then K:=IStartItem[J];End;
+        PopScroll:=SExt(Rd16(A+8),2);
         If PopupMenu(T,I,IV(0),IV(1),K,False) Then Begin
-         If B<>0 Then CopyMenuStruct(B,PopTree,PopMenuIdx,PopSel,SExt(Rd16(A+8),2));
+         If B<>0 Then CopyMenuStruct(B,PopTree,PopMenuIdx,PopSel,PopScroll);
          OV(0,1);
         End Else Begin
-         If B<>0 Then CopyMenuStruct(B,T,I,-1,SExt(Rd16(A+8),2));
+         If B<>0 Then CopyMenuStruct(B,T,I,-1,PopScroll);
          OV(0,0);
         End;
        End Else Begin
@@ -14338,7 +14921,7 @@ Begin
  WriteLn(ConOut,'  /INC:dir    '+T3('INCLUDE search directory','repertoire de recherche des INCLUDE','Suchverzeichnis fuer INCLUDE'));
  WriteLn(ConOut,'  /DEF:n=v    '+T3('define the symbol n with the value v','definit le symbole n avec la valeur v','Symbol n mit Wert v definieren'));
  WriteLn(ConOut,'  /NODISK     '+T3('assemble to memory only (no output file)','assemble en memoire seulement (pas de fichier)','nur im Speicher assemblieren'));
- WriteLn(ConOut,'  /FLA:file   '+T3('floppy image for drive A: (also /FLB: /FLC: /FLD:; default DISKA.ST ...)','image de disquette du lecteur A: (aussi /FLB: /FLC: /FLD: ; defaut DISKA.ST ...)','Diskettenabbild fuer Laufwerk A: (auch /FLB: /FLC: /FLD:; Standard DISKA.ST ...)'));
+ WriteLn(ConOut,'  /FLA:file   '+T3('floppy image for drive A: (also /FLB: /FLC: /FLD:; default DISKA.ST ...; a blank 720 KB disk is used and the file created on the first write)','image de disquette du lecteur A: (aussi /FLB: /FLC: /FLD: ; defaut DISKA.ST ... ; disquette vierge 720 Ko, fichier cree a la premiere ecriture)','Diskettenabbild fuer Laufwerk A: (auch /FLB: /FLC: /FLD:; Standard DISKA.ST ...; leere 720-KB-Diskette, Datei wird beim ersten Schreiben angelegt)'));
  WriteLn(ConOut,'  /NOGEM      '+T3('run programs without GEM (VDI/AES)','execute sans GEM (VDI/AES)','ohne GEM (VDI/AES) starten'));
  WriteLn(ConOut,'  /?          '+T3('this help','cette aide','diese Hilfe'));
  WriteLn(ConOut);
