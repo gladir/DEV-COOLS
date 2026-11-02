@@ -1787,6 +1787,36 @@ End;
 
 { Sortie texte VT52 }
 
+Var
+ VtSX,VtSY : Integer;
+
+Procedure VtInsLine(R: Integer);
+Begin
+ If (R<0) Or (R>=OUT_ROWS) Then Exit;
+ If R<OUT_ROWS-1 Then
+  Move(OutBuf^[LongInt(R)*16*OUT_RB],OutBuf^[LongInt(R+1)*16*OUT_RB],LongInt(OUT_ROWS-1-R)*16*OUT_RB);
+ FillChar(OutBuf^[LongInt(R)*16*OUT_RB],16*OUT_RB,0);
+ If OutLive Then OutPending:=True;
+End;
+
+Procedure VtDelLine(R: Integer);
+Begin
+ If (R<0) Or (R>=OUT_ROWS) Then Exit;
+ If R<OUT_ROWS-1 Then
+  Move(OutBuf^[LongInt(R+1)*16*OUT_RB],OutBuf^[LongInt(R)*16*OUT_RB],LongInt(OUT_ROWS-1-R)*16*OUT_RB);
+ FillChar(OutBuf^[LongInt(OUT_ROWS-1)*16*OUT_RB],16*OUT_RB,0);
+ If OutLive Then OutPending:=True;
+End;
+
+Procedure VtInvert(Col,Row: Integer);
+Var Y: Integer; Base: LongInt;
+Begin
+ If (Col<0) Or (Col>=OUT_COLS) Or (Row<0) Or (Row>=OUT_ROWS) Then Exit;
+ Base:=LongInt(Row)*16*OUT_RB+Col;
+ For Y:=0 To 15 Do OutBuf^[Base+LongInt(Y)*OUT_RB]:=OutBuf^[Base+LongInt(Y)*OUT_RB] Xor $FF;
+ If OutLive Then OutPending:=True;
+End;
+
 Procedure VtOut(Ch: Char);
 Var C: Integer;
 Begin
@@ -1807,7 +1837,7 @@ Begin
   End;
   Exit;
  End;
- Case VtState Of
+  Case VtState Of
   1: Begin
       VtState:=0;
       Case Ch Of
@@ -1817,6 +1847,7 @@ Begin
        'B': If OCY<OUT_ROWS-1 Then Inc(OCY);
        'C': If OCX<OUT_COLS-1 Then Inc(OCX);
        'D': If OCX>0 Then Dec(OCX);
+       'I': If OCY>0 Then Dec(OCY) Else VtInsLine(0);
        'J': Begin
              For C:=OCX To OUT_COLS-1 Do OGlyph(C,OCY,' ');
              For C:=OCY+1 To OUT_ROWS-1 Do Begin
@@ -1825,9 +1856,18 @@ Begin
              If OutLive Then OutPending:=True;
             End;
        'K': For C:=OCX To OUT_COLS-1 Do OGlyph(C,OCY,' ');
-       'L': ;
-       'M': ;
+       'L': Begin VtInsLine(OCY);OCX:=0;End;
+       'M': Begin VtDelLine(OCY);OCX:=0;End;
        'Y': VtState:=2;
+       'd': Begin
+             For C:=0 To OCY-1 Do FillChar(OutBuf^[LongInt(C)*16*OUT_RB],16*OUT_RB,0);
+             For C:=0 To OCX Do OGlyph(C,OCY,' ');
+             If OutLive Then OutPending:=True;
+            End;
+       'j': Begin VtSX:=OCX;VtSY:=OCY;End;
+       'k': OutGotoXY(VtSX,VtSY);
+       'l': Begin For C:=0 To OUT_COLS-1 Do OGlyph(C,OCY,' ');OCX:=0;End;
+       'o': For C:=0 To OCX Do OGlyph(C,OCY,' ');
        'p': VtRev:=True;
        'q': VtRev:=False;
        'e','f','v','w': ;
@@ -1839,7 +1879,12 @@ Begin
   5: VtState:=0;
  Else
   If Ch=#27 Then VtState:=1
-  Else OutCh(Ch);
+  Else If VtRev And (Ch>=' ') Then Begin
+   If OCX>=OutWidth Then OutNewLine;
+   C:=OCX;
+   OutCh(Ch);
+   VtInvert(C,OCY);
+  End Else OutCh(Ch);
  End;
 End;
 
@@ -2265,6 +2310,12 @@ Const
  S_CLRSCR=120;S_PARC=121;S_FARC=122;S_PRRECT=123;S_FRRECT=124;
  S_GETKEY=125;S_KEYPRESS=126;S_PAINTOUT=127;S_SETCOLOR=128;S_TEXTHT=129;
  S_TEXTSTY=130;S_DELAY=131;S_GETMOUSE=132;S_SETCLIP=133;S_SETMOUSE=134;
+ S_PACK=200;S_UNPACK=201;S_PWRTEN=202;S_FRENAME=203;S_FERASEF=204;S_CHAIN=205;S_BASEPAGE=206;
+ S_OPTION=207;S_CMDARGS=208;S_CMDGETARG=209;S_FILENAME=210;S_HANDLE=211;S_IDENT=212;
+ S_GETDATE=213;S_GETTIME=214;S_SETDATE=215;S_SETTIME=216;S_C2P=217;S_P2C=218;
+ S_SAVESCR=219;S_RESTSCR=220;S_READSCR=221;S_WRITESCR=222;S_IOSTATE=223;S_IORESULT=224;S_IOCHECK=225;
+ S_CARRASG=230;S_ARR2S=231;S_GOTOXY=226;S_TCOLOR=227;S_TBACK=228;S_CLOCK=229;
+ S_VT0=240;  { 240..258 : sequences VT52 d'AUXSUBS }
  S_NOEXT=139;S_MOVEW=97;S_MOVEL=98;S_WRIH=99;S_FBUF=82;S_GET=83;S_PUT=84;S_SYSFONT=135;S_INSUPER=136;S_NOP1=137;
 
  M_STMP = $E1000;     { 16 chaines temporaires de 258 octets }
@@ -2286,6 +2337,7 @@ Type
   ESize  : LongInt;
   EofV   : Boolean;
   Pk     : Integer;     { caractere de prelecture (-2 : aucun, -1 : fin) }
+  GH     : Integer;     { handle GEMDOS associe (HANDLE), 0 : aucun }
  End;
 
 Var
@@ -2309,6 +2361,10 @@ Var
  PrgText  : LongInt;
  RtTrace  : Boolean;
  Psg      : Array[0..15] Of Byte;
+ IoCheckOn: Boolean;          { IO_Check : erreurs d'E/S fatales }
+ IoRes    : Integer;          { IO_Result }
+ ClockAdj : LongInt;          { Set_Date / Set_Time : decalage en secondes }
+ ChainReq : String;           { CHAIN : ligne de commande du programme suivant }
 
 Function RtErrText(C: Integer): String;
 Begin
@@ -2345,6 +2401,13 @@ Begin
      ', PC=$'+HexStr(EmuOpPC,16);
  EmuMsg:=S;
  EmuHalt:=True;EmuCode:=C;
+End;
+
+Procedure IoFail(Pas,Tos: Integer);
+{ erreur d'entree/sortie : fatale seulement si IO_Check(TRUE) }
+Begin
+ If Tos<>0 Then IoRes:=Tos Else IoRes:=Pas;
+ If IoCheckOn Then RtFail(6);
 End;
 
 { ------------------------ chaines Pascal en memoire ------------------- }
@@ -2576,6 +2639,10 @@ Procedure FileClose(H: Integer);
 Begin
  If (H<1) Or (H>MAXFILES) Then Exit;
  If Not PFiles[H].Used Then Exit;
+ If PFiles[H].GH>0 Then Begin
+  If EmuFUsed[PFiles[H].GH] Then Begin {$I-}Close(EmuFile[PFiles[H].GH]);{$I+}If IOResult<>0 Then ;EmuFUsed[PFiles[H].GH]:=False;End;
+  PFiles[H].GH:=0;
+ End;
  {$I-}
  If PFiles[H].IsText Then Close(PFiles[H].T) Else Close(PFiles[H].F);
  {$I+}
@@ -2607,12 +2674,14 @@ Begin
  If K>0 Then FileClose(K);
  H:=0;
  For K:=1 To MAXFILES Do If (H=0) And (Not PFiles[K].Used) Then H:=K;
- If H=0 Then Begin RtFail(6);Exit;End;
+ IoRes:=0;
+ If H=0 Then Begin IoFail(0,-35);Exit;End;
  Nm:=GetPS(NA);
  If Mode=0 Then Nm:=ResolveFile(Nm);
  PFiles[H].IsText:=(ESz=0);
  PFiles[H].ESize:=ESz;
  PFiles[H].Pk:=-2;
+ PFiles[H].GH:=0;
  PFiles[H].Name:=Nm;
  PFiles[H].Writing:=(Mode<>0);
  {$I-}
@@ -2626,7 +2695,7 @@ Begin
  {$I+}
  If IOResult<>0 Then Begin
   WL(FA,0);
-  RtFail(6);
+  If Mode=0 Then IoFail(0,-33) Else IoFail(0,-36);
   Exit;
  End;
  PFiles[H].Used:=True;
@@ -4328,9 +4397,125 @@ Begin
 End;
 { ------------------------------ services ------------------------------ }
 
+{ ---------------- aides pour les services divers (CHAIN, OPTION...) ---------------- }
+
+Function CmdTail: String;
+Begin
+ CmdTail:=GetPS(M_BASEPAGE+$80);
+End;
+
+Function CmdArgCount: Integer;
+Var T: String; I,N: Integer; InW: Boolean;
+Begin
+ T:=CmdTail;N:=0;InW:=False;
+ For I:=1 To Length(T) Do Begin
+  If T[I]>' ' Then Begin If Not InW Then Begin Inc(N);InW:=True;End;End
+  Else InW:=False;
+ End;
+ CmdArgCount:=N;
+End;
+
+Function CmdArg(K: Integer): String;
+Var T,W: String; I,N: Integer; InW: Boolean;
+Begin
+ T:=CmdTail;N:=0;InW:=False;W:='';CmdArg:='';
+ For I:=1 To Length(T)+1 Do Begin
+  If (I<=Length(T)) And (T[I]>' ') Then Begin
+   If Not InW Then Begin Inc(N);InW:=True;W:='';End;
+   If N=K Then W:=W+T[I];
+  End Else Begin
+   If InW And (N=K) Then Begin CmdArg:=W;Exit;End;
+   InW:=False;
+  End;
+ End;
+End;
+
+Function ValidTosName(Const S0: String): Boolean;
+{ nom de fichier TOS valide : [X:][chemin\]nom[.ext] }
+Var S,Part: String; Ok: Boolean;
+ Function GoodChar(C: Char): Boolean;
+ Begin
+  GoodChar:=((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or ((C>='0') And (C<='9')) Or
+            (Pos(C,'_$#@!%''-~(){}^&+=,;`')>0);
+ End;
+ Function GoodPart(Const P: String; Last: Boolean): Boolean;
+ Var Q,Nm,Ex: String; J,Dp: Integer;
+ Begin
+  GoodPart:=False;
+  If (P='.') Or (P='..') Then Begin GoodPart:=Not Last;Exit;End;
+  Dp:=Pos('.',P);
+  If Dp=0 Then Begin Nm:=P;Ex:='';End
+  Else Begin Nm:=Copy(P,1,Dp-1);Ex:=Copy(P,Dp+1,100);End;
+  If (Nm='') Or (Length(Nm)>8) Or (Length(Ex)>3) Or (Pos('.',Ex)>0) Then Exit;
+  Q:=Nm+Ex;
+  For J:=1 To Length(Q) Do If Not GoodChar(Q[J]) Then Exit;
+  GoodPart:=True;
+ End;
+Begin
+ S:=S0;
+ While (Length(S)>0) And (S[Length(S)]=' ') Do Delete(S,Length(S),1);
+ ValidTosName:=False;
+ If S='' Then Exit;
+ If (Length(S)>=2) And (S[2]=':') Then Begin
+  If Not (UpCase(S[1]) In ['A'..'Z']) Then Exit;
+  Delete(S,1,2);
+ End;
+ If S='' Then Exit;
+ Ok:=True;
+ While Ok And (Pos('\',S)>0) Do Begin
+  Part:=Copy(S,1,Pos('\',S)-1);
+  Delete(S,1,Pos('\',S));
+  If Part<>'' Then Ok:=GoodPart(Part,False);
+ End;
+ If Not Ok Then Exit;
+ ValidTosName:=GoodPart(S,True);
+End;
+
+Function DaysFromCivil(Y,M,D: LongInt): LongInt;
+Var Era,Yoe,Doy,Doe: LongInt;
+Begin
+ If M<=2 Then Y:=Y-1;
+ If Y>=0 Then Era:=Y Div 400 Else Era:=(Y-399) Div 400;
+ Yoe:=Y-Era*400;
+ If M>2 Then Doy:=(153*(M-3)+2) Div 5+D-1 Else Doy:=(153*(M+9)+2) Div 5+D-1;
+ Doe:=Yoe*365+Yoe Div 4-Yoe Div 100+Doy;
+ DaysFromCivil:=Era*146097+Doe-719468;
+End;
+
+Procedure CivilFromDays(Z: LongInt; Var Y,M,D: LongInt);
+Var Era,Doe,Yoe,Doy,Mp: LongInt;
+Begin
+ Z:=Z+719468;
+ If Z>=0 Then Era:=Z Div 146097 Else Era:=(Z-146096) Div 146097;
+ Doe:=Z-Era*146097;
+ Yoe:=(Doe-Doe Div 1460+Doe Div 36524-Doe Div 146096) Div 365;
+ Y:=Yoe+Era*400;
+ Doy:=Doe-(365*Yoe+Yoe Div 4-Yoe Div 100);
+ Mp:=(5*Doy+2) Div 153;
+ D:=Doy-(153*Mp+2) Div 5+1;
+ If Mp<10 Then M:=Mp+3 Else M:=Mp-9;
+ If M<=2 Then Y:=Y+1;
+End;
+
+Function HostNowSecs: Int64;
+{ secondes depuis 1970 (heure locale de l'hote) }
+Var Y,Mo,D,Dw,H,Mi,Sc,S100: Word;
+Begin
+ GetDate(Y,Mo,D,Dw);GetTime(H,Mi,Sc,S100);
+ HostNowSecs:=Int64(DaysFromCivil(Y,Mo,D))*86400+H*3600+Mi*60+Sc;
+End;
+
+Function StNowSecs: Int64;
+Begin
+ StNowSecs:=HostNowSecs+ClockAdj;
+End;
+
+Const
+ VT_SEQ = 'KE  MLpqABCDHIJef';
+
 Procedure RtService;
 Var Sv: Word; A,B,C,D,E,F: LongInt; X,Y: Double; S,S2: String; I: Integer; M: Int64;
-    R: Integer;
+    R: Integer; FH: File; Yy,Mm,Dd,G: LongInt; Ss: Int64;
  Function Cmp3(V: Integer): LongInt;
  Begin
   If V<0 Then Cmp3:=-1 Else If V>0 Then Cmp3:=1 Else Cmp3:=0;
@@ -4461,7 +4646,7 @@ Begin
     B:=Pop32;A:=Pop32;                  { adresse, taille }
     S:=RdNumberStr(False);
     Val(S,D,I);
-    If (I<>0) Or (S='') Then Begin RtFail(8);D:=0;End;
+    If (I<>0) Or (S='') Then Begin IoRes:=7;If IoCheckOn Then RtFail(8);D:=0;End Else IoRes:=0;
     StoreSized(A,D,B);
    End;
   S_RDC: Begin
@@ -4492,7 +4677,7 @@ Begin
     A:=Pop32;
     S:=RdNumberStr(True);
     Val(S,X,I);
-    If (I<>0) Or (S='') Then Begin RtFail(8);X:=0;End;
+    If (I<>0) Or (S='') Then Begin IoRes:=10;If IoCheckOn Then RtFail(8);X:=0;End Else IoRes:=0;
     WriteRealMem(A,X);
    End;
   S_RDLN: Begin
@@ -4527,15 +4712,16 @@ Begin
     If (C=13) Or (C<0) Then RD[0]:=1 Else RD[0]:=0;
    End;
   S_FRESET: Begin
+    IoRes:=0;
     D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;   { f, nom, taille, mode }
     FileOpen(A,B,C,D);
    End;
-  S_FCLOSE: Begin A:=Pop32;R:=FileOf(A);If R>0 Then Begin FileClose(R);WL(A,0);End;End;
+  S_FCLOSE: Begin IoRes:=0;A:=Pop32;R:=FileOf(A);If R>0 Then Begin FileClose(R);WL(A,0);End;End;
   S_FREAD: Begin
-    C:=Pop32;B:=Pop32;A:=Pop32;R:=FileOf(A);
-    If R<=0 Then RtFail(6)
+    C:=Pop32;B:=Pop32;A:=Pop32;R:=FileOf(A);IoRes:=0;
+    If R<=0 Then IoFail(2,0)
     Else Begin
-     If PFiles[R].EofV Then RtFail(6)
+     If PFiles[R].EofV Then IoFail(1,0)
      Else Begin
       If C>256 Then C:=256;
       Move(VMem[M_FBUF+R*256],VMem[B],C);
@@ -4544,31 +4730,32 @@ Begin
     End;
    End;
   S_FWRITE: Begin
-    C:=Pop32;B:=Pop32;A:=Pop32;R:=FileOf(A);
-    If R<=0 Then RtFail(6)
+    C:=Pop32;B:=Pop32;A:=Pop32;R:=FileOf(A);IoRes:=0;
+    If R<=0 Then IoFail(3,0)
     Else Begin
      D:=0;
      {$I-}BlockWrite(PFiles[R].F,VMem[B],C,D);{$I+}
-     If (IOResult<>0) Or (D<C) Then RtFail(6);
+     If (IOResult<>0) Or (D<C) Then IoFail(0,-12);
     End;
    End;
   S_FSEEK: Begin
-    B:=Pop32;A:=Pop32;R:=FileOf(A);
-    If R<=0 Then RtFail(6)
+    B:=Pop32;A:=Pop32;R:=FileOf(A);IoRes:=0;
+    If R<=0 Then IoFail(6,0)
+    Else If B<0 Then IoFail(5,0)
     Else Begin
      {$I-}Seek(PFiles[R].F,B*PFiles[R].ESize);{$I+}
-     If IOResult<>0 Then RtFail(6) Else If Not PFiles[R].Writing Then FetchFile(R);
+     If IOResult<>0 Then IoFail(0,-6) Else If Not PFiles[R].Writing Then FetchFile(R);
     End;
    End;
   S_FBUF: Begin A:=Pop32;R:=FileOf(A);If R<=0 Then Begin RtFail(6);RD[0]:=M_FBUF;End Else RD[0]:=M_FBUF+R*256;End;
-  S_GET: Begin A:=Pop32;R:=FileOf(A);If R<=0 Then RtFail(6) Else FetchFile(R);End;
+  S_GET: Begin A:=Pop32;R:=FileOf(A);IoRes:=0;If R<=0 Then IoFail(2,0) Else FetchFile(R);End;
   S_PUT: Begin
-    A:=Pop32;R:=FileOf(A);
-    If R<=0 Then RtFail(6)
+    A:=Pop32;R:=FileOf(A);IoRes:=0;
+    If R<=0 Then IoFail(3,0)
     Else Begin
      D:=0;
      {$I-}BlockWrite(PFiles[R].F,VMem[M_FBUF+R*256],PFiles[R].ESize,D);{$I+}
-     If (IOResult<>0) Or (D<PFiles[R].ESize) Then RtFail(6);
+     If (IOResult<>0) Or (D<PFiles[R].ESize) Then IoFail(0,-12);
     End;
    End;
   S_WRIH: Begin
@@ -4689,6 +4876,223 @@ Begin
     A:=Pop32;
     GetMouseState(MX,MY,MB);
     WW(A,MX And $FFFF);WW(A+2,(MY-OFS_Y) And $FFFF);WW(A+4,MB And 3);
+   End;
+  S_PACK: Begin
+    { pack(src,debut,pk) : src, debut, bas, nbSrc, dst, nbDst, pas }
+    F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;G:=Pop32;
+    { G=src, A=debut, B=bas, C=nbSrc, D=dst, E=nbDst, F=pas }
+    M:=C-(A-B);
+    If (A<B) Or (M<0) Or (M>E) Then RtFail(1)
+    Else If M>0 Then Move(VMem[G+(A-B)*F],VMem[D],M*F);
+   End;
+  S_UNPACK: Begin
+    { unpack(pk,dst,debut) : pk, nbPk, dst, debut, bas, nbDst, pas }
+    F:=Pop32;E:=Pop32;D:=Pop32;C:=Pop32;B:=Pop32;A:=Pop32;G:=Pop32;
+    { G=pk, A=nbPk, B=dst, C=debut, D=bas, E=nbDst, F=pas }
+    M:=(C-D)+A;
+    If (C<D) Or (M>E) Then RtFail(1)
+    Else If A>0 Then Move(VMem[G],VMem[B+(C-D)*F],A*F);
+   End;
+  S_PWRTEN: Begin
+    A:=Pop32;
+    If (A<0) Or (A>38) Then Begin RtFail(1);X:=1;End
+    Else Begin X:=1;For I:=1 To A Do X:=X*10;End;
+    RetR(X);
+   End;
+  S_FRENAME: Begin
+    B:=Pop32;A:=Pop32;
+    IoRes:=0;
+    C:=FileOf(A);D:=FileOf(B);
+    If (C<=0) Or (D<=0) Then IoFail(2,0)
+    Else Begin
+     S:=PFiles[C].Name;S2:=PFiles[D].Name;
+     FileClose(C);FileClose(D);WL(A,0);WL(B,0);
+     {$I-}
+     If FileExists(S2) Then Begin Assign(FH,S2);Erase(FH);End;
+     If IOResult<>0 Then ;
+     Assign(FH,S);Rename(FH,S2);
+     {$I+}
+     If IOResult<>0 Then IoFail(0,-36);
+    End;
+   End;
+  S_FERASEF: Begin
+    A:=Pop32;
+    IoRes:=0;
+    C:=FileOf(A);
+    If C<=0 Then IoFail(2,0)
+    Else Begin
+     S:=PFiles[C].Name;
+     FileClose(C);WL(A,0);
+     {$I-}Assign(FH,S);Erase(FH);{$I+}
+     If IOResult<>0 Then IoFail(0,-33);
+    End;
+   End;
+  S_CHAIN: Begin
+    A:=Pop32;
+    ChainReq:=GetPS(A);
+    If ChainReq='' Then ChainReq:=' ';
+    EmuHalt:=True;EmuCode:=0;
+   End;
+  S_BASEPAGE: Begin A:=Pop32;WL(A,M_BASEPAGE);End;
+  S_OPTION: Begin
+    A:=Pop32;S:=Upper(GetPS(A));RD[0]:=0;
+    For I:=1 To CmdArgCount Do If Upper(CmdArg(I))=S Then RD[0]:=1;
+   End;
+  S_CMDARGS: RD[0]:=CmdArgCount;
+  S_CMDGETARG: Begin
+    B:=Pop32;A:=Pop32;
+    If (A<1) Or (A>CmdArgCount) Then WB(B,0) Else PutPS(B,CmdArg(A),255);
+   End;
+  S_FILENAME: Begin A:=Pop32;If ValidTosName(GetPS(A)) Then RD[0]:=1 Else RD[0]:=0;End;
+  S_HANDLE: Begin
+    A:=Pop32;R:=FileOf(A);RD[0]:=0;
+    If R<=0 Then IoFail(2,0)
+    Else Begin
+     If PFiles[R].GH=0 Then Begin
+      C:=0;
+      For I:=6 To 25 Do If (C=0) And (Not EmuFUsed[I]) Then C:=I;
+      If C=0 Then IoFail(0,-35)
+      Else Begin
+       {$I-}
+       Assign(EmuFile[C],PFiles[R].Name);
+       Reset(EmuFile[C],1);
+       If (IOResult=0) And (Not PFiles[R].IsText) Then Begin
+        If PFiles[R].Writing Then Seek(EmuFile[C],FileSize(EmuFile[C]))
+        Else Begin
+         D:=FilePos(PFiles[R].F);
+         If Not PFiles[R].EofV Then D:=D-PFiles[R].ESize;
+         If D<0 Then D:=0;
+         Seek(EmuFile[C],D);
+        End;
+       End;
+       {$I+}
+       If IOResult<>0 Then IoFail(0,-33)
+       Else Begin EmuFUsed[C]:=True;PFiles[R].GH:=C;End;
+      End;
+     End;
+     RD[0]:=PFiles[R].GH;
+    End;
+   End;
+  S_IDENT: Begin A:=Pop32;RD[0]:=A;End;
+  S_CARRASG: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;         { tableau, chaine, taille }
+    S:=GetPS(B);
+    For I:=1 To C Do If I<=Length(S) Then WB(A+I-1,Ord(S[I])) Else WB(A+I-1,32);
+   End;
+  S_ARR2S: Begin
+    B:=Pop32;A:=Pop32;                  { adresse, taille }
+    S:='';
+    If B>255 Then B:=255;
+    For I:=1 To B Do S:=S+Chr(RB(A+I-1));
+    C:=NewTmpStr;PutPS(C,S,255);RD[0]:=C;
+   End;
+  S_GETDATE: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    Ss:=StNowSecs;CivilFromDays(Ss Div 86400,Yy,Mm,Dd);
+    WW(A,Mm);WW(B,Dd);WW(C,Yy);
+   End;
+  S_GETTIME: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;
+    Ss:=StNowSecs Mod 86400;
+    WW(A,Ss Div 3600);WW(B,(Ss Div 60) Mod 60);WW(C,(Ss And (Not 1)) Mod 60);
+   End;
+  S_SETDATE: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;     { mois, jour, annee }
+    If (A<1) Or (A>12) Or (B<1) Or (B>31) Then IoFail(0,-32)
+    Else Begin
+     If C<80 Then C:=C+2000 Else If C<100 Then C:=C+1900;
+     Ss:=StNowSecs Mod 86400;
+     ClockAdj:=Int64(DaysFromCivil(C,A,B))*86400+Ss-HostNowSecs;
+    End;
+   End;
+  S_SETTIME: Begin
+    C:=Pop32;B:=Pop32;A:=Pop32;     { heure, minute, seconde }
+    If (A<0) Or (A>23) Or (B<0) Or (B>59) Or (C<0) Or (C>59) Then IoFail(0,-32)
+    Else Begin
+     Ss:=(StNowSecs Div 86400)*86400+A*3600+B*60+(C And (Not 1));
+     ClockAdj:=Ss-HostNowSecs;
+    End;
+   End;
+  S_CLOCK: RD[0]:=(StNowSecs Mod 86400) And (Not 1);
+  S_C2P: Begin
+    B:=Pop32;A:=Pop32;S:='';
+    While (Length(S)<255) And (RB(A+Length(S))<>0) Do S:=S+Chr(RB(A+Length(S)));
+    PutPS(B,S,255);
+   End;
+  S_P2C: Begin
+    B:=Pop32;A:=Pop32;S:=GetPS(A);
+    For I:=1 To Length(S) Do WB(B+I-1,Ord(S[I]));
+    WB(B+Length(S),0);
+   End;
+  S_SAVESCR: Begin
+    A:=Pop32;
+    If Not ScrCustom Then MemToOut;
+    WW(A,2);
+    WW(A+2,$FFF);
+    For I:=1 To 15 Do WW(A+2+I*2,0);
+    If ScrCustom Then Move(VMem[ScrPhys],VMem[A+34],32000)
+    Else Move(OutBuf^,VMem[A+34],32000);
+   End;
+  S_RESTSCR: Begin
+    A:=Pop32;
+    If ScrCustom Then Move(VMem[A+34],VMem[ScrPhys],32000)
+    Else Begin
+     Move(VMem[A+34],VMem[M_SCREEN],32000);
+     MemToOut;
+    End;
+    OutPending:=True;
+   End;
+  S_READSCR: Begin
+    B:=Pop32;A:=Pop32;
+    RD[0]:=0;
+    S:=ResolveFile(GetPS(A));
+    {$I-}
+    Assign(FH,S);Reset(FH,1);
+    If IOResult<>0 Then RD[0]:=-33
+    Else Begin
+     C:=0;
+     BlockRead(FH,VMem[B],32034,C);
+     If C<32034 Then RD[0]:=-11;
+     Close(FH);
+    End;
+    {$I+}
+    If IOResult<>0 Then ;
+    IoRes:=RD[0];
+    If (RD[0]<>0) And IoCheckOn Then RtFail(6);
+   End;
+  S_WRITESCR: Begin
+    B:=Pop32;A:=Pop32;
+    RD[0]:=0;
+    S:=GetPS(A);
+    {$I-}
+    Assign(FH,S);Rewrite(FH,1);
+    If IOResult<>0 Then RD[0]:=-36
+    Else Begin
+     C:=0;
+     BlockWrite(FH,VMem[B],32034,C);
+     If C<32034 Then RD[0]:=-10;
+     Close(FH);
+    End;
+    {$I+}
+    If IOResult<>0 Then ;
+    IoRes:=RD[0];
+    If (RD[0]<>0) And IoCheckOn Then RtFail(6);
+   End;
+  S_IOSTATE: If IoCheckOn Then RD[0]:=1 Else RD[0]:=0;
+  S_IORESULT: RD[0]:=IoRes;
+  S_IOCHECK: Begin A:=Pop32;IoCheckOn:=(A<>0);End;
+  S_GOTOXY: Begin
+    B:=Pop32;A:=Pop32;                    { x, y }
+    VtOut(#27);VtOut('Y');VtOut(Chr((32+B) And $FF));VtOut(Chr((32+A) And $FF));
+   End;
+  S_TCOLOR,S_TBACK: Begin
+    A:=Pop32;
+    VtOut(#27);If Sv=S_TCOLOR Then VtOut('b') Else VtOut('c');VtOut(Chr((32+A) And $FF));
+   End;
+  S_VT0..S_VT0+16: Begin
+    I:=Sv-S_VT0;
+    If VT_SEQ[I+1]<>' ' Then Begin VtOut(#27);VtOut(VT_SEQ[I+1]);End;
+    OutPending:=True;
    End;
  Else
   If Not GemService(Sv) Then RtFail(100+Sv);
@@ -5373,7 +5777,7 @@ End;
   si le fichier ne peut pas etre charge }
 Function RunCore(Const Name: String; Const Tail: String): Boolean;
 Var F: File; Hd: Array[0..27] Of Byte; N: Word; Tl,Dl,Sl,Fx: LongInt; I: Integer;
-    Ent: Array[0..13] Of Byte; Nm: String; Ad: LongInt;
+    Ent: Array[0..13] Of Byte; Nm: String; Ad: LongInt; Cm: String;
 Begin
  RunCore:=False;
  RunMsg:='';RunCodeV:=0;
@@ -5406,7 +5810,7 @@ Begin
  PrgLoad:=RPC;
  RunCore:=True;
  EmuHalt:=False;EmuBrk:=False;EmuCode:=0;EmuMsg:='';EmuSuper:=False;
- EmuSeed:=NowCs;RtSeed:=NowCs;VtState:=0;VtRev:=False;AesNext:=0;
+ EmuSeed:=NowCs;RtSeed:=NowCs;VtState:=0;VtRev:=False;AesNext:=0;IoCheckOn:=True;IoRes:=0;ChainReq:='';
  For I:=6 To 25 Do EmuFUsed[I]:=False;
  OutSel:=0;InSel:=0;ConBuf:='';ConPos:=1;TmpIdx:=0;SetIdx:=0;GemMode:=False;GemUsed:=False;
  OXor:=False;DrawModeV:=1;TxtColV:=1;FilCol:=1;FilSty:=1;FilIdx:=1;LinCol:=1;
@@ -5428,6 +5832,17 @@ Begin
  EmuActive:=False;
  RunMsg:=EmuMsg;RunCodeV:=EmuCode;RunAborted:=EmuBrk;
  If Headless Then WriteLn;
+ If (ChainReq<>'') And (Not EmuBrk) And (EmuMsg='') Then Begin
+  { CHAIN : lance le programme suivant de la ligne de commande }
+  Cm:=TrimStr(ChainReq);ChainReq:='';
+  I:=Pos(' ',Cm);
+  If I=0 Then Begin Nm:=Cm;Cm:='';End Else Begin Nm:=Copy(Cm,1,I-1);Cm:=TrimStr(Copy(Cm,I+1,255));End;
+  If Pos('.',ShortName(Nm))=0 Then Nm:=Nm+'.PRG';
+  If Cm<>'' Then Cm:=' '+Cm;
+  If Not RunCore(Nm,Cm) Then Begin
+   RunMsg:=T3('Cannot chain to ','Impossible d''enchainer vers ','Verkettung nicht moeglich: ')+Nm;RunCodeV:=-33;
+  End;
+ End;
 End;
 
 {$ELSE}
@@ -5490,6 +5905,7 @@ Type
 Var
  Conf    : TCompOpts;       { options (boite de dialogue) }
  Opt     : TCompOpts;       { options actives pendant la compilation (directives) }
+ LongIntOn : Boolean;       (* directive L+ : INTEGER devient LONG_INTEGER *)
  SrcL    : Array[1..MAXSRC] Of PString;
  SrcN    : Integer;
  IncL    : Array[1..3000] Of PString;
@@ -5768,6 +6184,7 @@ Begin
     'D': Opt.FullDebug:=On;
     'A': If On Then Opt.ProgType:=2;
     'M': ModuleMode:=On;
+    'L': LongIntOn:=On;
     'E': ExportOn:=On;
     'S','U': Begin
       N:=0;
@@ -5944,7 +6361,7 @@ Begin
  CurLn:=0;CurTxt:='';CurPos:=1;InInc:=False;IncI:=0;
  TokLine:=1;TokCol:=1;PrevLine:=1;PrevCol:=1;
  CErrN:=0;CHalt:=False;CGoEdit:=False;
- ModuleMode:=False;ExportOn:=False;ExpN:=0;ExtN:=0;ExtPosN:=0;
+ ModuleMode:=False;ExportOn:=False;ExpN:=0;ExtN:=0;ExtPosN:=0;LongIntOn:=False;
  Opt:=Conf;
 End;
 
@@ -6572,12 +6989,12 @@ Const
  F_ABS=1;F_SQR=2;F_SQRT=3;F_SIN=4;F_COS=5;F_ATAN=6;F_LN=7;F_EXP=8;F_TRUNC=9;
  F_ROUND=10;F_ODD=11;F_ORD=12;F_CHR=13;F_SUCC=14;F_PRED=15;F_LENGTH=16;
  F_CONCAT=17;F_COPY=18;F_POS=19;F_EOF=20;F_EOLN=21;F_SIZEOF=22;F_RANDOM=23;
- F_PEEK=24;F_WPEEK=25;F_LPEEK=26;F_ADDR=27;F_STRTRUNC=28;F_UPCASE=29;F_SHL=30;F_SHR=31;
+ F_PEEK=24;F_WPEEK=25;F_LPEEK=26;F_ADDR=27;F_STRTRUNC=28;F_UPCASE=29;F_SHL=30;F_SHR=31;F_INT=32;F_PWR=33;
  P_WRITE=40;P_WRITELN=41;P_READ=42;P_READLN=43;P_NEW=44;P_DISPOSE=45;P_MARK=46;
  P_RELEASE=47;P_INSERT=48;P_DELETE=49;P_RESET=50;P_REWRITE=51;P_CLOSE=52;
  P_SEEK=53;P_PAGE=54;P_HALT=55;P_POKE=56;P_WPOKE=57;P_LPOKE=58;P_MOVEB=59;
- P_GET=60;P_PUT=61;P_ERASE=62;P_PACK=63;
- NHOSTMAX=140;
+ P_GET=60;P_PUT=61;P_ERASE=62;P_PACK=63;P_UNPACK=64;
+ NHOSTMAX=240;
 
 Type
  TNode = Record
@@ -6644,10 +7061,18 @@ Begin
  M:=NewNd(N_CONV,TY_REAL);Nd[M].A:=N;Nd[M].V:=1;ToReal:=M;
 End;
 
+Function IsCharArr(T: Integer): Boolean;
+Begin
+ IsCharArr:=(Ty[T].K=TK_ARR) And (Ty[Ty[T].Base].K=TK_CHAR);
+End;
+
 Function ToStrN(N: Integer): Integer;
 Var M: Integer;
 Begin
  If Ty[Nd[N].Ty].K=TK_STR Then Begin ToStrN:=N;Exit;End;
+ If IsCharArr(Nd[N].Ty) Then Begin
+  M:=NewNd(N_CONV,TY_STRLIT);Nd[M].A:=N;Nd[M].V:=3;ToStrN:=M;Exit;
+ End;
  If Nd[N].Op=N_CHR Then Begin ToStrN:=MkStrNode(Chr(Nd[N].V And 255));Exit;End;
  M:=NewNd(N_CONV,TY_STRLIT);Nd[M].A:=N;Nd[M].V:=2;ToStrN:=M;
 End;
@@ -6660,8 +7085,13 @@ Begin
  If CHalt Then Exit;
  K:=Ty[T].K;
  If (K=TK_REAL) And IsIntLike(Nd[N].Ty) Then Begin Coerce:=ToReal(N);Exit;End;
- If (K=TK_STR) And ((Ty[Nd[N].Ty].K=TK_CHAR) Or (Ty[Nd[N].Ty].K=TK_STR)) Then Begin
+ If (K=TK_STR) And ((Ty[Nd[N].Ty].K=TK_CHAR) Or (Ty[Nd[N].Ty].K=TK_STR) Or IsCharArr(Nd[N].Ty)) Then Begin
   Coerce:=ToStrN(N);Exit;
+ End;
+ If IsCharArr(T) And (Ty[Nd[N].Ty].K=TK_STR) Then Begin
+  { affectation d'une chaine a un tableau de caracteres (ALFA, PACKED ARRAY OF CHAR) }
+  If (Nd[N].Op=N_STR) And (Nd[N].Len>Ty[T].Size) Then Err(5);
+  Exit;
  End;
  If (K=TK_CHAR) And (Ty[Nd[N].Ty].K=TK_STR) And (Nd[N].Op=N_STR) And (Nd[N].Len=1) Then Begin
   E:=NewNd(N_CHR,TY_CHAR);Nd[E].V:=Ord(' ');Coerce:=E;Err(5);Exit;
@@ -6994,9 +7424,13 @@ Begin
    End;
   N_BIN: GenBin(N);
   N_CONV: Begin
-    Expr(Nd[N].A);
-    PushD0;
-    If Nd[N].V=1 Then Svc(S_ITOR) Else Svc(S_C2S);
+    If Nd[N].V=3 Then Begin
+     AddrToA0(Nd[N].A);PushA0;PushImm(Ty[Nd[Nd[N].A].Ty].Size);Svc(S_ARR2S);
+    End Else Begin
+     Expr(Nd[N].A);
+     PushD0;
+     If Nd[N].V=1 Then Svc(S_ITOR) Else Svc(S_C2S);
+    End;
    End;
   N_SET: Begin
     Svc(S_SETNEW);
@@ -7457,7 +7891,9 @@ Begin
   F_SIZEOF: Begin
     Skip(T_LP);
     If (Tok=T_ID) And (FindSym(TokS)<>0) And (Sy[FindSym(TokS)].K=SK_TYPE) Then Begin
-     V:=Ty[Sy[FindSym(TokS)].Ty].Size;NextTok;
+     V:=Ty[Sy[FindSym(TokS)].Ty].Size;
+     If LongIntOn And (TokS='INTEGER') Then V:=4;
+     NextTok;
     End Else Begin A:=PExpr;V:=Ty[Nd[A].Ty].Size;End;
     Skip(T_RP);
     PStdFunc:=MkInt(V,IntTy(V));
@@ -7466,6 +7902,16 @@ Begin
     Skip(T_LP);A:=PExpr;Skip(T_COMMA);B:=PExpr;Skip(T_RP);
     If Not (IsIntLike(Nd[A].Ty) And IsIntLike(Nd[B].Ty)) Then Err(11);
     N:=NewNd(N_STD,Nd[A].Ty);Nd[N].V:=Id;Nd[N].A:=A;Nd[A].Nxt:=B;PStdFunc:=N;
+   End;
+  F_INT: Begin
+    OneArg;
+    If Not IsIntLike(Nd[A].Ty) Then Err(11);
+    N:=NewNd(N_STD,TY_INT);Nd[N].V:=Id;Nd[N].A:=A;PStdFunc:=N;
+   End;
+  F_PWR: Begin
+    OneArg;
+    If Not IsIntLike(Nd[A].Ty) Then Err(11);
+    N:=NewNd(N_STD,TY_REAL);Nd[N].V:=Id;Nd[N].A:=A;PStdFunc:=N;
    End;
   F_RANDOM: Begin
     OneArg;
@@ -7495,6 +7941,7 @@ Begin
       'I': If Not IsOrd(Nd[A].Ty) Then Err(11);
       'S': A:=Coerce(A,TY_STRLIT);
       'R': A:=Coerce(A,TY_REAL);
+      'V': If Not IsLval(A) Then Err(12);
      End;
      If First=0 Then First:=A Else Nd[Last].Nxt:=A;
      Last:=A;
@@ -7636,6 +8083,8 @@ Begin
     Expr(A);PushD0;Expr(B);E16($2200);PopD0;
     If Id=F_SHL Then E16($E3A8) Else E16($E2A8);
    End;
+  F_INT: Begin Expr(A);E16($48C0);End;
+  F_PWR: Begin Expr(A);PushD0;Svc(S_PWRTEN);End;
   F_RANDOM: Begin Expr(A);PushD0;Svc(S_RANDOM);End;
   F_PEEK: Begin Expr(A);PushD0;Svc(S_PEEKB);End;
   F_WPEEK: Begin Expr(A);PushD0;Svc(S_PEEKW);End;
@@ -7649,6 +8098,7 @@ Begin
    For K:=1 To Length(Sig) Do Begin
     Case Sig[K] Of
      'R': Begin Expr(E);PushReal;End;
+     'V': Begin AddrToA0(E);PushA0;End;
     Else Begin Expr(E);PushD0;End;
     End;
     E:=Nd[E].Nxt;
@@ -7761,9 +8211,13 @@ Begin
     Expr(R);PushD0;PushImm(Ty[T].Hi);Svc(S_SASG);
    End;
   TK_ARR,TK_REC,TK_SET: Begin
-    AddrToA0(L);PushA0;
-    AddrToA0(R);E16($2248);PopA0;
-    BlockCopy(Ty[T].Size);
+    If (K=TK_ARR) And (Ty[Nd[R].Ty].K=TK_STR) Then Begin
+     AddrToA0(L);PushA0;Expr(R);PushD0;PushImm(Ty[T].Size);Svc(S_CARRASG);
+    End Else Begin
+     AddrToA0(L);PushA0;
+     AddrToA0(R);E16($2248);PopA0;
+     BlockCopy(Ty[T].Size);
+    End;
    End;
  Else Begin
    Expr(R);
@@ -7794,6 +8248,7 @@ Procedure WItem(N,W,D: Integer; Hex: Boolean);
 Var T,K: Integer;
 Begin
  T:=Nd[N].Ty;K:=Ty[T].K;
+ If IsCharArr(T) Then Begin N:=ToStrN(N);T:=Nd[N].Ty;K:=Ty[T].K;End;
  If IsIntLike(T) Then Begin
   Expr(N);PushD0;
   If W<>0 Then Expr(W) Else If Hex Then LoadImm(0)
@@ -7992,7 +8447,35 @@ Begin
     Else Begin AddrToA0(A);PushA0;If Id=P_GET Then Svc(S_GET) Else Svc(S_PUT);End;
    End;
   P_ERASE: Begin
-    Skip(T_LP);A:=ToStrN(PExpr);Skip(T_RP);Expr(A);PushD0;Svc(S_FERASE);
+    Skip(T_LP);A:=PExpr;Skip(T_RP);
+    If FileArg(A) Then Begin AddrToA0(A);PushA0;Svc(S_FERASEF);End
+    Else Begin A:=ToStrN(A);Expr(A);PushD0;Svc(S_FERASE);End;
+   End;
+  P_PACK: Begin
+    { Pack(vnonpack, debut, vpack) }
+    Skip(T_LP);A:=PExpr;Skip(T_COMMA);B:=PExpr;Skip(T_COMMA);C:=PExpr;Skip(T_RP);
+    If (Not IsLval(A)) Or (Ty[Nd[A].Ty].K<>TK_ARR) Or (Not IsLval(C)) Or (Ty[Nd[C].Ty].K<>TK_ARR) Then Err(5)
+    Else Begin
+     AddrToA0(A);PushA0;Expr(B);PushD0;
+     PushImm(Ty[Ty[Nd[A].Ty].Idx].Lo);PushImm(Ty[Ty[Nd[A].Ty].Idx].Hi-Ty[Ty[Nd[A].Ty].Idx].Lo+1);
+     AddrToA0(C);PushA0;
+     PushImm(Ty[Ty[Nd[C].Ty].Idx].Hi-Ty[Ty[Nd[C].Ty].Idx].Lo+1);
+     PushImm(ElemStride(Nd[A].Ty));
+     Svc(S_PACK);
+    End;
+   End;
+  P_UNPACK: Begin
+    { UnPack(vpack, vnonpack, debut) }
+    Skip(T_LP);A:=PExpr;Skip(T_COMMA);B:=PExpr;Skip(T_COMMA);C:=PExpr;Skip(T_RP);
+    If (Not IsLval(A)) Or (Ty[Nd[A].Ty].K<>TK_ARR) Or (Not IsLval(B)) Or (Ty[Nd[B].Ty].K<>TK_ARR) Then Err(5)
+    Else Begin
+     AddrToA0(A);PushA0;
+     PushImm(Ty[Ty[Nd[A].Ty].Idx].Hi-Ty[Ty[Nd[A].Ty].Idx].Lo+1);
+     AddrToA0(B);PushA0;Expr(C);PushD0;
+     PushImm(Ty[Ty[Nd[B].Ty].Idx].Lo);PushImm(Ty[Ty[Nd[B].Ty].Idx].Hi-Ty[Ty[Nd[B].Ty].Idx].Lo+1);
+     PushImm(ElemStride(Nd[A].Ty));
+     Svc(S_UNPACK);
+    End;
    End;
   P_HALT: Begin
     If Tok=T_LP Then Begin NextTok;A:=PExpr;Skip(T_RP);Expr(A);End Else LoadImm(0);
@@ -8018,6 +8501,7 @@ Begin
       'I': Begin If Not IsOrd(Nd[A].Ty) Then Err(11);Expr(A);PushD0;End;
       'S': Begin A:=Coerce(A,TY_STRLIT);Expr(A);PushD0;End;
       'R': Begin A:=Coerce(A,TY_REAL);Expr(A);PushReal;End;
+      'V': Begin If Not IsLval(A) Then Err(12) Else Begin AddrToA0(A);PushA0;End;End;
      End;
      If K<Length(Sig) Then Skip(T_COMMA);
     End;
@@ -8463,6 +8947,7 @@ Begin
     If (S<>0) And (Sy[S].K=SK_TYPE) Then Begin
      T:=Sy[S].Ty;
      Nm:=TokS;
+     If LongIntOn And (Nm='INTEGER') Then T:=TY_LONG;
      NextTok;
      If (Nm='STRING') And (Tok=T_LB) Then Begin
       NextTok;PConstInt(V);Skip(T_RB);
@@ -8773,6 +9258,7 @@ Begin
  DefType('INTEGER',TY_INT);DefType('SHORT_INTEGER',TY_INT);DefType('LONG_INTEGER',TY_LONG);
  DefType('BYTE',TY_BYTE);DefType('BOOLEAN',TY_BOOL);DefType('CHAR',TY_CHAR);
  DefType('REAL',TY_REAL);DefType('STRING',TY_STR);DefType('TEXT',TY_TEXT);
+ DefType('ALFA',MakeArr(MakeSub(TY_INT,1,10),TY_CHAR));
  DefConst('FALSE',TY_BOOL,0);DefConst('TRUE',TY_BOOL,1);
  DefConst('MAXINT',TY_INT,32767);DefConst('LONG_MAXINT',TY_LONG,2147483647);
  S:=AddSym('INPUT',SK_STDFILE,TY_TEXT);S:=AddSym('OUTPUT',SK_STDFILE,TY_TEXT);
@@ -8811,6 +9297,10 @@ Begin
  S:=AddSym('UPCASE',SK_STD,TY_INT);Sy[S].Std:=F_UPCASE;
  S:=AddSym('SHL',SK_STD,TY_INT);Sy[S].Std:=F_SHL;
  S:=AddSym('SHR',SK_STD,TY_INT);Sy[S].Std:=F_SHR;
+ S:=AddSym('INT',SK_STD,TY_INT);Sy[S].Std:=F_INT;
+ S:=AddSym('PWROFTEN',SK_STD,TY_INT);Sy[S].Std:=F_PWR;
+ S:=AddSym('PACK',SK_STD,TY_INT);Sy[S].Std:=P_PACK;
+ S:=AddSym('UNPACK',SK_STD,TY_INT);Sy[S].Std:=P_UNPACK;
  S:=AddSym('GET',SK_STD,TY_INT);Sy[S].Std:=P_GET;
  S:=AddSym('PUT',SK_STD,TY_INT);Sy[S].Std:=P_PUT;
  S:=AddSym('WRITE',SK_STD,TY_INT);Sy[S].Std:=P_WRITE;
@@ -8916,10 +9406,41 @@ Begin
  AddHostT('WPOKE',S_POKEW,'II',' ');
  AddHostT('LPOKE',S_POKEL,'II',' ');
  AddHostT('MOVE_BYTE',S_MOVEB,'III',' ');
- AddHostT('MOVE_WORD',S_MOVEW,'III',' ');
- AddHostT('MOVE_LONG',S_MOVEL,'III',' ');
+ AddHost('MOVE_WORD',S_MOVEW,'III',' ');
+ AddHost('MOVE_LONG',S_MOVEL,'III',' ');
  AddHostT('IN_SUPER',S_INSUPER,'','B');
  AddHostT('SUPER',S_NOP1,'I',' ');
+ { suite de la bibliotheque auxiliaire (AUXSUBS.PAS) et divers }
+ AddHost('GET_DATE',S_GETDATE,'VVV',' ');AddHost('GET_TIME',S_GETTIME,'VVV',' ');
+ AddHost('SET_DATE',S_SETDATE,'III',' ');AddHost('SET_TIME',S_SETTIME,'III',' ');
+ AddHost('CLOCK',S_CLOCK,'','I');
+ AddHost('C_TO_PSTR',S_C2P,'VV',' ');AddHost('P_TO_CSTR',S_P2C,'VV',' ');
+ AddHost('SAVE_SCRN',S_SAVESCR,'V',' ');AddHost('RESTR_SCRN',S_RESTSCR,'V',' ');
+ AddHost('READ_SCRN',S_READSCR,'SV','I');AddHost('WRITE_SCRN',S_WRITESCR,'SV','I');
+ AddHost('IO_STATE',S_IOSTATE,'','B');AddHost('IO_RESULT',S_IORESULT,'','I');
+ AddHost('IO_CHECK',S_IOCHECK,'I',' ');
+ AddHost('CLREOL',S_VT0,'',' ');AddHost('CLRSCR',S_VT0+1,'',' ');AddHost('CLRSCRN',S_VT0+1,'',' ');
+ AddHost('CRTINIT',S_VT0+2,'',' ');AddHost('CRTEXIT',S_VT0+3,'',' ');
+ AddHost('DELLINE',S_VT0+4,'',' ');AddHost('INSLINE',S_VT0+5,'',' ');
+ AddHost('INVERSEVIDEO',S_VT0+6,'',' ');AddHost('NORMVIDEO',S_VT0+7,'',' ');
+ AddHost('CURS_UP',S_VT0+8,'',' ');AddHost('CURS_DOWN',S_VT0+9,'',' ');
+ AddHost('CURS_RIGHT',S_VT0+10,'',' ');AddHost('CURS_LEFT',S_VT0+11,'',' ');
+ AddHost('CURS_HOME',S_VT0+12,'',' ');AddHost('CURS_UP_2',S_VT0+13,'',' ');
+ AddHost('CLREOS',S_VT0+14,'',' ');AddHost('CLR_EOS',S_VT0+14,'',' ');
+ AddHost('CURS_ON',S_VT0+15,'',' ');AddHost('CURS_OFF',S_VT0+16,'',' ');
+ AddHost('GOTOXY',S_GOTOXY,'II',' ');
+ AddHost('TEXTCOLOR',S_TCOLOR,'I',' ');AddHost('TEXTBACKGROUND',S_TBACK,'I',' ');
+ AddHost('CMD_ARGS',S_CMDARGS,'','I');AddHost('CMD_GETARG',S_CMDGETARG,'IV',' ');
+ AddHost('OPTION',S_OPTION,'S','B');AddHost('FILENAME',S_FILENAME,'S','B');
+ AddHost('HANDLE',S_HANDLE,'V','I');AddHost('BASEPAGE',S_BASEPAGE,'V',' ');
+ AddHost('CHAIN',S_CHAIN,'S',' ');AddHost('RENAME',S_FRENAME,'VV',' ');
+ { Ptr / Addr : declarations EXTERNAL de l'utilisateur }
+ AddHostT('PTR',S_IDENT,'I','I');AddHostT('ADDR',S_IDENT,'V','I');
+ AddHostT('PTR_BYTE',S_IDENT,'I','I');AddHostT('PTR_CHAR',S_IDENT,'I','I');
+ AddHostT('PTR_INTEGER',S_IDENT,'I','I');AddHostT('PTR_LONG_INTEGER',S_IDENT,'I','I');
+ AddHostT('PTR_L',S_IDENT,'I','I');
+ AddHostT('ADDR_BYTE',S_IDENT,'V','I');AddHostT('ADDR_CHAR',S_IDENT,'V','I');
+ AddHostT('ADDR_INTEGER',S_IDENT,'V','I');AddHostT('ADDR_LONG_INTEGER',S_IDENT,'V','I');
 End;
 
 { ------------------------- programme complet -------------------------- }
@@ -9331,6 +9852,7 @@ Var
  PathNm    : Array[1..6] Of String[80];
  LinkType  : Integer;
  LinkExtra : String[60];
+ RunTail  : String[120];     (* /P: arguments passes au programme execute *)
  LinkAsk   : Boolean;
  EdInsert,EdAuto : Boolean;
  EdTab     : Integer;
@@ -10058,6 +10580,7 @@ Var
  BlkN    : Integer;
  FindStr,ReplStr : String[60];
  FindCase: Boolean;
+ ReplQuery: Boolean;        (* Replace All : avec confirmation *)
  EdMsg   : String;
  EdQuit  : Boolean;
  EdAction: Integer;
@@ -10089,7 +10612,7 @@ Begin
  End;
  EbCur:=1;BlkS:=0;BlkE:=0;BlkN:=0;
  For I:=1 To 4 Do EdMarks[I]:=0;
- FindStr:='';ReplStr:='';FindCase:=False;EdMsg:='';
+ FindStr:='';ReplStr:='';FindCase:=False;ReplQuery:=False;EdMsg:='';
 End;
 
 Function ExpandTabs(Const S: String): String;
@@ -10418,10 +10941,28 @@ Begin
  End;
 End;
 
-Procedure EdFindWhat;
-Var E1,E2,R1,R2,I,R: Integer;
+Function EdQueryReplace(Const Ctx: String): Integer;
+{ 1 remplacer, 2 ignorer, 3 tout remplacer, 0 annuler }
+Var B1,B2,B3,R: Integer;
 Begin
- DlgInit(380,190,1);
+ DlgInit(420,150,2);
+ DlgAdd(DK_TITLE,0,14,0,0,T3('Replace?','Remplacer ?','Ersetzen?'));
+ DlgAdd(DK_LABEL,18,44,0,0,Copy(Ctx,1,44));
+ B1:=DlgAdd(DK_BUTTON,14,90,88,30,T3('Replace','Remplacer','Ersetzen'));
+ B2:=DlgAdd(DK_BUTTON,108,90,88,30,T3('Skip','Ignorer','Weiter'));
+ B3:=DlgAdd(DK_BUTTON,202,90,88,30,T3('All','Tout','Alle'));
+ DCan:=DlgAdd(DK_BUTTON,296,90,100,30,CancelS);DDef:=B1;
+ R:=RunDlg;
+ If R=B1 Then EdQueryReplace:=1
+ Else If R=B2 Then EdQueryReplace:=2
+ Else If R=B3 Then EdQueryReplace:=3
+ Else EdQueryReplace:=0;
+End;
+
+Procedure EdFindWhat;
+Var E1,E2,R1,R2,I,R,Q1,Q2: Integer;
+Begin
+ DlgInit(380,240,1);
  DlgAdd(DK_TITLE,0,14,0,0,T3('Find What','Chercher quoi','Suchen nach'));
  DlgAdd(DK_LABEL,18,40,0,0,T3('Target:','Cible :','Ziel:'));
  E1:=DlgAdd(DK_EDIT,100,36,30,16,FindStr);
@@ -10429,11 +10970,13 @@ Begin
  E2:=DlgAdd(DK_EDIT,100,64,30,16,ReplStr);
  R1:=DlgAdd(DK_RADIO,18,98,110,18,T3('Match case','Respecter casse','Gross/klein'));DI[R1].Grp:=1;DI[R1].On:=FindCase;
  R2:=DlgAdd(DK_RADIO,140,98,110,18,T3('Ignore case','Ignorer casse','Ignorieren'));DI[R2].Grp:=1;DI[R2].On:=Not FindCase;
- DDef:=DlgAdd(DK_BUTTON,60,138,70,30,'OK');
- DCan:=DlgAdd(DK_BUTTON,200,138,70,30,CancelS);
+ Q1:=DlgAdd(DK_RADIO,18,124,200,18,T3('Replace with query','Remplacer avec requete','Mit Rueckfrage'));DI[Q1].Grp:=2;DI[Q1].On:=ReplQuery;
+ Q2:=DlgAdd(DK_RADIO,18,148,200,18,T3('Replace without query','Remplacer sans requete','Ohne Rueckfrage'));DI[Q2].Grp:=2;DI[Q2].On:=Not ReplQuery;
+ DDef:=DlgAdd(DK_BUTTON,60,190,70,30,'OK');
+ DCan:=DlgAdd(DK_BUTTON,200,190,70,30,CancelS);
  R:=RunDlg;
  If R=DDef Then Begin
-  FindStr:=DI[E1].S;ReplStr:=DI[E2].S;FindCase:=DI[R1].On;
+  FindStr:=DI[E1].S;ReplStr:=DI[E2].S;FindCase:=DI[R1].On;ReplQuery:=DI[Q1].On;
  End;
 End;
 
@@ -10551,7 +11094,7 @@ Begin
 End;
 
 Procedure EdCommand(Cmd: Integer);
-Var B: ^TEdBuf; Nm: String; N,C: Integer; I: Integer;
+Var B: ^TEdBuf; Nm: String; N,C: Integer; I: Integer; Qa: Boolean; Qr,Sk: Integer;
 Begin
  B:=@Eb[EbCur];
  EdMsg:='';
@@ -10611,9 +11154,21 @@ Begin
   E_FINDP: EdFind(False);
   E_REPN: Begin EdReplaceHere;EdFind(True);End;
   E_REPA: Begin
-    C:=0;
+    C:=0;Qa:=ReplQuery;Sk:=0;
     B^.Row:=1;B^.Col:=0;
-    While EdFind(True) Do Begin EdReplaceHere;Inc(C);If C>5000 Then Break;End;
+    While EdFind(True) Do Begin
+     Qr:=1;
+     If Qa Then Begin
+      Qr:=EdQueryReplace(Copy(B^.L[B^.Row]^,B^.Col,44));
+      If Qr=3 Then Begin Qa:=False;Qr:=1;End;
+     End;
+     If Qr=0 Then Break;
+     If Qr=1 Then Begin
+      EdReplaceHere;Inc(C);
+      If B^.Col>0 Then Dec(B^.Col);
+     End Else Inc(Sk);
+     If C+Sk>5000 Then Break;
+    End;
     EdMsg:=IntStr(C)+T3(' replaced',' remplacements',' ersetzt');
    End;
   E_SETM..E_SETM+3: EdMarks[Cmd-E_SETM+1]:=B^.Row;
@@ -10952,7 +11507,7 @@ Var Ok: Boolean; S: String; P: Integer;
 Begin
  {$IFDEF FPC}
  If Headless Then Begin
-  Ok:=RunCore(Name,'');
+  Ok:=RunCore(Name,RunTail);
   If Not Ok Then WriteLn(T3('Cannot load ','Chargement impossible : ','Kann nicht laden: ')+Name);
   If RunMsg<>'' Then WriteLn(RunMsg);
   Exit;
@@ -10962,7 +11517,7 @@ Begin
  Box(0,0,SCR_W-1,SCR_H-1,INK);
  OutLive:=True;OutPending:=True;
  OBlitRect(0,0,OUT_W-1,OUT_H-1);
- Ok:=RunCore(Name,'');
+ Ok:=RunCore(Name,RunTail);
  If Not Ok Then Begin
   OutLive:=False;Dec(MouseLock);
   DrawDesktop;
@@ -11240,6 +11795,7 @@ Begin
    WriteLn('  /GEM /TOS /ACC  program type    /D debug on   /ND debug off');
    WriteLn('  /LIST         print listing     /I:file load options (.INF)');
    WriteLn('  /M:mod1,mod2  additional link files (modules compiled with {$M+,E+})');
+   WriteLn('  /P:args       command line passed to the program run with /R');
    WriteLn('  /LANG:EN|FR|GR  language (else environment variable LANGUAGE)');
    WriteLn;
    WriteLn('Example: OSSPAS /GEM /C CUBE.PAS /R CUBE.PRG');
@@ -11255,6 +11811,7 @@ Begin
    WriteLn('  /B            Batch-Modus: kein Desktop, Konsolenmeldungen');
    WriteLn('  /GEM /TOS /ACC  Programmtyp     /D Debug ein   /ND Debug aus');
    WriteLn('  /LIST         Listing drucken   /I:Datei Optionen laden (.INF)');
+   WriteLn('  /P:Args       Kommandozeile fuer das mit /R gestartete Programm');
    WriteLn('  /LANG:EN|FR|GR  Sprache (sonst Umgebungsvariable LANGUAGE)');
    WriteLn;
    WriteLn('Beispiel: OSSPAS /GEM /C CUBE.PAS /R CUBE.PRG');
@@ -11270,6 +11827,7 @@ Begin
   WriteLn('  /B            mode batch : sans bureau, messages en console, code retour 0/1');
   WriteLn('  /GEM /TOS /ACC  type de programme   /D debug actif   /ND debug inactif');
   WriteLn('  /LIST         imprimer le listing   /I:fichier charger des options (.INF)');
+  WriteLn('  /P:args       ligne de commande transmise au programme lance par /R');
   WriteLn('  /LANG:EN|FR|GR  langue (sinon variable d''environnement LANGUAGE)');
   WriteLn;
   WriteLn('Exemple : OSSPAS /GEM /C CUBE.PAS /R CUBE.PRG');
@@ -11301,6 +11859,7 @@ Begin
   Else If (U='/ND') Then Conf.FullDebug:=False
   Else If (U='/LIST') Then Conf.PrintList:=True
   Else If (Copy(U,1,3)='/M:') Then LinkExtra:=Copy(S,4,60)
+  Else If (Copy(U,1,3)='/P:') Then Begin RunTail:=Copy(S,4,120);If RunTail<>'' Then RunTail:=' '+RunTail;End
   Else If (Copy(U,1,3)='/I:') Then Begin
    If Not LoadOptions(Copy(S,4,80)) Then WriteLn(T3('Cannot load ','Chargement impossible : ','Kann nicht laden: ')+Copy(S,4,80));
   End Else If (Copy(U,1,6)='/LANG:') Then Begin
@@ -11352,6 +11911,7 @@ Procedure InitProgram;
 Var I: Integer;
 Begin
  InitLanguage;
+ RunTail:='';
  InitConfig;
  Headless:=False;BatchMode:=False;QuitReq:=False;BreakReq:=False;
  KeyQ:='';LastFile:='';ListHook:=True;EdBack:=False;
