@@ -27111,6 +27111,8 @@ Var
  EmulScr    : String;          { /SCR:fichier : copie de l'ecran logique a la fin }
  EmulDump   : String;          { /DUMP:adresse:longueur:fichier }
  EmulTime   : LongInt;          { /TIME:secondes : duree maximale (0 = illimitee) }
+ EmulShow   : Boolean;          { /SHOW : avec /EMUL, affiche le programme dans la fenetre graphique }
+ EmulT0     : LongInt;
  PreDefs    : Array[1..10] Of String[80];
  NPre       : Integer;
  LastAsmOk  : Boolean;
@@ -27405,7 +27407,7 @@ End;
 
 { Execute un programme dans l'emulateur avec affichage graphique }
 Procedure RunProgramGUI(Const Name,Cmd: String);
-Var Msg,Cur,Nxt: String; I: LongInt;
+Var Msg,Cur,Nxt: String; I: LongInt; EH,EM,ES,EC: Word;
 Begin
  Cur:=Name;
  Repeat
@@ -27422,12 +27424,18 @@ Begin
   UserBreak:=False;
   ShelNext:='';
   If Emu_GEM Then GemBoot;
+  EmulT0:=0;
   While ((StopReason=STOP_NONE) Or (StopReason=STOP_YIELD)) And Not UserBreak
     Do Begin
    RunCpu(30000);
    If StopReason=STOP_YIELD Then GemDispatch;
    PollInput;
    BlitScreen(False);
+   If (StartAction='E') And (EmulTime>0) Then Begin
+    GetTime(EH,EM,ES,EC);
+    If EmulT0=0 Then EmulT0:=LongInt(EH)*3600+EM*60+ES;
+    If LongInt(EH)*3600+EM*60+ES-EmulT0>=EmulTime Then UserBreak:=True;
+   End;
   End;
   If UserBreak Then Begin StopReason:=STOP_USER;StopMsg:='^C';End;
   RunDirLeave;
@@ -29304,6 +29312,10 @@ Begin
  WriteLn(ConOut,'  /EMUL:prg   '+T3('run a .PRG in the built-in emulator (no graphics; the remaining'+
    ' arguments form its command line)','execute un .PRG dans l''emulateur integre (sans graphisme ; les autres'+
    ' arguments forment sa ligne de commande)','ein .PRG im eingebauten Emulator starten (ohne Grafik)'));
+ WriteLn(ConOut,'  /SHOW       '+T3('with /EMUL: display the program in the graphics window',
+   'avec /EMUL: affiche le programme dans la fenetre graphique','mit /EMUL: Programm im Grafikfenster anzeigen'));
+ WriteLn(ConOut,'  /TAIL:text  '+T3('with /EMUL: command line given to the program (may start with /)',
+   'avec /EMUL: ligne de commande transmise au programme (peut commencer par /)','mit /EMUL: Kommandozeile des Programms'));
  WriteLn(ConOut,'  /SCR:file   '+T3('with /EMUL: write the 32000-byte logical screen at the end',
    'avec /EMUL: ecrit l''ecran logique (32000 octets) a la fin','mit /EMUL: logischen Bildschirm schreiben'));
  WriteLn(ConOut,'  /DUMP:a:n:f '+T3('with /EMUL: write n bytes of memory at hex address a to file f',
@@ -29431,7 +29443,7 @@ Begin
   (U='NODISK') Or (U='NOGEM') Or (U='OLDRC') Or (Copy(U,1,4)='OUT:') Or
     (Copy(U,1,4)='INC:') Or
   (Copy(U,1,4)='DEF:') Or (U='EMUL') Or (Copy(U,1,5)='EMUL:') Or
-  (Copy(U,1,4)='SCR:') Or (Copy(U,1,5)='DUMP:') Or (Copy(U,1,5)='TIME:') Or
+  (U='SHOW') Or (Copy(U,1,5)='TAIL:') Or (Copy(U,1,4)='SCR:') Or (Copy(U,1,5)='DUMP:') Or (Copy(U,1,5)='TIME:') Or
   ((Copy(U,1,2)='FL') And (Length(U)>=5) And
     (U[3]>='A') And (U[3]<='D') And (U[4]=':'));
 End;
@@ -29538,7 +29550,7 @@ Procedure ParseCommandLine;
 Var I: Integer; A,U: String; HelpWanted,Used,BadCmd: Boolean;
 Begin
  BadCmd:=False;HelpWanted:=False;NQueue:=0;StartAction:=' ';NPre:=0;
- EmulPrg:='';EmulScr:='';EmulDump:='';EmulTime:=60;
+ EmulPrg:='';EmulScr:='';EmulDump:='';EmulTime:=60;EmulShow:=False;EmulTail:='';
  CmdOpts:='';CmdSyms:='';CmdHeaders:='';NoBinary:=False;OptFormatSel:=0;
    OptIncList:='';
  GenMode:=False;PauseEnd:=False;
@@ -29565,6 +29577,8 @@ Begin
     Else If (U='EMUL') And (I<ParamCount) Then Begin Inc(I);EmulPrg:=ParamStr(I);End;
     If EmulPrg<>'' Then Begin StartAction:='E';BatchMode:=True;End;
    End
+   Else If U='SHOW' Then EmulShow:=True
+   Else If Copy(U,1,5)='TAIL:' Then EmulTail:=Copy(A,Pos(':',A)+1,200)
    Else If Copy(U,1,4)='SCR:' Then EmulScr:=Copy(A,Pos(':',A)+1,200)
    Else If Copy(U,1,5)='DUMP:' Then EmulDump:=Copy(A,Pos(':',A)+1,300)
    Else If Copy(U,1,5)='TIME:' Then EmulTime:=ToInt(Copy(A,Pos(':',A)+1,20))
@@ -29596,6 +29610,7 @@ Begin
   Flush(ConOut);
   If OldRc Then Halt(2) Else Halt(100);
  End;
+ If EmulShow And (StartAction='E') Then BatchMode:=False;
  { une ligne de commande de style GEN : assemblage sans interface graphique }
  If GenMode And (StartAction=' ') Then BatchMode:=True;
  If HelpWanted Then Begin
@@ -29684,9 +29699,8 @@ Begin
  Rc:=0;
  If StartAction='E' Then Begin
   InitMemory(ST_MEMKB);
-  EmulTail:='';
   For I:=1 To NQueue Do Begin
-   If I>1 Then EmulTail:=EmulTail+' ';
+   If EmulTail<>'' Then EmulTail:=EmulTail+' ';
    EmulTail:=EmulTail+FileQueue[I];
   End;
   BatchRun:=BatchEmulate(EmulPrg,EmulTail);
@@ -29812,6 +29826,20 @@ BEGIN
  ScrBase:=(MemSize-SCR_BYTES) And $FFFF00;DrawBase:=ScrBase;
  EdInit;
  EWinInit;
+ If StartAction='E' Then Begin
+  { /EMUL /SHOW : le programme s'affiche dans la fenetre graphique }
+  For I:=1 To NQueue Do Begin
+   If EmulTail<>'' Then EmulTail:=EmulTail+' ';
+   EmulTail:=EmulTail+FileQueue[I];
+  End;
+  RunPause:=False;
+  RunProgramGUI(EmulPrg,EmulTail);
+  EmulDumps;
+  HideMouse;
+  DevCloseAll;
+  CloseGraph;
+  Halt(0);
+ End;
  NCr:=0;
  If NQueue>0 Then Begin
   If (StartAction<>'M') Then Begin
