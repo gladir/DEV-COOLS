@@ -4258,7 +4258,9 @@ Begin
 End;
 
 Function LoadProgFile(Const Name: String; Merge: Boolean): Boolean;
-Var T: Text; Line: String; I: Integer; N: LongInt; Nm: String; Cd: Integer;
+{ Les fichiers .BAS de ST BASIC sont du texte ASCII : une ligne numerotee par
+  ligne. Erreur 65 : caractere de controle ; erreur 66 : ligne sans numero. }
+Var T: Text; Line: String; I: Integer; N: LongInt; Nm: String; Bad: Integer;
 Begin
  LoadProgFile:=False;
  Nm:=ResolveFile(Name);
@@ -4268,23 +4270,29 @@ Begin
  {$I+}
  If IOResult<>0 Then Begin Fail(53);Exit;End;
  If Not Merge Then Begin NewProgram;ClearVars;CloseAllFiles;End;
- While Not Eof(T) Do Begin
+ Bad:=0;
+ While (Not Eof(T)) And (Bad=0) Do Begin
   {$I-}ReadLn(T,Line);{$I+}
-  If IOResult<>0 Then Begin Fail(57);Line:='';End;
-  I:=1;
-  While (I<=Length(Line)) And ((Line[I]=' ') Or (Line[I]=#9)) Do Inc(I);
-  If (I<=Length(Line)) And IsDigit(Line[I]) Then Begin
-   N:=0;
-   While (I<=Length(Line)) And IsDigit(Line[I]) Do Begin
-    If N<65000 Then N:=N*10+Ord(Line[I])-48;
-    Inc(I);
-   End;
-   While (Length(Line)>0) And ((Line[Length(Line)]=#13) Or (Line[Length(Line)]=#26)) Do
-    Delete(Line,Length(Line),1);
-   If TrimStr(Copy(Line,I,255))<>'' Then SetProgLine(N,Copy(Line,I,255));
+  If IOResult<>0 Then Begin Bad:=57;Line:='';End;
+  While (Length(Line)>0) And ((Line[Length(Line)]=#13) Or (Line[Length(Line)]=#26)) Do
+   Delete(Line,Length(Line),1);
+  For I:=1 To Length(Line) Do
+   If (Line[I]<' ') And (Line[I]<>#9) And (Bad=0) Then Bad:=65;
+  If (Bad=0) And (TrimStr(Line)<>'') Then Begin
+   I:=1;
+   While (I<=Length(Line)) And ((Line[I]=' ') Or (Line[I]=#9)) Do Inc(I);
+   If IsDigit(Line[I]) Then Begin
+    N:=0;
+    While (I<=Length(Line)) And IsDigit(Line[I]) Do Begin
+     If N<65000 Then N:=N*10+Ord(Line[I])-48;
+     Inc(I);
+    End;
+    If TrimStr(Copy(Line,I,255))<>'' Then SetProgLine(N,Copy(Line,I,255));
+   End Else Bad:=66;
   End;
  End;
  Close(T);
+ If Bad<>0 Then Begin Fail(Bad);Exit;End;
  If Not Merge Then SetProgTitle(Nm);
  LabDirty:=True;
  LoadProgFile:=True;
