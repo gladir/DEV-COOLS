@@ -628,13 +628,13 @@ End;
 Const
  HASHSZ     = 2048;
  MAXMAC     = 256;
- MAXCOND    = 64;
+ MAXCOND    = 32767;
  MAXSRC     = 24;
- MAXRELOC   = 16000;
- MAXDEC     = 32000;
+ RELOCINIT  = 16000;       { capacite initiale des relocations (extensible) }
+ DECCAP     = 1000000;     { decisions de taille de branche (octets) }
  MAXLOG     = 4000;
  CHUNKSZ    = 8192;
- NCHUNK     = 64;           { 512 Ko par section }
+ NCHUNK     = 512;          { 4 Mo par section }
 
  SEC_TEXT   = 0;
  SEC_DATA   = 1;
@@ -648,7 +648,7 @@ Type
 
  PSym = ^TSym;
  TSym = Record
-  Name  : String[63];
+  Name  : String[255];
   Value : LongInt;
   Sect  : Integer;       { -1 absolu, 0 texte, 1 data, 2 bss }
   Kind  : Byte;          { 0 etiquette/EQU, 1 SET, 2 liste de registres }
@@ -658,25 +658,27 @@ Type
  End;
 
  TMacro = Record
-  Name  : String[40];
+  Name  : String[63];
   PNames: String[100];
   Body  : PLineArr;
   Count : Integer;
+  Even  : Boolean;
  End;
 
  TSrc = Record
   Kind    : Integer;       { 0 fichier/tampon, 1 macro, 2 REPT }
   Lines   : PLineArr;
-  Count   : Integer;
-  Pos     : Integer;
+  Count   : LongInt;
+  Pos     : LongInt;
   Name    : String[80];
   Own     : Boolean;       { les lignes appartiennent a la source }
-  Args    : Array[0..9] Of String[100];
+  Args    : Array[0..35] Of String[200];
   NArg    : Integer;
   MacId   : LongInt;
-  Reps    : Integer;
+  Reps    : LongInt;
   Suffix  : String[8];
   MacIdx  : Integer;
+  CondBase: Integer;
  End;
 
  TCond = Record
@@ -691,6 +693,19 @@ Type
   U : Boolean;
  End;
 
+ TAsmOpts = Record
+  SymLen  : Integer;        { significance des symboles (8..127) }
+  BrDef   : Integer;        { 0 BRW, 1 BRB/BRS, 3 BRL }
+  OldBra  : Boolean;        { OPT OLD }
+  LocalU,Mex,Symtab,List1,TraceIf,Inconce,NoType,ChkImm,ChkPC,EvenChk,AutoPC,
+  AllowZero,User,Gensym,Line,Hcln,XDebug : Boolean;
+  ChkBit  : Integer;        { 0 erreur, 1 inactif, 2 avertissement }
+  Opt     : Array[1..12] Of Boolean;
+  OW      : Array[0..12] Of Boolean;   { 0 : avertissements d'optimisation en general }
+  Proc    : LongInt;        { 68000, 68010, 68020, 68030, 68040, 68332 }
+  Fmt     : Integer;        { 0 Atari, 1 GST, 2 DRI, 6 SREC, 7 Lattice }
+ End;
+
  TChunkTab = Array[0..NCHUNK-1] Of Pointer;
  PLongArr  = ^TLongArr;
  TLongArr  = Array[0..16000] Of LongInt;
@@ -701,6 +716,17 @@ Var
  { Options }
  OptListing,OptSymbols,OptToDisk,OptOptimize,OptCase,OptDebug : Boolean;
  OptWarnings : Boolean;
+ AO,AO0      : TAsmOpts;
+ AsmErrCnt   : Integer;      { vraies erreurs (AsmErrors = erreurs + avertissements listes) }
+ AsmFatal    : Boolean;
+ CmdOpts     : String;       { +OPTION / -V de la ligne de commande }
+ CmdSyms     : String;       { -E sym=expr,... }
+ CmdHeaders  : String;
+ NoBinary    : Boolean;      { -B : pas de fichier binaire }
+ OptCheckOnly: Boolean;
+ OptListDev  : Integer;      { 0 aucun, 1 ecran, 2 imprimante, 3 disque }
+ OptFormatSel: Integer;      { format de sortie choisi (-L, dialogue) }
+ OptIncList  : String;
  OptOutName,OptIncPath,OptListName : String;
  OptTabSize : Integer;
  { Etat de l'assemblage }
@@ -728,22 +754,25 @@ Var
  CondTop     : Integer;
  CondActive  : Boolean;
  MacUniq     : LongInt;
- LastGlobal  : String[63];
+ LastGlobal  : String[255];
 
  { Sections }
  Chunks      : Array[0..1] Of TChunkTab;
  SecLen      : Array[0..2] Of LongInt;
  CurSect     : Integer;
  AbsMode     : Boolean;
+ OffMode     : Boolean;       { section OFFSET en cours }
+ OffPC       : LongInt;
  OrgAddr     : LongInt;
  SecBase     : Array[0..2] Of LongInt;   { adresse de l'image }
  PrevLen     : Array[0..2] Of LongInt;   { tailles trouvees a la passe 1 }
  RelocPos    : PLongArr;   { decalage dans la section source }
  RelocSrc    : PByteArr;
  RelocDst    : PByteArr;
- RelocN      : Integer;
+ RelocN      : LongInt;
+ RelocCap    : LongInt;
  Decs        : PByteArr;
- DecIdx      : Integer;
+ DecIdx      : LongInt;
  EntryPoint  : LongInt;
  EntrySect   : Integer;
  HaveOutput  : Boolean;
@@ -752,7 +781,7 @@ Var
  ES          : String;
  EP          : Integer;
  ExprErrMsg  : String[80];
- UndefName   : String[63];
+ UndefName   : String[255];
  ReqDef      : Boolean;        { exige que les symboles soient definis }
 
  { Contenu de la ligne en cours }
@@ -800,29 +829,43 @@ End;
 { Erreurs                                                                 }
 { ---------------------------------------------------------------------- }
 
-Procedure Err3(Const En,Fr,De: String);
-Var S: String; I: Integer;
+Var
+ LastWarnLine : LongInt;
+ LastWarnTxt  : String[80];
+
+Procedure AddMsg(IsWarn: Boolean; Const S: String);
+Var I: Integer; T: String;
 Begin
- If AsmPassNo<>2 Then Exit;
- If (CurLineNo=LastErrLine) And (CurSrcName=AsmFileName) Then Exit;
- LastErrLine:=CurLineNo;
- Inc(AsmErrors);
- S:=T3(En,Fr,De);
- If AsmErrors<=MAXERR Then Begin
+ If AsmErrors<32000 Then Inc(AsmErrors);
+ If IsWarn Then Begin If AsmWarns<32000 Then Inc(AsmWarns);End
+ Else If AsmErrCnt<32000 Then Inc(AsmErrCnt);
+ If (AsmErrors<=MAXERR) And (AsmErrors>=1) Then Begin
   ErrLn[AsmErrors]:=CurLineNo;
   If CurSrcName=AsmFileName Then ErrNm[AsmErrors]:='' Else
    ErrNm[AsmErrors]:=Copy(CurSrcName,1,60);
   ErrTx[AsmErrors]:=Copy(S,1,90);
  End;
+ If IsWarn Then T:=T3('Warning in line ','Avertissement ligne ','Warnung Zeile ')
+ Else T:=T3('Error in line ','Erreur ligne ','Fehler in Zeile ');
  If CurSrcName=AsmFileName Then
-  LogLine(T3('Error in line ','Erreur ligne ','Fehler in Zeile ')+IntStr(CurLineNo)+': '+S)
+  LogLine(T+IntStr(CurLineNo)+': '+S)
+ Else If IsWarn Then
+  LogLine(T3('Warning in ','Avertissement dans ','Warnung in ')+CurSrcName+' ('+IntStr(CurLineNo)+'): '+S)
  Else
   LogLine(T3('Error in ','Erreur dans ','Fehler in ')+CurSrcName+' ('+IntStr(CurLineNo)+'): '+S);
  If LnText<>'' Then Begin
-  S:=Copy(LnText,1,70);
-  For I:=1 To Length(S) Do If S[I]=#9 Then S[I]:=' ';
-  LogLine('    '+S);
+  T:=Copy(LnText,1,70);
+  For I:=1 To Length(T) Do If T[I]=#9 Then T[I]:=' ';
+  LogLine('    '+T);
  End;
+End;
+
+Procedure Err3(Const En,Fr,De: String);
+Begin
+ If AsmPassNo<>2 Then Exit;
+ If (CurLineNo=LastErrLine) And (CurSrcName=AsmFileName) Then Exit;
+ LastErrLine:=CurLineNo;
+ AddMsg(False,T3(En,Fr,De));
 End;
 
 Procedure Err(Const S: String);
@@ -830,13 +873,33 @@ Begin
  Err3(S,S,S);
 End;
 
+{ Erreur fatale : arrete l'assemblage (code retour 20) }
+Procedure FatalErr3(Const En,Fr,De: String);
+Var Sv: Integer;
+Begin
+ Sv:=AsmPassNo;
+ AsmPassNo:=2;
+ LastErrLine:=0;
+ Err3(En,Fr,De);
+ AsmPassNo:=Sv;
+ AsmFatal:=True;
+End;
+
 Procedure Warn3(Const En,Fr,De: String);
+Var S: String;
 Begin
  If Not OptWarnings Then Exit;
  If AsmPassNo<>2 Then Exit;
- Inc(AsmWarns);
- LogLine(T3('Warning in line ','Avertissement ligne ','Warnung Zeile ')+
-         IntStr(CurLineNo)+': '+T3(En,Fr,De));
+ S:=T3(En,Fr,De);
+ If (CurLineNo=LastWarnLine) And (LastWarnTxt=Copy(S,1,80)) Then Exit;
+ LastWarnLine:=CurLineNo;LastWarnTxt:=Copy(S,1,80);
+ AddMsg(True,S);
+End;
+
+{ Avertissement d'optimisation n (1..12) }
+Procedure WarnOpt(N: Integer; Const En: String);
+Begin
+ If AO.OW[0] And AO.OW[N] Then Warn3(En,En,En);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -852,8 +915,11 @@ Begin
 End;
 
 Function KeyOf(Const S: String): String;
+Var K: String;
 Begin
- If OptCase Then KeyOf:=S Else KeyOf:=Upper(S);
+ K:=S;
+ If (Length(K)>AO.SymLen) And (Pos('~',K)=0) Then K:=Copy(K,1,AO.SymLen);
+ If OptCase Then KeyOf:=K Else KeyOf:=Upper(K);
 End;
 
 Function FindSym(Const Name: String): PSym;
@@ -873,7 +939,7 @@ Var P: PSym; H: Integer; K: String;
 Begin
  K:=KeyOf(Name);
  New(P);
- P^.Name:=Copy(K,1,63);
+ P^.Name:=K;
  P^.Value:=0;P^.Sect:=SEC_ABS;P^.Kind:=0;P^.Defd:=False;P^.Pas:=0;
  H:=HashOf(P^.Name);
  P^.Next:=Hash[H];
@@ -895,10 +961,17 @@ End;
 
 { Nom interne : les etiquettes locales (.nom ou nom$) dependent de la
   derniere etiquette globale }
+Function IsLocalName(Const N: String): Boolean;
+Begin
+ If N='' Then IsLocalName:=False
+ Else If AO.LocalU Then IsLocalName:=(N[1]='_') Or (N[Length(N)]='$')
+ Else IsLocalName:=(N[1]='.') Or (N[Length(N)]='$');
+End;
+
 Function LocalName(Const N: String): String;
 Begin
- If (N<>'') And ((N[1]='.') Or (N[Length(N)]='$')) Then
-  LocalName:=LastGlobal+'~'+N
+ If IsLocalName(N) Then
+  LocalName:=Copy(LastGlobal,1,AO.SymLen)+'~'+Copy(N,1,AO.SymLen)
  Else LocalName:=N;
 End;
 
@@ -945,6 +1018,7 @@ End;
 
 Function CurPC: LongInt;
 Begin
+ If OffMode Then CurPC:=OffPC Else
  If AbsMode Then CurPC:=OrgAddr+SecLen[0]
  Else CurPC:=SecLen[CurSect];
 End;
@@ -954,12 +1028,12 @@ Var S: Integer;
 Begin
  S:=CurSect;
  If AbsMode Then S:=0;
- If S=SEC_BSS Then Begin
-  Err3('Cannot generate code in BSS','Impossible de generer du code en BSS','Code im BSS nicht moeglich');
+ If OffMode Or (S=SEC_BSS) Then Begin
+  Err3('BSS or OFFSET section cannot contain data','Impossible de generer du code en BSS','Code im BSS nicht moeglich');
   Exit;
  End;
  If SecLen[S]>=LongInt(NCHUNK)*CHUNKSZ-1 Then Begin
-  Err3('Program too large','Programme trop grand','Programm zu gross');
+  Err3('program buffer full','Programme trop grand','Programm zu gross');
   Exit;
  End;
  If AsmPassNo=2 Then SecPut(S,SecLen[S],B);
@@ -972,16 +1046,27 @@ Begin
  EmitByte(W And $FF);
 End;
 
+Procedure GrowRelocs;
+Var NC: LongInt; A: PLongArr; B,C: PByteArr;
+Begin
+ NC:=RelocCap*2;
+ GetMem(A,NC*4+8);GetMem(B,NC+8);GetMem(C,NC+8);
+ Move(RelocPos^,A^,(RelocN+1)*4);
+ Move(RelocSrc^,B^,RelocN+1);
+ Move(RelocDst^,C^,RelocN+1);
+ FreeMem(RelocPos,RelocCap*4+8);FreeMem(RelocSrc,RelocCap+8);FreeMem(RelocDst,RelocCap+8);
+ RelocPos:=A;RelocSrc:=B;RelocDst:=C;RelocCap:=NC;
+End;
+
 { Mot long, avec relocation eventuelle (RSect >= 0) }
 Procedure EmitLong(L: LongInt; RSect: Integer);
 Begin
  If (RSect>=0) And Not AbsMode And (AsmPassNo=2) And (CurSect<>SEC_BSS) Then Begin
-  If RelocN<MAXRELOC Then Begin
-   Inc(RelocN);
-   RelocPos^[RelocN]:=SecLen[CurSect];
-   RelocSrc^[RelocN]:=CurSect;
-   RelocDst^[RelocN]:=RSect;
-  End;
+  If RelocN>=RelocCap Then GrowRelocs;
+  Inc(RelocN);
+  RelocPos^[RelocN]:=SecLen[CurSect];
+  RelocSrc^[RelocN]:=CurSect;
+  RelocDst^[RelocN]:=RSect;
  End;
  EmitWord(ShrL(L,16));
  EmitWord(L And $FFFF);
@@ -990,6 +1075,7 @@ End;
 Procedure ReserveBytes(N: LongInt);
 Begin
  If N<=0 Then Exit;
+ If OffMode Then Begin Inc(OffPC,N);Exit;End;
  If AbsMode Then Begin Inc(SecLen[0],N);Exit;End;
  If CurSect=SEC_BSS Then Inc(SecLen[SEC_BSS],N)
  Else Begin
@@ -1018,13 +1104,13 @@ End;
 
 Function IsIdStart(C: Char): Boolean;
 Begin
- IsIdStart:=((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or (C='_') Or (C='.');
+ IsIdStart:=((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or (C='_') Or (C='.') Or (C='@');
 End;
 
 Function IsIdChar(C: Char): Boolean;
 Begin
  IsIdChar:=((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or (C='_') Or
-           (C='.') Or ((C>='0') And (C<='9')) Or (C='$');
+           (C='.') Or ((C>='0') And (C<='9')) Or (C='$') Or (C='@');
 End;
 
 Function IsHexCh(C: Char): Boolean;
@@ -1052,17 +1138,39 @@ End;
 
 Function ExprLevel(L: Integer): TTV; Forward;
 
+Var
+ NumRadix  : Integer;     { RADIX : 2, 4, 8, 10 ou 16 }
+ CurRS     : LongInt;     { compteur RS (symbole reserve __RS) }
+
 Function MacArgCount: LongInt;
+Var K: Integer;
 Begin
- If SrcTop>0 Then Begin
-  If Srcs[SrcTop].Kind=1 Then MacArgCount:=Srcs[SrcTop].NArg
-  Else MacArgCount:=0;
- End Else MacArgCount:=0;
+ MacArgCount:=0;
+ K:=SrcTop;
+ While (K>0) And (Srcs[K].Kind<>1) Do Dec(K);
+ If K>0 Then MacArgCount:=Srcs[K].NArg;
+End;
+
+Function DigitOk(C: Char; Rdx: Integer): Boolean;
+Begin
+ DigitOk:=False;
+ If Not IsHexCh(C) Then Exit;
+ DigitOk:=HexVal(C)<Rdx;
+End;
+
+Function ReservedSym(Const U: String; Var V: LongInt): Boolean;
+Begin
+ ReservedSym:=True;
+ If U='NARG' Then V:=MacArgCount
+ Else If U='__RS' Then V:=CurRS
+ Else If U='__LK' Then V:=AO.Fmt
+ Else If U='__G2' Then V:=45+256*(AO.Proc Mod 100)
+ Else ReservedSym:=False;
 End;
 
 Function ExprPrimary: TTV;
-Var R: TTV; C: Char; V: LongInt; N,I: Integer; Name: String; P: PSym;
-    Q: Char; Cnt: Integer;
+Var R: TTV; C: Char; V: LongInt; N: Integer; Name: String; P: PSym;
+    Q: Char; Cnt: Integer; Closed: Boolean; RV: LongInt;
 Begin
  R:=MkTV(0,SEC_ABS,False);
  SkipSp;
@@ -1071,12 +1179,18 @@ Begin
   ExprPrimary:=R;Exit;
  End;
  C:=ES[EP];
+ { chiffres suivis de $ : etiquette locale }
+ N:=EP;
+ If (C>='0') And (C<='9') Then Begin
+  While (N<=Length(ES)) And (ES[N]>='0') And (ES[N]<='9') Do Inc(N);
+  If (N<=Length(ES)) And (ES[N]='$') Then C:='_';
+ End;
  If C='(' Then Begin
   Inc(EP);
   R:=ExprLevel(0);
   SkipSp;
   If (EP<=Length(ES)) And (ES[EP]=')') Then Inc(EP)
-  Else ExprError3('Missing )','Parenthese ) manquante','Klammer ) fehlt');
+  Else ExprError3('missing close bracket','Parenthese ) manquante','Klammer ) fehlt');
  End
  Else If C='$' Then Begin
   If (EP<Length(ES)) And IsHexCh(ES[EP+1]) Then Begin
@@ -1088,19 +1202,19 @@ Begin
   End Else Begin
    Inc(EP);
    R.V:=CurPC;
-   If Not AbsMode Then R.S:=CurSect;
+   If Not AbsMode And Not OffMode Then R.S:=CurSect;
   End;
  End
  Else If C='%' Then Begin
   Inc(EP);V:=0;
   If (EP>Length(ES)) Or Not (ES[EP] In ['0','1']) Then
-   ExprError3('Bad binary number','Nombre binaire incorrect','Falsche Binaerzahl');
+   ExprError3('invalid number','Nombre binaire incorrect','Falsche Binaerzahl');
   While (EP<=Length(ES)) And (ES[EP] In ['0','1']) Do Begin
    V:=(V Shl 1) Or (Ord(ES[EP])-48);Inc(EP);
   End;
   R.V:=V;
  End
- Else If C='@' Then Begin
+ Else If (C='@') And (EP<Length(ES)) And (ES[EP+1] In ['0'..'7']) Then Begin
   Inc(EP);V:=0;
   While (EP<=Length(ES)) And (ES[EP] In ['0'..'7']) Do Begin
    V:=(V Shl 3) Or (Ord(ES[EP])-48);Inc(EP);
@@ -1115,52 +1229,64 @@ Begin
     V:=(V Shl 4) Or HexVal(ES[EP]);Inc(EP);
    End;
   End Else Begin
-   While (EP<=Length(ES)) And (ES[EP]>='0') And (ES[EP]<='9') Do Begin
-    V:=V*10+(Ord(ES[EP])-48);Inc(EP);
+   While (EP<=Length(ES)) And DigitOk(ES[EP],NumRadix) Do Begin
+    V:=V*NumRadix+HexVal(ES[EP]);Inc(EP);
    End;
+   If (EP<=Length(ES)) And (ES[EP]>='0') And (ES[EP]<='9') Then
+    ExprError3('number too large','Nombre trop grand','Zahl zu gross');
   End;
   R.V:=V;
  End
  Else If (C='''') Or (C='"') Then Begin
-  Q:=C;Inc(EP);V:=0;Cnt:=0;
+  Q:=C;Inc(EP);V:=0;Cnt:=0;Closed:=False;
   While EP<=Length(ES) Do Begin
    If ES[EP]=Q Then Begin
     If (EP<Length(ES)) And (ES[EP+1]=Q) Then Begin
      V:=(V Shl 8) Or Ord(Q);Inc(Cnt);Inc(EP,2);
-    End Else Begin Inc(EP);Break;End;
+    End Else Begin Inc(EP);Closed:=True;Break;End;
    End Else Begin
     V:=(V Shl 8) Or Ord(ES[EP]);Inc(Cnt);Inc(EP);
    End;
   End;
+  If Not Closed Then ExprError3('missing quote','Apostrophe manquante','Anfuehrungszeichen fehlt');
   R.V:=V;
  End
  Else If C='*' Then Begin
   Inc(EP);
   R.V:=CurPC;
-  If Not AbsMode Then R.S:=CurSect;
+  If Not AbsMode And Not OffMode Then R.S:=CurSect;
  End
- Else If IsIdStart(C) Then Begin
+ Else If IsIdStart(C) Or (C='_') Then Begin
   N:=EP;
   While (EP<=Length(ES)) And IsIdChar(ES[EP]) Do Inc(EP);
   Name:=Copy(ES,N,EP-N);
-  If Upper(Name)='NARG' Then R.V:=MacArgCount
+  If ReservedSym(Upper(Name),RV) Then R.V:=RV
   Else Begin
    Name:=LocalName(Name);
    P:=FindSym(Name);
-   If (P<>Nil) And P^.Defd And (P^.Kind<>2) Then Begin
+   If (P<>Nil) And P^.Defd And (P^.Kind=2) Then Begin
+    Warn3('misuse of register list','Mauvaise utilisation de liste de registres','Falsche Verwendung der Registerliste');
+    R.V:=P^.Value;R.S:=SEC_ABS;
+   End Else If (P<>Nil) And P^.Defd Then Begin
     R.V:=P^.Value;R.S:=P^.Sect;
    End Else Begin
     R.U:=True;
     R.V:=0;
-    If UndefName='' Then UndefName:=Copy(Name,1,63);
+    If UndefName='' Then UndefName:=Copy(Name,1,255);
    End;
   End;
  End
  Else Begin
-  ExprError3('Bad expression','Expression incorrecte','Falscher Ausdruck');
+  ExprError3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
   Inc(EP);
  End;
  ExprPrimary:=R;
+End;
+
+Procedure TypeErr;
+Begin
+ If Not AO.NoType Then
+  ExprError3('illegal type combination','Combinaison de types illegale','Illegale Typkombination');
 End;
 
 Function ExprUnary: TTV;
@@ -1171,13 +1297,14 @@ Begin
   If ES[EP]='-' Then Begin
    Inc(EP);R:=ExprUnary;
    R.V:=-R.V;
-   If R.S>=0 Then Begin R.S:=SEC_ABS;ExprError3('Illegal relocation','Relocation illegale','Illegale Relokation');End;
+   If R.S>=0 Then Begin R.S:=SEC_ABS;TypeErr;End;
    ExprUnary:=R;Exit;
   End;
   If ES[EP]='+' Then Begin Inc(EP);ExprUnary:=ExprUnary;Exit;End;
   If ES[EP]='~' Then Begin
    Inc(EP);R:=ExprUnary;
    R.V:=Not R.V;
+   If R.S>=0 Then Begin R.S:=SEC_ABS;TypeErr;End;
    ExprUnary:=R;Exit;
   End;
  End;
@@ -1189,10 +1316,12 @@ Begin
  SignedLt:=A<B;
 End;
 
+{ Niveaux (priorite croissante, manuel p.70) : 0 comparaisons, 1 + -, 2 * / %,
+  3 & | ^ (meme niveau), 4 << >>, puis unaire }
 Function ExprLevel(L: Integer): TTV;
 Var A,B: TTV; Op: Integer; C,D: Char; Done: Boolean;
 Begin
- If L>6 Then Begin ExprLevel:=ExprUnary;Exit;End;
+ If L>4 Then Begin ExprLevel:=ExprUnary;Exit;End;
  A:=ExprLevel(L+1);
  Repeat
   SkipSp;
@@ -1211,16 +1340,16 @@ Begin
         Else If (C='>') And (D<>'>') Then Begin Op:=4;Inc(EP);End
         Else If (C='!') And (D='=') Then Begin Op:=2;Inc(EP,2);End;
        End;
-    1: If (C='|') Or ((C='!') And (D<>'=')) Then Begin Op:=1;Inc(EP);End;
-    2: If C='^' Then Begin Op:=1;Inc(EP);End;
-    3: If C='&' Then Begin Op:=1;Inc(EP);End;
-    4: If (C='<') And (D='<') Then Begin Op:=1;Inc(EP,2);End
-       Else If (C='>') And (D='>') Then Begin Op:=2;Inc(EP,2);End;
-    5: If C='+' Then Begin Op:=1;Inc(EP);End
+    1: If C='+' Then Begin Op:=1;Inc(EP);End
        Else If C='-' Then Begin Op:=2;Inc(EP);End;
-    6: If C='*' Then Begin Op:=1;Inc(EP);End
+    2: If C='*' Then Begin Op:=1;Inc(EP);End
        Else If C='/' Then Begin Op:=2;Inc(EP);End
        Else If (C='%') Then Begin Op:=3;Inc(EP);End;
+    3: If C='&' Then Begin Op:=1;Inc(EP);End
+       Else If (C='|') Or ((C='!') And (D<>'=')) Then Begin Op:=2;Inc(EP);End
+       Else If C='^' Then Begin Op:=3;Inc(EP);End;
+    4: If (C='<') And (D='<') Then Begin Op:=1;Inc(EP,2);End
+       Else If (C='>') And (D='>') Then Begin Op:=2;Inc(EP,2);End;
    End;
    If Op<>0 Then Begin
     Done:=False;
@@ -1228,6 +1357,7 @@ Begin
     A.U:=A.U Or B.U;
     Case L Of
      0: Begin
+         If (A.S>=0)<>(B.S>=0) Then TypeErr;
          Case Op Of
           1: If A.V=B.V Then A.V:=-1 Else A.V:=0;
           2: If A.V<>B.V Then A.V:=-1 Else A.V:=0;
@@ -1238,44 +1368,47 @@ Begin
          End;
          A.S:=SEC_ABS;
         End;
-     1: Begin A.V:=A.V Or B.V;A.S:=SEC_ABS;End;
-     2: Begin A.V:=A.V Xor B.V;A.S:=SEC_ABS;End;
-     3: Begin A.V:=A.V And B.V;A.S:=SEC_ABS;End;
+     3: Begin
+         If (A.S>=0) Or (B.S>=0) Then TypeErr;
+         Case Op Of
+          1: A.V:=A.V And B.V;
+          2: A.V:=A.V Or B.V;
+          3: A.V:=A.V Xor B.V;
+         End;
+         A.S:=SEC_ABS;
+        End;
      4: Begin
+         If (A.S>=0) Or (B.S>=0) Then TypeErr;
          If Op=1 Then A.V:=A.V Shl (B.V And 63)
          Else A.V:=ShrL(A.V,B.V And 63);
          A.S:=SEC_ABS;
         End;
-     5: Begin
+     1: Begin
          If Op=1 Then Begin
-          If (A.S>=0) And (B.S>=0) Then
-           ExprError3('Illegal relocation','Relocation illegale','Illegale Relokation')
+          If (A.S>=0) And (B.S>=0) Then TypeErr
           Else If B.S>=0 Then A.S:=B.S;
           A.V:=A.V+B.V;
          End Else Begin
           If (A.S>=0) And (B.S>=0) Then Begin
            If A.S<>B.S Then Begin
-            If Not (A.U Or B.U) Then
-             ExprError3('Illegal relocation','Relocation illegale','Illegale Relokation');
+            If Not (A.U Or B.U) Then TypeErr;
            End;
            A.S:=SEC_ABS;
-          End Else If (A.S<0) And (B.S>=0) Then
-           ExprError3('Illegal relocation','Relocation illegale','Illegale Relokation');
+          End Else If (A.S<0) And (B.S>=0) Then TypeErr;
           A.V:=A.V-B.V;
          End;
         End;
-     6: Begin
-         If (A.S>=0) Or (B.S>=0) Then
-          ExprError3('Illegal relocation','Relocation illegale','Illegale Relokation');
+     2: Begin
+         If (A.S>=0) Or (B.S>=0) Then TypeErr;
          A.S:=SEC_ABS;
          Case Op Of
           1: A.V:=A.V*B.V;
           2: If B.V=0 Then Begin
-              If Not A.U Then ExprError3('Division by zero','Division par zero','Division durch Null');
+              If Not A.U Then ExprError3('division by zero','Division par zero','Division durch Null');
               A.V:=0;
              End Else If (B.V=-1) Then A.V:=-A.V Else A.V:=A.V Div B.V;
           3: If B.V=0 Then Begin
-              If Not A.U Then ExprError3('Division by zero','Division par zero','Division durch Null');
+              If Not A.U Then ExprError3('division by zero','Division par zero','Division durch Null');
               A.V:=0;
              End Else If B.V=-1 Then A.V:=0 Else A.V:=A.V Mod B.V;
          End;
@@ -1294,7 +1427,7 @@ Begin
  ExprErrMsg:='';UndefName:='';
  R:=ExprLevel(0);
  If (ExprErrMsg='') And R.U And (AsmPassNo=2) And (UndefName<>'') Then Begin
-  Err3('Undefined symbol: '+UndefName,'Symbole non defini : '+UndefName,
+  Err3('undefined symbol: '+UndefName,'Symbole non defini : '+UndefName,
        'Undefiniertes Symbol: '+UndefName);
   EvalAt:=False;Exit;
  End;
@@ -1313,7 +1446,7 @@ Begin
  If Not EvalAt(R) Then Begin EvalStr:=False;Exit;End;
  SkipSp;
  If EP<=Length(ES) Then Begin
-  Err3('Bad expression','Expression incorrecte','Falscher Ausdruck');
+  Err3('expression mismatch','Expression incorrecte','Falscher Ausdruck');
   EvalStr:=False;Exit;
  End;
  EvalStr:=True;
@@ -1326,7 +1459,7 @@ End;
 Const
  OK_NONE=0; OK_DN=1; OK_AN=2; OK_IND=3; OK_POST=4; OK_PRE=5; OK_DISP=6;
  OK_IDX=7; OK_ABSW=8; OK_ABSL=9; OK_PCD=10; OK_PCI=11; OK_IMM=12;
- OK_SR=13; OK_CCR=14; OK_USP=15; OK_LIST=16;
+ OK_SR=13; OK_CCR=14; OK_USP=15; OK_LIST=16; OK_PAIR=17;
 
  MA_ALL  = $1FFE;
  MA_DATA = $1FFA;
@@ -1351,6 +1484,7 @@ Type
   Sz   : Integer;        { taille imposee pour un absolu : 2 ou 4 }
   Mask : LongInt;        { liste de registres (D0=bit0 .. A7=bit15) }
   HasX : Boolean;
+  Scale: Integer;       { echelle de l'index (1,2,4,8) }
  End;
 
 Var
@@ -1367,6 +1501,8 @@ Var
  XN       : Integer;
  XWords   : Integer;
  BadInstr : Boolean;
+ EvenSkip : Boolean;     { l'instruction n'accede pas a la memoire (LEA, PEA...) }
+ ExplSize : Boolean;
 
 Function KBit(K: Integer): LongInt;
 Begin
@@ -1384,9 +1520,18 @@ End;
 
 { Registre : 0..7 = D0..D7, 8..15 = A0..A7 (SP = A7), 20 SR, 21 CCR, 22 USP,
   23 PC, -1 sinon }
+Var
+ EqurName : Array[1..64] Of String[40];
+ EqurReg  : Array[1..64] Of Integer;
+ EqurN    : Integer;
+
 Function RegOf(Const U: String): Integer;
+Var K: Integer;
 Begin
  RegOf:=-1;
+ If EqurN>0 Then
+  For K:=1 To EqurN Do
+   If EqurName[K]=U Then Begin RegOf:=EqurReg[K];Exit;End;
  If Length(U)=2 Then Begin
   If (U[1]='D') And (U[2]>='0') And (U[2]<='7') Then RegOf:=Ord(U[2])-48
   Else If (U[1]='A') And (U[2]>='0') And (U[2]<='7') Then RegOf:=8+Ord(U[2])-48
@@ -1453,19 +1598,29 @@ Begin
  If (A=B) And (C=#0) Then ParseRegList:=True;
 End;
 
-{ Analyse un registre d'index : "D3.W", "A2.L", "D1" }
-Function ParseIndexReg(Const S0: String; Var R: Integer; Var L: Boolean): Boolean;
-Var S: String; P: Integer;
+{ Analyse un registre d'index : "D3.W", "A2.L", "D1", "D1.W*4" }
+Function ParseIndexReg(Const S0: String; Var R: Integer; Var L: Boolean; Var Sc: Integer): Boolean;
+Var S: String; P: Integer; T: String;
 Begin
  ParseIndexReg:=False;
  S:=Upper(TrimS(S0));
- L:=False;
+ L:=False;Sc:=1;
  P:=Pos('*',S);
- If P>0 Then S:=Copy(S,1,P-1);
+ If P>0 Then Begin
+  T:=TrimS(Copy(S,P+1,10));
+  S:=TrimS(Copy(S,1,P-1));
+  If T='1' Then Sc:=1 Else If T='2' Then Sc:=2 Else If T='4' Then Sc:=4 Else If T='8' Then Sc:=8
+  Else Begin Err3('invalid index scale','Echelle d''index invalide','Ungueltiger Indexfaktor');Exit;End;
+  If (Sc<>1) And (AO.Proc<68020) Then Begin
+   Err3('invalid 68020 addressing mode','Mode d''adressage 68020 invalide','Ungueltiger 68020-Adressmodus');Exit;
+  End;
+ End;
  P:=Pos('.',S);
  If P>0 Then Begin
   If Copy(S,P+1,1)='L' Then L:=True
-  Else If Copy(S,P+1,1)<>'W' Then Exit;
+  Else If Copy(S,P+1,1)<>'W' Then Begin
+   Err3('-W or .L expected as index size','-W oder .L erwartet','-W or .L expected as index size');Exit;
+  End;
   S:=Copy(S,1,P-1);
  End;
  R:=RegOf(S);
@@ -1491,7 +1646,7 @@ Var S,U,Pre,Inn,Suf: String; R,P,D,I,L,N: Integer; Items: Array[0..3] Of String;
     Post,IsReg: Boolean; Sy: PSym; M: LongInt; XL: Boolean; Ok: Boolean;
 Begin
  FillChar(O,SizeOf(O),0);
- O.S:=SEC_ABS;
+ O.S:=SEC_ABS;O.Scale:=1;
  S:=TrimS(S0);
  If S='' Then Begin
   Err3('Operand expected','Operande attendue','Operand erwartet');
@@ -1510,8 +1665,16 @@ Begin
   Else If R=20 Then O.K:=OK_SR
   Else If R=21 Then O.K:=OK_CCR
   Else If R=22 Then O.K:=OK_USP
-  Else Begin Err3('Illegal addressing mode','Mode d''adressage illegal','Illegaler Adressmodus');BadInstr:=True;End;
+  Else Begin Err3('addressing mode not allowed','Mode d''adressage illegal','Illegaler Adressmodus');BadInstr:=True;End;
   Exit;
+ End;
+ P:=Pos(':',U);
+ If P>1 Then Begin
+  R:=RegOf(TrimS(Copy(U,1,P-1)));
+  D:=RegOf(TrimS(Copy(U,P+1,20)));
+  If (R>=0) And (R<8) And (D>=0) And (D<8) Then Begin
+   O.K:=OK_PAIR;O.R:=R;O.XR:=D;Exit;
+  End;
  End;
  If ParseRegList(U,M) Then Begin O.K:=OK_LIST;O.Mask:=M;Exit;End;
  { symbole de liste de registres (REG) }
@@ -1555,6 +1718,7 @@ Begin
       EvalOpnd(Pre,O.V,O.S,O.U);
      End Else Begin
       O.R:=R-8;
+      If (Post Or (Pre='-')) And (Pre<>'-') And (Pre<>'') Then Ok:=False;
       If Post Then O.K:=OK_POST
       Else If Pre='-' Then O.K:=OK_PRE
       Else If Pre='' Then O.K:=OK_IND
@@ -1569,7 +1733,7 @@ Begin
      If (R>=8) And (R<=15) Or (R=23) Then Begin
       { d(An,Xn) : le deplacement est dans Pre }
       If R=23 Then O.K:=OK_PCI Else Begin O.K:=OK_IDX;O.R:=R-8;End;
-      If Not ParseIndexReg(Items[1],O.XR,O.XL) Then Ok:=False;
+      If Not ParseIndexReg(Items[1],O.XR,O.XL,O.Scale) Then Ok:=False;
       EvalOpnd(Pre,O.V,O.S,O.U);
      End Else Begin
       { (d,An) ou (d,An,Xn) }
@@ -1580,12 +1744,12 @@ Begin
       End Else Ok:=False;
       If (N>=3) And Ok Then Begin
        If R=23 Then O.K:=OK_PCI Else O.K:=OK_IDX;
-       If Not ParseIndexReg(Items[2],O.XR,O.XL) Then Ok:=False;
+       If Not ParseIndexReg(Items[2],O.XR,O.XL,O.Scale) Then Ok:=False;
       End;
      End;
     End;
     If Not Ok Then Begin
-     Err3('Illegal addressing mode','Mode d''adressage illegal','Illegaler Adressmodus');
+     Err3('addressing mode not allowed','Mode d''adressage illegal','Illegaler Adressmodus');
      BadInstr:=True;
     End;
     Exit;
@@ -1620,26 +1784,54 @@ Procedure CheckRange(V: LongInt; U: Boolean; Lo,Hi: LongInt);
 Begin
  If U Then Exit;
  If (V<Lo) Or (V>Hi) Then
-  Err3('Value out of range','Valeur hors limites','Wert ausserhalb des Bereichs');
+  Err3('data too large','Valeur hors limites','Wert ausserhalb des Bereichs');
 End;
 
 { Valeur immediate selon la taille }
 Procedure PutImm(Var O: TOp; Sz: Integer);
 Begin
  Case Sz Of
-  1: Begin CheckRange(O.V,O.U,-256,255);PutX(O.V And $FF,False,-1);End;
-  2: Begin CheckRange(O.V,O.U,-32768,65535);PutX(O.V And $FFFF,False,-1);End;
+  1: Begin
+      CheckRange(O.V,O.U,-256,255);
+      If O.S>=0 Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
+      PutX(O.V And $FF,False,-1);
+     End;
+  2: Begin
+      CheckRange(O.V,O.U,-32768,65535);
+      If O.S>=0 Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
+      PutX(O.V And $FFFF,False,-1);
+     End;
  Else PutX(ImgOf(O.V,O.S),True,O.S);
  End;
 End;
 
 { Encode un mode d'adressage ; retourne mode*8+registre ou -1 }
+Function ScaleBits(Sc: Integer): LongInt;
+Begin
+ Case Sc Of
+  2: ScaleBits:=$200;
+  4: ScaleBits:=$400;
+  8: ScaleBits:=$600;
+ Else ScaleBits:=0;
+ End;
+End;
+
+{ controle d'adresse impaire pour un absolu connu (OPT EVEN) }
+Procedure CheckOddAbs(Var O: TOp; Sz: Integer);
+Var V: LongInt;
+Begin
+ If Not AO.EvenChk Or EvenSkip Or O.U Or (Sz<2) Then Exit;
+ If (AsmPassNo<>2) Then Exit;
+ V:=ImgOf(O.V,O.S);
+ If Odd(V) Then Err3('odd address','Adresse impaire','Ungerade Adresse');
+End;
+
 Function EncEA(Var O: TOp; Sz: Integer; Allowed: LongInt): Integer;
 Var Disp,Tgt,At: LongInt; Ext: LongInt;
 Begin
  EncEA:=-1;
  If (O.K<1) Or (O.K>12) Or ((Allowed And KBit(O.K))=0) Then Begin
-  Err3('Illegal addressing mode','Mode d''adressage illegal','Illegaler Adressmodus');
+  Err3('addressing mode not allowed','Mode d''adressage illegal','Illegaler Adressmodus');
   BadInstr:=True;Exit;
  End;
  Case O.K Of
@@ -1657,15 +1849,20 @@ Begin
            CheckRange(O.V,O.U,-128,127);
            Ext:=(O.XR Shl 12) Or (O.V And $FF);
            If O.XL Then Ext:=Ext Or $800;
+           Ext:=Ext Or ScaleBits(O.Scale);
            PutX(Ext,False,-1);
            EncEA:=48+O.R;
           End;
   OK_ABSW: Begin
             CheckRange(O.V,O.U,-32768,32767);
+            If AO.ChkPC And (O.S>=0) Then Err3('addressing mode not allowed','Mode non permis','Adressmodus nicht erlaubt');
+            CheckOddAbs(O,Sz);
             PutX(O.V And $FFFF,False,-1);
             EncEA:=56;
            End;
   OK_ABSL: Begin
+            If AO.ChkPC And (O.S>=0) Then Err3('addressing mode not allowed','Mode non permis','Adressmodus nicht erlaubt');
+            CheckOddAbs(O,Sz);
             PutX(ImgOf(O.V,O.S),True,O.S);
             EncEA:=57;
            End;
@@ -1676,15 +1873,16 @@ Begin
             If O.K=OK_PCD Then Begin
              If (AsmPassNo=2) And Not O.U Then
               If (Disp<-32768) Or (Disp>32767) Then
-               Err3('Offset out of range','Deplacement hors limites','Abstand ausserhalb des Bereichs');
+               Err3('data too large','Deplacement hors limites','Abstand ausserhalb des Bereichs');
              PutX(Disp And $FFFF,False,-1);
              EncEA:=58;
             End Else Begin
              If (AsmPassNo=2) And Not O.U Then
               If (Disp<-128) Or (Disp>127) Then
-               Err3('Offset out of range','Deplacement hors limites','Abstand ausserhalb des Bereichs');
+               Err3('data too large','Deplacement hors limites','Abstand ausserhalb des Bereichs');
              Ext:=(O.XR Shl 12) Or (Disp And $FF);
              If O.XL Then Ext:=Ext Or $800;
+             Ext:=Ext Or ScaleBits(O.Scale);
              PutX(Ext,False,-1);
              EncEA:=59;
             End;
@@ -1725,7 +1923,7 @@ Begin
  NeedOps:=True;
  If NOps<>N Then Begin
   If NOps<N Then Err3('Operand expected','Operande attendue','Operand erwartet')
-  Else Err3('Too many operands','Trop d''operandes','Zu viele Operanden');
+  Else Err3('garbage following instruction','Trop d''operandes','Zu viele Operanden');
   BadInstr:=True;
   NeedOps:=False;
  End;
@@ -1744,13 +1942,13 @@ End;
 
 Procedure BadMode;
 Begin
- Err3('Illegal addressing mode','Mode d''adressage illegal','Illegaler Adressmodus');
+ Err3('addressing mode not allowed','Mode d''adressage illegal','Illegaler Adressmodus');
  BadInstr:=True;
 End;
 
 Procedure BadSize;
 Begin
- Err3('Illegal size','Taille illegale','Illegale Groesse');
+ Err3('invalid size','Taille illegale','Illegale Groesse');
  BadInstr:=True;
 End;
 
@@ -1770,7 +1968,7 @@ Begin
  Else If M='ILLEGAL' Then OpW:=$4AFC
  Else Begin GImplied:=False;Exit;End;
  If NOps<>0 Then Begin
-  Err3('Too many operands','Trop d''operandes','Zu viele Operanden');BadInstr:=True;
+  Err3('garbage following instruction','Trop d''operandes','Zu viele Operanden');BadInstr:=True;
  End;
 End;
 
@@ -1813,6 +2011,31 @@ Begin
  Else If (M='OR') Or (M='ORI') Then B:=$0000
  Else If (M='EOR') Or (M='EORI') Then B:=$0A00
  Else B:=$0C00;
+End;
+
+Procedure GMul32(Const M: String);
+Var E: Integer; Ext: LongInt; Sg,Dv: Boolean;
+Begin
+ If AO.Proc<68020 Then Begin
+  Err3('wrong processor','Mauvais processeur','Falscher Prozessor');BadInstr:=True;Exit;
+ End;
+ Sg:=(M='MULS') Or (M='DIVS') Or (M='DIVSL');
+ Dv:=(M='DIVU') Or (M='DIVS') Or (M='DIVUL') Or (M='DIVSL');
+ If (Ops[2].K<>OK_DN) And (Ops[2].K<>OK_PAIR) Then Begin BadMode;Exit;End;
+ If Ops[2].K=OK_PAIR Then Begin
+  { Dh:Dl (MUL) ou Dr:Dq (DIV) }
+  If Dv Then Ext:=(LongInt(Ops[2].XR) Shl 12) Or Ops[2].R Else Ext:=(LongInt(Ops[2].XR) Shl 12) Or Ops[2].R;
+  If (M<>'DIVUL') And (M<>'DIVSL') Then Ext:=Ext Or $400;
+ End Else Begin
+  If (M='DIVUL') Or (M='DIVSL') Then Begin BadMode;Exit;End;
+  Ext:=(LongInt(Ops[2].R) Shl 12);
+  If Dv Then Ext:=Ext Or Ops[2].R;
+ End;
+ If Sg Then Ext:=Ext Or $800;
+ PutX(Ext,False,-1);
+ E:=EncEA(Ops[1],4,MA_DATA);
+ If E<0 Then Exit;
+ If Dv Then OpW:=$4C40 Or E Else OpW:=$4C00 Or E;
 End;
 
 Function GArith(Const M: String): Boolean;
@@ -1930,8 +2153,13 @@ Begin
   OpW:=$B108 Or (Ops[2].R Shl 9) Or (SzBits(Sz) Shl 6) Or Ops[1].R;
   Exit;
  End;
+ If (M='DIVUL') Or (M='DIVSL') Then Begin
+  If Not NeedOps(2) Then Exit;
+  GMul32(M);Exit;
+ End;
  If (M='MULU') Or (M='MULS') Or (M='DIVU') Or (M='DIVS') Or (M='CHK') Then Begin
   If Not NeedOps(2) Then Exit;
+  If LnSz=4 Then Begin GMul32(M);Exit;End;
   If M='MULU' Then Base:=$C0C0 Else If M='MULS' Then Base:=$C1C0
   Else If M='DIVU' Then Base:=$80C0 Else If M='DIVS' Then Base:=$81C0
   Else Base:=$4180;
@@ -1964,7 +2192,12 @@ Begin
   End;
   If Ops[1].K=OK_CCR Then Begin
    E:=EncEA(Ops[2],2,MA_DALT);If E<0 Then Exit;
-   OpW:=$42C0 Or E;Exit;
+   If AO.Proc>=68010 Then OpW:=$42C0 Or E
+   Else Begin
+    OpW:=$40C0 Or E;
+    Warn3('68010 instruction, converted to MOVE SR','Instruction 68010 convertie en MOVE SR','68010-Befehl, in MOVE SR umgewandelt');
+   End;
+   Exit;
   End;
   If (Ops[1].K=OK_USP) And (Ops[2].K=OK_AN) Then Begin OpW:=$4E68 Or Ops[2].R;Exit;End;
   If (Ops[2].K=OK_USP) And (Ops[1].K=OK_AN) Then Begin OpW:=$4E60 Or Ops[1].R;Exit;End;
@@ -1987,6 +2220,8 @@ Begin
   If Not NeedOps(2) Then Exit;
   If (Ops[1].K<>OK_IMM) Or (Ops[2].K<>OK_DN) Then Begin BadMode;Exit;End;
   CheckRange(Ops[1].V,Ops[1].U,-128,255);
+  If (Ops[1].V>=128) And (Ops[1].V<=255) And (LnSz<>4) And Not Ops[1].U Then
+   Warn3('sign extended operand','Operande etendu avec signe','Operand vorzeichenerweitert');
   OpW:=$7000 Or (Ops[2].R Shl 9) Or (Ops[1].V And $FF);
   Exit;
  End;
@@ -2079,6 +2314,10 @@ Begin
   E:=EncEA(Ops[2],Sz,Al);If E<0 Then Exit;
   OpW:=$0100 Or (T Shl 6) Or (Ops[1].R Shl 9) Or E;
  End Else If Ops[1].K=OK_IMM Then Begin
+  If (Ops[2].K<>OK_DN) And Not Ops[1].U And ((Ops[1].V<0) Or (Ops[1].V>7)) Then Begin
+   If AO.ChkBit=0 Then Err3('Bit number should be 0-7 for byte','Numero de bit 0-7 pour un octet','Bitnummer 0-7 fuer Byte')
+   Else If AO.ChkBit=2 Then Warn3('Bit number should be 0-7 for byte','Numero de bit 0-7 pour un octet','Bitnummer 0-7 fuer Byte');
+  End;
   PutX(Ops[1].V And $FF,False,-1);
   E:=EncEA(Ops[2],Sz,Al);If E<0 Then Exit;
   OpW:=$0800 Or (T Shl 6) Or E;
@@ -2086,8 +2325,8 @@ Begin
 End;
 
 Function GBranch(Const M: String): Boolean;
-Var CC: Integer; Disp,Tgt,At: LongInt; Short,SameSec: Boolean; Sz: Integer;
-    N: String;
+Var CC: Integer; Disp,Tgt,At: LongInt; Short,SameSec,Lng: Boolean; Sz: Integer;
+    N: String; Explicit: Boolean;
 Begin
  GBranch:=False;
  CC:=-1;
@@ -2107,32 +2346,59 @@ Begin
  At:=InstrPC+2;
  Disp:=Tgt-At;
  Sz:=LnSz;
+ Explicit:=Sz<>0;
+ If Sz=0 Then Begin
+  If AO.BrDef=1 Then Sz:=1 Else If AO.BrDef=3 Then Sz:=4;
+ End;
+ Lng:=False;
+ If Sz=4 Then Begin
+  If (AO.Proc>=68020) And Not AO.OldBra Then Lng:=True
+  Else Begin
+   If Explicit Then Warn3('-L converted to .W','-L converti en .W','-L in .W umgewandelt');
+   Sz:=2;
+  End;
+ End;
  If (Sz=1) Or (Sz=8) Then Short:=True
- Else If Sz=2 Then Short:=False
+ Else If (Sz=2) Or Lng Then Short:=False
  Else Begin
   { taille automatique : decision enregistree a la passe 1 }
   Inc(DecIdx);
-  If DecIdx>MAXDEC Then DecIdx:=MAXDEC;
+  If DecIdx>=DECCAP Then Begin
+   DecIdx:=DECCAP-1;
+   Err3('program buffer full','Programme trop grand','Programm zu gross');
+  End;
   If AsmPassNo=1 Then Begin
    SameSec:=AbsMode Or (Ops[1].S=CurSect);
    Decs^[DecIdx]:=0;
    If Not Ops[1].U And SameSec And (Disp>=-128) And (Disp<=127) And (Disp<>0)
       And (Disp<>-1) Then Begin
-    If OptOptimize Or (Disp<0) Then Decs^[DecIdx]:=1;
+    If OptOptimize Or (AO.Opt[1] And (Disp<0)) Then Decs^[DecIdx]:=1;
    End;
   End;
   Short:=Decs^[DecIdx]=1;
  End;
+ If AsmPassNo=2 Then Begin
+  If Not Ops[1].U And Odd(Tgt) Then Err3('odd address','Adresse impaire','Ungerade Adresse');
+ End;
  If Short Then Begin
   If (AsmPassNo=2) And Not Ops[1].U Then
    If (Disp<-128) Or (Disp>127) Then
-    Err3('Branch out of range','Branchement hors limites','Sprung ausserhalb des Bereichs');
+    Err3('data too large','Branchement hors limites','Sprung ausserhalb des Bereichs');
   OpW:=$6000 Or (CC Shl 8) Or (Disp And $FF);
-  If (Disp=0) And (Sz<>2) And (Ops[1].S=CurSect) Or ((Disp=0) And AbsMode) Then OpW:=$4E71;
+  If (Disp=0) And ((Ops[1].S=CurSect) Or AbsMode) And Not Ops[1].U Then Begin
+   If CC=1 Then Err3('illegal BSR.S','BSR.S illegal','BSR.S unzulaessig')
+   Else If AO.Opt[7] Then Begin
+    OpW:=$4E71;
+    Warn3('short branch converted to NOP','Branchement court converti en NOP','Kurzer Sprung in NOP umgewandelt');
+   End Else Err3('short branch cannot be 0 bytes','Branchement court de 0 octet','Kurzer Sprung mit 0 Bytes');
+  End;
+ End Else If Lng Then Begin
+  OpW:=$6000 Or (CC Shl 8) Or $FF;
+  PutX(Disp,True,-1);
  End Else Begin
   If (AsmPassNo=2) And Not Ops[1].U Then
    If (Disp<-32768) Or (Disp>32767) Then
-    Err3('Branch out of range','Branchement hors limites','Sprung ausserhalb des Bereichs');
+    Err3('data too large','Branchement hors limites','Sprung ausserhalb des Bereichs');
   OpW:=$6000 Or (CC Shl 8);
   PutX(Disp And $FFFF,False,-1);
  End;
@@ -2150,8 +2416,19 @@ Begin
  End Else If M='LINK' Then Begin
   If Not NeedOps(2) Then Exit;
   If (Ops[1].K<>OK_AN) Or (Ops[2].K<>OK_IMM) Then Begin BadMode;Exit;End;
-  OpW:=$4E50 Or Ops[1].R;
-  PutImm(Ops[2],2);
+  If Not Ops[2].U Then
+   If (Ops[2].V>0) Or Odd(Ops[2].V) Then
+    Warn3('invalid LINK displacement','Deplacement LINK invalide','Ungueltige LINK-Verschiebung');
+  If LnSz=4 Then Begin
+   If AO.Proc<68020 Then Begin
+    Err3('wrong processor','Mauvais processeur','Falscher Prozessor');BadInstr:=True;Exit;
+   End;
+   OpW:=$4808 Or Ops[1].R;
+   PutImm(Ops[2],4);
+  End Else Begin
+   OpW:=$4E50 Or Ops[1].R;
+   PutImm(Ops[2],2);
+  End;
  End Else If M='UNLK' Then Begin
   If Not NeedOps(1) Then Exit;
   If Ops[1].K<>OK_AN Then Begin BadMode;Exit;End;
@@ -2195,7 +2472,8 @@ Begin
   Disp:=ImgOf(Ops[2].V,Ops[2].S)-At;
   If (AsmPassNo=2) And Not Ops[2].U Then
    If (Disp<-32768) Or (Disp>32767) Then
-    Err3('Branch out of range','Branchement hors limites','Sprung ausserhalb des Bereichs');
+    Err3('data too large','Branchement hors limites','Sprung ausserhalb des Bereichs');
+  If (AsmPassNo=2) And Not Ops[2].U And Odd(Disp+At) Then Err3('odd address','Adresse impaire','Ungerade Adresse');
   OpW:=$50C8 Or (CC Shl 8) Or Ops[1].R;
   PutX(Disp And $FFFF,False,-1);
  End Else If (Length(M)>=2) And (Length(M)<=3) And (M[1]='S') And
@@ -2209,7 +2487,7 @@ End;
 
 Const
  MnList1 = ' NOP RTS RTE RTR RESET TRAPV ILLEGAL CLR NEG NEGX NOT TST JMP JSR PEA TAS NBCD ADD SUB AND OR EOR CMP '+
-  'ADDI SUBI ANDI ORI EORI CMPI ADDA SUBA CMPA ADDQ SUBQ ADDX SUBX ABCD SBCD CMPM MULU MULS DIVU DIVS CHK ';
+  'ADDI SUBI ANDI ORI EORI CMPI ADDA SUBA CMPA ADDQ SUBQ ADDX SUBX ABCD SBCD CMPM MULU MULS DIVU DIVS CHK DIVUL DIVSL ';
  MnList2 = ' MOVE MOVEA MOVEQ MOVEM MOVEP ASL ASR LSL LSR ROL ROR ROXL ROXR BTST BCHG BCLR BSET '+
   'LEA LINK UNLK SWAP EXT EXG TRAP STOP DBRA ';
 
@@ -2226,20 +2504,93 @@ Begin
  IsMnemonic:=False;
 End;
 
+{ tailles permises : 1 B, 2 W, 4 L, 8 S ; 0 = pas de verification }
+Function SizeMask(Const M: String): Integer;
+Begin
+ SizeMask:=15;
+ If (M='NOP') Or (M='RTS') Or (M='RTE') Or (M='RTR') Or (M='RESET') Or (M='TRAPV') Or
+    (M='ILLEGAL') Or (M='UNLK') Or (M='TRAP') Or (M='STOP') Then SizeMask:=0
+ Else If (M='JMP') Or (M='JSR') Then SizeMask:=4
+ Else If (M='LEA') Or (M='PEA') Or (M='MOVEQ') Or (M='EXG') Then SizeMask:=4
+ Else If (M='ADDA') Or (M='SUBA') Or (M='CMPA') Or (M='MOVEA') Or (M='MOVEM') Or
+         (M='MOVEP') Or (M='EXT') Or (M='LINK') Or (M='CHK') Then SizeMask:=6
+ Else If M='SWAP' Then SizeMask:=2
+ Else If (M='MULU') Or (M='MULS') Or (M='DIVU') Or (M='DIVS') Then SizeMask:=6
+ Else If (M='DIVUL') Or (M='DIVSL') Then SizeMask:=4
+ Else If (M='NBCD') Or (M='TAS') Or (M='ABCD') Or (M='SBCD') Then SizeMask:=1
+ Else If (M='BTST') Or (M='BCHG') Or (M='BCLR') Or (M='BSET') Then SizeMask:=5
+ Else If (M='DBRA') Or ((Length(M)>=3) And (Length(M)<=4) And (Copy(M,1,2)='DB') And (CondCode(Copy(M,3,2))>=0)) Then SizeMask:=2
+ Else If (Length(M)>=2) And (Length(M)<=3) And (M[1]='S') And (M<>'SUB') And (M<>'STOP') And (M<>'SWAP') And
+         (M<>'SBCD') And (CondCode(Copy(M,2,2))>=0) Then SizeMask:=1
+ Else If (M='ASL') Or (M='ASR') Or (M='LSL') Or (M='LSR') Or (M='ROL') Or (M='ROR') Or (M='ROXL') Or (M='ROXR') Then SizeMask:=7;
+End;
+
+{ OPT CHKIMM : un absolu a la place d'un immediat ? }
+Procedure CheckImmMissing(Const M: String);
+Begin
+ If Not AO.ChkImm Or (NOps<>2) Then Exit;
+ If Not ((M='ADD') Or (M='SUB') Or (M='AND') Or (M='OR') Or (M='CMP') Or (M='ADDX') Or (M='SUBX')) Then Exit;
+ If (Ops[2].K<>OK_DN) And (Ops[2].K<>OK_AN) Then Exit;
+ If (Ops[1].K<>OK_ABSL) Or (Ops[1].Sz<>0) Or (Ops[1].S>=0) Or Ops[1].U Then Exit;
+ If (Ops[1].V<-128) Or (Ops[1].V>255) Then Exit;
+ Err3('# probably missing','# probablement manquant','# wahrscheinlich vergessen');
+ BadInstr:=True;
+End;
+
+{ OPT USER : instructions privilegiees refusees }
+Procedure CheckPrivileged(Const M: String);
+Var Priv: Boolean; I: Integer;
+Begin
+ If Not AO.User Then Exit;
+ Priv:=(M='RESET') Or (M='RTE') Or (M='STOP');
+ For I:=1 To NOps Do
+  If (Ops[I].K=OK_USP) Or ((Ops[I].K=OK_SR) And (I=NOps) And (M<>'MOVE')) Or
+     ((Ops[I].K=OK_SR) And (I=2) And (M='MOVE')) Then Priv:=True;
+ If (M='MOVE') And (NOps=2) And (Ops[1].K=OK_SR) And (AO.Proc>=68010) Then Priv:=True;
+ If Priv Then Begin
+  Err3('privileged instruction','Instruction privilegiee','Privilegierter Befehl');
+  BadInstr:=True;
+ End;
+End;
+
+{ OPT AUTOPC : les absolus relatifs au texte deviennent PC-relatifs }
+Procedure AutoPCConv(Const M: String);
+Var I,Last: Integer;
+Begin
+ If Not AO.AutoPC Or AbsMode Or (CurSect<>SEC_TEXT) Then Exit;
+ Last:=0;
+ If NOps=2 Then Last:=1
+ Else If (NOps=1) And ((M='JMP') Or (M='JSR') Or (M='PEA')) Then Last:=1;
+ If (M='LEA') Or (M='MOVEA') Then Last:=1;
+ If (M='MOVEM') And (NOps=2) And (Ops[1].K<>OK_LIST) And (Ops[1].K<>OK_DN) And (Ops[1].K<>OK_AN) Then Last:=1;
+ For I:=1 To Last Do
+  If ((Ops[I].K=OK_ABSL) Or (Ops[I].K=OK_ABSW)) And (Ops[I].Sz=0) And (Ops[I].S=SEC_TEXT) Then
+   Ops[I].K:=OK_PCD;
+End;
+
 { Assemble l'instruction courante : M est le mnemonique en majuscules }
 Function AsmInstruction(Const M: String): Boolean;
-Var I,N: Integer; Parts: Array[0..3] Of String;
+Var I,N: Integer; Parts: Array[0..4] Of String;
 Begin
  AsmInstruction:=True;
  If Not IsMnemonic(M) Then Begin AsmInstruction:=False;Exit;End;
  BadInstr:=False;XN:=0;XWords:=0;OpW:=0;
  NOps:=0;
+ EvenSkip:=(M='LEA') Or (M='PEA') Or (M='JMP') Or (M='JSR');
  If LnArgs<>'' Then Begin
-  N:=SplitTop(LnArgs,Parts,4);
+  N:=SplitTop(LnArgs,Parts,5);
+  If N>4 Then Begin
+   Err3('garbage following instruction','Trop d''operandes','Zu viele Operanden');
+   BadInstr:=True;N:=4;
+  End;
   For I:=1 To N Do Begin
    OpStr[I]:=Parts[I-1];
    NOps:=N;
   End;
+ End;
+ If (LnSz<>0) And ((SizeMask(M) And LnSz)=0) Then Begin
+  Err3('invalid size','Taille illegale','Illegale Groesse');
+  BadInstr:=True;
  End;
  If Odd(CurPC) Then ReserveBytes(1);
  InstrOff:=SecLen[CurSect];
@@ -2248,6 +2599,11 @@ Begin
  If AbsMode Then InstrPC:=OrgAddr+SecLen[0];
  For I:=1 To NOps Do ParseOp(OpStr[I],Ops[I]);
  If BadInstr Then Begin AsmInstruction:=True;Exit;End;
+ CheckImmMissing(M);
+ If BadInstr Then Begin AsmInstruction:=True;Exit;End;
+ CheckPrivileged(M);
+ If BadInstr Then Begin AsmInstruction:=True;Exit;End;
+ AutoPCConv(M);
  If GImplied(M) Or GUnary(M) Or GArith(M) Or GMove(M) Or GShift(M) Or
     GBit(M) Or GBranch(M) Or GMisc(M) Then Begin
   FlushInstr;
@@ -2257,6 +2613,9 @@ End;
 { ---------------------------------------------------------------------- }
 { Chargement de fichiers texte                                            }
 { ---------------------------------------------------------------------- }
+
+Var
+ LongLines : LongInt;       { lignes tronquees a 255 caracteres }
 
 Function LoadLines(Const Name: String; Var Arr: PLineArr; Var Count: Integer): Boolean;
 Var F: File; Buf: Array[0..4095] Of Byte; N,I: Integer; Cur: String;
@@ -2295,8 +2654,66 @@ Begin
  LoadLines:=True;
 End;
 
+{ Version de l'assembleur : nombre de lignes illimite (tableau extensible) }
+Function LoadLinesBig(Const Name: String; Var Arr: PLineArr; Var Count: LongInt): Boolean;
+Var F: File; Buf: Array[0..4095] Of Byte; I: Integer; Cur: String;
+    Got: Word; LastCR: Boolean; Cap: LongInt; Trunc: Boolean;
+
+ Procedure AddL;
+ Var NA: PLineArr;
+ Begin
+  If Count>=Cap Then Begin
+   GetMem(NA,Cap*2*SizeOf(PString)+8);
+   Move(Arr^,NA^,Cap*SizeOf(PString));
+   FreeMem(Arr,Cap*SizeOf(PString)+8);
+   Arr:=NA;Cap:=Cap*2;
+  End;
+  Inc(Count);Arr^[Count]:=NewStr(Cur);
+  Cur:='';
+ End;
+
+Begin
+ LoadLinesBig:=False;
+ Count:=0;
+ Assign(F,Name);
+ {$I-}
+ Reset(F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Cap:=2048;
+ GetMem(Arr,Cap*SizeOf(PString)+8);
+ Cur:='';LastCR:=False;Trunc:=False;
+ Repeat
+  BlockRead(F,Buf,SizeOf(Buf),Got);
+  For I:=0 To Got-1 Do Begin
+   If Buf[I]=13 Then Begin
+    AddL;Trunc:=False;LastCR:=True;
+   End Else If Buf[I]=10 Then Begin
+    If Not LastCR Then Begin AddL;Trunc:=False;End;
+    LastCR:=False;
+   End Else Begin
+    LastCR:=False;
+    If Buf[I]=26 Then Begin End
+    Else If Length(Cur)<255 Then Cur:=Cur+Chr(Buf[I])
+    Else If Not Trunc Then Begin Trunc:=True;Inc(LongLines);End;
+   End;
+  End;
+ Until Got=0;
+ If Cur<>'' Then AddL;
+ Close(F);
+ LoadLinesBig:=True;
+End;
+
 Procedure FreeLines(Arr: PLineArr; Count: Integer);
 Var I: Integer;
+Begin
+ If Arr=Nil Then Exit;
+ For I:=1 To Count Do FreeStr(Arr^[I]);
+ Dispose(Arr);
+End;
+
+Procedure FreeLinesBig(Arr: PLineArr; Count: LongInt);
+Var I: LongInt;
 Begin
  If Arr=Nil Then Exit;
  For I:=1 To Count Do FreeStr(Arr^[I]);
@@ -2307,7 +2724,7 @@ End;
 { Pile des sources                                                        }
 { ---------------------------------------------------------------------- }
 
-Procedure PushSrc(K: Integer; Lines: PLineArr; Count: Integer; Const Name: String; Own: Boolean);
+Procedure PushSrc(K: Integer; Lines: PLineArr; Count: LongInt; Const Name: String; Own: Boolean);
 Begin
  If SrcTop>=MAXSRC Then Begin
   Err3('Includes nested too deeply','Imbrications trop profondes','Zu tiefe Verschachtelung');
@@ -2327,7 +2744,7 @@ End;
 Procedure PopSrc;
 Begin
  If SrcTop<=0 Then Exit;
- If Srcs[SrcTop].Own Then FreeLines(Srcs[SrcTop].Lines,Srcs[SrcTop].Count);
+ If Srcs[SrcTop].Own Then FreeLinesBig(Srcs[SrcTop].Lines,Srcs[SrcTop].Count);
  Dec(SrcTop);
 End;
 
@@ -2356,28 +2773,81 @@ Begin
  End;
 End;
 
+{ index de parametre : 1-9, A-Z, a-z (10..35), -1 sinon }
+Function ParamOfChar(C: Char): Integer;
+Begin
+ ParamOfChar:=-1;
+ If (C>='1') And (C<='9') Then ParamOfChar:=Ord(C)-48
+ Else If (C>='A') And (C<='Z') Then ParamOfChar:=Ord(C)-55
+ Else If (C>='a') And (C<='z') Then ParamOfChar:=Ord(C)-87;
+End;
+
+Function HexMin(V: LongInt): String;
+Var S: String;
+Begin
+ S:=HexN(V,8);
+ While (Length(S)>1) And (S[1]='0') Do Delete(S,1,1);
+ HexMin:=S;
+End;
+
+Function PadZero(N: LongInt; W: Integer): String;
+Var S: String;
+Begin
+ S:=IntStr(N);
+ While Length(S)<W Do S:='0'+S;
+ PadZero:=S;
+End;
+
 Function SubstMacro(Const S: String; Var T: TSrc): String;
-Var R,Nm: String; I,K,J: Integer; C: Char;
+Var R,Nm: String; I,K,J: Integer; C: Char; P: PSym; V: LongInt; Hx: Boolean;
 Begin
  If Pos('\',S)=0 Then Begin SubstMacro:=S;Exit;End;
  R:='';I:=1;
  While I<=Length(S) Do Begin
   If (S[I]='\') And (I<Length(S)) Then Begin
    C:=S[I+1];
-   If (C>='0') And (C<='9') Then Begin
-    K:=Ord(C)-48;
-    If K=0 Then R:=R+T.Suffix Else R:=R+T.Args[K];
+   If C='0' Then Begin
+    If T.Suffix='' Then R:=R+'W' Else R:=R+T.Suffix;
     Inc(I,2);
    End Else If C='@' Then Begin
-    R:=R+'_'+IntStr(T.MacId);
+    R:=R+'_'+PadZero(T.MacId,3);
     Inc(I,2);
-   End Else If IsIdStart(C) And (T.MacIdx>0) Then Begin
+   End Else If C='#' Then Begin
+    R:=R+IntStr(T.NArg);
+    Inc(I,2);
+   End Else If C='\' Then Begin
+    R:=R+'\';
+    Inc(I,2);
+   End Else If (C='?') And (I+2<=Length(S)) Then Begin
+    K:=ParamOfChar(S[I+2]);
+    If K>0 Then R:=R+IntStr(Length(T.Args[K])) Else R:=R+'0';
+    Inc(I,3);
+   End Else If C='<' Then Begin
+    J:=I+2;Nm:='';
+    While (J<=Length(S)) And (S[J]<>'>') Do Begin Nm:=Nm+S[J];Inc(J);End;
+    Hx:=False;
+    If (Nm<>'') And (Nm[1]='$') Then Begin Hx:=True;Delete(Nm,1,1);End;
+    P:=FindSym(LocalName(Nm));
+    If (P<>Nil) And P^.Defd And (P^.Sect<0) And (P^.Kind<>2) Then Begin
+     If Hx Then R:=R+HexMin(P^.Value) Else R:=R+IntStr(P^.Value);
+    End Else If AsmPassNo=2 Then
+     Err3('invalid numeric expansion','Expansion numerique invalide','Ungueltige numerische Expansion');
+    I:=J+1;
+   End Else If IsIdStart(C) And (T.MacIdx>0) And (Macros[T.MacIdx].PNames<>'') Then Begin
     J:=I+1;Nm:='';
     While (J<=Length(S)) And IsIdChar(S[J]) Do Begin Nm:=Nm+S[J];Inc(J);End;
     K:=ParamIndex(Macros[T.MacIdx].PNames,Nm);
-    If (K>0) And (K<=9) Then Begin R:=R+T.Args[K];I:=J;End
+    If (K>0) And (K<=35) Then Begin R:=R+T.Args[K];I:=J;End
+    Else Begin
+     K:=ParamOfChar(C);
+     If K>0 Then Begin R:=R+T.Args[K];Inc(I,2);End
+     Else Begin R:=R+S[I];Inc(I);End;
+    End;
+   End Else Begin
+    K:=ParamOfChar(C);
+    If K>0 Then Begin R:=R+T.Args[K];Inc(I,2);End
     Else Begin R:=R+S[I];Inc(I);End;
-   End Else Begin R:=R+S[I];Inc(I);End;
+   End;
   End Else Begin R:=R+S[I];Inc(I);End;
  End;
  SubstMacro:=Copy(R,1,255);
@@ -2403,12 +2873,50 @@ Begin
  End;
 End;
 
+{ Ligne suivante de la source courante, sans la consommer ('' si fin) }
+Function PeekLine(Var S: String): Boolean;
+Begin
+ PeekLine:=False;
+ If SrcTop<=0 Then Exit;
+ If Srcs[SrcTop].Pos>Srcs[SrcTop].Count Then Exit;
+ S:=Srcs[SrcTop].Lines^[Srcs[SrcTop].Pos]^;
+ If Srcs[SrcTop].Kind=1 Then S:=SubstMacro(S,Srcs[SrcTop]);
+ PeekLine:=True;
+End;
+
+{ Appel de macro sur plusieurs lignes : la ligne se termine par une virgule et
+  la suivante commence par & }
+Procedure JoinContinuation(Var S: String);
+Var T: String; I,Q: Integer; Qc: Char;
+Begin
+ While PeekLine(T) Do Begin
+  Q:=1;
+  While (Q<=Length(T)) And ((T[Q]=' ') Or (T[Q]=#9)) Do Inc(Q);
+  If (Q>Length(T)) Or (T[Q]<>'&') Then Break;
+  { enleve le commentaire de la ligne courante }
+  Qc:=#0;
+  For I:=1 To Length(S) Do Begin
+   If Qc<>#0 Then Begin If S[I]=Qc Then Qc:=#0;End
+   Else If (S[I]='''') Or (S[I]='"') Then Qc:=S[I]
+   Else If (S[I]=';') And (I>1) And ((S[I-1]=' ') Or (S[I-1]=#9)) Then Begin S:=Copy(S,1,I-1);Break;End;
+  End;
+  While (S<>'') And ((S[Length(S)]=' ') Or (S[Length(S)]=#9)) Do Delete(S,Length(S),1);
+  Inc(Q);
+  While (Q<=Length(T)) And ((T[Q]=' ') Or (T[Q]=#9)) Do Inc(Q);
+  S:=Copy(S+Copy(T,Q,255),1,255);
+  Inc(Srcs[SrcTop].Pos);
+  UpdateLoc;
+ End;
+End;
+
 { ---------------------------------------------------------------------- }
 { Analyse d'une ligne                                                     }
 { ---------------------------------------------------------------------- }
 
+Function FindMacro(Const Name: String): Integer; Forward;
+
 Procedure SplitLine(Const S: String; Var Lbl,Op,Suf,Args: String);
-Var I,D: Integer; Q: Char; Tk: String;
+Var I,D: Integer; Q: Char; Tk: String; IsMac: Boolean;
 Begin
  Lbl:='';Op:='';Suf:='';Args:='';
  I:=1;
@@ -2428,11 +2936,23 @@ Begin
  While (I<=Length(S)) And (S[I]<>' ') And (S[I]<>#9) And (S[I]<>';') Do Begin
   Tk:=Tk+S[I];Inc(I);
  End;
+ { etiquette indentee terminee par ':' }
+ If (Lbl='') And (Length(Tk)>1) And (Tk[Length(Tk)]=':') And (S[1]<>'*') Then Begin
+  Lbl:=Copy(Tk,1,Length(Tk)-1);
+  If (Lbl<>'') And (Lbl[Length(Lbl)]=':') Then Delete(Lbl,Length(Lbl),1);
+  While (I<=Length(S)) And ((S[I]=' ') Or (S[I]=#9)) Do Inc(I);
+  If (I>Length(S)) Or (S[I]=';') Then Exit;
+  Tk:='';
+  While (I<=Length(S)) And (S[I]<>' ') And (S[I]<>#9) And (S[I]<>';') Do Begin
+   Tk:=Tk+S[I];Inc(I);
+  End;
+ End;
  D:=Pos('.',Tk);
  If (D>1) And (Tk[1]<>'.') Then Begin
   Op:=Upper(Copy(Tk,1,D-1));
   Suf:=Upper(Copy(Tk,D+1,10));
  End Else Op:=Upper(Tk);
+ IsMac:=(MacCount>0) And (FindMacro(Op)<>0);
  While (I<=Length(S)) And ((S[I]=' ') Or (S[I]=#9)) Do Inc(I);
  { champ des operandes }
  Q:=#0;D:=0;
@@ -2446,6 +2966,15 @@ Begin
     '''','"': Begin Q:=S[I];Args:=Args+S[I];Inc(I);End;
     '(': Begin Inc(D);Args:=Args+S[I];Inc(I);End;
     ')': Begin Dec(D);Args:=Args+S[I];Inc(I);End;
+    '<': If IsMac And ((Args='') Or (Args[Length(Args)]=',')) Then Begin
+          Args:=Args+'<';Inc(I);
+          While I<=Length(S) Do Begin
+           If S[I]='>' Then Begin
+            If (I<Length(S)) And (S[I+1]='>') Then Begin Args:=Args+'>>';Inc(I,2);End
+            Else Begin Args:=Args+'>';Inc(I);Break;End;
+           End Else Begin Args:=Args+S[I];Inc(I);End;
+          End;
+         End Else Begin Args:=Args+S[I];Inc(I);End;
     ';': If D<=0 Then Break Else Begin Args:=Args+S[I];Inc(I);End;
     ' ',#9: Begin
              If (D>0) Or ((Args<>'') And (Args[Length(Args)]=',')) Then Begin
@@ -2471,8 +3000,21 @@ End;
 Var
  PassSerial : Integer;
  EndFlag    : Boolean;
- RSCount    : LongInt;
  OutFileName: String;
+ HeadFlags  : LongInt;
+ HeadSet    : Boolean;
+ { listing }
+ ListCnt    : Integer;       { compteur LIST +/- }
+ ListPLen,ListLLen,ListPage,ListLineNo,ListSpc : Integer;
+ ListQ      : Array[1..8] Of String[255];
+ ListQN     : Integer;
+ ListHold   : Boolean;
+ ListTitle,ListSub : String[80];
+ ListFmt    : Array[0..2] Of Boolean;
+ IncDirs    : Array[1..16] Of String[120];
+ IncDirN    : Integer;
+ IncSeen    : Array[1..200] Of String[120];
+ IncSeenN   : Integer;
 
 Procedure DefSym(Const NameIn: String; V: LongInt; Sc: Integer; Kind: Byte);
 Var P: PSym; Name: String;
@@ -2482,13 +3024,13 @@ Begin
  If P=Nil Then P:=AddSym(Name)
  Else If P^.Defd And (P^.Pas=PassSerial) Then Begin
   If (Kind<>1) Or (P^.Kind<>1) Then Begin
-   Err3('Symbol already defined: '+NameIn,'Symbole deja defini : '+NameIn,
+   Err3('symbol defined twice: '+NameIn,'Symbole deja defini : '+NameIn,
         'Symbol bereits definiert: '+NameIn);
    Exit;
   End;
  End Else If (AsmPassNo=2) And P^.Defd And (Kind=0) And (P^.Kind=0) Then Begin
   If (P^.Value<>V) Or (P^.Sect<>Sc) Then
-   Err3('Phasing error: '+NameIn,'Erreur de phase : '+NameIn,'Phasenfehler: '+NameIn);
+   Err3('phasing error: '+NameIn,'Erreur de phase : '+NameIn,'Phasenfehler: '+NameIn);
  End;
  P^.Value:=V;P^.Sect:=Sc;P^.Kind:=Kind;P^.Defd:=True;P^.Pas:=PassSerial;
 End;
@@ -2496,10 +3038,10 @@ End;
 Procedure DefLabel(Const Name: String);
 Var Sc: Integer;
 Begin
- If AbsMode Then Sc:=SEC_ABS Else Sc:=CurSect;
+ If AbsMode Or OffMode Then Sc:=SEC_ABS Else Sc:=CurSect;
  DefSym(Name,CurPC,Sc,0);
- If (Name<>'') And (Name[1]<>'.') And (Name[Length(Name)]<>'$') Then
-  LastGlobal:=Copy(Name,1,63);
+ If (Name<>'') And Not IsLocalName(Name) Then
+  LastGlobal:=Copy(Name,1,255);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -2534,17 +3076,17 @@ Begin
 End;
 
 Function CondDirective(Const Op0,Args: String): Boolean;
-Var R: TTV; Test: Boolean; Parts: Array[0..3] Of String; N: Integer; P: PSym; Op: String;
+Var R: TTV; Test: Boolean; Parts: Array[0..3] Of String; N: Integer; P: PSym; Op: String; RV: LongInt;
 Begin
  CondDirective:=True;
  Op:=Op0;
  If Op='IFDEF' Then Op:='IFD' Else If Op='IFNDEF' Then Op:='IFND';
  If (Op='ENDC') Or (Op='ENDIF') Then Begin
-  If CondTop=0 Then Err3('ENDC without IF','ENDC sans IF','ENDC ohne IF')
+  If CondTop=0 Then Err3('spurious ENDC','ENDC sans IF','ENDC ohne IF')
   Else Begin Dec(CondTop);SetCondActive;End;
   Exit;
  End;
- If Op='ELSE' Then Begin
+ If (Op='ELSE') Or (Op='ELSEIF') Then Begin
   If CondTop=0 Then Err3('ELSE without IF','ELSE sans IF','ELSE ohne IF')
   Else Begin
    Conds[CondTop].Active:=Conds[CondTop].Parent And Not Conds[CondTop].Taken;
@@ -2571,8 +3113,11 @@ Begin
  If (Op='IFD') Or (Op='IFND') Then Begin
   Test:=False;
   If CondActive Then Begin
-   P:=FindSym(LocalName(TrimS(Args)));
-   Test:=(P<>Nil) And P^.Defd;
+   If ReservedSym(Upper(TrimS(Args)),RV) Then Test:=True
+   Else Begin
+    P:=FindSym(LocalName(TrimS(Args)));
+    Test:=(P<>Nil) And P^.Defd;
+   End;
    If Op='IFND' Then Test:=Not Test;
   End;
   CondPush(Test);
@@ -2597,23 +3142,32 @@ End;
 
 Var TmpBody : PLineArr;
 
+Procedure ListLine(Const S: String); Forward;
+
 Function CollectBody(Const OpStart,OpEnd: String; Var Cnt: Integer): PLineArr;
 Var S,L,O,Sf,A: String; Depth,I: Integer; Res: PLineArr; Done: Boolean;
 Begin
  Cnt:=0;Depth:=0;Done:=False;
  While Not Done Do Begin
   If Not NextLine(S) Then Begin
-   Err3('Unexpected end of file in '+OpStart,'Fin de fichier inattendue dans '+OpStart,
+   Err3('source expired prematurely','Fin de fichier inattendue dans '+OpStart,
         'Unerwartetes Dateiende in '+OpStart);
    Break;
   End;
   SplitLine(S,L,O,Sf,A);
-  If O=OpStart Then Inc(Depth)
+  If (OpStart='MACRO') And (AsmPassNo=2) Then Begin LnStartLen:=SecLen[CurSect];ListLine(S);End;
+  If O=OpStart Then Begin
+   Inc(Depth);
+   If OpStart='MACRO' Then
+    Err3('cannot nest MACRO definitions or define in REPTs','Macros imbriquees interdites','Verschachtelte Makros nicht erlaubt');
+  End Else If (OpStart='REPT') And (O='MACRO') Then
+   Err3('cannot nest MACRO definitions or define in REPTs','Macro dans REPT interdite','Makro in REPT nicht erlaubt')
   Else If O=OpEnd Then Begin
    If Depth=0 Then Begin Done:=True;Continue;End;
    Dec(Depth);
   End;
-  If Cnt<MAXLN Then Begin Inc(Cnt);TmpBody^[Cnt]:=NewStr(S);End;
+  If Cnt<MAXLN Then Begin Inc(Cnt);TmpBody^[Cnt]:=NewStr(S);End
+  Else Err3('program buffer full','Programme trop grand','Programm zu gross');
  End;
  GetMem(Res,Cnt*SizeOf(PString)+4);
  For I:=1 To Cnt Do Res^[I]:=TmpBody^[I];
@@ -2637,23 +3191,24 @@ Begin
  For I:=1 To MacCount Do If Macros[I].Name=Name Then Begin FindMacro:=I;Exit;End;
 End;
 
-Procedure DefineMacro(Const Name,PNames: String);
+Procedure DefineMacro(Const Name,PNames,Suf: String);
 Var Cnt: Integer; B: PLineArr; I: Integer;
 Begin
  B:=CollectBody('MACRO','ENDM',Cnt);
  If Name='' Then Begin
-  Err3('Macro name missing','Nom de macro manquant','Makroname fehlt');
- End Else If MacCount>=MAXMAC Then Err3('Too many macros','Trop de macros','Zu viele Makros')
+  Err3('symbol expected','Nom de macro manquant','Makroname fehlt');
+ End Else If MacCount>=MAXMAC Then Err3('out of memory','Trop de macros','Zu viele Makros')
  Else Begin
   I:=FindMacro(Upper(Name));
   If I<>0 Then Begin
-   Err3('Macro already defined','Macro deja definie','Makro bereits definiert');
+   Err3('symbol defined twice','Macro deja definie','Makro bereits definiert');
   End Else Begin
    Inc(MacCount);
-   Macros[MacCount].Name:=Copy(Upper(Name),1,40);
+   Macros[MacCount].Name:=Copy(Upper(Name),1,63);
    Macros[MacCount].PNames:=Copy(PNames,1,100);
    Macros[MacCount].Body:=B;
    Macros[MacCount].Count:=Cnt;
+   Macros[MacCount].Even:=(Suf='W') Or (Suf='L');
    Exit;
   End;
  End;
@@ -2661,10 +3216,60 @@ Begin
  FreeMem(B,Cnt*SizeOf(PString)+4);
 End;
 
-Procedure CallMacro(Idx: Integer; Const Args,Suf: String);
-Var Parts: Array[0..9] Of String; N,I: Integer; A: String;
+{ Decoupe les parametres d'un appel de macro (virgules, < > , guillemets) }
+Function SplitMacArgs(Const S: String; Var Arr: Array Of String; MaxN: Integer): Integer;
+Var I,D,N: Integer; Q: Char; Cur: String; Br: Boolean;
+
+ Procedure Fin;
+ Var T: String; K: Integer;
+ Begin
+  T:=TrimS(Cur);
+  If Br And (Length(T)>=2) And (T[1]='<') And (T[Length(T)]='>') Then Begin
+   T:=Copy(T,2,Length(T)-2);
+   K:=Pos('>>',T);
+   While K>0 Do Begin Delete(T,K,1);K:=Pos('>>',T);End;
+  End;
+  If N<MaxN Then Begin Arr[N]:=T;Inc(N);End;
+  Cur:='';Br:=False;
+ End;
+
 Begin
- N:=SplitTop(Args,Parts,10);
+ N:=0;D:=0;Q:=#0;Cur:='';Br:=False;
+ I:=1;
+ While I<=Length(S) Do Begin
+  If Q<>#0 Then Begin
+   Cur:=Cur+S[I];
+   If S[I]=Q Then Q:=#0;
+   Inc(I);
+  End Else Begin
+   Case S[I] Of
+    '''','"': Begin Q:=S[I];Cur:=Cur+S[I];Inc(I);End;
+    '(': Begin Inc(D);Cur:=Cur+S[I];Inc(I);End;
+    ')': Begin Dec(D);Cur:=Cur+S[I];Inc(I);End;
+    '<': If TrimS(Cur)='' Then Begin
+          Br:=True;
+          Cur:=Cur+'<';Inc(I);
+          While I<=Length(S) Do Begin
+           If S[I]='>' Then Begin
+            If (I<Length(S)) And (S[I+1]='>') Then Begin Cur:=Cur+'>>';Inc(I,2);End
+            Else Begin Cur:=Cur+'>';Inc(I);Break;End;
+           End Else Begin Cur:=Cur+S[I];Inc(I);End;
+          End;
+         End Else Begin Cur:=Cur+S[I];Inc(I);End;
+    ',': If D<=0 Then Begin Fin;Inc(I);End Else Begin Cur:=Cur+S[I];Inc(I);End;
+   Else Begin Cur:=Cur+S[I];Inc(I);End;
+   End;
+  End;
+ End;
+ If (Cur<>'') Or (N>0) Then Fin;
+ SplitMacArgs:=N;
+End;
+
+Procedure CallMacro(Idx: Integer; Const Args,Suf: String);
+Var Parts: Array[0..35] Of String; N,I: Integer; A: String;
+Begin
+ N:=SplitMacArgs(Args,Parts,36);
+ If Macros[Idx].Even Then EvenPC;
  PushSrc(1,Macros[Idx].Body,Macros[Idx].Count,Macros[Idx].Name,False);
  If SrcTop=0 Then Exit;
  With Srcs[SrcTop] Do Begin
@@ -2672,14 +3277,10 @@ Begin
   MacId:=MacUniq;
   NArg:=N;
   MacIdx:=Idx;
+  CondBase:=CondTop;
   Suffix:=Copy(Suf,1,8);
-  For I:=1 To 9 Do Begin
-   If I<=N Then Begin
-    A:=Parts[I-1];
-    If (Length(A)>=2) And (A[1]='<') And (A[Length(A)]='>') Then
-     A:=Copy(A,2,Length(A)-2);
-    Args[I]:=Copy(A,1,100);
-   End Else Args[I]:='';
+  For I:=1 To 35 Do Begin
+   If I<=N Then Args[I]:=Copy(Parts[I-1],1,200) Else Args[I]:='';
   End;
  End;
 End;
@@ -2688,17 +3289,44 @@ End;
 { Directives de donnees                                                   }
 { ---------------------------------------------------------------------- }
 
+{ Operande suivant d'une liste separee par des virgules (niveau 0) }
+Function NextOperand(Const S: String; Var P: Integer; Var Item: String): Boolean;
+Var D: Integer; Q: Char;
+Begin
+ NextOperand:=False;
+ If P>Length(S)+1 Then Exit;
+ Item:='';D:=0;Q:=#0;
+ While P<=Length(S) Do Begin
+  If Q<>#0 Then Begin
+   Item:=Item+S[P];
+   If S[P]=Q Then Q:=#0;
+   Inc(P);
+  End Else Begin
+   Case S[P] Of
+    '''','"': Begin Q:=S[P];Item:=Item+S[P];Inc(P);End;
+    '(','[': Begin Inc(D);Item:=Item+S[P];Inc(P);End;
+    ')',']': Begin Dec(D);Item:=Item+S[P];Inc(P);End;
+    ',': If D=0 Then Begin Inc(P);Item:=TrimS(Item);NextOperand:=True;Exit;End
+         Else Begin Item:=Item+S[P];Inc(P);End;
+   Else Begin Item:=Item+S[P];Inc(P);End;
+   End;
+  End;
+ End;
+ Item:=TrimS(Item);
+ Inc(P);
+ NextOperand:=True;
+End;
+
 Procedure DirDC(Sz: Integer; Const Args: String);
-Var Parts: Array[0..39] Of String; N,I,J: Integer; R: TTV; S: String; Q: Char;
+Var P,J: Integer; R: TTV; S: String; Q: Char; Any: Boolean;
 Begin
  If Sz=0 Then Sz:=2;
  If Sz=8 Then Sz:=1;
- N:=SplitTop(Args,Parts,40);
- If N=0 Then Begin
+ If TrimS(Args)='' Then Begin
   Err3('Operand expected','Operande attendue','Operand erwartet');Exit;
  End;
- For I:=0 To N-1 Do Begin
-  S:=Parts[I];
+ P:=1;
+ While NextOperand(Args,P,S) Do Begin
   If (S<>'') And ((S[1]='''') Or (S[1]='"')) And (Sz=1) Then Begin
    Q:=S[1];
    { chaine pure ? }
@@ -2721,8 +3349,16 @@ Begin
   End;
   If Not EvalStr(S,R) Then R.V:=0;
   Case Sz Of
-   1: Begin CheckRange(R.V,R.U,-256,255);EmitByte(R.V And $FF);End;
-   2: Begin CheckRange(R.V,R.U,-32768,65535);EmitWord(R.V And $FFFF);End;
+   1: Begin
+       CheckRange(R.V,R.U,-256,255);
+       If R.S>=0 Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
+       EmitByte(R.V And $FF);
+      End;
+   2: Begin
+       CheckRange(R.V,R.U,-32768,65535);
+       If R.S>=0 Then Warn3('relative cannot be relocated','Relatif non relogeable','Relativ nicht relozierbar');
+       EmitWord(R.V And $FFFF);
+      End;
   Else EmitLong(ImgOf(R.V,R.S),R.S);
   End;
  End;
@@ -2746,54 +3382,274 @@ Begin
  ReadFileBytes:=True;
 End;
 
-Function FindInclude(Const Name: String): String;
-Var Cand: String;
+{ nom TOS -> nom hote (\ en /, lecteur ignore) }
+Function AsmHostPath(Const S0: String): String;
+Var S: String; I: Integer;
 Begin
- If FileExists(Name) Then Begin FindInclude:=Name;Exit;End;
- Cand:=PathOf(AsmFileName)+Name;
- If FileExists(Cand) Then Begin FindInclude:=Cand;Exit;End;
- If OptIncPath<>'' Then Begin
-  Cand:=OptIncPath;
+ S:=S0;
+ {$IFDEF FPC}
+ {$IFDEF UNIX}
+ If (Length(S)>=2) And (S[2]=':') Then S:=Copy(S,3,255);
+ For I:=1 To Length(S) Do If S[I]='\' Then S[I]:='/';
+ {$ENDIF}
+ {$ENDIF}
+ AsmHostPath:=S;
+End;
+
+{ fichier existant (casse libre pour chaque composant du chemin) ou '' }
+Function ExistCI(Const S: String): String;
+Var Cur,Comp,Rest,U,Found: String; SR: SearchRec; P: Integer;
+Begin
+ ExistCI:='';
+ If S='' Then Exit;
+ If FileExists(S) Then Begin ExistCI:=S;Exit;End;
+ Cur:='';Rest:=S;
+ If Rest[1]='/' Then Begin Cur:='/';Delete(Rest,1,1);End;
+ While Rest<>'' Do Begin
+  P:=Pos('/',Rest);
+  If P>0 Then Begin Comp:=Copy(Rest,1,P-1);Rest:=Copy(Rest,P+1,255);End
+  Else Begin Comp:=Rest;Rest:='';End;
+  If (Comp='') Or (Comp='.') Or (Comp='..') Then Begin
+   If P>0 Then Cur:=Cur+Comp+'/' Else Cur:=Cur+Comp;
+   Continue;
+  End;
+  U:=Upper(Comp);Found:='';
+  FindFirst(Cur+'*',AnyFile,SR);
+  While DosError=0 Do Begin
+   If SR.Name=Comp Then Begin Found:=SR.Name;Break;End;
+   If (Found='') And (Upper(SR.Name)=U) Then Found:=SR.Name;
+   FindNext(SR);
+  End;
+  {$IFDEF FPC}FindClose(SR);{$ENDIF}
+  If Found='' Then Exit;
+  If P>0 Then Cur:=Cur+Found+'/' Else Cur:=Cur+Found;
+ End;
+ If FileExists(Cur) Then ExistCI:=Cur;
+End;
+
+Function FindInclude(Const Name0: String): String;
+Var Cand,Name: String; I: Integer;
+Begin
+ Name:=AsmHostPath(Name0);
+ Cand:=ExistCI(Name);
+ If Cand<>'' Then Begin FindInclude:=Cand;Exit;End;
+ Cand:=ExistCI(PathOf(AsmFileName)+Name);
+ If Cand<>'' Then Begin FindInclude:=Cand;Exit;End;
+ For I:=1 To IncDirN Do Begin
+  Cand:=IncDirs[I];
+  If Cand='' Then Continue;
   If (Cand[Length(Cand)]<>'\') And (Cand[Length(Cand)]<>'/') And (Cand[Length(Cand)]<>':') Then
    Cand:=Cand+'/';
-  Cand:=Cand+Name;
-  If FileExists(Cand) Then Begin FindInclude:=Cand;Exit;End;
+  Cand:=ExistCI(AsmHostPath(Cand)+Name);
+  If Cand<>'' Then Begin FindInclude:=Cand;Exit;End;
  End;
  FindInclude:='';
 End;
 
-Procedure DirOpt(Const Args: String);
-Var Parts: Array[0..19] Of String; N,I: Integer; S: String; On: Boolean;
+Procedure AddIncDirs(Const L: String);
+Var P: Integer; Item,Cur: String; Q: Boolean; I: Integer;
 Begin
- N:=SplitTop(Args,Parts,20);
- For I:=0 To N-1 Do Begin
-  S:=Upper(Parts[I]);
+ Cur:='';Q:=False;
+ For I:=1 To Length(L)+1 Do Begin
+  If (I>Length(L)) Or (((L[I]=',') Or (L[I]=';')) And Not Q) Then Begin
+   Item:=TrimS(Cur);Cur:='';
+   If (Length(Item)>=2) And (Item[1]='"') And (Item[Length(Item)]='"') Then Item:=Copy(Item,2,Length(Item)-2);
+   If (Item<>'') And (IncDirN<16) Then Begin Inc(IncDirN);IncDirs[IncDirN]:=Copy(Item,1,120);End;
+  End Else Begin
+   If L[I]='"' Then Q:=Not Q;
+   Cur:=Cur+L[I];
+  End;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ OPT                                                                     }
+{ ---------------------------------------------------------------------- }
+
+Procedure SetAllOpt(On: Boolean);
+Var K: Integer;
+Begin
+ For K:=1 To 12 Do AO.Opt[K]:=On;
+ OptOptimize:=On;
+End;
+
+Function CodeGenerated: Boolean;
+Begin
+ CodeGenerated:=(SecLen[0]>0) Or (SecLen[1]>0) Or (SecLen[2]>0);
+End;
+
+Procedure BadOption;
+Begin
+ Err3('invalid option','Option invalide','Ungueltige Option');
+End;
+
+Procedure SetFormat(F: Integer);
+Begin
+ If CodeGenerated Then Begin
+  Err3('option must be at start','L''option doit etre au debut','Option muss am Anfang stehen');Exit;
+ End;
+ If (F<>0) And (F<>6) Then Begin
+  Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
+  Exit;
+ End;
+ AO.Fmt:=F;
+End;
+
+{ une option de OPT ; T est en majuscules }
+Procedure OptOne(Const T0: String);
+Var T: String; On,HasSign: Boolean; N,K,C: Integer; Co: String;
+Begin
+ T:=T0;
+ On:=True;HasSign:=False;
+ If T='' Then Exit;
+ If T[Length(T)]='+' Then Begin Delete(T,Length(T),1);HasSign:=True;End
+ Else If T[Length(T)]='-' Then Begin Delete(T,Length(T),1);On:=False;HasSign:=True;End;
+ If T='' Then Begin BadOption;Exit;End;
+ { P=type[/copro] }
+ If (Length(T)>=2) And (T[1]='P') And (T[2]='=') Then Begin
+  Co:=Copy(T,3,40);
+  K:=Pos('/',Co);
+  If K>0 Then Co:=Copy(Co,1,K-1);
+  If (Co='68000') Or (Co='68008') Then AO.Proc:=68000
+  Else If Co='68010' Then AO.Proc:=68010
+  Else If Co='68020' Then AO.Proc:=68020
+  Else If Co='68030' Then AO.Proc:=68030
+  Else If Co='68040' Then AO.Proc:=68040
+  Else If (Co='68332') Or (Co='CPU32') Then AO.Proc:=68332
+  Else BadOption;
+  Exit;
+ End;
+ If T='D' Then Begin OptDebug:=On;Exit;End;
+ If T='DEBUG' Then Begin OptDebug:=True;Exit;End;
+ If T='NODEBUG' Then Begin OptDebug:=False;Exit;End;
+ If (T='X') Or (T='XDEBUG') Then Begin OptDebug:=On;AO.XDebug:=On;Exit;End;
+ If T='LINE' Then Begin AO.Line:=True;Exit;End;
+ If T='NOLINE' Then Begin AO.Line:=False;Exit;End;
+ If T='HCLN' Then Begin AO.Hcln:=True;Exit;End;
+ If T='NOHCLN' Then Begin AO.Hcln:=False;Exit;End;
+ If T='C' Then Begin OptCase:=On;Exit;End;
+ If T='CASE' Then Begin OptCase:=True;Exit;End;
+ If T='NOCASE' Then Begin OptCase:=False;Exit;End;
+ If (T[1]='C') And (Length(T)>=2) And (T[2]>='0') And (T[2]<='9') Then Begin
+  Val(Copy(T,2,5),N,C);
+  If (C<>0) Or (N<8) Or (N>127) Then Begin BadOption;Exit;End;
+  AO.SymLen:=N;
+  If HasSign Then OptCase:=On;
+  Exit;
+ End;
+ If (T='W') Or (T='WARN') Then Begin OptWarnings:=On;Exit;End;
+ If T='NOWARN' Then Begin OptWarnings:=False;Exit;End;
+ If T='L' Then Exit;
+ If (T[1]='L') And (Length(T)=2) And (T[2]>='0') And (T[2]<='9') Then Begin
+  C:=Ord(T[2])-48;
+  If (C=0) Or (C=1) Or (C=2) Or (C=6) Or (C=7) Then SetFormat(C) Else BadOption;
+  Exit;
+ End;
+ If T='ATARI' Then Begin SetFormat(0);Exit;End;
+ If T='GST' Then Begin SetFormat(1);Exit;End;
+ If T='DRI' Then Begin SetFormat(2);Exit;End;
+ If T='SREC' Then Begin SetFormat(6);Exit;End;
+ If T='LATTICE' Then Begin SetFormat(7);Exit;End;
+ If T='GENSYM' Then Begin AO.Gensym:=True;Exit;End;
+ { optimisations }
+ If T='O' Then Begin SetAllOpt(On);Exit;End;
+ If (T='OW') Then Begin
+  For K:=0 To 12 Do AO.OW[K]:=On;
+  Exit;
+ End;
+ If (Length(T)>=3) And (T[1]='O') And (T[2]='W') Then Begin
+  Val(Copy(T,3,3),N,C);
+  If (C<>0) Or (N<1) Or (N>12) Then Begin BadOption;Exit;End;
+  AO.OW[N]:=On;
+  If On Then AO.OW[0]:=True;
+  Exit;
+ End;
+ If (Length(T)>=2) And (T[1]='O') And (T[2]>='0') And (T[2]<='9') Then Begin
+  Val(Copy(T,2,3),N,C);
+  If (C<>0) Or (N<1) Or (N>12) Then Begin BadOption;Exit;End;
+  AO.Opt[N]:=On;
+  If (N=1) And Not On Then OptOptimize:=False;
+  Exit;
+ End;
+ If T='OLD' Then Begin AO.OldBra:=True;Exit;End;
+ If (T='BRW') Then Begin AO.BrDef:=0;AO.OldBra:=False;Exit;End;
+ If (T='BRB') Or (T='BRS') Then Begin AO.BrDef:=1;Exit;End;
+ If T='BRL' Then Begin
+  If AO.Proc<68020 Then Err3('wrong processor','Mauvais processeur','Falscher Prozessor')
+  Else AO.BrDef:=3;
+  Exit;
+ End;
+ If (T='BDW') Or (T='BDL') Or (T='ODW') Or (T='ODL') Then Exit;
+ If (T='MEX') Or (T='M') Then Begin AO.Mex:=On;Exit;End;
+ If T='NOMEX' Then Begin AO.Mex:=False;Exit;End;
+ If (T='SYMTAB') Or (T='S') Then Begin AO.Symtab:=On;Exit;End;
+ If T='NOSYMTAB' Then Begin AO.Symtab:=False;Exit;End;
+ If (T='LIST1') Or (T='Z') Then Begin AO.List1:=On;Exit;End;
+ If T='NOLIST1' Then Begin AO.List1:=False;Exit;End;
+ If T='TRACEIF' Then Begin AO.TraceIf:=True;Exit;End;
+ If T='NOTRACEIF' Then Begin AO.TraceIf:=False;Exit;End;
+ If T='ALLOWZERO' Then Begin AO.AllowZero:=True;Exit;End;
+ If T='NOALLOWZERO' Then Begin AO.AllowZero:=False;Exit;End;
+ If T='CHKBIT' Then Begin AO.ChkBit:=0;Exit;End;
+ If T='NOCHKBIT' Then Begin AO.ChkBit:=1;Exit;End;
+ If T='WARNBIT' Then Begin AO.ChkBit:=2;Exit;End;
+ If (T='CHKIMM') Or (T='I') Then Begin AO.ChkImm:=On;Exit;End;
+ If T='NOCHKIMM' Then Begin AO.ChkImm:=False;Exit;End;
+ If (T='CHKPC') Or (T='P') Then Begin AO.ChkPC:=On;Exit;End;
+ If T='NOCHKPC' Then Begin AO.ChkPC:=False;Exit;End;
+ If (T='EVEN') Or (T='E') Then Begin AO.EvenChk:=On;Exit;End;
+ If T='NOEVEN' Then Begin AO.EvenChk:=False;Exit;End;
+ If (T='AUTOPC') Or (T='A') Then Begin AO.AutoPC:=On;Exit;End;
+ If T='NOAUTOPC' Then Begin AO.AutoPC:=False;Exit;End;
+ If T='INCONCE' Then Begin AO.Inconce:=True;Exit;End;
+ If T='NOINCONCE' Then Begin AO.Inconce:=False;Exit;End;
+ If (T='LOCALU') Or (T='U') Then Begin AO.LocalU:=On;Exit;End;
+ If T='LOCALDOT' Then Begin AO.LocalU:=False;Exit;End;
+ If T='NOTYPE' Then Begin AO.NoType:=True;Exit;End;
+ If (T='TYPE') Or (T='T') Then Begin AO.NoType:=Not On;Exit;End;
+ If T='USER' Then Begin AO.User:=True;Exit;End;
+ If T='SUPER' Then Begin AO.User:=False;Exit;End;
+ BadOption;
+End;
+
+Procedure DirOpt(Const Args: String);
+Var P: Integer; S: String;
+Begin
+ P:=1;
+ While NextOperand(Args,P,S) Do Begin
+  S:=Upper(S);
   If S='' Then Continue;
-  On:=True;
-  If S[Length(S)]='+' Then Delete(S,Length(S),1)
-  Else If S[Length(S)]='-' Then Begin On:=False;Delete(S,Length(S),1);End;
-  If S='D' Then OptDebug:=On
-  Else If (S='O') Or (S='O1') Or (S='O2') Then OptOptimize:=On
-  Else If S='C' Then OptCase:=On
-  Else If S='W' Then OptWarnings:=On
-  Else If S='L' Then Begin End;
+  OptOne(S);
  End;
 End;
 
 Procedure DirSection(Const Op,Args: String);
-Var N: String; P: Integer;
+Var N,T: String; P: Integer;
 Begin
  If AbsMode Then Exit;
+ OffMode:=False;
  If (Op='TEXT') Or (Op='CODE') Then CurSect:=SEC_TEXT
  Else If Op='DATA' Then CurSect:=SEC_DATA
  Else If Op='BSS' Then CurSect:=SEC_BSS
  Else Begin
-  N:=Upper(Args);
+  N:=Upper(TrimS(Args));
   P:=Pos(',',N);
-  If P>0 Then N:=Copy(N,P+1,40);
-  If Copy(N,1,4)='DATA' Then CurSect:=SEC_DATA
-  Else If Copy(N,1,3)='BSS' Then CurSect:=SEC_BSS
-  Else CurSect:=SEC_TEXT;
+  If P>0 Then Begin
+   { SECTION nom,type (Amiga / Lattice) }
+   T:=TrimS(Copy(N,P+1,40));
+   If Copy(T,1,4)='DATA' Then CurSect:=SEC_DATA
+   Else If Copy(T,1,3)='BSS' Then CurSect:=SEC_BSS
+   Else CurSect:=SEC_TEXT;
+   Exit;
+  End;
+  If N='' Then Begin Err3('invalid section specified','Section invalide','Ungueltige Sektion');Exit;End;
+  If (N='TEXT') Or (N='CODE') Then CurSect:=SEC_TEXT
+  Else If N='DATA' Then CurSect:=SEC_DATA
+  Else If N='BSS' Then CurSect:=SEC_BSS
+  Else Begin
+   Err3('invalid section name, TEXT assumed','Nom de section invalide, TEXT suppose','Ungueltiger Sektionsname, TEXT angenommen');
+   CurSect:=SEC_TEXT;
+  End;
  End;
 End;
 
@@ -2811,27 +3667,70 @@ Begin
  PByteAt:=Q^;
 End;
 
+{ ---------------------------------------------------------------------- }
+{ Directives de listing                                                   }
+{ ---------------------------------------------------------------------- }
+
+Procedure DirFormat(Const Args: String);
+Var P: Integer; S: String;
+Begin
+ P:=1;
+ While NextOperand(Args,P,S) Do Begin
+  If (Length(S)<>2) Or (S[1]<'0') Or (S[1]>'2') Or ((S[2]<>'+') And (S[2]<>'-')) Then Begin
+   Err3('invalid FORMAT parameter','Parametre FORMAT invalide','Ungueltiger FORMAT-Parameter');
+   Exit;
+  End;
+  ListFmt[Ord(S[1])-48]:=S[2]='+';
+ End;
+End;
+
+Procedure DirListChar(Const Args: String);
+Var P: Integer; S: String; R: TTV;
+Begin
+ P:=1;
+ While NextOperand(Args,P,S) Do Begin
+  If EvalStr(S,R) Then
+   If (AsmPassNo=2) And ListOn Then Write(ListF,Chr(R.V And $FF));
+ End;
+End;
+
+Function ListTextArg(Const Args: String): String;
+Begin
+ ListTextArg:=Copy(StrOperand(Args),1,80);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Directive                                                               }
+{ ---------------------------------------------------------------------- }
+
 { Traite une directive ; retourne True si Op en est une }
 Function Directive(Const Lbl,Op,Args: String; Sz: Integer): Boolean;
-Var R: TTV; V: LongInt; Parts: Array[0..3] Of String; N,K: Integer; I: LongInt;
-    FN,Full: String; Lines: PLineArr; Cnt: Integer; P: Pointer; Len: LongInt;
-    SzB: Integer; Sy: PSym; Mk: LongInt;
+Var R,R2: TTV; V: LongInt; Parts: Array[0..3] Of String; N,K: Integer; I: LongInt;
+    FN,Full,S2,Nm: String; Lines: PLineArr; Cnt: LongInt; Cnt2: Integer; P: Pointer; Len: LongInt;
+    SzB: Integer; Sy: PSym; Mk: LongInt; Pp: Integer; Ofs: LongInt; Ch: Char;
 Begin
  Directive:=True;
  If Sz=0 Then SzB:=2 Else If Sz=8 Then SzB:=1 Else SzB:=Sz;
  If Op='DC' Then Begin DirDC(Sz,Args);Exit;End;
  If Op='DS' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
-  If R.V<0 Then R.V:=0;
+  If R.S>=0 Then Err3('relative not allowed','Relatif interdit','Relativ nicht erlaubt');
+  If R.V<0 Then Begin
+   Err3('DCB or DS count must not be negative','DCB/DS negatif','DCB/DS negativ');R.V:=0;
+  End;
   ReserveBytes(R.V*SzB);
   Exit;
  End;
  If Op='DCB' Then Begin
   N:=SplitTop(Args,Parts,4);
-  If N<>2 Then Begin Err3('Operand expected','Operande attendue','Operand erwartet');Exit;End;
+  If (N<1) Or (N>2) Then Begin Err3('Operand expected','Operande attendue','Operand erwartet');Exit;End;
   If Not EvalStr(Parts[0],R) Then R.V:=0;
   K:=R.V;
-  If Not EvalStr(Parts[1],R) Then R.V:=0;
+  If R.V<0 Then Begin
+   Err3('DCB or DS count must not be negative','DCB/DS negatif','DCB/DS negativ');K:=0;
+  End;
+  R.V:=0;R.S:=SEC_ABS;
+  If N=2 Then If Not EvalStr(Parts[1],R) Then R.V:=0;
   For I:=1 To K Do Begin
    If SzB=1 Then EmitByte(R.V And $FF)
    Else If SzB=2 Then EmitWord(R.V And $FFFF)
@@ -2852,44 +3751,140 @@ Begin
  End;
  If Op='ORG' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
-  If Not AbsMode And (SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) Then Begin
+  If Not AbsMode And Not OffMode And (SecLen[0]=0) And (SecLen[1]=0) And (SecLen[2]=0) Then Begin
    AbsMode:=True;OrgAddr:=R.V;
   End Else If AbsMode Then Begin
    If R.V>=CurPC Then ReserveBytes(R.V-CurPC)
-   Else Err3('ORG goes backwards','ORG recule','ORG geht rueckwaerts');
-  End Else Err3('ORG must be the first statement','ORG doit etre la premiere instruction',
+   Else Err3('ORG/RORG not allowed','ORG recule','ORG geht rueckwaerts');
+  End Else Err3('ORG/RORG not allowed','ORG doit etre la premiere instruction',
                 'ORG muss die erste Anweisung sein');
+  Exit;
+ End;
+ If Op='RORG' Then Begin
+  If Not EvalStr(Args,R) Then R.V:=0;
+  If OffMode Or (CurSect=SEC_BSS) Then Err3('ORG/RORG not allowed','ORG/RORG nicht erlaubt','ORG/RORG nicht erlaubt')
+  Else Begin
+   K:=0;
+   If AbsMode Then V:=R.V-CurPC Else V:=R.V-SecLen[CurSect];
+   If V<0 Then Err3('ORG/RORG not allowed','RORG recule','RORG geht rueckwaerts')
+   Else ReserveBytes(V);
+  End;
+  Exit;
+ End;
+ If Op='OFFSET' Then Begin
+  If Not AbsMode Then Begin
+   OffMode:=True;
+   If TrimS(Args)<>'' Then Begin
+    If EvalStr(Args,R) Then OffPC:=R.V;
+   End;
+  End Else Err3('ORG/RORG not allowed','OFFSET interdit apres ORG','OFFSET nach ORG nicht erlaubt');
   Exit;
  End;
  If (Op='SECTION') Or (Op='TEXT') Or (Op='DATA') Or (Op='BSS') Or (Op='CODE') Then Begin
   DirSection(Op,Args);Exit;
  End;
- If (Op='EQU') Or (Op='=') Or (Op='SET') Or (Op='EQUR') Then Begin
-  If Lbl='' Then Begin Err3('Label expected','Etiquette attendue','Label erwartet');Exit;End;
+ If (Op='EQU') Or (Op='=') Or (Op='SET') Then Begin
+  If Lbl='' Then Begin Err3('symbol expected','Etiquette attendue','Label erwartet');Exit;End;
   If Not EvalStr(Args,R) Then Begin R.V:=0;R.S:=SEC_ABS;End;
   If Op='SET' Then DefSym(Lbl,R.V,R.S,1) Else DefSym(Lbl,R.V,R.S,0);
   Exit;
  End;
+ If Op='EQUR' Then Begin
+  If Lbl='' Then Begin Err3('symbol expected','Etiquette attendue','Label erwartet');Exit;End;
+  K:=RegOf(Upper(TrimS(Args)));
+  If (K<0) Or (K>15) Then Begin Err3('register expected','Registre attendu','Register erwartet');Exit;End;
+  S2:=Upper(Lbl);
+  N:=1;
+  While (N<=EqurN) And (EqurName[N]<>S2) Do Inc(N);
+  If N>EqurN Then Begin
+   If EqurN>=64 Then Begin Err3('out of memory','Trop de synonymes','Zu viele Synonyme');Exit;End;
+   Inc(EqurN);
+  End;
+  EqurName[N]:=Copy(S2,1,40);EqurReg[N]:=K;
+  Exit;
+ End;
+ If Op='EQUENV' Then Begin
+  If Lbl='' Then Begin Err3('symbol expected','Etiquette attendue','Label erwartet');Exit;End;
+  S2:=GetEnv(TrimS(Args));
+  If S2='' Then Begin
+   Err3('undefined symbol: '+TrimS(Args),'Symbole non defini : '+TrimS(Args),'Undefiniertes Symbol: '+TrimS(Args));
+   Exit;
+  End;
+  If Not EvalStr(S2,R) Then Begin R.V:=0;R.S:=SEC_ABS;End;
+  DefSym(Lbl,R.V,R.S,0);
+  Exit;
+ End;
  If Op='REG' Then Begin
-  If Lbl='' Then Begin Err3('Label expected','Etiquette attendue','Label erwartet');Exit;End;
+  If Lbl='' Then Begin Err3('symbol expected','Etiquette attendue','Label erwartet');Exit;End;
   If Not ParseRegList(Upper(TrimS(Args)),Mk) Then Begin
    N:=RegOf(Upper(TrimS(Args)));
    If (N>=0) And (N<16) Then Mk:=LongInt(1) Shl N
-   Else Begin Err3('Bad register list','Liste de registres incorrecte','Falsche Registerliste');Exit;End;
+   Else Begin Err3('invalid register list','Liste de registres incorrecte','Falsche Registerliste');Exit;End;
   End;
   DefSym(Lbl,Mk,SEC_ABS,2);
   Exit;
  End;
- If Op='RSRESET' Then Begin RSCount:=0;Exit;End;
+ If Op='CARGS' Then Begin
+  Ofs:=4;
+  Pp:=1;
+  If NextOperand(Args,Pp,S2) Then Begin
+   Repeat
+    If (S2<>'') And (S2[1]='#') Then Begin
+     If EvalStr(Copy(S2,2,200),R) Then Ofs:=R.V;
+    End Else If S2<>'' Then Begin
+     K:=2;
+     Nm:=S2;
+     I:=Length(S2);
+     If (I>2) And (S2[I-1]='.') Then Begin
+      Ch:=UpCase(S2[I]);
+      Nm:=Copy(S2,1,I-2);
+      If Ch='L' Then K:=4 Else If (Ch='W') Or (Ch='B') Then K:=2
+      Else Begin Nm:=S2;Err3('invalid size','Taille invalide','Ungueltige Groesse');End;
+     End;
+     DefSym(Nm,Ofs,SEC_ABS,0);
+     Ofs:=Ofs+K;
+    End;
+   Until Not NextOperand(Args,Pp,S2);
+  End;
+  Exit;
+ End;
+ If Op='RSRESET' Then Begin CurRS:=0;Exit;End;
  If Op='RSSET' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
-  RSCount:=R.V;Exit;
+  CurRS:=R.V;Exit;
  End;
  If Op='RS' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
-  If SzB>1 Then If Odd(RSCount) Then Inc(RSCount);
-  If Lbl<>'' Then DefSym(Lbl,RSCount,SEC_ABS,0);
-  RSCount:=RSCount+R.V*SzB;
+  If SzB>1 Then If Odd(CurRS) Then Inc(CurRS);
+  If Lbl<>'' Then DefSym(Lbl,CurRS,SEC_ABS,0);
+  CurRS:=CurRS+R.V*SzB;
+  Exit;
+ End;
+ If Op='RADIX' Then Begin
+  S2:=TrimS(Args);
+  If (S2='2') Or (S2='4') Or (S2='8') Or (S2='10') Or (S2='16') Then NumRadix:=ToInt(S2)
+  Else Err3('invalid radix','Base invalide','Ungueltige Basis');
+  Exit;
+ End;
+ If Op='MACHINE' Then Begin
+  S2:=Upper(TrimS(Args));
+  If Copy(S2,1,2)='MC' Then Delete(S2,1,2);
+  If S2='68000' Then AO.Proc:=68000 Else If S2='68008' Then AO.Proc:=68000
+  Else If S2='68010' Then AO.Proc:=68010 Else If S2='68020' Then AO.Proc:=68020
+  Else If S2='68030' Then AO.Proc:=68030 Else If S2='68040' Then AO.Proc:=68040
+  Else If (S2='68332') Or (S2='CPU32') Then AO.Proc:=68332
+  Else Err3('invalid option','Processeur invalide','Ungueltiger Prozessor');
+  Exit;
+ End;
+ If (Length(Op)=7) And (Copy(Op,1,2)='MC') And (Copy(Op,3,5)<>'68881') And (Copy(Op,3,5)<>'68882') And
+    (Copy(Op,3,3)='680') And (Op[6] In ['0'..'9']) Then Begin
+  I:=ToInt(Copy(Op,3,5));
+  If (I=68000) Or (I=68010) Or (I=68020) Or (I=68030) Or (I=68040) Then AO.Proc:=I
+  Else Directive:=False;
+  Exit;
+ End;
+ If Op='MODULE' Then Begin
+  Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
   Exit;
  End;
  If (Op='INCLUDE') Or (Op='INCBIN') Then Begin
@@ -2897,18 +3892,32 @@ Begin
   If (FN<>'') And (FN[1]='<') Then FN:=Copy(FN,2,Length(FN)-2);
   Full:=FindInclude(FN);
   If Full='' Then Begin
-   Err3('Cannot open file: '+FN,'Impossible d''ouvrir le fichier : '+FN,'Datei nicht lesbar: '+FN);
+   FatalErr3('file not found: '+FN,'Fichier introuvable : '+FN,'Datei nicht gefunden: '+FN);
    Exit;
   End;
   If Op='INCLUDE' Then Begin
-   If LoadLines(Full,Lines,Cnt) Then PushSrc(0,Lines,Cnt,Full,True)
-   Else Err3('Cannot read file: '+FN,'Impossible de lire le fichier : '+FN,'Datei nicht lesbar: '+FN);
+   If AO.Inconce Then Begin
+    S2:=Upper(Full);
+    For N:=1 To IncSeenN Do If IncSeen[N]=S2 Then Exit;
+    If IncSeenN<200 Then Begin Inc(IncSeenN);IncSeen[IncSeenN]:=Copy(S2,1,120);End;
+   End;
+   If LoadLinesBig(Full,Lines,Cnt) Then Begin
+    If LongLines>0 Then Begin
+     Err3('line malformed','Ligne trop longue','Zeile zu lang');LongLines:=0;
+    End;
+    PushSrc(0,Lines,Cnt,Full,True);
+   End Else FatalErr3('include file read error: '+FN,'Erreur de lecture : '+FN,'Lesefehler: '+FN);
   End Else Begin
+   EvenPC;
    If ReadFileBytes(Full,P,Len) Then Begin
     For I:=0 To Len-1 Do EmitByte(PByteAt(P,I));
     If P<>Nil Then FreeMem(P,Len);
-   End;
+   End Else FatalErr3('include file read error: '+FN,'Erreur de lecture : '+FN,'Lesefehler: '+FN);
   End;
+  Exit;
+ End;
+ If Op='INCDIR' Then Begin
+  AddIncDirs(Args);
   Exit;
  End;
  If Op='OPT' Then Begin DirOpt(Args);Exit;End;
@@ -2917,32 +3926,74 @@ Begin
   OutFileName:=StrOperand(Args);
   Exit;
  End;
+ If Op='COMMENT' Then Begin
+  S2:=TrimS(Args);
+  If Copy(S2,1,5)='HEAD=' Then Begin
+   If EvalStr(Copy(S2,6,200),R) Then Begin HeadFlags:=R.V;HeadSet:=True;End;
+  End;
+  Exit;
+ End;
  If Op='FAIL' Then Begin
-  Err3('FAIL: '+Args,'FAIL : '+Args,'FAIL: '+Args);Exit;
+  Err3('user error','FAIL : '+Args,'FAIL: '+Args);Exit;
  End;
  If Op='MEXIT' Then Begin
   K:=SrcTop;
   While (K>0) And (Srcs[K].Kind<>1) Do Dec(K);
-  If K>0 Then While SrcTop>=K Do PopSrc;
+  If K>0 Then Begin
+   CondTop:=Srcs[K].CondBase;SetCondActive;
+   While SrcTop>=K Do PopSrc;
+  End
+  Else Err3('spurious ENDM or MEXIT','MEXIT hors macro','MEXIT ausserhalb Makro');
   Exit;
  End;
  If Op='REPT' Then Begin
   If Not EvalStr(Args,R) Then R.V:=0;
-  Lines:=CollectBody('REPT','ENDR',Cnt);
-  If (R.V>0) And (Cnt>0) Then Begin
-   PushSrc(2,Lines,Cnt,'REPT',True);
+  If R.S>=0 Then Err3('relative not allowed','Relatif interdit','Relativ nicht erlaubt');
+  Lines:=CollectBody('REPT','ENDR',Cnt2);
+  If (R.V>0) And (Cnt2>0) Then Begin
+   PushSrc(2,Lines,Cnt2,'REPT',True);
    Srcs[SrcTop].Reps:=R.V;
-  End Else FreeLines(Lines,Cnt);
+  End Else FreeLines(Lines,Cnt2);
   Exit;
  End;
- If (Op='ENDR') Or (Op='ENDM') Then Begin
-  Err3('Unexpected '+Op,Op+' inattendu',Op+' unerwartet');Exit;
+ If Op='ENDR' Then Begin Err3('spurious ENDR','ENDR inattendu','ENDR unerwartet');Exit;End;
+ If Op='ENDM' Then Begin Err3('spurious ENDM or MEXIT','ENDM inattendu','ENDM unerwartet');Exit;End;
+ { listing }
+ If Op='LIST' Then Begin
+  S2:=TrimS(Args);
+  If S2='+' Then Inc(ListCnt)
+  Else If S2='-' Then Dec(ListCnt)
+  Else ListCnt:=0;
+  Exit;
  End;
- If (Op='LIST') Or (Op='NOLIST') Or (Op='PAGE') Or (Op='TTL') Or (Op='SUBTTL') Or
-    (Op='LLEN') Or (Op='PLEN') Or (Op='SPC') Or (Op='IDNT') Or (Op='FORMAT') Or
-    (Op='NOPAGE') Or (Op='XDEF') Or (Op='XREF') Or (Op='PUBLIC') Or (Op='GLOBAL') Or
-    (Op='EXPORT') Or (Op='IMPORT') Or (Op='COMMENT') Or (Op='ECHO') Or (Op='NOFORMAT') Or
-    (Op='MASK2') Or (Op='OFFSET') Then Exit;
+ If Op='NOLIST' Then Begin ListCnt:=-1;Exit;End;
+ If Op='PLEN' Then Begin
+  If EvalStr(Args,R) Then Begin
+   If (R.V<12) Or (R.V>255) Then Err3('data too large','Valeur hors limites','Wert ausserhalb des Bereichs')
+   Else ListPLen:=R.V;
+  End;
+  Exit;
+ End;
+ If Op='LLEN' Then Begin
+  If EvalStr(Args,R) Then Begin
+   If (R.V<38) Or (R.V>255) Then Err3('data too large','Valeur hors limites','Wert ausserhalb des Bereichs')
+   Else ListLLen:=R.V;
+  End;
+  Exit;
+ End;
+ If Op='TTL' Then Begin ListTitle:=ListTextArg(Args);Exit;End;
+ If Op='SUBTTL' Then Begin ListSub:=ListTextArg(Args);Exit;End;
+ If Op='SPC' Then Begin
+  If EvalStr(Args,R) Then
+   If R.V>0 Then ListSpc:=R.V;
+  Exit;
+ End;
+ If Op='PAGE' Then Begin ListLineNo:=ListPLen;Exit;End;
+ If Op='FORMAT' Then Begin DirFormat(Args);Exit;End;
+ If Op='LISTCHAR' Then Begin DirListChar(Args);Exit;End;
+ If (Op='IDNT') Or (Op='NOPAGE') Or (Op='XDEF') Or (Op='XREF') Or (Op='PUBLIC') Or (Op='GLOBAL') Or
+    (Op='EXPORT') Or (Op='IMPORT') Or (Op='ECHO') Or (Op='NOFORMAT') Or
+    (Op='MASK2') Or (Op='CSECT') Then Exit;
  Directive:=False;
 End;
 
@@ -2954,47 +4005,167 @@ Var
  OptDebug0,OptOptimize0,OptCase0,OptWarnings0 : Boolean;
  OutPathFinal : String;
  OutIsTemp    : Boolean;
+ ListDevOpen  : Boolean;
 
 Function IsValueDirective(Const Op: String): Boolean;
 Begin
  IsValueDirective:=(Op='EQU') Or (Op='=') Or (Op='SET') Or (Op='REG') Or
-  (Op='EQUR') Or (Op='RS') Or (Op='RSSET') Or (Op='RSRESET');
+  (Op='EQUR') Or (Op='EQUENV') Or (Op='RS') Or (Op='RSSET') Or (Op='RSRESET') Or (Op='CARGS');
+End;
+
+Function ExpandTabs(Const S: String; Tab: Integer): String;
+Var R: String; I: Integer;
+Begin
+ R:='';
+ If Tab<1 Then Tab:=8;
+ For I:=1 To Length(S) Do
+  If S[I]=#9 Then Begin
+   R:=R+' ';
+   While (Length(R) Mod Tab)<>0 Do R:=R+' ';
+  End Else R:=R+S[I];
+ ExpandTabs:=R;
+End;
+
+Function TwoD(N: Integer): String;
+Begin
+ TwoD:=PadZero(N,2);
+End;
+
+Procedure ListHeader;
+Var Y,Mo,D,Dw,H,Mi,Se,Hs: Word; T,L1: String;
+Begin
+ GetDate(Y,Mo,D,Dw);GetTime(H,Mi,Se,Hs);
+ If ListTitle<>'' Then T:=ListTitle Else T:=ShortName(CurSrcName);
+ If ListPage>0 Then Write(ListF,#12);
+ Inc(ListPage);
+ L1:=PadR(T,40)+'  '+TwoD(D)+'/'+TwoD(Mo)+'/'+TwoD(Y Mod 100)+'  '+TwoD(H)+':'+TwoD(Mi)+':'+TwoD(Se)+'  Page '+IntStr(ListPage);
+ WriteLn(ListF,Copy(L1,1,ListLLen));
+ WriteLn(ListF,Copy(T,1,ListLLen));
+ WriteLn(ListF,Copy(ListSub,1,ListLLen));
+ WriteLn(ListF);
+ ListLineNo:=4;
+End;
+
+Procedure ListOut(Const Ln: String);
+Var K: Integer;
+Begin
+ If (ListPage=0) And ListHold And (ListQN<8) Then Begin
+  Inc(ListQN);ListQ[ListQN]:=Ln;Exit;
+ End;
+ If ListLineNo>=ListPLen Then ListHeader;
+ For K:=1 To ListQN Do Begin
+  WriteLn(ListF,Copy(ListQ[K],1,ListLLen));
+  Inc(ListLineNo);
+ End;
+ ListQN:=0;
+ WriteLn(ListF,Copy(Ln,1,ListLLen));
+ Inc(ListLineNo);
 End;
 
 Procedure ListLine(Const S: String);
-Var Ln,B: String; I: Integer; Sect: Integer; N: LongInt;
+Var Ln,B,Adr: String; I: Integer; Sect: Integer; N,Done: LongInt; MaxB: Integer; First: Boolean;
 Begin
  If Not ListOn Then Exit;
- Ln:=PadL(IntStr(CurLineNo),5)+' ';
+ If ListCnt<0 Then Exit;
  Sect:=CurSect;If AbsMode Then Sect:=0;
- If (LnStartLen<>SecLen[Sect]) Or (LnAddr>=0) Then Begin
-  Ln:=Ln+Hex6(LnAddr)+' ';
-  B:='';
-  N:=SecLen[Sect]-LnStartLen;
-  If N>6 Then N:=6;
-  If Sect<>SEC_BSS Then
-   For I:=0 To N-1 Do B:=B+Hex2(SecGet(Sect,LnStartLen+I));
-  Ln:=Ln+PadR(B,13);
- End Else Ln:=Ln+PadR('',20);
- WriteLn(ListF,Ln+S);
+ If ListLLen<80 Then MaxB:=6 Else MaxB:=20;
+ N:=SecLen[Sect]-LnStartLen;
+ If OffMode Or (Sect=SEC_BSS) Or (N<0) Then N:=0;
+ Done:=0;First:=True;
+ Repeat
+  Ln:='';
+  If ListFmt[0] Then Begin
+   If First Then Ln:=PadL(IntStr(CurLineNo),5)+' ' Else Ln:='      ';
+  End;
+  If ListFmt[1] Then Begin
+   Adr:=Hex6(LnAddr+Done)+' ';
+   Ln:=Ln+Adr;
+  End;
+  If ListFmt[2] Then Begin
+   B:='';
+   For I:=0 To MaxB-1 Do
+    If Done+I<N Then B:=B+Hex2(SecGet(Sect,LnStartLen+Done+I));
+   Ln:=Ln+PadR(B,MaxB*2+1);
+  End;
+  If First Then Ln:=Ln+ExpandTabs(S,OptTabSize);
+  ListOut(Ln);
+  Done:=Done+MaxB;
+  First:=False;
+ Until Done>=N;
+ While ListSpc>0 Do Begin ListOut('');Dec(ListSpc);End;
+End;
+
+Function InMacroExp: Boolean;
+Var K: Integer;
+Begin
+ InMacroExp:=False;
+ For K:=1 To SrcTop Do If Srcs[K].Kind=1 Then InMacroExp:=True;
+End;
+
+{ IIF expression instruction : coupe la ligne }
+Procedure IIFParts(Const S: String; Var ExprS,Rest: String);
+Var I,D: Integer; Q: Char; Tk: String;
+
+ Procedure SkipB;
+ Begin
+  While (I<=Length(S)) And ((S[I]=' ') Or (S[I]=#9)) Do Inc(I);
+ End;
+
+Begin
+ ExprS:='';Rest:='';I:=1;
+ If (S<>'') And (S[1]<>' ') And (S[1]<>#9) Then Begin
+  While (I<=Length(S)) And (S[I]<>' ') And (S[I]<>#9) Do Inc(I);
+ End;
+ SkipB;
+ { etiquette indentee ? }
+ Tk:='';
+ While (I<=Length(S)) And (S[I]<>' ') And (S[I]<>#9) Do Begin Tk:=Tk+S[I];Inc(I);End;
+ If (Tk<>'') And (Tk[Length(Tk)]=':') Then Begin
+  SkipB;
+  Tk:='';
+  While (I<=Length(S)) And (S[I]<>' ') And (S[I]<>#9) Do Begin Tk:=Tk+S[I];Inc(I);End;
+ End;
+ SkipB;
+ Q:=#0;D:=0;
+ While I<=Length(S) Do Begin
+  If Q<>#0 Then Begin ExprS:=ExprS+S[I];If S[I]=Q Then Q:=#0;Inc(I);End
+  Else If (S[I]='''') Or (S[I]='"') Then Begin Q:=S[I];ExprS:=ExprS+S[I];Inc(I);End
+  Else If S[I]='(' Then Begin Inc(D);ExprS:=ExprS+S[I];Inc(I);End
+  Else If S[I]=')' Then Begin Dec(D);ExprS:=ExprS+S[I];Inc(I);End
+  Else If ((S[I]=' ') Or (S[I]=#9)) And (D<=0) Then Break
+  Else Begin ExprS:=ExprS+S[I];Inc(I);End;
+ End;
+ SkipB;
+ Rest:=Copy(S,I,255);
 End;
 
 Procedure ProcessLine(Const S: String);
-Var Lbl,Op,Suf,Args: String; Sz,M: Integer; Even,IsInstr: Boolean; Sect: Integer;
+Var Lbl,Op,Suf,Args,Ex,Rest: String; Sz,M: Integer; Even,IsInstr,WasMac: Boolean; R: TTV;
 Begin
  LnText:=S;
+ WasMac:=InMacroExp;
  SplitLine(S,Lbl,Op,Suf,Args);
+ ListHold:=(Op='TTL') Or (Op='SUBTTL') Or (Op='PLEN') Or (Op='LLEN') Or (Op='FORMAT');
  LnStartLen:=SecLen[CurSect];
  If AbsMode Then LnStartLen:=SecLen[0];
  LnAddr:=CurPC;
  If (Op<>'') And CondDirective(Op,Args) Then Begin
-  If AsmPassNo=2 Then ListLine(S);
+  If (AsmPassNo=2) And (WasMac Or AO.Mex Or Not WasMac) Then
+   If Not WasMac Or AO.Mex Then ListLine(S);
   Exit;
  End;
  If Not CondActive Then Exit;
  If Op='' Then Begin
   If Lbl<>'' Then DefLabel(Lbl);
-  If AsmPassNo=2 Then ListLine(S);
+  If (AsmPassNo=2) And (Not WasMac Or AO.Mex) Then ListLine(S);
+  Exit;
+ End;
+ If (Op='IIF') And (FindMacro('IIF')=0) Then Begin
+  IIFParts(S,Ex,Rest);
+  If Ex='' Then Begin Err3('Operand expected','Operande attendue','Operand erwartet');Exit;End;
+  If Not EvalStr(Ex,R) Then R.V:=0;
+  If R.V<>0 Then ProcessLine(Lbl+' '+Rest)
+  Else If Lbl<>'' Then ProcessLine(Lbl);
   Exit;
  End;
  Sz:=0;
@@ -3004,20 +4175,21 @@ Begin
    'W': Sz:=2;
    'L': Sz:=4;
    'S': Sz:=8;
-  Else Err3('Bad size suffix','Suffixe de taille incorrect','Falsche Groessenangabe');
+  Else Err3('invalid size','Suffixe de taille incorrect','Falsche Groessenangabe');
   End;
-  If Length(Suf)>1 Then Err3('Bad size suffix','Suffixe de taille incorrect','Falsche Groessenangabe');
+  If Length(Suf)>1 Then Err3('invalid size','Suffixe de taille incorrect','Falsche Groessenangabe');
  End;
  LnSz:=Sz;
  LnArgs:=Args;
  If Op='MACRO' Then Begin
-  If Lbl<>'' Then DefineMacro(Lbl,Args) Else DefineMacro(TrimS(Args),'');
+  If AsmPassNo=2 Then ListLine(S);
+  If Lbl<>'' Then DefineMacro(Lbl,Args,Suf) Else DefineMacro(TrimS(Args),'',Suf);
   Exit;
  End;
  M:=FindMacro(Op);
  If IsValueDirective(Op) And (M=0) Then Begin
   Directive(Lbl,Op,Args,Sz);
-  If AsmPassNo=2 Then ListLine(S);
+  If (AsmPassNo=2) And (Not WasMac Or AO.Mex) Then ListLine(S);
   Exit;
  End;
  IsInstr:=IsMnemonic(Op) And (M=0);
@@ -3036,8 +4208,8 @@ Begin
  If M<>0 Then CallMacro(M,Args,Suf)
  Else If Directive(Lbl,Op,Args,Sz) Then
  Else If Not AsmInstruction(Op) Then
-  Err3('Unknown opcode: '+Op,'Code operation inconnu : '+Op,'Unbekannter Befehl: '+Op);
- If AsmPassNo=2 Then ListLine(S);
+  Err3('instruction not recognised: '+Op,'Code operation inconnu : '+Op,'Unbekannter Befehl: '+Op);
+ If (AsmPassNo=2) And (Not WasMac Or AO.Mex) Then ListLine(S);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -3049,27 +4221,56 @@ Begin
  If Odd(N) Then EvenUp:=N+1 Else EvenUp:=N;
 End;
 
-Procedure RunPass(Lines: PLineArr; Count: Integer);
-Var S: String; I: Integer;
+{ Symboles de la ligne de commande (-E, /DEF:) : a=expr,b }
+Procedure ApplyCmdSyms;
+Var P,K: Integer; S,Nm: String; R: TTV;
+Begin
+ If CmdSyms='' Then Exit;
+ P:=1;
+ While NextOperand(CmdSyms,P,S) Do Begin
+  If S='' Then Continue;
+  K:=Pos('=',S);
+  If K>0 Then Begin
+   Nm:=TrimS(Copy(S,1,K-1));
+   If EvalStr(Copy(S,K+1,200),R) Then DefSym(Nm,R.V,R.S,0)
+   Else Err3('error in command line symbol','Erreur de symbole en ligne de commande','Fehler im Kommandozeilensymbol');
+  End Else DefSym(TrimS(S),1,SEC_ABS,0);
+ End;
+End;
+
+Procedure RunPass(Lines: PLineArr; Count: LongInt);
+Var S: String; I: Integer; Q: Integer;
 Begin
  Inc(PassSerial);
  For I:=0 To 2 Do SecLen[I]:=0;
- CurSect:=SEC_TEXT;AbsMode:=False;OrgAddr:=0;
+ CurSect:=SEC_TEXT;AbsMode:=False;OrgAddr:=0;OffMode:=False;OffPC:=0;
  RelocN:=0;DecIdx:=0;CondTop:=0;CondActive:=True;SrcTop:=0;
  FreeMacros;
- EndFlag:=False;RSCount:=0;LastGlobal:='';MacUniq:=0;LastErrLine:=0;
+ EndFlag:=False;CurRS:=0;LastGlobal:='';MacUniq:=0;LastErrLine:=0;LastWarnLine:=0;
+ NumRadix:=10;EqurN:=0;IncSeenN:=0;IncDirN:=0;HeadSet:=False;HeadFlags:=0;
+ AO:=AO0;
  OptDebug:=OptDebug0;OptOptimize:=OptOptimize0;OptCase:=OptCase0;OptWarnings:=OptWarnings0;
  OutFileName:='';
  AsmLines:=0;
+ If OptIncPath<>'' Then AddIncDirs(OptIncPath);
+ If OptIncList<>'' Then AddIncDirs(OptIncList);
+ If OptListing Then ListCnt:=0 Else ListCnt:=-1;
+ ListPLen:=60;ListLLen:=132;ListPage:=0;ListLineNo:=ListPLen;
+ ListTitle:='';ListSub:='';ListSpc:=0;ListQN:=0;ListHold:=False;
+ For Q:=0 To 2 Do ListFmt[Q]:=True;
  PushSrc(0,Lines,Count,AsmFileName,False);
- While (Not EndFlag) And NextLine(S) Do Begin
+ CurSrcName:=AsmFileName;
+ If CmdOpts<>'' Then DirOpt(CmdOpts);
+ ApplyCmdSyms;
+ While (Not EndFlag) And (Not AsmFatal) And NextLine(S) Do Begin
   Inc(AsmLines);
+  JoinContinuation(S);
   ProcessLine(S);
  End;
  While SrcTop>0 Do PopSrc;
  If (AsmPassNo=2) And (CondTop>0) Then Begin
   CurLineNo:=Count;CurSrcName:=AsmFileName;LnText:='';
-  Err3('Missing ENDC','ENDC manquant','ENDC fehlt');
+  Err3('missing ENDC','ENDC manquant','ENDC fehlt');
  End;
 End;
 
@@ -3181,8 +4382,8 @@ Begin
  PrgSymbolBytes:=N*14;
 End;
 
-Procedure SortLongs(Var A: TLongArr; N: Integer);
-Var Gap,I,J: Integer; T: LongInt;
+Procedure SortLongs(Var A: TLongArr; N: LongInt);
+Var Gap,I,J: LongInt; T: LongInt;
 Begin
  Gap:=N Div 2;
  While Gap>0 Do Begin
@@ -3204,7 +4405,9 @@ Begin
  TS:=EvenUp(SecLen[0]);DS:=EvenUp(SecLen[1]);BS:=SecLen[2];
  If OptDebug Then SS:=PrgSymbolBytes Else SS:=0;
  OutWord($601A);OutLong(TS);OutLong(DS);OutLong(BS);OutLong(SS);
- OutLong(0);OutLong(0);OutWord(0);
+ OutLong(0);
+ If HeadSet Then OutLong(HeadFlags) Else OutLong(0);
+ OutWord(0);
  For I:=0 To TS-1 Do OutByte(SecGet(0,I));
  For I:=0 To DS-1 Do OutByte(SecGet(1,I));
  If OptDebug Then
@@ -3224,7 +4427,7 @@ Begin
    End;
   End;
  { table de relocation }
- GetMem(RO,SizeOf(TLongArr));
+ GetMem(RO,(RelocN+2)*4);
  For I:=1 To RelocN Do Begin
   RO^[I-1]:=RelocPos^[I];
   If RelocSrc^[I]=1 Then RO^[I-1]:=RO^[I-1]+SecBase[1];
@@ -3243,7 +4446,7 @@ Begin
   End;
   OutByte(0);
  End;
- FreeMem(RO,SizeOf(TLongArr));
+ FreeMem(RO,(RelocN+2)*4);
  CloseOut;
  WritePRG:=True;
 End;
@@ -3338,35 +4541,98 @@ Begin
  WriteHunk:=True;
 End;
 
+{ S-records Motorola (OPT SREC, -L6) : module S0, donnees S1/S2/S3 (28 octets par ligne), S9/S8/S7 }
+Function WriteSrec(Const Name: String): Boolean;
+Var T: Text; I,K,N,AL: LongInt; Base,Last: LongInt; Ln,Mod0: String; Ty: Char;
+
+ Function Rec(Ty: Char; Addr: LongInt; Alen: Integer; Const Data: String): String;
+ Var R: String; C,Sm: LongInt; J: Integer;
+ Begin
+  C:=Alen+Length(Data) Div 2+1;
+  Sm:=C;
+  R:='S'+Ty+Hex2(C);
+  For J:=Alen-1 DownTo 0 Do Begin
+   R:=R+Hex2(ShrL(Addr,J*8) And $FF);
+   Sm:=Sm+(ShrL(Addr,J*8) And $FF);
+  End;
+  R:=R+Data;
+  For J:=0 To Length(Data) Div 2-1 Do
+   Sm:=Sm+(HexVal(Data[J*2+1])*16+HexVal(Data[J*2+2]));
+  R:=R+Hex2((Not Sm) And $FF);
+  Rec:=R;
+ End;
+
+Begin
+ WriteSrec:=False;
+ Assign(T,Name);
+ {$I-}
+ Rewrite(T);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Base:=0;
+ If AbsMode Then Base:=OrgAddr;
+ Last:=Base+SecLen[0]-1;
+ If Last>$FFFFFF Then AL:=4 Else If Last>$FFFF Then AL:=3 Else AL:=2;
+ Mod0:=Upper(ShortName(ChangeExt(AsmFileName,'X')));
+ Mod0:=Copy(Mod0,1,Length(Mod0)-2);
+ Ln:='';
+ For I:=1 To Length(Mod0) Do Ln:=Ln+Hex2(Ord(Mod0[I]));
+ Write(T,Rec('0',0,2,Ln)+#13#10);
+ If AL=2 Then Ty:='1' Else If AL=3 Then Ty:='2' Else Ty:='3';
+ I:=0;
+ While I<SecLen[0] Do Begin
+  N:=SecLen[0]-I;
+  If N>28 Then N:=28;
+  Ln:='';
+  For K:=0 To N-1 Do Ln:=Ln+Hex2(SecGet(0,I+K));
+  Write(T,Rec(Ty,Base+I,AL,Ln)+#13#10);
+  I:=I+N;
+ End;
+ If AL=2 Then Ty:='9' Else If AL=3 Then Ty:='8' Else Ty:='7';
+ Write(T,Rec(Ty,Base,AL,'')+#13#10);
+ Close(T);
+ WriteSrec:=True;
+End;
+
 { Imprime la table des symboles dans le listing }
+Type
+ TSymArr = Array[1..1] Of PSym;
+ PSymArr = ^TSymArr;
+
 Procedure PrintSymbols;
-Var Arr: Array[1..2000] Of PSym; N,I,J: Integer; P: PSym; T: PSym; H: Integer;
+Var Arr: PSymArr; N,I,J,Gap: LongInt; P: PSym; T: PSym; H: Integer;
     Sc: String;
 Begin
+ GetMem(Arr,(SymCount+2)*SizeOf(PSym));
  N:=0;
  For H:=0 To HASHSZ-1 Do Begin
   P:=Hash[H];
   While P<>Nil Do Begin
-   If P^.Defd And (N<2000) And (P^.Kind<>2) Then Begin Inc(N);Arr[N]:=P;End;
+   If P^.Defd And (P^.Kind<>2) Then Begin Inc(N);Arr^[N]:=P;End;
    P:=P^.Next;
   End;
  End;
- For I:=2 To N Do Begin
-  T:=Arr[I];J:=I-1;
-  While (J>=1) And (Arr[J]^.Name>T^.Name) Do Begin Arr[J+1]:=Arr[J];Dec(J);End;
-  Arr[J+1]:=T;
+ Gap:=N Div 2;
+ While Gap>0 Do Begin
+  For I:=Gap+1 To N Do Begin
+   T:=Arr^[I];J:=I;
+   While (J>Gap) And (Arr^[J-Gap]^.Name>T^.Name) Do Begin Arr^[J]:=Arr^[J-Gap];J:=J-Gap;End;
+   Arr^[J]:=T;
+  End;
+  Gap:=Gap Div 2;
  End;
- WriteLn(ListF);
- WriteLn(ListF,T3('Symbol table','Table des symboles','Symboltabelle'));
+ ListOut('');
+ ListOut(T3('Symbol table','Table des symboles','Symboltabelle'));
  For I:=1 To N Do Begin
-  Case Arr[I]^.Sect Of
+  Case Arr^[I]^.Sect Of
    0: Sc:='TEXT';
    1: Sc:='DATA';
    2: Sc:='BSS ';
   Else Sc:='ABS ';
   End;
-  WriteLn(ListF,PadR(Arr[I]^.Name,40),' ',Hex8(Arr[I]^.Value),' ',Sc);
+  ListOut(PadR(Arr^[I]^.Name,40)+' '+Hex8(Arr^[I]^.Value)+' '+Sc);
  End;
+ FreeMem(Arr,(SymCount+2)*SizeOf(PSym));
 End;
 
 Function StripExt(Const N: String): String;
@@ -3380,39 +4646,66 @@ End;
 { Point d'entree de l'assembleur                                          }
 { ---------------------------------------------------------------------- }
 
+Procedure DefaultAsmOpts(Var O: TAsmOpts);
+Var K: Integer;
+Begin
+ FillChar(O,SizeOf(O),0);
+ O.SymLen:=127;O.EvenChk:=True;O.Proc:=68000;
+End;
+
 Procedure InitAsmTables;
 Var I: Integer;
 Begin
- For I:=0 To HASHSZ-1 Do Hash[I]:=Nil;
+ For I:=0 TO HASHSZ-1 Do Hash[I]:=Nil;
  SymCount:=0;MacCount:=0;SrcTop:=0;CondTop:=0;
  FillChar(Chunks,SizeOf(Chunks),0);
  If RelocPos=Nil Then Begin
-  New(RelocPos);New(RelocSrc);New(RelocDst);New(Decs);New(TmpBody);
+  RelocCap:=RELOCINIT;
+  GetMem(RelocPos,RelocCap*4+8);GetMem(RelocSrc,RelocCap+8);GetMem(RelocDst,RelocCap+8);
+  GetMem(Decs,DECCAP);New(TmpBody);
  End;
  OptListing:=False;OptSymbols:=False;OptToDisk:=True;OptOptimize:=False;
  OptCase:=True;OptDebug:=False;OptWarnings:=True;
  OptOutName:='';OptIncPath:='';OptListName:='';OptTabSize:=8;
+ CmdOpts:='';CmdSyms:='';CmdHeaders:='';NoBinary:=False;OptCheckOnly:=False;
+ OptFormatSel:=0;OptIncList:='';
+ DefaultAsmOpts(AO);DefaultAsmOpts(AO0);
  AsmLogN:=0;AmigaMode:=AmigaMode;
 End;
 
 { Assemble Lines[1..Count] ; True si aucune erreur }
-Function AssembleSource(Const Name: String; Lines: PLineArr; Count: Integer): Boolean;
-Var Prev,Cur: LongInt; N: Integer; Ext: String; L: LongInt;
+Function AssembleSource(Const Name: String; Lines: PLineArr; Count: LongInt): Boolean;
+Var Prev,Cur: LongInt; N: Integer; Ext,Expl: String; L: LongInt;
 Begin
  AssembleSource:=False;
  LogClear;
  FreeSyms;FreeSections;
- AsmErrors:=0;AsmWarns:=0;AsmFileName:=Name;CurSrcName:=Name;CurLineNo:=0;
+ AsmErrors:=0;AsmWarns:=0;AsmErrCnt:=0;AsmFatal:=False;
+ AsmFileName:=Name;CurSrcName:=Name;CurLineNo:=0;LastErrLine:=-1;LastWarnLine:=-1;
  PassSerial:=0;RelocN:=0;
  FillChar(SecLen,SizeOf(SecLen),0);
  FillChar(SecBase,SizeOf(SecBase),0);
  OptDebug0:=OptDebug;OptOptimize0:=OptOptimize;OptCase0:=OptCase;OptWarnings0:=OptWarnings;
+ DefaultAsmOpts(AO0);
+ AO0.Fmt:=OptFormatSel;
+ Expl:=OptOutName;
  LogLine(AsmName+T3(' Macro Assembler  Version ',' Macro-assembleur  Version ',' Makro-Assembler  Version ')+VERSION_TEXT);
  LogLine(T3('DEV-COOLS clone of HiSoft Devpac','Clone DEV-COOLS de HiSoft Devpac','DEV-COOLS-Klon von HiSoft Devpac'));
  LogLine('');
- FillChar(Decs^,SizeOf(TByteArr),0);
+ FillChar(Decs^,DECCAP,0);
+ If LongLines>0 Then Begin
+  AsmPassNo:=2;LnText:='';
+  Err3('line malformed','Ligne trop longue (255 caracteres maximum)','Zeile zu lang');
+  LongLines:=0;
+ End;
+ If (AO0.Fmt<>0) And (AO0.Fmt<>6) Then Begin
+  AsmPassNo:=2;LnText:='';
+  Err3('linker format restriction','Format d''edition de liens non gere','Linker-Format nicht unterstuetzt');
+  AsmFatal:=True;
+ End;
  { passe 1 repetee jusqu'a stabilisation des symboles }
  Prev:=-1;N:=0;
+ If Not AsmFatal Then
  Repeat
   AsmPassNo:=1;
   If N=0 Then LogLine('Pass 1') ;
@@ -3420,63 +4713,88 @@ Begin
   ComputeBases;
   Cur:=SymChecksum;
   Inc(N);
+  If AsmFatal Then Break;
   If Cur=Prev Then Break;
   Prev:=Cur;
  Until N>=8;
  { passe 2 : generation }
  AsmPassNo:=2;
- LogLine('Pass 2');
- FreeSections;
  ListOn:=False;
- If OptListing Then Begin
-  If OptListName='' Then OptListName:=ChangeExt(Name,'LST');
-  Assign(ListF,OptListName);
-  {$I-}
-  Rewrite(ListF);
-  {$I+}
-  ListOn:=IOResult=0;
- End;
- RunPass(Lines,Count);
- If ListOn Then Begin
-  PrintSymbols;
-  Close(ListF);
+ If Not AsmFatal Then Begin
+  LogLine('Pass 2');
+  FreeSections;
+  ListDevOpen:=False;
+  If OptListing Then Begin
+   If OptListName='' Then Assign(ListF,ChangeExt(Name,'LST')) Else Assign(ListF,OptListName);
+   {$I-}
+   Rewrite(ListF);
+   {$I+}
+   ListOn:=IOResult=0;
+  End Else Begin
+   { LIST sans destination : ecran }
+   Assign(ListF,'');
+   {$I-}
+   Rewrite(ListF);
+   {$I+}
+   ListOn:=IOResult=0;
+  End;
+  ListDevOpen:=ListOn;
+  RunPass(Lines,Count);
+  If ListOn Then Begin
+   If (AO.Symtab Or OptSymbols) And (ListCnt>=0) Then PrintSymbols;
+   Flush(ListF);
+   Close(ListF);
+  End;
  End;
  LogLine('');
  LogLine('CODE '+IntStr(SecLen[0])+'  DATA '+IntStr(SecLen[1])+'  BSS '+IntStr(SecLen[2])+
          T3(' bytes',' octets',' Bytes'));
  If AsmWarns>0 Then LogLine(IntStr(AsmWarns)+T3(' warning(s)',' avertissement(s)',' Warnung(en)'));
- If AsmErrors=0 Then Begin
+ If (AsmErrCnt=0) And (AO.Fmt=6) And Not AbsMode Then Begin
+  LnText:='';CurLineNo:=0;AsmPassNo:=2;
+  Warn3('no ORG specified','Pas de ORG specifie','Kein ORG angegeben');
+ End;
+ If AsmErrCnt=0 Then Begin
   LogLine(T3('No errors','Aucune erreur','Keine Fehler'));
   { fichier de sortie }
-  If OutFileName<>'' Then OptOutName:=OutFileName;
-  If Not OptToDisk Then Begin
-   OutPathFinal:=PathOf(Name)+'DEVPAC.TMP';OutIsTemp:=True;
+  If NoBinary Or OptCheckOnly Then Begin
+   HaveOutput:=True;OutPathFinal:='';OutIsTemp:=False;
   End Else Begin
-   OutIsTemp:=False;
-   If OptOutName<>'' Then OutPathFinal:=OptOutName
-   Else If AbsMode Then OutPathFinal:=ChangeExt(Name,'BIN')
-   Else If AmigaMode Then OutPathFinal:=StripExt(Name)
-   Else OutPathFinal:=ChangeExt(Name,'PRG');
-  End;
-  If AbsMode Then Begin
-   If WriteBin(OutPathFinal) Then HaveOutput:=True;
-  End Else If AmigaMode Then Begin
-   If WriteHunk(OutPathFinal) Then HaveOutput:=True;
-  End Else Begin
-   If WritePRG(OutPathFinal) Then HaveOutput:=True;
+   If Not OptToDisk Then Begin
+    OutPathFinal:=PathOf(Name)+'DEVPAC.TMP';OutIsTemp:=True;
+   End Else Begin
+    OutIsTemp:=False;
+    If Expl<>'' Then OutPathFinal:=Expl
+    Else If OutFileName<>'' Then Begin
+     If OutFileName[1]='.' Then OutPathFinal:=ChangeExt(Name,Copy(OutFileName,2,10))
+     Else OutPathFinal:=OutFileName;
+    End
+    Else If AO.Fmt=6 Then OutPathFinal:=ChangeExt(Name,'MX')
+    Else If AbsMode Then OutPathFinal:=ChangeExt(Name,'BIN')
+    Else If AmigaMode Then OutPathFinal:=StripExt(Name)
+    Else OutPathFinal:=ChangeExt(Name,'PRG');
+   End;
+   If AO.Fmt=6 Then Begin
+    If WriteSrec(OutPathFinal) Then HaveOutput:=True;
+   End Else If AbsMode Then Begin
+    If WriteBin(OutPathFinal) Then HaveOutput:=True;
+   End Else If AmigaMode Then Begin
+    If WriteHunk(OutPathFinal) Then HaveOutput:=True;
+   End Else Begin
+    If WritePRG(OutPathFinal) Then HaveOutput:=True;
+   End;
   End;
   If Not HaveOutput Then Begin
-   LogLine(T3('Cannot write output file ','Impossible d''ecrire le fichier ','Ausgabedatei nicht schreibbar ')+OutPathFinal);
-   Inc(AsmErrors);
-  End Else If OptToDisk Then LogLine(T3('Output: ','Sortie : ','Ausgabe: ')+OutPathFinal);
+   LogLine(T3('cannot create binary file ','Impossible d''ecrire le fichier ','Ausgabedatei nicht schreibbar ')+OutPathFinal);
+   Inc(AsmErrCnt);
+  End Else If OptToDisk And (OutPathFinal<>'') Then LogLine(T3('Output: ','Sortie : ','Ausgabe: ')+OutPathFinal);
  End Else Begin
-  LogLine(IntStr(AsmErrors)+T3(' error(s)',' erreur(s)',' Fehler'));
+  LogLine(IntStr(AsmErrCnt)+T3(' error(s)',' erreur(s)',' Fehler'));
   HaveOutput:=False;
  End;
  FreeMacros;
- AssembleSource:=(AsmErrors=0) And HaveOutput;
+ AssembleSource:=(AsmErrCnt=0) And HaveOutput;
 End;
-
 { ====================================================================== }
 {                 MEMOIRE DE L'EMULATEUR ET DESASSEMBLEUR                }
 { ====================================================================== }
@@ -3671,6 +4989,9 @@ End;
 
 Var
  DPC : LongInt;
+ DisMon : Boolean;     { moniteur : marque les symboles (#1 nom #2), symboles immediats }
+ DisRel : Boolean;     { moniteur : offsets relatifs symbole(An) }
+ DisAn  : Array[0..7] Of LongInt;   { valeurs de A0-A7 pour DisRel }
 
 Function DNextW: LongInt;
 Begin
@@ -3711,11 +5032,16 @@ Begin
  If V<0 Then SgnHex:='-'+HexS(-V) Else SgnHex:=HexS(V);
 End;
 
+Function DSym(Const S: String): String;
+Begin
+ If DisMon Then DSym:=#1+S+#2 Else DSym:=S;
+End;
+
 Function SymOrHex(A: LongInt): String;
 Var S: String;
 Begin
  S:=DbgFind(A);
- If S<>'' Then SymOrHex:=S Else SymOrHex:=HexS(A);
+ If S<>'' Then SymOrHex:=DSym(S) Else SymOrHex:=HexS(A);
 End;
 
 Function DSizeCh(Sz: Integer): String;
@@ -3744,7 +5070,10 @@ Begin
   4: DEA:='-(A'+IntStr(Reg)+')';
   5: Begin
       D:=SX16(DNextW);
-      DEA:=SgnHex(D)+'(A'+IntStr(Reg)+')';
+      S:='';
+      If DisMon And DisRel Then S:=DbgFind(DisAn[Reg]+D);
+      If S<>'' Then DEA:=DSym(S)+'(A'+IntStr(Reg)+')'
+      Else DEA:=SgnHex(D)+'(A'+IntStr(Reg)+')';
      End;
   6: Begin
       Ext:=DNextW;
@@ -3760,7 +5089,7 @@ Begin
       2: Begin
           W:=DPC;D:=SX16(DNextW);
           S:=DbgFind(W+D);
-          If S<>'' Then DEA:=S+'(PC)' Else DEA:=SgnHex(D)+'(PC)';
+          If S<>'' Then DEA:=DSym(S)+'(PC)' Else DEA:=SgnHex(D)+'(PC)';
          End;
       3: Begin
           W:=DPC;
@@ -3774,7 +5103,9 @@ Begin
       4: Begin
           If Sz=2 Then D:=DNextL
           Else Begin D:=DNextW;If Sz=0 Then D:=D And $FF;End;
-          DEA:=ImmText(D);
+          S:='';
+          If DisMon And (Sz=2) And (D>=$100) Then S:=DbgFind(D);
+          If S<>'' Then DEA:='#'+DSym(S) Else DEA:=ImmText(D);
          End;
      Else DEA:='?';
      End;
@@ -4229,6 +5560,7 @@ Begin
    11: Names:='Line F emulator';
   Else Names:='Exception #'+IntStr(Vec);
   End;
+  PC:=CurOpPC;   { le moniteur affiche l'instruction fautive }
   Halt68(Names+' at $'+Hex6(CurOpPC));
   Exit;
  End;
@@ -5041,12 +6373,15 @@ Begin
  End;
  If AddrErr Then Begin
   AddrErr:=False;
+  PC:=CurOpPC;
   Halt68('Address error at $'+Hex6(CurOpPC));
  End;
  If BusErr Then Begin
   BusErr:=False;
+  PC:=CurOpPC;
   Halt68('Bus error at $'+Hex6(BusAddr)+' (PC=$'+Hex6(CurOpPC)+')');
  End;
+ If StopReason=STOP_FAULT Then PC:=CurOpPC;   { PC = instruction fautive (moniteur) }
 End;
 
 Function IsBreakpoint(A: LongInt): Boolean;
@@ -7016,7 +8351,7 @@ Const
 
  CELL_W = 8;
  CELL_H = 16;
- MAXDI  = 30;
+ MAXDI  = 40;
 
  { Types d'elements de dialogue }
  DK_LABEL  = 1;
@@ -7026,6 +8361,8 @@ Const
  DK_BOXED  = 5;
  DK_ICON   = 6;
  DK_HLINE  = 7;
+ DK_CHECK  = 8;           { case a cocher : Txt = libelle, Sel = 0/1 }
+ DK_POPUP  = 9;           { menu local : Txt = 'a|b|c', Sel = choix, W = largeur }
 
 Type
  TDItem = Record
@@ -7037,6 +8374,8 @@ Type
   Id   : Integer;
   Def  : Boolean;
   Max  : Integer;
+  Cur  : Integer;        { position du curseur dans un champ (0..Length) }
+  Flt  : Byte;           { filtre de saisie : 0 tout, 1 chiffres }
  End;
 
 Var
@@ -7076,8 +8415,34 @@ Function DlgEdit(X,Y,W: Integer; Const Val: String): Integer;
 Var N: Integer;
 Begin
  N:=DlgAdd(DK_EDIT,X,Y,W,'');
- DI[N].Val:=Val;
+ DI[N].Val:=Val;DI[N].Cur:=Length(Val);
  DlgEdit:=N;
+End;
+
+{ champ de saisie dont la longueur maximale (M) depasse la largeur affichee }
+Function DlgEditX(X,Y,W,M: Integer; Const Val: String): Integer;
+Var N: Integer;
+Begin
+ N:=DlgEdit(X,Y,W,Val);
+ If M>60 Then M:=60;
+ DI[N].Max:=M;
+ DlgEditX:=N;
+End;
+
+Function DlgCheck(X,Y: Integer; Const Txt: String; On: Boolean): Integer;
+Var N: Integer;
+Begin
+ N:=DlgAdd(DK_CHECK,X,Y,(Length(Txt)*8+22) Div 8,Txt);
+ DI[N].Sel:=Ord(On);
+ DlgCheck:=N;
+End;
+
+Function DlgPopup(X,Y,W: Integer; Const Opts: String; Sel: Integer): Integer;
+Var N: Integer;
+Begin
+ N:=DlgAdd(DK_POPUP,X,Y,W,Opts);
+ DI[N].Sel:=Sel;
+ DlgPopup:=N;
 End;
 
 Function DlgRadio(X,Y: Integer; Const Opts: String; Sel: Integer): Integer;
@@ -7149,8 +8514,37 @@ Begin
  RadioCount:=K;
 End;
 
+{ lettre de la touche Alt-A..Alt-Z (code etendu K = 256+scan) ; #0 sinon }
+Function AltLetter(K: Word): Char;
+Var I: Integer;
+Begin
+ AltLetter:=#0;
+ If (K<256) Or (K>=512) Then Exit;
+ For I:=0 To 25 Do If K=256+AltScan[I] Then AltLetter:=Chr(65+I);
+End;
+
+Function IsFocusKind(K: Byte): Boolean;
+Begin
+ IsFocusKind:=(K=DK_EDIT) Or (K=DK_CHECK) Or (K=DK_POPUP);
+End;
+
+{ debut de la partie visible d'un champ dont le curseur est en C }
+Function EditViewStart(I: Integer): Integer;
+Begin
+ If DI[I].Cur>=DI[I].W Then EditViewStart:=DI[I].Cur-DI[I].W+1 Else EditViewStart:=0;
+End;
+
+Procedure DotRect(X1,Y1,X2,Y2: Integer);
+Begin
+ SetColor(INK);
+ SetLineStyle(UserBitLn,$AAAA,1);
+ Rectangle(X1,Y1,X2,Y2);
+ SetLineStyle(SolidLn,0,1);
+End;
+
 Procedure DlgDraw;
-Var X0,Y0,I,K,N,PX,PY,W,OX: Integer; S: String;
+Var X0,Y0,I,K,N,PX,PY,W,OX,VS,X2: Integer; S: String;
+    Pt: Array[1..3] Of PointType;
 Begin
  HideMouse;
  X0:=DlgX0;Y0:=DlgY0;
@@ -7175,14 +8569,38 @@ Begin
              End;
             End;
    DK_EDIT: Begin
-             S:=DI[I].Val;
-             If Length(S)>DI[I].Max Then S:=Copy(S,Length(S)-DI[I].Max+1,DI[I].Max);
+             VS:=EditViewStart(I);
+             S:=Copy(DI[I].Val,VS+1,DI[I].W);
              PText(PX,PY+4,S);
-             If I=DFocus Then PText(PX+Length(S)*8,PY+4,'_')
-             Else Begin
-              SetColor(INK);Line(PX+Length(S)*8,PY+14,PX+DI[I].W*CELL_W-1,PY+14);
+             SetColor(INK);
+             SetLineStyle(UserBitLn,$AAAA,1);
+             Line(PX,PY+14,PX+DI[I].W*CELL_W-1,PY+14);
+             SetLineStyle(SolidLn,0,1);
+             If I=DFocus Then Begin
+              OX:=PX+(DI[I].Cur-VS)*8;
+              Line(OX,PY+2,OX,PY+13);
              End;
             End;
+   DK_CHECK: Begin
+              Frame(PX,PY+2,PX+11,PY+13);
+              If DI[I].Sel=1 Then Begin
+               SetColor(INK);
+               Line(PX+2,PY+4,PX+9,PY+11);Line(PX+9,PY+4,PX+2,PY+11);
+              End;
+              PText(PX+18,PY+4,DI[I].Txt);
+              If I=DFocus Then DotRect(PX-2,PY,PX+19+Length(DI[I].Txt)*8,PY+CELL_H-1);
+             End;
+   DK_POPUP: Begin
+              X2:=PX+DI[I].W*CELL_W;
+              Box(PX+2,PY+2,X2+2,PY+CELL_H+2,INK);
+              Box(PX,PY,X2,PY+CELL_H,PAPER);
+              Frame(PX,PY,X2,PY+CELL_H);
+              PText(PX+6,PY+5,Copy(RadioOptStr(DI[I].Txt,DI[I].Sel),1,DI[I].W-2));
+              Pt[1].X:=X2-12;Pt[1].Y:=PY+5;Pt[2].X:=X2-4;Pt[2].Y:=PY+5;Pt[3].X:=X2-8;Pt[3].Y:=PY+11;
+              SetFillStyle(SolidFill,INK);SetColor(INK);
+              FillPoly(3,Pt);
+              If I=DFocus Then DotRect(PX-3,PY-3,X2+3,PY+CELL_H+3);
+             End;
    DK_RADIO: Begin
               N:=RadioCount(DI[I].Txt);OX:=PX;
               For K:=1 To N Do Begin
@@ -7199,7 +8617,15 @@ Begin
                OX:=OX+W;
               End;
              End;
-   DK_BUTTON: GButton(PX,PY,PX+DI[I].W*CELL_W,PY+CELL_H+2,DI[I].Txt,DI[I].Def,False);
+   DK_BUTTON: Begin
+               GButton(PX,PY,PX+DI[I].W*CELL_W,PY+CELL_H+2,DI[I].Txt,DI[I].Def,False);
+               { lettre d'acces Alt-<lettre> soulignee pour les boutons non par defaut }
+               If (Not DI[I].Def) And (DI[I].Txt<>'') Then Begin
+                OX:=(PX+PX+DI[I].W*CELL_W+1-TextW(DI[I].Txt)) Div 2;
+                SetColor(INK);
+                Line(OX,PY+CELL_H-1,OX+7,PY+CELL_H-1);
+               End;
+              End;
   End;
  End;
  ShowMouse;
@@ -7214,6 +8640,8 @@ Begin
   PX:=X0+8+DI[I].X*CELL_W;PY:=Y0+8+DI[I].Y*CELL_H;
   Case DI[I].Kind Of
    DK_EDIT: If InBox(MX1,MY1,PX,PY,PX+DI[I].W*CELL_W,PY+CELL_H) Then DlgHit:=I;
+   DK_CHECK: If InBox(MX1,MY1,PX,PY,PX+19+Length(DI[I].Txt)*8,PY+CELL_H) Then DlgHit:=I;
+   DK_POPUP: If InBox(MX1,MY1,PX,PY,PX+DI[I].W*CELL_W,PY+CELL_H) Then DlgHit:=I;
    DK_BUTTON: If InBox(MX1,MY1,PX,PY,PX+DI[I].W*CELL_W,PY+CELL_H+2) Then DlgHit:=I;
    DK_RADIO: Begin
               N:=RadioCount(DI[I].Txt);OX:=PX;
@@ -7228,61 +8656,177 @@ Begin
  End;
 End;
 
+{ Menu local (pop-up) : appui prolonge, relacher dehors = annuler ; un simple
+  clic laisse la liste ouverte (second clic = choix) }
+Procedure RunPopup(I: Integer);
+Var PX,PY,X1,Y1,X2,Y2,N,H,Hi,K: Integer; E: TEvent; Buf: Pointer; Sz: LongInt;
+    Done,Sticky,Moved: Boolean; T0: LongInt;
+ Procedure Paint;
+ Var J,Y: Integer;
+ Begin
+  HideMouse;
+  Box(X1+3,Y1+3,X2+3,Y2+3,INK);
+  Box(X1,Y1,X2,Y2,PAPER);
+  Frame(X1,Y1,X2,Y2);
+  For J:=1 To N Do Begin
+   Y:=Y1+2+(J-1)*CELL_H;
+   If J=Hi Then Begin
+    Box(X1+1,Y,X2-1,Y+CELL_H-1,INK);
+    WText(X1+6,Y+4,RadioOptStr(DI[I].Txt,J));
+   End Else PText(X1+6,Y+4,RadioOptStr(DI[I].Txt,J));
+  End;
+  ShowMouse;
+ End;
+ Function HitItem(X,Y: LongInt): Integer;
+ Var R: Integer;
+ Begin
+  R:=0;
+  If InBox(X,Y,X1,Y1+2,X2,Y2-2) Then Begin
+   R:=(Y-Y1-2) Div CELL_H+1;
+   If R>N Then R:=N;
+  End;
+  HitItem:=R;
+ End;
+Begin
+ N:=RadioCount(DI[I].Txt);
+ PX:=DlgX0+8+DI[I].X*CELL_W;PY:=DlgY0+8+DI[I].Y*CELL_H;
+ X1:=PX;X2:=PX+DI[I].W*CELL_W;
+ Y1:=PY-(DI[I].Sel-1)*CELL_H-2;
+ Y2:=Y1+N*CELL_H+4;
+ If Y2>SCR_H-6 Then Begin Y1:=Y1-(Y2-(SCR_H-6));Y2:=SCR_H-6;End;
+ If Y1<2 Then Begin Y2:=Y2+(2-Y1);Y1:=2;End;
+ Sz:=ImageSize(X1,Y1,X2+4,Y2+4);
+ GetMem(Buf,Sz);
+ HideMouse;
+ GetImage(X1,Y1,X2+4,Y2+4,Buf^);
+ ShowMouse;
+ Hi:=DI[I].Sel;
+ Paint;
+ Done:=False;Sticky:=False;Moved:=False;T0:=MsNow;
+ Repeat
+  PollEvent(E);
+  Case E.Kind Of
+   4: Begin
+       H:=HitItem(E.X,E.Y);
+       If H<>Hi Then Begin Hi:=H;Paint;End;
+       Moved:=True;
+      End;
+   3: Begin
+       H:=HitItem(E.X,E.Y);
+       If (Not Moved) And (Not Sticky) And (MsNow-T0<600) Then Sticky:=True
+       Else Begin
+        If H>0 Then DI[I].Sel:=H;
+        Done:=True;
+       End;
+      End;
+   2: If Sticky Then Begin
+       H:=HitItem(E.X,E.Y);
+       If H>0 Then DI[I].Sel:=H;
+       Done:=True;
+      End;
+   1: Case E.Key Of
+       K_ESC: Done:=True;
+       K_UP: Begin If Hi>1 Then Dec(Hi) Else Hi:=N;Paint;End;
+       K_DOWN: Begin If (Hi<N) And (Hi>0) Then Inc(Hi) Else Hi:=1;Paint;End;
+       K_ENTER: Begin If Hi>0 Then DI[I].Sel:=Hi;Done:=True;End;
+      End;
+  End;
+ Until Done;
+ HideMouse;
+ PutImage(X1,Y1,Buf^,NormalPut);
+ ShowMouse;
+ FreeMem(Buf,Sz);
+End;
+
+Procedure DlgFocusMove(Dir: Integer);
+Var F: Integer;
+Begin
+ If DFocus=0 Then Exit;
+ F:=DFocus;
+ Repeat
+  F:=F+Dir;
+  If F>DN Then F:=1;
+  If F<1 Then F:=DN;
+ Until IsFocusKind(DI[F].Kind) Or (F=DFocus);
+ DFocus:=F;
+End;
+
 { Boucle d'un dialogue : retourne l'Id du bouton choisi (0 si Echap) }
 Function DlgRun: Integer;
-Var E: TEvent; Done: Boolean; Res,I,Sub,F: Integer; DefId,EscId: Integer;
-    Ch: Char; S: String;
+Var E: TEvent; Done: Boolean; Res,I,Sub,F,DefId,K,VS,P: Integer;
+    L: Char; S: String;
 Begin
- DefId:=0;EscId:=0;
+ DefId:=0;
  For I:=1 To DN Do
-  If DI[I].Kind=DK_BUTTON Then Begin
-   If DI[I].Def Then DefId:=DI[I].Id;
-   If DI[I].Id=0 Then EscId:=0;
-  End;
+  If (DI[I].Kind=DK_BUTTON) And DI[I].Def Then DefId:=DI[I].Id;
  DFocus:=0;
- For I:=1 To DN Do If (DI[I].Kind=DK_EDIT) And (DFocus=0) Then DFocus:=I;
+ For I:=DN Downto 1 Do If IsFocusKind(DI[I].Kind) Then DFocus:=I;
+ For I:=DN Downto 1 Do If DI[I].Kind=DK_EDIT Then DFocus:=I;
  DlgDraw;
  Done:=False;Res:=0;
  Repeat
   PollEvent(E);
   If E.Kind=1 Then Begin
-   Case E.Key Of
-    K_ENTER: Begin Res:=DefId;Done:=True;End;
-    K_ESC: Begin Res:=0;Done:=True;End;
-    K_TAB,K_DOWN: Begin
-        If DFocus>0 Then Begin
-         F:=DFocus;
-         Repeat
-          Inc(F);If F>DN Then F:=1;
-         Until (DI[F].Kind=DK_EDIT) Or (F=DFocus);
-         DFocus:=F;DlgDraw;
-        End;
-       End;
-    K_STAB,K_UP: Begin
-        If DFocus>0 Then Begin
-         F:=DFocus;
-         Repeat
-          Dec(F);If F<1 Then F:=DN;
-         Until (DI[F].Kind=DK_EDIT) Or (F=DFocus);
-         DFocus:=F;DlgDraw;
-        End;
-       End;
-    K_BKSP: If (DFocus>0) And (Length(DI[DFocus].Val)>0) Then Begin
-             Dec(DI[DFocus].Val[0]);DlgDraw;
-            End;
-    K_DEL: If DFocus>0 Then Begin DI[DFocus].Val:='';DlgDraw;End;
-    32..255: If DFocus>0 Then Begin
-              If Length(DI[DFocus].Val)<DI[DFocus].Max Then Begin
-               Ch:=Chr(E.Key);
-               DI[DFocus].Val:=DI[DFocus].Val+Ch;DlgDraw;
-              End;
-             End;
+   K:=E.Key;
+   If K=K_ENTER Then Begin Res:=DefId;Done:=True;End
+   Else If K=K_ESC Then Begin
+    { Echap vide le champ en cours ; sur un champ vide ou sans champ : annule }
+    If (DFocus>0) And (DI[DFocus].Kind=DK_EDIT) And (DI[DFocus].Val<>'') Then Begin
+     DI[DFocus].Val:='';DI[DFocus].Cur:=0;DlgDraw;
+    End Else Begin Res:=0;Done:=True;End;
+   End
+   Else If (K=K_TAB) Or (K=K_DOWN) Then Begin DlgFocusMove(1);DlgDraw;End
+   Else If (K=K_STAB) Or (K=K_UP) Then Begin DlgFocusMove(-1);DlgDraw;End
+   Else If DFocus>0 Then Begin
+    F:=DFocus;
+    If DI[F].Kind=DK_EDIT Then Begin
+     S:=DI[F].Val;P:=DI[F].Cur;
+     If (K=K_LEFT) And (P>0) Then Dec(P)
+     Else If (K=K_RIGHT) And (P<Length(S)) Then Inc(P)
+     Else If K=K_HOME Then P:=0
+     Else If K=K_END Then P:=Length(S)
+     Else If (K=K_BKSP) And (P>0) Then Begin Delete(S,P,1);Dec(P);End
+     Else If (K=K_DEL) And (P<Length(S)) Then Delete(S,P+1,1)
+     Else If (K>=32) And (K<=255) And (Length(S)<DI[F].Max) Then Begin
+      If (DI[F].Flt<>1) Or ((K>=48) And (K<=57)) Then Begin
+       Insert(Chr(K),S,P+1);Inc(P);
+      End;
+     End;
+     DI[F].Val:=S;DI[F].Cur:=P;
+     DlgDraw;
+    End Else If DI[F].Kind=DK_CHECK Then Begin
+     If K=32 Then Begin DI[F].Sel:=1-DI[F].Sel;DlgDraw;End;
+    End Else If DI[F].Kind=DK_POPUP Then Begin
+     P:=RadioCount(DI[F].Txt);
+     If (K=32) Or (K=K_RIGHT) Then Begin
+      Inc(DI[F].Sel);If DI[F].Sel>P Then DI[F].Sel:=1;DlgDraw;
+     End Else If K=K_LEFT Then Begin
+      Dec(DI[F].Sel);If DI[F].Sel<1 Then DI[F].Sel:=P;DlgDraw;
+     End;
+    End;
    End;
+   { Alt-<premiere lettre> : bouton non par defaut }
+   L:=AltLetter(K);
+   If L<>#0 Then
+    For I:=1 To DN Do
+     If Not Done Then
+      If (DI[I].Kind=DK_BUTTON) And (Not DI[I].Def) And (DI[I].Txt<>'') Then
+       If UpCase(DI[I].Txt[1])=L Then Begin Res:=DI[I].Id;Done:=True;End;
   End Else If E.Kind=2 Then Begin
    I:=DlgHit(E.X,E.Y,Sub);
    If I>0 Then Begin
     Case DI[I].Kind Of
-     DK_EDIT: Begin DFocus:=I;DlgDraw;End;
+     DK_EDIT: Begin
+               DFocus:=I;
+               VS:=EditViewStart(I);
+               P:=VS+(E.X-(DlgX0+8+DI[I].X*CELL_W)+4) Div 8;
+               If P>Length(DI[I].Val) Then P:=Length(DI[I].Val);
+               If P<0 Then P:=0;
+               DI[I].Cur:=P;
+               DlgDraw;
+              End;
+     DK_CHECK: Begin DFocus:=I;DI[I].Sel:=1-DI[I].Sel;DlgDraw;End;
+     DK_POPUP: Begin DFocus:=I;DlgDraw;RunPopup(I);DlgDraw;End;
      DK_RADIO: Begin DI[I].Sel:=Sub;DlgDraw;End;
      DK_BUTTON: Begin Res:=DI[I].Id;Done:=True;End;
     End;
@@ -7341,19 +8885,25 @@ Begin
  R:=AlertBox(Icon,Txt,'OK',1);
 End;
 
-Function InputDlg(Const Title,Prompt: String; Var S: String; MaxLen: Integer): Boolean;
-Var W,R: Integer;
+Function InputDlgF(Const Title,Prompt: String; Var S: String; MaxLen: Integer; Flt: Byte): Boolean;
+Var W,R,E: Integer;
 Begin
  W:=Length(Prompt)+MaxLen+4;
  If W<Length(Title)+6 Then W:=Length(Title)+6;
  DlgReset(W,4);
  DlgLabel(1,0,Title);
  DlgLabel(1,1,Prompt);
- DlgEdit(2+Length(Prompt),1,MaxLen,S);
+ E:=DlgEdit(2+Length(Prompt),1,MaxLen,S);
+ DI[E].Flt:=Flt;
  DlgButton(W-24,2,10,'OK',1,True);
  DlgButton(W-12,2,10,T3('Cancel','Annuler','Abbruch'),0,False);
  R:=DlgRun;
- If R=1 Then Begin S:=DI[3].Val;InputDlg:=True;End Else InputDlg:=False;
+ If R=1 Then Begin S:=DI[E].Val;InputDlgF:=True;End Else InputDlgF:=False;
+End;
+
+Function InputDlg(Const Title,Prompt: String; Var S: String; MaxLen: Integer): Boolean;
+Begin
+ InputDlg:=InputDlgF(Title,Prompt,S,MaxLen,0);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -7367,6 +8917,7 @@ Const
 Var
  FSList : Array[1..FS_MAX] Of String[40];
  FSN    : Integer;
+ FSDirMode : Boolean;      { selection d'un repertoire (Change Directory) }
 
 Function NormDir(Const D: String): String;
 Var S: String; I: Integer;
@@ -7502,7 +9053,11 @@ Var Dir,Sel,Msk: String; Top,Cur,I,X0,Y0,LX,LY,LW,Row,Foc: Integer; E: TEvent;
  End;
  Procedure Accept;
  Begin
-  If Sel<>'' Then Begin
+  If FSDirMode Then Begin
+   If (Sel<>'') And (Sel[1]=DirSep) And (Sel<>DirSep+'..') Then Path:=Dir+Copy(Sel,2,80)+DirSep
+   Else Path:=Dir;
+   Ok:=True;Done:=True;
+  End Else If Sel<>'' Then Begin
    If (Pos(DirSep,Sel)>0) Or (Pos(':',Sel)>0) Then Path:=Sel Else Path:=Dir+Sel;
    Ok:=True;Done:=True;
   End;
@@ -7535,7 +9090,7 @@ Begin
                Sel:='';Rescan;Redraw:=True;
               End Else Accept;
              End;
-    K_ESC: Done:=True;
+    K_ESC,256+46: Done:=True;
     K_UP: If Cur>1 Then Begin Dec(Cur);Sel:=FSList[Cur];Redraw:=True;End
           Else If Cur=0 Then If FSN>0 Then Begin Cur:=1;Sel:=FSList[1];Redraw:=True;End;
     K_DOWN: If Cur<FSN Then Begin Inc(Cur);Sel:=FSList[Cur];Redraw:=True;End;
@@ -7590,93 +9145,212 @@ End;
 { ---------------------------------------------------------------------- }
 
 Const
- NMENU = 5;
+ NMENU = 8;
  MTitle : Array[1..NMENU] Of String[40] =
-  ('Desk~Bureau~Desk','File~Fichier~Datei','Search~Recherche~Suchen',
-   'Options~Options~Optionen','Program~Programme~Programm');
+  ('Desk~Bureau~Desk','File~Fichier~Datei','Edit~Edition~Bearbeiten','Block~Bloc~Block',
+   'Search~Recherche~Suchen','Options~Options~Optionen','Tools~Outils~Werkzeuge',
+   'Program~Programme~Programm');
+
+ { Identifiants de commandes : les menus, les touches et les sous-menus s'y
+   referent (DoCmd, p13). 0 = separateur. }
+ CM_NONE    = 0;
+ CM_ABOUT   = 1;  CM_HELP    = 2;  CM_MEMORY  = 3;
+ CM_NEW     = 10; CM_LOAD    = 11; CM_INSERT  = 12; CM_REVERT  = 13; CM_CLOSE   = 14;
+ CM_SAVEAS  = 15; CM_SAVE    = 16; CM_DELFILE = 17; CM_CHDIR   = 18; CM_QUIT    = 19;
+ CM_CUT     = 20; CM_COPY    = 21; CM_PASTE   = 22; CM_SELALL  = 23; CM_ASCII   = 24;
+ CM_TOP     = 25; CM_BOTTOM  = 26; CM_GOTO    = 27;
+ CM_BSTART  = 30; CM_BEND    = 31; CM_BSAVE   = 32; CM_BCOPY   = 33; CM_BDEL    = 34;
+ CM_BREM    = 35; CM_BPASTE  = 36; CM_BPRINT  = 37;
+ CM_FIND    = 40; CM_FNEXT   = 41; CM_FPREV   = 42; CM_REPL    = 43; CM_REPLALL = 44;
+ CM_SETBM   = 45; CM_GOTOBM  = 46;
+ CM_PREFS   = 50; CM_ASMOPT  = 51; CM_RUNOPT  = 52; CM_SAVEPREF= 53; CM_LOADPREF= 54;
+ CM_RUNOTHER= 60;
+ CM_ASM     = 70; CM_CHECK   = 71; CM_RUN     = 72; CM_DEBUG   = 73; CM_MON     = 74;
+ CM_RUNDIR  = 75; CM_GEM     = 76; CM_PREVERR = 77; CM_JUMPERR = 78;
+ CM_NEXTERR = 79;
 
 Var
  MenuOpen,MenuHi : Integer;
+ SubOpen,SubHi   : Integer;       { sous-menu ouvert (identifiant) et element en surbrillance }
  OptRunGem       : Boolean;
+ RunDirMode      : Integer;       { 1 repertoire courant, 2 repertoire de la fenetre du haut }
+
+Function CmdEnabled(Id: Integer): Boolean; Forward;
+Function SubEnabled(Id,J: Integer): Boolean; Forward;
+Procedure DoSub(Id,J: Integer); Forward;
 
 Function MCount(M: Integer): Integer;
 Begin
  Case M Of
   1: MCount:=4;
-  2: MCount:=8;
-  3: MCount:=13;
-  4: MCount:=6;
+  2: MCount:=13;
+  3: MCount:=9;
+  4: MCount:=8;
   5: MCount:=8;
+  6: MCount:=6;
+  7: MCount:=1;
+  8: MCount:=12;
  Else MCount:=0;
  End;
 End;
 
-{ Libelle : "texte|raccourci" ; '-' = separateur }
-Function MLabel(M,I: Integer): String;
+{ commande de l'element I du menu M (CM_NONE = separateur) }
+Function MItem(M,I: Integer): Integer;
 Begin
- MLabel:='';
+ MItem:=CM_NONE;
  Case M Of
-  1: Case I Of
-      1: MLabel:=T3('About ','A propos de ','Ueber ')+'Devpac...';
-      2: MLabel:='-';
-      3: MLabel:=T3('Help...|F1','Aide...|F1','Hilfe...|F1');
-      4: MLabel:=T3('Memory...','Memoire...','Speicher...');
-     End;
+  1: Case I Of 1: MItem:=CM_ABOUT; 3: MItem:=CM_HELP; 4: MItem:=CM_MEMORY; End;
   2: Case I Of
-      1: MLabel:=T3('New|^N','Nouveau|^N','Neu|^N');
-      2: MLabel:=T3('Load...|^L','Charger...|^L','Laden...|^L');
-      3: MLabel:=T3('Save|^S','Sauver|^S','Sichern|^S');
-      4: MLabel:=T3('Save as...','Sauver sous...','Sichern als...');
-      5: MLabel:=T3('Append...','Ajouter...','Anhaengen...');
-      6: MLabel:=T3('Save block...','Sauver le bloc...','Block sichern...');
-      7: MLabel:='-';
-      8: MLabel:=T3('Quit|^Q','Quitter|^Q','Ende|^Q');
+      1: MItem:=CM_NEW; 2: MItem:=CM_LOAD; 3: MItem:=CM_INSERT; 4: MItem:=CM_REVERT;
+      5: MItem:=CM_CLOSE; 7: MItem:=CM_SAVEAS; 8: MItem:=CM_SAVE;
+      10: MItem:=CM_DELFILE; 11: MItem:=CM_CHDIR; 13: MItem:=CM_QUIT;
      End;
   3: Case I Of
-      1: MLabel:=T3('Find...|^F','Chercher...|^F','Suchen...|^F');
-      2: MLabel:=T3('Find next|^G','Suivant|^G','Weitersuchen|^G');
-      3: MLabel:=T3('Replace...|^R','Remplacer...|^R','Ersetzen...|^R');
-      4: MLabel:=T3('Goto line...|^W','Aller a la ligne...|^W','Gehe zu Zeile...|^W');
-      5: MLabel:='-';
-      6: MLabel:=T3('Set block start|F5','Debut de bloc|F5','Blockanfang|F5');
-      7: MLabel:=T3('Set block end|F6','Fin de bloc|F6','Blockende|F6');
-      8: MLabel:=T3('Copy block|^C','Copier le bloc|^C','Block kopieren|^C');
-      9: MLabel:=T3('Cut block|^U','Couper le bloc|^U','Block ausschn.|^U');
-      10: MLabel:=T3('Paste block|^V','Coller le bloc|^V','Block einfuegen|^V');
-      11: MLabel:=T3('Delete block|^B','Effacer le bloc|^B','Block loeschen|^B');
-      12: MLabel:='-';
-      13: MLabel:=T3('Select all','Tout selectionner','Alles auswaehlen');
+      1: MItem:=CM_CUT; 2: MItem:=CM_COPY; 3: MItem:=CM_PASTE; 4: MItem:=CM_SELALL;
+      5: MItem:=CM_ASCII; 7: MItem:=CM_TOP; 8: MItem:=CM_BOTTOM; 9: MItem:=CM_GOTO;
      End;
-  4: Case I Of
-      1: MLabel:=T3('Editor preferences...','Preferences editeur...','Editor-Einstellungen...');
-      2: MLabel:=T3('Assembler options...','Options assembleur...','Assembler-Optionen...');
-      3: MLabel:=T3('Debugger options...','Options debogueur...','Debugger-Optionen...');
-      4: MLabel:='-';
-      5: MLabel:=T3('Save preferences','Sauver preferences','Einstellungen sichern');
-      6: MLabel:=T3('Load preferences','Charger preferences','Einstellungen laden');
-     End;
+  4: MItem:=CM_BSTART+I-1;
   5: Case I Of
-      1: MLabel:=T3('Assemble|^A','Assembler|^A','Assemblieren|^A');
-      2: MLabel:=T3('Run|^X','Executer|^X','Starten|^X');
-      3: MLabel:=T3('Debug|^D','Deboguer|^D','Debuggen|^D');
-      4: MLabel:=MonName+'|AltM';
-      5: MLabel:=T3('Run with GEM|^K','Executer avec GEM|^K','Mit GEM starten|^K');
-      6: MLabel:='-';
-      7: MLabel:=T3('Jump to error|^J','Aller a l''erreur|^J','Zum Fehler|^J');
-      8: MLabel:=T3('Run Other...|^O','Executer autre...|^O','Anderes starten...|^O');
+      1: MItem:=CM_FIND; 2: MItem:=CM_FNEXT; 3: MItem:=CM_FPREV; 4: MItem:=CM_REPL;
+      5: MItem:=CM_REPLALL; 7: MItem:=CM_SETBM; 8: MItem:=CM_GOTOBM;
+     End;
+  6: Case I Of
+      1: MItem:=CM_PREFS; 2: MItem:=CM_ASMOPT; 3: MItem:=CM_RUNOPT;
+      5: MItem:=CM_SAVEPREF; 6: MItem:=CM_LOADPREF;
+     End;
+  7: If I=1 Then MItem:=CM_RUNOTHER;
+  8: Case I Of
+      1: MItem:=CM_ASM; 2: MItem:=CM_CHECK; 4: MItem:=CM_RUN; 5: MItem:=CM_DEBUG;
+      6: MItem:=CM_MON; 8: MItem:=CM_RUNDIR; 9: MItem:=CM_GEM;
+      11: MItem:=CM_PREVERR; 12: MItem:=CM_JUMPERR;
      End;
  End;
- If AmigaMode And (M=5) And (I=5) Then MLabel:=T3('Run as CLI|^K','Executer en CLI|^K','Als CLI starten|^K');
 End;
 
-Function MChecked(M,I: Integer): Boolean;
+{ Libelle d'une commande : "texte|raccourci" }
+Function CmdLabel(Id: Integer): String;
 Begin
- MChecked:=(M=5) And (I=5) And OptRunGem;
+ CmdLabel:='';
+ Case Id Of
+  CM_ABOUT: CmdLabel:=T3('About ','A propos de ','Ueber ')+'Devpac...';
+  CM_HELP: CmdLabel:=T3('Help...|Alt-H','Aide...|Alt-H','Hilfe...|Alt-H');
+  CM_MEMORY: CmdLabel:=T3('Memory...','Memoire...','Speicher...');
+  CM_NEW: CmdLabel:=T3('New','Nouveau','Neu');
+  CM_LOAD: CmdLabel:=T3('Load...|Alt-L','Charger...|Alt-L','Laden...|Alt-L');
+  CM_INSERT: CmdLabel:=T3('Insert File...|Alt-I','Inserer fichier...|Alt-I','Datei einfuegen...|Alt-I');
+  CM_REVERT: CmdLabel:=T3('Revert','Recharger','Zuruecksetzen');
+  CM_CLOSE: CmdLabel:=T3('Close|^W','Fermer|^W','Schliessen|^W');
+  CM_SAVEAS: CmdLabel:=T3('Save As...|Alt-S','Sauver sous...|Alt-S','Sichern als...|Alt-S');
+  CM_SAVE: CmdLabel:=T3('Save|F8','Sauver|F8','Sichern|F8');
+  CM_DELFILE: CmdLabel:=T3('Delete File...','Effacer fichier...','Datei loeschen...');
+  CM_CHDIR: CmdLabel:=T3('Change Directory...','Changer de repertoire...','Verzeichnis wechseln...');
+  CM_QUIT: CmdLabel:=T3('Quit|Alt-Q','Quitter|Alt-Q','Ende|Alt-Q');
+  CM_CUT: CmdLabel:=T3('Cut|Shift-F5','Couper|Shift-F5','Ausschneiden|Shift-F5');
+  CM_COPY: CmdLabel:=T3('Copy|Shift-F4','Copier|Shift-F4','Kopieren|Shift-F4');
+  CM_PASTE: CmdLabel:=T3('Paste|F5','Coller|F5','Einfuegen|F5');
+  CM_SELALL: CmdLabel:=T3('Select All','Tout selectionner','Alles auswaehlen');
+  CM_ASCII: CmdLabel:=T3('ASCII Table...|Alt-C','Table ASCII...|Alt-C','ASCII-Tabelle...|Alt-C');
+  CM_TOP: CmdLabel:=T3('Goto Top|Alt-T','Aller en haut|Alt-T','Zum Anfang|Alt-T');
+  CM_BOTTOM: CmdLabel:=T3('Goto Bottom|Alt-B','Aller en bas|Alt-B','Zum Ende|Alt-B');
+  CM_GOTO: CmdLabel:=T3('Goto...|Alt-G','Aller a...|Alt-G','Gehe zu...|Alt-G');
+  CM_BSTART: CmdLabel:=T3('Block Start|F1','Debut de bloc|F1','Blockanfang|F1');
+  CM_BEND: CmdLabel:=T3('Block End|F2','Fin de bloc|F2','Blockende|F2');
+  CM_BSAVE: CmdLabel:=T3('Save Block...|F3','Sauver le bloc...|F3','Block sichern...|F3');
+  CM_BCOPY: CmdLabel:=T3('Copy Block|F4','Copier le bloc|F4','Block kopieren|F4');
+  CM_BDEL: CmdLabel:=T3('Delete Block|Shift-F5','Effacer le bloc|Shift-F5','Block loeschen|Shift-F5');
+  CM_BREM: CmdLabel:=T3('Remember Block|Shift-F4','Memoriser le bloc|Shift-F4','Block merken|Shift-F4');
+  CM_BPASTE: CmdLabel:=T3('Paste Block|F5','Coller le bloc|F5','Block einfuegen|F5');
+  CM_BPRINT: CmdLabel:=T3('Print Block|Alt-W','Imprimer le bloc|Alt-W','Block drucken|Alt-W');
+  CM_FIND: CmdLabel:=T3('Find...|Alt-F','Chercher...|Alt-F','Suchen...|Alt-F');
+  CM_FNEXT: CmdLabel:=T3('Find Next|Alt-N','Suivant|Alt-N','Weitersuchen|Alt-N');
+  CM_FPREV: CmdLabel:=T3('Find Previous|Alt-P','Precedent|Alt-P','Rueckwaerts|Alt-P');
+  CM_REPL: CmdLabel:=T3('Replace|Alt-R','Remplacer|Alt-R','Ersetzen|Alt-R');
+  CM_REPLALL: CmdLabel:=T3('Replace All','Tout remplacer','Alle ersetzen');
+  CM_SETBM: CmdLabel:=T3('Set Bookmark','Poser un signet','Lesezeichen setzen');
+  CM_GOTOBM: CmdLabel:=T3('Goto Bookmark','Aller au signet','Gehe zu Lesezeichen');
+  CM_PREFS: CmdLabel:=T3('Preferences...','Preferences...','Einstellungen...');
+  CM_ASMOPT: CmdLabel:=T3('Assembler options...','Options assembleur...','Assembler-Optionen...');
+  CM_RUNOPT: CmdLabel:=T3('Run options...','Options d''execution...','Start-Optionen...');
+  CM_SAVEPREF: CmdLabel:=T3('Save preferences','Sauver preferences','Einstellungen sichern');
+  CM_LOADPREF: CmdLabel:=T3('Load preferences','Charger preferences','Einstellungen laden');
+  CM_RUNOTHER: CmdLabel:=T3('Run Other...|Alt-0','Executer autre...|Alt-0','Anderes starten...|Alt-0');
+  CM_ASM: CmdLabel:=T3('Assemble|Alt-A','Assembler|Alt-A','Assemblieren|Alt-A');
+  CM_CHECK: CmdLabel:=T3('Check|Alt-Y','Verifier|Alt-Y','Pruefen|Alt-Y');
+  CM_RUN: CmdLabel:=T3('Run|Alt-X','Executer|Alt-X','Starten|Alt-X');
+  CM_DEBUG: CmdLabel:=T3('Debug|Alt-D','Deboguer|Alt-D','Debuggen|Alt-D');
+  CM_MON: CmdLabel:=MonName+'|Alt-M';
+  CM_RUNDIR: CmdLabel:=T3('Directory','Repertoire','Verzeichnis');
+  CM_GEM: If AmigaMode Then CmdLabel:=T3('Run as CLI|Alt-K','Executer en CLI|Alt-K','Als CLI starten|Alt-K')
+          Else CmdLabel:=T3('Run with GEM|Alt-K','Executer avec GEM|Alt-K','Mit GEM starten|Alt-K');
+  CM_PREVERR: CmdLabel:=T3('Previous error|^J','Erreur precedente|^J','Voriger Fehler|^J');
+  CM_JUMPERR: CmdLabel:=T3('Jump to Error|Alt-J','Aller a l''erreur|Alt-J','Zum Fehler|Alt-J');
+ End;
 End;
 
-Function MIsSep(M,I: Integer): Boolean;
+Function SubCount(Id: Integer): Integer;
 Begin
- MIsSep:=MLabel(M,I)='-';
+ Case Id Of
+  CM_SETBM,CM_GOTOBM: SubCount:=8;
+  CM_RUNDIR: SubCount:=2;
+ Else SubCount:=0;
+ End;
+End;
+
+Function SubLabel(Id,J: Integer): String;
+Begin
+ SubLabel:='';
+ Case Id Of
+  CM_SETBM: SubLabel:=T3('Set ','Poser ','Setze ')+IntStr(J)+'|Alt-F'+IntStr(J);
+  CM_GOTOBM: SubLabel:=T3('Goto ','Aller ','Gehe zu ')+IntStr(J)+'|Ctrl-F'+IntStr(J);
+  CM_RUNDIR: If J=1 Then SubLabel:=T3('Current','Courant','Aktuell')
+             Else SubLabel:=T3('Top Window','Fenetre du haut','Oberstes Fenster');
+ End;
+End;
+
+Function SubChecked(Id,J: Integer): Boolean;
+Begin
+ SubChecked:=(Id=CM_RUNDIR) And (J=RunDirMode);
+End;
+
+{ Panneaux : P = 1..NMENU menu principal ; P = 100+commande = sous-menu }
+Function PCount(P: Integer): Integer;
+Begin
+ If P<100 Then PCount:=MCount(P) Else PCount:=SubCount(P-100);
+End;
+
+Function PLabel(P,I: Integer): String;
+Begin
+ If P<100 Then Begin
+  If MItem(P,I)=CM_NONE Then PLabel:='-' Else PLabel:=CmdLabel(MItem(P,I));
+ End Else PLabel:=SubLabel(P-100,I);
+End;
+
+Function PSubOf(P,I: Integer): Integer;
+Var Id: Integer;
+Begin
+ PSubOf:=0;
+ If P<100 Then Begin
+  Id:=MItem(P,I);
+  If (Id=CM_SETBM) Or (Id=CM_GOTOBM) Or (Id=CM_RUNDIR) Then PSubOf:=Id;
+ End;
+End;
+
+Function MEnabled(M,I: Integer): Boolean; Forward;
+
+Function PEnabled(P,I: Integer): Boolean;
+Begin
+ If P<100 Then PEnabled:=MEnabled(P,I) Else PEnabled:=SubEnabled(P-100,I);
+End;
+
+Function PChecked(P,I: Integer): Boolean;
+Begin
+ If P<100 Then PChecked:=(MItem(P,I)=CM_GEM) And OptRunGem
+ Else PChecked:=SubChecked(P-100,I);
+End;
+
+Function PIsSep(P,I: Integer): Boolean;
+Begin
+ PIsSep:=PLabel(P,I)='-';
 End;
 
 Function MT(I: Integer): String;
@@ -7688,49 +9362,74 @@ Function MenuX(M: Integer): Integer;
 Var I,X: Integer;
 Begin
  X:=16;
- For I:=1 To M-1 Do X:=X+Length(MT(I))*8+24;
+ For I:=1 To M-1 Do X:=X+Length(MT(I))*8+16;
  MenuX:=X;
 End;
 
-Function ItemH(M,I: Integer): Integer;
+Function PItemH(P,I: Integer): Integer;
 Begin
- If MIsSep(M,I) Then ItemH:=8 Else ItemH:=16;
+ If PIsSep(P,I) Then PItemH:=8 Else PItemH:=16;
 End;
 
-Procedure DropRect(M: Integer; Var X1,Y1,X2,Y2: Integer);
-Var I,W,L,P: Integer; S: String;
+Function PItemY(P,I,Y1: Integer): Integer;
+Var K,Y: Integer;
 Begin
- W:=0;Y2:=MENU_H+2;
- For I:=1 To MCount(M) Do Begin
-  S:=MLabel(M,I);
-  P:=Pos('|',S);
-  If P>0 Then L:=(P-1)*8+24+(Length(S)-P)*8 Else L:=Length(S)*8;
+ Y:=Y1+2;
+ For K:=1 To I-1 Do Y:=Y+PItemH(P,K);
+ PItemY:=Y;
+End;
+
+{ rectangle d'un panneau dont le bord haut est Top et le bord gauche XPref }
+Procedure PanelRect(P,Top,XPref: Integer; Var X1,Y1,X2,Y2: Integer);
+Var I,W,L,Q: Integer; S: String;
+Begin
+ W:=0;Y2:=Top+2;
+ For I:=1 To PCount(P) Do Begin
+  S:=PLabel(P,I);
+  Q:=Pos('|',S);
+  If Q>0 Then L:=(Q-1)*8+24+(Length(S)-Q)*8 Else L:=Length(S)*8;
+  If PSubOf(P,I)<>0 Then L:=L+16;
   If L>W Then W:=L;
-  Y2:=Y2+ItemH(M,I);
+  Y2:=Y2+PItemH(P,I);
  End;
- X1:=MenuX(M)-8;
+ X1:=XPref;
  X2:=X1+W+40;
- If X2>SCR_W-4 Then Begin X1:=X1-(X2-(SCR_W-4));X2:=SCR_W-4;End;
- Y1:=MENU_H;
+ Y1:=Top;
  Y2:=Y2+2;
 End;
 
-Function ItemY(M,I: Integer): Integer;
-Var K,Y: Integer;
+Procedure DropRect(M: Integer; Var X1,Y1,X2,Y2: Integer);
 Begin
- Y:=MENU_H+2;
- For K:=1 To I-1 Do Y:=Y+ItemH(M,K);
- ItemY:=Y;
+ PanelRect(M,MENU_H,MenuX(M)-8,X1,Y1,X2,Y2);
+ If X2>SCR_W-4 Then Begin X1:=X1-(X2-(SCR_W-4));X2:=SCR_W-4;End;
+End;
+
+{ rectangle du sous-menu Id ouvert depuis l'element I du menu M }
+Procedure SubRect(M,I,Id: Integer; Var X1,Y1,X2,Y2: Integer);
+Var PX1,PY1,PX2,PY2,W: Integer;
+Begin
+ DropRect(M,PX1,PY1,PX2,PY2);
+ PanelRect(100+Id,PItemY(M,I,PY1)-2,PX2,X1,Y1,X2,Y2);
+ If X2>SCR_W-4 Then Begin
+  W:=X2-X1;
+  X1:=PX1-W;X2:=PX1;
+ End;
+End;
+
+Function PanelHit(P,X1,Y1,X2,Y2: Integer; X,Y: LongInt): Integer;
+Var I: Integer;
+Begin
+ PanelHit:=0;
+ If Not InBox(X,Y,X1,Y1,X2,Y2) Then Exit;
+ For I:=1 To PCount(P) Do
+  If (Y>=PItemY(P,I,Y1)) And (Y<PItemY(P,I,Y1)+PItemH(P,I)) Then PanelHit:=I;
 End;
 
 Function DropHit(M: Integer; X,Y: LongInt): Integer;
-Var X1,Y1,X2,Y2,I: Integer;
+Var X1,Y1,X2,Y2: Integer;
 Begin
- DropHit:=0;
  DropRect(M,X1,Y1,X2,Y2);
- If Not InBox(X,Y,X1,Y1,X2,Y2) Then Exit;
- For I:=1 To MCount(M) Do
-  If (Y>=ItemY(M,I)) And (Y<ItemY(M,I)+ItemH(M,I)) Then DropHit:=I;
+ DropHit:=PanelHit(M,X1,Y1,X2,Y2,X,Y);
 End;
 
 Function TitleHit(X,Y: LongInt): Integer;
@@ -7757,109 +9456,190 @@ Begin
  End;
 End;
 
-Function MEnabled(M,I: Integer): Boolean; Forward;
-
-Procedure DrawDropDown;
-Var X1,Y1,X2,Y2,I,Y,P: Integer; S,Sc,Lb: String; Hi: Boolean;
+Procedure DrawPanel(P,X1,Y1,X2,Y2,Hi: Integer);
+Var I,Y,Q: Integer; S,Sc,Lb: String; H,En: Boolean;
 Begin
- If MenuOpen=0 Then Exit;
- DropRect(MenuOpen,X1,Y1,X2,Y2);
  Box(X1+3,Y1+3,X2+3,Y2+3,INK);
  Box(X1,Y1,X2,Y2,PAPER);
  Frame(X1,Y1,X2,Y2);
- For I:=1 To MCount(MenuOpen) Do Begin
-  S:=MLabel(MenuOpen,I);
-  Y:=ItemY(MenuOpen,I);
+ For I:=1 To PCount(P) Do Begin
+  S:=PLabel(P,I);
+  Y:=PItemY(P,I,Y1);
   If S='-' Then Begin
    SetLineStyle(UserBitLn,$AAAA,1);
    SetColor(INK);
    Line(X1+2,Y+3,X2-2,Y+3);
    SetLineStyle(SolidLn,0,1);
   End Else Begin
-   P:=Pos('|',S);
-   If P>0 Then Begin Lb:=Copy(S,1,P-1);Sc:=Copy(S,P+1,20);End Else Begin
+   Q:=Pos('|',S);
+   If Q>0 Then Begin Lb:=Copy(S,1,Q-1);Sc:=Copy(S,Q+1,20);End Else Begin
      Lb:=S;Sc:='';End;
-   Hi:=(I=MenuHi) And MEnabled(MenuOpen,I);
-   If Hi Then Box(X1+1,Y,X2-1,Y+15,INK);
-   If MChecked(MenuOpen,I) Then Begin
-    If Hi Then WText(X1+6,Y+4,#251) Else PText(X1+6,Y+4,#251);
+   En:=PEnabled(P,I);
+   H:=(I=Hi) And En;
+   If H Then Box(X1+1,Y,X2-1,Y+15,INK);
+   If PChecked(P,I) Then Begin
+    If H Then WText(X1+6,Y+4,#251) Else PText(X1+6,Y+4,#251);
    End;
-   If Not MEnabled(MenuOpen,I) Then Begin
+   If Not En Then Begin
     GreyText(X1+24,Y+4,Lb);
     If Sc<>'' Then GreyText(X2-8-Length(Sc)*8,Y+4,Sc);
-   End Else If Hi Then Begin
+    If PSubOf(P,I)<>0 Then GreyText(X2-18,Y+4,#16);
+   End Else If H Then Begin
     WText(X1+24,Y+4,Lb);
     If Sc<>'' Then WText(X2-8-Length(Sc)*8,Y+4,Sc);
+    If PSubOf(P,I)<>0 Then WText(X2-18,Y+4,#16);
    End Else Begin
     PText(X1+24,Y+4,Lb);
     If Sc<>'' Then PText(X2-8-Length(Sc)*8,Y+4,Sc);
+    If PSubOf(P,I)<>0 Then PText(X2-18,Y+4,#16);
    End;
   End;
  End;
 End;
 
-Function NextItem(M,From,Dir: Integer): Integer;
-Var I,N: Integer;
+Procedure DrawDropDown;
+Var X1,Y1,X2,Y2: Integer;
 Begin
- N:=MCount(M);I:=From;
- Repeat
+ If MenuOpen=0 Then Exit;
+ DropRect(MenuOpen,X1,Y1,X2,Y2);
+ DrawPanel(MenuOpen,X1,Y1,X2,Y2,MenuHi);
+ If (SubOpen<>0) And (MenuHi<>0) Then Begin
+  SubRect(MenuOpen,MenuHi,SubOpen,X1,Y1,X2,Y2);
+  DrawPanel(100+SubOpen,X1,Y1,X2,Y2,SubHi);
+ End;
+End;
+
+{ element suivant (Dir=1) ou precedent (Dir=-1) utilisable du panneau P }
+Function PNext(P,From,Dir: Integer): Integer;
+Var I,N,K: Integer;
+Begin
+ N:=PCount(P);I:=From;
+ For K:=1 To N+1 Do Begin
   I:=I+Dir;
   If I<1 Then I:=N;
   If I>N Then I:=1;
-  If (Not MIsSep(M,I)) And MEnabled(M,I) Then Begin
-    NextItem:=I;Exit;End;
- Until I=From;
- NextItem:=From;
+  If (Not PIsSep(P,I)) And PEnabled(P,I) Then Begin
+    PNext:=I;Exit;End;
+ End;
+ PNext:=From;
 End;
 
 Procedure DoMenu(M,I: Integer); Forward;
 
 Procedure RunMenu(StartM: Integer; ByMouse: Boolean);
-Var M,Hi,H,T: Integer; E: TEvent; Done,Pick,Redraw: Boolean;
+Var M,Hi,H,T,SubWant,PickId,PickSubH: Integer; E: TEvent;
+    Done,Pick,PickSub,Redraw,InSub: Boolean; SubT: LongInt;
+    X1,Y1,X2,Y2,SX1,SY1,SX2,SY2: Integer;
 Begin
- M:=StartM;Hi:=0;
- If Not ByMouse Then Hi:=NextItem(M,0,1);
+ M:=StartM;Hi:=0;SubWant:=0;SubOpen:=0;SubHi:=0;SubT:=0;PickId:=0;PickSubH:=0;
+ If Not ByMouse Then Hi:=PNext(M,0,1);
  MenuOpen:=M;MenuHi:=Hi;
  DrawAll;
- Done:=False;Pick:=False;
+ Done:=False;Pick:=False;PickSub:=False;
  Repeat
   PollEvent(E);
   Redraw:=False;
+  { ouverture differee du sous-menu }
+  If (SubOpen=0) And (SubWant<>0) And (MsNow-SubT>=250) Then Begin
+   SubOpen:=SubWant;SubHi:=0;Redraw:=True;
+  End;
   Case E.Kind Of
    4,2: Begin
-         T:=TitleHit(E.X,E.Y);
-         If (T>0) And (T<>M) Then Begin M:=T;Hi:=0;Redraw:=True;End
-         Else Begin
-          H:=DropHit(M,E.X,E.Y);
-          If (H<>0) And (MIsSep(M,H) Or Not MEnabled(M,H)) Then H:=0;
-          If H<>Hi Then Begin Hi:=H;Redraw:=True;End;
+         InSub:=False;
+         DropRect(M,X1,Y1,X2,Y2);
+         If SubOpen<>0 Then Begin
+          SubRect(M,Hi,SubOpen,SX1,SY1,SX2,SY2);
+          If InBox(E.X,E.Y,SX1,SY1,SX2,SY2) Then Begin
+           InSub:=True;
+           H:=PanelHit(100+SubOpen,SX1,SY1,SX2,SY2,E.X,E.Y);
+           If (H<>0) And (PIsSep(100+SubOpen,H) Or Not PEnabled(100+SubOpen,H)) Then H:=0;
+           If H<>SubHi Then Begin SubHi:=H;Redraw:=True;End;
+           If (E.Kind=2) And (SubHi<>0) Then Begin
+            PickSub:=True;PickId:=SubOpen;PickSubH:=SubHi;Done:=True;
+           End;
+          End;
          End;
-         If E.Kind=2 Then Begin
-          If DropHit(M,E.X,E.Y)=0 Then Begin
-           If TitleHit(E.X,E.Y)=0 Then Done:=True;
-          End Else If Hi<>0 Then Begin Pick:=True;Done:=True;End;
+         If Not InSub Then Begin
+          T:=TitleHit(E.X,E.Y);
+          If (T>0) And (T<>M) Then Begin
+           M:=T;Hi:=0;SubOpen:=0;SubWant:=0;Redraw:=True;
+          End Else Begin
+           H:=PanelHit(M,X1,Y1,X2,Y2,E.X,E.Y);
+           If (H<>0) And (PIsSep(M,H) Or Not PEnabled(M,H)) Then H:=0;
+           If H<>Hi Then Begin
+            Hi:=H;SubOpen:=0;SubHi:=0;
+            If H<>0 Then SubWant:=PSubOf(M,H) Else SubWant:=0;
+            SubT:=MsNow;
+            Redraw:=True;
+           End;
+          End;
+          If E.Kind=2 Then Begin
+           If PanelHit(M,X1,Y1,X2,Y2,E.X,E.Y)=0 Then Begin
+            If TitleHit(E.X,E.Y)=0 Then Done:=True;
+           End Else If Hi<>0 Then Begin
+            If PSubOf(M,Hi)<>0 Then Begin
+             SubOpen:=PSubOf(M,Hi);SubHi:=0;Redraw:=True;
+            End Else Begin Pick:=True;Done:=True;End;
+           End;
+          End;
          End;
         End;
    3: Begin
-       H:=DropHit(M,E.X,E.Y);
-       If (H<>0) And (Hi=H) Then Begin Pick:=True;Done:=True;End;
+       DropRect(M,X1,Y1,X2,Y2);
+       If SubOpen<>0 Then Begin
+        SubRect(M,Hi,SubOpen,SX1,SY1,SX2,SY2);
+        H:=PanelHit(100+SubOpen,SX1,SY1,SX2,SY2,E.X,E.Y);
+        If (H<>0) And (H=SubHi) Then Begin
+         PickSub:=True;PickId:=SubOpen;PickSubH:=SubHi;Done:=True;
+        End;
+       End;
+       If Not Done Then Begin
+        H:=PanelHit(M,X1,Y1,X2,Y2,E.X,E.Y);
+        If (H<>0) And (Hi=H) And (PSubOf(M,H)=0) Then Begin Pick:=True;Done:=True;End;
+       End;
       End;
    1: Case E.Key Of
-       K_ESC: Done:=True;
-       K_LEFT: Begin Dec(M);If M<1 Then
-         M:=NMENU;Hi:=NextItem(M,0,1);Redraw:=True;End;
-       K_RIGHT: Begin Inc(M);If M>NMENU Then
-         M:=1;Hi:=NextItem(M,0,1);Redraw:=True;End;
-       K_UP: Begin Hi:=NextItem(M,Hi,-1);Redraw:=True;End;
-       K_DOWN: Begin Hi:=NextItem(M,Hi,1);Redraw:=True;End;
-       K_ENTER: If Hi<>0 Then Begin Pick:=True;Done:=True;End;
+       K_ESC: If SubOpen<>0 Then Begin SubOpen:=0;SubWant:=0;Redraw:=True;End Else Done:=True;
+       K_LEFT: If SubOpen<>0 Then Begin SubOpen:=0;SubWant:=0;Redraw:=True;End
+               Else Begin
+                Dec(M);If M<1 Then M:=NMENU;
+                Hi:=PNext(M,0,1);SubWant:=0;Redraw:=True;
+               End;
+       K_RIGHT: If (SubOpen=0) And (Hi<>0) And (PSubOf(M,Hi)<>0) Then Begin
+                 SubOpen:=PSubOf(M,Hi);SubHi:=PNext(100+SubOpen,0,1);Redraw:=True;
+                End Else If SubOpen=0 Then Begin
+                 Inc(M);If M>NMENU Then M:=1;
+                 Hi:=PNext(M,0,1);SubWant:=0;Redraw:=True;
+                End;
+       K_UP: Begin
+              If SubOpen<>0 Then SubHi:=PNext(100+SubOpen,SubHi,-1)
+              Else Begin Hi:=PNext(M,Hi,-1);SubWant:=0;End;
+              Redraw:=True;
+             End;
+       K_DOWN: Begin
+                If SubOpen<>0 Then SubHi:=PNext(100+SubOpen,SubHi,1)
+                Else Begin Hi:=PNext(M,Hi,1);SubWant:=0;End;
+                Redraw:=True;
+               End;
+       K_ENTER: Begin
+                 If SubOpen<>0 Then Begin
+                  If SubHi<>0 Then Begin
+                   PickSub:=True;PickId:=SubOpen;PickSubH:=SubHi;Done:=True;
+                  End;
+                 End Else If Hi<>0 Then Begin
+                  If PSubOf(M,Hi)<>0 Then Begin
+                   SubOpen:=PSubOf(M,Hi);SubHi:=PNext(100+SubOpen,0,1);Redraw:=True;
+                  End Else Begin Pick:=True;Done:=True;End;
+                 End;
+                End;
       End;
   End;
   If Redraw Then Begin MenuOpen:=M;MenuHi:=Hi;DrawAll;End;
  Until Done;
- MenuOpen:=0;MenuHi:=0;
+ MenuOpen:=0;MenuHi:=0;SubOpen:=0;
  DrawAll;
- If Pick And (Hi>0) Then DoMenu(M,Hi);
+ If PickSub Then DoSub(PickId,PickSubH)
+ Else If Pick And (Hi>0) Then DoMenu(M,Hi);
 End;
 
 { Barre de titre GEM (hachuree) }
@@ -13120,7 +14900,7 @@ Const
  TITLE_H = 18;
  INFO_Y  = WY1+TITLE_H;         { ligne d'information }
  INFO_H  = 13;
- TX0     = 4;                   { debut du texte }
+ TX0     = 8;                   { debut du texte (marge gauche : selection par lignes) }
  TY0     = INFO_Y+INFO_H+2;
  SB_W    = 17;
  TXT_X2  = WX2-SB_W-1;
@@ -13138,9 +14918,9 @@ Var
  EdMod   : Boolean;
  EdIns   : Boolean;
  EdMem   : LongInt;
+ { bloc : debut et fin poses separement (ordre libre) ; valide si debut < fin }
  BlkSL,BlkSC,BlkEL,BlkEC : Integer;
- BlkSet  : Boolean;             { bloc defini }
- BlkAnch : Boolean;             { debut pose, fin non posee }
+ BlkSOk,BlkEOk : Boolean;
  ClipLn  : PLineArr;
  ClipN   : Integer;
  FindStr,ReplStr : String;
@@ -13148,10 +14928,45 @@ Var
  CursorOn : Boolean;
  DragSel  : Boolean;
  AnchL,AnchC : Integer;
+ StatusMsg : String;             { message d'erreur de la ligne d'etat }
+ HiOn     : Boolean;             { chaine trouvee affichee en inverse }
+ HiL,HiC,HiLen : Integer;
+ FoundL,FoundC : Integer;        { derniere position trouvee (0 = aucune) }
+ EditLine : Integer;             { ligne en cours de modification (blocs non affiches) }
+ BkL,BkC  : Array[1..8] Of Integer;   { signets }
+ BkOn     : Array[1..8] Of Boolean;
+ UndelS   : String;              { derniere ligne supprimee (Ctrl-Y / Ctrl-@) }
+ UndelOk,UndelEnd : Boolean;
+ MouseHid : Boolean;
  { Preferences }
  PrefTab,PrefBuf : LongInt;
  PrefNumPad,PrefBackup,PrefIndent,PrefFlash,PrefLoadMon : Integer;
+ PrefAutoSave,PrefHideMouse,PrefMatch,PrefStopEol : Integer;
+ PrefSaveQuit,PrefSaveRun : Integer;     { 1 oui, 2 non, 3 demander }
+ CfgFile  : String;              { fichier de reglages charge (ou '') }
  ErrJump  : Integer;
+ ErrCur   : Integer;             { dernier numero d'erreur affiche (0 = aucun) }
+ CfgOutName,CfgListName : String;   { noms de sortie / listing choisis par l'utilisateur }
+ DragMode : Integer;             { 0 caractere, 1 ligne (marge) }
+ ScrollOnly : Boolean;           { la fenetre a ete defilee a la souris : le curseur peut sortir de la vue }
+ LastClkT : LongInt;             { double-clic : instant et position du dernier clic }
+ LastClkL,LastClkC : Integer;
+
+Procedure ShowMouseU;
+Begin
+ If Not MouseHid Then ShowMouse;
+End;
+
+Procedure ClearBlock;
+Begin
+ BlkSOk:=False;BlkEOk:=False;
+End;
+
+Procedure ClearBookmarks;
+Var I: Integer;
+Begin
+ For I:=1 To 8 Do BkOn[I]:=False;
+End;
 
 Procedure EdInit;
 Begin
@@ -13160,7 +14975,8 @@ Begin
  EdN:=1;
  Ed^[1]:=NewStr('');
  CurL:=1;CurC:=1;TopL:=1;LeftV:=0;WantV:=0;EdMod:=False;EdMem:=0;
- BlkSet:=False;BlkAnch:=False;EdIns:=True;
+ ClearBlock;ClearBookmarks;EdIns:=True;
+ StatusMsg:='';HiOn:=False;EditLine:=0;FoundL:=0;FoundC:=0;
 End;
 
 Procedure EdClear;
@@ -13169,6 +14985,14 @@ Begin
  For I:=1 To EdN Do FreeStr(Ed^[I]);
  EdN:=0;
  EdInit;
+End;
+
+{ Message dans la ligne d'etat, accompagne d'un bip ; efface a la touche suivante }
+Procedure StatusErr(Const S: String);
+Begin
+ StatusMsg:=S;
+ NeedDraw:=True;
+ SoundBell;
 End;
 
 Function Expand(Const S: String): String;
@@ -13214,14 +15038,64 @@ Begin
  MemFree:=PrefBuf-EdMem-12;
 End;
 
+{ ---------------------------------------------------------------------- }
+{ Reperes de position (blocs, signets, erreurs) suivant les modifications  }
+{ ---------------------------------------------------------------------- }
+
+{ texte insere en (L,C) : NL lignes, la derniere ayant LastLen caracteres inseres }
+Procedure AdjIns(Var PL,PC: Integer; L,C,NL,LastLen: Integer);
+Begin
+ If PL<L Then Exit;
+ If PL=L Then Begin
+  If PC>=C Then Begin
+   PL:=PL+NL-1;
+   If NL=1 Then PC:=PC+LastLen Else PC:=PC-C+LastLen+1;
+  End;
+ End Else PL:=PL+NL-1;
+End;
+
+{ texte supprime de (L1,C1) inclus a (L2,C2) exclu }
+Procedure AdjDel(Var PL,PC: Integer; L1,C1,L2,C2: Integer);
+Begin
+ If (PL<L1) Or ((PL=L1) And (PC<=C1)) Then Exit;
+ If (PL<L2) Or ((PL=L2) And (PC<C2)) Then Begin PL:=L1;PC:=C1;Exit;End;
+ If PL=L2 Then Begin PL:=L1;PC:=PC-C2+C1;End Else PL:=PL-(L2-L1);
+End;
+
+Procedure EdAdjIns(L,C,NL,LastLen: Integer);
+Var I,T,C0: Integer;
+Begin
+ If BlkSOk Then AdjIns(BlkSL,BlkSC,L,C,NL,LastLen);
+ If BlkEOk Then AdjIns(BlkEL,BlkEC,L,C,NL,LastLen);
+ For I:=1 To 8 Do If BkOn[I] Then AdjIns(BkL[I],BkC[I],L,C,NL,LastLen);
+ For I:=1 To AsmErrors Do If I<=MAXERR Then If ErrNm[I]='' Then Begin
+  T:=ErrLn[I];C0:=1;
+  AdjIns(T,C0,L,C,NL,LastLen);
+  ErrLn[I]:=T;
+ End;
+End;
+
+Procedure EdAdjDel(L1,C1,L2,C2: Integer);
+Var I,T,C0: Integer;
+Begin
+ If BlkSOk Then AdjDel(BlkSL,BlkSC,L1,C1,L2,C2);
+ If BlkEOk Then AdjDel(BlkEL,BlkEC,L1,C1,L2,C2);
+ For I:=1 To 8 Do If BkOn[I] Then AdjDel(BkL[I],BkC[I],L1,C1,L2,C2);
+ For I:=1 To AsmErrors Do If I<=MAXERR Then If ErrNm[I]='' Then Begin
+  T:=ErrLn[I];C0:=1;
+  AdjDel(T,C0,L1,C1,L2,C2);
+  ErrLn[I]:=T;
+ End;
+End;
+
 Function SetLine(I: Integer; Const S: String): Boolean;
 Var Delta: LongInt;
 Begin
  Delta:=Length(S)-Length(Ed^[I]^);
  If (Delta>0) And (Delta>MemFree) Then Begin
-  Alert1(3,T3('Out of text memory|Increase the text buffer|in Options|Editor preferences',
-              'Memoire texte pleine|Augmentez le tampon texte|dans Options|Preferences editeur',
-              'Textspeicher voll|Textpuffer erhoehen|in Optionen|Editor-Einstellungen'));
+  Alert1(3,T3('Out of text memory|Increase the text buffer|in Options|Preferences',
+              'Memoire texte pleine|Augmentez le tampon texte|dans Options|Preferences',
+              'Textspeicher voll|Textpuffer erhoehen|in Optionen|Einstellungen'));
   SetLine:=False;Exit;
  End;
  FreeStr(Ed^[I]);
@@ -13276,9 +15150,28 @@ Begin
  If LeftV<0 Then LeftV:=0;
 End;
 
-Procedure ClearBlock;
+{ 0 : pas de bloc ; 1 : bloc valide ; 2 : debut apres la fin }
+Function BlockState: Integer;
 Begin
- BlkSet:=False;BlkAnch:=False;
+ If Not (BlkSOk And BlkEOk) Then BlockState:=0
+ Else If (BlkSL=BlkEL) And (BlkSC=BlkEC) Then BlockState:=0
+ Else If (BlkSL>BlkEL) Or ((BlkSL=BlkEL) And (BlkSC>BlkEC)) Then BlockState:=2
+ Else BlockState:=1;
+End;
+
+Function BlockOk: Boolean;
+Begin
+ BlockOk:=BlockState=1;
+End;
+
+{ True si le bloc est utilisable ; sinon message dans la ligne d'etat }
+Function BlockCheck: Boolean;
+Var S: Integer;
+Begin
+ S:=BlockState;
+ BlockCheck:=S=1;
+ If S=0 Then StatusErr(T3('What blocks!','Quel bloc !','Welcher Block!'))
+ Else If S=2 Then StatusErr(T3('Invalid block!','Bloc invalide !','Ungueltiger Block!'));
 End;
 
 Procedure BlockOrder(Var SL,SC,EL,EC: Integer);
@@ -13342,17 +15235,9 @@ End;
 
 Procedure DrawTextLine(Row: Integer);
 Var L: Integer; S,E,Seg: String; Y,V1,V2,SL,SC,EL,EC,X1,X2: Integer; Vis: String;
-Begin
- Y:=TY0+Row*LINE_H;
- Box(WX1+1,Y,TXT_X2,Y+LINE_H-1,PAPER);
- L:=TopL+Row;
- If L>EdN Then Exit;
- S:=Ed^[L]^;
- E:=Expand(S);
- Vis:=Copy(E,LeftV+1,TXT_COLS);
- PText(TX0,Y+1,Vis);
- If BlkSet Then Begin
-  BlockOrder(SL,SC,EL,EC);
+ { surbrillance de la zone (SL,SC)-(EL,EC) sur la ligne L }
+ Procedure Hilite(SL,SC,EL,EC: Integer);
+ Begin
   If (L>=SL) And (L<=EL) Then Begin
    If L=SL Then V1:=VisOf(S,SC) Else V1:=0;
    If L=EL Then V2:=VisOf(S,EC) Else V2:=Length(E)+1;
@@ -13367,6 +15252,20 @@ Begin
    End;
   End;
  End;
+Begin
+ Y:=TY0+Row*LINE_H;
+ Box(WX1+1,Y,TXT_X2,Y+LINE_H-1,PAPER);
+ L:=TopL+Row;
+ If L>EdN Then Exit;
+ S:=Ed^[L]^;
+ E:=Expand(S);
+ Vis:=Copy(E,LeftV+1,TXT_COLS);
+ PText(TX0,Y+1,Vis);
+ If BlockOk And (L<>EditLine) Then Begin
+  BlockOrder(SL,SC,EL,EC);
+  Hilite(SL,SC,EL,EC);
+ End;
+ If HiOn And (L=HiL) Then Hilite(HiL,HiC,HiL,HiC+HiLen);
 End;
 
 Procedure DrawCursor(On: Boolean);
@@ -13381,27 +15280,33 @@ Begin
  If On Then Begin
   Ch:=Copy(Ed^[CurL]^,CurC,1);
   If (Ch=#9) Or (Ch='') Then Ch:=' ';
-  If EdIns Then Begin
+  If Not EdIns Then Begin
+   Box(X,Y+LINE_H-3,X+7,Y+LINE_H-1,INK);
+  End Else If (PrefFlash=2) Or (PrefFlash=4) Then Begin
+   Box(X,Y,X+1,Y+LINE_H-1,INK);
+  End Else Begin
    Box(X,Y,X+7,Y+LINE_H-1,INK);
    WText(X,Y+1,Ch);
-  End Else Begin
-   Box(X,Y+LINE_H-3,X+7,Y+LINE_H-1,INK);
   End;
  End Else DrawTextLine(Row);
- ShowMouse;
+ ShowMouseU;
 End;
 
 Procedure DrawEditor;
 Var R: Integer; T: String;
 Begin
- Box(WX1,WY1,WX2,WY2,PAPER);
+ If (EditLine<>0) And (EditLine<>CurL) Then EditLine:=0;
+ Box(WX1,MENU_H,WX2,WY2,PAPER);
  If EdFile<>'' Then T:=EdFile Else T:=AppTitle;
  GemTitleBar(WX1,WY1,WX2,WY1+TITLE_H-1,T,True);
- { ligne d'information }
+ { ligne d'information : Line / Col / Mem puis messages }
  Box(WX1,INFO_Y,WX2,INFO_Y+INFO_H,PAPER);
  PText(WX1+8,INFO_Y+3,InfoText);
- If EdMod Then PText(WX2-90,INFO_Y+3,T3('modified','modifie','geaendert'));
- If Not EdIns Then PText(WX2-170,INFO_Y+3,'OVR');
+ If StatusMsg<>'' Then PText(WX1+8+29*8,INFO_Y+3,Copy(StatusMsg,1,(WX2-WX1-16-29*8) Div 8))
+ Else Begin
+  If EdMod Then PText(WX2-90,INFO_Y+3,T3('modified','modifie','geaendert'));
+  If Not EdIns Then PText(WX2-170,INFO_Y+3,'OVR');
+ End;
  SetColor(INK);
  Line(WX1,INFO_Y+INFO_H,WX2,INFO_Y+INFO_H);
  Frame(WX1,WY1,WX2,WY2);
@@ -13421,13 +15326,19 @@ Begin
 End;
 
 Procedure InsertChar(Ch: Char);
-Var S: String;
+Var S: String; Ins: Boolean;
 Begin
  S:=Ed^[CurL]^;
- If Length(S)>=250 Then Exit;
- If EdIns Or (CurC>Length(S)) Then Insert(Ch,S,CurC)
- Else S[CurC]:=Ch;
- If SetLine(CurL,S) Then Inc(CurC);
+ If Length(S)>=250 Then Begin
+  StatusErr(T3('Line too long','Ligne trop longue','Zeile zu lang'));Exit;
+ End;
+ EditLine:=CurL;
+ Ins:=EdIns Or (CurC>Length(S));
+ If Ins Then Insert(Ch,S,CurC) Else S[CurC]:=Ch;
+ If SetLine(CurL,S) Then Begin
+  If Ins Then EdAdjIns(CurL,CurC,1,1);
+  Inc(CurC);
+ End;
  EnsureVisible;
  WantV:=VisOf(Ed^[CurL]^,CurC);
 End;
@@ -13445,6 +15356,7 @@ Begin
  End;
  If Not SetLine(CurL,S) Then Exit;
  If Not InsLineAt(CurL+1,Ind+Rest) Then Exit;
+ EdAdjIns(CurL,CurC,2,Length(Ind));
  Inc(CurL);CurC:=Length(Ind)+1;
  EnsureVisible;
  WantV:=VisOf(Ed^[CurL]^,CurC);
@@ -13453,17 +15365,23 @@ End;
 Procedure DoBackspace;
 Var S: String; P: String;
 Begin
+ EditLine:=CurL;
  If CurC>1 Then Begin
   S:=Ed^[CurL]^;
   Delete(S,CurC-1,1);
-  If SetLine(CurL,S) Then Dec(CurC);
+  If SetLine(CurL,S) Then Begin EdAdjDel(CurL,CurC-1,CurL,CurC);Dec(CurC);End;
  End Else If CurL>1 Then Begin
   P:=Ed^[CurL-1]^;
   S:=Ed^[CurL]^;
-  If Length(P)+Length(S)>250 Then Exit;
+  If Length(P)+Length(S)>250 Then Begin
+   StatusErr(T3('Line too long','Ligne trop longue','Zeile zu lang'));Exit;
+  End;
   Dec(CurL);
   CurC:=Length(P)+1;
-  If SetLine(CurL,P+S) Then DelLineAt(CurL+1);
+  If SetLine(CurL,P+S) Then Begin
+   DelLineAt(CurL+1);
+   EdAdjDel(CurL,CurC,CurL+1,1);
+  End;
  End;
  EnsureVisible;
  WantV:=VisOf(Ed^[CurL]^,CurC);
@@ -13472,14 +15390,20 @@ End;
 Procedure DoDelete;
 Var S: String;
 Begin
+ EditLine:=CurL;
  S:=Ed^[CurL]^;
  If CurC<=Length(S) Then Begin
   Delete(S,CurC,1);
-  SetLine(CurL,S);
+  If SetLine(CurL,S) Then EdAdjDel(CurL,CurC,CurL,CurC+1);
  End Else If CurL<EdN Then Begin
   S:=S+Ed^[CurL+1]^;
-  If Length(S)>250 Then Exit;
-  If SetLine(CurL,S) Then DelLineAt(CurL+1);
+  If Length(S)>250 Then Begin
+   StatusErr(T3('Line too long','Ligne trop longue','Zeile zu lang'));Exit;
+  End;
+  If SetLine(CurL,S) Then Begin
+   DelLineAt(CurL+1);
+   EdAdjDel(CurL,CurC,CurL+1,1);
+  End;
  End;
  EnsureVisible;
 End;
@@ -13487,17 +15411,56 @@ End;
 Procedure DoTab;
 Var S: String; V: Integer;
 Begin
+ EditLine:=CurL;
  S:=Ed^[CurL]^;
+ If Length(S)>=250 Then Begin
+  StatusErr(T3('Line too long','Ligne trop longue','Zeile zu lang'));Exit;
+ End;
  Insert(#9,S,CurC);
- If SetLine(CurL,S) Then Inc(CurC);
+ If SetLine(CurL,S) Then Begin EdAdjIns(CurL,CurC,1,1);Inc(CurC);End;
  EnsureVisible;
  V:=0;WantV:=VisOf(Ed^[CurL]^,CurC);
 End;
 
+{ Ctrl-Y : supprime la ligne courante (conservee pour Ctrl-U) }
 Procedure DeleteCurLine;
+Var Len: Integer;
 Begin
+ UndelS:=Ed^[CurL]^;UndelOk:=True;UndelEnd:=(CurL=EdN) And (EdN>1);
+ Len:=Length(Ed^[CurL]^);
+ If CurL<EdN Then EdAdjDel(CurL,1,CurL+1,1)
+ Else If CurL>1 Then EdAdjDel(CurL-1,Length(Ed^[CurL-1]^)+1,CurL,Len+1)
+ Else EdAdjDel(1,1,1,Len+1);
  DelLineAt(CurL);
  If CurL>EdN Then CurL:=EdN;
+ CurC:=1;
+ EnsureVisible;
+ WantV:=0;
+End;
+
+{ Ctrl-@ : supprime du curseur a la fin de la ligne (conserve pour Ctrl-U) }
+Procedure DeleteToEol;
+Var S: String;
+Begin
+ S:=Ed^[CurL]^;
+ If CurC>Length(S) Then Exit;
+ UndelS:=Copy(S,CurC,255);UndelOk:=True;UndelEnd:=False;
+ EditLine:=CurL;
+ If SetLine(CurL,Copy(S,1,CurC-1)) Then EdAdjDel(CurL,CurC,CurL,Length(S)+1);
+ EnsureVisible;
+End;
+
+{ Ctrl-U / Undo : reinsere la derniere ligne supprimee a la position du curseur }
+Procedure UndeleteLine;
+Begin
+ If Not UndelOk Then Exit;
+ If UndelEnd And (CurL=EdN) Then Begin
+  If Not InsLineAt(CurL+1,UndelS) Then Exit;
+  Inc(CurL);
+ End Else Begin
+  If Not InsLineAt(CurL,UndelS) Then Exit;
+  EdAdjIns(CurL,1,2,0);
+ End;
  CurC:=1;
  EnsureVisible;
  WantV:=0;
@@ -13531,6 +15494,77 @@ Begin
  EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
 End;
 
+{ Deplacements du curseur avec les messages Top of file / End of file }
+Procedure CurUp;
+Begin
+ If CurL>1 Then Begin
+  Dec(CurL);CurC:=CharOfVis(Ed^[CurL]^,WantV);
+  EnsureVisible;
+ End Else StatusErr(T3('Top of file','Debut du fichier','Dateianfang'));
+End;
+
+Procedure CurDown;
+Begin
+ If CurL<EdN Then Begin
+  Inc(CurL);CurC:=CharOfVis(Ed^[CurL]^,WantV);
+  EnsureVisible;
+ End Else StatusErr(T3('End of file','Fin du fichier','Dateiende'));
+End;
+
+Procedure CurLeft;
+Begin
+ If CurC>1 Then Dec(CurC)
+ Else If (PrefStopEol=0) And (CurL>1) Then Begin Dec(CurL);CurC:=Length(Ed^[CurL]^)+1;End;
+ EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
+End;
+
+Procedure CurRight;
+Begin
+ If CurC<=Length(Ed^[CurL]^) Then Inc(CurC)
+ Else If (PrefStopEol=0) And (CurL<EdN) Then Begin Inc(CurL);CurC:=1;End;
+ EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
+End;
+
+Procedure CurPageUp;
+Begin
+ CurL:=Max2(1,CurL-TXT_ROWS+1);TopL:=Max2(1,TopL-TXT_ROWS+1);
+ CurC:=CharOfVis(Ed^[CurL]^,WantV);EnsureVisible;
+End;
+
+Procedure CurPageDown;
+Begin
+ CurL:=Min2(EdN,CurL+TXT_ROWS-1);
+ If TopL+TXT_ROWS-1<EdN Then TopL:=Min2(EdN,TopL+TXT_ROWS-1);
+ CurC:=CharOfVis(Ed^[CurL]^,WantV);EnsureVisible;
+End;
+
+{ ")" tape : le curseur saute un instant sur la "(" correspondante }
+Procedure ShowMatchingParen;
+Var L,C,D: Integer; S: String; Found: Boolean; SL,SC: Integer;
+Begin
+ SL:=CurL;SC:=CurC;
+ L:=CurL;C:=CurC-2;D:=0;Found:=False;
+ While (L>=1) And (L>=CurL-100) And Not Found Do Begin
+  S:=Ed^[L]^;
+  If L<>CurL Then C:=Length(S);
+  While (C>=1) And Not Found Do Begin
+   If S[C]=')' Then Inc(D)
+   Else If S[C]='(' Then Begin
+    If D=0 Then Found:=True Else Dec(D);
+   End;
+   If Not Found Then Dec(C);
+  End;
+  If Not Found Then Dec(L);
+ End;
+ If Found Then Begin
+  MoveCur(L,C);
+  DrawAll;
+  Delay(350);
+  MoveCur(SL,SC);
+  NeedDraw:=True;
+ End;
+End;
+
 { ---------------------------------------------------------------------- }
 { Blocs                                                                    }
 { ---------------------------------------------------------------------- }
@@ -13542,69 +15576,152 @@ Begin
  ClipN:=0;
 End;
 
-Procedure CopyBlock;
+{ Place le texte du bloc (valide) dans Arr[1..N] }
+Procedure ExtractBlock(Arr: PLineArr; Var N: Integer);
 Var SL,SC,EL,EC,L: Integer; S: String;
 Begin
- If Not BlkSet Then Begin
-  Alert1(1,T3('No block defined','Aucun bloc defini','Kein Block definiert'));Exit;
- End;
  BlockOrder(SL,SC,EL,EC);
- ClipFree;
+ N:=0;
  For L:=SL To EL Do Begin
   S:=Ed^[L]^;
   If L=EL Then S:=Copy(S,1,EC-1);
   If L=SL Then S:=Copy(S,SC,255);
-  If ClipN<MAXLN Then Begin Inc(ClipN);ClipLn^[ClipN]:=NewStr(S);End;
+  If N<MAXLN Then Begin Inc(N);Arr^[N]:=NewStr(S);End;
  End;
 End;
 
-Procedure DeleteBlock;
-Var SL,SC,EL,EC,L: Integer; S,T: String;
+{ Remember Block / Copy : le bloc va dans le presse-papiers }
+Procedure CopyBlock;
 Begin
- If Not BlkSet Then Exit;
+ If Not BlockCheck Then Exit;
+ ClipFree;
+ ExtractBlock(ClipLn,ClipN);
+End;
+
+{ Delete Block / Cut : le bloc est supprime et conserve dans le presse-papiers }
+Procedure DeleteBlock;
+Var SL,SC,EL,EC,L: Integer; S: String;
+Begin
+ If Not BlockCheck Then Exit;
+ ClipFree;
+ ExtractBlock(ClipLn,ClipN);
  BlockOrder(SL,SC,EL,EC);
  S:=Copy(Ed^[SL]^,1,SC-1)+Copy(Ed^[EL]^,EC,255);
  If SetLine(SL,S) Then Begin
   For L:=EL Downto SL+1 Do DelLineAt(L);
+  EdAdjDel(SL,SC,EL,EC);
   CurL:=SL;CurC:=SC;
  End;
  ClearBlock;
  EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
 End;
 
-Procedure PasteBlock;
-Var I: Integer; S,Tail: String;
+{ Insere les lignes Arr[1..N] a la position du curseur }
+Function InsertLinesAtCursor(Arr: PLineArr; N: Integer): Boolean;
+Var I: Integer; S,Tail: String; LastLen: Integer;
 Begin
- If ClipN=0 Then Begin
-  Alert1(1,T3('Block buffer is empty','Le tampon de bloc est vide','Blockpuffer ist leer'));Exit;
- End;
+ InsertLinesAtCursor:=False;
+ If N=0 Then Exit;
  S:=Ed^[CurL]^;
  Tail:=Copy(S,CurC,255);
- If ClipN=1 Then Begin
-  S:=Copy(S,1,CurC-1)+ClipLn^[1]^+Tail;
-  If SetLine(CurL,S) Then CurC:=CurC+Length(ClipLn^[1]^);
+ LastLen:=Length(Arr^[N]^);
+ If N=1 Then Begin
+  If Length(S)+LastLen>250 Then Begin
+   StatusErr(T3('Line too long','Ligne trop longue','Zeile zu lang'));Exit;
+  End;
+  S:=Copy(S,1,CurC-1)+Arr^[1]^+Tail;
+  If Not SetLine(CurL,S) Then Exit;
+  EdAdjIns(CurL,CurC,1,LastLen);
+  CurC:=CurC+LastLen;
  End Else Begin
-  If Not SetLine(CurL,Copy(S,1,CurC-1)+ClipLn^[1]^) Then Exit;
-  For I:=2 To ClipN-1 Do
-   If Not InsLineAt(CurL+I-1,ClipLn^[I]^) Then Exit;
-  If Not InsLineAt(CurL+ClipN-1,ClipLn^[ClipN]^+Tail) Then Exit;
-  CurL:=CurL+ClipN-1;
-  CurC:=Length(ClipLn^[ClipN]^)+1;
+  If Not SetLine(CurL,Copy(S,1,CurC-1)+Arr^[1]^) Then Exit;
+  For I:=2 To N-1 Do
+   If Not InsLineAt(CurL+I-1,Arr^[I]^) Then Exit;
+  If Not InsLineAt(CurL+N-1,Arr^[N]^+Tail) Then Exit;
+  EdAdjIns(CurL,CurC,N,LastLen);
+  CurL:=CurL+N-1;
+  CurC:=LastLen+1;
  End;
- ClearBlock;
  EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
+ InsertLinesAtCursor:=True;
+End;
+
+{ Paste Block : le contenu du presse-papiers est insere au curseur }
+Procedure PasteBlock;
+Begin
+ If ClipN=0 Then Begin
+  StatusErr(T3('Block buffer is empty','Le tampon de bloc est vide','Blockpuffer ist leer'));Exit;
+ End;
+ EditLine:=CurL;
+ InsertLinesAtCursor(ClipLn,ClipN);
+End;
+
+{ Copy Block (F4) : copie du bloc a la position du curseur (presse-papiers intact) }
+Procedure DupBlock;
+Var SL,SC,EL,EC,N,I: Integer; Tmp: PLineArr;
+Begin
+ If Not BlockCheck Then Exit;
+ BlockOrder(SL,SC,EL,EC);
+ If ((CurL>SL) Or ((CurL=SL) And (CurC>SC))) And ((CurL<EL) Or ((CurL=EL) And (CurC<EC))) Then Begin
+  StatusErr(T3('Invalid block!','Bloc invalide !','Ungueltiger Block!'));Exit;
+ End;
+ New(Tmp);
+ ExtractBlock(Tmp,N);
+ EditLine:=CurL;
+ InsertLinesAtCursor(Tmp,N);
+ For I:=1 To N Do FreeStr(Tmp^[I]);
+ Dispose(Tmp);
 End;
 
 Procedure SelectAll;
 Begin
  BlkSL:=1;BlkSC:=1;BlkEL:=EdN;BlkEC:=Length(Ed^[EdN]^)+1;
- BlkSet:=True;BlkAnch:=False;
+ BlkSOk:=True;BlkEOk:=True;
+End;
+
+Procedure SetBlockStart;
+Begin
+ BlkSL:=CurL;BlkSC:=CurC;BlkSOk:=True;
+End;
+
+Procedure SetBlockEnd;
+Begin
+ BlkEL:=CurL;BlkEC:=CurC;BlkEOk:=True;
+End;
+
+{ Print Block : le bloc (ou tout le fichier) est envoye a PRINTER.OUT }
+Procedure PrintBlock;
+Var T: Text; I,N: Integer; SL,SC,EL,EC: Integer; S: String;
+Begin
+ If BlkSOk Or BlkEOk Then Begin
+  If Not BlockCheck Then Exit;
+ End;
+ If AlertBox(2,T3('Print the block ?|(whole file if no block)','Imprimer le bloc ?|(tout le fichier sans bloc)','Block drucken ?|(ganze Datei ohne Block)'),
+   T3('Cancel|OK','Annuler|OK','Abbruch|OK'),2)<>2 Then Exit;
+ Assign(T,'PRINTER.OUT');
+ {$I-}
+ Append(T);
+ If IOResult<>0 Then Rewrite(T);
+ {$I+}
+ If IOResult<>0 Then Begin StatusErr(T3('Cannot print','Impression impossible','Drucken nicht moeglich'));Exit;End;
+ If BlockOk Then BlockOrder(SL,SC,EL,EC) Else Begin SL:=1;SC:=1;EL:=EdN;EC:=Length(Ed^[EdN]^)+1;End;
+ If (EC=1) And (EL>SL) Then Begin Dec(EL);EC:=Length(Ed^[EL]^)+1;End;
+ For I:=SL To EL Do Begin
+  N:=1;
+  If I=SL Then N:=SC;
+  S:=Copy(Ed^[I]^,N,255);
+  If I=EL Then S:=Copy(S,1,EC-N);
+  WriteLn(T,Expand(S));
+ End;
+ Close(T);
 End;
 
 { ---------------------------------------------------------------------- }
 { Fichiers                                                                 }
 { ---------------------------------------------------------------------- }
 
+{ Append=False : remplace le texte (Load) ; Append=True : insere le fichier a la
+  position du curseur (Insert File) }
 Function EdLoadFile(Const Name: String; Append: Boolean): Boolean;
 Var Arr: PLineArr; Cnt,I: Integer; Tot: LongInt;
 Begin
@@ -13616,9 +15733,9 @@ Begin
  Tot:=0;
  For I:=1 To Cnt Do Tot:=Tot+Length(Arr^[I]^)+1;
  If Tot>PrefBuf-12-EdMem Then Begin
-  Alert1(3,T3('File too large for the text buffer|Increase it in Options|Editor preferences',
-              'Fichier trop grand pour le tampon texte|Augmentez-le dans Options|Preferences editeur',
-              'Datei zu gross fuer den Textpuffer|In Optionen erhoehen|Editor-Einstellungen'));
+  Alert1(3,T3('File too large for the text buffer|Increase it in Options|Preferences',
+              'Fichier trop grand pour le tampon texte|Augmentez-le dans Options|Preferences',
+              'Datei zu gross fuer den Textpuffer|In Optionen erhoehen|Einstellungen'));
   FreeLines(Arr,Cnt);Exit;
  End;
  If Not Append Then Begin
@@ -13629,12 +15746,11 @@ Begin
   EdMem:=Tot;
   EdFile:=Name;EdMod:=False;
   CurL:=1;CurC:=1;TopL:=1;LeftV:=0;WantV:=0;
+  AsmErrors:=0;ErrCur:=0;
  End Else Begin
-  For I:=1 To Cnt Do
-   If Not InsLineAt(CurL+I,Arr^[I]^) Then Break;
+  InsertLinesAtCursor(Arr,Cnt);
   FreeLines(Arr,Cnt);
  End;
- ClearBlock;
  EdLoadFile:=True;
 End;
 
@@ -13667,21 +15783,25 @@ Begin
  EdSaveFile:=True;
 End;
 
+{ Save Block : le bloc est ecrit tel quel (pas de sauvegarde .BAK, presse-papiers intact) }
 Function SaveBlockFile(Const Name: String): Boolean;
-Var F: File; I: Integer; S: String;
+Var F: File; I,N: Integer; S: String; Tmp: PLineArr;
 Begin
  SaveBlockFile:=False;
- CopyBlock;
- If ClipN=0 Then Exit;
+ If Not BlockCheck Then Exit;
  Assign(F,Name);
  {$I-}
  Rewrite(F,1);
  {$I+}
  If IOResult<>0 Then Exit;
- For I:=1 To ClipN Do Begin
-  S:=ClipLn^[I]^+#13#10;
+ New(Tmp);
+ ExtractBlock(Tmp,N);
+ For I:=1 To N Do Begin
+  S:=Tmp^[I]^+#13#10;
   BlockWrite(F,S[1],Length(S));
+  FreeStr(Tmp^[I]);
  End;
+ Dispose(Tmp);
  Close(F);
  SaveBlockFile:=True;
 End;
@@ -13708,6 +15828,23 @@ Begin
  End;
 End;
 
+{ derniere occurrence commencant strictement avant (L,C) }
+Function FindBack(L,C: Integer; Const Pat: String; Var FL,FC: Integer): Boolean;
+Var S,P: String; I,K,Lim: Integer;
+Begin
+ FindBack:=False;
+ If Pat='' Then Exit;
+ If FindCase Then P:=Pat Else P:=Upper(Pat);
+ For I:=L Downto 1 Do Begin
+  S:=Ed^[I]^;
+  If Not FindCase Then S:=Upper(S);
+  If I=L Then Lim:=C-1 Else Lim:=Length(S)+1;
+  If Lim>Length(S)-Length(P)+1 Then Lim:=Length(S)-Length(P)+1;
+  For K:=Lim Downto 1 Do
+   If Copy(S,K,Length(P))=P Then Begin FL:=I;FC:=K;FindBack:=True;Exit;End;
+ End;
+End;
+
 Procedure GotoLine(L: Integer);
 Begin
  If L<1 Then L:=1;
@@ -13718,117 +15855,231 @@ Begin
  EnsureVisible;
 End;
 
-Procedure DoFindNext;
+Procedure ShowFound(FL,FC: Integer);
+Begin
+ MoveCur(FL,FC);
+ If (FL<TopL) Or (FL>=TopL+TXT_ROWS) Then Begin
+  TopL:=FL-TXT_ROWS Div 2;If TopL<1 Then TopL:=1;
+ End;
+ EnsureVisible;
+ HiOn:=True;HiL:=FL;HiC:=FC;HiLen:=Length(FindStr);
+ FoundL:=FL;FoundC:=FC;
+End;
+
+{ Find Next / dialogue Find : Incl = la recherche part du curseur lui-meme }
+Procedure FindForward(Incl: Boolean);
+Var FL,FC,SC: Integer;
+Begin
+ If FindStr='' Then Exit;
+ SC:=CurC;
+ If Incl And (FoundL=CurL) And (FoundC=CurC) Then Incl:=False;
+ If Not Incl Then Inc(SC);
+ If FindFrom(CurL,SC,FindStr,FL,FC) Then ShowFound(FL,FC)
+ Else StatusErr(T3('Not found','Introuvable','Nicht gefunden'));
+End;
+
+Procedure FindPrevious;
 Var FL,FC: Integer;
 Begin
  If FindStr='' Then Exit;
- If FindFrom(CurL,CurC+1,FindStr,FL,FC) Then Begin
-  BlkSL:=FL;BlkSC:=FC;BlkEL:=FL;BlkEC:=FC+Length(FindStr);BlkSet:=True;
-  MoveCur(FL,FC);
-  TopL:=FL-TXT_ROWS Div 2;If TopL<1 Then TopL:=1;
-  EnsureVisible;
- End Else Alert1(1,T3('Not found','Introuvable','Nicht gefunden'));
+ If FindBack(CurL,CurC,FindStr,FL,FC) Then ShowFound(FL,FC)
+ Else StatusErr(T3('Not found','Introuvable','Nicht gefunden'));
 End;
 
+Procedure DoFindNext;
+Begin
+ FindForward(False);
+End;
+
+{ Dialogue Find / Replace (Alt-F) : champs Find et Replace, casse, Cancel/Previous/Next }
 Procedure DoFind;
-Var R: Integer;
+Var R,F,Rp,Pc: Integer;
 Begin
- DlgReset(44,6);
+ DlgReset(62,7);
  DlgLabel(1,0,T3('Find','Chercher','Suchen'));
- DlgLabel(1,1,T3('Text:','Texte :','Text:'));
- DlgEdit(8,1,30,FindStr);
- DlgLabel(1,2,T3('Case:','Casse :','Gross/klein:'));
- DlgRadio(14,2,T3('Ignore|Match','Ignorer|Respecter','Egal|Beachten'),Ord(FindCase)+1);
- DlgButton(2,4,10,'OK',1,True);
- DlgButton(14,4,12,T3('Cancel','Annuler','Abbruch'),0,False);
+ DlgLabel(1,1,T3('Find:','Chercher:','Suchen:'));
+ F:=DlgEditX(10,1,48,60,FindStr);
+ DlgLabel(1,2,T3('Replace:','Remplacer:','Ersetzen:'));
+ Rp:=DlgEditX(10,2,48,60,ReplStr);
+ DlgLabel(1,4,T3('Casing:','Casse:','Gr/Kl:'));
+ Pc:=DlgPopup(10,4,14,'test=Test|test<>Test',1+Ord(FindCase));
+ DlgButton(2,6,10,T3('Cancel','Annuler','Abbruch'),0,False);
+ DlgButton(24,6,12,T3('Previous','Precedent','Vorheriges'),2,False);
+ DlgButton(42,6,12,T3('Next','Suivant','Weiter'),1,True);
  R:=DlgRun;
- If R=1 Then Begin
-  FindStr:=DI[3].Val;
-  FindCase:=DI[5].Sel=2;
-  DoFindNext;
- End;
+ If R=0 Then Exit;
+ FindStr:=DI[F].Val;
+ ReplStr:=DI[Rp].Val;
+ FindCase:=DI[Pc].Sel=2;
+ If R=1 Then FindForward(True) Else FindPrevious;
 End;
 
-Procedure DoReplace;
-Var R,N,FL,FC,I: Integer; S: String; All: Boolean;
+Function MatchAt(L,C: Integer): Boolean;
+Var S,P: String;
 Begin
- DlgReset(52,8);
- DlgLabel(1,0,T3('Replace','Remplacer','Ersetzen'));
- DlgLabel(1,1,T3('Find   :','Chercher :','Suchen  :'));
- DlgEdit(12,1,30,FindStr);
- DlgLabel(1,2,T3('Replace:','Remplacer:','Ersetzen:'));
- DlgEdit(12,2,30,ReplStr);
- DlgLabel(1,3,T3('Case   :','Casse    :','Gr/Kl   :'));
- DlgRadio(12,3,T3('Ignore|Match','Ignorer|Respecter','Egal|Beachten'),Ord(FindCase)+1);
- DlgLabel(1,4,T3('Mode   :','Mode     :','Modus   :'));
- DlgRadio(12,4,T3('One|All','Un|Tous','Eins|Alle'),1);
- DlgButton(2,6,10,'OK',1,True);
- DlgButton(14,6,12,T3('Cancel','Annuler','Abbruch'),0,False);
- R:=DlgRun;
- If R<>1 Then Exit;
- FindStr:=DI[3].Val;ReplStr:=DI[5].Val;
- FindCase:=DI[7].Sel=2;
- All:=DI[9].Sel=2;
+ MatchAt:=False;
  If FindStr='' Then Exit;
- N:=0;
- If All Then Begin
-  FL:=1;FC:=1;
-  While FindFrom(FL,FC,FindStr,FL,FC) Do Begin
-   S:=Ed^[FL]^;
-   Delete(S,FC,Length(FindStr));
-   Insert(ReplStr,S,FC);
-   If Not SetLine(FL,S) Then Break;
-   Inc(N);
-   FC:=FC+Length(ReplStr);
-  End;
-  Alert1(3-2,IntStr(N)+T3(' replacement(s)',' remplacement(s)',' Ersetzung(en)'));
-  ClearBlock;
-  EnsureVisible;
- End Else Begin
-  If FindFrom(CurL,CurC,FindStr,FL,FC) Then Begin
-   S:=Ed^[FL]^;
-   Delete(S,FC,Length(FindStr));
-   Insert(ReplStr,S,FC);
-   If SetLine(FL,S) Then MoveCur(FL,FC+Length(ReplStr));
-  End Else Alert1(1,T3('Not found','Introuvable','Nicht gefunden'));
+ S:=Copy(Ed^[L]^,C,Length(FindStr));
+ P:=FindStr;
+ If Not FindCase Then Begin S:=Upper(S);P:=Upper(P);End;
+ MatchAt:=(S=P) And (Length(S)=Length(FindStr));
+End;
+
+{ remplace l'occurrence (FL,FC) ; True si possible }
+Function ReplaceAt(FL,FC: Integer): Boolean;
+Var S: String;
+Begin
+ ReplaceAt:=False;
+ S:=Ed^[FL]^;
+ Delete(S,FC,Length(FindStr));
+ Insert(ReplStr,S,FC);
+ If Length(S)>250 Then Begin
+  StatusErr(T3('Line too long','Ligne trop longue','Zeile zu lang'));Exit;
  End;
+ If Not SetLine(FL,S) Then Exit;
+ EdAdjDel(FL,FC,FL,FC+Length(FindStr));
+ If ReplStr<>'' Then EdAdjIns(FL,FC,1,Length(ReplStr));
+ ReplaceAt:=True;
+End;
+
+{ Replace (Alt-R) : remplace l'occurrence trouvee puis cherche la suivante }
+Procedure DoReplace;
+Var FL,FC: Integer;
+Begin
+ If FindStr='' Then Begin DoFind;Exit;End;
+ If MatchAt(CurL,CurC) Then Begin
+  If ReplaceAt(CurL,CurC) Then Begin
+   CurC:=CurC+Length(ReplStr);
+   EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
+   If FindFrom(CurL,CurC,FindStr,FL,FC) Then ShowFound(FL,FC)
+   Else StatusErr(T3('Not found','Introuvable','Nicht gefunden'));
+  End;
+ End Else FindForward(True);
+End;
+
+{ Replace All : a partir du curseur ; Echap abandonne ; le nombre de
+  remplacements est indique dans la ligne d'etat }
+Procedure DoReplaceAll;
+Var FL,FC,N: Integer; Esc: Boolean; Ch: Char;
+Begin
+ If FindStr='' Then Begin DoFind;Exit;End;
+ N:=0;Esc:=False;
+ FL:=CurL;FC:=CurC;
+ While (Not Esc) And FindFrom(FL,FC,FindStr,FL,FC) Do Begin
+  If Not ReplaceAt(FL,FC) Then Break;
+  Inc(N);
+  FC:=FC+Length(ReplStr);
+  CurL:=FL;CurC:=FC;
+  If KeyPressed Then Begin
+   Ch:=ReadKey;
+   If Ch=#27 Then Esc:=True Else If Ch=#0 Then Ch:=ReadKey;
+  End;
+ End;
+ EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
+ If N=0 Then StatusErr(T3('Not found','Introuvable','Nicht gefunden'))
+ Else Begin
+  StatusMsg:=IntStr(N)+T3(' replacement(s)',' remplacement(s)',' Ersetzung(en)');
+  If Esc Then SoundBell;
+ End;
+ NeedDraw:=True;
 End;
 
 Procedure DoGotoLine;
 Var S: String; V: LongInt;
 Begin
- S:=IntStr(CurL);
- If InputDlg(T3('Goto line','Aller a la ligne','Gehe zu Zeile'),T3('Line:','Ligne :','Zeile:'),S,6) Then Begin
+ S:='';
+ If InputDlgF(T3('Goto line','Aller a la ligne','Gehe zu Zeile'),T3('Line:','Ligne :','Zeile:'),S,6,1) Then Begin
   V:=ToInt(S);
-  GotoLine(V);
+  If V>EdN Then StatusErr(T3('End of file','Fin du fichier','Dateiende'))
+  Else GotoLine(V);
  End;
 End;
 
 { ---------------------------------------------------------------------- }
-{ Preferences                                                              }
+{ Signets                                                                   }
 { ---------------------------------------------------------------------- }
+
+Procedure SetBookmark(N: Integer);
+Begin
+ If (N<1) Or (N>8) Then Exit;
+ BkL[N]:=CurL;BkC[N]:=CurC;BkOn[N]:=True;
+End;
+
+Procedure GotoBookmark(N: Integer);
+Begin
+ If (N<1) Or (N>8) Then Exit;
+ If Not BkOn[N] Then Exit;
+ MoveCur(BkL[N],BkC[N]);
+ If (CurL<TopL) Or (CurL>=TopL+TXT_ROWS) Then Begin
+  TopL:=CurL-TXT_ROWS Div 2;If TopL<1 Then TopL:=1;
+ End;
+ EnsureVisible;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Preferences et fichier de configuration                                   }
+{ ---------------------------------------------------------------------- }
+
+Const
+ CFG_NAME = 'HISOFTED.INF';
+ CFG_OLD  = 'DEVPAC.INF';
 
 Procedure PrefDefaults;
 Begin
  PrefTab:=8;PrefBuf:=60000;PrefNumPad:=1;PrefBackup:=1;PrefIndent:=1;
  PrefFlash:=1;PrefLoadMon:=2;
+ PrefAutoSave:=0;PrefHideMouse:=0;PrefMatch:=0;PrefStopEol:=0;
+ PrefSaveQuit:=3;PrefSaveRun:=3;
 End;
 
-Procedure SavePrefs;
+{ Cherche un fichier de reglages : repertoire courant, repertoire du programme,
+  puis les repertoires de la variable PATH ; '' si introuvable }
+Function FindCfg(Const Name: String): String;
+Var P,D: String; I: Integer; Sep: Char;
+Begin
+ FindCfg:='';
+ If FileExists(Name) Then Begin FindCfg:=Name;Exit;End;
+ D:=PathOf(ParamStr(0));
+ If (D<>'') And FileExists(D+Name) Then Begin FindCfg:=D+Name;Exit;End;
+ P:=GetEnv('PATH');
+ {$IFDEF UNIX}
+ Sep:=':';
+ {$ELSE}
+ Sep:=';';
+ {$ENDIF}
+ While P<>'' Do Begin
+  I:=Pos(Sep,P);
+  If I=0 Then Begin D:=P;P:='';End Else Begin D:=Copy(P,1,I-1);Delete(P,1,I);End;
+  If D<>'' Then Begin
+   D:=NormDir(D);
+   If FileExists(D+Name) Then Begin FindCfg:=D+Name;Exit;End;
+  End;
+ End;
+End;
+
+Procedure SavePrefsTo(Const Name: String);
 Var T: Text;
 Begin
- Assign(T,'DEVPAC.INF');
+ Assign(T,Name);
  {$I-}
  Rewrite(T);
  {$I+}
- If IOResult<>0 Then Exit;
+ If IOResult<>0 Then Begin
+  Alert1(3,T3('Cannot write file|','Impossible d''ecrire le fichier|','Datei nicht schreibbar|')+ShortName(Name));
+  Exit;
+ End;
  WriteLn(T,'TAB=',PrefTab);
  WriteLn(T,'BUFFER=',PrefBuf);
- WriteLn(T,'NUMPAD=',PrefNumPad);
+ WriteLn(T,'KEYPAD=',PrefNumPad);
  WriteLn(T,'BACKUP=',PrefBackup);
  WriteLn(T,'INDENT=',PrefIndent);
  WriteLn(T,'CURSOR=',PrefFlash);
- WriteLn(T,'LOADMON=',PrefLoadMon);
+ WriteLn(T,'AUTOSAVE=',PrefAutoSave);
+ WriteLn(T,'HIDEMOUSE=',PrefHideMouse);
+ WriteLn(T,'MATCH=',PrefMatch);
+ WriteLn(T,'STOPEOL=',PrefStopEol);
+ WriteLn(T,'SAVEQUIT=',PrefSaveQuit);
+ WriteLn(T,'SAVERUN=',PrefSaveRun);
  WriteLn(T,'TODISK=',Ord(OptToDisk));
  WriteLn(T,'DEBUG=',Ord(OptDebug));
  WriteLn(T,'LISTING=',Ord(OptListing));
@@ -13837,13 +16088,32 @@ Begin
  WriteLn(T,'RUNGEM=',Ord(OptRunGem));
  WriteLn(T,'ACC=',Ord(OptAccs));
  WriteLn(T,'INCPATH=',OptIncPath);
+ WriteLn(T,'RUNDIR=',RunDirMode);
+ WriteLn(T,'OUTNAME=',CfgOutName);
+ WriteLn(T,'LISTNAME=',CfgListName);
+ WriteLn(T,'WARN=',Ord(OptWarnings));
+ WriteLn(T,'ASMTAB=',OptTabSize);
  Close(T);
 End;
 
-Procedure LoadPrefs;
-Var T: Text; S,K,V: String; P: Integer;
+{ Save preferences : le fichier est ecrit la ou il a ete trouve, sinon dans le
+  repertoire courant }
+Procedure SavePrefs;
 Begin
- Assign(T,'DEVPAC.INF');
+ If CfgFile='' Then CfgFile:=CFG_NAME;
+ SavePrefsTo(CfgFile);
+End;
+
+Function Flag01(Const V: String): Integer;
+Begin
+ If ToInt(V)<>0 Then Flag01:=1 Else Flag01:=0;
+End;
+
+Procedure LoadPrefsFrom(Const Name: String);
+Var T: Text; S,K,V: String; P: Integer; Legacy: Boolean;
+Begin
+ Legacy:=Upper(ShortName(Name))=CFG_OLD;
+ Assign(T,Name);
  {$I-}
  Reset(T);
  {$I+}
@@ -13853,133 +16123,362 @@ Begin
   P:=Pos('=',S);
   If P>0 Then Begin
    K:=Upper(Copy(S,1,P-1));V:=Copy(S,P+1,200);
-   If K='TAB' Then PrefTab:=Clamp(ToInt(V),1,32)
-   Else If K='BUFFER' Then PrefBuf:=Clamp(ToInt(V),4000,1000000)
-   Else If K='NUMPAD' Then PrefNumPad:=ToInt(V)
-   Else If K='BACKUP' Then PrefBackup:=ToInt(V)
-   Else If K='INDENT' Then PrefIndent:=ToInt(V)
-   Else If K='CURSOR' Then PrefFlash:=ToInt(V)
-   Else If K='LOADMON' Then PrefLoadMon:=ToInt(V)
+   If K='TAB' Then PrefTab:=Clamp(ToInt(V),2,16)
+   Else If K='BUFFER' Then PrefBuf:=Clamp(ToInt(V),4000,999000)
+   Else If K='KEYPAD' Then PrefNumPad:=Flag01(V)
+   Else If K='BACKUP' Then PrefBackup:=Flag01(V)
+   Else If K='INDENT' Then PrefIndent:=Flag01(V)
+   Else If K='CURSOR' Then Begin
+    PrefFlash:=Clamp(ToInt(V),1,4);
+    If Legacy And (PrefFlash=2) Then PrefFlash:=3;
+   End
+   Else If K='AUTOSAVE' Then PrefAutoSave:=Flag01(V)
+   Else If K='HIDEMOUSE' Then PrefHideMouse:=Flag01(V)
+   Else If K='MATCH' Then PrefMatch:=Flag01(V)
+   Else If K='STOPEOL' Then PrefStopEol:=Flag01(V)
+   Else If K='SAVEQUIT' Then PrefSaveQuit:=Clamp(ToInt(V),1,3)
+   Else If K='SAVERUN' Then PrefSaveRun:=Clamp(ToInt(V),1,3)
    Else If K='TODISK' Then OptToDisk:=ToInt(V)=1
    Else If K='DEBUG' Then OptDebug:=ToInt(V)=1
    Else If K='LISTING' Then OptListing:=ToInt(V)=1
    Else If K='OPTIMIZE' Then OptOptimize:=ToInt(V)=1
    Else If K='CASE' Then OptCase:=ToInt(V)=1
- Else If K='RUNGEM' Then OptRunGem:=ToInt(V)=1
+   Else If K='RUNGEM' Then OptRunGem:=ToInt(V)=1
    Else If K='ACC' Then OptAccs:=ToInt(V)=1
-   Else If K='INCPATH' Then OptIncPath:=V;
+   Else If K='INCPATH' Then OptIncPath:=V
+   Else If K='RUNDIR' Then RunDirMode:=Clamp(ToInt(V),1,2)
+   Else If K='OUTNAME' Then Begin CfgOutName:=V;OptOutName:=V;End
+   Else If K='LISTNAME' Then Begin CfgListName:=V;OptListName:=V;End
+   Else If K='WARN' Then OptWarnings:=ToInt(V)=1
+   Else If K='ASMTAB' Then OptTabSize:=Clamp(ToInt(V),2,16);
   End;
  End;
  Close(T);
 End;
 
-{ Dialogue "Editor preferences" (voir la capture d'ecran de Devpac) }
-Procedure EditorPrefsDlg;
-Var R,I: Integer; Msg: String;
+{ Chargement au demarrage : HISOFTED.INF (repertoire courant, repertoire du
+  programme, PATH), a defaut l'ancien DEVPAC.INF }
+Procedure LoadPrefs;
+Var N: String;
 Begin
- DlgReset(40,12);
- DlgLabel(2,0,T3('Editor preferences','Preferences de l''editeur','Editor-Einstellungen'));
- DlgLabel(2,2,T3('Tab setting:','Tabulation  :','Tabulator   :'));
- DlgEdit(16,2,4,IntStr(PrefTab));
- DlgLabel(2,3,T3('Text buffer:','Tampon texte:','Textpuffer  :'));
- DlgEdit(16,3,8,IntStr(PrefBuf));
- DlgLabel(2,4,T3('Numeric pad:','Pave num.   :','Zehnerblock :'));
- DlgRadio(16,4,T3('Numbers|Cursor','Chiffres|Curseur','Zahlen|Cursor'),PrefNumPad);
- DlgLabel(2,5,T3('Backups    :','Sauvegardes :','Sicherungen :'));
- DlgRadio(16,5,T3('Yes|No','Oui|Non','Ja|Nein'),2-PrefBackup);
- DlgLabel(2,6,T3('Auto indent:','Auto-retrait :','Auto-Einzug  :'));
- DlgRadio(16,6,T3('Yes|No','Oui|Non','Ja|Nein'),2-PrefIndent);
- DlgLabel(2,7,T3('Cursor     :','Curseur     :','Cursor      :'));
- DlgRadio(16,7,T3('Flash|Still','Clignote|Fixe','Blinkt|Fest'),PrefFlash);
- DlgLabel(2,8,T3('Load '+MonName+':','Charger '+MonName+':','Lade '+MonName+':'));
- DlgRadio(16,8,T3('Yes|No','Oui|Non','Ja|Nein'),PrefLoadMon);
- DlgButton(2,10,10,T3('Cancel','Annuler','Abbruch'),0,False);
- DlgButton(14,10,10,T3('Save','Sauver','Sichern'),2,False);
- DlgButton(26,10,10,'OK',1,True);
- R:=DlgRun;
- If R=0 Then Exit;
- PrefTab:=Clamp(ToInt(DI[3].Val),1,32);
- PrefBuf:=Clamp(ToInt(DI[5].Val),4000,1000000);
- PrefNumPad:=DI[7].Sel;
- PrefBackup:=Ord(DI[9].Sel=1);
- PrefIndent:=Ord(DI[11].Sel=1);
- PrefFlash:=DI[13].Sel;
- PrefLoadMon:=DI[15].Sel;
- If R=2 Then SavePrefs;
+ N:=FindCfg(CFG_NAME);
+ If N='' Then N:=FindCfg(CFG_OLD);
+ If N='' Then Exit;
+ LoadPrefsFrom(N);
+ If Upper(ShortName(N))=CFG_NAME Then CfgFile:=N Else CfgFile:='';
+End;
+
+{ Dialogue Preferences (Options) : voir le chapitre 2 du manuel Devpac 3 }
+Procedure EditorPrefsDlg;
+Var R,cInd,cAuto,cPad,cHide,cBak,cMatch,cStop,pQuit,pRun,eTab,eBuf,pCur: Integer;
+    P: String; NB: LongInt;
+ Procedure ReadBack;
+ Begin
+  PrefIndent:=DI[cInd].Sel;PrefAutoSave:=DI[cAuto].Sel;PrefNumPad:=DI[cPad].Sel;
+  PrefHideMouse:=DI[cHide].Sel;PrefBackup:=DI[cBak].Sel;PrefMatch:=DI[cMatch].Sel;
+  PrefStopEol:=DI[cStop].Sel;
+  PrefSaveQuit:=DI[pQuit].Sel;PrefSaveRun:=DI[pRun].Sel;
+  PrefFlash:=DI[pCur].Sel;
+  PrefTab:=Clamp(ToInt(DI[eTab].Val),2,16);
+  NB:=Clamp(ToInt(DI[eBuf].Val),4000,999000);
+ End;
+Begin
+ Repeat
+  DlgReset(72,13);
+  DlgLabel(2,0,T3('Preferences','Preferences','Einstellungen'));
+  cInd:=DlgCheck(2,2,T3('Auto-indent lines','Auto-retrait des lignes','Zeilen automatisch einruecken'),PrefIndent=1);
+  cBak:=DlgCheck(40,2,T3('Make backups','Faire des sauvegardes','Sicherungen anlegen'),PrefBackup=1);
+  cAuto:=DlgCheck(2,3,T3('Auto-save configuration','Sauver la configuration','Einstellungen autom. sichern'),PrefAutoSave=1);
+  cMatch:=DlgCheck(40,3,T3('Show matching parentheses','Parentheses assorties','Passende Klammern zeigen'),PrefMatch=1);
+  cPad:=DlgCheck(2,4,T3('Cursor mode numeric keypad','Pave numerique = curseur','Zehnerblock = Cursor'),PrefNumPad=1);
+  cStop:=DlgCheck(40,4,T3('Stop at end of line','Arret en fin de ligne','Am Zeilenende stoppen'),PrefStopEol=1);
+  cHide:=DlgCheck(2,5,T3('Hide mouse when typing','Cacher la souris en tapant','Maus beim Tippen verbergen'),PrefHideMouse=1);
+  DlgLabel(2,7,T3('Save files on Quit','Sauver en quittant','Beim Beenden sichern'));
+  pQuit:=DlgPopup(24,7,6,T3('Yes|No|Ask','Oui|Non|Demander','Ja|Nein|Fragen'),PrefSaveQuit);
+  DlgLabel(34,7,T3('Save files on Run Other','Sauver avant Run Other','Vor Run Other sichern'));
+  pRun:=DlgPopup(60,7,6,T3('Yes|No|Ask','Oui|Non|Demander','Ja|Nein|Fragen'),PrefSaveRun);
+  DlgLabel(2,9,T3('Tab setting:','Tabulation :','Tabulator :'));
+  eTab:=DlgEdit(16,9,3,IntStr(PrefTab));DI[eTab].Flt:=1;
+  DlgLabel(22,9,T3('Text Buffer:','Tampon texte :','Textpuffer :'));
+  eBuf:=DlgEdit(36,9,6,IntStr(PrefBuf));DI[eBuf].Flt:=1;
+  DlgLabel(45,9,'Cursor');
+  pCur:=DlgPopup(52,9,18,T3('Flashing block|Flashing line|Still block|Still line',
+    'Bloc clignotant|Barre clignotante|Bloc fixe|Barre fixe','Block blinkend|Strich blinkend|Block fest|Strich fest'),PrefFlash);
+  DlgButton(2,11,10,'Load...',2,False);
+  DlgButton(14,11,12,T3('Save as...','Sauver sous...','Sichern als...'),3,False);
+  DlgButton(28,11,9,'Reset',4,False);
+  DlgButton(46,11,10,T3('Cancel','Annuler','Abbruch'),0,False);
+  DlgButton(58,11,10,'OK',1,True);
+  R:=DlgRun;
+  If R=0 Then Exit;
+  If R=4 Then Begin PrefDefaults;NB:=PrefBuf;End
+  Else ReadBack;
+  Case R Of
+   2: Begin
+       P:=CFG_NAME;
+       If FileSelect(T3('Load settings','Charger les reglages','Einstellungen laden'),'*.INF',P) Then
+        If FileExists(P) Then LoadPrefsFrom(P);
+       NB:=PrefBuf;
+      End;
+   3: Begin
+       P:=CFG_NAME;
+       If FileSelect(T3('Save settings as','Sauver les reglages sous','Einstellungen sichern als'),'*.INF',P) Then Begin
+        If Pos('.',ShortName(P))=0 Then P:=P+'.INF';
+        SavePrefsTo(P);
+       End;
+      End;
+  End;
+ Until R=1;
+ { taille du tampon : refusee si le texte actuel n'y tient pas }
+ If NB<>PrefBuf Then Begin
+  If NB<EdMem+12 Then
+   Alert1(3,T3('Text buffer too small|for the current text','Tampon trop petit|pour le texte actuel','Textpuffer zu klein|fuer den aktuellen Text'))
+  Else PrefBuf:=NB;
+ End;
  EnsureVisible;
 End;
 
 Procedure AsmOptionsDlg;
-Var R: Integer; S: String;
+Var R,pOut,pLst,eLst,eTab,cWarn,cDbg,cOpt,cCase,eInc,eOut,L: Integer;
 Begin
- DlgReset(52,14);
+ DlgReset(64,14);
  DlgLabel(2,0,AsmName+T3(' options',' - options',' Optionen'));
- DlgLabel(2,2,T3('Output     :','Sortie     :','Ausgabe    :'));
- DlgRadio(16,2,T3('Memory|Disk','Memoire|Disque','Speicher|Disk'),1+Ord(OptToDisk));
- DlgLabel(2,3,T3('Debug info :','Infos debug :','Debug-Info  :'));
- DlgRadio(16,3,T3('Yes|No','Oui|Non','Ja|Nein'),2-Ord(OptDebug));
- DlgLabel(2,4,T3('Listing    :','Listing     :','Listing     :'));
- DlgRadio(16,4,T3('Yes|No','Oui|Non','Ja|Nein'),2-Ord(OptListing));
- DlgLabel(2,5,T3('Optimise   :','Optimiser   :','Optimieren  :'));
- DlgRadio(16,5,T3('Yes|No','Oui|Non','Ja|Nein'),2-Ord(OptOptimize));
- DlgLabel(2,6,T3('Symbols    :','Symboles    :','Symbole     :'));
- DlgRadio(16,6,T3('Case|Any','Casse|Libre','Gr/Kl|Egal'),2-Ord(OptCase));
- DlgLabel(2,7,T3('Include dir:','Rep. include:','Include-Verz.:'));
- DlgEdit(16,7,30,OptIncPath);
- DlgLabel(2,8,T3('Output file:','Fichier sortie:','Ausgabedatei:'));
- DlgEdit(16,8,30,OptOutName);
- DlgButton(2,12,10,T3('Cancel','Annuler','Abbruch'),0,False);
- DlgButton(18,12,10,T3('Save','Sauver','Sichern'),2,False);
- DlgButton(34,12,10,'OK',1,True);
+ DlgLabel(2,2,T3('Output:','Sortie:','Ausgabe:'));
+ pOut:=DlgPopup(12,2,10,T3('Memory|Disk','Memoire|Disque','Speicher|Disk'),1+Ord(OptToDisk));
+ DlgLabel(26,2,'Listing:');
+ L:=1;
+ If OptListing Then Begin
+  If Upper(CfgListName)='PRINTER.OUT' Then L:=3 Else L:=2;
+ End;
+ pLst:=DlgPopup(35,2,14,T3('None|Disk|Printer','Aucun|Disque|Imprimante','Keins|Disk|Drucker'),L);
+ DlgLabel(2,4,T3('List to:','Listing vers:','Listing nach:'));
+ eLst:=DlgEditX(16,4,40,60,CfgListName);
+ DlgLabel(2,5,T3('Tab size:','Tabulation:','Tabulator:'));
+ eTab:=DlgEdit(16,5,3,IntStr(OptTabSize));DI[eTab].Flt:=1;
+ cWarn:=DlgCheck(32,5,T3('No warnings','Pas d''avertissements','Keine Warnungen'),Not OptWarnings);
+ cDbg:=DlgCheck(2,7,T3('Debug symbols','Symboles de debogage','Debug-Symbole'),OptDebug);
+ cOpt:=DlgCheck(32,7,T3('Optimise branches','Optimiser les branches','Spruenge optimieren'),OptOptimize);
+ cCase:=DlgCheck(2,8,T3('Case sensitive labels','Etiquettes sensibles a la casse','Gross-/Kleinschreibung'),OptCase);
+ DlgLabel(2,10,T3('Include dir:','Rep. include:','Include-Verz.:'));
+ eInc:=DlgEditX(16,10,40,60,OptIncPath);
+ DlgLabel(2,11,T3('Output file:','Fichier sortie:','Ausgabedatei:'));
+ eOut:=DlgEditX(16,11,40,60,CfgOutName);
+ DlgButton(2,13,10,T3('Cancel','Annuler','Abbruch'),0,False);
+ DlgButton(18,13,10,T3('Save','Sauver','Sichern'),2,False);
+ DlgButton(50,13,10,'OK',1,True);
  R:=DlgRun;
  If R=0 Then Exit;
- OptToDisk:=DI[3].Sel=2;
- OptDebug:=DI[5].Sel=1;
- OptListing:=DI[7].Sel=1;
- OptOptimize:=DI[9].Sel=1;
- OptCase:=DI[11].Sel=1;
- OptIncPath:=DI[13].Val;
- OptOutName:=DI[15].Val;
+ OptToDisk:=DI[pOut].Sel=2;
+ OptListing:=DI[pLst].Sel>1;
+ CfgListName:=DI[eLst].Val;
+ If DI[pLst].Sel=3 Then CfgListName:='PRINTER.OUT'
+ Else If (DI[pLst].Sel=2) And (Upper(CfgListName)='PRINTER.OUT') Then CfgListName:='';
+ OptListName:=CfgListName;
+ OptTabSize:=Clamp(ToInt(DI[eTab].Val),2,16);
+ OptWarnings:=DI[cWarn].Sel=0;
+ OptDebug:=DI[cDbg].Sel=1;
+ OptOptimize:=DI[cOpt].Sel=1;
+ OptCase:=DI[cCase].Sel=1;
+ OptIncPath:=DI[eInc].Val;
+ CfgOutName:=DI[eOut].Val;
+ OptOutName:=CfgOutName;
  If R=2 Then SavePrefs;
 End;
-
 { ====================================================================== }
-{                  MONITEUR / DEBOGUEUR MonST / MonAm                    }
+{          MONITEUR / DEBOGUEUR Mon (Devpac 3) : ecran a fenetres         }
 { ====================================================================== }
 
 Const
- MON_LOG = 300;
- MR_ROWS = 10;                 { rangees de la fenetre des registres }
- MD_ROWS = 16;                 { rangees des fenetres du milieu }
- MC_ROWS = 17;                 { rangees de la fenetre de commande }
- MROW    = 10;                 { hauteur d'une rangee }
+ NWIN    = 5;                  { fenetres 1..5 }
+ MAXVIEW = 6;                  { vues empilees par fenetre }
+ MAXMB   = 8;                  { points d'arret (8 selon le manuel) }
+ HMAX    = 10;                 { entrees de l'historique }
+ MMAXSRC  = 4;                  { fichiers ASCII charges }
+ MCW   = 8;                  { largeur d'une cellule de texte }
+ VK_REG  = 0;
+ VK_DIS  = 1;
+ VK_MEM  = 2;
+ VK_SRC  = 3;
+ BK_SIMPLE = 1;
+ BK_STOP   = 2;
+ BK_COUNT  = 3;
+ BK_PERM   = 4;
+ BK_COND   = 5;
+ PV_NONE = 0;                  { types de controle de saisie }
+ PV_EXPR = 1;
+ PV_EXPR0= 2;                  { expression ou vide }
+ PV_BP   = 3;
+ PV_REG  = 4;
+ PV_FREE = 5;
+ PV_EXPRL= 6;                  { liste d'expressions }
+
+Type
+ TMView = Record
+  Kind : Byte;
+  Addr : LongInt;              { adresse de depart (ou 1re ligne pour VK_SRC) }
+  Lock : String[63];           { expression de verrouillage }
+  Src  : Integer;              { index dans MSrc (VK_SRC) }
+ End;
+ TMWin = Record
+  NV,Top : Integer;
+  V      : Array[1..MAXVIEW] Of TMView;
+  X,Y,W,H: Integer;            { rectangle en cellules }
+ End;
+ TMBp = Record
+  Addr : LongInt;
+  Kind : Byte;
+  N,Cnt: LongInt;
+  Expr : String[63];
+ End;
+ THist = Record
+  R   : Array[0..15] Of LongInt;
+  PCv : LongInt;
+  SRx : LongInt;
+ End;
+ TMSrc = Record
+  Name : String[80];
+  Arr  : PLineArr;
+  Cnt  : Integer;
+ End;
 
 Var
- MLog      : Array[1..MON_LOG] Of PString;
- MLogN     : Integer;
- MonDisAddr,MonMemAddr : LongInt;
- MonCmd    : String;
- MonCmdHist: String;
+ MW        : Array[1..NWIN] Of TMWin;
+ MCur      : Integer;          { fenetre courante }
+ MZoom     : Boolean;
+ RegRows   : Integer;          { hauteur de la fenetre 1 (titre compris) }
+ SplL,SplR : Integer;          { etats des frontieres verticales (colonnes gauche/droite) }
+ ColSt     : Integer;          { largeur de la colonne gauche (en cellules) }
+ CellH     : Integer;          { hauteur d'une cellule : 10 ou 8 }
+ NRows     : Integer;
+ MMem      : Array[0..9] Of LongInt;   { registres memoire M0..M9 }
+ MBp       : Array[1..MAXMB] Of TMBp;
+ NMB       : Integer;
+ BdosBp    : Integer;
+ Hist      : Array[0..HMAX-1] Of THist;
+ HHead,HCnt: Integer;
+ MsgText   : String;
+ MsgExtra  : String;
  MonLoaded : Boolean;
+ ProgDead  : Boolean;
  MonQuit   : Boolean;
  MonSeen   : Boolean;
- MonLastCmdKey : LongInt;
+ MonFromEd : Boolean;
+ PendKey   : LongInt;          { touche a re-traiter (apres Help) }
+ EditOn    : Boolean;
+ EditAsc   : Boolean;
+ EditNib   : Integer;
+ EditAddr  : LongInt;
+ MSrc      : Array[1..MMAXSRC] Of TMSrc;
+ NSrc      : Integer;
+ { recherche }
+ SrchKind  : Char;
+ SrchBuf   : String;
+ SrchAlign : Integer;
+ SrchCase  : Boolean;
+ { preferences }
+ PfRel,PfIgnCase,PfAutoPre,PfAutoSrc,PfZAn,PfTimer,PfTraps,PfCart : Boolean;
+ PfSymLen  : Integer;
+ PfLabel   : String;
+ PfLines   : Integer;          { 0 aucun, 1 decimal, 2 hexa }
+ PfTopRam  : LongInt;
+ LastFault : LongInt;
+ TabSrc4   : Boolean;
+ ExprErr   : Integer;
 
-Procedure MonPrint(Const S: String);
-Var I: Integer;
+Function MnT(Const En,Fr: String): String;
 Begin
- If MLogN>=MON_LOG Then Begin
-  FreeStr(MLog[1]);
-  For I:=1 To MLogN-1 Do MLog[I]:=MLog[I+1];
-  Dec(MLogN);
- End;
- Inc(MLogN);
- MLog[MLogN]:=NewStr(Copy(S,1,78));
+ MnT:=T3(En,Fr,En);
 End;
 
 Procedure ClrErr;
 Begin
  BusErr:=False;AddrErr:=False;
+End;
+
+Function Rdbl(A: LongInt): Boolean;
+Begin
+ A:=A And $FFFFFF;
+ Rdbl:=A<MemSize;
+End;
+
+Function HexStr8(V: LongInt): String;
+Begin
+ HexStr8:=Hex8(V);
+End;
+
+Function RdB(A: LongInt): Integer;
+Begin
+ If Rdbl(A) Then RdB:=Rd8(A) Else RdB:=-1;
+ ClrErr;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Segments du programme, symboles                                          }
+{ ---------------------------------------------------------------------- }
+
+Function SegAddr(N: Integer): LongInt;      { 0 text, 1 data, 2 bss, 3 end }
+Begin
+ SegAddr:=0;
+ If Not MonLoaded Then Exit;
+ Case N Of
+  0: SegAddr:=Rd32(BP_ADDR+8);
+  1: SegAddr:=Rd32(BP_ADDR+16);
+  2: SegAddr:=Rd32(BP_ADDR+24);
+  3: SegAddr:=Rd32(BP_ADDR+24)+Rd32(BP_ADDR+28);
+ End;
+ ClrErr;
+End;
+
+Function SegLen(N: Integer): LongInt;
+Begin
+ SegLen:=0;
+ If Not MonLoaded Then Exit;
+ Case N Of
+  0: SegLen:=Rd32(BP_ADDR+12);
+  1: SegLen:=Rd32(BP_ADDR+20);
+  2: SegLen:=Rd32(BP_ADDR+28);
+ End;
+ ClrErr;
+End;
+
+{ Recherche d'un symbole par son nom (options : casse, prefixe, longueur) }
+Function SymMatch(Const A,B: String): Boolean;
+Var X,Y: String;
+Begin
+ X:=A;Y:=B;
+ If Length(X)>PfSymLen Then X:=Copy(X,1,PfSymLen);
+ If Length(Y)>PfSymLen Then Y:=Copy(Y,1,PfSymLen);
+ If PfIgnCase Then SymMatch:=Upper(X)=Upper(Y) Else SymMatch:=X=Y;
+End;
+
+Function MSymByName(Const N: String; Var A: LongInt): Boolean;
+Var I: Integer;
+Begin
+ MSymByName:=False;
+ If (DbgSyms=Nil) Or (DbgN=0) Then Exit;
+ For I:=1 To DbgN Do
+  If SymMatch(DbgSyms^[I].Name,N) Then Begin A:=DbgSyms^[I].Addr;MSymByName:=True;Exit;End;
+ If PfAutoPre Then Begin
+  For I:=1 To DbgN Do
+   If SymMatch(DbgSyms^[I].Name,'_'+N) Or SymMatch(DbgSyms^[I].Name,'@'+N) Then Begin
+    A:=DbgSyms^[I].Addr;MSymByName:=True;Exit;
+   End;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Evaluation d'expression : hexadecimal par defaut, priorites du manuel    }
+{ ---------------------------------------------------------------------- }
+
+Var MS: String; MP: Integer; MErr: Boolean;
+
+Function WinAddrOf(N: Integer): LongInt; Forward;
+Procedure SetWinAddr(N: Integer; NewV: LongInt); Forward;
+Function ExprCmp: LongInt; Forward;
+
+Procedure MSkip;
+Begin
+ While (MP<=Length(MS)) And (MS[MP]=' ') Do Inc(MP);
 End;
 
 Function ParseHexVal(Const S: String; Var V: LongInt): Boolean;
@@ -13994,104 +16493,571 @@ Begin
  ParseHexVal:=True;
 End;
 
-{ Evaluation d'expression du moniteur : hexadecimal par defaut }
-Var MS: String; MP: Integer; MErr: Boolean;
+Function SymCh(C: Char): Boolean;
+Begin
+ SymCh:=((C>='A') And (C<='Z')) Or ((C>='a') And (C<='z')) Or (C='_') Or
+        (C='.') Or (C='@') Or ((C>='0') And (C<='9'));
+End;
 
-Function MonExpr: LongInt; Forward;
+Function RegValue(Const U: String; Var V: LongInt): Boolean;
+Var R: Integer;
+Begin
+ RegValue:=True;
+ If (Length(U)=2) And (U[1]='M') And (U[2]>='0') And (U[2]<='9') Then Begin
+  R:=Ord(U[2])-48;
+  If (R>=1) And (R<=5) Then V:=WinAddrOf(R) Else V:=MMem[R];
+  Exit;
+ End;
+ If U='SSP' Then Begin V:=SSPv;Exit;End;
+ If U='USP' Then Begin V:=USPv;Exit;End;
+ If U='CCR' Then Begin V:=SRv And $FF;Exit;End;
+ If U='TEXT' Then Begin V:=SegAddr(0);Exit;End;
+ If U='DATA' Then Begin V:=SegAddr(1);Exit;End;
+ If U='BSS' Then Begin V:=SegAddr(2);Exit;End;
+ If U='END' Then Begin V:=SegAddr(3);Exit;End;
+ R:=RegOf(U);
+ If (R>=0) And (R<16) Then Begin V:=Rg[R];Exit;End;
+ If R=20 Then Begin V:=SRv;Exit;End;
+ If R=23 Then Begin V:=PC;Exit;End;
+ RegValue:=False;
+End;
 
-Function MonTerm: LongInt;
-Var V: LongInt; Tk: String; R: Integer; C: Char; A: LongInt; Neg: Boolean;
+Function ExprPrim: LongInt;
+Var V,A: LongInt; Tk,U: String; C: Char; Sz: Char; Ok: Boolean;
 Begin
  V:=0;
- While (MP<=Length(MS)) And (MS[MP]=' ') Do Inc(MP);
- If MP>Length(MS) Then Begin MErr:=True;MonTerm:=0;Exit;End;
+ MSkip;
+ If MP>Length(MS) Then Begin MErr:=True;ExprPrim:=0;Exit;End;
  C:=MS[MP];
- If C='-' Then Begin Inc(MP);MonTerm:=-MonTerm;Exit;End;
  If C='(' Then Begin
-  Inc(MP);V:=MonExpr;
+  Inc(MP);V:=ExprCmp;MSkip;
   If (MP<=Length(MS)) And (MS[MP]=')') Then Inc(MP) Else MErr:=True;
-  MonTerm:=V;Exit;
+  ExprPrim:=V;Exit;
  End;
- If C='[' Then Begin
-  Inc(MP);V:=MonExpr;
-  If (MP<=Length(MS)) And (MS[MP]=']') Then Inc(MP) Else MErr:=True;
-  V:=Rd32(V);ClrErr;
-  MonTerm:=V;Exit;
- End;
- If C='#' Then Begin
-  Inc(MP);Neg:=False;
-  If (MP<=Length(MS)) And (MS[MP]='-') Then Begin Neg:=True;Inc(MP);End;
-  While (MP<=Length(MS)) And (MS[MP]>='0') And (MS[MP]<='9') Do Begin
-   V:=V*10+Ord(MS[MP])-48;Inc(MP);
+ If C='{' Then Begin
+  Inc(MP);A:=ExprCmp;MSkip;
+  If (MP<=Length(MS)) And (MS[MP]='}') Then Inc(MP) Else MErr:=True;
+  Sz:='L';
+  If (MP+1<=Length(MS)) And (MS[MP]='.') And (UpCase(MS[MP+1]) In ['B','W','L']) Then Begin
+   Sz:=UpCase(MS[MP+1]);Inc(MP,2);
   End;
-  If Neg Then V:=-V;
-  MonTerm:=V;Exit;
+  If MErr Then Begin ExprPrim:=0;Exit;End;
+  Case Sz Of
+   'B': Begin
+         If Not Rdbl(A) Then MErr:=True Else V:=Rd8(A);
+        End;
+   'W': Begin
+         If Odd(A) Or Not Rdbl(A) Or Not Rdbl(A+1) Then MErr:=True Else V:=Rd16(A);
+        End;
+  Else Begin
+         If Odd(A) Or Not Rdbl(A) Or Not Rdbl(A+3) Then MErr:=True Else V:=Rd32(A);
+       End;
+  End;
+  ClrErr;
+  ExprPrim:=V;Exit;
+ End;
+ If (C='#') Or (C='?') Then Begin
+  { operateurs source : sans informations de ligne ils sont invalides }
+  MErr:=True;ExprPrim:=0;Exit;
+ End;
+ If C='\' Then Begin
+  Inc(MP);Ok:=False;
+  While (MP<=Length(MS)) And (MS[MP]>='0') And (MS[MP]<='9') Do Begin
+   V:=V*10+Ord(MS[MP])-48;Inc(MP);Ok:=True;
+  End;
+  If Not Ok Then MErr:=True;
+  ExprPrim:=V;Exit;
  End;
  If C='%' Then Begin
-  Inc(MP);
-  While (MP<=Length(MS)) And (MS[MP] In ['0','1']) Do Begin V:=V*2+Ord(MS[MP])-48;Inc(MP);End;
-  MonTerm:=V;Exit;
+  Inc(MP);Ok:=False;
+  While (MP<=Length(MS)) And (MS[MP] In ['0','1']) Do Begin V:=V*2+Ord(MS[MP])-48;Inc(MP);Ok:=True;End;
+  If Not Ok Then MErr:=True;
+  ExprPrim:=V;Exit;
  End;
  If C='''' Then Begin
   Inc(MP);
   While (MP<=Length(MS)) And (MS[MP]<>'''') Do Begin V:=(V Shl 8) Or Ord(MS[MP]);Inc(MP);End;
-  If MP<=Length(MS) Then Inc(MP);
-  MonTerm:=V;Exit;
+  If MP<=Length(MS) Then Inc(MP) Else MErr:=True;
+  ExprPrim:=V;Exit;
  End;
- If C='$' Then Inc(MP);
+ If C='$' Then Begin
+  Inc(MP);Tk:='';
+  While (MP<=Length(MS)) And IsHexCh(MS[MP]) Do Begin Tk:=Tk+MS[MP];Inc(MP);End;
+  If (Tk='') Or Not ParseHexVal(Tk,V) Then MErr:=True;
+  ExprPrim:=V;Exit;
+ End;
  Tk:='';
- While (MP<=Length(MS)) And (IsIdChar(MS[MP])) Do Begin Tk:=Tk+MS[MP];Inc(MP);End;
- If Tk='' Then Begin MErr:=True;MonTerm:=0;Exit;End;
- R:=RegOf(Upper(Tk));
- If (C<>'$') And (R>=0) And (R<16) Then Begin MonTerm:=Rg[R];Exit;End;
- If (C<>'$') And (Upper(Tk)='PC') Then Begin MonTerm:=PC;Exit;End;
- If (C<>'$') And (Upper(Tk)='SR') Then Begin MonTerm:=SRv;Exit;End;
- If (C<>'$') And (Upper(Tk)='SP') Then Begin MonTerm:=Rg[15];Exit;End;
- If ParseHexVal(Tk,V) Then Begin MonTerm:=V;Exit;End;
- If DbgByName(Tk,A) Then Begin MonTerm:=A;Exit;End;
+ While (MP<=Length(MS)) And SymCh(MS[MP]) Do Begin Tk:=Tk+MS[MP];Inc(MP);End;
+ If Tk='' Then Begin MErr:=True;ExprPrim:=0;Exit;End;
+ U:=Upper(Tk);
+ If (C>='0') And (C<='9') Then Begin
+  If ParseHexVal(Tk,V) Then Begin ExprPrim:=V;Exit;End;
+  MErr:=True;ExprPrim:=0;Exit;
+ End;
+ If RegValue(U,V) Then Begin ExprPrim:=V;Exit;End;
+ If MSymByName(Tk,A) Then Begin ExprPrim:=A;Exit;End;
+ If ParseHexVal(Tk,V) Then Begin ExprPrim:=V;Exit;End;
  MErr:=True;
- MonTerm:=0;
+ ExprPrim:=0;
 End;
 
-Function MonExpr: LongInt;
+Function ExprUn: LongInt;
+Begin
+ MSkip;
+ If MP>Length(MS) Then Begin MErr:=True;ExprUn:=0;Exit;End;
+ If MS[MP]='-' Then Begin Inc(MP);ExprUn:=-ExprUn;Exit;End;
+ If MS[MP]='+' Then Begin Inc(MP);ExprUn:=ExprUn;Exit;End;
+ ExprUn:=ExprPrim;
+End;
+
+Function ExprNot: LongInt;
+Begin
+ MSkip;
+ If (MP<=Length(MS)) And (MS[MP]='~') Then Begin Inc(MP);ExprNot:=Not ExprNot;Exit;End;
+ ExprNot:=ExprUn;
+End;
+
+Function ExprShift: LongInt;
+Var V,W: LongInt;
+Begin
+ V:=ExprNot;
+ While Not MErr Do Begin
+  MSkip;
+  If (MP+1<=Length(MS)) And (MS[MP]='<') And (MS[MP+1]='<') Then Begin
+   Inc(MP,2);W:=ExprNot;
+   If (W<0) Or (W>31) Then V:=0 Else V:=V Shl W;
+  End Else If (MP+1<=Length(MS)) And (MS[MP]='>') And (MS[MP+1]='>') Then Begin
+   Inc(MP,2);W:=ExprNot;
+   If (W<0) Or (W>31) Then V:=0 Else V:=ShrL(V,W);
+  End Else Break;
+ End;
+ ExprShift:=V;
+End;
+
+Function ExprBit: LongInt;
 Var V,W: LongInt; Op: Char;
 Begin
- V:=MonTerm;
- While MP<=Length(MS) Do Begin
-  While (MP<=Length(MS)) And (MS[MP]=' ') Do Inc(MP);
+ V:=ExprShift;
+ While Not MErr Do Begin
+  MSkip;
   If MP>Length(MS) Then Break;
   Op:=MS[MP];
-  If (Op='+') Or (Op='-') Or (Op='*') Or (Op='/') Or (Op='&') Or (Op='|') Then Begin
-   Inc(MP);W:=MonTerm;
+  If (Op='!') And (MP<Length(MS)) And (MS[MP+1]='=') Then Break;
+  If (Op='&') Or (Op='!') Or (Op='^') Then Begin
+   Inc(MP);W:=ExprShift;
    Case Op Of
-    '+': V:=V+W;
-    '-': V:=V-W;
-    '*': V:=V*W;
-    '/': If W<>0 Then V:=V Div W Else MErr:=True;
     '&': V:=V And W;
-    '|': V:=V Or W;
+    '!': V:=V Or W;
+   Else V:=V Xor W;
    End;
   End Else Break;
  End;
- MonExpr:=V;
+ ExprBit:=V;
+End;
+
+Function ExprMul: LongInt;
+Var V,W: LongInt; Op: Char;
+Begin
+ V:=ExprBit;
+ While Not MErr Do Begin
+  MSkip;
+  If MP>Length(MS) Then Break;
+  Op:=MS[MP];
+  If (Op='*') Or (Op='/') Then Begin
+   Inc(MP);W:=ExprBit;
+   If Op='*' Then V:=V*W
+   Else If W<>0 Then V:=V Div W Else MErr:=True;
+  End Else Break;
+ End;
+ ExprMul:=V;
+End;
+
+Function ExprAdd: LongInt;
+Var V,W: LongInt; Op: Char;
+Begin
+ V:=ExprMul;
+ While Not MErr Do Begin
+  MSkip;
+  If MP>Length(MS) Then Break;
+  Op:=MS[MP];
+  If (Op='+') Or (Op='-') Then Begin
+   Inc(MP);W:=ExprMul;
+   If Op='+' Then V:=V+W Else V:=V-W;
+  End Else Break;
+ End;
+ ExprAdd:=V;
+End;
+
+Function ExprCmp: LongInt;
+Var V,W: LongInt; Op: String[2]; T: Boolean;
+Begin
+ V:=ExprAdd;
+ While Not MErr Do Begin
+  MSkip;
+  If MP>Length(MS) Then Break;
+  Op:='';
+  If (MP<Length(MS)) And (Copy(MS,MP,2)='<>') Then Op:='<>'
+  Else If (MP<Length(MS)) And (Copy(MS,MP,2)='!=') Then Op:='<>'
+  Else If (MP<Length(MS)) And (Copy(MS,MP,2)='<=') Then Op:='<='
+  Else If (MP<Length(MS)) And (Copy(MS,MP,2)='>=') Then Op:='>='
+  Else If MS[MP]='=' Then Op:='='
+  Else If MS[MP]='<' Then Op:='<'
+  Else If MS[MP]='>' Then Op:='>';
+  If Op='' Then Break;
+  If Op='=' Then Inc(MP) Else If Length(Op)=1 Then Inc(MP) Else Inc(MP,2);
+  If (Op='=') And (MP<=Length(MS)) And (MS[MP]='=') Then Inc(MP);
+  W:=ExprAdd;
+  Case Op[1] Of
+   '=': T:=V=W;
+   '<': If Op='<>' Then T:=V<>W Else If Op='<=' Then T:=V<=W Else T:=V<W;
+  Else If Op='>=' Then T:=V>=W Else T:=V>W;
+  End;
+  If T Then V:=-1 Else V:=0;
+ End;
+ ExprCmp:=V;
 End;
 
 Function MonEval(Const S: String; Var V: LongInt): Boolean;
+Var SvS: String; SvP: Integer; SvE: Boolean;
 Begin
+ SvS:=MS;SvP:=MP;SvE:=MErr;
  MS:=S;MP:=1;MErr:=False;
- V:=MonExpr;
- While (MP<=Length(MS)) And (MS[MP]=' ') Do Inc(MP);
- MonEval:=Not MErr And (MP>Length(MS));
+ V:=ExprCmp;
+ MSkip;
+ MonEval:=Not MErr And (MP>Length(MS)) And (Length(TrimS(S))>0);
+ MS:=SvS;MP:=SvP;MErr:=SvE;
 End;
 
 { ---------------------------------------------------------------------- }
-{ Affichage                                                                }
+{ Desassemblage au format du moniteur                                      }
 { ---------------------------------------------------------------------- }
 
-Procedure MonBar(Y: Integer; X1,X2: Integer; Const S: String);
+Function MDis(A: LongInt; Var Len: Integer): String;
+Var R,O: String; I: Integer; InSym,Hx: Boolean; C: Char;
 Begin
- Box(X1,Y,X2,Y+MROW-1,INK);
- WText(X1+4,Y+1,S);
+ For I:=0 To 7 Do DisAn[I]:=Rg[8+I];
+ DisMon:=True;DisRel:=PfRel;
+ R:=Dis(A,Len);
+ DisMon:=False;
+ ClrErr;
+ O:='';InSym:=False;Hx:=False;
+ For I:=1 To Length(R) Do Begin
+  C:=R[I];
+  If C=#1 Then InSym:=True
+  Else If C=#2 Then InSym:=False
+  Else If InSym Then O:=O+C
+  Else Begin
+   If C='$' Then Hx:=True
+   Else If Hx And Not IsHexCh(C) Then Hx:=False;
+   If C=' ' Then Begin
+    If (O<>'') And (O[Length(O)]<>' ') Then O:=O+C;
+   End Else If Hx Then O:=O+C
+   Else If (C>='A') And (C<='Z') Then O:=O+Chr(Ord(C)+32)
+   Else O:=O+C;
+  End;
+ End;
+ While (O<>'') And (O[Length(O)]=' ') Do Dec(O[0]);
+ If Copy(O,1,5)='movem' Then Begin
+  I:=2;
+  While I<Length(O)-1 Do Begin
+   If (O[I]='-') And (O[I-1]>='0') And (O[I-1]<='9') And ((O[I+1]='a') Or (O[I+1]='d')) And
+      (O[I+2]>='0') And (O[I+2]<='9') Then Delete(O,I+1,1);
+   Inc(I);
+  End;
+ End;
+ MDis:=O;
+End;
+
+{ Adresse effective du champ (Mode,Reg) ; P = adresse du mot d'extension }
+Function EAAddr(Mode,Reg,Sz: Integer; Var P: LongInt; Var Addr: LongInt): Boolean;
+Var Ext,D: LongInt; X: LongInt;
+Begin
+ EAAddr:=True;
+ Case Mode Of
+  2: Addr:=Rg[8+Reg];
+  3: Addr:=Rg[8+Reg];
+  4: Addr:=Rg[8+Reg]-Sz;
+  5: Begin Addr:=Rg[8+Reg]+SExt(Rd16(P),2);Inc(P,2);End;
+  6: Begin
+      Ext:=Rd16(P);Inc(P,2);
+      If (Ext And $8000)<>0 Then X:=Rg[8+((Ext Shr 12) And 7)] Else X:=Rg[(Ext Shr 12) And 7];
+      If (Ext And $800)=0 Then X:=SExt(X,2);
+      Addr:=Rg[8+Reg]+SExt(Ext,1)+X;
+     End;
+  7: Case Reg Of
+      0: Begin Addr:=SExt(Rd16(P),2);Inc(P,2);End;
+      1: Begin Addr:=Rd32(P);Inc(P,4);End;
+      2: Begin Addr:=P+SExt(Rd16(P),2);Inc(P,2);End;
+      3: Begin
+          Ext:=Rd16(P);D:=P;Inc(P,2);
+          If (Ext And $8000)<>0 Then X:=Rg[8+((Ext Shr 12) And 7)] Else X:=Rg[(Ext Shr 12) And 7];
+          If (Ext And $800)=0 Then X:=SExt(X,2);
+          Addr:=D+SExt(Ext,1)+X;
+         End;
+      4: Begin If Sz=4 Then Inc(P,4) Else Inc(P,2);EAAddr:=False;End;
+     Else EAAddr:=False;
+     End;
+ Else EAAddr:=False;
+ End;
+End;
+
+Function EAData(A: LongInt; Sz: Integer): String;
+Var S: String; I: Integer; B: Integer;
+Begin
+ S:='';
+ If Sz>8 Then Sz:=8;
+ If Sz<1 Then Sz:=1;
+ For I:=0 To Sz-1 Do Begin
+  B:=RdB(A+I);
+  If B<0 Then S:=S+'**' Else S:=S+Hex2(B);
+  If (Sz>1) And Odd(I) And (I<Sz-1) Then S:=S+' ';
+ End;
+ EAData:=S;
+End;
+
+{ Adresses effectives de l'instruction a PCa : "; 00001FAE 0F01 > 0002AC08 FFFF" }
+Function EAInfo(PCa: LongInt): String;
+Var Op,P,A1,A2: LongInt; Sz,S1,S2,Mode,Reg,G: Integer; Has1,Has2: Boolean; R: String;
+    Skip: Integer; AddrOnly: Boolean;
+Begin
+ EAInfo:='';
+ Has1:=False;Has2:=False;A1:=0;A2:=0;S1:=2;S2:=2;AddrOnly:=False;
+ Op:=Rd16(PCa);ClrErr;
+ P:=PCa+2;
+ G:=(Op Shr 12) And 15;
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ Sz:=(Op Shr 6) And 3;
+ Case G Of
+  0: Begin
+      If (Op And $F138)=$0108 Then Begin End
+      Else If (Op And $0100)<>0 Then Begin
+       If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,1,P,A1);S1:=1;End;
+      End Else Case (Op Shr 8) And 15 Of
+       0,2,4,6,10,12: Begin
+         If (Op=$003C) Or (Op=$023C) Or (Op=$0A3C) Or (Op=$007C) Or (Op=$027C) Or (Op=$0A7C) Then Begin End
+         Else If Sz<3 Then Begin
+          If Sz=2 Then Inc(P,4) Else Inc(P,2);
+          If Mode>=2 Then Begin
+           Case Sz Of 0: S1:=1; 1: S1:=2; Else S1:=4; End;
+           Has1:=EAAddr(Mode,Reg,S1,P,A1);
+          End;
+         End;
+        End;
+       8: Begin
+         Inc(P,2);
+         If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,1,P,A1);S1:=1;End;
+        End;
+      End;
+     End;
+  1,2,3: Begin
+      Case G Of 1: S1:=1; 3: S1:=2; Else S1:=4; End;
+      S2:=S1;
+      If Mode>=2 Then Has1:=EAAddr(Mode,Reg,S1,P,A1);
+      If ((Op Shr 6) And 7)>=2 Then Has2:=EAAddr((Op Shr 6) And 7,(Op Shr 9) And 7,S2,P,A2);
+     End;
+  4: Begin
+      If (Op And $F1C0)=$41C0 Then Begin
+       If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,2,P,A1);S1:=2;AddrOnly:=True;End;
+      End Else If (Op And $F1C0)=$4180 Then Begin
+       If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,2,P,A1);S1:=2;End;
+      End Else Case Op And $0F00 Of
+       $0000,$0200,$0400,$0600: Begin
+         If Mode>=2 Then Begin
+          Case Sz Of 0: S1:=1; 3: S1:=2; 1: S1:=2; Else S1:=4; End;
+          Has1:=EAAddr(Mode,Reg,S1,P,A1);
+         End;
+        End;
+       $0800: Begin
+         If (Op And $FFC0)=$4800 Then Begin
+          If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,1,P,A1);S1:=1;End;
+         End Else If (Op And $FFC0)=$4840 Then Begin
+          If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,4,P,A1);S1:=2;AddrOnly:=True;End;
+         End Else If (Op And $FF80)=$4880 Then Begin
+          Inc(P,2);
+          If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,4,P,A1);S1:=8;End;
+         End;
+        End;
+       $0A00: Begin
+         If Op<>$4AFC Then If Mode>=2 Then Begin
+          If Sz=3 Then S1:=1 Else Case Sz Of 0: S1:=1; 1: S1:=2; Else S1:=4; End;
+          Has1:=EAAddr(Mode,Reg,S1,P,A1);
+         End;
+        End;
+       $0C00: Begin
+         If (Op And $FF80)=$4C80 Then Begin
+          Inc(P,2);
+          If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,4,P,A1);S1:=8;End;
+         End;
+        End;
+       $0E00: Begin
+         If ((Op And $FFC0)=$4E80) Or ((Op And $FFC0)=$4EC0) Then Begin
+          If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,2,P,A1);S1:=2;AddrOnly:=True;End;
+         End;
+        End;
+      End;
+     End;
+  5: Begin
+      If Sz=3 Then Begin
+       If Mode<>1 Then If Mode>=2 Then Begin Has1:=EAAddr(Mode,Reg,1,P,A1);S1:=1;End;
+      End Else If Mode>=2 Then Begin
+       Case Sz Of 0: S1:=1; 1: S1:=2; Else S1:=4; End;
+       Has1:=EAAddr(Mode,Reg,S1,P,A1);
+      End;
+     End;
+  8,9,11,12,13: Begin
+      If Mode>=2 Then Begin
+       If Sz=3 Then Begin
+        If (G=9) Or (G=13) Or (G=11) Then Begin
+         If (Op And $100)<>0 Then S1:=4 Else S1:=2;
+        End Else S1:=2;
+       End Else Case Sz Of 0: S1:=1; 1: S1:=2; Else S1:=4; End;
+       If Not ((G=12) And ((Op And $1F0)=$100)) And Not ((G=8) And ((Op And $1F0)=$100)) Then
+        Has1:=EAAddr(Mode,Reg,S1,P,A1);
+      End;
+     End;
+  14: Begin
+      If (Sz=3) And (Mode>=2) Then Begin Has1:=EAAddr(Mode,Reg,2,P,A1);S1:=2;End;
+     End;
+ End;
+ ClrErr;
+ If Has2 Then Begin MMem[0]:=A2;End Else If Has1 Then MMem[0]:=A1;
+ If Not (Has1 Or Has2) Then Exit;
+ R:='  ;';
+ If Has1 Then Begin
+  R:=R+Hex8(A1);
+  If Not AddrOnly Then R:=R+' '+EAData(A1,S1) Else R:=R+' '+EAData(A1,2);
+ End;
+ If Has2 Then Begin
+  If Has1 Then R:=R+' > ' Else R:=R+' ';
+  R:=R+Hex8(A2)+' '+EAData(A2,S2);
+ End;
+ EAInfo:=R;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Modele des fenetres                                                      }
+{ ---------------------------------------------------------------------- }
+
+Function WinAddrOf(N: Integer): LongInt;
+Begin
+ If (N<1) Or (N>NWIN) Then Begin WinAddrOf:=0;Exit;End;
+ With MW[N] Do Begin
+  If (N=1) And (V[Top].Kind=VK_REG) Then WinAddrOf:=MMem[1]
+  Else WinAddrOf:=V[Top].Addr;
+ End;
+End;
+
+Procedure SetWinAddr(N: Integer; NewV: LongInt);
+Begin
+ If (N<1) Or (N>NWIN) Then Exit;
+ With MW[N] Do Begin
+  If (N=1) And (V[Top].Kind=VK_REG) Then MMem[1]:=NewV
+  Else V[Top].Addr:=NewV;
+ End;
+End;
+
+Function AllowedKind(N,K: Integer): Boolean;
+Begin
+ Case N Of
+  1: AllowedKind:=True;
+  3,5: AllowedKind:=K=VK_MEM;
+ Else AllowedKind:=K<>VK_REG;
+ End;
+End;
+
+Procedure InitView(Var V: TMView; K: Integer; A: LongInt);
+Begin
+ V.Kind:=K;V.Addr:=A;V.Lock:='';V.Src:=0;
+End;
+
+Procedure InitWindows;
+Var I: Integer;
+Begin
+ For I:=1 To NWIN Do Begin
+  MW[I].NV:=1;MW[I].Top:=1;
+  InitView(MW[I].V[1],VK_MEM,0);
+ End;
+ InitView(MW[1].V[1],VK_REG,0);
+ InitView(MW[2].V[1],VK_DIS,0);MW[2].V[1].Lock:='pc';
+ InitView(MW[3].V[1],VK_MEM,0);MW[3].V[1].Lock:='';
+ InitView(MW[4].V[1],VK_DIS,0);
+ InitView(MW[5].V[1],VK_MEM,0);
+ MCur:=2;MZoom:=False;RegRows:=11;
+ SplL:=0;SplR:=0;ColSt:=0;
+ CellH:=10;NRows:=SCR_H Div CellH;
+ EditOn:=False;EditAsc:=False;EditNib:=0;
+ FillChar(MMem,SizeOf(MMem),0);
+End;
+
+Procedure UpdateLocks;
+Var I,J,P: Integer; V: LongInt;
+Begin
+ For P:=1 To 2 Do
+  For I:=1 To NWIN Do
+   For J:=1 To MW[I].NV Do
+    If MW[I].V[J].Lock<>'' Then
+     If MonEval(MW[I].V[J].Lock,V) Then MW[I].V[J].Addr:=V;
+ ClrErr;
+End;
+
+Const
+ LeftWs : Array[0..4] Of Integer = (40,56,80,24,0);
+ TopNum : Array[0..3] Of Integer = (4,2,1,3);
+
+Procedure Layout;
+Var HB,R1,LW,RH,TL,TR,I: Integer;
+Begin
+ NRows:=SCR_H Div CellH;
+ HB:=NRows-2;
+ R1:=RegRows;
+ If R1<2 Then R1:=2;
+ If R1>HB-4 Then R1:=HB-4;
+ For I:=1 To NWIN Do Begin MW[I].X:=0;MW[I].Y:=0;MW[I].W:=0;MW[I].H:=0;End;
+ If MZoom Then Begin
+  MW[MCur].X:=0;MW[MCur].Y:=0;MW[MCur].W:=80;MW[MCur].H:=HB;
+  Exit;
+ End;
+ MW[1].W:=80;MW[1].H:=R1;
+ RH:=HB-R1;
+ LW:=LeftWs[ColSt];
+ TL:=(RH*TopNum[SplL]) Div 4;
+ TR:=(RH*TopNum[SplR]) Div 4;
+ If LW>=8 Then Begin
+  MW[2].X:=0;MW[2].Y:=R1;MW[2].W:=LW;MW[2].H:=TL;
+  MW[4].X:=0;MW[4].Y:=R1+TL;MW[4].W:=LW;MW[4].H:=RH-TL;
+ End;
+ If 80-LW>=8 Then Begin
+  MW[3].X:=LW;MW[3].Y:=R1;MW[3].W:=80-LW;MW[3].H:=TR;
+  MW[5].X:=LW;MW[5].Y:=R1+TR;MW[5].W:=80-LW;MW[5].H:=RH-TR;
+ End;
+ For I:=2 To NWIN Do
+  If (MW[I].H<2) Or (MW[I].W<8) Then Begin MW[I].W:=0;MW[I].H:=0;End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Primitives d'affichage en cellules                                       }
+{ ---------------------------------------------------------------------- }
+
+Procedure CT(C,R,W: Integer; Const S0: String; Inv: Boolean);
+Var S: String; X,Y,Yo: Integer;
+Begin
+ If W<=0 Then Exit;
+ S:=S0;
+ If Length(S)>W Then S:=Copy(S,1,W);
+ While Length(S)<W Do S:=S+' ';
+ X:=C*MCW;Y:=R*CellH;Yo:=(CellH-8) Div 2;
+ If Inv Then Begin
+  Box(X,Y,X+W*MCW-1,Y+CellH-1,INK);WText(X,Y+Yo,S);
+ End Else Begin
+  Box(X,Y,X+W*MCW-1,Y+CellH-1,PAPER);PText(X,Y+Yo,S);
+ End;
+End;
+
+Function PrintCh(B: Integer): Char;
+Begin
+ If B<0 Then PrintCh:='*'
+ Else If (B>=32) And (B<127) Then PrintCh:=Chr(B)
+ Else PrintCh:='.';
 End;
 
 Function FlagStr: String;
@@ -14106,117 +17072,512 @@ Begin
  FlagStr:=S;
 End;
 
-Function ModeStr: String;
+{ Mots pointes : 5 mots + ASCII }
+Function PtrDump(A: LongInt): String;
+Var S,Asc: String; I,B: Integer;
 Begin
- If (SRv And SR_S)<>0 Then ModeStr:=T3('Super','Super','Super') Else ModeStr:=T3('User','Util.','User');
+ S:='';Asc:='';
+ For I:=0 To 9 Do Begin
+  B:=RdB(A+I);
+  If B<0 Then S:=S+'**' Else S:=S+Hex2(B);
+  Asc:=Asc+PrintCh(B);
+  If Odd(I) Then S:=S+' ';
+ End;
+ PtrDump:=S+Asc;
+End;
+
+Function RegLine(L: Integer): String;
+Var S: String; I,Len: Integer; V: LongInt;
+Begin
+ S:='';
+ If L<=7 Then Begin
+  V:=Rg[L];
+  S:='d'+IntStr(L)+' = '+Hex8(V)+' '+PrintCh((V Shr 24) And 255)+PrintCh((V Shr 16) And 255)+
+     PrintCh((V Shr 8) And 255)+PrintCh(V And 255)+'  ';
+  S:=S+'a'+IntStr(L)+' = '+Hex8(Rg[8+L])+' '+PtrDump(Rg[8+L]);
+ End Else If L=8 Then Begin
+  S:='sr = '+Hex4(SRv)+' ';
+  If (SRv And SR_S)<>0 Then S:=S+'S' Else S:=S+'U';
+  If (SRv And SR_T)<>0 Then S:=S+' T' Else S:=S+' -';
+  S:=S+' i'+IntStr((SRv Shr 8) And 7)+'  '+FlagStr;
+ End Else If L=9 Then Begin
+  S:='PC:'+Hex8(PC)+' ';
+  If Rdbl(PC) Then S:=S+MDis(PC,Len)+EAInfo(PC) Else S:=S+'**';
+ End Else If L=11 Then S:='ssp = '+Hex8(SSPv)
+ Else If L=12 Then S:='usp = '+Hex8(USPv)
+ Else If (L>=14) And (L<=23) Then Begin
+  I:=L-14;
+  If (I>=1) And (I<=5) Then V:=WinAddrOf(I) Else V:=MMem[I];
+  S:='m'+IntStr(I)+' = '+Hex8(V)+' '+PtrDump(V);
+ End;
+ RegLine:=S;
+End;
+
+Function MemBpl(Wd: Integer): Integer;
+Var N: Integer;
+Begin
+ N:=((Wd-9) Div 7)*2;
+ If N>16 Then N:=16;
+ If N<2 Then N:=2;
+ MemBpl:=N;
+End;
+
+Function MemRow(A: LongInt; Bpl: Integer): String;
+Var S,Asc: String; I,B: Integer;
+Begin
+ S:=Hex8(A)+' ';Asc:='';
+ For I:=0 To Bpl-1 Do Begin
+  B:=RdB(A+I);
+  If B<0 Then S:=S+'**' Else S:=S+Hex2(B);
+  If Odd(I) Then S:=S+' ';
+  Asc:=Asc+PrintCh(B);
+ End;
+ MemRow:=S+Asc;
+End;
+
+Function BpMark(A: LongInt): String;
+Var I: Integer;
+Begin
+ BpMark:='';
+ For I:=1 To NMB Do
+  If MBp[I].Addr=A Then Begin
+   Case MBp[I].Kind Of
+    BK_SIMPLE: BpMark:=' [1]';
+    BK_STOP: BpMark:=' ['+IntStr(MBp[I].N)+']';
+    BK_COUNT: BpMark:=' [='+IntStr(MBp[I].Cnt)+']';
+    BK_PERM: BpMark:=' [*]';
+    BK_COND: BpMark:=' [?'+Copy(MBp[I].Expr,1,10)+']';
+   End;
+   Exit;
+  End;
+End;
+
+Function DisRow(A: LongInt; Wd: Integer; Var Len: Integer): String;
+Var Sym,Lead,T,M: String;
+Begin
+ Len:=2;
+ If Not Rdbl(A) Then Begin DisRow:=Hex8(A)+' ****';Exit;End;
+ T:=MDis(A,Len);
+ Sym:=DbgFind(A);
+ If A=PC Then M:='>' Else M:=' ';
+ If (Wd<64) And (Sym<>'') Then Lead:=PadR(Copy(Sym,1,8),8)
+ Else Lead:=Hex8(A);
+ DisRow:=Lead+M;
+ If (Wd>=64) And (Sym<>'') Then DisRow:=Lead+M+PadR(Sym,14)+T+BpMark(A)
+ Else If Wd>=64 Then DisRow:=Lead+M+PadR('',14)+T+BpMark(A)
+ Else DisRow:=Lead+M+T+BpMark(A);
+End;
+
+Function TabExpand(Const S: String; Tb: Integer): String;
+Var R: String; I: Integer;
+Begin
+ R:='';
+ For I:=1 To Length(S) Do
+  If S[I]=#9 Then Begin
+   Repeat R:=R+' ';Until (Length(R) Mod Tb)=0;
+  End Else R:=R+S[I];
+ TabExpand:=R;
+End;
+
+Function SrcRow(Const V: TMView; R: Integer): String;
+Var L: LongInt; S,N: String;
+Begin
+ SrcRow:='';
+ If (V.Src<1) Or (V.Src>NSrc) Then Exit;
+ L:=V.Addr+R;
+ If (L<1) Or (L>MSrc[V.Src].Cnt) Then Exit;
+ S:=MSrc[V.Src].Arr^[L]^;
+ If TabSrc4 Then S:=TabExpand(S,4) Else S:=TabExpand(S,8);
+ N:='';
+ If PfLines=1 Then N:=PadL(IntStr(L),5)+' '
+ Else If PfLines=2 Then N:=PadL(Hex4(L),5)+' ';
+ SrcRow:=N+S;
+End;
+
+Function KindName(K: Integer; Const V: TMView): String;
+Begin
+ Case K Of
+  VK_REG: KindName:=MnT('Registers','Registres');
+  VK_DIS: KindName:=MnT('Disassembly','Desassemblage');
+  VK_MEM: KindName:=MnT('Memory','Memoire');
+ Else Begin
+   If (V.Src>=1) And (V.Src<=NSrc) Then KindName:=MSrc[V.Src].Name Else KindName:='Source';
+  End;
+ End;
+End;
+
+Function WinTitle(I: Integer): String;
+Var S,Pn: String;
+Begin
+ With MW[I] Do Begin
+  S:=IntStr(I);
+  If NV>1 Then S:=S+Chr(96+Top);
+  S:=S+' '+KindName(V[Top].Kind,V[Top]);
+  If V[Top].Lock<>'' Then S:=S+'  ['+V[Top].Lock+']';
+  If (I=1) And (V[Top].Kind=VK_REG) And (ProgName<>'') Then Begin
+   Pn:=ProgName;
+   While Pos('/',Pn)>0 Do Delete(Pn,1,Pos('/',Pn));
+   While Pos('\',Pn)>0 Do Delete(Pn,1,Pos('\',Pn));
+   S:=S+'   '+Pn;
+  End;
+ End;
+ WinTitle:=S;
+End;
+
+{ Texte de la ligne R (0..H-2) du contenu de la fenetre I }
+Function WinRow(I,R: Integer; Var Len: Integer): String;
+Var A: LongInt; N,K,Bpl,J: Integer; Kd: Integer;
+Begin
+ Len:=0;
+ WinRow:='';
+ With MW[I] Do Begin
+  Kd:=V[Top].Kind;
+  N:=H-1;
+  Case Kd Of
+   VK_REG: Begin
+     If MZoom Or (N>=10) Then K:=R
+     Else If R<N-2 Then K:=R
+     Else If R=N-2 Then K:=8
+     Else K:=9;
+     If N=1 Then K:=9;
+     WinRow:=RegLine(K);
+    End;
+   VK_MEM: Begin
+     Bpl:=MemBpl(W);
+     WinRow:=MemRow(V[Top].Addr+R*Bpl,Bpl);
+    End;
+   VK_DIS: Begin
+     A:=V[Top].Addr;
+     For J:=1 To R Do Begin
+      DisRow(A,W,Len);
+      A:=A+Len;
+     End;
+     WinRow:=DisRow(A,W,Len);
+    End;
+  Else WinRow:=SrcRow(V[Top],R);
+  End;
+ End;
+End;
+
+Procedure DrawWin(I: Integer);
+Var R,Len,CX,Rw,Bpl,K,Col: Integer; A: LongInt; S: String; Inv: Boolean;
+Begin
+ With MW[I] Do Begin
+  If (W<=0) Or (H<2) Then Exit;
+  Inv:=I=MCur;
+  CT(X,Y,W,WinTitle(I),Inv);
+  If Not Inv Then Begin
+   SetColor(INK);
+   Line(X*MCW,Y*CellH+CellH-1,(X+W)*MCW-1,Y*CellH+CellH-1);
+  End;
+  If V[Top].Kind=VK_DIS Then Begin
+   { une seule passe : les adresses des lignes se suivent }
+   A:=V[Top].Addr;
+   For R:=0 To H-2 Do Begin
+    S:=DisRow(A,W,Len);
+    CT(X,Y+1+R,W,S,False);
+    A:=A+Len;
+   End;
+  End Else Begin
+   For R:=0 To H-2 Do Begin
+    S:=WinRow(I,R,Len);
+    CT(X,Y+1+R,W,S,False);
+   End;
+  End;
+  { curseur d'edition }
+  If EditOn And (I=MCur) And (V[Top].Kind=VK_MEM) Then Begin
+   Bpl:=MemBpl(W);
+   K:=EditAddr-V[Top].Addr;
+   If (K>=0) And (K<Bpl*(H-1)) Then Begin
+    Rw:=K Div Bpl;Col:=K Mod Bpl;
+    S:=MemRow(V[Top].Addr+Rw*Bpl,Bpl);
+    If EditAsc Then Begin
+     CX:=X+9+(Bpl Div 2)*5+Col;
+     CT(CX,Y+1+Rw,1,Copy(S,10+(Bpl Div 2)*5+Col,1),True);
+    End Else Begin
+     CX:=X+9+(Col Div 2)*5+(Col Mod 2)*2;
+     CT(CX,Y+1+Rw,2,Copy(S,10+(Col Div 2)*5+(Col Mod 2)*2,2),True);
+    End;
+   End;
+  End;
+  If X>0 Then Begin
+   SetColor(INK);
+   Line(X*MCW,Y*CellH,X*MCW,(Y+H)*CellH-1);
+  End;
+ End;
 End;
 
 Procedure DrawMonitor;
-Var R,I,Y,X: Integer; A: LongInt; S,Lbl: String; Len: Integer; Idx: Integer; Mk: String;
-    B: Byte; Asc: String;
+Var I,Ro: Integer; S: String;
 Begin
  HideMouse;
- Box(0,0,SCR_W-1,SCR_H-1,PAPER);
- { 1 Registers }
- MonBar(0,0,SCR_W-1,'1 '+T3('Registers','Registres','Register'));
- For I:=0 To 7 Do Begin
-  Y:=(1+I)*MROW;
-  A:=Rg[I];
-  S:='D'+IntStr(I)+':'+Hex8(A)+' ';
-  For R:=0 To 3 Do S:=S+Hex4(Rd16(A+R*2))+' ';
-  PText(4,Y+1,S);
-  A:=Rg[8+I];
-  If I=7 Then S:='A7:' Else S:='A'+IntStr(I)+':';
-  S:=S+Hex8(A)+' ';
-  For R:=0 To 3 Do S:=S+Hex4(Rd16(A+R*2))+' ';
-  PText(324,Y+1,S);
- End;
- ClrErr;
- Y:=9*MROW;
- PText(4,Y+1,'SR:'+Hex4(SRv)+' '+FlagStr+'  '+Chr(Ord('0'))+IntStr((SRv Shr 8) And 7)+
-   ' '+T3('Mode:','Mode:','Modus:')+' '+ ModeStr);
- PText(324,Y+1,'PC:'+Hex8(PC)+' '+T3('Instr:','Instr:','Befehle:')+IntStr(InstrCount));
- { 2 Disassembled PC et 3 Memory }
- Y:=MR_ROWS*MROW;
- MonBar(Y,0,319,'2 '+T3('Disassembled PC','Desassemblage PC','Disassembler PC'));
- MonBar(Y,320,SCR_W-1,'3 '+T3('Memory','Memoire','Speicher'));
- A:=MonDisAddr;
- For R:=0 To MD_ROWS-1 Do Begin
-  Y:=(MR_ROWS+1+R)*MROW;
-  S:=Hex6(A)+' ';
-  If A=PC Then S[7]:='*';
-  If IsBreakpoint(A) Then S[7]:='B';
-  Lbl:=Dis(A,Len);
-  ClrErr;
-  If A=PC Then Begin
-   Box(0,Y,319,Y+MROW-1,INK);
-   WText(4,Y+1,Copy(S+Lbl,1,38));
-  End Else PText(4,Y+1,Copy(S+Lbl,1,38));
-  A:=A+Len;
- End;
- A:=MonMemAddr;
- For R:=0 To MD_ROWS-1 Do Begin
-  Y:=(MR_ROWS+1+R)*MROW;
-  S:=Hex6(A)+' ';
-  Asc:='';
-  For I:=0 To 7 Do Begin
-   B:=Rd8(A+I);
-   If (I And 1)=0 Then Begin
-    If I>0 Then S:=S+' ';
-   End;
-   S:=S+Hex2(B);
-   If (B>=32) And (B<127) Then Asc:=Asc+Chr(B) Else Asc:=Asc+'.';
-  End;
-  ClrErr;
-  PText(324,Y+1,Copy(S+' '+Asc,1,39));
-  A:=A+8;
- End;
- { 4 commande }
- Y:=(MR_ROWS+MD_ROWS+1)*MROW;
- MonBar(Y,0,SCR_W-1,'4 '+T3('Command','Commande','Befehl')+'   '+ProgName);
- Idx:=MLogN-MC_ROWS+1;If Idx<1 Then Idx:=1;
- For R:=0 To MC_ROWS-1 Do Begin
-  If Idx+R<=MLogN Then PText(4,Y+(R+1)*MROW+1,MLog[Idx+R]^);
- End;
- Y:=Y+(MC_ROWS+1)*MROW;
- PText(4,Y+1,'>'+MonCmd+'_');
- { aide }
- Y:=SCR_H-MROW-1;
- Box(0,Y-1,SCR_W-1,SCR_H-1,INK);
- WText(4,Y,'F7:Trace F8:Over F9:Run F10:Screen  G T B D M R ? H Q');
+ Layout;
+ If MZoom Then DrawWin(MCur)
+ Else For I:=1 To NWIN Do DrawWin(I);
+ Ro:=NRows-2;
+ S:=MsgText;
+ If MsgExtra<>'' Then S:=S+'   '+MsgExtra;
+ CT(0,Ro,80,' '+S,False);
+ If EditOn Then
+  S:=MnT(' EDIT: hex digits or ASCII, Tab = switch hex/ASCII, cursor keys move, Esc = end',
+        ' EDITION : chiffres hexa ou ASCII, Tab = hexa/ASCII, curseurs, Esc = fin')
+ Else
+  S:=' ^Z Step ^T Trace ^R Run ^C Quit  Alt-A addr B brk E edit Z zoom  V scr  F1 help';
+ CT(0,Ro+1,80,S,True);
  ShowMouse;
 End;
 
 { ---------------------------------------------------------------------- }
-{ Commandes                                                                }
+{ Points d'arret                                                           }
 { ---------------------------------------------------------------------- }
 
-Procedure MonLoad(Const Name: String);
+Function BpFindAt(A: LongInt): Integer;
+Var I: Integer;
 Begin
- If LoadProgram(Name,'',OptRunGem) Then Begin
-  MonLoaded:=True;ProgName:=Name;
-  MonDisAddr:=PC;MonMemAddr:=Rg[15];
-  MonPrint(T3('Loaded ','Charge : ','Geladen: ')+Name+'  PC=$'+Hex8(PC)+'  '+IntStr(DbgN)+T3(' symbols',' symboles',' Symbole'));
- End Else Begin
-  MonLoaded:=False;
-  MonPrint(T3('Cannot load ','Impossible de charger ','Laden nicht moeglich: ')+Name);
- End;
+ BpFindAt:=0;
+ For I:=1 To NMB Do If MBp[I].Addr=A Then Begin BpFindAt:=I;Exit;End;
 End;
 
-Procedure ReportStop;
+Procedure BpDel(I: Integer);
+Var J: Integer;
 Begin
- Case StopReason Of
-  STOP_EXIT: MonPrint(T3('Program terminated, exit code ','Programme termine, code de sortie ','Programm beendet, Code ')+IntStr(ExitCode));
-  STOP_BREAK: MonPrint(T3('Breakpoint at $','Point d''arret en $','Haltepunkt bei $')+Hex6(PC));
-  STOP_FAULT: MonPrint(StopMsg);
-  STOP_STOP: MonPrint(T3('STOP instruction','Instruction STOP','STOP-Befehl'));
-  STOP_USER: MonPrint(T3('Interrupted by user','Interrompu par l''utilisateur','Vom Benutzer unterbrochen'));
- End;
- If UnknownCall<>'' Then Begin
-  MonPrint(T3('Unsupported call: ','Appel non gere : ','Nicht unterstuetzt: ')+UnknownCall);
-  UnknownCall:='';
- End;
+ For J:=I To NMB-1 Do MBp[J]:=MBp[J+1];
+ If NMB>0 Then Dec(NMB);
 End;
+
+Procedure MonAlert(Const Msg: String); Forward;
+
+{ Pose le point d'arret simple en A ; retourne False si la table est pleine }
+Function BpAddSimple(A: LongInt): Boolean;
+Var I: Integer;
+Begin
+ BpAddSimple:=True;
+ I:=BpFindAt(A);
+ If I=0 Then Begin
+  If NMB>=MAXMB Then Begin BpAddSimple:=False;Exit;End;
+  Inc(NMB);I:=NMB;
+ End;
+ MBp[I].Addr:=A;MBp[I].Kind:=BK_SIMPLE;MBp[I].N:=1;MBp[I].Cnt:=0;MBp[I].Expr:='';
+End;
+
+{ "<adresse>[,<specificateur>]" : Apply=False controle seulement la syntaxe }
+Function BpParse(Const S: String; Apply: Boolean): Boolean;
+Var P,I: Integer; A,V: LongInt; Ad,Rest,Ex: String; K: Integer;
+Begin
+ BpParse:=False;
+ P:=Pos(',',S);
+ If P>0 Then Begin Ad:=TrimS(Copy(S,1,P-1));Rest:=TrimS(Copy(S,P+1,100));End
+ Else Begin Ad:=TrimS(S);Rest:='';End;
+ If Not MonEval(Ad,A) Then Exit;
+ If Odd(A) Or Not Rdbl(A) Then Exit;
+ K:=BK_SIMPLE;V:=1;Ex:='';
+ If Rest='' Then Begin End
+ Else If Rest='-' Then K:=0
+ Else If Rest='=' Then K:=BK_COUNT
+ Else If Rest='*' Then K:=BK_PERM
+ Else If Rest[1]='?' Then Begin
+  K:=BK_COND;Ex:=TrimS(Copy(Rest,2,60));
+  If Not MonEval(Ex,V) Then Exit;
+ End Else Begin
+  If Not MonEval(Rest,V) Then Exit;
+  If V<1 Then Exit;
+  If V=1 Then K:=BK_SIMPLE Else K:=BK_STOP;
+ End;
+ If Not Apply Then Begin BpParse:=True;Exit;End;
+ I:=BpFindAt(A);
+ If K=0 Then Begin
+  If I>0 Then BpDel(I);
+  BpParse:=True;Exit;
+ End;
+ If I=0 Then Begin
+  If NMB>=MAXMB Then Begin
+   MonAlert(MnT('Too many breakpoints','Trop de points d''arret'));
+   BpParse:=True;Exit;
+  End;
+  Inc(NMB);I:=NMB;
+ End;
+ MBp[I].Addr:=A;MBp[I].Kind:=K;MBp[I].N:=V;MBp[I].Cnt:=0;MBp[I].Expr:=Ex;
+ If K<>BK_STOP Then MBp[I].N:=1;
+ BpParse:=True;
+End;
+
+{ Appele apres chaque instruction (PC = adresse a executer) : vrai si arret }
+Function BpCheck: Boolean;
+Var I: Integer; V: LongInt;
+Begin
+ BpCheck:=False;
+ For I:=1 To NMB Do
+  If MBp[I].Addr=PC Then Begin
+   Case MBp[I].Kind Of
+    BK_SIMPLE,BK_STOP: Begin
+      Dec(MBp[I].N);
+      If MBp[I].N<=0 Then Begin BpDel(I);BpCheck:=True;Exit;End;
+     End;
+    BK_COUNT: Inc(MBp[I].Cnt);
+    BK_PERM: Begin BpCheck:=True;Exit;End;
+    BK_COND: Begin
+      If MonEval(MBp[I].Expr,V) Then If V<>0 Then Begin BpCheck:=True;Exit;End;
+      ClrErr;
+     End;
+   End;
+   Exit;
+  End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Historique                                                               }
+{ ---------------------------------------------------------------------- }
+
+Procedure HistPush;
+Var I: Integer;
+Begin
+ HHead:=(HHead+1) Mod HMAX;
+ If HCnt<HMAX Then Inc(HCnt);
+ For I:=0 To 15 Do Hist[HHead].R[I]:=Rg[I];
+ Hist[HHead].PCv:=PC;Hist[HHead].SRx:=SRv;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Dialogues Mon                                                            }
+{ ---------------------------------------------------------------------- }
+
+Procedure DlgFrame(Const Prm,Ln2: String; Var C0,R0,Wd: Integer; Inv: Boolean);
+Var Ab: String;
+Begin
+ Wd:=64;C0:=8;R0:=NRows Div 2-2;
+ Ab:=' '+MnT('ESC to abort','ESC pour abandonner')+' ';
+ CT(C0,R0-1,Length(Ab),Ab,True);
+ Box(C0*MCW-4,R0*CellH-2,(C0+Wd)*MCW+3,(R0+2)*CellH+1,PAPER);
+ SetColor(INK);
+ Rectangle(C0*MCW-4,R0*CellH-2,(C0+Wd)*MCW+3,(R0+2)*CellH+1);
+ CT(C0,R0,Wd,' '+Prm,Inv);
+ CT(C0,R0+1,Wd,' '+Ln2,Inv);
+End;
+
+Procedure MnDlgDraw(Const Prm,S: String; Cur: Integer; Inv: Boolean);
+Var C0,R0,Wd: Integer; Ch: String;
+Begin
+ HideMouse;
+ DlgFrame(Prm,S,C0,R0,Wd,Inv);
+ If Cur<Length(S) Then Ch:=S[Cur+1] Else Ch:=' ';
+ If Not Inv Then CT(C0+1+Cur,R0+1,1,Ch,True);
+ ShowMouse;
+End;
+
+Procedure FlashDlg(Const Prm,S: String; Cur: Integer);
+Begin
+ MnDlgDraw(Prm,S,Cur,True);
+ Delay(70);
+ MnDlgDraw(Prm,S,Cur,False);
+End;
+
+Function RegAssign(Const S: String; Apply: Boolean): Boolean; Forward;
+Function ListOk(Const S: String): Boolean; Forward;
+
+Function PromptValid(Kind: Integer; Const S: String): Boolean;
+Var V: LongInt;
+Begin
+ Case Kind Of
+  PV_EXPR: PromptValid:=MonEval(S,V);
+  PV_EXPR0: PromptValid:=(TrimS(S)='') Or MonEval(S,V);
+  PV_BP: PromptValid:=BpParse(S,False);
+  PV_REG: PromptValid:=RegAssign(S,False);
+  PV_EXPRL: PromptValid:=ListOk(S);
+ Else PromptValid:=True;
+ End;
+ ClrErr;
+End;
+
+Function MonPrompt(Const Prm: String; Var S: String; Kind: Integer): Boolean;
+Var E: TEvent; Cur: Integer; Done: Boolean;
+Begin
+ MonPrompt:=False;
+ Cur:=Length(S);Done:=False;
+ Repeat
+  MnDlgDraw(Prm,S,Cur,False);
+  Repeat PollEvent(E);Until E.Kind=1;
+  Case E.Key Of
+   K_ESC: Begin Done:=True;MonPrompt:=False;End;
+   K_ENTER: Begin
+     If PromptValid(Kind,S) Then Begin Done:=True;MonPrompt:=True;End
+     Else FlashDlg(Prm,S,Cur);
+    End;
+   K_BKSP: If Cur>0 Then Begin Delete(S,Cur,1);Dec(Cur);End;
+   K_DEL: If Cur<Length(S) Then Delete(S,Cur+1,1);
+   K_LEFT: If Cur>0 Then Dec(Cur);
+   K_RIGHT: If Cur<Length(S) Then Inc(Cur);
+   K_HOME: Cur:=0;
+   K_END: Cur:=Length(S);
+   256+45: Begin S:='';Cur:=0;End;
+   32..126: If Length(S)<60 Then Begin Insert(Chr(E.Key),S,Cur+1);Inc(Cur);End;
+  End;
+ Until Done;
+End;
+
+{ Message d'erreur : "Return" ferme la boite }
+Procedure MonAlert(Const Msg: String);
+Var E: TEvent; C0,R0,Wd: Integer;
+Begin
+ HideMouse;
+ DlgFrame(Msg,'Return',C0,R0,Wd,False);
+ CT(C0+1,R0+1,6,'Return',True);
+ ShowMouse;
+ Repeat PollEvent(E);Until (E.Kind=1) And ((E.Key=K_ENTER) Or (E.Key=K_ESC));
+End;
+
+{ Question a reponse par une touche ; #0 si Esc, #13 si Return autorise }
+Function MonAskKey(Const Prm,Allowed: String): Char;
+Var E: TEvent; C: Char; Done: Boolean;
+Begin
+ MonAskKey:=#0;Done:=False;
+ MnDlgDraw(Prm,'',0,False);
+ Repeat
+  Repeat PollEvent(E);Until E.Kind=1;
+  If E.Key=K_ESC Then Done:=True
+  Else If E.Key<256 Then Begin
+   C:=UpCase(Chr(E.Key));
+   If Pos(C,Allowed)>0 Then Begin MonAskKey:=C;Done:=True;End;
+  End;
+ Until Done;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Messages                                                                 }
+{ ---------------------------------------------------------------------- }
+
+Procedure SetMsg(Const S: String);
+Begin
+ MsgText:=S;MsgExtra:='';
+End;
+
+Function FaultName(Const M: String): String;
+Begin
+ If Copy(M,1,13)='Address error' Then FaultName:=T3('Address Error','Erreur d''adresse','Adressfehler')
+ Else If Copy(M,1,9)='Bus error' Then FaultName:=T3('Bus Error','Erreur de bus','Busfehler')
+ Else If Copy(M,1,19)='Illegal instruction' Then FaultName:=T3('Illegal Instruction','Instruction illegale','Illegaler Befehl')
+ Else If Copy(M,1,19)='Privilege violation' Then FaultName:=T3('Privilege Violation','Violation de privilege','Privilegverletzung')
+ Else If Copy(M,1,14)='Divide by zero' Then FaultName:=T3('Divide by Zero','Division par zero','Division durch Null')
+ Else If Copy(M,1,13)='CHK exception' Then FaultName:=T3('CHK Instruction','Instruction CHK','CHK-Befehl')
+ Else If Copy(M,1,16)='TRAPV exception' Then FaultName:=T3('TRAPV Instruction','Instruction TRAPV','TRAPV-Befehl')
+ Else If Copy(M,1,15)='Line F emulator' Then FaultName:=T3('Line 1111 Emulator','Emulateur ligne 1111','Line-1111-Emulator')
+ Else FaultName:=M;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Execution                                                                }
+{ ---------------------------------------------------------------------- }
+
+Const
+ W_NONE  = 0;
+ W_BP    = 1;
+ W_TEMP  = 2;
+ W_COUNT = 3;
+ W_COND  = 4;
+ W_BDOS  = 5;
+ EX_GO    = 0;
+ EX_SLOW  = 1;
+ EX_COUNT = 2;
+ EX_UNTIL = 3;
 
 Procedure MonYield;
 Begin
@@ -14226,97 +17587,767 @@ Begin
  EmuVisible:=False;
 End;
 
-Procedure MonTraceN(N: LongInt);
-Var I: LongInt;
+Function CanRun: Boolean;
 Begin
- If Not MonLoaded Then Begin MonPrint(T3('No program loaded','Aucun programme charge','Kein Programm geladen'));Exit;End;
- If (StopReason<>STOP_NONE) And (StopReason<>STOP_BREAK) And (StopReason<>STOP_TRACE) Then Begin
-  ReportStop;Exit;
+ CanRun:=False;
+ If Not MonLoaded Then Begin
+  SetMsg(MnT('No program loaded','Aucun programme charge'));Exit;
  End;
- StopReason:=STOP_NONE;
- For I:=1 To N Do Begin
-  Step;
-  If StopReason=STOP_YIELD Then MonYield;
-  If StopReason<>STOP_NONE Then Break;
+ If ProgDead Then Begin
+  SetMsg(T3('Program Terminated','Programme termine','Programm beendet'));Exit;
  End;
- If StopReason<>STOP_NONE Then ReportStop;
- MonDisAddr:=PC;
+ CanRun:=True;
 End;
 
-Procedure MonRunUntil(Target: LongInt);
-Var Saved: Integer;
+{ Analyse de l'etat apres un arret }
+Procedure AfterStop(Why: Integer);
 Begin
- If Not MonLoaded Then Begin MonPrint(T3('No program loaded','Aucun programme charge','Kein Programm geladen'));Exit;End;
- If (StopReason<>STOP_NONE) And (StopReason<>STOP_BREAK) And (StopReason<>STOP_TRACE) Then Begin
-  ReportStop;Exit;
+ SetMsg('');
+ Case StopReason Of
+  STOP_EXIT: Begin
+    ProgDead:=True;
+    SetMsg(T3('Program Terminated','Programme termine','Programm beendet'));
+    MsgExtra:=MnT('exit code ','code de sortie ')+IntStr(ExitCode);
+   End;
+  STOP_FAULT: Begin
+    SetMsg(FaultName(StopMsg));
+    LastFault:=BusAddr;
+    If Pos('Bus error',StopMsg)=1 Then MsgExtra:=MnT('access at $','acces a $')+Hex6(BusAddr);
+   End;
+  STOP_STOP: SetMsg(MnT('STOP instruction','Instruction STOP'));
+  STOP_USER: SetMsg(MnT('Interrupted','Interrompu'));
+ Else Case Why Of
+   W_BP,W_BDOS: SetMsg(T3('Breakpoint','Point d''arret','Haltepunkt'));
+   W_COND: SetMsg(MnT('Condition true','Condition vraie'));
+   W_COUNT: SetMsg('');
+  End;
  End;
- StopReason:=STOP_NONE;
- EmuVisible:=True;
- BlitScreen(True);
+ If UnknownCall<>'' Then Begin
+  MsgExtra:=MnT('Unsupported call: ','Appel non gere : ')+UnknownCall;
+  UnknownCall:='';
+ End;
+ If StopReason<>STOP_EXIT Then StopReason:=STOP_NONE;
+End;
+
+Function EscInKQ: Boolean;
+Var I: Integer;
+Begin
+ EscInKQ:=False;
+ I:=KQHead;
+ While I<>KQTail Do Begin
+  If (KQ[I] And $FFFF)=27 Then Begin EscInKQ:=True;KQHead:=KQTail;Exit;End;
+  I:=(I+1) Mod KQ_SIZE;
+ End;
+End;
+
+Procedure ExecRun(Mode: Integer; Count: LongInt; Const Cond: String; Watch: Boolean;
+                  TempA,TempSP: LongInt);
+Var N,Poll,Every,LastDraw,T: LongInt; Why: Integer; V: LongInt; ShowProg: Boolean;
+Begin
+ If Not CanRun Then Exit;
+ StopReason:=STOP_NONE;StopMsg:='';
+ ShowProg:=(Mode=EX_GO) Or Not Watch;
  UserBreak:=False;
- Step;
- If StopReason=STOP_YIELD Then GemDispatch;
- While (StopReason=STOP_NONE) And Not UserBreak Do Begin
-  If (Target<>-1) And (PC=Target) Then Break;
-  RunCpu(20000);
-  If StopReason=STOP_YIELD Then GemDispatch;
-  If (Target<>-1) And (PC=Target) Then Break;
-  PollInput;
-  BlitScreen(False);
+ If ShowProg Then Begin
+  EmuVisible:=True;BlitScreen(True);
+ End Else Begin
+  SetMsg(MnT('Running... (Esc or Ctrl-C to interrupt)','Execution... (Esc ou Ctrl-C interrompt)'));
+  DrawMonitor;
  End;
+ Why:=W_NONE;N:=0;Poll:=0;
+ If Mode=EX_GO Then Every:=4096
+ Else If Watch Then Every:=48
+ Else Every:=512;
+ LastDraw:=MsNow;
+ Repeat
+  If Mode<>EX_GO Then HistPush;
+  Step;
+  Inc(N);Inc(Poll);
+  If StopReason=STOP_YIELD Then Begin
+   If EmuVisible Then GemDispatch Else MonYield;
+  End;
+  If StopReason<>STOP_NONE Then Break;
+  If (TempA<>-1) And (PC=TempA) And (Rg[15]>=TempSP) Then Begin Why:=W_TEMP;Break;End;
+  If NMB>0 Then If BpCheck Then Begin Why:=W_BP;Break;End;
+  If BdosBp>=0 Then
+   If (Rd16(PC)=$4E41) And (Rd16(Rg[15])=BdosBp) Then Begin Why:=W_BDOS;Break;End;
+  If Mode=EX_COUNT Then If N>=Count Then Begin Why:=W_COUNT;Break;End;
+  If Mode=EX_UNTIL Then Begin
+   If MonEval(Cond,V) Then If V<>0 Then Begin Why:=W_COND;Break;End;
+  End;
+  If Poll>=Every Then Begin
+   Poll:=0;
+   PollInput;
+   If UserBreak Then Begin StopReason:=STOP_USER;Break;End;
+   If EscInKQ Then Begin StopReason:=STOP_USER;Break;End;
+   If Not ShowProg Then Begin
+    T:=MsNow;
+    If (T-LastDraw>=60) Or (T<LastDraw) Then Begin DrawMonitor;LastDraw:=T;End;
+   End Else BlitScreen(False);
+  End;
+ Until False;
+ ClrErr;
+ EmuVisible:=False;
+ UserBreak:=False;
+ KQHead:=0;KQTail:=0;
+ HistPush;
+ AfterStop(Why);
+ UpdateLocks;
+End;
+
+Procedure ExecStep1;
+Begin
+ If Not CanRun Then Exit;
+ StopReason:=STOP_NONE;StopMsg:='';
+ UserBreak:=False;
+ HistPush;
+ Step;
+ If StopReason=STOP_YIELD Then MonYield;
+ ClrErr;
+ EmuVisible:=False;
  If UserBreak Then StopReason:=STOP_USER;
  UserBreak:=False;
- EmuVisible:=False;
- If StopReason<>STOP_NONE Then ReportStop;
- MonDisAddr:=PC;
+ AfterStop(W_NONE);
+ UpdateLocks;
 End;
 
-Procedure MonStepOver;
+Procedure ExecTrace;
 Var Op: LongInt; Len: Integer; T: String;
 Begin
- Op:=Rd16(PC);
- T:=Dis(PC,Len);
+ If Not CanRun Then Exit;
+ Op:=Rd16(PC);ClrErr;
+ If ((Op And $FFC0)=$4E80) Or ((Op And $FF00)=$6100) Then Begin
+  T:=MDis(PC,Len);
+  ExecRun(EX_GO,0,'',False,PC+Len,Rg[15]);
+ End Else ExecStep1;
+End;
+
+Procedure ExecSkip;
+Var Len: Integer; T: String;
+Begin
+ If Not CanRun Then Exit;
+ T:=MDis(PC,Len);
+ PC:=PC+Len;
+ SetMsg('');
+ UpdateLocks;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Utilitaires de commandes                                                 }
+{ ---------------------------------------------------------------------- }
+
+Function RegAssign(Const S: String; Apply: Boolean): Boolean;
+Var P: Integer; U: String; V: LongInt; R,M: Integer; Ok: Boolean;
+Begin
+ RegAssign:=False;
+ P:=Pos('=',S);
+ If P<2 Then Exit;
+ U:=Upper(TrimS(Copy(S,1,P-1)));
+ If Not MonEval(Copy(S,P+1,100),V) Then Exit;
+ R:=RegOf(U);
+ M:=-1;
+ If (Length(U)=2) And (U[1]='M') And (U[2]>='0') And (U[2]<='9') Then M:=Ord(U[2])-48;
+ Ok:=(R>=0) Or (U='SSP') Or (M>=0);
+ If Not Ok Then Exit;
+ If Not Apply Then Begin RegAssign:=True;Exit;End;
+ If (R>=0) And (R<16) Then Rg[R]:=V
+ Else If R=20 Then SetSR(V)
+ Else If R=21 Then SetSR((SRv And $FF00) Or (V And $FF))
+ Else If R=22 Then USPv:=V
+ Else If R=23 Then PC:=V
+ Else If U='SSP' Then SSPv:=V
+ Else If M>=0 Then Begin
+  If (M>=1) And (M<=5) Then SetWinAddr(M,V) Else MMem[M]:=V;
+ End;
+ RegAssign:=True;
+End;
+
+Function SplitList(Const S: String; Var P: Array Of String; Max: Integer): Integer;
+Begin
+ SplitList:=SplitTop(S,P,Max);
+End;
+
+Function IsSizeTok(Const S: String): Boolean;
+Begin
+ IsSizeTok:=(S='W') Or (S='w') Or (S='L') Or (S='l');
+End;
+
+Function ListOk(Const S: String): Boolean;
+Var P: Array[0..15] Of String; N,I: Integer; V: LongInt;
+Begin
+ ListOk:=False;
+ N:=SplitList(S,P,16);
+ If N=0 Then Exit;
+ For I:=0 To N-1 Do Begin
+  If (I>0) And (I=N-1) And IsSizeTok(P[I]) Then Begin End
+  Else If Not MonEval(P[I],V) Then Exit;
+ End;
  ClrErr;
- If ((Op And $FFC0)=$4E80) Or ((Op And $FF00)=$6100) Or ((Op And $F0F8)=$50C8) Or ((Op And $FFF0)=$4E40) Then
-  MonRunUntil(PC+Len)
- Else MonTraceN(1);
+ ListOk:=True;
 End;
 
-Procedure ToggleBp(A: LongInt);
-Var I,J: Integer;
+Function SymNear(V: LongInt): String;
+Var I,Best: Integer; D: LongInt;
 Begin
- For I:=1 To NBps Do
-  If Bps[I]=A Then Begin
-   For J:=I To NBps-1 Do Bps[J]:=Bps[J+1];
-   Dec(NBps);
-   MonPrint(T3('Breakpoint removed at $','Point d''arret supprime en $','Haltepunkt entfernt bei $')+Hex6(A));
-   Exit;
+ SymNear:='';Best:=0;
+ If (DbgSyms=Nil) Or (DbgN=0) Then Exit;
+ For I:=1 To DbgN Do
+  If DbgSyms^[I].Addr<=V Then
+   If (Best=0) Or (DbgSyms^[I].Addr>DbgSyms^[Best].Addr) Then Best:=I;
+ If Best=0 Then Exit;
+ D:=V-DbgSyms^[Best].Addr;
+ If D>$FFFF Then Exit;
+ If D=0 Then SymNear:=DbgSyms^[Best].Name
+ Else SymNear:=DbgSyms^[Best].Name+'+'+HexS(D);
+End;
+
+{ Fenetre cible des recherches / adresses : la courante, sinon la 3 }
+Function TargetWin: Integer;
+Begin
+ TargetWin:=MCur;
+ If (MCur=1) And (MW[1].V[MW[1].Top].Kind=VK_REG) Then TargetWin:=3;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Pages d'information                                                      }
+{ ---------------------------------------------------------------------- }
+
+Var
+ Pg  : Array[1..120] Of String[80];
+ PgN : Integer;
+
+Procedure PgAdd(Const S: String);
+Begin
+ If PgN<120 Then Begin Inc(PgN);Pg[PgN]:=S;End;
+End;
+
+Procedure ShowPager(Const Title: String);
+Var Top,Rows,I: Integer; E: TEvent;
+Begin
+ Rows:=NRows-2;
+ Top:=1;
+ Repeat
+  HideMouse;
+  Box(0,0,SCR_W-1,SCR_H-1,PAPER);
+  CT(0,0,80,' '+Title,True);
+  For I:=0 To Rows-2 Do If Top+I<=PgN Then CT(0,1+I,80,Pg[Top+I],False);
+  CT(0,NRows-1,80,MnT(' Any key = next page, Esc = end',' Une touche = page suivante, Esc = fin'),True);
+  ShowMouse;
+  Repeat PollEvent(E);Until E.Kind=1;
+  If E.Key=K_ESC Then Break;
+  If E.Key>=256 Then PendKey:=E.Key;
+  Top:=Top+Rows-1;
+  If Top>PgN Then Break;
+ Until False;
+End;
+
+Procedure MCmdHelp;
+Var I: Integer; T: String;
+Begin
+ PgN:=0;
+ PgAdd(MnT(' Segments:',' Segments :'));
+ PgAdd('  TEXT $'+Hex8(SegAddr(0))+'  '+MnT('length','longueur')+' $'+Hex8(SegLen(0)));
+ PgAdd('  DATA $'+Hex8(SegAddr(1))+'  '+MnT('length','longueur')+' $'+Hex8(SegLen(1)));
+ PgAdd('  BSS  $'+Hex8(SegAddr(2))+'  '+MnT('length','longueur')+' $'+Hex8(SegLen(2)));
+ PgAdd('');
+ PgAdd(MnT(' Breakpoints:',' Points d''arret :'));
+ If NMB=0 Then PgAdd('  '+MnT('none','aucun'));
+ For I:=1 To NMB Do Begin
+  T:=BpMark(MBp[I].Addr);
+  If MBp[I].Kind=BK_STOP Then T:=T+'  '+MnT('count','compte')+' '+IntStr(MBp[I].N);
+  If MBp[I].Kind=BK_COND Then T:=T+'  '+MBp[I].Expr;
+  PgAdd('  $'+Hex8(MBp[I].Addr)+T+'   '+DbgFind(MBp[I].Addr));
+ End;
+ If BdosBp>=0 Then PgAdd('  BDOS $'+Hex4(BdosBp));
+ PgAdd('');
+ PgAdd(MnT(' Window commands (Alt-):',' Commandes de fenetre (Alt-) :'));
+ PgAdd('  A/M address  B breakpoint  E edit  F font  G goto line  L lock  O/0 bases');
+ PgAdd('  P print  R register set  S split  T type  W widen  Z zoom');
+ PgAdd('  1-5 / Tab: current window   > < open/close view   . , next/prev view');
+ PgAdd('  Ctrl-Left/Right: register window height   Esc: update all / end zoom');
+ PgAdd('');
+ PgAdd(MnT(' Execution (Ctrl-):',' Execution (Ctrl-) :'));
+ PgAdd('  R run   Z/Y/W step   T trace   S skip   A breakpoint after');
+ PgAdd('  B simple breakpoint here   K kill breakpoints   D BDOS breakpoint');
+ PgAdd('  L load program   P preferences   C terminate   E exceptions   F7 F8 F9 = Z T R');
+ PgAdd('');
+ PgAdd(MnT(' Other commands:',' Autres commandes :'));
+ PgAdd('  R run (various)  U run until  G search  N next  C compare  I copy');
+ PgAdd('  W fill  Q query port  T transfer to port  A load ASCII  B load binary');
+ PgAdd('  S save binary  E exe symbols  H history  L list labels  P disassemble to file');
+ PgAdd('  D change directory  V view program screen  M modify address  0 other bases');
+ PgAdd('  :  text command line (T S G B D M ? reg=value)');
+ ShowPager(MnT('Help, segments and breakpoints','Aide, segments et points d''arret'));
+End;
+
+Procedure MCmdHistory;
+Var I,K,Len: Integer; S: String; E: Integer;
+Begin
+ PgN:=0;
+ If HCnt=0 Then PgAdd(' '+MnT('History buffer is empty','L''historique est vide'));
+ For I:=0 To HCnt-1 Do Begin
+  E:=((HHead-I) Mod HMAX+HMAX) Mod HMAX;
+  S:=' d';
+  For K:=0 To 7 Do S:=S+' '+Hex8(Hist[E].R[K]);
+  PgAdd(S);
+  S:=' a';
+  For K:=8 To 15 Do S:=S+' '+Hex8(Hist[E].R[K]);
+  PgAdd(S);
+  S:=' sr='+Hex4(Hist[E].SRx)+'  pc='+Hex8(Hist[E].PCv)+'  ';
+  If Rdbl(Hist[E].PCv) Then S:=S+MDis(Hist[E].PCv,Len)+BpMark(Hist[E].PCv);
+  PgAdd(S);
+  PgAdd('');
+ End;
+ ShowPager(MnT('History buffer (newest first)','Tampon d''historique (le plus recent d''abord)'));
+End;
+
+Procedure MCmdListLabels;
+Var Cols,Rows,I,J,K,Pgs: Integer; E: TEvent; Top: Integer;
+Begin
+ If DbgN=0 Then Begin MonAlert(MnT('No symbols loaded','Aucun symbole charge'));Exit;End;
+ Rows:=NRows-3;Cols:=3;
+ Top:=1;
+ Repeat
+  HideMouse;
+  Box(0,0,SCR_W-1,SCR_H-1,PAPER);
+  CT(0,0,80,' '+MnT('Labels','Symboles')+' ('+IntStr(DbgN)+')',True);
+  For J:=0 To Cols-1 Do
+   For I:=0 To Rows-1 Do Begin
+    K:=Top+J*Rows+I;
+    If K<=DbgN Then CT(J*27,1+I,26,Hex8(DbgSyms^[K].Addr)+' '+DbgSyms^[K].Name,False);
+   End;
+  CT(0,NRows-1,80,MnT(' Any key = next page, Esc = end',' Une touche = page suivante, Esc = fin'),True);
+  ShowMouse;
+  Repeat PollEvent(E);Until E.Kind=1;
+  If E.Key=K_ESC Then Break;
+  Top:=Top+Rows*Cols;
+  If Top>DbgN Then Break;
+ Until False;
+ Pgs:=0;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Commandes de fenetre                                                     }
+{ ---------------------------------------------------------------------- }
+
+Function CurKind: Integer;
+Begin
+ CurKind:=MW[MCur].V[MW[MCur].Top].Kind;
+End;
+
+Procedure MCmdSetAddr;
+Var S: String; V: LongInt;
+Begin
+ If CurKind=VK_REG Then Exit;
+ If CurKind=VK_SRC Then Exit;
+ S:='';
+ If MonPrompt(MnT('Window start address?','Adresse de debut de la fenetre ?'),S,PV_EXPR) Then
+  If MonEval(S,V) Then SetWinAddr(MCur,V);
+ ClrErr;
+End;
+
+Procedure MCmdGotoLine;
+Var S: String; V: LongInt;
+Begin
+ If CurKind<>VK_SRC Then Exit;
+ S:='';
+ If MonPrompt(MnT('Goto line?','Aller a la ligne ?'),S,PV_EXPR) Then
+  If MonEval(S,V) Then Begin
+   If V<1 Then V:=1;
+   With MW[MCur].V[MW[MCur].Top] Do
+    If (Src>=1) And (V>MSrc[Src].Cnt) Then V:=MSrc[Src].Cnt;
+   SetWinAddr(MCur,V);
   End;
- If NBps<MAXBP Then Begin
-  Inc(NBps);Bps[NBps]:=A;
-  MonPrint(T3('Breakpoint set at $','Point d''arret pose en $','Haltepunkt gesetzt bei $')+Hex6(A));
- End Else MonPrint(T3('Too many breakpoints','Trop de points d''arret','Zu viele Haltepunkte'));
 End;
 
-Procedure MonHelp;
+Procedure MCmdRegSet;
+Var S: String;
 Begin
- MonPrint(T3('Commands (numbers are hexadecimal, # = decimal):','Commandes (nombres en hexadecimal, # = decimal) :','Befehle (Zahlen hexadezimal, # = dezimal):'));
- MonPrint('  ? expr       '+T3('evaluate an expression','evalue une expression','Ausdruck auswerten'));
- MonPrint('  D [addr]     '+T3('disassemble from address','desassemble a partir de l''adresse','Disassemblieren ab Adresse'));
- MonPrint('  M [addr]     '+T3('show memory at address','affiche la memoire','Speicher anzeigen'));
- MonPrint('  T [n]  F7    '+T3('trace n instructions','execute n instructions','n Befehle verfolgen'));
- MonPrint('  S      F8    '+T3('step over JSR/BSR/TRAP/DBcc','saute JSR/BSR/TRAP/DBcc','JSR/BSR/TRAP/DBcc ueberspringen'));
- MonPrint('  G [addr] F9  '+T3('run (ESC/^C interrupts)','execute (ESC/^C interrompt)','starten (ESC/^C unterbricht)'));
- MonPrint('  B addr       '+T3('toggle breakpoint; BC clear all; BL list','pose/retire un point d''arret; BC efface; BL liste','Haltepunkt; BC loeschen; BL Liste'));
- MonPrint('  Dn=v An=v PC=v SR=v   '+T3('change a register','modifie un registre','Register aendern'));
- MonPrint('  F addr len b '+T3('fill memory','remplit la memoire','Speicher fuellen'));
- MonPrint('  L file       '+T3('load an executable','charge un executable','Programm laden'));
- MonPrint('  X            '+T3('reload the program','recharge le programme','Programm neu laden'));
- MonPrint('  V  F10       '+T3('view the program screen','affiche l''ecran du programme','Programmbildschirm'));
- MonPrint('  Q            '+T3('quit the monitor','quitte le moniteur','Monitor verlassen'));
+ S:='';
+ If MonPrompt(MnT('Register set (reg=value)?','Affecter un registre (reg=valeur) ?'),S,PV_REG) Then Begin
+  RegAssign(S,True);
+  UpdateLocks;
+ End;
 End;
 
-Procedure ViewProgramScreen;
+Procedure MCmdEdit;
+Begin
+ Case CurKind Of
+  VK_MEM: Begin
+    EditOn:=True;EditAsc:=False;EditNib:=0;
+    EditAddr:=MW[MCur].V[MW[MCur].Top].Addr;
+   End;
+  VK_REG: MCmdRegSet;
+  VK_SRC: TabSrc4:=Not TabSrc4;
+ End;
+End;
+
+Procedure EditKey(K: LongInt);
+Var Bpl,B,D,Rows: Integer;
+Begin
+ With MW[MCur] Do Begin
+  Bpl:=MemBpl(W);
+  If W=0 Then Bpl:=MemBpl(80);
+  Rows:=H-1;
+  If Rows<1 Then Rows:=1;
+  Case K Of
+   K_ESC: Begin EditOn:=False;Exit;End;
+   K_TAB: Begin EditAsc:=Not EditAsc;EditNib:=0;End;
+   K_LEFT: Begin Dec(EditAddr);EditNib:=0;End;
+   K_RIGHT: Begin Inc(EditAddr);EditNib:=0;End;
+   K_UP: Dec(EditAddr,Bpl);
+   K_DOWN: Inc(EditAddr,Bpl);
+   K_PGUP: Dec(EditAddr,Bpl*Rows);
+   K_PGDN: Inc(EditAddr,Bpl*Rows);
+  Else Begin
+    If EditAsc Then Begin
+     If (K>=32) And (K<=255) Then Begin
+      Wr8(EditAddr,K And $FF);ClrErr;Inc(EditAddr);
+     End;
+    End Else If (K<256) And IsHexCh(Chr(K)) Then Begin
+     D:=HexVal(Chr(K));
+     B:=RdB(EditAddr);
+     If B<0 Then B:=0;
+     If EditNib=0 Then Begin B:=(B And $0F) Or (D Shl 4);EditNib:=1;Wr8(EditAddr,B);End
+     Else Begin B:=(B And $F0) Or D;EditNib:=0;Wr8(EditAddr,B);Inc(EditAddr);End;
+     ClrErr;
+    End;
+   End;
+  End;
+  If EditAddr<0 Then EditAddr:=0;
+  If EditAddr<V[Top].Addr Then V[Top].Addr:=EditAddr-(EditAddr Mod Bpl)
+  Else If EditAddr>=V[Top].Addr+Bpl*Rows Then
+   V[Top].Addr:=EditAddr-(EditAddr Mod Bpl)-Bpl*(Rows-1);
+  If V[Top].Addr<0 Then V[Top].Addr:=0;
+ End;
+End;
+
+Procedure MCmdFont;
+Begin
+ If CellH=10 Then CellH:=8 Else CellH:=10;
+ NRows:=SCR_H Div CellH;
+ If CellH=8 Then RegRows:=RegRows+2 Else If RegRows>2 Then RegRows:=RegRows-2;
+ If RegRows<3 Then RegRows:=3;
+End;
+
+Procedure MCmdLock;
+Var S: String;
+Begin
+ With MW[MCur] Do Begin
+  If V[Top].Kind=VK_REG Then Exit;
+  S:=V[Top].Lock;
+  If MonPrompt(MnT('Lock to expression?','Verrouiller sur l''expression ?'),S,PV_EXPR0) Then Begin
+   V[Top].Lock:=TrimS(S);
+   UpdateLocks;
+  End;
+ End;
+End;
+
+Procedure MCmdSplit;
+Begin
+ If MCur=1 Then Exit;
+ If (MCur=2) Or (MCur=4) Then SplL:=(SplL+1) Mod 4 Else SplR:=(SplR+1) Mod 4;
+End;
+
+Procedure MCmdWiden;
+Begin
+ If MCur=1 Then Exit;
+ If (MCur=2) Or (MCur=4) Then Begin
+  If ColSt=0 Then ColSt:=1 Else If ColSt=1 Then ColSt:=2 Else ColSt:=0;
+ End Else Begin
+  If ColSt=0 Then ColSt:=3 Else If ColSt=3 Then ColSt:=4 Else ColSt:=0;
+ End;
+End;
+
+Procedure MCmdType;
+Var K,N: Integer;
+Begin
+ If (MCur=3) Or (MCur=5) Then Exit;
+ With MW[MCur] Do Begin
+  K:=V[Top].Kind;
+  For N:=1 To 4 Do Begin
+   K:=(K+1) Mod 4;
+   If AllowedKind(MCur,K) And ((K<>VK_SRC) Or (NSrc>0)) Then Break;
+  End;
+  If (V[Top].Kind=VK_REG) And (K<>VK_REG) Then V[Top].Addr:=MMem[1];
+  If K=VK_REG Then MMem[1]:=V[Top].Addr;
+  V[Top].Kind:=K;
+  If K=VK_SRC Then Begin V[Top].Src:=1;V[Top].Addr:=1;End;
+  If K<>VK_DIS Then If K<>VK_MEM Then V[Top].Lock:='';
+ End;
+End;
+
+Procedure MCmdZoom;
+Begin
+ MZoom:=Not MZoom;
+End;
+
+Procedure MCmdOpenView;
+Begin
+ If MZoom Then Exit;
+ With MW[MCur] Do Begin
+  If NV>=MAXVIEW Then Exit;
+  Inc(NV);
+  V[NV]:=V[Top];
+  Top:=NV;
+ End;
+End;
+
+Procedure MCmdCloseView;
+Var J: Integer;
+Begin
+ If MZoom Then Exit;
+ With MW[MCur] Do Begin
+  If NV<=1 Then Exit;
+  For J:=Top To NV-1 Do V[J]:=V[J+1];
+  Dec(NV);
+  If Top>NV Then Top:=NV;
+ End;
+End;
+
+Procedure MCmdNextView(Dir: Integer);
+Begin
+ If MZoom Then Exit;
+ With MW[MCur] Do Begin
+  Top:=Top+Dir;
+  If Top>NV Then Top:=1;
+  If Top<1 Then Top:=NV;
+ End;
+End;
+
+Procedure SelectWin(N: Integer);
+Begin
+ If (N<1) Or (N>NWIN) Then Exit;
+ MCur:=N;
+ EditOn:=False;
+ Layout;
+ If (N>1) And (MW[N].W=0) And Not MZoom Then
+  SetMsg(MnT('Window ','Fenetre ')+IntStr(N)+MnT(' is hidden (Alt-S / Alt-W / Alt-Z)',' est masquee (Alt-S / Alt-W / Alt-Z)'));
+End;
+
+{ Rend visible la fenetre N (chargement d'un fichier source) }
+Procedure RevealWin(N: Integer);
+Begin
+ Layout;
+ If (N<2) Or (MW[N].W>0) Then Exit;
+ If (N=2) Or (N=4) Then Begin
+  If LeftWs[ColSt]<8 Then ColSt:=0;
+  If N=2 Then SplL:=0 Else SplL:=1;
+ End Else Begin
+  If 80-LeftWs[ColSt]<8 Then ColSt:=0;
+  If N=3 Then SplR:=0 Else SplR:=1;
+ End;
+ Layout;
+End;
+
+Function PrevInstr(A: LongInt): LongInt;
+Var K,L: Integer; T: String;
+Begin
+ PrevInstr:=A-2;
+ K:=2;
+ While K<=10 Do Begin
+  T:=Dis(A-K,L);ClrErr;
+  If L=K Then Begin PrevInstr:=A-K;Exit;End;
+  Inc(K,2);
+ End;
+End;
+
+Procedure CursorKey(K: LongInt);
+Var Bpl,Len,I,Rows: Integer; A: LongInt; T: String;
+Begin
+ With MW[MCur] Do Begin
+  Rows:=H-1;
+  If Rows<1 Then Rows:=1;
+  A:=V[Top].Addr;
+  Case V[Top].Kind Of
+   VK_MEM: Begin
+     Bpl:=MemBpl(W);
+     Case K Of
+      K_LEFT: A:=A-1;
+      K_RIGHT: A:=A+1;
+      K_UP: A:=A-Bpl;
+      K_DOWN: A:=A+Bpl;
+      K_PGUP: A:=A-Bpl*Rows;
+      K_PGDN: A:=A+Bpl*Rows;
+     End;
+    End;
+   VK_DIS: Begin
+     Case K Of
+      K_LEFT: A:=A-2;
+      K_RIGHT: A:=A+2;
+      K_UP: A:=PrevInstr(A);
+      K_DOWN: Begin T:=Dis(A,Len);ClrErr;A:=A+Len;End;
+      K_PGUP: For I:=1 To Rows-1 Do A:=PrevInstr(A);
+      K_PGDN: For I:=1 To Rows-1 Do Begin T:=Dis(A,Len);ClrErr;A:=A+Len;End;
+     End;
+    End;
+   VK_SRC: Begin
+     Case K Of
+      K_UP,K_LEFT: A:=A-1;
+      K_DOWN,K_RIGHT: A:=A+1;
+      K_PGUP: A:=A-Rows;
+      K_PGDN: A:=A+Rows;
+     End;
+     If A<1 Then A:=1;
+     If (V[Top].Src>=1) And (A>MSrc[V[Top].Src].Cnt) Then A:=MSrc[V[Top].Src].Cnt;
+    End;
+  End;
+  If V[Top].Kind<>VK_REG Then Begin
+   If A<0 Then A:=0;
+   SetWinAddr(MCur,A);
+  End;
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Impression                                                               }
+{ ---------------------------------------------------------------------- }
+
+Var PrnF: Text; PrnFile: Boolean;
+
+Procedure PrnLine(Const S: String);
+Var I: Integer;
+Begin
+ If PrnFile Then WriteLn(PrnF,S)
+ Else Begin
+  For I:=1 To Length(S) Do PrnPut(Ord(S[I]));
+  PrnPut(13);PrnPut(10);
+ End;
+End;
+
+Function PrnOpen(Const Name: String): Boolean;
+Begin
+ PrnOpen:=True;
+ PrnFile:=Name<>'';
+ If PrnFile Then Begin
+  Assign(PrnF,Name);
+  {$I-}
+  Rewrite(PrnF);
+  {$I+}
+  If IOResult<>0 Then Begin PrnOpen:=False;PrnFile:=False;End;
+ End;
+End;
+
+Procedure PrnClose;
+Begin
+ If PrnFile Then Begin
+  {$I-}
+  Close(PrnF);
+  {$I+}
+  If IOResult<>0 Then Begin End;
+ End;
+End;
+
+Procedure MCmdPrint;
+Var S: String; R,Len: Integer;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Print window to file (blank = printer)?','Imprimer la fenetre dans le fichier (vide = imprimante) ?'),S,PV_FREE) Then Exit;
+ If Not PrnOpen(TrimS(S)) Then Begin MonAlert(MnT('Cannot create the file','Impossible de creer le fichier'));Exit;End;
+ Layout;
+ PrnLine(WinTitle(MCur));
+ With MW[MCur] Do
+  For R:=0 To H-2 Do PrnLine(WinRow(MCur,R,Len));
+ PrnClose;
+ SetMsg(MnT('Window printed','Fenetre imprimee'));
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Points d'arret : commandes                                               }
+{ ---------------------------------------------------------------------- }
+
+Procedure MCmdBreak;
+Var S: String;
+Begin
+ S:='';
+ If MonPrompt(MnT('Set breakpoint (address[,spec])?','Point d''arret (adresse[,type]) ?'),S,PV_BP) Then
+  BpParse(S,True);
+End;
+
+Procedure MCmdBpHere;
+Var I: Integer; A: LongInt;
+Begin
+ If CurKind<>VK_DIS Then Exit;
+ A:=MW[MCur].V[MW[MCur].Top].Addr;
+ If Odd(A) Or Not Rdbl(A) Then Exit;
+ I:=BpFindAt(A);
+ If I>0 Then BpDel(I)
+ Else If Not BpAddSimple(A) Then MonAlert(MnT('Too many breakpoints','Trop de points d''arret'));
+End;
+
+Procedure MCmdKill;
+Begin
+ NMB:=0;
+ SetMsg(MnT('Breakpoints cleared','Points d''arret effaces'));
+End;
+
+Procedure MCmdBdos;
+Var S: String; V: LongInt;
+Begin
+ S:='';
+ If BdosBp>=0 Then S:=Hex2(BdosBp);
+ If MonPrompt(MnT('BDOS call number (blank = clear)?','Numero d''appel BDOS (vide = effacer) ?'),S,PV_EXPR0) Then Begin
+  If TrimS(S)='' Then BdosBp:=-1
+  Else If MonEval(S,V) Then BdosBp:=V And $FFFF;
+ End;
+End;
+
+Procedure MCmdBreakAfter;
+Var Len: Integer; T: String;
+Begin
+ If Not CanRun Then Exit;
+ T:=MDis(PC,Len);
+ If Not BpAddSimple(PC+Len) Then Begin MonAlert(MnT('Too many breakpoints','Trop de points d''arret'));Exit;End;
+ ExecRun(EX_GO,0,'',False,-1,0);
+End;
+
+Procedure MCmdUntil;
+Var S: String;
+Begin
+ If Not CanRun Then Exit;
+ S:='';
+ If MonPrompt(MnT('Run until address[,spec]?','Executer jusqu''a adresse[,type] ?'),S,PV_BP) Then Begin
+  BpParse(S,True);
+  ExecRun(EX_GO,0,'',False,-1,0);
+ End;
+End;
+
+Procedure MCmdRunVarious;
+Var C,W: Char; S: String; V: LongInt; Cnt: LongInt; Mode: Integer;
+Begin
+ If Not CanRun Then Exit;
+ C:=MonAskKey(MnT('Run (G)o (S)lowly (I)nstruction (U)ntil?','Executer (G)o (S)lowly (I)nstruction (U)ntil ?'),'GSIU');
+ If C=#0 Then Exit;
+ If C='G' Then Begin ExecRun(EX_GO,0,'',False,-1,0);Exit;End;
+ S:='';Cnt:=0;Mode:=EX_SLOW;
+ If C='I' Then Begin
+  If Not MonPrompt(MnT('Number of instructions?','Nombre d''instructions ?'),S,PV_EXPR) Then Exit;
+  MonEval(S,Cnt);Mode:=EX_COUNT;
+ End Else If C='U' Then Begin
+  If Not MonPrompt(MnT('Run until expression?','Executer jusqu''a l''expression ?'),S,PV_EXPR) Then Exit;
+  Mode:=EX_UNTIL;
+ End;
+ W:=MonAskKey(MnT('Watch Y/N?','Observer O/N ?'),'YNO');
+ If W=#0 Then Exit;
+ ExecRun(Mode,Cnt,S,(W='Y') Or (W='O'),-1,0);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Autres commandes                                                         }
+{ ---------------------------------------------------------------------- }
+
+Procedure MCmdBases;
+Var S,T: String; V: LongInt;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Enter expression','Entrez une expression'),S,PV_EXPR) Then Exit;
+ If Not MonEval(S,V) Then Exit;
+ T:=SymNear(V);
+ If T<>'' Then T:='  '+T;
+ MonAlert('$'+Hex8(V)+'  \'+IntStr(V)+T);
+End;
+
+Procedure MCmdViewScreen;
 Var E: TEvent;
 Begin
  EmuVisible:=True;
@@ -14325,118 +18356,746 @@ Begin
  EmuVisible:=False;
 End;
 
-Procedure MonExec(Const Line: String);
-Var S,Cmd,Arg: String; P,N,I: Integer; V,V2,V3: LongInt; U: String; R: Integer;
-    Prt: Array[0..3] Of String;
+Procedure MCmdTerminate;
 Begin
- S:=TrimS(Line);
- If S='' Then Exit;
- MonPrint('> '+S);
- P:=Pos(' ',S);
- If P>0 Then Begin Cmd:=Upper(Copy(S,1,P-1));Arg:=TrimS(Copy(S,P+1,200));End
- Else Begin Cmd:=Upper(S);Arg:='';End;
- { affectation de registre }
- P:=Pos('=',S);
- If P>1 Then Begin
-  U:=Upper(TrimS(Copy(S,1,P-1)));
-  If MonEval(Copy(S,P+1,100),V) Then Begin
-   R:=RegOf(U);
-   If (R>=0) And (R<16) Then Begin Rg[R]:=V;Exit;End;
-   If U='PC' Then Begin PC:=V;MonDisAddr:=V;Exit;End;
-   If U='SR' Then Begin SetSR(V);Exit;End;
-   If U='SP' Then Begin Rg[15]:=V;Exit;End;
+ If MonLoaded And Not ProgDead Then Begin
+  ProgDead:=True;
+  CloseAllFiles;
+  SetMsg(T3('Program Terminated','Programme termine','Programm beendet'));
+ End Else MonQuit:=True;
+End;
+
+{ Chargement d'un programme (Ctrl-L, ligne de commande) }
+Function DoLoad(Const Name,Cmd: String): Boolean;
+Var I: Integer; A: LongInt;
+Begin
+ DoLoad:=False;
+ If Not FileExists(Name) Then Begin
+  MonAlert(MnT('File not found: ','Fichier introuvable : ')+Name);Exit;
+ End;
+ If Not LoadProgram(Name,Cmd,OptRunGem) Then Begin
+  MonLoaded:=False;
+  MonAlert(MnT('Invalid program load format','Format de programme invalide'));Exit;
+ End;
+ ClrErr;
+ MonLoaded:=True;ProgDead:=False;ProgName:=Name;
+ NMB:=0;BdosBp:=-1;HCnt:=0;HHead:=0;
+ MMem[8]:=0;MMem[9]:=0;
+ InitView(MW[2].V[1],VK_DIS,PC);MW[2].V[1].Lock:='pc';MW[2].NV:=1;MW[2].Top:=1;
+ InitView(MW[3].V[1],VK_MEM,Rg[15]);MW[3].NV:=1;MW[3].Top:=1;
+ InitView(MW[4].V[1],VK_DIS,SegAddr(0));MW[4].NV:=1;MW[4].Top:=1;
+ InitView(MW[5].V[1],VK_MEM,SegAddr(1));MW[5].NV:=1;MW[5].Top:=1;
+ MW[1].NV:=1;MW[1].Top:=1;InitView(MW[1].V[1],VK_REG,0);
+ UpdateLocks;
+ ConClear;
+ If Emu_GEM Then GemBoot;
+ ClrErr;
+ EmuVisible:=False;
+ SetMsg(T3('Breakpoint','Point d''arret','Haltepunkt'));
+ If PfLabel<>'' Then Begin
+  If MSymByName(PfLabel,A) Then Begin
+   If A<>PC Then If BpAddSimple(A) Then ExecRun(EX_GO,0,'',False,-1,0);
   End;
-  MonPrint(T3('Bad assignment','Affectation incorrecte','Falsche Zuweisung'));
+ End;
+ DoLoad:=True;
+End;
+
+Procedure MCmdLoadProg;
+Var S,C: String;
+Begin
+ If MonLoaded And Not ProgDead Then Begin
+  MonAlert(MnT('A program is already loaded (Ctrl-C to terminate it)','Un programme est deja charge (Ctrl-C pour le terminer)'));
   Exit;
  End;
+ S:='';C:='';
+ If Not MonPrompt(MnT('Executable file to load','Fichier executable a charger'),S,PV_FREE) Then Exit;
+ S:=TrimS(S);
+ If S='' Then Exit;
+ If MonPrompt(MnT('Command line?','Ligne de commande ?'),C,PV_FREE) Then Begin End Else C:='';
+ DoLoad(S,C);
+End;
+
+{ Fichiers binaires }
+Procedure MCmdLoadBin;
+Var S,Nm: String; P: Integer; A,Len,I: LongInt; Buf: Pointer; Ad: String;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Load binary file[,address]?','Charger le fichier binaire[,adresse] ?'),S,PV_FREE) Then Exit;
+ P:=Pos(',',S);
+ If P>0 Then Begin Nm:=TrimS(Copy(S,1,P-1));Ad:=TrimS(Copy(S,P+1,60));End
+ Else Begin Nm:=TrimS(S);Ad:='';End;
+ If Nm='' Then Exit;
+ If Not ReadAll(Nm,Buf,Len) Then Begin MonAlert(MnT('File not found: ','Fichier introuvable : ')+Nm);Exit;End;
+ If Ad<>'' Then Begin
+  If Not MonEval(Ad,A) Then Begin
+   MonAlert(MnT('Bad address','Adresse incorrecte'));If Buf<>Nil Then FreeMem(Buf,Len);Exit;
+  End;
+ End Else Begin
+  A:=(HeapLo+1) And (Not 1);
+  If A+Len>HeapHi Then Begin
+   MonAlert(MnT('Not enough memory','Memoire insuffisante'));If Buf<>Nil Then FreeMem(Buf,Len);Exit;
+  End;
+  HeapLo:=A+Len;
+ End;
+ For I:=0 To Len-1 Do Wr8(A+I,BufB(Buf,I));
+ ClrErr;
+ If Buf<>Nil Then FreeMem(Buf,Len);
+ MMem[8]:=A;MMem[9]:=A+Len-1;
+ SetMsg(MnT('Loaded $','Charge $')+Hex8(Len)+MnT(' bytes at $',' octets en $')+Hex8(A));
+End;
+
+Procedure MCmdSaveBin;
+Var S: String; P: Array[0..3] Of String; N: Integer; A,B,I: LongInt; F: File; Buf: Array[0..4095] Of Byte; K: Integer;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Save binary file,start,end?','Sauver le fichier binaire,debut,fin ?'),S,PV_FREE) Then Exit;
+ N:=SplitList(S,P,4);
+ If (N<3) Or Not MonEval(P[1],A) Or Not MonEval(P[2],B) Or (B<A) Then Begin
+  MonAlert(MnT('Bad parameters','Parametres incorrects'));Exit;
+ End;
+ Assign(F,P[0]);
+ {$I-}
+ Rewrite(F,1);
+ {$I+}
+ If IOResult<>0 Then Begin MonAlert(MnT('Cannot create the file','Impossible de creer le fichier'));Exit;End;
+ I:=A;K:=0;
+ While I<=B Do Begin
+  Buf[K]:=Rd8(I);Inc(K);Inc(I);
+  If K=4096 Then Begin BlockWrite(F,Buf,K);K:=0;End;
+ End;
+ If K>0 Then BlockWrite(F,Buf,K);
+ Close(F);
+ ClrErr;
+ SetMsg(MnT('Saved $','Sauve $')+Hex8(B-A+1)+MnT(' bytes',' octets'));
+End;
+
+Procedure MCmdLoadAscii;
+Var S: String; Wn: Integer; C: Char; Arr: PLineArr; Cnt: Integer;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Load ASCII file?','Charger le fichier ASCII ?'),S,PV_FREE) Then Exit;
+ S:=TrimS(S);
+ If S='' Then Exit;
+ If NSrc>=MMAXSRC Then Begin MonAlert(MnT('Too many files','Trop de fichiers'));Exit;End;
+ If Not LoadLines(S,Arr,Cnt) Then Begin MonAlert(MnT('File not found: ','Fichier introuvable : ')+S);Exit;End;
+ If (MCur=2) Or (MCur=4) Then Wn:=MCur
+ Else Begin
+  C:=MonAskKey(MnT('Load into window 2 or 4?','Charger dans la fenetre 2 ou 4 ?'),'24');
+  If C=#0 Then Begin FreeLines(Arr,Cnt);Exit;End;
+  Wn:=Ord(C)-48;
+ End;
+ Inc(NSrc);
+ MSrc[NSrc].Name:=S;MSrc[NSrc].Arr:=Arr;MSrc[NSrc].Cnt:=Cnt;
+ With MW[Wn] Do Begin
+  If V[Top].Kind=VK_SRC Then Begin
+   If NV<MAXVIEW Then Begin Inc(NV);Top:=NV;End;
+  End;
+  InitView(V[Top],VK_SRC,1);V[Top].Src:=NSrc;
+ End;
+ RevealWin(Wn);
+ MCur:=Wn;
+ SetMsg(S);
+End;
+
+Procedure MCmdExeSyms;
+Var S,Nm: String; P: Integer; A,TB,TS,DS,SS,Sym,Off: LongInt; Buf: Pointer; Len: LongInt;
+    Typ: LongInt; J: Integer; Name: String; Cnt: Integer;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Executable file to use[,text address]?','Executable a utiliser[,adresse du texte] ?'),S,PV_FREE) Then Exit;
+ P:=Pos(',',S);
+ If P>0 Then Begin Nm:=TrimS(Copy(S,1,P-1));If Not MonEval(Copy(S,P+1,60),TB) Then Exit;End
+ Else Begin Nm:=TrimS(S);TB:=SegAddr(0);If TB=0 Then TB:=BP_ADDR+$100;End;
+ If Not ReadAll(Nm,Buf,Len) Then Begin MonAlert(MnT('File not found: ','Fichier introuvable : ')+Nm);Exit;End;
+ If (Len<28) Or (BufW(Buf,0)<>$601A) Then Begin
+  MonAlert(MnT('Invalid program load format','Format de programme invalide'));
+  If Buf<>Nil Then FreeMem(Buf,Len);Exit;
+ End;
+ TS:=BufL(Buf,2);DS:=BufL(Buf,6);SS:=BufL(Buf,14);
+ Sym:=28+TS+DS;Cnt:=0;DbgN:=0;
+ While (SS>=14) And (Sym+14<=28+TS+DS+SS) Do Begin
+  Name:='';
+  For J:=0 To 7 Do If BufB(Buf,Sym+J)<>0 Then Name:=Name+Chr(BufB(Buf,Sym+J));
+  Typ:=BufW(Buf,Sym+8);
+  If (Typ And $0048)=$0048 Then Begin
+   For J:=0 To 13 Do If BufB(Buf,Sym+14+J)<>0 Then Name:=Name+Chr(BufB(Buf,Sym+14+J));
+   DbgAdd(Name,BufL(Buf,Sym+10)+TB);Inc(Cnt);
+   Inc(Sym,28);
+  End Else Begin
+   If (Typ And $8000)<>0 Then Begin DbgAdd(Name,BufL(Buf,Sym+10)+TB);Inc(Cnt);End;
+   Inc(Sym,14);
+  End;
+ End;
+ If Buf<>Nil Then FreeMem(Buf,Len);
+ Off:=0;A:=0;
+ SetMsg(IntStr(Cnt)+MnT(' symbols loaded',' symboles charges'));
+End;
+
+{ Memoire : fill, copy, compare, ports }
+Procedure Get3(Const S: String; Var A,B,C: LongInt; Var Ok: Boolean);
+Var P: Array[0..3] Of String; N: Integer;
+Begin
+ N:=SplitList(S,P,4);
+ Ok:=(N=3) And MonEval(P[0],A) And MonEval(P[1],B) And MonEval(P[2],C);
+ ClrErr;
+End;
+
+Procedure MCmdFill;
+Var S: String; A,B,C,I: LongInt; Ok: Boolean;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Fill start,end,byte?','Remplir debut,fin,octet ?'),S,PV_EXPRL) Then Exit;
+ Get3(S,A,B,C,Ok);
+ If Not Ok Or (B<A) Then Begin MonAlert(MnT('Bad parameters','Parametres incorrects'));Exit;End;
+ For I:=A To B Do Wr8(I,C And $FF);
+ ClrErr;
+End;
+
+Procedure MCmdCopy;
+Var S: String; A,B,C,I,N: LongInt; Ok: Boolean;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Copy start,end,destination?','Copier debut,fin,destination ?'),S,PV_EXPRL) Then Exit;
+ Get3(S,A,B,C,Ok);
+ If Not Ok Or (B<A) Then Begin MonAlert(MnT('Bad parameters','Parametres incorrects'));Exit;End;
+ N:=B-A+1;
+ If C<=A Then For I:=0 To N-1 Do Wr8(C+I,Rd8(A+I))
+ Else For I:=N-1 DownTo 0 Do Wr8(C+I,Rd8(A+I));
+ ClrErr;
+End;
+
+Procedure MCmdCompare;
+Var S: String; A,B,C,I: LongInt; Ok: Boolean;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Compare start,end,other start?','Comparer debut,fin,debut du second bloc ?'),S,PV_EXPRL) Then Exit;
+ Get3(S,A,B,C,Ok);
+ If Not Ok Or (B<A) Then Begin MonAlert(MnT('Bad parameters','Parametres incorrects'));Exit;End;
+ For I:=0 To B-A Do
+  If RdB(A+I)<>RdB(C+I) Then Begin
+   SetWinAddr(2,A+I);SetWinAddr(3,A+I);SetWinAddr(4,C+I);SetWinAddr(5,C+I);
+   SetMsg(MnT('Difference at $','Difference en $')+Hex8(A+I));
+   Exit;
+  End;
+ SetMsg(MnT('Memory areas are identical','Les zones sont identiques'));
+End;
+
+Procedure MCmdQuery;
+Var S: String; P: Array[0..3] Of String; N: Integer; A,V: LongInt; Sz: Integer; T: String;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Query port address[,W|L]?','Lire le port adresse[,W|L] ?'),S,PV_EXPRL) Then Exit;
+ N:=SplitList(S,P,4);
+ If (N<1) Or Not MonEval(P[0],A) Then Exit;
+ Sz:=1;
+ If (N>1) And ((P[1]='W') Or (P[1]='w')) Then Sz:=2;
+ If (N>1) And ((P[1]='L') Or (P[1]='l')) Then Sz:=4;
+ If Sz=1 Then Begin V:=Rd8(A);T:=Hex2(V);End
+ Else If Sz=2 Then Begin V:=Rd16(A);T:=Hex4(V);End
+ Else Begin V:=Rd32(A);T:=Hex8(V);End;
+ ClrErr;
+ MonAlert('$'+Hex8(A)+' = $'+T);
+End;
+
+Procedure MCmdTransfer;
+Var S: String; P: Array[0..3] Of String; N: Integer; A,V: LongInt;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Transfer address,data[,W|L]?','Ecrire adresse,donnee[,W|L] ?'),S,PV_EXPRL) Then Exit;
+ N:=SplitList(S,P,4);
+ If (N<2) Or Not MonEval(P[0],A) Or Not MonEval(P[1],V) Then Exit;
+ If (N>2) And ((P[2]='W') Or (P[2]='w')) Then Wr16(A,V)
+ Else If (N>2) And ((P[2]='L') Or (P[2]='l')) Then Wr32(A,V)
+ Else Wr8(A,V And $FF);
+ ClrErr;
+End;
+
+Procedure MCmdChDir;
+Var S: String;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Change drive & directory to?','Changer de lecteur et de repertoire ?'),S,PV_FREE) Then Exit;
+ S:=TrimS(S);
+ If S='' Then Exit;
+ {$I-}
+ ChDir(S);
+ {$I+}
+ If IOResult<>0 Then MonAlert(MnT('Cannot change directory','Impossible de changer de repertoire'))
+ Else SetMsg(S);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Recherche                                                                }
+{ ---------------------------------------------------------------------- }
+
+Function EscPressed: Boolean;
+Var E: TEvent;
+Begin
+ EscPressed:=False;
+ While KeyPressed Do Begin
+  PollEvent(E);
+  If (E.Kind=1) And (E.Key=K_ESC) Then EscPressed:=True;
+ End;
+End;
+
+Procedure DoSearch(FromA: LongInt);
+Var A,Start,Cnt: LongInt; I,Len,N: Integer; Found: Boolean; T,Pat: String; Step2: Integer;
+Begin
+ If SrchBuf='' Then Begin SetMsg(MnT('Nothing to search for','Rien a chercher'));Exit;End;
+ Start:=FromA+1;
+ If (Start<0) Or (Start>=MemSize) Then Start:=0;
+ Found:=False;A:=Start;Cnt:=0;
+ Pat:=SrchBuf;
+ If (SrchKind='T') And Not SrchCase Then Pat:=Upper(Pat);
+ If (SrchKind='I') And Not SrchCase Then Pat:=Upper(Pat);
+ Repeat
+  If SrchKind='I' Then Begin
+   If Not Odd(A) Then Begin
+    T:=MDis(A,Len);
+    If Not SrchCase Then T:=Upper(T);
+    If Pos(Pat,T)>0 Then Found:=True;
+    If (Cnt And 255)=0 Then If EscPressed Then Begin SetMsg(MnT('Search aborted','Recherche interrompue'));Exit;End;
+   End;
+  End Else Begin
+   N:=Length(Pat);
+   If (SrchAlign<=1) Or ((A Mod SrchAlign)=0) Then Begin
+    I:=1;
+    While I<=N Do Begin
+     If SrchKind='T' Then Begin
+      If SrchCase Then Begin If Chr(Rd8(A+I-1))<>Pat[I] Then Break;End
+      Else If UpCase(Chr(Rd8(A+I-1)))<>Pat[I] Then Break;
+     End Else If Rd8(A+I-1)<>Ord(Pat[I]) Then Break;
+     Inc(I);
+    End;
+    If I>N Then Found:=True;
+   End;
+   If (Cnt And 65535)=0 Then If EscPressed Then Begin SetMsg(MnT('Search aborted','Recherche interrompue'));Exit;End;
+  End;
+  If Found Then Break;
+  Inc(A);Inc(Cnt);
+  If A>=MemSize Then A:=0;
+ Until A=Start;
+ ClrErr;
+ If Found Then Begin
+  SetWinAddr(TargetWin,A);
+  SetMsg(MnT('Found at $','Trouve en $')+Hex8(A));
+ End Else SetMsg(MnT('Not found','Non trouve'));
+End;
+
+Procedure MCmdSearch;
+Var C,Cs: Char; S: String; P: Array[0..15] Of String; N,I,Sz,Last: Integer; V: LongInt; Buf: String; Al: Integer;
+Begin
+ C:=MonAskKey(MnT('Search for B/W/L/T/I?','Chercher B/W/L/T/I ?'),'BWLTI');
+ If C=#0 Then Exit;
+ S:='';
+ If (C='B') Or (C='W') Or (C='L') Then Begin
+  If Not MonPrompt(MnT('Search for (numbers, comma separated)?','Chercher (nombres separes par des virgules) ?'),S,PV_EXPRL) Then Exit;
+  N:=SplitList(S,P,16);
+  Al:=1;Last:=N-1;
+  If (N>1) And IsSizeTok(P[N-1]) Then Begin
+   If UpCase(P[N-1][1])='W' Then Al:=2 Else Al:=4;
+   Last:=N-2;
+  End;
+  If C='B' Then Sz:=1 Else If C='W' Then Sz:=2 Else Sz:=4;
+  Buf:='';
+  For I:=0 To Last Do Begin
+   If Not MonEval(P[I],V) Then Exit;
+   If Sz=4 Then Begin Buf:=Buf+Chr((V Shr 24) And 255)+Chr((V Shr 16) And 255);End;
+   If Sz>=2 Then Buf:=Buf+Chr((V Shr 8) And 255);
+   Buf:=Buf+Chr(V And 255);
+  End;
+  SrchBuf:=Buf;SrchAlign:=Al;SrchKind:='B';SrchCase:=True;
+ End Else Begin
+  If C='T' Then Begin
+   If Not MonPrompt(MnT('Search for text?','Chercher le texte ?'),S,PV_FREE) Then Exit;
+  End Else Begin
+   If Not MonPrompt(MnT('Search for instruction text?','Chercher le texte de l''instruction ?'),S,PV_FREE) Then Exit;
+  End;
+  If S='' Then Exit;
+  Cs:=MonAskKey(MnT('Ignore case Y/N?','Ignorer la casse O/N ?'),'YNO');
+  If Cs=#0 Then Exit;
+  SrchBuf:=S;SrchKind:=C;SrchAlign:=1;SrchCase:=(Cs='N');
+ End;
+ If (CurKind=VK_SRC) Then Begin End;
+ DoSearch(WinAddrOf(TargetWin));
+End;
+
+Procedure MCmdFindNext;
+Begin
+ DoSearch(WinAddrOf(TargetWin));
+End;
+
+{ Desassemblage vers l'imprimante ou un fichier }
+Procedure MCmdDisFile;
+Var S,Fn,T,Sym,Ln: String; P: Array[0..3] Of String; N,Len,K,I: Integer; A,A1,A2,D1,D2: LongInt;
+    Dsz: Integer; Ds: Array[1..8] Of Record A,B: LongInt; Sz: Integer; End; ND: Integer; Disk: Boolean;
+    InData: Boolean; Aborted: Boolean;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Disassemble start,end?','Desassembler debut,fin ?'),S,PV_EXPRL) Then Exit;
+ N:=SplitList(S,P,4);
+ If (N<2) Or Not MonEval(P[0],A1) Or Not MonEval(P[1],A2) Or (A2<A1) Then Begin
+  MonAlert(MnT('Bad parameters','Parametres incorrects'));Exit;
+ End;
+ S:='';
+ If Not MonPrompt(MnT('Cross-reference buffer start,end (blank = none)?','Tampon de references croisees debut,fin (vide = aucun) ?'),S,PV_FREE) Then Exit;
+ ND:=0;
+ Repeat
+  S:='';
+  If Not MonPrompt(MnT('Data area start,end[,B|W|L] (blank = end)?','Zone de donnees debut,fin[,B|W|L] (vide = fin) ?'),S,PV_EXPRL) Then Exit;
+  If TrimS(S)='' Then Break;
+  N:=SplitList(S,P,4);
+  If (N>=2) And MonEval(P[0],D1) And MonEval(P[1],D2) And (ND<8) Then Begin
+   Inc(ND);Ds[ND].A:=D1;Ds[ND].B:=D2;Ds[ND].Sz:=4;
+   If (N>2) And (UpCase(P[2][1])='B') Then Ds[ND].Sz:=1;
+   If (N>2) And (UpCase(P[2][1])='W') Then Ds[ND].Sz:=2;
+  End;
+ Until False;
+ Fn:='';
+ If Not MonPrompt(MnT('Output file (blank = printer)?','Fichier de sortie (vide = imprimante) ?'),Fn,PV_FREE) Then Exit;
+ Fn:=TrimS(Fn);
+ Disk:=Fn<>'';
+ If Not PrnOpen(Fn) Then Begin MonAlert(MnT('Cannot create the file','Impossible de creer le fichier'));Exit;End;
+ A:=A1;Aborted:=False;
+ While A<=A2 Do Begin
+  Sym:=DbgFind(A);
+  InData:=False;Dsz:=2;
+  For K:=1 To ND Do If (A>=Ds[K].A) And (A<=Ds[K].B) Then Begin InData:=True;Dsz:=Ds[K].Sz;End;
+  If InData Then Begin
+   Len:=Dsz;
+   If Dsz=1 Then T:='dc.b'+#9+'$'+Hex2(Rd8(A))
+   Else If Dsz=2 Then T:='dc.w'+#9+'$'+Hex4(Rd16(A))
+   Else T:='dc.l'+#9+'$'+Hex8(Rd32(A));
+  End Else Begin
+   T:=MDis(A,Len);
+   K:=Pos(' ',T);
+   If K>0 Then Begin T[K]:=#9;End;
+  End;
+  If Disk Then Ln:=Sym+#9+' '+T
+  Else Begin
+   Ln:=Hex8(A);
+   For I:=0 To 9 Do Begin
+    If I<Len Then Ln:=Ln+Hex2(Rd8(A+I)) Else Ln:=Ln+'  ';
+    If Odd(I) Then Ln:=Ln+' ';
+   End;
+   Ln:=Ln+' '+PadR(Copy(Sym,1,12),12)+' '+T;
+  End;
+  PrnLine(Ln);
+  A:=A+Len;
+  If EscPressed Then Begin Aborted:=True;Break;End;
+ End;
+ PrnClose;
+ ClrErr;
+ If Aborted Then SetMsg(MnT('Aborted','Interrompu')) Else SetMsg(MnT('Disassembly written','Desassemblage ecrit'));
+End;
+
+{ Ligne de commande texte (touche ":") pour les habitues }
+Procedure MCmdTextLine;
+Var S,Cmd,Arg: String; P: Integer; V: LongInt;
+Begin
+ S:='';
+ If Not MonPrompt(MnT('Command (T S G B D M ? reg=value)','Commande (T S G B D M ? reg=valeur)'),S,PV_FREE) Then Exit;
+ S:=TrimS(S);
+ If S='' Then Exit;
+ P:=Pos('=',S);
+ If (P>1) And (RegAssign(S,False)) And (Pos(' ',Copy(S,1,P-1))=0) Then Begin
+  RegAssign(S,True);UpdateLocks;Exit;
+ End;
+ P:=Pos(' ',S);
+ If P>0 Then Begin Cmd:=Upper(Copy(S,1,P-1));Arg:=TrimS(Copy(S,P+1,100));End
+ Else Begin Cmd:=Upper(S);Arg:='';End;
  If Cmd='?' Then Begin
-  If MonEval(Arg,V) Then
-   MonPrint('$'+Hex8(V)+'  #'+IntStr(V)+'  %'+IntStr(V And $FFFF)+' ('+T3('word','mot','Wort')+')')
-  Else MonPrint(T3('Bad expression','Expression incorrecte','Falscher Ausdruck'));
- End Else If Cmd='D' Then Begin
-  If Arg='' Then MonDisAddr:=PC
-  Else If MonEval(Arg,V) Then MonDisAddr:=V
-  Else MonPrint(T3('Bad expression','Expression incorrecte','Falscher Ausdruck'));
- End Else If Cmd='M' Then Begin
-  If Arg='' Then MonMemAddr:=Rg[15]
-  Else If MonEval(Arg,V) Then MonMemAddr:=V
-  Else MonPrint(T3('Bad expression','Expression incorrecte','Falscher Ausdruck'));
+  If MonEval(Arg,V) Then MonAlert('$'+Hex8(V)+'  \'+IntStr(V)) Else MonAlert(MnT('Bad expression','Expression incorrecte'));
  End Else If (Cmd='T') Or (Cmd='Z') Then Begin
   V:=1;
   If Arg<>'' Then If Not MonEval(Arg,V) Then V:=1;
-  MonTraceN(V);
- End Else If Cmd='S' Then MonStepOver
+  ExecRun(EX_COUNT,V,'',False,-1,0);
+ End Else If Cmd='S' Then ExecTrace
  Else If Cmd='G' Then Begin
   If Arg<>'' Then Begin
-   If MonEval(Arg,V) Then PC:=V Else Begin MonPrint(T3('Bad expression','Expression incorrecte','Falscher Ausdruck'));Exit;End;
+   If MonEval(Arg,V) Then PC:=V Else Begin MonAlert(MnT('Bad expression','Expression incorrecte'));Exit;End;
   End;
-  MonRunUntil(-1);
+  ExecRun(EX_GO,0,'',False,-1,0);
  End Else If Cmd='B' Then Begin
-  If Arg='' Then V:=PC Else If Not MonEval(Arg,V) Then Begin
-   MonPrint(T3('Bad expression','Expression incorrecte','Falscher Ausdruck'));Exit;End;
-  ToggleBp(V);
- End Else If Cmd='BC' Then Begin NBps:=0;MonPrint(T3('Breakpoints cleared','Points d''arret effaces','Haltepunkte geloescht'));End
- Else If Cmd='BL' Then Begin
-  If NBps=0 Then MonPrint(T3('No breakpoints','Aucun point d''arret','Keine Haltepunkte'));
-  For I:=1 To NBps Do MonPrint('  $'+Hex6(Bps[I])+'  '+DbgFind(Bps[I]));
- End Else If Cmd='F' Then Begin
-  N:=SplitTop(Arg,Prt,3);
-  If N<3 Then Begin
-   MonPrint('F addr,len,value');
-  End Else If MonEval(Prt[0],V) And MonEval(Prt[1],V2) And MonEval(Prt[2],V3) Then Begin
-   For I:=0 To V2-1 Do Wr8(V+I,V3 And $FF);
-   ClrErr;
+  If BpParse(Arg,False) Then BpParse(Arg,True) Else MonAlert(MnT('Bad expression','Expression incorrecte'));
+ End Else If Cmd='D' Then Begin
+  If MonEval(Arg,V) Then SetWinAddr(2,V) Else MonAlert(MnT('Bad expression','Expression incorrecte'));
+ End Else If Cmd='M' Then Begin
+  If MonEval(Arg,V) Then SetWinAddr(3,V) Else MonAlert(MnT('Bad expression','Expression incorrecte'));
+ End Else MonAlert(MnT('Unknown command','Commande inconnue'));
+ ClrErr;
+End;
+
+{ Preferences }
+Procedure SaveMonInf;
+Var F: Text; I: Integer;
+Begin
+ Assign(F,'MON.INF');
+ {$I-}
+ Rewrite(F);
+ {$I+}
+ If IOResult<>0 Then Begin MonAlert(MnT('Cannot write MON.INF','Ecriture de MON.INF impossible'));Exit;End;
+ WriteLn(F,'REL=',Ord(PfRel));
+ WriteLn(F,'CASE=',Ord(PfIgnCase));
+ WriteLn(F,'PREFIX=',Ord(PfAutoPre));
+ WriteLn(F,'AUTOSRC=',Ord(PfAutoSrc));
+ WriteLn(F,'ZAN=',Ord(PfZAn));
+ WriteLn(F,'TIMER=',Ord(PfTimer));
+ WriteLn(F,'TRAPS=',Ord(PfTraps));
+ WriteLn(F,'CART=',Ord(PfCart));
+ WriteLn(F,'SYMLEN=',PfSymLen);
+ WriteLn(F,'LABEL=',PfLabel);
+ WriteLn(F,'LINES=',PfLines);
+ WriteLn(F,'SPLL=',SplL);
+ WriteLn(F,'SPLR=',SplR);
+ WriteLn(F,'COLS=',ColSt);
+ WriteLn(F,'REGROWS=',RegRows);
+ WriteLn(F,'FONT=',CellH);
+ For I:=1 To NWIN Do WriteLn(F,'W',I,'=',MW[I].V[MW[I].Top].Kind);
+ Close(F);
+End;
+
+Procedure PfDefaults;
+Begin
+ PfRel:=True;PfIgnCase:=True;PfAutoPre:=True;PfAutoSrc:=True;PfZAn:=False;
+ PfTimer:=True;PfTraps:=False;PfCart:=False;PfSymLen:=22;PfLabel:='';PfLines:=0;
+ PfTopRam:=0;
+End;
+
+Procedure LoadMonInf;
+Var F: Text; L,K,V: String; P,N,Code,I: Integer;
+Begin
+ Assign(F,'MON.INF');
+ {$I-}
+ Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F,L);
+  P:=Pos('=',L);
+  If P>0 Then Begin
+   K:=Upper(Copy(L,1,P-1));V:=Copy(L,P+1,100);
+   Val(V,N,Code);
+   If Code<>0 Then N:=0;
+   If K='REL' Then PfRel:=N<>0
+   Else If K='CASE' Then PfIgnCase:=N<>0
+   Else If K='PREFIX' Then PfAutoPre:=N<>0
+   Else If K='AUTOSRC' Then PfAutoSrc:=N<>0
+   Else If K='ZAN' Then PfZAn:=N<>0
+   Else If K='TIMER' Then PfTimer:=N<>0
+   Else If K='TRAPS' Then PfTraps:=N<>0
+   Else If K='CART' Then PfCart:=N<>0
+   Else If K='SYMLEN' Then Begin If (N>=8) And (N<=24) Then PfSymLen:=N;End
+   Else If K='LABEL' Then PfLabel:=V
+   Else If K='LINES' Then PfLines:=N
+   Else If K='SPLL' Then Begin If (N>=0) And (N<=3) Then SplL:=N;End
+   Else If K='SPLR' Then Begin If (N>=0) And (N<=3) Then SplR:=N;End
+   Else If K='COLS' Then Begin If (N>=0) And (N<=4) Then ColSt:=N;End
+   Else If K='REGROWS' Then Begin If (N>=3) And (N<=30) Then RegRows:=N;End
+   Else If K='FONT' Then Begin If N=8 Then CellH:=8 Else CellH:=10;NRows:=SCR_H Div CellH;End
+   Else If (Length(K)=2) And (K[1]='W') And (K[2]>='1') And (K[2]<='5') Then Begin
+    I:=Ord(K[2])-48;
+    If AllowedKind(I,N) And (N<>VK_SRC) Then MW[I].V[1].Kind:=N;
+   End;
   End;
- End Else If Cmd='L' Then Begin
-  If Arg='' Then MonPrint(T3('Usage: L file','Syntaxe : L fichier','Syntax: L Datei')) Else MonLoad(Arg);
- End Else If Cmd='X' Then Begin
-  If ProgName<>'' Then MonLoad(ProgName);
- End Else If (Cmd='V') Then ViewProgramScreen
- Else If (Cmd='H') Or (Cmd='HELP') Then MonHelp
- Else If (Cmd='Q') Or (Cmd='QUIT') Then MonQuit:=True
- Else If Cmd='R' Then Begin End
- Else MonPrint(T3('Unknown command (H for help)','Commande inconnue (H pour l''aide)','Unbekannter Befehl (H fuer Hilfe)'));
+ End;
+ Close(F);
+End;
+
+Procedure MCmdPrefs;
+Var C: Char; S: String; V: LongInt; Cur: String;
+ Function YN(Const Q: String; B: Boolean): Boolean;
+ Var Ch: Char; T: String;
+ Begin
+  If B Then T:='Y' Else T:='N';
+  Ch:=MonAskKey(Q+' Y/N? ['+T+']','YN'+#13);
+  YN:=B;
+  If Ch='Y' Then YN:=True Else If Ch='N' Then YN:=False;
+ End;
+Begin
+ PfTimer:=YN(MnT('Screen timer','Temporisation d''ecran'),PfTimer);
+ PfTraps:=YN(MnT('Follow traps','Suivre les traps'),PfTraps);
+ PfRel:=YN(MnT('Relative offsets','Offsets relatifs'),PfRel);
+ PfIgnCase:=YN(MnT('Ignore case','Ignorer la casse'),PfIgnCase);
+ PfCart:=YN(MnT('Ignore cartridge area','Ignorer la cartouche'),PfCart);
+ Case PfLines Of 1: Cur:='D'; 2: Cur:='H'; Else Cur:='N'; End;
+ C:=MonAskKey(MnT('Source line numbers N/D/H? [','Numeros de ligne source N/D/H ? [')+Cur+']','NDH'+#13);
+ If C='N' Then PfLines:=0 Else If C='D' Then PfLines:=1 Else If C='H' Then PfLines:=2;
+ PfAutoSrc:=YN(MnT('Auto load source','Chargement auto du source'),PfAutoSrc);
+ PfAutoPre:=YN(MnT('Auto ''_'' or ''@'' prefix','Prefixe auto ''_'' ou ''@'''),PfAutoPre);
+ S:=PfLabel;
+ If MonPrompt(MnT('Start at label','Demarrer au label'),S,PV_FREE) Then PfLabel:=TrimS(S);
+ S:=IntStr(PfSymLen);
+ If MonPrompt(MnT('Symbol length (8-22)','Longueur des symboles (8-22)'),S,PV_EXPR) Then Begin
+  If MonEval(S,V) Then Begin
+   If V<8 Then V:=8;
+   If V>22 Then V:=22;
+   PfSymLen:=V;
+  End;
+ End;
+ PfZAn:=YN(MnT('Display ZAn in disassembly','Afficher ZAn dans le desassemblage'),PfZAn);
+ C:=MonAskKey(MnT('Save preferences Y/N?','Sauver les preferences O/N ?'),'YNO');
+ If (C='Y') Or (C='O') Then SaveMonInf;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Clavier                                                                  }
+{ ---------------------------------------------------------------------- }
+
+Function MonAltLetter(K: LongInt): Char;
+Var I: Integer;
+Begin
+ MonAltLetter:=#0;
+ If (K<256) Or (K>511) Then Exit;
+ For I:=0 To 25 Do
+  If AltScan[I]=K-256 Then Begin MonAltLetter:=Chr(65+I);Exit;End;
+End;
+
+Procedure MnHandleKey(K: LongInt);
+Var Al,C: Char; I: Integer;
+Begin
+ If EditOn Then Begin EditKey(K);Exit;End;
+ MsgText:='';MsgExtra:='';
+ Al:=MonAltLetter(K);
+ If Al<>#0 Then Begin
+  Case Al Of
+   'A': MCmdSetAddr;
+   'B': MCmdBreak;
+   'E': MCmdEdit;
+   'F': MCmdFont;
+   'G': MCmdGotoLine;
+   'L': MCmdLock;
+   'O': MCmdBases;
+   'P': MCmdPrint;
+   'R': MCmdRegSet;
+   'S': MCmdSplit;
+   'T': MCmdType;
+   'W': MCmdWiden;
+   'Z': MCmdZoom;
+  End;
+  Exit;
+ End;
+ If (K>=376) And (K<=380) Then Begin SelectWin(K-375);Exit;End;
+ If K=385 Then Begin MCmdBases;Exit;End;
+ Case K Of
+  1: MCmdBreakAfter;
+  2: MCmdBpHere;
+  3: MCmdTerminate;
+  4: MCmdBdos;
+  5: SetMsg(MnT('Exception vectors are managed by the emulator','Les vecteurs d''exception sont geres par l''emulateur'));
+  11: MCmdKill;
+  12: MCmdLoadProg;
+  15: SetMsg(MnT('Other screen mode: not available','Autre mode d''ecran : non disponible'));
+  16: MCmdPrefs;
+  18,K_F9: ExecRun(EX_GO,0,'',False,-1,0);
+  19: ExecSkip;
+  20,K_F8: ExecTrace;
+  23,25,26,K_F7: ExecStep1;
+  24: Begin End;
+  K_TAB: Begin
+          Layout;
+          I:=MCur;
+          Repeat
+           I:=I Mod NWIN+1;
+          Until (MW[I].W>0) Or (I=MCur);
+          SelectWin(I);
+         End;
+  K_ESC: Begin
+          MZoom:=False;
+          UpdateLocks;
+         End;
+  K_F1: MCmdHelp;
+  K_F10: MCmdViewScreen;
+  K_UP,K_DOWN,K_LEFT,K_RIGHT,K_PGUP,K_PGDN: CursorKey(K);
+  K_CLEFT: Begin If RegRows>3 Then Dec(RegRows);End;
+  K_CRIGHT: Begin If RegRows<NRows-8 Then Inc(RegRows);End;
+  32..126: Begin
+    C:=UpCase(Chr(K));
+    Case C Of
+     'A': MCmdLoadAscii;
+     'B': MCmdLoadBin;
+     'C': MCmdCompare;
+     'D': MCmdChDir;
+     'E': MCmdExeSyms;
+     'G': MCmdSearch;
+     'H': MCmdHistory;
+     'I': MCmdCopy;
+     'L': MCmdListLabels;
+     'M': MCmdSetAddr;
+     'N': MCmdFindNext;
+     'P': MCmdDisFile;
+     'Q': MCmdQuery;
+     'R': MCmdRunVarious;
+     'S': MCmdSaveBin;
+     'T': MCmdTransfer;
+     'U': MCmdUntil;
+     'V': MCmdViewScreen;
+     'W': MCmdFill;
+     '0': MCmdBases;
+     '.': MCmdNextView(1);
+     ',': MCmdNextView(-1);
+     '>': MCmdOpenView;
+     '<': MCmdCloseView;
+     ':': MCmdTextLine;
+     '?': MCmdHelp;
+    End;
+   End;
+ End;
 End;
 
 { Boucle principale du moniteur }
 Procedure RunMonitor(Const Prog: String; Prompt: Boolean);
-Var E: TEvent; Done: Boolean; S: String; Dirty: Boolean;
+Var E: TEvent; Dirty: Boolean; S,C: String; I,Cx,Ry: Integer;
 Begin
  MonActive:=True;MonQuit:=False;EmuVisible:=False;Dirty:=True;
- MonCmd:='';
- If Prog<>'' Then MonLoad(Prog)
+ PfDefaults;
+ InitWindows;
+ LoadMonInf;
+ NRows:=SCR_H Div CellH;
+ MonLoaded:=False;ProgDead:=False;NMB:=0;BdosBp:=-1;HCnt:=0;HHead:=0;
+ MsgText:='';MsgExtra:='';PendKey:=0;NSrc:=0;
+ SrchBuf:='';SrchKind:='B';SrchAlign:=1;SrchCase:=True;
+ TabSrc4:=False;
+ If Prog<>'' Then DoLoad(Prog,'')
  Else If Prompt Then Begin
   S:='';
   DrawMonitor;
-  If InputDlg(T3('Executable file to load','Fichier executable a charger','Zu ladendes Programm'),'',S,40) Then
-   If S<>'' Then MonLoad(S);
- End;
- If Not MonLoaded Then MonPrint(T3('Type H for help, L file to load a program','Tapez H pour l''aide, L fichier pour charger un programme','H fuer Hilfe, L Datei zum Laden'));
-
- While Not MonQuit Do Begin
-  If Dirty Then Begin DrawMonitor;Dirty:=False;End;
-  PollEvent(E);
-  If (E.Kind=1) Or (E.Kind=2) Then Dirty:=True;
-  If E.Kind=1 Then Begin
-   Case E.Key Of
-    K_ENTER: Begin
-              If MonCmd<>'' Then MonCmdHist:=MonCmd;
-              S:=MonCmd;MonCmd:='';
-              MonExec(S);
-             End;
-    K_ESC: MonCmd:='';
-    K_BKSP: If Length(MonCmd)>0 Then Dec(MonCmd[0]);
-    K_UP: MonCmd:=MonCmdHist;
-    K_F7,26: MonTraceN(1);
-    K_F8,1: MonStepOver;
-    K_F9,18: MonRunUntil(-1);
-    K_F10: ViewProgramScreen;
-    K_F1: MonHelp;
-    17: MonQuit:=True;
-    32..255: If Length(MonCmd)<70 Then MonCmd:=MonCmd+Chr(E.Key);
+  If MonPrompt(MnT('Executable file to load','Fichier executable a charger'),S,PV_FREE) Then Begin
+   S:=TrimS(S);
+   If S<>'' Then Begin
+    C:='';
+    If Not MonPrompt(MnT('Command line?','Ligne de commande ?'),C,PV_FREE) Then C:='';
+    DoLoad(S,C);
    End;
   End;
  End;
+ If Not MonLoaded Then SetMsg(MnT('No program loaded: Ctrl-L to load one, Ctrl-C to quit','Aucun programme charge : Ctrl-L pour en charger un, Ctrl-C pour quitter'));
+ While Not MonQuit Do Begin
+  If Dirty Then Begin
+   Box(0,0,SCR_W-1,SCR_H-1,PAPER);
+   DrawMonitor;Dirty:=False;
+  End;
+  PollEvent(E);
+  If (E.Kind=1) Or (E.Kind=2) Then Dirty:=True;
+  If E.Kind=2 Then Begin
+   { un clic selectionne la fenetre sous le curseur }
+   Layout;
+   Cx:=E.X Div MCW;Ry:=E.Y Div CellH;
+   For I:=1 To NWIN Do
+    With MW[I] Do
+     If (W>0) And (Cx>=X) And (Cx<X+W) And (Ry>=Y) And (Ry<Y+H) Then Begin MCur:=I;EditOn:=False;End;
+  End;
+  If E.Kind=1 Then Begin
+   MnHandleKey(E.Key);
+   While (PendKey<>0) And Not MonQuit Do Begin
+    I:=PendKey;PendKey:=0;
+    MnHandleKey(I);
+   End;
+   KQHead:=0;KQTail:=0;
+  End;
+ End;
+ For I:=1 To NSrc Do FreeLines(MSrc[I].Arr,MSrc[I].Cnt);
+ NSrc:=0;
  MonActive:=False;EmuVisible:=False;
  NeedDraw:=True;
 End;
@@ -14460,7 +19119,7 @@ Procedure IdleTick;
 Begin
  Inc(TickCount);
  If Not IdleOK Then Exit;
- If PrefFlash=1 Then Begin
+ If PrefFlash<=2 Then Begin
   If (TickCount Mod 70)=0 Then Begin
    CursorOn:=Not CursorOn;
    If MenuOpen=0 Then DrawCursor(CursorOn);
@@ -14472,27 +19131,38 @@ Procedure DrawAll;
 Begin
  HideMouse;
  SetViewPort(0,0,SCR_W-1,SCR_H-1,True);
- EnsureVisible;
+ If ScrollOnly Then ScrollOnly:=False Else EnsureVisible;
  DrawEditor;
  DrawMenuBar;
  DrawDropDown;
  CursorOn:=True;
  If MenuOpen=0 Then DrawCursor(True);
- ShowMouse;
+ ShowMouseU;
  NeedDraw:=False;
+End;
+
+{ Une commande est-elle utilisable (sinon element grise dans les menus) ? }
+Function CmdEnabled(Id: Integer): Boolean;
+Begin
+ CmdEnabled:=True;
+ Case Id Of
+  CM_CUT,CM_COPY,CM_BDEL,CM_BREM,CM_BSAVE,CM_BCOPY: CmdEnabled:=BlockOk;
+  CM_PASTE,CM_BPASTE: CmdEnabled:=ClipN>0;
+  CM_FNEXT,CM_FPREV,CM_REPLALL: CmdEnabled:=FindStr<>'';
+  CM_PREVERR,CM_JUMPERR,CM_NEXTERR: CmdEnabled:=AsmErrors>0;
+  CM_REVERT: CmdEnabled:=(EdFile<>'') And FileExists(EdFile);
+ End;
+End;
+
+Function SubEnabled(Id,J: Integer): Boolean;
+Begin
+ SubEnabled:=True;
+ If (Id=CM_GOTOBM) And (J>=1) And (J<=8) Then SubEnabled:=BkOn[J];
 End;
 
 Function MEnabled(M,I: Integer): Boolean;
 Begin
- MEnabled:=True;
- If M=3 Then Begin
-  If (I=2) And (FindStr='') Then MEnabled:=False;
-  If (I=8) Or (I=9) Or (I=11) Then MEnabled:=BlkSet;
-  If (I=10) Then MEnabled:=ClipN>0;
- End;
- If (M=2) And (I=6) Then MEnabled:=BlkSet;
- If (M=5) And (I=7) Then MEnabled:=AsmErrors>0;
- If (M=4) And (I=3) Then MEnabled:=True;
+ MEnabled:=CmdEnabled(MItem(M,I));
 End;
 
 { ---------------------------------------------------------------------- }
@@ -14532,22 +19202,55 @@ Begin
  Else If AmigaMode Then MainFileName:='NONAME.s' Else MainFileName:='NONAME.S';
 End;
 
-Procedure JumpToError;
-Var K: Integer;
+{ Affiche l'erreur K dans la ligne d'etat (le curseur va sur la ligne fautive) }
+Procedure ShowError(K: Integer);
 Begin
- If AsmErrors=0 Then Begin
-  Alert1(1,T3('No errors','Aucune erreur','Keine Fehler'));Exit;
- End;
- K:=ErrJump;
- If (K<1) Or (K>AsmErrors) Or (K>MAXERR) Then K:=1;
+ ErrCur:=K;
  If ErrNm[K]='' Then Begin
   GotoLine(ErrLn[K]);
-  MoveCur(ErrLn[K],1);
+  StatusErr(ErrTx[K]);
+ End Else
+  StatusErr(ErrNm[K]+'('+IntStr(ErrLn[K])+'): '+ErrTx[K]);
+End;
+
+Function ErrCount: Integer;
+Begin
+ If AsmErrors>MAXERR Then ErrCount:=MAXERR Else ErrCount:=AsmErrors;
+End;
+
+{ Alt-J : erreur suivante (Dir=1) ; Ctrl-J : erreur precedente (Dir=-1) }
+Procedure ErrorStep(Dir: Integer);
+Var K,N: Integer;
+Begin
+ N:=ErrCount;
+ If N=0 Then Begin
+  StatusErr(T3('No errors','Aucune erreur','Keine Fehler'));Exit;
  End;
- If ErrNm[K]='' Then Alert1(3,ErrTx[K])
- Else Alert1(3,ErrNm[K]+'|'+T3('line ','ligne ','Zeile ')+IntStr(ErrLn[K])+'|'+ErrTx[K]);
- ErrJump:=K+1;
- If ErrJump>AsmErrors Then ErrJump:=1;
+ If (ErrCur<1) Or (ErrCur>N) Then Begin
+  If Dir>0 Then K:=1 Else K:=N;
+ End Else Begin
+  K:=ErrCur+Dir;
+  If K>N Then K:=1;
+  If K<1 Then K:=N;
+ End;
+ ShowError(K);
+End;
+
+{ Alt-U : premiere erreur du fichier courant apres le curseur }
+Procedure NextErrorAfterCursor;
+Var K,N,Best: Integer;
+Begin
+ N:=ErrCount;
+ If N=0 Then Begin
+  StatusErr(T3('No errors','Aucune erreur','Keine Fehler'));Exit;
+ End;
+ Best:=0;
+ For K:=1 To N Do
+  If ErrNm[K]='' Then
+   If (ErrLn[K]>CurL) Or ((ErrLn[K]=CurL) And (K<>ErrCur)) Then
+    If (Best=0) Or (ErrLn[K]<ErrLn[Best]) Then Best:=K;
+ If Best=0 Then StatusErr(T3('No more errors','Plus d''erreur','Keine weiteren Fehler'))
+ Else ShowError(Best);
 End;
 
 Procedure ApplyPreDefs;
@@ -14564,6 +19267,8 @@ End;
 Function DoAssemble(ShowLog,ForRun: Boolean): Boolean;
 Var Ok: Boolean;
 Begin
+ ErrCur:=0;
+ OptOutName:=CfgOutName;OptListName:=CfgListName;
  AsmFromEditor:=True;
  HaveOutput:=False;
  If Not ForRun Then Begin End;
@@ -14572,10 +19277,40 @@ Begin
  If ShowLog Or Not Ok Then ShowTextScreen(True);
  NeedDraw:=True;
  If Not Ok Then Begin
-  ErrJump:=1;
-  If AsmErrors>0 Then JumpToError;
+  ErrCur:=0;
+  If AsmErrors>0 Then ErrorStep(1);
  End;
  DoAssemble:=Ok;
+End;
+
+Var SavedDir : String;
+    InRunDir : Boolean;
+
+{ Program > Directory > Top Window : le programme lance voit le repertoire du
+  fichier edite comme repertoire courant }
+Procedure RunDirEnter;
+Var D: String;
+Begin
+ InRunDir:=False;
+ If RunDirMode<>2 Then Exit;
+ D:=PathOf(EdFile);
+ If D='' Then Exit;
+ GetDir(0,SavedDir);
+ {$I-}
+ ChDir(D);
+ {$I+}
+ If IOResult=0 Then InRunDir:=True;
+End;
+
+Procedure RunDirLeave;
+Begin
+ If InRunDir Then Begin
+  {$I-}
+  ChDir(SavedDir);
+  {$I+}
+  If IOResult<>0 Then Begin End;
+ End;
+ InRunDir:=False;
 End;
 
 { Execute un programme dans l'emulateur avec affichage graphique }
@@ -14588,6 +19323,7 @@ Begin
    Alert1(3,T3('Cannot load the program|','Impossible de charger le programme|','Programm nicht ladbar|')+ShortName(Cur));
    Exit;
   End;
+  RunDirEnter;
   HideMouse;
   MonActive:=False;EmuVisible:=True;
   ConClear;
@@ -14602,6 +19338,7 @@ Begin
    BlitScreen(False);
   End;
   If UserBreak Then Begin StopReason:=STOP_USER;StopMsg:='^C';End;
+  RunDirLeave;
   Nxt:=ShelNext;
   If (Nxt<>'') And (StopReason=STOP_EXIT) Then Begin
    CloseAllFiles;
@@ -14643,10 +19380,290 @@ Begin
  End;
 End;
 
+{ ---------------------------------------------------------------------- }
+{ Fichiers                                                                 }
+{ ---------------------------------------------------------------------- }
+
+Procedure CmdSaveAs;
+Var P: String;
+Begin
+ P:=EdFile;
+ If FileSelect(T3('Save file as','Sauver le fichier sous','Datei sichern als'),'*.S',P) Then Begin
+  If FileExists(P) And (P<>EdFile) Then
+   If AlertBox(2,T3('File exists|Overwrite it ?','Le fichier existe|Le remplacer ?','Datei existiert|Ueberschreiben ?'),
+        T3('Cancel|Overwrite','Annuler|Remplacer','Abbruch|Ueberschr.'),1)<>2 Then Begin NeedDraw:=True;Exit;End;
+  EdSaveFile(P);
+ End;
+ NeedDraw:=True;
+End;
+
+Procedure CmdSave;
+Begin
+ If EdFile='' Then CmdSaveAs Else EdSaveFile(EdFile);
+ NeedDraw:=True;
+End;
+
+{ Le texte a-t-il ete modifie ? Propose Save / Leave / Cancel ; False = abandon de la commande }
+Function ConfirmChanges: Boolean;
+Var R: Integer; N: String;
+Begin
+ ConfirmChanges:=True;
+ If Not EdMod Then Exit;
+ If EdFile<>'' Then N:=ShortName(EdFile) Else N:=T3('(untitled)','(sans titre)','(ohne Titel)');
+ R:=AlertBox(2,N+'|'+T3('has been modified','a ete modifie','wurde geaendert'),
+  T3('Save|Leave|Cancel','Sauver|Laisser|Annuler','Sichern|Verwerfen|Abbruch'),1);
+ If R=1 Then Begin
+  CmdSave;
+  ConfirmChanges:=Not EdMod;
+ End Else ConfirmChanges:=R=2;
+End;
+
+Procedure CmdNew;
+Begin
+ If Not ConfirmChanges Then Exit;
+ EdClear;
+ EdFile:='';
+ AsmErrors:=0;ErrCur:=0;
+ NeedDraw:=True;
+End;
+
+{ Charge P ; si le fichier n'existe pas, propose de le creer }
+Procedure LoadNamed(Const P: String);
+Var F: File; R: Integer;
+Begin
+ If FileExists(P) Then Begin EdLoadFile(P,False);Exit;End;
+ R:=AlertBox(2,T3('File not found|','Fichier introuvable|','Datei nicht gefunden|')+ShortName(P)+'|'+
+   T3('Create it ?','Le creer ?','Anlegen ?'),T3('Cancel|Create','Annuler|Creer','Abbruch|Anlegen'),2);
+ If R=2 Then Begin
+  Assign(F,P);
+  {$I-}
+  Rewrite(F,1);
+  {$I+}
+  If IOResult=0 Then Begin
+   Close(F);
+   EdClear;EdFile:=P;EdMod:=False;AsmErrors:=0;ErrCur:=0;
+  End Else Alert1(3,T3('Cannot write file|','Impossible d''ecrire le fichier|','Datei nicht schreibbar|')+ShortName(P));
+ End;
+End;
+
+Procedure CmdLoad;
+Var P: String;
+Begin
+ If Not ConfirmChanges Then Exit;
+ P:=EdFile;
+ If FileSelect(T3('Load file','Charger un fichier','Datei laden'),'*.S',P) Then LoadNamed(P);
+ NeedDraw:=True;
+End;
+
+Procedure CmdInsert;
+Var P: String;
+Begin
+ P:='';
+ If FileSelect(T3('Insert file','Inserer un fichier','Datei einfuegen'),'*.S',P) Then
+  EdLoadFile(P,True);
+ NeedDraw:=True;
+End;
+
+Procedure CmdRevert;
+Var R: Integer;
+Begin
+ If (EdFile='') Or Not FileExists(EdFile) Then Exit;
+ R:=AlertBox(3,T3('Revert will lose the changes|made to ','Revert perdra les modifications|faites a ','Zuruecksetzen verwirft die Aenderungen|an ')+ShortName(EdFile),
+   T3('Cancel|Revert','Annuler|Recharger','Abbruch|Zurueck'),1);
+ If R=2 Then EdLoadFile(EdFile,False);
+ NeedDraw:=True;
+End;
+
+Procedure CmdClose;
+Begin
+ If Not ConfirmChanges Then Exit;
+ EdClear;
+ EdFile:='';
+ AsmErrors:=0;ErrCur:=0;
+ NeedDraw:=True;
+End;
+
+Procedure CmdDeleteFile;
+Var P: String; F: File;
+Begin
+ P:='';
+ If FileSelect(T3('Delete file','Effacer un fichier','Datei loeschen'),'*.*',P) Then Begin
+  Assign(F,P);
+  {$I-}
+  Erase(F);
+  {$I+}
+  If IOResult<>0 Then
+   Alert1(3,T3('Cannot delete file|','Impossible d''effacer le fichier|','Datei nicht loeschbar|')+ShortName(P));
+ End;
+ NeedDraw:=True;
+End;
+
+Procedure CmdChDir;
+Var P: String;
+Begin
+ P:='';
+ FSDirMode:=True;
+ If FileSelect(T3('Change directory','Changer de repertoire','Verzeichnis wechseln'),'*.',P) Then Begin
+  If (Length(P)>1) And (P[Length(P)]=DirSep) And (P[Length(P)-1]<>':') Then Dec(P[0]);
+  {$I-}
+  ChDir(P);
+  {$I+}
+  If IOResult<>0 Then Alert1(3,T3('Cannot change directory|','Changement de repertoire impossible|','Verzeichniswechsel nicht moeglich|')+P);
+ End;
+ FSDirMode:=False;
+ NeedDraw:=True;
+End;
+
+Procedure CmdSaveBlock;
+Var P: String;
+Begin
+ If Not BlockCheck Then Exit;
+ P:='';
+ If FileSelect(T3('Save block as','Sauver le bloc sous','Block sichern als'),'*.S',P) Then
+  If Not SaveBlockFile(P) Then
+   Alert1(3,T3('Cannot write file|','Impossible d''ecrire le fichier|','Datei nicht schreibbar|')+ShortName(P));
+ NeedDraw:=True;
+End;
+
+{ Dialogue de sortie : fichiers modifies, bouton Leave par fichier, case Backups,
+  Save All / As Above / Leave All / Cancel (manuel p.32) ; True = on peut quitter }
+Function QuitDialog: Boolean;
+Var R,cLeave,cBak: Integer; N: String;
+Begin
+ QuitDialog:=False;
+ If EdFile<>'' Then N:=EdFile Else N:=T3('(untitled)','(sans titre)','(ohne Titel)');
+ DlgReset(58,8);
+ DlgLabel(1,0,T3('These files have been changed:','Fichiers modifies :','Geaenderte Dateien:'));
+ cLeave:=DlgCheck(1,2,'Leave',False);
+ DlgLabel(11,2,Copy(N,1,44));
+ cBak:=DlgCheck(1,4,'Backups',PrefBackup=1);
+ DlgButton(1,6,12,T3('Save All','Tout sauver','Alle sichern'),1,True);
+ DlgButton(15,6,12,T3('As Above','Comme ci-dessus','Wie oben'),2,False);
+ DlgButton(29,6,12,T3('Leave All','Tout laisser','Alle lassen'),3,False);
+ DlgButton(43,6,12,T3('Cancel','Annuler','Abbruch'),0,False);
+ R:=DlgRun;
+ If R=0 Then Exit;
+ PrefBackup:=DI[cBak].Sel;
+ If (R=1) Or ((R=2) And (DI[cLeave].Sel=0)) Then Begin
+  If EdFile='' Then CmdSaveAs Else EdSaveFile(EdFile);
+  If EdMod Then Exit;
+ End;
+ QuitDialog:=True;
+End;
+
+Procedure CmdQuit;
+Begin
+ If EdMod Then Begin
+  If PrefSaveQuit=1 Then Begin
+   CmdSave;
+   If EdMod Then Exit;
+  End Else If PrefSaveQuit=3 Then Begin
+   If Not QuitDialog Then Begin NeedDraw:=True;Exit;End;
+  End;
+ End;
+ If PrefAutoSave=1 Then SavePrefs;
+ Quit:=True;
+End;
+
+{ Table ASCII (Edit) : un clic insere le caractere au curseur ; les caracteres
+  de controle sont grises }
+Procedure CmdAscii;
+Const CW = 16; CHT = 14;
+Var X0,Y0,I,Sel,H: Integer; E: TEvent; Buf: Pointer; Sz: LongInt; Done: Boolean;
+ Function Valid(C: Integer): Boolean;
+ Begin
+  Valid:=(C>=32) And (C<>127);
+ End;
+ Procedure Paint;
+ Var J,Cx,Cy: Integer;
+ Begin
+  HideMouse;
+  Box(X0-4,Y0-4,X0+16*CW+3,Y0+16*CHT+3,PAPER);
+  Frame(X0-4,Y0-4,X0+16*CW+3,Y0+16*CHT+3);
+  Frame(X0-3,Y0-3,X0+16*CW+2,Y0+16*CHT+2);
+  For J:=0 To 255 Do Begin
+   Cx:=X0+(J Mod 16)*CW;Cy:=Y0+(J Div 16)*CHT;
+   If J=Sel Then Box(Cx,Cy,Cx+CW-1,Cy+CHT-1,INK);
+   If Not Valid(J) Then GreyText(Cx+4,Cy+3,'.')
+   Else If J=Sel Then WText(Cx+4,Cy+3,Chr(J)) Else PText(Cx+4,Cy+3,Chr(J));
+  End;
+  ShowMouse;
+ End;
+Begin
+ X0:=MX-8;Y0:=MY-8;
+ If X0>SCR_W-16*CW-8 Then X0:=SCR_W-16*CW-8;
+ If Y0>SCR_H-16*CHT-8 Then Y0:=SCR_H-16*CHT-8;
+ If X0<8 Then X0:=8;
+ If Y0<MENU_H+8 Then Y0:=MENU_H+8;
+ Sz:=ImageSize(X0-4,Y0-4,X0+16*CW+3,Y0+16*CHT+3);
+ GetMem(Buf,Sz);
+ HideMouse;
+ GetImage(X0-4,Y0-4,X0+16*CW+3,Y0+16*CHT+3,Buf^);
+ ShowMouse;
+ Sel:=65;
+ Paint;
+ Done:=False;
+ Repeat
+  PollEvent(E);
+  If E.Kind=1 Then Begin
+   Case E.Key Of
+    K_ESC: Done:=True;
+    K_LEFT: If Sel>0 Then Begin Dec(Sel);Paint;End;
+    K_RIGHT: If Sel<255 Then Begin Inc(Sel);Paint;End;
+    K_UP: If Sel>=16 Then Begin Dec(Sel,16);Paint;End;
+    K_DOWN: If Sel<240 Then Begin Inc(Sel,16);Paint;End;
+    K_ENTER: Begin
+              If Valid(Sel) Then Begin
+               InsertChar(Chr(Sel));
+              End;
+              Done:=True;
+             End;
+   End;
+  End Else If E.Kind=4 Then Begin
+   If InBox(E.X,E.Y,X0,Y0,X0+16*CW-1,Y0+16*CHT-1) Then Begin
+    H:=((E.Y-Y0) Div CHT)*16+(E.X-X0) Div CW;
+    If H<>Sel Then Begin Sel:=H;Paint;End;
+   End;
+  End Else If E.Kind=2 Then Begin
+   If InBox(E.X,E.Y,X0,Y0,X0+16*CW-1,Y0+16*CHT-1) Then Begin
+    H:=((E.Y-Y0) Div CHT)*16+(E.X-X0) Div CW;
+    If Valid(H) Then Begin InsertChar(Chr(H));Done:=True;End;
+   End Else Done:=True;
+  End;
+ Until Done;
+ HideMouse;
+ PutImage(X0-4,Y0-4,Buf^,NormalPut);
+ ShowMouse;
+ FreeMem(Buf,Sz);
+ NeedDraw:=True;
+End;
+
+Procedure CmdLoadPrefs;
+Begin
+ If (FindCfg(CFG_NAME)='') And (FindCfg(CFG_OLD)='') Then
+  StatusErr(T3('Cannot find ','Introuvable : ','Nicht gefunden: ')+CFG_NAME)
+ Else Begin LoadPrefs;EnsureVisible;End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Programme                                                                 }
+{ ---------------------------------------------------------------------- }
+
 Procedure CmdAssemble;
 Begin
  DoAssemble(True,False);
  CleanTemp;
+End;
+
+{ Check (Alt-Y) : comme Assemble, mais sans produire de sortie }
+Procedure CmdCheck;
+Var Sv: Boolean;
+Begin
+ Sv:=OptToDisk;
+ OptToDisk:=False;
+ DoAssemble(True,False);
+ CleanTemp;
+ OptToDisk:=Sv;
 End;
 
 Procedure CmdRun;
@@ -14677,15 +19694,51 @@ Begin
  NeedDraw:=True;
 End;
 
+{ %. = nom complet du fichier edite ; %? = ce nom sans extension ; %% = un % }
+Function ExpandCmdLine(Const S: String): String;
+Var R,N: String; I,K: Integer;
+Begin
+ R:='';I:=1;
+ While I<=Length(S) Do Begin
+  If (S[I]='%') And (I<Length(S)) And (S[I+1]='.') Then Begin R:=R+EdFile;Inc(I,2);End
+  Else If (S[I]='%') And (I<Length(S)) And (S[I+1]='?') Then Begin
+   N:=EdFile;K:=Length(N);
+   While (K>0) And (N[K]<>'.') And (N[K]<>'\') And (N[K]<>'/') Do Dec(K);
+   If (K>0) And (N[K]='.') Then N:=Copy(N,1,K-1);
+   R:=R+N;Inc(I,2);
+  End
+  Else If (S[I]='%') And (I<Length(S)) And (S[I+1]='%') Then Begin R:=R+'%';Inc(I,2);End
+  Else Begin R:=R+S[I];Inc(I);End;
+ End;
+ ExpandCmdLine:=R;
+End;
+
+{ "Save files on Run Other" : False = commande abandonnee }
+Function SaveBeforeRun: Boolean;
+Var R: Integer;
+Begin
+ SaveBeforeRun:=True;
+ If Not EdMod Then Exit;
+ If PrefSaveRun=1 Then Begin
+  CmdSave;SaveBeforeRun:=Not EdMod;
+ End Else If PrefSaveRun=3 Then Begin
+  R:=AlertBox(2,T3('The text has not been saved','Le texte n''a pas ete sauve','Der Text wurde nicht gesichert'),
+       T3('Save|Leave|Cancel','Sauver|Laisser|Annuler','Sichern|Verwerfen|Abbruch'),1);
+  If R=1 Then Begin CmdSave;SaveBeforeRun:=Not EdMod;End
+  Else SaveBeforeRun:=R=2;
+ End;
+End;
+
 Procedure CmdRunOther;
 Var R: Integer; S: String;
 Begin
+ If Not SaveBeforeRun Then Exit;
  DlgReset(60,6);
  DlgLabel(1,0,T3('Run other program','Executer un autre programme','Anderes Programm starten'));
  DlgLabel(1,1,T3('Program     :','Programme    :','Programm     :'));
- DlgEdit(15,1,40,RunOther);
+ DlgEditX(15,1,40,60,RunOther);
  DlgLabel(1,2,T3('Command line:','Ligne de cmd. :','Kommandozeile:'));
- DlgEdit(15,2,40,RunOtherArg);
+ DlgEditX(15,2,40,60,RunOtherArg);
  DlgButton(2,4,10,'OK',1,True);
  DlgButton(14,4,14,T3('Select...','Choisir...','Waehlen...'),2,False);
  DlgButton(30,4,12,T3('Cancel','Annuler','Abbruch'),0,False);
@@ -14694,121 +19747,71 @@ Begin
   S:=RunOther;
   If FileSelect(T3('Program to run','Programme a executer','Programm'),'*.*',S) Then Begin
    RunOther:=S;
-   RunProgramGUI(RunOther,RunOtherArg);
+   RunProgramGUI(RunOther,ExpandCmdLine(RunOtherArg));
   End;
   Exit;
  End;
  If R=1 Then Begin
   RunOther:=DI[3].Val;RunOtherArg:=DI[5].Val;
-  If RunOther<>'' Then RunProgramGUI(RunOther,RunOtherArg);
+  If RunOther<>'' Then RunProgramGUI(RunOther,ExpandCmdLine(RunOtherArg));
  End;
-End;
-
-{ ---------------------------------------------------------------------- }
-{ Fichiers                                                                 }
-{ ---------------------------------------------------------------------- }
-
-Function ConfirmDiscard: Boolean;
-Var R: Integer;
-Begin
- ConfirmDiscard:=True;
- If Not EdMod Then Exit;
- R:=AlertBox(2,T3('The text has been modified|Discard the changes ?','Le texte a ete modifie|Abandonner les modifications ?','Der Text wurde geaendert|Aenderungen verwerfen ?'),
-  T3('Cancel|Discard','Annuler|Abandonner','Abbruch|Verwerfen'),1);
- ConfirmDiscard:=R=2;
-End;
-
-Procedure CmdNew;
-Begin
- If Not ConfirmDiscard Then Exit;
- EdClear;
- EdFile:='';
- NeedDraw:=True;
-End;
-
-Procedure CmdLoad;
-Var P: String;
-Begin
- If Not ConfirmDiscard Then Exit;
- P:=EdFile;
- If FileSelect(T3('Load file','Charger un fichier','Datei laden'),'*.S',P) Then
-  EdLoadFile(P,False);
- NeedDraw:=True;
-End;
-
-Procedure CmdSaveAs;
-Var P: String;
-Begin
- P:=EdFile;
- If FileSelect(T3('Save file as','Sauver le fichier sous','Datei sichern als'),'*.S',P) Then Begin
-  If FileExists(P) Then
-   If AlertBox(2,T3('File exists|Overwrite it ?','Le fichier existe|Le remplacer ?','Datei existiert|Ueberschreiben ?'),
-        T3('Cancel|Overwrite','Annuler|Remplacer','Abbruch|Ueberschr.'),1)<>2 Then Begin NeedDraw:=True;Exit;End;
-  EdSaveFile(P);
- End;
- NeedDraw:=True;
-End;
-
-Procedure CmdSave;
-Begin
- If EdFile='' Then CmdSaveAs Else EdSaveFile(EdFile);
- NeedDraw:=True;
-End;
-
-Procedure CmdAppend;
-Var P: String;
-Begin
- P:='';
- If FileSelect(T3('Append file','Ajouter un fichier','Datei anhaengen'),'*.S',P) Then
-  EdLoadFile(P,True);
- NeedDraw:=True;
-End;
-
-Procedure CmdSaveBlock;
-Var P: String;
-Begin
- If Not BlkSet Then Exit;
- P:='';
- If FileSelect(T3('Save block as','Sauver le bloc sous','Block sichern als'),'*.S',P) Then
-  SaveBlockFile(P);
- NeedDraw:=True;
-End;
-
-Procedure CmdQuit;
-Var R: Integer;
-Begin
- If EdMod Then Begin
-  R:=AlertBox(2,T3('The text has been modified','Le texte a ete modifie','Der Text wurde geaendert'),
-       T3('Save|Quit|Cancel','Sauver|Quitter|Annuler','Sichern|Ende|Abbruch'),1);
-  If R=1 Then Begin CmdSave;If EdMod Then Exit;End
-  Else If R<>2 Then Begin NeedDraw:=True;Exit;End;
- End;
- Quit:=True;
 End;
 
 Procedure CmdAbout;
 Var R: Integer;
 Begin
- DlgReset(46,13);
- DlgAdd(DK_BOXED,5,1,32,'  '+AsmName+' 68000 Editor/Assembler');
+ DlgReset(52,14);
+ DlgAdd(DK_BOXED,8,1,32,'  '+AsmName+' 68000 Editor/Assembler');
  DlgLabel(11,3,T3('DEV-COOLS clone, 2026','Clone DEV-COOLS, 2026','DEV-COOLS-Klon, 2026'));
  DlgLabel(2,5,T3('Inspired by HiSoft Devpac v','Inspire de HiSoft Devpac v','Nach HiSoft Devpac v')+VERSION_TEXT);
  DlgLabel(2,6,T3('Author: Sylvain Maltais','Auteur : Sylvain Maltais','Autor: Sylvain Maltais'));
  DlgLabel(2,7,'www.gladir.com/dev-cools');
+ DlgLabel(2,8,T3('Free text memory: ','Memoire texte libre : ','Freier Textspeicher: ')+IntStr(MemFree)+T3(', used: ',', utilise : ',', benutzt: ')+IntStr(EdMem));
  If AmigaMode Then DlgAdd(DK_BOXED,7,9,28,T3(' Mode: Commodore Amiga',' Mode : Commodore Amiga',' Modus: Commodore Amiga'))
  Else DlgAdd(DK_BOXED,7,9,28,T3(' Mode: Atari ST',' Mode : Atari ST',' Modus: Atari ST'));
- DlgButton(18,11,8,'OK',1,True);
+ DlgButton(22,11,8,'OK',1,True);
  R:=DlgRun;
 End;
 
+{ Help (Alt-H) : touches des commandes que les menus n'indiquent pas }
 Procedure CmdHelp;
 Var R: Integer;
 Begin
- R:=AlertBox(3,
-  T3('^N New  ^L Load  ^S Save  ^Q Quit|^F Find  ^G Next  ^R Replace  ^W Goto|^C Copy  ^U Cut  ^V Paste  ^B Delete|F5/F6 Block start/end  ^Y Delete line|^A Assemble  ^X Run  ^D Debug|AltM '+MonName+'  ^K GEM  ^J Jump  ^O Other',
-     '^N Nouveau  ^L Charger  ^S Sauver  ^Q Quitter|^F Chercher  ^G Suivant  ^R Remplacer  ^W Aller|^C Copier  ^U Couper  ^V Coller  ^B Effacer|F5/F6 Debut/fin de bloc  ^Y Effacer ligne|^A Assembler  ^X Executer  ^D Deboguer|AltM '+MonName+'  ^K GEM  ^J Erreur  ^O Autre',
-     '^N Neu  ^L Laden  ^S Sichern  ^Q Ende|^F Suchen  ^G Weiter  ^R Ersetzen  ^W Gehe zu|^C Kopieren  ^U Ausschn.  ^V Einfuegen  ^B Loeschen|F5/F6 Blockanfang/-ende  ^Y Zeile loeschen|^A Assemblieren  ^X Starten  ^D Debuggen|AltM '+MonName+'  ^K GEM  ^J Fehler  ^O Anderes'),
-  'OK',1);
+ DlgReset(74,14);
+ DlgLabel(1,0,T3('Keys','Touches','Tasten'));
+ DlgLabel(1,2,T3('F1 Block start  F2 Block end  F3 Save block  F4 Copy block',
+  'F1 Debut bloc  F2 Fin bloc  F3 Sauver bloc  F4 Copier bloc',
+  'F1 Blockanfang  F2 Blockende  F3 Block sichern  F4 Block kopieren'));
+ DlgLabel(1,3,T3('F5 Paste  Shift-F4 Remember  Shift-F5 Delete block',
+  'F5 Coller  Shift-F4 Memoriser  Shift-F5 Effacer le bloc',
+  'F5 Einfuegen  Shift-F4 Merken  Shift-F5 Block loeschen'));
+ DlgLabel(1,4,T3('^A ^F word  ^Y delete line  ^@ delete to EOL  ^U undelete',
+  '^A ^F mot  ^Y effacer ligne  ^@ effacer fin de ligne  ^U annuler',
+  '^A ^F Wort  ^Y Zeile loeschen  ^@ Zeilenrest loeschen  ^U zurueck'));
+ DlgLabel(1,5,T3('^S ^D ^E ^X cursor  ^R ^C page  Ctrl-left/right line start/end',
+  '^S ^D ^E ^X curseur  ^R ^C page  Ctrl-gauche/droite debut/fin',
+  '^S ^D ^E ^X Cursor  ^R ^C Seite  Strg-links/rechts Zeilenanfang/-ende'));
+ DlgLabel(1,6,T3('Alt-A Assemble  Y Check  X Run  D Debug  M '+MonName+'  J Error',
+  'Alt-A Assembler  Y Verifier  X Executer  D Deboguer  M '+MonName+'  J Err.',
+  'Alt-A Assembl.  Y Pruefen  X Starten  D Debug  M '+MonName+'  J Fehler'));
+ DlgLabel(1,7,T3('Alt-F Find  N Next  P Previous  R Replace  G Goto  T Top  B Bottom',
+  'Alt-F Chercher  N Suivant  P Precedent  R Remplacer  G Aller  T Haut',
+  'Alt-F Suchen  N Weiter  P Zurueck  R Ersetzen  G Gehe zu  T Anfang'));
+ DlgLabel(1,8,T3('Alt-L Load  S Save as  I Insert  Q Quit  W Print  0 Run other',
+  'Alt-L Charger  S Sauver sous  I Inserer  Q Quitter  W Imprimer',
+  'Alt-L Laden  S Sichern als  I Einfuegen  Q Ende  W Drucken'));
+ DlgLabel(1,9,T3('Alt-C ASCII table  H Help  U Next error in this file  K GEM',
+  'Alt-C Table ASCII  H Aide  U Erreur suivante ici  B Bas  K GEM',
+  'Alt-C ASCII-Tabelle  H Hilfe  U naechster Fehler  B Ende  K GEM'));
+ DlgLabel(1,10,T3('F8 Save  F9 Run  F10 Menu  ^J Previous error  Alt-0 Run other',
+  'F8 Sauver  F9 Executer  F10 Menu  ^J Erreur precedente  Alt-0 Autre',
+  'F8 Sichern  F9 Starten  F10 Menue  ^J voriger Fehler  Alt-0 Anderes'));
+ DlgLabel(1,11,T3('Alt-F1..F8 Set bookmark  Ctrl-F1..F8 Goto bookmark',
+  'Alt-F1..F8 Poser un signet  Ctrl-F1..F8 Aller au signet',
+  'Alt-F1..F8 Lesezeichen setzen  Ctrl-F1..F8 Gehe zu Lesezeichen'));
+ DlgLabel(1,12,T3('Free memory: ','Memoire libre : ','Freier Speicher: ')+IntStr(MemFree));
+ DlgButton(63,12,8,'OK',1,True);
+ R:=DlgRun;
 End;
 
 Procedure CmdMemory;
@@ -14840,55 +19843,78 @@ Begin
  If R=2 Then SavePrefs;
 End;
 
+{ ---------------------------------------------------------------------- }
+{ Dispatcheur de commandes (menus, touches, sous-menus)                     }
+{ ---------------------------------------------------------------------- }
+
+Procedure DoCmd(Id: Integer);
+Begin
+ If MouseHid Then Begin MouseHid:=False;ShowMouse;End;
+ Case Id Of
+  CM_ABOUT: CmdAbout;
+  CM_HELP: CmdHelp;
+  CM_MEMORY: CmdMemory;
+  CM_NEW: CmdNew;
+  CM_LOAD: CmdLoad;
+  CM_INSERT: CmdInsert;
+  CM_REVERT: CmdRevert;
+  CM_CLOSE: CmdClose;
+  CM_SAVEAS: CmdSaveAs;
+  CM_SAVE: CmdSave;
+  CM_DELFILE: CmdDeleteFile;
+  CM_CHDIR: CmdChDir;
+  CM_QUIT: CmdQuit;
+  CM_CUT: DeleteBlock;
+  CM_COPY: CopyBlock;
+  CM_PASTE: PasteBlock;
+  CM_SELALL: SelectAll;
+  CM_ASCII: CmdAscii;
+  CM_TOP: GotoLine(1);
+  CM_BOTTOM: GotoLine(EdN);
+  CM_GOTO: DoGotoLine;
+  CM_BSTART: SetBlockStart;
+  CM_BEND: SetBlockEnd;
+  CM_BSAVE: CmdSaveBlock;
+  CM_BCOPY: DupBlock;
+  CM_BDEL: DeleteBlock;
+  CM_BREM: CopyBlock;
+  CM_BPASTE: PasteBlock;
+  CM_BPRINT: PrintBlock;
+  CM_FIND: DoFind;
+  CM_FNEXT: DoFindNext;
+  CM_FPREV: FindPrevious;
+  CM_REPL: DoReplace;
+  CM_REPLALL: DoReplaceAll;
+  CM_PREFS: EditorPrefsDlg;
+  CM_ASMOPT: AsmOptionsDlg;
+  CM_RUNOPT: RunOptionsDlg;
+  CM_SAVEPREF: SavePrefs;
+  CM_LOADPREF: CmdLoadPrefs;
+  CM_RUNOTHER: CmdRunOther;
+  CM_ASM: CmdAssemble;
+  CM_CHECK: CmdCheck;
+  CM_RUN: CmdRun;
+  CM_DEBUG: CmdDebug;
+  CM_MON: CmdMonitor;
+  CM_GEM: OptRunGem:=Not OptRunGem;
+  CM_PREVERR: ErrorStep(-1);
+  CM_JUMPERR: ErrorStep(1);
+  CM_NEXTERR: NextErrorAfterCursor;
+ End;
+ NeedDraw:=True;
+End;
+
 Procedure DoMenu(M,I: Integer);
 Begin
- Case M Of
-  1: Case I Of
-      1: CmdAbout;
-      3: CmdHelp;
-      4: CmdMemory;
-     End;
-  2: Case I Of
-      1: CmdNew;
-      2: CmdLoad;
-      3: CmdSave;
-      4: CmdSaveAs;
-      5: CmdAppend;
-      6: CmdSaveBlock;
-      8: CmdQuit;
-     End;
-  3: Case I Of
-      1: DoFind;
-      2: DoFindNext;
-      3: DoReplace;
-      4: DoGotoLine;
-      6: Begin BlkSL:=CurL;BlkSC:=CurC;BlkAnch:=True;BlkSet:=False;End;
-      7: Begin
-          If BlkAnch Then Begin BlkEL:=CurL;BlkEC:=CurC;BlkSet:=True;BlkAnch:=False;End
-          Else Alert1(1,T3('Set the block start first','Posez d''abord le debut du bloc','Zuerst Blockanfang setzen'));
-         End;
-      8: CopyBlock;
-      9: Begin CopyBlock;DeleteBlock;End;
-      10: PasteBlock;
-      11: DeleteBlock;
-      13: SelectAll;
-     End;
-  4: Case I Of
-      1: EditorPrefsDlg;
-      2: AsmOptionsDlg;
-      3: RunOptionsDlg;
-      5: SavePrefs;
-      6: LoadPrefs;
-     End;
-  5: Case I Of
-      1: CmdAssemble;
-      2: CmdRun;
-      3: CmdDebug;
-      4: CmdMonitor;
-      5: OptRunGem:=Not OptRunGem;
-      7: JumpToError;
-      8: CmdRunOther;
-     End;
+ DoCmd(MItem(M,I));
+End;
+
+Procedure DoSub(Id,J: Integer);
+Begin
+ Case Id Of
+  CM_SETBM: SetBookmark(J);
+  CM_GOTOBM: GotoBookmark(J);
+  CM_RUNDIR: RunDirMode:=J;
  End;
  NeedDraw:=True;
 End;
@@ -14897,97 +19923,106 @@ End;
 { Clavier et souris                                                         }
 { ---------------------------------------------------------------------- }
 
+{ Commandes Ctrl-lettre : touches du manuel Devpac et WordStar (^S ^D ^E ^X) }
 Procedure CtrlCommand(K: Word);
 Begin
  Case K Of
-  1: CmdAssemble;
-  2: DeleteBlock;
-  3: CopyBlock;
-  4: CmdDebug;
-  6: DoFind;
-  7: DoFindNext;
-  10: JumpToError;
-  11: OptRunGem:=Not OptRunGem;
-  12: CmdLoad;
-  14: CmdNew;
-  15: CmdRunOther;
-  17: CmdQuit;
-  18: DoReplace;
-  19: CmdSave;
-  21: Begin CopyBlock;DeleteBlock;End;
-  22: PasteBlock;
-  23: DoGotoLine;
-  24: CmdRun;
-  25: DeleteCurLine;
+  1: WordLeft;                 { ^A mot a gauche }
+  3: CurPageDown;              { ^C page vers le bas (WordStar) }
+  4: CurRight;                 { ^D }
+  5: CurUp;                    { ^E }
+  6: WordRight;                { ^F mot a droite }
+  10: DoCmd(CM_PREVERR);       { ^J erreur precedente }
+  12: DoCmd(CM_LOAD);          { ^L (ancien raccourci du clone) }
+  14: DoCmd(CM_NEW);           { ^N (ancien raccourci du clone) }
+  15: DoCmd(CM_RUNOTHER);      { ^O (ancien raccourci du clone) }
+  17: DoCmd(CM_QUIT);          { ^Q (ancien raccourci du clone) }
+  18: CurPageUp;               { ^R page vers le haut (WordStar) }
+  19: CurLeft;                 { ^S }
+  21: UndeleteLine;            { ^U }
+  23: DoCmd(CM_CLOSE);         { ^W fermer la fenetre }
+  24: CurDown;                 { ^X }
+  25: DeleteCurLine;           { ^Y }
+ End;
+End;
+
+{ Alt-lettre : raccourcis des menus }
+Procedure AltCommand(L: Char);
+Begin
+ Case L Of
+  'A': DoCmd(CM_ASM);
+  'Y': DoCmd(CM_CHECK);
+  'X': DoCmd(CM_RUN);
+  'D': DoCmd(CM_DEBUG);
+  'M': DoCmd(CM_MON);
+  'K': DoCmd(CM_GEM);
+  'J': DoCmd(CM_JUMPERR);
+  'U': DoCmd(CM_NEXTERR);
+  'L': DoCmd(CM_LOAD);
+  'S': DoCmd(CM_SAVEAS);
+  'I': DoCmd(CM_INSERT);
+  'Q': DoCmd(CM_QUIT);
+  'F': DoCmd(CM_FIND);
+  'N': DoCmd(CM_FNEXT);
+  'P': DoCmd(CM_FPREV);
+  'R': DoCmd(CM_REPL);
+  'G': DoCmd(CM_GOTO);
+  'T': DoCmd(CM_TOP);
+  'B': DoCmd(CM_BOTTOM);
+  'H': DoCmd(CM_HELP);
+  'W': DoCmd(CM_BPRINT);
+  'C': DoCmd(CM_ASCII);
  End;
 End;
 
 Procedure HandleKey(K: Word);
-Var S: String; V: Integer; HadBlock: Boolean;
+Var L: Char;
 Begin
+ If StatusMsg<>'' Then Begin StatusMsg:='';NeedDraw:=True;End;
+ If HiOn Then Begin HiOn:=False;NeedDraw:=True;End;
+ If (PrefHideMouse=1) And (Not MouseHid) And ((K>=32) And (K<=255) Or (K=K_BKSP) Or (K=K_ENTER) Or (K=K_TAB)) Then Begin
+  HideMouse;MouseHid:=True;
+ End;
  If (K>=1) And (K<=26) And (K<>8) And (K<>9) And (K<>13) Then Begin
   CtrlCommand(K);NeedDraw:=True;Exit;
  End;
+ L:=AltLetter(K);
+ If L<>#0 Then Begin AltCommand(L);NeedDraw:=True;Exit;End;
  Case K Of
-  K_F1: CmdHelp;
-  K_F5: DoMenu(3,6);
-  K_F6: DoMenu(3,7);
+  K_F1: DoCmd(CM_BSTART);
+  K_F2: DoCmd(CM_BEND);
+  K_F3: DoCmd(CM_BSAVE);
+  K_F4: DoCmd(CM_BCOPY);
+  K_F5: DoCmd(CM_PASTE);
+  256+87: DoCmd(CM_BREM);          { Shift-F4 }
+  256+88: DoCmd(CM_BDEL);          { Shift-F5 }
+  K_F8: DoCmd(CM_SAVE);
+  K_F9: DoCmd(CM_RUN);
   K_F10: RunMenu(1,False);
-  K_F9: CmdRun;
-  256+50: CmdMonitor;
-  K_UP: Begin
-         If CurL>1 Then Begin
-          Dec(CurL);CurC:=CharOfVis(Ed^[CurL]^,WantV);
-          EnsureVisible;
-         End;
-        End;
-  K_DOWN: Begin
-         If CurL<EdN Then Begin
-          Inc(CurL);CurC:=CharOfVis(Ed^[CurL]^,WantV);
-          EnsureVisible;
-         End;
-        End;
-  K_LEFT: Begin
-         If CurC>1 Then Dec(CurC)
-         Else If CurL>1 Then Begin Dec(CurL);CurC:=Length(Ed^[CurL]^)+1;End;
-         EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
-        End;
-  K_RIGHT: Begin
-         If CurC<=Length(Ed^[CurL]^) Then Inc(CurC)
-         Else If CurL<EdN Then Begin Inc(CurL);CurC:=1;End;
-         EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);
-        End;
-  K_CLEFT: WordLeft;
-  K_CRIGHT: WordRight;
+  256+129: DoCmd(CM_RUNOTHER);     { Alt-0 }
+  256+94..256+101: GotoBookmark(K-256-93);     { Ctrl-F1..F8 }
+  256+104..256+111: SetBookmark(K-256-103);    { Alt-F1..F8 }
+  259: DeleteToEol;                { Ctrl-@ }
+  K_UP: CurUp;
+  K_DOWN: CurDown;
+  K_LEFT: CurLeft;
+  K_RIGHT: CurRight;
+  K_CLEFT: Begin CurC:=1;EnsureVisible;WantV:=0;End;
+  K_CRIGHT: Begin CurC:=Length(Ed^[CurL]^)+1;EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);End;
   K_HOME: Begin CurC:=1;EnsureVisible;WantV:=0;End;
   K_END: Begin CurC:=Length(Ed^[CurL]^)+1;EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);End;
   K_CHOME: Begin CurL:=1;CurC:=1;TopL:=1;EnsureVisible;WantV:=0;End;
   K_CEND: Begin CurL:=EdN;CurC:=Length(Ed^[CurL]^)+1;EnsureVisible;WantV:=VisOf(Ed^[CurL]^,CurC);End;
-  K_PGUP: Begin
-         CurL:=Max2(1,CurL-TXT_ROWS+1);TopL:=Max2(1,TopL-TXT_ROWS+1);
-         CurC:=CharOfVis(Ed^[CurL]^,WantV);EnsureVisible;
-        End;
-  K_PGDN: Begin
-         CurL:=Min2(EdN,CurL+TXT_ROWS-1);
-         If TopL+TXT_ROWS-1<EdN Then TopL:=Min2(EdN,TopL+TXT_ROWS-1);
-         CurC:=CharOfVis(Ed^[CurL]^,WantV);EnsureVisible;
-        End;
+  K_PGUP: CurPageUp;
+  K_PGDN: CurPageDown;
   K_INS: EdIns:=Not EdIns;
-  K_DEL: Begin
-          If BlkSet Then DeleteBlock Else DoDelete;
-         End;
-  K_BKSP: Begin
-           If BlkSet Then DeleteBlock Else DoBackspace;
-          End;
-  K_ENTER: Begin
-            If BlkSet Then ClearBlock;
-            NewLineAt;
-           End;
-  K_TAB: Begin ClearBlock;DoTab;End;
-  K_ESC: ClearBlock;
+  K_DEL: DoDelete;
+  K_BKSP: DoBackspace;
+  K_ENTER: Begin EditLine:=CurL;NewLineAt;End;
+  K_TAB: DoTab;
   32..255: Begin
-            If BlkSet Then ClearBlock;
             InsertChar(Chr(K));
+            If (K=41) And (PrefMatch=1) Then ShowMatchingParen;
            End;
  End;
  NeedDraw:=True;
@@ -15008,21 +20043,58 @@ End;
 
 Procedure VScroll(D: Integer);
 Begin
+ ScrollOnly:=True;
  TopL:=Clamp(TopL+D,1,Max2(1,EdN-TXT_ROWS+1));
 End;
 
+Var DragThumb: Boolean;
+    ThumbOff   : LongInt;
+
+{ geometrie de l'ascenseur vertical : haut de la glissiere (Y1), hauteur utile
+  (H), taille (Sz) et position (Pos) du curseur ; False s'il n'y a pas de defilement }
+Function ThumbGeom(Var Y1,H,Sz,Pos: LongInt): Boolean;
+Var Y2: LongInt;
+Begin
+ Y1:=TY0+SB_W-1;Y2:=TXT_Y2-SB_W+1;
+ H:=Y2-Y1-2;
+ ThumbGeom:=EdN>TXT_ROWS;
+ If EdN<=TXT_ROWS Then Exit;
+ Sz:=H*TXT_ROWS Div EdN;If Sz<12 Then Sz:=12;
+ Pos:=(H-Sz)*(TopL-1) Div (EdN-TXT_ROWS);
+ If Pos<0 Then Pos:=0;
+End;
+
 Procedure MouseDown(X,Y,B: LongInt);
-Var T,L,C: Integer; Y1,Y2,H: LongInt;
+Var T,L,C,W1,W2: Integer; Y1,Y2,H,Sz,Pos: LongInt; S: String;
 Begin
  T:=TitleHit(X,Y);
  If T>0 Then Begin RunMenu(T,True);Exit;End;
  If Y<WY1 Then Exit;
- If InBox(X,Y,WX1+1,WY1+1,WX1+17,WY1+TITLE_H-2) Then Begin CmdQuit;Exit;End;
- If InBox(X,Y,TX0-4,TY0,TXT_X2,TXT_Y2) Then Begin
+ If StatusMsg<>'' Then Begin StatusMsg:='';NeedDraw:=True;End;
+ If HiOn Then Begin HiOn:=False;NeedDraw:=True;End;
+ If InBox(X,Y,WX1+1,WY1+1,WX1+17,WY1+TITLE_H-2) Then Begin DoCmd(CM_CLOSE);Exit;End;
+ If InBox(X,Y,WX1+1,TY0,TXT_X2,TXT_Y2) Then Begin
   EdPosAt(X,Y,L,C);
   MoveCur(L,C);
-  ClearBlock;
-  DragSel:=True;AnchL:=L;AnchC:=C;
+  DragSel:=True;AnchL:=L;AnchC:=C;DragMode:=0;
+  If X<TX0 Then Begin
+   { marge gauche : selection ligne par ligne }
+   DragMode:=1;
+   BlkSL:=L;BlkSC:=1;
+   If L<EdN Then Begin BlkEL:=L+1;BlkEC:=1;End Else Begin BlkEL:=L;BlkEC:=Length(Ed^[L]^)+1;End;
+   BlkSOk:=True;BlkEOk:=True;
+  End Else If (MsNow-LastClkT<400) And (LastClkL=L) And (LastClkC=C) Then Begin
+   { double-clic : le mot sous la souris devient le bloc }
+   S:=Ed^[L]^;
+   If C<=Length(S) Then Begin
+    W1:=C;W2:=C;
+    While (W1>1) And (S[W1-1]<>' ') And (S[W1-1]<>#9) Do Dec(W1);
+    While (W2<=Length(S)) And (S[W2]<>' ') And (S[W2]<>#9) Do Inc(W2);
+    BlkSL:=L;BlkSC:=W1;BlkEL:=L;BlkEC:=W2;BlkSOk:=True;BlkEOk:=True;
+    DragSel:=False;
+   End;
+  End;
+  LastClkT:=MsNow;LastClkL:=L;LastClkC:=C;
   NeedDraw:=True;
   Exit;
  End;
@@ -15031,12 +20103,17 @@ Begin
   If InBox(X,Y,TXT_X2+1,TY0-1,WX2,TY0+SB_W-2) Then VScroll(-1)
   Else If InBox(X,Y,TXT_X2+1,TXT_Y2-SB_W+2,WX2,TXT_Y2+1) Then VScroll(1)
   Else If (Y>=Y1) And (Y<=Y2) Then Begin
-   H:=Y2-Y1;
-   TopL:=Clamp(1+(Y-Y1)*Max2(0,EdN-TXT_ROWS) Div Max2(1,H),1,Max2(1,EdN-TXT_ROWS+1));
+   { zone grise : une page vers le haut ou vers le bas selon le curseur de l'ascenseur }
+   If ThumbGeom(Y1,H,Sz,Pos) Then Begin
+    If Y<Y1+1+Pos Then VScroll(-(TXT_ROWS-1))
+    Else If Y>Y1+1+Pos+Sz Then VScroll(TXT_ROWS-1)
+    Else Begin DragThumb:=True;ThumbOff:=Y-(Y1+1+Pos);End;
+   End;
   End;
   NeedDraw:=True;Exit;
  End;
  If Y>TXT_Y2 Then Begin
+  ScrollOnly:=True;
   If X<WX1+SB_W Then LeftV:=Max2(0,LeftV-4)
   Else If X>TXT_X2-SB_W Then LeftV:=LeftV+4
   Else If X<(WX1+TXT_X2) Div 2 Then LeftV:=Max2(0,LeftV-TXT_COLS Div 2)
@@ -15046,14 +20123,39 @@ Begin
 End;
 
 Procedure MouseMove(X,Y: LongInt);
-Var L,C: Integer;
+Var L,C: Integer; Y1,H,Sz,Pos: LongInt;
 Begin
+ If DragThumb And ((MB And 3)<>0) Then Begin
+  If ThumbGeom(Y1,H,Sz,Pos) And (H>Sz) Then Begin
+   Pos:=Y-ThumbOff-(Y1+1);
+   If Pos<0 Then Pos:=0;
+   If Pos>H-Sz Then Pos:=H-Sz;
+   TopL:=Clamp(1+Pos*(EdN-TXT_ROWS) Div (H-Sz),1,Max2(1,EdN-TXT_ROWS+1));
+   ScrollOnly:=True;NeedDraw:=True;
+  End;
+  Exit;
+ End;
  If DragSel And ((MB And 3)<>0) Then Begin
   EdPosAt(X,Y,L,C);
-  If (L<>CurL) Or (C<>CurC) Then Begin
+  If DragMode=1 Then Begin
+   { selection par lignes depuis la marge }
+   If L>=AnchL Then Begin
+    BlkSL:=AnchL;BlkSC:=1;
+    If L<EdN Then Begin BlkEL:=L+1;BlkEC:=1;End Else Begin BlkEL:=L;BlkEC:=Length(Ed^[L]^)+1;End;
+   End Else Begin
+    BlkSL:=L;BlkSC:=1;
+    If AnchL<EdN Then Begin BlkEL:=AnchL+1;BlkEC:=1;End Else Begin BlkEL:=AnchL;BlkEC:=Length(Ed^[AnchL]^)+1;End;
+   End;
+   BlkSOk:=True;BlkEOk:=True;
+   If L<>CurL Then Begin CurL:=L;CurC:=1;EnsureVisible;WantV:=0;NeedDraw:=True;End;
+  End Else If (L<>CurL) Or (C<>CurC) Then Begin
    CurL:=L;CurC:=C;
-   BlkSL:=AnchL;BlkSC:=AnchC;BlkEL:=L;BlkEC:=C;
-   BlkSet:=(L<>AnchL) Or (C<>AnchC);
+   If (AnchL<L) Or ((AnchL=L) And (AnchC<=C)) Then Begin
+    BlkSL:=AnchL;BlkSC:=AnchC;BlkEL:=L;BlkEC:=C;
+   End Else Begin
+    BlkSL:=L;BlkSC:=C;BlkEL:=AnchL;BlkEC:=AnchC;
+   End;
+   BlkSOk:=True;BlkEOk:=True;
    EnsureVisible;
    WantV:=VisOf(Ed^[CurL]^,CurC);
    NeedDraw:=True;
@@ -15063,7 +20165,7 @@ End;
 
 Procedure MouseUp;
 Begin
- DragSel:=False;
+ DragSel:=False;DragThumb:=False;
 End;
 
 Procedure MainLoop;
@@ -15074,6 +20176,7 @@ Begin
   IdleOK:=True;
   PollEvent(E);
   IdleOK:=False;
+  If MouseHid And (E.Kind>=2) Then Begin MouseHid:=False;ShowMouse;End;
   Case E.Kind Of
    1: HandleKey(E.Key);
    2: MouseDown(E.X,E.Y,E.B);
@@ -15110,6 +20213,22 @@ Begin
  WriteLn(ConOut,'  /NODISK     '+T3('assemble to memory only (no output file)','assemble en memoire seulement (pas de fichier)','nur im Speicher assemblieren'));
  WriteLn(ConOut,'  /FLA:file   '+T3('floppy image for drive A: (also /FLB: /FLC: /FLD:; default DISKA.ST ...; a blank 720 KB disk is used and the file created on the first write)','image de disquette du lecteur A: (aussi /FLB: /FLC: /FLD: ; defaut DISKA.ST ... ; disquette vierge 720 Ko, fichier cree a la premiere ecriture)','Diskettenabbild fuer Laufwerk A: (auch /FLB: /FLC: /FLD:; Standard DISKA.ST ...; leere 720-KB-Diskette, Datei wird beim ersten Schreiben angelegt)'));
  WriteLn(ConOut,'  /NOGEM      '+T3('run programs without GEM (VDI/AES)','execute sans GEM (VDI/AES)','ohne GEM (VDI/AES) starten'));
+ WriteLn(ConOut,'  /OLDRC      '+T3('old return codes 0/1/2/3 (default: 0 OK, 5 warnings, 10 errors, 20 fatal)','anciens codes retour 0/1/2/3 (defaut : 0 OK, 5 avertissements, 10 erreurs, 20 fatal)','alte Rueckgabecodes 0/1/2/3 (Standard: 0 OK, 5 Warnungen, 10 Fehler, 20 fatal)'));
+ WriteLn(ConOut);
+ WriteLn(ConOut,T3('GEN.TTP style options (a command line using them assembles without graphics):',
+   'Options de style GEN.TTP (une ligne de commande qui les utilise assemble sans graphisme) :',
+   'Optionen im GEN.TTP-Stil (eine Kommandozeile mit ihnen assembliert ohne Grafik):'));
+ WriteLn(ConOut,'  -B          '+T3('no binary file','pas de fichier binaire','keine Binaerdatei'));
+ WriteLn(ConOut,'  -C          '+T3('case insensitive labels (+NOCASE)','etiquettes insensibles a la casse (+NOCASE)','Labels ohne Gross-/Kleinschreibung (+NOCASE)'));
+ WriteLn(ConOut,'  -Esym=expr,sym2  '+T3('define symbols (value 1 if =expr omitted)','definit des symboles (valeur 1 sans =expr)','Symbole definieren (Wert 1 ohne =expr)'));
+ WriteLn(ConOut,'  -Hfile      '+T3('pre-assembled header files (accepted, not used)','fichiers d''en-tete pre-assembles (acceptes, non utilises)','vorassemblierte Header (akzeptiert, nicht benutzt)'));
+ WriteLn(ConOut,'  -Ipath      '+T3('include directory','repertoire des INCLUDE','Include-Verzeichnis'));
+ WriteLn(ConOut,'  -L[n]       '+T3('output format: -L GST, -L2 DRI, -L6 S-records (supported), -L7 Lattice','format de sortie : -L GST, -L2 DRI, -L6 S-records (gere), -L7 Lattice','Ausgabeformat: -L GST, -L2 DRI, -L6 S-Records (unterstuetzt), -L7 Lattice'));
+ WriteLn(ConOut,'  -Ofile      '+T3('output file name','nom du fichier de sortie','Name der Ausgabedatei'));
+ WriteLn(ConOut,'  -Pfile      '+T3('listing file name (default source.LST)','nom du listing (defaut source.LST)','Listing-Datei (Standard Quelle.LST)'));
+ WriteLn(ConOut,'  -Q  -S  -Tn -Z  '+T3('pause at end, symbol table in listing, tab size, pass 1 listing','pause a la fin, table des symboles au listing, tabulation, listing passe 1','Pause am Ende, Symboltabelle im Listing, Tabulator, Listing Pass 1'));
+ WriteLn(ConOut,'  -Vopt  -Wfile  +OPTION  '+T3('OPT options, option file, long OPT name (e.g. +DEBUG)','options OPT, fichier d''options, nom long OPT (ex. +DEBUG)','OPT-Optionen, Optionsdatei, langer OPT-Name (z.B. +DEBUG)'));
+ WriteLn(ConOut,'  '+T3('(the / forms above keep their historical meaning; -D -X -M -A are historical too)','(les formes / ci-dessus gardent leur sens historique ; -D -X -M -A aussi)','(die /-Formen behalten ihre alte Bedeutung; -D -X -M -A ebenfalls)'));
  WriteLn(ConOut,'  /?          '+T3('this help','cette aide','diese Hilfe'));
  WriteLn(ConOut);
  WriteLn(ConOut,T3('Language: French by default, LANGUAGE=EN for English, LANGUAGE=GR for German.',
@@ -15117,26 +20236,145 @@ Begin
    'Sprache: Franzoesisch als Standard, LANGUAGE=EN fuer Englisch, LANGUAGE=GR fuer Deutsch.'));
 End;
 
+Var
+ GenMode    : Boolean;     { options de style GEN.TTP presentes }
+ OldRc      : Boolean;     { /OLDRC : anciens codes retour 0/1/2/3 }
+ PauseEnd   : Boolean;
+
+Function IsGenOpt(Const A: String): Boolean;
+Var C: Char;
+Begin
+ IsGenOpt:=False;
+ If Length(A)<2 Then Exit;
+ If A[1]='+' Then Begin IsGenOpt:=True;Exit;End;
+ If A[1]<>'-' Then Exit;
+ C:=UpCase(A[2]);
+ If (C='H') And (Length(A)=2) Then Exit;
+ IsGenOpt:=C In ['B','C','E','I','L','O','P','Q','S','T','V','W','Z','H'];
+End;
+
 Function IsOption(Const A: String): Boolean;
 Var U: String;
 Begin
  U:=Upper(A);
- If (U='') Or ((U[1]<>'/') And (U[1]<>'-')) Then Begin IsOption:=False;Exit;End;
+ If U='' Then Begin IsOption:=False;Exit;End;
+ If IsGenOpt(A) Then Begin IsOption:=True;Exit;End;
+ If (U[1]<>'/') And (U[1]<>'-') Then Begin IsOption:=False;Exit;End;
  U:=Copy(U,2,200);
  If (U<>'') And (U[1]='-') Then U:=Copy(U,2,200);
  IsOption:=(U='?') Or (U='H') Or (U='HELP') Or (U='ATARIST') Or (U='AMIGA') Or (U='A') Or
   (U='X') Or (U='D') Or (U='M') Or (U='B') Or (U='L') Or (U='S') Or (U='O') Or
-  (U='NODISK') Or (U='NOGEM') Or (Copy(U,1,4)='OUT:') Or (Copy(U,1,4)='INC:') Or
+  (U='NODISK') Or (U='NOGEM') Or (U='OLDRC') Or (Copy(U,1,4)='OUT:') Or (Copy(U,1,4)='INC:') Or
   (Copy(U,1,4)='DEF:') Or ((Copy(U,1,2)='FL') And (Length(U)>=5) And (U[3]>='A') And (U[3]<='D') And (U[4]=':'));
 End;
 
+Procedure AddCmdOpt(Const S: String);
+Begin
+ If CmdOpts<>'' Then CmdOpts:=CmdOpts+',';
+ CmdOpts:=Copy(CmdOpts+S,1,250);
+End;
+
+Procedure AddCmdSym(Const S: String);
+Begin
+ If S='' Then Exit;
+ If CmdSyms<>'' Then CmdSyms:=CmdSyms+',';
+ CmdSyms:=Copy(CmdSyms+S,1,250);
+End;
+
+Procedure GenArg(Const A: String; Const NextArg: String; Var UsedNext: Boolean); Forward;
+
+{ fichier d'options (-W) : un mot par element, separes par blancs/virgules }
+Procedure ReadOptFile(Const Fn: String);
+Var T: Text; L,Tk: String; I: Integer; Dummy: Boolean;
+Begin
+ Assign(T,Fn);
+ {$I-}
+ Reset(T);
+ {$I+}
+ If IOResult<>0 Then Begin
+  WriteLn(ConOut,T3('Cannot open ','Impossible d''ouvrir ','Kann nicht oeffnen: ')+Fn);
+  Exit;
+ End;
+ While Not Eof(T) Do Begin
+  ReadLn(T,L);
+  L:=TrimS(L);
+  Tk:='';
+  For I:=1 To Length(L)+1 Do Begin
+   If (I>Length(L)) Or (L[I]=' ') Or (L[I]=#9) Then Begin
+    If Tk<>'' Then Begin
+     If (Tk[1]='-') Or (Tk[1]='+') Then GenArg(Tk,'',Dummy)
+     Else AddCmdOpt(Upper(Tk));
+    End;
+    Tk:='';
+   End Else Tk:=Tk+L[I];
+  End;
+ End;
+ Close(T);
+End;
+
+{ une option de style GEN.TTP : -B -C -Efoo=1 -Hfile -Ipath -L[n] -Ofile -Pfile -Q -S -Tn -Vopt -Wfile -Z +OPTION }
+Procedure GenArg(Const A: String; Const NextArg: String; Var UsedNext: Boolean);
+Var I: Integer; C: Char; Rest: String; V: Integer;
+Begin
+ UsedNext:=False;
+ GenMode:=True;
+ If A[1]='+' Then Begin AddCmdOpt(Upper(Copy(A,2,200)));Exit;End;
+ I:=2;
+ While I<=Length(A) Do Begin
+  C:=UpCase(A[I]);
+  Rest:=Copy(A,I+1,250);
+  Case C Of
+   'B': NoBinary:=True;
+   'C': AddCmdOpt('NOCASE');
+   'D': AddCmdOpt('DEBUG');
+   'X': AddCmdOpt('XDEBUG');
+   'M': Begin End;
+   'Q': PauseEnd:=True;
+   'S': AddCmdOpt('SYMTAB');
+   'Z': AddCmdOpt('LIST1');
+   'E','H','I','O','P','T','V','W': Begin
+     If (Rest='') And (NextArg<>'') And (C<>'P') And (C<>'T') And Not IsOption(NextArg) Then Begin
+      Rest:=NextArg;UsedNext:=True;
+     End;
+     Case C Of
+      'E': AddCmdSym(Rest);
+      'H': CmdHeaders:=Rest;
+      'I': Begin If OptIncList<>'' Then OptIncList:=OptIncList+';';OptIncList:=Copy(OptIncList+Rest,1,250);End;
+      'O': OptOutName:=Rest;
+      'P': Begin OptListing:=True;If Rest<>'' Then OptListName:=Rest;End;
+      'T': Begin V:=ToInt(Rest);If (V>=1) And (V<=64) Then OptTabSize:=V;End;
+      'V': Begin
+            AddCmdOpt(Upper(Rest));
+           End;
+      'W': ReadOptFile(Rest);
+     End;
+     Exit;
+    End;
+   'L': Begin
+     If (Rest<>'') And (Rest[1]>='0') And (Rest[1]<='9') Then Begin
+      OptFormatSel:=Ord(Rest[1])-48;
+      Inc(I);
+     End Else OptFormatSel:=1;
+    End;
+  End;
+  Inc(I);
+ End;
+End;
+
 Procedure ParseCommandLine;
-Var I: Integer; A,U: String; HelpWanted: Boolean;
+Var I: Integer; A,U: String; HelpWanted,Used: Boolean;
 Begin
  HelpWanted:=False;NQueue:=0;StartAction:=' ';NPre:=0;
- For I:=1 To ParamCount Do Begin
+ CmdOpts:='';CmdSyms:='';CmdHeaders:='';NoBinary:=False;OptFormatSel:=0;OptIncList:='';
+ GenMode:=False;PauseEnd:=False;
+ I:=0;
+ While I<ParamCount Do Begin
+  Inc(I);
   A:=ParamStr(I);
-  If IsOption(A) Then Begin
+  If IsGenOpt(A) Then Begin
+   If I<ParamCount Then GenArg(A,ParamStr(I+1),Used) Else GenArg(A,'',Used);
+   If Used Then Inc(I);
+  End Else If IsOption(A) Then Begin
    U:=Upper(Copy(A,2,200));
    If (U<>'') And (U[1]='-') Then U:=Copy(U,2,200);
    If (U='?') Or (U='H') Or (U='HELP') Then HelpWanted:=True
@@ -15152,17 +20390,21 @@ Begin
    Else If U='O' Then OptOptimize:=True
    Else If U='NODISK' Then OptToDisk:=False
    Else If U='NOGEM' Then OptRunGem:=False
+   Else If U='OLDRC' Then OldRc:=True
    Else If Copy(U,1,4)='OUT:' Then OptOutName:=Copy(A,Pos(':',A)+1,200)
    Else If Copy(U,1,4)='INC:' Then OptIncPath:=Copy(A,Pos(':',A)+1,200)
    Else If (Copy(U,1,2)='FL') And (Length(U)>=5) And (U[3]>='A') And (U[3]<='D') And (U[4]=':') Then
     FlpImage[Ord(U[3])-65]:=Copy(A,6,200)
    Else If Copy(U,1,4)='DEF:' Then Begin
     If NPre<10 Then Begin Inc(NPre);PreDefs[NPre]:=Copy(A,Pos(':',A)+1,80);End;
+    AddCmdSym(Copy(A,Pos(':',A)+1,80));
    End;
   End Else If NQueue<20 Then Begin
    Inc(NQueue);FileQueue[NQueue]:=A;
   End;
  End;
+ { une ligne de commande de style GEN : assemblage sans interface graphique }
+ If GenMode And (StartAction=' ') Then BatchMode:=True;
  If HelpWanted Then Begin
   ShowHelpLine;
   Flush(ConOut);
@@ -15170,45 +20412,61 @@ Begin
  End;
 End;
 
-{ Mode batch : assemble (et execute) sans interface graphique }
+{ Mode batch : assemble (et execute) sans interface graphique.
+  Codes retour (manuel p.65) : 0 OK, 5 avertissement(s), 10 erreur(s), 20 erreur fatale,
+  100 echec d'initialisation (aucun fichier source) ; /OLDRC : anciens codes 0/1/2/3. }
 Function BatchRun: Integer;
-Var Arr: PLineArr; Cnt,I: Integer; Rc: Integer; Name,Src: String;
+Var Arr: PLineArr; Cnt: LongInt; I: Integer; Rc,R1: Integer; Name,Src: String;
 Begin
  Rc:=0;
  If NQueue=0 Then Begin
   WriteLn(ConOut,T3('No source file specified (DEVPAC /? for help)','Aucun fichier source indique (DEVPAC /? pour l''aide)','Keine Quelldatei angegeben (DEVPAC /? fuer Hilfe)'));
-  BatchRun:=2;Exit;
+  If OldRc Then BatchRun:=2 Else BatchRun:=100;
+  Exit;
  End;
  InitMemory(ST_MEMKB);
  For I:=1 To NQueue Do Begin
   Name:=FileQueue[I];
   If (Not FileExists(Name)) And FileExists(Name+'.S') Then Name:=Name+'.S';
   If (Not FileExists(Name)) And FileExists(Name+'.s') Then Name:=Name+'.s';
-  If Not LoadLines(Name,Arr,Cnt) Then Begin
-   WriteLn(ConOut,T3('Cannot open ','Impossible d''ouvrir ','Kann nicht oeffnen: ')+Name);
-   Rc:=2;Continue;
+  LongLines:=0;
+  If Not LoadLinesBig(Name,Arr,Cnt) Then Begin
+   WriteLn(ConOut,T3('file not found: ','Impossible d''ouvrir ','Kann nicht oeffnen: ')+Name);
+   If OldRc Then R1:=2 Else R1:=20;
+   If R1>Rc Then Rc:=R1;
+   Continue;
   End;
   AsmFromEditor:=False;
   HaveOutput:=False;
-  If Not AssembleSource(Name,Arr,Cnt) Then Rc:=1
-  Else If StartAction='X' Then Begin
-   If LoadProgram(OutPathFinal,'',OptRunGem) Then Begin
-    EmuVisible:=False;MonActive:=False;
-    If Emu_GEM Then GemBoot;
-    While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
-     RunCpu(100000);
-     If StopReason=STOP_YIELD Then GemDispatch;
-    End;
-    WriteLn(ConOut);
-    If StopReason=STOP_EXIT Then Rc:=ExitCode And $FF
-    Else Begin
-     WriteLn(ConOut,StopMsg);Rc:=3;
-    End;
-    If UnknownCall<>'' Then WriteLn(ConOut,'[',UnknownCall,']');
-   End Else Begin WriteLn(ConOut,'Cannot load ',OutPathFinal);Rc:=3;End;
+  If Not AssembleSource(Name,Arr,Cnt) Then Begin
+   If OldRc Then R1:=1 Else If AsmFatal Then R1:=20 Else R1:=10;
+   If R1>Rc Then Rc:=R1;
+  End Else Begin
+   If (AsmWarns>0) And Not OldRc And (Rc<5) Then Rc:=5;
+   If StartAction='X' Then Begin
+    If LoadProgram(OutPathFinal,'',OptRunGem) Then Begin
+     EmuVisible:=False;MonActive:=False;
+     If Emu_GEM Then GemBoot;
+     While (StopReason=STOP_NONE) Or (StopReason=STOP_YIELD) Do Begin
+      RunCpu(100000);
+      If StopReason=STOP_YIELD Then GemDispatch;
+     End;
+     WriteLn(ConOut);
+     If StopReason=STOP_EXIT Then Rc:=ExitCode And $FF
+     Else Begin
+      WriteLn(ConOut,StopMsg);Rc:=3;
+     End;
+     If UnknownCall<>'' Then WriteLn(ConOut,'[',UnknownCall,']');
+    End Else Begin WriteLn(ConOut,'Cannot load ',OutPathFinal);Rc:=3;End;
+   End;
   End;
   CleanTemp;
-  FreeLines(Arr,Cnt);
+  FreeLinesBig(Arr,Cnt);
+ End;
+ If PauseEnd Then Begin
+  WriteLn(ConOut,T3('Press Return','Appuyez sur Entree','Eingabetaste druecken'));
+  Flush(ConOut);
+  If Not Eof(ConIn) Then ReadLn(ConIn);
  End;
  BatchRun:=Rc;
 End;
@@ -15227,7 +20485,9 @@ Begin
  OptRunGem:=True;OptAccs:=True;
  RunOther:='';RunOtherArg:='';
  FindStr:='';ReplStr:='';FindCase:=False;
- MenuOpen:=0;MenuHi:=0;
+ MenuOpen:=0;MenuHi:=0;SubOpen:=0;SubHi:=0;RunDirMode:=1;
+ StatusMsg:='';HiOn:=False;MouseHid:=False;UndelOk:=False;UndelEnd:=False;
+ ErrCur:=0;CfgFile:='';
  MX:=0;MY:=0;MB:=0;LastB:=0;
  NeedDraw:=True;Quit:=False;
  ErrJump:=1;
@@ -15261,7 +20521,7 @@ Begin
  End;
 End;
 
-Var I: Integer;
+Var I: Integer; StartCreate: String;
 BEGIN
  Assign(ConOut,'');Rewrite(ConOut);
  Assign(ConIn,'');Reset(ConIn);
@@ -15278,20 +20538,25 @@ BEGIN
   Flush(ConOut);
   Halt(I);
  End;
+ CfgOutName:=OptOutName;CfgListName:=OptListName;
  InitializeGraphics;
  BuildFont;
  InitMemory(ST_MEMKB);
  ScrBase:=(MemSize-SCR_BYTES) And $FFFF00;DrawBase:=ScrBase;
  EdInit;
+ StartCreate:='';
  If NQueue>0 Then Begin
   If (StartAction<>'M') Then Begin
    If FileExists(FileQueue[1]) Then EdLoadFile(FileQueue[1],False)
    Else If FileExists(FileQueue[1]+'.S') Then EdLoadFile(FileQueue[1]+'.S',False)
+   Else If StartAction=' ' Then StartCreate:=FileQueue[1]
    Else EdFile:=FileQueue[1];
   End;
  End;
  If MouseDriverFound Then ShowMouse;
  DrawAll;
+ { fichier absent de la ligne de commande : proposer de le creer }
+ If StartCreate<>'' Then LoadNamed(StartCreate);
  StartupActions;
  MainLoop;
  HideMouse;
