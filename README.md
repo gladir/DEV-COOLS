@@ -130,6 +130,9 @@ Il possède un navigateur Web nommé BROWSER :
 
 <img width="637" height="483" alt="image" src="https://github.com/user-attachments/assets/9988c6ee-5996-4ad2-971e-19fbf1d4f5af" />
 
+Il possède un clone ST BASIC :
+
+<img width="639" height="480" alt="image" src="https://github.com/user-attachments/assets/582e065a-f0f1-416e-bd3e-7f50e37f08f4" />
 
 Il possède également des éditeurs de ressources, comme WORKSHOP :
 
