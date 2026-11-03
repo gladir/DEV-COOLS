@@ -961,6 +961,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande est un clone de la commande python3 (Python 3.8).</td>
 		</tr>
 		<tr>
+			<td><b>QPDF.PAS</b></td>
+			<td>Cette commande est un clone de la commande qpdf : elle optimise la structure interne d'un fichier PDF (renumérotation, suppression des objets inutiles, flux d'objets, flux xref) et compresse ses flux sans perte (Flate), sans réduire la résolution des images.</td>
+		</tr>
+		<tr>
 			<td><b>QPUDEP.PAS</b></td>
 			<td>Cette commande permet d'afficher les dépendances d'un unité QPU de QuickPascal.</td>
 		</tr>
