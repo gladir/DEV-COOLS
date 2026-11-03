@@ -49,7 +49,8 @@ Const
  InflateLimit=100000000;
  OutBufSize=32768;
 
- TrailerSkip='/Prev/XRefStm/Size/Encrypt/Length/Filter/DecodeParms/DP/W/Index/Type/';
+ TrailerSkip='/Prev/XRefStm/Size/Encrypt/Length/Filter/DecodeParms/'+
+  'DP/W/Index/Type/';
 
 Type
  PChunk=^TChunk;
@@ -66,7 +67,8 @@ Type
  TBytes=Array[0..32767]of Byte;
 
  TObjRec=Record
-  Kind:Byte;      { 0=inconnu/libre, 1=dans le fichier, 2=dans un flux d'objets }
+  Kind:Byte;      { 0=inconnu/libre, 1=dans le fichier, 2=dans un flux d'objets
+    }
   Flags:Byte;
   Gen:Word;
   Off:Longint;    { decalage dans le fichier ou numero du flux d'objets }
@@ -297,7 +299,8 @@ Var Got:Word;
 Begin
  If OutFill>0 Then Begin
   BlockWrite(OutF,OBytes^,Word(OutFill),Got);
-  If(IOResult<>0)or(Got<>OutFill)Then Fatal('Erreur d''ecriture sur le fichier de sortie.');
+  If(IOResult<>0)or(Got<>OutFill)Then Fatal('Erreur d''ecriture sur le fichier'+
+    ' de sortie.');
   OutFill:=0;
  End;
 End;
@@ -406,7 +409,8 @@ Function IsWS(C:Integer):Boolean;Begin
 End;
 
 Function IsDelim(C:Integer):Boolean;Begin
- IsDelim:=(C=40)or(C=41)or(C=60)or(C=62)or(C=91)or(C=93)or(C=123)or(C=125)or(C=47)or(C=37);
+ IsDelim:=(C=40)or(C=41)or(C=60)or(C=62)or(C=91)or(C=93)or(C=123)or(C=125)
+   or(C=47)or(C=37);
 End;
 
 Function IsReg(C:Integer):Boolean;Begin
@@ -553,11 +557,14 @@ Begin
 End;
 
 Function ValidKeyword(P,Q:Longint):Boolean;Begin
- ValidKeyword:=((Q-P=4)and(MatchStr(P,'true')or MatchStr(P,'null')))or((Q-P=5)and MatchStr(P,'false'));
+ ValidKeyword:=((Q-P=4)and(MatchStr(P,'true')or
+   MatchStr(P,'null')))or((Q-P=5)and MatchStr(P,'false'));
 End;
 
 Procedure WalkValue(Var P:Longint;Depth:Integer);
-Var C,D:Integer;Q,Q2,N1:Longint;Key:String;Done,DigitsOnly:Boolean;SaveMode:Integer;Lv,M:Longint;
+Var
+  C,D:Integer;Q,Q2,N1:Longint;Key:String;Done,DigitsOnly:Boolean;
+    SaveMode:Integer;Lv,M:Longint;
 Begin
  SkipWS(P);
  C:=SB(P);
@@ -756,12 +763,19 @@ End;
 { ------------------------------------------------------------------ }
 
 Const
- LBase:Array[0..28]of Word=(3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258);
- LExt:Array[0..28]of Byte=(0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0);
- DBase:Array[0..29]of Word=(1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577);
- DExt:Array[0..29]of Byte=(0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13);
+ LBase:Array[0..28]of
+   Word=(3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,
+     163,195,227,258);
+ LExt:Array[0..28]of
+   Byte=(0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0);
+ DBase:Array[0..29]of
+   Word=(1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,
+     2049,3073,4097,6145,8193,12289,16385,24577);
+ DExt:Array[0..29]of
+   Byte=(0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13);
  CLOrder:Array[0..18]of Byte=(16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15);
- BitMask:Array[0..16]of Longint=(0,1,3,7,15,31,63,127,255,511,1023,2047,4095,8191,16383,32767,65535);
+ BitMask:Array[0..16]of
+   Longint=(0,1,3,7,15,31,63,127,255,511,1023,2047,4095,8191,16383,32767,65535);
 
 { ------------------------------------------------------------------ }
 { Inflate (zlib / deflate)                                            }
@@ -855,7 +869,9 @@ Begin
 End;
 
 Function IDynTables:Boolean;
-Var NLen,NDist,NCode,I,Sym,Rep:Integer;Lens:TLen320;PrevL:Byte;CLH:THuff;Lv:Longint;
+Var
+  NLen,NDist,NCode,I,Sym,Rep:Integer;Lens:TLen320;PrevL:Byte;CLH:THuff;
+    Lv:Longint;
 Begin
  IDynTables:=False;
  NLen:=IGetBits(5)+257;
@@ -898,7 +914,8 @@ Begin
  IDynTables:=True;
 End;
 
-Function InflateBuf(Var Src:TBuf;From:Longint;Var Dst:TBuf;Zlib:Boolean):Boolean;
+Function InflateBuf(Var Src:TBuf;From:Longint;Var
+  Dst:TBuf;Zlib:Boolean):Boolean;
 Var Last:Boolean;T,Sym,DS:Integer;Len,Dist,K,NLn,I:Longint;Done:Boolean;
 Begin
  InflateBuf:=False;
@@ -1316,7 +1333,8 @@ End;
 Function DHash(Ps:Longint):Longint;
 Var V:Longint;
 Begin
- V:=(Longint(BufGet(DSrc^,Ps))shl 16)or(Longint(BufGet(DSrc^,Ps+1))shl 8)or BufGet(DSrc^,Ps+2);
+ V:=(Longint(BufGet(DSrc^,Ps))shl 16)or(Longint(BufGet(DSrc^,Ps+1))shl 8)or
+   BufGet(DSrc^,Ps+2);
  DHash:=(V xor(V shr 9)xor(V shr 17))and HashMask;
 End;
 
@@ -1351,7 +1369,9 @@ Begin
   If Best>=MaxLen Then Done:=True
    Else
   Begin
-   If(BufGet(DSrc^,Cand+Best)=BufGet(DSrc^,Ps+Best))and(BufGet(DSrc^,Cand)=BufGet(DSrc^,Ps))Then Begin
+   If(BufGet(DSrc^,Cand+Best)=BufGet(DSrc^,Ps+Best))and(BufGet(DSrc^,Cand)
+     =BufGet(DSrc^,Ps))Then
+     Begin
     L:=1;
     While(L<MaxLen)and(BufGet(DSrc^,Cand+L)=BufGet(DSrc^,Ps+L))Do Inc(L);
     If L>Best Then Begin
@@ -1502,7 +1522,8 @@ Begin
  DecodeAHx:=True;
 End;
 
-{ Ecrit les octets d'un groupe ASCII85 (N chiffres, N>=2) sans depasser 32 bits }
+{ Ecrit les octets d'un groupe ASCII85 (N chiffres, N>=2) sans depasser 32 bits
+  }
 Type
  TA85=Array[0..4]of Longint;
 
@@ -1591,7 +1612,8 @@ Var
  Ps:Longint;Ok,Done:Boolean;
 Begin
  DecodeLZW:=False;
- GetMem(Pre,SizeOf(TLzwPre));GetMem(Suf,SizeOf(TLzwSuf));GetMem(Stk,SizeOf(TLzwStk));
+ GetMem(Pre,SizeOf(TLzwPre));GetMem(Suf,SizeOf(TLzwSuf));GetMem(Stk,
+   SizeOf(TLzwStk));
  BitBuf:=0;BitCnt:=0;Ps:=0;Width:=9;NextC:=258;Prev:=-1;FirstCh:=0;
  Ok:=True;Done:=False;
  While Ok and Not Done Do Begin
@@ -1645,7 +1667,8 @@ Begin
     Else Width:=9;
   End;
  End;
- FreeMem(Pre,SizeOf(TLzwPre));FreeMem(Suf,SizeOf(TLzwSuf));FreeMem(Stk,SizeOf(TLzwStk));
+ FreeMem(Pre,SizeOf(TLzwPre));FreeMem(Suf,SizeOf(TLzwSuf));FreeMem(Stk,
+   SizeOf(TLzwStk));
  DecodeLZW:=Ok;
 End;
 
@@ -1824,7 +1847,9 @@ Begin
  Else If FName[I]='ASCII85Decode' Then Ok:=DecodeA85(Src,Dst)
  Else If FName[I]='ASCIIHexDecode' Then Ok:=DecodeAHx(Src,Dst)
  Else If FName[I]='RunLengthDecode' Then Ok:=DecodeRL(Src,Dst);
- If Ok and PredToo and(FPred[I]>1)and((FName[I]='FlateDecode')or(FName[I]='LZWDecode'))Then Begin
+ If Ok and PredToo
+   and(FPred[I]>1)and((FName[I]='FlateDecode')or(FName[I]='LZWDecode'))Then
+     Begin
   BufClear(PredTmp);
   BufAppend(PredTmp,Dst,0,Dst.Len);
   BufClear(Dst);
@@ -1839,7 +1864,9 @@ Var N:String;
 Begin
  CanDecode:=False;
  N:=FName[I];
- If Not((N='FlateDecode')or(N='LZWDecode')or(N='ASCII85Decode')or(N='ASCIIHexDecode')or(N='RunLengthDecode'))Then Exit;
+ If Not((N='FlateDecode')or(N='LZWDecode')or(N='ASCII85Decode')
+   or(N='ASCIIHexDecode')or(N='RunLengthDecode'))Then
+   Exit;
  If FPred[I]>1 Then Begin
   If Not PredToo Then Exit;
   If FPred[I]=2 Then Begin If FBpc[I]<>8 Then Exit;End
@@ -2134,7 +2161,8 @@ Begin
    SkipWS(Q2);
    If SB(Q2)=93 Then Begin Start:=0;Cnt:=0;Q2:=-2;End
     Else
-   If(Not ReadInt(Q2,Start))or(Not ReadInt(Q2,Cnt))Then Begin Start:=0;Cnt:=0;Q2:=-2;End;
+   If(Not ReadInt(Q2,Start))or(Not ReadInt(Q2,Cnt))Then Begin
+     Start:=0;Cnt:=0;Q2:=-2;End;
   End;
   K:=0;
   While(K<Cnt)and(Ps+RowLen<=XDec.Len)Do Begin
@@ -2261,9 +2289,11 @@ End;
 { ------------------------------------------------------------------ }
 
 Procedure Reconstruct;
-Var P,Q,Q2,N,G,DP,DS,DE,V,K,Nn:Longint;C:Integer;R,R2:PObjRec;T:String;S:Integer;
+Var
+  P,Q,Q2,N,G,DP,DS,DE,V,K,Nn:Longint;C:Integer;R,R2:PObjRec;T:String;S:Integer;
 Begin
- Warn('structure xref invalide ou incomplete : reconstruction de la table des objets.');
+ Warn('structure xref invalide ou incomplete : reconstruction de la table des'+
+   ' objets.');
  Reconstructed:=True;
  ResetObjects;
  SBuf:=NIL;
@@ -2300,7 +2330,8 @@ Begin
        End
         Else
        If T='XRef' Then Begin
-        If DictFind(DP,'Root')>=0 Then Begin TrailerPos:=DP;SrcXrefStm:=True;End;
+        If DictFind(DP,'Root')>=0 Then Begin
+          TrailerPos:=DP;SrcXrefStm:=True;End;
        End;
       End;
      End;
@@ -2336,7 +2367,8 @@ Begin
     SBuf:=NIL;
    End;
   End;
-  If SynthRoot=0 Then Fatal('impossible de trouver la racine (Root) du document.');
+  If SynthRoot=0 Then Fatal('impossible de trouver la racine (Root) du'+
+    ' document.');
  End;
 End;
 
@@ -2494,7 +2526,8 @@ Procedure XSet(Num,Typ,F2,F3:Longint);Begin
  BufSet(XE,Num*12+4,F2 and 255);BufSet(XE,Num*12+5,(F2 shr 8)and 255);
  BufSet(XE,Num*12+6,(F2 shr 16)and 255);BufSet(XE,Num*12+7,(F2 shr 24)and 255);
  BufSet(XE,Num*12+8,F3 and 255);BufSet(XE,Num*12+9,(F3 shr 8)and 255);
- BufSet(XE,Num*12+10,(F3 shr 16)and 255);BufSet(XE,Num*12+11,(F3 shr 24)and 255);
+ BufSet(XE,Num*12+10,(F3 shr 16)and 255);BufSet(XE,Num*12+11,(F3 shr 24)and
+   255);
 End;
 
 Procedure EmitStreamExtra;
@@ -2551,8 +2584,10 @@ End;
 
 Procedure EmitXrefExtra;Begin
  EmitRootExtra;
- PutS(' /Type /XRef /Size '+IStr(XSize)+' /W [ 1 '+IStr(XW2)+' '+IStr(XW3)+' ]');
- If XFlate Then PutS(' /Filter /FlateDecode /DecodeParms << /Columns '+IStr(1+XW2+XW3)+' /Predictor 12 >>');
+ PutS(' /Type /XRef /Size '+IStr(XSize)+' /W [ 1 '+IStr(XW2)+' '+IStr(XW3)+''+
+   ' ]');
+ If XFlate Then PutS(' /Filter /FlateDecode /DecodeParms << /Columns'+
+   ' '+IStr(1+XW2+XW3)+' /Predictor 12 >>');
  PutS(' /Length '+IStr(XLen));
 End;
 
@@ -2573,7 +2608,8 @@ Procedure EmitExtra;Begin
  End;
 End;
 
-{ Ecrit dans TB le dictionnaire du trailer (Kind : 2=flux xref, 3=trailer classique) }
+{ Ecrit dans TB le dictionnaire du trailer (Kind : 2=flux xref, 3=trailer
+  classique) }
 Procedure EmitTrailer(Kind:Integer);
 Var Q:Longint;
 Begin
@@ -2588,7 +2624,8 @@ Begin
   Else
  Begin
   PutS('<<');
-  If(NewRoot=0)and(SynthRoot>0)Then PutS(' /Root '+IStr(MapRef(SynthRoot))+' 0 R');
+  If(NewRoot=0)and(SynthRoot>0)Then PutS(' /Root '+IStr(MapRef(SynthRoot))+' 0'+
+    ' R');
   EmitExtra;
   PutS(' >>');
  End;
@@ -2612,7 +2649,8 @@ Begin
   If W3.Len<OSAll.Len Then Begin Data:=@W3;Fl:=True;End;
  End;
  XSet(StmN,1,OutPos,0);
- OutStr(IStr(StmN)+' 0 obj'#10'<< /Type /ObjStm /N '+IStr(OSCnt)+' /First '+IStr(First));
+ OutStr(IStr(StmN)+' 0 obj'#10'<< /Type /ObjStm /N '+IStr(OSCnt)+' /First'+
+   ' '+IStr(First));
  If Fl Then OutStr(' /Filter /FlateDecode');
  OutStr(' /Length '+IStr(Data^.Len)+' >>'#10'stream'#10);
  OutBuffer(Data^,0,Data^.Len);
@@ -2659,7 +2697,8 @@ Begin
  Data:=@Raw;
  StrChanged:=False;OutFlate:=False;OutFirst:=1;
  { recompression directe d'un flux Flate simple }
- If CompressOn and RecompFlate and FOk and(NF=1)and(FName[1]='FlateDecode')Then Begin
+ If CompressOn and RecompFlate and FOk and(NF=1)and(FName[1]='FlateDecode')Then
+   Begin
   BufClear(W1);BufClear(W2);
   If InflateBuf(Raw,0,W1,True)Then Begin
    DeflateBuf(W1,W2,Level);
@@ -2770,7 +2809,9 @@ Begin
 End;
 
 Procedure WriteXref;
-Var I,N,Typ,F2,F3,MaxF2,MaxF3,XrefNum,XrefPos,RowLen,Row0:Longint;XPlain,XOut:PBuf;B:Byte;
+Var
+  I,N,Typ,F2,F3,MaxF2,MaxF3,XrefNum,XrefPos,RowLen,Row0:Longint;XPlain,
+    XOut:PBuf;B:Byte;
 Begin
  If Not UseXrefStm Then Begin
   XSize:=NextStm;
@@ -2835,13 +2876,15 @@ Begin
  OutStr('startxref'#10+IStr(XrefPos)+#10'%%EOF'#10);
 End;
 
-Procedure BeginOutput(Const FName:String;TotalObj,NComp:Longint;VMaj,VMin:Integer);
+Procedure BeginOutput(Const
+  FName:String;TotalObj,NComp:Longint;VMaj,VMin:Integer);
 Var I,NStm:Longint;Maj,Min:Integer;
 Begin
  Maj:=VMaj;Min:=VMin;
  If UseXrefStm Then
   If(Maj<1)or((Maj=1)and(Min<5))Then Begin Maj:=1;Min:=5;End;
- If(MinVerMaj>Maj)or((MinVerMaj=Maj)and(MinVerMin>Min))Then Begin Maj:=MinVerMaj;Min:=MinVerMin;End;
+ If(MinVerMaj>Maj)or((MinVerMaj=Maj)and(MinVerMin>Min))Then Begin
+   Maj:=MinVerMaj;Min:=MinVerMin;End;
  If ForceMaj>0 Then Begin Maj:=ForceMaj;Min:=ForceMin;End;
  Assign(OutF,FName);
  Rewrite(OutF,1);
@@ -2878,7 +2921,8 @@ Begin
  If UseObjStm Then
   For N:=1 to HighObj do Begin
    R:=PeekRec(N);
-   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlStream)=0)Then Inc(NComp);
+   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and
+     FlStream)=0)Then Inc(NComp);
   End;
  BeginOutput(OutName,NObj,NComp,VerMajor,VerMinor);
  For N:=1 to HighObj do Begin
@@ -2900,7 +2944,8 @@ Var N:Longint;R:PObjRec;P:Longint;I:Integer;Src,Tgt:PBuf;Flip,Ok:Boolean;
 Begin
  For N:=1 to HighObj do Begin
   R:=PeekRec(N);
-  If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlStream)<>0)Then Begin
+  If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and
+    FlStream)<>0)Then Begin
    If OpenObject(N,P)Then Begin
     If GetRaw(P,WRaw)Then Begin
      AnalyzeFilters(P);
@@ -2952,7 +2997,8 @@ End;
 Const
  MaxOvr=4;
  InhKey:Array[0..3]of String[10]=('Resources','MediaBox','CropBox','Rotate');
- CatBlack='/Pages/Outlines/Names/Dests/StructTreeRoot/AcroForm/PageLabels/OpenAction/Threads/SpiderInfo/Perms/Legal/AA/';
+ CatBlack='/Pages/Outlines/Names/Dests/StructTreeRoot/AcroForm/'+
+  'PageLabels/OpenAction/Threads/SpiderInfo/Perms/Legal/AA/';
 
 Type
  TInh=Array[0..3]of Longint;
@@ -3026,7 +3072,8 @@ Procedure OpenSourceFile(Const Nm:String);Begin
  Assign(SF,Nm);
  FileMode:=0;
  Reset(SF,1);
- If IOResult<>0 Then Fatal('impossible d''ouvrir '+Nm+' : fichier introuvable ou illisible.');
+ If IOResult<>0 Then Fatal('impossible d''ouvrir '+Nm+' : fichier introuvable'+
+   ' ou illisible.');
  FileMode:=2;
  SFOpen:=True;
  SFSize:=FileSize(SF);
@@ -3058,7 +3105,8 @@ End;
 
 Procedure CheckEncrypt;Begin
  If(TrailerPos>=0)and(DictFind(TrailerPos,'Encrypt')>=0)Then
-  Fatal(CurName+' : fichier chiffre (Encrypt) : non supporte par cette version.');
+  Fatal(CurName+' : fichier chiffre (Encrypt) : non supporte par cette'+
+    ' version.');
 End;
 
 Procedure LoadStructure(Const Nm:String);
@@ -3074,9 +3122,11 @@ Begin
  If Not(PassA and ComputeReach)Then Begin
   Reconstruct;
   CheckEncrypt;
-  If Not(PassA and ComputeReach)Then Fatal(Nm+' : structure du document irrecuperable.');
+  If Not(PassA and ComputeReach)Then Fatal(Nm+' : structure du document'+
+    ' irrecuperable.');
  End;
- If NObj=0 Then Fatal(Nm+' : aucun objet atteignable depuis la racine du document.');
+ If NObj=0 Then Fatal(Nm+' : aucun objet atteignable depuis la racine du'+
+   ' document.');
 End;
 
 { ------------------------------------------------------------------ }
@@ -3263,7 +3313,8 @@ Begin
  For I:=0 to NDocs-1 do If Docs[I].Name=Nm Then Begin
   AddDoc:=I;Exit;
  End;
- If NDocs>=MaxDocs Then Fatal('trop de fichiers PDF differents (maximum '+IStr(MaxDocs)+').');
+ If NDocs>=MaxDocs Then Fatal('trop de fichiers PDF differents (maximum'+
+   ' '+IStr(MaxDocs)+').');
  If CurDoc>=0 Then SaveDoc(CurDoc);
  I:=NDocs;Inc(NDocs);
  Docs[I].Name:=Nm;
@@ -3321,7 +3372,8 @@ End;
 
 { Analyse un intervalle ("1,3,5-7,z,r2-r1,1-10:odd"). Fill : remplit L et
   verifie les bornes (erreur fatale) ; sinon verifie seulement la syntaxe. }
-Function ParseRange(Const S:String;Count:Longint;Var L:TBuf;Fill:Boolean):Boolean;
+Function ParseRange(Const S:String;Count:Longint;Var
+  L:TBuf;Fill:Boolean):Boolean;
 Var Ps,Q,A,B,Step,V,Idx:Longint;T,Sfx:String;Mode,P:Integer;Take:Boolean;
 Begin
  ParseRange:=False;
@@ -3343,7 +3395,8 @@ Begin
    End;
    P:=Pos('-',T);
    If P>0 Then Begin
-    If Not(RangeNum(Copy(T,1,P-1),Count,A)and RangeNum(Copy(T,P+1,255),Count,B))Then Exit;
+    If Not(RangeNum(Copy(T,1,P-1),Count,A)and
+      RangeNum(Copy(T,P+1,255),Count,B))Then Exit;
    End
     Else
    Begin
@@ -3352,7 +3405,8 @@ Begin
    End;
    If Fill Then Begin
     If(A<1)or(A>Count)or(B<1)or(B>Count)Then
-     Fatal('intervalle de pages "'+S+'" hors limites (le document a '+IStr(Count)+' page(s)).');
+     Fatal('intervalle de pages "'+S+'" hors limites (le document a'+
+       ' '+IStr(Count)+' page(s)).');
     If A<=B Then Step:=1 Else Step:=-1;
     V:=A;Idx:=0;
     Repeat
@@ -3413,7 +3467,8 @@ Begin
  For K:=0 to 3 do Inh[K]:=BufGetL(Docs[D].Pages,PIdx*20+4+K*4);
 End;
 
-{ Le document D doit etre le document courant. Rectangle effectif (MediaBox...) }
+{ Le document D doit etre le document courant. Rectangle effectif (MediaBox...)
+  }
 Procedure ReadBox(Obj:Longint;Var Inh:TInh;Key:Integer;Var X0,Y0,X1,Y1:Real);
 Var H,P,V,Q:Longint;T:Real;Ok:Boolean;
 Begin
@@ -3738,7 +3793,9 @@ Begin
 End;
 
 Procedure EmitForm(Idx:Longint);
-Var F:TFormRec;Obj:Longint;Inh:TInh;P,V,I:Longint;L:TBuf;Ps:Longint;Fl:Boolean;Data:PBuf;
+Var
+  F:TFormRec;Obj:Longint;Inh:TInh;P,V,I:Longint;L:TBuf;Ps:Longint;Fl:Boolean;
+    Data:PBuf;
 Begin
  RecGet(RunForms,Idx,F,SizeOf(F));
  SelectDoc(F.Doc);
@@ -3751,7 +3808,8 @@ Begin
  End;
  SBuf:=NIL;
  For I:=0 to L.Len div 4-1 do Begin
-  If OpenObject(BufGetL(L,I*4),Ps)and GetRaw(Ps,WRaw)and DecodeStreamFull(Ps,WRaw,XDec)Then Begin
+  If OpenObject(BufGetL(L,I*4),Ps)and GetRaw(Ps,WRaw)and
+    DecodeStreamFull(Ps,WRaw,XDec)Then Begin
    BufAppend(SynData,XDec,0,XDec.Len);
    BufPut(SynData,10);
   End
@@ -3818,7 +3876,8 @@ Begin
  End;
  Me:=Me+Dx0;Mf:=Mf+Dy0;
  BufClear(SynData);
- BufPutStr(SynData,'q '+RealStr(Ma)+' '+RealStr(Mb)+' '+RealStr(Mc)+' '+RealStr(Md)+' '+RealStr(Me)+' '+RealStr(Mf)+
+ BufPutStr(SynData,'q '+RealStr(Ma)+' '+RealStr(Mb)+' '+RealStr(Mc)+''+
+   ' '+RealStr(Md)+' '+RealStr(Me)+' '+RealStr(Mf)+
                    ' cm /QFm'+IStr(RO.LFIdx[L])+' Do Q'#10);
  BufClear(OB);
  EmBuf:=@OB;WMode:=2;
@@ -3910,7 +3969,9 @@ Begin
 End;
 
 Procedure ClosureDoc(D:Integer;A,B:Longint);
-Var I,Mark,Head,N,T,J,Root,P:Longint;O:TOcc;RO:TRunOcc;R,R0:PObjRec;F:TFormRec;Obj:Longint;Inh:TInh;
+Var
+  I,Mark,Head,N,T,J,Root,P:Longint;O:TOcc;RO:TRunOcc;R,R0:PObjRec;F:TFormRec;
+    Obj:Longint;Inh:TInh;
 Begin
  SelectDoc(D);
  ResetFlags;
@@ -4040,12 +4101,14 @@ Begin
   SelectDoc(D);
   For N:=1 to HighObj do Begin
    R:=PeekRec(N);
-   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlPageLeaf)=0)Then Begin
+   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and
+     FlPageLeaf)=0)Then Begin
     R^.NewNum:=NextNum;Inc(NextNum);
     If(R^.Flags and FlStream)=0 Then Inc(NComp);
    End;
   End;
-  If(VerMajor>Maj)or((VerMajor=Maj)and(VerMinor>Min))Then Begin Maj:=VerMajor;Min:=VerMinor;End;
+  If(VerMajor>Maj)or((VerMajor=Maj)and(VerMinor>Min))Then Begin
+    Maj:=VerMajor;Min:=VerMinor;End;
  End;
  TotalObj:=NextNum-1;
  If CurDoc>=0 Then SaveDoc(CurDoc);
@@ -4065,7 +4128,8 @@ Begin
   SelectDoc(D);
   For N:=1 to HighObj do Begin
    R:=PeekRec(N);
-   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlPageLeaf)=0)Then Begin
+   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and
+     FlPageLeaf)=0)Then Begin
     If UseObjStm and((R^.Flags and FlStream)=0)Then AddToObjStm(N,R)
                                                 Else WriteNormalObject(N,R);
    End;
@@ -4074,7 +4138,8 @@ Begin
  If HasPrimary Then SelectDoc(0);
  EndOutput;
  NewRoot:=0;ForceNoTrailer:=False;
- If Verbose Then WriteLn('Ecrit : ',FName,' (',Cnt,' page(s), ',TotalObj,' objets)');
+ If Verbose Then WriteLn('Ecrit : ',FName,' (',Cnt,' page(s), ',TotalObj,''+
+   ' objets)');
 End;
 
 { ------------------------------------------------------------------ }
@@ -4103,7 +4168,8 @@ Begin
  End;
  For S:=1 to NSp do Begin
   If PgFile[S]='.' Then Begin
-   If EmptyDoc Then Fatal('"." designe le fichier d''entree, mais --empty est utilise.');
+   If EmptyDoc Then Fatal('"." designe le fichier d''entree, mais --empty est'+
+     ' utilise.');
    DocOf[S]:=0;
   End
    Else
@@ -4111,7 +4177,8 @@ Begin
  End;
  For S:=1 to NSp do Begin
   BufInit(SpecL[S]);
-  If Docs[DocOf[S]].NPg=0 Then Fatal(Docs[DocOf[S]].Name+' : aucune page trouvee.');
+  If Docs[DocOf[S]].NPg=0 Then Fatal(Docs[DocOf[S]].Name+' : aucune page'+
+    ' trouvee.');
   ParseRange(PgRng[S],Docs[DocOf[S]].NPg,SpecL[S],True);
   Pos_[S]:=0;
  End;
@@ -4218,7 +4285,8 @@ Begin
  End
   Else
  CatSkip:=CatBlack;
- If RemoveLabels and(Pos('/PageLabels/',CatSkip)=0)Then CatSkip:=CatSkip+'/PageLabels/';
+ If RemoveLabels and(Pos('/PageLabels/',CatSkip)=0)Then
+   CatSkip:=CatSkip+'/PageLabels/';
  BuildPlan;
  Total:=OccAll.Len div SizeOf(TOcc);
  If ShowNPages Then Begin
@@ -4243,8 +4311,10 @@ End;
 { ------------------------------------------------------------------ }
 
 Procedure ShowHelp;Begin
- WriteLn('QPDF : Cette commande permet d''optimiser la structure interne d''un fichier PDF,');
- WriteLn('       de compresser ses flux de donnees sans perte (la resolution des');
+ WriteLn('QPDF : Cette commande permet d''optimiser la structure interne d''un'+
+   ' fichier PDF,');
+ WriteLn('       de compresser ses flux de donnees sans perte (la resolution'+
+   ' des');
  WriteLn('       images n''est jamais reduite) et de manipuler ses pages.');
  WriteLn;
  WriteLn('Syntaxe : QPDF [options] entree.pdf sortie.pdf');
@@ -4254,45 +4324,61 @@ Procedure ShowHelp;Begin
  WriteLn('                          Traitement des flux (defaut : compress)');
  WriteLn(' --compress-streams=y|n   Compresse les flux (Flate)');
  WriteLn(' --decode-level=none|generalized|specialized|all');
- WriteLn('                          Filtres decodes avant recompression (defaut : generalized).');
- WriteLn('                          Les filtres specialises (DCT, JPX, CCITT, JBIG2) ne sont jamais');
+ WriteLn('                          Filtres decodes avant recompression'+
+   ' (defaut : generalized).');
+ WriteLn('                          Les filtres specialises (DCT, JPX, CCITT,'+
+   ' JBIG2) ne sont jamais');
  WriteLn('                          decodes : ils sont conserves tels quels.');
  WriteLn(' --recompress-flate       Recompresse aussi les flux deja en Flate');
  WriteLn(' --compression-level=0..9 Niveau de compression Flate (defaut : 9)');
  WriteLn(' --object-streams=disable|preserve|generate');
- WriteLn('                          Gestion des flux d''objets (defaut : preserve)');
+ WriteLn('                          Gestion des flux d''objets (defaut :'+
+   ' preserve)');
  WriteLn(' --preserve-unreferenced  Conserve les objets non references');
  WriteLn(' --min-version=x.y        Version minimale du PDF produit');
  WriteLn(' --force-version=x.y      Force la version du PDF produit');
- WriteLn(' --check                  Verifie la structure et les flux (aucune sortie)');
+ WriteLn(' --check                  Verifie la structure et les flux (aucune'+
+   ' sortie)');
  WriteLn(' --show-npages            Affiche le nombre de pages');
- WriteLn(' --warning-exit-0         Code de retour 0 meme en cas d''avertissements');
+ WriteLn(' --warning-exit-0         Code de retour 0 meme en cas'+
+   ' d''avertissements');
  WriteLn(' --verbose                Affiche un resume des tailles');
  WriteLn(' --version                Affiche la version');
  WriteLn(' --help                   Affiche cette aide');
  WriteLn;
  WriteLn('Manipulation de pages :');
- WriteLn(' --empty                  Part d''un document vide (pas de fichier d''entree)');
+ WriteLn(' --empty                  Part d''un document vide (pas de fichier'+
+   ' d''entree)');
  WriteLn(' --pages fichier [pages] [fichier [pages]...] --');
- WriteLn('                          Selectionne des pages ("." = fichier d''entree).');
- WriteLn('                          Pages : 1,3,5-7,z,r2-r1,1-10:odd,1-10:even');
- WriteLn(' --collate[=n]            Entrelace les pages des differents fichiers (n a la fois)');
- WriteLn(' --split-pages[=n]        Un fichier de sortie par groupe de n pages');
- WriteLn(' --rotate=[+|-]angle[:pages]  Rotation (0, 90, 180, 270) ; +/- = relative');
+ WriteLn('                          Selectionne des pages ("." = fichier'+
+   ' d''entree).');
+ WriteLn('                          Pages :'+
+   ' 1,3,5-7,z,r2-r1,1-10:odd,1-10:even');
+ WriteLn(' --collate[=n]            Entrelace les pages des differents'+
+   ' fichiers (n a la fois)');
+ WriteLn(' --split-pages[=n]        Un fichier de sortie par groupe de n'+
+   ' pages');
+ WriteLn(' --rotate=[+|-]angle[:pages]  Rotation (0, 90, 180, 270) ; +/- ='+
+   ' relative');
  WriteLn(' --overlay fichier [--from=p] [--repeat=p] [--to=p] --');
  WriteLn('                          Superpose les pages d''un autre PDF');
  WriteLn(' --underlay fichier [--from=p] [--repeat=p] [--to=p] --');
  WriteLn('                          Place les pages d''un autre PDF derriere');
- WriteLn(' --remove-page-labels     Supprime les etiquettes de numerotation des pages');
+ WriteLn(' --remove-page-labels     Supprime les etiquettes de numerotation'+
+   ' des pages');
  WriteLn;
  WriteLn('Exemples :');
- WriteLn('  QPDF --stream-data=compress --object-streams=generate original.pdf compact.pdf');
+ WriteLn('  QPDF --stream-data=compress --object-streams=generate original.pdf'+
+   ' compact.pdf');
  WriteLn('  QPDF a.pdf --pages . 1-3 b.pdf z-1 -- sortie.pdf');
  WriteLn('  QPDF --empty --pages a.pdf b.pdf -- fusion.pdf');
  WriteLn;
- WriteLn('Limites : les fichiers chiffres, --linearize et --qdf ne sont pas supportes.');
- WriteLn('Avec la manipulation de pages, signets, formulaires et destinations nommees');
- WriteLn('ne sont conserves que si toutes les pages restent dans l''ordre d''origine.');
+ WriteLn('Limites : les fichiers chiffres, --linearize et --qdf ne sont pas'+
+   ' supportes.');
+ WriteLn('Avec la manipulation de pages, signets, formulaires et destinations'+
+   ' nommees');
+ WriteLn('ne sont conserves que si toutes les pages restent dans l''ordre'+
+   ' d''origine.');
 End;
 
 Procedure BadOpt(Const S:String);Begin
@@ -4358,7 +4444,8 @@ Begin
     Else
    If Opt='decode-level' Then Begin
     If OptVal='none' Then DecodeOn:=False
-     Else If(OptVal='generalized')or(OptVal='specialized')or(OptVal='all')Then DecodeOn:=True
+     Else If(OptVal='generalized')or(OptVal='specialized')or(OptVal='all')Then
+       DecodeOn:=True
      Else BadOpt(S);
    End
     Else
@@ -4393,7 +4480,9 @@ Begin
     Else
    If Opt='warning-exit-0' Then WarnExit0:=True
     Else
-   If(Opt='verbose')or(Opt='no-original-object-ids')or(Opt='deterministic-id')or(Opt='static-id')Then Begin
+   If(Opt='verbose')or(Opt='no-original-object-ids')or(Opt='deterministic-id')
+     or(Opt='static-id')Then
+     Begin
     If Opt='verbose' Then Verbose:=True;
    End
     Else
@@ -4421,7 +4510,8 @@ Begin
     If NRot>=8 Then BadOpt(S);
     Inc(NRot);
     P:=Pos(':',OptVal);
-    If P>0 Then Begin AngS:=Copy(OptVal,1,P-1);RotRng[NRot]:=Copy(OptVal,P+1,255);End
+    If P>0 Then Begin
+      AngS:=Copy(OptVal,1,P-1);RotRng[NRot]:=Copy(OptVal,P+1,255);End
            Else Begin AngS:=OptVal;RotRng[NRot]:='1-z';End;
     RotAbs[NRot]:=True;
     If(AngS<>'')and((AngS[1]='+')or(AngS[1]='-'))Then Begin
@@ -4447,7 +4537,8 @@ Begin
      If NPgSpec>=MaxDocs Then BadOpt('--pages');
      Inc(NPgSpec);
      PgFile[NPgSpec]:=ParamStr(I);PgRng[NPgSpec]:='1-z';
-     If(I<ParamCount)and(ParamStr(I+1)<>'--')and ParseRange(ParamStr(I+1),1000000,Dummy,False)Then Begin
+     If(I<ParamCount)and(ParamStr(I+1)<>'--')and
+       ParseRange(ParamStr(I+1),1000000,Dummy,False)Then Begin
       Inc(I);PgRng[NPgSpec]:=ParamStr(I);
      End;
      Inc(I);
@@ -4461,7 +4552,8 @@ Begin
     If I>ParamCount Then BadOpt(S);
     Inc(NOvr);
     If Opt='overlay' Then OvrKind[NOvr]:=1 Else OvrKind[NOvr]:=0;
-    OvrFile[NOvr]:=ParamStr(I);OvrFrom[NOvr]:='1-z';OvrRep[NOvr]:='';OvrTo[NOvr]:='1-z';
+    OvrFile[NOvr]:=ParamStr(I);OvrFrom[NOvr]:='1-z';OvrRep[NOvr]:='';
+      OvrTo[NOvr]:='1-z';
     Inc(I);
     While(I<=ParamCount)and(ParamStr(I)<>'--')Do Begin
      S:=ParamStr(I);
@@ -4475,7 +4567,8 @@ Begin
      BadOpt(S);
      Inc(I);
     End;
-    If Not(ParseRange(OvrFrom[NOvr],1000000,Dummy,False)and ParseRange(OvrRep[NOvr],1000000,Dummy,False)
+    If Not(ParseRange(OvrFrom[NOvr],1000000,Dummy,False)and
+      ParseRange(OvrRep[NOvr],1000000,Dummy,False)
        and ParseRange(OvrTo[NOvr],1000000,Dummy,False))Then BadOpt('--'+Opt);
    End
     Else
@@ -4519,8 +4612,10 @@ Begin
   SC[I].Num:=-1;SC[I].Count:=0;SC[I].First:=0;
   BufInit(SC[I].Data);BufInit(SC[I].Hdr);
  End;
- BufInit(Refs);BufInit(XRaw);BufInit(XDec);BufInit(RawX);BufInit(DecA);BufInit(DecB);
- BufInit(PredTmp);BufInit(XE);BufInit(OSBody);BufInit(OSHdr);BufInit(OSNums);BufInit(OSAll);
+ BufInit(Refs);BufInit(XRaw);BufInit(XDec);BufInit(RawX);BufInit(DecA);
+   BufInit(DecB);
+ BufInit(PredTmp);BufInit(XE);BufInit(OSBody);BufInit(OSHdr);BufInit(OSNums);
+   BufInit(OSAll);
  BufInit(WRaw);BufInit(W1);BufInit(W2);BufInit(W3);BufInit(TB);BufInit(OB);
  WMode:=0;TopSkip:='';ExtraKind:=0;EmBuf:=NIL;
  DInit:=False;DForceStore:=False;
@@ -4547,7 +4642,8 @@ BEGIN
   Halt(0);
  End;
  ParseArgs;
- UseNew:=EmptyDoc or(NPgSpec>0)or(NRot>0)or(NOvr>0)or SplitOn or CollateOn or RemoveLabels;
+ UseNew:=EmptyDoc or(NPgSpec>0)or(NRot>0)or(NOvr>0)or SplitOn or CollateOn or
+   RemoveLabels;
  If(InName='')and Not EmptyDoc Then Begin
   ErrLn('QPDF : aucun fichier d''entree. Essayez QPDF --help.');
   Halt(2);
@@ -4557,11 +4653,13 @@ BEGIN
   Halt(2);
  End;
  If(OutName<>'')and(OutName=InName)Then Begin
-  ErrLn('QPDF : le fichier de sortie doit etre different du fichier d''entree.');
+  ErrLn('QPDF : le fichier de sortie doit etre different du fichier'+
+    ' d''entree.');
   Halt(2);
  End;
  If UseNew Then Begin
-  If CheckOnly Then Fatal('--check ne peut pas etre combine avec la manipulation de pages.');
+  If CheckOnly Then Fatal('--check ne peut pas etre combine avec la'+
+    ' manipulation de pages.');
   RunPageOps;
  End
   Else
@@ -4575,8 +4673,10 @@ BEGIN
    Else
   If CheckOnly Then Begin
    CheckStreams;
-   If Warnings=0 Then WriteLn('Aucune erreur de syntaxe ou d''encodage de flux n''a ete trouvee.')
-   Else WriteLn('Des problemes ont ete trouves (',Warnings,' avertissement(s)).');
+   If Warnings=0 Then WriteLn('Aucune erreur de syntaxe ou d''encodage de flux'+
+     ' n''a ete trouvee.')
+   Else WriteLn('Des problemes ont ete trouves (',Warnings,''+
+     ' avertissement(s)).');
   End
    Else
   Begin
@@ -4598,7 +4698,8 @@ BEGIN
      SizeOut:=FileSize(F2);Close(F2);
      WriteLn('Taille d''origine : ',SizeIn,' octets');
      WriteLn('Taille finale    : ',SizeOut,' octets');
-     If SizeIn>=100 Then WriteLn('Gain             : ',(SizeIn-SizeOut)div(SizeIn div 100),' %');
+     If SizeIn>=100 Then WriteLn('Gain             :'+
+       ' ',(SizeIn-SizeOut)div(SizeIn div 100),' %');
      WriteLn('Objets conserves : ',NObj);
     End;
     FileMode:=2;
