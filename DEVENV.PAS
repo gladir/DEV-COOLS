@@ -15124,6 +15124,8 @@ Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
 Procedure StepEmulator(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_Clear(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char); Forward;
+{ Atari ST : ecran bitmap de l'onglet (noyau StCpu_, defini plus bas) }
+Function StCpu_StDrawIfGfx(Var P: TEmulatorPanel): Boolean; Forward;
 Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String); Forward;
 { Meme motif que EmuVScr_WriteStr+deux EmuVScr_PutChar(#13,#10) deja repete  }
 { des dizaines de fois (Win16/OS2LX/PE32/etc.) - factorise pour le chantier }
@@ -186971,6 +186973,9 @@ Var
  S3PalIdx: Integer;
 Begin
  ScrH := GetScreenHeight;
+ { Atari ST : ecran bitmap 640x400 (apres la premiere primitive graphique) }
+ If P.TargetCPU = '-CATARIST' Then
+  If StCpu_StDrawIfGfx(P) Then Exit;
  { Mode NES : rendu pixel du framebuffer 256x240 ----------------------- }
  If NesActive And (P.TargetCPU = '-CNES') Then Begin
   NesScale := 2;
@@ -233897,6 +233902,766 @@ End;
 
 
 
+Const
+ StCpu_SW = 640;
+ StCpu_SH = 400;
+ StCpu_StScrBase = $90000;               { ecran monochrome 640x400 : 32000 octets (Physbase / Logbase) }
+ StCpu_LINEA_VARS = $98800;              { variables de la ligne A (A0 apres $A000) }
+ StCpu_LA_PTSIN  = StCpu_LINEA_VARS + $300;
+ StCpu_LA_INTIN  = StCpu_LINEA_VARS + $400;
+ StCpu_LA_CONTRL = StCpu_LINEA_VARS + $440;
+ StCpu_LA_FONTS  = $99000;               { tableau de pointeurs sur les polices (A1 apres $A000) }
+ StCpu_LA_FH     = $99010;               { 3 en-tetes de police de 88 octets }
+ StCpu_LA_F8DAT  = $99400;               { forme 8x8 : 256 x 8 octets }
+ StCpu_LA_F16DAT = $99C00;               { forme 8x16 : 256 x 16 octets }
+Const
+ { Police 8x8 du TOS (8 lignes par caractere) : sert au texte de la ligne A, au terminal VT52 et aux textes GEM }
+ StCpu_Font8Emb : Array[0..255,0..7] Of Byte = (
+  ($00,$00,$00,$00,$00,$00,$00,$00),($7E,$81,$A5,$81,$BD,$99,$81,$7E),
+  ($7E,$FF,$DB,$FF,$C3,$E7,$FF,$7E),($6C,$FE,$FE,$FE,$7C,$38,$10,$00),
+  ($10,$38,$7C,$FE,$7C,$38,$10,$00),($38,$7C,$38,$FE,$FE,$7C,$38,$7C),
+  ($10,$10,$38,$7C,$FE,$7C,$38,$7C),($00,$00,$18,$3C,$3C,$18,$00,$00),
+  ($FF,$FF,$E7,$C3,$C3,$E7,$FF,$FF),($00,$3C,$66,$42,$42,$66,$3C,$00),
+  ($FF,$C3,$99,$BD,$BD,$99,$C3,$FF),($0F,$07,$0F,$7D,$CC,$CC,$CC,$78),
+  ($3C,$66,$66,$66,$3C,$18,$7E,$18),($3F,$33,$3F,$30,$30,$70,$F0,$E0),
+  ($7F,$63,$7F,$63,$63,$67,$E6,$C0),($99,$5A,$3C,$E7,$E7,$3C,$5A,$99),
+  ($80,$E0,$F8,$FE,$F8,$E0,$80,$00),($02,$0E,$3E,$FE,$3E,$0E,$02,$00),
+  ($18,$3C,$7E,$18,$18,$7E,$3C,$18),($66,$66,$66,$66,$66,$00,$66,$00),
+  ($7F,$DB,$DB,$7B,$1B,$1B,$1B,$00),($3E,$63,$38,$6C,$6C,$38,$CC,$78),
+  ($00,$00,$00,$00,$7E,$7E,$7E,$00),($18,$3C,$7E,$18,$7E,$3C,$18,$FF),
+  ($18,$3C,$7E,$18,$18,$18,$18,$00),($18,$18,$18,$18,$7E,$3C,$18,$00),
+  ($00,$18,$0C,$FE,$0C,$18,$00,$00),($00,$30,$60,$FE,$60,$30,$00,$00),
+  ($00,$00,$C0,$C0,$C0,$FE,$00,$00),($00,$24,$66,$FF,$66,$24,$00,$00),
+  ($00,$18,$3C,$7E,$FF,$FF,$00,$00),($00,$FF,$FF,$7E,$3C,$18,$00,$00),
+  ($00,$00,$00,$00,$00,$00,$00,$00),($30,$78,$78,$78,$30,$00,$30,$00),
+  ($6C,$6C,$6C,$00,$00,$00,$00,$00),($6C,$6C,$FE,$6C,$FE,$6C,$6C,$00),
+  ($30,$7C,$C0,$78,$0C,$F8,$30,$00),($00,$C6,$CC,$18,$30,$66,$C6,$00),
+  ($38,$6C,$38,$76,$DC,$CC,$76,$00),($60,$60,$C0,$00,$00,$00,$00,$00),
+  ($18,$30,$60,$60,$60,$30,$18,$00),($60,$30,$18,$18,$18,$30,$60,$00),
+  ($00,$66,$3C,$FF,$3C,$66,$00,$00),($00,$30,$30,$FC,$30,$30,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$60),($00,$00,$00,$FC,$00,$00,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$00),($06,$0C,$18,$30,$60,$C0,$80,$00),
+  ($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),($30,$70,$30,$30,$30,$30,$FC,$00),
+  ($78,$CC,$0C,$38,$60,$CC,$FC,$00),($78,$CC,$0C,$38,$0C,$CC,$78,$00),
+  ($1C,$3C,$6C,$CC,$FE,$0C,$1E,$00),($FC,$C0,$F8,$0C,$0C,$CC,$78,$00),
+  ($38,$60,$C0,$F8,$CC,$CC,$78,$00),($FC,$CC,$0C,$18,$30,$30,$30,$00),
+  ($78,$CC,$CC,$78,$CC,$CC,$78,$00),($78,$CC,$CC,$7C,$0C,$18,$70,$00),
+  ($00,$30,$30,$00,$00,$30,$30,$00),($00,$30,$30,$00,$00,$30,$30,$60),
+  ($18,$30,$60,$C0,$60,$30,$18,$00),($00,$00,$FC,$00,$00,$FC,$00,$00),
+  ($60,$30,$18,$0C,$18,$30,$60,$00),($78,$CC,$0C,$18,$30,$00,$30,$00),
+  ($7C,$C6,$DE,$DE,$DE,$C0,$78,$00),($38,$6C,$C6,$C6,$FE,$C6,$C6,$00),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$FC,$00),($7C,$C6,$C6,$C0,$C0,$C6,$7C,$00),
+  ($F8,$CC,$C6,$C6,$C6,$CC,$F8,$00),($FE,$C0,$C0,$FC,$C0,$C0,$FE,$00),
+  ($FE,$C0,$C0,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C0,$CE,$C6,$C6,$7E,$00),
+  ($C6,$C6,$C6,$FE,$C6,$C6,$C6,$00),($78,$30,$30,$30,$30,$30,$78,$00),
+  ($1E,$06,$06,$06,$C6,$C6,$7C,$00),($C6,$CC,$D8,$F0,$D8,$CC,$C6,$00),
+  ($C0,$C0,$C0,$C0,$C0,$C0,$FE,$00),($C6,$EE,$FE,$D6,$C6,$C6,$C6,$00),
+  ($C6,$E6,$F6,$DE,$CE,$C6,$C6,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($FC,$C6,$C6,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$06),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$C6,$00),($78,$CC,$60,$30,$18,$CC,$78,$00),
+  ($FC,$30,$30,$30,$30,$30,$30,$00),($C6,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($C6,$C6,$C6,$C6,$C6,$6C,$38,$00),($C6,$C6,$C6,$D6,$FE,$EE,$C6,$00),
+  ($C6,$C6,$6C,$38,$6C,$C6,$C6,$00),($C3,$C3,$66,$3C,$18,$18,$18,$00),
+  ($FE,$0C,$18,$30,$60,$C0,$FE,$00),($3C,$30,$30,$30,$30,$30,$3C,$00),
+  ($C0,$60,$30,$18,$0C,$06,$03,$00),($3C,$0C,$0C,$0C,$0C,$0C,$3C,$00),
+  ($00,$38,$6C,$C6,$00,$00,$00,$00),($00,$00,$00,$00,$00,$00,$00,$FF),
+  ($30,$30,$18,$00,$00,$00,$00,$00),($00,$00,$7C,$06,$7E,$C6,$7E,$00),
+  ($C0,$C0,$FC,$C6,$C6,$E6,$DC,$00),($00,$00,$7C,$C6,$C0,$C0,$7E,$00),
+  ($06,$06,$7E,$C6,$C6,$CE,$76,$00),($00,$00,$7C,$C6,$FE,$C0,$7E,$00),
+  ($1E,$30,$7C,$30,$30,$30,$30,$00),($00,$00,$7E,$C6,$CE,$76,$06,$7C),
+  ($C0,$C0,$FC,$C6,$C6,$C6,$C6,$00),($18,$00,$38,$18,$18,$18,$3C,$00),
+  ($18,$00,$38,$18,$18,$18,$18,$F0),($C0,$C0,$CC,$D8,$F0,$D8,$CC,$00),
+  ($38,$18,$18,$18,$18,$18,$3C,$00),($00,$00,$CC,$FE,$D6,$C6,$C6,$00),
+  ($00,$00,$FC,$C6,$C6,$C6,$C6,$00),($00,$00,$7C,$C6,$C6,$C6,$7C,$00),
+  ($00,$00,$FC,$C6,$C6,$E6,$DC,$C0),($00,$00,$7E,$C6,$C6,$CE,$76,$06),
+  ($00,$00,$6E,$70,$60,$60,$60,$00),($00,$00,$7C,$C0,$7C,$06,$FC,$00),
+  ($30,$30,$7C,$30,$30,$30,$1C,$00),($00,$00,$C6,$C6,$C6,$C6,$7E,$00),
+  ($00,$00,$C6,$C6,$C6,$6C,$38,$00),($00,$00,$C6,$C6,$D6,$FE,$6C,$00),
+  ($00,$00,$C6,$6C,$38,$6C,$C6,$00),($00,$00,$C6,$C6,$CE,$76,$06,$7C),
+  ($00,$00,$FC,$18,$30,$60,$FC,$00),($1C,$30,$30,$E0,$30,$30,$1C,$00),
+  ($18,$18,$18,$00,$18,$18,$18,$00),($E0,$30,$30,$1C,$30,$30,$E0,$00),
+  ($76,$DC,$00,$00,$00,$00,$00,$00),($00,$10,$38,$6C,$C6,$C6,$FE,$00),
+  ($78,$CC,$C0,$CC,$78,$18,$0C,$78),($00,$CC,$00,$CC,$CC,$CC,$7E,$00),
+  ($1C,$00,$78,$CC,$FC,$C0,$78,$00),($7E,$C3,$3C,$06,$3E,$66,$3F,$00),
+  ($CC,$00,$78,$0C,$7C,$CC,$7E,$00),($E0,$00,$78,$0C,$7C,$CC,$7E,$00),
+  ($30,$30,$78,$0C,$7C,$CC,$7E,$00),($00,$00,$78,$C0,$C0,$78,$0C,$38),
+  ($7E,$C3,$3C,$66,$7E,$60,$3C,$00),($CC,$00,$78,$CC,$FC,$C0,$78,$00),
+  ($E0,$00,$78,$CC,$FC,$C0,$78,$00),($CC,$00,$70,$30,$30,$30,$78,$00),
+  ($7C,$C6,$38,$18,$18,$18,$3C,$00),($E0,$00,$70,$30,$30,$30,$78,$00),
+  ($C6,$38,$6C,$C6,$FE,$C6,$C6,$00),($30,$30,$00,$78,$CC,$FC,$CC,$00),
+  ($1C,$00,$FC,$60,$78,$60,$FC,$00),($00,$00,$7F,$0C,$7F,$CC,$7F,$00),
+  ($3E,$6C,$CC,$FE,$CC,$CC,$CE,$00),($78,$CC,$00,$78,$CC,$CC,$78,$00),
+  ($00,$CC,$00,$78,$CC,$CC,$78,$00),($00,$E0,$00,$78,$CC,$CC,$78,$00),
+  ($78,$CC,$00,$CC,$CC,$CC,$7E,$00),($00,$E0,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$CC,$00,$CC,$CC,$7C,$0C,$F8),($C3,$18,$3C,$66,$66,$3C,$18,$00),
+  ($CC,$00,$CC,$CC,$CC,$CC,$78,$00),($18,$18,$7E,$C0,$C0,$7E,$18,$18),
+  ($38,$6C,$64,$F0,$60,$E6,$FC,$00),($CC,$CC,$78,$FC,$30,$FC,$30,$30),
+  ($F8,$CC,$CC,$FA,$C6,$CF,$C6,$C7),($0E,$1B,$18,$3C,$18,$18,$D8,$70),
+  ($1C,$00,$78,$0C,$7C,$CC,$7E,$00),($38,$00,$70,$30,$30,$30,$78,$00),
+  ($00,$1C,$00,$78,$CC,$CC,$78,$00),($00,$1C,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$F8,$00,$F8,$CC,$CC,$CC,$00),($FC,$00,$CC,$EC,$FC,$DC,$CC,$00),
+  ($3C,$6C,$6C,$3E,$00,$7E,$00,$00),($38,$6C,$6C,$38,$00,$7C,$00,$00),
+  ($30,$00,$30,$60,$C0,$CC,$78,$00),($00,$00,$00,$FC,$C0,$C0,$00,$00),
+  ($00,$00,$00,$FC,$0C,$0C,$00,$00),($C3,$C6,$CC,$DE,$33,$66,$CC,$0F),
+  ($C3,$C6,$CC,$DB,$37,$6F,$CF,$03),($18,$18,$00,$18,$18,$18,$18,$00),
+  ($00,$33,$66,$CC,$66,$33,$00,$00),($00,$CC,$66,$33,$66,$CC,$00,$00),
+  ($22,$88,$22,$88,$22,$88,$22,$88),($55,$AA,$55,$AA,$55,$AA,$55,$AA),
+  ($DB,$77,$DB,$EE,$DB,$77,$DB,$EE),($18,$18,$18,$18,$18,$18,$18,$18),
+  ($18,$18,$18,$18,$F8,$18,$18,$18),($18,$18,$F8,$18,$F8,$18,$18,$18),
+  ($36,$36,$36,$36,$F6,$36,$36,$36),($00,$00,$00,$00,$FE,$36,$36,$36),
+  ($00,$00,$F8,$18,$F8,$18,$18,$18),($36,$36,$F6,$06,$F6,$36,$36,$36),
+  ($36,$36,$36,$36,$36,$36,$36,$36),($00,$00,$FE,$06,$F6,$36,$36,$36),
+  ($36,$36,$F6,$06,$FE,$00,$00,$00),($36,$36,$36,$36,$FE,$00,$00,$00),
+  ($18,$18,$F8,$18,$F8,$00,$00,$00),($00,$00,$00,$00,$F8,$18,$18,$18),
+  ($18,$18,$18,$18,$1F,$00,$00,$00),($18,$18,$18,$18,$FF,$00,$00,$00),
+  ($00,$00,$00,$00,$FF,$18,$18,$18),($18,$18,$18,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$00,$00,$00),($18,$18,$18,$18,$FF,$18,$18,$18),
+  ($18,$18,$1F,$18,$1F,$18,$18,$18),($36,$36,$36,$36,$37,$36,$36,$36),
+  ($36,$36,$37,$30,$3F,$00,$00,$00),($00,$00,$3F,$30,$37,$36,$36,$36),
+  ($36,$36,$F7,$00,$FF,$00,$00,$00),($00,$00,$FF,$00,$F7,$36,$36,$36),
+  ($36,$36,$37,$30,$37,$36,$36,$36),($00,$00,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$F7,$00,$F7,$36,$36,$36),($18,$18,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$36,$36,$FF,$00,$00,$00),($00,$00,$FF,$00,$FF,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$36,$36,$36),($36,$36,$36,$36,$3F,$00,$00,$00),
+  ($18,$18,$1F,$18,$1F,$00,$00,$00),($00,$00,$1F,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$3F,$36,$36,$36),($36,$36,$36,$36,$FF,$36,$36,$36),
+  ($18,$18,$FF,$18,$FF,$18,$18,$18),($18,$18,$18,$18,$F8,$00,$00,$00),
+  ($00,$00,$00,$00,$1F,$18,$18,$18),($FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF),
+  ($00,$00,$00,$00,$FF,$FF,$FF,$FF),($F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0),
+  ($0F,$0F,$0F,$0F,$0F,$0F,$0F,$0F),($FF,$FF,$FF,$FF,$00,$00,$00,$00),
+  ($00,$00,$76,$DC,$C8,$DC,$76,$00),($00,$78,$CC,$F8,$CC,$F8,$C0,$C0),
+  ($00,$FC,$CC,$C0,$C0,$C0,$C0,$00),($00,$FE,$6C,$6C,$6C,$6C,$6C,$00),
+  ($FC,$CC,$60,$30,$60,$CC,$FC,$00),($00,$00,$7E,$D8,$D8,$D8,$70,$00),
+  ($00,$66,$66,$66,$66,$7C,$60,$C0),($00,$76,$DC,$18,$18,$18,$18,$00),
+  ($FC,$30,$78,$CC,$CC,$78,$30,$FC),($38,$6C,$C6,$FE,$C6,$6C,$38,$00),
+  ($38,$6C,$C6,$C6,$6C,$6C,$EE,$00),($1C,$30,$18,$7C,$CC,$CC,$78,$00),
+  ($00,$00,$7E,$DB,$DB,$7E,$00,$00),($06,$0C,$7E,$DB,$DB,$7E,$60,$C0),
+  ($38,$60,$C0,$F8,$C0,$60,$38,$00),($78,$CC,$CC,$CC,$CC,$CC,$CC,$00),
+  ($00,$FC,$00,$FC,$00,$FC,$00,$00),($30,$30,$FC,$30,$30,$00,$FC,$00),
+  ($60,$30,$18,$30,$60,$00,$FC,$00),($18,$30,$60,$30,$18,$00,$FC,$00),
+  ($0E,$1B,$1B,$18,$18,$18,$18,$18),($18,$18,$18,$18,$18,$D8,$D8,$70),
+  ($30,$30,$00,$FC,$00,$30,$30,$00),($00,$76,$DC,$00,$76,$DC,$00,$00),
+  ($38,$6C,$6C,$38,$00,$00,$00,$00),($00,$00,$00,$18,$18,$00,$00,$00),
+  ($00,$00,$00,$00,$18,$00,$00,$00),($0F,$0C,$0C,$0C,$EC,$6C,$3C,$1C),
+  ($78,$6C,$6C,$6C,$6C,$00,$00,$00),($70,$18,$30,$60,$78,$00,$00,$00),
+  ($00,$00,$3C,$3C,$3C,$3C,$00,$00),($00,$00,$00,$00,$00,$00,$00,$00)
+ );
+
+Type
+ StCpu_TMfdb = Record
+  Addr: LongInt;
+  W, H, WW, Stand, Planes: Integer;
+ End;
+Var
+ StCpu_Font8: Array[0..255, 0..7] Of Byte;
+ StCpu_CX1, StCpu_CY1, StCpu_CX2, StCpu_CY2: Integer;
+ StCpu_CurHotX, StCpu_CurHotY: Integer;
+ StCpu_CurMask, StCpu_CurData: Array[0..15] Of Word;
+ StCpu_MouseHidden: Integer;
+ StCpu_FloodCol: Integer;
+ StCpu_StGfx: Boolean;                   { l'ecran bitmap est affiche dans l'onglet }
+ StCpu_StFirst: Boolean;
+ StCpu_StShadow: Array[0..31999] Of Byte;
+ StCpu_StCX, StCpu_StCY, StCpu_StEsc, StCpu_StEscA: Integer;
+ StCpu_StRev: Boolean;
+
+Procedure StCpu_CheckFonts;
+Begin
+ Move(StCpu_Font8Emb, StCpu_Font8, SizeOf(StCpu_Font8));
+End;
+
+Function StCpu_Min2(A, B: LongInt): LongInt;
+Begin If A < B Then StCpu_Min2 := A Else StCpu_Min2 := B; End;
+Function StCpu_Max2(A, B: LongInt): LongInt;
+Begin If A > B Then StCpu_Max2 := A Else StCpu_Max2 := B; End;
+Function StCpu_Clamp(V, A, B: LongInt): LongInt;
+Begin If V < A Then StCpu_Clamp := A Else If V > B Then StCpu_Clamp := B Else StCpu_Clamp := V; End;
+
+Procedure StCpu_BPix(X, Y: Integer; V: Boolean);
+Var A: LongInt; B: Byte;
+Begin
+ If (X < 0) Or (X >= StCpu_SW) Or (Y < 0) Or (Y >= StCpu_SH) Then Exit;
+ A := StCpu_StScrBase + LongInt(Y) * 80 + (X Shr 3);
+ B := StCpu_Rd8(A);
+ If V Then B := B Or (128 Shr (X And 7)) Else B := B And Not (128 Shr (X And 7));
+ StCpu_Wr8(A, B);
+End;
+
+Function StCpu_BGet(X, Y: Integer): Boolean;
+Begin
+ StCpu_BGet := False;
+ If (X < 0) Or (X >= StCpu_SW) Or (Y < 0) Or (Y >= StCpu_SH) Then Exit;
+ StCpu_BGet := (StCpu_Rd8(StCpu_StScrBase + LongInt(Y) * 80 + (X Shr 3)) And (128 Shr (X And 7))) <> 0;
+End;
+
+Procedure StCpu_SetClip(X1, Y1, X2, Y2: Integer);
+Begin
+ StCpu_CX1 := StCpu_Max2(0, X1); StCpu_CY1 := StCpu_Max2(0, Y1); StCpu_CX2 := StCpu_Min2(StCpu_SW - 1, X2); StCpu_CY2 := StCpu_Min2(StCpu_SH - 1, Y2);
+End;
+
+Function StCpu_RopBit(Mode: Integer; S, D: Boolean): Boolean;
+Begin
+ Case Mode Of
+  0: StCpu_RopBit := False;
+  1: StCpu_RopBit := S And D;
+  2: StCpu_RopBit := S And Not D;
+  3: StCpu_RopBit := S;
+  4: StCpu_RopBit := Not S And D;
+  5: StCpu_RopBit := D;
+  6: StCpu_RopBit := S Xor D;
+  7: StCpu_RopBit := S Or D;
+  8: StCpu_RopBit := Not (S Or D);
+  9: StCpu_RopBit := Not (S Xor D);
+  10: StCpu_RopBit := Not D;
+  11: StCpu_RopBit := S Or Not D;
+  12: StCpu_RopBit := Not S;
+  13: StCpu_RopBit := Not S Or D;
+  14: StCpu_RopBit := Not (S And D);
+ Else StCpu_RopBit := True;
+ End;
+End;
+
+Function StCpu_ColBit(C: Integer): Boolean;
+Begin StCpu_ColBit := C <> 0; End;
+
+Procedure StCpu_ReadMfdb(P: LongInt; Var M: StCpu_TMfdb);
+Begin
+ If P = 0 Then Begin
+  M.Addr := 0; M.W := StCpu_SW; M.H := StCpu_SH; M.WW := 40; M.Stand := 0; M.Planes := 1; Exit;
+ End;
+ M.Addr := StCpu_Rd32(P); M.W := StCpu_SExt(StCpu_Rd16(P + 4), 2); M.H := StCpu_SExt(StCpu_Rd16(P + 6), 2);
+ M.WW := StCpu_SExt(StCpu_Rd16(P + 8), 2); M.Stand := StCpu_Rd16(P + 10); M.Planes := StCpu_SExt(StCpu_Rd16(P + 12), 2);
+ If M.Planes < 1 Then M.Planes := 1;
+End;
+
+Function StCpu_MBit(Const M: StCpu_TMfdb; X, Y: Integer): Boolean;
+Var A: LongInt;
+Begin
+ If M.Addr = 0 Then StCpu_MBit := StCpu_BGet(X, Y)
+ Else Begin
+  A := M.Addr + LongInt(Y) * M.WW * 2 * M.Planes + (X Shr 3);
+  StCpu_MBit := (StCpu_Rd8(A) And (128 Shr (X And 7))) <> 0;
+ End;
+End;
+
+Procedure StCpu_MPut(Const M: StCpu_TMfdb; X, Y: Integer; V: Boolean);
+Var A: LongInt; B: Byte;
+Begin
+ If M.Addr = 0 Then Begin
+  If (X >= StCpu_CX1) And (X <= StCpu_CX2) And (Y >= StCpu_CY1) And (Y <= StCpu_CY2) Then StCpu_BPix(X, Y, V);
+ End Else Begin
+  A := M.Addr + LongInt(Y) * M.WW * 2 * M.Planes + (X Shr 3);
+  B := StCpu_Rd8(A);
+  If V Then B := B Or (128 Shr (X And 7)) Else B := B And Not (128 Shr (X And 7));
+  StCpu_Wr8(A, B);
+ End;
+End;
+
+Procedure StCpu_CopyRaster(Const Src, Dst: StCpu_TMfdb; SX1, SY1, SX2, SY2, DX1, DY1: Integer; Mode: Integer;
+                     Trans: Boolean; Fg, Bg: Integer);
+Var W, H, X, Y, X0, X1_, XS, Y0, Y1_, YS: Integer; S, D, R: Boolean;
+Begin
+ If SX2 < SX1 Then Begin X := SX1; SX1 := SX2; SX2 := X; End;
+ If SY2 < SY1 Then Begin Y := SY1; SY1 := SY2; SY2 := Y; End;
+ W := SX2 - SX1 + 1; H := SY2 - SY1 + 1;
+ If (W <= 0) Or (H <= 0) Then Exit;
+ If (DY1 > SY1) And (Src.Addr = Dst.Addr) Then Begin Y0 := H - 1; Y1_ := 0; YS := -1; End
+ Else Begin Y0 := 0; Y1_ := H - 1; YS := 1; End;
+ If (DX1 > SX1) And (Src.Addr = Dst.Addr) Then Begin X0 := W - 1; X1_ := 0; XS := -1; End
+ Else Begin X0 := 0; X1_ := W - 1; XS := 1; End;
+ Y := Y0;
+ While True Do Begin
+  X := X0;
+  While True Do Begin
+   S := StCpu_MBit(Src, SX1 + X, SY1 + Y);
+   D := StCpu_MBit(Dst, DX1 + X, DY1 + Y);
+   If Trans Then Begin
+    Case Mode Of
+     1: If S Then R := StCpu_ColBit(Fg) Else R := StCpu_ColBit(Bg);
+     2: If S Then R := StCpu_ColBit(Fg) Else R := D;
+     3: If S Then R := Not D Else R := D;
+     4: If S Then R := D Else R := StCpu_ColBit(Fg);
+    Else R := S;
+    End;
+    StCpu_MPut(Dst, DX1 + X, DY1 + Y, R);
+   End Else StCpu_MPut(Dst, DX1 + X, DY1 + Y, StCpu_RopBit(Mode, S, D));
+   If X = X1_ Then Break;
+   X := X + XS;
+  End;
+  If Y = Y1_ Then Break;
+  Y := Y + YS;
+ End;
+End;
+
+{ remplissage par germe (region de meme couleur que le germe, 4-connexe, par lignes) }
+Procedure StCpu_FloodFill(X, Y: Integer; Border: Integer);
+Var Stack: Array[0..511, 0..1] Of Integer; SP, L, R, I, XX: Integer; Seed, Fc: Boolean;
+ Function Stop(Xp, Yp: Integer): Boolean;
+ Begin Stop := StCpu_BGet(Xp, Yp) <> Seed; End;
+Begin
+ Seed := StCpu_BGet(X, Y); Fc := StCpu_FloodCol <> 0;
+ If (X < StCpu_CX1) Or (X > StCpu_CX2) Or (Y < StCpu_CY1) Or (Y > StCpu_CY2) Then Exit;
+ If Seed = Fc Then Exit;
+ SP := 0; Stack[0, 0] := X; Stack[0, 1] := Y; SP := 1;
+ While SP > 0 Do Begin
+  Dec(SP); XX := Stack[SP, 0]; Y := Stack[SP, 1];
+  If (Y < StCpu_CY1) Or (Y > StCpu_CY2) Then Continue;
+  If Stop(XX, Y) Then Continue;
+  L := XX; R := XX;
+  While (L > StCpu_CX1) And Not Stop(L - 1, Y) Do Dec(L);
+  While (R < StCpu_CX2) And Not Stop(R + 1, Y) Do Inc(R);
+  For I := L To R Do StCpu_BPix(I, Y, Fc);
+  For I := L To R Do Begin
+   If SP >= 510 Then Break;
+   If (Y > StCpu_CY1) And Not Stop(I, Y - 1) And ((I = L) Or Stop(I - 1, Y - 1)) Then Begin
+    Stack[SP, 0] := I; Stack[SP, 1] := Y - 1; Inc(SP); End;
+   If (Y < StCpu_CY2) And Not Stop(I, Y + 1) And ((I = L) Or Stop(I - 1, Y + 1)) Then Begin
+    Stack[SP, 0] := I; Stack[SP, 1] := Y + 1; Inc(SP); End;
+  End;
+ End;
+End;
+
+Procedure StCpu_LineAFontHeader(A: LongInt; Id,Pt: Integer; Const Nm: String;
+  Top,Asc,Half,Desc,Bot,CellH: Integer; Dat: LongInt);
+Var I: Integer;
+Begin
+ For I:=0 To 87 Do StCpu_Wr8(A+I,0);
+ StCpu_Wr16(A,Id);StCpu_Wr16(A+2,Pt);
+ For I:=1 To Length(Nm) Do If I<=31 Then StCpu_Wr8(A+3+I,Ord(Nm[I]));
+ StCpu_Wr16(A+36,0);StCpu_Wr16(A+38,255);
+ StCpu_Wr16(A+40,Top);StCpu_Wr16(A+42,Asc);StCpu_Wr16(A+44,Half);StCpu_Wr16(A+46,Desc);StCpu_Wr16(A+48,Bot);
+ StCpu_Wr16(A+50,8);StCpu_Wr16(A+52,8);
+ StCpu_Wr16(A+58,1);StCpu_Wr16(A+60,1);
+ StCpu_Wr16(A+62,$5555);StCpu_Wr16(A+64,$5555);
+ StCpu_Wr16(A+66,$0001 Or $0008);        { police systeme, a chasse fixe }
+ StCpu_Wr32(A+68,0);StCpu_Wr32(A+72,StCpu_LA_F8DAT-$200+0);  { off_table : renseignee plus bas }
+ StCpu_Wr32(A+76,Dat);StCpu_Wr16(A+80,256);StCpu_Wr16(A+82,CellH);StCpu_Wr32(A+84,0);
+End;
+
+Procedure StCpu_LineAFonts;
+Var C,R: Integer; B: Byte;
+Begin
+ For C:=0 To 255 Do
+  For R:=0 To 7 Do Begin
+   B:=StCpu_Font8[C,R];
+   StCpu_Wr8(StCpu_LA_F8DAT+LongInt(R)*256+C,B);
+   StCpu_Wr8(StCpu_LA_F16DAT+LongInt(R*2)*256+C,B);
+   StCpu_Wr8(StCpu_LA_F16DAT+LongInt(R*2+1)*256+C,B);
+  End;
+ { table des decalages : caractere c a l'abscisse 8*c (257 mots) }
+ For C:=0 To 256 Do StCpu_Wr16(StCpu_LA_FONTS+$120+C*2,C*8);
+ StCpu_LineAFontHeader(StCpu_LA_FH,1,4,'6x6 system font',5,5,3,1,1,8,StCpu_LA_F8DAT);
+ StCpu_LineAFontHeader(StCpu_LA_FH+88,1,9,'8x8 system font',6,6,4,1,1,8,StCpu_LA_F8DAT);
+ StCpu_LineAFontHeader(StCpu_LA_FH+176,1,10,'8x16 system font',12,12,8,3,3,16,StCpu_LA_F16DAT);
+ For C:=0 To 2 Do Begin
+  StCpu_Wr32(StCpu_LA_FH+C*88+72,StCpu_LA_FONTS+$120);
+  StCpu_Wr32(StCpu_LA_FONTS+C*4,StCpu_LA_FH+C*88);
+ End;
+ StCpu_Wr32(StCpu_LA_FH+84,StCpu_LA_FH+88);StCpu_Wr32(StCpu_LA_FH+88+84,StCpu_LA_FH+176);
+End;
+
+Procedure StCpu_LineAInit;
+Var I: Integer;
+Begin
+ For I:=0 To 130 Do StCpu_Wr8(StCpu_LINEA_VARS+I,0);
+ For I:=1 To $2F Do StCpu_Wr8(StCpu_LINEA_VARS-I,0);
+ StCpu_Wr16(StCpu_LINEA_VARS,1);StCpu_Wr16(StCpu_LINEA_VARS+2,80);
+ StCpu_Wr32(StCpu_LINEA_VARS+4,StCpu_LA_CONTRL);StCpu_Wr32(StCpu_LINEA_VARS+8,StCpu_LA_INTIN);StCpu_Wr32(StCpu_LINEA_VARS+12,
+   StCpu_LA_PTSIN);
+ StCpu_Wr32(StCpu_LINEA_VARS+16,StCpu_LA_INTIN+$40);StCpu_Wr32(StCpu_LINEA_VARS+20,StCpu_LA_PTSIN+$40);
+ StCpu_Wr16(StCpu_LINEA_VARS+24,1);StCpu_Wr16(StCpu_LINEA_VARS+34,$FFFF);StCpu_Wr16(StCpu_LINEA_VARS+36,0);
+ StCpu_Wr16(StCpu_LINEA_VARS+56,0);StCpu_Wr16(StCpu_LINEA_VARS+58,0);StCpu_Wr16(StCpu_LINEA_VARS+60,
+   639);StCpu_Wr16(StCpu_LINEA_VARS+62,399);
+ StCpu_LineAFonts;
+ { police courante : 8x16 ; texte : premier plan 1, fond 0 }
+ StCpu_Wr32(StCpu_LINEA_VARS+84,StCpu_LA_F16DAT);StCpu_Wr16(StCpu_LINEA_VARS+88,256);
+ StCpu_Wr16(StCpu_LINEA_VARS+106,1);StCpu_Wr16(StCpu_LINEA_VARS+114,0);
+ { variables a decalage negatif (V_CEL_HT ... BYTES_LIN) }
+ StCpu_Wr16(StCpu_LINEA_VARS-$2E,16);StCpu_Wr16(StCpu_LINEA_VARS-$2C,79);StCpu_Wr16(StCpu_LINEA_VARS-$2A,24);StCpu_Wr16(StCpu_LINEA_VARS-$28,1280);
+ StCpu_Wr16(StCpu_LINEA_VARS-$26,0);StCpu_Wr16(StCpu_LINEA_VARS-$24,1);StCpu_Wr32(StCpu_LINEA_VARS-$22,StCpu_StScrBase);
+ StCpu_Wr32(StCpu_LINEA_VARS-$16,StCpu_LA_F16DAT);StCpu_Wr16(StCpu_LINEA_VARS-$12,255);StCpu_Wr16(StCpu_LINEA_VARS-$10,0);StCpu_Wr16(StCpu_LINEA_VARS-$E,256);
+ StCpu_Wr16(StCpu_LINEA_VARS-$C,640);StCpu_Wr32(StCpu_LINEA_VARS-$A,StCpu_LA_FONTS+$120);StCpu_Wr16(StCpu_LINEA_VARS-4,400);StCpu_Wr16(StCpu_LINEA_VARS-2,80);
+ StCpu_Rg[0]:=StCpu_LINEA_VARS;StCpu_Rg[8]:=StCpu_LINEA_VARS;
+ StCpu_Rg[9]:=StCpu_LA_FONTS;StCpu_Rg[10]:=StCpu_LINEA_VARS+$200;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Ligne A : primitives (pixel, ligne, rectangle, polygone, BITBLT, TEXTBLT   }
+{ avec tous les effets, lutins, copie raster, remplissage par germe)        }
+{ ---------------------------------------------------------------------- }
+
+Var StCpu_LaXor: Boolean;
+
+Procedure StCpu_LaOPlot(X,Y: LongInt; C: Integer);
+Begin
+ If (X<0) Or (X>=640) Or (Y<0) Or (Y>=400) Then Exit;
+ If StCpu_LaXor Then Begin If C<>0 Then StCpu_BPix(X,Y,Not StCpu_BGet(X,Y));End
+ Else StCpu_BPix(X,Y,C<>0);
+End;
+
+Function StCpu_LaOGet(X,Y: LongInt): Integer;
+Begin
+ StCpu_LaOGet:=Ord(StCpu_BGet(X,Y));
+End;
+
+Function StCpu_LaRop(Op,S,D: LongInt): LongInt;
+Begin
+ StCpu_LaRop:=Ord(StCpu_RopBit(Op,S<>0,D<>0));
+End;
+
+Function StCpu_LaW(Off: Integer): Integer;
+Begin StCpu_LaW:=SmallInt(StCpu_Rd16(StCpu_LINEA_VARS+Off)); End;
+
+Function StCpu_LaClip(X,Y: LongInt): Boolean;
+{ True si le point est visible (rectangle d'ecran et fenetre de clipping) }
+Begin
+ StCpu_LaClip:=False;
+ If (X<0) Or (Y<0) Or (X>639) Or (Y>399) Then Exit;
+ If StCpu_LaW(54)<>0 Then
+  If (X<StCpu_LaW(56)) Or (Y<StCpu_LaW(58)) Or (X>StCpu_LaW(60)) Or (Y>StCpu_LaW(62)) Then Exit;
+ StCpu_LaClip:=True;
+End;
+
+{ pixel selon le mode d'ecriture (0 remplace, 1 transparent, 2 xor, 3 transparent inverse) ;
+  Fg : le pixel fait partie du motif ; Col : couleur du premier plan }
+Procedure StCpu_LaPix(X,Y: LongInt; Fg: Boolean; Col: Integer);
+Var C: Byte;
+Begin
+ If Not StCpu_LaClip(X,Y) Then Exit;
+ If (Col And 1)<>0 Then C:=1 Else C:=0;
+ Case StCpu_LaW(36) Of
+  1: If Fg Then StCpu_LaOPlot(X,Y,C);
+  2: If Fg And (C<>0) Then Begin StCpu_LaXor:=True;StCpu_LaOPlot(X,Y,1);StCpu_LaXor:=False;End;
+  3: If Not Fg Then StCpu_LaOPlot(X,Y,C);
+ Else
+  If Fg Then StCpu_LaOPlot(X,Y,C) Else StCpu_LaOPlot(X,Y,0);
+ End;
+End;
+
+Procedure StCpu_LaPut(X,Y: LongInt; C: Integer);
+Begin
+ StCpu_LaPix(X,Y,True,C);
+End;
+
+{ bit du motif de remplissage en (X,Y) }
+Function StCpu_LaPat(X,Y: LongInt): Boolean;
+Var P: LongInt; W: Word; M: Integer;
+Begin
+ P:=StCpu_Rd32(StCpu_LINEA_VARS+46);
+ If P=0 Then Begin StCpu_LaPat:=True;Exit;End;
+ M:=StCpu_LaW(50);
+ W:=StCpu_Rd16(P+2*(Y And M));
+ StCpu_LaPat:=((W Shr (15-(X And 15))) And 1)<>0;
+End;
+
+Procedure StCpu_LaHLine(X1,X2,Y: LongInt);
+Var X,T: LongInt;
+Begin
+ If X1>X2 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ For X:=X1 To X2 Do StCpu_LaPix(X,Y,StCpu_LaPat(X,Y),StCpu_LaW(24));
+End;
+
+Procedure StCpu_LaLine(X1,Y1,X2,Y2: LongInt);
+Var DX,DY,SX,SY,Err,E2,N: LongInt; Mask: Word;
+Begin
+ Mask:=Word(StCpu_LaW(34));
+ DX:=Abs(X2-X1);DY:=Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ Err:=DX-DY;N:=0;
+ Repeat
+  StCpu_LaPix(X1,Y1,((Mask Shr (15-(N And 15))) And 1)<>0,StCpu_LaW(24));
+  Inc(N);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*Err;
+  If E2>-DY Then Begin Err:=Err-DY;X1:=X1+SX;End;
+  If E2<DX Then Begin Err:=Err+DX;Y1:=Y1+SY;End;
+ Until False;
+End;
+
+Procedure StCpu_LaSpriteMouse(Form: LongInt);
+Var I: Integer;
+Begin
+ StCpu_CurHotX:=StCpu_Clamp(StCpu_SExt(StCpu_Rd16(Form),2),0,15);StCpu_CurHotY:=StCpu_Clamp(StCpu_SExt(StCpu_Rd16(Form+2),2),0,15);
+ For I:=0 To 15 Do Begin StCpu_CurMask[I]:=StCpu_Rd16(Form+10+I*2);StCpu_CurData[I]:=StCpu_Rd16(Form+42+I*2);End;
+End;
+
+{ TEXTBLT : un caractere de la forme de police vers l'ecran avec tous les effets
+  (gras, clair, italique, souligne, contour, ombre), l'echelle et la rotation }
+Procedure StCpu_LaTextBlt;
+Const OFSX = 40; MAXC = 160;
+Var Fb,Fw: LongInt; SX,SY,DX,DY,W,H,I,J,K,R,C,Sty,Wt,Lm,Sk,Ro,Lo,Fg,Bg,Up,Mode: Integer;
+    G1,G2: Array[0..95,0..MAXC-1] Of Byte;       { lignes x colonnes (decalage OFSX) }
+    Wn: Integer; Mk: Word; StCpu_Sh,Cnt,Dir,Yd,Xd,Kx,Ky,Ry: Integer; Inc_,AccX,AccY: LongInt; B: Byte;
+    DstW,DstH,ExL,ExR: Integer;
+ Function Src(Jj,Ii: Integer): Byte;
+ Begin
+  If (Ii<0) Or (Ii>=W) Or (Jj<0) Or (Jj>=H) Then Begin Src:=0;Exit;End;
+  Src:=Ord((StCpu_Rd8(Fb+(SY+Jj)*Fw+((SX+Ii) Shr 3)) And (128 Shr ((SX+Ii) And 7)))<>0);
+ End;
+ Procedure Emit(Xo,Yo: Integer; V: Byte);
+ { ecrit le point (colonne Xo, ligne Yo) du glyphe compose, en tenant compte de la rotation }
+ Var PxX,PxY: Integer;
+ Begin
+  Case StCpu_LaW(104) Of
+   900: Begin PxX:=DX+Yo;PxY:=DY-Xo;End;
+   1800: Begin PxX:=DX-Xo;PxY:=DY-Yo;End;
+   2700: Begin PxX:=DX-Yo;PxY:=DY+Xo;End;
+  Else Begin PxX:=DX+Xo;PxY:=DY+Yo;End;
+  End;
+  If Not StCpu_LaClip(PxX,PxY) Then Exit;
+  Case StCpu_LaW(36) Of
+   1: If V<>0 Then StCpu_LaOPlot(PxX,PxY,Fg And 1);
+   2: If (V<>0) And ((Fg And 1)<>0) Then Begin StCpu_LaXor:=True;StCpu_LaOPlot(PxX,PxY,1);StCpu_LaXor:=False;End;
+   3: If V=0 Then StCpu_LaOPlot(PxX,PxY,Fg And 1);
+  Else
+   If V<>0 Then StCpu_LaOPlot(PxX,PxY,Fg And 1) Else StCpu_LaOPlot(PxX,PxY,Bg And 1);
+  End;
+ End;
+Begin
+ Fb:=StCpu_Rd32(StCpu_LINEA_VARS+84);Fw:=StCpu_LaW(88);
+ SX:=StCpu_LaW(72);SY:=StCpu_LaW(74);DX:=StCpu_LaW(76);DY:=StCpu_LaW(78);W:=StCpu_LaW(80);H:=StCpu_LaW(82);
+ Sty:=StCpu_LaW(90);Wt:=StCpu_LaW(96);Lm:=StCpu_LaW(92);Sk:=StCpu_LaW(94);Ro:=StCpu_LaW(98);Lo:=StCpu_LaW(100);
+ Fg:=StCpu_LaW(106);Bg:=StCpu_LaW(114);
+ If (W<=0) Or (H<=0) Or (W>64) Or (H>64) Then Exit;
+ FillChar(G1,SizeOf(G1),0);FillChar(G2,SizeOf(G2),0);
+ { etendue de la cellule : -LOFF .. largeur + epaisseur + ROFF (+1 de chaque cote pour le contour, +1 a droite pour l'ombre) }
+ If (Sty And 1)=0 Then Wt:=0;
+ If Ro<0 Then Ro:=0;
+ If Lo<0 Then Lo:=0;
+ ExL:=-Lo;ExR:=W+Wt+Ro;
+ If (Sty And 16)<>0 Then Begin Dec(ExL);Inc(ExR);End;
+ If (Sty And 32)<>0 Then Inc(ExR);
+ If ExL<-OFSX+1 Then ExL:=-OFSX+1;
+ If ExR>MAXC-OFSX-1 Then ExR:=MAXC-OFSX-1;
+ { 1. glyphe source }
+ For J:=0 To H-1 Do For I:=0 To W-1 Do G1[J,I+OFSX]:=Src(J,I);
+ { 2. gras : chaque point est repete sur Wt colonnes a sa droite }
+ If (Sty And 1)<>0 Then Begin
+  If Wt<0 Then Wt:=0;
+  For J:=0 To H-1 Do
+   For I:=0 To MAXC-1 Do
+    If G1[J,I]<>0 Then
+     For K:=0 To Wt Do If I+K<MAXC Then G2[J,I+K]:=1;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 3. clair : masque tourne d'un bit a chaque ligne }
+ If (Sty And 2)<>0 Then Begin
+  Mk:=Word(Lm);
+  For J:=0 To H-1 Do Begin
+   For I:=0 To MAXC-1 Do
+    If ((Mk Shr (15-((I-OFSX+16000) And 15))) And 1)=0 Then G1[J,I]:=0;
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+ End;
+ { 4. italique : decalage par ligne, de Ro au sommet vers -Lo en bas }
+ If (Sty And 4)<>0 Then Begin
+  Mk:=Word(Sk);StCpu_Sh:=Ro;
+  For J:=0 To H-1 Do Begin
+   For I:=0 To MAXC-1 Do
+    If G1[J,I]<>0 Then Begin
+     K:=I+StCpu_Sh;
+     If (K>=0) And (K<MAXC) Then G2[J,K]:=1;
+    End;
+   If (Mk And $8000)<>0 Then Dec(StCpu_Sh);
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 5. contour : bord du glyphe seulement }
+ If (Sty And 16)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=1 To MAXC-2 Do
+    If G1[J,I]=0 Then Begin
+     Cnt:=0;
+     For R:=-1 To 1 Do For C:=-1 To 1 Do
+      If (J+R>=0) And (J+R<H) And (G1[J+R,I+C]<>0) Then Cnt:=1;
+     G2[J,I]:=Cnt;
+    End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 6. ombre : copie decalee d'un point, en trame }
+ If (Sty And 32)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=0 To MAXC-1 Do Begin
+    G2[J,I]:=G1[J,I];
+    If (J>0) And (I>0) And (G1[J-1,I-1]<>0) And (G1[J,I]=0) And (((I+J) And 1)=0) Then G2[J,I]:=1;
+   End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 7. souligne : derniere ligne }
+ If (Sty And 8)<>0 Then For I:=0 To MAXC-1 Do If (I>=OFSX-Lo) And (I<OFSX+W+Wt+Ro) Then G1[H-1,I]:=1;
+ { 8. ecriture avec echelle (accumulateur DDA) }
+ DstH:=0;
+ If StCpu_LaW(102)=0 Then Begin
+  For J:=0 To H-1 Do
+   For I:=ExL To ExR-1 Do Emit(I,J,G1[J,I+OFSX]);
+ End Else Begin
+  Dir:=StCpu_LaW(68);Inc_:=StCpu_LaW(66) And $FFFF;
+  Yd:=0;AccY:=StCpu_LaW(64) And $FFFF;
+  For J:=0 To H-1 Do Begin
+   AccY:=AccY+Inc_;
+   If AccY>65535 Then Begin AccY:=AccY-65536;Ky:=1;End Else Ky:=0;
+   If Dir=0 Then Ky:=1+Ky Else Ky:=1-Ky;
+   For Ry:=1 To Ky Do Begin
+    Xd:=ExL;AccX:=StCpu_LaW(64) And $FFFF;
+    For I:=ExL To ExR-1 Do Begin
+     B:=G1[J,I+OFSX];
+     AccX:=AccX+Inc_;
+     If AccX>65535 Then Begin AccX:=AccX-65536;Kx:=1;End Else Kx:=0;
+     If Dir=0 Then Kx:=1+Kx Else Kx:=1-Kx;
+     For R:=1 To Kx Do Begin Emit(Xd,Yd,B);Inc(Xd);End;
+    End;
+    Inc(Yd);
+   End;
+  End;
+ End;
+ 
+End;
+
+Procedure StCpu_LaDispatch(Fn: Integer);
+Var X1,Y1,X2,Y2,X,Y,I,J,K,N: LongInt; Pt,Pn,Ct: LongInt; Col: Integer; B: LongInt;
+    W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt; Fg,Bg: Integer;
+    XI: Array[0..63] Of LongInt; Cnt: Integer; Mf1,Mf2,Fb,Fw: LongInt; Sv: Integer;
+    SrcM,DstM: StCpu_TMfdb; Sa,Sb,Sl: LongInt; Fm: LongInt; Mk,Dt: Word; PA,PNL,PMK: LongInt;
+ Function SrcBit(Frm,Nxw,Nxl,PX,PY: LongInt): Integer;
+ Var A: LongInt;
+ Begin
+  A:=Frm+PY*Nxl+(PX Shr 4)*Nxw+((PX And 15) Shr 3);
+  SrcBit:=Ord((StCpu_Rd8(A) And (128 Shr (PX And 7)))<>0);
+ End;
+ Procedure PutBit(Frm,Nxw,Nxl,PX,PY: LongInt; V: Integer);
+ Var A: LongInt;
+ Begin
+  A:=Frm+PY*Nxl+(PX Shr 4)*Nxw+((PX And 15) Shr 3);
+  If V<>0 Then StCpu_Wr8(A,StCpu_Rd8(A) Or (128 Shr (PX And 7))) Else StCpu_Wr8(A,StCpu_Rd8(A) And (Not (128 Shr (PX And 7))));
+ End;
+Begin
+ Case Fn Of
+  0: StCpu_LineAInit;
+  1: Begin
+      Pt:=StCpu_Rd32(StCpu_LINEA_VARS+12);Pn:=StCpu_Rd32(StCpu_LINEA_VARS+8);
+      StCpu_LaPix(SmallInt(StCpu_Rd16(Pt)),SmallInt(StCpu_Rd16(Pt+2)),True,SmallInt(StCpu_Rd16(Pn)));
+     End;
+  2: Begin
+      Pt:=StCpu_Rd32(StCpu_LINEA_VARS+12);
+      StCpu_Rg[0]:=StCpu_LaOGet(SmallInt(StCpu_Rd16(Pt)),SmallInt(StCpu_Rd16(Pt+2)));
+     End;
+  3: StCpu_LaLine(StCpu_LaW(38),StCpu_LaW(40),StCpu_LaW(42),StCpu_LaW(44));
+  4: StCpu_LaHLine(StCpu_LaW(38),StCpu_LaW(42),StCpu_LaW(40));
+  5: Begin
+      Y1:=StCpu_LaW(40);Y2:=StCpu_LaW(44);
+      If Y1>Y2 Then Begin Y:=Y1;Y1:=Y2;Y2:=Y;End;
+      For Y:=Y1 To Y2 Do StCpu_LaHLine(StCpu_LaW(38),StCpu_LaW(42),Y);
+     End;
+  6: Begin
+      { une ligne de balayage (Y1) d'un polygone : points dans PTSIN }
+      Ct:=StCpu_Rd32(StCpu_LINEA_VARS+4);Pt:=StCpu_Rd32(StCpu_LINEA_VARS+12);
+      Cnt:=SmallInt(StCpu_Rd16(Ct+2));
+      If Cnt>60 Then Cnt:=60;
+      Y:=StCpu_LaW(40);N:=0;
+      For I:=0 To Cnt-1 Do Begin
+       J:=I+1;If J>=Cnt Then J:=0;
+       X1:=SmallInt(StCpu_Rd16(Pt+I*4));Y1:=SmallInt(StCpu_Rd16(Pt+I*4+2));
+       X2:=SmallInt(StCpu_Rd16(Pt+J*4));Y2:=SmallInt(StCpu_Rd16(Pt+J*4+2));
+       If ((Y1<=Y) And (Y2>Y)) Or ((Y2<=Y) And (Y1>Y)) Then Begin
+        If N<63 Then Begin XI[N]:=Round(X1+(Y-Y1)*(X2-X1)/(Y2-Y1));Inc(N);End;
+       End;
+      End;
+      For I:=1 To N-1 Do Begin
+       K:=XI[I];J:=I-1;
+       While (J>=0) And (XI[J]>K) Do Begin XI[J+1]:=XI[J];Dec(J);End;
+       XI[J+1]:=K;
+      End;
+      I:=0;
+      While I+1<N Do Begin StCpu_LaHLine(XI[I],XI[I+1],Y);Inc(I,2);End;
+     End;
+  7: Begin
+      { BITBLT : bloc de parametres en A6 (un plan) }
+      B:=StCpu_Rg[14];
+      W:=SmallInt(StCpu_Rd16(B));H:=SmallInt(StCpu_Rd16(B+2));
+      Fg:=SmallInt(StCpu_Rd16(B+6)) And 1;Bg:=SmallInt(StCpu_Rd16(B+8)) And 1;
+      SX:=SmallInt(StCpu_Rd16(B+14));SY:=SmallInt(StCpu_Rd16(B+16));SF:=StCpu_Rd32(B+18);SNW:=SmallInt(StCpu_Rd16(B+22));SNL:=SmallInt(StCpu_Rd16(B+24));
+      DX:=SmallInt(StCpu_Rd16(B+28));DY:=SmallInt(StCpu_Rd16(B+30));DF:=StCpu_Rd32(B+32);DNW:=SmallInt(StCpu_Rd16(B+36));DNL:=SmallInt(StCpu_Rd16(B+38));
+      Opr:=StCpu_Rd8(B+10+(Fg Shl 1)+Bg);
+      { demi-teinte : la source est combinee (ET) au motif }
+      PA:=StCpu_Rd32(B+42);PNL:=SmallInt(StCpu_Rd16(B+46));PMK:=StCpu_Rd16(B+50);
+      { sens de copie choisi pour que le recouvrement ne detruise pas la source :
+        lignes en sens inverse si on descend, colonnes en sens inverse si on va a droite sur la meme ligne }
+      For K:=0 To H-1 Do Begin
+       If DY>SY Then J:=H-1-K Else J:=K;
+       For N:=0 To W-1 Do Begin
+        If (DY=SY) And (DX>SX) Then I:=W-1-N Else I:=N;
+        S:=SrcBit(SF,SNW,SNL,SX+I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+I,DY+J);
+        If PA<>0 Then S:=S And ((StCpu_Rd16(PA+PNL*((DY+J) And PMK)) Shr (15-((DX+I) And 15))) And 1);
+        PutBit(DF,DNW,DNL,DX+I,DY+J,StCpu_LaRop(Opr,S,D));
+       End;
+      End;
+      
+     End;
+  8: StCpu_LaTextBlt;
+  9: StCpu_MouseHidden:=StCpu_Max2(0,StCpu_MouseHidden-1);
+  10: Inc(StCpu_MouseHidden);
+  11: Begin
+       { transformation du curseur de souris : formulaire dans INTIN }
+       StCpu_LaSpriteMouse(StCpu_Rd32(StCpu_LINEA_VARS+8));
+      End;
+  12: Begin
+       { efface un lutin : tampon en A2 (x, y, nombre de lignes, fond) }
+       Sa:=StCpu_Rg[10];
+       If StCpu_Rd16(Sa+4)<>0 Then Begin
+        X:=SmallInt(StCpu_Rd16(Sa));Y:=SmallInt(StCpu_Rd16(Sa+2));N:=StCpu_Rd16(Sa+4);
+        For J:=0 To N-1 Do
+         For I:=0 To 15 Do
+          If StCpu_LaClip(X+I,Y+J) Then StCpu_LaOPlot(X+I,Y+J,(StCpu_Rd16(Sa+6+J*2) Shr (15-I)) And 1);
+        StCpu_Wr16(Sa+4,0);
+        
+       End;
+      End;
+  13: Begin
+       { dessine un lutin : D0=x, D1=y, A0=formulaire, A2=tampon de sauvegarde }
+       Fm:=StCpu_Rg[8];Sa:=StCpu_Rg[10];
+       X:=SmallInt(StCpu_Rg[0] And $FFFF)-SmallInt(StCpu_Rd16(Fm));Y:=SmallInt(StCpu_Rg[1] And $FFFF)-SmallInt(StCpu_Rd16(Fm+2));
+       { +6 : couleur du masque (fond), +8 : couleur des donnees (premier plan) }
+       Bg:=SmallInt(StCpu_Rd16(Fm+6)) And 1;Fg:=SmallInt(StCpu_Rd16(Fm+8)) And 1;
+       StCpu_Wr16(Sa,X);StCpu_Wr16(Sa+2,Y);StCpu_Wr16(Sa+4,16);
+       For J:=0 To 15 Do Begin
+        Mk:=0;
+        For I:=0 To 15 Do If StCpu_LaClip(X+I,Y+J) Then Mk:=Mk Or (Word(StCpu_LaOGet(X+I,Y+J)) Shl (15-I));
+        StCpu_Wr16(Sa+6+J*2,Mk);
+       End;
+       For J:=0 To 15 Do Begin
+        Mk:=StCpu_Rd16(Fm+10+J*4);Dt:=StCpu_Rd16(Fm+12+J*4);
+        For I:=0 To 15 Do
+         If ((Mk Shr (15-I)) And 1)<>0 Then
+          If StCpu_LaClip(X+I,Y+J) Then Begin
+           If ((Dt Shr (15-I)) And 1)<>0 Then StCpu_LaOPlot(X+I,Y+J,Fg) Else StCpu_LaOPlot(X+I,Y+J,Bg);
+          End;
+       End;
+       
+      End;
+  14: Begin
+       { copie de formulaire raster (comme vro_cpyfm / vrt_cpyfm) }
+       Ct:=StCpu_Rd32(StCpu_LINEA_VARS+4);Pn:=StCpu_Rd32(StCpu_LINEA_VARS+8);Pt:=StCpu_Rd32(StCpu_LINEA_VARS+12);
+       StCpu_ReadMfdb(StCpu_Rd32(Ct+14),SrcM);StCpu_ReadMfdb(StCpu_Rd32(Ct+18),DstM);
+       StCpu_SetClip(0,0,StCpu_SW-1,StCpu_SH-1);
+       If StCpu_LaW(54)<>0 Then StCpu_SetClip(StCpu_LaW(56),StCpu_LaW(58),StCpu_LaW(60),StCpu_LaW(62));
+       StCpu_CopyRaster(SrcM,DstM,StCpu_SExt(StCpu_Rd16(Pt),2),StCpu_SExt(StCpu_Rd16(Pt+2),2),StCpu_SExt(StCpu_Rd16(Pt+4),2),StCpu_SExt(StCpu_Rd16(Pt+6),2),
+         StCpu_SExt(StCpu_Rd16(Pt+8),2),StCpu_SExt(StCpu_Rd16(Pt+10),2),StCpu_SExt(StCpu_Rd16(Pn),2),StCpu_LaW(116)<>0,StCpu_LaW(106),StCpu_LaW(114));
+      End;
+  15: Begin
+       { remplissage par germe : point dans PTSIN }
+       Pt:=StCpu_Rd32(StCpu_LINEA_VARS+12);
+       StCpu_FloodCol:=StCpu_LaW(24) And 1;
+       StCpu_SetClip(0,0,StCpu_SW-1,StCpu_SH-1);
+       If StCpu_LaW(54)<>0 Then StCpu_SetClip(StCpu_LaW(56),StCpu_LaW(58),StCpu_LaW(60),StCpu_LaW(62));
+       StCpu_FloodFill(StCpu_SExt(StCpu_Rd16(Pt),2),StCpu_SExt(StCpu_Rd16(Pt+2),2),-1);
+      End;
+ End;
+End;
+
+
+
 { ---- liaison avec le reste de l'emulateur DEVENV ---- }
 Procedure StCpu_StCpuLoad;
 Var I: Integer;
@@ -233970,7 +234735,7 @@ Begin
  End;
  If HasReloc Then Begin StCpu_StBasePage := $1000; StCpu_StExitStub := $0F00; Tb := StCpu_StBasePage + $100; End
  Else Begin StCpu_StBasePage := $9F000; StCpu_StExitStub := $9EF00; Tb := 0; End;
- If (Tl < 0) Or (Dl < 0) Or (Bl < 0) Or (Tb + Tl + Dl + Bl > StCpu_StHiTpa - $2000) Then Begin Close(F); Exit; End;
+ If (Tl < 0) Or (Dl < 0) Or (Bl < 0) Or (Tb + Tl + Dl + Bl > $8F000) Then Begin Close(F); Exit; End;
  FillChar(M68K_Mem[0], StCpu_StHiTpa, 0);
  { texte + donnees, par blocs de 4 Ko (le bloc d'un seul tenant depasserait la limite de BlockRead) }
  Cur := Tb; Todo := Tl + Dl;
@@ -234555,12 +235320,181 @@ Begin
  End;
 End;
 
+
+{ ---- ecran bitmap : terminal VT52 (80 x 25 cellules de 8 x 16) et dessin dans l'onglet ---- }
+Procedure StCpu_StShowGfx;
+Begin
+ StCpu_StGfx := True;
+ StCpu_StFirst := True;
+ StCpu_StCX := 0; StCpu_StCY := 0; StCpu_StEsc := 0; StCpu_StRev := False;
+ StCpu_CheckFonts;
+ FillChar(StCpu_StShadow, SizeOf(StCpu_StShadow), $A5);
+End;
+
+Procedure StCpu_StGlyph(Col, Row: Integer; Ch: Byte);
+Var Y: Integer; B: Byte;
+Begin
+ If (Col < 0) Or (Col >= 80) Or (Row < 0) Or (Row >= 25) Then Exit;
+ For Y := 0 To 15 Do Begin
+  B := StCpu_Font8[Ch, Y Shr 1];
+  If StCpu_StRev Then B := Not B;
+  StCpu_Wr8(StCpu_StScrBase + LongInt(Row * 16 + Y) * 80 + Col, B);
+ End;
+End;
+
+Procedure StCpu_StScrollUp;
+Begin
+ Move(M68K_Mem[StCpu_StScrBase + 16 * 80], M68K_Mem[StCpu_StScrBase], 24 * 16 * 80);
+ FillChar(M68K_Mem[StCpu_StScrBase + 24 * 16 * 80], 16 * 80, 0);
+End;
+
+Procedure StCpu_StClearRows(R1, R2: Integer);
+Begin
+ If R1 < 0 Then R1 := 0;
+ If R2 > 24 Then R2 := 24;
+ If R2 >= R1 Then FillChar(M68K_Mem[StCpu_StScrBase + LongInt(R1) * 16 * 80], (R2 - R1 + 1) * 16 * 80, 0);
+End;
+
+Procedure StCpu_StNewLine;
+Begin
+ Inc(StCpu_StCY);
+ If StCpu_StCY > 24 Then Begin StCpu_StScrollUp; StCpu_StCY := 24; End;
+End;
+
+{ sortie console VT52 sur l'ecran bitmap (sous-ensemble : ESC A B C D E H J K Y p q) }
+Procedure StCpu_StConPut(C: Byte);
+Var I: Integer; Sv: Boolean;
+Begin
+ If StCpu_StEsc = 1 Then Begin
+  StCpu_StEsc := 0;
+  Case Chr(C) Of
+   'A': If StCpu_StCY > 0 Then Dec(StCpu_StCY);
+   'B': If StCpu_StCY < 24 Then Inc(StCpu_StCY);
+   'C': If StCpu_StCX < 79 Then Inc(StCpu_StCX);
+   'D': If StCpu_StCX > 0 Then Dec(StCpu_StCX);
+   'E': Begin StCpu_StClearRows(0, 24); StCpu_StCX := 0; StCpu_StCY := 0; End;
+   'H': Begin StCpu_StCX := 0; StCpu_StCY := 0; End;
+   'J': Begin
+         Sv := StCpu_StRev; StCpu_StRev := False;
+         For I := StCpu_StCX To 79 Do StCpu_StGlyph(I, StCpu_StCY, 32);
+         StCpu_StClearRows(StCpu_StCY + 1, 24); StCpu_StRev := Sv;
+        End;
+   'K': Begin Sv := StCpu_StRev; StCpu_StRev := False; For I := StCpu_StCX To 79 Do StCpu_StGlyph(I, StCpu_StCY, 32); StCpu_StRev := Sv; End;
+   'Y': StCpu_StEsc := 2;
+   'p': StCpu_StRev := True;
+   'q': StCpu_StRev := False;
+   'b', 'c': StCpu_StEsc := 4;
+  End;
+  Exit;
+ End;
+ If StCpu_StEsc = 2 Then Begin StCpu_StEscA := C - 32; StCpu_StEsc := 3; Exit; End;
+ If StCpu_StEsc = 3 Then Begin
+  StCpu_StEsc := 0;
+  StCpu_StCY := StCpu_Clamp(StCpu_StEscA, 0, 24); StCpu_StCX := StCpu_Clamp(C - 32, 0, 79);
+  Exit;
+ End;
+ If StCpu_StEsc = 4 Then Begin StCpu_StEsc := 0; Exit; End;
+ Case C Of
+  27: StCpu_StEsc := 1;
+  13: StCpu_StCX := 0;
+  10: StCpu_StNewLine;
+  8: If StCpu_StCX > 0 Then Dec(StCpu_StCX);
+  9: StCpu_StCX := (StCpu_StCX + 8) And Not 7;
+  7: ;
+ Else
+  If C >= 32 Then Begin
+   If StCpu_StCX > 79 Then Begin StCpu_StCX := 0; StCpu_StNewLine; End;
+   StCpu_StGlyph(StCpu_StCX, StCpu_StCY, C);
+   Inc(StCpu_StCX);
+   If StCpu_StCX > 79 Then Begin StCpu_StCX := 0; StCpu_StNewLine; End;
+  End;
+ End;
+ If StCpu_StCX > 79 Then StCpu_StCX := 79;
+End;
+
+{ sorties console GEMDOS/BIOS redirigees vers l'ecran bitmap quand il est affiche ; True si la fonction est traitee }
+Function StCpu_StConTrap(N: Integer): Boolean;
+Var Fn: Word; A, Cnt: LongInt; H: Integer;
+Begin
+ StCpu_StConTrap := False;
+ Fn := StCpu_Rd16(StCpu_Rg[15]);
+ If N = 1 Then Begin
+  Case Fn Of
+   2: Begin StCpu_StConPut(StCpu_PW(2) And $FF); StCpu_Rg[0] := 0; StCpu_StConTrap := True; End;
+   6: If StCpu_PW(2) <> $FF Then Begin StCpu_StConPut(StCpu_PW(2) And $FF); StCpu_Rg[0] := 0; StCpu_StConTrap := True; End;
+   9: Begin
+       A := StCpu_PL(2);
+       While (StCpu_Rd8(A) <> 0) Do Begin StCpu_StConPut(StCpu_Rd8(A)); Inc(A); End;
+       StCpu_Rg[0] := 0; StCpu_StConTrap := True;
+      End;
+   $40: Begin
+         H := SmallInt(StCpu_PW(2));
+         If (H = 1) Or (H = 2) Or (H = 0) Or (H < 0) Then Begin
+          Cnt := StCpu_PL(4); A := StCpu_PL(8);
+          While Cnt > 0 Do Begin StCpu_StConPut(StCpu_Rd8(A)); Inc(A); Dec(Cnt); End;
+          StCpu_Rg[0] := StCpu_PL(4); StCpu_StConTrap := True;
+         End;
+        End;
+  End;
+ End Else If (N = 13) And (Fn = 3) And (StCpu_PW(2) = 2) Then Begin
+  StCpu_StConPut(StCpu_PW(4) And $FF); StCpu_Rg[0] := 0; StCpu_StConTrap := True;
+ End;
+End;
+
+{ dessin de l'ecran bitmap dans l'onglet (seuls les octets modifies sont redessines) }
+Procedure StCpu_StDraw(Var P: TEmulatorPanel);
+Var Y, XB, Bit, GX, GY: Integer; B, O: Byte; A: LongInt; Full: Boolean;
+Begin
+ Full := StCpu_StFirst;
+ P.PanelX := 0;
+ P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ GX := P.PanelX; GY := P.PanelY + 22;
+ If StCpu_StFirst Then Begin
+  DrawFilledRect(P.PanelX - 2, P.PanelY - 2, P.PanelX + StCpu_SW + 2, P.PanelY + 22 + StCpu_SH + 2, CLR_BACKGROUND);
+  StCpu_StFirst := False;
+ End;
+ DrawFilledRect(P.PanelX, P.PanelY, P.PanelX + StCpu_SW, P.PanelY + 20, CLR_TITLEBAR_ACTIVE);
+ DrawText(P.PanelX + 6, P.PanelY + 4, 'Atari ST 640x400   PC=$' + M68K_HexN(M68K_PC, 6), CLR_HIGHLIGHTTEXT);
+ DrawText(P.PanelX + StCpu_SW - 60, P.PanelY + 4, '[Esc]', CLR_HIGHLIGHTTEXT);
+ A := StCpu_StScrBase;
+ For Y := 0 To StCpu_SH - 1 Do
+  For XB := 0 To 79 Do Begin
+   B := M68K_Mem[A + LongInt(Y) * 80 + XB];
+   O := StCpu_StShadow[Y * 80 + XB];
+   If Full Then O := Not B;      { premiere image : tous les points sont dessines }
+   If B <> O Then Begin
+    StCpu_StShadow[Y * 80 + XB] := B;
+    For Bit := 0 To 7 Do
+     If ((B Xor O) And (128 Shr Bit)) <> 0 Then Begin
+      If (B And (128 Shr Bit)) <> 0 Then PutPixel(GX + XB * 8 + Bit, GY + Y, CLR_EDITOR_TEXT)
+      Else PutPixel(GX + XB * 8 + Bit, GY + Y, 15);
+     End;
+   End;
+  End;
+ P.LastGridW := StCpu_SW;
+ P.LastGridH := 22 + StCpu_SH;
+End;
+
+{ appele par DrawEmulatorPanel : dessine l'ecran bitmap s'il est affiche ; retourne True dans ce cas }
+Function StCpu_StDrawIfGfx(Var P: TEmulatorPanel): Boolean;
+Begin
+ StCpu_StDrawIfGfx := StCpu_StGfx;
+ If StCpu_StGfx Then StCpu_StDraw(P);
+End;
+
 { TRAP #n : les services Atari ST (GEMDOS, AES/VDI, BIOS, XBIOS) sont ceux de M68K_DoTrap }
 Procedure StCpu_DoTrap(N: Integer);
 Begin
  { GEMDOS, BIOS et XBIOS de l'ST : implementation complete ci-dessus ; le reste (console, Pterm, AES/VDI) : M68K_DoTrap }
+ If StCpu_StGfx And StCpu_StConTrap(N) Then Exit;
  If (N = 1) And StCpu_StGemdos Then Exit;
  If (N = 13) And StCpu_StBios Then Exit;
+ If (N = 14) And ((StCpu_Rd16(StCpu_Rg[15]) = 2) Or (StCpu_Rd16(StCpu_Rg[15]) = 3)) Then Begin
+  { Physbase / Logbase : le programme va dessiner : l'ecran bitmap remplace le texte }
+  If Not StCpu_StGfx Then StCpu_StShowGfx;
+  StCpu_Rg[0] := StCpu_StScrBase;
+  Exit;
+ End;
  If (N = 14) And StCpu_StXbios Then Exit;
  StCpu_StCpuStore;
  M68K_DoTrap(N);
@@ -234573,10 +235507,8 @@ End;
 
 Procedure StCpu_DoLineA(Op: LongInt);
 Begin
- { ligne A : tolerance (comme l'ancien noyau) jusqu'a l'implementation des primitives }
- Inc(M68K_DbgUnknown);
- M68K_DbgLastBad := StCpu_CurOpPC;
- StCpu_Rg[0] := 0;
+ If Not StCpu_StGfx Then StCpu_StShowGfx;
+ StCpu_LaDispatch(Op And $FFF);
 End;
 
 Procedure StCpu_HleLibCheck;
@@ -234599,6 +235531,9 @@ Begin
  StCpu_StDta := StCpu_StBasePage + $80;
  StCpu_StClockAdj := 0;
  StCpu_StBxInit := False;
+ StCpu_StGfx := False;
+ StCpu_FloodCol := 1;
+ StCpu_MouseHidden := 0;
  StCpu_SingleStack := True;
  M68K_A[7] := StCpu_StUserSP;
  StCpu_Rg[15] := StCpu_StUserSP;
@@ -234678,6 +235613,16 @@ Begin
     WriteLn(TF, TLine);
    End;
    Close(TF);
+  End;
+ End;
+ { DEVENV_EMUSCR=fichier : ecran bitmap de l'Atari ST (32000 octets) }
+ S := GetEnv('DEVENV_EMUSCR');
+ If S <> '' Then Begin
+  Assign(F, S);
+  {$I-} Rewrite(F, 1); {$I+}
+  If IOResult = 0 Then Begin
+   BlockWrite(F, M68K_Mem[M68K_XBIOS_SCREEN_ADDR], 32000);
+   Close(F);
   End;
  End;
  S := GetEnv('DEVENV_EMUDUMP');

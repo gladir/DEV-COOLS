@@ -20619,7 +20619,7 @@ Const
 Const
  LA_FONTS = $9000;          { tableau de pointeurs }
  LA_FH    = $9010;          { 3 en-tetes de 88 octets }
- LA_F8DAT = $9200;          { forme 8x8  : 256 x 8  octets }
+ LA_F8DAT = $9400;          { forme 8x8  : 256 x 8  octets }
  LA_F16DAT= $9C00;          { forme 8x16 : 256 x 16 octets }
 
 Procedure LineAFontHeader(A: LongInt; Id,Pt: Integer; Const Nm: String;
@@ -20651,12 +20651,12 @@ Begin
    Wr8(LA_F16DAT+LongInt(R*2+1)*256+C,B);
   End;
  { table des decalages : caractere c a l'abscisse 8*c (257 mots) }
- For C:=0 To 256 Do Wr16(LA_FONTS+$800+C*2,C*8);
+ For C:=0 To 256 Do Wr16(LA_FONTS+$120+C*2,C*8);
  LineAFontHeader(LA_FH,1,4,'6x6 system font',5,5,3,1,1,8,LA_F8DAT);
  LineAFontHeader(LA_FH+88,1,9,'8x8 system font',6,6,4,1,1,8,LA_F8DAT);
  LineAFontHeader(LA_FH+176,1,10,'8x16 system font',12,12,8,3,3,16,LA_F16DAT);
  For C:=0 To 2 Do Begin
-  Wr32(LA_FH+C*88+72,LA_FONTS+$800);
+  Wr32(LA_FH+C*88+72,LA_FONTS+$120);
   Wr32(LA_FONTS+C*4,LA_FH+C*88);
  End;
  Wr32(LA_FH+84,LA_FH+88);Wr32(LA_FH+88+84,LA_FH+176);
@@ -20682,7 +20682,7 @@ Begin
  Wr16(LINEA_VARS-$2E,16);Wr16(LINEA_VARS-$2C,79);Wr16(LINEA_VARS-$2A,24);Wr16(LINEA_VARS-$28,1280);
  Wr16(LINEA_VARS-$26,0);Wr16(LINEA_VARS-$24,1);Wr32(LINEA_VARS-$22,DrawBase);
  Wr32(LINEA_VARS-$16,LA_F16DAT);Wr16(LINEA_VARS-$12,255);Wr16(LINEA_VARS-$10,0);Wr16(LINEA_VARS-$E,256);
- Wr16(LINEA_VARS-$C,640);Wr32(LINEA_VARS-$A,LA_FONTS+$800);Wr16(LINEA_VARS-4,400);Wr16(LINEA_VARS-2,80);
+ Wr16(LINEA_VARS-$C,640);Wr32(LINEA_VARS-$A,LA_FONTS+$120);Wr16(LINEA_VARS-4,400);Wr16(LINEA_VARS-2,80);
  Rg[0]:=LINEA_VARS;Rg[8]:=LINEA_VARS;
  Rg[9]:=LA_FONTS;Rg[10]:=LINEA_VARS+$200;
 End;

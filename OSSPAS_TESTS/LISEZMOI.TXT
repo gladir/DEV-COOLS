@@ -46,3 +46,7 @@ DEVENV_EMUTEXT=fichier (texte de l'ecran virtuel), DEVENV_EMUSTEPS=n (limite d'i
 GEMDOS (gemdos_fichiers.py) : Dgetdrv/Dsetdrv, Dsetpath/Dgetpath, Fcreate/Fwrite/Fclose/Fopen/Fread/Fseek, Frename,
 Fsfirst/Fsnext (ENMFIL = -49 en fin de liste)/Fgetdta, Fattrib, Fdelete, Dcreate/Ddelete, Malloc/Mfree/Mshrink : meme
 test sur les trois emulateurs ; les resultats sont relus en memoire a la fin du programme.
+
+Console VT52 (console_vt52.py) : texte, ESC E, ESC Y, ESC p/q, CR LF sur l'ecran bitmap (OSSPAS.PAS et DEVENV.PAS).
+DEVENV.PAS, etape 2 : l'onglet Atari ST affiche l'ecran bitmap 640x400 (en $90000) des la premiere primitive de la
+ligne A ou le premier appel a Physbase/Logbase ; la ligne A est celle de DEVPAC.PAS (memes tests que les autres emulateurs).

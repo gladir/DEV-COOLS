@@ -89,11 +89,23 @@ def compare(name,s,pts,box,expect_bg_zero=True):
             if s.px(x,y)!=v: bad.append((x,y,v))
     check(name,not bad,bad[:5])
     return bad
+
+# --- police 8x8 : les 8 lignes (dont les lignes 6 et 7) sont celles de la police 8x16 doublee ---
+def tb8(p,c,x,y):
+    p.mw(36,0); p.mw(54,0)
+    p.w(0x2869); p.w(4)                 # movea.l 4(a1),a4 : en-tete de la police 8x8 (si A1 n'a pas ete modifie)
+    p.fontform()
+    p.mw(72,c*8); p.mw(74,0); p.mw(76,x); p.mw(78,y); p.mw(80,8); p.mw(82,8)
+    p.mw(90,0); p.mw(102,0); p.mw(104,0); p.mw(106,1); p.mw(114,0)
+    p.op(8)
 # --- sans effet : le glyphe est exactement celui de la police ------------------
 for c in (65,103,0x7e,0xe9):
     p=P(); tb(p,c,100,50); s=run(p,'tb0')
     g=glyph(c)
     check('TEXTBLT sans effet, caractere %d'%c,s.box(100,50,8,16)==g and s.count()==sum(map(sum,g)),s.art(100,50,8,16))
+for c in (65,103,0x7e):
+    p=P(); tb8(p,c,100,50); s=run(p,'tb8'); g=glyph(c)
+    check('TEXTBLT police 8x8, caractere %d (8 lignes)'%c,s.box(100,50,8,8)==[g[2*r] for r in range(8)],s.art(100,50,8,8))
 # --- chaque effet seul + combinaisons -------------------------------------------------
 cases=[(1,{}),(1,{'wt':3}),(2,{}),(2,{'lite':0x8888}),(4,{'roff':7}),(4,{'roff':8,'loff':0,'skew':0xFFFF}),(8,{}),(8,{'loff':2,'roff':2}),(16,{}),(32,{}),
        (1|8,{}),(1|2,{}),(4|8,{'roff':8}),(16|1,{}),(1|4|8|16|32,{'roff':8}),(2|32,{}),(63,{'roff':8,'wt':2})]
