@@ -39,6 +39,9 @@ Const
  FlReach=1;   { objet atteignable depuis le trailer }
  FlStream=2;  { objet de type flux }
  FlFree=4;    { objet explicitement libere dans la table xref }
+ FlPageLeaf=8;  { feuille de l'arbre des pages }
+ FlSeen=16;     { deja visite (arbre des pages) }
+ MaxDocs=16;
 
  MaxFilt=8;
  CacheN=4;
@@ -86,6 +89,9 @@ Type
   First:Longint;
  End;
 
+Type
+ TCacheArr=Array[0..CacheN-1]of TStmCache;
+
 Var
  { Divers }
  Warnings:Longint;
@@ -119,7 +125,7 @@ Var
  SrcXrefStm:Boolean;
  Reconstructed:Boolean;
  OverrideFree:Boolean;
- SC:Array[0..CacheN-1]of TStmCache;
+ SC:TCacheArr;
  SCNext:Integer;
 
  { Parcours }
@@ -2360,6 +2366,8 @@ Var
  SLen:Longint;
  XSize,XW2,XW3,XLen:Longint;
  XFlate:Boolean;
+ NewRoot:Longint;          { numero du catalogue en mode manipulation de pages }
+ ForceNoTrailer:Boolean;
 
 { ------------------------------------------------------------------ }
 { Premiere passe : collecte des references de chaque objet            }
@@ -2537,17 +2545,31 @@ Begin
  PutS(' /Length '+IStr(SLen));
 End;
 
+Procedure EmitRootExtra;Begin
+ If NewRoot>0 Then PutS(' /Root '+IStr(NewRoot)+' 0 R');
+End;
+
 Procedure EmitXrefExtra;Begin
+ EmitRootExtra;
  PutS(' /Type /XRef /Size '+IStr(XSize)+' /W [ 1 '+IStr(XW2)+' '+IStr(XW3)+' ]');
  If XFlate Then PutS(' /Filter /FlateDecode /DecodeParms << /Columns '+IStr(1+XW2+XW3)+' /Predictor 12 >>');
  PutS(' /Length '+IStr(XLen));
 End;
 
+Procedure EmitPageExtra;Forward;
+Procedure EmitResExtra;Forward;
+Procedure EmitXObjExtra;Forward;
+Procedure EmitCatExtra;Forward;
+
 Procedure EmitExtra;Begin
  Case ExtraKind of
   1:EmitStreamExtra;
   2:EmitXrefExtra;
-  3:PutS(' /Size '+IStr(XSize));
+  3:Begin EmitRootExtra;PutS(' /Size '+IStr(XSize));End;
+  4:EmitPageExtra;
+  5:EmitResExtra;
+  6:EmitXObjExtra;
+  7:EmitCatExtra;
  End;
 End;
 
@@ -2558,14 +2580,15 @@ Begin
  BufClear(TB);
  EmBuf:=@TB;SBuf:=NIL;
  WMode:=2;ExtraKind:=Kind;TopSkip:=TrailerSkip;
- If TrailerPos>=0 Then Begin
+ If NewRoot>0 Then TopSkip:=TopSkip+'Root/';
+ If(TrailerPos>=0)and Not ForceNoTrailer Then Begin
   Q:=TrailerPos;
   WalkValue(Q,0);
  End
   Else
  Begin
   PutS('<<');
-  If SynthRoot>0 Then PutS(' /Root '+IStr(MapRef(SynthRoot))+' 0 R');
+  If(NewRoot=0)and(SynthRoot>0)Then PutS(' /Root '+IStr(MapRef(SynthRoot))+' 0 R');
   EmitExtra;
   PutS(' >>');
  End;
@@ -2612,6 +2635,19 @@ Begin
  BufPut(OSBody,10);
  BufPutStr(OSHdr,IStr(R^.NewNum)+' '+IStr(Off)+' ');
  BufPutL(OSNums,R^.NewNum);
+ Inc(OSCnt);
+ If OSCnt>=PerStm Then FlushObjStm;
+End;
+
+{ Ajoute le contenu de OB (objet synthetique) au flux d'objets courant }
+Procedure AddOBToObjStm(Num:Longint);
+Var Off:Longint;
+Begin
+ Off:=OSBody.Len;
+ BufAppend(OSBody,OB,0,OB.Len);
+ BufPut(OSBody,10);
+ BufPutStr(OSHdr,IStr(Num)+' '+IStr(Off)+' ');
+ BufPutL(OSNums,Num);
  Inc(OSCnt);
  If OSCnt>=PerStm Then FlushObjStm;
 End;
@@ -2799,36 +2835,52 @@ Begin
  OutStr('startxref'#10+IStr(XrefPos)+#10'%%EOF'#10);
 End;
 
-Procedure WriteOutput;
-Var N,I,NComp,NStm:Longint;R:PObjRec;Maj,Min:Integer;
+Procedure BeginOutput(Const FName:String;TotalObj,NComp:Longint;VMaj,VMin:Integer);
+Var I,NStm:Longint;Maj,Min:Integer;
 Begin
- { version }
- Maj:=VerMajor;Min:=VerMinor;
+ Maj:=VMaj;Min:=VMin;
  If UseXrefStm Then
   If(Maj<1)or((Maj=1)and(Min<5))Then Begin Maj:=1;Min:=5;End;
  If(MinVerMaj>Maj)or((MinVerMaj=Maj)and(MinVerMin>Min))Then Begin Maj:=MinVerMaj;Min:=MinVerMin;End;
  If ForceMaj>0 Then Begin Maj:=ForceMaj;Min:=ForceMin;End;
- Assign(OutF,OutName);
+ Assign(OutF,FName);
  Rewrite(OutF,1);
- If IOResult<>0 Then Fatal('impossible de creer le fichier de sortie : '+OutName);
+ If IOResult<>0 Then Fatal('impossible de creer le fichier de sortie : '+FName);
  OutOpen:=True;
- GetMem(OBytes,SizeOf(TBytes));
+ If OBytes=NIL Then GetMem(OBytes,SizeOf(TBytes));
  OutFill:=0;OutPos:=0;
  OutStr('%PDF-'+IStr(Maj)+'.'+IStr(Min)+#10);
  OutStr('%'#191#247#162#254#10);
- { dimension de la table xref }
+ NObj:=TotalObj;
+ If UseObjStm Then NStm:=(NComp+PerStm-1)div PerStm
+              Else NStm:=0;
+ BufClear(XE);
+ BufEnsure(XE,(NObj+NStm+2)*12);
+ For I:=0 to(NObj+NStm+2)*12-1 do BufPut(XE,0);
+ NextStm:=NObj+1;
+ OSCnt:=0;
+ BufClear(OSBody);BufClear(OSHdr);BufClear(OSNums);
+End;
+
+Procedure EndOutput;Begin
+ FlushObjStm;
+ WriteXref;
+ OutFlush;
+ Close(OutF);
+ If IOResult<>0 Then Fatal('erreur a la fermeture du fichier de sortie.');
+ OutOpen:=False;
+End;
+
+Procedure WriteOutput;
+Var N,NComp:Longint;R:PObjRec;
+Begin
  NComp:=0;
  If UseObjStm Then
   For N:=1 to HighObj do Begin
    R:=PeekRec(N);
    If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlStream)=0)Then Inc(NComp);
   End;
- NStm:=(NComp+PerStm-1)div PerStm;
- BufClear(XE);
- BufEnsure(XE,(NObj+NStm+2)*12);
- For I:=0 to(NObj+NStm+2)*12-1 do BufPut(XE,0);
- NextStm:=NObj+1;
- OSCnt:=0;
+ BeginOutput(OutName,NObj,NComp,VerMajor,VerMinor);
  For N:=1 to HighObj do Begin
   R:=PeekRec(N);
   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)Then Begin
@@ -2836,12 +2888,7 @@ Begin
                                                Else WriteNormalObject(N,R);
   End;
  End;
- FlushObjStm;
- WriteXref;
- OutFlush;
- Close(OutF);
- If IOResult<>0 Then Fatal('erreur a la fermeture du fichier de sortie.');
- OutOpen:=False;
+ EndOutput;
 End;
 
 { ------------------------------------------------------------------ }
@@ -2899,21 +2946,1317 @@ Begin
 End;
 
 { ------------------------------------------------------------------ }
+{ Chargement d'un document                                            }
+{ ------------------------------------------------------------------ }
+
+Const
+ MaxOvr=4;
+ InhKey:Array[0..3]of String[10]=('Resources','MediaBox','CropBox','Rotate');
+ CatBlack='/Pages/Outlines/Names/Dests/StructTreeRoot/AcroForm/PageLabels/OpenAction/Threads/SpiderInfo/Perms/Legal/AA/';
+
+Type
+ TInh=Array[0..3]of Longint;
+ TDocRec=Record
+  Name:String;
+  Bias:Longint;
+  VMaj,VMin:Integer;
+  ODir:PObjDir;
+  High:Longint;
+  RefsB:TBuf;
+  TPos,SRoot,RootObj:Longint;
+  SXs,Recon:Boolean;
+  Cache:TCacheArr;
+  CNext:Integer;
+  Pages:TBuf;      { 5 Longint par page : objet, heritage x4 }
+  NPg:Longint;
+ End;
+ TOcc=Record
+  Doc,PIdx,RotMode,RotVal,NL:Longint;
+  LKind,LDoc,LPIdx:Array[0..MaxOvr-1]of Longint;
+ End;
+ TRunOcc=Record
+  PageNum,NL:Longint;
+  LStr,LForm,LFIdx:Array[0..MaxOvr-1]of Longint;
+ End;
+ TSyn=Record
+  Kind,A,B,C:Longint;
+ End;
+ TFormRec=Record
+  Doc,PIdx,NewNum,Pad:Longint;
+ End;
+
+Var
+ Docs:Array[0..MaxDocs-1]of TDocRec;
+ NDocs,CurDoc:Integer;
+ SFOpen:Boolean;
+ CurName:String;
+ HasPrimary:Boolean;
+
+ { Options de manipulation de pages }
+ EmptyDoc,RemoveLabels,SplitOn,CollateOn:Boolean;
+ SplitN,CollateN:Longint;
+ NPgSpec,NRot,NOvr:Integer;
+ PgFile,PgRng:Array[1..MaxDocs]of String;
+ RotAbs:Array[1..8]of Boolean;
+ RotAng:Array[1..8]of Longint;
+ RotRng:Array[1..8]of String;
+ OvrKind:Array[1..MaxOvr]of Integer;
+ OvrFile,OvrFrom,OvrRep,OvrTo:Array[1..MaxOvr]of String;
+
+ { Plan }
+ OccAll,SynT,RunOcc,RunForms,CQ,SynData,SynComp:TBuf;
+ SpecL:Array[1..MaxDocs]of TBuf;
+ CatSkip:String;
+ QNum,QQNum,RunA:Longint;
+
+ { Page courante }
+ PgObj,PgParent,PgRotMode,PgRotVal,PgNL,PgQ,PgQQ,ResPos:Longint;
+ PgInh:TInh;
+ PgLKind,PgLStr,PgLForm,PgLFIdx:Array[0..MaxOvr-1]of Longint;
+
+Procedure CloseSource;Begin
+ If SFOpen Then Begin
+  Close(SF);If IOResult<>0 Then;
+  SFOpen:=False;
+ End;
+End;
+
+Procedure OpenSourceFile(Const Nm:String);Begin
+ CloseSource;
+ Assign(SF,Nm);
+ FileMode:=0;
+ Reset(SF,1);
+ If IOResult<>0 Then Fatal('impossible d''ouvrir '+Nm+' : fichier introuvable ou illisible.');
+ FileMode:=2;
+ SFOpen:=True;
+ SFSize:=FileSize(SF);
+ SCacheStart:=0;SCacheLen:=0;
+ SBuf:=NIL;
+ CurName:=Nm;
+End;
+
+Procedure OpenSource(Const Nm:String);
+Var P:Longint;Found:Boolean;
+Begin
+ OpenSourceFile(Nm);
+ If SFSize<16 Then Fatal(Nm+' : ce n''est pas un fichier PDF.');
+ Found:=False;P:=0;
+ While(P<1024)and(P<SFSize-8)and Not Found Do Begin
+  If(SB(P)=37)and MatchStr(P,'%PDF-')Then Found:=True
+                                      Else Inc(P);
+ End;
+ If Found Then Begin
+  Bias:=P;
+  VerMajor:=SB(P+5)-48;
+  If SB(P+6)=46 Then VerMinor:=SB(P+7)-48;
+  If(VerMajor<0)or(VerMajor>9)Then VerMajor:=1;
+  If(VerMinor<0)or(VerMinor>9)Then VerMinor:=4;
+ End
+  Else
+ Warn('en-tete %PDF- introuvable.');
+End;
+
+Procedure CheckEncrypt;Begin
+ If(TrailerPos>=0)and(DictFind(TrailerPos,'Encrypt')>=0)Then
+  Fatal(CurName+' : fichier chiffre (Encrypt) : non supporte par cette version.');
+End;
+
+Procedure LoadStructure(Const Nm:String);
+Var Sx:Longint;Ok:Boolean;
+Begin
+ OpenSource(Nm);
+ Ok:=False;
+ Sx:=FindStartXref;
+ If Sx>=0 Then Ok:=ReadXrefChain(Sx);
+ If Ok and(TrailerPos<0)Then Ok:=False;
+ If Not Ok Then Reconstruct;
+ CheckEncrypt;
+ If Not(PassA and ComputeReach)Then Begin
+  Reconstruct;
+  CheckEncrypt;
+  If Not(PassA and ComputeReach)Then Fatal(Nm+' : structure du document irrecuperable.');
+ End;
+ If NObj=0 Then Fatal(Nm+' : aucun objet atteignable depuis la racine du document.');
+End;
+
+{ ------------------------------------------------------------------ }
+{ Documents multiples : sauvegarde / restauration de l'etat           }
+{ ------------------------------------------------------------------ }
+
+Procedure SaveDoc(I:Integer);Begin
+ Docs[I].Bias:=Bias;
+ Docs[I].VMaj:=VerMajor;Docs[I].VMin:=VerMinor;
+ Docs[I].ODir:=ObjDir;Docs[I].High:=HighObj;
+ Docs[I].RefsB:=Refs;
+ Docs[I].TPos:=TrailerPos;Docs[I].SRoot:=SynthRoot;
+ Docs[I].SXs:=SrcXrefStm;Docs[I].Recon:=Reconstructed;
+ Docs[I].Cache:=SC;Docs[I].CNext:=SCNext;
+End;
+
+Procedure LoadDoc(I:Integer);Begin
+ OpenSourceFile(Docs[I].Name);
+ Bias:=Docs[I].Bias;
+ VerMajor:=Docs[I].VMaj;VerMinor:=Docs[I].VMin;
+ ObjDir:=Docs[I].ODir;HighObj:=Docs[I].High;
+ Refs:=Docs[I].RefsB;
+ TrailerPos:=Docs[I].TPos;SynthRoot:=Docs[I].SRoot;
+ SrcXrefStm:=Docs[I].SXs;Reconstructed:=Docs[I].Recon;
+ SC:=Docs[I].Cache;SCNext:=Docs[I].CNext;
+End;
+
+Procedure SelectDoc(I:Integer);Begin
+ If I<>CurDoc Then Begin
+  If CurDoc>=0 Then SaveDoc(CurDoc);
+  LoadDoc(I);
+  CurDoc:=I;
+ End;
+ SBuf:=NIL;
+End;
+
+Procedure ResetFlags;
+Var N:Longint;R:PObjRec;
+Begin
+ For N:=0 to HighObj do Begin
+  R:=PeekRec(N);
+  If R<>@NullRec Then Begin
+   R^.Flags:=R^.Flags and(FlStream or FlFree or FlPageLeaf);
+   R^.NewNum:=0;
+  End;
+ End;
+End;
+
+{ ------------------------------------------------------------------ }
+{ Enregistrements dans des tampons                                    }
+{ ------------------------------------------------------------------ }
+
+Procedure RecPut(Var B:TBuf;Idx:Longint;Var R;Size:Longint);
+Var P:PBytes;I:Longint;
+Begin
+ P:=@R;
+ For I:=0 to Size-1 do BufSet(B,Idx*Size+I,P^[I]);
+End;
+
+Procedure RecGet(Var B:TBuf;Idx:Longint;Var R;Size:Longint);
+Var P:PBytes;I:Longint;
+Begin
+ P:=@R;
+ For I:=0 to Size-1 do P^[I]:=BufGet(B,Idx*Size+I);
+End;
+
+Procedure RecAdd(Var B:TBuf;Var R;Size:Longint);
+Var P:PBytes;I:Longint;
+Begin
+ P:=@R;
+ For I:=0 to Size-1 do BufPut(B,P^[I]);
+End;
+
+{ ------------------------------------------------------------------ }
+{ Arbre des pages                                                     }
+{ ------------------------------------------------------------------ }
+
+Procedure PushNode(Var S:TBuf;N:Longint;Var E:TInh);
+Var K:Integer;
+Begin
+ BufPutL(S,N);
+ For K:=0 to 3 do BufPutL(S,E[K]);
+End;
+
+Procedure AddPageEntry(D:Integer;N:Longint;Var E:TInh);
+Var K:Integer;
+Begin
+ BufPutL(Docs[D].Pages,N);
+ For K:=0 to 3 do BufPutL(Docs[D].Pages,E[K]);
+ Inc(Docs[D].NPg);
+End;
+
+Procedure CollectPages(D:Integer);
+Var
+ Stk,Kids:TBuf;
+ N,Root,PgRoot,V,P,Q,N1,A,KidsPos:Longint;
+ I:Longint;K:Integer;
+ E:TInh;
+ R:PObjRec;Done:Boolean;
+Begin
+ BufInit(Stk);BufInit(Kids);
+ BufClear(Docs[D].Pages);Docs[D].NPg:=0;
+ Root:=0;
+ If TrailerPos>=0 Then Begin
+  V:=DictFind(TrailerPos,'Root');
+  If(V>=0)and IsRefAt(V,N1,A)Then Root:=N1;
+ End
+  Else
+ Root:=SynthRoot;
+ Docs[D].RootObj:=Root;
+ PgRoot:=0;
+ If(Root>0)and OpenObject(Root,P)Then Begin
+  V:=DictFind(P,'Pages');
+  If(V>=0)and IsRefAt(V,N1,A)Then PgRoot:=N1;
+ End;
+ SBuf:=NIL;
+ If PgRoot>0 Then Begin
+  For K:=0 to 3 do E[K]:=-1;
+  PushNode(Stk,PgRoot,E);
+  While Stk.Len>0 Do Begin
+   N:=BufGetL(Stk,Stk.Len-20);
+   For K:=0 to 3 do E[K]:=BufGetL(Stk,Stk.Len-16+K*4);
+   Dec(Stk.Len,20);
+   R:=PeekRec(N);
+   If(R^.Kind<>0)and((R^.Flags and FlSeen)=0)Then Begin
+    R^.Flags:=R^.Flags or FlSeen;
+    If OpenObject(N,P)and(SB(P)=60)Then Begin
+     KidsPos:=DictFind(P,'Kids');
+     If KidsPos>=0 Then Begin
+      For K:=0 to 3 do If DictFind(P,InhKey[K])>=0 Then E[K]:=N;
+      BufClear(Kids);
+      Q:=KidsPos;SkipWS(Q);
+      If SB(Q)=91 Then Begin
+       Inc(Q);Done:=False;
+       Repeat
+        SkipWS(Q);
+        If(SB(Q)=93)or(SB(Q)=-1)Then Done:=True
+         Else
+        If IsRefAt(Q,N1,A)Then Begin BufPutL(Kids,N1);Q:=A;End
+                          Else SkipValueAt(Q);
+       Until Done;
+      End;
+      I:=Kids.Len div 4-1;
+      While I>=0 Do Begin
+       PushNode(Stk,BufGetL(Kids,I*4),E);
+       Dec(I);
+      End;
+     End
+      Else
+     Begin
+      For K:=0 to 3 do If DictFind(P,InhKey[K])>=0 Then E[K]:=0;
+      AddPageEntry(D,N,E);
+      R^.Flags:=R^.Flags or FlPageLeaf;
+     End;
+    End;
+    SBuf:=NIL;
+   End;
+  End;
+ End;
+ If Docs[D].NPg=0 Then Begin
+  { arbre illisible : recherche des objets /Type /Page }
+  For N:=1 to HighObj do Begin
+   R:=PeekRec(N);
+   If(R^.Kind<>0)and OpenObject(N,P)Then Begin
+    If(SB(P)=60)and(ReadNameAt(DictFind(P,'Type'))='Page')Then Begin
+     For K:=0 to 3 do If DictFind(P,InhKey[K])>=0 Then E[K]:=0 Else E[K]:=-1;
+     AddPageEntry(D,N,E);
+     R^.Flags:=R^.Flags or FlPageLeaf;
+    End;
+   End;
+   SBuf:=NIL;
+  End;
+ End;
+ BufFree(Stk);BufFree(Kids);
+ For N:=0 to HighObj do Begin
+  R:=PeekRec(N);
+  If R<>@NullRec Then R^.Flags:=R^.Flags and Not FlSeen;
+ End;
+End;
+
+Function AddDoc(Const Nm:String):Integer;
+Var I:Integer;
+Begin
+ For I:=0 to NDocs-1 do If Docs[I].Name=Nm Then Begin
+  AddDoc:=I;Exit;
+ End;
+ If NDocs>=MaxDocs Then Fatal('trop de fichiers PDF differents (maximum '+IStr(MaxDocs)+').');
+ If CurDoc>=0 Then SaveDoc(CurDoc);
+ I:=NDocs;Inc(NDocs);
+ Docs[I].Name:=Nm;
+ BufInit(Docs[I].Pages);
+ Docs[I].NPg:=0;
+ { etat vierge }
+ GetMem(ObjDir,SizeOf(TObjDir));
+ FillChar(ObjDir^,SizeOf(TObjDir),0);
+ HighObj:=0;
+ BufInit(Refs);
+ TrailerPos:=-1;SynthRoot:=0;SrcXrefStm:=False;Reconstructed:=False;
+ SCNext:=0;Bias:=0;VerMajor:=1;VerMinor:=4;
+ FillChar(SC,SizeOf(SC),0);
+ CurDoc:=I;
+ LoadStructure(Nm);
+ CollectPages(I);
+ AddDoc:=I;
+End;
+
+{ ------------------------------------------------------------------ }
+{ Intervalles de pages                                                }
+{ ------------------------------------------------------------------ }
+
+Function StrNum(Const S:String):Longint;
+Var I:Integer;V:Longint;
+Begin
+ StrNum:=-1;
+ If(S='')or(Length(S)>9)Then Exit;
+ V:=0;
+ For I:=1 to Length(S)do Begin
+  If(S[I]<'0')or(S[I]>'9')Then Exit;
+  V:=V*10+(Ord(S[I])-48);
+ End;
+ StrNum:=V;
+End;
+
+Function RangeNum(Const T:String;Count:Longint;Var V:Longint):Boolean;
+Var N:Longint;
+Begin
+ RangeNum:=False;
+ If T='' Then Exit;
+ If T='z' Then Begin V:=Count;RangeNum:=True;Exit;End;
+ If T[1]='r' Then Begin
+  N:=StrNum(Copy(T,2,255));
+  If N<1 Then Exit;
+  V:=Count-N+1;
+  RangeNum:=True;
+  Exit;
+ End;
+ N:=StrNum(T);
+ If N<0 Then Exit;
+ V:=N;
+ RangeNum:=True;
+End;
+
+{ Analyse un intervalle ("1,3,5-7,z,r2-r1,1-10:odd"). Fill : remplit L et
+  verifie les bornes (erreur fatale) ; sinon verifie seulement la syntaxe. }
+Function ParseRange(Const S:String;Count:Longint;Var L:TBuf;Fill:Boolean):Boolean;
+Var Ps,Q,A,B,Step,V,Idx:Longint;T,Sfx:String;Mode,P:Integer;Take:Boolean;
+Begin
+ ParseRange:=False;
+ If Fill Then BufClear(L);
+ Ps:=1;
+ While Ps<=Length(S)+1 Do Begin
+  Q:=Ps;
+  While(Q<=Length(S))and(S[Q]<>',')Do Inc(Q);
+  T:=Copy(S,Ps,Q-Ps);
+  Ps:=Q+1;
+  If T<>'' Then Begin
+   Mode:=0;
+   P:=Pos(':',T);
+   If P>0 Then Begin
+    Sfx:=Copy(T,P+1,255);T:=Copy(T,1,P-1);
+    If Sfx='odd' Then Mode:=1
+     Else If Sfx='even' Then Mode:=2
+     Else Exit;
+   End;
+   P:=Pos('-',T);
+   If P>0 Then Begin
+    If Not(RangeNum(Copy(T,1,P-1),Count,A)and RangeNum(Copy(T,P+1,255),Count,B))Then Exit;
+   End
+    Else
+   Begin
+    If Not RangeNum(T,Count,A)Then Exit;
+    B:=A;
+   End;
+   If Fill Then Begin
+    If(A<1)or(A>Count)or(B<1)or(B>Count)Then
+     Fatal('intervalle de pages "'+S+'" hors limites (le document a '+IStr(Count)+' page(s)).');
+    If A<=B Then Step:=1 Else Step:=-1;
+    V:=A;Idx:=0;
+    Repeat
+     Inc(Idx);
+     Take:=(Mode=0)or((Mode=1)and Odd(Idx))or((Mode=2)and Not Odd(Idx));
+     If Take Then BufPutL(L,V);
+     If V=B Then V:=B+Step Else V:=V+Step;
+    Until V=B+Step;
+   End;
+  End;
+ End;
+ ParseRange:=True;
+End;
+
+{ ------------------------------------------------------------------ }
+{ Lecture de nombres reels et de rectangles                           }
+{ ------------------------------------------------------------------ }
+
+Function ReadReal(Var P:Longint;Var V:Real):Boolean;
+Var C:Integer;Neg,Any:Boolean;Frac:Real;Q:Longint;
+Begin
+ Q:=P;SkipWS(Q);V:=0;Neg:=False;Any:=False;
+ C:=SB(Q);
+ If(C=43)or(C=45)Then Begin Neg:=(C=45);Inc(Q);C:=SB(Q);End;
+ While(C>=48)and(C<=57)Do Begin
+  V:=V*10+(C-48);Any:=True;Inc(Q);C:=SB(Q);
+ End;
+ If C=46 Then Begin
+  Inc(Q);C:=SB(Q);Frac:=0.1;
+  While(C>=48)and(C<=57)Do Begin
+   V:=V+Frac*(C-48);Frac:=Frac/10;Any:=True;Inc(Q);C:=SB(Q);
+  End;
+ End;
+ If Any Then Begin
+  If Neg Then V:=-V;
+  P:=Q;
+ End;
+ ReadReal:=Any;
+End;
+
+Function RealStr(V:Real):String;
+Var S:String;
+Begin
+ Str(V:0:4,S);
+ If Pos('.',S)>0 Then Begin
+  While S[Length(S)]='0' Do Delete(S,Length(S),1);
+  If S[Length(S)]='.' Then Delete(S,Length(S),1);
+ End;
+ If(S='-0')or(S='')Then S:='0';
+ RealStr:=S;
+End;
+
+{ Entree de la page PIdx du document D }
+Procedure PageEntry(D:Integer;PIdx:Longint;Var Obj:Longint;Var Inh:TInh);
+Var K:Integer;
+Begin
+ Obj:=BufGetL(Docs[D].Pages,PIdx*20);
+ For K:=0 to 3 do Inh[K]:=BufGetL(Docs[D].Pages,PIdx*20+4+K*4);
+End;
+
+{ Le document D doit etre le document courant. Rectangle effectif (MediaBox...) }
+Procedure ReadBox(Obj:Longint;Var Inh:TInh;Key:Integer;Var X0,Y0,X1,Y1:Real);
+Var H,P,V,Q:Longint;T:Real;Ok:Boolean;
+Begin
+ X0:=0;Y0:=0;X1:=612;Y1:=792;
+ If Inh[Key]=0 Then H:=Obj
+  Else If Inh[Key]>0 Then H:=Inh[Key]
+  Else Exit;
+ SBuf:=NIL;
+ If Not OpenObject(H,P)Then Exit;
+ V:=DictFind(P,InhKey[Key]);
+ If V<0 Then Begin SBuf:=NIL;Exit;End;
+ SkipWS(V);
+ If SB(V)<>91 Then Begin SBuf:=NIL;Exit;End;
+ Inc(V);
+ Ok:=ReadReal(V,X0) and ReadReal(V,Y0) and ReadReal(V,X1) and ReadReal(V,Y1);
+ If Not Ok Then Begin X0:=0;Y0:=0;X1:=612;Y1:=792;End;
+ If X0>X1 Then Begin T:=X0;X0:=X1;X1:=T;End;
+ If Y0>Y1 Then Begin T:=Y0;Y0:=Y1;Y1:=T;End;
+ SBuf:=NIL;
+End;
+
+{ ------------------------------------------------------------------ }
+{ Emission d'une page                                                 }
+{ ------------------------------------------------------------------ }
+
+Procedure EmitInherited(Obj:Longint;Const Key:String);
+Var Save:PBuf;P,V:Longint;
+Begin
+ Save:=SBuf;
+ If OpenObject(Obj,P)Then Begin
+  V:=DictFind(P,Key);
+  If V>=0 Then Begin
+   PutS(' /'+Key+' ');
+   WalkValue(V,1);
+  End;
+ End;
+ SBuf:=Save;
+End;
+
+Function EffRotate:Longint;
+Var Save:PBuf;P,V,R:Longint;H:Longint;
+Begin
+ EffRotate:=0;
+ If PgInh[3]=0 Then H:=PgObj
+  Else If PgInh[3]>0 Then H:=PgInh[3]
+  Else Exit;
+ Save:=SBuf;
+ If OpenObject(H,P)Then Begin
+  V:=DictFind(P,'Rotate');
+  If(V>=0)and ReadDirectInt(V,R)Then EffRotate:=R;
+ End;
+ SBuf:=Save;
+End;
+
+Procedure EmitFormEntries;
+Var I,J:Integer;Dup:Boolean;
+Begin
+ For I:=0 to PgNL-1 do Begin
+  Dup:=False;
+  For J:=0 to I-1 do If PgLFIdx[J]=PgLFIdx[I]Then Dup:=True;
+  If Not Dup Then PutS(' /QFm'+IStr(PgLFIdx[I])+' '+IStr(PgLForm[I])+' 0 R');
+ End;
+End;
+
+Procedure EmitXObjExtra;Begin
+ EmitFormEntries;
+End;
+
+Procedure EmitResExtra;
+Var XV,N1,A,XP:Longint;Save:PBuf;Done:Boolean;
+Begin
+ XV:=DictFind(ResPos,'XObject');
+ PutS(' /XObject ');
+ Done:=False;
+ If XV>=0 Then Begin
+  Save:=SBuf;
+  If IsRefAt(XV,N1,A)Then Begin
+   If OpenObject(N1,XP)and(SB(XP)=60)Then Begin
+    TopSkip:='';ExtraKind:=6;
+    WalkValue(XP,0);
+    Done:=True;
+   End;
+  End
+   Else
+  If SB(XV)=60 Then Begin
+   TopSkip:='';ExtraKind:=6;
+   WalkValue(XV,0);
+   Done:=True;
+  End;
+  SBuf:=Save;
+ End;
+ If Not Done Then Begin
+  PutS('<<');EmitFormEntries;PutS(' >>');
+ End;
+End;
+
+Procedure EmitMergedResources;
+Var H,P,V,RP,N1,A:Longint;Save:PBuf;
+Begin
+ Save:=SBuf;
+ PutS(' /Resources ');
+ RP:=-1;
+ If PgInh[0]=0 Then H:=PgObj
+  Else If PgInh[0]>0 Then H:=PgInh[0]
+  Else H:=0;
+ If(H>0)and OpenObject(H,P)Then Begin
+  V:=DictFind(P,'Resources');
+  If V>=0 Then Begin
+   If IsRefAt(V,N1,A)Then Begin
+    If OpenObject(N1,P)Then RP:=P;
+   End
+    Else
+   RP:=V;
+  End;
+ End;
+ If(RP>=0)and(SB(RP)=60)Then Begin
+  ResPos:=RP;
+  TopSkip:='/XObject/';ExtraKind:=5;
+  WalkValue(RP,0);
+  ExtraKind:=0;TopSkip:='';
+ End
+  Else
+ Begin
+  PutS('<< /XObject <<');EmitFormEntries;PutS(' >> >>');
+ End;
+ SBuf:=Save;
+End;
+
+Procedure EmitContentsElems(V:Longint);
+Var Q,N1,A,Pt:Longint;C:Integer;Save:PBuf;Done:Boolean;
+Begin
+ SkipWS(V);
+ C:=SB(V);
+ If C=91 Then Begin
+  Q:=V+1;Done:=False;
+  Repeat
+   SkipWS(Q);C:=SB(Q);
+   If(C=-1)or(C=93)Then Done:=True
+    Else
+   Begin
+    PutC(32);
+    WalkValue(Q,1);
+   End;
+  Until Done;
+ End
+  Else
+ If IsRefAt(V,N1,A)Then Begin
+  Save:=SBuf;
+  If OpenObject(N1,Pt)and(SB(Pt)=91)Then Begin
+   Q:=Pt+1;Done:=False;
+   Repeat
+    SkipWS(Q);C:=SB(Q);
+    If(C=-1)or(C=93)Then Done:=True
+     Else
+    Begin
+     PutC(32);
+     WalkValue(Q,1);
+    End;
+   Until Done;
+  End
+   Else
+  Begin
+   SBuf:=Save;
+   PutC(32);
+   WalkValue(V,1);
+  End;
+  SBuf:=Save;
+ End;
+End;
+
+Procedure EmitLayers;
+Var I:Integer;Save:PBuf;P,V:Longint;
+Begin
+ Save:=SBuf;
+ PutS(' /Contents [');
+ For I:=0 to PgNL-1 do If PgLKind[I]=0 Then PutS(' '+IStr(PgLStr[I])+' 0 R');
+ PutS(' '+IStr(PgQ)+' 0 R');
+ If OpenObject(PgObj,P)Then Begin
+  V:=DictFind(P,'Contents');
+  If V>=0 Then EmitContentsElems(V);
+ End;
+ SBuf:=Save;
+ PutS(' '+IStr(PgQQ)+' 0 R');
+ For I:=0 to PgNL-1 do If PgLKind[I]=1 Then PutS(' '+IStr(PgLStr[I])+' 0 R');
+ PutS(' ]');
+ EmitMergedResources;
+End;
+
+Procedure EmitPageExtra;
+Var SaveEK:Integer;SaveTS:String;Save:PBuf;K:Integer;NewR:Longint;
+Begin
+ Save:=SBuf;SaveEK:=ExtraKind;SaveTS:=TopSkip;
+ ExtraKind:=0;TopSkip:='';
+ PutS(' /Parent '+IStr(PgParent)+' 0 R');
+ For K:=0 to 3 do
+  If(PgInh[K]>0)and Not((K=0)and(PgNL>0))and Not((K=3)and(PgRotMode<>0))Then
+   EmitInherited(PgInh[K],InhKey[K]);
+ If PgRotMode<>0 Then Begin
+  If PgRotMode=1 Then NewR:=PgRotVal
+                 Else NewR:=EffRotate+PgRotVal;
+  NewR:=((NewR mod 360)+360)mod 360;
+  PutS(' /Rotate '+IStr(NewR));
+ End;
+ If PgNL>0 Then EmitLayers;
+ SBuf:=Save;ExtraKind:=SaveEK;TopSkip:=SaveTS;
+End;
+
+{ Parcourt la page courante (Mode 1 = collecte des references, 2 = emission) }
+Procedure WalkPage(Mode:Integer);
+Var P:Longint;
+Begin
+ If Not OpenObject(PgObj,P)Then Begin
+  WMode:=Mode;
+  PutS('<< /Type /Page /Parent '+IStr(PgParent)+' 0 R >>');
+  WMode:=0;SBuf:=NIL;
+  Exit;
+ End;
+ TopSkip:='/Parent/';
+ If PgNL>0 Then Begin
+  TopSkip:=TopSkip+'Contents/';
+  If PgInh[0]=0 Then TopSkip:=TopSkip+'Resources/';
+ End;
+ If PgRotMode<>0 Then TopSkip:=TopSkip+'Rotate/';
+ ExtraKind:=4;WMode:=Mode;
+ WalkValue(P,0);
+ WMode:=0;ExtraKind:=0;TopSkip:='';
+ SBuf:=NIL;
+End;
+
+Procedure EmitCatExtra;Begin
+ PutS(' /Pages 2 0 R');
+End;
+
+{ ------------------------------------------------------------------ }
+{ Objets synthetiques                                                 }
+{ ------------------------------------------------------------------ }
+
+Function SynAdd(Kind,A,B,C:Longint):Longint;
+Var S:TSyn;
+Begin
+ S.Kind:=Kind;S.A:=A;S.B:=B;S.C:=C;
+ RecAdd(SynT,S,SizeOf(S));
+ SynAdd:=SynT.Len div SizeOf(TSyn);
+End;
+
+Procedure PutSynObject(Num:Longint;IsStream:Boolean;Var Data:TBuf);Begin
+ If UseObjStm and Not IsStream Then Begin
+  AddOBToObjStm(Num);
+  Exit;
+ End;
+ XSet(Num,1,OutPos,0);
+ OutStr(IStr(Num)+' 0 obj'#10);
+ OutBuffer(OB,0,OB.Len);
+ If IsStream Then Begin
+  OutStr(#10'stream'#10);
+  OutBuffer(Data,0,Data.Len);
+  OutStr(#10'endstream');
+ End;
+ OutStr(#10'endobj'#10);
+End;
+
+Procedure SetupPage(Var O:TOcc;Var RO:TRunOcc);
+Var Obj:Longint;K:Integer;
+Begin
+ PageEntry(O.Doc,O.PIdx,Obj,PgInh);
+ PgObj:=Obj;
+ PgParent:=2;
+ PgRotMode:=O.RotMode;PgRotVal:=O.RotVal;
+ PgNL:=O.NL;
+ PgQ:=QNum;PgQQ:=QQNum;
+ For K:=0 to MaxOvr-1 do Begin
+  PgLKind[K]:=O.LKind[K];
+  PgLStr[K]:=RO.LStr[K];PgLForm[K]:=RO.LForm[K];PgLFIdx[K]:=RO.LFIdx[K];
+ End;
+End;
+
+Procedure CollectContentRefs(V:Longint;Var L:TBuf);
+Var Q,N1,A,Pt:Longint;C:Integer;Save:PBuf;Done:Boolean;
+Begin
+ SkipWS(V);
+ C:=SB(V);
+ If C=91 Then Begin
+  Q:=V+1;Done:=False;
+  Repeat
+   SkipWS(Q);C:=SB(Q);
+   If(C=-1)or(C=93)Then Done:=True
+    Else
+   If IsRefAt(Q,N1,A)Then Begin BufPutL(L,N1);Q:=A;End
+                     Else SkipValueAt(Q);
+  Until Done;
+ End
+  Else
+ If IsRefAt(V,N1,A)Then Begin
+  Save:=SBuf;
+  If OpenObject(N1,Pt)and(SB(Pt)=91)Then Begin
+   Q:=Pt+1;Done:=False;
+   Repeat
+    SkipWS(Q);C:=SB(Q);
+    If(C=-1)or(C=93)Then Done:=True
+     Else
+    If IsRefAt(Q,N1,A)Then Begin BufPutL(L,N1);Q:=A;End
+                      Else SkipValueAt(Q);
+   Until Done;
+  End
+   Else
+  BufPutL(L,N1);
+  SBuf:=Save;
+ End;
+End;
+
+Procedure EmitEffective(Obj:Longint;Var Inh:TInh;Key:Integer;Const Dflt:String);
+Var H,P,V:Longint;
+Begin
+ If Inh[Key]=0 Then H:=Obj
+  Else If Inh[Key]>0 Then H:=Inh[Key]
+  Else H:=0;
+ V:=-1;
+ If(H>0)and OpenObject(H,P)Then V:=DictFind(P,InhKey[Key]);
+ If V>=0 Then WalkValue(V,1)
+         Else PutS(Dflt);
+ SBuf:=NIL;
+End;
+
+Procedure EmitForm(Idx:Longint);
+Var F:TFormRec;Obj:Longint;Inh:TInh;P,V,I:Longint;L:TBuf;Ps:Longint;Fl:Boolean;Data:PBuf;
+Begin
+ RecGet(RunForms,Idx,F,SizeOf(F));
+ SelectDoc(F.Doc);
+ PageEntry(F.Doc,F.PIdx,Obj,Inh);
+ BufInit(L);
+ BufClear(SynData);
+ If OpenObject(Obj,P)Then Begin
+  V:=DictFind(P,'Contents');
+  If V>=0 Then CollectContentRefs(V,L);
+ End;
+ SBuf:=NIL;
+ For I:=0 to L.Len div 4-1 do Begin
+  If OpenObject(BufGetL(L,I*4),Ps)and GetRaw(Ps,WRaw)and DecodeStreamFull(Ps,WRaw,XDec)Then Begin
+   BufAppend(SynData,XDec,0,XDec.Len);
+   BufPut(SynData,10);
+  End
+   Else
+  Warn('contenu de la page de superposition illisible, ignore.');
+  SBuf:=NIL;
+ End;
+ BufFree(L);
+ Data:=@SynData;Fl:=False;
+ If CompressOn Then Begin
+  BufClear(SynComp);
+  DeflateBuf(SynData,SynComp,Level);
+  If SynComp.Len<SynData.Len Then Begin Data:=@SynComp;Fl:=True;End;
+ End;
+ BufClear(OB);
+ EmBuf:=@OB;WMode:=2;
+ PutS('<< /Type /XObject /Subtype /Form /BBox ');
+ EmitEffective(Obj,Inh,1,'[ 0 0 612 792 ]');
+ PutS(' /Resources ');
+ EmitEffective(Obj,Inh,0,'<< >>');
+ If Fl Then PutS(' /Filter /FlateDecode');
+ PutS(' /Length '+IStr(Data^.Len)+' >>');
+ WMode:=0;
+ PutSynObject(F.NewNum,True,Data^);
+End;
+
+Procedure EmitLayerStream(OccIdx,L:Longint);
+Var O:TOcc;RO:TRunOcc;F:TFormRec;Obj:Longint;Inh:TInh;K:Integer;Rot:Longint;
+    Sx0,Sy0,Sx1,Sy1,Dx0,Dy0,Dx1,Dy1,Sw,Sh,Dw,Dh,Vw,Vh,S,S2,Vx,Vy:Real;
+    Ma,Mb,Mc,Md,Me,Mf:Real;
+Begin
+ RecGet(OccAll,OccIdx,O,SizeOf(O));
+ RecGet(RunOcc,OccIdx-RunA,RO,SizeOf(RO));
+ RecGet(RunForms,RO.LFIdx[L],F,SizeOf(F));
+ SelectDoc(F.Doc);
+ PageEntry(F.Doc,F.PIdx,Obj,Inh);
+ ReadBox(Obj,Inh,1,Sx0,Sy0,Sx1,Sy1);
+ SelectDoc(O.Doc);
+ PageEntry(O.Doc,O.PIdx,Obj,Inh);
+ ReadBox(Obj,Inh,1,Dx0,Dy0,Dx1,Dy1);
+ { rotation effective de la page de destination }
+ PgObj:=Obj;
+ For K:=0 to 3 do PgInh[K]:=Inh[K];
+ Rot:=EffRotate;
+ If O.RotMode=1 Then Rot:=O.RotVal
+  Else If O.RotMode=2 Then Rot:=Rot+O.RotVal;
+ Rot:=((Rot mod 360)+360)mod 360;
+ Sw:=Sx1-Sx0;Sh:=Sy1-Sy0;Dw:=Dx1-Dx0;Dh:=Dy1-Dy0;
+ If(Rot=90)or(Rot=270)Then Begin Vw:=Dh;Vh:=Dw;End
+                      Else Begin Vw:=Dw;Vh:=Dh;End;
+ S:=1;
+ If(Sw>0)and(Sh>0)Then Begin
+  S:=Vw/Sw;S2:=Vh/Sh;
+  If S2<S Then S:=S2;
+  If S>1 Then S:=1;
+ End;
+ Vx:=(Vw-S*Sw)/2-S*Sx0;
+ Vy:=(Vh-S*Sh)/2-S*Sy0;
+ Case Rot of
+  90:Begin Ma:=0;Mb:=S;Mc:=-S;Md:=0;Me:=Dw-Vy;Mf:=Vx;End;
+  180:Begin Ma:=-S;Mb:=0;Mc:=0;Md:=-S;Me:=Dw-Vx;Mf:=Dh-Vy;End;
+  270:Begin Ma:=0;Mb:=-S;Mc:=S;Md:=0;Me:=Vy;Mf:=Dh-Vx;End;
+  Else Begin Ma:=S;Mb:=0;Mc:=0;Md:=S;Me:=Vx;Mf:=Vy;End;
+ End;
+ Me:=Me+Dx0;Mf:=Mf+Dy0;
+ BufClear(SynData);
+ BufPutStr(SynData,'q '+RealStr(Ma)+' '+RealStr(Mb)+' '+RealStr(Mc)+' '+RealStr(Md)+' '+RealStr(Me)+' '+RealStr(Mf)+
+                   ' cm /QFm'+IStr(RO.LFIdx[L])+' Do Q'#10);
+ BufClear(OB);
+ EmBuf:=@OB;WMode:=2;
+ PutS('<< /Length '+IStr(SynData.Len)+' >>');
+ WMode:=0;
+ PutSynObject(RO.LStr[L],True,SynData);
+End;
+
+Procedure EmitSyn(K:Longint);
+Var S:TSyn;O:TOcc;RO:TRunOcc;I,Cnt,P,Root:Longint;
+Begin
+ RecGet(SynT,K-1,S,SizeOf(S));
+ BufClear(OB);
+ EmBuf:=@OB;
+ Case S.Kind of
+  1:Begin
+   WMode:=2;
+   Root:=0;
+   If HasPrimary Then Begin
+    SelectDoc(0);
+    Root:=Docs[0].RootObj;
+   End;
+   If(Root>0)and OpenObject(Root,P)and(SB(P)=60)Then Begin
+    TopSkip:=CatSkip;ExtraKind:=7;
+    WalkValue(P,0);
+    TopSkip:='';ExtraKind:=0;
+    SBuf:=NIL;
+   End
+    Else
+   PutS('<< /Type /Catalog /Pages 2 0 R >>');
+   WMode:=0;
+   PutSynObject(K,False,SynData);
+  End;
+  2:Begin
+   WMode:=2;
+   PutS('<< /Type /Pages /Kids [');
+   Cnt:=RunOcc.Len div SizeOf(TRunOcc);
+   For I:=0 to Cnt-1 do Begin
+    RecGet(RunOcc,I,RO,SizeOf(RO));
+    PutS(' '+IStr(RO.PageNum)+' 0 R');
+   End;
+   PutS(' ] /Count '+IStr(Cnt)+' >>');
+   WMode:=0;
+   PutSynObject(K,False,SynData);
+  End;
+  3,4:Begin
+   BufClear(SynData);
+   If S.Kind=3 Then BufPutStr(SynData,'q'#10) Else BufPutStr(SynData,'Q'#10);
+   WMode:=2;
+   PutS('<< /Length 2 >>');
+   WMode:=0;
+   PutSynObject(K,True,SynData);
+  End;
+  5:EmitForm(S.A);
+  6:EmitLayerStream(S.A,S.B);
+  7:Begin
+   RecGet(OccAll,S.A,O,SizeOf(O));
+   RecGet(RunOcc,S.B,RO,SizeOf(RO));
+   SelectDoc(O.Doc);
+   SetupPage(O,RO);
+   EmBuf:=@OB;
+   WalkPage(2);
+   PutSynObject(K,False,SynData);
+  End;
+ End;
+ WMode:=0;
+End;
+
+{ ------------------------------------------------------------------ }
+{ Fermeture transitive et numerotation                                }
+{ ------------------------------------------------------------------ }
+
+Procedure ConsumeSeeds(Mark:Longint);
+Var I,T:Longint;R:PObjRec;
+Begin
+ I:=Mark;
+ While I<Refs.Len Do Begin
+  T:=BufGetL(Refs,I);
+  If T>0 Then Begin
+   R:=PeekRec(T);
+   If(R^.Kind<>0)and((R^.Flags and(FlReach or FlPageLeaf))=0)Then Begin
+    R^.Flags:=R^.Flags or FlReach;
+    BufPutL(CQ,T);
+   End;
+  End;
+  Inc(I,4);
+ End;
+ Refs.Len:=Mark;
+End;
+
+Procedure ClosureDoc(D:Integer;A,B:Longint);
+Var I,Mark,Head,N,T,J,Root,P:Longint;O:TOcc;RO:TRunOcc;R,R0:PObjRec;F:TFormRec;Obj:Longint;Inh:TInh;
+Begin
+ SelectDoc(D);
+ ResetFlags;
+ BufClear(CQ);
+ { catalogue et trailer du document principal }
+ If HasPrimary and(D=0)Then Begin
+  Mark:=Refs.Len;
+  Root:=Docs[0].RootObj;
+  If(Root>0)and OpenObject(Root,P)and(SB(P)=60)Then Begin
+   TopSkip:=CatSkip;ExtraKind:=7;WMode:=1;
+   WalkValue(P,0);
+   WMode:=0;ExtraKind:=0;TopSkip:='';
+  End;
+  SBuf:=NIL;
+  If TrailerPos>=0 Then Begin
+   TopSkip:=TrailerSkip+'Root/';WMode:=1;
+   P:=TrailerPos;
+   WalkValue(P,0);
+   WMode:=0;TopSkip:='';
+  End;
+  ConsumeSeeds(Mark);
+ End;
+ { pages selectionnees }
+ For I:=A to B do Begin
+  RecGet(OccAll,I,O,SizeOf(O));
+  If O.Doc=D Then Begin
+   RecGet(RunOcc,I-A,RO,SizeOf(RO));
+   PageEntry(D,O.PIdx,Obj,Inh);
+   R:=PeekRec(Obj);
+   If(R^.Flags and FlReach)=0 Then Begin
+    R^.Flags:=R^.Flags or FlReach;
+    R^.NewNum:=RO.PageNum;
+    Mark:=Refs.Len;
+    PgObj:=Obj;PgParent:=2;PgRotMode:=0;PgRotVal:=0;PgNL:=0;
+    For J:=0 to 3 do PgInh[J]:=Inh[J];
+    WalkPage(1);
+    ConsumeSeeds(Mark);
+   End;
+  End;
+ End;
+ { formulaires de superposition }
+ For I:=0 to RunForms.Len div SizeOf(TFormRec)-1 do Begin
+  RecGet(RunForms,I,F,SizeOf(F));
+  If F.Doc=D Then Begin
+   Mark:=Refs.Len;
+   PageEntry(D,F.PIdx,Obj,Inh);
+   WMode:=1;
+   EmitEffective(Obj,Inh,0,'<< >>');
+   WMode:=0;
+   ConsumeSeeds(Mark);
+  End;
+ End;
+ { fermeture }
+ Head:=0;
+ While Head*4<CQ.Len Do Begin
+  N:=BufGetL(CQ,Head*4);Inc(Head);
+  R:=PeekRec(N);
+  For J:=0 to R^.RefCnt-1 do Begin
+   T:=BufGetL(Refs,(R^.RefStart+J)*4);
+   If T>0 Then Begin
+    R0:=PeekRec(T);
+    If(R0^.Kind<>0)and((R0^.Flags and(FlReach or FlPageLeaf))=0)Then Begin
+     R0^.Flags:=R0^.Flags or FlReach;
+     BufPutL(CQ,T);
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Produit un fichier avec les pages A..B de la sequence }
+Procedure ProduceOutput(A,B:Longint;Const FName:String);
+Var
+ I,L,D,N,Cnt,NextNum,NComp,TotalObj,SynCount,K:Longint;
+ O:TOcc;RO:TRunOcc;F:TFormRec;SY:TSyn;R:PObjRec;Found:Boolean;
+ AnyLayer:Boolean;Maj,Min:Integer;
+Begin
+ RunA:=A;
+ BufClear(SynT);BufClear(RunOcc);BufClear(RunForms);
+ Cnt:=B-A+1;
+ AnyLayer:=False;
+ For I:=A to B do Begin
+  RecGet(OccAll,I,O,SizeOf(O));
+  If O.NL>0 Then AnyLayer:=True;
+ End;
+ SynAdd(1,0,0,0);
+ SynAdd(2,A,Cnt,0);
+ QNum:=0;QQNum:=0;
+ If AnyLayer Then Begin
+  QNum:=SynAdd(3,0,0,0);
+  QQNum:=SynAdd(4,0,0,0);
+ End;
+ For I:=A to B do Begin
+  RecGet(OccAll,I,O,SizeOf(O));
+  FillChar(RO,SizeOf(RO),0);
+  RO.NL:=O.NL;
+  For L:=0 to O.NL-1 do Begin
+   Found:=False;
+   For K:=0 to RunForms.Len div SizeOf(TFormRec)-1 do Begin
+    RecGet(RunForms,K,F,SizeOf(F));
+    If(F.Doc=O.LDoc[L])and(F.PIdx=O.LPIdx[L])Then Begin
+     Found:=True;RO.LForm[L]:=F.NewNum;RO.LFIdx[L]:=K;
+    End;
+   End;
+   If Not Found Then Begin
+    F.Doc:=O.LDoc[L];F.PIdx:=O.LPIdx[L];F.Pad:=0;
+    K:=RunForms.Len div SizeOf(TFormRec);
+    F.NewNum:=SynAdd(5,K,0,0);
+    RecAdd(RunForms,F,SizeOf(F));
+    RO.LForm[L]:=F.NewNum;RO.LFIdx[L]:=K;
+   End;
+   RO.LStr[L]:=SynAdd(6,I,L,0);
+  End;
+  RO.PageNum:=SynAdd(7,I,I-A,0);
+  RecAdd(RunOcc,RO,SizeOf(RO));
+ End;
+ SynCount:=SynT.Len div SizeOf(TSyn);
+ For D:=0 to NDocs-1 do ClosureDoc(D,A,B);
+ NextNum:=SynCount+1;
+ NComp:=0;
+ For K:=1 to SynCount do Begin
+  RecGet(SynT,K-1,SY,SizeOf(SY));
+  If(SY.Kind=1)or(SY.Kind=2)or(SY.Kind=7)Then Inc(NComp);
+ End;
+ Maj:=0;Min:=0;
+ For D:=0 to NDocs-1 do Begin
+  SelectDoc(D);
+  For N:=1 to HighObj do Begin
+   R:=PeekRec(N);
+   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlPageLeaf)=0)Then Begin
+    R^.NewNum:=NextNum;Inc(NextNum);
+    If(R^.Flags and FlStream)=0 Then Inc(NComp);
+   End;
+  End;
+  If(VerMajor>Maj)or((VerMajor=Maj)and(VerMinor>Min))Then Begin Maj:=VerMajor;Min:=VerMinor;End;
+ End;
+ TotalObj:=NextNum-1;
+ If CurDoc>=0 Then SaveDoc(CurDoc);
+ Case ObjMode of
+  0:Begin UseObjStm:=False;UseXrefStm:=False;End;
+  1:Begin
+   UseObjStm:=HasPrimary and Docs[0].SXs;
+   UseXrefStm:=UseObjStm;
+  End;
+  Else Begin UseObjStm:=True;UseXrefStm:=True;End;
+ End;
+ NewRoot:=1;
+ ForceNoTrailer:=Not HasPrimary;
+ BeginOutput(FName,TotalObj,NComp,Maj,Min);
+ For K:=1 to SynCount do EmitSyn(K);
+ For D:=0 to NDocs-1 do Begin
+  SelectDoc(D);
+  For N:=1 to HighObj do Begin
+   R:=PeekRec(N);
+   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and FlPageLeaf)=0)Then Begin
+    If UseObjStm and((R^.Flags and FlStream)=0)Then AddToObjStm(N,R)
+                                                Else WriteNormalObject(N,R);
+   End;
+  End;
+ End;
+ If HasPrimary Then SelectDoc(0);
+ EndOutput;
+ NewRoot:=0;ForceNoTrailer:=False;
+ If Verbose Then WriteLn('Ecrit : ',FName,' (',Cnt,' page(s), ',TotalObj,' objets)');
+End;
+
+{ ------------------------------------------------------------------ }
+{ Plan : sequence de pages, rotations, superpositions                 }
+{ ------------------------------------------------------------------ }
+
+Function PagesOf(D:Integer):Longint;Begin
+ PagesOf:=Docs[D].NPg;
+End;
+
+Procedure BuildPlan;
+Var
+ S,I,J,K,D,Total,Done,Left:Longint;
+ DocOf:Array[1..MaxDocs]of Integer;
+ Pos_:Array[1..MaxDocs]of Longint;
+ NSp:Integer;
+ O:TOcc;
+ L,FL,RL,TL:TBuf;
+ Src,Dest,Ang:Longint;
+ Any:Boolean;
+Begin
+ NSp:=NPgSpec;
+ If NSp=0 Then Begin
+  If EmptyDoc Then Fatal('--empty necessite --pages pour choisir les pages.');
+  NSp:=1;PgFile[1]:='.';PgRng[1]:='1-z';
+ End;
+ For S:=1 to NSp do Begin
+  If PgFile[S]='.' Then Begin
+   If EmptyDoc Then Fatal('"." designe le fichier d''entree, mais --empty est utilise.');
+   DocOf[S]:=0;
+  End
+   Else
+  DocOf[S]:=AddDoc(PgFile[S]);
+ End;
+ For S:=1 to NSp do Begin
+  BufInit(SpecL[S]);
+  If Docs[DocOf[S]].NPg=0 Then Fatal(Docs[DocOf[S]].Name+' : aucune page trouvee.');
+  ParseRange(PgRng[S],Docs[DocOf[S]].NPg,SpecL[S],True);
+  Pos_[S]:=0;
+ End;
+ BufClear(OccAll);
+ FillChar(O,SizeOf(O),0);
+ If CollateOn Then Begin
+  Repeat
+   Any:=False;
+   For S:=1 to NSp do Begin
+    K:=0;
+    While(K<CollateN)and(Pos_[S]*4<SpecL[S].Len)Do Begin
+     O.Doc:=DocOf[S];O.PIdx:=BufGetL(SpecL[S],Pos_[S]*4)-1;
+     RecAdd(OccAll,O,SizeOf(O));
+     Inc(Pos_[S]);Inc(K);Any:=True;
+    End;
+   End;
+  Until Not Any;
+ End
+  Else
+ For S:=1 to NSp do
+  For I:=0 to SpecL[S].Len div 4-1 do Begin
+   O.Doc:=DocOf[S];O.PIdx:=BufGetL(SpecL[S],I*4)-1;
+   RecAdd(OccAll,O,SizeOf(O));
+  End;
+ Total:=OccAll.Len div SizeOf(TOcc);
+ If Total=0 Then Fatal('aucune page selectionnee.');
+ { rotations }
+ BufInit(L);
+ For S:=1 to NRot do Begin
+  ParseRange(RotRng[S],Total,L,True);
+  For I:=0 to L.Len div 4-1 do Begin
+   J:=BufGetL(L,I*4)-1;
+   RecGet(OccAll,J,O,SizeOf(O));
+   If RotAbs[S]Then Begin O.RotMode:=1;O.RotVal:=RotAng[S];End
+    Else
+   Begin
+    If O.RotMode=0 Then O.RotMode:=2;
+    O.RotVal:=O.RotVal+RotAng[S];
+   End;
+   RecPut(OccAll,J,O,SizeOf(O));
+  End;
+ End;
+ { superpositions }
+ BufInit(FL);BufInit(RL);BufInit(TL);
+ For S:=1 to NOvr do Begin
+  D:=AddDoc(OvrFile[S]);
+  ParseRange(OvrFrom[S],Docs[D].NPg,FL,True);
+  ParseRange(OvrRep[S],Docs[D].NPg,RL,True);
+  ParseRange(OvrTo[S],Total,TL,True);
+  Left:=FL.Len div 4;
+  For I:=0 to TL.Len div 4-1 do Begin
+   Dest:=BufGetL(TL,I*4)-1;
+   Src:=0;
+   If I<Left Then Src:=BufGetL(FL,I*4)
+    Else If RL.Len>0 Then Src:=BufGetL(RL,((I-Left)mod(RL.Len div 4))*4);
+   If Src>0 Then Begin
+    RecGet(OccAll,Dest,O,SizeOf(O));
+    If O.NL<MaxOvr Then Begin
+     O.LKind[O.NL]:=OvrKind[S];O.LDoc[O.NL]:=D;O.LPIdx[O.NL]:=Src-1;
+     Inc(O.NL);
+     RecPut(OccAll,Dest,O,SizeOf(O));
+    End
+     Else
+    Warn('trop de superpositions sur la page '+IStr(Dest+1)+'.');
+   End;
+  End;
+ End;
+ BufFree(L);BufFree(FL);BufFree(RL);BufFree(TL);
+End;
+
+Function SplitName(Const Base:String;FirstP,LastP,Total,N:Longint):String;
+Var W:Integer;Num,R:String;P,I,Dot:Integer;
+Begin
+ W:=Length(IStr(Total));
+ Num:=PadZero(FirstP,W);
+ If N>1 Then Num:=Num+'-'+PadZero(LastP,W);
+ P:=Pos('%d',Base);
+ If P>0 Then Begin
+  SplitName:=Copy(Base,1,P-1)+Num+Copy(Base,P+2,255);
+  Exit;
+ End;
+ Dot:=0;
+ For I:=1 to Length(Base)do Begin
+  If Base[I]='.' Then Dot:=I;
+  If(Base[I]='/')or(Base[I]='\')Then Dot:=0;
+ End;
+ If Dot>0 Then R:=Copy(Base,1,Dot-1)+'-'+Num+Copy(Base,Dot,255)
+          Else R:=Base+'-'+Num;
+ SplitName:=R;
+End;
+
+Procedure RunPageOps;
+Var Total,A,B:Longint;
+Begin
+ BufInit(OccAll);BufInit(SynT);BufInit(RunOcc);BufInit(RunForms);
+ BufInit(CQ);BufInit(SynData);BufInit(SynComp);
+ NewRoot:=0;ForceNoTrailer:=False;
+ If Not EmptyDoc Then AddDoc(InName);
+ HasPrimary:=Not EmptyDoc;
+ { champs du catalogue }
+ If(NPgSpec=0)and(Not CollateOn)Then Begin
+  CatSkip:='/Pages/';
+  If RemoveLabels Then CatSkip:=CatSkip+'/PageLabels/';
+ End
+  Else
+ CatSkip:=CatBlack;
+ If RemoveLabels and(Pos('/PageLabels/',CatSkip)=0)Then CatSkip:=CatSkip+'/PageLabels/';
+ BuildPlan;
+ Total:=OccAll.Len div SizeOf(TOcc);
+ If ShowNPages Then Begin
+  WriteLn(Total);
+  Exit;
+ End;
+ If SplitOn Then Begin
+  A:=0;
+  While A<Total Do Begin
+   B:=A+SplitN-1;
+   If B>=Total Then B:=Total-1;
+   ProduceOutput(A,B,SplitName(OutName,A+1,B+1,Total,B-A+1));
+   A:=B+1;
+  End;
+ End
+  Else
+ ProduceOutput(0,Total-1,OutName);
+End;
+
+{ ------------------------------------------------------------------ }
 { Programme principal                                                 }
 { ------------------------------------------------------------------ }
 
 Procedure ShowHelp;Begin
- WriteLn('QPDF : Cette commande permet d''optimiser la structure interne d''un fichier PDF');
- WriteLn('       et de compresser ses flux de donnees sans perte (la resolution des');
- WriteLn('       images n''est jamais reduite).');
+ WriteLn('QPDF : Cette commande permet d''optimiser la structure interne d''un fichier PDF,');
+ WriteLn('       de compresser ses flux de donnees sans perte (la resolution des');
+ WriteLn('       images n''est jamais reduite) et de manipuler ses pages.');
  WriteLn;
  WriteLn('Syntaxe : QPDF [options] entree.pdf sortie.pdf');
+ WriteLn('          QPDF --empty [options] sortie.pdf');
  WriteLn;
  WriteLn(' --stream-data=compress|preserve|uncompress');
  WriteLn('                          Traitement des flux (defaut : compress)');
  WriteLn(' --compress-streams=y|n   Compresse les flux (Flate)');
  WriteLn(' --decode-level=none|generalized|specialized|all');
- WriteLn('                          Filtres decodes avant recompression (defaut : generalized)');
+ WriteLn('                          Filtres decodes avant recompression (defaut : generalized).');
+ WriteLn('                          Les filtres specialises (DCT, JPX, CCITT, JBIG2) ne sont jamais');
+ WriteLn('                          decodes : ils sont conserves tels quels.');
  WriteLn(' --recompress-flate       Recompresse aussi les flux deja en Flate');
  WriteLn(' --compression-level=0..9 Niveau de compression Flate (defaut : 9)');
  WriteLn(' --object-streams=disable|preserve|generate');
@@ -2928,10 +4271,28 @@ Procedure ShowHelp;Begin
  WriteLn(' --version                Affiche la version');
  WriteLn(' --help                   Affiche cette aide');
  WriteLn;
- WriteLn('Exemple :');
+ WriteLn('Manipulation de pages :');
+ WriteLn(' --empty                  Part d''un document vide (pas de fichier d''entree)');
+ WriteLn(' --pages fichier [pages] [fichier [pages]...] --');
+ WriteLn('                          Selectionne des pages ("." = fichier d''entree).');
+ WriteLn('                          Pages : 1,3,5-7,z,r2-r1,1-10:odd,1-10:even');
+ WriteLn(' --collate[=n]            Entrelace les pages des differents fichiers (n a la fois)');
+ WriteLn(' --split-pages[=n]        Un fichier de sortie par groupe de n pages');
+ WriteLn(' --rotate=[+|-]angle[:pages]  Rotation (0, 90, 180, 270) ; +/- = relative');
+ WriteLn(' --overlay fichier [--from=p] [--repeat=p] [--to=p] --');
+ WriteLn('                          Superpose les pages d''un autre PDF');
+ WriteLn(' --underlay fichier [--from=p] [--repeat=p] [--to=p] --');
+ WriteLn('                          Place les pages d''un autre PDF derriere');
+ WriteLn(' --remove-page-labels     Supprime les etiquettes de numerotation des pages');
+ WriteLn;
+ WriteLn('Exemples :');
  WriteLn('  QPDF --stream-data=compress --object-streams=generate original.pdf compact.pdf');
+ WriteLn('  QPDF a.pdf --pages . 1-3 b.pdf z-1 -- sortie.pdf');
+ WriteLn('  QPDF --empty --pages a.pdf b.pdf -- fusion.pdf');
  WriteLn;
  WriteLn('Limites : les fichiers chiffres, --linearize et --qdf ne sont pas supportes.');
+ WriteLn('Avec la manipulation de pages, signets, formulaires et destinations nommees');
+ WriteLn('ne sont conserves que si toutes les pages restent dans l''ordre d''origine.');
 End;
 
 Procedure BadOpt(Const S:String);Begin
@@ -2954,10 +4315,18 @@ Begin
 End;
 
 Procedure ParseArgs;
-Var I,P,NPos:Integer;S,Opt,OptVal:String;EndOpts:Boolean;V:Longint;Code:Integer;
+Var
+ I,P,NPos:Integer;
+ S,Opt,OptVal,Pos1,Pos2,AngS:String;
+ EndOpts:Boolean;
+ V:Longint;
+ Code:Integer;
+ Dummy:TBuf;
 Begin
- InName:='';OutName:='';NPos:=0;EndOpts:=False;
- For I:=1 to ParamCount do Begin
+ InName:='';OutName:='';NPos:=0;EndOpts:=False;Pos1:='';Pos2:='';
+ BufInit(Dummy);
+ I:=1;
+ While I<=ParamCount Do Begin
   S:=ParamStr(I);
   If(Not EndOpts)and(S='--')Then EndOpts:=True
    Else
@@ -3028,17 +4397,108 @@ Begin
     If Opt='verbose' Then Verbose:=True;
    End
     Else
+   If Opt='empty' Then EmptyDoc:=True
+    Else
+   If Opt='remove-page-labels' Then RemoveLabels:=True
+    Else
+   If Opt='collate' Then Begin
+    CollateOn:=True;CollateN:=1;
+    If P>0 Then Begin
+     CollateN:=StrNum(OptVal);
+     If CollateN<1 Then BadOpt(S);
+    End;
+   End
+    Else
+   If Opt='split-pages' Then Begin
+    SplitOn:=True;SplitN:=1;
+    If P>0 Then Begin
+     SplitN:=StrNum(OptVal);
+     If SplitN<1 Then BadOpt(S);
+    End;
+   End
+    Else
+   If Opt='rotate' Then Begin
+    If NRot>=8 Then BadOpt(S);
+    Inc(NRot);
+    P:=Pos(':',OptVal);
+    If P>0 Then Begin AngS:=Copy(OptVal,1,P-1);RotRng[NRot]:=Copy(OptVal,P+1,255);End
+           Else Begin AngS:=OptVal;RotRng[NRot]:='1-z';End;
+    RotAbs[NRot]:=True;
+    If(AngS<>'')and((AngS[1]='+')or(AngS[1]='-'))Then Begin
+     RotAbs[NRot]:=False;
+     V:=StrNum(Copy(AngS,2,255));
+     If V<0 Then BadOpt(S);
+     If AngS[1]='-' Then V:=-V;
+    End
+     Else
+    Begin
+     V:=StrNum(AngS);
+     If V<0 Then BadOpt(S);
+    End;
+    If(V mod 90)<>0 Then BadOpt(S);
+    RotAng[NRot]:=V;
+    If Not ParseRange(RotRng[NRot],1000000,Dummy,False)Then BadOpt(S);
+   End
+    Else
+   If Opt='pages' Then Begin
+    NPgSpec:=0;
+    Inc(I);
+    While(I<=ParamCount)and(ParamStr(I)<>'--')Do Begin
+     If NPgSpec>=MaxDocs Then BadOpt('--pages');
+     Inc(NPgSpec);
+     PgFile[NPgSpec]:=ParamStr(I);PgRng[NPgSpec]:='1-z';
+     If(I<ParamCount)and(ParamStr(I+1)<>'--')and ParseRange(ParamStr(I+1),1000000,Dummy,False)Then Begin
+      Inc(I);PgRng[NPgSpec]:=ParamStr(I);
+     End;
+     Inc(I);
+    End;
+    If NPgSpec=0 Then BadOpt('--pages');
+   End
+    Else
+   If(Opt='overlay')or(Opt='underlay')Then Begin
+    If NOvr>=MaxOvr Then BadOpt(S);
+    Inc(I);
+    If I>ParamCount Then BadOpt(S);
+    Inc(NOvr);
+    If Opt='overlay' Then OvrKind[NOvr]:=1 Else OvrKind[NOvr]:=0;
+    OvrFile[NOvr]:=ParamStr(I);OvrFrom[NOvr]:='1-z';OvrRep[NOvr]:='';OvrTo[NOvr]:='1-z';
+    Inc(I);
+    While(I<=ParamCount)and(ParamStr(I)<>'--')Do Begin
+     S:=ParamStr(I);
+     P:=Pos('=',S);
+     If(P>0)and(Copy(S,1,7)='--from=')Then OvrFrom[NOvr]:=Copy(S,P+1,255)
+      Else
+     If(P>0)and(Copy(S,1,9)='--repeat=')Then OvrRep[NOvr]:=Copy(S,P+1,255)
+      Else
+     If(P>0)and(Copy(S,1,5)='--to=')Then OvrTo[NOvr]:=Copy(S,P+1,255)
+      Else
+     BadOpt(S);
+     Inc(I);
+    End;
+    If Not(ParseRange(OvrFrom[NOvr],1000000,Dummy,False)and ParseRange(OvrRep[NOvr],1000000,Dummy,False)
+       and ParseRange(OvrTo[NOvr],1000000,Dummy,False))Then BadOpt('--'+Opt);
+   End
+    Else
    BadOpt(S);
   End
    Else
   Begin
    Inc(NPos);
-   If NPos=1 Then InName:=S
+   If NPos=1 Then Pos1:=S
     Else
-   If NPos=2 Then OutName:=S
+   If NPos=2 Then Pos2:=S
     Else
    BadOpt(S);
   End;
+  Inc(I);
+ End;
+ If EmptyDoc Then Begin
+  OutName:=Pos1;
+  If Pos2<>'' Then BadOpt(Pos2);
+ End
+  Else
+ Begin
+  InName:=Pos1;OutName:=Pos2;
  End;
 End;
 
@@ -3068,43 +4528,15 @@ Begin
  CheckOnly:=False;ShowNPages:=False;KeepUnref:=False;
  MinVerMaj:=0;MinVerMin:=0;ForceMaj:=0;ForceMin:=0;
  StrChanged:=False;OutFlate:=False;OutFirst:=1;SLen:=0;
-End;
-
-Procedure OpenSource;
-Var P:Longint;Found:Boolean;
-Begin
- Assign(SF,InName);
- FileMode:=0;
- Reset(SF,1);
- If IOResult<>0 Then Fatal('impossible d''ouvrir '+InName+' : fichier introuvable ou illisible.');
- FileMode:=2;
- SFSize:=FileSize(SF);
- If SFSize<16 Then Fatal(InName+' : ce n''est pas un fichier PDF.');
- SBuf:=NIL;
- Found:=False;P:=0;
- While(P<1024)and(P<SFSize-8)and Not Found Do Begin
-  If(SB(P)=37)and MatchStr(P,'%PDF-')Then Found:=True
-                                      Else Inc(P);
- End;
- If Found Then Begin
-  Bias:=P;
-  VerMajor:=SB(P+5)-48;
-  If SB(P+6)=46 Then VerMinor:=SB(P+7)-48;
-  If(VerMajor<0)or(VerMajor>9)Then VerMajor:=1;
-  If(VerMinor<0)or(VerMinor>9)Then VerMinor:=4;
- End
-  Else
- Warn('en-tete %PDF- introuvable.');
-End;
-
-Procedure CheckEncrypt;Begin
- If(TrailerPos>=0)and(DictFind(TrailerPos,'Encrypt')>=0)Then
-  Fatal(InName+' : fichier chiffre (Encrypt) : non supporte par cette version.');
+ NewRoot:=0;ForceNoTrailer:=False;
+ CurDoc:=-1;NDocs:=0;SFOpen:=False;HasPrimary:=False;
+ EmptyDoc:=False;RemoveLabels:=False;SplitOn:=False;CollateOn:=False;
+ SplitN:=1;CollateN:=1;NPgSpec:=0;NRot:=0;NOvr:=0;
 End;
 
 Var
- Sx,N,SizeIn,SizeOut,NPages:Longint;
- Ok,SrcHasStm:Boolean;
+ N,SizeIn,SizeOut,NPages:Longint;
+ SrcHasStm,UseNew:Boolean;
  R:PObjRec;
  F2:File;
 
@@ -3115,7 +4547,8 @@ BEGIN
   Halt(0);
  End;
  ParseArgs;
- If InName='' Then Begin
+ UseNew:=EmptyDoc or(NPgSpec>0)or(NRot>0)or(NOvr>0)or SplitOn or CollateOn or RemoveLabels;
+ If(InName='')and Not EmptyDoc Then Begin
   ErrLn('QPDF : aucun fichier d''entree. Essayez QPDF --help.');
   Halt(2);
  End;
@@ -3127,57 +4560,51 @@ BEGIN
   ErrLn('QPDF : le fichier de sortie doit etre different du fichier d''entree.');
   Halt(2);
  End;
- OpenSource;
- { structure du document }
- Ok:=False;
- Sx:=FindStartXref;
- If Sx>=0 Then Ok:=ReadXrefChain(Sx);
- If Ok and(TrailerPos<0)Then Ok:=False;
- If Not Ok Then Reconstruct;
- CheckEncrypt;
- If Not(PassA and ComputeReach)Then Begin
-  Reconstruct;
-  CheckEncrypt;
-  If Not(PassA and ComputeReach)Then Fatal('structure du document irrecuperable.');
- End;
- If NObj=0 Then Fatal('aucun objet atteignable depuis la racine du document.');
- If ShowNPages Then Begin
-  NPages:=CountPages;
-  If NPages<0 Then Fatal('impossible de determiner le nombre de pages.');
-  WriteLn(NPages);
- End
-  Else
- If CheckOnly Then Begin
-  CheckStreams;
-  If Warnings=0 Then WriteLn('Aucune erreur de syntaxe ou d''encodage de flux n''a ete trouvee.')
-  Else WriteLn('Des problemes ont ete trouves (',Warnings,' avertissement(s)).');
+ If UseNew Then Begin
+  If CheckOnly Then Fatal('--check ne peut pas etre combine avec la manipulation de pages.');
+  RunPageOps;
  End
   Else
  Begin
-  SrcHasStm:=False;
-  For N:=1 to HighObj do Begin
-   R:=PeekRec(N);
-   If(R^.Kind=2)and((R^.Flags and FlReach)<>0)Then SrcHasStm:=True;
-  End;
-  Case ObjMode of
-   0:Begin UseObjStm:=False;UseXrefStm:=False;End;
-   1:Begin UseObjStm:=SrcHasStm;UseXrefStm:=SrcHasStm or SrcXrefStm;End;
-   Else Begin UseObjStm:=True;UseXrefStm:=True;End;
-  End;
-  WriteOutput;
-  If Verbose Then Begin
-   SizeIn:=SFSize;
-   Assign(F2,OutName);FileMode:=0;Reset(F2,1);
-   If IOResult=0 Then Begin
-    SizeOut:=FileSize(F2);Close(F2);
-    WriteLn('Taille d''origine : ',SizeIn,' octets');
-    WriteLn('Taille finale    : ',SizeOut,' octets');
-    If SizeIn>=100 Then WriteLn('Gain             : ',(SizeIn-SizeOut)div(SizeIn div 100),' %');
-    WriteLn('Objets conserves : ',NObj);
+  LoadStructure(InName);
+  If ShowNPages Then Begin
+   NPages:=CountPages;
+   If NPages<0 Then Fatal('impossible de determiner le nombre de pages.');
+   WriteLn(NPages);
+  End
+   Else
+  If CheckOnly Then Begin
+   CheckStreams;
+   If Warnings=0 Then WriteLn('Aucune erreur de syntaxe ou d''encodage de flux n''a ete trouvee.')
+   Else WriteLn('Des problemes ont ete trouves (',Warnings,' avertissement(s)).');
+  End
+   Else
+  Begin
+   SrcHasStm:=False;
+   For N:=1 to HighObj do Begin
+    R:=PeekRec(N);
+    If(R^.Kind=2)and((R^.Flags and FlReach)<>0)Then SrcHasStm:=True;
    End;
-   FileMode:=2;
+   Case ObjMode of
+    0:Begin UseObjStm:=False;UseXrefStm:=False;End;
+    1:Begin UseObjStm:=SrcHasStm;UseXrefStm:=SrcHasStm or SrcXrefStm;End;
+    Else Begin UseObjStm:=True;UseXrefStm:=True;End;
+   End;
+   WriteOutput;
+   If Verbose Then Begin
+    SizeIn:=SFSize;
+    Assign(F2,OutName);FileMode:=0;Reset(F2,1);
+    If IOResult=0 Then Begin
+     SizeOut:=FileSize(F2);Close(F2);
+     WriteLn('Taille d''origine : ',SizeIn,' octets');
+     WriteLn('Taille finale    : ',SizeOut,' octets');
+     If SizeIn>=100 Then WriteLn('Gain             : ',(SizeIn-SizeOut)div(SizeIn div 100),' %');
+     WriteLn('Objets conserves : ',NObj);
+    End;
+    FileMode:=2;
+   End;
   End;
  End;
- Close(SF);
+ CloseSource;
  If(Warnings>0)and Not WarnExit0 Then Halt(3);
 END.

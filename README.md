@@ -962,7 +962,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>QPDF.PAS</b></td>
-			<td>Cette commande est un clone de la commande qpdf : elle optimise la structure interne d'un fichier PDF (renumérotation, suppression des objets inutiles, flux d'objets, flux xref) et compresse ses flux sans perte (Flate), sans réduire la résolution des images.</td>
+			<td>Cette commande est un clone de la commande qpdf : elle optimise la structure interne d'un fichier PDF (renumérotation, suppression des objets inutiles, flux d'objets, flux xref) et compresse ses flux sans perte (Flate), sans réduire la résolution des images. Elle permet aussi de sélectionner, fusionner, entrelacer, diviser et faire pivoter des pages, ainsi que de superposer des pages d'un autre PDF (--pages, --collate, --split-pages, --rotate, --overlay, --underlay, --empty, --remove-page-labels).</td>
 		</tr>
 		<tr>
 			<td><b>QPUDEP.PAS</b></td>
