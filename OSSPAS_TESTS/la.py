@@ -1,12 +1,13 @@
 import struct, subprocess, os, sys
 import tempfile
-EMU=os.environ.get('OSSPAS_EMU','osspas')      # 'osspas' ou 'devpac'
+EMU=os.environ.get('OSSPAS_EMU','osspas')      # 'osspas', 'devpac' ou 'devenv'
+DEVENV=os.path.abspath(os.environ.get('DEVENV_BIN','./DEVENV'))   # DEVENV.PAS compile
 BIN=os.path.abspath(os.environ.get('OSSPAS_BIN','./OSSPAS'))      # executable compile depuis OSSPAS.PAS
 WORK=os.environ.get('OSSPAS_TMP',tempfile.gettempdir()+'/osspas_lineA')
 os.makedirs(WORK,exist_ok=True)
 SCR=0xF8000
-LAVARS=0x500 if EMU=='devpac' else 0x1F000      # adresse des variables de la ligne A (valeur de A0 apres $A000)
-FONTADDR=0x9C00 if EMU=='devpac' else 0x19800     # forme de la police 8x16 (lignes de 256 octets)
+LAVARS=0x500 if EMU in ('devpac','devenv') else 0x1F000      # adresse des variables de la ligne A (valeur de A0 apres $A000)
+FONTADDR=0x9C00 if EMU in ('devpac','devenv') else 0x19800     # forme de la police 8x16 (lignes de 256 octets)
 class P:
     def __init__(s):
         s.code=bytearray(); s.rel=[]; s.data=bytearray(); s.fix=[]   # fix: (codepos, dataoffset)
@@ -90,6 +91,13 @@ def _run(p,name,dump):
         cmd=[DEVPAC]+([] if getattr(p,'gem',False) else ['/NOGEM'])+['/EMUL:'+path,'/TIME:20','/SCR:'+scr]
         if dump: cmd.append('/DUMP:'+dump+':'+WORK+'/%s.dmp'%name)
         subprocess.run(cmd,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=WORK,timeout=60)
+        return Scr(open(scr,'rb').read())
+    if EMU=='devenv':
+        # DEVENV.PAS : -emu:ATARIST,prog.prg execute l'emulateur ST/GEM integre (variables DEVENV_EMU*)
+        env.update(DEVENV_EMUSCR=scr,DEVENV_EMUTIME='20',DEVENV_EMUQUIT='1')
+        if not getattr(p,'gem',False): env['DEVENV_EMUGEM']='0'
+        if dump: env['DEVENV_EMUDUMP']=dump+':'+WORK+'/%s.dmp'%name
+        subprocess.run([DEVENV,'-emu:ATARIST,'+path],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=WORK,timeout=90)
         return Scr(open(scr,'rb').read())
     env.update(OSSDUMPSCR=scr,OSSTIMEOUT='15')
     if dump: env['OSSDUMP']=dump+':'+WORK+'/%s.dmp'%name
