@@ -13886,7 +13886,7 @@ End;
 { ====================================================================== }
 
 Const
- C_ABOUT=1;C_EDIT=2;C_COMPILE=3;C_COMPALL=4;C_LINK=5;C_RUN=6;C_QUIT=7;
+ C_ABOUT=1;C_EDIT=2;C_COMPILE=3;C_COMPALL=4;C_LINK=5;C_RUN=6;C_QUIT=7;C_LOAD=8;
  C_COPT=10;C_LOPT=11;C_SRC=12;C_LOC=13;C_LOADO=14;C_SAVEO=15;
  C_COPY=20;C_REN=21;C_ERASE=22;C_PRINT=23;C_NONE=99;
  E_NEW=30;E_OPEN=31;E_SAVE=32;E_SAVEAS=33;E_QUIT=34;E_COMPILER=35;E_LINKER=36;
@@ -13939,6 +13939,7 @@ Begin
   AddMenu(1,'-','',C_NONE);
   AddMenu(1,'Control Panel~Panneau de contr'#147'le~Kontrollfeld','',C_NONE);
   AddMenu(1,'Install Printer~Installer imprimante~Drucker installieren','',C_NONE);
+  AddMenu(2,'Load...~Charger...~Laden...','O',C_LOAD);
   AddMenu(2,'Edit~Edition~Editieren','E',C_EDIT);
   AddMenu(2,'Compile~Compiler~Compilieren','C',C_COMPILE);
   AddMenu(2,'Compile All~Tout compiler~Alles compilieren','A',C_COMPALL);
@@ -15699,6 +15700,15 @@ Var Nm: String; I,R: Integer;
 Begin
  Case Cmd Of
   C_ABOUT: DlgAbout('Personal Pascal','Version '+VERSION_TEXT+'     March 31, 1989','Copyright 1987,1989 OSS and ICD');
+  C_LOAD: Begin
+    Nm:=LastFile;
+    If FileSelect(T3('Load file','Charger un fichier','Datei laden'),'*.PAS',Nm) Then Begin
+     If FileExists(ResolveFile(Nm)) Then Begin
+      LastFile:=Nm;
+      RunEditorSession(Nm,0,'');
+     End Else MsgBox(T3('File not found: ','Fichier introuvable : ','Datei nicht gefunden: ')+Copy(ShortName(Nm),1,40));
+    End;
+   End;
   C_EDIT: Begin
     Nm:=LastFile;
     If PickFile(T3('Edit','Editer','Editieren'),'*.PAS',Nm) Then RunEditorSession(Nm,0,'');
@@ -15787,9 +15797,10 @@ Begin
  A:=AltLetter(K);
  If A=#0 Then Begin
   If (K<256) Then A:=UpCase(Chr(K));
-  If (A<>'E') And (A<>'C') And (A<>'A') And (A<>'L') And (A<>'R') Then A:=#0;
+  If (A<>'O') And (A<>'E') And (A<>'C') And (A<>'A') And (A<>'L') And (A<>'R') Then A:=#0;
  End;
  Case A Of
+  'O': ManagerCmd(C_LOAD);
   'E': ManagerCmd(C_EDIT);
   'C': ManagerCmd(C_COMPILE);
   'A': ManagerCmd(C_COMPALL);
