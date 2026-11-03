@@ -10215,6 +10215,8 @@ Var
  M68K_CurPath      : String[127];
  M68K_DtaSearch    : SearchRec;
  M68K_DtaActive    : Boolean;
+ { limite d'instructions de l'Atari ST (DEVENV_EMUSTEPS en mode test) }
+ M68K_TestMaxSteps : Int64;
  { Etat XBIOS Trap #14 (resolution, palette 16 registres - pas de rendu   }
  { bitmap reel, juste un etat coherent pour les lectures/ecritures) }
  M68K_XBIOS_Rez     : Word;
@@ -232752,6 +232754,1413 @@ Begin
  M68K_Panel := @EmuPanel;
 End;
 
+{ ===== DEBUT NOYAU 68000 ATARI ST (StCpu_, porte de DEVPAC.PAS par devenv_port_st_cpu.py) ===== }
+
+Const
+ StCpu_MemSize = $100000;                 { 1 Mo : meme memoire que M68K_Mem }
+Var
+ StCpu_AddrErr, StCpu_BusErr: Boolean;
+ StCpu_BusAddr: LongInt;
+Function StCpu_IntStr(V: LongInt): String;
+Begin StCpu_IntStr := IntToStr(V); End;
+Function StCpu_Hex6(V: LongInt): String;
+Begin StCpu_Hex6 := M68K_HexN(V, 6); End;
+Function StCpu_Rd8(A: LongInt): Byte;
+Begin StCpu_Rd8 := M68K_Read8(A); End;
+Function StCpu_Rd16(A: LongInt): LongInt;
+Begin StCpu_Rd16 := M68K_Read16(A); End;
+Function StCpu_Rd32(A: LongInt): LongInt;
+Begin StCpu_Rd32 := M68K_Read32(A); End;
+Procedure StCpu_Wr8(A: LongInt; V: Byte);
+Begin M68K_Write8(A, V); End;
+Procedure StCpu_Wr16(A: LongInt; V: LongInt);
+Begin M68K_Write16(A, Word(V And $FFFF)); End;
+Procedure StCpu_Wr32(A: LongInt; V: LongInt);
+Begin M68K_Write32(A, V); End;
+Function StCpu_ShrL(V: LongInt; N: Integer): LongInt;
+Begin
+ If N <= 0 Then StCpu_ShrL := V
+ Else If N >= 32 Then StCpu_ShrL := 0
+ Else Begin
+  V := V Shr N;
+  If N > 0 Then V := V And ((LongInt(1) Shl (32 - N)) - 1);
+  StCpu_ShrL := V;
+ End;
+End;
+
+{ ====================================================================== }
+{                      EMULATEUR MOTOROLA 68000                          }
+{ ====================================================================== }
+
+Const
+ StCpu_SR_C = 1;  StCpu_SR_V = 2;  StCpu_SR_Z = 4;  StCpu_SR_N = 8;  StCpu_SR_X = 16;
+ StCpu_SR_S = $2000;  StCpu_SR_T = $8000;
+
+ StCpu_STOP_NONE  = 0;
+ StCpu_STOP_EXIT  = 1;     { programme termine }
+ StCpu_STOP_BREAK = 2;     { point d'arret }
+ StCpu_STOP_FAULT = 3;     { exception sans gestionnaire }
+ StCpu_STOP_STOP  = 4;     { instruction STOP }
+ StCpu_STOP_USER  = 5;     { interruption par l'utilisateur }
+ StCpu_STOP_TRACE = 6;     { pas a pas termine }
+
+ StCpu_MAXBP = 16;
+
+Const
+ StCpu_Low32 : LongInt = -2147483647-1;
+
+Var
+ StCpu_SingleStack : Boolean;
+ StCpu_Rg       : Array[0..15] Of LongInt;   { D0-D7 = 0..7, A0-A7 = 8..15 }
+ StCpu_PC       : LongInt;
+ StCpu_SRv      : LongInt;
+ StCpu_USPv,StCpu_SSPv: LongInt;
+ StCpu_StopReason : Integer;
+ StCpu_StopMsg    : String;
+ StCpu_ExitCode   : LongInt;
+ StCpu_InstrCount : LongInt;
+ StCpu_Bps        : Array[1..StCpu_MAXBP] Of LongInt;
+ StCpu_NBps       : Integer;
+ StCpu_CurOpPC    : LongInt;
+ StCpu_TraceOver  : Boolean;
+ { exceptions : gestionnaires du programme (vecteurs en memoire basse) }
+ StCpu_MonTrap    : Boolean;      { le moniteur intercepte d'abord les exceptions }
+ StCpu_PendVec    : Integer;      { exception interceptee, a livrer au gestionnaire
+   (-1 : aucune) }
+ StCpu_PendPC     : LongInt;
+ StCpu_PendAddr   : LongInt;
+ StCpu_PendIR     : LongInt;
+ StCpu_PendHnd    : LongInt;
+ StCpu_ExcTaken   : Boolean;      { une exception a ete prise pendant l'instruction }
+ StCpu_LastAccA   : LongInt;      { derniere adresse d'acces fautive }
+ { Etat du calcul d'adresse effective }
+ StCpu_EAK        : Integer;      { 0 Dn, 1 An, 2 memoire, 3 immediat }
+ StCpu_EAR        : Integer;
+ StCpu_EAA        : LongInt;
+
+Procedure StCpu_DoTrap(N: Integer); Forward;
+Procedure StCpu_DoLineA(Op: LongInt); Forward;
+Procedure StCpu_HleLibCheck; Forward;
+
+Function StCpu_Msk(V: LongInt; Sz: Integer): LongInt;
+Begin
+ Case Sz Of
+  1: StCpu_Msk:=V And $FF;
+  2: StCpu_Msk:=V And $FFFF;
+ Else StCpu_Msk:=V;
+ End;
+End;
+
+Function StCpu_IsNeg(V: LongInt; Sz: Integer): Boolean;
+Begin
+ Case Sz Of
+  1: StCpu_IsNeg:=(V And $80)<>0;
+  2: StCpu_IsNeg:=(V And $8000)<>0;
+ Else StCpu_IsNeg:=V<0;
+ End;
+End;
+
+Function StCpu_SExt(V: LongInt; Sz: Integer): LongInt;
+Begin
+ Case Sz Of
+  1: Begin V:=V And $FF;If V>=$80 Then V:=V-$100;End;
+  2: Begin V:=V And $FFFF;If V>=$8000 Then V:=V-$10000;End;
+ End;
+ StCpu_SExt:=V;
+End;
+
+Procedure StCpu_SetSR(V: LongInt);
+Var NewS: Boolean;
+Begin
+ V:=V And $A71F;
+ NewS:=(V And StCpu_SR_S)<>0;
+ If (Not StCpu_SingleStack) And (NewS<>((StCpu_SRv And StCpu_SR_S)<>0)) Then Begin
+  If NewS Then Begin StCpu_USPv:=StCpu_Rg[15];StCpu_Rg[15]:=StCpu_SSPv;End
+  Else Begin StCpu_SSPv:=StCpu_Rg[15];StCpu_Rg[15]:=StCpu_USPv;End;
+ End;
+ StCpu_SRv:=V;
+End;
+
+Procedure StCpu_SetF(M: LongInt; C: Boolean);
+Begin
+ If C Then StCpu_SRv:=StCpu_SRv Or M Else StCpu_SRv:=StCpu_SRv And (Not M);
+End;
+
+Function StCpu_GetF(M: LongInt): Boolean;
+Begin
+ StCpu_GetF:=(StCpu_SRv And M)<>0;
+End;
+
+Procedure StCpu_SetNZ(V: LongInt; Sz: Integer);
+Begin
+ StCpu_SetF(StCpu_SR_N,StCpu_IsNeg(V,Sz));
+ StCpu_SetF(StCpu_SR_Z,StCpu_Msk(V,Sz)=0);
+End;
+
+Procedure StCpu_SetLogic(V: LongInt; Sz: Integer);
+Begin
+ StCpu_SetNZ(V,Sz);
+ StCpu_SetF(StCpu_SR_V,False);StCpu_SetF(StCpu_SR_C,False);
+End;
+
+Procedure StCpu_Halt68(Const Msg: String);
+Begin
+ If StCpu_StopReason=StCpu_STOP_NONE Then Begin
+  StCpu_StopReason:=StCpu_STOP_FAULT;
+  StCpu_StopMsg:=Msg;
+ End;
+End;
+
+Procedure StCpu_PushL(V: LongInt);
+Begin
+ StCpu_Rg[15]:=StCpu_Rg[15]-4;
+ StCpu_Wr32(StCpu_Rg[15],V);
+End;
+
+Procedure StCpu_PushW(V: LongInt);
+Begin
+ StCpu_Rg[15]:=StCpu_Rg[15]-2;
+ StCpu_Wr16(StCpu_Rg[15],V);
+End;
+
+Function StCpu_PopL: LongInt;
+Begin
+ StCpu_PopL:=StCpu_Rd32(StCpu_Rg[15]);
+ StCpu_Rg[15]:=StCpu_Rg[15]+4;
+End;
+
+Function StCpu_PopW: LongInt;
+Begin
+ StCpu_PopW:=StCpu_Rd16(StCpu_Rg[15]);
+ StCpu_Rg[15]:=StCpu_Rg[15]+2;
+End;
+
+Function StCpu_Fetch16: LongInt;
+Begin
+ If Odd(StCpu_PC) Then StCpu_AddrErr:=True;
+ StCpu_Fetch16:=StCpu_Rd16(StCpu_PC);
+ StCpu_PC:=StCpu_PC+2;
+End;
+
+Function StCpu_Fetch32: LongInt;
+Begin
+ StCpu_Fetch32:=StCpu_Rd32(StCpu_PC);
+ StCpu_PC:=StCpu_PC+4;
+End;
+
+Function StCpu_MemRd(A: LongInt; Sz: Integer): LongInt;
+Begin
+ If (Sz>1) And Odd(A) Then Begin StCpu_AddrErr:=True;StCpu_BusAddr:=A;StCpu_MemRd:=0;Exit;End;
+ Case Sz Of
+  1: StCpu_MemRd:=StCpu_Rd8(A);
+  2: StCpu_MemRd:=StCpu_Rd16(A);
+ Else StCpu_MemRd:=StCpu_Rd32(A);
+ End;
+End;
+
+Procedure StCpu_MemWr(A: LongInt; Sz: Integer; V: LongInt);
+Begin
+ If (Sz>1) And Odd(A) Then Begin StCpu_AddrErr:=True;StCpu_BusAddr:=A;Exit;End;
+ Case Sz Of
+  1: StCpu_Wr8(A,V And $FF);
+  2: StCpu_Wr16(A,V And $FFFF);
+ Else StCpu_Wr32(A,V);
+ End;
+End;
+
+{ Gestionnaire valide du vecteur Vec (0 si aucun) }
+Function StCpu_ExcHandler(Vec: Integer): LongInt;
+Var H: LongInt;
+Begin
+ H:=StCpu_Rd32(Vec*4);
+ StCpu_ExcHandler:=H;
+ If (H=0) Or Odd(H) Or ((H And $FFFFFF)>=StCpu_MemSize) Then StCpu_ExcHandler:=0
+ Else If (Vec>=32) And (H<$400) Then StCpu_ExcHandler:=0;
+End;
+
+{ Vecteurs que Mon intercepte (tableau du manuel : "trapped" / "breakpoint") }
+Function StCpu_MonTraps(Vec: Integer): Boolean;
+Begin
+ StCpu_MonTraps:=((Vec>=2) And (Vec<=8)) Or ((Vec>=11) And (Vec<=14)) Or (Vec=24) Or
+           (Vec=32) Or ((Vec>=35) And (Vec<=44)) Or (Vec=47);
+End;
+
+{ Traitement d'exception du 68000 : cadre de 6 octets (SR, PC) ou de 14 octets
+  (groupe 0 : bus / address error), passage en superviseur, T efface }
+Procedure StCpu_ClrBusAddrErr;
+Begin
+ StCpu_BusErr:=False;StCpu_AddrErr:=False;
+End;
+
+Procedure StCpu_TakeExc(Vec: Integer; SPc,Hnd: LongInt; Grp0: Boolean; Addr,IR:
+  LongInt);
+Var OldSR,St: LongInt;
+Begin
+ OldSR:=StCpu_SRv;
+ StCpu_SetSR((StCpu_SRv Or StCpu_SR_S) And $7FFF);
+ StCpu_PushL(SPc);
+ StCpu_PushW(OldSR);
+ If Grp0 Then Begin
+  StCpu_PushW(IR);
+  StCpu_PushL(Addr);
+  If (OldSR And StCpu_SR_S)<>0 Then St:=$15 Else St:=$11;   { FC=donnees, R/W=lecture
+    }
+  StCpu_PushW(St);
+ End;
+ StCpu_PC:=Hnd;
+ StCpu_ExcTaken:=True;
+ StCpu_ClrBusAddrErr;
+End;
+
+Procedure StCpu_RaiseExcX(Vec: Integer; Grp0: Boolean; Addr: LongInt);
+Var Hnd,SPc,IR: LongInt; Names: String;
+Begin
+ Hnd:=StCpu_ExcHandler(Vec);
+ Case Vec Of
+  2,3: SPc:=StCpu_CurOpPC+2;
+  4,8,10,11: SPc:=StCpu_CurOpPC;
+ Else SPc:=StCpu_PC;
+ End;
+ IR:=StCpu_Rd16(StCpu_CurOpPC);
+ StCpu_ClrBusAddrErr;
+ If (Hnd<>0) And Not (StCpu_MonTrap And StCpu_MonTraps(Vec)) Then Begin
+  StCpu_TakeExc(Vec,SPc,Hnd,Grp0,Addr,IR);
+  Exit;
+ End;
+ Case Vec Of
+  2: Names:='Bus error';
+  3: Names:='Address error';
+  4: Names:='Illegal instruction';
+  5: Names:='Divide by zero';
+  6: Names:='CHK exception';
+  7: Names:='TRAPV exception';
+  8: Names:='Privilege violation';
+  11: Names:='Line F emulator';
+ Else Names:='Exception #'+StCpu_IntStr(Vec);
+ End;
+ If Hnd<>0 Then Begin
+  { intercepte par le moniteur : sera livre au gestionnaire a la reprise }
+  StCpu_PendVec:=Vec;StCpu_PendPC:=SPc;StCpu_PendAddr:=Addr;StCpu_PendIR:=IR;StCpu_PendHnd:=Hnd;
+ End;
+ StCpu_PC:=StCpu_CurOpPC;   { le moniteur affiche l'instruction fautive }
+ If Vec=2 Then StCpu_Halt68(Names+' at $'+StCpu_Hex6(Addr)+' (PC=$'+StCpu_Hex6(StCpu_CurOpPC)+')')
+ Else StCpu_Halt68(Names+' at $'+StCpu_Hex6(StCpu_CurOpPC));
+End;
+
+Procedure StCpu_RaiseExc(Vec: Integer);
+Begin
+ StCpu_RaiseExcX(Vec,False,0);
+End;
+
+Function StCpu_TestCC(CC: Integer): Boolean;
+Var C,V,Z,N: Boolean;
+Begin
+ C:=StCpu_GetF(StCpu_SR_C);V:=StCpu_GetF(StCpu_SR_V);Z:=StCpu_GetF(StCpu_SR_Z);N:=StCpu_GetF(StCpu_SR_N);
+ Case CC Of
+  0: StCpu_TestCC:=True;
+  1: StCpu_TestCC:=False;
+  2: StCpu_TestCC:=Not C And Not Z;
+  3: StCpu_TestCC:=C Or Z;
+  4: StCpu_TestCC:=Not C;
+  5: StCpu_TestCC:=C;
+  6: StCpu_TestCC:=Not Z;
+  7: StCpu_TestCC:=Z;
+  8: StCpu_TestCC:=Not V;
+  9: StCpu_TestCC:=V;
+  10: StCpu_TestCC:=Not N;
+  11: StCpu_TestCC:=N;
+  12: StCpu_TestCC:=N=V;
+  13: StCpu_TestCC:=N<>V;
+  14: StCpu_TestCC:=(Not Z) And (N=V);
+ Else StCpu_TestCC:=Z Or (N<>V);
+ End;
+End;
+
+{ Calcule l'adresse effective ; Sz en octets (1,2,4) }
+Procedure StCpu_CalcEA(Mode,Reg,Sz: Integer);
+Var Ext,D: LongInt; XV: LongInt; XR: Integer;
+Begin
+ StCpu_EAK:=2;StCpu_EAR:=Reg;
+ Case Mode Of
+  0: StCpu_EAK:=0;
+  1: StCpu_EAK:=1;
+  2: StCpu_EAA:=StCpu_Rg[8+Reg];
+  3: Begin
+      StCpu_EAA:=StCpu_Rg[8+Reg];
+      If (Reg=7) And (Sz=1) Then StCpu_Rg[8+Reg]:=StCpu_Rg[8+Reg]+2 Else
+        StCpu_Rg[8+Reg]:=StCpu_Rg[8+Reg]+Sz;
+     End;
+  4: Begin
+      If (Reg=7) And (Sz=1) Then StCpu_Rg[8+Reg]:=StCpu_Rg[8+Reg]-2 Else
+        StCpu_Rg[8+Reg]:=StCpu_Rg[8+Reg]-Sz;
+      StCpu_EAA:=StCpu_Rg[8+Reg];
+     End;
+  5: Begin D:=StCpu_SExt(StCpu_Fetch16,2);StCpu_EAA:=StCpu_Rg[8+Reg]+D;End;
+  6: Begin
+      Ext:=StCpu_Fetch16;
+      XR:=(Ext Shr 12) And 15;
+      XV:=StCpu_Rg[XR];
+      If (Ext And $800)=0 Then XV:=StCpu_SExt(XV,2);
+      StCpu_EAA:=StCpu_Rg[8+Reg]+StCpu_SExt(Ext,1)+XV;
+     End;
+  7: Case Reg Of
+      0: StCpu_EAA:=StCpu_SExt(StCpu_Fetch16,2);
+      1: StCpu_EAA:=StCpu_Fetch32;
+      2: Begin D:=StCpu_PC;StCpu_EAA:=D+StCpu_SExt(StCpu_Fetch16,2);End;
+      3: Begin
+          D:=StCpu_PC;
+          Ext:=StCpu_Fetch16;
+          XR:=(Ext Shr 12) And 15;
+          XV:=StCpu_Rg[XR];
+          If (Ext And $800)=0 Then XV:=StCpu_SExt(XV,2);
+          StCpu_EAA:=D+StCpu_SExt(Ext,1)+XV;
+         End;
+      4: Begin
+          StCpu_EAK:=3;
+          If Sz=4 Then StCpu_EAA:=StCpu_Fetch32
+          Else Begin StCpu_EAA:=StCpu_Fetch16;If Sz=1 Then StCpu_EAA:=StCpu_EAA And $FF;End;
+         End;
+     Else Begin
+       StCpu_EAK:=3;StCpu_EAA:=0;StCpu_Halt68('Illegal addressing mode at $'+StCpu_Hex6(StCpu_CurOpPC));End;
+     End;
+ End;
+End;
+
+Function StCpu_ReadEA(Sz: Integer): LongInt;
+Begin
+ Case StCpu_EAK Of
+  0: StCpu_ReadEA:=StCpu_Msk(StCpu_Rg[StCpu_EAR],Sz);
+  1: StCpu_ReadEA:=StCpu_Msk(StCpu_Rg[8+StCpu_EAR],Sz);
+  2: StCpu_ReadEA:=StCpu_MemRd(StCpu_EAA,Sz);
+ Else StCpu_ReadEA:=StCpu_Msk(StCpu_EAA,Sz);
+ End;
+End;
+
+Procedure StCpu_WriteEA(Sz: Integer; V: LongInt);
+Begin
+ Case StCpu_EAK Of
+  0: Case Sz Of
+      1: StCpu_Rg[StCpu_EAR]:=(StCpu_Rg[StCpu_EAR] And (Not $FF)) Or (V And $FF);
+      2: StCpu_Rg[StCpu_EAR]:=(StCpu_Rg[StCpu_EAR] And (Not $FFFF)) Or (V And $FFFF);
+     Else StCpu_Rg[StCpu_EAR]:=V;
+     End;
+  1: StCpu_Rg[8+StCpu_EAR]:=StCpu_SExt(V,Sz);
+  2: StCpu_MemWr(StCpu_EAA,Sz,V);
+ End;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ ALU                                                                      }
+{ ---------------------------------------------------------------------- }
+
+Function StCpu_AluAdd(S,D: LongInt; Sz: Integer; WithX: Boolean; SetX: Boolean):
+  LongInt;
+Var R: LongInt; XI: LongInt; C,V: Boolean;
+Begin
+ S:=StCpu_Msk(S,Sz);D:=StCpu_Msk(D,Sz);
+ XI:=0;
+ If WithX And StCpu_GetF(StCpu_SR_X) Then XI:=1;
+ R:=StCpu_Msk(S+D+XI,Sz);
+ C:=StCpu_IsNeg((S And D) Or ((Not R) And (S Or D)),Sz);
+ V:=StCpu_IsNeg((S Xor R) And (D Xor R),Sz);
+ StCpu_SetF(StCpu_SR_C,C);StCpu_SetF(StCpu_SR_V,V);
+ If SetX Then StCpu_SetF(StCpu_SR_X,C);
+ If WithX Then Begin If R<>0 Then StCpu_SetF(StCpu_SR_Z,False);End
+ Else StCpu_SetF(StCpu_SR_Z,R=0);
+ StCpu_SetF(StCpu_SR_N,StCpu_IsNeg(R,Sz));
+ StCpu_AluAdd:=R;
+End;
+
+{ R = D - S }
+Function StCpu_AluSub(S,D: LongInt; Sz: Integer; WithX: Boolean; SetX: Boolean):
+  LongInt;
+Var R: LongInt; XI: LongInt; C,V: Boolean;
+Begin
+ S:=StCpu_Msk(S,Sz);D:=StCpu_Msk(D,Sz);
+ XI:=0;
+ If WithX And StCpu_GetF(StCpu_SR_X) Then XI:=1;
+ R:=StCpu_Msk(D-S-XI,Sz);
+ C:=StCpu_IsNeg(((Not D) And S) Or (R And ((Not D) Or S)),Sz);
+ V:=StCpu_IsNeg((S Xor D) And (R Xor D),Sz);
+ StCpu_SetF(StCpu_SR_C,C);StCpu_SetF(StCpu_SR_V,V);
+ If SetX Then StCpu_SetF(StCpu_SR_X,C);
+ If WithX Then Begin If R<>0 Then StCpu_SetF(StCpu_SR_Z,False);End
+ Else StCpu_SetF(StCpu_SR_Z,R=0);
+ StCpu_SetF(StCpu_SR_N,StCpu_IsNeg(R,Sz));
+ StCpu_AluSub:=R;
+End;
+
+Function StCpu_SzFromBits(B: Integer): Integer;
+Begin
+ Case B Of
+  0: StCpu_SzFromBits:=1;
+  1: StCpu_SzFromBits:=2;
+ Else StCpu_SzFromBits:=4;
+ End;
+End;
+
+{ Decalages et rotations ; Ty : 0 AS, 1 LS, 2 ROX, 3 RO ; Left : sens }
+Function StCpu_Shift(Ty: Integer; Left: Boolean; V: LongInt; Cnt: Integer; Sz:
+  Integer): LongInt;
+Var I: Integer; C,Msb,Old,X: Boolean; Top: LongInt; Ovf: Boolean;
+Begin
+ V:=StCpu_Msk(V,Sz);
+ Cnt:=Cnt And 63;
+ C:=False;Ovf:=False;
+ If Cnt=0 Then Begin
+  If Ty=2 Then C:=StCpu_GetF(StCpu_SR_X);
+  StCpu_SetF(StCpu_SR_C,C);StCpu_SetF(StCpu_SR_V,False);StCpu_SetNZ(V,Sz);
+  StCpu_Shift:=V;Exit;
+ End;
+ For I:=1 To Cnt Do Begin
+  Msb:=StCpu_IsNeg(V,Sz);
+  If Left Then Begin
+   Case Ty Of
+    0: Begin C:=Msb;V:=StCpu_Msk(V Shl 1,Sz);If StCpu_IsNeg(V,Sz)<>Msb Then Ovf:=True;End;
+    1: Begin C:=Msb;V:=StCpu_Msk(V Shl 1,Sz);End;
+    2: Begin
+        X:=StCpu_GetF(StCpu_SR_X);C:=Msb;V:=StCpu_Msk(V Shl 1,Sz);
+        If X Then V:=V Or 1;
+        StCpu_SetF(StCpu_SR_X,C);
+       End;
+   Else Begin C:=Msb;V:=StCpu_Msk(V Shl 1,Sz);If C Then V:=V Or 1;End;
+   End;
+  End Else Begin
+   C:=(V And 1)<>0;
+   Case Ty Of
+    0: Begin
+        V:=StCpu_Msk(StCpu_ShrL(V,1),Sz);
+        If Msb Then Begin
+         Case Sz Of 1: V:=V Or $80; 2: V:=V Or $8000;
+         Else V:=V Or (LongInt(1) Shl 31) End;
+        End;
+       End;
+    1: V:=StCpu_Msk(StCpu_ShrL(V,1),Sz);
+    2: Begin
+        X:=StCpu_GetF(StCpu_SR_X);
+        V:=StCpu_Msk(StCpu_ShrL(V,1),Sz);
+        If X Then Begin
+         Case Sz Of 1: V:=V Or $80; 2: V:=V Or $8000;
+         Else V:=V Or (LongInt(1) Shl 31) End;
+        End;
+        StCpu_SetF(StCpu_SR_X,C);
+       End;
+   Else Begin
+         V:=StCpu_Msk(StCpu_ShrL(V,1),Sz);
+         If C Then Begin
+          Case Sz Of 1: V:=V Or $80; 2: V:=V Or $8000;
+          Else V:=V Or (LongInt(1) Shl 31) End;
+         End;
+        End;
+   End;
+  End;
+ End;
+ StCpu_SetF(StCpu_SR_C,C);
+ If Ty<>3 Then StCpu_SetF(StCpu_SR_X,C);
+ If Ty=2 Then StCpu_SetF(StCpu_SR_X,C);
+ StCpu_SetF(StCpu_SR_V,Ovf And (Ty=0));
+ StCpu_SetNZ(V,Sz);
+ StCpu_Shift:=V;
+End;
+
+Function StCpu_DivU32(Num: LongInt; Den: LongInt; Var Rem: LongInt): LongInt;
+{ division non signee 32 bits / 16 bits par soustractions }
+Var Q,R: LongInt; I: Integer; Bit: LongInt;
+Begin
+ Q:=0;R:=0;
+ For I:=31 Downto 0 Do Begin
+  Bit:=StCpu_ShrL(Num,I) And 1;
+  R:=(R Shl 1) Or Bit;
+  If (R>=0) And (R>=Den) Then Begin
+   R:=R-Den;
+   Q:=Q Or (LongInt(1) Shl I);
+  End Else If R<0 Then Begin
+   R:=R-Den;
+   Q:=Q Or (LongInt(1) Shl I);
+  End;
+ End;
+ Rem:=R;
+ StCpu_DivU32:=Q;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Groupes d'instructions                                                  }
+{ ---------------------------------------------------------------------- }
+
+Function StCpu_Supervisor: Boolean;
+Begin
+ If (StCpu_SRv And StCpu_SR_S)=0 Then Begin
+  StCpu_RaiseExc(8);
+  StCpu_Supervisor:=False;
+ End Else StCpu_Supervisor:=True;
+End;
+
+Procedure StCpu_Op0(Op: LongInt);
+Var Mode,Reg,Rn,Sz,Ty,T,Bit: Integer; Imm,V,R,D: LongInt; A: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If (Op And $F138)=$0108 Then Begin
+  D:=StCpu_SExt(StCpu_Fetch16,2);
+  A:=StCpu_Rg[8+Reg]+D;
+  If (Op And $80)=0 Then Begin
+   { memoire vers registre }
+   If (Op And $40)=0 Then StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FFFF)) Or (LongInt(StCpu_Rd8(A))
+     Shl 8) Or StCpu_Rd8(A+2)
+   Else StCpu_Rg[Rn]:=(LongInt(StCpu_Rd8(A)) Shl 24) Or (LongInt(StCpu_Rd8(A+2)) Shl 16) Or
+     (LongInt(StCpu_Rd8(A+4)) Shl 8) Or StCpu_Rd8(A+6);
+  End Else Begin
+   If (Op And $40)=0 Then Begin StCpu_Wr8(A,StCpu_ShrL(StCpu_Rg[Rn],8) And $FF);StCpu_Wr8(A+2,StCpu_Rg[Rn]
+     And $FF);End
+   Else Begin
+    StCpu_Wr8(A,StCpu_ShrL(StCpu_Rg[Rn],24) And $FF);StCpu_Wr8(A+2,StCpu_ShrL(StCpu_Rg[Rn],16) And $FF);
+    StCpu_Wr8(A+4,StCpu_ShrL(StCpu_Rg[Rn],8) And $FF);StCpu_Wr8(A+6,StCpu_Rg[Rn] And $FF);
+   End;
+  End;
+  Exit;
+ End;
+ If ((Op And $0100)<>0) Or ((Op And $0F00)=$0800) Then Begin
+  { instructions sur bits }
+  Ty:=(Op Shr 6) And 3;
+  If (Op And $0100)<>0 Then Bit:=StCpu_Rg[Rn] Else Bit:=StCpu_Fetch16 And $FF;
+  If Mode=0 Then Begin
+   Bit:=Bit And 31;
+   V:=StCpu_Rg[Reg];
+   StCpu_SetF(StCpu_SR_Z,(StCpu_ShrL(V,Bit) And 1)=0);
+   Case Ty Of
+    1: V:=V Xor (LongInt(1) Shl Bit);
+    2: V:=V And (Not (LongInt(1) Shl Bit));
+    3: V:=V Or (LongInt(1) Shl Bit);
+   End;
+   If Ty<>0 Then StCpu_Rg[Reg]:=V;
+  End Else Begin
+   Bit:=Bit And 7;
+   StCpu_CalcEA(Mode,Reg,1);
+   V:=StCpu_ReadEA(1);
+   StCpu_SetF(StCpu_SR_Z,((V Shr Bit) And 1)=0);
+   Case Ty Of
+    1: V:=V Xor (1 Shl Bit);
+    2: V:=V And (Not (1 Shl Bit));
+    3: V:=V Or (1 Shl Bit);
+   End;
+   If Ty<>0 Then StCpu_WriteEA(1,V);
+  End;
+  Exit;
+ End;
+ T:=(Op Shr 8) And $F;
+ { operations immediates sur CCR/SR }
+ If ((Op And $FF)=$3C) And ((T=0) Or (T=2) Or (T=10)) Then Begin
+  Imm:=StCpu_Fetch16 And $FF;
+  V:=StCpu_SRv And $FF;
+  Case T Of 0: V:=V Or Imm; 2: V:=V And Imm; Else V:=V Xor Imm End;
+  StCpu_SetSR((StCpu_SRv And $FF00) Or (V And $FF));
+  Exit;
+ End;
+ If ((Op And $FF)=$7C) And ((T=0) Or (T=2) Or (T=10)) Then Begin
+  If Not StCpu_Supervisor Then Exit;
+  Imm:=StCpu_Fetch16;
+  V:=StCpu_SRv;
+  Case T Of 0: V:=V Or Imm; 2: V:=V And Imm; Else V:=V Xor Imm End;
+  StCpu_SetSR(V);
+  Exit;
+ End;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ If ((Op Shr 6) And 3)=3 Then Begin StCpu_RaiseExc(4);Exit;End;
+ If Sz=4 Then Imm:=StCpu_Fetch32 Else Imm:=StCpu_Fetch16;
+ Imm:=StCpu_Msk(Imm,Sz);
+ StCpu_CalcEA(Mode,Reg,Sz);
+ V:=StCpu_ReadEA(Sz);
+ Case T Of
+  0: Begin R:=V Or Imm;StCpu_SetLogic(R,Sz);StCpu_WriteEA(Sz,R);End;
+  2: Begin R:=V And Imm;StCpu_SetLogic(R,Sz);StCpu_WriteEA(Sz,R);End;
+  4: Begin R:=StCpu_AluSub(Imm,V,Sz,False,True);StCpu_WriteEA(Sz,R);End;
+  6: Begin R:=StCpu_AluAdd(Imm,V,Sz,False,True);StCpu_WriteEA(Sz,R);End;
+  10: Begin R:=V Xor Imm;StCpu_SetLogic(R,Sz);StCpu_WriteEA(Sz,R);End;
+  12: R:=StCpu_AluSub(Imm,V,Sz,False,False);
+ Else StCpu_RaiseExc(4);
+ End;
+End;
+
+Procedure StCpu_OpMove(Op: LongInt);
+Var Sz,SM,SR1,DM,DR: Integer; V: LongInt;
+Begin
+ Case (Op Shr 12) And 3 Of
+  1: Sz:=1;
+  3: Sz:=2;
+ Else Sz:=4;
+ End;
+ SM:=(Op Shr 3) And 7;SR1:=Op And 7;
+ DM:=(Op Shr 6) And 7;DR:=(Op Shr 9) And 7;
+ StCpu_CalcEA(SM,SR1,Sz);
+ V:=StCpu_ReadEA(Sz);
+ If DM=1 Then Begin
+  StCpu_Rg[8+DR]:=StCpu_SExt(V,Sz);
+  Exit;
+ End;
+ StCpu_CalcEA(DM,DR,Sz);
+ StCpu_WriteEA(Sz,V);
+ StCpu_SetLogic(V,Sz);
+End;
+
+Procedure StCpu_OpMovem(Op: LongInt);
+Var Mode,Reg,Sz,I: Integer; Mk: LongInt; A: LongInt; ToMem: Boolean;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ If (Op And $40)<>0 Then Sz:=4 Else Sz:=2;
+ ToMem:=(Op And $400)=0;
+ Mk:=StCpu_Fetch16;
+ If ToMem Then Begin
+  If Mode=4 Then Begin
+   A:=StCpu_Rg[8+Reg];
+   For I:=0 To 15 Do
+    If (Mk And (LongInt(1) Shl I))<>0 Then Begin
+     A:=A-Sz;
+     If Sz=4 Then StCpu_Wr32(A,StCpu_Rg[15-I]) Else StCpu_Wr16(A,StCpu_Rg[15-I]);
+    End;
+   StCpu_Rg[8+Reg]:=A;
+  End Else Begin
+   StCpu_CalcEA(Mode,Reg,Sz);
+   A:=StCpu_EAA;
+   For I:=0 To 15 Do
+    If (Mk And (LongInt(1) Shl I))<>0 Then Begin
+     If Sz=4 Then StCpu_Wr32(A,StCpu_Rg[I]) Else StCpu_Wr16(A,StCpu_Rg[I]);
+     A:=A+Sz;
+    End;
+  End;
+ End Else Begin
+  If Mode=3 Then A:=StCpu_Rg[8+Reg] Else Begin StCpu_CalcEA(Mode,Reg,Sz);A:=StCpu_EAA;End;
+  For I:=0 To 15 Do
+   If (Mk And (LongInt(1) Shl I))<>0 Then Begin
+    If Sz=4 Then StCpu_Rg[I]:=StCpu_Rd32(A) Else StCpu_Rg[I]:=StCpu_SExt(StCpu_Rd16(A),2);
+    A:=A+Sz;
+   End;
+  If Mode=3 Then StCpu_Rg[8+Reg]:=A;
+ End;
+End;
+
+Procedure StCpu_Op4(Op: LongInt);
+Var Mode,Reg,Rn,Sz,SzB: Integer; V,R,D,A,Lo: LongInt; T: Integer;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ SzB:=(Op Shr 6) And 3;
+ If (Op And $F1C0)=$41C0 Then Begin
+  StCpu_CalcEA(Mode,Reg,4);
+  StCpu_Rg[8+Rn]:=StCpu_EAA;Exit;
+ End;
+ If (Op And $F1C0)=$4180 Then Begin
+  StCpu_CalcEA(Mode,Reg,2);
+  V:=StCpu_ReadEA(2);
+  D:=StCpu_SExt(StCpu_Rg[Rn],2);
+  If D<0 Then Begin StCpu_SetF(StCpu_SR_N,True);StCpu_RaiseExc(6);End
+  Else If D>StCpu_SExt(V,2) Then Begin StCpu_SetF(StCpu_SR_N,False);StCpu_RaiseExc(6);End;
+  Exit;
+ End;
+ Case Op And $0F00 Of
+  $0000,$0200,$0400,$0600: Begin
+    If SzB=3 Then Begin
+     Case Op And $0F00 Of
+      $0000: Begin StCpu_CalcEA(Mode,Reg,2);StCpu_WriteEA(2,StCpu_SRv And $FFFF);End;
+      $0200: Begin StCpu_CalcEA(Mode,Reg,2);StCpu_WriteEA(2,StCpu_SRv And $FF);End;
+      $0400: Begin StCpu_CalcEA(Mode,Reg,2);V:=StCpu_ReadEA(2);StCpu_SetSR((StCpu_SRv And $FF00) Or (V
+        And $FF));End;
+     Else Begin
+       If StCpu_Supervisor Then Begin StCpu_CalcEA(Mode,Reg,2);V:=StCpu_ReadEA(2);StCpu_SetSR(V);End;
+      End;
+     End;
+     Exit;
+    End;
+    Sz:=StCpu_SzFromBits(SzB);
+    StCpu_CalcEA(Mode,Reg,Sz);
+    V:=StCpu_ReadEA(Sz);
+    Case Op And $0F00 Of
+     $0000: Begin R:=StCpu_AluSub(V,0,Sz,True,True);StCpu_WriteEA(Sz,R);End;
+     $0200: Begin R:=0;StCpu_WriteEA(Sz,0);StCpu_SRv:=(StCpu_SRv And (Not 15)) Or StCpu_SR_Z;End;
+     $0400: Begin R:=StCpu_AluSub(V,0,Sz,False,True);StCpu_WriteEA(Sz,R);End;
+    Else Begin R:=StCpu_Msk(Not V,Sz);StCpu_WriteEA(Sz,R);StCpu_SetLogic(R,Sz);End;
+    End;
+   End;
+  $0800: Begin
+    If (Op And $FFC0)=$4800 Then Begin
+     StCpu_CalcEA(Mode,Reg,1);
+     V:=StCpu_ReadEA(1);
+     { NBCD : 0 - V - X }
+     Lo:=(0-(V And $F)-Ord(StCpu_GetF(StCpu_SR_X)));
+     D:=0-(StCpu_ShrL(V,4) And $F);
+     If Lo<0 Then Begin Lo:=Lo+10;D:=D-1;End;
+     StCpu_SetF(StCpu_SR_C,False);
+     If D<0 Then Begin D:=D+10;StCpu_SetF(StCpu_SR_C,True);End;
+     R:=((D And $F) Shl 4) Or (Lo And $F);
+     If R<>0 Then StCpu_SetF(StCpu_SR_Z,False);
+     StCpu_SetF(StCpu_SR_X,StCpu_GetF(StCpu_SR_C));
+     StCpu_WriteEA(1,R);
+    End Else If (Op And $FFF8)=$4840 Then Begin
+     R:=(StCpu_ShrL(StCpu_Rg[Reg],16) And $FFFF) Or ((StCpu_Rg[Reg] And $FFFF) Shl 16);
+     StCpu_Rg[Reg]:=R;StCpu_SetLogic(R,4);
+    End Else If (Op And $FFC0)=$4840 Then Begin
+     StCpu_CalcEA(Mode,Reg,4);
+     StCpu_PushL(StCpu_EAA);
+    End Else If (Op And $FFF8)=$4880 Then Begin
+     R:=StCpu_SExt(StCpu_Rg[Reg],1);
+     StCpu_Rg[Reg]:=(StCpu_Rg[Reg] And (Not $FFFF)) Or (R And $FFFF);
+     StCpu_SetLogic(R,2);
+    End Else If (Op And $FFF8)=$48C0 Then Begin
+     R:=StCpu_SExt(StCpu_Rg[Reg],2);StCpu_Rg[Reg]:=R;StCpu_SetLogic(R,4);
+    End Else If (Op And $FF80)=$4880 Then StCpu_OpMovem(Op)
+    Else StCpu_RaiseExc(4);
+   End;
+  $0A00: Begin
+    If Op=$4AFC Then Begin StCpu_RaiseExc(4);Exit;End;
+    If SzB=3 Then Begin
+     StCpu_CalcEA(Mode,Reg,1);
+     V:=StCpu_ReadEA(1);
+     StCpu_SetLogic(V,1);
+     StCpu_WriteEA(1,V Or $80);
+    End Else Begin
+     Sz:=StCpu_SzFromBits(SzB);
+     StCpu_CalcEA(Mode,Reg,Sz);
+     V:=StCpu_ReadEA(Sz);
+     StCpu_SetLogic(V,Sz);
+    End;
+   End;
+  $0C00: Begin
+    If (Op And $FF80)=$4C80 Then StCpu_OpMovem(Op) Else StCpu_RaiseExc(4);
+   End;
+  $0E00: Begin
+    If (Op And $FFF0)=$4E40 Then StCpu_DoTrap(Op And 15)
+    Else If (Op And $FFF8)=$4E50 Then Begin
+     D:=StCpu_SExt(StCpu_Fetch16,2);
+     StCpu_PushL(StCpu_Rg[8+Reg]);
+     StCpu_Rg[8+Reg]:=StCpu_Rg[15];
+     StCpu_Rg[15]:=StCpu_Rg[15]+D;
+    End Else If (Op And $FFF8)=$4E58 Then Begin
+     StCpu_Rg[15]:=StCpu_Rg[8+Reg];
+     StCpu_Rg[8+Reg]:=StCpu_PopL;
+    End Else If (Op And $FFF8)=$4E60 Then Begin
+     If StCpu_Supervisor Then StCpu_USPv:=StCpu_Rg[8+Reg];
+    End Else If (Op And $FFF8)=$4E68 Then Begin
+     If StCpu_Supervisor Then StCpu_Rg[8+Reg]:=StCpu_USPv;
+    End Else If Op=$4E70 Then Begin If StCpu_Supervisor Then Begin End;End
+    Else If Op=$4E71 Then Begin End
+    Else If Op=$4E72 Then Begin
+     If StCpu_Supervisor Then Begin
+      StCpu_SetSR(StCpu_Fetch16);
+      StCpu_StopReason:=StCpu_STOP_STOP;StCpu_StopMsg:='STOP';
+     End;
+    End Else If Op=$4E73 Then Begin
+     If StCpu_Supervisor Then Begin
+      V:=StCpu_PopW;A:=StCpu_PopL;
+      StCpu_SetSR(V);StCpu_PC:=A;
+     End;
+    End Else If Op=$4E75 Then StCpu_PC:=StCpu_PopL
+    Else If Op=$4E76 Then Begin If StCpu_GetF(StCpu_SR_V) Then StCpu_RaiseExc(7);End
+    Else If Op=$4E77 Then Begin
+     V:=StCpu_PopW;
+     StCpu_SetSR((StCpu_SRv And $FF00) Or (V And $FF));
+     StCpu_PC:=StCpu_PopL;
+    End Else If (Op And $FFC0)=$4E80 Then Begin
+     StCpu_CalcEA(Mode,Reg,4);
+     StCpu_PushL(StCpu_PC);
+     StCpu_PC:=StCpu_EAA;
+    End Else If (Op And $FFC0)=$4EC0 Then Begin
+     StCpu_CalcEA(Mode,Reg,4);
+     StCpu_PC:=StCpu_EAA;
+    End Else StCpu_RaiseExc(4);
+   End;
+ End;
+End;
+
+Procedure StCpu_Op5(Op: LongInt);
+Var Mode,Reg,Sz,CC: Integer; V,R,Q,D,Base: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ CC:=(Op Shr 8) And 15;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  If Mode=1 Then Begin
+   Base:=StCpu_PC;
+   D:=StCpu_SExt(StCpu_Fetch16,2);
+   If Not StCpu_TestCC(CC) Then Begin
+    V:=(StCpu_Rg[Reg] And $FFFF)-1;
+    StCpu_Rg[Reg]:=(StCpu_Rg[Reg] And (Not $FFFF)) Or (V And $FFFF);
+    If (V And $FFFF)<>$FFFF Then StCpu_PC:=Base+D;
+   End;
+  End Else Begin
+   StCpu_CalcEA(Mode,Reg,1);
+   If StCpu_TestCC(CC) Then StCpu_WriteEA(1,$FF) Else StCpu_WriteEA(1,0);
+  End;
+  Exit;
+ End;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ Q:=(Op Shr 9) And 7;If Q=0 Then Q:=8;
+ StCpu_CalcEA(Mode,Reg,Sz);
+ If StCpu_EAK=1 Then Begin
+  If (Op And $100)=0 Then StCpu_Rg[8+StCpu_EAR]:=StCpu_Rg[8+StCpu_EAR]+Q Else StCpu_Rg[8+StCpu_EAR]:=StCpu_Rg[8+StCpu_EAR]-Q;
+  Exit;
+ End;
+ V:=StCpu_ReadEA(Sz);
+ If (Op And $100)=0 Then R:=StCpu_AluAdd(Q,V,Sz,False,True)
+ Else R:=StCpu_AluSub(Q,V,Sz,False,True);
+ StCpu_WriteEA(Sz,R);
+End;
+
+Procedure StCpu_OpBcc(Op: LongInt);
+Var D,Base: LongInt; CC: Integer;
+Begin
+ CC:=(Op Shr 8) And 15;
+ Base:=StCpu_PC;
+ D:=Op And $FF;
+ If D=0 Then D:=StCpu_SExt(StCpu_Fetch16,2)
+ Else If D=$FF Then D:=StCpu_Fetch32
+ Else D:=StCpu_SExt(D,1);
+ If CC=1 Then Begin
+  StCpu_PushL(StCpu_PC);
+  StCpu_PC:=Base+D;
+ End Else If StCpu_TestCC(CC) Then StCpu_PC:=Base+D;
+End;
+
+Procedure StCpu_Op8(Op: LongInt);
+Var Mode,Reg,Rn,Sz: Integer; V,R,Q,Den,Rem,Num,Lo: LongInt; Neg1,Neg2: Boolean;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ If ((Op Shr 6) And 3)=3 Then Begin
+  StCpu_CalcEA(Mode,Reg,2);
+  Den:=StCpu_ReadEA(2);
+  If Den=0 Then Begin StCpu_RaiseExc(5);Exit;End;
+  Num:=StCpu_Rg[Rn];
+  If (Op And $100)=0 Then Begin
+   Q:=StCpu_DivU32(Num,Den,Rem);
+   If (Q<0) Or (Q>$FFFF) Then Begin StCpu_SetF(StCpu_SR_V,True);StCpu_SetF(StCpu_SR_C,False);Exit;End;
+   StCpu_Rg[Rn]:=((Rem And $FFFF) Shl 16) Or (Q And $FFFF);
+   StCpu_SetF(StCpu_SR_V,False);StCpu_SetF(StCpu_SR_C,False);StCpu_SetNZ(Q,2);
+  End Else Begin
+   Den:=StCpu_SExt(Den,2);
+   If (Num=StCpu_Low32) And (Den=-1) Then Begin
+     StCpu_SetF(StCpu_SR_V,True);StCpu_SetF(StCpu_SR_C,False);Exit;End;
+   Q:=Num Div Den;Rem:=Num Mod Den;
+   If (Q<-32768) Or (Q>32767) Then Begin
+     StCpu_SetF(StCpu_SR_V,True);StCpu_SetF(StCpu_SR_C,False);Exit;End;
+   StCpu_Rg[Rn]:=((Rem And $FFFF) Shl 16) Or (Q And $FFFF);
+   StCpu_SetF(StCpu_SR_V,False);StCpu_SetF(StCpu_SR_C,False);StCpu_SetNZ(Q,2);
+  End;
+  Exit;
+ End;
+ If (Op And $1F0)=$100 Then Begin
+  { SBCD }
+  If Mode=0 Then Begin V:=StCpu_Rg[Reg] And $FF;R:=StCpu_Rg[Rn] And $FF;End
+  Else Begin
+   StCpu_CalcEA(4,Reg,1);V:=StCpu_Rd8(StCpu_EAA);
+   StCpu_CalcEA(4,Rn,1);R:=StCpu_Rd8(StCpu_EAA);
+  End;
+  Lo:=(R And $F)-(V And $F)-Ord(StCpu_GetF(StCpu_SR_X));
+  Q:=(StCpu_ShrL(R,4) And $F)-(StCpu_ShrL(V,4) And $F);
+  If Lo<0 Then Begin Lo:=Lo+10;Q:=Q-1;End;
+  StCpu_SetF(StCpu_SR_C,False);
+  If Q<0 Then Begin Q:=Q+10;StCpu_SetF(StCpu_SR_C,True);End;
+  R:=((Q And $F) Shl 4) Or (Lo And $F);
+  If R<>0 Then StCpu_SetF(StCpu_SR_Z,False);
+  StCpu_SetF(StCpu_SR_X,StCpu_GetF(StCpu_SR_C));
+  If Mode=0 Then StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FF)) Or R Else StCpu_Wr8(StCpu_EAA,R);
+  Exit;
+ End;
+ StCpu_CalcEA(Mode,Reg,Sz);
+ If (Op And $100)=0 Then Begin
+  V:=StCpu_ReadEA(Sz);
+  R:=StCpu_Msk(V Or StCpu_Rg[Rn],Sz);
+  StCpu_SetLogic(R,Sz);
+  Case Sz Of
+   1: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FF)) Or R;
+   2: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FFFF)) Or R;
+  Else StCpu_Rg[Rn]:=R;
+  End;
+ End Else Begin
+  V:=StCpu_ReadEA(Sz);
+  R:=StCpu_Msk(V Or StCpu_Rg[Rn],Sz);
+  StCpu_SetLogic(R,Sz);
+  StCpu_WriteEA(Sz,R);
+ End;
+End;
+
+Procedure StCpu_OpAddSub(Op: LongInt; IsAdd: Boolean);
+Var Mode,Reg,Rn,Sz: Integer; V,R,S: LongInt; Q: Integer;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
+  StCpu_CalcEA(Mode,Reg,Sz);
+  V:=StCpu_SExt(StCpu_ReadEA(Sz),Sz);
+  If IsAdd Then StCpu_Rg[8+Rn]:=StCpu_Rg[8+Rn]+V Else StCpu_Rg[8+Rn]:=StCpu_Rg[8+Rn]-V;
+  Exit;
+ End;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ If ((Op And $130)=$100) And (Mode<2) Then Begin
+  { ADDX / SUBX }
+  If Mode=0 Then Begin V:=StCpu_Rg[Reg];S:=StCpu_Rg[Rn];End
+  Else Begin
+   StCpu_CalcEA(4,Reg,Sz);V:=StCpu_MemRd(StCpu_EAA,Sz);
+   StCpu_CalcEA(4,Rn,Sz);S:=StCpu_MemRd(StCpu_EAA,Sz);
+  End;
+  If IsAdd Then R:=StCpu_AluAdd(V,S,Sz,True,True) Else R:=StCpu_AluSub(V,S,Sz,True,True);
+  If Mode=0 Then Begin
+   Case Sz Of
+    1: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FF)) Or R;
+    2: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FFFF)) Or R;
+   Else StCpu_Rg[Rn]:=R;
+   End;
+  End Else StCpu_MemWr(StCpu_EAA,Sz,R);
+  Exit;
+ End;
+ StCpu_CalcEA(Mode,Reg,Sz);
+ If (Op And $100)=0 Then Begin
+  V:=StCpu_ReadEA(Sz);
+  If IsAdd Then R:=StCpu_AluAdd(V,StCpu_Rg[Rn],Sz,False,True) Else
+    R:=StCpu_AluSub(V,StCpu_Rg[Rn],Sz,False,True);
+  Case Sz Of
+   1: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FF)) Or R;
+   2: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FFFF)) Or R;
+  Else StCpu_Rg[Rn]:=R;
+  End;
+ End Else Begin
+  V:=StCpu_ReadEA(Sz);
+  If IsAdd Then R:=StCpu_AluAdd(StCpu_Rg[Rn],V,Sz,False,True) Else
+    R:=StCpu_AluSub(StCpu_Rg[Rn],V,Sz,False,True);
+  StCpu_WriteEA(Sz,R);
+ End;
+End;
+
+Procedure StCpu_OpB(Op: LongInt);
+Var Mode,Reg,Rn,Sz: Integer; V,R,S: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
+  StCpu_CalcEA(Mode,Reg,Sz);
+  V:=StCpu_SExt(StCpu_ReadEA(Sz),Sz);
+  R:=StCpu_AluSub(V,StCpu_Rg[8+Rn],4,False,False);
+  Exit;
+ End;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ If (Op And $100)=0 Then Begin
+  StCpu_CalcEA(Mode,Reg,Sz);
+  V:=StCpu_ReadEA(Sz);
+  R:=StCpu_AluSub(V,StCpu_Rg[Rn],Sz,False,False);
+ End Else If Mode=1 Then Begin
+  { CMPM }
+  StCpu_CalcEA(3,Reg,Sz);V:=StCpu_MemRd(StCpu_EAA,Sz);
+  StCpu_CalcEA(3,Rn,Sz);S:=StCpu_MemRd(StCpu_EAA,Sz);
+  R:=StCpu_AluSub(V,S,Sz,False,False);
+ End Else Begin
+  StCpu_CalcEA(Mode,Reg,Sz);
+  V:=StCpu_ReadEA(Sz);
+  R:=StCpu_Msk(V Xor StCpu_Rg[Rn],Sz);
+  StCpu_SetLogic(R,Sz);
+  StCpu_WriteEA(Sz,R);
+ End;
+End;
+
+Procedure StCpu_OpC(Op: LongInt);
+Var Mode,Reg,Rn,Sz: Integer; V,R,S,Lo,Q: LongInt; T: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  StCpu_CalcEA(Mode,Reg,2);
+  V:=StCpu_ReadEA(2);
+  If (Op And $100)=0 Then R:=(V And $FFFF)*(StCpu_Rg[Rn] And $FFFF)
+  Else R:=StCpu_SExt(V,2)*StCpu_SExt(StCpu_Rg[Rn],2);
+  StCpu_Rg[Rn]:=R;
+  StCpu_SetLogic(R,4);
+  Exit;
+ End;
+ If (Op And $1F0)=$100 Then Begin
+  { ABCD }
+  If Mode=0 Then Begin V:=StCpu_Rg[Reg] And $FF;R:=StCpu_Rg[Rn] And $FF;End
+  Else Begin
+   StCpu_CalcEA(4,Reg,1);V:=StCpu_Rd8(StCpu_EAA);
+   StCpu_CalcEA(4,Rn,1);R:=StCpu_Rd8(StCpu_EAA);
+  End;
+  Lo:=(R And $F)+(V And $F)+Ord(StCpu_GetF(StCpu_SR_X));
+  Q:=(StCpu_ShrL(R,4) And $F)+(StCpu_ShrL(V,4) And $F);
+  If Lo>9 Then Begin Lo:=Lo-10;Q:=Q+1;End;
+  StCpu_SetF(StCpu_SR_C,False);
+  If Q>9 Then Begin Q:=Q-10;StCpu_SetF(StCpu_SR_C,True);End;
+  R:=((Q And $F) Shl 4) Or (Lo And $F);
+  If R<>0 Then StCpu_SetF(StCpu_SR_Z,False);
+  StCpu_SetF(StCpu_SR_X,StCpu_GetF(StCpu_SR_C));
+  If Mode=0 Then StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FF)) Or R Else StCpu_Wr8(StCpu_EAA,R);
+  Exit;
+ End;
+ If (Op And $F1F8)=$C140 Then Begin
+   T:=StCpu_Rg[Rn];StCpu_Rg[Rn]:=StCpu_Rg[Reg];StCpu_Rg[Reg]:=T;Exit;End;
+ If (Op And $F1F8)=$C148 Then Begin
+   T:=StCpu_Rg[8+Rn];StCpu_Rg[8+Rn]:=StCpu_Rg[8+Reg];StCpu_Rg[8+Reg]:=T;Exit;End;
+ If (Op And $F1F8)=$C188 Then Begin
+   T:=StCpu_Rg[Rn];StCpu_Rg[Rn]:=StCpu_Rg[8+Reg];StCpu_Rg[8+Reg]:=T;Exit;End;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ StCpu_CalcEA(Mode,Reg,Sz);
+ V:=StCpu_ReadEA(Sz);
+ R:=StCpu_Msk(V And StCpu_Rg[Rn],Sz);
+ StCpu_SetLogic(R,Sz);
+ If (Op And $100)=0 Then Begin
+  Case Sz Of
+   1: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FF)) Or R;
+   2: StCpu_Rg[Rn]:=(StCpu_Rg[Rn] And (Not $FFFF)) Or R;
+  Else StCpu_Rg[Rn]:=R;
+  End;
+ End Else StCpu_WriteEA(Sz,R);
+End;
+
+Procedure StCpu_OpE(Op: LongInt);
+Var Mode,Reg,Rn,Sz,Ty,Cnt: Integer; V,R: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  Ty:=(Op Shr 9) And 3;
+  StCpu_CalcEA(Mode,Reg,2);
+  V:=StCpu_ReadEA(2);
+  R:=StCpu_Shift(Ty,(Op And $100)<>0,V,1,2);
+  StCpu_WriteEA(2,R);
+  Exit;
+ End;
+ Sz:=StCpu_SzFromBits((Op Shr 6) And 3);
+ Ty:=(Op Shr 3) And 3;
+ If (Op And $20)<>0 Then Cnt:=StCpu_Rg[Rn] And 63
+ Else Begin Cnt:=Rn;If Cnt=0 Then Cnt:=8;End;
+ R:=StCpu_Shift(Ty,(Op And $100)<>0,StCpu_Rg[Reg],Cnt,Sz);
+ Case Sz Of
+  1: StCpu_Rg[Reg]:=(StCpu_Rg[Reg] And (Not $FF)) Or R;
+  2: StCpu_Rg[Reg]:=(StCpu_Rg[Reg] And (Not $FFFF)) Or R;
+ Else StCpu_Rg[Reg]:=R;
+ End;
+End;
+
+Procedure StCpu_CpuReset;
+Var I: Integer;
+Begin
+ For I:=0 To 15 Do StCpu_Rg[I]:=0;
+ StCpu_PC:=0;StCpu_SRv:=$2700;StCpu_USPv:=0;StCpu_SSPv:=0;
+ StCpu_StopReason:=StCpu_STOP_NONE;StCpu_StopMsg:='';StCpu_ExitCode:=0;StCpu_InstrCount:=0;
+ StCpu_BusErr:=False;StCpu_AddrErr:=False;
+ StCpu_PendVec:=-1;StCpu_ExcTaken:=False;
+End;
+
+Procedure StCpu_Step;
+Var Op: LongInt; Tr: Boolean;
+Begin
+ StCpu_CurOpPC:=StCpu_PC;
+ If StCpu_PendVec>=0 Then Begin
+  { exception interceptee par le moniteur : on l'envoie au gestionnaire du
+    programme }
+  StCpu_TakeExc(StCpu_PendVec,StCpu_PendPC,StCpu_PendHnd,(StCpu_PendVec=2) Or (StCpu_PendVec=3),StCpu_PendAddr,StCpu_PendIR);
+  StCpu_PendVec:=-1;
+  Exit;
+ End;
+ StCpu_HleLibCheck;
+ If StCpu_StopReason<>StCpu_STOP_NONE Then Exit;
+ StCpu_CurOpPC:=StCpu_PC;
+ Tr:=(StCpu_SRv And StCpu_SR_T)<>0;
+ StCpu_ExcTaken:=False;
+ Op:=StCpu_Fetch16;
+ Inc(StCpu_InstrCount);
+ Case (Op Shr 12) And 15 Of
+  0: StCpu_Op0(Op);
+  1,2,3: StCpu_OpMove(Op);
+  4: StCpu_Op4(Op);
+  5: StCpu_Op5(Op);
+  6: StCpu_OpBcc(Op);
+  7: Begin
+      StCpu_Rg[(Op Shr 9) And 7]:=StCpu_SExt(Op And $FF,1);
+      StCpu_SetLogic(StCpu_Rg[(Op Shr 9) And 7],4);
+     End;
+  8: StCpu_Op8(Op);
+  9: StCpu_OpAddSub(Op,False);
+  10: StCpu_DoLineA(Op);
+  11: StCpu_OpB(Op);
+  12: StCpu_OpC(Op);
+  13: StCpu_OpAddSub(Op,True);
+  14: StCpu_OpE(Op);
+ Else StCpu_RaiseExc(11);
+ End;
+ If StCpu_AddrErr Then Begin
+  StCpu_LastAccA:=StCpu_BusAddr;
+  StCpu_RaiseExcX(3,True,StCpu_BusAddr);
+ End Else If StCpu_BusErr Then Begin
+  StCpu_LastAccA:=StCpu_BusAddr;
+  StCpu_RaiseExcX(2,True,StCpu_BusAddr);
+ End;
+ If StCpu_StopReason=StCpu_STOP_FAULT Then StCpu_PC:=StCpu_CurOpPC   { PC = instruction fautive
+   (moniteur) }
+ Else If Tr And Not StCpu_ExcTaken And (StCpu_StopReason=StCpu_STOP_NONE) And (StCpu_PendVec<0) Then
+   Begin
+  { bit Trace : exception 9 apres l'instruction (ignoree sans gestionnaire) }
+  Op:=StCpu_ExcHandler(9);
+  If Op<>0 Then StCpu_TakeExc(9,StCpu_PC,Op,False,0,0);
+ End;
+End;
+
+
+
+{ ---- liaison avec le reste de l'emulateur DEVENV ---- }
+Procedure StCpu_StCpuLoad;
+Var I: Integer;
+Begin
+ For I := 0 To 7 Do Begin
+  StCpu_Rg[I] := M68K_D[I];
+  StCpu_Rg[8 + I] := M68K_A[I];
+ End;
+ StCpu_PC := M68K_PC;
+ StCpu_SRv := M68K_SR;
+End;
+
+Procedure StCpu_StCpuStore;
+Var I: Integer;
+Begin
+ For I := 0 To 7 Do Begin
+  M68K_D[I] := StCpu_Rg[I];
+  M68K_A[I] := StCpu_Rg[8 + I];
+ End;
+ M68K_PC := StCpu_PC;
+ M68K_SR := StCpu_SRv;
+End;
+
+{ TRAP #n : les services Atari ST (GEMDOS, AES/VDI, BIOS, XBIOS) sont ceux de M68K_DoTrap }
+Procedure StCpu_DoTrap(N: Integer);
+Begin
+ StCpu_StCpuStore;
+ M68K_DoTrap(N);
+ StCpu_StCpuLoad;
+ If M68K_Halted And (StCpu_StopReason = StCpu_STOP_NONE) Then Begin
+  StCpu_StopReason := StCpu_STOP_EXIT;
+  StCpu_ExitCode := M68K_ExitCode;
+ End;
+End;
+
+Procedure StCpu_DoLineA(Op: LongInt);
+Begin
+ { ligne A : tolerance (comme l'ancien noyau) jusqu'a l'implementation des primitives }
+ Inc(M68K_DbgUnknown);
+ M68K_DbgLastBad := StCpu_CurOpPC;
+ StCpu_Rg[0] := 0;
+End;
+
+Procedure StCpu_HleLibCheck;
+Begin
+End;
+
+Procedure StCpu_IrqCheck;
+Begin
+End;
+
+
+{ ---- chargeur de programmes GEMDOS (.PRG) : basepage, relocation, pile, ligne de commande ---- }
+Const
+ StCpu_StHiTpa    = $A0000;              { fin de la zone programme (le tas GEMDOS commence ici) }
+Var
+ StCpu_StBasePage: LongInt;              { adresse de la basepage : $1000 (texte en $1100) pour un programme relogeable ; }
+                                   { $9F000 pour un programme sans table de relocation (TPCW32), charge en $0 }
+ StCpu_StExitStub: LongInt;              { clr.w -(sp) ; trap #1 : retour d'un programme par RTS }
+ StCpu_StUserSP: LongInt;                { pile utilisateur initiale }
+ StCpu_StTextBase: LongInt;              { adresse du texte du programme charge }
+
+Function StCpu_StLoadPRG(Const Name, Tail: String; Var Entry: LongInt): Boolean;
+Var
+ F: File;
+ Hdr: Array[0..27] Of Byte;
+ Buf: Array[0..4095] Of Byte;
+ Tl, Dl, Bl, Sl, Tb, Cur, Todo, Chunk, K: LongInt;
+ N: Word;
+ B: Byte;
+ HasReloc: Boolean;
+ Function L(O: Integer): LongInt;
+ Begin L := (LongInt(Hdr[O]) Shl 24) Or (LongInt(Hdr[O + 1]) Shl 16) Or (LongInt(Hdr[O + 2]) Shl 8) Or Hdr[O + 3]; End;
+ Function NextByte: Byte;
+ Var C: Byte; R: Word;
+ Begin
+  BlockRead(F, C, 1, R);
+  If R = 0 Then NextByte := 0 Else NextByte := C;
+ End;
+Begin
+ StCpu_StLoadPRG := False;
+ Entry := -1;
+ Assign(F, Name);
+ {$I-} Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockRead(F, Hdr, 28, N);
+ If (N < 28) Or (Hdr[0] <> $60) Or (Hdr[1] <> $1A) Then Begin Close(F); Exit; End;
+ Tl := L(2); Dl := L(6); Bl := L(10); Sl := L(14);
+ { table de relocation presente ? sinon (programme TPCW32) le texte est charge a l'adresse 0 }
+ HasReloc := False;
+ If (Hdr[26] = 0) And (Hdr[27] = 0) Then Begin
+  {$I-} Seek(F, 28 + Tl + Dl + Sl); {$I+}
+  If IOResult = 0 Then Begin
+   BlockRead(F, Buf, 4, N);
+   If (N = 4) And ((Buf[0] Or Buf[1] Or Buf[2] Or Buf[3]) <> 0) Then HasReloc := True;
+  End;
+  {$I-} Seek(F, 28); {$I+}
+ End;
+ If HasReloc Then Begin StCpu_StBasePage := $1000; StCpu_StExitStub := $0F00; Tb := StCpu_StBasePage + $100; End
+ Else Begin StCpu_StBasePage := $9F000; StCpu_StExitStub := $9EF00; Tb := 0; End;
+ If (Tl < 0) Or (Dl < 0) Or (Bl < 0) Or (Tb + Tl + Dl + Bl > StCpu_StHiTpa - $2000) Then Begin Close(F); Exit; End;
+ FillChar(M68K_Mem[0], StCpu_StHiTpa, 0);
+ { texte + donnees, par blocs de 4 Ko (le bloc d'un seul tenant depasserait la limite de BlockRead) }
+ Cur := Tb; Todo := Tl + Dl;
+ While Todo > 0 Do Begin
+  If Todo > SizeOf(Buf) Then Chunk := SizeOf(Buf) Else Chunk := Todo;
+  BlockRead(F, Buf, Chunk, N);
+  If N = 0 Then Break;
+  Move(Buf, M68K_Mem[Cur], N);
+  Inc(Cur, N); Dec(Todo, N);
+ End;
+ { table de relocation : apres les symboles }
+ If HasReloc Then Begin      { le programme est relogeable }
+  {$I-} Seek(F, 28 + Tl + Dl + Sl); {$I+}
+  If IOResult = 0 Then Begin
+   BlockRead(F, Buf, 4, N);
+   If N = 4 Then Begin
+    Cur := (LongInt(Buf[0]) Shl 24) Or (LongInt(Buf[1]) Shl 16) Or (LongInt(Buf[2]) Shl 8) Or Buf[3];
+    If Cur <> 0 Then Begin
+     Repeat
+      If (Cur >= 0) And (Cur + 4 <= Tl + Dl) Then
+       M68K_Write32(Tb + Cur, M68K_Read32(Tb + Cur) + Tb);
+      Repeat
+       B := NextByte;
+       If B = 1 Then Cur := Cur + 254;
+      Until B <> 1;
+      If B <> 0 Then Cur := Cur + B;
+     Until B = 0;
+    End;
+   End;
+  End;
+ End;
+ Close(F);
+ { basepage }
+ M68K_Write32(StCpu_StBasePage + $00, StCpu_StBasePage);          { p_lowtpa }
+ M68K_Write32(StCpu_StBasePage + $04, StCpu_StHiTpa);             { p_hitpa }
+ M68K_Write32(StCpu_StBasePage + $08, Tb);                  { p_tbase }
+ M68K_Write32(StCpu_StBasePage + $0C, Tl);                  { p_tlen }
+ M68K_Write32(StCpu_StBasePage + $10, Tb + Tl);             { p_dbase }
+ M68K_Write32(StCpu_StBasePage + $14, Dl);                  { p_dlen }
+ M68K_Write32(StCpu_StBasePage + $18, Tb + Tl + Dl);        { p_bbase }
+ M68K_Write32(StCpu_StBasePage + $1C, Bl);                  { p_blen }
+ M68K_Write32(StCpu_StBasePage + $20, StCpu_StBasePage + $80);    { p_dta }
+ M68K_Write32(StCpu_StBasePage + $24, 0);                   { p_parent }
+ If Length(Tail) > 126 Then K := 126 Else K := Length(Tail);
+ M68K_Write8(StCpu_StBasePage + $80, K);
+ For N := 1 To K Do M68K_Write8(StCpu_StBasePage + $80 + N, Ord(Tail[N]));
+ { retour par RTS : pile = adresse de sortie puis basepage (convention GEMDOS) }
+ M68K_Write16(StCpu_StExitStub, $4267);                     { clr.w -(sp) }
+ M68K_Write16(StCpu_StExitStub + 2, $4E41);                 { trap #1 }
+ StCpu_StUserSP := StCpu_StHiTpa - 8;
+ M68K_Write32(StCpu_StUserSP, StCpu_StExitStub);
+ M68K_Write32(StCpu_StUserSP + 4, StCpu_StBasePage);
+ StCpu_StTextBase := Tb;
+ Entry := Tb;
+ StCpu_StLoadPRG := True;
+End;
+
+{ prepare le noyau a partir de l'etat M68K_* (appele au chargement du programme) }
+Procedure StCpu_StCpuInit;
+Begin
+ StCpu_SingleStack := True;
+ M68K_A[7] := StCpu_StUserSP;
+ StCpu_Rg[15] := StCpu_StUserSP;
+ StCpu_MonTrap := False;
+ StCpu_PendVec := -1;
+ StCpu_NBps := 0;
+ StCpu_TraceOver := False;
+ StCpu_StopReason := StCpu_STOP_NONE;
+ StCpu_StopMsg := '';
+ StCpu_ExitCode := 0;
+ StCpu_InstrCount := 0;
+ StCpu_AddrErr := False;
+ StCpu_BusErr := False;
+End;
+
+{ execute au plus N instructions ; positionne M68K_Halted quand le programme se termine }
+Procedure StCpu_StCpuRun(Var P: TEmulatorPanel; N: LongInt);
+Var K: LongInt;
+Begin
+ StCpu_StCpuLoad;
+ StCpu_StopReason := StCpu_STOP_NONE;
+ K := 0;
+ While (StCpu_StopReason = StCpu_STOP_NONE) And (K < N) And (Not M68K_Halted) Do Begin
+  StCpu_Step;
+  Inc(K);
+ End;
+ StCpu_StCpuStore;
+ Inc(P.TotalSteps, K);
+ Inc(M68K_Cycles, K);
+ If StCpu_StopReason <> StCpu_STOP_NONE Then Begin
+  If StCpu_StopReason = StCpu_STOP_FAULT Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, StCpu_StopMsg);
+   P.CurFg := 7;
+   M68K_ExitCode := 1;
+  End;
+  M68K_Halted := True;
+ End;
+End;
+
+{ ===== FIN NOYAU 68000 ATARI ST ===== }
+
+{ Mode test (-emu:ATARIST avec DEVENV_EMUQUIT) : ecrit une zone de memoire emulee dans un fichier }
+{ (DEVENV_EMUDUMP=adresse_hexa:longueur:fichier) a la fin du programme, puis quitte. }
+Procedure M68K_TestDumps(Var P: TEmulatorPanel);
+Var
+ S, A, L, Fn: String;
+ TF: Text;
+ TR, TC, TLast: Integer;
+ TLine: String;
+ P1, P2, Ad, Ln, K: LongInt;
+ F: File;
+Begin
+ { diagnostic du mode test (sortie d'erreur) }
+ WriteLn(ErrOutput, 'M68K: halted=', M68K_Halted, ' exit=', M68K_ExitCode, ' cycles=', M68K_Cycles,
+  ' pc=$', M68K_HexN(M68K_PC, 6), ' lastvec=', M68K_LastVector, ' lastfunc=$', M68K_HexN(M68K_LastFunc, 4),
+  ' inconnus=', M68K_DbgUnknown, ' dernier=$', M68K_HexN(M68K_DbgLastBad, 6),
+  ' A6=$', M68K_HexN(M68K_A[6], 8), ' A7=$', M68K_HexN(M68K_A[7], 8), ' D0=$', M68K_HexN(M68K_D[0], 8), ' D1=$', M68K_HexN(M68K_D[1], 8));
+ { DEVENV_EMUTEXT=fichier : texte de l'ecran virtuel (une ligne par rangee, sans blancs de fin) }
+ S := GetEnv('DEVENV_EMUTEXT');
+ If S <> '' Then Begin
+  Assign(TF, S);
+  {$I-} Rewrite(TF); {$I+}
+  If IOResult = 0 Then Begin
+   TLast := 24;
+   While (TLast >= 0) And (P.VRAM[TLast, 0].Ch = ' ') Do Begin
+    TLine := '';
+    For TC := 0 To 79 Do If P.VRAM[TLast, TC].Ch <> ' ' Then TLine := 'x';
+    If TLine <> '' Then Break;
+    Dec(TLast);
+   End;
+   For TR := 0 To TLast Do Begin
+    TLine := '';
+    For TC := 0 To 79 Do TLine := TLine + P.VRAM[TR, TC].Ch;
+    While (TLine <> '') And (TLine[Length(TLine)] = ' ') Do Delete(TLine, Length(TLine), 1);
+    WriteLn(TF, TLine);
+   End;
+   Close(TF);
+  End;
+ End;
+ S := GetEnv('DEVENV_EMUDUMP');
+ If S = '' Then Exit;
+ P1 := Pos(':', S);
+ If P1 <= 0 Then Exit;
+ A := Copy(S, 1, P1 - 1);
+ Fn := Copy(S, P1 + 1, Length(S));
+ P2 := Pos(':', Fn);
+ If P2 <= 0 Then Exit;
+ L := Copy(Fn, 1, P2 - 1);
+ Fn := Copy(Fn, P2 + 1, Length(Fn));
+ Ad := 0;
+ For K := 1 To Length(A) Do
+  Ad := Ad * 16 + Pos(UpCase(A[K]), '0123456789ABCDEF') - 1;
+ Val(L, Ln, K);
+ If (Ad < 0) Or (Ln <= 0) Or (Ad + Ln > MEM_SIZE) Then Exit;
+ Assign(F, Fn);
+ {$I-} Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockWrite(F, M68K_Mem[Ad], Ln);
+ Close(F);
+End;
+
 Procedure M68K_RunOneChunk(Var P: TEmulatorPanel);
 Var
  ChunkI: LongInt;
@@ -232763,6 +234172,12 @@ Begin
    If K = 27 Then M68KAsync_KeyEsc := True;
   End;
   If M68KAsync_KeyEsc Then Exit;
+ End;
+ { Atari ST : noyau 68000 StCpu_ (instructions et indicateurs verifies par OSSPAS_TESTS/cpu_instructions.py) ;
+   Amiga et -C68000 gardent le noyau M68K_Step d'origine ci-dessous. }
+ If P.TargetCPU = '-CATARIST' Then Begin
+  StCpu_StCpuRun(P, 20000);
+  Exit;
  End;
  For ChunkI := 0 To 19999 Do Begin
   If M68K_Halted Then Break;
@@ -237390,7 +238805,7 @@ Begin NesActive := False;
   EntryAddr := -1;
   { Pour Atari ST, essayer le format PRG GEMDOS en premier }
   If TargetCPU = '-CATARIST' Then
-   Loaded := M68K_LoadPRG(BinaryPath, EntryAddr);
+   Loaded := StCpu_StLoadPRG(BinaryPath, Args, EntryAddr);
   { Sinon (ou si echec), essayer le format Amiga Hunk }
   If Not Loaded Then
    Loaded := M68K_LoadAmigaHunk(BinaryPath, EntryAddr);
@@ -237421,6 +238836,11 @@ Begin NesActive := False;
   { ce qui sera detecte par M68K_Step pour arreter proprement.       }
   M68K_A[7] := M68K_A[7] - 4;
   M68K_Write32(M68K_A[7], $00FFFFFE);
+  If TargetCPU = '-CATARIST' Then Begin
+   StCpu_StCpuInit;
+   M68K_TestMaxSteps := 400000000;
+   If GetEnv('DEVENV_EMUSTEPS') <> '' Then Val(GetEnv('DEVENV_EMUSTEPS'), M68K_TestMaxSteps, Steps);
+  End;
   If OptionsDlg.Data.EmuShowDebugMessages Then Begin
    P.CurFg := 10;
    EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
@@ -239373,7 +240793,9 @@ Begin
    EmuLastActiveState := True;
   End;
   M68K_RunOneChunk(P);
-  Finished := M68K_Halted Or (P.TotalSteps >= MAX_CYCLES) Or M68KAsync_KeyEsc;
+  Finished := M68K_Halted Or
+   ((P.TotalSteps >= MAX_CYCLES) And (P.TargetCPU <> '-CATARIST')) Or
+   ((P.TotalSteps >= M68K_TestMaxSteps) And (P.TargetCPU = '-CATARIST')) Or M68KAsync_KeyEsc;
   DrawEmulatorPanel(P);
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
@@ -239408,6 +240830,11 @@ Begin
    P.Fault := sfEndProgram;
    P.StatusMsg := 'Emulateur 68000 : ' + IntToStr(P.TotalSteps) + ' instr.';
    DrawEmulatorPanel(P);
+   { mode test (variable d'environnement DEVENV_EMUQUIT, Atari ST seulement) }
+   If (GetEnv('DEVENV_EMUQUIT') <> '') Then Begin
+    M68K_TestDumps(P);
+    Halt(0);
+   End;
   End;
   Exit;
  End;

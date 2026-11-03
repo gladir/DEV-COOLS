@@ -98,7 +98,7 @@ def _run(p,name,dump):
         if not getattr(p,'gem',False): env['DEVENV_EMUGEM']='0'
         if dump: env['DEVENV_EMUDUMP']=dump+':'+WORK+'/%s.dmp'%name
         subprocess.run([DEVENV,'-emu:ATARIST,'+path],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=WORK,timeout=90)
-        return Scr(open(scr,'rb').read())
+        return Scr(open(scr,'rb').read() if os.path.exists(scr) else bytes(32000))      # pas d'ecran bitmap : ecran vide
     env.update(OSSDUMPSCR=scr,OSSTIMEOUT='15')
     if dump: env['OSSDUMP']=dump+':'+WORK+'/%s.dmp'%name
     import time

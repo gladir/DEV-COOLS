@@ -33,3 +33,12 @@ Programmes assembleur reels (assembles par DEVPAC.PAS, en mode batch) :
 Limite : les references sont ecrites d'apres la documentation de la ligne A, pas
 mesurees sur un vrai Atari ST ; elles verifient la coherence et les proprietes
 (positions, modes, masques, rotations), pas l'identite pixel a pixel avec le TOS.
+
+Test des instructions du 68000 (cpu_instructions.py) : environ 2900 cas (ADD/SUB/ADDX/SUBX/CMP, logiques,
+MULU/MULS/DIVU/DIVS, decalages et rotations, bits, Scc, EXT, SWAP, EXG...) compares a un modele Python
+independant, indicateurs X N Z V C compris. Les trois emulateurs ST doivent passer (OSSPAS_EMU=osspas|devpac|devenv).
+
+DEVENV.PAS : le noyau 68000 de la cible Atari ST (StCpu_*, porte de DEVPAC.PAS par devenv_port_st_cpu.py) est
+distinct du noyau M68K_* d'origine, qui reste utilise par Amiga et -C68000 sans modification. Variables du mode
+test de DEVENV : DEVENV_EMUQUIT=1 (quitter a la fin), DEVENV_EMUDUMP=adresse:longueur:fichier (memoire),
+DEVENV_EMUTEXT=fichier (texte de l'ecran virtuel), DEVENV_EMUSTEPS=n (limite d'instructions).
