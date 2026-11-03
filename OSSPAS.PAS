@@ -6512,7 +6512,8 @@ Begin
        If NextMatch(True) Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
       End;
   79: Begin
-       If NextMatch(False) Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-33;
+       { Fsnext : ENMFIL (-49) quand il n'y a plus de fichier }
+       If NextMatch(False) Then Begin FillDta(EmuSF);RD[0]:=0;End Else RD[0]:=-49;
       End;
   86: Begin
        S:=ResolveFile(TosToHost(EmuStr(RL(SP+4))));

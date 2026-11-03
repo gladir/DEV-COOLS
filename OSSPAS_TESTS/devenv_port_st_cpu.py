@@ -12,7 +12,7 @@ sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import pascal_prefix
 BEGIN_MARK='{ ===== DEBUT NOYAU 68000 ATARI ST (StCpu_, porte de DEVPAC.PAS par devenv_port_st_cpu.py) ===== }'
 END_MARK='{ ===== FIN NOYAU 68000 ATARI ST ===== }'
-PRELUDE='''
+PRELUDE=r'''
 Const
  MemSize = $100000;                 { 1 Mo : meme memoire que M68K_Mem }
 Var
@@ -45,7 +45,7 @@ Begin
  End;
 End;
 '''
-TAIL='''
+TAIL=r'''
 { ---- liaison avec le reste de l'emulateur DEVENV ---- }
 Procedure StCpuLoad;
 Var I: Integer;
@@ -69,33 +69,6 @@ Begin
  M68K_SR := SRv;
 End;
 
-{ TRAP #n : les services Atari ST (GEMDOS, AES/VDI, BIOS, XBIOS) sont ceux de M68K_DoTrap }
-Procedure DoTrap(N: Integer);
-Begin
- StCpuStore;
- M68K_DoTrap(N);
- StCpuLoad;
- If M68K_Halted And (StopReason = STOP_NONE) Then Begin
-  StopReason := STOP_EXIT;
-  ExitCode := M68K_ExitCode;
- End;
-End;
-
-Procedure DoLineA(Op: LongInt);
-Begin
- { ligne A : tolerance (comme l'ancien noyau) jusqu'a l'implementation des primitives }
- Inc(M68K_DbgUnknown);
- M68K_DbgLastBad := CurOpPC;
- Rg[0] := 0;
-End;
-
-Procedure HleLibCheck;
-Begin
-End;
-
-Procedure IrqCheck;
-Begin
-End;
 
 
 { ---- chargeur de programmes GEMDOS (.PRG) : basepage, relocation, pile, ligne de commande ---- }
@@ -204,9 +177,577 @@ Begin
  StLoadPRG := True;
 End;
 
+
+{ ---- GEMDOS (fichiers, repertoires, memoire, date et heure), BIOS et XBIOS de l'Atari ST ---- }
+Const
+ StHeapLo = $A0000;                { tas GEMDOS (Malloc) : $A0000 .. $EFFFF }
+ StHeapHi = $F0000;
+ StBxKbdv = $F0400;                { table des vecteurs du clavier (Kbdvbase) }
+ StBxRts  = $F0480;                { RTS : cible des vecteurs inutilises }
+ StBxIorec = $F0500;               { trois structures IOREC (RS232, clavier, MIDI) }
+ StBxIobuf = $F0600;               { leurs tampons (3 x 256 octets) }
+ StBxKeyt = $F0A00;                { tables clavier (normal, Maj, Verr.Maj) }
+Type
+ StBlk = Record A, S: LongInt; End;
+Var
+ StFH: Array[6..21] Of File;
+ StFUsed: Array[6..21] Of Boolean;
+ StBlks: Array[1..64] Of StBlk;
+ StNBlks: Integer;
+ StCwd: String;                    { repertoire courant TOS (sans lecteur) }
+ StDrv: Integer;
+ StRoot: String;                   { racine du lecteur : repertoire de travail de DEVENV au lancement }
+ StSfDir, StSfPat: String;
+ StSfAttr: Integer;
+ StSfRec: SearchRec;
+ StDta: LongInt;
+ StClockAdj: LongInt;
+ StBxInit: Boolean;
+ StPal: Array[0..15] Of Integer;
+ StGi: Array[0..15] Of Byte;
+ StKbRate, StPrt: Integer;
+
+Function PW(N: Integer): LongInt;
+Begin PW := Rd16(Rg[15] + N); End;
+Function PL(N: Integer): LongInt;
+Begin PL := Rd32(Rg[15] + N); End;
+
+Function StUpper(Const S: String): String;
+Var I: Integer; T: String;
+Begin
+ T := S;
+ For I := 1 To Length(T) Do T[I] := UpCase(T[I]);
+ StUpper := T;
+End;
+
+Function StCStr(A: LongInt): String;
+Var S: String;
+Begin
+ S := '';
+ While (Rd8(A) <> 0) And (Length(S) < 250) Do Begin S := S + Chr(Rd8(A)); Inc(A); End;
+ StCStr := S;
+End;
+
+Procedure StPutStr(A: LongInt; Const S: String);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do Wr8(A + I - 1, Ord(S[I]));
+ Wr8(A + Length(S), 0);
+End;
+
+{ nom TOS -> chemin hote : lecteur retire, \ -> /, chemin relatif complete par le repertoire courant, casse resolue }
+Function StHostPath(Const S0: String): String;
+Var S, Cur, Comp, Full: String; I: Integer; Found: Boolean; Sr: SearchRec;
+Begin
+ S := S0;
+ While (Length(S) > 0) And (S[Length(S)] = ' ') Do Delete(S, Length(S), 1);
+ If (Length(S) >= 2) And (S[2] = ':') Then Delete(S, 1, 2);
+ For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+ If (S = '') Or (S[1] <> '\') Then Begin
+  If StCwd = '\' Then Full := '\' + S Else Full := StCwd + '\' + S;
+ End Else Full := S;
+ If StRoot = '' Then Begin GetDir(0, StRoot); If (StRoot <> '') And (StRoot[Length(StRoot)] <> '/') And (StRoot[Length(StRoot)] <> '\') Then StRoot := StRoot + '/'; End;
+ Cur := StRoot;
+ I := 1;
+ While I <= Length(Full) Do Begin
+  Comp := '';
+  While (I <= Length(Full)) And (Full[I] = '\') Do Inc(I);
+  While (I <= Length(Full)) And (Full[I] <> '\') Do Begin Comp := Comp + Full[I]; Inc(I); End;
+  If (Comp = '') Or (Comp = '.') Then
+  Else Begin
+   Found := False;
+   {$I-}
+   FindFirst(Cur + '*', AnyFile, Sr);
+   {$I+}
+   While DosError = 0 Do Begin
+    If StUpper(Sr.Name) = StUpper(Comp) Then Begin Comp := Sr.Name; Found := True; Break; End;
+    FindNext(Sr);
+   End;
+   If Found Then Begin
+    Cur := Cur + Comp;
+    If I <= Length(Full) Then Cur := Cur + '/';
+   End Else Begin
+    Cur := Cur + Comp;
+    If I <= Length(Full) Then Cur := Cur + '/';
+   End;
+  End;
+ End;
+ If (Cur <> '') And (Cur[Length(Cur)] = '/') And (Length(Cur) > 1) And (Cur <> StRoot) Then Delete(Cur, Length(Cur), 1);
+ StHostPath := Cur;
+End;
+
+{ fichier a creer : nom en majuscules (sauf s'il existe deja) }
+Function StCreatePath(Const S0: String): String;
+Var H: String; I, P: Integer; F: File; Ex: Boolean;
+Begin
+ H := StHostPath(S0);
+ Assign(F, H);
+ {$I-} Reset(F, 1); {$I+}
+ Ex := IOResult = 0;
+ If Ex Then Close(F)
+ Else Begin
+  P := 0;
+  For I := 1 To Length(H) Do If H[I] = '/' Then P := I;
+  H := Copy(H, 1, P) + StUpper(Copy(H, P + 1, 200));
+ End;
+ StCreatePath := H;
+End;
+
+Function StMatch(Const Pat, Nm: String): Boolean;
+ Function M(P, N: Integer): Boolean;
+ Begin
+  While P <= Length(Pat) Do Begin
+   If Pat[P] = '*' Then Begin
+    While (P <= Length(Pat)) And (Pat[P] = '*') Do Inc(P);
+    If P > Length(Pat) Then Begin M := True; Exit; End;
+    While N <= Length(Nm) + 1 Do Begin
+     If M(P, N) Then Begin M := True; Exit; End;
+     Inc(N);
+    End;
+    M := False; Exit;
+   End Else If N > Length(Nm) Then Begin M := False; Exit; End
+   Else If (Pat[P] <> '?') And (Pat[P] <> Nm[N]) Then Begin M := False; Exit; End;
+   Inc(P); Inc(N);
+  End;
+  M := N > Length(Nm);
+ End;
+Begin
+ If Pat = '*.*' Then StMatch := True Else StMatch := M(1, 1);
+End;
+
+Function StNextMatch(First: Boolean): Boolean;
+Begin
+ StNextMatch := False;
+ If First Then Begin
+  {$I-} FindFirst(StSfDir + '*', AnyFile, StSfRec); {$I+}
+ End Else Begin
+  {$I-} FindNext(StSfRec); {$I+}
+ End;
+ While DosError = 0 Do Begin
+  If StMatch(StSfPat, StUpper(StSfRec.Name)) And (StSfRec.Name <> '.') And (StSfRec.Name <> '..') And
+     (((StSfRec.Attr And Directory) = 0) Or ((StSfAttr And $10) <> 0)) And
+     ((StSfRec.Attr And $8) = 0) Then Begin
+   StNextMatch := True; Exit;
+  End;
+  {$I-} FindNext(StSfRec); {$I+}
+ End;
+End;
+
+Procedure StFillDta;
+Var N: String;
+Begin
+ Wr8(StDta + 21, StSfRec.Attr And $27);
+ Wr16(StDta + 22, StSfRec.Time And $FFFF);
+ Wr16(StDta + 24, (StSfRec.Time Shr 16) And $FFFF);
+ Wr32(StDta + 26, StSfRec.Size);
+ N := StUpper(StSfRec.Name);
+ If Length(N) > 12 Then N := Copy(N, 1, 12);
+ StPutStr(StDta + 30, N);
+End;
+
+Function StNowSecs: LongInt;
+Var Y, Mo, D, Dw, H, Mi, S, S100: Word;
+Begin
+ GetDate(Y, Mo, D, Dw);
+ GetTime(H, Mi, S, S100);
+ StNowSecs := LongInt(H) * 3600 + Mi * 60 + S + StClockAdj;
+End;
+
+Function StAlloc(N: LongInt): LongInt;
+Var I, J: Integer; Lo, Hi, Best: LongInt; T: StBlk;
+Begin
+ StAlloc := 0;
+ If (N <= 0) Or (StNBlks >= 64) Then Exit;
+ N := (N + 3) And (Not 3);
+ Lo := StHeapLo;
+ For I := 0 To StNBlks Do Begin
+  If I < StNBlks Then Hi := StBlks[I + 1].A Else Hi := StHeapHi;
+  If Hi - Lo >= N Then Begin
+   Inc(StNBlks);
+   For J := StNBlks DownTo I + 2 Do StBlks[J] := StBlks[J - 1];
+   StBlks[I + 1].A := Lo; StBlks[I + 1].S := N;
+   FillChar(M68K_Mem[Lo], N, 0);
+   StAlloc := Lo; Exit;
+  End;
+  If I < StNBlks Then Lo := StBlks[I + 1].A + StBlks[I + 1].S;
+ End;
+ Best := 0;
+End;
+
+Function StLargest: LongInt;
+Var I: Integer; Lo, Hi, Best: LongInt;
+Begin
+ Best := 0; Lo := StHeapLo;
+ For I := 0 To StNBlks Do Begin
+  If I < StNBlks Then Hi := StBlks[I + 1].A Else Hi := StHeapHi;
+  If Hi - Lo > Best Then Best := Hi - Lo;
+  If I < StNBlks Then Lo := StBlks[I + 1].A + StBlks[I + 1].S;
+ End;
+ StLargest := Best;
+End;
+
+Function StFreeSlot: Integer;
+Var I: Integer;
+Begin
+ StFreeSlot := -1;
+ For I := 6 To 21 Do If Not StFUsed[I] Then Begin StFreeSlot := I; Exit; End;
+End;
+
+{ retourne True si la fonction GEMDOS est traitee ici (D0 = resultat) }
+Function StGemdos: Boolean;
+Var Fn: Word; H, I, J, K: Integer; S, S2: String; A, Cnt, Done, Pos2, T: LongInt; F: File; N: Word; At: Word;
+    Buf: Array[0..4095] Of Byte; Mode: Integer; Yy, Mm, Dd, Dw: Word;
+Begin
+ StGemdos := True;
+ Fn := Rd16(Rg[15]);
+ Case Fn Of
+  $0E: Begin StDrv := PW(2) And 15; Rg[0] := 5; End;
+  $19: Rg[0] := StDrv;
+  $1A: StDta := PL(2);
+  $2F: Rg[0] := StDta;
+  $2A: Begin
+        { Tgetdate }
+        Rg[0] := 0;
+        GetDate(Yy, Mm, Dd, Dw);
+        Rg[0] := ((LongInt(Yy) - 1980) Shl 9) Or (LongInt(Mm) Shl 5) Or Dd;
+       End;
+  $2B: Rg[0] := 0;
+  $2C: Begin
+        T := StNowSecs Mod 86400;
+        Rg[0] := ((T Div 3600) Shl 11) Or (((T Div 60) Mod 60) Shl 5) Or ((T Mod 60) Div 2);
+       End;
+  $2D: Begin
+        T := PW(2);
+        StClockAdj := (T Shr 11) * 3600 + ((T Shr 5) And 63) * 60 + (T And 31) * 2 - (StNowSecs - StClockAdj) Mod 86400;
+        Rg[0] := 0;
+       End;
+  $36: Begin
+        A := PL(2);
+        Wr32(A, 20000); Wr32(A + 4, 40000); Wr32(A + 8, 512); Wr32(A + 12, 2);
+        Rg[0] := 0;
+       End;
+  $39: Begin
+        {$I-} MkDir(StCreatePath(StCStr(PL(2)))); {$I+}
+        If IOResult <> 0 Then Rg[0] := -36 Else Rg[0] := 0;
+       End;
+  $3A: Begin
+        {$I-} RmDir(StHostPath(StCStr(PL(2)))); {$I+}
+        If IOResult <> 0 Then Rg[0] := -36 Else Rg[0] := 0;
+       End;
+  $3B: Begin
+        S := StCStr(PL(2));
+        If (Length(S) >= 2) And (S[2] = ':') Then Delete(S, 1, 2);
+        For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+        Done := 0;
+        {$I-} FindFirst(StHostPath(S), Directory, StSfRec); {$I+}
+        If (S = '') Or (S = '\') Or ((DosError = 0) And ((StSfRec.Attr And Directory) <> 0)) Then Begin
+         If (S = '') Or (S[1] <> '\') Then Begin If StCwd = '\' Then S := '\' + S Else S := StCwd + '\' + S; End;
+         While (Length(S) > 1) And (S[Length(S)] = '\') Do Delete(S, Length(S), 1);
+         StCwd := S; Rg[0] := 0;
+        End Else Rg[0] := -34;
+       End;
+  $3C: Begin
+        H := StFreeSlot;
+        If H < 0 Then Rg[0] := -35
+        Else Begin
+         Assign(StFH[H], StCreatePath(StCStr(PL(2))));
+         {$I-} Rewrite(StFH[H], 1); {$I+}
+         If IOResult <> 0 Then Rg[0] := -36 Else Begin StFUsed[H] := True; Rg[0] := H; End;
+        End;
+       End;
+  $3D: Begin
+        H := StFreeSlot;
+        If H < 0 Then Rg[0] := -35
+        Else Begin
+         S := StHostPath(StCStr(PL(2)));
+         Assign(StFH[H], S);
+         If (PW(6) And 3) = 0 Then FileMode := 0 Else FileMode := 2;
+         {$I-} Reset(StFH[H], 1); {$I+}
+         FileMode := 2;
+         If IOResult <> 0 Then Rg[0] := -33 Else Begin StFUsed[H] := True; Rg[0] := H; End;
+        End;
+       End;
+  $3E: Begin
+        H := PW(2);
+        If (H >= 6) And (H <= 21) And StFUsed[H] Then Begin
+         {$I-} Close(StFH[H]); {$I+}
+         If IOResult <> 0 Then ;
+         StFUsed[H] := False; Rg[0] := 0;
+        End Else If H < 6 Then StGemdos := False Else Rg[0] := -37;
+       End;
+  $3F: Begin
+        H := SmallInt(PW(2)); Cnt := PL(4); A := PL(8);
+        If (H >= 6) And (H <= 21) And StFUsed[H] Then Begin
+         Done := 0;
+         If Cnt < 0 Then Cnt := 0;
+         While Cnt > 0 Do Begin
+          If Cnt > SizeOf(Buf) Then K := SizeOf(Buf) Else K := Cnt;
+          {$I-} BlockRead(StFH[H], Buf, K, N); {$I+}
+          If IOResult <> 0 Then Begin N := 0; End;
+          For I := 0 To N - 1 Do Wr8(A + Done + I, Buf[I]);
+          Done := Done + N; Cnt := Cnt - N;
+          If N < K Then Break;
+         End;
+         Rg[0] := Done;
+        End Else If (H >= 0) And (H < 6) Then StGemdos := False Else Rg[0] := -37;
+       End;
+  $40: Begin
+        H := SmallInt(PW(2)); Cnt := PL(4); A := PL(8);
+        If (H >= 6) And (H <= 21) And StFUsed[H] Then Begin
+         Done := 0;
+         While Cnt > 0 Do Begin
+          If Cnt > SizeOf(Buf) Then K := SizeOf(Buf) Else K := Cnt;
+          For I := 0 To K - 1 Do Buf[I] := Rd8(A + Done + I);
+          {$I-} BlockWrite(StFH[H], Buf, K, N); {$I+}
+          If IOResult <> 0 Then N := 0;
+          Done := Done + N; Cnt := Cnt - N;
+          If N < K Then Break;
+         End;
+         Rg[0] := Done;
+        End Else If (H >= 0) And (H < 6) Then StGemdos := False Else Rg[0] := -37;
+       End;
+  $41: Begin
+        S := StHostPath(StCStr(PL(2)));
+        Assign(F, S);
+        {$I-} Reset(F, 1); {$I+}
+        If IOResult <> 0 Then Rg[0] := -33
+        Else Begin
+         Close(F);
+         {$I-} Erase(F); {$I+}
+         If IOResult <> 0 Then Rg[0] := -36 Else Rg[0] := 0;
+        End;
+       End;
+  $42: Begin
+        Pos2 := PL(2); H := PW(6); Mode := PW(8);
+        If (H >= 6) And (H <= 21) And StFUsed[H] Then Begin
+         If Mode = 1 Then Pos2 := Pos2 + FilePos(StFH[H])
+         Else If Mode = 2 Then Pos2 := Pos2 + FileSize(StFH[H]);
+         If Pos2 < 0 Then Pos2 := 0;
+         {$I-} Seek(StFH[H], Pos2); {$I+}
+         If IOResult <> 0 Then Rg[0] := -64 Else Rg[0] := Pos2;
+        End Else If H < 6 Then Rg[0] := 0 Else Rg[0] := -37;
+       End;
+  $43: Begin
+        S := StHostPath(StCStr(PL(2)));
+        Assign(F, S);
+        {$I-} Reset(F, 1); {$I+}
+        If IOResult = 0 Then Begin
+         Close(F);
+         At := 0;
+         {$I-} GetFAttr(F, At); {$I+}
+         If IOResult <> 0 Then At := 0;
+         Rg[0] := At And $27;
+        End Else Begin
+         {$I-} FindFirst(S, Directory, StSfRec); {$I+}
+         If (DosError = 0) And ((StSfRec.Attr And Directory) <> 0) Then Rg[0] := $10 Else Rg[0] := -33;
+        End;
+       End;
+  $47: Begin
+        S := StCwd;
+        StPutStr(PL(2), S);
+        Rg[0] := 0;
+       End;
+  $48: Begin
+        Cnt := PL(2);
+        If Cnt = -1 Then Rg[0] := StLargest
+        Else Rg[0] := StAlloc(Cnt);
+       End;
+  $49: Begin
+        A := PL(2); Rg[0] := -40;
+        For I := 1 To StNBlks Do
+         If StBlks[I].A = A Then Begin
+          For J := I To StNBlks - 1 Do StBlks[J] := StBlks[J + 1];
+          Dec(StNBlks); Rg[0] := 0; Break;
+         End;
+       End;
+  $4A: Begin
+        A := PL(4); Cnt := PL(8); Rg[0] := 0;
+        For I := 1 To StNBlks Do
+         If StBlks[I].A = A Then Begin If Cnt < StBlks[I].S Then StBlks[I].S := (Cnt + 3) And (Not 3); End;
+       End;
+  $4E: Begin
+        S := StCStr(PL(2));
+        StSfAttr := PW(6);
+        For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+        If (Length(S) >= 2) And (S[2] = ':') Then Delete(S, 1, 2);
+        J := 0;
+        For I := 1 To Length(S) Do If S[I] = '\' Then J := I;
+        If J > 0 Then Begin
+         If J = 1 Then StSfDir := StHostPath('\') Else StSfDir := StHostPath(Copy(S, 1, J - 1));
+         StSfPat := StUpper(Copy(S, J + 1, 100));
+        End Else Begin StSfDir := StHostPath(''); StSfPat := StUpper(S); End;
+        If (StSfDir <> '') And (StSfDir[Length(StSfDir)] <> '/') Then StSfDir := StSfDir + '/';
+        If StNextMatch(True) Then Begin StFillDta; Rg[0] := 0; End Else Rg[0] := -33;
+       End;
+  $4F: Begin
+        If StNextMatch(False) Then Begin StFillDta; Rg[0] := 0; End Else Rg[0] := -49;
+       End;
+  $56: Begin
+        S := StHostPath(StCStr(PL(4)));
+        S2 := StCreatePath(StCStr(PL(8)));
+        Assign(F, S);
+        {$I-} Reset(F, 1); {$I+}
+        If IOResult <> 0 Then Rg[0] := -33
+        Else Begin
+         Close(F);
+         {$I-} Rename(F, S2); {$I+}
+         If IOResult <> 0 Then Rg[0] := -36 Else Rg[0] := 0;
+        End;
+       End;
+  $57: Begin
+        A := PL(2); H := PW(6);
+        If (PW(8) = 0) And (H >= 6) And (H <= 21) And StFUsed[H] Then Begin
+         T := 0;
+         {$I-} GetFTime(StFH[H], T); {$I+}
+         If IOResult <> 0 Then T := 0;
+         Wr16(A, T And $FFFF); Wr16(A + 2, (T Shr 16) And $FFFF);
+        End;
+        Rg[0] := 0;
+       End;
+ Else StGemdos := False;
+ End;
+End;
+
+
+Procedure StBxSetup;
+Var
+ Us1, Us2: String;
+ I, K: Integer;
+Begin
+ StBxInit := True;
+ Us1 := #0#27 + '1234567890-=' + #8#9 + 'qwertyuiop[]' + #13#0 + 'asdfghjkl;' + #39 + '`' + #0 + '\' + 'zxcvbnm,./' + #0#0#0 + ' ';
+ Us2 := #0#27 + '!@#$%^&*()_+' + #8#9 + 'QWERTYUIOP{}' + #13#0 + 'ASDFGHJKL:"~' + #0 + '|' + 'ZXCVBNM<>?' + #0#0#0 + ' ';
+ For I := 0 To 8 Do Wr32(StBxKbdv + I * 4, StBxRts);
+ Wr16(StBxRts, $4E75);
+ For I := 0 To 2 Do Begin
+  Wr32(StBxIorec + I * 14, StBxIobuf + I * 256);
+  Wr16(StBxIorec + I * 14 + 4, 256);
+  Wr16(StBxIorec + I * 14 + 10, 64);
+  Wr16(StBxIorec + I * 14 + 12, 192);
+ End;
+ For K := 1 To Length(Us1) Do Begin
+  Wr8(StBxKeyt + K, Ord(Us1[K])); Wr8(StBxKeyt + 128 + K, Ord(Us2[K]));
+  If (Us1[K] >= 'a') And (Us1[K] <= 'z') Then Wr8(StBxKeyt + 256 + K, Ord(Us2[K])) Else Wr8(StBxKeyt + 256 + K, Ord(Us1[K]));
+ End;
+ For I := 0 To 15 Do StPal[I] := 0;
+ StPal[0] := $777;
+ For I := 0 To 15 Do StGi[I] := 0;
+ StGi[7] := $FF; StGi[14] := $FF;
+ StKbRate := $0F0F; StPrt := 0;
+End;
+
+{ retourne True si la fonction BIOS est traitee ici }
+Function StBios: Boolean;
+Var Fn, N: Word; A: LongInt;
+Begin
+ StBios := True;
+ If Not StBxInit Then StBxSetup;
+ Fn := Rd16(Rg[15]);
+ Case Fn Of
+  0: Begin A := PL(2); Wr32(A, 0); Wr32(A + 4, 0); Wr32(A + 8, 0); Rg[0] := 0; End;
+  5: Begin
+      N := PW(2); A := PL(4);
+      If N < $200 Then Begin
+       Rg[0] := Rd32(N * 4);
+       If A <> -1 Then Wr32(N * 4, A);
+      End Else Rg[0] := 0;
+     End;
+  6: Rg[0] := 20;
+  8: Rg[0] := -1;
+  10: Rg[0] := 5;                          { Drvmap : A: et C: }
+ Else StBios := False;
+ End;
+End;
+
+{ retourne True si la fonction XBIOS est traitee ici }
+Function StXbios: Boolean;
+Var Fn: Word; A: LongInt; I, V: Integer; Y, Mo, D, Dw, Hh, Mi, Se, Hs: Word;
+Begin
+ StXbios := True;
+ If Not StBxInit Then StBxSetup;
+ Fn := Rd16(Rg[15]);
+ Case Fn Of
+  0: Rg[0] := 0;
+  6: Begin A := PL(2); For I := 0 To 15 Do StPal[I] := SmallInt(Rd16(A + I * 2)); Rg[0] := 0; End;
+  7: Begin
+      I := PW(2) And 15;
+      Rg[0] := StPal[I] And $FFFF;
+      V := SmallInt(PW(4));
+      If V >= 0 Then StPal[I] := V And $777;
+     End;
+  14: Begin I := PW(2); If I > 2 Then I := 0; Rg[0] := StBxIorec + I * 14; End;
+  15: Rg[0] := 0;
+  16: Rg[0] := StBxKeyt;
+  22: Rg[0] := 0;
+  23: Begin
+       GetDate(Y, Mo, D, Dw); GetTime(Hh, Mi, Se, Hs);
+       Rg[0] := ((LongInt(Y) - 1980) Shl 25) Or (LongInt(Mo) Shl 21) Or (LongInt(D) Shl 16) Or
+                (LongInt(Hh) Shl 11) Or (LongInt(Mi) Shl 5) Or (LongInt(Se) Div 2);
+      End;
+  24: Rg[0] := 0;
+  26, 27: Rg[0] := 0;
+  28: Begin
+       I := PW(4);
+       If (I And $80) <> 0 Then StGi[I And 15] := PW(2) And $FF;
+       Rg[0] := StGi[I And 15];
+      End;
+  29: Begin StGi[14] := StGi[14] And (PW(2) And $FF); Rg[0] := 0; End;
+  30: Begin StGi[14] := StGi[14] Or (PW(2) And $FF); Rg[0] := 0; End;
+  31, 32, 36: Rg[0] := 0;
+  33: Begin Rg[0] := StPrt; If SmallInt(PW(2)) >= 0 Then StPrt := PW(2); End;
+  34: Rg[0] := StBxKbdv;
+  35: Begin
+       Rg[0] := StKbRate;
+       If SmallInt(PW(2)) >= 0 Then StKbRate := ((PW(2) And $FF) Shl 8) Or (PW(4) And $FF);
+      End;
+ Else StXbios := False;
+ End;
+End;
+
+{ TRAP #n : les services Atari ST (GEMDOS, AES/VDI, BIOS, XBIOS) sont ceux de M68K_DoTrap }
+Procedure DoTrap(N: Integer);
+Begin
+ { GEMDOS, BIOS et XBIOS de l'ST : implementation complete ci-dessus ; le reste (console, Pterm, AES/VDI) : M68K_DoTrap }
+ If (N = 1) And StGemdos Then Exit;
+ If (N = 13) And StBios Then Exit;
+ If (N = 14) And StXbios Then Exit;
+ StCpuStore;
+ M68K_DoTrap(N);
+ StCpuLoad;
+ If M68K_Halted And (StopReason = STOP_NONE) Then Begin
+  StopReason := STOP_EXIT;
+  ExitCode := M68K_ExitCode;
+ End;
+End;
+
+Procedure DoLineA(Op: LongInt);
+Begin
+ { ligne A : tolerance (comme l'ancien noyau) jusqu'a l'implementation des primitives }
+ Inc(M68K_DbgUnknown);
+ M68K_DbgLastBad := CurOpPC;
+ Rg[0] := 0;
+End;
+
+Procedure HleLibCheck;
+Begin
+End;
+
+Procedure IrqCheck;
+Begin
+End;
+
 { prepare le noyau a partir de l'etat M68K_* (appele au chargement du programme) }
 Procedure StCpuInit;
+Var AddrErrI: Integer;
 Begin
+ StNBlks := 0;
+ For AddrErrI := 6 To 21 Do StFUsed[AddrErrI] := False;
+ StCwd := '\\';
+ StDrv := 2;
+ StRoot := '';
+ StDta := StBasePage + $80;
+ StClockAdj := 0;
+ StBxInit := False;
  SingleStack := True;
  M68K_A[7] := StUserSP;
  Rg[15] := StUserSP;

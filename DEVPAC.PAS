@@ -12623,7 +12623,7 @@ Begin
         If (I<0) Or (I>=DOS_MAXSRCH) Or (DosSrch[I]=Nil) Then R:=-33
         Else Begin
          N:=Rd16(DtaAddr+2)+1;
-         If N>DosSrch[I]^.N Then R:=-47
+         If N>DosSrch[I]^.N Then R:=-49
          Else Begin
           Wr16(DtaAddr+2,N);FillDtaEnt(DosSrch[I]^.Ent[N]);R:=0;
          End;

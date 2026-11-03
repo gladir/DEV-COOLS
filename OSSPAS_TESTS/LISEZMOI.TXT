@@ -42,3 +42,7 @@ DEVENV.PAS : le noyau 68000 de la cible Atari ST (StCpu_*, porte de DEVPAC.PAS p
 distinct du noyau M68K_* d'origine, qui reste utilise par Amiga et -C68000 sans modification. Variables du mode
 test de DEVENV : DEVENV_EMUQUIT=1 (quitter a la fin), DEVENV_EMUDUMP=adresse:longueur:fichier (memoire),
 DEVENV_EMUTEXT=fichier (texte de l'ecran virtuel), DEVENV_EMUSTEPS=n (limite d'instructions).
+
+GEMDOS (gemdos_fichiers.py) : Dgetdrv/Dsetdrv, Dsetpath/Dgetpath, Fcreate/Fwrite/Fclose/Fopen/Fread/Fseek, Frename,
+Fsfirst/Fsnext (ENMFIL = -49 en fin de liste)/Fgetdta, Fattrib, Fdelete, Dcreate/Ddelete, Malloc/Mfree/Mshrink : meme
+test sur les trois emulateurs ; les resultats sont relus en memoire a la fin du programme.

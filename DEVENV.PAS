@@ -233920,33 +233920,6 @@ Begin
  M68K_SR := StCpu_SRv;
 End;
 
-{ TRAP #n : les services Atari ST (GEMDOS, AES/VDI, BIOS, XBIOS) sont ceux de M68K_DoTrap }
-Procedure StCpu_DoTrap(N: Integer);
-Begin
- StCpu_StCpuStore;
- M68K_DoTrap(N);
- StCpu_StCpuLoad;
- If M68K_Halted And (StCpu_StopReason = StCpu_STOP_NONE) Then Begin
-  StCpu_StopReason := StCpu_STOP_EXIT;
-  StCpu_ExitCode := M68K_ExitCode;
- End;
-End;
-
-Procedure StCpu_DoLineA(Op: LongInt);
-Begin
- { ligne A : tolerance (comme l'ancien noyau) jusqu'a l'implementation des primitives }
- Inc(M68K_DbgUnknown);
- M68K_DbgLastBad := StCpu_CurOpPC;
- StCpu_Rg[0] := 0;
-End;
-
-Procedure StCpu_HleLibCheck;
-Begin
-End;
-
-Procedure StCpu_IrqCheck;
-Begin
-End;
 
 
 { ---- chargeur de programmes GEMDOS (.PRG) : basepage, relocation, pile, ligne de commande ---- }
@@ -234055,9 +234028,577 @@ Begin
  StCpu_StLoadPRG := True;
 End;
 
+
+{ ---- GEMDOS (fichiers, repertoires, memoire, date et heure), BIOS et XBIOS de l'Atari ST ---- }
+Const
+ StCpu_StHeapLo = $A0000;                { tas GEMDOS (Malloc) : $A0000 .. $EFFFF }
+ StCpu_StHeapHi = $F0000;
+ StCpu_StBxKbdv = $F0400;                { table des vecteurs du clavier (Kbdvbase) }
+ StCpu_StBxRts  = $F0480;                { RTS : cible des vecteurs inutilises }
+ StCpu_StBxIorec = $F0500;               { trois structures IOREC (RS232, clavier, MIDI) }
+ StCpu_StBxIobuf = $F0600;               { leurs tampons (3 x 256 octets) }
+ StCpu_StBxKeyt = $F0A00;                { tables clavier (normal, Maj, Verr.Maj) }
+Type
+ StCpu_StBlk = Record A, S: LongInt; End;
+Var
+ StCpu_StFH: Array[6..21] Of File;
+ StCpu_StFUsed: Array[6..21] Of Boolean;
+ StCpu_StBlks: Array[1..64] Of StCpu_StBlk;
+ StCpu_StNBlks: Integer;
+ StCpu_StCwd: String;                    { repertoire courant TOS (sans lecteur) }
+ StCpu_StDrv: Integer;
+ StCpu_StRoot: String;                   { racine du lecteur : repertoire de travail de DEVENV au lancement }
+ StCpu_StSfDir, StCpu_StSfPat: String;
+ StCpu_StSfAttr: Integer;
+ StCpu_StSfRec: SearchRec;
+ StCpu_StDta: LongInt;
+ StCpu_StClockAdj: LongInt;
+ StCpu_StBxInit: Boolean;
+ StCpu_StPal: Array[0..15] Of Integer;
+ StCpu_StGi: Array[0..15] Of Byte;
+ StCpu_StKbRate, StCpu_StPrt: Integer;
+
+Function StCpu_PW(N: Integer): LongInt;
+Begin StCpu_PW := StCpu_Rd16(StCpu_Rg[15] + N); End;
+Function StCpu_PL(N: Integer): LongInt;
+Begin StCpu_PL := StCpu_Rd32(StCpu_Rg[15] + N); End;
+
+Function StCpu_StUpper(Const S: String): String;
+Var I: Integer; T: String;
+Begin
+ T := S;
+ For I := 1 To Length(T) Do T[I] := UpCase(T[I]);
+ StCpu_StUpper := T;
+End;
+
+Function StCpu_StCStr(A: LongInt): String;
+Var S: String;
+Begin
+ S := '';
+ While (StCpu_Rd8(A) <> 0) And (Length(S) < 250) Do Begin S := S + Chr(StCpu_Rd8(A)); Inc(A); End;
+ StCpu_StCStr := S;
+End;
+
+Procedure StCpu_StPutStr(A: LongInt; Const S: String);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do StCpu_Wr8(A + I - 1, Ord(S[I]));
+ StCpu_Wr8(A + Length(S), 0);
+End;
+
+{ nom TOS -> chemin hote : lecteur retire, \ -> /, chemin relatif complete par le repertoire courant, casse resolue }
+Function StCpu_StHostPath(Const S0: String): String;
+Var S, Cur, Comp, Full: String; I: Integer; Found: Boolean; Sr: SearchRec;
+Begin
+ S := S0;
+ While (Length(S) > 0) And (S[Length(S)] = ' ') Do Delete(S, Length(S), 1);
+ If (Length(S) >= 2) And (S[2] = ':') Then Delete(S, 1, 2);
+ For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+ If (S = '') Or (S[1] <> '\') Then Begin
+  If StCpu_StCwd = '\' Then Full := '\' + S Else Full := StCpu_StCwd + '\' + S;
+ End Else Full := S;
+ If StCpu_StRoot = '' Then Begin GetDir(0, StCpu_StRoot); If (StCpu_StRoot <> '') And (StCpu_StRoot[Length(StCpu_StRoot)] <> '/') And (StCpu_StRoot[Length(StCpu_StRoot)] <> '\') Then StCpu_StRoot := StCpu_StRoot + '/'; End;
+ Cur := StCpu_StRoot;
+ I := 1;
+ While I <= Length(Full) Do Begin
+  Comp := '';
+  While (I <= Length(Full)) And (Full[I] = '\') Do Inc(I);
+  While (I <= Length(Full)) And (Full[I] <> '\') Do Begin Comp := Comp + Full[I]; Inc(I); End;
+  If (Comp = '') Or (Comp = '.') Then
+  Else Begin
+   Found := False;
+   {$I-}
+   FindFirst(Cur + '*', AnyFile, Sr);
+   {$I+}
+   While DosError = 0 Do Begin
+    If StCpu_StUpper(Sr.Name) = StCpu_StUpper(Comp) Then Begin Comp := Sr.Name; Found := True; Break; End;
+    FindNext(Sr);
+   End;
+   If Found Then Begin
+    Cur := Cur + Comp;
+    If I <= Length(Full) Then Cur := Cur + '/';
+   End Else Begin
+    Cur := Cur + Comp;
+    If I <= Length(Full) Then Cur := Cur + '/';
+   End;
+  End;
+ End;
+ If (Cur <> '') And (Cur[Length(Cur)] = '/') And (Length(Cur) > 1) And (Cur <> StCpu_StRoot) Then Delete(Cur, Length(Cur), 1);
+ StCpu_StHostPath := Cur;
+End;
+
+{ fichier a creer : nom en majuscules (sauf s'il existe deja) }
+Function StCpu_StCreatePath(Const S0: String): String;
+Var H: String; I, P: Integer; F: File; Ex: Boolean;
+Begin
+ H := StCpu_StHostPath(S0);
+ Assign(F, H);
+ {$I-} Reset(F, 1); {$I+}
+ Ex := IOResult = 0;
+ If Ex Then Close(F)
+ Else Begin
+  P := 0;
+  For I := 1 To Length(H) Do If H[I] = '/' Then P := I;
+  H := Copy(H, 1, P) + StCpu_StUpper(Copy(H, P + 1, 200));
+ End;
+ StCpu_StCreatePath := H;
+End;
+
+Function StCpu_StMatch(Const Pat, Nm: String): Boolean;
+ Function M(P, N: Integer): Boolean;
+ Begin
+  While P <= Length(Pat) Do Begin
+   If Pat[P] = '*' Then Begin
+    While (P <= Length(Pat)) And (Pat[P] = '*') Do Inc(P);
+    If P > Length(Pat) Then Begin M := True; Exit; End;
+    While N <= Length(Nm) + 1 Do Begin
+     If M(P, N) Then Begin M := True; Exit; End;
+     Inc(N);
+    End;
+    M := False; Exit;
+   End Else If N > Length(Nm) Then Begin M := False; Exit; End
+   Else If (Pat[P] <> '?') And (Pat[P] <> Nm[N]) Then Begin M := False; Exit; End;
+   Inc(P); Inc(N);
+  End;
+  M := N > Length(Nm);
+ End;
+Begin
+ If Pat = '*.*' Then StCpu_StMatch := True Else StCpu_StMatch := M(1, 1);
+End;
+
+Function StCpu_StNextMatch(First: Boolean): Boolean;
+Begin
+ StCpu_StNextMatch := False;
+ If First Then Begin
+  {$I-} FindFirst(StCpu_StSfDir + '*', AnyFile, StCpu_StSfRec); {$I+}
+ End Else Begin
+  {$I-} FindNext(StCpu_StSfRec); {$I+}
+ End;
+ While DosError = 0 Do Begin
+  If StCpu_StMatch(StCpu_StSfPat, StCpu_StUpper(StCpu_StSfRec.Name)) And (StCpu_StSfRec.Name <> '.') And (StCpu_StSfRec.Name <> '..') And
+     (((StCpu_StSfRec.Attr And Directory) = 0) Or ((StCpu_StSfAttr And $10) <> 0)) And
+     ((StCpu_StSfRec.Attr And $8) = 0) Then Begin
+   StCpu_StNextMatch := True; Exit;
+  End;
+  {$I-} FindNext(StCpu_StSfRec); {$I+}
+ End;
+End;
+
+Procedure StCpu_StFillDta;
+Var N: String;
+Begin
+ StCpu_Wr8(StCpu_StDta + 21, StCpu_StSfRec.Attr And $27);
+ StCpu_Wr16(StCpu_StDta + 22, StCpu_StSfRec.Time And $FFFF);
+ StCpu_Wr16(StCpu_StDta + 24, (StCpu_StSfRec.Time Shr 16) And $FFFF);
+ StCpu_Wr32(StCpu_StDta + 26, StCpu_StSfRec.Size);
+ N := StCpu_StUpper(StCpu_StSfRec.Name);
+ If Length(N) > 12 Then N := Copy(N, 1, 12);
+ StCpu_StPutStr(StCpu_StDta + 30, N);
+End;
+
+Function StCpu_StNowSecs: LongInt;
+Var Y, Mo, D, Dw, H, Mi, S, S100: Word;
+Begin
+ GetDate(Y, Mo, D, Dw);
+ GetTime(H, Mi, S, S100);
+ StCpu_StNowSecs := LongInt(H) * 3600 + Mi * 60 + S + StCpu_StClockAdj;
+End;
+
+Function StCpu_StAlloc(N: LongInt): LongInt;
+Var I, J: Integer; Lo, Hi, Best: LongInt; T: StCpu_StBlk;
+Begin
+ StCpu_StAlloc := 0;
+ If (N <= 0) Or (StCpu_StNBlks >= 64) Then Exit;
+ N := (N + 3) And (Not 3);
+ Lo := StCpu_StHeapLo;
+ For I := 0 To StCpu_StNBlks Do Begin
+  If I < StCpu_StNBlks Then Hi := StCpu_StBlks[I + 1].A Else Hi := StCpu_StHeapHi;
+  If Hi - Lo >= N Then Begin
+   Inc(StCpu_StNBlks);
+   For J := StCpu_StNBlks DownTo I + 2 Do StCpu_StBlks[J] := StCpu_StBlks[J - 1];
+   StCpu_StBlks[I + 1].A := Lo; StCpu_StBlks[I + 1].S := N;
+   FillChar(M68K_Mem[Lo], N, 0);
+   StCpu_StAlloc := Lo; Exit;
+  End;
+  If I < StCpu_StNBlks Then Lo := StCpu_StBlks[I + 1].A + StCpu_StBlks[I + 1].S;
+ End;
+ Best := 0;
+End;
+
+Function StCpu_StLargest: LongInt;
+Var I: Integer; Lo, Hi, Best: LongInt;
+Begin
+ Best := 0; Lo := StCpu_StHeapLo;
+ For I := 0 To StCpu_StNBlks Do Begin
+  If I < StCpu_StNBlks Then Hi := StCpu_StBlks[I + 1].A Else Hi := StCpu_StHeapHi;
+  If Hi - Lo > Best Then Best := Hi - Lo;
+  If I < StCpu_StNBlks Then Lo := StCpu_StBlks[I + 1].A + StCpu_StBlks[I + 1].S;
+ End;
+ StCpu_StLargest := Best;
+End;
+
+Function StCpu_StFreeSlot: Integer;
+Var I: Integer;
+Begin
+ StCpu_StFreeSlot := -1;
+ For I := 6 To 21 Do If Not StCpu_StFUsed[I] Then Begin StCpu_StFreeSlot := I; Exit; End;
+End;
+
+{ retourne True si la fonction GEMDOS est traitee ici (D0 = resultat) }
+Function StCpu_StGemdos: Boolean;
+Var Fn: Word; H, I, J, K: Integer; S, S2: String; A, Cnt, Done, Pos2, T: LongInt; F: File; N: Word; At: Word;
+    Buf: Array[0..4095] Of Byte; Mode: Integer; Yy, Mm, Dd, Dw: Word;
+Begin
+ StCpu_StGemdos := True;
+ Fn := StCpu_Rd16(StCpu_Rg[15]);
+ Case Fn Of
+  $0E: Begin StCpu_StDrv := StCpu_PW(2) And 15; StCpu_Rg[0] := 5; End;
+  $19: StCpu_Rg[0] := StCpu_StDrv;
+  $1A: StCpu_StDta := StCpu_PL(2);
+  $2F: StCpu_Rg[0] := StCpu_StDta;
+  $2A: Begin
+        { Tgetdate }
+        StCpu_Rg[0] := 0;
+        GetDate(Yy, Mm, Dd, Dw);
+        StCpu_Rg[0] := ((LongInt(Yy) - 1980) Shl 9) Or (LongInt(Mm) Shl 5) Or Dd;
+       End;
+  $2B: StCpu_Rg[0] := 0;
+  $2C: Begin
+        T := StCpu_StNowSecs Mod 86400;
+        StCpu_Rg[0] := ((T Div 3600) Shl 11) Or (((T Div 60) Mod 60) Shl 5) Or ((T Mod 60) Div 2);
+       End;
+  $2D: Begin
+        T := StCpu_PW(2);
+        StCpu_StClockAdj := (T Shr 11) * 3600 + ((T Shr 5) And 63) * 60 + (T And 31) * 2 - (StCpu_StNowSecs - StCpu_StClockAdj) Mod 86400;
+        StCpu_Rg[0] := 0;
+       End;
+  $36: Begin
+        A := StCpu_PL(2);
+        StCpu_Wr32(A, 20000); StCpu_Wr32(A + 4, 40000); StCpu_Wr32(A + 8, 512); StCpu_Wr32(A + 12, 2);
+        StCpu_Rg[0] := 0;
+       End;
+  $39: Begin
+        {$I-} MkDir(StCpu_StCreatePath(StCpu_StCStr(StCpu_PL(2)))); {$I+}
+        If IOResult <> 0 Then StCpu_Rg[0] := -36 Else StCpu_Rg[0] := 0;
+       End;
+  $3A: Begin
+        {$I-} RmDir(StCpu_StHostPath(StCpu_StCStr(StCpu_PL(2)))); {$I+}
+        If IOResult <> 0 Then StCpu_Rg[0] := -36 Else StCpu_Rg[0] := 0;
+       End;
+  $3B: Begin
+        S := StCpu_StCStr(StCpu_PL(2));
+        If (Length(S) >= 2) And (S[2] = ':') Then Delete(S, 1, 2);
+        For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+        Done := 0;
+        {$I-} FindFirst(StCpu_StHostPath(S), Directory, StCpu_StSfRec); {$I+}
+        If (S = '') Or (S = '\') Or ((DosError = 0) And ((StCpu_StSfRec.Attr And Directory) <> 0)) Then Begin
+         If (S = '') Or (S[1] <> '\') Then Begin If StCpu_StCwd = '\' Then S := '\' + S Else S := StCpu_StCwd + '\' + S; End;
+         While (Length(S) > 1) And (S[Length(S)] = '\') Do Delete(S, Length(S), 1);
+         StCpu_StCwd := S; StCpu_Rg[0] := 0;
+        End Else StCpu_Rg[0] := -34;
+       End;
+  $3C: Begin
+        H := StCpu_StFreeSlot;
+        If H < 0 Then StCpu_Rg[0] := -35
+        Else Begin
+         Assign(StCpu_StFH[H], StCpu_StCreatePath(StCpu_StCStr(StCpu_PL(2))));
+         {$I-} Rewrite(StCpu_StFH[H], 1); {$I+}
+         If IOResult <> 0 Then StCpu_Rg[0] := -36 Else Begin StCpu_StFUsed[H] := True; StCpu_Rg[0] := H; End;
+        End;
+       End;
+  $3D: Begin
+        H := StCpu_StFreeSlot;
+        If H < 0 Then StCpu_Rg[0] := -35
+        Else Begin
+         S := StCpu_StHostPath(StCpu_StCStr(StCpu_PL(2)));
+         Assign(StCpu_StFH[H], S);
+         If (StCpu_PW(6) And 3) = 0 Then FileMode := 0 Else FileMode := 2;
+         {$I-} Reset(StCpu_StFH[H], 1); {$I+}
+         FileMode := 2;
+         If IOResult <> 0 Then StCpu_Rg[0] := -33 Else Begin StCpu_StFUsed[H] := True; StCpu_Rg[0] := H; End;
+        End;
+       End;
+  $3E: Begin
+        H := StCpu_PW(2);
+        If (H >= 6) And (H <= 21) And StCpu_StFUsed[H] Then Begin
+         {$I-} Close(StCpu_StFH[H]); {$I+}
+         If IOResult <> 0 Then ;
+         StCpu_StFUsed[H] := False; StCpu_Rg[0] := 0;
+        End Else If H < 6 Then StCpu_StGemdos := False Else StCpu_Rg[0] := -37;
+       End;
+  $3F: Begin
+        H := SmallInt(StCpu_PW(2)); Cnt := StCpu_PL(4); A := StCpu_PL(8);
+        If (H >= 6) And (H <= 21) And StCpu_StFUsed[H] Then Begin
+         Done := 0;
+         If Cnt < 0 Then Cnt := 0;
+         While Cnt > 0 Do Begin
+          If Cnt > SizeOf(Buf) Then K := SizeOf(Buf) Else K := Cnt;
+          {$I-} BlockRead(StCpu_StFH[H], Buf, K, N); {$I+}
+          If IOResult <> 0 Then Begin N := 0; End;
+          For I := 0 To N - 1 Do StCpu_Wr8(A + Done + I, Buf[I]);
+          Done := Done + N; Cnt := Cnt - N;
+          If N < K Then Break;
+         End;
+         StCpu_Rg[0] := Done;
+        End Else If (H >= 0) And (H < 6) Then StCpu_StGemdos := False Else StCpu_Rg[0] := -37;
+       End;
+  $40: Begin
+        H := SmallInt(StCpu_PW(2)); Cnt := StCpu_PL(4); A := StCpu_PL(8);
+        If (H >= 6) And (H <= 21) And StCpu_StFUsed[H] Then Begin
+         Done := 0;
+         While Cnt > 0 Do Begin
+          If Cnt > SizeOf(Buf) Then K := SizeOf(Buf) Else K := Cnt;
+          For I := 0 To K - 1 Do Buf[I] := StCpu_Rd8(A + Done + I);
+          {$I-} BlockWrite(StCpu_StFH[H], Buf, K, N); {$I+}
+          If IOResult <> 0 Then N := 0;
+          Done := Done + N; Cnt := Cnt - N;
+          If N < K Then Break;
+         End;
+         StCpu_Rg[0] := Done;
+        End Else If (H >= 0) And (H < 6) Then StCpu_StGemdos := False Else StCpu_Rg[0] := -37;
+       End;
+  $41: Begin
+        S := StCpu_StHostPath(StCpu_StCStr(StCpu_PL(2)));
+        Assign(F, S);
+        {$I-} Reset(F, 1); {$I+}
+        If IOResult <> 0 Then StCpu_Rg[0] := -33
+        Else Begin
+         Close(F);
+         {$I-} Erase(F); {$I+}
+         If IOResult <> 0 Then StCpu_Rg[0] := -36 Else StCpu_Rg[0] := 0;
+        End;
+       End;
+  $42: Begin
+        Pos2 := StCpu_PL(2); H := StCpu_PW(6); Mode := StCpu_PW(8);
+        If (H >= 6) And (H <= 21) And StCpu_StFUsed[H] Then Begin
+         If Mode = 1 Then Pos2 := Pos2 + FilePos(StCpu_StFH[H])
+         Else If Mode = 2 Then Pos2 := Pos2 + FileSize(StCpu_StFH[H]);
+         If Pos2 < 0 Then Pos2 := 0;
+         {$I-} Seek(StCpu_StFH[H], Pos2); {$I+}
+         If IOResult <> 0 Then StCpu_Rg[0] := -64 Else StCpu_Rg[0] := Pos2;
+        End Else If H < 6 Then StCpu_Rg[0] := 0 Else StCpu_Rg[0] := -37;
+       End;
+  $43: Begin
+        S := StCpu_StHostPath(StCpu_StCStr(StCpu_PL(2)));
+        Assign(F, S);
+        {$I-} Reset(F, 1); {$I+}
+        If IOResult = 0 Then Begin
+         Close(F);
+         At := 0;
+         {$I-} GetFAttr(F, At); {$I+}
+         If IOResult <> 0 Then At := 0;
+         StCpu_Rg[0] := At And $27;
+        End Else Begin
+         {$I-} FindFirst(S, Directory, StCpu_StSfRec); {$I+}
+         If (DosError = 0) And ((StCpu_StSfRec.Attr And Directory) <> 0) Then StCpu_Rg[0] := $10 Else StCpu_Rg[0] := -33;
+        End;
+       End;
+  $47: Begin
+        S := StCpu_StCwd;
+        StCpu_StPutStr(StCpu_PL(2), S);
+        StCpu_Rg[0] := 0;
+       End;
+  $48: Begin
+        Cnt := StCpu_PL(2);
+        If Cnt = -1 Then StCpu_Rg[0] := StCpu_StLargest
+        Else StCpu_Rg[0] := StCpu_StAlloc(Cnt);
+       End;
+  $49: Begin
+        A := StCpu_PL(2); StCpu_Rg[0] := -40;
+        For I := 1 To StCpu_StNBlks Do
+         If StCpu_StBlks[I].A = A Then Begin
+          For J := I To StCpu_StNBlks - 1 Do StCpu_StBlks[J] := StCpu_StBlks[J + 1];
+          Dec(StCpu_StNBlks); StCpu_Rg[0] := 0; Break;
+         End;
+       End;
+  $4A: Begin
+        A := StCpu_PL(4); Cnt := StCpu_PL(8); StCpu_Rg[0] := 0;
+        For I := 1 To StCpu_StNBlks Do
+         If StCpu_StBlks[I].A = A Then Begin If Cnt < StCpu_StBlks[I].S Then StCpu_StBlks[I].S := (Cnt + 3) And (Not 3); End;
+       End;
+  $4E: Begin
+        S := StCpu_StCStr(StCpu_PL(2));
+        StCpu_StSfAttr := StCpu_PW(6);
+        For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+        If (Length(S) >= 2) And (S[2] = ':') Then Delete(S, 1, 2);
+        J := 0;
+        For I := 1 To Length(S) Do If S[I] = '\' Then J := I;
+        If J > 0 Then Begin
+         If J = 1 Then StCpu_StSfDir := StCpu_StHostPath('\') Else StCpu_StSfDir := StCpu_StHostPath(Copy(S, 1, J - 1));
+         StCpu_StSfPat := StCpu_StUpper(Copy(S, J + 1, 100));
+        End Else Begin StCpu_StSfDir := StCpu_StHostPath(''); StCpu_StSfPat := StCpu_StUpper(S); End;
+        If (StCpu_StSfDir <> '') And (StCpu_StSfDir[Length(StCpu_StSfDir)] <> '/') Then StCpu_StSfDir := StCpu_StSfDir + '/';
+        If StCpu_StNextMatch(True) Then Begin StCpu_StFillDta; StCpu_Rg[0] := 0; End Else StCpu_Rg[0] := -33;
+       End;
+  $4F: Begin
+        If StCpu_StNextMatch(False) Then Begin StCpu_StFillDta; StCpu_Rg[0] := 0; End Else StCpu_Rg[0] := -49;
+       End;
+  $56: Begin
+        S := StCpu_StHostPath(StCpu_StCStr(StCpu_PL(4)));
+        S2 := StCpu_StCreatePath(StCpu_StCStr(StCpu_PL(8)));
+        Assign(F, S);
+        {$I-} Reset(F, 1); {$I+}
+        If IOResult <> 0 Then StCpu_Rg[0] := -33
+        Else Begin
+         Close(F);
+         {$I-} Rename(F, S2); {$I+}
+         If IOResult <> 0 Then StCpu_Rg[0] := -36 Else StCpu_Rg[0] := 0;
+        End;
+       End;
+  $57: Begin
+        A := StCpu_PL(2); H := StCpu_PW(6);
+        If (StCpu_PW(8) = 0) And (H >= 6) And (H <= 21) And StCpu_StFUsed[H] Then Begin
+         T := 0;
+         {$I-} GetFTime(StCpu_StFH[H], T); {$I+}
+         If IOResult <> 0 Then T := 0;
+         StCpu_Wr16(A, T And $FFFF); StCpu_Wr16(A + 2, (T Shr 16) And $FFFF);
+        End;
+        StCpu_Rg[0] := 0;
+       End;
+ Else StCpu_StGemdos := False;
+ End;
+End;
+
+
+Procedure StCpu_StBxSetup;
+Var
+ Us1, Us2: String;
+ I, K: Integer;
+Begin
+ StCpu_StBxInit := True;
+ Us1 := #0#27 + '1234567890-=' + #8#9 + 'qwertyuiop[]' + #13#0 + 'asdfghjkl;' + #39 + '`' + #0 + '\' + 'zxcvbnm,./' + #0#0#0 + ' ';
+ Us2 := #0#27 + '!@#$%^&*()_+' + #8#9 + 'QWERTYUIOP{}' + #13#0 + 'ASDFGHJKL:"~' + #0 + '|' + 'ZXCVBNM<>?' + #0#0#0 + ' ';
+ For I := 0 To 8 Do StCpu_Wr32(StCpu_StBxKbdv + I * 4, StCpu_StBxRts);
+ StCpu_Wr16(StCpu_StBxRts, $4E75);
+ For I := 0 To 2 Do Begin
+  StCpu_Wr32(StCpu_StBxIorec + I * 14, StCpu_StBxIobuf + I * 256);
+  StCpu_Wr16(StCpu_StBxIorec + I * 14 + 4, 256);
+  StCpu_Wr16(StCpu_StBxIorec + I * 14 + 10, 64);
+  StCpu_Wr16(StCpu_StBxIorec + I * 14 + 12, 192);
+ End;
+ For K := 1 To Length(Us1) Do Begin
+  StCpu_Wr8(StCpu_StBxKeyt + K, Ord(Us1[K])); StCpu_Wr8(StCpu_StBxKeyt + 128 + K, Ord(Us2[K]));
+  If (Us1[K] >= 'a') And (Us1[K] <= 'z') Then StCpu_Wr8(StCpu_StBxKeyt + 256 + K, Ord(Us2[K])) Else StCpu_Wr8(StCpu_StBxKeyt + 256 + K, Ord(Us1[K]));
+ End;
+ For I := 0 To 15 Do StCpu_StPal[I] := 0;
+ StCpu_StPal[0] := $777;
+ For I := 0 To 15 Do StCpu_StGi[I] := 0;
+ StCpu_StGi[7] := $FF; StCpu_StGi[14] := $FF;
+ StCpu_StKbRate := $0F0F; StCpu_StPrt := 0;
+End;
+
+{ retourne True si la fonction BIOS est traitee ici }
+Function StCpu_StBios: Boolean;
+Var Fn, N: Word; A: LongInt;
+Begin
+ StCpu_StBios := True;
+ If Not StCpu_StBxInit Then StCpu_StBxSetup;
+ Fn := StCpu_Rd16(StCpu_Rg[15]);
+ Case Fn Of
+  0: Begin A := StCpu_PL(2); StCpu_Wr32(A, 0); StCpu_Wr32(A + 4, 0); StCpu_Wr32(A + 8, 0); StCpu_Rg[0] := 0; End;
+  5: Begin
+      N := StCpu_PW(2); A := StCpu_PL(4);
+      If N < $200 Then Begin
+       StCpu_Rg[0] := StCpu_Rd32(N * 4);
+       If A <> -1 Then StCpu_Wr32(N * 4, A);
+      End Else StCpu_Rg[0] := 0;
+     End;
+  6: StCpu_Rg[0] := 20;
+  8: StCpu_Rg[0] := -1;
+  10: StCpu_Rg[0] := 5;                          { Drvmap : A: et C: }
+ Else StCpu_StBios := False;
+ End;
+End;
+
+{ retourne True si la fonction XBIOS est traitee ici }
+Function StCpu_StXbios: Boolean;
+Var Fn: Word; A: LongInt; I, V: Integer; Y, Mo, D, Dw, Hh, Mi, Se, Hs: Word;
+Begin
+ StCpu_StXbios := True;
+ If Not StCpu_StBxInit Then StCpu_StBxSetup;
+ Fn := StCpu_Rd16(StCpu_Rg[15]);
+ Case Fn Of
+  0: StCpu_Rg[0] := 0;
+  6: Begin A := StCpu_PL(2); For I := 0 To 15 Do StCpu_StPal[I] := SmallInt(StCpu_Rd16(A + I * 2)); StCpu_Rg[0] := 0; End;
+  7: Begin
+      I := StCpu_PW(2) And 15;
+      StCpu_Rg[0] := StCpu_StPal[I] And $FFFF;
+      V := SmallInt(StCpu_PW(4));
+      If V >= 0 Then StCpu_StPal[I] := V And $777;
+     End;
+  14: Begin I := StCpu_PW(2); If I > 2 Then I := 0; StCpu_Rg[0] := StCpu_StBxIorec + I * 14; End;
+  15: StCpu_Rg[0] := 0;
+  16: StCpu_Rg[0] := StCpu_StBxKeyt;
+  22: StCpu_Rg[0] := 0;
+  23: Begin
+       GetDate(Y, Mo, D, Dw); GetTime(Hh, Mi, Se, Hs);
+       StCpu_Rg[0] := ((LongInt(Y) - 1980) Shl 25) Or (LongInt(Mo) Shl 21) Or (LongInt(D) Shl 16) Or
+                (LongInt(Hh) Shl 11) Or (LongInt(Mi) Shl 5) Or (LongInt(Se) Div 2);
+      End;
+  24: StCpu_Rg[0] := 0;
+  26, 27: StCpu_Rg[0] := 0;
+  28: Begin
+       I := StCpu_PW(4);
+       If (I And $80) <> 0 Then StCpu_StGi[I And 15] := StCpu_PW(2) And $FF;
+       StCpu_Rg[0] := StCpu_StGi[I And 15];
+      End;
+  29: Begin StCpu_StGi[14] := StCpu_StGi[14] And (StCpu_PW(2) And $FF); StCpu_Rg[0] := 0; End;
+  30: Begin StCpu_StGi[14] := StCpu_StGi[14] Or (StCpu_PW(2) And $FF); StCpu_Rg[0] := 0; End;
+  31, 32, 36: StCpu_Rg[0] := 0;
+  33: Begin StCpu_Rg[0] := StCpu_StPrt; If SmallInt(StCpu_PW(2)) >= 0 Then StCpu_StPrt := StCpu_PW(2); End;
+  34: StCpu_Rg[0] := StCpu_StBxKbdv;
+  35: Begin
+       StCpu_Rg[0] := StCpu_StKbRate;
+       If SmallInt(StCpu_PW(2)) >= 0 Then StCpu_StKbRate := ((StCpu_PW(2) And $FF) Shl 8) Or (StCpu_PW(4) And $FF);
+      End;
+ Else StCpu_StXbios := False;
+ End;
+End;
+
+{ TRAP #n : les services Atari ST (GEMDOS, AES/VDI, BIOS, XBIOS) sont ceux de M68K_DoTrap }
+Procedure StCpu_DoTrap(N: Integer);
+Begin
+ { GEMDOS, BIOS et XBIOS de l'ST : implementation complete ci-dessus ; le reste (console, Pterm, AES/VDI) : M68K_DoTrap }
+ If (N = 1) And StCpu_StGemdos Then Exit;
+ If (N = 13) And StCpu_StBios Then Exit;
+ If (N = 14) And StCpu_StXbios Then Exit;
+ StCpu_StCpuStore;
+ M68K_DoTrap(N);
+ StCpu_StCpuLoad;
+ If M68K_Halted And (StCpu_StopReason = StCpu_STOP_NONE) Then Begin
+  StCpu_StopReason := StCpu_STOP_EXIT;
+  StCpu_ExitCode := M68K_ExitCode;
+ End;
+End;
+
+Procedure StCpu_DoLineA(Op: LongInt);
+Begin
+ { ligne A : tolerance (comme l'ancien noyau) jusqu'a l'implementation des primitives }
+ Inc(M68K_DbgUnknown);
+ M68K_DbgLastBad := StCpu_CurOpPC;
+ StCpu_Rg[0] := 0;
+End;
+
+Procedure StCpu_HleLibCheck;
+Begin
+End;
+
+Procedure StCpu_IrqCheck;
+Begin
+End;
+
 { prepare le noyau a partir de l'etat M68K_* (appele au chargement du programme) }
 Procedure StCpu_StCpuInit;
+Var AddrErrI: Integer;
 Begin
+ StCpu_StNBlks := 0;
+ For AddrErrI := 6 To 21 Do StCpu_StFUsed[AddrErrI] := False;
+ StCpu_StCwd := '\\';
+ StCpu_StDrv := 2;
+ StCpu_StRoot := '';
+ StCpu_StDta := StCpu_StBasePage + $80;
+ StCpu_StClockAdj := 0;
+ StCpu_StBxInit := False;
  StCpu_SingleStack := True;
  M68K_A[7] := StCpu_StUserSP;
  StCpu_Rg[15] := StCpu_StUserSP;

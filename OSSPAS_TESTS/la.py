@@ -7,6 +7,7 @@ WORK=os.environ.get('OSSPAS_TMP',tempfile.gettempdir()+'/osspas_lineA')
 os.makedirs(WORK,exist_ok=True)
 SCR=0xF8000
 LAVARS=0x500 if EMU in ('devpac','devenv') else 0x1F000      # adresse des variables de la ligne A (valeur de A0 apres $A000)
+TEXTBASE={'osspas':0x20100,'devpac':0x10100,'devenv':0x1100}[EMU]    # adresse du texte d'un programme charge
 FONTADDR=0x9C00 if EMU in ('devpac','devenv') else 0x19800     # forme de la police 8x16 (lignes de 256 octets)
 class P:
     def __init__(s):

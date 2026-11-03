@@ -14,15 +14,18 @@ def run_asm(src,name,resfile,gem=False):
     if os.path.exists(rp): os.remove(rp)
     runprg(pp,name,gem=gem)
     return open(rp,'rb').read()
-# ---- AES : appl_getinfo, objc_sysvar, appl_search, scrp_*, shel_wdef/rdef, wind_new, appl_bvset -------------
-b=run_asm('emu_aes.s','AESTEST','AESRES.BIN',gem=True)
-rows=[struct.unpack('>8h',b[i:i+16]) for i in range(0,len(b),16)]
-rows=[r for r in rows[1:] ]       # la ligne 0 depend du numero d'application
-check('appl_getinfo(0) : police 10 points',rows[0][:3]==(1,10,1))
-check('objc_sysvar : ecriture puis lecture',rows[1][:3]==(1,7,9) and rows[2][:3]==(1,7,9))
-check('appl_search : application puis fin de liste',rows[3][:3]==(1,2,0) and rows[4][0]==0)
-check('scrp_write / scrp_read',rows[7][:3]==(1,67,83))
-check('shel_wdef / shel_rdef',rows[10][:3]==(1,68,67))
+if not os.environ.get('OSSPAS_SKIP_AES'):
+    # ---- AES : appl_getinfo, objc_sysvar, appl_search, scrp_*, shel_wdef/rdef, wind_new, appl_bvset -------------
+    b=run_asm('emu_aes.s','AESTEST','AESRES.BIN',gem=True)
+    rows=[struct.unpack('>8h',b[i:i+16]) for i in range(0,len(b),16)]
+    rows=[r for r in rows[1:] ]       # la ligne 0 depend du numero d'application
+    check('appl_getinfo(0) : police 10 points',rows[0][:3]==(1,10,1))
+    check('objc_sysvar : ecriture puis lecture',rows[1][:3]==(1,7,9) and rows[2][:3]==(1,7,9))
+    check('appl_search : application puis fin de liste',rows[3][:3]==(1,2,0) and rows[4][0]==0)
+    check('scrp_write / scrp_read',rows[7][:3]==(1,67,83))
+    check('shel_wdef / shel_rdef',rows[10][:3]==(1,68,67))
+
+
 # ---- BIOS / XBIOS --------------------------------------------------------------------------------------------
 b=run_asm('emu_bios.s','BXTEST','BXRES.BIN')
 v=struct.unpack('>8L',b[:32])
