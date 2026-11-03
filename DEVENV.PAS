@@ -15122,6 +15122,13 @@ Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
 Procedure StepEmulator(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_Clear(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char); Forward;
+{ Atari ST : onglet d'emulation complet (bloc St_ defini en fin de fichier) }
+Function St_TabStart(Var P: TEmulatorPanel; Const Prg, Tail: String): Boolean; Forward;
+Procedure St_TabStop; Forward;
+Procedure St_TabClose; Forward;
+Function St_TabDraw(Var P: TEmulatorPanel; Full: Boolean): Boolean; Forward;
+Procedure St_TabTick(Var P: TEmulatorPanel; Active: Boolean); Forward;
+Function St_TabEvent(Var P: TEmulatorPanel; Var Ev: TEvent): Boolean; Forward;
 Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String); Forward;
 { Meme motif que EmuVScr_WriteStr+deux EmuVScr_PutChar(#13,#10) deja repete  }
 { des dizaines de fois (Win16/OS2LX/PE32/etc.) - factorise pour le chantier }
@@ -15702,6 +15709,7 @@ End;
 Procedure EmuPanel_Stop;
 Begin
  If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then Begin
+  If EmuPanel.TargetCPU = '-CATARIST' Then St_TabStop;
   EmuPanel.Running := False;
   EmuPanel.StatusMsg := 'Arrete par l''utilisateur'; { court, voir EmuPanel_Pause }
   DrawEmulatorPanel(EmuPanel);
@@ -22265,6 +22273,7 @@ Begin
  If Node^.Win.Kind = WK_EMU Then Begin
   If Index = WinMgr.ActiveIdx Then ClosingDOSCPU := EmuPanel.TargetCPU
   Else ClosingDOSCPU := Node^.EmuTab.TargetCPU;
+  If ClosingDOSCPU = '-CATARIST' Then St_TabClose;
   If (ClosingDOSCPU = '-CD') Or (ClosingDOSCPU = '-CP') Then Begin
    If Index = WinMgr.ActiveIdx Then Begin
     If EmuVideo.Mem <> Nil Then Begin Dispose(EmuVideo.Mem); EmuVideo.Mem := Nil; EmuVideo.MemReady := False; End;
@@ -186969,6 +186978,9 @@ Var
  S3PalIdx: Integer;
 Begin
  ScrH := GetScreenHeight;
+ { Atari ST : ecran emule (onglet complet, bloc St_) }
+ If P.TargetCPU = '-CATARIST' Then
+  If St_TabDraw(P, True) Then Exit;
  { Mode NES : rendu pixel du framebuffer 256x240 ----------------------- }
  If NesActive And (P.TargetCPU = '-CNES') Then Begin
   NesScale := 2;
@@ -232752,6 +232764,10144 @@ Begin
  M68K_Panel := @EmuPanel;
 End;
 
+{ ===== DEBUT EMULATEUR ATARI ST / GEM (St_, porte de DEVPAC.PAS par devenv_port_st.py) ===== }
+{$PUSH}
+{$A-}
+{$I-}
+{$R-}
+{$Q-}
+
+Procedure St_BlitScreen(Full: Boolean); Forward;
+Procedure St_CursorDraw(X,Y: LongInt); Forward;
+Procedure St_CursorErase; Forward;
+Procedure St_ShowMouse; Forward;
+Procedure St_HideMouse; Forward;
+Procedure St_PollKeys; Forward;
+Procedure St_Sound(Hz: Word); Forward;
+Procedure St_NoSound; Forward;
+Procedure St_SoundOut(Freq: LongInt; St_Ms: Integer); Forward;
+Procedure St_SoundBell; Forward;
+Procedure St_GetMouseState(Var X,Y,B: LongInt); Forward;
+Function St_DosFileSel(Const Title: String; Var Dr,Dir,St_Msk,Sel: String): Boolean; Forward;
+Const
+ St_SCR_H        = 480;
+ St_INK          = 0;
+ St_PAPER        = 15;
+ St_MAXERR       = 100;
+Var
+ St_Lang      : Integer;
+ St_BatchMode : Boolean;
+ St_AmigaMode : Boolean;
+ St_GfxOn     : Boolean;
+ St_ConOut    : Text;
+Function St_T3(Const En,Fr,De: String): String;
+Begin
+ Case St_Lang Of
+  0: St_T3:=En;
+  2: St_T3:=De;
+ Else St_T3:=Fr;
+ End;
+End;
+Function St_IntStr(N: LongInt): String;
+Var S: String;
+Begin
+ Str(N,S);
+ St_IntStr:=S;
+End;
+Function St_Upper(S: String): String;
+Var St_I: Integer;
+Begin
+ For St_I:=1 To Length(S) Do S[St_I]:=UpCase(S[St_I]);
+ St_Upper:=S;
+End;
+Function St_LowerStr(S: String): String;
+Var St_I: Integer;
+Begin
+ For St_I:=1 To Length(S) Do
+  If (S[St_I]>='A') And (S[St_I]<='Z') Then S[St_I]:=Chr(Ord(S[St_I])+32);
+ St_LowerStr:=S;
+End;
+Function St_Min2(A,B: LongInt): LongInt;
+Begin
+ If A<B Then St_Min2:=A Else St_Min2:=B;
+End;
+Function St_Max2(A,B: LongInt): LongInt;
+Begin
+ If A>B Then St_Max2:=A Else St_Max2:=B;
+End;
+Function St_Clamp(V,A,B: LongInt): LongInt;
+Begin
+ If V<A Then V:=A;
+ If V>B Then V:=B;
+ St_Clamp:=V;
+End;
+Function St_PadR(Const S: String; W: Integer): String;
+Var R: String;
+Begin
+ R:=S;
+ While Length(R)<W Do R:=R+' ';
+ St_PadR:=R;
+End;
+Function St_ToInt(Const S: String): LongInt;
+Var V: LongInt; C: Integer;
+Begin
+ Val(S,V,C);
+ If C<>0 Then V:=0;
+ St_ToInt:=V;
+End;
+Function St_ShrL(V: LongInt; N: Integer): LongInt;
+Begin
+ If N<=0 Then St_ShrL:=V
+ Else If N>=32 Then St_ShrL:=0
+ Else Begin
+  V:=V shr N;
+  If N>0 Then V:=V And ((LongInt(1) shl (32-N))-1);
+  St_ShrL:=V;
+ End;
+End;
+Function St_HexN(V: LongInt; N: Integer): String;
+Const HD : String[16] = '0123456789ABCDEF';
+Var S: String; St_I: Integer;
+Begin
+ S:='';
+ For St_I:=1 To N Do Begin
+  S:=HD[(V And 15)+1]+S;
+  V:=St_ShrL(V,4);
+ End;
+ St_HexN:=S;
+End;
+Function St_Hex2(V: LongInt): String;
+Begin
+ St_Hex2:=St_HexN(V,2);
+End;
+Function St_Hex4(V: LongInt): String;
+Begin
+ St_Hex4:=St_HexN(V,4);
+End;
+Function St_Hex6(V: LongInt): String;
+Begin
+ St_Hex6:=St_HexN(V,6);
+End;
+Function St_Hex8(V: LongInt): String;
+Begin
+ St_Hex8:=St_HexN(V,8);
+End;
+Function St_PtrAdd(P: Pointer; N: LongInt): Pointer;
+Begin
+ {$IFDEF FPC}
+ St_PtrAdd:=Pointer(PtrUInt(P)+PtrUInt(N));
+ {$ELSE}
+ St_PtrAdd:=Ptr(Seg(P^),Ofs(P^)+N);
+ {$ENDIF}
+End;
+Function St_MsNow: LongInt;
+Var H,M,S,Hs: Word;
+Begin
+ GetTime(H,M,S,Hs);
+ St_MsNow:=((LongInt(H)*60+M)*60+S)*1000+LongInt(Hs)*10;
+End;
+Function St_FileExists(Const N: String): Boolean;
+Var F: File;
+Begin
+ {$I-}
+ Assign(F,N);
+ Reset(F,1);
+ {$I+}
+ If IOResult=0 Then Begin Close(F);St_FileExists:=True;End Else St_FileExists:=False;
+End;
+Function St_ShortName(Const N: String): String;
+Var St_I: Integer;
+Begin
+ St_I:=Length(N);
+ While (St_I>0) And (N[St_I]<>'\') And (N[St_I]<>'/') And (N[St_I]<>':') Do Dec(St_I);
+ St_ShortName:=Copy(N,St_I+1,255);
+End;
+Function St_PathOf(Const N: String): String;
+Var St_I: Integer;
+Begin
+ St_I:=Length(N);
+ While (St_I>0) And (N[St_I]<>'\') And (N[St_I]<>'/') And (N[St_I]<>':') Do Dec(St_I);
+ St_PathOf:=Copy(N,1,St_I);
+End;
+Var
+ St_MX,St_MY,St_MB,St_LastB : LongInt;
+ St_CurMask,St_CurData : Array[0..15] Of Word;
+ St_CurHotX,St_CurHotY : Integer;
+ St_CurMX,St_CurMY : LongInt;
+ St_CurSaved,St_CurShown : Boolean;
+Procedure St_Box(X1,Y1,X2,Y2,C: Integer);
+Begin
+ SetFillStyle(SolidFill,C);
+ Bar(X1,Y1,X2,Y2);
+End;
+Procedure St_PText(X,Y: Integer; Const S: String);
+Begin
+ SetColor(St_INK);
+ OutTextXY(X,Y,S);
+End;
+Procedure St_WText(X,Y: Integer; Const S: String);
+Begin
+ SetColor(St_PAPER);
+ OutTextXY(X,Y,S);
+End;
+Function St_InBox(X,Y,X1,Y1,X2,Y2: LongInt): Boolean;
+Begin
+ St_InBox:=(X>=X1) And (X<=X2) And (Y>=Y1) And (Y<=Y2);
+End;
+Var
+ St_EnvPathS,St_EnvClinkS,St_EnvLibsS : String;
+Const
+ St_MAXLOG     = 4000;
+Type
+ St_PString   = ^String;
+ St_TAsmOpts = Record
+  SymLen  : Integer;        { significance des symboles (8..127) }
+  BrDef   : Integer;        { 0 BRW, 1 BRB/BRS, 3 BRL }
+  OldBra  : Boolean;        { OPT OLD }
+  LocalU,Mex,Symtab,List1,TraceIf,Inconce,NoType,ChkImm,ChkPC,EvenChk,AutoPC,
+  AllowZero,User,Gensym,Line,Hcln,XDebug : Boolean;
+  ChkBit  : Integer;        { 0 erreur, 1 inactif, 2 avertissement }
+  BdW,OdL : Boolean;
+  FPU,MMU : Boolean;        { coprocesseurs 68881/2 et 68851 }
+  FpId    : Integer;        { identifiant de coprocesseur (FOPT ID=) }        {
+    BDW / ODL }
+  Opt     : Array[1..12] Of Boolean;
+  St_OW      : Array[0..12] Of Boolean;   { 0 : avertissements d'optimisation en
+    general }
+  Proc    : LongInt;        { 68000, 68010, 68020, 68030, 68040, 68332 }
+  Fmt     : Integer;        { 0 Atari, 1 GST, 2 DRI, 6 SREC, 7 Lattice }
+ End;
+Var
+ St_AO,St_AO0      : St_TAsmOpts;
+ St_Pass1Idx    : Integer;
+ St_ErrOvr      : String;
+ St_AsmErrCnt   : Integer;
+ St_AsmPassNo   : Integer;
+ St_AsmErrors,St_AsmWarns : Integer;
+ St_AsmFileName : String;
+ St_CurSrcName  : String;
+ St_CurLineNo   : LongInt;
+ St_ErrLn       : Array[1..St_MAXERR] Of LongInt;
+ St_ErrNm       : Array[1..St_MAXERR] Of String[60];
+ St_ErrTx       : Array[1..St_MAXERR] Of String[90];
+ St_LastErrLine : LongInt;
+ St_AsmLog      : Array[1..St_MAXLOG] Of St_PString;
+ St_AsmLogN     : Integer;
+ St_LnText      : String;
+ St_ListF       : Text;
+ St_ListOn      : Boolean;
+Procedure St_LogLine(Const S: String);
+Var P: St_PString;
+Begin
+ If St_AsmLogN<St_MAXLOG Then Begin
+  Inc(St_AsmLogN);
+  GetMem(P,Length(S)+1);
+  Move(S[0],P^[0],Length(S)+1);
+  St_AsmLog[St_AsmLogN]:=P;
+ End;
+ If St_BatchMode Then WriteLn(St_ConOut,S);
+End;
+Var
+ St_NoListMsg,St_ListOnlyPass,St_LnHadMsg: Boolean;
+Procedure St_ListOut(Const Ln: String); Forward;
+Function St_ListEnabled: Boolean; Forward;
+Procedure St_AddMsg(IsWarn: Boolean; Const S: String);
+Var St_I: Integer; T: String;
+Begin
+ If St_ListEnabled And (St_AsmPassNo=2) And Not St_NoListMsg Then Begin
+  If IsWarn Then T:='Warning ' Else T:='Error ';
+  St_ListOut(T+S+' at line '+St_IntStr(St_CurLineNo)+' in file '+St_CurSrcName);
+  St_LnHadMsg:=True;
+ End;
+ If St_ListOnlyPass Then Exit;
+ If St_AsmErrors<32000 Then Inc(St_AsmErrors);
+ If IsWarn Then Begin If St_AsmWarns<32000 Then Inc(St_AsmWarns);End
+ Else If St_AsmErrCnt<32000 Then Inc(St_AsmErrCnt);
+ If (St_AsmErrors<=St_MAXERR) And (St_AsmErrors>=1) Then Begin
+  St_ErrLn[St_AsmErrors]:=St_CurLineNo;
+  If St_CurSrcName=St_AsmFileName Then St_ErrNm[St_AsmErrors]:='' Else
+   St_ErrNm[St_AsmErrors]:=Copy(St_CurSrcName,1,60);
+  St_ErrTx[St_AsmErrors]:=Copy(S,1,90);
+ End;
+ If IsWarn Then
+   T:=St_T3('Warning in line ','Avertissement ligne ','Warnung Zeile ')
+ Else T:=St_T3('Error in line ','Erreur ligne ','Fehler in Zeile ');
+ If St_CurSrcName=St_AsmFileName Then
+  St_LogLine(T+St_IntStr(St_CurLineNo)+': '+S)
+ Else If IsWarn Then
+  St_LogLine(St_T3('Warning in ','Avertissement dans ','Warnung in ')+St_CurSrcName+' ('+
+    St_IntStr(St_CurLineNo)+'): '+S)
+ Else
+  St_LogLine(St_T3('Error in ','Erreur dans ','Fehler in ')+St_CurSrcName+' ('+
+    St_IntStr(St_CurLineNo)+'): '+S);
+ If St_LnText<>'' Then Begin
+  T:=Copy(St_LnText,1,70);
+  For St_I:=1 To Length(T) Do If T[St_I]=#9 Then T[St_I]:=' ';
+  St_LogLine('    '+T);
+ End;
+End;
+Function St_P1Msg(Const S: String): Boolean;
+Begin
+ St_P1Msg:=(S='instruction not recognised') Or (S='comma expected') Or
+   (S='garbage following instruction') Or
+  (S='expression mismatch') Or (S='addressing mode not recognised') Or
+    (S='symbol defined twice') Or
+  (S='spurious ENDC') Or (S='spurious ENDM or MEXIT') Or (S='spurious ENDR') Or
+    (S='addressing mode not allowed') Or
+  (S='missing quote') Or (S='DCB or DS count must not be negative') Or
+    (S='symbol expected') Or (S='invalid option') Or
+  (S='invalid section name, TEXT assumed') Or (S='missing close bracket') Or
+    (S='invalid size') Or
+  (S='invalid FORMAT parameter') Or (S='local not allowed') Or
+    (S='misuse of label') Or
+  (S='data register expected') Or (S='address register expected') Or
+    (S='immediate data expected') Or
+  (S='number too large') Or (S='invalid number') Or (S='odd address') Or
+    (S='cannot nest repeat loops') Or (S='user error');
+End;
+Procedure St_Err3(Const En,Fr,De: String);
+Begin
+ If St_AsmPassNo=1 Then Begin
+  If (St_Pass1Idx<>0) Or Not St_P1Msg(En) Then Exit;
+  If (St_CurLineNo=St_LastErrLine) And (St_CurSrcName=St_AsmFileName) Then Exit;
+  St_LastErrLine:=St_CurLineNo;
+  If St_ErrOvr<>'' Then St_AddMsg(False,St_ErrOvr) Else St_AddMsg(False,St_T3(En,Fr,De));
+  Exit;
+ End;
+ If St_AsmPassNo<>2 Then Exit;
+ If St_ListOnlyPass And Not St_P1Msg(En) Then Exit;
+ If (St_CurLineNo=St_LastErrLine) And (St_CurSrcName=St_AsmFileName) Then Exit;
+ St_LastErrLine:=St_CurLineNo;
+ If St_ErrOvr<>'' Then St_AddMsg(False,St_ErrOvr) Else St_AddMsg(False,St_T3(En,Fr,De));
+End;
+Procedure St_Err(Const S: String);
+Begin
+ St_Err3(S,S,S);
+End;
+Type
+ St_TOp = Record
+  St_K    : Integer;
+  R    : Integer;        { numero de registre (An/Dn) ou registre de base }
+  XR   : Integer;        { registre d'index 0..15 }
+  XL   : Boolean;        { index long }
+  V    : LongInt;
+  S    : Integer;
+  U    : Boolean;
+  Sz   : Integer;        { taille imposee pour un absolu : 2 ou 4 }
+  Mask : LongInt;        { liste de registres (D0=bit0 .. A7=bit15) }
+  HasX : Boolean;
+  Scale: Integer;       { echelle de l'index (1,2,4,8) }
+  X    : LongInt;       { index d'import (XREF) ou 0 }
+  NS   : Integer;       { GST : section soustraite }
+  FB,FIx,FSc,FMem,FBdSz,FOdSz,FBdS,FOdS : Integer;   { mode 68020 complet }
+  FSup,FIxL,FHasBd,FHasOd,FBdU,FOdU : Boolean;
+  FBdV,FOdV : LongInt;
+  BF   : LongInt;       (* champ de bits off:width : bits 11..0 du mot d
+    extension *)
+  HasBF: Boolean;
+  FTxt : String[80];     { texte d'une constante immediate flottante }
+  FIsFloat,HasK,KDyn : Boolean;
+  KV   : Integer;        { facteur k (FMOVE.P) }
+ End;
+Function St_TrimS(Const S: String): String;
+Var A,B: Integer;
+Begin
+ A:=1;B:=Length(S);
+ While (A<=B) And ((S[A]=' ') Or (S[A]=#9)) Do Inc(A);
+ While (B>=A) And ((S[B]=' ') Or (S[B]=#9)) Do Dec(B);
+ St_TrimS:=Copy(S,A,B-A+1);
+End;
+Function St_PadZero(N: LongInt; W: Integer): String;
+Var S: String;
+Begin
+ S:=St_IntStr(N);
+ While Length(S)<W Do S:='0'+S;
+ St_PadZero:=S;
+End;
+Var
+ St_ListCnt    : Integer;
+ St_ListPLen,St_ListLLen,St_ListPage,St_ListLineNo,St_ListSpc : Integer;
+ St_ListQ      : Array[1..8] Of String[255];
+ St_ListQN     : Integer;
+ St_ListHold   : Boolean;
+ St_ListTitle,St_ListSub : String[80];
+Function St_ReadFileBytes(Const Name: String; Var P: Pointer; Var Len: LongInt):
+  Boolean;
+Var F: File;
+Begin
+ St_ReadFileBytes:=False;P:=Nil;Len:=0;
+ Assign(F,Name);
+ {$I-}
+ Reset(F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Len:=FileSize(F);
+ If Len>0 Then Begin
+  GetMem(P,Len);
+  BlockRead(F,P^,Len);
+ End;
+ Close(F);
+ St_ReadFileBytes:=True;
+End;
+Procedure St_PByteSet(P: Pointer; St_I: LongInt; V: Byte);
+Var Q: ^Byte;
+Begin
+ Q:=St_PtrAdd(P,St_I);
+ Q^:=V;
+End;
+Function St_PByteAt(P: Pointer; St_I: LongInt): Byte;
+Var Q: ^Byte;
+Begin
+ Q:=St_PtrAdd(P,St_I);
+ St_PByteAt:=Q^;
+End;
+Function St_TwoD(N: Integer): String;
+Begin
+ St_TwoD:=St_PadZero(N,2);
+End;
+Procedure St_ListHeader;
+Var Y,Mo,D,Dw,H,Mi,Se,Hs: Word; T,L1: String;
+Begin
+ GetDate(Y,Mo,D,Dw);GetTime(H,Mi,Se,Hs);
+ If St_ListTitle<>'' Then T:=St_ListTitle Else T:=St_ShortName(St_CurSrcName);
+ If St_ListPage>0 Then Write(St_ListF,#12);
+ Inc(St_ListPage);
+ L1:=St_PadR(T,40)+'  '+St_TwoD(D)+'/'+St_TwoD(Mo)+'/'+St_TwoD(Y Mod
+   100)+'  '+St_TwoD(H)+':'+St_TwoD(Mi)+':'+St_TwoD(Se)+'  Page '+St_IntStr(St_ListPage);
+ WriteLn(St_ListF,Copy(L1,1,St_ListLLen));
+ WriteLn(St_ListF,Copy(T,1,St_ListLLen));
+ WriteLn(St_ListF,Copy(St_ListSub,1,St_ListLLen));
+ WriteLn(St_ListF);
+ St_ListLineNo:=4;
+End;
+Function St_ListEnabled: Boolean;
+Begin
+ St_ListEnabled:=St_ListOn And (St_ListCnt>=0);
+End;
+Procedure St_ListOut(Const Ln: String);
+Var St_K: Integer; Rest: String;
+Begin
+ If (St_ListPage=0) And St_ListHold And (St_ListQN<8) Then Begin
+  Inc(St_ListQN);St_ListQ[St_ListQN]:=Ln;Exit;
+ End;
+ If St_ListLineNo>=St_ListPLen Then St_ListHeader;
+ For St_K:=1 To St_ListQN Do Begin
+  WriteLn(St_ListF,Copy(St_ListQ[St_K],1,St_ListLLen));
+  Inc(St_ListLineNo);
+ End;
+ St_ListQN:=0;
+ { une ligne trop longue se poursuit sur la ligne suivante, comme dans le vrai
+   GenST }
+ Rest:=Ln;
+ Repeat
+  WriteLn(St_ListF,Copy(Rest,1,St_ListLLen));
+  Inc(St_ListLineNo);
+  Delete(Rest,1,St_ListLLen);
+ Until Rest='';
+End;
+Const
+ St_PAGE_SZ   = 4096;
+ St_MAX_PAGES = 2048;
+ St_SCR_BYTES = 32000;
+ St_ST_MEMKB  = 1024;
+Type
+ St_TPageTab = Array[0..St_MAX_PAGES-1] Of Pointer;
+Var
+ St_PageTab    : St_TPageTab;
+ St_MemSize    : LongInt;
+ St_BusErr     : Boolean;
+ St_BusAddr    : LongInt;
+ St_AddrErr    : Boolean;
+ St_ScrBase    : LongInt;
+ St_DrawBase   : LongInt;
+ St_ScrDirtyLo : Integer;
+ St_ScrDirtyHi : Integer;
+Procedure St_InitMemory(KB: LongInt);
+Var St_I,N: Integer; P: Pointer;
+Begin
+ N:=(KB*1024) Div St_PAGE_SZ;
+ If N>St_MAX_PAGES Then N:=St_MAX_PAGES;
+ For St_I:=0 To N-1 Do Begin
+  GetMem(P,St_PAGE_SZ);
+  FillChar(P^,St_PAGE_SZ,0);
+  St_PageTab[St_I]:=P;
+ End;
+ St_MemSize:=LongInt(N)*St_PAGE_SZ;
+ St_BusErr:=False;St_AddrErr:=False;
+ St_ScrDirtyLo:=0;St_ScrDirtyHi:=399;
+End;
+Procedure St_ClearMemory;
+Var St_I: Integer;
+Begin
+ For St_I:=0 To (St_MemSize Div St_PAGE_SZ)-1 Do FillChar(St_PageTab[St_I]^,St_PAGE_SZ,0);
+End;
+Procedure St_MarkScr(A: LongInt);
+Var Row: Integer;
+Begin
+ Row:=(A-St_ScrBase) Div 80;
+ If Row<St_ScrDirtyLo Then St_ScrDirtyLo:=Row;
+ If Row>St_ScrDirtyHi Then St_ScrDirtyHi:=Row;
+End;
+Function St_HwRd8(A: LongInt): Byte; Forward;
+Function St_Rd8(A: LongInt): Byte;
+Var P: ^Byte;
+Begin
+ A:=A And $FFFFFF;
+ If A>=St_MemSize Then Begin
+  If A<$FC0000 Then Begin St_BusErr:=True;St_BusAddr:=A;St_Rd8:=0;End
+  Else St_Rd8:=St_HwRd8(A);
+  Exit;
+ End;
+ {$IFDEF FPC}
+ P:=St_PageTab[A Shr 12];
+ Inc(P,A And 4095);
+ {$ELSE}
+ P:=St_PtrAdd(St_PageTab[A Shr 12],A And 4095);
+ {$ENDIF}
+ St_Rd8:=P^;
+End;
+Procedure St_HwWr8(A: LongInt; V: Byte); Forward;
+Procedure St_Wr8(A: LongInt; V: Byte);
+Var P: ^Byte;
+Begin
+ A:=A And $FFFFFF;
+ If A>=St_MemSize Then Begin
+  If A<$FF0000 Then Begin St_BusErr:=True;St_BusAddr:=A;End
+  Else If A>=$FF8000 Then St_HwWr8(A,V);
+  Exit;
+ End;
+ {$IFDEF FPC}
+ P:=St_PageTab[A Shr 12];
+ Inc(P,A And 4095);
+ {$ELSE}
+ P:=St_PtrAdd(St_PageTab[A Shr 12],A And 4095);
+ {$ENDIF}
+ P^:=V;
+ If (A>=St_ScrBase) And (A<St_ScrBase+St_SCR_BYTES) Then St_MarkScr(A);
+End;
+Function St_Rd16(A: LongInt): LongInt;
+Begin
+ St_Rd16:=(LongInt(St_Rd8(A)) Shl 8) Or St_Rd8(A+1);
+End;
+Function St_Rd32(A: LongInt): LongInt;
+Begin
+ St_Rd32:=(LongInt(St_Rd8(A)) Shl 24) Or (LongInt(St_Rd8(A+1)) Shl 16) Or
+       (LongInt(St_Rd8(A+2)) Shl 8) Or St_Rd8(A+3);
+End;
+Procedure St_Wr16(A: LongInt; V: LongInt);
+Begin
+ St_Wr8(A,(V Shr 8) And $FF);
+ St_Wr8(A+1,V And $FF);
+End;
+Procedure St_Wr32(A: LongInt; V: LongInt);
+Begin
+ St_Wr8(A,St_ShrL(V,24) And $FF);
+ St_Wr8(A+1,St_ShrL(V,16) And $FF);
+ St_Wr8(A+2,St_ShrL(V,8) And $FF);
+ St_Wr8(A+3,V And $FF);
+End;
+Function St_RdStr(A: LongInt; Max: Integer): String;
+Var S: String; B: Byte;
+Begin
+ S:='';
+ While Length(S)<Max Do Begin
+  B:=St_Rd8(A+Length(S));
+  If B=0 Then Break;
+  S:=S+Chr(B);
+ End;
+ St_RdStr:=S;
+End;
+Procedure St_WrStr(A: LongInt; Const S: String);
+Var St_I: Integer;
+Begin
+ For St_I:=1 To Length(S) Do St_Wr8(A+St_I-1,Ord(S[St_I]));
+ St_Wr8(A+Length(S),0);
+End;
+Const
+ St_MAXDBG = 3000;
+Type
+ St_TDbgSym = Record
+  Name : String[24];
+  Addr : LongInt;
+ End;
+ St_PDbgArr = ^St_TDbgArr;
+ St_TDbgArr = Array[1..St_MAXDBG] Of St_TDbgSym;
+Var
+ St_DbgSyms : St_PDbgArr;
+ St_DbgN    : Integer;
+Procedure St_DbgAdd(Const N: String; A: LongInt);
+Begin
+ If St_DbgSyms=Nil Then New(St_DbgSyms);
+ If St_DbgN<St_MAXDBG Then Begin
+  Inc(St_DbgN);
+  St_DbgSyms^[St_DbgN].Name:=Copy(N,1,24);
+  St_DbgSyms^[St_DbgN].Addr:=A;
+ End;
+End;
+Const
+ St_SR_C = 1;
+ St_SR_V = 2;
+ St_SR_Z = 4;
+ St_SR_N = 8;
+ St_SR_X = 16;
+ St_SR_S = $2000;
+ St_SR_T = $8000;
+ St_STOP_NONE  = 0;
+ St_STOP_EXIT  = 1;
+ St_STOP_BREAK = 2;
+ St_STOP_FAULT = 3;
+ St_STOP_STOP  = 4;
+ St_STOP_USER  = 5;
+ St_MAXBP = 16;
+ St_Low32 : LongInt = -2147483647-1;
+Var
+ St_SingleStack : Boolean;
+ St_Rg       : Array[0..15] Of LongInt;
+ St_PC       : LongInt;
+ St_SRv      : LongInt;
+ St_USPv,St_SSPv: LongInt;
+ St_StopReason : Integer;
+ St_StopMsg    : String;
+ St_ExitCode   : LongInt;
+ St_InstrCount : LongInt;
+ St_Bps        : Array[1..St_MAXBP] Of LongInt;
+ St_NBps       : Integer;
+ St_CurOpPC    : LongInt;
+ St_MonTrap    : Boolean;
+ St_PendVec    : Integer;
+ St_PendPC     : LongInt;
+ St_PendAddr   : LongInt;
+ St_PendIR     : LongInt;
+ St_PendHnd    : LongInt;
+ St_ExcTaken   : Boolean;
+ St_LastAccA   : LongInt;
+ St_EAK        : Integer;
+ St_EAR        : Integer;
+ St_EAA        : LongInt;
+Procedure St_DoTrap(N: Integer); Forward;
+Procedure St_DoLineA(Op: LongInt); Forward;
+Procedure St_HleLibCheck; Forward;
+Function St_Msk(V: LongInt; Sz: Integer): LongInt;
+Begin
+ Case Sz Of
+  1: St_Msk:=V And $FF;
+  2: St_Msk:=V And $FFFF;
+ Else St_Msk:=V;
+ End;
+End;
+Function St_IsNeg(V: LongInt; Sz: Integer): Boolean;
+Begin
+ Case Sz Of
+  1: St_IsNeg:=(V And $80)<>0;
+  2: St_IsNeg:=(V And $8000)<>0;
+ Else St_IsNeg:=V<0;
+ End;
+End;
+Function St_SExt(V: LongInt; Sz: Integer): LongInt;
+Begin
+ Case Sz Of
+  1: Begin V:=V And $FF;If V>=$80 Then V:=V-$100;End;
+  2: Begin V:=V And $FFFF;If V>=$8000 Then V:=V-$10000;End;
+ End;
+ St_SExt:=V;
+End;
+Procedure St_SetSR(V: LongInt);
+Var NewS: Boolean;
+Begin
+ V:=V And $A71F;
+ NewS:=(V And St_SR_S)<>0;
+ If (Not St_SingleStack) And (NewS<>((St_SRv And St_SR_S)<>0)) Then Begin
+  If NewS Then Begin St_USPv:=St_Rg[15];St_Rg[15]:=St_SSPv;End
+  Else Begin St_SSPv:=St_Rg[15];St_Rg[15]:=St_USPv;End;
+ End;
+ St_SRv:=V;
+End;
+Procedure St_SetF(M: LongInt; C: Boolean);
+Begin
+ If C Then St_SRv:=St_SRv Or M Else St_SRv:=St_SRv And (Not M);
+End;
+Function St_GetF(M: LongInt): Boolean;
+Begin
+ St_GetF:=(St_SRv And M)<>0;
+End;
+Procedure St_SetNZ(V: LongInt; Sz: Integer);
+Begin
+ St_SetF(St_SR_N,St_IsNeg(V,Sz));
+ St_SetF(St_SR_Z,St_Msk(V,Sz)=0);
+End;
+Procedure St_SetLogic(V: LongInt; Sz: Integer);
+Begin
+ St_SetNZ(V,Sz);
+ St_SetF(St_SR_V,False);St_SetF(St_SR_C,False);
+End;
+Procedure St_Halt68(Const Msg: String);
+Begin
+ If St_StopReason=St_STOP_NONE Then Begin
+  St_StopReason:=St_STOP_FAULT;
+  St_StopMsg:=Msg;
+ End;
+End;
+Procedure St_PushL(V: LongInt);
+Begin
+ St_Rg[15]:=St_Rg[15]-4;
+ St_Wr32(St_Rg[15],V);
+End;
+Procedure St_PushW(V: LongInt);
+Begin
+ St_Rg[15]:=St_Rg[15]-2;
+ St_Wr16(St_Rg[15],V);
+End;
+Function St_PopL: LongInt;
+Begin
+ St_PopL:=St_Rd32(St_Rg[15]);
+ St_Rg[15]:=St_Rg[15]+4;
+End;
+Function St_PopW: LongInt;
+Begin
+ St_PopW:=St_Rd16(St_Rg[15]);
+ St_Rg[15]:=St_Rg[15]+2;
+End;
+Function St_Fetch16: LongInt;
+Begin
+ If Odd(St_PC) Then St_AddrErr:=True;
+ St_Fetch16:=St_Rd16(St_PC);
+ St_PC:=St_PC+2;
+End;
+Function St_Fetch32: LongInt;
+Begin
+ St_Fetch32:=St_Rd32(St_PC);
+ St_PC:=St_PC+4;
+End;
+Function St_MemRd(A: LongInt; Sz: Integer): LongInt;
+Begin
+ If (Sz>1) And Odd(A) Then Begin St_AddrErr:=True;St_BusAddr:=A;St_MemRd:=0;Exit;End;
+ Case Sz Of
+  1: St_MemRd:=St_Rd8(A);
+  2: St_MemRd:=St_Rd16(A);
+ Else St_MemRd:=St_Rd32(A);
+ End;
+End;
+Procedure St_MemWr(A: LongInt; Sz: Integer; V: LongInt);
+Begin
+ If (Sz>1) And Odd(A) Then Begin St_AddrErr:=True;St_BusAddr:=A;Exit;End;
+ Case Sz Of
+  1: St_Wr8(A,V And $FF);
+  2: St_Wr16(A,V And $FFFF);
+ Else St_Wr32(A,V);
+ End;
+End;
+Function St_ExcHandler(Vec: Integer): LongInt;
+Var H: LongInt;
+Begin
+ H:=St_Rd32(Vec*4);
+ St_ExcHandler:=H;
+ If (H=0) Or Odd(H) Or ((H And $FFFFFF)>=St_MemSize) Then St_ExcHandler:=0
+ Else If (Vec>=32) And (H<$400) Then St_ExcHandler:=0;
+End;
+Function St_MonTraps(Vec: Integer): Boolean;
+Begin
+ St_MonTraps:=((Vec>=2) And (Vec<=8)) Or ((Vec>=11) And (Vec<=14)) Or (Vec=24) Or
+           (Vec=32) Or ((Vec>=35) And (Vec<=44)) Or (Vec=47);
+End;
+Procedure St_ClrBusAddrErr;
+Begin
+ St_BusErr:=False;St_AddrErr:=False;
+End;
+Procedure St_TakeExc(Vec: Integer; SPc,Hnd: LongInt; Grp0: Boolean; Addr,IR:
+  LongInt);
+Var OldSR,St: LongInt;
+Begin
+ OldSR:=St_SRv;
+ St_SetSR((St_SRv Or St_SR_S) And $7FFF);
+ St_PushL(SPc);
+ St_PushW(OldSR);
+ If Grp0 Then Begin
+  St_PushW(IR);
+  St_PushL(Addr);
+  If (OldSR And St_SR_S)<>0 Then St:=$15 Else St:=$11;   { FC=donnees, R/W=lecture
+    }
+  St_PushW(St);
+ End;
+ St_PC:=Hnd;
+ St_ExcTaken:=True;
+ St_ClrBusAddrErr;
+End;
+Procedure St_RaiseExcX(Vec: Integer; Grp0: Boolean; Addr: LongInt);
+Var Hnd,SPc,IR: LongInt; Names: String;
+Begin
+ Hnd:=St_ExcHandler(Vec);
+ Case Vec Of
+  2,3: SPc:=St_CurOpPC+2;
+  4,8,10,11: SPc:=St_CurOpPC;
+ Else SPc:=St_PC;
+ End;
+ IR:=St_Rd16(St_CurOpPC);
+ St_ClrBusAddrErr;
+ If (Hnd<>0) And Not (St_MonTrap And St_MonTraps(Vec)) Then Begin
+  St_TakeExc(Vec,SPc,Hnd,Grp0,Addr,IR);
+  Exit;
+ End;
+ Case Vec Of
+  2: Names:='Bus error';
+  3: Names:='Address error';
+  4: Names:='Illegal instruction';
+  5: Names:='Divide by zero';
+  6: Names:='CHK exception';
+  7: Names:='TRAPV exception';
+  8: Names:='Privilege violation';
+  11: Names:='Line F emulator';
+ Else Names:='Exception #'+St_IntStr(Vec);
+ End;
+ If Hnd<>0 Then Begin
+  { intercepte par le moniteur : sera livre au gestionnaire a la reprise }
+  St_PendVec:=Vec;St_PendPC:=SPc;St_PendAddr:=Addr;St_PendIR:=IR;St_PendHnd:=Hnd;
+ End;
+ St_PC:=St_CurOpPC;   { le moniteur affiche l'instruction fautive }
+ If Vec=2 Then St_Halt68(Names+' at $'+St_Hex6(Addr)+' (PC=$'+St_Hex6(St_CurOpPC)+')')
+ Else St_Halt68(Names+' at $'+St_Hex6(St_CurOpPC));
+End;
+Procedure St_RaiseExc(Vec: Integer);
+Begin
+ St_RaiseExcX(Vec,False,0);
+End;
+Function St_TestCC(CC: Integer): Boolean;
+Var C,V,Z,N: Boolean;
+Begin
+ C:=St_GetF(St_SR_C);V:=St_GetF(St_SR_V);Z:=St_GetF(St_SR_Z);N:=St_GetF(St_SR_N);
+ Case CC Of
+  0: St_TestCC:=True;
+  1: St_TestCC:=False;
+  2: St_TestCC:=Not C And Not Z;
+  3: St_TestCC:=C Or Z;
+  4: St_TestCC:=Not C;
+  5: St_TestCC:=C;
+  6: St_TestCC:=Not Z;
+  7: St_TestCC:=Z;
+  8: St_TestCC:=Not V;
+  9: St_TestCC:=V;
+  10: St_TestCC:=Not N;
+  11: St_TestCC:=N;
+  12: St_TestCC:=N=V;
+  13: St_TestCC:=N<>V;
+  14: St_TestCC:=(Not Z) And (N=V);
+ Else St_TestCC:=Z Or (N<>V);
+ End;
+End;
+Procedure St_CalcEA(Mode,Reg,Sz: Integer);
+Var Ext,D: LongInt; XV: LongInt; XR: Integer;
+Begin
+ St_EAK:=2;St_EAR:=Reg;
+ Case Mode Of
+  0: St_EAK:=0;
+  1: St_EAK:=1;
+  2: St_EAA:=St_Rg[8+Reg];
+  3: Begin
+      St_EAA:=St_Rg[8+Reg];
+      If (Reg=7) And (Sz=1) Then St_Rg[8+Reg]:=St_Rg[8+Reg]+2 Else
+        St_Rg[8+Reg]:=St_Rg[8+Reg]+Sz;
+     End;
+  4: Begin
+      If (Reg=7) And (Sz=1) Then St_Rg[8+Reg]:=St_Rg[8+Reg]-2 Else
+        St_Rg[8+Reg]:=St_Rg[8+Reg]-Sz;
+      St_EAA:=St_Rg[8+Reg];
+     End;
+  5: Begin D:=St_SExt(St_Fetch16,2);St_EAA:=St_Rg[8+Reg]+D;End;
+  6: Begin
+      Ext:=St_Fetch16;
+      XR:=(Ext Shr 12) And 15;
+      XV:=St_Rg[XR];
+      If (Ext And $800)=0 Then XV:=St_SExt(XV,2);
+      St_EAA:=St_Rg[8+Reg]+St_SExt(Ext,1)+XV;
+     End;
+  7: Case Reg Of
+      0: St_EAA:=St_SExt(St_Fetch16,2);
+      1: St_EAA:=St_Fetch32;
+      2: Begin D:=St_PC;St_EAA:=D+St_SExt(St_Fetch16,2);End;
+      3: Begin
+          D:=St_PC;
+          Ext:=St_Fetch16;
+          XR:=(Ext Shr 12) And 15;
+          XV:=St_Rg[XR];
+          If (Ext And $800)=0 Then XV:=St_SExt(XV,2);
+          St_EAA:=D+St_SExt(Ext,1)+XV;
+         End;
+      4: Begin
+          St_EAK:=3;
+          If Sz=4 Then St_EAA:=St_Fetch32
+          Else Begin St_EAA:=St_Fetch16;If Sz=1 Then St_EAA:=St_EAA And $FF;End;
+         End;
+     Else Begin
+       St_EAK:=3;St_EAA:=0;St_Halt68('Illegal addressing mode at $'+St_Hex6(St_CurOpPC));End;
+     End;
+ End;
+End;
+Function St_ReadEA(Sz: Integer): LongInt;
+Begin
+ Case St_EAK Of
+  0: St_ReadEA:=St_Msk(St_Rg[St_EAR],Sz);
+  1: St_ReadEA:=St_Msk(St_Rg[8+St_EAR],Sz);
+  2: St_ReadEA:=St_MemRd(St_EAA,Sz);
+ Else St_ReadEA:=St_Msk(St_EAA,Sz);
+ End;
+End;
+Procedure St_WriteEA(Sz: Integer; V: LongInt);
+Begin
+ Case St_EAK Of
+  0: Case Sz Of
+      1: St_Rg[St_EAR]:=(St_Rg[St_EAR] And (Not $FF)) Or (V And $FF);
+      2: St_Rg[St_EAR]:=(St_Rg[St_EAR] And (Not $FFFF)) Or (V And $FFFF);
+     Else St_Rg[St_EAR]:=V;
+     End;
+  1: St_Rg[8+St_EAR]:=St_SExt(V,Sz);
+  2: St_MemWr(St_EAA,Sz,V);
+ End;
+End;
+Function St_AluAdd(S,D: LongInt; Sz: Integer; WithX: Boolean; SetX: Boolean):
+  LongInt;
+Var R: LongInt; XI: LongInt; C,V: Boolean;
+Begin
+ S:=St_Msk(S,Sz);D:=St_Msk(D,Sz);
+ XI:=0;
+ If WithX And St_GetF(St_SR_X) Then XI:=1;
+ R:=St_Msk(S+D+XI,Sz);
+ C:=St_IsNeg((S And D) Or ((Not R) And (S Or D)),Sz);
+ V:=St_IsNeg((S Xor R) And (D Xor R),Sz);
+ St_SetF(St_SR_C,C);St_SetF(St_SR_V,V);
+ If SetX Then St_SetF(St_SR_X,C);
+ If WithX Then Begin If R<>0 Then St_SetF(St_SR_Z,False);End
+ Else St_SetF(St_SR_Z,R=0);
+ St_SetF(St_SR_N,St_IsNeg(R,Sz));
+ St_AluAdd:=R;
+End;
+Function St_AluSub(S,D: LongInt; Sz: Integer; WithX: Boolean; SetX: Boolean):
+  LongInt;
+Var R: LongInt; XI: LongInt; C,V: Boolean;
+Begin
+ S:=St_Msk(S,Sz);D:=St_Msk(D,Sz);
+ XI:=0;
+ If WithX And St_GetF(St_SR_X) Then XI:=1;
+ R:=St_Msk(D-S-XI,Sz);
+ C:=St_IsNeg(((Not D) And S) Or (R And ((Not D) Or S)),Sz);
+ V:=St_IsNeg((S Xor D) And (R Xor D),Sz);
+ St_SetF(St_SR_C,C);St_SetF(St_SR_V,V);
+ If SetX Then St_SetF(St_SR_X,C);
+ If WithX Then Begin If R<>0 Then St_SetF(St_SR_Z,False);End
+ Else St_SetF(St_SR_Z,R=0);
+ St_SetF(St_SR_N,St_IsNeg(R,Sz));
+ St_AluSub:=R;
+End;
+Function St_SzFromBits(B: Integer): Integer;
+Begin
+ Case B Of
+  0: St_SzFromBits:=1;
+  1: St_SzFromBits:=2;
+ Else St_SzFromBits:=4;
+ End;
+End;
+Function Shift(Ty: Integer; Left: Boolean; V: LongInt; Cnt: Integer; Sz:
+  Integer): LongInt;
+Var St_I: Integer; C,Msb,Old,X: Boolean; St_Top: LongInt; Ovf: Boolean;
+Begin
+ V:=St_Msk(V,Sz);
+ Cnt:=Cnt And 63;
+ C:=False;Ovf:=False;
+ If Cnt=0 Then Begin
+  If Ty=2 Then C:=St_GetF(St_SR_X);
+  St_SetF(St_SR_C,C);St_SetF(St_SR_V,False);St_SetNZ(V,Sz);
+  Shift:=V;Exit;
+ End;
+ For St_I:=1 To Cnt Do Begin
+  Msb:=St_IsNeg(V,Sz);
+  If Left Then Begin
+   Case Ty Of
+    0: Begin C:=Msb;V:=St_Msk(V Shl 1,Sz);If St_IsNeg(V,Sz)<>Msb Then Ovf:=True;End;
+    1: Begin C:=Msb;V:=St_Msk(V Shl 1,Sz);End;
+    2: Begin
+        X:=St_GetF(St_SR_X);C:=Msb;V:=St_Msk(V Shl 1,Sz);
+        If X Then V:=V Or 1;
+        St_SetF(St_SR_X,C);
+       End;
+   Else Begin C:=Msb;V:=St_Msk(V Shl 1,Sz);If C Then V:=V Or 1;End;
+   End;
+  End Else Begin
+   C:=(V And 1)<>0;
+   Case Ty Of
+    0: Begin
+        V:=St_Msk(St_ShrL(V,1),Sz);
+        If Msb Then Begin
+         Case Sz Of 1: V:=V Or $80; 2: V:=V Or $8000;
+         Else V:=V Or (LongInt(1) Shl 31) End;
+        End;
+       End;
+    1: V:=St_Msk(St_ShrL(V,1),Sz);
+    2: Begin
+        X:=St_GetF(St_SR_X);
+        V:=St_Msk(St_ShrL(V,1),Sz);
+        If X Then Begin
+         Case Sz Of 1: V:=V Or $80; 2: V:=V Or $8000;
+         Else V:=V Or (LongInt(1) Shl 31) End;
+        End;
+        St_SetF(St_SR_X,C);
+       End;
+   Else Begin
+         V:=St_Msk(St_ShrL(V,1),Sz);
+         If C Then Begin
+          Case Sz Of 1: V:=V Or $80; 2: V:=V Or $8000;
+          Else V:=V Or (LongInt(1) Shl 31) End;
+         End;
+        End;
+   End;
+  End;
+ End;
+ St_SetF(St_SR_C,C);
+ If Ty<>3 Then St_SetF(St_SR_X,C);
+ If Ty=2 Then St_SetF(St_SR_X,C);
+ St_SetF(St_SR_V,Ovf And (Ty=0));
+ St_SetNZ(V,Sz);
+ Shift:=V;
+End;
+Function St_DivU32(Num: LongInt; Den: LongInt; Var Rem: LongInt): LongInt;
+{ division non signee 32 bits / 16 bits par soustractions }
+Var Q,R: LongInt; St_I: Integer; Bit: LongInt;
+Begin
+ Q:=0;R:=0;
+ For St_I:=31 Downto 0 Do Begin
+  Bit:=St_ShrL(Num,St_I) And 1;
+  R:=(R Shl 1) Or Bit;
+  If (R>=0) And (R>=Den) Then Begin
+   R:=R-Den;
+   Q:=Q Or (LongInt(1) Shl St_I);
+  End Else If R<0 Then Begin
+   R:=R-Den;
+   Q:=Q Or (LongInt(1) Shl St_I);
+  End;
+ End;
+ Rem:=R;
+ St_DivU32:=Q;
+End;
+Function St_Supervisor: Boolean;
+Begin
+ If (St_SRv And St_SR_S)=0 Then Begin
+  St_RaiseExc(8);
+  St_Supervisor:=False;
+ End Else St_Supervisor:=True;
+End;
+Procedure St_Op0(Op: LongInt);
+Var Mode,Reg,Rn,Sz,Ty,T,Bit: Integer; Imm,V,R,D: LongInt; A: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If (Op And $F138)=$0108 Then Begin
+  D:=St_SExt(St_Fetch16,2);
+  A:=St_Rg[8+Reg]+D;
+  If (Op And $80)=0 Then Begin
+   { memoire vers registre }
+   If (Op And $40)=0 Then St_Rg[Rn]:=(St_Rg[Rn] And (Not $FFFF)) Or (LongInt(St_Rd8(A))
+     Shl 8) Or St_Rd8(A+2)
+   Else St_Rg[Rn]:=(LongInt(St_Rd8(A)) Shl 24) Or (LongInt(St_Rd8(A+2)) Shl 16) Or
+     (LongInt(St_Rd8(A+4)) Shl 8) Or St_Rd8(A+6);
+  End Else Begin
+   If (Op And $40)=0 Then Begin St_Wr8(A,St_ShrL(St_Rg[Rn],8) And $FF);St_Wr8(A+2,St_Rg[Rn]
+     And $FF);End
+   Else Begin
+    St_Wr8(A,St_ShrL(St_Rg[Rn],24) And $FF);St_Wr8(A+2,St_ShrL(St_Rg[Rn],16) And $FF);
+    St_Wr8(A+4,St_ShrL(St_Rg[Rn],8) And $FF);St_Wr8(A+6,St_Rg[Rn] And $FF);
+   End;
+  End;
+  Exit;
+ End;
+ If ((Op And $0100)<>0) Or ((Op And $0F00)=$0800) Then Begin
+  { instructions sur bits }
+  Ty:=(Op Shr 6) And 3;
+  If (Op And $0100)<>0 Then Bit:=St_Rg[Rn] Else Bit:=St_Fetch16 And $FF;
+  If Mode=0 Then Begin
+   Bit:=Bit And 31;
+   V:=St_Rg[Reg];
+   St_SetF(St_SR_Z,(St_ShrL(V,Bit) And 1)=0);
+   Case Ty Of
+    1: V:=V Xor (LongInt(1) Shl Bit);
+    2: V:=V And (Not (LongInt(1) Shl Bit));
+    3: V:=V Or (LongInt(1) Shl Bit);
+   End;
+   If Ty<>0 Then St_Rg[Reg]:=V;
+  End Else Begin
+   Bit:=Bit And 7;
+   St_CalcEA(Mode,Reg,1);
+   V:=St_ReadEA(1);
+   St_SetF(St_SR_Z,((V Shr Bit) And 1)=0);
+   Case Ty Of
+    1: V:=V Xor (1 Shl Bit);
+    2: V:=V And (Not (1 Shl Bit));
+    3: V:=V Or (1 Shl Bit);
+   End;
+   If Ty<>0 Then St_WriteEA(1,V);
+  End;
+  Exit;
+ End;
+ T:=(Op Shr 8) And $F;
+ { operations immediates sur CCR/SR }
+ If ((Op And $FF)=$3C) And ((T=0) Or (T=2) Or (T=10)) Then Begin
+  Imm:=St_Fetch16 And $FF;
+  V:=St_SRv And $FF;
+  Case T Of 0: V:=V Or Imm; 2: V:=V And Imm; Else V:=V Xor Imm End;
+  St_SetSR((St_SRv And $FF00) Or (V And $FF));
+  Exit;
+ End;
+ If ((Op And $FF)=$7C) And ((T=0) Or (T=2) Or (T=10)) Then Begin
+  If Not St_Supervisor Then Exit;
+  Imm:=St_Fetch16;
+  V:=St_SRv;
+  Case T Of 0: V:=V Or Imm; 2: V:=V And Imm; Else V:=V Xor Imm End;
+  St_SetSR(V);
+  Exit;
+ End;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ If ((Op Shr 6) And 3)=3 Then Begin St_RaiseExc(4);Exit;End;
+ If Sz=4 Then Imm:=St_Fetch32 Else Imm:=St_Fetch16;
+ Imm:=St_Msk(Imm,Sz);
+ St_CalcEA(Mode,Reg,Sz);
+ V:=St_ReadEA(Sz);
+ Case T Of
+  0: Begin R:=V Or Imm;St_SetLogic(R,Sz);St_WriteEA(Sz,R);End;
+  2: Begin R:=V And Imm;St_SetLogic(R,Sz);St_WriteEA(Sz,R);End;
+  4: Begin R:=St_AluSub(Imm,V,Sz,False,True);St_WriteEA(Sz,R);End;
+  6: Begin R:=St_AluAdd(Imm,V,Sz,False,True);St_WriteEA(Sz,R);End;
+  10: Begin R:=V Xor Imm;St_SetLogic(R,Sz);St_WriteEA(Sz,R);End;
+  12: R:=St_AluSub(Imm,V,Sz,False,False);
+ Else St_RaiseExc(4);
+ End;
+End;
+Procedure St_OpMove(Op: LongInt);
+Var Sz,SM,SR1,DM,DR: Integer; V: LongInt;
+Begin
+ Case (Op Shr 12) And 3 Of
+  1: Sz:=1;
+  3: Sz:=2;
+ Else Sz:=4;
+ End;
+ SM:=(Op Shr 3) And 7;SR1:=Op And 7;
+ DM:=(Op Shr 6) And 7;DR:=(Op Shr 9) And 7;
+ St_CalcEA(SM,SR1,Sz);
+ V:=St_ReadEA(Sz);
+ If DM=1 Then Begin
+  St_Rg[8+DR]:=St_SExt(V,Sz);
+  Exit;
+ End;
+ St_CalcEA(DM,DR,Sz);
+ St_WriteEA(Sz,V);
+ St_SetLogic(V,Sz);
+End;
+Procedure St_OpMovem(Op: LongInt);
+Var Mode,Reg,Sz,St_I: Integer; Mk: LongInt; A: LongInt; ToMem: Boolean;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ If (Op And $40)<>0 Then Sz:=4 Else Sz:=2;
+ ToMem:=(Op And $400)=0;
+ Mk:=St_Fetch16;
+ If ToMem Then Begin
+  If Mode=4 Then Begin
+   A:=St_Rg[8+Reg];
+   For St_I:=0 To 15 Do
+    If (Mk And (LongInt(1) Shl St_I))<>0 Then Begin
+     A:=A-Sz;
+     If Sz=4 Then St_Wr32(A,St_Rg[15-St_I]) Else St_Wr16(A,St_Rg[15-St_I]);
+    End;
+   St_Rg[8+Reg]:=A;
+  End Else Begin
+   St_CalcEA(Mode,Reg,Sz);
+   A:=St_EAA;
+   For St_I:=0 To 15 Do
+    If (Mk And (LongInt(1) Shl St_I))<>0 Then Begin
+     If Sz=4 Then St_Wr32(A,St_Rg[St_I]) Else St_Wr16(A,St_Rg[St_I]);
+     A:=A+Sz;
+    End;
+  End;
+ End Else Begin
+  If Mode=3 Then A:=St_Rg[8+Reg] Else Begin St_CalcEA(Mode,Reg,Sz);A:=St_EAA;End;
+  For St_I:=0 To 15 Do
+   If (Mk And (LongInt(1) Shl St_I))<>0 Then Begin
+    If Sz=4 Then St_Rg[St_I]:=St_Rd32(A) Else St_Rg[St_I]:=St_SExt(St_Rd16(A),2);
+    A:=A+Sz;
+   End;
+  If Mode=3 Then St_Rg[8+Reg]:=A;
+ End;
+End;
+Procedure St_Op4(Op: LongInt);
+Var Mode,Reg,Rn,Sz,SzB: Integer; V,R,D,A,Lo: LongInt; T: Integer;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ SzB:=(Op Shr 6) And 3;
+ If (Op And $F1C0)=$41C0 Then Begin
+  St_CalcEA(Mode,Reg,4);
+  St_Rg[8+Rn]:=St_EAA;Exit;
+ End;
+ If (Op And $F1C0)=$4180 Then Begin
+  St_CalcEA(Mode,Reg,2);
+  V:=St_ReadEA(2);
+  D:=St_SExt(St_Rg[Rn],2);
+  If D<0 Then Begin St_SetF(St_SR_N,True);St_RaiseExc(6);End
+  Else If D>St_SExt(V,2) Then Begin St_SetF(St_SR_N,False);St_RaiseExc(6);End;
+  Exit;
+ End;
+ Case Op And $0F00 Of
+  $0000,$0200,$0400,$0600: Begin
+    If SzB=3 Then Begin
+     Case Op And $0F00 Of
+      $0000: Begin St_CalcEA(Mode,Reg,2);St_WriteEA(2,St_SRv And $FFFF);End;
+      $0200: Begin St_CalcEA(Mode,Reg,2);St_WriteEA(2,St_SRv And $FF);End;
+      $0400: Begin St_CalcEA(Mode,Reg,2);V:=St_ReadEA(2);St_SetSR((St_SRv And $FF00) Or (V
+        And $FF));End;
+     Else Begin
+       If St_Supervisor Then Begin St_CalcEA(Mode,Reg,2);V:=St_ReadEA(2);St_SetSR(V);End;
+      End;
+     End;
+     Exit;
+    End;
+    Sz:=St_SzFromBits(SzB);
+    St_CalcEA(Mode,Reg,Sz);
+    V:=St_ReadEA(Sz);
+    Case Op And $0F00 Of
+     $0000: Begin R:=St_AluSub(V,0,Sz,True,True);St_WriteEA(Sz,R);End;
+     $0200: Begin R:=0;St_WriteEA(Sz,0);St_SRv:=(St_SRv And (Not 15)) Or St_SR_Z;End;
+     $0400: Begin R:=St_AluSub(V,0,Sz,False,True);St_WriteEA(Sz,R);End;
+    Else Begin R:=St_Msk(Not V,Sz);St_WriteEA(Sz,R);St_SetLogic(R,Sz);End;
+    End;
+   End;
+  $0800: Begin
+    If (Op And $FFC0)=$4800 Then Begin
+     St_CalcEA(Mode,Reg,1);
+     V:=St_ReadEA(1);
+     { NBCD : 0 - V - X }
+     Lo:=(0-(V And $F)-Ord(St_GetF(St_SR_X)));
+     D:=0-(St_ShrL(V,4) And $F);
+     If Lo<0 Then Begin Lo:=Lo+10;D:=D-1;End;
+     St_SetF(St_SR_C,False);
+     If D<0 Then Begin D:=D+10;St_SetF(St_SR_C,True);End;
+     R:=((D And $F) Shl 4) Or (Lo And $F);
+     If R<>0 Then St_SetF(St_SR_Z,False);
+     St_SetF(St_SR_X,St_GetF(St_SR_C));
+     St_WriteEA(1,R);
+    End Else If (Op And $FFF8)=$4840 Then Begin
+     R:=(St_ShrL(St_Rg[Reg],16) And $FFFF) Or ((St_Rg[Reg] And $FFFF) Shl 16);
+     St_Rg[Reg]:=R;St_SetLogic(R,4);
+    End Else If (Op And $FFC0)=$4840 Then Begin
+     St_CalcEA(Mode,Reg,4);
+     St_PushL(St_EAA);
+    End Else If (Op And $FFF8)=$4880 Then Begin
+     R:=St_SExt(St_Rg[Reg],1);
+     St_Rg[Reg]:=(St_Rg[Reg] And (Not $FFFF)) Or (R And $FFFF);
+     St_SetLogic(R,2);
+    End Else If (Op And $FFF8)=$48C0 Then Begin
+     R:=St_SExt(St_Rg[Reg],2);St_Rg[Reg]:=R;St_SetLogic(R,4);
+    End Else If (Op And $FF80)=$4880 Then St_OpMovem(Op)
+    Else St_RaiseExc(4);
+   End;
+  $0A00: Begin
+    If Op=$4AFC Then Begin St_RaiseExc(4);Exit;End;
+    If SzB=3 Then Begin
+     St_CalcEA(Mode,Reg,1);
+     V:=St_ReadEA(1);
+     St_SetLogic(V,1);
+     St_WriteEA(1,V Or $80);
+    End Else Begin
+     Sz:=St_SzFromBits(SzB);
+     St_CalcEA(Mode,Reg,Sz);
+     V:=St_ReadEA(Sz);
+     St_SetLogic(V,Sz);
+    End;
+   End;
+  $0C00: Begin
+    If (Op And $FF80)=$4C80 Then St_OpMovem(Op) Else St_RaiseExc(4);
+   End;
+  $0E00: Begin
+    If (Op And $FFF0)=$4E40 Then St_DoTrap(Op And 15)
+    Else If (Op And $FFF8)=$4E50 Then Begin
+     D:=St_SExt(St_Fetch16,2);
+     St_PushL(St_Rg[8+Reg]);
+     St_Rg[8+Reg]:=St_Rg[15];
+     St_Rg[15]:=St_Rg[15]+D;
+    End Else If (Op And $FFF8)=$4E58 Then Begin
+     St_Rg[15]:=St_Rg[8+Reg];
+     St_Rg[8+Reg]:=St_PopL;
+    End Else If (Op And $FFF8)=$4E60 Then Begin
+     If St_Supervisor Then St_USPv:=St_Rg[8+Reg];
+    End Else If (Op And $FFF8)=$4E68 Then Begin
+     If St_Supervisor Then St_Rg[8+Reg]:=St_USPv;
+    End Else If Op=$4E70 Then Begin If St_Supervisor Then Begin End;End
+    Else If Op=$4E71 Then Begin End
+    Else If Op=$4E72 Then Begin
+     If St_Supervisor Then Begin
+      St_SetSR(St_Fetch16);
+      St_StopReason:=St_STOP_STOP;St_StopMsg:='STOP';
+     End;
+    End Else If Op=$4E73 Then Begin
+     If St_Supervisor Then Begin
+      V:=St_PopW;A:=St_PopL;
+      St_SetSR(V);St_PC:=A;
+     End;
+    End Else If Op=$4E75 Then St_PC:=St_PopL
+    Else If Op=$4E76 Then Begin If St_GetF(St_SR_V) Then St_RaiseExc(7);End
+    Else If Op=$4E77 Then Begin
+     V:=St_PopW;
+     St_SetSR((St_SRv And $FF00) Or (V And $FF));
+     St_PC:=St_PopL;
+    End Else If (Op And $FFC0)=$4E80 Then Begin
+     St_CalcEA(Mode,Reg,4);
+     St_PushL(St_PC);
+     St_PC:=St_EAA;
+    End Else If (Op And $FFC0)=$4EC0 Then Begin
+     St_CalcEA(Mode,Reg,4);
+     St_PC:=St_EAA;
+    End Else St_RaiseExc(4);
+   End;
+ End;
+End;
+Procedure St_Op5(Op: LongInt);
+Var Mode,Reg,Sz,CC: Integer; V,R,Q,D,Base: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;
+ CC:=(Op Shr 8) And 15;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  If Mode=1 Then Begin
+   Base:=St_PC;
+   D:=St_SExt(St_Fetch16,2);
+   If Not St_TestCC(CC) Then Begin
+    V:=(St_Rg[Reg] And $FFFF)-1;
+    St_Rg[Reg]:=(St_Rg[Reg] And (Not $FFFF)) Or (V And $FFFF);
+    If (V And $FFFF)<>$FFFF Then St_PC:=Base+D;
+   End;
+  End Else Begin
+   St_CalcEA(Mode,Reg,1);
+   If St_TestCC(CC) Then St_WriteEA(1,$FF) Else St_WriteEA(1,0);
+  End;
+  Exit;
+ End;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ Q:=(Op Shr 9) And 7;If Q=0 Then Q:=8;
+ St_CalcEA(Mode,Reg,Sz);
+ If St_EAK=1 Then Begin
+  If (Op And $100)=0 Then St_Rg[8+St_EAR]:=St_Rg[8+St_EAR]+Q Else St_Rg[8+St_EAR]:=St_Rg[8+St_EAR]-Q;
+  Exit;
+ End;
+ V:=St_ReadEA(Sz);
+ If (Op And $100)=0 Then R:=St_AluAdd(Q,V,Sz,False,True)
+ Else R:=St_AluSub(Q,V,Sz,False,True);
+ St_WriteEA(Sz,R);
+End;
+Procedure St_OpBcc(Op: LongInt);
+Var D,Base: LongInt; CC: Integer;
+Begin
+ CC:=(Op Shr 8) And 15;
+ Base:=St_PC;
+ D:=Op And $FF;
+ If D=0 Then D:=St_SExt(St_Fetch16,2)
+ Else If D=$FF Then D:=St_Fetch32
+ Else D:=St_SExt(D,1);
+ If CC=1 Then Begin
+  St_PushL(St_PC);
+  St_PC:=Base+D;
+ End Else If St_TestCC(CC) Then St_PC:=Base+D;
+End;
+Procedure St_Op8(Op: LongInt);
+Var Mode,Reg,Rn,Sz: Integer; V,R,Q,Den,Rem,Num,Lo: LongInt; Neg1,Neg2: Boolean;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ If ((Op Shr 6) And 3)=3 Then Begin
+  St_CalcEA(Mode,Reg,2);
+  Den:=St_ReadEA(2);
+  If Den=0 Then Begin St_RaiseExc(5);Exit;End;
+  Num:=St_Rg[Rn];
+  If (Op And $100)=0 Then Begin
+   Q:=St_DivU32(Num,Den,Rem);
+   If (Q<0) Or (Q>$FFFF) Then Begin St_SetF(St_SR_V,True);St_SetF(St_SR_C,False);Exit;End;
+   St_Rg[Rn]:=((Rem And $FFFF) Shl 16) Or (Q And $FFFF);
+   St_SetF(St_SR_V,False);St_SetF(St_SR_C,False);St_SetNZ(Q,2);
+  End Else Begin
+   Den:=St_SExt(Den,2);
+   If (Num=St_Low32) And (Den=-1) Then Begin
+     St_SetF(St_SR_V,True);St_SetF(St_SR_C,False);Exit;End;
+   Q:=Num Div Den;Rem:=Num Mod Den;
+   If (Q<-32768) Or (Q>32767) Then Begin
+     St_SetF(St_SR_V,True);St_SetF(St_SR_C,False);Exit;End;
+   St_Rg[Rn]:=((Rem And $FFFF) Shl 16) Or (Q And $FFFF);
+   St_SetF(St_SR_V,False);St_SetF(St_SR_C,False);St_SetNZ(Q,2);
+  End;
+  Exit;
+ End;
+ If (Op And $1F0)=$100 Then Begin
+  { SBCD }
+  If Mode=0 Then Begin V:=St_Rg[Reg] And $FF;R:=St_Rg[Rn] And $FF;End
+  Else Begin
+   St_CalcEA(4,Reg,1);V:=St_Rd8(St_EAA);
+   St_CalcEA(4,Rn,1);R:=St_Rd8(St_EAA);
+  End;
+  Lo:=(R And $F)-(V And $F)-Ord(St_GetF(St_SR_X));
+  Q:=(St_ShrL(R,4) And $F)-(St_ShrL(V,4) And $F);
+  If Lo<0 Then Begin Lo:=Lo+10;Q:=Q-1;End;
+  St_SetF(St_SR_C,False);
+  If Q<0 Then Begin Q:=Q+10;St_SetF(St_SR_C,True);End;
+  R:=((Q And $F) Shl 4) Or (Lo And $F);
+  If R<>0 Then St_SetF(St_SR_Z,False);
+  St_SetF(St_SR_X,St_GetF(St_SR_C));
+  If Mode=0 Then St_Rg[Rn]:=(St_Rg[Rn] And (Not $FF)) Or R Else St_Wr8(St_EAA,R);
+  Exit;
+ End;
+ St_CalcEA(Mode,Reg,Sz);
+ If (Op And $100)=0 Then Begin
+  V:=St_ReadEA(Sz);
+  R:=St_Msk(V Or St_Rg[Rn],Sz);
+  St_SetLogic(R,Sz);
+  Case Sz Of
+   1: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FF)) Or R;
+   2: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FFFF)) Or R;
+  Else St_Rg[Rn]:=R;
+  End;
+ End Else Begin
+  V:=St_ReadEA(Sz);
+  R:=St_Msk(V Or St_Rg[Rn],Sz);
+  St_SetLogic(R,Sz);
+  St_WriteEA(Sz,R);
+ End;
+End;
+Procedure St_OpAddSub(Op: LongInt; IsAdd: Boolean);
+Var Mode,Reg,Rn,Sz: Integer; V,R,S: LongInt; Q: Integer;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
+  St_CalcEA(Mode,Reg,Sz);
+  V:=St_SExt(St_ReadEA(Sz),Sz);
+  If IsAdd Then St_Rg[8+Rn]:=St_Rg[8+Rn]+V Else St_Rg[8+Rn]:=St_Rg[8+Rn]-V;
+  Exit;
+ End;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ If ((Op And $130)=$100) And (Mode<2) Then Begin
+  { ADDX / SUBX }
+  If Mode=0 Then Begin V:=St_Rg[Reg];S:=St_Rg[Rn];End
+  Else Begin
+   St_CalcEA(4,Reg,Sz);V:=St_MemRd(St_EAA,Sz);
+   St_CalcEA(4,Rn,Sz);S:=St_MemRd(St_EAA,Sz);
+  End;
+  If IsAdd Then R:=St_AluAdd(V,S,Sz,True,True) Else R:=St_AluSub(V,S,Sz,True,True);
+  If Mode=0 Then Begin
+   Case Sz Of
+    1: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FF)) Or R;
+    2: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FFFF)) Or R;
+   Else St_Rg[Rn]:=R;
+   End;
+  End Else St_MemWr(St_EAA,Sz,R);
+  Exit;
+ End;
+ St_CalcEA(Mode,Reg,Sz);
+ If (Op And $100)=0 Then Begin
+  V:=St_ReadEA(Sz);
+  If IsAdd Then R:=St_AluAdd(V,St_Rg[Rn],Sz,False,True) Else
+    R:=St_AluSub(V,St_Rg[Rn],Sz,False,True);
+  Case Sz Of
+   1: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FF)) Or R;
+   2: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FFFF)) Or R;
+  Else St_Rg[Rn]:=R;
+  End;
+ End Else Begin
+  V:=St_ReadEA(Sz);
+  If IsAdd Then R:=St_AluAdd(St_Rg[Rn],V,Sz,False,True) Else
+    R:=St_AluSub(St_Rg[Rn],V,Sz,False,True);
+  St_WriteEA(Sz,R);
+ End;
+End;
+Procedure St_OpB(Op: LongInt);
+Var Mode,Reg,Rn,Sz: Integer; V,R,S: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  If (Op And $100)<>0 Then Sz:=4 Else Sz:=2;
+  St_CalcEA(Mode,Reg,Sz);
+  V:=St_SExt(St_ReadEA(Sz),Sz);
+  R:=St_AluSub(V,St_Rg[8+Rn],4,False,False);
+  Exit;
+ End;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ If (Op And $100)=0 Then Begin
+  St_CalcEA(Mode,Reg,Sz);
+  V:=St_ReadEA(Sz);
+  R:=St_AluSub(V,St_Rg[Rn],Sz,False,False);
+ End Else If Mode=1 Then Begin
+  { CMPM }
+  St_CalcEA(3,Reg,Sz);V:=St_MemRd(St_EAA,Sz);
+  St_CalcEA(3,Rn,Sz);S:=St_MemRd(St_EAA,Sz);
+  R:=St_AluSub(V,S,Sz,False,False);
+ End Else Begin
+  St_CalcEA(Mode,Reg,Sz);
+  V:=St_ReadEA(Sz);
+  R:=St_Msk(V Xor St_Rg[Rn],Sz);
+  St_SetLogic(R,Sz);
+  St_WriteEA(Sz,R);
+ End;
+End;
+Procedure St_OpC(Op: LongInt);
+Var Mode,Reg,Rn,Sz: Integer; V,R,S,Lo,Q: LongInt; T: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  St_CalcEA(Mode,Reg,2);
+  V:=St_ReadEA(2);
+  If (Op And $100)=0 Then R:=(V And $FFFF)*(St_Rg[Rn] And $FFFF)
+  Else R:=St_SExt(V,2)*St_SExt(St_Rg[Rn],2);
+  St_Rg[Rn]:=R;
+  St_SetLogic(R,4);
+  Exit;
+ End;
+ If (Op And $1F0)=$100 Then Begin
+  { ABCD }
+  If Mode=0 Then Begin V:=St_Rg[Reg] And $FF;R:=St_Rg[Rn] And $FF;End
+  Else Begin
+   St_CalcEA(4,Reg,1);V:=St_Rd8(St_EAA);
+   St_CalcEA(4,Rn,1);R:=St_Rd8(St_EAA);
+  End;
+  Lo:=(R And $F)+(V And $F)+Ord(St_GetF(St_SR_X));
+  Q:=(St_ShrL(R,4) And $F)+(St_ShrL(V,4) And $F);
+  If Lo>9 Then Begin Lo:=Lo-10;Q:=Q+1;End;
+  St_SetF(St_SR_C,False);
+  If Q>9 Then Begin Q:=Q-10;St_SetF(St_SR_C,True);End;
+  R:=((Q And $F) Shl 4) Or (Lo And $F);
+  If R<>0 Then St_SetF(St_SR_Z,False);
+  St_SetF(St_SR_X,St_GetF(St_SR_C));
+  If Mode=0 Then St_Rg[Rn]:=(St_Rg[Rn] And (Not $FF)) Or R Else St_Wr8(St_EAA,R);
+  Exit;
+ End;
+ If (Op And $F1F8)=$C140 Then Begin
+   T:=St_Rg[Rn];St_Rg[Rn]:=St_Rg[Reg];St_Rg[Reg]:=T;Exit;End;
+ If (Op And $F1F8)=$C148 Then Begin
+   T:=St_Rg[8+Rn];St_Rg[8+Rn]:=St_Rg[8+Reg];St_Rg[8+Reg]:=T;Exit;End;
+ If (Op And $F1F8)=$C188 Then Begin
+   T:=St_Rg[Rn];St_Rg[Rn]:=St_Rg[8+Reg];St_Rg[8+Reg]:=T;Exit;End;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ St_CalcEA(Mode,Reg,Sz);
+ V:=St_ReadEA(Sz);
+ R:=St_Msk(V And St_Rg[Rn],Sz);
+ St_SetLogic(R,Sz);
+ If (Op And $100)=0 Then Begin
+  Case Sz Of
+   1: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FF)) Or R;
+   2: St_Rg[Rn]:=(St_Rg[Rn] And (Not $FFFF)) Or R;
+  Else St_Rg[Rn]:=R;
+  End;
+ End Else St_WriteEA(Sz,R);
+End;
+Procedure St_OpE(Op: LongInt);
+Var Mode,Reg,Rn,Sz,Ty,Cnt: Integer; V,R: LongInt;
+Begin
+ Mode:=(Op Shr 3) And 7;Reg:=Op And 7;Rn:=(Op Shr 9) And 7;
+ If ((Op Shr 6) And 3)=3 Then Begin
+  Ty:=(Op Shr 9) And 3;
+  St_CalcEA(Mode,Reg,2);
+  V:=St_ReadEA(2);
+  R:=Shift(Ty,(Op And $100)<>0,V,1,2);
+  St_WriteEA(2,R);
+  Exit;
+ End;
+ Sz:=St_SzFromBits((Op Shr 6) And 3);
+ Ty:=(Op Shr 3) And 3;
+ If (Op And $20)<>0 Then Cnt:=St_Rg[Rn] And 63
+ Else Begin Cnt:=Rn;If Cnt=0 Then Cnt:=8;End;
+ R:=Shift(Ty,(Op And $100)<>0,St_Rg[Reg],Cnt,Sz);
+ Case Sz Of
+  1: St_Rg[Reg]:=(St_Rg[Reg] And (Not $FF)) Or R;
+  2: St_Rg[Reg]:=(St_Rg[Reg] And (Not $FFFF)) Or R;
+ Else St_Rg[Reg]:=R;
+ End;
+End;
+Procedure St_CpuReset;
+Var St_I: Integer;
+Begin
+ For St_I:=0 To 15 Do St_Rg[St_I]:=0;
+ St_PC:=0;St_SRv:=$2700;St_USPv:=0;St_SSPv:=0;
+ St_StopReason:=St_STOP_NONE;St_StopMsg:='';St_ExitCode:=0;St_InstrCount:=0;
+ St_BusErr:=False;St_AddrErr:=False;
+ St_PendVec:=-1;St_ExcTaken:=False;
+End;
+Procedure St_Step;
+Var Op: LongInt; Tr: Boolean;
+Begin
+ St_CurOpPC:=St_PC;
+ If St_PendVec>=0 Then Begin
+  { exception interceptee par le moniteur : on l'envoie au gestionnaire du
+    programme }
+  St_TakeExc(St_PendVec,St_PendPC,St_PendHnd,(St_PendVec=2) Or (St_PendVec=3),St_PendAddr,St_PendIR);
+  St_PendVec:=-1;
+  Exit;
+ End;
+ St_HleLibCheck;
+ If St_StopReason<>St_STOP_NONE Then Exit;
+ St_CurOpPC:=St_PC;
+ Tr:=(St_SRv And St_SR_T)<>0;
+ St_ExcTaken:=False;
+ Op:=St_Fetch16;
+ Inc(St_InstrCount);
+ Case (Op Shr 12) And 15 Of
+  0: St_Op0(Op);
+  1,2,3: St_OpMove(Op);
+  4: St_Op4(Op);
+  5: St_Op5(Op);
+  6: St_OpBcc(Op);
+  7: Begin
+      St_Rg[(Op Shr 9) And 7]:=St_SExt(Op And $FF,1);
+      St_SetLogic(St_Rg[(Op Shr 9) And 7],4);
+     End;
+  8: St_Op8(Op);
+  9: St_OpAddSub(Op,False);
+  10: St_DoLineA(Op);
+  11: St_OpB(Op);
+  12: St_OpC(Op);
+  13: St_OpAddSub(Op,True);
+  14: St_OpE(Op);
+ Else St_RaiseExc(11);
+ End;
+ If St_AddrErr Then Begin
+  St_LastAccA:=St_BusAddr;
+  St_RaiseExcX(3,True,St_BusAddr);
+ End Else If St_BusErr Then Begin
+  St_LastAccA:=St_BusAddr;
+  St_RaiseExcX(2,True,St_BusAddr);
+ End;
+ If St_StopReason=St_STOP_FAULT Then St_PC:=St_CurOpPC   { PC = instruction fautive
+   (moniteur) }
+ Else If Tr And Not St_ExcTaken And (St_StopReason=St_STOP_NONE) And (St_PendVec<0) Then
+   Begin
+  { bit Trace : exception 9 apres l'instruction (ignoree sans gestionnaire) }
+  Op:=St_ExcHandler(9);
+  If Op<>0 Then St_TakeExc(9,St_PC,Op,False,0,0);
+ End;
+End;
+Function St_IsBreakpoint(A: LongInt): Boolean;
+Var St_I: Integer;
+Begin
+ St_IsBreakpoint:=False;
+ For St_I:=1 To St_NBps Do If St_Bps[St_I]=A Then Begin St_IsBreakpoint:=True;Exit;End;
+End;
+Procedure St_IrqCheck; Forward;
+Procedure St_RunCpu(Max: LongInt);
+Var N: LongInt;
+Begin
+ N:=0;
+ While (St_StopReason=St_STOP_NONE) And (N<Max) Do Begin
+  St_Step;
+  Inc(N);
+  If (N And 511)=0 Then St_IrqCheck;
+  If (St_StopReason=St_STOP_NONE) And (St_NBps>0) And St_IsBreakpoint(St_PC) Then Begin
+   St_StopReason:=St_STOP_BREAK;
+   St_StopMsg:='Breakpoint';
+  End;
+ End;
+End;
+Const
+ St_KQ_SIZE = 64;
+ St_CON_ROWS = 25;
+ St_CON_COLS = 80;
+ St_EMU_Y0   = 40;
+Var
+ St_Font8     : Array[0..255,0..7] Of Byte;
+ St_FontReady : Boolean;
+ St_KQ        : Array[0..St_KQ_SIZE-1] Of LongInt;
+ St_KQHead,St_KQTail : Integer;
+ St_UserBreak : Boolean;
+ St_ConRow,St_ConCol : Integer;
+ St_ConRev,St_ConWrap,St_ConCurOn : Boolean;
+ St_ConState  : Integer;
+ St_ConYRow   : Integer;
+ St_ScrShadow : Array[0..St_SCR_BYTES-1] Of Byte;
+ St_Emu_GEM   : Boolean;
+ St_EmuVisible: Boolean;
+ St_MonActive : Boolean;
+ St_UserCursor : Boolean;
+ St_RecActive  : Boolean;
+ St_MouseHidden : Integer;
+Const
+ St_Font8Emb : Array[0..255,0..7] Of Byte = (
+  ($00,$00,$00,$00,$00,$00,$00,$00),($7E,$81,$A5,$81,$BD,$99,$81,$7E),
+  ($7E,$FF,$DB,$FF,$C3,$E7,$FF,$7E),($6C,$FE,$FE,$FE,$7C,$38,$10,$00),
+  ($10,$38,$7C,$FE,$7C,$38,$10,$00),($38,$7C,$38,$FE,$FE,$7C,$38,$7C),
+  ($10,$10,$38,$7C,$FE,$7C,$38,$7C),($00,$00,$18,$3C,$3C,$18,$00,$00),
+  ($FF,$FF,$E7,$C3,$C3,$E7,$FF,$FF),($00,$3C,$66,$42,$42,$66,$3C,$00),
+  ($FF,$C3,$99,$BD,$BD,$99,$C3,$FF),($0F,$07,$0F,$7D,$CC,$CC,$CC,$78),
+  ($3C,$66,$66,$66,$3C,$18,$7E,$18),($3F,$33,$3F,$30,$30,$70,$F0,$E0),
+  ($7F,$63,$7F,$63,$63,$67,$E6,$C0),($99,$5A,$3C,$E7,$E7,$3C,$5A,$99),
+  ($80,$E0,$F8,$FE,$F8,$E0,$80,$00),($02,$0E,$3E,$FE,$3E,$0E,$02,$00),
+  ($18,$3C,$7E,$18,$18,$7E,$3C,$18),($66,$66,$66,$66,$66,$00,$66,$00),
+  ($7F,$DB,$DB,$7B,$1B,$1B,$1B,$00),($3E,$63,$38,$6C,$6C,$38,$CC,$78),
+  ($00,$00,$00,$00,$7E,$7E,$7E,$00),($18,$3C,$7E,$18,$7E,$3C,$18,$FF),
+  ($18,$3C,$7E,$18,$18,$18,$18,$00),($18,$18,$18,$18,$7E,$3C,$18,$00),
+  ($00,$18,$0C,$FE,$0C,$18,$00,$00),($00,$30,$60,$FE,$60,$30,$00,$00),
+  ($00,$00,$C0,$C0,$C0,$FE,$00,$00),($00,$24,$66,$FF,$66,$24,$00,$00),
+  ($00,$18,$3C,$7E,$FF,$FF,$00,$00),($00,$FF,$FF,$7E,$3C,$18,$00,$00),
+  ($00,$00,$00,$00,$00,$00,$00,$00),($30,$78,$78,$78,$30,$00,$30,$00),
+  ($6C,$6C,$6C,$00,$00,$00,$00,$00),($6C,$6C,$FE,$6C,$FE,$6C,$6C,$00),
+  ($30,$7C,$C0,$78,$0C,$F8,$30,$00),($00,$C6,$CC,$18,$30,$66,$C6,$00),
+  ($38,$6C,$38,$76,$DC,$CC,$76,$00),($60,$60,$C0,$00,$00,$00,$00,$00),
+  ($18,$30,$60,$60,$60,$30,$18,$00),($60,$30,$18,$18,$18,$30,$60,$00),
+  ($00,$66,$3C,$FF,$3C,$66,$00,$00),($00,$30,$30,$FC,$30,$30,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$60),($00,$00,$00,$FC,$00,$00,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$00),($06,$0C,$18,$30,$60,$C0,$80,$00),
+  ($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),($30,$70,$30,$30,$30,$30,$FC,$00),
+  ($78,$CC,$0C,$38,$60,$CC,$FC,$00),($78,$CC,$0C,$38,$0C,$CC,$78,$00),
+  ($1C,$3C,$6C,$CC,$FE,$0C,$1E,$00),($FC,$C0,$F8,$0C,$0C,$CC,$78,$00),
+  ($38,$60,$C0,$F8,$CC,$CC,$78,$00),($FC,$CC,$0C,$18,$30,$30,$30,$00),
+  ($78,$CC,$CC,$78,$CC,$CC,$78,$00),($78,$CC,$CC,$7C,$0C,$18,$70,$00),
+  ($00,$30,$30,$00,$00,$30,$30,$00),($00,$30,$30,$00,$00,$30,$30,$60),
+  ($18,$30,$60,$C0,$60,$30,$18,$00),($00,$00,$FC,$00,$00,$FC,$00,$00),
+  ($60,$30,$18,$0C,$18,$30,$60,$00),($78,$CC,$0C,$18,$30,$00,$30,$00),
+  ($7C,$C6,$DE,$DE,$DE,$C0,$78,$00),($38,$6C,$C6,$C6,$FE,$C6,$C6,$00),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$FC,$00),($7C,$C6,$C6,$C0,$C0,$C6,$7C,$00),
+  ($F8,$CC,$C6,$C6,$C6,$CC,$F8,$00),($FE,$C0,$C0,$FC,$C0,$C0,$FE,$00),
+  ($FE,$C0,$C0,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C0,$CE,$C6,$C6,$7E,$00),
+  ($C6,$C6,$C6,$FE,$C6,$C6,$C6,$00),($78,$30,$30,$30,$30,$30,$78,$00),
+  ($1E,$06,$06,$06,$C6,$C6,$7C,$00),($C6,$CC,$D8,$F0,$D8,$CC,$C6,$00),
+  ($C0,$C0,$C0,$C0,$C0,$C0,$FE,$00),($C6,$EE,$FE,$D6,$C6,$C6,$C6,$00),
+  ($C6,$E6,$F6,$DE,$CE,$C6,$C6,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($FC,$C6,$C6,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$06),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$C6,$00),($78,$CC,$60,$30,$18,$CC,$78,$00),
+  ($FC,$30,$30,$30,$30,$30,$30,$00),($C6,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($C6,$C6,$C6,$C6,$C6,$6C,$38,$00),($C6,$C6,$C6,$D6,$FE,$EE,$C6,$00),
+  ($C6,$C6,$6C,$38,$6C,$C6,$C6,$00),($C3,$C3,$66,$3C,$18,$18,$18,$00),
+  ($FE,$0C,$18,$30,$60,$C0,$FE,$00),($3C,$30,$30,$30,$30,$30,$3C,$00),
+  ($C0,$60,$30,$18,$0C,$06,$03,$00),($3C,$0C,$0C,$0C,$0C,$0C,$3C,$00),
+  ($00,$38,$6C,$C6,$00,$00,$00,$00),($00,$00,$00,$00,$00,$00,$00,$FF),
+  ($30,$30,$18,$00,$00,$00,$00,$00),($00,$00,$7C,$06,$7E,$C6,$7E,$00),
+  ($C0,$C0,$FC,$C6,$C6,$E6,$DC,$00),($00,$00,$7C,$C6,$C0,$C0,$7E,$00),
+  ($06,$06,$7E,$C6,$C6,$CE,$76,$00),($00,$00,$7C,$C6,$FE,$C0,$7E,$00),
+  ($1E,$30,$7C,$30,$30,$30,$30,$00),($00,$00,$7E,$C6,$CE,$76,$06,$7C),
+  ($C0,$C0,$FC,$C6,$C6,$C6,$C6,$00),($18,$00,$38,$18,$18,$18,$3C,$00),
+  ($18,$00,$38,$18,$18,$18,$18,$F0),($C0,$C0,$CC,$D8,$F0,$D8,$CC,$00),
+  ($38,$18,$18,$18,$18,$18,$3C,$00),($00,$00,$CC,$FE,$D6,$C6,$C6,$00),
+  ($00,$00,$FC,$C6,$C6,$C6,$C6,$00),($00,$00,$7C,$C6,$C6,$C6,$7C,$00),
+  ($00,$00,$FC,$C6,$C6,$E6,$DC,$C0),($00,$00,$7E,$C6,$C6,$CE,$76,$06),
+  ($00,$00,$6E,$70,$60,$60,$60,$00),($00,$00,$7C,$C0,$7C,$06,$FC,$00),
+  ($30,$30,$7C,$30,$30,$30,$1C,$00),($00,$00,$C6,$C6,$C6,$C6,$7E,$00),
+  ($00,$00,$C6,$C6,$C6,$6C,$38,$00),($00,$00,$C6,$C6,$D6,$FE,$6C,$00),
+  ($00,$00,$C6,$6C,$38,$6C,$C6,$00),($00,$00,$C6,$C6,$CE,$76,$06,$7C),
+  ($00,$00,$FC,$18,$30,$60,$FC,$00),($1C,$30,$30,$E0,$30,$30,$1C,$00),
+  ($18,$18,$18,$00,$18,$18,$18,$00),($E0,$30,$30,$1C,$30,$30,$E0,$00),
+  ($76,$DC,$00,$00,$00,$00,$00,$00),($00,$10,$38,$6C,$C6,$C6,$FE,$00),
+  ($78,$CC,$C0,$CC,$78,$18,$0C,$78),($00,$CC,$00,$CC,$CC,$CC,$7E,$00),
+  ($1C,$00,$78,$CC,$FC,$C0,$78,$00),($7E,$C3,$3C,$06,$3E,$66,$3F,$00),
+  ($CC,$00,$78,$0C,$7C,$CC,$7E,$00),($E0,$00,$78,$0C,$7C,$CC,$7E,$00),
+  ($30,$30,$78,$0C,$7C,$CC,$7E,$00),($00,$00,$78,$C0,$C0,$78,$0C,$38),
+  ($7E,$C3,$3C,$66,$7E,$60,$3C,$00),($CC,$00,$78,$CC,$FC,$C0,$78,$00),
+  ($E0,$00,$78,$CC,$FC,$C0,$78,$00),($CC,$00,$70,$30,$30,$30,$78,$00),
+  ($7C,$C6,$38,$18,$18,$18,$3C,$00),($E0,$00,$70,$30,$30,$30,$78,$00),
+  ($C6,$38,$6C,$C6,$FE,$C6,$C6,$00),($30,$30,$00,$78,$CC,$FC,$CC,$00),
+  ($1C,$00,$FC,$60,$78,$60,$FC,$00),($00,$00,$7F,$0C,$7F,$CC,$7F,$00),
+  ($3E,$6C,$CC,$FE,$CC,$CC,$CE,$00),($78,$CC,$00,$78,$CC,$CC,$78,$00),
+  ($00,$CC,$00,$78,$CC,$CC,$78,$00),($00,$E0,$00,$78,$CC,$CC,$78,$00),
+  ($78,$CC,$00,$CC,$CC,$CC,$7E,$00),($00,$E0,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$CC,$00,$CC,$CC,$7C,$0C,$F8),($C3,$18,$3C,$66,$66,$3C,$18,$00),
+  ($CC,$00,$CC,$CC,$CC,$CC,$78,$00),($18,$18,$7E,$C0,$C0,$7E,$18,$18),
+  ($38,$6C,$64,$F0,$60,$E6,$FC,$00),($CC,$CC,$78,$FC,$30,$FC,$30,$30),
+  ($F8,$CC,$CC,$FA,$C6,$CF,$C6,$C7),($0E,$1B,$18,$3C,$18,$18,$D8,$70),
+  ($1C,$00,$78,$0C,$7C,$CC,$7E,$00),($38,$00,$70,$30,$30,$30,$78,$00),
+  ($00,$1C,$00,$78,$CC,$CC,$78,$00),($00,$1C,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$F8,$00,$F8,$CC,$CC,$CC,$00),($FC,$00,$CC,$EC,$FC,$DC,$CC,$00),
+  ($3C,$6C,$6C,$3E,$00,$7E,$00,$00),($38,$6C,$6C,$38,$00,$7C,$00,$00),
+  ($30,$00,$30,$60,$C0,$CC,$78,$00),($00,$00,$00,$FC,$C0,$C0,$00,$00),
+  ($00,$00,$00,$FC,$0C,$0C,$00,$00),($C3,$C6,$CC,$DE,$33,$66,$CC,$0F),
+  ($C3,$C6,$CC,$DB,$37,$6F,$CF,$03),($18,$18,$00,$18,$18,$18,$18,$00),
+  ($00,$33,$66,$CC,$66,$33,$00,$00),($00,$CC,$66,$33,$66,$CC,$00,$00),
+  ($22,$88,$22,$88,$22,$88,$22,$88),($55,$AA,$55,$AA,$55,$AA,$55,$AA),
+  ($DB,$77,$DB,$EE,$DB,$77,$DB,$EE),($18,$18,$18,$18,$18,$18,$18,$18),
+  ($18,$18,$18,$18,$F8,$18,$18,$18),($18,$18,$F8,$18,$F8,$18,$18,$18),
+  ($36,$36,$36,$36,$F6,$36,$36,$36),($00,$00,$00,$00,$FE,$36,$36,$36),
+  ($00,$00,$F8,$18,$F8,$18,$18,$18),($36,$36,$F6,$06,$F6,$36,$36,$36),
+  ($36,$36,$36,$36,$36,$36,$36,$36),($00,$00,$FE,$06,$F6,$36,$36,$36),
+  ($36,$36,$F6,$06,$FE,$00,$00,$00),($36,$36,$36,$36,$FE,$00,$00,$00),
+  ($18,$18,$F8,$18,$F8,$00,$00,$00),($00,$00,$00,$00,$F8,$18,$18,$18),
+  ($18,$18,$18,$18,$1F,$00,$00,$00),($18,$18,$18,$18,$FF,$00,$00,$00),
+  ($00,$00,$00,$00,$FF,$18,$18,$18),($18,$18,$18,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$00,$00,$00),($18,$18,$18,$18,$FF,$18,$18,$18),
+  ($18,$18,$1F,$18,$1F,$18,$18,$18),($36,$36,$36,$36,$37,$36,$36,$36),
+  ($36,$36,$37,$30,$3F,$00,$00,$00),($00,$00,$3F,$30,$37,$36,$36,$36),
+  ($36,$36,$F7,$00,$FF,$00,$00,$00),($00,$00,$FF,$00,$F7,$36,$36,$36),
+  ($36,$36,$37,$30,$37,$36,$36,$36),($00,$00,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$F7,$00,$F7,$36,$36,$36),($18,$18,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$36,$36,$FF,$00,$00,$00),($00,$00,$FF,$00,$FF,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$36,$36,$36),($36,$36,$36,$36,$3F,$00,$00,$00),
+  ($18,$18,$1F,$18,$1F,$00,$00,$00),($00,$00,$1F,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$3F,$36,$36,$36),($36,$36,$36,$36,$FF,$36,$36,$36),
+  ($18,$18,$FF,$18,$FF,$18,$18,$18),($18,$18,$18,$18,$F8,$00,$00,$00),
+  ($00,$00,$00,$00,$1F,$18,$18,$18),($FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF),
+  ($00,$00,$00,$00,$FF,$FF,$FF,$FF),($F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0),
+  ($0F,$0F,$0F,$0F,$0F,$0F,$0F,$0F),($FF,$FF,$FF,$FF,$00,$00,$00,$00),
+  ($00,$00,$76,$DC,$C8,$DC,$76,$00),($00,$78,$CC,$F8,$CC,$F8,$C0,$C0),
+  ($00,$FC,$CC,$C0,$C0,$C0,$C0,$00),($00,$FE,$6C,$6C,$6C,$6C,$6C,$00),
+  ($FC,$CC,$60,$30,$60,$CC,$FC,$00),($00,$00,$7E,$D8,$D8,$D8,$70,$00),
+  ($00,$66,$66,$66,$66,$7C,$60,$C0),($00,$76,$DC,$18,$18,$18,$18,$00),
+  ($FC,$30,$78,$CC,$CC,$78,$30,$FC),($38,$6C,$C6,$FE,$C6,$6C,$38,$00),
+  ($38,$6C,$C6,$C6,$6C,$6C,$EE,$00),($1C,$30,$18,$7C,$CC,$CC,$78,$00),
+  ($00,$00,$7E,$DB,$DB,$7E,$00,$00),($06,$0C,$7E,$DB,$DB,$7E,$60,$C0),
+  ($38,$60,$C0,$F8,$C0,$60,$38,$00),($78,$CC,$CC,$CC,$CC,$CC,$CC,$00),
+  ($00,$FC,$00,$FC,$00,$FC,$00,$00),($30,$30,$FC,$30,$30,$00,$FC,$00),
+  ($60,$30,$18,$30,$60,$00,$FC,$00),($18,$30,$60,$30,$18,$00,$FC,$00),
+  ($0E,$1B,$1B,$18,$18,$18,$18,$18),($18,$18,$18,$18,$18,$D8,$D8,$70),
+  ($30,$30,$00,$FC,$00,$30,$30,$00),($00,$76,$DC,$00,$76,$DC,$00,$00),
+  ($38,$6C,$6C,$38,$00,$00,$00,$00),($00,$00,$00,$18,$18,$00,$00,$00),
+  ($00,$00,$00,$00,$18,$00,$00,$00),($0F,$0C,$0C,$0C,$EC,$6C,$3C,$1C),
+  ($78,$6C,$6C,$6C,$6C,$00,$00,$00),($70,$18,$30,$60,$78,$00,$00,$00),
+  ($00,$00,$3C,$3C,$3C,$3C,$00,$00),($00,$00,$00,$00,$00,$00,$00,$00)
+ );
+Procedure St_BPix(X,Y: Integer; V: Boolean);
+Var A: LongInt; B: Byte;
+Begin
+ If (X<0) Or (X>=640) Or (Y<0) Or (Y>=400) Then Exit;
+ A:=St_DrawBase+LongInt(Y)*80+(X Shr 3);
+ B:=St_Rd8(A);
+ If V Then B:=B Or (128 Shr (X And 7)) Else B:=B And Not (128 Shr (X And 7));
+ St_Wr8(A,B);
+End;
+Function St_BGet(X,Y: Integer): Boolean;
+Begin
+ St_BGet:=False;
+ If (X<0) Or (X>=640) Or (Y<0) Or (Y>=400) Then Exit;
+ St_BGet:=(St_Rd8(St_DrawBase+LongInt(Y)*80+(X Shr 3)) And (128 Shr (X And 7)))<>0;
+End;
+Procedure St_BRect(X1,Y1,X2,Y2: Integer; V: Boolean);
+Var X,Y: Integer;
+Begin
+ For Y:=Y1 To Y2 Do
+  For X:=X1 To X2 Do St_BPix(X,Y,V);
+End;
+Procedure St_ConGlyph(R,C: Integer; Ch: Byte; Rev: Boolean);
+Var GY: Integer; B: Byte; A: LongInt;
+Begin
+ A:=St_DrawBase+LongInt(R)*16*80+C;
+ For GY:=0 To 15 Do Begin
+  B:=St_Font8[Ch,GY Shr 1];
+  If Rev Then B:=Not B;
+  St_Wr8(A+LongInt(GY)*80,B);
+ End;
+End;
+Procedure St_ConClear;
+Var St_I: LongInt;
+Begin
+ For St_I:=0 To St_SCR_BYTES-1 Do St_Wr8(St_DrawBase+St_I,0);
+ St_ConRow:=0;St_ConCol:=0;
+End;
+Procedure St_ConScroll;
+Var St_I: LongInt;
+Begin
+ For St_I:=0 To (St_CON_ROWS-1)*16*80-1 Do St_Wr8(St_DrawBase+St_I,St_Rd8(St_DrawBase+St_I+16*80));
+ For St_I:=(St_CON_ROWS-1)*16*80 To St_SCR_BYTES-1 Do St_Wr8(St_DrawBase+St_I,0);
+End;
+Procedure St_ConCursor(On: Boolean);
+Var GY: Integer; A: LongInt;
+Begin
+ If St_BatchMode Then Exit;
+ A:=St_DrawBase+LongInt(St_ConRow)*16*80+St_ConCol;
+ For GY:=13 To 15 Do St_Wr8(A+LongInt(GY)*80,St_Rd8(A+LongInt(GY)*80) Xor $FF);
+End;
+Procedure St_ConNewLine;
+Begin
+ St_ConCol:=0;
+ If St_ConRow>=St_CON_ROWS-1 Then St_ConScroll Else Inc(St_ConRow);
+End;
+Procedure St_ConPut(B: Byte);
+Begin
+ If St_BatchMode Then Begin
+  Case St_ConState Of
+   0: If B=27 Then St_ConState:=1
+      Else If B=10 Then WriteLn(St_ConOut)
+      Else If (B=9) Or (B=8) Or (B>=32) Then Write(St_ConOut,Chr(B));
+   1: Begin
+       If B=Ord('Y') Then St_ConState:=2
+       Else If (B=Ord('b')) Or (B=Ord('c')) Then St_ConState:=4
+       Else St_ConState:=0;
+      End;
+   2: St_ConState:=3;
+   3: St_ConState:=0;
+   4: St_ConState:=0;
+  End;
+  Exit;
+ End;
+ Case St_ConState Of
+  1: Begin
+      St_ConState:=0;
+      Case Chr(B) Of
+       'A': If St_ConRow>0 Then Dec(St_ConRow);
+       'B': If St_ConRow<St_CON_ROWS-1 Then Inc(St_ConRow);
+       'C': If St_ConCol<St_CON_COLS-1 Then Inc(St_ConCol);
+       'D': If St_ConCol>0 Then Dec(St_ConCol);
+       'E': St_ConClear;
+       'H': Begin St_ConRow:=0;St_ConCol:=0;End;
+       'J': Begin
+             St_ConGlyph(St_ConRow,St_ConCol,32,False);
+             While St_ConCol<St_CON_COLS Do Begin
+               St_ConGlyph(St_ConRow,St_ConCol,32,False);Inc(St_ConCol);End;
+             St_ConCol:=0;
+            End;
+       'K': Begin
+             While St_ConCol<St_CON_COLS Do Begin
+               St_ConGlyph(St_ConRow,St_ConCol,32,False);Inc(St_ConCol);End;
+             St_ConCol:=0;
+            End;
+       'Y': St_ConState:=2;
+       'b','c': St_ConState:=4;
+       'e': St_ConCurOn:=True;
+       'f': St_ConCurOn:=False;
+       'p': St_ConRev:=True;
+       'q': St_ConRev:=False;
+       'v': St_ConWrap:=True;
+       'w': St_ConWrap:=False;
+      End;
+     End;
+  2: Begin St_ConYRow:=Integer(B)-32;St_ConState:=3;End;
+  3: Begin
+      St_ConState:=0;
+      If (St_ConYRow>=0) And (St_ConYRow<St_CON_ROWS) Then St_ConRow:=St_ConYRow;
+      If (Integer(B)-32>=0) And (Integer(B)-32<St_CON_COLS) Then
+        St_ConCol:=Integer(B)-32;
+     End;
+  4: St_ConState:=0;
+ Else
+  Case B Of
+   27: St_ConState:=1;
+   13: St_ConCol:=0;
+   10: Begin If St_ConRow>=St_CON_ROWS-1 Then St_ConScroll Else Inc(St_ConRow);End;
+   8: If St_ConCol>0 Then Dec(St_ConCol);
+   9: Begin St_ConCol:=(St_ConCol+8) And Not 7;If St_ConCol>=St_CON_COLS Then
+     St_ConNewLine;End;
+   7: St_SoundBell;
+  Else
+   If B>=32 Then Begin
+    St_ConGlyph(St_ConRow,St_ConCol,B,St_ConRev);
+    Inc(St_ConCol);
+    If St_ConCol>=St_CON_COLS Then Begin
+     If St_ConWrap Then St_ConNewLine Else St_ConCol:=St_CON_COLS-1;
+    End;
+   End;
+  End;
+ End;
+End;
+Var
+ St_ScrForceFull : Boolean;
+Function St_ScanOfChar(C: Char): Integer;
+Const R1 : String[10] = '1234567890';
+      R2 : String[10] = 'qwertyuiop';
+      R3 : String[9]  = 'asdfghjkl';
+      R4 : String[7]  = 'zxcvbnm';
+Var P: Integer;
+Begin
+ St_ScanOfChar:=0;
+ C:=St_LowerStr(C)[1];
+ P:=Pos(C,R1);If P>0 Then Begin St_ScanOfChar:=1+P;Exit;End;
+ P:=Pos(C,R2);If P>0 Then Begin St_ScanOfChar:=15+P;Exit;End;
+ P:=Pos(C,R3);If P>0 Then Begin St_ScanOfChar:=29+P;Exit;End;
+ P:=Pos(C,R4);If P>0 Then Begin St_ScanOfChar:=43+P;Exit;End;
+ If C=' ' Then St_ScanOfChar:=57;
+End;
+Procedure St_RecEvent(Kind: Integer; Data: LongInt); Forward;
+Procedure St_SoundTick; Forward;
+Procedure St_IkDrain; Forward;
+Procedure St_KQPush(V: LongInt);
+Begin
+ If St_RecActive Then St_RecEvent(3,(((V Shr 16) And $FF) Shl 8) Or (V And $FF));
+ If ((St_KQTail+1) Mod St_KQ_SIZE)<>St_KQHead Then Begin
+  St_KQ[St_KQTail]:=V;
+  St_KQTail:=(St_KQTail+1) Mod St_KQ_SIZE;
+ End;
+End;
+Function St_KQEmpty: Boolean;
+Begin
+ St_KQEmpty:=St_KQHead=St_KQTail;
+End;
+Function St_KQPop: LongInt;
+Begin
+ If St_KQHead=St_KQTail Then St_KQPop:=0
+ Else Begin
+  St_KQPop:=St_KQ[St_KQHead];
+  St_KQHead:=(St_KQHead+1) Mod St_KQ_SIZE;
+ End;
+End;
+Procedure St_TickSysVars;
+Var T: LongInt;
+Begin
+ T:=St_MsNow Div 5;
+ St_Wr32($4BA,T);St_Wr32($462,T Div 4);St_Wr32($466,T Div 4);
+End;
+Procedure St_IrqNested; Forward;
+Procedure St_EmuIdle;
+Begin
+ St_PollKeys;
+ St_IrqNested;
+ If Not St_BatchMode Then Begin
+  St_BlitScreen(False);
+  Delay(2);
+ End;
+End;
+Function St_WaitKeyEmu: LongInt;
+Begin
+ If St_MonActive And Not St_EmuVisible And Not St_BatchMode Then Begin
+  St_EmuVisible:=True;St_BlitScreen(True);
+ End;
+ If Not St_Emu_GEM Then St_ConCursor(True);
+ If Not St_BatchMode Then St_BlitScreen(False);
+ While St_KQEmpty And Not St_UserBreak Do St_EmuIdle;
+ If Not St_Emu_GEM Then St_ConCursor(False);
+ If St_UserBreak Then St_WaitKeyEmu:=0 Else St_WaitKeyEmu:=St_KQPop;
+End;
+Const
+ St_STUB_RTS   = $0440;
+ St_KT_UNSH    = $0A00;
+ St_KT_SHIFT   = $0A80;
+ St_KT_CAPS    = $0B00;
+ St_KT_PTRS    = $0B80;
+ St_KBDVECS    = $0B90;
+ St_IOREC_BASE = $0C00;
+ St_BPB_BASE   = $0D00;
+ St_ZERO_WORD  = $0DF0;
+ St_PARM_BLK   = $0F00;
+ St_SCRATCH_BLK= $8000;
+ St_ENV_BLK    = $8400;
+ St_ENV_SIZE   = $0200;
+ St_E_OK=0;
+ St_E_ERROR=-1;
+ St_E_NOTRDY=-2;
+ St_E_SEEK=-6;
+ St_E_RNF=-8;
+ St_E_WRITF=-10;
+ St_E_READF=-11;
+ St_E_WRPRO=-13;
+ St_E_UNDEV=-15;
+Type
+ St_TFlp = Record
+  On,Changed,RO,Virt : Boolean;
+  Name : String[80];
+  Size : LongInt;
+  Spt,Sides,Tracks : Integer;
+  F    : File;
+ End;
+Var
+ St_AuxOutF,St_MidiOutF,St_PrnOutF,St_AuxInF,St_MidiInF : File;
+ St_AuxOutOpen,St_MidiOutOpen,St_PrnOutOpen,St_AuxInOpen,St_MidiInOpen : Boolean;
+ St_AuxInTried,St_MidiInTried : Boolean;
+ St_Flp : Array[0..3] Of St_TFlp;
+ St_FlpImage : Array[0..3] Of String[80];
+ St_GiRegs : Array[0..15] Of Byte;
+ St_Palette68 : Array[0..15] Of Word;
+ St_RsConfig : Array[0..5] Of LongInt;
+ St_PrtConfig,St_KbRate,St_CurBlinkRate,St_FlpRate : LongInt;
+ St_SndPos,St_SndWait,St_SndLast,St_SndFreq : LongInt;
+ St_SndTemp,St_SndSlReg,St_SndSlInc,St_SndSlEnd : Integer;
+ St_SndSlide : Boolean;
+ St_SndLogOpen,St_SndLogTried : Boolean;
+ St_SndLog : Text;
+ St_MfpEnable : LongInt;
+ St_XbVec : Array[0..31] Of LongInt;
+Procedure St_SndLogNote(F: LongInt);
+Begin
+ If Not St_SndLogTried Then Begin
+  St_SndLogTried:=True;
+  If GetEnv('DEVPAC_SNDLOG')<>'' Then Begin
+   Assign(St_SndLog,GetEnv('DEVPAC_SNDLOG'));
+   {$I-}
+   Rewrite(St_SndLog);
+   {$I+}
+   St_SndLogOpen:=IOResult=0;
+  End;
+ End;
+ If St_SndLogOpen Then Begin
+  WriteLn(St_SndLog,F);
+  Flush(St_SndLog);
+ End;
+End;
+Function St_SndRegsFreq: LongInt;
+Var C,Vol,Best: Integer; F: LongInt; Per: LongInt;
+Begin
+ F:=0;Best:=0;
+ For C:=0 To 2 Do Begin
+  Vol:=St_GiRegs[8+C] And $1F;
+  If (Vol>Best) Then Begin
+   If (St_GiRegs[7] And (1 Shl C))=0 Then Begin
+    Per:=St_GiRegs[C*2]+LongInt(St_GiRegs[C*2+1] And 15)*256;
+    If Per<1 Then Per:=1;
+    F:=125000 Div Per;Best:=Vol;
+   End Else If (St_GiRegs[7] And (8 Shl C))=0 Then Begin
+    { bruit : approxime par une note aigue }
+    Per:=St_GiRegs[6] And 31;
+    If Per<1 Then Per:=1;
+    F:=125000 Div (Per*8);Best:=Vol;
+   End;
+  End;
+ End;
+ St_SndRegsFreq:=F;
+End;
+Procedure St_SoundOff;
+Begin
+ St_SoundOut(0,0);
+ St_SndFreq:=0;St_SndPos:=0;St_SndSlide:=False;
+End;
+Procedure St_DosoundStart(P: LongInt);
+Begin
+ St_SndPos:=P;St_SndWait:=0;St_SndSlide:=False;St_SndTemp:=0;
+End;
+Procedure St_SndStep;
+Var C,N,Guard,V: Integer;
+ Function Nxt: Integer;
+ Begin
+  Nxt:=St_Rd8(St_SndPos);Inc(St_SndPos);
+ End;
+Begin
+ If St_SndSlide Then Begin
+  V:=St_GiRegs[St_SndSlReg And 15]+St_SndSlInc;
+  St_GiRegs[St_SndSlReg And 15]:=V And $FF;
+  If ((St_SndSlInc>0) And (V>=St_SndSlEnd)) Or ((St_SndSlInc<=0) And (V<=St_SndSlEnd)) Then
+    Begin
+   St_GiRegs[St_SndSlReg And 15]:=St_SndSlEnd And $FF;St_SndSlide:=False;
+  End;
+  Exit;
+ End;
+ If St_SndWait>0 Then Begin Dec(St_SndWait);If St_SndWait>0 Then Exit;End;
+ Guard:=0;
+ While (St_SndPos<>0) And (Guard<256) Do Begin
+  Inc(Guard);
+  C:=Nxt;
+  If C<=15 Then St_GiRegs[C]:=Nxt And $FF
+  Else If C=$80 Then St_SndTemp:=Nxt
+  Else If C=$81 Then Begin
+   St_SndSlReg:=Nxt;St_SndSlInc:=Nxt;If St_SndSlInc>127 Then St_SndSlInc:=St_SndSlInc-256;
+   St_SndSlEnd:=Nxt;
+   St_GiRegs[St_SndSlReg And 15]:=St_SndTemp And $FF;
+   St_SndSlide:=True;Exit;
+  End Else If C>=$82 Then Begin
+   N:=Nxt;
+   If N=0 Then Begin St_SndPos:=0;St_GiRegs[8]:=0;St_GiRegs[9]:=0;St_GiRegs[10]:=0;End
+   Else Begin St_SndWait:=N;Exit;End;
+  End;
+ End;
+End;
+Procedure St_SoundTick;
+Var T,F: LongInt;
+Begin
+ T:=St_MsNow;
+ If T-St_SndLast<20 Then Exit;
+ If T-St_SndLast>200 Then St_SndLast:=T-20;
+ St_SndLast:=St_SndLast+20;
+ If (St_SndPos<>0) Or St_SndSlide Then St_SndStep;
+ F:=St_SndRegsFreq;
+ If F<>St_SndFreq Then Begin
+  St_SndLogNote(F);
+  {$IFNDEF WINDOWS}
+  St_SoundOut(F,20);
+  {$ENDIF}
+  St_SndFreq:=F;
+ End;
+ {$IFDEF WINDOWS}
+ If F>0 Then St_SoundOut(F,20);
+ {$ENDIF}
+End;
+Procedure St_DevOut(Var F: File; Var Opened: Boolean; Const Name: String; B: Byte);
+Var Bb: Byte;
+Begin
+ If Not Opened Then Begin
+  Assign(F,Name);
+  {$I-}
+  FileMode:=2;
+  Reset(F,1);
+  If IOResult<>0 Then Rewrite(F,1)
+  Else Seek(F,FileSize(F));
+  {$I+}
+  If IOResult<>0 Then Exit;
+  Opened:=True;
+ End;
+ Bb:=B;
+ {$I-}
+ BlockWrite(F,Bb,1);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+Function St_DevIn(Var F: File; Var Opened,Tried: Boolean; Const Name: String; Var
+  B: Byte): Boolean;
+Var Got: LongInt;
+Begin
+ St_DevIn:=False;
+ If Not Opened Then Begin
+  If Tried Then Exit;
+  Tried:=True;
+  Assign(F,Name);
+  {$I-}
+  FileMode:=0;
+  Reset(F,1);
+  {$I+}
+  If IOResult<>0 Then Exit;
+  Opened:=True;
+ End;
+ {$I-}
+ BlockRead(F,B,1,Got);
+ {$I+}
+ If (IOResult=0) And (Got=1) Then St_DevIn:=True;
+End;
+Function St_DevAvail(Var F: File; Var Opened,Tried: Boolean; Const Name: String):
+  Boolean;
+Begin
+ St_DevAvail:=False;
+ If Not Opened Then Begin
+  If Tried Then Exit;
+  Tried:=True;
+  Assign(F,Name);
+  {$I-}
+  FileMode:=0;
+  Reset(F,1);
+  {$I+}
+  If IOResult<>0 Then Exit;
+  Opened:=True;
+ End;
+ St_DevAvail:=FilePos(F)<FileSize(F);
+End;
+Procedure St_AuxPut(B: Byte);
+Begin
+ St_DevOut(St_AuxOutF,St_AuxOutOpen,'AUX.OUT',B);
+End;
+Function St_AuxGet(Var B: Byte): Boolean;
+Begin
+ St_AuxGet:=St_DevIn(St_AuxInF,St_AuxInOpen,St_AuxInTried,'AUX.IN',B);
+End;
+Function St_AuxAvail: Boolean;
+Begin
+ St_AuxAvail:=St_DevAvail(St_AuxInF,St_AuxInOpen,St_AuxInTried,'AUX.IN');
+End;
+Procedure St_MidiPut(B: Byte);
+Begin
+ St_DevOut(St_MidiOutF,St_MidiOutOpen,'MIDI.OUT',B);
+End;
+Function St_MidiGet(Var B: Byte): Boolean;
+Begin
+ St_MidiGet:=St_DevIn(St_MidiInF,St_MidiInOpen,St_MidiInTried,'MIDI.IN',B);
+End;
+Function St_MidiAvail: Boolean;
+Begin
+ St_MidiAvail:=St_DevAvail(St_MidiInF,St_MidiInOpen,St_MidiInTried,'MIDI.IN');
+End;
+Procedure St_PrnPut(B: Byte);
+Begin
+ St_DevOut(St_PrnOutF,St_PrnOutOpen,'PRINTER.OUT',B);
+End;
+Procedure St_DevCloseAll;
+Begin
+ St_SoundOff;
+ {$I-}
+ If St_AuxOutOpen Then Close(St_AuxOutF);
+ If St_MidiOutOpen Then Close(St_MidiOutF);
+ If St_PrnOutOpen Then Close(St_PrnOutF);
+ If St_AuxInOpen Then Close(St_AuxInF);
+ If St_MidiInOpen Then Close(St_MidiInF);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ St_AuxOutOpen:=False;St_MidiOutOpen:=False;St_PrnOutOpen:=False;St_AuxInOpen:=False;
+   St_MidiInOpen:=False;
+ St_AuxInTried:=False;St_MidiInTried:=False;
+End;
+Procedure St_FlpClose(D: Integer);
+Begin
+ If St_Flp[D].On Then Begin
+  If Not St_Flp[D].Virt Then Begin
+   {$I-}
+   Close(St_Flp[D].F);
+   {$I+}
+   If IOResult<>0 Then Begin End;
+  End;
+  St_Flp[D].On:=False;St_Flp[D].Virt:=False;
+ End;
+End;
+Type
+ St_TSec = Array[0..511] Of Byte;
+Procedure St_BlankSector(Lsn: LongInt; Var B: St_TSec);
+Const Oem : String[6] = 'DEVPAC';
+Var St_I: Integer;
+Begin
+ FillChar(B,SizeOf(B),0);
+ If Lsn=0 Then Begin
+  B[0]:=$60;B[1]:=$1C;
+  For St_I:=1 To 6 Do B[1+St_I]:=Ord(Oem[St_I]);
+  B[11]:=0;B[12]:=2;B[13]:=2;B[14]:=1;B[15]:=0;B[16]:=2;B[17]:=112;B[18]:=0;
+  B[19]:=$A0;B[20]:=$05;B[21]:=$F9;B[22]:=5;B[23]:=0;B[24]:=9;B[25]:=0;B[26]:=2;
+    B[27]:=0;
+ End Else If (Lsn=1) Or (Lsn=6) Then Begin
+  B[0]:=$F9;B[1]:=$FF;B[2]:=$FF;
+ End;
+End;
+Procedure St_FlpMountBlank(D: Integer; Const Name: String);
+Begin
+ St_FlpClose(D);
+ St_Flp[D].On:=True;St_Flp[D].Virt:=True;St_Flp[D].RO:=False;St_Flp[D].Changed:=True;
+ St_Flp[D].Name:=Name;St_Flp[D].Size:=737280;St_Flp[D].Spt:=9;St_Flp[D].Sides:=2;St_Flp[D].
+   Tracks:=80;
+End;
+Function St_FlpMaterialize(D: Integer): Boolean;
+Var B: St_TSec; L: LongInt; Got: LongInt;
+Begin
+ St_FlpMaterialize:=False;
+ Assign(St_Flp[D].F,St_Flp[D].Name);
+ {$I-}
+ Rewrite(St_Flp[D].F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ For L:=0 To 1439 Do Begin
+  St_BlankSector(L,B);
+  {$I-}
+  BlockWrite(St_Flp[D].F,B,512,Got);
+  {$I+}
+  If IOResult<>0 Then Begin Close(St_Flp[D].F);Exit;End;
+ End;
+ {$I-}
+ Close(St_Flp[D].F);
+ FileMode:=2;
+ Reset(St_Flp[D].F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ St_Flp[D].Virt:=False;
+ St_FlpMaterialize:=True;
+End;
+Function St_FlpMount(D: Integer; Const Name: String): Boolean;
+Var B: Array[0..31] Of Byte; Got: LongInt; St_Bps,Spt,Sd,Tot: LongInt;
+Begin
+ St_FlpMount:=False;
+ If (D<0) Or (D>3) Then Exit;
+ St_FlpClose(D);
+ Assign(St_Flp[D].F,Name);
+ St_Flp[D].RO:=False;
+ {$I-}
+ FileMode:=2;
+ Reset(St_Flp[D].F,1);
+ If IOResult<>0 Then Begin
+  FileMode:=0;
+  Reset(St_Flp[D].F,1);
+  St_Flp[D].RO:=True;
+ End;
+ {$I+}
+ If IOResult<>0 Then Exit;
+ St_Flp[D].On:=True;St_Flp[D].Virt:=False;St_Flp[D].Changed:=True;St_Flp[D].Name:=Name;
+ St_Flp[D].Size:=FileSize(St_Flp[D].F);
+ FillChar(B,SizeOf(B),0);
+ {$I-}
+ BlockRead(St_Flp[D].F,B,32,Got);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ St_Bps:=B[11]+B[12]*256;Spt:=B[24]+B[25]*256;Sd:=B[26]+B[27]*256;Tot:=B[19]+
+   B[20]*256;
+ If (St_Bps<>512) Or (Spt<1) Or (Spt>30) Or (Sd<1) Or (Sd>2) Then Begin
+  Spt:=9;Sd:=2;
+  If St_Flp[D].Size<=368640 Then Sd:=1;
+  If (St_Flp[D].Size=409600) Or (St_Flp[D].Size=819200) Then Spt:=10;
+  If St_Flp[D].Size>900000 Then Spt:=18;
+ End;
+ St_Flp[D].Spt:=Spt;St_Flp[D].Sides:=Sd;
+ St_Flp[D].Tracks:=St_Flp[D].Size Div (512*Spt*Sd);
+ If St_Flp[D].Tracks<1 Then St_Flp[D].Tracks:=1;
+ St_FlpMount:=True;
+End;
+Function St_FlpRW(D: Integer; Lsn,Count: LongInt; Buf: LongInt; Wr: Boolean):
+  Integer;
+Var St_I,J: LongInt; Tmp: St_TSec; Got: LongInt;
+Begin
+ St_FlpRW:=St_E_NOTRDY;
+ If (D<0) Or (D>3) Or Not St_Flp[D].On Then Exit;
+ If Wr And St_Flp[D].RO Then Begin St_FlpRW:=St_E_WRPRO;Exit;End;
+ If (Lsn<0) Or ((Lsn+Count)*512>St_Flp[D].Size) Then Begin St_FlpRW:=St_E_RNF;Exit;End;
+ If St_Flp[D].Virt Then Begin
+  If Wr Then Begin
+   If Not St_FlpMaterialize(D) Then Begin St_FlpRW:=St_E_WRITF;Exit;End;
+  End Else Begin
+   For St_I:=0 To Count-1 Do Begin
+    St_BlankSector(Lsn+St_I,Tmp);
+    For J:=0 To 511 Do St_Wr8(Buf+St_I*512+J,Tmp[J]);
+   End;
+   St_FlpRW:=St_E_OK;Exit;
+  End;
+ End;
+ For St_I:=0 To Count-1 Do Begin
+  {$I-}
+  Seek(St_Flp[D].F,(Lsn+St_I)*512);
+  If Wr Then Begin
+   For J:=0 To 511 Do Tmp[J]:=St_Rd8(Buf+St_I*512+J);
+   BlockWrite(St_Flp[D].F,Tmp,512,Got);
+  End Else Begin
+   BlockRead(St_Flp[D].F,Tmp,512,Got);
+   For J:=0 To 511 Do St_Wr8(Buf+St_I*512+J,Tmp[J]);
+  End;
+  {$I+}
+  If IOResult<>0 Then Begin If Wr Then St_FlpRW:=St_E_WRITF Else
+    St_FlpRW:=St_E_READF;Exit;End;
+ End;
+ St_FlpRW:=St_E_OK;
+End;
+Procedure St_DevInitAll;
+Var St_I: Integer;
+Begin
+ St_DevCloseAll;
+ For St_I:=0 To 3 Do St_FlpClose(St_I);
+ FillChar(St_GiRegs,SizeOf(St_GiRegs),0);
+ FillChar(St_Palette68,SizeOf(St_Palette68),0);
+ St_Palette68[0]:=$0777;
+ St_PrtConfig:=0;St_KbRate:=$0F0F;St_CurBlinkRate:=30;
+ FillChar(St_RsConfig,SizeOf(St_RsConfig),0);
+ FillChar(St_XbVec,SizeOf(St_XbVec),0);
+ St_SndPos:=0;St_MfpEnable:=0;St_FlpRate:=2;
+ For St_I:=0 To 3 Do Begin
+  If St_FlpImage[St_I]<>'' Then Begin
+   If St_FileExists(St_FlpImage[St_I]) Then St_FlpMount(St_I,St_FlpImage[St_I])
+   Else St_FlpMountBlank(St_I,St_FlpImage[St_I]);
+  End Else Begin
+   If St_FileExists('DISK'+Chr(65+St_I)+'.ST') Then St_FlpMount(St_I,'DISK'+Chr(65+St_I)+'.ST')
+   Else If St_FileExists('disk'+Chr(97+St_I)+'.st') Then
+     St_FlpMount(St_I,'disk'+Chr(97+St_I)+'.st')
+   Else If St_I=0 Then St_FlpMountBlank(0,'DISKA.ST');
+  End;
+ End;
+End;
+Const
+ St_BP_ADDR     = $10000;
+ St_STUB_EXIT   = $0400;
+ St_STUB_USER   = $0410;
+ St_LINEA_VARS  = $0500;
+ St_EXECBASE    = $2000;
+ St_DOSBASE     = $3000;
+ St_INTUIBASE   = $3800;
+ St_GFXBASE     = $4000;
+ St_AMIGA_LO    = $1C00;
+ St_AMIGA_HI    = $4100;
+ St_MAXFH       = 45;
+Var
+ St_HitPa,St_HeapLo,St_HeapHi : LongInt;
+ St_PexBp : LongInt;
+ St_MBase,St_MSize,St_MOwn : Array[1..64] Of LongInt;
+ St_CurOwn      : LongInt;
+ St_MCnt        : Integer;
+ St_DtaAddr     : LongInt;
+ St_FHUsed      : Array[6..St_MAXFH] Of Boolean;
+ St_FHs         : Array[6..St_MAXFH] Of File;
+ St_FScratch    : File;
+ St_DtaActive   : Boolean;
+ St_AmigaRun    : Boolean;
+ St_UnknownCall : String;
+ St_RandSeed68  : LongInt;
+ St_ProgName    : String;
+ St_ProgCmd     : String;
+ St_DosTrace    : Boolean;
+ St_DosUserSP   : LongInt;
+ St_VdiTrace    : Boolean;
+Function St_HostPath(Const S0: String): String;
+Var S: String; St_I: Integer;
+Begin
+ S:=S0;
+ {$IFDEF FPC}
+ {$IFDEF UNIX}
+ If (Length(S)>=2) And (S[2]=':') Then S:=Copy(S,3,255);
+ If (S<>'') And (S[1]='\') Then S:=Copy(S,2,255);
+ If S='' Then S:='.';
+ For St_I:=1 To Length(S) Do If S[St_I]='\' Then S[St_I]:='/';
+ If Not St_FileExists(S) Then Begin
+  If St_FileExists(St_LowerStr(S)) Then S:=St_LowerStr(S);
+ End;
+ {$ENDIF}
+ {$ENDIF}
+ St_HostPath:=S;
+End;
+Const
+ St_DOS_MAXSRCH = 16;
+ St_DOS_MAXENT  = 400;
+ {$IFDEF UNIX}
+ St_HSEP = '/';
+ {$ELSE}
+ St_HSEP = '\';
+ {$ENDIF}
+Type
+ St_TDosEnt = Record St_Nm: String[12]; At: Byte; Sz: LongInt; Tm: LongInt; End;
+ St_TDosSrch = Record N: Integer; Ent: Array[1..St_DOS_MAXENT] Of St_TDosEnt; End;
+ St_PDosSrch = ^St_TDosSrch;
+Var
+ St_DosRoot : String;
+ St_DosCur  : String;
+ St_DosDrv  : Integer;
+ St_DosSrch : Array[0..St_DOS_MAXSRCH-1] Of St_PDosSrch;
+ St_DosSrchNext : Integer;
+Function St_DosRootNow: String;
+Var S: String;
+Begin
+ GetDir(0,S);
+ If (S<>'') And (S[Length(S)]<>St_HSEP) Then S:=S+St_HSEP;
+ St_DosRoot:=S;
+ St_DosRootNow:=S;
+End;
+Procedure St_DosInit;
+Begin
+ St_DosRootNow;St_DosCur:='';St_DosDrv:=2;
+ St_DosSrchNext:=0;
+End;
+Function St_DosVirt(Const S0: String): String;
+Var S,Base,Cur,Res: String; St_I: Integer;
+ Procedure Flush1;
+ Var P: Integer;
+ Begin
+  If Cur='' Then Exit;
+  If Cur='.' Then Begin Cur:='';Exit;End;
+  If Cur='..' Then Begin
+   P:=Length(Res);
+   While (P>0) And (Res[P]<>'\') Do Dec(P);
+   If P>0 Then Res:=Copy(Res,1,P-1) Else Res:='';
+   Cur:='';Exit;
+  End;
+  If Res<>'' Then Res:=Res+'\';
+  Res:=Res+Cur;Cur:='';
+ End;
+Begin
+ S:=S0;
+ If (Length(S)>=2) And (S[2]=':') Then S:=Copy(S,3,255);
+ If (S<>'') And ((S[1]='\') Or (S[1]='/')) Then Res:=''
+ Else Res:=St_DosCur;
+ Cur:='';
+ For St_I:=1 To Length(S) Do
+  If (S[St_I]='\') Or (S[St_I]='/') Then Flush1 Else Cur:=Cur+S[St_I];
+ Flush1;
+ St_DosVirt:=Res;
+End;
+Function St_DosIsHostAbs(Const S: String): Boolean;
+Begin
+ {$IFDEF FPC}
+ {$IFDEF UNIX}
+ St_DosIsHostAbs:=(S<>'') And (S[1]='/');
+ {$ELSE}
+ St_DosIsHostAbs:=False;
+ {$ENDIF}
+ {$ELSE}
+ St_DosIsHostAbs:=False;
+ {$ENDIF}
+End;
+Function St_DosLookup(Const Dir,St_Nm: String; Var Real_: String; Var At: Integer):
+  Boolean;
+Var SR: SearchRec; U: String; Found: Boolean;
+Begin
+ Found:=False;
+ U:=St_Upper(St_Nm);
+ FindFirst(Dir+'*',AnyFile,SR);
+ While DosError=0 Do Begin
+  If St_Upper(SR.Name)=U Then Begin
+    Real_:=SR.Name;At:=SR.Attr;Found:=True;Break;End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ St_DosLookup:=Found;
+End;
+Function St_DosHost(Const S1: String; Var HostDir,Last: String): Boolean;
+Var V,H,C,R,S0: String; P,At: Integer; Ok: Boolean;
+Begin
+ Ok:=True;
+ { les programmes Pascal (OSS) transmettent des noms completes par des blancs : ils sont ignores }
+ S0:=S1;
+ While (S0<>'') And (S0[Length(S0)]=' ') Do Dec(S0[0]);
+ If St_DosIsHostAbs(S0) Then Begin
+  P:=Length(S0);
+  While (P>0) And (S0[P]<>'/') Do Dec(P);
+  HostDir:=Copy(S0,1,P);Last:=Copy(S0,P+1,255);
+  St_DosHost:=True;Exit;
+ End;
+ V:=St_DosVirt(S0);
+ { dernier composant }
+ P:=Length(V);
+ While (P>0) And (V[P]<>'\') Do Dec(P);
+ Last:=Copy(V,P+1,255);
+ V:=Copy(V,1,P);               { avec '\' final }
+ H:=St_DosRootNow;
+ While (V<>'') Do Begin
+  P:=Pos('\',V);
+  C:=Copy(V,1,P-1);V:=Copy(V,P+1,255);
+  If St_DosLookup(H,C,R,At) And ((At And Directory)<>0) Then H:=H+R+St_HSEP
+  Else Begin H:=H+C+St_HSEP;Ok:=False;End;
+ End;
+ HostDir:=H;
+ St_DosHost:=Ok;
+End;
+Function St_TosPath(Const S0: String): String;
+Var H,L,R: String; At: Integer;
+Begin
+ If (S0='') Or (S0='.') Then Begin St_DosHost('.',H,L);St_TosPath:=H+L;Exit;End;
+ If St_DosHost(S0,H,L) Then Begin
+  If (L<>'') And St_DosLookup(H,L,R,At) Then L:=R;
+ End;
+ St_TosPath:=H+L;
+End;
+Function St_DosIsDir(Const S: String): Boolean;
+Var H,L,R: String; At: Integer;
+Begin
+ St_DosIsDir:=False;
+ If Not St_DosHost(S,H,L) Then Exit;
+ If L='' Then Begin St_DosIsDir:=True;Exit;End;
+ If St_DosLookup(H,L,R,At) Then St_DosIsDir:=(At And Directory)<>0;
+End;
+Function St_DosWild(Const Pt,St_Nm: String): Boolean;
+ Function M(Const P,N: String; St_I,J: Integer): Boolean;
+ Begin
+  If St_I>Length(P) Then M:=J>Length(N)
+  Else If P[St_I]='*' Then Begin
+   M:=M(P,N,St_I+1,J) Or ((J<=Length(N)) And M(P,N,St_I,J+1));
+  End Else If J>Length(N) Then M:=False
+  Else If (P[St_I]='?') Or (P[St_I]=N[J]) Then M:=M(P,N,St_I+1,J+1)
+  Else M:=False;
+ End;
+Var PB,PE,NB,NE,P0,N0: String; St_I: Integer;
+Begin
+ P0:=St_Upper(Pt);N0:=St_Upper(St_Nm);
+ St_I:=Pos('.',P0);
+ If St_I>0 Then Begin PB:=Copy(P0,1,St_I-1);PE:=Copy(P0,St_I+1,20);End Else Begin
+   PB:=P0;PE:='*';End;
+ St_I:=Pos('.',N0);
+ If (St_I>0) And (N0<>'.') And (N0<>'..') Then Begin
+   NB:=Copy(N0,1,St_I-1);NE:=Copy(N0,St_I+1,20);End Else Begin NB:=N0;NE:='';End;
+ St_DosWild:=M(PB,NB,1,1) And M(PE,NE,1,1);
+End;
+Function St_DosName83(Const N: String): Boolean;
+Var P: Integer;
+Begin
+ St_DosName83:=False;
+ If (N='.') Or (N='..') Then Begin St_DosName83:=True;Exit;End;
+ If (N='') Or (N[1]='.') Then Exit;
+ P:=Pos('.',N);
+ If P=0 Then Begin St_DosName83:=Length(N)<=8;Exit;End;
+ If (P>9) Or (Length(N)-P>3) Or (Pos('.',Copy(N,P+1,20))>0) Then Exit;
+ St_DosName83:=True;
+End;
+Function St_DosSrchSlot: Integer;
+Var St_K: Integer;
+Begin
+ St_K:=St_DosSrchNext;
+ St_DosSrchNext:=(St_DosSrchNext+1) Mod St_DOS_MAXSRCH;
+ If St_DosSrch[St_K]=Nil Then New(St_DosSrch[St_K]);
+ St_DosSrchSlot:=St_K;
+End;
+Function St_DosSearch(Const Spec: String; Attr: Integer): Integer;
+Var H,L: String; SR: SearchRec; St_K,St_I,J: Integer; D: St_PDosSrch; E: St_TDosEnt; N:
+  String; Ok,InRoot: Boolean;
+    V: String;
+Begin
+ St_DosSearch:=-1;
+ If Not St_DosHost(Spec,H,L) Then Exit;
+ V:=St_DosVirt(Spec);
+ InRoot:=Pos('\',V)=0;
+ St_K:=St_DosSrchSlot;D:=St_DosSrch[St_K];D^.N:=0;
+ FindFirst(H+'*',AnyFile,SR);
+ While (DosError=0) And (D^.N<St_DOS_MAXENT) Do Begin
+  N:=St_Upper(SR.Name);
+  Ok:=St_DosName83(N) And St_DosWild(L,N);
+  If Ok And InRoot And ((N='.') Or (N='..')) Then Ok:=False;
+  If Ok Then Begin
+   E.At:=SR.Attr And $37;
+   If (SR.Attr And Directory)<>0 Then E.At:=E.At Or $10 Else E.At:=E.At Or $20;
+   E.At:=E.At And $3F;
+   If (N='.') Or (N='..') Then E.At:=$10;
+   { attributs demandes : cachee/systeme/repertoire seulement sur demande }
+   If ((E.At And $16) And Not Attr)<>0 Then Ok:=False;
+   If (Attr=8) Then Ok:=False;
+   If Ok Then Begin
+    E.St_Nm:=N;E.Sz:=SR.Size;E.Tm:=SR.Time;
+    If (SR.Attr And Directory)<>0 Then E.Sz:=0;
+    Inc(D^.N);D^.Ent[D^.N]:=E;
+   End;
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ { tri alphabetique (noms), '.' et '..' en tete }
+ For St_I:=2 To D^.N Do Begin
+  E:=D^.Ent[St_I];J:=St_I-1;
+  While (J>=1) And (D^.Ent[J].St_Nm>E.St_Nm) Do Begin
+    D^.Ent[J+1]:=D^.Ent[J];Dec(J);End;
+  D^.Ent[J+1]:=E;
+ End;
+ If D^.N=0 Then St_DosSearch:=-1 Else St_DosSearch:=St_K;
+End;
+Function St_DosCurPath: String;
+Begin
+ If St_DosCur='' Then St_DosCurPath:='' Else St_DosCurPath:='\'+St_Upper(St_DosCur);
+End;
+Function St_DosDriveLetter: Char;
+Begin
+ St_DosDriveLetter:=Chr(65+St_DosDrv);
+End;
+Procedure St_CloseAllFiles;
+Var St_I: Integer;
+Begin
+ For St_I:=6 To St_MAXFH Do
+  If St_FHUsed[St_I] Then Begin
+   {$I-}
+   Close(St_FHs[St_I]);
+   {$I+}
+   If IOResult=0 Then Begin End;
+   St_FHUsed[St_I]:=False;
+  End;
+End;
+Function St_AllocFH: Integer;
+Var St_I: Integer;
+Begin
+ St_AllocFH:=0;
+ For St_I:=6 To St_MAXFH Do If Not St_FHUsed[St_I] Then Begin St_AllocFH:=St_I;Exit;End;
+End;
+Function St_HeapFindGap(N: LongInt): LongInt;
+Var Start: LongInt; St_I: Integer; Moved: Boolean;
+Begin
+ Start:=St_HeapLo;
+ Repeat
+  Moved:=False;
+  For St_I:=1 To St_MCnt Do
+   If (St_MBase[St_I]<Start+N) And (St_MBase[St_I]+St_MSize[St_I]>Start) Then Begin
+    Start:=St_MBase[St_I]+St_MSize[St_I];Moved:=True;
+   End;
+ Until Not Moved;
+ If Start+N<=St_HeapHi Then St_HeapFindGap:=Start Else St_HeapFindGap:=0;
+End;
+Function St_HeapLargest: LongInt;
+Var Start,Best,Nxt: LongInt; St_I: Integer; Done: Boolean;
+Begin
+ Best:=0;Start:=St_HeapLo;
+ Repeat
+  Nxt:=St_HeapHi;
+  For St_I:=1 To St_MCnt Do
+   If (St_MBase[St_I]>=Start) And (St_MBase[St_I]<Nxt) Then Nxt:=St_MBase[St_I];
+  If Nxt-Start>Best Then Best:=Nxt-Start;
+  Done:=True;
+  For St_I:=1 To St_MCnt Do
+   If St_MBase[St_I]=Nxt Then Begin Start:=St_MBase[St_I]+St_MSize[St_I];Done:=False;End;
+  If Nxt>=St_HeapHi Then Done:=True;
+ Until Done;
+ St_HeapLargest:=Best;
+End;
+Function St_DoMalloc(N: LongInt): LongInt;
+Var A: LongInt;
+Begin
+ If N=-1 Then Begin St_DoMalloc:=St_HeapLargest;Exit;End;
+ If Odd(N) Then Inc(N);
+ If (N<=0) Or (St_MCnt>=64) Then Begin St_DoMalloc:=0;Exit;End;
+ A:=St_HeapFindGap(N);
+ If A<>0 Then Begin
+  Inc(St_MCnt);St_MBase[St_MCnt]:=A;St_MSize[St_MCnt]:=N;St_MOwn[St_MCnt]:=St_CurOwn;
+ End;
+ St_DoMalloc:=A;
+End;
+Function St_DoMfree(A: LongInt): LongInt;
+Var St_I,J: Integer;
+Begin
+ St_DoMfree:=-40;
+ For St_I:=1 To St_MCnt Do
+  If St_MBase[St_I]=A Then Begin
+   For J:=St_I To St_MCnt-1 Do Begin
+     St_MBase[J]:=St_MBase[J+1];St_MSize[J]:=St_MSize[J+1];St_MOwn[J]:=St_MOwn[J+1];End;
+   Dec(St_MCnt);
+   St_DoMfree:=0;Exit;
+  End;
+End;
+Procedure St_FreeOwned(Bp: LongInt);
+Var St_I,J: Integer;
+Begin
+ St_I:=1;
+ While St_I<=St_MCnt Do Begin
+  If St_MOwn[St_I]=Bp Then Begin
+   For J:=St_I To St_MCnt-1 Do Begin
+     St_MBase[J]:=St_MBase[J+1];St_MSize[J]:=St_MSize[J+1];St_MOwn[J]:=St_MOwn[J+1];End;
+   Dec(St_MCnt);
+  End Else Inc(St_I);
+ End;
+End;
+Function St_PW(Off: LongInt): LongInt;
+Begin
+ St_PW:=St_Rd16(St_Rg[15]+Off);
+End;
+Function St_PL(Off: LongInt): LongInt;
+Begin
+ St_PL:=St_Rd32(St_Rg[15]+Off);
+End;
+Procedure St_FillDtaEnt(Const E: St_TDosEnt);
+Var St_I: Integer;
+Begin
+ St_Wr8(St_DtaAddr+21,E.At And $FF);
+ St_Wr16(St_DtaAddr+22,E.Tm And $FFFF);
+ St_Wr16(St_DtaAddr+24,St_ShrL(E.Tm,16) And $FFFF);
+ St_Wr32(St_DtaAddr+26,E.Sz);
+ For St_I:=0 To 13 Do St_Wr8(St_DtaAddr+30+St_I,0);
+ For St_I:=1 To Length(E.St_Nm) Do If St_I<=13 Then St_Wr8(St_DtaAddr+29+St_I,Ord(E.St_Nm[St_I]));
+End;
+Function St_ConLineInput(Buf: LongInt): LongInt;
+Var MaxL,Len: Integer; St_K: LongInt; Ch: Integer;
+Begin
+ MaxL:=St_Rd8(Buf);Len:=0;
+ Repeat
+  St_K:=St_WaitKeyEmu;
+  If St_UserBreak Then Break;
+  Ch:=St_K And $FF;
+  If Ch=13 Then Begin St_ConPut(13);St_ConPut(10);Break;End
+  Else If Ch=8 Then Begin
+   If Len>0 Then Begin Dec(Len);St_ConPut(8);St_ConPut(32);St_ConPut(8);End;
+  End Else If (Ch>=32) And (Len<MaxL) Then Begin
+   St_Wr8(Buf+2+Len,Ch);Inc(Len);St_ConPut(Ch);
+  End;
+ Until False;
+ St_Wr8(Buf+1,Len);
+ St_ConLineInput:=Len;
+End;
+Function St_DoPexec(Mode: Integer; NameP,CmdP,EnvP: LongInt): LongInt; Forward;
+Procedure St_Gemdos;
+Var Fn: LongInt; R: LongInt; H: Integer; St_I,N: LongInt; S: String; St_K: LongInt;
+  Buf: Array[0..4095] Of Byte;
+    Cnt,Got,A,Off: LongInt; Bb: Byte; Y,Mo,D,Dw,Hh,Mi,Se,Hs: Word; Fp: LongInt;
+    FPtr: ^File;
+Begin
+ Fn:=St_PW(0);
+ R:=0;
+ If St_DosTrace Then Begin
+   WriteLn(St_ConOut,'GEMDOS $',St_Hex2(Fn),' ',St_Hex8(St_PL(2)),' ',St_Hex8(St_PL(6)),' ',
+   St_Hex8(St_PL(10)),' pc=',St_Hex8(St_PC),' sp=',St_Hex8(St_Rg[15]));Flush(St_ConOut);End;
+ Case Fn Of
+  $00: Begin St_StopReason:=St_STOP_EXIT;St_ExitCode:=0;End;
+  $4C: Begin St_StopReason:=St_STOP_EXIT;St_ExitCode:=St_SExt(St_PW(2),2);End;
+  $31: Begin St_StopReason:=St_STOP_EXIT;St_ExitCode:=St_SExt(St_PW(6),2);End;
+  $01: Begin
+        St_K:=St_WaitKeyEmu;
+        If (St_K And $FF)<>0 Then St_ConPut(St_K And $FF);
+        R:=St_K;
+       End;
+  $02: St_ConPut(St_PW(2) And $FF);
+  $03: Begin If St_AuxGet(Bb) Then R:=Bb Else R:=0;End;
+  $04: St_AuxPut(St_PW(2) And $FF);
+  $05: Begin St_PrnPut(St_PW(2) And $FF);R:=-1;End;
+  $06: Begin
+        If (St_PW(2) And $FF)=$FF Then Begin
+         St_PollKeys;
+         If St_KQEmpty Then R:=0 Else R:=St_KQPop;
+        End Else St_ConPut(St_PW(2) And $FF);
+       End;
+  $07,$08: R:=St_WaitKeyEmu;
+  $09: Begin
+        A:=St_PL(2);
+        N:=0;
+        While (St_Rd8(A+N)<>0) And (N<30000) Do Begin St_ConPut(St_Rd8(A+N));Inc(N);End;
+       End;
+  $0A: R:=St_ConLineInput(St_PL(2));
+  $0B: Begin St_PollKeys;If St_KQEmpty Then R:=0 Else R:=-1;End;
+  $0E: Begin St_DosDrv:=St_PW(2) And 15;R:=4;End;
+  $10: R:=-1;
+  $11: R:=-1;
+  $12: Begin If St_AuxAvail Then R:=-1 Else R:=0;End;
+  $13: R:=-1;
+  $19: R:=St_DosDrv;
+  $1A: St_DtaAddr:=St_PL(2);
+  $20: Begin
+        A:=St_PL(2);
+        If A=0 Then Begin
+         If (St_SRv And St_SR_S)=0 Then Begin
+          St_SSPv:=St_Rg[15];St_USPv:=St_Rg[15];
+          St_SRv:=St_SRv Or St_SR_S;
+          R:=St_Rg[15];
+         End Else R:=St_Rg[15];
+        End Else If A=1 Then Begin
+         If (St_SRv And St_SR_S)<>0 Then R:=-1 Else R:=0;
+        End Else If (St_SRv And St_SR_S)=0 Then Begin
+         { mode utilisateur -> superviseur avec une nouvelle pile superviseur
+           (ex. MonST) }
+         St_DosUserSP:=St_Rg[15];R:=St_SSPv;
+         St_SRv:=St_SRv Or St_SR_S;
+         St_Rg[15]:=A;St_SSPv:=A;
+        End Else Begin
+         { superviseur -> utilisateur : on restitue la pile utilisateur si elle
+           avait ete changee }
+         St_SRv:=St_SRv And (Not St_SR_S);
+         If St_DosUserSP<>0 Then Begin St_Rg[15]:=St_DosUserSP;St_DosUserSP:=0;End;
+         R:=0;
+        End;
+       End;
+  $2A: Begin
+        GetDate(Y,Mo,D,Dw);
+        R:=((Y-1980) Shl 9) Or (Mo Shl 5) Or D;
+       End;
+  $2B: R:=0;
+  $2C: Begin
+        GetTime(Hh,Mi,Se,Hs);
+        R:=(Hh Shl 11) Or (Mi Shl 5) Or (Se Div 2);
+       End;
+  $2D: R:=0;
+  $2F: R:=St_DtaAddr;
+  $30: R:=$1300;
+  $36: Begin
+        A:=St_PL(2);
+        St_Wr32(A,10000);St_Wr32(A+4,20000);St_Wr32(A+8,512);St_Wr32(A+12,2);
+       End;
+  $39: Begin
+        S:=St_TosPath(St_RdStr(St_PL(2),200));
+        {$I-}
+        MkDir(S);
+        {$I+}
+        If IOResult<>0 Then R:=-36 Else R:=0;
+       End;
+  $3A: Begin
+        S:=St_TosPath(St_RdStr(St_PL(2),200));
+        {$I-}
+        RmDir(S);
+        {$I+}
+        If IOResult<>0 Then R:=-36 Else R:=0;
+       End;
+  $3B: Begin
+        S:=St_RdStr(St_PL(2),200);
+        If St_DosIsDir(S) Then St_DosCur:=St_Upper(St_DosVirt(S)) Else R:=-34;
+       End;
+  $3C,$3D: Begin
+        S:=St_TosPath(St_RdStr(St_PL(2),200));
+        H:=St_AllocFH;
+        If H=0 Then R:=-35
+        Else Begin
+         Assign(St_FHs[H],S);
+         {$I-}
+         If Fn=$3C Then Rewrite(St_FHs[H],1)
+         Else Begin
+          If St_PW(6)=0 Then FileMode:=0 Else FileMode:=2;
+          Reset(St_FHs[H],1);
+         End;
+         {$I+}
+         If IOResult<>0 Then R:=-33
+         Else Begin St_FHUsed[H]:=True;R:=H;End;
+        End;
+       End;
+  $3E: Begin
+        H:=St_PW(2);
+        If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+         {$I-}
+         Close(St_FHs[H]);
+         {$I+}
+         If IOResult=0 Then Begin End;
+         St_FHUsed[H]:=False;
+         R:=0;
+        End Else R:=-37;
+       End;
+  $3F: Begin
+        H:=St_PW(2);Cnt:=St_PL(4);A:=St_PL(8);
+        If H=2 Then Begin
+         R:=0;
+         While (R<Cnt) And St_AuxGet(Bb) Do Begin St_Wr8(A+R,Bb);Inc(R);End;
+        End Else If H=0 Then Begin
+         { lecture sur la console : une ligne }
+         R:=0;
+         While R<Cnt Do Begin
+          St_K:=St_WaitKeyEmu;
+          If St_UserBreak Then Break;
+          St_Wr8(A+R,St_K And $FF);Inc(R);
+          St_ConPut(St_K And $FF);
+          If (St_K And $FF)=13 Then Begin
+           If R<Cnt Then Begin St_Wr8(A+R,10);Inc(R);End;
+           St_ConPut(10);
+           Break;
+          End;
+         End;
+        End Else If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+         R:=0;
+         While Cnt>0 Do Begin
+          If Cnt>4096 Then N:=4096 Else N:=Cnt;
+          {$I-}
+          BlockRead(St_FHs[H],Buf,N,Got);
+          {$I+}
+          If IOResult<>0 Then Got:=0;
+          For St_I:=0 To Got-1 Do St_Wr8(A+R+St_I,Buf[St_I]);
+          R:=R+Got;Cnt:=Cnt-Got;
+          If Got<N Then Break;
+         End;
+        End Else R:=-37;
+       End;
+  $40: Begin
+        H:=St_PW(2);Cnt:=St_PL(4);A:=St_PL(8);
+        If (H=1) Or (H=2) Or (H=3) Then Begin
+         For St_I:=0 To Cnt-1 Do Begin
+          If H=1 Then St_ConPut(St_Rd8(A+St_I)) Else If H=2 Then St_AuxPut(St_Rd8(A+St_I)) Else
+            St_PrnPut(St_Rd8(A+St_I));
+         End;
+         R:=Cnt;
+        End Else If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+         R:=0;
+         While Cnt>0 Do Begin
+          If Cnt>4096 Then N:=4096 Else N:=Cnt;
+          For St_I:=0 To N-1 Do Buf[St_I]:=St_Rd8(A+R+St_I);
+          {$I-}
+          BlockWrite(St_FHs[H],Buf,N,Got);
+          {$I+}
+          If IOResult<>0 Then Got:=0;
+          R:=R+Got;Cnt:=Cnt-Got;
+          If Got<N Then Break;
+         End;
+        End Else R:=-37;
+       End;
+  $41: Begin
+        S:=St_TosPath(St_RdStr(St_PL(2),200));
+        Assign(St_FScratch,S);
+        {$I-}
+        Erase(St_FScratch);
+        {$I+}
+        If IOResult<>0 Then R:=-33 Else R:=0;
+       End;
+  $42: Begin
+        Off:=St_PL(2);H:=St_PW(6);N:=St_PW(8);
+        If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+         {$I-}
+         Case N Of
+          0: Fp:=Off;
+          1: Fp:=FilePos(St_FHs[H])+Off;
+         Else Fp:=FileSize(St_FHs[H])+Off;
+         End;
+         If Fp<0 Then Fp:=0;
+         Seek(St_FHs[H],Fp);
+         {$I+}
+         If IOResult<>0 Then R:=-64 Else R:=Fp;
+        End Else R:=-37;
+       End;
+  $43: Begin
+        S:=St_RdStr(St_PL(2),200);
+        If St_DosIsDir(S) Then R:=$10
+        Else Begin
+         St_I:=St_DosSearch(S,$17);
+         If St_I<0 Then R:=-33 Else R:=St_DosSrch[St_I]^.Ent[1].At And $27;
+        End;
+       End;
+  $45: R:=-36;
+  $47: Begin
+        A:=St_PL(2);S:=St_DosCurPath;
+        For St_I:=1 To Length(S) Do St_Wr8(A+St_I-1,Ord(S[St_I]));
+        St_Wr8(A+Length(S),0);
+       End;
+  $48: R:=St_DoMalloc(St_PL(2));
+  $49: R:=St_DoMfree(St_PL(2));
+  $4A: Begin
+        A:=St_PL(4);N:=St_PL(8);
+        R:=-40;
+        { bloc obtenu par Malloc / Pexec(5) : on le reduit }
+        For St_I:=1 To St_MCnt Do
+         If St_MBase[St_I]=A Then Begin
+          If (N>=0) And (N<St_MSize[St_I]) Then St_MSize[St_I]:=(N+1) And (Not 1);
+          R:=0;
+         End;
+        If (R<>0) And ((A=St_BP_ADDR) Or (A=St_PexBp)) Then Begin
+         St_HeapLo:=A+((N+1) And (Not 1));
+         If St_HeapLo>St_HeapHi Then St_HeapLo:=St_HeapHi;
+         R:=0;
+        End;
+       End;
+  $4B: R:=St_DoPexec(St_PW(2),St_PL(4),St_PL(8),St_PL(12));
+  $4E: Begin
+        St_I:=St_DosSearch(St_RdStr(St_PL(2),200),St_PW(6));
+        If St_I<0 Then R:=-33
+        Else Begin
+         St_Wr16(St_DtaAddr,$4000+St_I);St_Wr16(St_DtaAddr+2,1);
+         St_FillDtaEnt(St_DosSrch[St_I]^.Ent[1]);R:=0;
+        End;
+       End;
+  $4F: Begin
+        St_I:=St_Rd16(St_DtaAddr)-$4000;
+        If (St_I<0) Or (St_I>=St_DOS_MAXSRCH) Or (St_DosSrch[St_I]=Nil) Then R:=-33
+        Else Begin
+         N:=St_Rd16(St_DtaAddr+2)+1;
+         If N>St_DosSrch[St_I]^.N Then R:=-49
+         Else Begin
+          St_Wr16(St_DtaAddr+2,N);St_FillDtaEnt(St_DosSrch[St_I]^.Ent[N]);R:=0;
+         End;
+        End;
+       End;
+  $56: Begin
+        S:=St_TosPath(St_RdStr(St_PL(4),200));
+        Assign(St_FScratch,S);
+        {$I-}
+        Rename(St_FScratch,St_TosPath(St_RdStr(St_PL(8),200)));
+        {$I+}
+        If IOResult<>0 Then R:=-33 Else R:=0;
+       End;
+  $57: Begin
+        H:=St_PW(6);
+        If (St_PW(8)=0) And (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+         {$I-}
+         GetFTime(St_FHs[H],Fp);
+         {$I+}
+         If IOResult<>0 Then Fp:=0;
+         St_Wr16(St_PL(2),Fp And $FFFF);St_Wr16(St_PL(2)+2,St_ShrL(Fp,16) And $FFFF);
+        End Else If (St_PW(8)<>0) And (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then
+          Begin
+         Fp:=St_Rd16(St_PL(2)) Or (LongInt(St_Rd16(St_PL(2)+2)) Shl 16);
+         {$I-}
+         SetFTime(St_FHs[H],Fp);
+         {$I+}
+         If IOResult<>0 Then Begin End;
+        End Else R:=-37;
+       End;
+ Else Begin
+   St_UnknownCall:='GEMDOS $'+St_Hex2(Fn);
+   R:=-32;
+  End;
+ End;
+ If St_DosTrace And Not ((Fn=$02) Or (Fn=$09) Or (Fn=$06) Or (Fn=$0B)) Then Begin
+   WriteLn(St_ConOut,'   -> ',R,' ($',St_Hex8(R),')');Flush(St_ConOut);End;
+ St_Rg[0]:=R;
+End;
+Var
+ St_IorecInit  : Boolean;
+ St_MouseVecUser : LongInt;
+ St_TimeBase : LongInt;
+ St_TimeSetPacked : LongInt;
+ St_TimeSetOn : Boolean;
+Procedure St_ConPutRaw(B: Byte);
+Begin
+ If St_BatchMode Then Begin Write(St_ConOut,Chr(B));Exit;End;
+ St_ConGlyph(St_ConRow,St_ConCol,B,St_ConRev);
+ Inc(St_ConCol);
+ If St_ConCol>=St_CON_COLS Then Begin
+  If St_ConWrap Then St_ConNewLine Else St_ConCol:=St_CON_COLS-1;
+ End;
+End;
+Procedure St_KeyTables;
+Const
+ Rows : Array[0..45,0..2] Of Byte = (
+  (1,27,27),(2,49,33),(3,50,64),(4,51,35),(5,52,36),(6,53,37),(7,54,94),(8,55,
+    38),(9,56,42),(10,57,40),
+  (11,48,41),(12,45,95),(13,61,43),(14,8,8),(15,9,9),(26,91,123),(27,93,125),
+    (28,13,13),(39,59,58),(40,39,34),
+  (41,96,126),(43,92,124),(51,44,60),(52,46,62),(53,47,63),(57,32,32),(83,127,
+    127),(74,45,45),(78,43,43),(99,40,40),
+  (100,41,41),(101,47,47),(102,42,42),(103,55,55),(104,56,56),(105,57,57),(106,
+    52,52),(107,53,53),(108,54,54),(109,49,49),
+  (110,50,50),(111,51,51),(112,48,48),(113,46,46),(114,13,13),(0,0,0));
+ L1 : String[10] = 'qwertyuiop';
+ L2 : String[9]  = 'asdfghjkl';
+ L3 : String[7]  = 'zxcvbnm';
+Var St_I: Integer; C: Char;
+Begin
+ For St_I:=0 To 127 Do Begin
+   St_Wr8(St_KT_UNSH+St_I,0);St_Wr8(St_KT_SHIFT+St_I,0);St_Wr8(St_KT_CAPS+St_I,0);End;
+ For St_I:=0 To 44 Do Begin
+  St_Wr8(St_KT_UNSH+Rows[St_I,0],Rows[St_I,1]);St_Wr8(St_KT_SHIFT+Rows[St_I,0],Rows[St_I,
+    2]);St_Wr8(St_KT_CAPS+Rows[St_I,0],Rows[St_I,1]);
+ End;
+ For St_I:=1 To 10 Do Begin
+  St_Wr8(St_KT_UNSH+15+St_I,Ord(L1[St_I]));St_Wr8(St_KT_SHIFT+15+St_I,
+    Ord(UpCase(L1[St_I])));St_Wr8(St_KT_CAPS+15+St_I,Ord(UpCase(L1[St_I])));
+ End;
+ For St_I:=1 To 9 Do Begin
+  St_Wr8(St_KT_UNSH+29+St_I,Ord(L2[St_I]));St_Wr8(St_KT_SHIFT+29+St_I,
+    Ord(UpCase(L2[St_I])));St_Wr8(St_KT_CAPS+29+St_I,Ord(UpCase(L2[St_I])));
+ End;
+ For St_I:=1 To 7 Do Begin
+  St_Wr8(St_KT_UNSH+43+St_I,Ord(L3[St_I]));St_Wr8(St_KT_SHIFT+43+St_I,
+    Ord(UpCase(L3[St_I])));St_Wr8(St_KT_CAPS+43+St_I,Ord(UpCase(L3[St_I])));
+ End;
+ St_Wr32(St_KT_PTRS,St_KT_UNSH);St_Wr32(St_KT_PTRS+4,St_KT_SHIFT);St_Wr32(St_KT_PTRS+8,St_KT_CAPS);
+End;
+Function St_PackedToSec(P: LongInt; Var Y,Mo,D,H,Mi,S: Integer): Boolean;
+Begin
+ Y:=((St_ShrL(P,25) And 127)+1980);Mo:=St_ShrL(P,21) And 15;D:=St_ShrL(P,16) And 31;
+ H:=St_ShrL(P,11) And 31;Mi:=St_ShrL(P,5) And 63;S:=(P And 31)*2;
+ St_PackedToSec:=True;
+End;
+Function St_DaysIn(Y,M: Integer): Integer;
+Begin
+ Case M Of
+  2: If ((Y Mod 4)=0) And (((Y Mod 100)<>0) Or ((Y Mod 400)=0)) Then St_DaysIn:=29
+    Else St_DaysIn:=28;
+  4,6,9,11: St_DaysIn:=30;
+ Else St_DaysIn:=31;
+ End;
+End;
+Function St_PackedAdd(P: LongInt; Secs: LongInt): LongInt;
+Var Y,Mo,D,H,Mi,S: Integer; T: LongInt;
+Begin
+ St_PackedToSec(P,Y,Mo,D,H,Mi,S);
+ T:=LongInt(H)*3600+Mi*60+S+Secs;
+ While T>=86400 Do Begin
+  T:=T-86400;Inc(D);
+  If D>St_DaysIn(Y,Mo) Then Begin D:=1;Inc(Mo);If Mo>12 Then Begin
+    Mo:=1;Inc(Y);End;End;
+ End;
+ H:=T Div 3600;Mi:=(T Mod 3600) Div 60;S:=T Mod 60;
+ St_PackedAdd:=(LongInt((Y-1980) Shl 9 Or (Mo Shl 5) Or D) Shl 16) Or LongInt((H
+   Shl 11) Or (Mi Shl 5) Or (S Div 2));
+End;
+Function St_HostPacked: LongInt;
+Var Y,Mo,D,Dw,H,Mi,S,Hs: Word;
+Begin
+ GetDate(Y,Mo,D,Dw);GetTime(H,Mi,S,Hs);
+ St_HostPacked:=(LongInt((Y-1980) Shl 9 Or (Mo Shl 5) Or D) Shl 16) Or LongInt((H
+   Shl 11) Or (Mi Shl 5) Or (S Div 2));
+End;
+Procedure St_ProtoBootSector(Buf: LongInt; Serial: LongInt; DiskType: Integer;
+  Exec: Integer);
+Var St_I,Sum: Integer; Spc,Nroot,Media,Spf,Sides,Tot: Integer; W: LongInt;
+Begin
+ Case DiskType Of
+  0: Begin Tot:=360;Spc:=1;Nroot:=64;Media:=$FC;Spf:=2;Sides:=1;End;
+  1: Begin Tot:=720;Spc:=2;Nroot:=112;Media:=$FD;Spf:=2;Sides:=2;End;
+  2: Begin Tot:=720;Spc:=2;Nroot:=112;Media:=$F8;Spf:=3;Sides:=1;End;
+ Else Begin Tot:=1440;Spc:=2;Nroot:=112;Media:=$F9;Spf:=5;Sides:=2;End;
+ End;
+ If DiskType>=0 Then Begin
+  St_Wr8(Buf,$60);St_Wr8(Buf+1,$1C);
+  For St_I:=2 To 7 Do St_Wr8(Buf+St_I,Ord('L'));
+  If Serial<0 Then Serial:=(St_RandSeed68 Shr 8) And $FFFFFF;
+  St_Wr8(Buf+8,St_ShrL(Serial,16) And $FF);St_Wr8(Buf+9,St_ShrL(Serial,8) And
+    $FF);St_Wr8(Buf+10,Serial And $FF);
+  St_Wr8(Buf+11,0);St_Wr8(Buf+12,2);St_Wr8(Buf+13,Spc);St_Wr8(Buf+14,1);St_Wr8(Buf+15,0);
+  St_Wr8(Buf+16,2);St_Wr8(Buf+17,Nroot And $FF);St_Wr8(Buf+18,Nroot Shr 8);
+  St_Wr8(Buf+19,Tot And $FF);St_Wr8(Buf+20,Tot Shr 8);St_Wr8(Buf+21,Media);
+  St_Wr8(Buf+22,Spf);St_Wr8(Buf+23,0);St_Wr8(Buf+24,9);St_Wr8(Buf+25,0);St_Wr8(Buf+26,
+    Sides);St_Wr8(Buf+27,0);
+  For St_I:=28 To 29 Do St_Wr8(Buf+St_I,0);
+ End;
+ St_Wr16(Buf+510,0);
+ Sum:=0;
+ For St_I:=0 To 254 Do Sum:=(Sum+St_Rd16(Buf+St_I*2)) And $FFFF;
+ If Exec<>0 Then W:=($1234-Sum) And $FFFF Else W:=($1235-Sum) And $FFFF;
+ St_Wr16(Buf+510,W);
+End;
+Procedure St_PrnDumpByte(Var F: File; B: Byte);
+Begin
+ BlockWrite(F,B,1);
+End;
+Procedure St_ScreenDump;
+Var F: File; St_I: Integer; Hd: String;
+Begin
+ Assign(F,'SCRDUMP.PBM');
+ {$I-}
+ Rewrite(F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Hd:='P4'#10'640 400'#10;
+ BlockWrite(F,Hd[1],Length(Hd));
+ For St_I:=0 To St_SCR_BYTES-1 Do St_PrnDumpByte(F,St_Rd8(St_ScrBase+St_I));
+ Close(F);
+End;
+Procedure St_EnvInit;
+Var A: LongInt; S: String;
+ Procedure Add(Const V: String);
+ Var St_I: Integer;
+ Begin
+  For St_I:=1 To Length(V) Do St_Wr8(A+St_I-1,Ord(V[St_I]));
+  St_Wr8(A+Length(V),0);A:=A+Length(V)+1;
+ End;
+Begin
+ A:=St_ENV_BLK;
+ If St_EnvPathS<>'' Then Add('PATH='+St_EnvPathS) Else Add('PATH=A:\;C:\');
+ If St_EnvClinkS<>'' Then Add('CLINKWITH='+St_EnvClinkS);
+ If St_EnvLibsS<>'' Then Add('LIBS='+St_EnvLibsS);
+ Add('TERM=st52');
+ Add('HOME=C:\');
+ S:=GetEnv('LANGUAGE');
+ If S<>'' Then Add('LANGUAGE='+S);
+ St_Wr8(A,0);St_Wr8(A+1,0);
+End;
+Const
+ St_IKBD_PKT = $8340;
+ St_IK_STAT = 12;
+ St_IK_MOUSE = 16;
+ St_IK_CLOCK = 20;
+ St_IK_JOY = 24;
+Var
+ St_IkMouseOn,St_IkPaused,St_IkYBottom,St_IkClockSet : Boolean;
+ St_IkMouseMode : Integer;
+ St_IkBtnAct : Integer;
+ St_IkThrX,St_IkThrY,St_IkScX,St_IkScY,St_IkKeyDx,St_IkKeyDy : Integer;
+ St_IkXMax,St_IkYMax : Integer;
+ St_IkAbsX,St_IkAbsY,St_IkAccX,St_IkAccY,St_IkLastX,St_IkLastY : LongInt;
+ St_IkJoyMode : Integer;
+ St_IkClockPacked,St_IkClockBase : LongInt;
+ St_IkRam : Array[0..127] Of Byte;
+ St_IkBuf : Array[0..127] Of Byte;
+ St_IkN : Integer;
+ St_IkTmp : Array[0..15] Of Byte;
+ St_IkQN : Integer;
+ St_IkQVec,St_IkQLen : Array[0..15] Of Integer;
+ St_IkQPkt : Array[0..15,0..15] Of Byte;
+Procedure St_IkQueue(Vec,Len: Integer);
+Begin
+ If St_IkQN>=16 Then Exit;
+ St_IkQVec[St_IkQN]:=Vec;St_IkQLen[St_IkQN]:=Len;
+ Move(St_IkTmp,St_IkQPkt[St_IkQN],16);
+ Inc(St_IkQN);
+End;
+Procedure St_IkReset;
+Begin
+ St_IkMouseOn:=True;St_IkPaused:=False;St_IkYBottom:=False;St_IkMouseMode:=1;St_IkBtnAct:=0;
+ St_IkThrX:=1;St_IkThrY:=1;St_IkScX:=1;St_IkScY:=1;St_IkKeyDx:=1;St_IkKeyDy:=1;
+ St_IkXMax:=639;St_IkYMax:=399;St_IkAbsX:=0;St_IkAbsY:=0;St_IkAccX:=0;St_IkAccY:=0;St_IkJoyMode:=0;
+   St_IkN:=0;
+End;
+Function St_BcdToI(B: Integer): Integer;
+Begin
+ St_BcdToI:=((B Shr 4) And 15)*10+(B And 15);
+End;
+Function St_IToBcd(V: Integer): Integer;
+Begin
+ St_IToBcd:=((V Div 10) Shl 4) Or (V Mod 10);
+End;
+Procedure St_IkSendAbs(Flags: Integer);
+Begin
+ St_IkTmp[0]:=$F7;St_IkTmp[1]:=Flags And $FF;
+ St_IkTmp[2]:=(St_IkAbsX Shr 8) And $FF;St_IkTmp[3]:=St_IkAbsX And $FF;
+ St_IkTmp[4]:=(St_IkAbsY Shr 8) And $FF;St_IkTmp[5]:=St_IkAbsY And $FF;
+ St_IkQueue(St_IK_MOUSE,6);
+End;
+Procedure St_IkMouseEvent(AX,AY,NewB,OldB: LongInt);
+Var Dx,Dy,Bt,Cx,Cy,Fl,P: Integer;
+Begin
+ Dx:=AX-St_IkLastX;Dy:=AY-St_IkLastY;St_IkLastX:=AX;St_IkLastY:=AY;
+ If (Not St_IkMouseOn) Or St_IkPaused Then Exit;
+ { bit 0 = bouton droit, bit 1 = bouton gauche dans les paquets IKBD }
+ Bt:=((NewB And 1) Shl 1) Or ((NewB And 2) Shr 1);
+ Case St_IkMouseMode Of
+  1: Begin
+      St_IkAccX:=St_IkAccX+Dx;St_IkAccY:=St_IkAccY+Dy;
+      While (NewB<>OldB) Or (Abs(St_IkAccX)>=St_IkThrX) Or (Abs(St_IkAccY)>=St_IkThrY) Do
+        Begin
+       Cx:=St_Clamp(St_IkAccX,-128,127);Cy:=St_Clamp(St_IkAccY,-128,127);
+       If (Abs(St_IkAccX)<St_IkThrX) And (Abs(St_IkAccY)<St_IkThrY) Then Begin
+         Cx:=0;Cy:=0;End;
+       St_IkTmp[0]:=$F8 Or Bt;St_IkTmp[1]:=Cx And $FF;St_IkTmp[2]:=Cy And $FF;
+       St_IkQueue(St_IK_MOUSE,3);
+       St_IkAccX:=St_IkAccX-Cx;St_IkAccY:=St_IkAccY-Cy;OldB:=NewB;
+       If (Abs(St_IkAccX)<St_IkThrX) And (Abs(St_IkAccY)<St_IkThrY) Then Break;
+      End;
+     End;
+  2: Begin
+      St_IkAbsX:=St_Clamp(AX Div St_Max2(St_IkScX,1),0,St_IkXMax);
+      If St_IkYBottom Then St_IkAbsY:=St_Clamp((399-AY) Div St_Max2(St_IkScY,1),0,St_IkYMax)
+      Else St_IkAbsY:=St_Clamp(AY Div St_Max2(St_IkScY,1),0,St_IkYMax);
+      If NewB<>OldB Then Begin
+       Fl:=0;
+       P:=((OldB And 1) Shl 1) Or ((OldB And 2) Shr 1);
+       If ((Bt And 1)<>0) And ((P And 1)=0) And ((St_IkBtnAct And 1)<>0) Then
+         Fl:=Fl Or 1;
+       If ((Bt And 1)=0) And ((P And 1)<>0) And ((St_IkBtnAct And 2)<>0) Then
+         Fl:=Fl Or 2;
+       If ((Bt And 2)<>0) And ((P And 2)=0) And ((St_IkBtnAct And 1)<>0) Then
+         Fl:=Fl Or 4;
+       If ((Bt And 2)=0) And ((P And 2)<>0) And ((St_IkBtnAct And 2)<>0) Then
+         Fl:=Fl Or 8;
+       If Fl<>0 Then St_IkSendAbs(Fl);
+      End;
+     End;
+  3: Begin
+      St_IkAccX:=St_IkAccX+Dx;St_IkAccY:=St_IkAccY+Dy;
+      While St_IkAccX>=St_IkKeyDx Do Begin St_KQPush(LongInt(77) Shl
+        16);St_IkAccX:=St_IkAccX-St_IkKeyDx;End;
+      While St_IkAccX<=-St_IkKeyDx Do Begin St_KQPush(LongInt(75) Shl
+        16);St_IkAccX:=St_IkAccX+St_IkKeyDx;End;
+      While St_IkAccY>=St_IkKeyDy Do Begin St_KQPush(LongInt(80) Shl
+        16);St_IkAccY:=St_IkAccY-St_IkKeyDy;End;
+      While St_IkAccY<=-St_IkKeyDy Do Begin St_KQPush(LongInt(72) Shl
+        16);St_IkAccY:=St_IkAccY+St_IkKeyDy;End;
+     End;
+ End;
+End;
+Procedure St_IkStatus(Cmd,B1,B2,B3,B4,B5,B6: Integer);
+Begin
+ FillChar(St_IkTmp,SizeOf(St_IkTmp),0);
+ St_IkTmp[0]:=$F6;St_IkTmp[1]:=Cmd;St_IkTmp[2]:=B1;St_IkTmp[3]:=B2;St_IkTmp[4]:=B3;St_IkTmp[5]:=B4
+   ;St_IkTmp[6]:=B5;St_IkTmp[7]:=B6;
+ St_IkQueue(St_IK_STAT,8);
+End;
+Procedure St_IkExec(Len: Integer);
+Var C,Y,Mo,D,H,Mi,S,St_I,A,N: Integer; P: LongInt; Yw,Mow,Dw,Dow: Word;
+Begin
+ C:=St_IkBuf[0];
+ Case C Of
+  $80: If St_IkBuf[1]=1 Then St_IkReset;
+  $07: St_IkBtnAct:=St_IkBuf[1];
+  $08: Begin St_IkMouseMode:=1;St_IkAccX:=0;St_IkAccY:=0;End;
+  $09: Begin
+        St_IkMouseMode:=2;St_IkXMax:=St_IkBuf[1]*256+St_IkBuf[2];St_IkYMax:=St_IkBuf[3]*256+
+          St_IkBuf[4];
+        St_IkAbsX:=St_Clamp(St_IkLastX,0,St_IkXMax);St_IkAbsY:=St_Clamp(St_IkLastY,0,St_IkYMax);
+       End;
+  $0A: Begin
+    St_IkMouseMode:=3;St_IkKeyDx:=St_Max2(St_IkBuf[1],1);St_IkKeyDy:=St_Max2(St_IkBuf[2],
+    1);St_IkAccX:=0;St_IkAccY:=0;End;
+  $0B: Begin St_IkThrX:=St_Max2(St_IkBuf[1],1);St_IkThrY:=St_Max2(St_IkBuf[2],1);End;
+  $0C: Begin St_IkScX:=St_Max2(St_IkBuf[1],1);St_IkScY:=St_Max2(St_IkBuf[2],1);End;
+  $0D: Begin
+        St_IkAbsX:=St_Clamp(St_IkLastX Div St_Max2(St_IkScX,1),0,St_IkXMax);
+        If St_IkYBottom Then St_IkAbsY:=St_Clamp((399-St_IkLastY) Div
+          St_Max2(St_IkScY,1),0,St_IkYMax)
+        Else St_IkAbsY:=St_Clamp(St_IkLastY Div St_Max2(St_IkScY,1),0,St_IkYMax);
+        St_IkSendAbs(0);
+       End;
+  $0E: Begin
+    St_IkAbsX:=St_Clamp(St_IkBuf[2]*256+St_IkBuf[3],0,St_IkXMax);St_IkAbsY:=St_Clamp(St_IkBuf[4]*256+
+    St_IkBuf[5],0,St_IkYMax);End;
+  $0F: St_IkYBottom:=True;
+  $10: St_IkYBottom:=False;
+  $11: Begin St_IkPaused:=False;St_IkMouseOn:=True;End;
+  $12: St_IkMouseOn:=False;
+  $13: St_IkPaused:=True;
+  $14: St_IkJoyMode:=0;
+  $15: St_IkJoyMode:=1;
+  $16: Begin
+        { interrogation des manettes : aucune manette n'est branchee }
+        St_IkTmp[0]:=$FD;St_IkTmp[1]:=0;St_IkTmp[2]:=0;St_IkQueue(St_IK_JOY,3);
+       End;
+  $17: St_IkJoyMode:=2;
+  $18: St_IkJoyMode:=3;
+  $19: St_IkJoyMode:=4;
+  $1A: St_IkJoyMode:=5;
+  $1B: Begin
+        Y:=St_BcdToI(St_IkBuf[1]);If Y<80 Then Y:=Y+2000 Else Y:=Y+1900;
+        Mo:=St_BcdToI(St_IkBuf[2]);D:=St_BcdToI(St_IkBuf[3]);H:=St_BcdToI(St_IkBuf[4]);Mi:=St_BcdToI(
+          St_IkBuf[5]);S:=St_BcdToI(St_IkBuf[6]);
+        If (Mo<1) Or (Mo>12) Then Mo:=1;If (D<1) Or (D>31) Then D:=1;
+        St_IkClockPacked:=(LongInt((Y-1980) Shl 9 Or (Mo Shl 5) Or D) Shl 16) Or
+          LongInt((H Shl 11) Or (Mi Shl 5) Or (S Div 2));
+        St_IkClockBase:=St_MsNow Div 1000;St_IkClockSet:=True;
+       End;
+  $1C: Begin
+        If St_IkClockSet Then P:=St_PackedAdd(St_IkClockPacked,(St_MsNow Div
+          1000)-St_IkClockBase) Else P:=St_HostPacked;
+        St_PackedToSec(P,Y,Mo,D,H,Mi,S);
+        St_IkTmp[0]:=$FC;St_IkTmp[1]:=St_IToBcd(Y Mod
+          100);St_IkTmp[2]:=St_IToBcd(Mo);St_IkTmp[3]:=St_IToBcd(D);
+        St_IkTmp[4]:=St_IToBcd(H);St_IkTmp[5]:=St_IToBcd(Mi);St_IkTmp[6]:=St_IToBcd(S);
+        St_IkQueue(St_IK_CLOCK,7);
+       End;
+  $20: Begin
+        A:=St_IkBuf[1]*256+St_IkBuf[2];N:=St_IkBuf[3];
+        For St_I:=0 To N-1 Do
+         If (A+St_I>=$80) And (A+St_I<=$FF) Then St_IkRam[A+St_I-$80]:=St_IkBuf[4+St_I];
+       End;
+  $21: Begin
+        A:=St_IkBuf[1]*256+St_IkBuf[2];
+        FillChar(St_IkTmp,SizeOf(St_IkTmp),0);
+        St_IkTmp[0]:=$F6;St_IkTmp[1]:=$20;
+        For St_I:=0 To 5 Do If (A+St_I>=$80) And (A+St_I<=$FF) Then
+          St_IkTmp[2+St_I]:=St_IkRam[A+St_I-$80];
+        St_IkQueue(St_IK_STAT,8);
+       End;
+  $22: Begin End;
+  { demandes d'etat }
+  $87: St_IkStatus($07,St_IkBtnAct,0,0,0,0,0);
+  $88: St_IkStatus($08,0,0,0,0,0,0);
+  $89: St_IkStatus($09,St_IkXMax Shr 8,St_IkXMax And $FF,St_IkYMax Shr 8,St_IkYMax And
+    $FF,0,0);
+  $8A: St_IkStatus($0A,St_IkKeyDx,St_IkKeyDy,0,0,0,0);
+  $8B: St_IkStatus($0B,St_IkThrX,St_IkThrY,0,0,0,0);
+  $8C: St_IkStatus($0C,St_IkScX,St_IkScY,0,0,0,0);
+  $8F: If St_IkYBottom Then St_IkStatus($0F,0,0,0,0,0,0);
+  $90: If Not St_IkYBottom Then St_IkStatus($10,0,0,0,0,0,0);
+  $92: If St_IkMouseOn Then St_IkStatus($00,0,0,0,0,0,0) Else
+    St_IkStatus($12,0,0,0,0,0,0);
+  $94: St_IkStatus($14,0,0,0,0,0,0);
+  $95: St_IkStatus($15,0,0,0,0,0,0);
+  $99: St_IkStatus($19,0,0,0,0,0,0);
+  $9A: St_IkStatus($1A,0,0,0,0,0,0);
+ End;
+End;
+Function St_IkCmdLen(C: Integer): Integer;
+Begin
+ Case C Of
+  $80,$07,$17: St_IkCmdLen:=2;
+  $09: St_IkCmdLen:=5;
+  $0A,$0B,$0C,$21,$22: St_IkCmdLen:=3;
+  $0E: St_IkCmdLen:=6;
+  $19,$1B: St_IkCmdLen:=7;
+  $20: St_IkCmdLen:=4;
+ Else St_IkCmdLen:=1;
+ End;
+End;
+Procedure St_IkByte(B: Integer);
+Var L: Integer;
+Begin
+ If St_IkN<128 Then Begin St_IkBuf[St_IkN]:=B;Inc(St_IkN);End;
+ L:=St_IkCmdLen(St_IkBuf[0]);
+ If (St_IkBuf[0]=$20) And (St_IkN>=4) Then L:=4+St_IkBuf[3];
+ If St_IkN>=L Then Begin
+  St_IkExec(L);
+  St_IkN:=0;
+ End;
+End;
+Procedure St_SysTablesInit;
+Var St_I: Integer;
+Begin
+ St_Wr16(St_STUB_RTS,$4E75);
+ St_KeyTables;
+ For St_I:=0 To 8 Do St_Wr32(St_KBDVECS+St_I*4,St_STUB_RTS);
+ St_IkReset;St_IkQN:=0;St_IkClockSet:=False;
+ St_Wr32(St_ZERO_WORD,0);
+ St_IorecInit:=False;
+ St_MouseVecUser:=0;
+End;
+Const
+ St_OS_ROM = $FC0000;
+Function St_HwRd8(A: LongInt): Byte;
+Var St_I: Integer; V: Word;
+Begin
+ St_HwRd8:=0;
+ If (A>=St_OS_ROM) And (A<St_OS_ROM+$40) Then Begin
+  { en-tete du systeme (os_base) }
+  Case A-St_OS_ROM Of
+   0: St_HwRd8:=$60;  1: St_HwRd8:=$1E;           { bra.s }
+   2: St_HwRd8:=$01;  3: St_HwRd8:=$00;           { os_version : TOS 1.00 }
+   4: St_HwRd8:=$00;  5: St_HwRd8:=$FC;  6: St_HwRd8:=$00;  7: St_HwRd8:=$20;   { reseth }
+   8: St_HwRd8:=$00;  9: St_HwRd8:=$FC;  10: St_HwRd8:=$00; 11: St_HwRd8:=$00;  { os_beg }
+   12: St_HwRd8:=$00; 13: St_HwRd8:=$FF; 14: St_HwRd8:=$00; 15: St_HwRd8:=$00;  { os_end }
+   20: St_HwRd8:=$87; 21: St_HwRd8:=$65; 22: St_HwRd8:=$43; 23: St_HwRd8:=$21;  { os_magic }
+   24: St_HwRd8:=$11; 25: St_HwRd8:=$20; 26: St_HwRd8:=$19; 27: St_HwRd8:=$85;  { os_date :
+     20/11/1985 }
+   29: St_HwRd8:=$01;                          { os_conf : PAL / Royaume-Uni }
+   30: St_HwRd8:=$0A; 31: St_HwRd8:=$74;          { os_dosdate }
+  End;
+  Exit;
+ End;
+ Case A Of
+  $FF8201: St_HwRd8:=(St_ScrBase Shr 16) And $FF;       { base video }
+  $FF8203: St_HwRd8:=(St_ScrBase Shr 8) And $FF;
+  $FF8205: St_HwRd8:=(St_ScrBase Shr 16) And $FF;       { compteur video }
+  $FF8207: St_HwRd8:=(St_ScrBase Shr 8) And $FF;
+  $FF8209: St_HwRd8:=St_ScrBase And $FF;
+  $FF820A: St_HwRd8:=2;                              { synchro 50 Hz }
+  $FF8260: St_HwRd8:=2;                              { resolution : monochrome }
+  $FFFA01: St_HwRd8:=$7F;                            { MFP gpip : bit 7 a 0 =
+    moniteur monochrome }
+  $FFFC00: St_HwRd8:=2;                              { ACIA clavier : emetteur
+    libre }
+  $FFFC02: St_HwRd8:=0;
+ Else
+  If (A>=$FF8240) And (A<$FF8260) Then Begin
+   St_I:=(A-$FF8240) Shr 1;V:=St_Palette68[St_I];
+   If Odd(A) Then St_HwRd8:=V And $FF Else St_HwRd8:=V Shr 8;
+  End;
+ End;
+End;
+Var
+ St_HwVidHi,St_HwVidMid: Integer;
+ St_IrqLastC,St_IrqLastV: LongInt;
+Procedure St_HwWr8(A: LongInt; V: Byte);
+Var NB: LongInt;
+Begin
+ If St_DosTrace And (A>=$FF8000) And (A<$FF8300) Then Begin
+   WriteLn(St_ConOut,'HWWR ',St_Hex8(A),' <- ',St_Hex2(V),' pc=',St_Hex8(St_CurOpPC),
+   ' scrbase=',St_Hex8(St_ScrBase),' drawbase=',St_Hex8(St_DrawBase));Flush(St_ConOut);End;
+ If (A=$FF8201) Or (A=$FF8203) Then Begin
+  If A=$FF8201 Then St_HwVidHi:=V Else St_HwVidMid:=V;
+  NB:=(LongInt(St_HwVidHi) Shl 16) Or (LongInt(St_HwVidMid) Shl 8);
+  If (NB<>St_ScrBase) And (NB+St_SCR_BYTES<=St_MemSize) And (NB>=$1000) Then Begin
+   St_ScrBase:=NB;
+   St_ScrDirtyLo:=0;St_ScrDirtyHi:=399;
+   St_ScrForceFull:=True;
+  End;
+ End;
+End;
+Procedure St_SysVarsInit;
+Begin
+ St_Wr32(0,$0006E000);St_Wr32(4,St_OS_ROM+$20);
+ St_Wr32($420,$752019F3);St_Wr32($43A,$237698AA);St_Wr32($51A,$5555AAAA);   { memvalid,
+   memval2, memval3 }
+ St_Wr32($426,0);St_Wr32($42A,0);
+ St_Wr32($42E,St_MemSize);                      { phystop }
+ St_Wr32($432,St_BP_ADDR);St_Wr32($436,St_HitPa);     { _membot, _memtop }
+ St_Wr8($44C,2);                             { sshiftmd : haute resolution }
+ St_Wr32($44E,St_ScrBase);                      { _v_bas_ad }
+ St_Wr16($446,2);                            { _bootdev : C: }
+ St_Wr16($454,1);                            { nvbls }
+ St_Wr16($4A6,2);                            { _nflops }
+ St_Wr32($4C2,4);                            { _drvbits }
+ St_Wr32($4F2,St_OS_ROM);                       { _sysbase }
+ St_Wr32($4F6,St_OS_ROM);                       { _shell_p (approx.) }
+ St_Wr32($4FA,St_OS_ROM+$40000);                { _end_os }
+ St_Wr32($4FE,St_OS_ROM);                       { _exec_os }
+ St_Wr16($484,7);                            { conterm }
+ St_Wr32($4BA,0);St_Wr32($462,0);St_Wr32($466,0);
+ St_IrqLastC:=St_MsNow Div 5;St_IrqLastV:=St_MsNow Div 20;
+ St_Wr16($0452,$4E73);St_Wr32(69*4,$0452);St_Wr32(28*4,$0452);   { Timer C et VBL : RTE
+   par defaut (chainage des gestionnaires) }
+ St_HwVidHi:=(St_ScrBase Shr 16) And $FF;St_HwVidMid:=(St_ScrBase Shr 8) And $FF;
+End;
+Const
+ St_IRQ_RET = $0450;
+ St_IRQ_RTE = $0452;
+Function St_IrqDue(Var Lvl: Integer): Integer;
+Var T: LongInt; Mk: Integer;
+Begin
+ St_IrqDue:=0;
+ If (St_Rd32(69*4)=St_IRQ_RTE) And (St_Rd32(28*4)=St_IRQ_RTE) Then Exit;
+ Mk:=(St_SRv Shr 8) And 7;
+ T:=St_MsNow Div 5;
+ If (T<>St_IrqLastC) And (St_ExcHandler(69)<>0) And (St_Rd32(69*4)<>St_IRQ_RTE) Then Begin
+  If Mk<6 Then Begin St_IrqLastC:=T;St_IrqDue:=69;Lvl:=6;Exit;End;
+ End;
+ If ((T Div 4)<>St_IrqLastV) And (St_ExcHandler(28)<>0) And (St_Rd32(28*4)<>St_IRQ_RTE)
+   Then Begin
+  If Mk<4 Then Begin St_IrqLastV:=T Div 4;St_IrqDue:=28;Lvl:=4;End;
+ End;
+End;
+Var
+ St_IrqCnt: Integer;
+Procedure St_IrqCheck;
+Var V,L: Integer;
+Begin
+ Inc(St_IrqCnt);
+ If (St_IrqCnt And 7)=0 Then St_TickSysVars;       { _frclock/_hz_200 evoluent meme
+   si le programme boucle sans appel systeme }
+ If (St_StopReason<>St_STOP_NONE) Or (St_PendVec>=0) Then Exit;
+ L:=0;V:=St_IrqDue(L);
+ If V=0 Then Exit;
+ St_TakeExc(V,St_PC,St_ExcHandler(V),False,0,0);
+ St_SetSR((St_SRv And $F8FF) Or (LongInt(L) Shl 8));
+End;
+Procedure St_IrqNested;
+Var V,L,N: Integer; SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp:
+  LongInt; SvExc: Boolean; SvStop: Integer;
+Begin
+ If ((St_StopReason<>St_STOP_NONE) And (St_StopReason<>7)) Or (St_PendVec>=0) Then Exit;
+ L:=0;V:=St_IrqDue(L);
+ If V=0 Then Exit;
+ Move(St_Rg,SvRg,SizeOf(St_Rg));
+ SvPC:=St_PC;SvSR:=St_SRv;SvUSP:=St_USPv;SvSSP:=St_SSPv;SvOp:=St_CurOpPC;SvExc:=St_ExcTaken;SvStop
+   :=St_StopReason;St_StopReason:=St_STOP_NONE;
+ If St_DosTrace Then Begin
+   WriteLn(St_ConOut,'IRQ nested start pc=',St_Hex8(St_PC),' sr=',St_Hex4(St_SRv),' sp=',
+   St_Hex8(St_Rg[15]),' h=',St_Hex8(St_ExcHandler(V)));Flush(St_ConOut);End;
+ St_TakeExc(V,St_IRQ_RET,St_ExcHandler(V),False,0,0);
+ St_SetSR((St_SRv And $F8FF) Or (LongInt(L) Shl 8));
+ N:=0;
+ While (St_PC<>St_IRQ_RET) And (St_StopReason=St_STOP_NONE) And (N<400000) Do Begin
+  St_Step;Inc(N);
+  If (N And 255)=0 Then St_TickSysVars;
+ End;
+ If St_StopReason=St_STOP_NONE Then Begin
+  Move(SvRg,St_Rg,SizeOf(St_Rg));
+  St_PC:=SvPC;St_SRv:=SvSR;St_USPv:=SvUSP;St_SSPv:=SvSSP;St_CurOpPC:=SvOp;St_ExcTaken:=SvExc;
+    St_StopReason:=SvStop;
+ End;
+ If St_DosTrace Then Begin
+   WriteLn(St_ConOut,'IRQ nested vec ',V,' steps ',N,' stop=',St_StopReason,' pc=',
+   St_Hex8(St_PC));Flush(St_ConOut);End;
+End;
+Procedure St_Bios;
+Var Fn: LongInt; R,St_K,Cnt,Rec: LongInt; Dev,St_I: Integer; B: Byte; Sec: Integer;
+  Bp,Boot: LongInt;
+    St_Bps,Spc,Res,Nfat,Nroot,Tot,Spf,Rdlen,Datrec,Ncl: LongInt; Tmp: Array[0..31]
+      Of Byte;
+Begin
+ Fn:=St_PW(0);
+ R:=0;
+ If St_DosTrace Then Begin
+   WriteLn(St_ConOut,'BIOS ',Fn,' ',St_Hex8(St_PL(2)),' ',St_Hex8(St_PL(6)));Flush(St_ConOut);End;
+ Case Fn Of
+  0: Begin
+      St_K:=St_PL(2);
+      St_Wr32(St_K,0);St_Wr32(St_K+4,0);St_Wr32(St_K+8,0);
+     End;
+  1: Begin
+      Dev:=St_PW(2);
+      Case Dev Of
+       1: If St_AuxAvail Then R:=-1 Else R:=0;
+       2: Begin St_PollKeys;If St_KQEmpty Then R:=0 Else R:=-1;End;
+       3: If St_MidiAvail Then R:=-1 Else R:=0;
+      Else R:=0;
+      End;
+     End;
+  2: Begin
+      Dev:=St_PW(2);
+      Case Dev Of
+       1: If St_AuxGet(B) Then R:=B Else R:=0;
+       2: R:=St_WaitKeyEmu;
+       3: If St_MidiGet(B) Then R:=B Else R:=0;
+      Else R:=0;
+      End;
+     End;
+  3: Begin
+      Dev:=St_PW(2);
+      Case Dev Of
+       0: St_PrnPut(St_PW(4) And $FF);
+       1: St_AuxPut(St_PW(4) And $FF);
+       2: St_ConPut(St_PW(4) And $FF);
+       3: St_MidiPut(St_PW(4) And $FF);
+       5: St_ConPutRaw(St_PW(4) And $FF);
+      End;
+     End;
+  4: Begin
+      { Rwabs : rwflag, buf, count, recno, dev, lrecno }
+      Dev:=St_PW(12);
+      If St_SExt(St_Rd16(St_Rg[15]+10),2)=-1 Then Rec:=St_PL(14) Else Rec:=St_Rd16(St_Rg[15]+10);
+      Cnt:=St_SExt(St_PW(8),2);
+      If (St_PW(2) And 1)=0 Then R:=St_FlpRW(Dev,Rec,Cnt,St_PL(4),False)
+      Else R:=St_FlpRW(Dev,Rec,Cnt,St_PL(4),True);
+      If (Dev>3) Then R:=St_E_UNDEV;
+     End;
+  5: Begin
+      R:=St_Rd32(St_PW(2)*4);
+      If St_PL(4)<>-1 Then St_Wr32(St_PW(2)*4,St_PL(4));
+     End;
+  6: R:=20;
+  7: Begin
+      { Getbpb }
+      Dev:=St_PW(2);
+      R:=0;
+      If (Dev>=0) And (Dev<=3) And St_Flp[Dev].On Then Begin
+       Boot:=St_BPB_BASE+Dev*32;
+       Tot:=0;
+       { relit le secteur de boot }
+       If St_FlpRW(Dev,0,1,St_BPB_BASE+$100,False)=0 Then Begin
+        For St_I:=0 To 31 Do Tmp[St_I]:=St_Rd8(St_BPB_BASE+$100+St_I);
+        St_Bps:=Tmp[11]+Tmp[12]*256;Spc:=Tmp[13];Res:=Tmp[14]+
+          Tmp[15]*256;Nfat:=Tmp[16];
+        Nroot:=Tmp[17]+Tmp[18]*256;Tot:=Tmp[19]+Tmp[20]*256;Spf:=Tmp[22]+
+          Tmp[23]*256;
+        If (St_Bps<>512) Or (Spc=0) Or (Nfat=0) Then Begin
+         St_Bps:=512;Spc:=2;Res:=1;Nfat:=2;Nroot:=112;Spf:=5;Tot:=St_Flp[Dev].Size
+           Div 512;
+        End;
+        Rdlen:=(Nroot*32+511) Div 512;
+        Datrec:=Res+Nfat*Spf+Rdlen;
+        Ncl:=(Tot-Datrec) Div Spc;
+        St_Wr16(Boot,St_Bps);St_Wr16(Boot+2,Spc);St_Wr16(Boot+4,St_Bps*Spc);St_Wr16(Boot+6,Rdlen);
+        St_Wr16(Boot+8,Spf);St_Wr16(Boot+10,Res+Spf);St_Wr16(Boot+12,Datrec);St_Wr16(Boot+
+          14,Ncl);
+        If Ncl>4086 Then St_Wr16(Boot+16,1) Else St_Wr16(Boot+16,0);
+        St_Flp[Dev].Changed:=False;
+        R:=Boot;
+       End;
+      End;
+     End;
+  8: Begin
+      Dev:=St_PW(2);
+      If Dev=1 Then R:=-1 Else If Dev=0 Then R:=-1 Else If Dev=3 Then R:=-1
+        Else R:=-1;
+     End;
+  9: Begin
+      Dev:=St_PW(2);
+      If (Dev>=0) And (Dev<=3) And St_Flp[Dev].On Then Begin
+       If St_Flp[Dev].Changed Then R:=2 Else R:=0;
+      End Else R:=0;
+     End;
+  10: Begin
+       R:=4;
+       For St_I:=0 To 3 Do If St_Flp[St_I].On Then R:=R Or (1 Shl St_I);
+      End;
+  11: R:=0;
+ Else R:=0;
+ End;
+ St_Rg[0]:=R;
+End;
+Procedure St_Xbios;
+Var Fn: LongInt; R,A,B,L: LongInt; Hh,Mi,Se,Hs,Y,Mo,D,Dw: Word;
+  Dev,Sec,Trk,Sd,Cnt,St_I: Integer; Lsn: LongInt;
+    Tmp: Byte; Old: LongInt; V: LongInt;
+Begin
+ Fn:=St_PW(0);
+ R:=0;
+ If St_DosTrace Then Begin
+   WriteLn(St_ConOut,'XBIOS ',Fn,' ',St_Hex8(St_PL(2)),' ',
+   St_Hex8(St_PL(6)));Flush(St_ConOut);End;
+ Case Fn Of
+  0: Begin
+      { Initmous(type,param,vecteur) }
+      St_MouseVecUser:=St_PL(8);
+      If St_MouseVecUser<>0 Then St_Wr32(St_KBDVECS+16,St_MouseVecUser) Else
+        St_Wr32(St_KBDVECS+16,St_STUB_RTS);
+      A:=St_PL(4);
+      Case St_PW(2) Of
+       0: St_IkMouseOn:=False;
+       1: Begin
+           St_IkMouseOn:=True;St_IkPaused:=False;St_IkMouseMode:=1;St_IkAccX:=0;St_IkAccY:=0;
+           If A<>0 Then Begin
+            St_IkBtnAct:=St_Rd8(A+1);St_IkThrX:=St_Max2(St_Rd8(A+2),1);St_IkThrY:=St_Max2(St_Rd8(A+3),
+              1);
+           End;
+          End;
+       2: Begin
+           St_IkMouseOn:=True;St_IkPaused:=False;St_IkMouseMode:=2;
+           If A<>0 Then Begin
+            St_IkBtnAct:=St_Rd8(A+1);St_IkXMax:=St_Rd16(A+2);St_IkYMax:=St_Rd16(A+4);
+            St_IkAbsX:=St_Clamp(St_Rd16(A+6),0,St_IkXMax);St_IkAbsY:=St_Clamp(St_Rd16(A+8),0,St_IkYMax);
+           End;
+          End;
+       4: Begin
+           St_IkMouseOn:=True;St_IkPaused:=False;St_IkMouseMode:=3;St_IkAccX:=0;St_IkAccY:=0;
+           If A<>0 Then Begin
+             St_IkKeyDx:=St_Max2(St_Rd8(A+2),1);St_IkKeyDy:=St_Max2(St_Rd8(A+3),1);End;
+          End;
+      End;
+     End;
+  1: R:=0;
+  2: R:=St_ScrBase;
+  3: R:=St_DrawBase;
+  4: R:=2;
+  5: Begin
+      A:=St_PL(2);B:=St_PL(6);
+      If A<>-1 Then St_DrawBase:=A;
+      If B<>-1 Then Begin
+       St_ScrBase:=B;
+       St_ScrDirtyLo:=0;St_ScrDirtyHi:=399;
+       St_ScrForceFull:=True;
+      End;
+     End;
+  6: Begin
+      A:=St_PL(2);
+      For St_I:=0 To 15 Do St_Palette68[St_I]:=St_Rd16(A+St_I*2);
+     End;
+  7: Begin
+      St_I:=St_PW(2) And 15;
+      R:=St_Palette68[St_I];
+      If St_SExt(St_PW(4),2)>=0 Then St_Palette68[St_I]:=St_PW(4) And $777;
+     End;
+  8,9: Begin
+        { Floprd / Flopwr }
+        A:=St_PL(2);Dev:=St_PW(10);Sec:=St_PW(12);Trk:=St_PW(14);Sd:=St_PW(16);Cnt:=St_PW(18);
+        If (Dev<0) Or (Dev>1) Or Not St_Flp[Dev].On Then R:=St_E_NOTRDY
+        Else If (Sd>=St_Flp[Dev].Sides) Or (Trk>=St_Flp[Dev].Tracks) Or (Sec<1) Or
+          (Sec>St_Flp[Dev].Spt) Then R:=St_E_RNF
+        Else Begin
+         Lsn:=(LongInt(Trk)*St_Flp[Dev].Sides+Sd)*St_Flp[Dev].Spt+(Sec-1);
+         R:=St_FlpRW(Dev,Lsn,Cnt,A,Fn=9);
+        End;
+       End;
+  10: Begin
+       { Flopfmt }
+       A:=St_PL(2);Dev:=St_PW(10);Trk:=St_PW(14);Sd:=St_PW(16);
+       If (Dev<0) Or (Dev>1) Or Not St_Flp[Dev].On Then R:=St_E_NOTRDY
+       Else If St_PL(20)<>-2023406815 Then R:=St_E_ERROR
+       Else If (Sd>=St_Flp[Dev].Sides) Or (Trk>=St_Flp[Dev].Tracks) Then R:=St_E_SEEK
+       Else Begin
+        Cnt:=St_PW(12);
+        For St_I:=0 To 511 Do St_Wr8(St_SCRATCH_BLK+St_I,((St_PW(24) Shr 8) And $FF));
+        Lsn:=(LongInt(Trk)*St_Flp[Dev].Sides+Sd)*St_Flp[Dev].Spt;
+        For St_I:=0 To Cnt-1 Do St_FlpRW(Dev,Lsn+St_I,1,St_SCRATCH_BLK,True);
+        St_Wr16(St_ZERO_WORD,0);
+        R:=St_ZERO_WORD;
+       End;
+      End;
+  11: R:=0;
+  12: Begin
+       Cnt:=St_PW(2)+1;A:=St_PL(4);
+       For St_I:=0 To Cnt-1 Do St_MidiPut(St_Rd8(A+St_I));
+      End;
+  13: Begin
+       St_I:=St_PW(2) And 15;
+       St_Wr32($100+St_I*4,St_PL(4));St_XbVec[St_I]:=St_PL(4);
+      End;
+  14: Begin
+       If Not St_IorecInit Then Begin
+        St_IorecInit:=True;
+        For St_I:=0 To 2 Do Begin
+         A:=St_DoMalloc(512);
+         St_Wr32(St_IOREC_BASE+St_I*$40,A);St_Wr16(St_IOREC_BASE+St_I*$40+4,256);
+         St_Wr16(St_IOREC_BASE+St_I*$40+6,0);St_Wr16(St_IOREC_BASE+St_I*$40+8,0);
+         St_Wr16(St_IOREC_BASE+St_I*$40+10,64);St_Wr16(St_IOREC_BASE+St_I*$40+12,192);
+         St_Wr32(St_IOREC_BASE+St_I*$40+14,A+256);St_Wr16(St_IOREC_BASE+St_I*$40+18,256);
+         St_Wr16(St_IOREC_BASE+St_I*$40+20,0);St_Wr16(St_IOREC_BASE+St_I*$40+22,0);
+         St_Wr16(St_IOREC_BASE+St_I*$40+24,64);St_Wr16(St_IOREC_BASE+St_I*$40+26,192);
+        End;
+       End;
+       R:=St_IOREC_BASE+(St_PW(2) And 3)*$40;
+      End;
+  15: Begin
+       { Rsconf : retourne l'ancienne configuration }
+       R:=St_RsConfig[0];
+       If St_SExt(St_PW(2),2)<>-2 Then Begin
+        St_RsConfig[0]:=(LongInt(St_PW(2)) Shl 16) Or St_PW(4);
+        St_RsConfig[1]:=St_PW(6);St_RsConfig[2]:=St_PW(8);St_RsConfig[3]:=St_PW(10);St_RsConfig[4]:=
+          St_PW(12);
+       End;
+      End;
+  16: Begin
+       A:=St_PL(2);
+       If A<>-1 Then St_Wr32(St_KT_PTRS,A);
+       A:=St_PL(6);If A<>-1 Then St_Wr32(St_KT_PTRS+4,A);
+       A:=St_PL(10);If A<>-1 Then St_Wr32(St_KT_PTRS+8,A);
+       R:=St_KT_PTRS;
+      End;
+  17: Begin
+       St_RandSeed68:=St_RandSeed68*1103515245+12345;
+       R:=St_ShrL(St_RandSeed68,8) And $FFFFFF;
+      End;
+  18: St_ProtoBootSector(St_PL(2),St_PL(6),St_SExt(St_PW(10),2),St_PW(12));
+  19: Begin
+       St_Wr16(St_PL(2),0);R:=0;
+       Dev:=St_PW(10);
+       If (Dev<0) Or (Dev>1) Or Not St_Flp[Dev].On Then R:=St_E_NOTRDY;
+      End;
+  20: St_ScreenDump;
+  21: Begin
+       Case St_PW(2) Of
+        0: St_ConCurOn:=False;
+        1: St_ConCurOn:=True;
+        2,3: Begin End;
+        4: St_CurBlinkRate:=St_PW(4);
+        5: R:=St_CurBlinkRate;
+       End;
+      End;
+  22: Begin
+       St_TimeSetPacked:=St_PL(2);St_TimeSetOn:=True;St_TimeBase:=St_MsNow Div 1000;
+      End;
+  23: Begin
+       If St_TimeSetOn Then R:=St_PackedAdd(St_TimeSetPacked,(St_MsNow Div 1000)-St_TimeBase)
+       Else R:=St_HostPacked;
+       { le mot haut contient la date, le mot bas l'heure }
+      End;
+  24: St_KeyTables;
+  25: Begin
+       { Ikbdws : commandes du clavier intelligent }
+       Cnt:=St_PW(2)+1;A:=St_PL(4);
+       For St_I:=0 To Cnt-1 Do St_IkByte(St_Rd8(A+St_I));
+      End;
+  26: Begin St_MfpEnable:=St_MfpEnable And Not (LongInt(1) Shl (St_PW(2) And 31));End;
+  27: Begin St_MfpEnable:=St_MfpEnable Or (LongInt(1) Shl (St_PW(2) And 31));End;
+  28: Begin
+       St_I:=St_PW(4);
+       If (St_I And $80)<>0 Then Begin St_GiRegs[St_I And 15]:=St_PW(2) And $FF;R:=St_GiRegs[St_I
+         And 15];End
+       Else R:=St_GiRegs[St_I And 15];
+      End;
+  29: Begin St_GiRegs[14]:=St_GiRegs[14] And (St_PW(2) And $FF);End;
+  30: Begin St_GiRegs[14]:=St_GiRegs[14] Or (St_PW(2) And $FF);End;
+  31: Begin
+       St_I:=St_PW(2) And 3;
+       St_XbVec[16+St_I]:=St_PL(8);
+       St_Wr32($134+St_I*4,St_PL(8));
+      End;
+  32: Begin
+       { Dosound : lance (ou arrete) une sequence YM2149 ; renvoie la position
+         courante }
+       R:=St_SndPos;
+       If St_PL(2)=0 Then St_SoundOff Else If St_PL(2)<>-1 Then St_DosoundStart(St_PL(2));
+      End;
+  33: Begin R:=St_PrtConfig;If St_SExt(St_PW(2),2)>=0 Then St_PrtConfig:=St_PW(2);End;
+  34: R:=St_KBDVECS;
+  35: Begin
+       R:=St_KbRate;
+       If St_SExt(St_PW(2),2)>=0 Then St_KbRate:=(LongInt(St_PW(2)) Shl 8) Or St_PW(4);
+      End;
+  36: R:=0;
+  37: Begin St_PollKeys;Delay(16);End;
+  38: Begin
+       A:=St_PL(2);
+       St_PushL(St_PC);
+       St_PushL(St_STUB_USER);
+       St_SRv:=St_SRv Or St_SR_S;
+       St_PC:=A;
+       Exit;
+      End;
+  39: R:=0;
+  64: R:=0;
+ Else R:=0;
+ End;
+ St_Rg[0]:=R;
+End;
+Const
+ St_FS_MAX = 400;
+ St_FS_ROWS = 10;
+Var
+ St_FSList : Array[1..St_FS_MAX] Of String[40];
+ St_FSN    : Integer;
+ St_OptRunGem       : Boolean;
+Function St_ReadAll(Const Name: String; Var P: Pointer; Var Len: LongInt): Boolean;
+Begin
+ St_ReadAll:=St_ReadFileBytes(Name,P,Len);
+End;
+Function St_BufB(P: Pointer; St_I: LongInt): LongInt;
+Begin
+ St_BufB:=St_PByteAt(P,St_I);
+End;
+Function St_BufL(P: Pointer; St_I: LongInt): LongInt;
+Begin
+ St_BufL:=(St_BufB(P,St_I) Shl 24) Or (St_BufB(P,St_I+1) Shl 16) Or (St_BufB(P,St_I+2) Shl 8) Or
+   St_BufB(P,St_I+3);
+End;
+Function St_BufW(P: Pointer; St_I: LongInt): LongInt;
+Begin
+ St_BufW:=(St_BufB(P,St_I) Shl 8) Or St_BufB(P,St_I+1);
+End;
+Const
+ St_MAXVWK  = 16;
+ St_SW      = 640;
+ St_SH      = 400;
+ St_WM_REPL = 1;
+ St_WM_TRANS = 2;
+ St_WM_XOR = 3;
+ St_WM_RTRANS = 4;
+Type
+ St_TVdi = Record
+  Used     : Boolean;
+  Owner    : Integer;
+  WrMode   : Integer;
+  LineType,LineCol,LineWidth,LineEnd0,LineEnd1 : Integer;
+  LineUd   : Word;
+  MarkType,MarkCol,MarkH : Integer;
+  TxtFont,TxtCol,TxtRot,TxtEff,TxtHAl,TxtVAl,TxtCell : Integer;
+  FillInt,FillSty,FillCol,FillPer : Integer;
+  UdPat    : Array[0..15] Of Word;
+  ClipOn   : Boolean;
+  St_Cx1,St_Cy1,St_Cx2,St_Cy2 : Integer;
+ End;
+ St_TPoly = Array[0..255] Of Integer;
+Var
+ St_Vd      : Array[0..St_MAXVWK] Of St_TVdi;
+ St_VP      : ^St_TVdi;
+ St_VCur    : Integer;
+ St_CX1,St_CY1,St_CX2,St_CY2 : Integer;
+ St_GMouseX,St_GMouseY,St_GMouseB : LongInt;
+ St_BayerM  : Array[0..3,0..3] Of Byte;
+ St_BayerCnt: Array[1..8] Of Byte;
+ St_PX,St_PY   : St_TPoly;
+ St_LinePhase : Integer;
+ St_AesTrace  : Boolean;
+ St_VdiOwnerProc : Integer;
+ St_VdiInMd   : Array[1..4] Of Integer;
+ St_VexTim,St_VexBut,St_VexMot,St_VexCur : LongInt;
+ St_VexTimLast  : LongInt;
+ St_InVex       : Boolean;
+ St_KbdPrevX,St_KbdPrevY,St_KbdPrevB : LongInt;
+Procedure St_ApplyMouseForm(A: LongInt);
+Var St_I: Integer;
+Begin
+ St_CurHotX:=St_Clamp(St_SExt(St_Rd16(A),2),0,15);St_CurHotY:=St_Clamp(St_SExt(St_Rd16(A+2),2),0,15);
+ For St_I:=0 To 15 Do Begin
+  St_CurMask[St_I]:=St_Rd16(A+10+St_I*2);St_CurData[St_I]:=St_Rd16(A+42+St_I*2);
+ End;
+ {$IFDEF FPC}
+ If St_GfxOn Then Begin If St_MouseHidden>0 Then St_HideMouse Else St_CursorDraw(St_MX,St_MY);End;
+ {$ENDIF}
+End;
+Procedure St_VdiInitTables;
+Const B : Array[0..15] Of Byte = (0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
+      C : Array[1..8] Of Byte = (1,2,4,6,8,10,12,14);
+Var St_I: Integer;
+Begin
+ For St_I:=0 To 15 Do St_BayerM[St_I Div 4,St_I Mod 4]:=B[St_I];
+ For St_I:=1 To 8 Do St_BayerCnt[St_I]:=C[St_I];
+ For St_I:=1 To 4 Do St_VdiInMd[St_I]:=1;
+End;
+Procedure St_VdiDefaults(Var V: St_TVdi);
+Var St_I: Integer;
+Begin
+ V.WrMode:=St_WM_REPL;
+ V.LineType:=1;V.LineCol:=1;V.LineWidth:=1;V.LineEnd0:=0;V.LineEnd1:=0;V.LineUd
+   :=$FFFF;
+ V.MarkType:=3;V.MarkCol:=1;V.MarkH:=8;
+ V.TxtFont:=1;V.TxtCol:=1;V.TxtRot:=0;V.TxtEff:=0;V.TxtHAl:=0;V.TxtVAl:=0;V.
+   TxtCell:=16;
+ V.FillInt:=0;V.FillSty:=1;V.FillCol:=1;V.FillPer:=1;
+ For St_I:=0 To 15 Do V.UdPat[St_I]:=$AAAA;
+ V.ClipOn:=False;V.St_Cx1:=0;V.St_Cy1:=0;V.St_Cx2:=St_SW-1;V.St_Cy2:=St_SH-1;
+End;
+Procedure St_SelVdi(H: Integer);
+Begin
+ If (H<0) Or (H>St_MAXVWK) Or Not St_Vd[H].Used Then H:=1;
+ If Not St_Vd[H].Used Then H:=0;
+ St_VCur:=H;St_VP:=@St_Vd[H];
+ If St_VP^.ClipOn Then Begin
+  St_CX1:=St_Max2(0,St_VP^.St_Cx1);St_CY1:=St_Max2(0,St_VP^.St_Cy1);St_CX2:=St_Min2(St_SW-1,
+    St_VP^.St_Cx2);St_CY2:=St_Min2(St_SH-1,St_VP^.St_Cy2);
+ End Else Begin St_CX1:=0;St_CY1:=0;St_CX2:=St_SW-1;St_CY2:=St_SH-1;End;
+End;
+Procedure St_SetClip(X1,Y1,X2,Y2: Integer);
+Begin
+ St_CX1:=St_Max2(0,X1);St_CY1:=St_Max2(0,Y1);St_CX2:=St_Min2(St_SW-1,X2);St_CY2:=St_Min2(St_SH-1,Y2);
+End;
+Procedure St_PlotPat(X,Y: Integer; PatBit,Col: Boolean);
+Begin
+ If (X<St_CX1) Or (X>St_CX2) Or (Y<St_CY1) Or (Y>St_CY2) Then Exit;
+ Case St_VP^.WrMode Of
+  St_WM_REPL: If PatBit Then St_BPix(X,Y,Col) Else St_BPix(X,Y,False);
+  St_WM_TRANS: If PatBit Then St_BPix(X,Y,Col);
+  St_WM_XOR: If PatBit Then St_BPix(X,Y,Not St_BGet(X,Y));
+  St_WM_RTRANS: If Not PatBit Then St_BPix(X,Y,Col);
+ End;
+End;
+Procedure St_PlotSolid(X,Y: Integer; Col: Boolean);
+Begin
+ St_PlotPat(X,Y,True,Col);
+End;
+Procedure St_FastSpan(Y,X1,X2: Integer; Col: Boolean; Xor_: Boolean);
+Var XB1,XB2,XB: Integer; M1,M2,B: Byte; A: LongInt;
+Begin
+ If X1<St_CX1 Then X1:=St_CX1;
+ If X2>St_CX2 Then X2:=St_CX2;
+ If (X1>X2) Or (Y<St_CY1) Or (Y>St_CY2) Then Exit;
+ A:=St_DrawBase+LongInt(Y)*80;
+ XB1:=X1 Shr 3;XB2:=X2 Shr 3;
+ M1:=$FF Shr (X1 And 7);
+ M2:=$FF Shl (7-(X2 And 7));
+ If XB1=XB2 Then Begin
+  M1:=M1 And M2;
+  B:=St_Rd8(A+XB1);
+  If Xor_ Then B:=B Xor M1 Else If Col Then B:=B Or M1 Else B:=B And Not M1;
+  St_Wr8(A+XB1,B);
+ End Else Begin
+  B:=St_Rd8(A+XB1);
+  If Xor_ Then B:=B Xor M1 Else If Col Then B:=B Or M1 Else B:=B And Not M1;
+  St_Wr8(A+XB1,B);
+  For XB:=XB1+1 To XB2-1 Do Begin
+   If Xor_ Then St_Wr8(A+XB,St_Rd8(A+XB) Xor $FF) Else If Col Then St_Wr8(A+XB,$FF) Else
+     St_Wr8(A+XB,0);
+  End;
+  B:=St_Rd8(A+XB2);
+  If Xor_ Then B:=B Xor M2 Else If Col Then B:=B Or M2 Else B:=B And Not M2;
+  St_Wr8(A+XB2,B);
+ End;
+End;
+Function St_ColBit(C: Integer): Boolean;
+Begin
+ St_ColBit:=C<>0;
+End;
+Function St_PatPix(Sty,X,Y: Integer): Boolean;
+Var R: Boolean; A,B: Integer;
+Begin
+ X:=X And 15;Y:=Y And 15;
+ Case Sty Of
+  1..8: R:=St_BayerM[Y And 3,X And 3]<St_BayerCnt[Sty];
+  9: R:=((Y And 7)=0) Or (((X+(((Y Shr 3) And 1)*8)) And 15)=0);
+  10: R:=((Y And 3)=0) Or (((X+(((Y Shr 2) And 1)*4)) And 7)=0);
+  11: R:=((X+Y) And 7)=0;
+  12: R:=((X+Y) And 3)=0;
+  13: R:=((X-Y) And 7)=0;
+  14: R:=((X-Y) And 3)=0;
+  15: R:=((Y And 3)=0) Or ((X And 3)=0);
+  16: R:=((X And 7)=0) Or ((Y And 7)=0);
+  17: R:=(((X Shr 1)+(Y Shr 1)) And 1)=0;
+  18: R:=(((X Shr 2)+(Y Shr 2)) And 1)=0;
+  19: Begin A:=Abs((X And 7)-4);B:=Abs((Y And 7)-4);R:=A+B<=3;End;
+  20: Begin A:=(X+(((Y Shr 2) And 1)*4)) And 7;R:=(A<4) Xor ((Y And 3)>=2);End;
+  21: R:=((X+Y) And 3)<2;
+  22: R:=St_BayerM[Y And 3,X And 3]<13;
+  23: R:=St_BayerM[Y And 3,X And 3]<14;
+  24: R:=St_BayerM[Y And 3,X And 3]<15;
+ Else R:=True;
+ End;
+ St_PatPix:=R;
+End;
+Function St_HatchPix(Sty,X,Y: Integer): Boolean;
+Var R: Boolean;
+Begin
+ X:=X And 15;Y:=Y And 15;
+ Case Sty Of
+  1: R:=((X+Y) And 7)=0;
+  2: R:=((X+Y) And 3)=0;
+  3: R:=((X-Y) And 7)=0;
+  4: R:=((X-Y) And 3)=0;
+  5: R:=(Y And 7)=0;
+  6: R:=(Y And 3)=0;
+  7: R:=(X And 7)=0;
+  8: R:=(X And 3)=0;
+  9: R:=((X And 7)=0) Or ((Y And 7)=0);
+  10: R:=((X And 3)=0) Or ((Y And 3)=0);
+  11: R:=(((X+Y) And 7)=0) Or (((X-Y) And 7)=0);
+ Else R:=(((X+Y) And 3)=0) Or (((X-Y) And 3)=0);
+ End;
+ St_HatchPix:=R;
+End;
+Function St_FillBit(X,Y: Integer): Boolean;
+Begin
+ Case St_VP^.FillInt Of
+  0: St_FillBit:=False;
+  1: St_FillBit:=True;
+  2: St_FillBit:=St_PatPix(St_Clamp(St_VP^.FillSty,1,24),X,Y);
+  3: St_FillBit:=St_HatchPix(St_Clamp(St_VP^.FillSty,1,12),X,Y);
+  4: St_FillBit:=(St_VP^.UdPat[Y And 15] And ($8000 Shr (X And 15)))<>0;
+ Else St_FillBit:=True;
+ End;
+End;
+Procedure St_FillSpanPat(Y,X1,X2: Integer);
+Var X: Integer; Col: Boolean;
+Begin
+ Col:=St_ColBit(St_VP^.FillCol);
+ If (St_VP^.FillInt=1) And (St_VP^.WrMode=St_WM_REPL) Then Begin
+   St_FastSpan(Y,X1,X2,Col,False);Exit;End;
+ If (St_VP^.FillInt=1) And (St_VP^.WrMode=St_WM_XOR) Then Begin
+   St_FastSpan(Y,X1,X2,Col,True);Exit;End;
+ If (St_VP^.FillInt=0) And (St_VP^.WrMode=St_WM_REPL) Then Begin
+   St_FastSpan(Y,X1,X2,False,False);Exit;End;
+ For X:=X1 To X2 Do St_PlotPat(X,Y,St_FillBit(X,Y),Col);
+End;
+Function St_LineStyleWord: Word;
+Begin
+ Case St_VP^.LineType Of
+  1: St_LineStyleWord:=$FFFF;
+  2: St_LineStyleWord:=$FFF0;
+  3: St_LineStyleWord:=$C0C0;
+  4: St_LineStyleWord:=$FF18;
+  5: St_LineStyleWord:=$FF00;
+  6: St_LineStyleWord:=$F191;
+ Else St_LineStyleWord:=St_VP^.LineUd;
+ End;
+End;
+Procedure St_PolyFillPts(N: Integer; Var XS,YS: St_TPoly; UseFillAttr: Boolean);
+  Forward;
+Procedure St_ThinLine(X1,Y1,X2,Y2: Integer; Mask: Word; Col: Boolean);
+Var DX,DY,SX,SY,St_Err,E2: Integer;
+Begin
+ DX:=Abs(X2-X1);DY:=-Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ St_Err:=DX+DY;
+ While True Do Begin
+  St_PlotPat(X1,Y1,(Mask And ($8000 Shr (St_LinePhase And 15)))<>0,Col);
+  Inc(St_LinePhase);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*St_Err;
+  If E2>=DY Then Begin St_Err:=St_Err+DY;X1:=X1+SX;End;
+  If E2<=DX Then Begin St_Err:=St_Err+DX;Y1:=Y1+SY;End;
+ End;
+End;
+Procedure St_DiscFill(CXx,CYy,R: Integer; Col: Boolean);
+Var Y,W: Integer;
+Begin
+ For Y:=-R To R Do Begin
+  W:=Trunc(Sqrt(R*R-Y*Y)+0.5);
+  St_FastSpan(CYy+Y,CXx-W,CXx+W,Col,False);
+ End;
+End;
+Procedure St_VLine(X1,Y1,X2,Y2: Integer);
+Var W: Integer; Col: Boolean; DXf,DYf,L,NX,NY: Real; QX,QY: St_TPoly; Sv,SvC,SvW:
+  Integer;
+Begin
+ W:=St_VP^.LineWidth;Col:=St_ColBit(St_VP^.LineCol);
+ If W<=1 Then Begin
+  St_ThinLine(X1,Y1,X2,Y2,St_LineStyleWord,Col);
+  Exit;
+ End;
+ DXf:=X2-X1;DYf:=Y2-Y1;
+ L:=Sqrt(DXf*DXf+DYf*DYf);
+ If L=0 Then Begin St_DiscFill(X1,Y1,W Div 2,Col);Exit;End;
+ NX:=-DYf/L*(W/2);NY:=DXf/L*(W/2);
+ QX[0]:=Round(X1+NX);QY[0]:=Round(Y1+NY);
+ QX[1]:=Round(X2+NX);QY[1]:=Round(Y2+NY);
+ QX[2]:=Round(X2-NX);QY[2]:=Round(Y2-NY);
+ QX[3]:=Round(X1-NX);QY[3]:=Round(Y1-NY);
+ Sv:=St_VP^.FillInt;SvC:=St_VP^.FillCol;
+ St_VP^.FillInt:=1;St_VP^.FillCol:=St_VP^.LineCol;
+ St_PolyFillPts(4,QX,QY,False);
+ St_VP^.FillInt:=Sv;St_VP^.FillCol:=SvC;
+ If St_VP^.LineEnd0=2 Then St_DiscFill(X1,Y1,W Div 2,Col);
+ If St_VP^.LineEnd1=2 Then St_DiscFill(X2,Y2,W Div 2,Col);
+End;
+Procedure St_PolyFillPts(N: Integer; Var XS,YS: St_TPoly; UseFillAttr: Boolean);
+Var Y,MinY,MaxY,St_I,J,St_K,Cnt: Integer; Xi: Array[0..127] Of Integer;
+  X1,Y1,X2,Y2,T: Integer;
+Begin
+ If N<3 Then Exit;
+ MinY:=YS[0];MaxY:=YS[0];
+ For St_I:=1 To N-1 Do Begin
+  If YS[St_I]<MinY Then MinY:=YS[St_I];
+  If YS[St_I]>MaxY Then MaxY:=YS[St_I];
+ End;
+ If MinY<St_CY1 Then MinY:=St_CY1;
+ If MaxY>St_CY2 Then MaxY:=St_CY2;
+ For Y:=MinY To MaxY Do Begin
+  Cnt:=0;
+  For St_I:=0 To N-1 Do Begin
+   J:=(St_I+1) Mod N;
+   X1:=XS[St_I];Y1:=YS[St_I];X2:=XS[J];Y2:=YS[J];
+   If Y1=Y2 Then Continue;
+   If Y1>Y2 Then Begin T:=X1;X1:=X2;X2:=T;T:=Y1;Y1:=Y2;Y2:=T;End;
+   If (Y>=Y1) And (Y<Y2) And (Cnt<127) Then Begin
+    Xi[Cnt]:=X1+Integer(LongInt(Y-Y1)*(X2-X1) Div (Y2-Y1));
+    Inc(Cnt);
+   End;
+  End;
+  For St_I:=1 To Cnt-1 Do Begin
+   T:=Xi[St_I];St_K:=St_I-1;
+   While (St_K>=0) And (Xi[St_K]>T) Do Begin Xi[St_K+1]:=Xi[St_K];Dec(St_K);End;
+   Xi[St_K+1]:=T;
+  End;
+  St_I:=0;
+  While St_I+1<Cnt Do Begin
+   St_FillSpanPat(Y,Xi[St_I],Xi[St_I+1]);
+   Inc(St_I,2);
+  End;
+ End;
+End;
+Procedure St_PolyOutline(N: Integer; Var XS,YS: St_TPoly; Closed: Boolean);
+Var St_I: Integer;
+Begin
+ St_LinePhase:=0;
+ For St_I:=0 To N-2 Do St_VLine(XS[St_I],YS[St_I],XS[St_I+1],YS[St_I+1]);
+ If Closed And (N>2) Then St_VLine(XS[N-1],YS[N-1],XS[0],YS[0]);
+End;
+Procedure St_FillPolyAttr(N: Integer; Var XS,YS: St_TPoly);
+Var SvW,SvC,SvT: Integer;
+Begin
+ St_PolyFillPts(N,XS,YS,True);
+ If St_VP^.FillPer<>0 Then Begin
+  SvW:=St_VP^.LineWidth;SvC:=St_VP^.LineCol;SvT:=St_VP^.LineType;
+  St_VP^.LineWidth:=1;St_VP^.LineCol:=1;St_VP^.LineType:=1;
+  St_PolyOutline(N,XS,YS,True);
+  St_VP^.LineWidth:=SvW;St_VP^.LineCol:=SvC;St_VP^.LineType:=SvT;
+ End;
+End;
+Procedure St_VBar(X1,Y1,X2,Y2: Integer);
+Var Y,T: Integer; SvW,SvC,SvT: Integer;
+Begin
+ If X2<X1 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ If Y2<Y1 Then Begin T:=Y1;Y1:=Y2;Y2:=T;End;
+ For Y:=St_Max2(Y1,St_CY1) To St_Min2(Y2,St_CY2) Do St_FillSpanPat(Y,X1,X2);
+ If St_VP^.FillPer<>0 Then Begin
+  SvW:=St_VP^.LineWidth;SvC:=St_VP^.LineCol;SvT:=St_VP^.LineType;
+  St_VP^.LineWidth:=1;St_VP^.LineCol:=1;St_VP^.LineType:=1;
+  St_LinePhase:=0;
+  St_VLine(X1,Y1,X2,Y1);St_VLine(X2,Y1,X2,Y2);St_VLine(X2,Y2,X1,Y2);St_VLine(X1,Y2,X1,Y1);
+  St_VP^.LineWidth:=SvW;St_VP^.LineCol:=SvC;St_VP^.LineType:=SvT;
+ End;
+End;
+Function St_ArcPoints(CXx,CYy,RX,RY,A0,A1: Integer; Var XS,YS: St_TPoly; Start:
+  Integer): Integer;
+Var N,St_I,Steps: Integer; A,Span: Real;
+Begin
+ Span:=(A1-A0)/10.0;
+ If Span<=0 Then Span:=Span+360;
+ Steps:=Round((Abs(RX)+Abs(RY))*Span/360.0/1.5);
+ If Steps<4 Then Steps:=4;
+ If Steps>120 Then Steps:=120;
+ N:=Start;
+ For St_I:=0 To Steps Do Begin
+  If N>250 Then Break;
+  A:=(A0/10.0+Span*St_I/Steps)*Pi/180.0;
+  XS[N]:=CXx+Round(RX*Cos(A));
+  YS[N]:=CYy-Round(RY*Sin(A));
+  Inc(N);
+ End;
+ St_ArcPoints:=N;
+End;
+Procedure St_VArc(CXx,CYy,RX,RY,A0,A1: Integer; Mode: Integer);
+Var N: Integer;
+Begin
+ If RX<=0 Then RX:=1;
+ If RY<=0 Then RY:=1;
+ Case Mode Of
+  0: Begin
+    N:=St_ArcPoints(CXx,CYy,RX,RY,A0,A1,St_PX,St_PY,0);St_PolyOutline(N,St_PX,St_PY,False);End;
+  1: Begin
+      N:=St_ArcPoints(CXx,CYy,RX,RY,A0,A1,St_PX,St_PY,0);
+      St_PX[N]:=CXx;St_PY[N]:=CYy;Inc(N);
+      St_FillPolyAttr(N,St_PX,St_PY);
+     End;
+ Else Begin
+   N:=St_ArcPoints(CXx,CYy,RX,RY,0,3600,St_PX,St_PY,0);
+   Dec(N);
+   St_FillPolyAttr(N,St_PX,St_PY);
+  End;
+ End;
+End;
+Procedure St_VRoundRect(X1,Y1,X2,Y2: Integer; Fill: Boolean);
+Var R,N,T: Integer;
+Begin
+ If X2<X1 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ If Y2<Y1 Then Begin T:=Y1;Y1:=Y2;Y2:=T;End;
+ R:=St_Min2(X2-X1,Y2-Y1) Div 4;
+ If R<2 Then R:=2;
+ N:=0;
+ N:=St_ArcPoints(X2-R,Y1+R,R,R,0,900,St_PX,St_PY,N);
+ N:=St_ArcPoints(X1+R,Y1+R,R,R,900,1800,St_PX,St_PY,N);
+ N:=St_ArcPoints(X1+R,Y2-R,R,R,1800,2700,St_PX,St_PY,N);
+ N:=St_ArcPoints(X2-R,Y2-R,R,R,2700,3600,St_PX,St_PY,N);
+ If Fill Then St_FillPolyAttr(N,St_PX,St_PY) Else St_PolyOutline(N,St_PX,St_PY,True);
+End;
+Procedure St_VMarker(X,Y: Integer);
+Var H,St_I: Integer; Col: Boolean; SvW,SvT,SvC: Integer;
+Begin
+ H:=St_Max2(1,St_VP^.MarkH Div 2);
+ Col:=St_ColBit(St_VP^.MarkCol);
+ SvW:=St_VP^.LineWidth;SvT:=St_VP^.LineType;SvC:=St_VP^.LineCol;
+ St_VP^.LineWidth:=1;St_VP^.LineType:=1;St_VP^.LineCol:=St_VP^.MarkCol;
+ St_LinePhase:=0;
+ Case St_VP^.MarkType Of
+  1: St_PlotSolid(X,Y,Col);
+  2: Begin St_VLine(X-H,Y,X+H,Y);St_VLine(X,Y-H,X,Y+H);End;
+  3: Begin
+    St_VLine(X-H,Y,X+H,Y);St_VLine(X,Y-H,X,Y+H);St_VLine(X-H,Y-H,X+H,Y+H);St_VLine(X-H,Y+H,
+    X+H,Y-H);End;
+  4: Begin
+    St_VLine(X-H,Y-H,X+H,Y-H);St_VLine(X+H,Y-H,X+H,Y+H);St_VLine(X+H,Y+H,X-H,Y+
+    H);St_VLine(X-H,Y+H,X-H,Y-H);End;
+  5: Begin St_VLine(X-H,Y-H,X+H,Y+H);St_VLine(X-H,Y+H,X+H,Y-H);End;
+  6: Begin
+    St_VLine(X,Y-H,X+H,Y);St_VLine(X+H,Y,X,Y+H);St_VLine(X,Y+H,X-H,Y);St_VLine(X-H,Y,X,
+    Y-H);End;
+ Else Begin
+   For St_I:=-1 To 1 Do St_PlotSolid(X+St_I,Y,Col);
+   St_PlotSolid(X,Y-1,Col);St_PlotSolid(X,Y+1,Col);
+  End;
+ End;
+ St_VP^.LineWidth:=SvW;St_VP^.LineType:=SvT;St_VP^.LineCol:=SvC;
+End;
+Function St_CellW(Cell: Integer): Integer;
+Begin
+ If Cell<=6 Then St_CellW:=6 Else St_CellW:=8;
+End;
+Function St_GlyphPix(Cell: Integer; Ch,Gx,Gy: Integer): Boolean;
+Var Row,Col: Integer;
+Begin
+ St_GlyphPix:=False;
+ If (Gx<0) Or (Gy<0) Then Exit;
+ If Cell<=6 Then Begin
+  If (Gx>5) Or (Gy>5) Then Exit;
+  Row:=Gy*8 Div 6;Col:=Gx*8 Div 6;
+ End Else If Cell<=8 Then Begin
+  If (Gx>7) Or (Gy>7) Then Exit;
+  Row:=Gy;Col:=Gx;
+ End Else Begin
+  If (Gx>7) Or (Gy>15) Then Exit;
+  Row:=Gy Shr 1;Col:=Gx;
+ End;
+ St_GlyphPix:=(St_Font8[Ch And 255,Row] And (128 Shr Col))<>0;
+End;
+Function St_BaseLine(Cell: Integer): Integer;
+Begin
+ If Cell<=6 Then St_BaseLine:=5 Else If Cell<=8 Then St_BaseLine:=6 Else St_BaseLine:=12;
+End;
+Function St_TextWidthPx(Const S: String): Integer;
+Var W: Integer;
+Begin
+ W:=Length(S)*St_CellW(St_VP^.TxtCell);    { le gras epaissit le trait dans la
+   cellule : l'avance reste celle de la police }
+ St_TextWidthPx:=W;
+End;
+Procedure St_DrawGlyph(St_OX,St_OY: Integer; Ch: Integer; Rot: Integer; RX,RY: Integer;
+  Pass: Integer);
+Var Gx,Gy,Cw,Ch2,DX,DY,TX,TY,St_Sh,Sx,X0,X1: Integer; On_,Col: Boolean; Bl:
+  Integer;
+Begin
+ Cw:=St_CellW(St_VP^.TxtCell);Ch2:=St_VP^.TxtCell;
+ If Ch2<6 Then Ch2:=6;
+ Col:=St_ColBit(St_VP^.TxtCol);
+ Bl:=St_BaseLine(Ch2);
+ For Gy:=0 To Ch2-1 Do Begin
+  { italique : la ligne du haut reste en place, les lignes du bas glissent vers
+    la gauche (jusqu'a
+    -7 pixels pour la police 8x16, comme le parallelogramme que 1st Word efface
+      avant de tracer) ;
+    la partie qui sort de la cellule (Pass=1) est tracee sans effacer la lettre
+      voisine }
+  St_Sh:=0;
+  If (St_VP^.TxtEff And 4)<>0 Then St_Sh:=-(Gy Div 2);
+  If Pass=0 Then Begin X0:=0;X1:=Cw-1;End Else Begin X0:=St_Sh;X1:=-1;End;
+  For Gx:=X0 To X1 Do Begin
+   Sx:=Gx-St_Sh;
+   On_:=St_GlyphPix(Ch2,Ch,Sx,Gy);
+   If (St_VP^.TxtEff And 1)<>0 Then
+    On_:=On_ Or St_GlyphPix(Ch2,Ch,Sx-1,Gy);
+   If (St_VP^.TxtEff And 16)<>0 Then Begin
+    { contour : on ne garde que l'anneau autour de la lettre }
+    If On_ Then On_:=False
+    Else On_:=St_GlyphPix(Ch2,Ch,Sx-1,Gy) Or St_GlyphPix(Ch2,Ch,Sx+1,Gy) Or
+              St_GlyphPix(Ch2,Ch,Sx,Gy-1) Or St_GlyphPix(Ch2,Ch,Sx,Gy+1);
+   End;
+   If (St_VP^.TxtEff And 2)<>0 Then
+    If On_ And (((St_OX+Gx+St_OY+Gy) And 1)=1) Then On_:=False;
+   If (St_VP^.TxtEff And 8)<>0 Then If Gy=Bl+1 Then On_:=True;
+   DX:=St_OX+Gx-RX;DY:=St_OY+Gy-RY;
+   Case Rot Of
+    1: Begin TX:=DY;TY:=-DX;End;
+    2: Begin TX:=-DX;TY:=-DY;End;
+    3: Begin TX:=-DY;TY:=DX;End;
+   Else Begin TX:=DX;TY:=DY;End;
+   End;
+   If (St_VP^.WrMode=St_WM_REPL) And (Pass=0) Then St_PlotPat(RX+TX,RY+TY,On_,Col)
+   Else If On_ Then St_PlotPat(RX+TX,RY+TY,True,Col);
+  End;
+ End;
+End;
+Procedure St_VGText(X,Y: Integer; Const S: String);
+Var St_I,Cw,Ch,W,Rot,St_OX,St_OY,Bl,Adv: Integer;
+Begin
+ Cw:=St_CellW(St_VP^.TxtCell);Ch:=St_VP^.TxtCell;
+ If Ch<6 Then Ch:=6;
+ Bl:=St_BaseLine(Ch);
+ Adv:=Cw;
+ W:=St_TextWidthPx(S);
+ Rot:=((St_VP^.TxtRot+450) Div 900) And 3;
+ St_OX:=X;
+ Case St_VP^.TxtHAl Of
+  1: St_OX:=X-W Div 2;
+  2: St_OX:=X-W;
+ End;
+ Case St_VP^.TxtVAl Of
+  0: St_OY:=Y-Bl;
+  1: St_OY:=Y-Bl+(Bl Div 2);
+  2: St_OY:=Y;
+  3: St_OY:=Y-(Ch-1);
+  4: St_OY:=Y-(Bl+1);
+ Else St_OY:=Y;
+ End;
+ For St_I:=1 To Length(S) Do
+  St_DrawGlyph(St_OX+(St_I-1)*Adv,St_OY,Ord(S[St_I]),Rot,X,Y,0);
+ If (St_VP^.TxtEff And 4)<>0 Then
+  For St_I:=1 To Length(S) Do
+   St_DrawGlyph(St_OX+(St_I-1)*Adv,St_OY,Ord(S[St_I]),Rot,X,Y,1);
+End;
+Type
+ St_TMfdb = Record
+  Addr  : LongInt;
+  W,H,WW,Stand,Planes : Integer;
+ End;
+Procedure St_ReadMfdb(P: LongInt; Var M: St_TMfdb);
+Begin
+ If P=0 Then Begin
+  M.Addr:=0;M.W:=St_SW;M.H:=St_SH;M.WW:=40;M.Stand:=0;M.Planes:=1;Exit;
+ End;
+ M.Addr:=St_Rd32(P);M.W:=St_SExt(St_Rd16(P+4),2);M.H:=St_SExt(St_Rd16(P+6),2);
+ M.WW:=St_SExt(St_Rd16(P+8),2);M.Stand:=St_Rd16(P+10);M.Planes:=St_SExt(St_Rd16(P+12),2);
+ If M.Planes<1 Then M.Planes:=1;
+End;
+Function St_MBit(Const M: St_TMfdb; X,Y: Integer): Boolean;
+Var A: LongInt;
+Begin
+ If M.Addr=0 Then St_MBit:=St_BGet(X,Y)
+ Else Begin
+  A:=M.Addr+LongInt(Y)*M.WW*2*M.Planes+(X Shr 3);
+  St_MBit:=(St_Rd8(A) And (128 Shr (X And 7)))<>0;
+ End;
+End;
+Procedure St_MPut(Const M: St_TMfdb; X,Y: Integer; V: Boolean);
+Var A: LongInt; B: Byte;
+Begin
+ If M.Addr=0 Then Begin
+  If (X>=St_CX1) And (X<=St_CX2) And (Y>=St_CY1) And (Y<=St_CY2) Then St_BPix(X,Y,V);
+ End Else Begin
+  A:=M.Addr+LongInt(Y)*M.WW*2*M.Planes+(X Shr 3);
+  B:=St_Rd8(A);
+  If V Then B:=B Or (128 Shr (X And 7)) Else B:=B And Not (128 Shr (X And 7));
+  St_Wr8(A,B);
+ End;
+End;
+Function St_RopBit(Mode: Integer; S,D: Boolean): Boolean;
+Begin
+ Case Mode Of
+  0: St_RopBit:=False;
+  1: St_RopBit:=S And D;
+  2: St_RopBit:=S And Not D;
+  3: St_RopBit:=S;
+  4: St_RopBit:=Not S And D;
+  5: St_RopBit:=D;
+  6: St_RopBit:=S Xor D;
+  7: St_RopBit:=S Or D;
+  8: St_RopBit:=Not (S Or D);
+  9: St_RopBit:=Not (S Xor D);
+  10: St_RopBit:=Not D;
+  11: St_RopBit:=S Or Not D;
+  12: St_RopBit:=Not S;
+  13: St_RopBit:=Not S Or D;
+  14: St_RopBit:=Not (S And D);
+ Else St_RopBit:=True;
+ End;
+End;
+Procedure St_CopyRaster(Const Src,Dst: St_TMfdb; SX1,SY1,SX2,SY2,DX1,DY1: Integer;
+  Mode: Integer;
+                     Trans: Boolean; Fg,Bg: Integer);
+Var W,H,X,Y,X0,X1_,XS,Y0,Y1_,YS: Integer; S,D,R: Boolean;
+Begin
+ If SX2<SX1 Then Begin X:=SX1;SX1:=SX2;SX2:=X;End;
+ If SY2<SY1 Then Begin Y:=SY1;SY1:=SY2;SY2:=Y;End;
+ W:=SX2-SX1+1;H:=SY2-SY1+1;
+ If (W<=0) Or (H<=0) Then Exit;
+ If (DY1>SY1) And (Src.Addr=Dst.Addr) Then Begin Y0:=H-1;Y1_:=0;YS:=-1;End
+ Else Begin Y0:=0;Y1_:=H-1;YS:=1;End;
+ If (DX1>SX1) And (Src.Addr=Dst.Addr) Then Begin X0:=W-1;X1_:=0;XS:=-1;End
+ Else Begin X0:=0;X1_:=W-1;XS:=1;End;
+ Y:=Y0;
+ While True Do Begin
+  X:=X0;
+  While True Do Begin
+   S:=St_MBit(Src,SX1+X,SY1+Y);
+   D:=St_MBit(Dst,DX1+X,DY1+Y);
+   If Trans Then Begin
+    Case Mode Of
+     1: If S Then R:=St_ColBit(Fg) Else R:=St_ColBit(Bg);
+     2: If S Then R:=St_ColBit(Fg) Else R:=D;
+     3: If S Then R:=Not D Else R:=D;
+     4: If S Then R:=D Else R:=St_ColBit(Fg);
+    Else R:=S;
+    End;
+    St_MPut(Dst,DX1+X,DY1+Y,R);
+   End Else St_MPut(Dst,DX1+X,DY1+Y,St_RopBit(Mode,S,D));
+   If X=X1_ Then Break;
+   X:=X+XS;
+  End;
+  If Y=Y1_ Then Break;
+  Y:=Y+YS;
+ End;
+End;
+Procedure St_FloodFill(X,Y: Integer; Border: Integer);
+Var Stack: Array[0..511,0..1] Of Integer; SP: Integer; L,R,St_I,XX: Integer; Seed:
+  Boolean;
+ Function Stop(Xp,Yp: Integer): Boolean;
+ Begin
+  If Border>=0 Then Stop:=St_BGet(Xp,Yp)=St_ColBit(Border) Else
+    Stop:=St_BGet(Xp,Yp)<>Seed;
+ End;
+Begin
+ Seed:=St_BGet(X,Y);
+ If (X<St_CX1) Or (X>St_CX2) Or (Y<St_CY1) Or (Y>St_CY2) Then Exit;
+ If Border>=0 Then If St_BGet(X,Y)=St_ColBit(Border) Then Exit;
+ SP:=0;Stack[0,0]:=X;Stack[0,1]:=Y;SP:=1;
+ While SP>0 Do Begin
+  Dec(SP);XX:=Stack[SP,0];Y:=Stack[SP,1];
+  If (Y<St_CY1) Or (Y>St_CY2) Then Continue;
+  If Stop(XX,Y) Then Continue;
+  If (Border<0) And (St_VP^.FillInt=1) And (Seed=St_ColBit(St_VP^.FillCol)) Then
+    Continue;
+  L:=XX;R:=XX;
+  While (L>St_CX1) And Not Stop(L-1,Y) Do Dec(L);
+  While (R<St_CX2) And Not Stop(R+1,Y) Do Inc(R);
+  St_FillSpanPat(Y,L,R);
+  For St_I:=L To R Do Begin
+   If SP>=510 Then Break;
+   If (Y>St_CY1) And Not Stop(St_I,Y-1) And ((St_I=L) Or Stop(St_I-1,Y-1)) Then Begin
+     Stack[SP,0]:=St_I;Stack[SP,1]:=Y-1;Inc(SP);End;
+   If (Y<St_CY2) And Not Stop(St_I,Y+1) And ((St_I=L) Or Stop(St_I-1,Y+1)) Then Begin
+     Stack[SP,0]:=St_I;Stack[SP,1]:=Y+1;Inc(SP);End;
+  End;
+ End;
+End;
+Var
+ St_TxtOutW,St_TxtOutH,St_TxtOutCW,St_TxtOutCH : Integer;
+Function St_PtsX(Pi: LongInt; St_I: Integer): Integer;
+Begin
+ St_PtsX:=St_SExt(St_Rd16(Pi+St_I*4),2);
+End;
+Function St_PtsY(Pi: LongInt; St_I: Integer): Integer;
+Begin
+ St_PtsY:=St_SExt(St_Rd16(Pi+St_I*4+2),2);
+End;
+Procedure St_SetCellFromHeight(H: Integer);
+Begin
+ If H>=11 Then Begin
+   St_VP^.TxtCell:=16;St_TxtOutW:=8;St_TxtOutH:=13;St_TxtOutCW:=8;St_TxtOutCH:=16;End
+ Else Begin St_VP^.TxtCell:=8;St_TxtOutW:=8;St_TxtOutH:=7;St_TxtOutCW:=8;St_TxtOutCH:=8;End;
+   { ST mono : seulement les polices 8x16 et 8x8 }
+End;
+Procedure St_VdiOpenInfo(Io,Po: LongInt);
+Var St_I: Integer;
+Const Ii : Array[0..44] Of Integer =
+ (639,399,0,372,372,3,7,0,6,0,1,24,12,2,10,1,2,3,4,5,6,7,8,9,10,
+  1,2,3,4,5,6,7,8,9,10, 1,1,1,0,2,2,1,1,1,2);
+Begin
+ For St_I:=0 To 44 Do St_Wr16(Io+St_I*2,Ii[St_I]);
+ St_Wr16(Io+26,2);
+ { po : tailles min/max }
+ St_Wr16(Po,4);St_Wr16(Po+2,4);St_Wr16(Po+4,8);St_Wr16(Po+6,16);
+ St_Wr16(Po+8,1);St_Wr16(Po+10,0);St_Wr16(Po+12,40);St_Wr16(Po+14,0);
+ St_Wr16(Po+16,8);St_Wr16(Po+18,8);St_Wr16(Po+20,24);St_Wr16(Po+22,24);
+End;
+Procedure St_CheckFonts;
+Begin
+ If Not St_FontReady Then Begin
+  { en mode batch : police integree }
+  Move(St_Font8Emb,St_Font8,SizeOf(St_Font8));
+  St_FontReady:=True;
+ End;
+End;
+Procedure St_Vdi(Pb: LongInt);
+Var Ctl,Ii,Pi,Io,Po: LongInt; Op,Sub,N,NI,H,St_I,J: Integer; S: String;
+    X1,Y1,X2,Y2,V: Integer; Src,Dst: St_TMfdb; Mode: Integer; Hn: Integer;
+    SvVP: Integer;
+ Procedure RetI(Cnt: Integer);
+ Begin
+  St_Wr16(Ctl+8,Cnt);
+ End;
+ Procedure RetP(Cnt: Integer);
+ Begin
+  St_Wr16(Ctl+4,Cnt);
+ End;
+ Function IntIn(St_K: Integer): Integer;
+ Begin
+  IntIn:=St_SExt(St_Rd16(Ii+St_K*2),2);
+ End;
+ Procedure SetOut(St_K,Vv: Integer);
+ Begin
+  St_Wr16(Io+St_K*2,Vv And $FFFF);
+ End;
+ Procedure SetPts(St_K,Vv: Integer);
+ Begin
+  St_Wr16(Po+St_K*2,Vv And $FFFF);
+ End;
+ Procedure ReturnText;
+ Begin
+  SetPts(0,St_TxtOutW);SetPts(1,St_TxtOutH);SetPts(2,St_TxtOutCW);SetPts(3,St_TxtOutCH);
+  RetP(2);
+ End;
+Begin
+ St_CheckFonts;
+ Ctl:=St_Rd32(Pb);Ii:=St_Rd32(Pb+4);Pi:=St_Rd32(Pb+8);Io:=St_Rd32(Pb+12);Po:=St_Rd32(Pb+16);
+ Op:=St_Rd16(Ctl);N:=St_Rd16(Ctl+2);NI:=St_Rd16(Ctl+6);Sub:=St_Rd16(Ctl+10);H:=St_Rd16(Ctl+12);
+ RetP(0);RetI(0);
+ If St_AesTrace And St_VdiTrace Then Begin
+  Write(St_ConOut,'VDI ',Op,' sub=',Sub,' h=',H,' n=',N,' ni=',NI,' in=');
+  For St_I:=0 To St_Min2(NI,3)-1 Do Write(St_ConOut,St_SExt(St_Rd16(Ii+St_I*2),2),' ');
+  Write(St_ConOut,' pts=');
+  For St_I:=0 To St_Min2(N*2,12)-1 Do Write(St_ConOut,St_SExt(St_Rd16(Pi+St_I*2),2),' ');
+  WriteLn(St_ConOut);Flush(St_ConOut);
+ End;
+ If Op=1 Then Begin
+  { v_opnwk : station physique }
+  St_Vd[1].Used:=True;St_VdiDefaults(St_Vd[1]);
+  St_Wr16(Ctl+12,1);
+  St_VdiOpenInfo(Io,Po);RetI(45);RetP(6);
+  Exit;
+ End;
+ If Op=100 Then Begin
+  Hn:=0;
+  For St_I:=2 To St_MAXVWK Do If Not St_Vd[St_I].Used Then Begin Hn:=St_I;Break;End;
+  If Hn=0 Then Begin St_Wr16(Ctl+12,0);Exit;End;
+  St_Vd[Hn].Used:=True;St_VdiDefaults(St_Vd[Hn]);St_Vd[Hn].Owner:=St_VdiOwnerProc;
+  If NI>=2 Then Begin
+   St_Vd[Hn].LineType:=St_Clamp(IntIn(1),1,7);St_Vd[Hn].LineCol:=IntIn(2);
+   St_Vd[Hn].MarkType:=St_Clamp(IntIn(3),1,6);St_Vd[Hn].MarkCol:=IntIn(4);
+   St_Vd[Hn].TxtFont:=IntIn(5);St_Vd[Hn].TxtCol:=IntIn(6);
+   St_Vd[Hn].FillInt:=St_Clamp(IntIn(7),0,
+     4);St_Vd[Hn].FillSty:=IntIn(8);St_Vd[Hn].FillCol:=IntIn(9);
+  End;
+  St_Wr16(Ctl+12,Hn);
+  St_VdiOpenInfo(Io,Po);RetI(45);RetP(6);
+  Exit;
+ End;
+ St_SelVdi(H);
+ Case Op Of
+  2: Begin If (H>=1) And (H<=St_MAXVWK) Then St_Vd[H].Used:=False;End;
+  101: Begin If (H>=2) And (H<=St_MAXVWK) Then St_Vd[H].Used:=False;End;
+  3: Begin
+      St_SetClip(0,0,St_SW-1,St_SH-1);
+      St_BRect(0,0,St_SW-1,St_SH-1,False);
+      St_ConRow:=0;St_ConCol:=0;
+      St_SelVdi(H);
+     End;
+  4: Begin End;
+  5: Case Sub Of
+      1: Begin SetOut(0,St_CON_ROWS);SetOut(1,St_CON_COLS);RetI(2);End;
+      2: Begin End;
+      3: Begin St_ConClear;End;
+      4: If St_ConRow>0 Then Dec(St_ConRow);
+      5: If St_ConRow<St_CON_ROWS-1 Then Inc(St_ConRow);
+      6: If St_ConCol<St_CON_COLS-1 Then Inc(St_ConCol);
+      7: If St_ConCol>0 Then Dec(St_ConCol);
+      8: Begin St_ConRow:=0;St_ConCol:=0;End;
+      9: Begin St_ConPut(27);St_ConPut(Ord('J'));End;
+      10: Begin St_ConPut(27);St_ConPut(Ord('K'));End;
+      11: Begin
+           St_ConRow:=St_Clamp(IntIn(0)-1,0,St_CON_ROWS-1);St_ConCol:=St_Clamp(IntIn(1)-1,0,
+             St_CON_COLS-1);
+          End;
+      12: For St_I:=0 To NI-1 Do St_ConPut(IntIn(St_I) And $FF);
+      13: St_ConRev:=True;
+      14: St_ConRev:=False;
+      15: Begin SetOut(0,St_ConRow+1);SetOut(1,St_ConCol+1);RetI(2);End;
+      16: Begin SetOut(0,1);RetI(1);End;
+      18: Begin End;
+      19: Begin End;
+     End;
+  6: Begin
+      For St_I:=0 To N-1 Do Begin St_PX[St_I]:=St_PtsX(Pi,St_I);St_PY[St_I]:=St_PtsY(Pi,St_I);End;
+      St_LinePhase:=0;
+      If St_VP^.LineWidth>1 Then Begin
+       For St_I:=0 To N-2 Do St_VLine(St_PX[St_I],St_PY[St_I],St_PX[St_I+1],St_PY[St_I+1]);
+      End Else St_PolyOutline(N,St_PX,St_PY,False);
+     End;
+  7: For St_I:=0 To N-1 Do St_VMarker(St_PtsX(Pi,St_I),St_PtsY(Pi,St_I));
+  8: Begin
+      S:='';
+      For St_I:=0 To NI-1 Do Begin
+       If Length(S)<250 Then S:=S+Chr(St_Rd16(Ii+St_I*2) And $FF);
+      End;
+      If St_AesTrace And St_VdiTrace Then Begin
+        WriteLn(St_ConOut,'  gtext [',S,'] at ',St_PtsX(Pi,0),',',St_PtsY(Pi,0),' cell=',
+        St_VP^.TxtCell,' eff=',St_VP^.TxtEff,' font=',St_VP^.TxtFont,' hal=',St_VP^.TxtHAl,
+        ' val=',St_VP^.TxtVAl,' wm=',St_VP^.WrMode,' clip=',St_CX1,',',St_CY1,',',St_CX2,',',
+        St_CY2);Flush(St_ConOut);End;
+      St_VGText(St_PtsX(Pi,0),St_PtsY(Pi,0),S);
+     End;
+  9: Begin
+      If N>250 Then N:=250;
+      For St_I:=0 To N-1 Do Begin St_PX[St_I]:=St_PtsX(Pi,St_I);St_PY[St_I]:=St_PtsY(Pi,St_I);End;
+      St_FillPolyAttr(N,St_PX,St_PY);
+     End;
+  10: Begin
+       X1:=St_PtsX(Pi,0);Y1:=St_PtsY(Pi,0);X2:=St_PtsX(Pi,1);Y2:=St_PtsY(Pi,1);
+       N:=St_SExt(St_Rd16(Ctl+14),2);   { longueur de ligne }
+       J:=St_SExt(St_Rd16(Ctl+18),2);   { nombre de lignes }
+       If (N>0) And (J>0) Then
+        For St_I:=0 To N*J-1 Do Begin
+         V:=St_SExt(St_Rd16(Ii+St_I*2),2);
+         If V<>0 Then
+          Begin
+           St_PlotSolid(X1+(St_I Mod N)*(X2-X1+1) Div N,Y1+(St_I Div N)*(Y2-Y1+1) Div
+             J,True);
+          End;
+        End;
+      End;
+  11: Case Sub Of
+       1: St_VBar(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1));
+       2: St_VArc(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,3),St_PtsX(Pi,3),IntIn(0),IntIn(1),0);
+       3: St_VArc(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,3),St_PtsX(Pi,3),IntIn(0),IntIn(1),1);
+       4: St_VArc(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,2),St_PtsX(Pi,2),0,3600,2);
+       5: St_VArc(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),0,3600,2);
+       6: St_VArc(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),IntIn(0),IntIn(1),0);
+       7: St_VArc(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),IntIn(0),IntIn(1),1);
+       8: St_VRoundRect(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),False);
+       9: St_VRoundRect(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),True);
+       10: Begin
+            S:='';
+            For St_I:=2 To NI-1 Do If Length(S)<250 Then S:=S+Chr(St_Rd16(Ii+St_I*2) And
+              $FF);
+            X1:=St_PtsX(Pi,0);Y1:=St_PtsY(Pi,0);N:=St_PtsX(Pi,1);
+            If Length(S)>1 Then Begin
+             J:=St_TextWidthPx(S);
+             If (IntIn(1)<>0) And (N>J) Then Begin
+              For St_I:=1 To Length(S) Do Begin
+               St_VGText(X1+(St_I-1)*N Div Length(S),Y1,S[St_I]);
+              End;
+             End Else St_VGText(X1,Y1,S);
+            End Else St_VGText(X1,Y1,S);
+           End;
+      End;
+  12: Begin St_SetCellFromHeight(St_PtsY(Pi,0));ReturnText;End;
+  13: Begin V:=IntIn(0);V:=((V+450) Div 900)*900;V:=V Mod 3600;If V<0 Then
+    V:=0;St_VP^.TxtRot:=V;SetOut(0,V);RetI(1);End;
+  14: Begin SetOut(0,IntIn(0));RetI(1);End;
+  15: Begin
+    St_VP^.LineType:=St_Clamp(IntIn(0),1,7);SetOut(0,St_VP^.LineType);RetI(1);End;
+  16: Begin
+       V:=St_PtsX(Pi,0);If V<1 Then V:=1;If Not Odd(V) Then Dec(V,0);
+       If V>39 Then V:=39;
+       St_VP^.LineWidth:=V;SetPts(0,V);SetPts(1,0);RetP(1);
+      End;
+  17: Begin St_VP^.LineCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  18: Begin
+    St_VP^.MarkType:=St_Clamp(IntIn(0),1,6);SetOut(0,St_VP^.MarkType);RetI(1);End;
+  19: Begin
+    St_VP^.MarkH:=St_Max2(1,St_PtsY(Pi,1));SetPts(0,St_VP^.MarkH);SetPts(1,
+    St_VP^.MarkH);RetP(1);End;
+  20: Begin St_VP^.MarkCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  21: Begin St_VP^.TxtFont:=IntIn(0);SetOut(0,1);RetI(1);End;
+  22: Begin St_VP^.TxtCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  23: Begin St_VP^.FillInt:=St_Clamp(IntIn(0),0,4);SetOut(0,St_VP^.FillInt);RetI(1);End;
+  24: Begin St_VP^.FillSty:=IntIn(0);SetOut(0,St_VP^.FillSty);RetI(1);End;
+  25: Begin St_VP^.FillCol:=IntIn(0);SetOut(0,IntIn(0));RetI(1);End;
+  26: Begin
+       V:=IntIn(0);SetOut(0,V);
+       If V=0 Then Begin SetOut(1,1000);SetOut(2,1000);SetOut(3,1000);End
+       Else Begin SetOut(1,0);SetOut(2,0);SetOut(3,0);End;
+       RetI(4);
+      End;
+  28: Begin
+       SetPts(0,St_GMouseX);SetPts(1,St_GMouseY);RetP(1);SetOut(0,St_GMouseB);RetI(1);
+      End;
+  29: Begin SetOut(0,0);SetOut(1,0);RetI(2);End;
+  30: Begin SetOut(0,1);RetI(1);End;
+  31: RetI(0);
+  32: Begin
+       V:=IntIn(0);If (V<1) Or (V>4) Then
+         V:=1;St_VP^.WrMode:=V;SetOut(0,V);RetI(1);
+      End;
+  27: Begin
+       { vq_cellarray : echantillonne l'ecran sur une grille }
+       X1:=St_PtsX(Pi,0);Y1:=St_PtsY(Pi,0);X2:=St_PtsX(Pi,1);Y2:=St_PtsY(Pi,1);
+       If X2<X1 Then Begin V:=X1;X1:=X2;X2:=V;End;
+       If Y2<Y1 Then Begin V:=Y1;Y1:=Y2;Y2:=V;End;
+       St_I:=St_Clamp(IntIn(0),1,64);J:=St_Clamp(IntIn(1),1,64);
+       For Mode:=0 To J-1 Do
+        For Hn:=0 To St_I-1 Do
+         SetOut(3+Mode*St_I+Hn,Ord(St_BGet(X1+((Hn*2+1)*(X2-X1+1)) Div
+           (2*St_I),Y1+((Mode*2+1)*(Y2-Y1+1)) Div (2*J))));
+       SetOut(0,St_I);SetOut(1,J);SetOut(2,0);
+       RetI(3+St_I*J);
+      End;
+  33: Begin
+       V:=IntIn(0);
+       If (V>=1) And (V<=4) Then St_VdiInMd[V]:=St_Clamp(IntIn(1),1,2);
+       SetOut(0,IntIn(1));RetI(1);
+      End;
+  111: Begin
+        { vsc_form : forme du curseur de la souris }
+        St_ApplyMouseForm(Ii);
+       End;
+  115: Begin
+        { vqin_mode : mode d'entree courant du peripherique }
+        V:=IntIn(0);
+        If (V>=1) And (V<=4) Then SetOut(0,St_VdiInMd[V]) Else SetOut(0,1);
+        RetI(1);
+       End;
+  35: Begin
+       SetOut(0,St_VP^.LineType);SetOut(1,St_VP^.LineCol);SetOut(2,St_VP^.WrMode);
+       SetOut(3,St_VP^.LineEnd0);SetOut(4,St_VP^.LineEnd1);RetI(5);
+       SetPts(0,St_VP^.LineWidth);SetPts(1,0);RetP(1);
+      End;
+  36: Begin
+       SetOut(0,St_VP^.MarkType);SetOut(1,St_VP^.MarkCol);SetOut(2,
+         St_VP^.WrMode);RetI(3);
+       SetPts(0,St_VP^.MarkH);SetPts(1,St_VP^.MarkH);RetP(1);
+      End;
+  37: Begin
+       SetOut(0,St_VP^.FillInt);SetOut(1,St_VP^.FillCol);SetOut(2,St_VP^.FillSty);
+       SetOut(3,St_VP^.WrMode);SetOut(4,St_VP^.FillPer);RetI(5);
+      End;
+  38: Begin
+       SetOut(0,St_VP^.TxtFont);SetOut(1,St_VP^.TxtCol);SetOut(2,St_VP^.TxtRot);
+       SetOut(3,St_VP^.TxtHAl);SetOut(4,St_VP^.TxtVAl);SetOut(5,St_VP^.WrMode);RetI(6);
+       St_SetCellFromHeight(St_VP^.TxtCell);ReturnText;
+      End;
+  39: Begin
+       St_VP^.TxtHAl:=St_Clamp(IntIn(0),0,2);St_VP^.TxtVAl:=St_Clamp(IntIn(1),0,5);
+       SetOut(0,St_VP^.TxtHAl);SetOut(1,St_VP^.TxtVAl);RetI(2);
+      End;
+  102: Begin
+        If IntIn(0)=0 Then Begin St_VdiOpenInfo(Io,Po);RetI(45);RetP(6);End
+        Else Begin
+         For St_I:=0 To 44 Do SetOut(St_I,0);
+         SetOut(0,1);SetOut(1,2);SetOut(2,63);SetOut(3,0);SetOut(4,1);SetOut(5,
+           0);
+         SetOut(6,2000);SetOut(7,1);SetOut(8,1);SetOut(9,4);SetOut(10,
+           1);SetOut(11,1);
+         SetOut(14,128);SetOut(15,-1);SetOut(16,2);
+         For St_I:=0 To 11 Do SetPts(St_I,0);
+         RetI(45);RetP(6);
+        End;
+       End;
+  103: Begin
+        St_FloodFill(St_PtsX(Pi,0),St_PtsY(Pi,0),IntIn(0));
+       End;
+  104: Begin St_VP^.FillPer:=Ord(IntIn(0)<>0);SetOut(0,St_VP^.FillPer);RetI(1);End;
+  105: Begin
+        V:=Ord(St_BGet(St_PtsX(Pi,0),St_PtsY(Pi,0)));SetOut(0,V);SetOut(1,V);RetI(2);
+       End;
+  106: Begin St_VP^.TxtEff:=IntIn(0) And 63;SetOut(0,St_VP^.TxtEff);RetI(1);End;
+  107: Begin
+        V:=IntIn(0);
+        If V>=10 Then St_SetCellFromHeight(16) Else St_SetCellFromHeight(8);
+        SetOut(0,V);RetI(1);ReturnText;
+       End;
+  108: Begin
+    St_VP^.LineEnd0:=IntIn(0);St_VP^.LineEnd1:=IntIn(1);SetOut(0,
+    St_VP^.LineEnd0);SetOut(1,St_VP^.LineEnd1);RetI(2);End;
+  109,121: Begin
+        St_ReadMfdb(St_Rd32(Ctl+14),Src);St_ReadMfdb(St_Rd32(Ctl+18),Dst);
+        If Op=109 Then Begin
+         Mode:=IntIn(0);
+         St_CopyRaster(Src,Dst,St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),St_PtsX(Pi,
+           2),St_PtsY(Pi,2),Mode,False,1,0);
+        End Else
+         St_CopyRaster(Src,Dst,St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1),St_PtsX(Pi,
+           2),St_PtsY(Pi,2),
+                    St_Clamp(IntIn(0),1,4),True,IntIn(1),IntIn(2));
+       End;
+  110: Begin
+        St_ReadMfdb(St_Rd32(Ctl+14),Src);St_ReadMfdb(St_Rd32(Ctl+18),Dst);
+        If (Src.Addr<>0) And (Dst.Addr<>0) And (Src.Addr<>Dst.Addr) Then
+         For St_I:=0 To Src.WW*2*Src.H*Src.Planes-1 Do
+           St_Wr8(Dst.Addr+St_I,St_Rd8(Src.Addr+St_I));
+        St_Wr16(St_Rd32(Ctl+18)+10,Ord(St_Rd16(St_Rd32(Ctl+14)+10)=0));
+       End;
+  112: For St_I:=0 To 15 Do St_VP^.UdPat[St_I]:=St_Rd16(Ii+St_I*2);
+  113: St_VP^.LineUd:=St_Rd16(Ii);
+  114: Begin
+        St_I:=St_VP^.FillPer;St_VP^.FillPer:=0;
+        St_VBar(St_PtsX(Pi,0),St_PtsY(Pi,0),St_PtsX(Pi,1),St_PtsY(Pi,1));
+        St_VP^.FillPer:=St_I;
+       End;
+  116: Begin
+        S:='';
+        For St_I:=0 To NI-1 Do S:=S+Chr(St_Rd16(Ii+St_I*2) And $FF);
+        J:=St_TextWidthPx(S);
+        If St_VP^.TxtCell<6 Then St_VP^.TxtCell:=6;
+        SetPts(0,0);SetPts(1,St_VP^.TxtCell);SetPts(2,J);SetPts(3,St_VP^.TxtCell);
+        SetPts(4,J);SetPts(5,0);SetPts(6,0);SetPts(7,0);RetP(4);
+       End;
+  117: Begin
+        SetPts(0,St_CellW(St_VP^.TxtCell));SetPts(1,0);SetPts(2,0);SetPts(3,
+          0);SetPts(4,0);SetPts(5,0);RetP(3);
+        SetOut(0,IntIn(0));RetI(1);
+       End;
+  118: Begin
+        St_Wr32(Ctl+18,St_VexTim);St_VexTim:=St_Rd32(Ctl+14);St_VexTimLast:=St_MsNow;
+        SetOut(0,20);RetI(1);
+       End;
+  119: Begin SetOut(0,0);RetI(1);End;
+  120: Begin End;
+  122: Begin
+        If IntIn(0)<>0 Then St_MouseHidden:=0 Else If St_MouseHidden>0 Then
+          Dec(St_MouseHidden);
+       End;
+  123: Inc(St_MouseHidden);
+  124: Begin
+    SetOut(0,St_GMouseB);RetI(1);SetPts(0,St_GMouseX);SetPts(1,St_GMouseY);RetP(1);End;
+  125: Begin St_Wr32(Ctl+18,St_VexBut);St_VexBut:=St_Rd32(Ctl+14);End;
+  126: Begin St_Wr32(Ctl+18,St_VexMot);St_VexMot:=St_Rd32(Ctl+14);End;
+  127: Begin
+        St_Wr32(Ctl+18,St_VexCur);St_VexCur:=St_Rd32(Ctl+14);
+        St_UserCursor:=St_VexCur<>St_STUB_RTS;
+       End;
+  128: Begin SetOut(0,0);RetI(1);End;
+  129: Begin
+        St_VP^.ClipOn:=IntIn(0)<>0;
+        St_VP^.St_Cx1:=St_PtsX(Pi,0);St_VP^.St_Cy1:=St_PtsY(Pi,0);St_VP^.St_Cx2:=St_PtsX(Pi,
+          1);St_VP^.St_Cy2:=St_PtsY(Pi,1);
+        SetOut(0,0);
+       End;
+  130: Begin
+        SetOut(0,1);
+        S:='Atari System Font';
+        For St_I:=1 To 32 Do If St_I<=Length(S) Then SetOut(St_I,Ord(S[St_I])) Else
+          SetOut(St_I,0);
+        SetOut(33,0);RetI(34);
+       End;
+  131: Begin
+        If St_VP^.TxtCell<6 Then St_VP^.TxtCell:=6;
+        SetOut(0,32);SetOut(1,255);RetI(2);
+        St_I:=St_BaseLine(St_VP^.TxtCell);
+        SetPts(0,St_CellW(St_VP^.TxtCell));SetPts(1,St_VP^.TxtCell-1-St_I);SetPts(2,
+          St_CellW(St_VP^.TxtCell));SetPts(3,0);
+        SetPts(4,0);SetPts(5,St_VP^.TxtCell-1-St_I);SetPts(6,0);SetPts(7,St_I Div
+          2);SetPts(8,0);SetPts(9,St_I);
+        RetP(5);
+       End;
+ Else Begin
+   { code VDI inconnu (le code 34 n'est pas une fonction VDI documentee) : sans
+     sortie, signale dans le moniteur }
+   Str(Op,S);St_UnknownCall:='VDI '+S;
+   If St_AesTrace Then Begin
+     WriteLn(St_ConOut,'VDI unsupported opcode ',Op);Flush(St_ConOut);End;
+  End;
+ End;
+End;
+Const
+ St_G_BOX=20;
+ St_G_TEXT=21;
+ St_G_BOXTEXT=22;
+ St_G_IMAGE=23;
+ St_G_USERDEF=24;
+ St_G_IBOX=25;
+ St_G_BUTTON=26;
+ St_G_BOXCHAR=27;
+ St_G_STRING=28;
+ St_G_FTEXT=29;
+ St_G_FBOXTEXT=30;
+ St_G_ICON=31;
+ St_G_TITLE=32;
+ St_OF_SELECTABLE=1;
+ St_OF_DEFAULT=2;
+ St_OF_EXIT=4;
+ St_OF_EDITABLE=8;
+ St_OF_RBUTTON=16;
+ St_OF_LASTOB=32;
+ St_OF_TOUCHEXIT=64;
+ St_OF_HIDETREE=128;
+ St_OF_INDIRECT=256;
+ St_OS_SELECTED=1;
+ St_OS_CROSSED=2;
+ St_OS_CHECKED=4;
+ St_OS_DISABLED=8;
+ St_OS_OUTLINED=16;
+ St_OS_SHADOWED=32;
+ St_STUB_RET = $0430;
+Type
+ St_TScrSave = Record
+  P : Pointer;
+  XB1,XB2,Y1,Y2 : Integer;
+  Sz : LongInt;
+ End;
+Function St_OA(T: LongInt; St_I: Integer): LongInt;
+Begin
+ St_OA:=T+LongInt(St_I)*24;
+End;
+Function St_ONext(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_ONext:=St_SExt(St_Rd16(St_OA(T,St_I)),2);
+End;
+Function St_OHead(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OHead:=St_SExt(St_Rd16(St_OA(T,St_I)+2),2);
+End;
+Function St_OTail(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OTail:=St_SExt(St_Rd16(St_OA(T,St_I)+4),2);
+End;
+Function St_OType(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OType:=St_Rd16(St_OA(T,St_I)+6) And $FF;
+End;
+Function St_OFlags(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OFlags:=St_Rd16(St_OA(T,St_I)+8);
+End;
+Function St_OState(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OState:=St_Rd16(St_OA(T,St_I)+10);
+End;
+Function St_OSpec(T: LongInt; St_I: Integer): LongInt;
+Begin
+ St_OSpec:=St_Rd32(St_OA(T,St_I)+12);
+End;
+Function St_OX(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OX:=St_SExt(St_Rd16(St_OA(T,St_I)+16),2);
+End;
+Function St_OY(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OY:=St_SExt(St_Rd16(St_OA(T,St_I)+18),2);
+End;
+Function St_OW(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OW:=St_SExt(St_Rd16(St_OA(T,St_I)+20),2);
+End;
+Function St_OH(T: LongInt; St_I: Integer): Integer;
+Begin
+ St_OH:=St_SExt(St_Rd16(St_OA(T,St_I)+22),2);
+End;
+Procedure St_SetOState(T: LongInt; St_I,V: Integer);
+Begin
+ St_Wr16(St_OA(T,St_I)+10,V And $FFFF);
+End;
+Function St_OParent(T: LongInt; St_I: Integer): Integer;
+Var Cur,Nx,Guard: Integer;
+Begin
+ St_OParent:=-1;
+ If St_I<=0 Then Exit;
+ Cur:=St_I;Guard:=0;
+ While Guard<2000 Do Begin
+  Nx:=St_ONext(T,Cur);
+  If Nx<0 Then Exit;
+  If St_OTail(T,Nx)=Cur Then Begin St_OParent:=Nx;Exit;End;
+  Cur:=Nx;Inc(Guard);
+ End;
+End;
+Procedure St_ObjOffset(T: LongInt; St_I: Integer; Var X,Y: Integer);
+Var Cur,Guard: Integer;
+Begin
+ X:=0;Y:=0;Cur:=St_I;Guard:=0;
+ While (Cur>=0) And (Guard<64) Do Begin
+  X:=X+St_OX(T,Cur);Y:=Y+St_OY(T,Cur);
+  Cur:=St_OParent(T,Cur);
+  Inc(Guard);
+ End;
+End;
+Procedure St_ScrSave(X1,Y1,X2,Y2: Integer; Var S: St_TScrSave);
+Var Y,XB: Integer; Q: LongInt;
+Begin
+ If X1<0 Then X1:=0;If Y1<0 Then Y1:=0;
+ If X2>St_SW-1 Then X2:=St_SW-1;If Y2>St_SH-1 Then Y2:=St_SH-1;
+ S.XB1:=X1 Shr 3;S.XB2:=X2 Shr 3;S.Y1:=Y1;S.Y2:=Y2;
+ S.Sz:=LongInt(S.XB2-S.XB1+1)*(Y2-Y1+1);
+ If S.Sz<=0 Then Begin S.P:=Nil;S.Sz:=0;Exit;End;
+ GetMem(S.P,S.Sz);
+ Q:=0;
+ For Y:=Y1 To Y2 Do
+  For XB:=S.XB1 To S.XB2 Do Begin
+   St_PByteSet(S.P,Q,St_Rd8(St_DrawBase+LongInt(Y)*80+XB));Inc(Q);
+  End;
+End;
+Procedure St_ScrRestore(Var S: St_TScrSave);
+Var Y,XB: Integer; Q: LongInt;
+Begin
+ If S.P=Nil Then Exit;
+ Q:=0;
+ For Y:=S.Y1 To S.Y2 Do
+  For XB:=S.XB1 To S.XB2 Do Begin
+   St_Wr8(St_DrawBase+LongInt(Y)*80+XB,St_PByteAt(S.P,Q));Inc(Q);
+  End;
+ FreeMem(S.P,S.Sz);S.P:=Nil;
+End;
+Function St_CallGuestEx(Addr,Arg,D0,D1,A0: LongInt; Var OD0,OD1: LongInt): LongInt;
+Var SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp: LongInt; N:
+  LongInt; SvStop: Integer;
+Begin
+ Move(St_Rg,SvRg,SizeOf(St_Rg));
+ SvPC:=St_PC;SvSR:=St_SRv;SvUSP:=St_USPv;SvSSP:=St_SSPv;SvOp:=St_CurOpPC;SvStop:=St_StopReason;
+ If ((St_SRv And St_SR_S)=0) And (St_SSPv>$1000) Then St_SetSR(St_SRv Or St_SR_S);
+ St_Rg[15]:=St_Rg[15]-64;
+ St_PushL(Arg);
+ St_PushL(St_STUB_RET);
+ St_Rg[0]:=D0;St_Rg[1]:=D1;St_Rg[8]:=A0;
+ St_PC:=Addr;
+ N:=0;
+ St_StopReason:=St_STOP_NONE;
+ While (St_PC<>St_STUB_RET) And (St_StopReason=St_STOP_NONE) And (N<2000000) Do Begin
+  St_Step;Inc(N);
+ End;
+ St_CallGuestEx:=St_Rg[0];
+ OD0:=St_Rg[0];OD1:=St_Rg[1];
+ If St_StopReason=St_STOP_NONE Then Begin
+  Move(SvRg,St_Rg,SizeOf(St_Rg));
+  St_PC:=SvPC;St_SRv:=SvSR;St_USPv:=SvUSP;St_SSPv:=SvSSP;St_CurOpPC:=SvOp;
+  St_StopReason:=SvStop;
+ End;
+End;
+Function St_CallGuest(Addr,Arg: LongInt): LongInt;
+Var A,B: LongInt;
+Begin
+ St_CallGuest:=St_CallGuestEx(Addr,Arg,St_Rg[0],St_Rg[1],St_Rg[8],A,B);
+End;
+Procedure St_OSetup;
+Begin
+ St_SelVdi(0);
+ St_VP^.WrMode:=St_WM_REPL;St_VP^.FillPer:=0;St_VP^.LineWidth:=1;St_VP^.LineType:=1;St_VP^.LineCol
+   :=1;
+ St_VP^.TxtEff:=0;St_VP^.TxtRot:=0;St_VP^.TxtHAl:=0;St_VP^.TxtVAl:=0;
+End;
+Procedure St_OFill(X1,Y1,X2,Y2: Integer; Pat: Integer; ColIdx: Integer);
+Begin
+ If Pat=0 Then Begin St_VP^.FillInt:=0;St_VP^.FillCol:=0;End
+ Else If Pat=7 Then Begin St_VP^.FillInt:=1;St_VP^.FillCol:=ColIdx;End
+ Else Begin St_VP^.FillInt:=2;St_VP^.FillSty:=Pat;St_VP^.FillCol:=ColIdx;End;
+ St_VBar(X1,Y1,X2,Y2);
+End;
+Procedure St_OFrameRect(X1,Y1,X2,Y2: Integer; Col: Integer);
+Var C: Boolean;
+Begin
+ C:=St_ColBit(Col);
+ St_FastSpan(Y1,X1,X2,C,False);St_FastSpan(Y2,X1,X2,C,False);
+ If Y2>Y1+1 Then Begin
+  St_VP^.FillInt:=1;St_VP^.FillCol:=Col;
+  St_VBar(X1,Y1+1,X1,Y2-1);St_VBar(X2,Y1+1,X2,Y2-1);
+ End;
+End;
+Procedure St_OBorder(X,Y,W,H,Th,Col: Integer);
+Var St_I,A: Integer;
+Begin
+ If Th=0 Then Exit;
+ A:=Abs(Th);
+ For St_I:=0 To A-1 Do Begin
+  If Th>0 Then St_OFrameRect(X+St_I,Y+St_I,X+W-1-St_I,Y+H-1-St_I,Col)
+  Else St_OFrameRect(X-1-St_I,Y-1-St_I,X+W+St_I,Y+H+St_I,Col);
+ End;
+End;
+Procedure St_OText(X,Y: Integer; Const S: String; Cell: Integer; ColIdx: Integer;
+  Repl: Boolean);
+Begin
+ St_VP^.TxtCell:=Cell;St_VP^.TxtCol:=ColIdx;
+ If Repl Then St_VP^.WrMode:=St_WM_REPL Else St_VP^.WrMode:=St_WM_TRANS;
+ St_VP^.TxtHAl:=0;St_VP^.TxtVAl:=5;
+ St_VGText(X,Y,S);
+ St_VP^.WrMode:=St_WM_REPL;St_VP^.TxtVAl:=0;
+End;
+Function St_CellOfFont(F: Integer): Integer;
+Begin
+ If F=5 Then St_CellOfFont:=8 Else St_CellOfFont:=16;
+End;
+Function St_FtextDisplay(Const Tmpl,Txt: String): String;
+Var R: String; St_I,St_K: Integer;
+Begin
+ R:='';St_K:=1;
+ For St_I:=1 To Length(Tmpl) Do Begin
+  If Tmpl[St_I]='_' Then Begin
+   If St_K<=Length(Txt) Then Begin R:=R+Txt[St_K];Inc(St_K);End Else R:=R+'_';
+  End Else R:=R+Tmpl[St_I];
+ End;
+ St_FtextDisplay:=R;
+End;
+Procedure St_ObjDrawOne(T: LongInt; St_I: Integer; AX,AY: Integer; Const
+  ClipX1,ClipY1,ClipX2,ClipY2: Integer);
+Var Ty,St,Fl,W,H,Th,Cw,Ch,Fi,Pat,Ic,Bc,Tc,Just,Fnt,Cell: Integer; Sp,Ted,Pr:
+  LongInt;
+    Col: Word; S,Tm: String; Ch1: Char; TXx,TYy,Rx,St_K,J,XX,YY: Integer; Repl:
+      Boolean;
+    Ib: LongInt; Wb,Hl,Wi,Hi,Xi,Yi,Bx,By: Integer; PrevSt: Integer; Rv:
+      LongInt; Tw: Integer;
+    Pb: LongInt;
+Begin
+ St_OSetup;
+ St_SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+ Ty:=St_OType(T,St_I);St:=St_OState(T,St_I);Fl:=St_OFlags(T,St_I);
+ W:=St_OW(T,St_I);H:=St_OH(T,St_I);Sp:=St_OSpec(T,St_I);
+ If (Fl And St_OF_INDIRECT)<>0 Then Sp:=St_Rd32(Sp);
+ { ombre }
+ If (St And St_OS_SHADOWED)<>0 Then Begin
+  Th:=St_SExt((Sp Shr 16) And $FF,1);
+  If (Ty=St_G_BOXTEXT) Or (Ty=St_G_FBOXTEXT) Then Th:=St_SExt(St_Rd16(Sp+22),2);
+  St_K:=St_Max2(2,Abs(Th)*2);
+  If Th<0 Then Begin AX:=AX;End;
+  St_OFill(AX+St_K,AY+H,AX+W-1+St_K,AY+H+St_K-1,7,1);
+  St_OFill(AX+W,AY+St_K,AX+W+St_K-1,AY+H-1,7,1);
+ End;
+ If (St And St_OS_OUTLINED)<>0 Then Begin
+  St_OFill(AX-3,AY-3,AX+W+2,AY+H+2,0,0);
+  St_OFrameRect(AX-3,AY-3,AX+W+2,AY+H+2,1);
+ End;
+ Case Ty Of
+  St_G_BOX,St_G_IBOX,St_G_BOXCHAR: Begin
+    Col:=Sp And $FFFF;Th:=St_SExt((Sp Shr 16) And $FF,1);
+    Ic:=Col And 15;Pat:=(Col Shr 4) And 7;Tc:=(Col Shr 8) And 15;Bc:=(Col Shr
+      12) And 15;
+    If Ty<>St_G_IBOX Then Begin
+     If Th>=0 Then St_OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic)
+     Else St_OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic);
+    End;
+    St_OBorder(AX,AY,W,H,Th,Bc);
+    If Ty=St_G_BOXCHAR Then Begin
+     Ch1:=Chr((Sp Shr 24) And $FF);
+     Repl:=(Col And $80)<>0;
+     St_OText(AX+(W-8) Div 2,AY+(H-16) Div 2,Ch1,16,Tc,False);
+    End;
+   End;
+  St_G_TEXT,St_G_FTEXT,St_G_BOXTEXT,St_G_FBOXTEXT: Begin
+    Ted:=Sp;
+    Col:=St_Rd16(Ted+18);Fnt:=St_Rd16(Ted+12);Just:=St_Rd16(Ted+16);Th:=St_SExt(St_Rd16(Ted+
+      22),2);
+    Ic:=Col And 15;Pat:=(Col Shr 4) And 7;Tc:=(Col Shr 8) And 15;Bc:=(Col Shr
+      12) And 15;
+    Repl:=(Col And $80)<>0;
+    Cell:=St_CellOfFont(Fnt);
+    If (Ty=St_G_BOXTEXT) Or (Ty=St_G_FBOXTEXT) Then Begin
+     St_OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic);
+     St_OBorder(AX,AY,W,H,Th,Bc);
+    End Else If Repl Then St_OFill(AX,AY,AX+W-1,AY+H-1,Pat,Ic);
+    S:=St_RdStr(St_Rd32(Ted),120);
+    If (Ty=St_G_FTEXT) Or (Ty=St_G_FBOXTEXT) Then
+      S:=St_FtextDisplay(St_RdStr(St_Rd32(Ted+4),120),S);
+    Tw:=Length(S)*8;
+    Case Just Of
+     1: TXx:=AX+W-Tw;
+     2: TXx:=AX+(W-Tw) Div 2;
+    Else TXx:=AX;
+    End;
+    TYy:=AY+(H-Cell) Div 2;
+    St_OText(TXx,TYy,S,Cell,Tc,False);
+   End;
+  St_G_STRING,St_G_TITLE: Begin
+    S:=St_RdStr(Sp,120);
+    { le fond blanc ne doit pas ecraser le cadre interieur du parent (chaines
+      pleine largeur) }
+    Th:=0;Pr:=St_OParent(T,St_I);
+    If (Ty=St_G_STRING) And (Pr>=0) Then Begin
+     St_K:=St_OType(T,Pr);
+     If (St_K=St_G_BOX) Or (St_K=St_G_BOXCHAR) Then Th:=St_SExt((St_OSpec(T,Pr) Shr 16) And
+       $FF,1);
+     If Th<0 Then Th:=0;
+    End;
+    If Th>0 Then Begin
+     Rx:=AX-St_OX(T,St_I);   { origine absolue du parent }
+     St_K:=AY-St_OY(T,St_I);
+     St_OFill(St_Max2(AX,Rx+Th),St_Max2(AY,St_K+Th),St_Min2(AX+W-1,Rx+St_OW(T,Pr)-1-Th),St_Min2(AY+
+       H-1,St_K+St_OH(T,Pr)-1-Th),0,0);
+    End Else St_OFill(AX,AY,AX+W-1,AY+H-1,0,0);
+    St_OText(AX,AY+(H-16) Div 2,S,16,1,False);
+   End;
+  St_G_BUTTON: Begin
+    S:=St_RdStr(Sp,120);
+    Th:=1;
+    If (Fl And St_OF_EXIT)<>0 Then Th:=2;
+    If (Fl And St_OF_DEFAULT)<>0 Then Th:=3;
+    St_OFill(AX,AY,AX+W-1,AY+H-1,0,0);
+    St_OBorder(AX,AY,W,H,Th,1);
+    St_OText(AX+(W-Length(S)*8) Div 2,AY+(H-16) Div 2,S,16,1,False);
+   End;
+  St_G_IMAGE: Begin
+    Pb:=Sp;
+    Wb:=St_Rd16(Pb+4);Hl:=St_Rd16(Pb+6);Col:=St_Rd16(Pb+12);
+    Ic:=Col And 15;
+    For YY:=0 To Hl-1 Do
+     For XX:=0 To Wb*8-1 Do Begin
+      If (St_Rd8(St_Rd32(Pb)+LongInt(YY)*Wb+(XX Shr 3)) And (128 Shr (XX And 7)))<>0
+        Then
+       St_PlotSolid(AX+XX,AY+YY,St_ColBit(Ic))
+      Else St_PlotSolid(AX+XX,AY+YY,False);
+     End;
+   End;
+  St_G_ICON: Begin
+    Ib:=Sp;
+    Wi:=St_SExt(St_Rd16(Ib+22),2);Hi:=St_SExt(St_Rd16(Ib+24),2);
+    Xi:=St_SExt(St_Rd16(Ib+18),2);Yi:=St_SExt(St_Rd16(Ib+20),2);
+    For YY:=0 To Hi-1 Do
+     For XX:=0 To Wi-1 Do Begin
+      St_K:=((Wi+15) Div 16)*2;
+      If (St_Rd8(St_Rd32(Ib)+LongInt(YY)*St_K+(XX Shr 3)) And (128 Shr (XX And 7)))<>0
+        Then Begin
+       If (St_Rd8(St_Rd32(Ib+4)+LongInt(YY)*St_K+(XX Shr 3)) And (128 Shr (XX And
+         7)))<>0 Then
+        St_PlotSolid(AX+Xi+XX,AY+Yi+YY,True)
+       Else St_PlotSolid(AX+Xi+XX,AY+Yi+YY,False);
+      End;
+     End;
+    S:=St_RdStr(St_Rd32(Ib+8),40);
+    Tw:=St_SExt(St_Rd16(Ib+30),2);
+    St_OFill(AX+St_SExt(St_Rd16(Ib+26),2),AY+St_SExt(St_Rd16(Ib+28),2),AX+St_SExt(St_Rd16(Ib+26),2)+
+      Tw-1,
+          AY+St_SExt(St_Rd16(Ib+28),2)+St_SExt(St_Rd16(Ib+32),2)-1,0,0);
+    St_OText(AX+St_SExt(St_Rd16(Ib+26),2)+(Tw-Length(S)*8) Div
+      2,AY+St_SExt(St_Rd16(Ib+28),2),S,8,1,False);
+    If St_Rd16(Ib+12)<>0 Then
+     St_OText(AX+St_SExt(St_Rd16(Ib+14),2),AY+St_SExt(St_Rd16(Ib+16),2),Chr(St_Rd16(Ib+12) And
+       $FF),8,1,False);
+    St_OSetup;St_SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+    If (St And St_OS_SELECTED)<>0 Then Begin
+     { icone et texte inverses, sans le reste de l'objet }
+     St_VP^.FillInt:=1;St_VP^.WrMode:=St_WM_XOR;St_VP^.FillCol:=1;
+     St_VBar(AX+Xi,AY+Yi,AX+Xi+Wi-1,AY+Yi+Hi-1);
+     St_VBar(AX+St_SExt(St_Rd16(Ib+26),2),AY+St_SExt(St_Rd16(Ib+28),2),AX+St_SExt(St_Rd16(Ib+26),2)+
+       Tw-1,
+          AY+St_SExt(St_Rd16(Ib+28),2)+St_SExt(St_Rd16(Ib+32),2)-1);
+     St_VP^.WrMode:=St_WM_REPL;
+     St:=St And Not St_OS_SELECTED;
+    End;
+   End;
+  St_G_USERDEF: Begin
+    PrevSt:=St;
+    Pb:=St_PARM_BLK;
+    St_Wr32(Pb,T);St_Wr16(Pb+4,St_I);St_Wr16(Pb+6,St);St_Wr16(Pb+8,St);
+    St_Wr16(Pb+10,AX);St_Wr16(Pb+12,AY);St_Wr16(Pb+14,W);St_Wr16(Pb+16,H);
+    St_Wr16(Pb+18,ClipX1);St_Wr16(Pb+20,ClipY1);St_Wr16(Pb+22,ClipX2-ClipX1+1);St_Wr16(Pb+
+      24,ClipY2-ClipY1+1);
+    St_Wr32(Pb+26,St_Rd32(Sp+4));
+    Rv:=St_CallGuest(St_Rd32(Sp),Pb);
+    St_OSetup;St_SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+    St:=Rv And $FFFF;
+   End;
+ End;
+ { etats }
+ St_OSetup;St_SetClip(ClipX1,ClipY1,ClipX2,ClipY2);
+ If (St And St_OS_CROSSED)<>0 Then Begin
+  St_VP^.LineCol:=1;St_LinePhase:=0;
+  St_VLine(AX,AY,AX+W-1,AY+H-1);St_VLine(AX,AY+H-1,AX+W-1,AY);
+ End;
+ If (St And St_OS_CHECKED)<>0 Then St_OText(AX+2,AY+(H-16) Div 2,#251,16,1,False);
+ If (St And St_OS_SELECTED)<>0 Then Begin
+  St_VP^.FillInt:=1;St_VP^.WrMode:=St_WM_XOR;St_VP^.FillCol:=1;
+  St_VBar(AX,AY,AX+W-1,AY+H-1);
+  St_VP^.WrMode:=St_WM_REPL;
+ End;
+ If (St And St_OS_DISABLED)<>0 Then Begin
+  For YY:=AY To AY+H-1 Do
+   For XX:=AX To AX+W-1 Do
+    If Odd(XX+YY) Then St_PlotPat(XX,YY,True,False);
+ End;
+End;
+Procedure St_ObjDrawRec(T: LongInt; St_I: Integer; Depth: Integer; AX,AY: Integer;
+                     CX1_,CY1_,CX2_,CY2_: Integer);
+Var C: Integer; Guard: Integer;
+Begin
+ If (St_OFlags(T,St_I) And St_OF_HIDETREE)<>0 Then Exit;
+ St_ObjDrawOne(T,St_I,AX,AY,CX1_,CY1_,CX2_,CY2_);
+ If Depth>0 Then Begin
+  C:=St_OHead(T,St_I);Guard:=0;
+  If C>=0 Then
+   While (C>=0) And (C<>St_I) And (Guard<2000) Do Begin
+    St_ObjDrawRec(T,C,Depth-1,AX+St_OX(T,C),AY+St_OY(T,C),CX1_,CY1_,CX2_,CY2_);
+    If C=St_OTail(T,St_I) Then Break;
+    C:=St_ONext(T,C);Inc(Guard);
+   End;
+ End;
+End;
+Procedure St_ObjDraw(T: LongInt; Start,Depth: Integer; Cx,Cy,Cw,Ch: Integer);
+Var X,Y: Integer; Sv: Integer;
+Begin
+ St_ObjOffset(T,Start,X,Y);
+ If (Cw<=0) Or (Ch<=0) Then Begin Cx:=0;Cy:=0;Cw:=St_SW;Ch:=St_SH;End;
+ St_ObjDrawRec(T,Start,Depth,X,Y,Cx,Cy,Cx+Cw-1,Cy+Ch-1);
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+End;
+Function St_ObjFindRec(T: LongInt; St_I,Depth,AX,AY,MXx,MYy: Integer): Integer;
+Var C,R,Guard: Integer; Hit: Integer;
+Begin
+ St_ObjFindRec:=-1;
+ If (St_OFlags(T,St_I) And St_OF_HIDETREE)<>0 Then Exit;
+ Hit:=-1;
+ If (MXx>=AX) And (MXx<AX+St_OW(T,St_I)) And (MYy>=AY) And (MYy<AY+St_OH(T,St_I)) Then
+   Hit:=St_I
+ Else If (St_OState(T,St_I) And St_OS_SHADOWED)=0 Then Begin
+  If Not ((St_OType(T,St_I)=St_G_IBOX) Or (St_OType(T,St_I)=St_G_BOX)) Then Exit;
+ End;
+ If Depth>0 Then Begin
+  C:=St_OHead(T,St_I);Guard:=0;
+  While (C>=0) And (C<>St_I) And (Guard<2000) Do Begin
+   R:=St_ObjFindRec(T,C,Depth-1,AX+St_OX(T,C),AY+St_OY(T,C),MXx,MYy);
+   If R>=0 Then Hit:=R;
+   If C=St_OTail(T,St_I) Then Break;
+   C:=St_ONext(T,C);Inc(Guard);
+  End;
+ End;
+ St_ObjFindRec:=Hit;
+End;
+Function St_ObjFind(T: LongInt; Start,Depth: Integer; MXx,MYy: Integer): Integer;
+Var X,Y: Integer;
+Begin
+ St_ObjOffset(T,Start,X,Y);
+ St_ObjFind:=St_ObjFindRec(T,Start,Depth,X,Y,MXx,MYy);
+End;
+Procedure St_ObjRedraw(T: LongInt; St_I: Integer);
+Var X,Y: Integer;
+Begin
+ St_ObjOffset(T,St_I,X,Y);
+ St_ObjDrawRec(T,St_I,0,X,Y,X-4,Y-4,X+St_OW(T,St_I)+8,Y+St_OH(T,St_I)+8);
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+End;
+Procedure St_ObjAdd(T: LongInt; Parent,Child: Integer);
+Var Last: Integer;
+Begin
+ Last:=St_OTail(T,Parent);
+ If St_OHead(T,Parent)<0 Then Begin
+  St_Wr16(St_OA(T,Parent)+2,Child);St_Wr16(St_OA(T,Parent)+4,Child);
+  St_Wr16(St_OA(T,Child),Parent);
+ End Else Begin
+  St_Wr16(St_OA(T,Last),Child);
+  St_Wr16(St_OA(T,Parent)+4,Child);
+  St_Wr16(St_OA(T,Child),Parent);
+ End;
+End;
+Procedure St_ObjDelete(T: LongInt; Obj: Integer);
+Var P,C,Prev: Integer;
+Begin
+ P:=St_OParent(T,Obj);
+ If P<0 Then Exit;
+ If St_OHead(T,P)=Obj Then Begin
+  If St_OTail(T,P)=Obj Then Begin
+   St_Wr16(St_OA(T,P)+2,$FFFF);St_Wr16(St_OA(T,P)+4,$FFFF);
+  End Else St_Wr16(St_OA(T,P)+2,St_ONext(T,Obj));
+ End Else Begin
+  Prev:=St_OHead(T,P);
+  While St_ONext(T,Prev)<>Obj Do Prev:=St_ONext(T,Prev);
+  St_Wr16(St_OA(T,Prev),St_ONext(T,Obj));
+  If St_OTail(T,P)=Obj Then St_Wr16(St_OA(T,P)+4,Prev);
+ End;
+ St_Wr16(St_OA(T,Obj),$FFFF);
+End;
+Procedure St_ObjOrder(T: LongInt; Obj,Pos: Integer);
+Var P,C,N,St_I,Prev: Integer; Idx: Array[0..63] Of Integer;
+Begin
+ P:=St_OParent(T,Obj);
+ If P<0 Then Exit;
+ St_ObjDelete(T,Obj);
+ N:=0;C:=St_OHead(T,P);
+ While (C>=0) And (C<>P) And (N<62) Do Begin
+  Idx[N]:=C;Inc(N);
+  If C=St_OTail(T,P) Then Break;
+  C:=St_ONext(T,C);
+ End;
+ If (Pos<0) Or (Pos>N) Then Pos:=N;
+ { reconstruit la liste des enfants }
+ For St_I:=N Downto Pos+1 Do Idx[St_I]:=Idx[St_I-1];
+ Idx[Pos]:=Obj;Inc(N);
+ St_Wr16(St_OA(T,P)+2,Idx[0]);St_Wr16(St_OA(T,P)+4,Idx[N-1]);
+ For St_I:=0 To N-2 Do St_Wr16(St_OA(T,Idx[St_I]),Idx[St_I+1]);
+ St_Wr16(St_OA(T,Idx[N-1]),P);
+End;
+Function St_ValidChar(V: Char; Ch: Char): Boolean;
+Begin
+ St_ValidChar:=False;
+ Case V Of
+  '9': St_ValidChar:=(Ch>='0') And (Ch<='9');
+  'a': St_ValidChar:=((Ch>='a') And (Ch<='z')) Or ((Ch>='A') And (Ch<='Z')) Or
+    (Ch=' ');
+  'A': St_ValidChar:=((Ch>='A') And (Ch<='Z')) Or (Ch=' ');
+  'n': St_ValidChar:=((Ch>='a') And (Ch<='z')) Or ((Ch>='A') And (Ch<='Z')) Or
+    ((Ch>='0') And (Ch<='9')) Or (Ch=' ');
+  'N': St_ValidChar:=((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or
+    (Ch=' ');
+  'F': St_ValidChar:=((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or
+    (Ch='?') Or (Ch='*') Or (Ch=':') Or (Ch='.') Or (Ch='_');
+  'f': St_ValidChar:=(Ch>' ') And (Ch<>'\') And (Ch<>'/');
+  'P': St_ValidChar:=((Ch>='A') And (Ch<='Z')) Or ((Ch>='0') And (Ch<='9')) Or
+    (Ch='\') Or (Ch=':') Or (Ch='.') Or (Ch='_') Or (Ch='?') Or (Ch='*');
+  'p': St_ValidChar:=(Ch>=' ');
+  'X': St_ValidChar:=Ch>=' ';
+ Else St_ValidChar:=Ch>=' ';
+ End;
+End;
+Function St_EditCursorX(T: LongInt; Obj,Idx: Integer): Integer;
+Var Ted: LongInt; Tm: String; St_I,St_K: Integer; X,Y: Integer; Just,W,Tw,TX:
+  Integer; S: String;
+Begin
+ Ted:=St_OSpec(T,Obj);
+ Tm:=St_RdStr(St_Rd32(Ted+4),120);
+ S:=St_FtextDisplay(Tm,St_RdStr(St_Rd32(Ted),120));
+ St_ObjOffset(T,Obj,X,Y);
+ W:=St_OW(T,Obj);Tw:=Length(S)*8;Just:=St_Rd16(Ted+16);
+ Case Just Of
+  1: TX:=X+W-Tw;
+  2: TX:=X+(W-Tw) Div 2;
+ Else TX:=X;
+ End;
+ St_K:=0;
+ For St_I:=1 To Length(Tm) Do Begin
+  If Tm[St_I]='_' Then Begin
+   If St_K=Idx Then Begin St_EditCursorX:=TX+(St_I-1)*8;Exit;End;
+   Inc(St_K);
+  End;
+ End;
+ St_EditCursorX:=TX+Length(Tm)*8;
+End;
+Procedure St_EditDrawCursor(T: LongInt; Obj,Idx: Integer);
+Var X,Y,CXp: Integer;
+Begin
+ St_ObjOffset(T,Obj,X,Y);
+ CXp:=St_EditCursorX(T,Obj,Idx);
+ St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);
+ St_VP^.WrMode:=St_WM_XOR;
+ St_VP^.FillInt:=1;St_VP^.FillCol:=1;
+ St_VBar(CXp,Y+(St_OH(T,Obj)-16) Div 2,CXp,Y+(St_OH(T,Obj)-16) Div 2+15);
+ St_VP^.WrMode:=St_WM_REPL;
+End;
+Function St_EditTextLen(T: LongInt; Obj: Integer): Integer;
+Var Ted: LongInt; Tm: String; St_I,St_K: Integer;
+Begin
+ Ted:=St_OSpec(T,Obj);
+ Tm:=St_RdStr(St_Rd32(Ted+4),120);St_K:=0;
+ For St_I:=1 To Length(Tm) Do If Tm[St_I]='_' Then Inc(St_K);
+ St_EditTextLen:=St_K;
+End;
+Function St_ObjEdit(T: LongInt; Obj: Integer; Key: LongInt; Var Idx: Integer;
+  Kind: Integer): Integer;
+Var Ted,Txt,St_Vp: LongInt; S,Vl: String; St_Mx: Integer; Ch: Char; Scan,Asc:
+  Integer; Ok: Boolean;
+Begin
+ St_ObjEdit:=1;
+ Ted:=St_OSpec(T,Obj);
+ Txt:=St_Rd32(Ted);St_Vp:=St_Rd32(Ted+8);
+ S:=St_RdStr(Txt,120);Vl:=St_RdStr(St_Vp,120);
+ St_Mx:=St_EditTextLen(T,Obj);
+ Case Kind Of
+  0,2: Begin
+        Idx:=Length(S);
+        St_ObjRedraw(T,Obj);
+        If Kind=0 Then St_EditDrawCursor(T,Obj,Idx);
+       End;
+  3: Begin St_ObjRedraw(T,Obj);End;
+  1: Begin
+      Asc:=Key And $FF;Scan:=(Key Shr 8) And $FF;
+      If Idx>Length(S) Then Idx:=Length(S);
+      Ok:=False;
+      If Asc=27 Then Begin S:='';Idx:=0;Ok:=True;End   { Esc efface le champ
+        (GEM) }
+      Else If (Asc=8) Or (Asc=127) Then Begin
+       If (Asc=8) And (Idx>0) Then Begin Delete(S,Idx,1);Dec(Idx);Ok:=True;End
+       Else If (Asc=127) And (Idx<Length(S)) Then Begin
+         Delete(S,Idx+1,1);Ok:=True;End;
+      End Else If (Asc=0) And (Scan=$4B) Then Begin If Idx>0 Then
+        Dec(Idx);Ok:=True;End
+      Else If (Asc=0) And (Scan=$4D) Then Begin If Idx<Length(S) Then
+        Inc(Idx);Ok:=True;End
+      Else If (Asc=0) And (Scan=$47) Then Begin Idx:=0;Ok:=True;End
+      Else If (Asc=0) And (Scan=$4F) Then Begin Idx:=Length(S);Ok:=True;End
+      Else If Asc>=32 Then Begin
+       Ch:=Chr(Asc);
+       If Length(S)<St_Mx Then Begin
+        If Idx<Length(Vl) Then Begin
+         If St_ValidChar(Vl[Idx+1],Ch) Then Begin
+          If (Vl[Idx+1]='A') Or (Vl[Idx+1]='N') Then Ch:=UpCase(Ch);
+          Insert(Ch,S,Idx+1);Inc(Idx);Ok:=True;
+         End;
+        End Else If Length(Vl)>0 Then Begin
+         If St_ValidChar(Vl[Length(Vl)],Ch) Then Begin
+           Insert(Ch,S,Idx+1);Inc(Idx);Ok:=True;End;
+        End Else Begin Insert(Ch,S,Idx+1);Inc(Idx);Ok:=True;End;
+       End;
+      End;
+      If Ok Then Begin
+       St_WrStr(Txt,S);
+       St_ObjRedraw(T,Obj);
+       St_EditDrawCursor(T,Obj,Idx);
+      End Else St_ObjEdit:=0;
+     End;
+ End;
+End;
+Var
+ St_RscBase    : LongInt;
+ St_RscSize    : LongInt;
+ St_RscLoaded  : Boolean;
+ St_RscOwned   : Boolean;
+Procedure St_ObjFix(T: LongInt; St_I: Integer);
+Var A: LongInt; V: Integer;
+ Function Fx(V,Cell: Integer): Integer;
+ Begin
+  Fx:=(V And $FF)*Cell+St_SExt(St_ShrL(V,8) And $FF,1);
+ End;
+Begin
+ A:=St_OA(T,St_I);
+ St_Wr16(A+16,Fx(St_Rd16(A+16),8));St_Wr16(A+18,Fx(St_Rd16(A+18),16));
+ St_Wr16(A+20,Fx(St_Rd16(A+20),8));St_Wr16(A+22,Fx(St_Rd16(A+22),16));
+End;
+Procedure St_RscFixup(B: LongInt);
+Var Nobs,Nted,Nib,Nbb,Nstr,Nimg,Ntree,Oobj,Oted,Oib,Obb,Ofrs,Ofri,Otri: LongInt;
+    A: LongInt; Ty,St_I: Integer;
+Begin
+ Oobj:=St_Rd16(B+2);Oted:=St_Rd16(B+4);Oib:=St_Rd16(B+6);Obb:=St_Rd16(B+8);Ofrs:=St_Rd16(B+10);
+ Ofri:=St_Rd16(B+16);Otri:=St_Rd16(B+18);
+ Nobs:=St_Rd16(B+20);Ntree:=St_Rd16(B+22);Nted:=St_Rd16(B+24);Nib:=St_Rd16(B+
+   26);Nbb:=St_Rd16(B+28);
+ Nstr:=St_Rd16(B+30);Nimg:=St_Rd16(B+32);
+ { objets }
+ For St_I:=0 To Nobs-1 Do Begin
+  A:=B+Oobj+St_I*24;
+  Ty:=St_Rd16(A+6) And $FF;
+  If (Ty<>St_G_BOX) And (Ty<>St_G_IBOX) And (Ty<>St_G_BOXCHAR) Then
+    St_Wr32(A+12,St_Rd32(A+12)+B);
+ End;
+ For St_I:=0 To Nted-1 Do Begin
+  A:=B+Oted+St_I*28;
+  St_Wr32(A,St_Rd32(A)+B);St_Wr32(A+4,St_Rd32(A+4)+B);St_Wr32(A+8,St_Rd32(A+8)+B);
+ End;
+ For St_I:=0 To Nib-1 Do Begin
+  A:=B+Oib+St_I*34;
+  St_Wr32(A,St_Rd32(A)+B);St_Wr32(A+4,St_Rd32(A+4)+B);St_Wr32(A+8,St_Rd32(A+8)+B);
+ End;
+ For St_I:=0 To Nbb-1 Do Begin
+  A:=B+Obb+St_I*14;
+  St_Wr32(A,St_Rd32(A)+B);
+ End;
+ For St_I:=0 To Nstr-1 Do St_Wr32(B+Ofrs+St_I*4,St_Rd32(B+Ofrs+St_I*4)+B);
+ For St_I:=0 To Nimg-1 Do St_Wr32(B+Ofri+St_I*4,St_Rd32(B+Ofri+St_I*4)+B);
+ For St_I:=0 To Ntree-1 Do St_Wr32(B+Otri+St_I*4,St_Rd32(B+Otri+St_I*4)+B);
+ For St_I:=0 To Nobs-1 Do St_ObjFix(B+Oobj,St_I);
+End;
+Function St_RscLoad(Const Name: String): Boolean;
+Var P: Pointer;
+  Len,B,St_I,J,Nobs,Nted,Nib,Nbb,Nstr,Nimg,Ntree,Oobj,Oted,Oib,Obb,Ofrs,Ofri,Otri:
+  LongInt;
+    A: LongInt; Ty: Integer; F: String;
+Begin
+ St_RscLoad:=False;
+ F:=St_TosPath(Name);
+ If Not St_ReadFileBytes(F,P,Len) Then Begin
+  F:=St_HostPath(St_PathOf(St_ProgName)+St_ShortName(Name));
+  If Not St_ReadFileBytes(F,P,Len) Then Exit;
+ End;
+ If Len<36 Then Begin FreeMem(P,Len);Exit;End;
+ Oobj:=St_BufW(P,2);Oted:=St_BufW(P,4);Oib:=St_BufW(P,6);Obb:=St_BufW(P,8);Ofrs:=St_BufW(P,10);
+ Ofri:=St_BufW(P,16);Otri:=St_BufW(P,18);
+ Nobs:=St_BufW(P,20);Ntree:=St_BufW(P,22);Nted:=St_BufW(P,24);Nib:=St_BufW(P,
+   26);Nbb:=St_BufW(P,28);
+ Nstr:=St_BufW(P,30);Nimg:=St_BufW(P,32);
+ St_RscSize:=St_BufW(P,34);
+ If St_RscSize<Len Then St_RscSize:=Len;
+ B:=St_DoMalloc(St_RscSize+16);
+ If B=0 Then Begin FreeMem(P,Len);Exit;End;
+ For St_I:=0 To Len-1 Do St_Wr8(B+St_I,St_BufB(P,St_I));
+ FreeMem(P,Len);
+ St_RscBase:=B;St_RscLoaded:=True;
+ St_RscOwned:=True;
+ St_RscFixup(B);
+ { l'arbre i : l'objet 0 de chaque arbre est dans la table }
+ St_RscLoad:=True;
+End;
+Function St_RscGaddr(Ty,Idx: Integer; Var Addr: LongInt): Boolean;
+Var B,Oobj,Oted,Oib,Obb,Ofrs,Ofri,Otri: LongInt;
+Begin
+ St_RscGaddr:=False;
+ If Not St_RscLoaded Then Exit;
+ B:=St_RscBase;
+ Oobj:=St_Rd16(B+2);Oted:=St_Rd16(B+4);Oib:=St_Rd16(B+6);Obb:=St_Rd16(B+8);Ofrs:=St_Rd16(B+10);
+ Ofri:=St_Rd16(B+16);Otri:=St_Rd16(B+18);
+ Case Ty Of
+  0: If Idx<St_Rd16(B+22) Then Begin Addr:=St_Rd32(B+Otri+Idx*4);St_RscGaddr:=True;End;
+  1: If Idx<St_Rd16(B+20) Then Begin Addr:=B+Oobj+Idx*24;St_RscGaddr:=True;End;
+  2: If Idx<St_Rd16(B+24) Then Begin Addr:=B+Oted+Idx*28;St_RscGaddr:=True;End;
+  3: If Idx<St_Rd16(B+26) Then Begin Addr:=B+Oib+Idx*34;St_RscGaddr:=True;End;
+  4: If Idx<St_Rd16(B+28) Then Begin Addr:=B+Obb+Idx*14;St_RscGaddr:=True;End;
+  5,15: If Idx<St_Rd16(B+30) Then Begin
+    Addr:=St_Rd32(B+Ofrs+Idx*4);St_RscGaddr:=True;End;
+  6,16: If Idx<St_Rd16(B+32) Then Begin
+    Addr:=St_Rd32(B+Ofri+Idx*4);St_RscGaddr:=True;End;
+ End;
+End;
+Const
+ St_MAXPROC = 8;
+ St_MAXWIN  = 8;
+ St_NAME_=1;
+ St_CLOSER_=2;
+ St_FULLER_=4;
+ St_MOVER_=8;
+ St_INFO_=16;
+ St_SIZER_=32;
+ St_UPARROW_=64;
+ St_DNARROW_=128;
+ St_VSLIDE_=256;
+ St_LFARROW_=512;
+ St_RTARROW_=1024;
+ St_HSLIDE_=2048;
+ St_WTITLE_H = 19;
+ St_WINFO_H  = 18;
+ St_WSCROLL  = 18;
+ St_MN_SELECTED=10;
+ St_WM_REDRAW=20;
+ St_WM_TOPPED=21;
+ St_WM_CLOSED=22;
+ St_WM_FULLED=23;
+ St_WM_ARROWED=24;
+ St_WM_HSLID=25;
+ St_WM_VSLID=26;
+ St_WM_SIZED=27;
+ St_WM_MOVED=28;
+ St_AC_OPEN=40;
+ St_STOP_YIELD = 7;
+Type
+ St_TRect = Record X,Y,W,H: Integer; End;
+ St_TWin = Record
+  Used,Open : Boolean;
+  Kind,Owner : Integer;
+  Name,Info : LongInt;
+  R,Prev,Full : St_TRect;
+  HSl,VSl,HSz,VSz : Integer;
+  RectIdx : Integer;
+ End;
+ St_TProc = Record
+  Used,Blocked,IsAcc,Started,Fresh : Boolean;
+  Name : String[9];
+  ApId : Integer;
+  Rgs  : Array[0..15] Of LongInt;
+  PCs,SRs,USPs,SSPs : LongInt;
+  BpAddr : LongInt;
+  { evenement en attente }
+  WFlags,WClicks,WMask,WState : Integer;
+  WM1F,WM2F : Integer;
+  WM1,WM2 : St_TRect;
+  WDeadline : LongInt;
+  WIo,WAi,WCtl : LongInt;
+  WOp : Integer;
+  Q : Array[1..16,0..7] Of Integer;
+  QN : Integer;
+  MenuId : Integer;
+ End;
+Var
+ St_Wins    : Array[0..St_MAXWIN] Of St_TWin;
+ St_WZ      : Array[1..St_MAXWIN] Of Integer;
+ St_NWZ     : Integer;
+ St_Procs   : Array[0..St_MAXPROC-1] Of St_TProc;
+ St_CurProc : Integer;
+ St_MainProc: Integer;
+ St_AesActive : Boolean;
+ St_MenuTree   : LongInt;
+ St_MenuOwner  : Integer;
+ St_MenuH      : Integer;
+ St_MenuBar    : Integer;
+ St_AccSlots   : Array[0..5] Of Integer;
+ St_AccProc    : Array[0..5] Of Integer;
+ St_AccStr     : Array[0..5] Of LongInt;
+ St_DeskTree   : LongInt;
+ St_DeskStart  : Integer;
+ St_PrevB      : LongInt;
+ St_BtnLastTime,St_BtnClickCnt : LongInt;
+ St_ClickCount : Integer;
+ St_DClickSpeed: Integer;
+ St_UpdateLevel,St_MCtrlLevel : Integer;
+ St_MCtrlOwner : Integer;
+ St_ButtonTaken : Boolean;
+ St_KShift      : Integer;
+ St_RectList    : Array[1..64] Of St_TRect;
+ St_RectN,St_RectPos : Integer;
+ St_CurShape    : Integer;
+ St_ScrapDir    : String;
+ St_ScrapSet    : Boolean;
+ St_MenuSet     : Array[0..4] Of LongInt;
+ St_AttachN     : Integer;
+ St_AttachTree  : Array[1..16] Of LongInt;
+ St_AttachItem  : Array[1..16] Of Integer;
+ St_AttachSub   : Array[1..16] Of LongInt;
+ St_AttachBox   : Array[1..16] Of Integer;
+ St_AttachSubItem : Array[1..16] Of Integer;
+ St_ShelBuf     : Array[0..4095] Of Byte;
+ St_ShelLen     : Integer;
+ St_ShelDefCmd,St_ShelDefDir : String;
+ St_RecMem,St_RecCnt,St_RecPos,St_RecLast : LongInt;
+ St_PlayMem,St_PlayCnt,St_PlayPos,St_PlayDeadline : LongInt;
+ St_PlayScale   : Integer;
+ St_SynthMouse  : Boolean;
+ St_PlayWait    : Boolean;
+ St_IStartTree : Array[1..16] Of LongInt;
+ St_IStartMenu,St_IStartItem : Array[1..16] Of Integer;
+ St_IStartN : Integer;
+ St_SynthRel    : Boolean;
+ St_PopSel      : Integer;
+ St_SynthX,St_SynthY,St_SynthB : LongInt;
+ St_BvDisk,St_BvHard : LongInt;
+ St_SearchPos   : Integer;
+ St_ObjSysV     : Array[1..6,0..1] Of Integer;
+ St_ShelNext    : String;
+ St_ShelTail    : String;
+Function St_RectMake(X,Y,W,H: Integer): St_TRect;
+Var R: St_TRect;
+Begin
+ R.X:=X;R.Y:=Y;R.W:=W;R.H:=H;
+ St_RectMake:=R;
+End;
+Function St_RectInter(A,B: St_TRect; Var R: St_TRect): Boolean;
+Var X1,Y1,X2,Y2: Integer;
+Begin
+ X1:=St_Max2(A.X,B.X);Y1:=St_Max2(A.Y,B.Y);
+ X2:=St_Min2(A.X+A.W,B.X+B.W);Y2:=St_Min2(A.Y+A.H,B.Y+B.H);
+ R:=St_RectMake(X1,Y1,X2-X1,Y2-Y1);
+ St_RectInter:=(X2>X1) And (Y2>Y1);
+End;
+Function St_InRect(X,Y: Integer; Const R: St_TRect): Boolean;
+Begin
+ St_InRect:=(X>=R.X) And (X<R.X+R.W) And (Y>=R.Y) And (Y<R.Y+R.H);
+End;
+Const
+ St_CurShapes : Array[0..7,0..15] Of String[16] = (
+  { 0 fleche }
+  ('X...............','XX..............','XoX.............','XooX............',
+    'XoooX...........',
+   'XooooX..........','XoooooX.........','XooooooX........','XoooooooX.......',
+     'XooooXXXXX......',
+   'XooXooX.........','XoX.XooX........','XX..XooX........','X....XooX.......',
+     '.....XooX.......',
+   '......XX........'),
+  { 1 curseur de texte }
+  ('................','..XXX.XXX.......','....XoX.........','....XoX.........',
+    '....XoX.........',
+   '....XoX.........','....XoX.........','....XoX.........','....XoX.........',
+     '....XoX.........',
+   '....XoX.........','....XoX.........','....XoX.........','..XXX.XXX.......',
+     '................',
+   '................'),
+  { 2 abeille / sablier }
+  ('..XXXXXXXXXX....','..XooooooooX....','...XoooooooX....','....XooooooX....',
+    '.....XooooX.....',
+   '......XooX......','.......XX.......','......XooX......','.....XooooX.....',
+     '....XooooooX....',
+   '...XoooooooX....','..XooooooooX....','..XXXXXXXXXX....','................',
+     '................',
+   '................'),
+  { 3 main pointant }
+  ('.....XX.........','....XooX........','....XooX........','....XooX........',
+    '....XooXXX......',
+   '....XooXooXXX...','.XX.XooXooXooX..','XooXXooooooooX..','XooooooooooooX..',
+     '.XooooooooooooX.',
+   '..XoooooooooooX.','..XoooooooooooX.','...XooooooooooX.','...XXooooooooX..',
+     '....XXooooooX...',
+   '.....XXXXXXXX...'),
+  { 4 main plate }
+  ('......XX........','..XX.XooXXX.....','.XooXXooXooXX...','.XooXXooXooXooX.',
+    '..XooXooXooXooX.',
+   '..XooXooXooXooX.','XXXooooooooooooX','XooXooooooooooX.','XooooooooooooX..',
+     '.XoooooooooooX..',
+   '..XooooooooooX..','..XooooooooooX..','...XooooooooX...','....XooooooX....',
+     '....XXXXXXXX....',
+   '................'),
+  { 5 croix fine }
+  ('.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+    '.......XX.......',
+   '.......XX.......','.......XX.......','XXXXXX.....XXXXX','XXXXXX.....XXXXX',
+     '.......XX.......',
+   '.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+     '.......XX.......',
+   '.......XX.......'),
+  { 6 croix epaisse }
+  ('.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+    '.......XX.......',
+   '.......XX.......','.......XX.......','XXXXXXXXXXXXXXXX','XXXXXXXXXXXXXXXX',
+     '.......XX.......',
+   '.......XX.......','.......XX.......','.......XX.......','.......XX.......',
+     '.......XX.......',
+   '.......XX.......'),
+  { 7 croix evidee }
+  ('......XooX......','......XooX......','......XooX......','......XooX......',
+    '......XooX......',
+   '......XooX......','XXXXXXXooXXXXXXX','XooooooooooooooX','XooooooooooooooX',
+     'XXXXXXXooXXXXXXX',
+   '......XooX......','......XooX......','......XooX......','......XooX......',
+     '......XooX......',
+   '......XooX......'));
+ St_CurHot : Array[0..7,0..1] Of Byte =
+   ((0,0),(5,7),(7,6),(7,0),(7,0),(7,7),(7,7),(7,7));
+Procedure St_SetMouseShape(N: Integer);
+Var Y,X: Integer; M,D: Word; C: Char;
+Begin
+ If (N<0) Or (N>7) Then N:=0;
+ St_CurShape:=N;
+ For Y:=0 To 15 Do Begin
+  M:=0;D:=0;
+  For X:=0 To 15 Do Begin
+   C:=St_CurShapes[N,Y][X+1];
+   If (C='X') Or (C='o') Then M:=M Or ($8000 Shr X);
+   If C='X' Then D:=D Or ($8000 Shr X);
+  End;
+  St_CurMask[Y]:=M;St_CurData[Y]:=D;
+ End;
+ St_CurHotX:=St_CurHot[N,0];St_CurHotY:=St_CurHot[N,1];
+End;
+Procedure St_PostMsg(P: Integer; M0,M3,M4,M5,M6,M7: Integer; Sender: Integer);
+Var St_K: Integer;
+Begin
+ If (P<0) Or (P>=St_MAXPROC) Or Not St_Procs[P].Used Then Exit;
+ { fusion des redessins identiques }
+ If St_Procs[P].QN>=16 Then Begin
+  For St_K:=1 To 15 Do St_Procs[P].Q[St_K]:=St_Procs[P].Q[St_K+1];
+  St_Procs[P].QN:=15;
+ End;
+ Inc(St_Procs[P].QN);
+ St_K:=St_Procs[P].QN;
+ St_Procs[P].Q[St_K,0]:=M0;St_Procs[P].Q[St_K,1]:=Sender;St_Procs[P].Q[St_K,2]:=0;
+ St_Procs[P].Q[St_K,3]:=M3;St_Procs[P].Q[St_K,4]:=M4;St_Procs[P].Q[St_K,5]:=M5;
+ St_Procs[P].Q[St_K,6]:=M6;St_Procs[P].Q[St_K,7]:=M7;
+End;
+Function St_PopMsg(P: Integer; Buf: LongInt): Boolean;
+Var St_K,St_I: Integer;
+Begin
+ St_PopMsg:=False;
+ If St_Procs[P].QN<=0 Then Exit;
+ If St_AesTrace Then Begin Write(St_ConOut,'  MSG to ',P,':');For St_I:=0 To 7 Do
+   Write(St_ConOut,' ',St_Procs[P].Q[1,St_I]);WriteLn(St_ConOut);Flush(St_ConOut);End;
+ For St_I:=0 To 7 Do St_Wr16(Buf+St_I*2,St_Procs[P].Q[1,St_I] And $FFFF);
+ For St_K:=1 To St_Procs[P].QN-1 Do St_Procs[P].Q[St_K]:=St_Procs[P].Q[St_K+1];
+ Dec(St_Procs[P].QN);
+ St_PopMsg:=True;
+End;
+Function St_HasTitle(St_K: Integer): Boolean;
+Begin
+ St_HasTitle:=(St_K And (St_NAME_ Or St_CLOSER_ Or St_FULLER_ Or St_MOVER_))<>0;
+End;
+Function St_HasVBar(St_K: Integer): Boolean;
+Begin
+ St_HasVBar:=(St_K And (St_UPARROW_ Or St_DNARROW_ Or St_VSLIDE_))<>0;
+End;
+Function St_HasHBar(St_K: Integer): Boolean;
+Begin
+ St_HasHBar:=(St_K And (St_LFARROW_ Or St_RTARROW_ Or St_HSLIDE_))<>0;
+End;
+Function St_WorkOf(St_K: Integer; Const O: St_TRect): St_TRect;
+Var R: St_TRect; T: Integer;
+Begin
+ T:=0;
+ If St_HasTitle(St_K) Then T:=T+St_WTITLE_H;
+ If (St_K And St_INFO_)<>0 Then T:=T+St_WINFO_H;
+ R.X:=O.X+1;R.Y:=O.Y+1+T;
+ R.W:=O.W-2;R.H:=O.H-2-T;
+ If St_HasVBar(St_K) Then R.W:=R.W-St_WSCROLL;
+ If St_HasHBar(St_K) Then R.H:=R.H-St_WSCROLL;
+ St_WorkOf:=R;
+End;
+Function St_OuterOf(St_K: Integer; Const W: St_TRect): St_TRect;
+Var R: St_TRect; T: Integer;
+Begin
+ T:=0;
+ If St_HasTitle(St_K) Then T:=T+St_WTITLE_H;
+ If (St_K And St_INFO_)<>0 Then T:=T+St_WINFO_H;
+ R.X:=W.X-1;R.Y:=W.Y-1-T;
+ R.W:=W.W+2;R.H:=W.H+2+T;
+ If St_HasVBar(St_K) Then R.W:=R.W+St_WSCROLL;
+ If St_HasHBar(St_K) Then R.H:=R.H+St_WSCROLL;
+ St_OuterOf:=R;
+End;
+Function St_WinWork(H: Integer): St_TRect;
+Begin
+ St_WinWork:=St_WorkOf(St_Wins[H].Kind,St_Wins[H].R);
+End;
+Function St_ZPos(H: Integer): Integer;
+Var St_I: Integer;
+Begin
+ St_ZPos:=0;
+ For St_I:=1 To St_NWZ Do If St_WZ[St_I]=H Then Begin St_ZPos:=St_I;Exit;End;
+End;
+Procedure St_ZRemove(H: Integer);
+Var St_I,P: Integer;
+Begin
+ P:=St_ZPos(H);
+ If P=0 Then Exit;
+ For St_I:=P To St_NWZ-1 Do St_WZ[St_I]:=St_WZ[St_I+1];
+ Dec(St_NWZ);
+End;
+Procedure St_ZToTop(H: Integer);
+Var St_I: Integer;
+Begin
+ St_ZRemove(H);
+ For St_I:=St_NWZ Downto 1 Do St_WZ[St_I+1]:=St_WZ[St_I];
+ St_WZ[1]:=H;Inc(St_NWZ);
+End;
+Function St_TopWin: Integer;
+Begin
+ If St_NWZ>0 Then St_TopWin:=St_WZ[1] Else St_TopWin:=0;
+End;
+Procedure St_VisibleRects(H: Integer; Const Area: St_TRect);
+Var St_I,St_K,Z,Cnt: Integer; Cur: Array[1..64] Of St_TRect; N,M: Integer; B,A,P: St_TRect;
+  Tmp: Array[1..64] Of St_TRect;
+ Procedure Add(Const R: St_TRect);
+ Begin
+  If (R.W>0) And (R.H>0) And (M<64) Then Begin Inc(M);Tmp[M]:=R;End;
+ End;
+Begin
+ St_RectN:=0;St_RectPos:=1;
+ Z:=St_ZPos(H);
+ N:=1;Cur[1]:=Area;
+ { le bureau (H=0) est sous toutes les fenetres }
+ If Z=0 Then Z:=St_NWZ+1;
+ For St_I:=1 To Z-1 Do Begin
+  B:=St_Wins[St_WZ[St_I]].R;
+  If Not St_Wins[St_WZ[St_I]].Open Then Continue;
+  M:=0;
+  For St_K:=1 To N Do Begin
+   A:=Cur[St_K];
+   If Not St_RectInter(A,B,P) Then Begin Add(A);Continue;End;
+   { decoupe A \ B }
+   Add(St_RectMake(A.X,A.Y,A.W,P.Y-A.Y));
+   Add(St_RectMake(A.X,P.Y+P.H,A.W,A.Y+A.H-(P.Y+P.H)));
+   Add(St_RectMake(A.X,P.Y,P.X-A.X,P.H));
+   Add(St_RectMake(P.X+P.W,P.Y,A.X+A.W-(P.X+P.W),P.H));
+  End;
+  N:=M;
+  For St_K:=1 To N Do Cur[St_K]:=Tmp[St_K];
+ End;
+ For St_K:=1 To N Do If St_RectN<64 Then Begin Inc(St_RectN);St_RectList[St_RectN]:=Cur[St_K];End;
+End;
+Procedure St_AFill(X1,Y1,X2,Y2: Integer; Pat,Col: Integer);
+Begin
+ St_OSetup;St_OFill(X1,Y1,X2,Y2,Pat,Col);
+End;
+Procedure St_ABox(X1,Y1,X2,Y2: Integer);
+Begin
+ St_OSetup;St_OFrameRect(X1,Y1,X2,Y2,1);
+End;
+Procedure St_AArrow(X,Y,W,H,Dir: Integer);
+Var CXp,CYp,St_I: Integer;
+Begin
+ St_AFill(X,Y,X+W-1,Y+H-1,0,0);St_ABox(X,Y,X+W-1,Y+H-1);
+ CXp:=X+W Div 2;CYp:=Y+H Div 2;
+ St_OSetup;
+ For St_I:=0 To 4 Do Begin
+  Case Dir Of
+   0: St_FastSpan(CYp-3+St_I,CXp-St_I,CXp+St_I,True,False);
+   1: St_FastSpan(CYp+3-St_I,CXp-St_I,CXp+St_I,True,False);
+   2: Begin St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VBar(CXp-3+St_I,CYp-St_I,CXp-3+St_I,CYp+St_I);End;
+  Else Begin
+    St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VBar(CXp+3-St_I,CYp-St_I,CXp+3-St_I,CYp+St_I);End;
+  End;
+ End;
+End;
+Procedure St_DrawWinFrame(H: Integer);
+Var W: ^St_TWin; R,Wk: St_TRect; St_K,X1,Y1,X2,Y2,St_I,TX,Tw: Integer; S: String; St_Top:
+  Boolean;
+    TrackLen,SlLen,SlPos: Integer;
+Begin
+ W:=@St_Wins[H];
+ R:=W^.R;St_K:=W^.Kind;Wk:=St_WorkOf(St_K,R);St_Top:=(St_TopWin=H);
+ St_OSetup;
+ X1:=R.X;Y1:=R.Y;X2:=R.X+R.W-1;Y2:=R.Y+R.H-1;
+ St_ABox(X1,Y1,X2,Y2);
+ If St_HasTitle(St_K) Then Begin
+  St_AFill(X1+1,Y1+1,X2-1,Y1+St_WTITLE_H-1,0,0);
+  If St_Top Then Begin
+   St_OSetup;
+   For St_I:=0 To St_WTITLE_H-4 Do If Odd(St_I) Then
+     St_FastSpan(Y1+2+St_I,X1+2,X2-2,True,False);
+  End;
+  St_FastSpan(Y1+St_WTITLE_H,X1,X2,True,False);
+  TX:=X1+1;
+  If (St_K And St_CLOSER_)<>0 Then Begin
+   St_AFill(X1+1,Y1+1,X1+St_WSCROLL-1,Y1+St_WTITLE_H-1,0,0);St_ABox(X1+1,Y1+1,X1+St_WSCROLL-1,
+     Y1+St_WTITLE_H-1);
+   St_ABox(X1+5,Y1+5,X1+St_WSCROLL-5,Y1+St_WTITLE_H-5);
+   TX:=X1+St_WSCROLL;
+  End;
+  Tw:=X2-1;
+  If (St_K And St_FULLER_)<>0 Then Begin
+   St_AFill(X2-St_WSCROLL+1,Y1+1,X2-1,Y1+St_WTITLE_H-1,0,0);St_ABox(X2-St_WSCROLL+1,Y1+1,X2-1,
+     Y1+St_WTITLE_H-1);
+   St_ABox(X2-St_WSCROLL+5,Y1+5,X2-5,Y1+St_WTITLE_H-5);
+   Tw:=X2-St_WSCROLL;
+  End;
+  If W^.Name<>0 Then Begin
+   S:=St_RdStr(W^.Name,80);
+   If Length(S)*8+8>Tw-TX Then S:=Copy(S,1,(Tw-TX-8) Div 8);
+   St_I:=TX+(Tw-TX-Length(S)*8) Div 2;
+   St_AFill(St_I-4,Y1+1,St_I+Length(S)*8+3,Y1+St_WTITLE_H-1,0,0);
+   St_OText(St_I,Y1+(St_WTITLE_H-8) Div 2+1,S,8,1,False);
+  End;
+ End;
+ If (St_K And St_INFO_)<>0 Then Begin
+  St_I:=Y1+1+(Ord(St_HasTitle(St_K))*St_WTITLE_H);
+  St_AFill(X1+1,St_I,X2-1,St_I+St_WINFO_H-2,0,0);
+  If W^.Info<>0 Then Begin
+   S:=St_RdStr(W^.Info,100);
+   If St_AesTrace And St_VdiTrace Then Begin
+     WriteLn(St_ConOut,'  info line [',S,']');Flush(St_ConOut);End;
+   St_OText(X1+6,St_I+(St_WINFO_H-8) Div 2-1,Copy(S,1,(R.W-12) Div 8),8,1,False);
+  End;
+  St_FastSpan(St_I+St_WINFO_H-1,X1,X2,True,False);
+ End;
+ { barres de defilement }
+ If St_HasVBar(St_K) Then Begin
+  X1:=Wk.X+Wk.W;
+  St_AFill(X1,Wk.Y,X1+St_WSCROLL-1,Wk.Y+Wk.H+Ord(St_HasHBar(St_K))*St_WSCROLL-1,0,0);
+  St_OSetup;St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VBar(X1,Wk.Y,X1,Wk.Y+Wk.H-1+
+    Ord(St_HasHBar(St_K))*St_WSCROLL);
+  Y1:=Wk.Y;Y2:=Wk.Y+Wk.H-1;
+  If (St_K And St_UPARROW_)<>0 Then Begin
+    St_AArrow(X1+1,Y1,St_WSCROLL-1,St_WSCROLL,0);Y1:=Y1+St_WSCROLL;End;
+  If (St_K And St_DNARROW_)<>0 Then Begin
+    St_AArrow(X1+1,Y2-St_WSCROLL+1,St_WSCROLL-1,St_WSCROLL,1);Y2:=Y2-St_WSCROLL;End;
+  If (St_K And St_VSLIDE_)<>0 Then Begin
+   St_OSetup;
+   For St_I:=Y1 To Y2 Do St_FastSpan(St_I,X1+1,X1+St_WSCROLL-1,False,False);
+   For St_I:=Y1 To Y2 Do If Odd(St_I) Then Begin
+    St_FastSpan(St_I,X1+1,X1+St_WSCROLL-1,True,False);
+    St_FastSpan(St_I,X1+1,X1+St_WSCROLL-1,False,False);
+   End;
+   For St_I:=Y1 To Y2 Do Begin
+    St_OSetup;
+    St_VP^.FillInt:=2;St_VP^.FillSty:=4;St_VP^.FillCol:=1;St_VBar(X1+1,St_I,X1+St_WSCROLL-1,St_I);
+   End;
+   TrackLen:=Y2-Y1+1;
+   If W^.VSz<=0 Then SlLen:=TrackLen Else SlLen:=St_Max2(St_WSCROLL,TrackLen*W^.VSz
+     Div 1000);
+   SlPos:=(TrackLen-SlLen)*St_Clamp(W^.VSl,0,1000) Div 1000;
+   St_AFill(X1+1,Y1+SlPos,X1+St_WSCROLL-1,Y1+SlPos+SlLen-1,0,0);
+   St_ABox(X1+1,Y1+SlPos,X1+St_WSCROLL-1,Y1+SlPos+SlLen-1);
+  End;
+ End;
+ If St_HasHBar(St_K) Then Begin
+  Y1:=Wk.Y+Wk.H;
+  St_AFill(Wk.X,Y1,Wk.X+Wk.W-1,Y1+St_WSCROLL-1,0,0);
+  St_OSetup;St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VBar(Wk.X,Y1,Wk.X+Wk.W-1,Y1);
+  X1:=Wk.X;X2:=Wk.X+Wk.W-1;
+  If (St_K And St_LFARROW_)<>0 Then Begin
+    St_AArrow(X1,Y1+1,St_WSCROLL,St_WSCROLL-1,2);X1:=X1+St_WSCROLL;End;
+  If (St_K And St_RTARROW_)<>0 Then Begin
+    St_AArrow(X2-St_WSCROLL+1,Y1+1,St_WSCROLL,St_WSCROLL-1,3);X2:=X2-St_WSCROLL;End;
+  If (St_K And St_HSLIDE_)<>0 Then Begin
+   St_OSetup;
+   For St_I:=X1 To X2 Do Begin
+    St_VP^.FillInt:=2;St_VP^.FillSty:=4;St_VP^.FillCol:=1;St_VBar(St_I,Y1+1,St_I,Y1+St_WSCROLL-1);
+   End;
+   TrackLen:=X2-X1+1;
+   If W^.HSz<=0 Then SlLen:=TrackLen Else SlLen:=St_Max2(St_WSCROLL,TrackLen*W^.HSz
+     Div 1000);
+   SlPos:=(TrackLen-SlLen)*St_Clamp(W^.HSl,0,1000) Div 1000;
+   St_AFill(X1+SlPos,Y1+1,X1+SlPos+SlLen-1,Y1+St_WSCROLL-1,0,0);
+   St_ABox(X1+SlPos,Y1+1,X1+SlPos+SlLen-1,Y1+St_WSCROLL-1);
+  End;
+ End;
+ If ((St_K And St_SIZER_)<>0) Then Begin
+  X1:=Wk.X+Wk.W;Y1:=Wk.Y+Wk.H;
+  If St_HasVBar(St_K) And St_HasHBar(St_K) Then Begin
+   St_AFill(X1,Y1,X1+St_WSCROLL-1,Y1+St_WSCROLL-1,0,0);St_ABox(X1,Y1,X1+St_WSCROLL-1,Y1+
+     St_WSCROLL-1);
+   St_ABox(X1+4,Y1+4,X1+St_WSCROLL-4,Y1+St_WSCROLL-4);
+  End;
+ End;
+End;
+Procedure St_RedrawFrame(H: Integer);
+Var St_I,N,SvN,SvPos: Integer; L,Sv: Array[1..64] Of St_TRect;
+Begin
+ { l'application peut etre en train de parcourir la liste (wind_get
+   FIRST/NEXTXYWH) : on la preserve }
+ SvN:=St_RectN;SvPos:=St_RectPos;
+ For St_I:=1 To SvN Do Sv[St_I]:=St_RectList[St_I];
+ St_VisibleRects(H,St_Wins[H].R);
+ N:=St_RectN;
+ For St_I:=1 To N Do L[St_I]:=St_RectList[St_I];
+ St_RectN:=SvN;St_RectPos:=SvPos;
+ For St_I:=1 To SvN Do St_RectList[St_I]:=Sv[St_I];
+ For St_I:=1 To N Do Begin
+  St_OSetup;St_SetClip(L[St_I].X,L[St_I].Y,L[St_I].X+L[St_I].W-1,L[St_I].Y+L[St_I].H-1);
+  St_DrawWinFrame(H);
+ End;
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+End;
+Procedure St_DrawDesktopRect(X1,Y1,X2,Y2: Integer);
+Var X,Y: Integer;
+Begin
+ St_OSetup;
+ St_SetClip(X1,Y1,X2,Y2);
+ If St_DeskTree<>0 Then Begin
+  St_ObjDrawRec(St_DeskTree,St_DeskStart,8,St_OX(St_DeskTree,St_DeskStart),St_OY(St_DeskTree,St_DeskStart),
+    X1,Y1,X2,Y2);
+  St_OSetup;
+ End Else Begin
+  For Y:=Y1 To Y2 Do
+   For X:=X1 To X2 Do St_BPix(X,Y,Odd(X+Y) Or (Not Odd(X+Y) And False));
+ End;
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+End;
+Procedure St_DrawMenuBarNow; Forward;
+Procedure St_Repaint(R: St_TRect; SendRedraw: Boolean);
+Var St_I,H: Integer; A,P: St_TRect; Wk: St_TRect;
+Begin
+ If Not St_RectInter(R,St_RectMake(0,0,St_SW,St_SH),A) Then Exit;
+ If A.Y<St_MenuH Then Begin
+  St_DrawMenuBarNow;
+  If A.Y+A.H<=St_MenuH Then Begin St_SetClip(0,0,St_SW-1,St_SH-1);Exit;End;
+  A.H:=A.H-(St_MenuH-A.Y);A.Y:=St_MenuH;
+ End;
+ St_DrawDesktopRect(A.X,A.Y,A.X+A.W-1,A.Y+A.H-1);
+ For St_I:=St_NWZ Downto 1 Do Begin
+  H:=St_WZ[St_I];
+  If Not St_Wins[H].Open Then Continue;
+  If St_RectInter(A,St_Wins[H].R,P) Then Begin
+   St_OSetup;St_SetClip(P.X,P.Y,P.X+P.W-1,P.Y+P.H-1);
+   { efface le cadre sous la zone de travail ? non : la zone de travail est
+     redessinee par l'application (WM_REDRAW) apres un fond blanc }
+   St_DrawWinFrame(H);
+   Wk:=St_WinWork(H);
+   If St_RectInter(P,Wk,Wk) Then Begin
+    If SendRedraw Then Begin
+     St_OSetup;St_SetClip(P.X,P.Y,P.X+P.W-1,P.Y+P.H-1);
+     St_OFill(Wk.X,Wk.Y,Wk.X+Wk.W-1,Wk.Y+Wk.H-1,0,0);
+     St_PostMsg(St_Wins[H].Owner,St_WM_REDRAW,H,Wk.X,Wk.Y,Wk.W,Wk.H,0);
+    End;
+   End;
+  End;
+ End;
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+End;
+Procedure St_RepaintAll;
+Begin
+ St_Repaint(St_RectMake(0,0,St_SW,St_SH),True);
+End;
+Var
+ St_ModalLevel : Integer;
+ St_NoBlit     : Boolean;
+Procedure St_VexCall(Addr,D0,D1: LongInt; Var O0,O1: LongInt);
+Var R: LongInt;
+Begin
+ O0:=D0;O1:=D1;
+ If St_InVex Or (Addr=0) Or (Addr=St_STUB_RTS) Or St_BatchMode Then Exit;
+ St_InVex:=True;
+ R:=St_CallGuestEx(Addr,0,D0,D1,0,O0,O1);
+ St_InVex:=False;
+End;
+Procedure St_IkDrain;
+Var St_K,L: Integer; V,O0,O1: LongInt;
+Begin
+ While (St_IkQN>0) And Not St_InVex Do Begin
+  For St_K:=0 To 15 Do St_Wr8(St_IKBD_PKT+St_K,St_IkQPkt[0,St_K]);
+  V:=St_Rd32(St_KBDVECS+St_IkQVec[0]);
+  For L:=1 To St_IkQN-1 Do Begin
+   St_IkQVec[L-1]:=St_IkQVec[L];St_IkQLen[L-1]:=St_IkQLen[L];Move(St_IkQPkt[L],St_IkQPkt[L-1],16);
+  End;
+  Dec(St_IkQN);
+  If (V<>0) And (V<>St_STUB_RTS) Then Begin
+   St_InVex:=True;
+   St_CallGuestEx(V,0,0,0,St_IKBD_PKT,O0,O1);
+   St_InVex:=False;
+  End;
+ End;
+End;
+Procedure St_RecEvent(Kind: Integer; Data: LongInt);
+Var T: LongInt;
+ Procedure Put(St_K: LongInt; V: LongInt);
+ Begin
+  If St_RecPos<St_RecCnt Then Begin
+   St_Wr32(St_RecMem+St_RecPos*8,St_K);St_Wr32(St_RecMem+St_RecPos*8+4,V);Inc(St_RecPos);
+  End;
+ End;
+Begin
+ If (St_RecMem=0) Or (St_RecPos>=St_RecCnt) Then Begin St_RecActive:=False;Exit;End;
+ T:=St_MsNow;
+ If T-St_RecLast>=10 Then Begin Put(0,T-St_RecLast);St_RecLast:=T;End;
+ Put(Kind,Data);
+ If St_RecPos>=St_RecCnt Then St_RecActive:=False;
+End;
+Procedure St_PlayStep;
+Var St_K,V: LongInt;
+Begin
+ If St_PlayMem=0 Then Exit;
+ While St_PlayPos<St_PlayCnt Do Begin
+  St_K:=St_Rd32(St_PlayMem+St_PlayPos*8);V:=St_Rd32(St_PlayMem+St_PlayPos*8+4);
+  Case St_K Of
+   0: Begin
+       If St_BatchMode Then Begin Inc(St_PlayPos);Continue;End;
+       If Not St_PlayWait Then Begin
+        St_PlayDeadline:=St_MsNow+(V*100) Div St_Max2(St_PlayScale,1);St_PlayWait:=True;
+       End;
+       If St_MsNow-St_PlayDeadline>=0 Then Begin
+         St_PlayWait:=False;Inc(St_PlayPos);Continue;End;
+       Exit;
+      End;
+   1: Begin
+       St_SynthB:=V And 3;Inc(St_PlayPos);
+      End;
+   2: Begin
+       St_SynthX:=St_Clamp(St_SExt((V Shr 16) And $FFFF,2),0,St_SW-1);
+       St_SynthY:=St_Clamp(St_SExt(V And $FFFF,2),0,St_SH-1);
+       Inc(St_PlayPos);
+      End;
+   3: Begin
+       St_KQPush((((V Shr 8) And $FF) Shl 16) Or (V And $FF));
+       Inc(St_PlayPos);
+      End;
+  Else Inc(St_PlayPos);
+  End;
+ End;
+ { fin : la souris synthetique est liberee apres la prise en compte du dernier
+   etat }
+ St_SynthRel:=St_SynthMouse;St_PlayMem:=0;
+End;
+Procedure St_PollInput;
+Var NX,NY,NB,T,O0,O1: LongInt; Moved,BtnChg: Boolean;
+Begin
+ St_PollKeys;
+ St_PlayStep;
+ If St_BatchMode Or Not St_GfxOn Then Exit;
+ If St_SynthMouse Then Begin
+  NX:=St_SynthX;NY:=St_SynthY+St_EMU_Y0;NB:=St_SynthB;
+  If St_SynthRel Then Begin St_SynthMouse:=False;St_SynthRel:=False;End;
+ End
+ Else St_GetMouseState(NX,NY,NB);
+ St_MX:=NX;St_MY:=NY;St_MB:=NB;
+ {$IFDEF FPC}
+ If St_CurShown And ((St_MX<>St_CurMX) Or (St_MY<>St_CurMY)) Then St_CursorDraw(St_MX,St_MY);
+ {$ENDIF}
+ St_GMouseX:=St_Clamp(NX,0,St_SW-1);St_GMouseY:=St_Clamp(NY-St_EMU_Y0,0,St_SH-1);
+ St_GMouseB:=NB And 3;
+ Moved:=(St_GMouseX<>St_KbdPrevX) Or (St_GMouseY<>St_KbdPrevY);
+ BtnChg:=St_GMouseB<>St_KbdPrevB;
+ If BtnChg Then Begin
+  { routine vex_butv }
+  St_VexCall(St_VexBut,St_GMouseB,0,O0,O1);
+ End;
+ If Moved Then Begin
+  { routine vex_motv : peut modifier la position }
+  St_VexCall(St_VexMot,St_GMouseX,St_GMouseY,O0,O1);
+  If (O0<>St_GMouseX) Or (O1<>St_GMouseY) Then Begin
+   St_GMouseX:=St_Clamp(St_SExt(O0 And $FFFF,2),0,St_SW-1);St_GMouseY:=St_Clamp(St_SExt(O1 And
+     $FFFF,2),0,St_SH-1);
+  End;
+  If St_UserCursor Then St_VexCall(St_VexCur,St_GMouseX,St_GMouseY,O0,O1);
+ End;
+ { clavier intelligent : paquets souris selon le mode (Initmous, Ikbdws) }
+ If Moved Or BtnChg Then Begin
+  St_IkMouseEvent(St_GMouseX,St_GMouseY,St_GMouseB,St_KbdPrevB);
+  St_IkDrain;
+ End;
+ { appl_trecord }
+ If St_RecActive Then Begin
+  If BtnChg Then St_RecEvent(1,St_GMouseB Or (LongInt(St_Max2(1,St_ClickCount)) Shl 16));
+  If Moved Then St_RecEvent(2,((St_GMouseX And $FFFF) Shl 16) Or (St_GMouseY And $FFFF));
+ End;
+ St_KbdPrevX:=St_GMouseX;St_KbdPrevY:=St_GMouseY;St_KbdPrevB:=St_GMouseB;
+ { minuterie utilisateur vex_timv : 50 Hz }
+ T:=St_MsNow;
+ If (St_VexTim<>St_STUB_RTS) And (St_VexTim<>0) And (T-St_VexTimLast>=20) Then Begin
+  St_VexTimLast:=T;
+  St_VexCall(St_VexTim,0,0,O0,O1);
+ End;
+ If (St_GMouseB And 1)<>0 Then Begin
+  If (St_PrevB And 1)=0 Then Begin
+   T:=St_MsNow;
+   If (T-St_BtnLastTime>=0) And (T-St_BtnLastTime<LongInt(St_DClickSpeed)*80) Then
+     Inc(St_ClickCount)
+   Else St_ClickCount:=1;
+   St_BtnLastTime:=T;
+  End;
+ End;
+ St_PrevB:=St_GMouseB;
+End;
+Procedure St_GemIdle;
+Begin
+ St_PollInput;
+ St_IrqNested;      { le processeur ne tourne pas pendant une attente AES : on
+   livre les interruptions (MonST) }
+ If Not St_BatchMode Then Begin
+  If Not St_NoBlit Then St_BlitScreen(False);
+  Delay(1);
+ End;
+End;
+Procedure St_WaitButtonRelease;
+Begin
+ Repeat St_GemIdle;Until ((St_GMouseB And 3)=0) Or St_UserBreak;
+End;
+Procedure St_SyncSysVars;
+Var T: LongInt;
+Begin
+ St_TickSysVars;
+End;
+Procedure St_DrawMenuBarNow;
+Var Sv: Integer;
+Begin
+ St_OSetup;St_SetClip(0,0,St_SW-1,St_MenuH);
+ St_OFill(0,0,St_SW-1,St_MenuH-1,0,0);
+ St_FastSpan(St_MenuH-1,0,St_SW-1,True,False);
+ If St_MenuTree<>0 Then Begin
+  St_ObjDrawRec(St_MenuTree,St_MenuBar,4,St_OX(St_MenuTree,St_MenuBar)+St_OX(St_MenuTree,0),St_OY(St_MenuTree,
+    St_MenuBar)+St_OY(St_MenuTree,0),
+             0,0,St_SW-1,St_MenuH-1);
+  St_OSetup;St_FastSpan(St_MenuH-1,0,St_SW-1,True,False);
+ End;
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+End;
+Function St_TitleIndexOf(T: LongInt; Title: Integer): Integer;
+Var P,C,St_K: Integer;
+Begin
+ P:=St_OParent(T,Title);St_K:=0;C:=St_OHead(T,P);
+ While C>=0 Do Begin
+  If C=Title Then Begin St_TitleIndexOf:=St_K;Exit;End;
+  Inc(St_K);
+  If C=St_OTail(T,P) Then Break;
+  C:=St_ONext(T,C);
+ End;
+ St_TitleIndexOf:=0;
+End;
+Function St_NthChild(T: LongInt; Parent,N: Integer): Integer;
+Var C,St_K: Integer;
+Begin
+ St_NthChild:=-1;
+ C:=St_OHead(T,Parent);St_K:=0;
+ While C>=0 Do Begin
+  If St_K=N Then Begin St_NthChild:=C;Exit;End;
+  Inc(St_K);
+  If C=St_OTail(T,Parent) Then Break;
+  C:=St_ONext(T,C);
+ End;
+End;
+Function St_ItemSelectable(T: LongInt; St_I: Integer): Boolean;
+Var S: String;
+Begin
+ St_ItemSelectable:=False;
+ If St_OType(T,St_I)<>St_G_STRING Then Exit;
+ If (St_OState(T,St_I) And St_OS_DISABLED)<>0 Then Exit;
+ S:=St_RdStr(St_OSpec(T,St_I),4);
+ If (S<>'') And (S[1]='-') Then Exit;
+ If St_TrimS(S)='' Then Exit;
+ St_ItemSelectable:=True;
+End;
+Function St_AccOfItem(Item: Integer; Var Slot: Integer): Integer;
+Var St_K: Integer;
+Begin
+ St_AccOfItem:=-1;
+ For St_K:=0 To 5 Do
+  If St_AccSlots[St_K]=Item Then Begin Slot:=St_K;St_AccOfItem:=St_K;Exit;End;
+End;
+Function St_MouseOnTitle: Boolean;
+Var St_I: Integer;
+Begin
+ St_MouseOnTitle:=False;
+ If (St_MenuTree=0) Or (St_GMouseY>=St_MenuH) Then Exit;
+ St_I:=St_ObjFind(St_MenuTree,St_MenuBar,4,St_GMouseX,St_GMouseY);
+ St_MouseOnTitle:=(St_I>=0) And (St_OType(St_MenuTree,St_I)=St_G_TITLE);
+End;
+Var
+ St_PopTree,St_PopMenuIdx : LongInt;
+ St_PopScroll : Integer;
+Function St_FindAttach(T: LongInt; Item: Integer): Integer;
+Var St_K: Integer;
+Begin
+ St_FindAttach:=0;
+ For St_K:=1 To St_AttachN Do
+  If (St_AttachTree[St_K]=T) And (St_AttachItem[St_K]=Item) Then Begin
+    St_FindAttach:=St_K;Exit;End;
+End;
+Function St_PopItemFromPoint(T: LongInt; Menu,St_PX,St_PY: Integer): Integer;
+Var St_I: Integer;
+Begin
+ St_I:=St_ObjFind(T,Menu,1,St_PX,St_PY);
+ If (St_I<=0) Or (St_I=Menu) Or Not St_ItemSelectable(T,St_I) Then St_I:=-1;
+ St_PopItemFromPoint:=St_I;
+End;
+Function St_PopupMenu(T: LongInt; Menu,X0,Y0: Integer; Var Item: Integer; Hover:
+  Boolean): Boolean;
+Var Sv: St_TScrSave; BoxR,TopRow,BotRow: St_TRect;
+  W,H,H0,X,Y,Ax,Ay,OldX,OldY,Cur,St_I,St_K,Sc: Integer;
+    Done,Sel,WasDown,Pressed,Opened,SubDone,Scroll: Boolean; St_Kq: LongInt;
+      HoverT,ScrT: LongInt; SubItem: Integer;
+    ItY,LMx,LMy: Integer; N,V,F,Rh,ScrollReq,ScrDelay: Integer;
+    Ch,SaveY,SaveFl: Array[0..255] Of Integer;
+ Procedure Light(St_I: Integer; On_: Boolean);
+ Begin
+  If St_I<0 Then Exit;
+  If On_ Then St_SetOState(T,St_I,St_OState(T,St_I) Or St_OS_SELECTED)
+  Else St_SetOState(T,St_I,St_OState(T,St_I) And Not St_OS_SELECTED);
+  St_ObjRedraw(T,St_I);
+ End;
+ Function IdxOf(C: Integer): Integer;
+ Var J: Integer;
+ Begin
+  IdxOf:=-1;
+  For J:=0 To N-1 Do If Ch[J]=C Then Begin IdxOf:=J;Exit;End;
+ End;
+ { positions et visibilite des elements selon le premier element visible F }
+ Procedure St_Layout;
+ Var J: Integer;
+ Begin
+  If Not Scroll Then Exit;
+  For J:=0 To N-1 Do Begin
+   If (J>=F) And (J<F+V) Then Begin
+    St_Wr16(St_OA(T,Ch[J])+18,((J-F+1)*Rh) And $FFFF);
+    St_Wr16(St_OA(T,Ch[J])+8,SaveFl[J] And Not St_OF_HIDETREE);
+   End Else St_Wr16(St_OA(T,Ch[J])+8,SaveFl[J] Or St_OF_HIDETREE);
+  End;
+ End;
+ Procedure Arrow(Const R: St_TRect; Up: Boolean);
+ Var J,Cx,Cy: Integer;
+ Begin
+  Cx:=R.X+R.W Div 2;Cy:=R.Y+R.H Div 2;
+  For J:=0 To 4 Do
+   If Up Then St_OFill(Cx-J,Cy-3+J,Cx+J,Cy-3+J,7,1)
+   Else St_OFill(Cx-J,Cy+3-J,Cx+J,Cy+3-J,7,1);
+ End;
+ Procedure Render;
+ Begin
+  St_Layout;
+  St_ObjDrawRec(T,Menu,8,X,Y,X-2,Y-2,X+W+4,Y+H+4);
+  St_OSetup;
+  If Scroll Then Begin
+   If F>0 Then Arrow(TopRow,True);
+   If F<N-V Then Arrow(BotRow,False);
+  End;
+  St_OFrameRect(X,Y,X+W-1,Y+H-1,1);
+  St_OFill(X+3,Y+H,X+W+2,Y+H+2,7,1);
+  St_OFill(X+W,Y+3,X+W+2,Y+H-1,7,1);
+  St_SetClip(0,0,St_SW-1,St_SH-1);
+ End;
+ Procedure ScrollTo(NewF: Integer);
+ Begin
+  NewF:=St_Clamp(NewF,0,St_Max2(0,N-V));
+  If NewF=F Then Exit;
+  If Cur>=0 Then Begin St_SetOState(T,Cur,St_OState(T,Cur) And Not
+    St_OS_SELECTED);Cur:=-1;End;
+  F:=NewF;ScrT:=St_MsNow;LMx:=-1;
+  Render;
+ End;
+ Procedure Nav(Dir: Integer);
+ Var L: Array[0..255] Of Integer; M,P,C,Idx: Integer;
+ Begin
+  M:=0;P:=-1;
+  For C:=0 To N-1 Do
+   If St_ItemSelectable(T,Ch[C]) Then Begin
+    If Ch[C]=Cur Then P:=M;
+    L[M]:=Ch[C];Inc(M);
+   End;
+  If M=0 Then Exit;
+  If P<0 Then Begin If Dir>0 Then P:=0 Else P:=M-1;End
+  Else P:=(P+Dir+M) Mod M;
+  If Cur>=0 Then Light(Cur,False);
+  Cur:=L[P];
+  If Scroll Then Begin
+   Idx:=IdxOf(Cur);
+   If Idx<F Then Begin F:=Idx;Render;End
+   Else If Idx>=F+V Then Begin F:=Idx-V+1;Render;End;
+  End;
+  Light(Cur,True);HoverT:=St_MsNow;
+ End;
+Begin
+ St_PopupMenu:=False;St_PopSel:=-1;SubDone:=False;LMx:=-1;LMy:=-1;St_PopTree:=T;
+   St_PopMenuIdx:=Menu;
+ ScrollReq:=St_PopScroll;St_PopScroll:=0;
+ { liste des elements }
+ N:=0;St_K:=St_OHead(T,Menu);
+ While (St_K>=0) And (N<256) Do Begin
+  Ch[N]:=St_K;SaveY[N]:=St_SExt(St_Rd16(St_OA(T,St_K)+18),2);SaveFl[N]:=St_Rd16(St_OA(T,St_K)+8);Inc(N);
+  If St_K=St_OTail(T,Menu) Then Break;
+  St_K:=St_ONext(T,St_K);
+ End;
+ W:=St_OW(T,Menu);H0:=St_OH(T,Menu);H:=H0;
+ Scroll:=False;V:=N;F:=0;Rh:=0;
+ If N>0 Then Rh:=St_OH(T,Ch[0]);
+ If (ScrollReq<>0) And (Rh>0) Then Begin
+  V:=St_Min2(St_Clamp(St_MenuSet[4],3,64),((St_SH-St_MenuH-8) Div Rh)-2);
+  If V<3 Then V:=3;
+  If N>V Then Begin
+   Scroll:=True;H:=(V+2)*Rh;
+   If Item>0 Then Begin St_K:=IdxOf(Item);If St_K>=0 Then F:=St_Clamp(St_K-V Div
+     2,0,N-V);End;
+  End;
+ End;
+ ScrDelay:=St_MenuSet[3];If ScrDelay<=0 Then ScrDelay:=50;
+ X:=St_Clamp(X0,0,St_Max2(0,St_SW-W-4));Y:=St_Clamp(Y0,St_MenuH,St_Max2(St_MenuH,St_SH-H-4));
+ OldX:=St_SExt(St_Rd16(St_OA(T,Menu)+16),2);OldY:=St_SExt(St_Rd16(St_OA(T,Menu)+18),2);
+ St_ObjOffset(T,Menu,Ax,Ay);
+ St_Wr16(St_OA(T,Menu)+16,(OldX+X-Ax) And $FFFF);St_Wr16(St_OA(T,Menu)+18,(OldY+Y-Ay) And
+   $FFFF);
+ If Scroll Then St_Wr16(St_OA(T,Menu)+22,H And $FFFF);
+ BoxR:=St_RectMake(X,Y,W,H);
+ TopRow:=St_RectMake(X,Y,W,Rh);BotRow:=St_RectMake(X,Y+H-Rh,W,Rh);
+ St_ScrSave(X-2,Y-2,X+W+4,Y+H+4,Sv);
+ Render;
+ Cur:=-1;Done:=False;Sel:=False;WasDown:=(St_GMouseB And
+   1)<>0;Opened:=False;HoverT:=St_MsNow;ScrT:=St_MsNow;
+ If (Item>0) And (Not Scroll Or ((IdxOf(Item)>=F) And (IdxOf(Item)<F+V))) Then
+   Begin Cur:=Item;Light(Cur,True);End;
+ Repeat
+  St_PollInput;
+  St_I:=-1;
+  If St_InRect(St_GMouseX,St_GMouseY,BoxR) Then Begin
+   St_I:=St_PopItemFromPoint(T,Menu,St_GMouseX,St_GMouseY);
+   Opened:=True;
+  End Else If Hover And Opened Then Done:=True;
+  If (St_GMouseX<>LMx) Or (St_GMouseY<>LMy) Then Begin
+   LMx:=St_GMouseX;LMy:=St_GMouseY;
+   If (St_I<>Cur) And ((St_I>=0) Or Not Hover) Then Begin
+    Light(Cur,False);Cur:=St_I;Light(Cur,True);HoverT:=St_MsNow;
+   End;
+  End;
+  { defilement : la souris sur la fleche haute ou basse }
+  If Scroll And (St_MsNow-ScrT>=ScrDelay) Then Begin
+   If St_InRect(St_GMouseX,St_GMouseY,TopRow) And (F>0) Then ScrollTo(F-1)
+   Else If St_InRect(St_GMouseX,St_GMouseY,BotRow) And (F<N-V) Then ScrollTo(F+1);
+  End;
+  { clavier }
+  While Not St_KQEmpty Do Begin
+   St_Kq:=St_KQPop;Sc:=(St_Kq Shr 16) And $FF;
+   Case Sc Of
+    1: Begin Done:=True;Sel:=False;Cur:=-1;End;
+    28,114: If Cur>=0 Then Begin Sel:=True;Done:=True;End;
+    72: Nav(-1);
+    80: Nav(1);
+    73: If Scroll Then ScrollTo(F-V);
+    81: If Scroll Then ScrollTo(F+V);
+   End;
+  End;
+  Pressed:=(St_GMouseB And 1)<>0;
+  If Cur>=0 Then Begin
+   If (Pressed And Not WasDown) Or ((Not Pressed) And WasDown And
+     St_InRect(St_GMouseX,St_GMouseY,BoxR) And
+      (Not Hover Or (St_MsNow-HoverT>150))) Then Begin Sel:=True;Done:=True;End;
+  End;
+  { sous-menu attache a l'element }
+  If (Not Done) And (Cur>=0) Then Begin
+   St_K:=St_FindAttach(T,Cur);
+   If (St_K>0) And ((St_MsNow-HoverT>=St_MenuSet[0]) Or (Pressed And Not WasDown)) Then
+     Begin
+    St_ObjOffset(T,Cur,Ax,ItY);
+    SubItem:=St_AttachSubItem[St_K];
+    If St_PopupMenu(St_AttachSub[St_K],St_AttachBox[St_K],X+W-3,ItY,SubItem,True) Then Begin
+     Sel:=True;Done:=True;SubDone:=True;
+    End Else HoverT:=St_MsNow;
+    Pressed:=(St_GMouseB And 1)<>0;
+   End;
+  End;
+  If Done And Sel And Not SubDone And (Cur>=0) And (St_FindAttach(T,Cur)>0) Then
+    Begin Done:=False;Sel:=False;End;
+  If (Not Hover) And (Pressed And Not WasDown) And Not
+    St_InRect(St_GMouseX,St_GMouseY,BoxR) Then Begin Done:=True;Sel:=False;End;
+  WasDown:=Pressed;
+  If Not St_NoBlit Then St_BlitScreen(False);
+  If Not Done Then Delay(1);
+ Until Done Or St_UserBreak;
+ If Cur>=0 Then St_SetOState(T,Cur,St_OState(T,Cur) And Not St_OS_SELECTED);
+ St_ScrRestore(Sv);
+ { remet l'arbre dans son etat d'origine }
+ If Scroll Then Begin
+  For St_K:=0 To N-1 Do Begin
+   St_Wr16(St_OA(T,Ch[St_K])+18,SaveY[St_K] And $FFFF);St_Wr16(St_OA(T,Ch[St_K])+8,SaveFl[St_K]);
+  End;
+  St_Wr16(St_OA(T,Menu)+22,H0 And $FFFF);
+ End;
+ St_Wr16(St_OA(T,Menu)+16,OldX And $FFFF);St_Wr16(St_OA(T,Menu)+18,OldY And $FFFF);
+ If Sel And (Cur>=0) Then Begin
+  If Not SubDone Then Begin St_PopTree:=T;St_PopSel:=Cur;St_PopMenuIdx:=Menu;End;
+  Item:=St_PopSel;St_PopupMenu:=True;
+ End Else Begin Item:=-1;End;
+ St_PopScroll:=F;
+ If Sel Then Begin While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do St_GemIdle;End;
+End;
+Procedure St_MenuTrack;
+Var Active,St_Box,Item,T,St_I,Screen,Prev: Integer; Sv: St_TScrSave;
+  Saved,Done,Selected,InBar,St_InBox,WasDown,SubSel: Boolean;
+    HoverItem,SubItem,Ak,Ix,Iy: Integer; HoverT: LongInt;
+    BoxR: St_TRect; MXp,MYp: Integer; X,Y: Integer; Target: Integer; Slot,Ac:
+      Integer;
+ Procedure CloseBox;
+ Begin
+  If Saved Then Begin St_ScrRestore(Sv);Saved:=False;End;
+  If Item>=0 Then Begin St_SetOState(St_MenuTree,Item,St_OState(St_MenuTree,Item) And Not
+    St_OS_SELECTED);Item:=-1;End;
+ End;
+ Procedure OpenBox(Tt: Integer);
+ Var St_K: Integer; Bx: Integer;
+ Begin
+  Active:=Tt;
+  St_SetOState(St_MenuTree,Tt,St_OState(St_MenuTree,Tt) Or St_OS_SELECTED);
+  St_ObjRedraw(St_MenuTree,Tt);
+  Screen:=St_ONext(St_MenuTree,St_MenuBar);
+  St_K:=St_TitleIndexOf(St_MenuTree,Tt);
+  St_Box:=St_NthChild(St_MenuTree,Screen,St_K);
+  If St_Box>=0 Then Begin
+   St_ObjOffset(St_MenuTree,St_Box,X,Y);
+   BoxR:=St_RectMake(X,Y,St_OW(St_MenuTree,St_Box),St_OH(St_MenuTree,St_Box));
+   St_ScrSave(X-2,Y-2,X+BoxR.W+4,Y+BoxR.H+4,Sv);Saved:=True;
+   St_ObjDrawRec(St_MenuTree,St_Box,8,X,Y,X-2,Y-2,X+BoxR.W+4,Y+BoxR.H+4);
+   St_OSetup;St_OFrameRect(X,Y,X+BoxR.W-1,Y+BoxR.H-1,1);
+   St_OFill(X+3,Y+BoxR.H,X+BoxR.W+2,Y+BoxR.H+2,7,1);
+   St_OFill(X+BoxR.W,Y+3,X+BoxR.W+2,Y+BoxR.H-1,7,1);
+   St_SetClip(0,0,St_SW-1,St_SH-1);
+  End;
+ End;
+Begin
+ If St_MenuTree=0 Then Exit;
+ Active:=-1;St_Box:=-1;Item:=-1;Saved:=False;Done:=False;Selected:=False;SubSel:=
+   False;HoverItem:=-1;HoverT:=St_MsNow;
+ WasDown:=(St_GMouseB And 1)<>0;
+ Repeat
+  St_PollInput;
+  MXp:=St_GMouseX;MYp:=St_GMouseY;
+  InBar:=MYp<St_MenuH;
+  T:=-1;
+  If InBar Then Begin
+   St_I:=St_ObjFind(St_MenuTree,St_MenuBar,4,MXp,MYp);
+   If (St_I>=0) And (St_OType(St_MenuTree,St_I)=St_G_TITLE) Then T:=St_I;
+  End;
+  If (T>=0) And (T<>Active) Then Begin
+   If Active>=0 Then Begin
+    CloseBox;
+    St_SetOState(St_MenuTree,Active,St_OState(St_MenuTree,Active) And Not St_OS_SELECTED);
+    St_ObjRedraw(St_MenuTree,Active);
+   End;
+   OpenBox(T);
+  End;
+  St_InBox:=False;Prev:=Item;
+  If (Active>=0) And (St_Box>=0) Then Begin
+   St_InBox:=St_InRect(MXp,MYp,BoxR);
+   If St_InBox Then Begin
+    St_I:=St_ObjFind(St_MenuTree,St_Box,1,MXp,MYp);
+    If (St_I<=0) Or (St_I=St_Box) Or Not St_ItemSelectable(St_MenuTree,St_I) Then St_I:=-1;
+   End Else St_I:=-1;
+   If St_I<>Item Then Begin
+    If Item>=0 Then Begin
+     St_SetOState(St_MenuTree,Item,St_OState(St_MenuTree,Item) And Not
+       St_OS_SELECTED);St_ObjRedraw(St_MenuTree,Item);
+    End;
+    Item:=St_I;
+    If Item>=0 Then Begin
+     St_SetOState(St_MenuTree,Item,St_OState(St_MenuTree,Item) Or
+       St_OS_SELECTED);St_ObjRedraw(St_MenuTree,Item);
+    End;
+   End;
+  End;
+  If Item<>HoverItem Then Begin HoverItem:=Item;HoverT:=St_MsNow;End;
+  If (Item>=0) And (St_AttachN>0) Then Begin
+   Ak:=St_FindAttach(St_MenuTree,Item);
+   If (Ak>0) And ((St_MsNow-HoverT>=St_MenuSet[0]) Or (((St_GMouseB And 1)<>0) And Not
+     WasDown)) Then Begin
+    St_ObjOffset(St_MenuTree,Item,Ix,Iy);
+    SubItem:=St_AttachSubItem[Ak];St_PopScroll:=0;
+    If St_PopupMenu(St_AttachSub[Ak],St_AttachBox[Ak],BoxR.X+BoxR.W-3,Iy,SubItem,True)
+      Then Begin
+     SubSel:=True;Selected:=True;Done:=True;
+    End Else Begin HoverT:=St_MsNow;WasDown:=(St_GMouseB And 1)<>0;End;
+   End;
+  End;
+  If (Item>=0) And Not Done And (St_AttachN>0) And (St_FindAttach(St_MenuTree,Item)>0)
+    Then Begin End
+  Else If Item>=0 Then Begin
+   If ((St_GMouseB And 1)<>0) And Not WasDown Then Begin
+     Selected:=True;Done:=True;End;
+   If ((St_GMouseB And 1)=0) And WasDown Then Begin Selected:=True;Done:=True;End;
+  End;
+  WasDown:=(St_GMouseB And 1)<>0;
+  If (Not InBar) And (Not St_InBox) Then Done:=True;
+  If (Active<0) And (Not InBar Or (T<0)) Then Done:=True;
+  If Not St_NoBlit Then St_BlitScreen(False);
+  If Not Done Then Delay(1);
+ Until Done Or St_UserBreak;
+ Target:=Item;
+ If Saved Then Begin St_ScrRestore(Sv);Saved:=False;End;
+ If Selected And (Item>=0) Then Begin
+  { le menu Desk : elements d'accessoires }
+  Ac:=-1;
+  If St_TitleIndexOf(St_MenuTree,Active)=0 Then Ac:=St_AccOfItem(Item,Slot);
+  St_SetOState(St_MenuTree,Item,St_OState(St_MenuTree,Item) And Not St_OS_SELECTED);
+  If Ac>=0 Then Begin
+   St_SetOState(St_MenuTree,Active,St_OState(St_MenuTree,Active) And Not St_OS_SELECTED);
+   St_ObjRedraw(St_MenuTree,Active);
+   St_PostMsg(St_AccProc[Ac],St_AC_OPEN,0,St_Procs[St_AccProc[Ac]].MenuId,0,0,0,0);
+  End Else
+   If SubSel Then St_PostMsg(St_MenuOwner,St_MN_SELECTED,Active,St_PopSel,St_PopTree Shr
+     16,St_PopTree And $FFFF,St_PopMenuIdx,0)
+   Else St_PostMsg(St_MenuOwner,St_MN_SELECTED,Active,Item,St_MenuTree Shr 16,St_MenuTree And
+     $FFFF,St_Box,0);
+  St_ButtonTaken:=True;
+ End Else If Active>=0 Then Begin
+  St_SetOState(St_MenuTree,Active,St_OState(St_MenuTree,Active) And Not St_OS_SELECTED);
+  St_ObjRedraw(St_MenuTree,Active);
+ End;
+ If Item>=0 Then Begin End;
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+ St_DrawMenuBarNow;
+End;
+Procedure St_XorFrame(X,Y,W,H: Integer);
+Begin
+ St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);
+ St_VP^.WrMode:=St_WM_XOR;St_VP^.FillInt:=1;St_VP^.FillCol:=1;
+ If (W<2) Or (H<2) Then Exit;
+ St_VBar(X,Y,X+W-1,Y);St_VBar(X,Y+H-1,X+W-1,Y+H-1);
+ If H>2 Then Begin St_VBar(X,Y+1,X,Y+H-2);St_VBar(X+W-1,Y+1,X+W-1,Y+H-2);End;
+ St_VP^.WrMode:=St_WM_REPL;
+End;
+Procedure St_DragBox(W,H,SX,SY: Integer; Const Bound: St_TRect; Var RX,RY: Integer);
+Var OXx,OYy,NXx,NYy,DX,DY: Integer; Drawn: Boolean;
+Begin
+ DX:=St_GMouseX-SX;DY:=St_GMouseY-SY;
+ OXx:=SX;OYy:=SY;
+ St_XorFrame(OXx,OYy,W,H);Drawn:=True;
+ While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do Begin
+  St_GemIdle;
+  NXx:=St_Clamp(St_GMouseX-DX,Bound.X,St_Max2(Bound.X,Bound.X+Bound.W-W));
+  NYy:=St_Clamp(St_GMouseY-DY,Bound.Y,St_Max2(Bound.Y,Bound.Y+Bound.H-H));
+  If (NXx<>OXx) Or (NYy<>OYy) Then Begin
+   St_XorFrame(OXx,OYy,W,H);
+   OXx:=NXx;OYy:=NYy;
+   St_XorFrame(OXx,OYy,W,H);
+  End;
+ End;
+ St_XorFrame(OXx,OYy,W,H);
+ RX:=OXx;RY:=OYy;
+End;
+Procedure St_RubberBox(X,Y,MinW,MinH: Integer; Var RW,RH: Integer);
+Var NW,NH,OW_,OH_: Integer;
+Begin
+ OW_:=St_Max2(MinW,1);OH_:=St_Max2(MinH,1);
+ St_XorFrame(X,Y,OW_,OH_);
+ While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do Begin
+  St_GemIdle;
+  NW:=St_Max2(MinW,St_GMouseX-X+1);NH:=St_Max2(MinH,St_GMouseY-Y+1);
+  If (NW<>OW_) Or (NH<>OH_) Then Begin
+   St_XorFrame(X,Y,OW_,OH_);OW_:=NW;OH_:=NH;St_XorFrame(X,Y,OW_,OH_);
+  End;
+ End;
+ St_XorFrame(X,Y,OW_,OH_);
+ RW:=OW_;RH:=OH_;
+End;
+Procedure St_GrowShrink(Const A,B: St_TRect);
+Var St_I: Integer; R: St_TRect;
+Begin
+ For St_I:=1 To 6 Do Begin
+  R.X:=A.X+(B.X-A.X)*St_I Div 6;R.Y:=A.Y+(B.Y-A.Y)*St_I Div 6;
+  R.W:=A.W+(B.W-A.W)*St_I Div 6;R.H:=A.H+(B.H-A.H)*St_I Div 6;
+  St_XorFrame(R.X,R.Y,R.W,R.H);
+  If Not St_BatchMode Then Begin St_BlitScreen(False);Delay(8);End;
+  St_XorFrame(R.X,R.Y,R.W,R.H);
+ End;
+ If Not St_BatchMode Then St_BlitScreen(False);
+End;
+Function St_WatchBox(T: LongInt; Obj,InSt,OutSt: Integer): Boolean;
+Var Inside,Was: Boolean; X,Y: Integer;
+Begin
+ St_ObjOffset(T,Obj,X,Y);
+ Was:=True;
+ St_SetOState(T,Obj,InSt);St_ObjRedraw(T,Obj);
+ While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do Begin
+  St_GemIdle;
+  Inside:=St_InRect(St_GMouseX,St_GMouseY,St_RectMake(X,Y,St_OW(T,Obj),St_OH(T,Obj)));
+  If Inside<>Was Then Begin
+   If Inside Then St_SetOState(T,Obj,InSt) Else St_SetOState(T,Obj,OutSt);
+   St_ObjRedraw(T,Obj);
+   Was:=Inside;
+  End;
+ End;
+ St_WatchBox:=Was;
+End;
+Function St_SlideBox(T: LongInt; Par,Obj,Vh: Integer): Integer;
+Var St_Px,St_Py,St_Ox,St_Oy,St_Pw,Ph,Ow_,Oh_,Gx,Gy,Nx,Ny,Cx,Cy,Den: Integer;
+Begin
+ St_ObjOffset(T,Par,St_Px,St_Py);St_ObjOffset(T,Obj,St_Ox,St_Oy);
+ St_Pw:=St_OW(T,Par);Ph:=St_OH(T,Par);Ow_:=St_OW(T,Obj);Oh_:=St_OH(T,Obj);
+ { point saisi dans le curseur }
+ Gx:=St_GMouseX-St_Ox;Gy:=St_GMouseY-St_Oy;
+ If (Gx<0) Or (Gx>=Ow_) Then Gx:=Ow_ Div 2;
+ If (Gy<0) Or (Gy>=Oh_) Then Gy:=Oh_ Div 2;
+ Cx:=St_Ox;Cy:=St_Oy;
+ St_XorFrame(Cx,Cy,Ow_,Oh_);
+ While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do Begin
+  St_GemIdle;
+  Nx:=Cx;Ny:=Cy;
+  If Vh=0 Then Nx:=St_Clamp(St_GMouseX-Gx,St_Px,St_Max2(St_Px,St_Px+St_Pw-Ow_))
+  Else Ny:=St_Clamp(St_GMouseY-Gy,St_Py,St_Max2(St_Py,St_Py+Ph-Oh_));
+  If (Nx<>Cx) Or (Ny<>Cy) Then Begin
+   St_XorFrame(Cx,Cy,Ow_,Oh_);Cx:=Nx;Cy:=Ny;St_XorFrame(Cx,Cy,Ow_,Oh_);
+  End;
+ End;
+ St_XorFrame(Cx,Cy,Ow_,Oh_);
+ If Vh=0 Then Begin Den:=St_Pw-Ow_;If Den<=0 Then St_SlideBox:=0 Else
+   St_SlideBox:=((Cx-St_Px)*1000+Den Div 2) Div Den;End
+ Else Begin Den:=Ph-Oh_;If Den<=0 Then St_SlideBox:=0 Else
+   St_SlideBox:=((Cy-St_Py)*1000+Den Div 2) Div Den;End;
+End;
+Function St_WinCreate(Kind: Integer; Const Full: St_TRect): Integer;
+Var H: Integer;
+Begin
+ St_WinCreate:=-1;
+ For H:=1 To St_MAXWIN-1 Do
+  If Not St_Wins[H].Used Then Begin
+   FillChar(St_Wins[H],SizeOf(St_TWin),0);
+   St_Wins[H].Used:=True;St_Wins[H].Kind:=Kind;St_Wins[H].Owner:=St_CurProc;
+   St_Wins[H].Full:=Full;St_Wins[H].R:=Full;St_Wins[H].Prev:=Full;
+   St_Wins[H].HSl:=0;St_Wins[H].VSl:=0;St_Wins[H].HSz:=-1;St_Wins[H].VSz:=-1;
+   St_WinCreate:=H;
+   Exit;
+  End;
+End;
+Procedure St_WinOpen(H: Integer; R: St_TRect);
+Begin
+ If (H<1) Or (H>=St_MAXWIN) Or Not St_Wins[H].Used Or St_Wins[H].Open Then Exit;
+ If R.X<0 Then R.X:=0;If R.Y<St_MenuH Then R.Y:=St_MenuH;
+ If R.X+R.W>St_SW Then R.W:=St_SW-R.X;
+ If R.Y+R.H>St_SH Then R.H:=St_SH-R.Y;
+ St_Wins[H].R:=R;St_Wins[H].Prev:=R;St_Wins[H].Open:=True;
+ St_ZToTop(H);
+ St_GrowShrink(St_RectMake(R.X+R.W Div 2,R.Y+R.H Div 2,2,2),R);
+ St_Repaint(R,True);
+End;
+Procedure St_WinClose(H: Integer);
+Var R: St_TRect;
+Begin
+ If (H<1) Or (H>=St_MAXWIN) Or Not St_Wins[H].Open Then Exit;
+ R:=St_Wins[H].R;
+ St_GrowShrink(R,St_RectMake(R.X+R.W Div 2,R.Y+R.H Div 2,2,2));
+ St_Wins[H].Open:=False;
+ St_ZRemove(H);
+ St_Repaint(R,True);
+End;
+Procedure St_WinDelete(H: Integer);
+Begin
+ If (H<1) Or (H>=St_MAXWIN) Then Exit;
+ If St_Wins[H].Open Then St_WinClose(H);
+ St_Wins[H].Used:=False;
+End;
+Procedure St_WinSetRect(H: Integer; R: St_TRect);
+Var Old,U: St_TRect; Sz: Boolean;
+Begin
+ If (H<1) Or (H>=St_MAXWIN) Or Not St_Wins[H].Used Then Exit;
+ Old:=St_Wins[H].R;
+ St_Wins[H].Prev:=Old;
+ St_Wins[H].R:=R;
+ If St_Wins[H].Open Then Begin
+  { zone anciennement couverte, non recouverte par la nouvelle : redessin
+    complet ; la fenetre elle-meme : redessinee avec contenu }
+  St_Repaint(Old,True);
+  St_Repaint(R,True);
+ End;
+End;
+Procedure St_WinTop(H: Integer);
+Var OldTop: Integer;
+Begin
+ If (H<1) Or (H>=St_MAXWIN) Or Not St_Wins[H].Open Then Exit;
+ If St_TopWin=H Then Exit;
+ St_ZToTop(H);
+ St_Repaint(St_Wins[H].R,True);
+End;
+Function St_WinFind(X,Y: Integer): Integer;
+Var St_I,H: Integer;
+Begin
+ St_WinFind:=0;
+ For St_I:=1 To St_NWZ Do Begin
+  H:=St_WZ[St_I];
+  If St_Wins[H].Open And St_InRect(X,Y,St_Wins[H].R) Then Begin St_WinFind:=H;Exit;End;
+ End;
+End;
+Function St_WatchBoxRect(X,Y,W,H: Integer): Boolean;
+Var Inside,Was: Boolean;
+Begin
+ Was:=True;
+ St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VP^.WrMode:=St_WM_XOR;
+ St_VBar(X,Y,X+W-1,Y+H-1);
+ While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do Begin
+  St_GemIdle;
+  Inside:=St_InRect(St_GMouseX,St_GMouseY,St_RectMake(X,Y,W,H));
+  If Inside<>Was Then Begin
+   St_OSetup;St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VP^.WrMode:=St_WM_XOR;
+   St_VBar(X,Y,X+W-1,Y+H-1);Was:=Inside;
+  End;
+ End;
+ If Was Then Begin
+   St_OSetup;St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VP^.WrMode:=St_WM_XOR;St_VBar(X,Y,X+W-1,Y+
+   H-1);End;
+ St_OSetup;
+ St_WatchBoxRect:=Was;
+End;
+Procedure St_SliderMsg(H: Integer; Vert: Boolean);
+Var W: ^St_TWin; Wk: St_TRect; St_K,X1,Y1,X2,Y2,Track,SlLen,SlPos,Pos0,Off,Sz: Integer;
+  Pos: LongInt; Start: Integer;
+    Done: Boolean; DX,DY: Integer; NewPos: Integer;
+Begin
+ W:=@St_Wins[H];Wk:=St_WinWork(H);St_K:=W^.Kind;
+ If Vert Then Begin
+  Y1:=Wk.Y;Y2:=Wk.Y+Wk.H-1;
+  If (St_K And St_UPARROW_)<>0 Then Y1:=Y1+St_WSCROLL;
+  If (St_K And St_DNARROW_)<>0 Then Y2:=Y2-St_WSCROLL;
+  Track:=Y2-Y1+1;
+  If W^.VSz<=0 Then SlLen:=Track Else SlLen:=St_Max2(St_WSCROLL,Track*W^.VSz Div
+    1000);
+  SlPos:=(Track-SlLen)*St_Clamp(W^.VSl,0,1000) Div 1000;
+  Off:=St_GMouseY-(Y1+SlPos);
+  Start:=St_GMouseY;
+ End Else Begin
+  X1:=Wk.X;X2:=Wk.X+Wk.W-1;
+  If (St_K And St_LFARROW_)<>0 Then X1:=X1+St_WSCROLL;
+  If (St_K And St_RTARROW_)<>0 Then X2:=X2-St_WSCROLL;
+  Track:=X2-X1+1;
+  If W^.HSz<=0 Then SlLen:=Track Else SlLen:=St_Max2(St_WSCROLL,Track*W^.HSz Div
+    1000);
+  SlPos:=(Track-SlLen)*St_Clamp(W^.HSl,0,1000) Div 1000;
+  Off:=St_GMouseX-(X1+SlPos);
+ End;
+ While ((St_GMouseB And 1)<>0) And Not St_UserBreak Do St_GemIdle;
+ If Vert Then Begin
+  Pos:=St_GMouseY-Off-Y1;
+  If Track-SlLen>0 Then NewPos:=St_Clamp(Pos*1000 Div (Track-SlLen),0,1000) Else
+    NewPos:=0;
+  St_PostMsg(W^.Owner,St_WM_VSLID,H,NewPos,0,0,0,0);
+ End Else Begin
+  Pos:=St_GMouseX-Off-X1;
+  If Track-SlLen>0 Then NewPos:=St_Clamp(Pos*1000 Div (Track-SlLen),0,1000) Else
+    NewPos:=0;
+  St_PostMsg(W^.Owner,St_WM_HSLID,H,NewPos,0,0,0,0);
+ End;
+End;
+Function St_ScreenManagerClick: Boolean;
+Var H,St_K,Z: Integer; W: ^St_TWin; R,Wk: St_TRect; X,Y,NX,NY,NW,NH,RW,RH: Integer;
+  Bound: St_TRect; Ok: Boolean;
+    X1,Y1,X2,Y2,Arrow,Own: Integer; SlLen,Track,SlPos: Integer;
+Begin
+ St_ScreenManagerClick:=False;
+ X:=St_GMouseX;Y:=St_GMouseY;
+ If (St_MenuTree<>0) And (Y<St_MenuH) Then Begin
+  St_ScreenManagerClick:=True;Exit;
+ End;
+ H:=St_WinFind(X,Y);
+ If H=0 Then Exit;
+ W:=@St_Wins[H];St_K:=W^.Kind;R:=W^.R;Wk:=St_WinWork(H);
+ Own:=W^.Owner;
+ If St_InRect(X,Y,Wk) Then Begin
+  If St_TopWin<>H Then Begin
+   St_PostMsg(Own,St_WM_TOPPED,H,0,0,0,0,0);
+   St_ScreenManagerClick:=True;
+  End;
+  Exit;
+ End;
+ St_ScreenManagerClick:=True;
+ If St_TopWin<>H Then Begin St_PostMsg(Own,St_WM_TOPPED,H,0,0,0,0,0);Exit;End;
+ { barre de titre }
+ If St_HasTitle(St_K) And (Y<R.Y+St_WTITLE_H) Then Begin
+  If ((St_K And St_CLOSER_)<>0) And (X<R.X+St_WSCROLL) Then Begin
+   Ok:=St_WatchBoxRect(R.X+1,R.Y+1,St_WSCROLL-1,St_WTITLE_H-1);
+   If Ok Then St_PostMsg(Own,St_WM_CLOSED,H,0,0,0,0,0);
+   Exit;
+  End;
+  If ((St_K And St_FULLER_)<>0) And (X>=R.X+R.W-St_WSCROLL) Then Begin
+   Ok:=St_WatchBoxRect(R.X+R.W-St_WSCROLL+1,R.Y+1,St_WSCROLL-1,St_WTITLE_H-1);
+   If Ok Then St_PostMsg(Own,St_WM_FULLED,H,0,0,0,0,0);
+   Exit;
+  End;
+  If (St_K And St_MOVER_)<>0 Then Begin
+   Bound:=St_RectMake(0,St_MenuH,St_SW,St_SH-St_MenuH);
+   St_DragBox(R.W,R.H,R.X,R.Y,St_RectMake(-R.W+40,St_MenuH,St_SW+R.W-80,St_SH),NX,NY);
+   If (NX<>R.X) Or (NY<>R.Y) Then St_PostMsg(Own,St_WM_MOVED,H,NX,NY,R.W,R.H,0);
+  End;
+  Exit;
+ End;
+ { barres de defilement }
+ If St_HasVBar(St_K) And (X>=Wk.X+Wk.W) And (X<Wk.X+Wk.W+St_WSCROLL) And (Y>=Wk.Y) And
+   (Y<Wk.Y+Wk.H) Then Begin
+  Y1:=Wk.Y;Y2:=Wk.Y+Wk.H-1;
+  If ((St_K And St_UPARROW_)<>0) And (Y<Y1+St_WSCROLL) Then Begin
+   Ok:=St_WatchBoxRect(Wk.X+Wk.W+1,Wk.Y,St_WSCROLL-1,St_WSCROLL);
+   If Ok Then St_PostMsg(Own,St_WM_ARROWED,H,2,0,0,0,0);Exit;
+  End;
+  If ((St_K And St_DNARROW_)<>0) And (Y>Y2-St_WSCROLL) Then Begin
+   Ok:=St_WatchBoxRect(Wk.X+Wk.W+1,Y2-St_WSCROLL+1,St_WSCROLL-1,St_WSCROLL);
+   If Ok Then St_PostMsg(Own,St_WM_ARROWED,H,3,0,0,0,0);Exit;
+  End;
+  If (St_K And St_UPARROW_)<>0 Then Y1:=Y1+St_WSCROLL;
+  If (St_K And St_DNARROW_)<>0 Then Y2:=Y2-St_WSCROLL;
+  If (St_K And St_VSLIDE_)<>0 Then Begin
+   Track:=Y2-Y1+1;
+   If W^.VSz<=0 Then SlLen:=Track Else SlLen:=St_Max2(St_WSCROLL,Track*W^.VSz Div
+     1000);
+   SlPos:=(Track-SlLen)*St_Clamp(W^.VSl,0,1000) Div 1000;
+   If (Y>=Y1+SlPos) And (Y<Y1+SlPos+SlLen) Then St_SliderMsg(H,True)
+   Else If Y<Y1+SlPos Then St_PostMsg(Own,St_WM_ARROWED,H,0,0,0,0,0)
+   Else St_PostMsg(Own,St_WM_ARROWED,H,1,0,0,0,0);
+   St_WaitButtonRelease;
+  End;
+  Exit;
+ End;
+ If St_HasHBar(St_K) And (Y>=Wk.Y+Wk.H) And (Y<Wk.Y+Wk.H+St_WSCROLL) And (X>=Wk.X) And
+   (X<Wk.X+Wk.W) Then Begin
+  X1:=Wk.X;X2:=Wk.X+Wk.W-1;
+  If ((St_K And St_LFARROW_)<>0) And (X<X1+St_WSCROLL) Then Begin
+   Ok:=St_WatchBoxRect(Wk.X,Wk.Y+Wk.H+1,St_WSCROLL,St_WSCROLL-1);
+   If Ok Then St_PostMsg(Own,St_WM_ARROWED,H,6,0,0,0,0);Exit;
+  End;
+  If ((St_K And St_RTARROW_)<>0) And (X>X2-St_WSCROLL) Then Begin
+   Ok:=St_WatchBoxRect(X2-St_WSCROLL+1,Wk.Y+Wk.H+1,St_WSCROLL,St_WSCROLL-1);
+   If Ok Then St_PostMsg(Own,St_WM_ARROWED,H,7,0,0,0,0);Exit;
+  End;
+  If (St_K And St_LFARROW_)<>0 Then X1:=X1+St_WSCROLL;
+  If (St_K And St_RTARROW_)<>0 Then X2:=X2-St_WSCROLL;
+  If (St_K And St_HSLIDE_)<>0 Then Begin
+   Track:=X2-X1+1;
+   If W^.HSz<=0 Then SlLen:=Track Else SlLen:=St_Max2(St_WSCROLL,Track*W^.HSz Div
+     1000);
+   SlPos:=(Track-SlLen)*St_Clamp(W^.HSl,0,1000) Div 1000;
+   If (X>=X1+SlPos) And (X<X1+SlPos+SlLen) Then St_SliderMsg(H,False)
+   Else If X<X1+SlPos Then St_PostMsg(Own,St_WM_ARROWED,H,4,0,0,0,0)
+   Else St_PostMsg(Own,St_WM_ARROWED,H,5,0,0,0,0);
+   St_WaitButtonRelease;
+  End;
+  Exit;
+ End;
+ { coin de redimensionnement }
+ If ((St_K And St_SIZER_)<>0) And (X>=R.X+R.W-St_WSCROLL) And (Y>=R.Y+R.H-St_WSCROLL) Then
+   Begin
+  St_RubberBox(R.X,R.Y,80,60,RW,RH);
+  If (RW<>R.W) Or (RH<>R.H) Then St_PostMsg(Own,St_WM_SIZED,H,R.X,R.Y,RW,RH,0);
+ End;
+End;
+Procedure St_DrawAlertIcon(X,Y,Ic: Integer);
+Var St_I: Integer;
+Begin
+ St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);
+ Case Ic Of
+  1: Begin
+      For St_I:=0 To 28 Do St_FastSpan(Y+2+St_I,X+16-St_I Div 2,X+16+St_I Div 2,False,False);
+      St_LinePhase:=0;St_VP^.LineCol:=1;St_VP^.LineWidth:=2;
+      St_VLine(X+16,Y+2,X+2,Y+30);St_VLine(X+16,Y+2,X+30,Y+30);St_VLine(X+2,Y+30,X+30,Y+
+        30);
+      St_VP^.LineWidth:=1;
+      St_OText(X+12,Y+14,'!',16,1,False);
+     End;
+  2: Begin
+      St_VP^.FillInt:=0;St_VP^.FillPer:=1;St_VArc(X+16,Y+16,15,15,0,3600,
+        2);St_VP^.FillPer:=0;
+      St_OText(X+12,Y+8,'?',16,1,False);
+     End;
+  3: Begin
+      St_VP^.FillInt:=1;St_VP^.FillCol:=1;
+      St_PX[0]:=X+10;St_PY[0]:=Y;St_PX[1]:=X+22;St_PY[1]:=Y;St_PX[2]:=X+32;St_PY[2]:=Y+
+        10;St_PX[3]:=X+32;St_PY[3]:=Y+22;
+      St_PX[4]:=X+22;St_PY[4]:=Y+32;St_PX[5]:=X+10;St_PY[5]:=Y+32;St_PX[6]:=X;St_PY[6]:=Y+
+        22;St_PX[7]:=X;St_PY[7]:=Y+10;
+      St_PolyFillPts(8,St_PX,St_PY,True);
+      St_OText(X+12,Y+8,'X',16,0,False);
+     End;
+ End;
+End;
+Function St_FormAlert(Def: Integer; Const Txt: String): Integer;
+Var Lines: Array[1..6] Of String; Btns: Array[1..4] Of String;
+  NL,NB,St_I,P,Ic,W,H,X0,Y0,BW,TX,BX,Sel,Res: Integer;
+    S,Cur: String; Part: Integer; Sv: St_TScrSave; Done: Boolean; St_K: LongInt;
+      PrevDown: Boolean;
+    Rc: Array[1..4] Of St_TRect; St_Mx,St_My: Integer;
+Begin
+ NL:=0;NB:=0;Ic:=0;Part:=0;
+ St_I:=1;
+ While St_I<=Length(Txt) Do Begin
+  If Txt[St_I]='[' Then Begin
+   Inc(Part);Cur:='';Inc(St_I);
+   While (St_I<=Length(Txt)) And (Txt[St_I]<>']') Do Begin Cur:=Cur+Txt[St_I];Inc(St_I);End;
+   Case Part Of
+    1: Ic:=St_ToInt(Cur);
+    2: While (Cur<>'') And (NL<6) Do Begin
+        P:=Pos('|',Cur);Inc(NL);
+        If P=0 Then Begin Lines[NL]:=Cur;Cur:='';End Else Begin
+          Lines[NL]:=Copy(Cur,1,P-1);Delete(Cur,1,P);End;
+       End;
+    3: While (Cur<>'') And (NB<4) Do Begin
+        P:=Pos('|',Cur);Inc(NB);
+        If P=0 Then Begin Btns[NB]:=Cur;Cur:='';End Else Begin
+          Btns[NB]:=Copy(Cur,1,P-1);Delete(Cur,1,P);End;
+       End;
+   End;
+  End;
+  Inc(St_I);
+ End;
+ If NB=0 Then Begin NB:=1;Btns[1]:='OK';End;
+ BW:=0;
+ For St_I:=1 To NB Do If Length(Btns[St_I])*8+16>BW Then BW:=Length(Btns[St_I])*8+16;
+ W:=0;
+ For St_I:=1 To NL Do If Length(Lines[St_I])*8>W Then W:=Length(Lines[St_I])*8;
+ If Ic>0 Then TX:=64 Else TX:=16;
+ W:=TX+W+16;
+ If NB*(BW+16)+16>W Then W:=NB*(BW+16)+16;
+ H:=St_Max2(NL*16,32)+16+8+24+24;
+ X0:=(St_SW-W) Div 2;Y0:=(St_SH-H) Div 2;
+ St_ScrSave(X0-2,Y0-2,X0+W+6,Y0+H+6,Sv);
+ St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);
+ St_OFill(X0+4,Y0+4,X0+W+3,Y0+H+3,7,1);
+ St_OFill(X0,Y0,X0+W-1,Y0+H-1,0,0);
+ St_OBorder(X0,Y0,W,H,3,1);St_OBorder(X0+4,Y0+4,W-8,H-8,1,1);
+ If Ic>0 Then St_DrawAlertIcon(X0+16,Y0+16,Ic);
+ For St_I:=1 To NL Do St_OText(X0+TX,Y0+16+(St_I-1)*16,Lines[St_I],16,1,False);
+ BX:=X0+(W-NB*(BW+16)+16) Div 2;
+ If Def<1 Then Def:=0;
+ For St_I:=1 To NB Do Begin
+  Rc[St_I]:=St_RectMake(BX+(St_I-1)*(BW+16),Y0+H-40,BW,22);
+ End;
+ Sel:=Def;
+ Done:=False;Res:=St_Max2(1,Def);
+ For St_I:=1 To NB Do Begin
+  St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);
+  St_OFill(Rc[St_I].X,Rc[St_I].Y,Rc[St_I].X+Rc[St_I].W-1,Rc[St_I].Y+Rc[St_I].H-1,0,0);
+  If St_I=Def Then St_OBorder(Rc[St_I].X,Rc[St_I].Y,Rc[St_I].W,Rc[St_I].H,3,1) Else
+    St_OBorder(Rc[St_I].X,Rc[St_I].Y,Rc[St_I].W,Rc[St_I].H,1,1);
+  St_OText(Rc[St_I].X+(BW-Length(Btns[St_I])*8) Div 2,Rc[St_I].Y+3,Btns[St_I],16,1,False);
+ End;
+ If Not St_BatchMode Then St_BlitScreen(False);
+ If St_BatchMode Then Begin Done:=True;Res:=St_Max2(1,Def);End;
+ PrevDown:=True;
+ Inc(St_ModalLevel);
+ While Not Done And Not St_UserBreak Do Begin
+  St_GemIdle;
+  If Not St_KQEmpty Then Begin
+   St_K:=St_KQPop;
+   If (St_K And $FF)=13 Then Begin Res:=St_Max2(1,Def);Done:=True;End;
+  End;
+  If ((St_GMouseB And 1)<>0) And Not PrevDown Then Begin
+   For St_I:=1 To NB Do
+    If St_InRect(St_GMouseX,St_GMouseY,Rc[St_I]) Then Begin
+     St_OSetup;St_VP^.FillInt:=1;St_VP^.FillCol:=1;St_VP^.WrMode:=St_WM_XOR;
+     St_VBar(Rc[St_I].X,Rc[St_I].Y,Rc[St_I].X+Rc[St_I].W-1,Rc[St_I].Y+Rc[St_I].H-1);
+     St_OSetup;
+     If Not St_BatchMode Then St_BlitScreen(False);
+     St_WaitButtonRelease;
+     Res:=St_I;Done:=True;
+    End;
+  End;
+  PrevDown:=(St_GMouseB And 1)<>0;
+ End;
+ Dec(St_ModalLevel);
+ St_ScrRestore(Sv);
+ If Not St_BatchMode Then St_BlitScreen(False);
+ St_FormAlert:=Res;
+End;
+Function St_FormErrorText(N: Integer): String;
+Begin
+ Case N Of
+  2,18:
+    St_FormErrorText:='[1][This application cannot find the|fol'+
+    'der or file you tried to access.][ OK ]';
+  3: St_FormErrorText:='[1][This application cannot find the|fol'+
+    'der you tried to access.][ OK ]';
+  4: St_FormErrorText:='[1][This application has run out of|file handles.][ OK ]';
+  5: St_FormErrorText:='[1][You cannot access this item.][ OK ]';
+  8: St_FormErrorText:='[1][There is not enough memory to|run th'+
+    'is application.][ OK ]';
+  15: St_FormErrorText:='[1][The drive you specified does not|exist.][ OK ]';
+ Else St_FormErrorText:='[3][An error occurred (TOS error '+St_IntStr(N)+').][ OK ]';
+ End;
+End;
+Function St_NextEditable(T: LongInt; Cur,Dir: Integer): Integer;
+Var St_I,Cnt,N: Integer;
+Begin
+ St_NextEditable:=-1;
+ N:=0;
+ Repeat
+  Inc(N);If N>2000 Then Exit;
+  Cur:=Cur+Dir;
+  If (Cur<0) Then Cur:=0;
+  If (Cur>=0) And ((St_OFlags(T,Cur) And St_OF_EDITABLE)<>0) And ((St_OFlags(T,Cur) And
+    St_OF_HIDETREE)=0) Then Begin
+   St_NextEditable:=Cur;Exit;
+  End;
+  If (Dir>0) And ((St_OFlags(T,Cur) And St_OF_LASTOB)<>0) Then Begin
+   { reprend au debut }
+   Cur:=-1;
+   If N>1 Then Begin
+    For St_I:=0 To 2000 Do Begin
+     If ((St_OFlags(T,St_I) And St_OF_EDITABLE)<>0) Then Begin St_NextEditable:=St_I;Exit;End;
+     If (St_OFlags(T,St_I) And St_OF_LASTOB)<>0 Then Break;
+    End;
+    Exit;
+   End;
+  End;
+  If (Dir<0) And (Cur=0) Then Begin
+   For St_I:=0 To 2000 Do Begin
+    If ((St_OFlags(T,St_I) And St_OF_EDITABLE)<>0) Then St_NextEditable:=St_I;
+    If (St_OFlags(T,St_I) And St_OF_LASTOB)<>0 Then Break;
+   End;
+   Exit;
+  End;
+ Until False;
+End;
+Function St_DefaultObj(T: LongInt): Integer;
+Var St_I: Integer;
+Begin
+ St_DefaultObj:=-1;
+ For St_I:=0 To 2000 Do Begin
+  If ((St_OFlags(T,St_I) And St_OF_DEFAULT)<>0) And ((St_OFlags(T,St_I) And St_OF_HIDETREE)=0)
+    Then Begin St_DefaultObj:=St_I;Exit;End;
+  If (St_OFlags(T,St_I) And St_OF_LASTOB)<>0 Then Break;
+ End;
+End;
+Function St_FormKeybd(T: LongInt; Edit: Integer; Key: LongInt; Var NewObj:
+  Integer; Var KeyOut: LongInt): Integer;
+Var Asc,Scan,Def,Nx: Integer;
+Begin
+ Asc:=Key And $FF;Scan:=(Key Shr 8) And $FF;
+ NewObj:=Edit;KeyOut:=Key;St_FormKeybd:=1;
+ If (Asc=13) Or (Scan=$1C) Or (Scan=$72) Then Begin
+  Def:=St_DefaultObj(T);
+  If (Def>0) And ((St_OState(T,Def) And St_OS_DISABLED)=0) Then Begin
+   St_SetOState(T,Def,St_OState(T,Def) Or St_OS_SELECTED);St_ObjRedraw(T,Def);
+   NewObj:=Def;KeyOut:=0;St_FormKeybd:=0;
+  End;
+  Exit;
+ End;
+ If (Asc=9) Or ((Asc=0) And (Scan=$50)) Then Begin
+  Nx:=St_NextEditable(T,Edit,1);
+  If Nx>0 Then NewObj:=Nx;
+  KeyOut:=0;Exit;
+ End;
+ If (Asc=0) And (Scan=$48) Then Begin
+  Nx:=St_NextEditable(T,Edit,-1);
+  If Nx>0 Then NewObj:=Nx;
+  KeyOut:=0;Exit;
+ End;
+End;
+Function St_FormButton(T: LongInt; Obj,Clicks: Integer; Var NextObj: Integer):
+  Integer;
+Var Fl,St,P,Sib: Integer; Inside: Boolean;
+Begin
+ St_FormButton:=1;NextObj:=Obj;
+ If (Obj<=0) Or ((St_OState(T,Obj) And St_OS_DISABLED)<>0) Or ((St_OFlags(T,Obj) And
+   St_OF_HIDETREE)<>0) Then Exit;
+ Fl:=St_OFlags(T,Obj);
+ If (Fl And St_OF_SELECTABLE)<>0 Then Begin
+  If (Fl And St_OF_RBUTTON)<>0 Then Begin
+   If (St_OState(T,Obj) And St_OS_SELECTED)=0 Then Begin
+    P:=St_OParent(T,Obj);
+    If P>=0 Then Begin
+     Sib:=St_OHead(T,P);
+     While Sib>=0 Do Begin
+      If (Sib<>Obj) And ((St_OFlags(T,Sib) And St_OF_RBUTTON)<>0) And ((St_OState(T,Sib)
+        And St_OS_SELECTED)<>0) Then Begin
+       St_SetOState(T,Sib,St_OState(T,Sib) And Not St_OS_SELECTED);St_ObjRedraw(T,Sib);
+      End;
+      If Sib=St_OTail(T,P) Then Break;
+      Sib:=St_ONext(T,Sib);
+     End;
+    End;
+    St_SetOState(T,Obj,St_OState(T,Obj) Or St_OS_SELECTED);St_ObjRedraw(T,Obj);
+   End;
+   If Not St_BatchMode Then St_BlitScreen(False);
+   St_WaitButtonRelease;
+  End Else Begin
+   St:=St_OState(T,Obj);
+   If (Fl And St_OF_TOUCHEXIT)<>0 Then Begin
+    St_SetOState(T,Obj,St Xor St_OS_SELECTED);St_ObjRedraw(T,Obj);
+   End Else Begin
+    Inside:=St_WatchBox(T,Obj,St Xor St_OS_SELECTED,St);
+    If Not Inside Then St_SetOState(T,Obj,St) Else St_SetOState(T,Obj,St Xor
+      St_OS_SELECTED);
+    St_ObjRedraw(T,Obj);
+   End;
+  End;
+ End;
+ If ((Fl And St_OF_EXIT)<>0) Or ((Fl And St_OF_TOUCHEXIT)<>0) Then Begin
+  If ((Fl And St_OF_SELECTABLE)=0) Or ((St_OState(T,Obj) And St_OS_SELECTED)<>0) Or ((Fl
+    And St_OF_TOUCHEXIT)<>0) Then Begin
+   If Clicks>=2 Then NextObj:=Obj Or $8000;
+   St_FormButton:=0;
+  End;
+ End;
+End;
+Function St_FormDo(T: LongInt; Start: Integer): Integer;
+Var Cur,Idx,Obj,Res,Nx,Cont: Integer; St_K,Ko: LongInt; Fl: Integer; Done:
+  Boolean; PrevDown: Boolean;
+    X,Y: Integer;
+Begin
+ Inc(St_ModalLevel);
+ Cur:=-1;
+ If (Start>0) And ((St_OFlags(T,Start) And St_OF_EDITABLE)<>0) Then Cur:=Start
+ Else Cur:=St_NextEditable(T,0,1);
+ If (Cur=0) Then Cur:=-1;
+ If Cur>0 Then St_ObjEdit(T,Cur,0,Idx,0);
+ Done:=False;Res:=0;PrevDown:=True;
+ If St_BatchMode Then Begin
+  Res:=St_DefaultObj(T);If Res<0 Then Res:=0;
+  Done:=True;
+ End;
+ While Not Done And Not St_UserBreak Do Begin
+  St_GemIdle;
+  If Not St_KQEmpty Then Begin
+   St_K:=St_KQPop;
+   St_K:=(((St_K Shr 16) And $FF) Shl 8) Or (St_K And $FF);
+   Cont:=St_FormKeybd(T,Cur,St_K,Nx,Ko);
+   If Cont=0 Then Begin Res:=Nx;Done:=True;End
+   Else Begin
+    If (Nx<>Cur) And (Nx>0) Then Begin
+     If Cur>0 Then St_ObjEdit(T,Cur,0,Idx,3);
+     Cur:=Nx;St_ObjEdit(T,Cur,0,Idx,0);
+    End;
+    If (Ko<>0) And (Cur>0) Then St_ObjEdit(T,Cur,Ko,Idx,1);
+   End;
+  End;
+  If ((St_GMouseB And 1)<>0) And Not PrevDown Then Begin
+   Obj:=St_ObjFind(T,0,8,St_GMouseX,St_GMouseY);
+   If (Obj>0) And ((St_OState(T,Obj) And St_OS_DISABLED)=0) Then Begin
+    Fl:=St_OFlags(T,Obj);
+    If (Fl And St_OF_EDITABLE)<>0 Then Begin
+     { le curseur d'edition suit le clic }
+     If Cur>0 Then St_ObjEdit(T,Cur,0,Idx,3);
+     Cur:=Obj;St_ObjEdit(T,Cur,0,Idx,0);
+     If (Fl And (St_OF_SELECTABLE Or St_OF_EXIT Or St_OF_TOUCHEXIT))=0 Then Begin
+      St_ObjOffset(T,Obj,X,Y);
+      Idx:=St_Clamp((St_GMouseX-St_EditCursorX(T,Obj,0)) Div 8,0,Idx);
+      St_ObjRedraw(T,Obj);St_EditDrawCursor(T,Obj,Idx);
+     End;
+    End;
+    Cont:=St_FormButton(T,Obj,St_ClickCount,Nx);
+    If Cont=0 Then Begin Res:=Nx;Done:=True;End;
+   End;
+  End;
+  PrevDown:=(St_GMouseB And 1)<>0;
+ End;
+ If Cur>0 Then St_ObjEdit(T,Cur,0,Idx,3);
+ Dec(St_ModalLevel);
+ St_FormDo:=Res;
+End;
+Procedure St_FselScan(Const Dir,Mask: String);
+Var St_I,J,St_K: Integer; D: St_PDosSrch; T: String[40]; Nd: Integer;
+Begin
+ St_FSN:=0;
+ If Pos('\',St_DosVirt(Dir))>0 Then Begin Inc(St_FSN);St_FSList[St_FSN]:='\..';End
+ Else If St_DosVirt(Dir)<>'' Then Begin Inc(St_FSN);St_FSList[St_FSN]:='\..';End;
+ St_K:=St_DosSearch(Dir+'\*.*',$10);
+ If St_K>=0 Then Begin
+  D:=St_DosSrch[St_K];
+  For St_I:=1 To D^.N Do
+   If ((D^.Ent[St_I].At And $10)<>0) And (D^.Ent[St_I].St_Nm<>'.') And
+     (D^.Ent[St_I].St_Nm<>'..') And (St_FSN<St_FS_MAX) Then Begin
+    Inc(St_FSN);St_FSList[St_FSN]:='\'+D^.Ent[St_I].St_Nm;
+   End;
+ End;
+ Nd:=St_FSN;
+ St_K:=St_DosSearch(Dir+'\'+Mask,0);
+ If St_K>=0 Then Begin
+  D:=St_DosSrch[St_K];
+  For St_I:=1 To D^.N Do
+   If ((D^.Ent[St_I].At And $10)=0) And (St_FSN<St_FS_MAX) Then Begin
+    Inc(St_FSN);St_FSList[St_FSN]:=D^.Ent[St_I].St_Nm;
+   End;
+ End;
+End;
+Function St_AesFsel(PathAddr,FileAddr: LongInt; Const Title: String): Boolean;
+Var Path,Sel,Mask,Dir,Spec,Dr: String; P: Integer; Ok_: Boolean;
+Begin
+ St_AesFsel:=False;
+ If St_BatchMode Then Exit;
+ Path:=St_RdStr(PathAddr,120);
+ Sel:=St_Upper(St_RdStr(FileAddr,14));
+ If St_AesTrace Then Begin
+   WriteLn(St_ConOut,'  fsel_input path=[',Path,'] sel=[',Sel,
+   ']');Flush(St_ConOut);End;
+ P:=Length(Path);
+ While (P>0) And (Path[P]<>'\') And (Path[P]<>'/') And (Path[P]<>':') Do Dec(P);
+ Dir:=Copy(Path,1,P);Mask:=St_Upper(Copy(Path,P+1,40));
+ If Mask='' Then Mask:='*.*';
+ Dr:=St_DosDriveLetter;
+ If (Length(Dir)>=2) And (Dir[2]=':') Then Begin
+   Dr:=Upcase(Dir[1]);Dir:=Copy(Dir,3,120);End;
+ If (Dir<>'') And ((Dir[Length(Dir)]='\') Or (Dir[Length(Dir)]='/')) Then
+   Dec(Dir[0]);
+ If Dir='' Then Dir:=St_DosCurPath;
+ If Not St_DosIsDir(Dir+'\') Then Dir:='';
+ Dir:='\'+St_DosVirt(Dir+'\');
+ St_BlitScreen(True);
+ St_HideMouse;
+ Ok_:=St_DosFileSel(Title,Dr,Dir,Mask,Sel);
+ St_BlitScreen(True);
+ If Ok_ Then Begin
+  Spec:=Dr+':'+Dir;
+  If Spec[Length(Spec)]<>'\' Then Spec:=Spec+'\';
+  St_WrStr(PathAddr,Spec+Mask);
+  St_WrStr(FileAddr,Sel);
+  St_AesFsel:=True;
+ End;
+End;
+Procedure St_SaveCtx(P: Integer);
+Begin
+ Move(St_Rg,St_Procs[P].Rgs,SizeOf(St_Rg));
+ St_Procs[P].PCs:=St_PC;St_Procs[P].SRs:=St_SRv;St_Procs[P].USPs:=St_USPv;St_Procs[P].SSPs:=St_SSPv;
+End;
+Procedure St_LoadCtx(P: Integer);
+Begin
+ Move(St_Procs[P].Rgs,St_Rg,SizeOf(St_Rg));
+ St_PC:=St_Procs[P].PCs;St_SRv:=St_Procs[P].SRs;St_USPv:=St_Procs[P].USPs;St_SSPv:=St_Procs[P].SSPs;
+End;
+Function St_ProcApName(Const Name: String): String;
+Var S: String; P: Integer;
+Begin
+ S:=St_Upper(St_ShortName(Name));
+ P:=Pos('.',S);
+ If P>0 Then S:=Copy(S,1,P-1);
+ St_ProcApName:=Copy(S,1,8);
+End;
+Function St_NewProc(Const Name: String; IsAcc: Boolean): Integer;
+Var St_I: Integer;
+Begin
+ St_NewProc:=-1;
+ For St_I:=0 To St_MAXPROC-1 Do
+  If Not St_Procs[St_I].Used Then Begin
+   FillChar(St_Procs[St_I],SizeOf(St_TProc),0);
+   St_Procs[St_I].Used:=True;St_Procs[St_I].IsAcc:=IsAcc;St_Procs[St_I].ApId:=St_I;
+   St_Procs[St_I].Name:=St_ProcApName(Name);St_Procs[St_I].MenuId:=-1;
+   St_NewProc:=St_I;Exit;
+  End;
+End;
+Procedure St_GemReset;
+Var St_I: Integer;
+Begin
+ FillChar(St_Wins,SizeOf(St_Wins),0);St_NWZ:=0;
+ FillChar(St_Procs,SizeOf(St_Procs),0);
+ St_CurProc:=0;St_MainProc:=0;
+ St_MenuTree:=0;St_MenuOwner:=0;St_MenuH:=19;St_MenuBar:=1;St_DeskTree:=0;St_DeskStart:=0;
+ For St_I:=0 To 5 Do Begin St_AccSlots[St_I]:=-1;St_AccProc[St_I]:=-1;St_AccStr[St_I]:=0;End;
+ St_UpdateLevel:=0;St_MCtrlLevel:=0;St_MCtrlOwner:=-1;St_ModalLevel:=0;
+ St_ClickCount:=0;St_DClickSpeed:=3;St_PrevB:=0;St_ButtonTaken:=False;St_MouseHidden:=0;
+ St_BtnLastTime:=0;St_RscLoaded:=False;
+ St_VdiInitTables;
+ FillChar(St_Vd,SizeOf(St_Vd),0);
+ St_Vd[0].Used:=True;St_VdiDefaults(St_Vd[0]);
+ St_Vd[1].Used:=True;St_VdiDefaults(St_Vd[1]);
+ St_SelVdi(0);
+ St_SetMouseShape(0);
+ St_ScrapDir:='C:\CLIPBRD';St_ScrapSet:=True;
+ St_BvDisk:=3;St_BvHard:=0;St_SearchPos:=-1;St_RscOwned:=False;
+ For St_I:=1 To 6 Do Begin St_ObjSysV[St_I,0]:=0;St_ObjSysV[St_I,1]:=0;End;
+ St_ObjSysV[6,0]:=1;St_ObjSysV[6,1]:=1;
+ St_VexTim:=St_STUB_RTS;St_VexBut:=St_STUB_RTS;St_VexMot:=St_STUB_RTS;St_VexCur:=St_STUB_RTS;St_VexTimLast
+   :=0;St_InVex:=False;
+ St_KbdPrevX:=-1;St_KbdPrevY:=-1;St_KbdPrevB:=0;
+ St_RecActive:=False;St_RecMem:=0;St_PlayMem:=0;St_SynthMouse:=False;St_SynthRel:=False;
+   St_PlayWait:=False;
+ St_MenuSet[0]:=200;St_MenuSet[1]:=10000;St_MenuSet[2]:=250;St_MenuSet[3]:=0;St_MenuSet[4]:=16;
+   St_AttachN:=0;St_IStartN:=0;
+ St_ShelNext:='';St_ShelTail:='';
+ St_AesActive:=True;St_NoBlit:=False;
+End;
+Procedure St_InstallAccItems(T: LongInt);
+Var Screen,St_Box,N,St_K,St_I,C: Integer; Items: Array[0..63] Of Integer;
+Begin
+ For St_K:=0 To 5 Do St_AccSlots[St_K]:=-1;
+ Screen:=St_ONext(T,St_OHead(T,0));
+ If Screen<0 Then Exit;
+ St_Box:=St_OHead(T,Screen);
+ If St_Box<0 Then Exit;
+ N:=0;C:=St_OHead(T,St_Box);
+ While (C>=0) And (N<63) Do Begin
+  Items[N]:=C;Inc(N);
+  If C=St_OTail(T,St_Box) Then Break;
+  C:=St_ONext(T,C);
+ End;
+ If N<6 Then Exit;
+ For St_K:=0 To 5 Do Begin
+  St_I:=Items[N-6+St_K];
+  St_AccSlots[St_K]:=St_I;
+  If St_AccStr[St_K]<>0 Then Begin
+   St_Wr32(St_OA(T,St_I)+12,St_AccStr[St_K]);
+   St_SetOState(T,St_I,St_OState(T,St_I) And Not St_OS_DISABLED);
+  End;
+ End;
+End;
+Function St_RegisterAcc(P: Integer; Const Name: String): Integer;
+Var St_K: Integer; A: LongInt;
+Begin
+ St_RegisterAcc:=-1;
+ For St_K:=0 To 5 Do
+  If St_AccProc[St_K]<0 Then Begin
+   A:=St_DoMalloc(Length(Name)+2);
+   If A=0 Then Exit;
+   St_WrStr(A,Name);
+   St_AccStr[St_K]:=A;St_AccProc[St_K]:=P;
+   If (St_MenuTree<>0) And (St_AccSlots[St_K]>=0) Then Begin
+    St_Wr32(St_OA(St_MenuTree,St_AccSlots[St_K])+12,A);
+    St_SetOState(St_MenuTree,St_AccSlots[St_K],St_OState(St_MenuTree,St_AccSlots[St_K]) And Not
+      St_OS_DISABLED);
+    St_RegisterAcc:=St_AccSlots[St_K];
+   End Else St_RegisterAcc:=St_K;
+   St_Procs[P].MenuId:=St_K;
+   Exit;
+  End;
+End;
+Var
+ St_PrevDbgX,St_PrevDbgY : LongInt;
+ St_LastRun    : Integer;
+ St_SmPrevDown : Boolean;
+Function St_KeyOwnerWants(P: Integer): Boolean;
+Begin
+ St_KeyOwnerWants:=St_Procs[P].Used And St_Procs[P].Blocked And ((St_Procs[P].WFlags And
+   1)<>0);
+End;
+Function St_KeyOwner: Integer;
+Var H,St_I: Integer;
+Begin
+ St_KeyOwner:=-1;
+ H:=St_TopWin;
+ If (H>0) And St_KeyOwnerWants(St_Wins[H].Owner) Then Begin
+   St_KeyOwner:=St_Wins[H].Owner;Exit;End;
+ If St_KeyOwnerWants(St_MainProc) Then Begin St_KeyOwner:=St_MainProc;Exit;End;
+ For St_I:=0 To St_MAXPROC-1 Do If St_KeyOwnerWants(St_I) Then Begin St_KeyOwner:=St_I;Exit;End;
+End;
+Function St_ClickOwner: Integer;
+Var H: Integer;
+Begin
+ H:=St_WinFind(St_GMouseX,St_GMouseY);
+ If H=0 Then St_ClickOwner:=St_MainProc Else St_ClickOwner:=St_Wins[H].Owner;
+End;
+Function St_TryComplete(P: Integer): Boolean;
+Var Pr: ^St_TProc; Fl,Got,Cl: Integer; Io,Ai: LongInt; St_K: LongInt; Inside:
+  Boolean; Now: LongInt;
+    KeyV,Btn: Integer; Kb: Boolean;
+ Procedure Out(St_I,V: Integer);
+ Begin
+  St_Wr16(Pr^.WIo+St_I*2,V And $FFFF);
+ End;
+Begin
+ St_TryComplete:=False;
+ Pr:=@St_Procs[P];
+ Fl:=Pr^.WFlags;Got:=0;Io:=Pr^.WIo;Ai:=Pr^.WAi;
+ KeyV:=0;Cl:=0;Btn:=St_GMouseB;
+ If St_BatchMode Then Begin
+  { pas d'interaction : on envoie un message de fermeture }
+  If (Fl And 1)<>0 Then Begin Got:=Got Or 1;KeyV:=27;End;
+  If (Fl And 16)<>0 Then Begin
+   St_Procs[P].QN:=0;St_PostMsg(P,St_WM_CLOSED,0,0,0,0,0,0);
+   St_PopMsg(P,St_Rd32(Ai));Got:=Got Or 16;
+  End;
+  If (Fl And 32)<>0 Then Got:=Got Or 32;
+  If (Fl And 64)<>0 Then Got:=Got Or 64;
+  If (Fl And 128)<>0 Then Got:=Got Or 128;
+  If (Fl And 256)<>0 Then Got:=Got Or 256;
+  If Got=0 Then Got:=Fl;
+ End Else Begin
+  If ((Fl And 1)<>0) And (St_KeyOwner=P) And Not St_KQEmpty Then Begin
+   St_K:=St_KQPop;KeyV:=(((St_K Shr 16) And $FF) Shl 8) Or (St_K And $FF);Got:=Got Or 1;
+  End;
+  If (Fl And 2)<>0 Then Begin
+   If Not St_ButtonTaken And (St_ClickOwner=P) Then Begin
+    If (St_GMouseB And Pr^.WMask)=Pr^.WState Then Begin
+     If Pr^.WClicks<=1 Then Begin Got:=Got Or 2;Cl:=St_Max2(1,St_ClickCount);End
+     Else Begin
+      If St_ClickCount>=Pr^.WClicks Then Begin Got:=Got Or 2;Cl:=St_ClickCount;End
+      Else If (St_MsNow-St_BtnLastTime>LongInt(St_DClickSpeed)*80) Or ((St_GMouseB And
+        Pr^.WMask)<>Pr^.WState) Then Begin
+       Got:=Got Or 2;Cl:=St_ClickCount;
+      End;
+     End;
+    End;
+   End;
+  End;
+  If (Fl And 4)<>0 Then Begin
+   Inside:=St_InRect(St_GMouseX,St_GMouseY,Pr^.WM1);
+   If Inside=(Pr^.WM1F=0) Then Got:=Got Or 4;
+  End;
+  If (Fl And 8)<>0 Then Begin
+   Inside:=St_InRect(St_GMouseX,St_GMouseY,Pr^.WM2);
+   If Inside=(Pr^.WM2F=0) Then Got:=Got Or 8;
+  End;
+  If ((Fl And 16)<>0) And (Pr^.QN>0) Then Begin
+   St_PopMsg(P,St_Rd32(Ai));Got:=Got Or 16;
+  End;
+  If ((Fl And 32)<>0) And (St_MsNow-Pr^.WDeadline>=0) Then Got:=Got Or 32;
+  If ((Fl And 64)<>0) And Not St_RecActive Then Got:=Got Or 64;
+  If ((Fl And 128)<>0) And (St_PlayMem=0) Then Got:=Got Or 128;
+  If (Fl And 256)<>0 Then Got:=Got Or 256;
+ End;
+ If Got=0 Then Exit;
+ St_TryComplete:=True;
+ Case Pr^.WOp Of
+  20: Out(0,KeyV);
+  21: Begin Out(0,Cl);Out(1,St_GMouseX);Out(2,St_GMouseY);Out(3,Btn);Out(4,0);End;
+  22: Begin Out(0,1);Out(1,St_GMouseX);Out(2,St_GMouseY);Out(3,Btn);Out(4,0);End;
+  23,11: Out(0,1);
+  24: Out(0,1);
+  26: Out(0,St_DClickSpeed);
+  14: Out(0,1);
+  17: Out(0,1);
+  15: Begin Out(0,St_RecPos);St_RecActive:=False;St_RecMem:=0;End;
+ Else Begin
+   Out(0,Got);Out(1,St_GMouseX);Out(2,St_GMouseY);Out(3,Btn);Out(4,0);Out(5,
+     KeyV);Out(6,Cl);
+  End;
+ End;
+End;
+Procedure St_ScreenManager;
+Var Down: Boolean;
+Begin
+ If St_BatchMode Then Exit;
+ If St_AesTrace And ((St_GMouseX<>St_PrevDbgX) Or (St_GMouseY<>St_PrevDbgY)) Then Begin
+  St_PrevDbgX:=St_GMouseX;St_PrevDbgY:=St_GMouseY;
+  WriteLn(St_ConOut,'MOUSE ',St_GMouseX,' ',St_GMouseY,' b=',St_GMouseB,' menuH=',St_MenuH,
+    ' tree=',St_Hex8(St_MenuTree),' title=',St_MouseOnTitle);Flush(St_ConOut);
+ End;
+ Down:=(St_GMouseB And 1)<>0;
+ If Not Down Then St_ButtonTaken:=False;
+ If (St_MCtrlLevel>0) Or (St_ModalLevel>0) Then Begin St_SmPrevDown:=Down;Exit;End;
+ If St_MouseOnTitle And (St_GMouseB=0) And (Not St_ButtonTaken) Then Begin
+  St_MenuTrack;
+  St_SmPrevDown:=(St_GMouseB And 1)<>0;Exit;
+ End;
+ If St_MouseOnTitle And Down And Not St_SmPrevDown Then Begin
+  St_MenuTrack;St_SmPrevDown:=(St_GMouseB And 1)<>0;Exit;
+ End;
+ If Down And Not St_SmPrevDown And Not St_ButtonTaken Then Begin
+  If St_ScreenManagerClick Then St_ButtonTaken:=True;
+ End;
+ St_SmPrevDown:=Down;
+End;
+Procedure St_ResumeProc(P: Integer);
+Begin
+ If P<>St_CurProc Then St_LoadCtx(P);
+ St_CurProc:=P;
+ St_Procs[P].Blocked:=False;
+ St_LastRun:=P;
+End;
+Procedure St_GemDispatch;
+Var N,P: Integer; Done: Boolean;
+Begin
+ Done:=False;
+ Repeat
+  St_PollInput;
+  St_SyncSysVars;
+  St_ScreenManager;
+  For N:=1 To St_MAXPROC Do Begin
+   P:=(St_LastRun+N) Mod St_MAXPROC;
+   If St_Procs[P].Used And St_Procs[P].Blocked Then
+    If St_TryComplete(P) Then Begin
+     St_ResumeProc(P);Done:=True;Break;
+    End;
+  End;
+  If Not Done Then Begin
+   St_IrqNested;     { interruptions (MonST : commutation d'ecran temporisee)
+     pendant l'attente }
+   If Not St_BatchMode Then Begin St_BlitScreen(False);Delay(1);End;
+  End;
+ Until Done Or St_UserBreak;
+ If Done Then St_StopReason:=St_STOP_NONE
+ Else If St_UserBreak Then St_StopReason:=St_STOP_USER;
+End;
+Procedure St_BlockProc(Op,Flags: Integer; Io,Ai,Ctl: LongInt);
+Begin
+ With St_Procs[St_CurProc] Do Begin
+  WOp:=Op;WFlags:=Flags;WIo:=Io;WAi:=Ai;WCtl:=Ctl;Blocked:=True;
+ End;
+ St_SaveCtx(St_CurProc);
+ St_StopReason:=St_STOP_YIELD;
+End;
+Procedure St_WindGet(H,Fld: Integer; Io: LongInt);
+Var W: ^St_TWin; R: St_TRect; St_I: Integer;
+ Procedure SetR(Const Rr: St_TRect);
+ Begin
+  St_Wr16(Io+2,Rr.X);St_Wr16(Io+4,Rr.Y);St_Wr16(Io+6,Rr.W);St_Wr16(Io+8,Rr.H);
+ End;
+Begin
+ St_Wr16(Io,1);
+ { WF_TOP : le numero de fenetre passe est ignore (les applications passent
+   n'importe quoi) }
+ If Fld=10 Then Begin
+  St_Wr16(Io+2,St_TopWin);If St_TopWin>0 Then St_Wr16(Io+4,St_Wins[St_TopWin].Owner) Else
+    St_Wr16(Io+4,0);
+  Exit;
+ End;
+ If (H<0) Or (H>=St_MAXWIN) Then Begin St_Wr16(Io,0);Exit;End;
+ W:=@St_Wins[H];
+ If H=0 Then Begin
+  Case Fld Of
+   4,5,7,17: SetR(St_RectMake(0,St_MenuH,St_SW,St_SH-St_MenuH));
+   10: Begin St_Wr16(Io+2,St_TopWin);If St_TopWin>0 Then St_Wr16(Io+4,St_Wins[St_TopWin].Owner)
+     Else St_Wr16(Io+4,0);End;
+   14: Begin St_Wr16(Io+2,St_DeskTree Shr 16);St_Wr16(Io+4,St_DeskTree And
+     $FFFF);St_Wr16(Io+6,St_DeskStart);End;
+  End;
+  If Fld=11 Then Begin
+   St_VisibleRects(0,St_RectMake(0,St_MenuH,St_SW,St_SH-St_MenuH));
+   If St_RectN>0 Then Begin SetR(St_RectList[1]);St_RectPos:=2;End Else Begin
+     SetR(St_RectMake(0,0,0,0));End;
+  End Else If Fld=12 Then Begin
+   If St_RectPos<=St_RectN Then Begin SetR(St_RectList[St_RectPos]);Inc(St_RectPos);End Else
+     SetR(St_RectMake(0,0,0,0));
+  End;
+  Exit;
+ End;
+ If Not W^.Used Then Begin St_Wr16(Io,0);Exit;End;
+ Case Fld Of
+  1: St_Wr16(Io+2,W^.Kind);
+  2: Begin St_Wr16(Io+2,W^.Name Shr 16);St_Wr16(Io+4,W^.Name And $FFFF);End;
+  3: Begin St_Wr16(Io+2,W^.Info Shr 16);St_Wr16(Io+4,W^.Info And $FFFF);End;
+  4: SetR(St_WinWork(H));
+  5: SetR(W^.R);
+  6: SetR(W^.Prev);
+  7: SetR(W^.Full);
+  8: St_Wr16(Io+2,W^.HSl);
+  9: St_Wr16(Io+2,W^.VSl);
+  10: Begin St_Wr16(Io+2,St_TopWin);If St_TopWin>0 Then
+    St_Wr16(Io+4,St_Wins[St_TopWin].Owner);End;
+  11: Begin
+       R:=St_WinWork(H);
+       St_VisibleRects(H,R);
+       If St_RectN>0 Then Begin SetR(St_RectList[1]);St_RectPos:=2;End Else
+         SetR(St_RectMake(0,0,0,0));
+      End;
+  12: Begin
+       If St_RectPos<=St_RectN Then Begin SetR(St_RectList[St_RectPos]);Inc(St_RectPos);End
+         Else SetR(St_RectMake(0,0,0,0));
+      End;
+  15: St_Wr16(Io+2,W^.HSz);
+  16: St_Wr16(Io+2,W^.VSz);
+  17: SetR(St_RectMake(0,St_MenuH,St_SW,St_SH-St_MenuH));
+ End;
+End;
+Procedure St_WindSet(H,Fld: Integer; Ii: LongInt);
+Var W: ^St_TWin; R: St_TRect; V: Integer;
+ Function St_I(St_K: Integer): Integer;
+ Begin
+  St_I:=St_SExt(St_Rd16(Ii+St_K*2),2);
+ End;
+Begin
+ If H=0 Then Begin
+  If Fld=14 Then Begin
+   St_DeskTree:=(LongInt(St_Rd16(Ii+4)) Shl 16) Or St_Rd16(Ii+6);St_DeskStart:=St_I(4);
+   If St_DeskTree<>0 Then St_Repaint(St_RectMake(0,St_MenuH,St_SW,St_SH-St_MenuH),True);
+  End;
+  Exit;
+ End;
+ If (H<0) Or (H>=St_MAXWIN) Or Not St_Wins[H].Used Then Exit;
+ W:=@St_Wins[H];
+ Case Fld Of
+  1: Begin W^.Kind:=St_I(2) And $FFF;End;
+  2: Begin W^.Name:=(LongInt(St_Rd16(Ii+4)) Shl 16) Or St_Rd16(Ii+6);If W^.Open Then
+    St_RedrawFrame(H);End;
+  3: Begin W^.Info:=(LongInt(St_Rd16(Ii+4)) Shl 16) Or St_Rd16(Ii+6);If St_AesTrace Then
+    Begin
+    WriteLn(St_ConOut,'  wind_set INFO [',St_RdStr(W^.Info,100),
+    ']');Flush(St_ConOut);End;If W^.Open Then St_RedrawFrame(H);End;
+  5: Begin
+      R:=St_RectMake(St_I(2),St_I(3),St_I(4),St_I(5));
+      If R.W<80 Then R.W:=80;If R.H<60 Then R.H:=60;
+      If R.Y<St_MenuH Then R.Y:=St_MenuH;
+      St_WinSetRect(H,R);
+     End;
+  7: W^.Full:=St_RectMake(St_I(2),St_I(3),St_I(4),St_I(5));
+  8: Begin W^.HSl:=St_Clamp(St_I(2),0,1000);If W^.Open Then St_RedrawFrame(H);End;
+  9: Begin W^.VSl:=St_Clamp(St_I(2),0,1000);If W^.Open Then St_RedrawFrame(H);End;
+  10: St_WinTop(H);
+  15: Begin W^.HSz:=St_I(2);If W^.Open Then St_RedrawFrame(H);End;
+  16: Begin W^.VSz:=St_I(2);If W^.Open Then St_RedrawFrame(H);End;
+ End;
+End;
+Function St_HostSep: Char;
+Begin
+ {$IFDEF UNIX}St_HostSep:='/';{$ELSE}St_HostSep:='\';{$ENDIF}
+End;
+Procedure St_ScrapMakeDir;
+Begin
+ {$I-}
+ MkDir(St_HostPath(St_ScrapDir));
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+Procedure St_ScrapClear;
+Var SR: SearchRec; D: String; Ef: File;
+Begin
+ D:=St_HostPath(St_ScrapDir);
+ FindFirst(D+St_HostSep+'*',AnyFile,SR);
+ While DosError=0 Do Begin
+  If (St_Upper(Copy(SR.Name,1,6))='SCRAP.') And ((SR.Attr And Directory)=0) Then
+    Begin
+   {$I-}
+   Assign(Ef,D+St_HostSep+SR.Name);Erase(Ef);
+   {$I+}
+   If IOResult<>0 Then Begin End;
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}FindClose(SR);{$ENDIF}
+End;
+Function St_EnvLookup(Const Name: String): LongInt;
+Var A,B: LongInt; S: String;
+Begin
+ St_EnvLookup:=0;
+ A:=St_ENV_BLK;
+ While (St_Rd8(A)<>0) And (A<St_ENV_BLK+St_ENV_SIZE-2) Do Begin
+  S:=St_RdStr(A,120);
+  B:=A+Length(S)+1;
+  If (Pos('=',Name)>0) And (St_Upper(Copy(S,1,Length(Name)))=St_Upper(Name)) Then
+    Begin
+   St_EnvLookup:=A+Length(Name);Exit;
+  End;
+  If (Pos('=',Name)=0) And (St_Upper(Copy(S,1,Length(Name)+1))=St_Upper(Name)+'=')
+    Then Begin
+   St_EnvLookup:=A+Length(Name)+1;Exit;
+  End;
+  A:=B;
+ End;
+End;
+Procedure St_CopyMenuStruct(Dst,Tree: LongInt; Menu,Item,Scroll: Integer);
+Begin
+ St_Wr32(Dst,Tree);St_Wr16(Dst+4,Menu And $FFFF);St_Wr16(Dst+6,Item And $FFFF);
+ St_Wr16(Dst+8,Scroll And $FFFF);St_Wr16(Dst+10,St_KShift And $FFFF);
+End;
+Function St_IStartFind(T: LongInt; Menu: Integer): Integer;
+Var St_K: Integer;
+Begin
+ St_IStartFind:=0;
+ For St_K:=1 To St_IStartN Do If (St_IStartTree[St_K]=T) And (St_IStartMenu[St_K]=Menu) Then
+   St_IStartFind:=St_K;
+End;
+Function St_NProcsUsed: Integer;
+Var St_I,N: Integer;
+Begin
+ N:=0;
+ For St_I:=0 To St_MAXPROC-1 Do If St_Procs[St_I].Used Then Inc(N);
+ St_NProcsUsed:=N;
+End;
+Procedure St_Aes(Pb: LongInt);
+Var Ctl,Glb,Ii,Io,Ai,St_Ao: LongInt; Op,St_I,J,St_K,H: Integer; S: String; T: LongInt;
+  R,R2: St_TRect;
+    A,B: LongInt; Fl,Cl,Mk,St: Integer; Dm: Integer; X,Y,W,Hh: Integer;
+ Function IV(N: Integer): Integer;
+ Begin
+  IV:=St_SExt(St_Rd16(Ii+N*2),2);
+ End;
+ Function AI_(N: Integer): LongInt;
+ Begin
+  AI_:=St_Rd32(Ai+N*4);
+ End;
+ Procedure OV(N,V: Integer);
+ Begin
+  St_Wr16(Io+N*2,V And $FFFF);
+ End;
+ Procedure Wait(Flags: Integer);
+ Begin
+  St_BlockProc(Op,Flags,Io,Ai,Ctl);
+  With St_Procs[St_CurProc] Do Begin
+   WClicks:=0;WMask:=0;WState:=0;WM1F:=0;WM2F:=0;
+  End;
+ End;
+Begin
+ Ctl:=St_Rd32(Pb);Glb:=St_Rd32(Pb+4);Ii:=St_Rd32(Pb+8);Io:=St_Rd32(Pb+12);Ai:=St_Rd32(Pb+
+   16);St_Ao:=St_Rd32(Pb+20);
+ Op:=St_Rd16(Ctl);
+ OV(0,1);
+ If St_AesTrace Then Begin
+  Write(St_ConOut,'AES ',Op,' [');
+  For St_I:=0 To 7 Do Write(St_ConOut,St_SExt(St_Rd16(Ii+St_I*2),2),' ');
+  WriteLn(St_ConOut,'] a0=',St_Hex8(St_Rd32(Ai)),' pc=',St_Hex8(St_PC));
+  Flush(St_ConOut);
+ End;
+ Case Op Of
+  10: Begin
+       If Not St_Procs[St_CurProc].Used Then Begin
+        St_K:=St_NewProc(St_ProgName,False);If St_K>=0 Then St_CurProc:=St_K;
+       End;
+       If St_Procs[St_CurProc].Fresh Then Begin
+        { premier appl_init d'un fils de Pexec : il remplace la barre de menus
+          et le bureau }
+        St_Procs[St_CurProc].Fresh:=False;
+        St_MenuTree:=0;St_DeskTree:=0;St_MenuH:=19;
+        If Not St_BatchMode And St_GfxOn Then St_Repaint(St_RectMake(0,0,St_SW,St_SH),True);
+       End;
+       St_Wr16(Glb,$0140);
+       If St_NProcsUsed>1 Then St_Wr16(Glb+2,$FFFF) Else St_Wr16(Glb+2,1);
+       St_Wr16(Glb+4,St_CurProc);St_Wr32(Glb+6,0);
+       St_Wr32(Glb+10,0);St_Wr32(Glb+14,0);
+       OV(0,St_CurProc);
+       If St_Procs[St_CurProc].Name='' Then St_Procs[St_CurProc].Name:=St_ProcApName(St_ProgName);
+      End;
+  11: Begin
+       If St_Procs[St_CurProc].QN>0 Then Begin St_PopMsg(St_CurProc,AI_(0));OV(0,1);End
+       Else Wait(16);
+      End;
+  12: Begin
+       St_K:=IV(0);
+       If (St_K>=0) And (St_K<St_MAXPROC) And St_Procs[St_K].Used Then Begin
+        A:=AI_(0);
+        St_PostMsg(St_K,St_Rd16(A),St_Rd16(A+6),St_Rd16(A+8),St_Rd16(A+10),St_Rd16(A+12),St_Rd16(A+14),
+          St_CurProc);
+        For St_I:=0 To 7 Do St_Procs[St_K].Q[St_Procs[St_K].QN,St_I]:=St_SExt(St_Rd16(A+St_I*2),2);
+        OV(0,1);
+       End Else OV(0,0);
+      End;
+  13: Begin
+       S:=St_Upper(St_TrimS(St_RdStr(AI_(0),9)));
+       OV(0,-1);
+       For St_I:=0 To St_MAXPROC-1 Do
+        If St_Procs[St_I].Used And (St_Upper(St_Procs[St_I].Name)=S) Then OV(0,St_I);
+      End;
+  14: Begin
+       { appl_tplay : relit les evenements enregistres }
+       A:=AI_(0);Cl:=IV(0);
+       If (A=0) Or (Cl<=0) Then OV(0,0)
+       Else Begin
+        St_PlayMem:=A;St_PlayCnt:=Cl;St_PlayPos:=0;St_PlayScale:=St_Max2(1,
+          IV(1));St_PlayWait:=False;
+        St_SynthX:=St_GMouseX;St_SynthY:=St_GMouseY;St_SynthB:=St_GMouseB;
+        St_SynthMouse:=Not St_BatchMode;
+        Wait(128);
+       End;
+      End;
+  15: Begin
+       { appl_trecord : enregistre les evenements utilisateur }
+       A:=AI_(0);Cl:=IV(0);
+       If (A=0) Or (Cl<=0) Or St_BatchMode Then OV(0,0)
+       Else Begin
+        St_RecMem:=A;St_RecCnt:=Cl;St_RecPos:=0;St_RecLast:=St_MsNow;St_RecActive:=True;
+        Wait(64);
+       End;
+      End;
+  16: Begin
+       { appl_bvset : unites disponibles pour le selecteur de fichiers }
+       St_BvDisk:=St_Rd16(Ii) Or (LongInt(St_Rd16(Ii+2)) Shl 16);
+       St_BvHard:=St_Rd16(Ii+4) Or (LongInt(St_Rd16(Ii+6)) Shl 16);
+       OV(0,1);
+      End;
+  17: Wait(256);
+  18: Begin
+       { appl_search(mode,nom,type,id) : parcourt les applications }
+       St_K:=IV(0);
+       If St_K=2 Then Begin OV(0,0);End
+       Else Begin
+        If St_K=0 Then St_SearchPos:=-1;
+        J:=-1;
+        For St_I:=St_SearchPos+1 To St_MAXPROC-1 Do
+         If St_Procs[St_I].Used And (J<0) Then J:=St_I;
+        If J<0 Then Begin St_SearchPos:=-1;OV(0,0);End
+        Else Begin
+         St_SearchPos:=J;
+         S:=St_Procs[J].Name;
+         While Length(S)<8 Do S:=S+' ';
+         St_WrStr(AI_(0),S);
+         If St_Procs[J].IsAcc Then OV(1,4) Else OV(1,2);
+         OV(2,J);OV(0,1);
+        End;
+       End;
+      End;
+  19: OV(0,1);
+  20: Wait(1);
+  21: Begin
+       Wait(2);
+       St_Procs[St_CurProc].WClicks:=IV(0);St_Procs[St_CurProc].WMask:=IV(1);St_Procs[St_CurProc].
+         WState:=IV(2);
+      End;
+  22: Begin
+       Wait(Ord(IV(0)=0)*4+Ord(IV(0)<>0)*4);
+       St_Procs[St_CurProc].WM1F:=IV(0);St_Procs[St_CurProc].WM1:=St_RectMake(IV(1),IV(2),
+         IV(3),IV(4));
+      End;
+  23: Wait(16);
+  24: Begin
+       Wait(32);
+       St_Procs[St_CurProc].WDeadline:=St_MsNow+((LongInt(St_Rd16(Ii+2)) Shl 16) Or
+         St_Rd16(Ii));
+      End;
+  25: Begin
+       Fl:=IV(0);
+       Wait(Fl And $3F);
+       With St_Procs[St_CurProc] Do Begin
+        WClicks:=IV(1);WMask:=IV(2);WState:=IV(3);
+        WM1F:=IV(4);WM1:=St_RectMake(IV(5),IV(6),IV(7),IV(8));
+        WM2F:=IV(9);WM2:=St_RectMake(IV(10),IV(11),IV(12),IV(13));
+        WDeadline:=St_MsNow+((LongInt(St_Rd16(Ii+30)) Shl 16) Or St_Rd16(Ii+28));
+       End;
+      End;
+  26: Begin
+       If IV(1)<>0 Then St_DClickSpeed:=St_Clamp(IV(0),0,4);
+       OV(0,St_DClickSpeed);
+      End;
+  { ---- menus ---- }
+  30: Begin
+       T:=AI_(0);
+       Case IV(0) Of
+        0: Begin
+            If St_MenuTree<>0 Then Begin
+              St_MenuTree:=0;St_Repaint(St_RectMake(0,0,St_SW,St_MenuH),True);End;
+            OV(0,1);
+           End;
+        1: Begin
+            St_MenuTree:=T;St_MenuOwner:=St_CurProc;St_MenuBar:=St_OHead(T,0);
+            St_I:=St_OY(T,St_MenuBar)+St_OH(T,St_MenuBar)+St_OY(T,0);
+            St_MenuH:=St_Max2(19,St_I+1);
+            St_InstallAccItems(T);
+            St_Repaint(St_RectMake(0,0,St_SW,St_SH),True);
+            OV(0,1);
+           End;
+       Else OV(0,St_MenuOwner);
+       End;
+      End;
+  31: Begin
+       T:=AI_(0);St_I:=IV(0);
+       If IV(1)<>0 Then St_SetOState(T,St_I,St_OState(T,St_I) Or St_OS_CHECKED) Else
+         St_SetOState(T,St_I,St_OState(T,St_I) And Not St_OS_CHECKED);
+       OV(0,1);
+      End;
+  32: Begin
+       T:=AI_(0);St_I:=IV(0);
+       If IV(1)<>0 Then St_SetOState(T,St_I,St_OState(T,St_I) And Not St_OS_DISABLED) Else
+         St_SetOState(T,St_I,St_OState(T,St_I) Or St_OS_DISABLED);
+       OV(0,1);
+      End;
+  33: Begin
+       T:=AI_(0);St_I:=IV(0);
+       If IV(1)<>0 Then St_SetOState(T,St_I,St_OState(T,St_I) And Not St_OS_SELECTED) Else
+         St_SetOState(T,St_I,St_OState(T,St_I) Or St_OS_SELECTED);
+       If T=St_MenuTree Then Begin St_DrawMenuBarNow;If Not St_BatchMode Then
+         St_BlitScreen(False);End;
+       OV(0,1);
+      End;
+  34: Begin
+       T:=AI_(0);St_I:=IV(0);
+       S:=St_RdStr(AI_(1),60);
+       A:=St_Rd32(St_OA(T,St_I)+12);
+       St_WrStr(A,S);
+       OV(0,1);
+      End;
+  35: Begin
+       S:=St_RdStr(AI_(0),40);
+       OV(0,St_RegisterAcc(IV(0),S));
+      End;
+  36: Begin
+       If St_Rd16(Ctl+6)>=2 Then Begin
+        { menu_popup(me,x,y,mdata) }
+        A:=AI_(0);B:=AI_(1);
+        T:=St_Rd32(A);St_I:=St_SExt(St_Rd16(A+4),2);St_K:=St_SExt(St_Rd16(A+6),2);
+        If St_K<=0 Then Begin J:=St_IStartFind(T,St_I);If J>0 Then St_K:=St_IStartItem[J];End;
+        St_PopScroll:=St_SExt(St_Rd16(A+8),2);
+        If St_PopupMenu(T,St_I,IV(0),IV(1),St_K,False) Then Begin
+         If B<>0 Then St_CopyMenuStruct(B,St_PopTree,St_PopMenuIdx,St_PopSel,St_PopScroll);
+         OV(0,1);
+        End Else Begin
+         If B<>0 Then St_CopyMenuStruct(B,T,St_I,-1,St_PopScroll);
+         OV(0,0);
+        End;
+       End Else Begin
+        { menu_unregister }
+        St_K:=IV(0);
+        If St_K=-1 Then St_K:=St_Procs[St_CurProc].MenuId;
+        If (St_K>=0) And (St_K<=5) Then Begin
+         St_AccProc[St_K]:=-1;St_AccStr[St_K]:=0;
+         If (St_MenuTree<>0) And (St_AccSlots[St_K]>=0) Then
+          St_SetOState(St_MenuTree,St_AccSlots[St_K],St_OState(St_MenuTree,St_AccSlots[St_K]) Or
+            St_OS_DISABLED);
+         St_Procs[St_CurProc].MenuId:=-1;
+        End;
+        OV(0,1);
+       End;
+      End;
+  37: Begin
+       { menu_attach(flag,tree,item,mdata) }
+       T:=AI_(0);B:=AI_(1);St_I:=IV(1);J:=St_FindAttach(T,St_I);OV(0,0);
+       Case IV(0) Of
+        0: If (J>0) And (B<>0) Then Begin
+            St_CopyMenuStruct(B,St_AttachSub[J],St_AttachBox[J],St_AttachSubItem[J],0);OV(0,
+              1);
+           End;
+        1: If B=0 Then Begin
+            If J>0 Then Begin
+             St_AttachTree[J]:=St_AttachTree[St_AttachN];St_AttachItem[J]:=St_AttachItem[
+               St_AttachN];St_AttachSub[J]:=St_AttachSub[St_AttachN];
+             St_AttachBox[J]:=St_AttachBox[St_AttachN];St_AttachSubItem[J]:=St_AttachSubItem[
+               St_AttachN];Dec(St_AttachN);
+            End;
+            OV(0,1);
+           End Else Begin
+            If J=0 Then Begin
+             If St_AttachN<16 Then Begin Inc(St_AttachN);J:=St_AttachN;End;
+            End;
+            If J>0 Then Begin
+             St_AttachTree[J]:=T;St_AttachItem[J]:=St_I;St_AttachSub[J]:=St_Rd32(B);
+             St_AttachBox[J]:=St_SExt(St_Rd16(B+4),2);St_AttachSubItem[J]:=St_SExt(St_Rd16(B+6),
+               2);
+             OV(0,1);
+            End;
+           End;
+        2: If J>0 Then Begin
+            St_AttachTree[J]:=St_AttachTree[St_AttachN];St_AttachItem[J]:=St_AttachItem[St_AttachN
+              ];St_AttachSub[J]:=St_AttachSub[St_AttachN];
+            St_AttachBox[J]:=St_AttachBox[St_AttachN];St_AttachSubItem[J]:=St_AttachSubItem[
+              St_AttachN];Dec(St_AttachN);
+            OV(0,1);
+           End;
+       End;
+      End;
+  38: Begin
+       { menu_istart(flag,tree,imenu,item) }
+       T:=AI_(0);St_I:=IV(1);J:=St_IStartFind(T,St_I);
+       If IV(0)=0 Then Begin
+        If J>0 Then OV(0,St_IStartItem[J]) Else OV(0,0);
+       End Else Begin
+        If J=0 Then Begin If St_IStartN<16 Then Begin
+          Inc(St_IStartN);J:=St_IStartN;End;End;
+        If J>0 Then Begin
+          St_IStartTree[J]:=T;St_IStartMenu[J]:=St_I;St_IStartItem[J]:=IV(2);OV(0,
+          IV(2));End Else OV(0,0);
+       End;
+      End;
+  39: Begin
+       { menu_settings(flag,set) }
+       A:=AI_(0);
+       If A<>0 Then Begin
+        If IV(0)=0 Then Begin
+         For J:=0 To 3 Do St_Wr32(A+J*4,St_MenuSet[J]);
+         St_Wr16(A+16,St_MenuSet[4]);
+        End Else Begin
+         For J:=0 To 3 Do St_MenuSet[J]:=St_Rd32(A+J*4);
+         St_MenuSet[4]:=St_SExt(St_Rd16(A+16),2);
+        End;
+       End;
+       OV(0,1);
+      End;
+  { ---- objets ---- }
+  40: Begin St_ObjAdd(AI_(0),IV(0),IV(1));OV(0,1);End;
+  41: Begin St_ObjDelete(AI_(0),IV(0));OV(0,1);End;
+  42: Begin
+       If St_AesTrace And St_VdiTrace Then Begin
+        For St_I:=0 To 40 Do Begin
+         WriteLn(St_ConOut,'  obj ',St_I,' nx=',St_OA(AI_(0),St_I)-AI_(0),' ty=',
+           St_OType(AI_(0),St_I),' fl=',St_OFlags(AI_(0),St_I),' st=',St_OState(AI_(0),St_I),
+           ' sp=',St_Hex8(St_OSpec(AI_(0),St_I)),' ',St_OX(AI_(0),St_I),',',St_OY(AI_(0),St_I),' ',
+           St_OW(AI_(0),St_I),'x',St_OH(AI_(0),St_I),' nxt=',St_ONext(AI_(0),St_I),' hd=',
+           St_OHead(AI_(0),St_I),' tl=',St_OTail(AI_(0),St_I));
+         If (St_OFlags(AI_(0),St_I) And 32)<>0 Then Break;
+        End;
+        Flush(St_ConOut);
+       End;
+       St_ObjDraw(AI_(0),IV(0),IV(1),IV(2),IV(3),IV(4),IV(5));
+       OV(0,1);
+      End;
+  43: OV(0,St_ObjFind(AI_(0),IV(0),IV(1),IV(2),IV(3)));
+  44: Begin St_ObjOffset(AI_(0),IV(0),X,Y);OV(0,1);OV(1,X);OV(2,Y);End;
+  45: Begin St_ObjOrder(AI_(0),IV(0),IV(1));OV(0,1);End;
+  46: Begin
+       St_K:=IV(2);
+       OV(0,St_ObjEdit(AI_(0),IV(0),IV(1),St_K,IV(3)));
+       OV(1,St_K);
+      End;
+  47: Begin
+       T:=AI_(0);St_I:=IV(0);
+       St_SetOState(T,St_I,IV(6));
+       If IV(7)<>0 Then Begin
+        St_ObjOffset(T,St_I,X,Y);
+        St_SetClip(IV(2),IV(3),IV(2)+IV(4)-1,IV(3)+IV(5)-1);
+        St_ObjDrawRec(T,St_I,0,X,Y,IV(2),IV(3),IV(2)+IV(4)-1,IV(3)+IV(5)-1);
+        St_SetClip(0,0,St_SW-1,St_SH-1);
+       End;
+       OV(0,1);
+      End;
+  { ---- formulaires ---- }
+  48: Begin
+       { objc_sysvar(mode,quoi,val1,val2) }
+       St_K:=IV(1);
+       If (St_K<1) Or (St_K>6) Then OV(0,0)
+       Else Begin
+        If IV(0)=1 Then Begin St_ObjSysV[St_K,0]:=IV(2);St_ObjSysV[St_K,1]:=IV(3);End;
+        OV(0,1);OV(1,St_ObjSysV[St_K,0]);OV(2,St_ObjSysV[St_K,1]);
+       End;
+      End;
+  50: OV(0,St_FormDo(AI_(0),IV(0)));
+  51: Begin
+       Case IV(0) Of
+        0: Begin End;
+        1: St_GrowShrink(St_RectMake(IV(1),IV(2),IV(3),IV(4)),St_RectMake(IV(5),IV(6),
+          IV(7),IV(8)));
+        2: St_GrowShrink(St_RectMake(IV(5),IV(6),IV(7),IV(8)),St_RectMake(IV(1),IV(2),
+          IV(3),IV(4)));
+        3: St_Repaint(St_RectMake(IV(5)-4,IV(6)-4,IV(7)+10,IV(8)+10),True);
+       End;
+       OV(0,1);
+      End;
+  52: OV(0,St_FormAlert(IV(0),St_RdStr(AI_(0),250)));
+  53: OV(0,St_FormAlert(1,St_FormErrorText(IV(0))));
+  54: Begin
+       T:=AI_(0);
+       W:=St_OW(T,0);Hh:=St_OH(T,0);
+       X:=(St_SW-W) Div 2;Y:=St_MenuH+(St_SH-St_MenuH-Hh) Div 2;
+       St_Wr16(St_OA(T,0)+16,X);St_Wr16(St_OA(T,0)+18,Y);
+       OV(0,1);OV(1,X-4);OV(2,Y-4);OV(3,W+8);OV(4,Hh+8);
+      End;
+  55: Begin
+       { form_keybd(arbre,objet,touche,suivant) }
+       Fl:=St_FormKeybd(AI_(0),IV(0),LongInt(IV(1)) And $FFFF,St_I,T);
+       OV(0,Fl);OV(1,St_I);OV(2,T And $FFFF);
+      End;
+  56: Begin
+       { form_button(arbre,objet,clics) }
+       Fl:=St_FormButton(AI_(0),IV(0),IV(1),St_I);
+       OV(0,Fl);OV(1,St_I);
+      End;
+  { ---- graf ---- }
+  70: Begin
+       St_RubberBox(IV(0),IV(1),IV(2),IV(3),W,Hh);
+       OV(0,1);OV(1,W);OV(2,Hh);
+      End;
+  71: Begin
+       R:=St_RectMake(IV(4),IV(5),IV(6),IV(7));
+       St_DragBox(IV(0),IV(1),IV(2),IV(3),R,X,Y);
+       OV(0,1);OV(1,X);OV(2,Y);
+      End;
+  72: Begin
+    St_GrowShrink(St_RectMake(IV(0),IV(1),IV(2),IV(3)),St_RectMake(IV(4),IV(5),IV(2),
+    IV(3)));OV(0,1);End;
+  73: Begin
+    St_GrowShrink(St_RectMake(IV(0),IV(1),IV(2),IV(3)),St_RectMake(IV(4),IV(5),IV(6),
+    IV(7)));OV(0,1);End;
+  74: Begin
+    St_GrowShrink(St_RectMake(IV(4),IV(5),IV(6),IV(7)),St_RectMake(IV(0),IV(1),IV(2),
+    IV(3)));OV(0,1);End;
+  75: Begin
+       T:=AI_(0);
+       If St_WatchBox(T,IV(1),IV(2),IV(3)) Then OV(0,1) Else OV(0,0);
+      End;
+  76: OV(0,St_SlideBox(AI_(0),IV(0),IV(1),IV(2)));
+  77: Begin OV(0,1);OV(1,8);OV(2,16);OV(3,8);OV(4,16);End;
+  78: Begin
+       St_K:=IV(0);
+       Case St_K Of
+        256: Begin Inc(St_MouseHidden);End;
+        257: Begin If St_MouseHidden>0 Then Dec(St_MouseHidden);End;
+        255: St_ApplyMouseForm(AI_(0));
+       Else St_SetMouseShape(St_K);
+       End;
+       {$IFDEF FPC}
+       If St_GfxOn Then Begin If St_MouseHidden>0 Then St_HideMouse Else
+         St_CursorDraw(St_MX,St_MY);End;
+       {$ENDIF}
+       OV(0,1);
+      End;
+  79: Begin OV(0,1);OV(1,St_GMouseX);OV(2,St_GMouseY);OV(3,St_GMouseB);OV(4,0);End;
+  80: Begin
+       { scrp_read }
+       If St_ScrapSet Then Begin St_ScrapMakeDir;St_WrStr(AI_(0),St_ScrapDir);OV(0,1);End
+       Else Begin St_Wr8(AI_(0),0);OV(0,0);End;
+      End;
+  81: Begin
+       { scrp_write }
+       St_ScrapDir:=St_RdStr(AI_(0),120);St_ScrapSet:=St_ScrapDir<>'';
+       If St_ScrapSet Then St_ScrapMakeDir;
+       OV(0,1);
+      End;
+  82: Begin
+       { scrp_clear }
+       If St_ScrapSet Then St_ScrapClear;
+       OV(0,1);
+      End;
+  90,91: Begin
+       S:=St_T3('Item Selector','Selecteur d''objets','Objektauswahl');
+       If Op=91 Then S:=St_RdStr(AI_(2),40);
+       If St_AesFsel(AI_(0),AI_(1),S) Then Begin OV(0,1);OV(1,1);End Else Begin
+         OV(0,1);OV(1,0);End;
+      End;
+  { ---- fenetres ---- }
+  100: Begin
+        OV(0,St_WinCreate(IV(0),St_RectMake(IV(1),IV(2),IV(3),IV(4))));
+       End;
+  101: Begin St_WinOpen(IV(0),St_RectMake(IV(1),IV(2),IV(3),IV(4)));OV(0,1);End;
+  102: Begin St_WinClose(IV(0));OV(0,1);End;
+  103: Begin St_WinDelete(IV(0));OV(0,1);End;
+  104: St_WindGet(IV(0),IV(1),Io);
+  105: Begin St_WindSet(IV(0),IV(1),Ii);OV(0,1);End;
+  106: OV(0,St_WinFind(IV(0),IV(1)));
+  107: Begin
+        Case IV(0) Of
+         1: Inc(St_UpdateLevel);
+         0: If St_UpdateLevel>0 Then Dec(St_UpdateLevel);
+         3: Begin Inc(St_MCtrlLevel);St_MCtrlOwner:=St_CurProc;End;
+         2: If St_MCtrlLevel>0 Then Dec(St_MCtrlLevel);
+        End;
+        OV(0,1);
+       End;
+  108: Begin
+        If IV(0)=0 Then R:=St_OuterOf(IV(1),St_RectMake(IV(2),IV(3),IV(4),IV(5)))
+        Else R:=St_WorkOf(IV(1),St_RectMake(IV(2),IV(3),IV(4),IV(5)));
+        OV(0,1);OV(1,R.X);OV(2,R.Y);OV(3,R.W);OV(4,R.H);
+       End;
+  109: OV(0,1);
+  { ---- ressources ---- }
+  110: Begin
+        S:=St_RdStr(AI_(0),100);
+        If St_AesTrace Then Begin
+          WriteLn(St_ConOut,'rsrc_load [',S,'] ',St_Hex8(AI_(0)));Flush(St_ConOut);End;
+        If St_RscLoad(S) Then Begin
+         OV(0,1);
+         St_Wr32(Glb+10,St_RscBase+St_Rd16(St_RscBase+18));
+        End Else OV(0,0);
+       End;
+  111: Begin
+        If St_RscLoaded And St_RscOwned Then St_DoMfree(St_RscBase);
+        St_RscLoaded:=False;St_RscOwned:=False;OV(0,1);
+       End;
+  112: Begin
+        If St_RscGaddr(IV(0),IV(1),A) Then Begin St_Wr32(St_Ao,A);OV(0,1);End Else Begin
+          St_Wr32(St_Ao,0);OV(0,0);End;
+       End;
+  113: Begin
+        A:=AI_(0);
+        If St_RscLoaded Then Begin
+         Case IV(0) Of
+          0: St_Wr32(St_RscBase+St_Rd16(St_RscBase+18)+IV(1)*4,A);
+          5,15: St_Wr32(St_Rd16(St_RscBase+10)+St_RscBase+IV(1)*4,A);
+         End;
+        End;
+        OV(0,1);
+       End;
+  114: Begin St_ObjFix(AI_(0),IV(0));OV(0,1);End;
+  115: Begin
+        { rsrc_rcfix : ressource deja en memoire }
+        A:=AI_(0);
+        If A=0 Then OV(0,0)
+        Else Begin
+         St_RscFixup(A);
+         St_RscBase:=A;St_RscLoaded:=True;St_RscOwned:=False;
+         St_Wr32(Glb+10,A+St_Rd16(A+18));
+         OV(0,1);
+        End;
+       End;
+  { ---- shell ---- }
+  130: Begin
+        { appl_getinfo(type) : renseignements sur l'AES }
+        OV(0,1);OV(1,0);OV(2,0);OV(3,0);OV(4,0);
+        Case IV(0) Of
+         0: Begin OV(1,10);OV(2,1);OV(3,0);End;       { grande police : 10
+           points, systeme }
+         1: Begin OV(1,8);OV(2,1);OV(3,0);End;        { petite police : 8
+           points }
+         2: Begin OV(1,2);OV(2,0);OV(3,0);End;        { nombre de couleurs }
+         3: Begin
+             If St_Lang=0 Then OV(1,0) Else If St_Lang=2 Then OV(1,1) Else OV(1,2);
+            End;
+         4: Begin OV(1,0);OV(2,1);OV(3,1);OV(4,1);End; { coop., appl_find,
+           appl_search, rsrc_rcfix }
+         5: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,1);End; { shel_rdef/wdef }
+         6: OV(1,13);                                  { dernier type connu }
+         7: Begin OV(1,1);OV(2,0);OV(3,0);OV(4,0);End; { formes de souris
+           utilisateur }
+         8: Begin OV(1,1);OV(2,1);OV(3,1);OV(4,1);End; { popup, attach, istart,
+           settings }
+         9: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,0);End;
+         10: Begin OV(1,$FFF);OV(2,0);OV(3,0);OV(4,0);End;
+         11: Begin OV(1,$FFF);OV(2,0);OV(3,0);OV(4,0);End;
+         12: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,0);End; { pas d'objets 3D }
+         13: Begin OV(1,0);OV(2,0);OV(3,0);OV(4,0);End;
+        Else OV(0,0);
+        End;
+       End;
+  120: Begin
+        St_WrStr(AI_(0),St_ShortName(St_ProgName));
+        St_WrStr(AI_(1),Chr(Length(St_ProgCmd))+St_ProgCmd);
+        OV(0,1);
+       End;
+  121: Begin
+        St_ShelNext:=St_RdStr(AI_(0),128);St_ShelTail:=St_RdStr(AI_(1),128);
+        OV(0,1);
+       End;
+  122: Begin
+        { shel_get(len,buf) }
+        A:=AI_(0);Cl:=St_Clamp(IV(0),0,4096);
+        For St_I:=0 To Cl-1 Do St_Wr8(A+St_I,St_ShelBuf[St_I]);
+        OV(0,1);
+       End;
+  123: Begin
+        { shel_put(len,buf) }
+        A:=AI_(0);Cl:=St_Clamp(IV(0),0,4096);
+        For St_I:=0 To Cl-1 Do St_ShelBuf[St_I]:=St_Rd8(A+St_I);
+        St_ShelLen:=Cl;
+        OV(0,1);
+       End;
+  124: Begin
+        S:=St_RdStr(AI_(0),128);
+        If St_FileExists(St_TosPath(S)) Or St_FileExists(St_TosPath(St_ShortName(S))) Or
+          St_FileExists(St_HostPath(S)) Then OV(0,1) Else OV(0,0);
+       End;
+  125: Begin
+        { shel_envrn(ppath,psrch) }
+        St_Wr32(AI_(0),St_EnvLookup(St_RdStr(AI_(1),60)));
+        OV(0,1);
+       End;
+  126: Begin
+        { shel_rdef(cmd,dir) }
+        St_WrStr(AI_(0),St_ShelDefCmd);St_WrStr(AI_(1),St_ShelDefDir);OV(0,1);
+       End;
+  127: Begin
+        { shel_wdef(cmd,dir) }
+        St_ShelDefCmd:=St_RdStr(AI_(0),127);St_ShelDefDir:=St_RdStr(AI_(1),127);OV(0,1);
+       End;
+ Else OV(0,0);
+ End;
+End;
+Type
+ St_TGemSave = Record
+  Proc : Integer;
+  MTree,DTree : LongInt;
+  MOwner,MBar,MH,DStart : Integer;
+  Rsc  : LongInt;
+  RscOk,RscOwn : Boolean;
+  PName,PCmd : String;
+  Child : Integer;
+ End;
+Procedure St_GemChildEnter(Var S: St_TGemSave; Const Name,Cmd: String);
+Var St_K: Integer;
+Begin
+ S.Proc:=St_CurProc;S.MTree:=St_MenuTree;S.DTree:=St_DeskTree;S.MOwner:=St_MenuOwner;S.MBar
+   :=St_MenuBar;
+ S.MH:=St_MenuH;S.DStart:=St_DeskStart;S.Rsc:=St_RscBase;S.RscOk:=St_RscLoaded;S.RscOwn:=
+   St_RscOwned;S.PName:=St_ProgName;S.PCmd:=St_ProgCmd;
+ S.Child:=-1;
+ If Name<>'' Then St_ProgName:=Name;
+ St_ProgCmd:=Cmd;
+ St_RscLoaded:=False;
+ If St_Emu_GEM And St_AesActive Then Begin
+  St_K:=St_NewProc(St_ProgName,False);
+  If St_K>=0 Then Begin
+   St_Procs[St_K].Started:=True;
+   S.Child:=St_K;St_CurProc:=St_K;
+   { la barre de menus et le bureau du pere ne sont retires qu'au appl_init du
+     fils }
+   St_Procs[St_K].Fresh:=True;
+  End;
+ End;
+End;
+Procedure St_GemChildLeave(Var S: St_TGemSave);
+Var St_K,H,St_I: Integer; Redraw: Boolean;
+Begin
+ St_K:=S.Child;
+ Redraw:=False;
+ If (St_K>=0) And Not St_Procs[St_K].Fresh Then Redraw:=True;
+ If St_K>=0 Then Begin
+  For H:=1 To St_MAXWIN-1 Do
+   If St_Wins[H].Used And (St_Wins[H].Owner=St_K) Then Begin
+    If St_Wins[H].Open Then Redraw:=True;
+    St_Wins[H].Open:=False;St_ZRemove(H);St_Wins[H].Used:=False;
+   End;
+  For St_I:=2 To St_MAXVWK Do If St_Vd[St_I].Used And (St_Vd[St_I].Owner=St_K) Then
+    St_Vd[St_I].Used:=False;
+  For St_I:=0 To 5 Do
+   If St_AccProc[St_I]=St_K Then Begin St_AccProc[St_I]:=-1;St_AccStr[St_I]:=0;End;
+  If St_MCtrlOwner=St_K Then Begin St_MCtrlLevel:=0;St_MCtrlOwner:=-1;End;
+  If St_MenuOwner=St_K Then St_MenuTree:=0;
+  St_Procs[St_K].Used:=False;St_Procs[St_K].Blocked:=False;
+  If St_LastRun=St_K Then St_LastRun:=S.Proc;
+ End;
+ If St_RscLoaded Then Begin
+  If (St_RscBase<>S.Rsc) And St_RscOwned Then St_DoMfree(St_RscBase);
+ End;
+ St_RscBase:=S.Rsc;St_RscLoaded:=S.RscOk;St_RscOwned:=S.RscOwn;
+ St_CurProc:=S.Proc;
+ St_MenuTree:=S.MTree;St_DeskTree:=S.DTree;St_MenuOwner:=S.MOwner;St_MenuBar:=S.MBar;St_MenuH:=
+   S.MH;St_DeskStart:=S.DStart;
+ St_ProgName:=S.PName;St_ProgCmd:=S.PCmd;
+ St_ButtonTaken:=False;
+ If Redraw And Not St_BatchMode And St_GfxOn Then St_Repaint(St_RectMake(0,0,St_SW,St_SH),True);
+End;
+Procedure St_DoTrap(N: Integer);
+Begin
+ If St_AmigaRun And (N<>1) Then Begin
+  St_RaiseExc(32+N);Exit;
+ End;
+ Case N Of
+  1: St_Gemdos;
+  2: Begin
+      If Not St_Emu_GEM Then St_Halt68('GEM is not available (Run with GEM is off)')
+      Else If (St_Rg[0] And $FFFF)=$73 Then Begin
+        St_VdiOwnerProc:=St_CurProc;St_Vdi(St_Rg[1]);End
+      Else If (St_Rg[0] And $FFFF)=$C8 Then St_Aes(St_Rg[1]);
+     End;
+  13: St_Bios;
+  14: St_Xbios;
+ Else St_RaiseExc(32+N);
+ End;
+End;
+Const
+ St_LA_PTSIN  = St_LINEA_VARS+$300;
+ St_LA_INTIN  = St_LINEA_VARS+$400;
+ St_LA_CONTRL = St_LINEA_VARS+$440;
+ St_LA_FONTS = $9000;
+ St_LA_FH    = $9010;
+ St_LA_F8DAT = $9400;
+ St_LA_F16DAT= $9C00;
+Procedure St_LineAFontHeader(A: LongInt; Id,Pt: Integer; Const St_Nm: String;
+  St_Top,Asc,Half,Desc,Bot,St_CellH: Integer; Dat: LongInt);
+Var St_I: Integer;
+Begin
+ For St_I:=0 To 87 Do St_Wr8(A+St_I,0);
+ St_Wr16(A,Id);St_Wr16(A+2,Pt);
+ For St_I:=1 To Length(St_Nm) Do If St_I<=31 Then St_Wr8(A+3+St_I,Ord(St_Nm[St_I]));
+ St_Wr16(A+36,0);St_Wr16(A+38,255);
+ St_Wr16(A+40,St_Top);St_Wr16(A+42,Asc);St_Wr16(A+44,Half);St_Wr16(A+46,Desc);St_Wr16(A+48,Bot);
+ St_Wr16(A+50,8);St_Wr16(A+52,8);
+ St_Wr16(A+58,1);St_Wr16(A+60,1);
+ St_Wr16(A+62,$5555);St_Wr16(A+64,$5555);
+ St_Wr16(A+66,$0001 Or $0008);        { police systeme, a chasse fixe }
+ St_Wr32(A+68,0);St_Wr32(A+72,St_LA_F8DAT-$200+0);  { off_table : renseignee plus bas }
+ St_Wr32(A+76,Dat);St_Wr16(A+80,256);St_Wr16(A+82,St_CellH);St_Wr32(A+84,0);
+End;
+Procedure St_LineAFonts;
+Var C,R: Integer; B: Byte;
+Begin
+ St_CheckFonts;
+ For C:=0 To 255 Do
+  For R:=0 To 7 Do Begin
+   B:=St_Font8[C,R];
+   St_Wr8(St_LA_F8DAT+LongInt(R)*256+C,B);
+   St_Wr8(St_LA_F16DAT+LongInt(R*2)*256+C,B);
+   St_Wr8(St_LA_F16DAT+LongInt(R*2+1)*256+C,B);
+  End;
+ { table des decalages : caractere c a l'abscisse 8*c (257 mots) }
+ For C:=0 To 256 Do St_Wr16(St_LA_FONTS+$120+C*2,C*8);
+ St_LineAFontHeader(St_LA_FH,1,4,'6x6 system font',5,5,3,1,1,8,St_LA_F8DAT);
+ St_LineAFontHeader(St_LA_FH+88,1,9,'8x8 system font',6,6,4,1,1,8,St_LA_F8DAT);
+ St_LineAFontHeader(St_LA_FH+176,1,10,'8x16 system font',12,12,8,3,3,16,St_LA_F16DAT);
+ For C:=0 To 2 Do Begin
+  St_Wr32(St_LA_FH+C*88+72,St_LA_FONTS+$120);
+  St_Wr32(St_LA_FONTS+C*4,St_LA_FH+C*88);
+ End;
+ St_Wr32(St_LA_FH+84,St_LA_FH+88);St_Wr32(St_LA_FH+88+84,St_LA_FH+176);
+End;
+Procedure St_LineAInit;
+Var St_I: Integer;
+Begin
+ For St_I:=0 To 130 Do St_Wr8(St_LINEA_VARS+St_I,0);
+ For St_I:=1 To $2F Do St_Wr8(St_LINEA_VARS-St_I,0);
+ St_Wr16(St_LINEA_VARS,1);St_Wr16(St_LINEA_VARS+2,80);
+ St_Wr32(St_LINEA_VARS+4,St_LA_CONTRL);St_Wr32(St_LINEA_VARS+8,St_LA_INTIN);St_Wr32(St_LINEA_VARS+12,
+   St_LA_PTSIN);
+ St_Wr32(St_LINEA_VARS+16,St_LA_INTIN+$40);St_Wr32(St_LINEA_VARS+20,St_LA_PTSIN+$40);
+ St_Wr16(St_LINEA_VARS+24,1);St_Wr16(St_LINEA_VARS+34,$FFFF);St_Wr16(St_LINEA_VARS+36,0);
+ St_Wr16(St_LINEA_VARS+56,0);St_Wr16(St_LINEA_VARS+58,0);St_Wr16(St_LINEA_VARS+60,
+   639);St_Wr16(St_LINEA_VARS+62,399);
+ St_LineAFonts;
+ { police courante : 8x16 ; texte : premier plan 1, fond 0 }
+ St_Wr32(St_LINEA_VARS+84,St_LA_F16DAT);St_Wr16(St_LINEA_VARS+88,256);
+ St_Wr16(St_LINEA_VARS+106,1);St_Wr16(St_LINEA_VARS+114,0);
+ { variables a decalage negatif (V_CEL_HT ... BYTES_LIN) }
+ St_Wr16(St_LINEA_VARS-$2E,16);St_Wr16(St_LINEA_VARS-$2C,79);St_Wr16(St_LINEA_VARS-$2A,24);St_Wr16(St_LINEA_VARS-$28,1280);
+ St_Wr16(St_LINEA_VARS-$26,0);St_Wr16(St_LINEA_VARS-$24,1);St_Wr32(St_LINEA_VARS-$22,St_DrawBase);
+ St_Wr32(St_LINEA_VARS-$16,St_LA_F16DAT);St_Wr16(St_LINEA_VARS-$12,255);St_Wr16(St_LINEA_VARS-$10,0);St_Wr16(St_LINEA_VARS-$E,256);
+ St_Wr16(St_LINEA_VARS-$C,640);St_Wr32(St_LINEA_VARS-$A,St_LA_FONTS+$120);St_Wr16(St_LINEA_VARS-4,400);St_Wr16(St_LINEA_VARS-2,80);
+ St_Rg[0]:=St_LINEA_VARS;St_Rg[8]:=St_LINEA_VARS;
+ St_Rg[9]:=St_LA_FONTS;St_Rg[10]:=St_LINEA_VARS+$200;
+End;
+Var
+ St_LaXor: Boolean;
+Procedure St_LaOPlot(X,Y: LongInt; C: Integer);
+Begin
+ If (X<0) Or (X>=640) Or (Y<0) Or (Y>=400) Then Exit;
+ If St_LaXor Then Begin If C<>0 Then St_BPix(X,Y,Not St_BGet(X,Y));End
+ Else St_BPix(X,Y,C<>0);
+End;
+Function St_LaOGet(X,Y: LongInt): Integer;
+Begin
+ St_LaOGet:=Ord(St_BGet(X,Y));
+End;
+Function St_LaRop(Op,S,D: LongInt): LongInt;
+Begin
+ St_LaRop:=Ord(St_RopBit(Op,S<>0,D<>0));
+End;
+Function St_LaW(Off: Integer): Integer;
+Begin St_LaW:=SmallInt(St_Rd16(St_LINEA_VARS+Off)); End;
+Function St_LaClip(X,Y: LongInt): Boolean;
+{ True si le point est visible (rectangle d'ecran et fenetre de clipping) }
+Begin
+ St_LaClip:=False;
+ If (X<0) Or (Y<0) Or (X>639) Or (Y>399) Then Exit;
+ If St_LaW(54)<>0 Then
+  If (X<St_LaW(56)) Or (Y<St_LaW(58)) Or (X>St_LaW(60)) Or (Y>St_LaW(62)) Then Exit;
+ St_LaClip:=True;
+End;
+Procedure St_LaPix(X,Y: LongInt; Fg: Boolean; Col: Integer);
+Var C: Byte;
+Begin
+ If Not St_LaClip(X,Y) Then Exit;
+ If (Col And 1)<>0 Then C:=1 Else C:=0;
+ Case St_LaW(36) Of
+  1: If Fg Then St_LaOPlot(X,Y,C);
+  2: If Fg And (C<>0) Then Begin St_LaXor:=True;St_LaOPlot(X,Y,1);St_LaXor:=False;End;
+  3: If Not Fg Then St_LaOPlot(X,Y,C);
+ Else
+  If Fg Then St_LaOPlot(X,Y,C) Else St_LaOPlot(X,Y,0);
+ End;
+End;
+Function St_LaPat(X,Y: LongInt): Boolean;
+Var P: LongInt; W: Word; M: Integer;
+Begin
+ P:=St_Rd32(St_LINEA_VARS+46);
+ If P=0 Then Begin St_LaPat:=True;Exit;End;
+ M:=St_LaW(50);
+ W:=St_Rd16(P+2*(Y And M));
+ St_LaPat:=((W Shr (15-(X And 15))) And 1)<>0;
+End;
+Procedure St_LaHLine(X1,X2,Y: LongInt);
+Var X,T: LongInt;
+Begin
+ If X1>X2 Then Begin T:=X1;X1:=X2;X2:=T;End;
+ For X:=X1 To X2 Do St_LaPix(X,Y,St_LaPat(X,Y),St_LaW(24));
+End;
+Procedure St_LaLine(X1,Y1,X2,Y2: LongInt);
+Var DX,DY,SX,SY,St_Err,E2,N: LongInt; Mask: Word;
+Begin
+ Mask:=Word(St_LaW(34));
+ DX:=Abs(X2-X1);DY:=Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ St_Err:=DX-DY;N:=0;
+ Repeat
+  St_LaPix(X1,Y1,((Mask Shr (15-(N And 15))) And 1)<>0,St_LaW(24));
+  Inc(N);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*St_Err;
+  If E2>-DY Then Begin St_Err:=St_Err-DY;X1:=X1+SX;End;
+  If E2<DX Then Begin St_Err:=St_Err+DX;Y1:=Y1+SY;End;
+ Until False;
+End;
+Procedure St_LaSpriteMouse(Form: LongInt);
+Var St_I: Integer;
+Begin
+ St_CurHotX:=St_Clamp(St_SExt(St_Rd16(Form),2),0,15);St_CurHotY:=St_Clamp(St_SExt(St_Rd16(Form+2),2),0,15);
+ For St_I:=0 To 15 Do Begin St_CurMask[St_I]:=St_Rd16(Form+10+St_I*2);St_CurData[St_I]:=St_Rd16(Form+42+St_I*2);End;
+End;
+Procedure St_LaTextBlt;
+Const OFSX = 40; MAXC = 160;
+Var Fb,Fw: LongInt; SX,SY,DX,DY,W,H,St_I,J,St_K,R,C,Sty,Wt,Lm,Sk,Ro,Lo,Fg,Bg,Up,Mode: Integer;
+    G1,G2: Array[0..95,0..MAXC-1] Of Byte;       { lignes x colonnes (decalage OFSX) }
+    Wn: Integer; Mk: Word; St_Sh,Cnt,Dir,Yd,Xd,Kx,Ky,Ry: Integer; Inc_,AccX,AccY: LongInt; B: Byte;
+    DstW,DstH,ExL,ExR: Integer;
+ Function Src(Jj,Ii: Integer): Byte;
+ Begin
+  If (Ii<0) Or (Ii>=W) Or (Jj<0) Or (Jj>=H) Then Begin Src:=0;Exit;End;
+  Src:=Ord((St_Rd8(Fb+(SY+Jj)*Fw+((SX+Ii) Shr 3)) And (128 Shr ((SX+Ii) And 7)))<>0);
+ End;
+ Procedure Emit(Xo,Yo: Integer; V: Byte);
+ { ecrit le point (colonne Xo, ligne Yo) du glyphe compose, en tenant compte de la rotation }
+ Var PxX,PxY: Integer;
+ Begin
+  Case St_LaW(104) Of
+   900: Begin PxX:=DX+Yo;PxY:=DY-Xo;End;
+   1800: Begin PxX:=DX-Xo;PxY:=DY-Yo;End;
+   2700: Begin PxX:=DX-Yo;PxY:=DY+Xo;End;
+  Else Begin PxX:=DX+Xo;PxY:=DY+Yo;End;
+  End;
+  If Not St_LaClip(PxX,PxY) Then Exit;
+  Case St_LaW(36) Of
+   1: If V<>0 Then St_LaOPlot(PxX,PxY,Fg And 1);
+   2: If (V<>0) And ((Fg And 1)<>0) Then Begin St_LaXor:=True;St_LaOPlot(PxX,PxY,1);St_LaXor:=False;End;
+   3: If V=0 Then St_LaOPlot(PxX,PxY,Fg And 1);
+  Else
+   If V<>0 Then St_LaOPlot(PxX,PxY,Fg And 1) Else St_LaOPlot(PxX,PxY,Bg And 1);
+  End;
+ End;
+Begin
+ Fb:=St_Rd32(St_LINEA_VARS+84);Fw:=St_LaW(88);
+ SX:=St_LaW(72);SY:=St_LaW(74);DX:=St_LaW(76);DY:=St_LaW(78);W:=St_LaW(80);H:=St_LaW(82);
+ Sty:=St_LaW(90);Wt:=St_LaW(96);Lm:=St_LaW(92);Sk:=St_LaW(94);Ro:=St_LaW(98);Lo:=St_LaW(100);
+ Fg:=St_LaW(106);Bg:=St_LaW(114);
+ If (W<=0) Or (H<=0) Or (W>64) Or (H>64) Then Exit;
+ FillChar(G1,SizeOf(G1),0);FillChar(G2,SizeOf(G2),0);
+ { etendue de la cellule : -LOFF .. largeur + epaisseur + ROFF (+1 de chaque cote pour le contour, +1 a droite pour l'ombre) }
+ If (Sty And 1)=0 Then Wt:=0;
+ If Ro<0 Then Ro:=0;
+ If Lo<0 Then Lo:=0;
+ ExL:=-Lo;ExR:=W+Wt+Ro;
+ If (Sty And 16)<>0 Then Begin Dec(ExL);Inc(ExR);End;
+ If (Sty And 32)<>0 Then Inc(ExR);
+ If ExL<-OFSX+1 Then ExL:=-OFSX+1;
+ If ExR>MAXC-OFSX-1 Then ExR:=MAXC-OFSX-1;
+ { 1. glyphe source }
+ For J:=0 To H-1 Do For St_I:=0 To W-1 Do G1[J,St_I+OFSX]:=Src(J,St_I);
+ { 2. gras : chaque point est repete sur Wt colonnes a sa droite }
+ If (Sty And 1)<>0 Then Begin
+  If Wt<0 Then Wt:=0;
+  For J:=0 To H-1 Do
+   For St_I:=0 To MAXC-1 Do
+    If G1[J,St_I]<>0 Then
+     For St_K:=0 To Wt Do If St_I+St_K<MAXC Then G2[J,St_I+St_K]:=1;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 3. clair : masque tourne d'un bit a chaque ligne }
+ If (Sty And 2)<>0 Then Begin
+  Mk:=Word(Lm);
+  For J:=0 To H-1 Do Begin
+   For St_I:=0 To MAXC-1 Do
+    If ((Mk Shr (15-((St_I-OFSX+16000) And 15))) And 1)=0 Then G1[J,St_I]:=0;
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+ End;
+ { 4. italique : decalage par ligne, de Ro au sommet vers -Lo en bas }
+ If (Sty And 4)<>0 Then Begin
+  Mk:=Word(Sk);St_Sh:=Ro;
+  For J:=0 To H-1 Do Begin
+   For St_I:=0 To MAXC-1 Do
+    If G1[J,St_I]<>0 Then Begin
+     St_K:=St_I+St_Sh;
+     If (St_K>=0) And (St_K<MAXC) Then G2[J,St_K]:=1;
+    End;
+   If (Mk And $8000)<>0 Then Dec(St_Sh);
+   Mk:=Word((Mk Shl 1) Or (Mk Shr 15));
+  End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 5. contour : bord du glyphe seulement }
+ If (Sty And 16)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For St_I:=1 To MAXC-2 Do
+    If G1[J,St_I]=0 Then Begin
+     Cnt:=0;
+     For R:=-1 To 1 Do For C:=-1 To 1 Do
+      If (J+R>=0) And (J+R<H) And (G1[J+R,St_I+C]<>0) Then Cnt:=1;
+     G2[J,St_I]:=Cnt;
+    End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 6. ombre : copie decalee d'un point, en trame }
+ If (Sty And 32)<>0 Then Begin
+  For J:=0 To H-1 Do
+   For St_I:=0 To MAXC-1 Do Begin
+    G2[J,St_I]:=G1[J,St_I];
+    If (J>0) And (St_I>0) And (G1[J-1,St_I-1]<>0) And (G1[J,St_I]=0) And (((St_I+J) And 1)=0) Then G2[J,St_I]:=1;
+   End;
+  G1:=G2;FillChar(G2,SizeOf(G2),0);
+ End;
+ { 7. souligne : derniere ligne }
+ If (Sty And 8)<>0 Then For St_I:=0 To MAXC-1 Do If (St_I>=OFSX-Lo) And (St_I<OFSX+W+Wt+Ro) Then G1[H-1,St_I]:=1;
+ { 8. ecriture avec echelle (accumulateur DDA) }
+ DstH:=0;
+ If St_LaW(102)=0 Then Begin
+  For J:=0 To H-1 Do
+   For St_I:=ExL To ExR-1 Do Emit(St_I,J,G1[J,St_I+OFSX]);
+ End Else Begin
+  Dir:=St_LaW(68);Inc_:=St_LaW(66) And $FFFF;
+  Yd:=0;AccY:=St_LaW(64) And $FFFF;
+  For J:=0 To H-1 Do Begin
+   AccY:=AccY+Inc_;
+   If AccY>65535 Then Begin AccY:=AccY-65536;Ky:=1;End Else Ky:=0;
+   If Dir=0 Then Ky:=1+Ky Else Ky:=1-Ky;
+   For Ry:=1 To Ky Do Begin
+    Xd:=ExL;AccX:=St_LaW(64) And $FFFF;
+    For St_I:=ExL To ExR-1 Do Begin
+     B:=G1[J,St_I+OFSX];
+     AccX:=AccX+Inc_;
+     If AccX>65535 Then Begin AccX:=AccX-65536;Kx:=1;End Else Kx:=0;
+     If Dir=0 Then Kx:=1+Kx Else Kx:=1-Kx;
+     For R:=1 To Kx Do Begin Emit(Xd,Yd,B);Inc(Xd);End;
+    End;
+    Inc(Yd);
+   End;
+  End;
+ End;
+ 
+End;
+Procedure St_LaDispatch(Fn: Integer);
+Var X1,Y1,X2,Y2,X,Y,St_I,J,St_K,N: LongInt; Pt,Pn,St_Ct: LongInt; Col: Integer; B: LongInt;
+    W,H,SF,DF,SNL,DNL,SNW,DNW,SX,SY,DX,DY,Opr,S,D,R: LongInt; Fg,Bg: Integer;
+    XI: Array[0..63] Of LongInt; Cnt: Integer; Mf1,Mf2,Fb,Fw: LongInt; Sv: Integer;
+    SrcM,DstM: St_TMfdb; Sa,Sb,Sl: LongInt; Fm: LongInt; Mk,Dt: Word; PA,PNL,PMK: LongInt;
+ Function SrcBit(Frm,Nxw,Nxl,St_PX,St_PY: LongInt): Integer;
+ Var A: LongInt;
+ Begin
+  A:=Frm+St_PY*Nxl+(St_PX Shr 4)*Nxw+((St_PX And 15) Shr 3);
+  SrcBit:=Ord((St_Rd8(A) And (128 Shr (St_PX And 7)))<>0);
+ End;
+ Procedure PutBit(Frm,Nxw,Nxl,St_PX,St_PY: LongInt; V: Integer);
+ Var A: LongInt;
+ Begin
+  A:=Frm+St_PY*Nxl+(St_PX Shr 4)*Nxw+((St_PX And 15) Shr 3);
+  If V<>0 Then St_Wr8(A,St_Rd8(A) Or (128 Shr (St_PX And 7))) Else St_Wr8(A,St_Rd8(A) And (Not (128 Shr (St_PX And 7))));
+ End;
+Begin
+ Case Fn Of
+  0: St_LineAInit;
+  1: Begin
+      Pt:=St_Rd32(St_LINEA_VARS+12);Pn:=St_Rd32(St_LINEA_VARS+8);
+      St_LaPix(SmallInt(St_Rd16(Pt)),SmallInt(St_Rd16(Pt+2)),True,SmallInt(St_Rd16(Pn)));
+     End;
+  2: Begin
+      Pt:=St_Rd32(St_LINEA_VARS+12);
+      St_Rg[0]:=St_LaOGet(SmallInt(St_Rd16(Pt)),SmallInt(St_Rd16(Pt+2)));
+     End;
+  3: St_LaLine(St_LaW(38),St_LaW(40),St_LaW(42),St_LaW(44));
+  4: St_LaHLine(St_LaW(38),St_LaW(42),St_LaW(40));
+  5: Begin
+      Y1:=St_LaW(40);Y2:=St_LaW(44);
+      If Y1>Y2 Then Begin Y:=Y1;Y1:=Y2;Y2:=Y;End;
+      For Y:=Y1 To Y2 Do St_LaHLine(St_LaW(38),St_LaW(42),Y);
+     End;
+  6: Begin
+      { une ligne de balayage (Y1) d'un polygone : points dans PTSIN }
+      St_Ct:=St_Rd32(St_LINEA_VARS+4);Pt:=St_Rd32(St_LINEA_VARS+12);
+      Cnt:=SmallInt(St_Rd16(St_Ct+2));
+      If Cnt>60 Then Cnt:=60;
+      Y:=St_LaW(40);N:=0;
+      For St_I:=0 To Cnt-1 Do Begin
+       J:=St_I+1;If J>=Cnt Then J:=0;
+       X1:=SmallInt(St_Rd16(Pt+St_I*4));Y1:=SmallInt(St_Rd16(Pt+St_I*4+2));
+       X2:=SmallInt(St_Rd16(Pt+J*4));Y2:=SmallInt(St_Rd16(Pt+J*4+2));
+       If ((Y1<=Y) And (Y2>Y)) Or ((Y2<=Y) And (Y1>Y)) Then Begin
+        If N<63 Then Begin XI[N]:=Round(X1+(Y-Y1)*(X2-X1)/(Y2-Y1));Inc(N);End;
+       End;
+      End;
+      For St_I:=1 To N-1 Do Begin
+       St_K:=XI[St_I];J:=St_I-1;
+       While (J>=0) And (XI[J]>St_K) Do Begin XI[J+1]:=XI[J];Dec(J);End;
+       XI[J+1]:=St_K;
+      End;
+      St_I:=0;
+      While St_I+1<N Do Begin St_LaHLine(XI[St_I],XI[St_I+1],Y);Inc(St_I,2);End;
+     End;
+  7: Begin
+      { BITBLT : bloc de parametres en A6 (un plan) }
+      B:=St_Rg[14];
+      W:=SmallInt(St_Rd16(B));H:=SmallInt(St_Rd16(B+2));
+      Fg:=SmallInt(St_Rd16(B+6)) And 1;Bg:=SmallInt(St_Rd16(B+8)) And 1;
+      SX:=SmallInt(St_Rd16(B+14));SY:=SmallInt(St_Rd16(B+16));SF:=St_Rd32(B+18);SNW:=SmallInt(St_Rd16(B+22));SNL:=SmallInt(St_Rd16(B+24));
+      DX:=SmallInt(St_Rd16(B+28));DY:=SmallInt(St_Rd16(B+30));DF:=St_Rd32(B+32);DNW:=SmallInt(St_Rd16(B+36));DNL:=SmallInt(St_Rd16(B+38));
+      Opr:=St_Rd8(B+10+(Fg Shl 1)+Bg);
+      { demi-teinte : la source est combinee (ET) au motif }
+      PA:=St_Rd32(B+42);PNL:=SmallInt(St_Rd16(B+46));PMK:=St_Rd16(B+50);
+      { sens de copie choisi pour que le recouvrement ne detruise pas la source :
+        lignes en sens inverse si on descend, colonnes en sens inverse si on va a droite sur la meme ligne }
+      For St_K:=0 To H-1 Do Begin
+       If DY>SY Then J:=H-1-St_K Else J:=St_K;
+       For N:=0 To W-1 Do Begin
+        If (DY=SY) And (DX>SX) Then St_I:=W-1-N Else St_I:=N;
+        S:=SrcBit(SF,SNW,SNL,SX+St_I,SY+J);D:=SrcBit(DF,DNW,DNL,DX+St_I,DY+J);
+        If PA<>0 Then S:=S And ((St_Rd16(PA+PNL*((DY+J) And PMK)) Shr (15-((DX+St_I) And 15))) And 1);
+        PutBit(DF,DNW,DNL,DX+St_I,DY+J,St_LaRop(Opr,S,D));
+       End;
+      End;
+      
+     End;
+  8: St_LaTextBlt;
+  9: St_MouseHidden:=St_Max2(0,St_MouseHidden-1);
+  10: Inc(St_MouseHidden);
+  11: Begin
+       { transformation du curseur de souris : formulaire dans INTIN }
+       St_LaSpriteMouse(St_Rd32(St_LINEA_VARS+8));
+      End;
+  12: Begin
+       { efface un lutin : tampon en A2 (x, y, nombre de lignes, fond) }
+       Sa:=St_Rg[10];
+       If St_Rd16(Sa+4)<>0 Then Begin
+        X:=SmallInt(St_Rd16(Sa));Y:=SmallInt(St_Rd16(Sa+2));N:=St_Rd16(Sa+4);
+        For J:=0 To N-1 Do
+         For St_I:=0 To 15 Do
+          If St_LaClip(X+St_I,Y+J) Then St_LaOPlot(X+St_I,Y+J,(St_Rd16(Sa+6+J*2) Shr (15-St_I)) And 1);
+        St_Wr16(Sa+4,0);
+        
+       End;
+      End;
+  13: Begin
+       { dessine un lutin : D0=x, D1=y, A0=formulaire, A2=tampon de sauvegarde }
+       Fm:=St_Rg[8];Sa:=St_Rg[10];
+       X:=SmallInt(St_Rg[0] And $FFFF)-SmallInt(St_Rd16(Fm));Y:=SmallInt(St_Rg[1] And $FFFF)-SmallInt(St_Rd16(Fm+2));
+       { +6 : couleur du masque (fond), +8 : couleur des donnees (premier plan) }
+       Bg:=SmallInt(St_Rd16(Fm+6)) And 1;Fg:=SmallInt(St_Rd16(Fm+8)) And 1;
+       St_Wr16(Sa,X);St_Wr16(Sa+2,Y);St_Wr16(Sa+4,16);
+       For J:=0 To 15 Do Begin
+        Mk:=0;
+        For St_I:=0 To 15 Do If St_LaClip(X+St_I,Y+J) Then Mk:=Mk Or (Word(St_LaOGet(X+St_I,Y+J)) Shl (15-St_I));
+        St_Wr16(Sa+6+J*2,Mk);
+       End;
+       For J:=0 To 15 Do Begin
+        Mk:=St_Rd16(Fm+10+J*4);Dt:=St_Rd16(Fm+12+J*4);
+        For St_I:=0 To 15 Do
+         If ((Mk Shr (15-St_I)) And 1)<>0 Then
+          If St_LaClip(X+St_I,Y+J) Then Begin
+           If ((Dt Shr (15-St_I)) And 1)<>0 Then St_LaOPlot(X+St_I,Y+J,Fg) Else St_LaOPlot(X+St_I,Y+J,Bg);
+          End;
+       End;
+       
+      End;
+  14: Begin
+       { copie de formulaire raster (comme vro_cpyfm / vrt_cpyfm) }
+       St_Ct:=St_Rd32(St_LINEA_VARS+4);Pn:=St_Rd32(St_LINEA_VARS+8);Pt:=St_Rd32(St_LINEA_VARS+12);
+       St_ReadMfdb(St_Rd32(St_Ct+14),SrcM);St_ReadMfdb(St_Rd32(St_Ct+18),DstM);
+       St_SetClip(0,0,St_SW-1,St_SH-1);
+       If St_LaW(54)<>0 Then St_SetClip(St_LaW(56),St_LaW(58),St_LaW(60),St_LaW(62));
+       St_CopyRaster(SrcM,DstM,St_SExt(St_Rd16(Pt),2),St_SExt(St_Rd16(Pt+2),2),St_SExt(St_Rd16(Pt+4),2),St_SExt(St_Rd16(Pt+6),2),
+         St_SExt(St_Rd16(Pt+8),2),St_SExt(St_Rd16(Pt+10),2),St_SExt(St_Rd16(Pn),2),St_LaW(116)<>0,St_LaW(106),St_LaW(114));
+      End;
+  15: Begin
+       { remplissage par germe : point dans PTSIN }
+       Pt:=St_Rd32(St_LINEA_VARS+12);
+       St_VP^.FillInt:=1;St_VP^.FillCol:=St_LaW(24) And 1;St_VP^.FillPer:=0;
+       St_SetClip(0,0,St_SW-1,St_SH-1);
+       If St_LaW(54)<>0 Then St_SetClip(St_LaW(56),St_LaW(58),St_LaW(60),St_LaW(62));
+       St_FloodFill(St_SExt(St_Rd16(Pt),2),St_SExt(St_Rd16(Pt+2),2),-1);
+      End;
+ End;
+End;
+Procedure St_DoLineA(Op: LongInt);
+Var F: Integer; Col: Integer;
+Begin
+ If (St_ExcHandler(10)<>0) And Not St_AmigaRun Then Begin St_RaiseExc(10);Exit;End;   { vecteur 10 installe par le programme }
+ F:=Op And $FFF;
+ If St_DosTrace Then Begin
+   WriteLn(St_ConOut,'LINEA ',F,' pc=',St_Hex8(St_CurOpPC));Flush(St_ConOut);End;
+ St_SelVdi(0);
+ If F>0 Then St_CheckFonts;
+ St_LaXor:=False;
+ St_LaDispatch(F);
+ St_SetClip(0,0,St_SW-1,St_SH-1);
+ St_VP^.WrMode:=St_WM_REPL;
+End;
+Procedure St_AmigaCall(Base: LongInt; Off: LongInt);
+Var Lib: Integer; R,A,N: LongInt; S: String; St_I: LongInt; Buf: Array[0..4095] Of
+  Byte; Got: LongInt; H: Integer;
+Begin
+ R:=0;
+ If Base=St_EXECBASE Then Begin
+  Case Off Of
+   -552: Begin
+          S:=St_Upper(St_RdStr(St_Rg[9],40));
+          If S='DOS.LIBRARY' Then R:=St_DOSBASE
+          Else If S='INTUITION.LIBRARY' Then R:=St_INTUIBASE
+          Else If S='GRAPHICS.LIBRARY' Then R:=St_GFXBASE
+          Else R:=0;
+         End;
+   -198: Begin
+          R:=St_DoMalloc(St_Rg[0]);
+          If (R<>0) And ((St_Rg[1] And $10000)<>0) Then
+           For St_I:=0 To St_Rg[0]-1 Do St_Wr8(R+St_I,0);
+         End;
+   -684: R:=St_DoMalloc(St_Rg[0]);
+   -210: Begin St_DoMfree(St_Rg[9]);End;
+   -690: Begin St_DoMfree(St_Rg[9]);End;
+   -294: R:=$2800;
+  Else R:=0;
+  End;
+ End Else If Base=St_DOSBASE Then Begin
+  Case Off Of
+   -30: Begin
+         S:=St_HostPath(St_RdStr(St_Rg[1],200));
+         H:=St_AllocFH;
+         If H=0 Then R:=0
+         Else Begin
+          Assign(St_FHs[H],S);
+          {$I-}
+          If St_Rg[2]=1006 Then Rewrite(St_FHs[H],1) Else Begin
+            FileMode:=0;Reset(St_FHs[H],1);End;
+          {$I+}
+          If IOResult<>0 Then R:=0 Else Begin St_FHUsed[H]:=True;R:=H;End;
+         End;
+        End;
+   -36: Begin
+         H:=St_Rg[1];
+         If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+          {$I-}
+          Close(St_FHs[H]);
+          {$I+}
+          If IOResult=0 Then Begin End;
+          St_FHUsed[H]:=False;R:=-1;
+         End;
+        End;
+   -42: Begin
+         H:=St_Rg[1];N:=St_Rg[3];A:=St_Rg[2];
+         If H=1 Then Begin
+          R:=0;
+          While R<N Do Begin
+           Got:=St_WaitKeyEmu;
+           If St_UserBreak Then Break;
+           St_Wr8(A+R,Got And $FF);Inc(R);St_ConPut(Got And $FF);
+           If (Got And $FF)=13 Then Begin St_ConPut(10);Break;End;
+          End;
+         End Else If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+          If N>4096 Then N:=4096;
+          {$I-}
+          BlockRead(St_FHs[H],Buf,N,Got);
+          {$I+}
+          If IOResult<>0 Then Got:=0;
+          For St_I:=0 To Got-1 Do St_Wr8(A+St_I,Buf[St_I]);
+          R:=Got;
+         End Else R:=-1;
+        End;
+   -48: Begin
+         H:=St_Rg[1];N:=St_Rg[3];A:=St_Rg[2];
+         If (H=1) Or (H=2) Then Begin
+          For St_I:=0 To N-1 Do St_ConPut(St_Rd8(A+St_I));
+          R:=N;
+         End Else If (H>=6) And (H<=St_MAXFH) And St_FHUsed[H] Then Begin
+          If N>4096 Then N:=4096;
+          For St_I:=0 To N-1 Do Buf[St_I]:=St_Rd8(A+St_I);
+          {$I-}
+          BlockWrite(St_FHs[H],Buf,N,Got);
+          {$I+}
+          If IOResult<>0 Then Got:=0;
+          R:=Got;
+         End Else R:=-1;
+        End;
+   -54: R:=1;
+   -60: R:=2;
+   -72: Begin
+         S:=St_HostPath(St_RdStr(St_Rg[1],200));
+         Assign(St_FScratch,S);
+         {$I-}
+         Erase(St_FScratch);
+         {$I+}
+         If IOResult=0 Then R:=-1 Else R:=0;
+        End;
+   -144: Begin St_StopReason:=St_STOP_EXIT;St_ExitCode:=St_Rg[1];End;
+   -198: Delay(St_Rg[1]*20);
+   -948: Begin
+          A:=St_Rg[1];N:=0;
+          While (St_Rd8(A+N)<>0) And (N<30000) Do Begin
+            St_ConPut(St_Rd8(A+N));Inc(N);End;
+         End;
+  Else R:=0;
+  End;
+ End;
+ St_Rg[0]:=R;
+End;
+Procedure St_HleLibCheck;
+Begin
+ If Not St_AmigaRun Then Exit;
+ If (St_PC<St_AMIGA_LO) Or (St_PC>=St_AMIGA_HI) Then Exit;
+ If (St_PC>=St_EXECBASE-1024) And (St_PC<St_EXECBASE) Then St_AmigaCall(St_EXECBASE,St_PC-St_EXECBASE)
+ Else If (St_PC>=St_DOSBASE-1024) And (St_PC<St_DOSBASE) Then St_AmigaCall(St_DOSBASE,St_PC-St_DOSBASE)
+ Else St_Rg[0]:=0;
+ St_PC:=St_PopL;
+End;
+Procedure St_EmuReset;
+Var St_I: Integer;
+Begin
+ St_CpuReset;
+ St_SingleStack:=True;
+ St_ClearMemory;
+ St_ScrBase:=(St_MemSize-St_SCR_BYTES) And $FFFF00;St_DrawBase:=St_ScrBase;
+ St_HitPa:=(St_ScrBase-$1000) And $FFFF00;
+ St_HeapLo:=St_BP_ADDR+$100;St_HeapHi:=St_HitPa-$4000;
+ St_MCnt:=0;St_CurOwn:=0;St_DosUserSP:=0;St_DtaAddr:=St_BP_ADDR+$80;St_DtaActive:=False;
+ St_CloseAllFiles;
+ St_ConRow:=0;St_ConCol:=0;St_ConRev:=False;St_ConWrap:=True;St_ConCurOn:=True;St_ConState:=0;
+ St_KQHead:=0;St_KQTail:=0;St_UserBreak:=False;
+ St_NBps:=0;St_DbgN:=0;St_UnknownCall:='';
+ St_AmigaRun:=False;
+ St_DosTrace:=GetEnv('DEVPAC_TRACE')<>'';
+ St_VdiTrace:=GetEnv('DEVPAC_TRACE')='2';
+ St_DosInit;
+ St_GemReset;
+ St_DevInitAll;St_EnvInit;
+ St_SysTablesInit;
+ St_SysVarsInit;
+ St_UserCursor:=False;St_RecActive:=False;
+ St_ScrDirtyLo:=0;St_ScrDirtyHi:=399;
+ { stub de sortie : clr.w -(sp) ; trap #1 }
+ St_Wr16(St_STUB_EXIT,$4267);St_Wr16(St_STUB_EXIT+2,$4E41);
+ { stub Supexec : andi #$DFFF,sr ; rts }
+ St_Wr16(St_STUB_USER,$027C);St_Wr16(St_STUB_USER+2,$DFFF);St_Wr16(St_STUB_USER+4,$4E75);
+ FillChar(St_ScrShadow,SizeOf(St_ScrShadow),$FF);
+End;
+Function St_LoadPRGImage(P: Pointer; Len: LongInt; Const CmdLine: String; Bp:
+  LongInt;
+                      WantSyms: Boolean; Var TB,EndA,TextSz: LongInt): Boolean;
+Var TS,DS,BS,SS,St_I,Off,Cur,Sym,Typ,B: LongInt; Name: String; J: Integer;
+Begin
+ St_LoadPRGImage:=False;
+ If (Len<28) Or (St_BufW(P,0)<>$601A) Then Exit;
+ TS:=St_BufL(P,2);DS:=St_BufL(P,6);BS:=St_BufL(P,10);SS:=St_BufL(P,14);
+ TB:=Bp+$100;
+ EndA:=TB+TS+DS+BS;
+ If EndA>St_HeapHi Then Exit;
+ TextSz:=TS+DS;
+ For St_I:=0 To TS+DS-1 Do St_Wr8(TB+St_I,St_BufB(P,28+St_I));
+ For St_I:=0 To BS-1 Do St_Wr8(TB+TS+DS+St_I,0);
+ Off:=28+TS+DS+SS;
+ If Off+4<=Len Then Begin
+  Cur:=St_BufL(P,Off);Inc(Off,4);
+  If Cur<>0 Then Begin
+   St_Wr32(TB+Cur,St_Rd32(TB+Cur)+TB);
+   While Off<Len Do Begin
+    B:=St_BufB(P,Off);Inc(Off);
+    If B=0 Then Break;
+    If B=1 Then Cur:=Cur+254
+    Else Begin Cur:=Cur+B;St_Wr32(TB+Cur,St_Rd32(TB+Cur)+TB);End;
+   End;
+  End;
+ End;
+ If WantSyms Then Begin
+  St_DbgN:=0;
+  Sym:=28+TS+DS;
+  While (SS>=14) And (Sym+14<=28+TS+DS+SS) Do Begin
+   Name:='';
+   For J:=0 To 7 Do If St_BufB(P,Sym+J)<>0 Then Name:=Name+Chr(St_BufB(P,Sym+J));
+   Typ:=St_BufW(P,Sym+8);
+   If (Typ And $0048)=$0048 Then Begin
+    For J:=0 To 13 Do If St_BufB(P,Sym+14+J)<>0 Then
+      Name:=Name+Chr(St_BufB(P,Sym+14+J));
+    St_DbgAdd(Name,St_BufL(P,Sym+10)+TB);
+    Inc(Sym,28);
+   End Else Begin
+    If (Typ And $8000)<>0 Then St_DbgAdd(Name,St_BufL(P,Sym+10)+TB);
+    Inc(Sym,14);
+   End;
+  End;
+ End;
+ For St_I:=0 TO 255 Do St_Wr8(Bp+St_I,0);
+ St_Wr32(Bp,Bp);St_Wr32(Bp+4,EndA);
+ St_Wr32(Bp+8,TB);St_Wr32(Bp+12,TS);
+ St_Wr32(Bp+16,TB+TS);St_Wr32(Bp+20,DS);
+ St_Wr32(Bp+24,TB+TS+DS);St_Wr32(Bp+28,BS);
+ St_Wr32(Bp+32,Bp+$80);St_Wr32(Bp+36,St_BP_ADDR);St_Wr32(Bp+44,St_ENV_BLK);
+ St_Wr8(Bp+$80,Length(CmdLine));
+ For J:=1 To Length(CmdLine) Do St_Wr8(Bp+$80+J,Ord(CmdLine[J]));
+ St_Wr8(Bp+$F0,0);
+ St_LoadPRGImage:=True;
+End;
+Function St_LoadPRG(P: Pointer; Len: LongInt; Const CmdLine: String): Boolean;
+Var TB,EndA,TSz,Sp: LongInt;
+Begin
+ St_LoadPRG:=False;
+ If Not St_LoadPRGImage(P,Len,CmdLine,St_BP_ADDR,True,TB,EndA,TSz) Then Exit;
+ St_Wr32(St_BP_ADDR+4,St_HitPa);
+ St_HeapLo:=EndA;
+ If Odd(St_HeapLo) Then Inc(St_HeapLo);
+ Sp:=St_HitPa-8;
+ St_Wr32(Sp,St_STUB_EXIT);St_Wr32(Sp+4,St_BP_ADDR);
+ St_Rg[15]:=Sp;St_USPv:=Sp;St_SSPv:=$7000;
+ St_PC:=TB;St_SRv:=0;
+ St_LoadPRG:=True;
+End;
+Var
+ St_OptAccs : Boolean;
+Procedure St_LoadOneAcc(Const F: String);
+Var P: Pointer; Len,Bp,TB,EndA,TSz,St_Top: LongInt; St_K: Integer; Ok: Boolean;
+Begin
+ If Not St_ReadFileBytes(F,P,Len) Then Exit;
+ Bp:=(St_HeapLo+255) And Not 255;
+ Ok:=St_LoadPRGImage(P,Len,'',Bp,False,TB,EndA,TSz);
+ If P<>Nil Then FreeMem(P,Len);
+ If Not Ok Then Exit;
+ St_Top:=(EndA+$2000+255) And Not 255;
+ If St_Top>=St_HeapHi Then Exit;
+ St_K:=St_NewProc(F,True);
+ If St_K<0 Then Exit;
+ St_HeapLo:=St_Top;
+ St_Wr32(Bp+4,St_Top);
+ FillChar(St_Procs[St_K].Rgs,SizeOf(St_Procs[St_K].Rgs),0);
+ St_Wr32(St_Top-8,St_STUB_EXIT);St_Wr32(St_Top-4,Bp);
+ St_Procs[St_K].Rgs[15]:=St_Top-8;St_Procs[St_K].USPs:=St_Top-8;St_Procs[St_K].SSPs:=$7000;
+ St_Procs[St_K].PCs:=TB;St_Procs[St_K].SRs:=0;St_Procs[St_K].BpAddr:=Bp;St_Procs[St_K].Started:=False;
+End;
+Procedure St_LoadAccessories;
+Var SR: SearchRec; D1,D2: String; Seen: String;
+ Procedure Scan(Const Dir: String);
+ Begin
+  FindFirst(Dir+'*.ACC',AnyFile,SR);
+  While DosError=0 Do Begin
+   If Pos('|'+St_Upper(SR.Name)+'|',Seen)=0 Then Begin
+    Seen:=Seen+'|'+St_Upper(SR.Name)+'|';
+    St_LoadOneAcc(Dir+SR.Name);
+   End;
+   FindNext(SR);
+  End;
+  {$IFDEF FPC}
+  FindClose(SR);
+  {$ENDIF}
+  {$IFDEF UNIX}
+  FindFirst(Dir+'*.acc',AnyFile,SR);
+  While DosError=0 Do Begin
+   If Pos('|'+St_Upper(SR.Name)+'|',Seen)=0 Then Begin
+    Seen:=Seen+'|'+St_Upper(SR.Name)+'|';
+    St_LoadOneAcc(Dir+SR.Name);
+   End;
+   FindNext(SR);
+  End;
+  FindClose(SR);
+  {$ENDIF}
+ End;
+Begin
+ Seen:='';
+ D1:=St_PathOf(St_ProgName);
+ Scan(D1);
+ If D1<>'' Then Scan('');
+End;
+Procedure St_GemBoot;
+Var St_K: Integer; N: LongInt;
+Begin
+ St_RepaintAll;
+ If Not St_BatchMode Then St_BlitScreen(True);
+ St_SaveCtx(St_MainProc);
+ For St_K:=0 To St_MAXPROC-1 Do
+  If St_Procs[St_K].Used And St_Procs[St_K].IsAcc And Not St_Procs[St_K].Started Then Begin
+   St_LoadCtx(St_K);St_CurProc:=St_K;St_Procs[St_K].Started:=True;
+   St_StopReason:=St_STOP_NONE;N:=0;
+   While (St_StopReason=St_STOP_NONE) And (N<200) Do Begin St_RunCpu(100000);Inc(N);End;
+   If St_StopReason<>St_STOP_YIELD Then Begin St_Procs[St_K].Used:=False;End;
+   St_StopReason:=St_STOP_NONE;
+  End;
+ St_LoadCtx(St_MainProc);St_CurProc:=St_MainProc;
+ St_StopReason:=St_STOP_NONE;
+ If Not St_BatchMode Then St_BlitScreen(False);
+End;
+Function St_LoadHunk(P: Pointer; Len: LongInt; Const CmdLine: String): Boolean;
+Var Pos,NH,First,Last,St_I,Cur,T,Sz,N,Dst,Base,St_Nm: LongInt; HAddr,HSize:
+  Array[0..15] Of LongInt;
+    J: Integer; Name: String; Sp,Val: LongInt;
+ Function NextL: LongInt;
+ Begin
+  If Pos+4>Len Then NextL:=0 Else NextL:=St_BufL(P,Pos);
+  Inc(Pos,4);
+ End;
+Begin
+ St_LoadHunk:=False;
+ Pos:=0;
+ If St_BufL(P,0)<>$3F3 Then Exit;
+ Inc(Pos,4);
+ While True Do Begin
+  N:=NextL;
+  If N=0 Then Break;
+  Inc(Pos,N*4);
+ End;
+ NH:=NextL;First:=NextL;Last:=NextL;
+ If (NH>16) Or (NH<=0) Then Exit;
+ Base:=$20000;
+ For St_I:=0 To Last-First Do Begin
+  HSize[St_I]:=(NextL And $3FFFFFFF)*4;
+  HAddr[St_I]:=Base;
+  Base:=Base+HSize[St_I]+16;
+  For J:=0 To HSize[St_I]-1 Do St_Wr8(HAddr[St_I]+J,0);
+ End;
+ If Base>St_HeapHi Then Exit;
+ Cur:=0;St_DbgN:=0;
+ While Pos<Len Do Begin
+  T:=NextL And $3FFFFFFF;
+  Case T Of
+   $3E9,$3EA: Begin
+               Sz:=NextL*4;
+               For J:=0 To Sz-1 Do St_Wr8(HAddr[Cur]+J,St_BufB(P,Pos+J));
+               Inc(Pos,Sz);
+              End;
+   $3EB: NextL;
+   $3EC: Begin
+          While True Do Begin
+           N:=NextL;
+           If N=0 Then Break;
+           Dst:=NextL;
+           For J:=1 To N Do Begin
+            Sz:=NextL;
+            St_Wr32(HAddr[Cur]+Sz,St_Rd32(HAddr[Cur]+Sz)+HAddr[Dst]);
+           End;
+          End;
+         End;
+   $3F0: Begin
+          While True Do Begin
+           N:=NextL And $FFFFFF;
+           If N=0 Then Break;
+           Name:='';
+           For J:=0 To N*4-1 Do If St_BufB(P,Pos+J)<>0 Then
+             Name:=Name+Chr(St_BufB(P,Pos+J));
+           Inc(Pos,N*4);
+           Val:=NextL;
+           St_DbgAdd(Name,HAddr[Cur]+Val);
+          End;
+         End;
+   $3F1: Begin Sz:=NextL*4;Inc(Pos,Sz);End;
+   $3F2: Begin Inc(Cur);If Cur>Last-First Then Break;End;
+  Else Break;
+  End;
+ End;
+ St_HeapLo:=Base;
+ St_AmigaRun:=True;
+ St_Wr32(4,St_EXECBASE);
+ St_Wr32(St_BP_ADDR+$80,0);
+ For J:=1 To Length(CmdLine) Do St_Wr8(St_BP_ADDR+$80+J-1,Ord(CmdLine[J]));
+ Sp:=St_HitPa-8;
+ St_Wr32(Sp,St_STUB_EXIT);
+ St_Wr16(St_STUB_EXIT,$3F00);St_Wr16(St_STUB_EXIT+2,$3F3C);St_Wr16(St_STUB_EXIT+4,
+   $004C);St_Wr16(St_STUB_EXIT+6,$4E41);
+ St_Rg[15]:=Sp;St_USPv:=Sp;St_SSPv:=$7000;
+ St_Rg[0]:=Length(CmdLine);St_Rg[8]:=St_BP_ADDR+$80;St_Rg[14]:=St_EXECBASE;
+ St_PC:=HAddr[0];St_SRv:=0;
+ St_LoadHunk:=True;
+End;
+Function St_DoPexec(Mode: Integer; NameP,CmdP,EnvP: LongInt): LongInt;
+Var St_Nm,Cmd: String; P: Pointer; Len,Bp,TB,EndA,TSz,St_Top,SvHeap,Code: LongInt;
+  Ok: Boolean;
+    SvRg: Array[0..15] Of LongInt; SvPC,SvSR,SvUSP,SvSSP,SvOp,SvPexBp,SvOwn:
+      LongInt; St_I: Integer; SvProc: Integer;
+ Procedure RunChild(B: LongInt; Const ChName,ChCmd: String);
+ Var N: LongInt; Gs: St_TGemSave;
+ Begin
+  Move(St_Rg,SvRg,SizeOf(St_Rg));
+  SvPC:=St_PC;SvSR:=St_SRv;SvUSP:=St_USPv;SvSSP:=St_SSPv;SvOp:=St_CurOpPC;SvProc:=St_CurProc;
+  St_GemChildEnter(Gs,ChName,ChCmd);
+  FillChar(St_Rg,SizeOf(St_Rg),0);
+  St_Top:=St_Rd32(B+4);
+  St_Rg[15]:=St_Top-8;St_Wr32(St_Top-8,St_STUB_EXIT);St_Wr32(St_Top-4,B);
+  St_PC:=St_Rd32(B+8);St_SRv:=0;
+  St_StopReason:=St_STOP_NONE;
+  While (St_StopReason=St_STOP_NONE) Or (St_StopReason=St_STOP_YIELD) Do Begin
+   St_RunCpu(20000);
+   If St_StopReason=St_STOP_YIELD Then St_GemDispatch;
+   St_PollInput;
+   If Not St_BatchMode Then St_BlitScreen(False);
+   If St_UserBreak Then St_StopReason:=St_STOP_USER;
+  End;
+  If St_StopReason=St_STOP_EXIT Then Code:=St_ExitCode Else Code:=-1;
+  Move(SvRg,St_Rg,SizeOf(St_Rg));
+  St_PC:=SvPC;St_SRv:=SvSR;St_USPv:=SvUSP;St_SSPv:=SvSSP;St_CurOpPC:=SvOp;
+  St_GemChildLeave(Gs);
+  St_CurProc:=SvProc;
+  St_StopReason:=St_STOP_NONE;St_UserBreak:=False;
+ End;
+Begin
+ St_DoPexec:=-33;
+ Case Mode Of
+  0,3,5: Begin
+    If Mode=5 Then Begin
+     { cree une page de base : le fils recoit toute la memoire libre (a reduire
+       par Mshrink) }
+     St_Top:=St_DoMalloc(-1);
+     If St_Top<$400 Then Begin St_DoPexec:=-39;Exit;End;
+     Bp:=St_DoMalloc(St_Top);
+     If Bp=0 Then Begin St_DoPexec:=-39;Exit;End;
+     For St_I:=0 To 255 Do St_Wr8(Bp+St_I,0);
+     St_Wr32(Bp,Bp);St_Wr32(Bp+4,Bp+St_Top);St_Wr32(Bp+8,Bp+$100);St_Wr32(Bp+36,
+       St_BP_ADDR);St_Wr32(Bp+44,St_ENV_BLK);
+     St_Wr32(Bp+32,Bp+$80);
+     If CmdP<>0 Then Begin
+      For St_I:=0 To St_Rd8(CmdP) Do St_Wr8(Bp+$80+St_I,St_Rd8(CmdP+St_I));
+     End;
+     St_DoPexec:=Bp;Exit;
+    End;
+    St_Nm:=St_TosPath(St_RdStr(NameP,200));
+    If CmdP<>0 Then Cmd:=St_RdStr(CmdP+1,St_Rd8(CmdP)) Else Cmd:='';
+    If Not St_ReadFileBytes(St_Nm,P,Len) Then Exit;
+    { comme TOS : le fils recoit le plus grand bloc libre (TPA) et doit le
+      restituer par Mshrink }
+    St_Top:=St_DoMalloc(-1);
+    If (St_Top<Len+$1000) Or (St_Top<$2000) Then Begin
+     If P<>Nil Then FreeMem(P,Len);
+     St_DoPexec:=-39;Exit;
+    End;
+    Bp:=St_DoMalloc(St_Top);
+    If Bp=0 Then Begin
+     If P<>Nil Then FreeMem(P,Len);
+     St_DoPexec:=-39;Exit;
+    End;
+    Ok:=St_LoadPRGImage(P,Len,Cmd,Bp,False,TB,EndA,TSz);
+    If P<>Nil Then FreeMem(P,Len);
+    If (Not Ok) Or (EndA+$400>Bp+St_Top) Then Begin
+      St_DoMfree(Bp);St_DoPexec:=-66;Exit;End;
+    St_Wr32(Bp+4,Bp+St_Top);
+    If Mode=3 Then Begin St_DoPexec:=Bp;Exit;End;
+    SvPexBp:=St_PexBp;St_PexBp:=Bp;
+    SvOwn:=St_CurOwn;St_CurOwn:=Bp;
+    RunChild(Bp,St_Nm,Cmd);
+    St_CurOwn:=SvOwn;
+    St_PexBp:=SvPexBp;
+    St_FreeOwned(Bp);St_DoMfree(Bp);
+    St_DoPexec:=Code;
+   End;
+  4,6: Begin
+    Bp:=CmdP;
+    SvHeap:=St_HeapLo;
+    SvPexBp:=St_PexBp;St_PexBp:=Bp;
+    SvOwn:=St_CurOwn;St_CurOwn:=Bp;
+    RunChild(Bp,'',St_RdStr(Bp+$81,St_Rd8(Bp+$80)));
+    St_CurOwn:=SvOwn;
+    St_PexBp:=SvPexBp;
+    St_FreeOwned(Bp);
+    If Mode=6 Then St_HeapLo:=SvHeap;
+    St_DoPexec:=Code;
+   End;
+ End;
+End;
+Function St_LoadProgram(Const Name,CmdLine: String; GemOn: Boolean): Boolean;
+Var P: Pointer; Len: LongInt; Ok: Boolean; St_K: Integer;
+Begin
+ St_LoadProgram:=False;
+ If Not St_ReadAll(Name,P,Len) Then Exit;
+ St_EmuReset;
+ St_Emu_GEM:=GemOn;
+ St_ProgName:=Name;St_ProgCmd:=CmdLine;
+ If St_BufW(P,0)=$601A Then Ok:=St_LoadPRG(P,Len,CmdLine)
+ Else If St_BufL(P,0)=$3F3 Then Ok:=St_LoadHunk(P,Len,CmdLine)
+ Else Ok:=False;
+ If P<>Nil Then FreeMem(P,Len);
+ If Ok Then Begin
+  St_K:=St_NewProc(Name,False);
+  If St_K>=0 Then Begin St_MainProc:=St_K;St_CurProc:=St_K;St_Procs[St_K].Started:=True;End;
+  If GemOn And St_OptAccs And Not St_AmigaRun Then St_LoadAccessories;
+ End;
+ St_LoadProgram:=Ok;
+End;
+Const
+ St_NWIN    = 5;
+ St_MAXVIEW = 6;
+ St_MCW   = 8;
+Type
+ St_TMView = Record
+  Kind : Byte;
+  Addr : LongInt;              { adresse de depart (ou 1re ligne pour VK_SRC) }
+  Lock : String[63];           { expression de verrouillage }
+  Src  : Integer;              { index dans MSrc (VK_SRC) }
+ End;
+ St_TMWin = Record
+  NV,St_Top : Integer;
+  V      : Array[1..St_MAXVIEW] Of St_TMView;
+  X,Y,W,H: Integer;            { rectangle en cellules }
+ End;
+Var
+ St_MW        : Array[1..St_NWIN] Of St_TMWin;
+ St_MCur      : Integer;
+ St_MZoom     : Boolean;
+ St_RegRows   : Integer;
+ St_SplL,St_SplR : Integer;
+ St_ColSt     : Integer;
+ St_CellH     : Integer;
+ St_NRows     : Integer;
+ St_MS: String;
+Const
+ St_LeftWs : Array[0..4] Of Integer = (40,56,80,24,0);
+ St_TopNum : Array[0..3] Of Integer = (4,2,1,3);
+Procedure St_Layout;
+Var HB,R1,LW,RH,TL,TR,St_I: Integer;
+Begin
+ St_NRows:=St_SCR_H Div St_CellH;
+ HB:=St_NRows-2;
+ R1:=St_RegRows;
+ If R1<2 Then R1:=2;
+ If R1>HB-4 Then R1:=HB-4;
+ For St_I:=1 To St_NWIN Do Begin St_MW[St_I].X:=0;St_MW[St_I].Y:=0;St_MW[St_I].W:=0;St_MW[St_I].H:=0;End;
+ If St_MZoom Then Begin
+  St_MW[St_MCur].X:=0;St_MW[St_MCur].Y:=0;St_MW[St_MCur].W:=80;St_MW[St_MCur].H:=HB;
+  Exit;
+ End;
+ St_MW[1].W:=80;St_MW[1].H:=R1;
+ RH:=HB-R1;
+ LW:=St_LeftWs[St_ColSt];
+ TL:=(RH*St_TopNum[St_SplL]) Div 4;
+ TR:=(RH*St_TopNum[St_SplR]) Div 4;
+ If LW>=8 Then Begin
+  St_MW[2].X:=0;St_MW[2].Y:=R1;St_MW[2].W:=LW;St_MW[2].H:=TL;
+  St_MW[4].X:=0;St_MW[4].Y:=R1+TL;St_MW[4].W:=LW;St_MW[4].H:=RH-TL;
+ End;
+ If 80-LW>=8 Then Begin
+  St_MW[3].X:=LW;St_MW[3].Y:=R1;St_MW[3].W:=80-LW;St_MW[3].H:=TR;
+  St_MW[5].X:=LW;St_MW[5].Y:=R1+TR;St_MW[5].W:=80-LW;St_MW[5].H:=RH-TR;
+ End;
+ For St_I:=2 To St_NWIN Do
+  If (St_MW[St_I].H<2) Or (St_MW[St_I].W<8) Then Begin St_MW[St_I].W:=0;St_MW[St_I].H:=0;End;
+End;
+Procedure St_CT(C,R,W: Integer; Const S0: String; Inv: Boolean);
+Var S: String; X,Y,Yo: Integer;
+Begin
+ If W<=0 Then Exit;
+ S:=S0;
+ If Length(S)>W Then S:=Copy(S,1,W);
+ While Length(S)<W Do S:=S+' ';
+ X:=C*St_MCW;Y:=R*St_CellH;Yo:=(St_CellH-8) Div 2;
+ If Inv Then Begin
+  St_Box(X,Y,X+W*St_MCW-1,Y+St_CellH-1,St_INK);St_WText(X,Y+Yo,S);
+ End Else Begin
+  St_Box(X,Y,X+W*St_MCW-1,Y+St_CellH-1,St_PAPER);St_PText(X,Y+Yo,S);
+ End;
+End;
+Var
+ St_I,St_K,St_NCr: Integer;
+ St_Nm: String;
+
+{ ---- routines graphiques de l'hote remplacees : l'emulation tourne dans son propre fil, le dessin est fait par DEVENV ---- }
+Procedure St_BlitScreen(Full: Boolean);
+Begin
+ St_ScrDirtyLo := 400; St_ScrDirtyHi := -1;
+End;
+Procedure St_CursorDraw(X,Y: LongInt);
+Begin
+End;
+Procedure St_CursorErase;
+Begin
+End;
+Procedure St_ShowMouse;
+Begin
+End;
+Procedure St_HideMouse;
+Begin
+End;
+Procedure St_Sound(Hz: Word);
+Begin
+End;
+Procedure St_SoundOut(Freq: LongInt; St_Ms: Integer);      { DEVENV n'a pas de sortie sonore : l'emulation est muette }
+Begin
+End;
+Procedure St_SoundBell;
+Begin
+End;
+Procedure St_NoSound;
+Begin
+End;
+Var
+ St_StMX, St_StMY, St_StMB: LongInt;        { souris : coordonnees relatives a l'ecran emule (ecrites par DEVENV) }
+ St_StEvQ: Array[0..63] Of LongInt;    { touches : file a un producteur (DEVENV) et un consommateur (fil de l'emulation) }
+ St_StEvH, St_StEvT: Integer;
+ St_StMQX, St_StMQY, St_StMQB: Array[0..63] Of LongInt;   { changements d'etat des boutons : un clic bref n'est jamais perdu }
+ St_StMQH, St_StMQT: Integer;
+ St_StMBRet: LongInt;                 { etat des boutons rendu a la derniere lecture }
+Procedure St_GetMouseState(Var X,Y,B: LongInt);
+Begin
+ If St_StMQH <> St_StMQT Then Begin
+  X := St_StMQX[St_StMQH]; Y := St_StMQY[St_StMQH] + St_EMU_Y0; St_StMBRet := St_StMQB[St_StMQH];
+  St_StMQH := (St_StMQH + 1) And 63;
+ End Else Begin
+  X := St_StMX; Y := St_StMY + St_EMU_Y0;
+ End;
+ B := St_StMBRet;
+End;
+{ selecteur de fichiers (fsel_input) : meme comportement que celui de DEVPAC.PAS, mais dessine dans l'ecran emule
+  (comme form_alert) et pilote par la file de touches et la souris de l'onglet, au lieu de l'ecran de l'hote }
+Function St_DosFileSel(Const Title: String; Var Dr,Dir,St_Msk,Sel: String): Boolean;
+Const FW = 512; FH = 320;
+Var FTop, FCur, FX0, FY0, LX, LY, LW, FRow, FFoc, FNd, FQ, FLastIdx, FDblT: LongInt;
+  FDone, FOk, FRedraw, FDrag, FPrevDown: Boolean;
+  FK, FAsc, FScan, FI: LongInt; FV: String; FSv: St_TScrSave;
+ Function DirStr: String;
+ Begin
+  FV:=St_DosVirt(Dir);
+  If FV='' Then DirStr:=Dr+':\' Else DirStr:=Dr+':\'+St_Upper(FV)+'\';
+ End;
+ Procedure Rescan;
+ Begin
+  St_FselScan(Dir,St_Msk);FTop:=1;FCur:=0;
+  FNd:=0;
+  While (FNd<St_FSN) And (St_FSList[FNd+1][1]='\') Do Inc(FNd);
+ End;
+ Procedure Enter(Const D: String);
+ Begin
+  If D='\..' Then Dir:='\'+St_DosVirt(Dir+'\..') Else
+    Dir:='\'+St_DosVirt(Dir+'\'+Copy(D,2,40));
+  Sel:='';Rescan;
+ End;
+ Function ThumbH: LongInt;
+ Var Tr,H: LongInt;
+ Begin
+  Tr:=St_FS_ROWS*16-32-1;
+  If St_FSN<=St_FS_ROWS Then ThumbH:=Tr
+  Else Begin H:=(Tr*St_FS_ROWS) Div St_FSN;If H<12 Then H:=12;ThumbH:=H;End;
+ End;
+ Function ThumbTop: LongInt;
+ Var Tr: LongInt;
+ Begin
+  Tr:=St_FS_ROWS*16-32-1;
+  If St_FSN<=St_FS_ROWS Then ThumbTop:=0 Else ThumbTop:=((FTop-1)*(Tr-ThumbH)) Div (St_FSN-St_FS_ROWS);
+ End;
+ Procedure FBtn(X1,Y1,X2,Y2: LongInt; Const Cap: String; Def: Boolean);
+ Begin
+  St_OFill(X1,Y1,X2,Y2,0,0);
+  If Def Then St_OBorder(X1,Y1,X2-X1+1,Y2-Y1+1,3,1) Else St_OBorder(X1,Y1,X2-X1+1,Y2-Y1+1,1,1);
+  St_OText((X1+X2+1-Length(Cap)*8) Div 2,Y1+3,Cap,16,1,False);
+ End;
+ Procedure DrawFS;
+ Var R,Idx,Y,Tt,Th: LongInt; S: String;
+ Begin
+  St_OSetup;St_SetClip(0,0,St_SW-1,St_SH-1);
+  St_OFill(FX0+4,FY0+4,FX0+FW+3,FY0+FH+3,7,1);
+  St_OFill(FX0,FY0,FX0+FW-1,FY0+FH-1,0,0);
+  St_OBorder(FX0,FY0,FW,FH,3,1);St_OBorder(FX0+4,FY0+4,FW-8,FH-8,1,1);
+  St_OText(FX0+16,FY0+10,Title,16,1,False);
+  St_OText(FX0+16,FY0+30,St_T3('Directory: ','Repertoire : ','Verzeichnis: ')+Copy(DirStr+St_Msk,1,48),16,1,False);
+  LX:=FX0+16;LY:=FY0+54;LW:=50*8;
+  St_OFill(LX,LY,LX+LW,LY+St_FS_ROWS*16+2,0,0);
+  St_OBorder(LX,LY,LW+1,St_FS_ROWS*16+3,1,1);
+  For R:=0 To St_FS_ROWS-1 Do Begin
+   Idx:=FTop+R;
+   If Idx<=St_FSN Then Begin
+    Y:=LY+2+R*16;
+    S:=St_FSList[Idx];
+    If Idx=FCur Then Begin
+     St_OFill(LX+1,Y,LX+LW-1,Y+15,7,1);
+     St_OText(LX+8,Y,S,16,0,False);
+    End Else St_OText(LX+8,Y,S,16,1,False);
+   End;
+  End;
+  FBtn(LX+LW+8,LY,LX+LW+8+16,LY+16,Chr(1),False);
+  FBtn(LX+LW+8,LY+St_FS_ROWS*16-14,LX+LW+8+16,LY+St_FS_ROWS*16+2,Chr(2),False);
+  St_OFill(LX+LW+8,LY+17,LX+LW+8+16,LY+St_FS_ROWS*16-15,2,1);
+  St_OBorder(LX+LW+8,LY+17,17,St_FS_ROWS*16-31,1,1);
+  Th:=ThumbH;Tt:=LY+17+ThumbTop;
+  St_OFill(LX+LW+8,Tt,LX+LW+8+16,Tt+Th,0,0);
+  St_OBorder(LX+LW+8,Tt,17,Th+1,1,1);
+  St_OText(LX,LY+St_FS_ROWS*16+10,St_T3('Selection: ','Selection : ','Auswahl: '),16,1,False);
+  S:=Sel;
+  St_OText(LX+88,LY+St_FS_ROWS*16+10,S,16,1,False);
+  If FFoc=1 Then St_OText(LX+88+Length(S)*8,LY+St_FS_ROWS*16+10,'_',16,1,False);
+  FBtn(LX+16,LY+St_FS_ROWS*16+36,LX+16+80,LY+St_FS_ROWS*16+56,'OK',True);
+  FBtn(LX+16+100,LY+St_FS_ROWS*16+36,LX+16+100+80,LY+St_FS_ROWS*16+56,St_T3('Cancel','Annuler','Abbruch'),False);
+ End;
+ Procedure Accept;
+ Var Q: LongInt; N2: String;
+ Begin
+  If (Pos('*',Sel)>0) Or (Pos('?',Sel)>0) Then Begin
+    St_Msk:=Sel;Sel:='';Rescan;Exit;End;
+  If Sel='' Then Exit;
+  Q:=Length(Sel);
+  While (Q>0) And (Sel[Q]<>'\') And (Sel[Q]<>':') Do Dec(Q);
+  If Q>0 Then Begin
+   N2:=Copy(Sel,1,Q);
+   If (Length(N2)>=2) And (N2[2]=':') Then Dr:=Upcase(N2[1]);
+   If St_DosIsDir(N2) Then Dir:='\'+St_DosVirt(N2) Else Begin Sel:='';Exit;End;
+   Sel:=Copy(Sel,Q+1,40);
+   Rescan;
+   If Sel='' Then Exit;
+  End;
+  FOk:=True;FDone:=True;
+ End;
+Begin
+ St_DosFileSel:=False;
+ FX0:=(St_SW-FW) Div 2;FY0:=(St_SH-FH) Div 2;
+ St_ScrSave(FX0-2,FY0-2,FX0+FW+6,FY0+FH+6,FSv);
+ Rescan;
+ FFoc:=1;FDone:=False;FOk:=False;FLastIdx:=0;FDblT:=0;FDrag:=False;FPrevDown:=True;
+ DrawFS;
+ Inc(St_ModalLevel);
+ While (Not FDone) And (Not St_UserBreak) Do Begin
+  St_GemIdle;
+  FRedraw:=False;
+  While (Not St_KQEmpty) And (Not FDone) Do Begin
+   FK:=St_KQPop;FAsc:=FK And $FF;FScan:=(FK Shr 16) And $FF;
+   If FAsc=13 Then Begin
+    If (FCur>0) And (Sel='') Then Sel:=St_FSList[FCur];
+    If (Sel<>'') And (Sel[1]='\') Then Enter(Sel) Else Accept;
+    FRedraw:=True;
+   End Else If (FAsc=27) Or ((FAsc=127) And (FScan=83) And False) Then FDone:=True
+   Else If FAsc=0 Then Begin
+    Case FScan Of
+     72: If FCur>1 Then Begin Dec(FCur);Sel:=St_FSList[FCur];FRedraw:=True;End
+         Else If FCur=0 Then If St_FSN>0 Then Begin FCur:=1;Sel:=St_FSList[1];FRedraw:=True;End;
+     80: If FCur<St_FSN Then Begin Inc(FCur);Sel:=St_FSList[FCur];FRedraw:=True;End;
+     73: Begin FCur:=St_Max2(1,FCur-St_FS_ROWS);If St_FSN>0 Then Sel:=St_FSList[FCur];FRedraw:=True;End;
+     81: Begin FCur:=St_Min2(St_FSN,FCur+St_FS_ROWS);If St_FSN>0 Then Sel:=St_FSList[FCur];FRedraw:=True;End;
+    End;
+   End Else If FAsc=8 Then Begin
+    If Length(Sel)>0 Then Begin Dec(Sel[0]);FCur:=0;FRedraw:=True;End;
+   End Else If (FAsc>=32) And (FAsc<>127) Then Begin
+    If Length(Sel)<40 Then Begin Sel:=Sel+Upcase(Chr(FAsc));FCur:=0;FRedraw:=True;End;
+   End;
+   If (FCur>0) And (FCur<FTop) Then FTop:=FCur;
+   If (FCur>=FTop+St_FS_ROWS) Then FTop:=FCur-St_FS_ROWS+1;
+  End;
+  If (St_GMouseB And 1)=0 Then Begin FDrag:=False;FPrevDown:=False;End
+  Else If FDrag Then Begin
+   If St_FSN>St_FS_ROWS Then Begin
+    FI:=1+((St_GMouseY-LY-17-ThumbH Div 2)*(St_FSN-St_FS_ROWS)) Div (St_FS_ROWS*16-32-1-ThumbH);
+    FTop:=St_Clamp(FI,1,St_FSN-St_FS_ROWS+1);FRedraw:=True;
+   End;
+  End Else If Not FPrevDown Then Begin
+   FPrevDown:=True;
+   LX:=FX0+16;LY:=FY0+54;LW:=50*8;
+   If St_InBox(St_GMouseX,St_GMouseY,LX,LY,LX+LW,LY+St_FS_ROWS*16+2) Then Begin
+    FRow:=(St_GMouseY-LY-2) Div 16;
+    FI:=FTop+FRow;
+    If (FI>=1) And (FI<=St_FSN) Then Begin
+     FK:=St_MsNow;
+     If (FI=FLastIdx) And (FK-FDblT<500) And (FK>=FDblT) Then Begin
+      Sel:=St_FSList[FI];
+      If Sel[1]='\' Then Enter(Sel) Else Accept;
+     End Else Begin FCur:=FI;Sel:=St_FSList[FI];End;
+     FLastIdx:=FI;FDblT:=FK;
+     FRedraw:=True;
+    End;
+   End Else If St_InBox(St_GMouseX,St_GMouseY,LX+LW+8,LY,LX+LW+24,LY+16) Then Begin
+    If FTop>1 Then Dec(FTop);FRedraw:=True;
+   End Else If St_InBox(St_GMouseX,St_GMouseY,LX+LW+8,LY+St_FS_ROWS*16-14,LX+LW+24,LY+St_FS_ROWS*16+2) Then Begin
+    If FTop+St_FS_ROWS<=St_FSN Then Inc(FTop);FRedraw:=True;
+   End Else If St_InBox(St_GMouseX,St_GMouseY,LX+LW+8,LY+17,LX+LW+24,LY+St_FS_ROWS*16-15) Then Begin
+    If (St_GMouseY>=LY+17+ThumbTop) And (St_GMouseY<=LY+17+ThumbTop+ThumbH) Then FDrag:=True
+    Else If St_GMouseY<LY+17+ThumbTop Then FTop:=St_Max2(1,FTop-St_FS_ROWS)
+    Else FTop:=St_Max2(1,St_Min2(St_FSN-St_FS_ROWS+1,FTop+St_FS_ROWS));
+    FRedraw:=True;
+   End Else If St_InBox(St_GMouseX,St_GMouseY,LX+16,LY+St_FS_ROWS*16+36,LX+16+80,LY+St_FS_ROWS*16+56) Then Begin
+    Accept;FRedraw:=True;
+   End Else If St_InBox(St_GMouseX,St_GMouseY,LX+16+100,LY+St_FS_ROWS*16+36,LX+16+180,LY+St_FS_ROWS*16+56) Then FDone:=True;
+  End;
+  If FRedraw And (Not FDone) Then DrawFS;
+ End;
+ Dec(St_ModalLevel);
+ St_ScrRestore(FSv);
+ St_DosFileSel:=FOk;
+End;
+Procedure St_PollKeys;
+Begin
+ St_TickSysVars;
+ St_SoundTick;
+ St_IkDrain;
+ While St_StEvH <> St_StEvT Do Begin       { touches deposees par DEVENV }
+  St_KQPush(St_StEvQ[St_StEvH]);
+  St_StEvH := (St_StEvH + 1) And 63;
+ End;
+End;
+
+{ ---- onglet Atari ST : fil d'execution de l'emulateur, dessin dans le panneau, clavier et souris ----
+  L'emulation (processeur, TOS, VDI, AES) tourne dans son propre fil : un appel AES bloquant (evnt_multi, form_do,
+  menus...) attend dans ce fil sans geler DEVENV. Le fil ne s'execute que tant que l'onglet est affiche et actif
+  (TabTick l'appelle a chaque tour de la boucle de DEVENV). Un seul onglet Atari ST est actif a la fois. }
+Var
+ St_StThread: TThreadID;
+ St_StQuit, St_StPaused, St_StDone, St_StRunning, St_StShown, St_StFirst, St_StTrace: Boolean;
+ St_StShadow: Array[0..31999] Of Byte;
+ St_StCurX, St_StCurY: Integer;
+ St_StStart, St_StTickAt, St_StMaxSteps, St_StTitleAt, St_StDrawAt, St_StCurSh: LongInt;
+
+Procedure St_StKeyPut(St_K: LongInt);
+Begin
+ If ((St_StEvT + 1) And 63) <> St_StEvH Then Begin
+  St_StEvQ[St_StEvT] := St_K;
+  St_StEvT := (St_StEvT + 1) And 63;
+ End;
+End;
+
+Function St_StWorker(P: Pointer): PtrInt;
+Var Nxt: String;
+Begin
+ St_StWorker := 0;
+ While Not St_StQuit Do Begin
+  If St_StPaused Or (St_MsNow - St_StTickAt > 400) Or (St_MsNow < St_StTickAt) Then Delay(10)
+  Else If (St_StopReason = St_STOP_NONE) Or (St_StopReason = St_STOP_YIELD) Then Begin
+   St_RunCpu(30000);
+   If St_StopReason = St_STOP_YIELD Then St_GemDispatch;
+   St_PollInput;
+   If (St_StMaxSteps > 0) And (St_InstrCount > St_StMaxSteps) And (St_StopReason = St_STOP_NONE) Then St_StopReason := St_STOP_USER;
+   If St_UserBreak Then St_StopReason := St_STOP_USER;
+  End Else Begin
+   Nxt := St_ShelNext;
+   If (Nxt <> '') And (St_StopReason = St_STOP_EXIT) Then Begin
+    { shel_write / Pexec : le programme suivant remplace le courant (meme comportement que RunProgramGUI) }
+    St_CloseAllFiles;
+    St_ShelNext := '';
+    If St_LoadProgram(Nxt, '', St_OptRunGem) Then Begin
+     St_ConClear;
+     If St_Emu_GEM Then St_GemBoot;
+     St_StopReason := St_STOP_NONE;
+    End Else St_StDone := True;
+   End Else Begin St_StDone := True; Delay(20); End;
+  End;
+ End;
+End;
+
+Procedure St_TabStop;
+Begin
+ If St_StRunning Then Begin
+  St_StQuit := True;
+  St_UserBreak := True;
+  WaitForThreadTerminate(St_StThread, 3000);
+  St_StRunning := False;
+  St_CloseAllFiles;
+ End;
+End;
+
+Procedure St_TabClose;
+Begin
+ St_TabStop;
+ St_StShown := False;
+End;
+
+Function St_TabStart(Var P: TEmulatorPanel; Const Prg, Tail: String): Boolean;
+Begin
+ St_TabStart := False;
+ St_TabClose;
+ P.Cols := 80; P.Rows := 25; P.CharW := 8; P.CharH := 16;      { zone de clic du panneau : EmuPanel_HitTest (640 x 400 points) }
+ St_StQuit := False; St_StPaused := False; St_StDone := False; St_StFirst := True; St_StCurX := -100; St_StCurY := -100; St_StCurSh := 0; St_StTitleAt := 0; St_StDrawAt := 0;
+ St_StMX := 0; St_StMY := 0; St_StMB := 0; St_StMBRet := 0; St_StMQH := 0; St_StMQT := 0; St_StEvH := 0; St_StEvT := 0; St_StMaxSteps := 0; St_StTrace := GetEnv('DEVENV_EMUTRACE') <> '';
+ If GetEnv('DEVENV_EMUSTEPS') <> '' Then Val(GetEnv('DEVENV_EMUSTEPS'), St_StMaxSteps, St_StMaxSteps);
+ St_BatchMode := False; St_GfxOn := True; St_AmigaMode := False; St_Lang := 1;
+ St_OptRunGem := True; St_OptAccs := True; St_MonActive := False; St_EmuVisible := True;
+ St_InitMemory(St_ST_MEMKB);
+ St_ScrBase := (St_MemSize - St_SCR_BYTES) And $FFFF00; St_DrawBase := St_ScrBase;
+ St_CheckFonts;
+ If Not St_LoadProgram(Prg, Tail, GetEnv('DEVENV_EMUGEM') <> '0') Then Exit;      { DEVENV_EMUGEM=0 : sans GEM (tests) }
+ St_ConClear;
+ St_UserBreak := False; St_ShelNext := '';
+ If St_Emu_GEM Then St_GemBoot;
+ St_StopReason := St_STOP_NONE;
+ FillChar(St_StShadow, SizeOf(St_StShadow), 0);
+ St_StRunning := True; St_StShown := True;
+ St_StStart := St_MsNow; St_StTickAt := St_MsNow;
+ St_StThread := BeginThread(TThreadFunc(@St_StWorker), Nil);
+ St_TabStart := True;
+End;
+
+{ dessin de l'ecran emule dans le panneau (octets modifies seulement ; tout si Full) et du curseur de souris.
+  Le curseur n'est efface et redessine que s'il bouge, change de forme ou si un octet qu'il couvre change : sinon
+  l'affichage de l'hote (qui peut etre presente a tout moment) le montrerait par intermittence. }
+Function St_TabDraw(Var P: TEmulatorPanel; Full: Boolean): Boolean;
+Var Y, XB, GX, GY, R, C: Integer; B, O: Byte; A: LongInt; MXd, MYd, Sig: LongInt; Show, CurDirty, Any: Boolean;
+ Procedure PutByte(XB, Y: Integer; V: Byte);
+ Var Bit: Integer;
+ Begin
+  For Bit := 0 To 7 Do
+   If (V And (128 Shr Bit)) <> 0 Then PutPixel(GX + XB * 8 + Bit, GY + Y, CLR_EDITOR_TEXT)
+   Else PutPixel(GX + XB * 8 + Bit, GY + Y, 15);
+ End;
+Begin
+ St_TabDraw := St_StShown;
+ If Not St_StShown Then Exit;
+ If St_StTrace Then WriteLn(ErrOutput, 'draw full=', Full, ' t=', St_MsNow);
+ If St_StFirst Then Full := True;
+ P.PanelX := 0;
+ P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ GX := P.PanelX; GY := P.PanelY + 12;
+ { rien a dessiner : ni changement de l'ecran emule, ni curseur, ni titre a rafraichir }
+ If Not Full Then Begin
+  Any := (St_MsNow - St_StTitleAt >= 250) Or (St_MsNow < St_StTitleAt);
+  Show := (St_MouseHidden <= 0) And (St_GMouseX >= 0);
+  If Show <> (St_StCurX > -100) Then Any := True;
+  MXd := St_GMouseX - St_CurHotX; MYd := St_GMouseY - St_CurHotY;
+  If MXd < 0 Then MXd := 0;
+  If MYd < 0 Then MYd := 0;
+  If MXd > St_SW - 16 Then MXd := St_SW - 16;
+  If MYd > St_SH - 16 Then MYd := St_SH - 16;
+  If Show And ((St_StCurX <> MXd) Or (St_StCurY <> MYd)) Then Any := True;
+  A := 0;
+  While (Not Any) And (A < 32000) Do Begin
+   If St_Rd8(St_ScrBase + A) <> St_StShadow[A] Then Any := True;
+   Inc(A);
+  End;
+  If (Not Any) And (Not Show) Then Exit;
+  If (Not Any) And Show Then Begin
+   Sig := 0;
+   For R := 0 To 15 Do Sig := Sig * 31 + St_CurMask[R] + 7 * St_CurData[R];
+   If Sig = St_StCurSh Then Exit;
+  End;
+ End;
+ If Full Then Begin
+  DrawFilledRect(P.PanelX - 2, P.PanelY - 2, P.PanelX + St_SW + 2, P.PanelY + 12 + St_SH + 2, CLR_BACKGROUND);
+  St_StFirst := False;
+  St_StCurX := -100;
+ End;
+ If Full Or (St_MsNow - St_StTitleAt >= 250) Or (St_MsNow < St_StTitleAt) Then Begin
+  DrawFilledRect(P.PanelX, P.PanelY, P.PanelX + St_SW, P.PanelY + 11, CLR_TITLEBAR_ACTIVE);
+  DrawText(P.PanelX + 6, P.PanelY + 2, 'Atari ST 640x400   PC=$' + St_Hex8(St_PC), CLR_HIGHLIGHTTEXT);
+  DrawText(P.PanelX + St_SW - 60, P.PanelY + 2, '[Esc]', CLR_HIGHLIGHTTEXT);
+  St_StTitleAt := St_MsNow;
+ End;
+ { nouvelle position du curseur (forme definie par le programme, vst_mouse / graf_mouse) }
+ Show := (St_MouseHidden <= 0) And (St_GMouseX >= 0);
+ MXd := St_GMouseX - St_CurHotX; MYd := St_GMouseY - St_CurHotY;
+ If MXd < 0 Then MXd := 0;
+ If MYd < 0 Then MYd := 0;
+ If MXd > St_SW - 16 Then MXd := St_SW - 16;
+ If MYd > St_SH - 16 Then MYd := St_SH - 16;
+ Sig := 0;
+ For R := 0 To 15 Do Sig := Sig * 31 + St_CurMask[R] + 7 * St_CurData[R];
+ CurDirty := Show <> (St_StCurX > -100);
+ If Show And ((St_StCurX <> MXd) Or (St_StCurY <> MYd) Or (St_StCurSh <> Sig)) Then CurDirty := True;
+ { ancien curseur : les octets qu'il couvrait sont redessines d'apres la memoire }
+ If CurDirty And (St_StCurX > -100) Then
+  For Y := St_StCurY To St_StCurY + 15 Do
+   For XB := St_StCurX Shr 3 To (St_StCurX + 15) Shr 3 Do
+    If (XB >= 0) And (XB < 80) And (Y >= 0) And (Y < St_SH) Then Begin
+     B := St_Rd8(St_ScrBase + LongInt(Y) * 80 + XB);
+     St_StShadow[Y * 80 + XB] := B;
+     PutByte(XB, Y, B);
+    End;
+ A := St_ScrBase;
+ For Y := 0 To St_SH - 1 Do
+  For XB := 0 To 79 Do Begin
+   B := St_Rd8(A + LongInt(Y) * 80 + XB);
+   O := St_StShadow[Y * 80 + XB];
+   If Full Then O := Not B;
+   If B <> O Then Begin
+    St_StShadow[Y * 80 + XB] := B;
+    PutByte(XB, Y, B);
+    If (St_StCurX > -100) And (Y >= St_StCurY) And (Y < St_StCurY + 16) And (XB >= St_StCurX Shr 3 - 1) And (XB <= (St_StCurX + 15) Shr 3 + 1) Then CurDirty := True;
+   End;
+  End;
+ If CurDirty Then Begin
+  If Show Then Begin
+   For R := 0 To 15 Do
+    For C := 0 To 15 Do
+     If (St_CurMask[R] And ($8000 Shr C)) <> 0 Then Begin
+      If (St_CurData[R] And ($8000 Shr C)) <> 0 Then PutPixel(GX + MXd + C, GY + MYd + R, CLR_EDITOR_TEXT)
+      Else PutPixel(GX + MXd + C, GY + MYd + R, 15);
+     End;
+   St_StCurX := MXd; St_StCurY := MYd; St_StCurSh := Sig;
+  End Else St_StCurX := -100;
+ End;
+ If St_StTrace Then WriteLn(ErrOutput, '  fin full=', Full, ' cur=', St_StCurX, ',', St_StCurY, ' dirty=', CurDirty, ' g=', St_GMouseX, ',', St_GMouseY, ' hot=', St_CurHotX, ',', St_CurHotY, ' m=', MXd, ',', MYd, ' hid=', St_MouseHidden);
+ P.LastGridW := St_SW;
+ P.LastGridH := 12 + St_SH;
+End;
+
+{ dump des zones memoire en mode test (DEVENV_EMUDUMP=adresse:longueur:fichier, DEVENV_EMUSCR=fichier) }
+Procedure St_TestDumps;
+Var S, A, L, Fn: String; P1, P2, Ad, Ln, St_K: LongInt; F: File; B: Array[0..4095] Of Byte; N: LongInt;
+ Procedure Dump(Addr, Len: LongInt; Const Name: String);
+ Var T, M, J: LongInt;
+ Begin
+  Assign(F, Name);
+  {$I-} Rewrite(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  T := 0;
+  While T < Len Do Begin
+   M := Len - T; If M > SizeOf(B) Then M := SizeOf(B);
+   For J := 0 To M - 1 Do B[J] := St_Rd8(Addr + T + J);
+   BlockWrite(F, B, M);
+   Inc(T, M);
+  End;
+  Close(F);
+ End;
+Begin
+ WriteLn(ErrOutput, 'ST: stop=', St_StopReason, ' msg=', St_StopMsg, ' exit=', St_ExitCode, ' pc=$', St_Hex8(St_PC), ' instr=', St_InstrCount, ' souris=', St_GMouseX, ',', St_GMouseY, ' cache=', St_MouseHidden, ' forme=$', St_Hex8(St_CurMask[0]), '/', St_Hex8(St_CurMask[2]));
+ S := GetEnv('DEVENV_EMUSCR');
+ If S <> '' Then Dump(St_ScrBase, 32000, S);
+ S := GetEnv('DEVENV_EMUDUMP');
+ If S <> '' Then Begin
+  P1 := Pos(':', S);
+  If P1 > 0 Then Begin
+   A := Copy(S, 1, P1 - 1); Fn := Copy(S, P1 + 1, Length(S));
+   P2 := Pos(':', Fn);
+   If P2 > 0 Then Begin
+    L := Copy(Fn, 1, P2 - 1); Fn := Copy(Fn, P2 + 1, Length(Fn));
+    Ad := 0;
+    For St_K := 1 To Length(A) Do Ad := Ad * 16 + Pos(UpCase(A[St_K]), '0123456789ABCDEF') - 1;
+    Val(L, Ln, N);
+    If (Ad >= 0) And (Ln > 0) And (Ad + Ln <= St_MemSize) Then Dump(Ad, Ln, Fn);
+   End;
+  End;
+ End;
+End;
+
+{ appele a chaque tour de la boucle de DEVENV : horloge du fil, fin du programme, mode test, dessin }
+Procedure St_TabTick(Var P: TEmulatorPanel; Active: Boolean);
+Var Lim: LongInt;
+Begin
+ St_StPaused := Not Active;
+ St_StTickAt := St_MsNow;
+ If St_StDone And P.Running Then Begin
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Programme termine';
+  St_TabDraw(P, False);
+ End;
+ If GetEnv('DEVENV_EMUQUIT') <> '' Then Begin
+  Lim := 20;
+  If GetEnv('DEVENV_EMUTIME') <> '' Then Val(GetEnv('DEVENV_EMUTIME'), Lim, Lim);
+  If St_StDone Or ((St_MsNow - St_StStart) > Lim * 1000) Then Begin
+   St_TabStop;
+   St_TestDumps;
+   Halt(0);
+  End;
+ End;
+ If Active Then Begin
+  If P.StatusMsg <> '' Then P.StatusMsg := '';
+  If (St_MsNow - St_StDrawAt >= 20) Or (St_MsNow < St_StDrawAt) Then Begin      { au plus 50 images par seconde }
+   St_TabDraw(P, False);
+   St_StDrawAt := St_MsNow;
+  End;
+ End Else If P.StatusMsg = '' Then P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+End;
+
+{ clavier et souris de l'onglet ; retourne False pour laisser DEVENV traiter l'evenement (Echap ferme l'onglet) }
+Function St_TabEvent(Var P: TEmulatorPanel; Var Ev: TEvent): Boolean;
+Var Sc: Integer; Asc: Integer; NB: LongInt;
+Begin
+ St_TabEvent := False;
+ If Not St_StRunning Then Exit;
+ Case Ev.Kind Of
+  EV_MOUSE_MOVE, EV_MOUSE_DOWN, EV_MOUSE_UP: Begin
+    If St_StTrace And (Ev.Kind <> EV_MOUSE_MOVE) Then WriteLn(ErrOutput, 'souris ', Ev.MouseX, ',', Ev.MouseY, ' kind=', Ord(Ev.Kind), ' btn=', Ord(Ev.MouseBtn));
+    St_StMX := Ev.MouseX - P.PanelX;
+    St_StMY := Ev.MouseY - (P.PanelY + 12);
+    If Ev.Kind = EV_MOUSE_DOWN Then Begin
+     If Ev.MouseBtn = MB_LEFT Then NB := St_StMB Or 1 Else NB := St_StMB Or 2;
+    End Else If Ev.Kind = EV_MOUSE_UP Then Begin
+     If Ev.MouseBtn = MB_LEFT Then NB := St_StMB And Not 1 Else NB := St_StMB And Not 2;
+    End Else NB := St_StMB;
+    If (NB <> St_StMB) And (((St_StMQT + 1) And 63) <> St_StMQH) Then Begin
+     St_StMQX[St_StMQT] := St_StMX; St_StMQY[St_StMQT] := St_StMY; St_StMQB[St_StMQT] := NB;
+     St_StMQT := (St_StMQT + 1) And 63;
+    End;
+    St_StMB := NB;
+    St_TabEvent := True;
+   End;
+  EV_KEY_CHAR: Begin
+    If Ev.KeyChar = #27 Then Exit;
+    Asc := Ord(Ev.KeyChar);
+    Sc := St_ScanOfChar(Ev.KeyChar);
+    If Asc = 8 Then Sc := 14 Else If Asc = 9 Then Sc := 15 Else If Asc = 13 Then Sc := 28;
+    St_StKeyPut((LongInt(Sc) Shl 16) Or Asc);
+    St_TabEvent := True;
+   End;
+  EV_KEY_DOWN: Begin
+    Sc := Ev.KeyCode And $FF;
+    If Sc = $1B Then Exit;
+    Asc := 0;
+    If Sc = 83 Then Asc := 127;
+    St_StKeyPut((LongInt(Sc) Shl 16) Or Asc);
+    St_TabEvent := True;
+   End;
+ End;
+End;
+
+{$POP}
+{ ===== FIN EMULATEUR ATARI ST / GEM ===== }
+
 Procedure M68K_RunOneChunk(Var P: TEmulatorPanel);
 Var
  ChunkI: LongInt;
@@ -237341,6 +247491,23 @@ Begin NesActive := False;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  End;
  If IsM68K Then Begin
+  { ----- Atari ST : emulateur complet (processeur, TOS, VDI, AES), bloc St_ en fin de fichier ----- }
+  If TargetCPU = '-CATARIST' Then Begin
+   P.Loaded := True;
+   P.Running := True;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
+   If Not St_TabStart(P, BinaryPath, Args) Then Begin
+    P.CurFg := 12;
+    EmuVScr_WriteStr(P, 'Erreur : impossible de charger ' + BinaryPath);
+    P.CurFg := OldFg;
+    P.Running := False;
+    P.Fault := sfEndProgram;
+    P.StatusMsg := 'Echec chargement binaire Atari ST';
+   End;
+   DrawEmulatorPanel(P);
+   Exit;
+  End;
   { ----- Emulateur Motorola 68000 ----- }
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 14;
@@ -239359,6 +249526,11 @@ Begin
  If P.Loaded And ((P.TargetCPU = '-C68000') Or (P.TargetCPU = '-CATARIST') Or
                    (P.TargetCPU = '-CAMIGA')) Then Begin
   If Not P.Running Then Exit;
+  If P.TargetCPU = '-CATARIST' Then Begin
+   { Atari ST : l'emulation tourne dans son fil (bloc St_) ; ici : pause, dessin, fin }
+   St_TabTick(P, EmuHasFocus And Not MenuActive And Not CtxMenu.Visible);
+   Exit;
+  End;
   Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
   If Not Active Then Begin
    If EmuLastActiveState Then Begin
@@ -239934,6 +250106,9 @@ Begin
  { OneChunk ne fait plus AUCUN PollEvents pour la souris. }
  IsDOSTarget := (P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP');
  IsWin16Target := (P.TargetCPU = '-CWIN16');
+ { Atari ST : clavier et souris vont a l'emulation (Echap ferme l'onglet comme pour les autres) }
+ If P.TargetCPU = '-CATARIST' Then
+  If St_TabEvent(P, Ev) Then Exit;
  Case Ev.Kind Of
   EV_KEY_CHAR:
    Begin
