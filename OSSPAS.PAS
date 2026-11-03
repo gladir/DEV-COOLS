@@ -92,6 +92,11 @@ Const
 
 Type
  PString = ^String;
+ TRegArr = Array[0..7] Of LongInt;
+ TEmuFileArr = Array[6..25] Of File;
+ TEmuUsedArr = Array[6..25] Of Boolean;
+ TDbgNmArr = Array[1..400] Of String[12];
+ TDbgAdArr = Array[1..400] Of LongInt;
 
  TEvent = Record
   { 0 rien, 1 touche, 2 bouton bas, 3 bouton haut, 4 mouvement }
@@ -1495,7 +1500,7 @@ Type
  End;
 
 Var
- RD,RA   : Array[0..7] Of LongInt;
+ RD,RA   : TRegArr;
  RPC     : LongInt;
  RSR     : Word;
  RUSP    : LongInt;
@@ -1515,8 +1520,8 @@ Var
  VtState : Integer;
  VtRow   : Integer;
  VtRev   : Boolean;
- EmuFile : Array[6..25] Of File;
- EmuFUsed: Array[6..25] Of Boolean;
+ EmuFile : TEmuFileArr;
+ EmuFUsed: TEmuUsedArr;
  EmuSF   : SearchRec;
  EmuSFOk : Boolean;
  VdiTxtCol : Integer;
@@ -2204,8 +2209,10 @@ Type
   GH     : Integer;     { handle GEMDOS associe (HANDLE), 0 : aucun }
  End;
 
+ TPFileArr = Array[1..MAXFILES] Of TPFile;
+
 Var
- PFiles   : Array[1..MAXFILES] Of TPFile;
+ PFiles   : TPFileArr;
  OutSel   : Integer;          { fichier de sortie courant (0 : console) }
  InSel    : Integer;          { fichier d'entree courant (0 : console) }
  ConBuf   : String;
@@ -2218,8 +2225,8 @@ Var
  TxtSize  : Integer;
  RtSeed   : LongInt;
  PrgDebug : Boolean;
- DbgNames : Array[1..400] Of String[12];
- DbgAddrs : Array[1..400] Of LongInt;
+ DbgNames : TDbgNmArr;
+ DbgAddrs : TDbgAdArr;
  DbgCount : Integer;
  PrgLoad  : LongInt;
  PrgText  : LongInt;
@@ -2408,7 +2415,7 @@ Begin
  E:=SmallInt(Bits And $FFFF);
  If E>60 Then E:=60;
  If E<-60 Then E:=-60;
- V:=Extended(M)*Pw10[E-10];
+ V:=M*Pw10[E-10];
  If ((Bits Shr 16) And 8)<>0 Then V:=-V;
  DecodeReal:=V;
 End;
@@ -3538,8 +3545,8 @@ Begin
  End;
 End;
 
-Function DlgRun(D,Start: Integer): Integer;
-Var E: TEvent; Done: Boolean; Fc,I,J,Hit,X,Y,W,H,R,Dbl: Integer; Sv: TSave; Own: Boolean; Ch: Char;
+Function DlgRun(D,Start: Integer): LongInt;
+Var E: TEvent; Done: Boolean; Fc,I,J,Hit,X,Y,W,H,R: Integer; Dbl: LongInt; Sv: TSave; Own: Boolean; Ch: Char;
     Prev: Integer;
  Function NextEdit(From,Dir: Integer): Integer;
  Var K,N: Integer;
@@ -6038,18 +6045,18 @@ End;
 Function NestedRun(Const Nm,Tl: String; Var Code: Integer; Var Mess: String): Boolean;
 Var I: Integer;
     SvMem: PByteArr;
-    SvRD,SvRA: Array[0..7] Of LongInt;
+    SvRD,SvRA: TRegArr;
     SvPC,SvUSP,SvHeap,SvDta,SvSeed,SvStk,SvLog,SvPhys,SvPenX,SvPenY,SvLoad,SvText: LongInt;
     SvSR: Word;
     SvSuper,SvCustom,SvClip,SvGem,SvGemUsed,SvScreen,SvActive,SvIoChk,SvXor,SvRev: Boolean;
     SvOut,SvIn,SvCPos,SvIoRes,SvDbgN,SvTmp,SvSet,SvDm,SvTc,SvFc,SvFs,SvFi,SvLc,SvTs,SvVt: Integer;
     SvCon: String;
     SvCx1,SvCy1,SvCx2,SvCy2: LongInt;
-    SvPF: Array[1..MAXFILES] Of TPFile;
-    SvEF: Array[6..25] Of File;
-    SvEFU: Array[6..25] Of Boolean;
-    SvDbgNm: Array[1..400] Of String[12];
-    SvDbgAd: Array[1..400] Of LongInt;
+    SvPF: TPFileArr;
+    SvEF: TEmuFileArr;
+    SvEFU: TEmuUsedArr;
+    SvDbgNm: TDbgNmArr;
+    SvDbgAd: TDbgAdArr;
     SvDebug: Boolean;
     SvMsg: String; SvCode: Integer;
     Ok,Aborted: Boolean;
@@ -6114,7 +6121,7 @@ End;
 
 { CHAIN : execute le programme de la ligne de commande puis REPREND le programme
   appelant la ou il en etait. Comme sur TOS, l'ecran n'est pas restaure et le
-  programme fils ne dispose que de la memoire laissee libre par {$S} / {$U}. }
+  programme fils ne dispose que de la memoire laissee libre par S et U. }
 Procedure DoChain(Const Cmd0: String);
 Var Cm,Nm,Tl,Mess: String; I,Code: Integer; F: File; Hd: Array[0..27] Of Byte; N: Word;
     Need,Left,SK: LongInt;
@@ -6569,9 +6576,10 @@ Type
   ClipOn : Boolean;
   CX1,CY1,CX2,CY2 : Integer;
  End;
+ TVdiArr = Array[0..VD_MAX] Of TVdi;
 
 Var
- Vd     : Array[0..VD_MAX] Of TVdi;     { 0 : etat interne de l'AES }
+ Vd     : TVdiArr;     { 0 : etat interne de l'AES }
  VdCur  : Integer;
  VIn,VPts,VOut,VPOut,VCtl : LongInt;   { tableaux du bloc de parametres VDI }
 
@@ -7370,10 +7378,11 @@ Type
   ObjO,TedO,IcoO,BitO,FrStr,StrO,ImgO,FrImg,TrIdx : LongInt;
   NObs,NTree,NTed,NIco,NBit,NStr,NImg,NFrS : LongInt;
  End;
+ TRscArr = Array[1..MAXRSC] Of TRscInfo;
 
 Var
  AesPoolTop : LongInt;
- Rsc        : Array[1..MAXRSC] Of TRscInfo;
+ Rsc        : TRscArr;
  RscCur     : Integer;
  EdIdx      : Integer;                  { position du curseur d'edition }
 
@@ -7394,7 +7403,7 @@ Const
  RET_ADDR = $412;      { adresse de retour fictive (jamais executee) }
 
 Function CallEmu(Addr,Arg: LongInt): LongInt;
-Var SvRD,SvRA: Array[0..7] Of LongInt; SvPC: LongInt; SvSR: Word; SvOpc: Word; SvOpPC,SvSteps: LongInt;
+Var SvRD,SvRA: TRegArr; SvPC: LongInt; SvSR: Word; SvOpc: Word; SvOpPC,SvSteps: LongInt;
     SvHalt: Boolean; N: LongInt;
 Begin
  SvRD:=RD;SvRA:=RA;SvPC:=RPC;SvSR:=RSR;SvOpc:=EmuOpc;SvOpPC:=EmuOpPC;SvSteps:=EmuSteps;SvHalt:=EmuHalt;
@@ -8080,10 +8089,10 @@ Begin
 End;
 
 { touche d'edition (code de balayage << 8 | ascii) ; retourne True si traitee }
-Function EdKey(T: LongInt; N: Integer; Key: LongInt; Var Idx: Integer): Boolean;
+Function FldEdKey(T: LongInt; N: Integer; Key: LongInt; Var Idx: Integer): Boolean;
 Var Ted,Pt: LongInt; S: String; Ch: Char; Mx,I: Integer; Sc,As_: Integer;
 Begin
- EdKey:=False;
+ FldEdKey:=False;
  Ted:=OSpc(T,N);
  Pt:=RL(Ted);
  S:=CStrAt(Pt);
@@ -8093,22 +8102,22 @@ Begin
  Sc:=(Key Shr 8) And $FF;As_:=Key And $FF;
  If Idx>Length(S) Then Idx:=Length(S);
  If Idx<0 Then Idx:=0;
- If (Sc=$4B) And (As_=0) Then Begin If Idx>0 Then Dec(Idx);EdKey:=True;End
- Else If (Sc=$4D) And (As_=0) Then Begin If Idx<Length(S) Then Inc(Idx);EdKey:=True;End
- Else If (Sc=$47) And (As_=0) Then Begin Idx:=0;EdKey:=True;End
- Else If (Sc=$4F) And (As_=0) Then Begin Idx:=Length(S);EdKey:=True;End
+ If (Sc=$4B) And (As_=0) Then Begin If Idx>0 Then Dec(Idx);FldEdKey:=True;End
+ Else If (Sc=$4D) And (As_=0) Then Begin If Idx<Length(S) Then Inc(Idx);FldEdKey:=True;End
+ Else If (Sc=$47) And (As_=0) Then Begin Idx:=0;FldEdKey:=True;End
+ Else If (Sc=$4F) And (As_=0) Then Begin Idx:=Length(S);FldEdKey:=True;End
  Else If As_=8 Then Begin
   If Idx>0 Then Begin Delete(S,Idx,1);Dec(Idx);End;
-  EdKey:=True;
+  FldEdKey:=True;
  End Else If As_=127 Then Begin
   If Idx<Length(S) Then Delete(S,Idx+1,1);
-  EdKey:=True;
+  FldEdKey:=True;
  End Else If (As_>=32) And (As_<>127) Then Begin
   Ch:=Chr(As_);
   If (Length(S)<Mx) And EdValidCh(Ted,Idx,Ch) Then Begin
    Insert(Ch,S,Idx+1);Inc(Idx);
   End;
-  EdKey:=True;
+  FldEdKey:=True;
  End;
  For I:=1 To Length(S) Do WB(Pt+I-1,Ord(S[I]));
  WB(Pt+Length(S),0);
@@ -8292,7 +8301,7 @@ Begin
     EdDrawCursor(T,Cur,Idx);Cur:=NextEditable(T,Cur,-1);Idx:=Length(CStrAt(RL(OSpc(T,Cur))));EdDrawCursor(T,Cur,Idx);
    End Else If Cur>0 Then Begin
     EdDrawCursor(T,Cur,Idx);
-    If EdKey(T,Cur,K,Idx) Then EdRedraw(T,Cur);
+    If FldEdKey(T,Cur,K,Idx) Then EdRedraw(T,Cur);
     EdDrawCursor(T,Cur,Idx);
    End;
   End Else If E.Kind=2 Then Begin
@@ -8339,9 +8348,9 @@ End;
 Type
  TAesSave = Record
   Pool    : LongInt;
-  Rs      : Array[1..MAXRSC] Of TRscInfo;
+  Rs      : TRscArr;
   RsCur   : Integer;
-  VdS     : Array[0..VD_MAX] Of TVdi;
+  VdS     : TVdiArr;
   VdC     : Integer;
   KeyScan : Boolean;
   MenuT   : LongInt;
@@ -8716,7 +8725,7 @@ Begin
            End;
         2: Begin
             If Not Headless Then EdDrawCursor(T,I,K);
-            If EdKey(T,I,IW(1) And $FFFF,K) Then Begin If Not Headless Then EdRedraw(T,I);End;
+            If FldEdKey(T,I,IW(1) And $FFFF,K) Then Begin If Not Headless Then EdRedraw(T,I);End;
             If Not Headless Then EdDrawCursor(T,I,K);
             IO(0,1);IO(1,K);
            End;
@@ -10048,7 +10057,7 @@ Begin
 End;
 
 Procedure Directive(Const D: String);
-{ D = texte entre {$ et } }
+{ D = texte entre le signe dollar d accolade ouvrante et l accolade fermante }
 Var C: Char; S: String; I,N: Integer; On: Boolean; Nm,Bn,Dir0: String;
 Begin
  S:=D;
@@ -13686,7 +13695,7 @@ End;
 { Lit un ou plusieurs fichiers .O (programme + modules) et produit un
   programme GEMDOS (.PRG / .TOS / .ACC) en y associant la bibliotheque
   d'execution (PASLIB / PASGEM) integree. Les references externes d'un
-  fichier sont resolues avec les symboles exportes ({$E+}) des autres. }
+  fichier sont resolues avec les symboles exportes (directive E+) des autres. }
 
 Const MAXLO = 5;
 
@@ -14958,15 +14967,15 @@ Begin
 End;
 
 Function EdFind(Fwd: Boolean): Boolean;
-Var B: ^TEdBuf; Ln,P,K: Integer; S: String;
+Var B: ^TEdBuf; Ln,P,K: Integer; S: String; Found: Boolean;
 Begin
- EdFind:=False;
- If FindStr='' Then Exit;
+ Found:=False;
+ If FindStr='' Then Begin EdFind:=False;Exit;End;
  B:=@Eb[EbCur];
  If Fwd Then Begin
   Ln:=B^.Row;P:=EdPos(FindStr,B^.L[Ln]^,B^.Col+1);
   While (P=0) And (Ln<B^.N) Do Begin Inc(Ln);P:=EdPos(FindStr,B^.L[Ln]^,1);End;
-  If P>0 Then Begin B^.Row:=Ln;B^.Col:=P;EdFind:=True;End;
+  If P>0 Then Begin B^.Row:=Ln;B^.Col:=P;Found:=True;End;
  End Else Begin
   Ln:=B^.Row;P:=0;
   S:=B^.L[Ln]^;
@@ -14976,9 +14985,10 @@ Begin
    Dec(Ln);S:=B^.L[Ln]^;K:=EdPos(FindStr,S,1);
    While K>0 Do Begin P:=K;K:=EdPos(FindStr,S,K+1);End;
   End;
-  If P>0 Then Begin B^.Row:=Ln;B^.Col:=P;EdFind:=True;End;
+  If P>0 Then Begin B^.Row:=Ln;B^.Col:=P;Found:=True;End;
  End;
- If Not EdFind Then EdMsg:=T3('Not found','Introuvable','Nicht gefunden');
+ If Not Found Then EdMsg:=T3('Not found','Introuvable','Nicht gefunden');
+ EdFind:=Found;
 End;
 
 Procedure EdReplaceHere;
@@ -15771,9 +15781,9 @@ Begin
 End;
 
 Function ManagerKey(K: Word): Boolean;
-Var A: Char;
+Var A: Char; Ok: Boolean;
 Begin
- ManagerKey:=True;
+ Ok:=True;
  A:=AltLetter(K);
  If A=#0 Then Begin
   If (K<256) Then A:=UpCase(Chr(K));
@@ -15799,10 +15809,11 @@ Begin
    K_SF3: ManagerCmd(C_ERASE);
    K_SF4: ManagerCmd(C_PRINT);
    K_F10: QuitReq:=True;
-  Else ManagerKey:=False;
+  Else Ok:=False;
   End;
  End;
- If ManagerKey And (Not QuitReq) Then RefreshAll;
+ If Ok And (Not QuitReq) Then RefreshAll;
+ ManagerKey:=Ok;
 End;
 
 Procedure ManagerLoop;
