@@ -50,3 +50,13 @@ test sur les trois emulateurs ; les resultats sont relus en memoire a la fin du 
 Console VT52 (console_vt52.py) : texte, ESC E, ESC Y, ESC p/q, CR LF sur l'ecran bitmap (OSSPAS.PAS et DEVENV.PAS).
 DEVENV.PAS, etape 2 : l'onglet Atari ST affiche l'ecran bitmap 640x400 (en $90000) des la premiere primitive de la
 ligne A ou le premier appel a Physbase/Logbase ; la ligne A est celle de DEVPAC.PAS (memes tests que les autres emulateurs).
+
+DEVENV.PAS, etape 3 : l'onglet Atari ST execute l'emulateur complet de DEVPAC.PAS (processeur, GEMDOS/BIOS/XBIOS, VDI, AES,
+ligne A, console VT52, selecteur de fichiers dessine dans l'ecran emule) : le code est genere dans DEVENV.PAS entre les
+marqueurs DEBUT/FIN EMULATEUR ATARI ST / GEM par OSSPAS_TESTS/devenv_port_st.py (identifiants prefixes St_, aucune unite,
+inclusion ni declaration externe ajoutee ; le noyau M68K_* d'Amiga et de -C68000 n'est pas modifie).
+  python3 OSSPAS_TESTS/devenv_port_st.py DEVPAC.PAS DEVENV.PAS        # regenere DEVENV.PAS a partir de la version d'origine (git)
+L'emulation tourne dans un fil d'execution ; l'onglet n'avance que lorsqu'il est affiche et actif. Clavier et souris
+vont au programme emule ; Echap ferme l'onglet comme pour les autres emulateurs. Variables de test : DEVENV_EMUQUIT,
+DEVENV_EMUTIME, DEVENV_EMUSCR, DEVENV_EMUDUMP, DEVENV_EMUSTEPS, DEVENV_EMUGEM=0 (sans GEM), DEVENV_EMUTRACE.
+Tous les tests de ce dossier passent avec OSSPAS_EMU=devenv (la_*, cpu_instructions, gemdos_fichiers, emu_aes_bios, console_vt52).

@@ -159,21 +159,14 @@ for i,(a,ins,model,b,ccr) in enumerate(cases):
     lines.append('\tand.w\t#$1F,d7')
     lines.append('\tmove.l\td0,(a6)+')
     lines.append('\tmove.w\td7,(a6)+')
-if EMU=='devenv':
-    # l'emulateur ST d'origine de DEVENV n'a pas de GEMDOS fiable : les resultats sont relus en memoire a la fin
-    lines+=['\tclr.w\t-(sp)','\ttrap\t#1',"fname:\tdc.b\t'CPURES.BIN',0",'\teven','res:\tds.b\t%d'%(N*6+16)]
-else:
+if True:
     lines+=['\tclr.w\t-(sp)','\tpea\tfname','\tmove.w\t#$3C,-(sp)','\ttrap\t#1','\taddq.l\t#8,sp','\tmove.w\td0,d7',
         '\tlea\tres,a1','\tmove.l\ta1,-(sp)','\tmove.l\t#%d,-(sp)'%(N*6),'\tmove.w\td7,-(sp)','\tmove.w\t#$40,-(sp)','\ttrap\t#1','\tlea\t12(sp),sp',
         '\tmove.w\td7,-(sp)','\tmove.w\t#$3E,-(sp)','\ttrap\t#1','\taddq.l\t#4,sp','\tclr.w\t-(sp)','\ttrap\t#1',"fname:\tdc.b\t'CPURES.BIN',0",'\teven','res:\tds.b\t%d'%(N*6+16)]
 pp=asm('\n'.join(lines)+'\n','CPUTEST')
 rp=os.path.join(WORK,'CPURES.BIN')
 if os.path.exists(rp): os.remove(rp)
-if EMU=='devenv':
-    # le chargeur ST de DEVENV place le texte a l'adresse $1100 : la zone de resultats est a la fin du programme
-    h=open(pp,'rb').read(28); tl,dl=struct.unpack('>II',h[2:10]); off=tl+dl-(N*6+16)+0x1100
-    sc=runprg(pp,'CPUTEST',dump='%X:%d'%(off,N*6)); b=sc.dump
-else:
+if True:
     runprg(pp,'CPUTEST')
     b=open(rp,'rb').read() if os.path.exists(rp) else b''
 check('programme termine et fichier ecrit (%d cas, %d octets attendus)'%(N,N*6),len(b)==N*6,len(b))
