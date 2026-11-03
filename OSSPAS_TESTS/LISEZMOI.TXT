@@ -15,7 +15,7 @@ Fichiers : la_pixel_ligne (A001-A004), la_motif_rect_polygone (A004-A006),
 la_bitblt (A007), la_textblt + la_textblt_echelle (A008), la_lutin_copie_germe
 (A00C-A00F). La ligne "FAILS []" en fin de sortie signifie : aucun ecart.
 
-Les memes tests tournent sur l'emulateur de DEVENV.PAS (option -emu:ATARIST, embarque depuis DEVPAC.PAS) :
+Les memes tests peuvent viser l'emulateur Atari ST de DEVENV.PAS (option -emu:ATARIST) :
   python3 OSSPAS_TESTS/devenv_linux_build.py DEVENV.PAS /tmp/devenv_build
   export OSSPAS_EMU=devenv DEVENV_BIN=/tmp/devenv_build/devenv
 Et sur celui de DEVPAC.PAS : export OSSPAS_EMU=devpac (utilise
