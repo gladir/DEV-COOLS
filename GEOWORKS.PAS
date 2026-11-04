@@ -103,8 +103,8 @@ Const
  A_PREFS   = 13; A_GEOCALC = 14; A_COMM    = 15; A_AOL     = 16;
  A_TEXTED  = 17; A_GEOFILE = 18; A_PERF    = 19; A_BOUNCE  = 20;
  A_GEODE   = 21; A_ABOUT   = 22; A_DOSPRG  = 23; A_HELP    = 24;
- A_GRAPH   = 25;
- NAPPS     = 25;
+ A_GRAPH   = 25; A_INSTALL = 26;
+ NAPPS     = 26;
 
 { ====================================================================== }
 {                                TYPES                                   }
@@ -3871,7 +3871,7 @@ Const
  AppIconTab : Array[1..NAPPS] Of Integer = (
   IC_GEOMGR,IC_CALC,IC_PERF,IC_NOTE,IC_TETRIS,IC_SOLI,IC_WRITE,IC_DRAW,
   IC_PLAN,IC_DEX,IC_BANNER,IC_SCRAP,IC_PREF,IC_CALC,IC_COMM,IC_AOL,
-  IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP,IC_GEOS);
+  IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP,IC_GEOS,IC_GEOS);
 
  AppNameTab : Array[1..NAPPS] Of String[44] = (
   'GeoManager','Calculator~Calculatrice~Rechner','Clock~Horloge~Uhr',
@@ -3880,7 +3880,7 @@ Const
   'Preferences~Pr'#130'f'#130'rences~Einstellungen','GeoCalc','GeoComm',
   'America Online','Text File Editor~'#201'diteur de texte~Texteditor',
   'GeoFile','Perf','Bounce','Geode','About~A propos~'#154'ber',
-  'DOS Programs~Programmes DOS~DOS-Programme','Help~Aide~Hilfe','Graph');
+  'DOS Programs~Programmes DOS~DOS-Programme','Help~Aide~Hilfe','Graph','Universal Installer');
 
 Function AppTitle(A: Integer): String;
 Begin
@@ -3912,6 +3912,7 @@ Begin
  Else If T='AMOL' Then TokenToApp:=A_AOL
  Else If T='PERF' Then TokenToApp:=A_PERF
  Else If T='GRAF' Then TokenToApp:=A_GRAPH
+ Else If (T='IstF') Or (T='InsD') Then TokenToApp:=A_INSTALL
  Else If T='BONC' Then TokenToApp:=A_BOUNCE
  Else If T='GCLK' Then TokenToApp:=A_CLOCK
  Else If T='GCAL' Then TokenToApp:=A_GEOCALC
@@ -11065,6 +11066,555 @@ Begin
  End;
  Invalidate(Wd_);
 End;
+{ ====================================================================== }
+{   UNIVERSAL INSTALLER (INSTFE.GEO, jeton IstF) - equivalent natif.      }
+{   Lit les paquets d'installation (fichiers VM de jeton InsD, ex.        }
+{   GEOZIP_2.001), affiche leur contenu et installe les fichiers GEOS     }
+{   dans les repertoires WORLD, SYSTEM et USERDATA\HELP.                   }
+{ ====================================================================== }
+
+Const
+ UIMAXF = 16;
+ CM_UIOPEN=1100; CM_UIINST=1101; CM_UIONE=1102; CM_UITARGET=1103; CM_UIINFO=1104;
+
+Type
+ TUiBuf = Array[0..65519] Of Byte;
+ PUiBuf = ^TUiBuf;
+
+ TUiFile = Record
+  Dos   : String[13];
+  LName : String[36];
+  Size  : LongInt;
+  Head  : Word;
+  Kind  : Byte;            { 1 application, 2 bibliotheque, 3 donnees }
+  State : Byte;            { 0 en attente, 1 installe, 2 erreur }
+ End;
+
+ PInst = ^TInst;
+ TInst = Record
+  Pkg   : String;
+  Loaded: Boolean;
+  PName : String[70];
+  PCopy : String[70];
+  PDesc : String;
+  N,Sel,Top : Integer;
+  F     : Array[1..UIMAXF] Of TUiFile;
+  Dir   : PUiBuf;
+  DirSz : Word;
+  Root  : String;
+  Msg   : String;
+  MsgErr: Boolean;
+ End;
+
+Function InstNew(AX,AY: Integer; Const APkg: String): PWindow; Forward;
+Procedure InstDone(Wd_: PWindow); Forward;
+Procedure InstDrawClient(Wd_: PWindow); Forward;
+Procedure InstOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure InstOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure InstOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+Procedure InstPrepareMenus(Wd_: PWindow); Forward;
+
+Function UiW(Var B; Off: LongInt): Word;
+Var P: PUiBuf;
+Begin
+ P:=@B;
+ UiW:=P^[Off]+256*Word(P^[Off+1]);
+End;
+
+Function UiL(Var B; Off: LongInt): LongInt;
+Var P: PUiBuf;
+Begin
+ P:=@B;
+ UiL:=P^[Off]+256*LongInt(P^[Off+1])+65536*LongInt(P^[Off+2])+16777216*LongInt(P^[Off+3]);
+End;
+
+Function UiRead(Var F: File; Pos: LongInt; Var Buf; Len: Word): Boolean;
+Var N: Word;
+Begin
+ UiRead:=False;
+ {$I-}
+ Seek(F,Pos);
+ BlockRead(F,Buf,Len,N);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ UiRead:=N=Len;
+End;
+
+Procedure UiFreeDir(Dt_: PInst);
+Begin
+ If Dt_^.Dir<>Nil Then Begin FreeMem(Dt_^.Dir,Dt_^.DirSz);Dt_^.Dir:=Nil;End;
+End;
+
+Function UiDosName(Const S: String): Boolean;
+Var I: Integer;
+Begin
+ UiDosName:=False;
+ If (Length(S)<3) Or (Length(S)>12) Then Exit;
+ For I:=1 To Length(S) Do
+  If Not (S[I] In ['A'..'Z','0'..'9','_','.','-','~','$']) Then Exit;
+ UiDosName:=Pos('.',S)>0;
+End;
+
+{ Position de l'en-tete d'un bloc VM (handle H) : position et taille }
+Function UiBlock(Dt_: PInst; H: Word; Var Pos: LongInt; Var Sz,Uid: Word): Boolean;
+Begin
+ UiBlock:=False;
+ If (H<32) Or (LongInt(H)+12>Dt_^.DirSz) Then Exit;
+ Sz:=UiW(Dt_^.Dir^,H+6);Uid:=UiW(Dt_^.Dir^,H+4);
+ Pos:=UiL(Dt_^.Dir^,H+8)+256;
+ UiBlock:=Sz<>0;
+End;
+
+Function UiTrim(Const S: String): String;
+Var A,B: Integer;
+Begin
+ A:=1;B:=Length(S);
+ While (A<=B) And (S[A]<=' ') Do Inc(A);
+ While (B>=A) And (S[B]<=' ') Do Dec(B);
+ UiTrim:=Copy(S,A,B-A+1);
+End;
+
+{ Ouvre et analyse un paquet ; retourne un message d'erreur ou '' }
+Function InstOpenPkg(Dt_: PInst; Const Path: String): String;
+Type
+ THead = Record
+  H    : Word;
+  Pos  : LongInt;
+  Name : String[36];
+ End;
+Var
+ F: File; Hd: Array[0..255] Of Byte; Map: Array[0..1023] Of Byte; Blk: Array[0..47] Of Byte;
+ NH: Integer; Heads: Array[1..32] Of THead;
+ DirPos: LongInt; Cnt,I,J,K,Tbl,MapHdl,H,Sz,Uid,E,NE,Sc: Word; Pos,EPos: LongInt;
+ DirHdl: Word; Ent: Array[0..399] Of Byte; Nm,Ln: String; Sg: LongInt; Found,Got: Boolean;
+ Buf: PUiBuf; Err: String;
+Begin
+ InstOpenPkg:='';
+ Err:='';
+ UiFreeDir(Dt_);
+ Dt_^.Loaded:=False;Dt_^.N:=0;Dt_^.Sel:=1;Dt_^.Top:=1;
+ {$I-}
+ Assign(F,Path);FileMode:=0;Reset(F,1);
+ {$I+}
+ If IOResult<>0 Then Begin InstOpenPkg:=T3('Cannot open the package.','Impossible d''ouvrir le paquet.','Paket kann nicht ge'#148'ffnet werden.');Exit;End;
+ Repeat
+  If Not UiRead(F,0,Hd,256) Then Begin Err:='?';Break;End;
+  If (UiL(Hd,0)<>$53C145C7) Or (UiW(Hd,40)<>2) Then Begin Err:='?';Break;End;
+  If UiRead(F,256,Blk,16)=False Then Begin Err:='?';Break;End;
+  If UiW(Blk,0)<>$ADEB Then Begin Err:='?';Break;End;
+  Dt_^.DirSz:=UiW(Blk,2);DirPos:=UiL(Blk,4)+256;
+  If (Dt_^.DirSz<64) Then Begin Err:='?';Break;End;
+  GetMem(Dt_^.Dir,Dt_^.DirSz);
+  If Not UiRead(F,DirPos,Dt_^.Dir^,Dt_^.DirSz) Then Begin Err:='?';Break;End;
+  MapHdl:=UiW(Dt_^.Dir^,20);
+  { bloc MAP : nom, copyright, description }
+  FillChar(Map,SizeOf(Map),0);
+  If UiBlock(Dt_,MapHdl,Pos,Sz,Uid) Then Begin
+   If Sz>1023 Then Sz:=1023;
+   UiRead(F,Pos,Map,Sz);
+   Dt_^.PName:=UiTrim(GeosToDos(CStr(Map,4,70)));
+   I:=$80;While (I<$100) And (Map[I]=0) Do Inc(I);
+   Dt_^.PCopy:=UiTrim(GeosToDos(CStr(Map,I,70)));
+   I:=$100;While (I<1000) And (Map[I]=0) Do Inc(I);
+   Dt_^.PDesc:=GeosToDos(CStr(Map,I,250));
+  End;
+  { inventaire des blocs : tetes de fichiers et repertoire des entrees }
+  Tbl:=UiW(Dt_^.Dir^,8);
+  If Tbl>Dt_^.DirSz Then Tbl:=Dt_^.DirSz;
+  Cnt:=(Tbl-32) Div 12;
+  NH:=0;DirHdl:=0;
+  If Cnt>0 Then For I:=0 To Cnt-1 Do Begin
+   H:=32+I*12;
+   If UiBlock(Dt_,H,Pos,Sz,Uid) And (Uid=$FF04) And (Sz>=$30) Then Begin
+    If UiRead(F,Pos,Blk,$30) Then Begin
+     If (UiW(Blk,$20)=$135) And (UiW(Blk,$1E)>0) And (UiW(Blk,$1E)<=32) And (DirHdl=0) Then DirHdl:=H;
+     If (UiL(Blk,$26)=$53C145C7) And (NH<32) Then Begin
+      Inc(NH);Heads[NH].H:=H;Heads[NH].Pos:=Pos;
+      UiRead(F,Pos+$26+4,Map,40);
+      Heads[NH].Name:=CStr(Map,0,36);
+     End;
+    End;
+   End;
+  End;
+  If DirHdl=0 Then Begin Err:='?';Break;End;
+  UiBlock(Dt_,DirHdl,Pos,Sz,Uid);
+  UiRead(F,Pos,Blk,$30);
+  NE:=UiW(Blk,$1E);
+  For K:=0 To NE-1 Do Begin
+   EPos:=Pos+$26+LongInt(K)*$135;
+   If EPos+$135>Pos+Sz Then Break;
+   If Not UiRead(F,EPos,Ent,$135) Then Break;
+   Nm:=CStr(Ent,0,13);
+   If UiDosName(Nm) And (Dt_^.N<UIMAXF) Then Begin
+    Inc(Dt_^.N);
+    Dt_^.F[Dt_^.N].Dos:=Nm;
+    Dt_^.F[Dt_^.N].LName:=GeosToDos(CStr(Ent,$24,36));
+    Dt_^.F[Dt_^.N].Size:=UiL(Ent,$11E);
+    Dt_^.F[Dt_^.N].Head:=0;Dt_^.F[Dt_^.N].Kind:=3;Dt_^.F[Dt_^.N].State:=0;
+    Ln:=CStr(Ent,$24,36);
+    For J:=1 To NH Do
+     If (Heads[J].Name=Ln) And (Heads[J].H<>0) Then Begin
+      Dt_^.F[Dt_^.N].Head:=Heads[J].H;Heads[J].H:=0;Break;
+     End;
+   End;
+  End;
+  { type de chaque fichier : application, bibliotheque ou donnees }
+  For K:=1 To Dt_^.N Do
+   If (Dt_^.F[K].Head<>0) And UiBlock(Dt_,Dt_^.F[K].Head,Pos,Sz,Uid) Then Begin
+    If UiRead(F,Pos+$26,Hd,256) Then Begin
+     If UiW(Hd,40)=1 Then Begin
+      If UiRead(F,Pos+$26+248+36,Map,2) Then Begin
+       Dt_^.F[K].Kind:=Map[0];
+       If (Dt_^.F[K].Kind<1) Or (Dt_^.F[K].Kind>2) Then Dt_^.F[K].Kind:=1;
+      End;
+     End;
+    End;
+   End;
+ Until True;
+ {$I-}
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ If (Err='') And (Dt_^.N=0) Then Err:='?';
+ If Err<>'' Then Begin
+  UiFreeDir(Dt_);
+  InstOpenPkg:=T3('This file is not an installation package.','Ce fichier n''est pas un paquet d''installation.',
+                  'Diese Datei ist kein Installationspaket.');
+  Exit;
+ End;
+ Dt_^.Pkg:=Path;Dt_^.Loaded:=True;
+End;
+
+Function InstKindDir(Dt_: PInst; K: Integer): String;
+Begin
+ Case Dt_^.F[K].Kind Of
+  1: InstKindDir:=JoinPath(Dt_^.Root,'WORLD');
+  2: InstKindDir:=JoinPath(Dt_^.Root,'SYSTEM');
+ Else InstKindDir:=JoinPath(JoinPath(Dt_^.Root,'USERDATA'),'HELP');
+ End;
+End;
+
+Function InstKindText(K: Integer): String;
+Begin
+ Case K Of
+  1: InstKindText:='WORLD';
+  2: InstKindText:='SYSTEM';
+ Else InstKindText:='USERDATA\HELP';
+ End;
+End;
+
+Procedure InstMakeDirs(Const P: String);
+Var I: Integer; S: String;
+Begin
+ S:='';
+ I:=1;
+ While I<=Length(P) Do Begin
+  S:=S+P[I];
+  If ((P[I]='\') Or (P[I]='/')) And (I>1) And (P[I-1]<>':') Then Begin
+   {$I-}
+   If Not DirExists(S) Then MkDir(Copy(S,1,Length(S)-1));
+   {$I+}
+   If IOResult<>0 Then Begin End;
+  End;
+  Inc(I);
+ End;
+ {$I-}
+ If Not DirExists(P) Then MkDir(P);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+{ Extrait un fichier du paquet vers OutPath }
+Function InstExtract(Dt_: PInst; Var F: File; K: Integer; Const OutPath: String): Boolean;
+Var O: File; Cur,Sz,Uid,Csz: Word; Pos: LongInt; Rem: LongInt; Hd: Array[0..47] Of Byte;
+    Buf: Array[0..4095] Of Byte; N,Part,Nw: Word; Ok: Boolean; Done,Guard: Integer;
+Begin
+ InstExtract:=False;
+ {$I-}
+ Assign(O,OutPath);FileMode:=2;Rewrite(O,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Cur:=Dt_^.F[K].Head;Rem:=Dt_^.F[K].Size;Ok:=True;Guard:=0;
+ While (Cur<>0) And (Rem>0) And Ok And (Guard<500) Do Begin
+  Inc(Guard);
+  If Not UiBlock(Dt_,Cur,Pos,Sz,Uid) Then Begin Ok:=False;Break;End;
+  If Not UiRead(F,Pos,Hd,$26) Then Begin Ok:=False;Break;End;
+  Csz:=UiW(Hd,$1C);
+  If Csz>Sz-$26 Then Csz:=Sz-$26;
+  If Csz>Rem Then Csz:=Rem;
+  Done:=0;
+  While (Done<Csz) And Ok Do Begin
+   Part:=Csz-Done;
+   If Part>4096 Then Part:=4096;
+   If Not UiRead(F,Pos+$26+Done,Buf,Part) Then Begin Ok:=False;Break;End;
+   {$I-}
+   BlockWrite(O,Buf,Part,Nw);
+   {$I+}
+   If (IOResult<>0) Or (Nw<>Part) Then Begin Ok:=False;Break;End;
+   Inc(Done,Part);
+  End;
+  Dec(Rem,Csz);
+  Cur:=UiW(Hd,$10);
+ End;
+ {$I-}
+ Close(O);
+ {$I+}
+ If IOResult<>0 Then Ok:=False;
+ If Rem>0 Then Ok:=False;
+ InstExtract:=Ok;
+End;
+
+{ Installe un fichier (K) ou tous (K=0) }
+Procedure InstInstall(Wd_: PWindow; K: Integer);
+Var Dt_: PInst; F: File; I,A,B,Good,Bad: Integer; D,Pth: String;
+Begin
+ Dt_:=Wd_^.Data;
+ If Not Dt_^.Loaded Then Begin
+  Info('Universal Installer',T3('Open a package first.','Ouvrez d''abord un paquet.','Zuerst ein Paket '#148'ffnen.'));
+  Exit;
+ End;
+ {$I-}
+ Assign(F,Dt_^.Pkg);FileMode:=0;Reset(F,1);
+ {$I+}
+ If IOResult<>0 Then Begin Info('Universal Installer',T3('Cannot read the package.','Lecture du paquet impossible.','Paket nicht lesbar.'));Exit;End;
+ If K=0 Then Begin A:=1;B:=Dt_^.N;End Else Begin A:=K;B:=K;End;
+ Good:=0;Bad:=0;
+ For I:=A To B Do Begin
+  D:=InstKindDir(Dt_,I);
+  InstMakeDirs(D);
+  Pth:=JoinPath(D,Dt_^.F[I].Dos);
+  If (Dt_^.F[I].Head<>0) And InstExtract(Dt_,F,I,Pth) Then Begin Dt_^.F[I].State:=1;Inc(Good);End
+  Else Begin Dt_^.F[I].State:=2;Inc(Bad);End;
+  Dt_^.Sel:=I;
+  Invalidate(Wd_);FlushPaint;
+ End;
+ {$I-}
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ Dt_^.MsgErr:=Bad>0;
+ If Bad=0 Then
+  Dt_^.Msg:=IntStr(Good)+T3(' file(s) installed in ',' fichier(s) install'#130'(s) dans ',' Datei(en) installiert in ')+Dt_^.Root
+ Else
+  Dt_^.Msg:=IntStr(Bad)+T3(' file(s) could not be installed.',' fichier(s) non install'#130'(s).',' Datei(en) nicht installiert.');
+ If Bad=0 Then
+  Info('Universal Installer',T3('Installation complete.|','Installation termin'#130'e.|','Installation abgeschlossen.|')+Dt_^.Msg)
+ Else
+  Info('Universal Installer',Dt_^.Msg);
+End;
+
+Function InstNew(AX,AY: Integer; Const APkg: String): PWindow;
+ Var Wd_: PWindow; Dt_: PInst; E: String;
+Begin
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_INSTALL,AX,AY,560,396,'Universal Installer');
+ Wd_^.IconId:=IC_GEOS;Wd_^.MinW:=480;Wd_^.MinH:=360;
+ If WorldDir<>'' Then Dt_^.Root:=DirOf(WorldDir) Else Dt_^.Root:=JoinPath(HomeDir,'GEOS');
+ Dt_^.Sel:=1;Dt_^.Top:=1;
+ WinAddMenu(Wd_,'Package~Paquet~Paket');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_UIOPEN,'Ctrl+O');
+ WinAddItem(Wd_,'Install All~Tout installer~Alles installieren',CM_UIINST,'');
+ WinAddItem(Wd_,'Install Selected File~Installer le fichier s'#130'lectionn'#130'~Gew'#132'hlte Datei installieren',CM_UIONE,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Target Directory...~R'#130'pertoire cible...~Zielverzeichnis...',CM_UITARGET,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Help~Aide~Hilfe');
+ WinAddItem(Wd_,'About Universal Installer~A propos de Universal Installer~'#154'ber Universal Installer',CM_UIINFO,'');
+ If APkg<>'' Then Begin
+  E:=InstOpenPkg(Dt_,APkg);
+  If E<>'' Then Info('Universal Installer',E);
+ End;
+ InstNew:=Wd_;
+End;
+
+Procedure InstDone(Wd_: PWindow);
+Begin
+ UiFreeDir(PInst(Wd_^.Data));
+End;
+
+Procedure InstPrepareMenus(Wd_: PWindow);
+ Var Dt_: PInst;
+Begin
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_UIINST,1,Not Dt_^.Loaded);
+ WinSetFlag(Wd_,CM_UIONE,1,Not Dt_^.Loaded);
+End;
+
+{ Texte justifie a gauche avec retours a la ligne ; retourne la derniere ordonnee }
+Procedure InstWrap(X,Y,W,MaxLines: Integer; Const S: String; C: Integer);
+ Var Cpl,L,Cut,I,N: Integer; Line,Rest: String;
+Begin
+ Cpl:=W Div 8;
+ Rest:=S;N:=0;
+ While (Rest<>'') And (N<MaxLines) Do Begin
+  I:=Pos(#13,Rest);
+  If I=0 Then Begin Line:=Rest;Rest:='';End
+  Else Begin Line:=Copy(Rest,1,I-1);Rest:=Copy(Rest,I+1,255);End;
+  If Line='' Then Inc(N)
+  Else Begin
+   While (Line<>'') And (N<MaxLines) Do Begin
+    L:=Length(Line);
+    If L>Cpl Then Begin
+     Cut:=Cpl;
+     While (Cut>1) And (Line[Cut+1]<>' ') And (Line[Cut]<>' ') Do Dec(Cut);
+     If Cut<=1 Then Cut:=Cpl;
+    End Else Cut:=L;
+    GText(X,Y+N*10,UiTrim(Copy(Line,1,Cut)),C);
+    Delete(Line,1,Cut);
+    Inc(N);
+   End;
+  End;
+ End;
+End;
+
+Function InstSizeStr(N: LongInt): String;
+Begin
+ If N>=10240 Then InstSizeStr:=NumFmt((N+512) Div 1024)+' KB' Else InstSizeStr:=NumFmt(N)+' B';
+End;
+
+Procedure InstDrawClient(Wd_: PWindow);
+ Var Dt_: PInst;
+Var X1,Y1,X2,Y2,I,Y,Rows,K: Integer; S: String; C: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ GBar(X1,Y1,X2,Y2,cLGr);
+ If Not Dt_^.Loaded Then Begin
+  GTextBig(X1+16,Y1+14,'Universal Installer',2,cBlk);
+  GText(X1+16,Y1+44,T3('Install GEOS programs from installation packages.',
+                       'Installe des programmes GEOS '#133' partir de paquets d''installation.',
+                       'Installiert GEOS-Programme aus Installationspaketen.'),cBlk);
+  GText(X1+16,Y1+64,T3('Use Package > Open to choose a package (.001),',
+                       'Utilisez Paquet > Ouvrir pour choisir un paquet (.001),',
+                       'W'#132'hlen Sie Paket > '#153'ffnen, um ein Paket (.001) zu w'#132'hlen,'),cBlk);
+  GText(X1+16,Y1+76,T3('for example GEOZIP_2.001.','par exemple GEOZIP_2.001.','z. B. GEOZIP_2.001.'),cBlk);
+  Button(X1+16,Y1+110,X1+190,Y1+132,T3('Open Package...','Ouvrir un paquet...','Paket '#148'ffnen...'),True,False,True);
+  Exit;
+ End;
+ { en-tete du paquet }
+ GText(X1+10,Y1+8,T3('Package:','Paquet :','Paket:'),cDGr);
+ GTextBig(X1+10,Y1+20,Copy(Dt_^.PName,1,(X2-X1-20) Div 16),2,cBlk);
+ GText(X1+10,Y1+40,Copy(Dt_^.PCopy,1,(X2-X1-20) Div 8),cDGr);
+ Sunken(X1+8,Y1+54,X2-8,Y1+130,cWht);
+ InstWrap(X1+14,Y1+60,X2-X1-34,7,Dt_^.PDesc,cBlk);
+ { liste des fichiers }
+ Y:=Y1+138;
+ GText(X1+10,Y+2,T3('Files in this package','Fichiers de ce paquet','Dateien in diesem Paket'),cBlk);
+ Y:=Y+16;
+ GBar(X1+8,Y,X2-8,Y+13,cDGr);
+ GText(X1+14,Y+3,T3('File','Fichier','Datei'),cWht);
+ GText(X1+122,Y+3,T3('Description','Description','Beschreibung'),cWht);
+ GText(X2-200,Y+3,T3('Size','Taille','Gr'#148#225'e'),cWht);
+ GText(X2-134,Y+3,T3('Directory','R'#130'pertoire','Verzeichnis'),cWht);
+ Sunken(X1+8,Y+13,X2-8,Y+13+8*13+4,cWht);
+ Rows:=8;
+ If Dt_^.Sel<Dt_^.Top Then Dt_^.Top:=Dt_^.Sel;
+ If Dt_^.Sel>=Dt_^.Top+Rows Then Dt_^.Top:=Dt_^.Sel-Rows+1;
+ For I:=0 To Rows-1 Do Begin
+  K:=Dt_^.Top+I;
+  If K<=Dt_^.N Then Begin
+   If K=Dt_^.Sel Then Begin GBar(X1+10,Y+15+I*13,X2-10,Y+15+I*13+12,cBlk);C:=cWht;End Else C:=cBlk;
+   GText(X1+14,Y+18+I*13,Dt_^.F[K].Dos,C);
+   GText(X1+122,Y+18+I*13,Copy(Dt_^.F[K].LName,1,(X2-X1-340) Div 8),C);
+   S:=InstSizeStr(Dt_^.F[K].Size);
+   GText(X2-144-TextW(S),Y+18+I*13,S,C);
+   GText(X2-134,Y+18+I*13,Copy(InstKindText(Dt_^.F[K].Kind),1,13),C);
+   Case Dt_^.F[K].State Of
+    1: GText(X2-26,Y+18+I*13,'OK',cLGn);
+    2: GText(X2-26,Y+18+I*13,'!!',cLRd);
+   End;
+  End;
+ End;
+ Y:=Y+13+8*13+10;
+ Button(X1+8,Y,X1+130,Y+22,T3('Open...','Ouvrir...',#153'ffnen...'),False,False,True);
+ Button(X1+140,Y,X1+280,Y+22,T3('Install All','Tout installer','Alles installieren'),True,False,True);
+ Button(X1+290,Y,X1+470,Y+22,T3('Install Selected','Installer la s'#130'lection','Auswahl installieren'),False,False,True);
+ If Dt_^.Msg<>'' Then Begin
+  If Dt_^.MsgErr Then C:=cRed Else C:=cGrn;
+  GText(X1+10,Y+30,Copy(Dt_^.Msg,1,(X2-X1-20) Div 8),C);
+ End Else
+  GText(X1+10,Y+30,T3('Target: ','Cible : ','Ziel: ')+Copy(Dt_^.Root,1,(X2-X1-80) Div 8),cDGr);
+End;
+
+Procedure InstOpenDlg(Wd_: PWindow);
+ Var Dt_: PInst; P,E: String;
+Begin
+ Dt_:=Wd_^.Data;
+ P:='';
+ If FileDlg(T3('Open Package','Ouvrir un paquet','Paket '#148'ffnen'),'*.001',P,False) Then Begin
+  E:=InstOpenPkg(Dt_,P);
+  If E<>'' Then Info('Universal Installer',E)
+  Else Begin
+   Dt_^.Msg:='';
+   Wd_^.Title:='Universal Installer - '+ShortName(P);
+  End;
+ End;
+ NeedFull:=True;
+End;
+
+Procedure InstOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PInst;
+Var X1,Y1,X2,Y2,Y,K: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ If E.Kind<>EV_DOWN Then Exit;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ If Not Dt_^.Loaded Then Begin
+  If InBox(E.X,E.Y,X1+16,Y1+110,X1+190,Y1+132) Then InstOpenDlg(Wd_);
+  Exit;
+ End;
+ Y:=Y1+138+16;
+ If InBox(E.X,E.Y,X1+8,Y+13,X2-8,Y+13+8*13+4) Then Begin
+  K:=Dt_^.Top+(E.Y-(Y+15)) Div 13;
+  If (K>=1) And (K<=Dt_^.N) Then Dt_^.Sel:=K;
+  Invalidate(Wd_);
+  Exit;
+ End;
+ Y:=Y+13+8*13+10;
+ If InBox(E.X,E.Y,X1+8,Y,X1+130,Y+22) Then InstOpenDlg(Wd_)
+ Else If InBox(E.X,E.Y,X1+140,Y,X1+280,Y+22) Then InstInstall(Wd_,0)
+ Else If InBox(E.X,E.Y,X1+290,Y,X1+470,Y+22) Then InstInstall(Wd_,Dt_^.Sel);
+ Invalidate(Wd_);
+End;
+
+Procedure InstOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PInst;
+Begin
+ Dt_:=Wd_^.Data;
+ Case K Of
+  K_UP: If Dt_^.Sel>1 Then Dec(Dt_^.Sel);
+  K_DOWN: If Dt_^.Sel<Dt_^.N Then Inc(Dt_^.Sel);
+  K_HOME: Dt_^.Sel:=1;
+  K_END: If Dt_^.N>0 Then Dt_^.Sel:=Dt_^.N;
+  K_ENTER: InstInstall(Wd_,0);
+  K_CTRLO: InstOpenDlg(Wd_);
+ End;
+ Invalidate(Wd_);
+End;
+
+Procedure InstOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PInst; S: String;
+Begin
+ Dt_:=Wd_^.Data;
+ Case Cmd Of
+  CM_UIOPEN: InstOpenDlg(Wd_);
+  CM_UIINST: InstInstall(Wd_,0);
+  CM_UIONE: InstInstall(Wd_,Dt_^.Sel);
+  CM_UITARGET: Begin
+   S:=Dt_^.Root;
+   If InputBox(T3('Target Directory','R'#130'pertoire cible','Zielverzeichnis'),
+      T3('GEOS root directory (contains WORLD, SYSTEM...):','Racine GEOS (contient WORLD, SYSTEM...) :',
+         'GEOS-Stammverzeichnis (enth'#132'lt WORLD, SYSTEM...):'),S,70) And (S<>'') Then Dt_^.Root:=S;
+  End;
+  CM_UIINFO: Info('Universal Installer',
+     T3('Universal Installer (native clone of INSTFE.GEO)|Reads installation packages (token InsD) and|installs GEOS files into WORLD, SYSTEM and USERDATA\HELP.',
+        'Universal Installer (clone natif de INSTFE.GEO)|Lit les paquets d''installation (jeton InsD) et|installe les fichiers GEOS dans WORLD, SYSTEM et USERDATA\HELP.',
+        'Universal Installer (nativer Klon von INSTFE.GEO)|Liest Installationspakete (Token InsD) und|installiert GEOS-Dateien in WORLD, SYSTEM und USERDATA\HELP.'));
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ End;
+ Invalidate(Wd_);
+End;
 
 { ====================================================================== }
 {       CHARGEUR DE GEODES PC/GEOS (.GEO) ET EMULATEUR x86 MINIMAL       }
@@ -12062,6 +12612,7 @@ Var X1,Y1,X2,Y2: Integer;
 Begin
  Case W^.Kind Of
   A_GRAPH: GrDrawClient(W);
+  A_INSTALL: InstDrawClient(W);
   A_MANAGER: MgrDrawClient(W);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwDrawClient(W);
   A_CALC: CalcDrawClient(W);
@@ -12091,6 +12642,7 @@ Procedure WinMouse(W: PWindow; Var E: TEvent);
 Begin
  Case W^.Kind Of
   A_GRAPH: GrOnMouse(W,E);
+  A_INSTALL: InstOnMouse(W,E);
   A_MANAGER: MgrOnMouse(W,E);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnMouse(W,E);
   A_CALC: CalcOnMouse(W,E);
@@ -12111,6 +12663,7 @@ Procedure WinKey(W: PWindow; K: Word);
 Begin
  Case W^.Kind Of
   A_GRAPH: GrOnKey(W,K);
+  A_INSTALL: InstOnKey(W,K);
   A_MANAGER: MgrOnKey(W,K);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnKey(W,K);
   A_CALC: CalcOnKey(W,K);
@@ -12133,6 +12686,7 @@ Procedure WinCommand(W: PWindow; Cmd: Integer);
 Begin
  Case W^.Kind Of
   A_GRAPH: GrOnCommand(W,Cmd);
+  A_INSTALL: InstOnCommand(W,Cmd);
   A_MANAGER: MgrOnCommand(W,Cmd);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnCommand(W,Cmd);
   A_CALC: CalcOnCommand(W,Cmd);
@@ -12156,6 +12710,7 @@ Procedure WinPrepare(W: PWindow);
 Begin
  Case W^.Kind Of
   A_GRAPH: GrPrepareMenus(W);
+  A_INSTALL: InstPrepareMenus(W);
   A_MANAGER: MgrPrepareMenus(W);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwPrepareMenus(W);
   A_CALC: CalcPrepareMenus(W);
@@ -12207,6 +12762,7 @@ Procedure WinFree(W: PWindow);
 Begin
  Case W^.Kind Of
   A_GRAPH: Begin GrDone(W);Dispose(PGraph(W^.Data)) End;
+  A_INSTALL: Begin InstDone(W);Dispose(PInst(W^.Data)) End;
   A_MANAGER: Begin MgrDone(W);Dispose(PManager(W^.Data)) End;
   A_NOTEPAD,A_TEXTED,A_WRITE: Begin EdwDone(W);Dispose(PEditWin(W^.Data)) End;
   A_CALC: Begin Dispose(PCalcWin(W^.Data)) End;
@@ -12276,6 +12832,7 @@ Begin
   A_PLANNER: W:=PlnNew(X,Y);
   A_DEX: W:=DexNew(X,Y);
   A_GRAPH: W:=GrNew(X,Y);
+  A_INSTALL: W:=InstNew(X,Y,Param);
  Else
   Info(AppTitle(AppId),T3('This application is not available yet.','Cette application n''est pas encore disponible.','Diese Anwendung ist noch nicht verf'#129'gbar.'));
  End;
