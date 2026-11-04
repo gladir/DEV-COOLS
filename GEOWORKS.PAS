@@ -53,7 +53,7 @@ Const
 
  MAXWIN   = 24;
  MAXMENU  = 8;
- MAXITEM  = 18;
+ MAXITEM  = 22;
 
  { Codes de touches : caractere = ord ; etendue = 256 + code }
  K_ESC    = 27;
@@ -103,8 +103,9 @@ Const
  A_PREFS   = 13; A_GEOCALC = 14; A_COMM    = 15; A_AOL     = 16;
  A_TEXTED  = 17; A_GEOFILE = 18; A_PERF    = 19; A_BOUNCE  = 20;
  A_GEODE   = 21; A_ABOUT   = 22; A_DOSPRG  = 23; A_HELP    = 24;
- A_GRAPH   = 25; A_INSTALL = 26;
- NAPPS     = 26;
+ A_GRAPH   = 25; A_INSTALL = 26; A_TREE    = 27; A_DUMP    = 28;
+ A_WK1     = 29;
+ NAPPS     = 29;
 
 { ====================================================================== }
 {                                TYPES                                   }
@@ -3902,16 +3903,17 @@ Const
  AppIconTab : Array[1..NAPPS] Of Integer = (
   IC_GEOMGR,IC_CALC,IC_PERF,IC_NOTE,IC_TETRIS,IC_SOLI,IC_WRITE,IC_DRAW,
   IC_PLAN,IC_DEX,IC_BANNER,IC_SCRAP,IC_PREF,IC_CALC,IC_COMM,IC_AOL,
-  IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP,IC_GEOS,IC_GEOS);
+  IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP,IC_GEOS,IC_GEOS,IC_FOLDER,IC_COLORS,IC_CALC);
 
- AppNameTab : Array[1..NAPPS] Of String[44] = (
+ AppNameTab : Array[1..NAPPS] Of String[64] = (
   'GeoManager','Calculator~Calculatrice~Rechner','Clock~Horloge~Uhr',
   'Notepad~Bloc-notes~Notizblock','Tetris','Solitaire','GeoWrite','GeoDraw',
   'GeoPlanner','GeoDex','GeoBanner','Scrapbook~Album~Sammelalbum',
   'Preferences~Pr'#130'f'#130'rences~Einstellungen','GeoCalc','GeoComm',
   'America Online','Text File Editor~'#201'diteur de texte~Texteditor',
   'GeoFile','Perf','Bounce','Geode','About~A propos~'#154'ber',
-  'DOS Programs~Programmes DOS~DOS-Programme','Help~Aide~Hilfe','Graph','Universal Installer');
+  'DOS Programs~Programmes DOS~DOS-Programme','Help~Aide~Hilfe','Graph','Universal Installer','Directory Tree~Arbre des r'#130'pertoires~Verzeichnisbaum',
+  'Screen Dumper~Capture d'''#130'cran~Bildschirmfoto','Spreadsheet Viewer~Visionneuse de tableur~Tabellenbetrachter');
 
 Function AppTitle(A: Integer): String;
 Begin
@@ -4139,6 +4141,7 @@ Const
  CM_HIDDEN  = 140; CM_CONFIRM = 141;
  CM_DINFO   = 150; CM_FORMAT  = 151; CM_DCOPY   = 152;
  CM_DRIVE   = 160;
+ CM_SELINV  = 142; CM_SELPAT  = 143; CM_EXTSEL  = 144; CM_TREE    = 145;
 
 Var
  F_ : File;
@@ -4185,6 +4188,9 @@ Type
   SBDrag    : Boolean;
   SBGrab    : LongInt;
   TotBytes  : LongInt;
+  ExtSel    : Boolean;      { mode selection etendue : un clic bascule l'element }
+  RbOn      : Boolean;      { selection par rectangle }
+  RbX0,RbY0,RbX1,RbY1: Integer;
  End;
 
 Function MgrNew(AX,AY,AW,AH: Integer; Const APath: String): PWindow; Forward;
@@ -4216,6 +4222,8 @@ Procedure MgrDoInfo(Wd_: PWindow); Forward;
 Procedure MgrDoDelete(Wd_: PWindow); Forward;
 Procedure MgrDoRename(Wd_: PWindow); Forward;
 Procedure MgrDoCopyMove(Wd_: PWindow; Move,Dup: Boolean); Forward;
+Procedure MgrXfer(Wd_: PWindow; Const DstDir: String; Move: Boolean); Forward;
+Procedure MgrSelPattern(Wd_: PWindow); Forward;
 Procedure MgrDoMkDir(Wd_: PWindow); Forward;
 Procedure MgrOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
 
@@ -4306,6 +4314,9 @@ Begin
  WinAddSep(Wd_);
  WinAddItem(Wd_,'Create Directory...~Cr'#130'er un r'#130'pertoire...~Verzeichnis erstellen...',CM_MKDIR,'');
  WinAddItem(Wd_,'Select All~Tout s'#130'lectionner~Alles ausw'#132'hlen',CM_SELALL,'Ctrl+A');
+ WinAddItem(Wd_,'Invert Selection~Inverser la s'#130'lection~Auswahl umkehren',CM_SELINV,'');
+ WinAddItem(Wd_,'Select by Pattern...~S'#130'lection par motif...~Auswahl nach Muster...',CM_SELPAT,'');
+ WinAddItem(Wd_,'Extend Selection~S'#130'lection '#130'tendue~Erweiterte Auswahl',CM_EXTSEL,'Space');
  WinAddSep(Wd_);
  WinAddItem(Wd_,'About GeoWorks...~A propos de GeoWorks...~'#154'ber GeoWorks...',CM_ABOUT,'');
  WinAddItem(Wd_,'Exit to Welcome~Retour '#133' l''accueil~Zur'#129'ck zum Willkommen',CM_EXITWEL,'');
@@ -4318,6 +4329,7 @@ Begin
   WinAddItem(Wd_,'Document~Document~Dokument',CM_DOCDIR,'');
   WinAddItem(Wd_,'Home~Dossier de d'#130'part~Startverzeichnis',CM_HOMEDIR,'');
   WinAddSep(Wd_);
+  WinAddItem(Wd_,'Directory Tree~Arbre des r'#130'pertoires~Verzeichnisbaum',CM_TREE,'');
   WinAddItem(Wd_,'Refresh~Actualiser~Aktualisieren',CM_REFRESH,'F5');
  End;
  WinAddMenu(Wd_,'View~Affichage~Ansicht');
@@ -4717,6 +4729,11 @@ Begin
    End;
   End;
  End;
+  If Dt_^.RbOn Then Begin
+  SetClip(Max2(CX1,FX1+2),Max2(CY1,FY1+2),Min2(CX2,FX2-SB-1),Min2(CY2,FY2-2));
+  GDotRect(Min2(Dt_^.RbX0,Dt_^.RbX1),Min2(Dt_^.RbY0,Dt_^.RbY1),Max2(Dt_^.RbX0,Dt_^.RbX1),Max2(Dt_^.RbY0,Dt_^.RbY1),cBlu);
+  ClipFull;
+ End;
  DrawScroll(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,MgrRows(Wd_),VR,Dt_^.Top);
  MgrDrawBar(Wd_,X1,Y2-BAR_H+1,X2,Y2);
 End;
@@ -4785,18 +4802,34 @@ Begin
   End;
   I:=MgrItemAt(Wd_,E.X,E.Y);
   If I>=0 Then Begin
-   If Not Dt_^.Ents^[I].Sel Then MgrSelectOnly(Wd_,I);
+   If Dt_^.ExtSel And Not E.Dbl Then Dt_^.Ents^[I].Sel:=Not Dt_^.Ents^[I].Sel
+   Else If Not Dt_^.Ents^[I].Sel Then MgrSelectOnly(Wd_,I);
    Dt_^.Cur:=I;
    If E.Dbl Then MgrOpenItem(Wd_,I)
-   Else Begin Dt_^.DragEnt:=I;Dt_^.DragX:=E.X;Dt_^.DragY:=E.Y;End;
+   Else If Dt_^.Ents^[I].Sel Then Begin Dt_^.DragEnt:=I;Dt_^.DragX:=E.X;Dt_^.DragY:=E.Y;End;
   End Else Begin
-   For P:=0 To Dt_^.NE-1 Do Dt_^.Ents^[P].Sel:=False;
-   Dt_^.Cur:=-1;
+   If Not Dt_^.ExtSel Then Begin
+    For P:=0 To Dt_^.NE-1 Do Dt_^.Ents^[P].Sel:=False;
+    Dt_^.Cur:=-1;
+   End;
+   If InBox(E.X,E.Y,FX1+2,FY1+2,FX2-SB-1,FY2-2) Then Begin
+    Dt_^.RbOn:=True;Dt_^.RbX0:=E.X;Dt_^.RbY0:=E.Y;Dt_^.RbX1:=E.X;Dt_^.RbY1:=E.Y;
+   End;
   End;
   Invalidate(Wd_);
  End Else If E.Kind=EV_MOVE Then Begin
   If Dt_^.SBDrag Then Begin
    Dt_^.Top:=ScrollDrag(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,MgrRows(Wd_),VR,E.Y,Dt_^.SBGrab);
+   Invalidate(Wd_);
+  End Else If Dt_^.RbOn Then Begin
+   Dt_^.RbX1:=E.X;Dt_^.RbY1:=E.Y;
+   For P:=0 To Dt_^.NE-1 Do Begin
+    MgrItemRect(Wd_,P,DX,BX,D,N);
+    If (DX<=Max2(Dt_^.RbX0,Dt_^.RbX1)) And (D>=Min2(Dt_^.RbX0,Dt_^.RbX1)) And
+       (BX<=Max2(Dt_^.RbY0,Dt_^.RbY1)) And (N>=Min2(Dt_^.RbY0,Dt_^.RbY1)) Then Begin
+     Dt_^.Ents^[P].Sel:=True;Dt_^.Cur:=P;
+    End Else If Not Dt_^.ExtSel Then Dt_^.Ents^[P].Sel:=False;
+   End;
    Invalidate(Wd_);
   End Else If (Dt_^.DragEnt>=0) And ((Abs(E.X-Dt_^.DragX)>5) Or (Abs(E.Y-Dt_^.DragY)>5)) Then Dt_^.Dragging:=True;
  End Else If E.Kind=EV_UP Then Begin
@@ -4807,18 +4840,13 @@ Begin
    End Else If (Tgt>=0) And (Tgt<>Dt_^.DragEnt) And (Dt_^.Ents^[Tgt].Kind=0) And Not MgrIsVirtual(Wd_) Then Begin
     If Confirm(T3('Move','D'#130'placer','Verschieben'),
      T3('Move to directory|','D'#130'placer vers le r'#130'pertoire|','Verschieben nach|')+Dt_^.Ents^[Tgt].Name+'?') Then Begin
-     {$I-}
-     Assign(F_,MgrFullPath(Wd_,Dt_^.DragEnt));
-     {$I+}
-     If CopyFileTo(MgrFullPath(Wd_,Dt_^.DragEnt),JoinPath(MgrFullPath(Wd_,Tgt),Dt_^.Ents^[Dt_^.DragEnt].Name)) Then Begin
-      {$I-}Erase(F_);{$I+}
-      If IOResult<>0 Then Beep;
-     End;
+     Dt_^.Ents^[Tgt].Sel:=False;
+     MgrXfer(Wd_,MgrFullPath(Wd_,Tgt),True);
      MgrScan(Wd_);
     End;
    End;
   End;
-  Dt_^.Dragging:=False;Dt_^.DragEnt:=-1;Dt_^.SBDrag:=False;
+  Dt_^.Dragging:=False;Dt_^.DragEnt:=-1;Dt_^.SBDrag:=False;Dt_^.RbOn:=False;
   Invalidate(Wd_);
  End;
 End;
@@ -4835,6 +4863,7 @@ Begin
  Old:=Dt_^.Cur;
  Case K Of
   K_ENTER: If Dt_^.Cur>=0 Then MgrOpenItem(Wd_,Dt_^.Cur);
+  K_SPACE: If Dt_^.Cur>=0 Then Dt_^.Ents^[Dt_^.Cur].Sel:=Not Dt_^.Ents^[Dt_^.Cur].Sel;
   K_BKSP: MgrGoUp(Wd_);
   K_DEL: MgrDoDelete(Wd_);
   K_F2: MgrDoRename(Wd_);
@@ -4886,6 +4915,7 @@ Begin
  WinSetFlag(Wd_,CM_SSIZE,2,Dt_^.SortMode=2);
  WinSetFlag(Wd_,CM_HIDDEN,2,Dt_^.ShowHid);
  WinSetFlag(Wd_,CM_CONFIRM,2,Dt_^.ConfirmDel);
+ WinSetFlag(Wd_,CM_EXTSEL,2,Dt_^.ExtSel);
  For D:=1 To 26 Do WinSetFlag(Wd_,CM_DRIVE+D,2,(Not MgrIsVirtual(Wd_)) And (DriveOfPath(Dt_^.Path)=D));
 End;
 
@@ -4913,27 +4943,60 @@ Begin
  Info(T3('Get Info','Informations','Informationen'),S);
 End;
 
+{ Suppression recursive d'un repertoire }
+Function DelTree(Const P: String): Boolean;
+Var SR: SearchRec; Ok: Boolean; F: File;
+Begin
+ Ok:=True;
+ FindFirst(JoinPath(P,'*'),AnyFile,SR);
+ While DosError=0 Do Begin
+  If (SR.Name<>'.') And (SR.Name<>'..') Then Begin
+   If (SR.Attr And Directory)<>0 Then Begin
+    If Not DelTree(JoinPath(P,SR.Name)) Then Ok:=False;
+   End Else Begin
+    {$I-}
+    Assign(F,JoinPath(P,SR.Name));Erase(F);
+    {$I+}
+    If IOResult<>0 Then Ok:=False;
+   End;
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ {$I-}
+ RmDir(P);
+ {$I+}
+ If IOResult<>0 Then Ok:=False;
+ DelTree:=Ok;
+End;
+
 Procedure MgrDoDelete(Wd_: PWindow);
  Var Dt_: PManager;
-Var I,N: Integer; Ok: Boolean; Sg: String;
+Var I,N,ND: Integer; Ok: Boolean; Sg: String;
 Begin
  Dt_:=Wd_^.Data;
  If MgrIsVirtual(Wd_) Then Exit;
- N:=0;
- For I:=0 To Dt_^.NE-1 Do If Dt_^.Ents^[I].Sel Then Inc(N);
+ N:=0;ND:=0;
+ For I:=0 To Dt_^.NE-1 Do If Dt_^.Ents^[I].Sel Then Begin Inc(N);If Dt_^.Ents^[I].Kind=0 Then Inc(ND);End;
  If N=0 Then Exit;
- If Dt_^.ConfirmDel Then Begin
+ If Dt_^.ConfirmDel Or (ND>0) Then Begin
   If N=1 Then Sg:=T3('Delete ','Supprimer ','L'#148'schen ')+Dt_^.Ents^[Dt_^.Cur].Name+' ?'
   Else Sg:=T3('Delete ','Supprimer ','L'#148'schen ')+IntStr(N)+' '+T3('items?',''#130'l'#130'ments ?','Elemente?');
+  If ND>0 Then Sg:=Sg+'|'+T3('Directories are deleted with their contents.','Les r'#130'pertoires sont supprim'#130's avec leur contenu.',
+                            'Verzeichnisse werden mit Inhalt gel'#148'scht.');
   If Not Confirm(T3('Delete','Supprimer','L'#148'schen'),Sg) Then Exit;
  End;
  For I:=0 To Dt_^.NE-1 Do
   If Dt_^.Ents^[I].Sel Then Begin
-   {$I-}
-   If Dt_^.Ents^[I].Kind=0 Then Begin RmDir(MgrFullPath(Wd_,I)); End
-   Else Begin Assign(F_,MgrFullPath(Wd_,I));Erase(F_);End;
-   Ok:=IOResult=0;
-   {$I+}
+   If Dt_^.Ents^[I].Kind=0 Then Ok:=DelTree(MgrFullPath(Wd_,I))
+   Else Begin
+    {$I-}
+    Assign(F_,MgrFullPath(Wd_,I));Erase(F_);
+    Ok:=IOResult=0;
+    {$I+}
+   End;
    If Not Ok Then Info(T3('Error','Erreur','Fehler'),T3('Cannot delete|','Impossible de supprimer|','Kann nicht l'#148'schen|')+Dt_^.Ents^[I].Name);
   End;
  MgrScan(Wd_);
@@ -4960,37 +5023,149 @@ Begin
  End;
 End;
 
-Procedure MgrDoCopyMove(Wd_: PWindow; Move,Dup: Boolean);
+Var
+ XferMode   : Integer;      { 0 demander, 1 tout remplacer, 2 tout ignorer }
+ XferCancel : Boolean;
+
+Function XferFile(Const Src,Dst: String; Move: Boolean): Boolean;
+Var R: Integer; F: File;
+Begin
+ XferFile:=True;
+ If FileExists(Dst) Then Begin
+  If XferMode=2 Then Exit;
+  If XferMode=0 Then Begin
+   R:=ChoiceBox(T3('Confirm Replace','Confirmer le remplacement','Ersetzen best'#132'tigen'),
+      ShortName(Dst)+T3(' already exists.',' existe d'#130'j'#133'.',' existiert bereits.'),
+      T3('Replace|Replace All|Skip|Skip All|Cancel','Remplacer|Tout remplacer|Ignorer|Tout ignorer|Annuler',
+         'Ersetzen|Alle ersetzen|'#154'berspringen|Alle '#129'berspringen|Abbrechen'),1);
+   Case R Of
+    2: XferMode:=1;
+    3: Exit;
+    4: Begin XferMode:=2;Exit;End;
+    5,0: Begin XferCancel:=True;XferFile:=False;Exit;End;
+   End;
+  End;
+ End;
+ If Not CopyFileTo(Src,Dst) Then Begin XferFile:=False;Exit;End;
+ If Move Then Begin
+  {$I-}
+  Assign(F,Src);Erase(F);
+  {$I+}
+  If IOResult<>0 Then Beep;
+ End;
+End;
+
+{ Copie ou deplace un repertoire de facon recursive }
+Function XferDir(Const Src,Dst: String; Move: Boolean): Boolean;
+Var SR: SearchRec; Ok: Boolean;
+Begin
+ Ok:=True;
+ If Pos(Upper(Src)+DirSep,Upper(Dst)+DirSep)=1 Then Begin XferDir:=False;Exit;End;
+ {$I-}
+ If Not DirExists(Dst) Then MkDir(Dst);
+ {$I+}
+ If IOResult<>0 Then Begin XferDir:=False;Exit;End;
+ FindFirst(JoinPath(Src,'*'),AnyFile,SR);
+ While (DosError=0) And Not XferCancel Do Begin
+  If (SR.Name<>'.') And (SR.Name<>'..') Then Begin
+   If (SR.Attr And Directory)<>0 Then Begin
+    If Not XferDir(JoinPath(Src,SR.Name),JoinPath(Dst,SR.Name),Move) Then Ok:=False;
+   End Else If Not XferFile(JoinPath(Src,SR.Name),JoinPath(Dst,SR.Name),Move) Then Ok:=False;
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ If Move And Ok And Not XferCancel Then Begin
+  {$I-}
+  RmDir(Src);
+  {$I+}
+  If IOResult<>0 Then Begin End;
+ End;
+ XferDir:=Ok;
+End;
+
+{ Copie ou deplace tous les elements selectionnes vers DstDir }
+Procedure MgrXfer(Wd_: PWindow; Const DstDir: String; Move: Boolean);
  Var Dt_: PManager;
-Var S,Dst: String;
+Var I,Bad: Integer; Src,Dst: String; Ok: Boolean;
 Begin
  Dt_:=Wd_^.Data;
- If (Dt_^.Cur<0) Or MgrIsVirtual(Wd_) Or (Dt_^.Ents^[Dt_^.Cur].Kind=0) Then Exit;
+ XferMode:=0;XferCancel:=False;Bad:=0;
+ For I:=0 To Dt_^.NE-1 Do
+  If Dt_^.Ents^[I].Sel And Not XferCancel Then Begin
+   Src:=MgrFullPath(Wd_,I);
+   Dst:=JoinPath(DstDir,Dt_^.Ents^[I].Name);
+   If Upper(Src)<>Upper(Dst) Then Begin
+    If Dt_^.Ents^[I].Kind=0 Then Ok:=XferDir(Src,Dst,Move) Else Ok:=XferFile(Src,Dst,Move);
+    If Not Ok And Not XferCancel Then Inc(Bad);
+   End;
+  End;
+ If Bad>0 Then
+  Info(T3('Error','Erreur','Fehler'),IntStr(Bad)+' '+T3('item(s) could not be copied or moved.',''#130'l'#130'ment(s) non copi'#130'(s) ou d'#130'plac'#130'(s).',
+       'Element(e) nicht kopiert oder verschoben.'));
+ MgrScan(Wd_);Invalidate(Wd_);
+End;
+
+Procedure MgrDoCopyMove(Wd_: PWindow; Move,Dup: Boolean);
+ Var Dt_: PManager;
+Var S,Dst: String; I,N: Integer; Ok: Boolean;
+Begin
+ Dt_:=Wd_^.Data;
+ If MgrIsVirtual(Wd_) Then Exit;
+ N:=0;
+ For I:=0 To Dt_^.NE-1 Do If Dt_^.Ents^[I].Sel Then Inc(N);
+ If N=0 Then Exit;
  If Dup Then Begin
+  If Dt_^.Cur<0 Then Exit;
   S:=Dt_^.Ents^[Dt_^.Cur].Name;
   If Pos('.',S)>0 Then S:=Copy(S,1,Pos('.',S)-1)+'2'+Copy(S,Pos('.',S),20) Else S:=S+'2';
   If Not InputBox(T3('Duplicate','Dupliquer','Duplizieren'),T3('Name of the copy:','Nom de la copie :','Name der Kopie:'),S,44) Then Exit;
   Dst:=JoinPath(Dt_^.Path,S);
- End Else Begin
-  S:=Dt_^.Path;
-  If Not InputBox(T3('Destination','Destination','Ziel'),T3('Directory:','R'#130'pertoire :','Verzeichnis:'),S,70) Then Exit;
-  If Not DirExists(S) Then Begin
-   Info(T3('Error','Erreur','Fehler'),T3('Directory not found.','R'#130'pertoire introuvable.','Verzeichnis nicht gefunden.'));
-   Exit;
-  End;
-  Dst:=JoinPath(S,Dt_^.Ents^[Dt_^.Cur].Name);
- End;
- If Not CopyFileTo(MgrFullPath(Wd_,Dt_^.Cur),Dst) Then Begin
-  Info(T3('Error','Erreur','Fehler'),T3('Copy failed.',''#130'chec de la copie.','Kopieren fehlgeschlagen.'));
+  XferMode:=0;XferCancel:=False;
+  If Dt_^.Ents^[Dt_^.Cur].Kind=0 Then Ok:=XferDir(MgrFullPath(Wd_,Dt_^.Cur),Dst,False)
+  Else Ok:=XferFile(MgrFullPath(Wd_,Dt_^.Cur),Dst,False);
+  If Not Ok Then Info(T3('Error','Erreur','Fehler'),T3('Copy failed.',''#130'chec de la copie.','Kopieren fehlgeschlagen.'));
+  MgrScan(Wd_);Invalidate(Wd_);
   Exit;
  End;
- If Move Then Begin
-  {$I-}
-  Assign(F_,MgrFullPath(Wd_,Dt_^.Cur));Erase(F_);
-  {$I+}
-  If IOResult<>0 Then Beep;
+ S:=Dt_^.Path;
+ If Not InputBox(T3('Destination','Destination','Ziel'),T3('Directory:','R'#130'pertoire :','Verzeichnis:'),S,70) Then Exit;
+ If Not DirExists(S) Then Begin
+  Info(T3('Error','Erreur','Fehler'),T3('Directory not found.','R'#130'pertoire introuvable.','Verzeichnis nicht gefunden.'));
+  Exit;
  End;
- MgrScan(Wd_);Invalidate(Wd_);
+ MgrXfer(Wd_,S,Move);
+End;
+
+{ Filtre de type DOS : * et ? }
+Function WildMatch(Const P,S: String; I,J: Integer): Boolean;
+Begin
+ If I>Length(P) Then WildMatch:=J>Length(S)
+ Else If P[I]='*' Then WildMatch:=WildMatch(P,S,I+1,J) Or ((J<=Length(S)) And WildMatch(P,S,I,J+1))
+ Else If J>Length(S) Then WildMatch:=False
+ Else If (P[I]='?') Or (UpCase(P[I])=UpCase(S[J])) Then WildMatch:=WildMatch(P,S,I+1,J+1)
+ Else WildMatch:=False;
+End;
+
+Procedure MgrSelPattern(Wd_: PWindow);
+ Var Dt_: PManager;
+Var P,Nm: String; I,K: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ P:='*.*';
+ If Not InputBox(T3('Select by Pattern','S'#130'lection par motif','Auswahl nach Muster'),T3('Pattern (* and ?):','Motif (* et ?) :','Muster (* und ?):'),P,30) Then Exit;
+ P:=Upper(P);
+ If P='*.*' Then P:='*';
+ For I:=0 To Dt_^.NE-1 Do Begin
+  Nm:=Dt_^.Ents^[I].Name;
+  Dt_^.Ents^[I].Sel:=WildMatch(P,Nm,1,1) And (Dt_^.Ents^[I].Kind<>0);
+ End;
+ K:=-1;
+ For I:=0 To Dt_^.NE-1 Do If Dt_^.Ents^[I].Sel Then K:=I;
+ Dt_^.Cur:=K;
+ Invalidate(Wd_);
 End;
 
 Procedure MgrDoMkDir(Wd_: PWindow);
@@ -5030,6 +5205,13 @@ Begin
   CM_MOVETO: MgrDoCopyMove(Wd_,True,False);
   CM_DELETE: MgrDoDelete(Wd_);
   CM_MKDIR: MgrDoMkDir(Wd_);
+  CM_EXTSEL: Begin Dt_^.ExtSel:=Not Dt_^.ExtSel;Invalidate(Wd_);End;
+  CM_SELINV: Begin
+              For I:=0 To Dt_^.NE-1 Do Dt_^.Ents^[I].Sel:=Not Dt_^.Ents^[I].Sel;
+              Invalidate(Wd_);
+             End;
+  CM_SELPAT: MgrSelPattern(Wd_);
+  CM_TREE: LaunchApp(A_TREE,Dt_^.Path);
   CM_SELALL: Begin
               For I:=0 To Dt_^.NE-1 Do Dt_^.Ents^[I].Sel:=True;
               If Dt_^.Cur<0 Then Dt_^.Cur:=0;
@@ -5346,6 +5528,263 @@ Begin
    If Not Done Then Begin HideMouse;DrawDosScreen(Page);ShowMouse;End;
   End;
  Until Done;
+End;
+
+{ ====================================================================== }
+{   ARBRE DES REPERTOIRES (fenetre d'arbre du GeoManager)                 }
+{ ====================================================================== }
+
+Const
+ MAXTN = 500;
+ CM_TROPEN=1200; CM_TREXP=1201; CM_TRCOL=1202; CM_TRALL=1203; CM_TRREF=1204;
+
+Type
+ TTreeNode = Record
+  Name  : String[40];
+  Path  : String[120];
+  Depth : Byte;
+  Open  : Boolean;
+  Kids  : Boolean;
+ End;
+
+ PTree = ^TTree;
+ TTree = Record
+  N,Sel,Top : Integer;
+  Nd   : Array[1..MAXTN] Of TTreeNode;
+  VBar : Boolean;
+  VGrab: LongInt;
+ End;
+
+Function TreeNew(AX,AY: Integer; Const APath: String): PWindow; Forward;
+Procedure TreeDrawClient(Wd_: PWindow); Forward;
+Procedure TreeOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure TreeOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure TreeOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+{ Etend le noeud I : insere ses sous-repertoires }
+Procedure TreeExpand(T: PTree; I: Integer);
+Var SR: SearchRec; Names: Array[1..60] Of String[40]; NN,J,K,Pos_: Integer; S: String[40]; Q: String[40];
+Begin
+ If (I<1) Or (I>T^.N) Or T^.Nd[I].Open Then Exit;
+ NN:=0;
+ FindFirst(JoinPath(T^.Nd[I].Path,'*'),AnyFile,SR);
+ While DosError=0 Do Begin
+  If ((SR.Attr And Directory)<>0) And (SR.Name<>'.') And (SR.Name<>'..') And (NN<60) Then Begin
+   Inc(NN);Names[NN]:=Copy(SR.Name,1,40);
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR);
+ {$ENDIF}
+ For J:=2 To NN Do Begin
+  S:=Names[J];K:=J-1;
+  While (K>=1) And (Upper(Names[K])>Upper(S)) Do Begin Names[K+1]:=Names[K];Dec(K);End;
+  Names[K+1]:=S;
+ End;
+ T^.Nd[I].Open:=True;
+ If (NN=0) Or (T^.N+NN>MAXTN) Then Begin T^.Nd[I].Kids:=NN>0;If NN=0 Then T^.Nd[I].Open:=False;Exit;End;
+ For J:=T^.N DownTo I+1 Do T^.Nd[J+NN]:=T^.Nd[J];
+ Inc(T^.N,NN);
+ For J:=1 To NN Do Begin
+  Pos_:=I+J;
+  T^.Nd[Pos_].Name:=Names[J];
+  T^.Nd[Pos_].Path:=Copy(JoinPath(T^.Nd[I].Path,Names[J]),1,120);
+  T^.Nd[Pos_].Depth:=T^.Nd[I].Depth+1;
+  T^.Nd[Pos_].Open:=False;T^.Nd[Pos_].Kids:=True;
+ End;
+End;
+
+Procedure TreeCollapse(T: PTree; I: Integer);
+Var J,K: Integer;
+Begin
+ If (I<1) Or (I>T^.N) Or Not T^.Nd[I].Open Then Exit;
+ J:=I+1;
+ While (J<=T^.N) And (T^.Nd[J].Depth>T^.Nd[I].Depth) Do Inc(J);
+ K:=J-I-1;
+ If K>0 Then Begin
+  While J<=T^.N Do Begin T^.Nd[J-K]:=T^.Nd[J];Inc(J);End;
+  Dec(T^.N,K);
+ End;
+ T^.Nd[I].Open:=False;
+ If T^.Sel>T^.N Then T^.Sel:=T^.N;
+End;
+
+{ Deplie l'arbre jusqu'au repertoire Target }
+Procedure TreeReveal(T: PTree; Const Target: String);
+Var I,Guard: Integer; Tg,P: String;
+Begin
+ Tg:=Upper(Target);
+ While (Length(Tg)>1) And ((Tg[Length(Tg)]='\') Or (Tg[Length(Tg)]='/')) Do Delete(Tg,Length(Tg),1);
+ Guard:=0;
+ Repeat
+  Inc(Guard);
+  I:=0;
+  For I:=T^.N DownTo 1 Do Begin
+   P:=Upper(T^.Nd[I].Path);
+   If (Length(P)>1) And ((P[Length(P)]='\') Or (P[Length(P)]='/')) Then Delete(P,Length(P),1);
+   If P=Tg Then Begin T^.Sel:=I;Exit;End;
+   If (Not T^.Nd[I].Open) And (Pos(P+DirSep,Tg+DirSep)=1) And (Length(P)<Length(Tg)) Then Begin
+    TreeExpand(T,I);
+    Break;
+   End;
+  End;
+ Until (Guard>40) Or (I<1);
+End;
+
+Function TreeNew(AX,AY: Integer; Const APath: String): PWindow;
+ Var Wd_: PWindow; Dt_: PTree; R: String;
+Begin
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_TREE,AX,AY,360,320,T3('Directory Tree','Arbre des r'#130'pertoires','Verzeichnisbaum'));
+ Wd_^.IconId:=IC_FOLDER;Wd_^.MinW:=200;Wd_^.MinH:=120;
+ WinAddMenu(Wd_,'Tree~Arbre~Baum');
+ WinAddItem(Wd_,'Open Directory~Ouvrir le r'#130'pertoire~Verzeichnis '#148'ffnen',CM_TROPEN,'Enter');
+ WinAddItem(Wd_,'Expand~D'#130'plier~Aufklappen',CM_TREXP,'Right');
+ WinAddItem(Wd_,'Collapse~Replier~Zuklappen',CM_TRCOL,'Left');
+ WinAddItem(Wd_,'Expand One Level~D'#130'plier un niveau~Eine Ebene aufklappen',CM_TRALL,'');
+ WinAddItem(Wd_,'Refresh~Actualiser~Aktualisieren',CM_TRREF,'F5');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ If (Length(APath)>=2) And (APath[2]=':') Then R:=Copy(APath,1,2)+'\' Else R:=DirSep;
+ If (APath='') Or (Copy(APath,1,2)='V:') Then Begin
+  If WorldDir<>'' Then R:=ParentDir(WorldDir) Else R:=HomeDir;
+ End;
+ Dt_^.N:=1;Dt_^.Nd[1].Name:=R;Dt_^.Nd[1].Path:=Copy(R,1,120);Dt_^.Nd[1].Depth:=0;
+ Dt_^.Nd[1].Open:=False;Dt_^.Nd[1].Kids:=True;Dt_^.Sel:=1;Dt_^.Top:=1;
+ TreeExpand(Dt_,1);
+ If (APath<>'') And (Copy(APath,1,2)<>'V:') Then TreeReveal(Dt_,APath)
+ Else If WorldDir<>'' Then TreeReveal(Dt_,WorldDir);
+ TreeNew:=Wd_;
+End;
+
+Procedure TreeGeom(Wd_: PWindow; Var X1,Y1,X2,Y2,VR: Integer);
+Begin
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ VR:=(Y2-Y1-6) Div 14;
+ If VR<1 Then VR:=1;
+End;
+
+Procedure TreeDrawClient(Wd_: PWindow);
+ Var Dt_: PTree;
+Var X1,Y1,X2,Y2,VR,I,K,Y,X: Integer; C: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ TreeGeom(Wd_,X1,Y1,X2,Y2,VR);
+ Sunken(X1,Y1,X2,Y2,cWht);
+ If Dt_^.Sel<Dt_^.Top Then Dt_^.Top:=Dt_^.Sel;
+ If Dt_^.Sel>=Dt_^.Top+VR Then Dt_^.Top:=Dt_^.Sel-VR+1;
+ If Dt_^.Top<1 Then Dt_^.Top:=1;
+ SetClip(Max2(CX1,X1+2),Max2(CY1,Y1+2),Min2(CX2,X2-SB-1),Min2(CY2,Y2-2));
+ For I:=0 To VR Do Begin
+  K:=Dt_^.Top+I;
+  If K<=Dt_^.N Then Begin
+   Y:=Y1+4+I*14;X:=X1+6+Dt_^.Nd[K].Depth*16;
+   If K=Dt_^.Sel Then Begin GBar(X+28,Y-1,X+30+TextW(Dt_^.Nd[K].Name),Y+11,cBlk);C:=cWht;End Else C:=cBlk;
+   If Dt_^.Nd[K].Depth>0 Then GHLine(X-8,X,Y+5,cDGr);
+   If Dt_^.Nd[K].Kids Then Begin
+    GRect(X,Y+1,X+8,Y+9,cDGr);
+    GHLine(X+2,X+6,Y+5,cBlk);
+    If Not Dt_^.Nd[K].Open Then GVLine(X+4,Y+3,Y+7,cBlk);
+   End;
+   { dossier }
+   GBar(X+12,Y+2,X+24,Y+10,cYel);GRect(X+12,Y+2,X+24,Y+10,cBrn);GBar(X+12,Y,X+17,Y+2,cBrn);
+   GText(X+29,Y+1,Dt_^.Nd[K].Name,C);
+  End;
+ End;
+ ClipFull;
+ DrawScroll(True,X2-SB+1,Y1+1,X2-1,Y2-1,Dt_^.N,VR,Dt_^.Top-1);
+End;
+
+Procedure TreeOpen(Dt_: PTree);
+Begin
+ LaunchApp(A_MANAGER,Dt_^.Nd[Dt_^.Sel].Path);
+End;
+
+Procedure TreeOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PTree;
+Var X1,Y1,X2,Y2,VR,K,P,A,B,X: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ TreeGeom(Wd_,X1,Y1,X2,Y2,VR);
+ If E.Kind=EV_UP Then Begin Dt_^.VBar:=False;Exit;End;
+ If E.Kind=EV_MOVE Then Begin
+  If Dt_^.VBar Then Begin
+   Dt_^.Top:=1+ScrollDrag(True,X2-SB+1,Y1+1,X2-1,Y2-1,Dt_^.N,VR,E.Y,Dt_^.VGrab);
+   If Dt_^.Top>Dt_^.N Then Dt_^.Top:=Dt_^.N;
+   Invalidate(Wd_);
+  End;
+  Exit;
+ End;
+ If E.Kind<>EV_DOWN Then Exit;
+ If E.X>=X2-SB+1 Then Begin
+  P:=ScrollPart(True,X2-SB+1,Y1+1,X2-1,Y2-1,Dt_^.N,VR,Dt_^.Top-1,E.X,E.Y);
+  Case P Of
+   1: If Dt_^.Top>1 Then Dec(Dt_^.Top);
+   2: If Dt_^.Top<Dt_^.N Then Inc(Dt_^.Top);
+   3: Dt_^.Top:=Max2(1,Dt_^.Top-VR);
+   4: Dt_^.Top:=Min2(Dt_^.N,Dt_^.Top+VR);
+   5: Begin Dt_^.VBar:=True;ScrollThumb(Y1+1+SB,Y2-1-SB,Dt_^.N,VR,Dt_^.Top-1,A,B);Dt_^.VGrab:=E.Y-A;End;
+  End;
+  Invalidate(Wd_);Exit;
+ End;
+ K:=Dt_^.Top+(E.Y-Y1-4) Div 14;
+ If (K>=1) And (K<=Dt_^.N) Then Begin
+  X:=X1+6+Dt_^.Nd[K].Depth*16;
+  Dt_^.Sel:=K;
+  If Dt_^.Nd[K].Kids And (E.X>=X-1) And (E.X<=X+10) Then Begin
+   If Dt_^.Nd[K].Open Then TreeCollapse(Dt_,K) Else TreeExpand(Dt_,K);
+  End Else If E.Dbl Then TreeOpen(Dt_);
+ End;
+ Invalidate(Wd_);
+End;
+
+Procedure TreeOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PTree;
+Begin
+ Dt_:=Wd_^.Data;
+ Case K Of
+  K_UP: If Dt_^.Sel>1 Then Dec(Dt_^.Sel);
+  K_DOWN: If Dt_^.Sel<Dt_^.N Then Inc(Dt_^.Sel);
+  K_HOME: Dt_^.Sel:=1;
+  K_END: Dt_^.Sel:=Dt_^.N;
+  K_PGUP: Dt_^.Sel:=Max2(1,Dt_^.Sel-10);
+  K_PGDN: Dt_^.Sel:=Min2(Dt_^.N,Dt_^.Sel+10);
+  K_RIGHT: TreeExpand(Dt_,Dt_^.Sel);
+  K_LEFT: If Dt_^.Nd[Dt_^.Sel].Open Then TreeCollapse(Dt_,Dt_^.Sel);
+  K_ENTER: TreeOpen(Dt_);
+  K_F5: TreeOnCommand(Wd_,CM_TRREF);
+ End;
+ Invalidate(Wd_);
+End;
+
+Procedure TreeOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PTree;
+Var I: Integer; P: String;
+Begin
+ Dt_:=Wd_^.Data;
+ Case Cmd Of
+  CM_TROPEN: TreeOpen(Dt_);
+  CM_TREXP: TreeExpand(Dt_,Dt_^.Sel);
+  CM_TRCOL: TreeCollapse(Dt_,Dt_^.Sel);
+  CM_TRALL: Begin
+             I:=Dt_^.Sel;
+             If Not Dt_^.Nd[I].Open Then TreeExpand(Dt_,I);
+             I:=I+1;
+             While (I<=Dt_^.N) And (Dt_^.Nd[I].Depth>Dt_^.Nd[Dt_^.Sel].Depth) Do Begin
+              If Dt_^.Nd[I].Depth=Dt_^.Nd[Dt_^.Sel].Depth+1 Then TreeExpand(Dt_,I);
+              Inc(I);
+             End;
+            End;
+  CM_TRREF: Begin
+             P:=Dt_^.Nd[Dt_^.Sel].Path;
+             While Dt_^.N>1 Do Dec(Dt_^.N);
+             Dt_^.Nd[1].Open:=False;
+             TreeExpand(Dt_,1);TreeReveal(Dt_,P);
+            End;
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ End;
+ Invalidate(Wd_);
 End;
 
 { ====================================================================== }
@@ -13129,6 +13568,7 @@ Begin
  Case W^.Kind Of
   A_GRAPH: GrDrawClient(W);
   A_INSTALL: InstDrawClient(W);
+  A_TREE: TreeDrawClient(W);
   A_MANAGER: MgrDrawClient(W);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwDrawClient(W);
   A_CALC: CalcDrawClient(W);
@@ -13159,6 +13599,7 @@ Begin
  Case W^.Kind Of
   A_GRAPH: GrOnMouse(W,E);
   A_INSTALL: InstOnMouse(W,E);
+  A_TREE: TreeOnMouse(W,E);
   A_MANAGER: MgrOnMouse(W,E);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnMouse(W,E);
   A_CALC: CalcOnMouse(W,E);
@@ -13180,6 +13621,7 @@ Begin
  Case W^.Kind Of
   A_GRAPH: GrOnKey(W,K);
   A_INSTALL: InstOnKey(W,K);
+  A_TREE: TreeOnKey(W,K);
   A_MANAGER: MgrOnKey(W,K);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnKey(W,K);
   A_CALC: CalcOnKey(W,K);
@@ -13203,6 +13645,7 @@ Begin
  Case W^.Kind Of
   A_GRAPH: GrOnCommand(W,Cmd);
   A_INSTALL: InstOnCommand(W,Cmd);
+  A_TREE: TreeOnCommand(W,Cmd);
   A_MANAGER: MgrOnCommand(W,Cmd);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnCommand(W,Cmd);
   A_CALC: CalcOnCommand(W,Cmd);
@@ -13280,6 +13723,7 @@ Begin
  Case W^.Kind Of
   A_GRAPH: Begin GrDone(W);Dispose(PGraph(W^.Data)) End;
   A_INSTALL: Begin InstDone(W);Dispose(PInst(W^.Data)) End;
+  A_TREE: Dispose(PTree(W^.Data));
   A_MANAGER: Begin MgrDone(W);Dispose(PManager(W^.Data)) End;
   A_NOTEPAD,A_TEXTED,A_WRITE: Begin EdwDone(W);Dispose(PEditWin(W^.Data)) End;
   A_CALC: Begin Dispose(PCalcWin(W^.Data)) End;
@@ -13350,6 +13794,7 @@ Begin
   A_DEX: W:=DexNew(X,Y);
   A_GRAPH: W:=GrNew(X,Y);
   A_INSTALL: W:=InstNew(X,Y,Param);
+  A_TREE: W:=TreeNew(X,Y,Param);
  Else
   Info(AppTitle(AppId),T3('This application is not available yet.','Cette application n''est pas encore disponible.','Diese Anwendung ist noch nicht verf'#129'gbar.'));
  End;
